@@ -1,0 +1,108 @@
+keen-quest-34: bounded standalone RT on software Vulkan
+
+Result
+The final CPU Vulkan standalone rt path passed with validation errors: 0 and
+ALL PASS. Native /usr/bin/time elapsed 17:54.13 (1074.13 s), exit status 0,
+maximum RSS 5255640 KiB. The unchanged wrapper retains its 1500 s cap and
+process-group TERM/KILL containment. Managed job
+33d8e031-1c0e-4248-afb4-453b6f7af14d passed; pytest reports 1 passed in
+1073.55 s; daemon run_seconds is 1075.912 (queue 18.262 s).
+
+This is deliberately reduced software coverage, not a full GI pass. It retains
+all three multi-LOD mapping/BLAS reuse/opacity frames with one real shadow RT
+dispatch each, index compaction, pinned BLAS geometry under buffer growth,
+real indexed surface queries (transformed normals, UV/tint/AO/material), SBT
+alignment/categories, miss behavior, invalid part-record rejection/counters,
+and stable part slots after release. Existing assertions remain enabled.
+GI/froxel/visibility/local-direct lighting scenarios and the remainder of the
+full lighting suite are skipped on VK_PHYSICAL_DEVICE_TYPE_CPU, with an explicit
+reason printed before setup. Hardware Vulkan still follows the original full
+suite. Full GI/lighting remains unqualified here; hardware execution was not
+available. The dedicated rt-counters entry point is unchanged and separate;
+its earlier native qualification in 2026-10-20-rt-counter-native is not being
+relabelled as a new counter-mode or full-GI run.
+
+Trace first
+Before editing, rebuilt the baseline b65847b8c69be6ca2dc1036c8efe0d593e3178be
+from this workspace's current source list, regenerated canonical SPIR-V, and
+ran a bounded 360 s diagnostic with frame tracing and trace_llvm.c preloaded.
+The interposer forwards LLVM arguments/results without modifying compiler
+options; it resolves LLVM from its already-loaded driver-local dependency.
+See diagnostic-provenance.txt for executable/shader/RT-source/interposer hashes.
+The diagnostic failed at its bound (native terminated -15), not a test pass.
+At the first GI multi-LOD frame serial 4, end.submit.exit occurred at
+234984.380 ms, followed by pending unsignaled frame/present fences. Queue thread
+3387452 completed LLVMRunPasses for cs9_variant0 at monotonic 282981.098250108,
+then entered LLVMGetPointerToGlobal(cs_variant) at 282981.136089379 without an
+exit through termination. This directly locates unfinished deferred driver JIT
+on the current isolated-raygen build. It does not prove an infinite shader
+loop, nor the duration of the LLVM call beyond the diagnostic bound. The
+1500 s full-GI timeout is prior task evidence; this fresh trace was only 360 s.
+
+Intermediate failure retained
+Disabling GI alone let all three mapping frames finish, but the first fallback
+still timed out in the original 1500 s wrapper. Its four separate renderers
+eagerly created unused lighting/diffuse/reflection pipelines; the log ends in
+the fourth set's reflection creation. This was a real managed failed job,
+ad6be53d-f7dd-4ea5-91f2-b36b41ad47d5, not an idle or missing producer. See
+gi-disabled-eager-pipelines-{job.json,provenance.txt,timeout.log}.
+
+Final change
+A MATTER_VK_TEST_FAULT_INJECTION-only option, set before renderer init, omits
+unused RT lighting pipeline creation for these four CPU fixtures. Real shadow
+and surface-query pipelines/SBTs still use production creation/dispatch code.
+A test-only guard explicitly rejects GI or local-light dispatches when the
+lighting pipelines are omitted. The option defaults false; shipping builds
+compile it out. Hardware fixtures create all pipelines as before. The native
+wrapper also verifies the skip reason, three completed mapping frames, no
+lighting pipeline profile entries, RT availability, validation zero, and ALL
+PASS. No shader arguments, shaders, cap, or assertions were weakened.
+
+Provenance and replay
+The final job used input_mode=live, input_stability=unverified and an input_ref
+of b65847b8. That ref is the checkout base, NOT the tested modified source.
+The committed C++ change and geometry-only-provenance.txt identify the actual
+executed sources; executable SHA-256:
+7c31e67bc956440d0ab28594aeac1a6d51d3070e7970c6a7b09188c6b1fed64f
+The source hashes were captured after building and before job submission; no
+C++ changes were made afterward. geometry-only-rt.log and geometry-only-job.json
+are the final native and managed evidence. The embedded shader hash stayed
+39cde59890c55c466fea0f5b42bac976b64e8c65ccaba051ff1317e5374cef22.
+
+Built with the prior gen_linux_smoke_cmake.py from ../2026-10-20-rt-counter-native,
+using current cmake/MatterViewer.cmake source arrays, plus the moved component
+include roots. linux-smoke-CMakeLists.txt archives the exact generated project;
+set its R path to the checkout and save it as CMakeLists.txt to replay elsewhere.
+It links the available GLFW static library and system Vulkan/X11 libraries.
+Commands used:
+  python3 -I docs/agent/evidence/2026-10-20-rt-counter-native/gen_linux_smoke_cmake.py "$PWD" /tmp/keen-quest-34/cmakeproj
+  cmake -S /tmp/keen-quest-34/cmakeproj -B /tmp/keen-quest-34/build -G Ninja -DCMAKE_BUILD_TYPE=Release
+  cmake --build /tmp/keen-quest-34/build --parallel 4
+Canonical shaders were regenerated with make -C MatterEngine3 vulkan-spirv -j4,
+GLSLC=/tmp/fleet-rapids-48-epoch18/toolchain/usr/bin/glslc and LD_LIBRARY_PATH
+pointing to that toolchain's usr/lib/x86_64-linux-gnu. No shader diff resulted.
+
+Runtime was llvmpipe Mesa 25.2.8, LLVM 20.1.2, API 1.4.318, DISPLAY=:0,
+LP_NUM_THREADS=1. test_native.py records the complete native environment,
+including the existing validation layer/toolchain paths. Those /tmp paths and
+the executable path must be adjusted if replayed on another machine. It imports
+the original run_mode from ../2026-10-20-rt-counter-native without changing it.
+Final accepted invocation (configured worker defaults):
+  aq test --aq-detach --aq-wait --aq-idempotency-key keen-quest-34-native-v2 docs/agent/evidence/2026-10-20-rt-software-gi/test_native.py -q -s
+An initial -n 0 managed submission was refused jobs.preset_denied, without a
+producer. Removing that override admitted the run above; it was not resubmitted
+while pending. diagnostic_repro.py archives the pre-change trace harness;
+replay that diagnostic against the baseline executable, not the fixed binary.
+Build its interposer with:
+  cc -shared -fPIC -O2 -Wall -Wextra trace_llvm.c -ldl -o /tmp/keen-quest-34/trace_llvm.so
+
+CPU checks and limitation
+  aq test --aq-timeout 75 -n 0 MatterEngine3/tests/test_rt_counter_cpu.py MatterEngine3/tests/test_rt_pipeline_subset.py -q
+Result: 10 passed in 1.31 s (cpu-final.log).
+The related-area invocation additionally included test_frame_recording_rollback.py:
+11 passed, 1 failed in 1.23 s (cpu-pytest.log). The unchanged
+ test_image_layout_submission_rollback fixture fails to compile because its
+quoted include resolves the moved native vk_resources.h, which includes
+vulkan/vulkan.h, without that fixture's Vulkan include root. Exact compiler
+error is retained in rollback-compile.log. No fix or skip was added for that
+unrelated failure; the focused pass above does not imply the entire area passed.

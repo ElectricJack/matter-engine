@@ -678,6 +678,22 @@ AuthoringRoute classify_authoring_route(const std::string& source) {
                                                   : AuthoringRoute::Unknown;
 }
 
+bool reauthor_portable(Baker& baker, const std::unordered_map<uint64_t, BakeInputs>& plan,
+                       std::string& err) {
+    for (const auto& [hash, inputs] : plan) {
+        if (classify_authoring_route(inputs.source) != AuthoringRoute::PortableV1) continue;
+        const uint64_t again = baker.resolve_hash(inputs.source, inputs.params,
+                                                  inputs.child_hashes, nullptr);
+        if (again == hash) continue;
+        char ids[64];
+        std::snprintf(ids, sizeof ids, "%016llx re-authored to %016llx",
+                      (unsigned long long)hash, (unsigned long long)again);
+        err = "resolve cache stale: portable part '" + inputs.module + "' " + ids;
+        return false;
+    }
+    return true;
+}
+
 namespace {
 // Non-null only for a PortableV1 source with a route installed; logs and
 // sets `failed` for an Unknown marker, a missing route or children.

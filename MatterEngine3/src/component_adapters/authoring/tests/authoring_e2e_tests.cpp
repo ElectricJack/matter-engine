@@ -8,7 +8,9 @@
 #include <matter/graphics/vulkan_raster.h>
 #endif
 #include <cmath>
+#include <cstdlib>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <iterator>
 
@@ -241,7 +243,32 @@ int dedup() {
 
 #ifdef MATTER_AUTHORING_VULKAN
 // Graphics consumes the coordinator result through its public upload contract.
-void render(const std::shared_ptr<NativeDevice> &native, const std::string &generator) {
+// MATTER_AUTHORING_E2E_DUMP=<dir> also writes <dir>/<generator>.native.json
+// (top-down rows) for the native/browser matched view in
+// docs/component-separation/qualification-2026-10-20/tools/browser_matched.py.
+void dump(const std::string &generator, const mg::SceneFrame &frame, const mg::RasterOutput &output) {
+  const char *dir = std::getenv("MATTER_AUTHORING_E2E_DUMP");
+  if (!dir) return;
+  std::ofstream out(std::string(dir) + "/" + generator + ".native.json");
+  out << std::setprecision(9) << "{\"generator\":\"" << generator << "\",\"width\":" << output.identity.width
+      << ",\"height\":" << output.identity.height << ",\"instances\":[";
+  for (size_t i = 0; i < frame.visible.size(); ++i) out << (i ? "," : "") << '"' << frame.visible[i].instance.value << '"';
+  const auto channels = [&](const char *name, const mg::FloatImage &image, int count) {
+    out << "],\"" << name << "\":[";
+    for (size_t i = 0; i < image.pixels.size(); ++i)
+      for (int c = 0; c < count; ++c) out << (i || c ? "," : "") << image.pixels[i][c];
+  };
+  out << "],\"identity\":[";
+  for (size_t i = 0; i < output.identity.pixels.size(); ++i)
+    out << (i ? "," : "") << (output.identity.pixels[i][1] == UINT32_MAX ? -1 : int64_t(output.identity.pixels[i][1]));
+  channels("albedo", output.albedo, 3);
+  channels("normal", output.normal, 3);
+  channels("depth", output.depth, 1);
+  out << "]}\n";
+  expect(bool(out), "RENDER dump " + generator);
+}
+void render(const std::shared_ptr<NativeDevice> &native, const std::string &generator, size_t min_pixels = 100,
+            size_t culled = 0) {
   aa::AuthoringPipeline p;
   auto product = built(p, generator);
   if (!product) return;
@@ -255,16 +282,18 @@ void render(const std::shared_ptr<NativeDevice> &native, const std::string &gene
   check(ready.ok() && ready.value()->state == ms::UploadState::ready, "RENDER ready");
   const auto handle = ready.value()->resource;
   valid(graphics.release_ticket(*ticket.value()), "RENDER release ticket");
-  ms::CameraState camera; // Orthographic x in [-2,4], y in [-1,6], reversed depth.
+  // Orthographic x in [-2,4], y in [-1,6], looking down -z with reversed depth
+  // (1 at z=2, 0 at z=-8), so the nearest surface is also the front face.
+  ms::CameraState camera;
   camera.projection.m[0] = 1.0f/3; camera.projection.m[3] = -1.0f/3;
   camera.projection.m[5] = 2.0f/7; camera.projection.m[7] = -5.0f/7;
-  camera.projection.m[10] = -0.1f; camera.projection.m[11] = 0.9f;
+  camera.projection.m[10] = 0.1f; camera.projection.m[11] = 0.8f;
   check(graphics.set_camera(job, camera).ok(), "RENDER camera");
   std::vector<ms::SceneInstance> instances;
   for (const auto &i : asset->instances) instances.push_back({i.id, i.prototype, handle, i.local_transform});
   check(graphics.update_scene(job, {1, instances, {}}).ok(), "RENDER placements");
   mg::SceneFrame frame; valid(scene->frame(frame), "RENDER snapshot");
-  expect(frame.visible.size() == asset->instances.size(), "RENDER every authored instance visible");
+  expect(frame.visible.size() + culled == asset->instances.size(), "RENDER every authored instance in view visible");
   mg::VulkanRaster raster(native->binding(native)); mg::RasterOutput output;
   valid(raster.render(frame, 128, 128, output), "RENDER mesh draw");
   std::vector<size_t> pixels(frame.visible.size());
@@ -284,15 +313,19 @@ void render(const std::shared_ptr<NativeDevice> &native, const std::string &gene
   }
   for (size_t i = 0; i < pixels.size(); ++i) {
     std::cout << "RENDER " << generator << " " << frame.visible[i].instance.value << ": " << pixels[i] << " pixels\n";
-    expect(pixels[i] > 100, "RENDER instance coverage " + generator);
+    expect(pixels[i] > min_pixels, "RENDER instance coverage " + generator);
     expect(output.instances[i].instance == frame.visible[i].instance, "RENDER coordinator identity preserved");
   }
+  dump(generator, frame, output);
 }
 int graphics() {
   auto native = std::make_shared<NativeDevice>(true);
   render(native, "primitive");
   render(native, "materialAssignment");
   render(native, "orderedCsg");
+  // Shared prototype (one InstancedMesh in the browser): 0.25 m posts of ~90
+  // px, row.2 straddles the frame edge and row.3 (x=6) is frustum-culled.
+  render(native, "sharedInstances", 40, 1);
   native.reset();
   expect(validation_errors == 0, "RENDER no validation errors");
   return 0;
