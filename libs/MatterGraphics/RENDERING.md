@@ -90,17 +90,49 @@ failure or use an approved, tested compatibility adapter during migration.
 Central wiring alone cannot substitute for missing module extraction.
 
 `bright-torrent-52` relocates the production raster/material shaders and
-mesh/impostor helpers to MatterGraphics, plus the G-buffer recording, raster
-pipeline and atlas routines as private fragments included by the existing host.
-The inventory below names their original engine locations; see
-[the actual paths and retained host dependencies](src/native/README.md).
-Standalone producer APIs and broader facade integration remain pending.
+mesh/impostor helpers. `clear-crest-48.4.14` then compiles the mesh recorder and
+pipeline creation independently and exposes `VulkanRaster::render(SceneFrame)`
+for uniform opaque PBR imported/synthetic meshes. It returns G-buffers from the
+production shaders; textured/VT/water/skin/impostor facade products remain pending.
+The native host delegates to the same recorder with its existing extension hooks.
+See [the actual paths and boundaries](src/native/README.md). This API does not
+advertise the broader pending producer capabilities in the inventory below.
+
+On 2026-10-12, the independent RelWithDebInfo MSVC build passed all 11 CTests
+on an NVIDIA RTX 4090 with the pinned Vulkan SDK synchronization validation
+enabled. The imported repeated-assembly raster fixture covered all four mesh
+placements (195, 207, 1179 and 857 pixels), checked native material/depth outputs,
+mirrored winding, inverse-transpose normals, reversed-Z overlap, empty clears,
+and atomic unsupported-appearance/triangle/GPU-budget failures. The dependency
+audit passed with no world, generator or renderer implementation in the graph.
+Production raster SPIR-V matched the host byte-for-byte using its `-O` settings;
+the first optimized raster run took 123 seconds with a cold driver cache, while
+the completed fixture ran in 5.43 seconds with a warm cache. The dedicated CTest allows 180 seconds.
+
+The native host MSVC smoke target built, and its `raster`, `animation-skin`,
+`vt-feedback`, `water-animation` and `raster-fault` modes passed with zero
+validation errors. Source-manifest unit tests passed 6/6. The full repository
+manifest gate still reports ten unclassified sources, verified to be the same
+ten on the unchanged base commit; none are introduced by this extraction.
+This establishes the uniform-mesh facade boundary and retained host behavior,
+and does not qualify textured or animated facade producers.
 
 `clear-crest-48.4.6` similarly relocates the existing VT residency/feedback,
 encoded-page upload/lifetime helpers and POM shaders. Legacy files forward to
 the graphics-owned implementation; behavior and host wiring remain intact.
 See [the VT boundary and deferred qualification](src/native/README.md#vt-residency-and-pom-relocation).
 This does not advertise a standalone VT runtime or a P3 product adapter.
+
+`clear-crest-48.4.7` relocates C's production BLAS/TLAS, RT dispatch, local-light
+index/tile culling, GI filters and sparse-shadow interop under the same pure-move
+directive. See [the moved paths, retained ownership and native qualification](src/native/RAY_TRACING.md).
+The original inventory rows below still identify the legacy entrypoints. This
+source move does not advertise any of the proposed standalone capabilities.
+
+`clear-crest-48.4.8` also relocates the three native environment producers and
+their pure parameter records into `src/native`, with engine forwarding paths.
+See [environment relocation evidence](#environment-relocation-evidence) for
+the retained platform boundary and the separately reported native test results.
 
 Follow-up owners A–E are temporary task keys in supervisor proposal
 `prop-9ef784b996c1`, vault file
@@ -153,16 +185,23 @@ in [INTEGRATION.md](INTEGRATION.md) and `.9.1`; this leaf does not change them.
 
 ## Reproduction and evidence
 
+The later production source move for inventory E is documented in
+[native/WATER_TEMPORAL.md](src/native/WATER_TEMPORAL.md). Water resources,
+playback, shaders, temporal state and Streamline implementation now live in
+MatterGraphics, with legacy forwarding paths and exact renderer fragments.
+This establishes source ownership; the retained native host coupling does not
+advertise the pending standalone water/temporal capabilities above.
+
 ```powershell
 libs/MatterGraphics/build-windows.ps1 -Config RelWithDebInfo -Test
 ```
 
 The supported native wrapper resolves pinned MSVC/Vulkan SDK, configures Ninja,
-compiles production GLSL to embedded SPIR-V, and runs all five CTests. The optional
+compiles production GLSL to embedded SPIR-V, and runs the CTests. The optional
 Vulkan target requires glslc and Python 3.9+ even when tests are disabled; the core
 `matter_graphics` target has no Vulkan/shader-tool dependency. GLSL depfiles are
 normalized for paths containing spaces. The independence test audits the actual
-CMake graph, links, compiled dependency closure and exactly nine shader files.
+CMake graph, links, compiled dependency closure and the exact shader allowlist.
 
 Recorded on task baseline `bd498c5af` plus this module change: MSVC 19.44.35211,
 Vulkan SDK 1.4.357, NVIDIA GeForce RTX 4090, Khronos validation and synchronization
@@ -183,9 +222,9 @@ display channel `3e-4`; alpha is exactly 1. Largest observed HDR error was
 - `subsurface-impostor-mask`, `cloud-optical-depth`, `native-glass-fallback`
 - `debug-display-passthrough`
 
-Matched actual/reference PPMs are generated in the build directory's
-`composition-evidence/`; per-fixture errors appear in
-`Testing/Temporary/LastTest.log`. A visual contact sheet is committed at
+Matched actual/reference pixels are compared in memory; per-fixture errors
+appear in `Testing/Temporary/LastTest.log`. Tests write no shared image files.
+A visual contact sheet from the earlier evidence capture is committed at
 [tests/evidence/composition-matched.png](tests/evidence/composition-matched.png).
 The CPU boundary tests cover malformed payloads/dimensions, capabilities,
 material/identity, finite camera/light inputs and budget rejection. Native tests
@@ -196,3 +235,97 @@ behind a host-gated GPU submission until its fence completes.
 These are selected production **shading** parity fixtures. They do not prove
 mesh rasterization, RT generation, full-scene temporal quality, water production,
 or performance. The inventory above records the additional acceptance owed.
+
+## Environment relocation evidence
+
+The `.4.8` move uses native producer sources from
+`6490dbab806876631465259cdf5b397f258c5837`. After normalizing include paths,
+the shader-registry namespace and the three-assignment sun-direction adapter,
+all six producer files match that reference. The four parameter headers and
+the FogSettings/GPU-emitter blocks match byte for byte. See the
+[native boundary](src/native/README.md#atmosphere-cloud-shadows-and-froxels).
+
+Commands from the repository root (Windows PowerShell, except the stated WSL
+build wrapper):
+
+```powershell
+libs/MatterGraphics/build-windows.ps1 -Config RelWithDebInfo -Test
+# WSL: ./tools/build-windows-from-wsl.sh RelWithDebInfo vulkan_smoke_tests
+$smoke = '.\MatterEditor\build\cmake\windows-msvc\relwithdebinfo\vulkan_smoke_tests.exe'
+$env:MATTER_VK_SMOKE_MODE = 'atmosphere'; & $smoke
+$env:MATTER_VK_SMOKE_MODE = 'froxel-resize'; & $smoke
+$env:MATTER_VK_SMOKE_MODE = 'rt-empty-tlas'; & $smoke
+```
+
+Recorded with MSVC 19.44.35211, toolset 14.44.35207, Windows SDK 10.0.26100.0,
+Vulkan SDK 1.4.357.0, NVIDIA GeForce RTX 4090 driver 610.74/API 1.4.341,
+Khronos validation enabled. All three smoke modes passed with **zero validation
+errors**, including teardown. Existing Epic overlay manifest and unused shader
+interface warnings appear separately in the full logs. All ten environment
+SPIR-V outputs match the host's outputs byte for byte (`vulkan1.3`, `-O`).
+
+- `atmosphere`: LUT/reference comparison, parameter invalidation, presentation,
+  irradiance last-valid state, transaction failures, and six-elevation raster/RT
+  direct-light and sky/SH receiver gates.
+- `froxel-resize`: cloud bundle allocation/disable/failure and lifetime,
+  density/prefix slab readback, reprojection/history/tile selection, numerical
+  scattering references, and 160x90x128 → 80x45x64 → 320x180x256 → 240x135x192
+  → 160x90x128 froxel transitions, with per-stage timestamps.
+- `rt-empty-tlas`: retained scene with empty/nonempty geometry selection,
+  initialized volume descriptors across frame slots, and reallocation.
+- Module CTest: **8/9 pass**. Atmosphere, cloud-layer, volumetric-quality,
+  lifetime, scene, composition, native Vulkan and dependency audit pass.
+  The native Vulkan test includes the existing matched `physical-sky-product`,
+  `environment-irradiance`, `cloud-optical-depth` and `integrated-volume` fixtures
+  plus explicit unsupported-capability and retention/failure checks.
+
+`matter_graphics_cloud_shadow` still fails three unchanged assertions: constant
+slab transmittance, local/coarse no-overlap, and froxel-exit truncation. An
+unmodified full test with exact original header blobs from the reference commit
+reproduces the same three failures with matched
+`/DWIN32 /D_WINDOWS /EHsc /O2 /Ob1 /DNDEBUG /std:c++17 /MD /Zi` flags and SDK.
+The relocated full test gives the same result. Thus this failure predates the
+move under these build inputs; the suite is **not** reported as passing.
+Instrumenting the current full test shows local tau 5/2.5/1.5 and coarse tau 2,
+but total tau 2/2/2. With `/Od /Ob0`, that diagnostic passes with totals
+7/4.5/3.5. The unmodified test also passes on Linux g++ `-O2`. This establishes
+optimization-dependent behavior, not its root cause. No algorithm, assertion,
+tolerance or production optimization flag was changed to hide it.
+
+[Full test logs, matched baseline/current compiler commands and shader hashes](tests/evidence/environment-relocation.txt)
+retain the failure separately from GPU success. The static archive compiles
+independently against the audited platform declarations; runtime smoke exercises
+the moved code through the existing host's forwarding translation units. New
+facade producer APIs, an independently linked device host and complete live-world
+compatibility qualification remain integration work. This move does not
+advertise the pending atmosphere/cloud/volume producer capabilities.
+
+### Optimized CPU reference follow-up
+
+`clear-crest-48.4.10` resolves the three historical CPU failures above. The
+pinned MSVC 19.44.35211 `/O2 /Ob1` build miscompiles the reference helper's
+unrolled accumulation: when the step count is divisible by four, the aggregate
+member receives the correct local optical depth but the total uses a stale
+zero register. A standalone reproducer and the emitted instructions establish
+this cause; inlining can mask it.
+
+The helper now accumulates in a local float and assigns the aggregate member
+after the loop. It retains every per-step addition, input guard, step cap and
+optical-depth clamp. No shader, production dispatch, assertion, tolerance or
+optimization setting changes. The original full `cloud_shadow_tests.cpp` is
+byte-identical. A separate regression exercises the out-of-line helper across
+0–40 requested steps, froxel exits, invalid inputs and saturation; it reports
+35 failures against the original header and passes with the fix.
+
+The optimized native module now passes **10/10 CTests**, including the original
+cloud-shadow suite and the new regression. Rebuilt native `froxel-resize`
+passes with **zero validation errors**, including the seeded local/coarse
+optical-depth checks, cloud/fog separation, reprojection and resize gates. Both
+CPU suites also pass GCC `-O2` with address/undefined-behavior sanitizers. This
+closes the numerical reference gap without extending the relocation's facade
+or live-world qualification claims.
+
+[Cause, commands, assembly and full qualification logs](tests/evidence/cloud-shadow-msvc.txt)
+and the [standalone reproducer](tests/evidence/cloud-shadow-msvc-repro.cpp)
+preserve the original failing form for compiler/toolchain follow-up. The pinned
+toolchain remains supported with this bounded source workaround.

@@ -1,4 +1,57 @@
-# Production raster implementation
+# Production native implementations
+
+The ray tracing, lighting, GI and sparse-shadow relocation is documented in
+[RAY_TRACING.md](RAY_TRACING.md). It uses the same private-fragment boundary
+described below for raster.
+
+## Atmosphere, cloud shadows and froxels
+
+`clear-crest-48.4.8` moves `vk_atmosphere.*`, `vk_cloud_shadows.*` and
+`vk_volumetrics.*` from the engine into this directory. The reference is
+`6490dbab806876631465259cdf5b397f258c5837`. The old translation units and
+headers forward here, so existing CMake/Make hosts compile exactly one copy.
+Resource ownership, dispatches, layouts, histories, failure injection and
+numerical algorithms are preserved. The three producers account for 5,526
+original lines; parameter/reference headers and two extracted data blocks
+bring the total to 6,892 relocated lines.
+
+The four parameter headers (`atmosphere.h`, `cloud_layers.h`,
+`cloud_shadow_settings.h`, `volumetric_quality.h`) are byte-identical moves.
+`fog_settings.h` contains the unchanged 125-line FogSettings/cloud-helper
+block from `world_definition.h`; `gpu_volume_emitter.h` contains the unchanged
+16-line GPU record from `vk_emitter_gather.h`. The latter's part-aware gather
+stays in the engine. No emitter-update behavior has been added.
+
+The producer sources no longer include world definitions, WorldSession,
+VkSceneRenderer or the part-aware emitter gatherer. `set_sun_direction(Float3)`
+performs the original three assignments; the old `set_lighting` entrypoint
+forwards the direction from its existing host translation unit. Consumers of
+the module archive use `set_sun_direction`. All other public native signatures
+and namespaces remain intact.
+
+`matter_graphics_environment` is a separately compiled static archive, enabled
+with `MATTER_GRAPHICS_VULKAN`. It still borrows the native `VulkanDevice`,
+`vk_resources`, frame matrices and matrix packing support. A host must supply
+their implementations and the existing descriptor/command-buffer lifecycle.
+This is not a new standalone device or facade producer API. The dependency
+audit enumerates the exact remaining platform/data headers and rejects world,
+scene, ScriptHost and generation dependencies. The portable compositor still
+rejects unadvertised producer capabilities.
+
+The archive compiles the ten original atmosphere/cloud-shadow/volume compute
+shaders from `MatterEngine3/shaders_vk` with Vulkan 1.3, matching the host.
+Shaders remain at their existing source authority; none are copied or rewritten.
+A ten-line adapter reuses the host SPIR-V generator with a separate namespace,
+preventing its subset lookup registry from colliding with the host's full one.
+The forwarding host continues using its full existing shader registry.
+
+Validation and remaining qualification are recorded in
+[RENDERING.md](../../RENDERING.md#environment-relocation-evidence).
+
+## Raster implementation
+
+The subsequent water/temporal/DLSS source move and its retained native host
+boundaries are documented in [WATER_TEMPORAL.md](WATER_TEMPORAL.md).
 
 These files were moved from the production engine by `bright-torrent-52`.
 The reference is commit `58289c187`. They preserve the native renderer's
@@ -10,25 +63,39 @@ namespaces and types. The engine locations forward here. The mesh header's
 one changed include names the existing `IndexedPartGeometry` contract;
 welding and procedural impostor baking remain engine responsibilities.
 
-The four `.inl` files are **private implementation fragments**, included once
-at their original lexical positions in `VkSceneRenderer`. They deliberately
-share the host's existing resource ownership, helper functions, feature macros,
-profiling scopes and fault-injection definitions. They are not compiled as
-additional translation units or exposed as a standalone graphics API.
+`clear-crest-48.4.14` turns the G-buffer recorder and pipeline creation fragments
+into compiled `mesh_raster.cpp` and `mesh_pipelines.cpp`. The recorder borrows
+neutral image/buffer/pipeline/descriptor records, with explicit callbacks for VT
+pre/post recording and sparse draws. Host ownership stays in `VkSceneRenderer`;
+its call site forwards existing buffers, layout bookkeeping, timestamps, draw
+order, skin/water records and hooks. Pipeline creation receives a shader loader
+and profiling callback, preserving native variants and specialization controls.
+The shared image barrier and destination-stage rules live in
+`image_transitions.h`; the engine delegates to their single implementation.
+
+The standalone public `VulkanRaster` entrypoint consumes the existing immutable
+`SceneFrame` asset/scene facade. Its device binding owns native lifetimes and
+queue synchronization. Uniform opaque PBR geometry is packed per visible
+placement with inverse-transpose normals and winding parity, then the exact
+production pipeline and recorder produce G-buffers. Prepared texture, VT, skin,
+water and impostor products are not yet accepted by this facade adapter; they
+remain supported by the host's unchanged extensions. Unsupported materials
+fail before recording. There is no world/source/generator dependency and no
+alternate raster shader. `examples/imported_acceptance.h` is the minimal GFX-IMPORTED
+caller and checks actual repeated/mirrored fixture pixels, identities, normals,
+materials, depth, clear state and atomic resource/appearance failures.
+
+Two `.inl` fragments still remain at their lexical host positions:
 
 | Fragment | Host boundary and dependencies |
 | --- | --- |
-| `record_gbuffer.inl` | Inside `record_raster`, borrowing its `RasterRecord`. Uses existing image transitions, timestamps, draw types, indirect-run helper and profiling. VT pre/post hooks and sparse draws remain calls into their existing owners. Leaves the existing viewport/scissor and attachments in scope for composition. |
-| `create_raster_pipelines.inl` | Inside `create_raster_pipelines`, borrowing the device, pipeline layout and output handles. Uses existing shader-module, pipeline-profile, error and statistics helpers. Retains static/skinned/water/wireframe/visibility variants and their shared pipeline state; composition continues afterward in the host. |
-| `impostor_atlas.inl` | In namespace `viewer`. Contains the existing upload/clear callbacks and atlas creation/descriptor methods; uses native device/resources, bake-layout constants and the existing tileset-image allocator. |
-| `adopt_part_impostors.inl` | In namespace `viewer`. Retains the existing part-input validation, mip preparation, slot allocation, upload, vertex patching and diagnostics. Uses the atlas fragment's upload callback and the renderer's retained resources. |
+| `impostor_atlas.inl` | Existing upload/clear callbacks and atlas creation/descriptors; native resources, bake constants and tileset image allocation. |
+| `adopt_part_impostors.inl` | Existing validation, mips, slot allocation, upload, vertex patching and diagnostics; retained host resources. |
 
-Expanding those four includes reconstructs the reference renderer source
-byte for byte. No renderer algorithm is copied into a second path. Source
-locations in compiler/profiler diagnostics naturally identify the moved files.
-This source separation retains host coupling; it does not establish standalone
-renderer independence. The independently built facade/compositor remains a
-separate boundary, with its own dependency audit.
+These atlas consumers do not add standalone impostor support. The standalone
+CMake graph separately compiles the raster pass and six original shader variants.
+Its source, link, compiler-header and shader-dependency audit admits only the
+exact platform/pure-data closure and the compile-out ProfileLib header.
 
 The complete `raster.vert`, `gbuffer.frag`, `material_common.glsl` and
 `impostor_common.glsl` files live in `../../shaders/`, unchanged. Root CMake
@@ -41,7 +108,7 @@ The rejected `.4.5` branch was not an ancestor of this task's base. Its rewritte
 `raster.cpp`, `vulkan_raster.cpp`, `mesh.vert`/`mesh.frag`, scene-draw and sparse
 producer implementations are therefore not imported. Its fixtures requiring
 those APIs cannot be treated as native behavior parity: for example,
-`raster_native.h` explicitly expects inverse-transpose normals to differ from
+that branch's `raster_native.h` expects inverse-transpose normals to differ from
 the legacy renderer. Preserve that incompatibility in validation evidence;
 do not change production semantics or weaken those fixtures to make them pass.
 

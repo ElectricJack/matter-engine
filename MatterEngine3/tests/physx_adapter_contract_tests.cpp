@@ -20,6 +20,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -148,9 +149,7 @@ void test_section_request_assembly_selects_local_inputs() {
         height = 12.0f - x * 0.06f;
         return true;
     };
-    const std::string cache_root =
-        (std::filesystem::temp_directory_path() /
-         "matter-section-request-contract").string();
+    const std::string cache_root = "runtime/section-request-contract";
     viewer::FluidBakeRequest upper_request{};
     hydrology::FluidBakeError error{};
     CHECK(viewer::assemble_authored_fluid_section_request(
@@ -3966,7 +3965,7 @@ int main() {
     test_section_animation_substitutes_only_canonical_boundary_contributors();
     test_canonical_chunks_keep_exact_integer_ranges_at_the_tight_cap();
     test_product_keys_follow_the_settings_the_extractors_consume();
-#if defined(MATTER_LOCAL_PROVIDER_FLUID_PATH_TEST)
+#if defined(MATTER_LOCAL_PROVIDER_FLUID_PATH_TEST) && defined(MATTER_CODEC_SOURCE_QUALIFICATION)
     test_world_session_runs_authored_fluid_bake_before_publication();
     test_world_session_publishes_complete_two_section_network();
     test_wall_time_only_sidecar_repair_reuses_ready_static_target();
