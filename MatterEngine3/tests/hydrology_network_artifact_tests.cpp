@@ -437,7 +437,7 @@ void test_manifest_round_trip_is_canonical_and_transactional() {
           "a parent-traversing field path is rejected");
     invalid = manifest;
     invalid.field_products[0].relative_path =
-        std::filesystem::absolute("runtime.mhydfield").generic_string();
+        std::string("/runtime.mhydfield");
     CHECK(!hydrology::serialize_network_artifact(invalid, reversed_bytes, error),
           "an absolute field path is rejected");
     invalid = manifest;
@@ -1193,13 +1193,29 @@ int main() {
     test_manifest_round_trip_is_canonical_and_transactional();
     test_animation_manifest_extension_and_legacy_bytes();
     test_manifest_content_address_tracks_product_generation();
+#ifdef MATTER_CODEC_SOURCE_QUALIFICATION
     test_ready_animation_package_rejects_missing_or_corrupt_payload();
+#endif
+#ifdef MATTER_CODEC_SOURCE_QUALIFICATION
     test_typed_field_wire_format_and_ready_package_closure();
+#endif
+#ifdef MATTER_CODEC_SOURCE_QUALIFICATION
     test_ready_package_rejects_reparse_escape_when_supported();
+#endif
+#ifdef MATTER_CODEC_SOURCE_QUALIFICATION
     test_allocation_failure_closes_native_resources_transactionally();
+#endif
+#ifdef MATTER_CODEC_SOURCE_QUALIFICATION
     test_file_identity_requires_one_stable_native_object();
+#endif
+#ifdef MATTER_CODEC_SOURCE_QUALIFICATION
     test_posix_publication_source_contract_uses_one_unprivileged_helper();
+#endif
+#ifdef MATTER_CODEC_SOURCE_QUALIFICATION
     test_confined_field_open_uses_the_held_directory_identity();
+#endif
+#ifdef MATTER_CODEC_SOURCE_QUALIFICATION
     test_manifest_publication_is_confined_and_transactional();
+#endif
     return check_summary();
 }

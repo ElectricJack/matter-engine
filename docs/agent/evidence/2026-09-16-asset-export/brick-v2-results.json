@@ -1,0 +1,430 @@
+[
+    {
+        "protocol":  "matter-agent",
+        "version":  1,
+        "type":  "result",
+        "request_id":  "export",
+        "command":  "asset.export",
+        "ticket_id":  "2",
+        "ok":  true,
+        "code":  "ok",
+        "message":  "",
+        "context":  {
+                        "session":  {
+                                        "id":  "1",
+                                        "generation":  "1"
+                                    },
+                        "scene":  {
+                                      "generation":  "1",
+                                      "revision":  "1",
+                                      "ready":  true
+                                  },
+                        "selection":  {
+                                          "revision":  "0"
+                                      },
+                        "frame":  {
+                                      "id":  "288"
+                                  },
+                        "view":  {
+                                     "id":  "288"
+                                 }
+                    },
+        "result":  {
+                       "directory":  "D:\\Shared With Desktop\\AI\\matter-engine-cpp\\MatterEditor\\build\\asset-export-validation\\pilot-v2\\validation\\brick-v2\\asset",
+                       "source_hash":  "17729211918163249119",
+                       "lod":  0,
+                       "triangles":  12,
+                       "vertices":  36,
+                       "materials":  1,
+                       "files":  [
+                                     "material_0-basecolor.png",
+                                     "material_0-normal.png",
+                                     "material_0-orm.png",
+                                     "material_0-normal-obj.png",
+                                     "material_0-occlusion.png",
+                                     "material_0-roughness.png",
+                                     "material_0-metallic.png",
+                                     "material_0-height.png",
+                                     "asset.obj",
+                                     "asset.mtl",
+                                     "asset.glb",
+                                     "manifest.json"
+                                 ]
+                   }
+    },
+    {
+        "protocol":  "matter-agent",
+        "version":  1,
+        "type":  "result",
+        "request_id":  "existing",
+        "command":  "asset.export",
+        "ticket_id":  "4",
+        "ok":  false,
+        "code":  "execution_failure",
+        "message":  "choose a new export directory; existing destinations are never overwritten",
+        "context":  {
+                        "session":  {
+                                        "id":  "1",
+                                        "generation":  "1"
+                                    },
+                        "scene":  {
+                                      "generation":  "1",
+                                      "revision":  "1",
+                                      "ready":  true
+                                  },
+                        "selection":  {
+                                          "revision":  "0"
+                                      },
+                        "frame":  {
+                                      "id":  "290"
+                                  },
+                        "view":  {
+                                     "id":  "290"
+                                 }
+                    },
+        "result":  null
+    },
+    {
+        "protocol":  "matter-agent",
+        "version":  1,
+        "type":  "result",
+        "request_id":  "bad-lod",
+        "command":  "asset.export",
+        "ticket_id":  "6",
+        "ok":  false,
+        "code":  "invalid_input",
+        "message":  "lod must be an integer between 0 and 15",
+        "context":  {
+                        "session":  {
+                                        "id":  "1",
+                                        "generation":  "1"
+                                    },
+                        "scene":  {
+                                      "generation":  "1",
+                                      "revision":  "1",
+                                      "ready":  true
+                                  },
+                        "selection":  {
+                                          "revision":  "0"
+                                      },
+                        "frame":  {
+                                      "id":  "291"
+                                  },
+                        "view":  {
+                                     "id":  "291"
+                                 }
+                    },
+        "result":  null
+    },
+    {
+        "protocol":  "matter-agent",
+        "version":  1,
+        "type":  "result",
+        "request_id":  "capture",
+        "command":  "viewport.capture",
+        "ticket_id":  "8",
+        "ok":  true,
+        "code":  "ok",
+        "message":  "",
+        "context":  {
+                        "session":  {
+                                        "id":  "1",
+                                        "generation":  "1"
+                                    },
+                        "scene":  {
+                                      "generation":  "1",
+                                      "revision":  "1",
+                                      "ready":  true
+                                  },
+                        "selection":  {
+                                          "revision":  "0"
+                                      },
+                        "frame":  {
+                                      "id":  "293"
+                                  },
+                        "view":  {
+                                     "id":  "293"
+                                 }
+                    },
+        "result":  {
+                       "path":  "D:\\Shared With Desktop\\AI\\matter-engine-cpp\\MatterEditor\\build\\asset-export-validation\\pilot-v2\\validation\\brick-v2\\engine.png",
+                       "completion_marker":  "D:\\Shared With Desktop\\AI\\matter-engine-cpp\\MatterEditor\\build\\asset-export-validation\\pilot-v2\\validation\\brick-v2\\engine.png.done",
+                       "image":  {
+                                     "format":  "png",
+                                     "width":  1200,
+                                     "height":  900,
+                                     "framebuffer_origin":  {
+                                                                "x":  0,
+                                                                "y":  0
+                                                            }
+                                 },
+                       "viewport":  {
+                                        "logical":  {
+                                                        "x":  265,
+                                                        "y":  59,
+                                                        "width":  621,
+                                                        "height":  667
+                                                    },
+                                        "framebuffer":  {
+                                                            "x":  265,
+                                                            "y":  59,
+                                                            "width":  621,
+                                                            "height":  667
+                                                        },
+                                        "image":  {
+                                                      "x":  265,
+                                                      "y":  59,
+                                                      "width":  621,
+                                                      "height":  667
+                                                  },
+                                        "framebuffer_scale":  {
+                                                                  "x":  1,
+                                                                  "y":  1
+                                                              },
+                                        "production_view":  true
+                                    },
+                       "pick_mapping":  {
+                                            "target_space":  "viewport_local_logical_pixels",
+                                            "image_offset":  {
+                                                                 "x":  265,
+                                                                 "y":  59
+                                                             },
+                                            "divide_by":  {
+                                                              "x":  1,
+                                                              "y":  1
+                                                          },
+                                            "formula":  "viewport_x = (image_x - image_offset.x) / divide_by.x; same for y"
+                                        },
+                       "camera":  {
+                                      "position":  [
+                                                       4.1999998092651367,
+                                                       2.0999999046325684,
+                                                       4
+                                                   ],
+                                      "target":  [
+                                                     1.7999999523162842,
+                                                     0.30000001192092896,
+                                                     0.12250000238418579
+                                                 ],
+                                      "up":  [
+                                                 0,
+                                                 1,
+                                                 0
+                                             ],
+                                      "vertical_fov_radians":  0.78539818525314331,
+                                      "near_plane":  0.10000000149011612,
+                                      "far_plane":  10241
+                                  },
+                       "captured":  {
+                                        "session":  {
+                                                        "id":  "1",
+                                                        "generation":  "1"
+                                                    },
+                                        "scene":  {
+                                                      "generation":  "1",
+                                                      "revision":  "1",
+                                                      "ready":  true
+                                                  },
+                                        "selection":  {
+                                                          "revision":  "0"
+                                                      },
+                                        "frame":  {
+                                                      "id":  "293"
+                                                  },
+                                        "view":  {
+                                                     "id":  "293"
+                                                 }
+                                    },
+                       "presented":  {
+                                         "id":  "293",
+                                         "view_id":  "293"
+                                     },
+                       "annotations":  {
+                                           "available":  false,
+                                           "reason":  "annotate_selection was not requested"
+                                       }
+                   }
+    },
+    {
+        "protocol":  "matter-agent",
+        "version":  1,
+        "type":  "result",
+        "request_id":  "workbench",
+        "command":  "asset.export",
+        "ticket_id":  "13",
+        "ok":  true,
+        "code":  "ok",
+        "message":  "",
+        "context":  {
+                        "session":  {
+                                        "id":  "1",
+                                        "generation":  "1"
+                                    },
+                        "scene":  {
+                                      "generation":  "1",
+                                      "revision":  "1",
+                                      "ready":  true
+                                  },
+                        "selection":  {
+                                          "revision":  "0"
+                                      },
+                        "frame":  {
+                                      "id":  "920"
+                                  },
+                        "view":  {
+                                     "id":  "920"
+                                 }
+                    },
+        "result":  {
+                       "directory":  "D:\\Shared With Desktop\\AI\\matter-engine-cpp\\MatterEditor\\build\\asset-export-validation\\pilot-v2\\validation\\brick-v2\\asset-workbench",
+                       "source_hash":  "17090635788402481908",
+                       "lod":  0,
+                       "triangles":  12,
+                       "vertices":  36,
+                       "materials":  1,
+                       "files":  [
+                                     "material_0-basecolor.png",
+                                     "material_0-normal.png",
+                                     "material_0-orm.png",
+                                     "material_0-normal-obj.png",
+                                     "material_0-occlusion.png",
+                                     "material_0-roughness.png",
+                                     "material_0-metallic.png",
+                                     "material_0-height.png",
+                                     "asset.obj",
+                                     "asset.mtl",
+                                     "asset.glb",
+                                     "manifest.json"
+                                 ]
+                   }
+    },
+    {
+        "protocol":  "matter-agent",
+        "version":  1,
+        "type":  "result",
+        "request_id":  "workbench-capture",
+        "command":  "viewport.capture",
+        "ticket_id":  "15",
+        "ok":  true,
+        "code":  "ok",
+        "message":  "",
+        "context":  {
+                        "session":  {
+                                        "id":  "1",
+                                        "generation":  "1"
+                                    },
+                        "scene":  {
+                                      "generation":  "1",
+                                      "revision":  "1",
+                                      "ready":  true
+                                  },
+                        "selection":  {
+                                          "revision":  "0"
+                                      },
+                        "frame":  {
+                                      "id":  "927"
+                                  },
+                        "view":  {
+                                     "id":  "927"
+                                 }
+                    },
+        "result":  {
+                       "path":  "D:\\Shared With Desktop\\AI\\matter-engine-cpp\\MatterEditor\\build\\asset-export-validation\\pilot-v2\\validation\\brick-v2\\workbench.png",
+                       "completion_marker":  "D:\\Shared With Desktop\\AI\\matter-engine-cpp\\MatterEditor\\build\\asset-export-validation\\pilot-v2\\validation\\brick-v2\\workbench.png.done",
+                       "image":  {
+                                     "format":  "png",
+                                     "width":  1200,
+                                     "height":  900,
+                                     "framebuffer_origin":  {
+                                                                "x":  0,
+                                                                "y":  0
+                                                            }
+                                 },
+                       "viewport":  {
+                                        "logical":  {
+                                                        "x":  265,
+                                                        "y":  59,
+                                                        "width":  621,
+                                                        "height":  667
+                                                    },
+                                        "framebuffer":  {
+                                                            "x":  265,
+                                                            "y":  59,
+                                                            "width":  621,
+                                                            "height":  667
+                                                        },
+                                        "image":  {
+                                                      "x":  265,
+                                                      "y":  59,
+                                                      "width":  621,
+                                                      "height":  667
+                                                  },
+                                        "framebuffer_scale":  {
+                                                                  "x":  1,
+                                                                  "y":  1
+                                                              },
+                                        "production_view":  false
+                                    },
+                       "pick_mapping":  {
+                                            "target_space":  "viewport_local_logical_pixels",
+                                            "image_offset":  {
+                                                                 "x":  265,
+                                                                 "y":  59
+                                                             },
+                                            "divide_by":  {
+                                                              "x":  1,
+                                                              "y":  1
+                                                          },
+                                            "formula":  "viewport_x = (image_x - image_offset.x) / divide_by.x; same for y"
+                                        },
+                       "camera":  {
+                                      "position":  [
+                                                       1.9240015745162964,
+                                                       1.2472511529922485,
+                                                       1.541501522064209
+                                                   ],
+                                      "target":  [
+                                                     0.50499999523162842,
+                                                     0.18299999833106995,
+                                                     0.12250000238418579
+                                                 ],
+                                      "up":  [
+                                                 0,
+                                                 1,
+                                                 0
+                                             ],
+                                      "vertical_fov_radians":  0.78539818525314331,
+                                      "near_plane":  1,
+                                      "far_plane":  5000
+                                  },
+                       "captured":  {
+                                        "session":  {
+                                                        "id":  "1",
+                                                        "generation":  "1"
+                                                    },
+                                        "scene":  {
+                                                      "generation":  "1",
+                                                      "revision":  "1",
+                                                      "ready":  true
+                                                  },
+                                        "selection":  {
+                                                          "revision":  "0"
+                                                      },
+                                        "frame":  {
+                                                      "id":  "927"
+                                                  },
+                                        "view":  {
+                                                     "id":  "927"
+                                                 }
+                                    },
+                       "presented":  {
+                                         "id":  "927",
+                                         "view_id":  "927"
+                                     },
+                       "annotations":  {
+                                           "available":  false,
+                                           "reason":  "annotate_selection was not requested"
+                                       }
+                   }
+    }
+]

@@ -46,6 +46,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -116,6 +117,11 @@ struct VulkanRayTracingSettings {
     float bias = 0.001f;
     uint32_t samples = 1;
     bool debug_view = false;
+    // Cap the primary sun ray's geometric-normal offset in world metres.
+    // The default retains the terrain terminator correction. Zero traces the
+    // source surface using only `bias` along the light ray, useful for thin
+    // geometry where a screen-depth-derived offset would skip real occluders.
+    float max_normal_bias = 0.5f;
 };
 
 // The single device feature the wireframe view needs
@@ -158,9 +164,11 @@ bool supports_native_ray_tracing(const VulkanRayTracingCapabilities& capabilitie
                                  std::string& reason);
 
 namespace detail {
+struct DeviceCore;
 class DeviceRetentionAccess;
 class DeviceLifetimeAccess;
 class DeviceSubmitAccess;
+class DeviceGraphicsBindingAccess;
 }  // namespace detail
 
 // One acquired, recording swapchain frame. Produced by
@@ -187,6 +195,25 @@ struct VulkanFrame {
     bool swapchain_recreated = false; // set on the first frame after a swapchain
                                       // rebuild (resize / out-of-date); consumers
                                       // must drop size-dependent and temporal state
+};
+
+// Optional CPU wait attribution for the latest begin/end attempt. Enabled by
+// MATTER_FRAME_TIMINGS=1 at device creation; no clocks are sampled otherwise.
+// begin_ms includes all begin_frame work; the named waits are its subspans.
+// frame_serial is zero unless begin_frame succeeded. Read after end_frame.
+struct VulkanFrameTimings {
+    bool enabled = false;
+    uint64_t frame_serial = 0;
+    uint32_t frame_slot = UINT32_MAX;
+    uint32_t image_index = UINT32_MAX;
+    double begin_ms = 0.0;
+    double frame_fence_ms = 0.0;
+    double retained_clear_ms = 0.0;
+    double acquire_fence_ms = 0.0;
+    double acquire_ms = 0.0;
+    double present_fence_ms = 0.0;
+    double submit_ms = 0.0;
+    double present_ms = 0.0;
 };
 
 // Owns the Vulkan instance, physical and logical device, graphics queue,
@@ -238,6 +265,7 @@ public:
     // command_buffer is open for recording. False means the acquire failed or
     // the device is poisoned; `error` carries the latched message.
     bool begin_frame(VulkanFrame& frame, std::string& error);
+    VulkanFrameTimings frame_timings() const noexcept;
     // End and submit the frame's command buffer, resolve any readback queued
     // by readback_swapchain_rgba8(), and present. Must be given the frame
     // begin_frame() produced. The two-argument form discards the presented
@@ -290,6 +318,10 @@ public:
     VkPhysicalDevice physical_device() const;
     VkDevice device() const;
     VkQueue graphics_queue() const;
+    // Taken around every graphics_queue() submit/present and every
+    // vkDeviceWaitIdle, here and in MatterGraphics bindings; a caller that
+    // drives graphics_queue() itself (the ImGui backend) must hold it too.
+    std::mutex& queue_mutex() const;
     uint32_t graphics_queue_family() const;
     VkFormat swapchain_format() const;
     uint32_t swapchain_image_count() const;
@@ -325,11 +357,11 @@ private:
     friend class detail::DeviceRetentionAccess;
     friend class detail::DeviceLifetimeAccess;
     friend class detail::DeviceSubmitAccess;
-    bool submit_and_wait_for_phase(VkCommandBuffer command_buffer,
-                                   VkFence fence, bool& completion_proven,
-                                   const char* fault_phase,
-                                   std::string& error);
+    friend class detail::DeviceGraphicsBindingAccess;
     std::unique_ptr<Impl> impl_;
+    // impl_'s DeviceCore base, for the shims MatterGraphics compiles without
+    // the definition of Impl.
+    detail::DeviceCore* core_ = nullptr;
 };
 
 }  // namespace matter

@@ -1,5 +1,9 @@
 # Build artifacts
+/build/
 *.obj
+# OBJ export geometry fixtures are source data, not MSVC object files.
+!/MatterEngine3/tests/fixtures/export/AlpineFlower.obj
+!/MatterEngine3/tests/fixtures/export/CastlePavingSlab.obj
 *.so
 *.dylib
 *.dll
@@ -44,6 +48,7 @@ SurfaceLib/test_config
 /MatterEditor/editor_settings.json
 
 # Editor / OS
+__pycache__/
 .DS_Store
 .vscode/
 .idea/
@@ -163,5 +168,12 @@ MatterEditor/profile_trace.json
 MatterEditor/vulkan_device_fault.log
 *.nv-gpudmp
 
-# Native CI transcripts and JUnit output.
-/artifacts/ci/
+# Native CI transcripts, JUnit output and local measurement evidence.
+/artifacts/
+
+# graft's local graph cache — regenerable, not committed (run `graft build`).
+/graft/
+
+# MSVC static-library debug databases and root-level Vulkan device-fault logs are build/run artifacts.
+*.pdb
+/vulkan_device_fault*.log

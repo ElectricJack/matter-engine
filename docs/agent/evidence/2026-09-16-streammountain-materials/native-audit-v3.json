@@ -1,0 +1,90 @@
+{
+  "prefix": "mountain-material-v3",
+  "source_count": 1003,
+  "source_changes": [],
+  "binary_changes": [],
+  "builds": [
+    {
+      "target": "chart_atlas_tests",
+      "exit": 0,
+      "seconds": 93.77659268499701
+    },
+    {
+      "target": "surface_field_tests",
+      "exit": 0,
+      "seconds": 10.263581163999334
+    },
+    {
+      "target": "world_definition_tests",
+      "exit": 0,
+      "seconds": 12.5821986200026
+    },
+    {
+      "target": "vulkan_smoke_tests",
+      "exit": 0,
+      "seconds": 141.30591933600226
+    },
+    {
+      "target": "matter_editor",
+      "exit": 0,
+      "seconds": 74.57490441400296
+    }
+  ],
+  "tests": [
+    {
+      "mode": "chart",
+      "passed": true,
+      "exit": 0,
+      "seconds": 3.10988955799985,
+      "all_pass": true,
+      "zero_validation_errors": true,
+      "skipped_rt": false
+    },
+    {
+      "mode": "surface",
+      "passed": true,
+      "exit": 0,
+      "seconds": 0.7244388229955803,
+      "all_pass": true,
+      "zero_validation_errors": true,
+      "skipped_rt": false
+    },
+    {
+      "mode": "mountain",
+      "passed": true,
+      "exit": 0,
+      "seconds": 0.8788541559988516,
+      "all_pass": true,
+      "zero_validation_errors": true,
+      "skipped_rt": false
+    },
+    {
+      "mode": "sparse-voxel",
+      "passed": true,
+      "exit": 0,
+      "seconds": 18.271009830001276,
+      "all_pass": true,
+      "zero_validation_errors": true,
+      "skipped_rt": false
+    },
+    {
+      "mode": "vt-feedback-pair",
+      "passed": true,
+      "exit": 0,
+      "seconds": 1.4465473339951131,
+      "all_pass": true,
+      "zero_validation_errors": true,
+      "skipped_rt": false
+    },
+    {
+      "mode": "vt-direct-source",
+      "passed": true,
+      "exit": 0,
+      "seconds": 25.50048729000264,
+      "all_pass": true,
+      "zero_validation_errors": true,
+      "skipped_rt": false
+    }
+  ],
+  "accepted": true
+}

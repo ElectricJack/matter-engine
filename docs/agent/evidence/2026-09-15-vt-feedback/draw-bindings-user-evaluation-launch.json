@@ -1,0 +1,28 @@
+{
+  "pid": 46124,
+  "scene": "StreamMountain",
+  "camera": "380,90,1600,420,55,1420",
+  "executable": "D:\\Shared With Desktop\\AI\\matter-engine-cpp\\MatterEditor\\build\\windows-msvc\\editor.exe",
+  "executable_sha256": "9c695196ed80024b00d2c9eb19be4ce40880cd7c81103df152d2d3d2f65099ae",
+  "launched_utc": "2026-09-15T14:36:58.2054646Z",
+  "source_manifest": "docs/agent/evidence/2026-09-15-vt-feedback/draw-bindings-final-source.json",
+  "interactive": true,
+  "validation_enabled": false,
+  "automatic_exit": false,
+  "stdout": "D:\\tmp\\matter-vt\\20260915-feedback\\user-streammountain-evaluation\\stdout.log",
+  "stderr": "D:\\tmp\\matter-vt\\20260915-feedback\\user-streammountain-evaluation\\stderr.log",
+  "launch_script": {
+    "path": "/mnt/d/tmp/matter-vt/20260915-feedback/user-streammountain-evaluation/launch.ps1",
+    "sha256": "ab9ae77bcf1cddd96a8a8504d0dffe9c8fc509b9eb5ced035618536796f949a9"
+  },
+  "full_vt_acceptance": false,
+  "purpose": "Interactive user evaluation; not a timed acceptance run.",
+  "source_fingerprint_changes_at_launch": [],
+  "logs_are_live": true,
+  "confirmed_utc": "2026-09-15T14:40:58.253101+00:00",
+  "native_process_responding": true,
+  "bake_finished_errors": 0,
+  "source_texture_progress": "8/8",
+  "rt_observed_effective": true,
+  "streaming_ongoing": true
+}

@@ -1,0 +1,16 @@
+{
+  "timestamp_utc": "2026-09-18T03:21:05.919990+00:00",
+  "scope": "Node authoring math and rock-planner integration only; no native terrain/renderer validation",
+  "command": [
+    "node",
+    "projects/world_demo/tests/mountain_routes_tests.mjs"
+  ],
+  "returncode": 0,
+  "output": "mountain routes: PASS (34 straight sections; 38 curved sections; 2 excluded rocks; 10k JS grade queries 23.8 ms)\n",
+  "source_sha256": {
+    "projects/world_demo/shared-lib/mountain_routes.js": "e62810ca7d879ae09793d558c836751465a21a3d8a8bca97504f3277f5556059",
+    "projects/world_demo/tests/mountain_routes_tests.mjs": "171a5acc318fb79bab02dddbdd2d4f80b4671797fac345fce6c5be80413b8d30"
+  },
+  "sources_unchanged": true,
+  "editor_build": "not rebuilt; RT/GI review session left open"
+}

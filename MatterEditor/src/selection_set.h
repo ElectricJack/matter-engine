@@ -76,6 +76,14 @@ public:
     // Clear the entire selection.
     void clear();
 
+    // Atomically install one already-validated ordered selection.  `primary`
+    // is an index into `items`, or -1 only when `items` is empty.  This is the
+    // bulk counterpart to the click gestures above: it lets an app-thread
+    // command validate its whole request before making any visible change.
+    // Returns false for a malformed input and otherwise reports whether the
+    // ordered selection or primary changed.
+    bool assign(std::vector<SelectedObject> items, int primary);
+
     // The primary (most recently clicked) object. Returns nullptr if empty.
     const SelectedObject* primary() const;
 

@@ -1,0 +1,88 @@
+{
+  "runs": [
+    {
+      "mode": "vt-surface-connections",
+      "command": "$env:MATTER_VK_VALIDATION=\"1\"; $env:TMP=\"$env:LOCALAPPDATA\\Temp\"; $env:TEMP=$env:TMP; $env:MATTER_VK_SMOKE_MODE=\"vt-surface-connections\"; $env:MATTER_VT_PROP_TEXELS_PER_METER=$null; & \"./build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe\"; exit $LASTEXITCODE",
+      "exit": 0,
+      "seconds": 1.47888746400713,
+      "binary_sha256": "2afac42f3abe686e799ab8d8daaf5ca1ce8a746753022c7583e2ab70c0a1f4db",
+      "binary_unchanged": true,
+      "source_changes": [],
+      "all_pass": true,
+      "zero_validation_errors": true,
+      "skipped_rt": false,
+      "log_sha256": "d893d660944dc65fd0d6f00e128df9eae19e8ceb736810cce8124e8beb353253",
+      "passed": true
+    },
+    {
+      "mode": "vt-sector-seam",
+      "command": "$env:MATTER_VK_VALIDATION=\"1\"; $env:TMP=\"$env:LOCALAPPDATA\\Temp\"; $env:TEMP=$env:TMP; $env:MATTER_VK_SMOKE_MODE=\"vt-sector-seam\"; $env:MATTER_VT_PROP_TEXELS_PER_METER=$null; & \"./build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe\"; exit $LASTEXITCODE",
+      "exit": 0,
+      "seconds": 42.60573563800426,
+      "binary_sha256": "2afac42f3abe686e799ab8d8daaf5ca1ce8a746753022c7583e2ab70c0a1f4db",
+      "binary_unchanged": true,
+      "source_changes": [],
+      "all_pass": true,
+      "zero_validation_errors": true,
+      "skipped_rt": false,
+      "log_sha256": "058e370c40f16424cbe31b62323fec7016ba3bf3b05f3570974194ade72ae60e",
+      "passed": true
+    },
+    {
+      "mode": "compositor",
+      "command": "$env:MATTER_VK_VALIDATION=\"1\"; $env:TMP=\"$env:LOCALAPPDATA\\Temp\"; $env:TEMP=$env:TMP; $env:MATTER_VK_SMOKE_MODE=\"compositor\"; $env:MATTER_VT_PROP_TEXELS_PER_METER=$null; & \"./build/cmake/windows-msvc/relwithdebinfo/vt_compositor_tests.exe\"; exit $LASTEXITCODE",
+      "exit": 0,
+      "seconds": 4.611111147998599,
+      "binary_sha256": "7b7b4ddafb6304c114ec54e3b690aa42a2e3de0ef70e7c9300474e729aa6661d",
+      "binary_unchanged": true,
+      "source_changes": [],
+      "all_pass": true,
+      "zero_validation_errors": true,
+      "skipped_rt": false,
+      "log_sha256": "abaf4a5c86293290759f75895a0b635ddedcba5fa969356bb0a46d07673fdde7",
+      "passed": true
+    },
+    {
+      "mode": "vt-composed-seam",
+      "command": "$env:MATTER_VK_VALIDATION=\"1\"; $env:TMP=\"$env:LOCALAPPDATA\\Temp\"; $env:TEMP=$env:TMP; $env:MATTER_VK_SMOKE_MODE=\"vt-composed-seam\"; $env:MATTER_VT_PROP_TEXELS_PER_METER=$null; & \"./build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe\"; exit $LASTEXITCODE",
+      "exit": 0,
+      "seconds": 21.626431469994714,
+      "binary_sha256": "2afac42f3abe686e799ab8d8daaf5ca1ce8a746753022c7583e2ab70c0a1f4db",
+      "binary_unchanged": true,
+      "source_changes": [],
+      "all_pass": true,
+      "zero_validation_errors": true,
+      "skipped_rt": false,
+      "log_sha256": "14d6396e3eee0c843c0e0cd1cd09125e2b1ed566a3369721ab0ec0f2e513697f",
+      "passed": true
+    },
+    {
+      "mode": "vt-pom-work",
+      "command": "$env:MATTER_VK_VALIDATION=\"1\"; $env:TMP=\"$env:LOCALAPPDATA\\Temp\"; $env:TEMP=$env:TMP; $env:MATTER_VK_SMOKE_MODE=\"vt-pom-work\"; $env:MATTER_VT_PROP_TEXELS_PER_METER=$null; & \"./build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe\"; exit $LASTEXITCODE",
+      "exit": 0,
+      "seconds": 1.106951920010033,
+      "binary_sha256": "2afac42f3abe686e799ab8d8daaf5ca1ce8a746753022c7583e2ab70c0a1f4db",
+      "binary_unchanged": true,
+      "source_changes": [],
+      "all_pass": true,
+      "zero_validation_errors": true,
+      "skipped_rt": false,
+      "log_sha256": "0d34adb5e4061b2584fd67dd988ba7e1c9f7681e59c02cb9bf5946a5311a1794",
+      "passed": true
+    },
+    {
+      "mode": "vt-feedback-pair",
+      "command": "$env:MATTER_VK_VALIDATION=\"1\"; $env:TMP=\"$env:LOCALAPPDATA\\Temp\"; $env:TEMP=$env:TMP; $env:MATTER_VK_SMOKE_MODE=\"vt-feedback-pair\"; $env:MATTER_VT_PROP_TEXELS_PER_METER=$null; & \"./build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe\"; exit $LASTEXITCODE",
+      "exit": 0,
+      "seconds": 1.129979525008821,
+      "binary_sha256": "2afac42f3abe686e799ab8d8daaf5ca1ce8a746753022c7583e2ab70c0a1f4db",
+      "binary_unchanged": true,
+      "source_changes": [],
+      "all_pass": true,
+      "zero_validation_errors": true,
+      "skipped_rt": false,
+      "log_sha256": "8b699532f6f24edb807049f8ecfba70d64fe33b62eae8ead051232b55be74444",
+      "passed": true
+    }
+  ]
+}

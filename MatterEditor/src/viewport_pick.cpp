@@ -169,14 +169,16 @@ PickResult viewport_pick(float cursor_x, float cursor_y,
     // GPU identity-buffer pick: pixel-exact, no CPU geometry needed.
     matter::PickIdentity gpu_pick;
     if (session.pick_at_pixel(cursor_x, cursor_y, fb_width, fb_height, gpu_pick)) {
-        result.hit = true;
         if (gpu_pick.kind == matter::PickKind::StaticInstance) {
+            result.hit = true;
             result.object.kind = SelectedObject::BakedRoot;
             result.object.id = gpu_pick.part_hash;
         } else if (gpu_pick.kind == matter::PickKind::DynamicEntity) {
+            result.hit = true;
             result.object.kind = SelectedObject::Entity;
             result.object.id = gpu_pick.entity_id;
         }
+        if (result.hit) result.geometry = PickGeometry::GpuIdentity;
         return result;
     }
 
@@ -241,7 +243,13 @@ PickResult viewport_pick(float cursor_x, float cursor_y,
 
     result.hit = found;
     result.object = best_object;
-    result.distance = found ? best_t : 0.0f;
+    if (found) {
+        result.geometry = PickGeometry::CpuObbFallback;
+        result.distance = best_t;
+        result.world_position = {origin[0] + ray_dir[0] * best_t,
+                                 origin[1] + ray_dir[1] * best_t,
+                                 origin[2] + ray_dir[2] * best_t};
+    }
     return result;
 }
 

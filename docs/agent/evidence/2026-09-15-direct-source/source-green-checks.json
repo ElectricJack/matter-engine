@@ -1,0 +1,16 @@
+[
+  {
+    "kind": "build",
+    "name": "surface_field_tests",
+    "command": [
+      "./tools/build-windows-from-wsl.sh",
+      "RelWithDebInfo",
+      "surface_field_tests"
+    ],
+    "exit": 1,
+    "seconds": 2.678424419995281,
+    "log": "docs/agent/evidence/2026-09-15-direct-source/source-green-build-surface_field_tests.log",
+    "source_changes": [],
+    "validation_errors": []
+  }
+]

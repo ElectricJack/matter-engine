@@ -13,6 +13,8 @@
 
 #include "../src/scene_inventory.h"
 
+#include "matter/scene.h"
+
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -179,15 +181,18 @@ void test_overlapping_numeric_ids_across_kinds() {
 }
 
 // No id here is ever a Flecs handle, and SceneEntityId splits its own space by
-// a reserved high bit (scene_registry.cpp "IDENTITY"): high bit clear is the
-// FNV-1a hash of the world definition's authored id string, stable across
-// reloads; the high bit is reserved for runtime-allocated ids, which are not.
-// The contract states which rule classified the id rather than assuming one.
+// its top bit -- matter::scene::kRuntimeIdBit (matter/scene.h), the ONE
+// definition of the split: bit clear is the FNV-1a hash of the world
+// definition's authored id string, stable across reloads; bit set is an id
+// SceneService::allocate_id minted at runtime, which is not. Both allocators
+// are held to it, so the classification is exact for either population. The
+// contract still names the rule that produced the answer rather than letting a
+// caller assume one.
 void test_identity_contract_is_explicit() {
-    const std::uint64_t kSessionBit = 1ull << 63;
+    const std::uint64_t kRuntimeBit = matter::scene::kRuntimeIdBit;
     const inv::Snapshot snapshot = inv::build_snapshot(
         {entity_row(637276243303307148ull, 0, "Authored"),
-         entity_row(kSessionBit | 1ull, 0, "Runtime")},
+         entity_row(kRuntimeBit | 1ull, 0, "Runtime")},
         {root_row(2, "b")}, {}, 1);
     const Value listing = list_json(snapshot, inv::ListQuery{});
 
@@ -196,13 +201,32 @@ void test_identity_contract_is_explicit() {
               text(authored, "source") == "world_authored_id_hash" &&
               text(authored, "stability") == "world_definition",
           "an authored entity id is declared as the world definition's hash");
-    CHECK(text(authored, "classified_by") == "reserved_high_bit",
+    CHECK(text(authored, "classified_by") == "runtime_id_bit",
           "the contract names the rule that classified the id");
 
     const Value& runtime = field(row_at(listing, 1), "identity");
     CHECK(text(runtime, "source") == "session_allocated_id" &&
               text(runtime, "stability") == "session",
-          "a high-bit id is declared runtime-allocated and session-scoped");
+          "a runtime-bit id is declared runtime-allocated and session-scoped");
+    CHECK(text(runtime, "classified_by") == "runtime_id_bit",
+          "both entity classifications name the same rule");
+
+    // Read every emitted entity id back and re-run the ENGINE predicate on it:
+    // the reported source must be whatever matter::scene::is_runtime_id says,
+    // not whatever a bit test copied into this file would say. That is the
+    // coupling that keeps the protocol from drifting from the allocator.
+    for (const Value& row : field(listing, "objects").arr) {
+        if (text(row, "kind") != "entity") continue;
+        const std::uint64_t id =
+            std::strtoull(text(field(row, "object"), "id").c_str(), nullptr, 10);
+        const bool runtime_id = matter::scene::is_runtime_id(id);
+        CHECK(text(field(row, "identity"), "source") ==
+                  (runtime_id ? "session_allocated_id" : "world_authored_id_hash"),
+              "source follows matter::scene::is_runtime_id, not a local copy");
+        CHECK(text(field(row, "identity"), "stability") ==
+                  (runtime_id ? "session" : "world_definition"),
+              "stability follows the same split as source");
+    }
 
     for (const Value& row : field(listing, "objects").arr)
         CHECK(text(field(row, "identity"), "notes").find("not a Flecs handle") !=
@@ -624,6 +648,104 @@ void test_world_switch_reuses_entity_ids_for_different_objects() {
           "an id that is stable within one world definition");
 }
 
+// --- procedural provenance trace -------------------------------------------
+
+void test_provenance_trace_is_bounded_and_deterministic() {
+    inv::EntityRow placed = entity_row(7, 0, "Placed tree");
+    placed.part_instance.available = true;
+    placed.part_hash = 200;
+    const inv::Snapshot snapshot = inv::build_snapshot(
+        {placed},
+        {root_row(100, "terrain", "C:/objects/terrain.js",
+                  "{\"density\":2,\"worldSeed\":42}")}, {}, 12);
+    std::vector<inv::ProvenanceNode> graph = {
+        {"terrain", "C:/objects/terrain.js", "{\"density\":2,\"worldSeed\":42}",
+         {"foliage"}, {"noise"}, {"C:/shared/noise.js"}, 100, true},
+        {"foliage", "C:/objects/foliage.js", "{\"variant\":\"oak\"}",
+         {}, {}, {}, 200, false},
+    };
+
+    inv::TraceQuery query;
+    query.object = root_id(100);
+    query.max_depth = 1;
+    query.max_nodes = 2;
+    const Value first = inv::trace_result_json(snapshot, graph, query);
+    const Value repeated = inv::trace_result_json(snapshot, graph, query);
+    CHECK(matter::jsondoc::write_json(first) == matter::jsondoc::write_json(repeated),
+          "repeated trace generation is byte-deterministic");
+    CHECK(flag(first, "found") &&
+              text(field(first, "classification"), "kind") == "baked_root",
+          "a root is explicitly classified as a baked root");
+    CHECK(flag(field(first, "generated_instance"), "available") &&
+              text(field(first, "generated_instance"), "part_hash") == "100",
+          "a baked root retains its content-addressed generated part hash");
+    const Value& traversal = field(first, "traversal");
+    CHECK(flag(traversal, "available") && number(traversal, "returned") == 2,
+          "trace returns the requested bounded root and child traversal");
+    const Value& nodes = field(traversal, "nodes");
+    CHECK(nodes.kind == Value::Kind::Array &&
+              text(nodes.arr[0], "module") == "terrain" &&
+              text(field(nodes.arr[0], "source_location"), "value") ==
+                  "C:/objects/terrain.js",
+          "trace returns recorded module and source location");
+    const Value& inputs = field(nodes.arr[0], "generation_inputs");
+    CHECK(text(inputs, "params_hash_algorithm") == "fnv1a64_canonical_params" &&
+              text(field(inputs, "world_seed"), "value") == "42",
+          "trace returns canonical parameter hash and recorded world seed");
+    CHECK(!flag(field(field(nodes.arr[1], "generation_inputs"), "world_seed"),
+                "available") &&
+              !text(field(nodes.arr[1], "generation_inputs"), "params_hash").empty(),
+          "a missing seed is explicit while recorded parameters still hash");
+
+    inv::TraceQuery placed_entity;
+    placed_entity.object = entity_id(7);
+    placed_entity.max_depth = 0;
+    const Value entity_trace = inv::trace_result_json(snapshot, graph, placed_entity);
+    CHECK(text(field(entity_trace, "classification"), "kind") == "authored_entity" &&
+              flag(field(entity_trace, "generated_instance"), "available") &&
+              text(field(entity_trace, "generated_instance"), "kind") ==
+                  "generated_instance" &&
+              text(field(field(entity_trace, "traversal"), "nodes").arr[0], "module") ==
+                  "foliage",
+          "an authored entity with a PartInstance traces its generated part separately");
+}
+
+void test_provenance_trace_handles_runtime_and_replaced_objects() {
+    constexpr std::uint64_t kRuntimeEntity = matter::scene::kRuntimeIdBit | 17ull;
+    const inv::Snapshot current = inv::build_snapshot(
+        {entity_row(kRuntimeEntity, 0, "Particle")},
+        {root_row(200, "new_terrain", "C:/objects/new_terrain.js", "{}")}, {}, 22);
+    inv::TraceQuery runtime;
+    runtime.object = entity_id(kRuntimeEntity);
+    const Value runtime_result = inv::trace_result_json(current, {}, runtime);
+    CHECK(flag(runtime_result, "found") &&
+              text(field(runtime_result, "classification"), "kind") == "runtime_only" &&
+              !flag(field(runtime_result, "generated_instance"), "available") &&
+              !flag(field(runtime_result, "traversal"), "available"),
+          "runtime-only entities never invent source mappings");
+
+    inv::TraceQuery old_root;
+    old_root.object = root_id(100);  // replaced by a deterministic rebake
+    const Value replaced = inv::trace_result_json(current, {}, old_root);
+    CHECK(!flag(replaced, "found") && text(replaced, "scene_revision") == "22",
+          "a replaced baked-root identity has an explicit current-revision miss");
+
+    inv::TraceQuery parsed;
+    std::string error;
+    CHECK(inv::parse_trace_query(
+              args({{"object", viewer::agent::object_identity_json(root_id(200))},
+                    {"max_depth", number_value(0)},
+                    {"max_nodes", number_value(1)}}),
+              parsed, error) &&
+              parsed.max_depth == 0 && parsed.max_nodes == 1,
+          "trace bounds accept their inclusive low limits");
+    CHECK(!inv::parse_trace_query(
+               args({{"object", viewer::agent::object_identity_json(root_id(200))},
+                     {"max_nodes", number_value(101)}}),
+               parsed, error),
+          "trace rejects an unbounded node request");
+}
+
 }  // namespace
 
 int main() {
@@ -641,6 +763,8 @@ int main() {
     test_selection_state_is_joined();
     test_rebake_readdresses_baked_roots();
     test_world_switch_reuses_entity_ids_for_different_objects();
+    test_provenance_trace_is_bounded_and_deterministic();
+    test_provenance_trace_handles_runtime_and_replaced_objects();
     std::printf("scene inventory tests: ALL PASS\n");
     return 0;
 }

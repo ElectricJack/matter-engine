@@ -1,0 +1,18 @@
+{
+  "task": "nimble-rapids-30",
+  "claim_epoch": 8,
+  "source_commit": "90a19c6698a03623da9a3e3c5235ad272531d462",
+  "source_tree": "4b5507ae08396520437b1d2fb797e6e1966e31eb",
+  "status": "extraction-interrupted-after-baseline-native-build-failed",
+  "export_exit_code": 143,
+  "archive_sha256": "8533667cdee243f18cfad4d5d180d9cd7b3fe6110a72ea885b0928233a8bd744",
+  "inventory": "90a19c6698a03623da9a3e3c5235ad272531d462-partial-inventory.json.gz",
+  "inventory_sha256": "0471adbefbe79f2b6fc62d3313fb777e78812d9c01892c301f5bf68ae2f8766c",
+  "expected_files": 10443,
+  "complete_files": 4824,
+  "missing_files": 5619,
+  "partial_or_mismatched_files": 0,
+  "build_attempted": false,
+  "smoke_runs_attempted": false,
+  "recorded_at": 1792022704.0261126
+}

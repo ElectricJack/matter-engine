@@ -1,0 +1,3241 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="Win32-ninja"
+	tests="189"
+	failures="5"
+	disabled="0"
+	skipped="0"
+	hostname="DESKTOP-EB8UOME"
+	time="1916"
+	timestamp="2026-10-12T18:06:16"
+	>
+	<testcase name="matter_memory_tests" classname="matter_memory_tests" time="1.28651" status="run">
+		<properties>
+			<property name="cmake_labels" value="foundation"/>
+		</properties>
+		<system-out>  Fixed bank capacity, fragmentation, alignment, lifetime and reuse passed!
+Running MemPool tests...
+max_align_t alignment: 8 bytes
+
+Testing object alignment with objectSize=12...
+  Object 0: 00000210368A6EB0 (addr % alignment = 0)
+  Object 1: 00000210368A6EA0 (addr % alignment = 0)
+  Object 2: 00000210368A6E90 (addr % alignment = 0)
+  Object 3: 00000210368A6E80 (addr % alignment = 0)
+  Object 4: 00000210368A6E70 (addr % alignment = 0)
+  All objects properly aligned!
+Testing alloc-after-free reuse...
+  Reused Object 0: 00000210368A6E70 (addr % alignment = 0)
+  Reused Object 1: 00000210368A6E80 (addr % alignment = 0)
+  Reused Object 2: 00000210368A6E90 (addr % alignment = 0)
+  Reused Object 3: 00000210368A6EA0 (addr % alignment = 0)
+  Reused Object 4: 00000210368A6EB0 (addr % alignment = 0)
+  Alloc-after-free reuse verified!
+  All objects properly aligned!
+
+Testing alignment across multiple pages (allocate 25 objects with objectsPerPage=10)...
+  Object 0: 00000210368A9F90 (addr % alignment = 0)
+  Object 1: 000...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="matter_memory_hpp_tests" classname="matter_memory_hpp_tests" time="0.709032" status="run">
+		<properties>
+			<property name="cmake_labels" value="foundation"/>
+		</properties>
+		<system-out>Testing mem::Arena...
+Testing mem::Pool move-construction...
+Testing mem::Pool move-assignment (including self-assignment)...
+Testing mem::Arena move-assignment (including self-assignment)...
+All memory.hpp tests passed!
+</system-out>
+	</testcase>
+	<testcase name="matter_math_tests" classname="matter_math_tests" time="0.545252" status="run">
+		<properties>
+			<property name="cmake_labels" value="foundation"/>
+		</properties>
+		<system-out>=== MathLib: mathlib_tests ===
+
+[TEST] test_inverse_round_trip
+  PASS
+[TEST] test_singular_matrix_policy
+  PASS
+[TEST] test_inverse_rejects_non_finite_input
+  PASS
+[TEST] test_trs_matches_transform_math_reference
+  PASS
+[TEST] test_row_major_translation_indices
+  PASS
+[TEST] test_rotation_axis_matches_cardinal_builders
+  PASS
+[TEST] test_rotation_cardinal_matches_quaternion_path
+  PASS
+[TEST] test_rotation_axis_degenerate_axis_returns_identity
+  PASS
+[TEST] test_multiply_composition_order
+  PASS
+[TEST] test_c_pod_conversions_round_trip
+  PASS
+[TEST] test_c_pod_mat4_memory_layout_interchangeable
+  PASS
+[TEST] test_quat_identity_invert_multiply
+  PASS
+[TEST] test_rotate_matches_from_trs_quaternion_path
+  PASS
+
+=== Results: 13/13 passed ===
+</system-out>
+	</testcase>
+	<testcase name="matter_math_c_smoke" classname="matter_math_c_smoke" time="0.942657" status="run">
+		<properties>
+			<property name="cmake_labels" value="foundation"/>
+		</properties>
+		<system-out></system-out>
+	</testcase>
+	<testcase name="matter_spatial_tests" classname="matter_spatial_tests" time="0.648784" status="run">
+		<properties>
+			<property name="cmake_labels" value="foundation"/>
+		</properties>
+		<system-out>=== SpatialQueryLib: spatial_hash_tests ===
+
+[TEST] test_query_radius_no_duplicates
+  PASS
+[TEST] test_query_first_basic
+  PASS
+[TEST] test_query_first_miss
+  PASS
+[TEST] test_query_first_no_false_positive_from_collision
+  PASS
+[TEST] test_hash_no_signed_overflow
+  PASS
+[TEST] test_initial_capacity_sizes_table
+  PASS
+[TEST] test_basic_insert_query
+  PASS
+[TEST] test_query_first_with_two_objects
+  PASS
+[TEST] test_query_radius_nearest_keeps_closest
+  PASS
+
+=== Results: 9/9 passed ===
+</system-out>
+	</testcase>
+	<testcase name="matter_bvh_tests" classname="matter_bvh_tests" time="1.80807" status="run">
+		<properties>
+			<property name="cmake_labels" value="foundation"/>
+		</properties>
+		<system-out>=== SpatialQueryLib BVH tests ===
+[TEST] test_leaf_ranges_tile_the_permutation
+  PASS
+[TEST] test_subdiv_to_one_prim_tiles_the_permutation
+  PASS
+[TEST] test_coincident_centroids_keep_one_leaf
+  PASS
+[TEST] test_ray_hits_the_nearest_triangle
+  PASS
+[TEST] test_empty_tlas_is_a_valid_tree
+  PASS
+[TEST] test_tlas_traces_both_instances
+  PASS
+[TEST] test_analyze_empty_mesh_terminates
+  PASS
+[TEST] test_analyze_populated_mesh
+  PASS
+[TEST] test_tlas_analysis_reports_instance_triangles
+  PASS
+
+=== Results: 9/9 passed ===
+</system-out>
+	</testcase>
+	<testcase name="matter_profile_tests" classname="matter_profile_tests" time="0.966353" status="run">
+		<properties>
+			<property name="cmake_labels" value="foundation"/>
+		</properties>
+		<system-out>ALL PASS (ProfileLib P0)
+</system-out>
+	</testcase>
+	<testcase name="matter_particle_flow_tests" classname="matter_particle_flow_tests" time="0.941794" status="run">
+		<properties>
+			<property name="cmake_labels" value="foundation"/>
+		</properties>
+		<system-out>pf_tests:
+  rng determinism OK
+  v3 math OK
+  spatial hash OK (500 pts)
+  spatial hash no-duplicates OK (729 pts, 50 queries)
+  sim determinism + incremental OK (150 alive, 16749 deposited)
+  gravity parabola OK (y=-20.0900 expect -20.0900)
+  turn clamp OK
+  emission/cap/age/reuse OK
+  adhere OK (x=0.283)
+  separate OK (0.200 -&gt; 3.064)
+  attract consume/kill OK
+  attract per-field params OK
+  emitter channel init OK (20 channels)
+  surface normal OK
+  curl OK
+  path recorder OK (100 paths, 40 closed)
+  pathset append-only OK
+pf_tests: ALL OK
+</system-out>
+	</testcase>
+	<testcase name="matter_mesh_charting_tests" classname="matter_mesh_charting_tests" time="1.03265" status="run">
+		<properties>
+			<property name="cmake_labels" value="foundation"/>
+		</properties>
+		<system-out>All mesh_charting tests passed
+</system-out>
+	</testcase>
+	<testcase name="matter_asset_store_tests" classname="matter_asset_store_tests" time="5.09934" status="run">
+		<properties>
+			<property name="cmake_labels" value="foundation"/>
+		</properties>
+		<system-out>AssetStoreLib tests (scratch: C:/Users/webde/AppData/Local/Temp/asset_store_tests_83076)
+
+- crc32: slice-by-eight agrees with the reference, bit for bit
+- roundtrip, dedup, miss
+- crash mid-write: torn append is invisible after reopen
+- corruption: a flipped payload byte reads Corrupt, never garbage
+- eviction: LRU against a disk budget, survivors intact
+    evicted 16 refs, freed 524288 bytes, live now 262144 (budget 262144)
+    compaction kept 8 blobs / 262144 bytes, dropped 16, reclaimed 524800 bytes
+- concurrent soak: 6 reader threads + 1 reader process vs a live writer
+    16096 verified blob reads across 6 threads
+- determinism: identical writes produce identical pack and index bytes
+- batching: N sequential blobs become a handful of reads
+    200 requests -&gt; 1 chunk reads, 4006368 bytes read for 4000000 delivered
+- arena landing: payloads come out of the caller's MemoryLib arena
+- bounded reads: span, total holes, deduplicated checksums and exact reservation
+- manifest directory: reuse unchanged data a...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="mat_math_tests" classname="mat_math_tests" time="1.28809" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>mat_math_tests: row-major normal transforms, shear and affine plane perpendicularity
+ALL PASS
+</system-out>
+	</testcase>
+	<testcase name="vt_residency_tests" classname="vt_residency_tests" time="1.40286" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>vt residency tests complete
+ALL PASS
+</system-out>
+	</testcase>
+	<testcase name="compiler_portability_tests" classname="compiler_portability_tests" time="2.06828" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>ALL PASS
+</system-out>
+	</testcase>
+	<testcase name="matter_engine_headless_consumer_tests" classname="matter_engine_headless_consumer_tests" time="4.53443" status="run">
+		<properties>
+			<property name="cmake_labels" value="compiler-policy"/>
+		</properties>
+		<system-out></system-out>
+	</testcase>
+	<testcase name="compiler_format_negative_tests" classname="compiler_format_negative_tests" time="4.37218" status="run">
+		<properties>
+			<property name="cmake_labels" value="compiler-policy"/>
+		</properties>
+		<system-out>GNU MATTER_PRINTF_FORMAT negative compile rejected the invalid call as expected
+</system-out>
+	</testcase>
+	<testcase name="compiler_return_address_gnu_tests" classname="compiler_return_address_gnu_tests" time="5.03815" status="run">
+		<properties>
+			<property name="cmake_labels" value="compiler-policy"/>
+		</properties>
+		<system-out>GNU return-address caller identity preserved at -O0
+</system-out>
+	</testcase>
+	<testcase name="physx_dependency_contract_tests" classname="physx_dependency_contract_tests" time="15.1187" status="run">
+		<properties>
+			<property name="cmake_labels" value="compiler-policy"/>
+		</properties>
+		<system-out>PhysX dependency contract: PASS (exact lock, external checkout, offline validation, safe generator path, provider-free river runtime API)
+</system-out>
+	</testcase>
+	<testcase name="matter_mesh_allocator_policy_tests" classname="matter_mesh_allocator_policy_tests" time="0.296022" status="run">
+		<properties>
+			<property name="cmake_labels" value="compiler-policy"/>
+		</properties>
+		<system-out>ALL PASS
+</system-out>
+	</testcase>
+	<testcase name="solid_source_evaluation_tests" classname="solid_source_evaluation_tests" time="0.58418" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>SOURCE_EVAL seed=0 ops=23 eval_ms=10.255900 artifact_writes=0 gpu_calls=0 hash=abd4d664ec5a932f
+SOURCE_EVAL seed=1 ops=23 eval_ms=5.571100 artifact_writes=0 gpu_calls=0 hash=ec3e12bfde0a23d5
+SOURCE_EVAL seed=2 ops=23 eval_ms=4.635000 artifact_writes=0 gpu_calls=0 hash=b6734dc68b92e16f
+SOURCE_EVAL seed=3 ops=23 eval_ms=4.288900 artifact_writes=0 gpu_calls=0 hash=fc49fdfc1857f570
+SOURCE_EVAL seed=4 ops=23 eval_ms=5.530700 artifact_writes=0 gpu_calls=0 hash=b4a7b6f939b9bf1f
+SOURCE_EVAL seed=5 ops=23 eval_ms=5.180400 artifact_writes=0 gpu_calls=0 hash=55e4c7a67e9cb855
+SOURCE_EVAL seed=6 ops=23 eval_ms=5.182000 artifact_writes=0 gpu_calls=0 hash=e4cd91b61632ea6c
+SOURCE_EVAL seed=7 ops=23 eval_ms=5.339400 artifact_writes=0 gpu_calls=0 hash=3aa00ddab07e083e
+ALL PASS
+</system-out>
+	</testcase>
+	<testcase name="finite_surface_recipe_tests" classname="finite_surface_recipe_tests" time="5.39307" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>FINITE_RECIPE seed=0 ops=161 faces=6 eval_ms=17.6505 gpu_calls=0 artifact_writes=0
+FINITE_RECIPE seed=1 ops=161 faces=6 eval_ms=11.7397 gpu_calls=0 artifact_writes=0
+FINITE_RECIPE seed=2 ops=161 faces=6 eval_ms=9.9352 gpu_calls=0 artifact_writes=0
+FINITE_RECIPE seed=3 ops=161 faces=6 eval_ms=10.3514 gpu_calls=0 artifact_writes=0
+FINITE_RECIPE seed=4 ops=161 faces=6 eval_ms=10.0135 gpu_calls=0 artifact_writes=0
+FINITE_RECIPE seed=5 ops=161 faces=6 eval_ms=10.8073 gpu_calls=0 artifact_writes=0
+FINITE_RECIPE seed=6 ops=161 faces=6 eval_ms=12.1686 gpu_calls=0 artifact_writes=0
+FINITE_RECIPE seed=7 ops=161 faces=6 eval_ms=11.1325 gpu_calls=0 artifact_writes=0
+PATH_RECIPE placements=3024 receivers=8 ok=1
+PATH_RECIPE placements=2240 receivers=9 ok=1
+PATH_RECIPE placements=640 receivers=44 ok=1
+PATH_RECIPE placements=672 receivers=32 ok=1
+WEATHER_RECIPE index=0 ops=404
+WEATHER_RECIPE index=1 ops=448
+WEATHER_RECIPE index=2 ops=404
+WEATHER_RECIPE index=3 ops=416
+WEATHER_RECIPE index=4 ops=414
+WEATHER_RECIPE index=5 ops...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="vt_encoded_pages_tests" classname="vt_encoded_pages_tests" time="0.892292" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>ALL PASS
+</system-out>
+	</testcase>
+	<testcase name="asset_export_tests" classname="asset_export_tests" time="0.305642" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>ASSET_EXPORT fixture=C:\Users\webde\AppData\Local\Temp\matter-export-test-813547746534000
+ALL PASS
+</system-out>
+	</testcase>
+	<testcase name="part_surface_provider_tests" classname="part_surface_provider_tests" time="1.83127" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>PART_VT_DENSITY merged_params=checked disk_memory=equal invalid_metadata=rejected
+[finite-surface] part=8647c9fa223dbf33 faces=6 geometry_hits=0 material_hits=0 bytes=75576
+[local_provider] LocalProvider: flattened 8647c9fa223dbf33 (1 clusters, 1 levels, 1 -&gt; 1 tris, 0 instance_refs)
+[finite-surface] part=8647c9fa223dbf33 faces=6 geometry_hits=6 material_hits=0 bytes=75576
+[finite-surface] part=08cf2ffc55794fd3 faces=6 geometry_hits=6 material_hits=0 bytes=75576
+[local_provider] LocalProvider: flattened 08cf2ffc55794fd3 (1 clusters, 1 levels, 1 -&gt; 1 tris, 0 instance_refs)
+PART_SURFACE_SOURCE_RANGE receiver=refused module=refused
+PART_SURFACE cold_faces=6 warm_geometry_dispatches=0 publication=atomic receiver_binding=passed
+[part-surface] part=b7d54ebad6fe2b96 direct recipe_bytes=233 source_images=0
+[local_provider] LocalProvider: flattened b7d54ebad6fe2b96 (1 clusters, 1 levels, 1 -&gt; 1 tris, 0 instance_refs)
+[part-store] loaded v3 FLAT part b7d54ebad6fe2b96 (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[par...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="brick_bond_detail_tests" classname="brick_bond_detail_tests" time="0.533096" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>ALL PASS
+</system-out>
+	</testcase>
+	<testcase name="brick_bond_atlas_tests" classname="brick_bond_atlas_tests" time="1.5641" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>brick bond atlas: physical running bond, coverage, normals,16Wang copies
+brick bond atlas: 0 failures
+</system-out>
+	</testcase>
+	<testcase name="solid_face_projection_tests" classname="solid_face_projection_tests" time="0.314267" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>solid_face_projection_tests: PASS
+</system-out>
+	</testcase>
+	<testcase name="projected_face_cache_tests" classname="projected_face_cache_tests" time="0.388848" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>ALL PASS
+</system-out>
+	</testcase>
+	<testcase name="face_material_bake_tests" classname="face_material_bake_tests" time="0.458212" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>ALL PASS
+</system-out>
+	</testcase>
+	<testcase name="finite_surface_stamp_tests" classname="finite_surface_stamp_tests" time="0.361086" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>ALL PASS
+</system-out>
+	</testcase>
+	<testcase name="sparse_voxel_hierarchy_tests" classname="sparse_voxel_hierarchy_tests" time="0.365577" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>ALL PASS
+</system-out>
+	</testcase>
+	<testcase name="sparse_voxel_bake_tests" classname="sparse_voxel_bake_tests" time="0.233817" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>sparse_voxel_bake_tests: 0 failures; ornament 8 bricks / 128 cells
+</system-out>
+	</testcase>
+	<testcase name="surface_proxy_tests" classname="surface_proxy_tests" time="10.1575" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>ALL PASS
+</system-out>
+	</testcase>
+	<testcase name="mesh_simplifier_tests" classname="mesh_simplifier_tests" time="42.6506" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>=== Mesh Simplifier Tests ===
+=== test_indices_in_range_sphere ===
+PASSED
+=== test_empty_input ===
+PASSED
+=== test_single_triangle ===
+PASSED
+=== test_identity_ratio_one ===
+PASSED
+=== test_weld_non_indexed ===
+PASSED
+=== test_indexed_unwelded_stays_closed ===
+PASSED
+=== test_normals_unit_length ===
+PASSED
+=== test_triangle_reduction ===
+  in tris=128 out tris=64
+PASSED
+=== test_determinism ===
+PASSED
+=== test_no_degenerate_triangles ===
+PASSED
+=== test_boundary_preserved ===
+PASSED
+=== test_group_border_edges ===
+PASSED
+=== test_error_bounded_entrypoints ===
+PASSED
+=== test_watertight_seam ===
+PASSED
+=== test_simplify_meshindexed_overload_delegates ===
+PASSED
+=== test_simplify_meshindexed_over_65535_verts ===
+  in_verts=332800 in_tris=166400 -&gt; out_verts=25200 out_tris=49920
+PASSED
+
+All mesh simplifier tests PASSED
+</system-out>
+	</testcase>
+	<testcase name="indirect_draw_runs_tests" classname="indirect_draw_runs_tests" time="0.324079" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>ALL PASS
+</system-out>
+	</testcase>
+	<testcase name="blas_refcount_tests" classname="blas_refcount_tests" time="0.165019" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>consume allocation ownership and multiplicity PASSED
+=== test_adopt_from_dedups_and_remaps ===
+PASSED
+=== test_dedup_and_release ===
+PASSED
+=== test_content_revision_tracks_content_not_refcount ===
+PASSED
+=== test_remesh_no_leak ===
+PASSED
+=== test_release_invalid_is_noop ===
+PASSED
+=== test_triex_material_cpu_retention ===
+PASSED
+=== test_triex_material_pack_roundtrip ===
+PASSED
+=== test_dedup_respects_material ===
+PASSED
+
+ALL BLAS REFCOUNT TESTS PASSED
+</system-out>
+	</testcase>
+	<testcase name="blas_disk_cache_tests" classname="blas_disk_cache_tests" time="0.321902" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>ALL PASS
+</system-out>
+	</testcase>
+	<testcase name="blas_cache_queue_tests" classname="blas_cache_queue_tests" time="0.194056" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>ALL PASS: BLAS queue saturation defers lookup without reporting a false cache miss
+</system-out>
+	</testcase>
+	<testcase name="async_queue_tests" classname="async_queue_tests" time="0.287312" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>=== async_queue_tests ===
+[test_pump_runs_posted_jobs_in_order]
+ok pump_runs_posted_jobs_in_order
+[test_pump_respects_budget_but_always_runs_one]
+ok pump_respects_budget_but_always_runs_one
+[test_run_blocking_returns_result]
+ok run_blocking_returns_result
+[test_cancelled_token_skips_job]
+ok cancelled_token_skips_job
+[test_shutdown_unblocks_waiter]
+ok shutdown_unblocks_waiter
+[test_throwing_job_does_not_escape_pump]
+ok throwing_job_does_not_escape_pump
+[test_bakeall_supersedes_pending_and_cancels_inflight]
+ok bakeall_supersedes_pending_and_cancels_inflight
+[test_command_shutdown_wakes_pop]
+ok command_shutdown_wakes_pop
+[test_push_after_shutdown_is_cancelled_and_not_queued]
+ok push_after_shutdown_is_cancelled_and_not_queued
+[test_bakeall_cancels_every_displaced_token]
+ok bakeall_cancels_every_displaced_token
+[test_reload_supersedes_like_bakeall]
+ok reload_supersedes_like_bakeall
+[test_shutdown_command_cancels_all_pending]
+ok shutdown_command_cancels_all_pending
+[test_rebake_cone_fifo_preserved]
+ok rebake_cone_f...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="async_stage_pipeline_tests" classname="async_stage_pipeline_tests" time="0.313661" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>ALL PASS: asynchronous overlap, bounded admission, cancellation, failures and shutdown pins
+</system-out>
+	</testcase>
+	<testcase name="geometry_hierarchy_tests" classname="geometry_hierarchy_tests" time="17.3375" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>[geometry] bake batch commit failed: cannot create index tmp: open_rw (win32 error 5)
+[geometry] bake batch commit failed: cannot create index tmp: open_rw (win32 error 5)
+[geometry] bake batch commit failed: cannot create index tmp: open_rw (win32 error 5)
+Geometry proof: 288 source triangles, 17 groups, 48 coarse triangles, error &lt;= 0.144025, compiler 44.659 ms
+Simplification: reduced=8, attribute_seams=0, changed_borders=0, no_reduction=0; root_border=48, root_result=1
+ALL PASS
+</system-out>
+	</testcase>
+	<testcase name="geometry_cut_tests" classname="geometry_cut_tests" time="1.01446" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>ALL PASS
+</system-out>
+	</testcase>
+	<testcase name="mesh_error_tests" classname="mesh_error_tests" time="0.114566" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>ALL PASS
+</system-out>
+	</testcase>
+	<testcase name="bake_trace_tests" classname="bake_trace_tests" time="0.239588" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>bake_trace tests
+  (concurrent: 55025 snapshots raced against 3000 spans)
+  overhead: 10000 spans+counters active: 3.930 ms (393 ns/span); no-collector: 0.052 ms (5.2 ns/span)
+ALL PASS
+</system-out>
+	</testcase>
+	<testcase name="world_definition_tests" classname="world_definition_tests" time="333.143" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>  shared-lib module references checked: 0
+  every shipped world loads: 72/72
+MOUNTAIN_ROCK_DENSITY shape=0 seed=0 reference_m=0.5 finest_tpm=[192.000,192.000]
+[part-store] loaded v3 FLAT part 41c2b071016a6a99 (3 LOD levels, 1 clusters, 0 refs, 0 impostors)
+MOUNTAIN_ROCK_LOD shape=0 reference_m=0.5 triangles=240,172,80 stage_ms=115.532
+MOUNTAIN_ROCK_DENSITY shape=1 seed=0 reference_m=0.5 finest_tpm=[192.000,192.000]
+[part-store] loaded v3 FLAT part 9aeb337116113390 (3 LOD levels, 1 clusters, 0 refs, 0 impostors)
+MOUNTAIN_ROCK_LOD shape=1 reference_m=0.5 triangles=228,176,60 stage_ms=23.997
+MOUNTAIN_ROCK_DENSITY shape=2 seed=0 reference_m=0.5 finest_tpm=[192.000,192.000]
+[part-store] loaded v3 FLAT part ada4278dcbdb2a13 (3 LOD levels, 1 clusters, 0 refs, 0 impostors)
+MOUNTAIN_ROCK_LOD shape=2 reference_m=0.5 triangles=324,276,172 stage_ms=25.374
+MOUNTAIN_ROCK_DENSITY shape=0 seed=1 reference_m=0.5 finest_tpm=[192.000,192.000]
+MOUNTAIN_ROCK_DENSITY shape=1 seed=1 reference_m=0.5 finest_tpm=[192.000,192.000]
+MOUN...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="surface_field_tests" classname="surface_field_tests" time="0.903392" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>CELLULAR3_ORACLE max_error=0.000000387 identities=1 outer_required=3
+ALL PASS
+</system-out>
+	</testcase>
+	<testcase name="world_state_delta_tests" classname="world_state_delta_tests" time="0.913477" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>ALL PASS
+</system-out>
+	</testcase>
+	<testcase name="sector_lod_tests" classname="sector_lod_tests" time="0.800148" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>ALL PASS
+</system-out>
+	</testcase>
+	<testcase name="sector_bake_tests" classname="sector_bake_tests" time="9.34197" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+  scatter bake hash: 4a3f64eb53dabb9c  path: C:\Users\webde\AppData\Local\Temp\me3_sector_bake_812903331597200/parts/4a3f64eb53dabb9c.bundle
+  nested tris: L0=3400 L1=2720 L2=2798 (lattice 32x32 at each)
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+  nested scatter: level-1 tile placed 41 children, its four level-0 cells 41
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS ...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="gi_bake_tests" classname="gi_bake_tests" time="3.38536" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>[gi] ground 256x168 covered=26240 rays=2758541 176ms | room 128x60 covered=3548 rays=715703 129ms
+[gi] court=(1.687 1.647 1.588) strip=1.312 deep=0.024 shadow=0.387 wall=0.043
+[gi] direct-only wall=0.006 deep=0.003
+[gi] vault charts=2 atlas=128x57
+[gi] seam deltas: n=12 max=0.0197 p95=0.0195 level=2.341 | interior: n=1164 median=0.0048 p95=0.0209
+ALL PASS
+</system-out>
+	</testcase>
+	<testcase name="local_light_index_tests" classname="local_light_index_tests" time="0.150751" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>ALL PASS
+</system-out>
+	</testcase>
+	<testcase name="primary_light_culling_tests" classname="primary_light_culling_tests" time="0.430879" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>primary tile witnesses=19313 rejected_boxes=15898
+ALL PASS
+</system-out>
+	</testcase>
+	<testcase name="resolve_cache_tests" classname="resolve_cache_tests" time="0.816179" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>=== resolve_cache_tests ===
+[resolve_cache] round_trip_basic
+[resolve_cache] snapshot_indices
+[resolve_cache] project_sources_define_key
+[resolve_cache] scene_object_tier_enters_the_key
+[resolve_cache] world_definition_adapter
+[resolve_cache] project_procedural_settings
+[resolve_cache] key_changes_on_seed
+[resolve_cache] truncated_load
+[resolve_cache] authored_world_size_limit
+[resolve_cache] bad_magic_rejected
+[resolve_cache] old_light_record_version_rejected
+[resolve_cache] bad_key_rejected
+[resolve_cache] multi_source_dedup
+=== 213/213 passed ===
+</system-out>
+	</testcase>
+	<testcase name="authored_world_cache_tests" classname="authored_world_cache_tests" time="0.236387" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>authored_world_cache_tests: static definition and ordered materials
+authored_world_cache_tests: corruption, schema, limits and fallback
+authored_world_cache_tests: PASS (0 failures)
+</system-out>
+	</testcase>
+	<testcase name="authored_world_provider_cache_tests" classname="authored_world_provider_cache_tests" time="1.11346" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>authored_world_provider_cache_tests: restore bypasses throwing source
+authored_world_provider_cache_tests: PASS (0 failures)
+</system-out>
+	</testcase>
+	<testcase name="material_registry_tests" classname="material_registry_tests" time="0.558859" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>All material_registry tests passed
+</system-out>
+	</testcase>
+	<testcase name="terrain_collision_definition_tests" classname="terrain_collision_definition_tests" time="1.07473" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>ALL PASS
+</system-out>
+	</testcase>
+	<testcase name="terrain_collision_artifact_tests" classname="terrain_collision_artifact_tests" time="6.82463" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>ALL PASS
+</system-out>
+	</testcase>
+	<testcase name="shared_lib_tests" classname="shared_lib_tests" time="8.51548" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>INFO: xoshiro128** seed=42 first4: 660444221 3652823732 77672526 910233633
+All shared_lib tests passed
+</system-out>
+	</testcase>
+	<testcase name="river_network_tests" classname="river_network_tests" time="0.810045" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>ALL PASS
+</system-out>
+	</testcase>
+	<testcase name="river_geometry_tests" classname="river_geometry_tests" time="1.60697" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>ALL PASS
+</system-out>
+	</testcase>
+	<testcase name="authored_fluid_colliders_tests" classname="authored_fluid_colliders_tests" time="1.02662" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>ALL PASS
+</system-out>
+	</testcase>
+	<testcase name="river_section_graph_tests" classname="river_section_graph_tests" time="1.21623" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>ALL PASS
+</system-out>
+	</testcase>
+	<testcase name="spillway_handoff_tests" classname="spillway_handoff_tests" time="0.929445" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>ALL PASS
+</system-out>
+	</testcase>
+	<testcase name="dsl_determinism_tests" classname="dsl_determinism_tests" time="4.83803" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>scene=flat                     ops=  3 additive=  1 carve=  0 fat=  2 stages= 1 lowered_hash=ea1765749c7a1a7f grid_hash=c3ddd3520607ca65
+scene=nested_rotated_translated ops=  5 additive=  1 carve=  0 fat=  4 stages= 3 lowered_hash=4f3b4323db552c95 grid_hash=90880561426703e6
+scene=apply_matrix_lookat      ops=  3 additive=  1 carve=  0 fat=  2 stages= 1 lowered_hash=52d2b04e26911d55 grid_hash=a804c133b2c36b67
+scene=deep_stack               ops=  5 additive=  1 carve=  0 fat=  4 stages= 4 lowered_hash=d3ff7d1bb2f4e600 grid_hash=d8795888863d7442
+scene=degenerate_flatten       ops=  1 additive=  0 carve=  0 fat=  1 stages= 1 lowered_hash=e02562534daa8922 grid_hash=bbc97924e366cbbf
+river_fluid_hash=0d50adf9e782953b emitters=2 order_invariant=1
+DETERMINISM HARNESS DONE
+</system-out>
+	</testcase>
+	<testcase name="script_host_tests" classname="script_host_tests" time="137.959" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+absolute voxel sampling: coarse=108 plank=2300 beam=2620 carved=2404 groove_y=0.27753
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+  test_eval_lod_budgets OK
+  test_eval_no_impostor OK
+  test_eval_lods_schema_parsing OK
+  test_eval_lods_authored_ladder OK
+  test_bake_seed_invariance_per_lod_params OK
+Warning: No draw records to build TLAS from
+  test_bake_result_child_modules_placed OK
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: No draw records to build TLAS from
+Warning: Triangle 27...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="tileset_bake_tests" classname="tileset_bake_tests" time="1.76455" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>ok:   params roundtrip [{}]
+ok:   params roundtrip [integer]
+ok:   params roundtrip [integer nonzero]
+ok:   params roundtrip [float]
+ok:   params roundtrip [float 17g]
+ok:   params roundtrip [bool true]
+ok:   params roundtrip [bool false]
+ok:   params roundtrip [string]
+ok:   params roundtrip [multi]
+[hash] Pebble -&gt; d4e4532dd42c8400
+[hash] Twig   -&gt; 226255e83ee11be9
+
+All tileset_bake_tests passed.
+</system-out>
+	</testcase>
+	<testcase name="tileset_physics_tests" classname="tileset_physics_tests" time="0.336879" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>== tileset_physics_tests ==
+PASSED (0 failures)
+</system-out>
+	</testcase>
+	<testcase name="part_flatten_tests" classname="part_flatten_tests" time="177.769" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>=== test_impostor_cell_px_parametrized ===
+PASSED
+=== test_impostor_atlas_padding ===
+PASSED
+=== test_cross_process_byte_identical ===
+  compared 2 artifact file(s) across two processes
+=== test_topological_boundary_lock ===
+  input: 128 tris, 32 boundary verts
+  output: 30 tris, 32 verts
+PASSED
+=== test_cluster_split_40k ===
+  clusters: 4, total tris: 40000
+PASSED
+=== test_cluster_split_small (100 tris =&gt; 1 cluster) ===
+PASSED
+=== test_cluster_split_deterministic ===
+PASSED
+=== test_v3_round_trip ===
+PASSED
+=== test_v3_empty_children_and_lods ===
+PASSED
+=== test_v3_cross_version_guards ===
+PASSED
+=== test_peek_format_version ===
+PASSED
+=== test_v2_byte_stability ===
+PASSED
+=== test_flatten_clustered_v3 ===
+  clusters=4, levels=3, full_tris=40000
+PASSED
+=== test_flatten_watertight_invariant ===
+  shared boundary vertices: 303
+PASSED
+=== test_small_part_gets_ladder ===
+  levels=6, coarsest_tris=28, full_tris=360
+PASSED
+=== test_ratio2_ladder_shape ===
+  levels=9, clusters=2, full_tris=21360
+PASSED
+=== test_bud...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="modifier_apply_tests" classname="modifier_apply_tests" time="0.163675" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>[modifier] t: smooth failed (smooth: mu must be &lt; 0), skipped
+[modifier] t: retopo unavailable (built without autoremesher), skipped
+modifier_apply_tests
+all modifier_apply tests passed
+</system-out>
+	</testcase>
+	<testcase name="staged_normals_tests" classname="staged_normals_tests" time="0.16343" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>staged_normals_tests: PASS (0 failures)
+</system-out>
+	</testcase>
+	<testcase name="sdf_candidate_bounds_tests" classname="sdf_candidate_bounds_tests" time="0.803959" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>beam candidates: 5832 -&gt; 40
+candidate geometry parity: removed=204 active=12; PASS
+</system-out>
+	</testcase>
+	<testcase name="surface_vertex_tests" classname="surface_vertex_tests" time="0.473492" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>surface_vertex_tests: PASS
+</system-out>
+	</testcase>
+	<testcase name="castle_singleton_tests" classname="castle_singleton_tests" time="1.26513" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>castle_singleton_tests: PASS
+</system-out>
+	</testcase>
+	<testcase name="part_graph_tests" classname="part_graph_tests" time="0.468401" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>All part_graph tests passed
+</system-out>
+	</testcase>
+	<testcase name="partstore_tests" classname="partstore_tests" time="17.7156" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>[geometry] terrain 7ff44b886e03e4f6 paging failed: geometry cache directory absent
+[part-store] loaded v3 FLAT part 0102030405060708 (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 0102030405060708 (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 0102030405060708 (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 0102030405060708 (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 0102030405060708 (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 0102030405060708 (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 0102030405060708 (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 0005136f1a700021 (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 0005136f1a700022 (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 0005136f1a700001 (2 LOD le...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="chart_atlas_tests" classname="chart_atlas_tests" time="6.44275" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>[part-store] loaded v3 FLAT part 0000000f1a7c4a75 (2 LOD levels, 2 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 0000000f1a7c4a75 (2 LOD levels, 2 clusters, 0 refs, 0 impostors)
+  [cube] charts=6 atlas=384x256 worst distortion=1.000
+  [cube] pack efficiency (block area / atlas area) = 100.0%
+  [cube] indexed verts 24 -&gt; 24 (0.00% inflation)
+  [cylinder-overhang] charts=11 atlas=512x384 worst distortion=1.376
+  [cylinder-overhang] pack efficiency (block area / atlas area) = 91.7%
+  [cylinder-overhang] indexed verts 900 -&gt; 900 (0.00% inflation)
+  [big-sheet] charts=755 atlas=3968x4480 worst distortion=1.562
+  [big-sheet] pack efficiency (block area / atlas area) = 88.2%
+  [big-sheet] indexed verts 68121 -&gt; 74175 (8.89% inflation)
+=== test_density_clamp ===
+  [clamped-plane] charts=1 atlas=16384x16384 worst distortion=1.000
+  [clamped-plane] pack efficiency (block area / atlas area) = 100.0%
+  density clamp: fixture=0 aligned=0 requested=512.000 actual=408.000 atlas=16384x16384
+  [clamped-plane...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="part_asset_v2_tests" classname="part_asset_v2_tests" time="3.09432" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>[part_bundle] fopen('part_asset_v2_tests_cache/atomic-static.bundle.tmp','wb') failed: errno=13 (Permission denied)
+[part]   save_v2: bundle section write failed for 'part_asset_v2_tests_cache/atomic-static.bundle' (format 2, hash 0000000000715aff)
+All part_asset_v2 tests passed
+</system-out>
+	</testcase>
+	<testcase name="world_tracer_tests" classname="world_tracer_tests" time="1.17003" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 1 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 2 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 3 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 4 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 5 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 6 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 7 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 8 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 9 (tried flat + compositional)
+[tracer] world_tracer: warning: world_tracer: load_v2 failed for hash 10 (tried flat + compositional)
+[tracer] worl...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="part_asset_flat_refs_tests" classname="part_asset_flat_refs_tests" time="1.9766" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>Validated FLAT reference scan: parity, corruption, emitter compatibility
+FLAT reference scan: PASS
+</system-out>
+	</testcase>
+	<testcase name="obj_export_tests" classname="obj_export_tests" time="8.48004" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>All obj export tests passed
+ALL PASS
+</system-out>
+	</testcase>
+	<testcase name="obj_export_golden_tests" classname="obj_export_golden_tests" time="29.093" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>-- CastleStone
+-- CastlePavingSlab
+-- AlpineFlower
+-- World.exports (DSL binding)
+All obj export golden tests passed
+ALL PASS
+</system-out>
+	</testcase>
+	<testcase name="eval_world_tests" classname="eval_world_tests" time="8.5814" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>ordered layer fixture: 196 operations
+ProceduralBrickProof: 361 material operations
+ProceduralTerrainProof: 229 material operations
+ALL PASS
+</system-out>
+	</testcase>
+	<testcase name="vertex_cache_order_tests" classname="vertex_cache_order_tests" time="1.81421" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>grid FIFO misses: 24413 -&gt; 4599
+vertex_cache_order_tests: ALL PASS
+</system-out>
+	</testcase>
+	<testcase name="lod_distance_tests" classname="lod_distance_tests" time="1.33788" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>=== test_known_answers ===
+=== test_equivalence_sweep ===
+  compared 1200000 selections, 0 disagreed, 0 structural
+=== test_one_table_serves_any_radius ===
+  one table across 20000 unseen radii: 0 structural mismatches
+=== test_open_rung_survives_zero_reach ===
+=== test_detects_a_wrong_conversion ===
+  wrong-conversion probe produced 3457 structural disagreements
+ALL PASS
+</system-out>
+	</testcase>
+	<testcase name="event_channel_tests" classname="event_channel_tests" time="0.678853" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>=== event_channel_tests ===
+[test_push_try_pop_fifo]
+ok push_try_pop_fifo
+[test_wait_pop_blocks_then_returns_on_push]
+ok wait_pop_blocks_then_returns_on_push
+[test_wait_pop_for_timeout_then_item]
+ok wait_pop_for_timeout_then_item
+[test_pump_budget_progress_guarantee]
+ok pump_budget_progress_guarantee
+[test_pump_one_delivers_at_most_one]
+ok pump_one_delivers_at_most_one
+[test_reject_newest_at_capacity]
+ok reject_newest_at_capacity
+[test_drop_oldest_evicts_oldest]
+ok drop_oldest_evicts_oldest
+[test_coalesce_newest_matching_key_replaces]
+ok coalesce_newest_matching_key_replaces
+[test_coalesce_newest_nonmatching_key_rejects_without_clobbering]
+ok coalesce_newest_nonmatching_key_rejects_without_clobbering
+[test_run_blocking_completes]
+ok run_blocking_completes
+[test_shutdown_wakes_waiters_and_fails_run_blocking]
+ok shutdown_wakes_waiters_and_fails_run_blocking
+[test_block_producer_blocks_until_pop_then_unblocks]
+ok block_producer_blocks_until_pop_then_unblocks
+[test_block_producer_unblocks_on_shutdown]
+ok block_pr...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="event_hub_tests" classname="event_hub_tests" time="15.3991" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>=== event_hub_tests ===
+[test_immediate_subscribe_emit_unsubscribe]
+ok immediate_subscribe_emit_unsubscribe
+[test_lane_delivery_via_pump]
+ok lane_delivery_via_pump
+[test_ordering_determinism_across_permutations]
+ok ordering_determinism_across_permutations
+[test_uniqueness_try_subscribe_no_mutation]
+ok uniqueness_try_subscribe_no_mutation
+[test_uniqueness_must_subscribe_fail_fast_release_path]
+ok uniqueness_must_subscribe_fail_fast_release_path
+[test_emit_vs_teardown_race]
+ok emit_vs_teardown_race (500 iterations)
+[test_dispatch_barrier_toctou_deterministic]
+ok dispatch_barrier_toctou_deterministic
+[test_earlier_handler_removes_later_subscriber_skipped]
+ok earlier_handler_removes_later_subscriber_skipped
+[test_logical_unsubscribe_before_pump_suppresses_delivery]
+ok logical_unsubscribe_before_pump_suppresses_delivery
+[test_unsubscribe_all_and_wait_illegal_self_call]
+ok unsubscribe_all_and_wait_illegal_self_call
+[test_close_invalidates_and_drops_queued]
+ok close_invalidates_and_drops_queued
+[test_handle_destroye...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="error_events_tests" classname="error_events_tests" time="1.44386" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>=== error_events_tests ===
+[test_live_edit_sink_emits_error_live_edit]
+ok live_edit_sink_emits_error_live_edit
+[test_bridge_sink_emits_part_instance_events]
+ok bridge_sink_emits_part_instance_events
+ALL PASS
+</system-out>
+	</testcase>
+	<testcase name="event_command_tests" classname="event_command_tests" time="0.741496" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>[test_execute_typed_result]
+ok execute_typed_result
+[test_dispatch_ticket_then_and_wait]
+ok dispatch_ticket_then_and_wait
+[test_invalid_ticket_is_inert]
+ok invalid_ticket_is_inert
+[test_duplicate_handler_all_build]
+ok duplicate_handler_all_build
+[test_scope_epochs_stale]
+ok scope_epochs_stale
+[test_ticket_exactly_once_all_outcomes]
+ok ticket_exactly_once_all_outcomes
+[test_hub_notifications]
+ok hub_notifications
+[test_history_sink_inverse_coalesce]
+ok history_sink_inverse_coalesce
+[test_registered_handler_name_snapshot_tracks_live_registry]
+[test_concurrent_dispatch]
+ok concurrent_dispatch (success=1200 handled=1200)
+
+ALL COMMAND TESTS PASSED
+</system-out>
+	</testcase>
+	<testcase name="event_property_tests" classname="event_property_tests" time="1.14195" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>=== event_property_tests ===
+[test_coalescing_latest_wins]
+ok coalescing_latest_wins
+[test_prime_on_bind_sees_latest]
+ok prime_on_bind_sees_latest
+[test_equality_suppression]
+ok equality_suppression
+[test_affinity_off_thread_fails_fast]
+ok affinity_off_thread_fails_fast
+[test_edit_loop_terminates]
+ok edit_loop_terminates
+[test_subscription_destruction_stops_delivery]
+ok subscription_destruction_stops_delivery
+[test_property_destruction_deregisters]
+ok property_destruction_deregisters
+[test_set_now_immediate]
+ok set_now_immediate
+[test_trace_sink_records_flushes]
+ok trace_sink_records_flushes
+
+ALL PASS
+</system-out>
+	</testcase>
+	<testcase name="sector_streamer_tests" classname="sector_streamer_tests" time="120.007" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>  key round trip: 13182 (level, tx, ty, tz) tuples, signs and 20-bit extremes on all three axes
+  long flight: peak=7997 end=7993
+  nested: 1213 tiles (L0..L5: 124 321 344 244 152 28), 146051 probes, 0 holes, 0 doubles
+  nested: 1213 tiles vs uniform 78201 sectors (64.5x fewer)
+  nested pathological: 224 tiles, 0 violations, 141 forced finer
+  nested: 724 evictions matched by a complete child quad
+  nested groups: 220 ticks flown, 0 uncovered probes (first at tick -1)
+  nested groups: worst superseded-tile dwell 1 ticks (1 is inherent to publish-then-evict)
+  nested groups: eviction bookkeeping: 246 superseded-variant (expected), 0 unknown-key
+  nested groups: 39054 probe-ticks of residency overlap (worst depth 2, first at tick 5) -- the 1-tick window, not the visibility bug
+  nested groups: 0 ancestor evictions while a child was failing
+  nested groups: 1204 resident at origin, 1217 after leaving
+  staged jump ON : 1300 requests over 17 updates, 0/1144 over-fine, 0 wave skips, deepest wave chain 4
+  staged j...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="sector_streaming_coordinator_tests" classname="sector_streaming_coordinator_tests" time="1.37802" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>ALL PASS
+</system-out>
+	</testcase>
+	<testcase name="terrain_field_tests" classname="terrain_field_tests" time="2.33657" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>ALL PASS
+</system-out>
+	</testcase>
+	<testcase name="terrain_mesher_tests" classname="terrain_mesher_tests" time="4.17225" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>  nested L0/1 (voxel 2/4 m): nested 28/31 cols, step 0.5432 | uniform 28/31 cols, step 0.5432
+  nested L1/2 (voxel 4/8 m): nested 31/31 cols, step 1.8299 | uniform 31/31 cols, step 1.8299
+  nested L2/3 (voxel 8/16 m): nested 31/31 cols, step 2.9544 | uniform 31/31 cols, step 2.9544
+  nested L3/4 (voxel 16/32 m): nested 31/31 cols, step 5.2852 | uniform 31/31 cols, step 5.2852
+  nested L4/5 (voxel 32/64 m): nested 31/31 cols, step 4.6643 | uniform 31/31 cols, step 4.6643
+  nested vs uniform: worst mismatch ratio 1.0000 (level 0)
+  seam -x L0/1 (voxel 2/4 m): 26/31 rows gapped, worst run 1.750 m (0.88 fine voxels)
+  seam -x L1/2 (voxel 4/8 m): 31/31 rows gapped, worst run 4.000 m (1.00 fine voxels)
+  seam -x L2/3 (voxel 8/16 m): 31/31 rows gapped, worst run 7.000 m (0.88 fine voxels)
+  seam -x L3/4 (voxel 16/32 m): 31/31 rows gapped, worst run 14.000 m (0.88 fine voxels)
+  seam -x: worst uncovered run 1.00 fine voxels (level 1) -- open by construction until the welder runs
+  seam -z L0/1: 27/31 rows gapped, wor...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="seam_weld_tests" classname="seam_weld_tests" time="0.455166" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>=== seam welder (M0-WP3) ===
+[1] equal rung (21 + 21 record verts) -&gt; 0 tris, crossings 0
+[2] rung gap 2 rejected: "seam_weld: rung difference exceeds one level (restrict_levels guarantees +/-1 across faces; the fan implements exactly one)"
+[3] flat 2:1 (fine rung 2 / coarse rung 1): crossings 50 = quads 25 + tris 25, missing 0, 75 tris, 225 emitted verts all from the 60+36 record verts
+[4] winding sweep, 3 axes x 2 fine sides: 1080 tris, 1080 testable, 0 backwards, worst cos = 0.9135
+[5] collapse parity: crossings 120 (oracle 120), tris 60 (oracle 60), quads 60 (oracle 60) -&gt; 50.0% collapsed to the 2:1 fan
+[6] residue: removed coarse cell (-1,7) -&gt; 2 caps + 1 coarse-pair drops (+0 fine); tris 180 -&gt; 177; quads 60 -&gt; 58, tris 60 -&gt; 61
+[6b] cap: anchor (-14,3), removed coarse cell (-8,1) -&gt; caps 1, missing 0, 2 -&gt; 1 tris, 3 corners all from records, winding 1/1 ok (worst cos 0.9991)
+[7] corner adjacency: 2x2 split at a=b=0 into 32/29/32/30 verts; 120 crossings, 4 straddling a tile border; output byte-identical...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="contour_seam_tests" classname="contour_seam_tests" time="1.01722" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>=== contour seam foundation (docs/contour-seam-design-2026-08-13.md) ===
+  [1] L1 (64 m) vs L0 (32 m): 20 shared vertices, BITWISE IDENTICAL
+  [1] L2 (128 m) vs L1 (64 m): 38 shared vertices, BITWISE IDENTICAL
+  [1] L3 (256 m) vs L2 (128 m): 76 shared vertices, BITWISE IDENTICAL
+  [2] negative control: tile-anchored lattice DISAGREES (as it must)
+  [3] L1 (64 m, own voxel 4 m): sampled 38, traced 38 -- IDENTICAL
+  [3] L2 (128 m, own voxel 8 m): sampled 76, traced 76 -- IDENTICAL
+  [3] L3 (256 m, own voxel 16 m): sampled 150, traced 150 -- IDENTICAL
+  [4] cost, one vertical face, this field:
+      level    tile m  contour v   interior c      ratio
+      0            32         20          256       0.08
+      1            64         38          256       0.15
+      2           128         76          256       0.30
+      3           256        150          256       0.59
+      4           512        301          256       1.18
+      5          1024        604          256       2.36
+  [5] tunnel fixture: canon...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="contour_mesh_tests" classname="contour_mesh_tests" time="0.624621" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>=== contour mesh: constrained borders (docs/contour-seam-design-2026-08-13.md) ===
+  equal level  (L1 | L1): 780 + 766 tris, 878 merged verts
+      non-manifold edges on the seam 4 (4 of them on a tile EDGE line), coplanar overlaps 0
+  cross level  (L1 | L0): 780 + 1402 tris, 1178 merged verts
+      non-manifold edges on the seam 4 (4 of them on a tile EDGE line), coplanar overlaps 0
+  grazing dome (L1 | L0): 764 + 396 tris, 653 merged verts
+      non-manifold edges on the seam 0 (0 of them on a tile EDGE line), coplanar overlaps 0
+=== contour mesh ALL PASS
+</system-out>
+	</testcase>
+	<testcase name="contour_engine_tests" classname="contour_engine_tests" time="4.69049" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>=== contour mesher in the engine (docs/contour-seam-design-2026-08-13.md) ===
+  [1] equal level 2x2x2
+      contour 11168 tris / 6055 verts | welder 8962 tris / 4674 verts  (+24.6%)
+      interior non-manifold: contour 2, welder 2 (surface nets pinches, not the seam)
+      SEAM non-manifold:     contour 6 (0 holes, 6 folds), welder 2
+      SHARED-VERTEX NORMAL SPLIT: contour 187 verts, worst 0.0 deg, mean 0.0 | welder 84 verts, worst 0.0, mean 0.0
+          contour at (66.156, -23.357, 66.019)  4 incident tris
+          contour at (85.230, -3.079, 72.555)  4 incident tris
+          contour at (73.272, -1.927, 80.170)  4 incident tris
+          contour at (84.745, 0.054, 75.471)  4 incident tris
+          contour at (73.919, 0.046, 80.823)  4 incident tris
+          contour at (77.936, 3.163, 90.151)  4 incident tris
+          welder  at (66.156, -23.357, 66.019)  4 incident tris
+          welder  at (77.936, 3.163, 90.151)  4 incident tris
+  [2] cross level 2:1 split
+      contour 12932 tris / 6941 verts | we...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="viewer_logic_tests" classname="viewer_logic_tests" time="204.34" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>[local_provider] LocalProvider: flatten failed for d6b57ad4f82b10bd: flatten: merged mesh is empty
+[local_provider] LocalProvider: flatten failed for d79143d195e7efd5: flatten: merged mesh is empty
+[local_provider] LocalProvider: flatten failed for d6b57ad4f82b10bd: flatten: merged mesh is empty
+[local_provider] LocalProvider: flatten failed for d79143d195e7efd5: flatten: merged mesh is empty
+  test_forward_moves_along_camera_forward OK
+  test_yaw_turns_camera_analytically OK
+  test_huge_pitch_delta_stops_before_crossing_pole OK
+  test_combined_camera_movement_has_axial_speed OK
+  test_world_state_version OK
+  test_resolver_binning_cache OK
+=== test_resolver_cutover_expansion ===
+  test_resolver_cutover_expansion OK
+  baked_count=0 (0 = warm/cached, &gt;0 = cold bake)
+  BFS queue init: 11 unique hashes from 11 manifest instances
+[part-store] v3 flat artifact unusable for 8e2524541ff54410 (C:\Users\webde\AppData\Local\Temp\me3_viewer_cache_test/parts/8e2524541ff54410.bundle), falling back
+[part-store] part 8e2524...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="props_tests" classname="props_tests" time="1.16657" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>[props] test.tunables.density is not finite - not persisting it
+[props] test.tunables.serial: expected uint64, got number — skipped
+[props] test.tunables.serial: expected uint64, got number — skipped
+[props] test.tunables.budget: expected uint, got string — skipped
+[props] test.tunables.enabled: expected bool, got number — skipped
+[props] DynamicGroup 'world.props' destroyed while still bound (binding 1) — unbind_from() before releasing it
+ALL PASS
+</system-out>
+	</testcase>
+	<testcase name="physics_tests" classname="physics_tests" time="13.9964" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>ALL PASS
+</system-out>
+	</testcase>
+	<testcase name="ecs_tests" classname="ecs_tests" time="12.4465" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>ALL PASS
+</system-out>
+	</testcase>
+	<testcase name="character_controller_tests" classname="character_controller_tests" time="13.9863" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>numeric boundary: integration
+numeric boundary: gravity-product
+numeric boundary: displacement
+numeric boundary: query-norm
+numeric boundary: position
+numeric boundary: query-bounds
+numeric boundary: integration
+numeric boundary: gravity-product
+numeric boundary: displacement
+numeric boundary: query-norm
+numeric boundary: position
+numeric boundary: query-bounds
+numeric boundary: integration
+numeric boundary: gravity-product
+numeric boundary: displacement
+numeric boundary: query-norm
+numeric boundary: position
+numeric boundary: query-bounds
+numeric boundary: integration
+numeric boundary: gravity-product
+numeric boundary: displacement
+numeric boundary: query-norm
+numeric boundary: position
+numeric boundary: query-bounds
+numeric boundary: integration
+numeric boundary: gravity-product
+numeric boundary: displacement
+numeric boundary: query-norm
+numeric boundary: position
+numeric boundary: query-bounds
+numeric boundary: integration
+numeric boundary: gravity-product
+numeric boundary: displacement
+numeric boundary: q...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="character_walk_controller_tests" classname="character_walk_controller_tests" time="12.1431" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>ALL PASS
+</system-out>
+	</testcase>
+	<testcase name="terrain_collision_physics_tests" classname="terrain_collision_physics_tests" time="13.4788" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>== terrain_collision_physics_tests ==
+TERRAIN_SEAM axis=X slope=0.00 crossing=(0.126,0.279,0.000) clearance=0.279 after=(3.196,0.254,0.000) clearance=0.254 free_y=(-1.145,-4.615) speed=(6.940,6.379)
+TERRAIN_SEAM axis=Z slope=0.00 crossing=(-0.000,0.279,0.126) clearance=0.279 after=(-0.000,0.254,3.196) clearance=0.254 free_y=(-1.145,-4.615) speed=(6.940,6.379)
+TERRAIN_SEAM axis=Y slope=0.50 crossing=(1.582,1.176,-0.000) clearance=0.385 after=(3.925,2.247,-0.000) clearance=0.284 free_y=(0.064,-0.748) speed=(8.005,5.789)
+TERRAIN_RETAINED_BYTES shapes=2 bytes=416
+TERRAIN_NOOP_ALLOC cpp=0 box=0 replacements=1
+TERRAIN_SANITY_PREFLIGHT side=positive allocations=0 frees=0 retained_delta=0
+TERRAIN_SANITY_PREFLIGHT side=negative allocations=0 frees=0 retained_delta=0
+TERRAIN_STEADY_TICK_ALLOC ticks=240 cpp_control=1680 cpp_terrain=1680 box_control=0 box_terrain=0
+TERRAIN_DESTRUCTION_ALLOC allocations=103 frees=103 bytes_before=0 bytes_after=0
+TERRAIN_SUITE_ALLOC allocations=1818 frees=1818 retained_bytes=0
+ALL PASS
+</system-out>
+	</testcase>
+	<testcase name="terrain_collision_session_tests" classname="terrain_collision_session_tests" time="27.4622" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>[stream] WorldSector requires 0 child variants
+[stream] asset install complete: 0 child hashes, field_hash=d7febe0fcc5bc6c8, sector_size=16.0, sea_level=-8.00
+[stream] tiling: COLUMN (DEPRECATED -- this world declares no nestedSectors, so there is no level ladder for an octree to descend). Cube tiles are the direction; see terrain_mesher.h. MATTER_VOLUMETRIC_SECTORS=1 forces the octree.
+[stream] resolver activation radius: 640 m (outermost terrain band)
+[terrain-collision] installed generation=137a4fa681b9521c geometry=51b28130050700e2 cell=0.500 rung=2 regions=1 sectors=2 nonempty=2 empty=0 triangles=4 vertices=8 artifact=384 box3d=416 build=1.25ms cache=0.00ms validation=0.25ms install=823.90ms
+[gpu-job] bake.terrain-collision took 836.8 ms
+[stream] pre-warmed 0/0 child variants
+[resolve]   resolve census: 1 parts baked, 0 cache hits, version digest 144cdeb99c68f1a7
+[refine] controller built: 0 tiles
+[bake-timing] install=2519ms world=189ms publish=950ms total=3787ms (world-kind: ROOTS ONLY — the sector f...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="river_float_system_tests" classname="river_float_system_tests" time="9.66187" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>[river-float] disabled scene_entity=101 after 8 invalid ticks
+[river-float] disabled scene_entity=549 after 8 invalid ticks
+RIVER_FLOAT_PHASE_TRACE Reconcile&gt;RiverFloatForces&gt;Push&gt;Physics&gt;Pull
+RIVER_FLOAT_REPLAY sample=10055899834916655463 force=13196851216949461115 transform=13997781128351431705
+RIVER_FLOAT_WHOLE_TICK_ALLOC cpp=86012 box=992 flecs=0
+RIVER_FLOAT_PHASE_ALLOC cpp=0 box=0 flecs=0
+ALL PASS
+</system-out>
+	</testcase>
+	<testcase name="scene_registry_tests" classname="scene_registry_tests" time="12.1911" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>ALL PASS
+</system-out>
+	</testcase>
+	<testcase name="simulation_control_tests" classname="simulation_control_tests" time="6.95045" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>ALL PASS
+</system-out>
+	</testcase>
+	<testcase name="scene_tracker_tests" classname="scene_tracker_tests" time="13.7149" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>[test_create_upsert]
+[test_delete_cascade_removed]
+[test_reparent_upsert]
+[test_rename_upsert]
+[test_component_edit_upsert]
+[test_sequence_discipline]
+[test_snapshot_recovery_invariant]
+[test_direct_edit_caught]
+[test_runtime_id_namespace]
+scene_tracker_tests: ALL PASS
+</system-out>
+	</testcase>
+	<testcase name="entity_recipe_tests" classname="entity_recipe_tests" time="8.20608" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>ALL PASS
+</system-out>
+	</testcase>
+	<testcase name="dynamic_instance_slots_tests" classname="dynamic_instance_slots_tests" time="0.829317" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>ALL PASS
+</system-out>
+	</testcase>
+	<testcase name="dynamic_scene_bridge_tests" classname="dynamic_scene_bridge_tests" time="11.9458" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>ALL PASS
+</system-out>
+	</testcase>
+	<testcase name="animation_rigid_bridge_tests" classname="animation_rigid_bridge_tests" time="3.41936" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>ALL PASS
+</system-out>
+	</testcase>
+	<testcase name="gpu_visual_mesher_cpu_tests" classname="gpu_visual_mesher_cpu_tests" time="0.598408" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>ALL PASS
+</system-out>
+	</testcase>
+	<testcase name="water_mesh_animation_capture_tests" classname="water_mesh_animation_capture_tests" time="0.721778" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>ALL PASS
+</system-out>
+	</testcase>
+	<testcase name="water_mesh_animation_tests" classname="water_mesh_animation_tests" time="1.28346" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>ALL PASS
+</system-out>
+	</testcase>
+	<testcase name="water_mesh_animation_artifact_tests" classname="water_mesh_animation_artifact_tests" time="0.628035" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>ALL PASS
+</system-out>
+	</testcase>
+	<testcase name="water_boundary_animation_source_tests" classname="water_boundary_animation_source_tests" time="1.11205" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>ALL PASS
+</system-out>
+	</testcase>
+	<testcase name="water_mesh_animation_playback_tests" classname="water_mesh_animation_playback_tests" time="1.20977" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>ALL PASS
+</system-out>
+	</testcase>
+	<testcase name="river_presentation_field_tests" classname="river_presentation_field_tests" time="1.39023" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>ALL PASS
+</system-out>
+	</testcase>
+	<testcase name="river_runtime_tests" classname="river_runtime_tests" time="1.53121" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>ALL PASS
+</system-out>
+	</testcase>
+	<testcase name="hydrology_artifact_tests" classname="hydrology_artifact_tests" time="1.73506" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>ALL PASS
+</system-out>
+	</testcase>
+	<testcase name="hydrology_network_artifact_tests" classname="hydrology_network_artifact_tests" time="4.79097" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>ALL PASS
+</system-out>
+	</testcase>
+	<testcase name="river_section_coordinator_tests" classname="river_section_coordinator_tests" time="0.925486" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>ALL PASS
+</system-out>
+	</testcase>
+	<testcase name="hydrology_handoff_products_tests" classname="hydrology_handoff_products_tests" time="4.7954" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>ALL PASS
+</system-out>
+	</testcase>
+	<testcase name="physx_adapter_contract_tests" classname="physx_adapter_contract_tests" time="43.5402" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>[gpu-job] hydrology_particle_visual took 58.4 ms
+[hydrology] accepted cache_hit=false steps=5 active=3 peak=3 escaped=0 emitted=3 budget=32 wall_seconds=0.010000 sensor_max=0.800000 sensor_final=0.750000 sensor_stable=0.750000 visual_vertices=4 visual_triangles=2 coarse_vertices=60 coarse_triangles=108 gameplay_cells=128 payload=95492b0b04f7d3d2
+[resolve] resolve cache: saved key 3906eb3f2cfa8186
+[gpu-job] bake.reset took 419.8 ms
+[local_provider] LocalProvider: flattened 41018cea40a9cf12 (1 clusters, 1 levels, 1 -&gt; 1 tris, 0 instance_refs)
+[part-store] loaded v3 FLAT part 41018cea40a9cf12 (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[gpu-job] bake.publish took 885.4 ms
+[resolve]   resolve census: 1 parts baked, 1 cache hits, version digest 144cdeb99c68f1a7
+[refine] controller built: 0 tiles
+[bake-timing] install=3283ms compose=0ms publish=3116ms total=9042ms
+[hydrology] fluid bake rejected: Vulkan particle-water visual meshing failed
+[resolve] resolve cache: saved key 3906eb3f2cfa8186
+[local_provider] Loc...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="async_bake_tests" classname="async_bake_tests" time="38.5244" status="fail">
+		<failure message="Failed"/>
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>[resolve] resolve cache: saved key cf597d162c30e474
+[local_provider] LocalProvider: flattened d272a566a487b63a (1 clusters, 1 levels, 2 -&gt; 2 tris, 0 instance_refs)
+[part-store] loaded v3 FLAT part d272a566a487b63a (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[gpu-job] bake.publish took 85.2 ms
+[resolve]   resolve census: 1 parts baked, 1 cache hits, version digest 144cdeb99c68f1a7
+[bake-timing] install=1336ms compose=14ms publish=420ms total=1810ms
+[resolve] resolve cache: saved key cf597d162c30e474
+[local_provider] LocalProvider: flattened d272a566a487b63a (1 clusters, 1 levels, 2 -&gt; 2 tris, 0 instance_refs)
+[part-store] loaded v3 FLAT part d272a566a487b63a (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[resolve]   resolve census: 1 parts baked, 1 cache hits, version digest 144cdeb99c68f1a7
+[refine] controller built: 0 tiles
+[bake-timing] install=30ms compose=0ms publish=67ms total=104ms
+[resolve] resolve cache: saved key cf597d162c30e474
+[local_provider] LocalProvider: flattened d272a566a487b63a (1 clusters, 1 levels, 2 -&gt; 2 tris, 0 instance_refs)
+[part-store] loaded v3 FLAT part d272a566a487b63a (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[resolve]   resolve census: 1 parts baked, 1 cache hits, version digest 144cdeb99c68f1a7
+[refine] controller built: 0 tiles
+[bake-timing] install=45ms compose=0ms publish=43ms total=96ms
+[resolve] resolve cache: saved key cf597d162c30e474
+[local_provider] LocalProvider: flattened d272a566a487b63a (1 clusters, 1 levels, 2 -&gt; 2 tris, 0 instance_refs)
+[part-store] loaded v3 FLAT part d272a566a487b63a (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[resolve]   resolve census: 1 parts baked, 1 cache hits, version digest 144cdeb99c68f1a7
+[refine] controller built: 0 tiles
+[bake-timing] install=23ms compose=0ms publish=36ms total=63ms
+[resolve] resolve cache: hit cf597d162c30e474
+[bake-timing] install=0ms compose=0ms (resolve-cache-hit) publish=...ms total(pre-publish)=5ms
+[part-store] loaded v3 FLAT part d272a566a487b63a (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[resolve]   resolve census: 0 parts baked, 1 cache hits, version digest 144cdeb99c68f1a7
+[refine] controller built: 0 tiles
+[bake-timing] install=0ms compose=0ms publish=22ms total=27ms (resolve-cache-hit)
+[resolve] resolve cache: hit cf597d162c30e474
+[bake-timing] install=0ms compose=0ms (resolve-cache-hit) publish=...ms total(pre-publish)=6ms
+[part-store] loaded v3 FLAT part d272a566a487b63a (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[resolve]   resolve census: 0 parts baked, 1 cache hits, version digest 144cdeb99c68f1a7
+[refine] controller built: 0 tiles
+[bake-timing] install=0ms compose=0ms publish=21ms total=26ms (resolve-cache-hit)
+[resolve] resolve cache: saved key cf597d162c30e474
+[local_provider] LocalProvider: flattened d272a566a487b63a (1 clusters, 1 levels, 2 -&gt; 2 tris, 0 instance_refs)
+[part-store] loaded v3 FLAT part d272a566a487b63a (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[resolve]   resolve census: 1 parts baked, 1 cache hits, version digest 144cdeb99c68f1a7
+[refine] controller built: 0 tiles
+[bake-timing] install=26ms compose=0ms publish=38ms total=69ms
+[resolve] resolve cache: hit cf597d162c30e474
+[bake-timing] install=0ms compose=0ms (resolve-cache-hit) publish=...ms total(pre-publish)=4ms
+[part-store] loaded v3 FLAT part d272a566a487b63a (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[resolve]   resolve census: 0 parts baked, 1 cache hits, version digest 144cdeb99c68f1a7
+[refine] controller built: 0 tiles
+[bake-timing] install=0ms compose=0ms publish=17ms total=21ms (resolve-cache-hit)
+[resolve] resolve cache: saved key 1bcd09690500d660
+[local_provider] LocalProvider: flattened 013421d9e26c3d61 (1 clusters, 1 levels, 2 -&gt; 2 tris, 0 instance_refs)
+[part-store] loaded v3 FLAT part 013421d9e26c3d61 (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[local_provider] LocalProvider: flattened 4d7024864c232d79 (1 clusters, 1 levels, 2 -&gt; 2 tris, 0 instance_refs)
+[part-store] loaded v3 FLAT part 4d7024864c232d79 (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[local_provider] LocalProvider: flattened 644f8f7a977bd062 (1 clusters, 1 levels, 2 -&gt; 2 tris, 0 instance_refs)
+[part-store] loaded v3 FLAT part 644f8f7a977bd062 (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[local_provider] LocalProvider: flattened 7e9e54bb270fa0f8 (1 clusters, 1 levels, 2 -&gt; 2 tris, 0 instance_refs)
+[part-store] loaded v3 FLAT part 7e9e54bb270fa0f8 (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[local_provider] LocalProvider: flattened ab8bb6987ff4725b (1 clusters, 1 levels, 2 -&gt; 2 tris, 0 instance_refs)
+[part-store] loaded v3 FLAT part ab8bb6987ff4725b (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[local_provider] LocalProvider: flattened b581dabbc6ab98eb (1 clusters, 1 levels, 2 -&gt; 2 tris, 0 instance_refs)
+[part-store] loaded v3 FLAT part b581dabbc6ab98eb (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[resolve]   resolve census: 0 parts baked, 12 cache hits, version digest 144cdeb99c68f1a7
+[refine] controller built: 0 tiles
+[bake-timing] install=47ms compose=0ms publish=177ms total=244ms
+[resolve] resolve cache: saved key af03c3b84b43fbe9
+[local_provider] LocalProvider: flattened 013421d9e26c3d61 (1 clusters, 1 levels, 2 -&gt; 2 tris, 0 instance_refs)
+[part-store] loaded v3 FLAT part 013421d9e26c3d61 (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[resolve]   resolve census: 1 parts baked, 1 cache hits, version digest 144cdeb99c68f1a7
+[refine] controller built: 0 tiles
+[bake-timing] install=844ms compose=0ms publish=34ms total=883ms
+[resolve] resolve cache: saved key 98e3234427c9e8b8
+[local_provider] LocalProvider: flattened 27b954286a4c8a23 (1 clusters, 1 levels, 2 -&gt; 2 tris, 0 instance_refs)
+[part-store] loaded v3 FLAT part 27b954286a4c8a23 (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[resolve]   resolve census: 1 parts baked, 1 cache hits, version digest 144cdeb99c68f1a7
+[refine] controller built: 0 tiles
+[bake-timing] install=26ms compose=0ms publish=42ms total=77ms
+[resolve] resolve cache: saved key af03c3b84b43fbe9
+[local_provider] LocalProvider: flattened 013421d9e26c3d61 (1 clusters, 1 levels, 2 -&gt; 2 tris, 0 instance_refs)
+[part-store] loaded v3 FLAT part 013421d9e26c3d61 (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[local_provider] LocalProvider: flattened 4d7024864c232d79 (1 clusters, 1 levels, 2 -&gt; 2 tris, 0 instance_refs)
+[resolve]   resolve census: 2 parts baked, 2 cache hits, version digest 144cdeb99c68f1a7
+[refine] controller built: 0 tiles
+[bake-timing] install=40ms compose=0ms publish=88ms total=134ms
+[resolve] resolve cache: saved key 68fae204abb2e5fa
+[local_provider] LocalProvider: flattened 2ee7158cd9084e32 (1 clusters, 1 levels, 2 -&gt; 2 tris, 0 instance_refs)
+[part-store] loaded v3 FLAT part 2ee7158cd9084e32 (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[local_provider] LocalProvider: flattened 374e3d4139f5e860 (1 clusters, 1 levels, 2 -&gt; 2 tris, 0 instance_refs)
+[part-store] loaded v3 FLAT part 374e3d4139f5e860 (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[local_provider] LocalProvider: flattened e6afaf8776611617 (1 clusters, 1 levels, 2 -&gt; 2 tris, 0 instance_refs)
+[part-store] loaded v3 FLAT part e6afaf8776611617 (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[resolve]   resolve census: 4 parts baked, 0 cache hits, version digest 144cdeb99c68f1a7
+[refine] controller built: 0 tiles
+[bake-timing] install=68ms compose=23ms publish=121ms total=217ms
+[resolve] resolve cache: hit 68fae204abb2e5fa
+[bake-timing] install=0ms compose=0ms (resolve-cache-hit) publish=...ms total(pre-publish)=5ms
+[part-store] loaded v3 FLAT part e6afaf8776611617 (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 374e3d4139f5e860 (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 2ee7158cd9084e32 (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[resolve]   resolve census: 0 parts baked, 3 cache hits, version digest 144cdeb99c68f1a7
+[refine] controller built: 0 tiles
+[bake-timing] install=0ms compose=0ms publish=36ms total=41ms (resolve-cache-hit)
+[resolve] resolve cache: hit 68fae204abb2e5fa
+[bake-timing] install=0ms compose=0ms (resolve-cache-hit) publish=...ms total(pre-publish)=5ms
+[part-store] loaded v3 FLAT part 2ee7158cd9084e32 (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 374e3d4139f5e860 (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part e6afaf8776611617 (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[resolve]   resolve census: 0 parts baked, 3 cache hits, version digest 144cdeb99c68f1a7
+[refine] controller built: 0 tiles
+[bake-timing] install=0ms compose=0ms publish=38ms total=43ms (resolve-cache-hit)
+[resolve] resolve cache: saved key b2e579183b96a95b
+[local_provider] LocalProvider: flattened 76462bc4c1e2f939 (1 clusters, 1 levels, 2 -&gt; 2 tris, 0 instance_refs)
+[part-store] loaded v3 FLAT part 76462bc4c1e2f939 (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[resolve]   resolve census: 1 parts baked, 1 cache hits, version digest 144cdeb99c68f1a7
+[refine] controller built: 0 tiles
+[bake-timing] install=43ms compose=0ms publish=64ms total=114ms
+[resolve] resolve cache: saved key 7d7c56a20071ff16
+[local_provider] LocalProvider: flattened 19107282148117fb (1 clusters, 1 levels, 2 -&gt; 2 tris, 0 instance_refs)
+[part-store] loaded v3 FLAT part 19107282148117fb (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[resolve]   resolve census: 1 parts baked, 1 cache hits, version digest 144cdeb99c68f1a7
+[refine] controller built: 0 tiles
+[bake-timing] install=42ms compose=0ms publish=37ms total=88ms
+[resolve] resolve cache: hit 7d7c56a20071ff16
+[bake-timing] install=0ms compose=0ms (resolve-cache-hit) publish=...ms total(pre-publish)=5ms
+[part-store] loaded v3 FLAT part 19107282148117fb (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[resolve]   resolve census: 0 parts baked, 1 cache hits, version digest 144cdeb99c68f1a7
+[refine] controller built: 0 tiles
+[bake-timing] install=0ms compose=0ms publish=20ms total=25ms (resolve-cache-hit)
+[lod] HostBaker: lodBudgets on a part with children is unsupported; skipping
+[resolve] resolve cache: saved key 3fc6da7e1c0f22fd
+[local_provider] LocalProvider: flattened e0cb9085530e3c7d (1 clusters, 1 levels, 12 -&gt; 12 tris, 0 instance_refs)
+[part-store] loaded v3 FLAT part e0cb9085530e3c7d (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[lod] HostBaker: lodBudgets on a part with children is unsupported; skipping
+[gpu-job] bake.publish took 192.8 ms
+[resolve]   resolve census: 2 parts baked, 3 cache hits, version digest 144cdeb99c68f1a7
+[refine] controller built: 0 tiles
+[bake-timing] install=2715ms compose=0ms publish=371ms total=3114ms
+[resolve] resolve cache: hit 3fc6da7e1c0f22fd
+[bake-timing] install=0ms compose=0ms (resolve-cache-hit) publish=...ms total(pre-publish)=6ms
+[part-store] loaded v3 FLAT part e0cb9085530e3c7d (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[lod] HostBaker: lodBudgets on a part with children is unsupported; skipping
+[gpu-job] bake.publish took 165.9 ms
+[resolve]   resolve census: 0 parts baked, 3 cache hits, version digest 144cdeb99c68f1a7
+[refine] controller built: 0 tiles
+[bake-timing] install=0ms compose=0ms publish=329ms total=335ms (resolve-cache-hit)
+[lod] HostBaker: lodBudgets on a part with children is unsupported; skipping
+[resolve] resolve cache: saved key 4030c3beb9c41160
+[part-store] loaded v3 FLAT part e0cb9085530e3c7d (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[lod] HostBaker: lodBudgets on a part with children is unsupported; skipping
+[gpu-job] bake.publish took 187.4 ms
+[resolve]   resolve census: 0 parts baked, 5 cache hits, version digest 144cdeb99c68f1a7
+[refine] controller built: 0 tiles
+[bake-timing] install=135ms compose=0ms publish=379ms total=537ms
+[resolve] resolve cache: saved key bdd16d494e603559
+[part-store] loaded v3 FLAT part e0cb9085530e3c7d (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[resolve]   resolve census: 0 parts baked, 2 cache hits, version digest 144cdeb99c68f1a7
+[refine] controller built: 0 tiles
+[bake-timing] install=9ms compose=0ms publish=17ms total=40ms
+[lod] HostBaker: lodBudgets on a part with children is unsupported; skipping
+[resolve] resolve cache: saved key 5337e33e5e0c7dc2
+[part-store] loaded v3 FLAT part e0cb9085530e3c7d (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[lod] HostBaker: lodBudgets on a part with children is unsupported; skipping
+[gpu-job] bake.publish took 172.3 ms
+[resolve]   resolve census: 1 parts baked, 4 cache hits, version digest 144cdeb99c68f1a7
+[refine] controller built: 0 tiles
+[bake-timing] install=478ms compose=0ms publish=328ms total=832ms
+[lod] HostBaker: lodBudgets on a part with children is unsupported; skipping
+[resolve] resolve cache: saved key 7e3dc4b817a09971
+[part-store] loaded v3 FLAT part e0cb9085530e3c7d (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[lod] HostBaker: lodBudgets on a part with children is unsupported; skipping
+[gpu-job] bake.publish took 143.5 ms
+[resolve]   resolve census: 0 parts baked, 5 cache hits, version digest 144cdeb99c68f1a7
+[refine] controller built: 0 tiles
+[bake-timing] install=113ms compose=0ms publish=285ms total=402ms
+[lod] HostBaker: lodBudgets on a part with children is unsupported; skipping
+[resolve] resolve cache: saved key 5337e33e5e0c7dc2
+[part-store] loaded v3 FLAT part e0cb9085530e3c7d (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[lod] HostBaker: lodBudgets on a part with children is unsupported; skipping
+[gpu-job] bake.publish took 147.3 ms
+[resolve]   resolve census: 0 parts baked, 5 cache hits, version digest 144cdeb99c68f1a7
+[refine] controller built: 0 tiles
+[bake-timing] install=112ms compose=0ms publish=281ms total=398ms
+[hydrology] accepted cache_hit=false steps=5 active=3 peak=3 escaped=0 emitted=3 budget=32 wall_seconds=0.010000 sensor_max=0.800000 sensor_final=0.750000 sensor_stable=0.750000 visual_vertices=3 visual_triangles=1 coarse_vertices=60 coarse_triangles=108 gameplay_cells=128 payload=c4064f8bc36d9d65
+[resolve] resolve cache: saved key efe9e8d5cc46d22e
+[local_provider] LocalProvider: flattened 5bfbc8306e6b1145 (1 clusters, 1 levels, 1 -&gt; 1 tris, 0 instance_refs)
+[part-store] loaded v3 FLAT part 5bfbc8306e6b1145 (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[resolve]   resolve census: 1 parts baked, 1 cache hits, version digest 144cdeb99c68f1a7
+[refine] controller built: 0 tiles
+[bake-timing] install=626ms compose=0ms publish=35ms total=2022ms
+[hydrology] accepted cache_hit=false steps=5 active=3 peak=3 escaped=0 emitted=3 budget=32 wall_seconds=0.010000 sensor_max=0.800000 sensor_final=0.750000 sensor_stable=0.750000 visual_vertices=3 visual_triangles=1 coarse_vertices=60 coarse_triangles=108 gameplay_cells=128 payload=c4064f8bc36d9d65
+[bake-timing] install=24ms compose=0ms publish=0ms total=103ms
+[hydrology] accepted cache_hit=true steps=5 active=3 peak=3 escaped=0 emitted=3 budget=32 sensor_max=0.800000 sensor_final=0.750000 sensor_stable=0.750000 visual_vertices=3 visual_triangles=1 gameplay_cells=128 payload=c4064f8bc36d9d65
+[resolve] resolve cache: saved key d22e35623798eca3
+[local_provider] LocalProvider: flattened 5bfbc8306e6b1145 (1 clusters, 1 levels, 1 -&gt; 1 tris, 0 instance_refs)
+[part-store] loaded v3 FLAT part 5bfbc8306e6b1145 (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[resolve]   resolve census: 0 parts baked, 2 cache hits, version digest 144cdeb99c68f1a7
+[refine] controller built: 0 tiles
+[bake-timing] install=9ms compose=0ms publish=37ms total=83ms
+[hydrology] accepted cache_hit=true steps=5 active=3 peak=3 escaped=0 emitted=3 budget=32 sensor_max=0.800000 sensor_final=0.750000 sensor_stable=0.750000 visual_vertices=3 visual_triangles=1 gameplay_cells=128 payload=c4064f8bc36d9d65
+[bake-timing] install=12ms compose=0ms publish=0ms total=64ms
+[hydrology] accepted cache_hit=true steps=5 active=3 peak=3 escaped=0 emitted=3 budget=32 sensor_max=0.800000 sensor_final=0.750000 sensor_stable=0.750000 visual_vertices=3 visual_triangles=1 gameplay_cells=128 payload=c4064f8bc36d9d65
+[resolve] resolve cache: saved key 4497093a3a12a098
+[part-store] loaded v3 FLAT part 5bfbc8306e6b1145 (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[resolve]   resolve census: 0 parts baked, 2 cache hits, version digest 144cdeb99c68f1a7
+[refine] controller built: 0 tiles
+[bake-timing] install=12ms compose=0ms publish=19ms total=227ms
+[hydrology] fluid bake rejected: injected replacement visual failure
+[resolve] resolve cache: saved key 10347c6e4a58dc95
+[part-store] loaded v3 FLAT part 5bfbc8306e6b1145 (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[resolve]   resolve census: 0 parts baked, 2 cache hits, version digest 144cdeb99c68f1a7
+[refine] controller built: 0 tiles
+[bake-timing] install=13ms compose=0ms publish=22ms total=63ms
+[resolve] resolve cache: saved key cf597d162c30e474
+[local_provider] LocalProvider: flattened d272a566a487b63a (1 clusters, 1 levels, 2 -&gt; 2 tris, 0 instance_refs)
+[part-store] loaded v3 FLAT part d272a566a487b63a (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[resolve]   resolve census: 1 parts baked, 1 cache hits, version digest 144cdeb99c68f1a7
+[refine] controller built: 0 tiles
+[bake-timing] install=27ms compose=0ms publish=40ms total=72ms
+[install] install: load world definition C:\Users\webde\AppData\Local\Temp\me3_asyncbake_813128176609700_abort\worlds\AbortWorld.js: SyntaxError: invalid property name
+    at C:\Users\webde\AppData\Local\Temp\me3_asyncbake_813128176609700_abort\worlds\AbortWorld.js:4:20
+ [source]
+-- (a) request_bake_returns_immediately
+  request_bake elapsed: 406.92 ms
+FAIL: request_bake returns &lt; 50 ms
+  events before pump: 0 (finished-seen=0)
+-- (b) bake_completes_with_finished
+  BakePartDone(phase=parts) count: 1
+  instance_count: 3
+  bake trace: 5 root children
+    span resolve-cache.key: 0.1..3.0 ms
+    span resolve-cache.load: 3.0..3.1 ms
+    span install: 3.1..33.0 ms
+    span compose: 33.0..33.0 ms
+    span publish: 37.2..104.0 ms
+-- (c) determinism
+  run A: 4 events, run B: 4 events
+-- (d) reload_reenters
+-- warm_session_publishes_graph
+-- (e) supersede_cancels_inflight
+  ev: BakeStarted code=0 phase= module= gen=1
+  ev: BakePartDone code=0 phase=install module=Part0 gen=1
+  issued second request_bake() after 1 BakePartDone
+  ev: BakePartDone code=0 phase=install module=Part1 gen=1
+  ev: BakePartDone code=0 phase=install module=Part2 gen=1
+  ev: BakePartDone code=0 phase=install module=Part3 gen=1
+  ev: BakePartDone code=0 phase=install module=Part4 gen=1
+  ev: BakePartDone code=0 phase=install module=Part5 gen=1
+  ev: BakeError code=1 phase=install module= gen=1
+  saw Cancelled BakeError (supersede worked)
+  ev: BakeAborted code=1 phase=install module= gen=1
+  ev: BakeStarted code=0 phase= module= gen=2
+  saw second BakeStarted after Cancelled
+  ev: BakePartDone code=0 phase=parts module=Part0 gen=2
+  ev: BakePartDone code=0 phase=parts module=Part1 gen=2
+  ev: BakePartDone code=0 phase=parts module=Part4 gen=2
+  ev: BakePartDone code=0 phase=parts module=Part5 gen=2
+  ev: BakePartDone code=0 phase=parts module=Part2 gen=2
+  ev: BakePartDone code=0 phase=parts module=Part3 gen=2
+  ev: BakeFinished code=0 phase= module= gen=2
+  second_bake_issued=1 saw_cancelled=1 first_finished_before_supersede=0 overall_ok=1
+-- (f) destructor_mid_bake_joins
+  destructor elapsed: 0.03s
+-- (g) oom_injection_skips_part
+  BakeError: code=2 phase=install module=Part1 msg=out of memory (bad_alloc) baking part: Part1
+  OOM BakeError: module=Part1 phase=install
+  instance_count after OOM injection: 1
+-- (h) broken_script_skips_part
+  BakeError: code=3 phase=install module=BrokenPart msg=failed to resolve hash for part: BrokenPart
+  ScriptError BakeError: module=BrokenPart phase=install
+  instance_count after broken script: 1
+-- (i) load_failure_skips_part
+  BakeError: code=5 phase=parts module=Part1 msg=injected load failure for part 1
+  BakeError(parts): code=5 module=Part1 msg=injected load failure for part 1
+  instance_count after load failure: 1
+-- (k) focus_orders_publish
+Warning: No draw records to build TLAS from
+  [focus near C] order: BoxC BoxB BoxA
+  [focus near A] order: BoxA BoxB BoxC
+  [focus near C, repeat] order: BoxC BoxB BoxA
+-- (l) regenerate_seed_reroll
+  [seed=1 initial] parts_baked=1
+  [seed=2] parts_baked=1
+  [seed=2 repeat] parts_baked=0 cache_hits=1
+-- production AnimatedRigGallery runtime binding
+  cold skin: count=1 part_hash=d34b5ef90ab1a826 range_calls=4 range_part=d34b5ef90ab1a826 asset_identity=d34b5ef90ab1a826 (expected d34b5ef90ab1a826) source_vertex=1200 influence_vertex=0 vertex_count=4190 influence_count=4683 lods=3 tiled=1 first_index=3400 index_count=24492
+  warm skin: count=1 part_hash=d34b5ef90ab1a826 range_calls=4 range_part=d34b5ef90ab1a826 asset_identity=d34b5ef90ab1a826 (expected d34b5ef90ab1a826) source_vertex=5600 influence_vertex=0 vertex_count=4190 influence_count=4683 lods=3 tiled=1 first_index=7800 index_count=24492
+-- authored_fluid_uses_worker_and_gpu_job_seam
+-- cancelled_fluid_generation_publishes_neither_half
+  BakeError: code=1 phase=terrain-collision module= msg=cancelled
+  BakeError: code=1 phase=terrain-collision module= msg=cancelled
+  BakeError: code=4 phase=hydrology module= msg=injected replacement visual failure
+-- (n) bake_aborted_terminal_event
+  happy path: started gen=1 finished gen=1
+  fatal run: 3 events, 1 BakeError(s), aborted=1 finished=0
+  BakeAborted: gen=1 phase=install code=5 errors=1 msg=load world definition C:\Users\webde\AppData\Local\Temp\me3_asyncbake_813128176609700_abort\worlds\AbortWorld.js: SyntaxError: invalid property name
+    at C:\Users\w[install] install: load world definition C:\Users\webde\AppData\Local\Temp\me3_asyncbake_813128176609700_abort\worlds\AbortWorld.js: SyntaxError: invalid property name
+    at C:\Users\webde\AppData\Local\Temp\me3_asyncbake_813128176609700_abort\worlds\AbortWorld.js:4:20
+ [source]
+[resolve] resolve cache: saved key cf597d162c30e474
+[local_provider] LocalProvider: flattened d272a566a487b63a (1 clusters, 1 levels, 2 -&gt; 2 tris, 0 instance_refs)
+[part-store] loaded v3 FLAT part d272a566a487b63a (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[resolve]   resolve census: 1 parts baked, 1 cache hits, version digest 144cdeb99c68f1a7
+[refine] controller built: 0 tiles
+[bake-timing] install=67ms compose=0ms publish=47ms total=122ms
+ebde\AppData\Local\Temp\me3_asyncbake_813128176609700_abort\worlds\AbortWorld.js:4:20
+ [source]
+-- (m) e3_poll_event_typed_parity
+
+1 FAILURE(S)
+</system-out>
+	</testcase>
+	<testcase name="conifer_lod_provider_tests" classname="conifer_lod_provider_tests" time="6.08976" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>[shared-surface] mesh=8435bfdeace6e3ea source=12 surfaces=12 textures=0 shadow_cells=38402
+[shared-surface] mesh=19da618619e73ef1 source=36 surfaces=36 textures=0 shadow_cells=2988
+[shared-surface] mesh=2154432c28b9dc83 source=60 surfaces=60 textures=0 shadow_cells=42
+[shared-surface] assembly=8435bfdeace6e3ea prototypes=3 visited=3 radius=1.73205
+[local_provider] LocalProvider: flattened 19da618619e73ef1 (1 clusters, 3 levels, 36 -&gt; 12 tris, 0 instance_refs)
+[local_provider] LocalProvider: flattened 2154432c28b9dc83 (1 clusters, 1 levels, 60 -&gt; 0 tris, 0 instance_refs)
+[part-store] loaded v3 FLAT part 2154432c28b9dc83 (1 LOD levels, 1 clusters, 0 refs, 1 impostors)
+[shared-surface] mesh=8435bfdeace6e3ea source=12 surfaces=12 textures=0 shadow_cells=38402
+[shared-surface] mesh=19da618619e73ef1 source=36 surfaces=36 textures=0 shadow_cells=2988
+[shared-surface] mesh=2154432c28b9dc83 source=60 surfaces=60 textures=0 shadow_cells=42
+[shared-surface] assembly=8435bfdeace6e3ea prototypes=3 visited=3 radius=1.73205...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="gpu_water_render_tests" classname="gpu_water_render_tests" time="0.663936" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>ALL PASS
+</system-out>
+	</testcase>
+	<testcase name="gpu_water_animation_render_tests" classname="gpu_water_animation_render_tests" time="1.01214" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>ALL PASS
+</system-out>
+	</testcase>
+	<testcase name="water_field_vk_tests" classname="water_field_vk_tests" time="0.58115" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>ALL PASS
+</system-out>
+	</testcase>
+	<testcase name="water_surface_reference_tests" classname="water_surface_reference_tests" time="1.22678" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>ALL PASS
+</system-out>
+	</testcase>
+	<testcase name="water_forward_reference_tests" classname="water_forward_reference_tests" time="0.881201" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>ALL PASS
+</system-out>
+	</testcase>
+	<testcase name="shader_source_tests" classname="shader_source_tests" time="5.64941" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>shader_source_tests: all passed
+</system-out>
+	</testcase>
+	<testcase name="geometry_runtime_tests" classname="geometry_runtime_tests" time="0.260266" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu"/>
+		</properties>
+		<system-out>geometry_runtime_tests: ALL PASS
+</system-out>
+	</testcase>
+	<testcase name="geometry_runtime_gpu_tests" classname="geometry_runtime_gpu_tests" time="22.28" status="run">
+		<properties>
+			<property name="cmake_labels" value="vulkan"/>
+		</properties>
+		<system-out>[vk] Vulkan loader/general ERROR: loader_get_json: Failed to open JSON file D:\Epic Games\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win32.json
+[vk] Vulkan loader/general ERROR: loader_get_json: Failed to open JSON file D:\Epic Games\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win64.json
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_OBS_HOOK" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_RENDERDOC_Capture" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_VALVE_steam_overlay" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_VALVE_steam_fossilize" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_EOS_Overlay" forced disabled because ...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="vulkan_compat_tests" classname="vulkan_compat_tests" time="0.118095" status="run">
+		<properties>
+			<property name="cmake_labels" value="vulkan"/>
+		</properties>
+		<system-out>vulkan compat CPU cleanup: PASS
+</system-out>
+	</testcase>
+	<testcase name="vulkan_smoke_tests" classname="vulkan_smoke_tests" time="63.6356" status="run">
+		<properties>
+			<property name="cmake_labels" value="vulkan"/>
+		</properties>
+		<system-out>[vk] Vulkan loader/general ERROR: loader_get_json: Failed to open JSON file D:\Epic Games\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win32.json
+[vk] Vulkan loader/general ERROR: loader_get_json: Failed to open JSON file D:\Epic Games\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win64.json
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_OBS_HOOK" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_RENDERDOC_Capture" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_VALVE_steam_overlay" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_VALVE_steam_fossilize" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_EOS_Overlay" forced disabled because ...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="geometry_pages_gpu_tests" classname="geometry_pages_gpu_tests" time="16.6785" status="run">
+		<properties>
+			<property name="cmake_labels" value="vulkan"/>
+		</properties>
+		<system-out>[vk] Vulkan loader/general ERROR: loader_get_json: Failed to open JSON file D:\Epic Games\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win32.json
+[vk] Vulkan loader/general ERROR: loader_get_json: Failed to open JSON file D:\Epic Games\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win64.json
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_OBS_HOOK" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_RENDERDOC_Capture" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_VALVE_steam_overlay" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_VALVE_steam_fossilize" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_EOS_Overlay" forced disabled because ...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="vt_feedback_visibility_tests" classname="vt_feedback_visibility_tests" time="46.6041" status="run">
+		<properties>
+			<property name="cmake_labels" value="vulkan"/>
+		</properties>
+		<system-out>[vk] Vulkan loader/general ERROR: loader_get_json: Failed to open JSON file D:\Epic Games\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win32.json
+[vk] Vulkan loader/general ERROR: loader_get_json: Failed to open JSON file D:\Epic Games\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win64.json
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_OBS_HOOK" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_RENDERDOC_Capture" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_VALVE_steam_overlay" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_VALVE_steam_fossilize" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_EOS_Overlay" forced disabled because ...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="vt_input_snapshot_tests" classname="vt_input_snapshot_tests" time="23.431" status="run">
+		<properties>
+			<property name="cmake_labels" value="vulkan"/>
+		</properties>
+		<system-out>[vk] Vulkan loader/general ERROR: loader_get_json: Failed to open JSON file D:\Epic Games\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win32.json
+[vk] Vulkan loader/general ERROR: loader_get_json: Failed to open JSON file D:\Epic Games\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win64.json
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_OBS_HOOK" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_RENDERDOC_Capture" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_VALVE_steam_overlay" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_VALVE_steam_fossilize" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_EOS_Overlay" forced disabled because ...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="vt_direct_source_tests" classname="vt_direct_source_tests" time="88.9318" status="run">
+		<properties>
+			<property name="cmake_labels" value="vulkan"/>
+		</properties>
+		<system-out>[vk] Vulkan loader/general ERROR: loader_get_json: Failed to open JSON file D:\Epic Games\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win32.json
+[vk] Vulkan loader/general ERROR: loader_get_json: Failed to open JSON file D:\Epic Games\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win64.json
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_OBS_HOOK" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_RENDERDOC_Capture" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_VALVE_steam_overlay" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_VALVE_steam_fossilize" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_EOS_Overlay" forced disabled because ...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="vt_surface_material_tests" classname="vt_surface_material_tests" time="22.6605" status="run">
+		<properties>
+			<property name="cmake_labels" value="vulkan"/>
+		</properties>
+		<system-out>[vk] Vulkan loader/general ERROR: loader_get_json: Failed to open JSON file D:\Epic Games\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win32.json
+[vk] Vulkan loader/general ERROR: loader_get_json: Failed to open JSON file D:\Epic Games\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win64.json
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_OBS_HOOK" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_RENDERDOC_Capture" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_VALVE_steam_overlay" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_VALVE_steam_fossilize" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_EOS_Overlay" forced disabled because ...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="sparse_voxel_gpu_tests" classname="sparse_voxel_gpu_tests" time="60.3748" status="run">
+		<properties>
+			<property name="cmake_labels" value="vulkan"/>
+		</properties>
+		<system-out>[vk] Vulkan loader/general ERROR: loader_get_json: Failed to open JSON file D:\Epic Games\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win32.json
+[vk] Vulkan loader/general ERROR: loader_get_json: Failed to open JSON file D:\Epic Games\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win64.json
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_OBS_HOOK" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_RENDERDOC_Capture" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_VALVE_steam_overlay" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_VALVE_steam_fossilize" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_EOS_Overlay" forced disabled because ...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="static_surface_vt_tests" classname="static_surface_vt_tests" time="2.05282" status="run">
+		<properties>
+			<property name="cmake_labels" value="vulkan"/>
+		</properties>
+		<system-out>[vk] Vulkan loader/general ERROR: loader_get_json: Failed to open JSON file D:\Epic Games\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win32.json
+[vk] Vulkan loader/general ERROR: loader_get_json: Failed to open JSON file D:\Epic Games\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win64.json
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_OBS_HOOK" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_RENDERDOC_Capture" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_VALVE_steam_overlay" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_VALVE_steam_fossilize" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_EOS_Overlay" forced disabled because ...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="solid_face_projection_gpu_tests" classname="solid_face_projection_gpu_tests" time="54.2322" status="fail">
+		<failure message="Failed"/>
+		<properties>
+			<property name="cmake_labels" value="vulkan"/>
+		</properties>
+		<system-out>[vk] Vulkan loader/general ERROR: loader_get_json: Failed to open JSON file D:\Epic Games\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win32.json
+[vk] Vulkan loader/general ERROR: loader_get_json: Failed to open JSON file D:\Epic Games\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win64.json
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_OBS_HOOK" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_RENDERDOC_Capture" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_VALVE_steam_overlay" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_VALVE_steam_fossilize" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_EOS_Overlay" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_EOS_Overlay" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.
+Vulkan adapter: NVIDIA GeForce RTX 4090 | driver: NVIDIA (610.74, 0x98928000) | API 1.4.341
+[vk] present requested=auto effective=fifo(2) supported=[fifo(2),fifo_relaxed(3),mailbox(1),immediate(0),other(1000361000)] images=3 extent=800x450
+FAIL face GPU: InternalError: interrupted
+FACE oracle pixels=1 coverage_mismatch=0 max_height_error_m=0 min_normal_dot=1
+FACE oracle pixels=1 coverage_mismatch=0 max_height_error_m=0 min_normal_dot=0.99999994
+FACE oracle pixels=24576 coverage_mismatch=0 max_height_error_m=3.99723649e-06 min_normal_dot=0.999999821
+CLAY seed=0 side=0 dimensions=256x96 covered=20648 dents=461 slopes=1015 steps=154 gpu_ms=197.1658 host_ms=262.9583 digest=f6342d3e24b949b2
+STAMP oracle samples=13995 levels=9 pixels=32767 max_error=8.95559788e-06 height_error_m=2.23517418e-08 detail_error_m=9.67702363e-10 digest=02e12545873781f0
+STAMP oracle samples=13995 levels=9 pixels=32767 max_error=8.65757465e-06 height_error_m=1.86264515e-08 detail_error_m=0 digest=fe7ab5319ccf9e43
+PROJECTED seed=0 side=0 residual_m=9.99541953e-07 min_m=0.045088917 max_m=0.0559802502
+MATERIAL oracle exact=0 channels=3.57627869e-07 microheight_m=2.91038305e-10 normal=1.81794167e-06 coverage=0
+MATERIAL oracle exact=1 channels=0 microheight_m=0 normal=0 coverage=0
+MATERIAL oracle exact=1 channels=0 microheight_m=0 normal=0 coverage=0
+MATERIAL oracle exact=1 channels=0 microheight_m=0 normal=0 coverage=0
+MATERIAL oracle exact=0 channels=0 microheight_m=0 normal=3.27825546e-07 coverage=0
+MATERIAL oracle exact=0 channels=5.96046448e-08 microheight_m=0 normal=3.27825546e-07 coverage=0
+CLAY material seed=0 side=0 pixels=24576 submits=2 host_ms=794.1643 wait_ms=7.2355 digest=34cfe6dd25dfe25b
+FACE oracle pixels=24576 coverage_mismatch=0 max_height_error_m=3.9935112e-06 min_normal_dot=0.999999762
+CLAY seed=0 side=1 dimensions=256x96 covered=20648 dents=702 slopes=1269 steps=114 gpu_ms=65.7489 host_ms=87.1788 digest=d352e2778ee684b2
+STAMP oracle samples=13995 levels=9 pixels=32767 max_error=1.06096268e-05 height_error_m=1.04308128e-07 detail_error_m=1.37515599e-09 digest=af8547581bac0107
+STAMP oracle samples=13995 levels=9 pixels=32767 max_error=1.02221966e-05 height_error_m=1.00582838e-07 detail_error_m=0 digest=5d9446a4a2bbefbf
+PROJECTED seed=0 side=1 residual_m=9.983778e-07 min_m=0.0454278216 max_m=0.0559834801
+MATERIAL oracle exact=0 channels=2.98023224e-07 microheight_m=2.61934474e-10 normal=4.645437e-06 coverage=0
+MATERIAL oracle exact=1 channels=0 microheight_m=0 normal=0 coverage=0
+MATERIAL oracle exact=0 channels=0 microheight_m=0 normal=1.1511147e-06 coverage=0
+MATERIAL oracle exact=0 channels=5.96046448e-08 microheight_m=0 normal=1.1511147e-06 coverage=0
+CLAY material seed=0 side=1 pixels=24576 submits=2 host_ms=8.7520 wait_ms=1.8545 digest=e1983aced0533338
+CLAY seed=0 side=2 dimensions=128x96 covered=9404 dents=0 slopes=240 steps=15 gpu_ms=14.1288 host_ms=25.2488 digest=67f40c70025d149e
+STAMP oracle samples=12441 levels=8 pixels=16383 max_error=7.74860382e-06 height_error_m=3.7252903e-08 detail_error_m=7.42147677e-10 digest=cef7962cd3d29d53
+STAMP oracle samples=12441 levels=8 pixels=16383 max_error=7.74860382e-06 height_error_m=3.7252903e-08 detail_error_m=0 digest=256a0d86481839e7
+PROJECTED seed=0 side=2 residual_m=9.90927219e-07 min_m=0.120689124 max_m=0.122478612
+MATERIAL oracle exact=0 channels=1.78813934e-07 microheight_m=1.8189894e-10 normal=6.2584877e-07 coverage=0
+MATERIAL oracle exact=1 channels=0 microheight_m=0 normal=0 coverage=0
+MATERIAL oracle exact=0 channels=0 microheight_m=0 normal=3.94880772e-07 coverage=0
+MATERIAL oracle exact=0 channels=5.96046448e-08 microheight_m=0 normal=3.94880772e-07 coverage=0
+CLAY material seed=0 side=2 pixels=12288 submits=1 host_ms=5.0682 wait_ms=2.0620 digest=48e9b9824fd10334
+CLAY seed=0 side=3 dimensions=128x96 covered=9404 dents=0 slopes=240 steps=15 gpu_ms=13.6156 host_ms=23.1045 digest=ed61c1417590549e
+STAMP oracle samples=12441 levels=8 pixels=16383 max_error=7.74860382e-06 height_error_m=3.7252903e-08 detail_error_m=5.67524694e-10 digest=a46b21d688d3ac17
+STAMP oracle samples=12441 levels=8 pixels=16383 max_error=7.74860382e-06 height_error_m=3.7252903e-08 detail_error_m=0 digest=23c0407c7b112c39
+PROJECTED seed=0 side=3 residual_m=9.983778e-07 min_m=0.120711066 max_m=0.122481778
+MATERIAL oracle exact=0 channels=1.78813934e-07 microheight_m=1.67347025e-10 normal=5.77419996e-06 coverage=0
+MATERIAL oracle exact=1 channels=0 microheight_m=0 normal=0 coverage=0
+MATERIAL oracle exact=0 channels=0 microheight_m=0 normal=8.64267349e-07 coverage=0
+MATERIAL oracle exact=0 channels=5.96046448e-08 microheight_m=0 normal=8.64267349e-07 coverage=0
+CLAY material seed=0 side=3 pixels=12288 submits=1 host_ms=4.7746 wait_ms=1.6466 digest=a64e4cf23caa8345
+CLAY seed=0 side=4 dimensions=256x128 covered=27536 dents=12600 slopes=0 steps=46 gpu_ms=73.6252 host_ms=100.3910 digest=5d06f4b89d43067e
+STAMP oracle samples=13995 levels=9 pixels=43691 max_error=1.97533518e-06 height_error_m=1.49011612e-08 detail_error_m=1.37515599e-09 digest=d5700efc44133253
+STAMP oracle samples=13995 levels=9 pixels=43691 max_error=1.97533518e-06 height_error_m=1.49011612e-08 detail_error_m=0 digest=85612da792d37330
+PROJECTED seed=0 side=4 residual_m=9.983778e-07 min_m=0.0314926244 max_m=0.0419837311
+MATERIAL oracle exact=0 channels=2.38418579e-07 microheight_m=2.47382559e-10 normal=2.02655792e-06 coverage=0
+MATERIAL oracle exact=1 channels=0 microheight_m=0 normal=0 coverage=0
+MATERIAL oracle exact=0 channels=0 microheight_m=0 normal=1.14366412e-06 coverage=0
+MATERIAL oracle exact=0 channels=5.96046448e-08 microheight_m=0 normal=1.14366412e-06 coverage=0
+CLAY material seed=0 side=4 pixels=32768 submits=2 host_ms=9.0534 wait_ms=2.0834 digest=63b1ec65091e7ba1
+CLAY seed=0 side=5 dimensions=256x128 covered=27536 dents=12600 slopes=0 steps=57 gpu_ms=75.3121 host_ms=102.9006 digest=e5d88bf8738fe07e
+STAMP oracle samples=13995 levels=9 pixels=43691 max_error=1.37835741e-06 height_error_m=1.49011612e-08 detail_error_m=1.44063961e-09 digest=7220203dac6baccf
+STAMP oracle samples=13995 levels=9 pixels=43691 max_error=1.38953328e-06 height_error_m=1.49011612e-08 detail_error_m=0 digest=f53d7f5b74beb6d0
+PROJECTED seed=0 side=5 residual_m=9.9465251e-07 min_m=0.0329715274 max_m=0.0419845805
+MATERIAL oracle exact=0 channels=4.76837158e-07 microheight_m=4.51109372e-10 normal=1.30757689e-06 coverage=0
+MATERIAL oracle exact=1 channels=0 microheight_m=0 normal=0 coverage=0
+MATERIAL oracle exact=0 channels=0 microheight_m=0 normal=8.60542059e-07 coverage=0
+MATERIAL oracle exact=0 channels=5.96046448e-08 microheight_m=0 normal=8.60542059e-07 coverage=0
+CLAY material seed=0 side=5 pixels=32768 submits=2 host_ms=10.2044 wait_ms=2.0956 digest=83b70d61341ff67a
+CLAY seed=1 side=0 dimensions=256x96 covered=20648 dents=451 slopes=1058 steps=146 gpu_ms=70.6313 host_ms=91.9987 digest=7910d4bdce59dd64
+STAMP oracle samples=13995 levels=9 pixels=32767 max_error=7.74860382e-06 height_error_m=1.86264515e-08 detail_error_m=7.27595761e-10 digest=d4b924ce3f99b039
+STAMP oracle samples=13995 levels=9 pixels=32767 max_error=7.74860382e-06 height_error_m=1.86264515e-08 detail_error_m=0 digest=d0fed41b0e728da1
+PROJECTED seed=1 side=0 residual_m=9.983778e-07 min_m=0.0446666405 max_m=0.0559794977
+CLAY material seed=1 side=0 pixels=24576 submits=2 host_ms=8.9296 wait_ms=2.8683 digest=5562f8f58ab2e0a1
+CLAY seed=1 side=1 dimensions=256x96 covered=20648 dents=522 slopes=1214 steps=855 gpu_ms=92.4166 host_ms=113.8910 digest=44d6eebbc2945064
+STAMP oracle samples=13995 levels=9 pixels=32767 max_error=7.74860382e-06 height_error_m=2.23517418e-08 detail_error_m=1.12049747e-09 digest=28bbf9af0fcea112
+STAMP oracle samples=13995 levels=9 pixels=32767 max_error=7.74860382e-06 height_error_m=2.60770321e-08 detail_error_m=0 digest=9749cf5970c4d212
+PROJECTED seed=1 side=1 residual_m=9.983778e-07 min_m=0.0455627628 max_m=0.0559827387
+CLAY material seed=1 side=1 pixels=24576 submits=2 host_ms=6.2916 wait_ms=1.6142 digest=608aff3aafc68f06
+CLAY seed=1 side=2 dimensions=128x96 covered=9404 dents=0 slopes=240 steps=15 gpu_ms=13.4154 host_ms=21.9748 digest=ef44687b71f06178
+STAMP oracle samples=12441 levels=8 pixels=16383 max_error=7.74860382e-06 height_error_m=3.7252903e-08 detail_error_m=7.20319804e-10 digest=b69481525fbe5d3e
+STAMP oracle samples=12441 levels=8 pixels=16383 max_error=7.74860382e-06 height_error_m=3.7252903e-08 detail_error_m=0 digest=86856a1ea5a6c616
+PROJECTED seed=1 side=2 residual_m=9.53674316e-07 min_m=0.120704629 max_m=0.1224792
+CLAY material seed=1 side=2 pixels=12288 submits=1 host_ms=4.2984 wait_ms=1.3224 digest=529b237e3d4f57ad
+CLAY seed=1 side=3 dimensions=128x96 covered=9404 dents=0 slopes=240 steps=71 gpu_ms=17.3843 host_ms=26.5176 digest=69d6b3a9febd2178
+STAMP oracle samples=12441 levels=8 pixels=16383 max_error=7.74860382e-06 height_error_m=4.47034836e-08 detail_error_m=5.96628524e-10 digest=cb8337b17c2b7341
+STAMP oracle samples=12441 levels=8 pixels=16383 max_error=7.74860382e-06 height_error_m=5.21540642e-08 detail_error_m=0 digest=90b231755ce62b56
+PROJECTED seed=1 side=3 residual_m=9.83476639e-07 min_m=0.0908944234 max_m=0.122482382
+CLAY material seed=1 side=3 pixels=12288 submits=1 host_ms=3.7435 wait_ms=1.3224 digest=dfea709f53758806
+CLAY seed=1 side=4 dimensions=256x128 covered=27536 dents=12600 slopes=0 steps=60 gpu_ms=69.5697 host_ms=96.0349 digest=50cf79a8df9b4e98
+STAMP oracle samples=13995 levels=9 pixels=43691 max_error=1.56462193e-06 height_error_m=1.11758709e-08 detail_error_m=1.38243195e-09 digest=7e2b7e26749c65f6
+STAMP oracle samples=13995 levels=9 pixels=43691 max_error=1.56462193e-06 height_error_m=1.49011612e-08 detail_error_m=0 digest=ceac59724074cf63
+PROJECTED seed=1 side=4 residual_m=9.983778e-07 min_m=0.0303738602 max_m=0.0419792533
+CLAY material seed=1 side=4 pixels=32768 submits=2 host_ms=7.7730 wait_ms=1.7986 digest=53bae76d5432fa17
+CLAY seed=1 side=5 dimensions=256x128 covered=27536 dents=12600 slopes=0 steps=45 gpu_ms=73.2941 host_ms=102.9409 digest=235bb426763a1a98
+STAMP oracle samples=13995 levels=9 pixels=43691 max_error=1.40070915e-06 height_error_m=1.49011612e-08 detail_error_m=1.40425982e-09 digest=eeb4e3109bd7a242
+STAMP oracle samples=13995 levels=9 pixels=43691 max_error=1.39325857e-06 height_error_m=1.49011612e-08 detail_error_m=0 digest=33363b1389d01206
+PROJECTED seed=1 side=5 residual_m=9.983778e-07 min_m=0.0332490876 max_m=0.0419844054
+CLAY material seed=1 side=5 pixels=32768 submits=2 host_ms=9.3782 wait_ms=2.5399 digest=546a4521a0a2bff9
+CLAY seed=2 side=0 dimensions=256x96 covered=20648 dents=432 slopes=972 steps=836 gpu_ms=84.5933 host_ms=101.3616 digest=9593b01887339a4b
+STAMP oracle samples=13995 levels=9 pixels=32767 max_error=1.42455101e-05 height_error_m=1.15483999e-07 detail_error_m=1.31694833e-09 digest=5582518dbf198732
+STAMP oracle samples=13995 levels=9 pixels=32767 max_error=1.35600567e-05 height_error_m=1.15483999e-07 detail_error_m=0 digest=b830f5a27a6761c3
+PROJECTED seed=2 side=0 residual_m=9.983778e-07 min_m=0.0461465232 max_m=0.0559789874
+CLAY material seed=2 side=0 pixels=24576 submits=2 host_ms=6.1645 wait_ms=1.4572 digest=ace440210047e7bc
+CLAY seed=2 side=1 dimensions=256x96 covered=20648 dents=616 slopes=1137 steps=163 gpu_ms=69.4800 host_ms=85.0667 digest=27ec0229c054a74b
+STAMP oracle samples=13995 levels=9 pixels=32767 max_error=7.74860382e-06 height_error_m=1.86264515e-08 detail_error_m=1.49884727e-09 digest=e94904259dc095c3
+STAMP oracle samples=13995 levels=9 pixels=32767 max_error=7.74860382e-06 height_error_m=2.23517418e-08 detail_error_m=0 digest=903ba5ee80084a77
+PROJECTED seed=2 side=1 residual_m=9.97912139e-07 min_m=0.0474719778 max_m=0.0559837073
+CLAY material seed=2 side=1 pixels=24576 submits=2 host_ms=5.3213 wait_ms=1.2639 digest=14bb26efc806e607
+CLAY seed=2 side=2 dimensions=128x96 covered=9404 dents=0 slopes=240 steps=28 gpu_ms=14.3154 host_ms=22.6608 digest=cd529125f38e0e1f
+STAMP oracle samples=12441 levels=8 pixels=16383 max_error=7.74860382e-06 height_error_m=3.7252903e-08 detail_error_m=6.98491931e-10 digest=cbdbf06b221d738a
+STAMP oracle samples=12441 levels=8 pixels=16383 max_error=7.74860382e-06 height_error_m=3.7252903e-08 detail_error_m=0 digest=f2941e2eca8abae6
+PROJECTED seed=2 side=2 residual_m=9.983778e-07 min_m=0.119777687 max_m=0.122479208
+CLAY material seed=2 side=2 pixels=12288 submits=1 host_ms=4.1109 wait_ms=1.4083 digest=192c313825914722
+CLAY seed=2 side=3 dimensions=128x96 covered=9404 dents=0 slopes=240 steps=28 gpu_ms=16.1522 host_ms=22.7774 digest=79ed9ee3420b8f1f
+STAMP oracle samples=12441 levels=8 pixels=16383 max_error=7.74860382e-06 height_error_m=2.98023224e-08 detail_error_m=6.07542461e-10 digest=47f52183696581f3
+STAMP oracle samples=12441 levels=8 pixels=16383 max_error=7.74860382e-06 height_error_m=3.7252903e-08 detail_error_m=0 digest=d7251a5ed2eb94c1
+PROJECTED seed=2 side=3 residual_m=9.79751348e-07 min_m=0.119777516 max_m=0.122482672
+CLAY material seed=2 side=3 pixels=12288 submits=1 host_ms=4.1090 wait_ms=1.2535 digest=a4b516cdc0e2a6ab
+CLAY seed=2 side=4 dimensions=256x128 covered=27536 dents=12600 slopes=0 steps=48 gpu_ms=74.3749 host_ms=92.1786 digest=8b384e3501e0fb1f
+STAMP oracle samples=13995 levels=9 pixels=43691 max_error=3.33786011e-06 height_error_m=2.98023224e-08 detail_error_m=9.82254278e-10 digest=b5544c4398f17bf8
+STAMP oracle samples=13995 levels=9 pixels=43691 max_error=3.51667404e-06 height_error_m=3.35276127e-08 detail_error_m=0 digest=578ac663970de01f
+PROJECTED seed=2 side=4 residual_m=9.79751348e-07 min_m=0.0309258401 max_m=0.0419838578
+CLAY material seed=2 side=4 pixels=32768 submits=2 host_ms=7.9046 wait_ms=1.6296 digest=e9d531ff2708d600
+CLAY seed=2 side=5 dimensions=256x128 covered=27536 dents=12600 slopes=0 steps=42 gpu_ms=72.5070 host_ms=96.1448 digest=0266b6f52b94211f
+STAMP oracle samples=13995 levels=9 pixels=43691 max_error=1.37090683e-06 height_error_m=1.11758709e-08 detail_error_m=1.28056854e-09 digest=898fdfaba4b1c04f
+STAMP oracle samples=13995 levels=9 pixels=43691 max_error=1.37090683e-06 height_error_m=1.49011612e-08 detail_error_m=0 digest=a55de38c1e0c90b3
+PROJECTED seed=2 side=5 residual_m=9.983778e-07 min_m=0.0327106901 max_m=0.0419839621
+CLAY material seed=2 side=5 pixels=32768 submits=2 host_ms=7.1071 wait_ms=1.5947 digest=02c7a7cce63fe95d
+CLAY seed=3 side=0 dimensions=256x96 covered=20656 dents=353 slopes=990 steps=396 gpu_ms=76.2327 host_ms=92.3522 digest=e2c67365084f6461
+STAMP oracle samples=13995 levels=9 pixels=32767 max_error=7.74860382e-06 height_error_m=2.23517418e-08 detail_error_m=6.47560228e-10 digest=f0e4bd8973be5b8c
+STAMP oracle samples=13995 levels=9 pixels=32767 max_error=7.74860382e-06 height_error_m=2.23517418e-08 detail_error_m=0 digest=bf958facaf28b76b
+PROJECTED seed=3 side=0 residual_m=9.99309123e-07 min_m=0.0458595082 max_m=0.0559803322
+CLAY material seed=3 side=0 pixels=24576 submits=2 host_ms=6.8348 wait_ms=1.6507 digest=909ca0e5383ae76a
+CLAY seed=3 side=1 dimensions=256x96 covered=20656 dents=469 slopes=991 steps=402 gpu_ms=82.4901 host_ms=99.6200 digest=2ac5b57553a06461
+STAMP oracle samples=13995 levels=9 pixels=32767 max_error=1.98129565e-05 height_error_m=1.49011612e-08 detail_error_m=6.69388101e-10 digest=2d4a44fe4af3ffe7
+STAMP oracle samples=13995 levels=9 pixels=32767 max_error=1.9332394e-05 height_error_m=1.49011612e-08 detail_error_m=0 digest=f4d7c87f525a7797
+PROJECTED seed=3 side=1 residual_m=9.99425538e-07 min_m=0.045046661 max_m=0.0559833087
+CLAY material seed=3 side=1 pixels=24576 submits=2 host_ms=6.2501 wait_ms=1.4207 digest=aec963819d0be2fd
+CLAY seed=3 side=2 dimensions=128x96 covered=9404 dents=0 slopes=240 steps=13 gpu_ms=11.4793 host_ms=19.2489 digest=fc96989f8e431f1d
+STAMP oracle samples=12441 levels=8 pixels=16383 max_error=7.74860382e-06 height_error_m=2.98023224e-08 detail_error_m=4.22005542e-10 digest=64fbbf969f6dc3df
+STAMP oracle samples=12441 levels=8 pixels=16383 max_error=7.74860382e-06 height_error_m=3.7252903e-08 detail_error_m=0 digest=f976be04e9320151
+PROJECTED seed=3 side=2 residual_m=9.83476639e-07 min_m=0.121092975 max_m=0.122480161
+CLAY material seed=3 side=2 pixels=12288 submits=1 host_ms=3.4705 wait_ms=0.7861 digest=96383b94579f5c2c
+CLAY seed=3 side=3 dimensions=128x96 covered=9404 dents=0 slopes=240 steps=12 gpu_ms=13.2111 host_ms=21.0239 digest=394c9b475131f11d
+STAMP oracle samples=12441 levels=8 pixels=16383 max_error=7.74860382e-06 height_error_m=3.7252903e-08 detail_error_m=5.23868948e-10 digest=ae8f5a49a95a6062
+STAMP oracle samples=12441 levels=8 pixels=16383 max_error=7.74860382e-06 height_error_m=3.7252903e-08 detail_error_m=0 digest=2a0bbffa7af11262
+PROJECTED seed=3 side=3 residual_m=9.90927219e-07 min_m=0.121059321 max_m=0.122482404
+CLAY material seed=3 side=3 pixels=12288 submits=1 host_ms=4.1377 wait_ms=1.2147 digest=90ebcebd020f5fe9
+CLAY seed=3 side=4 dimensions=256x128 covered=27544 dents=12600 slopes=0 steps=45 gpu_ms=69.9344 host_ms=95.4505 digest=0acb9f84f2dae13d
+STAMP oracle samples=13995 levels=9 pixels=43691 max_error=1.53109431e-06 height_error_m=1.49011612e-08 detail_error_m=1.02591002e-09 digest=4bc61ea76f7c9326
+STAMP oracle samples=13995 levels=9 pixels=43691 max_error=1.53109431e-06 height_error_m=1.49011612e-08 detail_error_m=0 digest=62088d81146bc977
+PROJECTED seed=3 side=4 residual_m=9.983778e-07 min_m=0.0325172916 max_m=0.0419835784
+CLAY material seed=3 side=4 pixels=32768 submits=2 host_ms=14.4388 wait_ms=4.5073 digest=e7ac18d299c0289a
+CLAY seed=3 side=5 dimensions=256x128 covered=27544 dents=12600 slopes=0 steps=169 gpu_ms=81.5990 host_ms=108.4272 digest=7475c0a8ef2aaa3d
+STAMP oracle samples=13995 levels=9 pixels=43691 max_error=1.55717134e-06 height_error_m=1.11758709e-08 detail_error_m=1.46246748e-09 digest=80f649885d3f4c2c
+STAMP oracle samples=13995 levels=9 pixels=43691 max_error=1.56462193e-06 height_error_m=1.49011612e-08 detail_error_m=0 digest=ea6a6109be106042
+PROJECTED seed=3 side=5 residual_m=9.90927219e-07 min_m=0.011389412 max_m=0.0419842973
+CLAY material seed=3 side=5 pixels=32768 submits=2 host_ms=9.4201 wait_ms=2.3193 digest=f3a324e19778f07d
+CLAY seed=4 side=0 dimensions=256x96 covered=20648 dents=458 slopes=983 steps=162 gpu_ms=64.0714 host_ms=88.5719 digest=aa283f0774f3b064
+STAMP oracle samples=13995 levels=9 pixels=32767 max_error=9.29832458e-06 height_error_m=1.86264515e-08 detail_error_m=1.38243195e-09 digest=dd3b97ca5fcf5926
+STAMP oracle samples=13995 levels=9 pixels=32767 max_error=8.92579556e-06 height_error_m=1.86264515e-08 detail_error_m=0 digest=400def1ae9d7bbdb
+PROJECTED seed=4 side=0 residual_m=9.983778e-07 min_m=0.0471801832 max_m=0.0559796207
+CLAY material seed=4 side=0 pixels=24576 submits=2 host_ms=7.8713 wait_ms=2.0074 digest=16b9abf997463c87
+CLAY seed=4 side=1 dimensions=256x96 covered=20648 dents=414 slopes=1014 steps=340 gpu_ms=72.8897 host_ms=91.9608 digest=75ee5905692e2364
+STAMP oracle samples=13995 levels=9 pixels=32767 max_error=7.74860382e-06 height_error_m=2.23517418e-08 detail_error_m=1.32422429e-09 digest=03a5a1e7c589759f
+STAMP oracle samples=13995 levels=9 pixels=32767 max_error=7.74860382e-06 height_error_m=2.23517418e-08 detail_error_m=0 digest=f870ac97584fb411
+PROJECTED seed=4 side=1 residual_m=9.983778e-07 min_m=0.0445114039 max_m=0.0559831597
+CLAY material seed=4 side=1 pixels=24576 submits=2 host_ms=6.8369 wait_ms=1.3970 digest=e595b624d2b90a0b
+CLAY seed=4 side=2 dimensions=128x96 covered=9404 dents=0 slopes=240 steps=21 gpu_ms=14.1934 host_ms=23.9677 digest=205bd2c5188a3478
+STAMP oracle samples=12441 levels=8 pixels=16383 max_error=7.74860382e-06 height_error_m=4.47034836e-08 detail_error_m=4.22005542e-10 digest=9995ef1e34766937
+STAMP oracle samples=12441 levels=8 pixels=16383 max_error=7.74860382e-06 height_error_m=4.47034836e-08 detail_error_m=0 digest=d35b3bdbea7eb158
+PROJECTED seed=4 side=2 residual_m=9.9465251e-07 min_m=0.120164782 max_m=0.122478932
+CLAY material seed=4 side=2 pixels=12288 submits=1 host_ms=4.1864 wait_ms=1.2565 digest=ed8ade25d8963b5e
+CLAY seed=4 side=3 dimensions=128x96 covered=9404 dents=0 slopes=240 steps=21 gpu_ms=16.0498 host_ms=26.1391 digest=9aee1df3a556f478
+STAMP oracle samples=12441 levels=8 pixels=16383 max_error=7.74860382e-06 height_error_m=3.7252903e-08 detail_error_m=6.54836185e-10 digest=24b1a1a04bccf404
+STAMP oracle samples=12441 levels=8 pixels=16383 max_error=7.74860382e-06 height_error_m=4.47034836e-08 detail_error_m=0 digest=fb6dd9f5ba3a60fc
+PROJECTED seed=4 side=3 residual_m=9.9465251e-07 min_m=0.120160587 max_m=0.122482851
+CLAY material seed=4 side=3 pixels=12288 submits=1 host_ms=3.4743 wait_ms=1.2336 digest=2075f2cf5a88c8dd
+CLAY seed=4 side=4 dimensions=256x128 covered=27536 dents=12600 slopes=0 steps=44 gpu_ms=74.0860 host_ms=101.7346 digest=81e6e3f286352198
+STAMP oracle samples=13995 levels=9 pixels=43691 max_error=5.55813313e-06 height_error_m=1.49011612e-08 detail_error_m=1.06228981e-09 digest=a389a6acb81abb9d
+STAMP oracle samples=13995 levels=9 pixels=43691 max_error=5.37931919e-06 height_error_m=1.49011612e-08 detail_error_m=0 digest=568091f4a263df2b
+PROJECTED seed=4 side=4 residual_m=9.983778e-07 min_m=0.0326076746 max_m=0.0419831574
+CLAY material seed=4 side=4 pixels=32768 submits=2 host_ms=11.5960 wait_ms=3.1184 digest=d250e654e905075a
+CLAY seed=4 side=5 dimensions=256x128 covered=27536 dents=12600 slopes=0 steps=44 gpu_ms=73.5360 host_ms=103.0501 digest=54731e701cd3ed98
+STAMP oracle samples=13995 levels=9 pixels=43691 max_error=2.1904707e-06 height_error_m=1.11758709e-08 detail_error_m=7.63975549e-10 digest=a5c09ff39b5522d5
+STAMP oracle samples=13995 levels=9 pixels=43691 max_error=2.16066837e-06 height_error_m=1.49011612e-08 detail_error_m=0 digest=7129f34f94284289
+PROJECTED seed=4 side=5 residual_m=9.9465251e-07 min_m=0.0345829166 max_m=0.041984316
+CLAY material seed=4 side=5 pixels=32768 submits=2 host_ms=12.8059 wait_ms=3.3903 digest=918e55e355277649
+CLAY seed=5 side=0 dimensions=256x96 covered=20648 dents=1025 slopes=1164 steps=150 gpu_ms=71.6979 host_ms=91.5480 digest=f74ac86ee7f2e991
+STAMP oracle samples=13995 levels=9 pixels=32767 max_error=9.81241465e-06 height_error_m=2.60770321e-08 detail_error_m=1.46246748e-09 digest=ce44d3d7b66ce2fb
+STAMP oracle samples=13995 levels=9 pixels=32767 max_error=9.39518213e-06 height_error_m=2.60770321e-08 detail_error_m=0 digest=2101b8983c38e0a0
+PROJECTED seed=5 side=0 residual_m=9.983778e-07 min_m=0.0449122079 max_m=0.0559797511
+CLAY material seed=5 side=0 pixels=24576 submits=2 host_ms=7.3318 wait_ms=1.7301 digest=67ca3300f7c9b4df
+CLAY seed=5 side=1 dimensions=256x96 covered=20648 dents=726 slopes=1229 steps=101 gpu_ms=68.9283 host_ms=87.3884 digest=0d69f26dc9fd6991
+STAMP oracle samples=13995 levels=9 pixels=32767 max_error=7.74860382e-06 height_error_m=2.23517418e-08 detail_error_m=1.12777343e-09 digest=3776fe59d0514eae
+STAMP oracle samples=13995 levels=9 pixels=32767 max_error=7.74860382e-06 height_error_m=2.23517418e-08 detail_error_m=0 digest=015e5ebdf6da3416
+PROJECTED seed=5 side=1 residual_m=9.99309123e-07 min_m=0.0449951068 max_m=0.0559828319
+CLAY material seed=5 side=1 pixels=24576 submits=2 host_ms=7.2560 wait_ms=2.1487 digest=aa0f71ac0783754e
+CLAY seed=5 side=2 dimensions=128x96 covered=9404 dents=0 slopes=240 steps=23 gpu_ms=14.0704 host_ms=22.0039 digest=8976dbaa0dc44ecd
+STAMP oracle samples=12441 levels=8 pixels=16383 max_error=7.74860382e-06 height_error_m=3.7252903e-08 detail_error_m=5.31144906e-10 digest=050950d5e60bd2e4
+STAMP oracle samples=12441 levels=8 pixels=16383 max_error=7.74860382e-06 height_error_m=3.7252903e-08 detail_error_m=0 digest=77122138151f15b3
+PROJECTED seed=5 side=2 residual_m=9.983778e-07 min_m=0.119985841 max_m=0.122478552
+CLAY material seed=5 side=2 pixels=12288 submits=1 host_ms=5.0468 wait_ms=1.9218 digest=1f990abe2c028119
+CLAY seed=5 side=3 dimensions=128x96 covered=9404 dents=0 slopes=240 steps=23 gpu_ms=16.2863 host_ms=24.9692 digest=4cc0d9024ad57ccd
+STAMP oracle samples=12441 levels=8 pixels=16383 max_error=7.74860382e-06 height_error_m=4.47034836e-08 detail_error_m=4.94765118e-10 digest=607a342f39ebeabd
+STAMP oracle samples=12441 levels=8 pixels=16383 max_error=7.74860382e-06 height_error_m=3.7252903e-08 detail_error_m=0 digest=1541e3b2fa6fef5d
+PROJECTED seed=5 side=3 residual_m=9.79751348e-07 min_m=0.119997591 max_m=0.122482464
+CLAY material seed=5 side=3 pixels=12288 submits=1 host_ms=3.1488 wait_ms=0.7991 digest=9123a12ec418ebbc
+CLAY seed=5 side=4 dimensions=256x128 covered=27536 dents=12600 slopes=0 steps=51 gpu_ms=78.3290 host_ms=102.5446 digest=853b0c995e245a6d
+STAMP oracle samples=13995 levels=9 pixels=43691 max_error=5.06639481e-06 height_error_m=1.49011612e-08 detail_error_m=1.45519152e-09 digest=9570b193108072ad
+STAMP oracle samples=13995 levels=9 pixels=43691 max_error=5.06639481e-06 height_error_m=1.49011612e-08 detail_error_m=0 digest=c51e8fdba0e60743
+PROJECTED seed=5 side=4 residual_m=9.983778e-07 min_m=0.0323320404 max_m=0.0419835709
+CLAY material seed=5 side=4 pixels=32768 submits=2 host_ms=7.8969 wait_ms=1.7460 digest=e673ea61c6efb1f3
+CLAY seed=5 side=5 dimensions=256x128 covered=27536 dents=12600 slopes=0 steps=94 gpu_ms=76.6956 host_ms=98.4123 digest=1b90eb7561d4916d
+STAMP oracle samples=13995 levels=9 pixels=43691 max_error=1.1920929e-06 height_error_m=1.49011612e-08 detail_error_m=6.65750122e-10 digest=49bb522884441772
+STAMP oracle samples=13995 levels=9 pixels=43691 max_error=1.1920929e-06 height_error_m=1.49011612e-08 detail_error_m=0 digest=de6592ab01ea7702
+PROJECTED seed=5 side=5 residual_m=9.983778e-07 min_m=-0.00291812047 max_m=0.0419842899
+CLAY material seed=5 side=5 pixels=32768 submits=2 host_ms=8.4870 wait_ms=1.8740 digest=1c43055fe9fde287
+CLAY seed=6 side=0 dimensions=256x96 covered=20648 dents=305 slopes=939 steps=74 gpu_ms=60.4989 host_ms=82.6496 digest=fabe8fdf507048ce
+STAMP oracle samples=13995 levels=9 pixels=32767 max_error=1.37686729e-05 height_error_m=1.86264515e-08 detail_error_m=8.80390871e-10 digest=2f9808804d471caf
+STAMP oracle samples=13995 levels=9 pixels=32767 max_error=1.32918358e-05 height_error_m=1.86264515e-08 detail_error_m=0 digest=05f375d39edef0f9
+PROJECTED seed=6 side=0 residual_m=9.983778e-07 min_m=0.0482535809 max_m=0.0559782982
+CLAY material seed=6 side=0 pixels=24576 submits=2 host_ms=7.4175 wait_ms=1.8182 digest=5ecf2613fccc39f6
+CLAY seed=6 side=1 dimensions=256x96 covered=20648 dents=721 slopes=1256 steps=151 gpu_ms=73.3945 host_ms=90.3183 digest=e49f65e06e65c8ce
+STAMP oracle samples=13995 levels=9 pixels=32767 max_error=7.74860382e-06 height_error_m=2.23517418e-08 detail_error_m=1.27329258e-09 digest=5d428d1252924435
+STAMP oracle samples=13995 levels=9 pixels=32767 max_error=7.74860382e-06 height_error_m=2.23517418e-08 detail_error_m=0 digest=c9f0600c432e6fde
+PROJECTED seed=6 side=1 residual_m=9.983778e-07 min_m=0.0458434969 max_m=0.0559823774
+CLAY material seed=6 side=1 pixels=24576 submits=2 host_ms=6.8423 wait_ms=1.6442 digest=19b5b4fbf333fe03
+CLAY seed=6 side=2 dimensions=128x96 covered=9396 dents=0 slopes=240 steps=14 gpu_ms=13.9737 host_ms=23.6373 digest=02ff8ab2d82ddbaa
+STAMP oracle samples=12441 levels=8 pixels=16383 max_error=7.74860382e-06 height_error_m=4.47034836e-08 detail_error_m=4.00177669e-10 digest=9bf2149c4116bf81
+STAMP oracle samples=12441 levels=8 pixels=16383 max_error=7.74860382e-06 height_error_m=3.7252903e-08 detail_error_m=0 digest=b0de17c9dda7d20d
+PROJECTED seed=6 side=2 residual_m=9.9465251e-07 min_m=0.120484762 max_m=0.122479118
+CLAY material seed=6 side=2 pixels=12288 submits=1 host_ms=3.1160 wait_ms=0.8718 digest=984df420ba2006c9
+CLAY seed=6 side=3 dimensions=128x96 covered=9396 dents=0 slopes=240 steps=13 gpu_ms=15.6008 host_ms=25.1387 digest=3fb58d5a9b1cadaa
+STAMP oracle samples=12441 levels=8 pixels=16383 max_error=7.74860382e-06 height_error_m=4.47034836e-08 detail_error_m=5.60248736e-10 digest=9ecb6e5ee82eec55
+STAMP oracle samples=12441 levels=8 pixels=16383 max_error=7.74860382e-06 height_error_m=3.7252903e-08 detail_error_m=0 digest=02ab43fd6f253769
+PROJECTED seed=6 side=3 residual_m=9.79751348e-07 min_m=0.120465681 max_m=0.122482583
+CLAY material seed=6 side=3 pixels=12288 submits=1 host_ms=3.0504 wait_ms=0.9827 digest=cd4072c5a4944f8f
+CLAY seed=6 side=4 dimensions=256x128 covered=27536 dents=12600 slopes=0 steps=221 gpu_ms=80.0756 host_ms=107.2891 digest=147c6f9136a5c46a
+STAMP oracle samples=13995 levels=9 pixels=43691 max_error=1.43423676e-06 height_error_m=1.49011612e-08 detail_error_m=1.04046194e-09 digest=f129dccf4c9edb56
+STAMP oracle samples=13995 levels=9 pixels=43691 max_error=1.44168735e-06 height_error_m=1.49011612e-08 detail_error_m=0 digest=9b8573fef8ce0bf3
+PROJECTED seed=6 side=4 residual_m=9.983778e-07 min_m=0.0145353815 max_m=0.041982837
+CLAY material seed=6 side=4 pixels=32768 submits=2 host_ms=7.2497 wait_ms=1.6080 digest=9660544560de4187
+CLAY seed=6 side=5 dimensions=256x128 covered=27536 dents=12600 slopes=0 steps=67 gpu_ms=71.6521 host_ms=93.2658 digest=aad24e6d3a55fb6a
+STAMP oracle samples=13995 levels=9 pixels=43691 max_error=1.45658851e-06 height_error_m=1.49011612e-08 detail_error_m=1.39698386e-09 digest=0ff78f500dbd6c7e
+STAMP oracle samples=13995 levels=9 pixels=43691 max_error=1.45658851e-06 height_error_m=1.49011612e-08 detail_error_m=0 digest=4e7ef5036600f3c4
+PROJECTED seed=6 side=5 residual_m=9.983778e-07 min_m=0.0347885638 max_m=0.041984044
+CLAY material seed=6 side=5 pixels=32768 submits=2 host_ms=7.9615 wait_ms=1.7752 digest=1d7c1a228ba7e94d
+CLAY seed=7 side=0 dimensions=256x96 covered=20648 dents=762 slopes=1222 steps=468 gpu_ms=73.7724 host_ms=93.2771 digest=e18c115171fad34c
+STAMP oracle samples=13995 levels=9 pixels=32767 max_error=7.74860382e-06 height_error_m=2.23517418e-08 detail_error_m=1.42608769e-09 digest=fc5999e69a2bbe69
+STAMP oracle samples=13995 levels=9 pixels=32767 max_error=7.74860382e-06 height_error_m=1.86264515e-08 detail_error_m=0 digest=b22ebe93920d318d
+PROJECTED seed=7 side=0 residual_m=9.983778e-07 min_m=0.0460797884 max_m=0.055978924
+CLAY material seed=7 side=0 pixels=24576 submits=2 host_ms=6.7281 wait_ms=1.4772 digest=b8399bb0659a4417
+CLAY seed=7 side=1 dimensions=256x96 covered=20648 dents=762 slopes=1013 steps=301 gpu_ms=70.0482 host_ms=84.9647 digest=4ec66c18f59da54c
+STAMP oracle samples=13995 levels=9 pixels=32767 max_error=8.61287117e-06 height_error_m=1.49011612e-08 detail_error_m=1.51339918e-09 digest=a70415b0a839b831
+STAMP oracle samples=13995 levels=9 pixels=32767 max_error=8.28504562e-06 height_error_m=1.86264515e-08 detail_error_m=0 digest=7c11672ac570db71
+PROJECTED seed=7 side=1 residual_m=9.983778e-07 min_m=0.0469661839 max_m=0.0559827462
+CLAY material seed=7 side=1 pixels=24576 submits=2 host_ms=5.7266 wait_ms=1.5552 digest=ed4b985706167a1f
+CLAY seed=7 side=2 dimensions=128x96 covered=9396 dents=0 slopes=240 steps=93 gpu_ms=15.9731 host_ms=22.6811 digest=ec31bf2646f0e6e0
+STAMP oracle samples=12441 levels=8 pixels=16383 max_error=7.74860382e-06 height_error_m=3.7252903e-08 detail_error_m=5.23868948e-10 digest=dd980fd0141de150
+STAMP oracle samples=12441 levels=8 pixels=16383 max_error=7.74860382e-06 height_error_m=3.7252903e-08 detail_error_m=0 digest=b61360d7d81ef34f
+PROJECTED seed=7 side=2 residual_m=9.983778e-07 min_m=0.102008209 max_m=0.122479305
+CLAY material seed=7 side=2 pixels=12288 submits=1 host_ms=3.6170 wait_ms=0.9448 digest=488f6ef8622ad738
+CLAY seed=7 side=3 dimensions=128x96 covered=9396 dents=0 slopes=240 steps=14 gpu_ms=16.3545 host_ms=26.1654 digest=98cccce3956e67e0
+STAMP oracle samples=12441 levels=8 pixels=16383 max_error=7.74860382e-06 height_error_m=3.7252903e-08 detail_error_m=6.98491931e-10 digest=4a4991d471b8d05e
+STAMP oracle samples=12441 levels=8 pixels=16383 max_error=7.74860382e-06 height_error_m=3.7252903e-08 detail_error_m=0 digest=776153b3c24036d2
+PROJECTED seed=7 side=3 residual_m=9.983778e-07 min_m=0.120398529 max_m=0.122481935
+CLAY material seed=7 side=3 pixels=12288 submits=1 host_ms=3.0132 wait_ms=1.0705 digest=057ebc5ee41b72d5
+CLAY seed=7 side=4 dimensions=256x128 covered=27536 dents=12600 slopes=0 steps=59 gpu_ms=72.9465 host_ms=101.3783 digest=18832fece4416ec0
+STAMP oracle samples=13995 levels=9 pixels=43691 max_error=4.94718552e-06 height_error_m=1.49011612e-08 detail_error_m=1.41153578e-09 digest=ea79551fffdd0488
+STAMP oracle samples=13995 levels=9 pixels=43691 max_error=4.64916229e-06 height_error_m=1.49011612e-08 detail_error_m=0 digest=fdf87d41c0fc39c0
+PROJECTED seed=7 side=4 residual_m=9.90927219e-07 min_m=0.0100530246 max_m=0.0419829935
+CLAY material seed=7 side=4 pixels=32768 submits=2 host_ms=7.7072 wait_ms=1.5488 digest=412792e1c575ff6b
+CLAY seed=7 side=5 dimensions=256x128 covered=27536 dents=12600 slopes=0 steps=45 gpu_ms=72.0741 host_ms=93.8345 digest=3872add3203f45c0
+STAMP oracle samples=13995 levels=9 pixels=43691 max_error=9.95397568e-06 height_error_m=1.49011612e-08 detail_error_m=1.4770194e-09 digest=ae998fc164544a4b
+STAMP oracle samples=13995 levels=9 pixels=43691 max_error=9.77516174e-06 height_error_m=1.49011612e-08 detail_error_m=0 digest=58ffcb6392b81625
+PROJECTED seed=7 side=5 residual_m=9.983778e-07 min_m=0.0320450105 max_m=0.0419839546
+CLAY material seed=7 side=5 pixels=32768 submits=2 host_ms=10.1593 wait_ms=2.3395 digest=f1b0abc3c3524b88
+MODULAR_SOURCE seed=0 faces=6 bytes=10867656 ok=1 error=
+MODULAR_SOURCE seed=1 faces=6 bytes=10867656 ok=1 error=
+MODULAR_SOURCE seed=2 faces=6 bytes=10867656 ok=1 error=
+MODULAR_SOURCE seed=3 faces=6 bytes=10867656 ok=1 error=
+MODULAR_SOURCE seed=4 faces=6 bytes=10867656 ok=1 error=
+MODULAR_SOURCE seed=5 faces=6 bytes=10867656 ok=1 error=
+MODULAR_SOURCE seed=6 faces=6 bytes=10867656 ok=1 error=
+MODULAR_SOURCE seed=7 faces=6 bytes=10867656 ok=1 error=
+solid_face_projection_gpu_tests: FAIL
+</system-out>
+	</testcase>
+	<testcase name="smoke_geometry_pages" classname="smoke_geometry_pages" time="16.892" status="run">
+		<properties>
+			<property name="cmake_labels" value="vulkan"/>
+		</properties>
+		<system-out>[vk] Vulkan loader/general ERROR: loader_get_json: Failed to open JSON file D:\Epic Games\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win32.json
+[vk] Vulkan loader/general ERROR: loader_get_json: Failed to open JSON file D:\Epic Games\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win64.json
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_OBS_HOOK" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_RENDERDOC_Capture" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_VALVE_steam_overlay" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_VALVE_steam_fossilize" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_EOS_Overlay" forced disabled because ...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="smoke_vt_queue" classname="smoke_vt_queue" time="2.71471" status="run">
+		<properties>
+			<property name="cmake_labels" value="vulkan"/>
+		</properties>
+		<system-out>[vk] Vulkan loader/general ERROR: loader_get_json: Failed to open JSON file D:\Epic Games\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win32.json
+[vk] Vulkan loader/general ERROR: loader_get_json: Failed to open JSON file D:\Epic Games\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win64.json
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_OBS_HOOK" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_RENDERDOC_Capture" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_VALVE_steam_overlay" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_VALVE_steam_fossilize" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_EOS_Overlay" forced disabled because ...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="smoke_vt_normal_frame" classname="smoke_vt_normal_frame" time="34.2978" status="run">
+		<properties>
+			<property name="cmake_labels" value="vulkan"/>
+		</properties>
+		<system-out>[vk] Vulkan loader/general ERROR: loader_get_json: Failed to open JSON file D:\Epic Games\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win32.json
+[vk] Vulkan loader/general ERROR: loader_get_json: Failed to open JSON file D:\Epic Games\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win64.json
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_OBS_HOOK" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_RENDERDOC_Capture" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_VALVE_steam_overlay" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_VALVE_steam_fossilize" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_EOS_Overlay" forced disabled because ...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="smoke_vt_material_domain" classname="smoke_vt_material_domain" time="2.39523" status="run">
+		<properties>
+			<property name="cmake_labels" value="vulkan"/>
+		</properties>
+		<system-out>[vk] Vulkan loader/general ERROR: loader_get_json: Failed to open JSON file D:\Epic Games\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win32.json
+[vk] Vulkan loader/general ERROR: loader_get_json: Failed to open JSON file D:\Epic Games\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win64.json
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_OBS_HOOK" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_RENDERDOC_Capture" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_VALVE_steam_overlay" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_VALVE_steam_fossilize" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_EOS_Overlay" forced disabled because ...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="smoke_vt_pom_work" classname="smoke_vt_pom_work" time="1.73735" status="run">
+		<properties>
+			<property name="cmake_labels" value="vulkan"/>
+		</properties>
+		<system-out>[vk] Vulkan loader/general ERROR: loader_get_json: Failed to open JSON file D:\Epic Games\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win32.json
+[vk] Vulkan loader/general ERROR: loader_get_json: Failed to open JSON file D:\Epic Games\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win64.json
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_OBS_HOOK" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_RENDERDOC_Capture" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_VALVE_steam_overlay" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_VALVE_steam_fossilize" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_EOS_Overlay" forced disabled because ...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="smoke_vt_receiver_material" classname="smoke_vt_receiver_material" time="2.6502" status="run">
+		<properties>
+			<property name="cmake_labels" value="vulkan"/>
+		</properties>
+		<system-out>[vk] Vulkan loader/general ERROR: loader_get_json: Failed to open JSON file D:\Epic Games\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win32.json
+[vk] Vulkan loader/general ERROR: loader_get_json: Failed to open JSON file D:\Epic Games\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win64.json
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_OBS_HOOK" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_RENDERDOC_Capture" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_VALVE_steam_overlay" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_VALVE_steam_fossilize" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_EOS_Overlay" forced disabled because ...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="smoke_vt_module_residency" classname="smoke_vt_module_residency" time="2.33042" status="run">
+		<properties>
+			<property name="cmake_labels" value="vulkan"/>
+		</properties>
+		<system-out>[vk] Vulkan loader/general ERROR: loader_get_json: Failed to open JSON file D:\Epic Games\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win32.json
+[vk] Vulkan loader/general ERROR: loader_get_json: Failed to open JSON file D:\Epic Games\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win64.json
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_OBS_HOOK" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_RENDERDOC_Capture" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_VALVE_steam_overlay" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_VALVE_steam_fossilize" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_EOS_Overlay" forced disabled because ...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="smoke_vt_export" classname="smoke_vt_export" time="1.75603" status="run">
+		<properties>
+			<property name="cmake_labels" value="vulkan"/>
+		</properties>
+		<system-out>[vk] Vulkan loader/general ERROR: loader_get_json: Failed to open JSON file D:\Epic Games\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win32.json
+[vk] Vulkan loader/general ERROR: loader_get_json: Failed to open JSON file D:\Epic Games\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win64.json
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_OBS_HOOK" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_RENDERDOC_Capture" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_VALVE_steam_overlay" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_VALVE_steam_fossilize" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_EOS_Overlay" forced disabled because ...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="smoke_vt_surface_connections" classname="smoke_vt_surface_connections" time="1.85572" status="run">
+		<properties>
+			<property name="cmake_labels" value="vulkan"/>
+		</properties>
+		<system-out>[vk] Vulkan loader/general ERROR: loader_get_json: Failed to open JSON file D:\Epic Games\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win32.json
+[vk] Vulkan loader/general ERROR: loader_get_json: Failed to open JSON file D:\Epic Games\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win64.json
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_OBS_HOOK" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_RENDERDOC_Capture" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_VALVE_steam_overlay" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_VALVE_steam_fossilize" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_EOS_Overlay" forced disabled because ...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="smoke_vt_feedback_pair" classname="smoke_vt_feedback_pair" time="1.74821" status="run">
+		<properties>
+			<property name="cmake_labels" value="vulkan"/>
+		</properties>
+		<system-out>[vk] Vulkan loader/general ERROR: loader_get_json: Failed to open JSON file D:\Epic Games\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win32.json
+[vk] Vulkan loader/general ERROR: loader_get_json: Failed to open JSON file D:\Epic Games\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win64.json
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_OBS_HOOK" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_RENDERDOC_Capture" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_VALVE_steam_overlay" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_VALVE_steam_fossilize" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_EOS_Overlay" forced disabled because ...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="smoke_rt_empty_tlas" classname="smoke_rt_empty_tlas" time="10.0572" status="run">
+		<properties>
+			<property name="cmake_labels" value="vulkan"/>
+		</properties>
+		<system-out>[vk] Vulkan loader/general ERROR: loader_get_json: Failed to open JSON file D:\Epic Games\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win32.json
+[vk] Vulkan loader/general ERROR: loader_get_json: Failed to open JSON file D:\Epic Games\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win64.json
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_OBS_HOOK" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_RENDERDOC_Capture" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_VALVE_steam_overlay" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_VALVE_steam_fossilize" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_EOS_Overlay" forced disabled because ...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="smoke_water_field_nort" classname="smoke_water_field_nort" time="8.76844" status="run">
+		<properties>
+			<property name="cmake_labels" value="vulkan"/>
+		</properties>
+		<system-out>[vk] Vulkan loader/general ERROR: loader_get_json: Failed to open JSON file D:\Epic Games\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win32.json
+[vk] Vulkan loader/general ERROR: loader_get_json: Failed to open JSON file D:\Epic Games\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win64.json
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_OBS_HOOK" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_RENDERDOC_Capture" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_VALVE_steam_overlay" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_VALVE_steam_fossilize" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_EOS_Overlay" forced disabled because ...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="vulkan_scene_oracle_tests" classname="vulkan_scene_oracle_tests" time="2.25543" status="run">
+		<properties>
+			<property name="cmake_labels" value="viewer;vulkan"/>
+		</properties>
+		<system-out>scene oracle fixture: black rejected (scene frame has insufficient nonblack world coverage (0%): C:\Users\webde\AppData\Local\Temp\matter-scene-oracle-84475af960754fca9e8a793790061321\black.png)
+scene oracle fixture: uniform/corrupt rejected (scene frame lacks dynamic range/variance (range=0, sigma=0): C:\Users\webde\AppData\Local\Temp\matter-scene-oracle-84475af960754fca9e8a793790061321\uniform.png)
+scene oracle: coverage=100.00% range=52.1 sigma=13.5 colors=31 edges=1.27% quadrants=4/4
+Vulkan scene-frame oracle fixtures: PASS (3/3)
+</system-out>
+	</testcase>
+	<testcase name="vt_compositor_tests" classname="vt_compositor_tests" time="6.4812" status="run">
+		<properties>
+			<property name="cmake_labels" value="vulkan"/>
+		</properties>
+		<system-out>[vk] Vulkan loader/general ERROR: loader_get_json: Failed to open JSON file D:\Epic Games\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win32.json
+[vk] Vulkan loader/general ERROR: loader_get_json: Failed to open JSON file D:\Epic Games\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win64.json
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_OBS_HOOK" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_RENDERDOC_Capture" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_VALVE_steam_overlay" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_VALVE_steam_fossilize" forced disabled because name matches filter of env var 'VK_LOADER_LAYERS_DISABLE'.
+[vk] Vulkan loader/general warning: Layer "VK_LAYER_EOS_Overlay" forced disabled because ...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="vt_link_inventory_tests" classname="vt_link_inventory_tests" time="7.64582" status="run">
+		<properties>
+			<property name="cmake_labels" value="compiler-policy;vulkan"/>
+		</properties>
+		<system-out>VT generated link/object inventory: PASS
+</system-out>
+	</testcase>
+	<testcase name="viewer_graph_tests" classname="viewer_graph_tests" time="51.4378" status="fail">
+		<failure message="Failed"/>
+		<properties>
+			<property name="cmake_labels" value="compiler-policy"/>
+		</properties>
+		<system-out>**********************************************************************
+** Visual Studio 2022 Developer Command Prompt v17.14.7
+** Copyright (c) 2025 Microsoft Corporation
+**********************************************************************
+CMake Error at D:/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-1/cmake/tests/viewer_graph_tests.cmake:182 (message):
+  Viewer graph configure failed for retopo=ON.
+
+  stdout:
+
+  -- The C compiler identification is MSVC 19.44.35211.0
+
+  -- The CXX compiler identification is MSVC 19.44.35211.0
+
+  -- Detecting C compiler ABI info
+
+  -- Detecting C compiler ABI info - done
+
+  -- Check for working C compiler: C:/Program Files/Microsoft Visual
+  Studio/2022/Community/VC/Tools/MSVC/14.44.35207/bin/Hostx64/x64/cl.exe -
+  skipped
+
+  -- Detecting C compile features
+
+  -- Detecting C compile features - done
+
+  -- Detecting CXX compiler ABI info
+
+  -- Detecting CXX compiler ABI info - done
+
+  -- Check for working CXX compiler: C:/Program Files/Microsoft Visual
+  Studio/2022/Community/VC/Tools/MSVC/14.44.35207/bin/Hostx64/x64/cl.exe -
+  skipped
+
+  -- Detecting CXX compile features
+
+  -- Detecting CXX compile features - done
+
+  -- Configuring incomplete, errors occurred!
+
+
+
+  stderr:
+
+  CMake Error at
+  MatterEditor/build/cmake/viewer-graph-test/assert-viewer-graph.cmake:90
+  (message):
+
+    viewer source census is wrong for retopo=ON; count=219, unique=219,
+    expected=217
+
+  Call Stack (most recent call first):
+
+    MatterEditor/build/cmake/viewer-graph-test/assert-viewer-graph.cmake:141 (matter_assert_viewer_graph)
+    CMakeLists.txt:DEFERRED
+
+
+
+
+
+
+
+</system-out>
+	</testcase>
+	<testcase name="python_contract_tests" classname="python_contract_tests" time="3.25459" status="run">
+		<properties>
+			<property name="cmake_labels" value="compiler-policy"/>
+		</properties>
+		<system-out>-- Configuring done (0.5s)
+-- Generating done (0.1s)
+-- Build files have been written to: D:/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-1/MatterEditor/build/cmake/python-contract-test/alternate-launcher
+-- Configuring done (0.3s)
+-- Generating done (0.1s)
+-- Build files have been written to: D:/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-1/MatterEditor/build/cmake/python-contract-test/direct-python
+python executable contract tests: PASS
+</system-out>
+	</testcase>
+	<testcase name="shader_rebuild_tests" classname="shader_rebuild_tests" time="13.9295" status="run">
+		<properties>
+			<property name="cmake_labels" value="shader"/>
+		</properties>
+		<system-out>Legacy expanded shader inputs exceed CMD limit: 12752 characters
+-- Configuring done (0.3s)
+-- Generating done (0.2s)
+-- Build files have been written to: D:/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-1/MatterEditor/build/cmake/shader-rebuild-test/native shader build with spaces and a long output directory
+[1/61] Compiling Vulkan shader dependent_b.comp
+[2/61] Compiling Vulkan shader dependent_a.comp
+[3/61] Compiling Vulkan shader inventory_padding_shader_00.comp
+[4/61] Compiling Vulkan shader inventory_padding_shader_01.comp
+[5/61] Compiling Vulkan shader inventory_padding_shader_03.comp
+[6/61] Compiling Vulkan shader inventory_padding_shader_02.comp
+[7/61] Compiling Vulkan shader inventory_padding_shader_04.comp
+[8/61] Compiling Vulkan shader inventory_padding_shader_05.comp
+[9/61] Compiling Vulkan shader inventory_padding_shader_06.comp
+[10/61] Compiling Vulkan shader inventory_padding_shader_07.comp
+[11/61] Compiling Vulkan shader inventory_padding_shader_08.comp
+[12/61] Compiling Vulkan ...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="shader_input_list_tests" classname="shader_input_list_tests" time="2.01449" status="run">
+		<properties>
+			<property name="cmake_labels" value="shader"/>
+		</properties>
+		<system-out>........
+----------------------------------------------------------------------
+Ran 8 tests in 1.597s
+
+OK
+</system-out>
+	</testcase>
+	<testcase name="frame_pacer_tests" classname="frame_pacer_tests" time="0.145057" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu;editor"/>
+		</properties>
+		<system-out>frame_pacer: PASS
+</system-out>
+	</testcase>
+	<testcase name="perf_gpu_stats_tests" classname="perf_gpu_stats_tests" time="1.11471" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu;editor"/>
+		</properties>
+		<system-out>PASS raw GPU timing percentiles (median/p95/p99/max), validity, duplicates, reset, lighting dispatches
+</system-out>
+	</testcase>
+	<testcase name="agent_protocol_tests" classname="agent_protocol_tests" time="1.25041" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu;editor"/>
+		</properties>
+		<system-out>agent protocol tests: ALL PASS
+</system-out>
+	</testcase>
+	<testcase name="scene_inventory_tests" classname="scene_inventory_tests" time="2.9576" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu;editor"/>
+		</properties>
+		<system-out>scene inventory tests: ALL PASS
+</system-out>
+	</testcase>
+	<testcase name="scene_diff_tests" classname="scene_diff_tests" time="2.38515" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu;editor"/>
+		</properties>
+		<system-out>scene diff tests: ALL PASS
+</system-out>
+	</testcase>
+	<testcase name="regen_job_tests" classname="regen_job_tests" time="0.880137" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu;editor"/>
+		</properties>
+		<system-out>Regeneration job tests passed.
+</system-out>
+	</testcase>
+	<testcase name="procedural_parameter_tests" classname="procedural_parameter_tests" time="0.678632" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu;editor"/>
+		</properties>
+		<system-out>procedural parameter tests: PASS
+</system-out>
+	</testcase>
+	<testcase name="selection_command_tests" classname="selection_command_tests" time="0.764215" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu;editor"/>
+		</properties>
+		<system-out>Selection command tests passed.
+</system-out>
+	</testcase>
+	<testcase name="viewport_capture_tests" classname="viewport_capture_tests" time="1.66325" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu;editor"/>
+		</properties>
+		<system-out>Viewport capture tests passed.
+</system-out>
+	</testcase>
+	<testcase name="asset_root_tests" classname="asset_root_tests" time="0.858294" status="run">
+		<properties>
+			<property name="cmake_labels" value="cpu;editor"/>
+		</properties>
+		<system-out>test_asset_root
+-- a dev-layout exe resolves the cwd's projects/
+  ok: the author's projects/ wins over the build checkout's
+  ok: the build checkout's projects/ is not returned
+-- the cwd wins even when the exe sits deeper in its own tree
+  ok: the cwd's projects/ wins over the deeper exe walk-up
+-- a packaged layout still uses the folder next to the exe
+  ok: an exe-adjacent projects/ is found
+  ok: the exe-adjacent folder beats both cwd and exe walk-up
+-- a dev build launched from an unrelated cwd still finds its tree
+  ok: the walk-up from the exe dir runs when the cwd has no projects/
+-- issues/ and MatterEngine3/shared-lib share the same order
+  ok: issues_root()'s lookup follows the cwd before the exe tree
+  ok: shared_lib_root()'s nested lookup walks up to the cwd's engine root
+-- nothing found keeps the bare relative name
+  ok: the failure message still says just "projects"
+  ok: an undeterminable exe dir and cwd do not throw
+ALL PASS
+</system-out>
+	</testcase>
+	<testcase name="matter_agent_client_tests" classname="matter_agent_client_tests" time="1.12598" status="run">
+		<properties>
+			<property name="cmake_labels" value="editor;python"/>
+		</properties>
+		<system-out>......matter-agent: ignored non-JSON result line: Expecting value: line 1 column 1 (char 0)
+..
+----------------------------------------------------------------------
+Ran 8 tests in 0.212s
+
+OK
+</system-out>
+	</testcase>
+	<testcase name="windows_build_wrapper_contract" classname="windows_build_wrapper_contract" time="70.3581" status="run">
+		<properties>
+			<property name="cmake_labels" value="compiler-policy;editor"/>
+		</properties>
+		<system-out>A
+
+c
+o
+n
+n
+e
+c
+t
+i
+o
+n
+
+a
+t
+t
+e
+m
+p
+t
+
+f
+a
+i
+l
+e
+d
+
+b
+e
+c
+a
+u
+s
+e
+
+t
+h
+e
+
+c
+o
+n
+n
+e
+c
+t
+e
+d
+
+p
+a
+r
+t
+y
+
+d
+i
+d
+
+n
+o
+t
+
+p
+r
+o
+p
+e
+r
+l
+y
+
+r
+e
+s
+p
+o
+n
+d
+
+a
+f
+t
+e
+r
+
+a
+
+p
+e
+r
+i
+o
+d
+
+o
+f
+
+t
+i
+m
+e
+,
+
+o
+r
+
+e
+s
+t
+a
+b
+l
+i
+s
+h
+e
+d
+
+c
+o
+n
+n
+e
+c
+t
+i
+o
+n
+
+f
+a
+i
+l
+e
+d
+
+b
+e
+c
+a
+u
+s
+e
+
+c
+o
+n
+n
+e
+c
+t
+e
+d
+
+h
+o
+s
+t
+
+h
+a
+s
+
+f
+a
+i
+l
+e
+d
+
+t
+o
+
+r
+e
+s
+p
+o
+n
+d
+.
+
+
+
+
+E
+r
+r
+o
+r
+
+c
+o
+d
+e
+:
+
+W
+s
+l
+/
+S
+e
+r
+v
+i
+c
+e
+/
+0
+x
+8
+0
+0
+7
+2
+7
+4
+c
+
+
+
+WSL could not launch the contract (attempt 1 of 4)
+WSL build-wrapper contract passed
+native and WSL build-wrapper contracts passed
+</system-out>
+	</testcase>
+	<testcase name="editor_registration_census" classname="editor_registration_census" time="44.539" status="fail">
+		<failure message="Failed"/>
+		<properties>
+			<property name="cmake_labels" value="editor"/>
+		</properties>
+		<system-out>D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-1\MatterEditor\build\windows-msvc\editor.exe did not
+finish its runtime registration census within 30 seconds
+At D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-1\cmake\tests\editor_registration_census.ps1:60
+char:9
++         throw "$Path did not finish its runtime registration census w ...
++         ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : OperationStopped: (D:\Shared With ...thin 30 seconds:String) [], RuntimeException
+    + FullyQualifiedErrorId : D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-1\MatterEditor\build\wind
+   ows-msvc\editor.exe did not finish its runtime registration census within 30 seconds
+
+</system-out>
+	</testcase>
+	<testcase name="package_project_name_tests" classname="package_project_name_tests" time="2.47637" status="run">
+		<properties>
+			<property name="cmake_labels" value="editor;package;safety"/>
+		</properties>
+		<system-out>CMake package project-name safety: PASS
+</system-out>
+	</testcase>
+	<testcase name="windows_package_stage_tests" classname="windows_package_stage_tests" time="2.24946" status="run">
+		<properties>
+			<property name="cmake_labels" value="editor;package;safety"/>
+		</properties>
+		<system-out>.....................
+----------------------------------------------------------------------
+Ran 21 tests in 0.878s
+
+OK
+</system-out>
+	</testcase>
+	<testcase name="vt_density_tests" classname="vt_density_tests" time="1.64645" status="run">
+		<properties>
+			<property name="cmake_labels" value="editor;python"/>
+		</properties>
+		<system-out>...
+----------------------------------------------------------------------
+Ran 3 tests in 0.001s
+
+OK
+</system-out>
+	</testcase>
+	<testcase name="vt_acceptance_tests" classname="vt_acceptance_tests" time="2.32141" status="run">
+		<properties>
+			<property name="cmake_labels" value="editor;python"/>
+		</properties>
+		<system-out>...........
+----------------------------------------------------------------------
+Ran 11 tests in 0.912s
+
+OK
+</system-out>
+	</testcase>
+	<testcase name="geometry_paging_report_tests" classname="geometry_paging_report_tests" time="1.70595" status="run">
+		<properties>
+			<property name="cmake_labels" value="editor;python"/>
+		</properties>
+		<system-out>....
+----------------------------------------------------------------------
+Ran 4 tests in 0.000s
+
+OK
+</system-out>
+	</testcase>
+	<testcase name="frame_attribution_tests" classname="frame_attribution_tests" time="2.89955" status="run">
+		<properties>
+			<property name="cmake_labels" value="editor;python"/>
+		</properties>
+		<system-out>...........
+----------------------------------------------------------------------
+Ran 11 tests in 0.631s
+
+OK
+</system-out>
+	</testcase>
+	<testcase name="windows_package_tests" classname="windows_package_tests" time="1500.4" status="fail">
+		<failure message="Timeout"/>
+		<properties>
+			<property name="cmake_labels" value="editor;package"/>
+		</properties>
+		<system-out>package fixture: missing executable rejected
+package fixture: forbidden GNU import rejected
+package fixture: dynamic MSVC CRT import rejected
+package fixture: missing notices rejected
+package fixture: missing manifest rejected
+package fixture: compiler mismatch rejected
+package fixture: extra file rejected
+package fixture: missing PDB rejected
+package fixture: extra PDB rejected
+package fixture: runtime_dlls mismatch rejected
+package fixture: hash tamper rejected
+package fixture: unused DLL rejected
+package fixture: missing imported DLL rejected
+package fixture: missing notice component rejected
+package fixture: empty notice content rejected
+package fixture: dirty release provenance rejected
+package fixture: dependency options mismatch rejected
+package fixture: developer-PATH-only launch rejected
+package fixture: PhysX/CUDA feature mismatch rejected
+package fixture: PhysX runtime alias rejected
+package fixture: missing NVIDIA notice file rejected
+package fixture: missing accepted hydrology artifact rejected
+package fixture: missing DLSS runtime rejected
+package fixture: disabled DLSS runtime rejected
+package fixture: missing DLSS license rejected
+package fixture: extra frame generation runtime rejected
+package fixture: DLSS runtime hash tamper rejected
+package fixture: enabled DLSS does not relax editor static CRT policy rejected
+</system-out>
+	</testcase>
+	<testcase name="matter_third_party_smoke" classname="matter_third_party_smoke" time="1.65068" status="run">
+		<properties>
+			<property name="cmake_labels" value="third_party"/>
+		</properties>
+		<system-out>matter_third_party_smoke: GLFW 3.4.0, ImGui 1.92.9 WIP, autoremesher 0.1.0-2026-07-07
+</system-out>
+	</testcase>
+	<testcase name="matter_third_party_binary_audit" classname="matter_third_party_binary_audit" time="16.6967" status="run">
+		<properties>
+			<property name="cmake_labels" value="third_party"/>
+		</properties>
+		<system-out>matter_third_party_binary_audit: clean
+  dependencies: WS2_32.dll, dbghelp.dll, GDI32.dll, USER32.dll, SHELL32.dll, KERNEL32.dll, ADVAPI32.dll, IMM32.dll
+  Ninja closure: 309 commands and 618 inputs; no .a/.o/MinGW/GNU runtime contamination
+  autoremesher: 16 optional-loader definitions renamed; fallback symbols authoritative
+</system-out>
+	</testcase>
+	<testcase name="matter_third_party_review_policy" classname="matter_third_party_review_policy" time="10.2009" status="run">
+		<properties>
+			<property name="cmake_labels" value="third_party"/>
+		</properties>
+		<system-out>matter_third_party_review_policy: clean
+  autoremesher: forced NDEBUG undef on 172 commands
+  NL optional loaders: 16 real definitions renamed; fallback names authoritative
+  smoke: empty-input remesh call present
+</system-out>
+	</testcase>
+	<testcase name="matter_third_party_audit_rejects_graph_archive" classname="matter_third_party_audit_rejects_graph_archive" time="6.64657" status="run">
+		<properties>
+			<property name="cmake_labels" value="third_party"/>
+		</properties>
+		<system-out>matter_third_party_audit_rejects_graph_archive: clean
+</system-out>
+	</testcase>
+</testsuite>
