@@ -40,4 +40,16 @@ inline GpuMat4 pack_glsl_mat4(const matter::Mat4f& matrix) {
     return packed;
 }
 
+// True when the matrix's linear part has a negative determinant: a mirror,
+// which turns counter-clockwise triangles clockwise on screen. The upper 3x3
+// determinant is the same for the matrix and its transpose, so the packing
+// order does not matter.
+inline bool gpu_mat4_reverses_winding(const GpuMat4& matrix) {
+    const float* e = matrix.elements;
+    const float determinant = e[0] * (e[5] * e[10] - e[6] * e[9]) -
+                              e[4] * (e[1] * e[10] - e[2] * e[9]) +
+                              e[8] * (e[1] * e[6] - e[2] * e[5]);
+    return determinant < 0.0f;
+}
+
 } // namespace viewer

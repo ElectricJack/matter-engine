@@ -1,0 +1,9 @@
+aq test: no interpreter found for /tmp/noble-zenith-31-epoch4 (no .venv, no resources.test_interpreters entry); using /usr/bin/python3.12
+aq test: slot 2 of 6, -n 6
+$ /usr/bin/python3.12 -m pytest --dist loadfile -m 'not perf and not migration and not slow and not tmux and not integration' -n 0 /tmp/noble-zenith-31-epoch4/test_counter_characterization.py -q -s
+poison: warnings=6 total=15949192134
+equal: warnings=1 total=7 (two samples would sum to 14)
+stale: warnings=6 total=15 (one sample per slot sums to 5)
+
+.
+1 passed in 0.55s
