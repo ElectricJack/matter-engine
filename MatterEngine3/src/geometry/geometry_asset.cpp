@@ -71,7 +71,6 @@ struct RootCache::Impl {
 };
 RootCache::RootCache(std::string directory, uint64_t bytes) : d_(new Impl) {
     d_->config.store.dir = std::move(directory); d_->config.resident_bytes = bytes;
-    d_->config.bank = asset_store::PageBank::create(static_cast<size_t>(bytes));
 }
 RootCache::~RootCache() {
     std::string error;
@@ -88,7 +87,9 @@ RootCache::WriterStats RootCache::writer_stats() const {
 const std::string& RootCache::directory() const { return d_->config.store.dir; }
 asset_store::PageCacheStats RootCache::stats() const {
     std::lock_guard<std::mutex> lock(d_->mutex);
-    return d_->cache ? d_->cache->stats() : asset_store::PageCacheStats{};
+    auto result = d_->cache ? d_->cache->stats() : asset_store::PageCacheStats{};
+    if (d_->config.bank) result.bank = d_->config.bank->stats();
+    return result;
 }
 std::shared_ptr<const CachedAsset> RootCache::load(const std::string& key, std::string& error,
                                                    CacheLoadStatus* status, bool load_root_payloads) {
@@ -103,6 +104,10 @@ std::shared_ptr<const CachedAsset> RootCache::load(const std::string& key, std::
         if (status) *status = CacheLoadStatus::Hit;
         error.clear(); return pending->second;
     }
+    // PartStore owns this cache even with VG disabled. Commit its aggregate
+    // payload bank only when a paging-enabled consumer actually loads roots.
+    if (!d_->config.bank)
+        d_->config.bank = asset_store::PageBank::create(static_cast<size_t>(d_->config.resident_bytes));
     if (!d_->config.bank) { error = "geometry root bank allocation failed"; return {}; }
     if (!d_->cache) {
         std::error_code ec;
