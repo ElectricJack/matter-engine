@@ -1,0 +1,195 @@
+{
+  "schema_version": 3,
+  "task_id": "azure-impact-46.2",
+  "claim_epoch": 25,
+  "recorded_at_utc": "2026-10-25T10:06:23.983314+00:00",
+  "status": "accepted",
+  "acceptance_satisfied": true,
+  "authority": {
+    "supervisor_message": "msg-415e728993554a2e813c9edaf2032bd7",
+    "observation_time_utc": "2026-10-25 approximately 09:55Z",
+    "receipt": "aq wait ack --wait-id 1ee67161-8495-44a7-94c0-f5d83f882cef --continuation-id 3b963f86-d515-48cf-b6d8-1d766dd90838 --generation 2 --claim-epoch 25",
+    "receipt_result": "acknowledged; full supervisor reply delivered",
+    "message_status_result": "Separate aq message status returned not found; authority is the full reply delivered by wait acknowledgment.",
+    "direction": "Finish and close; no further wait. Current selection supersedes previous clear-crest canaries."
+  },
+  "repository": {
+    "origin": "https://github.com/ElectricJack/matter-engine.git",
+    "repository_id": "matter-engine-cpp"
+  },
+  "checkpoint_recovery": {
+    "commit": "ad16df4ef085450890be2515ac60dfd734cfc166",
+    "command": "git checkout ad16df4e -- docs/agent/aq-promotion/evidence/canary_inventory.json",
+    "disposition": "Restored then replaced historical blocked inventory with selected canary evidence."
+  },
+  "current_selected_canary": {
+    "task_id": "solid-grove-19.1",
+    "branch": "aq/solid-grove-19.1",
+    "source_sha": "f7fbcdde3fe264bb3f075290a4352a397454a5a7",
+    "source_sha_evidence": "Second parent and commit subject of 10900f35 identify integrated leaf source.",
+    "status": "COMPLETED",
+    "selected_by": "supervisor-global",
+    "selected_at_utc": "2026-10-25T06:00:00Z",
+    "eligible_at_selection": true,
+    "current_disposition": "train delivered; branch deleted on origin per supervisor",
+    "completion_id": null,
+    "completion_id_visibility": "not visible from supervisor task reads"
+  },
+  "current_immediate_parent": {
+    "task_id": "solid-grove-19",
+    "ref": "refs/heads/aq/epic/train-canary-retire-dead-tlas-manager-drawrecord-fields-2",
+    "head_at_publication": "d86587fe78c42c6de8c2685ba959681802b26ab5",
+    "status": "COMPLETED",
+    "required_child_state": "complete",
+    "completion_id": null,
+    "completion_id_visibility": "not visible from supervisor task reads",
+    "current_ref_state": "deleted on origin per supervisor"
+  },
+  "outer_target": {
+    "ref": "refs/heads/dev",
+    "head_at_supervisor_observation": "1e8ed3cd2f3856a559750ec6849b1bcc732a0bb8"
+  },
+  "delivery": {
+    "actor": "train (supervisor-reported provenance)",
+    "leaf_integration_commits": [
+      "10900f352da82346192127c6c2d1755a0a828842",
+      "d76785efaee5accc56783a060a447777d253b0f7"
+    ],
+    "root_pr": "https://github.com/ElectricJack/matter-engine/pull/54",
+    "root_pr_head": "d86587fe78c42c6de8c2685ba959681802b26ab5",
+    "merged_at_utc": "2026-10-25T07:20:20Z",
+    "merge_commit": "1e8ed3cd2f3856a559750ec6849b1bcc732a0bb8",
+    "expected_old_target_from_merge_first_parent": "31e14641d85d9edd59d9430f3655563c4f160fef",
+    "manual_delivery": false
+  },
+  "source_containment": [
+    {
+      "source": "f7fbcdde3fe264bb3f075290a4352a397454a5a7",
+      "target": "10900f352da82346192127c6c2d1755a0a828842",
+      "contains_source": true
+    },
+    {
+      "source": "f7fbcdde3fe264bb3f075290a4352a397454a5a7",
+      "target": "d76785efaee5accc56783a060a447777d253b0f7",
+      "contains_source": true
+    },
+    {
+      "source": "f7fbcdde3fe264bb3f075290a4352a397454a5a7",
+      "target": "d86587fe78c42c6de8c2685ba959681802b26ab5",
+      "contains_source": true
+    },
+    {
+      "source": "f7fbcdde3fe264bb3f075290a4352a397454a5a7",
+      "target": "1e8ed3cd2f3856a559750ec6849b1bcc732a0bb8",
+      "contains_source": true
+    }
+  ],
+  "tree_ci_coverage": [
+    {
+      "head": "d86587fe78c42c6de8c2685ba959681802b26ab5",
+      "aq_push_coverage": true,
+      "pull_request_targets": [
+        "dev",
+        "staging",
+        "main"
+      ],
+      "verifier_test_step": true,
+      "files": [
+        {
+          "path": ".github/workflows/tests.yml",
+          "blob_oid": "3db84309c18ff56f732d7ba50fb40eeae6c4a4e6",
+          "sha256_stripped_text": "c41ef0850f6238481e813d70f2e6b528e7dcfcbac000d79f7ae8994c3bab950c"
+        },
+        {
+          "path": ".github/workflows/main-attestation.yml",
+          "blob_oid": "6b723166d6332b196ad15737ff1dfde261d96798",
+          "sha256_stripped_text": "54e2739972591db86cefb2d5b7f4338d34a3c36253bbccbfaeffd02626abf31f"
+        },
+        {
+          "path": "tools/aq_attestation.py",
+          "blob_oid": "be5ecfbde3c9ee8e596b96058b08a6b34af3beff",
+          "sha256_stripped_text": "8b46fcfb8222f53952a74c9f2353c8d5c35cc1b48990f0ea0f635bb98ce5dd09"
+        },
+        {
+          "path": "tools/tests/test_aq_attestation.py",
+          "blob_oid": "23a2cf3c2fc15d8653241ea4e717d9c784e0bf13",
+          "sha256_stripped_text": "15837ff853155258d406aff780c0e49d1091b84bc1305cfe4fc9cd052af44b9f"
+        }
+      ]
+    },
+    {
+      "head": "1e8ed3cd2f3856a559750ec6849b1bcc732a0bb8",
+      "aq_push_coverage": true,
+      "pull_request_targets": [
+        "dev",
+        "staging",
+        "main"
+      ],
+      "verifier_test_step": true,
+      "files": [
+        {
+          "path": ".github/workflows/tests.yml",
+          "blob_oid": "3db84309c18ff56f732d7ba50fb40eeae6c4a4e6",
+          "sha256_stripped_text": "c41ef0850f6238481e813d70f2e6b528e7dcfcbac000d79f7ae8994c3bab950c"
+        },
+        {
+          "path": ".github/workflows/main-attestation.yml",
+          "blob_oid": "6b723166d6332b196ad15737ff1dfde261d96798",
+          "sha256_stripped_text": "54e2739972591db86cefb2d5b7f4338d34a3c36253bbccbfaeffd02626abf31f"
+        },
+        {
+          "path": "tools/aq_attestation.py",
+          "blob_oid": "be5ecfbde3c9ee8e596b96058b08a6b34af3beff",
+          "sha256_stripped_text": "8b46fcfb8222f53952a74c9f2353c8d5c35cc1b48990f0ea0f635bb98ce5dd09"
+        },
+        {
+          "path": "tools/tests/test_aq_attestation.py",
+          "blob_oid": "23a2cf3c2fc15d8653241ea4e717d9c784e0bf13",
+          "sha256_stripped_text": "15837ff853155258d406aff780c0e49d1091b84bc1305cfe4fc9cd052af44b9f"
+        }
+      ]
+    }
+  ],
+  "ci": {
+    "source": "supervisor reply; hosted runs not repeated by worker",
+    "blocker": "resolved",
+    "repair_task": "steady-quest-73",
+    "repair_commit": "9bfd09beadb9af1936f6500b12f01faca15be43f",
+    "repair_pr": 56,
+    "repair_landed_at_utc": "2026-10-25T07:09:00Z",
+    "pr54_passed_checks": [
+      "Linux foundation build and tests",
+      "Component build matrix",
+      "Native build scope"
+    ],
+    "windows_runtime_readiness": "No new Windows runner preflight or native execution claim in this reconciliation."
+  },
+  "control_observation": {
+    "source": "supervisor reply",
+    "effective": "train",
+    "desired": "train",
+    "generation": 23,
+    "owner": "supervisor-global",
+    "batch_count": 11,
+    "open_or_nonterminal_batches": 0,
+    "other_batches": "aborted history, including old smart-dune and edfc8c3a batches with withheld members",
+    "remaining_blockers": "Other epics have epic_completion_pending; not this canary."
+  },
+  "ordinary_prerequisites": {
+    "selected_epic_required_children": "complete",
+    "selected_epic_completion": "complete",
+    "selected_root_pr": "merged by train",
+    "remaining_for_this_canary": []
+  },
+  "limitations": [
+    "Supervisor supplies task completion, deleted remote refs, hosted checks and integration-control observations; local Git independently verifies commit identities, containment and exact epic/dev tree coverage.",
+    "Completion IDs unavailable: null is intentional, not fabricated.",
+    "This evidence does not claim full fleet migration, Windows runtime qualification, or staging promotion completion; those remain separately owned.",
+    "Control generation and reported dev head are timestamped evidence, not mutation fences."
+  ],
+  "closure_disposition": {
+    "outcome": "pass",
+    "work_outcome": "shipped",
+    "scope": "Selected canary inventory reconciliation per supervisor acceptance direction"
+  }
+}
