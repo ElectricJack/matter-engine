@@ -1,0 +1,64 @@
+make: Entering directory '/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/MatterEditor'
+make -C ../MatterEngine3 vulkan-spirv
+make[1]: Entering directory '/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/MatterEngine3'
+/tmp/sharp-zenith-52-shaderc/root/usr/bin/glslc --target-env=vulkan1.3 -O -Ishaders_vk shaders_vk/transform_probe.comp -o build/shaders_vk/transform_probe.comp.spv
+/tmp/sharp-zenith-52-shaderc/root/usr/bin/glslc --target-env=vulkan1.3 -O -Ishaders_vk shaders_vk/smoke_triangle.vert -o build/shaders_vk/smoke_triangle.vert.spv
+/tmp/sharp-zenith-52-shaderc/root/usr/bin/glslc --target-env=vulkan1.3 -O -Ishaders_vk shaders_vk/smoke_triangle.frag -o build/shaders_vk/smoke_triangle.frag.spv
+/tmp/sharp-zenith-52-shaderc/root/usr/bin/glslc --target-env=vulkan1.3 -O -Ishaders_vk shaders_vk/vt_material_domain_probe.comp -o build/shaders_vk/vt_material_domain_probe.comp.spv
+/tmp/sharp-zenith-52-shaderc/root/usr/bin/glslc --target-env=vulkan1.3 -O -Ishaders_vk shaders_vk/gpu_mesh_scan_blocks.comp -o build/shaders_vk/gpu_mesh_scan_blocks.comp.spv
+/tmp/sharp-zenith-52-shaderc/root/usr/bin/glslc --target-env=vulkan1.3 -O -Ishaders_vk shaders_vk/gpu_mesh_scan_add.comp -o build/shaders_vk/gpu_mesh_scan_add.comp.spv
+/tmp/sharp-zenith-52-shaderc/root/usr/bin/glslc --target-env=vulkan1.3 -O -Ishaders_vk shaders_vk/gpu_mesh_bin_count.comp -o build/shaders_vk/gpu_mesh_bin_count.comp.spv
+/tmp/sharp-zenith-52-shaderc/root/usr/bin/glslc --target-env=vulkan1.3 -O -Ishaders_vk shaders_vk/gpu_mesh_bin_scatter.comp -o build/shaders_vk/gpu_mesh_bin_scatter.comp.spv
+/tmp/sharp-zenith-52-shaderc/root/usr/bin/glslc --target-env=vulkan1.3 -O -Ishaders_vk shaders_vk/gpu_mesh_bin_sort.comp -o build/shaders_vk/gpu_mesh_bin_sort.comp.spv
+/tmp/sharp-zenith-52-shaderc/root/usr/bin/glslc --target-env=vulkan1.3 -O -Ishaders_vk shaders_vk/gpu_mesh_field.comp -o build/shaders_vk/gpu_mesh_field.comp.spv
+/tmp/sharp-zenith-52-shaderc/root/usr/bin/glslc --target-env=vulkan1.3 -O -Ishaders_vk shaders_vk/gpu_mesh_classify.comp -o build/shaders_vk/gpu_mesh_classify.comp.spv
+/tmp/sharp-zenith-52-shaderc/root/usr/bin/glslc --target-env=vulkan1.3 -O -Ishaders_vk shaders_vk/gpu_mesh_compact.comp -o build/shaders_vk/gpu_mesh_compact.comp.spv
+/tmp/sharp-zenith-52-shaderc/root/usr/bin/glslc --target-env=vulkan1.3 -O -Ishaders_vk shaders_vk/gpu_mesh_emit.comp -o build/shaders_vk/gpu_mesh_emit.comp.spv
+/tmp/sharp-zenith-52-shaderc/root/usr/bin/glslc --target-env=vulkan1.3 -O -Ishaders_vk shaders_vk/solid_field.comp -o build/shaders_vk/solid_field.comp.spv
+/tmp/sharp-zenith-52-shaderc/root/usr/bin/glslc --target-env=vulkan1.3 -O -Ishaders_vk shaders_vk/solid_face_project.comp -o build/shaders_vk/solid_face_project.comp.spv
+/tmp/sharp-zenith-52-shaderc/root/usr/bin/glslc --target-env=vulkan1.3 -O -Ishaders_vk shaders_vk/face_material.comp -o build/shaders_vk/face_material.comp.spv
+/tmp/sharp-zenith-52-shaderc/root/usr/bin/glslc --target-env=vulkan1.3 -O -Ishaders_vk shaders_vk/finite_stamp_probe.comp -o build/shaders_vk/finite_stamp_probe.comp.spv
+/tmp/sharp-zenith-52-shaderc/root/usr/bin/glslc --target-env=vulkan1.3 -O -Ishaders_vk shaders_vk/solid_classify.comp -o build/shaders_vk/solid_classify.comp.spv
+/tmp/sharp-zenith-52-shaderc/root/usr/bin/glslc --target-env=vulkan1.3 -O -Ishaders_vk shaders_vk/solid_scan.comp -o build/shaders_vk/solid_scan.comp.spv
+/tmp/sharp-zenith-52-shaderc/root/usr/bin/glslc --target-env=vulkan1.3 -O -Ishaders_vk shaders_vk/solid_emit.comp -o build/shaders_vk/solid_emit.comp.spv
+/tmp/sharp-zenith-52-shaderc/root/usr/bin/glslc --target-env=vulkan1.3 -O -Ishaders_vk shaders_vk/atmosphere_transmittance.comp -o build/shaders_vk/atmosphere_transmittance.comp.spv
+/tmp/sharp-zenith-52-shaderc/root/usr/bin/glslc --target-env=vulkan1.3 -O -Ishaders_vk shaders_vk/atmosphere_multiscatter.comp -o build/shaders_vk/atmosphere_multiscatter.comp.spv
+/tmp/sharp-zenith-52-shaderc/root/usr/bin/glslc --target-env=vulkan1.3 -O -Ishaders_vk shaders_vk/atmosphere_sky_view.comp -o build/shaders_vk/atmosphere_sky_view.comp.spv
+/tmp/sharp-zenith-52-shaderc/root/usr/bin/glslc --target-env=vulkan1.3 -O -Ishaders_vk shaders_vk/atmosphere_irradiance.comp -o build/shaders_vk/atmosphere_irradiance.comp.spv
+/tmp/sharp-zenith-52-shaderc/root/usr/bin/glslc --target-env=vulkan1.3 -O -Ishaders_vk shaders_vk/environment_sampling_test.comp -o build/shaders_vk/environment_sampling_test.comp.spv
+/tmp/sharp-zenith-52-shaderc/root/usr/bin/glslc --target-env=vulkan1.3 -O -Ishaders_vk shaders_vk/animation_skin.comp -o build/shaders_vk/animation_skin.comp.spv
+/tmp/sharp-zenith-52-shaderc/root/usr/bin/glslc --target-env=vulkan1.3 -O -Ishaders_vk shaders_vk/cull.comp -o build/shaders_vk/cull.comp.spv
+/tmp/sharp-zenith-52-shaderc/root/usr/bin/glslc --target-env=vulkan1.3 -O -Ishaders_vk shaders_vk/geometry_cut_probe.comp -o build/shaders_vk/geometry_cut_probe.comp.spv
+/tmp/sharp-zenith-52-shaderc/root/usr/bin/glslc --target-env=vulkan1.3 -O -Ishaders_vk shaders_vk/geometry_select.comp -o build/shaders_vk/geometry_select.comp.spv
+/tmp/sharp-zenith-52-shaderc/root/usr/bin/glslc --target-env=vulkan1.3 -O -Ishaders_vk ../libs/MatterGraphics/shaders/primary_light_cull.comp -o build/shaders_vk/primary_light_cull.comp.spv
+/tmp/sharp-zenith-52-shaderc/root/usr/bin/glslc --target-env=vulkan1.3 -O -Ishaders_vk shaders_vk/visible_ids.comp -o build/shaders_vk/visible_ids.comp.spv
+/tmp/sharp-zenith-52-shaderc/root/usr/bin/glslc --target-env=vulkan1.3 -O -Ishaders_vk shaders_vk/visibility_id.vert -o build/shaders_vk/visibility_id.vert.spv
+/tmp/sharp-zenith-52-shaderc/root/usr/bin/glslc --target-env=vulkan1.3 -O -Ishaders_vk shaders_vk/visibility_id.frag -o build/shaders_vk/visibility_id.frag.spv
+/tmp/sharp-zenith-52-shaderc/root/usr/bin/glslc --target-env=vulkan1.3 -O -Ishaders_vk ../libs/MatterGraphics/shaders/raster.vert -o build/shaders_vk/raster.vert.spv
+/tmp/sharp-zenith-52-shaderc/root/usr/bin/glslc --target-env=vulkan1.3 -O -Ishaders_vk -DMATTER_SKINNED_VERTEX_INPUT ../libs/MatterGraphics/shaders/raster.vert -o build/shaders_vk/raster_skin.vert.spv
+/tmp/sharp-zenith-52-shaderc/root/usr/bin/glslc --target-env=vulkan1.3 -O -Ishaders_vk -DMATTER_WATER_ANIMATION_VERTEX_INPUT ../libs/MatterGraphics/shaders/raster.vert -o build/shaders_vk/raster_water.vert.spv
+/tmp/sharp-zenith-52-shaderc/root/usr/bin/glslc --target-env=vulkan1.3 -O -Ishaders_vk ../libs/MatterGraphics/shaders/gbuffer.frag -o build/shaders_vk/gbuffer.frag.spv
+/tmp/sharp-zenith-52-shaderc/root/usr/bin/glslc --target-env=vulkan1.3 -O -Ishaders_vk shaders_vk/sparse_voxel.vert -o build/shaders_vk/sparse_voxel.vert.spv
+/tmp/sharp-zenith-52-shaderc/root/usr/bin/glslc --target-env=vulkan1.3 -O -Ishaders_vk shaders_vk/sparse_voxel.frag -o build/shaders_vk/sparse_voxel.frag.spv
+/tmp/sharp-zenith-52-shaderc/root/usr/bin/glslc --target-env=vulkan1.3 -O -Ishaders_vk ../libs/MatterGraphics/shaders/sparse_voxel_shadow.comp -o build/shaders_vk/sparse_voxel_shadow.comp.spv
+/tmp/sharp-zenith-52-shaderc/root/usr/bin/glslc --target-env=vulkan1.3 -O -Ishaders_vk shaders_vk/surface_proxy.vert -o build/shaders_vk/surface_proxy.vert.spv
+/tmp/sharp-zenith-52-shaderc/root/usr/bin/glslc --target-env=vulkan1.3 -O -Ishaders_vk shaders_vk/surface_query.vert -o build/shaders_vk/surface_query.vert.spv
+/tmp/sharp-zenith-52-shaderc/root/usr/bin/glslc --target-env=vulkan1.3 -O -Ishaders_vk shaders_vk/surface_query.frag -o build/shaders_vk/surface_query.frag.spv
+/tmp/sharp-zenith-52-shaderc/root/usr/bin/glslc --target-env=vulkan1.3 -O -Ishaders_vk shaders_vk/surface_proxy.frag -o build/shaders_vk/surface_proxy.frag.spv
+/tmp/sharp-zenith-52-shaderc/root/usr/bin/glslc --target-env=vulkan1.3 -O -Ishaders_vk shaders_vk/sparse_voxel_select.comp -o build/shaders_vk/sparse_voxel_select.comp.spv
+/tmp/sharp-zenith-52-shaderc/root/usr/bin/glslc --target-env=vulkan1.3 -O -Ishaders_vk shaders_vk/sparse_hierarchy.comp -o build/shaders_vk/sparse_hierarchy.comp.spv
+/tmp/sharp-zenith-52-shaderc/root/usr/bin/glslc --target-env=vulkan1.3 -O -Ishaders_vk shaders_vk/water_forward.frag -o build/shaders_vk/water_forward.frag.spv
+/tmp/sharp-zenith-52-shaderc/root/usr/bin/glslc --target-env=vulkan1.3 -O -Ishaders_vk shaders_vk/composite.vert -o build/shaders_vk/composite.vert.spv
+/tmp/sharp-zenith-52-shaderc/root/usr/bin/glslc --target-env=vulkan1.3 -O -Ishaders_vk shaders_vk/composite.frag -o build/shaders_vk/composite.frag.spv
+/tmp/sharp-zenith-52-shaderc/root/usr/bin/glslc --target-env=vulkan1.3 -O -Ishaders_vk shaders_vk/display_transform.frag -o build/shaders_vk/display_transform.frag.spv
+/tmp/sharp-zenith-52-shaderc/root/usr/bin/glslc --target-env=vulkan1.3 -O -Ishaders_vk ../libs/MatterGraphics/shaders/rt_shadow.rgen -o build/shaders_vk/rt_shadow.rgen.spv
+/tmp/sharp-zenith-52-shaderc/root/usr/bin/glslc --target-env=vulkan1.3 -O -Ishaders_vk ../libs/MatterGraphics/shaders/rt_shadow.rmiss -o build/shaders_vk/rt_shadow.rmiss.spv
+/tmp/sharp-zenith-52-shaderc/root/usr/bin/glslc --target-env=vulkan1.3 -O -Ishaders_vk ../libs/MatterGraphics/shaders/rt_shadow.rchit -o build/shaders_vk/rt_shadow.rchit.spv
+/tmp/sharp-zenith-52-shaderc/root/usr/bin/glslc --target-env=vulkan1.3 -O -Ishaders_vk ../libs/MatterGraphics/shaders/rt_visibility.rmiss -o build/shaders_vk/rt_visibility.rmiss.spv
+/tmp/sharp-zenith-52-shaderc/root/usr/bin/glslc --target-env=vulkan1.3 -O -Ishaders_vk ../libs/MatterGraphics/shaders/rt_visibility.rchit -o build/shaders_vk/rt_visibility.rchit.spv
+/tmp/sharp-zenith-52-shaderc/root/usr/bin/glslc --target-env=vulkan1.3 -O -Ishaders_vk ../libs/MatterGraphics/shaders/rt_visibility.rahit -o build/shaders_vk/rt_visibility.rahit.spv
+/tmp/sharp-zenith-52-shaderc/root/usr/bin/glslc --target-env=vulkan1.3 -O -Ishaders_vk ../libs/MatterGraphics/shaders/rt_radiance.rmiss -o build/shaders_vk/rt_radiance.rmiss.spv
+/tmp/sharp-zenith-52-shaderc/root/usr/bin/glslc --target-env=vulkan1.3 -O -Ishaders_vk ../libs/MatterGraphics/shaders/rt_primary_adaptive.rgen -o build/shaders_vk/rt_primary_adaptive.rgen.spv
+/tmp/sharp-zenith-52-shaderc/root/usr/bin/glslc --target-env=vulkan1.3 -O -Ishaders_vk ../libs/MatterGraphics/shaders/rt_lighting.rgen -o build/shaders_vk/rt_lighting.rgen.spv
+make[1]: *** [../libs/MatterGraphics/native-ray-shaders.mk:26: build/shaders_vk/rt_lighting.rgen.spv] Terminated
+make: *** [Makefile:533: ../MatterEngine3/shaders_gen/embedded_spirv.h] Terminated

@@ -1,3 +1,4 @@
+#include "matter/project_layout.h"
 // MatterEditor/src/part_workbench.cpp
 //
 // Implementation of viewer::PartWorkbench (see part_workbench.h for the
@@ -32,6 +33,7 @@
 
 #include "script_host.h"  // MatterEngine3/src (ME3_DIR/src is on the app include path)
 #include "matter/bake_observer.h"  // W3: per-rung bake observer seam
+#include "matter/log.h"
 #include "matter/json_doc.h"       // shared order-preserving JSON document
 
 #include <algorithm>
@@ -295,7 +297,8 @@ void PartWorkbench::refresh_default_params() {
     host_->host.set_shared_lib_roots(roots);
 
     bool ok = false;
-    const std::string source_path = (fs::path(source_project_dir_) / "objects" / (module_ + ".js")).string();
+    const std::string source_path = matter::project_layout::object_source(
+            {(fs::path(source_project_dir_) / "objects").string()}, module_).string();
     part_source_ = read_file(source_path, ok);
     if (!ok) {
         status_line_ = "part source not found: " + source_path;
@@ -428,6 +431,8 @@ WorkbenchPartRecord& PartWorkbench::part_record() {
 }
 
 void PartWorkbench::close() {
+    export_pending_ = false;
+    export_status_.clear();
     session_.reset();
     engine_.reset();
     module_.clear();
@@ -454,6 +459,9 @@ void PartWorkbench::open_part(const std::string& source_project_dir, const std::
 
     source_project_dir_ = source_project_dir;
     module_ = module;
+    export_pending_ = false; export_status_.clear(); export_lod_ = 0;
+    std::snprintf(export_directory_, sizeof(export_directory_), "exports/%s-%llu", module.c_str(),
+        static_cast<unsigned long long>(std::chrono::system_clock::now().time_since_epoch().count()));
 
     std::string err;
     if (!ensure_scratch_project(source_project_dir_, err)) {
@@ -638,6 +646,27 @@ void PartWorkbench::tick(float dt) {
     }
 }
 
+bool PartWorkbench::export_current(const std::string& directory,uint32_t lod,
+    matter::AssetExportReceipt& out,std::string& error) {
+    part_graph_snapshot::Snapshot graph;
+    if(!session_ || !session_->graph_snapshot(graph)) {error="workbench asset has not completed its bake";return false;}
+    uint64_t hash=0;
+    for(const auto& [key,node]:graph.nodes)if(node.is_root && (key==module_ || node.module==module_)) {
+        if(hash && hash!=node.resolved_hash){error="workbench root is ambiguous";return false;}
+        hash=node.resolved_hash;
+    }
+    if(!hash){error="workbench has no published root asset";return false;}
+    return session_->export_asset(hash,lod,directory,out,error);
+}
+void PartWorkbench::process_pending_export() {
+    if(!export_pending_)return;
+    export_pending_=false;matter::AssetExportReceipt receipt;std::string error;
+    if(export_current(export_directory_,uint32_t(export_lod_),receipt,error))
+        export_status_="Exported "+std::to_string(receipt.triangles)+" triangles to "+receipt.directory;
+    else export_status_="Export failed: "+error;
+    MATTER_LOGI("asset-export","%s",export_status_.c_str());
+}
+
 void PartWorkbench::pump_gpu_jobs(float ms_budget) {
     if (session_) session_->pump_gpu_jobs(ms_budget);
 }
@@ -719,6 +748,16 @@ void PartWorkbench::draw(const std::vector<WorldEntry>& worlds) {
             session_->instance_info(0, info) ? info.part_hash : 0;
         lod_inspector_.draw(session_.get(), part_hash);
     }
+
+    ImGui::SeparatorText("Export asset");
+    ImGui::InputText("New folder",export_directory_,sizeof(export_directory_));
+    ImGui::InputInt("Mesh LOD",&export_lod_);
+    export_lod_=std::clamp(export_lod_,0,15);
+    if(ImGui::Button("Export OBJ + GLB + textures")) {
+        export_pending_=true;export_status_="Export queued...";
+    }
+    ImGui::TextDisabled("PBR maps and 16-bit height. Creates a new folder.");
+    if(!export_status_.empty())ImGui::TextWrapped("%s",export_status_.c_str());
 
     // W5: per-LOD authoring (part-workbench.md SS-I.5/W5).
     ImGui::Spacing();
@@ -1084,7 +1123,13 @@ bool PartWorkbench::write_lods_to_source(std::string& err) {
     }
 
     const std::string source_path =
-        (fs::path(source_project_dir_) / "objects" / (module_ + ".js")).string();
+        matter::project_layout::object_source(
+            {(fs::path(source_project_dir_) / "objects").string()}, module_).string();
+
+    if (source_path.empty()) {
+        err = "part source not found: " + module_;
+        return false;
+    }
 
     // .bak on the FIRST write of this open_part() session only, so it always
     // holds the file as it was before ANY workbench edit this session.

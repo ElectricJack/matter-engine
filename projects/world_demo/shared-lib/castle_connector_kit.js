@@ -1179,3 +1179,94 @@ export function emitConnector(part, input, params = {}) {
     clearancePolygon: record.clearancePolygon,
   };
 }
+
+// Opt-in finished structural envelope. Material detail replaces individual
+// stone children; dimensions are authored directly into triangle positions.
+// The existing volume compiler remains the source of collision footprints.
+function emitFinishedConvex(part, inputFaces, material, id) {
+  const points=inputFaces.flat();
+  const center=[0,1,2].map(axis=>points.reduce((n,p)=>n+p[axis],0)/points.length);
+  const minus=(a,b)=>a.map((v,i)=>v-b[i]);
+  const dot=(a,b)=>a.reduce((n,v,i)=>n+v*b[i],0);
+  const cross=(a,b)=>[a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]];
+  const faces=[];
+  for(const input of inputFaces) {
+    const face=input.map(p=>[...p]);
+    let n=[0,0,0];
+    for(let i=2;i<face.length&&Math.hypot(...n)<EPS;i++)n=cross(minus(face[i-1],face[0]),minus(face[i],face[0]));
+    const magnitude=Math.hypot(...n);
+    if(magnitude<EPS)continue;
+    n=n.map(v=>v/magnitude);
+    if(dot(n,minus(face[0],center))<0){face.reverse();n=n.map(v=>-v);}
+    const horizontal=Math.hypot(n[0],n[2]);
+    // Metric world-space phase keeps brick courses continuous across mitres.
+    const u=horizontal>EPS?[n[2]/horizontal,0,-n[0]/horizontal]:[1,0,0];
+    const v=cross(n,u),uv=face.map(p=>[dot(p,u),dot(p,v)]);
+    part.fill(material);part.beginShape(SHAPE.triangles);
+    for(let i=1;i+1<face.length;i++)for(const j of [0,i,i+1]) {
+      if(typeof part.surfaceVertex==='function')part.surfaceVertex(...face[j],...n,...uv[j]);
+      else part.vertex(...face[j]);
+    }
+    part.endShape();
+    faces.push({positions:face,normal:n,uv});
+  }
+  return {id,material,faces};
+}
+function finishedPrismFaces(polygon,bottom,top) {
+  const low=polygon.map(p=>[p[0],bottom,p[1]]),high=polygon.map(p=>[p[0],top,p[1]]);
+  return [low,high,...low.map((p,i)=>[p,low[(i+1)%low.length],high[(i+1)%low.length],high[i]])];
+}
+
+// The legacy roof author emits position-only triangles. Attribute that exact
+// stream explicitly before batching: neither winding nor roof placement changes.
+function surfaceConnectorSink(part) {
+  const buckets=new Map();let active,pending=[];
+  const sink={
+    fill(material){if(!buckets.has(material))buckets.set(material,[]);active=buckets.get(material);},
+    beginShape(){pending=[];},
+    surfaceVertex(...v){active.push(v);},
+    vertex(...p){pending.push(p);},
+    endShape(){
+      for(let i=0;i<pending.length;i+=3){
+        const tri=pending.slice(i,i+3),a=tri[1].map((v,j)=>v-tri[0][j]),b=tri[2].map((v,j)=>v-tri[0][j]);
+        const cross=(a,b)=>[a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]];
+        const raw=cross(a,b),length=Math.hypot(...raw);
+        if(length<=1e-14)throw new Error('Degenerate connector roof triangle');
+        const n=raw.map(v=>v/length),horizontal=Math.hypot(n[0],n[2]);
+        const u=horizontal>EPS?[n[2]/horizontal,0,-n[0]/horizontal]:[1,0,0],v=cross(n,u);
+        const dot=(a,b)=>a.reduce((s,x,j)=>s+x*b[j],0);
+        for(const p of tri)active.push([...p,...n,dot(p,u),dot(p,v)]);
+      }
+    },
+  };
+  return {sink,flush(){
+    for(const [material,vertices] of buckets){
+      part.fill(material);part.beginShape(SHAPE.triangles);
+      for(const vertex of vertices){
+        if(typeof part.surfaceVertex==='function')part.surfaceVertex(...vertex);
+        else part.vertex(...vertex.slice(0,3));
+      }
+      part.endShape();
+    }
+    return buckets.size;
+  }};
+}
+
+export function emitSurfaceConnector(part,input,params={}) {
+  const record=normalizedRecord(input),p=normalizedEmitParams(params);
+  const solids=connectorSolidVolumes(record,p),shells=[];
+  const batch=surfaceConnectorSink(part),sink=batch.sink;
+  // Includes rectangles formerly owned by CastleStone children, ensuring a
+  // complete walkable floor after removing the old assembly root.
+  for(const solid of solids) shells.push(emitFinishedConvex(sink,
+    finishedPrismFaces(solid.polygon,solid.bottomY,solid.topY),
+    solid.kind==='wall'?p.stoneMaterial:p.floorMaterial,solid.id));
+  const roof=emitRoof(sink,record,p,{mesh:true,children:false});
+  for(const [i,segment] of roof.rafters.entries())shells.push(emitFinishedConvex(sink,
+    rafterBoxFaces(segment),p.timberMaterial,record.id+':rafter:'+i));
+  const materialBatches=batch.flush();
+  return {id:record.id,shells,floorPieces:solids.filter(s=>s.kind==='floor').map(s=>s.polygon),
+    solidVolumes:solids,clearancePolygon:record.clearancePolygon,
+    roofFacets:roof.facets,roofUndersides:roof.undersides,roofFascias:roof.fascias,roofTiles:roof.tiles,
+    rafters:roof.rafters,children:0,materialBatches};
+}

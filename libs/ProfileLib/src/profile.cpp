@@ -54,9 +54,10 @@ namespace {
 
 struct Registry {
     // Zone names, copied in so callers may pass transient strings. Fixed pool;
-    // register_zone clamps to the last slot if exhausted rather than growing.
+    // Exhausted registrations return an invalid id rather than growing.
     char names[kMaxZones][64] = {};
     std::atomic<int> count{0};
+    std::atomic<uint64_t> rejected_zone_registrations{0};
     std::mutex register_mutex;
 
     // Per-zone accumulators for the frame in progress. Relaxed atomics: any
@@ -81,6 +82,7 @@ struct Registry {
     // Counters: per-frame event tallies, same intern-once model as zones.
     char counter_names[kMaxCounters][64] = {};
     std::atomic<int> counter_n{0};
+    std::atomic<uint64_t> rejected_counter_registrations{0};
     std::mutex counter_register_mutex;
     std::atomic<uint64_t> counter_val[kMaxCounters] = {};
 
@@ -242,9 +244,9 @@ void set_enabled(bool on) {
 // PROFILE_* macros cache the result in a function-local static precisely so it
 // runs once per call site.
 //
-// Two silent behaviors to know about: names are truncated to 63 characters, and
-// once the table is full every further name returns the LAST slot, merging all
-// of them into one zone rather than failing or growing.
+// Names are truncated to 63 characters. A full table rejects new names while
+// retaining existing ids. Rejected registration attempts are disclosed in
+// trace metadata; their samples must never be added to an unrelated zone.
 int register_zone(const char* name) {
     if (name == nullptr) name = "?";
     Registry& r = reg();
@@ -253,7 +255,10 @@ int register_zone(const char* name) {
     for (int i = 0; i < have; ++i) {
         if (std::strcmp(r.names[i], name) == 0) return i;
     }
-    if (have >= kMaxZones) return kMaxZones - 1;  // clamp; never grow unbounded
+    if (have >= kMaxZones) {
+        r.rejected_zone_registrations.fetch_add(1, std::memory_order_relaxed);
+        return -1;
+    }
     std::strncpy(r.names[have], name, sizeof(r.names[have]) - 1);
     r.names[have][sizeof(r.names[have]) - 1] = '\0';
     r.count.store(have + 1, std::memory_order_release);
@@ -355,7 +360,10 @@ int register_counter(const char* name) {
     for (int i = 0; i < have; ++i) {
         if (std::strcmp(r.counter_names[i], name) == 0) return i;
     }
-    if (have >= kMaxCounters) return kMaxCounters - 1;
+    if (have >= kMaxCounters) {
+        r.rejected_counter_registrations.fetch_add(1, std::memory_order_relaxed);
+        return -1;
+    }
     std::strncpy(r.counter_names[have], name, sizeof(r.counter_names[have]) - 1);
     r.counter_names[have][sizeof(r.counter_names[have]) - 1] = '\0';
     r.counter_n.store(have + 1, std::memory_order_release);
@@ -546,7 +554,17 @@ bool dump_chrome_trace(const char* path) {
     const int zones = zone_count();
     const int counters = counter_count();
 
-    std::fprintf(f, "{\"displayTimeUnit\":\"ms\",\"traceEvents\":[\n");
+    std::fprintf(f,
+                 "{\"displayTimeUnit\":\"ms\",\"profileRegistry\":{"
+                 "\"zones\":%d,\"zone_capacity\":%d,"
+                 "\"counters\":%d,\"counter_capacity\":%d,"
+                 "\"rejected_zone_registrations\":%llu,"
+                 "\"rejected_counter_registrations\":%llu},\"traceEvents\":[\n",
+                 zones, kMaxZones, counters, kMaxCounters,
+                 static_cast<unsigned long long>(reg().rejected_zone_registrations.load(
+                     std::memory_order_relaxed)),
+                 static_cast<unsigned long long>(reg().rejected_counter_registrations.load(
+                     std::memory_order_relaxed)));
     // Lane + process names.
     std::fprintf(f,
                  "{\"ph\":\"M\",\"name\":\"process_name\",\"pid\":1,\"tid\":0,"

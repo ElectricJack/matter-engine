@@ -1,0 +1,16 @@
+[
+  {
+    "kind": "build",
+    "name": "projected_face_cache_tests",
+    "command": [
+      "./tools/build-windows-from-wsl.sh",
+      "RelWithDebInfo",
+      "projected_face_cache_tests"
+    ],
+    "exit": 1,
+    "seconds": 2.490513393000583,
+    "log": "docs/agent/evidence/2026-09-15-face-preparation/finite-cache-v1-build-projected_face_cache_tests.log",
+    "source_changes": [],
+    "validation_errors": []
+  }
+]

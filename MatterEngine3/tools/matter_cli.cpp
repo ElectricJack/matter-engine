@@ -18,6 +18,9 @@
 #include "export/export_cli.h"
 #include "export/export_text.h"
 #include "matter/log.h"
+#ifdef MATTER_ENABLE_GI_CLI
+#include "../cli/matter_bake_cli.h"
+#endif
 
 #include <cstdio>
 #include <cstdlib>
@@ -33,6 +36,7 @@ const char* const kUsage =
     "\n"
     "Usage:\n"
     "  matter export obj <part-id|scene> --out <dir> [options]\n"
+    "  matter bake gi <scene> --out <dir> [options]\n"
     "\n"
     "Target forms:\n"
     "  <Module>            a part module in the project's object tiers; baked on a\n"
@@ -325,6 +329,16 @@ int main(int argc, char** argv) {
     if (group == "-h" || group == "--help") {
         std::printf("%s", kUsage);
         return 2;
+    }
+    if (group == "bake") {
+#ifdef MATTER_ENABLE_GI_CLI
+        if (argc >= 3 && std::strcmp(argv[2], "gi") == 0)
+            return matter_bake_gi_cli_main(argc - 3, argv + 3);
+        MATTER_LOGE("matter", "%s", "bake needs a format; today only 'gi'");
+#else
+        MATTER_LOGE("matter", "%s", "this rollback build supports export obj only");
+#endif
+        return 1;
     }
     if (group != "export") {
         MATTER_LOGE("matter", "unknown command '%s'; try --help", group.c_str());

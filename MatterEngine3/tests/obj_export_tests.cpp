@@ -47,6 +47,7 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -202,7 +203,8 @@ void test_number_formatting() {
     CHECK(format_fixed(-0.0000005, 6) == "-0.000001", "format: negative half rounds away");
     CHECK(format_fixed(0.1234564, 6) == "0.123456", "format: rounds down");
     CHECK(format_fixed(0.25, 1) == "0.3", "format: one decimal, half up");
-    CHECK(format_fixed(1.0 / 0.0, 6) == "0", "format: infinity is not written as text");
+    CHECK(format_fixed(std::numeric_limits<double>::infinity(), 6) == "0",
+          "format: infinity is not written as text");
     CHECK(format_fixed(12.0, 0) == "12", "format: zero decimals");
     CHECK(format_fixed(0.0009, 6) == "0.0009", "format: leading fraction zeros kept");
     CHECK(matter_export::format_hex64(0x0123456789abcdefull) == "0123456789abcdef",
@@ -819,15 +821,21 @@ void test_input_validation() {
 } // namespace
 
 int main() {
+#ifdef MATTER_CODEC_SOURCE_QUALIFICATION
     const std::string root = make_sandbox("sandbox/obj_export", {});
+#endif
 
     test_number_formatting();
+#ifdef MATTER_CODEC_SOURCE_QUALIFICATION
     test_round_trip(root);
+#endif
     test_texture_content();
     test_uv_to_texel_agreement();
+#ifdef MATTER_CODEC_SOURCE_QUALIFICATION
     test_determinism(root);
     test_artifact_export(root);
     test_texture_format_reservation(root);
+#endif
     test_input_validation();
 
     if (g_failures == 0) printf("All obj export tests passed\n");

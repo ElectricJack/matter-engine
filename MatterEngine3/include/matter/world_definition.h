@@ -29,12 +29,14 @@
 
 #include "atmosphere.h"
 #include "cloud_layers.h"
+#include "../../../libs/MatterGraphics/src/native/fog_settings.h"
 #include "cloud_shadow_settings.h"
 #include "hydrology.h"
 #include "math_types.h"
 #include "river_network.h"
 #include "sun_angles.h"
 #include "terrain_collision.h"
+#include "fixture_io.h"
 #include "volumetric_quality.h"
 
 #include <cmath>
@@ -115,131 +117,6 @@ struct WorldLight {
     float outer_cone_degrees = 180.0f;
 };
 
-// Everything IN the froxel volume. Two independent things live here:
-//
-//   1. Ground fog — density / floor / falloff / color / wind. An exponential
-//      falling off upward from `floor` with no upper bound. This is what most
-//      worlds mean by "fog" and it is always evaluated.
-//
-//   2. Cloud decks — `clouds`, up to kMaxCloudLayers of them, each bounded
-//      between its own min and max height. These ADD extinction on top of the
-//      ground fog; a world with no enabled layer costs nothing for them
-//      (vol_density.comp is specialized on the enabled count and the loop is
-//      compiled away at zero).
-//
-// The two are deliberately not unified. Ground fog has no top, clouds are
-// defined by having one, and every existing world depends on the first shape.
-struct FogSettings {
-    float density  = 0.0f;
-    float floor    = 0.0f;
-    float falloff  = 30.0f;
-    float color[3] = {0.9f, 0.92f, 0.95f};
-    float wind[3]  = {0.0f, 0.0f, 0.0f};
-
-    // Fixed-size, not a vector: this struct is copied whole through
-    // RenderOptions::fog_override every frame, is the target of a props
-    // Group whose Descs are byte offsets into it, and is the thing a world
-    // reload memcpy-assigns. A ceiling of 4 costs 4 * sizeof(CloudLayer)
-    // (~200 bytes) and buys all of that staying trivially copyable.
-    // `cloud_count` bounds the meaningful prefix; entries past it are
-    // untouched defaults.
-    CloudLayer clouds[kMaxCloudLayers]{};
-    int32_t cloud_count = 0;
-
-    // Legacy single bounded layer (pre-2026-07-31). Kept ONLY as an authoring
-    // alias: world_definition_loader maps minHeight/maxHeight/noiseScale onto
-    // clouds[0] and sets this so the composite pass's above-the-deck early-out
-    // still knows a deck exists. Nothing reads min_height/max_height for
-    // shading any more — vol_density.comp sees the CloudLayer.
-    bool height_layer = false;
-    float min_height = 0.0f;
-    float max_height = 0.0f;
-    float noise_scale = 0.0018f;
-};
-
-// The number of leading `clouds` entries that are enabled AND well formed.
-// This is the value vol_density.comp is specialized on, so it must be a
-// PREFIX count: a disabled layer 0 with an enabled layer 1 would otherwise
-// compile a 2-layer permutation that evaluates a dead entry. compact_clouds()
-// below is what guarantees the prefix property.
-//
-// DERIVED FROM THE LAYERS, NOT FROM `cloud_count`. This used to clamp the scan
-// to `fog.cloud_count`, which made that field a second, authoritative gate —
-// and every write path that sets a layer WITHOUT running compaction left it
-// stale. Enabling a deck through the World-scope property file, through
-// MATTER_CLOUD_LAYER<i>, or through the FIFO `set` then rendered nothing at
-// all, because the count those paths never touch stayed at whatever the world
-// script had compacted to. The 0-deck case was the sharp one: a world that
-// authors no clouds pins cloud_count at 0, so a deck enabled by an override
-// file was invisible on every launch until the user happened to nudge some
-// other cloud field in the panel and trip the panel's compaction — which
-// resurrected it, making the bug look intermittent.
-//
-// Scanning the array directly is equivalent wherever compaction HAS run
-// (compact_clouds sets cloud_count to exactly the number of leading live
-// layers, and it parks every non-live layer behind them, so the scan stops at
-// the same index), and correct where it has not. `cloud_count` survives as the
-// cached result and as the world's requested count for the overflow warning in
-// vk_volumetrics.cpp; nothing about what renders depends on it any more.
-inline int32_t active_cloud_count(const FogSettings& fog) {
-    int32_t n = 0;
-    for (int32_t i = 0; i < kMaxCloudLayers; ++i) {
-        if (!fog.clouds[i].enabled) break;
-        if (!(fog.clouds[i].max_height > fog.clouds[i].min_height)) break;
-        ++n;
-    }
-    return n;
-}
-
-inline float active_cloud_top(const FogSettings& fog) {
-    const int32_t count = active_cloud_count(fog);
-    if (count == 0) return 0.0f;
-    float top = -std::numeric_limits<float>::infinity();
-    for (int32_t i = 0; i < count; ++i) {
-        if (std::isfinite(fog.clouds[i].max_height))
-            top = std::fmax(top, fog.clouds[i].max_height);
-    }
-    return std::isfinite(top) ? top : 0.0f;
-}
-
-// Slides every enabled layer down to the front, so `clouds[0 .. count)` is
-// exactly the live set. Call after any edit that can disable a middle layer —
-// the editor toggling `clouds[0].enabled` off with `clouds[1]` still on is
-// the ordinary case, and without this that world would render layer 1's
-// parameters as if they were layer 0's, or nothing at all.
-//
-// A STABLE PARTITION, not a wipe: non-surviving layers (disabled, or
-// degenerate with max_height <= min_height) are moved to the tail WITH their
-// parameters intact, in their original relative order, rather than being
-// reset to CloudLayer{}. The prefix property everything above depends on
-// only constrains `[0, cloud_count)` — what sits behind that point is free to
-// be anything, including a parked deck's untouched values. Zeroing it was
-// gratuitous, and destructive: switching a deck off ran through here on
-// every edit (property_editor.cpp), so the old behaviour deleted a deck's
-// authored parameters the instant it was switched off, with no way to
-// recover them by switching it back on (see the
-// editor-cloud-deck-cannot-be-enabled issue).
-inline void compact_clouds(FogSettings& fog) {
-    CloudLayer snapshot[kMaxCloudLayers];
-    for (int32_t i = 0; i < kMaxCloudLayers; ++i) snapshot[i] = fog.clouds[i];
-
-    CloudLayer parked[kMaxCloudLayers];
-    int32_t out = 0;
-    int32_t parked_n = 0;
-    for (int32_t i = 0; i < kMaxCloudLayers; ++i) {
-        const CloudLayer& layer = snapshot[i];
-        const bool live =
-            layer.enabled && layer.max_height > layer.min_height;
-        if (live) {
-            fog.clouds[out++] = layer;
-        } else {
-            parked[parked_n++] = layer;
-        }
-    }
-    for (int32_t i = 0; i < parked_n; ++i) fog.clouds[out + i] = parked[i];
-    fog.cloud_count = out;
-}
-
 // One annulus boundary of a world-authored LOD profile: everything inside
 // `radius` metres of the streaming anchor gets `rung`. Rings are listed
 // innermost-first with increasing radii. What `rung` means depends on which
@@ -288,17 +165,29 @@ struct TilesetPomSettings {
     // before that were relief 0.178, datum 0.105, march 0.73, steps 50,
     // distance 50.4, fade 1.0, ao 0.63, shadow 0.68, horizon 1.0.
     //
-    // enabled defaults to TRUE as of 2026-07-30, reversing the 2026-07-29
-    // opt-in default: with steps down to 30 and the reach traded for it, the
-    // march is what the ground is supposed to look like rather than a thing
-    // you switch on to inspect it.
+    // enabled defaults to FALSE as of 2026-09-28, reversing the 2026-07-30
+    // default-on. This one flag gates every POM march (ground tileset, VT
+    // chart, finished-surface detail and the RT secondary lift all read the
+    // uploaded pom_steps), so off means off for terrain and world props
+    // alike. On StreamMountain POM measured +221 ms gbuffer and +56 ms rt_gi
+    // median after 300 s (docs/findings/streammountain-frame-attribution-
+    // 2026-09-27.md §2.2), and the march is to be rewritten along the DASHR
+    // revision-2 proposal (docs/design/2026-09-28-dashr-initial-proposal.md).
+    // It is a default, not a deletion: a world opts back in with
+    // render.pom.enabled=true in its props.json (VillaDoricColumnStudy
+    // does), or live with `set render.pom.enabled true`. Returning POM to
+    // every world is flipping this back once the rewrite lands.
+    // StreamMountain also saves enabled=false explicitly; while that equals
+    // this default the sparse world-props save drops it on the next editor
+    // Save, which is harmless until the default flips back.
     //
-    // The 30-step / 1564 m pairing is the shape of this pass: steps 40 -> 30
-    // pays for max_distance 100 -> 1564, so the parallax reaches most of the
-    // way to the fog wall instead of dying just past the camera, at a slightly
-    // coarser march per texel. Relief up (0.260 -> 0.352) and datum down
-    // (0.240 -> 0.168) both deepen what that march has to bite into.
-    bool  enabled            = true;
+    // The 30-step / 1564 m pairing is the shape of the 2026-07-30 pass: steps
+    // 40 -> 30 pays for max_distance 100 -> 1564, so the parallax reaches
+    // most of the way to the fog wall instead of dying just past the camera,
+    // at a slightly coarser march per texel. Relief up (0.260 -> 0.352) and
+    // datum down (0.240 -> 0.168) both deepen what that march has to bite
+    // into.
+    bool  enabled            = false;
     float relief_cap_m       = 0.352f;  // pom_max_relief_m
     float datum_bias_m       = 0.168f;  // Ground POM datum-bias fix knob
     float max_march_m        = 1.59f;   // pom_max_march_m
@@ -350,6 +239,8 @@ struct TilesetPomSettings {
     //   used to ask it (world XZ at the roof-escape-lifted point),
     //   4 |map - march|, 5 |rt-form - march|, 6 the rt form without the
     //   roof-escape lift (3 vs 6 isolates the lift, 6 vs 1 the frame).
+    //   7 composed status, 8 chart identity, 9 ordinary/connected POM route;
+    //   10 proxy requested/resident mip, 11 proxy finest/resident world density.
     // Consumed by TilesetParamsGpu::vt_near_band[3]; see gbuffer.frag's
     // render.pom.horizon_debug block. Session-scoped in the property registry
     // so it cannot survive a relaunch.
@@ -421,6 +312,16 @@ struct WorldSettings {
     // With nesting off there are no levels to descend, so the streamer forces
     // this back off rather than half-honouring it.
     bool volumetric_sectors = false;
+
+    // Finest streamed-terrain chart density, authored as
+    // streaming.terrainTexelsPerMeter. Runtime charts are rebuilt on reload;
+    // nested levels retain the existing density/size scaling and atlas cap.
+    float terrain_texels_per_meter = 16.0f;
+
+    // Opt-in modules receiving the world's direct surface recipe, in addition
+    // to terrain. Static, singly placed, rigid receivers only; original asset
+    // materials remain authoritative for unselected/shared receivers.
+    std::vector<std::string> surface_receiver_modules;
 
     // Tile pitch in world metres. With nested_sectors on this is the LEVEL 0
     // (finest) tile and level L tiles are sector_size << L across.
@@ -553,6 +454,21 @@ inline bool operator!=(const WorldPropSpec& a, const WorldPropSpec& b) {
     return !(a == b);
 }
 
+// Authored GI lightmap bake request (docs/bake-gi.md), declared by the world
+// script's `giBake({...})` call. Every field is optional in the script and
+// defaults to the bake's own default here; the CLI's flags override these.
+// The world script chooses WHETHER a bake is meaningful for this world and
+// its default quality; the CLI (`matter bake gi`) is what actually runs it.
+struct GiBakeSettings {
+    std::uint32_t samples = 64;        // paths per texel
+    std::uint32_t bounces = 2;         // diffuse interreflections
+    float texel_density = 8.0f;        // lightmap texels per metre
+    std::uint32_t seed = 0x5EEDu;
+    bool denoise = true;
+    bool prelit = false;               // also emit albedo x lightmap textures
+    std::string out;                   // output directory, "" = the CLI decides
+};
+
 // One `World.exports` entry: a standing request to write this world's Parts out
 // in an interchange format. THE ENGINE NEVER ACTS ON THIS BY ITSELF — nothing
 // in a world load or a frame reads it. It is authoring metadata for the offline
@@ -607,6 +523,8 @@ struct WorldDefinition {
     std::optional<HydrologyWorldSettings> hydrology;
     std::optional<RiverNetworkDefinition> river_network;
     std::optional<TerrainCollisionDefinition> terrain_collision;
+    // Present when the script called giBake({...}); absent = the CLI defaults.
+    std::optional<GiBakeSettings> gi_bake;
     // World.exports declaration order. Empty when the world declares none,
     // which is every world that does not want an offline export.
     std::vector<WorldExportRequest> exports;
@@ -624,6 +542,8 @@ struct WorldLoadDesc {
     // hashed into content addresses, so byte-equal params must produce a
     // byte-equal string here.
     std::string canonical_params_json = "{}";
+    // Strict generated inputs: a miss never falls back to the filesystem.
+    std::shared_ptr<const SourceSnapshot> source_snapshot;
 };
 
 // A load failure, reported instead of a WorldDefinition. `source_location` is

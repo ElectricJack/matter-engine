@@ -1,0 +1,54 @@
+Task noble-zenith-31, claim epoch 3, 2026-10-20
+Source: 975b0b9cb684c25fa085a4559d1120dd5dffc04c
+Recovered this task's published implementation by fast-forward of its assigned
+branch from clean 9d846e66961cf275be4fb29182281961018f93e5. No production edits.
+The approved rev-agile-stone revision 1 source research was read and its approval
+and SHA256 4ebdbd5aa3151c65135f09a52ba1a094aae8fd5784be7203be96d2688e7c4b11 verified.
+
+Fresh pre-fix characterization request (one attempt):
+  aq test --aq-timeout 75 -n 0 /tmp/noble-zenith-31-epoch3/test_counter_characterization.py -q -s
+  exit 75: no test slot free after 75s (6 slots; box admission).
+  The launcher reported all six slots held by agile-stone-80.
+  pytest and C++ compilation/execution did NOT start.
+  Full log: characterization-admission.log (adjacent).
+  Executed request source: test_counter_characterization.py (adjacent).
+  Only ROOT was changed from the preserved characterization probe, pointing to
+  /tmp/noble-zenith-31-epoch3/pristine, containing git-show exports of eeae129c:
+rt_dispatch.inl: 10130ffa4fa7de64a5f9c1cd604f314de8405356a19e30977930e1098d87bb62
+rt_contract.inl: fa743b4e5a63443f375d7c3ed6cce7309095db0ad745c4589bfc39b74feb4997
+
+The older task comments conflict on whether characterization ever executed.
+This epoch establishes only the recorded exit-75 refusal; it does not resolve
+that historical discrepancy or claim reproduce-before-fix acceptance.
+
+Native artifact recovered (not executed):
+  /tmp/claude-1000/-home-jkern-dev-matter-engine-cpp--aq-worktrees-slot-1/0b036f9d-10e9-478d-820c-1b88fe42800a/scratchpad/cmakebuild/vulkan_smoke_tests
+  SHA256 9e2f24e77193a5e22ea7ad7a0e4c3316a50f4605cb0097468975f7c2acf47605
+  Matches the previously recorded artifact prefix. The previous epoch's
+  97-source compile/link remains historical evidence; no rebuild this epoch.
+  Existing layer manifest/library and /usr/share/vulkan/icd.d/lvp_icd.json
+  were found, but file availability is not runtime validation.
+
+Additional entrypoint limitation, verified against recovered source:
+  MatterEngine3/tests/vulkan_smoke_tests.cpp:16748-16773 always calls glfwInit,
+  glfwCreateWindow, then VulkanDevice::create(window, true, error). Neither
+  rt-counters nor rt provides a headless alternative before that setup.
+  test_rt_counter_native.py sets DISPLAY=:0 when unset; this does not provide
+  a display server. The owner states no display server is available here.
+  Therefore the preserved binary must not be described as a headless matrix
+  merely because the selected ICD is lavapipe. No native launch was attempted
+  after the admission refusal; no GLFW failure is claimed as an executed result.
+
+NOT RUN this epoch: original reporter characterization; rt-counters matrix
+(poison/disabled/unavailable/empty/culled, 7+7, 2/3 then disable, record/submit
+failure, duplicate reporting, invalid record, reset/resource replacement);
+unchanged rt surface-query fixture; software Vulkan validation; hardware RT;
+Windows MSVC; UI and performance. No runtime device/capability banner or
+validation-error count was produced. No zero-validation or GPU PASS claim.
+Hardware/UI/performance are owner-deferred, not the cause of this blocked close.
+Runnable software acceptance remains unmet because admission refused.
+
+Reported once to project supervisor as msg-7673d190d4fb4417932cb6539f7dbd80.
+Following latest epoch-3 task guidance: preserve/publish code and exact failure,
+close fail/blocked; no resubmission loop, idle runner wait, provisioning, slot
+reaping, test-policy bypass, unheld task changes or source/history reset.

@@ -1,0 +1,254 @@
+{
+  "date": "2026-10-14",
+  "baseline_commit": "c57ba76866d811e285457439380b57a01eebe717",
+  "environment": {
+    "os": "Ubuntu 24.04 Linux",
+    "adapter": "llvmpipe (LLVM 20.1.2, 256 bits)",
+    "driver": "Mesa 25.2.8-0ubuntu0.24.04.2",
+    "vulkan_api": "1.4.318",
+    "validation": "VK_LAYER_KHRONOS_validation enabled",
+    "shader_cache": "disabled (MESA_SHADER_CACHE_DISABLE=true)",
+    "display": "Xvfb 640x480x24, GLFW X11"
+  },
+  "build": {
+    "method": "Temporary native Linux CMake harness using the canonical matter_vulkan_smoke_sources inventory from cmake/MatterViewer.cmake and its linked libraries; g++ -O2, embedded SPIR-V built with glslc. Root repository CMake targets Windows/MSVC only.",
+    "compatibility": "Baseline uses a local setenv/unsetenv implementation of _putenv_s and unused Win32 handle-diagnostic stubs. Final main smoke source compiles without a shim; unchanged gpu_visual_mesher_vk_tests.cpp alone uses a local _putenv_s shim.",
+    "native_windows_build": "Not available on this Linux worker."
+  },
+  "measurement": "GNU /usr/bin/time -v; peak_kib is maximum resident set size in KiB; elapsed includes process teardown and timeout cleanup.",
+  "default_before": {
+    "mode": "unset",
+    "exit": 124,
+    "timeout_seconds": 60,
+    "elapsed_seconds": 63.34,
+    "peak_kib": 2103528,
+    "peak_mib": 2054.23,
+    "result": "Did not finish within 60 seconds; runtime is a lower bound, not a passing measurement."
+  },
+  "default_after": {
+    "mode": "unset",
+    "exit": 0,
+    "elapsed_seconds": 0.24,
+    "peak_kib": 141660,
+    "peak_mib": 138.34,
+    "frames": 3,
+    "framebuffer": "256x256",
+    "assertions": "Red triangle center and black background readback on every frame, zero validation errors including teardown, peak RSS <256 MiB and elapsed <10 seconds.",
+    "llvmpipe_workers": 1
+  },
+  "named_mode_audit": {
+    "purpose": "Check whether reduced fixture reservations make named integrations fit the default budget. All exceed 256 MiB even in this bounded experiment, so all are opt-in heavy tests. Heavy modes retain their original resource policies in the delivered executable.",
+    "experimental_environment": {
+      "LP_NUM_THREADS": "1",
+      "MESA_GLTHREAD": "false",
+      "MATTER_VK_STATIC_RESERVE_CLUSTER_MB": "1",
+      "MATTER_VK_STATIC_RESERVE_VERTEX_MB": "1",
+      "MATTER_VK_STATIC_RESERVE_INDEX_MB": "1",
+      "MATTER_VK_CPU_RESERVE_VERTEX_MB": "0",
+      "MATTER_VK_CPU_RESERVE_INDEX_MB": "0",
+      "MATTER_IMPOSTOR_CELL_PX": "16"
+    },
+    "timeout_seconds": 15,
+    "kill_after_seconds": 2,
+    "timeout_exit": 124,
+    "results": [
+      {
+        "mode": "geometry-pages",
+        "exit": 124,
+        "peak_kib": 576436,
+        "elapsed": "0:15.15",
+        "all_pass": false,
+        "peak_mib": 562.93,
+        "classification": "heavy"
+      },
+      {
+        "mode": "vt-feedback",
+        "exit": 124,
+        "peak_kib": 456988,
+        "elapsed": "0:16.45",
+        "all_pass": false,
+        "peak_mib": 446.28,
+        "classification": "heavy"
+      },
+      {
+        "mode": "vt-input-snapshot",
+        "exit": 124,
+        "peak_kib": 461104,
+        "elapsed": "0:15.11",
+        "all_pass": false,
+        "peak_mib": 450.3,
+        "classification": "heavy"
+      },
+      {
+        "mode": "vt-direct-source",
+        "exit": 124,
+        "peak_kib": 450392,
+        "elapsed": "0:16.44",
+        "all_pass": false,
+        "peak_mib": 439.84,
+        "classification": "heavy"
+      },
+      {
+        "mode": "vt-surfaces",
+        "exit": 124,
+        "peak_kib": 485036,
+        "elapsed": "0:15.05",
+        "all_pass": false,
+        "peak_mib": 473.67,
+        "classification": "heavy"
+      },
+      {
+        "mode": "sparse-voxel",
+        "exit": 124,
+        "peak_kib": 492760,
+        "elapsed": "0:16.46",
+        "all_pass": false,
+        "peak_mib": 481.21,
+        "classification": "heavy"
+      },
+      {
+        "mode": "vt-queue",
+        "exit": 0,
+        "peak_kib": 272600,
+        "elapsed": "0:02.07",
+        "all_pass": true,
+        "peak_mib": 266.21,
+        "classification": "heavy"
+      },
+      {
+        "mode": "vt-normal-frame",
+        "exit": 124,
+        "peak_kib": 485024,
+        "elapsed": "0:15.06",
+        "all_pass": false,
+        "peak_mib": 473.66,
+        "classification": "heavy"
+      },
+      {
+        "mode": "vt-material-domain",
+        "exit": 124,
+        "peak_kib": 506148,
+        "elapsed": "0:16.41",
+        "all_pass": false,
+        "peak_mib": 494.29,
+        "classification": "heavy"
+      },
+      {
+        "mode": "vt-pom-work",
+        "exit": 1,
+        "peak_kib": 526432,
+        "elapsed": "0:12.90",
+        "all_pass": false,
+        "peak_mib": 514.09,
+        "classification": "heavy"
+      },
+      {
+        "mode": "vt-receiver-material",
+        "exit": 124,
+        "peak_kib": 553348,
+        "elapsed": "0:16.44",
+        "all_pass": false,
+        "peak_mib": 540.38,
+        "classification": "heavy"
+      },
+      {
+        "mode": "vt-module-residency",
+        "exit": 124,
+        "peak_kib": 739216,
+        "elapsed": "0:15.08",
+        "all_pass": false,
+        "peak_mib": 721.89,
+        "classification": "heavy"
+      },
+      {
+        "mode": "vt-export",
+        "exit": 0,
+        "peak_kib": 445680,
+        "elapsed": "0:14.58",
+        "all_pass": true,
+        "peak_mib": 435.23,
+        "classification": "heavy"
+      },
+      {
+        "mode": "vt-surface-connections",
+        "exit": 1,
+        "peak_kib": 525572,
+        "elapsed": "0:09.72",
+        "all_pass": false,
+        "peak_mib": 513.25,
+        "classification": "heavy"
+      },
+      {
+        "mode": "vt-feedback-pair",
+        "exit": 1,
+        "peak_kib": 530236,
+        "elapsed": "0:08.95",
+        "all_pass": false,
+        "peak_mib": 517.81,
+        "classification": "heavy"
+      },
+      {
+        "mode": "rt-empty-tlas",
+        "exit": 124,
+        "peak_kib": 504756,
+        "elapsed": "0:16.45",
+        "all_pass": false,
+        "peak_mib": 492.93,
+        "classification": "heavy"
+      },
+      {
+        "mode": "water-field-nort",
+        "exit": 124,
+        "peak_kib": 494656,
+        "elapsed": "0:15.06",
+        "all_pass": false,
+        "peak_mib": 483.06,
+        "classification": "heavy"
+      },
+      {
+        "mode": "full",
+        "exit": 124,
+        "peak_kib": 523040,
+        "elapsed": "0:16.45",
+        "all_pass": false,
+        "peak_mib": 510.78,
+        "classification": "heavy"
+      }
+    ],
+    "failure_notes": "The bounded vt-pom-work experiment also fails on the unchanged baseline executable with identical caps (native POM work probe, zero validation errors). vt-surface-connections and vt-feedback-pair fail in this budget experiment; no integration-suite pass is claimed."
+  },
+  "ctest_registration": {
+    "heavy_option_default": "OFF",
+    "off_tests": 1,
+    "on_tests": 20,
+    "on_heavy_tests": 19,
+    "quick_timeout_seconds": 10,
+    "heavy_timeout_seconds": 180,
+    "resource_lock": "matter_gpu",
+    "preset_exclusion_label": "heavy",
+    "final_default_run": {
+      "exit": 0,
+      "test_seconds": 0.18,
+      "total_command_seconds": 0.19,
+      "peak_kib": 141072,
+      "peak_mib": 137.77,
+      "validation_errors": 0,
+      "parent_LP_NUM_THREADS": "32 (executable overrides to 1)",
+      "command": "ctest --test-dir <native harness>/ctest-off -V",
+      "selection_with_heavy_enabled": "ctest --test-dir <native harness>/ctest-on -LE heavy: 1/1 passed, 0.19 s"
+    }
+  },
+  "related_checks": {
+    "passed": [
+      "MemoryLib test",
+      "AssetStoreLib test",
+      "MeshChartingLib tests/run",
+      "MatterEngine3 tests/run-lod-distance",
+      "MatterEngine3/tools/tests/test_embed_spirv.py (8 tests)",
+      "native Linux full smoke source build",
+      "CTest OFF/ON registration checks",
+      "Final default CTest run and heavy-enabled configuration with -LE heavy: both 1/1 passed"
+    ],
+    "existing_failure": "MatterEngine3/tests/run-shader-source: shader_source_tests.cpp:1163, water_forward_uses_world_normal; test and water shaders unchanged."
+  }
+}
