@@ -1,0 +1,10 @@
+render_path native_rt
+set render.gi.diffuse_multiplier 1
+set render.lighting.emission_multiplier 1
+set render.lighting.exposure_ev 0
+set render.gi.enabled true
+cam 23 11 27 0 1.7 0
+history_reset
+wait_frames 96
+shot C:/tmp/local-light-rt-bounded-76a/zero-after-reload.png
+quit

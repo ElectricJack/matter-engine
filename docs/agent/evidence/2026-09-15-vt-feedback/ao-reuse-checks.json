@@ -1,0 +1,108 @@
+[
+  {
+    "name": "ao-reuse-build",
+    "command": [
+      "./tools/build-windows-from-wsl.sh",
+      "RelWithDebInfo",
+      "vulkan_smoke_tests"
+    ],
+    "exit": 0,
+    "elapsed_seconds": 25.000196933746338,
+    "log": "docs/agent/evidence/2026-09-15-vt-feedback/ao-reuse-build.log"
+  },
+  {
+    "name": "ao-reuse-vt-enrich",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-Command",
+      "$env:MATTER_VK_SMOKE_MODE=\"vt-enrich\"; $env:MATTER_VK_VALIDATION=\"1\"; Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe\"; exit $LASTEXITCODE"
+    ],
+    "exit": 0,
+    "elapsed_seconds": 1.9597296714782715,
+    "log": "docs/agent/evidence/2026-09-15-vt-feedback/ao-reuse-vt-enrich.log",
+    "all_pass": true,
+    "zero_validation_errors": true
+  },
+  {
+    "name": "ao-reuse-vt-enrich-nort",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-Command",
+      "$env:MATTER_VK_SMOKE_MODE=\"vt-enrich-nort\"; $env:MATTER_VK_VALIDATION=\"1\"; Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe\"; exit $LASTEXITCODE"
+    ],
+    "exit": 0,
+    "elapsed_seconds": 1.0706596374511719,
+    "log": "docs/agent/evidence/2026-09-15-vt-feedback/ao-reuse-vt-enrich-nort.log",
+    "all_pass": true,
+    "zero_validation_errors": true
+  },
+  {
+    "name": "ao-reuse-vt-surfaces",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-Command",
+      "$env:MATTER_VK_SMOKE_MODE=\"vt-surfaces\"; $env:MATTER_VK_VALIDATION=\"1\"; Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe\"; exit $LASTEXITCODE"
+    ],
+    "exit": 0,
+    "elapsed_seconds": 1.7681117057800293,
+    "log": "docs/agent/evidence/2026-09-15-vt-feedback/ao-reuse-vt-surfaces.log",
+    "all_pass": true,
+    "zero_validation_errors": true
+  },
+  {
+    "name": "ao-reuse-vt-normal-frame",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-Command",
+      "$env:MATTER_VK_SMOKE_MODE=\"vt-normal-frame\"; $env:MATTER_VK_VALIDATION=\"1\"; Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe\"; exit $LASTEXITCODE"
+    ],
+    "exit": 0,
+    "elapsed_seconds": 6.470961332321167,
+    "log": "docs/agent/evidence/2026-09-15-vt-feedback/ao-reuse-vt-normal-frame.log",
+    "all_pass": true,
+    "zero_validation_errors": true
+  },
+  {
+    "name": "ao-reuse-surface-parallax",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-Command",
+      "$env:MATTER_VK_SMOKE_MODE=\"surface-parallax\"; $env:MATTER_VK_VALIDATION=\"1\"; Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe\"; exit $LASTEXITCODE"
+    ],
+    "exit": 0,
+    "elapsed_seconds": 5.318325996398926,
+    "log": "docs/agent/evidence/2026-09-15-vt-feedback/ao-reuse-surface-parallax.log",
+    "all_pass": true,
+    "zero_validation_errors": true
+  },
+  {
+    "name": "ao-reuse-vt-queue",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-Command",
+      "$env:MATTER_VK_SMOKE_MODE=\"vt-queue\"; $env:MATTER_VK_VALIDATION=\"1\"; Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe\"; exit $LASTEXITCODE"
+    ],
+    "exit": 0,
+    "elapsed_seconds": 1.1194748878479004,
+    "log": "docs/agent/evidence/2026-09-15-vt-feedback/ao-reuse-vt-queue.log",
+    "all_pass": true,
+    "zero_validation_errors": true
+  },
+  {
+    "name": "ao-reuse-editor-build",
+    "command": [
+      "./tools/build-windows-from-wsl.sh",
+      "RelWithDebInfo",
+      "editor"
+    ],
+    "exit": 0,
+    "elapsed_seconds": 7.756853342056274,
+    "log": "docs/agent/evidence/2026-09-15-vt-feedback/ao-reuse-editor-build.log"
+  }
+]

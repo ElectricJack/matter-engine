@@ -1,0 +1,10 @@
+{
+  "artifact_integrity_passed": true,
+  "regression_steps_passed": 6,
+  "continuity_acceptance": "FAIL: 2 expected assertions, fix remains open",
+  "native_source_files_checked": 88,
+  "used_binaries_checked": 2,
+  "capture_images_checked": 7,
+  "local_links_checked": 37,
+  "errors": []
+}

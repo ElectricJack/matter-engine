@@ -1,0 +1,38 @@
+{
+  "valley-albedo": {
+    "changed_pixels": 191,
+    "pixels": 2919024,
+    "mean_byte_error": 2.4551585278732433e-05,
+    "max_byte_error": 1
+  },
+  "valley-normal": {
+    "changed_pixels": 142,
+    "pixels": 2919024,
+    "mean_byte_error": 1.6329659045854595e-05,
+    "max_byte_error": 1
+  },
+  "valley-depth": {
+    "changed_pixels": 0,
+    "pixels": 2919024,
+    "mean_byte_error": 0.0,
+    "max_byte_error": 0
+  },
+  "cliff-albedo": {
+    "changed_pixels": 17889,
+    "pixels": 2919024,
+    "mean_byte_error": 0.7733381659988635,
+    "max_byte_error": 189
+  },
+  "cliff-normal": {
+    "changed_pixels": 13128,
+    "pixels": 2919024,
+    "mean_byte_error": 0.0018246966565993747,
+    "max_byte_error": 3
+  },
+  "cliff-depth": {
+    "changed_pixels": 2,
+    "pixels": 2919024,
+    "mean_byte_error": 2.283868398021622e-07,
+    "max_byte_error": 1
+  }
+}

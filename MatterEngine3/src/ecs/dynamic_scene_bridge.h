@@ -104,6 +104,10 @@ public:
     // Notify that a GPU frame completed (allows slot reuse).
     void finish_frame(uint64_t completed_serial);
 
+    // Drop renderer-slot bookkeeping after the renderer discards its dynamic
+    // lane. The next reconcile emits fresh Bind changes for live ECS entities.
+    void reset();
+
     // Query: how many active dynamic entities this frame.
     uint32_t active_count() const;
 

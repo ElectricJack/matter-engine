@@ -1,0 +1,45 @@
+{
+ "protocol": "matter-agent",
+ "version": 1,
+ "type": "result",
+ "request_id": "acc-md1-0001",
+ "command": "procedural.parameters",
+ "ticket_id": "283",
+ "ok": true,
+ "code": "ok",
+ "message": "",
+ "context": {
+  "session": {
+   "id": "5",
+   "generation": "5"
+  },
+  "scene": {
+   "generation": "1",
+   "revision": "12",
+   "ready": true
+  },
+  "selection": {
+   "revision": "19"
+  },
+  "frame": {
+   "id": "157596"
+  },
+  "view": {
+   "id": "157596"
+  }
+ },
+ "result": {
+  "object": {
+   "kind": "baked_root",
+   "id": "3743653689683782954"
+  },
+  "owner": "Meadow",
+  "source": {
+   "available": true,
+   "value": "D:\\Shared With Desktop\\AI\\matter-engine-cpp\\.aq\\worktrees\\slot-2\\projects\\world_demo\\scenes\\Meadow\\objects\\Meadow.js"
+  },
+  "persistence": "session_only_root_override",
+  "available": true,
+  "parameters": []
+ }
+}

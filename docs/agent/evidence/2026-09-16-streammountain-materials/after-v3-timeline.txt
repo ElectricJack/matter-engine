@@ -1,0 +1,29 @@
+wait_event bake.finished 900
+wait_idle 3 45
+render_path raster
+cam 380 90 1600 420 55 1420
+wait_frames 300
+stats after-v3-overview
+shot C:/tmp/matter-mountain-material-v3/overview.png
+cam 380 20.25 1600 380 18.25 1593
+wait_frames 450
+stats after-v3-close
+shot C:/tmp/matter-mountain-material-v3/close.png
+cam 380 20.25 1600 400 20.25 1550
+wait_frames 90
+stats after-v3-grazing
+shot C:/tmp/matter-mountain-material-v3/grazing.png
+cam 380 20.25 1600 380 18.25 1593
+set render.lighting.exposure_ev 0
+set render.lighting.sun_elevation_deg 50
+set render.lighting.sun_tint 1, 1, 1
+set render.lighting.day_ambient_multiplier 1
+history_reset
+wait_frames 90
+stats after-v3-close-daylight
+shot C:/tmp/matter-mountain-material-v3/close-daylight.png
+set render.lighting.exposure_ev -0.74000001
+set render.lighting.sun_elevation_deg 24.8899994
+set render.lighting.sun_tint 0.950980365, 0.758480906, 0.587370217
+set render.lighting.day_ambient_multiplier 0.219999999
+quit

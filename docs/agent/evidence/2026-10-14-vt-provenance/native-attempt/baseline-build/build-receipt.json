@@ -1,0 +1,12 @@
+{
+    "source_root":  "D:\\matter-agent-artifacts\\matter-engine-cpp\\nimble-rapids-30\\epoch8-230ea608\\58289c187ef2565c7d0532fe28a8cfb903023e44",
+    "command":  "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"D:\\matter-agent-artifacts\\matter-engine-cpp\\nimble-rapids-30\\epoch8-230ea608\\58289c187ef2565c7d0532fe28a8cfb903023e44\\tools\\build-windows.ps1\" -Config RelWithDebInfo -Target vulkan_smoke_tests",
+    "working_directory":  "D:\\matter-agent-artifacts\\matter-engine-cpp\\nimble-rapids-30\\epoch8-230ea608\\58289c187ef2565c7d0532fe28a8cfb903023e44",
+    "started_at":  "2026-10-15T00:02:38.6217849Z",
+    "timeout_seconds":  1800,
+    "build_parallel_level":  "6",
+    "status":  "failed",
+    "exit_code":  1,
+    "elapsed_seconds":  6.2184678999999994,
+    "finished_at":  "2026-10-15T00:02:44.8447881Z"
+}
