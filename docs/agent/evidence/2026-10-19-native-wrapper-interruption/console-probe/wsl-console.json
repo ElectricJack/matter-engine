@@ -1,0 +1,15 @@
+{
+    "pid":  50588,
+    "parent_pid":  3512,
+    "console_window":  0,
+    "console_window_visible":  false,
+    "console_window_class":  "",
+    "console_process_ids":  [
+                                50588,
+                                3512
+                            ],
+    "console_processes":  [
+                              "50588:powershell.exe",
+                              "3512:powershell.exe"
+                          ]
+}

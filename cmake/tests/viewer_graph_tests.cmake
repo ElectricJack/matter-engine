@@ -28,9 +28,9 @@ if(CMAKE_SOURCE_DIR STREQUAL MATTER_REPOSITORY_ROOT)
         list(REMOVE_DUPLICATES editor_sources_unique)
         list(LENGTH editor_sources editor_count)
         list(LENGTH editor_sources_unique editor_unique_count)
-        if(NOT editor_count EQUAL 46 OR NOT editor_unique_count EQUAL 46)
+        if(NOT editor_count EQUAL 48 OR NOT editor_unique_count EQUAL 48)
             message(FATAL_ERROR
-                "editor source census is wrong: count=${editor_count}, unique=${editor_unique_count}, expected=46")
+                "editor source census is wrong: count=${editor_count}, unique=${editor_unique_count}, expected=48")
         endif()
         assert_list_contains("${editor_sources}" MatterEditor/src/agent_protocol.cpp
             "editor agent protocol source is missing")
@@ -48,10 +48,21 @@ if(CMAKE_SOURCE_DIR STREQUAL MATTER_REPOSITORY_ROOT)
         get_target_property(headless_surface_sources matter_engine_surface_objects SOURCES)
         list(LENGTH headless_core_sources headless_core_count)
         list(LENGTH headless_surface_sources headless_surface_count)
-        if(NOT headless_core_count EQUAL 138 OR NOT headless_surface_count EQUAL 21)
+        if(NOT headless_core_count EQUAL 170 OR NOT headless_surface_count EQUAL 21)
             message(FATAL_ERROR
                 "accepted headless graph changed: core=${headless_core_count}, surface=${headless_surface_count}")
         endif()
+        foreach(required_source IN ITEMS
+                MatterEngine3/src/projected_face_cache.cpp
+                MatterEngine3/src/face_material_bake.cpp
+                MatterEngine3/src/finite_surface_stamp.cpp
+                MatterEngine3/src/part_surface.cpp)
+            assert_list_contains("${headless_core_sources}" "${required_source}"
+                "CPU surface preparation source is missing")
+        endforeach()
+        assert_list_excludes("${headless_core_sources}"
+            MatterEngine3/src/render/gpu_meshing/gpu_face_material_vk.cpp
+            "headless core must not compile the renderer-owned material baker")
         get_target_property(headless_core_definitions matter_engine_core COMPILE_DEFINITIONS)
         get_target_property(headless_surface_definitions matter_engine_surface_objects COMPILE_DEFINITIONS)
         get_target_property(headless_links matter_engine_headless LINK_LIBRARIES)
@@ -68,10 +79,23 @@ if(CMAKE_SOURCE_DIR STREQUAL MATTER_REPOSITORY_ROOT)
         list(LENGTH viewer_sources viewer_count)
         list(LENGTH viewer_sources_unique viewer_unique_count)
         if(MATTER_EXPECT_RETOPO)
-            set(expected_viewer_count 180)
+            set(expected_viewer_count 234)
         else()
-            set(expected_viewer_count 179)
+            set(expected_viewer_count 233)
         endif()
+        foreach(required_source IN ITEMS
+                MatterEngine3/src/projected_face_cache.cpp
+                MatterEngine3/src/face_material_bake.cpp
+                MatterEngine3/src/finite_surface_stamp.cpp
+                MatterEngine3/src/part_surface.cpp
+                MatterEngine3/src/render/gpu_meshing/gpu_face_material_vk.cpp
+                libs/MatterGraphics/src/native/mesh_raster.cpp
+                libs/MatterGraphics/src/native/mesh_pipelines.cpp
+                MatterEngine3/src/render/vt_compositor.cpp
+                libs/MatterGraphics/src/native/vt/vt_residency.cpp)
+            assert_list_contains("${viewer_sources}" "${required_source}"
+                "viewer surface preparation/composition source is missing")
+        endforeach()
         if(NOT viewer_count EQUAL expected_viewer_count OR
                 NOT viewer_unique_count EQUAL expected_viewer_count)
             message(FATAL_ERROR
@@ -162,4 +186,4 @@ foreach(retopo IN ITEMS ON OFF)
     endif()
 endforeach()
 
-message(STATUS "viewer graph preserves 46-source editor, isolated 138+21 headless, and coherent 179/180-source viewer boundaries")
+message(STATUS "viewer graph preserves 48-source editor, isolated 170+21 headless, and coherent 232/233-source viewer boundaries")

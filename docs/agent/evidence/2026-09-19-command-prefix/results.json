@@ -1,0 +1,142 @@
+{
+  "moving-hot-record-v1": {
+    "movement": {
+      "samples": 959,
+      "median_ms": 22.489300000001094,
+      "p95_ms": 32.91730000000098,
+      "max_ms": 65.89849999999933
+    },
+    "scopes": {
+      "geometry.update": {
+        "mean_ms": 15.717356640625,
+        "max_ms": 45.781699999999994,
+        "count": 512
+      },
+      "geometry.adopt_hierarchies": {
+        "mean_ms": 0.0742623046875,
+        "max_ms": 0.6379,
+        "count": 512
+      },
+      "geometry.admission": {
+        "mean_ms": 0.4151623046875,
+        "max_ms": 4.7136000000000005,
+        "count": 512
+      },
+      "geometry.stream_pages": {
+        "mean_ms": 4.64887890625,
+        "max_ms": 22.3317,
+        "count": 512
+      },
+      "geometry.scene_completion": {
+        "mean_ms": 0.0144255859375,
+        "max_ms": 0.17980000000000002,
+        "count": 512
+      },
+      "geometry.scene_assembly": {
+        "mean_ms": 6.4724259765625,
+        "max_ms": 20.5084,
+        "count": 512
+      },
+      "geometry.retain_snapshots": {
+        "mean_ms": 0.0120453125,
+        "max_ms": 0.054200000000000005,
+        "count": 512
+      },
+      "geometry.reclaim_dispatch": {
+        "mean_ms": 0.21174375,
+        "max_ms": 8.8178,
+        "count": 512
+      },
+      "geometry.publish_scene": {
+        "mean_ms": 3.8452119140625,
+        "max_ms": 8.1813,
+        "count": 512
+      },
+      "build.prepare_frame": {
+        "count": 512,
+        "mean_ms": 4.9088556640625,
+        "max_ms": 11.4515
+      },
+      "geometry.invalidate_published": {
+        "mean_ms": 0.46024587155963304,
+        "max_ms": 1.0424,
+        "count": 327
+      },
+      "pf.flushtmpl": {
+        "count": 512,
+        "mean_ms": 2.9149091796875,
+        "max_ms": 8.326
+      }
+    }
+  },
+  "moving-command-prefix-v1": {
+    "movement": {
+      "samples": 959,
+      "median_ms": 22.257299999997485,
+      "p95_ms": 31.913700000000972,
+      "max_ms": 80.1668000000027
+    },
+    "scopes": {
+      "geometry.update": {
+        "mean_ms": 16.192305859375,
+        "max_ms": 55.848099999999995,
+        "count": 512
+      },
+      "geometry.adopt_hierarchies": {
+        "mean_ms": 0.07650234375000001,
+        "max_ms": 0.5749,
+        "count": 512
+      },
+      "geometry.admission": {
+        "mean_ms": 0.4411857421875,
+        "max_ms": 5.3377,
+        "count": 512
+      },
+      "geometry.stream_pages": {
+        "mean_ms": 4.7203130859375,
+        "max_ms": 27.1522,
+        "count": 512
+      },
+      "geometry.scene_completion": {
+        "mean_ms": 0.0156943359375,
+        "max_ms": 0.1364,
+        "count": 512
+      },
+      "geometry.scene_assembly": {
+        "mean_ms": 6.6761261718750005,
+        "max_ms": 22.041400000000003,
+        "count": 512
+      },
+      "geometry.retain_snapshots": {
+        "mean_ms": 0.0132923828125,
+        "max_ms": 0.0394,
+        "count": 512
+      },
+      "geometry.reclaim_dispatch": {
+        "mean_ms": 0.2283859375,
+        "max_ms": 10.8531,
+        "count": 512
+      },
+      "geometry.publish_scene": {
+        "mean_ms": 3.9973798828125,
+        "max_ms": 6.898,
+        "count": 512
+      },
+      "build.prepare_frame": {
+        "count": 512,
+        "mean_ms": 3.5834365234375,
+        "max_ms": 12.2569
+      },
+      "geometry.invalidate_published": {
+        "mean_ms": 0.4378830357142857,
+        "max_ms": 1.3717000000000001,
+        "count": 336
+      },
+      "pf.flushtmpl": {
+        "count": 512,
+        "mean_ms": 1.2476603515625,
+        "max_ms": 6.3687
+      }
+    }
+  }
+}

@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><title>Matter runtime-only build</title><link rel="icon" href="data:,">
+<body><pre id="output">Running</pre>
+<!-- Runtime consumers that never render: no import map, no viewer, no three.js.
+     browser_tests.py asserts nothing under viewer/ or vendor/three is requested. -->
+<script type="module">
+import {ProceduralRuntime} from '../../runtime/dist/index.mjs';
+const source = `export default ({sdk, job, seed}) => {
+  const b = new sdk.RecipeBuilder({source: {id: 'runtime.only', uri: 'fixture://WEB-RUNTIME-ONLY', revision: job.source_revision}, seed});
+  return b.output(b.box('block', [1, 2, 3])).build();
+}`;
+const runtime = new ProceduralRuntime({geometryModuleURL: new URL('/wasm/matter_geometry_wasm.mjs', location.href), concurrency: 1});
+try {
+  runtime.setCurrent('runtime-only', 1n);
+  const result = await runtime.submit({kind: 'author', job: {request_id: 'runtime-only', source_revision: 'runtime-only', generation_epoch: 1n},
+    snapshot: {source, uri: 'fixture://WEB-RUNTIME-ONLY'}, parameters: {}, seed: 1n});
+  const asset = result.value.asset;
+  if (result.value.kind !== 'asset' || result.meshes.length !== 1) throw new Error(`unexpected result ${result.value.kind}/${result.meshes.length}`);
+  window.runtimeOnlyReport = {kind: result.value.kind, meshes: result.meshes.length, triangles: result.meshes[0].indices.length / 3,
+    bounds: asset.bounds, three: 'THREE' in globalThis, importMap: document.querySelector('script[type=importmap]') !== null};
+  document.getElementById('output').textContent = JSON.stringify(window.runtimeOnlyReport);
+} catch (error) {
+  window.runtimeOnlyFailure = String(error.stack ?? error);
+  document.getElementById('output').textContent = window.runtimeOnlyFailure;
+} finally { runtime.dispose(); }
+</script></body></html>

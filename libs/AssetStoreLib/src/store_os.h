@@ -18,7 +18,7 @@
  * wrapper here, so every early return in a caller has to close what it opened.
  *
  * Errors: every function reports failure by return value (false, null, or 0)
- * and leaves a description in the process-global string that last_error()
+ * and leaves a description in the thread-local string that last_error()
  * returns. Nothing here throws, and nothing retries an IO error.
  */
 #ifndef ASSET_STORE_OS_H
@@ -71,12 +71,12 @@ bool stamp_of(const std::string& path, uint64_t* out_stamp);
 struct Lock;
 /* Returns null if the lock is held elsewhere and `block` is false. */
 Lock* lock_exclusive(const std::string& path, bool block);
+/* Nonblocking shared lease, compatible with other shared holders but not an
+ * exclusive maintenance lock. May create the otherwise empty lock file. */
+Lock* lock_shared(const std::string& path);
 void unlock(Lock* l);
 
-/* The message from the most recent failure IN THIS PROCESS: one static string,
- * not per-File and not per-thread. Read it immediately after the call that
- * returned false -- a failure on another thread overwrites it. Empty until
- * something has failed. */
+/* Most recent failure on THIS THREAD. Read immediately after the failed call. */
 std::string last_error();
 
 }  // namespace os

@@ -1,0 +1,16 @@
+[
+  {
+    "kind": "build",
+    "name": "part_surface_provider_tests",
+    "command": [
+      "./tools/build-windows-from-wsl.sh",
+      "RelWithDebInfo",
+      "part_surface_provider_tests"
+    ],
+    "exit": 1,
+    "seconds": 13.746938900003443,
+    "log": "docs/agent/evidence/2026-09-15-wall-surface/provider-v2-build-part_surface_provider_tests.log",
+    "source_changes": [],
+    "validation_errors": []
+  }
+]
