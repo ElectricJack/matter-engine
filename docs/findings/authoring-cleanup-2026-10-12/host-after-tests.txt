@@ -1,0 +1,14 @@
+Internal ctest changing into directory: /tmp/crisp-ember-20-validation/host
+Test project /tmp/crisp-ember-20-validation/host
+    Start 1: matter_host_quickjs_controls
+1/4 Test #1: matter_host_quickjs_controls .......   Passed    2.21 sec
+    Start 2: matter_host_quickjs_parity
+2/4 Test #2: matter_host_quickjs_parity .........   Passed    2.25 sec
+    Start 3: matter_host_quickjs_parser_oom
+3/4 Test #3: matter_host_quickjs_parser_oom .....   Passed    0.06 sec
+    Start 4: matter_host_quickjs_compiler_oom
+4/4 Test #4: matter_host_quickjs_compiler_oom ...   Passed    1.55 sec
+
+100% tests passed, 0 tests failed out of 4
+
+Total Test time (real) =   6.10 sec

@@ -1,0 +1,100 @@
+{
+  "matter_contracts": {
+    "type": "STATIC_LIBRARY",
+    "sources": [
+      "D:/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-1/libs/MatterContracts/src/value.cpp",
+      "D:/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-1/libs/MatterContracts/src/codec.cpp",
+      "D:/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-1/libs/MatterContracts/src/validation.cpp",
+      "D:/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-1/libs/MatterContracts/src/digest.cpp",
+      "D:/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-1/libs/MatterContracts/src/services.cpp"
+    ],
+    "dependencies": [],
+    "link": []
+  },
+  "matter_graphics": {
+    "type": "STATIC_LIBRARY",
+    "sources": [
+      "src/graphics.cpp",
+      "src/scene_backend.cpp",
+      "src/composition.cpp",
+      "D:/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-1/MatterEngine3/src/render/matrix_math.cpp"
+    ],
+    "dependencies": [
+      "matter_contracts"
+    ],
+    "link": []
+  },
+  "matter_graphics_sample": {
+    "type": "EXECUTABLE",
+    "sources": [
+      "examples/graphics_sample.cpp"
+    ],
+    "dependencies": [
+      "matter_graphics_vulkan",
+      "matter_graphics",
+      "matter_contracts"
+    ],
+    "link": [
+      {
+        "fragment": "/DWIN32 /D_WINDOWS /EHsc /O2 /Ob1 /DNDEBUG -MD -Zi",
+        "role": "flags"
+      },
+      {
+        "fragment": "/machine:x64 /debug /INCREMENTAL /subsystem:console",
+        "role": "flags"
+      },
+      {
+        "backtrace": 2,
+        "fragment": "matter_graphics_vulkan.lib",
+        "role": "libraries"
+      },
+      {
+        "backtrace": 3,
+        "fragment": "matter_graphics.lib",
+        "role": "libraries"
+      },
+      {
+        "backtrace": 4,
+        "fragment": "matter-components\\matter_contracts\\matter_contracts.lib",
+        "role": "libraries"
+      },
+      {
+        "backtrace": 3,
+        "fragment": "C:\\VulkanSDK\\1.4.357.0\\Lib\\vulkan-1.lib",
+        "role": "libraries"
+      },
+      {
+        "fragment": "kernel32.lib user32.lib gdi32.lib winspool.lib shell32.lib ole32.lib oleaut32.lib uuid.lib comdlg32.lib advapi32.lib",
+        "role": "libraries"
+      }
+    ]
+  },
+  "matter_graphics_vulkan": {
+    "type": "STATIC_LIBRARY",
+    "sources": [
+      "src/vulkan_resources.cpp",
+      "src/vulkan_composition.cpp",
+      "src/vulkan_raster.cpp",
+      "build/sample-clean-epoch8/raster_spirv.h",
+      "src/native/mesh_raster.cpp",
+      "src/native/mesh_pipelines.cpp",
+      "build/sample-clean-epoch8/composition_spirv.h",
+      "build/sample-clean-epoch8/raster_spirv.h.rule",
+      "build/sample-clean-epoch8/composition_spirv.h.rule",
+      "build/sample-clean-epoch8/gbuffer.frag.spv.rule",
+      "build/sample-clean-epoch8/raster.vert.spv.rule",
+      "build/sample-clean-epoch8/raster_skin.vert.spv.rule",
+      "build/sample-clean-epoch8/raster_water.vert.spv.rule",
+      "build/sample-clean-epoch8/visibility_id.frag.spv.rule",
+      "build/sample-clean-epoch8/visibility_id.vert.spv.rule",
+      "build/sample-clean-epoch8/composite.frag.spv.rule",
+      "build/sample-clean-epoch8/composite.vert.spv.rule",
+      "build/sample-clean-epoch8/display_transform.frag.spv.rule"
+    ],
+    "dependencies": [
+      "matter_graphics",
+      "matter_contracts"
+    ],
+    "link": []
+  }
+}

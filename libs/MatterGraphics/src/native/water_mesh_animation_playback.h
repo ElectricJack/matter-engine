@@ -12,6 +12,8 @@
 #include <string_view>
 #include <vector>
 
+namespace matter { class CacheByteStorage; }
+
 namespace viewer {
 
 enum class WaterAnimationFallbackReason : std::uint8_t {
@@ -104,7 +106,7 @@ private:
         const hydrology::HydrologyNetworkArtifact&,
         const std::filesystem::path&, std::uint32_t, std::uint32_t,
         std::uint64_t,
-        WaterMeshAnimationPlayback&, WaterAnimationFallback&);
+        WaterMeshAnimationPlayback&, WaterAnimationFallback&, matter::CacheByteStorage*);
 
     struct Asset {
         hydrology::HydrologyWaterAnimationReference reference{};
@@ -129,6 +131,7 @@ bool activate_water_mesh_animation_playback(
     std::uint32_t vulkan_frame_slots,
     std::uint64_t cpu_budget_bytes,
     WaterMeshAnimationPlayback& playback,
-    WaterAnimationFallback& fallback);
+    WaterAnimationFallback& fallback,
+    matter::CacheByteStorage* storage = nullptr);
 
 }  // namespace viewer

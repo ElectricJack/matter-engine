@@ -46,7 +46,8 @@ Prototype `id` and `parts[]` are stable recipe node IDs. `partIds` and
 `materialIds` have one entry per triangle and index `parts` and `materials`.
 Groups use index offsets/counts, suitable for three.js `BufferGeometry.addGroup`.
 Each instance has its own stable `id`/`partId`, shared `meshId` and row-major
-local-to-asset matrix. Coordinates are right-handed, Y up, metres. Bounds are
+local-to-asset matrix. Coordinates are right-handed, Y up, metres. Extrusion uses
+the canonical transport frame: a +Z path maps profile (u,v) to (-u,-v,z). Bounds are
 native conservative AABBs; smoothing/simplification need not shrink them.
 LODs retain the base part/material tables and placement identities.
 
