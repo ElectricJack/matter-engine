@@ -1,0 +1,61 @@
+{
+  "capture": "v1",
+  "pom_pairs": {
+    "cliff": {
+      "mean_abs_8bit": 2.0064222005208334,
+      "max_abs_8bit": 31.0,
+      "fraction_pixels_above_3_levels": 0.2506826171875,
+      "caveat": "Lit frames also include temporal lighting variation; metrics are not a POM correctness oracle."
+    },
+    "cliff-grazing": {
+      "mean_abs_8bit": 2.28698046875,
+      "max_abs_8bit": 40.0,
+      "fraction_pixels_above_3_levels": 0.3082294921875,
+      "caveat": "Lit frames also include temporal lighting variation; metrics are not a POM correctness oracle."
+    },
+    "close": {
+      "mean_abs_8bit": 8.543059244791667,
+      "max_abs_8bit": 96.0,
+      "fraction_pixels_above_3_levels": 0.6395107421875,
+      "caveat": "Lit frames also include temporal lighting variation; metrics are not a POM correctness oracle."
+    },
+    "grazing": {
+      "mean_abs_8bit": 3.6330237630208333,
+      "max_abs_8bit": 79.0,
+      "fraction_pixels_above_3_levels": 0.2423916015625,
+      "caveat": "Lit frames also include temporal lighting variation; metrics are not a POM correctness oracle."
+    }
+  },
+  "root_bake_ms": 55115.9639,
+  "root_children_ms": {
+    "resolve-cache.key": 15.0366,
+    "resolve-cache.load": 0.04970000000000141,
+    "install": 19.514799999999997,
+    "publish": 41211.3576
+  },
+  "stream_summaries": [
+    "[stream.fill] COMPLETE: 2586 sectors resident in 170.60 s (12 workers; MATTER_STREAM_FILL_PROFILE=1 for the rate breakdown)"
+  ],
+  "render_timings": {
+    "overview": {
+      "samples": 30,
+      "gbuffer_median_ms": 33.953
+    },
+    "grazing": {
+      "samples": 30,
+      "gbuffer_median_ms": 18.810499999999998
+    },
+    "cliff": {
+      "samples": 30,
+      "gbuffer_median_ms": 23.1725
+    },
+    "cliff-grazing": {
+      "samples": 30,
+      "gbuffer_median_ms": 35.663
+    },
+    "close": {
+      "samples": 30,
+      "gbuffer_median_ms": 6.1240000000000006
+    }
+  }
+}

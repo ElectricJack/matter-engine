@@ -1,0 +1,106 @@
+{
+  "build_prefix": "weld-vt-v3",
+  "expected_suites": [
+    "compositor",
+    "static-surface",
+    "vt-composed-seam",
+    "vt-feedback",
+    "vt-sector-seam",
+    "vt-surface-connections"
+  ],
+  "native_suites_passed": true,
+  "test_runs": [
+    {
+      "mode": "static-surface",
+      "command": "$env:MATTER_VK_VALIDATION=\"1\"; $env:TMP=\"$env:LOCALAPPDATA\\Temp\"; $env:TEMP=$env:TMP; $env:MATTER_VK_SMOKE_MODE=\"static-surface\"; $env:MATTER_VT_PROP_TEXELS_PER_METER=$null; & \"./build/cmake/windows-msvc/relwithdebinfo/static_surface_vt_tests.exe\"; exit $LASTEXITCODE",
+      "exit": 0,
+      "seconds": 39.911113500987994,
+      "binary_sha256": "164945832cd617665b99e5151aeb0a656372af4a0e100b599ea40e42c04de004",
+      "binary_unchanged": true,
+      "source_changes": [],
+      "all_pass": true,
+      "zero_validation_errors": true,
+      "skipped_rt": false,
+      "log_sha256": "fed19b1f50a9b65834904c404d22313b36ae3f49b9244c57a92730188c439661",
+      "passed": true
+    },
+    {
+      "mode": "vt-feedback",
+      "command": "$env:MATTER_VK_VALIDATION=\"1\"; $env:TMP=\"$env:LOCALAPPDATA\\Temp\"; $env:TEMP=$env:TMP; $env:MATTER_VK_SMOKE_MODE=\"vt-feedback\"; $env:MATTER_VT_PROP_TEXELS_PER_METER=$null; & \"./build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe\"; exit $LASTEXITCODE",
+      "exit": 0,
+      "seconds": 10.876530306006316,
+      "binary_sha256": "5d3eb37fc49b3f93c7eb27adfa6e4484b232583b87a57158f0344f172f2f3ff4",
+      "binary_unchanged": true,
+      "source_changes": [],
+      "all_pass": true,
+      "zero_validation_errors": true,
+      "skipped_rt": false,
+      "log_sha256": "7679400c8e5b2b25327044bfc1e34757172ef19dce57a50aa29118d9d7d297cc",
+      "passed": true
+    },
+    {
+      "mode": "vt-sector-seam",
+      "command": "$env:MATTER_VK_VALIDATION=\"1\"; $env:TMP=\"$env:LOCALAPPDATA\\Temp\"; $env:TEMP=$env:TMP; $env:MATTER_VK_SMOKE_MODE=\"vt-sector-seam\"; $env:MATTER_VT_PROP_TEXELS_PER_METER=$null; & \"./build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe\"; exit $LASTEXITCODE",
+      "exit": 0,
+      "seconds": 40.51752733399917,
+      "binary_sha256": "5d3eb37fc49b3f93c7eb27adfa6e4484b232583b87a57158f0344f172f2f3ff4",
+      "binary_unchanged": true,
+      "source_changes": [],
+      "all_pass": true,
+      "zero_validation_errors": true,
+      "skipped_rt": false,
+      "log_sha256": "058e370c40f16424cbe31b62323fec7016ba3bf3b05f3570974194ade72ae60e",
+      "passed": true
+    },
+    {
+      "mode": "vt-composed-seam",
+      "command": "$env:MATTER_VK_VALIDATION=\"1\"; $env:TMP=\"$env:LOCALAPPDATA\\Temp\"; $env:TEMP=$env:TMP; $env:MATTER_VK_SMOKE_MODE=\"vt-composed-seam\"; $env:MATTER_VT_PROP_TEXELS_PER_METER=$null; & \"./build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe\"; exit $LASTEXITCODE",
+      "exit": 0,
+      "seconds": 12.9653381370008,
+      "binary_sha256": "5d3eb37fc49b3f93c7eb27adfa6e4484b232583b87a57158f0344f172f2f3ff4",
+      "binary_unchanged": true,
+      "source_changes": [],
+      "all_pass": true,
+      "zero_validation_errors": true,
+      "skipped_rt": false,
+      "log_sha256": "14d6396e3eee0c843c0e0cd1cd09125e2b1ed566a3369721ab0ec0f2e513697f",
+      "passed": true
+    },
+    {
+      "mode": "vt-surface-connections",
+      "command": "$env:MATTER_VK_VALIDATION=\"1\"; $env:TMP=\"$env:LOCALAPPDATA\\Temp\"; $env:TEMP=$env:TMP; $env:MATTER_VK_SMOKE_MODE=\"vt-surface-connections\"; $env:MATTER_VT_PROP_TEXELS_PER_METER=$null; & \"./build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe\"; exit $LASTEXITCODE",
+      "exit": 0,
+      "seconds": 1.2025391749921255,
+      "binary_sha256": "5d3eb37fc49b3f93c7eb27adfa6e4484b232583b87a57158f0344f172f2f3ff4",
+      "binary_unchanged": true,
+      "source_changes": [],
+      "all_pass": true,
+      "zero_validation_errors": true,
+      "skipped_rt": false,
+      "log_sha256": "d893d660944dc65fd0d6f00e128df9eae19e8ceb736810cce8124e8beb353253",
+      "passed": true
+    },
+    {
+      "mode": "compositor",
+      "command": "$env:MATTER_VK_VALIDATION=\"1\"; $env:TMP=\"$env:LOCALAPPDATA\\Temp\"; $env:TEMP=$env:TMP; $env:MATTER_VK_SMOKE_MODE=\"compositor\"; $env:MATTER_VT_PROP_TEXELS_PER_METER=$null; & \"./build/cmake/windows-msvc/relwithdebinfo/vt_compositor_tests.exe\"; exit $LASTEXITCODE",
+      "exit": 0,
+      "seconds": 4.945578785991529,
+      "binary_sha256": "7b7b4ddafb6304c114ec54e3b690aa42a2e3de0ef70e7c9300474e729aa6661d",
+      "binary_unchanged": true,
+      "source_changes": [],
+      "all_pass": true,
+      "zero_validation_errors": true,
+      "skipped_rt": false,
+      "log_sha256": "891b226ff02ae4c73b9fa93d2a07bf39d4485a47987748a53accf50813767b7f",
+      "passed": true
+    }
+  ],
+  "binaries": {
+    "MatterEditor/build/cmake/windows-msvc/relwithdebinfo/static_surface_vt_tests.exe": "164945832cd617665b99e5151aeb0a656372af4a0e100b599ea40e42c04de004",
+    "MatterEditor/build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe": "5d3eb37fc49b3f93c7eb27adfa6e4484b232583b87a57158f0344f172f2f3ff4",
+    "MatterEditor/build/cmake/windows-msvc/relwithdebinfo/vt_compositor_tests.exe": "7b7b4ddafb6304c114ec54e3b690aa42a2e3de0ef70e7c9300474e729aa6661d",
+    "MatterEditor/build/windows-msvc/editor.exe": "40a981e90cf054681d59de746b5a2179ce984023e1da19eb3cad61d21cd9addd"
+  },
+  "scope": "Retained runtime strip chart/material registration, draw-selected LOD contract, synthetic cross-owner POM and incremental table lifecycle; not full Streaming Mountains continuity acceptance.",
+  "fixture_correction": "Changed the boundary-case 45-degree fold to a 90-degree fold with matching geometry normals; the production chart cone remains 45 degrees."
+}

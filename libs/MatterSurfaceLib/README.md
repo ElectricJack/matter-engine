@@ -12,8 +12,8 @@ copied or symlinked into a consumer.
 > ObjectAllocatorLib)" dependency. That app (`main.cpp` +
 > `bvh_visualizer.{cpp,hpp}`) was deleted outright in Phase 5a along with the
 > whole GL renderer path, and nothing was ever copied from MemoryLib. The
-> `build.sh` / `run.sh` / `run*.ps1` / `platform-status.sh` scripts still
-> sitting in this directory are leftovers from that app and drive nothing.
+> obsolete standalone build, launch, and platform-status scripts have also
+> been removed; use the library and shader targets documented below.
 
 ## Dependencies
 

@@ -73,11 +73,16 @@ static bool read_file(const std::string& path, std::string& out) {
 // genuine error (a typo in a logical path, or a shader the build did not
 // embed) and never a normal outcome.
 bool shader_text(const char* logical_path, std::string& out, std::string& err) {
+    return shader_text(logical_path, out, err, read_file);
+}
+
+bool shader_text(const char* logical_path, std::string& out, std::string& err,
+                 const ShaderSourceReader& read_source) {
     if (const char* env = getenv("MATTER_SHADER_DIR")) {
-        if (read_file(std::string(env) + "/" + logical_path, out)) return true;
+        if (read_source(std::string(env) + "/" + logical_path, out)) return true;
     }
     if (!g_override_dir.empty()) {
-        if (read_file(g_override_dir + "/" + logical_path, out)) return true;
+        if (read_source(g_override_dir + "/" + logical_path, out)) return true;
     }
     for (int i = 0; i < matter_embedded::kEmbeddedShaderCount; ++i) {
         if (strcmp(matter_embedded::kEmbeddedShaders[i].path, logical_path) == 0) {

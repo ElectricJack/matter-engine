@@ -318,7 +318,7 @@ export function castleBasePlan(name = 'courtyard', seed = 9411) {
    const side=[-1,1].map(sign=>level.rooms.find(r=>contains(r,x+sign*(-dz)/len*.01,z+sign*dx/len*.01)));
    const connects=side.map(r=>r?roomId(index,r[0]):'outside');
    const open=side.every(r=>r&&r[3]==='gallery');
-   return {id:`${levelId}-portal-${x1}-${z1}-${x2}-${z2}`,from:[x1,z1],to:[x2,z2],kind:open?'open':'arch',connects,opening:{offset:open?0:.35,width:len-(open?0:.7),height:open?4:2.8,bottom:0}};
+   return {id:`${levelId}-portal-${x1}-${z1}-${x2}-${z2}`,from:[x1,z1],to:[x2,z2],kind:open?'open':'arch',connects,opening:{offset:open?0:.35,width:len-(open?0:.7),height:open?3.5:2.8,bottom:0}};
   });
   plan.levels.push({id:levelId,baseY:level.y,height:4,rooms,edgeOverrides});
   if(name==='roundkeep')plan.curves.push({id:`${levelId}-tower`,levelId,roomId:roomId(index,'tower'),kind:'ring',center:[0,4],radius:4,thickness:.6,height:4,apertures:[{id:`${levelId}-throat`,kind:'arch',startAngle:-16,endAngle:16,connects:[roomId(index,'tower'),roomId(index,'lobby')],bottom:0,height:2.8,throat:{targetRoomId:roomId(index,'lobby'),direction:'E',width:1.3,depth:.6}}]});
@@ -381,21 +381,28 @@ function addFacadeBays(plan) {
    endAngle:angle+9, bottom:1.1, height:1.9});
 }
 
+// An upper gallery edge opens only where it overlooks air: a double-height
+// void beside it, or an open court below its exterior side. The court test
+// samples the cell beyond the wall, not the wall line: a gallery wall on a
+// court's edge overlooks it, but one on a hall's outer edge is the keep's
+// outer wall above the lean-tos.
 function addGalleryEdges(plan) {
  const base = compilePlan(plan);
- const authoredRooms = plan.levels[0].rooms;
+ const courts = plan.levels[0].rooms.filter(room => room.rect && room.use === 'court');
  const rooms = new Map(base.rooms.map(room => [room.id, room]));
+ const cells = new Map(base.rooms.map(room => [room.id, new Set((room.boundary.cells || []).map(cell => cell.join(',')))]));
  const groups = new Map();
  for (const wall of base.walls) {
   const adjacent = wall.roomIds.map(id => rooms.get(id));
   const gallery = adjacent.find(room => room.use === 'gallery');
-  if (wall.levelId !== 'upper' || wall.kind !== 'wall' || !gallery || (wall.boundary !== 'exterior' && !adjacent.some(room => room.openToBelow))) continue;
-  const x=(wall.from[0]+wall.to[0])/2,z=(wall.from[1]+wall.to[1])/2;
-  const overVoid=authoredRooms.some(room=>{
-   if (!room.rect || !['court','hall','chapel'].includes(room.use)) return false;
-   const r=room.rect;
-   return x>=r.x && x<=r.x+r.width && z>=r.z && z<=r.z+r.depth;
-  });
+  if (wall.levelId !== 'upper' || wall.kind !== 'wall' || !gallery) continue;
+  let overVoid = adjacent.some(room => room.openToBelow);
+  if (!overVoid && wall.boundary === 'exterior') {
+   const [x,z] = wall.from.map((value,i) => Math.min(value,wall.to[i]));
+   const sides = wall.axis === 'x' ? [[x,z-1],[x,z]] : [[x-1,z],[x,z]];
+   const [cx,cz] = sides.find(cell => !cells.get(gallery.id).has(cell.join(',')));
+   overVoid = courts.some(({rect:r}) => cx >= r.x && cx < r.x+r.width && cz >= r.z && cz < r.z+r.depth);
+  }
   if (!overVoid) continue;
   const axis=wall.axis==='x'?0:1;
   const key=gallery.id+':'+wall.axis+':'+wall.from[1-axis];
@@ -466,8 +473,8 @@ function addRoofsAndTimber(plan, name) {
   const count=Math.max(1,Math.ceil(length/4));
   for(let i=0;i<=count;i++){
    const along=length*i/count;
-   const a=alongX?[b.x+along,r.baseY+(r.baseY>=8?.36:-.5),b.z]:[b.x,r.baseY+(r.baseY>=8?.36:-.5),b.z+along];
-   const c=alongX?[b.x+along,r.baseY+(r.baseY>=8?.36:-.5),b.z+span]:[b.x+span,r.baseY+(r.baseY>=8?.36:-.5),b.z+along];
+   const a=alongX?[b.x+along,r.baseY-(r.baseY>=8?.12:.5),b.z]:[b.x,r.baseY-(r.baseY>=8?.12:.5),b.z+along];
+   const c=alongX?[b.x+along,r.baseY-(r.baseY>=8?.12:.5),b.z+span]:[b.x+span,r.baseY-(r.baseY>=8?.12:.5),b.z+along];
    beam(r.id+'-tie-'+i,a,c,[.28,span>10?.48:.36],'roof-tie',r.levelId);
   }
  }

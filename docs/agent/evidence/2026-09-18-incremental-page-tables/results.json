@@ -1,0 +1,42 @@
+{
+  "movement": {
+    "count": 959,
+    "median_ms": 35.35750000000189,
+    "p95_ms": 48.60250000000087,
+    "max_ms": 93.12650000000576
+  },
+  "scopes": {
+    "geometry.update": {
+      "mean_ms": 28.3485287109375,
+      "max_ms": 67.5693
+    },
+    "pf.vtslots": {
+      "mean_ms": 0.794912109375,
+      "max_ms": 5.4483999999999995
+    },
+    "pf.flushtmpl": {
+      "mean_ms": 3.0480630859375,
+      "max_ms": 11.914399999999999
+    },
+    "build.prepare_frame": {
+      "mean_ms": 5.1461431640625,
+      "max_ms": 18.6525
+    }
+  },
+  "queues": {
+    "reads_sampled_peak": 37,
+    "decode_queue_sampled_peak": 52,
+    "completions_sampled_peak": 96,
+    "prepared_sampled_peak": 0,
+    "uploads_sampled_peak": 109,
+    "published": 51697,
+    "reservation_stalls": 0,
+    "upload_limit_frames": 64,
+    "cpu_deferrals": 0,
+    "failures": 0,
+    "watchdogs": 0,
+    "gpu_stalls": 0,
+    "scratch_stalls": 0,
+    "evictions": 0
+  }
+}

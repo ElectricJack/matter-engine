@@ -1,0 +1,840 @@
+{
+  "stamp_faces": 48,
+  "stamp_queries": 646896,
+  "stamp_max_channel_error": 1.98129565e-05,
+  "stamp_max_height_error_m": 1.15483999e-07,
+  "stamp_max_detail_error_m": 1.51339918e-09,
+  "stamp_all_mip_pixels": 1485456,
+  "stamp_all_mip_float_bytes": 95069184,
+  "largest_stamp_float_bytes": 2796224,
+  "material_oracles": 20,
+  "material_cpu_max_channel_error": 4.76837158e-07,
+  "material_cpu_max_height_error_m": 4.51109372e-10,
+  "material_cpu_max_normal_component_error": 5.77419996e-06,
+  "material_total_coverage_mismatches": 0,
+  "material_exact_max_error": 0.0,
+  "source_changes_after_validation": [],
+  "raw": {
+    "clay-0-0.bin": {
+      "sha256": "b122d79a813c50c336c708525590b3beac00b37be8582a2b87a199034a938673",
+      "bytes": 491520
+    },
+    "clay-0-0.json": {
+      "sha256": "729f5261de0c504e0377b2922cb5044d5619fb02887b5eb1892a4966bbd39c75",
+      "bytes": 178
+    },
+    "clay-0-1.bin": {
+      "sha256": "df9b54294d1e8f29e2ae9b2e5b218d79ad05803a2b94046485b348c2f9e06dce",
+      "bytes": 491520
+    },
+    "clay-0-1.json": {
+      "sha256": "729f5261de0c504e0377b2922cb5044d5619fb02887b5eb1892a4966bbd39c75",
+      "bytes": 178
+    },
+    "clay-0-2.bin": {
+      "sha256": "e8c462493cc6f1bff8d09cff2c82081f3b868392c01890bbe4b69014dc7ccf0e",
+      "bytes": 245760
+    },
+    "clay-0-2.json": {
+      "sha256": "47193a3738a107137cb8385d59965927b919d36128a1fa71dc44baa10d58c6a8",
+      "bytes": 179
+    },
+    "clay-0-3.bin": {
+      "sha256": "89fb3618d956ed6be0ad0598c92285babc70aef00160a3944c6f5dec8ffa22bc",
+      "bytes": 245760
+    },
+    "clay-0-3.json": {
+      "sha256": "47193a3738a107137cb8385d59965927b919d36128a1fa71dc44baa10d58c6a8",
+      "bytes": 179
+    },
+    "clay-0-4.bin": {
+      "sha256": "2d206b2a2fb8e05c8bc0e24a009f91d0cd1fdc1dfa33e9369c94df5b71c7cc2e",
+      "bytes": 655360
+    },
+    "clay-0-4.json": {
+      "sha256": "2b3d348c27818bc34fdd75ca3bed6924554030423844123d4eb80bbc44ccf6ea",
+      "bytes": 179
+    },
+    "clay-0-5.bin": {
+      "sha256": "ffa4d5cde020f708d9aaa87b3536c051741eb3c954b3751fd94dee4c42964aab",
+      "bytes": 655360
+    },
+    "clay-0-5.json": {
+      "sha256": "2b3d348c27818bc34fdd75ca3bed6924554030423844123d4eb80bbc44ccf6ea",
+      "bytes": 179
+    },
+    "clay-1-0.bin": {
+      "sha256": "5a59f7897b86791a9b24adc558dbdc0691ed2c8d7f68c69eb3b79cad5c8bd84b",
+      "bytes": 491520
+    },
+    "clay-1-0.json": {
+      "sha256": "729f5261de0c504e0377b2922cb5044d5619fb02887b5eb1892a4966bbd39c75",
+      "bytes": 178
+    },
+    "clay-1-1.bin": {
+      "sha256": "1e42c2d936dfd5acdb80041261d51bb4123677adc368bcff261cfa42ee57fc5c",
+      "bytes": 491520
+    },
+    "clay-1-1.json": {
+      "sha256": "729f5261de0c504e0377b2922cb5044d5619fb02887b5eb1892a4966bbd39c75",
+      "bytes": 178
+    },
+    "clay-1-2.bin": {
+      "sha256": "3d84234049db58a861dabb77df3fc046034dd15bb61b50af7c54c5e79c06f521",
+      "bytes": 245760
+    },
+    "clay-1-2.json": {
+      "sha256": "47193a3738a107137cb8385d59965927b919d36128a1fa71dc44baa10d58c6a8",
+      "bytes": 179
+    },
+    "clay-1-3.bin": {
+      "sha256": "c0420c9369409154d256e73f72c47a7380a233a0139878cd06b6d0bcd3d0f410",
+      "bytes": 245760
+    },
+    "clay-1-3.json": {
+      "sha256": "47193a3738a107137cb8385d59965927b919d36128a1fa71dc44baa10d58c6a8",
+      "bytes": 179
+    },
+    "clay-1-4.bin": {
+      "sha256": "51dc1faf7536975dc5d41c3a88317eeb9494336c27c9f497fa8773726cc8fbd0",
+      "bytes": 655360
+    },
+    "clay-1-4.json": {
+      "sha256": "2b3d348c27818bc34fdd75ca3bed6924554030423844123d4eb80bbc44ccf6ea",
+      "bytes": 179
+    },
+    "clay-1-5.bin": {
+      "sha256": "ce603ac27ff63d6ac2bbf5ea81410c64fc170ffcf0411fc3d387fbd0bfcb9427",
+      "bytes": 655360
+    },
+    "clay-1-5.json": {
+      "sha256": "2b3d348c27818bc34fdd75ca3bed6924554030423844123d4eb80bbc44ccf6ea",
+      "bytes": 179
+    },
+    "clay-2-0.bin": {
+      "sha256": "8e3410d9ff890b4f0d426a2687a0e175a529e3ec70ecf757965f7794ac98818f",
+      "bytes": 491520
+    },
+    "clay-2-0.json": {
+      "sha256": "729f5261de0c504e0377b2922cb5044d5619fb02887b5eb1892a4966bbd39c75",
+      "bytes": 178
+    },
+    "clay-2-1.bin": {
+      "sha256": "4eae0cf0c904b79b8c4c3c75620856f3387f955c3b91612c647df9c1d424d0a6",
+      "bytes": 491520
+    },
+    "clay-2-1.json": {
+      "sha256": "729f5261de0c504e0377b2922cb5044d5619fb02887b5eb1892a4966bbd39c75",
+      "bytes": 178
+    },
+    "clay-2-2.bin": {
+      "sha256": "0802b28385b6c2c5c9489bf604cbe722fed0549330409ebd30cd74d25fce56b3",
+      "bytes": 245760
+    },
+    "clay-2-2.json": {
+      "sha256": "47193a3738a107137cb8385d59965927b919d36128a1fa71dc44baa10d58c6a8",
+      "bytes": 179
+    },
+    "clay-2-3.bin": {
+      "sha256": "feaae1e83681df2c71d439070c208d5535486ba332f3f967af2aa2ca9af47a8e",
+      "bytes": 245760
+    },
+    "clay-2-3.json": {
+      "sha256": "47193a3738a107137cb8385d59965927b919d36128a1fa71dc44baa10d58c6a8",
+      "bytes": 179
+    },
+    "clay-2-4.bin": {
+      "sha256": "bb71cb8427b57755df3b3a92cde7a141840f00c07aa741dd20d923cb76d1a6e1",
+      "bytes": 655360
+    },
+    "clay-2-4.json": {
+      "sha256": "2b3d348c27818bc34fdd75ca3bed6924554030423844123d4eb80bbc44ccf6ea",
+      "bytes": 179
+    },
+    "clay-2-5.bin": {
+      "sha256": "53efd4a3062396a1e944b6d7943534837fed80ef104d5dc4dbd2405325968bff",
+      "bytes": 655360
+    },
+    "clay-2-5.json": {
+      "sha256": "2b3d348c27818bc34fdd75ca3bed6924554030423844123d4eb80bbc44ccf6ea",
+      "bytes": 179
+    },
+    "clay-3-0.bin": {
+      "sha256": "de8eadb241332c10fe9490eaa926bc89f22f3f2ca7fa210b250c9c3434092155",
+      "bytes": 491520
+    },
+    "clay-3-0.json": {
+      "sha256": "729f5261de0c504e0377b2922cb5044d5619fb02887b5eb1892a4966bbd39c75",
+      "bytes": 178
+    },
+    "clay-3-1.bin": {
+      "sha256": "02aecb1be05de3c2ad11c57487ee384142f2de115e90f92c71c49c59a617d09b",
+      "bytes": 491520
+    },
+    "clay-3-1.json": {
+      "sha256": "729f5261de0c504e0377b2922cb5044d5619fb02887b5eb1892a4966bbd39c75",
+      "bytes": 178
+    },
+    "clay-3-2.bin": {
+      "sha256": "90b1bf0e688b357a0c4f0582913a39eacc27740b87a3a275461805649d3c796d",
+      "bytes": 245760
+    },
+    "clay-3-2.json": {
+      "sha256": "47193a3738a107137cb8385d59965927b919d36128a1fa71dc44baa10d58c6a8",
+      "bytes": 179
+    },
+    "clay-3-3.bin": {
+      "sha256": "267f962d669480df63451dbe93cba390ffa957728be76e596bd1c26c7dd6ded6",
+      "bytes": 245760
+    },
+    "clay-3-3.json": {
+      "sha256": "47193a3738a107137cb8385d59965927b919d36128a1fa71dc44baa10d58c6a8",
+      "bytes": 179
+    },
+    "clay-3-4.bin": {
+      "sha256": "2fd1ebb8db61a9f06a2965abe5da6fb8d051dd6c30e676cb179ad2ddac90cb59",
+      "bytes": 655360
+    },
+    "clay-3-4.json": {
+      "sha256": "2b3d348c27818bc34fdd75ca3bed6924554030423844123d4eb80bbc44ccf6ea",
+      "bytes": 179
+    },
+    "clay-3-5.bin": {
+      "sha256": "404f10c8bdb9aa0ed3ea31c7ef0824908aa23c0394dd87e6ab76e7d96dfbf80d",
+      "bytes": 655360
+    },
+    "clay-3-5.json": {
+      "sha256": "2b3d348c27818bc34fdd75ca3bed6924554030423844123d4eb80bbc44ccf6ea",
+      "bytes": 179
+    },
+    "clay-4-0.bin": {
+      "sha256": "1295758718a60224f5c899d0c3eda2114d4e53343e1ca0916ba86cccf33de11f",
+      "bytes": 491520
+    },
+    "clay-4-0.json": {
+      "sha256": "729f5261de0c504e0377b2922cb5044d5619fb02887b5eb1892a4966bbd39c75",
+      "bytes": 178
+    },
+    "clay-4-1.bin": {
+      "sha256": "1b1ead6b5740ad301e40dad57604397f5957085b543857bd043d393ac83e26fa",
+      "bytes": 491520
+    },
+    "clay-4-1.json": {
+      "sha256": "729f5261de0c504e0377b2922cb5044d5619fb02887b5eb1892a4966bbd39c75",
+      "bytes": 178
+    },
+    "clay-4-2.bin": {
+      "sha256": "392278d82f9bcdf09fb593b7fe782acaf3b20ca319f559680d9f1e72b9faada4",
+      "bytes": 245760
+    },
+    "clay-4-2.json": {
+      "sha256": "47193a3738a107137cb8385d59965927b919d36128a1fa71dc44baa10d58c6a8",
+      "bytes": 179
+    },
+    "clay-4-3.bin": {
+      "sha256": "4d35a62a0e1e491039cb3f4dc06f9762a204faececdbf2f4881d559a0a9687b6",
+      "bytes": 245760
+    },
+    "clay-4-3.json": {
+      "sha256": "47193a3738a107137cb8385d59965927b919d36128a1fa71dc44baa10d58c6a8",
+      "bytes": 179
+    },
+    "clay-4-4.bin": {
+      "sha256": "9cfe21963277c00e9d3d134872787510a4c7e64a2e6b70d500e8e4c17972e664",
+      "bytes": 655360
+    },
+    "clay-4-4.json": {
+      "sha256": "2b3d348c27818bc34fdd75ca3bed6924554030423844123d4eb80bbc44ccf6ea",
+      "bytes": 179
+    },
+    "clay-4-5.bin": {
+      "sha256": "36ca1d96bf441d88b87c02c073bc57323471ce02865e9479b7bca7bbf304bffc",
+      "bytes": 655360
+    },
+    "clay-4-5.json": {
+      "sha256": "2b3d348c27818bc34fdd75ca3bed6924554030423844123d4eb80bbc44ccf6ea",
+      "bytes": 179
+    },
+    "clay-5-0.bin": {
+      "sha256": "0b82004e5ac45b0cc50c8c8c792d8d6889b441e3240fd8dd17f4fe7e4e4a1da2",
+      "bytes": 491520
+    },
+    "clay-5-0.json": {
+      "sha256": "729f5261de0c504e0377b2922cb5044d5619fb02887b5eb1892a4966bbd39c75",
+      "bytes": 178
+    },
+    "clay-5-1.bin": {
+      "sha256": "cbe72e1bf6f14cf88f60586b53b8ca3963f6c8cbe601e07e15402296d76748a1",
+      "bytes": 491520
+    },
+    "clay-5-1.json": {
+      "sha256": "729f5261de0c504e0377b2922cb5044d5619fb02887b5eb1892a4966bbd39c75",
+      "bytes": 178
+    },
+    "clay-5-2.bin": {
+      "sha256": "3ce57b0c590e09d1bc97c2052f58dad9fb82ec3053cbbd8fc37c5e96c3ca7be7",
+      "bytes": 245760
+    },
+    "clay-5-2.json": {
+      "sha256": "47193a3738a107137cb8385d59965927b919d36128a1fa71dc44baa10d58c6a8",
+      "bytes": 179
+    },
+    "clay-5-3.bin": {
+      "sha256": "a98d09bee28bd5eba4b489e9e638de8adf9952cb37d72c7e4e7a8ee5395e49de",
+      "bytes": 245760
+    },
+    "clay-5-3.json": {
+      "sha256": "47193a3738a107137cb8385d59965927b919d36128a1fa71dc44baa10d58c6a8",
+      "bytes": 179
+    },
+    "clay-5-4.bin": {
+      "sha256": "8f2b7acac5336849d8f1959ef1d362c012394487cf800f33cb73c64a3e6f16f8",
+      "bytes": 655360
+    },
+    "clay-5-4.json": {
+      "sha256": "2b3d348c27818bc34fdd75ca3bed6924554030423844123d4eb80bbc44ccf6ea",
+      "bytes": 179
+    },
+    "clay-5-5.bin": {
+      "sha256": "b1a083dec8b7d938779e538fe1b7d3b2fb5d215a8550ac8e7af4a772c9a220ae",
+      "bytes": 655360
+    },
+    "clay-5-5.json": {
+      "sha256": "2b3d348c27818bc34fdd75ca3bed6924554030423844123d4eb80bbc44ccf6ea",
+      "bytes": 179
+    },
+    "clay-6-0.bin": {
+      "sha256": "6b4a3d7b061f74acb26e4c0f62290ff9fc2ac1a3a8d518b10d4033e8bec7877b",
+      "bytes": 491520
+    },
+    "clay-6-0.json": {
+      "sha256": "729f5261de0c504e0377b2922cb5044d5619fb02887b5eb1892a4966bbd39c75",
+      "bytes": 178
+    },
+    "clay-6-1.bin": {
+      "sha256": "cb18b35bb68f195c85932633c42d1a667816825bc71434c09dbff1a5b4770b77",
+      "bytes": 491520
+    },
+    "clay-6-1.json": {
+      "sha256": "729f5261de0c504e0377b2922cb5044d5619fb02887b5eb1892a4966bbd39c75",
+      "bytes": 178
+    },
+    "clay-6-2.bin": {
+      "sha256": "b40a6a84c480dcaf88000f71f644777d616ba9dc2025ecdadb85e27ae5a8b21d",
+      "bytes": 245760
+    },
+    "clay-6-2.json": {
+      "sha256": "47193a3738a107137cb8385d59965927b919d36128a1fa71dc44baa10d58c6a8",
+      "bytes": 179
+    },
+    "clay-6-3.bin": {
+      "sha256": "d18f89efc67acb4db6b166deaaf3d08b5094957a5db8659843efa8a3b68b11b7",
+      "bytes": 245760
+    },
+    "clay-6-3.json": {
+      "sha256": "47193a3738a107137cb8385d59965927b919d36128a1fa71dc44baa10d58c6a8",
+      "bytes": 179
+    },
+    "clay-6-4.bin": {
+      "sha256": "3517f8f7b6796c9481b275cece363951a2d032d3242a8f8d58d6a317ccf47359",
+      "bytes": 655360
+    },
+    "clay-6-4.json": {
+      "sha256": "2b3d348c27818bc34fdd75ca3bed6924554030423844123d4eb80bbc44ccf6ea",
+      "bytes": 179
+    },
+    "clay-6-5.bin": {
+      "sha256": "771fafe377389e472367cc179620105f472eb05d8f5d6d0087d72801018cda60",
+      "bytes": 655360
+    },
+    "clay-6-5.json": {
+      "sha256": "2b3d348c27818bc34fdd75ca3bed6924554030423844123d4eb80bbc44ccf6ea",
+      "bytes": 179
+    },
+    "clay-7-0.bin": {
+      "sha256": "44f17d473d99d65c4b152d4c2501cf149e96316fa314e91c6ed6c808a4e02a3c",
+      "bytes": 491520
+    },
+    "clay-7-0.json": {
+      "sha256": "729f5261de0c504e0377b2922cb5044d5619fb02887b5eb1892a4966bbd39c75",
+      "bytes": 178
+    },
+    "clay-7-1.bin": {
+      "sha256": "009f91e0aa0b5d9a9502a3b91df7d6b022beed338dd1be285727eadb40e1860c",
+      "bytes": 491520
+    },
+    "clay-7-1.json": {
+      "sha256": "729f5261de0c504e0377b2922cb5044d5619fb02887b5eb1892a4966bbd39c75",
+      "bytes": 178
+    },
+    "clay-7-2.bin": {
+      "sha256": "4331156871acc9c545118dfc6af29ecb1ab67dbb00f94dbe3ca27dc39f511681",
+      "bytes": 245760
+    },
+    "clay-7-2.json": {
+      "sha256": "47193a3738a107137cb8385d59965927b919d36128a1fa71dc44baa10d58c6a8",
+      "bytes": 179
+    },
+    "clay-7-3.bin": {
+      "sha256": "d58c7c9e5da166ced410fb6d4ecb7d0903da99b139c82ac88d9e80e34cdbf53e",
+      "bytes": 245760
+    },
+    "clay-7-3.json": {
+      "sha256": "47193a3738a107137cb8385d59965927b919d36128a1fa71dc44baa10d58c6a8",
+      "bytes": 179
+    },
+    "clay-7-4.bin": {
+      "sha256": "45eaffe89444cd6dd8530573e76a04fce3632f7c5ab7053536f09301591f1626",
+      "bytes": 655360
+    },
+    "clay-7-4.json": {
+      "sha256": "2b3d348c27818bc34fdd75ca3bed6924554030423844123d4eb80bbc44ccf6ea",
+      "bytes": 179
+    },
+    "clay-7-5.bin": {
+      "sha256": "520396865b2caa1f6c796086fc4aae990c20cce472920f8b79820dbd2a1b174a",
+      "bytes": 655360
+    },
+    "clay-7-5.json": {
+      "sha256": "2b3d348c27818bc34fdd75ca3bed6924554030423844123d4eb80bbc44ccf6ea",
+      "bytes": 179
+    },
+    "clay-filtered-0-0.bin": {
+      "sha256": "c2e70e7bd85375261259ef70d4da2d9ba2d4d70951fc3e2ba604665de1a3ecb5",
+      "bytes": 895680
+    },
+    "clay-filtered-0-0.json": {
+      "sha256": "542b0c649a964e2349ac245126071544e0dfd233d001f065d08c0ad1fdc1547c",
+      "bytes": 170
+    },
+    "clay-filtered-0-1.bin": {
+      "sha256": "ae5f36c5149e1aba2ba331bf3f1b4a07dd4012fe1e4a67ec4ac933f100437332",
+      "bytes": 895680
+    },
+    "clay-filtered-0-1.json": {
+      "sha256": "5ac9be982fe78f2b80d4c7553ec8c5664b7865010f0d909e22617361664fbbef",
+      "bytes": 170
+    },
+    "clay-filtered-0-2.bin": {
+      "sha256": "4c9500a0b0031ab0276eb41ea6556aa9d2a6a5a9fbcae62b4efb18bcc363713d",
+      "bytes": 796224
+    },
+    "clay-filtered-0-2.json": {
+      "sha256": "dfb5a0f7a2fc83bd2f01738c0c263c8aef728333b345da58ab10ca4579b8e86f",
+      "bytes": 170
+    },
+    "clay-filtered-0-3.bin": {
+      "sha256": "cc35ac1786239ebf5757d6849c00d3084786c54b4954372f585be9c4c2e487fa",
+      "bytes": 796224
+    },
+    "clay-filtered-0-3.json": {
+      "sha256": "42ac9ba78c2fd8f4a822645952ce3e1910890637c68303f877b9b4e9ca4c5a1e",
+      "bytes": 170
+    },
+    "clay-filtered-0-4.bin": {
+      "sha256": "8deb6b70d508a3a147dbeec1db605b9ac8ef4e20efa4490c29d1cfb0738e80f7",
+      "bytes": 895680
+    },
+    "clay-filtered-0-4.json": {
+      "sha256": "098c2bc94e6d6dbafe6b3263fcc014eeea99fe4f23e0d9cba30ca177ea8f498b",
+      "bytes": 170
+    },
+    "clay-filtered-0-5.bin": {
+      "sha256": "8ec94464a1a8bf4d21b39724b6015f3e72080c4b84a8849d3b46e342387dcb3b",
+      "bytes": 895680
+    },
+    "clay-filtered-0-5.json": {
+      "sha256": "c549299e5c17591423c147ba0b3867d7e846bdf0078f6c7de0f2f2573cb1fc11",
+      "bytes": 170
+    },
+    "clay-material-0-0.bin": {
+      "sha256": "194641b2dc906d0043c93b66d78f80dc34fcfb292be3dab487164aaa9b313d64",
+      "bytes": 1081344
+    },
+    "clay-material-0-0.json": {
+      "sha256": "c1e04427f592eba20dc4804bf4718984678c8a6db7b9423bcf9471feef7bcd00",
+      "bytes": 191
+    },
+    "clay-material-0-1.bin": {
+      "sha256": "3ecad9c8f291052f1f9f481c4e32b4c5641169954548605167146816204752cd",
+      "bytes": 1081344
+    },
+    "clay-material-0-1.json": {
+      "sha256": "27cc6deeac9e3f91aeaa2166c18f1c2c22faab9e695d7249d7f400fa0fed543a",
+      "bytes": 191
+    },
+    "clay-material-0-2.bin": {
+      "sha256": "a138545414ed6ebb4c7613a028be6990d25b08aded7e1f769e5bfd9d703f4327",
+      "bytes": 540672
+    },
+    "clay-material-0-2.json": {
+      "sha256": "9cd97616d61d407fdc0d1274e72a165b43eebc403d874e3cc80753f2379a7621",
+      "bytes": 189
+    },
+    "clay-material-0-3.bin": {
+      "sha256": "914beeab359f9b1923a39459b8b4e9e9947524d14817695823a39a68a587f03d",
+      "bytes": 540672
+    },
+    "clay-material-0-3.json": {
+      "sha256": "0e1a6f4ec9919e72248723ca34ddf24ed07541d24fdc074d1f4bdc7eed51aab4",
+      "bytes": 191
+    },
+    "clay-material-0-4.bin": {
+      "sha256": "70f3249fcb0f3876408dac8e0c88a813fece2be6846eb5ca61dc0c72c12b3b1f",
+      "bytes": 1441792
+    },
+    "clay-material-0-4.json": {
+      "sha256": "4678258880e59fc20e6180e28ef62f9f466820caead08ba6087856fcac321aa3",
+      "bytes": 189
+    },
+    "clay-material-0-5.bin": {
+      "sha256": "aa614e1fbefbfa7fb45f9969da82094bc0b42b14226d0bd9122e3ed20a369a27",
+      "bytes": 1441792
+    },
+    "clay-material-0-5.json": {
+      "sha256": "6be583b85bdb241041923e24f6bedd864c452e6096a67bc60cda46223b4294ec",
+      "bytes": 192
+    },
+    "clay-material-1-0.bin": {
+      "sha256": "eb77acc1baaf7dbf03c38075d6b94c0f912b9df30962e7e26e4f7247f3afccaa",
+      "bytes": 1081344
+    },
+    "clay-material-1-0.json": {
+      "sha256": "f3520f2944efc6d7293f2d10dadb83488965fca6c7c0f345475ddf5a0f8cf6a3",
+      "bytes": 190
+    },
+    "clay-material-1-1.bin": {
+      "sha256": "29899aa9e92d5fc4b7c78797fc6b1773f819efb7bb580ba457fd65b9f8c24567",
+      "bytes": 1081344
+    },
+    "clay-material-1-1.json": {
+      "sha256": "dfab7455bbc5748480cd52d6fc7638caa219f0f33279227cd95b300d70492e0a",
+      "bytes": 192
+    },
+    "clay-material-1-2.bin": {
+      "sha256": "e5def48302898653535b5e352d16dbe34291e0d02eb633832934392b0f50a3e6",
+      "bytes": 540672
+    },
+    "clay-material-1-2.json": {
+      "sha256": "28f5f58cef100f3b6a0aa63e86225c398ef3c7b91663650bad6093999154cf06",
+      "bytes": 190
+    },
+    "clay-material-1-3.bin": {
+      "sha256": "e0ec4162cf8269b325de93be7c9037fd3347c90177769926f0803d3726f3404e",
+      "bytes": 540672
+    },
+    "clay-material-1-3.json": {
+      "sha256": "8ce3ae0af9b29003f38aac339b995667a17571c23d15de39dd0c83f219d02769",
+      "bytes": 191
+    },
+    "clay-material-1-4.bin": {
+      "sha256": "6e54fea23f2f68bcad05ecde0b427200db78d0841fb7eece9f0508dc80938158",
+      "bytes": 1441792
+    },
+    "clay-material-1-4.json": {
+      "sha256": "ee6e48f28eabd7544be4cabdd786132d97b5e41a7fbef26886e7154ae455a11f",
+      "bytes": 192
+    },
+    "clay-material-1-5.bin": {
+      "sha256": "d49738edc315848f20ab5cfb4f82a0c47b1553e6ef90644ee9040f18896f8401",
+      "bytes": 1441792
+    },
+    "clay-material-1-5.json": {
+      "sha256": "969210ba70eedc970f256d6606f51edb6f41793f11e216bb27eea7ee1a41557c",
+      "bytes": 191
+    },
+    "clay-material-2-0.bin": {
+      "sha256": "eb755a42500a647ddffa2054fce71ec4a0608a23f8f891107c0c7765fc2e825f",
+      "bytes": 1081344
+    },
+    "clay-material-2-0.json": {
+      "sha256": "bd1e506b10362ac72d2cc1c7d4f9d076c935ad0765be3b9fb7be8a7112f0c904",
+      "bytes": 190
+    },
+    "clay-material-2-1.bin": {
+      "sha256": "322e8b6aec0c069ce13e4ae30ff476f6af31d645ff6feece3ad5abab5b3f7e17",
+      "bytes": 1081344
+    },
+    "clay-material-2-1.json": {
+      "sha256": "18ef1fd9d6b4297eafbdc5757f60f2bdf2b4171fe364e42352475e66ee3b2684",
+      "bytes": 192
+    },
+    "clay-material-2-2.bin": {
+      "sha256": "4290196d88f5221a264f7aa58f86d0f31b254e933e3aae89f5b2d7b5faf52dd1",
+      "bytes": 540672
+    },
+    "clay-material-2-2.json": {
+      "sha256": "4ea581c3a2f7a4275b2d8eaef4abceb92160bf409cdeb19dc680849f2ace4e9a",
+      "bytes": 192
+    },
+    "clay-material-2-3.bin": {
+      "sha256": "f14006ecbf17837c407597fa2b358caa423bc09575ef31ae7c59150a60aa3108",
+      "bytes": 540672
+    },
+    "clay-material-2-3.json": {
+      "sha256": "91274f36c0bab888b4af00e0ccee48fde6695dca93e8cfc6cb940400cf4e2c6b",
+      "bytes": 191
+    },
+    "clay-material-2-4.bin": {
+      "sha256": "1305eb40f7505c17e89c273a98a68f27cc26694ad4bd77bb9de1f38ed7653f27",
+      "bytes": 1441792
+    },
+    "clay-material-2-4.json": {
+      "sha256": "c5e989497c22035ffff287230931612f739329d03b4ece1a6556cec3affc74d2",
+      "bytes": 193
+    },
+    "clay-material-2-5.bin": {
+      "sha256": "dad8c334a452b23fd774dcdedc273a3992ac1fd5291535e72ae90a38f139b4dc",
+      "bytes": 1441792
+    },
+    "clay-material-2-5.json": {
+      "sha256": "e17379923e21648fab6e5a603f6148a89da74bbb4a844629014e5e2944d9f4db",
+      "bytes": 191
+    },
+    "clay-material-3-0.bin": {
+      "sha256": "2f293df050af7626396d7c046dd56defbf96be69edd8afd64161a450d8f31326",
+      "bytes": 1081344
+    },
+    "clay-material-3-0.json": {
+      "sha256": "9166639cd8cb73bbaa31e1b6e13486f72551f4218a6e7b2218ddb394b7a18276",
+      "bytes": 191
+    },
+    "clay-material-3-1.bin": {
+      "sha256": "1fbc8a3448b5b54fc3b5a1f51a39ba8c805112e6ae8ac309d64ea71949681df5",
+      "bytes": 1081344
+    },
+    "clay-material-3-1.json": {
+      "sha256": "1484d3c113671e22d8efade454e833f56907cdb030d0431dbae0ae9bb7c9fcb4",
+      "bytes": 191
+    },
+    "clay-material-3-2.bin": {
+      "sha256": "3fd38683ab686ff3811c1a13afce97b238a4406b2a6964f69593f38f7e0efe73",
+      "bytes": 540672
+    },
+    "clay-material-3-2.json": {
+      "sha256": "966e883aa29b77cec6d5ad61e07daef62ee5796415b9e51e494a35da81dc7e32",
+      "bytes": 192
+    },
+    "clay-material-3-3.bin": {
+      "sha256": "2a29ad5467185adb0143882fd7c44b59fc37c521b97cedd16bfb95a9f284ee48",
+      "bytes": 540672
+    },
+    "clay-material-3-3.json": {
+      "sha256": "ad11e1856045e84e8c0d443c3fa91b082ea89c7d0502462b6de1320722829c41",
+      "bytes": 190
+    },
+    "clay-material-3-4.bin": {
+      "sha256": "62306d75854df051c6b1bc2734cd4b0787d949c2d206cd29dde11625def2a727",
+      "bytes": 1441792
+    },
+    "clay-material-3-4.json": {
+      "sha256": "183f10b9d56a75ca794086ef5e9d6913aa3bb1b20ecf3f68c335a4416bccf577",
+      "bytes": 191
+    },
+    "clay-material-3-5.bin": {
+      "sha256": "49b6772a744e03535811a23863f3e3d7170447c01c17f323fd71b24b1bff004a",
+      "bytes": 1441792
+    },
+    "clay-material-3-5.json": {
+      "sha256": "564d568d5148096a9156d183beff11492b9cde0fa7cab9cbfb05bf4fcea85772",
+      "bytes": 192
+    },
+    "clay-material-4-0.bin": {
+      "sha256": "b217e8fbc9b125ec1adaca254fb39bee602f2f46ccb8c93e56c462fb160df328",
+      "bytes": 1081344
+    },
+    "clay-material-4-0.json": {
+      "sha256": "818688af1d859cb844da3f9d24226128a8f1cfbd9af84792660435717105a2ad",
+      "bytes": 191
+    },
+    "clay-material-4-1.bin": {
+      "sha256": "eafd5e289c64000d28a456ca0382352c758428506b83cfc67df00aeebd54bd54",
+      "bytes": 1081344
+    },
+    "clay-material-4-1.json": {
+      "sha256": "c9e21e6e744ae12648470eaf678865b3a3dea2e5aa3dc1793fb26a8437bcb2d7",
+      "bytes": 191
+    },
+    "clay-material-4-2.bin": {
+      "sha256": "25042fea4316ca8cae412a678237cbd6807fc8d55142adce73e14363060e318c",
+      "bytes": 540672
+    },
+    "clay-material-4-2.json": {
+      "sha256": "1f7d686e1d20b70d2ad55d5242475306442738c41bd7ef4aa77f85d6ac0954ea",
+      "bytes": 189
+    },
+    "clay-material-4-3.bin": {
+      "sha256": "862b56aed0f7b74599da4f85139dc671c4c07e2a1c52a52c8501682187fb4124",
+      "bytes": 540672
+    },
+    "clay-material-4-3.json": {
+      "sha256": "ee200ddf12e498b5c7cfe56c0d283c3d241fc4d15e331041f5cd2c900fd65601",
+      "bytes": 190
+    },
+    "clay-material-4-4.bin": {
+      "sha256": "5504e369672920ccf08d550019b1d28258e68d860ae0c0a819366d6113ee0279",
+      "bytes": 1441792
+    },
+    "clay-material-4-4.json": {
+      "sha256": "197dd745907b4f405191fd166f1a18e1cf73cef700580f9a014554f06fefd74c",
+      "bytes": 192
+    },
+    "clay-material-4-5.bin": {
+      "sha256": "98b1279ca4a53faf8dff5d22cf17bd3f8b707edb656fd1ad697c5d7081ca2345",
+      "bytes": 1441792
+    },
+    "clay-material-4-5.json": {
+      "sha256": "b24c31fe6cfc93c265cc040bf439d9a91f3e58b4f5229aa1ce507a19c3ca2e6d",
+      "bytes": 191
+    },
+    "clay-material-5-0.bin": {
+      "sha256": "739cead51ba4ace1985c88504f49a6b14492b49ada9042249614cb82846ea306",
+      "bytes": 1081344
+    },
+    "clay-material-5-0.json": {
+      "sha256": "8f10e467a38fc57bbbff6ee79353fb5c3b46c08ce4ab31e9214bcaba39737311",
+      "bytes": 191
+    },
+    "clay-material-5-1.bin": {
+      "sha256": "8ff6adab096b09ca9838de5d3515cac28192e4b59a405a6bdf5bf68ca1b66dac",
+      "bytes": 1081344
+    },
+    "clay-material-5-1.json": {
+      "sha256": "e580a5877268f45631c1fc1c72ecc78b20e748e474ba6673f23280840f5da39e",
+      "bytes": 191
+    },
+    "clay-material-5-2.bin": {
+      "sha256": "7b65361c057498ab3ff7026b625bd2da8e378b11a9934af38380ef8e9f37263b",
+      "bytes": 540672
+    },
+    "clay-material-5-2.json": {
+      "sha256": "37e889fa7b7d9787ed3d413090700a78d4e1fc14255ae31ca6d36d982a7e4266",
+      "bytes": 189
+    },
+    "clay-material-5-3.bin": {
+      "sha256": "705d7200d9661a0f3434ea96f440469212ad1727573f52061e690534e1a8e5a9",
+      "bytes": 540672
+    },
+    "clay-material-5-3.json": {
+      "sha256": "2c02b20efd868f6fe9fdd919ecab69b9713ee88a43d601facb2c06451b80ebab",
+      "bytes": 190
+    },
+    "clay-material-5-4.bin": {
+      "sha256": "11815e52a80e9aefa34b198ec8a54aaf1f9b33d08539fedd3b8d86c18edb1b04",
+      "bytes": 1441792
+    },
+    "clay-material-5-4.json": {
+      "sha256": "2dbf3982ca2b0b167a8dd1bf18b902db218b2dcc51c3127711d5eb48491b1b38",
+      "bytes": 191
+    },
+    "clay-material-5-5.bin": {
+      "sha256": "37836d4d2f59c4f457689c9952ceac7024a591770157822ffcbe90ee141ee677",
+      "bytes": 1441792
+    },
+    "clay-material-5-5.json": {
+      "sha256": "b1439ea0fde41727642dfac2d19ceef06c3688935dc088a396eb2a355f464d71",
+      "bytes": 193
+    },
+    "clay-material-6-0.bin": {
+      "sha256": "f2e3cdabef3f48987eb5d91a5dab28a1cfd6635fdf8b53e5cf43ed64f7943e48",
+      "bytes": 1081344
+    },
+    "clay-material-6-0.json": {
+      "sha256": "c769b92abfe9703d3925729b8019d170655dbd43cde34617baccda04b1b2975c",
+      "bytes": 191
+    },
+    "clay-material-6-1.bin": {
+      "sha256": "a67c26aa5075db3ef980c767baaafc6d56ed5e85d5a5cb42f6b38402af8dab62",
+      "bytes": 1081344
+    },
+    "clay-material-6-1.json": {
+      "sha256": "8e9d8788ddcf8c018edf0650155be2753dcdd04344fb3434ae31ddb24c4e2125",
+      "bytes": 190
+    },
+    "clay-material-6-2.bin": {
+      "sha256": "053c7f0245d2d7ae176bc8d67836e189ef987f70d38a97dda784cbc66f472a87",
+      "bytes": 540672
+    },
+    "clay-material-6-2.json": {
+      "sha256": "dfcb5f9d9d802060cc89f971adbe370d4c4ca7d6a72562e1d78f6deac1efccc8",
+      "bytes": 191
+    },
+    "clay-material-6-3.bin": {
+      "sha256": "d5b691b931905055f92d3a0ace6cd9313ee9db7db6ac21d5e2e25e3cd08c97c4",
+      "bytes": 540672
+    },
+    "clay-material-6-3.json": {
+      "sha256": "c71224900150e721f9c2d8b86b792b311fb026fc7f6d30aa14e7540c4127f6de",
+      "bytes": 191
+    },
+    "clay-material-6-4.bin": {
+      "sha256": "583572e388fd8b13dc4a458027e9556959ecdb59bc1caf059bf3472929afabf5",
+      "bytes": 1441792
+    },
+    "clay-material-6-4.json": {
+      "sha256": "2d54d7ab77c8e6c2643e849944f5d46cc1717d103864686321f547d938283a9f",
+      "bytes": 192
+    },
+    "clay-material-6-5.bin": {
+      "sha256": "ff2352166537e080de71fb2e25ea5facba34944df3ee9de893e083b582321e5d",
+      "bytes": 1441792
+    },
+    "clay-material-6-5.json": {
+      "sha256": "64560028ff2da260bb35f76680583071aa4323498dfd066f804135174f51f7d8",
+      "bytes": 191
+    },
+    "clay-material-7-0.bin": {
+      "sha256": "aaee684b80c4efd5d9d90803836fef96bedc9e76c66f92345e26a36d0a2ba794",
+      "bytes": 1081344
+    },
+    "clay-material-7-0.json": {
+      "sha256": "7f1b6439b7e28c945fd1e1bd55926b9c5f6fc28173bb2941060df2555ee5b553",
+      "bytes": 191
+    },
+    "clay-material-7-1.bin": {
+      "sha256": "7abee1017e1a4f4429a587d4f1f34410fa85bc1502ff85ac4006f0098d6a1961",
+      "bytes": 1081344
+    },
+    "clay-material-7-1.json": {
+      "sha256": "1179eee99583145a23b90f45447050c9bad215ae1db677f1a38f9b3cd2248d53",
+      "bytes": 191
+    },
+    "clay-material-7-2.bin": {
+      "sha256": "5e5eb110ad95bbcc8778bae13e480a20577b50722b3668d7ace4f304f2012b83",
+      "bytes": 540672
+    },
+    "clay-material-7-2.json": {
+      "sha256": "c7a8187a608767cb3c64bc5f2d3ebfc7748da012f05d41d7072de81546114e6d",
+      "bytes": 191
+    },
+    "clay-material-7-3.bin": {
+      "sha256": "0fb9c600c442c1c57953006045caaf89916c9960df695b82037f1c3519b8129e",
+      "bytes": 540672
+    },
+    "clay-material-7-3.json": {
+      "sha256": "8fa4b810b1cb188a5ae44d9da90e5819bf0fc535e6b7b01a261fb08a94cd15c2",
+      "bytes": 190
+    },
+    "clay-material-7-4.bin": {
+      "sha256": "a43a949da9c02c959952e3c85fbec542237fb042d11013a40e26a370da8b4d83",
+      "bytes": 1441792
+    },
+    "clay-material-7-4.json": {
+      "sha256": "39da973e4d67b61b272508abe3a633e2db03ba508c50289beacf26208f1256d1",
+      "bytes": 191
+    },
+    "clay-material-7-5.bin": {
+      "sha256": "18935536fc8c4386c2a60c6f177dc7d26c29721313fcf6d5067d2dda8a49dff5",
+      "bytes": 1441792
+    },
+    "clay-material-7-5.json": {
+      "sha256": "60736d66efc9ee913686afd91bcb8cbe47a7cda2bd3dd7e3e823762c26ce5baf",
+      "bytes": 193
+    }
+  },
+  "archive": {
+    "name": "raw-face-channels.zip",
+    "bytes": 32595266,
+    "sha256": "d76d8c63618557245bc0e718640ba69ba5604de0a6328a8b59cc9638393e2997"
+  }
+}

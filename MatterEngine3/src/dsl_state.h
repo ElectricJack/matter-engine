@@ -38,6 +38,7 @@
 //   - Only `Vector4` (the tint cursor) is still a raylib type here; everything
 //     else moved to MathLib in Phase 3.
 
+#include "matter/solid_sdf_meshing.h"
 #include "raylib.h"   // Vector4 (tint cursor; not migrated -- see matter_math.h scope note)
 #include "matter_math.h"  // mm::Vec3, mm::Mat4 (Phase 3: DSL transform stack + BuildOp)
 #include "dsl_rng.h"
@@ -395,6 +396,8 @@ public:
     // and applied to all verts of that primitive. mode: 0=triangles,1=strip,2=fan.
     void beginShape(int mode);              // misuse (voxels open / nested) -> set_error
     void vertex(float x, float y, float z); // misuse (no open shape) -> set_error
+    void surfaceVertex(float x, float y, float z, float nx, float ny, float nz,
+                       float u, float v);
     void endShape();                         // misuse (not open) -> set_error
     // A radius-skinned segment (tapered tube of stepped spheres). Standalone:
     // captures the current transform/material, no beginShape needed.
@@ -574,6 +577,19 @@ public:
     size_t op_count() const { return buffer_.ops.size(); }
     size_t child_count_ts() const { return children_.size(); }
 
+    struct SolidSourceRequest {
+        std::vector<gpu_meshing::SolidOp> ops;
+        float voxel_m = 0;
+        uint32_t max_vertices = 0;
+        uint32_t material = 0;
+        Vector4 tint{1,1,1,0};
+    };
+    void solid_source(std::vector<gpu_meshing::SolidOp> ops, float voxel_m,
+                      uint32_t max_vertices);
+    const std::optional<SolidSourceRequest>& solid_source_request() const {
+        return solid_source_;
+    }
+
     // World field binding (set by the host before build() when baking a terrain
     // sector part). terrainVolume reads this.
     void set_world(const WorldBinding& w) { world_ = w; }
@@ -626,6 +642,7 @@ private:
     float    smoothing_ = 0.0f;
     size_t   session_start_ = 0;  // index into buffer_.ops where the open session began
     BuildBuffer buffer_;
+    std::optional<SolidSourceRequest> solid_source_;
     bool        has_error_ = false;
     std::string error_;
     std::unique_ptr<Rng> rng_;    // seeded by the host before build()
