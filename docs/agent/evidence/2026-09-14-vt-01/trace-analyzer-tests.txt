@@ -1,0 +1,11 @@
+test_complete_stable_window_does_not_claim_gpu_or_full_acceptance (test_vt_acceptance.VtAcceptanceTests.test_complete_stable_window_does_not_claim_gpu_or_full_acceptance) ... ok
+test_dropped_rows_and_repeated_vt_snapshot_do_not_pass (test_vt_acceptance.VtAcceptanceTests.test_dropped_rows_and_repeated_vt_snapshot_do_not_pass) ... ok
+test_gpu_readback_is_deduplicated_and_true_zero_is_valid (test_vt_acceptance.VtAcceptanceTests.test_gpu_readback_is_deduplicated_and_true_zero_is_valid) ... ok
+test_intermediate_change_cannot_hide_behind_matching_endpoints (test_vt_acceptance.VtAcceptanceTests.test_intermediate_change_cannot_hide_behind_matching_endpoints) ... ok
+test_invalid_numbers_and_missing_markers_fail_closed (test_vt_acceptance.VtAcceptanceTests.test_invalid_numbers_and_missing_markers_fail_closed) ... ok
+test_truncated_capture_and_missing_counter_are_rejected (test_vt_acceptance.VtAcceptanceTests.test_truncated_capture_and_missing_counter_are_rejected) ... ok
+
+----------------------------------------------------------------------
+Ran 6 tests in 0.078s
+
+OK

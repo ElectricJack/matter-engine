@@ -121,7 +121,9 @@ std::string canonical_specifier(std::string specifier) {
     return specifier;
 }
 
-bool read_text_file(const std::string& path, std::string& contents) {
+bool read_text_file(const std::string& path, std::string& contents,
+                    const std::shared_ptr<const SourceSnapshot>& sources = {}) {
+    if (sources) return sources->read(path, contents);
     std::ifstream input(path, std::ios::binary);
     if (!input) return false;
     std::ostringstream stream;
@@ -177,8 +179,8 @@ bool gather_modules(const std::string& world_source,
             join_path(desc.project_shared_lib_dir, filename);
         const std::string engine_path =
             join_path(desc.engine_shared_lib_dir, filename);
-        if ((project_path.empty() || !read_text_file(project_path, module_source)) &&
-            (engine_path.empty() || !read_text_file(engine_path, module_source))) {
+        if ((project_path.empty() || !read_text_file(project_path, module_source, desc.source_snapshot)) &&
+            (engine_path.empty() || !read_text_file(engine_path, module_source, desc.source_snapshot))) {
             message = "module not found in project or engine shared-lib: " + specifier;
             return false;
         }
@@ -2782,6 +2784,41 @@ bool extract_streaming(JSContext* context,
     // while the outermost ring bounded residency (no rings, nothing streamed
     // anyway); under nested sector LOD the outermost BAND bounds residency, so
     // such a world is meaningful and must keep its bands.
+    JSValue density = JS_GetPropertyStr(context, streaming, "terrainTexelsPerMeter");
+    if (!JS_IsUndefined(density)) {
+        float value = 0;
+        if (!JS_IsNumber(density) || !number_value(context, density, value) ||
+            !std::isfinite(value) || value < 1 || value > 2048) {
+            JS_FreeValue(context, density);
+            JS_FreeValue(context, streaming);
+            return fail(desc, error, "streaming.terrainTexelsPerMeter",
+                        "terrainTexelsPerMeter must be a finite number in [1,2048]");
+        }
+        definition.settings.terrain_texels_per_meter = value;
+    }
+    JS_FreeValue(context, density);
+
+    JSValue receivers = JS_GetPropertyStr(context, streaming, "surfaceReceivers");
+    if (!JS_IsUndefined(receivers)) {
+        std::uint32_t count = 0;
+        bool valid = array_length(context, receivers, count) && count <= 64;
+        std::set<std::string> unique;
+        for (std::uint32_t i = 0; valid && i < count; ++i) {
+            JSValue entry = JS_GetPropertyUint32(context, receivers, i);
+            std::string module;
+            valid = JS_IsString(entry) && string_value(context, entry, module) &&
+                    !module.empty() && module.size() <= 256 && unique.insert(module).second;
+            JS_FreeValue(context, entry);
+            if (valid) definition.settings.surface_receiver_modules.push_back(std::move(module));
+        }
+        if (!valid) {
+            JS_FreeValue(context, receivers);JS_FreeValue(context, streaming);
+            return fail(desc,error,"streaming.surfaceReceivers",
+                        "surfaceReceivers must be an array of at most 64 unique nonempty module names");
+        }
+    }
+    JS_FreeValue(context, receivers);
+
     JSValue rings = JS_GetPropertyStr(context, streaming, "rings");
     if (JS_IsUndefined(rings)) {
         JS_FreeValue(context, rings);
@@ -4152,7 +4189,7 @@ bool load_world_definition(const WorldLoadDesc& desc,
     MaterialRegistryResetDynamic();
 
     std::string source;
-    if (!read_text_file(desc.world_path, source)) {
+    if (!read_text_file(desc.world_path, source, desc.source_snapshot)) {
         return fail(desc, error, "source", "unable to read world source");
     }
     const std::string class_name =

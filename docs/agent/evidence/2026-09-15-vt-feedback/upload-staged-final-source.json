@@ -1,0 +1,31 @@
+{
+  "sources": {
+    "MatterEngine3/src/render/vk_scene_renderer.h": "589e5b5f011924c8bca4b0e77030e108cc299b7650a4ad5dacab198f6f09d45b",
+    "MatterEngine3/src/render/vk_scene_renderer.cpp": "06e9f755ddb2e0056bf34eade873cfdbe61a1e6e29043df6c17018d3f3202cf6",
+    "MatterEngine3/src/render/vt_types.h": "e4d611fdd65c92cb96b4af05c785767a050a3877f081975f0e4eccd75cbbfb0e",
+    "MatterEngine3/src/render/vt_residency.cpp": "cfb537c75105cf2bdf737f993fd68987f525f0b6b8220553bc031ab53359bec8",
+    "MatterEngine3/src/render/vt_residency.h": "0b92beea3c05878f10c3c1e7f17319b0befa7cea20aa01aa45cfe18664460986",
+    "MatterEngine3/src/render/vt_compositor.cpp": "42c4175beb5ad48b96a89bec5178f12d4c8305ba7ade80eac75f6453774db044",
+    "MatterEngine3/src/render/vt_compositor.h": "ceaa57d07d813fe95bcd9a3606ae416849a620e92a4381b223baf47f78c403ca",
+    "MatterEngine3/src/render/vt_enrich.cpp": "fa9d59d47f53b8307c6ed29d344a7db2459938ad0095c0c6721d2b30fc6d36f7",
+    "MatterEngine3/src/render/vt_enrich.h": "12d1af6452d2051dec120ab88592aafa5d5386cb32a4371ebcb0fdb938cb5b41",
+    "MatterEngine3/src/render/vt_chart_gpu.h": "d7d8993caf4293852d62f7396473e6520168a0c5ca27227d1bfda9fe7c06e68c",
+    "MatterEngine3/tests/vulkan_smoke_tests.cpp": "add6dcc46723363debbf3d0a24ea52b91c438611e07625688b8e88e2dd87a9f2",
+    "MatterEngine3/tests/vt_compositor_tests.cpp": "1a4f231261cfa599c41d46a39bb9eeb1f59284819523361312dc5668a9b3f8e0",
+    "MatterEngine3/tests/vt_queue_tests.h": "621aa9cb3d4d9a964fd4eae336de7d167e826d63c5da7ec876a80c2a4b086ab4",
+    "MatterEngine3/shaders_vk/vt_composite.comp": "c7a3f8da5247108274e9e72fd25be58164a01fe70e24d576df1316462817f431",
+    "MatterEngine3/shaders_vk/vt_chart_types.glsl": "fc7ddbc9b837542d4bc7bbe26a613c03967bb44ae45a20c48abf1f60696ca4a5",
+    "MatterEngine3/shaders_vk/vt_chart_resolve.glsl": "ca7a1add9a2408bef74fe89e85f73996d225c803c1bf3e5e123f38b62ce4e2c8",
+    "MatterEngine3/shaders_vk/vt_enrich_ao.comp": "a431363d776d9a1de66db8eaed638c964a9f83141b9e5db814316f832da31162",
+    "MatterEngine3/src/render/vt_snapshot.h": "c41efa5c34974d90117b0be5b1ce4b664fae1e08e890da91a288400bb611615c",
+    "MatterEngine3/src/render/vt_prepare.h": "0a962c90ebf9f000391deab830973fd6a347dc2e69d84143a08ae0e366c0dbc4",
+    "MatterEngine3/tests/vt_prepare_tests.h": "1864aa0d51a55e124dc331c865bdfb3463515e6583bd896bdd8f36fac51652b2",
+    "libs/ProfileLib/include/profile.h": "bad265885c786dbcdce835e2aa177aff5f2accbc8438353eb913a7bda872c914",
+    "libs/ProfileLib/src/profile.cpp": "88a259ef31ed647f004d10961e84f56c4a408b40509c938bc056b843b7f70090"
+  },
+  "binaries": {
+    "MatterEditor/build/cmake/windows-msvc/relwithdebinfo/vt_compositor_tests.exe": "ec195ba7df423e63d612cf3197b0914b9cc25ef2ee73f8bc0ddef8d20d1f6008",
+    "MatterEditor/build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe": "7b29fcde9308e205fffe0d8246dc939368f1e8ca20eb18736d7feb03cc533270",
+    "MatterEditor/build/windows-msvc/editor.exe": "a720f459c51dc382dbe3a164df43f2c1bf31063ec9fd4a535cf2aa3fe1601e77"
+  }
+}

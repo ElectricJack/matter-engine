@@ -13,6 +13,10 @@ class GpuSolidFaceProjector {
     GpuSolidFaceProjector(const GpuSolidFaceProjector &) = delete;
     GpuSolidFaceProjector &operator=(const GpuSolidFaceProjector &) = delete;
     bool project(const FaceJob &, FacePatch &, FaceStats &, Error &, const BuildControl & = {});
+    bool prepare(const FaceJob &, FacePatch &, FaceStats &, Error &, const BuildControl & = {},
+                 const FacePreparationLimits & = {});
+    bool project_region(const FaceJob &, const FaceRegion &, std::vector<FaceTexel> &,
+                        FaceStats &, Error &, const BuildControl & = {});
 
   private:
     struct Impl;

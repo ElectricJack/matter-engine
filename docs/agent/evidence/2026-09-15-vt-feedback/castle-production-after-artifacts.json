@@ -1,0 +1,147 @@
+{
+  "command": [
+    "/mnt/c/Users/webde/AppData/Local/Programs/Python/Launcher/py.exe",
+    "-3",
+    "D:/tmp/matter-vt/20260915-feedback/run_without_validation.py",
+    "D:/tmp/matter-vt/20260915-feedback/castle-production-after/effective-validation.json",
+    "D:/Shared With Desktop/AI/matter-engine-cpp/MatterEngine3/tools/drive.py",
+    "--world",
+    "CastleUpgraded",
+    "--timeline",
+    "D:/tmp/matter-vt/20260915-feedback/castle-production-after/timeline.txt",
+    "--out-dir",
+    "D:/tmp/matter-vt/20260915-feedback/castle-production-after/run",
+    "--editor",
+    "D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor/build/windows-msvc/editor.exe",
+    "--timeout",
+    "600",
+    "--hide-ui",
+    "--env",
+    "MATTER_HIDE_WINDOW=0",
+    "--env",
+    "MATTER_WINDOW_WIDTH=1920",
+    "--env",
+    "MATTER_WINDOW_HEIGHT=1080",
+    "--env",
+    "MATTER_VSYNC=0",
+    "--env",
+    "MATTER_PRESENT_MODE=mailbox",
+    "--env",
+    "MATTER_FRAME_LIMIT=60",
+    "--env",
+    "MATTER_CAM=-15,24,43,16.062178,7,7.674546",
+    "--env",
+    "MATTER_VT_TRACE=D:/tmp/matter-vt/20260915-feedback/castle-production-after/vt.jsonl",
+    "--env",
+    "MATTER_VT_EVENT_LOG=0",
+    "--env",
+    "MATTER_VT_DENSITY_FRAME=0",
+    "--env",
+    "TMP=C:/Users/webde/AppData/Local/Temp",
+    "--env",
+    "TEMP=C:/Users/webde/AppData/Local/Temp",
+    "--env",
+    "MATTER_CAM_PATH=D:/tmp/matter-vt/20260915-feedback/castle-production-after/camera.path",
+    "--env",
+    "MATTER_CAM_PATH_WARMUP=0",
+    "--env",
+    "MATTER_CAM_PATH_SETTLE=5",
+    "--env",
+    "MATTER_CAM_PATH_EXIT=0",
+    "--env",
+    "MATTER_PROFILE_TRACE=D:/tmp/matter-vt/20260915-feedback/castle-production-after/profile.json"
+  ],
+  "driver_exit": 0,
+  "elapsed_seconds": 129.4630365371704,
+  "source_manifest": "docs/agent/evidence/2026-09-15-vt-feedback/fallback-source.json",
+  "validation_effective": false,
+  "method": "Native launcher removes MATTER_VK_VALIDATION before executing drive.py; selected loader-layer environment is recorded.",
+  "effective_validation_environment": {
+    "MATTER_VK_VALIDATION": null,
+    "VK_INSTANCE_LAYERS": null,
+    "VK_LOADER_LAYERS_ENABLE": null
+  },
+  "visual_review": "1920x1080 screenshot reviewed; reference castle framing retained. A single final image does not establish intermediate material continuity.",
+  "full_vt_acceptance": false,
+  "artifacts": [
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/castle-production-after/camera.path",
+      "bytes": 372076,
+      "sha256": "5caac095539bfdb731cf9728e88b348190e8b1ff065352bb022ccc9715e10662"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/castle-production-after/command.json",
+      "bytes": 1582,
+      "sha256": "fa91f548320b6ae07b2478b997c9605e75fd90ccc0c1bc1edbfd38370bc86ea0"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/castle-production-after/driver.log",
+      "bytes": 21935,
+      "sha256": "276ec0abd4d3663fb75ee029c698f6b4ff7e2b1011e30d1f32e625486280c748"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/castle-production-after/effective-validation.json",
+      "bytes": 105,
+      "sha256": "61d38810249d558ffae390a009059aa2ba7a190d3d474e2a4ffdc131b13284ea"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/castle-production-after/launch-source.json",
+      "bytes": 258,
+      "sha256": "aa030274ae744966a818f243730dd4945ccb25bcd3836291607d8e9e6e22f990"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/castle-production-after/profile.json",
+      "bytes": 3709501,
+      "sha256": "1eeb2d008e36cfdb7d46f4b592cfbd6029c244eb22bfc057672ee69432f89142"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/castle-production-after/result.json",
+      "bytes": 1761,
+      "sha256": "5cd737c11f243d2dd186ab52ee2ad8f50289a64fff9dd0e8cb6b188370682d96"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/castle-production-after/run/cmd.txt",
+      "bytes": 214,
+      "sha256": "c196190819fc4c77f259d2047980ada8e3a8fd3bef2f902bb54965ad0230d5ff"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/castle-production-after/run/log.txt",
+      "bytes": 21457,
+      "sha256": "fd16e1b79dc9994d5bc478c9dfa5f1ed8aa75ea5479818bb7e93cdd743519dff"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/castle-production-after/settled.png",
+      "bytes": 2121731,
+      "sha256": "c0ecd6a60d6c1a4c8295611f3c524f840d3b64297ac4f260b29fb6f8f1006990",
+      "dimensions": [
+        1920,
+        1080
+      ]
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/castle-production-after/settled.png.done",
+      "bytes": 10,
+      "sha256": "4c339121e4860b04ebd48181621c9dd3f84901846feda08d4e77aafaf9a6c896"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/castle-production-after/timeline.txt",
+      "bytes": 214,
+      "sha256": "c196190819fc4c77f259d2047980ada8e3a8fd3bef2f902bb54965ad0230d5ff"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/castle-production-after/vt.jsonl",
+      "bytes": 1288380,
+      "sha256": "8b876313dc224d1542aa7bba961dbb6f74ce568b10273ff9435b2455f6ebe58d"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/run_without_validation.py",
+      "bytes": 462,
+      "sha256": "f4dfbf924a1637fc2c3d0293e39cc1f723dee34338d1f0610bd74fe2c8a390b3"
+    }
+  ],
+  "validation_error_lines": 0,
+  "markers": [
+    "STATSVT,settle_begin,active=1,variants=79/32768,rejected=0,mesh=58.3/3512.0 MiB,pool=3328/33024,pinned=79,queue=0,fills=4761,evictions=0,ind=0.59/64 MiB",
+    "STATSVT,settle_end,active=1,variants=79/32768,rejected=0,mesh=58.3/3512.0 MiB,pool=3330/33024,pinned=79,queue=0,fills=4763,evictions=0,ind=0.59/64 MiB"
+  ]
+}

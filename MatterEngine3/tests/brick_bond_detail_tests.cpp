@@ -1,13 +1,17 @@
 #include "brick_bond_detail.h"
 #include "provider/detail_cache_validation.h"
 #include "check.h"
-#include <fstream>
-#include <iterator>
+#include "memory_fixture_io.h"
+#include "part_bundle.h"
+#include "source_snapshot_modules.h"
+#include "embedded_world_modules.h"
 #include <string>
 namespace {
+const auto sources = std::make_shared<const matter::SourceSnapshot>(embedded_world_test_sources());
 std::string read(const char *path) {
-    std::ifstream file(path, std::ios::binary);
-    return {std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
+    std::string source;
+    sources->read(path, source);
+    return source;
 }
 void cache_validation_test() {
     const auto check_case = [](bool cached, int failed_loads, bool can_recover,
@@ -32,10 +36,14 @@ void cache_validation_test() {
 }
 void tests() {
     cache_validation_test();
+    auto storage = std::make_shared<matter::test::MemoryCacheByteStorage>();
+    part_bundle::ScopedStorage scope(storage);
     script_host::ScriptHost host;
     host.set_shared_lib_roots({"projects/world_demo/shared-lib", "MatterEngine3/shared-lib"});
-    const auto descriptor_source = read("projects/world_demo/objects/CastleBrickBondDetail.js");
-    const auto source = read("projects/world_demo/objects/CastleStoneSource.js");
+    host.set_module_sources(matter::source_snapshot_modules(*sources,
+        {"projects/world_demo/shared-lib", "MatterEngine3/shared-lib"}));
+    const auto descriptor_source = read("projects/world_demo/objects/castle/materials/CastleBrickBondDetail.js");
+    const auto source = read("projects/world_demo/objects/castle/materials/CastleStoneSource.js");
     CHECK(!descriptor_source.empty() && !source.empty(),
           "actual authored detail/source files available");
     if (descriptor_source.empty() || source.empty())
@@ -82,17 +90,25 @@ void tests() {
     CHECK(prepared.cache_key != 0 && gpu_calls == 0,
           "cache identity established before GPU or mesh callback");
     const auto old_key = prepared.cache_key;
+    const auto original_face = gpu_meshing::face_recipe_digest(detail_bake::brick_bond_face_job(
+        descriptor, prepared.sources[0].job(), prepared.sources[0].resolved_hash, false));
     auto palette = descriptor;
     palette.bond.brick_rgb[0][0]++;
     CHECK(detail_bake::prepare_brick_bond_sources(palette, descriptor_hash, source, host, options,
                                                   prepared, error),
           error.c_str());
     CHECK(prepared.cache_key != old_key, "palette enters preprojection identity");
+    CHECK(gpu_meshing::face_recipe_digest(detail_bake::brick_bond_face_job(
+        palette, prepared.sources[0].job(), prepared.sources[0].resolved_hash, false)) == original_face,
+        "palette edit reuses physical source face identity");
     CHECK(detail_bake::prepare_brick_bond_sources(descriptor, descriptor_hash,
                                                   source + "\n// selected source edit\n", host,
                                                   options, prepared, error),
           error.c_str());
     CHECK(prepared.cache_key != old_key, "actual resolved source identity enters atlas cache key");
+    CHECK(gpu_meshing::face_recipe_digest(detail_bake::brick_bond_face_job(
+        descriptor, prepared.sources[0].job(), prepared.sources[0].resolved_hash, false)) != original_face,
+        "source edit invalidates finite geometry identity");
     const auto front = detail_bake::brick_bond_face_job(descriptor, prepared.sources[0].job(),
                                                         prepared.sources[0].resolved_hash, false);
     const auto back = detail_bake::brick_bond_face_job(descriptor, prepared.sources[0].job(),

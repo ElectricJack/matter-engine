@@ -1,3 +1,4 @@
+#include "matter/project_layout.h"
 // Native QuickJS -> direct triangle buffer -> baked CPU geometry contract.
 #include "script_host.h"
 #include "render/part_store.h"
@@ -22,7 +23,7 @@ int main(int argc,char** argv) {
         host.set_shared_lib_roots({(repo/"projects/world_demo/shared-lib").string()});
         script_host::BakeOptions options;options.parts_dir=out.string();options.retain_geometry=true;
         for(const std::string module:{"CastleBeamSurface","CastleFloorSurface","CastleWallSurface"}) {
-            std::ifstream file(repo/"projects/world_demo/objects"/(module+".js"));
+            std::ifstream file(matter::project_layout::object_source({(repo/"projects/world_demo/objects").string()}, module));
             if(!file)throw std::runtime_error("source missing");
             const std::string source((std::istreambuf_iterator<char>(file)),std::istreambuf_iterator<char>());
             const int shapes=module=="CastleBeamSurface"?12:module=="CastleFloorSurface"?3:10;

@@ -1,3 +1,4 @@
+import { objectFile } from './helpers/project_layout.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 await import('./castle_shared_lib_hooks.mjs');
@@ -32,7 +33,7 @@ class Replay {
  placeChild(module,params) { this.children.push({module,params,origin:this.point([0,0,0]),axes:[[1,0,0],[0,1,0],[0,0,1]].map(p=>this.point(p))}); }
 }
 function partClass(file,name,dependencies) {
- const source=fs.readFileSync(new URL('../objects/'+file,import.meta.url),'utf8').replace(/^import .*;\s*$/gm,'');
+ const source=fs.readFileSync(objectFile(file.replace(/\.js$/, '')),'utf8').replace(/^import .*;\s*$/gm,'');
  return Function(...Object.keys(dependencies),source+'\nreturn '+name)(...Object.values(dependencies));
 }
 const Structure=partClass('CastleWingStructure.js','CastleWingStructure',{

@@ -1,0 +1,18 @@
+{
+  "task": "clear-crest-48.4.4",
+  "claim_epoch": 34,
+  "source_commit": "e2bf6305115ff05101b1d8b4e193a25cc881a18e",
+  "build_steps": 72,
+  "build_exit": 0,
+  "ctest_exit": 0,
+  "ctest_passed": 12,
+  "ctest_failed": 0,
+  "ctest_seconds": 45.24,
+  "validation_required": true,
+  "validation_errors": 0,
+  "device": "llvmpipe (LLVM 20.1.2, 256 bits)",
+  "compiled_targets": 22,
+  "exact_repeat_pairs": 4,
+  "prime_error": "context.required_over_budget",
+  "new_implementation_lines": 0
+}

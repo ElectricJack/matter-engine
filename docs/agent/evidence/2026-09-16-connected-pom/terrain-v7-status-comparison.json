@@ -1,0 +1,16 @@
+{
+  "terrain-connected-pom-v6": {
+    "hit_green": 774507,
+    "path_red": 1287,
+    "initial_orange": 520,
+    "limit_blue": 7265
+  },
+  "terrain-connected-pom-v7": {
+    "hit_green": 776314,
+    "path_red": 0,
+    "initial_orange": 0,
+    "limit_blue": 7265
+  },
+  "classification": "8-bit RGB: dominant channel >200; other channels <40; orange R>200, 80<G<170, B<40.",
+  "scope": "Same scene settings, cameras, density and wait count. Diagnostic pixels only, not visual or performance acceptance."
+}

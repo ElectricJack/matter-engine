@@ -1,6 +1,6 @@
 # Wavefront MTL exported by MatterEngine3
 # part: CastlePavingSlab
-# resolved_hash: 6fc0e819cd769001
+# resolved_hash: b57b33e2797b2792
 # colour keys (Kd, Ke) are sRGB-encoded; Pr/Pm/map_Ka are linear
 # Kd is white because map_Kd carries the colour; see the base_albedo comment on each material
 
