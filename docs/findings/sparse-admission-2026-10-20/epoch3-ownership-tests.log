@@ -1,0 +1,8 @@
+aq test: no interpreter found for /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2 (no .venv, no resources.test_interpreters entry); using /usr/bin/python3.12
+aq test: slot 1 of 6, -n 6
+$ /usr/bin/python3.12 -m pytest -n 6 --dist loadfile -m 'not perf and not migration and not slow and not tmux and not integration' tools/tests/test_sparse_scene_admission.py -q -k full_world_publication_ownership
+bringing up nodes...
+bringing up nodes...
+
+.                                                                        [100%]
+1 passed in 11.04s

@@ -107,6 +107,8 @@
 #endif
 #include "indirect_draw_runs.h"
 #include "vk_scene_renderer.h"
+#include "vk_sparse_admission.h"
+#include "vk_scene_publication.h"
 #include "../../../libs/MatterGraphics/src/native/mesh_raster.h"
 #include "../../../libs/MatterGraphics/src/native/image_transitions.h"
 #include "../../../libs/MatterGraphics/src/native/mesh_pipelines.h"
@@ -1373,15 +1375,29 @@ bool VkSceneRenderer::set_shared_surface_forest(const std::vector<SparseSharedOb
         } else unchanged=false;
     }
     if(unchanged) return true;
+    if(!preflight_shared_forest(*vulkan_,surfaces,shadows,error)) return false;
+    // Copy owning catalog metadata before committing GPU snapshots. A failed
+    // allocation must not publish geometry with a stale catalog.
+    auto next_surfaces=surfaces;auto next_shadows=shadows;
     std::shared_ptr<VkSparseVoxelScene> primary,shadow;
     if(!surfaces.empty()) {
         primary=reuse?sparse_voxels_->with_shared_placements(*vulkan_,placements,error):VkSparseVoxelScene::create_shared_surfaces(*vulkan_,surfaces,error);
         if(!primary) return false;
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+        if(admission::test_failure==admission::Preparation::primary) {
+            error="injected failure after sparse primary preparation";return false;
+        }
+#endif
         shadow=reuse?sparse_shadows_->with_shared_placements(*vulkan_,placements,error):VkSparseVoxelScene::create_shared_shadow_casters(*vulkan_,shadows,error);
         if(!shadow) return false;
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+        if(admission::test_failure==admission::Preparation::shadow) {
+            error="injected failure after sparse shadow preparation";return false;
+        }
+#endif
     }
     sparse_voxels_=std::move(primary);sparse_shadows_=std::move(shadow);
-    shared_forest_catalog_=surfaces;shared_forest_shadow_catalog_=shadows;
+    shared_forest_catalog_.swap(next_surfaces);shared_forest_shadow_catalog_.swap(next_shadows);
     note_sparse_snapshot_changed();
     return true;
 }
@@ -1408,14 +1424,27 @@ bool VkSceneRenderer::set_shared_surface_forest_placements(
         }
     }
     if(!changed) return true;
+    auto next_surfaces=shared_forest_catalog_;auto next_shadows=shared_forest_shadow_catalog_;
+    for(size_t i=0;i<placements.size();++i) {
+        next_surfaces[i].instances=placements[i];next_shadows[i].instances=placements[i];
+    }
+    if(!preflight_shared_forest(*vulkan_,next_surfaces,next_shadows,error)) return false;
     auto primary=sparse_voxels_->with_shared_placements(*vulkan_,placements,error);
     if(!primary) return false;
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+    if(admission::test_failure==admission::Preparation::primary) {
+        error="injected failure after sparse primary preparation";return false;
+    }
+#endif
     auto shadows=sparse_shadows_->with_shared_placements(*vulkan_,placements,error);
     if(!shadows) return false;
-    sparse_voxels_=std::move(primary);sparse_shadows_=std::move(shadows);
-    for(size_t i=0;i<placements.size();++i) {
-        shared_forest_catalog_[i].instances=placements[i];shared_forest_shadow_catalog_[i].instances=placements[i];
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+    if(admission::test_failure==admission::Preparation::shadow) {
+        error="injected failure after sparse shadow preparation";return false;
     }
+#endif
+    sparse_voxels_=std::move(primary);sparse_shadows_=std::move(shadows);
+    shared_forest_catalog_.swap(next_surfaces);shared_forest_shadow_catalog_.swap(next_shadows);
     note_sparse_snapshot_changed();
     return true;
 }
@@ -14495,5 +14524,7 @@ void VkSceneRenderer::finish_dynamic_frame(uint64_t completed_serial) {
     dynamic_completed_serial_ =
         std::max(dynamic_completed_serial_, completed_serial);
 }
+
+#include "vk_scene_publication.inl"
 
 }  // namespace viewer

@@ -16923,7 +16923,8 @@ int main() {
             glfwTerminate();
             return check_summary();
         }
-        if (smoke_mode && std::string(smoke_mode) == "sparse-voxel") {
+        if (smoke_mode && (std::string(smoke_mode) == "sparse-voxel" ||
+                           std::string(smoke_mode) == "sparse-admission")) {
             sparse_voxel_gpu_test::run(*vulkan);
             CHECK(vulkan->validation_error_count() == 0, "sparse voxel Vulkan validation");
             std::printf("validation errors: %u\n", vulkan->validation_error_count());
