@@ -1,0 +1,14 @@
+{
+  "task_id": "clear-crest-48.4.4",
+  "claim_epoch": 24,
+  "tested_source": "78c2bcda5e3e6b997a4f5ad3d87860f7a61e4190",
+  "workspace": "/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0",
+  "command": "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"$(wslpath -w \"$PWD/tools/ci-windows.ps1\")\"",
+  "exit_code": 1,
+  "result": "CMD.EXE cannot use WSL UNC current directory; defaults to C:/Windows; CMakePresets.json not found",
+  "configure_completed": false,
+  "build_completed": false,
+  "tests_run": false,
+  "package_validated": false,
+  "prior_evidence_preserved": true
+}

@@ -1,0 +1,119 @@
+{
+  "profile": "legacy-export-v1",
+  "legacy_hash_namespaces": {
+    "resolved_hash": "matter.engine3.resolved_hash",
+    "map_legacy_hashes": "matter.engine3.export.map_content_hash"
+  },
+  "samples": [
+    {
+      "module": "CastlePavingSlab",
+      "fields": {
+        "module": "CastlePavingSlab",
+        "resolved_hash": "b57b33e2797b2792",
+        "lod": "0",
+        "lod_count": "1",
+        "texture_size": "256",
+        "vertices": "24",
+        "triangles": "12",
+        "charts": "6",
+        "atlas": "256",
+        "inlined_subtree_refs": "0",
+        "skipped_subtree_refs": "0"
+      },
+      "materials": [
+        {
+          "name": "mat_9",
+          "id": 9,
+          "triangles": 12
+        }
+      ],
+      "map_legacy_hashes": {
+        "albedo": "0b6917089dda3b56",
+        "normal": "2cb79b540db2b1f6",
+        "roughness": "916003147a616eb4",
+        "metallic": "e1f3cdd36ed438d4",
+        "ao": "872cc60622a338d4"
+      },
+      "material_path": "MatterEngine3/tests/fixtures/export/CastlePavingSlab.mtl",
+      "golden_path": "MatterEngine3/tests/fixtures/export/CastlePavingSlab.golden",
+      "status": "native metadata/MTL pass at assigned HEAD; legacy OBJ comparison fails because fixture is absent; new bounded OBJ snapshot retained separately",
+      "missing_legacy_geometry_path": "MatterEngine3/tests/fixtures/export/CastlePavingSlab.obj",
+      "captured_geometry_path": "fixtures/native-export/CastlePavingSlab.obj"
+    },
+    {
+      "module": "AlpineFlower",
+      "fields": {
+        "module": "AlpineFlower",
+        "resolved_hash": "62dd2578800bd70e",
+        "lod": "0",
+        "lod_count": "2",
+        "texture_size": "256",
+        "vertices": "228",
+        "triangles": "76",
+        "charts": "42",
+        "atlas": "256",
+        "inlined_subtree_refs": "0",
+        "skipped_subtree_refs": "0"
+      },
+      "materials": [
+        {
+          "name": "mat_17",
+          "id": 17,
+          "triangles": 48
+        },
+        {
+          "name": "mat_29",
+          "id": 29,
+          "triangles": 28
+        }
+      ],
+      "map_legacy_hashes": {
+        "albedo": "1ecfd22d9fe8a152",
+        "normal": "244925b928edba4c",
+        "roughness": "9bb9c91a69384f7f",
+        "metallic": "e1f3cdd36ed438d4",
+        "ao": "872cc60622a338d4"
+      },
+      "material_path": "MatterEngine3/tests/fixtures/export/AlpineFlower.mtl",
+      "golden_path": "MatterEngine3/tests/fixtures/export/AlpineFlower.golden",
+      "status": "native metadata/MTL pass at assigned HEAD; legacy OBJ comparison fails because fixture is absent; new bounded OBJ snapshot retained separately",
+      "missing_legacy_geometry_path": "MatterEngine3/tests/fixtures/export/AlpineFlower.obj",
+      "captured_geometry_path": "fixtures/native-export/AlpineFlower.obj"
+    },
+    {
+      "module": "CastleStone",
+      "fields": {
+        "module": "CastleStone",
+        "resolved_hash": "730a3217c9a13581",
+        "lod": "0",
+        "lod_count": "1",
+        "texture_size": "256",
+        "vertices": "45506",
+        "triangles": "54054",
+        "charts": "223",
+        "atlas": "256",
+        "inlined_subtree_refs": "0",
+        "skipped_subtree_refs": "0"
+      },
+      "materials": [
+        {
+          "name": "mat_8",
+          "id": 8,
+          "triangles": 54054
+        }
+      ],
+      "map_legacy_hashes": {
+        "albedo": "0473d9caa5d6987e",
+        "normal": "281757a9a9886a07",
+        "roughness": "2ced7296228f8a00",
+        "metallic": "e1f3cdd36ed438d4",
+        "ao": "872cc60622a338d4"
+      },
+      "geometry_path": null,
+      "material_path": "MatterEngine3/tests/fixtures/export/CastleStone.mtl",
+      "golden_path": "MatterEngine3/tests/fixtures/export/CastleStone.golden",
+      "status": "native digest/MTL comparison passed at assigned HEAD; large OBJ intentionally not checked in"
+    }
+  ],
+  "update_policy": "MATTER_EXPORT_GOLDEN_UPDATE must remain unset for checks; never regenerate in a comparison run."
+}
