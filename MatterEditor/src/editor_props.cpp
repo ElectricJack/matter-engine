@@ -779,6 +779,12 @@ const auto s_viewer_debug = matter::props::group<ViewerStats>(
              "selection with it (same eye). Pair with \"Freeze terrain "
              "streaming\", which holds which tiles exist rather than which "
              "are drawn."),
+    prop(&ViewerStats::live_terrain_graphics, "live_terrain_graphics")
+        .label("Live terrain graphics")
+        .doc("MATTER_LIVE_TERRAIN=1 only. Off releases every live terrain "
+             "tile's GPU residency; the generated products stay cached and the "
+             "terrain collision stays installed. On re-uploads from the cache "
+             "without regenerating."),
     prop(&ViewerStats::occlusion_draw_cull, "occlusion_draw_cull")
         .label("Occlusion culling")
         .doc("Do not rasterise sectors that owned no pixel THIS frame.\n\n"

@@ -1,10 +1,11 @@
 #include "matter/volumetric_quality.h"
 #include "matter/cloud_shadow_settings.h"
+// Production source predicates run through the shared CMake/Make qualifier;
+// this binary retains the numerical froxel, memory and preset regressions.
 #include "check.h"
 
 #include <cmath>
 #include <cstdint>
-#include <fstream>
 #include <limits>
 #include <string>
 
@@ -36,10 +37,6 @@ bool equal(const matter::CloudShadowSettings& a,
            a.update_fraction == b.update_fraction;
 }
 
-std::string read_file(const char* path) {
-    std::ifstream file(path, std::ios::binary);
-    return {std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
-}
 
 float slice_to_depth(float slice, float depth_slices) {
     return 0.1f * std::pow(30000.0f, slice / depth_slices);
@@ -72,13 +69,6 @@ void test_dimension_independent_slice_mapping_and_shader_contract() {
             prior_transmittance = transmittance;
         }
     }
-    const std::string common = read_file("../shaders_vk/vol_common.glsl");
-    CHECK(common.find("const uint VOL_W") == std::string::npos &&
-              common.find("const uint VOL_H") == std::string::npos &&
-              common.find("const uint VOL_D") == std::string::npos &&
-              common.find("slice_to_depth(float slice_index, float depth_slices)") != std::string::npos &&
-              common.find("depth_to_slice_n(float depth, float depth_slices)") != std::string::npos,
-          "volumetric shader helpers derive slice mapping from runtime depth dimensions");
 }
 
 void test_froxel_grid_resolves_every_discrete_combination() {
@@ -230,45 +220,6 @@ void test_enhanced_lighting_derives_from_any_enhanced_feature() {
 // grid, memory, preset and wiring contracts they sat beside still cover the
 // shipped code.
 
-void test_effective_froxel_state_and_rejection_recovery_are_wired() {
-    const std::string engine = read_file("../src/matter_engine.cpp");
-    const std::string editor = read_file("../../MatterEditor/src/main.cpp");
-    CHECK(engine.find("vol_effective_xy_scale") != std::string::npos &&
-              engine.find("vol_effective_depth_slices") != std::string::npos,
-          "frame stats receive active effective froxel enums from the renderer");
-    CHECK(editor.find("last_rejected_froxel_generation") != std::string::npos &&
-              editor.find("frame_stats.vol_resource_generation !=\n                last_rejected_froxel_generation") != std::string::npos &&
-              editor.find("set_enum(b->instance(), *xy") != std::string::npos &&
-              editor.find("set_enum(b->instance(), *depth") != std::string::npos &&
-              editor.find("b->set_dirty(false)") != std::string::npos &&
-              editor.find("volumetric froxel allocation rejected:") != std::string::npos,
-          "a new rejected froxel generation restores both live fields, clears the binding, and logs once");
-}
-
-void test_froxel_candidate_descriptor_failure_is_transactionally_destroyed() {
-    const std::string implementation = read_file("../src/render/vk_volumetrics.cpp");
-    CHECK(implementation.find("fail_next_bundle_descriptor_allocation_for_test_") !=
-              std::string::npos &&
-              implementation.find("destroy_froxel_bundle(bundle)") !=
-              std::string::npos,
-          "a descriptor-allocation failure has a test seam and destroys its partial froxel bundle");
-}
-
-void test_neutral_volume_fallback_is_explicitly_cleared() {
-    const std::string renderer = read_file("../src/render/vk_scene_renderer.cpp");
-    CHECK(renderer.find("VkClearColorValue neutral_volume") != std::string::npos &&
-              renderer.find("vol_dummy_3d_") != std::string::npos &&
-              renderer.find("submit_immediate") != std::string::npos,
-          "the no-RT volumetric fallback is cleared to a defined neutral value");
-}
-
-void test_resize_smoke_observes_bundle_view_and_ceil_dispatch_coverage() {
-    const std::string smoke = read_file("vulkan_smoke_tests.cpp");
-    CHECK(smoke.find("volumetrics_integrated_view()") != std::string::npos &&
-              smoke.find("(active.width + 7) / 8") != std::string::npos &&
-              smoke.find("seen_frame_slots") != std::string::npos,
-          "the resize smoke pins bundle-view replacement, ceil dispatch coverage, and both frame slots");
-}
 
 } // namespace
 
@@ -280,9 +231,5 @@ int main() {
     test_froxel_memory_saturates_instead_of_wrapping_for_unrepresentable_dimensions();
     test_presets_apply_and_identify_exact_fixed_table_values();
     test_enhanced_lighting_derives_from_any_enhanced_feature();
-    test_effective_froxel_state_and_rejection_recovery_are_wired();
-    test_froxel_candidate_descriptor_failure_is_transactionally_destroyed();
-    test_neutral_volume_fallback_is_explicitly_cleared();
-    test_resize_smoke_observes_bundle_view_and_ceil_dispatch_coverage();
     return check_summary();
 }

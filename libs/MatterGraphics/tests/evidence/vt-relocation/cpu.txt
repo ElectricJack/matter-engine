@@ -1,0 +1,13 @@
+Internal ctest changing into directory: D:/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-2/MatterEditor/build/cmake/windows-msvc/relwithdebinfo
+Test project D:/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-2/MatterEditor/build/cmake/windows-msvc/relwithdebinfo
+    Start 12: vt_residency_tests
+1/2 Test #12: vt_residency_tests ...............   Passed    0.54 sec
+    Start 21: vt_encoded_pages_tests
+2/2 Test #21: vt_encoded_pages_tests ...........   Passed    0.56 sec
+
+100% tests passed, 0 tests failed out of 2
+
+Label Time Summary:
+cpu    =   1.09 sec*proc (2 tests)
+
+Total Test time (real) =   1.12 sec
