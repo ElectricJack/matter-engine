@@ -1,0 +1,1131 @@
+aq test: no interpreter found for /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2 (no .venv, no resources.test_interpreters entry); using /usr/bin/python3.12
+aq test: slot 1 of 6, -n 6
+$ /usr/bin/python3.12 -m pytest -n 6 --dist loadfile -m 'not perf and not migration and not slow and not tmux and not integration' tools/tests/test_sparse_scene_admission.py -q -rP -k native_session_collision_admission
+bringing up nodes...
+bringing up nodes...
+
+.                                                                        [100%]
+==================================== PASSES ====================================
+___________________ test_native_session_collision_admission ____________________
+[gw0] linux -- Python 3.12.3 /usr/bin/python3.12
+----------------------------- Captured stdout call -----------------------------
+== terrain_collision_session_tests ==
+-- real_worker_fixture_cache_cold_and_warm
+o-[Process     ] Using posix threads
+                 Multithreading enabled
+                 Available cores = 24
+                 Max used threads = 24
+                 Cancel mode disabled
+   0 : 4.0214863840e+02 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 5.276742e-07
+   0 : 2.0031447891e+02 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 6.418230e-07
+   0 : 1.0966191721e+02 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 5.990147e-07
+   0 : 7.4262249046e+01 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 5.377808e-07
+   0 : 4.8156938047e+01 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 4.951296e-07
+   0 : 8.4882775643e+01 -- 8.4882775643e-11
+in OpenNL : ||Ax-b||/||b|| = 8.984158e-07
+   0 : 4.0175789032e+01 -- 1.7974005946e-09
+in OpenNL : ||Ax-b||/||b|| = 7.377547e-07
+   0 : 4.0214863840e+02 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 5.276742e-07
+   0 : 2.0031447891e+02 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 6.418230e-07
+   0 : 1.0966191721e+02 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 5.990147e-07
+   0 : 7.4262249046e+01 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 5.377808e-07
+   0 : 4.8156938047e+01 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 4.951296e-07
+   0 : 8.4882775643e+01 -- 8.4882775643e-11
+in OpenNL : ||Ax-b||/||b|| = 8.984158e-07
+   0 : 4.0175789032e+01 -- 1.7974005946e-09
+in OpenNL : ||Ax-b||/||b|| = 7.377547e-07
+-- worker_build_app_install_ready_gate_and_identity
+   0 : 4.0214863840e+02 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 5.276742e-07
+   0 : 2.0031447891e+02 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 6.418230e-07
+   0 : 1.0966191721e+02 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 5.990147e-07
+   0 : 7.4262249046e+01 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 5.377808e-07
+   0 : 4.8156938047e+01 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 4.951296e-07
+   0 : 8.4882775643e+01 -- 8.4882775643e-11
+in OpenNL : ||Ax-b||/||b|| = 8.984158e-07
+   0 : 4.0175789032e+01 -- 1.7974005946e-09
+in OpenNL : ||Ax-b||/||b|| = 7.377547e-07
+-- omitted_collision_clears_before_ready
+   0 : 4.0214863840e+02 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 5.276742e-07
+   0 : 2.0031447891e+02 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 6.418230e-07
+   0 : 1.0966191721e+02 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 5.990147e-07
+   0 : 7.4262249046e+01 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 5.377808e-07
+   0 : 4.8156938047e+01 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 4.951296e-07
+   0 : 8.4882775643e+01 -- 8.4882775643e-11
+in OpenNL : ||Ax-b||/||b|| = 8.984158e-07
+   0 : 4.0175789032e+01 -- 1.7974005946e-09
+in OpenNL : ||Ax-b||/||b|| = 7.377547e-07
+   0 : 4.0214863840e+02 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 5.276742e-07
+   0 : 2.0031447891e+02 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 6.418230e-07
+   0 : 1.0966191721e+02 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 5.990147e-07
+   0 : 7.4262249046e+01 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 5.377808e-07
+   0 : 4.8156938047e+01 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 4.951296e-07
+   0 : 8.4882775643e+01 -- 8.4882775643e-11
+in OpenNL : ||Ax-b||/||b|| = 8.984158e-07
+   0 : 4.0175789032e+01 -- 1.7974005946e-09
+in OpenNL : ||Ax-b||/||b|| = 7.377547e-07
+-- builder_failure_reports_once_and_never_ready
+   0 : 4.0214863840e+02 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 5.276742e-07
+   0 : 2.0031447891e+02 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 6.418230e-07
+   0 : 1.0966191721e+02 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 5.990147e-07
+   0 : 7.4262249046e+01 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 5.377808e-07
+   0 : 4.8156938047e+01 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 4.951296e-07
+   0 : 8.4882775643e+01 -- 8.4882775643e-11
+in OpenNL : ||Ax-b||/||b|| = 8.984158e-07
+   0 : 4.0175789032e+01 -- 1.7974005946e-09
+in OpenNL : ||Ax-b||/||b|| = 7.377547e-07
+-- prebuild_exception_uses_collision_failure_path
+   0 : 4.0214863840e+02 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 5.276742e-07
+   0 : 2.0031447891e+02 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 6.418230e-07
+   0 : 1.0966191721e+02 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 5.990147e-07
+   0 : 7.4262249046e+01 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 5.377808e-07
+   0 : 4.8156938047e+01 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 4.951296e-07
+   0 : 8.4882775643e+01 -- 8.4882775643e-11
+in OpenNL : ||Ax-b||/||b|| = 8.984158e-07
+   0 : 4.0175789032e+01 -- 1.7974005946e-09
+in OpenNL : ||Ax-b||/||b|| = 7.377547e-07
+-- throwing_builder_copy_failure_is_atomic_and_disconnects
+   0 : 4.0214863840e+02 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 5.276742e-07
+   0 : 2.0031447891e+02 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 6.418230e-07
+   0 : 1.0966191721e+02 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 5.990147e-07
+   0 : 7.4262249046e+01 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 5.377808e-07
+   0 : 4.8156938047e+01 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 4.951296e-07
+   0 : 8.4882775643e+01 -- 8.4882775643e-11
+in OpenNL : ||Ax-b||/||b|| = 8.984158e-07
+   0 : 4.0175789032e+01 -- 1.7974005946e-09
+in OpenNL : ||Ax-b||/||b|| = 7.377547e-07
+   0 : 4.0214863840e+02 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 5.276742e-07
+   0 : 2.0031447891e+02 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 6.418230e-07
+   0 : 1.0966191721e+02 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 5.990147e-07
+   0 : 7.4262249046e+01 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 5.377808e-07
+   0 : 4.8156938047e+01 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 4.951296e-07
+   0 : 8.4882775643e+01 -- 8.4882775643e-11
+in OpenNL : ||Ax-b||/||b|| = 8.984158e-07
+   0 : 4.0175789032e+01 -- 1.7974005946e-09
+in OpenNL : ||Ax-b||/||b|| = 7.377547e-07
+-- app_job_exception_before_install_preserves_prior_and_fails_coherently
+   0 : 4.0214863840e+02 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 5.276742e-07
+   0 : 2.0031447891e+02 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 6.418230e-07
+   0 : 1.0966191721e+02 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 5.990147e-07
+   0 : 7.4262249046e+01 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 5.377808e-07
+   0 : 4.8156938047e+01 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 4.951296e-07
+   0 : 8.4882775643e+01 -- 8.4882775643e-11
+in OpenNL : ||Ax-b||/||b|| = 8.984158e-07
+   0 : 4.0175789032e+01 -- 1.7974005946e-09
+in OpenNL : ||Ax-b||/||b|| = 7.377547e-07
+   0 : 4.0214863840e+02 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 5.276742e-07
+   0 : 2.0031447891e+02 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 6.418230e-07
+   0 : 1.0966191721e+02 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 5.990147e-07
+   0 : 7.4262249046e+01 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 5.377808e-07
+   0 : 4.8156938047e+01 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 4.951296e-07
+   0 : 8.4882775643e+01 -- 8.4882775643e-11
+in OpenNL : ||Ax-b||/||b|| = 8.984158e-07
+   0 : 4.0175789032e+01 -- 1.7974005946e-09
+in OpenNL : ||Ax-b||/||b|| = 7.377547e-07
+-- empty_publication_exception_uses_nonempty_diagnostic
+   0 : 4.0214863840e+02 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 5.276742e-07
+   0 : 2.0031447891e+02 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 6.418230e-07
+   0 : 1.0966191721e+02 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 5.990147e-07
+   0 : 7.4262249046e+01 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 5.377808e-07
+   0 : 4.8156938047e+01 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 4.951296e-07
+   0 : 8.4882775643e+01 -- 8.4882775643e-11
+in OpenNL : ||Ax-b||/||b|| = 8.984158e-07
+   0 : 4.0175789032e+01 -- 1.7974005946e-09
+in OpenNL : ||Ax-b||/||b|| = 7.377547e-07
+-- post_commit_log_exception_cannot_reject_installed_generation
+   0 : 4.0214863840e+02 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 5.276742e-07
+   0 : 2.0031447891e+02 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 6.418230e-07
+   0 : 1.0966191721e+02 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 5.990147e-07
+   0 : 7.4262249046e+01 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 5.377808e-07
+   0 : 4.8156938047e+01 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 4.951296e-07
+   0 : 8.4882775643e+01 -- 8.4882775643e-11
+in OpenNL : ||Ax-b||/||b|| = 8.984158e-07
+   0 : 4.0175789032e+01 -- 1.7974005946e-09
+in OpenNL : ||Ax-b||/||b|| = 7.377547e-07
+   0 : 4.0214863840e+02 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 5.276742e-07
+   0 : 2.0031447891e+02 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 6.418230e-07
+   0 : 1.0966191721e+02 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 5.990147e-07
+   0 : 7.4262249046e+01 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 5.377808e-07
+   0 : 4.8156938047e+01 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 4.951296e-07
+   0 : 8.4882775643e+01 -- 8.4882775643e-11
+in OpenNL : ||Ax-b||/||b|| = 8.984158e-07
+   0 : 4.0175789032e+01 -- 1.7974005946e-09
+in OpenNL : ||Ax-b||/||b|| = 7.377547e-07
+-- transactional_replacement_failure_retains_prior
+   0 : 4.0214863840e+02 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 5.276742e-07
+   0 : 2.0031447891e+02 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 6.418230e-07
+   0 : 1.0966191721e+02 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 5.990147e-07
+   0 : 7.4262249046e+01 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 5.377808e-07
+   0 : 4.8156938047e+01 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 4.951296e-07
+   0 : 8.4882775643e+01 -- 8.4882775643e-11
+in OpenNL : ||Ax-b||/||b|| = 8.984158e-07
+   0 : 4.0175789032e+01 -- 1.7974005946e-09
+in OpenNL : ||Ax-b||/||b|| = 7.377547e-07
+   0 : 4.0214863840e+02 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 5.276742e-07
+   0 : 2.0031447891e+02 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 6.418230e-07
+   0 : 1.0966191721e+02 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 5.990147e-07
+   0 : 7.4262249046e+01 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 5.377808e-07
+   0 : 4.8156938047e+01 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 4.951296e-07
+   0 : 8.4882775643e+01 -- 8.4882775643e-11
+in OpenNL : ||Ax-b||/||b|| = 8.984158e-07
+   0 : 4.0175789032e+01 -- 1.7974005946e-09
+in OpenNL : ||Ax-b||/||b|| = 7.377547e-07
+   0 : 4.0214863840e+02 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 5.276742e-07
+   0 : 2.0031447891e+02 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 6.418230e-07
+   0 : 1.0966191721e+02 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 5.990147e-07
+   0 : 7.4262249046e+01 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 5.377808e-07
+   0 : 4.8156938047e+01 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 4.951296e-07
+   0 : 8.4882775643e+01 -- 8.4882775643e-11
+in OpenNL : ||Ax-b||/||b|| = 8.984158e-07
+   0 : 4.0175789032e+01 -- 1.7974005946e-09
+in OpenNL : ||Ax-b||/||b|| = 7.377547e-07
+   0 : 4.0214863840e+02 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 5.276742e-07
+   0 : 2.0031447891e+02 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 6.418230e-07
+   0 : 1.0966191721e+02 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 5.990147e-07
+   0 : 7.4262249046e+01 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 5.377808e-07
+   0 : 4.8156938047e+01 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 4.951296e-07
+   0 : 8.4882775643e+01 -- 8.4882775643e-11
+in OpenNL : ||Ax-b||/||b|| = 8.984158e-07
+   0 : 4.0175789032e+01 -- 1.7974005946e-09
+in OpenNL : ||Ax-b||/||b|| = 7.377547e-07
+-- cancelled_at_publication_barrier_skips_replacement
+   0 : 4.0214863840e+02 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 5.276742e-07
+   0 : 2.0031447891e+02 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 6.418230e-07
+   0 : 1.0966191721e+02 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 5.990147e-07
+   0 : 7.4262249046e+01 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 5.377808e-07
+   0 : 4.8156938047e+01 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 4.951296e-07
+   0 : 8.4882775643e+01 -- 8.4882775643e-11
+in OpenNL : ||Ax-b||/||b|| = 8.984158e-07
+   0 : 4.0175789032e+01 -- 1.7974005946e-09
+in OpenNL : ||Ax-b||/||b|| = 7.377547e-07
+   0 : 4.0214863840e+02 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 5.276742e-07
+   0 : 2.0031447891e+02 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 6.418230e-07
+   0 : 1.0966191721e+02 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 5.990147e-07
+   0 : 7.4262249046e+01 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 5.377808e-07
+   0 : 4.8156938047e+01 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 4.951296e-07
+   0 : 8.4882775643e+01 -- 8.4882775643e-11
+in OpenNL : ||Ax-b||/||b|| = 8.984158e-07
+   0 : 4.0175789032e+01 -- 1.7974005946e-09
+in OpenNL : ||Ax-b||/||b|| = 7.377547e-07
+   0 : 4.0214863840e+02 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 5.276742e-07
+   0 : 2.0031447891e+02 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 6.418230e-07
+   0 : 1.0966191721e+02 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 5.990147e-07
+   0 : 7.4262249046e+01 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 5.377808e-07
+   0 : 4.8156938047e+01 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 4.951296e-07
+   0 : 8.4882775643e+01 -- 8.4882775643e-11
+in OpenNL : ||Ax-b||/||b|| = 8.984158e-07
+   0 : 4.0175789032e+01 -- 1.7974005946e-09
+in OpenNL : ||Ax-b||/||b|| = 7.377547e-07
+-- cancelled_after_collision_job_skips_visual_publication
+   0 : 4.0214863840e+02 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 5.276742e-07
+   0 : 2.0031447891e+02 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 6.418230e-07
+   0 : 1.0966191721e+02 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 5.990147e-07
+   0 : 7.4262249046e+01 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 5.377808e-07
+   0 : 4.8156938047e+01 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 4.951296e-07
+   0 : 8.4882775643e+01 -- 8.4882775643e-11
+in OpenNL : ||Ax-b||/||b|| = 8.984158e-07
+   0 : 4.0175789032e+01 -- 1.7974005946e-09
+in OpenNL : ||Ax-b||/||b|| = 7.377547e-07
+   0 : 4.0214863840e+02 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 5.276742e-07
+   0 : 2.0031447891e+02 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 6.418230e-07
+   0 : 1.0966191721e+02 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 5.990147e-07
+   0 : 7.4262249046e+01 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 5.377808e-07
+   0 : 4.8156938047e+01 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 4.951296e-07
+   0 : 8.4882775643e+01 -- 8.4882775643e-11
+in OpenNL : ||Ax-b||/||b|| = 8.984158e-07
+   0 : 4.0175789032e+01 -- 1.7974005946e-09
+in OpenNL : ||Ax-b||/||b|| = 7.377547e-07
+-- cancelled_queued_collision_job_releases_before_worker_continues
+   0 : 4.0214863840e+02 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 5.276742e-07
+   0 : 2.0031447891e+02 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 6.418230e-07
+   0 : 1.0966191721e+02 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 5.990147e-07
+   0 : 7.4262249046e+01 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 5.377808e-07
+   0 : 4.8156938047e+01 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 4.951296e-07
+   0 : 8.4882775643e+01 -- 8.4882775643e-11
+in OpenNL : ||Ax-b||/||b|| = 8.984158e-07
+   0 : 4.0175789032e+01 -- 1.7974005946e-09
+in OpenNL : ||Ax-b||/||b|| = 7.377547e-07
+   0 : 4.0214863840e+02 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 5.276742e-07
+   0 : 2.0031447891e+02 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 6.418230e-07
+   0 : 1.0966191721e+02 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 5.990147e-07
+   0 : 7.4262249046e+01 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 5.377808e-07
+   0 : 4.8156938047e+01 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 4.951296e-07
+   0 : 8.4882775643e+01 -- 8.4882775643e-11
+in OpenNL : ||Ax-b||/||b|| = 8.984158e-07
+   0 : 4.0175789032e+01 -- 1.7974005946e-09
+in OpenNL : ||Ax-b||/||b|| = 7.377547e-07
+   0 : 4.0214863840e+02 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 5.276742e-07
+   0 : 2.0031447891e+02 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 6.418230e-07
+   0 : 1.0966191721e+02 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 5.990147e-07
+   0 : 7.4262249046e+01 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 5.377808e-07
+   0 : 4.8156938047e+01 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 4.951296e-07
+   0 : 8.4882775643e+01 -- 8.4882775643e-11
+in OpenNL : ||Ax-b||/||b|| = 8.984158e-07
+   0 : 4.0175789032e+01 -- 1.7974005946e-09
+in OpenNL : ||Ax-b||/||b|| = 7.377547e-07
+-- cancelled_build_publishes_no_manifest_or_physics
+   0 : 4.0214863840e+02 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 5.276742e-07
+   0 : 2.0031447891e+02 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 6.418230e-07
+   0 : 1.0966191721e+02 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 5.990147e-07
+   0 : 7.4262249046e+01 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 5.377808e-07
+   0 : 4.8156938047e+01 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 4.951296e-07
+   0 : 8.4882775643e+01 -- 8.4882775643e-11
+in OpenNL : ||Ax-b||/||b|| = 8.984158e-07
+   0 : 4.0175789032e+01 -- 1.7974005946e-09
+in OpenNL : ||Ax-b||/||b|| = 7.377547e-07
+   0 : 4.0214863840e+02 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 5.276742e-07
+   0 : 2.0031447891e+02 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 6.418230e-07
+   0 : 1.0966191721e+02 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 5.990147e-07
+   0 : 7.4262249046e+01 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 5.377808e-07
+   0 : 4.8156938047e+01 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 4.951296e-07
+   0 : 8.4882775643e+01 -- 8.4882775643e-11
+in OpenNL : ||Ax-b||/||b|| = 8.984158e-07
+   0 : 4.0175789032e+01 -- 1.7974005946e-09
+in OpenNL : ||Ax-b||/||b|| = 7.377547e-07
+   0 : 4.0214863840e+02 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 5.276742e-07
+   0 : 2.0031447891e+02 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 6.418230e-07
+   0 : 1.0966191721e+02 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 5.990147e-07
+   0 : 7.4262249046e+01 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 5.377808e-07
+   0 : 4.8156938047e+01 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 4.951296e-07
+   0 : 8.4882775643e+01 -- 8.4882775643e-11
+in OpenNL : ||Ax-b||/||b|| = 8.984158e-07
+   0 : 4.0175789032e+01 -- 1.7974005946e-09
+in OpenNL : ||Ax-b||/||b|| = 7.377547e-07
+ALL PASS
+
+ check_that multiplicity are respected
+New LS iteration 
+New LS iteration 
+Try enforce mutiplicity equality with snap size  0
+Extract connections...
+Extract connections done
+Extract edges...
+Extract edges done
+Extract mesh...
+Extract mesh done
+Searching boundaries...
+Searching boundaries done
+Searching boundaries...
+Searching boundaries done
+debug: Quad mesh breakdown: total 8 ms | voxel 0 ms | split 0 ms | build 0 ms | parallel 8 ms   (param 5 ms | extract 1 ms) | merge 0 ms
+[local_provider] LocalProvider: TBB warm-up retopo ok=1 elapsed=0.009s
+[stream] WorldSector requires 0 child variants
+[stream] asset install complete: 0 child hashes, field_hash=d7febe0fcc5bc6c8, sector_size=16.0, sea_level=-8.00
+[stream] tiling: COLUMN (DEPRECATED -- this world declares no nestedSectors, so there is no level ladder for an octree to descend). Cube tiles are the direction; see terrain_mesher.h. MATTER_VOLUMETRIC_SECTORS=1 forces the octree.
+[stream] resolver activation radius: 640 m (outermost terrain band)
+[terrain-collision] installed generation=7b0ee504ddb7d037 geometry=8dc3b34b4c9f1ea0 cell=0.500 rung=2 regions=1 sectors=1 nonempty=1 empty=0 triangles=1990 vertices=1059 artifact=36732 box3d=72888 build=12.73ms cache=0.00ms validation=7.03ms install=1.03ms
+[stream] pre-warmed 0/0 child variants
+[resolve]   resolve census: 1 parts baked, 0 cache hits, version digest 144cdeb99c68f1a7
+[refine] controller built: 0 tiles
+[stream] Runtime coordinator profile ready for world-kind session
+[bake-timing] install=17ms world=19ms publish=9ms total=46ms (world-kind: ROOTS ONLY — the sector fill is NOT in this number, see [stream.fill])
+ check_that multiplicity are respected
+New LS iteration 
+New LS iteration 
+Try enforce mutiplicity equality with snap size  0
+Extract connections...
+Extract connections done
+Extract edges...
+Extract edges done
+Extract mesh...
+Extract mesh done
+Searching boundaries...
+Searching boundaries done
+Searching boundaries...
+Searching boundaries done
+debug: Quad mesh breakdown: total 8 ms | voxel 0 ms | split 0 ms | build 0 ms | parallel 8 ms   (param 5 ms | extract 1 ms) | merge 0 ms
+[local_provider] LocalProvider: TBB warm-up retopo ok=1 elapsed=0.009s
+[stream] WorldSector requires 0 child variants
+[stream] asset install complete: 0 child hashes, field_hash=d7febe0fcc5bc6c8, sector_size=16.0, sea_level=-8.00
+[stream] tiling: COLUMN (DEPRECATED -- this world declares no nestedSectors, so there is no level ladder for an octree to descend). Cube tiles are the direction; see terrain_mesher.h. MATTER_VOLUMETRIC_SECTORS=1 forces the octree.
+[stream] resolver activation radius: 640 m (outermost terrain band)
+[terrain-collision] installed generation=7b0ee504ddb7d037 geometry=8dc3b34b4c9f1ea0 cell=0.500 rung=2 regions=1 sectors=1 nonempty=1 empty=0 triangles=1990 vertices=1059 artifact=36732 box3d=72888 build=0.00ms cache=0.49ms validation=0.66ms install=0.01ms
+[stream] pre-warmed 0/0 child variants
+[resolve]   resolve census: 0 parts baked, 1 cache hits, version digest 144cdeb99c68f1a7
+[refine] controller built: 0 tiles
+[stream] Runtime coordinator profile ready for world-kind session
+[bake-timing] install=12ms world=4ms publish=7ms total=24ms (world-kind: ROOTS ONLY — the sector fill is NOT in this number, see [stream.fill])
+ check_that multiplicity are respected
+New LS iteration 
+New LS iteration 
+Try enforce mutiplicity equality with snap size  0
+Extract connections...
+Extract connections done
+Extract edges...
+Extract edges done
+Extract mesh...
+Extract mesh done
+Searching boundaries...
+Searching boundaries done
+Searching boundaries...
+Searching boundaries done
+debug: Quad mesh breakdown: total 9 ms | voxel 0 ms | split 0 ms | build 0 ms | parallel 8 ms   (param 6 ms | extract 1 ms) | merge 0 ms
+[local_provider] LocalProvider: TBB warm-up retopo ok=1 elapsed=0.009s
+[stream] WorldSector requires 0 child variants
+[stream] asset install complete: 0 child hashes, field_hash=d7febe0fcc5bc6c8, sector_size=16.0, sea_level=-8.00
+[stream] tiling: COLUMN (DEPRECATED -- this world declares no nestedSectors, so there is no level ladder for an octree to descend). Cube tiles are the direction; see terrain_mesher.h. MATTER_VOLUMETRIC_SECTORS=1 forces the octree.
+[stream] resolver activation radius: 640 m (outermost terrain band)
+[terrain-collision] installed generation=137a4fa681b9521c geometry=51b28130050700e2 cell=0.500 rung=2 regions=1 sectors=2 nonempty=2 empty=0 triangles=4 vertices=8 artifact=384 box3d=416 build=1.25ms cache=0.00ms validation=0.25ms install=0.05ms
+[stream] pre-warmed 0/0 child variants
+[resolve]   resolve census: 1 parts baked, 0 cache hits, version digest 144cdeb99c68f1a7
+[refine] controller built: 0 tiles
+[stream] Runtime coordinator profile ready for world-kind session
+[bake-timing] install=15ms world=4ms publish=7ms total=26ms (world-kind: ROOTS ONLY — the sector fill is NOT in this number, see [stream.fill])
+ check_that multiplicity are respected
+New LS iteration 
+New LS iteration 
+Try enforce mutiplicity equality with snap size  0
+Extract connections...
+Extract connections done
+Extract edges...
+Extract edges done
+Extract mesh...
+Extract mesh done
+Searching boundaries...
+Searching boundaries done
+Searching boundaries...
+Searching boundaries done
+debug: Quad mesh breakdown: total 9 ms | voxel 0 ms | split 0 ms | build 0 ms | parallel 9 ms   (param 6 ms | extract 1 ms) | merge 0 ms
+[local_provider] LocalProvider: TBB warm-up retopo ok=1 elapsed=0.010s
+[stream] WorldSector requires 0 child variants
+[stream] asset install complete: 0 child hashes, field_hash=d7febe0fcc5bc6c8, sector_size=16.0, sea_level=-8.00
+[stream] tiling: COLUMN (DEPRECATED -- this world declares no nestedSectors, so there is no level ladder for an octree to descend). Cube tiles are the direction; see terrain_mesher.h. MATTER_VOLUMETRIC_SECTORS=1 forces the octree.
+[stream] resolver activation radius: 640 m (outermost terrain band)
+[terrain-collision] installed generation=faa881e133e0ccbe geometry=51b28130050700e2 cell=0.500 rung=2 regions=1 sectors=2 nonempty=2 empty=0 triangles=4 vertices=8 artifact=384 box3d=416 build=1.25ms cache=0.00ms validation=0.25ms install=0.04ms
+[stream] pre-warmed 0/0 child variants
+[resolve]   resolve census: 1 parts baked, 0 cache hits, version digest 144cdeb99c68f1a7
+[refine] controller built: 0 tiles
+[stream] Runtime coordinator profile ready for world-kind session
+[bake-timing] install=15ms world=4ms publish=8ms total=28ms (world-kind: ROOTS ONLY — the sector fill is NOT in this number, see [stream.fill])
+ check_that multiplicity are respected
+New LS iteration 
+New LS iteration 
+Try enforce mutiplicity equality with snap size  0
+Extract connections...
+Extract connections done
+Extract edges...
+Extract edges done
+Extract mesh...
+Extract mesh done
+Searching boundaries...
+Searching boundaries done
+Searching boundaries...
+Searching boundaries done
+debug: Quad mesh breakdown: total 8 ms | voxel 0 ms | split 0 ms | build 0 ms | parallel 8 ms   (param 5 ms | extract 1 ms) | merge 0 ms
+[local_provider] LocalProvider: TBB warm-up retopo ok=1 elapsed=0.008s
+[stream] WorldSector requires 0 child variants
+[stream] asset install complete: 0 child hashes, field_hash=d7febe0fcc5bc6c8, sector_size=16.0, sea_level=-8.00
+[stream] tiling: COLUMN (DEPRECATED -- this world declares no nestedSectors, so there is no level ladder for an octree to descend). Cube tiles are the direction; see terrain_mesher.h. MATTER_VOLUMETRIC_SECTORS=1 forces the octree.
+[stream] resolver activation radius: 640 m (outermost terrain band)
+[stream] pre-warmed 0/0 child variants
+[resolve]   resolve census: 0 parts baked, 1 cache hits, version digest 144cdeb99c68f1a7
+[refine] controller built: 0 tiles
+[stream] Runtime coordinator profile ready for world-kind session
+[bake-timing] install=12ms world=3ms publish=8ms total=23ms (world-kind: ROOTS ONLY — the sector fill is NOT in this number, see [stream.fill])
+ check_that multiplicity are respected
+New LS iteration 
+New LS iteration 
+Try enforce mutiplicity equality with snap size  0
+Extract connections...
+Extract connections done
+Extract edges...
+Extract edges done
+Extract mesh...
+Extract mesh done
+Searching boundaries...
+Searching boundaries done
+Searching boundaries...
+Searching boundaries done
+debug: Quad mesh breakdown: total 7 ms | voxel 0 ms | split 0 ms | build 0 ms | parallel 7 ms   (param 5 ms | extract 1 ms) | merge 0 ms
+[local_provider] LocalProvider: TBB warm-up retopo ok=1 elapsed=0.008s
+[terrain-collision] build-failed: injected cache validation failure
+[install_world] install_world: injected cache validation failure
+ check_that multiplicity are respected
+New LS iteration 
+New LS iteration 
+Try enforce mutiplicity equality with snap size  0
+Extract connections...
+Extract connections done
+Extract edges...
+Extract edges done
+Extract mesh...
+Extract mesh done
+Searching boundaries...
+Searching boundaries done
+Searching boundaries...
+Searching boundaries done
+debug: Quad mesh breakdown: total 7 ms | voxel 0 ms | split 0 ms | build 0 ms | parallel 7 ms   (param 5 ms | extract 1 ms) | merge 0 ms
+[local_provider] LocalProvider: TBB warm-up retopo ok=1 elapsed=0.008s
+[terrain-collision] build-exception: injected terrain prebuild exception
+[install_world] install_world: injected terrain prebuild exception
+ check_that multiplicity are respected
+New LS iteration 
+New LS iteration 
+Try enforce mutiplicity equality with snap size  0
+Extract connections...
+Extract connections done
+Extract edges...
+Extract edges done
+Extract mesh...
+Extract mesh done
+Searching boundaries...
+Searching boundaries done
+Searching boundaries...
+Searching boundaries done
+debug: Quad mesh breakdown: total 8 ms | voxel 0 ms | split 0 ms | build 0 ms | parallel 8 ms   (param 5 ms | extract 1 ms) | merge 0 ms
+[local_provider] LocalProvider: TBB warm-up retopo ok=1 elapsed=0.008s
+[stream] WorldSector requires 0 child variants
+[stream] asset install complete: 0 child hashes, field_hash=d7febe0fcc5bc6c8, sector_size=16.0, sea_level=-8.00
+[stream] tiling: COLUMN (DEPRECATED -- this world declares no nestedSectors, so there is no level ladder for an octree to descend). Cube tiles are the direction; see terrain_mesher.h. MATTER_VOLUMETRIC_SECTORS=1 forces the octree.
+[stream] resolver activation radius: 640 m (outermost terrain band)
+[terrain-collision] installed generation=bffccf328ab2ae6b geometry=51b28130050700e2 cell=0.500 rung=2 regions=1 sectors=2 nonempty=2 empty=0 triangles=4 vertices=8 artifact=384 box3d=416 build=1.25ms cache=0.00ms validation=0.25ms install=0.04ms
+[stream] pre-warmed 0/0 child variants
+[resolve]   resolve census: 1 parts baked, 0 cache hits, version digest 144cdeb99c68f1a7
+[refine] controller built: 0 tiles
+[stream] Runtime coordinator profile ready for world-kind session
+[bake-timing] install=13ms world=3ms publish=9ms total=26ms (world-kind: ROOTS ONLY — the sector fill is NOT in this number, see [stream.fill])
+ check_that multiplicity are respected
+New LS iteration 
+New LS iteration 
+Try enforce mutiplicity equality with snap size  0
+Extract connections...
+Extract connections done
+Extract edges...
+Extract edges done
+Extract mesh...
+Extract mesh done
+Searching boundaries...
+Searching boundaries done
+Searching boundaries...
+Searching boundaries done
+debug: Quad mesh breakdown: total 7 ms | voxel 0 ms | split 0 ms | build 0 ms | parallel 7 ms   (param 4 ms | extract 1 ms) | merge 0 ms
+[local_provider] LocalProvider: TBB warm-up retopo ok=1 elapsed=0.007s
+[terrain-collision] collision-fail: build failure
+[install_world] install_world: build failure
+ check_that multiplicity are respected
+New LS iteration 
+New LS iteration 
+Try enforce mutiplicity equality with snap size  0
+Extract connections...
+Extract connections done
+Extract edges...
+Extract edges done
+Extract mesh...
+Extract mesh done
+Searching boundaries...
+Searching boundaries done
+Searching boundaries...
+Searching boundaries done
+debug: Quad mesh breakdown: total 8 ms | voxel 0 ms | split 0 ms | build 0 ms | parallel 8 ms   (param 5 ms | extract 1 ms) | merge 0 ms
+[local_provider] LocalProvider: TBB warm-up retopo ok=1 elapsed=0.009s
+[stream] WorldSector requires 0 child variants
+[stream] asset install complete: 0 child hashes, field_hash=d7febe0fcc5bc6c8, sector_size=16.0, sea_level=-8.00
+[stream] tiling: COLUMN (DEPRECATED -- this world declares no nestedSectors, so there is no level ladder for an octree to descend). Cube tiles are the direction; see terrain_mesher.h. MATTER_VOLUMETRIC_SECTORS=1 forces the octree.
+[stream] resolver activation radius: 640 m (outermost terrain band)
+[terrain-collision] installed generation=bffccf328ab2ae6b geometry=51b28130050700e2 cell=0.500 rung=2 regions=1 sectors=2 nonempty=2 empty=0 triangles=4 vertices=8 artifact=384 box3d=416 build=1.25ms cache=0.00ms validation=0.25ms install=0.03ms
+[stream] pre-warmed 0/0 child variants
+[resolve]   resolve census: 1 parts baked, 0 cache hits, version digest 144cdeb99c68f1a7
+[refine] controller built: 0 tiles
+[stream] Runtime coordinator profile ready for world-kind session
+[bake-timing] install=14ms world=4ms publish=8ms total=26ms (world-kind: ROOTS ONLY — the sector fill is NOT in this number, see [stream.fill])
+ check_that multiplicity are respected
+New LS iteration 
+New LS iteration 
+Try enforce mutiplicity equality with snap size  0
+Extract connections...
+Extract connections done
+Extract edges...
+Extract edges done
+Extract mesh...
+Extract mesh done
+Searching boundaries...
+Searching boundaries done
+Searching boundaries...
+Searching boundaries done
+debug: Quad mesh breakdown: total 8 ms | voxel 0 ms | split 0 ms | build 0 ms | parallel 8 ms   (param 5 ms | extract 1 ms) | merge 0 ms
+[local_provider] LocalProvider: TBB warm-up retopo ok=1 elapsed=0.008s
+[stream] WorldSector requires 0 child variants
+[stream] asset install complete: 0 child hashes, field_hash=d7febe0fcc5bc6c8, sector_size=16.0, sea_level=-8.00
+[stream] tiling: COLUMN (DEPRECATED -- this world declares no nestedSectors, so there is no level ladder for an octree to descend). Cube tiles are the direction; see terrain_mesher.h. MATTER_VOLUMETRIC_SECTORS=1 forces the octree.
+[stream] resolver activation radius: 640 m (outermost terrain band)
+[terrain-collision] build-exception: Flecs world has no physics context
+[bake-timing] install=12ms world=3ms publish=1ms total=17ms (world-kind: ROOTS ONLY — the sector fill is NOT in this number, see [stream.fill])
+ check_that multiplicity are respected
+New LS iteration 
+New LS iteration 
+Try enforce mutiplicity equality with snap size  0
+Extract connections...
+Extract connections done
+Extract edges...
+Extract edges done
+Extract mesh...
+Extract mesh done
+Searching boundaries...
+Searching boundaries done
+Searching boundaries...
+Searching boundaries done
+debug: Quad mesh breakdown: total 9 ms | voxel 0 ms | split 0 ms | build 0 ms | parallel 8 ms   (param 6 ms | extract 1 ms) | merge 0 ms
+[local_provider] LocalProvider: TBB warm-up retopo ok=1 elapsed=0.009s
+[stream] WorldSector requires 0 child variants
+[stream] asset install complete: 0 child hashes, field_hash=d7febe0fcc5bc6c8, sector_size=16.0, sea_level=-8.00
+[stream] tiling: COLUMN (DEPRECATED -- this world declares no nestedSectors, so there is no level ladder for an octree to descend). Cube tiles are the direction; see terrain_mesher.h. MATTER_VOLUMETRIC_SECTORS=1 forces the octree.
+[stream] resolver activation radius: 640 m (outermost terrain band)
+[terrain-collision] build-exception: build failure
+[bake-timing] install=15ms world=4ms publish=1ms total=19ms (world-kind: ROOTS ONLY — the sector fill is NOT in this number, see [stream.fill])
+ check_that multiplicity are respected
+New LS iteration 
+New LS iteration 
+Try enforce mutiplicity equality with snap size  0
+Extract connections...
+Extract connections done
+Extract edges...
+Extract edges done
+Extract mesh...
+Extract mesh done
+Searching boundaries...
+Searching boundaries done
+Searching boundaries...
+Searching boundaries done
+debug: Quad mesh breakdown: total 9 ms | voxel 0 ms | split 0 ms | build 0 ms | parallel 8 ms   (param 6 ms | extract 1 ms) | merge 0 ms
+[local_provider] LocalProvider: TBB warm-up retopo ok=1 elapsed=0.009s
+[stream] WorldSector requires 0 child variants
+[stream] asset install complete: 0 child hashes, field_hash=d7febe0fcc5bc6c8, sector_size=16.0, sea_level=-8.00
+[stream] tiling: COLUMN (DEPRECATED -- this world declares no nestedSectors, so there is no level ladder for an octree to descend). Cube tiles are the direction; see terrain_mesher.h. MATTER_VOLUMETRIC_SECTORS=1 forces the octree.
+[stream] resolver activation radius: 640 m (outermost terrain band)
+[terrain-collision] installed generation=bffccf328ab2ae6b geometry=51b28130050700e2 cell=0.500 rung=2 regions=1 sectors=2 nonempty=2 empty=0 triangles=4 vertices=8 artifact=384 box3d=416 build=1.25ms cache=0.00ms validation=0.25ms install=0.04ms
+[stream] pre-warmed 0/0 child variants
+[resolve]   resolve census: 1 parts baked, 0 cache hits, version digest 144cdeb99c68f1a7
+[refine] controller built: 0 tiles
+[stream] Runtime coordinator profile ready for world-kind session
+[bake-timing] install=14ms world=3ms publish=8ms total=26ms (world-kind: ROOTS ONLY — the sector fill is NOT in this number, see [stream.fill])
+ check_that multiplicity are respected
+New LS iteration 
+New LS iteration 
+Try enforce mutiplicity equality with snap size  0
+Extract connections...
+Extract connections done
+Extract edges...
+Extract edges done
+Extract mesh...
+Extract mesh done
+Searching boundaries...
+Searching boundaries done
+Searching boundaries...
+Searching boundaries done
+debug: Quad mesh breakdown: total 8 ms | voxel 0 ms | split 0 ms | build 0 ms | parallel 8 ms   (param 5 ms | extract 1 ms) | merge 0 ms
+[local_provider] LocalProvider: TBB warm-up retopo ok=1 elapsed=0.009s
+[stream] WorldSector requires 0 child variants
+[stream] asset install complete: 0 child hashes, field_hash=d7febe0fcc5bc6c8, sector_size=16.0, sea_level=-8.00
+[stream] tiling: COLUMN (DEPRECATED -- this world declares no nestedSectors, so there is no level ladder for an octree to descend). Cube tiles are the direction; see terrain_mesher.h. MATTER_VOLUMETRIC_SECTORS=1 forces the octree.
+[stream] resolver activation radius: 640 m (outermost terrain band)
+[terrain-collision] installed generation=b4fc83a53acaad50 geometry=51b28130050700e2 cell=0.500 rung=2 regions=1 sectors=2 nonempty=2 empty=0 triangles=4 vertices=8 artifact=384 box3d=416 build=1.25ms cache=0.00ms validation=0.25ms install=0.03ms
+[stream] pre-warmed 0/0 child variants
+[resolve]   resolve census: 0 parts baked, 1 cache hits, version digest 144cdeb99c68f1a7
+[refine] controller built: 0 tiles
+[stream] Runtime coordinator profile ready for world-kind session
+[bake-timing] install=12ms world=3ms publish=8ms total=23ms (world-kind: ROOTS ONLY — the sector fill is NOT in this number, see [stream.fill])
+ check_that multiplicity are respected
+New LS iteration 
+New LS iteration 
+Try enforce mutiplicity equality with snap size  0
+Extract connections...
+Extract connections done
+Extract edges...
+Extract edges done
+Extract mesh...
+Extract mesh done
+Searching boundaries...
+Searching boundaries done
+Searching boundaries...
+Searching boundaries done
+debug: Quad mesh breakdown: total 8 ms | voxel 0 ms | split 0 ms | build 0 ms | parallel 8 ms   (param 5 ms | extract 1 ms) | merge 0 ms
+[local_provider] LocalProvider: TBB warm-up retopo ok=1 elapsed=0.009s
+[stream] WorldSector requires 0 child variants
+[stream] asset install complete: 0 child hashes, field_hash=d7febe0fcc5bc6c8, sector_size=16.0, sea_level=-8.00
+[stream] tiling: COLUMN (DEPRECATED -- this world declares no nestedSectors, so there is no level ladder for an octree to descend). Cube tiles are the direction; see terrain_mesher.h. MATTER_VOLUMETRIC_SECTORS=1 forces the octree.
+[stream] resolver activation radius: 640 m (outermost terrain band)
+[terrain-collision] installed generation=bffccf328ab2ae6b geometry=51b28130050700e2 cell=0.500 rung=2 regions=1 sectors=2 nonempty=2 empty=0 triangles=4 vertices=8 artifact=384 box3d=416 build=1.25ms cache=0.00ms validation=0.25ms install=0.04ms
+[stream] pre-warmed 0/0 child variants
+[resolve]   resolve census: 1 parts baked, 0 cache hits, version digest 144cdeb99c68f1a7
+[refine] controller built: 0 tiles
+[stream] Runtime coordinator profile ready for world-kind session
+[bake-timing] install=14ms world=5ms publish=7ms total=26ms (world-kind: ROOTS ONLY — the sector fill is NOT in this number, see [stream.fill])
+ check_that multiplicity are respected
+New LS iteration 
+New LS iteration 
+Try enforce mutiplicity equality with snap size  0
+Extract connections...
+Extract connections done
+Extract edges...
+Extract edges done
+Extract mesh...
+Extract mesh done
+Searching boundaries...
+Searching boundaries done
+Searching boundaries...
+Searching boundaries done
+debug: Quad mesh breakdown: total 8 ms | voxel 0 ms | split 0 ms | build 0 ms | parallel 8 ms   (param 6 ms | extract 1 ms) | merge 0 ms
+[local_provider] LocalProvider: TBB warm-up retopo ok=1 elapsed=0.009s
+[stream] WorldSector requires 0 child variants
+[stream] asset install complete: 0 child hashes, field_hash=d7febe0fcc5bc6c8, sector_size=16.0, sea_level=-8.00
+[stream] tiling: COLUMN (DEPRECATED -- this world declares no nestedSectors, so there is no level ladder for an octree to descend). Cube tiles are the direction; see terrain_mesher.h. MATTER_VOLUMETRIC_SECTORS=1 forces the octree.
+[stream] resolver activation radius: 640 m (outermost terrain band)
+[terrain-collision] installed generation=9aa8eac2225a9a21 geometry=51b28130050700e2 cell=0.500 rung=2 regions=1 sectors=2 nonempty=2 empty=0 triangles=4 vertices=8 artifact=384 box3d=416 build=1.25ms cache=0.00ms validation=0.25ms install=0.03ms
+[stream] pre-warmed 0/0 child variants
+[resolve]   resolve census: 0 parts baked, 1 cache hits, version digest 144cdeb99c68f1a7
+[refine] controller built: 0 tiles
+[stream] Runtime coordinator profile ready for world-kind session
+[bake-timing] install=13ms world=4ms publish=7ms total=23ms (world-kind: ROOTS ONLY — the sector fill is NOT in this number, see [stream.fill])
+ check_that multiplicity are respected
+New LS iteration 
+New LS iteration 
+Try enforce mutiplicity equality with snap size  0
+Extract connections...
+Extract connections done
+Extract edges...
+Extract edges done
+Extract mesh...
+Extract mesh done
+Searching boundaries...
+Searching boundaries done
+Searching boundaries...
+Searching boundaries done
+debug: Quad mesh breakdown: total 8 ms | voxel 0 ms | split 0 ms | build 0 ms | parallel 7 ms   (param 5 ms | extract 1 ms) | merge 0 ms
+[local_provider] LocalProvider: TBB warm-up retopo ok=1 elapsed=0.008s
+[stream] WorldSector requires 0 child variants
+[stream] asset install complete: 0 child hashes, field_hash=d7febe0fcc5bc6c8, sector_size=16.0, sea_level=-8.00
+[stream] tiling: COLUMN (DEPRECATED -- this world declares no nestedSectors, so there is no level ladder for an octree to descend). Cube tiles are the direction; see terrain_mesher.h. MATTER_VOLUMETRIC_SECTORS=1 forces the octree.
+[stream] resolver activation radius: 640 m (outermost terrain band)
+[terrain-collision] install-failed: Box3D rejected a terrain collision mesh
+[bake-timing] install=12ms world=3ms publish=2ms total=17ms (world-kind: ROOTS ONLY — the sector fill is NOT in this number, see [stream.fill])
+ check_that multiplicity are respected
+New LS iteration 
+New LS iteration 
+Try enforce mutiplicity equality with snap size  0
+Extract connections...
+Extract connections done
+Extract edges...
+Extract edges done
+Extract mesh...
+Extract mesh done
+Searching boundaries...
+Searching boundaries done
+Searching boundaries...
+Searching boundaries done
+debug: Quad mesh breakdown: total 8 ms | voxel 0 ms | split 0 ms | build 0 ms | parallel 8 ms   (param 6 ms | extract 1 ms) | merge 0 ms
+[local_provider] LocalProvider: TBB warm-up retopo ok=1 elapsed=0.009s
+[stream] WorldSector requires 0 child variants
+[stream] asset install complete: 0 child hashes, field_hash=d7febe0fcc5bc6c8, sector_size=16.0, sea_level=-8.00
+[stream] tiling: COLUMN (DEPRECATED -- this world declares no nestedSectors, so there is no level ladder for an octree to descend). Cube tiles are the direction; see terrain_mesher.h. MATTER_VOLUMETRIC_SECTORS=1 forces the octree.
+[stream] resolver activation radius: 640 m (outermost terrain band)
+[terrain-collision] installed generation=137a4fa681b9521c geometry=51b28130050700e2 cell=0.500 rung=2 regions=1 sectors=2 nonempty=2 empty=0 triangles=4 vertices=8 artifact=384 box3d=416 build=1.25ms cache=0.00ms validation=0.25ms install=0.03ms
+[stream] pre-warmed 0/0 child variants
+[resolve]   resolve census: 1 parts baked, 0 cache hits, version digest 144cdeb99c68f1a7
+[refine] controller built: 0 tiles
+[stream] Runtime coordinator profile ready for world-kind session
+[bake-timing] install=14ms world=4ms publish=8ms total=26ms (world-kind: ROOTS ONLY — the sector fill is NOT in this number, see [stream.fill])
+ check_that multiplicity are respected
+New LS iteration 
+New LS iteration 
+Try enforce mutiplicity equality with snap size  0
+Extract connections...
+Extract connections done
+Extract edges...
+Extract edges done
+Extract mesh...
+Extract mesh done
+Searching boundaries...
+Searching boundaries done
+Searching boundaries...
+Searching boundaries done
+debug: Quad mesh breakdown: total 8 ms | voxel 0 ms | split 0 ms | build 0 ms | parallel 8 ms   (param 6 ms | extract 1 ms) | merge 0 ms
+[local_provider] LocalProvider: TBB warm-up retopo ok=1 elapsed=0.009s
+[stream] WorldSector requires 0 child variants
+[stream] asset install complete: 0 child hashes, field_hash=d7febe0fcc5bc6c8, sector_size=16.0, sea_level=-8.00
+[stream] tiling: COLUMN (DEPRECATED -- this world declares no nestedSectors, so there is no level ladder for an octree to descend). Cube tiles are the direction; see terrain_mesher.h. MATTER_VOLUMETRIC_SECTORS=1 forces the octree.
+[stream] resolver activation radius: 640 m (outermost terrain band)
+[terrain-collision] installed generation=bffccf328ab2ae6b geometry=51b28130050700e2 cell=0.500 rung=2 regions=1 sectors=2 nonempty=2 empty=0 triangles=4 vertices=8 artifact=384 box3d=416 build=1.25ms cache=0.00ms validation=0.25ms install=0.07ms
+[stream] pre-warmed 0/0 child variants
+[resolve]   resolve census: 1 parts baked, 0 cache hits, version digest 144cdeb99c68f1a7
+[refine] controller built: 0 tiles
+[stream] Runtime coordinator profile ready for world-kind session
+[bake-timing] install=15ms world=4ms publish=7ms total=26ms (world-kind: ROOTS ONLY — the sector fill is NOT in this number, see [stream.fill])
+ check_that multiplicity are respected
+New LS iteration 
+New LS iteration 
+Try enforce mutiplicity equality with snap size  0
+Extract connections...
+Extract connections done
+Extract edges...
+Extract edges done
+Extract mesh...
+Extract mesh done
+Searching boundaries...
+Searching boundaries done
+Searching boundaries...
+Searching boundaries done
+debug: Quad mesh breakdown: total 8 ms | voxel 0 ms | split 0 ms | build 0 ms | parallel 8 ms   (param 6 ms | extract 1 ms) | merge 0 ms
+[local_provider] LocalProvider: TBB warm-up retopo ok=1 elapsed=0.009s
+[stream] WorldSector requires 0 child variants
+[stream] asset install complete: 0 child hashes, field_hash=d7febe0fcc5bc6c8, sector_size=16.0, sea_level=-8.00
+[stream] tiling: COLUMN (DEPRECATED -- this world declares no nestedSectors, so there is no level ladder for an octree to descend). Cube tiles are the direction; see terrain_mesher.h. MATTER_VOLUMETRIC_SECTORS=1 forces the octree.
+[stream] resolver activation radius: 640 m (outermost terrain band)
+[bake-timing] install=13ms world=5ms publish=1ms total=19ms (world-kind: ROOTS ONLY — the sector fill is NOT in this number, see [stream.fill])
+ check_that multiplicity are respected
+New LS iteration 
+New LS iteration 
+Try enforce mutiplicity equality with snap size  0
+Extract connections...
+Extract connections done
+Extract edges...
+Extract edges done
+Extract mesh...
+Extract mesh done
+Searching boundaries...
+Searching boundaries done
+Searching boundaries...
+Searching boundaries done
+debug: Quad mesh breakdown: total 8 ms | voxel 0 ms | split 0 ms | build 0 ms | parallel 8 ms   (param 5 ms | extract 1 ms) | merge 0 ms
+[local_provider] LocalProvider: TBB warm-up retopo ok=1 elapsed=0.009s
+[stream] WorldSector requires 0 child variants
+[stream] asset install complete: 0 child hashes, field_hash=d7febe0fcc5bc6c8, sector_size=16.0, sea_level=-8.00
+[stream] tiling: COLUMN (DEPRECATED -- this world declares no nestedSectors, so there is no level ladder for an octree to descend). Cube tiles are the direction; see terrain_mesher.h. MATTER_VOLUMETRIC_SECTORS=1 forces the octree.
+[stream] resolver activation radius: 640 m (outermost terrain band)
+[stream] pre-warmed 0/0 child variants
+[resolve]   resolve census: 0 parts baked, 1 cache hits, version digest 144cdeb99c68f1a7
+[refine] controller built: 0 tiles
+[stream] Runtime coordinator profile ready for world-kind session
+[bake-timing] install=12ms world=3ms publish=8ms total=23ms (world-kind: ROOTS ONLY — the sector fill is NOT in this number, see [stream.fill])
+ check_that multiplicity are respected
+New LS iteration 
+New LS iteration 
+Try enforce mutiplicity equality with snap size  0
+Extract connections...
+Extract connections done
+Extract edges...
+Extract edges done
+Extract mesh...
+Extract mesh done
+Searching boundaries...
+Searching boundaries done
+Searching boundaries...
+Searching boundaries done
+debug: Quad mesh breakdown: total 8 ms | voxel 0 ms | split 0 ms | build 0 ms | parallel 8 ms   (param 5 ms | extract 1 ms) | merge 0 ms
+[local_provider] LocalProvider: TBB warm-up retopo ok=1 elapsed=0.009s
+[stream] WorldSector requires 0 child variants
+[stream] asset install complete: 0 child hashes, field_hash=d7febe0fcc5bc6c8, sector_size=16.0, sea_level=-8.00
+[stream] tiling: COLUMN (DEPRECATED -- this world declares no nestedSectors, so there is no level ladder for an octree to descend). Cube tiles are the direction; see terrain_mesher.h. MATTER_VOLUMETRIC_SECTORS=1 forces the octree.
+[stream] resolver activation radius: 640 m (outermost terrain band)
+[terrain-collision] installed generation=137a4fa681b9521c geometry=51b28130050700e2 cell=0.500 rung=2 regions=1 sectors=2 nonempty=2 empty=0 triangles=4 vertices=8 artifact=384 box3d=416 build=1.25ms cache=0.00ms validation=0.25ms install=0.03ms
+[bake-timing] install=14ms world=3ms publish=2ms total=19ms (world-kind: ROOTS ONLY — the sector fill is NOT in this number, see [stream.fill])
+ check_that multiplicity are respected
+New LS iteration 
+New LS iteration 
+Try enforce mutiplicity equality with snap size  0
+Extract connections...
+Extract connections done
+Extract edges...
+Extract edges done
+Extract mesh...
+Extract mesh done
+Searching boundaries...
+Searching boundaries done
+Searching boundaries...
+Searching boundaries done
+debug: Quad mesh breakdown: total 8 ms | voxel 0 ms | split 0 ms | build 0 ms | parallel 8 ms   (param 5 ms | extract 1 ms) | merge 0 ms
+[local_provider] LocalProvider: TBB warm-up retopo ok=1 elapsed=0.008s
+[stream] WorldSector requires 0 child variants
+[stream] asset install complete: 0 child hashes, field_hash=d7febe0fcc5bc6c8, sector_size=16.0, sea_level=-8.00
+[stream] tiling: COLUMN (DEPRECATED -- this world declares no nestedSectors, so there is no level ladder for an octree to descend). Cube tiles are the direction; see terrain_mesher.h. MATTER_VOLUMETRIC_SECTORS=1 forces the octree.
+[stream] resolver activation radius: 640 m (outermost terrain band)
+[stream] pre-warmed 0/0 child variants
+[resolve]   resolve census: 0 parts baked, 1 cache hits, version digest 144cdeb99c68f1a7
+[refine] controller built: 0 tiles
+[stream] Runtime coordinator profile ready for world-kind session
+[bake-timing] install=12ms world=4ms publish=7ms total=23ms (world-kind: ROOTS ONLY — the sector fill is NOT in this number, see [stream.fill])
+ check_that multiplicity are respected
+New LS iteration 
+New LS iteration 
+Try enforce mutiplicity equality with snap size  0
+Extract connections...
+Extract connections done
+Extract edges...
+Extract edges done
+Extract mesh...
+Extract mesh done
+Searching boundaries...
+Searching boundaries done
+Searching boundaries...
+Searching boundaries done
+debug: Quad mesh breakdown: total 13 ms | voxel 0 ms | split 0 ms | build 0 ms | parallel 13 ms   (param 9 ms | extract 1 ms) | merge 0 ms
+[local_provider] LocalProvider: TBB warm-up retopo ok=1 elapsed=0.014s
+[stream] WorldSector requires 0 child variants
+[stream] asset install complete: 0 child hashes, field_hash=d7febe0fcc5bc6c8, sector_size=16.0, sea_level=-8.00
+[stream] tiling: COLUMN (DEPRECATED -- this world declares no nestedSectors, so there is no level ladder for an octree to descend). Cube tiles are the direction; see terrain_mesher.h. MATTER_VOLUMETRIC_SECTORS=1 forces the octree.
+[stream] resolver activation radius: 640 m (outermost terrain band)
+[terrain-collision] installed generation=bffccf328ab2ae6b geometry=51b28130050700e2 cell=0.500 rung=2 regions=1 sectors=2 nonempty=2 empty=0 triangles=4 vertices=8 artifact=384 box3d=416 build=1.25ms cache=0.00ms validation=0.25ms install=0.03ms
+[stream] pre-warmed 0/0 child variants
+[resolve]   resolve census: 1 parts baked, 0 cache hits, version digest 144cdeb99c68f1a7
+[refine] controller built: 0 tiles
+[stream] Runtime coordinator profile ready for world-kind session
+[bake-timing] install=21ms world=3ms publish=8ms total=32ms (world-kind: ROOTS ONLY — the sector fill is NOT in this number, see [stream.fill])
+ check_that multiplicity are respected
+New LS iteration 
+New LS iteration 
+Try enforce mutiplicity equality with snap size  0
+Extract connections...
+Extract connections done
+Extract edges...
+Extract edges done
+Extract mesh...
+Extract mesh done
+Searching boundaries...
+Searching boundaries done
+Searching boundaries...
+Searching boundaries done
+debug: Quad mesh breakdown: total 9 ms | voxel 0 ms | split 0 ms | build 0 ms | parallel 8 ms   (param 6 ms | extract 1 ms) | merge 0 ms
+[local_provider] LocalProvider: TBB warm-up retopo ok=1 elapsed=0.009s
+[stream] WorldSector requires 0 child variants
+[stream] asset install complete: 0 child hashes, field_hash=d7febe0fcc5bc6c8, sector_size=16.0, sea_level=-8.00
+[stream] tiling: COLUMN (DEPRECATED -- this world declares no nestedSectors, so there is no level ladder for an octree to descend). Cube tiles are the direction; see terrain_mesher.h. MATTER_VOLUMETRIC_SECTORS=1 forces the octree.
+[stream] resolver activation radius: 640 m (outermost terrain band)
+[bake-timing] install=13ms world=4ms publish=2ms total=19ms (world-kind: ROOTS ONLY — the sector fill is NOT in this number, see [stream.fill])
+ check_that multiplicity are respected
+New LS iteration 
+New LS iteration 
+Try enforce mutiplicity equality with snap size  0
+Extract connections...
+Extract connections done
+Extract edges...
+Extract edges done
+Extract mesh...
+Extract mesh done
+Searching boundaries...
+Searching boundaries done
+Searching boundaries...
+Searching boundaries done
+debug: Quad mesh breakdown: total 9 ms | voxel 0 ms | split 0 ms | build 0 ms | parallel 9 ms   (param 6 ms | extract 1 ms) | merge 0 ms
+[local_provider] LocalProvider: TBB warm-up retopo ok=1 elapsed=0.010s
+[stream] WorldSector requires 0 child variants
+[stream] asset install complete: 0 child hashes, field_hash=d7febe0fcc5bc6c8, sector_size=16.0, sea_level=-8.00
+[stream] tiling: COLUMN (DEPRECATED -- this world declares no nestedSectors, so there is no level ladder for an octree to descend). Cube tiles are the direction; see terrain_mesher.h. MATTER_VOLUMETRIC_SECTORS=1 forces the octree.
+[stream] resolver activation radius: 640 m (outermost terrain band)
+[stream] pre-warmed 0/0 child variants
+[resolve]   resolve census: 0 parts baked, 1 cache hits, version digest 144cdeb99c68f1a7
+[refine] controller built: 0 tiles
+[stream] Runtime coordinator profile ready for world-kind session
+[bake-timing] install=14ms world=4ms publish=8ms total=26ms (world-kind: ROOTS ONLY — the sector fill is NOT in this number, see [stream.fill])
+ check_that multiplicity are respected
+New LS iteration 
+New LS iteration 
+Try enforce mutiplicity equality with snap size  0
+Extract connections...
+Extract connections done
+Extract edges...
+Extract edges done
+Extract mesh...
+Extract mesh done
+Searching boundaries...
+Searching boundaries done
+Searching boundaries...
+Searching boundaries done
+debug: Quad mesh breakdown: total 10 ms | voxel 0 ms | split 0 ms | build 0 ms | parallel 10 ms   (param 7 ms | extract 1 ms) | merge 0 ms
+[local_provider] LocalProvider: TBB warm-up retopo ok=1 elapsed=0.011s
+[stream] WorldSector requires 0 child variants
+[stream] asset install complete: 0 child hashes, field_hash=d7febe0fcc5bc6c8, sector_size=16.0, sea_level=-8.00
+[stream] tiling: COLUMN (DEPRECATED -- this world declares no nestedSectors, so there is no level ladder for an octree to descend). Cube tiles are the direction; see terrain_mesher.h. MATTER_VOLUMETRIC_SECTORS=1 forces the octree.
+[stream] resolver activation radius: 640 m (outermost terrain band)
+[terrain-collision] installed generation=137a4fa681b9521c geometry=51b28130050700e2 cell=0.500 rung=2 regions=1 sectors=2 nonempty=2 empty=0 triangles=4 vertices=8 artifact=384 box3d=416 build=1.25ms cache=0.00ms validation=0.25ms install=0.08ms
+[stream] pre-warmed 0/0 child variants
+[resolve]   resolve census: 1 parts baked, 0 cache hits, version digest 144cdeb99c68f1a7
+[refine] controller built: 0 tiles
+[stream] Runtime coordinator profile ready for world-kind session
+[bake-timing] install=18ms world=4ms publish=8ms total=30ms (world-kind: ROOTS ONLY — the sector fill is NOT in this number, see [stream.fill])
+ check_that multiplicity are respected
+New LS iteration 
+New LS iteration 
+Try enforce mutiplicity equality with snap size  0
+Extract connections...
+Extract connections done
+Extract edges...
+Extract edges done
+Extract mesh...
+Extract mesh done
+Searching boundaries...
+Searching boundaries done
+Searching boundaries...
+Searching boundaries done
+debug: Quad mesh breakdown: total 8 ms | voxel 0 ms | split 0 ms | build 0 ms | parallel 8 ms   (param 6 ms | extract 1 ms) | merge 0 ms
+[local_provider] LocalProvider: TBB warm-up retopo ok=1 elapsed=0.009s
+[install_world] install_world: cancelled
+ check_that multiplicity are respected
+New LS iteration 
+New LS iteration 
+Try enforce mutiplicity equality with snap size  0
+Extract connections...
+Extract connections done
+Extract edges...
+Extract edges done
+Extract mesh...
+Extract mesh done
+Searching boundaries...
+Searching boundaries done
+Searching boundaries...
+Searching boundaries done
+debug: Quad mesh breakdown: total 9 ms | voxel 0 ms | split 0 ms | build 0 ms | parallel 8 ms   (param 6 ms | extract 1 ms) | merge 0 ms
+[local_provider] LocalProvider: TBB warm-up retopo ok=1 elapsed=0.009s
+[stream] WorldSector requires 0 child variants
+[stream] asset install complete: 0 child hashes, field_hash=d7febe0fcc5bc6c8, sector_size=16.0, sea_level=-8.00
+[stream] tiling: COLUMN (DEPRECATED -- this world declares no nestedSectors, so there is no level ladder for an octree to descend). Cube tiles are the direction; see terrain_mesher.h. MATTER_VOLUMETRIC_SECTORS=1 forces the octree.
+[stream] resolver activation radius: 640 m (outermost terrain band)
+[stream] pre-warmed 0/0 child variants
+[resolve]   resolve census: 0 parts baked, 1 cache hits, version digest 144cdeb99c68f1a7
+[refine] controller built: 0 tiles
+[stream] Runtime coordinator profile ready for world-kind session
+[bake-timing] install=14ms world=4ms publish=8ms total=26ms (world-kind: ROOTS ONLY — the sector fill is NOT in this number, see [stream.fill])
+
+1 passed in 4.16s
