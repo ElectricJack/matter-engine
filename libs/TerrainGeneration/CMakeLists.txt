@@ -12,16 +12,17 @@ function(matter_terrain_register_contracts)
     matter_register_component(matter_contracts)
 endfunction()
 matter_terrain_register_contracts()
+include("${CMAKE_CURRENT_LIST_DIR}/../ProceduralGeometry/cmake/FieldKernel.cmake")
 set(terrain_legacy "${CMAKE_CURRENT_LIST_DIR}/../../MatterEngine3")
 cmake_path(NORMAL_PATH terrain_legacy)
-# The field and mesher live here; the engine compiles the same sources (and the
-# seam welder beside them) from this directory. The overlay dependency is a
-# neutral virtual CPU interface; no concrete hydrology backend is linked into
-# the production field library.
-add_library(matter_terrain STATIC src/field.cpp src/meshing.cpp
-    src/terrain_field.cpp src/terrain_mesher.cpp)
+# The mesher lives here; the engine compiles the same sources (and the seam
+# welder beside them) from this directory. The field/surface tape kernel is
+# owned by ProceduralGeometry and linked from its lean matter_geometry_field
+# target, so it is compiled once per graph. The overlay dependency is a neutral virtual CPU interface; no
+# concrete hydrology backend is linked into the production field library.
+add_library(matter_terrain STATIC src/field.cpp src/meshing.cpp src/terrain_mesher.cpp)
 target_compile_features(matter_terrain PUBLIC cxx_std_17)
-target_link_libraries(matter_terrain PUBLIC matter_contracts)
+target_link_libraries(matter_terrain PUBLIC matter_contracts PRIVATE matter_geometry_field)
 target_include_directories(matter_terrain PUBLIC "${CMAKE_CURRENT_LIST_DIR}/include"
     PRIVATE "${terrain_legacy}/src" "${terrain_legacy}/include")
 if(MSVC)

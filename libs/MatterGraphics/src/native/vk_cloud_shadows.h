@@ -83,7 +83,7 @@
 
 #include "cloud_layers.h"
 #include "cloud_shadow_settings.h"
-#include "../../../../MatterEngine3/src/render/vk_resources.h"
+#include "vk_resources.h"
 
 namespace matter { struct FogSettings; }
 

@@ -66,10 +66,11 @@ matter_read_manifest(
 )
 set(matter_engine_core_sources ${matter_engine_core_manifest})
 # The triangle emitter, polygon triangulator and matrix math are owned by
-# ProceduralGeometry/MatterGraphics, and the terrain field, mesher and seam
-# welder by TerrainGeneration; each is compiled from where it lives.
+# ProceduralGeometry/MatterGraphics, the terrain field, mesher and seam welder
+# by TerrainGeneration, and the Box3d settle core by AssetPipeline physics; each
+# is compiled from where it lives.
 list(FILTER matter_engine_core_sources INCLUDE REGEX
-    "^(MatterEngine3/src|libs/ProceduralGeometry/src|libs/MatterGraphics/src|libs/TerrainGeneration/src)/.*\\.cpp$")
+    "^(MatterEngine3/src|libs/ProceduralGeometry/src|libs/MatterGraphics/src|libs/TerrainGeneration/src|libs/AssetPipeline/physics/src)/.*\\.cpp$")
 if(WIN32)
     # The inotify implementation is Linux-only. Its source retains the existing
     # Linux guards and remains in the canonical manifest/Make build.
@@ -188,6 +189,15 @@ set(BUILD_TESTING OFF)
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 set(MATTER_AUTHORING_HOST_KERNELS ON)
 add_subdirectory(MatterEngine3/src/component_adapters/authoring)
+set(BUILD_TESTING ${matter_authoring_saved_testing})
+set(CMAKE_MSVC_RUNTIME_LIBRARY ${matter_authoring_saved_runtime})
+
+# The terrain coordinator: the one native sector flow live terrain demand goes
+# through. It reuses the contracts target loaded above; its own tests stay its
+# gate, so only the library joins this graph.
+set(BUILD_TESTING OFF)
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+add_subdirectory(MatterEngine3/src/component_adapters/terrain_coordinator)
 set(BUILD_TESTING ${matter_authoring_saved_testing})
 set(CMAKE_MSVC_RUNTIME_LIBRARY ${matter_authoring_saved_runtime})
 
@@ -511,9 +521,9 @@ if(BUILD_TESTING)
     matter_add_engine_cpu_test(gi_bake_tests
         MatterEngine3/tests/gi_bake_tests.cpp)
     matter_add_engine_cpu_test(local_light_index_tests
-        MatterEngine3/tests/local_light_index_tests.cpp)
+        libs/MatterGraphics/tests/native/local_light_index_tests.cpp)
     matter_add_engine_cpu_test(primary_light_culling_tests
-        MatterEngine3/tests/primary_light_culling_tests.cpp)
+        libs/MatterGraphics/tests/native/primary_light_culling_tests.cpp)
     matter_add_engine_cpu_test(resolve_cache_tests
         MatterEngine3/tests/resolve_cache_tests.cpp)
     matter_add_engine_cpu_test(authored_world_cache_tests
@@ -801,6 +811,23 @@ if(BUILD_TESTING)
         MatterEngine3/tests/terrain_collision_physics_tests.cpp)
     matter_add_engine_cpu_test(terrain_collision_session_tests
         MatterEngine3/tests/terrain_collision_session_tests.cpp)
+    # Live terrain end to end: coordinator -> cache, collision, scene backend.
+    # Headless already compiles the terrain field, mesher and matrix math; only
+    # the component sources it lacks are added here.
+    matter_add_engine_cpu_test(live_terrain_tests
+        MatterEngine3/tests/live_terrain_tests.cpp
+        MatterEngine3/src/component_adapters/terrain_coordinator/engine/live_terrain.cpp
+        MatterEngine3/src/component_adapters/terrain_coordinator/engine/live_terrain_session.cpp
+        libs/TerrainGeneration/src/field.cpp
+        libs/TerrainGeneration/src/meshing.cpp
+        libs/MatterGraphics/src/graphics.cpp
+        libs/MatterGraphics/src/scene_backend.cpp)
+    target_include_directories(live_terrain_tests PRIVATE
+        "${CMAKE_SOURCE_DIR}/libs/TerrainGeneration/include"
+        "${CMAKE_SOURCE_DIR}/libs/TerrainGeneration/tests"
+        "${CMAKE_SOURCE_DIR}/libs/MatterGraphics/include")
+    target_link_libraries(live_terrain_tests PRIVATE matter_terrain_coordinator)
+    set_tests_properties(live_terrain_tests PROPERTIES ENVIRONMENT MATTER_CONTOUR_SEAMS=1)
     matter_add_engine_cpu_test(river_float_system_tests
         MatterEngine3/tests/river_float_system_tests.cpp)
     matter_qualify_cpu_filesystem(river_float_system_tests MatterEngine3/tests/river_float_system_tests.cpp)
@@ -909,7 +936,7 @@ if(BUILD_TESTING)
         MatterEngine3/src/render/gpu_meshing/water_scene_part.cpp)
     matter_add_engine_cpu_test(gpu_water_animation_render_tests
         MatterEngine3/tests/gpu_water_animation_render_tests.cpp
-        MatterEngine3/src/render/water_animation_gpu.cpp)
+        libs/MatterGraphics/src/native/water_animation_gpu.cpp)
     matter_add_engine_cpu_test(water_field_vk_tests
         MatterEngine3/tests/water_field_vk_tests.cpp)
     matter_add_engine_cpu_test(water_surface_reference_tests
