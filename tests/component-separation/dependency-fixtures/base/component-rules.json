@@ -1,0 +1,111 @@
+{
+  "schema": "matter.component-dependency-rules.v1",
+  "description": "Fixture rules: a clean miniature of the real component layout. Every test case starts from this tree, introduces one deliberate violation and asserts the checker reports it.",
+  "ownership_manifest": "ownership.json",
+  "capabilities": {
+    "fx-sdk": "the FxSdk graphics SDK (never installed; stands in for the Vulkan SDK)"
+  },
+  "symbol_groups": {
+    "fakejs": "^_?FJS_[A-Z]",
+    "fakerender": "^_?FR_[A-Z]",
+    "geometry_ns": "fxgeo_",
+    "graphics_ns": "fxgfx_"
+  },
+  "system_link_libraries": [
+    "m", "pthread", "dl", "rt", "stdc++", "c++", "gcc", "gcc_s",
+    "kernel32.lib", "user32.lib", "gdi32.lib", "winspool.lib", "shell32.lib", "ole32.lib",
+    "oleaut32.lib", "uuid.lib", "comdlg32.lib", "advapi32.lib"
+  ],
+  "forbidden_external_headers": ["(^|/)fakejs\\.h$"],
+  "probe_cache": {
+    "FX_GRAPHICS_SDK": "OFF"
+  },
+  "duplicates": {
+    "roots": ["libs", "legacy", "packages"],
+    "window": 6,
+    "min_chars": 12
+  },
+  "components": [
+    {
+      "name": "contracts",
+      "status": "implemented",
+      "kind": "native",
+      "directory": "libs/FxContracts",
+      "description": "Neutral contracts: no component, JS engine or renderer.",
+      "targets": ["fx_contracts"],
+      "public_include_dirs": ["libs/FxContracts/include"],
+      "allowed_components": [],
+      "forbidden_public_includes": ["(^|/)fakejs\\.h$", "(^|/)fakerender\\.h$"],
+      "forbidden_symbols": ["fakejs", "fakerender", "geometry_ns", "graphics_ns"]
+    },
+    {
+      "name": "geometry",
+      "status": "implemented",
+      "kind": "native",
+      "directory": "libs/FxGeometry",
+      "description": "Geometry without the JS engine or the renderer.",
+      "targets": ["fx_geometry"],
+      "public_include_dirs": ["libs/FxGeometry/include"],
+      "allowed_components": ["contracts"],
+      "forbidden_public_includes": ["(^|/)fakejs\\.h$", "(^|/)fakerender\\.h$"],
+      "forbidden_symbols": ["fakejs", "fakerender", "graphics_ns"]
+    },
+    {
+      "name": "graphics",
+      "status": "implemented",
+      "kind": "native",
+      "directory": "libs/FxGraphics",
+      "description": "Graphics without geometry; an SDK-gated variant stands in for Vulkan.",
+      "targets": ["fx_graphics"],
+      "public_include_dirs": ["libs/FxGraphics/include"],
+      "allowed_components": ["contracts"],
+      "forbidden_public_includes": ["(^|/)fakejs\\.h$"],
+      "forbidden_symbols": ["fakejs", "geometry_ns"],
+      "variants": [
+        {"name": "default"},
+        {
+          "name": "sdk",
+          "description": "The FxSdk backend; UNTESTED where the SDK is missing.",
+          "cache": {"FX_GRAPHICS_SDK": "ON"},
+          "targets": ["fx_graphics_sdk"],
+          "sources": ["src/fx_sdk_backend.cpp"],
+          "public_headers": ["include/fx_graphics/fx_sdk_backend.h"],
+          "requires_capability": "fx-sdk",
+          "unavailable_patterns": ["Could NOT find FxSdk"],
+          "allowed_external_headers": ["(^|/)fxsdk/"],
+          "allowed_external_include_dirs": ["(?i)fxsdk"],
+          "allowed_link_libraries": ["(?i)fxsdk"]
+        }
+      ]
+    },
+    {
+      "name": "scaffold",
+      "status": "scaffold",
+      "kind": "native",
+      "directory": "libs/FxScaffold",
+      "reason": "reserved for a later extraction; it has a build file but no code yet",
+      "targets": ["fx_scaffold"],
+      "allowed_components": ["contracts"]
+    },
+    {
+      "name": "authoring",
+      "status": "implemented",
+      "kind": "javascript",
+      "directory": "packages/fx-authoring",
+      "description": "Portable authoring JavaScript: no host modules.",
+      "js": {
+        "include": ["*.mjs"],
+        "exclude": ["tests/*"],
+        "forbidden_specifiers": ["^node:", "^(fs|os|path|child_process|process)(/|$)"],
+        "allowed_bare_specifiers": []
+      }
+    },
+    {
+      "name": "web",
+      "status": "absent",
+      "kind": "browser",
+      "directory": "integrations/fx-web",
+      "reason": "the browser integration has not been written yet"
+    }
+  ]
+}

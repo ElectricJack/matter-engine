@@ -56,7 +56,8 @@ case "${GI_SPECIALIZE:-auto}" in
 esac
 if [ "${GBUFFER_WORKLOAD:-0}" = 1 ]; then stats_env+=(MATTER_GBUFFER_WORKLOAD=1); fi
 if [ "$PIPELINE_STATS" = 1 ]; then stats_env+=(MATTER_VK_PIPELINE_STATS=1); fi
-paged_env=()
+# Pin the source comparison even when the caller used a VG development shell.
+paged_env=(MATTER_GEOMETRY_PAGES=0 MATTER_GEOMETRY_TERRAIN=0)
 if [ "${PAGED_TERRAIN:-0}" = 1 ]; then
   paged_gpu_mb=${PAGED_GPU_MB:-3072}
   paged_vt_mb=${PAGED_VT_MB:-2048}

@@ -193,10 +193,11 @@ function New-ValidFixture(
     [string]$Name,
     [string]$Configuration = 'RelWithDebInfo',
     [switch]$WithoutRuntimeDll,
-    [switch]$CompleteContent,
     [switch]$Physx,
     [switch]$Streamline
 ) {
+    $fixtureClock = [Diagnostics.Stopwatch]::StartNew()
+    Write-Host "package fixture: $Name creation started"
     $dist = Join-Path $scratch $Name
     New-Item -ItemType Directory -Force -Path $dist | Out-Null
     $fixtureEditor = if ($Physx -or $Streamline) { $script:peFixture.StandaloneEditor } else { $script:peFixture.Editor }
@@ -208,26 +209,17 @@ function New-ValidFixture(
     if ($Configuration -eq 'RelWithDebInfo') {
         Set-Content -LiteralPath (Join-Path $dist 'editor.pdb') -Value 'fixture PDB identity' -Encoding ascii
     }
-    if ($CompleteContent) {
-        Copy-Item -LiteralPath (Join-Path $RepositoryRoot 'projects\world_demo') `
-            -Destination (Join-Path $dist 'projects\world_demo') -Recurse
-        Copy-Item -LiteralPath (Join-Path $RepositoryRoot 'MatterEngine3\shared-lib') `
-            -Destination (Join-Path $dist 'MatterEngine3\shared-lib') -Recurse
-    } else {
-        New-Item -ItemType Directory -Force `
-            -Path (Join-Path $dist 'projects\world_demo'), (Join-Path $dist 'MatterEngine3\shared-lib') | Out-Null
-        Set-Content -LiteralPath (Join-Path $dist 'projects\world_demo\fixture-scene.js') `
-            -Value '// package fixture project content' -Encoding ascii
-        Set-Content -LiteralPath (Join-Path $dist 'MatterEngine3\shared-lib\fixture-runtime.js') `
-            -Value '// package fixture engine shared library' -Encoding ascii
-    }
-    # The real stager excludes developer caches. Complete-content fixtures copy
-    # the live project tree, so remove that copied cache before constructing the
-    # explicit accepted-network fixture below.
-    $copiedProjectCache = Join-Path $dist 'projects\world_demo\.cache'
-    if (Test-Path -LiteralPath $copiedProjectCache) {
-        Remove-Item -LiteralPath $copiedProjectCache -Recurse -Force
-    }
+    # These are checker fixtures, not distribution staging. Never copy the live
+    # project: concurrent world tests can populate an unbounded .cache there.
+    # Real content creation/validation remains in matter_dist and its checker;
+    # the stager has separate safety/content tests. Keep every positive checker
+    # path on the same deterministic content as the negative cases.
+    New-Item -ItemType Directory -Force `
+        -Path (Join-Path $dist 'projects\world_demo'), (Join-Path $dist 'MatterEngine3\shared-lib') | Out-Null
+    Set-Content -LiteralPath (Join-Path $dist 'projects\world_demo\fixture-scene.js') `
+        -Value '// package fixture project content' -Encoding ascii
+    Set-Content -LiteralPath (Join-Path $dist 'MatterEngine3\shared-lib\fixture-runtime.js') `
+        -Value '// package fixture engine shared library' -Encoding ascii
     $notice = @('MatterEngine third-party notices')
     foreach ($label in $expectedNotices) {
         $notice += "===== ${label}: fixture-license.txt ====="
@@ -283,6 +275,7 @@ function New-ValidFixture(
     }
     Write-Manifest $dist -Configuration $Configuration -RuntimeDlls $runtime `
         -Physx $Physx.IsPresent -Cuda $Physx.IsPresent -Streamline $Streamline.IsPresent -Notices $notices
+    Write-Host ("package fixture: {0} created in {1:F3}s" -f $Name, $fixtureClock.Elapsed.TotalSeconds)
     return $dist
 }
 
@@ -291,6 +284,9 @@ function Invoke-Checker(
     [string]$Dumpbin,
     [string[]]$FakeImports
 ) {
+    $checkerClock = [Diagnostics.Stopwatch]::StartNew()
+    $fixtureName = Split-Path -Leaf $DistPath
+    Write-Host "package fixture: $fixtureName checker started"
     $savedImports = $env:MATTER_PACKAGE_TEST_IMPORTS
     try {
         if ($null -ne $FakeImports) { $env:MATTER_PACKAGE_TEST_IMPORTS = $FakeImports -join ';' }
@@ -304,6 +300,8 @@ function Invoke-Checker(
         } finally {
             $ErrorActionPreference = $previous
         }
+        Write-Host ("package fixture: {0} checker exited {1} in {2:F3}s" -f `
+            $fixtureName, $exitCode, $checkerClock.Elapsed.TotalSeconds)
         return [pscustomobject]@{ ExitCode = $exitCode; Output = $output -join "`n" }
     } finally {
         $env:MATTER_PACKAGE_TEST_IMPORTS = $savedImports
@@ -324,6 +322,7 @@ function Assert-Rejected(
 }
 
 try {
+    & (Join-Path $PSScriptRoot 'windows_package_fixture_tests.ps1')
     New-Item -ItemType Directory -Force -Path $scratch | Out-Null
     Set-Content -LiteralPath $fakeDumpbin -Encoding utf8 -Value @'
 $imports = $env:MATTER_PACKAGE_TEST_IMPORTS -split ';' | Where-Object { $_ }
@@ -332,7 +331,10 @@ Write-Output '  Image has the following dependencies:'
 $imports | ForEach-Object { Write-Output "    $_" }
 exit 0
 '@
+    Write-Host 'package fixture: real PE compilation started'
+    $compileClock = [Diagnostics.Stopwatch]::StartNew()
     $script:peFixture = Initialize-RealPeFixture
+    Write-Host ("package fixture: real PE compilation finished in {0:F3}s" -f $compileClock.Elapsed.TotalSeconds)
 
     $missingExe = New-ValidFixture 'missing-exe'
     Remove-Item -LiteralPath (Join-Path $missingExe 'editor.exe')
@@ -501,11 +503,11 @@ exit 0
         Assert-True ($validDlssResult.ExitCode -eq 0) "valid DLSS package failed:`n$($validDlssResult.Output)"
     }
 
-    $valid = New-ValidFixture 'valid' -CompleteContent
+    $valid = New-ValidFixture 'valid'
     $validResult = Invoke-Checker $valid '' $null
     Assert-True ($validResult.ExitCode -eq 0) "valid package failed:`n$($validResult.Output)"
     Assert-True ($validResult.Output -match 'MSVC package: PASS') 'valid package omitted PASS summary'
-    $validPhysx = New-ValidFixture 'valid-physx' -CompleteContent -Physx
+    $validPhysx = New-ValidFixture 'valid-physx' -Physx
     $validPhysxResult = Invoke-Checker $validPhysx '' $null
     Assert-True ($validPhysxResult.ExitCode -eq 0) "valid PhysX package failed:`n$($validPhysxResult.Output)"
     Assert-True ($validPhysxResult.Output -match 'MSVC package: PASS') `
