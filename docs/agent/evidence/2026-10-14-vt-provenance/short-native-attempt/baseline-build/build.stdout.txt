@@ -1,0 +1,173 @@
+**********************************************************************
+** Visual Studio 2022 Developer Command Prompt v17.14.7
+** Copyright (c) 2025 Microsoft Corporation
+**********************************************************************
+Preset CMake variables:
+
+  BUILD_TESTING="ON"
+  CMAKE_BUILD_TYPE="RelWithDebInfo"
+
+-- The C compiler identification is MSVC 19.44.35211.0
+-- The CXX compiler identification is MSVC 19.44.35211.0
+-- Detecting C compiler ABI info
+-- Detecting C compiler ABI info - done
+-- Check for working C compiler: C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.44.35207/bin/Hostx64/x64/cl.exe - skipped
+-- Detecting C compile features
+-- Detecting C compile features - done
+-- Detecting CXX compiler ABI info
+-- Detecting CXX compiler ABI info - done
+-- Check for working CXX compiler: C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.44.35207/bin/Hostx64/x64/cl.exe - skipped
+-- Detecting CXX compile features
+-- Detecting CXX compile features - done
+-- Configuring done (3.8s)
+-- Generating done (1.3s)
+-- Build files have been written to: D:/mv8e8/b/MatterEditor/build/cmake/windows-msvc/relwithdebinfo
+**********************************************************************
+** Visual Studio 2022 Developer Command Prompt v17.14.7
+** Copyright (c) 2025 Microsoft Corporation
+**********************************************************************
+[0/2] Re-checking globbed directories...
+[1/429] Building C object CMakeFiles\matter_memory.dir\libs\MemoryLib\src\mem_array.c.obj
+[2/429] Building C object CMakeFiles\matter_memory.dir\libs\MemoryLib\src\mem_arena.c.obj
+[3/429] Building C object CMakeFiles\matter_memory.dir\libs\MemoryLib\src\mem_bank.c.obj
+[4/429] Building C object CMakeFiles\matter_memory.dir\libs\MemoryLib\src\mem_pool.c.obj
+[5/429] Compiling Vulkan shader animation_skin.comp
+[6/429] Compiling Vulkan shader atmosphere_irradiance.comp
+[7/429] Compiling Vulkan shader atmosphere_multiscatter.comp
+[8/429] Compiling Vulkan shader atmosphere_transmittance.comp
+[9/429] Compiling Vulkan shader atmosphere_sky_view.comp
+[10/429] Compiling Vulkan shader cloud_shadow_density.comp
+[11/429] Compiling Vulkan shader cloud_shadow_integrate.comp
+[12/429] Compiling Vulkan shader cloud_shadow_reproject.comp
+[13/429] Compiling Vulkan shader composite.vert
+[14/429] Compiling Vulkan shader display_transform.frag
+[15/429] Compiling Vulkan shader environment_sampling_test.comp
+[16/429] Compiling Vulkan shader cull.comp
+[17/429] Compiling Vulkan shader finite_stamp_probe.comp
+[18/429] Compiling Vulkan shader composite.frag
+[19/429] Compiling Vulkan shader geometry_cut_probe.comp
+[20/429] Compiling Vulkan shader geometry_select.comp
+[21/429] Compiling Vulkan shader gi_atrous.comp
+[22/429] Compiling Vulkan shader gi_temporal.comp
+[23/429] Compiling Vulkan shader gpu_mesh_bin_count.comp
+[24/429] Compiling Vulkan shader gpu_mesh_bin_scatter.comp
+[25/429] Compiling Vulkan shader gpu_mesh_bin_sort.comp
+[26/429] Compiling Vulkan shader gpu_mesh_classify.comp
+[27/429] Compiling Vulkan shader gpu_mesh_compact.comp
+[28/429] Compiling Vulkan shader gpu_mesh_emit.comp
+[29/429] Compiling Vulkan shader gpu_mesh_field.comp
+[30/429] Compiling Vulkan shader gpu_mesh_scan_add.comp
+[31/429] Compiling Vulkan shader gpu_mesh_scan_blocks.comp
+[32/429] Compiling Vulkan shader raster.vert
+[33/429] Compiling Vulkan shader primary_light_cull.comp
+[34/429] Compiling Vulkan shader specialization raster_skin.vert
+[35/429] Compiling Vulkan shader specialization raster_water.vert
+[36/429] Compiling Vulkan shader face_material.comp
+[37/429] Compiling Vulkan shader rt_lighting_culled.rgen
+[38/429] Compiling Vulkan shader rt_lighting_culled_audit.rgen
+[39/429] Compiling Vulkan shader rt_primary_adaptive.rgen
+[40/429] Compiling Vulkan shader rt_radiance.rmiss
+[41/429] Compiling Vulkan shader rt_shadow.rchit
+[42/429] Compiling Vulkan shader rt_primary_adaptive_culled.rgen
+[43/429] Compiling Vulkan shader rt_shadow.rmiss
+[44/429] Compiling Vulkan shader rt_shadow.rgen
+[45/429] Compiling Vulkan shader rt_surface.rahit
+[46/429] Compiling Vulkan shader rt_surface_test.rgen
+[47/429] Compiling Vulkan shader rt_visibility.rahit
+[48/429] Compiling Vulkan shader rt_primary_fixed.rgen
+[49/429] Compiling Vulkan shader rt_primary_adaptive_culled_audit.rgen
+[50/429] Compiling Vulkan shader rt_visibility.rchit
+[51/429] Compiling Vulkan shader rt_visibility.rmiss
+[52/429] Compiling Vulkan shader selection_line.frag
+[53/429] Compiling Vulkan shader selection_line.vert
+[54/429] Compiling Vulkan shader solid_classify.comp
+[55/429] Compiling Vulkan shader solid_emit.comp
+[56/429] Compiling Vulkan shader solid_field.comp
+[57/429] Compiling Vulkan shader solid_scan.comp
+[58/429] Compiling Vulkan shader solid_face_project.comp
+[59/429] Compiling Vulkan shader sparse_hierarchy.comp
+[60/429] Compiling Vulkan shader sparse_voxel.vert
+[61/429] Compiling Vulkan shader sparse_voxel.frag
+[62/429] Compiling Vulkan shader sparse_voxel_select.comp
+[63/429] Compiling Vulkan shader sparse_voxel_shadow.comp
+[64/429] Compiling Vulkan shader surface_proxy.frag
+[65/429] Compiling Vulkan shader surface_proxy.vert
+[66/429] Compiling Vulkan shader surface_query.vert
+[67/429] Compiling Vulkan shader surface_query.frag
+[68/429] Compiling Vulkan shader tileset_bake_ao.comp
+[69/429] Compiling Vulkan shader tileset_bake_primary.comp
+[70/429] Compiling Vulkan shader transform_probe.comp
+[71/429] Compiling Vulkan shader visibility_id.frag
+[72/429] Compiling Vulkan shader visibility_id.vert
+[73/429] Compiling Vulkan shader visible_ids.comp
+[74/429] Compiling Vulkan shader vol_density.comp
+[75/429] Compiling Vulkan shader vol_integrate.comp
+[76/429] Compiling Vulkan shader vol_scatter.comp
+[77/429] Compiling Vulkan shader vt_bc_encode.comp
+[78/429] Compiling Vulkan shader vt_enrich_ao.comp
+[79/429] Compiling Vulkan shader vt_feedback.comp
+[80/429] Compiling Vulkan shader vt_height_normal.comp
+[81/429] Compiling Vulkan shader water_forward.frag
+[82/429] Linking C static library matter_memory.lib
+[83/429] Building CXX object CMakeFiles\matter_spatial.dir\libs\SpatialQueryLib\src\bvh.cpp.obj
+D:\mv8e8\b\libs\SpatialQueryLib\src\bvh.cpp(660): warning C4456: declaration of 'i' hides previous local declaration
+D:\mv8e8\b\libs\SpatialQueryLib\src\bvh.cpp(630): note: see declaration of 'i'
+D:\mv8e8\b\libs\SpatialQueryLib\src\bvh.cpp(663): warning C4456: declaration of 'j' hides previous local declaration
+D:\mv8e8\b\libs\SpatialQueryLib\src\bvh.cpp(631): note: see declaration of 'j'
+[84/429] Compiling Vulkan shader vt_composite.comp
+[85/429] Building C object CMakeFiles\matter_spatial.dir\libs\SpatialQueryLib\src\spatial_hash.c.obj
+[86/429] Building CXX object CMakeFiles\matter_spatial.dir\libs\SpatialQueryLib\src\bvh_analyzer.cpp.obj
+D:\mv8e8\b\libs\SpatialQueryLib\src\bvh_analyzer.cpp(281): warning C4244: '=': conversion from 'double' to 'float', possible loss of data
+D:\mv8e8\b\libs\SpatialQueryLib\src\bvh_analyzer.cpp(368): warning C4244: '=': conversion from 'double' to 'float', possible loss of data
+D:\mv8e8\b\libs\SpatialQueryLib\src\bvh_analyzer.cpp(275): warning C4100: 'name': unreferenced parameter
+D:\mv8e8\b\libs\SpatialQueryLib\src\bvh_analyzer.cpp(391): warning C4244: '=': conversion from 'double' to 'float', possible loss of data
+D:\mv8e8\b\libs\SpatialQueryLib\src\bvh_analyzer.cpp(436): warning C4244: '=': conversion from 'double' to 'float', possible loss of data
+D:\mv8e8\b\libs\SpatialQueryLib\src\bvh_analyzer.cpp(385): warning C4100: 'name': unreferenced parameter
+[87/429] Building CXX object CMakeFiles\matter_profile.dir\libs\ProfileLib\src\profile.cpp.obj
+D:\mv8e8\b\libs\ProfileLib\src\profile.cpp(218): warning C4996: 'getenv': This function or variable may be unsafe. Consider using _dupenv_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details.
+D:\mv8e8\b\libs\ProfileLib\src\profile.cpp(221): warning C4996: 'getenv': This function or variable may be unsafe. Consider using _dupenv_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details.
+D:\mv8e8\b\libs\ProfileLib\src\profile.cpp(262): warning C4996: 'strncpy': This function or variable may be unsafe. Consider using strncpy_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details.
+D:\mv8e8\b\libs\ProfileLib\src\profile.cpp(367): warning C4996: 'strncpy': This function or variable may be unsafe. Consider using strncpy_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details.
+D:\mv8e8\b\libs\ProfileLib\src\profile.cpp(549): warning C4996: 'fopen': This function or variable may be unsafe. Consider using fopen_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details.
+[88/429] Building CXX object CMakeFiles\matter_asset_store.dir\libs\AssetStoreLib\src\store_hash.cpp.obj
+[89/429] Building CXX object CMakeFiles\matter_mesh_charting.dir\libs\MeshChartingLib\src\mesh_charting.cpp.obj
+[90/429] Building CXX object CMakeFiles\matter_asset_store.dir\libs\AssetStoreLib\src\store_os.cpp.obj
+[91/429] Building CXX object CMakeFiles\matter_asset_store.dir\libs\AssetStoreLib\src\blob_store.cpp.obj
+D:\mv8e8\b\libs\AssetStoreLib\src\blob_store.cpp(362): warning C4996: 'sscanf': This function or variable may be unsafe. Consider using sscanf_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details.
+[92/429] Building CXX object CMakeFiles\matter_asset_store.dir\libs\AssetStoreLib\src\ref_table.cpp.obj
+[93/429] Building CXX object CMakeFiles\matter_asset_store.dir\libs\AssetStoreLib\src\asset_pages.cpp.obj
+[94/429] Building C object CMakeFiles\matter_glfw.dir\third_party\raylib\src\external\glfw\src\context.c.obj
+[95/429] Building C object CMakeFiles\matter_glfw.dir\third_party\raylib\src\external\glfw\src\egl_context.c.obj
+[96/429] Building C object CMakeFiles\matter_glfw.dir\third_party\raylib\src\external\glfw\src\init.c.obj
+[97/429] Building C object CMakeFiles\matter_glfw.dir\third_party\raylib\src\external\glfw\src\input.c.obj
+[98/429] Building C object CMakeFiles\matter_glfw.dir\third_party\raylib\src\external\glfw\src\monitor.c.obj
+[99/429] Building C object CMakeFiles\matter_glfw.dir\third_party\raylib\src\external\glfw\src\null_init.c.obj
+[100/429] Building C object CMakeFiles\matter_glfw.dir\third_party\raylib\src\external\glfw\src\null_joystick.c.obj
+[101/429] Building C object CMakeFiles\matter_glfw.dir\third_party\raylib\src\external\glfw\src\null_monitor.c.obj
+[102/429] Building C object CMakeFiles\matter_glfw.dir\third_party\raylib\src\external\glfw\src\null_window.c.obj
+[103/429] Building C object CMakeFiles\matter_glfw.dir\third_party\raylib\src\external\glfw\src\osmesa_context.c.obj
+[104/429] Building C object CMakeFiles\matter_glfw.dir\third_party\raylib\src\external\glfw\src\platform.c.obj
+[105/429] Building C object CMakeFiles\matter_glfw.dir\third_party\raylib\src\external\glfw\src\vulkan.c.obj
+[106/429] Building C object CMakeFiles\matter_flecs.dir\third_party\flecs\flecs.c.obj
+[107/429] Building C object CMakeFiles\matter_glfw.dir\third_party\raylib\src\external\glfw\src\window.c.obj
+[108/429] Building C object CMakeFiles\matter_glfw.dir\third_party\raylib\src\external\glfw\src\win32_init.c.obj
+[109/429] Building C object CMakeFiles\matter_glfw.dir\third_party\raylib\src\external\glfw\src\win32_joystick.c.obj
+[110/429] Building C object CMakeFiles\matter_glfw.dir\third_party\raylib\src\external\glfw\src\win32_module.c.obj
+[111/429] Building C object CMakeFiles\matter_glfw.dir\third_party\raylib\src\external\glfw\src\win32_monitor.c.obj
+[112/429] Building C object CMakeFiles\matter_glfw.dir\third_party\raylib\src\external\glfw\src\win32_thread.c.obj
+[113/429] Building C object CMakeFiles\matter_glfw.dir\third_party\raylib\src\external\glfw\src\win32_time.c.obj
+[114/429] Building C object CMakeFiles\matter_glfw.dir\third_party\raylib\src\external\glfw\src\win32_window.c.obj
+[115/429] Building C object CMakeFiles\matter_glfw.dir\MatterEditor\src\glfw_vulkan_only_context.c.obj
+[116/429] Building CXX object CMakeFiles\matter_bc7enc.dir\third_party\bc7enc\bc7enc.cpp.obj
+[117/429] Generating MatterEngine3/shaders_gen/embedded_shaders.h
+[118/429] Linking CXX static library matter_spatial.lib
+[119/429] Building CXX object CMakeFiles\matter_bc7enc.dir\third_party\bc7enc\rgbcx.cpp.obj
+[120/429] Linking CXX static library matter_profile.lib
+[121/429] Linking CXX static library matter_mesh_charting.lib
+[122/429] Linking CXX static library matter_asset_store.lib
+[123/429] Linking C static library matter_flecs.lib
+[124/429] Linking C static library matter_glfw.lib
+[125/429] Linking CXX static library matter_bc7enc.lib
+[126/429] Compiling Vulkan shader rt_surface.rchit
+[127/429] Compiling Vulkan shader vt_material_domain_probe.comp
+[128/429] Compiling Vulkan shader gbuffer.frag

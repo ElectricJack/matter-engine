@@ -10,12 +10,16 @@
 #include "../src/render/vt_surface_tape.h"
 #include "../src/render/part_store.h"
 #include "../src/part_flatten.h"
+#ifndef MATTER_WORLD_SOURCE_QUALIFICATION
+#include "embedded_shared_modules.h"
+#endif
 
 extern "C" {
 #include "material_registry.h"
 }
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <filesystem>
@@ -51,8 +55,12 @@ struct ScopedCacheRootEnv {
 
 struct Fixture {
     fs::path root;
+#ifndef MATTER_WORLD_SOURCE_QUALIFICATION
+    matter::SourceSnapshot::Files files;
+#endif
 
     Fixture() {
+#ifdef MATTER_WORLD_SOURCE_QUALIFICATION
         const auto stamp = std::chrono::high_resolution_clock::now()
                                .time_since_epoch().count();
         root = fs::temp_directory_path() /
@@ -60,18 +68,28 @@ struct Fixture {
         fs::create_directories(root / "objects");
         fs::create_directories(root / "project-shared");
         fs::create_directories(root / "engine-shared");
+#else
+        static std::atomic<unsigned> next_id{0};
+        root = fs::path("/matter-world-definition") / std::to_string(next_id++);
+#endif
     }
 
     ~Fixture() {
+#ifdef MATTER_WORLD_SOURCE_QUALIFICATION
         std::error_code ignored;
         fs::remove_all(root, ignored);
+#endif
     }
 
     fs::path write(const fs::path& relative, const std::string& contents) {
         const fs::path path = root / relative;
+#ifdef MATTER_WORLD_SOURCE_QUALIFICATION
         fs::create_directories(path.parent_path());
         std::ofstream out(path, std::ios::binary);
         out << contents;
+#else
+        files[matter::SourceSnapshot::key(path.string())] = contents;
+#endif
         return path;
     }
 
@@ -81,12 +99,35 @@ struct Fixture {
         result.objects_dir = (root / "objects").string();
         result.project_shared_lib_dir = (root / "project-shared").string();
         result.engine_shared_lib_dir = (root / "engine-shared").string();
+#ifndef MATTER_WORLD_SOURCE_QUALIFICATION
+        result.source_snapshot = std::make_shared<const matter::SourceSnapshot>(files);
+#endif
         result.world_seed = 77;
         result.canonical_params_json = "{\"difficulty\":3}";
         return result;
     }
 };
 
+void test_lexical_project_cache_identity() {
+#ifdef _WIN32
+    const fs::path project("C:/matter-cache-identity/project");
+#else
+    const fs::path project("/matter-cache-identity/project");
+#endif
+    ScopedCacheRootEnv env((project.parent_path() / "external").string().c_str());
+    auto cache = [](const fs::path& path) {
+        return viewer::project_bake_cache_root(path, "Demo", true);
+    };
+    CHECK(cache(project / "unused" / "..") == cache(project),
+          "RAM project aliases share cache identity");
+    CHECK(cache(project / "") == cache(project),
+          "RAM project trailing separator shares cache identity");
+    const auto root = project.root_path();
+    CHECK(cache(root / "unused" / "..") == cache(root),
+          "cache identity normalization preserves the filesystem root");
+}
+
+#ifdef MATTER_WORLD_SOURCE_QUALIFICATION
 void test_project_layout_derives_runtime_paths() {
     Fixture fixture;
     fs::create_directories(fixture.root / "worlds");
@@ -357,6 +398,8 @@ void test_relative_project_dir_yields_absolute_cache_root() {
     CHECK(cfg_from_absolute.cache_root == cfg.cache_root,
           "an already-absolute project_dir produces the identical cache_root");
 }
+
+#endif // MATTER_WORLD_SOURCE_QUALIFICATION
 
 void test_rejects_non_world_base_with_location_and_property() {
     Fixture fixture;
@@ -735,6 +778,7 @@ void test_surface_receiver_authoring() {
           "world receiver selection: explicit modules survive native world loading");
 }
 
+#ifdef MATTER_WORLD_SOURCE_QUALIFICATION
 void test_surface_contact_material() {
     const fs::path project = "../../projects/world_demo";
     const fs::path path = project / "scenes/texturing/terrain/SurfaceContactProof/SurfaceContactProof.js";
@@ -1247,6 +1291,8 @@ void test_example_worlds_preserve_manifest_authoring() {
               (std::string(expected.name) + " procedural settings").c_str());
     }
 }
+
+#endif // MATTER_WORLD_SOURCE_QUALIFICATION
 
 void test_authored_entity_override_cannot_intercept_collection() {
     Fixture fixture;
@@ -2334,6 +2380,143 @@ void test_props_validation_paths() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// World.exports — the DSL binding for offline asset export (docs/export-obj.md).
+//
+// Worth stating what these tests are protecting, because the field is inert at
+// runtime: `static exports` is the only place a scene can record HOW it wants
+// to be exported, so the exporter reads it as its defaults. A silently dropped
+// or silently clamped value would produce an export nobody asked for and
+// nobody could trace, which is why the loader rejects instead of coercing and
+// why the rejection paths below are enumerated one by one.
+// ---------------------------------------------------------------------------
+
+bool load_exports_world(Fixture& fixture, const char* body,
+                        matter::WorldDefinition& definition,
+                        matter::WorldLoadError& error) {
+    const std::string source = std::string(
+        "class ExportsWorld extends World {\n"
+        "  static roots = [{ module: 'Terrain' }];\n"
+        "  static exports = ") + body + ";\n}\n";
+    const fs::path path = fixture.write("ExportsWorld.js", source);
+    return matter::load_world_definition(fixture.desc(path), definition, error);
+}
+
+void test_exports_extraction() {
+    Fixture fixture;
+    matter::WorldDefinition definition;
+    matter::WorldLoadError error;
+    const bool loaded = load_exports_world(
+        fixture,
+        "[{ format: 'obj', out: 'export/web', lod: 1, textureSize: 1024,\n"
+        "   textureFormat: 'none', chartCone: 30, normalSpace: 'flat',\n"
+        "   modules: ['Terrain', 'Rock'] },\n"
+        " { out: 'export/full' }]",
+        definition, error);
+    CHECK(loaded, error.message.c_str());
+    if (!loaded) return;
+
+    CHECK(definition.exports.size() == 2, "every declared export entry is recorded");
+    if (definition.exports.size() != 2) return;
+
+    const matter::WorldExportRequest& first = definition.exports[0];
+    CHECK(first.format == "obj", "format carried through");
+    CHECK(first.out_dir == "export/web", "out carried through");
+    CHECK(first.lod == 1u, "lod carried through");
+    CHECK(first.texture_size == 1024u, "textureSize carried through");
+    CHECK(first.texture_format == "none", "textureFormat carried through");
+    CHECK(nearly_equal(first.chart_cone_deg, 30.0f), "chartCone carried through");
+    CHECK(first.normal_space == "flat", "normalSpace carried through");
+    CHECK(first.modules.size() == 2u && first.modules[0] == "Terrain" &&
+              first.modules[1] == "Rock",
+          "modules carried through in declaration order");
+
+    // An entry that declares only `out` takes every other default, which is
+    // what makes the common case one line.
+    const matter::WorldExportRequest& second = definition.exports[1];
+    CHECK(second.format == "obj" && second.lod == 0u && second.texture_size == 2048u &&
+              second.texture_format == "png" && second.normal_space == "smooth" &&
+              nearly_equal(second.chart_cone_deg, 45.0f) && second.modules.empty(),
+          "an entry with only `out` takes the documented defaults");
+}
+
+void test_exports_single_object_form() {
+    Fixture fixture;
+    matter::WorldDefinition definition;
+    matter::WorldLoadError error;
+    const bool loaded =
+        load_exports_world(fixture, "{ out: 'export/one' }", definition, error);
+    CHECK(loaded, error.message.c_str());
+    CHECK(definition.exports.size() == 1 && definition.exports[0].out_dir == "export/one",
+          "a bare object is accepted as a single export entry");
+}
+
+void test_exports_absent() {
+    Fixture fixture;
+    const fs::path path = fixture.write("NoExports.js", R"JS(
+class NoExports extends World {
+  static roots = [{ module: 'Terrain' }];
+}
+)JS");
+    matter::WorldDefinition definition;
+    matter::WorldLoadError error;
+    CHECK(matter::load_world_definition(fixture.desc(path), definition, error),
+          error.message.c_str());
+    CHECK(definition.exports.empty(),
+          "a world that declares no exports records none");
+}
+
+void test_exports_validation_paths() {
+    struct Case {
+        const char* body;
+        const char* property_path;
+        const char* what;
+    };
+    const Case cases[] = {
+        {"'export/web'", "exports",
+         "a bare string is not an export entry"},
+        {"[7]", "exports[0]", "a non-object entry is rejected"},
+        {"[{ }]", "exports[0].out", "a missing out is rejected"},
+        {"[{ out: '' }]", "exports[0].out", "an empty out is rejected"},
+        {"[{ out: 'x', format: 'gltf' }]", "exports[0].format",
+         "an unimplemented format is rejected rather than ignored"},
+        {"[{ out: 'x', textureSize: 8 }]", "exports[0].textureSize",
+         "a textureSize below the atlas minimum is rejected, not clamped"},
+        {"[{ out: 'x', textureSize: 16384 }]", "exports[0].textureSize",
+         "a textureSize above the atlas maximum is rejected, not clamped"},
+        {"[{ out: 'x', lod: -1 }]", "exports[0].lod", "a negative lod is rejected"},
+        {"[{ out: 'x', textureFormat: 'jpeg' }]", "exports[0].textureFormat",
+         "an unknown textureFormat is rejected"},
+        {"[{ out: 'x', chartCone: 90 }]", "exports[0].chartCone",
+         "a chartCone at 90 degrees is rejected"},
+        {"[{ out: 'x', chartCone: 0 }]", "exports[0].chartCone",
+         "a chartCone of 0 is rejected"},
+        {"[{ out: 'x', normalSpace: 'object' }]", "exports[0].normalSpace",
+         "an unknown normalSpace is rejected"},
+        {"[{ out: 'x', modules: 'Rock' }]", "exports[0].modules",
+         "a non-array modules is rejected"},
+        {"[{ out: 'x', modules: ['Rock', 7] }]", "exports[0].modules[1]",
+         "a non-string module name is rejected"},
+        {"[{ out: 'x', textureSizes: 1024 }]", "exports[0]",
+         "a mistyped key is rejected rather than silently defaulted"},
+    };
+
+    for (const Case& item : cases) {
+        Fixture fixture;
+        matter::WorldDefinition definition;
+        matter::WorldLoadError error;
+        const bool loaded = load_exports_world(fixture, item.body, definition, error);
+        CHECK(!loaded, item.what);
+        CHECK(error.property_path == item.property_path,
+              (std::string(item.what) + " -> property_path '" + item.property_path +
+               "' (got '" + error.property_path + "')")
+                  .c_str());
+        CHECK(!error.message.empty(), "an export rejection carries a message");
+        CHECK(definition.exports.empty(),
+              "a rejected exports block leaves no partial entries behind");
+    }
+}
+
 void test_props_getprop_diagnostics() {
     Fixture fixture;
     // Unknown name from buildEntities.
@@ -2765,6 +2948,7 @@ class RiverHydrology extends World {
           "hydrology dimensions are parsed as typed domain extents");
 }
 
+#ifdef MATTER_WORLD_SOURCE_QUALIFICATION
 void test_checked_in_river_hydrology_uses_the_imperative_section_contract() {
     const fs::path project = fs::path("../../projects/world_demo");
     matter::WorldLoadDesc load{};
@@ -2924,6 +3108,8 @@ void test_checked_in_river_hydrology_uses_the_imperative_section_contract() {
     CHECK(collider_footprints_clear_terrain,
           "every boulder collider clears the rounded-V terrain across its footprint");
 }
+
+#endif // MATTER_WORLD_SOURCE_QUALIFICATION
 
 void test_world_loader_leaves_hydrology_empty_when_absent() {
     Fixture fixture;
@@ -3247,6 +3433,11 @@ class CanonicalWaterWorld extends World {
 
 void test_world_loader_preserves_completed_dsl_curve_and_profile() {
     Fixture fixture;
+#ifndef MATTER_WORLD_SOURCE_QUALIFICATION
+    const auto shared_sources = embedded_shared_test_sources();
+    fixture.files.emplace("../shared-lib/river_curve.js",
+                          shared_sources.at("../shared-lib/river_curve.js"));
+#endif
     const fs::path path = fixture.write("AuthoredCurve.js", R"JS(
 import { riverCurve } from 'shared-lib/river_curve';
 class AuthoredCurve extends World {
@@ -3650,9 +3841,113 @@ void test_slot_binder_reset_union_is_exact() {
 
 } // namespace
 
+// giBake({...}) — the GI lightmap bake declaration (docs/bake-gi.md). A data
+// call, not a lifecycle hook: legal at module scope, in a static initializer
+// and inside hooks; every field optional; at most one call per world.
+void test_world_loader_accepts_gi_bake_call() {
+    {
+        Fixture fixture;
+        const fs::path path = fixture.write("GiWorld.js", R"JS(
+const gi = giBake({ samples: 128, bounces: 3, texelDensity: 12.5, seed: 42, prelit: true, denoise: false, out: 'gi-out' });
+if (gi.samples !== 128 || gi.bounces !== 3 || gi.texelDensity !== 12.5 || gi.prelit !== true || gi.out !== 'gi-out')
+  throw new Error('giBake did not echo its settings');
+class GiWorld extends World {
+  static settings = { sectorSize: 64 };
+}
+)JS");
+        matter::WorldDefinition definition;
+        matter::WorldLoadError error;
+        CHECK(matter::load_world_definition(fixture.desc(path), definition, error),
+              error.message.c_str());
+        CHECK(definition.gi_bake.has_value(), "giBake() publishes a GI bake declaration");
+        if (definition.gi_bake) {
+            const matter::GiBakeSettings& g = *definition.gi_bake;
+            CHECK(g.samples == 128 && g.bounces == 3 && g.texel_density == 12.5f && g.seed == 42,
+                  "giBake numeric fields are retained");
+            CHECK(g.prelit && !g.denoise && g.out == "gi-out", "giBake flags and out dir are retained");
+        }
+    }
+    {
+        // Static-initializer call with no options: every field defaults.
+        Fixture fixture;
+        const fs::path path = fixture.write("GiDefaults.js", R"JS(
+class GiDefaults extends World {
+  static settings = { sectorSize: 64 };
+  static gi = giBake();
+}
+)JS");
+        matter::WorldDefinition definition;
+        matter::WorldLoadError error;
+        CHECK(matter::load_world_definition(fixture.desc(path), definition, error),
+              error.message.c_str());
+        CHECK(definition.gi_bake.has_value() && definition.gi_bake->samples == 64 &&
+                  definition.gi_bake->bounces == 2 && definition.gi_bake->texel_density == 8.0f &&
+                  definition.gi_bake->denoise && !definition.gi_bake->prelit &&
+                  definition.gi_bake->out.empty(),
+              "giBake() with no options records the defaults");
+    }
+    {
+        // A call from buildEntities() — the last hook to run — is recorded too,
+        // and a large seed survives with full 32-bit precision.
+        Fixture fixture;
+        const fs::path path = fixture.write("GiLate.js", R"JS(
+class GiLate extends World {
+  static settings = { sectorSize: 64 };
+  buildEntities() { giBake({ samples: 256, seed: 4294967295 }); }
+}
+)JS");
+        matter::WorldDefinition definition;
+        matter::WorldLoadError error;
+        CHECK(matter::load_world_definition(fixture.desc(path), definition, error),
+              error.message.c_str());
+        CHECK(definition.gi_bake.has_value() && definition.gi_bake->samples == 256 &&
+                  definition.gi_bake->seed == 4294967295u,
+              "giBake() inside buildEntities() is recorded with an exact u32 seed");
+    }
+    {
+        Fixture fixture;
+        const fs::path path = fixture.write("NoGi.js", R"JS(
+class NoGi extends World { static settings = { sectorSize: 64 }; }
+)JS");
+        matter::WorldDefinition definition;
+        matter::WorldLoadError error;
+        CHECK(matter::load_world_definition(fixture.desc(path), definition, error),
+              error.message.c_str());
+        CHECK(!definition.gi_bake.has_value(), "a world without giBake() has no declaration");
+    }
+}
+
+void test_world_loader_rejects_invalid_gi_bake() {
+    const auto rejects = [](const char* filename, const std::string& body, const char* expected_path) {
+        Fixture fixture;
+        const fs::path path = fixture.write(
+            filename, body + "\nclass Bad extends World { static settings = { sectorSize: 64 }; }\n");
+        matter::WorldDefinition definition;
+        matter::WorldLoadError error;
+        CHECK(!matter::load_world_definition(fixture.desc(path), definition, error),
+              "invalid giBake authoring is rejected");
+        CHECK(error.property_path.find(expected_path) != std::string::npos,
+              (std::string("giBake diagnostic names the field: ") + expected_path +
+               " (got '" + error.property_path + "')").c_str());
+    };
+    rejects("GiSamples.js", "giBake({ samples: 0 });", "giBake.samples");
+    rejects("GiSamplesBig.js", "giBake({ samples: 5000 });", "giBake.samples");
+    rejects("GiBounces.js", "giBake({ bounces: 9 });", "giBake.bounces");
+    rejects("GiDensity.js", "giBake({ texelDensity: -1 });", "giBake.texelDensity");
+    rejects("GiDensityNaN.js", "giBake({ texelDensity: 'dense' });", "giBake.texelDensity");
+    rejects("GiSeedBig.js", "giBake({ seed: 4294967296 });", "giBake.seed");
+    rejects("GiSeedFrac.js", "giBake({ seed: 1.5 });", "giBake.seed");
+    rejects("GiPrelit.js", "giBake({ prelit: 'yes' });", "giBake.prelit");
+    rejects("GiOut.js", "giBake({ out: 7 });", "giBake.out");
+    rejects("GiTwice.js", "giBake({}); giBake({ samples: 8 });", "giBake");
+    rejects("GiArg.js", "giBake(12);", "giBake");
+}
+
 int main(int argc, char** argv) {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     ScopedCacheRootEnv clean_cache_environment(nullptr);
+    test_lexical_project_cache_identity();
+#ifdef MATTER_WORLD_SOURCE_QUALIFICATION
     if (argc == 2 && std::string(argv[1]) == "--surface-contact") {
         test_surface_receiver_authoring();
         test_surface_contact_material();
@@ -3679,6 +3974,15 @@ int main(int argc, char** argv) {
     test_surface_contact_material();
     test_surface_receiver_authoring();
     test_example_worlds_preserve_manifest_authoring();
+    test_checked_in_river_hydrology_uses_the_imperative_section_contract();
+    return check_summary();
+#else
+    if (argc != 1) {
+        std::fprintf(stderr, "Source qualification options moved to matter_world_source_qualifier.\n");
+        return 2;
+    }
+    (void)argv;
+    test_surface_receiver_authoring();
     test_rejects_non_world_base_with_location_and_property();
     test_extracts_statics_without_calling_field_and_uses_project_override();
     test_local_light_object_forms_and_runtime_publication();
@@ -3714,6 +4018,10 @@ int main(int argc, char** argv) {
     test_props_absent_and_empty();
     test_props_validation_paths();
     test_props_getprop_diagnostics();
+    test_exports_extraction();
+    test_exports_single_object_form();
+    test_exports_absent();
+    test_exports_validation_paths();
     test_define_material_round_trip();
     test_define_material_reset_between_worlds();
     test_define_material_name_collision_rules();
@@ -3724,7 +4032,6 @@ int main(int argc, char** argv) {
     test_slot_allocator_eviction_order();
     test_slot_binder_reports_displaced_materials();
     test_world_loader_reads_static_hydrology();
-    test_checked_in_river_hydrology_uses_the_imperative_section_contract();
     test_world_loader_leaves_hydrology_empty_when_absent();
     test_world_loader_rejects_invalid_static_hydrology();
     test_world_loader_rejects_every_unknown_hydrology_property();
@@ -3742,6 +4049,9 @@ int main(int argc, char** argv) {
     test_world_loader_rejects_terrain_collision_outside_collision_phase();
     test_world_loader_rejects_invalid_terrain_collision_builder_lifecycle();
     test_terrain_collision_adapter_preserves_optional_definition();
+    test_world_loader_accepts_gi_bake_call();
+    test_world_loader_rejects_invalid_gi_bake();
     test_slot_binder_reset_union_is_exact();
     return check_summary();
+#endif
 }

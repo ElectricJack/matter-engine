@@ -1,0 +1,6 @@
+Vulkan adapter: llvmpipe (LLVM 20.1.2, 256 bits) | driver: llvmpipe (Mesa 25.2.8-0ubuntu0.24.04.2 (LLVM 20.1.2), 0x06402008) | API 1.4.318
+quick smoke: 256x256, 3 frames, triangle and background readback
+validation errors: 0
+quick smoke budget: peak_rss_bytes=141328384 elapsed_seconds=0.589
+ALL PASS
+[vk] present requested=auto effective=fifo(2) supported=[immediate(0),mailbox(1),fifo(2),fifo_relaxed(3)] images=4 extent=256x256
