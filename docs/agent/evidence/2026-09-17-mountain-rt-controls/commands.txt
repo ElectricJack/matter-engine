@@ -1,0 +1,17 @@
+render_path native_rt
+set render.gi.enabled true
+get render.gpu.ray_tracing
+get render.gi.enabled
+shot_now C:/tmp/matter-mountain-rt-review-20260917/rt-startup.png
+wait_frames 12
+shot_now C:/tmp/matter-mountain-rt-review-20260917/rt-loaded.png
+shot_now C:/tmp/matter-mountain-rt-review-20260917/rt-on-before-check.png
+render_path raster
+get render.gpu.ray_tracing
+wait_frames 8
+shot_now C:/tmp/matter-mountain-rt-review-20260917/rt-off-check.png
+set render.gpu.ray_tracing true
+get render.gpu.ray_tracing
+wait_frames 24
+get render.gi.enabled
+shot_now C:/tmp/matter-mountain-rt-review-20260917/rt-on-after-check.png

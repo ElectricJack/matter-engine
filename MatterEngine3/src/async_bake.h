@@ -30,17 +30,20 @@
 //                    Channel's "delivered?" latch does not itself carry.
 //   * CommandQueue — cancel-token supersession (BakeAll/Reload/Shutdown) and
 //                    the single-consumer pop contract, layered on an unbounded
-//                    Channel via wait_pop / wait_pop_for (§I.5).
+//                    Channel; timed service waits also accept a coalesced idle wake.
 #include "matter/event/channel.h"
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <deque>
 #include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <vector>
+
+namespace matter { class SourceSnapshot; }
 
 namespace matter_async {
 
@@ -119,6 +122,8 @@ struct Command {
     CommandKind kind = CommandKind::BakeAll;
     std::vector<std::string> changed_files;   // RebakeCone only
     std::shared_ptr<CancelToken> token;       // filled by CommandQueue::push
+    // Reload-only owned input; installed by the worker after quiescence.
+    std::shared_ptr<const matter::SourceSnapshot> fixture_sources;
 };
 
 // Single-consumer queue with supersession: BakeAll/Reload cancels the
@@ -144,8 +149,11 @@ public:
     // Returns true + fills out if a command is available within ms milliseconds.
     // Returns false (and does NOT fill out) on timeout, shutdown, or empty+drained.
     // Caller must check the return value; false on shutdown signals termination.
-    // out_timed_out is set to true on timeout (vs false on shutdown/drained).
+    // out_timed_out is true on timeout or idle wake (false on shutdown/drained).
     bool pop_wait(Command& out, int ms, bool& out_timed_out);
+    // Coalesced idle-service notification. Real commands and shutdown win;
+    // pop_wait reports it as an idle timeout without creating a command/token.
+    void wake_idle();
     void shut_down();
 private:
     using Chan = matter::evt::Channel<Command>;
@@ -155,10 +163,13 @@ private:
     // its own lock). pending_ mirrors, in FIFO order, the CancelTokens of the
     // commands currently queued in ch_; each is popped in lockstep as its
     // command is delivered. Lock order is always m_ -> ch_ internal mutex
-    // (push/shut_down hold m_ then touch ch_); pop touches ch_ first (blocking
-    // wait_pop, no m_ held) then acquires m_, so the two never nest the other
-    // way and cannot deadlock.
+    // (push/shut_down hold m_ then touch ch_).
+    // pop() touches ch_ first (blocking wait_pop, no m_ held) then acquires m_.
+    // pop_wait() holds m_ across ch_.try_pop(), nesting m_ -> channel mutex,
+    // which is the same order producers use, so neither path can deadlock.
     std::mutex m_;
+    std::condition_variable service_cv_;
+    bool idle_wake_ = false;
     std::deque<std::shared_ptr<CancelToken>> pending_;
     std::shared_ptr<CancelToken> in_flight_;  // token of the command last delivered
     bool shut_down_ = false;

@@ -1,0 +1,179 @@
+{
+  "asset_dependencies": [],
+  "canonical_profile": "matter-exact-json-v1",
+  "document_type": "recipe",
+  "extensions": [],
+  "materials": [
+    {
+      "base_color": {
+        "factor": [
+          0.75,
+          0.25,
+          0.125,
+          1
+        ],
+        "texture": null,
+        "uv_set": 0
+      },
+      "emissive": [
+        0,
+        0,
+        0
+      ],
+      "emissive_texture": null,
+      "id": "clay",
+      "metallic": 0,
+      "metallic_roughness_texture": null,
+      "normal_scale": 1,
+      "normal_texture": null,
+      "roughness": 0.800000011920929
+    }
+  ],
+  "metadata": {},
+  "nodes": [
+    {
+      "id": "cut",
+      "inputs": [
+        {
+          "kind": "node",
+          "port": "operand",
+          "reference": "missing",
+          "type": "mesh"
+        },
+        {
+          "kind": "node",
+          "port": "operand",
+          "reference": "cutter",
+          "type": "mesh"
+        }
+      ],
+      "materials": [
+        "clay"
+      ],
+      "operation": "solid.csg",
+      "operation_version": 1,
+      "output_type": "mesh",
+      "parameters": {
+        "operator": "subtract"
+      },
+      "transform": [
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+      ]
+    },
+    {
+      "id": "outer",
+      "inputs": [],
+      "materials": [
+        "clay"
+      ],
+      "operation": "primitive.box",
+      "operation_version": 1,
+      "output_type": "mesh",
+      "parameters": {
+        "size": [
+          2,
+          2,
+          2
+        ]
+      },
+      "transform": [
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+      ]
+    },
+    {
+      "id": "cutter",
+      "inputs": [],
+      "materials": [
+        "clay"
+      ],
+      "operation": "primitive.box",
+      "operation_version": 1,
+      "output_type": "mesh",
+      "parameters": {
+        "size": [
+          1,
+          1,
+          1
+        ]
+      },
+      "transform": [
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+      ]
+    }
+  ],
+  "outputs": [
+    "cut"
+  ],
+  "parameters": {},
+  "required_capabilities": [
+    {
+      "name": "matter.recipe.core",
+      "version": 1
+    },
+    {
+      "name": "matter.material.pbr",
+      "version": 1
+    }
+  ],
+  "resources": [],
+  "rng_algorithm": "matter.splitmix64.v1",
+  "schema_version": {
+    "major": 1,
+    "minor": 0
+  },
+  "seed": "0123456789abcdef",
+  "source": {
+    "content": null,
+    "id": "corpus.ordered-csg",
+    "legacy_hashes": [],
+    "revision": "1",
+    "uri": "fixture://component-separation/ordered-csg"
+  },
+  "source_map": {},
+  "textures": []
+}

@@ -477,6 +477,14 @@ public:
         const PartGeo* geo = load(hash, err);
         if (!geo) return false;
 
+        // The authored/budget full-gather paths currently serialize no child
+        // references. Reject this new explicit contract before materializing
+        // it, instead of losing a child's geometry or local material silently.
+        for(const auto& hint:geo->hints.child_px) if(hint.second==0) {
+            err="flatten: permanent child instances require the default parent LOD ladder";
+            return false;
+        }
+
         NormalMatF3 nm(world);
         for (size_t i = 0; i < geo->tris.size(); ++i) {
             const Tri& s = geo->tris[i];
@@ -599,6 +607,16 @@ public:
             mul16(world, c.transform, child_world);
             auto hit = geo->hints.child_px.find((uint32_t)ci);
             if (hit != geo->hints.child_px.end()) {
+                if(hit->second==0) {
+                    // A material-bearing child must keep its own local frame
+                    // and VT owner at every distance. Do not include it in the
+                    // shared cutover of other, distance-limited child hints.
+                    part_asset::FlatInstanceRef ref{};
+                    ref.child_resolved_hash=c.child_resolved_hash;
+                    std::memcpy(ref.transform,child_world,16*sizeof(float));
+                    instance_refs_.push_back(ref);
+                    continue;
+                }
                 HintedRef hr;
                 hr.ref.child_resolved_hash = c.child_resolved_hash;
                 std::memcpy(hr.ref.transform, child_world, 16 * sizeof(float));
@@ -984,6 +1002,23 @@ static FlattenResult flatten_static_lod_ladder(
                               matter::kMaxSerializedLodLevels);
     if (n == 0) { res.error = "flatten: empty static-lod plan"; return res; }
 
+    // A sole impostor at zero makes build() a bake source, not a runtime
+    // mesh. Initially this contract is for leaves: retaining or inlining a
+    // child hierarchy needs a separate, bounded hierarchy bake.
+    const bool source_only = n == 1 && !plan.level_gen.empty() &&
+        plan.level_gen[0] == "impostor {}";
+    if (source_only) {
+        const PartGeo* source = g0.load_public(root_hash, res.error);
+        if (!source || !source->children.empty() || !g0.instance_refs().empty()) {
+            res.error = "flatten: an impostor-only bake source must be a leaf";
+            return res;
+        }
+        if (plan.no_impostor || !env_impostors_enabled()) {
+            res.error = "flatten: impostor-only representation is disabled";
+            return res;
+        }
+    }
+
     // The clamp above would TRUNCATE an over-long plan, and §3.4's terminal is
     // by definition the last entry — so a plan longer than the cap would drop
     // the impostor and bake a mesh-only ladder that looks entirely intentional.
@@ -1017,6 +1052,7 @@ static FlattenResult flatten_static_lod_ladder(
             }
         }
     };
+    if (source_only) acc(g0.tris());
 
     const bool ladder_log = ladder_log_level() > 0;
     std::string ladder_line;
@@ -1069,7 +1105,7 @@ static FlattenResult flatten_static_lod_ladder(
                     res.error = "flatten: impostor rep is not the terminal rep";
                     return res;
                 }
-                if (levels.empty()) {
+                if (levels.empty() && !source_only) {
                     res.error = "flatten: impostor rep with no mesh rung to depict";
                     return res;
                 }
@@ -1090,10 +1126,10 @@ static FlattenResult flatten_static_lod_ladder(
                 // Rep 0, not the coarsest rung -- see the default ladder's
                 // note above for why. `levels.front()` is this ladder's own
                 // rep 0 (the authored `at: 0` entry).
-                const uint32_t src_idx = levels.front().blas_idx;
+                const uint32_t src_idx = source_only ? UINT32_MAX : levels.front().blas_idx;
                 const BLASManager::BLASEntry* src =
                     src_idx < blas_entries.size() ? blas_entries[src_idx].get() : nullptr;
-                if (!src) {
+                if (!src && !source_only) {
                     res.error = "flatten: impostor source rung missing";
                     return res;
                 }
@@ -1102,12 +1138,18 @@ static FlattenResult flatten_static_lod_ladder(
                 // 4-triangle rung is worth replacing with a 2-triangle card —
                 // so a declared impostor under the floor drops the rung rather
                 // than baking an atlas that buys nothing.
-                if (!impostor::cluster_earns_impostor(src->triangles.size())) {
+                const auto& source_tris = source_only ? g0.tris() : src->triangles;
+                const auto& source_ex = source_only ? g0.triex() : src->tri_extra;
+                if (!source_only && !impostor::cluster_earns_impostor(source_tris.size())) {
                     if (ladder_log) ladder_line += " [impostor:under-floor]";
                     break;
                 }
                 impostor::ClusterImpostor imp;
-                if (!impostor::bake_cluster(0u, src->triangles, src->tri_extra, imp)) {
+                if (!impostor::bake_cluster(0u, source_tris, source_ex, imp)) {
+                    if (source_only) {
+                        res.error = "flatten: impostor-only source failed to bake";
+                        return res;
+                    }
                     if (ladder_log) ladder_line += " [impostor:bake-failed]";
                     break;
                 }
@@ -1119,8 +1161,7 @@ static FlattenResult flatten_static_lod_ladder(
                     e.tint = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
                 impostor::depicts_hash_add_cluster(impostor_depicts,
                                                    imp.cluster_index,
-                                                   src->triangles,
-                                                   src->tri_extra);
+                                                   source_tris, source_ex);
                 part_impostor.clusters.push_back(std::move(imp));
                 tp = &own_tris; ep = &own_ex;
             } else if (name != "decimate") {
@@ -1901,6 +1942,17 @@ static FlattenResult flatten_part_impl(const std::string& cache_root,
         !has_variants && have_static_plan && slod_plan.drives_ladder();
 
     if (has_variants || has_authored_ladder) {
+        // Reject unsupported hierarchy sources before materializing them. A
+        // tree can reference millions of needles; discovering this contract
+        // violation after gather() would first expand that entire source.
+        if (has_authored_ladder && slod_plan.level_hashes.size() == 1 &&
+            slod_plan.level_gen.size() == 1 && slod_plan.level_gen[0] == "impostor {}") {
+            const PartGeo* source = g.load_public(root_hash, res.error);
+            if (!source || !source->children.empty()) {
+                res.error = "flatten: an impostor-only bake source must be a leaf";
+                return res;
+            }
+        }
         if (!g.gather(root_hash, kIdentity, 0, res.error)) return res;
         std::vector<Tri>&   full_full   = g.tris();
         std::vector<TriEx>& full_fullex = g.triex();
@@ -2436,6 +2488,25 @@ static FlattenResult flatten_part_impl(const std::string& cache_root,
 
     res.ok = true;
     return res;
+}
+
+bool impostor_only_source_digest(const std::string& cache_root, uint64_t root_hash,
+                                uint64_t& digest, std::string& error) {
+    Gatherer source(cache_root, FlattenTargets{});
+    const PartGeo* geo = source.load_public(root_hash, error);
+    if (!geo || !geo->children.empty()) {
+        if (error.empty()) error = "impostor-only bake source is not a leaf";
+        return false;
+    }
+    // Identical source extraction/normal transforms to the bake. The temporary
+    // source is discarded after this load-time integrity check; it is never
+    // registered as runtime geometry or handed to the GPU.
+    if (!source.gather(root_hash, kIdentity, 0, error) || source.tris().empty())
+        return false;
+    uint64_t h = impostor::depicts_hash_begin();
+    impostor::depicts_hash_add_cluster(h, 0u, source.tris(), source.triex());
+    digest = impostor::depicts_hash_finish(h);
+    return true;
 }
 
 // Public entry point: outer boundary that converts a std::bad_alloc thrown by

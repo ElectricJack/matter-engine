@@ -1,0 +1,78 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+layout(local_size_x=64) in;
+#include "scene_instance.glsl"
+layout(set=0,binding=0,std140) uniform FrameConstants {
+    mat4 world_to_clip;
+    mat4 previous_world_to_clip;
+    vec4 frustum_planes[6];
+    vec4 camera_eye_pixel_budget;
+    uvec4 counts;
+    uvec4 capacities;
+} frame;
+layout(set=1,binding=1,std430) readonly buffer Instances { GpuInstance instances[]; };
+layout(set=1,binding=27,std430) readonly buffer GeometryHierarchy { uint geometry_words[]; };
+// Dispatch x/y/z, selected count/capacity/overflow, request count/status flags,
+// status bit 0: request overflow; bit 1: visible refinement fallback.
+// then selected {instance, cluster, override slot, reserved} records followed
+// by 1024 bounded {job, missing-node} request records.
+layout(set=1,binding=28,std430) buffer GeometrySelected { uint selected[]; };
+uint geometry_job, geometry_job_index, geometry_instance_index;
+GpuInstance geometry_instance;
+uint geometry_vt_bucket = 0xffffffffu;
+void emit_cluster(uint cluster) {
+    uint slot = atomicAdd(selected[3], 1u);
+    if (slot >= selected[4]) { atomicMin(selected[3], selected[4]); atomicOr(selected[5], 1u); return; }
+    uint p = 8u+slot*4u;
+    selected[p] = geometry_instance_index; selected[p+1u] = cluster;
+    selected[p+2u] = geometry_instance.part_slot; selected[p+3u] = geometry_vt_bucket;
+    atomicMax(selected[0], slot/64u + 1u);
+}
+vec4 geometry_plane(uint i) { return frame.frustum_planes[i]; }
+float geometry_scale() { return uintBitsToFloat(geometry_words[geometry_job+5u]); }
+uint geometry_root(uint i) { return geometry_words[geometry_words[2]+geometry_words[geometry_job+1u]+i]; }
+bool geometry_ready(uint i) { return i < geometry_words[6] && geometry_words[geometry_words[1]+i*12u+10u] != 0u; }
+void geometry_invalid() { atomicOr(selected[5], 2u); }
+void geometry_visit() {}
+void geometry_fallback() { atomicOr(selected[7], 2u); }
+void geometry_request(uint node) {
+    if (node >= geometry_words[6]) return;
+    uint slot = atomicAdd(selected[6], 1u);
+    if (slot >= 1024u) { atomicMin(selected[6], 1024u); atomicOr(selected[7], 1u); return; }
+    uint p = 8u + selected[4]*4u + slot*2u;
+    selected[p] = geometry_job_index; selected[p+1u] = node;
+}
+void geometry_emit(uint i) { emit_cluster(geometry_words[geometry_words[1]+i*12u+11u]); }
+#include "geometry_cut.glsl"
+GeometryCutNode geometry_node(uint i) {
+    uint p = geometry_words[1]+i*12u;
+    uint base = geometry_words[geometry_job+7u] >> 1u;
+    uvec4 links = uvec4(geometry_words[p+8u],geometry_words[p+9u],geometry_words[p+10u],geometry_words[p+11u]);
+    if (links.x != GEOMETRY_NO_CHILD) links.x += base;
+    if (links.y != GEOMETRY_NO_CHILD) links.y += base;
+    return GeometryCutNode(
+        uintBitsToFloat(uvec4(geometry_words[p],geometry_words[p+1u],geometry_words[p+2u],geometry_words[p+3u])),
+        uintBitsToFloat(uvec4(geometry_words[p+4u],geometry_words[p+5u],geometry_words[p+6u],geometry_words[p+7u])),
+        links);
+}
+void main() {
+    geometry_job_index = gl_GlobalInvocationID.x;
+    if (geometry_job_index >= geometry_words[0] + geometry_words[5]) return;
+    bool hierarchy = false;
+    if (geometry_job_index < geometry_words[0]) {
+        geometry_job = geometry_words[3]+geometry_job_index*8u;
+        geometry_instance_index = geometry_words[geometry_job];
+        hierarchy = geometry_words[geometry_job+2u] != 0u;
+    } else geometry_instance_index = geometry_words[4]+geometry_job_index-geometry_words[0];
+    if (geometry_instance_index >= frame.counts.x || geometry_instance_index >= frame.capacities.y) return;
+    geometry_instance = instances[geometry_instance_index];
+    if (hierarchy) {
+        if ((geometry_words[geometry_job+7u] & 1u) != 0u)
+            geometry_vt_bucket = geometry_instance.cluster_start * 9u; // kVkMaxLod
+        geometry_select(geometry_words[geometry_job+2u], geometry_words[geometry_job+3u],
+            geometry_words[geometry_job+4u], geometry_instance.transform, frame.camera_eye_pixel_budget.xyz,
+            uintBitsToFloat(geometry_words[geometry_job+6u]));
+    } else if (geometry_instance.water_pad0 == 0u) {
+        for (uint i = 0u; i < geometry_instance.cluster_count; ++i) emit_cluster(geometry_instance.cluster_start+i);
+    }
+}

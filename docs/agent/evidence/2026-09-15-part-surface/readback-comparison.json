@@ -1,0 +1,50 @@
+[
+  {
+    "file": "clay-projected-0.vt.bin",
+    "bytes": 983040,
+    "sha256": "1efee85ecab122a1ecbb891626748e82b543e9ef34f2e6c8ea11c870c1146c5c",
+    "identical_to_previous_native_readback": true
+  },
+  {
+    "file": "clay-projected-1.vt.bin",
+    "bytes": 983040,
+    "sha256": "a48ea77aabad25b29ee6d711b6277f942b28d1ff4e1b03da3f8def4c5fb94fd2",
+    "identical_to_previous_native_readback": true
+  },
+  {
+    "file": "clay-projected-2.vt.bin",
+    "bytes": 983040,
+    "sha256": "88c47daa33888ed02fd387f6a336dd8248165be074e5a3117900882388aa7dce",
+    "identical_to_previous_native_readback": true
+  },
+  {
+    "file": "clay-projected-3.vt.bin",
+    "bytes": 983040,
+    "sha256": "d0db2e548264b72893a74878792ebe50b05628810c2b8f6f5590f229599b990b",
+    "identical_to_previous_native_readback": true
+  },
+  {
+    "file": "clay-projected-4.vt.bin",
+    "bytes": 983040,
+    "sha256": "a801bbcd4dd2b22223724bdbf79ea81afa4966fdf6567827eccc9d4ce41de473",
+    "identical_to_previous_native_readback": true
+  },
+  {
+    "file": "clay-projected-5.vt.bin",
+    "bytes": 983040,
+    "sha256": "6366adff366c8739f66e44298cf4c501227b0c79eea2ac7dd28b312c8a1108da",
+    "identical_to_previous_native_readback": true
+  },
+  {
+    "file": "clay-projected-6.vt.bin",
+    "bytes": 983040,
+    "sha256": "6103a74f8c7868a728903533c5c95d6bd9bbe283883740c0dc19f6178680024c",
+    "identical_to_previous_native_readback": true
+  },
+  {
+    "file": "clay-projected-7.vt.bin",
+    "bytes": 983040,
+    "sha256": "5f30519af0ac890250b2d66b1ae145c6b31b55d4edb331f5627e4c489f32bbb4",
+    "identical_to_previous_native_readback": true
+  }
+]

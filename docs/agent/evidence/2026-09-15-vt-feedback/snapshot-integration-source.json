@@ -1,0 +1,28 @@
+{
+  "sources": {
+    "MatterEngine3/src/render/vk_scene_renderer.h": "589e5b5f011924c8bca4b0e77030e108cc299b7650a4ad5dacab198f6f09d45b",
+    "MatterEngine3/src/render/vk_scene_renderer.cpp": "06e9f755ddb2e0056bf34eade873cfdbe61a1e6e29043df6c17018d3f3202cf6",
+    "MatterEngine3/src/render/vt_types.h": "d0fcc24043e318674cbb25871c433a40b6047402be54005b03dcf2e36b91feac",
+    "MatterEngine3/src/render/vt_residency.cpp": "6b53fab6664ba27e25ef4d9494fbca14e9b83fff296f18c2de058250ea8e8731",
+    "MatterEngine3/src/render/vt_residency.h": "0b92beea3c05878f10c3c1e7f17319b0befa7cea20aa01aa45cfe18664460986",
+    "MatterEngine3/src/render/vt_compositor.cpp": "f969a38fe260cb7f1d33ceee54c7180a941a2b036516570aacb5905828d05ef7",
+    "MatterEngine3/src/render/vt_compositor.h": "3901435848dcaefbf07146f18dd793c21927c4263e82e8454788956e333136f9",
+    "MatterEngine3/src/render/vt_enrich.cpp": "fa9d59d47f53b8307c6ed29d344a7db2459938ad0095c0c6721d2b30fc6d36f7",
+    "MatterEngine3/src/render/vt_enrich.h": "12d1af6452d2051dec120ab88592aafa5d5386cb32a4371ebcb0fdb938cb5b41",
+    "MatterEngine3/src/render/vt_chart_gpu.h": "d7d8993caf4293852d62f7396473e6520168a0c5ca27227d1bfda9fe7c06e68c",
+    "MatterEngine3/tests/vulkan_smoke_tests.cpp": "add6dcc46723363debbf3d0a24ea52b91c438611e07625688b8e88e2dd87a9f2",
+    "MatterEngine3/tests/vt_compositor_tests.cpp": "330fd2b52ef16819be209b04a75640b6612c18e489958e697ebf903ea9b8542a",
+    "MatterEngine3/tests/vt_queue_tests.h": "2b126828011c61ceb5e38b3c8f4716907d8bb862c2a2160730f41459949adbb2",
+    "MatterEngine3/shaders_vk/vt_composite.comp": "c7a3f8da5247108274e9e72fd25be58164a01fe70e24d576df1316462817f431",
+    "MatterEngine3/shaders_vk/vt_chart_types.glsl": "fc7ddbc9b837542d4bc7bbe26a613c03967bb44ae45a20c48abf1f60696ca4a5",
+    "MatterEngine3/shaders_vk/vt_chart_resolve.glsl": "ca7a1add9a2408bef74fe89e85f73996d225c803c1bf3e5e123f38b62ce4e2c8",
+    "MatterEngine3/shaders_vk/vt_enrich_ao.comp": "a431363d776d9a1de66db8eaed638c964a9f83141b9e5db814316f832da31162",
+    "MatterEngine3/src/render/vt_snapshot.h": "c41efa5c34974d90117b0be5b1ce4b664fae1e08e890da91a288400bb611615c"
+  },
+  "binaries": {
+    "MatterEditor/build/cmake/windows-msvc/relwithdebinfo/vt_compositor_tests.exe": "7c923a116bc1c19598527895fd8773b95db45884897e69f962199d50ac89f7c3",
+    "MatterEditor/build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe": "91f3666aee1c0e09bde9c2ecd2665816ecdbeac6f9563df51cb62f17817d833b",
+    "MatterEditor/build/cmake/windows-msvc/relwithdebinfo/vt_residency_tests.exe": "00f9eead1d294c7e205405fb5a3145af1067ac64b0479384b089af50faef1d8c",
+    "MatterEditor/build/windows-msvc/editor.exe": "9a425ce26f9ed37695bce63ef89ea86a65f78e840520c999312076d51f8180c5"
+  }
+}

@@ -265,7 +265,7 @@ root, so `procedural.update` has no working fixture.** Filed as AQ
 
 `procedural.parameters` answers `ok` with `available:true` and `parameters: []`
 for every root in all four worlds. The decisive case is `Meadow`:
-`projects/world_demo/scenes/Meadow/objects/Meadow.js:37` declares
+`projects/world_demo/scenes/vegetation/Meadow/objects/Meadow.js:37` declares
 `static params = { worldSeed: 20260721 }`, that module *is* the published root,
 and `procedural.parameters` resolves its `source` to exactly that file — yet
 reports no parameters, and `procedural.update{worldSeed:…}` is refused with
@@ -281,6 +281,13 @@ world and is deterministic per seed. Only the parameter projection is empty.
 A survey of `projects/world_demo` found `Meadow` is the **only** world whose
 `static roots` names a module declaring `static params` at all, so no other
 fixture could cover this either.
+
+**Resolved** by AQ `smart-dune.10`: the part-graph snapshot now records each
+node's *effective* parameters — the merged object the resolved hash was already
+folded from — alongside the placement params, and every parameter surface reads
+that. The two rows above were true of `a0ab93e0` and are left as the record of
+that run; re-running them against the fix is the follow-up acceptance pass's
+job.
 
 ### Frame guards are unusable on an animated world
 

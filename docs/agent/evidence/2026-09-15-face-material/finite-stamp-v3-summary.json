@@ -1,0 +1,14 @@
+{
+  "stamp_faces": 48,
+  "stamp_queries": 646896,
+  "stamp_max_channel_error": 1.98129565e-05,
+  "stamp_all_mip_pixels": 1485456,
+  "stamp_all_mip_float_bytes": 95069184,
+  "largest_stamp_float_bytes": 2796224,
+  "material_oracles": 20,
+  "material_cpu_max_channel_error": 4.76837158e-07,
+  "material_cpu_max_height_error_m": 4.51109372e-10,
+  "material_cpu_max_normal_component_error": 5.77419996e-06,
+  "material_total_coverage_mismatches": 0,
+  "material_exact_max_error": 0.0
+}
