@@ -89,7 +89,7 @@ float clearance_along(const FieldRuntime& f, float x, float y, float z,
 int main(int argc, char** argv) {
     const char* scene = argc > 1
         ? argv[1]
-        : "../../projects/world_demo/scenes/StreamCaverns/StreamCaverns.js";
+        : "../../projects/world_demo/scenes/streaming/StreamCaverns/StreamCaverns.js";
     bool ok = false;
     const std::string source = read_file(scene, ok);
     if (!ok) {

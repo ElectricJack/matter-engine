@@ -50,6 +50,33 @@ void test_invalid_plan_does_not_mutate_the_output() {
           "non-finite numeric input is rejected");
 }
 
+// A module may declare a nested default. It is reported (it IS an effective
+// parameter), but the applied path cannot carry it, so both the description and
+// the plan must say so rather than accepting a change that would silently do
+// nothing.
+void test_non_scalar_parameters_are_reported_but_not_overridable() {
+    procedural::Root value = root();
+    value.params_json = "{\"height\":12,\"palette\":{\"a\":1}}";
+
+    const Value result = procedural::describe_json(value);
+    const Value* fields = result.find("parameters");
+    CHECK(fields && fields->arr.size() == 2, "the nested parameter is still reported");
+    const Value* scalar = fields->arr[0].find("overridable");
+    CHECK(scalar && scalar->find("available") && scalar->find("available")->b,
+          "a scalar parameter is overridable");
+    const Value* nested = fields->arr[1].find("overridable");
+    CHECK(nested && nested->find("available") && !nested->find("available")->b,
+          "a nested parameter is explicitly not overridable");
+    CHECK(nested->find("reason"), "and says why");
+
+    procedural::Plan plan;
+    std::string error;
+    CHECK(!procedural::make_plan(value, parse("{\"palette\":{\"a\":2}}"), plan, error),
+          "an update naming a nested parameter is refused, not silently dropped");
+    CHECK(procedural::make_plan(value, parse("{\"height\":13}"), plan, error),
+          "a scalar parameter on the same root still plans");
+}
+
 void test_plan_is_atomic_and_preserves_seed_as_integer() {
     procedural::Plan plan;
     std::string error;
@@ -71,6 +98,7 @@ void test_plan_is_atomic_and_preserves_seed_as_integer() {
 int main() {
     test_schema_is_typed_and_honest_about_ranges();
     test_invalid_plan_does_not_mutate_the_output();
+    test_non_scalar_parameters_are_reported_but_not_overridable();
     test_plan_is_atomic_and_preserves_seed_as_integer();
     std::puts("procedural parameter tests: PASS");
     return 0;

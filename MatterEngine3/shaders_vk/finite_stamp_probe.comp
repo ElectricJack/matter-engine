@@ -1,0 +1,15 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#define STAMP_SET 0
+#define STAMP_PIXELS_BINDING 0
+#define STAMP_LEVELS_BINDING 1
+#include "finite_surface_stamp.glsl"
+layout(local_size_x=128) in;
+layout(std430,set=0,binding=2) readonly buffer Params { vec4 domain; uvec4 limits; } params;
+layout(std430,set=0,binding=3) readonly buffer Queries { vec4 queries[]; };
+layout(std430,set=0,binding=4) writeonly buffer Results { StampChannels results[]; };
+void main() {
+    uint i=gl_GlobalInvocationID.x;
+    if (i>=params.limits.x) return;
+    results[i]=sample_finite_stamp(0u,params.limits.y,params.domain,queries[i].xy,queries[i].z);
+}

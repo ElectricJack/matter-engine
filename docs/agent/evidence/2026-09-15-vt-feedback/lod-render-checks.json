@@ -1,0 +1,41 @@
+[
+  {
+    "name": "lod-render-smoke-build",
+    "command": [
+      "./tools/build-windows-from-wsl.sh",
+      "RelWithDebInfo",
+      "vulkan_smoke_tests"
+    ],
+    "exit": 0,
+    "elapsed_seconds": 21.048678636550903,
+    "log": "docs/agent/evidence/2026-09-15-vt-feedback/lod-render-smoke-build.log"
+  },
+  {
+    "name": "lod-render-vt-enrich",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-Command",
+      "$env:MATTER_VK_SMOKE_MODE=\"vt-enrich\"; $env:MATTER_VK_VALIDATION=\"1\"; Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe\"; exit $LASTEXITCODE"
+    ],
+    "exit": 0,
+    "elapsed_seconds": 2.681504487991333,
+    "log": "docs/agent/evidence/2026-09-15-vt-feedback/lod-render-vt-enrich.log",
+    "all_pass": true,
+    "zero_validation_errors": true
+  },
+  {
+    "name": "lod-render-vt-queue",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-Command",
+      "$env:MATTER_VK_SMOKE_MODE=\"vt-queue\"; $env:MATTER_VK_VALIDATION=\"1\"; Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe\"; exit $LASTEXITCODE"
+    ],
+    "exit": 0,
+    "elapsed_seconds": 1.0383622646331787,
+    "log": "docs/agent/evidence/2026-09-15-vt-feedback/lod-render-vt-queue.log",
+    "all_pass": true,
+    "zero_validation_errors": true
+  }
+]

@@ -1,0 +1,21 @@
+**********************************************************************
+** Visual Studio 2022 Developer Command Prompt v17.14.7
+** Copyright (c) 2025 Microsoft Corporation
+**********************************************************************
+-- Configuring done (0.1s)
+-- Generating done (0.1s)
+-- Build files have been written to: D:/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-5/tests/component-separation/build/windows-msvc-relwithdebinfo
+**********************************************************************
+** Visual Studio 2022 Developer Command Prompt v17.14.7
+** Copyright (c) 2025 Microsoft Corporation
+**********************************************************************
+[1/2] Building CXX object CMakeFiles\corpus_native.dir\native.cpp.obj
+[2/2] Linking CXX executable corpus_native.exe
+Internal ctest changing into directory: D:/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-5/tests/component-separation/build/windows-msvc-relwithdebinfo
+Test project D:/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-5/tests/component-separation/build/windows-msvc-relwithdebinfo
+    Start 1: compatibility_corpus
+1/1 Test #1: compatibility_corpus .............   Passed    0.10 sec
+
+100% tests passed, 0 tests failed out of 1
+
+Total Test time (real) =   0.10 sec

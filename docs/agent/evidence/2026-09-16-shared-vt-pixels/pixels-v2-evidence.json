@@ -1,0 +1,29 @@
+{
+  "source_changes": [],
+  "artifacts": {
+    "docs/agent/evidence/2026-09-16-shared-vt-pixels/README.md": "d6d440ff550d8dc34be3859c5e004393de35b5569bbec42262c0a0c95d0489ac",
+    "docs/agent/evidence/2026-09-16-shared-vt-pixels/pixels-v1-build-cpu.log": "eeb26d53785e788192957cbc85fb8dbc785e4e500f990ca79c26276cd576eda3",
+    "docs/agent/evidence/2026-09-16-shared-vt-pixels/pixels-v1-cpu-test.log": "9e23733e86ca4ca41fe830668a5be05615274b5d747466d07e45445284439296",
+    "docs/agent/evidence/2026-09-16-shared-vt-pixels/pixels-v1-sources.json": "ac973b641ef35bfca3a3b0953a3c12dab98354c645164cba50b4b2e2ec7364f5",
+    "docs/agent/evidence/2026-09-16-shared-vt-pixels/pixels-v2-build-cpu.log": "044dfef7a55d67a5e10c6ac4bfab698df86930731f90cdbd2d8e0dc5d2ee8d2c",
+    "docs/agent/evidence/2026-09-16-shared-vt-pixels/pixels-v2-build-editor.log": "848839916f313738d7de932475c743c30b450f775b4c6f6bfd3d4e5dcd1e6ab1",
+    "docs/agent/evidence/2026-09-16-shared-vt-pixels/pixels-v2-build-manifest.json": "1b18fd2247c5c668a933033dbfc6302e94a2d85dfb09997fa9ab6a849d557132",
+    "docs/agent/evidence/2026-09-16-shared-vt-pixels/pixels-v2-build-smoke.log": "6730955bf447329ca18a24e4fc83a1442d6ee30e862020510d3bf02c9deaea40",
+    "docs/agent/evidence/2026-09-16-shared-vt-pixels/pixels-v2-cpu-test.log": "9e23733e86ca4ca41fe830668a5be05615274b5d747466d07e45445284439296",
+    "docs/agent/evidence/2026-09-16-shared-vt-pixels/pixels-v2-sources.json": "9a4a47487aec0b4b2a876443de9a1ec1565b6657279afe24f2139bfb9ef408e0",
+    "docs/agent/evidence/2026-09-16-shared-vt-pixels/pixels-v2-terrain-capture.log": "9ddbfd2afe2eff0a80a99141d4453125c4003c041569d99a6ec2f0a1f177fd08",
+    "docs/agent/evidence/2026-09-16-shared-vt-pixels/pixels-v2-terrain-comparison.json": "232644fba20916b564fde4034e494767eb594e0871f976fc1eb69dc5c6cb4128",
+    "docs/agent/evidence/2026-09-16-shared-vt-pixels/pixels-v2-test-surface-parallax.log": "0c0c0386aa3b5c7c7e86399b026450b1c114e77603ddb8aa03f6fcb36d04d214",
+    "docs/agent/evidence/2026-09-16-shared-vt-pixels/pixels-v2-test-vt-composed-parallax.log": "0bf2a157a059c75f7399f08880475422783b839f858980808aad396ea807c538",
+    "docs/agent/evidence/2026-09-16-shared-vt-pixels/pixels-v2-test-vt-composed-seam.log": "a016de6d9f24f9bf784659131f64f3ff8ef612fbbfbf25d07e004f36f7077988",
+    "docs/agent/evidence/2026-09-16-shared-vt-pixels/pixels-v2-test-vt-direct-source.log": "d7c07df4b255b3ae4e63afa6e417b9fbd0e7384c96d458f0b276a46fb6c47d5e",
+    "docs/agent/evidence/2026-09-16-shared-vt-pixels/pixels-v2-test-vt-input-snapshot.log": "dbba9a60eb135de56149b1b7801cffa4196b48c27d7b2bef53e3b4465a83fdfe",
+    "docs/agent/evidence/2026-09-16-shared-vt-pixels/pixels-v2-test-vt-queue.log": "d68f92f6f92472415576e032b1cadf7f4f077d7e78c86868d7fcf1b510e31c9d",
+    "docs/agent/evidence/2026-09-16-shared-vt-pixels/pixels-v2-tests.json": "d4a8e3cb18a51093c6a5aeca26a8ed3ce0172144bbc4b2798b6b63a8113d926c",
+    "docs/agent/evidence/2026-09-16-shared-vt-pixels/run_checks.py": "8aa89c74c7d78cb7a893e8d11c4f3b84254e936b16f90a1129d6ef35f74a93f6"
+  },
+  "native_cpu": "ALL PASS",
+  "native_gpu_modes": 6,
+  "scene_capture": "docs/agent/evidence/2026-09-15-material-look/terrain-shared-pixels-v2-result.json",
+  "scope": "Shared material allocation groundwork; production wall pixel identities and canonical mapping remain open."
+}

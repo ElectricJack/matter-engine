@@ -1,4 +1,5 @@
 #include "check.h"
+#include "memory_fixture_io.h"
 
 #include "render/water_mesh_animation_playback.h"
 
@@ -8,6 +9,33 @@
 #include <fstream>
 
 namespace {
+#ifdef MATTER_CODEC_SOURCE_QUALIFICATION
+std::shared_ptr<matter::test::MemoryCacheByteStorage> storage;
+#else
+const auto storage = std::make_shared<matter::test::MemoryCacheByteStorage>();
+#endif
+bool activate_fixture(const hydrology::HydrologyNetworkArtifact& manifest,
+    const std::filesystem::path& root, uint32_t material, uint32_t slots, uint64_t budget,
+    viewer::WaterMeshAnimationPlayback& playback, viewer::WaterAnimationFallback& fallback) {
+    return viewer::activate_water_mesh_animation_playback(manifest, root, material, slots,
+        budget, playback, fallback, storage.get());
+}
+bool load_fixture(const std::filesystem::path& path,
+    hydrology::WaterMeshAnimationArtifact& artifact, gpu_meshing::Error& error) {
+    if (!storage) return hydrology::load_water_mesh_animation_artifact(path, artifact, error);
+    const auto bytes=storage->open(path.generic_string());
+    return bytes && hydrology::deserialize_water_mesh_animation_artifact(*bytes,artifact,error);
+}
+void erase_fixture(const std::filesystem::path& path) {
+    if (storage) storage->erase(path.generic_string());
+    else std::filesystem::remove(path);
+}
+void clear_fixture(const std::filesystem::path& path) {
+    if (!storage) { std::filesystem::remove_all(path); return; }
+    const auto prefix=path.generic_string()+"/";
+    for(const auto& entry:storage->entries())
+        if(entry.first.compare(0,prefix.size(),prefix)==0)storage->erase(entry.first);
+}
 
 constexpr std::uint32_t kAuthoredWaterMaterial = 19u;
 
@@ -61,10 +89,11 @@ std::pair<std::uint64_t, std::uint64_t> expected_activation_bytes(
         const hydrology::HydrologyWaterAnimationReference& reference) {
         const auto path = fixture.root / reference.relative_path;
         const std::uint64_t file_bytes =
+            storage ? storage->open(path.generic_string())->size() :
             static_cast<std::uint64_t>(std::filesystem::file_size(path));
         hydrology::WaterMeshAnimationArtifact artifact{};
         gpu_meshing::Error error{};
-        CHECK(hydrology::load_water_mesh_animation_artifact(
+        CHECK(load_fixture(
                   path, artifact, error), error.message.c_str());
         const std::uint64_t decoded_heap_bytes = artifact_heap_bytes(artifact);
         activation_high_water_bytes = std::max(
@@ -84,8 +113,13 @@ Fixture write_fixture() {
     const auto stamp =
         std::chrono::steady_clock::now().time_since_epoch().count();
     Fixture fixture{};
+#ifdef MATTER_CODEC_SOURCE_QUALIFICATION
     fixture.root = std::filesystem::temp_directory_path() /
         ("matter-water-playback-" + std::to_string(stamp));
+#else
+    static unsigned generation=0;
+    fixture.root = "runtime/water-playback/" + std::to_string(++generation);
+#endif
     fixture.manifest.state = hydrology::HydrologyNetworkState::Ready;
     fixture.manifest.section_animations = {
         {"upper", "hydrology/animations/upper.mhwa", 101u,
@@ -102,10 +136,13 @@ Fixture write_fixture() {
             ref.id, ref.semantic_key, ref.source_primary_payload_digest,
             ref.source_secondary_payload_digest);
         gpu_meshing::Error error{};
-        CHECK(hydrology::save_water_mesh_animation_artifact_immutable(
-                  fixture.root / ref.relative_path, artifact, error),
-              error.message.c_str());
-        CHECK(hydrology::load_water_mesh_animation_artifact(
+        if (storage) {
+            std::vector<uint8_t> bytes;
+            CHECK(hydrology::serialize_water_mesh_animation_artifact(artifact,bytes,error),error.message.c_str());
+            CHECK(storage->publish((fixture.root/ref.relative_path).generic_string(),bytes), "publish RAM animation bytes");
+        } else CHECK(hydrology::save_water_mesh_animation_artifact_immutable(
+                  fixture.root / ref.relative_path, artifact, error), error.message.c_str());
+        CHECK(load_fixture(
                   fixture.root / ref.relative_path, artifact, error),
               error.message.c_str());
         ref.payload_digest = artifact.payload_digest;
@@ -121,7 +158,7 @@ void test_common_clock_and_per_slot_upload_decisions() {
     Fixture fixture = write_fixture();
     viewer::WaterMeshAnimationPlayback playback{};
     viewer::WaterAnimationFallback fallback{};
-    CHECK(viewer::activate_water_mesh_animation_playback(
+    CHECK(activate_fixture(
               fixture.manifest, fixture.root, kAuthoredWaterMaterial,
               3u, 700ull * 1024ull * 1024ull, playback, fallback),
           fallback.message.c_str());
@@ -182,14 +219,14 @@ void test_common_clock_and_per_slot_upload_decisions() {
     CHECK(hydrology::water_mesh_animation_validation_count() ==
               validations_after_activation,
           "steady-state playback uses frame spans proven during transactional activation without re-hashing artifacts");
-    std::filesystem::remove_all(fixture.root);
+    clear_fixture(fixture.root);
 }
 
 void test_cpu_decode_oracle_and_transactional_fallbacks() {
     Fixture fixture = write_fixture();
     viewer::WaterMeshAnimationPlayback playback{};
     viewer::WaterAnimationFallback fallback{};
-    CHECK(viewer::activate_water_mesh_animation_playback(
+    CHECK(activate_fixture(
               fixture.manifest, fixture.root, kAuthoredWaterMaterial,
               2u, 700ull * 1024ull * 1024ull, playback, fallback),
           fallback.message.c_str());
@@ -209,34 +246,37 @@ void test_cpu_decode_oracle_and_transactional_fallbacks() {
 
     auto mismatched = fixture.manifest;
     mismatched.section_animations[0].semantic_key++;
-    CHECK(!viewer::activate_water_mesh_animation_playback(
+    CHECK(!activate_fixture(
               mismatched, fixture.root, kAuthoredWaterMaterial,
               2u, 700ull * 1024ull * 1024ull, playback, fallback) &&
               fallback.reason ==
                   viewer::WaterAnimationFallbackReason::MismatchedReference &&
               playback.compressed_bytes() == active_bytes,
           "mismatched activation falls back without replacing the active set");
-    CHECK(!viewer::activate_water_mesh_animation_playback(
+    CHECK(!activate_fixture(
               fixture.manifest, fixture.root, kAuthoredWaterMaterial, 2u, 1u,
               playback, fallback) &&
               fallback.reason ==
                   viewer::WaterAnimationFallbackReason::CpuBudgetExceeded &&
               playback.compressed_bytes() == active_bytes,
           "over-budget activation is atomic");
-    std::filesystem::remove(
+    erase_fixture(
         fixture.root / fixture.manifest.section_animations[1].relative_path);
-    CHECK(!viewer::activate_water_mesh_animation_playback(
+    CHECK(!activate_fixture(
               fixture.manifest, fixture.root, kAuthoredWaterMaterial, 2u,
               700ull * 1024ull * 1024ull, playback, fallback) &&
               fallback.reason ==
                   viewer::WaterAnimationFallbackReason::MissingArtifact,
           "a missing artifact produces a typed whole-network fallback");
-    std::filesystem::remove_all(fixture.root);
+    clear_fixture(fixture.root);
 
     Fixture corrupt_fixture = write_fixture();
     const auto corrupt_path = corrupt_fixture.root /
         corrupt_fixture.manifest.section_animations.front().relative_path;
-    {
+    if (storage) {
+        auto bytes=*storage->open(corrupt_path.generic_string());bytes.back()^=1;
+        CHECK(storage->publish(corrupt_path.generic_string(),bytes), "publish corrupt animation fixture");
+    } else {
         std::fstream stream(corrupt_path,
                             std::ios::binary | std::ios::in | std::ios::out);
         stream.seekg(-1, std::ios::end);
@@ -246,14 +286,14 @@ void test_cpu_decode_oracle_and_transactional_fallbacks() {
         stream.seekp(-1, std::ios::end);
         stream.write(&value, 1);
     }
-    CHECK(!viewer::activate_water_mesh_animation_playback(
+    CHECK(!activate_fixture(
               corrupt_fixture.manifest, corrupt_fixture.root,
               kAuthoredWaterMaterial, 2u,
               700ull * 1024ull * 1024ull, playback, fallback) &&
               fallback.reason ==
                   viewer::WaterAnimationFallbackReason::CorruptArtifact,
           "a corrupt artifact produces a typed whole-network fallback");
-    std::filesystem::remove_all(corrupt_fixture.root);
+    clear_fixture(corrupt_fixture.root);
 }
 
 }  // namespace

@@ -43,6 +43,87 @@ The client records the current result-file offset before appending its request,
 polls incrementally, tolerates partial writes and transient Windows open races,
 and resets its partial buffer if the result file is truncated or replaced.
 
+### Persistent targets and bounded batches
+
+`tools/matter_agent.py` is safe to use as the small reusable CLI layer in an
+agent workflow.  Its normal one-command form remains the one above; stdout is
+exactly one JSON terminal result and stderr is diagnostics.  Its exit codes
+are stable:
+
+| Exit | Meaning |
+| --- | --- |
+| 0 | Every requested command returned `ok:true`. |
+| 1 | A terminal protocol result returned `ok:false`. Inspect its JSON `code`. |
+| 2 | Local input, file I/O, or client wait failure. A request may already have been appended, so do not blindly resend an edit/regeneration. |
+| 3 | A batch stopped at a failed step; its stdout JSON records the completed prefix. |
+
+Create a named target once, then target the same editor session from later
+shells without repeatedly carrying both paths.  Targets are versioned JSON
+files in `.matter-agent/sessions/` by default (override with
+`MATTER_AGENT_SESSIONS_DIR` or `--sessions-dir`); they contain paths only, not
+credentials or editor state.
+
+```bash
+python3 tools/matter_agent.py session set physics \
+  --cmd-file /mnt/c/tmp/matter-agent-physics/commands.txt \
+  --result-file /mnt/c/tmp/matter-agent-physics/results.jsonl
+
+python3 tools/matter_agent.py scene.list_objects --session physics \
+  --args '{"limit":200}'
+```
+
+The client appends a request once and never automatically retries it.  If the
+editor rotates/truncates the JSONL result file, polling reconnects to the new
+file and continues looking for the original `request_id`; that reconnect does
+not append a second command.  Give a destructive operation an explicit,
+recorded `--request-id` if a caller needs to reconcile an interrupted run with
+the editor's bounded request-id replay window.  A local exit 2 is intentionally
+an *unknown completion state*, not evidence that the operation did not run.
+
+`--batch FILE` sends a small ordered list of ordinary protocol requests.  It
+does not add a new editor command or transaction: each step reaches the normal
+`CommandRegistry` separately, and already-completed edits/regenerations remain
+completed if a later step fails.  At most 64 steps are accepted.  The batch
+prints one JSON `batch_result` with the terminal result (or local error) for
+each dispatched step, `completed_steps`, `remaining_steps`, and
+`transactional:false`.
+
+```json
+{
+  "version": 1,
+  "batch_id": "physics-inspect-reroll-capture-01",
+  "stop_on_error": true,
+  "steps": [
+    {"command": "scene.list_objects", "args": {"limit": 200}},
+    {"command": "selection.replace", "args": {"objects": [{"kind": "entity", "id": "637278442326563570"}]}},
+    {"command": "procedural.update", "args": {"object": {"kind": "baked_root", "id": "123"}, "changes": {"worldSeed": "424242"}, "dry_run": true}},
+    {"command": "job.start", "args": {"operation": "regenerate", "seed": "424242"}},
+    {"command": "job.wait", "args": {"job_id": "1"}, "timeout_ms": 30000},
+    {"command": "viewport.capture", "args": {"path": "C:/tmp/matter-agent-physics/after.png", "annotate_selection": true}}
+  ]
+}
+```
+
+Run it with `python3 tools/matter_agent.py --session physics --batch plan.json`.
+`stop_on_error` defaults to `true`; with it, the first non-OK terminal result
+stops dispatch and exits 3 with `status:"partial"`.  Set it to `false` only
+when later operations are independently safe; every step is still sequential
+and a fully dispatched batch with any non-OK terminal result exits 1.  Step
+`timeout_ms` is 1 through 30000 and otherwise inherits `--timeout`.  A supplied
+`batch_id` makes omitted per-step request IDs deterministic (`<batch_id>:1`,
+`<batch_id>:2`, ...), so retain it in logs when reconciling a failed run.
+
+The 2026-09-10 native MSVC acceptance run
+([`acceptance-2026-09-10.md`](acceptance-2026-09-10.md)) exercised all 28
+descriptors and records which of them are working, broken or untested on that
+revision. Read its capability matrix before relying on `procedural.update`,
+`job.start{reload}` or selection of an unplaced `baked_root`.
+
+Use the direct structured reads (`scene.*`, `selection.list`, `job.*`) for
+routine inspection.  `procedural.update` is a bounded session override, not a
+source editor: authoring JavaScript and broader procedural-code changes stay in
+the normal source-control workflow.
+
 **Driving the native editor from WSL.** A Win32 process launched from WSL does
 NOT inherit arbitrary WSL environment variables — only the ones named in
 `WSLENV`. An `env`-prefixed launch therefore starts an editor that silently
@@ -205,6 +286,9 @@ decide where to look, look there, read again.
 | --- | --- | --- |
 | `path` | string, required | Absolute `.png` path. The same rule the `shot_now` FIFO verb applies (`fifo_safe_absolute_png_path`: drive-absolute or UNC, no `..`, no reserved DOS names, no control characters). |
 | `annotate_selection` | boolean | Also project every selected object's bounding box into the captured image. Default false, because it costs a bounds scan. |
+| `export_channels` | boolean | Write numeric channels from the captured render submission. Default false. |
+| `desired_max_lod` | integer 0–7 | Highest accepted visible VG ladder index; 0 requires the finest. Requires `export_channels:true`. |
+| `require_rt` | boolean | Require native RT and visible BLAS readiness. Requires `export_channels:true`. |
 
 It is the ONE command whose result is not produced on the app lane. The request
 is accepted, a capture is armed on the same present/readback queue `shot_now`
@@ -239,6 +323,8 @@ The four terminal outcomes are deliberately distinct:
   no pick coordinate at all, and clamping to the nearest edge would answer for
   a pixel the caller never saw;
 - `camera` — the pose the image was rendered with;
+  `camera.intrinsics` gives the unjittered pinhole `fx`, `fy`, `cx`, `cy` in
+  PNG image pixels for the 3D viewport rectangle;
 - `captured` — the full context block AS OF THE CAPTURED FRAME. The envelope's
   own `context` is a completion-time snapshot; these two differ whenever a
   later frame presented in between, which is precisely when the newer numbers
@@ -261,6 +347,41 @@ The four terminal outcomes are deliberately distinct:
 
 The existing `shot` / `shot_now` FIFO verbs are untouched, keep their stdout
 wording, and share the queue.
+
+With `export_channels:true`, `result.channels.path` names `<path>.channels.bin`.
+Its `MECAP001` container starts with eight ASCII magic bytes, then little-endian
+`uint32` width and height, then six tightly packed top-left row-major planes.
+The receipt lists each plane's byte offset, size and format. The planes are
+identity (`rg32_uint`: material index and frame-local instance token),
+reversed-Z device depth (`r32_float`), normal (`rgba16_float`), linear HDR
+composite (`rgba16_float`), linear albedo (`rgba8_unorm`) and ORM/displacement
+(`rgba16_float`). The numeric extent is the internal raster extent and can
+differ from the display PNG when scaling is active. Identity tokens are valid
+only for that frame; `channels.identities` maps them to static part hashes or
+dynamic entity IDs. The map is capped at 2048 rows and signals truncation.
+The PNG, channel bundle and receipt share `captured.frame.id`; the `.done`
+marker is written only after both files finish. Use a fresh path per capture.
+
+`result.readiness` reports `ready`, explicit `blockers`, visible selected LOD,
+draw/identity coverage, BLAS and VT resources, streaming/refinement state, RT
+status, and stable-camera frames. It is a captured-frame quality gate, not a
+promise that a later frame has the same state. A coarse visible draw, missing
+visible VT or BLAS, pending refinement, unavailable required RT, or incomplete
+identity map keeps `ready:false`. A scene with no visible object pixels also
+fails closed. For a controlled sequence, use `render.reset_temporal`, wait for
+at least three unchanged camera frames, then inspect `readiness` on every
+capture. Compare cold and warm repeated captures to establish the scene's
+pixel variation band before scoring.
+
+### `view.set_camera` and `render.reset_temporal`
+
+`view.set_camera` requires the complete pose: `position`, `target`, `up` as
+three-number arrays, plus `vertical_fov_radians`, `near_plane`, `far_plane`.
+The eye and target must differ, up must be nonparallel, FOV must be in
+`[0.05,3]`, and clip planes must satisfy
+`0.001 <= near_plane < far_plane <= 1e7` in world meters. The camera applies
+on the next presented frame. `render.reset_temporal` takes no arguments and
+requests a reset of the renderer's presentation histories on the next frame.
 
 ### `view.focus`
 
@@ -555,9 +676,21 @@ its schema:
 
 The response names the owning module and source availability, returns every
 effective parameter with its JSON type and current default, and reports
-`persistence:"session_only_root_override"`. The procedural source model has no
-portable min/max declaration, so each field's `range` is explicitly
-unavailable rather than guessed.
+`persistence:"session_only_root_override"`. *Effective* means the module's
+declared `static params` merged with whatever the placement (or an override
+already applied this session) passed, so a root placed with no explicit params
+still reports everything its module declares — it is the same parameter object
+the root's resolved hash was folded from, which is what
+`scene.trace_provenance` publishes as `params_json`/`params_hash`. The
+procedural source model has no portable min/max declaration, so each field's
+`range` is explicitly unavailable rather than guessed.
+
+Each field also carries `overridable`. The session override the applied path
+uses carries numbers, booleans and strings only, so a parameter whose declared
+value is a nested object or array is *reported* (it is genuinely part of the
+effective set) but reports `overridable {available:false}` with the reason, and
+`procedural.update` refuses it with `invalid_input` rather than returning a
+receipt for a change that would be dropped on the way in.
 
 `procedural.update` accepts the same `object`, a non-empty `changes` object,
 and optional `dry_run` (default `false`). Keys must already be declared in the
@@ -737,6 +870,17 @@ identities), and typed `primary` or `null`. Stale entries are pruned before a
 selection command/list response, so a rebake or world switch cannot leave an
 old root/entity selected.
 
+"Stale" means gone from the current population, never "not placed". A baked
+root that is in the part graph but has no instance in this world — the one
+`scene.get_object` answers `found:true` with `placement.available:false` for —
+is a selectable object: it can be selected, stays selected, and reports
+`changed:false` on a repeated `add`. It simply has no bounds, so the outline
+and camera focus have nothing to draw or frame for it. The editor's
+once-a-frame prune uses the same part-graph population the selection commands
+validate against (`viewer::baked_root_selectable`, MatterEditor/src/reveal_part.h),
+so `changed:true` is never reported for a selection that does not survive to
+the next read.
+
 ### Object rows
 
 Every row (in a listing and in an inspection) carries:
@@ -842,3 +986,27 @@ resets both the file offset and partial line, preventing bytes from disconnected
 writers from being joined. Lines beyond the request bound are discarded through
 their newline and reported explicitly in stderr plus a request-less JSON error
 when a result file is configured.
+
+## Asset export
+
+`asset.export` writes a completed static asset to a new directory. Arguments:
+
+| Argument | Type | Meaning |
+| --- | --- | --- |
+| `directory` | string, required | New output folder, in the editor host's path format. Existing folders are refused. |
+| `source` | string | `world` (default) or `workbench`. |
+| `module` | string | Published world-root module or root key; optional for Workbench. |
+| `part_hash` | decimal uint64 string | Select one published world-root variant; can replace or constrain `module`. World only. |
+| `lod` | integer | Root mesh LOD ordinal, 0–15; default 0. The requested LOD must exist. |
+
+For `source:world`, supply `module` or `part_hash`. Ambiguous root-module variants
+are rejected. For `source:workbench`, open and finish baking the part in the
+Workbench preview; an optional module must match it. Output includes OBJ/MTL,
+GLB, PBR/height PNGs and a manifest. The success receipt contains `directory`,
+`source_hash` (decimal string), `lod`, `triangles`, `vertices`, `materials`, and
+`files`. Failure never publishes a partial destination.
+
+Export is an offline operation on the app thread and may pause presentation.
+Use a 30-second client timeout; if the client times out, inspect its correlated
+terminal result before retrying. See [asset export](asset-export.md) for supported
+materials, height conventions, memory limits and examples.
