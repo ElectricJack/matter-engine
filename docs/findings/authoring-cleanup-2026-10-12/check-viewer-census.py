@@ -70,8 +70,8 @@ def main():
             inventory = dict(line.split('=', 1) for line in output.read_text().splitlines())
             sources = inventory.pop('sources').split(';')
             inventory = {k: int(v) for k, v in inventory.items()}
-            assert inventory['core'] == 168 and inventory['surface'] == 21
-            assert inventory['viewer'] == inventory['unique'] == (219 if mode == 'ON' else 218)
+            assert inventory['core'] == 170 and inventory['surface'] == 21
+            assert inventory['viewer'] == inventory['unique'] == (221 if mode == 'ON' else 220)
             assert sum(p.endswith('.c') for p in sources) == 3
             assert len(sources) == len(set(sources))
             for required in ('libs/MatterGraphics/src/native/mesh_raster.cpp',
