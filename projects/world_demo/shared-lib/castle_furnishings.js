@@ -33,9 +33,13 @@
 // children, and an expanded root does not place its own geometry.
 
 import { beamParams, plankParams, stoneParams } from 'shared-lib/castle_primitives';
+import { primitiveStock, fitStockTransform } from 'shared-lib/castle_stock';
+import { emitSiteStructurePrimitive } from 'shared-lib/castle_site_surface_structure';
 import { defineCastleMaterials } from 'shared-lib/castle_materials';
+import { emitCastleRingSurface } from 'shared-lib/castle_ring_surface';
 
 const TAU = Math.PI * 2;
+const connectedRingParts = new WeakSet();
 
 // ---------------------------------------------------------------------------
 // Materials
@@ -123,6 +127,9 @@ const len = (d, lo, hi) => ['num', d, lo, hi];
 const int = (d, lo, hi) => ['int', d, lo, hi];
 const flag = (d) => ['flag', d];
 const SEED = ['seed', 0];
+// These seeds describe visible wear, not placement identity. Two reusable
+// designs per dimensional recipe keep a whole furnished site in a small cache.
+export const FURNISHING_VARIANT_COUNT = 2;
 
 const WOOD = {
   material: mat(14), endMaterial: mat(14), ironMaterial: mat(3),
@@ -212,6 +219,8 @@ function clamp(value, lo, hi) {
 
 function canonical(schema, input) {
   const out = {};
+  // Preserve legacy recipe identities unless the optional path is requested.
+  if (finite(input.surfaceMembers, 0)) out.surfaceMembers = 1;
   for (const key of Object.keys(schema).sort()) {
     const [type, fallback, lo, hi] = schema[key];
     const raw = input[key];
@@ -220,8 +229,8 @@ function canonical(schema, input) {
     else if (type === 'flag') out[key] = finite(raw, fallback) ? 1 : 0;
     else if (type === 'mat') out[key] = Math.max(0, Math.floor(finite(raw, fallback)));
     else {
-      const seed = Math.floor(finite(raw, fallback)) % 65536;
-      out[key] = seed < 0 ? seed + 65536 : seed;
+      const seed = Math.floor(finite(raw, fallback)) % FURNISHING_VARIANT_COUNT;
+      out[key] = seed < 0 ? seed + FURNISHING_VARIANT_COUNT : seed;
     }
   }
   return out;
@@ -351,6 +360,10 @@ function circlePoint(center, radius, axis, angle) {
 
 // Closed ring (or arc) of capsules: iron hoops, handles and chain loops.
 function ring(part, center, radius, tube, axis, segments, a0 = 0, a1 = TAU) {
+  if (connectedRingParts.has(part) && a0 === 0 && a1 === TAU && radius > tube) {
+    emitCastleRingSurface(part, center, radius, tube, axis, segments);
+    return;
+  }
   let previous = circlePoint(center, radius, axis, a0);
   for (let i = 1; i <= segments; ++i) {
     const next = circlePoint(center, radius, axis, a0 + (a1 - a0) * i / segments);
@@ -449,11 +462,19 @@ function stone(p, k, dims, at) {
   };
 }
 
-function placeMembers(part, members) {
+function placeMembers(part, members, surfaceMembers = 0) {
   for (const m of members) {
+    if (surfaceMembers) {
+      part.pushMatrix();
+      part.applyMatrix(basisMatrix(m.basis, m.at));
+      emitSiteStructurePrimitive(part, m.module, m.params);
+      part.popMatrix();
+      continue;
+    }
+    const stock = primitiveStock(m.module, m.params);
     part.pushMatrix();
-    part.applyMatrix(basisMatrix(m.basis, m.at));
-    part.placeChild(m.module, m.params);
+    part.applyMatrix(fitStockTransform(basisMatrix(m.basis, m.at), stock.scale));
+    part.placeChild(m.module, stock.params);
     part.popMatrix();
   }
 }
@@ -462,10 +483,11 @@ function uniqueChildren(members) {
   const seen = new Set();
   const out = [];
   for (const m of members) {
-    const key = m.module + JSON.stringify(m.params);
+    const stock = primitiveStock(m.module, m.params);
+    const key = m.module + JSON.stringify(stock.params);
     if (seen.has(key)) continue;
     seen.add(key);
-    out.push({ module: m.module, params: m.params });
+    out.push({ module: m.module, params: stock.params });
   }
   return out;
 }
@@ -511,7 +533,7 @@ export function tableMembers(input) {
 
 export function emitTable(part, input) {
   const p = tableParams(input), L = tableLayout(p);
-  placeMembers(part, tableMembers(p));
+  placeMembers(part, tableMembers(p), p.surfaceMembers);
   part.fill(p.endMaterial);
   for (const side of [-1, 1]) {
     const x = side * L.tx;
@@ -567,7 +589,7 @@ export function benchMembers(input) {
 
 export function emitBench(part, input) {
   const p = benchParams(input), L = benchLayout(p);
-  placeMembers(part, benchMembers(p));
+  placeMembers(part, benchMembers(p), p.surfaceMembers);
   for (const side of [-1, 1]) {
     part.fill(p.endMaterial);
     part.box([side * (L.lx + 0.1), L.stretcherY, 0], [0.014, 0.085, 0.03]);
@@ -640,7 +662,7 @@ export function chairMembers(input) {
 
 export function emitChair(part, input) {
   const p = chairParams(input), L = chairLayout(p);
-  placeMembers(part, chairMembers(p));
+  placeMembers(part, chairMembers(p), p.surfaceMembers);
   part.fill(p.endMaterial);
   for (const side of [-1, 1]) {
     const x = side * L.px;
@@ -750,7 +772,7 @@ export function bedMembers(input) {
 
 export function emitBed(part, input) {
   const p = bedParams(input), L = bedLayout(p);
-  placeMembers(part, bedMembers(p));
+  placeMembers(part, bedMembers(p), p.surfaceMembers);
   part.fill(p.endMaterial);
   for (const side of [-1, 1]) for (const end of [-1, 1]) {
     const x = side * L.px, z = end * L.pz;
@@ -832,7 +854,7 @@ export function chestMembers(input) {
 
 export function emitChest(part, input) {
   const p = chestParams(input), L = chestLayout(p);
-  placeMembers(part, chestMembers(p));
+  placeMembers(part, chestMembers(p), p.surfaceMembers);
   const H = p.height, fz = p.depth / 2, lidZ = p.depth / 2 + 0.02;
   part.fill(p.ironMaterial);
   const straps = p.length >= 0.9 ? [-0.3, 0.3] : [-0.25, 0.25];
@@ -919,7 +941,7 @@ export function cupboardMembers(input) {
 
 export function emitCupboard(part, input) {
   const p = cupboardParams(input), L = cupboardLayout(p);
-  placeMembers(part, cupboardMembers(p));
+  placeMembers(part, cupboardMembers(p), p.surfaceMembers);
   const face = p.depth / 2 + 0.005;
   part.fill(p.ironMaterial);
   for (const sx of [-1, 1]) {
@@ -994,7 +1016,7 @@ export function altarMembers(input) {
 
 export function emitAltar(part, input) {
   const p = altarParams(input), L = altarLayout(p);
-  placeMembers(part, altarMembers(p));
+  placeMembers(part, altarMembers(p), p.surfaceMembers);
   const H = p.height, top = (p.width + 0.16) / 2, front = (p.depth + 0.16) / 2;
   // Mortar core read through the dressed joints, plinth course included.
   part.fill(p.mortarMaterial);
@@ -1304,7 +1326,8 @@ export function glowParams(kindOrInput, maybeInput) {
     kind = FIXTURE_KINDS[clamp(Math.floor(finite(raw.fixture, 0)), 0, 2)];
   }
   if (FIXTURE_CODES[kind] === undefined) throw new TypeError('no glow proxy for furnishing kind ' + kind);
-  return { ...KINDS[kind].params(input), fixture: FIXTURE_CODES[kind] };
+  // Flame positions depend on fixture dimensions, not its wood/metal wear seed.
+  return { ...KINDS[kind].params(input), seed: 0, fixture: FIXTURE_CODES[kind] };
 }
 
 export function emitFixtureGlow(part, input) {
@@ -1324,7 +1347,8 @@ export function fixtureLightsLocal(kind, input, color = CANDLE_COLOR) {
   const points = [], spots = [];
   if (FIXTURE_CODES[kind] === undefined) return { points, spots };
   const p = KINDS[kind].params(input);
-  const sourceRadius = kind === 'sconce' && p.style === 1 ? 0.03 : 0.015;
+  // Wick tips sit 12 mm below the flame center; leave 4 mm of clearance.
+  const sourceRadius = 0.008;
   for (const position of fixtureFlamePoints(kind, p)) {
     const light = {
       position, color: [...color], intensity: p.lightIntensity, range: p.lightRange,
@@ -1727,13 +1751,22 @@ export function furnishingChildren(kind, input) {
   const k = FURNISHING_KIND_ALIASES[kind] || kind;
   const entry = KINDS[k];
   if (!entry) throw new TypeError('unknown furnishing kind ' + kind);
-  return entry.members ? uniqueChildren(entry.members(furnishingParams(kind, input))) : [];
+  const params = furnishingParams(kind, input);
+  if (params.surfaceMembers) return [];
+  return entry.members ? uniqueChildren(entry.members(params)) : [];
 }
 
 export function emitFurnishing(part, kind, input) {
   const k = FURNISHING_KIND_ALIASES[kind] || kind;
   if (!KINDS[k]) throw new TypeError('unknown furnishing kind ' + kind);
-  return KINDS[k].emit(part, furnishingParams(kind, input));
+  const params = furnishingParams(kind, input);
+  const wasConnected = connectedRingParts.has(part);
+  if (params.surfaceMembers) connectedRingParts.add(part);
+  try {
+    return KINDS[k].emit(part, params);
+  } finally {
+    if (!wasConnected) connectedRingParts.delete(part);
+  }
 }
 
 export function furnishingEnvelope(kind, input) {

@@ -1,0 +1,1 @@
+Stopped after all 815 geometry-cache hits and 2441 resident sectors; geometry publication still in flight near the 262144-page admission ceiling. Not a completed VG readiness/performance test.

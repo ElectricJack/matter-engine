@@ -1,0 +1,24 @@
+{
+  "exit": 0,
+  "seconds_including_startup_and_view_waits": 23.091584005000186,
+  "source_changes": [],
+  "binary_changed": false,
+  "errors": [],
+  "vt_stats": [
+    "STATSVT,brick-layer-v1-middle,active=1,variants=1/32768,rejected=0,mesh=0.0/3512.0 MiB,pool=61/33024,pinned=1,queue=0,fills=61,evictions=0,ind=0.00/64 MiB",
+    "STATSVT,brick-layer-v1-close,active=1,variants=1/32768,rejected=0,mesh=0.0/3512.0 MiB,pool=61/33024,pinned=1,queue=0,fills=61,evictions=0,ind=0.00/64 MiB",
+    "STATSVT,brick-layer-v1-far,active=1,variants=1/32768,rejected=0,mesh=0.0/3512.0 MiB,pool=61/33024,pinned=1,queue=0,fills=61,evictions=0,ind=0.00/64 MiB",
+    "STATSVT,brick-layer-v1-grazing,active=1,variants=1/32768,rejected=0,mesh=0.0/3512.0 MiB,pool=66/33024,pinned=1,queue=0,fills=66,evictions=0,ind=0.00/64 MiB",
+    "STATSVT,brick-layer-v1-rt,active=1,variants=1/32768,rejected=0,mesh=0.0/3512.0 MiB,pool=66/33024,pinned=1,queue=0,fills=66,evictions=0,ind=0.00/64 MiB"
+  ],
+  "images": {
+    "brick-layer-v1-middle.png": "da68b51f1b0e914ce985de6cba854fc1231eb2f1ababcf1f546c9d34de3a78af",
+    "brick-layer-v1-close.png": "f3e36667264734b37714ff9c62d8b76321c0accc709d2b90e24a0d7b07093f77",
+    "brick-layer-v1-far.png": "f3e36667264734b37714ff9c62d8b76321c0accc709d2b90e24a0d7b07093f77",
+    "brick-layer-v1-grazing.png": "2e21c2bfd8f68ce48f500807b202a5d10251adaa1bba7964720eb1753fdd6d94",
+    "brick-layer-v1-rt.png": "0fb12a41c8a70a7d3d8bd7f2ecb8e785db41b122f5192931611d42a6b1bc3259"
+  },
+  "passed": true,
+  "visual_review_passed": false,
+  "visual_review_notes": "Close and far views are blank. Narrow streaming bounds omit the analytic receiver at those camera positions. Retain middle/grazing/RT images as preliminary only; rerun with prior streaming policy."
+}

@@ -1,0 +1,66 @@
+[
+  {
+    "name": "worker-retry-compositor-build",
+    "command": [
+      "./tools/build-windows-from-wsl.sh",
+      "RelWithDebInfo",
+      "vt_compositor_tests"
+    ],
+    "exit": 0,
+    "elapsed_seconds": 16.235863409005105,
+    "log": "docs/agent/evidence/2026-09-15-vt-feedback/worker-retry-compositor-build.log"
+  },
+  {
+    "name": "worker-retry-compositor-test",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-Command",
+      "Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vt_compositor_tests.exe\"; exit $LASTEXITCODE"
+    ],
+    "exit": 0,
+    "elapsed_seconds": 1.9111145339993527,
+    "log": "docs/agent/evidence/2026-09-15-vt-feedback/worker-retry-compositor-test.log",
+    "all_pass": true,
+    "zero_validation_errors": true
+  },
+  {
+    "name": "worker-retry-smoke-build",
+    "command": [
+      "./tools/build-windows-from-wsl.sh",
+      "RelWithDebInfo",
+      "vulkan_smoke_tests"
+    ],
+    "exit": 0,
+    "elapsed_seconds": 28.70799896799872,
+    "log": "docs/agent/evidence/2026-09-15-vt-feedback/worker-retry-smoke-build.log"
+  },
+  {
+    "name": "worker-retry-vt-queue",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-Command",
+      "$env:MATTER_VK_SMOKE_MODE=\"vt-queue\"; $env:MATTER_VK_VALIDATION=\"1\"; Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe\"; exit $LASTEXITCODE"
+    ],
+    "exit": 0,
+    "elapsed_seconds": 1.5047969320003176,
+    "log": "docs/agent/evidence/2026-09-15-vt-feedback/worker-retry-vt-queue.log",
+    "all_pass": true,
+    "zero_validation_errors": true
+  },
+  {
+    "name": "worker-retry-vt-enrich",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-Command",
+      "$env:MATTER_VK_SMOKE_MODE=\"vt-enrich\"; $env:MATTER_VK_VALIDATION=\"1\"; Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe\"; exit $LASTEXITCODE"
+    ],
+    "exit": 0,
+    "elapsed_seconds": 2.7851219560034224,
+    "log": "docs/agent/evidence/2026-09-15-vt-feedback/worker-retry-vt-enrich.log",
+    "all_pass": true,
+    "zero_validation_errors": true
+  }
+]

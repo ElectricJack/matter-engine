@@ -1,0 +1,108 @@
+{
+  "cases": [
+    {
+      "id": "ERROR-MISSING-REFERENCE",
+      "kind": "recipe",
+      "input": "fixtures/missing-reference.recipe.json",
+      "expected_code": "missing_dependency",
+      "expected_publish": false
+    },
+    {
+      "id": "ERROR-CYCLE",
+      "kind": "recipe",
+      "input": "fixtures/cycle.recipe.json",
+      "expected_code": "cycle",
+      "expected_publish": false
+    },
+    {
+      "id": "ERROR-UNKNOWN-REQUIRED",
+      "kind": "recipe",
+      "input": "fixtures/unknown-required.recipe.json",
+      "expected_code": "unsupported_capability",
+      "expected_publish": false
+    },
+    {
+      "id": "ERROR-UNSUPPORTED-VERSION",
+      "kind": "recipe",
+      "input": "fixtures/unsupported-version.recipe.json",
+      "expected_code": "unsupported_version",
+      "expected_publish": false
+    },
+    {
+      "id": "ERROR-NEGATIVE-SIZE",
+      "kind": "recipe",
+      "input": "fixtures/negative-size.recipe.json",
+      "expected_code": "invalid_input",
+      "expected_publish": false
+    },
+    {
+      "id": "ERROR-INVALID-INDEX",
+      "kind": "asset",
+      "input": "fixtures/invalid-index.asset.json",
+      "expected_code": "invalid_input",
+      "expected_publish": false
+    },
+    {
+      "id": "ERROR-SINGULAR-TRANSFORM",
+      "kind": "asset",
+      "input": "fixtures/singular-transform.asset.json",
+      "expected_code": "invalid_input",
+      "expected_publish": false
+    },
+    {
+      "id": "ERROR-CSG-NONUNIFORM",
+      "kind": "recipe",
+      "input": "fixtures/csg-nonuniform.recipe.json",
+      "expected_code": "unsupported_capability",
+      "expected_publish": false
+    },
+    {
+      "id": "ERROR-DUPLICATE-KEY",
+      "kind": "json",
+      "input": "fixtures/duplicate-key.json",
+      "expected_code": "invalid_input",
+      "expected_publish": false
+    },
+    {
+      "id": "ERROR-NONFINITE",
+      "kind": "json",
+      "input": "fixtures/nonfinite.json",
+      "expected_code": "invalid_input",
+      "expected_publish": false
+    }
+  ],
+  "budgets": [
+    {
+      "id": "BUDGET-NODES",
+      "kind": "recipe",
+      "input": "fixtures/ordered-csg.recipe.json",
+      "limit": "max_nodes",
+      "value": 2,
+      "expected_code": "resource_limit"
+    },
+    {
+      "id": "BUDGET-VERTICES",
+      "kind": "asset",
+      "input": "fixtures/cube.asset.json",
+      "limit": "max_vertices",
+      "value": 7,
+      "expected_code": "resource_limit"
+    },
+    {
+      "id": "BUDGET-INDICES",
+      "kind": "asset",
+      "input": "fixtures/cube.asset.json",
+      "limit": "max_indices",
+      "value": 35,
+      "expected_code": "resource_limit"
+    },
+    {
+      "id": "BUDGET-JSON",
+      "kind": "json",
+      "input": "fixtures/primitive.recipe.json",
+      "limit": "max_value_nodes",
+      "value": 2,
+      "expected_code": "resource_limit"
+    }
+  ]
+}
