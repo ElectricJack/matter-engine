@@ -1,0 +1,26 @@
+{
+  "passed": true,
+  "walls": 20,
+  "wallTriangles": 608,
+  "groundTriangles": 2,
+  "bodyDiameterM": 0.4,
+  "gridM": 0.1,
+  "allGatesConnected": true,
+  "reachableCells": 24677,
+  "curves": [
+    {
+      "id": "broad-bend",
+      "radiusM": 3.143265247314093,
+      "sweepRadians": 1.5707963267948966,
+      "innerJointM": 0.004875381309040763,
+      "outerJointM": 0.025124618690959236
+    },
+    {
+      "id": "tight-bend",
+      "radiusM": 2.190788294501883,
+      "sweepRadians": 1.5707963267948966,
+      "innerJointM": 0.005207268131539919,
+      "outerJointM": 0.03479273186846008
+    }
+  ]
+}

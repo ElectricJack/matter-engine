@@ -1,0 +1,140 @@
+{
+  "command": [
+    "/mnt/c/Users/webde/AppData/Local/Programs/Python/Launcher/py.exe",
+    "-3",
+    "D:/tmp/matter-vt/20260915-feedback/run_without_validation.py",
+    "D:/tmp/matter-vt/20260915-feedback/castle-page-identities/effective-validation.json",
+    "D:/Shared With Desktop/AI/matter-engine-cpp/MatterEngine3/tools/drive.py",
+    "--world",
+    "CastleUpgraded",
+    "--timeline",
+    "D:/tmp/matter-vt/20260915-feedback/castle-page-identities/timeline.txt",
+    "--out-dir",
+    "D:/tmp/matter-vt/20260915-feedback/castle-page-identities/run",
+    "--editor",
+    "D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor/build/windows-msvc/editor.exe",
+    "--timeout",
+    "600",
+    "--hide-ui",
+    "--env",
+    "MATTER_HIDE_WINDOW=0",
+    "--env",
+    "MATTER_WINDOW_WIDTH=1920",
+    "--env",
+    "MATTER_WINDOW_HEIGHT=1080",
+    "--env",
+    "MATTER_VSYNC=0",
+    "--env",
+    "MATTER_PRESENT_MODE=mailbox",
+    "--env",
+    "MATTER_FRAME_LIMIT=60",
+    "--env",
+    "MATTER_CAM=-15,24,43,16.062178,7,7.674546",
+    "--env",
+    "MATTER_VT_TRACE=D:/tmp/matter-vt/20260915-feedback/castle-page-identities/vt.jsonl",
+    "--env",
+    "MATTER_VT_EVENT_LOG=1",
+    "--env",
+    "MATTER_VT_DENSITY_FRAME=0",
+    "--env",
+    "TMP=C:/Users/webde/AppData/Local/Temp",
+    "--env",
+    "TEMP=C:/Users/webde/AppData/Local/Temp",
+    "--env",
+    "MATTER_CAM_PATH=D:/tmp/matter-vt/20260915-feedback/castle-page-identities/camera.path",
+    "--env",
+    "MATTER_CAM_PATH_WARMUP=0",
+    "--env",
+    "MATTER_CAM_PATH_SETTLE=5",
+    "--env",
+    "MATTER_CAM_PATH_EXIT=0",
+    "--env",
+    "MATTER_PROFILE_TRACE=D:/tmp/matter-vt/20260915-feedback/castle-page-identities/profile.json"
+  ],
+  "driver_exit": 0,
+  "elapsed_seconds": 156.18924117088318,
+  "source_manifest": "docs/agent/evidence/2026-09-15-vt-feedback/fallback-source.json",
+  "purpose": "Page-identity correctness diagnosis. Event logging and concurrent code discovery exclude this capture from performance acceptance.",
+  "effective_validation_environment": {
+    "MATTER_VK_VALIDATION": null,
+    "VK_INSTANCE_LAYERS": null,
+    "VK_LOADER_LAYERS_ENABLE": null
+  },
+  "artifacts": [
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/castle-page-identities/camera.path",
+      "bytes": 372076,
+      "sha256": "5caac095539bfdb731cf9728e88b348190e8b1ff065352bb022ccc9715e10662"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/castle-page-identities/command.json",
+      "bytes": 1576,
+      "sha256": "103aba3f7c2bbfdf25d3e9fdab41162fa1af6ed7daefce420d6bfe20869be505"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/castle-page-identities/driver.log",
+      "bytes": 688840,
+      "sha256": "4be0bda69e09d638cfcbd670fd883d481240da9a4b0fe225d5c36490c75caf02"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/castle-page-identities/effective-validation.json",
+      "bytes": 105,
+      "sha256": "61d38810249d558ffae390a009059aa2ba7a190d3d474e2a4ffdc131b13284ea"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/castle-page-identities/launch-source.json",
+      "bytes": 238,
+      "sha256": "bcbfe40cb3f8e4548dcd8730fa7da7b8f746e8d853da9114c2d877fbe10a6218"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/castle-page-identities/profile.json",
+      "bytes": 3716397,
+      "sha256": "ca184cc389165008365e8986a684129acb5f1514b07aa5d11d12b61835a2ff52"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/castle-page-identities/result.json",
+      "bytes": 1756,
+      "sha256": "7833546840662523c0a4252bf9be9431df6367d74bd60507e05be947a52a9096"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/castle-page-identities/run/cmd.txt",
+      "bytes": 213,
+      "sha256": "06eefc5cbf08d95813e41b6d74bcaebe83f3649e2f8bb5424440e1210a7c01c4"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/castle-page-identities/run/log.txt",
+      "bytes": 688364,
+      "sha256": "a66902e25cf32575f72e3fcb2d3470d580f81f5ca5a4a1fe1030b991e828d763"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/castle-page-identities/settled.png",
+      "bytes": 2118166,
+      "sha256": "b2a56cd236e46cd4e3eb7567c3e0a731112fc02191744ccc9c63551a6b6a4634",
+      "dimensions": [
+        1920,
+        1080
+      ]
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/castle-page-identities/settled.png.done",
+      "bytes": 10,
+      "sha256": "4c339121e4860b04ebd48181621c9dd3f84901846feda08d4e77aafaf9a6c896"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/castle-page-identities/timeline.txt",
+      "bytes": 213,
+      "sha256": "06eefc5cbf08d95813e41b6d74bcaebe83f3649e2f8bb5424440e1210a7c01c4"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/castle-page-identities/vt.jsonl",
+      "bytes": 1313918,
+      "sha256": "32c2adb6ea5e36e3e2be38df63aa2972376872bf4c80b6d33ab11f9528a65c9e"
+    }
+  ],
+  "markers": [
+    "STATSVT,settle_begin,active=1,variants=79/32768,rejected=0,mesh=58.3/3512.0 MiB,pool=3392/33024,pinned=79,queue=0,fills=4855,evictions=0,ind=0.59/64 MiB",
+    "STATSVT,settle_end,active=1,variants=79/32768,rejected=0,mesh=58.3/3512.0 MiB,pool=3392/33024,pinned=79,queue=0,fills=4855,evictions=0,ind=0.59/64 MiB"
+  ],
+  "full_vt_acceptance": false,
+  "visual_review": "1920x1080 screenshot reviewed; reference castle framing retained. Final frame only, not intermediate continuity evidence."
+}

@@ -1,0 +1,37 @@
+{
+  "pid": 875637,
+  "result": "docs/agent/evidence/2026-09-17-mountain-rocks/metric-validation-v2-result.json",
+  "log": "docs/agent/evidence/2026-09-17-mountain-rocks/metric-validation-v2-supervisor.log",
+  "steps": [
+    [
+      "docs/agent/evidence/2026-09-17-mountain-rocks/capture_scale.py",
+      "scale-v2",
+      "rock-metric-v2"
+    ],
+    [
+      "docs/agent/evidence/2026-09-17-receiver-height/audit_paths.py",
+      "docs/agent/evidence/2026-09-17-mountain-rocks/scale-v2"
+    ],
+    [
+      "docs/agent/evidence/2026-09-17-mountain-rocks/analyze_scale.py",
+      "docs/agent/evidence/2026-09-17-mountain-rocks/scale-v2"
+    ],
+    [
+      "docs/agent/evidence/2026-09-17-vt-resolution/capture.py",
+      "v12",
+      "rock-metric-v2",
+      "rock-metric-v2",
+      "clear-controls",
+      "rt-controls"
+    ],
+    [
+      "docs/agent/evidence/2026-09-17-receiver-height/audit_paths.py",
+      "docs/agent/evidence/2026-09-17-vt-resolution/v12"
+    ],
+    [
+      "docs/agent/evidence/2026-09-17-vt-resolution/analyze.py",
+      "v12",
+      "docs/agent/evidence/2026-09-17-vt-resolution/v11"
+    ]
+  ]
+}

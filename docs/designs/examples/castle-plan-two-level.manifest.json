@@ -1,0 +1,6146 @@
+{
+  "schema": "matter.castle-manifest/v1",
+  "planId": "two-room-two-level",
+  "seed": 240911,
+  "style": {
+    "wallThickness": 0.6,
+    "wallMaterial": "castle.limestone",
+    "bond": "ashlar"
+  },
+  "levels": [
+    {
+      "id": "ground",
+      "baseY": 0,
+      "height": 4
+    },
+    {
+      "id": "upper",
+      "baseY": 4,
+      "height": 4
+    }
+  ],
+  "rooms": [
+    {
+      "id": "chamber",
+      "levelId": "upper",
+      "use": "chamber",
+      "required": true,
+      "walkable": true,
+      "openToBelow": false,
+      "lowerRoomId": null,
+      "floorType": "oak",
+      "boundary": {
+        "kind": "cells",
+        "cells": [
+          [
+            0,
+            0
+          ],
+          [
+            0,
+            1
+          ],
+          [
+            1,
+            0
+          ],
+          [
+            1,
+            1
+          ],
+          [
+            2,
+            0
+          ],
+          [
+            2,
+            1
+          ],
+          [
+            3,
+            0
+          ],
+          [
+            3,
+            1
+          ],
+          [
+            4,
+            0
+          ],
+          [
+            4,
+            1
+          ],
+          [
+            5,
+            0
+          ],
+          [
+            5,
+            1
+          ],
+          [
+            6,
+            0
+          ],
+          [
+            6,
+            1
+          ],
+          [
+            7,
+            0
+          ],
+          [
+            7,
+            1
+          ]
+        ]
+      }
+    },
+    {
+      "id": "hall",
+      "levelId": "ground",
+      "use": "hall",
+      "required": true,
+      "walkable": true,
+      "openToBelow": false,
+      "lowerRoomId": null,
+      "floorType": "flags",
+      "boundary": {
+        "kind": "cells",
+        "cells": [
+          [
+            0,
+            0
+          ],
+          [
+            0,
+            1
+          ],
+          [
+            1,
+            0
+          ],
+          [
+            1,
+            1
+          ],
+          [
+            2,
+            0
+          ],
+          [
+            2,
+            1
+          ],
+          [
+            3,
+            0
+          ],
+          [
+            3,
+            1
+          ],
+          [
+            4,
+            0
+          ],
+          [
+            4,
+            1
+          ],
+          [
+            5,
+            0
+          ],
+          [
+            5,
+            1
+          ],
+          [
+            6,
+            0
+          ],
+          [
+            6,
+            1
+          ],
+          [
+            7,
+            0
+          ],
+          [
+            7,
+            1
+          ]
+        ]
+      }
+    }
+  ],
+  "walls": [
+    {
+      "id": "wall:ground:0,0|0,1",
+      "levelId": "ground",
+      "from": [
+        0,
+        0
+      ],
+      "to": [
+        0,
+        1
+      ],
+      "axis": "z",
+      "roomIds": [
+        "hall"
+      ],
+      "boundary": "exterior",
+      "kind": "door",
+      "overrideId": "front-door",
+      "connects": [
+        "hall",
+        "outside"
+      ],
+      "section": {
+        "thickness": 0.6,
+        "height": 4,
+        "material": "castle.limestone",
+        "bond": "ashlar",
+        "profile": "exterior"
+      },
+      "openings": [
+        {
+          "apertureId": "aperture:ground:front-door",
+          "kind": "door",
+          "start": 0.4,
+          "end": 1,
+          "localStart": 0.4,
+          "localEnd": 1,
+          "segmentFrom": [
+            0,
+            0
+          ],
+          "segmentTo": [
+            0,
+            2
+          ],
+          "globalStart": 0.4,
+          "globalEnd": 1.6,
+          "bottom": 0,
+          "top": 2.2,
+          "ownerEdgeId": "wall:ground:0,0|0,1"
+        }
+      ],
+      "railProfile": null,
+      "startSocket": {
+        "id": "socket:wall:ground:0,0|0,1:0,0",
+        "vertexId": "junction:ground:0,0",
+        "position": [
+          0,
+          0
+        ],
+        "direction": "N",
+        "junctionKind": "L",
+        "owner": true,
+        "trim": 0.3,
+        "ownsJunctionVolume": true,
+        "section": {
+          "thickness": 0.6,
+          "height": 4,
+          "material": "castle.limestone",
+          "bond": "ashlar",
+          "profile": "exterior"
+        }
+      },
+      "endSocket": {
+        "id": "socket:wall:ground:0,0|0,1:0,1",
+        "vertexId": "junction:ground:0,1",
+        "position": [
+          0,
+          1
+        ],
+        "direction": "S",
+        "junctionKind": "straight",
+        "owner": true,
+        "trim": 0,
+        "ownsJunctionVolume": false,
+        "section": {
+          "thickness": 0.6,
+          "height": 4,
+          "material": "castle.limestone",
+          "bond": "ashlar",
+          "profile": "exterior"
+        }
+      },
+      "trim": {
+        "start": 0.3,
+        "end": 0
+      }
+    },
+    {
+      "id": "wall:ground:0,0|1,0",
+      "levelId": "ground",
+      "from": [
+        0,
+        0
+      ],
+      "to": [
+        1,
+        0
+      ],
+      "axis": "x",
+      "roomIds": [
+        "hall"
+      ],
+      "boundary": "exterior",
+      "kind": "wall",
+      "overrideId": null,
+      "connects": null,
+      "section": {
+        "thickness": 0.6,
+        "height": 4,
+        "material": "castle.limestone",
+        "bond": "ashlar",
+        "profile": "exterior"
+      },
+      "openings": [],
+      "railProfile": null,
+      "startSocket": {
+        "id": "socket:wall:ground:0,0|1,0:0,0",
+        "vertexId": "junction:ground:0,0",
+        "position": [
+          0,
+          0
+        ],
+        "direction": "E",
+        "junctionKind": "L",
+        "owner": false,
+        "trim": 0.3,
+        "ownsJunctionVolume": false,
+        "section": {
+          "thickness": 0.6,
+          "height": 4,
+          "material": "castle.limestone",
+          "bond": "ashlar",
+          "profile": "exterior"
+        }
+      },
+      "endSocket": {
+        "id": "socket:wall:ground:0,0|1,0:1,0",
+        "vertexId": "junction:ground:1,0",
+        "position": [
+          1,
+          0
+        ],
+        "direction": "W",
+        "junctionKind": "straight",
+        "owner": true,
+        "trim": 0,
+        "ownsJunctionVolume": false,
+        "section": {
+          "thickness": 0.6,
+          "height": 4,
+          "material": "castle.limestone",
+          "bond": "ashlar",
+          "profile": "exterior"
+        }
+      },
+      "trim": {
+        "start": 0.3,
+        "end": 0
+      }
+    },
+    {
+      "id": "wall:ground:0,1|0,2",
+      "levelId": "ground",
+      "from": [
+        0,
+        1
+      ],
+      "to": [
+        0,
+        2
+      ],
+      "axis": "z",
+      "roomIds": [
+        "hall"
+      ],
+      "boundary": "exterior",
+      "kind": "door",
+      "overrideId": "front-door",
+      "connects": [
+        "hall",
+        "outside"
+      ],
+      "section": {
+        "thickness": 0.6,
+        "height": 4,
+        "material": "castle.limestone",
+        "bond": "ashlar",
+        "profile": "exterior"
+      },
+      "openings": [
+        {
+          "apertureId": "aperture:ground:front-door",
+          "kind": "door",
+          "start": 0,
+          "end": 0.6000000000000001,
+          "localStart": 0,
+          "localEnd": 0.6000000000000001,
+          "segmentFrom": [
+            0,
+            0
+          ],
+          "segmentTo": [
+            0,
+            2
+          ],
+          "globalStart": 0.4,
+          "globalEnd": 1.6,
+          "bottom": 0,
+          "top": 2.2,
+          "ownerEdgeId": "wall:ground:0,0|0,1"
+        }
+      ],
+      "railProfile": null,
+      "startSocket": {
+        "id": "socket:wall:ground:0,1|0,2:0,1",
+        "vertexId": "junction:ground:0,1",
+        "position": [
+          0,
+          1
+        ],
+        "direction": "N",
+        "junctionKind": "straight",
+        "owner": false,
+        "trim": 0,
+        "ownsJunctionVolume": false,
+        "section": {
+          "thickness": 0.6,
+          "height": 4,
+          "material": "castle.limestone",
+          "bond": "ashlar",
+          "profile": "exterior"
+        }
+      },
+      "endSocket": {
+        "id": "socket:wall:ground:0,1|0,2:0,2",
+        "vertexId": "junction:ground:0,2",
+        "position": [
+          0,
+          2
+        ],
+        "direction": "S",
+        "junctionKind": "L",
+        "owner": true,
+        "trim": 0.3,
+        "ownsJunctionVolume": true,
+        "section": {
+          "thickness": 0.6,
+          "height": 4,
+          "material": "castle.limestone",
+          "bond": "ashlar",
+          "profile": "exterior"
+        }
+      },
+      "trim": {
+        "start": 0,
+        "end": 0.3
+      }
+    },
+    {
+      "id": "wall:ground:0,2|1,2",
+      "levelId": "ground",
+      "from": [
+        0,
+        2
+      ],
+      "to": [
+        1,
+        2
+      ],
+      "axis": "x",
+      "roomIds": [
+        "hall"
+      ],
+      "boundary": "exterior",
+      "kind": "wall",
+      "overrideId": null,
+      "connects": null,
+      "section": {
+        "thickness": 0.6,
+        "height": 4,
+        "material": "castle.limestone",
+        "bond": "ashlar",
+        "profile": "exterior"
+      },
+      "openings": [],
+      "railProfile": null,
+      "startSocket": {
+        "id": "socket:wall:ground:0,2|1,2:0,2",
+        "vertexId": "junction:ground:0,2",
+        "position": [
+          0,
+          2
+        ],
+        "direction": "E",
+        "junctionKind": "L",
+        "owner": false,
+        "trim": 0.3,
+        "ownsJunctionVolume": false,
+        "section": {
+          "thickness": 0.6,
+          "height": 4,
+          "material": "castle.limestone",
+          "bond": "ashlar",
+          "profile": "exterior"
+        }
+      },
+      "endSocket": {
+        "id": "socket:wall:ground:0,2|1,2:1,2",
+        "vertexId": "junction:ground:1,2",
+        "position": [
+          1,
+          2
+        ],
+        "direction": "W",
+        "junctionKind": "straight",
+        "owner": true,
+        "trim": 0,
+        "ownsJunctionVolume": false,
+        "section": {
+          "thickness": 0.6,
+          "height": 4,
+          "material": "castle.limestone",
+          "bond": "ashlar",
+          "profile": "exterior"
+        }
+      },
+      "trim": {
+        "start": 0.3,
+        "end": 0
+      }
+    },
+    {
+      "id": "wall:ground:1,0|2,0",
+      "levelId": "ground",
+      "from": [
+        1,
+        0
+      ],
+      "to": [
+        2,
+        0
+      ],
+      "axis": "x",
+      "roomIds": [
+        "hall"
+      ],
+      "boundary": "exterior",
+      "kind": "wall",
+      "overrideId": null,
+      "connects": null,
+      "section": {
+        "thickness": 0.6,
+        "height": 4,
+        "material": "castle.limestone",
+        "bond": "ashlar",
+        "profile": "exterior"
+      },
+      "openings": [],
+      "railProfile": null,
+      "startSocket": {
+        "id": "socket:wall:ground:1,0|2,0:1,0",
+        "vertexId": "junction:ground:1,0",
+        "position": [
+          1,
+          0
+        ],
+        "direction": "E",
+        "junctionKind": "straight",
+        "owner": false,
+        "trim": 0,
+        "ownsJunctionVolume": false,
+        "section": {
+          "thickness": 0.6,
+          "height": 4,
+          "material": "castle.limestone",
+          "bond": "ashlar",
+          "profile": "exterior"
+        }
+      },
+      "endSocket": {
+        "id": "socket:wall:ground:1,0|2,0:2,0",
+        "vertexId": "junction:ground:2,0",
+        "position": [
+          2,
+          0
+        ],
+        "direction": "W",
+        "junctionKind": "straight",
+        "owner": true,
+        "trim": 0,
+        "ownsJunctionVolume": false,
+        "section": {
+          "thickness": 0.6,
+          "height": 4,
+          "material": "castle.limestone",
+          "bond": "ashlar",
+          "profile": "exterior"
+        }
+      },
+      "trim": {
+        "start": 0,
+        "end": 0
+      }
+    },
+    {
+      "id": "wall:ground:1,2|2,2",
+      "levelId": "ground",
+      "from": [
+        1,
+        2
+      ],
+      "to": [
+        2,
+        2
+      ],
+      "axis": "x",
+      "roomIds": [
+        "hall"
+      ],
+      "boundary": "exterior",
+      "kind": "wall",
+      "overrideId": null,
+      "connects": null,
+      "section": {
+        "thickness": 0.6,
+        "height": 4,
+        "material": "castle.limestone",
+        "bond": "ashlar",
+        "profile": "exterior"
+      },
+      "openings": [],
+      "railProfile": null,
+      "startSocket": {
+        "id": "socket:wall:ground:1,2|2,2:1,2",
+        "vertexId": "junction:ground:1,2",
+        "position": [
+          1,
+          2
+        ],
+        "direction": "E",
+        "junctionKind": "straight",
+        "owner": false,
+        "trim": 0,
+        "ownsJunctionVolume": false,
+        "section": {
+          "thickness": 0.6,
+          "height": 4,
+          "material": "castle.limestone",
+          "bond": "ashlar",
+          "profile": "exterior"
+        }
+      },
+      "endSocket": {
+        "id": "socket:wall:ground:1,2|2,2:2,2",
+        "vertexId": "junction:ground:2,2",
+        "position": [
+          2,
+          2
+        ],
+        "direction": "W",
+        "junctionKind": "straight",
+        "owner": true,
+        "trim": 0,
+        "ownsJunctionVolume": false,
+        "section": {
+          "thickness": 0.6,
+          "height": 4,
+          "material": "castle.limestone",
+          "bond": "ashlar",
+          "profile": "exterior"
+        }
+      },
+      "trim": {
+        "start": 0,
+        "end": 0
+      }
+    },
+    {
+      "id": "wall:ground:2,0|3,0",
+      "levelId": "ground",
+      "from": [
+        2,
+        0
+      ],
+      "to": [
+        3,
+        0
+      ],
+      "axis": "x",
+      "roomIds": [
+        "hall"
+      ],
+      "boundary": "exterior",
+      "kind": "wall",
+      "overrideId": null,
+      "connects": null,
+      "section": {
+        "thickness": 0.6,
+        "height": 4,
+        "material": "castle.limestone",
+        "bond": "ashlar",
+        "profile": "exterior"
+      },
+      "openings": [],
+      "railProfile": null,
+      "startSocket": {
+        "id": "socket:wall:ground:2,0|3,0:2,0",
+        "vertexId": "junction:ground:2,0",
+        "position": [
+          2,
+          0
+        ],
+        "direction": "E",
+        "junctionKind": "straight",
+        "owner": false,
+        "trim": 0,
+        "ownsJunctionVolume": false,
+        "section": {
+          "thickness": 0.6,
+          "height": 4,
+          "material": "castle.limestone",
+          "bond": "ashlar",
+          "profile": "exterior"
+        }
+      },
+      "endSocket": {
+        "id": "socket:wall:ground:2,0|3,0:3,0",
+        "vertexId": "junction:ground:3,0",
+        "position": [
+          3,
+          0
+        ],
+        "direction": "W",
+        "junctionKind": "straight",
+        "owner": true,
+        "trim": 0,
+        "ownsJunctionVolume": false,
+        "section": {
+          "thickness": 0.6,
+          "height": 4,
+          "material": "castle.limestone",
+          "bond": "ashlar",
+          "profile": "exterior"
+        }
+      },
+      "trim": {
+        "start": 0,
+        "end": 0
+      }
+    },
+    {
+      "id": "wall:ground:2,2|3,2",
+      "levelId": "ground",
+      "from": [
+        2,
+        2
+      ],
+      "to": [
+        3,
+        2
+      ],
+      "axis": "x",
+      "roomIds": [
+        "hall"
+      ],
+      "boundary": "exterior",
+      "kind": "wall",
+      "overrideId": null,
+      "connects": null,
+      "section": {
+        "thickness": 0.6,
+        "height": 4,
+        "material": "castle.limestone",
+        "bond": "ashlar",
+        "profile": "exterior"
+      },
+      "openings": [],
+      "railProfile": null,
+      "startSocket": {
+        "id": "socket:wall:ground:2,2|3,2:2,2",
+        "vertexId": "junction:ground:2,2",
+        "position": [
+          2,
+          2
+        ],
+        "direction": "E",
+        "junctionKind": "straight",
+        "owner": false,
+        "trim": 0,
+        "ownsJunctionVolume": false,
+        "section": {
+          "thickness": 0.6,
+          "height": 4,
+          "material": "castle.limestone",
+          "bond": "ashlar",
+          "profile": "exterior"
+        }
+      },
+      "endSocket": {
+        "id": "socket:wall:ground:2,2|3,2:3,2",
+        "vertexId": "junction:ground:3,2",
+        "position": [
+          3,
+          2
+        ],
+        "direction": "W",
+        "junctionKind": "straight",
+        "owner": true,
+        "trim": 0,
+        "ownsJunctionVolume": false,
+        "section": {
+          "thickness": 0.6,
+          "height": 4,
+          "material": "castle.limestone",
+          "bond": "ashlar",
+          "profile": "exterior"
+        }
+      },
+      "trim": {
+        "start": 0,
+        "end": 0
+      }
+    },
+    {
+      "id": "wall:ground:3,0|4,0",
+      "levelId": "ground",
+      "from": [
+        3,
+        0
+      ],
+      "to": [
+        4,
+        0
+      ],
+      "axis": "x",
+      "roomIds": [
+        "hall"
+      ],
+      "boundary": "exterior",
+      "kind": "wall",
+      "overrideId": null,
+      "connects": null,
+      "section": {
+        "thickness": 0.6,
+        "height": 4,
+        "material": "castle.limestone",
+        "bond": "ashlar",
+        "profile": "exterior"
+      },
+      "openings": [],
+      "railProfile": null,
+      "startSocket": {
+        "id": "socket:wall:ground:3,0|4,0:3,0",
+        "vertexId": "junction:ground:3,0",
+        "position": [
+          3,
+          0
+        ],
+        "direction": "E",
+        "junctionKind": "straight",
+        "owner": false,
+        "trim": 0,
+        "ownsJunctionVolume": false,
+        "section": {
+          "thickness": 0.6,
+          "height": 4,
+          "material": "castle.limestone",
+          "bond": "ashlar",
+          "profile": "exterior"
+        }
+      },
+      "endSocket": {
+        "id": "socket:wall:ground:3,0|4,0:4,0",
+        "vertexId": "junction:ground:4,0",
+        "position": [
+          4,
+          0
+        ],
+        "direction": "W",
+        "junctionKind": "straight",
+        "owner": true,
+        "trim": 0,
+        "ownsJunctionVolume": false,
+        "section": {
+          "thickness": 0.6,
+          "height": 4,
+          "material": "castle.limestone",
+          "bond": "ashlar",
+          "profile": "exterior"
+        }
+      },
+      "trim": {
+        "start": 0,
+        "end": 0
+      }
+    },
+    {
+      "id": "wall:ground:3,2|4,2",
+      "levelId": "ground",
+      "from": [
+        3,
+        2
+      ],
+      "to": [
+        4,
+        2
+      ],
+      "axis": "x",
+      "roomIds": [
+        "hall"
+      ],
+      "boundary": "exterior",
+      "kind": "wall",
+      "overrideId": null,
+      "connects": null,
+      "section": {
+        "thickness": 0.6,
+        "height": 4,
+        "material": "castle.limestone",
+        "bond": "ashlar",
+        "profile": "exterior"
+      },
+      "openings": [],
+      "railProfile": null,
+      "startSocket": {
+        "id": "socket:wall:ground:3,2|4,2:3,2",
+        "vertexId": "junction:ground:3,2",
+        "position": [
+          3,
+          2
+        ],
+        "direction": "E",
+        "junctionKind": "straight",
+        "owner": false,
+        "trim": 0,
+        "ownsJunctionVolume": false,
+        "section": {
+          "thickness": 0.6,
+          "height": 4,
+          "material": "castle.limestone",
+          "bond": "ashlar",
+          "profile": "exterior"
+        }
+      },
+      "endSocket": {
+        "id": "socket:wall:ground:3,2|4,2:4,2",
+        "vertexId": "junction:ground:4,2",
+        "position": [
+          4,
+          2
+        ],
+        "direction": "W",
+        "junctionKind": "straight",
+        "owner": true,
+        "trim": 0,
+        "ownsJunctionVolume": false,
+        "section": {
+          "thickness": 0.6,
+          "height": 4,
+          "material": "castle.limestone",
+          "bond": "ashlar",
+          "profile": "exterior"
+        }
+      },
+      "trim": {
+        "start": 0,
+        "end": 0
+      }
+    },
+    {
+      "id": "wall:ground:4,0|5,0",
+      "levelId": "ground",
+      "from": [
+        4,
+        0
+      ],
+      "to": [
+        5,
+        0
+      ],
+      "axis": "x",
+      "roomIds": [
+        "hall"
+      ],
+      "boundary": "exterior",
+      "kind": "wall",
+      "overrideId": null,
+      "connects": null,
+      "section": {
+        "thickness": 0.6,
+        "height": 4,
+        "material": "castle.limestone",
+        "bond": "ashlar",
+        "profile": "exterior"
+      },
+      "openings": [],
+      "railProfile": null,
+      "startSocket": {
+        "id": "socket:wall:ground:4,0|5,0:4,0",
+        "vertexId": "junction:ground:4,0",
+        "position": [
+          4,
+          0
+        ],
+        "direction": "E",
+        "junctionKind": "straight",
+        "owner": false,
+        "trim": 0,
+        "ownsJunctionVolume": false,
+        "section": {
+          "thickness": 0.6,
+          "height": 4,
+          "material": "castle.limestone",
+          "bond": "ashlar",
+          "profile": "exterior"
+        }
+      },
+      "endSocket": {
+        "id": "socket:wall:ground:4,0|5,0:5,0",
+        "vertexId": "junction:ground:5,0",
+        "position": [
+          5,
+          0
+        ],
+        "direction": "W",
+        "junctionKind": "straight",
+        "owner": true,
+        "trim": 0,
+        "ownsJunctionVolume": false,
+        "section": {
+          "thickness": 0.6,
+          "height": 4,
+          "material": "castle.limestone",
+          "bond": "ashlar",
+          "profile": "exterior"
+        }
+      },
+      "trim": {
+        "start": 0,
+        "end": 0
+      }
+    },
+    {
+      "id": "wall:ground:4,2|5,2",
+      "levelId": "ground",
+      "from": [
+        4,
+        2
+      ],
+      "to": [
+        5,
+        2
+      ],
+      "axis": "x",
+      "roomIds": [
+        "hall"
+      ],
+      "boundary": "exterior",
+      "kind": "wall",
+      "overrideId": null,
+      "connects": null,
+      "section": {
+        "thickness": 0.6,
+        "height": 4,
+        "material": "castle.limestone",
+        "bond": "ashlar",
+        "profile": "exterior"
+      },
+      "openings": [],
+      "railProfile": null,
+      "startSocket": {
+        "id": "socket:wall:ground:4,2|5,2:4,2",
+        "vertexId": "junction:ground:4,2",
+        "position": [
+          4,
+          2
+        ],
+        "direction": "E",
+        "junctionKind": "straight",
+        "owner": false,
+        "trim": 0,
+        "ownsJunctionVolume": false,
+        "section": {
+          "thickness": 0.6,
+          "height": 4,
+          "material": "castle.limestone",
+          "bond": "ashlar",
+          "profile": "exterior"
+        }
+      },
+      "endSocket": {
+        "id": "socket:wall:ground:4,2|5,2:5,2",
+        "vertexId": "junction:ground:5,2",
+        "position": [
+          5,
+          2
+        ],
+        "direction": "W",
+        "junctionKind": "straight",
+        "owner": true,
+        "trim": 0,
+        "ownsJunctionVolume": false,
+        "section": {
+          "thickness": 0.6,
+          "height": 4,
+          "material": "castle.limestone",
+          "bond": "ashlar",
+          "profile": "exterior"
+        }
+      },
+      "trim": {
+        "start": 0,
+        "end": 0
+      }
+    },
+    {
+      "id": "wall:ground:5,0|6,0",
+      "levelId": "ground",
+      "from": [
+        5,
+        0
+      ],
+      "to": [
+        6,
+        0
+      ],
+      "axis": "x",
+      "roomIds": [
+        "hall"
+      ],
+      "boundary": "exterior",
+      "kind": "wall",
+      "overrideId": null,
+      "connects": null,
+      "section": {
+        "thickness": 0.6,
+        "height": 4,
+        "material": "castle.limestone",
+        "bond": "ashlar",
+        "profile": "exterior"
+      },
+      "openings": [],
+      "railProfile": null,
+      "startSocket": {
+        "id": "socket:wall:ground:5,0|6,0:5,0",
+        "vertexId": "junction:ground:5,0",
+        "position": [
+          5,
+          0
+        ],
+        "direction": "E",
+        "junctionKind": "straight",
+        "owner": false,
+        "trim": 0,
+        "ownsJunctionVolume": false,
+        "section": {
+          "thickness": 0.6,
+          "height": 4,
+          "material": "castle.limestone",
+          "bond": "ashlar",
+          "profile": "exterior"
+        }
+      },
+      "endSocket": {
+        "id": "socket:wall:ground:5,0|6,0:6,0",
+        "vertexId": "junction:ground:6,0",
+        "position": [
+          6,
+          0
+        ],
+        "direction": "W",
+        "junctionKind": "straight",
+        "owner": true,
+        "trim": 0,
+        "ownsJunctionVolume": false,
+        "section": {
+          "thickness": 0.6,
+          "height": 4,
+          "material": "castle.limestone",
+          "bond": "ashlar",
+          "profile": "exterior"
+        }
+      },
+      "trim": {
+        "start": 0,
+        "end": 0
+      }
+    },
+    {
+      "id": "wall:ground:5,2|6,2",
+      "levelId": "ground",
+      "from": [
+        5,
+        2
+      ],
+      "to": [
+        6,
+        2
+      ],
+      "axis": "x",
+      "roomIds": [
+        "hall"
+      ],
+      "boundary": "exterior",
+      "kind": "wall",
+      "overrideId": null,
+      "connects": null,
+      "section": {
+        "thickness": 0.6,
+        "height": 4,
+        "material": "castle.limestone",
+        "bond": "ashlar",
+        "profile": "exterior"
+      },
+      "openings": [],
+      "railProfile": null,
+      "startSocket": {
+        "id": "socket:wall:ground:5,2|6,2:5,2",
+        "vertexId": "junction:ground:5,2",
+        "position": [
+          5,
+          2
+        ],
+        "direction": "E",
+        "junctionKind": "straight",
+        "owner": false,
+        "trim": 0,
+        "ownsJunctionVolume": false,
+        "section": {
+          "thickness": 0.6,
+          "height": 4,
+          "material": "castle.limestone",
+          "bond": "ashlar",
+          "profile": "exterior"
+        }
+      },
+      "endSocket": {
+        "id": "socket:wall:ground:5,2|6,2:6,2",
+        "vertexId": "junction:ground:6,2",
+        "position": [
+          6,
+          2
+        ],
+        "direction": "W",
+        "junctionKind": "straight",
+        "owner": true,
+        "trim": 0,
+        "ownsJunctionVolume": false,
+        "section": {
+          "thickness": 0.6,
+          "height": 4,
+          "material": "castle.limestone",
+          "bond": "ashlar",
+          "profile": "exterior"
+        }
+      },
+      "trim": {
+        "start": 0,
+        "end": 0
+      }
+    },
+    {
+      "id": "wall:ground:6,0|7,0",
+      "levelId": "ground",
+      "from": [
+        6,
+        0
+      ],
+      "to": [
+        7,
+        0
+      ],
+      "axis": "x",
+      "roomIds": [
+        "hall"
+      ],
+      "boundary": "exterior",
+      "kind": "wall",
+      "overrideId": null,
+      "connects": null,
+      "section": {
+        "thickness": 0.6,
+        "height": 4,
+        "material": "castle.limestone",
+        "bond": "ashlar",
+        "profile": "exterior"
+      },
+      "openings": [],
+      "railProfile": null,
+      "startSocket": {
+        "id": "socket:wall:ground:6,0|7,0:6,0",
+        "vertexId": "junction:ground:6,0",
+        "position": [
+          6,
+          0
+        ],
+        "direction": "E",
+        "junctionKind": "straight",
+        "owner": false,
+        "trim": 0,
+        "ownsJunctionVolume": false,
+        "section": {
+          "thickness": 0.6,
+          "height": 4,
+          "material": "castle.limestone",
+          "bond": "ashlar",
+          "profile": "exterior"
+        }
+      },
+      "endSocket": {
+        "id": "socket:wall:ground:6,0|7,0:7,0",
+        "vertexId": "junction:ground:7,0",
+        "position": [
+          7,
+          0
+        ],
+        "direction": "W",
+        "junctionKind": "straight",
+        "owner": true,
+        "trim": 0,
+        "ownsJunctionVolume": false,
+        "section": {
+          "thickness": 0.6,
+          "height": 4,
+          "material": "castle.limestone",
+          "bond": "ashlar",
+          "profile": "exterior"
+        }
+      },
+      "trim": {
+        "start": 0,
+        "end": 0
+      }
+    },
+    {
+      "id": "wall:ground:6,2|7,2",
+      "levelId": "ground",
+      "from": [
+        6,
+        2
+      ],
+      "to": [
+        7,
+        2
+      ],
+      "axis": "x",
+      "roomIds": [
+        "hall"
+      ],
+      "boundary": "exterior",
+      "kind": "wall",
+      "overrideId": null,
+      "connects": null,
+      "section": {
+        "thickness": 0.6,
+        "height": 4,
+        "material": "castle.limestone",
+        "bond": "ashlar",
+        "profile": "exterior"
+      },
+      "openings": [],
+      "railProfile": null,
+      "startSocket": {
+        "id": "socket:wall:ground:6,2|7,2:6,2",
+        "vertexId": "junction:ground:6,2",
+        "position": [
+          6,
+          2
+        ],
+        "direction": "E",
+        "junctionKind": "straight",
+        "owner": false,
+        "trim": 0,
+        "ownsJunctionVolume": false,
+        "section": {
+          "thickness": 0.6,
+          "height": 4,
+          "material": "castle.limestone",
+          "bond": "ashlar",
+          "profile": "exterior"
+        }
+      },
+      "endSocket": {
+        "id": "socket:wall:ground:6,2|7,2:7,2",
+        "vertexId": "junction:ground:7,2",
+        "position": [
+          7,
+          2
+        ],
+        "direction": "W",
+        "junctionKind": "straight",
+        "owner": true,
+        "trim": 0,
+        "ownsJunctionVolume": false,
+        "section": {
+          "thickness": 0.6,
+          "height": 4,
+          "material": "castle.limestone",
+          "bond": "ashlar",
+          "profile": "exterior"
+        }
+      },
+      "trim": {
+        "start": 0,
+        "end": 0
+      }
+    },
+    {
+      "id": "wall:ground:7,0|8,0",
+      "levelId": "ground",
+      "from": [
+        7,
+        0
+      ],
+      "to": [
+        8,
+        0
+      ],
+      "axis": "x",
+      "roomIds": [
+        "hall"
+      ],
+      "boundary": "exterior",
+      "kind": "wall",
+      "overrideId": null,
+      "connects": null,
+      "section": {
+        "thickness": 0.6,
+        "height": 4,
+        "material": "castle.limestone",
+        "bond": "ashlar",
+        "profile": "exterior"
+      },
+      "openings": [],
+      "railProfile": null,
+      "startSocket": {
+        "id": "socket:wall:ground:7,0|8,0:7,0",
+        "vertexId": "junction:ground:7,0",
+        "position": [
+          7,
+          0
+        ],
+        "direction": "E",
+        "junctionKind": "straight",
+        "owner": false,
+        "trim": 0,
+        "ownsJunctionVolume": false,
+        "section": {
+          "thickness": 0.6,
+          "height": 4,
+          "material": "castle.limestone",
+          "bond": "ashlar",
+          "profile": "exterior"
+        }
+      },
+      "endSocket": {
+        "id": "socket:wall:ground:7,0|8,0:8,0",
+        "vertexId": "junction:ground:8,0",
+        "position": [
+          8,
+          0
+        ],
+        "direction": "W",
+        "junctionKind": "L",
+        "owner": true,
+        "trim": 0.3,
+        "ownsJunctionVolume": true,
+        "section": {
+          "thickness": 0.6,
+          "height": 4,
+          "material": "castle.limestone",
+          "bond": "ashlar",
+          "profile": "exterior"
+        }
+      },
+      "trim": {
+        "start": 0,
+        "end": 0.3
+      }
+    },
+    {
+      "id": "wall:ground:7,2|8,2",
+      "levelId": "ground",
+      "from": [
+        7,
+        2
+      ],
+      "to": [
+        8,
+        2
+      ],
+      "axis": "x",
+      "roomIds": [
+        "hall"
+      ],
+      "boundary": "exterior",
+      "kind": "wall",
+      "overrideId": null,
+      "connects": null,
+      "section": {
+        "thickness": 0.6,
+        "height": 4,
+        "material": "castle.limestone",
+        "bond": "ashlar",
+        "profile": "exterior"
+      },
+      "openings": [],
+      "railProfile": null,
+      "startSocket": {
+        "id": "socket:wall:ground:7,2|8,2:7,2",
+        "vertexId": "junction:ground:7,2",
+        "position": [
+          7,
+          2
+        ],
+        "direction": "E",
+        "junctionKind": "straight",
+        "owner": false,
+        "trim": 0,
+        "ownsJunctionVolume": false,
+        "section": {
+          "thickness": 0.6,
+          "height": 4,
+          "material": "castle.limestone",
+          "bond": "ashlar",
+          "profile": "exterior"
+        }
+      },
+      "endSocket": {
+        "id": "socket:wall:ground:7,2|8,2:8,2",
+        "vertexId": "junction:ground:8,2",
+        "position": [
+          8,
+          2
+        ],
+        "direction": "W",
+        "junctionKind": "L",
+        "owner": true,
+        "trim": 0.3,
+        "ownsJunctionVolume": true,
+        "section": {
+          "thickness": 0.6,
+          "height": 4,
+          "material": "castle.limestone",
+          "bond": "ashlar",
+          "profile": "exterior"
+        }
+      },
+      "trim": {
+        "start": 0,
+        "end": 0.3
+      }
+    },
+    {
+      "id": "wall:ground:8,0|8,1",
+      "levelId": "ground",
+      "from": [
+        8,
+        0
+      ],
+      "to": [
+        8,
+        1
+      ],
+      "axis": "z",
+      "roomIds": [
+        "hall"
+      ],
+      "boundary": "exterior",
+      "kind": "wall",
+      "overrideId": null,
+      "connects": null,
+      "section": {
+        "thickness": 0.6,
+        "height": 4,
+        "material": "castle.limestone",
+        "bond": "ashlar",
+        "profile": "exterior"
+      },
+      "openings": [],
+      "railProfile": null,
+      "startSocket": {
+        "id": "socket:wall:ground:8,0|8,1:8,0",
+        "vertexId": "junction:ground:8,0",
+        "position": [
+          8,
+          0
+        ],
+        "direction": "N",
+        "junctionKind": "L",
+        "owner": false,
+        "trim": 0.3,
+        "ownsJunctionVolume": false,
+        "section": {
+          "thickness": 0.6,
+          "height": 4,
+          "material": "castle.limestone",
+          "bond": "ashlar",
+          "profile": "exterior"
+        }
+      },
+      "endSocket": {
+        "id": "socket:wall:ground:8,0|8,1:8,1",
+        "vertexId": "junction:ground:8,1",
+        "position": [
+          8,
+          1
+        ],
+        "direction": "S",
+        "junctionKind": "straight",
+        "owner": true,
+        "trim": 0,
+        "ownsJunctionVolume": false,
+        "section": {
+          "thickness": 0.6,
+          "height": 4,
+          "material": "castle.limestone",
+          "bond": "ashlar",
+          "profile": "exterior"
+        }
+      },
+      "trim": {
+        "start": 0.3,
+        "end": 0
+      }
+    },
+    {
+      "id": "wall:ground:8,1|8,2",
+      "levelId": "ground",
+      "from": [
+        8,
+        1
+      ],
+      "to": [
+        8,
+        2
+      ],
+      "axis": "z",
+      "roomIds": [
+        "hall"
+      ],
+      "boundary": "exterior",
+      "kind": "wall",
+      "overrideId": null,
+      "connects": null,
+      "section": {
+        "thickness": 0.6,
+        "height": 4,
+        "material": "castle.limestone",
+        "bond": "ashlar",
+        "profile": "exterior"
+      },
+      "openings": [],
+      "railProfile": null,
+      "startSocket": {
+        "id": "socket:wall:ground:8,1|8,2:8,1",
+        "vertexId": "junction:ground:8,1",
+        "position": [
+          8,
+          1
+        ],
+        "direction": "N",
+        "junctionKind": "straight",
+        "owner": false,
+        "trim": 0,
+        "ownsJunctionVolume": false,
+        "section": {
+          "thickness": 0.6,
+          "height": 4,
+          "material": "castle.limestone",
+          "bond": "ashlar",
+          "profile": "exterior"
+        }
+      },
+      "endSocket": {
+        "id": "socket:wall:ground:8,1|8,2:8,2",
+        "vertexId": "junction:ground:8,2",
+        "position": [
+          8,
+          2
+        ],
+        "direction": "S",
+        "junctionKind": "L",
+        "owner": false,
+        "trim": 0.3,
+        "ownsJunctionVolume": false,
+        "section": {
+          "thickness": 0.6,
+          "height": 4,
+          "material": "castle.limestone",
+          "bond": "ashlar",
+          "profile": "exterior"
+        }
+      },
+      "trim": {
+        "start": 0,
+        "end": 0.3
+      }
+    },
+    {
+      "id": "wall:upper:0,0|0,1",
+      "levelId": "upper",
+      "from": [
+        0,
+        0
+      ],
+      "to": [
+        0,
+        1
+      ],
+      "axis": "z",
+      "roomIds": [
+        "chamber"
+      ],
+      "boundary": "exterior",
+      "kind": "wall",
+      "overrideId": null,
+      "connects": null,
+      "section": {
+        "thickness": 0.6,
+        "height": 4,
+        "material": "castle.limestone",
+        "bond": "ashlar",
+        "profile": "exterior"
+      },
+      "openings": [],
+      "railProfile": null,
+      "startSocket": {
+        "id": "socket:wall:upper:0,0|0,1:0,0",
+        "vertexId": "junction:upper:0,0",
+        "position": [
+          0,
+          0
+        ],
+        "direction": "N",
+        "junctionKind": "L",
+        "owner": true,
+        "trim": 0.3,
+        "ownsJunctionVolume": true,
+        "section": {
+          "thickness": 0.6,
+          "height": 4,
+          "material": "castle.limestone",
+          "bond": "ashlar",
+          "profile": "exterior"
+        }
+      },
+      "endSocket": {
+        "id": "socket:wall:upper:0,0|0,1:0,1",
+        "vertexId": "junction:upper:0,1",
+        "position": [
+          0,
+          1
+        ],
+        "direction": "S",
+        "junctionKind": "straight",
+        "owner": true,
+        "trim": 0,
+        "ownsJunctionVolume": false,
+        "section": {
+          "thickness": 0.6,
+          "height": 4,
+          "material": "castle.limestone",
+          "bond": "ashlar",
+          "profile": "exterior"
+        }
+      },
+      "trim": {
+        "start": 0.3,
+        "end": 0
+      }
+    },
+    {
+      "id": "wall:upper:0,0|1,0",
+      "levelId": "upper",
+      "from": [
+        0,
+        0
+      ],
+      "to": [
+        1,
+        0
+      ],
+      "axis": "x",
+      "roomIds": [
+        "chamber"
+      ],
+      "boundary": "exterior",
+      "kind": "wall",
+      "overrideId": null,
+      "connects": null,
+      "section": {
+        "thickness": 0.6,
+        "height": 4,
+        "material": "castle.limestone",
+        "bond": "ashlar",
+        "profile": "exterior"
+      },
+      "openings": [],
+      "railProfile": null,
+      "startSocket": {
+        "id": "socket:wall:upper:0,0|1,0:0,0",
+        "vertexId": "junction:upper:0,0",
+        "position": [
+          0,
+          0
+        ],
+        "direction": "E",
+        "junctionKind": "L",
+        "owner": false,
+        "trim": 0.3,
+        "ownsJunctionVolume": false,
+        "section": {
+          "thickness": 0.6,
+          "height": 4,
+          "material": "castle.limestone",
+          "bond": "ashlar",
+          "profile": "exterior"
+        }
+      },
+      "endSocket": {
+        "id": "socket:wall:upper:0,0|1,0:1,0",
+        "vertexId": "junction:upper:1,0",
+        "position": [
+          1,
+          0
+        ],
+        "direction": "W",
+        "junctionKind": "straight",
+        "owner": true,
+        "trim": 0,
+        "ownsJunctionVolume": false,
+        "section": {
+          "thickness": 0.6,
+          "height": 4,
+          "material": "castle.limestone",
+          "bond": "ashlar",
+          "profile": "exterior"
+        }
+      },
+      "trim": {
+        "start": 0.3,
+        "end": 0
+      }
+    },
+    {
+      "id": "wall:upper:0,1|0,2",
+      "levelId": "upper",
+      "from": [
+        0,
+        1
+      ],
+      "to": [
+        0,
+        2
+      ],
+      "axis": "z",
+      "roomIds": [
+        "chamber"
+      ],
+      "boundary": "exterior",
+      "kind": "wall",
+      "overrideId": null,
+      "connects": null,
+      "section": {
+        "thickness": 0.6,
+        "height": 4,
+        "material": "castle.limestone",
+        "bond": "ashlar",
+        "profile": "exterior"
+      },
+      "openings": [],
+      "railProfile": null,
+      "startSocket": {
+        "id": "socket:wall:upper:0,1|0,2:0,1",
+        "vertexId": "junction:upper:0,1",
+        "position": [
+          0,
+          1
+        ],
+        "direction": "N",
+        "junctionKind": "straight",
+        "owner": false,
+        "trim": 0,
+        "ownsJunctionVolume": false,
+        "section": {
+          "thickness": 0.6,
+          "height": 4,
+          "material": "castle.limestone",
+          "bond": "ashlar",
+          "profile": "exterior"
+        }
+      },
+      "endSocket": {
+        "id": "socket:wall:upper:0,1|0,2:0,2",
+        "vertexId": "junction:upper:0,2",
+        "position": [
+          0,
+          2
+        ],
+        "direction": "S",
+        "junctionKind": "L",
+        "owner": true,
+        "trim": 0.3,
+        "ownsJunctionVolume": true,
+        "section": {
+          "thickness": 0.6,
+          "height": 4,
+          "material": "castle.limestone",
+          "bond": "ashlar",
+          "profile": "exterior"
+        }
+      },
+      "trim": {
+        "start": 0,
+        "end": 0.3
+      }
+    },
+    {
+      "id": "wall:upper:0,2|1,2",
+      "levelId": "upper",
+      "from": [
+        0,
+        2
+      ],
+      "to": [
+        1,
+        2
+      ],
+      "axis": "x",
+      "roomIds": [
+        "chamber"
+      ],
+      "boundary": "exterior",
+      "kind": "wall",
+      "overrideId": null,
+      "connects": null,
+      "section": {
+        "thickness": 0.6,
+        "height": 4,
+        "material": "castle.limestone",
+        "bond": "ashlar",
+        "profile": "exterior"
+      },
+      "openings": [],
+      "railProfile": null,
+      "startSocket": {
+        "id": "socket:wall:upper:0,2|1,2:0,2",
+        "vertexId": "junction:upper:0,2",
+        "position": [
+          0,
+          2
+        ],
+        "direction": "E",
+        "junctionKind": "L",
+        "owner": false,
+        "trim": 0.3,
+        "ownsJunctionVolume": false,
+        "section": {
+          "thickness": 0.6,
+          "height": 4,
+          "material": "castle.limestone",
+          "bond": "ashlar",
+          "profile": "exterior"
+        }
+      },
+      "endSocket": {
+        "id": "socket:wall:upper:0,2|1,2:1,2",
+        "vertexId": "junction:upper:1,2",
+        "position": [
+          1,
+          2
+        ],
+        "direction": "W",
+        "junctionKind": "straight",
+        "owner": true,
+        "trim": 0,
+        "ownsJunctionVolume": false,
+        "section": {
+          "thickness": 0.6,
+          "height": 4,
+          "material": "castle.limestone",
+          "bond": "ashlar",
+          "profile": "exterior"
+        }
+      },
+      "trim": {
+        "start": 0.3,
+        "end": 0
+      }
+    },
+    {
+      "id": "wall:upper:1,0|2,0",
+      "levelId": "upper",
+      "from": [
+        1,
+        0
+      ],
+      "to": [
+        2,
+        0
+      ],
+      "axis": "x",
+      "roomIds": [
+        "chamber"
+      ],
+      "boundary": "exterior",
+      "kind": "wall",
+      "overrideId": null,
+      "connects": null,
+      "section": {
+        "thickness": 0.6,
+        "height": 4,
+        "material": "castle.limestone",
+        "bond": "ashlar",
+        "profile": "exterior"
+      },
+      "openings": [],
+      "railProfile": null,
+      "startSocket": {
+        "id": "socket:wall:upper:1,0|2,0:1,0",
+        "vertexId": "junction:upper:1,0",
+        "position": [
+          1,
+          0
+        ],
+        "direction": "E",
+        "junctionKind": "straight",
+        "owner": false,
+        "trim": 0,
+        "ownsJunctionVolume": false,
+        "section": {
+          "thickness": 0.6,
+          "height": 4,
+          "material": "castle.limestone",
+          "bond": "ashlar",
+          "profile": "exterior"
+        }
+      },
+      "endSocket": {
+        "id": "socket:wall:upper:1,0|2,0:2,0",
+        "vertexId": "junction:upper:2,0",
+        "position": [
+          2,
+          0
+        ],
+        "direction": "W",
+        "junctionKind": "straight",
+        "owner": true,
+        "trim": 0,
+        "ownsJunctionVolume": false,
+        "section": {
+          "thickness": 0.6,
+          "height": 4,
+          "material": "castle.limestone",
+          "bond": "ashlar",
+          "profile": "exterior"
+        }
+      },
+      "trim": {
+        "start": 0,
+        "end": 0
+      }
+    },
+    {
+      "id": "wall:upper:1,2|2,2",
+      "levelId": "upper",
+      "from": [
+        1,
+        2
+      ],
+      "to": [
+        2,
+        2
+      ],
+      "axis": "x",
+      "roomIds": [
+        "chamber"
+      ],
+      "boundary": "exterior",
+      "kind": "wall",
+      "overrideId": null,
+      "connects": null,
+      "section": {
+        "thickness": 0.6,
+        "height": 4,
+        "material": "castle.limestone",
+        "bond": "ashlar",
+        "profile": "exterior"
+      },
+      "openings": [],
+      "railProfile": null,
+      "startSocket": {
+        "id": "socket:wall:upper:1,2|2,2:1,2",
+        "vertexId": "junction:upper:1,2",
+        "position": [
+          1,
+          2
+        ],
+        "direction": "E",
+        "junctionKind": "straight",
+        "owner": false,
+        "trim": 0,
+        "ownsJunctionVolume": false,
+        "section": {
+          "thickness": 0.6,
+          "height": 4,
+          "material": "castle.limestone",
+          "bond": "ashlar",
+          "profile": "exterior"
+        }
+      },
+      "endSocket": {
+        "id": "socket:wall:upper:1,2|2,2:2,2",
+        "vertexId": "junction:upper:2,2",
+        "position": [
+          2,
+          2
+        ],
+        "direction": "W",
+        "junctionKind": "straight",
+        "owner": true,
+        "trim": 0,
+        "ownsJunctionVolume": false,
+        "section": {
+          "thickness": 0.6,
+          "height": 4,
+          "material": "castle.limestone",
+          "bond": "ashlar",
+          "profile": "exterior"
+        }
+      },
+      "trim": {
+        "start": 0,
+        "end": 0
+      }
+    },
+    {
+      "id": "wall:upper:2,0|3,0",
+      "levelId": "upper",
+      "from": [
+        2,
+        0
+      ],
+      "to": [
+        3,
+        0
+      ],
+      "axis": "x",
+      "roomIds": [
+        "chamber"
+      ],
+      "boundary": "exterior",
+      "kind": "wall",
+      "overrideId": null,
+      "connects": null,
+      "section": {
+        "thickness": 0.6,
+        "height": 4,
+        "material": "castle.limestone",
+        "bond": "ashlar",
+        "profile": "exterior"
+      },
+      "openings": [],
+      "railProfile": null,
+      "startSocket": {
+        "id": "socket:wall:upper:2,0|3,0:2,0",
+        "vertexId": "junction:upper:2,0",
+        "position": [
+          2,
+          0
+        ],
+        "direction": "E",
+        "junctionKind": "straight",
+        "owner": false,
+        "trim": 0,
+        "ownsJunctionVolume": false,
+        "section": {
+          "thickness": 0.6,
+          "height": 4,
+          "material": "castle.limestone",
+          "bond": "ashlar",
+          "profile": "exterior"
+        }
+      },
+      "endSocket": {
+        "id": "socket:wall:upper:2,0|3,0:3,0",
+        "vertexId": "junction:upper:3,0",
+        "position": [
+          3,
+          0
+        ],
+        "direction": "W",
+        "junctionKind": "straight",
+        "owner": true,
+        "trim": 0,
+        "ownsJunctionVolume": false,
+        "section": {
+          "thickness": 0.6,
+          "height": 4,
+          "material": "castle.limestone",
+          "bond": "ashlar",
+          "profile": "exterior"
+        }
+      },
+      "trim": {
+        "start": 0,
+        "end": 0
+      }
+    },
+    {
+      "id": "wall:upper:2,2|3,2",
+      "levelId": "upper",
+      "from": [
+        2,
+        2
+      ],
+      "to": [
+        3,
+        2
+      ],
+      "axis": "x",
+      "roomIds": [
+        "chamber"
+      ],
+      "boundary": "exterior",
+      "kind": "wall",
+      "overrideId": null,
+      "connects": null,
+      "section": {
+        "thickness": 0.6,
+        "height": 4,
+        "material": "castle.limestone",
+        "bond": "ashlar",
+        "profile": "exterior"
+      },
+      "openings": [],
+      "railProfile": null,
+      "startSocket": {
+        "id": "socket:wall:upper:2,2|3,2:2,2",
+        "vertexId": "junction:upper:2,2",
+        "position": [
+          2,
+          2
+        ],
+        "direction": "E",
+        "junctionKind": "straight",
+        "owner": false,
+        "trim": 0,
+        "ownsJunctionVolume": false,
+        "section": {
+          "thickness": 0.6,
+          "height": 4,
+          "material": "castle.limestone",
+          "bond": "ashlar",
+          "profile": "exterior"
+        }
+      },
+      "endSocket": {
+        "id": "socket:wall:upper:2,2|3,2:3,2",
+        "vertexId": "junction:upper:3,2",
+        "position": [
+          3,
+          2
+        ],
+        "direction": "W",
+        "junctionKind": "straight",
+        "owner": true,
+        "trim": 0,
+        "ownsJunctionVolume": false,
+        "section": {
+          "thickness": 0.6,
+          "height": 4,
+          "material": "castle.limestone",
+          "bond": "ashlar",
+          "profile": "exterior"
+        }
+      },
+      "trim": {
+        "start": 0,
+        "end": 0
+      }
+    },
+    {
+      "id": "wall:upper:3,0|4,0",
+      "levelId": "upper",
+      "from": [
+        3,
+        0
+      ],
+      "to": [
+        4,
+        0
+      ],
+      "axis": "x",
+      "roomIds": [
+        "chamber"
+      ],
+      "boundary": "exterior",
+      "kind": "wall",
+      "overrideId": null,
+      "connects": null,
+      "section": {
+        "thickness": 0.6,
+        "height": 4,
+        "material": "castle.limestone",
+        "bond": "ashlar",
+        "profile": "exterior"
+      },
+      "openings": [],
+      "railProfile": null,
+      "startSocket": {
+        "id": "socket:wall:upper:3,0|4,0:3,0",
+        "vertexId": "junction:upper:3,0",
+        "position": [
+          3,
+          0
+        ],
+        "direction": "E",
+        "junctionKind": "straight",
+        "owner": false,
+        "trim": 0,
+        "ownsJunctionVolume": false,
+        "section": {
+          "thickness": 0.6,
+          "height": 4,
+          "material": "castle.limestone",
+          "bond": "ashlar",
+          "profile": "exterior"
+        }
+      },
+      "endSocket": {
+        "id": "socket:wall:upper:3,0|4,0:4,0",
+        "vertexId": "junction:upper:4,0",
+        "position": [
+          4,
+          0
+        ],
+        "direction": "W",
+        "junctionKind": "straight",
+        "owner": true,
+        "trim": 0,
+        "ownsJunctionVolume": false,
+        "section": {
+          "thickness": 0.6,
+          "height": 4,
+          "material": "castle.limestone",
+          "bond": "ashlar",
+          "profile": "exterior"
+        }
+      },
+      "trim": {
+        "start": 0,
+        "end": 0
+      }
+    },
+    {
+      "id": "wall:upper:3,2|4,2",
+      "levelId": "upper",
+      "from": [
+        3,
+        2
+      ],
+      "to": [
+        4,
+        2
+      ],
+      "axis": "x",
+      "roomIds": [
+        "chamber"
+      ],
+      "boundary": "exterior",
+      "kind": "wall",
+      "overrideId": null,
+      "connects": null,
+      "section": {
+        "thickness": 0.6,
+        "height": 4,
+        "material": "castle.limestone",
+        "bond": "ashlar",
+        "profile": "exterior"
+      },
+      "openings": [],
+      "railProfile": null,
+      "startSocket": {
+        "id": "socket:wall:upper:3,2|4,2:3,2",
+        "vertexId": "junction:upper:3,2",
+        "position": [
+          3,
+          2
+        ],
+        "direction": "E",
+        "junctionKind": "straight",
+        "owner": false,
+        "trim": 0,
+        "ownsJunctionVolume": false,
+        "section": {
+          "thickness": 0.6,
+          "height": 4,
+          "material": "castle.limestone",
+          "bond": "ashlar",
+          "profile": "exterior"
+        }
+      },
+      "endSocket": {
+        "id": "socket:wall:upper:3,2|4,2:4,2",
+        "vertexId": "junction:upper:4,2",
+        "position": [
+          4,
+          2
+        ],
+        "direction": "W",
+        "junctionKind": "straight",
+        "owner": true,
+        "trim": 0,
+        "ownsJunctionVolume": false,
+        "section": {
+          "thickness": 0.6,
+          "height": 4,
+          "material": "castle.limestone",
+          "bond": "ashlar",
+          "profile": "exterior"
+        }
+      },
+      "trim": {
+        "start": 0,
+        "end": 0
+      }
+    },
+    {
+      "id": "wall:upper:4,0|5,0",
+      "levelId": "upper",
+      "from": [
+        4,
+        0
+      ],
+      "to": [
+        5,
+        0
+      ],
+      "axis": "x",
+      "roomIds": [
+        "chamber"
+      ],
+      "boundary": "exterior",
+      "kind": "wall",
+      "overrideId": null,
+      "connects": null,
+      "section": {
+        "thickness": 0.6,
+        "height": 4,
+        "material": "castle.limestone",
+        "bond": "ashlar",
+        "profile": "exterior"
+      },
+      "openings": [],
+      "railProfile": null,
+      "startSocket": {
+        "id": "socket:wall:upper:4,0|5,0:4,0",
+        "vertexId": "junction:upper:4,0",
+        "position": [
+          4,
+          0
+        ],
+        "direction": "E",
+        "junctionKind": "straight",
+        "owner": false,
+        "trim": 0,
+        "ownsJunctionVolume": false,
+        "section": {
+          "thickness": 0.6,
+          "height": 4,
+          "material": "castle.limestone",
+          "bond": "ashlar",
+          "profile": "exterior"
+        }
+      },
+      "endSocket": {
+        "id": "socket:wall:upper:4,0|5,0:5,0",
+        "vertexId": "junction:upper:5,0",
+        "position": [
+          5,
+          0
+        ],
+        "direction": "W",
+        "junctionKind": "straight",
+        "owner": true,
+        "trim": 0,
+        "ownsJunctionVolume": false,
+        "section": {
+          "thickness": 0.6,
+          "height": 4,
+          "material": "castle.limestone",
+          "bond": "ashlar",
+          "profile": "exterior"
+        }
+      },
+      "trim": {
+        "start": 0,
+        "end": 0
+      }
+    },
+    {
+      "id": "wall:upper:4,2|5,2",
+      "levelId": "upper",
+      "from": [
+        4,
+        2
+      ],
+      "to": [
+        5,
+        2
+      ],
+      "axis": "x",
+      "roomIds": [
+        "chamber"
+      ],
+      "boundary": "exterior",
+      "kind": "wall",
+      "overrideId": null,
+      "connects": null,
+      "section": {
+        "thickness": 0.6,
+        "height": 4,
+        "material": "castle.limestone",
+        "bond": "ashlar",
+        "profile": "exterior"
+      },
+      "openings": [],
+      "railProfile": null,
+      "startSocket": {
+        "id": "socket:wall:upper:4,2|5,2:4,2",
+        "vertexId": "junction:upper:4,2",
+        "position": [
+          4,
+          2
+        ],
+        "direction": "E",
+        "junctionKind": "straight",
+        "owner": false,
+        "trim": 0,
+        "ownsJunctionVolume": false,
+        "section": {
+          "thickness": 0.6,
+          "height": 4,
+          "material": "castle.limestone",
+          "bond": "ashlar",
+          "profile": "exterior"
+        }
+      },
+      "endSocket": {
+        "id": "socket:wall:upper:4,2|5,2:5,2",
+        "vertexId": "junction:upper:5,2",
+        "position": [
+          5,
+          2
+        ],
+        "direction": "W",
+        "junctionKind": "straight",
+        "owner": true,
+        "trim": 0,
+        "ownsJunctionVolume": false,
+        "section": {
+          "thickness": 0.6,
+          "height": 4,
+          "material": "castle.limestone",
+          "bond": "ashlar",
+          "profile": "exterior"
+        }
+      },
+      "trim": {
+        "start": 0,
+        "end": 0
+      }
+    },
+    {
+      "id": "wall:upper:5,0|6,0",
+      "levelId": "upper",
+      "from": [
+        5,
+        0
+      ],
+      "to": [
+        6,
+        0
+      ],
+      "axis": "x",
+      "roomIds": [
+        "chamber"
+      ],
+      "boundary": "exterior",
+      "kind": "wall",
+      "overrideId": null,
+      "connects": null,
+      "section": {
+        "thickness": 0.6,
+        "height": 4,
+        "material": "castle.limestone",
+        "bond": "ashlar",
+        "profile": "exterior"
+      },
+      "openings": [],
+      "railProfile": null,
+      "startSocket": {
+        "id": "socket:wall:upper:5,0|6,0:5,0",
+        "vertexId": "junction:upper:5,0",
+        "position": [
+          5,
+          0
+        ],
+        "direction": "E",
+        "junctionKind": "straight",
+        "owner": false,
+        "trim": 0,
+        "ownsJunctionVolume": false,
+        "section": {
+          "thickness": 0.6,
+          "height": 4,
+          "material": "castle.limestone",
+          "bond": "ashlar",
+          "profile": "exterior"
+        }
+      },
+      "endSocket": {
+        "id": "socket:wall:upper:5,0|6,0:6,0",
+        "vertexId": "junction:upper:6,0",
+        "position": [
+          6,
+          0
+        ],
+        "direction": "W",
+        "junctionKind": "straight",
+        "owner": true,
+        "trim": 0,
+        "ownsJunctionVolume": false,
+        "section": {
+          "thickness": 0.6,
+          "height": 4,
+          "material": "castle.limestone",
+          "bond": "ashlar",
+          "profile": "exterior"
+        }
+      },
+      "trim": {
+        "start": 0,
+        "end": 0
+      }
+    },
+    {
+      "id": "wall:upper:5,2|6,2",
+      "levelId": "upper",
+      "from": [
+        5,
+        2
+      ],
+      "to": [
+        6,
+        2
+      ],
+      "axis": "x",
+      "roomIds": [
+        "chamber"
+      ],
+      "boundary": "exterior",
+      "kind": "wall",
+      "overrideId": null,
+      "connects": null,
+      "section": {
+        "thickness": 0.6,
+        "height": 4,
+        "material": "castle.limestone",
+        "bond": "ashlar",
+        "profile": "exterior"
+      },
+      "openings": [],
+      "railProfile": null,
+      "startSocket": {
+        "id": "socket:wall:upper:5,2|6,2:5,2",
+        "vertexId": "junction:upper:5,2",
+        "position": [
+          5,
+          2
+        ],
+        "direction": "E",
+        "junctionKind": "straight",
+        "owner": false,
+        "trim": 0,
+        "ownsJunctionVolume": false,
+        "section": {
+          "thickness": 0.6,
+          "height": 4,
+          "material": "castle.limestone",
+          "bond": "ashlar",
+          "profile": "exterior"
+        }
+      },
+      "endSocket": {
+        "id": "socket:wall:upper:5,2|6,2:6,2",
+        "vertexId": "junction:upper:6,2",
+        "position": [
+          6,
+          2
+        ],
+        "direction": "W",
+        "junctionKind": "straight",
+        "owner": true,
+        "trim": 0,
+        "ownsJunctionVolume": false,
+        "section": {
+          "thickness": 0.6,
+          "height": 4,
+          "material": "castle.limestone",
+          "bond": "ashlar",
+          "profile": "exterior"
+        }
+      },
+      "trim": {
+        "start": 0,
+        "end": 0
+      }
+    },
+    {
+      "id": "wall:upper:6,0|7,0",
+      "levelId": "upper",
+      "from": [
+        6,
+        0
+      ],
+      "to": [
+        7,
+        0
+      ],
+      "axis": "x",
+      "roomIds": [
+        "chamber"
+      ],
+      "boundary": "exterior",
+      "kind": "wall",
+      "overrideId": null,
+      "connects": null,
+      "section": {
+        "thickness": 0.6,
+        "height": 4,
+        "material": "castle.limestone",
+        "bond": "ashlar",
+        "profile": "exterior"
+      },
+      "openings": [],
+      "railProfile": null,
+      "startSocket": {
+        "id": "socket:wall:upper:6,0|7,0:6,0",
+        "vertexId": "junction:upper:6,0",
+        "position": [
+          6,
+          0
+        ],
+        "direction": "E",
+        "junctionKind": "straight",
+        "owner": false,
+        "trim": 0,
+        "ownsJunctionVolume": false,
+        "section": {
+          "thickness": 0.6,
+          "height": 4,
+          "material": "castle.limestone",
+          "bond": "ashlar",
+          "profile": "exterior"
+        }
+      },
+      "endSocket": {
+        "id": "socket:wall:upper:6,0|7,0:7,0",
+        "vertexId": "junction:upper:7,0",
+        "position": [
+          7,
+          0
+        ],
+        "direction": "W",
+        "junctionKind": "straight",
+        "owner": true,
+        "trim": 0,
+        "ownsJunctionVolume": false,
+        "section": {
+          "thickness": 0.6,
+          "height": 4,
+          "material": "castle.limestone",
+          "bond": "ashlar",
+          "profile": "exterior"
+        }
+      },
+      "trim": {
+        "start": 0,
+        "end": 0
+      }
+    },
+    {
+      "id": "wall:upper:6,2|7,2",
+      "levelId": "upper",
+      "from": [
+        6,
+        2
+      ],
+      "to": [
+        7,
+        2
+      ],
+      "axis": "x",
+      "roomIds": [
+        "chamber"
+      ],
+      "boundary": "exterior",
+      "kind": "wall",
+      "overrideId": null,
+      "connects": null,
+      "section": {
+        "thickness": 0.6,
+        "height": 4,
+        "material": "castle.limestone",
+        "bond": "ashlar",
+        "profile": "exterior"
+      },
+      "openings": [],
+      "railProfile": null,
+      "startSocket": {
+        "id": "socket:wall:upper:6,2|7,2:6,2",
+        "vertexId": "junction:upper:6,2",
+        "position": [
+          6,
+          2
+        ],
+        "direction": "E",
+        "junctionKind": "straight",
+        "owner": false,
+        "trim": 0,
+        "ownsJunctionVolume": false,
+        "section": {
+          "thickness": 0.6,
+          "height": 4,
+          "material": "castle.limestone",
+          "bond": "ashlar",
+          "profile": "exterior"
+        }
+      },
+      "endSocket": {
+        "id": "socket:wall:upper:6,2|7,2:7,2",
+        "vertexId": "junction:upper:7,2",
+        "position": [
+          7,
+          2
+        ],
+        "direction": "W",
+        "junctionKind": "straight",
+        "owner": true,
+        "trim": 0,
+        "ownsJunctionVolume": false,
+        "section": {
+          "thickness": 0.6,
+          "height": 4,
+          "material": "castle.limestone",
+          "bond": "ashlar",
+          "profile": "exterior"
+        }
+      },
+      "trim": {
+        "start": 0,
+        "end": 0
+      }
+    },
+    {
+      "id": "wall:upper:7,0|8,0",
+      "levelId": "upper",
+      "from": [
+        7,
+        0
+      ],
+      "to": [
+        8,
+        0
+      ],
+      "axis": "x",
+      "roomIds": [
+        "chamber"
+      ],
+      "boundary": "exterior",
+      "kind": "wall",
+      "overrideId": null,
+      "connects": null,
+      "section": {
+        "thickness": 0.6,
+        "height": 4,
+        "material": "castle.limestone",
+        "bond": "ashlar",
+        "profile": "exterior"
+      },
+      "openings": [],
+      "railProfile": null,
+      "startSocket": {
+        "id": "socket:wall:upper:7,0|8,0:7,0",
+        "vertexId": "junction:upper:7,0",
+        "position": [
+          7,
+          0
+        ],
+        "direction": "E",
+        "junctionKind": "straight",
+        "owner": false,
+        "trim": 0,
+        "ownsJunctionVolume": false,
+        "section": {
+          "thickness": 0.6,
+          "height": 4,
+          "material": "castle.limestone",
+          "bond": "ashlar",
+          "profile": "exterior"
+        }
+      },
+      "endSocket": {
+        "id": "socket:wall:upper:7,0|8,0:8,0",
+        "vertexId": "junction:upper:8,0",
+        "position": [
+          8,
+          0
+        ],
+        "direction": "W",
+        "junctionKind": "L",
+        "owner": true,
+        "trim": 0.3,
+        "ownsJunctionVolume": true,
+        "section": {
+          "thickness": 0.6,
+          "height": 4,
+          "material": "castle.limestone",
+          "bond": "ashlar",
+          "profile": "exterior"
+        }
+      },
+      "trim": {
+        "start": 0,
+        "end": 0.3
+      }
+    },
+    {
+      "id": "wall:upper:7,2|8,2",
+      "levelId": "upper",
+      "from": [
+        7,
+        2
+      ],
+      "to": [
+        8,
+        2
+      ],
+      "axis": "x",
+      "roomIds": [
+        "chamber"
+      ],
+      "boundary": "exterior",
+      "kind": "wall",
+      "overrideId": null,
+      "connects": null,
+      "section": {
+        "thickness": 0.6,
+        "height": 4,
+        "material": "castle.limestone",
+        "bond": "ashlar",
+        "profile": "exterior"
+      },
+      "openings": [],
+      "railProfile": null,
+      "startSocket": {
+        "id": "socket:wall:upper:7,2|8,2:7,2",
+        "vertexId": "junction:upper:7,2",
+        "position": [
+          7,
+          2
+        ],
+        "direction": "E",
+        "junctionKind": "straight",
+        "owner": false,
+        "trim": 0,
+        "ownsJunctionVolume": false,
+        "section": {
+          "thickness": 0.6,
+          "height": 4,
+          "material": "castle.limestone",
+          "bond": "ashlar",
+          "profile": "exterior"
+        }
+      },
+      "endSocket": {
+        "id": "socket:wall:upper:7,2|8,2:8,2",
+        "vertexId": "junction:upper:8,2",
+        "position": [
+          8,
+          2
+        ],
+        "direction": "W",
+        "junctionKind": "L",
+        "owner": true,
+        "trim": 0.3,
+        "ownsJunctionVolume": true,
+        "section": {
+          "thickness": 0.6,
+          "height": 4,
+          "material": "castle.limestone",
+          "bond": "ashlar",
+          "profile": "exterior"
+        }
+      },
+      "trim": {
+        "start": 0,
+        "end": 0.3
+      }
+    },
+    {
+      "id": "wall:upper:8,0|8,1",
+      "levelId": "upper",
+      "from": [
+        8,
+        0
+      ],
+      "to": [
+        8,
+        1
+      ],
+      "axis": "z",
+      "roomIds": [
+        "chamber"
+      ],
+      "boundary": "exterior",
+      "kind": "wall",
+      "overrideId": null,
+      "connects": null,
+      "section": {
+        "thickness": 0.6,
+        "height": 4,
+        "material": "castle.limestone",
+        "bond": "ashlar",
+        "profile": "exterior"
+      },
+      "openings": [],
+      "railProfile": null,
+      "startSocket": {
+        "id": "socket:wall:upper:8,0|8,1:8,0",
+        "vertexId": "junction:upper:8,0",
+        "position": [
+          8,
+          0
+        ],
+        "direction": "N",
+        "junctionKind": "L",
+        "owner": false,
+        "trim": 0.3,
+        "ownsJunctionVolume": false,
+        "section": {
+          "thickness": 0.6,
+          "height": 4,
+          "material": "castle.limestone",
+          "bond": "ashlar",
+          "profile": "exterior"
+        }
+      },
+      "endSocket": {
+        "id": "socket:wall:upper:8,0|8,1:8,1",
+        "vertexId": "junction:upper:8,1",
+        "position": [
+          8,
+          1
+        ],
+        "direction": "S",
+        "junctionKind": "straight",
+        "owner": true,
+        "trim": 0,
+        "ownsJunctionVolume": false,
+        "section": {
+          "thickness": 0.6,
+          "height": 4,
+          "material": "castle.limestone",
+          "bond": "ashlar",
+          "profile": "exterior"
+        }
+      },
+      "trim": {
+        "start": 0.3,
+        "end": 0
+      }
+    },
+    {
+      "id": "wall:upper:8,1|8,2",
+      "levelId": "upper",
+      "from": [
+        8,
+        1
+      ],
+      "to": [
+        8,
+        2
+      ],
+      "axis": "z",
+      "roomIds": [
+        "chamber"
+      ],
+      "boundary": "exterior",
+      "kind": "wall",
+      "overrideId": null,
+      "connects": null,
+      "section": {
+        "thickness": 0.6,
+        "height": 4,
+        "material": "castle.limestone",
+        "bond": "ashlar",
+        "profile": "exterior"
+      },
+      "openings": [],
+      "railProfile": null,
+      "startSocket": {
+        "id": "socket:wall:upper:8,1|8,2:8,1",
+        "vertexId": "junction:upper:8,1",
+        "position": [
+          8,
+          1
+        ],
+        "direction": "N",
+        "junctionKind": "straight",
+        "owner": false,
+        "trim": 0,
+        "ownsJunctionVolume": false,
+        "section": {
+          "thickness": 0.6,
+          "height": 4,
+          "material": "castle.limestone",
+          "bond": "ashlar",
+          "profile": "exterior"
+        }
+      },
+      "endSocket": {
+        "id": "socket:wall:upper:8,1|8,2:8,2",
+        "vertexId": "junction:upper:8,2",
+        "position": [
+          8,
+          2
+        ],
+        "direction": "S",
+        "junctionKind": "L",
+        "owner": false,
+        "trim": 0.3,
+        "ownsJunctionVolume": false,
+        "section": {
+          "thickness": 0.6,
+          "height": 4,
+          "material": "castle.limestone",
+          "bond": "ashlar",
+          "profile": "exterior"
+        }
+      },
+      "trim": {
+        "start": 0,
+        "end": 0.3
+      }
+    }
+  ],
+  "wallModules": [
+    {
+      "id": "module:ground:0,0|0,1",
+      "levelId": "ground",
+      "kind": "door",
+      "length": 1,
+      "from": [
+        0,
+        0
+      ],
+      "to": [
+        0,
+        1
+      ],
+      "section": {
+        "thickness": 0.6,
+        "height": 4,
+        "material": "castle.limestone",
+        "bond": "ashlar",
+        "profile": "exterior"
+      },
+      "sourceEdgeIds": [
+        "wall:ground:0,0|0,1"
+      ],
+      "apertureIds": [
+        "aperture:ground:front-door"
+      ],
+      "apertures": [
+        {
+          "apertureId": "aperture:ground:front-door",
+          "kind": "door",
+          "segmentFrom": [
+            0,
+            0
+          ],
+          "segmentTo": [
+            0,
+            2
+          ],
+          "globalStart": 0.4,
+          "globalEnd": 1.6,
+          "bottom": 0,
+          "top": 2.2,
+          "ownerEdgeId": "wall:ground:0,0|0,1",
+          "claimedByRadialThroatId": null
+        }
+      ],
+      "ownsAperture": true,
+      "trim": {
+        "start": 0.3,
+        "end": 0
+      },
+      "ownedJunctionIds": [
+        "junction:ground:0,0"
+      ]
+    },
+    {
+      "id": "module:ground:0,0|1,0+ground:1,0|2,0+ground:2,0|3,0+ground:3,0|4,0+ground:4,0|5,0+ground:5,0|6,0+ground:6,0|7,0+ground:7,0|8,0",
+      "levelId": "ground",
+      "kind": "wall",
+      "length": 8,
+      "from": [
+        0,
+        0
+      ],
+      "to": [
+        8,
+        0
+      ],
+      "section": {
+        "thickness": 0.6,
+        "height": 4,
+        "material": "castle.limestone",
+        "bond": "ashlar",
+        "profile": "exterior"
+      },
+      "sourceEdgeIds": [
+        "wall:ground:0,0|1,0",
+        "wall:ground:1,0|2,0",
+        "wall:ground:2,0|3,0",
+        "wall:ground:3,0|4,0",
+        "wall:ground:4,0|5,0",
+        "wall:ground:5,0|6,0",
+        "wall:ground:6,0|7,0",
+        "wall:ground:7,0|8,0"
+      ],
+      "apertureIds": [],
+      "apertures": [],
+      "ownsAperture": false,
+      "trim": {
+        "start": 0.3,
+        "end": 0.3
+      },
+      "ownedJunctionIds": [
+        "junction:ground:8,0"
+      ]
+    },
+    {
+      "id": "module:ground:0,1|0,2",
+      "levelId": "ground",
+      "kind": "door",
+      "length": 1,
+      "from": [
+        0,
+        1
+      ],
+      "to": [
+        0,
+        2
+      ],
+      "section": {
+        "thickness": 0.6,
+        "height": 4,
+        "material": "castle.limestone",
+        "bond": "ashlar",
+        "profile": "exterior"
+      },
+      "sourceEdgeIds": [
+        "wall:ground:0,1|0,2"
+      ],
+      "apertureIds": [
+        "aperture:ground:front-door"
+      ],
+      "apertures": [
+        {
+          "apertureId": "aperture:ground:front-door",
+          "kind": "door",
+          "segmentFrom": [
+            0,
+            0
+          ],
+          "segmentTo": [
+            0,
+            2
+          ],
+          "globalStart": 0.4,
+          "globalEnd": 1.6,
+          "bottom": 0,
+          "top": 2.2,
+          "ownerEdgeId": "wall:ground:0,0|0,1",
+          "claimedByRadialThroatId": null
+        }
+      ],
+      "ownsAperture": false,
+      "trim": {
+        "start": 0,
+        "end": 0.3
+      },
+      "ownedJunctionIds": [
+        "junction:ground:0,2"
+      ]
+    },
+    {
+      "id": "module:ground:0,2|1,2+ground:1,2|2,2+ground:2,2|3,2+ground:3,2|4,2+ground:4,2|5,2+ground:5,2|6,2+ground:6,2|7,2+ground:7,2|8,2",
+      "levelId": "ground",
+      "kind": "wall",
+      "length": 8,
+      "from": [
+        0,
+        2
+      ],
+      "to": [
+        8,
+        2
+      ],
+      "section": {
+        "thickness": 0.6,
+        "height": 4,
+        "material": "castle.limestone",
+        "bond": "ashlar",
+        "profile": "exterior"
+      },
+      "sourceEdgeIds": [
+        "wall:ground:0,2|1,2",
+        "wall:ground:1,2|2,2",
+        "wall:ground:2,2|3,2",
+        "wall:ground:3,2|4,2",
+        "wall:ground:4,2|5,2",
+        "wall:ground:5,2|6,2",
+        "wall:ground:6,2|7,2",
+        "wall:ground:7,2|8,2"
+      ],
+      "apertureIds": [],
+      "apertures": [],
+      "ownsAperture": false,
+      "trim": {
+        "start": 0.3,
+        "end": 0.3
+      },
+      "ownedJunctionIds": [
+        "junction:ground:8,2"
+      ]
+    },
+    {
+      "id": "module:ground:8,0|8,1+ground:8,1|8,2",
+      "levelId": "ground",
+      "kind": "wall",
+      "length": 2,
+      "from": [
+        8,
+        0
+      ],
+      "to": [
+        8,
+        2
+      ],
+      "section": {
+        "thickness": 0.6,
+        "height": 4,
+        "material": "castle.limestone",
+        "bond": "ashlar",
+        "profile": "exterior"
+      },
+      "sourceEdgeIds": [
+        "wall:ground:8,0|8,1",
+        "wall:ground:8,1|8,2"
+      ],
+      "apertureIds": [],
+      "apertures": [],
+      "ownsAperture": false,
+      "trim": {
+        "start": 0.3,
+        "end": 0.3
+      },
+      "ownedJunctionIds": []
+    },
+    {
+      "id": "module:upper:0,0|0,1+upper:0,1|0,2",
+      "levelId": "upper",
+      "kind": "wall",
+      "length": 2,
+      "from": [
+        0,
+        0
+      ],
+      "to": [
+        0,
+        2
+      ],
+      "section": {
+        "thickness": 0.6,
+        "height": 4,
+        "material": "castle.limestone",
+        "bond": "ashlar",
+        "profile": "exterior"
+      },
+      "sourceEdgeIds": [
+        "wall:upper:0,0|0,1",
+        "wall:upper:0,1|0,2"
+      ],
+      "apertureIds": [],
+      "apertures": [],
+      "ownsAperture": false,
+      "trim": {
+        "start": 0.3,
+        "end": 0.3
+      },
+      "ownedJunctionIds": [
+        "junction:upper:0,0",
+        "junction:upper:0,2"
+      ]
+    },
+    {
+      "id": "module:upper:0,0|1,0+upper:1,0|2,0+upper:2,0|3,0+upper:3,0|4,0+upper:4,0|5,0+upper:5,0|6,0+upper:6,0|7,0+upper:7,0|8,0",
+      "levelId": "upper",
+      "kind": "wall",
+      "length": 8,
+      "from": [
+        0,
+        0
+      ],
+      "to": [
+        8,
+        0
+      ],
+      "section": {
+        "thickness": 0.6,
+        "height": 4,
+        "material": "castle.limestone",
+        "bond": "ashlar",
+        "profile": "exterior"
+      },
+      "sourceEdgeIds": [
+        "wall:upper:0,0|1,0",
+        "wall:upper:1,0|2,0",
+        "wall:upper:2,0|3,0",
+        "wall:upper:3,0|4,0",
+        "wall:upper:4,0|5,0",
+        "wall:upper:5,0|6,0",
+        "wall:upper:6,0|7,0",
+        "wall:upper:7,0|8,0"
+      ],
+      "apertureIds": [],
+      "apertures": [],
+      "ownsAperture": false,
+      "trim": {
+        "start": 0.3,
+        "end": 0.3
+      },
+      "ownedJunctionIds": [
+        "junction:upper:8,0"
+      ]
+    },
+    {
+      "id": "module:upper:0,2|1,2+upper:1,2|2,2+upper:2,2|3,2+upper:3,2|4,2+upper:4,2|5,2+upper:5,2|6,2+upper:6,2|7,2+upper:7,2|8,2",
+      "levelId": "upper",
+      "kind": "wall",
+      "length": 8,
+      "from": [
+        0,
+        2
+      ],
+      "to": [
+        8,
+        2
+      ],
+      "section": {
+        "thickness": 0.6,
+        "height": 4,
+        "material": "castle.limestone",
+        "bond": "ashlar",
+        "profile": "exterior"
+      },
+      "sourceEdgeIds": [
+        "wall:upper:0,2|1,2",
+        "wall:upper:1,2|2,2",
+        "wall:upper:2,2|3,2",
+        "wall:upper:3,2|4,2",
+        "wall:upper:4,2|5,2",
+        "wall:upper:5,2|6,2",
+        "wall:upper:6,2|7,2",
+        "wall:upper:7,2|8,2"
+      ],
+      "apertureIds": [],
+      "apertures": [],
+      "ownsAperture": false,
+      "trim": {
+        "start": 0.3,
+        "end": 0.3
+      },
+      "ownedJunctionIds": [
+        "junction:upper:8,2"
+      ]
+    },
+    {
+      "id": "module:upper:8,0|8,1+upper:8,1|8,2",
+      "levelId": "upper",
+      "kind": "wall",
+      "length": 2,
+      "from": [
+        8,
+        0
+      ],
+      "to": [
+        8,
+        2
+      ],
+      "section": {
+        "thickness": 0.6,
+        "height": 4,
+        "material": "castle.limestone",
+        "bond": "ashlar",
+        "profile": "exterior"
+      },
+      "sourceEdgeIds": [
+        "wall:upper:8,0|8,1",
+        "wall:upper:8,1|8,2"
+      ],
+      "apertureIds": [],
+      "apertures": [],
+      "ownsAperture": false,
+      "trim": {
+        "start": 0.3,
+        "end": 0.3
+      },
+      "ownedJunctionIds": []
+    }
+  ],
+  "junctions": [
+    {
+      "id": "junction:ground:0,0",
+      "levelId": "ground",
+      "position": [
+        0,
+        0
+      ],
+      "kind": "L",
+      "directions": [
+        "E",
+        "N"
+      ],
+      "edgeIds": [
+        "wall:ground:0,0|0,1",
+        "wall:ground:0,0|1,0"
+      ],
+      "ownerEdgeId": "wall:ground:0,0|0,1",
+      "ownedVolume": {
+        "minX": -0.3,
+        "maxX": 0.3,
+        "minY": 0,
+        "maxY": 4,
+        "minZ": -0.3,
+        "maxZ": 0.3
+      }
+    },
+    {
+      "id": "junction:ground:0,1",
+      "levelId": "ground",
+      "position": [
+        0,
+        1
+      ],
+      "kind": "straight",
+      "directions": [
+        "N",
+        "S"
+      ],
+      "edgeIds": [
+        "wall:ground:0,0|0,1",
+        "wall:ground:0,1|0,2"
+      ],
+      "ownerEdgeId": "wall:ground:0,0|0,1",
+      "ownedVolume": null
+    },
+    {
+      "id": "junction:ground:0,2",
+      "levelId": "ground",
+      "position": [
+        0,
+        2
+      ],
+      "kind": "L",
+      "directions": [
+        "E",
+        "S"
+      ],
+      "edgeIds": [
+        "wall:ground:0,1|0,2",
+        "wall:ground:0,2|1,2"
+      ],
+      "ownerEdgeId": "wall:ground:0,1|0,2",
+      "ownedVolume": {
+        "minX": -0.3,
+        "maxX": 0.3,
+        "minY": 0,
+        "maxY": 4,
+        "minZ": 1.7,
+        "maxZ": 2.3
+      }
+    },
+    {
+      "id": "junction:ground:1,0",
+      "levelId": "ground",
+      "position": [
+        1,
+        0
+      ],
+      "kind": "straight",
+      "directions": [
+        "E",
+        "W"
+      ],
+      "edgeIds": [
+        "wall:ground:0,0|1,0",
+        "wall:ground:1,0|2,0"
+      ],
+      "ownerEdgeId": "wall:ground:0,0|1,0",
+      "ownedVolume": null
+    },
+    {
+      "id": "junction:ground:1,2",
+      "levelId": "ground",
+      "position": [
+        1,
+        2
+      ],
+      "kind": "straight",
+      "directions": [
+        "E",
+        "W"
+      ],
+      "edgeIds": [
+        "wall:ground:0,2|1,2",
+        "wall:ground:1,2|2,2"
+      ],
+      "ownerEdgeId": "wall:ground:0,2|1,2",
+      "ownedVolume": null
+    },
+    {
+      "id": "junction:ground:2,0",
+      "levelId": "ground",
+      "position": [
+        2,
+        0
+      ],
+      "kind": "straight",
+      "directions": [
+        "E",
+        "W"
+      ],
+      "edgeIds": [
+        "wall:ground:1,0|2,0",
+        "wall:ground:2,0|3,0"
+      ],
+      "ownerEdgeId": "wall:ground:1,0|2,0",
+      "ownedVolume": null
+    },
+    {
+      "id": "junction:ground:2,2",
+      "levelId": "ground",
+      "position": [
+        2,
+        2
+      ],
+      "kind": "straight",
+      "directions": [
+        "E",
+        "W"
+      ],
+      "edgeIds": [
+        "wall:ground:1,2|2,2",
+        "wall:ground:2,2|3,2"
+      ],
+      "ownerEdgeId": "wall:ground:1,2|2,2",
+      "ownedVolume": null
+    },
+    {
+      "id": "junction:ground:3,0",
+      "levelId": "ground",
+      "position": [
+        3,
+        0
+      ],
+      "kind": "straight",
+      "directions": [
+        "E",
+        "W"
+      ],
+      "edgeIds": [
+        "wall:ground:2,0|3,0",
+        "wall:ground:3,0|4,0"
+      ],
+      "ownerEdgeId": "wall:ground:2,0|3,0",
+      "ownedVolume": null
+    },
+    {
+      "id": "junction:ground:3,2",
+      "levelId": "ground",
+      "position": [
+        3,
+        2
+      ],
+      "kind": "straight",
+      "directions": [
+        "E",
+        "W"
+      ],
+      "edgeIds": [
+        "wall:ground:2,2|3,2",
+        "wall:ground:3,2|4,2"
+      ],
+      "ownerEdgeId": "wall:ground:2,2|3,2",
+      "ownedVolume": null
+    },
+    {
+      "id": "junction:ground:4,0",
+      "levelId": "ground",
+      "position": [
+        4,
+        0
+      ],
+      "kind": "straight",
+      "directions": [
+        "E",
+        "W"
+      ],
+      "edgeIds": [
+        "wall:ground:3,0|4,0",
+        "wall:ground:4,0|5,0"
+      ],
+      "ownerEdgeId": "wall:ground:3,0|4,0",
+      "ownedVolume": null
+    },
+    {
+      "id": "junction:ground:4,2",
+      "levelId": "ground",
+      "position": [
+        4,
+        2
+      ],
+      "kind": "straight",
+      "directions": [
+        "E",
+        "W"
+      ],
+      "edgeIds": [
+        "wall:ground:3,2|4,2",
+        "wall:ground:4,2|5,2"
+      ],
+      "ownerEdgeId": "wall:ground:3,2|4,2",
+      "ownedVolume": null
+    },
+    {
+      "id": "junction:ground:5,0",
+      "levelId": "ground",
+      "position": [
+        5,
+        0
+      ],
+      "kind": "straight",
+      "directions": [
+        "E",
+        "W"
+      ],
+      "edgeIds": [
+        "wall:ground:4,0|5,0",
+        "wall:ground:5,0|6,0"
+      ],
+      "ownerEdgeId": "wall:ground:4,0|5,0",
+      "ownedVolume": null
+    },
+    {
+      "id": "junction:ground:5,2",
+      "levelId": "ground",
+      "position": [
+        5,
+        2
+      ],
+      "kind": "straight",
+      "directions": [
+        "E",
+        "W"
+      ],
+      "edgeIds": [
+        "wall:ground:4,2|5,2",
+        "wall:ground:5,2|6,2"
+      ],
+      "ownerEdgeId": "wall:ground:4,2|5,2",
+      "ownedVolume": null
+    },
+    {
+      "id": "junction:ground:6,0",
+      "levelId": "ground",
+      "position": [
+        6,
+        0
+      ],
+      "kind": "straight",
+      "directions": [
+        "E",
+        "W"
+      ],
+      "edgeIds": [
+        "wall:ground:5,0|6,0",
+        "wall:ground:6,0|7,0"
+      ],
+      "ownerEdgeId": "wall:ground:5,0|6,0",
+      "ownedVolume": null
+    },
+    {
+      "id": "junction:ground:6,2",
+      "levelId": "ground",
+      "position": [
+        6,
+        2
+      ],
+      "kind": "straight",
+      "directions": [
+        "E",
+        "W"
+      ],
+      "edgeIds": [
+        "wall:ground:5,2|6,2",
+        "wall:ground:6,2|7,2"
+      ],
+      "ownerEdgeId": "wall:ground:5,2|6,2",
+      "ownedVolume": null
+    },
+    {
+      "id": "junction:ground:7,0",
+      "levelId": "ground",
+      "position": [
+        7,
+        0
+      ],
+      "kind": "straight",
+      "directions": [
+        "E",
+        "W"
+      ],
+      "edgeIds": [
+        "wall:ground:6,0|7,0",
+        "wall:ground:7,0|8,0"
+      ],
+      "ownerEdgeId": "wall:ground:6,0|7,0",
+      "ownedVolume": null
+    },
+    {
+      "id": "junction:ground:7,2",
+      "levelId": "ground",
+      "position": [
+        7,
+        2
+      ],
+      "kind": "straight",
+      "directions": [
+        "E",
+        "W"
+      ],
+      "edgeIds": [
+        "wall:ground:6,2|7,2",
+        "wall:ground:7,2|8,2"
+      ],
+      "ownerEdgeId": "wall:ground:6,2|7,2",
+      "ownedVolume": null
+    },
+    {
+      "id": "junction:ground:8,0",
+      "levelId": "ground",
+      "position": [
+        8,
+        0
+      ],
+      "kind": "L",
+      "directions": [
+        "N",
+        "W"
+      ],
+      "edgeIds": [
+        "wall:ground:7,0|8,0",
+        "wall:ground:8,0|8,1"
+      ],
+      "ownerEdgeId": "wall:ground:7,0|8,0",
+      "ownedVolume": {
+        "minX": 7.7,
+        "maxX": 8.3,
+        "minY": 0,
+        "maxY": 4,
+        "minZ": -0.3,
+        "maxZ": 0.3
+      }
+    },
+    {
+      "id": "junction:ground:8,1",
+      "levelId": "ground",
+      "position": [
+        8,
+        1
+      ],
+      "kind": "straight",
+      "directions": [
+        "N",
+        "S"
+      ],
+      "edgeIds": [
+        "wall:ground:8,0|8,1",
+        "wall:ground:8,1|8,2"
+      ],
+      "ownerEdgeId": "wall:ground:8,0|8,1",
+      "ownedVolume": null
+    },
+    {
+      "id": "junction:ground:8,2",
+      "levelId": "ground",
+      "position": [
+        8,
+        2
+      ],
+      "kind": "L",
+      "directions": [
+        "S",
+        "W"
+      ],
+      "edgeIds": [
+        "wall:ground:7,2|8,2",
+        "wall:ground:8,1|8,2"
+      ],
+      "ownerEdgeId": "wall:ground:7,2|8,2",
+      "ownedVolume": {
+        "minX": 7.7,
+        "maxX": 8.3,
+        "minY": 0,
+        "maxY": 4,
+        "minZ": 1.7,
+        "maxZ": 2.3
+      }
+    },
+    {
+      "id": "junction:upper:0,0",
+      "levelId": "upper",
+      "position": [
+        0,
+        0
+      ],
+      "kind": "L",
+      "directions": [
+        "E",
+        "N"
+      ],
+      "edgeIds": [
+        "wall:upper:0,0|0,1",
+        "wall:upper:0,0|1,0"
+      ],
+      "ownerEdgeId": "wall:upper:0,0|0,1",
+      "ownedVolume": {
+        "minX": -0.3,
+        "maxX": 0.3,
+        "minY": 4,
+        "maxY": 8,
+        "minZ": -0.3,
+        "maxZ": 0.3
+      }
+    },
+    {
+      "id": "junction:upper:0,1",
+      "levelId": "upper",
+      "position": [
+        0,
+        1
+      ],
+      "kind": "straight",
+      "directions": [
+        "N",
+        "S"
+      ],
+      "edgeIds": [
+        "wall:upper:0,0|0,1",
+        "wall:upper:0,1|0,2"
+      ],
+      "ownerEdgeId": "wall:upper:0,0|0,1",
+      "ownedVolume": null
+    },
+    {
+      "id": "junction:upper:0,2",
+      "levelId": "upper",
+      "position": [
+        0,
+        2
+      ],
+      "kind": "L",
+      "directions": [
+        "E",
+        "S"
+      ],
+      "edgeIds": [
+        "wall:upper:0,1|0,2",
+        "wall:upper:0,2|1,2"
+      ],
+      "ownerEdgeId": "wall:upper:0,1|0,2",
+      "ownedVolume": {
+        "minX": -0.3,
+        "maxX": 0.3,
+        "minY": 4,
+        "maxY": 8,
+        "minZ": 1.7,
+        "maxZ": 2.3
+      }
+    },
+    {
+      "id": "junction:upper:1,0",
+      "levelId": "upper",
+      "position": [
+        1,
+        0
+      ],
+      "kind": "straight",
+      "directions": [
+        "E",
+        "W"
+      ],
+      "edgeIds": [
+        "wall:upper:0,0|1,0",
+        "wall:upper:1,0|2,0"
+      ],
+      "ownerEdgeId": "wall:upper:0,0|1,0",
+      "ownedVolume": null
+    },
+    {
+      "id": "junction:upper:1,2",
+      "levelId": "upper",
+      "position": [
+        1,
+        2
+      ],
+      "kind": "straight",
+      "directions": [
+        "E",
+        "W"
+      ],
+      "edgeIds": [
+        "wall:upper:0,2|1,2",
+        "wall:upper:1,2|2,2"
+      ],
+      "ownerEdgeId": "wall:upper:0,2|1,2",
+      "ownedVolume": null
+    },
+    {
+      "id": "junction:upper:2,0",
+      "levelId": "upper",
+      "position": [
+        2,
+        0
+      ],
+      "kind": "straight",
+      "directions": [
+        "E",
+        "W"
+      ],
+      "edgeIds": [
+        "wall:upper:1,0|2,0",
+        "wall:upper:2,0|3,0"
+      ],
+      "ownerEdgeId": "wall:upper:1,0|2,0",
+      "ownedVolume": null
+    },
+    {
+      "id": "junction:upper:2,2",
+      "levelId": "upper",
+      "position": [
+        2,
+        2
+      ],
+      "kind": "straight",
+      "directions": [
+        "E",
+        "W"
+      ],
+      "edgeIds": [
+        "wall:upper:1,2|2,2",
+        "wall:upper:2,2|3,2"
+      ],
+      "ownerEdgeId": "wall:upper:1,2|2,2",
+      "ownedVolume": null
+    },
+    {
+      "id": "junction:upper:3,0",
+      "levelId": "upper",
+      "position": [
+        3,
+        0
+      ],
+      "kind": "straight",
+      "directions": [
+        "E",
+        "W"
+      ],
+      "edgeIds": [
+        "wall:upper:2,0|3,0",
+        "wall:upper:3,0|4,0"
+      ],
+      "ownerEdgeId": "wall:upper:2,0|3,0",
+      "ownedVolume": null
+    },
+    {
+      "id": "junction:upper:3,2",
+      "levelId": "upper",
+      "position": [
+        3,
+        2
+      ],
+      "kind": "straight",
+      "directions": [
+        "E",
+        "W"
+      ],
+      "edgeIds": [
+        "wall:upper:2,2|3,2",
+        "wall:upper:3,2|4,2"
+      ],
+      "ownerEdgeId": "wall:upper:2,2|3,2",
+      "ownedVolume": null
+    },
+    {
+      "id": "junction:upper:4,0",
+      "levelId": "upper",
+      "position": [
+        4,
+        0
+      ],
+      "kind": "straight",
+      "directions": [
+        "E",
+        "W"
+      ],
+      "edgeIds": [
+        "wall:upper:3,0|4,0",
+        "wall:upper:4,0|5,0"
+      ],
+      "ownerEdgeId": "wall:upper:3,0|4,0",
+      "ownedVolume": null
+    },
+    {
+      "id": "junction:upper:4,2",
+      "levelId": "upper",
+      "position": [
+        4,
+        2
+      ],
+      "kind": "straight",
+      "directions": [
+        "E",
+        "W"
+      ],
+      "edgeIds": [
+        "wall:upper:3,2|4,2",
+        "wall:upper:4,2|5,2"
+      ],
+      "ownerEdgeId": "wall:upper:3,2|4,2",
+      "ownedVolume": null
+    },
+    {
+      "id": "junction:upper:5,0",
+      "levelId": "upper",
+      "position": [
+        5,
+        0
+      ],
+      "kind": "straight",
+      "directions": [
+        "E",
+        "W"
+      ],
+      "edgeIds": [
+        "wall:upper:4,0|5,0",
+        "wall:upper:5,0|6,0"
+      ],
+      "ownerEdgeId": "wall:upper:4,0|5,0",
+      "ownedVolume": null
+    },
+    {
+      "id": "junction:upper:5,2",
+      "levelId": "upper",
+      "position": [
+        5,
+        2
+      ],
+      "kind": "straight",
+      "directions": [
+        "E",
+        "W"
+      ],
+      "edgeIds": [
+        "wall:upper:4,2|5,2",
+        "wall:upper:5,2|6,2"
+      ],
+      "ownerEdgeId": "wall:upper:4,2|5,2",
+      "ownedVolume": null
+    },
+    {
+      "id": "junction:upper:6,0",
+      "levelId": "upper",
+      "position": [
+        6,
+        0
+      ],
+      "kind": "straight",
+      "directions": [
+        "E",
+        "W"
+      ],
+      "edgeIds": [
+        "wall:upper:5,0|6,0",
+        "wall:upper:6,0|7,0"
+      ],
+      "ownerEdgeId": "wall:upper:5,0|6,0",
+      "ownedVolume": null
+    },
+    {
+      "id": "junction:upper:6,2",
+      "levelId": "upper",
+      "position": [
+        6,
+        2
+      ],
+      "kind": "straight",
+      "directions": [
+        "E",
+        "W"
+      ],
+      "edgeIds": [
+        "wall:upper:5,2|6,2",
+        "wall:upper:6,2|7,2"
+      ],
+      "ownerEdgeId": "wall:upper:5,2|6,2",
+      "ownedVolume": null
+    },
+    {
+      "id": "junction:upper:7,0",
+      "levelId": "upper",
+      "position": [
+        7,
+        0
+      ],
+      "kind": "straight",
+      "directions": [
+        "E",
+        "W"
+      ],
+      "edgeIds": [
+        "wall:upper:6,0|7,0",
+        "wall:upper:7,0|8,0"
+      ],
+      "ownerEdgeId": "wall:upper:6,0|7,0",
+      "ownedVolume": null
+    },
+    {
+      "id": "junction:upper:7,2",
+      "levelId": "upper",
+      "position": [
+        7,
+        2
+      ],
+      "kind": "straight",
+      "directions": [
+        "E",
+        "W"
+      ],
+      "edgeIds": [
+        "wall:upper:6,2|7,2",
+        "wall:upper:7,2|8,2"
+      ],
+      "ownerEdgeId": "wall:upper:6,2|7,2",
+      "ownedVolume": null
+    },
+    {
+      "id": "junction:upper:8,0",
+      "levelId": "upper",
+      "position": [
+        8,
+        0
+      ],
+      "kind": "L",
+      "directions": [
+        "N",
+        "W"
+      ],
+      "edgeIds": [
+        "wall:upper:7,0|8,0",
+        "wall:upper:8,0|8,1"
+      ],
+      "ownerEdgeId": "wall:upper:7,0|8,0",
+      "ownedVolume": {
+        "minX": 7.7,
+        "maxX": 8.3,
+        "minY": 4,
+        "maxY": 8,
+        "minZ": -0.3,
+        "maxZ": 0.3
+      }
+    },
+    {
+      "id": "junction:upper:8,1",
+      "levelId": "upper",
+      "position": [
+        8,
+        1
+      ],
+      "kind": "straight",
+      "directions": [
+        "N",
+        "S"
+      ],
+      "edgeIds": [
+        "wall:upper:8,0|8,1",
+        "wall:upper:8,1|8,2"
+      ],
+      "ownerEdgeId": "wall:upper:8,0|8,1",
+      "ownedVolume": null
+    },
+    {
+      "id": "junction:upper:8,2",
+      "levelId": "upper",
+      "position": [
+        8,
+        2
+      ],
+      "kind": "L",
+      "directions": [
+        "S",
+        "W"
+      ],
+      "edgeIds": [
+        "wall:upper:7,2|8,2",
+        "wall:upper:8,1|8,2"
+      ],
+      "ownerEdgeId": "wall:upper:7,2|8,2",
+      "ownedVolume": {
+        "minX": 7.7,
+        "maxX": 8.3,
+        "minY": 4,
+        "maxY": 8,
+        "minZ": 1.7,
+        "maxZ": 2.3
+      }
+    }
+  ],
+  "floors": [
+    {
+      "id": "floor:ground:hall",
+      "levelId": "ground",
+      "roomId": "hall",
+      "elevation": 0,
+      "thickness": 0.25,
+      "floorType": "flags",
+      "openToSky": false,
+      "boundary": {
+        "kind": "cells",
+        "cells": [
+          [
+            0,
+            0
+          ],
+          [
+            0,
+            1
+          ],
+          [
+            1,
+            0
+          ],
+          [
+            1,
+            1
+          ],
+          [
+            2,
+            0
+          ],
+          [
+            2,
+            1
+          ],
+          [
+            3,
+            0
+          ],
+          [
+            3,
+            1
+          ],
+          [
+            4,
+            0
+          ],
+          [
+            4,
+            1
+          ],
+          [
+            5,
+            0
+          ],
+          [
+            5,
+            1
+          ],
+          [
+            6,
+            0
+          ],
+          [
+            6,
+            1
+          ],
+          [
+            7,
+            0
+          ],
+          [
+            7,
+            1
+          ]
+        ]
+      },
+      "regions": [
+        {
+          "kind": "cells",
+          "cells": [
+            [
+              0,
+              0
+            ],
+            [
+              0,
+              1
+            ],
+            [
+              1,
+              0
+            ],
+            [
+              1,
+              1
+            ],
+            [
+              2,
+              0
+            ],
+            [
+              2,
+              1
+            ],
+            [
+              3,
+              0
+            ],
+            [
+              3,
+              1
+            ],
+            [
+              4,
+              0
+            ],
+            [
+              4,
+              1
+            ],
+            [
+              5,
+              0
+            ],
+            [
+              5,
+              1
+            ],
+            [
+              6,
+              0
+            ],
+            [
+              6,
+              1
+            ],
+            [
+              7,
+              0
+            ],
+            [
+              7,
+              1
+            ]
+          ]
+        }
+      ],
+      "extensions": [],
+      "holes": [],
+      "walkableVolumeIds": [
+        "occupied:room:hall:0,0",
+        "occupied:room:hall:0,1",
+        "occupied:room:hall:1,0",
+        "occupied:room:hall:1,1",
+        "occupied:room:hall:2,0",
+        "occupied:room:hall:2,1",
+        "occupied:room:hall:3,0",
+        "occupied:room:hall:3,1",
+        "occupied:room:hall:4,0",
+        "occupied:room:hall:4,1",
+        "occupied:room:hall:5,0",
+        "occupied:room:hall:5,1",
+        "occupied:room:hall:6,0",
+        "occupied:room:hall:6,1",
+        "occupied:room:hall:7,0",
+        "occupied:room:hall:7,1"
+      ],
+      "bearing": {
+        "edgeIds": [
+          "wall:ground:0,0|0,1",
+          "wall:ground:0,0|1,0",
+          "wall:ground:0,1|0,2",
+          "wall:ground:0,2|1,2",
+          "wall:ground:1,0|2,0",
+          "wall:ground:1,2|2,2",
+          "wall:ground:2,0|3,0",
+          "wall:ground:2,2|3,2",
+          "wall:ground:3,0|4,0",
+          "wall:ground:3,2|4,2",
+          "wall:ground:4,0|5,0",
+          "wall:ground:4,2|5,2",
+          "wall:ground:5,0|6,0",
+          "wall:ground:5,2|6,2",
+          "wall:ground:6,0|7,0",
+          "wall:ground:6,2|7,2",
+          "wall:ground:7,0|8,0",
+          "wall:ground:7,2|8,2",
+          "wall:ground:8,0|8,1",
+          "wall:ground:8,1|8,2"
+        ],
+        "intermediateSupportIds": []
+      },
+      "joists": {
+        "direction": null,
+        "spacing": null,
+        "memberIds": []
+      },
+      "openBoundaryIds": []
+    },
+    {
+      "id": "floor:upper:chamber",
+      "levelId": "upper",
+      "roomId": "chamber",
+      "elevation": 4,
+      "thickness": 0.25,
+      "floorType": "oak",
+      "openToSky": false,
+      "boundary": {
+        "kind": "cells",
+        "cells": [
+          [
+            0,
+            0
+          ],
+          [
+            0,
+            1
+          ],
+          [
+            1,
+            0
+          ],
+          [
+            1,
+            1
+          ],
+          [
+            2,
+            0
+          ],
+          [
+            2,
+            1
+          ],
+          [
+            3,
+            0
+          ],
+          [
+            3,
+            1
+          ],
+          [
+            4,
+            0
+          ],
+          [
+            4,
+            1
+          ],
+          [
+            5,
+            0
+          ],
+          [
+            5,
+            1
+          ],
+          [
+            6,
+            0
+          ],
+          [
+            6,
+            1
+          ],
+          [
+            7,
+            0
+          ],
+          [
+            7,
+            1
+          ]
+        ]
+      },
+      "regions": [
+        {
+          "kind": "cells",
+          "cells": [
+            [
+              0,
+              0
+            ],
+            [
+              0,
+              1
+            ],
+            [
+              1,
+              0
+            ],
+            [
+              1,
+              1
+            ],
+            [
+              2,
+              0
+            ],
+            [
+              2,
+              1
+            ],
+            [
+              3,
+              0
+            ],
+            [
+              3,
+              1
+            ],
+            [
+              4,
+              0
+            ],
+            [
+              4,
+              1
+            ],
+            [
+              5,
+              0
+            ],
+            [
+              5,
+              1
+            ],
+            [
+              6,
+              0
+            ],
+            [
+              6,
+              1
+            ],
+            [
+              7,
+              0
+            ],
+            [
+              7,
+              1
+            ]
+          ]
+        }
+      ],
+      "extensions": [],
+      "holes": [
+        {
+          "id": "floor-hole:vertical-void~3Amain-stair:0",
+          "voidId": "vertical-void:main-stair",
+          "kind": "stair",
+          "footprint": {
+            "x": 1.2,
+            "z": 0.4,
+            "width": 5,
+            "depth": 1.2
+          },
+          "regions": [
+            {
+              "x": 1.2,
+              "z": 0.4,
+              "width": 5,
+              "depth": 1.2
+            }
+          ],
+          "replacementLandingId": null
+        },
+        {
+          "id": "floor-hole:vertical-void~3Amain-stair:1",
+          "voidId": "vertical-void:main-stair",
+          "kind": "stair",
+          "footprint": {
+            "x": 6.2,
+            "z": 0.4,
+            "width": 1.2,
+            "depth": 1.2
+          },
+          "regions": [
+            {
+              "x": 6.2,
+              "z": 0.4,
+              "width": 1.2,
+              "depth": 1.2
+            }
+          ],
+          "replacementLandingId": "landing:main-stair:upper"
+        }
+      ],
+      "walkableVolumeIds": [
+        "occupied:room:chamber:0,0",
+        "occupied:room:chamber:0,1",
+        "occupied:room:chamber:1,0",
+        "occupied:room:chamber:1,1",
+        "occupied:room:chamber:2,0",
+        "occupied:room:chamber:2,1",
+        "occupied:room:chamber:3,0",
+        "occupied:room:chamber:3,1",
+        "occupied:room:chamber:4,0",
+        "occupied:room:chamber:4,1",
+        "occupied:room:chamber:5,0",
+        "occupied:room:chamber:5,1",
+        "occupied:room:chamber:6,0",
+        "occupied:room:chamber:6,1",
+        "occupied:room:chamber:7,0",
+        "occupied:room:chamber:7,1"
+      ],
+      "bearing": {
+        "edgeIds": [
+          "wall:upper:0,0|0,1",
+          "wall:upper:0,0|1,0",
+          "wall:upper:0,1|0,2",
+          "wall:upper:0,2|1,2",
+          "wall:upper:1,0|2,0",
+          "wall:upper:1,2|2,2",
+          "wall:upper:2,0|3,0",
+          "wall:upper:2,2|3,2",
+          "wall:upper:3,0|4,0",
+          "wall:upper:3,2|4,2",
+          "wall:upper:4,0|5,0",
+          "wall:upper:4,2|5,2",
+          "wall:upper:5,0|6,0",
+          "wall:upper:5,2|6,2",
+          "wall:upper:6,0|7,0",
+          "wall:upper:6,2|7,2",
+          "wall:upper:7,0|8,0",
+          "wall:upper:7,2|8,2",
+          "wall:upper:8,0|8,1",
+          "wall:upper:8,1|8,2"
+        ],
+        "intermediateSupportIds": []
+      },
+      "joists": {
+        "direction": null,
+        "spacing": null,
+        "memberIds": []
+      },
+      "openBoundaryIds": []
+    }
+  ],
+  "curves": [],
+  "radialThroats": [],
+  "curveTransitions": [],
+  "portals": [
+    {
+      "id": "portal:aperture:ground:front-door",
+      "kind": "door",
+      "sourceId": "front-door",
+      "levelId": "ground",
+      "rooms": [
+        "hall",
+        "outside"
+      ],
+      "floorIds": [
+        "floor:ground:hall"
+      ],
+      "clearWidth": 1.2000000000000002,
+      "clearHeight": 2.2,
+      "bounds": {
+        "minX": -0.3,
+        "maxX": 0.3,
+        "minZ": 0.4,
+        "maxZ": 1.6,
+        "minY": 0,
+        "maxY": 2.2
+      },
+      "thresholds": [
+        [
+          -0.3,
+          0,
+          1
+        ],
+        [
+          0.3,
+          0,
+          1
+        ]
+      ],
+      "roomThresholds": {
+        "hall": [
+          0.3,
+          0,
+          1
+        ]
+      },
+      "hostEdgeIds": [
+        "wall:ground:0,0|0,1",
+        "wall:ground:0,1|0,2"
+      ],
+      "hostModuleIds": [
+        "module:ground:0,0|0,1",
+        "module:ground:0,1|0,2"
+      ],
+      "sweptVolumeId": "route-volume:aperture:ground:front-door"
+    }
+  ],
+  "openBoundaries": [],
+  "beamMembers": [
+    {
+      "id": "beam:ground:0,0,0|0,4,0:post",
+      "levelId": "ground",
+      "from": [
+        0,
+        0,
+        0
+      ],
+      "to": [
+        0,
+        4,
+        0
+      ],
+      "section": [
+        0.25,
+        0.25
+      ],
+      "jointFamily": "pegged",
+      "role": "post",
+      "material": "castle.oak",
+      "bearing": null,
+      "joist": null
+    },
+    {
+      "id": "beam:upper:0,4,2|8,4,2:floor-beam",
+      "levelId": "upper",
+      "from": [
+        0,
+        4,
+        2
+      ],
+      "to": [
+        8,
+        4,
+        2
+      ],
+      "section": [
+        0.2,
+        0.3
+      ],
+      "jointFamily": "mortise-tenon",
+      "role": "floor-beam",
+      "material": "castle.oak",
+      "bearing": null,
+      "joist": null
+    }
+  ],
+  "stairs": [
+    {
+      "id": "stair:main-stair",
+      "sourceId": "main-stair",
+      "lowerLevelId": "ground",
+      "upperLevelId": "upper",
+      "lowerRoomId": "hall",
+      "upperRoomId": "chamber",
+      "width": 1.2,
+      "rise": 4,
+      "tread": 0.25,
+      "riser": 0.2,
+      "stepCount": 20,
+      "headroom": 2.2,
+      "entryDirection": "E",
+      "exitDirection": "E",
+      "flights": [
+        {
+          "id": "flight:main-stair:flight-1",
+          "sourceId": "flight-1",
+          "index": 0,
+          "direction": "E",
+          "width": 1.2,
+          "stepCount": 20,
+          "riser": 0.2,
+          "tread": 0.25,
+          "run": 5,
+          "footprint": {
+            "x": 1.2,
+            "z": 0.4,
+            "width": 5,
+            "depth": 1.2
+          },
+          "fromY": 0,
+          "toY": 4,
+          "centerline": [
+            [
+              1.2000000000000002,
+              0,
+              1
+            ],
+            [
+              6.2,
+              4,
+              1
+            ]
+          ],
+          "sweptVolume": {
+            "minX": 1.2,
+            "maxX": 6.2,
+            "minZ": 0.4,
+            "maxZ": 1.6,
+            "minY": 0,
+            "maxY": 6.2
+          },
+          "fromLandingId": "landing:main-stair:lower",
+          "toLandingId": "landing:main-stair:upper"
+        }
+      ],
+      "landings": [
+        {
+          "id": "landing:main-stair:lower",
+          "sourceId": "lower",
+          "kind": "lower",
+          "bounds": {
+            "x": 0,
+            "z": 0.4,
+            "width": 1.2,
+            "depth": 1.2
+          },
+          "elevation": 0,
+          "roomId": "hall",
+          "sweptVolumeId": "swept:landing:main-stair:lower"
+        },
+        {
+          "id": "landing:main-stair:upper",
+          "sourceId": "upper",
+          "kind": "upper",
+          "bounds": {
+            "x": 6.2,
+            "z": 0.4,
+            "width": 1.2,
+            "depth": 1.2
+          },
+          "elevation": 4,
+          "roomId": "chamber",
+          "sweptVolumeId": "swept:landing:main-stair:upper"
+        }
+      ],
+      "holes": [
+        {
+          "id": "hole:main-stair:0",
+          "levelId": "upper",
+          "floorId": "floor:upper:chamber",
+          "footprint": {
+            "x": 1.2,
+            "z": 0.4,
+            "width": 5,
+            "depth": 1.2
+          },
+          "minY": 0,
+          "maxY": 6.2
+        },
+        {
+          "id": "hole:main-stair:1",
+          "levelId": "upper",
+          "floorId": "floor:upper:chamber",
+          "footprint": {
+            "x": 6.2,
+            "z": 0.4,
+            "width": 1.2,
+            "depth": 1.2
+          },
+          "minY": 0,
+          "maxY": 6.2
+        }
+      ],
+      "route": {
+        "waypoints": [
+          [
+            0.6,
+            0,
+            1
+          ],
+          [
+            1.2000000000000002,
+            0,
+            1
+          ],
+          [
+            6.2,
+            4,
+            1
+          ],
+          [
+            6.8,
+            4,
+            1
+          ]
+        ],
+        "sweptVolumeIds": [
+          "swept:flight:main-stair:flight-1",
+          "swept:landing:main-stair:lower",
+          "swept:landing:main-stair:upper"
+        ]
+      },
+      "sweptVolumes": [
+        {
+          "id": "swept:flight:main-stair:flight-1",
+          "minX": 1.2,
+          "maxX": 6.2,
+          "minZ": 0.4,
+          "maxZ": 1.6,
+          "minY": 0,
+          "maxY": 6.2
+        },
+        {
+          "id": "swept:landing:main-stair:lower",
+          "minX": 0,
+          "maxX": 1.2,
+          "minZ": 0.4,
+          "maxZ": 1.6,
+          "minY": 0,
+          "maxY": 2.2
+        },
+        {
+          "id": "swept:landing:main-stair:upper",
+          "minX": 6.2,
+          "maxX": 7.4,
+          "minZ": 0.4,
+          "maxZ": 1.6,
+          "minY": 4,
+          "maxY": 6.2
+        }
+      ],
+      "voids": [
+        {
+          "id": "void:main-stair:ceiling",
+          "levelId": "ground",
+          "kind": "ceiling",
+          "bounds": {
+            "x": 1.2,
+            "z": 0.4,
+            "width": 6.2,
+            "depth": 1.2000000000000002
+          },
+          "regions": [
+            {
+              "x": 1.2,
+              "z": 0.4,
+              "width": 5,
+              "depth": 1.2
+            },
+            {
+              "x": 6.2,
+              "z": 0.4,
+              "width": 1.2,
+              "depth": 1.2
+            }
+          ]
+        },
+        {
+          "id": "void:main-stair:floor",
+          "levelId": "upper",
+          "kind": "floor",
+          "bounds": {
+            "x": 1.2,
+            "z": 0.4,
+            "width": 6.2,
+            "depth": 1.2000000000000002
+          },
+          "regions": [
+            {
+              "x": 1.2,
+              "z": 0.4,
+              "width": 5,
+              "depth": 1.2
+            },
+            {
+              "x": 6.2,
+              "z": 0.4,
+              "width": 1.2,
+              "depth": 1.2
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "verticalVoids": [
+    {
+      "id": "vertical-void:main-stair",
+      "kind": "stair",
+      "lowerLevelId": "ground",
+      "upperLevelId": "upper",
+      "lowerY": 0,
+      "upperY": 6.2,
+      "footprints": [
+        {
+          "x": 1.2,
+          "z": 0.4,
+          "width": 5,
+          "depth": 1.2
+        },
+        {
+          "x": 6.2,
+          "z": 0.4,
+          "width": 1.2,
+          "depth": 1.2
+        }
+      ],
+      "penetratedFloorIds": [
+        "floor:upper:chamber"
+      ],
+      "penetratedCeilingIds": [
+        "ceiling:ground:hall"
+      ],
+      "lowerRoomIds": [
+        "hall"
+      ],
+      "upperRoomIds": [
+        "chamber"
+      ],
+      "openToBelowRoomIds": [],
+      "railProfile": "castle.stair-guardrail"
+    }
+  ],
+  "roofs": [],
+  "fixtures": [],
+  "localLights": [],
+  "occupiedVolumes": [
+    {
+      "id": "occupied:room:chamber:0,0",
+      "kind": "room-cell",
+      "levelId": "upper",
+      "roomId": "chamber",
+      "bounds": {
+        "minX": 0,
+        "minY": 4,
+        "minZ": 0,
+        "maxX": 1,
+        "maxY": 8,
+        "maxZ": 1
+      }
+    },
+    {
+      "id": "occupied:room:chamber:0,1",
+      "kind": "room-cell",
+      "levelId": "upper",
+      "roomId": "chamber",
+      "bounds": {
+        "minX": 0,
+        "minY": 4,
+        "minZ": 1,
+        "maxX": 1,
+        "maxY": 8,
+        "maxZ": 2
+      }
+    },
+    {
+      "id": "occupied:room:chamber:1,0",
+      "kind": "room-cell",
+      "levelId": "upper",
+      "roomId": "chamber",
+      "bounds": {
+        "minX": 1,
+        "minY": 4,
+        "minZ": 0,
+        "maxX": 2,
+        "maxY": 8,
+        "maxZ": 1
+      }
+    },
+    {
+      "id": "occupied:room:chamber:1,1",
+      "kind": "room-cell",
+      "levelId": "upper",
+      "roomId": "chamber",
+      "bounds": {
+        "minX": 1,
+        "minY": 4,
+        "minZ": 1,
+        "maxX": 2,
+        "maxY": 8,
+        "maxZ": 2
+      }
+    },
+    {
+      "id": "occupied:room:chamber:2,0",
+      "kind": "room-cell",
+      "levelId": "upper",
+      "roomId": "chamber",
+      "bounds": {
+        "minX": 2,
+        "minY": 4,
+        "minZ": 0,
+        "maxX": 3,
+        "maxY": 8,
+        "maxZ": 1
+      }
+    },
+    {
+      "id": "occupied:room:chamber:2,1",
+      "kind": "room-cell",
+      "levelId": "upper",
+      "roomId": "chamber",
+      "bounds": {
+        "minX": 2,
+        "minY": 4,
+        "minZ": 1,
+        "maxX": 3,
+        "maxY": 8,
+        "maxZ": 2
+      }
+    },
+    {
+      "id": "occupied:room:chamber:3,0",
+      "kind": "room-cell",
+      "levelId": "upper",
+      "roomId": "chamber",
+      "bounds": {
+        "minX": 3,
+        "minY": 4,
+        "minZ": 0,
+        "maxX": 4,
+        "maxY": 8,
+        "maxZ": 1
+      }
+    },
+    {
+      "id": "occupied:room:chamber:3,1",
+      "kind": "room-cell",
+      "levelId": "upper",
+      "roomId": "chamber",
+      "bounds": {
+        "minX": 3,
+        "minY": 4,
+        "minZ": 1,
+        "maxX": 4,
+        "maxY": 8,
+        "maxZ": 2
+      }
+    },
+    {
+      "id": "occupied:room:chamber:4,0",
+      "kind": "room-cell",
+      "levelId": "upper",
+      "roomId": "chamber",
+      "bounds": {
+        "minX": 4,
+        "minY": 4,
+        "minZ": 0,
+        "maxX": 5,
+        "maxY": 8,
+        "maxZ": 1
+      }
+    },
+    {
+      "id": "occupied:room:chamber:4,1",
+      "kind": "room-cell",
+      "levelId": "upper",
+      "roomId": "chamber",
+      "bounds": {
+        "minX": 4,
+        "minY": 4,
+        "minZ": 1,
+        "maxX": 5,
+        "maxY": 8,
+        "maxZ": 2
+      }
+    },
+    {
+      "id": "occupied:room:chamber:5,0",
+      "kind": "room-cell",
+      "levelId": "upper",
+      "roomId": "chamber",
+      "bounds": {
+        "minX": 5,
+        "minY": 4,
+        "minZ": 0,
+        "maxX": 6,
+        "maxY": 8,
+        "maxZ": 1
+      }
+    },
+    {
+      "id": "occupied:room:chamber:5,1",
+      "kind": "room-cell",
+      "levelId": "upper",
+      "roomId": "chamber",
+      "bounds": {
+        "minX": 5,
+        "minY": 4,
+        "minZ": 1,
+        "maxX": 6,
+        "maxY": 8,
+        "maxZ": 2
+      }
+    },
+    {
+      "id": "occupied:room:chamber:6,0",
+      "kind": "room-cell",
+      "levelId": "upper",
+      "roomId": "chamber",
+      "bounds": {
+        "minX": 6,
+        "minY": 4,
+        "minZ": 0,
+        "maxX": 7,
+        "maxY": 8,
+        "maxZ": 1
+      }
+    },
+    {
+      "id": "occupied:room:chamber:6,1",
+      "kind": "room-cell",
+      "levelId": "upper",
+      "roomId": "chamber",
+      "bounds": {
+        "minX": 6,
+        "minY": 4,
+        "minZ": 1,
+        "maxX": 7,
+        "maxY": 8,
+        "maxZ": 2
+      }
+    },
+    {
+      "id": "occupied:room:chamber:7,0",
+      "kind": "room-cell",
+      "levelId": "upper",
+      "roomId": "chamber",
+      "bounds": {
+        "minX": 7,
+        "minY": 4,
+        "minZ": 0,
+        "maxX": 8,
+        "maxY": 8,
+        "maxZ": 1
+      }
+    },
+    {
+      "id": "occupied:room:chamber:7,1",
+      "kind": "room-cell",
+      "levelId": "upper",
+      "roomId": "chamber",
+      "bounds": {
+        "minX": 7,
+        "minY": 4,
+        "minZ": 1,
+        "maxX": 8,
+        "maxY": 8,
+        "maxZ": 2
+      }
+    },
+    {
+      "id": "occupied:room:hall:0,0",
+      "kind": "room-cell",
+      "levelId": "ground",
+      "roomId": "hall",
+      "bounds": {
+        "minX": 0,
+        "minY": 0,
+        "minZ": 0,
+        "maxX": 1,
+        "maxY": 4,
+        "maxZ": 1
+      }
+    },
+    {
+      "id": "occupied:room:hall:0,1",
+      "kind": "room-cell",
+      "levelId": "ground",
+      "roomId": "hall",
+      "bounds": {
+        "minX": 0,
+        "minY": 0,
+        "minZ": 1,
+        "maxX": 1,
+        "maxY": 4,
+        "maxZ": 2
+      }
+    },
+    {
+      "id": "occupied:room:hall:1,0",
+      "kind": "room-cell",
+      "levelId": "ground",
+      "roomId": "hall",
+      "bounds": {
+        "minX": 1,
+        "minY": 0,
+        "minZ": 0,
+        "maxX": 2,
+        "maxY": 4,
+        "maxZ": 1
+      }
+    },
+    {
+      "id": "occupied:room:hall:1,1",
+      "kind": "room-cell",
+      "levelId": "ground",
+      "roomId": "hall",
+      "bounds": {
+        "minX": 1,
+        "minY": 0,
+        "minZ": 1,
+        "maxX": 2,
+        "maxY": 4,
+        "maxZ": 2
+      }
+    },
+    {
+      "id": "occupied:room:hall:2,0",
+      "kind": "room-cell",
+      "levelId": "ground",
+      "roomId": "hall",
+      "bounds": {
+        "minX": 2,
+        "minY": 0,
+        "minZ": 0,
+        "maxX": 3,
+        "maxY": 4,
+        "maxZ": 1
+      }
+    },
+    {
+      "id": "occupied:room:hall:2,1",
+      "kind": "room-cell",
+      "levelId": "ground",
+      "roomId": "hall",
+      "bounds": {
+        "minX": 2,
+        "minY": 0,
+        "minZ": 1,
+        "maxX": 3,
+        "maxY": 4,
+        "maxZ": 2
+      }
+    },
+    {
+      "id": "occupied:room:hall:3,0",
+      "kind": "room-cell",
+      "levelId": "ground",
+      "roomId": "hall",
+      "bounds": {
+        "minX": 3,
+        "minY": 0,
+        "minZ": 0,
+        "maxX": 4,
+        "maxY": 4,
+        "maxZ": 1
+      }
+    },
+    {
+      "id": "occupied:room:hall:3,1",
+      "kind": "room-cell",
+      "levelId": "ground",
+      "roomId": "hall",
+      "bounds": {
+        "minX": 3,
+        "minY": 0,
+        "minZ": 1,
+        "maxX": 4,
+        "maxY": 4,
+        "maxZ": 2
+      }
+    },
+    {
+      "id": "occupied:room:hall:4,0",
+      "kind": "room-cell",
+      "levelId": "ground",
+      "roomId": "hall",
+      "bounds": {
+        "minX": 4,
+        "minY": 0,
+        "minZ": 0,
+        "maxX": 5,
+        "maxY": 4,
+        "maxZ": 1
+      }
+    },
+    {
+      "id": "occupied:room:hall:4,1",
+      "kind": "room-cell",
+      "levelId": "ground",
+      "roomId": "hall",
+      "bounds": {
+        "minX": 4,
+        "minY": 0,
+        "minZ": 1,
+        "maxX": 5,
+        "maxY": 4,
+        "maxZ": 2
+      }
+    },
+    {
+      "id": "occupied:room:hall:5,0",
+      "kind": "room-cell",
+      "levelId": "ground",
+      "roomId": "hall",
+      "bounds": {
+        "minX": 5,
+        "minY": 0,
+        "minZ": 0,
+        "maxX": 6,
+        "maxY": 4,
+        "maxZ": 1
+      }
+    },
+    {
+      "id": "occupied:room:hall:5,1",
+      "kind": "room-cell",
+      "levelId": "ground",
+      "roomId": "hall",
+      "bounds": {
+        "minX": 5,
+        "minY": 0,
+        "minZ": 1,
+        "maxX": 6,
+        "maxY": 4,
+        "maxZ": 2
+      }
+    },
+    {
+      "id": "occupied:room:hall:6,0",
+      "kind": "room-cell",
+      "levelId": "ground",
+      "roomId": "hall",
+      "bounds": {
+        "minX": 6,
+        "minY": 0,
+        "minZ": 0,
+        "maxX": 7,
+        "maxY": 4,
+        "maxZ": 1
+      }
+    },
+    {
+      "id": "occupied:room:hall:6,1",
+      "kind": "room-cell",
+      "levelId": "ground",
+      "roomId": "hall",
+      "bounds": {
+        "minX": 6,
+        "minY": 0,
+        "minZ": 1,
+        "maxX": 7,
+        "maxY": 4,
+        "maxZ": 2
+      }
+    },
+    {
+      "id": "occupied:room:hall:7,0",
+      "kind": "room-cell",
+      "levelId": "ground",
+      "roomId": "hall",
+      "bounds": {
+        "minX": 7,
+        "minY": 0,
+        "minZ": 0,
+        "maxX": 8,
+        "maxY": 4,
+        "maxZ": 1
+      }
+    },
+    {
+      "id": "occupied:room:hall:7,1",
+      "kind": "room-cell",
+      "levelId": "ground",
+      "roomId": "hall",
+      "bounds": {
+        "minX": 7,
+        "minY": 0,
+        "minZ": 1,
+        "maxX": 8,
+        "maxY": 4,
+        "maxZ": 2
+      }
+    },
+    {
+      "id": "occupied:swept:flight:main-stair:flight-1",
+      "kind": "stair-clearance",
+      "levelId": "ground",
+      "bounds": {
+        "minX": 1.2,
+        "maxX": 6.2,
+        "minY": 0,
+        "maxY": 6.2,
+        "minZ": 0.4,
+        "maxZ": 1.6
+      }
+    },
+    {
+      "id": "occupied:swept:landing:main-stair:lower",
+      "kind": "stair-clearance",
+      "levelId": "ground",
+      "bounds": {
+        "minX": 0,
+        "maxX": 1.2,
+        "minY": 0,
+        "maxY": 2.2,
+        "minZ": 0.4,
+        "maxZ": 1.6
+      }
+    },
+    {
+      "id": "occupied:swept:landing:main-stair:upper",
+      "kind": "stair-clearance",
+      "levelId": "ground",
+      "bounds": {
+        "minX": 6.2,
+        "maxX": 7.4,
+        "minY": 4,
+        "maxY": 6.2,
+        "minZ": 0.4,
+        "maxZ": 1.6
+      }
+    },
+    {
+      "id": "route-volume:aperture:ground:front-door",
+      "kind": "portal-clearance",
+      "levelId": "ground",
+      "bounds": {
+        "minX": -0.3,
+        "maxX": 0.3,
+        "minZ": 0.4,
+        "maxZ": 1.6,
+        "minY": 0,
+        "maxY": 2.2
+      }
+    }
+  ],
+  "roomGraph": {
+    "entryRoomId": "hall",
+    "entryPortalId": "portal:aperture:ground:front-door",
+    "nodes": [
+      {
+        "id": "chamber",
+        "levelId": "upper",
+        "use": "chamber",
+        "required": true,
+        "walkable": true
+      },
+      {
+        "id": "hall",
+        "levelId": "ground",
+        "use": "hall",
+        "required": true,
+        "walkable": true
+      }
+    ],
+    "edges": [
+      {
+        "id": "route:door:front-door:hall|outside",
+        "kind": "door",
+        "sourceId": "front-door",
+        "rooms": [
+          "hall",
+          "outside"
+        ],
+        "portalVolumeId": "portal:aperture:ground:front-door",
+        "floorIds": [
+          "floor:ground:hall"
+        ],
+        "thresholds": [
+          [
+            -0.3,
+            0,
+            1
+          ],
+          [
+            0.3,
+            0,
+            1
+          ]
+        ],
+        "roomThresholds": {
+          "hall": [
+            0.3,
+            0,
+            1
+          ]
+        },
+        "clearWidth": 1.2000000000000002,
+        "sweptVolumeIds": [
+          "route-volume:aperture:ground:front-door"
+        ]
+      },
+      {
+        "id": "route:stair:main-stair:chamber|hall",
+        "kind": "stair",
+        "sourceId": "main-stair",
+        "rooms": [
+          "chamber",
+          "hall"
+        ],
+        "portalVolumeId": "stair:main-stair",
+        "floorIds": [
+          "floor:ground:hall",
+          "floor:upper:chamber"
+        ],
+        "thresholds": [
+          [
+            0.6,
+            0,
+            1
+          ],
+          [
+            6.8,
+            4,
+            1
+          ]
+        ],
+        "roomThresholds": {
+          "hall": [
+            0.6,
+            0,
+            1
+          ],
+          "chamber": [
+            6.8,
+            4,
+            1
+          ]
+        },
+        "clearWidth": 1.2,
+        "sweptVolumeIds": [
+          "swept:flight:main-stair:flight-1",
+          "swept:landing:main-stair:lower",
+          "swept:landing:main-stair:upper"
+        ]
+      }
+    ],
+    "reachableRoomIds": [
+      "chamber",
+      "hall"
+    ],
+    "walkRoute": [
+      {
+        "roomId": "chamber",
+        "fromEntry": [
+          "hall",
+          "chamber"
+        ],
+        "edgeIds": [
+          "route:door:front-door:hall|outside",
+          "route:stair:main-stair:chamber|hall"
+        ],
+        "sweptVolumeIds": [
+          "route-volume:aperture:ground:front-door",
+          "swept:flight:main-stair:flight-1",
+          "swept:landing:main-stair:lower",
+          "swept:landing:main-stair:upper",
+          "route-segment:chamber:0"
+        ],
+        "waypoints": [
+          [
+            -0.3,
+            0,
+            1
+          ],
+          [
+            0.3,
+            0,
+            1
+          ],
+          [
+            0.6,
+            0,
+            1
+          ],
+          [
+            1.2000000000000002,
+            0,
+            1
+          ],
+          [
+            6.2,
+            4,
+            1
+          ],
+          [
+            6.8,
+            4,
+            1
+          ]
+        ],
+        "traversals": [
+          {
+            "edgeId": "route:door:front-door:hall|outside",
+            "fromRoomId": "outside",
+            "toRoomId": "hall",
+            "from": [
+              -0.3,
+              0,
+              1
+            ],
+            "to": [
+              0.3,
+              0,
+              1
+            ]
+          },
+          {
+            "edgeId": "route:stair:main-stair:chamber|hall",
+            "fromRoomId": "hall",
+            "toRoomId": "chamber",
+            "from": [
+              0.6,
+              0,
+              1
+            ],
+            "to": [
+              6.8,
+              4,
+              1
+            ]
+          }
+        ],
+        "roomSegments": [
+          {
+            "roomId": "hall",
+            "from": [
+              0.3,
+              0,
+              1
+            ],
+            "to": [
+              0.6,
+              0,
+              1
+            ],
+            "width": 1.2,
+            "waypoints": [
+              [
+                0.3,
+                0,
+                1
+              ],
+              [
+                0.6,
+                0,
+                1
+              ]
+            ],
+            "segments": [
+              {
+                "from": [
+                  0.3,
+                  0,
+                  1
+                ],
+                "to": [
+                  0.6,
+                  0,
+                  1
+                ],
+                "bounds": {
+                  "minX": 0.3,
+                  "maxX": 0.6,
+                  "minY": 0,
+                  "maxY": 2.1,
+                  "minZ": 0.4,
+                  "maxZ": 1.6
+                }
+              }
+            ],
+            "sweptBounds": {
+              "minX": 0.3,
+              "maxX": 0.6,
+              "minY": 0,
+              "maxY": 2.1,
+              "minZ": 0.4,
+              "maxZ": 1.6
+            },
+            "id": "route-segment:chamber:0"
+          }
+        ]
+      },
+      {
+        "roomId": "hall",
+        "fromEntry": [
+          "hall"
+        ],
+        "edgeIds": [
+          "route:door:front-door:hall|outside"
+        ],
+        "sweptVolumeIds": [
+          "route-volume:aperture:ground:front-door"
+        ],
+        "waypoints": [
+          [
+            -0.3,
+            0,
+            1
+          ],
+          [
+            0.3,
+            0,
+            1
+          ]
+        ],
+        "traversals": [
+          {
+            "edgeId": "route:door:front-door:hall|outside",
+            "fromRoomId": "outside",
+            "toRoomId": "hall",
+            "from": [
+              -0.3,
+              0,
+              1
+            ],
+            "to": [
+              0.3,
+              0,
+              1
+            ]
+          }
+        ],
+        "roomSegments": []
+      }
+    ]
+  },
+  "walkRoute": [
+    {
+      "roomId": "chamber",
+      "fromEntry": [
+        "hall",
+        "chamber"
+      ],
+      "edgeIds": [
+        "route:door:front-door:hall|outside",
+        "route:stair:main-stair:chamber|hall"
+      ],
+      "sweptVolumeIds": [
+        "route-volume:aperture:ground:front-door",
+        "swept:flight:main-stair:flight-1",
+        "swept:landing:main-stair:lower",
+        "swept:landing:main-stair:upper",
+        "route-segment:chamber:0"
+      ],
+      "waypoints": [
+        [
+          -0.3,
+          0,
+          1
+        ],
+        [
+          0.3,
+          0,
+          1
+        ],
+        [
+          0.6,
+          0,
+          1
+        ],
+        [
+          1.2000000000000002,
+          0,
+          1
+        ],
+        [
+          6.2,
+          4,
+          1
+        ],
+        [
+          6.8,
+          4,
+          1
+        ]
+      ],
+      "traversals": [
+        {
+          "edgeId": "route:door:front-door:hall|outside",
+          "fromRoomId": "outside",
+          "toRoomId": "hall",
+          "from": [
+            -0.3,
+            0,
+            1
+          ],
+          "to": [
+            0.3,
+            0,
+            1
+          ]
+        },
+        {
+          "edgeId": "route:stair:main-stair:chamber|hall",
+          "fromRoomId": "hall",
+          "toRoomId": "chamber",
+          "from": [
+            0.6,
+            0,
+            1
+          ],
+          "to": [
+            6.8,
+            4,
+            1
+          ]
+        }
+      ],
+      "roomSegments": [
+        {
+          "roomId": "hall",
+          "from": [
+            0.3,
+            0,
+            1
+          ],
+          "to": [
+            0.6,
+            0,
+            1
+          ],
+          "width": 1.2,
+          "waypoints": [
+            [
+              0.3,
+              0,
+              1
+            ],
+            [
+              0.6,
+              0,
+              1
+            ]
+          ],
+          "segments": [
+            {
+              "from": [
+                0.3,
+                0,
+                1
+              ],
+              "to": [
+                0.6,
+                0,
+                1
+              ],
+              "bounds": {
+                "minX": 0.3,
+                "maxX": 0.6,
+                "minY": 0,
+                "maxY": 2.1,
+                "minZ": 0.4,
+                "maxZ": 1.6
+              }
+            }
+          ],
+          "sweptBounds": {
+            "minX": 0.3,
+            "maxX": 0.6,
+            "minY": 0,
+            "maxY": 2.1,
+            "minZ": 0.4,
+            "maxZ": 1.6
+          },
+          "id": "route-segment:chamber:0"
+        }
+      ]
+    },
+    {
+      "roomId": "hall",
+      "fromEntry": [
+        "hall"
+      ],
+      "edgeIds": [
+        "route:door:front-door:hall|outside"
+      ],
+      "sweptVolumeIds": [
+        "route-volume:aperture:ground:front-door"
+      ],
+      "waypoints": [
+        [
+          -0.3,
+          0,
+          1
+        ],
+        [
+          0.3,
+          0,
+          1
+        ]
+      ],
+      "traversals": [
+        {
+          "edgeId": "route:door:front-door:hall|outside",
+          "fromRoomId": "outside",
+          "toRoomId": "hall",
+          "from": [
+            -0.3,
+            0,
+            1
+          ],
+          "to": [
+            0.3,
+            0,
+            1
+          ]
+        }
+      ],
+      "roomSegments": []
+    }
+  ]
+}

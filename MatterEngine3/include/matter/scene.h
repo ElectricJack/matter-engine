@@ -2,10 +2,11 @@
 
 // MatterEngine3/include/matter/scene.h
 //
-// Shared vocabulary for the editable ("dynamic") scene: entity identity, the
-// component that places a baked part on an entity, and the typed result codes
-// scene edits report. Deliberately tiny and dependency-free — it sits below the
-// ECS, the renderer and the editor, all of which include it:
+// Shared vocabulary for the editable ("dynamic") scene: entity identity (down
+// to the bit that splits authored ids from runtime-minted ones), the component
+// that places a baked part on an entity, and the typed result codes scene edits
+// report. Deliberately tiny and dependency-free — it sits below the ECS, the
+// renderer and the editor, all of which include it:
 //
 //   src/ecs/scene_registry.{h,cpp}     component reflection for the inspector
 //   src/scene/scene_service.h          the ONE supported path for scene edits;
@@ -33,6 +34,28 @@ namespace matter::scene {
 // Generation makes renderer identity fail closed when an editor recycles a
 // user-visible entity id while an old GPU slot is still retiring.
 struct SceneEntityId { uint64_t value = 0; uint32_t generation = 0; };
+
+// SceneEntityId::value is split into two namespaces by its top bit, and this
+// constant is the ONE definition of that split. World-authored ids are
+// `hash_authored_id` FNV-1a hashes (src/ecs/scene_registry.h) with the bit
+// CLEARED; ids minted at runtime by SceneService (src/scene/scene_service.cpp
+// allocate_id) carry it SET. Keeping the allocators in disjoint halves is what
+// makes them collision-free across a reload, which a liveness scan over
+// currently-loaded entities cannot achieve, and it lets a reader classify an
+// id's provenance without the world definition in hand.
+//
+// It lives here, in the dependency-free vocabulary header, rather than beside
+// the hash in scene_registry.h, because the readers of the rule are not all
+// ECS code: the editor's agent protocol classifies ids it is handed
+// (MatterEditor/src/scene_inventory.cpp) and must not pull in Flecs to do it.
+inline constexpr uint64_t kRuntimeIdBit = 1ULL << 63;
+
+// True when `value` was minted at runtime rather than hashed from an authored
+// id. The zero sentinel ("no id") reports false, like any authored value.
+inline constexpr bool is_runtime_id(uint64_t value) {
+    return (value & kRuntimeIdBit) != 0;
+}
+
 // Places one baked part (by content hash) on a dynamic entity; the entity's
 // transform decides where it lands. `visible` and `casts_shadow` are separate on
 // purpose — a hidden shadow caster and a visible non-caster are both useful.

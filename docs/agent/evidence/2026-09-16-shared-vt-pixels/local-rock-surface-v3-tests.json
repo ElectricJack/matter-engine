@@ -1,0 +1,32 @@
+{
+  "runs": [
+    {
+      "mode": "provider",
+      "command": "$env:MATTER_VK_VALIDATION=\"1\"; $env:TMP=\"$env:LOCALAPPDATA\\Temp\"; $env:TEMP=$env:TMP; $env:MATTER_VK_SMOKE_MODE=\"provider\"; & \"./MatterEditor/build/cmake/windows-msvc/relwithdebinfo/part_surface_provider_tests.exe\"; exit $LASTEXITCODE",
+      "exit": 1,
+      "seconds": 1.0915366780100157,
+      "binary_sha256": "e018ad42b0f92a40ef7f7fbd5c7aa20d1e7c1a311a78eb7901338b7b13ab0967",
+      "binary_unchanged": true,
+      "source_changes": [],
+      "all_pass": false,
+      "zero_validation_errors": true,
+      "skipped_rt": false,
+      "log_sha256": "85a329643b909e569c200b4834c1c9482a5dae1068591d54ec13082673c0b8ec",
+      "passed": false
+    },
+    {
+      "mode": "flatten",
+      "command": "$env:MATTER_VK_VALIDATION=\"1\"; $env:TMP=\"$env:LOCALAPPDATA\\Temp\"; $env:TEMP=$env:TMP; $env:MATTER_VK_SMOKE_MODE=\"flatten\"; & \"./build/cmake/windows-msvc/relwithdebinfo/part_flatten_tests.exe\"; exit $LASTEXITCODE",
+      "exit": 0,
+      "seconds": 65.78347473399481,
+      "binary_sha256": "e1c89f0fb3a9542289f0a5755ca96898287993d5fb5f90d1aff42c7140df5d12",
+      "binary_unchanged": true,
+      "source_changes": [],
+      "all_pass": true,
+      "zero_validation_errors": true,
+      "skipped_rt": false,
+      "log_sha256": "3998e9961c7478f26273f81d69f1ba7b28ac2df3ef3d20e374c75838a3fec2d0",
+      "passed": true
+    }
+  ]
+}

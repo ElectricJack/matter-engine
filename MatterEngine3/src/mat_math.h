@@ -48,7 +48,7 @@ inline void mul16(const float* a, const float* b, float* out) {
 
 // ---------------------------------------------------------------------------
 // NormalMat — inverse-transpose of the upper 3×3 for shading normals under
-// non-uniform scale.  Falls back to the raw 3×3 when the matrix is singular.
+// non-uniform scale and shear. Falls back to the raw 3×3 for singular matrices.
 //
 // After construction, apply() maps a local-space normal to world space and
 // normalises the result.  Both in and out are raw float[3] arrays.
@@ -72,14 +72,13 @@ struct NormalMat {
             n[6]=g; n[7]=h; n[8]=i;
             return;
         }
-        // Cofactor / det gives M^-1; store its transpose in n[].
+        // Cofactor(M) / det(M) IS M^-T. Store that matrix row-major:
+        // apply() multiplies column vectors, just like point transforms.
+        // Transposing these cofactors again would incorrectly produce M^-1.
         const float id = 1.0f / det;
-        float tmp[9];
-        tmp[0] = A*id;             tmp[3] = -(b*i - c*h)*id;  tmp[6] =  (b*f - c*e)*id;
-        tmp[1] = B*id;             tmp[4] =  (a*i - c*g)*id;  tmp[7] = -(a*f - c*d)*id;
-        tmp[2] = C*id;             tmp[5] = -(a*h - b*g)*id;  tmp[8] =  (a*e - b*d)*id;
-        std::swap(tmp[1], tmp[3]); std::swap(tmp[2], tmp[6]); std::swap(tmp[5], tmp[7]);
-        std::memcpy(n, tmp, 36);
+        n[0] = A*id;                n[1] = B*id;                n[2] = C*id;
+        n[3] = -(b*i - c*h)*id;     n[4] = (a*i - c*g)*id;      n[5] = -(a*h - b*g)*id;
+        n[6] = (b*f - c*e)*id;      n[7] = -(a*f - c*d)*id;     n[8] = (a*e - b*d)*id;
     }
 
     // Transform local normal v[3] to world space and normalise into out[3].

@@ -1,0 +1,27 @@
+{
+  "id": "2026-09-16-r1",
+  "directory": "/mnt/d/shared with desktop/ai/matter-engine-cpp/MatterEditor/build/asset-handoff/2026-09-16-r1",
+  "editor_sha256": "e3a89f607cf104512958e2433dd3d1bb5f6de7115d70d4ef1a9431692312c58f",
+  "runtime_files_verified": 17,
+  "native_test_count": 12,
+  "native_tests_passed": true,
+  "clean_path_census_and_wall_launch": [
+    {
+      "mode": "census",
+      "exit": 0,
+      "seconds": 0.6231059,
+      "clean_path": true
+    },
+    {
+      "mode": "walls-authoring",
+      "exit": 0,
+      "seconds": 11.0987025,
+      "clean_path": true
+    }
+  ],
+  "visual_inspection": "Three brick-textured box walls, correct scene, visible mortar and brick surface detail at the explicit 512 texels/metre authoring density.",
+  "screenshot_sha256": "203a3fb97fdd9ef215c41c243e968fc5648920fd3906c38bd560bdbc4718c0eb",
+  "optional_physx": false,
+  "optional_streamline": false,
+  "runtime_immutable_project_editable": true
+}

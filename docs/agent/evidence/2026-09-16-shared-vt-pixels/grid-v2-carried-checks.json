@@ -1,0 +1,22 @@
+{
+  "source_manifest_identical": true,
+  "binaries_identical": {
+    "MatterEditor/build/cmake/windows-msvc/relwithdebinfo/chart_atlas_tests.exe": true,
+    "MatterEditor/build/cmake/windows-msvc/relwithdebinfo/vt_residency_tests.exe": true,
+    "MatterEditor/build/cmake/windows-msvc/relwithdebinfo/vt_compositor_tests.exe": true,
+    "MatterEditor/build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe": true
+  },
+  "tests_carried_from": "grid-v1-tests.json",
+  "passing_modes": [
+    "chart",
+    "cpu",
+    "compositor",
+    "vt-queue",
+    "vt-composed-seam",
+    "vt-composed-parallax",
+    "vt-input-snapshot",
+    "vt-direct-source",
+    "surface-parallax"
+  ],
+  "note": "grid-v1 editor link failed with LNK1104; native tests passed. Unchanged-source grid-v2 retry built all targets including editor."
+}

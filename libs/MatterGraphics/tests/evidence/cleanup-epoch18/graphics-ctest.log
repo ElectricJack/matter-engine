@@ -1,0 +1,35 @@
+Internal ctest changing into directory: /tmp/fleet-rapids-48-epoch18/graphics
+Test project /tmp/fleet-rapids-48-epoch18/graphics
+      Start  1: matter_graphics_atmosphere
+ 1/11 Test  #1: matter_graphics_atmosphere ...............   Passed    0.00 sec
+      Start  2: matter_graphics_cloud_layer
+ 2/11 Test  #2: matter_graphics_cloud_layer ..............   Passed    0.00 sec
+      Start  3: matter_graphics_cloud_shadow
+ 3/11 Test  #3: matter_graphics_cloud_shadow .............   Passed    0.00 sec
+      Start  4: matter_graphics_volumetric_quality
+ 4/11 Test  #4: matter_graphics_volumetric_quality .......   Passed    0.00 sec
+      Start  5: matter_graphics_cloud_shadow_reference
+ 5/11 Test  #5: matter_graphics_cloud_shadow_reference ...   Passed    0.00 sec
+      Start  6: matter_graphics_lifetime
+ 6/11 Test  #6: matter_graphics_lifetime .................   Passed    0.02 sec
+      Start  7: matter_graphics_scene
+ 7/11 Test  #7: matter_graphics_scene ....................   Passed    0.03 sec
+      Start  8: matter_graphics_composition
+ 8/11 Test  #8: matter_graphics_composition ..............   Passed    0.00 sec
+      Start  9: matter_graphics_raster
+ 9/11 Test  #9: matter_graphics_raster ...................   Passed   16.98 sec
+      Start 10: matter_graphics_sample
+10/11 Test #10: matter_graphics_sample ...................   Passed   47.77 sec
+      Start 11: matter_graphics_vulkan
+11/11 Test #11: matter_graphics_vulkan ...................   Passed    0.62 sec
+
+100% tests passed, 0 tests failed out of 11
+
+Label Time Summary:
+cpu              =   0.06 sec*proc (8 tests)
+gpu              =  17.60 sec*proc (2 tests)
+graphics         =  65.43 sec*proc (11 tests)
+qualification    =  47.77 sec*proc (1 test)
+vulkan           =  17.60 sec*proc (2 tests)
+
+Total Test time (real) =  65.44 sec

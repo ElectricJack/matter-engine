@@ -299,6 +299,7 @@ bool write_state_json(const std::filesystem::path& path,
         << ", \"build_ms\": " << frame_stats.build_ms
         << ", \"draw_ms\": " << frame_stats.draw_ms << "},\n";
     out << "    \"loop_ms\": {\"poll\": " << stats.loop_poll_ms
+        << ", \"pacing\": " << stats.loop_pacing_ms
         << ", \"acquire\": " << stats.loop_acquire_ms
         << ", \"ui\": " << stats.loop_ui_ms
         << ", \"tick\": " << stats.loop_tick_ms
@@ -310,12 +311,20 @@ bool write_state_json(const std::filesystem::path& path,
         << ", \"peak_acquire\": " << stats.loop_peak_acquire_ms << "},\n";
     out << "    \"gpu_ms\": {\"supported\": "
         << (frame_stats.gpu_timers_supported ? "true" : "false")
+        << ", \"metric\": \"latest_ema\""
         << ", \"total\": " << frame_stats.gpu_total_ms
         << ", \"cull\": " << frame_stats.gpu_cull_ms
         << ", \"gbuffer\": " << frame_stats.gpu_gbuffer_ms
         << ", \"blas\": " << frame_stats.gpu_blas_ms
         << ", \"tlas\": " << frame_stats.gpu_tlas_ms
         << ", \"rt\": " << frame_stats.gpu_rt_ms
+        << ", \"rt_sun_shadow\": " << frame_stats.gpu_rt_ms
+        << ", \"rt_local_direct\": " << frame_stats.gpu_rt_local_direct_ms
+        << ", \"rt_gi\": " << frame_stats.gpu_rt_gi_ms
+        << ", \"hdr_lighting\": " << frame_stats.gpu_hdr_lighting_ms
+        << ", \"primary_light_cull\": " << frame_stats.gpu_primary_light_cull_ms
+        << ", \"rt_gi_diffuse\": " << frame_stats.gpu_rt_gi_diffuse_ms
+        << ", \"rt_gi_reflection_transmission\": " << frame_stats.gpu_rt_gi_reflection_transmission_ms
         << ", \"denoise\": " << frame_stats.gpu_denoise_ms
         << ", \"dlss\": " << frame_stats.gpu_dlss_ms
         << ", \"composite\": " << frame_stats.gpu_composite_ms

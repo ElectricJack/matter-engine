@@ -76,6 +76,14 @@ public:
     // Clear the entire selection.
     void clear();
 
+    // Atomically install one already-validated ordered selection.  `primary`
+    // is an index into `items`, or -1 only when `items` is empty.  This is the
+    // bulk counterpart to the click gestures above: it lets an app-thread
+    // command validate its whole request before making any visible change.
+    // Returns false for a malformed input and otherwise reports whether the
+    // ordered selection or primary changed.
+    bool assign(std::vector<SelectedObject> items, int primary);
+
     // The primary (most recently clicked) object. Returns nullptr if empty.
     const SelectedObject* primary() const;
 
@@ -90,6 +98,11 @@ public:
     size_t size() const { return items_.size(); }
     bool empty() const { return items_.empty(); }
 
+    // Monotonic app-session revision. It advances only when the ordered set or
+    // primary actually changes; idempotent clears/replacements do not make an
+    // optimistic-concurrency token stale.
+    uint64_t revision() const { return revision_; }
+
     // Remove objects that no longer exist. Call once per frame.
     // `alive` returns true if the object still exists in the scene.
     // Called once per selected object, so keep that lookup cheap. A surviving
@@ -100,6 +113,7 @@ public:
 private:
     std::vector<SelectedObject> items_;
     int primary_index_ = -1;  // index into items_ of the primary selection
+    uint64_t revision_ = 0;
 };
 
 } // namespace viewer
