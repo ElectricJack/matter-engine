@@ -1,0 +1,1332 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Matter portable recipe and asset contracts v1.0",
+  "description": "Structural schema. Semantic validators additionally check references, cycles, finite float32 normalization, transform classes and resource budgets.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/recipe"
+    },
+    {
+      "$ref": "#/$defs/asset"
+    }
+  ],
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$"
+    },
+    "u64": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{16}$"
+    },
+    "digest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "algorithm",
+        "hex"
+      ],
+      "properties": {
+        "algorithm": {
+          "const": "sha256"
+        },
+        "hex": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "version": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "major",
+        "minor"
+      ],
+      "properties": {
+        "major": {
+          "const": 1
+        },
+        "minor": {
+          "const": 0
+        }
+      }
+    },
+    "location": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "uri",
+        "line",
+        "column"
+      ],
+      "properties": {
+        "uri": {
+          "type": "string",
+          "maxLength": 65536
+        },
+        "line": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "column": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        }
+      }
+    },
+    "legacy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "namespace",
+        "value"
+      ],
+      "properties": {
+        "namespace": {
+          "enum": [
+            "matter.source.v1",
+            "matter.resolved.v1"
+          ]
+        },
+        "value": {
+          "$ref": "#/$defs/u64"
+        }
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "uri",
+        "revision",
+        "content",
+        "legacy_hashes"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "uri": {
+          "type": "string",
+          "maxLength": 65536
+        },
+        "revision": {
+          "type": "string",
+          "maxLength": 65536
+        },
+        "content": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/digest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "legacy_hashes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/legacy"
+          },
+          "minItems": 0
+        }
+      }
+    },
+    "capability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "version"
+      ],
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/id"
+        },
+        "version": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295
+        }
+      }
+    },
+    "extension": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "capability",
+        "required",
+        "payload"
+      ],
+      "properties": {
+        "capability": {
+          "$ref": "#/$defs/capability"
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "payload": {}
+      }
+    },
+    "resource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "content",
+        "scalar_type",
+        "components",
+        "element_count",
+        "byte_length"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "content": {
+          "$ref": "#/$defs/digest"
+        },
+        "scalar_type": {
+          "enum": [
+            "u8",
+            "u32",
+            "f32"
+          ]
+        },
+        "components": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4
+        },
+        "element_count": {
+          "$ref": "#/$defs/u64"
+        },
+        "byte_length": {
+          "$ref": "#/$defs/u64"
+        }
+      }
+    },
+    "material_input": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "factor",
+        "texture",
+        "uv_set"
+      ],
+      "properties": {
+        "factor": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 4,
+          "maxItems": 4
+        },
+        "texture": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "uv_set": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        }
+      }
+    },
+    "material": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "base_color",
+        "metallic",
+        "roughness",
+        "normal_scale",
+        "emissive",
+        "metallic_roughness_texture",
+        "normal_texture",
+        "emissive_texture"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "base_color": {
+          "$ref": "#/$defs/material_input"
+        },
+        "metallic": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "roughness": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "normal_scale": {
+          "type": "number",
+          "minimum": 0
+        },
+        "emissive": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 3,
+          "maxItems": 3
+        },
+        "metallic_roughness_texture": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "normal_texture": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "emissive_texture": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "texture": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "resource",
+        "color_space",
+        "wrap_u",
+        "wrap_v",
+        "min_filter",
+        "mag_filter",
+        "width",
+        "height",
+        "pixel_format"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "resource": {
+          "$ref": "#/$defs/id"
+        },
+        "color_space": {
+          "enum": [
+            "linear",
+            "srgb"
+          ]
+        },
+        "wrap_u": {
+          "enum": [
+            "repeat",
+            "clamp",
+            "mirror"
+          ]
+        },
+        "wrap_v": {
+          "enum": [
+            "repeat",
+            "clamp",
+            "mirror"
+          ]
+        },
+        "min_filter": {
+          "enum": [
+            "nearest",
+            "linear"
+          ]
+        },
+        "mag_filter": {
+          "enum": [
+            "nearest",
+            "linear"
+          ]
+        },
+        "width": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295
+        },
+        "height": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295
+        },
+        "pixel_format": {
+          "const": "rgba8"
+        }
+      }
+    },
+    "input": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "port",
+        "kind",
+        "reference",
+        "type"
+      ],
+      "properties": {
+        "port": {
+          "$ref": "#/$defs/id"
+        },
+        "kind": {
+          "enum": [
+            "node",
+            "resource",
+            "asset"
+          ]
+        },
+        "reference": {
+          "$ref": "#/$defs/id"
+        },
+        "type": {
+          "enum": [
+            "mesh",
+            "profile",
+            "assembly"
+          ]
+        }
+      }
+    },
+    "node": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "operation",
+        "operation_version",
+        "output_type",
+        "inputs",
+        "parameters",
+        "transform",
+        "materials"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "operation": {
+          "type": "string",
+          "maxLength": 65536
+        },
+        "operation_version": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295
+        },
+        "output_type": {
+          "enum": [
+            "mesh",
+            "profile",
+            "assembly"
+          ]
+        },
+        "inputs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/input"
+          },
+          "minItems": 0
+        },
+        "parameters": {
+          "type": "object"
+        },
+        "transform": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 16,
+          "maxItems": 16
+        },
+        "materials": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/id"
+          },
+          "minItems": 0
+        }
+      }
+    },
+    "bounds": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "min",
+        "max"
+      ],
+      "properties": {
+        "min": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 3,
+          "maxItems": 3
+        },
+        "max": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 3,
+          "maxItems": 3
+        }
+      }
+    },
+    "submesh": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "first_index",
+        "index_count",
+        "material"
+      ],
+      "properties": {
+        "first_index": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "index_count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "material": {
+          "$ref": "#/$defs/id"
+        }
+      }
+    },
+    "mesh": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "positions",
+        "normals",
+        "tangents",
+        "uv_sets",
+        "indices",
+        "submeshes",
+        "bounds",
+        "winding"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "positions": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "minItems": 3,
+            "maxItems": 3
+          },
+          "minItems": 1
+        },
+        "normals": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "minItems": 3,
+            "maxItems": 3
+          },
+          "minItems": 0
+        },
+        "tangents": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "minItems": 4,
+            "maxItems": 4
+          },
+          "minItems": 0
+        },
+        "uv_sets": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              },
+              "minItems": 2,
+              "maxItems": 2
+            },
+            "minItems": 0
+          },
+          "minItems": 0
+        },
+        "indices": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 4294967295
+          },
+          "minItems": 3
+        },
+        "submeshes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/submesh"
+          },
+          "minItems": 1
+        },
+        "bounds": {
+          "$ref": "#/$defs/bounds"
+        },
+        "winding": {
+          "const": "ccw"
+        }
+      }
+    },
+    "instance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "prototype",
+        "target",
+        "parent",
+        "local_transform"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "prototype": {
+          "$ref": "#/$defs/id"
+        },
+        "target": {
+          "enum": [
+            "mesh",
+            "assembly"
+          ]
+        },
+        "parent": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "local_transform": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 16,
+          "maxItems": 16
+        }
+      }
+    },
+    "assembly": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "instances"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "instances": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/instance"
+          },
+          "minItems": 0
+        }
+      }
+    },
+    "attachment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "instance",
+        "local_transform"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "instance": {
+          "$ref": "#/$defs/id"
+        },
+        "local_transform": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 16,
+          "maxItems": 16
+        }
+      }
+    },
+    "lod": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "prototype",
+        "max_error_metres"
+      ],
+      "properties": {
+        "prototype": {
+          "$ref": "#/$defs/id"
+        },
+        "max_error_metres": {
+          "type": "number",
+          "minimum": 0
+        }
+      }
+    },
+    "collision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "instance",
+        "shape",
+        "prototype",
+        "size"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "instance": {
+          "$ref": "#/$defs/id"
+        },
+        "shape": {
+          "enum": [
+            "mesh",
+            "convex_mesh",
+            "box",
+            "capsule"
+          ]
+        },
+        "prototype": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "size": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 3,
+          "maxItems": 3
+        }
+      }
+    },
+    "joint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "parent",
+        "inverse_bind"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "parent": {
+          "type": "integer",
+          "minimum": -2147483648,
+          "maximum": 2147483647
+        },
+        "inverse_bind": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 16,
+          "maxItems": 16
+        }
+      }
+    },
+    "rig": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "joints"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "joints": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/joint"
+          },
+          "minItems": 1
+        }
+      }
+    },
+    "skin": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "prototype",
+        "rig",
+        "joints",
+        "weights"
+      ],
+      "properties": {
+        "prototype": {
+          "$ref": "#/$defs/id"
+        },
+        "rig": {
+          "$ref": "#/$defs/id"
+        },
+        "joints": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 4294967295
+            },
+            "minItems": 4,
+            "maxItems": 4
+          },
+          "minItems": 0
+        },
+        "weights": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "minItems": 4,
+            "maxItems": 4
+          },
+          "minItems": 0
+        }
+      }
+    },
+    "animation_key": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "time_seconds",
+        "translation",
+        "rotation",
+        "scale"
+      ],
+      "properties": {
+        "time_seconds": {
+          "type": "number",
+          "minimum": 0
+        },
+        "translation": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 3,
+          "maxItems": 3
+        },
+        "rotation": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 4,
+          "maxItems": 4
+        },
+        "scale": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 3,
+          "maxItems": 3
+        }
+      }
+    },
+    "track": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "joint",
+        "keys"
+      ],
+      "properties": {
+        "joint": {
+          "$ref": "#/$defs/id"
+        },
+        "keys": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/animation_key"
+          },
+          "minItems": 1
+        }
+      }
+    },
+    "animation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "rig",
+        "duration_seconds",
+        "tracks"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "rig": {
+          "$ref": "#/$defs/id"
+        },
+        "duration_seconds": {
+          "type": "number",
+          "minimum": 0
+        },
+        "tracks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/track"
+          },
+          "minItems": 0
+        }
+      }
+    },
+    "boundary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "neighbor",
+        "policy",
+        "sample_spacing_metres",
+        "seam_resource"
+      ],
+      "properties": {
+        "neighbor": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": -2147483648,
+            "maximum": 2147483647
+          },
+          "minItems": 3,
+          "maxItems": 3
+        },
+        "policy": {
+          "$ref": "#/$defs/id"
+        },
+        "sample_spacing_metres": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "seam_resource": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "terrain": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "region",
+        "region_key",
+        "origin_metres",
+        "prototypes",
+        "boundaries"
+      ],
+      "properties": {
+        "region": {
+          "$ref": "#/$defs/id"
+        },
+        "region_key": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": -2147483648,
+            "maximum": 2147483647
+          },
+          "minItems": 3,
+          "maxItems": 3
+        },
+        "origin_metres": {
+          "type": "array",
+          "items": {
+            "type": "number"
+          },
+          "minItems": 3,
+          "maxItems": 3
+        },
+        "prototypes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/id"
+          },
+          "minItems": 0
+        },
+        "boundaries": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/boundary"
+          },
+          "minItems": 0
+        }
+      }
+    },
+    "recipe": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "document_type",
+        "canonical_profile",
+        "schema_version",
+        "required_capabilities",
+        "resources",
+        "materials",
+        "textures",
+        "extensions",
+        "metadata",
+        "source",
+        "parameters",
+        "seed",
+        "rng_algorithm",
+        "asset_dependencies",
+        "nodes",
+        "outputs",
+        "source_map"
+      ],
+      "properties": {
+        "document_type": {
+          "const": "recipe"
+        },
+        "canonical_profile": {
+          "const": "matter-exact-json-v1"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/version"
+        },
+        "required_capabilities": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/capability"
+          },
+          "minItems": 0
+        },
+        "resources": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/resource"
+          },
+          "minItems": 0
+        },
+        "materials": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/material"
+          },
+          "minItems": 0
+        },
+        "textures": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/texture"
+          },
+          "minItems": 0
+        },
+        "extensions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/extension"
+          },
+          "minItems": 0
+        },
+        "metadata": {},
+        "source": {
+          "$ref": "#/$defs/source"
+        },
+        "parameters": {
+          "type": "object"
+        },
+        "seed": {
+          "$ref": "#/$defs/u64"
+        },
+        "rng_algorithm": {
+          "const": "matter.splitmix64.v1"
+        },
+        "asset_dependencies": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/asset_dependency"
+          },
+          "minItems": 0
+        },
+        "nodes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/node"
+          },
+          "minItems": 0
+        },
+        "outputs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/id"
+          },
+          "minItems": 1
+        },
+        "source_map": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/location"
+          }
+        }
+      }
+    },
+    "asset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "document_type",
+        "canonical_profile",
+        "schema_version",
+        "required_capabilities",
+        "resources",
+        "materials",
+        "textures",
+        "extensions",
+        "metadata",
+        "id",
+        "provenance",
+        "bounds",
+        "meshes",
+        "assemblies",
+        "instances",
+        "attachments",
+        "lods",
+        "collisions",
+        "rigs",
+        "skins",
+        "animations",
+        "terrain"
+      ],
+      "properties": {
+        "document_type": {
+          "const": "asset"
+        },
+        "canonical_profile": {
+          "const": "matter-exact-json-v1"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/version"
+        },
+        "required_capabilities": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/capability"
+          },
+          "minItems": 0
+        },
+        "resources": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/resource"
+          },
+          "minItems": 0
+        },
+        "materials": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/material"
+          },
+          "minItems": 0
+        },
+        "textures": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/texture"
+          },
+          "minItems": 0
+        },
+        "extensions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/extension"
+          },
+          "minItems": 0
+        },
+        "metadata": {},
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "provenance": {
+          "$ref": "#/$defs/source"
+        },
+        "bounds": {
+          "$ref": "#/$defs/bounds"
+        },
+        "meshes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/mesh"
+          },
+          "minItems": 0
+        },
+        "assemblies": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/assembly"
+          },
+          "minItems": 0
+        },
+        "instances": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/instance"
+          },
+          "minItems": 0
+        },
+        "attachments": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/attachment"
+          },
+          "minItems": 0
+        },
+        "lods": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/lod"
+          },
+          "minItems": 0
+        },
+        "collisions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/collision"
+          },
+          "minItems": 0
+        },
+        "rigs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/rig"
+          },
+          "minItems": 0
+        },
+        "skins": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/skin"
+          },
+          "minItems": 0
+        },
+        "animations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/animation"
+          },
+          "minItems": 0
+        },
+        "terrain": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/terrain"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "asset_dependency": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "content",
+        "schema_version"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/id"
+        },
+        "content": {
+          "$ref": "#/$defs/digest"
+        },
+        "schema_version": {
+          "$ref": "#/$defs/version"
+        }
+      }
+    }
+  }
+}
