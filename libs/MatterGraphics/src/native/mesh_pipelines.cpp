@@ -9,10 +9,6 @@ bool fail_vk(const char* operation, VkResult result, std::string& error) {
     error = std::string(operation) + " failed: VkResult " + std::to_string(result);
     return false;
 }
-template<class Create, class Invoke>
-VkResult profile_pipeline_call(const char*, const char*, int, uint32_t, const Create*, Invoke invoke) {
-    return invoke();
-}
 }
 bool create_mesh_raster_pipelines(VkDevice device, VkPipelineLayout layout, bool wireframe_available,
     const RasterShaderLoader& create_shader_module, const RasterPipelineCreator& create_pipeline,
@@ -120,21 +116,21 @@ bool create_mesh_raster_pipelines(VkDevice device, VkPipelineLayout layout, bool
          static_cast<uint32_t>(offsetof(VkRasterVertex, warp_uv))},
         {7, 0, VK_FORMAT_R32G32_UINT,
          static_cast<uint32_t>(offsetof(VkRasterVertex, warp_tangent))}};
-    VkPipelineVertexInputStateCreateInfo vertex_input{
-        VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+    VkPipelineVertexInputStateCreateInfo vertex_input{};
+    vertex_input.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
     vertex_input.vertexBindingDescriptionCount = 1;
     vertex_input.pVertexBindingDescriptions = &vertex_binding;
     vertex_input.vertexAttributeDescriptionCount = 7;
     vertex_input.pVertexAttributeDescriptions = attributes;
-    VkPipelineInputAssemblyStateCreateInfo input_assembly{
-        VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
+    VkPipelineInputAssemblyStateCreateInfo input_assembly{};
+    input_assembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
     input_assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-    VkPipelineViewportStateCreateInfo viewport_state{
-        VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
+    VkPipelineViewportStateCreateInfo viewport_state{};
+    viewport_state.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
     viewport_state.viewportCount = 1;
     viewport_state.scissorCount = 1;
-    VkPipelineRasterizationStateCreateInfo rasterization{
-        VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
+    VkPipelineRasterizationStateCreateInfo rasterization{};
+    rasterization.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
     rasterization.polygonMode = VK_POLYGON_MODE_FILL;
     // Every mesh source (terrain surface-nets, marching-cubes scatter, skirt
     // strips) emits right-hand outward-normal geometry: counter-clockwise
@@ -152,19 +148,19 @@ bool create_mesh_raster_pipelines(VkDevice device, VkPipelineLayout layout, bool
     }
     rasterization.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
     rasterization.lineWidth = 1.0f;
-    VkPipelineMultisampleStateCreateInfo multisample{
-        VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
+    VkPipelineMultisampleStateCreateInfo multisample{};
+    multisample.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
     multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
     const VkDynamicState dynamic_values[] = {VK_DYNAMIC_STATE_VIEWPORT,
                                               VK_DYNAMIC_STATE_SCISSOR};
-    VkPipelineDynamicStateCreateInfo dynamic{
-        VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
+    VkPipelineDynamicStateCreateInfo dynamic{};
+    dynamic.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
     dynamic.dynamicStateCount = 2;
     dynamic.pDynamicStates = dynamic_values;
 
     // GBuffer pipeline: six surface channels, integer VT demand and depth.
-    VkPipelineDepthStencilStateCreateInfo depth_stencil{
-        VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+    VkPipelineDepthStencilStateCreateInfo depth_stencil{};
+    depth_stencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
     depth_stencil.depthTestEnable  = VK_TRUE;
     depth_stencil.depthWriteEnable = VK_TRUE;
     // Reversed-Z: nearer geometry has a larger NDC depth, so passing requires
@@ -177,21 +173,21 @@ bool create_mesh_raster_pipelines(VkDevice device, VkPipelineLayout layout, bool
                                VK_COLOR_COMPONENT_B_BIT |
                                VK_COLOR_COMPONENT_A_BIT;
     }
-    VkPipelineColorBlendStateCreateInfo color_blend{
-        VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+    VkPipelineColorBlendStateCreateInfo color_blend{};
+    color_blend.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
     color_blend.attachmentCount = 7;
     color_blend.pAttachments = blend_attachments;
     const VkFormat gbuffer_formats[] = {
         VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R16G16B16A16_SFLOAT,
         VK_FORMAT_R16G16B16A16_SFLOAT, VK_FORMAT_R16G16_SFLOAT,
         VK_FORMAT_R32G32_UINT, VK_FORMAT_R8_UNORM, VK_FORMAT_R32G32B32A32_UINT};
-    VkPipelineRenderingCreateInfo rendering{
-        VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
+    VkPipelineRenderingCreateInfo rendering{};
+    rendering.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
     rendering.colorAttachmentCount = 7;
     rendering.pColorAttachmentFormats = gbuffer_formats;
     rendering.depthAttachmentFormat = VK_FORMAT_D32_SFLOAT;
-    VkGraphicsPipelineCreateInfo raster_create{
-        VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+    VkGraphicsPipelineCreateInfo raster_create{};
+    raster_create.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
     raster_create.pNext = &rendering;
     raster_create.stageCount = 2;
     raster_create.pStages = raster_stages;
@@ -208,9 +204,7 @@ bool create_mesh_raster_pipelines(VkDevice device, VkPipelineLayout layout, bool
         vkGetDeviceProcAddr(device, "vkGetPipelineExecutableStatisticsKHR"))
         raster_create.flags |= VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR |
             VK_PIPELINE_CREATE_CAPTURE_INTERNAL_REPRESENTATIONS_BIT_KHR;
-    VkResult result = profile_pipeline_call("graphics", __func__, __LINE__, 1, &raster_create, [&] {
-        return create_pipeline(raster_create, &output.raster);
-    });
+    VkResult result = create_pipeline(raster_create, &output.raster);
     if (result != VK_SUCCESS) {
         vkDestroyShaderModule(device, skinned_raster_vertex, nullptr);
         vkDestroyShaderModule(device, raster_fragment, nullptr);
@@ -218,6 +212,24 @@ bool create_mesh_raster_pipelines(VkDevice device, VkPipelineLayout layout, bool
         return fail_vk("vkCreateGraphicsPipelines(raster)", result, error);
     }
     log_vk_pipeline_stats(device, output.raster, "gbuffer.frag");
+    {
+        // Identical except for the front face: a mirrored object_to_world
+        // turns the outward counter-clockwise winding clockwise on screen,
+        // so the same cull mode must treat clockwise as front for it.
+        VkPipelineRasterizationStateCreateInfo mirrored_rasterization =
+            rasterization;
+        mirrored_rasterization.frontFace = VK_FRONT_FACE_CLOCKWISE;
+        VkGraphicsPipelineCreateInfo mirrored_create = raster_create;
+        mirrored_create.pRasterizationState = &mirrored_rasterization;
+        result = create_pipeline(mirrored_create, &output.raster_mirrored);
+        if (result != VK_SUCCESS) {
+            vkDestroyShaderModule(device, skinned_raster_vertex, nullptr);
+            vkDestroyShaderModule(device, raster_fragment, nullptr);
+            vkDestroyShaderModule(device, raster_vertex, nullptr);
+            return fail_vk("vkCreateGraphicsPipelines(mirrored raster)",
+                           result, error);
+        }
+    }
 
     // ---- the occlusion ID pipeline (M4) ----------------------------------
     //
@@ -262,18 +274,18 @@ bool create_mesh_raster_pipelines(VkDevice device, VkPipelineLayout layout, bool
         VkPipelineColorBlendAttachmentState id_blend{};
         id_blend.colorWriteMask =
             VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT;
-        VkPipelineColorBlendStateCreateInfo id_color_blend{
-            VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+        VkPipelineColorBlendStateCreateInfo id_color_blend{};
+        id_color_blend.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
         id_color_blend.attachmentCount = 1;
         id_color_blend.pAttachments = &id_blend;
         const VkFormat id_format = VK_FORMAT_R32G32_UINT;
-        VkPipelineRenderingCreateInfo id_rendering{
-            VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
+        VkPipelineRenderingCreateInfo id_rendering{};
+        id_rendering.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
         id_rendering.colorAttachmentCount = 1;
         id_rendering.pColorAttachmentFormats = &id_format;
         id_rendering.depthAttachmentFormat = VK_FORMAT_D32_SFLOAT;
-        VkGraphicsPipelineCreateInfo id_create{
-            VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
+        VkGraphicsPipelineCreateInfo id_create{};
+        id_create.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
         id_create.pNext = &id_rendering;
         id_create.stageCount = 2;
         id_create.pStages = id_stages;
@@ -286,9 +298,7 @@ bool create_mesh_raster_pipelines(VkDevice device, VkPipelineLayout layout, bool
         id_create.pColorBlendState = &id_color_blend;
         id_create.pDynamicState = &dynamic;
         id_create.layout = layout;
-        const VkResult id_result = profile_pipeline_call("graphics", __func__, __LINE__, 1, &id_create, [&] {
-        return create_pipeline(id_create, &output.visibility);
-    });
+        const VkResult id_result = create_pipeline(id_create, &output.visibility);
         vkDestroyShaderModule(device, id_fragment, nullptr);
         vkDestroyShaderModule(device, id_vertex, nullptr);
         if (id_result != VK_SUCCESS) {
@@ -325,9 +335,7 @@ bool create_mesh_raster_pipelines(VkDevice device, VkPipelineLayout layout, bool
     vertex_input.pVertexBindingDescriptions = skin_vertex_bindings;
     vertex_input.vertexAttributeDescriptionCount = 6;
     vertex_input.pVertexAttributeDescriptions = skin_attributes;
-    result = profile_pipeline_call("graphics", __func__, __LINE__, 1, &raster_create, [&] {
-        return create_pipeline(raster_create, &output.skin);
-    });
+    result = create_pipeline(raster_create, &output.skin);
     if (result != VK_SUCCESS) {
         vkDestroyShaderModule(device, skinned_raster_vertex, nullptr);
         vkDestroyShaderModule(device, raster_fragment, nullptr);
@@ -356,9 +364,7 @@ bool create_mesh_raster_pipelines(VkDevice device, VkPipelineLayout layout, bool
     vertex_input.pVertexBindingDescriptions = &water_vertex_binding;
     vertex_input.vertexAttributeDescriptionCount = 1u;
     vertex_input.pVertexAttributeDescriptions = water_attributes;
-    result = profile_pipeline_call("graphics", __func__, __LINE__, 1u, &raster_create, [&] {
-        return create_pipeline(raster_create, &output.water);
-    });
+    result = create_pipeline(raster_create, &output.water);
     vkDestroyShaderModule(device, water_raster_vertex, nullptr);
     if (result != VK_SUCCESS) {
         vkDestroyShaderModule(device, skinned_raster_vertex, nullptr);
@@ -389,16 +395,14 @@ bool create_mesh_raster_pipelines(VkDevice device, VkPipelineLayout layout, bool
         wireframe_stages[0].module = raster_vertex;
         wireframe_create.pStages = wireframe_stages;
 
-        VkPipelineVertexInputStateCreateInfo wireframe_vertex_input{
-            VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+        VkPipelineVertexInputStateCreateInfo wireframe_vertex_input{};
+        wireframe_vertex_input.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
         wireframe_vertex_input.vertexBindingDescriptionCount = 1;
         wireframe_vertex_input.pVertexBindingDescriptions = &vertex_binding;
         wireframe_vertex_input.vertexAttributeDescriptionCount = 7;
         wireframe_vertex_input.pVertexAttributeDescriptions = attributes;
         wireframe_create.pVertexInputState = &wireframe_vertex_input;
-        result = profile_pipeline_call("graphics", __func__, __LINE__, 1, &wireframe_create, [&] {
-        return create_pipeline(wireframe_create, &output.wireframe);
-    });
+        result = create_pipeline(wireframe_create, &output.wireframe);
         if (result != VK_SUCCESS) {
             vkDestroyShaderModule(device, skinned_raster_vertex, nullptr);
             vkDestroyShaderModule(device, raster_fragment, nullptr);
@@ -412,9 +416,7 @@ bool create_mesh_raster_pipelines(VkDevice device, VkPipelineLayout layout, bool
         wireframe_vertex_input.pVertexBindingDescriptions = skin_vertex_bindings;
         wireframe_vertex_input.vertexAttributeDescriptionCount = 6;
         wireframe_vertex_input.pVertexAttributeDescriptions = skin_attributes;
-        result = profile_pipeline_call("graphics", __func__, __LINE__, 1, &wireframe_create, [&] {
-        return create_pipeline(wireframe_create, &output.wireframe_skin);
-    });
+        result = create_pipeline(wireframe_create, &output.wireframe_skin);
         if (result != VK_SUCCESS) {
             vkDestroyShaderModule(device, skinned_raster_vertex, nullptr);
             vkDestroyShaderModule(device, raster_fragment, nullptr);

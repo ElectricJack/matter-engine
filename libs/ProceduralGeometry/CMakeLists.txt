@@ -12,20 +12,6 @@ if(NOT TARGET matter_contracts)
     set(BUILD_TESTING "${_geometry_testing}")
 endif()
 get_filename_component(MATTER_GEOMETRY_ROOT "${CMAKE_CURRENT_LIST_DIR}/../.." ABSOLUTE)
-# Compile the geometry portion of the canonical TU. Its final VariationRecorder
-# function depends on the cache/world backend and MSVC resolves that reference
-# even with /Gy + /OPT:REF. No algorithm copy is checked in. Reconfigure whenever
-# the source changes; a moved seam fails explicitly instead of linking a cache.
-set(_emitter "${MATTER_GEOMETRY_ROOT}/MatterEngine3/src/triangle_emit.cpp")
-set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_emitter}")
-file(READ "${_emitter}" _emitter_source)
-string(FIND "${_emitter_source}" "\nuint64_t VariationRecorder::instance(" _cache_seam)
-if(_cache_seam LESS 0)
-    message(FATAL_ERROR "Canonical triangle emitter/cache seam changed; audit the source split")
-endif()
-string(SUBSTRING "${_emitter_source}" 0 ${_cache_seam} _geometry_source)
-file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/shared_triangle_emit.cpp"
-    "${_geometry_source}\n} // namespace tri_emit\n")
 set(_surface "${MATTER_GEOMETRY_ROOT}/libs/MatterSurfaceLib/src/surface.c")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_surface}")
 file(READ "${_surface}" _surface_source)
@@ -51,9 +37,9 @@ endforeach()
 file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/shared_surface_math.h" "${_surface_math}\n}\n")
 add_library(matter_geometry STATIC src/geometry.cpp src/profile.cpp src/session.cpp src/csg.cpp src/csg_mesh.cpp
     src/query.cpp src/modifiers.cpp
-    "${CMAKE_CURRENT_BINARY_DIR}/shared_triangle_emit.cpp"
-    "${MATTER_GEOMETRY_ROOT}/MatterEngine3/src/polygon_triangulate.cpp"
+    src/triangle_emit.cpp src/polygon_triangulate.cpp
     "${MATTER_GEOMETRY_ROOT}/libs/MatterSurfaceLib/src/fat_primitive.c")
+include(cmake/FieldKernel.cmake)
 # Simplify/smooth compile the canonical MatterSurfaceLib stages. OFF drops them
 # and stops advertising their capabilities; modifier requests then fail as
 # unsupported_capability. The optional isolated worker links its own backend.
@@ -79,7 +65,6 @@ target_compile_features(matter_geometry PUBLIC cxx_std_17)
 target_link_libraries(matter_geometry PUBLIC matter_contracts)
 target_include_directories(matter_geometry PUBLIC include PRIVATE
     "${CMAKE_CURRENT_BINARY_DIR}"
-    "${MATTER_GEOMETRY_ROOT}/MatterEngine3/src"
     "${MATTER_GEOMETRY_ROOT}/MatterEngine3/include"
     "${MATTER_GEOMETRY_ROOT}/libs/SpatialQueryLib/include"
     "${MATTER_GEOMETRY_ROOT}/libs/MatterSurfaceLib/include"
@@ -205,6 +190,8 @@ set(geometry_public_links [==[$<TARGET_PROPERTY:matter_geometry,INTERFACE_LINK_L
 set(geometry_sources [==[$<TARGET_PROPERTY:matter_geometry,SOURCES>]==])
 set(geometry_public_includes [==[$<TARGET_PROPERTY:matter_geometry,INTERFACE_INCLUDE_DIRECTORIES>]==])
 set(recipe_links [==[$<TARGET_PROPERTY:matter_geometry_recipe,LINK_LIBRARIES>]==])
+set(field_links [==[$<TARGET_PROPERTY:matter_geometry_field,LINK_LIBRARIES>]==])
+set(field_sources [==[$<TARGET_PROPERTY:matter_geometry_field,SOURCES>]==])
 set(geometry_archive [==[$<TARGET_FILE:matter_geometry>]==])
 set(symbol_tool [==[${CMAKE_NM}]==])
 set(native_linker [==[${CMAKE_LINKER}]==])
