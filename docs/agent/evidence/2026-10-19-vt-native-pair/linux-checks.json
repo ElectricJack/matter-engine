@@ -1,0 +1,10 @@
+{
+  "command": "aq test -n 0 docs/agent/evidence/2026-10-19-vt-native-pair/test_source_provenance.py -q",
+  "result": "3 passed in 1.80s",
+  "checks": [
+    "expanded historical renderer and VT source equality",
+    "compiled historical VT budget upper bound",
+    "existing VT residency suite"
+  ],
+  "scope": "Linux source and CPU checks; no native GPU verdict"
+}

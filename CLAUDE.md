@@ -231,6 +231,11 @@ syntax by default. Run them from the repo root with plain `node`:
 node projects/world_demo/tests/alpine_ecology_tests.mjs
 ```
 
+Suites that go through `projects/world_demo/tests/helpers/castle_dsl_harness.mjs`
+(`conifer_tests.mjs`, `castle_upgraded_scene_tests.mjs`) need
+`node --experimental-vm-modules <file>`; without it they die with
+"vm.SourceTextModule is not a constructor".
+
 On Node 20.10–22.6, add `--experimental-detect-module`; without it the import
 dies with "is a CommonJS module". Do **not** use
 `--experimental-default-type=module`: Node 24 rejects it (`bad option`, exit 9).

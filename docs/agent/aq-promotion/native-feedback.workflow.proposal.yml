@@ -1,0 +1,32 @@
+# Replace native-windows.yml with this owner-composed wrapper after installing
+# tests.yml and main-attestation.yml. AQ/PR and delivery full jobs belong there.
+name: Native Windows feedback and maintenance
+on:
+  push:
+    branches: [dev]
+  schedule:
+    - cron: '17 10 * * *'
+  workflow_dispatch:
+    inputs:
+      tier:
+        type: choice
+        default: full
+        options: [full, fast]
+      force_clean:
+        type: boolean
+        default: false
+permissions:
+  contents: read
+jobs:
+  advisory-ci:
+    if: github.event_name == 'push'
+    uses: ./.github/workflows/tests.yml
+    with:
+      tier: fast
+  maintenance-ci:
+    if: github.event_name != 'push'
+    uses: ./.github/workflows/tests.yml
+    with:
+      tier: ${{ inputs.tier || 'full' }}
+      force_clean: ${{ github.event_name == 'schedule' || inputs.force_clean == true }}
+      disable_compiler_cache: ${{ github.event_name == 'schedule' }}

@@ -1,0 +1,125 @@
+{
+  "schema": "matter.ci-conversion-manifest.v1",
+  "source_checks": [
+    {
+      "name": "compiler_format_negative_tests",
+      "command_suffix": "cmake/tests/compiler_format_negative_tests.ps1",
+      "required_labels": [
+        "compiler-policy"
+      ],
+      "semantics": "Compile the intentionally invalid printf call with GNU -Werror=format; require rejection for the format diagnostic, not an unrelated compiler failure."
+    },
+    {
+      "name": "compiler_return_address_gnu_tests",
+      "command_suffix": "cmake/tests/compiler_return_address_gnu_tests.ps1",
+      "required_labels": [
+        "compiler-policy"
+      ],
+      "semantics": "Compile and execute the GNU -O0 caller-identity probe; this mixed build/runtime qualifier remains mandatory until a peer-owned pure runtime registration exists."
+    },
+    {
+      "name": "physx_dependency_contract_tests",
+      "command_suffix": "tools/tests/physx_dependency_contract_tests.ps1",
+      "required_labels": [
+        "compiler-policy"
+      ],
+      "semantics": "Verify pinned PhysX dependencies, stale-source rejection and standalone consumer build contracts; preserve the existing positive and negative probes."
+    },
+    {
+      "name": "vt_link_inventory_tests",
+      "command_suffix": "cmake/tests/vt_link_inventory_test.ps1",
+      "required_labels": [
+        "compiler-policy",
+        "vulkan"
+      ],
+      "semantics": "Inspect Ninja generated link commands: exact compositor object set, required narrow libraries and forbidden broad engine dependencies. Does not launch Vulkan; historical CTest DEPENDS is ordering only."
+    },
+    {
+      "name": "viewer_graph_tests",
+      "command_suffix": "cmake/tests/viewer_graph_tests.ps1",
+      "required_labels": [
+        "compiler-policy"
+      ],
+      "semantics": "Configure synthetic viewer graphs and enforce their positive and negative target/dependency contracts."
+    },
+    {
+      "name": "python_contract_tests",
+      "command_suffix": "cmake/tests/python_contract_tests.ps1",
+      "required_labels": [
+        "compiler-policy"
+      ],
+      "semantics": "Configure shader commands with direct Python and a spaced launcher path; preserve executable selection, version and launcher-argument assertions."
+    },
+    {
+      "name": "shader_rebuild_tests",
+      "command_suffix": "cmake/tests/shader_rebuild_test.ps1",
+      "required_labels": [
+        "shader"
+      ],
+      "semantics": "Build and mutate a synthetic shader/include fixture to verify incremental depfiles and regeneration."
+    },
+    {
+      "name": "shader_input_list_tests",
+      "command_suffix": "MatterEngine3/tools/tests/test_embed_spirv.py",
+      "required_labels": [
+        "shader"
+      ],
+      "semantics": "Preserve embedding and shader-input-list validation, including malformed/missing inputs and source/build contract assertions."
+    },
+    {
+      "name": "windows_build_wrapper_contract",
+      "command_suffix": "cmake/tests/build_wrapper_contract_tests.ps1",
+      "required_labels": [
+        "compiler-policy",
+        "editor"
+      ],
+      "semantics": "Preserve build-wrapper preflight, configure/build argument forwarding and negative contract fixtures."
+    },
+    {
+      "name": "editor_registration_census",
+      "command_suffix": "cmake/tests/editor_registration_census.ps1",
+      "required_labels": [
+        "editor"
+      ],
+      "semantics": "Run the real editor registration census, compare the reviewed manifest, append an unregistered PE string decoy and require no false live registration. Mixed runtime/disk qualifier pending peer conversion."
+    },
+    {
+      "name": "shader_source_tests",
+      "command_suffix": "shader_source_tests.exe",
+      "required_labels": [
+        "cpu"
+      ],
+      "semantics": "Inspect the shader source closure and retain all existing positive and mutation-negative shader/CPU composition contracts; source-text input belongs in lint."
+    }
+  ],
+  "behavioral_policy_checks": [
+    {
+      "name": "matter_engine_headless_consumer_tests",
+      "semantics": "Construct LocalProvider and validate its linked public host-baker interface; keep the executable in PR/full runtime CTest."
+    },
+    {
+      "name": "matter_mesh_allocator_policy_tests",
+      "semantics": "Execute graphical MemAlloc/MemFree and headless allocator-hook dispatch assertions; keep both probes in PR/full runtime CTest."
+    }
+  ],
+  "custom_checks": [
+    {
+      "name": "windows_ci_contract_tests",
+      "target": "matter_ci_lint",
+      "command_suffix": "tools/lint/windows_ci_contract_lint.ps1",
+      "stage": "every-native-run",
+      "semantics": "Preserve tier/package selection, build ownership, cache fingerprint, incomplete baseline and failure propagation guards.",
+      "arguments": []
+    },
+    {
+      "name": "shader_external_build_tests",
+      "target": "matter_ci_promotion_lint",
+      "command_suffix": "cmake/tests/shader_rebuild_test.ps1",
+      "arguments": [
+        "-ExternalBuild"
+      ],
+      "stage": "promotion",
+      "semantics": "Preserve the complete cross-drive shader/include rebuild fixture on staging/main/nightly or explicit packaging."
+    }
+  ]
+}
