@@ -1,0 +1,359 @@
+Vulkan adapter: llvmpipe (LLVM 20.1.2, 256 bits) | driver: llvmpipe (Mesa 25.2.8-0ubuntu0.24.04.2 (LLVM 20.1.2), 0x06402008) | API 1.4.318
+llvm-trace t=282734.708558785 tid=3387413 phase=LLVMGetPointerToGlobal.enter name=size
+llvm-trace t=282734.708734360 tid=3387413 phase=LLVMGetPointerToGlobal.exit name=size
+llvm-trace t=282734.708870584 tid=3387413 phase=LLVMGetPointerToGlobal.enter name=size
+llvm-trace t=282734.708910700 tid=3387413 phase=LLVMGetPointerToGlobal.exit name=size
+llvm-trace t=282734.709747153 tid=3387413 phase=LLVMGetPointerToGlobal.enter name=sample
+llvm-trace t=282734.709794564 tid=3387413 phase=LLVMGetPointerToGlobal.exit name=sample
+llvm-trace t=282734.710322384 tid=3387413 phase=LLVMGetPointerToGlobal.enter name=fetch
+llvm-trace t=282734.710371364 tid=3387413 phase=LLVMGetPointerToGlobal.exit name=fetch
+llvm-trace t=282734.715337309 tid=3387413 phase=LLVMGetPointerToGlobal.enter name=fetch
+llvm-trace t=282734.715450134 tid=3387413 phase=LLVMGetPointerToGlobal.exit name=fetch
+[vk] present requested=auto effective=fifo(2) supported=[immediate(0),mailbox(1),fifo(2),fifo_relaxed(3)] images=4 extent=320x200
+[vk.frame-trace] t=0.000ms serial=1 slot=0 phase=begin.fence_wait.enter frame_fence=signaled present_fence=none
+[vk.frame-trace] t=0.040ms serial=1 slot=0 phase=begin.fence_wait.exit frame_fence=signaled present_fence=none
+[vk.frame-trace] t=0.181ms serial=1 slot=0 phase=end.enter frame_fence=signaled present_fence=unsignaled
+[vk.frame-trace] t=0.211ms serial=1 slot=0 phase=end.command_buffer_ended frame_fence=signaled present_fence=unsignaled
+[vk] present requested=auto effective=fifo(2) supported=[immediate(0),mailbox(1),fifo(2),fifo_relaxed(3)] images=4 extent=320x200
+[vk.frame-trace] t=1.792ms serial=2 slot=0 phase=begin.fence_wait.enter frame_fence=signaled present_fence=none
+[vk.frame-trace] t=1.802ms serial=2 slot=0 phase=begin.fence_wait.exit frame_fence=signaled present_fence=none
+[vk.frame-trace] t=1.850ms serial=2 slot=0 phase=end.enter frame_fence=signaled present_fence=unsignaled
+[vk.frame-trace] t=1.859ms serial=2 slot=0 phase=end.command_buffer_ended frame_fence=signaled present_fence=unsignaled
+[vk] present requested=auto effective=fifo(2) supported=[immediate(0),mailbox(1),fifo(2),fifo_relaxed(3)] images=4 extent=320x200
+[vk.frame-trace] t=3.309ms serial=3 slot=0 phase=begin.fence_wait.enter frame_fence=signaled present_fence=none
+[vk.frame-trace] t=3.315ms serial=3 slot=0 phase=begin.fence_wait.exit frame_fence=signaled present_fence=none
+[vk.frame-trace] t=3.340ms serial=3 slot=0 phase=end.enter frame_fence=signaled present_fence=unsignaled
+[vk.frame-trace] t=3.348ms serial=3 slot=0 phase=end.command_buffer_ended frame_fence=signaled present_fence=unsignaled
+[vk.frame-trace] t=3.353ms serial=3 slot=0 phase=end.submit.enter frame_fence=unsignaled present_fence=unsignaled
+[vk.frame-trace] t=3.452ms serial=3 slot=0 phase=end.submit.exit frame_fence=unsignaled present_fence=unsignaled
+[vk.frame-trace] t=3.611ms serial=3 slot=0 phase=end.gpu_observe.complete frame_fence=signaled present_fence=unsignaled
+[vk.frame-trace] t=3.623ms serial=3 slot=0 phase=end.present_common.enter frame_fence=signaled present_fence=unsignaled
+[vk.frame-trace] t=3.626ms serial=3 slot=0 phase=end.queue_present.enter frame_fence=signaled present_fence=unsignaled
+[vk.frame-trace] t=3.761ms serial=3 slot=0 phase=end.queue_present.exit frame_fence=signaled present_fence=signaled
+DLSS fallback: Streamline disabled for Vulkan test device
+Vulkan RT available=true (standalone rt entry)
+RT multi-LOD: attempt=1 phase=begin.enter monotonic_ms=282734724.858
+[vk.frame-trace] t=4.301ms serial=4 slot=1 phase=begin.fence_wait.enter frame_fence=signaled present_fence=none
+[vk.frame-trace] t=4.310ms serial=4 slot=1 phase=begin.fence_wait.exit frame_fence=signaled present_fence=none
+RT multi-LOD: attempt=1 phase=begin.exit/prepare.enter monotonic_ms=282734725.363
+llvm-trace t=282734.725845755 tid=3387413 phase=LLVMGetPointerToGlobal.enter name=sample
+llvm-trace t=282734.725919485 tid=3387413 phase=LLVMGetPointerToGlobal.exit name=sample
+[vk] impostor atlas: 128 slots x 2 layers of 128x128 RGBA8 (cell 16 px, filtered mips) = 21 MiB
+[pipeline-profile] begin kind=compute caller=create_pipeline:2368 count=1
+[pipeline-profile] stage=0 flag=0x20 module=00004d000000004d entry=main
+[pipeline-profile] end kind=compute caller=create_pipeline:2368 ms=2.088873 result=0
+[pipeline-profile] begin kind=compute caller=create_pipeline:2418 count=1
+[pipeline-profile] stage=0 flag=0x20 module=00004f000000004f entry=main
+[pipeline-profile] stage=0 specialization_bytes=4 fnv64=4d25767f9dce13f5
+[pipeline-profile] end kind=compute caller=create_pipeline:2418 ms=48.839048 result=0
+[pipeline-profile] begin kind=compute caller=create_pipeline:2418 count=1
+[pipeline-profile] stage=0 flag=0x20 module=00004f000000004f entry=main
+[pipeline-profile] stage=0 specialization_bytes=4 fnv64=ad2aca7747985764
+[pipeline-profile] end kind=compute caller=create_pipeline:2418 ms=47.563864 result=0
+[pipeline-profile] shader=raster.vert.spv module=0000520000000052 spv_fnv64=cbfac7417ae13057 bytes=12232
+[pipeline-profile] shader=gbuffer.frag.spv module=0000530000000053 spv_fnv64=80e850b7f32310c3 bytes=1580976
+[pipeline-profile] shader=raster_skin.vert.spv module=0000540000000054 spv_fnv64=98960d5674f9363b bytes=11244
+[pipeline-profile] begin kind=graphics caller=operator():2476 count=1
+[pipeline-profile] stage=0 flag=0x1 module=0000520000000052 entry=main
+[pipeline-profile] stage=1 flag=0x10 module=0000530000000053 entry=main
+[vk] Vulkan loader/general warning: Validation Performance Warning: [ WARNING-Shader-OutputNotConsumed ] Object 0: handle = 0x520000000052, type = VK_OBJECT_TYPE_SHADER_MODULE; Object 1: handle = 0x530000000053, type = VK_OBJECT_TYPE_SHADER_MODULE; | MessageID = 0xc81ad50e | vkCreateGraphicsPipelines(): pCreateInfos[0] (SPIR-V Interface) VK_SHADER_STAGE_VERTEX_BIT declared to output location 17 Component 0 but is not an Input declared by VK_SHADER_STAGE_FRAGMENT_BIT.
+llvm-trace t=282757.690584680 tid=3387413 phase=LLVMGetPointerToGlobal.enter name=sample
+llvm-trace t=282757.690678974 tid=3387413 phase=LLVMGetPointerToGlobal.exit name=sample
+llvm-trace t=282757.690804141 tid=3387413 phase=LLVMGetPointerToGlobal.enter name=sample
+llvm-trace t=282757.690851217 tid=3387413 phase=LLVMGetPointerToGlobal.exit name=sample
+[pipeline-profile] end kind=graphics caller=operator():2476 ms=22798.948538 result=0
+[pipeline-profile] begin kind=graphics caller=operator():2476 count=1
+[pipeline-profile] stage=0 flag=0x1 module=0000520000000052 entry=main
+[pipeline-profile] stage=1 flag=0x10 module=0000530000000053 entry=main
+[vk] Vulkan loader/general warning: Validation Performance Warning: [ WARNING-Shader-OutputNotConsumed ] Object 0: handle = 0x520000000052, type = VK_OBJECT_TYPE_SHADER_MODULE; Object 1: handle = 0x530000000053, type = VK_OBJECT_TYPE_SHADER_MODULE; | MessageID = 0xc81ad50e | vkCreateGraphicsPipelines(): pCreateInfos[0] (SPIR-V Interface) VK_SHADER_STAGE_VERTEX_BIT declared to output location 17 Component 0 but is not an Input declared by VK_SHADER_STAGE_FRAGMENT_BIT.
+[pipeline-profile] end kind=graphics caller=operator():2476 ms=22760.790173 result=0
+[pipeline-profile] shader=visibility_id.vert.spv module=0000570000000057 spv_fnv64=3a4e0235a5bd2b79 bytes=2040
+[pipeline-profile] shader=visibility_id.frag.spv module=0000580000000058 spv_fnv64=18d33bd3765480ba bytes=364
+[pipeline-profile] begin kind=graphics caller=operator():2476 count=1
+[pipeline-profile] stage=0 flag=0x1 module=0000570000000057 entry=main
+[pipeline-profile] stage=1 flag=0x10 module=0000580000000058 entry=main
+[vk] Vulkan loader/general warning: Validation Performance Warning: [ WARNING-Shader-OutputNotConsumed ] Object 0: handle = 0x570000000057, type = VK_OBJECT_TYPE_SHADER_MODULE; | MessageID = 0xc81ad50e | vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 1 not consumed by vertex shader.
+[vk] Vulkan loader/general warning: Validation Performance Warning: [ WARNING-Shader-OutputNotConsumed ] Object 0: handle = 0x570000000057, type = VK_OBJECT_TYPE_SHADER_MODULE; | MessageID = 0xc81ad50e | vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 2 not consumed by vertex shader.
+[vk] Vulkan loader/general warning: Validation Performance Warning: [ WARNING-Shader-OutputNotConsumed ] Object 0: handle = 0x570000000057, type = VK_OBJECT_TYPE_SHADER_MODULE; | MessageID = 0xc81ad50e | vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 3 not consumed by vertex shader.
+[vk] Vulkan loader/general warning: Validation Performance Warning: [ WARNING-Shader-OutputNotConsumed ] Object 0: handle = 0x570000000057, type = VK_OBJECT_TYPE_SHADER_MODULE; | MessageID = 0xc81ad50e | vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 4 not consumed by vertex shader.
+[vk] Vulkan loader/general warning: Validation Performance Warning: [ WARNING-Shader-OutputNotConsumed ] Object 0: handle = 0x570000000057, type = VK_OBJECT_TYPE_SHADER_MODULE; | MessageID = 0xc81ad50e | vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 6 not consumed by vertex shader.
+[vk] Vulkan loader/general warning: Validation Performance Warning: [ WARNING-Shader-OutputNotConsumed ] Object 0: handle = 0x570000000057, type = VK_OBJECT_TYPE_SHADER_MODULE; | MessageID = 0xc81ad50e | vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 7 not consumed by vertex shader.
+[pipeline-profile] end kind=graphics caller=operator():2476 ms=0.806371 result=0
+[pipeline-profile] begin kind=graphics caller=operator():2476 count=1
+[pipeline-profile] stage=0 flag=0x1 module=0000540000000054 entry=main
+[pipeline-profile] stage=1 flag=0x10 module=0000530000000053 entry=main
+[vk] Vulkan loader/general warning: Validation Performance Warning: [ WARNING-Shader-OutputNotConsumed ] Object 0: handle = 0x540000000054, type = VK_OBJECT_TYPE_SHADER_MODULE; Object 1: handle = 0x530000000053, type = VK_OBJECT_TYPE_SHADER_MODULE; | MessageID = 0xc81ad50e | vkCreateGraphicsPipelines(): pCreateInfos[0] (SPIR-V Interface) VK_SHADER_STAGE_VERTEX_BIT declared to output location 17 Component 0 but is not an Input declared by VK_SHADER_STAGE_FRAGMENT_BIT.
+[pipeline-profile] end kind=graphics caller=operator():2476 ms=25036.730954 result=0
+[pipeline-profile] shader=raster_water.vert.spv module=00005b000000005b spv_fnv64=b83c9b57a12d749e bytes=8028
+[pipeline-profile] begin kind=graphics caller=operator():2476 count=1
+[pipeline-profile] stage=0 flag=0x1 module=00005b000000005b entry=main
+[pipeline-profile] stage=1 flag=0x10 module=0000530000000053 entry=main
+[vk] Vulkan loader/general warning: Validation Performance Warning: [ WARNING-Shader-OutputNotConsumed ] Object 0: handle = 0x5b000000005b, type = VK_OBJECT_TYPE_SHADER_MODULE; Object 1: handle = 0x530000000053, type = VK_OBJECT_TYPE_SHADER_MODULE; | MessageID = 0xc81ad50e | vkCreateGraphicsPipelines(): pCreateInfos[0] (SPIR-V Interface) VK_SHADER_STAGE_VERTEX_BIT declared to output location 17 Component 0 but is not an Input declared by VK_SHADER_STAGE_FRAGMENT_BIT.
+[pipeline-profile] end kind=graphics caller=operator():2476 ms=24893.405529 result=0
+[pipeline-profile] begin kind=graphics caller=operator():2476 count=1
+[pipeline-profile] stage=0 flag=0x1 module=0000520000000052 entry=main
+[pipeline-profile] stage=1 flag=0x10 module=0000530000000053 entry=main
+[vk] Vulkan loader/general warning: Validation Performance Warning: [ WARNING-Shader-OutputNotConsumed ] Object 0: handle = 0x520000000052, type = VK_OBJECT_TYPE_SHADER_MODULE; Object 1: handle = 0x530000000053, type = VK_OBJECT_TYPE_SHADER_MODULE; | MessageID = 0xc81ad50e | vkCreateGraphicsPipelines(): pCreateInfos[0] (SPIR-V Interface) VK_SHADER_STAGE_VERTEX_BIT declared to output location 17 Component 0 but is not an Input declared by VK_SHADER_STAGE_FRAGMENT_BIT.
+[pipeline-profile] end kind=graphics caller=operator():2476 ms=21546.131271 result=0
+[pipeline-profile] begin kind=graphics caller=operator():2476 count=1
+[pipeline-profile] stage=0 flag=0x1 module=0000540000000054 entry=main
+[pipeline-profile] stage=1 flag=0x10 module=0000530000000053 entry=main
+[vk] Vulkan loader/general warning: Validation Performance Warning: [ WARNING-Shader-OutputNotConsumed ] Object 0: handle = 0x540000000054, type = VK_OBJECT_TYPE_SHADER_MODULE; Object 1: handle = 0x530000000053, type = VK_OBJECT_TYPE_SHADER_MODULE; | MessageID = 0xc81ad50e | vkCreateGraphicsPipelines(): pCreateInfos[0] (SPIR-V Interface) VK_SHADER_STAGE_VERTEX_BIT declared to output location 17 Component 0 but is not an Input declared by VK_SHADER_STAGE_FRAGMENT_BIT.
+[pipeline-profile] end kind=graphics caller=operator():2476 ms=19682.289916 result=0
+[pipeline-profile] shader=composite.vert.spv module=0000620000000062 spv_fnv64=3fa5ead47188214f bytes=916
+[pipeline-profile] shader=composite.frag.spv module=0000630000000063 spv_fnv64=5fecb2f9ffb5dabc bytes=76012
+[pipeline-profile] begin kind=graphics caller=create_raster_pipelines:2636 count=1
+[pipeline-profile] stage=0 flag=0x1 module=0000620000000062 entry=main
+[pipeline-profile] stage=1 flag=0x10 module=0000630000000063 entry=main
+[pipeline-profile] stage=1 specialization_bytes=4 fnv64=4d25767f9dce13f5
+llvm-trace t=282871.733309192 tid=3387413 phase=LLVMGetPointerToGlobal.enter name=sample
+llvm-trace t=282871.733456323 tid=3387413 phase=LLVMGetPointerToGlobal.exit name=sample
+llvm-trace t=282871.734059871 tid=3387413 phase=LLVMGetPointerToGlobal.enter name=sample
+llvm-trace t=282871.734147815 tid=3387413 phase=LLVMGetPointerToGlobal.exit name=sample
+[pipeline-profile] end kind=graphics caller=create_raster_pipelines:2636 ms=116.998269 result=0
+[pipeline-profile] shader=raster.vert.spv module=0000720000000072 spv_fnv64=cbfac7417ae13057 bytes=12232
+[pipeline-profile] shader=raster_water.vert.spv module=0000730000000073 spv_fnv64=b83c9b57a12d749e bytes=8028
+[pipeline-profile] shader=water_forward.frag.spv module=0000740000000074 spv_fnv64=b102ba572d559f18 bytes=107740
+[pipeline-profile] begin kind=graphics caller=create_water_forward_pipelines:178 count=1
+[pipeline-profile] stage=0 flag=0x1 module=0000720000000072 entry=main
+[pipeline-profile] stage=1 flag=0x10 module=0000740000000074 entry=main
+[vk] Vulkan loader/general warning: Validation Performance Warning: [ WARNING-Shader-OutputNotConsumed ] Object 0: handle = 0x720000000072, type = VK_OBJECT_TYPE_SHADER_MODULE; Object 1: handle = 0x740000000074, type = VK_OBJECT_TYPE_SHADER_MODULE; | MessageID = 0xc81ad50e | vkCreateGraphicsPipelines(): pCreateInfos[0] (SPIR-V Interface) VK_SHADER_STAGE_VERTEX_BIT declared to output location 11 Component 0 but is not an Input declared by VK_SHADER_STAGE_FRAGMENT_BIT.
+[pipeline-profile] end kind=graphics caller=create_water_forward_pipelines:178 ms=118.391410 result=0
+[pipeline-profile] begin kind=graphics caller=create_water_forward_pipelines:193 count=1
+[pipeline-profile] stage=0 flag=0x1 module=0000730000000073 entry=main
+[pipeline-profile] stage=1 flag=0x10 module=0000740000000074 entry=main
+[vk] Vulkan loader/general warning: Validation Performance Warning: [ WARNING-Shader-OutputNotConsumed ] Object 0: handle = 0x730000000073, type = VK_OBJECT_TYPE_SHADER_MODULE; Object 1: handle = 0x740000000074, type = VK_OBJECT_TYPE_SHADER_MODULE; | MessageID = 0xc81ad50e | vkCreateGraphicsPipelines(): pCreateInfos[0] (SPIR-V Interface) VK_SHADER_STAGE_VERTEX_BIT declared to output location 11 Component 0 but is not an Input declared by VK_SHADER_STAGE_FRAGMENT_BIT.
+[pipeline-profile] end kind=graphics caller=create_water_forward_pipelines:193 ms=113.823842 result=0
+[pipeline-profile] shader=composite.vert.spv module=0000790000000079 spv_fnv64=3fa5ead47188214f bytes=916
+[pipeline-profile] shader=display_transform.frag.spv module=00007a000000007a spv_fnv64=384bdbddd6dd21ec bytes=5188
+[pipeline-profile] begin kind=graphics caller=create_display_pipeline:2811 count=1
+[pipeline-profile] stage=0 flag=0x1 module=0000790000000079 entry=main
+[pipeline-profile] stage=1 flag=0x10 module=00007a000000007a entry=main
+[pipeline-profile] end kind=graphics caller=create_display_pipeline:2811 ms=2.732390 result=0
+[pipeline-profile] shader=selection_line.vert.spv module=00007d000000007d spv_fnv64=cd31e2d21002c573 bytes=956
+[pipeline-profile] shader=selection_line.frag.spv module=00007e000000007e spv_fnv64=98a2772f10953eef bytes=312
+[pipeline-profile] begin kind=graphics caller=create_overlay_line_pipeline:2929 count=1
+[pipeline-profile] stage=0 flag=0x1 module=00007d000000007d entry=main
+[pipeline-profile] stage=1 flag=0x10 module=00007e000000007e entry=main
+[pipeline-profile] end kind=graphics caller=create_overlay_line_pipeline:2929 ms=0.265900 result=0
+[pipeline-profile] shader=gi_temporal.comp.spv module=0000820000000082 spv_fnv64=75de2fb397c76caa bytes=33640
+[pipeline-profile] begin kind=compute caller=create_gi_temporal_pipeline:57 count=1
+[pipeline-profile] stage=0 flag=0x20 module=0000820000000082 entry=main
+llvm-trace t=282872.007897319 tid=3387413 phase=LLVMGetPointerToGlobal.enter name=image
+llvm-trace t=282872.008054901 tid=3387413 phase=LLVMGetPointerToGlobal.exit name=image
+[pipeline-profile] end kind=compute caller=create_gi_temporal_pipeline:57 ms=31.077917 result=0
+[pipeline-profile] shader=gi_atrous.comp.spv module=0000860000000086 spv_fnv64=560a4c5f6fe2b996 bytes=10956
+[pipeline-profile] begin kind=compute caller=create_gi_atrous_pipeline:117 count=1
+[pipeline-profile] stage=0 flag=0x20 module=0000860000000086 entry=main
+[pipeline-profile] end kind=compute caller=create_gi_atrous_pipeline:117 ms=2.976008 result=0
+[rt] independent GI shader specialization=1
+[pipeline-profile] shader=rt_shadow.rgen.spv module=00008a000000008a spv_fnv64=fb2b9ab68870aae5 bytes=27272
+[pipeline-profile] shader=rt_surface_test.rgen.spv module=00008b000000008b spv_fnv64=7f86b1136f9e45dd bytes=50588
+[pipeline-profile] shader=rt_lighting.rgen.spv module=00008c000000008c spv_fnv64=3e4165d7ed37420d bytes=1390620
+[pipeline-profile] shader=rt_visibility.rmiss.spv module=00008d000000008d spv_fnv64=846e24f9cd1ca853 bytes=164
+[pipeline-profile] shader=rt_radiance.rmiss.spv module=00008e000000008e spv_fnv64=301940d946fa7b40 bytes=908
+[pipeline-profile] shader=rt_visibility.rchit.spv module=00008f000000008f spv_fnv64=6593f085f2c20144 bytes=380
+[pipeline-profile] shader=rt_visibility.rahit.spv module=0000900000000090 spv_fnv64=babf76481d46d179 bytes=12044
+[pipeline-profile] shader=rt_surface.rchit.spv module=0000910000000091 spv_fnv64=0356a6abd65779b1 bytes=1189224
+[pipeline-profile] shader=rt_surface.rahit.spv module=0000920000000092 spv_fnv64=60e3a5c72d97b8ba bytes=9664
+[pipeline-profile] shader=rt_lighting.rgen.spv module=0000930000000093 spv_fnv64=3e4165d7ed37420d bytes=1390620
+[pipeline-profile] shader=rt_lighting.rgen.spv module=0000940000000094 spv_fnv64=3e4165d7ed37420d bytes=1390620
+[rt] local primary area samples=4 (0=adaptive); visibility diagnostic counters=1
+[rt] local-light selection code=0; packed budgets=0
+[rt] secondary local-light sampling=1 (0 exact, 1 importance reservoir)
+[rt] secondary surface detail mode=0 (0 reference, 1 adaptive, 2 normal-only)
+[pipeline-profile] begin kind=ray_tracing_shadow caller=operator():480 count=1
+[pipeline-profile] stage=0 flag=0x100 module=00008a000000008a entry=main
+[pipeline-profile] stage=1 flag=0x800 module=00008d000000008d entry=main
+[pipeline-profile] stage=2 flag=0x400 module=00008f000000008f entry=main
+[pipeline-profile] stage=3 flag=0x200 module=0000900000000090 entry=main
+[pipeline-profile] stage=3 specialization_bytes=4 fnv64=ad2aca7747985764
+llvm-trace t=282872.088962550 tid=3387413 phase=LLVMGetPointerToGlobal.enter name=image
+llvm-trace t=282872.089061698 tid=3387413 phase=LLVMGetPointerToGlobal.exit name=image
+[pipeline-profile] end kind=ray_tracing_shadow caller=operator():480 ms=24.588480 result=0
+[pipeline-profile] begin kind=ray_tracing_surface_test caller=operator():480 count=1
+[pipeline-profile] stage=0 flag=0x100 module=00008b000000008b entry=main
+[pipeline-profile] stage=1 flag=0x800 module=00008d000000008d entry=main
+[pipeline-profile] stage=2 flag=0x800 module=00008e000000008e entry=main
+[pipeline-profile] stage=3 flag=0x400 module=00008f000000008f entry=main
+[pipeline-profile] stage=4 flag=0x200 module=0000900000000090 entry=main
+[pipeline-profile] stage=4 specialization_bytes=4 fnv64=ad2aca7747985764
+[pipeline-profile] stage=5 flag=0x400 module=0000910000000091 entry=main
+[pipeline-profile] stage=5 specialization_bytes=4 fnv64=4d25767f9dce13f5
+[pipeline-profile] stage=6 flag=0x200 module=0000920000000092 entry=main
+llvm-trace t=282887.669855475 tid=3387413 phase=LLVMGetPointerToGlobal.enter name=sample
+llvm-trace t=282887.669982177 tid=3387413 phase=LLVMGetPointerToGlobal.exit name=sample
+llvm-trace t=282887.670156641 tid=3387413 phase=LLVMGetPointerToGlobal.enter name=sample
+llvm-trace t=282887.670207164 tid=3387413 phase=LLVMGetPointerToGlobal.exit name=sample
+[pipeline-profile] end kind=ray_tracing_surface_test caller=operator():480 ms=15580.937511 result=0
+[pipeline-profile] begin kind=ray_tracing_lighting caller=operator():480 count=1
+[pipeline-profile] stage=0 flag=0x100 module=00008c000000008c entry=main
+[pipeline-profile] stage=0 specialization_bytes=20 fnv64=e64e9a595eba0950
+[pipeline-profile] stage=1 flag=0x800 module=00008d000000008d entry=main
+[pipeline-profile] stage=2 flag=0x800 module=00008e000000008e entry=main
+[pipeline-profile] stage=3 flag=0x400 module=00008f000000008f entry=main
+[pipeline-profile] stage=4 flag=0x200 module=0000900000000090 entry=main
+[pipeline-profile] stage=4 specialization_bytes=4 fnv64=ad2aca7747985764
+[pipeline-profile] stage=5 flag=0x400 module=0000910000000091 entry=main
+[pipeline-profile] stage=5 specialization_bytes=4 fnv64=4d25767f9dce13f5
+[pipeline-profile] stage=6 flag=0x200 module=0000920000000092 entry=main
+[pipeline-profile] end kind=ray_tracing_lighting caller=operator():480 ms=33481.310459 result=0
+[pipeline-profile] begin kind=ray_tracing_diffuse caller=operator():480 count=1
+[pipeline-profile] stage=0 flag=0x100 module=0000930000000093 entry=main
+[pipeline-profile] stage=0 specialization_bytes=24 fnv64=825ee05c69fbc2e1
+[pipeline-profile] stage=1 flag=0x800 module=00008d000000008d entry=main
+[pipeline-profile] stage=2 flag=0x800 module=00008e000000008e entry=main
+[pipeline-profile] stage=3 flag=0x400 module=00008f000000008f entry=main
+[pipeline-profile] stage=4 flag=0x200 module=0000900000000090 entry=main
+[pipeline-profile] stage=4 specialization_bytes=4 fnv64=ad2aca7747985764
+[pipeline-profile] stage=5 flag=0x400 module=0000910000000091 entry=main
+[pipeline-profile] stage=5 specialization_bytes=4 fnv64=4d25767f9dce13f5
+[pipeline-profile] stage=6 flag=0x200 module=0000920000000092 entry=main
+[pipeline-profile] end kind=ray_tracing_diffuse caller=operator():480 ms=22676.092904 result=0
+[pipeline-profile] begin kind=ray_tracing_reflection caller=operator():480 count=1
+[pipeline-profile] stage=0 flag=0x100 module=0000940000000094 entry=main
+[pipeline-profile] stage=0 specialization_bytes=24 fnv64=22598c64c0317f72
+[pipeline-profile] stage=1 flag=0x800 module=00008d000000008d entry=main
+[pipeline-profile] stage=2 flag=0x800 module=00008e000000008e entry=main
+[pipeline-profile] stage=3 flag=0x400 module=00008f000000008f entry=main
+[pipeline-profile] stage=4 flag=0x200 module=0000900000000090 entry=main
+[pipeline-profile] stage=4 specialization_bytes=4 fnv64=ad2aca7747985764
+[pipeline-profile] stage=5 flag=0x400 module=0000910000000091 entry=main
+[pipeline-profile] stage=5 specialization_bytes=4 fnv64=4d25767f9dce13f5
+[pipeline-profile] stage=6 flag=0x200 module=0000920000000092 entry=main
+[pipeline-profile] end kind=ray_tracing_reflection caller=operator():480 ms=25367.352247 result=0
+llvm-trace t=282969.198449808 tid=3387413 phase=LLVMGetPointerToGlobal.enter name=image
+llvm-trace t=282969.198558587 tid=3387413 phase=LLVMGetPointerToGlobal.exit name=image
+llvm-trace t=282969.198846166 tid=3387413 phase=LLVMGetPointerToGlobal.enter name=image
+llvm-trace t=282969.198925795 tid=3387413 phase=LLVMGetPointerToGlobal.exit name=image
+llvm-trace t=282969.200970151 tid=3387413 phase=LLVMGetPointerToGlobal.enter name=image
+llvm-trace t=282969.201051823 tid=3387413 phase=LLVMGetPointerToGlobal.exit name=image
+llvm-trace t=282969.201288601 tid=3387413 phase=LLVMGetPointerToGlobal.enter name=image
+llvm-trace t=282969.201341293 tid=3387413 phase=LLVMGetPointerToGlobal.exit name=image
+llvm-trace t=282969.447666233 tid=3387413 phase=LLVMGetPointerToGlobal.enter name=image
+llvm-trace t=282969.447782021 tid=3387413 phase=LLVMGetPointerToGlobal.exit name=image
+llvm-trace t=282969.448538391 tid=3387413 phase=LLVMGetPointerToGlobal.enter name=image
+llvm-trace t=282969.448625492 tid=3387413 phase=LLVMGetPointerToGlobal.exit name=image
+llvm-trace t=282969.449339288 tid=3387413 phase=LLVMGetPointerToGlobal.enter name=image
+llvm-trace t=282969.449397580 tid=3387413 phase=LLVMGetPointerToGlobal.exit name=image
+llvm-trace t=282969.449546897 tid=3387413 phase=LLVMGetPointerToGlobal.enter name=image
+llvm-trace t=282969.449593942 tid=3387413 phase=LLVMGetPointerToGlobal.exit name=image
+[vk] static reserve: clusters 1 MiB, vertices 1 MiB, indices 1 MiB (host-visible)
+llvm-trace t=282969.475959338 tid=3387452 phase=LLVMGetPointerToGlobal.enter name=cs_variant
+llvm-trace t=282969.476103604 tid=3387452 phase=LLVMGetPointerToGlobal.exit name=cs_variant
+llvm-trace t=282969.478152018 tid=3387452 phase=LLVMGetPointerToGlobal.enter name=cs_variant
+llvm-trace t=282969.478239583 tid=3387452 phase=LLVMGetPointerToGlobal.exit name=cs_variant
+llvm-trace t=282969.478672668 tid=3387454 phase=LLVMGetPointerToGlobal.enter name=sample
+llvm-trace t=282969.478743510 tid=3387454 phase=LLVMGetPointerToGlobal.exit name=sample
+llvm-trace t=282969.501091809 tid=3387452 phase=LLVMGetPointerToGlobal.enter name=cs_variant
+llvm-trace t=282969.501269114 tid=3387452 phase=LLVMGetPointerToGlobal.exit name=cs_variant
+llvm-trace t=282969.501781733 tid=3387454 phase=LLVMGetPointerToGlobal.enter name=sample
+llvm-trace t=282969.501867804 tid=3387454 phase=LLVMGetPointerToGlobal.exit name=sample
+llvm-trace t=282969.568530783 tid=3387452 phase=LLVMGetPointerToGlobal.enter name=cs_variant
+llvm-trace t=282969.568659623 tid=3387452 phase=LLVMGetPointerToGlobal.exit name=cs_variant
+llvm-trace t=282969.569095393 tid=3387454 phase=LLVMGetPointerToGlobal.enter name=sample
+llvm-trace t=282969.569168572 tid=3387454 phase=LLVMGetPointerToGlobal.exit name=sample
+[vk] static upload frame bytes=1104 pending_parts=0 publish=0.03 ms
+RT multi-LOD: attempt=1 phase=prepare.exit/record.enter monotonic_ms=282969571.372
+llvm-trace t=282969.572371782 tid=3387413 phase=LLVMGetPointerToGlobal.enter name=image
+llvm-trace t=282969.572446228 tid=3387413 phase=LLVMGetPointerToGlobal.exit name=image
+llvm-trace t=282969.572813776 tid=3387413 phase=LLVMGetPointerToGlobal.enter name=image
+llvm-trace t=282969.572867159 tid=3387413 phase=LLVMGetPointerToGlobal.exit name=image
+llvm-trace t=282969.573006715 tid=3387413 phase=LLVMGetPointerToGlobal.enter name=image
+llvm-trace t=282969.573047461 tid=3387413 phase=LLVMGetPointerToGlobal.exit name=image
+llvm-trace t=282969.573486382 tid=3387413 phase=LLVMGetPointerToGlobal.enter name=image
+llvm-trace t=282969.573537787 tid=3387413 phase=LLVMGetPointerToGlobal.exit name=image
+llvm-trace t=282969.573699316 tid=3387413 phase=LLVMGetPointerToGlobal.enter name=image
+llvm-trace t=282969.573749397 tid=3387413 phase=LLVMGetPointerToGlobal.exit name=image
+llvm-trace t=282969.573947321 tid=3387413 phase=LLVMGetPointerToGlobal.enter name=image
+llvm-trace t=282969.573997677 tid=3387413 phase=LLVMGetPointerToGlobal.exit name=image
+llvm-trace t=282969.574121636 tid=3387413 phase=LLVMGetPointerToGlobal.enter name=image
+llvm-trace t=282969.574162619 tid=3387413 phase=LLVMGetPointerToGlobal.exit name=image
+llvm-trace t=282969.574828652 tid=3387413 phase=LLVMGetPointerToGlobal.enter name=image
+llvm-trace t=282969.574922138 tid=3387413 phase=LLVMGetPointerToGlobal.exit name=image
+llvm-trace t=282969.575143215 tid=3387413 phase=LLVMGetPointerToGlobal.enter name=image
+llvm-trace t=282969.575195075 tid=3387413 phase=LLVMGetPointerToGlobal.exit name=image
+llvm-trace t=282969.575487042 tid=3387413 phase=LLVMGetPointerToGlobal.enter name=image
+llvm-trace t=282969.575544851 tid=3387413 phase=LLVMGetPointerToGlobal.exit name=image
+llvm-trace t=282969.576049429 tid=3387413 phase=LLVMGetPointerToGlobal.enter name=image
+llvm-trace t=282969.576124187 tid=3387413 phase=LLVMGetPointerToGlobal.exit name=image
+RT multi-LOD: attempt=1 phase=record.exit/composite.enter monotonic_ms=282969705.097
+RT multi-LOD: attempt=1 phase=composite.exit monotonic_ms=282969705.210
+RT multi-LOD: attempt=1 phase=end_frame.enter monotonic_ms=282969705.216
+[vk.frame-trace] t=234984.190ms serial=4 slot=1 phase=end.enter frame_fence=signaled present_fence=unsignaled
+[vk.frame-trace] t=234984.214ms serial=4 slot=1 phase=end.command_buffer_ended frame_fence=signaled present_fence=unsignaled
+[vk.frame-trace] t=234984.227ms serial=4 slot=1 phase=end.submit.enter frame_fence=unsignaled present_fence=unsignaled
+[vk.frame-trace] t=234984.380ms serial=4 slot=1 phase=end.submit.exit frame_fence=unsignaled present_fence=unsignaled
+llvm-trace t=282969.706516675 tid=3387452 phase=LLVMGetPointerToGlobal.enter name=cs_variant
+llvm-trace t=282969.706692817 tid=3387452 phase=LLVMGetPointerToGlobal.exit name=cs_variant
+llvm-trace t=282969.747961452 tid=3387452 phase=LLVMGetPointerToGlobal.enter name=fs_variant_partial
+llvm-trace t=282969.753639805 tid=3387452 phase=LLVMGetPointerToGlobal.exit name=fs_variant_partial
+llvm-trace t=282969.754039246 tid=3387452 phase=LLVMRunPasses.enter name=setup_variant_0
+llvm-trace t=282969.754281869 tid=3387452 phase=LLVMRunPasses.exit name=setup_variant_0
+llvm-trace t=282969.754287809 tid=3387452 phase=LLVMRunPasses.enter name=setup_variant_0
+llvm-trace t=282969.755373599 tid=3387452 phase=LLVMRunPasses.exit name=setup_variant_0
+llvm-trace t=282969.755396166 tid=3387452 phase=LLVMGetPointerToGlobal.enter name=setup_variant_0
+llvm-trace t=282969.761074311 tid=3387452 phase=LLVMGetPointerToGlobal.exit name=setup_variant_0
+llvm-trace t=282969.762466028 tid=3387452 phase=LLVMGetPointerToGlobal.enter name=draw_llvm_vs_variant
+llvm-trace t=282969.762580861 tid=3387452 phase=LLVMGetPointerToGlobal.exit name=draw_llvm_vs_variant
+llvm-trace t=282969.764211863 tid=3387452 phase=LLVMGetPointerToGlobal.enter name=cs_variant
+llvm-trace t=282969.764435807 tid=3387452 phase=LLVMGetPointerToGlobal.exit name=cs_variant
+llvm-trace t=282969.764957391 tid=3387452 phase=LLVMGetPointerToGlobal.enter name=cs_variant
+llvm-trace t=282969.765014879 tid=3387452 phase=LLVMGetPointerToGlobal.exit name=cs_variant
+llvm-trace t=282969.765690123 tid=3387452 phase=LLVMGetPointerToGlobal.enter name=cs_variant
+llvm-trace t=282969.765870378 tid=3387452 phase=LLVMGetPointerToGlobal.exit name=cs_variant
+llvm-trace t=282969.766452071 tid=3387452 phase=LLVMGetPointerToGlobal.enter name=cs_variant
+llvm-trace t=282969.766517115 tid=3387452 phase=LLVMGetPointerToGlobal.exit name=cs_variant
+llvm-trace t=282969.767267042 tid=3387452 phase=LLVMGetPointerToGlobal.enter name=cs_variant
+llvm-trace t=282969.767424342 tid=3387452 phase=LLVMGetPointerToGlobal.exit name=cs_variant
+llvm-trace t=282969.768955635 tid=3387452 phase=LLVMGetPointerToGlobal.enter name=cs_variant
+llvm-trace t=282969.769146569 tid=3387452 phase=LLVMGetPointerToGlobal.exit name=cs_variant
+llvm-trace t=282969.769825096 tid=3387452 phase=LLVMGetPointerToGlobal.enter name=cs_variant
+llvm-trace t=282969.769904810 tid=3387452 phase=LLVMGetPointerToGlobal.exit name=cs_variant
+llvm-trace t=282969.770506260 tid=3387452 phase=LLVMGetPointerToGlobal.enter name=cs_variant
+llvm-trace t=282969.770579268 tid=3387452 phase=LLVMGetPointerToGlobal.exit name=cs_variant
+llvm-trace t=282969.775219464 tid=3387452 phase=LLVMGetPointerToGlobal.enter name=cs_variant
+llvm-trace t=282969.775525117 tid=3387452 phase=LLVMGetPointerToGlobal.exit name=cs_variant
+llvm-trace t=282969.775923955 tid=3387454 phase=LLVMGetPointerToGlobal.enter name=sample
+llvm-trace t=282969.775979163 tid=3387454 phase=LLVMGetPointerToGlobal.exit name=sample
+llvm-trace t=282969.777105509 tid=3387454 phase=LLVMGetPointerToGlobal.enter name=sample
+llvm-trace t=282969.777164784 tid=3387454 phase=LLVMGetPointerToGlobal.exit name=sample
+llvm-trace t=282969.777372818 tid=3387454 phase=LLVMGetPointerToGlobal.enter name=sample
+llvm-trace t=282969.777428376 tid=3387454 phase=LLVMGetPointerToGlobal.exit name=sample
+llvm-trace t=282969.817121225 tid=3387452 phase=LLVMGetPointerToGlobal.enter name=cs_variant
+llvm-trace t=282969.827931081 tid=3387452 phase=LLVMGetPointerToGlobal.exit name=cs_variant
+llvm-trace t=282969.828381834 tid=3387454 phase=LLVMGetPointerToGlobal.enter name=size
+llvm-trace t=282969.828447806 tid=3387454 phase=LLVMGetPointerToGlobal.exit name=size
+llvm-trace t=282969.828670519 tid=3387454 phase=LLVMGetPointerToGlobal.enter name=sample
+llvm-trace t=282969.828730636 tid=3387454 phase=LLVMGetPointerToGlobal.exit name=sample
+llvm-trace t=282969.832427994 tid=3387454 phase=LLVMGetPointerToGlobal.enter name=sample
+llvm-trace t=282969.832524960 tid=3387454 phase=LLVMGetPointerToGlobal.exit name=sample
+llvm-trace t=282971.829467432 tid=3387452 phase=LLVMRunPasses.enter name=cs9_variant0
+llvm-trace t=282971.853701094 tid=3387452 phase=LLVMRunPasses.exit name=cs9_variant0
+llvm-trace t=282971.853752453 tid=3387452 phase=LLVMRunPasses.enter name=cs9_variant0
+[vk.frame-trace] t=239984.507ms serial=4 slot=1 phase=end.gpu_observe.pending frame_fence=unsignaled present_fence=unsignaled
+[vk.frame-trace] t=244984.653ms serial=4 slot=1 phase=end.gpu_observe.pending frame_fence=unsignaled present_fence=unsignaled
+llvm-trace t=282981.098250108 tid=3387452 phase=LLVMRunPasses.exit name=cs9_variant0
+llvm-trace t=282981.136089379 tid=3387452 phase=LLVMGetPointerToGlobal.enter name=cs_variant
+[vk.frame-trace] t=249984.817ms serial=4 slot=1 phase=end.gpu_observe.pending frame_fence=unsignaled present_fence=unsignaled
+[vk.frame-trace] t=254984.953ms serial=4 slot=1 phase=end.gpu_observe.pending frame_fence=unsignaled present_fence=unsignaled
+[vk.frame-trace] t=259985.094ms serial=4 slot=1 phase=end.gpu_observe.pending frame_fence=unsignaled present_fence=unsignaled
+[vk.frame-trace] t=264985.239ms serial=4 slot=1 phase=end.gpu_observe.pending frame_fence=unsignaled present_fence=unsignaled
+[vk.frame-trace] t=269985.380ms serial=4 slot=1 phase=end.gpu_observe.pending frame_fence=unsignaled present_fence=unsignaled
+[vk.frame-trace] t=274985.511ms serial=4 slot=1 phase=end.gpu_observe.pending frame_fence=unsignaled present_fence=unsignaled
+[vk.frame-trace] t=279985.644ms serial=4 slot=1 phase=end.gpu_observe.pending frame_fence=unsignaled present_fence=unsignaled
+[vk.frame-trace] t=284985.821ms serial=4 slot=1 phase=end.gpu_observe.pending frame_fence=unsignaled present_fence=unsignaled
+[vk.frame-trace] t=289985.986ms serial=4 slot=1 phase=end.gpu_observe.pending frame_fence=unsignaled present_fence=unsignaled
+[vk.frame-trace] t=294986.181ms serial=4 slot=1 phase=end.gpu_observe.pending frame_fence=unsignaled present_fence=unsignaled
+[vk.frame-trace] t=299986.351ms serial=4 slot=1 phase=end.gpu_observe.pending frame_fence=unsignaled present_fence=unsignaled
+[vk.frame-trace] t=304986.535ms serial=4 slot=1 phase=end.gpu_observe.pending frame_fence=unsignaled present_fence=unsignaled
+[vk.frame-trace] t=309986.736ms serial=4 slot=1 phase=end.gpu_observe.pending frame_fence=unsignaled present_fence=unsignaled
+[vk.frame-trace] t=314986.902ms serial=4 slot=1 phase=end.gpu_observe.pending frame_fence=unsignaled present_fence=unsignaled
+[vk.frame-trace] t=319987.041ms serial=4 slot=1 phase=end.gpu_observe.pending frame_fence=unsignaled present_fence=unsignaled
+[vk.frame-trace] t=324987.258ms serial=4 slot=1 phase=end.gpu_observe.pending frame_fence=unsignaled present_fence=unsignaled
+[vk.frame-trace] t=329987.478ms serial=4 slot=1 phase=end.gpu_observe.pending frame_fence=unsignaled present_fence=unsignaled
+[vk.frame-trace] t=334987.633ms serial=4 slot=1 phase=end.gpu_observe.pending frame_fence=unsignaled present_fence=unsignaled
+[vk.frame-trace] t=339987.744ms serial=4 slot=1 phase=end.gpu_observe.pending frame_fence=unsignaled present_fence=unsignaled
+[vk.frame-trace] t=344987.855ms serial=4 slot=1 phase=end.gpu_observe.pending frame_fence=unsignaled present_fence=unsignaled
+[vk.frame-trace] t=349987.952ms serial=4 slot=1 phase=end.gpu_observe.pending frame_fence=unsignaled present_fence=unsignaled
+[vk.frame-trace] t=354988.051ms serial=4 slot=1 phase=end.gpu_observe.pending frame_fence=unsignaled present_fence=unsignaled

@@ -1,0 +1,46 @@
+noble-zenith-31 epoch 7 final evidence
+
+Decision msg-640959d0cc2942b89b2bd6b1503a27bf authorized ONE 600-second
+compiler-trace run with the same executable/device/extent/validation/caps,
+native-child-only preload and process-group containment. The earlier
+approval wait was cancelled after this explicit inbox delivery.
+
+Managed submission was rejected with jobs.preset_denied; no producer ran.
+The previously authorized foreground aq test runner admitted the attempt:
+aq test --aq-timeout 75 -n 0 docs/agent/evidence/2026-10-20-rt-counter-native/epoch7/test_compiler_trace.py -q -s
+The AQ timeout controls resource admission. The Python runner imposes the
+600-second native timeout and process-group termination.
+
+Outcome: native exit 134 (SIGABRT), wall 0.77 seconds, maximum RSS 108452 kB.
+pytest: 1 failed in 1.08 seconds. The driver reported llvmpipe, LLVM 20.1.2,
+Mesa 25.2.8-0ubuntu0.24.04.2. The preload intercepted LLVMGetPointerToGlobal
+but RTLD_NEXT could not find the original function from the locally loaded
+driver dependency. No frame 21, RT availability banner, retired sample or
+final validation count was reached. /usr/bin/time's trailing Exit status: 0
+does not override its signal-6 report or the child returncode 134.
+
+executed-trace_llvm.c is the exact interposer used by the failed attempt.
+test_compiler_trace.py is the exact runner; its historical /tmp paths are
+intentionally preserved. attempt-provenance.txt records source/binary SHA256
+and confirms zero remaining members of process group 947534. Full output is
+in native-attempt.log and native-pytest.log. No second native attempt ran.
+
+trace_llvm.c now falls back to a handle for ALREADY LOADED libLLVM.so.20.1
+(RTLD_NOLOAD), preserving compiler arguments/results and avoiding a new or
+replacement LLVM library. The repair was tested with a fake LLVM library
+and a locally/globally loaded fake driver, without Vulkan or actual compiler
+work. Tests check both wrapped calls' arguments, return values and enter/
+exit logs, and reproduce the old interposer's abort with local visibility:
+aq test --aq-timeout 75 -n 0 docs/agent/evidence/2026-10-20-rt-counter-native/epoch7/test_trace_llvm.py -q
+Result: 3 passed in 0.64 seconds (loader-pytest.log).
+
+The corrected interposer has NOT been tested against the native executable.
+Deferred LLVM compilation remains a source-supported hypothesis only.
+Therefore no production compile-path/workload change was justified by this
+attempt, and no counter code was changed during epoch 7.
+
+Acceptance remains UNMET for the Linux native counter matrix and real
+invalid-record shader fixture. Historical CPU lifecycle results from prior
+epochs do not substitute for these gates. Windows was explicitly waived;
+no Windows, performance, GPU or allocator acceptance is claimed. Close FAIL
+with work outcome blocked and preserve the published evidence for followup.
