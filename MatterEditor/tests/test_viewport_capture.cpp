@@ -15,7 +15,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
-#include <fstream>
+#include "../../MatterEngine3/tests/memory_fixture_io.h"
 #include <iterator>
 #include <string>
 #include <vector>
@@ -510,14 +510,15 @@ void test_numeric_bundle_and_receipt() {
         channels.planes[i].assign(2 *
             matter::EvaluationChannels::bytes_per_pixel[i],
             static_cast<uint8_t>(i + 1));
-    const std::string path = "viewport-capture-channel-test.bin";
-    std::remove(path.c_str());
+    const std::string path = "/virtual/viewport-capture-channel-test.bin";
+    matter::test::MemoryCacheByteStorage storage;
     std::string error;
-    CHECK(cap::write_channel_bundle(path, channels, error),
+    CHECK(cap::write_channel_bundle(path, channels, error, &storage),
           "six synchronized numeric planes write as one bundle");
-    std::ifstream input(path, std::ios::binary);
-    std::vector<char> bytes((std::istreambuf_iterator<char>(input)),
-                             std::istreambuf_iterator<char>());
+    const auto encoded = storage.open(path);
+    CHECK(bool(encoded), "successful publication exposes owned bytes");
+    if (!encoded) return;
+    const std::vector<char> bytes(encoded->begin(), encoded->end());
     CHECK(bytes.size() == 16 + 2 * (8 + 4 + 8 + 8 + 4 + 8),
           "bundle contains exactly its header and six planes");
     CHECK(std::string(bytes.data(), 8) == "MECAP001" &&
@@ -526,9 +527,11 @@ void test_numeric_bundle_and_receipt() {
           "bundle header records magic and little-endian dimensions");
     CHECK(bytes[16] == 1 && bytes[32] == 2 && bytes[40] == 3,
           "identity, depth and normal offsets align with the receipt contract");
-    CHECK(!cap::write_channel_bundle(path, channels, error),
+    CHECK(!cap::write_channel_bundle(path, channels, error, &storage),
           "an existing bundle cannot be silently replaced by a later frame");
-    std::remove(path.c_str());
+    storage.fail_publication(true);
+    CHECK(!cap::write_channel_bundle(path + "-failed", channels, error, &storage) &&
+          !storage.exists(path + "-failed"), "failed publication exposes no completed channel bundle");
 
     cap::Request pending = request("C:/tmp/shot.png", false,
                                    std::chrono::seconds(5));

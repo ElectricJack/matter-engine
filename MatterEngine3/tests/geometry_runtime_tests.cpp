@@ -25,6 +25,15 @@ static unsigned thread_count() {
 #endif
 
 int main(int argc, char** argv) {
+#ifdef MATTER_GEOMETRY_RUNTIME_CPU_TEST
+    // This executable registers the original inactive-runtime CPU guards.
+    // The unchanged native --gpu lifecycle remains a separate Vulkan test.
+    if (argc != 1) {
+        std::fprintf(stderr, "geometry CPU test accepts no arguments\n");
+        return 2;
+    }
+    (void)argv;
+#endif
     unsigned failures = 0;
     const auto check = [&](bool ok, const char* message) {
         if (!ok) { std::printf("FAIL: %s\n", message); ++failures; }
@@ -52,6 +61,7 @@ int main(int argc, char** argv) {
 #ifdef _WIN32
     check(thread_count() == before, "inactive runtime starts no paging worker lanes");
 #endif
+#ifndef MATTER_GEOMETRY_RUNTIME_CPU_TEST
     if (argc == 2 && std::strcmp(argv[1], "--gpu") == 0) {
 #ifdef MATTER_VK_TEST_LAYER_PATH
         SetDllDirectoryA(MATTER_VK_TEST_LAYER_PATH);
@@ -119,6 +129,7 @@ int main(int argc, char** argv) {
         if (window) glfwDestroyWindow(window);
         glfwTerminate();
     }
+#endif
     std::printf("geometry_runtime_tests: %s\n", failures ? "FAIL" : "ALL PASS");
     return failures ? 1 : 0;
 }
