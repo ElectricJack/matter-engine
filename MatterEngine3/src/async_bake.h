@@ -43,6 +43,8 @@
 #include <string>
 #include <vector>
 
+namespace matter { class SourceSnapshot; }
+
 namespace matter_async {
 
 // One-shot, monotonic cancel flag shared between whoever requested a piece of
@@ -120,6 +122,8 @@ struct Command {
     CommandKind kind = CommandKind::BakeAll;
     std::vector<std::string> changed_files;   // RebakeCone only
     std::shared_ptr<CancelToken> token;       // filled by CommandQueue::push
+    // Reload-only owned input; installed by the worker after quiescence.
+    std::shared_ptr<const matter::SourceSnapshot> fixture_sources;
 };
 
 // Single-consumer queue with supersession: BakeAll/Reload cancels the
