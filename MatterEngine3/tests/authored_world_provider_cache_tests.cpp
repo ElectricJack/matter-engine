@@ -1,4 +1,5 @@
 #include "authored_world_cache.h"
+#include "memory_fixture_io.h"
 #include "provider/local_provider.h"
 #include "resolve_cache.h"
 #include "script/world_definition_loader.h"
@@ -15,17 +16,16 @@ int main() {
             ++failures;
         }
     };
-    const auto dir =
-        fs::temp_directory_path() /
-        ("matter-authored-provider-" +
-         std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
-    fs::create_directories(dir / "objects");
-    fs::create_directories(dir / "worlds");
+    const fs::path dir = "/matter-authored-provider";
     const auto path = dir / "worlds" / "Cached.js";
-    auto write = [&](const std::string& s) {
-        std::ofstream f(path);
-        f << s;
-    };
+    matter::SourceSnapshot::Files files;
+    auto storage = std::make_shared<matter::test::MemoryCacheByteStorage>();
+    auto write = [&](const std::string& source) { files[path.generic_string()] = source; };
+    auto snapshot = [&]() { return std::make_shared<const matter::SourceSnapshot>(
+        files, std::vector<std::string>{(dir / "objects").generic_string(),
+                                       (dir / "worlds").generic_string()}); };
+    auto io = [&]() { auto owned = std::make_shared<matter::WorldFixtureIO>();
+        owned->sources = snapshot(); owned->cache = storage; return owned; };
     const std::string source =
         "const M=defineMaterial('cached-wall',{roughness:0.42}); class Cached extends "
         "World {static roots=[]; static props={speed:{default:2,min:0,max:7}};}";
@@ -33,21 +33,22 @@ int main() {
     matter::WorldLoadDesc desc;
     desc.world_path = path.string();
     desc.objects_dir = (dir / "objects").string();
+    desc.source_snapshot = snapshot();
     matter::WorldDefinition world;
     matter::WorldLoadError loadError;
     check(matter::load_world_definition(desc, world, loadError), "cold authored load");
     std::string blob;
     check(authored_world_cache::capture(world, blob), "capture loaded world");
     const auto key =
-        resolve_cache::compute_key(path.string(), "", desc.objects_dir, "", "");
+        resolve_cache::compute_key(path.string(), "", desc.objects_dir, "", "", snapshot().get());
     // Exercise the direct provider restore seam with a source that cannot execute.
     // The real engine's key gate rejects this changed source (checked below).
     write("throw new Error('world JS must not run in direct snapshot restore'); class "
           "Cached extends World {}");
     check(key !=
-              resolve_cache::compute_key(path.string(), "", desc.objects_dir, "", ""),
+              resolve_cache::compute_key(path.string(), "", desc.objects_dir, "", "", snapshot().get()),
           "source edit invalidates outer cache key");
-    auto cfg = viewer::LocalProviderConfig::for_project(dir.string(), "Cached", "");
+    auto cfg = viewer::LocalProviderConfig::for_project(dir.string(), "Cached", "", io());
     cfg.cache_root = (dir / "cache").string();
     viewer::LocalProvider provider(cfg);
     std::string error;
@@ -72,14 +73,15 @@ int main() {
           "corrupt snapshot falls back to throwing JS");
     check(MaterialRegistryDynamicCount() == 0, "fallback clears prior registry");
     write(source);
-    check(provider.restore_from_cache(graph, plan, roots, error, corrupt),
+    viewer::LocalProvider valid_provider(viewer::LocalProviderConfig::for_project(
+        dir.string(), "Cached", "", io()));
+    check(valid_provider.restore_from_cache(graph, plan, roots, error, corrupt),
           "corrupt snapshot falls back to valid JS");
-    check(provider.world_prop_specs().size() == 1 &&
-              provider.world_materials().size() == 1,
+    check(valid_provider.world_prop_specs().size() == 1 &&
+              valid_provider.world_materials().size() == 1,
           "fallback restores declarations");
     MaterialRegistryResetDynamic();
-    std::error_code ignored;
-    fs::remove_all(dir, ignored);
+
     std::printf("authored_world_provider_cache_tests: %s (%d failures)\n",
                 failures ? "FAIL" : "PASS", failures);
     return failures ? 1 : 0;

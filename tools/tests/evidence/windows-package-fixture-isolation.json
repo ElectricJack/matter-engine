@@ -1,0 +1,269 @@
+{
+  "task": "sharp-nexus-43",
+  "base_sha": "ee290a384823e182bee7ccac74f627ab64aaef5d",
+  "historical_source_sha": "cb67171295439262aef581ba0490dcbf6a6064d1",
+  "historical_timeout_seconds": 1500.4,
+  "historical_evidence": "libs/MatterGraphics/tests/evidence/standalone-sample/full-windows-ci.log:2765-2793",
+  "diagnosis": {
+    "observed": "Retained log stops after final rejection. Subsequent valid-DLSS and complete-content fixtures have no progress markers.",
+    "reproduced": "The actual valid positive-fixture call recursively reads the live projects/world_demo tree, including unbounded/concurrently generated .cache content, before deleting the copied cache. The new isolation regression rejects that read on the unchanged base.",
+    "limit": "The historical log has no phase timings, child PID or stack dump; it cannot prove which remaining operation consumed the timeout. This is a reproduced fixture-isolation repair, not proof of the exact historical blocked child."
+  },
+  "fixture_isolation": {
+    "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File tools/tests/windows_package_fixture_tests.ps1",
+    "environment": "Windows PowerShell 5.1 via WSL interop; test script on admitted Linux checkout; entirely in-memory fixture commands, no MSVC/editor/package launch",
+    "before": {
+      "fixture_source_sha": "ee290a384823e182bee7ccac74f627ab64aaef5d",
+      "exit_code": 1,
+      "seconds": 1.074,
+      "diagnostic": "fixture accessed live content: C:\\unreadable-live-checkout\\projects\\world_demo (recurse=True)",
+      "script_identical_to_historical_source": true,
+      "script_sha256": "9a8f195b373b0199fb9a4ca03f34685dd5b092972baf5e0bc0d71a9ec96f0670"
+    },
+    "after": {
+      "exit_code": 0,
+      "seconds": 1.003,
+      "valid_creation_seconds": 0.062,
+      "valid_physx_creation_seconds": 0.011,
+      "stdout": "package fixture: valid creation started\npackage fixture: valid created in 0.062s\npackage fixture: valid-physx creation started\npackage fixture: valid-physx created in 0.011s\nWindows package fixture isolation: PASS (positive fixtures use only in-memory content and fixture binaries)\n"
+    },
+    "timing_limit": "Before/after are isolation-test wall times, not complete packaging acceptance or comparable to the historical 1500.40s timeout."
+  },
+  "staging_tests": {
+    "command": "aq test tools/tests/test_windows_package_stage.py -n 0 -q",
+    "exit_code": 0,
+    "passed": 14,
+    "windows_only_skipped": 7,
+    "subtests_passed": 40,
+    "pytest_seconds": 0.3,
+    "initial_command": "aq test tools/tests/test_windows_package_stage.py -q",
+    "initial_result": "xdist/execnet failed serializing a PosixPath subtest parameter; reran with lower parallelism (-n 0), preserving all tests and markers."
+  },
+  "linux_validation": {
+    "source_sha": "ee290a384823e182bee7ccac74f627ab64aaef5d",
+    "source_dirty": true,
+    "parallelism": 2,
+    "scope": "portable foundations and same mandatory qualifiers as tools/ci-linux.py; separate output paths to preserve preexisting artifacts/",
+    "checks": [
+      {
+        "name": "MemoryLib",
+        "passed": true,
+        "steps": [
+          {
+            "command": [
+              "make",
+              "-C",
+              "libs/MemoryLib",
+              "-j1",
+              "test"
+            ],
+            "exit_code": 0,
+            "passed": true,
+            "seconds": 0.953114806994563
+          }
+        ]
+      },
+      {
+        "name": "MeshChartingLib",
+        "passed": true,
+        "steps": [
+          {
+            "command": [
+              "make",
+              "-C",
+              "libs/MeshChartingLib/tests",
+              "-j1",
+              "build/mesh_charting_tests"
+            ],
+            "exit_code": 0,
+            "passed": true,
+            "seconds": 0.011529637005878612
+          },
+          {
+            "command": [
+              "./libs/MeshChartingLib/tests/build/mesh_charting_tests"
+            ],
+            "exit_code": 0,
+            "passed": true,
+            "seconds": 0.004505693010287359
+          }
+        ]
+      },
+      {
+        "name": "AssetStoreLib",
+        "passed": true,
+        "steps": [
+          {
+            "command": [
+              "make",
+              "-C",
+              "libs/AssetStoreLib",
+              "-j1"
+            ],
+            "exit_code": 0,
+            "passed": true,
+            "seconds": 0.014871269988361746
+          },
+          {
+            "command": [
+              "make",
+              "-C",
+              "libs/AssetStoreLib/tests",
+              "-j1",
+              "build/asset_store_tests"
+            ],
+            "exit_code": 0,
+            "passed": true,
+            "seconds": 0.011426426994148642
+          },
+          {
+            "command": [
+              "./libs/AssetStoreLib/tests/build/asset_store_tests"
+            ],
+            "exit_code": 0,
+            "passed": true,
+            "seconds": 1.9186513430031482
+          }
+        ]
+      },
+      {
+        "name": "compiler_format_negative_tests",
+        "passed": true,
+        "steps": [
+          {
+            "command": [
+              "g++",
+              "-std=c++17",
+              "-Werror=format",
+              "-IMatterEngine3/include",
+              "-c",
+              "MatterEngine3/tests/compiler_format_negative.cpp",
+              "-o",
+              "/tmp/sharp-nexus-43-linux/format-negative.o"
+            ],
+            "exit_code": 1,
+            "passed": true,
+            "seconds": 0.035712931014131755
+          }
+        ]
+      },
+      {
+        "name": "compiler_return_address_gnu_tests",
+        "passed": true,
+        "steps": [
+          {
+            "command": [
+              "g++",
+              "-std=c++17",
+              "-O0",
+              "-IMatterEngine3/include",
+              "MatterEngine3/tests/compiler_return_address_gnu_tests.cpp",
+              "-o",
+              "/tmp/sharp-nexus-43-linux/return-address"
+            ],
+            "exit_code": 0,
+            "passed": true,
+            "seconds": 0.17943423701217398
+          },
+          {
+            "command": [
+              "/tmp/sharp-nexus-43-linux/return-address"
+            ],
+            "exit_code": 0,
+            "passed": true,
+            "seconds": 0.002577010018285364
+          }
+        ]
+      },
+      {
+        "name": "ci_test_report_tests",
+        "passed": true,
+        "steps": [
+          {
+            "command": [
+              "python3",
+              "tools/tests/test_ci_test_report.py"
+            ],
+            "exit_code": 0,
+            "passed": true,
+            "seconds": 0.07324444799451157
+          }
+        ]
+      },
+      {
+        "name": "ci_source_lint_tests",
+        "passed": true,
+        "steps": [
+          {
+            "command": [
+              "python3",
+              "tools/tests/test_ci_source_lint.py"
+            ],
+            "exit_code": 0,
+            "passed": true,
+            "seconds": 0.1110989089938812
+          }
+        ]
+      },
+      {
+        "name": "glslc_depfile_tests",
+        "passed": true,
+        "steps": [
+          {
+            "command": [
+              "python3",
+              "tools/tests/test_glslc_depfile.py"
+            ],
+            "exit_code": 0,
+            "passed": true,
+            "seconds": 0.09182681300444528
+          }
+        ]
+      },
+      {
+        "name": "shader_input_list_tests",
+        "passed": true,
+        "steps": [
+          {
+            "command": [
+              "python3",
+              "MatterEngine3/tools/tests/test_embed_spirv.py"
+            ],
+            "exit_code": 0,
+            "passed": true,
+            "seconds": 0.5088085110182874
+          }
+        ]
+      }
+    ],
+    "seconds": 1.9669493730179965,
+    "passed": true
+  },
+  "coverage": {
+    "preserved": "All 33 existing native checker cases and real PE compilation/import closure/clean-PATH launch remain. Real matter_dist creation and package checker, staging safety/content tests, CMake registrations and CI workflows are unchanged.",
+    "changed": "Two positive checker fixtures now use the same deterministic nested project/shared-lib content as negative fixtures, with the existing explicit PhysX network/license/runtime files. No live project/cache copy remains. Fixture creation, checker and PE compilation emit start/end timings.",
+    "qualification_limit": "Full native 33-case suite and real distribution creation/validation were not run. Current supervisor directive waives Windows CI; admitted checkout is Linux-resident, while CLAUDE.md requires a mounted Windows checkout for native builds. Canonical wrapper preflight succeeded (pinned toolchain found), so no executed UNC rejection is claimed. No full-CI or package-acceptance pass claimed."
+  },
+  "changed_source_sha256": {
+    "tools/tests/windows_package_tests.ps1": "1ec146f4c24949de5c6f9c2e66143cab53edb892bb728d38f6c5405fe9b225bb",
+    "tools/tests/windows_package_fixture_tests.ps1": "5763d9e8545f319185715edb3473de8170c94929bcec147c9954999bc19fe550"
+  },
+  "native_preflight": {
+    "command": "./tools/build-windows-from-wsl.sh RelWithDebInfo preflight",
+    "exit_code": 0,
+    "toolchain": {
+      "VisualStudioRoot": "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community",
+      "VisualStudioProductId": "Microsoft.VisualStudio.Product.Community",
+      "VsDevCmd": "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\Common7\\Tools\\VsDevCmd.bat",
+      "MsvcToolsVersion": "14.44.35207",
+      "WindowsSdkVersion": "10.0.26100.0",
+      "CMake": "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\Common7\\IDE\\CommonExtensions\\Microsoft\\CMake\\CMake\\bin\\cmake.exe",
+      "Ninja": "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\Common7\\IDE\\CommonExtensions\\Microsoft\\CMake\\Ninja\\ninja.exe",
+      "Python": "C:\\Users\\webde\\AppData\\Local\\Programs\\Python\\Launcher\\py.exe",
+      "PythonVersion": "Python 3.13.14",
+      "VulkanSdk": "C:\\VulkanSDK\\1.4.357.0",
+      "Glslc": "C:\\VulkanSDK\\1.4.357.0\\Bin\\glslc.exe"
+    },
+    "limit": "Toolchain discovery only; no configure/build, checker fixture suite or package acceptance ran."
+  }
+}

@@ -1,10 +1,8 @@
 // Included by vulkan_tests.cpp to reuse its validation-enabled native device.
+#include "../examples/image_capture.h"
 #include <algorithm>
 #include <cmath>
-#include <filesystem>
-#include <fstream>
 #include <functional>
-#include <iomanip>
 namespace {
 constexpr double pi = 3.14159265358979323846;
 using D3 = std::array<double, 3>;
@@ -99,13 +97,6 @@ double display_reference(double value, const mg::CompositionInputs &in, size_t i
   int rank=ranks[((i/in.albedo.width)&7)*8+((i%in.albedo.width)&7)];
   return std::clamp(code+(rank-31.5)/31.5*(0.5/255),0.0,1.0);
 }
-void ppm(const std::string &name, uint32_t w,uint32_t h,const std::vector<mg::Rgba> &pixels) {
-  std::filesystem::create_directories("composition-evidence");
-  std::ofstream f("composition-evidence/"+name+".ppm",std::ios::binary);
-  f<<"P6\n"<<w<<' '<<h<<"\n255\n";
-  for(const auto &p:pixels)for(int c=0;c<3;++c)f.put(char(std::lround(std::clamp(p[c],0.f,1.f)*255)));
-  check(bool(f),"COMP write matched image evidence");
-}
 void matched(mg::VulkanComposition &backend,const std::string &name,const mg::CompositionInputs &in,
              const std::function<D3(size_t)> &reference) {
   mg::CompositionOutput out; valid(backend.render(in,out),name.c_str());
@@ -126,7 +117,6 @@ void matched(mg::VulkanComposition &backend,const std::string &name,const mg::Co
     }
     check(out.linear_hdr[i][3]==1&&out.display_srgb[i][3]==1,"COMP alpha");
   }
-  ppm(name+"-actual",out.width,out.height,out.display_srgb); ppm(name+"-reference",out.width,out.height,expected);
   std::cout<<"MATCH "<<name<<" pixels="<<out.linear_hdr.size()<<" hdr_max="<<max_hdr<<" display_max="<<max_display<<'\n';
 }
 void exercise_composition(const std::shared_ptr<NativeDevice> &native) {
