@@ -1,0 +1,14 @@
+{
+    "source_root":  "D:\\azl65\\b",
+    "command":  "powershell.exe -NoProfile -ExecutionPolicy Bypass -File D:\\azl65\\b\\tools\\build-windows.ps1 -Config RelWithDebInfo -Target vulkan_smoke_tests",
+    "working_directory":  "D:\\azl65\\b",
+    "console":  "CreateNoWindow",
+    "started_at":  "2026-10-19T21:51:59.9618179Z",
+    "timeout_seconds":  1800,
+    "build_parallel_level":  "6",
+    "status":  "completed",
+    "exit_code":  0,
+    "process_id":  18640,
+    "elapsed_seconds":  413.8412879,
+    "finished_at":  "2026-10-19T21:58:53.8095706Z"
+}

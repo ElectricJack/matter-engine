@@ -1,0 +1,2 @@
+PASS 172 corpus checks: contract codec/errors, actual legacy params/RNG, affine math, cooperative jobs.
+Geometry producers, terrain mesh generation, renderer and performance require separate adapters/captures.
