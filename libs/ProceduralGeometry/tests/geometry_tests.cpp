@@ -1,7 +1,9 @@
 #include <matter/geometry/geometry.h>
+#include <algorithm>
 #include <cmath>
 #include <iostream>
 #include <stdexcept>
+#include <map>
 namespace d=matter::contracts;
 namespace s=matter::services;
 namespace g=matter::geometry;
@@ -75,6 +77,74 @@ void primitives() {
         }
     }
     std::cout<<"GEOM-BOX GEOM-SPHERE GEOM-ROUND passed\n";
+}
+// Triangle soup needs positional welding before checking directed edges. The
+// seam's sin(2*pi) roundoff scales with ring radius; use a relative tolerance
+// so a just-above-threshold tip ring keeps its distinct vertices.
+void closed_cone(const d::MeshPrototype &mesh,double expected_volume) {
+    std::vector<mm::Vec3> welded;
+    std::map<std::pair<size_t,size_t>,std::pair<int,int>> edges;
+    auto vertex=[&](mm::Vec3 p) {
+        const double radius=std::hypot(double(p.x),double(p.y));
+        for(size_t i=0;i<welded.size();++i) {
+            const auto q=welded[i];
+            const double tolerance=1e-6*std::max(radius,std::hypot(double(q.x),double(q.y)))+1e-14;
+            if(mm::length(mm::sub(p,q))<=tolerance) return i;
+        }
+        welded.push_back(p); return welded.size()-1;
+    };
+    double volume=0;
+    for(size_t i=0;i<mesh.indices.size();i+=3) {
+        const auto a=mesh.positions[mesh.indices[i]],b=mesh.positions[mesh.indices[i+1]],c=mesh.positions[mesh.indices[i+2]];
+        const auto face=mm::cross(mm::sub(b,a),mm::sub(c,a));
+        const auto centroid=mm::scale_vec(mm::add(mm::add(a,b),c),1.0f/3.0f);
+        check(mm::dot(face,mm::sub(centroid,{0,0,1}))>0,"cone face points away from interior");
+        volume+=(double(a.x)*(double(b.y)*c.z-double(b.z)*c.y)
+                +double(a.y)*(double(b.z)*c.x-double(b.x)*c.z)
+                +double(a.z)*(double(b.x)*c.y-double(b.y)*c.x))/6;
+        const size_t corners[]={vertex(a),vertex(b),vertex(c)};
+        check(corners[0]!=corners[1]&&corners[1]!=corners[2]&&corners[2]!=corners[0],"cone has no collapsed triangle edges");
+        for(int j=0;j<3;++j) {
+            const auto from=corners[j],to=corners[(j+1)%3];
+            auto &edge=edges[{std::min(from,to),std::max(from,to)}];
+            ++edge.first; edge.second+=from<to?1:-1;
+        }
+    }
+    check(volume>0,"cone signed volume is positive");
+    check(std::abs(volume-expected_volume)<=1e-6*expected_volume,"cone signed volume matches polygonal frustum");
+    for(const auto &entry:edges) {
+        check(entry.second.first==2,"closed cone edge has exactly two faces");
+        check(entry.second.second==0,"closed cone edge directions oppose");
+    }
+}
+void cone_winding() {
+    constexpr int segments=16;
+    constexpr double pi=3.14159265358979323846;
+    const float above=std::nextafter(1e-6f,1.0f);
+    // Include both sides of the inclusive collapse threshold at each end.
+    const std::pair<float,float> radii[]={
+        {0.7f,0},{0.7f,0.5e-6f},{0.7f,1e-6f},{0.7f,above},
+        {0,0.7f},{0.5e-6f,0.7f},{1e-6f,0.7f},{above,0.7f},
+        {0.7f,0.4f},{0.4f,0.7f},{0.5f,0.5f}
+    };
+    for(const auto &radii_pair:radii) {
+        const auto r0=radii_pair.first,r1=radii_pair.second;
+        auto r=recipe(); auto n=box(); n.id={"cone"};
+        n.operation=r0==r1?"primitive.cylinder":"primitive.cone";
+        r.required_capabilities.push_back({"matter.operation."+n.operation,1});
+        n.parameters=d::Value::Object{{"a",d::Value::Array{0,0,0}},{"b",d::Value::Array{0,0,2}},
+            {"radius0",r0},{"radius1",r1},{"segments",segments}};
+        r.nodes={n}; r.outputs={n.id}; auto result=evaluate(r); ok(result);
+        const auto &mesh=result.value()->document.meshes[0];
+        const bool apexA=r0<=1e-6f,apexB=r1<=1e-6f;
+        check(mesh.indices.size()/3==size_t(segments*((apexA||apexB)?2:4)),"cone collapse preserves triangle count");
+        check(mesh.submeshes[0].material.value=="clay","cone winding preserves material");
+        const double a=apexA?0:r0,b=apexB?0:r1;
+        // Area of a regular N-gon times h/3 times the squared-radius sum.
+        const double expected=segments*std::sin(2*pi/segments)*(a*a+a*b+b*b)/3;
+        closed_cone(mesh,expected);
+    }
+    std::cout<<"GEOM-CONE-WINDING apexA/apexB threshold, frustum and cylinder passed\n";
 }
 void profiles() {
     g::Session session(recipe().source); check(session.material(recipe().materials[0]).ok(),"material cursor");
@@ -173,6 +243,6 @@ void malformed() {
     std::cout<<"GEOM-MALFORMED GEOM-EXHAUSTION GEOM-CANCEL GEOM-CAPABILITIES passed\n";
 }
 int main() {
-    try { primitives(); profiles(); cursors(); triangles(); placements(); malformed(); std::cout<<checks<<" assertions passed\n"; return 0; }
+    try { primitives(); cone_winding(); profiles(); cursors(); triangles(); placements(); malformed(); std::cout<<checks<<" assertions passed\n"; return 0; }
     catch(const std::exception &e) { std::cerr<<"FAILED: "<<e.what()<<'\n'; return 1; }
 }
