@@ -23,6 +23,7 @@ $expectedObjects = @(
     'terrain_field.cpp.obj',
     'vk_context.cpp.obj',
     'vk_resources.cpp.obj',
+    'vk_device_internal.cpp.obj',
     'streamline_bridge.cpp.obj'
 )
 $objectMatches = [regex]::Matches($linkLine, '[^\s"]+\.obj')

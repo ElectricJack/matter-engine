@@ -40,9 +40,8 @@ RasterMeshData build_raster_mesh_data(const Tri* tris, const TriEx* triex, int t
 // Unweld an indexed mesh back to soup (3 corners per triangle, indices empty).
 // Legacy shim for the GL path; new code should consume indices directly.
 // No production caller remains: MatterEngine3/tests/viewer_logic_tests.cpp is
-// the only user, for soup-layout assertions. It also does NOT carry the warp
-// channels (`warp_uvs` / `warp_frames`) across, so a terrain-sector rung
-// round-tripped through it silently loses its warp data.
+// the only user, for soup-layout assertions. Optional channels, including
+// `warp_uvs` and `warp_frames`, are carried across when present.
 RasterMeshData expand_indexed(const RasterMeshData& indexed);
 
 } // namespace viewer
