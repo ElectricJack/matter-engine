@@ -1,0 +1,27 @@
+bindings/geometry-c/tests/consumer.c: In function ‘main’:
+bindings/geometry-c/tests/consumer.c:41:5: warning: missing initializer for field ‘instance’ of ‘matter_geometry_api’ [-Wmissing-field-initializers]
+   41 |     matter_geometry_api api={HEADER(matter_geometry_api)},other={HEADER(matter_geometry_api)},stale;
+      |     ^~~~~~~~~~~~~~~~~~~
+In file included from bindings/geometry-c/include/matter/geometry_c.h:3,
+                 from bindings/geometry-c/tests/consumer.c:1:
+libs/MatterContracts/include/matter/contracts/abi.h:65:9: note: ‘instance’ declared here
+   65 |   void *instance;
+      |         ^~~~~~~~
+bindings/geometry-c/tests/consumer.c:41:5: warning: missing initializer for field ‘instance’ of ‘matter_geometry_api’ [-Wmissing-field-initializers]
+   41 |     matter_geometry_api api={HEADER(matter_geometry_api)},other={HEADER(matter_geometry_api)},stale;
+      |     ^~~~~~~~~~~~~~~~~~~
+libs/MatterContracts/include/matter/contracts/abi.h:65:9: note: ‘instance’ declared here
+   65 |   void *instance;
+      |         ^~~~~~~~
+bindings/geometry-c/tests/consumer.c:42:5: warning: missing initializer for field ‘max_results’ of ‘matter_geometry_config’ [-Wmissing-field-initializers]
+   42 |     matter_geometry_config config={HEADER(matter_geometry_config)};
+      |     ^~~~~~~~~~~~~~~~~~~~~~
+bindings/geometry-c/include/matter/geometry_c.h:16:14: note: ‘max_results’ declared here
+   16 |     uint32_t max_results;
+      |              ^~~~~~~~~~~
+bindings/geometry-c/tests/consumer.c:107:5: warning: missing initializer for field ‘instance’ of ‘matter_geometry_api’ [-Wmissing-field-initializers]
+  107 |     { matter_geometry_api limited={HEADER(matter_geometry_api)};
+      |     ^
+libs/MatterContracts/include/matter/contracts/abi.h:65:9: note: ‘instance’ declared here
+   65 |   void *instance;
+      |         ^~~~~~~~

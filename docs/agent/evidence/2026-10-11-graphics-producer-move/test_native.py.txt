@@ -1,0 +1,24 @@
+from pathlib import Path
+import os
+import subprocess
+import pytest
+
+ROOT = Path('/mnt/d/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-2')
+LOGS = Path('/tmp/bright-torrent-validation')
+PS = '/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe'
+
+def win(path):
+    return subprocess.check_output(['wslpath', '-w', str(path)], text=True).strip()
+
+@pytest.mark.parametrize('mode', ['raster', 'raster-fault', 'rt-disabled', 'animation-skin', 'vt', 'vt-surfaces', 'vt-rt'])
+def test_native_smoke(mode):
+    exe = ROOT / 'MatterEditor/build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe'
+    command = ("$env:MATTER_VK_SMOKE_MODE='" + mode + "'; "
+               "$env:VK_LAYER_PATH='C:\\VulkanSDK\\1.4.357.0\\Bin'; "
+               "Set-Location -LiteralPath '" + win(ROOT / 'MatterEditor') + "'; "
+               "& '" + win(exe) + "'; exit $LASTEXITCODE")
+    result = subprocess.run([PS, '-NoProfile', '-Command', command], text=True,
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=240)
+    (LOGS / (mode + '.log')).write_text(result.stdout)
+    assert result.returncode == 0, result.stdout[-12000:]
+    assert 'ALL PASS' in result.stdout and 'validation errors: 0' in result.stdout, result.stdout[-12000:]

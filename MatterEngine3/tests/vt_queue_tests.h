@@ -15,6 +15,7 @@
 #include <future>
 #include <map>
 #include <memory>
+#include <stdexcept>
 #include <thread>
 #include <vector>
 
@@ -33,6 +34,7 @@ struct Budgets {
         current.mesh_budget_mb = 4;
         current.fills_per_frame = 8;
         current.tail_fills_per_frame = 16;
+        current.fill_budget_ms = 0.0f; // legacy page-count scenarios below
         current.queue_cap = 256;
         current.enrich_per_frame = 0;
     }
@@ -318,6 +320,168 @@ inline void run_page_probe(matter::VulkanDevice& vulkan) {
     CHECK(frames.next(residency, 6), "VT page probe: remaining uncached tail frame");
     CHECK(producer->written(first + 3, 1) + producer->written(first + 4, 1) == 2,
           "remaining uncached tail retains demand for next frame");
+
+    // A forced re-queue that queue_page declines (the page is outside its
+    // owner's indirection range) must be dropped, not looked up with
+    // std::map::at, which threw std::out_of_range out of record_frame. No
+    // shipped path narrows a live owner's range today, so the seam stands in.
+    producer->page_probe = {};
+    {
+        // Durable dirty path: queue_dirty_pages re-feeds the dirty tail.
+        context.variant_hash = 0x9010u;
+        const uint32_t owner = residency.register_variant(0x9010u, /*rung=*/0, atlas, context);
+        CHECK(owner != vt::kVtNoSlot, "queue probe: dirty-path owner registers");
+        CHECK(frames.next(residency, 7) && producer->written(0x9010u, 1) == 1,
+              "queue probe: dirty-path owner tail filled");
+        residency.narrow_indirection_for_test(owner, /*mip_count=*/1);
+        residency.invalidate_owners({owner}, vt::VtInvalidationReason::SourceInputs);
+        bool survived = true;
+        try { survived = frames.next(residency, 8); } catch (const std::exception&) { survived = false; }
+        CHECK(survived, "queue probe: dirty page outside the owner's range is dropped without throwing");
+        CHECK(residency.stats().dirty_pages == 0 && residency.queued_requests_consistent_for_test(),
+              "queue probe: the unqueueable dirty page is retired, not retried forever");
+        residency.release_variant(0x9010u);
+    }
+    {
+        // Stale-fill retry: the owner is invalidated while its tail fill is
+        // being recorded, so record_frame re-queues the tail it just dropped.
+        context.variant_hash = 0x9011u;
+        const uint32_t owner = residency.register_variant(0x9011u, /*rung=*/0, atlas, context);
+        CHECK(owner != vt::kVtNoSlot, "queue probe: stale-retry owner registers");
+        bool armed = true;
+        producer->on_request = [&](const vt::VtFillRequest& request) {
+            if (!armed || request.variant_hash != 0x9011u || request.mip != 1) return;
+            armed = false;
+            residency.narrow_indirection_for_test(owner, /*mip_count=*/1);
+            residency.invalidate_owners({owner}, vt::VtInvalidationReason::SourceInputs);
+        };
+        bool survived = true;
+        try { survived = frames.next(residency, 9); } catch (const std::exception&) { survived = false; }
+        producer->on_request = {};
+        CHECK(!armed, "queue probe: stale-retry tail fill was recorded");
+        CHECK(survived, "queue probe: stale tail retry outside the owner's range is dropped without throwing");
+        bool drained = true;
+        try { drained = frames.next(residency, 10); } catch (const std::exception&) { drained = false; }
+        CHECK(drained && residency.stats().dirty_pages == 0 && residency.queued_requests_consistent_for_test(),
+              "queue probe: the stale tail's durable dirty entry is retired on the next frame");
+        residency.release_variant(0x9011u);
+    }
+    // The shared time target limits tails as well as detail pages, using the
+    // retired GPU sample to lower admission after a costly frame. Disabling
+    // it restores the separate page-count limits for callers without timers.
+    auto& limits = matter::vt_residency_budgets();
+    limits.tail_fills_per_frame = 16;
+    limits.fill_budget_ms = 32.0f;
+    for (uint64_t hash = 0x9020u; hash < 0x9025u; ++hash) {
+        context.variant_hash = hash;
+        CHECK(residency.register_variant(hash, 0, atlas, context) != vt::kVtNoSlot,
+              "VT fill time: tail owner admitted");
+    }
+    CHECK(frames.next(residency, 11) && residency.recorded_fill_count() == 2,
+          "VT fill time: initial 32 ms target records at most two tails");
+    residency.observe_gpu_fill_ms(100.0f, 2);
+    CHECK(frames.next(residency, 12) && residency.recorded_fill_count() == 1,
+          "VT fill time: a slow retired sample lowers the next frame to one tail");
+    limits.fill_budget_ms = 0.0f;
+    CHECK(frames.next(residency, 13) && residency.recorded_fill_count() == 2,
+          "VT fill time: disabling the target drains remaining tails");
+}
+
+// A registration whose pinned tail must recycle a live unpinned page retires
+// the evicted page's per-slot side tables exactly as record_frame's eviction
+// does. Before, the tail path only released the material pixels: the new
+// owner's slot kept the old page's geometry lifetime (and input snapshot,
+// occlusion factor and material mapping) until its own tail happened to fill.
+inline void run_tail_recycling(matter::VulkanDevice& vulkan) {
+    const uint32_t errors_before = vulkan.validation_error_count();
+    Budgets budgets;
+    matter::vt_residency_budgets().pool_pages = vt::kVtPagesPerLayer; // one layer: few free slots
+    matter::vt_residency_budgets().evict_protect_frames = 1;
+    Frames frames(vulkan);
+    vt::VtResidency residency;
+    std::string error;
+    CHECK(frames.valid() && residency.init(vulkan, error), "VT tail recycle: native resources initialized");
+    if (!frames.valid() || !residency.available()) return;
+    auto writer = vt::make_vt_stub_filler(vulkan, 64, error);
+    CHECK(writer != nullptr, "VT tail recycle: shipped writer initialized");
+    if (!writer) return;
+    auto observed = std::make_unique<PublicationWriter>(vulkan, std::move(writer));
+    auto* producer = observed.get();
+    residency.set_filler(std::move(observed));
+    chart_atlas::ChartAtlasRung atlas;
+    atlas.atlas_w = atlas.atlas_h = 128;
+    atlas.charts.resize(1);
+    atlas.charts[0].rect_w = atlas.charts[0].rect_h = 128;
+    atlas.charts[0].tri_count = 1; atlas.charts[0].texels_per_meter = 1;
+    atlas.tri_order = {0};
+    const float positions[] = {0,0,0, 1,0,0, 0,1,0};
+    const uint32_t indices[] = {0,1,2};
+    vt::VtPartContext context;
+    context.positions = positions; context.vertex_count = 3;
+    context.indices = indices; context.triangle_count = 1;
+    vt::VtVariantLayout layout;
+    CHECK(vt::vt_build_layout(atlas.atlas_w, atlas.atlas_h, layout) && layout.mip_count == 2,
+          "VT tail recycle: fixture has one detail page above its tail");
+
+    // The victim's tail fills first; its one detail page then fills under a
+    // geometry lifetime only that page's slot holds.
+    context.variant_hash = 0xA000u;
+    const uint32_t victim = residency.register_variant(context.variant_hash, 0, atlas, context);
+    CHECK(victim != vt::kVtNoSlot && frames.next(residency, 1), "VT tail recycle: victim tail filled");
+    if (victim == vt::kVtNoSlot) return;
+    std::weak_ptr<const void> detail_geometry;
+    {
+        auto lifetime = std::make_shared<int>(1);
+        detail_geometry = lifetime;
+        producer->geometry.lifetime = std::move(lifetime);
+    }
+    const vt::VtFeedbackRequest detail{victim - 1u, 0, 0, 0};
+    residency.inject_feedback_for_test(&detail, 1);
+    CHECK(frames.next(residency, 2), "VT tail recycle: victim detail filled");
+    producer->geometry.lifetime.reset();
+    const uint32_t detail_slot = residency.resident_page_slot_for_test(victim, {0, 0, 0});
+    CHECK(detail_slot != UINT32_MAX && !detail_geometry.expired() && residency.stats().material_pages == 2,
+          "VT tail recycle: victim detail is resident and its slot holds the page geometry");
+    if (detail_slot == UINT32_MAX) return;
+    // Age the detail page out of the eviction hysteresis window.
+    CHECK(frames.next(residency, 3), "VT tail recycle: idle frame");
+
+    // Pin every free slot with new owners whose tails stay unfilled, until a
+    // registration has to recycle the victim's detail page -- the pool's only
+    // live unpinned page -- for its tail.
+    residency.pause_page_fills_for_test(true);
+    uint32_t recycler = vt::kVtNoSlot;
+    for (uint64_t hash = 0xB000u; hash < 0xB000u + vt::kVtPagesPerLayer; ++hash) {
+        const uint64_t evictions = residency.stats().evictions_total;
+        context.variant_hash = hash;
+        const uint32_t owner = residency.register_variant(hash, 0, atlas, context);
+        if (owner == vt::kVtNoSlot) break;
+        if (residency.stats().evictions_total != evictions) { recycler = owner; break; }
+    }
+    CHECK(recycler != vt::kVtNoSlot, "VT tail recycle: a registration evicts the live detail page for its tail");
+    if (recycler == vt::kVtNoSlot) return;
+    CHECK(residency.resident_page_slot_for_test(recycler, {1, 0, 0}) == detail_slot &&
+              residency.resident_page_slot_for_test(victim, {0, 0, 0}) == UINT32_MAX,
+          "VT tail recycle: the new tail owns the former detail slot and the victim no longer maps it");
+    CHECK(residency.stats().material_pages == 1,
+          "VT tail recycle: the recycled slot keeps no material pixels of the evicted page");
+    CHECK(residency.occlusion_address_for_test(detail_slot) == 0 &&
+              !residency.coverage_only_page_for_test(detail_slot),
+          "VT tail recycle: the recycled slot publishes no occlusion or coverage-only state");
+
+    // With the recycler's own fill deferred, only the reader horizon may
+    // keep the evicted page's geometry alive.
+    for (uint64_t frame = 4; frame <= 4 + vt::kVtRetireHorizonFrames; ++frame)
+        CHECK(frames.next(residency, frame), "VT tail recycle: deferred-fill frame");
+    CHECK(detail_geometry.expired(),
+          "VT tail recycle: the recycled slot retires the evicted page's geometry within the reader horizon");
+
+    residency.pause_page_fills_for_test(false);
+    for (uint64_t frame = 20; frame < 60 && !residency.slot_active(recycler); ++frame)
+        CHECK(frames.next(residency, frame), "VT tail recycle: resumed fill frame");
+    CHECK(residency.slot_active(recycler) && residency.slot_active(victim),
+          "VT tail recycle: the recycler's tail fills and activates while the victim keeps its tail");
+    CHECK(vulkan.validation_error_count() == errors_before, "VT tail recycle: zero Vulkan validation errors");
 }
 
 inline void run_replacements(matter::VulkanDevice& vulkan) {
@@ -490,6 +654,99 @@ inline void run_replacements(matter::VulkanDevice& vulkan) {
           residency.stats().dirty_pages == 0 && residency.stats().fills_stale_total == 4,
           "VT replacement: released owner cannot publish into retiring slots");
     CHECK(vulkan.validation_error_count() == errors_before, "VT replacement: zero Vulkan validation errors");
+    run_tail_recycling(vulkan);
+}
+
+inline void run_slice_publication(matter::VulkanDevice& vulkan) {
+    Budgets budgets;
+    auto& limits = matter::vt_residency_budgets();
+    limits.pool_mb = 100; limits.fill_budget_ms = limits.enrich_budget_ms = 4;
+    Frames frames(vulkan); vt::VtResidency residency; std::string error;
+    CHECK(frames.valid() && residency.init(vulkan,error), "sliced publication: runtime initialized");
+    if (!frames.valid() || !residency.available()) return;
+    auto writer = vt::make_vt_stub_filler(vulkan,64,error);
+    if (!writer) { CHECK(false, "sliced publication: writer created"); return; }
+    auto production = std::make_unique<PublicationWriter>(vulkan,std::move(writer));
+    // The custom factor producer does not dereference geometry; this lease
+    // tests residency's metadata publication and cancellation, with real writes.
+    production->geometry.lifetime = std::make_shared<uint32_t>(7);
+    class Slices final : public vt::VtPageFiller {
+    public:
+        std::unique_ptr<vt::VtPageFiller> producer;
+        std::vector<uint64_t> owners;
+        bool supports_incremental_fill() const override { return true; }
+        void fill(VkCommandBuffer cmd,const vt::VtFillRequest* requests,size_t count) override {
+            CHECK(count == 1 && requests[0].work_tiles <= 4, "sliced publication: one priced slice admitted");
+            owners.push_back(requests[0].owner_key);
+            if (owners.size() % 4) requests[0].mark_pending();
+            else producer->fill(cmd,requests,count);
+        }
+    };
+    auto slices = std::make_unique<Slices>(); auto* observed = slices.get();
+    slices->producer = std::move(production); residency.set_filler(std::move(slices));
+    chart_atlas::ChartAtlasRung atlas;
+    atlas.atlas_w = atlas.atlas_h = 128; atlas.charts.resize(1); atlas.tri_order = {0};
+    auto& chart = atlas.charts[0]; chart.rect_w = chart.rect_h = 128; chart.tri_count = 1; chart.texels_per_meter = 1;
+    const float positions[] = {0,0,0,1,0,0,0,1,0}; const uint32_t indices[] = {0,1,2};
+    vt::VtPartContext context; context.positions = positions; context.vertex_count = 3;
+    context.indices = indices; context.triangle_count = 1;
+    uint32_t owners[2];
+    for (uint32_t i=0;i<2;++i) {
+        context.variant_hash = 0xB100+i;
+        owners[i] = residency.register_variant(context.variant_hash,0,atlas,context);
+        CHECK(owners[i] != vt::kVtNoSlot, "sliced publication: tail admitted");
+    }
+    for (uint64_t frame=1;frame<=8;++frame) {
+        CHECK(frames.next(residency,frame), "sliced publication: frame submitted");
+        CHECK(residency.stats().fills_total == frame/4 && residency.stats().fills_failed_total == 0 &&
+              residency.queued_requests_consistent_for_test(), "sliced publication: pending pages preserve queue and success accounting");
+    }
+    CHECK(observed->owners.size()==8 && observed->owners[0]==observed->owners[3] &&
+          observed->owners[4]==observed->owners[7] && observed->owners[0]!=observed->owners[4],
+          "sliced publication: continuation finishes before another tail can replace scratch");
+    class Factors final : public vt::VtPageEnricher {
+    public:
+        std::vector<uint32_t> starts;
+        std::vector<uint64_t> addresses;
+        bool supports_separate_occlusion() const override { return true; }
+        bool supports_incremental_enrichment() const override { return true; }
+        void enrich(VkCommandBuffer cmd,const vt::VtEnrichRequest* requests,size_t count) override {
+            CHECK(count==1, "sliced AO: one private factor admitted");
+            const auto& r = requests[0]; starts.push_back(r.tile_begin); addresses.push_back(r.occlusion_address);
+            CHECK(r.tile_count<=4 && r.occlusion_buffer, "sliced AO: bounded real factor storage");
+            for (uint32_t tile=r.tile_begin;tile<r.tile_begin+r.tile_count;++tile) {
+                const uint32_t x=(tile%vt::kVtPageTilesPerRow)*vt::kVtPageTileWidth;
+                const uint32_t texel=(tile/vt::kVtPageTilesPerRow)*vt::kVtPageStride+x;
+                const uint32_t width=std::min(vt::kVtPageTileWidth,vt::kVtPageStride-x);
+                vkCmdFillBuffer(cmd,r.occlusion_buffer,r.occlusion_offset+texel*2u,width*2u,0x80008000u);
+            }
+            r.mark_enriched();
+        }
+        void invalidate_part(uint64_t) override {}
+        uint32_t sample_count() const override { return 1; }
+        float max_footprint_meters() const override { return 1000; }
+    };
+    auto factors = std::make_unique<Factors>(); auto* factor_probe = factors.get();
+    limits.enrich_per_frame = 2; residency.set_enricher(std::move(factors));
+    CHECK(frames.next(residency,9) && factor_probe->starts.size()==1 &&
+          residency.stats().occlusion_pages==0 && residency.stats().enrich_total==0,
+          "sliced AO: first factor slice stays unpublished");
+    CHECK(frames.next(residency,10) && factor_probe->starts.back()==2 &&
+          factor_probe->addresses[0]==factor_probe->addresses[1] && residency.stats().occlusion_pages==0,
+          "sliced AO: next frame retains private factor and cursor");
+    residency.invalidate_owners({owners[0]});
+    residency.observe_gpu_fill_ms(12,1,1); residency.observe_gpu_enrich_ms(12,1);
+    CHECK(frames.next(residency,11) && residency.recorded_fill_tiles()==1 && residency.recorded_enrich_tiles()==0,
+          "sliced pair budget: an expensive fill advances while AO waits");
+    CHECK(frames.next(residency,12) && residency.recorded_fill_tiles()==0 && residency.recorded_enrich_tiles()==1,
+          "sliced pair budget: the next frame advances AO while fill waits");
+    for (uint64_t frame=13;frame<1600 && residency.stats().enrich_total<2;++frame)
+        CHECK(frames.next(residency,frame), "sliced AO: cancellation and completion frames submitted");
+    CHECK(residency.stats().enrich_total==2 && residency.stats().occlusion_pages==2 &&
+          residency.stats().enrich_queue_depth==0,
+          "sliced AO: superseded factor is retired and both complete pages eventually publish");
+    CHECK(factor_probe->addresses.size()>2 && factor_probe->addresses[2]!=factor_probe->addresses[0] &&
+          factor_probe->starts[2]==0, "sliced AO: invalidated rows cannot enter a new factor");
 }
 
 inline void run_shared_enrichment_transition(matter::VulkanDevice& vulkan) {
@@ -1209,6 +1466,7 @@ inline void run_finite_source_edits(matter::VulkanDevice& vulkan) {
 }
 
 inline void run(matter::VulkanDevice& vulkan) {
+    run_slice_publication(vulkan);
     run_finite_source_edits(vulkan);
     run_preparation_owners(vulkan);
     const uint32_t errors_before = vulkan.validation_error_count();
