@@ -120,6 +120,9 @@ requirements.
   volumetric streaming architecture.
 - **[Engine-internal architecture index](../MatterEngine3/docs/README.md)** —
   bake pipeline, rendering, authoring, events, tools, and active engine notes.
+- **[Baked GI lightmaps](bake-gi.md)** — `matter bake gi`: offline per-instance
+  lightmap bake (sun, sky, bounce), outputs, UV sidecar contract for the OBJ
+  exporter, three.js usage, validation and limits.
 
 Remaining dated files under `superpowers/plans/` and `superpowers/specs/` are
 unfinished or explicitly deferred. They do not outrank the roadmap.
@@ -132,14 +135,45 @@ unfinished or explicitly deferred. They do not outrank the roadmap.
   command FIFO grammar, and events.
 - **[QA cookbook](agent/qa-cookbook.md)** — builds, screenshots, replay/diff,
   smoke, seam, and performance gates.
+- **[Windows CI tiers](agent/aq-promotion/windows-ci-tiers.md)** — persistent
+  builds, compiler cache, test selection, timing evidence and promotion bindings.
 - **[Issue system](agent/issue-system.md)** — capture, file, and replay
   workflow.
+- **[Object evaluation adapter](agent/object-evaluation.md)** — frozen rock
+  candidates, native multi-view capture, audited-mask scoring, and repeat noise.
 - **[Debugging feedback loop](debugging-feedback-loop.md)** — visual GPU bug
   diagnosis workflow.
 - **[Baselines](baselines/README.md)** — screenshot baseline policy and tools.
+- **[OBJ export](export-obj.md)** — `matter export obj`: taking a baked Part out
+  of the engine as OBJ + MTL + PBR maps, and what that format cannot carry.
 
 ## Findings and measurements
 
+- [Historical VT native comparison: VT/VT-RT failures predate the graphics move](findings/vt-native-pair-2026-10-19.md)
+  shows that pre-move `58289c187` and move `90a19c669` fail the same 7 `vt` and
+  12 `vt-rt` assertions natively, so the move is not the cause.
+- [Native wrapper interruption](findings/native-wrapper-interruption-2026-10-19.md)
+  traces the 0xC000013A native-build deaths to a Start-Process launch that
+  handed the build a closable Windows Terminal console, and records the
+  windowless bounded runner that replaces it.
+- [Static-default integration candidate validation](findings/static-default-candidate-validation-2026-09-30.md)
+  records the merged main/VG candidate, restored population, native checks,
+  and serial captures, with loaded-coverage and visual-parity limits.
+- [VG integration provenance and rock population](findings/vg-integration-provenance-and-rock-population-2026-09-30.md)
+  pins the main/VG/clear-ridge heads, distinguishes the three-rock pilot from
+  the 1,283-rock stress site, and inventories the improvements and main-only
+  features to preserve during integration.
+- [High-density geometry performance decision](findings/hdgeo-performance-pass-2026-09-30.md)
+  compares historical baseline and three current static/VG repeats at both
+  warmups; recommends the static default and retains VG as opt-in development,
+  with pacing, coverage, visual parity and VT budget gates still open.
+- [StreamMountain GI attribution and specialization](findings/streammountain-gi-attribution-2026-09-29.md)
+  identifies diffuse as the dominant GI lane, records shader specialization
+  and the POM-off secondary-hit skip, and compares native captures with the
+  task-1 baseline while retaining fixed-seed signal and material checks.
+- [VT normal-frame readiness](findings/vt-normal-frame-readiness-2026-09-29.md)
+  reproduces the unchanged smoke failure and verifies bounded residency waits
+  with the original raster/RT normal oracles and parity thresholds.
 - [VT memory density](findings/vt-memory-density-2026-09-14.md)
   measures reserved capacity, occupied pages, chart padding and triangle coverage
   in native terrain/building captures; identifies packing and coarse-tail costs.

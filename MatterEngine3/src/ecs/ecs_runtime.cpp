@@ -619,8 +619,8 @@ void Runtime::enqueue_world_state(WorldStateCommand command) {
 // swapped out under the mutex and then processed unlocked, so a producer thread
 // is never blocked on ECS work.
 //
-// A Ready command bumps content_generation and, if it carries entity recipes,
-// bootstraps them transactionally — all-or-nothing, with a failure reported to
+// A Ready command bumps content_generation and bootstraps entity recipes when
+// supplied or explicitly replacing the authored scene, with a failure reported to
 // stderr and the status still advanced to Ready. A command with no resolver gets
 // a stub that resolves every module name to hash 0.
 void Runtime::drain_world_state_commands() {
@@ -642,7 +642,7 @@ void Runtime::drain_world_state_commands() {
             case WorldStateCommandKind::Ready: {
                 state.status = ecs::WorldStatus::Ready;
                 ++state.content_generation;
-                if (!command.entities.empty()) {
+                if (command.replace_entities || !command.entities.empty()) {
                     scene::PartResolver resolver = command.part_resolver
                         ? command.part_resolver
                         : scene::PartResolver([](const std::string&, uint64_t& out_hash) {
