@@ -1,0 +1,8 @@
+Observed wrapper timeout: first pytest case F; /usr/bin/time PID3130635 exited; native PID3130636 reparented to1.
+Confirmed native executable /tmp/claude-1000/-home-jkern-dev-matter-engine-cpp--aq-worktrees-slot-1/0b036f9d-10e9-478d-820c-1b88fe42800a/scratchpad/cmakebuild/vulkan_smoke_tests
+UTC epoch cleanup 1792531469.9099452: SIGTERM to this task-owned native PID through pidfd.
+Native child exit confirmed by pidfd readiness; no other process signalled.
+UTC epoch final check 1792532965.5077064: original AQ/pytest invocation exited 1; both modes raised TimeoutExpired.
+Second-mode known PID 3420451: /proc entry present=False.
+Second-mode known PID 3420453: /proc entry present=False.
+No second-mode process remained at final inspection; no second-mode signal sent. Exit mechanism not inferred.

@@ -290,6 +290,16 @@ private:
 enum class AuthoringRoute { Legacy, PortableV1, Unknown };
 AuthoringRoute classify_authoring_route(const std::string& source);
 
+// Re-authors every PortableV1 node of a restored bake plan through `baker`
+// from its pinned source and params, so a warm resolve cache retains the same
+// immutable products a cold resolve would. The portable hash folds the
+// pipeline implementation, route version and recipe digest, so getting each
+// cached hash back proves the product is the one its cached .part was baked
+// from. False (with `err` naming the part) on the first node that re-authors
+// to anything else; legacy nodes are untouched.
+bool reauthor_portable(Baker& baker, const std::unordered_map<uint64_t, BakeInputs>& plan,
+                       std::string& err);
+
 // The portable route a HostBaker hands PortableV1 sources to. Implemented by
 // the authoring component adapter (component_adapters/authoring), which owns
 // the authoring -> host -> Coordinator -> geometry wiring; the kernel only

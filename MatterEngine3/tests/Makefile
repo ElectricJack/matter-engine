@@ -134,8 +134,8 @@ LOD_DISTANCE_CPP = lod_distance_tests.cpp
 LOD_DISTANCE_HEADERS = ../src/render/lod_distance.h
 
 LOCAL_LIGHT_INDEX_TARGET = build/local_light_index_tests
-LOCAL_LIGHT_INDEX_CPP = local_light_index_tests.cpp ../src/world_lights.cpp
-LOCAL_LIGHT_INDEX_HEADERS = check.h ../src/world_lights.h
+LOCAL_LIGHT_INDEX_CPP = ../../libs/MatterGraphics/tests/native/local_light_index_tests.cpp ../../libs/MatterGraphics/src/native/world_lights.cpp
+LOCAL_LIGHT_INDEX_HEADERS = check.h ../../libs/MatterGraphics/src/native/world_lights.h
 
 MATRIX_TARGET = build/matrix_tests
 MATRIX_CPP = matrix_tests.cpp ../../libs/MatterGraphics/src/matrix_math.cpp ../src/render/frame_matrices.cpp
@@ -156,10 +156,10 @@ ANIMATION_IR_TARGET = build/animation_ir_tests
 ANIMATION_IR_CPP = animation_ir_tests.cpp ../src/animation/animation_ir.cpp ../src/animation/animation_validate.cpp
 
 ANIMATION_ASSET_TARGET = build/animation_asset_tests
-ANIMATION_ASSET_CPP = animation_asset_tests.cpp ../src/animation/anim_asset.cpp ../src/animation/anim_bundle.cpp ../src/animation/animation_asset_store.cpp ../src/animation/animation_binding_bake.cpp ../src/animation/animation_ir.cpp ../src/render/raster_mesh.cpp ../src/render/indexed_part_geometry.cpp ../src/part_asset_v2.cpp $(COMMON_MSL_BLAS_SRC) $(MSL)/material_registry.c
+ANIMATION_ASSET_CPP = animation_asset_tests.cpp ../src/animation/anim_asset.cpp ../src/animation/anim_bundle.cpp ../src/animation/animation_asset_store.cpp ../src/animation/animation_binding_bake.cpp ../src/animation/animation_ir.cpp ../../libs/MatterGraphics/src/native/raster_mesh.cpp ../src/render/indexed_part_geometry.cpp ../src/part_asset_v2.cpp $(COMMON_MSL_BLAS_SRC) $(MSL)/material_registry.c
 
 ANIMATION_RUNTIME_ASSET_TARGET = build/animation_runtime_asset_tests
-ANIMATION_RUNTIME_ASSET_CPP = animation_runtime_asset_tests.cpp ../src/animation/animation_runtime_asset.cpp ../src/animation/animation_binding_bake.cpp ../src/animation/animation_evaluator.cpp ../src/animation/animation_controllers.cpp ../src/animation/animation_targets.cpp ../src/animation/animation_budget.cpp ../src/animation/animation_validate.cpp ../src/animation/ozz_adapter.cpp ../src/animation/ozz_bake.cpp ../src/animation/animation_ir.cpp ../src/render/raster_mesh.cpp ../src/render/indexed_part_geometry.cpp
+ANIMATION_RUNTIME_ASSET_CPP = animation_runtime_asset_tests.cpp ../src/animation/animation_runtime_asset.cpp ../src/animation/animation_binding_bake.cpp ../src/animation/animation_evaluator.cpp ../src/animation/animation_controllers.cpp ../src/animation/animation_targets.cpp ../src/animation/animation_budget.cpp ../src/animation/animation_validate.cpp ../src/animation/ozz_adapter.cpp ../src/animation/ozz_bake.cpp ../src/animation/animation_ir.cpp ../../libs/MatterGraphics/src/native/raster_mesh.cpp ../src/render/indexed_part_geometry.cpp
 
 ANIMATION_DSL_RIG_TARGET = build/animation_dsl_rig_tests
 # SCRIPT_CPP already owns indexed_part_geometry.cpp for ScriptHost's runtime
@@ -180,7 +180,7 @@ check-animation-dsl-rig-sources:
 	fi
 
 ANIMATION_BINDING_TARGET = build/animation_binding_tests
-ANIMATION_BINDING_CPP = animation_binding_tests.cpp ../src/render/raster_mesh.cpp ../src/render/indexed_part_geometry.cpp ../src/animation/animation_binding_bake.cpp ../src/animation/animation_ir.cpp
+ANIMATION_BINDING_CPP = animation_binding_tests.cpp ../../libs/MatterGraphics/src/native/raster_mesh.cpp ../src/render/indexed_part_geometry.cpp ../src/animation/animation_binding_bake.cpp ../src/animation/animation_ir.cpp
 
 # Phase D1: the bake boundary must report every animation diagnostic. Drives a
 # real ScriptHost bake, so it needs the script-host closure (sh flavor) exactly
@@ -318,6 +318,14 @@ CHARACTER_C = $(FLECS_C)
 PHYSICS_TARGET = build/physics-tests
 PHYSICS_CPP = physics_tests.cpp $(ANIMATION_ECS_RUNTIME_REQUIRED) ../src/ecs/scene_registry.cpp ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp $(RIVER_FLOAT_SYSTEM_CPP) ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp ../src/streaming/sector_streaming_coordinator.cpp ../src/sector_streamer.cpp
 PHYSICS_C = $(FLECS_C)
+# Runtime installs the character module and river floating samples the river
+# runtime binding, so the Physics link closure carries both on Linux. The
+# RIVER_RUNTIME_CPP sources get their object rules from that suite's eval.
+PHYSICS_CPP += ../src/ecs/character_systems.cpp ../src/hydrology/river_runtime.cpp \
+    ../src/hydrology/water_mesh_continuity.cpp ../src/hydrology/water_mesh_animation.cpp \
+    ../src/hydrology/water_boundary_animation_source.cpp ../src/hydrology/water_mesh_animation_artifact.cpp \
+    $(filter-out hydrology_handoff_products_tests.cpp,$(HYDROLOGY_HANDOFF_PRODUCTS_CPP))
+PHYSICS_MSL_C = $(HYDROLOGY_HANDOFF_PRODUCTS_C)
 
 # Terrain collision Box3D lifetime/behavior suite. Rollback-only source
 # closure; acceptance executes the MSVC/CMake target, never this recipe.
@@ -325,6 +333,28 @@ TERRAIN_COLLISION_PHYSICS_TARGET = build/terrain_collision_physics_tests
 TERRAIN_COLLISION_PHYSICS_CPP = terrain_collision_physics_tests.cpp \
     $(filter-out physics_tests.cpp,$(PHYSICS_CPP))
 TERRAIN_COLLISION_PHYSICS_C = $(PHYSICS_C)
+
+# Live terrain end to end: the engine's LiveTerrain driver over the terrain
+# coordinator, the portable CPU terrain service, Box3D terrain collision and
+# the MatterGraphics scene backend. Rollback-only closure on Windows; the
+# MSVC/CMake target is authoritative there.
+LIVE_TERRAIN_TARGET = build/live_terrain_tests
+LIVE_TERRAIN_COMPONENT_CPP = live_terrain_tests.cpp \
+    ../src/component_adapters/terrain_coordinator/engine/live_terrain.cpp \
+    ../src/component_adapters/terrain_coordinator/engine/live_terrain_session.cpp \
+    ../src/component_adapters/terrain_coordinator/src/coordinator.cpp \
+    ../src/component_adapters/terrain_coordinator/src/cache.cpp \
+    ../../libs/TerrainGeneration/src/field.cpp ../../libs/TerrainGeneration/src/meshing.cpp \
+    ../../libs/MatterGraphics/src/graphics.cpp ../../libs/MatterGraphics/src/scene_backend.cpp
+LIVE_TERRAIN_CPP = $(LIVE_TERRAIN_COMPONENT_CPP) \
+    ../../libs/ProceduralGeometry/src/terrain_field.cpp ../../libs/TerrainGeneration/src/terrain_mesher.cpp \
+    ../src/terrain_river_overlay.cpp ../src/hydrology/river_geometry.cpp \
+    ../../libs/MatterGraphics/src/matrix_math.cpp \
+    $(filter-out physics_tests.cpp,$(PHYSICS_CPP))
+LIVE_TERRAIN_C = $(PHYSICS_C)
+LIVE_TERRAIN_INCLUDES = -I../src/component_adapters/terrain_coordinator/include \
+    -I../../libs/TerrainGeneration/include -I../../libs/TerrainGeneration/tests \
+    -I../../libs/MatterGraphics/include
 
 # River floating is registered here only for rollback source-census parity.
 # Acceptance executes the MSVC/CMake target, never this legacy Make target.
@@ -513,7 +543,7 @@ ifeq ($(UNAME_S),Linux)
 FLAVOR_flecsc_FLAGS   += -D_POSIX_C_SOURCE=200809L
 endif
 FLAVOR_physicsc_CC    := gcc
-FLAVOR_physicsc_FLAGS := -std=c17 -O2 -I$(FLECS_DIR)
+FLAVOR_physicsc_FLAGS := $(FLAVOR_flecsc_FLAGS)
 
 # C++ flavor list (compiled with $(CC) = g++). Order matters only for pattern-rule
 # generation; the alt-compile-cmd rules are all distinct.
@@ -597,7 +627,7 @@ COMP_C   = $(MSL)/material_registry.c
 CHARTATLAS_TARGET = build/chart_atlas_tests
 CHARTATLAS_CPP = chart_atlas_tests.cpp ../src/lod_bake.cpp ../src/bake_trace.cpp \
                  ../src/part_asset_v2.cpp \
-                 ../src/render/raster_mesh.cpp ../src/render/indexed_part_geometry.cpp \
+                 ../../libs/MatterGraphics/src/native/raster_mesh.cpp ../src/render/indexed_part_geometry.cpp \
                  ../src/render/part_store.cpp ../../libs/ProfileLib/src/profile.cpp ../src/impostor_bake.cpp ../src/warp_field.cpp ../../libs/MatterGraphics/src/matrix_math.cpp \
                  ../src/lod_select.cpp ../src/sector_grid.cpp \
                  ../src/animation/animation_asset_store.cpp ../src/animation/anim_asset.cpp \
@@ -970,7 +1000,7 @@ SECTORCOORD_C      = $(FLECS_C)
 RESOLVECACHE_TARGET = build/resolve_cache_tests
 RESOLVECACHE_CPP    = resolve_cache_tests.cpp \
                       ../src/resolve_cache.cpp \
-                      ../src/world_lights.cpp \
+                      ../../libs/MatterGraphics/src/native/world_lights.cpp \
                       ../src/part_graph.cpp \
                       ../src/part_graph_snapshot.cpp \
                       ../src/part_asset_v2.cpp \
@@ -985,12 +1015,12 @@ MODAPPLY_CPP = modifier_apply_tests.cpp ../src/modifier_apply.cpp \
 
 # Phase C Task 3 — terrain field program interpreter (pure CPU, no JS, no GL).
 TERRAINFIELD_TARGET = build/terrain_field_tests
-TERRAINFIELD_CPP    = terrain_field_tests.cpp ../../libs/TerrainGeneration/src/terrain_field.cpp \
+TERRAINFIELD_CPP    = terrain_field_tests.cpp ../../libs/ProceduralGeometry/src/terrain_field.cpp \
                       ../src/terrain_river_overlay.cpp ../src/hydrology/river_geometry.cpp
 
 # Phase C Task 5 — terrain mesher (pure CPU: terrain_field + terrain_mesher, no JS, no GL).
 TERRAINMESH_TARGET = build/terrain_mesher_tests
-TERRAINMESH_CPP    = terrain_mesher_tests.cpp ../../libs/TerrainGeneration/src/terrain_field.cpp ../../libs/TerrainGeneration/src/terrain_mesher.cpp \
+TERRAINMESH_CPP    = terrain_mesher_tests.cpp ../../libs/ProceduralGeometry/src/terrain_field.cpp ../../libs/TerrainGeneration/src/terrain_mesher.cpp \
                      ../src/terrain_river_overlay.cpp ../src/hydrology/river_geometry.cpp
 
 # M0-WP3 — cross-level seam welder (pure geometry: seam_boundary.h + seam_weld,
@@ -1007,7 +1037,7 @@ SEAMWELD_HEADERS = check.h ../src/seam_boundary.h ../src/seam_weld.h
 # produce real tiles (cf. TERRAINMESH_CPP).
 SEAMINTEGRATION_TARGET = build/seam_integration_tests
 SEAMINTEGRATION_CPP    = seam_integration_tests.cpp ../../libs/TerrainGeneration/src/seam_weld.cpp \
-                         ../../libs/TerrainGeneration/src/terrain_mesher.cpp ../../libs/TerrainGeneration/src/terrain_field.cpp
+                         ../../libs/TerrainGeneration/src/terrain_mesher.cpp ../../libs/ProceduralGeometry/src/terrain_field.cpp
 SEAMINTEGRATION_HEADERS = check.h ../src/seam_boundary.h ../src/seam_weld.h \
                           ../src/terrain_mesher.h ../src/terrain_field.h
 
@@ -1039,7 +1069,7 @@ CONTOURMESH_HEADERS = check.h
 # terrain_mesher_tests pins the WELDER path's bytes bitwise and a process cannot
 # be in both modes.
 CONTOURENGINE_TARGET = build/contour_engine_tests
-CONTOURENGINE_CPP    = contour_engine_tests.cpp ../../libs/TerrainGeneration/src/terrain_field.cpp \
+CONTOURENGINE_CPP    = contour_engine_tests.cpp ../../libs/ProceduralGeometry/src/terrain_field.cpp \
                        ../../libs/TerrainGeneration/src/terrain_mesher.cpp
 CONTOURENGINE_HEADERS = check.h ../src/terrain_mesher.h ../src/bake_mode.h
 
@@ -1055,7 +1085,7 @@ TERRAINVERB_CPP = terrain_verb_tests.cpp ../src/part_graph.cpp ../src/bake_trace
                   ../src/dsl_bindings.cpp ../src/csg_lowering.cpp ../src/module_resolver.cpp ../src/part_asset_v2.cpp ../src/lod_bake.cpp \
                   ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
                   ../src/modifier_apply.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp \
-                  ../../libs/TerrainGeneration/src/terrain_field.cpp ../../libs/TerrainGeneration/src/terrain_mesher.cpp \
+                  ../../libs/ProceduralGeometry/src/terrain_field.cpp ../../libs/TerrainGeneration/src/terrain_mesher.cpp \
                   ../src/pf_bindings.cpp \
                   ../../libs/ParticleFlowLib/src/pf_math.cpp ../../libs/ParticleFlowLib/src/pf_sim.cpp \
                   ../../libs/ParticleFlowLib/src/pf_fields.cpp ../../libs/ParticleFlowLib/src/pf_path_recorder.cpp \
@@ -1099,7 +1129,7 @@ SCATTERPROF_C = $(COMMON_MSL_C)
 PARTSTORE_TARGET = build/partstore_tests
 PARTSTORE_CPP = partstore_tests.cpp ../src/render/part_store.cpp ../../libs/ProfileLib/src/profile.cpp ../src/impostor_bake.cpp ../src/warp_field.cpp \
                 ../../libs/MatterGraphics/src/matrix_math.cpp \
-                ../src/render/raster_mesh.cpp ../src/lod_select.cpp \
+                ../../libs/MatterGraphics/src/native/raster_mesh.cpp ../src/lod_select.cpp \
                 ../src/sector_grid.cpp ../src/lod_bake.cpp ../src/bake_trace.cpp \
                 ../src/part_asset_v2.cpp \
                 ../src/animation/animation_asset_store.cpp ../src/animation/anim_asset.cpp \
@@ -1154,7 +1184,7 @@ PF_CPP = ../src/pf_bindings.cpp \
 
 # any target that links dsl_bindings.cpp must also link the terrain sources
 # (dsl_bindings.cpp now registers the terrainVolume verb which calls mesh_sector)
-TERRAIN_SRC = ../../libs/TerrainGeneration/src/terrain_field.cpp ../../libs/TerrainGeneration/src/terrain_mesher.cpp
+TERRAIN_SRC = ../../libs/ProceduralGeometry/src/terrain_field.cpp ../../libs/TerrainGeneration/src/terrain_mesher.cpp
 
 GRAPH_INT_TARGET = build/part_graph_integration_tests
 # SCRIPT_CPP is a superset of the explicit part_graph/bake_trace/script_host/
@@ -1163,7 +1193,7 @@ GRAPH_INT_TARGET = build/part_graph_integration_tests
 # render/LOD sources below are the A8 additions (part_store.h consumers).
 GRAPH_INT_CPP = part_graph_integration_tests.cpp $(filter-out script_host_tests.cpp,$(SCRIPT_CPP)) \
                 ../src/render/part_store.cpp ../../libs/ProfileLib/src/profile.cpp ../src/impostor_bake.cpp ../src/warp_field.cpp ../../libs/MatterGraphics/src/matrix_math.cpp \
-                ../src/render/raster_mesh.cpp ../src/lod_select.cpp \
+                ../../libs/MatterGraphics/src/native/raster_mesh.cpp ../src/lod_select.cpp \
                 ../src/sector_grid.cpp ../src/animation/animation_asset_store.cpp \
                 $(AUTHORING_ROUTE_CPP)
 GRAPH_INT_C   = $(COMMON_MSL_C)
@@ -1177,7 +1207,7 @@ EXAMPLE_TARGET = build/example_world
 EXAMPLE_CPP = example_world.cpp ../src/part_graph.cpp ../src/bake_trace.cpp $(SCRIPT_SOLID_COMMON_CPP) \
               ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../../libs/ProceduralGeometry/src/triangle_emit.cpp ../src/triangle_variation_recorder.cpp ../../libs/ProceduralGeometry/src/polygon_triangulate.cpp ../src/dsl_bindings.cpp \
               ../src/csg_lowering.cpp ../src/module_resolver.cpp ../src/script_rng_binding.cpp \
-              ../src/script/world_definition_loader.cpp ../src/world_lights.cpp ../src/hydrology/river_network_builder.cpp ../src/hydrology/hydrology_settings.cpp \
+              ../src/script/world_definition_loader.cpp ../../libs/MatterGraphics/src/native/world_lights.cpp ../src/hydrology/river_network_builder.cpp ../src/hydrology/hydrology_settings.cpp \
               ../src/part_asset_v2.cpp ../src/lod_bake.cpp ../src/world_flatten.cpp ../src/part_flatten.cpp \
               ../src/impostor_bake.cpp \
               ../src/retopo_blacklist.cpp \
@@ -1302,7 +1332,7 @@ TERRAINNOISE_CPP = terrain_noise_tests.cpp ../src/module_resolver.cpp
 WORLD_DEFINITION_TARGET = build/world_definition_tests
 WORLD_DEFINITION_CPP = world_definition_tests.cpp \
                        ../src/script/world_definition_loader.cpp \
-                       ../src/world_lights.cpp \
+                       ../../libs/MatterGraphics/src/native/world_lights.cpp \
                        ../src/terrain_collision/terrain_collision_definition.cpp \
                        ../src/hydrology/river_network_builder.cpp \
                        ../src/module_resolver.cpp \
@@ -1340,7 +1370,7 @@ TERRAIN_COLLISION_ARTIFACT_TARGET = build/terrain_collision_artifact_tests
 TERRAIN_COLLISION_ARTIFACT_CPP = terrain_collision_artifact_tests.cpp \
     ../src/terrain_collision/terrain_collision_artifact.cpp \
     ../src/terrain_collision/terrain_collision_definition.cpp \
-    ../../libs/TerrainGeneration/src/terrain_field.cpp ../../libs/TerrainGeneration/src/terrain_mesher.cpp \
+    ../../libs/ProceduralGeometry/src/terrain_field.cpp ../../libs/TerrainGeneration/src/terrain_mesher.cpp \
     ../src/terrain_river_overlay.cpp ../src/hydrology/river_geometry.cpp
 TERRAIN_COLLISION_ARTIFACT_OBJS = \
     $(call obj_list,def,$(TERRAIN_COLLISION_ARTIFACT_CPP))
@@ -1567,7 +1597,7 @@ VIEWER_LOGIC_CPP = viewer_logic_tests.cpp \
               ../src/provider/resolvers.cpp \
               ../src/render/part_store.cpp ../../libs/ProfileLib/src/profile.cpp ../src/warp_field.cpp \
               ../src/provider/local_provider.cpp ../src/authored_world_cache.cpp \
-              ../src/render/raster_mesh.cpp \
+              ../../libs/MatterGraphics/src/native/raster_mesh.cpp \
               ../src/tileset_phase.cpp $(AUTHORING_ROUTE_CPP) \
               ../../libs/AssetPipeline/physics/src/tileset_settle.cpp ../src/tileset_gtex.cpp \
               ../src/tileset_bake.cpp ../src/tileset_collider.cpp \
@@ -1618,7 +1648,7 @@ GPU_RENDER_CPP = \
     ../src/render/vk_animation_skinning.cpp \
     ../src/bake_trace.cpp \
     ../../libs/MatterGraphics/src/matrix_math.cpp ../src/render/frame_matrices.cpp \
-    ../src/render/raster_mesh.cpp ../src/render/part_store.cpp ../../libs/ProfileLib/src/profile.cpp ../src/warp_field.cpp \
+    ../../libs/MatterGraphics/src/native/raster_mesh.cpp ../src/render/part_store.cpp ../../libs/ProfileLib/src/profile.cpp ../src/warp_field.cpp \
     ../src/render/world_state.cpp \
     ../src/provider/local_provider.cpp ../src/authored_world_cache.cpp ../src/provider/resolvers.cpp \
     ../src/matter_engine.cpp \
@@ -1660,7 +1690,7 @@ GPU_PIPELINE_CPP = \
     ../src/tileset_torus_bvh.cpp \
     ../src/tileset_gtex.cpp \
     ../src/sector_grid.cpp ../src/lod_select.cpp \
-    ../src/world_lights.cpp \
+    ../../libs/MatterGraphics/src/native/world_lights.cpp \
     ../src/world_tracer.cpp \
     ../src/shader_source.cpp \
     ../src/tileset_phase.cpp $(AUTHORING_ROUTE_CPP) \
@@ -1776,8 +1806,7 @@ def_CPP_SRCS := $(sort \
     $(CHARACTER_CPP) \
     $(ANIMATION_STORE_CPP) \
     $(ANIMATION_BUDGET_CPP) \
-    $(PHYSICS_CPP) \
-    $(TERRAIN_COLLISION_PHYSICS_CPP) \
+    $(filter-out $(RIVER_RUNTIME_CPP),$(PHYSICS_CPP) $(TERRAIN_COLLISION_PHYSICS_CPP) $(LIVE_TERRAIN_CPP)) \
     $(RIVER_FLOAT_SYSTEM_TEST_CPP) \
     $(ANIMATION_SYSTEMS_CPP) \
     $(ANIMATION_SIMULATION_CPP) \
@@ -1980,8 +2009,11 @@ EVENT_IMPL_DEF_OBJS = $(call obj_list,def,\
 
 ECS_OBJS = $(call obj_list,def,$(ECS_CPP)) $(call obj_list,flecsc,$(ECS_C)) $(EVENT_IMPL_DEF_OBJS)
 CHARACTER_OBJS = $(call obj_list,def,$(CHARACTER_CPP)) $(call obj_list,flecsc,$(CHARACTER_C)) $(EVENT_IMPL_DEF_OBJS)
-PHYSICS_OBJS = $(call obj_list,def,$(PHYSICS_CPP)) $(call obj_list,physicsc,$(PHYSICS_C)) $(EVENT_IMPL_DEF_OBJS)
-TERRAIN_COLLISION_PHYSICS_OBJS = $(call obj_list,def,$(TERRAIN_COLLISION_PHYSICS_CPP)) $(call obj_list,physicsc,$(TERRAIN_COLLISION_PHYSICS_C)) $(EVENT_IMPL_DEF_OBJS)
+PHYSICS_OBJS = $(call obj_list,def,$(PHYSICS_CPP)) $(call obj_list,physicsc,$(PHYSICS_C)) $(call obj_list,mslc,$(PHYSICS_MSL_C)) $(EVENT_IMPL_DEF_OBJS)
+TERRAIN_COLLISION_PHYSICS_OBJS = $(call obj_list,def,$(TERRAIN_COLLISION_PHYSICS_CPP)) $(call obj_list,physicsc,$(TERRAIN_COLLISION_PHYSICS_C)) $(call obj_list,mslc,$(PHYSICS_MSL_C)) $(EVENT_IMPL_DEF_OBJS)
+LIVE_TERRAIN_OBJS = $(call obj_list,def,$(LIVE_TERRAIN_CPP)) $(call obj_list,physicsc,$(LIVE_TERRAIN_C)) $(call obj_list,mslc,$(PHYSICS_MSL_C)) $(EVENT_IMPL_DEF_OBJS)
+# Only the component TUs see the component include roots.
+$(call obj_list,def,$(LIVE_TERRAIN_COMPONENT_CPP)): FLAVOR_def_FLAGS += $(LIVE_TERRAIN_INCLUDES)
 RIVER_FLOAT_SYSTEM_OBJS = $(call obj_list,def,$(RIVER_FLOAT_SYSTEM_TEST_CPP)) $(call obj_list,physicsc,$(RIVER_FLOAT_SYSTEM_C)) $(EVENT_IMPL_DEF_OBJS)
 # The animation suites below reach physics_context.cpp through the same ECS
 # runtime closure (ANIMATION_ECS_RUNTIME_REQUIRED / ANIMATION_STORE_CPP), so
@@ -2119,7 +2151,7 @@ run-lod-distance: $(LOD_DISTANCE_TARGET)
 	./$(LOD_DISTANCE_TARGET)
 
 $(LOCAL_LIGHT_INDEX_TARGET): $(LOCAL_LIGHT_INDEX_CPP) $(LOCAL_LIGHT_INDEX_HEADERS) | build
-	$(CC) $(LOCAL_LIGHT_INDEX_CPP) -o $@ $(CFLAGS) $(INCLUDE_PATHS)
+	$(CC) $(LOCAL_LIGHT_INDEX_CPP) -o $@ $(CFLAGS) -I. $(INCLUDE_PATHS)
 
 run-local-light-index: $(LOCAL_LIGHT_INDEX_TARGET)
 	./$(LOCAL_LIGHT_INDEX_TARGET)
@@ -2305,6 +2337,16 @@ run-terrain-collision-physics: $(TERRAIN_COLLISION_PHYSICS_TARGET)
 	./$(TERRAIN_COLLISION_PHYSICS_TARGET)
 
 .PHONY: run-terrain-collision-physics
+
+$(LIVE_TERRAIN_TARGET): $(LIVE_TERRAIN_OBJS) $(BOX3D_LIB) $(OZZ_OFFLINE_LIBS) $(AUTHORING_ADAPTER_LIBS)
+	$(CC) $(LIVE_TERRAIN_OBJS) -o $@ $(FLAVOR_def_FLAGS) $(LDFLAGS) $(BOX3D_LIB) $(OZZ_OFFLINE_LIBS) \
+	    $(AUTHORING_ADAPTER_BUILD)/contracts/libmatter_contracts.a $(FLECS_PLATFORM_LIBS)
+
+# Seam assertions need the contour seam policy the coordinator requests.
+run-live-terrain: $(LIVE_TERRAIN_TARGET)
+	MATTER_CONTOUR_SEAMS=1 ./$(LIVE_TERRAIN_TARGET)
+
+.PHONY: run-live-terrain
 
 $(RIVER_FLOAT_SYSTEM_TARGET): $(RIVER_FLOAT_SYSTEM_OBJS) $(BOX3D_LIB) $(OZZ_OFFLINE_LIBS)
 	$(CC) $(RIVER_FLOAT_SYSTEM_OBJS) -o $@ $(FLAVOR_def_FLAGS) $(LDFLAGS) $(BOX3D_LIB) $(OZZ_OFFLINE_LIBS) $(FLECS_PLATFORM_LIBS)
@@ -3567,7 +3609,7 @@ clean-physicsevents:
 # links terrain_field.cpp directly.
 # ---------------------------------------------------------------------------
 SURFACEFIELD_TARGET = build/surface_field_tests
-SURFACEFIELD_CPP    = surface_field_tests.cpp ../../libs/TerrainGeneration/src/terrain_field.cpp
+SURFACEFIELD_CPP    = surface_field_tests.cpp ../../libs/ProceduralGeometry/src/terrain_field.cpp
 SURFACEFIELD_OBJS   = $(call obj_list,def,$(SURFACEFIELD_CPP))
 
 $(eval $(call objrule_cpp,def,surface_field_tests.cpp))

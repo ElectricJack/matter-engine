@@ -42,6 +42,12 @@ On 2026-10-20 the world set gained `PortableCrateFixture`
 `class PortableCrateFixture extends World`), the matched-view fixture for the
 portable authoring/graphics route. Nothing else changed.
 
+Later on 2026-10-20 it gained `LiveTerrainFixture`
+(`projects/world_demo/scenes/examples/LiveTerrainFixture/LiveTerrainFixture.js`,
+`class LiveTerrainFixture extends World`), the native live-terrain editor
+fixture. The new `viewer.debug.live_terrain_graphics` field rides in the
+existing `viewer.debug` group, so the property set is unchanged.
+
 For an intentional registration change, review the declaring source and the
 live registry consumer, edit the manifest explicitly in that same change, and
 run the native gate. Do not copy a runtime log into the manifest to make a
