@@ -1,0 +1,172 @@
+aq test: no interpreter found for /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2 (no .venv, no resources.test_interpreters entry); using /usr/bin/python3.12
+aq test: slot 1 of 6, -n 6
+$ /usr/bin/python3.12 -m pytest -n 6 --dist loadfile -m 'not perf and not migration and not slow and not tmux and not integration' tools/tests/test_sparse_scene_admission.py -q -k 'not native_session_collision_admission'
+bringing up nodes...
+bringing up nodes...
+
+..F                                                                      [100%]
+=================================== FAILURES ===================================
+____________________ test_full_world_publication_ownership _____________________
+[gw0] linux -- Python 3.12.3 /usr/bin/python3.12
+
+tmp_path = PosixPath('/tmp/pytest-of-jkern/pytest-660/popen-gw0/test_full_world_publication_ow0')
+
+    def test_full_world_publication_ownership(tmp_path):
+        # Exercise the ownership transaction used by WorldSession with real world,
+        # expansion-cache and temporal implementations. GPU recording is separate.
+>       output = compile_run(tmp_path, r'''#include "render/world_scene_publication.h"
+    #include "render/scene_admission.h"
+    #include "render/vk_instance_cache.h"
+    #include "render/vk_temporal.h"
+    #include "provider/world_source.h"
+    #include "provider/sector_resolver.h"
+    #include <cassert>
+    #include <iostream>
+    #include <stdexcept>
+    using namespace viewer;
+    struct Publication {
+        WorldState world;
+        VulkanInstanceCache cache;
+        TemporalState temporal;
+        std::shared_ptr<int> catalog;
+    };
+    Publication make_world(unsigned id) {
+        Publication result;
+        WorldManifest manifest;
+        WorldManifestEntry entry{}; entry.instance_id=id;entry.part_hash=id;
+        manifest.instances.push_back(entry);result.world.reset(manifest);
+        ResolvedInstance resolved{};resolved.part_hash=id;resolved.stable_id=id;
+        VkSceneInstance draw{};draw.part_hash=id;
+        result.cache.store({resolved},{draw});
+        result.catalog=std::make_shared<int>(id);
+        return result;
+    }
+    std::vector<TemporalInstance> instances(unsigned id) {
+        TemporalInstance value{};value.instance_id=id;
+        value.object_to_world.m[0]=value.object_to_world.m[5]=
+            value.object_to_world.m[10]=value.object_to_world.m[15]=1;
+        return {value};
+    }
+    int main() {
+        constexpr uint64_t limit=128ull*1024*1024;
+        Publication current=make_world(7);
+        WorldScenePublication<Publication> publication;
+        const FrameMatrices camera{};
+        auto token=current.temporal.begin(camera,{64,64},{64,64},instances(7),false,{}).attempt_token;
+        assert(current.temporal.commit_presented(token));
+        std::weak_ptr<int> accepted=current.catalog;
+        publication.stage(current,make_world(8),true);
+        // The reload eviction barrier runs AFTER retention. Removing an old
+        // instance from the candidate lane must not remove accepted identity 7.
+        WorldDelta evicted; evicted.removed={7}; current.world.apply(evicted);
+        assert(publication.retained()->world.find(7));
+        unsigned collision_identity=7, commits=0;
+        auto pending=std::make_shared<int>(8);
+        std::weak_ptr<int> pending_lifetime=pending;
+        publication.defer([&,pending](std::string&) {
+            ++commits; collision_identity=*pending; return true;
+        });
+        pending.reset();
+        admission::Plan rejected(limit);
+        assert(!rejected.add(admission::Buffer::triangles,838861,160,8));
+        assert(!accepted.expired() && current.world.find(8));
+        assert(commits==0 && collision_identity==7 && !pending_lifetime.expired());
+        // Replay/completion temporarily select the SAME accepted catalog and caches.
+        publication.with_retained(current,[&] {
+            assert(current.world.find(7) && !current.world.find(8));
+            assert(*current.catalog==7 && current.cache.instances().front().part_hash==7);
+            const auto& frame=current.temporal.begin(camera,{64,64},{64,64},instances(7),false,{});
+            assert(!frame.reset && frame.instances.front().history_valid);
+            assert(current.temporal.commit_presented(frame.attempt_token));
+        });
+        assert(current.world.find(8));
+        try { publication.with_retained(current,[] { throw std::runtime_error("recording"); }); }
+        catch (const std::runtime_error&) {}
+        assert(current.world.find(8));
+        std::weak_ptr<int> rejected_catalog=current.catalog;
+        publication.cancel_pending();
+        assert(pending_lifetime.expired() && commits==0 && collision_identity==7);
+        publication.stage(current,make_world(9),false);
+        assert(rejected_catalog.expired() && !accepted.expired());
+        assert(publication.retained()->world.find(7));
+        // Smaller complete request gets fresh temporal history, then replaces old.
+        publication.stage(current,make_world(10),false);
+        admission::Plan smaller(limit);
+        assert(smaller.add(admission::Buffer::triangles,1,160,10));
+        const auto& fresh=current.temporal.begin(camera,{64,64},{64,64},instances(10),false,{});
+        assert(fresh.reset && !fresh.instances.front().history_valid);
+        assert(current.temporal.commit_presented(fresh.attempt_token));
+        std::string error;
+        publication.defer([&](std::string& e) { e="injected physics failure";return false; });
+        assert(!publication.finish(error) && !accepted.expired() && collision_identity==7);
+        publication.defer([&](std::string&) { ++commits;collision_identity=10;return true; });
+        assert(publication.finish(error) && collision_identity==10 && commits==1);
+        assert(publication.finish(error) && commits==1); // no duplicate installation
+        assert(accepted.expired() && !publication.retained());
+        assert(current.world.find(10) && current.cache.instances().front().part_hash==10);
+        // First rejected load has no accepted owner: caller keeps its clear shell.
+        Publication empty;
+        WorldScenePublication<Publication> first;
+        first.stage(empty,make_world(11),false);
+        assert(!first.retained());
+        std::cout << "world/catalog/cache/temporal rollback and smaller replacement passed\n";
+    }
+    ''', sources=(
+            "MatterEngine3/src/render/world_state.cpp",
+            "MatterEngine3/src/render/vk_instance_cache.cpp",
+            "MatterEngine3/src/render/vk_temporal.cpp",
+            "MatterEngine3/src/render/matrix_math.cpp",
+        ))
+
+tools/tests/test_sparse_scene_admission.py:153: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tools/tests/test_sparse_scene_admission.py:35: in compile_run
+    run_checked(command, timeout=60)
+tools/tests/test_sparse_scene_admission.py:13: in run_checked
+    result.check_returncode()
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = CompletedProcess(args=['g++', '-std=c++17', '-Wall', '-Wextra', '-Werror', '-Wno-missing-field-initializers', '-ffunct...                                                                ^~~~\ncc1plus: all warnings being treated as errors\n')
+
+    def check_returncode(self):
+        """Raise CalledProcessError if the exit code is non-zero."""
+        if self.returncode:
+>           raise CalledProcessError(self.returncode, self.args, self.stdout,
+                                     self.stderr)
+E           subprocess.CalledProcessError: Command '['g++', '-std=c++17', '-Wall', '-Wextra', '-Werror', '-Wno-missing-field-initializers', '-ffunction-sections', '-Wl,--gc-sections', '-I/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/MatterEngine3/src', '-I/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/MatterEngine3/include', '-I/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/MatterEngine3/src/render', '-I/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/third_party/Vulkan-Headers/include', '-I/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/libs/MathLib/include', '-I/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/libs/MatterSurfaceLib/include', '-I/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/libs/SpatialQueryLib/include', '-I/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/MatterEngine3/src/provider', '-I/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/libs/ProfileLib/include', '-DMATTER_PROFILE_ENABLED=0', '/tmp/pytest-of-jkern/pytest-660/popen-gw0/test_full_world_publication_ow0/admission.cpp', '/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/MatterEngine3/src/render/world_state.cpp', '/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/MatterEngine3/src/render/vk_instance_cache.cpp', '/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/MatterEngine3/src/render/vk_temporal.cpp', '/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/MatterEngine3/src/render/matrix_math.cpp', '-o', '/tmp/pytest-of-jkern/pytest-660/popen-gw0/test_full_world_publication_ow0/admission']' returned non-zero exit status 1.
+
+/usr/lib/python3.12/subprocess.py:502: CalledProcessError
+----------------------------- Captured stdout call -----------------------------
+
+In file included from /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/MatterEngine3/src/render/../../../libs/MatterGraphics/src/native/vt/vt_snapshot.h:7,
+                 from /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/MatterEngine3/src/render/../../../libs/MatterGraphics/src/native/vt/vt_residency.h:92,
+                 from /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/MatterEngine3/src/render/vt_residency.h:3,
+                 from /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/MatterEngine3/src/render/vk_scene_renderer.h:126,
+                 from /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/MatterEngine3/src/render/vk_instance_cache.h:25,
+                 from /tmp/pytest-of-jkern/pytest-660/popen-gw0/test_full_world_publication_ow0/admission.cpp:3:
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/MatterEngine3/src/render/../../../libs/MatterGraphics/src/native/vt/../../../../../MatterEngine3/src/render/vt_finite_sources.h: In function ‘bool vt::vt_make_finite_sources(const std::vector<VtFiniteSourceBinding>&, std::shared_ptr<const VtFiniteSources>&, std::string&, const std::vector<VtFiniteReceiver>&, const std::vector<std::shared_ptr<const surface_stamp::Stamp> >&)’:
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/MatterEngine3/src/render/../../../libs/MatterGraphics/src/native/vt/../../../../../MatterEngine3/src/render/vt_finite_sources.h:157:17: error: this ‘if’ clause does not guard... [-Werror=misleading-indentation]
+  157 |                 if(used[id]) return fail("duplicate composite candidate");used[id]=true;
+      |                 ^~
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/MatterEngine3/src/render/../../../libs/MatterGraphics/src/native/vt/../../../../../MatterEngine3/src/render/vt_finite_sources.h:157:75: note: ...this statement, but the latter is misleadingly indented as if it were guarded by the ‘if’
+  157 |                 if(used[id]) return fail("duplicate composite candidate");used[id]=true;
+      |                                                                           ^~~~
+cc1plus: all warnings being treated as errors
+In file included from /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/MatterEngine3/src/render/../../../libs/MatterGraphics/src/native/vt/vt_snapshot.h:7,
+                 from /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/MatterEngine3/src/render/../../../libs/MatterGraphics/src/native/vt/vt_residency.h:92,
+                 from /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/MatterEngine3/src/render/vt_residency.h:3,
+                 from /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/MatterEngine3/src/render/vk_scene_renderer.h:126,
+                 from /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/MatterEngine3/src/render/vk_instance_cache.h:25,
+                 from /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/MatterEngine3/src/render/vk_instance_cache.cpp:15:
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/MatterEngine3/src/render/../../../libs/MatterGraphics/src/native/vt/../../../../../MatterEngine3/src/render/vt_finite_sources.h: In function ‘bool vt::vt_make_finite_sources(const std::vector<VtFiniteSourceBinding>&, std::shared_ptr<const VtFiniteSources>&, std::string&, const std::vector<VtFiniteReceiver>&, const std::vector<std::shared_ptr<const surface_stamp::Stamp> >&)’:
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/MatterEngine3/src/render/../../../libs/MatterGraphics/src/native/vt/../../../../../MatterEngine3/src/render/vt_finite_sources.h:157:17: error: this ‘if’ clause does not guard... [-Werror=misleading-indentation]
+  157 |                 if(used[id]) return fail("duplicate composite candidate");used[id]=true;
+      |                 ^~
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/MatterEngine3/src/render/../../../libs/MatterGraphics/src/native/vt/../../../../../MatterEngine3/src/render/vt_finite_sources.h:157:75: note: ...this statement, but the latter is misleadingly indented as if it were guarded by the ‘if’
+  157 |                 if(used[id]) return fail("duplicate composite candidate");used[id]=true;
+      |                                                                           ^~~~
+cc1plus: all warnings being treated as errors
+
+=========================== short test summary info ============================
+FAILED tools/tests/test_sparse_scene_admission.py::test_full_world_publication_ownership
+1 failed, 2 passed in 13.03s

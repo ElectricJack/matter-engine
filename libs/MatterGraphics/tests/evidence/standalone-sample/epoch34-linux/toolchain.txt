@@ -1,0 +1,17 @@
+cmake version 3.28.3
+
+CMake suite maintained and supported by Kitware (kitware.com/cmake).
+1.11.1
+c++ (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0
+Copyright (C) 2023 Free Software Foundation, Inc.
+This is free software; see the source for copying conditions.  There is NO
+warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+
+shaderc 2023.8-1build1
+spirv-tools 2023.6~rc1-2
+glslang 14.0.0-2
+
+Target: SPIR-V 1.0
+ee5f737e570b4b1713b4db9c8f9ead8258726af457391af00264350e59810bd4  /tmp/glslc_2023.8-1build1_amd64.deb
+ebd699ab3feaf00676a7da0644dd74290f60cd1b34057256db90f60e126655b1  /tmp/libshaderc1_2023.8-1build1_amd64.deb
+3f5e9b53fbaabe32d770d3608912c04a33b8683385df9a5472fe062c16850746  /tmp/vulkan-validationlayers_1.3.275.0-1_amd64.deb
