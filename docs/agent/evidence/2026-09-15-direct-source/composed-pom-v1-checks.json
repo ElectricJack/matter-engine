@@ -1,0 +1,16 @@
+[
+  {
+    "kind": "build",
+    "name": "vt_compositor_tests",
+    "command": [
+      "./tools/build-windows-from-wsl.sh",
+      "RelWithDebInfo",
+      "vt_compositor_tests"
+    ],
+    "exit": 1,
+    "seconds": 7.308589546009898,
+    "log": "docs/agent/evidence/2026-09-15-direct-source/composed-pom-v1-build-vt_compositor_tests.log",
+    "source_changes": [],
+    "validation_errors": []
+  }
+]

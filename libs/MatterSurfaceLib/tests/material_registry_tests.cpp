@@ -8,6 +8,9 @@
 #include <cmath>
 #include <cstring>
 #include <initializer_list>
+#include <array>
+#include <thread>
+#include <atomic>
 
 static int failures = 0;
 #define CHECK(cond, msg) do { if (!(cond)) { printf("FAIL: %s\n", msg); ++failures; } } while (0)
@@ -47,13 +50,13 @@ int main() {
     CHECK(n >= 10, "expected at least 10 materials");
     float buf[64 * MATERIAL_FLOATS_PER_DEF];
     assert(n <= 64);
-    MaterialRegistryPackForGPU(buf);
+    MaterialRegistryPackForGPU(buf, 64);
     // translucency is the 8th float (index 7) in each packed record (see MaterialRegistryPackForGPU).
     CHECK(fabsf(buf[4 * MATERIAL_FLOATS_PER_DEF + 7] - MaterialRegistryGet(4)->translucency) < 1e-6f,
           "packed translucency for material 4 must match the table");
 
     MaterialGpuRecord records[64]{};
-    MaterialRegistryPackRtForGPU(records);
+    MaterialRegistryPackRtForGPU(records, 64);
     CHECK(sizeof(MaterialGpuRecord) == 144, "RTX material record is 9x vec4");
     CHECK(offsetof(MaterialGpuRecord, base_roughness) == 0,
           "RTX base/roughness vec4 begins at byte 0");
@@ -176,7 +179,7 @@ int main() {
     CHECK(authored_water_id >= MaterialRegistryStaticCount(),
           "dynamic authored water registers through the ordinary material table");
     MaterialGpuRecord dynamic_records[MATERIAL_MAX_TOTAL]{};
-    MaterialRegistryPackRtForGPU(dynamic_records);
+    MaterialRegistryPackRtForGPU(dynamic_records, MATERIAL_MAX_TOTAL);
     if (authored_water_id >= 0) {
         CHECK((dynamic_records[authored_water_id].flags_misc[0] &
                MATERIAL_WATER_SURFACE) != 0u,
@@ -190,7 +193,7 @@ int main() {
     authored_surface.surfaceFlags |= MATERIAL_SURFACE_DETAIL;
     const int surface_id = MaterialRegistryDefineDynamic(&authored_surface, "RegistryTestSurface");
     CHECK(surface_id >= MaterialRegistryStaticCount(), "finished surface registers normally");
-    MaterialRegistryPackRtForGPU(dynamic_records);
+    MaterialRegistryPackRtForGPU(dynamic_records, MATERIAL_MAX_TOTAL);
     if (surface_id >= 0) {
         CHECK((dynamic_records[surface_id].flags_misc[0] & MATERIAL_SURFACE_DETAIL) != 0u,
               "finished surface bit reaches GPU without new record fields");
@@ -213,6 +216,48 @@ int main() {
     // Sand (new material id 13) selects the oriented-cube algorithm (1).
     CHECK(MaterialMeshingAlgorithm(13) == 1, "sand(13) should select oriented cubes (1)");
     CHECK(MaterialRegistryCount() >= 14, "expected at least 14 materials after adding sand");
+
+    // Reproduce the count/pack interleaving that used to overwrite the heap.
+    const int old_count = MaterialRegistryCount();
+    MaterialDef extra{}; MaterialRegistryDefaultDynamicDef(&extra);
+    CHECK(MaterialRegistryDefineDynamic(&extra, "BetweenCountAndPack") >= old_count,
+          "registry grows after caller sizes its snapshot");
+    std::array<MaterialGpuRecord, MATERIAL_MAX_TOTAL> guarded;
+    std::memset(guarded.data(), 0xa5, sizeof(guarded));
+    MaterialGpuRecord sentinel; std::memset(&sentinel, 0xa5, sizeof(sentinel));
+    CHECK(MaterialRegistryPackRtForGPU(guarded.data(), old_count) == old_count &&
+          std::memcmp(&guarded[old_count], &sentinel, sizeof(sentinel)) == 0,
+          "RT packing never writes beyond stale caller capacity");
+    std::array<float, MATERIAL_MAX_TOTAL * MATERIAL_FLOATS_PER_DEF> legacy;
+    legacy.fill(-12345.0f);
+    CHECK(MaterialRegistryPackForGPU(legacy.data(), old_count) == old_count &&
+          legacy[old_count * MATERIAL_FLOATS_PER_DEF] == -12345.0f,
+          "legacy packing never writes beyond stale caller capacity");
+    CHECK(MaterialRegistryPackRtForGPU(nullptr, MATERIAL_MAX_TOTAL) == 0 &&
+          MaterialRegistryPackForGPU(nullptr, 0) == 0, "empty snapshots are safe");
+    MaterialRegistryResetDynamic();
+    extra.albedo[0] = .123f; extra.roughness = .456f;
+    std::atomic<bool> start{false};
+    std::thread writer([&] {
+        while (!start.load()) std::this_thread::yield();
+        for (int pass=0; pass<2000; ++pass) {
+            MaterialRegistryResetDynamic();
+            MaterialRegistryDefineDynamic(&extra, "ConcurrentSnapshot");
+        }
+    });
+    start.store(true);
+    for (int pass=0; pass<2000; ++pass) {
+        const int count = MaterialRegistryPackRtForGPU(guarded.data(), MATERIAL_MAX_TOTAL);
+        CHECK(count >= MaterialRegistryStaticCount() && count <= MATERIAL_MAX_TOTAL,
+              "concurrent snapshot count remains bounded");
+        if (count > MaterialRegistryStaticCount()) {
+            const auto& row = guarded[MaterialRegistryStaticCount()];
+            CHECK(row.base_roughness[0] == .123f && row.base_roughness[3] == .456f,
+                  "concurrent snapshot sees a fully published material");
+        }
+    }
+    writer.join();
+    MaterialRegistryResetDynamic();
 
     if (failures == 0) printf("All material_registry tests passed\n");
     return failures == 0 ? 0 : 1;

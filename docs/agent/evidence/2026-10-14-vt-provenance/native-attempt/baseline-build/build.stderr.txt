@@ -1,0 +1,57 @@
+CMake Warning in D:/matter-agent-artifacts/matter-engine-cpp/nimble-rapids-30/epoch8-230ea608/58289c187ef2565c7d0532fe28a8cfb903023e44/MatterEditor/build/cmake/windows-msvc/relwithdebinfo/CMakeFiles/CMakeScratch/TryCompile-g695fl/CMakeLists.txt:
+  The object file directory
+
+    D:/matter-agent-artifacts/matter-engine-cpp/nimble-rapids-30/epoch8-230ea608/58289c187ef2565c7d0532fe28a8cfb903023e44/MatterEditor/build/cmake/windows-msvc/relwithdebinfo/CMakeFiles/CMakeScratch/TryCompile-g695fl/CMakeFiles/cmTC_54759.dir/./
+
+  has 241 characters.  The maximum full path to an object file is 250
+  characters (see CMAKE_OBJECT_PATH_MAX).  Object file
+
+    CMakeCCompilerABI.c.obj
+
+  cannot be safely placed under this directory.  The build may not work
+  correctly.
+
+
+CMake Warning in D:/matter-agent-artifacts/matter-engine-cpp/nimble-rapids-30/epoch8-230ea608/58289c187ef2565c7d0532fe28a8cfb903023e44/MatterEditor/build/cmake/windows-msvc/relwithdebinfo/CMakeFiles/CMakeScratch/TryCompile-8j5me4/CMakeLists.txt:
+  The object file directory
+
+    D:/matter-agent-artifacts/matter-engine-cpp/nimble-rapids-30/epoch8-230ea608/58289c187ef2565c7d0532fe28a8cfb903023e44/MatterEditor/build/cmake/windows-msvc/relwithdebinfo/CMakeFiles/CMakeScratch/TryCompile-8j5me4/CMakeFiles/cmTC_fbc28.dir/./
+
+  has 241 characters.  The maximum full path to an object file is 250
+  characters (see CMAKE_OBJECT_PATH_MAX).  Object file
+
+    testCCompiler.c.obj
+
+  cannot be safely placed under this directory.  The build may not work
+  correctly.
+
+
+CMake Error at C:/Program Files/Microsoft Visual Studio/2022/Community/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/share/cmake-3.31/Modules/CMakeTestCCompiler.cmake:67 (message):
+  The C compiler
+
+    "C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.44.35207/bin/Hostx64/x64/cl.exe"
+
+  is not able to compile a simple test program.
+
+  It fails with the following output:
+
+    Change Dir: 'D:/matter-agent-artifacts/matter-engine-cpp/nimble-rapids-30/epoch8-230ea608/58289c187ef2565c7d0532fe28a8cfb903023e44/MatterEditor/build/cmake/windows-msvc/relwithdebinfo/CMakeFiles/CMakeScratch/TryCompile-8j5me4'
+    
+    Run Build Command(s): "C:/Program Files/Microsoft Visual Studio/2022/Community/Common7/IDE/CommonExtensions/Microsoft/CMake/Ninja/ninja.exe" -v cmTC_fbc28
+    [1/2] C:\PROGRA~1\MICROS~2\2022\COMMUN~1\VC\Tools\MSVC\1444~1.352\bin\Hostx64\x64\cl.exe  /nologo   /DWIN32 /D_WINDOWS  /Ob0 /Od /RTC1 -MDd -Zi /showIncludes /FoCMakeFiles\cmTC_fbc28.dir\testCCompiler.c.obj /FdCMakeFiles\cmTC_fbc28.dir\ /FS -c D:\matter-agent-artifacts\matter-engine-cpp\nimble-rapids-30\epoch8-230ea608\58289c187ef2565c7d0532fe28a8cfb903023e44\MatterEditor\build\cmake\windows-msvc\relwithdebinfo\CMakeFiles\CMakeScratch\TryCompile-8j5me4\testCCompiler.c
+    [2/2] C:\WINDOWS\system32\cmd.exe /C "cd . && "C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe" -E vs_link_exe --msvc-ver=1944 --intdir=CMakeFiles\cmTC_fbc28.dir --rc=C:\PROGRA~2\WI3CF2~1\10\bin\100261~1.0\x64\rc.exe --mt=C:\PROGRA~2\WI3CF2~1\10\bin\100261~1.0\x64\mt.exe --manifests  -- C:\PROGRA~1\MICROS~2\2022\COMMUN~1\VC\Tools\MSVC\1444~1.352\bin\Hostx64\x64\link.exe /nologo CMakeFiles\cmTC_fbc28.dir\testCCompiler.c.obj  /out:cmTC_fbc28.exe /implib:cmTC_fbc28.lib /pdb:cmTC_fbc28.pdb /version:0.0 /machine:x64  /debug /INCREMENTAL /subsystem:console  kernel32.lib user32.lib gdi32.lib winspool.lib shell32.lib ole32.lib oleaut32.lib uuid.lib comdlg32.lib advapi32.lib && cd ."
+    FAILED: cmTC_fbc28.exe 
+    C:\WINDOWS\system32\cmd.exe /C "cd . && "C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe" -E vs_link_exe --msvc-ver=1944 --intdir=CMakeFiles\cmTC_fbc28.dir --rc=C:\PROGRA~2\WI3CF2~1\10\bin\100261~1.0\x64\rc.exe --mt=C:\PROGRA~2\WI3CF2~1\10\bin\100261~1.0\x64\mt.exe --manifests  -- C:\PROGRA~1\MICROS~2\2022\COMMUN~1\VC\Tools\MSVC\1444~1.352\bin\Hostx64\x64\link.exe /nologo CMakeFiles\cmTC_fbc28.dir\testCCompiler.c.obj  /out:cmTC_fbc28.exe /implib:cmTC_fbc28.lib /pdb:cmTC_fbc28.pdb /version:0.0 /machine:x64  /debug /INCREMENTAL /subsystem:console  kernel32.lib user32.lib gdi32.lib winspool.lib shell32.lib ole32.lib oleaut32.lib uuid.lib comdlg32.lib advapi32.lib && cd ."
+    LINK Pass 1: command "C:\PROGRA~1\MICROS~2\2022\COMMUN~1\VC\Tools\MSVC\1444~1.352\bin\Hostx64\x64\link.exe /nologo CMakeFiles\cmTC_fbc28.dir\testCCompiler.c.obj /out:cmTC_fbc28.exe /implib:cmTC_fbc28.lib /pdb:cmTC_fbc28.pdb /version:0.0 /machine:x64 /debug /INCREMENTAL /subsystem:console kernel32.lib user32.lib gdi32.lib winspool.lib shell32.lib ole32.lib oleaut32.lib uuid.lib comdlg32.lib advapi32.lib /MANIFEST /MANIFESTFILE:CMakeFiles\cmTC_fbc28.dir/intermediate.manifest CMakeFiles\cmTC_fbc28.dir/manifest.res" failed (exit code 1104) with the following output:
+    LINK : fatal error LNK1104: cannot open file 'CMakeFiles\cmTC_fbc28.dir/intermediate.manifest'
+    ninja: build stopped: subcommand failed.
+    
+    
+
+  
+
+  CMake will not be able to correctly generate this project.
+Call Stack (most recent call first):
+  CMakeLists.txt:3 (project)
+
+

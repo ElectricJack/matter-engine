@@ -275,4 +275,7 @@ globalThis.Part = class Part {
   }
   biomeAt(x,z)    { return __biomeAt(x,z); }
 };
-)JS";
+)JS"
+#include "surface_base.js.inc"
+#include "finite_surface_base.js.inc"
+;

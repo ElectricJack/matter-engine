@@ -1,38 +1,31 @@
 #include "check.h"
+#include "memory_fixture_io.h"
+#include "part_bundle.h"
+#include "source_snapshot_modules.h"
+#include "embedded_world_modules.h"
 #include "script_host.h"
 #include <chrono>
 #include <filesystem>
-#include <fstream>
-#include <iterator>
 #include <set>
 #include <string>
 namespace fs = std::filesystem;
 namespace {
+const auto sources = std::make_shared<const matter::SourceSnapshot>(embedded_world_test_sources());
 struct Fixture {
-    fs::path original = fs::current_path();
-    fs::path root;
-    Fixture() {
-        root = fs::temp_directory_path() /
-               ("matter-source-evaluation-" +
-                std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
-        fs::create_directories(root / "shared-lib");
-        fs::current_path(root);
-    }
-    ~Fixture() {
-        std::error_code ignored;
-        fs::current_path(original, ignored);
-        fs::remove_all(root, ignored);
-    }
+    const fs::path original;
+    const fs::path root = "runtime/solid-source";
+    std::shared_ptr<matter::test::MemoryCacheByteStorage> storage =
+        std::make_shared<matter::test::MemoryCacheByteStorage>();
     std::set<std::string> files() const {
         std::set<std::string> result;
-        for (const auto &entry : fs::recursive_directory_iterator(root))
-            result.insert(entry.path().string());
+        for (const auto& entry : storage->entries()) result.insert(entry.first);
         return result;
     }
 };
-std::string read(const fs::path &p) {
-    std::ifstream f(p, std::ios::binary);
-    return {std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>()};
+std::string read(const fs::path& path) {
+    std::string source;
+    sources->read(path.generic_string(), source);
+    return source;
 }
 std::string solid(const std::string &before = "", const std::string &after = "",
                   const std::string &statics = "") {
@@ -44,7 +37,9 @@ std::string solid(const std::string &before = "", const std::string &after = "",
 }
 void tests() {
     Fixture fixture;
+    part_bundle::ScopedStorage scope(fixture.storage);
     script_host::ScriptHost host;
+    host.set_module_sources(std::vector<module_resolver::ResolvedModule>{});
     unsigned gpu_calls = 0;
     host.set_solid_source_baker([&](const gpu_meshing::SolidJob &, gpu_meshing::MeshResult &,
                                     gpu_meshing::SolidStats &, gpu_meshing::Error &,
@@ -105,7 +100,9 @@ void tests() {
 
     host.set_shared_lib_roots({(fixture.original / "projects/world_demo/shared-lib").string(),
                                (fixture.original / "MatterEngine3/shared-lib").string()});
-    const auto source = read(fixture.original / "projects/world_demo/objects/CastleStoneSource.js");
+    host.set_module_sources(matter::source_snapshot_modules(*sources,
+        {"projects/world_demo/shared-lib", "MatterEngine3/shared-lib"}));
+    const auto source = read(fixture.original / "projects/world_demo/objects/castle/materials/CastleStoneSource.js");
     CHECK(!source.empty(), "actual eight-recipe source exists (run from repo root)");
     std::set<uint64_t> identities, fields;
     for (unsigned seed = 0; seed < 8 && !source.empty(); ++seed) {
@@ -126,25 +123,27 @@ void tests() {
     }
     CHECK(identities.size() == 8 && fields.size() == 8, "seed affects source and field identities");
     const fs::path dependency = fixture.root / "shared-lib/value.js";
-    {
-        std::ofstream f(dependency);
-        f << "export const radius=.1;";
-    }
+    matter::SourceSnapshot::Files dependencies{{dependency.generic_string(), "export const radius=.1;"}};
+    auto bind_dependency = [&] {
+        host.set_module_sources(matter::source_snapshot_modules(
+            matter::SourceSnapshot(dependencies), {(fixture.root / "shared-lib").generic_string()}));
+    };
+    bind_dependency();
     host.set_shared_lib_roots({(fixture.root / "shared-lib").string()});
     const std::string imported =
         "import {radius} from 'shared-lib/value';" +
         solid("", "", "").replace(solid().find("size:.1"), 7, "size:radius");
     CHECK(host.evaluate_solid_source(imported, "{}", result, error), error.message.c_str());
     auto old_hash = result.resolved_hash, old_field = result.recipe_digest;
-    {
-        std::ofstream f(dependency);
-        f << "export const radius=.11;";
-    }
+    dependencies[dependency.generic_string()] = "export const radius=.11;";
+    CHECK(host.evaluate_solid_source(imported, "{}", result, error) && result.resolved_hash == old_hash,
+          "source edits preserve the prior owned generation");
+    bind_dependency();
     host.clear_fold_cache();
     CHECK(host.evaluate_solid_source(imported, "{}", result, error), error.message.c_str());
     CHECK(result.resolved_hash != old_hash && result.recipe_digest != old_field,
           "selected shared source dependency invalidates identity and field");
-    CHECK(gpu_calls == 0 && !fs::exists(fixture.root / "parts"), "imports do not create artifacts");
+    CHECK(gpu_calls == 0 && fixture.storage->publication_count() == 0, "imports do not create artifacts");
 }
 } // namespace
 int main() {

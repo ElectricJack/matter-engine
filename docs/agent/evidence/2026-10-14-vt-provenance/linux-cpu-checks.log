@@ -1,0 +1,11 @@
+aq test: no interpreter found for / (no .venv, no resources.test_interpreters entry); using /usr/bin/python3.12
+aq test: slot 0 of 6, -n 6
+$ /usr/bin/python3.12 -m pytest --dist loadfile -m 'not perf and not migration and not slow and not tmux and not integration' -n 0 docs/agent/evidence/2026-10-14-vt-provenance/test_provenance.py /tmp/test_nimble_vt_cpu.py -q
+...                                                                      [100%]
+=============================== warnings summary ===============================
+../../../../../.local/lib/python3.12/site-packages/_pytest/cacheprovider.py:475
+  /home/jkern/.local/lib/python3.12/site-packages/_pytest/cacheprovider.py:475: PytestCacheWarning: could not create cache path /.pytest_cache/v/cache/nodeids: [Errno 13] Permission denied: '/pytest-cache-files-2mlxvsy8'
+    config.cache.set("cache/nodeids", sorted(self.cached_nodeids))
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+3 passed, 1 warning in 4.71s

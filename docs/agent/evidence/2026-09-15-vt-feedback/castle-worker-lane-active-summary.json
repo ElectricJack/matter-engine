@@ -1,0 +1,305 @@
+{
+  "purpose": "Native regression for VT worker profiler lane and cold-start scope attribution; not performance acceptance",
+  "source_manifest": "worker-lane-source.json",
+  "quantiles": "nearest rank on nonempty per-frame aggregate scope samples; inclusive parents/children are not additive",
+  "worker_lane_check": {
+    "samples": 60,
+    "recorded_lane_ids": [
+      2
+    ],
+    "pass": true
+  },
+  "vt_rows": 511,
+  "first_vt_serial": 0,
+  "last_vt_serial": 494,
+  "last_counters": {
+    "variants": 79,
+    "pool_used": 2765,
+    "pool_capacity": 33024,
+    "pinned": 79,
+    "queue": 0,
+    "dirty_pages": 0,
+    "fills_total": 3695,
+    "evictions_total": 0,
+    "fills_failed_total": 0,
+    "fills_stale_total": 0,
+    "invalidations_total": 2
+  },
+  "scope_samples": [
+    {
+      "thread_id": 1,
+      "name": "cull.vt_begin",
+      "records": 494,
+      "sum_ms": 204.6351,
+      "p50_ms": 0.38239999999999996,
+      "p95_ms": 0.7002,
+      "p99_ms": 1.0723,
+      "max_ms": 1.2655999999999998
+    },
+    {
+      "thread_id": 1,
+      "name": "cull.vt_demand",
+      "records": 494,
+      "sum_ms": 25.7622,
+      "p50_ms": 0.055600000000000004,
+      "p95_ms": 0.1032,
+      "p99_ms": 0.15230000000000002,
+      "max_ms": 0.2383
+    },
+    {
+      "thread_id": 1,
+      "name": "draw.vt_requests",
+      "records": 494,
+      "sum_ms": 79.1388,
+      "p50_ms": 0.0016,
+      "p95_ms": 0.31489999999999996,
+      "p99_ms": 1.7102,
+      "max_ms": 52.6239
+    },
+    {
+      "thread_id": 1,
+      "name": "raster.vt_post",
+      "records": 494,
+      "sum_ms": 14.3328,
+      "p50_ms": 0.0255,
+      "p95_ms": 0.0502,
+      "p99_ms": 0.11309999999999999,
+      "max_ms": 0.16169999999999998
+    },
+    {
+      "thread_id": 1,
+      "name": "raster.vt_pre",
+      "records": 494,
+      "sum_ms": 543.9366,
+      "p50_ms": 0.8552000000000001,
+      "p95_ms": 2.3828,
+      "p99_ms": 4.2904,
+      "max_ms": 18.955099999999998
+    },
+    {
+      "thread_id": 1,
+      "name": "vt.candidates",
+      "records": 465,
+      "sum_ms": 35.7331,
+      "p50_ms": 0.0635,
+      "p95_ms": 0.1718,
+      "p99_ms": 0.3004,
+      "max_ms": 0.4953
+    },
+    {
+      "thread_id": 1,
+      "name": "vt.collect",
+      "records": 493,
+      "sum_ms": 1.9006,
+      "p50_ms": 0.003,
+      "p95_ms": 0.0068,
+      "p99_ms": 0.011800000000000001,
+      "max_ms": 0.29760000000000003
+    },
+    {
+      "thread_id": 1,
+      "name": "vt.descriptors",
+      "records": 493,
+      "sum_ms": 17.7623,
+      "p50_ms": 0.0343,
+      "p95_ms": 0.068,
+      "p99_ms": 0.1129,
+      "max_ms": 0.136
+    },
+    {
+      "thread_id": 1,
+      "name": "vt.drain_feedback",
+      "records": 493,
+      "sum_ms": 150.2123,
+      "p50_ms": 0.2767,
+      "p95_ms": 0.5477000000000001,
+      "p99_ms": 0.7817000000000001,
+      "max_ms": 1.0722
+    },
+    {
+      "thread_id": 1,
+      "name": "vt.enrich",
+      "records": 491,
+      "sum_ms": 0.3269,
+      "p50_ms": 0.0005,
+      "p95_ms": 0.0014,
+      "p99_ms": 0.0027,
+      "max_ms": 0.0197
+    },
+    {
+      "thread_id": 1,
+      "name": "vt.fb_dedup",
+      "records": 493,
+      "sum_ms": 12.0618,
+      "p50_ms": 0.0218,
+      "p95_ms": 0.0371,
+      "p99_ms": 0.0418,
+      "max_ms": 0.0799
+    },
+    {
+      "thread_id": 1,
+      "name": "vt.fb_queue",
+      "records": 490,
+      "sum_ms": 68.9832,
+      "p50_ms": 0.1145,
+      "p95_ms": 0.2864,
+      "p99_ms": 0.3797,
+      "max_ms": 0.473
+    },
+    {
+      "thread_id": 1,
+      "name": "vt.fb_scan",
+      "records": 491,
+      "sum_ms": 63.043,
+      "p50_ms": 0.1215,
+      "p95_ms": 0.268,
+      "p99_ms": 0.4155,
+      "max_ms": 0.6297999999999999
+    },
+    {
+      "thread_id": 1,
+      "name": "vt.feedback_target",
+      "records": 493,
+      "sum_ms": 1.1995,
+      "p50_ms": 0.0007,
+      "p95_ms": 0.0015,
+      "p99_ms": 0.0027,
+      "max_ms": 0.836
+    },
+    {
+      "thread_id": 1,
+      "name": "vt.fill",
+      "records": 465,
+      "sum_ms": 304.687,
+      "p50_ms": 0.4249,
+      "p95_ms": 1.5932,
+      "p99_ms": 3.7296,
+      "max_ms": 18.186700000000002
+    },
+    {
+      "thread_id": 1,
+      "name": "vt.fill_select",
+      "records": 466,
+      "sum_ms": 51.1062,
+      "p50_ms": 0.0947,
+      "p95_ms": 0.2205,
+      "p99_ms": 0.29869999999999997,
+      "max_ms": 0.6974
+    },
+    {
+      "thread_id": 1,
+      "name": "vt.geometry_upload",
+      "records": 60,
+      "sum_ms": 32.3324,
+      "p50_ms": 0.179,
+      "p95_ms": 1.5788,
+      "p99_ms": 8.5716,
+      "max_ms": 8.5716
+    },
+    {
+      "thread_id": 1,
+      "name": "vt.invalidate_dependencies",
+      "records": 2,
+      "sum_ms": 0.41159999999999997,
+      "p50_ms": 0.19169999999999998,
+      "p95_ms": 0.2199,
+      "p99_ms": 0.2199,
+      "max_ms": 0.2199
+    },
+    {
+      "thread_id": 1,
+      "name": "vt.mesh_alloc",
+      "records": 60,
+      "sum_ms": 42.1363,
+      "p50_ms": 0.5426,
+      "p95_ms": 1.3609,
+      "p99_ms": 3.1225,
+      "max_ms": 3.1225
+    },
+    {
+      "thread_id": 1,
+      "name": "vt.mesh_copy",
+      "records": 62,
+      "sum_ms": 16.3951,
+      "p50_ms": 0.1238,
+      "p95_ms": 1.3477000000000001,
+      "p99_ms": 2.1518,
+      "max_ms": 2.1518
+    },
+    {
+      "thread_id": 1,
+      "name": "vt.mesh_entry",
+      "records": 465,
+      "sum_ms": 98.7723,
+      "p50_ms": 0.0028,
+      "p95_ms": 1.0892,
+      "p99_ms": 2.7688,
+      "max_ms": 16.5852
+    },
+    {
+      "thread_id": 1,
+      "name": "vt.push_inputs",
+      "records": 493,
+      "sum_ms": 1.0189,
+      "p50_ms": 0.001,
+      "p95_ms": 0.002,
+      "p99_ms": 0.0035,
+      "max_ms": 0.2815
+    },
+    {
+      "thread_id": 1,
+      "name": "vt.residency_begin",
+      "records": 493,
+      "sum_ms": 153.17,
+      "p50_ms": 0.2822,
+      "p95_ms": 0.5575,
+      "p99_ms": 0.7936,
+      "max_ms": 1.0865
+    },
+    {
+      "thread_id": 1,
+      "name": "vt.surface_upload",
+      "records": 60,
+      "sum_ms": 14.3741,
+      "p50_ms": 0.07890000000000001,
+      "p95_ms": 0.6675,
+      "p99_ms": 4.3612,
+      "max_ms": 4.3612
+    },
+    {
+      "thread_id": 1,
+      "name": "vt.table_upload",
+      "records": 493,
+      "sum_ms": 25.8915,
+      "p50_ms": 0.0426,
+      "p95_ms": 0.1144,
+      "p99_ms": 0.1978,
+      "max_ms": 0.2532
+    },
+    {
+      "thread_id": 1,
+      "name": "vt.wait_idle",
+      "records": 3,
+      "sum_ms": 0.2439,
+      "p50_ms": 0.0531,
+      "p95_ms": 0.1519,
+      "p99_ms": 0.1519,
+      "max_ms": 0.1519
+    },
+    {
+      "thread_id": 2,
+      "name": "vt.cpu_prepare",
+      "records": 60,
+      "sum_ms": 138.731,
+      "p50_ms": 0.4738,
+      "p95_ms": 14.851,
+      "p99_ms": 38.3544,
+      "max_ms": 38.3544
+    }
+  ],
+  "limitations": [
+    "Validation enabled; no settled/active/edit performance gate is claimed.",
+    "Scope samples sum work per frame, not individual Vulkan API calls.",
+    "Startup work and retained page sets vary across these short runs; this is not an isolated speedup or memory comparison."
+  ]
+}
