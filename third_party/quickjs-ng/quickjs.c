@@ -6737,7 +6737,7 @@ static void build_backtrace(JSContext *ctx, JSValueConst error_val,
                             int line_num, int col_num, int backtrace_flags)
 {
     JSStackFrame *sf, *sf_start;
-    JSValue stack, prepare, saved_exception;
+    JSValue stack, prepare, saved_exception, error_obj;
     DynBuf dbuf;
     const char *func_name_str;
     const char *str1;
@@ -6754,6 +6754,11 @@ static void build_backtrace(JSContext *ctx, JSValueConst error_val,
     if (rt->in_build_stack_trace)
         return;
     rt->in_build_stack_trace = true;
+    /* Callers pass the pending exception as a borrowed error_val. An
+       allocation failure below (OOM) calls JS_Throw, which frees that
+       pending exception; keep our own reference until the end
+       (quickjs-ng upstream fix). */
+    error_obj = js_dup(error_val);
 
     // Save exception because conversion to double may fail.
     saved_exception = JS_GetException(ctx);
@@ -6899,7 +6904,7 @@ static void build_backtrace(JSContext *ctx, JSValueConst error_val,
             JS_FreeValue(ctx, csd[k].func_name);
         }
         JSValueConst args[] = {
-            error_val,
+            error_obj,
             stack,
         };
         JSValue stack2 = JS_Call(ctx, prepare, ctx->error_ctor, countof(args), args);
@@ -6920,13 +6925,14 @@ static void build_backtrace(JSContext *ctx, JSValueConst error_val,
 
     if (JS_IsUndefined(ctx->error_back_trace))
         ctx->error_back_trace = js_dup(stack);
-    if (has_filter_func || can_add_backtrace(error_val)) {
-        JS_DefinePropertyValue(ctx, error_val, JS_ATOM_stack, stack,
+    if (has_filter_func || can_add_backtrace(error_obj)) {
+        JS_DefinePropertyValue(ctx, error_obj, JS_ATOM_stack, stack,
                                JS_PROP_WRITABLE | JS_PROP_CONFIGURABLE);
     } else {
         JS_FreeValue(ctx, stack);
     }
 
+    JS_FreeValue(ctx, error_obj);
     rt->in_build_stack_trace = false;
 }
 
@@ -10533,9 +10539,12 @@ do {                                                    \
     res = __a;                                          \
 } while (0)
 
-/* a != 0 */
+/* returns JS_LIMB_BITS for a == 0: clz32(0) is undefined and the top limb
+   of a normalized BigInt can be a zero sign limb (quickjs-ng upstream fix) */
 static inline js_limb_t js_limb_clz(js_limb_t a)
 {
+    if (!a)
+        return JS_LIMB_BITS;
     return clz32(a);
 }
 
@@ -11867,11 +11876,12 @@ static JSValue js_bigint_to_string1(JSContext *ctx, JSValueConst val, int radix)
                 bit_pos = i * log2_radix;
                 pos = bit_pos / JS_LIMB_BITS;
                 shift = bit_pos % JS_LIMB_BITS;
-                if (likely((shift + log2_radix) <= JS_LIMB_BITS)) {
-                    c = r->tab[pos] >> shift;
-                } else {
-                    c = (r->tab[pos] >> shift) |
-                        (r->tab[pos + 1] << (JS_LIMB_BITS - shift));
+                c = r->tab[pos] >> shift;
+                /* the last digit may straddle the top limb: never read
+                   past r->len (quickjs-ng upstream fix) */
+                if ((shift + log2_radix) > JS_LIMB_BITS &&
+                    (pos + 1) < r->len) {
+                    c |= r->tab[pos + 1] << (JS_LIMB_BITS - shift);
                 }
                 c &= (radix - 1);
                 *--q = digits[c];
@@ -21862,7 +21872,7 @@ static void skip_shebang(const uint8_t **pp, const uint8_t *buf_end)
 }
 
 static inline int get_prev_opcode(JSFunctionDef *fd) {
-    if (fd->last_opcode_pos < 0)
+    if (fd->last_opcode_pos < 0 || dbuf_error(&fd->byte_code))
         return OP_invalid;
     else
         return fd->byte_code.buf[fd->last_opcode_pos];
@@ -21923,7 +21933,11 @@ static void emit_op(JSParseState *s, uint8_t val)
 
 static void emit_atom(JSParseState *s, JSAtom name)
 {
-    emit_u32(s, JS_DupAtom(s->ctx, name));
+    DynBuf *bc = &s->cur_func->byte_code;
+    if (dbuf_realloc(bc, bc->size + 4))
+        return; /* not enough memory : don't duplicate the atom */
+    put_u32(bc->buf + bc->size, JS_DupAtom(s->ctx, name));
+    bc->size += 4;
 }
 
 static int update_label(JSFunctionDef *s, int label, int delta)
@@ -21937,29 +21951,33 @@ static int update_label(JSFunctionDef *s, int label, int delta)
     return ls->ref_count;
 }
 
-static int new_label_fd(JSFunctionDef *fd, int label)
+static int new_label_fd(JSFunctionDef *fd)
 {
+    int label;
     LabelSlot *ls;
 
-    if (label < 0) {
-        if (js_resize_array(fd->ctx, (void *)&fd->label_slots,
+    if (js_resize_array(fd->ctx, (void *)&fd->label_slots,
                             sizeof(fd->label_slots[0]),
                             &fd->label_size, fd->label_count + 1))
-            return -1;
-        label = fd->label_count++;
-        ls = &fd->label_slots[label];
-        ls->ref_count = 0;
-        ls->pos = -1;
-        ls->pos2 = -1;
-        ls->addr = -1;
-        ls->first_reloc = NULL;
-    }
+        return -1;
+    label = fd->label_count++;
+    ls = &fd->label_slots[label];
+    ls->ref_count = 0;
+    ls->pos = -1;
+    ls->pos2 = -1;
+    ls->addr = -1;
+    ls->first_reloc = NULL;
     return label;
 }
 
 static int new_label(JSParseState *s)
 {
-    return new_label_fd(s->cur_func, -1);
+    int label;
+    label = new_label_fd(s->cur_func);
+    if (unlikely(label < 0)) {
+        dbuf_set_error(&s->cur_func->byte_code);
+    }
+    return label;
 }
 
 /* don't update the last opcode and don't emit line number info */
@@ -21987,8 +22005,11 @@ static int emit_label(JSParseState *s, int label)
 static int emit_goto(JSParseState *s, int opcode, int label)
 {
     if (js_is_live_code(s)) {
-        if (label < 0)
+        if (label < 0) {
             label = new_label(s);
+            if (label < 0)
+                return -1;
+        }
         emit_op(s, opcode);
         emit_u32(s, label);
         s->cur_func->label_slots[label].ref_count++;
@@ -22003,8 +22024,10 @@ static int cpool_add(JSParseState *s, JSValue val)
     JSFunctionDef *fd = s->cur_func;
 
     if (js_resize_array(s->ctx, (void *)&fd->cpool, sizeof(fd->cpool[0]),
-                        &fd->cpool_size, fd->cpool_count + 1))
+                        &fd->cpool_size, fd->cpool_count + 1)) {
+        JS_FreeValue(s->ctx, val);
         return -1;
+    }
     fd->cpool[fd->cpool_count++] = val;
     return fd->cpool_count - 1;
 }
@@ -22982,7 +23005,7 @@ static int js_parse_skip_parens_token(JSParseState *s, int *pbits, bool no_line_
                 s->last_line_num = s->token.line_num;
                 s->last_col_num = s->token.col_num;
                 if (js_parse_template_part(s, s->buf_ptr))
-                    goto done;
+                    goto fail;
                 goto handle_template;
             } else if (c != '{') {
                 goto done;
@@ -23022,10 +23045,8 @@ static int js_parse_skip_parens_token(JSParseState *s, int *pbits, bool no_line_
         parse_regexp:
             if (is_regexp_allowed(last_tok)) {
                 s->buf_ptr -= tok_len;
-                if (js_parse_regexp(s)) {
-                    /* XXX: should clear the exception */
-                    goto done;
-                }
+                if (js_parse_regexp(s))
+                    goto fail;
             }
             break;
         }
@@ -23037,10 +23058,8 @@ static int js_parse_skip_parens_token(JSParseState *s, int *pbits, bool no_line_
         } else {
             last_tok = s->token.val;
         }
-        if (next_token(s)) {
-            /* XXX: should clear the exception generated by next_token() */
-            break;
-        }
+        if (next_token(s))
+            goto fail;
         if (level <= 1) {
             tok = s->token.val;
             if (token_is_pseudo_keyword(s, JS_ATOM_of))
@@ -23050,6 +23069,11 @@ static int js_parse_skip_parens_token(JSParseState *s, int *pbits, bool no_line_
             break;
         }
     }
+    goto done;
+ fail:
+    /* This speculative scan rewinds and reparses the source. Discard its
+       exception; the real parse will report any persistent error. */
+    JS_FreeValue(s->ctx, JS_GetException(s->ctx));
  done:
     if (pbits) {
         *pbits = bits;
@@ -23332,7 +23356,7 @@ static __exception int emit_class_init_start(JSParseState *s,
     return 0;
 }
 
-static void emit_class_init_end(JSParseState *s, ClassFieldsDef *cf)
+static __exception int emit_class_init_end(JSParseState *s, ClassFieldsDef *cf)
 {
     int cpool_idx;
 
@@ -23341,10 +23365,13 @@ static void emit_class_init_end(JSParseState *s, ClassFieldsDef *cf)
     s->cur_func = s->cur_func->parent;
 
     cpool_idx = cpool_add(s, JS_NULL);
+    if (cpool_idx < 0)
+        return -1;
     cf->fields_init_fd->parent_cpool_idx = cpool_idx;
     emit_op(s, OP_fclosure);
     emit_u32(s, cpool_idx);
     emit_op(s, OP_set_home_object);
+    return 0;
 }
 
 static void emit_return(JSParseState *s, bool hasval);
@@ -23376,7 +23403,10 @@ static __exception int js_parse_class_default_ctor(JSParseState *s,
     fd->has_this_binding = true;
     fd->new_target_allowed = true;
 
-    push_scope(s);  /* enter body scope */
+    if (push_scope(s) < 0) { /* enter body scope */
+        s->cur_func = fd->parent;
+        return -1;
+    }
     fd->body_scope = fd->scope_level;
     if (has_super) {
         fd->is_derived_class_constructor = true;
@@ -23408,6 +23438,8 @@ static __exception int js_parse_class_default_ctor(JSParseState *s,
     int idx;
     /* the real object will be set at the end of the compilation */
     idx = cpool_add(s, JS_NULL);
+    if (idx < 0)
+        return -1;
     fd->parent_cpool_idx = idx;
 
     return 0;
@@ -23454,7 +23486,8 @@ static __exception int js_parse_class(JSParseState *s, bool is_class_expr,
         class_var_name = JS_DupAtom(ctx, class_var_name);
     }
 
-    push_scope(s);
+    if (push_scope(s) < 0)
+        goto fail;
 
     if (s->token.val == TOK_EXTENDS) {
         class_flags = JS_DEFINE_CLASS_HAS_HERITAGE;
@@ -23477,7 +23510,8 @@ static __exception int js_parse_class(JSParseState *s, bool is_class_expr,
         goto fail;
 
     /* this scope contains the private fields */
-    push_scope(s);
+    if (push_scope(s) < 0)
+        goto fail;
 
     emit_op(s, OP_push_const);
     ctor_cpool_offset = fd->byte_code.size;
@@ -23539,7 +23573,8 @@ static __exception int js_parse_class(JSParseState *s, bool is_class_expr,
                     goto fail;
                 }
                 // stack is now: fclosure
-                push_scope(s);
+                if (push_scope(s) < 0)
+                    goto fail;
                 emit_op(s, OP_scope_get_var);
                 emit_atom(s, JS_ATOM_this);
                 emit_u16(s, 0);
@@ -23821,6 +23856,11 @@ static __exception int js_parse_class(JSParseState *s, bool is_class_expr,
         if (js_parse_class_default_ctor(s, class_flags & JS_DEFINE_CLASS_HAS_HERITAGE, &ctor_fd))
             goto fail;
     }
+    /* Patching requires the placeholder to have been fully emitted. */
+    if (dbuf_error(&fd->byte_code)) {
+        JS_ThrowOutOfMemory(ctx);
+        goto fail;
+    }
     /* patch the constant pool index for the constructor */
     put_u32(fd->byte_code.buf + ctor_cpool_offset, ctor_fd->parent_cpool_idx);
 
@@ -23853,6 +23893,10 @@ static __exception int js_parse_class(JSParseState *s, bool is_class_expr,
             }
             /* patch the start of the function to enable the
                OP_add_brand_instance code */
+            if (dbuf_error(&cf->fields_init_fd->byte_code)) {
+                JS_ThrowOutOfMemory(ctx);
+                goto fail;
+            }
             cf->fields_init_fd->byte_code.buf[cf->brand_push_pos] = OP_push_true;
         }
 
@@ -23863,7 +23907,8 @@ static __exception int js_parse_class(JSParseState *s, bool is_class_expr,
         if (var_idx < 0)
             goto fail;
         if (cf->fields_init_fd) {
-            emit_class_init_end(s, cf);
+            if (emit_class_init_end(s, cf))
+                goto fail;
         } else {
             emit_op(s, OP_undefined);
         }
@@ -23886,7 +23931,8 @@ static __exception int js_parse_class(JSParseState *s, bool is_class_expr,
     if (class_fields[1].fields_init_fd != NULL) {
         ClassFieldsDef *cf = &class_fields[1];
         emit_op(s, OP_dup);
-        emit_class_init_end(s, cf);
+        if (emit_class_init_end(s, cf))
+            goto fail;
         emit_op(s, OP_call_method);
         emit_u16(s, 0);
         emit_op(s, OP_drop);
@@ -24123,6 +24169,8 @@ static __exception int get_lvalue(JSParseState *s, int *popcode, int *pscope,
         switch(opcode) {
         case OP_scope_get_var:
             label = new_label(s);
+            if (label < 0)
+                return -1;
             emit_op(s, OP_scope_make_ref);
             emit_atom(s, name);
             emit_u32(s, label);
@@ -24158,6 +24206,8 @@ static __exception int get_lvalue(JSParseState *s, int *popcode, int *pscope,
         switch(opcode) {
         case OP_scope_get_var:
             label = new_label(s);
+            if (label < 0)
+                return -1;
             emit_op(s, OP_scope_make_ref);
             emit_atom(s, name);
             emit_u32(s, label);
@@ -26521,7 +26571,8 @@ static __exception int js_parse_block(JSParseState *s)
     if (js_parse_expect(s, '{'))
         return -1;
     if (s->token.val != '}') {
-        push_scope(s);
+        if (push_scope(s) < 0)
+            return -1;
         for(;;) {
             if (js_parse_statement_or_decl(s, DECL_MASK_ALL))
                 return -1;
@@ -26704,7 +26755,8 @@ static __exception int js_parse_for_in_of(JSParseState *s, int label_name,
     /* create scope for the lexical variables declared in the enumeration
        expressions. XXX: Not completely correct because of weird capturing
        semantics in `for (i of o) a.push(function(){return i})` */
-    push_scope(s);
+    if (push_scope(s) < 0)
+        return -1;
 
     /* local for_in scope starts here so individual elements
        can be closed in statement. */
@@ -27026,7 +27078,8 @@ static __exception int js_parse_statement_or_decl(JSParseState *s,
             if (next_token(s))
                 goto fail;
             /* create a new scope for `let f;if(1) function f(){}` */
-            push_scope(s);
+            if (push_scope(s) < 0)
+                goto fail;
             set_eval_ret_undefined(s);
             if (js_parse_expr_paren(s))
                 goto fail;
@@ -27162,7 +27215,8 @@ static __exception int js_parse_statement_or_decl(JSParseState *s,
 
             /* create scope for the lexical variables declared in the initial,
                test and increment expressions */
-            push_scope(s);
+            if (push_scope(s) < 0)
+                goto fail;
             /* initial expression */
             tok = s->token.val;
             if (tok != ';') {
@@ -27303,7 +27357,8 @@ static __exception int js_parse_statement_or_decl(JSParseState *s,
             if (js_parse_expr_paren(s))
                 goto fail;
 
-            push_scope(s);
+            if (push_scope(s) < 0)
+                goto fail;
             label_break = new_label(s);
             push_break_entry(s->cur_func, &break_entry,
                              label_name, label_break, -1, 1);
@@ -27373,6 +27428,10 @@ static __exception int js_parse_statement_or_decl(JSParseState *s,
             }
             if (js_parse_expect(s, '}'))
                 goto fail;
+            if (dbuf_error(&s->cur_func->byte_code)) {
+                JS_ThrowOutOfMemory(s->ctx);
+                goto fail;
+            }
             if (default_label_pos >= 0) {
                 /* Ugly patch for the the `default` label, shameful and risky */
                 put_u32(s->cur_func->byte_code.buf + default_label_pos,
@@ -27428,7 +27487,8 @@ static __exception int js_parse_statement_or_decl(JSParseState *s,
                 if (next_token(s))
                     goto fail;
 
-                push_scope(s);  /* catch variable */
+                if (push_scope(s) < 0)  /* catch variable */
+                    goto fail;
                 emit_label(s, label_catch);
 
                 if (s->token.val == '{') {
@@ -27464,7 +27524,8 @@ static __exception int js_parse_statement_or_decl(JSParseState *s,
                 /* XXX: should keep the address to nop it out if there is no finally block */
                 emit_goto(s, OP_catch, label_catch2);
 
-                push_scope(s);  /* catch block */
+                if (push_scope(s) < 0)  /* catch block */
+                    goto fail;
                 push_break_entry(s->cur_func, &block_env, JS_ATOM_NULL,
                                  -1, -1, 1);
                 block_env.label_finally = label_finally;
@@ -27561,7 +27622,8 @@ static __exception int js_parse_statement_or_decl(JSParseState *s,
             if (js_parse_expr_paren(s))
                 goto fail;
 
-            push_scope(s);
+            if (push_scope(s) < 0)
+                goto fail;
             with_idx = define_var(s, s->cur_func, JS_ATOM__with_,
                                   JS_VAR_DEF_WITH);
             if (with_idx < 0)
@@ -29892,6 +29954,13 @@ static JSFunctionDef *js_new_function_def(JSContext *ctx,
     if (!fd)
         return NULL;
 
+    /* Acquire the filename before linking a partially initialized child. */
+    fd->filename = JS_NewAtom(ctx, filename);
+    if (fd->filename == JS_ATOM_NULL) {
+        js_free(ctx, fd);
+        return NULL;
+    }
+
     fd->ctx = ctx;
     init_list_head(&fd->child_list);
 
@@ -29930,7 +29999,6 @@ static JSFunctionDef *js_new_function_def(JSContext *ctx,
     fd->scope_first = -1;
     fd->body_scope = -1;
 
-    fd->filename = JS_NewAtom(ctx, filename);
     fd->line_num = line_num;
     fd->col_num = col_num;
 
@@ -29966,6 +30034,8 @@ static void free_bytecode_atoms(JSRuntime *rt,
         case OP_FMT_atom_u16:
         case OP_FMT_atom_label_u8:
         case OP_FMT_atom_label_u16:
+            if ((pos + 1 + 4) > bc_len)
+                break; /* may happen if there is not enough memory when emiting bytecode */
             atom = get_u32(bc_buf + pos + 1);
             JS_FreeAtomRT(rt, atom);
             break;
@@ -30655,6 +30725,21 @@ static int optimize_scope_make_ref(JSContext *ctx, JSFunctionDef *s,
     return pos_next;
 }
 
+/* These compiler writes transfer an owned atom reference. If the output
+   buffer failed, no instruction owns that reference, so release it here. */
+static void put_atom(JSContext *ctx, DynBuf *bc, JSAtom atom)
+{
+    if (dbuf_put_u32(bc, atom))
+        JS_FreeAtom(ctx, atom);
+}
+
+static void put_bytecode(JSContext *ctx, DynBuf *bc,
+                         const uint8_t *buf, int len)
+{
+    if (dbuf_put(bc, buf, len))
+        free_bytecode_atoms(ctx->rt, buf, len, false);
+}
+
 static int optimize_scope_make_global_ref(JSContext *ctx, JSFunctionDef *s,
                                           DynBuf *bc, uint8_t *bc_buf,
                                           LabelSlot *ls, int pos_next,
@@ -30670,13 +30755,13 @@ static int optimize_scope_make_global_ref(JSContext *ctx, JSFunctionDef *s,
            expression */
         /* XXX: need an extra OP_true if destructuring an array */
         dbuf_putc(bc, OP_check_var);
-        dbuf_put_u32(bc, JS_DupAtom(ctx, var_name));
+        put_atom(ctx, bc, JS_DupAtom(ctx, var_name));
     } else {
         /* XXX: need 2 extra OP_true if destructuring an array */
     }
     if (bc_buf[pos_next] == OP_get_ref_value) {
         dbuf_putc(bc, OP_get_var);
-        dbuf_put_u32(bc, JS_DupAtom(ctx, var_name));
+        put_atom(ctx, bc, JS_DupAtom(ctx, var_name));
         pos_next++;
     }
     /* remove the OP_label to make room for replacement */
@@ -30736,6 +30821,7 @@ static int add_var_this(JSContext *ctx, JSFunctionDef *fd)
     return idx;
 }
 
+/* Return -1 if absent, -2 on allocation failure, or the variable index. */
 static int resolve_pseudo_var(JSContext *ctx, JSFunctionDef *s,
                                JSAtom var_name)
 {
@@ -30769,10 +30855,9 @@ static int resolve_pseudo_var(JSContext *ctx, JSFunctionDef *s,
         var_idx = s->this_var_idx;
         break;
     default:
-        var_idx = -1;
-        break;
+        return -1;
     }
-    return var_idx;
+    return var_idx < 0 ? -2 : var_idx;
 }
 
 /* test if 'var_name' is in the variable object on the stack. If is it
@@ -30782,15 +30867,21 @@ static void var_object_test(JSContext *ctx, JSFunctionDef *s,
                             int *plabel_done, bool is_with)
 {
     dbuf_putc(bc, get_with_scope_opcode(op));
-    dbuf_put_u32(bc, JS_DupAtom(ctx, var_name));
-    *plabel_done = new_label_fd(s, *plabel_done);
+    put_atom(ctx, bc, JS_DupAtom(ctx, var_name));
+    if (*plabel_done < 0) {
+        *plabel_done = new_label_fd(s);
+        if (*plabel_done < 0) {
+            dbuf_set_error(bc);
+            return;
+        }
+    }
     dbuf_put_u32(bc, *plabel_done);
     dbuf_putc(bc, is_with);
     update_label(s, *plabel_done, 1);
     s->jump_size++;
 }
 
-/* return the position of the next opcode */
+/* Return the next opcode position, or -1 on allocation failure. */
 static int resolve_scope_var(JSContext *ctx, JSFunctionDef *s,
                              JSAtom var_name, int scope_level, int op,
                              DynBuf *bc, uint8_t *bc_buf,
@@ -30819,7 +30910,7 @@ static int resolve_scope_var(JSContext *ctx, JSFunctionDef *s,
             if (op == OP_scope_put_var || op == OP_scope_make_ref) {
                 if (vd->is_const) {
                     dbuf_putc(bc, OP_throw_error);
-                    dbuf_put_u32(bc, JS_DupAtom(ctx, var_name));
+                    put_atom(ctx, bc, JS_DupAtom(ctx, var_name));
                     dbuf_putc(bc, JS_THROW_VAR_RO);
                     goto done;
                 }
@@ -30842,17 +30933,24 @@ static int resolve_scope_var(JSContext *ctx, JSFunctionDef *s,
             var_idx = find_var(ctx, s, var_name);
         }
 
-        if (var_idx < 0 && is_pseudo_var)
+        if (var_idx < 0 && is_pseudo_var) {
             var_idx = resolve_pseudo_var(ctx, s, var_name);
+            if (var_idx == -2)
+                return -1;
+        }
 
         if (var_idx < 0 && var_name == JS_ATOM_arguments &&
             s->has_arguments_binding) {
             /* 'arguments' pseudo variable */
             var_idx = add_arguments_var(ctx, s);
+            if (var_idx < 0)
+                return -1;
         }
         if (var_idx < 0 && s->is_func_expr && var_name == s->func_name) {
             /* add a new variable with the function name */
             var_idx = add_func_var(ctx, s, var_name);
+            if (var_idx < 0)
+                return -1;
         }
     }
     if (var_idx >= 0) {
@@ -30862,7 +30960,7 @@ static int resolve_scope_var(JSContext *ctx, JSFunctionDef *s,
             /* only happens when assigning a function expression name
                in strict mode */
             dbuf_putc(bc, OP_throw_error);
-            dbuf_put_u32(bc, JS_DupAtom(ctx, var_name));
+            put_atom(ctx, bc, JS_DupAtom(ctx, var_name));
             dbuf_putc(bc, JS_THROW_VAR_RO);
             goto done;
         }
@@ -30878,9 +30976,9 @@ static int resolve_scope_var(JSContext *ctx, JSFunctionDef *s,
                 dbuf_putc(bc, OP_get_loc);
                 dbuf_put_u16(bc, var_idx);
                 dbuf_putc(bc, OP_define_field);
-                dbuf_put_u32(bc, JS_DupAtom(ctx, var_name));
+                put_atom(ctx, bc, JS_DupAtom(ctx, var_name));
                 dbuf_putc(bc, OP_push_atom_value);
-                dbuf_put_u32(bc, JS_DupAtom(ctx, var_name));
+                put_atom(ctx, bc, JS_DupAtom(ctx, var_name));
             } else
             if (label_done == -1 && can_opt_put_ref_value(bc_buf, ls->pos)) {
                 int get_op;
@@ -30900,11 +30998,11 @@ static int resolve_scope_var(JSContext *ctx, JSFunctionDef *s,
                    a reference to the local variable */
                 if (var_idx & ARGUMENT_VAR_OFFSET) {
                     dbuf_putc(bc, OP_make_arg_ref);
-                    dbuf_put_u32(bc, JS_DupAtom(ctx, var_name));
+                    put_atom(ctx, bc, JS_DupAtom(ctx, var_name));
                     dbuf_put_u16(bc, var_idx - ARGUMENT_VAR_OFFSET);
                 } else {
                     dbuf_putc(bc, OP_make_loc_ref);
-                    dbuf_put_u32(bc, JS_DupAtom(ctx, var_name));
+                    put_atom(ctx, bc, JS_DupAtom(ctx, var_name));
                     dbuf_put_u16(bc, var_idx);
                 }
             }
@@ -30974,7 +31072,7 @@ static int resolve_scope_var(JSContext *ctx, JSFunctionDef *s,
                 if (op == OP_scope_put_var || op == OP_scope_make_ref) {
                     if (vd->is_const) {
                         dbuf_putc(bc, OP_throw_error);
-                        dbuf_put_u32(bc, JS_DupAtom(ctx, var_name));
+                        put_atom(ctx, bc, JS_DupAtom(ctx, var_name));
                         dbuf_putc(bc, JS_THROW_VAR_RO);
                         goto done;
                     }
@@ -30984,6 +31082,8 @@ static int resolve_scope_var(JSContext *ctx, JSFunctionDef *s,
             } else if (vd->var_name == JS_ATOM__with_ && !is_pseudo_var) {
                 vd->is_captured = 1;
                 idx = get_closure_var(ctx, s, fd, false, idx, vd->var_name, false, false, JS_VAR_NORMAL);
+                if (idx < 0)
+                    return -1;
                 if (idx >= 0) {
                     dbuf_putc(bc, OP_get_var_ref);
                     dbuf_put_u16(bc, idx);
@@ -31003,16 +31103,22 @@ static int resolve_scope_var(JSContext *ctx, JSFunctionDef *s,
         }
         if (is_pseudo_var) {
             var_idx = resolve_pseudo_var(ctx, fd, var_name);
+            if (var_idx == -2)
+                return -1;
             if (var_idx >= 0)
                 break;
         }
         if (var_name == JS_ATOM_arguments && fd->has_arguments_binding) {
             var_idx = add_arguments_var(ctx, fd);
+            if (var_idx < 0)
+                return -1;
             break;
         }
         if (fd->is_func_expr && fd->func_name == var_name) {
             /* add a new variable with the function name */
             var_idx = add_func_var(ctx, fd, var_name);
+            if (var_idx < 0)
+                return -1;
             break;
         }
 
@@ -31023,6 +31129,8 @@ static int resolve_scope_var(JSContext *ctx, JSFunctionDef *s,
             idx = get_closure_var(ctx, s, fd, false,
                                   fd->var_object_idx, vd->var_name,
                                   false, false, JS_VAR_NORMAL);
+            if (idx < 0)
+                return -1;
             dbuf_putc(bc, OP_get_var_ref);
             dbuf_put_u16(bc, idx);
             var_object_test(ctx, s, var_name, op, bc, &label_done, 0);
@@ -31035,6 +31143,8 @@ static int resolve_scope_var(JSContext *ctx, JSFunctionDef *s,
             idx = get_closure_var(ctx, s, fd, false,
                                   fd->arg_var_object_idx, vd->var_name,
                                   false, false, JS_VAR_NORMAL);
+            if (idx < 0)
+                return -1;
             dbuf_putc(bc, OP_get_var_ref);
             dbuf_put_u16(bc, idx);
             var_object_test(ctx, s, var_name, op, bc, &label_done, 0);
@@ -31059,6 +31169,8 @@ static int resolve_scope_var(JSContext *ctx, JSFunctionDef *s,
                                            cv->is_arg, idx1,
                                            cv->var_name, cv->is_const,
                                            cv->is_lexical, cv->var_kind);
+                    if (idx < 0)
+                        return -1;
                 } else {
                     idx = idx1;
                 }
@@ -31073,6 +31185,8 @@ static int resolve_scope_var(JSContext *ctx, JSFunctionDef *s,
                                            cv->is_arg, idx1,
                                            cv->var_name, false, false,
                                            JS_VAR_NORMAL);
+                    if (idx < 0)
+                        return -1;
                 } else {
                     idx = idx1;
                 }
@@ -31090,6 +31204,8 @@ static int resolve_scope_var(JSContext *ctx, JSFunctionDef *s,
             idx = get_closure_var(ctx, s, fd,
                                   true, var_idx - ARGUMENT_VAR_OFFSET,
                                   var_name, false, false, JS_VAR_NORMAL);
+            if (idx < 0)
+                return -1;
         } else {
             fd->vars[var_idx].is_captured = 1;
             idx = get_closure_var(ctx, s, fd,
@@ -31098,13 +31214,15 @@ static int resolve_scope_var(JSContext *ctx, JSFunctionDef *s,
                                   fd->vars[var_idx].is_const,
                                   fd->vars[var_idx].is_lexical,
                                   fd->vars[var_idx].var_kind);
+            if (idx < 0)
+                return -1;
         }
         if (idx >= 0) {
         has_idx:
             if ((op == OP_scope_put_var || op == OP_scope_make_ref) &&
                 s->closure_var[idx].is_const) {
                 dbuf_putc(bc, OP_throw_error);
-                dbuf_put_u32(bc, JS_DupAtom(ctx, var_name));
+                put_atom(ctx, bc, JS_DupAtom(ctx, var_name));
                 dbuf_putc(bc, JS_THROW_VAR_RO);
                 goto done;
             }
@@ -31116,9 +31234,9 @@ static int resolve_scope_var(JSContext *ctx, JSFunctionDef *s,
                     dbuf_putc(bc, OP_get_var_ref);
                     dbuf_put_u16(bc, idx);
                     dbuf_putc(bc, OP_define_field);
-                    dbuf_put_u32(bc, JS_DupAtom(ctx, var_name));
+                    put_atom(ctx, bc, JS_DupAtom(ctx, var_name));
                     dbuf_putc(bc, OP_push_atom_value);
-                    dbuf_put_u32(bc, JS_DupAtom(ctx, var_name));
+                    put_atom(ctx, bc, JS_DupAtom(ctx, var_name));
                 } else
                 if (label_done == -1 &&
                     can_opt_put_ref_value(bc_buf, ls->pos)) {
@@ -31134,7 +31252,7 @@ static int resolve_scope_var(JSContext *ctx, JSFunctionDef *s,
                     /* Create a dummy object with a named slot that is
                        a reference to the closure variable */
                     dbuf_putc(bc, OP_make_var_ref_ref);
-                    dbuf_put_u32(bc, JS_DupAtom(ctx, var_name));
+                    put_atom(ctx, bc, JS_DupAtom(ctx, var_name));
                     dbuf_put_u16(bc, idx);
                 }
                 break;
@@ -31189,7 +31307,7 @@ static int resolve_scope_var(JSContext *ctx, JSFunctionDef *s,
                                                       pos_next, var_name);
         } else {
             dbuf_putc(bc, OP_make_var_ref);
-            dbuf_put_u32(bc, JS_DupAtom(ctx, var_name));
+            put_atom(ctx, bc, JS_DupAtom(ctx, var_name));
         }
         break;
     case OP_scope_get_ref:
@@ -31197,21 +31315,21 @@ static int resolve_scope_var(JSContext *ctx, JSFunctionDef *s,
            a reference to the global variable */
         dbuf_putc(bc, OP_undefined);
         dbuf_putc(bc, OP_get_var);
-        dbuf_put_u32(bc, JS_DupAtom(ctx, var_name));
+        put_atom(ctx, bc, JS_DupAtom(ctx, var_name));
         break;
     case OP_scope_get_var_undef:
     case OP_scope_get_var:
     case OP_scope_put_var:
         dbuf_putc(bc, OP_get_var_undef + (op - OP_scope_get_var_undef));
-        dbuf_put_u32(bc, JS_DupAtom(ctx, var_name));
+        put_atom(ctx, bc, JS_DupAtom(ctx, var_name));
         break;
     case OP_scope_put_var_init:
         dbuf_putc(bc, OP_put_var_init);
-        dbuf_put_u32(bc, JS_DupAtom(ctx, var_name));
+        put_atom(ctx, bc, JS_DupAtom(ctx, var_name));
         break;
     case OP_scope_delete_var:
         dbuf_putc(bc, OP_delete_var);
-        dbuf_put_u32(bc, JS_DupAtom(ctx, var_name));
+        put_atom(ctx, bc, JS_DupAtom(ctx, var_name));
         break;
     }
 done:
@@ -31352,7 +31470,7 @@ static int resolve_scope_private_field(JSContext *ctx, JSFunctionDef *s,
         case JS_VAR_PRIVATE_SETTER:
             /* XXX: add clearer error message */
             dbuf_putc(bc, OP_throw_error);
-            dbuf_put_u32(bc, JS_DupAtom(ctx, var_name));
+            put_atom(ctx, bc, JS_DupAtom(ctx, var_name));
             dbuf_putc(bc, JS_THROW_VAR_RO);
             break;
         default:
@@ -31369,7 +31487,7 @@ static int resolve_scope_private_field(JSContext *ctx, JSFunctionDef *s,
         case JS_VAR_PRIVATE_GETTER:
             /* XXX: add clearer error message */
             dbuf_putc(bc, OP_throw_error);
-            dbuf_put_u32(bc, JS_DupAtom(ctx, var_name));
+            put_atom(ctx, bc, JS_DupAtom(ctx, var_name));
             dbuf_putc(bc, JS_THROW_VAR_RO);
             break;
         case JS_VAR_PRIVATE_SETTER:
@@ -31436,7 +31554,7 @@ static bool is_var_in_arg_scope(const JSVarDef *vd)
             vd->var_kind == JS_VAR_FUNCTION_NAME);
 }
 
-static void add_eval_variables(JSContext *ctx, JSFunctionDef *s)
+static __exception int add_eval_variables(JSContext *ctx, JSFunctionDef *s)
 {
     JSFunctionDef *fd;
     JSVarDef *vd;
@@ -31446,37 +31564,52 @@ static void add_eval_variables(JSContext *ctx, JSFunctionDef *s)
     /* in non strict mode, variables are created in the caller's
        environment object */
     if (!s->is_eval && !s->is_strict_mode) {
-        s->var_object_idx = add_var(ctx, s, JS_ATOM__var_);
+        if ((s->var_object_idx = add_var(ctx, s, JS_ATOM__var_)) < 0)
+            return -1;
         if (s->has_parameter_expressions) {
             /* an additional variable object is needed for the
                argument scope */
-            s->arg_var_object_idx = add_var(ctx, s, JS_ATOM__arg_var_);
+            if ((s->arg_var_object_idx = add_var(ctx, s, JS_ATOM__arg_var_)) < 0)
+                return -1;
         }
     }
 
     /* eval can potentially use 'arguments' so we must define it */
     has_this_binding = s->has_this_binding;
     if (has_this_binding) {
-        if (s->this_var_idx < 0)
-            s->this_var_idx = add_var_this(ctx, s);
-        if (s->new_target_var_idx < 0)
-            s->new_target_var_idx = add_var(ctx, s, JS_ATOM_new_target);
-        if (s->is_derived_class_constructor && s->this_active_func_var_idx < 0)
-            s->this_active_func_var_idx = add_var(ctx, s, JS_ATOM_this_active_func);
-        if (s->has_home_object && s->home_object_var_idx < 0)
-            s->home_object_var_idx = add_var(ctx, s, JS_ATOM_home_object);
+        if (s->this_var_idx < 0) {
+            if ((s->this_var_idx = add_var_this(ctx, s)) < 0)
+                return -1;
+        }
+        if (s->new_target_var_idx < 0) {
+            if ((s->new_target_var_idx = add_var(ctx, s, JS_ATOM_new_target)) < 0)
+                return -1;
+        }
+        if (s->is_derived_class_constructor && s->this_active_func_var_idx < 0) {
+            if ((s->this_active_func_var_idx = add_var(ctx, s, JS_ATOM_this_active_func)) < 0)
+                return -1;
+        }
+        if (s->has_home_object && s->home_object_var_idx < 0) {
+            if ((s->home_object_var_idx = add_var(ctx, s, JS_ATOM_home_object)) < 0)
+                return -1;
+        }
     }
     has_arguments_binding = s->has_arguments_binding;
     if (has_arguments_binding) {
-        add_arguments_var(ctx, s);
+        if (add_arguments_var(ctx, s) < 0)
+            return -1;
         /* also add an arguments binding in the argument scope to
            raise an error if a direct eval in the argument scope tries
            to redefine it */
-        if (s->has_parameter_expressions && !s->is_strict_mode)
-            add_arguments_arg(ctx, s);
+        if (s->has_parameter_expressions && !s->is_strict_mode) {
+            if (add_arguments_arg(ctx, s) < 0)
+                return -1;
+        }
     }
-    if (s->is_func_expr && s->func_name != JS_ATOM_NULL)
-        add_func_var(ctx, s, s->func_name);
+    if (s->is_func_expr && s->func_name != JS_ATOM_NULL) {
+        if (add_func_var(ctx, s, s->func_name) < 0)
+            return -1;
+    }
 
     /* eval can use all the variables of the enclosing functions, so
        they must be all put in the closure. The closure variables are
@@ -31493,32 +31626,44 @@ static void add_eval_variables(JSContext *ctx, JSFunctionDef *s)
             break;
         /* add 'this' if it was not previously added */
         if (!has_this_binding && fd->has_this_binding) {
-            if (fd->this_var_idx < 0)
-                fd->this_var_idx = add_var_this(ctx, fd);
-            if (fd->new_target_var_idx < 0)
-                fd->new_target_var_idx = add_var(ctx, fd, JS_ATOM_new_target);
-            if (fd->is_derived_class_constructor && fd->this_active_func_var_idx < 0)
-                fd->this_active_func_var_idx = add_var(ctx, fd, JS_ATOM_this_active_func);
-            if (fd->has_home_object && fd->home_object_var_idx < 0)
-                fd->home_object_var_idx = add_var(ctx, fd, JS_ATOM_home_object);
+            if (fd->this_var_idx < 0) {
+                if ((fd->this_var_idx = add_var_this(ctx, fd)) < 0)
+                    return -1;
+            }
+            if (fd->new_target_var_idx < 0) {
+                if ((fd->new_target_var_idx = add_var(ctx, fd, JS_ATOM_new_target)) < 0)
+                    return -1;
+            }
+            if (fd->is_derived_class_constructor && fd->this_active_func_var_idx < 0) {
+                if ((fd->this_active_func_var_idx = add_var(ctx, fd, JS_ATOM_this_active_func)) < 0)
+                    return -1;
+            }
+            if (fd->has_home_object && fd->home_object_var_idx < 0) {
+                if ((fd->home_object_var_idx = add_var(ctx, fd, JS_ATOM_home_object)) < 0)
+                    return -1;
+            }
             has_this_binding = true;
         }
         /* add 'arguments' if it was not previously added */
         if (!has_arguments_binding && fd->has_arguments_binding) {
-            add_arguments_var(ctx, fd);
+            if (add_arguments_var(ctx, fd) < 0)
+                return -1;
             has_arguments_binding = true;
         }
         /* add function name */
-        if (fd->is_func_expr && fd->func_name != JS_ATOM_NULL)
-            add_func_var(ctx, fd, fd->func_name);
+        if (fd->is_func_expr && fd->func_name != JS_ATOM_NULL) {
+            if (add_func_var(ctx, fd, fd->func_name) < 0)
+                return -1;
+        }
 
         /* add lexical variables */
         scope_idx = fd->scopes[scope_level].first;
         while (scope_idx >= 0) {
             vd = &fd->vars[scope_idx];
             vd->is_captured = 1;
-            get_closure_var(ctx, s, fd, false, scope_idx,
-                            vd->var_name, vd->is_const, vd->is_lexical, vd->var_kind);
+            if (get_closure_var(ctx, s, fd, false, scope_idx,
+                            vd->var_name, vd->is_const, vd->is_lexical, vd->var_kind) < 0)
+                return -1;
             scope_idx = vd->scope_next;
         }
         is_arg_scope = (scope_idx == ARG_SCOPE_END);
@@ -31528,9 +31673,10 @@ static void add_eval_variables(JSContext *ctx, JSFunctionDef *s)
             for(i = 0; i < fd->arg_count; i++) {
                 vd = &fd->args[i];
                 if (vd->var_name != JS_ATOM_NULL) {
-                    get_closure_var(ctx, s, fd,
+                    if (get_closure_var(ctx, s, fd,
                                     true, i, vd->var_name, false,
-                                    vd->is_lexical, JS_VAR_NORMAL);
+                                    vd->is_lexical, JS_VAR_NORMAL) < 0)
+                        return -1;
                 }
             }
             for(i = 0; i < fd->var_count; i++) {
@@ -31539,9 +31685,10 @@ static void add_eval_variables(JSContext *ctx, JSFunctionDef *s)
                 if (vd->scope_level == 0 &&
                     vd->var_name != JS_ATOM__ret_ &&
                     vd->var_name != JS_ATOM_NULL) {
-                    get_closure_var(ctx, s, fd,
+                    if (get_closure_var(ctx, s, fd,
                                     false, i, vd->var_name, false,
-                                    vd->is_lexical, JS_VAR_NORMAL);
+                                    vd->is_lexical, JS_VAR_NORMAL) < 0)
+                        return -1;
                 }
             }
         } else {
@@ -31549,9 +31696,10 @@ static void add_eval_variables(JSContext *ctx, JSFunctionDef *s)
                 vd = &fd->vars[i];
                 /* do not close top level last result */
                 if (vd->scope_level == 0 && is_var_in_arg_scope(vd)) {
-                    get_closure_var(ctx, s, fd,
+                    if (get_closure_var(ctx, s, fd,
                                     false, i, vd->var_name, false,
-                                    vd->is_lexical, JS_VAR_NORMAL);
+                                    vd->is_lexical, JS_VAR_NORMAL) < 0)
+                        return -1;
                 }
             }
         }
@@ -31561,13 +31709,15 @@ static void add_eval_variables(JSContext *ctx, JSFunctionDef *s)
                top level) */
             for (idx = 0; idx < fd->closure_var_count; idx++) {
                 JSClosureVar *cv = &fd->closure_var[idx];
-                get_closure_var2(ctx, s, fd,
+                if (get_closure_var2(ctx, s, fd,
                                  false, cv->is_arg,
                                  idx, cv->var_name, cv->is_const,
-                                 cv->is_lexical, cv->var_kind);
+                                 cv->is_lexical, cv->var_kind) < 0)
+                    return -1;
             }
         }
     }
+    return 0;
 }
 
 static void set_closure_from_var(JSContext *ctx, JSClosureVar *cv,
@@ -31827,7 +31977,11 @@ static void instantiate_hoisted_definitions(JSContext *ctx, JSFunctionDef *s, Dy
        evaluating the module so that the exported functions are
        visible if there are cyclic module references */
     if (s->module) {
-        label_next = new_label_fd(s, -1);
+        label_next = new_label_fd(s);
+        if (label_next < 0) {
+            dbuf_set_error(bc);
+            return;
+        }
 
         /* if 'this' is true, initialize the global variables and return */
         dbuf_putc(bc, OP_push_this);
@@ -31875,7 +32029,7 @@ static void instantiate_hoisted_definitions(JSContext *ctx, JSFunctionDef *s, Dy
                 dbuf_put_u32(bc, hf->cpool_idx);
 
                 dbuf_putc(bc, OP_define_func);
-                dbuf_put_u32(bc, JS_DupAtom(ctx, hf->var_name));
+                put_atom(ctx, bc, JS_DupAtom(ctx, hf->var_name));
                 dbuf_putc(bc, flags);
 
                 goto done_global_var;
@@ -31886,7 +32040,7 @@ static void instantiate_hoisted_definitions(JSContext *ctx, JSFunctionDef *s, Dy
                         flags |= JS_PROP_WRITABLE;
                 }
                 dbuf_putc(bc, OP_define_var);
-                dbuf_put_u32(bc, JS_DupAtom(ctx, hf->var_name));
+                put_atom(ctx, bc, JS_DupAtom(ctx, hf->var_name));
                 dbuf_putc(bc, flags);
             }
         }
@@ -31897,7 +32051,7 @@ static void instantiate_hoisted_definitions(JSContext *ctx, JSFunctionDef *s, Dy
                 if (hf->var_name == JS_ATOM__default_) {
                     /* set default export function name */
                     dbuf_putc(bc, OP_set_name);
-                    dbuf_put_u32(bc, JS_DupAtom(ctx, JS_ATOM_default));
+                    put_atom(ctx, bc, JS_DupAtom(ctx, JS_ATOM_default));
                 }
             } else {
                 dbuf_putc(bc, OP_undefined);
@@ -31907,12 +32061,12 @@ static void instantiate_hoisted_definitions(JSContext *ctx, JSFunctionDef *s, Dy
                 dbuf_put_u16(bc, idx);
             } else if (has_closure == 1) {
                 dbuf_putc(bc, OP_define_field);
-                dbuf_put_u32(bc, JS_DupAtom(ctx, hf->var_name));
+                put_atom(ctx, bc, JS_DupAtom(ctx, hf->var_name));
                 dbuf_putc(bc, OP_drop);
             } else {
                 /* XXX: Check if variable is writable and enumerable */
                 dbuf_putc(bc, OP_put_var);
-                dbuf_put_u32(bc, JS_DupAtom(ctx, hf->var_name));
+                put_atom(ctx, bc, JS_DupAtom(ctx, hf->var_name));
             }
         }
     done_global_var:
@@ -32035,7 +32189,7 @@ static __exception int resolve_variables(JSContext *ctx, JSFunctionDef *s)
                        with the other checks, we delay the
                        error generation. */
                     dbuf_putc(&bc_out, OP_throw_error);
-                    dbuf_put_u32(&bc_out, JS_DupAtom(ctx, hf->var_name));
+                    put_atom(ctx, &bc_out, JS_DupAtom(ctx, hf->var_name));
                     dbuf_putc(&bc_out, JS_THROW_VAR_REDECL);
                 }
                 goto next;
@@ -32046,7 +32200,7 @@ static __exception int resolve_variables(JSContext *ctx, JSFunctionDef *s)
         }
 
         dbuf_putc(&bc_out, OP_check_define_var);
-        dbuf_put_u32(&bc_out, JS_DupAtom(ctx, hf->var_name));
+        put_atom(ctx, &bc_out, JS_DupAtom(ctx, hf->var_name));
         flags = 0;
         if (hf->is_lexical)
             flags |= DEFINE_GLOBAL_LEX_VAR;
@@ -32095,6 +32249,8 @@ static __exception int resolve_variables(JSContext *ctx, JSFunctionDef *s)
             scope = get_u16(bc_buf + pos + 5);
             pos_next = resolve_scope_var(ctx, s, var_name, scope, op, &bc_out,
                                          NULL, NULL, pos_next);
+            if (pos_next < 0)
+                goto fail;
             JS_FreeAtom(ctx, var_name);
             break;
         case OP_scope_make_ref:
@@ -32108,6 +32264,8 @@ static __exception int resolve_variables(JSContext *ctx, JSFunctionDef *s)
                 ls->ref_count--;  /* always remove label reference */
                 pos_next = resolve_scope_var(ctx, s, var_name, scope, op, &bc_out,
                                              bc_buf, ls, pos_next);
+                if (pos_next < 0)
+                    goto fail;
                 JS_FreeAtom(ctx, var_name);
             }
             break;
@@ -32174,7 +32332,7 @@ static __exception int resolve_variables(JSContext *ctx, JSFunctionDef *s)
                 /* remove dead code */
                 int line = -1;
                 int col = -1;
-                dbuf_put(&bc_out, bc_buf + pos, len);
+                put_bytecode(ctx, &bc_out, bc_buf + pos, len);
                 pos = skip_dead_code(s, bc_buf, bc_len, pos + len,
                                      &line, &col);
                 pos_next = pos;
@@ -32319,7 +32477,7 @@ static __exception int resolve_variables(JSContext *ctx, JSFunctionDef *s)
             {
                 JSAtom name = get_u32(bc_buf + pos + 1);
                 dbuf_putc(&bc_out, OP_get_field);
-                dbuf_put_u32(&bc_out, name);
+                put_atom(ctx, &bc_out, name);
             }
             break;
         case OP_get_array_el_opt_chain: /* equivalent to OP_get_array_el */
@@ -32328,11 +32486,14 @@ static __exception int resolve_variables(JSContext *ctx, JSFunctionDef *s)
 
         default:
         no_change:
-            dbuf_put(&bc_out, bc_buf + pos, len);
+            put_bytecode(ctx, &bc_out, bc_buf + pos, len);
             break;
         }
     }
 
+    /* Preserve failures raised by label/variable helpers on the input. */
+    if (dbuf_error(&s->byte_code))
+        dbuf_set_error(&bc_out);
     /* set the new byte code */
     dbuf_free(&s->byte_code);
     s->byte_code = bc_out;
@@ -32348,7 +32509,7 @@ static __exception int resolve_variables(JSContext *ctx, JSFunctionDef *s)
         op = bc_buf[pos];
         len = opcode_info[op].size;
         pos_next = pos + len;
-        dbuf_put(&bc_out, bc_buf + pos, len);
+        put_bytecode(ctx, &bc_out, bc_buf + pos, len);
     }
     dbuf_free(&s->byte_code);
     s->byte_code = bc_out;
@@ -32377,6 +32538,14 @@ static void add_pc2line_info(JSFunctionDef *s, uint32_t pc,
     s->col_number_last = col_num;
 }
 
+/* Debug data is optional: allocation failure must not replace the pending
+   exception or leave a partially encoded source-map record. */
+static void *js_pc2line_realloc(void *opaque, void *ptr, size_t size)
+{
+    JSContext *ctx = opaque;
+    return js_realloc_rt(ctx->rt, ptr, size);
+}
+
 static void compute_pc2line_info(JSFunctionDef *s)
 {
     if (s->source_loc_slots) {
@@ -32385,7 +32554,7 @@ static void compute_pc2line_info(JSFunctionDef *s)
         uint32_t last_pc = 0;
         int i;
 
-        js_dbuf_init(s->ctx, &s->pc2line);
+        dbuf_init2(&s->pc2line, s->ctx, js_pc2line_realloc);
         for (i = 0; i < s->source_loc_count; i++) {
             uint32_t pc = s->source_loc_slots[i].pc;
             int line_num = s->source_loc_slots[i].line_num;
@@ -32417,6 +32586,10 @@ static void compute_pc2line_info(JSFunctionDef *s)
             }
             dbuf_put_sleb128(&s->pc2line, diff_col);
 
+            if (dbuf_error(&s->pc2line)) {
+                dbuf_free(&s->pc2line);
+                return;
+            }
             last_pc = pc;
             last_line_num = line_num;
             last_col_num = col_num;
@@ -32672,6 +32845,15 @@ static __exception int resolve_labels(JSContext *ctx, JSFunctionDef *s)
         dbuf_putc(&bc_out, OP_special_object);
         dbuf_putc(&bc_out, OP_SPECIAL_OBJECT_VAR_OBJECT);
         put_short_code(&bc_out, OP_put_loc, s->arg_var_object_idx);
+    }
+
+    /* Every rewrite below is no longer than the input it consumes. Reserve
+       that upper bound before transferring atoms or patching jump offsets;
+       failed growth must never leave a partial instruction to patch. */
+    pos_next = 0;
+    if (dbuf_realloc(&bc_out, bc_out.size + bc_len)) {
+        JS_ThrowOutOfMemory(ctx);
+        goto fail;
     }
 
     for (pos = 0; pos < bc_len; pos = pos_next) {
@@ -33475,8 +33657,19 @@ static __exception int resolve_labels(JSContext *ctx, JSFunctionDef *s)
     }
     return 0;
  fail:
-    /* XXX: not safe */
+    /* The output owns atoms from consumed input, including the current
+       instruction. Only the unconsumed suffix still belongs to the input. */
+    free_bytecode_atoms(ctx->rt, bc_out.buf, bc_out.size, true);
+    free_bytecode_atoms(ctx->rt, bc_buf + pos_next, bc_len - pos_next, false);
+    dbuf_free(&s->byte_code);
     dbuf_free(&bc_out);
+    for (i = 0; i < s->label_count; i++) {
+        for (re = label_slots[i].first_reloc; re; re = re_next) {
+            re_next = re->next;
+            js_free(ctx, re);
+        }
+        label_slots[i].first_reloc = NULL;
+    }
     return -1;
 }
 
@@ -33777,6 +33970,13 @@ static JSValue js_create_function(JSContext *ctx, JSFunctionDef *fd)
     int function_size, byte_code_offset, cpool_offset;
     int closure_var_offset, vardefs_offset;
 
+    /* Matter: a failed emission may leave a truncated instruction. Never
+       pass that buffer to variable/label resolution, even if parsing ended. */
+    if (dbuf_error(&fd->byte_code)) {
+        JS_ThrowOutOfMemory(ctx);
+        goto fail;
+    }
+
     /* recompute scope linkage */
     for (scope = 0; scope < fd->scope_count; scope++) {
         fd->scopes[scope].first = -1;
@@ -33808,8 +34008,8 @@ static JSValue js_create_function(JSContext *ctx, JSFunctionDef *fd)
        so it is necessary to create the closure variables before any
        other variable lookup is done. */
 #ifndef QJS_DISABLE_PARSER
-    if (fd->has_eval_call)
-        add_eval_variables(ctx, fd);
+    if (fd->has_eval_call && add_eval_variables(ctx, fd))
+        goto fail;
 #endif // QJS_DISABLE_PARSER
 
     /* add the module global variables in the closure */
@@ -33918,7 +34118,7 @@ static JSValue js_create_function(JSContext *ctx, JSFunctionDef *fd)
     b->line_num = fd->line_num;
     b->col_num = fd->col_num;
 
-    b->pc2line_buf = js_realloc(ctx, fd->pc2line.buf, fd->pc2line.size);
+    b->pc2line_buf = js_realloc_rt(ctx->rt, fd->pc2line.buf, fd->pc2line.size);
     if (!b->pc2line_buf)
         b->pc2line_buf = fd->pc2line.buf;
     b->pc2line_len = fd->pc2line.size;
@@ -34571,7 +34771,8 @@ static __exception int js_parse_function_decl2(JSParseState *s,
     /* in generators, yield expression is forbidden during the parsing
        of the arguments */
     fd->in_function_body = true;
-    push_scope(s);  /* enter body scope */
+    if (push_scope(s) < 0)  /* enter body scope */
+        goto fail;
     fd->body_scope = fd->scope_level;
 
     if (s->token.val == TOK_ARROW) {
@@ -34650,6 +34851,8 @@ done:
 
         /* the real object will be set at the end of the compilation */
         idx = cpool_add(s, JS_NULL);
+        if (idx < 0)
+            goto fail;
         fd->parent_cpool_idx = idx;
 
         if (is_expr) {
@@ -34955,7 +35158,8 @@ static JSValue __JS_EvalInternal(JSContext *ctx, JSValueConst this_obj,
     s->is_module = (m != NULL);
     s->allow_html_comments = !s->is_module;
 
-    push_scope(s); /* body scope */
+    if (push_scope(s) < 0) /* body scope */
+        goto fail;
     fd->body_scope = fd->scope_level;
 
     err = js_parse_program(s);
@@ -53104,28 +53308,68 @@ static JSValue js_bigint_asUintN(JSContext *ctx,
         res = __JS_NewShortBigInt(ctx, 0);
     } else if (JS_VALUE_GET_TAG(a) == JS_TAG_SHORT_BIG_INT) {
         /* fast case */
-        if (bits >= JS_SHORT_BIG_INT_BITS) {
+        /* quickjs-ng upstream fix: a negative value is only unchanged by
+           asIntN; asUintN must produce 2^bits + a, which needs a long
+           BigInt with an explicit zero sign limb */
+        js_slimb_t sv = JS_VALUE_GET_SHORT_BIG_INT(a);
+        if (bits >= JS_SHORT_BIG_INT_BITS && (asIntN || sv >= 0)) {
             res = a;
-        } else {
+        } else if (bits < JS_SHORT_BIG_INT_BITS) {
             uint64_t v;
             int shift;
             shift = 64 - bits;
-            v = JS_VALUE_GET_SHORT_BIG_INT(a);
+            v = sv;
             v = v << shift;
             if (asIntN)
                 v = (int64_t)v >> shift;
             else
                 v = v >> shift;
             res = __JS_NewShortBigInt(ctx, v);
+        } else {
+            JSBigInt *r;
+            uint64_t len64 = (bits + JS_LIMB_BITS - 1) / JS_LIMB_BITS;
+            int len, shift, i;
+
+            if (len64 > JS_BIGINT_MAX_SIZE) {
+                JS_FreeValue(ctx, a);
+                return JS_ThrowRangeError(ctx, "BigInt is too large to allocate");
+            }
+            len = len64;
+            r = js_bigint_new(ctx, len);
+            if (!r) {
+                JS_FreeValue(ctx, a);
+                return JS_EXCEPTION;
+            }
+            r->len = len;
+            r->tab[0] = sv;
+            for(i = 1; i < len; i++)
+                r->tab[i] = -1;
+            shift = (-bits) & (JS_LIMB_BITS - 1);
+            r->tab[len - 1] = (r->tab[len - 1] << shift) >> shift;
+            r = js_bigint_extend(ctx, r, 0);
+            JS_FreeValue(ctx, a);
+            if (!r)
+                return JS_EXCEPTION;
+            res = JS_CompactBigInt(ctx, r);
         }
     } else {
+        /* quickjs-ng upstream fix: asUintN sign-extends negative inputs
+           to 'bits' and always leaves a non-negative result (appending a
+           zero sign limb when the top retained bit is set) */
         JSBigInt *r, *p = JS_VALUE_GET_PTR(a);
-        if (bits >= p->len * JS_LIMB_BITS) {
+        int is_neg = js_bigint_sign(p);
+        if (bits >= (uint64_t)p->len * JS_LIMB_BITS &&
+            (asIntN || !is_neg)) {
             res = a;
         } else {
+            uint64_t len64 = (bits + JS_LIMB_BITS - 1) / JS_LIMB_BITS;
             int len, shift, i;
             js_limb_t v;
-            len = (bits + JS_LIMB_BITS - 1) / JS_LIMB_BITS;
+            if (len64 > JS_BIGINT_MAX_SIZE) {
+                JS_FreeValue(ctx, a);
+                return JS_ThrowRangeError(ctx, "BigInt is too large to allocate");
+            }
+            len = len64;
             r = js_bigint_new(ctx, len);
             if (!r) {
                 JS_FreeValue(ctx, a);
@@ -53133,15 +53377,21 @@ static JSValue js_bigint_asUintN(JSContext *ctx,
             }
             r->len = len;
             for(i = 0; i < len - 1; i++)
-                r->tab[i] = p->tab[i];
+                r->tab[i] = i < p->len ? p->tab[i] : -is_neg;
             shift = (-bits) & (JS_LIMB_BITS - 1);
             /* 0 <= shift <= JS_LIMB_BITS - 1 */
-            v = p->tab[len - 1] << shift;
+            v = (len - 1 < p->len ? p->tab[len - 1] : -is_neg) << shift;
             if (asIntN)
                 v = (js_slimb_t)v >> shift;
             else
                 v = v >> shift;
             r->tab[len - 1] = v;
+            if (!asIntN)
+                r = js_bigint_extend(ctx, r, 0);
+            if (!r) {
+                JS_FreeValue(ctx, a);
+                return JS_EXCEPTION;
+            }
             r = js_bigint_normalize(ctx, r);
             JS_FreeValue(ctx, a);
             res = JS_CompactBigInt(ctx, r);

@@ -265,6 +265,7 @@ class InvalidPatch extends World {
         CHECK(!generated.ok && generated.message.find("coverageShape()") != std::string::npos,
               "bounded splat: malformed placement fails at authoring with a useful error");
     }
+#ifdef MATTER_CODEC_SOURCE_QUALIFICATION
     for (const char* scene : {"ProceduralBrickProof", "ProceduralTerrainProof"}) {
         // Match world-definition loading: field evaluation resolves handles
         // already assigned at module scope; it does not register materials.
@@ -292,6 +293,7 @@ class InvalidPatch extends World {
             std::printf("%s: %zu material operations\n", scene, program.ops.size());
         }
     }
+#endif
     WorldEvalResult r = host.eval_world(kWorld, "{}");
     CHECK(r.ok, r.message.c_str());
     CHECK(!r.field_program.empty(), "program emitted");
@@ -658,6 +660,7 @@ class TapePlain extends World {
               "surfaces() without s.weight() fails loudly");
     }
 
+#ifdef MATTER_CODEC_SOURCE_QUALIFICATION
     // ---- WP-F: the shipped ChartVtProof world records a compilable tape ----
     // eval_world's defineMaterial shim RESOLVES handles the world-definition
     // loader assigned; mirror the loader by registering the three materials
@@ -742,7 +745,9 @@ class TapePlain extends World {
         const int scree = MaterialRegistryDefineDynamic(&def, "Scree");
         const int snow = MaterialRegistryDefineDynamic(&def, "AlpineSnow");
         const int meadow = MaterialRegistryDefineDynamic(&def, "AlpineMeadow");
-        // The shipped world now also declares the forest's materials while
+        CHECK(MaterialRegistryDefineDynamic(&def, "Mountain.GeometryRock") >= 30,
+              "dynamic geometry rock material registered for StreamMountain evaluation");
+        // The shipped world also declares the forest's materials while
         // loading its module; mirror those loader assignments for eval_world.
         for (const char* name : {"mountain.forest.bark", "mountain.forest.branch",
                                  "mountain.forest.needles", "mountain.forest.cone",
@@ -758,6 +763,11 @@ class TapePlain extends World {
         // Report the world-load failure instead of dereferencing an empty
         // material vector and losing the diagnostic to an access violation.
         if (!mtn.ok) return check_summary();
+        // The shipped world places the three-rock detailed inspection site;
+        // the 1,283-rock stress grid is an explicit benchmark opt-in.
+        CHECK(mtn.biomes_json.find("\"__geometryRocks\":{\"material\":") != std::string::npos &&
+                  mtn.biomes_json.find("\"__geometryRockStress\":false") != std::string::npos,
+              "StreamMountain ships the restored detailed-rock density");
         CHECK(!mtn.surface_program.empty(), "StreamMountain records a tape");
         terrain_field::SurfaceProgram sp;
         std::string serr;
@@ -809,6 +819,7 @@ class TapePlain extends World {
         MaterialRegistryResetDynamic();
     }
 
+#endif
     // =======================================================================
     // habitat() tape round-trip (docs/habitat-tape-sketch-2026-08-08.md)
     //
