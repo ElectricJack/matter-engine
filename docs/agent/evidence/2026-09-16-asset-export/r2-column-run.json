@@ -1,0 +1,11 @@
+{
+    "world":  "VillaDoricColumnStudy",
+    "module":  "VillaDoricColumnPilot",
+    "export_request_id":  "export-attempt-0",
+    "readiness_retries":  0,
+    "seconds":  52.310047,
+    "exit":  0,
+    "zero_validation_errors":  true,
+    "clean_path":  true,
+    "editor_sha256":  "3aac176acbea521dfc6f1c0b017c5f376a2dc5ae7e1b4c7e18bdfc5db932b615"
+}

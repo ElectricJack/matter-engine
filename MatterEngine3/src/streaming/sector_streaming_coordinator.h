@@ -105,6 +105,7 @@ struct AnchorSample {
     // is what starts consuming this. See SectorStreamer::update.
     float y = 0.0f;
     float z = 0.0f;
+    matter_stream::StreamingView view;
 };
 
 // A sector request/eviction plus the tag that identifies WHICH streaming era it
@@ -174,6 +175,8 @@ struct Snapshot {
     flecs::entity_t owner = 0;
     SectorStreamingStatus status{};
     SectorStreamingError error{};
+    // Internal full-disc readiness, independent of view culling/dispatchability.
+    size_t pending_sectors = 0;
 };
 
 // Fixed, non-allocating admission claims shared by WorldSession and focused
@@ -306,6 +309,7 @@ public:
         SectorStreamingErrorCode profile_error =
             SectorStreamingErrorCode::None);
     void submit_anchor(flecs::entity_t owner, float x, float y, float z);
+    uint64_t submit_view(flecs::entity_t owner, const matter_stream::StreamingView& view);
 
     void clear_anchor(flecs::entity_t owner);
     void detach(flecs::entity_t owner);
@@ -341,6 +345,7 @@ private:
         SectorStreamingErrorCode::None;
     uint64_t profile_revision_ = 0;
     std::optional<AnchorSample> intended_anchor_;
+    uint64_t next_view_revision_ = 0;
     uint64_t anchor_reset_revision_ = 0;
     uint64_t restart_revision_ = 0;
     std::vector<Acknowledgement> acknowledgement_inbox_;

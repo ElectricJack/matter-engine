@@ -1,0 +1,32 @@
+[
+  {
+    "kind": "build",
+    "name": "surface_field_tests",
+    "command": [
+      "./tools/build-windows-from-wsl.sh",
+      "RelWithDebInfo",
+      "surface_field_tests"
+    ],
+    "exit": 0,
+    "seconds": 8.433759060004377,
+    "log": "docs/agent/evidence/2026-09-15-direct-source/cell-red-build-surface_field_tests.log",
+    "source_changes": [],
+    "validation_errors": []
+  },
+  {
+    "kind": "cpu",
+    "name": "surface_field_tests",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      "Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEngine3/tests\"; & \"../../MatterEditor/build/cmake/windows-msvc/relwithdebinfo/surface_field_tests.exe\"; exit $LASTEXITCODE"
+    ],
+    "exit": 1,
+    "seconds": 0.4386626149935182,
+    "log": "docs/agent/evidence/2026-09-15-direct-source/cell-red-cpu-surface_field_tests.log",
+    "source_changes": [],
+    "validation_errors": []
+  }
+]

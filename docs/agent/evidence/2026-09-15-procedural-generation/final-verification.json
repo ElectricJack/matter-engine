@@ -1,0 +1,34 @@
+{
+  "recorded_utc": "2026-09-15T17:59:20.399927+00:00",
+  "integration_manifest": "analytic-integration-source.json",
+  "monitored_source_count": 74,
+  "source_mismatches": [],
+  "test_binary_mismatches": [],
+  "binaries": {
+    "MatterEditor/build/cmake/windows-msvc/relwithdebinfo/tileset_bake_tests.exe": "3f1380f8aa2687966c0cf68dac7c9ff76abd97a51bbb859fa952c8045b1cf0df",
+    "MatterEditor/build/cmake/windows-msvc/relwithdebinfo/tileset_physics_tests.exe": "d0ffb325fe3bbcd133b899508e769b092b5714bc70cafb8f5c7fb64303d9ac11",
+    "MatterEditor/build/windows-msvc/editor.exe": "a9c2342ca54452bf2f637f150002491e8661bae894ce7d6ed59e9ef162b04d47"
+  },
+  "git_diff_check": {
+    "exit": 0,
+    "output": ""
+  },
+  "isolated_patch": "/mnt/d/tmp/matter-vt/20260915-feedback/generation-spec-work/procedural-generation.patch",
+  "isolated_patch_sha256": "b96a865ec57954794d1e612aeee451e131565f2945d4c9d3562d881482c41afc",
+  "archive": "/mnt/d/tmp/matter-vt/20260915-feedback/generation-spec-work/before",
+  "archive_compared_files": [
+    "MatterEngine3/src/tileset_bake.cpp",
+    "MatterEngine3/src/tileset_settle.cpp",
+    "MatterEngine3/tests/Makefile",
+    "MatterEngine3/tests/tileset_bake_tests.cpp",
+    "MatterEngine3/tests/tileset_physics_tests.cpp",
+    "ROADMAP.md",
+    "cmake/MatterEngine.cmake",
+    "docs/README.md",
+    "docs/agent/evidence/2026-09-15-vt-feedback/README.md",
+    "docs/superpowers/plans/2026-09-14-layered-surface-texturing.md",
+    "docs/superpowers/plans/2026-09-14-vt-reliability-and-throughput.md",
+    "docs/superpowers/specs/2026-09-14-layered-surface-texturing-design.md",
+    "docs/superpowers/specs/2026-09-14-vt-reliability-and-throughput-design.md"
+  ]
+}

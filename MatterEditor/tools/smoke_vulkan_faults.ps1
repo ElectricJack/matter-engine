@@ -13,12 +13,10 @@ try {
         @{ Label = 'Streamline missing device proxy'; Mode = 'streamline-missing-device-proxy' },
         # The rt mode's scenario suite is dominated by ~7k single-pixel
         # readbacks (specular/visibility scans at ~4 ms per immediate
-        # submit round-trip) and runs ~35 s on the RTX 4090 -- it outgrew
-        # the default 15 s gate well before RT PBR Phase 1 (measured 30 s
-        # with the pre-phase readback layout). The per-mode timeout keeps
-        # the gate's purpose (hang detection) without failing a passing
-        # mode on wall-clock growth.
-        @{ Label = 'rt'; Mode = 'rt'; TimeoutMilliseconds = 90000 },
+        # submit round-trip). A passing RTX 4090 run took 78 s in September
+        # 2026, and a concurrent GPU job pushed another past the old 90 s
+        # limit. Keep a bounded gate with headroom for shared GPU load.
+        @{ Label = 'rt'; Mode = 'rt'; TimeoutMilliseconds = 180000 },
         # RT PBR Phase 1: microfacet (frosted) transmission -- roughness-blur
         # monotonicity, energy conservation, smooth-glass byte parity, the
         # composite fallback guard, and alpha-tested occluders in the walk.
@@ -28,7 +26,10 @@ try {
            TimeoutMilliseconds = 45000 },
         @{ Label = 'rt-disabled'; Mode = 'rt-disabled' },
         @{ Label = 'rt-unavailable'; Mode = 'rt-unavailable' },
-        @{ Label = 'animation skin compute readback'; Mode = 'animation-skin' },
+        # GPU readbacks plus the record-fault matrix took 65 s on the same
+        # machine, despite skipping the shared CPU contract prelude.
+        @{ Label = 'animation skin compute readback'; Mode = 'animation-skin'
+           TimeoutMilliseconds = 120000 },
         # WP-E: chart-space virtual texturing residency + stub filler +
         # G-buffer sampling (pages, seams, chartless regression gate).
         @{ Label = 'chart-space virtual texturing'; Mode = 'vt' },
@@ -36,8 +37,10 @@ try {
         # (tape regions, determinism, tape-edit invalidation, strip fallback).
         @{ Label = 'chart VT surfaces() tape'; Mode = 'vt-surfaces' },
         # WP-G: RT sampling of VT pages + ray cones (G-buffer/traced-hit
-        # consistency, cone-mip monotonicity).
-        @{ Label = 'chart VT in the RT path'; Mode = 'vt-rt' },
+        # consistency, cone-mip monotonicity). The RTX 4090 fixture passed
+        # in 66 s in September 2026, beyond the shared 30 s limit.
+        @{ Label = 'chart VT in the RT path'; Mode = 'vt-rt'
+           TimeoutMilliseconds = 120000 },
         # WP-H: tier-2 hemisphere AO page enrichment (occluder fixture,
         # determinism, no double-application, invalidation re-enrich) and the
         # same fixture on a device forced to report no ray tracing, where the
@@ -74,6 +77,7 @@ try {
 
             $process = New-Object System.Diagnostics.Process
             $process.StartInfo = $startInfo
+            $timer = [System.Diagnostics.Stopwatch]::StartNew()
             if (-not $process.Start()) {
                 throw "$($case.Label) process did not start"
             }
@@ -98,6 +102,10 @@ try {
             if ($joined -notmatch 'ALL PASS') {
                 throw "$($case.Label) did not report ALL PASS"
             }
+            $timer.Stop()
+            Write-Output ("{0} completed in {1:N1} s (limit {2:N1} s)" -f
+                $case.Label, $timer.Elapsed.TotalSeconds,
+                ($caseTimeout / 1000.0))
         } finally {
             if ($process) { $process.Dispose() }
         }

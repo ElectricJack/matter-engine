@@ -1,0 +1,36 @@
+{
+  "id": "2026-09-16-r2",
+  "editor_sha256": "3aac176acbea521dfc6f1c0b017c5f376a2dc5ae7e1b4c7e18bdfc5db932b615",
+  "runtime_files_verified": 17,
+  "r1_editor_sha256": "e3a89f607cf104512958e2433dd3d1bb5f6de7115d70d4ef1a9431692312c58f",
+  "column_module_and_hash_exports_identical": true,
+  "column_files_sha256": {
+    "asset.glb": "ae6f91245fc09ed50eda8a3a25be55f54e1c3eb230488c60fc2a3bd80ca43ba3",
+    "asset.mtl": "05839e2239a0ab3faed37fa9cf7bbaf347c5689ab10ac4fb16e6bb9ed741e103",
+    "asset.obj": "08c4dbd3245ff93b13ae6330c68759b347ee61556a634bdbff0369530c22fa5b",
+    "manifest.json": "b12dcbc2b32d2508d08530eebe11807621f6ae82431188a63814a62b3dd83629",
+    "material_0-basecolor.png": "8d5f1173632abb334657e7291cc2971d670aff9ddd2b46689517449c83eaae0f",
+    "material_0-clearcoat.png": "f1fd1a7294bbb57f95da5f4fb516f544fbf3828067f03dc064111bff0ecc10fe",
+    "material_0-height.png": "51b4eded1512d91d2804f0c325cf58d3ddc91625a2872520fee3062fdbc64c99",
+    "material_0-metallic.png": "7d8066428bda8e1ae82235c2f760f6969a6522ee2ccccb4fdd2a0ca94ab123bc",
+    "material_0-normal-obj.png": "fea6b77d9403bae4bce49477df9106805bbdfe4af736103abf42868c894d09ad",
+    "material_0-normal.png": "1629390f65b7af57afd232209e0088dc181f914d1fd4cb080156bb0651266142",
+    "material_0-occlusion.png": "39c5f73756f1142d17d46ad30c9f2714303f936a1c7880b5d7d8608d1b2f5797",
+    "material_0-orm.png": "861bfb95c1efc8808f9816224a58f98a34cc323c687c1643cf52fd2472806d84",
+    "material_0-roughness.png": "578eb59f43f0ed68a45ef6726ad4282d6e86fb264d873e289c4b7286efa06dd6"
+  },
+  "packaged_run": {
+    "world": "VillaDoricColumnStudy",
+    "module": "VillaDoricColumnPilot",
+    "export_request_id": "export-attempt-0",
+    "readiness_retries": 0,
+    "seconds": 52.310047,
+    "exit": 0,
+    "zero_validation_errors": true,
+    "clean_path": true,
+    "editor_sha256": "3aac176acbea521dfc6f1c0b017c5f376a2dc5ae7e1b4c7e18bdfc5db932b615"
+  },
+  "native_validation_prefix": "export-v8",
+  "gltf_errors": 0,
+  "gltf_warnings": 0
+}

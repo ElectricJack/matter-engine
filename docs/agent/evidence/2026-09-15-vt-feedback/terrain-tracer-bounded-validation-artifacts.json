@@ -1,0 +1,171 @@
+{
+  "driver_exit": 0,
+  "elapsed_seconds": 360.0675943030001,
+  "command": [
+    "/mnt/c/Users/webde/AppData/Local/Programs/Python/Launcher/py.exe",
+    "-3",
+    "D:/Shared With Desktop/AI/matter-engine-cpp/MatterEngine3/tools/drive.py",
+    "--world",
+    "StreamMountain",
+    "--timeline",
+    "D:/tmp/matter-vt/20260915-feedback/terrain-tracer-bounded-validation/timeline.txt",
+    "--out-dir",
+    "D:/tmp/matter-vt/20260915-feedback/terrain-tracer-bounded-validation/run",
+    "--editor",
+    "D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor/build/windows-msvc/editor.exe",
+    "--timeout",
+    "600",
+    "--hide-ui",
+    "--env",
+    "MATTER_HIDE_WINDOW=0",
+    "--env",
+    "MATTER_WINDOW_WIDTH=1920",
+    "--env",
+    "MATTER_WINDOW_HEIGHT=1080",
+    "--env",
+    "MATTER_VSYNC=0",
+    "--env",
+    "MATTER_PRESENT_MODE=mailbox",
+    "--env",
+    "MATTER_FRAME_LIMIT=60",
+    "--env",
+    "MATTER_CAM=380,90,1600,420,55,1420",
+    "--env",
+    "MATTER_VT_TRACE=D:/tmp/matter-vt/20260915-feedback/terrain-tracer-bounded-validation/vt.jsonl",
+    "--env",
+    "MATTER_VT_EVENT_LOG=0",
+    "--env",
+    "MATTER_VT_DENSITY_FRAME=0",
+    "--env",
+    "MATTER_VK_VALIDATION=1",
+    "--env",
+    "TMP=C:/Users/webde/AppData/Local/Temp",
+    "--env",
+    "TEMP=C:/Users/webde/AppData/Local/Temp",
+    "--env",
+    "MATTER_CAM_PATH=D:/tmp/matter-vt/20260915-feedback/terrain-tracer-bounded-validation/camera.path",
+    "--env",
+    "MATTER_CAM_PATH_WARMUP=0",
+    "--env",
+    "MATTER_CAM_PATH_SETTLE=5",
+    "--env",
+    "MATTER_CAM_PATH_EXIT=0",
+    "--env",
+    "MATTER_PROFILE_TRACE=D:/tmp/matter-vt/20260915-feedback/terrain-tracer-bounded-validation/profile.json"
+  ],
+  "changed_inputs_during_run": [],
+  "validation_enabled": true,
+  "page_event_logging": false,
+  "full_vt_acceptance": false,
+  "analysis_exit": 0,
+  "analysis_command": [
+    "python3",
+    "tools/vt_acceptance.py",
+    "--trace",
+    "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-tracer-bounded-validation/vt.jsonl",
+    "--output",
+    "docs/agent/evidence/2026-09-15-vt-feedback/terrain-tracer-bounded-validation-summary.json",
+    "--begin-marker",
+    "settle_begin",
+    "--end-marker",
+    "settle_end",
+    "--required-frames",
+    "600",
+    "--require-settled"
+  ],
+  "settled_counter_gate": true,
+  "source_manifest": "tracer-green-source.json",
+  "validation_error_lines": [],
+  "skip_or_oversize_lines": [],
+  "load_failure_lines": 1758,
+  "unique_failed_hashes": 1758,
+  "end_owners": 789,
+  "end_pages": 1452,
+  "pool_capacity": 33024,
+  "end_fills": 1452,
+  "end_pinned": 789,
+  "occupied_page_storage_mib": 179.284423828125,
+  "pool_occupied_percent": 4.396802325581396,
+  "memory": {
+    "samples": 66,
+    "editor_ids": [
+      38232
+    ],
+    "max_sampled_private_bytes": 26980192256,
+    "max_reported_peak_paged_bytes": 27996987392,
+    "max_reported_peak_paged_gib": 26.07422637939453,
+    "basis": "Windows Get-Process PrivateMemorySize64 and PeakPagedMemorySize64, sampled approximately every five seconds. Process-wide counters, not isolated VT memory or full GPU memory. No matched pre-fix peak is available."
+  },
+  "visual_review": "Inspected the 1920x1080 final screenshot against terrain-upload-staged-validation/settled.png. The forest/valley framing and broad appearance are retained; existing granular ground, thin/noisy trees and mountain surface appearance remain. One final image does not establish intermediate continuity.",
+  "artifacts": [
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-tracer-bounded-validation/camera.path",
+      "bytes": 336051,
+      "sha256": "221bab96a8d6eae04c361d209b4b9cc60afcb4470b8ad30aea128d6db0cccfa5"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-tracer-bounded-validation/command.json",
+      "bytes": 1508,
+      "sha256": "7e57bd2b235df30629716bba406d674114945687db6104e9c9a70f76fc43e631"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-tracer-bounded-validation/driver.log",
+      "bytes": 515713,
+      "sha256": "91054b5842caaf9cf4de81970f45248f8b6275973cb90de0e629f8852a61e913"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-tracer-bounded-validation/launch-source.json",
+      "bytes": 55217,
+      "sha256": "85eb81fe46d3cac759d91d9596f39b438951526e6171d90060d13b84f6051c49"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-tracer-bounded-validation/memory-samples.json",
+      "bytes": 13254,
+      "sha256": "248c08c5a89a689d1d55575e50ed0ce3e8ab77f9224415315a0010cbdd39d120"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-tracer-bounded-validation/profile.json",
+      "bytes": 3661939,
+      "sha256": "83494f50d72d5db722d5067e1f256ae4da1fc5e51ea94eef2974948ca6b0bafb"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-tracer-bounded-validation/result.json",
+      "bytes": 1814,
+      "sha256": "3415e9bf96538aa5d94d9d41410f1cea82371b62a24fb347b49c5b643466a2fd"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-tracer-bounded-validation/run/cmd.txt",
+      "bytes": 224,
+      "sha256": "c77a515c845d8c7a8bef64f502f7ba68bf0fbfb30c1dbb6709e32e19fa2c6f16"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-tracer-bounded-validation/run/log.txt",
+      "bytes": 515220,
+      "sha256": "45455ddf5082abf4287e90a798b66969a1a7ea506f83b1b095af300743203260"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-tracer-bounded-validation/settled.png",
+      "bytes": 5910253,
+      "sha256": "c37c9541c50a60a767b258d8c1bbcc7035c4a19834e87b265d51dbf33ed6b0d1"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-tracer-bounded-validation/settled.png.done",
+      "bytes": 10,
+      "sha256": "4c339121e4860b04ebd48181621c9dd3f84901846feda08d4e77aafaf9a6c896"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-tracer-bounded-validation/timeline.txt",
+      "bytes": 224,
+      "sha256": "c77a515c845d8c7a8bef64f502f7ba68bf0fbfb30c1dbb6709e32e19fa2c6f16"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-tracer-bounded-validation/vt.jsonl",
+      "bytes": 1754927,
+      "sha256": "e5c4e3aed1bfe9b9b611cce8e184a4af9efb6092c80a73fecc977257bd6651bb"
+    }
+  ],
+  "capture_runner": {
+    "path": "/mnt/d/tmp/matter-vt/20260915-feedback/run_tracer_capture.py",
+    "sha256": "11c21378eac9602b97591508e000ceb3d1be367613a9fd8100cea2fd76d7dc41"
+  }
+}

@@ -1,0 +1,34 @@
+#version 460
+layout(local_size_x=64) in;
+struct Root { vec4 sphere; vec4 lod_sphere; uvec4 output_range; }; // first level, level count
+struct Level {
+    uint first_brick; uint brick_count; uint first_visible; float switch_distance;
+    vec4 grid;
+    uvec4 flags;
+};
+layout(std430,set=0,binding=3) buffer VisibleRoots { uint visible_roots[]; };
+layout(std430,set=0,binding=4) readonly buffer Roots { Root roots[]; };
+layout(std430,set=0,binding=5) buffer Commands { uvec4 commands[]; };
+layout(std430,set=0,binding=6) readonly buffer Levels { Level levels[]; };
+layout(push_constant) uniform Selection { vec4 planes[6]; uvec4 counts; vec4 eye_budget; } selection;
+void main() {
+    uint index=gl_GlobalInvocationID.x;
+    if(index>=selection.counts.x) return;
+    Root root=roots[index];
+    for(int i=0;i<6;++i)
+        if(dot(selection.planes[i].xyz,root.sphere.xyz)+selection.planes[i].w < -root.sphere.w) return;
+    // Same normalized switch-distance contract as lod_distance.h/cull.comp.
+    float reach=root.lod_sphere.w*selection.eye_budget.w;
+    float distance_to_eye=max(length(root.lod_sphere.xyz-selection.eye_budget.xyz),0.01);
+    uint chosen=root.output_range.x+root.output_range.y-1u;
+    for(uint i=0u;i<root.output_range.y;++i) {
+        uint candidate=root.output_range.x+i;
+        float limit=levels[candidate].switch_distance;
+        if(isinf(limit) || distance_to_eye<=limit*reach) { chosen=candidate; break; }
+    }
+    Level level=levels[chosen];
+    // Each root occurs once, and the CPU has bounded rootCount*brickCount.
+    // This reserves a slot without expanding any placed brick or triangle.
+    uint offset=atomicAdd(commands[chosen].y,level.brick_count);
+    visible_roots[level.first_visible+offset/level.brick_count]=index;
+}

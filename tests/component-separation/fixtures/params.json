@@ -1,0 +1,44 @@
+{
+  "profile": "legacy-matter-part-graph-v1",
+  "portable_profile": "matter-exact-json-v1",
+  "cases": [
+    {
+      "id": "empty",
+      "params": {},
+      "legacy_memo": "",
+      "legacy_json": "{}",
+      "portable_canonical": "{}"
+    },
+    {
+      "id": "sorted",
+      "params": {
+        "zeta": 2,
+        "alpha": 1
+      },
+      "legacy_memo": "alpha=1;zeta=2;",
+      "legacy_json": "{\"alpha\":1,\"zeta\":2}",
+      "portable_canonical": "{\"alpha\":1,\"zeta\":2}"
+    },
+    {
+      "id": "typed",
+      "params": {
+        "hollow": true,
+        "name": "rock"
+      },
+      "legacy_memo": "hollow=true;name=rock;",
+      "legacy_json": "{\"hollow\":true,\"name\":\"rock\"}",
+      "portable_canonical": "{\"hollow\":true,\"name\":\"rock\"}"
+    },
+    {
+      "id": "binary64",
+      "params": {
+        "x": 0.1,
+        "y": 0.2
+      },
+      "legacy_memo": "x=0.10000000000000001;y=0.20000000000000001;",
+      "legacy_json": "{\"x\":0.10000000000000001,\"y\":0.20000000000000001}",
+      "portable_canonical": "{\"x\":0.1000000000000000055511151231257827021181583404541015625,\"y\":0.200000000000000011102230246251565404236316680908203125}"
+    }
+  ],
+  "known_limit": "Legacy memo is not injective and legacy string quoting has no escapes. Do not use either as portable artifact identity or silently relabel legacy hashes."
+}

@@ -1,0 +1,25 @@
+{
+  "pid": 45972,
+  "path": "D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor/build/windows-msvc/editor.exe",
+  "world": "StreamMountain",
+  "ui_visible": true,
+  "started": "2026-09-17T17:39:49.1464504-07:00",
+  "sha256": "E459B452C20440FCE867D98CF8277DDB9A68DFAFB6B405529D45DCA5BE0E7219",
+  "logs": "/mnt/c/tmp/matter-mountain-rock-review-20260917",
+  "commands": "/mnt/c/tmp/matter-mountain-rock-review-20260917/commands.txt",
+  "status": "live user review; world bake ready and native scene rendering verified",
+  "test_job": "links-diag-v1-result.json",
+  "test_terminal": true,
+  "direct_rock_sources": 48,
+  "bake_errors": 0,
+  "ui_capture": "/mnt/c/tmp/matter-mountain-rock-review-20260917/review-streaming.png",
+  "stats": [
+    "STATS,rock-review-streaming,64.28,4.91,19.26,7.30,7530,83,134068,6808,517,709,0,32768,177.2,3512.0,320,180,256,478.12,2,0.000,0.267,0.000,0.000,0.000,84.00,24.814,0.041,19.154"
+  ],
+  "remaining": "User visual review; initial streaming may still populate distant terrain.",
+  "runtime_followup": {
+    "static_capacity_overflow_count_observed": 2,
+    "last_warning": "[vk] STATIC CAPACITY OVERFLOW -- full O(world) rewrite ahead.",
+    "note": "Scene is rendering and user has moved camera/lighting. Investigate capacity warnings after review; do not reset user props or interrupt this editor."
+  }
+}

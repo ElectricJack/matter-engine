@@ -1,0 +1,76 @@
+[
+  {
+    "kind": "build",
+    "name": "finite_surface_recipe_tests",
+    "command": [
+      "./tools/build-windows-from-wsl.sh",
+      "RelWithDebInfo",
+      "finite_surface_recipe_tests"
+    ],
+    "exit": 0,
+    "seconds": 18.556101822003257,
+    "log": "docs/agent/evidence/2026-09-15-wall-surface/composite-v3-build-finite_surface_recipe_tests.log",
+    "source_changes": [],
+    "validation_errors": []
+  },
+  {
+    "kind": "rootcpu",
+    "name": "finite_surface_recipe_tests",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      "Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp\"; & \"./MatterEditor/build/cmake/windows-msvc/relwithdebinfo/finite_surface_recipe_tests.exe\"; exit $LASTEXITCODE"
+    ],
+    "exit": 0,
+    "seconds": 1.0637864860036643,
+    "log": "docs/agent/evidence/2026-09-15-wall-surface/composite-v3-rootcpu-finite_surface_recipe_tests.log",
+    "source_changes": [],
+    "validation_errors": []
+  },
+  {
+    "kind": "build",
+    "name": "part_surface_provider_tests",
+    "command": [
+      "./tools/build-windows-from-wsl.sh",
+      "RelWithDebInfo",
+      "part_surface_provider_tests"
+    ],
+    "exit": 0,
+    "seconds": 9.898254328989424,
+    "log": "docs/agent/evidence/2026-09-15-wall-surface/composite-v3-build-part_surface_provider_tests.log",
+    "source_changes": [],
+    "validation_errors": []
+  },
+  {
+    "kind": "rootcpu",
+    "name": "part_surface_provider_tests",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      "Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp\"; & \"./MatterEditor/build/cmake/windows-msvc/relwithdebinfo/part_surface_provider_tests.exe\"; exit $LASTEXITCODE"
+    ],
+    "exit": 0,
+    "seconds": 1.2833270889968844,
+    "log": "docs/agent/evidence/2026-09-15-wall-surface/composite-v3-rootcpu-part_surface_provider_tests.log",
+    "source_changes": [],
+    "validation_errors": []
+  },
+  {
+    "kind": "build",
+    "name": "vt_compositor_tests",
+    "command": [
+      "./tools/build-windows-from-wsl.sh",
+      "RelWithDebInfo",
+      "vt_compositor_tests"
+    ],
+    "exit": 1,
+    "seconds": 52.47653867099143,
+    "log": "docs/agent/evidence/2026-09-15-wall-surface/composite-v3-build-vt_compositor_tests.log",
+    "source_changes": [],
+    "validation_errors": []
+  }
+]
