@@ -1,0 +1,26 @@
+{
+  "baseline": "58289c187ef2565c7d0532fe28a8cfb903023e44",
+  "move": "90a19c6698a03623da9a3e3c5235ad272531d462",
+  "baseline_build_status": "failed-before-engine-compilation",
+  "baseline_build_exit_code": 1,
+  "move_build_status": "not-attempted-stop-after-baseline-failure",
+  "smoke_runs": [],
+  "planned_smoke_modes": [
+    "vt",
+    "vt-rt"
+  ],
+  "planned_timeouts_seconds": {
+    "vt": 30,
+    "vt-rt": 120
+  },
+  "executable_sha256": null,
+  "generated_shader_sha256": null,
+  "hashes_unavailable_reason": "No smoke executable or generated engine shaders; compiler check failed during configuration.",
+  "retry_attempted": false,
+  "source_or_wrapper_changes": false,
+  "source_artifacts_root": "/mnt/d/matter-agent-artifacts/matter-engine-cpp/nimble-rapids-30/epoch8-230ea608",
+  "authorization": "msg-55fa5898a0d54a0e86e8e3be10694467",
+  "baseline_configure_exit_code": 1,
+  "baseline_engine_compile_status": "not-started",
+  "move_configure_status": "not-attempted-stop-after-baseline-failure"
+}
