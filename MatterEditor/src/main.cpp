@@ -227,6 +227,7 @@
 #include "dsl_bindings.h"
 
 #include "imgui.h"
+#include "render/scene_admission.h"
 #include "quickjs.h"
 
 #define GLFW_INCLUDE_NONE
@@ -2748,6 +2749,8 @@ int main() {
         vulkan->ray_tracing_available();
     bool quit_requested = false;
     bool fatal_error = false;
+    bool scene_automation_failed = false;
+    std::string scene_admission_diagnostic;
     // Captured only at the Vulkan/device-surfacing fatal sites (render(),
     // end_frame(), the ImGui Vulkan backend prepare/end_frame calls, and
     // exhausted screenshot-readback retries) -- see mark_device_fatal below.
@@ -6805,12 +6808,12 @@ int main() {
         // carries matter::streaming::SectorStreaming — that component is what
         // makes the coordinator claim an owner and build a SectorStreamer.
         // Nothing else in the viewer creates one since the sector panel was
-        // retired, so auto-create + attach the anchor as soon as the session is
-        // Ready. Runs every frame on purpose: it is idempotent against live ECS
-        // state, so a reload or world switch (which resets bake_ready and
+        // retired, so attach during loading: initial fill is a prerequisite
+        // of scene admission, not a consequence of BakeFinished. Runs every
+        // frame: it is idempotent against live ECS state, so a reload or world switch (which resets bake_ready and
         // installs a fresh Flecs world) transparently re-creates the anchor. A
         // no-op for closed-world sessions.
-        if (bake_ready) ui.ensure_streaming_anchor(*session);
+        ui.ensure_streaming_anchor(*session);
         ui.update_sector_streaming(*session, frame_camera,
                                    !stats.freeze_stream_anchor);
         viewer::CharacterWalkInput walk_input{};
@@ -6889,9 +6892,10 @@ int main() {
             // world switch's own bake, the deferred tileset phase that follows
             // a BakeFinished) is dropped rather than attributed to whichever
             // job happens to be newest.
-            if (event.type == matter::EventType::BakeStarted)
+            if (event.type == matter::EventType::BakeStarted) {
+                bake_ready = false;
                 regen_jobs.on_bake_started(viewer::jobs::Clock::now());
-            else if (event.type == matter::EventType::BakePartDone)
+            } else if (event.type == matter::EventType::BakePartDone)
                 regen_jobs.on_part_done(event.module, event.phase, event.done,
                                         event.total);
             else if (event.type == matter::EventType::BakeError)
@@ -7186,10 +7190,30 @@ int main() {
             viewer::submit_selection_overlay_lines(selection_set, *session);
         else
             render_session->submit_overlay_lines(nullptr, 0);
-        if (!render_session->render(render_camera, render_frame, options, error)) {
+        const bool scene_rendered=render_session->render(render_camera, render_frame, options, error);
+        const bool scene_admission_rejected=!scene_rendered && viewer::admission::rejected(error);
+        if(scene_admission_rejected) {
+            if(scene_admission_diagnostic!=error) {
+                scene_admission_diagnostic=error;
+                MATTER_LOGW("editor","Scene admission rejected: %s\n",error.c_str());
+            }
+            // A shell or retained accepted revision cannot qualify the requested
+            // scene. Fail automation without filing a device-fault issue.
+            if(!screenshot_path.empty() || perf.enabled) {
+                scene_automation_failed=true;quit_requested=true;
+            }
+            if(agent_capture.armed())
+                resolve_agent_capture(viewer::capture::Resolution::Abandoned,nullptr,nullptr,nullptr);
+            if(shot_settle>0 || !fifo_present.pending_screenshot_path().empty())
+                std::printf("shot: rejected requested scene (%s)\n",error.c_str());
+            shot_settle=0;fifo_present.cancel_pending_screenshot();
+            if(fifo_block==FifoBlockKind::Shot) fifo_block=FifoBlockKind::None;
+            stable_camera_frames=0;presented_camera_available=false;
+        } else if(!scene_rendered) {
             MATTER_LOGE("editor", "FATAL: render: %s\n", error.c_str());
             mark_device_fatal(error);
         } else if (!show_isolation) {
+            scene_admission_diagnostic.clear();
             camera_input_order.render_scene();
             matter::ResolvedAtmospherePresentationStatus committed{};
             if (session->resolved_atmosphere_status(committed)) {
@@ -7597,6 +7621,14 @@ int main() {
             stats.process_peak_working_set_bytes = proc.peak_working_set_bytes;
         }
 
+        if(ui_frame_ready && scene_admission_rejected) {
+            ImGui::SetNextWindowSize(ImVec2(520,0),ImGuiCond_FirstUseEver);
+            if(ImGui::Begin("Scene capacity")) {
+                ImGui::TextWrapped("%s",scene_admission_diagnostic.c_str());
+                ImGui::TextWrapped("The requested scene is not rendering. Select a smaller world or correct its assets to retry.");
+            }
+            ImGui::End();
+        }
         bool ui_frame_completed = false;
         if (ui_frame_ready) {
             ui_frame_completed = ui.end_frame(frame, error);
@@ -7624,13 +7656,13 @@ int main() {
         bool issue_capture = false;
         bool fifo_immediate_capture = false;
         std::string capture_path;
-        if (!screenshot_path.empty() && bake_ready && frame_stats.instances_drawn > 0 &&
+        if (!scene_admission_rejected && !screenshot_path.empty() && bake_ready && frame_stats.instances_drawn > 0 &&
             ++screenshot_settle >= settle_frames) {
             capture = true; capture_path = screenshot_path;
-        } else if (shot_settle > 0 && frame_stats.instances_drawn > 0 &&
+        } else if (!scene_admission_rejected && shot_settle > 0 && frame_stats.instances_drawn > 0 &&
                    --shot_settle == 0) {
             capture = true; capture_path = shot_path;
-        } else if (!fifo_present.pending_screenshot_path().empty()) {
+        } else if (!scene_admission_rejected && !fifo_present.pending_screenshot_path().empty()) {
             capture = true;
             fifo_immediate_capture = true;
             capture_path = fifo_present.pending_screenshot_path();
@@ -7677,12 +7709,12 @@ int main() {
             numeric_queued = false;
         }
         session->finish_vulkan_frame(
-            frame.serial, frame_presented && !fatal_error);
+            frame.serial, frame_presented && !fatal_error && !scene_admission_rejected);
         const viewer::FifoPresentUpdate fifo_present_update =
             fifo_present.advance(frame_completed && frame_presented &&
-                                     !fatal_error,
+                                     !fatal_error && !scene_admission_rejected,
                                  !fifo_immediate_capture || capture);
-        if (frame_completed && frame_presented && !fatal_error) {
+        if (frame_completed && frame_presented && !fatal_error && !scene_admission_rejected) {
             // frame_camera is the production pose the interactive picker uses.
             presented_camera = frame_camera;
             presented_camera_available = true;
@@ -8238,7 +8270,7 @@ int main() {
             fifo_issue_capture_active = false;
         }
 
-        if (perf.enabled && perf_phase != PerfPhase::Complete && !fatal_error) {
+        if (perf.enabled && perf_phase != PerfPhase::Complete && !fatal_error && !scene_admission_rejected) {
             const auto perf_now = std::chrono::steady_clock::now();
             if (perf_phase == PerfPhase::WaitingForBake) {
                 if (bake_ready && frame_stats.instances_drawn > 0) {
@@ -8785,5 +8817,5 @@ int main() {
                      validation_errors);
         return 1;
     }
-    return fatal_error ? 1 : 0;
+    return (fatal_error || scene_automation_failed) ? 1 : 0;
 }

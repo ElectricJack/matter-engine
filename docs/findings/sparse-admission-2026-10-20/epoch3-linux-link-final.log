@@ -1,0 +1,21 @@
+make: Entering directory '/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/MatterEditor'
+make -C ../MatterEngine3 vulkan-spirv
+make[1]: Entering directory '/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/MatterEngine3'
+make[1]: Nothing to be done for 'vulkan-spirv'.
+make[1]: Leaving directory '/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/MatterEngine3'
+make[1]: Entering directory '/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/third_party/autoremesher_core'
+make[1]: 'libautoremesher_core.a' is up to date.
+make[1]: Leaving directory '/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/third_party/autoremesher_core'
+make -C ../MatterEngine3 shaders_gen/embedded_shaders.h
+make[1]: Entering directory '/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/MatterEngine3'
+make[1]: 'shaders_gen/embedded_shaders.h' is up to date.
+make[1]: Leaving directory '/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/MatterEngine3'
+make -C ../MatterEngine3 viewer-lib VIEWER_TAG=_linux VIEWER_CXX="g++" VIEWER_CC="gcc" VIEWER_AR="ar" VULKAN_INCLUDE="/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/third_party/Vulkan-Headers/include" HAVE_STREAMLINE=0 EXTRA_CFLAGS="-DMATTER_HAVE_AUTOREMESHER -I../third_party/autoremesher_core/include " EXTRA_INCLUDE="-I../third_party/autoremesher_core/include" EXTRA_RETOPO_CPP="../libs/MatterSurfaceLib/src/mesh_retopo.cpp"
+make[1]: Entering directory '/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/MatterEngine3'
+make[1]: Leaving directory '/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/MatterEngine3'
+g++ build/linux/obj/main.o build/linux/obj/agent_protocol.o build/linux/obj/scene_inventory.o build/linux/obj/scene_diff.o build/linux/obj/regen_jobs.o build/linux/obj/procedural_parameters.o build/linux/obj/ui.o build/linux/obj/ui_lighting_controls.o build/linux/obj/animation_debug_overlay.o build/linux/obj/animation_panel.o build/linux/obj/animation_panel_model.o build/linux/obj/session_binding.o build/linux/obj/scene_model_adapter.o build/linux/obj/bake_lab.o build/linux/obj/bake_lab_timeline.o build/linux/obj/event_inspector.o build/linux/obj/asset_browser.o build/linux/obj/part_workbench.o build/linux/obj/part_workbench_iso.o build/linux/obj/reveal_part.o build/linux/obj/lod_inspector.o build/linux/obj/camera_controller.o build/linux/obj/character_walk_controller.o build/linux/obj/camera_focus.o build/linux/obj/camera_orbit.o build/linux/obj/streaming_anchor_controller.o build/linux/obj/selection_set.o build/linux/obj/editor_model.o build/linux/obj/scene_tree_panel.o build/linux/obj/selection_bounds.o build/linux/obj/viewport_pick.o build/linux/obj/viewport_capture.o build/linux/obj/selection_outline.o build/linux/obj/toolbar_panel.o build/linux/obj/console_panel.o build/linux/obj/console_log.o build/linux/obj/image_preview.o build/linux/obj/issue_reporter.o build/linux/obj/issue_reporter_panel.o build/linux/obj/shot_replay.o build/linux/obj/properties_registry.o build/linux/obj/properties_panel.o build/linux/obj/specialized_editors.o build/linux/obj/property_editor.o build/linux/obj/editor_props.o build/linux/obj/gizmo.o build/linux/obj/os_open.o build/linux/obj/asset_root.o build/linux/obj/imgui.o build/linux/obj/imgui_draw.o build/linux/obj/imgui_tables.o build/linux/obj/imgui_widgets.o build/linux/obj/imgui_impl_glfw.o build/linux/obj/ImGuizmo.o build/linux/obj/imgui_impl_vulkan.o \
+    -Wl,--whole-archive ../MatterEngine3/build/libmatter_engine3_viewer_linux.a -Wl,--no-whole-archive \
+    -o build/linux/editor -std=c++17 -O2 -Wall -Wno-missing-braces -Wno-unused-variable -DPLATFORM_DESKTOP -Wl,--gc-sections \
+    /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/MatterEngine3/tests/build/box3d-linux/src/libbox3d.a build/linux/libglfw3.a -L../third_party/autoremesher_core -lautoremesher_core -Wl,--allow-multiple-definition ../third_party/ozz-animation/build/matter/src/animation/offline/libozz_animation_offline.a ../third_party/ozz-animation/build/matter/src/animation/runtime/libozz_animation.a ../third_party/ozz-animation/build/matter/src/base/libozz_base.a \
+    -lX11 -ldl -lpthread -lm -lrt -L/tmp/eager-nexus-71-vulkan-link -lvulkan
+make: Leaving directory '/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/MatterEditor'
