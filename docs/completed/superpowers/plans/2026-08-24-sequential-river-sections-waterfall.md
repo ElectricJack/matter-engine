@@ -49,7 +49,7 @@ The task checklists below are retained as the implementation record.
 - `MatterEngine3/src/hydrology/river_section_coordinator.{h,cpp}`: serial dependency execution with an injected per-section executor.
 - `MatterEngine3/src/hydrology/hydrology_handoff_products.{h,cpp}`: dam masking, GPU collar meshing, CPU ownership cuts, gameplay blending, and aggregate products.
 - `MatterEngine3/src/matter_engine.cpp`: cancellation-safe atomic publication of one assembled network render binding.
-- `projects/world_demo/scenes/RiverHydrology/RiverHydrology.js`: authoritative two-section waterfall test world and DSL-authored boulders.
+- `projects/world_demo/scenes/water/RiverHydrology/RiverHydrology.js`: authoritative two-section waterfall test world and DSL-authored boulders.
 - `MatterEngine3/tools/river_hydrology_sections.timeline`: matched camera set for overview, waterfall, spillway, rapids, and pools.
 - `tools/run-river-hydrology-acceptance.ps1`: reproducible opt-in build, bake, trace, screenshot, and evidence summary.
 
@@ -998,7 +998,7 @@ git commit -m "feat: coordinate sequential fluid sections"
 ### Task 8: Author the Two-Section Ravine, Waterfall, Pools, and Boulders
 
 **Files:**
-- Modify: `projects/world_demo/scenes/RiverHydrology/RiverHydrology.js`
+- Modify: `projects/world_demo/scenes/water/RiverHydrology/RiverHydrology.js`
 - Create: `projects/world_demo/tests/river_hydrology_scene_tests.mjs`
 - Create: `MatterEngine3/tools/river_hydrology_sections.timeline`
 - Modify: `MatterEngine3/tests/world_definition_tests.cpp`
@@ -1119,7 +1119,7 @@ Expected: PASS with the fluid backend disabled; the dry world remains buildable 
 - [ ] **Step 7: Commit**
 
 ```powershell
-git add projects/world_demo/scenes/RiverHydrology/RiverHydrology.js projects/world_demo/tests/river_hydrology_scene_tests.mjs MatterEngine3/tools/river_hydrology_sections.timeline MatterEngine3/tests/world_definition_tests.cpp MatterEngine3/tests/terrain_field_tests.cpp
+git add projects/world_demo/scenes/water/RiverHydrology/RiverHydrology.js projects/world_demo/tests/river_hydrology_scene_tests.mjs MatterEngine3/tools/river_hydrology_sections.timeline MatterEngine3/tests/world_definition_tests.cpp MatterEngine3/tests/terrain_field_tests.cpp
 git commit -m "feat: author the sectional waterfall ravine"
 ```
 
@@ -1366,7 +1366,7 @@ git commit -m "feat: publish sequential river networks"
 **Files:**
 - Create: `tools/run-river-hydrology-acceptance.ps1`
 - Modify: `MatterEngine3/tests/physx_fluid_integration_tests.cpp`
-- Modify: `projects/world_demo/scenes/RiverHydrology/RiverHydrology.js`
+- Modify: `projects/world_demo/scenes/water/RiverHydrology/RiverHydrology.js`
 - Modify: `docs/superpowers/specs/2026-08-24-sequential-river-sections-waterfall-design.md`
 - Modify: `docs/superpowers/plans/2026-08-24-sequential-river-sections-waterfall.md`
 - Modify: `docs/README.md`
@@ -1486,6 +1486,6 @@ Expected: all commands exit 0; default CPU build remains PhysX-free, opt-in GPU 
 Change the design status to implemented only after all gates pass. Add the design and plan to `docs/README.md`, record the accepted run directory (as an untracked build artifact), screenshots names, timings, counts, and any authored tuning changes.
 
 ```powershell
-git add tools/run-river-hydrology-acceptance.ps1 MatterEngine3/tests/physx_fluid_integration_tests.cpp projects/world_demo/scenes/RiverHydrology/RiverHydrology.js docs/superpowers/specs/2026-08-24-sequential-river-sections-waterfall-design.md docs/superpowers/plans/2026-08-24-sequential-river-sections-waterfall.md docs/README.md
+git add tools/run-river-hydrology-acceptance.ps1 MatterEngine3/tests/physx_fluid_integration_tests.cpp projects/world_demo/scenes/water/RiverHydrology/RiverHydrology.js docs/superpowers/specs/2026-08-24-sequential-river-sections-waterfall-design.md docs/superpowers/plans/2026-08-24-sequential-river-sections-waterfall.md docs/README.md
 git commit -m "test: accept the sectional waterfall river"
 ```

@@ -1,0 +1,5 @@
+{
+  "MatterEngine3/src/render/vk_scene_renderer.cpp": "8fc8d26ff64c8a6c0e379619ee514bf08cdb91d6f1d4227201e3231b3a387c6e",
+  "MatterEngine3/tests/vulkan_smoke_tests.cpp": "1e22acd4b4628df77f968d627ad34928d9e5864ff3b85447e46c9568118c055f",
+  "MatterEditor/build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe": "ea7eb0c1af68ac2a8127f2b1a1afc8659617f73c339eed39dfeb3906cba308ac"
+}

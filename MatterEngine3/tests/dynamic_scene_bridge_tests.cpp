@@ -94,6 +94,35 @@ static void test_bridge_add_entity() {
     }
 }
 
+static void test_bridge_reset_rebinds_live_entities() {
+    flecs::world world;
+    world.import<ecs::CoreModule>();
+    world.import<SceneModule>();
+    make_entity(world, 0x100, 0x1234);
+
+    DynamicSceneBridge bridge(8);
+    RecordingSink recorder;
+    std::string err;
+    CHECK(bridge.reconcile(world, recorder.make(), err),
+          "initial reconcile succeeds");
+    bridge.drain();
+
+    // The renderer has discarded every slot during a world reset, while the
+    // ECS entity remains present. The bridge must therefore emit a new Bind,
+    // rather than treating the unchanged entity as already resident.
+    bridge.reset();
+    CHECK(bridge.reconcile(world, recorder.make(), err),
+          "reconcile after reset succeeds");
+    const auto changes = bridge.drain();
+    CHECK(changes.size() == 1, "reset re-emits one live entity binding");
+    if (!changes.empty()) {
+        CHECK(changes[0].kind == render::DynamicSlotChangeKind::Bind,
+              "reset re-emits Bind rather than Transform/no-op");
+        CHECK(changes[0].part_hash == 0x1234,
+              "reset preserves the live entity part hash");
+    }
+}
+
 static void test_bridge_transform_only() {
     flecs::world world;
     world.import<ecs::CoreModule>();
@@ -498,6 +527,7 @@ static void test_scene_registry_assigns_reusable_id_generations() {
 
 int main() {
     test_bridge_add_entity();
+    test_bridge_reset_rebinds_live_entities();
     test_bridge_transform_only();
     test_bridge_part_change();
     test_bridge_carries_root_policy_hash_and_override();

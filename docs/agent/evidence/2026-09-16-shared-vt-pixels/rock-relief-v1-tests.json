@@ -1,0 +1,18 @@
+{
+  "runs": [
+    {
+      "mode": "mountain",
+      "command": "$env:MATTER_VK_VALIDATION=\"1\"; $env:TMP=\"$env:LOCALAPPDATA\\Temp\"; $env:TEMP=$env:TMP; $env:MATTER_VK_SMOKE_MODE=\"mountain\"; $env:MATTER_VT_PROP_TEXELS_PER_METER=$null; & \"./../../MatterEditor/build/cmake/windows-msvc/relwithdebinfo/world_definition_tests.exe\" --mountain-material; exit $LASTEXITCODE",
+      "exit": 1,
+      "seconds": 9.136943634002819,
+      "binary_sha256": "b818d0438801f508b4fb620a2880899dc0a477c7cbbb5fb2e3d06a2d1f080de4",
+      "binary_unchanged": true,
+      "source_changes": [],
+      "all_pass": false,
+      "zero_validation_errors": true,
+      "skipped_rt": false,
+      "log_sha256": "186201d970a014baa08c166e27134f7923b9b304c63bf8ad71c3e6900ae88480",
+      "passed": false
+    }
+  ]
+}

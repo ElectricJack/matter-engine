@@ -1,0 +1,17 @@
+{
+  "pid": 890330,
+  "result": "docs/agent/evidence/2026-09-17-sector-pom/fixture-v1-result.json",
+  "log": "docs/agent/evidence/2026-09-17-sector-pom/fixture-v1-supervisor.log",
+  "steps": [
+    [
+      "docs/agent/evidence/2026-09-16-shared-vt-pixels/build_checks.py",
+      "sector-pom-v1",
+      "vulkan_smoke_tests"
+    ],
+    [
+      "docs/agent/evidence/2026-09-16-shared-vt-pixels/run_checks.py",
+      "sector-pom-v1",
+      "vt-sector-seam"
+    ]
+  ]
+}

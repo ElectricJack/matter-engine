@@ -208,7 +208,11 @@ bool to_props_desc(const FieldDescriptor& field, matter::props::Desc& out);
 bool validate(const RawEntityRecipe& raw, EntityRecipe& out, RecipeError& err,
              const PartResolver& resolve_part = nullptr);
 
-// Stable authored identity: FNV-1a bytes with the high bit cleared.
+// Stable authored identity: FNV-1a bytes with `kRuntimeIdBit` cleared, so an
+// authored id always lands in the LOW half of the SceneEntityId::value space.
+// The bit itself and `is_runtime_id` are defined once in matter/scene.h (which
+// this header includes) — the classification is read outside the ECS too, and
+// those readers must not have to pull in Flecs for it.
 uint64_t hash_authored_id(const std::string& id);
 
 // Validate an edited copy against its entity before committing ECS storage.

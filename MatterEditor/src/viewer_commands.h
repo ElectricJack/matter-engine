@@ -73,8 +73,10 @@
 #ifndef VIEWER_FIFO_PROPERTY_HELPERS_ONLY
 #include "matter/event/command.h"
 #include "agent_protocol.h"
+#include "regen_jobs.h"
 #endif
 #include "matter/props.h"
+#include "matter/fixture_io.h"
 #ifndef VIEWER_FIFO_PROPERTY_HELPERS_ONLY
 #include "matter/scene.h"  // SceneEntityId / SceneEditResult receipts (E5c)
 #include "matter/world_session.h"
@@ -82,10 +84,16 @@
 
 namespace viewer {
 
-inline bool write_screenshot_completion_marker(const std::string& path) {
+inline bool write_screenshot_completion_marker(
+        const std::string& path, matter::CacheByteStorage* storage = nullptr) {
+    static constexpr char kMarker[] = "captured\n";
+    if (storage) {
+        const matter::CacheByteStorage::Bytes bytes(
+            kMarker, kMarker + sizeof(kMarker) - 1u);
+        return storage->publish(path, bytes);
+    }
     FILE* file = std::fopen(path.c_str(), "w");
     if (!file) return false;
-    static constexpr char kMarker[] = "captured\n";
     const bool wrote =
         std::fwrite(kMarker, 1u, sizeof(kMarker) - 1u, file) ==
         sizeof(kMarker) - 1u;
@@ -114,6 +122,257 @@ struct AgentSchema {
     MT_COMMAND_NAME("agent.schema");
     using Result = matter::evt::CommandResult<matter::jsondoc::Value>;
     std::string command;
+};
+
+// --- versioned agent-protocol scene reads ----------------------------------
+// The three metadata commands above answer with a payload and nothing else, so
+// their handler's success/failure is the whole protocol status. A scene READ
+// has outcomes the CommandRegistry has no vocabulary for — "that object does
+// not exist at this revision" is a successful query with a not_found answer,
+// not a handler failure — so these two carry the protocol status back with the
+// payload instead of collapsing every non-success into execution_failure.
+struct AgentPayload {
+    agent::Status status = agent::Status::Ok;
+    matter::jsondoc::Value value;
+    std::string message;
+};
+
+// scene.list_objects{kinds?,name_contains?,offset?,limit?} — one bounded,
+// deterministically ordered page of the authored entities and baked roots in
+// the current world. Ordering and paging live in scene_inventory.h; the
+// handler only snapshots the live sources.
+struct AssetExport {
+    MT_COMMAND_NAME("asset.export");
+    using Result = matter::evt::CommandResult<AgentPayload>;
+    matter::jsondoc::Value arguments;
+};
+
+struct SceneListObjects {
+    MT_COMMAND_NAME("scene.list_objects");
+    using Result = matter::evt::CommandResult<AgentPayload>;
+    matter::jsondoc::Value arguments;
+};
+
+// scene.get_object{object} — exact inspection of ONE typed object. `object` is
+// the {kind,id} pair scene.list_objects returned; the two id namespaces never
+// merge, so entity 42 and baked_root 42 resolve to different objects.
+struct SceneGetObject {
+    MT_COMMAND_NAME("scene.get_object");
+    using Result = matter::evt::CommandResult<AgentPayload>;
+    agent::ObjectIdentity object;
+};
+
+// scene.trace_provenance{object,max_depth?,max_nodes?} — follows the published
+// procedural module DAG for one inspected object.  Like scene.get_object, a
+// missing/replaced typed identity is a normal not_found payload rather than a
+// registry failure.
+struct SceneTraceProvenance {
+    MT_COMMAND_NAME("scene.trace_provenance");
+    using Result = matter::evt::CommandResult<AgentPayload>;
+    matter::jsondoc::Value arguments;
+};
+
+// --- versioned agent-protocol scene comparison (scene_diff.h) --------------
+// A baked root's id IS its content hash, so "what changed" cannot be answered
+// by diffing two object lists: a rebake re-addresses every root. These four
+// carry the same AgentPayload status convention as the reads above -- an
+// unknown snapshot id or an incomparable pair of snapshots is a successful
+// query with a not_found / labelled answer, not a handler failure.
+
+// scene.capture_snapshot{label?} -- retains one bounded, ordered capture of
+// every object the editor can name, plus its measured world bounds and the
+// generation inputs the editor can attest to.
+struct SceneCaptureSnapshot {
+    MT_COMMAND_NAME("scene.capture_snapshot");
+    using Result = matter::evt::CommandResult<AgentPayload>;
+    std::string label;
+};
+
+// scene.list_snapshots{} -- what is still in the retained ring.
+struct SceneListSnapshots {
+    MT_COMMAND_NAME("scene.list_snapshots");
+    using Result = matter::evt::CommandResult<AgentPayload>;
+};
+
+// scene.diff{from,to?,kinds?,changes?,offset?,limit?} -- compares two captures
+// by LOGICAL key (module name / authored entity id), so a regeneration reads
+// as one changed row carrying the new incarnation rather than as a removal
+// plus an addition. `to` defaults to "current", captured at dispatch.
+struct SceneDiff {
+    MT_COMMAND_NAME("scene.diff");
+    using Result = matter::evt::CommandResult<AgentPayload>;
+    matter::jsondoc::Value arguments;
+};
+
+// scene.query{snapshot?,kinds?,name_contains?,module_contains?,
+//             source_path_contains?,has_provenance?,has_part_instance?,
+//             region?,offset?,limit?}
+// -- bounded name/kind/provenance and spatial-region filtering over a capture.
+struct SceneQuery {
+    MT_COMMAND_NAME("scene.query");
+    using Result = matter::evt::CommandResult<AgentPayload>;
+    matter::jsondoc::Value arguments;
+};
+
+// --- typed app-selection commands ------------------------------------------
+// These mutate the one app-owned SelectionSet only.  They deliberately carry
+// typed identities rather than raw JSON; parsing and duplicate rejection stay
+// at the protocol boundary, while the handler validates the complete vector
+// against one current scene-inventory snapshot before changing selection.
+struct SelectionReplace {
+    MT_COMMAND_NAME("selection.replace");
+    using Result = matter::evt::CommandResult<AgentPayload>;
+    std::vector<agent::ObjectIdentity> objects;
+};
+
+struct SelectionAdd {
+    MT_COMMAND_NAME("selection.add");
+    using Result = matter::evt::CommandResult<AgentPayload>;
+    std::vector<agent::ObjectIdentity> objects;
+};
+
+struct SelectionRemove {
+    MT_COMMAND_NAME("selection.remove");
+    using Result = matter::evt::CommandResult<AgentPayload>;
+    std::vector<agent::ObjectIdentity> objects;
+};
+
+struct SelectionToggle {
+    MT_COMMAND_NAME("selection.toggle");
+    using Result = matter::evt::CommandResult<AgentPayload>;
+    std::vector<agent::ObjectIdentity> objects;
+};
+
+struct SelectionClear {
+    MT_COMMAND_NAME("selection.clear");
+    using Result = matter::evt::CommandResult<AgentPayload>;
+};
+
+struct SelectionList {
+    MT_COMMAND_NAME("selection.list");
+    using Result = matter::evt::CommandResult<AgentPayload>;
+};
+
+// --- typed viewport picking -------------------------------------------------
+// These commands deliberately route to viewport_pick(), the same GPU identity
+// then CPU-OBB fallback used by an interactive viewport click. x/y are
+// viewport-local logical pixels. The app-lane handler snapshots the current
+// viewport geometry/camera and supplies its own framebuffer scale in the
+// response; callers use the regular agent `expect.view_id` guard for a shot.
+struct ViewportPick {
+    MT_COMMAND_NAME("viewport.pick");
+    using Result = matter::evt::CommandResult<AgentPayload>;
+    float x = 0.0f;
+    float y = 0.0f;
+};
+
+struct ViewportPickSelect {
+    MT_COMMAND_NAME("viewport.pick_select");
+    using Result = matter::evt::CommandResult<AgentPayload>;
+    enum class Mode { Replace, Add, Toggle };
+    float x = 0.0f;
+    float y = 0.0f;
+    Mode mode = Mode::Replace;
+};
+
+// --- typed viewport capture and framing -------------------------------------
+// viewport.capture is the ONE agent command whose answer is not knowable on
+// the app lane: a screenshot is only true once a frame has PRESENTED and its
+// readback has been written. The handler therefore only decides whether a
+// capture can be armed right now; main.cpp's dispatch bridge arms it, and the
+// frame loop emits the single terminal result when the PNG lands, times out,
+// or is abandoned. See MatterEditor/src/viewport_capture.h.
+struct ViewportCapture {
+    MT_COMMAND_NAME("viewport.capture");
+    using Result = matter::evt::CommandResult<AgentPayload>;
+    std::string path;
+    bool annotate = false;
+};
+
+// view.focus frames the camera exactly the way the F key and the Asset
+// Browser's Reveal do -- camera_focus.h's merged selection AABB -- on either
+// the current selection or one named object. Naming an object does NOT select
+// it: framing is a view operation, and an agent that wanted the selection
+// changed has selection.replace for that.
+struct ViewFocus {
+    MT_COMMAND_NAME("view.focus");
+    using Result = matter::evt::CommandResult<AgentPayload>;
+    bool has_object = false;
+    agent::ObjectIdentity object;
+};
+
+// Set a complete calibrated pinhole camera. A complete replacement prevents
+// an agent from mixing fresh intrinsics with an old pose by omission.
+struct ViewSetCamera {
+    MT_COMMAND_NAME("view.set_camera");
+    using Result = matter::evt::CommandResult<AgentPayload>;
+    matter::CameraDesc camera;
+};
+
+struct RenderResetTemporal {
+    MT_COMMAND_NAME("render.reset_temporal");
+    using Result = matter::evt::CommandResult<AgentPayload>;
+};
+
+// --- typed regeneration job control (regen_jobs.h) --------------------------
+// These five make the reload / regenerate work the engine already does
+// OBSERVABLE, rather than something an agent infers from a sleep. They are
+// App-scoped like the other agent reads: the ledger belongs to the editor
+// process, and a job's own record carries the world and the scene identity it
+// was accepted at, so a world switch is visible in the record instead of
+// silently retargeting a job id.
+//
+// job.start only ACCEPTS. The heavy session operation runs at main.cpp's
+// post-frame seam, the same place viewer.reload lands, because a reload
+// destroys state panels are drawing from. job.wait is the second command in
+// this protocol (after viewport.capture) whose answer is not knowable on the
+// app lane: the handler decides only whether a wait can be armed, and the
+// frame loop emits the one terminal record when the job ends or the deadline
+// passes.
+struct JobStart {
+    MT_COMMAND_NAME("job.start");
+    using Result = matter::evt::CommandResult<AgentPayload>;
+    jobs::StartRequest request;
+};
+
+struct JobStatus {
+    MT_COMMAND_NAME("job.status");
+    using Result = matter::evt::CommandResult<AgentPayload>;
+    uint64_t job_id = 0;
+};
+
+struct JobWait {
+    MT_COMMAND_NAME("job.wait");
+    using Result = matter::evt::CommandResult<AgentPayload>;
+    uint64_t job_id = 0;
+};
+
+struct JobCancel {
+    MT_COMMAND_NAME("job.cancel");
+    using Result = matter::evt::CommandResult<AgentPayload>;
+    uint64_t job_id = 0;
+};
+
+struct JobList {
+    MT_COMMAND_NAME("job.list");
+    using Result = matter::evt::CommandResult<AgentPayload>;
+    size_t limit = jobs::kDefaultListLimit;
+};
+
+// A procedural root's effective parameter object is published by the part
+// graph. Updates are typed, session-only root overrides with a job receipt.
+struct ProceduralParameters {
+    MT_COMMAND_NAME("procedural.parameters");
+    using Result = matter::evt::CommandResult<AgentPayload>;
+    agent::ObjectIdentity object;
+};
+
+struct ProceduralUpdate {
+    MT_COMMAND_NAME("procedural.update");
+    using Result = matter::evt::CommandResult<AgentPayload>;
+    agent::ObjectIdentity object;
+    matter::jsondoc::Value changes;
+    bool dry_run = false;
 };
 
 // --- E5c scene-edit commands (event-system.md S I.14) -----------------------

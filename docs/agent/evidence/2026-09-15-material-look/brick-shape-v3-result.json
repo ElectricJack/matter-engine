@@ -1,0 +1,28 @@
+{
+  "exit": 0,
+  "seconds_including_startup_and_view_waits": 37.61446168400289,
+  "source_changes": [],
+  "binary_changed": false,
+  "errors": [],
+  "vt_stats": [
+    "STATSVT,brick-shape-v3-middle,active=1,variants=1/32768,rejected=0,mesh=0.0/3512.0 MiB,pool=114/25600,pinned=1,queue=0,fills=114,evictions=0,ind=0.00/64 MiB",
+    "STATSVT,brick-shape-v3-close,active=1,variants=1/32768,rejected=0,mesh=0.0/3512.0 MiB,pool=163/25600,pinned=1,queue=0,fills=163,evictions=0,ind=0.00/64 MiB",
+    "STATSVT,brick-shape-v3-far,active=1,variants=1/32768,rejected=0,mesh=0.0/3512.0 MiB,pool=183/25600,pinned=1,queue=0,fills=183,evictions=0,ind=0.00/64 MiB",
+    "STATSVT,brick-shape-v3-grazing,active=1,variants=1/32768,rejected=0,mesh=0.0/3512.0 MiB,pool=195/25600,pinned=1,queue=0,fills=195,evictions=0,ind=0.00/64 MiB",
+    "STATSVT,brick-shape-v3-rt,active=1,variants=1/32768,rejected=0,mesh=0.0/3512.0 MiB,pool=196/25600,pinned=1,queue=0,fills=196,evictions=0,ind=0.00/64 MiB",
+    "STATSVT,brick-shape-v3-albedo,active=1,variants=1/32768,rejected=0,mesh=0.0/3512.0 MiB,pool=196/25600,pinned=1,queue=0,fills=196,evictions=0,ind=0.00/64 MiB",
+    "STATSVT,brick-shape-v3-normals,active=1,variants=1/32768,rejected=0,mesh=0.0/3512.0 MiB,pool=196/25600,pinned=1,queue=0,fills=196,evictions=0,ind=0.00/64 MiB",
+    "STATSVT,brick-shape-v3-wireframe,active=1,variants=1/32768,rejected=0,mesh=0.0/3512.0 MiB,pool=205/25600,pinned=1,queue=0,fills=205,evictions=0,ind=0.00/64 MiB"
+  ],
+  "images": {
+    "brick-shape-v3-middle.png": "8b4fd8e32b8eef98dc706a3159a445dcc6f004cee8aaec1f402d028b75e7326d",
+    "brick-shape-v3-close.png": "37e2ebf519724a2cadb946625c40c9e20b15fe5684792fa7445131d913061194",
+    "brick-shape-v3-far.png": "3f105351a0a19e19d7ecc4c4373df783eabe4bced1f92f6587122469a57352dc",
+    "brick-shape-v3-grazing.png": "a70b85efc975092e0a686b9e5f6fe62ba270815b0f63bd766b115f5dcfd7a5f4",
+    "brick-shape-v3-rt.png": "6fe5e9892f3793985d0fdc60f50f35974b76001ed4b0dcdf7115dbfbf907b12f",
+    "brick-shape-v3-albedo.png": "c1078f1e6c0344087fe8d247552f4091d220d16f8cebb09b1485a239a30aba12",
+    "brick-shape-v3-normals.png": "f89e4e2f4f624a47a8250222d6f3edfa5db47500cba0c80b7615237e4c9453e8",
+    "brick-shape-v3-wireframe.png": "adbcac26ca3737db1c5bba7d85f0cd31405e2d8679e880518a3a274009d3b717"
+  },
+  "passed": true
+}

@@ -95,14 +95,15 @@ struct TickResult {
 
 // A world-status transition queued from outside the tick thread (world loading
 // is asynchronous). Applied at the top of the next tick(), in enqueue order.
-// Ready additionally bumps the world's content generation and, if `entities` is
-// non-empty, bootstraps those recipes transactionally.
+// Ready additionally bumps the world's content generation and bootstraps
+// nonempty recipes (or explicitly replaces the authored scene, even if empty).
 enum class WorldStateCommandKind { Loading, Ready, Failed };
 
 struct WorldStateCommand {
     WorldStateCommandKind kind;
     std::vector<RawEntityRecipe> entities;  // populated for Ready commands
     scene::PartResolver part_resolver;      // optional; resolves module name → hash
+    bool replace_entities = false;         // an empty authored replacement clears the old scene
 };
 
 // Owner of one flecs world and its native subsystems. See the file header for
@@ -158,6 +159,10 @@ public:
     // Queues the command under a mutex; it takes effect at the start of the next
     // tick(), not here.
     void enqueue_world_state(WorldStateCommand command);
+    // App/tick thread, between ticks only. Full-scene admission uses this after
+    // visual/physics acceptance so Ready and authored entities are observable
+    // before the worker is released to emit its terminal success.
+    void flush_world_state_commands() { drain_world_state_commands(); }
     // Advance the world by one frame: drain commands, audit animation bindings,
     // run the fixed pipeline off the accumulator, then the frame pipeline once.
     // Returns invalid (and does nothing) for a non-finite or negative frame

@@ -1,0 +1,32 @@
+{
+  "runs": [
+    {
+      "mode": "writer",
+      "command": "$env:MATTER_VK_VALIDATION=\"1\"; $env:TMP=\"$env:LOCALAPPDATA\\Temp\"; $env:TEMP=$env:TMP; $env:MATTER_VK_SMOKE_MODE=\"writer\"; & \"./build/cmake/windows-msvc/relwithdebinfo/asset_export_tests.exe\"; exit $LASTEXITCODE",
+      "exit": 0,
+      "seconds": 0.8508425569998508,
+      "binary_sha256": "2887c7ba33e211fc7c38b898c2fe80e48609be5e3866a02fcdf8e96c56ea2ba3",
+      "binary_unchanged": true,
+      "source_changes": [],
+      "all_pass": true,
+      "zero_validation_errors": true,
+      "skipped_rt": false,
+      "log_sha256": "76227b506f31351c7a3f1e3f04beac50650443d0b3cdc9cb0d74f2b897ba6a5a",
+      "passed": true
+    },
+    {
+      "mode": "vt-export",
+      "command": "$env:MATTER_VK_VALIDATION=\"1\"; $env:TMP=\"$env:LOCALAPPDATA\\Temp\"; $env:TEMP=$env:TMP; $env:MATTER_VK_SMOKE_MODE=\"vt-export\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe\"; exit $LASTEXITCODE",
+      "exit": 1,
+      "seconds": 5.897046369998861,
+      "binary_sha256": "29fcb363199d79cbb6e69ec3d81cd6368cab1bacc365556be7a206748264e845",
+      "binary_unchanged": true,
+      "source_changes": [],
+      "all_pass": false,
+      "zero_validation_errors": false,
+      "skipped_rt": false,
+      "log_sha256": "daa6c6561dcef7ceabf73022f1b21a18ae84a21931af4e6f7dd65e8cec41f346",
+      "passed": false
+    }
+  ]
+}
