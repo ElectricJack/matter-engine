@@ -1,0 +1,7 @@
+The authoring cleanup evidence in verification.json describes commit 49103fc124d8b23c216b12f941fa5b184362191a and remains byte-identical. Supervisor message msg-fc42ae14f8494af99718a366a675576f additionally authorized correcting the shared viewer graph test census to match production inventory. This addendum records that separate change.
+
+The helper now expects 219 viewer sources with retopology enabled and 218 without it, and requires the existing mesh_raster.cpp and mesh_pipelines.cpp sources. All other helper assertions remain byte-identical. Portable checks evaluate the actual manifest reader and production inventory construction, then the existing census/member/C3 predicate block bound to that inventory. Before the correction both modes fail with the expected census mismatch; afterwards both pass. Headless counts remain 168 core and 21 surface sources, viewer sources are unique, and exactly three are C sources.
+
+These checks qualify inventory assertions, not native configuration, compilation or runtime. Required hosted checks on the new published commit supply full native qualification. No competing local Windows run, unchanged component-suite rerun, manual CI dispatch or cancellation was performed. The old helper summary text is unchanged; numeric assertions and production inventories are authoritative.
+
+Reproduce with `python3 docs/findings/authoring-cleanup-2026-10-12/check-viewer-census.py`; source hashes, command arguments, timings, before/after exits and member receipts are in census-validation.json.

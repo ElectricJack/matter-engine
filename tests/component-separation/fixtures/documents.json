@@ -1,0 +1,50 @@
+[
+  {
+    "input": "fixtures/primitive.recipe.json",
+    "kind": "recipe",
+    "expected_wire": "fixtures/primitive.recipe.canonical.json",
+    "content_sha256": "746bde16663f137afb03a9843d68c5f77bd943104dd34101fd695365b023a727"
+  },
+  {
+    "input": "fixtures/extrude.recipe.json",
+    "kind": "recipe",
+    "expected_wire": "fixtures/extrude.recipe.canonical.json",
+    "content_sha256": "5e36cb190ab490179761fb13e37c392836051d0544463fca629026d9615193e6"
+  },
+  {
+    "input": "fixtures/ordered-csg.recipe.json",
+    "kind": "recipe",
+    "expected_wire": "fixtures/ordered-csg.recipe.canonical.json",
+    "content_sha256": "7a323a29f22cc7f8f4f53cc4fbacd1459e74044e31f1fe71732ede9288ef543c"
+  },
+  {
+    "input": "fixtures/reversed-csg.recipe.json",
+    "kind": "recipe",
+    "expected_wire": "fixtures/reversed-csg.recipe.canonical.json",
+    "content_sha256": "a5335e3bff2394fcfe9a7a5d5e4baf6682c956676e324b9baf420cfda26e06b0"
+  },
+  {
+    "input": "fixtures/cube.asset.json",
+    "kind": "asset",
+    "expected_wire": "fixtures/cube.asset.canonical.json",
+    "content_sha256": "c3ffe5ada74ec77d5670b1fecf3295027234b9d9a2e8fab69cfcab3aa9f32281"
+  },
+  {
+    "input": "fixtures/repeated-assembly.asset.json",
+    "kind": "asset",
+    "expected_wire": "fixtures/repeated-assembly.asset.canonical.json",
+    "content_sha256": "6a52bbc34f274d4f02bc7b8c7b53ea30df16bc96d6cb32110515b6eaeb29c445"
+  },
+  {
+    "input": "fixtures/material.asset.json",
+    "kind": "asset",
+    "expected_wire": "fixtures/material.asset.canonical.json",
+    "content_sha256": "068d52d65d88ac0b961074486039961b6fda1f5e547eeda3043e36d5d85fd7ad"
+  },
+  {
+    "input": "fixtures/affine.asset.json",
+    "kind": "asset",
+    "expected_wire": "fixtures/affine.asset.canonical.json",
+    "content_sha256": "e1a1dd0cadc67aa6b60dfec64d46d22ebead8159f8f22d0cf60484aba0492780"
+  }
+]

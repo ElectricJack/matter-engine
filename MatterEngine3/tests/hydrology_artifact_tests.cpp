@@ -529,7 +529,9 @@ int main() {
     test_cpu_fallback_interpolates_finite_to_empty_cells_without_nan();
     test_cpu_fallback_preserves_fine_particle_water_on_a_coarse_query_lattice();
     test_artifact_round_trip_and_corruption_closure();
+#ifdef MATTER_CODEC_SOURCE_QUALIFICATION
     test_atomic_save_validated_load_and_cache_hit();
+#endif
     test_payload_digest_is_available_before_animation_packaging();
     return check_summary();
 }

@@ -1,0 +1,9 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><title>Matter web viewer tests</title><link rel="icon" href="data:,">
+<script type="importmap">{"imports": {"three": "../vendor/three/three.module.js"}}</script>
+<body><pre id="output">Running</pre>
+<script type="module">
+import {runTests} from './viewer_tests.mjs';
+try { window.viewerReport = await runTests(); document.getElementById('output').textContent = JSON.stringify(window.viewerReport.passed); }
+catch (error) { window.viewerFailure = String(error.stack ?? error); document.getElementById('output').textContent = window.viewerFailure; }
+</script></body></html>

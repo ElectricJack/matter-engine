@@ -204,6 +204,7 @@ class VtEnricher final : public VtPageEnricher {
     void enrich(VkCommandBuffer cmd, const VtEnrichRequest* batch,
                 size_t count) override;
     bool supports_separate_occlusion() const override {return true;}
+    bool supports_incremental_enrichment() const override {return true;}
     void release_preparation(const VtPreparationKey& key) override;
 
     // Drop the cached chart/triangle streams AND acceleration structures for a

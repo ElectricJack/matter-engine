@@ -124,9 +124,9 @@ int dbuf_realloc(DynBuf *s, size_t new_size)
 {
     size_t size;
     uint8_t *new_buf;
+    if (s->error)
+        return -1;
     if (new_size > s->allocated_size) {
-        if (s->error)
-            return -1;
         size = s->allocated_size * 3 / 2;
         if (size > new_size)
             new_size = size;
@@ -155,6 +155,8 @@ int dbuf_write(DynBuf *s, size_t offset, const void *data, size_t len)
 
 int dbuf_put(DynBuf *s, const void *data, size_t len)
 {
+    if (s->error)
+        return -1;
     if (unlikely((s->size + len) > s->allocated_size)) {
         if (dbuf_realloc(s, s->size + len))
             return -1;
@@ -168,6 +170,8 @@ int dbuf_put(DynBuf *s, const void *data, size_t len)
 
 int dbuf_put_self(DynBuf *s, size_t offset, size_t len)
 {
+    if (s->error)
+        return -1;
     if (unlikely((s->size + len) > s->allocated_size)) {
         if (dbuf_realloc(s, s->size + len))
             return -1;

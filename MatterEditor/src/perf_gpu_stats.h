@@ -8,6 +8,8 @@
 namespace viewer {
 // Collect retired RAW timestamps, once per readback. Percentiles describe
 // executions with available timestamp pairs, not absent passes or EMA values.
+// p95/p99 are nearest-rank, sorted[ceil(q * n) - 1] (the index
+// write_perf_result uses for frame times); max is the worst execution.
 class PerfGpuStats {
 public:
     void reset(uint64_t current_sequence = 0) {
@@ -26,13 +28,14 @@ public:
     void append_json(std::ostream& out) const {
         out << ",\"gpu_pass_statistics\":{\"metric\":\"raw_available_executions\","
                "\"window\":\"readbacks_observed_during_sampling\","
-               "\"median_method\":\"midpoint\",\"p95_method\":\"nearest_rank\",\"passes\":{";
+               "\"median_method\":\"midpoint\",\"p95_method\":\"nearest_rank\","
+               "\"p99_method\":\"nearest_rank\",\"passes\":{";
         for (size_t i = 0; i < samples_.size(); ++i) {
             if (i) out << ',';
             out << '"' << matter::kGpuTimingNames[i] << "\":{\"samples\":"
                 << samples_[i].size() << ",\"median_ms\":";
             if (samples_[i].empty()) {
-                out << "null,\"p95_ms\":null}";
+                out << "null,\"p95_ms\":null,\"p99_ms\":null,\"max_ms\":null}";
                 continue;
             }
             auto sorted = samples_[i];
@@ -41,7 +44,9 @@ public:
             const double median = n % 2 ? sorted[n / 2]
                 : (sorted[n / 2 - 1] + sorted[n / 2]) * 0.5;
             const size_t p95 = static_cast<size_t>(std::ceil(n * 0.95)) - 1;
-            out << median << ",\"p95_ms\":" << sorted[p95] << '}';
+            const size_t p99 = static_cast<size_t>(std::ceil(n * 0.99)) - 1;
+            out << median << ",\"p95_ms\":" << sorted[p95] << ",\"p99_ms\":" << sorted[p99]
+                << ",\"max_ms\":" << sorted.back() << '}';
         }
         out << "}}";
     }

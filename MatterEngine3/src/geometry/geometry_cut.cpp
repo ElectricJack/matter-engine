@@ -4,7 +4,7 @@
 namespace geometry {
 namespace {
 bool matches(const NodeRef& ref,const NodeView& node) {
-    if(!node.page||ref.page!=node.self.page||ref.page!=node.page->hash||ref.error!=node.self.error||
+    if(!node.ready||ref.page!=node.self.page||(node.page && ref.page!=node.page->hash)||ref.error!=node.self.error||
        ref.source_triangles!=node.self.source_triangles||ref.triangles!=node.self.triangles)return false;
     for(int k=0;k<3;++k)if(ref.bounds.lo[k]!=node.self.bounds.lo[k]||ref.bounds.hi[k]!=node.self.bounds.hi[k])return false;
     return true;

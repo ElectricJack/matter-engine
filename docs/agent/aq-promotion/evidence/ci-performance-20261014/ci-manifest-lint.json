@@ -1,0 +1,28 @@
+{
+  "schema": "matter.ci-manifest-lint.v1",
+  "status": "passed",
+  "source_commit": "b28d73adfd14ea90d8557c8913429cbde1186c17",
+  "source_dirty": true,
+  "fixture": "synthetic LANGUAGES NONE full historical name/label inventory, not native execution",
+  "tests": 192,
+  "required_source_checks": [
+    "compiler_format_negative_tests",
+    "compiler_return_address_gnu_tests",
+    "physx_dependency_contract_tests",
+    "vt_link_inventory_tests",
+    "viewer_graph_tests",
+    "python_contract_tests",
+    "shader_rebuild_tests",
+    "shader_input_list_tests",
+    "windows_build_wrapper_contract",
+    "editor_registration_census",
+    "shader_source_tests"
+  ],
+  "behavioral_policy_checks": [
+    "matter_engine_headless_consumer_tests",
+    "matter_mesh_allocator_policy_tests"
+  ],
+  "manifest_path": "/tmp/keen-ci-manifest-njcgjvyn",
+  "missing_contract_probe": "rejected as required",
+  "unknown_policy_probe": "rejected as required"
+}
