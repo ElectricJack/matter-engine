@@ -43,6 +43,8 @@
 #include <string>
 #include <vector>
 
+namespace matter { class SourceSnapshot; }
+
 namespace matter_async {
 
 // One-shot, monotonic cancel flag shared between whoever requested a piece of
@@ -120,6 +122,8 @@ struct Command {
     CommandKind kind = CommandKind::BakeAll;
     std::vector<std::string> changed_files;   // RebakeCone only
     std::shared_ptr<CancelToken> token;       // filled by CommandQueue::push
+    // Reload-only owned input; installed by the worker after quiescence.
+    std::shared_ptr<const matter::SourceSnapshot> fixture_sources;
 };
 
 // Single-consumer queue with supersession: BakeAll/Reload cancels the
@@ -159,9 +163,10 @@ private:
     // its own lock). pending_ mirrors, in FIFO order, the CancelTokens of the
     // commands currently queued in ch_; each is popped in lockstep as its
     // command is delivered. Lock order is always m_ -> ch_ internal mutex
-    // (push/shut_down hold m_ then touch ch_); pop touches ch_ first (blocking
-    // wait_pop, no m_ held) then acquires m_, so the two never nest the other
-    // way and cannot deadlock.
+    // (push/shut_down hold m_ then touch ch_).
+    // pop() touches ch_ first (blocking wait_pop, no m_ held) then acquires m_.
+    // pop_wait() holds m_ across ch_.try_pop(), nesting m_ -> channel mutex,
+    // which is the same order producers use, so neither path can deadlock.
     std::mutex m_;
     std::condition_variable service_cv_;
     bool idle_wake_ = false;

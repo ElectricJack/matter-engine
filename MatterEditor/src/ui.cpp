@@ -39,6 +39,7 @@
 #include <cstdio>
 #include <cstring>
 #include <functional>
+#include <mutex>
 #include <set>          // scene-vs-flat layout dedup in scan_worlds
 #include <vector>
 #include <filesystem>
@@ -106,12 +107,14 @@ std::vector<WorldEntry> scan_worlds(const std::string& examples_root) {
         // behind, and listing it only produces a load error on click.
         std::set<std::string> seen;
         if (has_scenes) {
-            for (const auto& script : matter::project_layout::scene_scripts(scenes)) {
+            matter::project_layout::Diagnostics diag;
+            for (const auto& script : matter::project_layout::scene_scripts(scenes, &diag)) {
                 const std::string name = script.stem().string();
                 const auto group = script.parent_path().parent_path().lexically_relative(scenes);
                 seen.insert(name);
                 add_entry(project, name, group == "." ? "" : group.generic_string());
             }
+            for (const auto& d : diag.duplicates) MATTER_LOGW("ui", "%s", d.c_str());
         }
 
         // Flat layout: worlds/<Name>.js. Still scanned so a project can be
@@ -285,6 +288,8 @@ bool Ui::prepare_vulkan_backend(const matter::VulkanFrame& frame,
     }
     if (frame.swapchain_recreated || frame.image_count != image_count_) {
         image_count_ = frame.image_count;
+        // May vkDeviceWaitIdle, which needs every queue the device serializes.
+        std::lock_guard<std::mutex> lock(vulkan_->queue_mutex());
         ImGui_ImplVulkan_SetMinImageCount(image_count_);
     }
     return true;
@@ -337,7 +342,11 @@ bool Ui::end_frame(const matter::VulkanFrame& frame, std::string& error) {
     rendering.colorAttachmentCount = 1;
     rendering.pColorAttachments = &attachment;
     vkCmdBeginRendering(frame.command_buffer, &rendering);
-    ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), frame.command_buffer);
+    {
+        // Texture uploads inside submit to and wait on the shared graphics queue.
+        std::lock_guard<std::mutex> lock(vulkan_->queue_mutex());
+        ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), frame.command_buffer);
+    }
     vkCmdEndRendering(frame.command_buffer);
     return true;
 }
