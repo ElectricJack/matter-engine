@@ -1,0 +1,532 @@
+{
+  "id": "courtyard",
+  "name": "Courtyard residence",
+  "width": 36,
+  "depth": 40,
+  "levels": [
+    {
+      "name": "Ground / Y=0",
+      "y": 0,
+      "rooms": [
+        [
+          "kitchen",
+          "Kitchen",
+          [
+            0,
+            2,
+            8,
+            10
+          ],
+          "service"
+        ],
+        [
+          "hall",
+          "Great hall",
+          [
+            8,
+            2,
+            20,
+            10
+          ],
+          "hall"
+        ],
+        [
+          "study",
+          "Study",
+          [
+            28,
+            2,
+            8,
+            10
+          ],
+          "chamber"
+        ],
+        [
+          "pantry",
+          "Pantry",
+          [
+            0,
+            12,
+            10,
+            8
+          ],
+          "service"
+        ],
+        [
+          "stair",
+          "Stair hall",
+          [
+            0,
+            20,
+            10,
+            10
+          ],
+          "stair"
+        ],
+        [
+          "court",
+          "Open court",
+          [
+            10,
+            12,
+            16,
+            18
+          ],
+          "court"
+        ],
+        [
+          "chapel",
+          "Chapel",
+          [
+            26,
+            12,
+            10,
+            18
+          ],
+          "chapel"
+        ],
+        [
+          "westguard",
+          "Guard room",
+          [
+            0,
+            30,
+            14,
+            10
+          ],
+          "guard"
+        ],
+        [
+          "gate",
+          "Gate passage",
+          [
+            14,
+            30,
+            8,
+            10
+          ],
+          "gallery"
+        ],
+        [
+          "eastguard",
+          "Guard room",
+          [
+            22,
+            30,
+            14,
+            10
+          ],
+          "guard"
+        ]
+      ],
+      "portals": [
+        [
+          16,
+          40,
+          20,
+          40
+        ],
+        [
+          16,
+          30,
+          20,
+          30
+        ],
+        [
+          16,
+          12,
+          20,
+          12
+        ],
+        [
+          10,
+          22,
+          10,
+          24
+        ],
+        [
+          10,
+          16,
+          10,
+          18
+        ],
+        [
+          26,
+          20,
+          26,
+          22
+        ],
+        [
+          8,
+          6,
+          8,
+          8
+        ],
+        [
+          28,
+          6,
+          28,
+          8
+        ],
+        [
+          14,
+          34,
+          14,
+          36
+        ],
+        [
+          22,
+          34,
+          22,
+          36
+        ]
+      ],
+      "stairs": [
+        [
+          2,
+          22,
+          2,
+          6
+        ]
+      ],
+      "route": [
+        [
+          18,
+          42
+        ],
+        [
+          18,
+          35
+        ],
+        [
+          18,
+          23
+        ],
+        [
+          11,
+          23
+        ],
+        [
+          3,
+          23
+        ],
+        [
+          3,
+          28
+        ]
+      ],
+      "stairRecords": [
+        {
+          "id": "west",
+          "kind": "straight",
+          "lowerY": 0,
+          "upperY": 4,
+          "flight": [
+            2,
+            22,
+            2,
+            6
+          ],
+          "direction": [
+            0,
+            1
+          ],
+          "risers": 20,
+          "tread": 0.3,
+          "lowerLanding": [
+            2,
+            20,
+            2,
+            2
+          ],
+          "upperLanding": [
+            2,
+            28,
+            2,
+            2
+          ],
+          "destinationHole": [
+            2,
+            22,
+            2,
+            6
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Upper / Y=4",
+      "y": 4,
+      "rooms": [
+        [
+          "kitchenloft",
+          "Service loft",
+          [
+            0,
+            2,
+            8,
+            10
+          ],
+          "service"
+        ],
+        [
+          "northgallery",
+          "Hall balcony",
+          [
+            8,
+            10,
+            20,
+            2
+          ],
+          "gallery"
+        ],
+        [
+          "eaststudy",
+          "Library",
+          [
+            28,
+            2,
+            8,
+            10
+          ],
+          "chamber"
+        ],
+        [
+          "westloft",
+          "Linen store",
+          [
+            0,
+            12,
+            8,
+            8
+          ],
+          "service"
+        ],
+        [
+          "upperstair",
+          "Landing",
+          [
+            0,
+            20,
+            8,
+            10
+          ],
+          "stair"
+        ],
+        [
+          "westgallery",
+          "Gallery",
+          [
+            8,
+            12,
+            2,
+            18
+          ],
+          "gallery"
+        ],
+        [
+          "eastgallery",
+          "Gallery",
+          [
+            26,
+            12,
+            2,
+            18
+          ],
+          "gallery"
+        ],
+        [
+          "westchamber",
+          "West chamber",
+          [
+            0,
+            30,
+            14,
+            10
+          ],
+          "chamber"
+        ],
+        [
+          "southgallery",
+          "Solar gallery",
+          [
+            14,
+            30,
+            8,
+            10
+          ],
+          "gallery"
+        ],
+        [
+          "eastchamber",
+          "East chamber",
+          [
+            22,
+            30,
+            14,
+            10
+          ],
+          "chamber"
+        ]
+      ],
+      "portals": [
+        [
+          2,
+          12,
+          4,
+          12
+        ],
+        [
+          2,
+          20,
+          4,
+          20
+        ],
+        [
+          8,
+          24,
+          8,
+          26
+        ],
+        [
+          2,
+          30,
+          4,
+          30
+        ],
+        [
+          14,
+          34,
+          14,
+          36
+        ],
+        [
+          22,
+          34,
+          22,
+          36
+        ],
+        [
+          26,
+          30,
+          28,
+          30
+        ],
+        [
+          28,
+          10,
+          28,
+          12
+        ],
+        [
+          8,
+          12,
+          10,
+          12
+        ],
+        [
+          26,
+          12,
+          28,
+          12
+        ]
+      ],
+      "stairs": [
+        [
+          2,
+          22,
+          2,
+          6
+        ]
+      ],
+      "route": [
+        [
+          3,
+          29
+        ],
+        [
+          3,
+          34
+        ],
+        [
+          18,
+          35
+        ],
+        [
+          27,
+          35
+        ],
+        [
+          27,
+          25
+        ],
+        [
+          27,
+          11
+        ],
+        [
+          18,
+          11
+        ],
+        [
+          9,
+          11
+        ],
+        [
+          9,
+          25
+        ],
+        [
+          6,
+          25
+        ]
+      ],
+      "stairRecords": [
+        {
+          "id": "west",
+          "kind": "straight",
+          "lowerY": 0,
+          "upperY": 4,
+          "flight": [
+            2,
+            22,
+            2,
+            6
+          ],
+          "direction": [
+            0,
+            1
+          ],
+          "risers": 20,
+          "tread": 0.3,
+          "lowerLanding": [
+            2,
+            20,
+            2,
+            2
+          ],
+          "upperLanding": [
+            2,
+            28,
+            2,
+            2
+          ],
+          "destinationHole": [
+            2,
+            22,
+            2,
+            6
+          ]
+        }
+      ]
+    }
+  ],
+  "status": "concept program; translate to frozen compiler API before building",
+  "walkClearance": {
+    "width": 1.2,
+    "headroom": 2.1,
+    "eyeHeight": 1.7
+  },
+  "galleryEdges": "rail at vertical void, explicit open portals between adjoining gallery segments",
+  "supports": "Ground stone bearing; upper floors require declared joist bearings and posts; unresolved here"
+}

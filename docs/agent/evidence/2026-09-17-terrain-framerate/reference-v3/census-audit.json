@@ -1,0 +1,102 @@
+{
+  "valley-flat": {
+    "samples": 100,
+    "counters": {
+      "variants": [
+        964,
+        964
+      ],
+      "rejected": [
+        27948,
+        30324
+      ],
+      "queue": [
+        0,
+        0
+      ],
+      "fills": [
+        8478,
+        8478
+      ],
+      "evictions": [
+        0,
+        0
+      ]
+    }
+  },
+  "valley-pom": {
+    "samples": 100,
+    "counters": {
+      "variants": [
+        757,
+        757
+      ],
+      "rejected": [
+        39773,
+        42149
+      ],
+      "queue": [
+        0,
+        0
+      ],
+      "fills": [
+        9416,
+        9416
+      ],
+      "evictions": [
+        0,
+        0
+      ]
+    }
+  },
+  "cliff-flat": {
+    "samples": 100,
+    "counters": {
+      "variants": [
+        657,
+        657
+      ],
+      "rejected": [
+        55823,
+        58199
+      ],
+      "queue": [
+        0,
+        0
+      ],
+      "fills": [
+        11582,
+        11582
+      ],
+      "evictions": [
+        0,
+        0
+      ]
+    }
+  },
+  "cliff-pom": {
+    "samples": 100,
+    "counters": {
+      "variants": [
+        657,
+        657
+      ],
+      "rejected": [
+        59511,
+        61887
+      ],
+      "queue": [
+        0,
+        0
+      ],
+      "fills": [
+        11603,
+        11603
+      ],
+      "evictions": [
+        0,
+        0
+      ]
+    }
+  }
+}

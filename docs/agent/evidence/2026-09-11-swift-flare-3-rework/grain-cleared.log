@@ -1,0 +1,84 @@
+Vulkan adapter: NVIDIA GeForce RTX 4090 | driver: NVIDIA (610.74, 0x98928000) | API 1.4.341
+worlds available (38):
+  [0] AnimatedRigGallery  (D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-2\projects\world_demo)
+  [1] AtmospherePresentationFixture  (D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-2\projects\world_demo)
+  [2] BranchGallery  (D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-2\projects\world_demo)
+  [3] CastleCloister  (D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-2\projects\world_demo)
+  [4] CastleCourtyard  (D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-2\projects\world_demo)
+  [5] CastleFurnishings  (D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-2\projects\world_demo)
+  [6] CastleGallery  (D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-2\projects\world_demo)
+  [7] CastleMasonry  (D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-2\projects\world_demo)
+  [8] CastleMaterials  (D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-2\projects\world_demo)
+  [9] CastleRoundKeep  (D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-2\projects\world_demo)
+  [10] CastleTimberProbe  (D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-2\projects\world_demo)
+  [11] ChartVtProof  (D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-2\projects\world_demo)
+  [12] CloudLab  (D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-2\projects\world_demo)
+  [13] CloudLegacy  (D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-2\projects\world_demo)
+  [14] CornellBox  (D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-2\projects\world_demo)
+  [15] Demo  (D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-2\projects\world_demo)
+  [16] FloorDemo  (D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-2\projects\world_demo)
+  [17] FogLab  (D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-2\projects\world_demo)
+  [18] LightingGarden  (D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-2\projects\world_demo)
+  [19] LocalLightGallery  (D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-2\projects\world_demo)
+  [20] LocalLightPointIsolation  (D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-2\projects\world_demo)
+  [21] LocalLightRtGallery  (D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-2\projects\world_demo)
+  [22] LocalLightSpotIsolation  (D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-2\projects\world_demo)
+  [23] Meadow  (D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-2\projects\world_demo)
+  [24] MetalProof  (D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-2\projects\world_demo)
+  [25] PhysicsPlayground  (D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-2\projects\world_demo)
+  [26] PomProof  (D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-2\projects\world_demo)
+  [27] PomProofBrick  (D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-2\projects\world_demo)
+  [28] Primitives  (D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-2\projects\primitive_demo)
+  [29] RiverFloatLab  (D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-2\projects\world_demo)
+  [30] RiverHydrology  (D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-2\projects\world_demo)
+  [31] RockGallery  (D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-2\projects\world_demo)
+  [32] SeamLab  (D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-2\projects\world_demo)
+  [33] StreamCaverns  (D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-2\projects\world_demo)
+  [34] StreamMeadow  (D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-2\projects\world_demo)
+  [35] StreamMountain  (D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-2\projects\world_demo)
+  [36] TilesetGallery  (D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-2\projects\world_demo)
+  [37] VegetationGallery  (D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-2\projects\world_demo)
+Vulkan RT available=true enabled=true reason=none
+Vulkan wireframe available=true reason=none
+issues: reports go to D:\Shared With Desktop\AI\matter-engine-cpp\issues
+viewer: UI hidden by MATTER_HIDE_UI
+MATTER_CMD_FIFO: polling command file C:\tmp\local-light-rt-grain-controls\cleared-run\cmd.txt
+render_path: native_rt
+set: render.gi.diffuse_multiplier = 1
+set: render.lighting.emission_multiplier = 1
+set: render.lighting.exposure_ev = 0
+set: render.gi.enabled = false
+history_reset: requested
+DLSS selected=Native active=Native internal=1280x720 output=1280x720 resets=0 reason=Streamline SDK not found: build with HAVE_STREAMLINE=1 to enable DLSS
+Vulkan RT observed effective=false dispatches=0 reason=world session disconnected
+wait_frames: complete 1 frame_serial=1
+[resolve] resolve cache: hit fee269afb2282eb7
+[bake-timing] install=0ms compose=0ms (resolve-cache-hit) publish=...ms total(pre-publish)=21ms
+Vulkan RT observed effective=false dispatches=0 reason=no drawable instances
+[part-store] loaded v3 FLAT part a9ba94e74ee369c8 (7 LOD levels, 1 clusters, 0 refs, 0 impostors)
+bake 1/2 LocalLightRtGlowProxy
+[local-light] published 6 lights, 68 cells/256 buckets, 8748 index bytes, max 4 candidates
+[vk] impostor atlas: 128 slots x 2 layers of 1024x1024 RGBA8 (cell 128 px) = 1024 MiB
+[vk] static reserve: clusters 32 MiB, vertices 512 MiB, indices 256 MiB (host-visible)
+Vulkan RT observed effective=false dispatches=0 reason=no traceable RT instances
+[part-store] loaded v3 FLAT part e12fba9427329ced (9 LOD levels, 1 clusters, 0 refs, 1 impostors)
+b[gpu-job] bake.publish took 193.8 ms
+ake 2/2 LocalLightRtGalleryFixture
+[vk] chart-space VT online: 33024 page pool (4078 MiB), 32768 variant slots (MATTER_VT_MAX_VARIANTS, soft bound), 64 MiB indirection arena (MATTER_VT_INDIRECTION_MB, exact-sized tables), 1024 MiB mesh budget (MATTER_VT_MESH_BUDGET_MB), 8 fills/frame, filler=tier-1 compositor, tier2=hemisphere AO (32 rays/texel, 2 pages/frame)
+Vulkan RT observed effective=true dispatches=2 reason=none
+[resolve]   resolve census: 0 parts baked, 2 cache hits, version digest bb615a10c8d165a2
+bake finished (0 errors)
+world camera: eye(23.0,11.0,27.0) target(0.0,1.7,0.0)
+selected world LocalLightRtGallery hash a9ba94e74ee369c8
+viewer: bake ready
+bake 0/1 ForestFloor
+screenshot written to C:/tmp/local-light-rt-grain-controls/cleared-frame-1.png
+history_reset: requested
+[tileset] slot 0 'D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-2\projects\world_demo\.cache\LocalLightRtGallery/ForestFloor.gtex': 1024px x16 layers x11 mips -- core 74.7 MiB BC (was 256.0 MiB raw, 3.43x smaller) + horizon 11 MiB uncompressed
+[local_provider] LocalProvider: tileset 'ForestFloor' -> slot 0, material(s) 46 (D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-2\projects\world_demo\.cache\LocalLightRtGallery/ForestFloor.gtex) [deferred]
+[gpu-job] ForestFloor took 2408.3 ms
+[refine] controller built: 0 tiles
+[bake-timing] install=0ms compose=0ms publish=3493ms total=3514ms (resolve-cache-hit)
+bake 1/1 ForestFloor
+wait_frames: complete 96 frame_serial=111
+screenshot written to C:/tmp/local-light-rt-grain-controls/cleared-frame-96.png
