@@ -107,6 +107,11 @@
 #endif
 #include "indirect_draw_runs.h"
 #include "vk_scene_renderer.h"
+#include "vk_sparse_admission.h"
+#include "vk_scene_publication.h"
+#include "../../../libs/MatterGraphics/src/native/mesh_raster.h"
+#include "../../../libs/MatterGraphics/src/native/image_transitions.h"
+#include "../../../libs/MatterGraphics/src/native/mesh_pipelines.h"
 #include "vk_blas_cache.h"
 #include "vt_export.h"
 #include "vt_encoded_filler.h"
@@ -149,8 +154,7 @@
 #include "matter/log.h"
 #include "matter/vulkan_device.h"
 #include "matter/vt_budgets.h"
-#include "matter/world_definition.h"
-#include "matter/world_session.h"
+#include "../../../libs/MatterGraphics/src/native/fog_settings.h"
 #include "shaders_gen/embedded_spirv.h"
 #include "bc_encode.h"
 #include "streamline_bridge.h"
@@ -495,18 +499,7 @@ void clear_color_image_for_use(VkCommandBuffer command_buffer,
                                     next_access, VK_IMAGE_ASPECT_COLOR_BIT);
 }
 
-VkPipelineStageFlags2 gbuffer_sampled_stages(
-    uint32_t attachment_index, bool native_ray_tracing_available) {
-    VkPipelineStageFlags2 stages = 0;
-    if (attachment_index < 4)
-        stages |= VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-    if (attachment_index == 1 || attachment_index == 3 ||
-        attachment_index == 4 || attachment_index == 5)
-        stages |= VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-    if (native_ray_tracing_available && attachment_index < 3)
-        stages |= VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR;
-    return stages;
-}
+using raster_detail::gbuffer_sampled_stages;
 
 // One compute-cull dispatch, described by value so the same description can be
 // recorded inline into the frame command buffer (record_cull_dispatch_commands)
@@ -746,6 +739,10 @@ struct RasterRecord {
     SparseVoxelTemporal sparse_temporal{};
     const VkSparseVoxelScene* sparse_shadows=nullptr;
     float sparse_shadow_bias=.002f,sparse_shadow_distance=10000;
+    // Mirrored (det<0) instances' commands live at mirror_command_base +
+    // primary index and draw with the clockwise-front pipeline.
+    VkPipeline mirrored_raster_pipeline = VK_NULL_HANDLE;
+    uint32_t mirror_command_base = 0;
 };
 
 struct NeutralVolumeClearRecord {
@@ -791,7 +788,81 @@ void record_raster(VkCommandBuffer command_buffer, void* user_data) {
         if (record.ray_trace_ok) *record.ray_trace_ok = false;
         return;
     }
-#include "../../../libs/MatterGraphics/src/native/record_gbuffer.inl"
+    MeshRasterRecord mesh_record{};
+    RasterImage mesh_albedo{record.albedo->image, record.albedo->view, &record.albedo->layout, record.albedo->mip_levels, record.albedo->array_layers};
+    mesh_record.albedo = &mesh_albedo;
+    RasterImage mesh_normal{record.normal->image, record.normal->view, &record.normal->layout, record.normal->mip_levels, record.normal->array_layers};
+    mesh_record.normal = &mesh_normal;
+    RasterImage mesh_orm{record.orm->image, record.orm->view, &record.orm->layout, record.orm->mip_levels, record.orm->array_layers};
+    mesh_record.orm = &mesh_orm;
+    RasterImage mesh_velocity{record.velocity->image, record.velocity->view, &record.velocity->layout, record.velocity->mip_levels, record.velocity->array_layers};
+    mesh_record.velocity = &mesh_velocity;
+    RasterImage mesh_material_instance{record.material_instance->image, record.material_instance->view, &record.material_instance->layout, record.material_instance->mip_levels, record.material_instance->array_layers};
+    mesh_record.material_instance = &mesh_material_instance;
+    RasterImage mesh_reactivity{record.reactivity->image, record.reactivity->view, &record.reactivity->layout, record.reactivity->mip_levels, record.reactivity->array_layers};
+    mesh_record.reactivity = &mesh_reactivity;
+    RasterImage mesh_vt_feedback{record.vt_feedback->image, record.vt_feedback->view, &record.vt_feedback->layout, record.vt_feedback->mip_levels, record.vt_feedback->array_layers};
+    mesh_record.vt_feedback = &mesh_vt_feedback;
+    RasterImage mesh_depth{record.depth->image, record.depth->view, &record.depth->layout, record.depth->mip_levels, record.depth->array_layers};
+    mesh_record.depth = &mesh_depth;
+    RasterImage mesh_hdr{record.hdr->image, record.hdr->view, &record.hdr->layout, record.hdr->mip_levels, record.hdr->array_layers};
+    mesh_record.hdr = &mesh_hdr;
+    mesh_record.extent = record.extent;
+    mesh_record.raster_pipeline = record.raster_pipeline;
+    mesh_record.skinned_raster_pipeline = record.skinned_raster_pipeline;
+    mesh_record.mirrored_raster_pipeline = record.mirrored_raster_pipeline;
+    mesh_record.mirror_command_base = record.mirror_command_base;
+    mesh_record.raster_layout = record.raster_layout;
+    mesh_record.raster_debug_push = record.raster_debug_push;
+    mesh_record.vertex_buffer = record.vertex_buffer;
+    mesh_record.index_buffer = record.index_buffer;
+    mesh_record.indirect_buffer = record.indirect_buffer;
+    mesh_record.static_command_count = record.static_command_count;
+    mesh_record.index_count = record.index_count;
+    mesh_record.skin_vertex_buffers = record.skin_vertex_buffers;
+    mesh_record.skin_previous_vertex_buffers = record.skin_previous_vertex_buffers;
+    mesh_record.skin_vertex_counts = record.skin_vertex_counts;
+    mesh_record.skin_buffer_count = record.skin_buffer_count;
+    mesh_record.skin_draws = record.skin_draws;
+    mesh_record.skin_draw_count = record.skin_draw_count;
+    mesh_record.draw_transform_slots = record.draw_transform_slots;
+    mesh_record.skin_transform_base = record.skin_transform_base;
+    mesh_record.draw_ranges = record.draw_ranges;
+    mesh_record.draw_range_count = record.draw_range_count;
+    mesh_record.max_draw_indirect_count = record.max_draw_indirect_count;
+    mesh_record.recorded_draw_ranges = record.recorded_draw_ranges;
+    mesh_record.native_ray_tracing_available = record.native_ray_tracing_available;
+    mesh_record.ts_pool = record.ts_pool;
+    mesh_record.ts_written = record.ts_written;
+    mesh_record.gbuffer_zone = record.gbuffer_zone;
+    mesh_record.vt_zone = record.vt_zone;
+    mesh_record.vt_feedback_zone = record.vt_feedback_zone;
+    mesh_record.frame_slot = record.frame_slot;
+    mesh_record.water_vertices = record.water_vertices;
+    mesh_record.water_indices = record.water_indices;
+    mesh_record.water_vertex_bytes = record.water_vertex_bytes;
+    mesh_record.water_index_bytes = record.water_index_bytes;
+    mesh_record.water_upload_required = record.water_upload_required;
+    mesh_record.raster_stats_pool = record.raster_stats_pool;
+    mesh_record.raster_sets[0] = record.raster_sets[0];
+    mesh_record.raster_sets[1] = record.raster_sets[1];
+    if (record.vt_hooks) {
+        mesh_record.vt_pre = {record.vt_hooks, [](VkCommandBuffer cmd, void* owner) {
+            static_cast<VkSceneRenderer*>(owner)->vt_record_pre_pass(cmd);
+        }};
+        mesh_record.vt_post = {record.vt_hooks, [](VkCommandBuffer cmd, void* owner) {
+            static_cast<VkSceneRenderer*>(owner)->vt_record_post_pass(cmd);
+        }};
+    }
+    if (record.sparse_voxels && record.sparse_voxel_matrices)
+        mesh_record.sparse_draw = {&record, [](VkCommandBuffer cmd, void* owner) {
+            const auto& pass = *static_cast<RasterRecord*>(owner);
+            pass.sparse_voxels->record(cmd, *pass.sparse_voxel_matrices, pass.frame_slot);
+        }};
+    record_mesh_gbuffer(command_buffer, mesh_record);
+    const VkRect2D scissor{{0, 0}, record.extent};
+    const VkClearValue clear_color{{{0.0f, 0.0f, 0.0f, 0.0f}}};
+
 
     if (record.renderer) {
         PROFILE_SCOPE("raster.rt");
@@ -1014,325 +1085,7 @@ uint16_t float_to_half(float value) {
 
 }  // namespace
 
-void VkSceneRenderer::record_raster_and_water(VkCommandBuffer command_buffer,
-                                               void* user_data) {
-    auto& raster = *static_cast<RasterRecord*>(user_data);
-    record_raster(command_buffer, user_data);
-    if (!raster.water_forward_owner || !raster.water_forward_record ||
-        (raster.ray_trace_ok && !*raster.ray_trace_ok))
-        return;
-    auto& water = *static_cast<WaterForwardRecord*>(
-        raster.water_forward_record);
-    raster.water_forward_owner->record_water_forward(command_buffer, water);
-#ifdef MATTER_VK_TEST_FAULT_INJECTION
-    if (raster.recorded_water_draw_count && water.observation)
-        *raster.recorded_water_draw_count = water.observation->direct_draws;
-#endif
-}
-
-void VkSceneRenderer::record_water_forward(
-    VkCommandBuffer command_buffer, const WaterForwardRecord& record) {
-#ifdef MATTER_VK_TEST_FAULT_INJECTION
-    if (record.observation) *record.observation = {};
-#endif
-    if (record.extent.width == 0u || record.extent.height == 0u ||
-        !record.hdr || !record.depth || !record.velocity ||
-        !record.reactivity || !record.material_instance ||
-        !record.opaque_hdr || !record.opaque_depth ||
-        record.layout == VK_NULL_HANDLE)
-        return;
-
-    bool has_static = false;
-    for (uint32_t range_index = 0u; range_index < record.range_count;
-         ++range_index) {
-        const PartCommandRange& range = record.ranges[range_index];
-        if (range.raster_water_surface && range.command_count != 0u &&
-            range.first_command <= record.static_command_count &&
-            range.command_count <=
-                record.static_command_count - range.first_command) {
-            has_static = true;
-            break;
-        }
-    }
-    const bool has_direct =
-        record.direct_pipeline != VK_NULL_HANDLE &&
-        record.direct_vertices != VK_NULL_HANDLE &&
-        record.direct_indices != VK_NULL_HANDLE &&
-        record.direct_draws != nullptr && record.direct_draw_count != 0u;
-    if ((!has_static || record.static_pipeline == VK_NULL_HANDLE ||
-         record.static_vertices == VK_NULL_HANDLE ||
-         record.static_indices == VK_NULL_HANDLE ||
-         record.indirect == VK_NULL_HANDLE) &&
-        !has_direct)
-        return;
-
-    const bool time_forward =
-        record.timing_pool != VK_NULL_HANDLE &&
-        record.timing_written != nullptr &&
-        record.timing_zone < kGpuZoneCount;
-    if (time_forward) {
-        write_ts(command_buffer, record.timing_pool, record.timing_zone,
-                 false);
-        record.timing_written[record.timing_zone] |= 1u;
-    }
-
-    transition_for_use(command_buffer, *record.hdr,
-                       VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                       VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-                       VK_ACCESS_2_TRANSFER_READ_BIT,
-                       VK_IMAGE_ASPECT_COLOR_BIT);
-    transition_for_use(command_buffer, *record.opaque_hdr,
-                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                       VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-                       VK_ACCESS_2_TRANSFER_WRITE_BIT,
-                       VK_IMAGE_ASPECT_COLOR_BIT);
-    VkImageCopy hdr_copy{};
-    hdr_copy.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    hdr_copy.srcSubresource.layerCount = 1u;
-    hdr_copy.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    hdr_copy.dstSubresource.layerCount = 1u;
-    hdr_copy.extent = {record.extent.width, record.extent.height, 1u};
-    vkCmdCopyImage(command_buffer, record.hdr->image,
-                   VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                   record.opaque_hdr->image,
-                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1u, &hdr_copy);
-
-    transition_for_use(command_buffer, *record.depth,
-                       VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                       VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-                       VK_ACCESS_2_TRANSFER_READ_BIT,
-                       VK_IMAGE_ASPECT_DEPTH_BIT);
-    transition_for_use(command_buffer, *record.opaque_depth,
-                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                       VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-                       VK_ACCESS_2_TRANSFER_WRITE_BIT,
-                       VK_IMAGE_ASPECT_DEPTH_BIT);
-    VkImageCopy depth_copy{};
-    depth_copy.srcSubresource.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-    depth_copy.srcSubresource.layerCount = 1u;
-    depth_copy.dstSubresource.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-    depth_copy.dstSubresource.layerCount = 1u;
-    depth_copy.extent = {record.extent.width, record.extent.height, 1u};
-    vkCmdCopyImage(command_buffer, record.depth->image,
-                   VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                   record.opaque_depth->image,
-                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1u, &depth_copy);
-
-    transition_for_use(command_buffer, *record.opaque_hdr,
-                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                       VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-                       VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-                       VK_IMAGE_ASPECT_COLOR_BIT);
-    transition_for_use(command_buffer, *record.opaque_depth,
-                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                       VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-                       VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-                       VK_IMAGE_ASPECT_DEPTH_BIT);
-
-    matter::VkImageResource* colors[] = {
-        record.hdr, record.velocity, record.reactivity,
-        record.material_instance};
-    for (matter::VkImageResource* color : colors) {
-        transition_for_use(command_buffer, *color,
-                           VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                           VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-                           VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT |
-                               VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-                           VK_IMAGE_ASPECT_COLOR_BIT);
-    }
-    transition_for_use(command_buffer, *record.depth,
-                       VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
-                       VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
-                           VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
-                       VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
-                           VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-                       VK_IMAGE_ASPECT_DEPTH_BIT);
-
-    VkRenderingAttachmentInfo color_attachments[4]{};
-    for (uint32_t index = 0u; index < 4u; ++index) {
-        color_attachments[index].sType =
-            VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
-        color_attachments[index].imageView = colors[index]->view;
-        color_attachments[index].imageLayout =
-            VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-        color_attachments[index].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
-        color_attachments[index].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-    }
-    VkRenderingAttachmentInfo depth_attachment{
-        VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
-    depth_attachment.imageView = record.depth->view;
-    depth_attachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
-    depth_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
-    depth_attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-    VkRenderingInfo rendering{VK_STRUCTURE_TYPE_RENDERING_INFO};
-    rendering.renderArea.extent = record.extent;
-    rendering.layerCount = 1u;
-    rendering.colorAttachmentCount = 4u;
-    rendering.pColorAttachments = color_attachments;
-    rendering.pDepthAttachment = &depth_attachment;
-    vkCmdBeginRendering(command_buffer, &rendering);
-
-    const VkViewport viewport{
-        0.0f, static_cast<float>(record.extent.height),
-        static_cast<float>(record.extent.width),
-        -static_cast<float>(record.extent.height), 0.0f, 1.0f};
-    const VkRect2D scissor{{0, 0}, record.extent};
-    const VkDeviceSize vertex_offset = 0u;
-    vkCmdSetViewport(command_buffer, 0u, 1u, &viewport);
-    vkCmdSetScissor(command_buffer, 0u, 1u, &scissor);
-
-    uint32_t issued_static = 0u;
-    if (has_static && record.static_pipeline != VK_NULL_HANDLE &&
-        record.static_vertices != VK_NULL_HANDLE &&
-        record.static_indices != VK_NULL_HANDLE &&
-        record.indirect != VK_NULL_HANDLE) {
-        vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                          record.static_pipeline);
-        vkCmdBindDescriptorSets(command_buffer,
-                                VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                record.layout, 0u, 4u, record.sets, 0u,
-                                nullptr);
-        vkCmdPushConstants(command_buffer, record.layout,
-                           VK_SHADER_STAGE_VERTEX_BIT |
-                               VK_SHADER_STAGE_FRAGMENT_BIT,
-                           0u, sizeof(record.debug_push),
-                           &record.debug_push);
-        vkCmdBindVertexBuffers(command_buffer, 0u, 1u,
-                               &record.static_vertices, &vertex_offset);
-        vkCmdBindIndexBuffer(command_buffer, record.static_indices, 0u,
-                             VK_INDEX_TYPE_UINT32);
-        const uint32_t max_per_call =
-            std::max(1u, record.max_draw_indirect_count);
-        for (uint32_t range_index = 0u; range_index < record.range_count;
-             ++range_index) {
-            const PartCommandRange& range = record.ranges[range_index];
-            if (!range.raster_water_surface || range.command_count == 0u ||
-                range.first_command > record.static_command_count ||
-                range.command_count >
-                    record.static_command_count - range.first_command)
-                continue;
-            uint32_t first = range.first_command;
-            uint32_t remaining = range.command_count;
-            while (remaining != 0u) {
-                const uint32_t count = std::min(remaining, max_per_call);
-                vkCmdDrawIndexedIndirect(
-                    command_buffer, record.indirect,
-                    static_cast<VkDeviceSize>(first) * sizeof(DrawCommand),
-                    count, sizeof(DrawCommand));
-                ++issued_static;
-                first += count;
-                remaining -= count;
-            }
-        }
-    }
-
-    uint32_t issued_direct = 0u;
-    const bool time_direct = has_direct &&
-        record.timing_pool != VK_NULL_HANDLE &&
-        record.timing_written != nullptr;
-    if (time_direct) {
-        write_ts(command_buffer, record.timing_pool,
-                 kGpuZoneWaterDirectDraw, false);
-        record.timing_written[kGpuZoneWaterDirectDraw] |= 1u;
-    }
-    if (has_direct) {
-        vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                          record.direct_pipeline);
-        vkCmdBindDescriptorSets(command_buffer,
-                                VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                record.layout, 0u, 4u, record.sets, 0u,
-                                nullptr);
-        vkCmdBindVertexBuffers(command_buffer, 0u, 1u,
-                               &record.direct_vertices, &vertex_offset);
-        vkCmdBindIndexBuffer(command_buffer, record.direct_indices, 0u,
-                             VK_INDEX_TYPE_UINT32);
-        const RasterDebugPushConstants direct_base =
-            make_raster_debug_push_constants(
-                0u, true,
-                record.debug_push.lod_tint_enabled != 0u
-                    ? matter::GeometryDebugView::LodTint
-                    : matter::GeometryDebugView::None,
-                false,
-                record.debug_push.impostor_parallax_enabled != 0u);
-        for (uint32_t draw_index = 0u;
-             draw_index < record.direct_draw_count; ++draw_index) {
-            const VkWaterAnimationRasterDraw& draw =
-                record.direct_draws[draw_index];
-            if (draw.index_count == 0u || draw.index_count % 3u != 0u ||
-                draw.first_index > record.direct_index_count ||
-                draw.index_count >
-                    record.direct_index_count - draw.first_index ||
-                draw.vertex_count == 0u ||
-                draw.vertex_offset > record.direct_vertex_count ||
-                draw.vertex_count >
-                    record.direct_vertex_count - draw.vertex_offset ||
-                draw.vertex_offset > static_cast<uint32_t>(INT32_MAX) ||
-                draw.proxy_transform_slot >= record.draw_transform_slots)
-                continue;
-            const RasterDebugPushConstants push =
-                make_water_animation_push_constants(direct_base, draw);
-            vkCmdPushConstants(command_buffer, record.layout,
-                               VK_SHADER_STAGE_VERTEX_BIT |
-                                   VK_SHADER_STAGE_FRAGMENT_BIT,
-                               0u, sizeof(push), &push);
-            vkCmdDrawIndexed(command_buffer, draw.index_count, 1u,
-                             draw.first_index,
-                             static_cast<int32_t>(draw.vertex_offset),
-                             draw.proxy_transform_slot);
-            ++issued_direct;
-        }
-    }
-    if (time_direct) {
-        write_ts(command_buffer, record.timing_pool,
-                 kGpuZoneWaterDirectDraw, true);
-        record.timing_written[kGpuZoneWaterDirectDraw] |= 2u;
-    }
-    vkCmdEndRendering(command_buffer);
-
-    for (matter::VkImageResource* color : colors) {
-        matter::record_image_transition(
-            command_buffer, *color,
-            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-            VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT |
-                VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-            VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-            VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-            VK_IMAGE_ASPECT_COLOR_BIT);
-    }
-    matter::record_image_transition(
-        command_buffer, *record.depth,
-        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-        VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
-            VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
-        VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
-            VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-        VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-        VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_ASPECT_DEPTH_BIT);
-
-    if (time_forward) {
-        write_ts(command_buffer, record.timing_pool, record.timing_zone,
-                 true);
-        record.timing_written[record.timing_zone] |= 2u;
-    }
-
-#ifdef MATTER_VK_TEST_FAULT_INJECTION
-    if (record.observation) {
-        // Indirect ranges with zero GPU instance counts are still submitted.
-        // When direct animation owns this fixture, report visible ownership,
-        // not the no-op indirect command-buffer call.
-        record.observation->static_draws =
-            issued_direct != 0u ? 0u : issued_static;
-        record.observation->direct_draws = issued_direct;
-        record.observation->copied_opaque_hdr = true;
-        record.observation->copied_opaque_depth = true;
-        record.observation->wrote_depth = true;
-        record.observation->wrote_velocity = true;
-        record.observation->wrote_reactivity = true;
-        record.observation->wrote_identity = true;
-    }
-#endif
-}
+#include "../../../libs/MatterGraphics/src/native/record_water_forward.inl"
 
 // ---------------------------------------------------------------------------
 // vk_scene_detail: CPU mirrors and checked arithmetic
@@ -1448,13 +1201,8 @@ size_t frame_constants_size_for_test() noexcept {
     return sizeof(FrameConstants);
 }
 
-VkPipelineStageFlags2 ray_depth_destination_stages(
-    bool native_ray_tracing_available) noexcept {
-    VkPipelineStageFlags2 stages = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
-                                   VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-    if (native_ray_tracing_available)
-        stages |= VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR;
-    return stages;
+VkPipelineStageFlags2 ray_depth_destination_stages(bool available) noexcept {
+    return raster_detail::ray_depth_destination_stages(available);
 }
 
 VkPipelineStageFlags2 gbuffer_sampled_stages_for_test(
@@ -1542,16 +1290,7 @@ bool checked_size_to_int(size_t count, int& result, const char* label,
     return true;
 }
 
-uint64_t water_forward_image_bytes_for_extent(uint32_t width,
-                                              uint32_t height) noexcept {
-    constexpr uint64_t kBytesPerPixel = 8u + 4u;
-    const uint64_t pixels = static_cast<uint64_t>(width) *
-                            static_cast<uint64_t>(height);
-    if (pixels == 0u ||
-        pixels > std::numeric_limits<uint64_t>::max() / kBytesPerPixel)
-        return 0u;
-    return pixels * kBytesPerPixel;
-}
+#include "../../../libs/MatterGraphics/src/native/water_forward_bytes.inl"
 
 }  // namespace vk_scene_detail
 
@@ -1636,15 +1375,29 @@ bool VkSceneRenderer::set_shared_surface_forest(const std::vector<SparseSharedOb
         } else unchanged=false;
     }
     if(unchanged) return true;
+    if(!preflight_shared_forest(*vulkan_,surfaces,shadows,error)) return false;
+    // Copy owning catalog metadata before committing GPU snapshots. A failed
+    // allocation must not publish geometry with a stale catalog.
+    auto next_surfaces=surfaces;auto next_shadows=shadows;
     std::shared_ptr<VkSparseVoxelScene> primary,shadow;
     if(!surfaces.empty()) {
         primary=reuse?sparse_voxels_->with_shared_placements(*vulkan_,placements,error):VkSparseVoxelScene::create_shared_surfaces(*vulkan_,surfaces,error);
         if(!primary) return false;
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+        if(admission::test_failure==admission::Preparation::primary) {
+            error="injected failure after sparse primary preparation";return false;
+        }
+#endif
         shadow=reuse?sparse_shadows_->with_shared_placements(*vulkan_,placements,error):VkSparseVoxelScene::create_shared_shadow_casters(*vulkan_,shadows,error);
         if(!shadow) return false;
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+        if(admission::test_failure==admission::Preparation::shadow) {
+            error="injected failure after sparse shadow preparation";return false;
+        }
+#endif
     }
     sparse_voxels_=std::move(primary);sparse_shadows_=std::move(shadow);
-    shared_forest_catalog_=surfaces;shared_forest_shadow_catalog_=shadows;
+    shared_forest_catalog_.swap(next_surfaces);shared_forest_shadow_catalog_.swap(next_shadows);
     note_sparse_snapshot_changed();
     return true;
 }
@@ -1671,14 +1424,27 @@ bool VkSceneRenderer::set_shared_surface_forest_placements(
         }
     }
     if(!changed) return true;
+    auto next_surfaces=shared_forest_catalog_;auto next_shadows=shared_forest_shadow_catalog_;
+    for(size_t i=0;i<placements.size();++i) {
+        next_surfaces[i].instances=placements[i];next_shadows[i].instances=placements[i];
+    }
+    if(!preflight_shared_forest(*vulkan_,next_surfaces,next_shadows,error)) return false;
     auto primary=sparse_voxels_->with_shared_placements(*vulkan_,placements,error);
     if(!primary) return false;
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+    if(admission::test_failure==admission::Preparation::primary) {
+        error="injected failure after sparse primary preparation";return false;
+    }
+#endif
     auto shadows=sparse_shadows_->with_shared_placements(*vulkan_,placements,error);
     if(!shadows) return false;
-    sparse_voxels_=std::move(primary);sparse_shadows_=std::move(shadows);
-    for(size_t i=0;i<placements.size();++i) {
-        shared_forest_catalog_[i].instances=placements[i];shared_forest_shadow_catalog_[i].instances=placements[i];
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+    if(admission::test_failure==admission::Preparation::shadow) {
+        error="injected failure after sparse shadow preparation";return false;
     }
+#endif
+    sparse_voxels_=std::move(primary);sparse_shadows_=std::move(shadows);
+    shared_forest_catalog_.swap(next_surfaces);shared_forest_shadow_catalog_.swap(next_shadows);
     note_sparse_snapshot_changed();
     return true;
 }
@@ -1736,245 +1502,7 @@ VkSceneRenderer::VkSceneRenderer(matter::VulkanDevice& vulkan)
     cloud_shadow_settings_.enabled = false;
 }
 
-bool VkSceneRenderer::publish_water_field(
-    const PackedWaterField& candidate, const WaterFieldBinding* replacing,
-    std::uint64_t retire_after_serial, WaterFieldBinding& binding,
-    WaterFieldError& error) {
-    if (!initialized_) {
-        std::string init_error;
-        if (!init(init_error)) {
-            error.code = WaterFieldErrorCode::UploadFailure;
-            error.message = "water field renderer initialization failed: " +
-                            init_error;
-            return false;
-        }
-    }
-    WaterFieldVkResources::StagedImages staged;
-    if (!water_field_resources_.stage(candidate, staged, error)) return false;
-    if (!water_fields_.publish(candidate, replacing, retire_after_serial,
-                               binding, error))
-        return false;
-    water_field_resources_.commit(binding, std::move(staged));
-    return true;
-}
-
-bool VkSceneRenderer::release_water_field(
-    WaterFieldBinding binding, std::uint64_t retire_after_serial,
-    WaterFieldError& error) {
-    if (!water_fields_.release(binding, retire_after_serial, error))
-        return false;
-    water_field_resources_.release(binding, retire_after_serial);
-    return true;
-}
-
-void VkSceneRenderer::collect_water_fields(
-    std::uint64_t completed_serial) noexcept {
-    water_fields_.collect(completed_serial);
-    water_field_resources_.collect(completed_serial);
-}
-
-VkImageView VkSceneRenderer::test_water_field_image_view(
-    WaterFieldBinding binding, std::uint32_t channel) const noexcept {
-    return water_field_resources_.image_view(binding, channel);
-}
-
-VkSampler VkSceneRenderer::test_water_field_sampler(
-    std::uint32_t channel) const noexcept {
-    return water_field_resources_.sampler(channel);
-}
-
-WaterFieldGpuRecord VkSceneRenderer::test_water_field_gpu_record(
-    std::uint32_t slot) const noexcept {
-    const auto records = water_fields_.gpu_records();
-    return slot < records.size() ? records[slot] : WaterFieldGpuRecord{};
-}
-
-bool VkSceneRenderer::test_water_field_descriptors_match(
-    std::uint32_t frame_slot, WaterFieldBinding binding) const noexcept {
-    if (!binding.valid() || frame_slot >= frames_.size()) return false;
-    const FrameResources& frame = frames_[frame_slot];
-    if (!frame.water_field_raster_descriptors_valid ||
-        (vulkan_->ray_tracing_available() &&
-         !frame.water_field_rt_descriptors_valid) ||
-        frame.water_field_records.buffer == VK_NULL_HANDLE ||
-        frame.water_field_generations[binding.slot] != binding.generation)
-        return false;
-    for (std::uint32_t channel = 0u; channel != 4u; ++channel) {
-        if (frame.water_field_views[channel][binding.slot] !=
-            water_field_resources_.image_view(binding, channel))
-            return false;
-    }
-    return true;
-}
-
-bool VkSceneRenderer::publish_water_animation(
-    std::uint64_t generation, std::uint32_t frame_slots,
-    const WaterAnimationGpuCapacity& capacity,
-    std::uint64_t retire_after_serial, WaterAnimationGpuError& error) {
-    error = {};
-    if (!initialized_) {
-        std::string init_error;
-        if (!init(init_error)) {
-            error = {WaterAnimationGpuErrorCode::InvalidConfiguration,
-                     "water animation renderer initialization failed: " +
-                         init_error};
-            return false;
-        }
-    }
-    if (generation == 0u || frame_slots == 0u || !capacity.valid() ||
-        capacity.gpu_bytes_per_slot() == 0u ||
-        generation <= water_animation_schedule_.generation()) {
-        error = {generation <= water_animation_schedule_.generation()
-                     ? WaterAnimationGpuErrorCode::StaleGeneration
-                     : WaterAnimationGpuErrorCode::InvalidConfiguration,
-                 "water animation Vulkan publication is invalid or stale"};
-        return false;
-    }
-    if (capacity.packed_vertex_bytes > limits_.max_buffer_size ||
-        capacity.index_bytes > limits_.max_buffer_size) {
-        error = {WaterAnimationGpuErrorCode::CapacityExceeded,
-                 "water animation buffers exceed Vulkan device limits"};
-        return false;
-    }
-
-    WaterAnimationVulkanGeneration candidate{};
-    candidate.generation = generation;
-    candidate.frames.resize(frame_slots);
-    const auto reject_candidate = [&](const std::string& message) {
-        candidate.frames.clear();
-        error = {WaterAnimationGpuErrorCode::InvalidConfiguration, message};
-        return false;
-    };
-
-    std::string vk_error;
-    for (std::uint32_t slot = 0u; slot != frame_slots; ++slot) {
-        WaterAnimationVulkanFrame& frame = candidate.frames[slot];
-        if (!matter::create_buffer(
-                *vulkan_, capacity.packed_vertex_bytes,
-                VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-                kWaterAnimationRequiredMemory,
-                kWaterAnimationPreferredMemory,
-                frame.vertices, vk_error) ||
-            !matter::create_buffer(
-                *vulkan_, capacity.index_bytes,
-                VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
-                kWaterAnimationRequiredMemory,
-                kWaterAnimationPreferredMemory,
-                frame.indices, vk_error))
-            return reject_candidate(
-                "water animation Vulkan allocation failed: " + vk_error);
-    }
-
-    WaterAnimationGpuError schedule_error{};
-    if (!water_animation_schedule_.publish(
-            generation, frame_slots, capacity, retire_after_serial,
-            schedule_error))
-        return reject_candidate(schedule_error.message);
-    if (water_animation_resources_.generation != 0u ||
-        !water_animation_resources_.frames.empty()) {
-        retired_water_animation_resources_.emplace_back();
-        auto& retired = retired_water_animation_resources_.back();
-        retired.retire_after_serial = retire_after_serial;
-        retired.resources.generation = std::exchange(
-            water_animation_resources_.generation, 0u);
-        retired.resources.frames =
-            std::move(water_animation_resources_.frames);
-    }
-    water_animation_resources_ = std::move(candidate);
-    water_animation_proxy_instance_indices_.assign(capacity.draw_count,
-                                                    UINT32_MAX);
-    water_animation_direct_transform_slots_.resize(capacity.draw_count);
-    command_template_dirty_ = true;
-    dynamic_dirty_ = true;
-    return true;
-}
-
-bool VkSceneRenderer::prepare_water_animation_frame(
-    std::uint64_t generation, std::uint32_t frame_slot,
-    const WaterAnimationFrameSelection& selection,
-    const std::vector<std::uint32_t>& proxy_transform_slots,
-    WaterAnimationGpuError& error) {
-    if (proxy_transform_slots.size() !=
-        water_animation_proxy_instance_indices_.size()) {
-        error = {WaterAnimationGpuErrorCode::InvalidSelection,
-                 "water animation static proxy mapping changed size"};
-        return false;
-    }
-    water_animation_proxy_instance_indices_ = proxy_transform_slots;
-    for (std::size_t index = 0u;
-         index != water_animation_direct_transform_slots_.size();
-         ++index)
-        water_animation_direct_transform_slots_[index] =
-            water_animation_transform_base_ +
-            static_cast<std::uint32_t>(index);
-    if (!water_animation_schedule_.prepare(
-            generation, frame_slot, selection,
-            water_animation_direct_transform_slots_, error))
-        return false;
-    const WaterAnimationGpuFrame* prepared =
-        water_animation_schedule_.frame(frame_slot);
-    if (!prepared ||
-        water_animation_resources_.generation != generation ||
-        frame_slot >= water_animation_resources_.frames.size()) {
-        error = {WaterAnimationGpuErrorCode::StaleGeneration,
-                 "water animation Vulkan resources are stale"};
-        return false;
-    }
-    if (!prepared->upload_required) return true;
-    WaterAnimationVulkanFrame& resources =
-        water_animation_resources_.frames[frame_slot];
-    std::string upload_error;
-    if (!matter::upload_buffer(
-            *vulkan_, resources.vertices,
-            prepared->packed_vertices.data(),
-            prepared->packed_vertices.size(), 0u, upload_error) ||
-        !matter::upload_buffer(
-            *vulkan_, resources.indices, prepared->indices.data(),
-            prepared->indices.size() * sizeof(std::uint32_t), 0u,
-            upload_error)) {
-        error = {WaterAnimationGpuErrorCode::InvalidConfiguration,
-                 "water animation Vulkan upload failed: " + upload_error};
-        return false;
-    }
-    ++water_animation_upload_count_;
-    return true;
-}
-
-void VkSceneRenderer::clear_water_animation(
-    std::uint64_t retire_after_serial) {
-    water_animation_schedule_.clear(retire_after_serial);
-    if (water_animation_resources_.generation != 0u ||
-        !water_animation_resources_.frames.empty()) {
-        retired_water_animation_resources_.emplace_back();
-        auto& retired = retired_water_animation_resources_.back();
-        retired.retire_after_serial = retire_after_serial;
-        retired.resources.generation = std::exchange(
-            water_animation_resources_.generation, 0u);
-        retired.resources.frames =
-            std::move(water_animation_resources_.frames);
-    }
-    water_animation_proxy_instance_indices_.clear();
-    water_animation_direct_transform_slots_.clear();
-    command_template_dirty_ = true;
-    dynamic_dirty_ = true;
-}
-
-void VkSceneRenderer::collect_water_animation(
-    std::uint64_t completed_serial) noexcept {
-    water_animation_schedule_.collect(completed_serial);
-    retired_water_animation_resources_.erase(
-        std::remove_if(
-            retired_water_animation_resources_.begin(),
-            retired_water_animation_resources_.end(),
-            [completed_serial](
-                RetiredWaterAnimationVulkanGeneration& retired) {
-                if (retired.retire_after_serial > completed_serial)
-                    return false;
-                retired.resources.frames.clear();
-                return true;
-            }),
-        retired_water_animation_resources_.end());
-}
+#include "../../../libs/MatterGraphics/src/native/water_publication.inl"
 
 bool VkSceneRenderer::register_animation_skin_asset(
     uint64_t asset_key, const std::vector<VkSkinInfluence>& influences) {
@@ -2278,62 +1806,7 @@ bool VkSceneRenderer::unregister_animation_bounds_asset(uint64_t asset_key) {
     return animation_bounds_.unregister_asset(asset_key);
 }
 
-matter::DlssMode VkSceneRenderer::active_dlss_mode() const {
-    return dlss_bridge_->active_dlss_mode();
-}
-
-const std::string& VkSceneRenderer::dlss_reason() const {
-    return dlss_bridge_->dlss_unavailable_reason();
-}
-
-#ifdef MATTER_VK_TEST_FAULT_INJECTION
-void VkSceneRenderer::set_test_dlss_bridge(matter::StreamlineBridge bridge) {
-    test_dlss_bridge_override_ =
-        std::make_unique<matter::StreamlineBridge>(std::move(bridge));
-    dlss_bridge_ = test_dlss_bridge_override_.get();
-}
-
-bool VkSceneRenderer::test_uses_device_streamline_bridge() const {
-    return vulkan_ && dlss_bridge_ == &vulkan_->streamline_bridge();
-}
-
-std::weak_ptr<void> VkSceneRenderer::test_dlss_output_lifetime(
-    uint32_t frame_slot) const {
-    return frame_slot < frames_.size()
-               ? std::weak_ptr<void>(frames_[frame_slot].dlss_output.lifetime)
-               : std::weak_ptr<void>{};
-}
-
-bool VkSceneRenderer::test_replace_dlss_output(uint32_t frame_slot,
-                                               VkExtent2D extent,
-                                               std::string& error) {
-    if (frame_slot >= frames_.size()) {
-        error = "test DLSS output frame slot is out of range";
-        return false;
-    }
-    return ensure_dlss_output(frames_[frame_slot], extent, error);
-}
-#endif
-
-VkExtent2D VkSceneRenderer::dlss_internal_extent(
-    VkExtent2D output_extent) const {
-    if (!dlss_bridge_->supports_dlss_mode(selected_dlss_mode_))
-        return output_extent;
-    matter::DlssOptimalSettings settings{};
-    std::string ignored_error;
-    if (dlss_bridge_->query_dlss_optimal_settings(
-            {selected_dlss_mode_, output_extent, true, true}, settings,
-            ignored_error))
-        return settings.render_extent;
-    return output_extent;
-}
-
-void VkSceneRenderer::set_dlss_mode(matter::DlssMode mode) {
-    if (selected_dlss_mode_ == mode) return;
-    selected_dlss_mode_ = mode;
-    gi_history_reset_pending_ = true;
-    local_direct_history_state_.reset_pending = true;
-}
+#include "../../../libs/MatterGraphics/src/native/dlss_controls.inl"
 
 void VkSceneRenderer::set_geometry_debug_view(matter::GeometryDebugView view) {
     if (geometry_debug_view_ == view) return;
@@ -2362,15 +1835,7 @@ bool VkSceneRenderer::wireframe_available() const noexcept {
 
 #include "../../../libs/MatterGraphics/src/native/rt_settings.inl"
 
-bool VkSceneRenderer::consume_dlss_history_reset() {
-    const bool pending = dlss_history_reset_pending_;
-    dlss_history_reset_pending_ = false;
-    // Explicit RT/GI/light edits invalidate whole-frame lighting independently
-    // of GI's candidate history. In particular, a previous GI frame's reset
-    // flag must not swallow a new control edit before the next frame starts.
-    // Bridge-owned transition notifications are coalesced at their source.
-    return pending;
-}
+#include "../../../libs/MatterGraphics/src/native/dlss_history_reset.inl"
 
 VkSceneRenderer::~VkSceneRenderer() {
     if (vulkan_) {
@@ -2390,6 +1855,7 @@ VkSceneRenderer::~VkSceneRenderer() {
 // poisoned branch of reset()) wait_idle first. Calling it while a frame is in
 // flight would destroy objects a submitted command buffer still references.
 void VkSceneRenderer::destroy_pipeline() {
+    frame_image_layouts_.clear();
     if (!vulkan_) return;
     gpu_visual_mesher_.reset();
     gpu_solid_face_projector_.reset();
@@ -2425,7 +1891,14 @@ void VkSceneRenderer::destroy_pipeline() {
         destroy_water_animation_generation(retired.resources);
     retired_water_animation_resources_.clear();
     water_animation_schedule_ = WaterAnimationGpuSchedule{};
-    rt_sbt_.reset();
+    for (auto* trace : {&rt_shadow_pipeline_, &rt_surface_test_pipeline_,
+                        &rt_lighting_pipeline_, &rt_primary_pipeline_,
+                        &rt_diffuse_pipeline_, &rt_reflection_pipeline_}) {
+        trace->sbt.reset();
+        if (trace->pipeline != VK_NULL_HANDLE)
+            vkDestroyPipeline(device, trace->pipeline, nullptr);
+        *trace = RtTracePipeline{};
+    }
     // Identity-buffer visibility (M4): the per-slot pipelines name the identity
     // attachment and this slot's buffer, both of which are going away.
     for (FrameResources& frame : frames_) frame.visibility_id_reduce.reset();
@@ -2480,8 +1953,6 @@ void VkSceneRenderer::destroy_pipeline() {
         vkDestroyPipelineLayout(device, gi_atrous_pipeline_layout_, nullptr);
     if (gi_atrous_set_layout_ != VK_NULL_HANDLE)
         vkDestroyDescriptorSetLayout(device, gi_atrous_set_layout_, nullptr);
-    if (rt_pipeline_ != VK_NULL_HANDLE)
-        vkDestroyPipeline(device, rt_pipeline_, nullptr);
     if (rt_pipeline_layout_ != VK_NULL_HANDLE)
         vkDestroyPipelineLayout(device, rt_pipeline_layout_, nullptr);
     if (rt_descriptor_pool_ != VK_NULL_HANDLE)
@@ -2580,6 +2051,8 @@ void VkSceneRenderer::destroy_pipeline() {
         vkDestroyDescriptorSetLayout(device, environment_set_layout_, nullptr);
     if (raster_pipeline_ != VK_NULL_HANDLE)
         vkDestroyPipeline(device, raster_pipeline_, nullptr);
+    if (mirrored_raster_pipeline_ != VK_NULL_HANDLE)
+        vkDestroyPipeline(device, mirrored_raster_pipeline_, nullptr);
     if (skinned_raster_pipeline_ != VK_NULL_HANDLE)
         vkDestroyPipeline(device, skinned_raster_pipeline_, nullptr);
     if (water_animation_raster_pipeline_ != VK_NULL_HANDLE)
@@ -2615,6 +2088,7 @@ void VkSceneRenderer::destroy_pipeline() {
     geometry_pipeline_ = geometry_vis_pipeline_ = VK_NULL_HANDLE;
     geometry_select_pipeline_ = VK_NULL_HANDLE;
     raster_pipeline_ = VK_NULL_HANDLE;
+    mirrored_raster_pipeline_ = VK_NULL_HANDLE;
     skinned_raster_pipeline_ = VK_NULL_HANDLE;
     water_animation_raster_pipeline_ = VK_NULL_HANDLE;
     water_forward_static_pipeline_ = VK_NULL_HANDLE;
@@ -2646,29 +2120,17 @@ void VkSceneRenderer::destroy_pipeline() {
     gi_atrous_pipeline_ = VK_NULL_HANDLE;
     gi_atrous_pipeline_layout_ = VK_NULL_HANDLE;
     gi_atrous_set_layout_ = VK_NULL_HANDLE;
-    rt_pipeline_ = VK_NULL_HANDLE;
     rt_pipeline_layout_ = VK_NULL_HANDLE;
     rt_descriptor_pool_ = VK_NULL_HANDLE;
     rt_set_layout_ = VK_NULL_HANDLE;
     rt_adaptive_set_layout_ = VK_NULL_HANDLE;
     rt_descriptor_sets_.clear();
     rt_adaptive_descriptor_sets_.clear();
-    rt_sbt_address_ = 0;
-    rt_sbt_test_raygen_address_ = 0;
-    rt_sbt_lighting_raygen_address_ = 0;
-    rt_sbt_primary_raygen_address_ = 0;
-    rt_sbt_diffuse_raygen_address_ = 0;
-    rt_sbt_reflection_raygen_address_ = 0;
     rt_specialize_gi_ = true;
     rt_primary_adaptive_ = false;
     rt_separate_primary_ = false;
     rt_adaptive_diagnostics_ = false;
     rt_adaptive_diagnostic_frames_ = 0;
-    rt_sbt_miss_address_ = 0;
-    rt_sbt_hit_address_ = 0;
-    rt_sbt_stride_ = 0;
-    rt_sbt_miss_size_ = 0;
-    rt_sbt_hit_size_ = 0;
     pipeline_layout_ = VK_NULL_HANDLE;
     descriptor_pool_ = VK_NULL_HANDLE;
     for (auto& f : frames_) {
@@ -3036,7 +2498,34 @@ bool VkSceneRenderer::create_pipeline(std::string& error) {
 // CULL_MODE_NONE rasterization struct because it draws a fullscreen triangle.
 bool VkSceneRenderer::create_raster_pipelines(std::string& error) {
     const VkDevice device = vulkan_->device();
-#include "../../../libs/MatterGraphics/src/native/create_raster_pipelines.inl"
+    MeshRasterPipelines mesh_pipelines{};
+    const bool mesh_ok = create_mesh_raster_pipelines(device, pipeline_layout_, vulkan_->wireframe_available(),
+        create_shader_module,
+        [&](const VkGraphicsPipelineCreateInfo& info, VkPipeline* pipeline) {
+            return profile_pipeline_call("graphics", __func__, __LINE__, 1, &info, [&] {
+                return vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &info, nullptr, pipeline);
+            });
+        }, mesh_pipelines, error);
+    raster_pipeline_ = mesh_pipelines.raster;
+    mirrored_raster_pipeline_ = mesh_pipelines.raster_mirrored;
+    skinned_raster_pipeline_ = mesh_pipelines.skin;
+    water_animation_raster_pipeline_ = mesh_pipelines.water;
+    visibility_id_pipeline_ = mesh_pipelines.visibility;
+    wireframe_raster_pipeline_ = mesh_pipelines.wireframe;
+    wireframe_skinned_raster_pipeline_ = mesh_pipelines.wireframe_skin;
+    if (!mesh_ok) return false;
+    VkResult result = VK_SUCCESS;
+    VkPipelineInputAssemblyStateCreateInfo input_assembly{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
+    input_assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    VkPipelineViewportStateCreateInfo viewport_state{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
+    viewport_state.viewportCount = viewport_state.scissorCount = 1;
+    VkPipelineMultisampleStateCreateInfo multisample{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
+    multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+    const VkDynamicState dynamic_values[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+    VkPipelineDynamicStateCreateInfo dynamic{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
+    dynamic.dynamicStateCount = 2;
+    dynamic.pDynamicStates = dynamic_values;
+
 
     std::array<VkDescriptorSetLayoutBinding, 12> sampled_bindings{};
     for (uint32_t i = 0; i < 7; ++i) {
@@ -3247,211 +2736,7 @@ bool VkSceneRenderer::create_raster_pipelines(std::string& error) {
     return true;
 }
 
-bool VkSceneRenderer::create_water_forward_pipelines(std::string& error) {
-    const VkDevice device = vulkan_->device();
-
-    const VkDescriptorSetLayoutBinding bindings[] = {
-        descriptor_binding(0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                           VK_SHADER_STAGE_FRAGMENT_BIT),
-        descriptor_binding(1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                           VK_SHADER_STAGE_FRAGMENT_BIT),
-        descriptor_binding(2, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-                           VK_SHADER_STAGE_FRAGMENT_BIT)};
-    VkDescriptorSetLayoutCreateInfo set_info{
-        VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-    set_info.bindingCount =
-        static_cast<uint32_t>(sizeof(bindings) / sizeof(bindings[0]));
-    set_info.pBindings = bindings;
-    VkResult result = vkCreateDescriptorSetLayout(
-        device, &set_info, nullptr, &water_forward_set_layout_);
-    if (result != VK_SUCCESS)
-        return fail_vk("vkCreateDescriptorSetLayout(water forward)", result,
-                       error);
-
-    const VkDescriptorSetLayout layouts[] = {
-        set_layouts_[0], set_layouts_[1], water_forward_set_layout_,
-        environment_set_layout_};
-    const VkPushConstantRange raster_push{
-        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
-        sizeof(RasterDebugPushConstants)};
-    VkPipelineLayoutCreateInfo layout_info{
-        VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
-    layout_info.setLayoutCount =
-        static_cast<uint32_t>(sizeof(layouts) / sizeof(layouts[0]));
-    layout_info.pSetLayouts = layouts;
-    layout_info.pushConstantRangeCount = 1;
-    layout_info.pPushConstantRanges = &raster_push;
-    result = vkCreatePipelineLayout(device, &layout_info, nullptr,
-                                    &water_forward_pipeline_layout_);
-    if (result != VK_SUCCESS)
-        return fail_vk("vkCreatePipelineLayout(water forward)", result,
-                       error);
-
-    VkSamplerCreateInfo sampler{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
-    sampler.magFilter = VK_FILTER_LINEAR;
-    sampler.minFilter = VK_FILTER_LINEAR;
-    sampler.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
-    sampler.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    sampler.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    sampler.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    sampler.maxLod = 0.0f;
-    result = vkCreateSampler(device, &sampler, nullptr,
-                             &water_forward_sampler_);
-    if (result != VK_SUCCESS)
-        return fail_vk("vkCreateSampler(water forward)", result, error);
-
-    VkShaderModule static_vertex = VK_NULL_HANDLE;
-    VkShaderModule direct_vertex = VK_NULL_HANDLE;
-    VkShaderModule fragment = VK_NULL_HANDLE;
-    if (!create_shader_module(device, "raster.vert.spv", static_vertex,
-                              error) ||
-        !create_shader_module(device, "raster_water.vert.spv", direct_vertex,
-                              error) ||
-        !create_shader_module(device, "water_forward.frag.spv", fragment,
-                              error)) {
-        if (static_vertex != VK_NULL_HANDLE)
-            vkDestroyShaderModule(device, static_vertex, nullptr);
-        if (direct_vertex != VK_NULL_HANDLE)
-            vkDestroyShaderModule(device, direct_vertex, nullptr);
-        if (fragment != VK_NULL_HANDLE)
-            vkDestroyShaderModule(device, fragment, nullptr);
-        return false;
-    }
-
-    VkPipelineShaderStageCreateInfo stages[2]{};
-    stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
-    stages[0].module = static_vertex;
-    stages[0].pName = "main";
-    stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-    stages[1].module = fragment;
-    stages[1].pName = "main";
-
-    const VkVertexInputBindingDescription static_binding{
-        0, sizeof(VkRasterVertex), VK_VERTEX_INPUT_RATE_VERTEX};
-    const VkVertexInputAttributeDescription static_attributes[] = {
-        {0, 0, VK_FORMAT_R32G32B32_SFLOAT,
-         static_cast<uint32_t>(offsetof(VkRasterVertex, position))},
-        {1, 0, VK_FORMAT_R32G32B32_SFLOAT,
-         static_cast<uint32_t>(offsetof(VkRasterVertex, normal))},
-        {2, 0, VK_FORMAT_R32G32B32A32_SFLOAT,
-         static_cast<uint32_t>(offsetof(VkRasterVertex, tint))},
-        {3, 0, VK_FORMAT_R32G32B32A32_SFLOAT,
-         static_cast<uint32_t>(offsetof(VkRasterVertex, surface))},
-        {4, 0, VK_FORMAT_R32_UINT,
-         static_cast<uint32_t>(offsetof(VkRasterVertex, material_index))},
-        {6, 0, VK_FORMAT_R32G32_SFLOAT,
-         static_cast<uint32_t>(offsetof(VkRasterVertex, warp_uv))},
-        {7, 0, VK_FORMAT_R32G32_UINT,
-         static_cast<uint32_t>(offsetof(VkRasterVertex, warp_tangent))}};
-    VkPipelineVertexInputStateCreateInfo vertex_input{
-        VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
-    vertex_input.vertexBindingDescriptionCount = 1;
-    vertex_input.pVertexBindingDescriptions = &static_binding;
-    vertex_input.vertexAttributeDescriptionCount =
-        static_cast<uint32_t>(sizeof(static_attributes) /
-                              sizeof(static_attributes[0]));
-    vertex_input.pVertexAttributeDescriptions = static_attributes;
-
-    VkPipelineInputAssemblyStateCreateInfo input_assembly{
-        VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
-    input_assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-    VkPipelineViewportStateCreateInfo viewport_state{
-        VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
-    viewport_state.viewportCount = 1;
-    viewport_state.scissorCount = 1;
-    VkPipelineRasterizationStateCreateInfo rasterization{
-        VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
-    rasterization.polygonMode = VK_POLYGON_MODE_FILL;
-    rasterization.cullMode = VK_CULL_MODE_BACK_BIT;
-    if (const char* cull_env = std::getenv("MATTER_RASTER_CULL")) {
-        if (std::strcmp(cull_env, "none") == 0)
-            rasterization.cullMode = VK_CULL_MODE_NONE;
-        else if (std::strcmp(cull_env, "front") == 0)
-            rasterization.cullMode = VK_CULL_MODE_FRONT_BIT;
-    }
-    rasterization.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
-    rasterization.lineWidth = 1.0f;
-    VkPipelineMultisampleStateCreateInfo multisample{
-        VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
-    multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
-    VkPipelineDepthStencilStateCreateInfo depth_stencil{
-        VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
-    depth_stencil.depthTestEnable = VK_TRUE;
-    depth_stencil.depthWriteEnable = VK_TRUE;
-    depth_stencil.depthCompareOp = VK_COMPARE_OP_GREATER_OR_EQUAL;
-    VkPipelineColorBlendAttachmentState blend_attachments[4]{};
-    for (auto& blend : blend_attachments) {
-        blend.blendEnable = VK_FALSE;
-        blend.colorWriteMask = VK_COLOR_COMPONENT_R_BIT |
-                               VK_COLOR_COMPONENT_G_BIT |
-                               VK_COLOR_COMPONENT_B_BIT |
-                               VK_COLOR_COMPONENT_A_BIT;
-    }
-    VkPipelineColorBlendStateCreateInfo color_blend{
-        VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
-    color_blend.attachmentCount = 4;
-    color_blend.pAttachments = blend_attachments;
-    const VkDynamicState dynamic_states[] = {VK_DYNAMIC_STATE_VIEWPORT,
-                                             VK_DYNAMIC_STATE_SCISSOR};
-    VkPipelineDynamicStateCreateInfo dynamic{
-        VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
-    dynamic.dynamicStateCount =
-        static_cast<uint32_t>(sizeof(dynamic_states) / sizeof(dynamic_states[0]));
-    dynamic.pDynamicStates = dynamic_states;
-    const VkFormat color_formats[] = {
-        VK_FORMAT_R16G16B16A16_SFLOAT, VK_FORMAT_R16G16_SFLOAT,
-        VK_FORMAT_R8_UNORM, VK_FORMAT_R32G32_UINT};
-    VkPipelineRenderingCreateInfo rendering{
-        VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
-    rendering.colorAttachmentCount =
-        static_cast<uint32_t>(sizeof(color_formats) / sizeof(color_formats[0]));
-    rendering.pColorAttachmentFormats = color_formats;
-    rendering.depthAttachmentFormat = VK_FORMAT_D32_SFLOAT;
-    VkGraphicsPipelineCreateInfo create{
-        VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
-    create.pNext = &rendering;
-    create.stageCount = 2;
-    create.pStages = stages;
-    create.pVertexInputState = &vertex_input;
-    create.pInputAssemblyState = &input_assembly;
-    create.pViewportState = &viewport_state;
-    create.pRasterizationState = &rasterization;
-    create.pMultisampleState = &multisample;
-    create.pDepthStencilState = &depth_stencil;
-    create.pColorBlendState = &color_blend;
-    create.pDynamicState = &dynamic;
-    create.layout = water_forward_pipeline_layout_;
-
-    result = profile_pipeline_call("graphics", __func__, __LINE__, 1, &create, [&] {
-        return vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &create,
-                                       nullptr,
-                                       &water_forward_static_pipeline_);
-    });
-    if (result == VK_SUCCESS) {
-        stages[0].module = direct_vertex;
-        const VkVertexInputBindingDescription direct_binding{
-            0, kWaterAnimationRasterVertexStride,
-            VK_VERTEX_INPUT_RATE_VERTEX};
-        const VkVertexInputAttributeDescription direct_attribute{
-            0, 0, VK_FORMAT_R32G32B32_UINT, 0};
-        vertex_input.pVertexBindingDescriptions = &direct_binding;
-        vertex_input.vertexAttributeDescriptionCount = 1;
-        vertex_input.pVertexAttributeDescriptions = &direct_attribute;
-        result = profile_pipeline_call("graphics", __func__, __LINE__, 1, &create, [&] {
-        return vkCreateGraphicsPipelines(
-            device, VK_NULL_HANDLE, 1, &create, nullptr,
-            &water_forward_direct_pipeline_);
-    });
-    }
-    vkDestroyShaderModule(device, fragment, nullptr);
-    vkDestroyShaderModule(device, direct_vertex, nullptr);
-    vkDestroyShaderModule(device, static_vertex, nullptr);
-    return result == VK_SUCCESS ||
-           fail_vk("vkCreateGraphicsPipelines(water forward)", result,
-                   error);
-}
+#include "../../../libs/MatterGraphics/src/native/create_water_forward_pipelines.inl"
 
 bool VkSceneRenderer::create_display_pipeline(std::string& error) {
     const VkDevice device = vulkan_->device();
@@ -3991,11 +3276,21 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
         return fail_vk("vkCreateDescriptorPool(water forward)", result,
                        error);
     }
+    std::vector<FrameResources> next_frames(frame_slot_count);
     const auto destroy_candidate_pools = [&] {
+        // A later slot can fail after earlier candidates allocated query
+        // pools. These raw handles are not owned by the buffer RAII members.
+        for (auto& candidate : next_frames) {
+            if (candidate.ts_pool != VK_NULL_HANDLE)
+                vkDestroyQueryPool(vulkan_->device(), candidate.ts_pool, nullptr);
+            if (candidate.raster_stats_pool != VK_NULL_HANDLE)
+                vkDestroyQueryPool(vulkan_->device(), candidate.raster_stats_pool, nullptr);
+            candidate.ts_pool = VK_NULL_HANDLE;
+            candidate.raster_stats_pool = VK_NULL_HANDLE;
+        }
         vkDestroyDescriptorPool(vulkan_->device(), next_water_pool, nullptr);
         vkDestroyDescriptorPool(vulkan_->device(), next_pool, nullptr);
     };
-    std::vector<FrameResources> next_frames(frame_slot_count);
     std::vector<VkDescriptorSetLayout> layouts;
     layouts.reserve(frame_slot_count * 21);
     for (size_t index = 0; index < frame_slot_count; ++index) {
@@ -4205,6 +3500,23 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
             destroy_candidate_pools();
             return false;
         }
+        // The RT counter is otherwise first written by emit_ray_instances,
+        // which a slot that never traces never reaches. Zero the WHOLE
+        // allocation (ensure_buffer may round it up) and flush it so the
+        // device-visible bytes are defined even on noncoherent memory. The
+        // fresh slot carries no sample, so the reporter would not read it
+        // anyway; this keeps the test-only direct readbacks defined too.
+        if (!matter::map_buffer(frame.rt_error_counter, error)) {
+            destroy_candidate_pools();
+            return false;
+        }
+        std::memset(frame.rt_error_counter.mapped, 0,
+                    static_cast<size_t>(frame.rt_error_counter.size));
+        if (!matter::flush_buffer(frame.rt_error_counter, 0,
+                                  frame.rt_error_counter.size, error)) {
+            destroy_candidate_pools();
+            return false;
+        }
         if (!upload_local_lights(frame, error)) {
             destroy_candidate_pools();
             return false;
@@ -4406,143 +3718,7 @@ void VkSceneRenderer::update_frame_descriptors(FrameResources& frame) {
     write_vt_descriptors_for_frame(frame);
 }
 
-void VkSceneRenderer::update_water_forward_descriptor(FrameResources& frame) {
-    if (frame.water_forward_descriptor_set == VK_NULL_HANDLE ||
-        frame.water_forward_constants.buffer == VK_NULL_HANDLE ||
-        water_forward_sampler_ == VK_NULL_HANDLE ||
-        opaque_hdr_.view == VK_NULL_HANDLE ||
-        opaque_depth_.view == VK_NULL_HANDLE)
-        return;
-    const VkDescriptorImageInfo opaque_hdr_info{
-        water_forward_sampler_, opaque_hdr_.view,
-        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-    const VkDescriptorImageInfo opaque_depth_info{
-        water_forward_sampler_, opaque_depth_.view,
-        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-    const VkDescriptorBufferInfo constants_info{
-        frame.water_forward_constants.buffer, 0,
-        sizeof(WaterForwardConstants)};
-    VkWriteDescriptorSet writes[3]{};
-    for (uint32_t index = 0; index != 3; ++index) {
-        writes[index].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[index].dstSet = frame.water_forward_descriptor_set;
-        writes[index].dstBinding = index;
-        writes[index].descriptorCount = 1;
-    }
-    writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    writes[0].pImageInfo = &opaque_hdr_info;
-    writes[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    writes[1].pImageInfo = &opaque_depth_info;
-    writes[2].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    writes[2].pBufferInfo = &constants_info;
-    update_descriptor_sets(vulkan_->device(), 3, writes, 0, nullptr);
-}
-
-bool VkSceneRenderer::upload_water_forward_constants(
-    FrameResources& frame, const FrameMatrices& matrices, VkExtent2D extent,
-    std::string& error) {
-    WaterForwardConstants constants{};
-    constants.clip_to_world = pack_glsl_mat4(matrices.clip_to_world);
-    constants.to_sun = {atmosphere_replay_constants_.rt_to_sun.x,
-                        atmosphere_replay_constants_.rt_to_sun.y,
-                        atmosphere_replay_constants_.rt_to_sun.z, 0.0f};
-    constants.viewport_refraction = {static_cast<float>(extent.width),
-                                     static_cast<float>(extent.height),
-                                     24.0f, 0.75f};
-    constants.reflection_controls = {24.0f, 2.0f, 0.25f, 80.0f};
-    constants.diagnostics[0] =
-        static_cast<std::uint32_t>(water_diagnostic_view_);
-    frame.water_forward_constants_cache = constants;
-    return matter::upload_buffer(
-        *vulkan_, frame.water_forward_constants, &constants,
-        sizeof(constants), 0u, error);
-}
-
-bool VkSceneRenderer::write_water_field_descriptors_for_frame(
-    FrameResources& frame, VkDescriptorSet rt_set, std::string& error) {
-    const auto records = water_fields_.gpu_records();
-    std::uint32_t generations[kWaterFieldBindingSlots]{};
-    bool records_changed = !frame.water_field_raster_descriptors_valid;
-    for (std::uint32_t slot = 0u; slot != kWaterFieldBindingSlots; ++slot) {
-        generations[slot] = records[slot].extent_generation[2];
-        records_changed = records_changed ||
-            frame.water_field_generations[slot] != generations[slot];
-    }
-    if (records_changed &&
-        !matter::upload_buffer(
-            *vulkan_, frame.water_field_records, records.data(),
-            sizeof(records), 0u, error))
-        return false;
-
-    std::array<std::array<VkDescriptorImageInfo,
-                          kWaterFieldBindingSlots>, 4>
-        image_infos{};
-    bool views_changed = false;
-    for (std::uint32_t channel = 0u; channel != image_infos.size();
-         ++channel) {
-        for (std::uint32_t slot = 0u; slot != kWaterFieldBindingSlots;
-             ++slot) {
-            VkDescriptorImageInfo& info = image_infos[channel][slot];
-            info.sampler = water_field_resources_.sampler(channel);
-            info.imageView =
-                water_field_resources_.descriptor_view(slot, channel);
-            info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-            views_changed = views_changed ||
-                frame.water_field_views[channel][slot] != info.imageView;
-            frame.water_field_views[channel][slot] = info.imageView;
-        }
-    }
-    const bool write_raster =
-        !frame.water_field_raster_descriptors_valid || views_changed;
-    const bool write_rt = rt_set != VK_NULL_HANDLE &&
-        (!frame.water_field_rt_descriptors_valid || views_changed);
-    if (!write_raster && !write_rt) {
-        std::copy(std::begin(generations), std::end(generations),
-                  std::begin(frame.water_field_generations));
-        return true;
-    }
-    const VkDescriptorBufferInfo buffer_info{
-        frame.water_field_records.buffer, 0u,
-        sizeof(WaterFieldGpuRecord) * kWaterFieldBindingSlots};
-    std::array<VkWriteDescriptorSet, 5> writes{};
-    for (std::uint32_t channel = 0u; channel != 4u; ++channel) {
-        VkWriteDescriptorSet& write = writes[channel];
-        write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        write.dstSet = frame.descriptor_sets[1];
-        write.dstBinding = 20u + channel;
-        write.descriptorCount = kWaterFieldBindingSlots;
-        write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        write.pImageInfo = image_infos[channel].data();
-    }
-    writes[4].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[4].dstSet = frame.descriptor_sets[1];
-    writes[4].dstBinding = 24u;
-    writes[4].descriptorCount = 1u;
-    writes[4].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    writes[4].pBufferInfo = &buffer_info;
-    if (write_raster) {
-        update_descriptor_sets(vulkan_->device(),
-                               static_cast<std::uint32_t>(writes.size()),
-                               writes.data(), 0u, nullptr);
-        frame.water_field_raster_descriptors_valid = true;
-    }
-
-    if (write_rt) {
-        for (std::uint32_t channel = 0u; channel != 4u; ++channel) {
-            writes[channel].dstSet = rt_set;
-            writes[channel].dstBinding = 21u + channel;
-        }
-        writes[4].dstSet = rt_set;
-        writes[4].dstBinding = 25u;
-        update_descriptor_sets(vulkan_->device(),
-                               static_cast<std::uint32_t>(writes.size()),
-                               writes.data(), 0u, nullptr);
-        frame.water_field_rt_descriptors_valid = true;
-    }
-    std::copy(std::begin(generations), std::end(generations),
-              std::begin(frame.water_field_generations));
-    return true;
-}
+#include "../../../libs/MatterGraphics/src/native/water_descriptors.inl"
 
 void VkSceneRenderer::probe_skin_raster_draws(
     const std::vector<VkSkinRasterDraw>& draws) const {
@@ -8981,60 +8157,7 @@ int VkSceneRenderer::ensure_part(const VkScenePart& part,
     return slot;
 }
 
-bool VkSceneRenderer::set_part_water_field_binding(
-    std::uint64_t part_hash, WaterFieldBinding binding, std::string& error) {
-    error.clear();
-    if (fail_if_poisoned(error)) return false;
-    if (binding.valid() && water_fields_.lookup(binding) == nullptr) {
-        error = "water-field part binding is stale or unpublished";
-        return false;
-    }
-    const auto found = slot_of_.find(part_hash);
-    if (found == slot_of_.end()) {
-        error = "water-field part binding references an unregistered part";
-        return false;
-    }
-    const std::uint32_t part_slot = static_cast<std::uint32_t>(found->second);
-    PartRecord& part = parts_[part_slot];
-    if (part.water_binding_slot == binding.slot &&
-        part.water_generation == binding.generation)
-        return true;
-
-    part.water_binding_slot = binding.slot;
-    part.water_generation = binding.generation;
-    for (std::size_t index = 0u; index != instance_staging_.size(); ++index) {
-        if (index < instance_part_slots_.size() &&
-            instance_part_slots_[index] == part_slot) {
-            instance_staging_[index].water_binding_slot = binding.slot;
-            instance_staging_[index].water_generation = binding.generation;
-        }
-    }
-    bool dynamic_changed = false;
-    for (std::size_t index = 0u; index != dynamic_instance_staging_.size();
-         ++index) {
-        if (index < dynamic_instance_part_slots_.size() &&
-            dynamic_instance_part_slots_[index] == part_slot) {
-            dynamic_instance_staging_[index].water_binding_slot = binding.slot;
-            dynamic_instance_staging_[index].water_generation =
-                binding.generation;
-            dynamic_changed = true;
-        }
-    }
-    dynamic_dirty_ = dynamic_dirty_ || dynamic_changed;
-    ++instance_generation_;
-    instance_snapshot_valid_ = false;
-    return true;
-}
-
-#ifdef MATTER_VK_TEST_FAULT_INJECTION
-bool VkSceneRenderer::part_is_raster_water(uint64_t part_hash) const noexcept {
-    const auto found = slot_of_.find(part_hash);
-    return found != slot_of_.end() && found->second >= 0 &&
-           static_cast<size_t>(found->second) < parts_.size() &&
-           parts_[static_cast<size_t>(found->second)].live &&
-           parts_[static_cast<size_t>(found->second)].raster_water_surface;
-}
-#endif
+#include "../../../libs/MatterGraphics/src/native/water_part_binding.inl"
 
 void VkSceneRenderer::refresh_part_slot_index() const {
     // Power-of-two, at least 2x occupancy, so linear probing stays short.
@@ -10230,108 +9353,7 @@ void VkSceneRenderer::release_part(uint64_t part_hash) {
 // result, so flipping one is an A/B of cost only.
 // ---------------------------------------------------------------------------
 
-// Stores this frame's temporal (motion-vector / history) state and records, in
-// `temporal_history_changed_`, whether anything update_instances() actually
-// READS has changed since its last snapshot. The flag is sticky until
-// update_instances takes a fresh snapshot, so any number of calls between two
-// update_instances() calls are covered.
-void VkSceneRenderer::set_temporal_frame(const TemporalFrame& frame) {
-    // Track, for update_instances()' unchanged-input fast path, whether the
-    // history data it actually reads changed. That is exactly:
-    //   * `reset` (gates the whole history lookup), and
-    //   * per entry and IN ORDER (the id index keeps the first match, so order
-    //     is load-bearing when ids repeat): instance_id, history_valid, and
-    //     previous_object_to_world -- the last only when history_valid is set,
-    //     because it is not read otherwise.
-    // current_object_to_world is never read by update_instances().
-    //
-    // The flag is sticky: it is only cleared when update_instances() takes a
-    // fresh snapshot, so any number of set_temporal_frame() calls between two
-    // update_instances() calls are covered.
-    if (!temporal_copy_fuse_enabled()) {
-        if (!temporal_history_changed_) {
-            matter::profile::Scope compare_scope(
-                engine_prof::id(engine_prof::kSetTemporalCompare));
-            bool same = temporal_frame_.reset == frame.reset;
-            // When both frames are reset the history contributes nothing to the
-            // output in either case, so the per-entry data cannot matter.
-            if (same && !frame.reset) {
-                same =
-                    temporal_frame_.instances.size() == frame.instances.size();
-                for (size_t index = 0; same && index < frame.instances.size();
-                     ++index) {
-                    const TemporalInstanceFrame& previous =
-                        temporal_frame_.instances[index];
-                    const TemporalInstanceFrame& next = frame.instances[index];
-                    if (previous.instance_id != next.instance_id ||
-                        previous.history_valid != next.history_valid ||
-                        (next.history_valid &&
-                         std::memcmp(
-                             previous.previous_object_to_world.m,
-                             next.previous_object_to_world.m,
-                             sizeof(next.previous_object_to_world.m)) != 0))
-                        same = false;
-                }
-            }
-            if (!same) temporal_history_changed_ = true;
-        }
-        {
-            matter::profile::Scope copy_scope(
-                engine_prof::id(engine_prof::kSetTemporalCopy));
-            temporal_frame_ = frame;
-        }
-        return;
-    }
-    // Perf: the compare above and the `temporal_frame_ = frame` below each walk
-    // the same ~90k-entry, ~13 MB TemporalInstanceFrame array, so the pair cost
-    // three full traversals per frame -- and vector's copy-assign allocates
-    // EXACTLY the source size when it has to grow, which during a fill is every
-    // frame (13 MB allocated, copied and freed each time). One pass does both,
-    // and resize_geometric restores amortised growth. The comparison result and
-    // the resulting contents are identical.
-    const bool compare_needed = !temporal_history_changed_;
-    const size_t count = frame.instances.size();
-    // Exactly the branch structure of the legacy path above: the per-entry data
-    // (and therefore a size mismatch) only matters when neither frame is a
-    // reset, because on a reset the history contributes nothing either way.
-    bool same = temporal_frame_.reset == frame.reset;
-    const bool history_matters = compare_needed && same && !frame.reset;
-    if (history_matters && temporal_frame_.instances.size() != count)
-        same = false;
-    const bool per_entry_compare = history_matters && same;
-    {
-        matter::profile::Scope copy_scope(engine_prof::id(engine_prof::kSetTemporalCopy));
-        // Grow first so every destination entry exists. When the sizes differ
-        // `same` is already settled, so the stale tail is never compared.
-        vk_perf::resize_geometric(temporal_frame_.instances, count);
-        for (size_t index = 0; index < count; ++index) {
-            TemporalInstanceFrame& previous = temporal_frame_.instances[index];
-            const TemporalInstanceFrame& next = frame.instances[index];
-            if (per_entry_compare && same &&
-                (previous.instance_id != next.instance_id ||
-                 previous.history_valid != next.history_valid ||
-                 (next.history_valid &&
-                  std::memcmp(previous.previous_object_to_world.m,
-                              next.previous_object_to_world.m,
-                              sizeof(next.previous_object_to_world.m)) != 0)))
-                same = false;
-            previous = next;
-        }
-    }
-    if (compare_needed && !same) temporal_history_changed_ = true;
-    // Everything except the instance array, which the loop above already owns.
-    temporal_frame_.current_unjittered = frame.current_unjittered;
-    temporal_frame_.previous_unjittered = frame.previous_unjittered;
-    temporal_frame_.current_jittered = frame.current_jittered;
-    temporal_frame_.previous_jittered = frame.previous_jittered;
-    temporal_frame_.internal_extent = frame.internal_extent;
-    temporal_frame_.output_extent = frame.output_extent;
-    temporal_frame_.jitter_pixels[0] = frame.jitter_pixels[0];
-    temporal_frame_.jitter_pixels[1] = frame.jitter_pixels[1];
-    temporal_frame_.reset = frame.reset;
-    temporal_frame_.attempt_token = frame.attempt_token;
-    temporal_frame_.presented_frame_index = frame.presented_frame_index;
-}
+#include "../../../libs/MatterGraphics/src/native/temporal_frame.inl"
 
 bool VkSceneRenderer::instance_inputs_match_snapshot(
     const std::vector<VkSceneInstance>& instances) const noexcept {
@@ -10541,6 +9563,8 @@ bool VkSceneRenderer::update_instances(
         instance.water_binding_slot = part.water_binding_slot;
         instance.water_generation = part.water_generation;
         instance.water_pad0 = source.rt_proxy_only ? 1u : 0u;
+        instance.mirrored =
+            gpu_mat4_reverses_winding(instance.object_to_world) ? 1u : 0u;
         const TemporalInstanceFrame* temporal =
             temporal_lookup(stable_id, source_index);
         if (!temporal_frame_.reset && temporal != nullptr &&
@@ -10597,7 +9621,17 @@ bool VkSceneRenderer::update_instances(
         return true;
     }
 
-    const bool layout_changed = !slots_equal;
+    // A mirror flip moves the instance between its bucket's primary and
+    // mirrored regions, so it re-derives the layout like a slot change.
+    bool mirrors_changed = false;
+    if (slots_equal) {
+        const size_t common =
+            std::min(candidate_instances.size(), instance_staging_.size());
+        for (size_t i = 0; i < common && !mirrors_changed; ++i)
+            mirrors_changed =
+                candidate_instances[i].mirrored != instance_staging_[i].mirrored;
+    }
+    const bool layout_changed = !slots_equal || mirrors_changed;
     if (!layout_changed) {
         // Swap, not move: the retired staging keeps its capacity inside the
         // scratch vectors for the next rebuild.
@@ -10618,6 +9652,8 @@ bool VkSceneRenderer::update_instances(
     auto old_commands = std::move(command_template_);
     auto old_raster_enabled = std::move(raster_command_enabled_);
     auto old_part_counts = std::move(part_instance_counts_);
+    auto old_part_mirrored = std::move(part_mirrored_counts_);
+    auto old_mirror_commands = std::move(mirror_command_template_);
     auto old_part_ranges = std::move(part_command_ranges_);
     const uint32_t old_raster_count = raster_draw_command_count_;
     const uint32_t old_max_clusters = max_clusters_per_instance_;
@@ -10634,6 +9670,8 @@ bool VkSceneRenderer::update_instances(
         command_template_ = std::move(old_commands);
         raster_command_enabled_ = std::move(old_raster_enabled);
         part_instance_counts_ = std::move(old_part_counts);
+        part_mirrored_counts_ = std::move(old_part_mirrored);
+        mirror_command_template_ = std::move(old_mirror_commands);
         part_command_ranges_ = std::move(old_part_ranges);
         raster_draw_command_count_ = old_raster_count;
         max_clusters_per_instance_ = old_max_clusters;
@@ -10828,6 +9866,17 @@ bool VkSceneRenderer::rebuild_command_template(std::string& error) {
                 water_animation_proxy_instance_indices_.size()),
             draw_transform_slots_, "water animation transform tail", error))
         return false;
+    // instance_staging_ may carry last frame's dynamic tail; its static
+    // prefix is index-aligned with instance_part_slots_.
+    std::vector<uint32_t> mirrored(parts_.size(), 0);
+    const size_t static_count =
+        std::min(instance_part_slots_.size(), instance_staging_.size());
+    for (size_t i = 0; i < static_count; ++i) {
+        if (instance_staging_[i].mirrored != 0u)
+            ++mirrored[instance_part_slots_[i]];
+    }
+    rebuild_mirror_command_template(per_part, mirrored);
+    part_mirrored_counts_ = std::move(mirrored);
     part_instance_counts_ = std::move(per_part);
     part_command_ranges_ = std::move(next_part_ranges);
     // Any successful rebuild covers every deferred registration.
@@ -10841,6 +9890,41 @@ bool VkSceneRenderer::flush_command_template(std::string& error) {
     if (!rebuild_command_template(error)) return false;
     note_command_layout_rebuild();
     return true;
+}
+
+// Splits each bucket's transform region for front-face winding. The legacy
+// raster pipeline culls back faces with counter-clockwise front, and an
+// instance whose transform has a negative determinant arrives clockwise, so
+// cull.comp routes it to bucket b's mirrored command (index
+// command_template_.size() + b in the `commands` buffer), which owns the LAST
+// mirrored[part] slots of b's region and is drawn with the clockwise-front
+// pipeline. The primary region shrinks by the same amount, so the transform
+// buffer and every other bucket keep their offsets. `totals` and `mirrored`
+// are the per-part counts the regions were sized from (mirrored <= totals).
+void VkSceneRenderer::rebuild_mirror_command_template(
+    const std::vector<uint32_t>& totals, const std::vector<uint32_t>& mirrored) {
+    mirror_command_template_.clear();
+    if (std::all_of(mirrored.begin(), mirrored.end(),
+                    [](uint32_t count) { return count == 0u; }))
+        return;
+    mirror_command_template_.resize(command_template_.size());
+    const size_t clusters =
+        std::min(cluster_staging_.size(), command_template_.size() / kVkMaxLod);
+    for (size_t cluster_index = 0; cluster_index < clusters; ++cluster_index) {
+        const GpuCluster& cluster = cluster_staging_[cluster_index];
+        const uint32_t slot = cluster.part_slot;
+        const uint32_t primary = slot < totals.size() && slot < mirrored.size()
+                                     ? totals[slot] - mirrored[slot]
+                                     : 0u;
+        for (uint32_t lod = 0; lod < kVkMaxLod; ++lod) {
+            const size_t bucket = cluster_index * kVkMaxLod + lod;
+            DrawCommand mirror = command_template_[bucket];
+            mirror.instance_count = 0;
+            // A padding rung owns an empty region; its mirror stays empty.
+            if (lod < cluster.lod_count) mirror.first_instance += primary;
+            mirror_command_template_[bucket] = mirror;
+        }
+    }
 }
 
 // Task 7 (dynamic lane): rebuild_command_template() sizes the per-bucket
@@ -10869,7 +9953,11 @@ bool VkSceneRenderer::apply_dynamic_command_layout(std::string& error) {
         return false;
     }
     std::vector<uint32_t> merged_counts = part_instance_counts_;
-    for (uint32_t part_slot : dynamic_instance_part_slots_) {
+    std::vector<uint32_t> merged_mirrored = part_mirrored_counts_;
+    merged_mirrored.resize(merged_counts.size(), 0u);
+    for (size_t dynamic_slot = 0;
+         dynamic_slot < dynamic_instance_part_slots_.size(); ++dynamic_slot) {
+        const uint32_t part_slot = dynamic_instance_part_slots_[dynamic_slot];
         if (part_slot == UINT32_MAX) continue;
         if (part_slot >= merged_counts.size()) {
             error = "dynamic instance part bucket is outside the active part table";
@@ -10880,6 +9968,9 @@ bool VkSceneRenderer::apply_dynamic_command_layout(std::string& error) {
                              "dynamic instance part bucket", error)) {
             return false;
         }
+        if (dynamic_slot < dynamic_instance_staging_.size() &&
+            dynamic_instance_staging_[dynamic_slot].mirrored != 0u)
+            ++merged_mirrored[part_slot];
     }
     uint32_t first_instance = 0;
     for (size_t cluster_index = 0; cluster_index < cluster_staging_.size();
@@ -10948,6 +10039,7 @@ bool VkSceneRenderer::apply_dynamic_command_layout(std::string& error) {
              part.raster_water_surface});
     }
     part_command_ranges_ = std::move(next_part_ranges);
+    rebuild_mirror_command_template(merged_counts, merged_mirrored);
     ++command_generation_;
     return true;
 }
@@ -11011,6 +10103,8 @@ bool VkSceneRenderer::upload_scene_buffers(
     VkDeviceSize cluster_bytes = 0;
     VkDeviceSize instance_bytes = 0;
     VkDeviceSize command_bytes = 0;
+    // command_bytes plus the mirrored table, which only `commands` carries.
+    VkDeviceSize command_table_bytes = 0;
     VkDeviceSize transform_bytes = 0;
     VkDeviceSize vertex_bytes = 0;
     VkDeviceSize index_bytes = 0;
@@ -11024,6 +10118,10 @@ bool VkSceneRenderer::upload_scene_buffers(
         !vk_scene_detail::checked_mul_to_device_size(
             command_template_.size(), sizeof(DrawCommand), command_bytes,
             "draw-command buffer", error) ||
+        !vk_scene_detail::checked_mul_to_device_size(
+            command_template_.size() + mirror_command_template_.size(),
+            sizeof(DrawCommand), command_table_bytes, "draw-command buffer",
+            error) ||
         !vk_scene_detail::checked_mul_to_device_size(
             draw_transform_slots_, sizeof(GpuDrawTransform), transform_bytes,
             "draw-transform buffer", error) ||
@@ -11053,7 +10151,7 @@ bool VkSceneRenderer::upload_scene_buffers(
     };
     if (!storage_size_ok(cluster_bytes, "cluster buffer") ||
         !storage_size_ok(instance_bytes, "instance buffer") ||
-        !storage_size_ok(command_bytes, "draw-command buffer") ||
+        !storage_size_ok(command_table_bytes, "draw-command buffer") ||
         !storage_size_ok(transform_bytes, "draw-transform buffer") ||
         !storage_size_ok(material_bytes, "material buffer")) {
         return false;
@@ -11127,8 +10225,11 @@ bool VkSceneRenderer::upload_scene_buffers(
                         destination.buffer, 1, &copy);
         VkBufferMemoryBarrier barrier{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
         barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        // A prepared slot can be submitted without a cull/draw dispatch. Its
+        // next upload must also be ordered after this copy in that case.
         barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT |
-                                VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
+                                VK_ACCESS_INDIRECT_COMMAND_READ_BIT |
+                                VK_ACCESS_TRANSFER_WRITE_BIT;
         barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         barrier.buffer = destination.buffer;
@@ -11136,7 +10237,7 @@ bool VkSceneRenderer::upload_scene_buffers(
         barrier.size = size;
         vkCmdPipelineBarrier(material_command_buffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT |
-                VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
+                VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
             0, 0, nullptr, 1, &barrier, 0, nullptr);
         return true;
     };
@@ -11247,7 +10348,10 @@ bool VkSceneRenderer::upload_scene_buffers(
             }
             VkBufferMemoryBarrier barrier{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
             barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-            barrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
+            // Later dirty uploads can overwrite a recycled or partially
+            // uploaded range; publish to those copies as well as readers.
+            barrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT |
+                                    VK_ACCESS_TRANSFER_WRITE_BIT;
             barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
             barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
             barrier.buffer = buffer.buffer;
@@ -11480,7 +10584,10 @@ bool VkSceneRenderer::upload_scene_buffers(
                 VkBufferMemoryBarrier barrier{
                     VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
                 barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-                barrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
+                // The preserved prefix includes allocation coverage that may
+                // still be pending a bounded upload in a subsequent frame.
+                barrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT |
+                                        VK_ACCESS_TRANSFER_WRITE_BIT;
                 barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
                 barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
                 barrier.buffer = replacement.buffer;
@@ -11686,7 +10793,7 @@ bool VkSceneRenderer::upload_scene_buffers(
                        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, error, &replaced, true))
         return poison(error);
     descriptors_changed |= replaced;
-    if (!ensure_buffer(frame.commands, command_bytes,
+    if (!ensure_buffer(frame.commands, command_table_bytes,
                        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                            VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
                        error, &replaced, true))
@@ -11947,15 +11054,27 @@ bool VkSceneRenderer::upload_scene_buffers(
         frame.command_generation = command_generation_;
     // Unconditional by design: cull.comp writes instance_count into these
     // records on the GPU, so the CPU template has to be restored every frame.
-    if (!upload_gpu(frame.commands, frame.command_upload,
-                    command_template_.data(), command_bytes))
+    // The mirrored table rides in the same copy: upload_gpu stages from
+    // offset 0, so the primary bytes the vis_commands copy below reuses stay
+    // at the front of the staging buffer.
+    const DrawCommand* command_source = command_template_.data();
+    if (!mirror_command_template_.empty()) {
+        command_upload_scratch_.assign(command_template_.begin(),
+                                       command_template_.end());
+        command_upload_scratch_.insert(command_upload_scratch_.end(),
+                                       mirror_command_template_.begin(),
+                                       mirror_command_template_.end());
+        command_source = command_upload_scratch_.data();
+    }
+    if (!upload_gpu(frame.commands, frame.command_upload, command_source,
+                    command_table_bytes))
         return false;
     // The ID pass's list gets the same restore for the same reason: cull.comp
     // writes instance_count into it too.
     // Both destinations copy identical bytes from this frame's same staging.
     // Reuse the first CPU fill; the frame fence retains it for both GPU reads.
     if (!upload_gpu(frame.vis_commands, frame.command_upload,
-                    command_template_.data(), command_bytes, 0, false))
+                    command_source, command_bytes, 0, false))
         return false;
     if (command_bytes != 0) ++upload_counters_.command_uploads;
     if (reset_stats) {
@@ -11964,6 +11083,7 @@ bool VkSceneRenderer::upload_scene_buffers(
         frame.stats_valid = false;
     }
     uploaded_command_count_ = static_cast<uint32_t>(command_template_.size());
+    uploaded_mirror_commands_ = !mirror_command_template_.empty();
     uploaded_transform_slots_ = draw_transform_slots_;
     // Copy-assign reallocates exactly; pre-grow so a fill does not rebuild this
     // mirror's block every frame.
@@ -12081,7 +11201,9 @@ bool VkSceneRenderer::upload_frame_constants(FrameResources& frame,
     constants.vis_params[0] =
         (visibility_draw_cull_ && visibility_reduce_) ? 1u : 0u;
     constants.vis_params[1] = visibility_reduce_ ? 1u : 0u;
-    constants.vis_params[2] = 0;
+    // Set by upload_scene_buffers, which runs first on every path that
+    // uploads these constants.
+    constants.vis_params[2] = uploaded_mirror_commands_ ? 1u : 0u;
     constants.vis_params[3] = 0;
     // Process-level reference switch for matched DLSS quality measurements.
     // No bias is applied to geometry LOD, culling, or the displacement range.
@@ -12540,6 +11662,18 @@ bool VkSceneRenderer::validate_draw_command_regions(std::string& error) const {
         }
         previous_first = first;
     }
+    // Each mirrored region must sit inside its bucket's region.
+    for (size_t i = 0; i < mirror_command_template_.size(); ++i) {
+        const uint32_t first = mirror_command_template_[i].first_instance;
+        const uint32_t end = i + 1 < command_template_.size()
+                                 ? command_template_[i + 1].first_instance
+                                 : skin_transform_base_;
+        if (i >= command_template_.size() ||
+            first < command_template_[i].first_instance || first > end) {
+            error = "mirrored draw command regions must lie inside their buckets";
+            return false;
+        }
+    }
     return true;
 }
 
@@ -12664,6 +11798,27 @@ bool VkSceneRenderer::record_cull_and_render(
     if (!upload_water_forward_constants(selected, matrices, raster_extent_,
                                         error))
         return false;
+    // Targets have now been allocated (including any synchronous initial
+    // transitions). Snapshot before frame commands change their layouts.
+    // finish_ray_tracing_frame rolls back only an unsubmitted recording.
+    if (frame_image_layouts_.begin(frame.serial)) {
+        for (auto* image : {&albedo_, &normal_, &orm_, &velocity_,
+                &material_instance_, &reactivity_, &vt_feedback_, &depth_,
+                &hdr_, &opaque_hdr_, &opaque_depth_, &visibility_,
+                &raw_diffuse_, &raw_specular_, &raw_specular_aux_,
+                &raw_transmission_, &raw_transmission_aux_, &raw_local_direct_,
+                &local_direct_filtered_, &visibility_id_color_, &visibility_id_depth_})
+            frame_image_layouts_.capture(*image);
+        for (auto* histories : {&gi_history_, &gi_spec_history_,
+                                &gi_trans_history_, &local_direct_history_})
+            for (auto& history : *histories)
+                for (auto* image : {&history.radiance, &history.moments,
+                        &history.history_length, &history.depth, &history.normal,
+                        &history.identity, &history.rejection, &history.aux})
+                    frame_image_layouts_.capture(*image);
+        for (auto* images : {&gi_atrous_, &gi_spec_atrous_, &gi_trans_atrous_})
+            for (auto& image : *images) frame_image_layouts_.capture(image);
+    }
     // Resize froxels while this frame slot is known complete and before the
     // composite descriptor below is written. The same frame then binds the
     // candidate integrated view rather than one frame of the retired bundle.
@@ -13041,6 +12196,11 @@ bool VkSceneRenderer::record_cull_and_render(
                         kGpuZoneVt,         // WP-E: vt_zone
                         kGpuZoneVtFeedbackReadback};
     record.raster_stats_pool = selected.raster_stats_pool;
+    if (uploaded_mirror_commands_ &&
+        raster_pipelines.static_mesh == raster_pipeline_) {
+        record.mirrored_raster_pipeline = mirrored_raster_pipeline_;
+        record.mirror_command_base = uploaded_command_count_;
+    }
     selected.raster_stats_written = selected.raster_stats_pool != VK_NULL_HANDLE;
     record.sparse_voxels = sparse_voxels_.get();
     record.sparse_voxel_matrices = &matrices;
@@ -13671,33 +12831,7 @@ bool VkSceneRenderer::ensure_raster_targets(uint32_t width, uint32_t height,
     return true;
 }
 
-bool VkSceneRenderer::ensure_dlss_output(FrameResources& frame,
-                                         VkExtent2D output_extent,
-                                         std::string& error) {
-    if (output_extent.width == 0 || output_extent.height == 0) {
-        error = "DLSS output extent must be nonzero";
-        return false;
-    }
-    if (frame.dlss_output.image != VK_NULL_HANDLE &&
-        frame.dlss_output_extent.width == output_extent.width &&
-        frame.dlss_output_extent.height == output_extent.height) {
-        return true;
-    }
-    matter::VkImageResource replacement;
-    if (!matter::create_image(
-            *vulkan_, VK_IMAGE_TYPE_2D, VK_FORMAT_R16G16B16A16_SFLOAT,
-            {output_extent.width, output_extent.height, 1},
-            VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
-                VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
-                VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-            VK_IMAGE_ASPECT_COLOR_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
-            replacement, error)) {
-        return false;
-    }
-    frame.dlss_output = std::move(replacement);
-    frame.dlss_output_extent = output_extent;
-    return true;
-}
+#include "../../../libs/MatterGraphics/src/native/dlss_output.inl"
 
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
 bool VkSceneRenderer::render_gbuffer_and_composite(uint32_t width,
@@ -13766,6 +12900,11 @@ bool VkSceneRenderer::render_gbuffer_and_composite(uint32_t width,
         {wireframe_raster_pipeline_, wireframe_skinned_raster_pipeline_});
     record.raster_pipeline = raster_pipelines.static_mesh;
     record.skinned_raster_pipeline = raster_pipelines.skinned_mesh;
+    if (uploaded_mirror_commands_ &&
+        raster_pipelines.static_mesh == raster_pipeline_) {
+        record.mirrored_raster_pipeline = mirrored_raster_pipeline_;
+        record.mirror_command_base = uploaded_command_count_;
+    }
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
     test_last_raster_pipeline_draw_ = {
         raster_pipelines.wireframe_enabled,
@@ -14339,164 +13478,7 @@ bool VkSceneRenderer::record_composite_to_swapchain(
         VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
     VkAccessFlags2 composite_source_access =
         VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
-    const auto consume_bridge_reset = [this]() {
-        if (!dlss_bridge_->consume_dlss_history_reset()) return;
-        if (!dlss_history_reset_pending_) ++dlss_reset_count_;
-        // A bridge mode/extent transition can already be represented by this
-        // frame's GI reset. Coalesce only that bridge notification, never a
-        // pending explicit RT/GI/light edit: resetting a GI lane does not
-        // itself invalidate whole-frame temporal lighting.
-        if (!gi_candidate_was_reset_)
-            dlss_history_reset_pending_ = true;
-        gi_history_reset_pending_ = true;
-        local_direct_history_state_.reset_pending = true;
-    };
-    if (selected_dlss_mode_ == matter::DlssMode::Native) {
-        matter::DlssEvaluationOutput ignored_output{};
-        matter::DlssConstants ignored_constants{};
-        matter::DlssResources ignored_resources{};
-        std::string transition_error;
-        FrameResources& dlss_slot_native = frames_[frame.frame_slot];
-        write_gpu_timestamp(frame.command_buffer, kGpuZoneDlss, false,
-                            dlss_slot_native);
-        (void)dlss_bridge_->evaluate_dlss(
-            frame.command_buffer, temporal_frame_.attempt_token,
-            {matter::DlssMode::Native, frame.extent, true, true},
-            ignored_constants, ignored_resources, ignored_output,
-            transition_error);
-        write_gpu_timestamp(frame.command_buffer, kGpuZoneDlss, true,
-                            dlss_slot_native);
-        consume_bridge_reset();
-    }
-    if (selected_dlss_mode_ != matter::DlssMode::Native &&
-        dlss_bridge_->supports_dlss_mode(selected_dlss_mode_) &&
-        frame.frame_slot < frames_.size()) {
-        FrameResources& slot = frames_[frame.frame_slot];
-        if (!ensure_dlss_output(slot, frame.extent, error)) return false;
-        matter::record_image_transition(
-            frame.command_buffer, hdr_, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-            VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-            VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-            VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
-        const bool output_was_presented =
-            slot.dlss_output.layout == VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-        matter::record_image_transition(
-            frame.command_buffer, slot.dlss_output, VK_IMAGE_LAYOUT_GENERAL,
-            output_was_presented ? VK_PIPELINE_STAGE_2_TRANSFER_BIT
-                                 : VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
-            output_was_presented ? VK_ACCESS_2_TRANSFER_READ_BIT : 0,
-            VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-            VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, VK_IMAGE_ASPECT_COLOR_BIT);
-
-        matter::DlssConstants constants{};
-        std::memcpy(constants.camera_view_to_clip,
-                    temporal_frame_.current_unjittered.view_to_clip.m,
-                    sizeof(constants.camera_view_to_clip));
-        matter::Mat4f clip_to_view{};
-        (void)mat4_inverse(temporal_frame_.current_unjittered.view_to_clip,
-                           clip_to_view);
-        std::memcpy(constants.clip_to_camera_view, clip_to_view.m,
-                    sizeof(constants.clip_to_camera_view));
-        const matter::Mat4f clip_to_prev = mat4_mul(
-            temporal_frame_.previous_unjittered.world_to_clip,
-            temporal_frame_.current_unjittered.clip_to_world);
-        const matter::Mat4f prev_to_clip = mat4_mul(
-            temporal_frame_.current_unjittered.world_to_clip,
-            temporal_frame_.previous_unjittered.clip_to_world);
-        std::memcpy(constants.clip_to_prev_clip, clip_to_prev.m,
-                    sizeof(constants.clip_to_prev_clip));
-        std::memcpy(constants.prev_clip_to_clip, prev_to_clip.m,
-                    sizeof(constants.prev_clip_to_clip));
-        constants.jitter_offset = {temporal_frame_.jitter_pixels[0],
-                                   temporal_frame_.jitter_pixels[1]};
-        constants.motion_vector_scale = {
-            -1.0f / static_cast<float>(raster_extent_.width),
-            -1.0f / static_cast<float>(raster_extent_.height)};
-        matter::Mat4f view_to_world{};
-        if (mat4_inverse(temporal_frame_.current_unjittered.world_to_view,
-                         view_to_world)) {
-            constants.camera_position[0] = view_to_world.m[3];
-            constants.camera_position[1] = view_to_world.m[7];
-            constants.camera_position[2] = view_to_world.m[11];
-            constants.camera_right[0] = view_to_world.m[0];
-            constants.camera_right[1] = view_to_world.m[4];
-            constants.camera_right[2] = view_to_world.m[8];
-            constants.camera_up[0] = view_to_world.m[1];
-            constants.camera_up[1] = view_to_world.m[5];
-            constants.camera_up[2] = view_to_world.m[9];
-            constants.camera_forward[0] = -view_to_world.m[2];
-            constants.camera_forward[1] = -view_to_world.m[6];
-            constants.camera_forward[2] = -view_to_world.m[10];
-        }
-        const matter::Mat4f& projection =
-            temporal_frame_.current_unjittered.view_to_clip;
-        // Reversed-Z projection identities: m[10] = near/(far-near),
-        // m[11] = far*near/(far-near) (near->NDC 1, far->NDC 0), so
-        // m[11]/m[10] = far and m[11]/(m[10]+1) = near -- swapped from the
-        // old standard-ZO recovery (camera_near/camera_far remain true
-        // linear distances in meters for downstream consumers).
-        constants.camera_far = projection.m[11] / projection.m[10];
-        constants.camera_near =
-            projection.m[11] / (projection.m[10] + 1.0f);
-        constants.camera_fov = 2.0f * std::atan(1.0f / projection.m[5]);
-        constants.camera_aspect_ratio = projection.m[5] / projection.m[0];
-        constants.depth_inverted = true;
-        constants.camera_motion_included = true;
-        constants.motion_vectors_jittered = true;
-        constants.reset = temporal_frame_.reset;
-        constants.internal_extent = raster_extent_;
-        constants.output_extent = frame.extent;
-        const matter::DlssResources resources{
-            {hdr_.image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, hdr_.format,
-             raster_extent_, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-             VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, hdr_.view, hdr_.memory,
-             VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
-                 VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
-             VK_IMAGE_ASPECT_COLOR_BIT},
-            {depth_.image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-             depth_.format, raster_extent_,
-             VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-             VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, depth_.view, depth_.memory,
-             VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
-                 VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-             VK_IMAGE_ASPECT_DEPTH_BIT},
-            {velocity_.image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-             velocity_.format, raster_extent_,
-             VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-             VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, velocity_.view,
-             velocity_.memory,
-             VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
-                 VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
-             VK_IMAGE_ASPECT_COLOR_BIT},
-            {slot.dlss_output.image, VK_IMAGE_LAYOUT_GENERAL,
-             slot.dlss_output.format, frame.extent,
-             VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-             VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, slot.dlss_output.view,
-             slot.dlss_output.memory,
-             VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
-                 VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
-                 VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-             VK_IMAGE_ASPECT_COLOR_BIT}};
-        std::string evaluation_error;
-        matter::DlssEvaluationOutput evaluation_output{};
-        write_gpu_timestamp(frame.command_buffer, kGpuZoneDlss, false, slot);
-        if (dlss_bridge_->evaluate_dlss(
-                frame.command_buffer, temporal_frame_.attempt_token,
-                {selected_dlss_mode_, frame.extent, true, true}, constants,
-                resources, evaluation_output, evaluation_error)) {
-            write_gpu_timestamp(frame.command_buffer, kGpuZoneDlss, true, slot);
-            composite_source = &slot.dlss_output;
-            slot.dlss_output.layout = evaluation_output.layout;
-            composite_source_stage = evaluation_output.stage;
-            composite_source_access = evaluation_output.access;
-        } else {
-            write_gpu_timestamp(frame.command_buffer, kGpuZoneDlss, true, slot);
-            composite_source_stage = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-            composite_source_access = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
-            consume_bridge_reset();
-        }
-    }
+#include "../../../libs/MatterGraphics/src/native/record_dlss.inl"
     if (!vulkan_->retain_for_frame(frame, {composite_source->lifetime}, error))
         return false;
     matter::record_image_transition(
@@ -15267,6 +14249,7 @@ int VkSceneRenderer::fill_rt_instances(
 // reading. Does NOT destroy the tileset slots, the impostor atlas or the VT
 // runtime -- those are torn down by destroy_pipeline().
 void VkSceneRenderer::reset() {
+    frame_image_layouts_.abandon();
     const bool full_reset = poisoned();
     // ALWAYS idle, not just on the poisoned path.
     //
@@ -15364,7 +14347,9 @@ void VkSceneRenderer::reset() {
     part_cluster_snapshot_.clear();
     static_instance_count_ = 0;
     part_instance_counts_.clear();
+    part_mirrored_counts_.clear();
     command_template_.clear();
+    mirror_command_template_.clear();
     part_command_ranges_.clear();
     recorded_draw_ranges_.clear();
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
@@ -15386,6 +14371,7 @@ void VkSceneRenderer::reset() {
     max_clusters_per_instance_ = 0;
     draw_transform_slots_ = 0;
     uploaded_command_count_ = 0;
+    uploaded_mirror_commands_ = false;
     uploaded_transform_slots_ = 0;
     uploaded_cluster_count_ = 0;
     uploaded_vertex_count_ = 0;
@@ -15404,6 +14390,10 @@ void VkSceneRenderer::reset() {
         frame.rt_tlas_instances.clear();
         frame.rt_tlas_valid = false;
         frame.rt_tlas_pending_serial = 0;
+        // Retire, without consuming, any counter sample traced against the
+        // world being discarded. The renderer-lifetime totals are kept.
+        frame.rt_counter_candidate_serial = 0;
+        frame.rt_counter_sample_serial = 0;
     }
     for (FrameResources& frame : frames_) {
         frame.stats_valid = false;
@@ -15481,6 +14471,8 @@ bool VkSceneRenderer::update_dynamic_instances(
                 instance.animation_instance_generation = change.slot_generation;
                 instance.water_binding_slot = part.water_binding_slot;
                 instance.water_generation = part.water_generation;
+                instance.mirrored =
+                    gpu_mat4_reverses_winding(instance.object_to_world) ? 1u : 0u;
                 dynamic_instance_staging_[change.slot_index] = instance;
                 dynamic_instance_part_slots_[change.slot_index] = instance.part_slot;
                 dynamic_instance_ray_traced_[change.slot_index] =
@@ -15501,6 +14493,8 @@ bool VkSceneRenderer::update_dynamic_instances(
                 }
                 instance.previous_object_to_world = pack_glsl_mat4(change.previous_object_to_world);
                 instance.object_to_world = pack_glsl_mat4(change.object_to_world);
+                instance.mirrored =
+                    gpu_mat4_reverses_winding(instance.object_to_world) ? 1u : 0u;
                 instance.history_valid = 1;
                 dynamic_instance_ray_traced_[change.slot_index] =
                     change.ray_traced ? 1u : 0u;
@@ -15530,5 +14524,7 @@ void VkSceneRenderer::finish_dynamic_frame(uint64_t completed_serial) {
     dynamic_completed_serial_ =
         std::max(dynamic_completed_serial_, completed_serial);
 }
+
+#include "vk_scene_publication.inl"
 
 }  // namespace viewer

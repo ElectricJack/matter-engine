@@ -1,0 +1,7 @@
+param([string]$RepositoryRoot)
+$ErrorActionPreference = 'Stop'
+Import-Module (Join-Path $RepositoryRoot 'tools\windows\MatterWindowsToolchain.psm1') -Force
+$toolchain = Resolve-MatterWindowsToolchain -RepositoryRoot $RepositoryRoot
+$ctest = Join-Path (Split-Path $toolchain.CMake) 'ctest.exe'
+& $ctest --test-dir (Join-Path $RepositoryRoot 'MatterEditor\build\cmake\windows-msvc\relwithdebinfo') --output-on-failure --no-tests=error -j 1 -R '^(vt_residency_tests|vt_encoded_pages_tests)$'
+exit $LASTEXITCODE
