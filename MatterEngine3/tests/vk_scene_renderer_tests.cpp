@@ -542,7 +542,7 @@ static void test_water_field_transport_contract() {
     std::ifstream vert("../../libs/MatterGraphics/shaders/raster.vert");
     const std::string vert_text((std::istreambuf_iterator<char>(vert)),
                                 std::istreambuf_iterator<char>());
-    std::ifstream rt("../shaders_vk/rt_surface_common.glsl");
+    std::ifstream rt("../../libs/MatterGraphics/shaders/rt_surface_common.glsl");
     const std::string rt_text((std::istreambuf_iterator<char>(rt)),
                               std::istreambuf_iterator<char>());
     CHECK(header_text.find("static_assert(sizeof(GpuInstance) == 176)") !=

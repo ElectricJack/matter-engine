@@ -39,6 +39,7 @@ add_library(matter_geometry STATIC src/geometry.cpp src/profile.cpp src/session.
     src/query.cpp src/modifiers.cpp
     src/triangle_emit.cpp src/polygon_triangulate.cpp
     "${MATTER_GEOMETRY_ROOT}/libs/MatterSurfaceLib/src/fat_primitive.c")
+include(cmake/FieldKernel.cmake)
 # Simplify/smooth compile the canonical MatterSurfaceLib stages. OFF drops them
 # and stops advertising their capabilities; modifier requests then fail as
 # unsupported_capability. The optional isolated worker links its own backend.
@@ -189,6 +190,8 @@ set(geometry_public_links [==[$<TARGET_PROPERTY:matter_geometry,INTERFACE_LINK_L
 set(geometry_sources [==[$<TARGET_PROPERTY:matter_geometry,SOURCES>]==])
 set(geometry_public_includes [==[$<TARGET_PROPERTY:matter_geometry,INTERFACE_INCLUDE_DIRECTORIES>]==])
 set(recipe_links [==[$<TARGET_PROPERTY:matter_geometry_recipe,LINK_LIBRARIES>]==])
+set(field_links [==[$<TARGET_PROPERTY:matter_geometry_field,LINK_LIBRARIES>]==])
+set(field_sources [==[$<TARGET_PROPERTY:matter_geometry_field,SOURCES>]==])
 set(geometry_archive [==[$<TARGET_FILE:matter_geometry>]==])
 set(symbol_tool [==[${CMAKE_NM}]==])
 set(native_linker [==[${CMAKE_LINKER}]==])

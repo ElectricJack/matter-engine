@@ -1,10 +1,12 @@
 # Headless terrain fields, meshes and CPU products
 
-`matter_terrain` owns the existing CPU field/noise interpreter,
-`src/terrain_field.cpp`, which moved here from `MatterEngine3/src`; the engine
-compiles the same file from this directory. The algorithms, integer noise hashes,
-96-register limit, octave accumulation order and legacy FNV text identity have
-one source of truth. Its production link dependency is `matter_contracts`;
+`matter_terrain` links the existing CPU field/noise interpreter from
+ProceduralGeometry's lean `matter_geometry_field` target, which compiles
+`libs/ProceduralGeometry/src/terrain_field.cpp` alone (see
+`libs/ProceduralGeometry/cmake/FieldKernel.cmake`); the engine compiles the same
+file from there, so a combined graph builds it once. The algorithms, integer noise
+hashes, 96-register limit, octave accumulation order and legacy FNV text identity
+have one source of truth. Its other production link dependency is `matter_contracts`;
 private legacy includes are the engine's river-overlay, hydrology, bake-mode
 and logging headers. The target also owns the original `src/terrain_mesher.cpp`
 surface-nets and contour implementation; `src/seam_weld.cpp` lives beside it and

@@ -38,6 +38,30 @@ jobs:
           name: linux-${{ github.sha }}-${{ github.run_attempt }}
           path: artifacts/ci-linux/
           if-no-files-found: error
+  # Every component configures, builds and tests alone, then the source
+  # manifest, dependency/ownership and fixture gates run. The hosted runner has
+  # no Emscripten SDK or Vulkan SDK, so the WASM smoke and the graphics/vulkan
+  # probe report NOT RUN / UNTESTED in summary.json rather than passing.
+  component-matrix:
+    name: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && startsWith(github.head_ref, 'aq/') && 'Duplicate PR component matrix (push checks apply)' || 'Component build matrix and dependency rules' }}
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository || !startsWith(github.head_ref, 'aq/')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Build and test each component alone and check the dependency rules
+        run: python3 tools/ci-component-matrix.py --jobs 4
+      - name: Upload component evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: components-${{ github.sha }}-${{ github.run_attempt }}
+          path: |
+            artifacts/ci-components/*.log
+            artifacts/ci-components/*.json
+          if-no-files-found: error
   # Agents build and test on Linux as they work; the single Windows runner is
   # the scarce resource. A branch whose changes cannot reach the native build
   # (web/, docs/, Markdown only) skips it -- a skipped required job reports
