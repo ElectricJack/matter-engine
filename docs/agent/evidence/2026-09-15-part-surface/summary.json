@@ -1,0 +1,42 @@
+{
+  "source_count": 135,
+  "final_source_changes": [],
+  "native_commands_passed": 13,
+  "recipe_eval_ms": {
+    "minimum": 4.9721,
+    "maximum": 6.5246,
+    "mean": 5.5391
+  },
+  "native_receiver_triangles": 12,
+  "gpu_source_faces": 48,
+  "vt_variants_identical_to_prior_readback": 8,
+  "fixtures": {
+    "clay-projected-0.fst": "3ae6dbbc6b6f2667927c326851d826e3976497046a291121aaa07bb51d8548b0",
+    "clay-projected-0.vt.bin": "1efee85ecab122a1ecbb891626748e82b543e9ef34f2e6c8ea11c870c1146c5c",
+    "clay-projected-1.fst": "0780612a40cd014ab4109cbb01634c5d887dfa7d17a1ade619fa490b31797643",
+    "clay-projected-1.vt.bin": "a48ea77aabad25b29ee6d711b6277f942b28d1ff4e1b03da3f8def4c5fb94fd2",
+    "clay-projected-2.fst": "69c9e60c25a66c8b76ef33af9dde4df76bb7cbbdfcb6faf331dd0a773fb144a7",
+    "clay-projected-2.vt.bin": "88c47daa33888ed02fd387f6a336dd8248165be074e5a3117900882388aa7dce",
+    "clay-projected-3.fst": "e88a46671893294b2111d101e2450e76e29e4aa190783d94574de0e36669c07a",
+    "clay-projected-3.vt.bin": "d0db2e548264b72893a74878792ebe50b05628810c2b8f6f5590f229599b990b",
+    "clay-projected-4.fst": "1e2b7353f4e3d8da86da97cd93744b061f81d3422648ce69a27b4df9130825b0",
+    "clay-projected-4.vt.bin": "a801bbcd4dd2b22223724bdbf79ea81afa4966fdf6567827eccc9d4ce41de473",
+    "clay-projected-5.fst": "191835a9b6283690eb36feca57301a6a68b169197505720a3836c9f250f32cd0",
+    "clay-projected-5.vt.bin": "6366adff366c8739f66e44298cf4c501227b0c79eea2ac7dd28b312c8a1108da",
+    "clay-projected-6.fst": "811f139d0c21947f6f642d753e415d0ca13b245b199377fe5c0a1a036c86b26b",
+    "clay-projected-6.vt.bin": "6103a74f8c7868a728903533c5c95d6bd9bbe283883740c0dc19f6178680024c",
+    "clay-projected-7.fst": "bb1fe0cbe9a566199e309db2bd23290983c1160760fef818e87264483282e353",
+    "clay-projected-7.vt.bin": "5f30519af0ac890250b2d66b1ae145c6b31b55d4edb331f5627e4c489f32bbb4"
+  },
+  "remaining": [
+    "provider preparation and publication",
+    "eager/deferred VT face binding",
+    "low-poly whole-wall visual review",
+    "final compressed source storage",
+    "silhouette visibility",
+    "weathering/splats",
+    "terrain look",
+    "POM internal chart seam gate",
+    "full native performance acceptance"
+  ]
+}

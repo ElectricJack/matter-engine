@@ -1,0 +1,30 @@
+{
+  "stage": "queue coverage fixes with native pressure/activation tests; full VT goal incomplete",
+  "head": "d753087d88417ab5b77cf77369c1e38e22cee6b9",
+  "sha256": {
+    "MatterEngine3/src/render/vt_residency.cpp": "7a57a3a4b0a3ee7cbafb7ba7a432dd4bcccc56c3639a7fd4877fc2ffe3da62f0",
+    "MatterEngine3/src/render/vt_residency.h": "292323ce12abac1ae11702922eedf1b4ae0f9a57a6159a2ccc48a29752ee677a",
+    "MatterEngine3/include/matter/vt_budgets.h": "ba26f698f87106fad3b18281146b67e9beca24bdf6dade1bc762974a94eae90f",
+    "MatterEngine3/tests/vt_queue_tests.h": "f2138bdaabaca46d48fbc8e7837727b7b05416affece928c15b5398f844ae61c",
+    "MatterEngine3/tests/vulkan_smoke_tests.cpp": "b535953ce725925377c541d200d8502c9b7a755b2fa4c8ba28b61bdc0b3dab50",
+    "MatterEngine3/src/render/vk_scene_renderer.cpp": "5ec3592fb85265e50cf5f1139b05857b51808dcb6c1ba43c0e10bf5b2503bead",
+    "MatterEngine3/src/render/vk_scene_renderer.h": "ee1386ba09d797219ad0ce237509094e20015133bdd93a0b4f8bfef214f33b98",
+    "MatterEngine3/include/matter/gpu_timing_sample.h": "6b4772a97e089eb1189e7b563b149efac02e28419ea46e09e145f3cb04160491",
+    "MatterEngine3/include/matter/world_session.h": "0b21e2276abf6967f11fa80541d2afb14ee1b49a37ff92069a2814b1b16008e9",
+    "MatterEngine3/src/matter_engine.cpp": "0676aa8538ec05170290aea65a8e03b0ec5a66fdcf5476ac0132513fc66fcd6e",
+    "MatterEditor/src/main.cpp": "a8d8cf164ed13fca39e1298a7444332d44fb5430f7d7dd5ae37829e58627c6b2",
+    "MatterEditor/src/vt_trace.h": "825ed7af8b26441b2e15f78764935ecf85f7d39f713b320c2b60125c65a21d9b",
+    "tools/vt_acceptance.py": "cfb4bb95ab8f981b0e7078dd6c0bf9d089d98ad25d10a267f654f32dc905f5b4",
+    "tools/tests/test_vt_acceptance.py": "b17f3f065d211f1d560bf28f625b7c310ee2a24baf7d55bf07558ac2e5fdc133",
+    "cmake/MatterEngine.cmake": "c274cac3869ca24c0d3ab7f14493d2f2b31545e2bf134b8b9d07b03ca2201cd0"
+  },
+  "binary_sha256": {
+    "MatterEditor/build/windows-msvc/editor.exe": "d454fa15d05a321858f447e199f57c236ec36bbaee6da733231d1b23c3758a74",
+    "MatterEditor/build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe": "9e2d7804151f1d7e5de51fee0d2be4e2d20bd732c979aba149b3650beb0422c6",
+    "MatterEditor/build/cmake/windows-msvc/relwithdebinfo/vt_residency_tests.exe": "2637f9c41ca47e187f30bf251923dc33142c9f1ec60537a3901bf2f1219ccbbd"
+  },
+  "props_unchanged_since_initial_snapshot": {
+    "projects/world_demo/scenes/CastleUpgraded/props.json": true,
+    "projects/world_demo/scenes/StreamMountain/props.json": true
+  }
+}

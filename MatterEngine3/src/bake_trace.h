@@ -21,6 +21,7 @@
 
 #include <chrono>
 #include <mutex>
+#include <string>
 #include <vector>
 
 namespace bake_trace {
@@ -106,6 +107,16 @@ private:
     std::vector<Span*> open_;
     std::chrono::steady_clock::time_point start_;
 };
+
+// Versioned JSON diagnostic preserving the full ordered tree, duplicate
+// counters and double precision millisecond timestamps. Open end/duration
+// and nonfinite scalar values become JSON null. Names are JSON escaped.
+std::string snapshot_json(const Span& snapshot);
+// Overwrites an absolute diagnostic path, checks write/close failures; no
+// directory creation, atomic rename or fsync. A crash can leave a partial file.
+// Does not mutate the collector. Export errors do not affect bake results.
+bool write_snapshot_json(const Span& snapshot, const std::string& path,
+                         std::string& error);
 
 // Thread-local "current collector" so deep call sites (lod_bake,
 // part_flatten, script_host) need no plumbing: set_current(&c) at bake

@@ -1,3 +1,4 @@
+#include "matter/project_layout.h"
 // MatterEditor/src/editor_props.cpp
 //
 // The editor's property SCHEMA plus the layer machinery around it. Each
@@ -73,7 +74,9 @@ std::string world_props_path(const std::string& project_dir,
                              const std::string& world_name) {
     namespace fs = std::filesystem;
     std::error_code ec;
-    const fs::path scene_dir = fs::path(project_dir) / "scenes" / world_name;
+    const auto script = matter::project_layout::scene_script(project_dir, world_name);
+    const fs::path scene_dir = script.empty()
+        ? fs::path(project_dir) / "scenes" / world_name : script.parent_path();
     if (fs::is_directory(scene_dir, ec))
         return (scene_dir / "props.json").string();
     return project_dir + "/editor/worlds/" + world_name + ".props.json";
@@ -312,7 +315,9 @@ const auto s_cloud_shadows = matter::props::group<matter::CloudShadowSettings>(
 const char* const kHorizonDebugLabels[] = {
     "Off", "Map (addressed frame)", "March (reference)",
     "Map (rt_shadow world XZ)", "|Map - March|", "|RT form - March|",
-    "Map (world XZ, no lift)"};
+    "Map (world XZ, no lift)", "Composed VT status", "Composed VT charts",
+    "Composed POM path (raster)", "VT proxy mip (raster)",
+    "VT proxy density (raster)"};
 
 // render.pom — Scope::World, bound to ViewerStats::tileset_pom. Ground
 // parallax-occlusion mapping over the tileset's height channel: how deep the
@@ -355,13 +360,18 @@ const auto s_pom = matter::props::group<matter::TilesetPomSettings>(
         .doc("Blends the baked per-direction horizon occlusion toward 0. No "
              "effect on slots loaded from a v1 .gtex."),
     prop(&matter::TilesetPomSettings::horizon_debug, "horizon_debug")
-        .label("Horizon debug").enums(kHorizonDebugLabels, 7).no_serialize()
+        .label("Surface debug").enums(kHorizonDebugLabels, 12).no_serialize()
         .doc("Draws the horizon term over the parallaxed ground in place of "
              "its albedo. Read it with Viewer Debug > Debug view > Raw "
              "albedo; anything lit is unreadable as a field. The march is "
              "the reference -- it steps the same height field the parallax "
              "displaced along, so wherever it and the map disagree, the map "
-             "is misregistered."));
+             "is misregistered. Composed VT modes show traversal status or "
+             "chart identity through the same raw-albedo view. Proxy mip "
+             "encodes requested/resident mip in red/green (divide by 8); "
+             "density encodes log2 finest/resident texels per world metre "
+             "(divide by 12). Blue marks a valid ordinary chart; magenta "
+             "marks unsupported module/metric, black means no VT."));
 
 // render.vt — the chart-VT near band (Phase 0 of the decal/ground-compositing
 // design). Two rows, and they exist because until now there were none: the
@@ -769,6 +779,12 @@ const auto s_viewer_debug = matter::props::group<ViewerStats>(
              "selection with it (same eye). Pair with \"Freeze terrain "
              "streaming\", which holds which tiles exist rather than which "
              "are drawn."),
+    prop(&ViewerStats::live_terrain_graphics, "live_terrain_graphics")
+        .label("Live terrain graphics")
+        .doc("MATTER_LIVE_TERRAIN=1 only. Off releases every live terrain "
+             "tile's GPU residency; the generated products stay cached and the "
+             "terrain collision stays installed. On re-uploads from the cache "
+             "without regenerating."),
     prop(&ViewerStats::occlusion_draw_cull, "occlusion_draw_cull")
         .label("Occlusion culling")
         .doc("Do not rasterise sectors that owned no pixel THIS frame.\n\n"
@@ -842,7 +858,48 @@ const auto s_gpu = matter::props::group<GpuPrefs>(
         .env("MATTER_DLSS_MODE")
         .doc("Native renders at output resolution; the upscaling modes render "
              "smaller and reconstruct. Watch dlss internal/output in the HUD "
-             "to see it land."));
+             "to see it land."),
+    prop(&GpuPrefs::frame_limit, "frame_limit")
+        .label("Frame rate limit (0 = unlimited)")
+        .range(0, 360)
+        .env("MATTER_FRAME_LIMIT")
+        .doc("Pace frames before input sampling. Choose a rate the scene can "
+             "sustain with some GPU headroom. Does not lower rendering quality "
+             "or change VSync; zero disables the limit."),
+    prop(&GpuPrefs::forest_history_reset, "forest_history_reset")
+        .label("Reset temporal history on forest streaming")
+        .doc("On: every terrain streaming update that replaces the sparse-voxel "
+             "forest snapshot restarts the DLSS history, so trees go coarse and "
+             "re-converge over the next frames. Off: the accumulated history is "
+             "kept and tree detail stays stable across streaming updates; newly "
+             "placed trees rely on the upscaler's disocclusion handling. No "
+             "effect in Native mode. Takes effect on the next frame."));
+
+const auto s_gi = matter::props::group<GiPrefs>(
+    "render.gi", "Ray-Traced GI",
+    prop(&GiPrefs::enabled, "enabled")
+        .label("GI enabled")
+        .doc("Enables diffuse GI, reflections and transmission. Traced local "
+             "direct lighting remains active when this is off."),
+    prop(&GiPrefs::diffuse_multiplier, "diffuse_multiplier")
+        .label("Diffuse bounce strength")
+        .range(0.0f, 4.0f)
+        .doc("Scales diffuse indirect lighting. Zero skips diffuse bounce rays "
+             "while retaining traced reflections, glass and direct shadows. "
+             "Other values change brightness, not the amount of ray work."),
+    prop(&GiPrefs::trace_scale, "trace_scale")
+        .label("Diffuse GI resolution scale")
+        .range(0.125f, 1.0f)
+        .doc("Resolution of soft diffuse bounce lighting only. 0.125 traces "
+             "one eighth of the width and height. Guided reconstruction "
+             "applies that lighting to full-resolution material detail. "
+             "Reflections, glass and direct shadows keep their own resolution."),
+    prop(&GiPrefs::reflection_trace_scale, "reflection_trace_scale")
+        .label("Reflections and glass resolution scale")
+        .range(0.125f, 1.0f)
+        .doc("Resolution of traced reflections and refraction, independent "
+             "of diffuse GI. Keep at 1 for sharp glass and reflected detail. "
+             "Reducing this can lose thin geometry and sharp highlights."));
 // ---------------------------------------------------------------------------
 // One-shot world-file migration: render.volumetrics' fog multipliers
 // (issue 80c66789)
@@ -1078,6 +1135,7 @@ void EditorProps::init(ViewerStats& stats, CameraPrefs& camera,
     // trace rays and how hard DLSS should upscale is a property of the machine
     // sitting in front of the user, not of the project.
     gpu_ = registry_.bind(s_gpu, &gpu_prefs_, Scope::User);
+    gi_ = registry_.bind(s_gi, &gi_prefs_, Scope::Session);
     // Same engine-owned deal, with one extra step: `workers` has no compiled
     // default worth showing (it scales with the machine), so the engine's own
     // env pass — which also seeds that default — must run BEFORE bind captures
@@ -1169,6 +1227,7 @@ matter::props::Binding* EditorProps::vt_enrich() {
 }
 
 matter::props::Binding* EditorProps::gpu() { return registry_.get(gpu_); }
+matter::props::Binding* EditorProps::gi() { return registry_.get(gi_); }
 
 bool EditorProps::set_dlss_mode(int index) {
     matter::props::Binding* b = registry_.get(gpu_);

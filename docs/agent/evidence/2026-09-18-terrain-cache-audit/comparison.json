@@ -1,0 +1,64 @@
+{
+  "prepare-v1": {
+    "exit_code": 0,
+    "completed": true,
+    "valid": false,
+    "elapsed_seconds": 410.40779779999866,
+    "streamer_idle_seconds": null,
+    "outcomes": {
+      "hit": 634,
+      "missing": 181
+    },
+    "compilations": 181,
+    "expected_keys_missing": [],
+    "unexpected_keys": [],
+    "hit_lookup_median_ms": 2.7105
+  },
+  "prepare-v2": {
+    "exit_code": 0,
+    "completed": true,
+    "valid": true,
+    "elapsed_seconds": 166.4258650999982,
+    "streamer_idle_seconds": 140.61962809999386,
+    "outcomes": {
+      "hit": 804,
+      "missing": 11
+    },
+    "compilations": 11,
+    "expected_keys_missing": [],
+    "unexpected_keys": [],
+    "hit_lookup_median_ms": 5.1485
+  },
+  "reopen-v2": {
+    "exit_code": 0,
+    "completed": true,
+    "valid": true,
+    "elapsed_seconds": 117.70640840000124,
+    "streamer_idle_seconds": 97.12536389999877,
+    "outcomes": {
+      "hit": 815
+    },
+    "compilations": 0,
+    "expected_keys_missing": [],
+    "unexpected_keys": [],
+    "hit_lookup_median_ms": 4.869,
+    "geometry_cache_key_audit_passed": true
+  },
+  "load-v2": {
+    "exit_code": 0,
+    "completed": false,
+    "valid": false,
+    "elapsed_seconds": 154.71833270000207,
+    "streamer_idle_seconds": null,
+    "outcomes": {
+      "hit": 815
+    },
+    "compilations": 0,
+    "expected_keys_missing": [],
+    "unexpected_keys": [],
+    "hit_lookup_median_ms": 3.783,
+    "geometry_cache_key_audit_passed": true,
+    "stream_fill_seconds": 74.5,
+    "vg_ready": false
+  }
+}

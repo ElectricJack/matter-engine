@@ -1,0 +1,500 @@
+Vulkan adapter: NVIDIA GeForce RTX 4090 | driver: NVIDIA (610.74, 0x98928000) | API 1.4.341
+[vk] present requested=mailbox effective=mailbox(1) supported=[fifo(2),fifo_relaxed(3),mailbox(1),immediate(0),other(1000361000)] images=3 extent=1920x1080
+worlds available (56):
+  [0] AnimatedRigGallery  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [1] AtmospherePresentationFixture  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [2] BranchGallery  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [3] CastleAngledBailey  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [4] CastleBentPalace  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [5] CastleCloister  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [6] CastleClusteredCourt  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [7] CastleConnectorFixture  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [8] CastleCourtyard  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [9] CastleFastBakeProof  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [10] CastleFurnishings  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [11] CastleGallery  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [12] CastleMasonry  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [13] CastleMasonryPreview  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [14] CastleMaterials  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [15] CastleRoundKeep  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [16] CastleSiteGallery  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [17] CastleStructure  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [18] CastleTimberProbe  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [19] CastleUpgraded  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [20] CastleWalkProbe  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [21] CastleWalkProbeCloister  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [22] CastleWalkProbeRoundKeep  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [23] CastleWallBakeProof  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [24] CastleWingStudy  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [25] ChartVtProof  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [26] CloudLab  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [27] CloudLegacy  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [28] ConiferForest  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [29] ConiferLab  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [30] CornellBox  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [31] Demo  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [32] FloorDemo  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [33] FogLab  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [34] Kreuzenstein  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [35] LightingGarden  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [36] LocalLightGallery  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [37] LocalLightPointIsolation  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [38] LocalLightRtGallery  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [39] LocalLightSpotIsolation  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [40] Meadow  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [41] MetalProof  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [42] PhysicsPlayground  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [43] PomProof  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [44] PomProofBrick  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [45] Primitives  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\primitive_demo)
+  [46] RedwoodGrove  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [47] RiverFloatLab  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [48] RiverHydrology  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [49] RockGallery  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [50] SeamLab  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [51] StreamCaverns  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [52] StreamMeadow  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [53] StreamMountain  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [54] TilesetGallery  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [55] VegetationGallery  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+MATTER_CAM: eye(-15.0,24.0,43.0) target(16.1,7.0,7.7)
+Vulkan RT available=true enabled=true reason=none
+Vulkan wireframe available=true reason=none
+issues: reports go to D:\Shared With Desktop\AI\matter-engine-cpp\issues
+viewer: UI hidden by MATTER_HIDE_UI
+MATTER_CMD_FIFO: polling command file D:/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-14-vt-01/castle-initial/commands.txt
+DLSS selected=Performance active=Native internal=1920x1080 output=1920x1080 resets=0 reason=Streamline SDK not found: build with HAVE_STREAMLINE=1 to enable DLSS
+Vulkan RT observed effective=false dispatches=0 reason=world session disconnected
+o-[Process     ] Using Windows thread pool
+                 Multithreading enabled
+                 Available cores = 24
+                 Max used threads = 24
+                 Cancel mode disabled
+   0 : 4.0214863840e+02 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 5.276742e-07
+   0 : 2.0031447891e+02 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 6.418230e-07
+   0 : 1.0966191721e+02 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 5.990147e-07
+   0 : 7.4262249046e+01 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 5.377808e-07
+   0 : 4.8156938047e+01 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 4.951296e-07
+ check_that multiplicity are respected
+New LS iteration 
+   0 : 8.4882775643e+01 -- 8.4882775643e-11
+in OpenNL : ||Ax-b||/||b|| = 6.535354e-07
+New LS iteration 
+Try enforce mutiplicity equality with snap size  0
+   0 : 4.0175792543e+01 -- 1.7974005946e-09
+in OpenNL : ||Ax-b||/||b|| = 7.377545e-07
+Extract connections...
+Extract connections done
+Extract edges...
+Extract edges done
+Extract mesh...
+Extract mesh done
+Searching boundaries...
+Searching boundaries done
+Searching boundaries...
+Searching boundaries done
+debug: Quad mesh breakdown: total 13 ms | voxel 0 ms | split 0 ms | build 0 ms | parallel 12 ms   (param 8 ms | extract 1 ms) | merge 0 ms
+[local_provider] LocalProvider: TBB warm-up retopo ok=1 elapsed=0.014s
+bake 1/0 CastleWingSurfaceMasonry
+bake 2/0 CastleWingSurfaceStructure
+bake 3/0 CastleWingSurfaceStructure
+bake 4/0 CastleWingSurfaceStructure
+bake 5/0 CastleWingSurfaceStructure
+bake 6/0 CastleWingSurfaceStructure
+bake 7/0 CastleWingSurfaceStructure
+bake 8/0 CastleWingSurfaceStructure
+bake 9/0 CastleWingSurfaceStructure
+bake 10/0 CastleSconce
+bake 11/0 CastleFixtureGlow
+bake 12/0 CastleChandelier
+bake 13/0 CastleFixtureGlow
+bake 14/0 CastleAltar
+bake 15/0 CastleFixtureGlow
+bake 16/0 CastleBench
+bake 17/0 CastleBench
+bake 18/0 CastleSconce
+bake 19/0 CastleChandelier
+bake 20/0 CastleFixtureGlow
+bake 21/0 CastleChest
+bake 22/0 CastleSconce
+bake 23/0 CastleFixtureGlow
+bake 24/0 CastleSconce
+bake 25/0 CastleWindowGlazing
+bake 26/0 CastleWindowGlazing
+bake 27/0 CastleWindowGlazing
+bake 28/0 CastleWindowGlazing
+bake 29/0 CastleWindowGlazing
+bake 30/0 CastleWindowGlazing
+bake 31/0 CastleWindowGlazing
+bake 32/0 CastleWindowGlazing
+bake 33/0 CastleWingSurfaceMasonry
+bake 34/0 CastleWingSurfaceStructure
+bake 35/0 CastleWingSurfaceStructure
+bake 36/0 CastleWingSurfaceStructure
+bake 37/0 CastleWingSurfaceStructure
+bake 38/0 CastleWingSurfaceStructure
+bake 39/0 CastleWingSurfaceStructure
+bake 40/0 CastleWingSurfaceStructure
+bake 41/0 CastleWingSurfaceStructure
+bake 42/0 CastleWingSurfaceStructure
+bake 43/0 CastleTable
+bake 44/0 CastleChair
+bake 45/0 CastleCupboard
+bake 46/0 CastleWingSurfaceMasonry
+bake 47/0 CastleWingSurfaceStructure
+bake 48/0 CastleWingSurfaceStructure
+bake 49/0 CastleWingSurfaceStructure
+bake 50/0 CastleWingSurfaceStructure
+bake 51/0 CastleWingSurfaceStructure
+bake 52/0 CastleWingSurfaceStructure
+bake 53/0 CastleWingSurfaceStructure
+bake 54/0 CastleWingSurfaceStructure
+bake 55/0 CastleWingSurfaceStructure
+bake 56/0 CastleWingSurfaceStructure
+bake 57/0 CastleWingSurfaceStructure
+bake 58/0 CastleWingSurfaceStructure
+bake 59/0 CastleTable
+bake 60/0 CastleChair
+bake 61/0 CastleCupboard
+bake 62/0 CastleChest
+bake 63/0 CastleChandelier
+bake 64/0 CastleChair
+bake 65/0 CastleChair
+bake 66/0 CastleChandelier
+bake 67/0 CastleFixtureGlow
+bake 68/0 CastleChandelier
+bake 69/0 CastleBed
+bake 70/0 CastleTable
+bake 71/0 CastleWingSurfaceMasonry
+bake 72/0 CastleWingSurfaceStructure
+bake 73/0 CastleWingSurfaceStructure
+bake 74/0 CastleWingSurfaceStructure
+bake 75/0 CastleWingSurfaceStructure
+bake 76/0 CastleBarrel
+bake 77/0 CastleBarrel
+bake 78/0 CastleSiteSurfaceConnector
+bake 79/0 CastleSiteSurfaceConnector
+bake 80/0 CastleSiteSurfaceConnector
+bake 81/0 CastleSiteSurfaceConnector
+bake 82/0 CastleSiteSurfacePaving
+bake 83/0 CastleSurfaceEntranceApron
+bake 84/0 CastlePlinth
+[resolve] resolve cache: saved key a50359d575557a1d
+Vulkan RT observed effective=false dispatches=0 reason=no drawable instances
+[local_provider] LocalProvider: flattened 24922a59cd7085f1 (1 clusters, 1 levels, 1032 -> 1032 tris, 0 instance_refs)
+[part-store] loaded v3 FLAT part 24922a59cd7085f1 (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+bake 1/84 CastleSiteSurfaceConnector
+[local-light] published 136 lights, 456 cells/1024 buckets, 64404 index bytes, max 71 candidates
+[vk] impostor atlas: 128 slots x 2 layers of 1024x1024 RGBA8 (cell 128 px, filtered mips) = 1365 MiB
+[local_provider] LocalProvider: flattened 4f0c73cb897150c9 (1 clusters, 1 levels, 1120 -> 1120 tris, 0 instance_refs)
+[rt] local primary area samples=4 (0=adaptive); visibility diagnostic counters=0
+[rt] local-light selection code=0; packed budgets=0
+[rt] secondary local-light sampling=0 (0 exact, 1 importance reservoir)
+[rt] secondary surface detail mode=0 (0 reference, 1 adaptive, 2 normal-only)
+[local_provider] LocalProvider: flattened 57f34dbf195905f0 (1 clusters, 1 levels, 860 -> 860 tris, 0 instance_refs)
+[local_provider] LocalProvider: flattened 873d5ca6caebbbb4 (1 clusters, 1 levels, 842 -> 842 tris, 0 instance_refs)
+[local_provider] LocalProvider: flattened 967d83517a976144 (1 clusters, 1 levels, 1006 -> 1006 tris, 0 instance_refs)
+[local_provider] LocalProvider: flattened a44362e88508ebe6 (1 clusters, 1 levels, 5004 -> 5004 tris, 0 instance_refs)
+[local_provider] LocalProvider: flattened dd1169ef4fde3987 (1 clusters, 1 levels, 12 -> 12 tris, 0 instance_refs)
+[local_provider] LocalProvider: flattened ed9e94bfd480ba16 (1 clusters, 1 levels, 6152 -> 6152 tris, 0 instance_refs)
+[local_provider] LocalProvider: flattened 5c34e1cd40de8a56 (1 clusters, 1 levels, 4448 -> 4448 tris, 0 instance_refs)
+[local_provider] LocalProvider: flattened dbb426090c021448 (1 clusters, 1 levels, 2796 -> 2796 tris, 0 instance_refs)
+[local_provider] LocalProvider: flattened 2f1e1b18e67ad6ce (1 clusters, 1 levels, 4160 -> 4160 tris, 0 instance_refs)
+[part_bundle] atomic replace('D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo\.cache\CastleUpgraded/parts/3bdf5c3b3898a711.bundle.tmp' -> 'D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo\.cache\CastleUpgraded/parts/3bdf5c3b3898a711.bundle') failed after 10 attempt(s): os_error=5
+[part]   save_v2: bundle section write failed for 'D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo\.cache\CastleUpgraded/parts/3bdf5c3b3898a711.bundle' (format 9, hash 3bdf5c3b3898a711)
+[local_provider] LocalProvider: flatten failed for 3bdf5c3b3898a711: flatten: save_flat_v3 failed for D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo\.cache\CastleUpgraded/parts/3bdf5c3b3898a711.bundle
+[local_provider] LocalProvider: flattened 15f0dcf47c08b0aa (1 clusters, 1 levels, 5516 -> 5516 tris, 0 instance_refs)
+[local_provider] LocalProvider: flattened be6175588311da08 (1 clusters, 1 levels, 2796 -> 2796 tris, 0 instance_refs)
+[local_provider] LocalProvider: flattened 267f37204f92d052 (1 clusters, 1 levels, 592 -> 592 tris, 0 instance_refs)
+[local_provider] LocalProvider: flattened fdd33229e0d907b0 (1 clusters, 1 levels, 8724 -> 8724 tris, 0 instance_refs)
+[local_provider] LocalProvider: flattened 9422bd76aa2a7bdb (1 clusters, 1 levels, 19934 -> 19934 tris, 0 instance_refs)
+[local_provider] LocalProvider: flattened 42271cc9cd1b29b7 (1 clusters, 1 levels, 1664 -> 1664 tris, 0 instance_refs)
+[local_provider] LocalProvider: flattened 1e3bf03837f85857 (1 clusters, 1 levels, 8724 -> 8724 tris, 0 instance_refs)
+[local_provider] LocalProvider: flattened b6df94eb9dd347e2 (1 clusters, 1 levels, 232 -> 232 tris, 0 instance_refs)
+[local_provider] LocalProvider: flattened 01ed5efbb908c5d3 (1 clusters, 1 levels, 72216 -> 72216 tris, 0 instance_refs)
+[local_provider] LocalProvider: flattened 71fbb64f8937100e (1 clusters, 1 levels, 1776 -> 1776 tris, 0 instance_refs)
+[local_provider] LocalProvider: flattened 34070c26b078c303 (1 clusters, 1 levels, 4160 -> 4160 tris, 0 instance_refs)
+[local_provider] LocalProvider: flattened e062d4b110b9c5fe (1 clusters, 1 levels, 2796 -> 2796 tris, 0 instance_refs)
+[local_provider] LocalProvider: flattened 34cbe36692e0df8a (1 clusters, 1 levels, 1928 -> 1928 tris, 0 instance_refs)
+[local_provider] LocalProvider: flattened 8604ae7762fd36e3 (1 clusters, 1 levels, 2852 -> 2852 tris, 0 instance_refs)
+[local_provider] LocalProvider: flattened ebdee271bd339d51 (1 clusters, 1 levels, 5684 -> 5684 tris, 0 instance_refs)
+[local_provider] LocalProvider: flattened 742895f595c09068 (1 clusters, 1 levels, 7332 -> 7332 tris, 0 instance_refs)
+[local_provider] LocalProvider: flattened 0988f113db251472 (1 clusters, 1 levels, 6536 -> 6536 tris, 0 instance_refs)
+[local_provider] LocalProvider: flattened 3ebcae65c2cde246 (1 clusters, 1 levels, 77056 -> 77056 tris, 0 instance_refs)
+[local_provider] LocalProvider: flattened 526b9d93dcd55ec7 (1 clusters, 1 levels, 592 -> 592 tris, 0 instance_refs)
+[local_provider] LocalProvider: flattened 9c9265cd0a06a5e5 (1 clusters, 1 levels, 11956 -> 11956 tris, 0 instance_refs)
+[local_provider] LocalProvider: flattened 8350a5028333ca9e (1 clusters, 1 levels, 11956 -> 11956 tris, 0 instance_refs)
+[local_provider] LocalProvider: flattened b1e0fcb10715005e (1 clusters, 1 levels, 7560 -> 7560 tris, 0 instance_refs)
+[local_provider] LocalProvider: flattened f2683ab8c57581dc (1 clusters, 1 levels, 4816 -> 4816 tris, 0 instance_refs)
+[local_provider] LocalProvider: flattened 7f110bd41505119b (1 clusters, 1 levels, 6340 -> 6340 tris, 0 instance_refs)
+[local_provider] LocalProvider: flattened 192b5fb8c9f1becc (1 clusters, 1 levels, 1776 -> 1776 tris, 0 instance_refs)
+[local_provider] LocalProvider: flattened 9802b78699fdc81d (1 clusters, 1 levels, 72216 -> 72216 tris, 0 instance_refs)
+[local_provider] LocalProvider: flattened e61b45d837d9c08d (1 clusters, 1 levels, 5676 -> 5676 tris, 0 instance_refs)
+[local_provider] LocalProvider: flattened 1e40bdd01c9d4dec (1 clusters, 1 levels, 1460 -> 1460 tris, 0 instance_refs)
+[local_provider] LocalProvider: flattened 8e0cc26ce7f1bb97 (1 clusters, 1 levels, 2796 -> 2796 tris, 0 instance_refs)
+[local_provider] LocalProvider: flattened 19d4247857533072 (1 clusters, 1 levels, 232 -> 232 tris, 0 instance_refs)
+[local_provider] LocalProvider: flattened ff4814c04353c2be (1 clusters, 1 levels, 1460 -> 1460 tris, 0 instance_refs)
+[local_provider] LocalProvider: flattened 5261b1a877655acf (1 clusters, 1 levels, 4900 -> 4900 tris, 0 instance_refs)
+[local_provider] LocalProvider: flattened c7f7479fef383dd5 (1 clusters, 1 levels, 7700 -> 7700 tris, 0 instance_refs)
+[local_provider] LocalProvider: flattened 3b649eed28eafb6a (1 clusters, 1 levels, 1664 -> 1664 tris, 0 instance_refs)
+[local_provider] LocalProvider: flattened d8c91c397e9a6cab (1 clusters, 1 levels, 72216 -> 72216 tris, 0 instance_refs)
+[local_provider] LocalProvider: flattened 43181de93fcf5097 (1 clusters, 1 levels, 7332 -> 7332 tris, 0 instance_refs)
+[local_provider] LocalProvider: flattened 5adc5bd04eb68891 (1 clusters, 1 levels, 72216 -> 72216 tris, 0 instance_refs)
+[local_provider] LocalProvider: flattened 6daf700e23d3ce1b (1 clusters, 1 levels, 5540 -> 5540 tris, 0 instance_refs)
+[local_provider] LocalProvider: flattened 756336d5d749593f (1 clusters, 1 levels, 58176 -> 58176 tris, 0 instance_refs)
+[local_provider] LocalProvider: flattened 24ee697ab91265cd (1 clusters, 1 levels, 3576 -> 3576 tris, 0 instance_refs)
+[local_provider] LocalProvider: flattened 6f1655b0682b939a (1 clusters, 1 levels, 3056 -> 3056 tris, 0 instance_refs)
+[local_provider] LocalProvider: flattened 601e54c328401e42 (1 clusters, 1 levels, 1464 -> 1464 tris, 0 instance_refs)
+[local_provider] LocalProvider: flattened 84fed9f0f040947e (1 clusters, 1 levels, 6380 -> 6380 tris, 0 instance_refs)
+[local_provider] LocalProvider: flattened 413449e7a497b3c1 (1 clusters, 1 levels, 1480 -> 1480 tris, 0 instance_refs)
+[local_provider] LocalProvider: flattened cad4aa5d65cb0c09 (1 clusters, 1 levels, 41312 -> 41312 tris, 0 instance_refs)
+[local_provider] LocalProvider: flattened f3362f211548e45f (1 clusters, 1 levels, 4160 -> 4160 tris, 0 instance_refs)
+[local_provider] LocalProvider: flattened d2afc25d1841919f (1 clusters, 1 levels, 1020 -> 1020 tris, 0 instance_refs)
+[local_provider] LocalProvider: flattened 4d1d90e4c73ab98f (1 clusters, 1 levels, 6148 -> 6148 tris, 0 instance_refs)
+[local_provider] LocalProvider: flattened f41b76d5ca0be392 (1 clusters, 1 levels, 920 -> 920 tris, 0 instance_refs)
+[local_provider] LocalProvider: flattened 7a0abdac95323b30 (1 clusters, 1 levels, 3008 -> 3008 tris, 0 instance_refs)
+[local_provider] LocalProvider: flattened 690af2cfe5d8e2f4 (1 clusters, 1 levels, 3008 -> 3008 tris, 0 instance_refs)
+[local_provider] LocalProvider: flattened 4866c609d25087b8 (1 clusters, 1 levels, 976 -> 976 tris, 0 instance_refs)
+[local_provider] LocalProvider: flattened 7367899c9b3415bc (1 clusters, 1 levels, 54816 -> 54816 tris, 0 instance_refs)
+[local_provider] LocalProvider: flattened 403db2605efdba6c (1 clusters, 1 levels, 724 -> 724 tris, 0 instance_refs)
+[local_provider] LocalProvider: flattened ae61f3fb2f640f25 (1 clusters, 1 levels, 2580 -> 2580 tris, 0 instance_refs)
+[local_provider] LocalProvider: flattened 026209de4a4badcf (1 clusters, 1 levels, 2884 -> 2884 tris, 0 instance_refs)
+[local_provider] LocalProvider: flattened 6cf00bec32542994 (1 clusters, 1 levels, 364 -> 364 tris, 0 instance_refs)
+[local_provider] LocalProvider: flattened 24c0e90267fb7148 (1 clusters, 1 levels, 1452 -> 1452 tris, 0 instance_refs)
+[local_provider] LocalProvider: flattened a89f316cb08e351a (1 clusters, 1 levels, 172952 -> 172952 tris, 0 instance_refs)
+[local_provider] LocalProvider: flattened c365d116bc314852 (1 clusters, 1 levels, 2960 -> 2960 tris, 0 instance_refs)
+[local_provider] LocalProvider: flattened 5525c707b327184f (1 clusters, 1 levels, 2180 -> 2180 tris, 0 instance_refs)
+[local_provider] LocalProvider: flattened 8e847a4db8949bcf (1 clusters, 1 levels, 1900 -> 1900 tris, 0 instance_refs)
+[local_provider] LocalProvider: flattened 8879e040a9713030 (1 clusters, 1 levels, 6704 -> 6704 tris, 0 instance_refs)
+[local_provider] LocalProvider: flattened 3677c8cd8575c088 (1 clusters, 1 levels, 7672 -> 7672 tris, 0 instance_refs)
+[local_provider] LocalProvider: flattened 333d0767a1fe4f7a (1 clusters, 1 levels, 420 -> 420 tris, 0 instance_refs)
+[local_provider] LocalProvider: flattened 615c7260f89e5feb (1 clusters, 1 levels, 4000 -> 4000 tris, 0 instance_refs)
+[local_provider] LocalProvider: flattened 95c7116328b68bff (1 clusters, 1 levels, 2796 -> 2796 tris, 0 instance_refs)
+[local_provider] LocalProvider: flattened 703f61d4142df2c2 (1 clusters, 1 levels, 592 -> 592 tris, 0 instance_refs)
+[local_provider] LocalProvider: flattened 8df4f1d9acbde723 (1 clusters, 1 levels, 2852 -> 2852 tris, 0 instance_refs)
+[local_provider] LocalProvider: flattened fdb952d87af482d4 (1 clusters, 1 levels, 2796 -> 2796 tris, 0 instance_refs)
+[local_provider] LocalProvider: flattened 80bcd1af7e213211 (1 clusters, 1 levels, 2796 -> 2796 tris, 0 instance_refs)
+[local_provider] LocalProvider: flattened 807ee93b1ed6c843 (1 clusters, 1 levels, 2796 -> 2796 tris, 0 instance_refs)
+[vk] static reserve: clusters 32 MiB, vertices 512 MiB, indices 256 MiB (host-visible)
+Vulkan RT observed effective=true dispatches=3 reason=none
+[part-store] loaded v3 FLAT part 4f0c73cb897150c9 (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 57f34dbf195905f0 (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 873d5ca6caebbbb4 (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 967d83517a976144 (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part a44362e88508ebe6 (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+bake 2/84 CastleSurfaceEntranceApron
+bake 3/84 CastleSiteSurfaceConnector
+bake 4/84 CastleSiteSurfaceConnector
+bake 5/84 CastleSiteSurfaceConnector
+bake 6/84 CastleWingSurfaceMasonry
+bake 7/84 CastlePlinth
+bake 8/84 CastleSiteSurfacePaving
+bake 9/84 CastleWingSurfaceStructure
+bake 10/84 CastleWindowGlazing
+bake 11/84 CastleTable
+bake 12/84 CastleChest
+bake 13/84 CastleWingSurfaceStructure
+bake 14/84 CastleWindowGlazing
+bake 15/84 CastleFixtureGlow
+bake 16/84 CastleSconce
+bake 17/84 CastleBed
+bake 18/84 CastleChair
+bake 19/84 CastleSconce
+bake 20/84 CastleBench
+bake 21/84 CastleChandelier
+bake 22/84 CastleFixtureGlow
+bake 23/84 CastleTable
+bake 24/84 CastleWindowGlazing
+bake 25/84 CastleWingSurfaceStructure
+bake 26/84 CastleWingSurfaceStructure
+bake 27/84 CastleWingSurfaceStructure
+bake 28/84 CastleCupboard
+bake 29/84 CastleWingSurfaceStructure
+bake 30/84 CastleWingSurfaceStructure
+bake 31/84 CastleFixtureGlow
+bake 32/84 CastleSconce
+bake 33/84 CastleSconce
+bake 34/84 CastleWingSurfaceStructure
+bake 35/84 CastleWingSurfaceStructure
+bake 36/84 CastleWingSurfaceStructure
+bake 37/84 CastleFixtureGlow
+bake 38/84 CastleChandelier
+bake 39/84 CastleChest
+bake 40/84 CastleChair
+bake 41/84 CastleWindowGlazing
+bake 42/84 CastleBench
+bake 43/84 CastleChair
+bake 44/84 CastleWingSurfaceStructure
+bake 45/84 CastleWingSurfaceStructure
+bake 46/84 CastleChair
+bake 47/84 CastleChandelier
+bake 48/84 CastleCupboard
+bake 49/84 CastleChandelier
+bake 50/84 CastleWingSurfaceStructure
+bake 51/84 CastleWingSurfaceStructure
+bake 52/84 CastleWingSurfaceMasonry
+bake 53/84 CastleWingSurfaceStructure
+bake 54/84 CastleWingSurfaceStructure
+bake 55/84 CastleWingSurfaceStructure
+bake 56/84 CastleWingSurfaceStructure
+bake 57/84 CastleWingSurfaceStructure
+bake 58/84 CastleTable
+bake 59/84 CastleWingSurfaceMasonry
+bake 60/84 CastleWingSurfaceStructure
+bake 61/84 CastleWingSurfaceStructure
+bake 62/84 CastleBarrel
+bake 63/84 CastleBarrel
+bake 64/84 CastleWingSurfaceStructure
+bake 65/84 CastleWingSurfaceStructure
+bake 66/84 CastleWingSurfaceStructure
+bake 67/84 CastleWingSurfaceMasonry
+bake 68/84 CastleWingSurfaceStructure
+bake 69/84 CastleWingSurfaceStructure
+bake 70/84 CastleWingSurfaceStructure
+bake 71/84 CastleChandelier
+bake 72/84 CastleFixtureGlow
+bake 73/84 CastleWingSurfaceStructure
+bake 74/84 CastleWingSurfaceStructure
+bake 75/84 CastleWingSurfaceStructure
+bake 76/84 CastleWingSurfaceStructure
+bake 77/84 CastleWingSurfaceStructure
+bake 78/84 CastleWingSurfaceStructure
+bake 79/84 CastleWindowGlazing
+bake 80/84 CastleFixtureGlow
+bake 81/84 CastleAltar
+bake 82/84 CastleWindowGlazing
+bake 83/84 CastleWindowGlazing
+bake 84/84 CastleWindowGlazing
+[vk] chart-space VT online: 33024 page pool (4078 MiB), 32768 variant slots (MATTER_VT_MAX_VARIANTS, soft bound), 64 MiB indirection arena (MATTER_VT_INDIRECTION_MB, exact-sized tables), 3512 MiB mesh budget (MATTER_VT_MESH_BUDGET_MB), 8 fills/frame, filler=tier-1 compositor, tier2=hemisphere AO (8 rays/texel, 0 pages/frame)
+[part-store] loaded v3 FLAT part dd1169ef4fde3987 (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part ed9e94bfd480ba16 (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 5c34e1cd40de8a56 (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part dbb426090c021448 (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 2f1e1b18e67ad6ce (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 15f0dcf47c08b0aa (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part be6175588311da08 (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 267f37204f92d052 (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part fdd33229e0d907b0 (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 9422bd76aa2a7bdb (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[gpu-job] bake.publish took 70.9 ms
+[part-store] loaded v3 FLAT part 42271cc9cd1b29b7 (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 1e3bf03837f85857 (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part b6df94eb9dd347e2 (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 01ed5efbb908c5d3 (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[gpu-job] bake.publish took 309.3 ms
+[part-store] loaded v3 FLAT part 71fbb64f8937100e (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 34070c26b078c303 (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part e062d4b110b9c5fe (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 34cbe36692e0df8a (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 8604ae7762fd36e3 (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part ebdee271bd339d51 (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 742895f595c09068 (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 0988f113db251472 (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 3ebcae65c2cde246 (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[gpu-job] bake.publish took 342.7 ms
+[part-store] loaded v3 FLAT part 526b9d93dcd55ec7 (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 9c9265cd0a06a5e5 (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[gpu-job] bake.publish took 51.1 ms
+[part-store] loaded v3 FLAT part 8350a5028333ca9e (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part b1e0fcb10715005e (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part f2683ab8c57581dc (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 7f110bd41505119b (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 192b5fb8c9f1becc (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 9802b78699fdc81d (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[gpu-job] bake.publish took 322.3 ms
+[part-store] loaded v3 FLAT part e61b45d837d9c08d (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 1e40bdd01c9d4dec (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 8e0cc26ce7f1bb97 (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 19d4247857533072 (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part ff4814c04353c2be (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 5261b1a877655acf (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part c7f7479fef383dd5 (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 3b649eed28eafb6a (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part d8c91c397e9a6cab (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[gpu-job] bake.publish took 306.9 ms
+[part-store] loaded v3 FLAT part 43181de93fcf5097 (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 5adc5bd04eb68891 (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[gpu-job] bake.publish took 319.2 ms
+[part-store] loaded v3 FLAT part 6daf700e23d3ce1b (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 756336d5d749593f (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[gpu-job] bake.publish took 254.2 ms
+[part-store] loaded v3 FLAT part 24ee697ab91265cd (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 6f1655b0682b939a (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 601e54c328401e42 (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 84fed9f0f040947e (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 413449e7a497b3c1 (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part cad4aa5d65cb0c09 (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[gpu-job] bake.publish took 173.4 ms
+[part-store] loaded v3 FLAT part f3362f211548e45f (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part d2afc25d1841919f (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 4d1d90e4c73ab98f (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part f41b76d5ca0be392 (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 7a0abdac95323b30 (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 690af2cfe5d8e2f4 (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 4866c609d25087b8 (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 7367899c9b3415bc (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[gpu-job] bake.publish took 221.4 ms
+[part-store] loaded v3 FLAT part 403db2605efdba6c (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part ae61f3fb2f640f25 (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 026209de4a4badcf (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 6cf00bec32542994 (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 24c0e90267fb7148 (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part a89f316cb08e351a (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[gpu-job] bake.publish took 810.9 ms
+[part-store] loaded v3 FLAT part c365d116bc314852 (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 5525c707b327184f (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 8e847a4db8949bcf (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 8879e040a9713030 (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 3677c8cd8575c088 (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 333d0767a1fe4f7a (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 615c7260f89e5feb (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 95c7116328b68bff (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 703f61d4142df2c2 (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 8df4f1d9acbde723 (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part fdb952d87af482d4 (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 80bcd1af7e213211 (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 807ee93b1ed6c843 (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[resolve]   resolve census: 84 parts baked, 84 cache hits, version digest 144cdeb99c68f1a7
+[tileset] slot 0 'D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo\.cache\CastleUpgraded/CastleFloorWearDetail.gtex': 512px x16 layers x10 mips -- core 18.7 MiB BC (was 64.0 MiB raw, 3.43x smaller) + horizon 3 MiB uncompressed
+[local_provider] LocalProvider: tileset 'CastleFloorWearDetail' -> slot 0, material(s) 54 (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo\.cache\CastleUpgraded/CastleFloorWearDetail.gtex) [deferred]
+[gpu-job] CastleFloorWearDetail took 1847.4 ms
+[bake] bake finished (0 errors)
+selected world CastleUpgraded hash 24922a59cd7085f1
+viewer: bake ready
+bake 0/2 CastleFloorWearDetail
+bake 1/2 CastleFloorWearDetail
+bake 1/2 CastleBrickBondDetail
+set: render.pom.enabled = true
+set: render.lighting.exposure_ev = -1.5
+set: render.lighting.sun_multiplier = 1
+set: render.lighting.sky_multiplier = 1
+set: render.lighting.sky_irradiance_multiplier = 1
+set: render.gi.enabled = true
+set: render.gi.diffuse_multiplier = 1
+render_path: native_rt
+[gpu-job] detail.source_face took 135.8 ms
+DLSS selected=Native active=Native internal=1920x1080 output=1920x1080 resets=0 reason=Streamline SDK not found: build with HAVE_STREAMLINE=1 to enable DLSS
+[gpu-job] detail.source_face took 127.6 ms
+[gpu-job] detail.source_face took 70.5 ms
+[gpu-job] detail.source_face took 109.0 ms
+[gpu-job] detail.source_face took 113.4 ms
+[gpu-job] detail.source_face took 109.8 ms
+[gpu-job] detail.source_face took 52.0 ms
+[gpu-job] detail.source_face took 65.7 ms
+wait_frames: complete 8 frame_serial=4857
+[gpu-job] detail.source_face took 56.5 ms
+screenshot written to D:/Shared
+perf: static geometry stable for 30 frames; warming for 10.000 seconds
+[tileset] slot 1 'D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo\.cache\CastleUpgraded/brick-bond-797f95df34b647a8.gtex': 512px x16 layers x10 mips -- core 18.7 MiB BC (was 64.0 MiB raw, 3.43x smaller)
+[gpu-job] detail.load_slot took 435.5 ms
+[brick-bond] module=CastleBrickBondDetail cache_hit=0 cache_rebuilt=0 sources=8 faces=16 source_bundles=0 source_meshes=0 prepare_ms=25.278 source_eval_ms=19.402 projection_wall_ms=1621.757 projection_host_ms=1081.322 projection_gpu_ms=7.724 compose_ms=195.119 save_compress_ms=555.457 load_upload_ms=436.045 path=D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo\.cache\CastleUpgraded/brick-bond-797f95df34b647a8.gtex
+bake 2/2 CastleBrickBondDetail
+[refine] controller built: 0 tiles
+[bake-timing] install=80205ms compose=0ms publish=47544ms total=127820ms
+perf: sampling for 12.000 seconds
+perf: wrote 247 frames to D:/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-14-vt-01/castle-initial/perf.json

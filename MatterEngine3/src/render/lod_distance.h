@@ -133,4 +133,31 @@ inline int select_rep(const float* switch_distances, int count,
     return count - 1;
 }
 
+// The error-authored form of the same switch rule. A flattening threshold is
+// radius * baked_pixel_budget * pixel_angle / error. Multiplying its reciprocal
+// by reach() cancels radius and yields this distance (the budget ratio and LOD
+// bias are supplied as detail_scale). A zero error never requires refinement.
+inline double error_switch_distance(double error, double instance_scale,
+                                    double pixel_angle, double detail_scale = 1.0) noexcept {
+    if (!(error > 0.0) || !(instance_scale > 0.0) || !(detail_scale > 0.0)) return 0.0;
+    if (!(pixel_angle > 0.0)) return INFINITY;
+    return error * instance_scale * detail_scale / pixel_angle;
+}
+// Upper bound on the transform's largest singular value, using row sums of
+// A^T A. Exact for rotation plus axis scale; conservative for shear. Positions
+// and error cannot safely use an average-axis scale under nonuniform scaling.
+inline double error_transform_scale(const float* matrix) noexcept {
+    double largest = 0;
+    for (int c = 0; c < 3; ++c) {
+        double row = 0;
+        for (int j = 0; j < 3; ++j) {
+            double product = 0;
+            for (int r = 0; r < 3; ++r) product += double(matrix[r*4+c]) * matrix[r*4+j];
+            row += std::abs(product);
+        }
+        if (row > largest) largest = row;
+    }
+    return std::sqrt(largest);
+}
+
 } // namespace lod
