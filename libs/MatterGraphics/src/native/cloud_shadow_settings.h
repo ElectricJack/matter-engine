@@ -16,7 +16,7 @@
 //     `identify_volumetric_quality_preset`; their definitions live at the
 //     bottom of THIS header. Include cloud_shadow_settings.h — not just
 //     volumetric_quality.h — wherever you call them.
-//   * MatterEngine3/src/render/vk_cloud_shadows.cpp owns the GPU side. It
+//   * native/vk_cloud_shadows.cpp owns the GPU side. It
 //     calls `resolve_cloud_shadow_levels` for the image dimensions,
 //     `make_cloud_shadow_frame` once per level per frame, and
 //     `cloud_shadow_requires_full_invalidation` to choose between a full
@@ -36,7 +36,7 @@
 //   * The two cascade levels are always ordered {near, far}; index 0 is near.
 
 #include "matter/math_types.h"
-#include "matter/volumetric_quality.h"
+#include "volumetric_quality.h"
 
 #include <array>
 #include <cmath>

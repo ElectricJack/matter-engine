@@ -129,12 +129,25 @@ bool VkSceneRenderer::record_ray_traced_shadows(
         return publish_local_direct_owner(
             frames_[frame.frame_slot], LocalDirectOwner::Raster, 0, error);
     }
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+    // The counter was already zeroed and seeded above; a failed record must
+    // still leave it without a candidate.
+    if (test_fail_next_rt_dispatch_record_) {
+        test_fail_next_rt_dispatch_record_ = false;
+        error = "injected RT dispatch record failure";
+        return false;
+    }
+#endif
     {
         PROFILE_SCOPE("rt.dispatch");
         if (!record_ray_trace_dispatch(frame, matrices, trace_extent,
                                        cmd_trace, error))
             return false;
     }
+    // Only a recorded production dispatch makes the counter a candidate
+    // sample; finish_ray_tracing_frame promotes it if this serial submits.
+    if (frame.serial != 0)
+        frames_[frame.frame_slot].rt_counter_candidate_serial = frame.serial;
     return true;
 }
 
@@ -698,14 +711,21 @@ bool VkSceneRenderer::build_ray_geometry(
     return true;
 }
 
-// The RT hit shader counts every part record it rejects, but the only reader
-// was a test-only readback compiled out of shipping builds -- so in a real
-// session a rejection was invisible. A rejection is exactly the signal that
-// says whether the stale-rt_parts-tail clear below is doing anything. Called
-// once per frame from prepare_frame, where this slot's fence has already been
-// waited on, so the value belongs to the slot's PREVIOUS submission (the
-// counter is zeroed per frame in emit_ray_instances). Logged on change only:
-// a steady count would otherwise spam every frame.
+// The RT hit shader counts every surface lookup it rejects (a traced
+// rt_parts record that is stale or unwritten), but the only other reader is a
+// test-only readback compiled out of shipping builds. A rejection is exactly
+// the signal that says whether the stale-rt_parts-tail clear below works.
+//
+// Called once per frame from record_cull_and_render, after begin_frame has
+// waited on this slot's fence, so a sample here is RETIRED: its submission has completed. The
+// counter bytes are consumed only when they carry a sample -- written by a
+// dispatch recorded in a frame that was actually submitted (see
+// rt_counter_candidate_serial) -- and exactly once: the sample is cleared
+// before it is read, so neither a duplicate call nor a later frame of a slot
+// that stopped tracing re-reads the same bytes. Whether RT is enabled NOW is
+// irrelevant: the last sample submitted before RT turned off is still
+// consumed. Every consumed sample is accumulated, equal consecutive counts
+// included; only the warning is suppressed while the count is unchanged.
 void VkSceneRenderer::report_rt_trace_counters(uint32_t frame_slot) {
     if (frame_slot >= frames_.size()) return;
     FrameResources& selected = frames_[frame_slot];
@@ -755,25 +775,40 @@ void VkSceneRenderer::report_rt_trace_counters(uint32_t frame_slot) {
                 word64(53), w[55]);
         }
     }
-    if (selected.rt_error_counter.buffer == VK_NULL_HANDLE) return;
+    const uint64_t sample_serial = selected.rt_counter_sample_serial;
+    selected.rt_counter_sample_serial = 0;
+    if (sample_serial == 0 ||
+        selected.rt_error_counter.buffer == VK_NULL_HANDLE) return;
     std::string error;
     if (!matter::map_buffer(selected.rt_error_counter, error) ||
         !matter::invalidate_buffer(selected.rt_error_counter, 0,
-                                   sizeof(GpuRtCounters), error))
+                                   sizeof(GpuRtCounters), error)) {
+        MATTER_LOGW("vk", "RT counter readback failed: %s\n", error.c_str());
         return;
+    }
     const auto* gpu =
         static_cast<const GpuRtCounters*>(selected.rt_error_counter.mapped);
-    const uint32_t invalid = gpu->invalid_part_records;
-    if (invalid == rt_invalid_part_records_last_) return;
-    rt_invalid_part_records_last_ = invalid;
-    if (invalid == 0) return;
-    rt_invalid_part_records_total_ += invalid;
+    const uint32_t rejected = gpu->invalid_part_records;
+    ++rt_rejected_surface_lookup_samples_;
+    rt_rejected_surface_lookups_total_ += rejected;
+    if (pipeline_profile_enabled()) {
+        MATTER_LOGI("rt-counter", "consumer=report_rt_trace_counters slot=%u "
+                    "serial=%llu rejected=%u samples=%llu total=%llu",
+                    frame_slot, static_cast<unsigned long long>(sample_serial),
+                    rejected,
+                    static_cast<unsigned long long>(rt_rejected_surface_lookup_samples_),
+                    static_cast<unsigned long long>(rt_rejected_surface_lookups_total_));
+    }
+    const bool changed = rejected != rt_rejected_surface_lookups_last_logged_;
+    rt_rejected_surface_lookups_last_logged_ = rejected;
+    if (rejected == 0 || !changed) return;
     MATTER_LOGW("vk",
-                 "RT rejected %u part record(s) last frame (%llu total) -- "
-                 "a rejected record is a stale or unwritten rt_parts slot\n",
-                 invalid,
+                 "RT rejected %u surface lookup(s) in the last retired RT "
+                 "sample (%llu total) -- a rejected lookup traced a stale or "
+                 "unwritten rt_parts record\n",
+                 rejected,
                  static_cast<unsigned long long>(
-                     rt_invalid_part_records_total_));
+                     rt_rejected_surface_lookups_total_));
     std::fflush(stderr);
 }
 
@@ -904,8 +939,15 @@ bool VkSceneRenderer::emit_ray_instances(
     if (!part_records.empty())
         std::memcpy(selected.rt_parts.mapped, part_records.data(),
                     part_records.size() * sizeof(GpuRtPartRecord));
+    // Overwriting the counter retires whatever sample it held; a dispatch
+    // recorded below becomes the new candidate.
+    selected.rt_counter_sample_serial = 0;
+    selected.rt_counter_candidate_serial = 0;
     std::memset(selected.rt_error_counter.mapped, 0, sizeof(GpuRtCounters));
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
+    if (test_rt_counter_seed_ != 0)
+        static_cast<GpuRtCounters*>(selected.rt_error_counter.mapped)
+            ->invalid_part_records = test_rt_counter_seed_;
     if (!matter::map_buffer(selected.rt_test_output, error)) return false;
     auto* test_words =
         static_cast<uint32_t*>(selected.rt_test_output.mapped);
@@ -1063,6 +1105,13 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
     VkExtent2D trace_extent,
     PFN_vkCmdTraceRaysKHR cmd_trace,
     std::string& error) {
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+    if (test_rt_geometry_pipelines_only_ &&
+        (gi_settings_.enabled || !local_light_publication_.records.empty())) {
+        error = "geometry-only RT test fixture cannot dispatch GI or local lighting";
+        return false;
+    }
+#endif
     FrameResources& selected = frames_[frame.frame_slot];
     // This target exists even without VT/extraction. Order color writes and
     // any extraction layout transition before primary RT storage reads.
@@ -1422,7 +1471,7 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
     last_rt_samples_ = constants.samples;
     last_rt_debug_view_ = constants.debug_view != 0;
     vkCmdBindPipeline(frame.command_buffer,
-                      VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, rt_pipeline_);
+                      VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, rt_shadow_pipeline_.pipeline);
     const VkDescriptorSet rt_set = rt_descriptor_sets_[frame.frame_slot];
     const VkDescriptorSet rt_sets[] = {
         rt_set, frames_[frame.frame_slot].environment_descriptor_set,
@@ -1439,21 +1488,11 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
     vkCmdPushConstants(frame.command_buffer, rt_pipeline_layout_,
                        VK_SHADER_STAGE_RAYGEN_BIT_KHR, 0, sizeof(constants),
                        &constants);
-    const auto& props = vulkan_->ray_tracing_properties();
-    const VkDeviceSize handle_stride =
-        (props.shader_group_handle_size + props.shader_group_handle_alignment - 1) /
-        props.shader_group_handle_alignment * props.shader_group_handle_alignment;
-    const VkStridedDeviceAddressRegionKHR raygen{rt_sbt_address_, handle_stride,
-                                                  handle_stride};
-    const VkStridedDeviceAddressRegionKHR miss{rt_sbt_miss_address_,
-                                                handle_stride,
-                                                rt_sbt_miss_size_};
-    const VkStridedDeviceAddressRegionKHR hit{rt_sbt_hit_address_, handle_stride,
-                                               rt_sbt_hit_size_};
     const VkStridedDeviceAddressRegionKHR callable{};
     FrameResources& rt_frame_slot = frames_[frame.frame_slot];
     write_gpu_timestamp(frame.command_buffer, kGpuZoneRt, false, rt_frame_slot);
-    cmd_trace(frame.command_buffer, &raygen, &miss, &hit, &callable,
+    cmd_trace(frame.command_buffer, &rt_shadow_pipeline_.raygen,
+              &rt_shadow_pipeline_.miss, &rt_shadow_pipeline_.hit, &callable,
               trace_extent.width, trace_extent.height, 1);
     // End sun shadows here; local-direct and GI traces have separate zones.
     write_gpu_timestamp(frame.command_buffer, kGpuZoneRt, true, rt_frame_slot);
@@ -1523,8 +1562,6 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
         constexpr uint32_t kSceneGiEnabledBit = 0x20000000u;
         const uint32_t scene_gi_state =
             gi_settings_.enabled ? kSceneGiEnabledBit : 0u;
-        const VkStridedDeviceAddressRegionKHR gi_raygen{
-            rt_sbt_lighting_raygen_address_, handle_stride, handle_stride};
         if (trace_local_direct) {
             write_gpu_timestamp(frame.command_buffer, kGpuZoneRtLocalDirect,
                                 false, rt_frame_slot);
@@ -1544,11 +1581,12 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
             vkCmdPushConstants(frame.command_buffer, rt_pipeline_layout_,
                                VK_SHADER_STAGE_RAYGEN_BIT_KHR, 0, sizeof(primary_gi),
                                &primary_gi);
-            const VkStridedDeviceAddressRegionKHR primary_raygen{
-                rt_separate_primary_ ? rt_sbt_primary_raygen_address_
-                                     : rt_sbt_lighting_raygen_address_,
-                handle_stride, handle_stride};
-            cmd_trace(frame.command_buffer, &primary_raygen, &miss, &hit, &callable,
+            const auto& primary = rt_separate_primary_
+                ? rt_primary_pipeline_ : rt_lighting_pipeline_;
+            vkCmdBindPipeline(frame.command_buffer,
+                              VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, primary.pipeline);
+            cmd_trace(frame.command_buffer, &primary.raygen, &primary.miss,
+                      &primary.hit, &callable,
                       raster_extent_.width, raster_extent_.height, 1);
             write_gpu_timestamp(frame.command_buffer, kGpuZoneRtLocalDirect,
                                 true, rt_frame_slot);
@@ -1576,13 +1614,12 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
                                     kGiDispatchBit | scene_gi_state | mask;
                 vkCmdPushConstants(frame.command_buffer, rt_pipeline_layout_,
                                    VK_SHADER_STAGE_RAYGEN_BIT_KHR, 0, sizeof(gi), &gi);
-                VkStridedDeviceAddressRegionKHR signal_raygen = gi_raygen;
-                if (rt_specialize_gi_) {
-                    signal_raygen.deviceAddress = mask == kDiffuseOnlyBit
-                        ? rt_sbt_diffuse_raygen_address_ : rt_sbt_reflection_raygen_address_;
-                }
-                cmd_trace(frame.command_buffer, &signal_raygen, &miss, &hit, &callable,
-                          extent.width, extent.height, 1);
+                const auto& signal = !rt_specialize_gi_ ? rt_lighting_pipeline_ :
+                    (mask == kDiffuseOnlyBit ? rt_diffuse_pipeline_ : rt_reflection_pipeline_);
+                vkCmdBindPipeline(frame.command_buffer,
+                                  VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, signal.pipeline);
+                cmd_trace(frame.command_buffer, &signal.raygen, &signal.miss,
+                          &signal.hit, &callable, extent.width, extent.height, 1);
                 ++last_rt_trace_dispatches_;
             };
             if (raw_diffuse_extent_.width == raw_reflection_extent_.width &&
@@ -1698,7 +1735,10 @@ bool VkSceneRenderer::record_ray_trace_dispatch(
         selected.rt_tlas_scratch.lifetime,
         selected.rt_tlas.lifetime, selected.rt_parts.lifetime,
         selected.rt_error_counter.lifetime, selected.materials.lifetime,
-        selected.rt_test_output.lifetime, rt_sbt_.lifetime,
+        selected.rt_test_output.lifetime,
+        rt_shadow_pipeline_.sbt.lifetime, rt_surface_test_pipeline_.sbt.lifetime,
+        rt_lighting_pipeline_.sbt.lifetime, rt_primary_pipeline_.sbt.lifetime,
+        rt_diffuse_pipeline_.sbt.lifetime, rt_reflection_pipeline_.sbt.lifetime,
         vertices_.lifetime, indices_.lifetime};
     if (rt_primary_adaptive_)
         for (const auto* image : primary_history_inputs)
