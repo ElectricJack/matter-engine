@@ -1,0 +1,87 @@
+{
+  "schema": "matter.linux-source-lint.v1",
+  "checks": [
+    {
+      "name": "compiler_format_negative_tests",
+      "command": [
+        "g++",
+        "-std=c++17",
+        "-Werror=format",
+        "-IMatterEngine3/include",
+        "-c",
+        "MatterEngine3/tests/compiler_format_negative.cpp",
+        "-o",
+        "/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/artifacts/ci-linux/compiler-probes/format-negative.o"
+      ],
+      "process_exit_code": 1,
+      "passed": true,
+      "seconds": 0.03386443399995187
+    },
+    {
+      "name": "compiler_return_address_gnu_build",
+      "command": [
+        "g++",
+        "-std=c++17",
+        "-O0",
+        "-IMatterEngine3/include",
+        "MatterEngine3/tests/compiler_return_address_gnu_tests.cpp",
+        "-o",
+        "/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/artifacts/ci-linux/compiler-probes/return-address"
+      ],
+      "process_exit_code": 0,
+      "passed": true,
+      "seconds": 0.3270109120003326
+    },
+    {
+      "name": "compiler_return_address_gnu_tests",
+      "command": [
+        "/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/artifacts/ci-linux/compiler-probes/return-address"
+      ],
+      "process_exit_code": 0,
+      "passed": true,
+      "seconds": 0.00408853499993711
+    },
+    {
+      "name": "ci_test_report_tests",
+      "command": [
+        "python3",
+        "tools/tests/test_ci_test_report.py"
+      ],
+      "process_exit_code": 0,
+      "passed": true,
+      "seconds": 0.15716801899998245
+    },
+    {
+      "name": "ci_source_lint_tests",
+      "command": [
+        "python3",
+        "tools/tests/test_ci_source_lint.py"
+      ],
+      "process_exit_code": 0,
+      "passed": true,
+      "seconds": 0.31976118100010353
+    },
+    {
+      "name": "glslc_depfile_tests",
+      "command": [
+        "python3",
+        "tools/tests/test_glslc_depfile.py"
+      ],
+      "process_exit_code": 0,
+      "passed": true,
+      "seconds": 0.14811853700030042
+    },
+    {
+      "name": "shader_input_list_tests",
+      "command": [
+        "python3",
+        "MatterEngine3/tools/tests/test_embed_spirv.py"
+      ],
+      "process_exit_code": 0,
+      "passed": true,
+      "seconds": 1.0544592859996555
+    }
+  ],
+  "seconds": 2.0448439419997158,
+  "status": "passed"
+}
