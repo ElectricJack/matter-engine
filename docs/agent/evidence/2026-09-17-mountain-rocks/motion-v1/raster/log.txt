@@ -1,0 +1,243 @@
+[vk] Vulkan loader/general ERROR: loader_get_json: Failed to open JSON file D:\Epic Games\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win32.json
+[vk] Vulkan loader/general ERROR: loader_get_json: Failed to open JSON file D:\Epic Games\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win64.json
+[vk] Vulkan loader/general warning: Removing layer VK_LAYER_EOS_Overlay (C:\Program Files (x86)\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win64.json) because it is a duplicate of VK_LAYER_EOS_Overlay (C:\Program Files (x86)\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win32.json)
+Vulkan adapter: NVIDIA GeForce RTX 4090 | driver: NVIDIA (610.74, 0x98928000) | API 1.4.341
+[vk] present requested=auto effective=fifo(2) supported=[fifo(2),fifo_relaxed(3),mailbox(1),immediate(0),other(1000361000)] images=3 extent=1280x800
+worlds available (71):
+  [0] AnimatedRigGallery  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [1] AtmospherePresentationFixture  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [2] BranchGallery  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [3] CastleAngledBailey  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [4] CastleBentPalace  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [5] CastleCloister  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [6] CastleClusteredCourt  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [7] CastleConnectorFixture  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [8] CastleCourtyard  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [9] CastleFastBakeProof  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [10] CastleFurnishings  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [11] CastleGallery  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [12] CastleMasonry  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [13] CastleMasonryPreview  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [14] CastleMaterials  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [15] CastleRoundKeep  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [16] CastleSiteGallery  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [17] CastleStructure  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [18] CastleTimberProbe  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [19] CastleUpgraded  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [20] CastleWalkProbe  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [21] CastleWalkProbeCloister  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [22] CastleWalkProbeRoundKeep  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [23] CastleWallBakeProof  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [24] CastleWingStudy  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [25] ChartVtProof  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [26] ClayBrickGeometryProof  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [27] ClayBrickMaterialProof  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [28] ClayBrickMaze  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [29] ClayBrickWallProof  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [30] ClayBrickWallSurfaceProof  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [31] CloudLab  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [32] CloudLegacy  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [33] ConiferForest  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [34] ConiferLab  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [35] CornellBox  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [36] Demo  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [37] FloorDemo  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [38] FogLab  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [39] Kreuzenstein  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [40] LightingGarden  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [41] LocalLightGallery  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [42] LocalLightPointIsolation  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [43] LocalLightRtGallery  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [44] LocalLightSpotIsolation  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [45] Meadow  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [46] MetalProof  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [47] PeriodicBrickWallProof  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [48] PhysicsPlayground  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [49] PomProof  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [50] PomProofBrick  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [51] Primitives  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\primitive_demo)
+  [52] ProceduralBrickProof  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [53] ProceduralTerrainProof  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [54] RedwoodGrove  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [55] RiverFloatLab  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [56] RiverHydrology  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [57] RockFormationProof  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [58] RockGallery  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [59] RockScaleProof  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [60] SeamLab  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [61] SharedBrickWallProof  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [62] StreamCaverns  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [63] StreamMeadow  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [64] StreamMountain  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [65] SurfaceContactProof  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [66] TilesetGallery  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [67] VegetationGallery  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [68] VillaDoricColumnStudy  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [69] VillaGoldTreasury  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [70] VillaWebsiteKit  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+MATTER_CAM_PATH: 900 poses from D:/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-17-mountain-rocks/motion-v1/camera-path.txt
+Vulkan RT available=true enabled=true reason=none
+Vulkan wireframe available=true reason=none
+issues: reports go to D:\Shared With Desktop\AI\matter-engine-cpp\issues
+viewer: UI hidden by MATTER_HIDE_UI
+MATTER_CMD_FIFO: polling command file C:\tmp\matter-rock-motion-v1-raster\cmd.txt
+DLSS selected=Native active=Native internal=1280x800 output=1280x800 resets=0 reason=Streamline SDK not found: build with HAVE_STREAMLINE=1 to enable DLSS
+Vulkan RT observed effective=false dispatches=0 reason=world session disconnected
+[resolve] resolve cache: hit 0dfba2d3737ab1fc
+[bake-timing] install=0ms compose=0ms (resolve-cache-hit) publish=...ms total(pre-publish)=15ms
+Vulkan RT observed effective=false dispatches=0 reason=no drawable instances
+[part-surface] part=ad18da2a98c65ddd direct recipe_bytes=1089 source_images=0
+[part-surface] part=689892634b0e6a43 direct recipe_bytes=1091 source_images=0
+[part-surface] part=8a97d53161447feb direct recipe_bytes=1095 source_images=0
+[part-surface] part=668d4e10d6295d03 direct recipe_bytes=1099 source_images=0
+[part-store] loaded v3 FLAT part 73d1dece7e634d00 (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part ad18da2a98c65ddd (3 LOD levels, 1 clusters, 0 refs, 0 impostors)
+bake 1/5 RockScaleGallery
+bake 2/5 
+[local-light] published 0 lights, 0 cells/0 buckets, 48 index bytes, max 0 candidates
+[vk] impostor atlas: 128 slots x 2 layers of 1024x1024 RGBA8 (cell 128 px, filtered mips) = 1365 MiB
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0] (SPIR-V Interface) [VK_SHADER_STAGE_VERTEX_BIT] has an Output value declared at Location 17 Component 0, but there is no corresponding Input declared in [VK_SHADER_STAGE_FRAGMENT_BIT].
+This is not invalid, but the write to the unused Output is discarded.
+The Output variable is:
+  pointer to Output -> uint32
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 1 not consumed by vertex shader.
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 2 not consumed by vertex shader.
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 3 not consumed by vertex shader.
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 4 not consumed by vertex shader.
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 6 not consumed by vertex shader.
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 7 not consumed by vertex shader.
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0] (SPIR-V Interface) [VK_SHADER_STAGE_VERTEX_BIT] has an Output value declared at Location 17 Component 0, but there is no corresponding Input declared in [VK_SHADER_STAGE_FRAGMENT_BIT].
+This is not invalid, but the write to the unused Output is discarded.
+The Output variable is:
+  pointer to Output -> uint32
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0] (SPIR-V Interface) [VK_SHADER_STAGE_VERTEX_BIT] has an Output value declared at Location 17 Component 0, but there is no corresponding Input declared in [VK_SHADER_STAGE_FRAGMENT_BIT].
+This is not invalid, but the write to the unused Output is discarded.
+The Output variable is:
+  pointer to Output -> uint32
+[vk] Vulkan loader/general warning: (Warning - This VUID has now been reported 10 times, which is the duplicate_message_limit value, this will be the last time reporting it).
+vkCreateGraphicsPipelines(): pCreateInfos[0] (SPIR-V Interface) [VK_SHADER_STAGE_VERTEX_BIT] has an Output value declared at Location 17 Component 0, but there is no corresponding Input declared in [VK_SHADER_STAGE_FRAGMENT_BIT].
+This is not invalid, but the write to the unused Output is discarded.
+The Output variable is:
+  pointer to Output -> uint32
+[rt] local primary area samples=4 (0=adaptive); visibility diagnostic counters=0
+[rt] local-light selection code=0; packed budgets=0
+[rt] secondary local-light sampling=1 (0 exact, 1 importance reservoir)
+[rt] secondary surface detail mode=0 (0 reference, 1 adaptive, 2 normal-only)
+[vk] static reserve: clusters 32 MiB, vertices 512 MiB, indices 256 MiB (host-visible)
+[lod-trace] recording to C:/tmp/matter-rock-motion-v1-raster/lod-trace.txt
+Vulkan RT observed effective=true dispatches=2 reason=none
+[part-store] loaded v3 FLAT part 689892634b0e6a43 (3 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 8a97d53161447feb (3 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 668d4e10d6295d03 (3 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[resolve]   resolve census: 0 parts baked, 9 cache hits, version digest 144cdeb99c68f1a7
+bake 3/5 
+bake 4/5 
+bake 5/5 
+[bake] bake finished (0 errors)
+world camera: eye(110.0,50.0,95.0) target(40.0,5.0,[refine] controller built: 0 tiles
+0.0)
+[bake-timing] install=0ms compose=0ms publish=1294ms total=1310ms (resolve-cache-hit)
+selected world RockScaleProof hash 73d1dece7e634d00
+viewer: bake ready
+[vk] chart-space VT online: 25600 page pool (4064 MiB), 32768 variant slots (MATTER_VT_MAX_VARIANTS, soft bound), 64 MiB indirection arena (MATTER_VT_INDIRECTION_MB, exact-sized tables), 3512 MiB mesh budget (MATTER_VT_MESH_BUDGET_MB), 8 fills/frame, filler=tier-1 compositor, tier2=hemisphere AO (8 rays/texel, 0 pages/frame)
+event: bake.finished
+render_path: raster
+set: render.fog.density = 0
+set: render.clouds.layer0_max_density = 0
+set: render.cloud_shadows.enabled = false
+set: render.lighting.sun_elevation_deg = 25
+set: render.lighting.sun_azimuth_deg = -120
+set: render.lighting.sun_tint = (1, 1, 1)
+set: render.lighting.sun_multiplier = 1
+set: render.lighting.sky_irradiance_multiplier = 0.5
+set: render.lighting.day_ambient_multiplier = 0.5
+Vulkan RT observed effective=false dispatches=0 reason=disabled by render options
+MATTER_CAM_PATH: starting (900 poses, 0 resident sectors at settle)
+wait_frames: complete 320 frame_serial=335
+STATS,move-00,31.54,0.01,28.65,0.94,5,5,948,0,0,5,0,32768,0.1,3512.0,160,90,128,56.25,1,0.000,0.000,0.000,0.000,0.000,0.00,6.101,0.024,4.509
+STATSVT,move-00,active=1,variants=5/32768,rejected=0,mesh=0.1/3512.0 MiB,pool=101/25600,pinned=5,queue=0,fills=101,evictions=0,ind=0.13/64 MiB,material_pages=101,shared_material_refs=0,coverage_only_pages=0,occlusion_pages=0,occlusion_retained_pages=0,occlusion_allocated_bytes=0,enrich_deferred=0
+screenshot written to C:/tmp/matter-rock-motion-v1-raster/move-raster-00.png
+wait_frames: complete 30 frame_serial=368
+STATS,move-01,30.64,0.01,30.69,0.99,5,5,948,0,0,5,0,32768,0.1,3512.0,160,90,128,56.25,1,0.000,0.000,0.000,0.000,0.000,0.00,1.270,0.023,0.803
+STATSVT,move-01,active=1,variants=5/32768,rejected=0,mesh=0.1/3512.0 MiB,pool=114/25600,pinned=5,queue=0,fills=114,evictions=0,ind=0.13/64 MiB,material_pages=114,shared_material_refs=0,coverage_only_pages=0,occlusion_pages=0,occlusion_retained_pages=0,occlusion_allocated_bytes=0,enrich_deferred=0
+screenshot written to C:/tmp/matter-rock-motion-v1-raster/move-raster-01.png
+wait_frames: complete 30 frame_serial=401
+STATS,move-02,30.72,0.01,29.20,1.07,5,5,948,0,0,5,0,32768,0.1,3512.0,160,90,128,56.25,1,0.000,0.000,0.000,0.000,0.000,0.00,0.802,0.022,0.474
+STATSVT,move-02,active=1,variants=5/32768,rejected=0,mesh=0.1/3512.0 MiB,pool=117/25600,pinned=5,queue=0,fills=117,evictions=0,ind=0.13/64 MiB,material_pages=117,shared_material_refs=0,coverage_only_pages=0,occlusion_pages=0,occlusion_retained_pages=0,occlusion_allocated_bytes=0,enrich_deferred=0
+screenshot written to C:/tmp/matter-rock-motion-v1-raster/move-raster-02.png
+wait_frames: complete 30 frame_serial=434
+STATS,move-03,30.68,0.01,30.05,1.44,5,5,948,0,0,6,0,32768,0.1,3512.0,160,90,128,56.25,1,0.000,0.000,0.000,0.000,0.000,0.00,0.640,0.021,0.370
+STATSVT,move-03,active=1,variants=6/32768,rejected=0,mesh=0.1/3512.0 MiB,pool=118/25600,pinned=6,queue=1,fills=117,evictions=0,ind=0.26/64 MiB,material_pages=117,shared_material_refs=0,coverage_only_pages=0,occlusion_pages=0,occlusion_retained_pages=0,occlusion_allocated_bytes=0,enrich_deferred=0
+screenshot written to C:/tmp/matter-rock-motion-v1-raster/move-raster-03.png
+wait_frames: complete 30 frame_serial=467
+STATS,move-04,30.40,0.01,29.58,0.86,5,5,798,0,0,5,0,32768,0.1,3512.0,160,90,128,56.25,1,0.000,0.000,0.000,0.000,0.000,0.00,1.953,0.022,0.351
+STATSVT,move-04,active=1,variants=5/32768,rejected=0,mesh=0.1/3512.0 MiB,pool=78/25600,pinned=5,queue=0,fills=139,evictions=0,ind=0.13/64 MiB,material_pages=78,shared_material_refs=0,coverage_only_pages=0,occlusion_pages=0,occlusion_retained_pages=0,occlusion_allocated_bytes=0,enrich_deferred=0
+screenshot written to C:/tmp/matter-rock-motion-v1-raster/move-raster-04.png
+wait_frames: complete 30 frame_serial=500
+STATS,move-05,30.65,0.01,29.63,1.02,5,5,798,0,0,5,0,32768,0.1,3512.0,160,90,128,56.25,1,0.000,0.000,0.000,0.000,0.000,0.00,0.535,0.022,0.255
+STATSVT,move-05,active=1,variants=5/32768,rejected=0,mesh=0.1/3512.0 MiB,pool=78/25600,pinned=5,queue=0,fills=139,evictions=0,ind=0.13/64 MiB,material_pages=78,shared_material_refs=0,coverage_only_pages=0,occlusion_pages=0,occlusion_retained_pages=0,occlusion_allocated_bytes=0,enrich_deferred=0
+screenshot written to C:/tmp/matter-rock-motion-v1-raster/move-raster-05.png
+wait_frames: complete 30 frame_serial=533
+STATS,move-06,30.61,0.01,29.44,1.00,5,4,626,0,1,5,0,32768,0.1,3512.0,160,90,128,56.25,1,0.000,0.000,0.000,0.000,0.000,0.00,0.467,0.021,0.235
+STATSVT,move-06,active=1,variants=5/32768,rejected=0,mesh=0.1/3512.0 MiB,pool=78/25600,pinned=5,queue=0,fills=139,evictions=0,ind=0.13/64 MiB,material_pages=78,shared_material_refs=0,coverage_only_pages=0,occlusion_pages=0,occlusion_retained_pages=0,occlusion_allocated_bytes=0,enrich_deferred=0
+screenshot written to C:/tmp/matter-rock-motion-v1-raster/move-raster-06.png
+wait_frames: complete 30 frame_serial=566
+STATS,move-07,30.62,0.01,34.38,0.92,5,4,626,0,1,5,0,32768,0.1,3512.0,160,90,128,56.25,1,0.283,0.000,0.000,0.000,0.000,0.00,0.470,0.021,0.236
+STATSVT,move-07,active=1,variants=5/32768,rejected=0,mesh=0.1/3512.0 MiB,pool=78/25600,pinned=5,queue=0,fills=139,evictions=0,ind=0.13/64 MiB,material_pages=78,shared_material_refs=0,coverage_only_pages=0,occlusion_pages=0,occlusion_retained_pages=0,occlusion_allocated_bytes=0,enrich_deferred=0
+screenshot written to C:/tmp/matter-rock-motion-v1-raster/move-raster-07.png
+wait_frames: complete 30 frame_serial=599
+STATS,move-08,31.01,0.01,25.39,0.95,5,4,626,0,1,5,0,32768,0.1,3512.0,160,90,128,56.25,1,0.000,0.000,0.000,0.000,0.000,0.00,0.455,0.021,0.223
+STATSVT,move-08,active=1,variants=5/32768,rejected=0,mesh=0.1/3512.0 MiB,pool=78/25600,pinned=5,queue=0,fills=139,evictions=0,ind=0.13/64 MiB,material_pages=78,shared_material_refs=0,coverage_only_pages=0,occlusion_pages=0,occlusion_retained_pages=0,occlusion_allocated_bytes=0,enrich_deferred=0
+screenshot written to C:/tmp/matter-rock-motion-v1-raster/move-raster-08.png
+wait_frames: complete 30 frame_serial=632
+STATS,move-09,30.79,0.01,28.22,0.91,5,4,524,0,1,6,0,32768,0.1,3512.0,160,90,128,56.25,1,0.000,0.000,0.000,0.000,0.000,0.00,0.428,0.021,0.205
+STATSVT,move-09,active=1,variants=6/32768,rejected=0,mesh=0.1/3512.0 MiB,pool=79/25600,pinned=6,queue=1,fills=139,evictions=0,ind=0.26/64 MiB,material_pages=78,shared_material_refs=0,coverage_only_pages=0,occlusion_pages=0,occlusion_retained_pages=0,occlusion_allocated_bytes=0,enrich_deferred=0
+screenshot written to C:/tmp/matter-rock-motion-v1-raster/move-raster-09.png
+wait_frames: complete 30 frame_serial=665
+STATS,move-10,30.36,0.01,30.24,0.96,5,4,524,0,1,5,0,32768,0.1,3512.0,160,90,128,56.25,1,0.000,0.000,0.000,0.000,0.000,0.00,0.443,0.021,0.187
+STATSVT,move-10,active=1,variants=5/32768,rejected=0,mesh=0.1/3512.0 MiB,pool=63/25600,pinned=5,queue=0,fills=141,evictions=0,ind=0.13/64 MiB,material_pages=63,shared_material_refs=0,coverage_only_pages=0,occlusion_pages=0,occlusion_retained_pages=0,occlusion_allocated_bytes=0,enrich_deferred=0
+screenshot written to C:/tmp/matter-rock-motion-v1-raster/move-raster-10.png
+wait_frames: complete 30 frame_serial=698
+STATS,move-11,30.39,0.01,29.22,0.99,5,3,350,0,2,5,0,32768,0.1,3512.0,160,90,128,56.25,1,0.000,0.000,0.000,0.000,0.000,0.00,0.401,0.021,0.177
+STATSVT,move-11,active=1,variants=5/32768,rejected=0,mesh=0.1/3512.0 MiB,pool=63/25600,pinned=5,queue=0,fills=141,evictions=0,ind=0.13/64 MiB,material_pages=63,shared_material_refs=0,coverage_only_pages=0,occlusion_pages=0,occlusion_retained_pages=0,occlusion_allocated_bytes=0,enrich_deferred=0
+screenshot written to C:/tmp/matter-rock-motion-v1-raster/move-raster-11.png
+wait_frames: complete 30 frame_serial=731
+STATS,move-12,30.35,0.01,28.80,0.80,5,4,524,0,1,5,0,32768,0.1,3512.0,160,90,128,56.25,1,0.000,0.000,0.000,0.000,0.000,0.00,0.401,0.021,0.180
+STATSVT,move-12,active=1,variants=5/32768,rejected=0,mesh=0.1/3512.0 MiB,pool=63/25600,pinned=5,queue=0,fills=141,evictions=0,ind=0.13/64 MiB,material_pages=63,shared_material_refs=0,coverage_only_pages=0,occlusion_pages=0,occlusion_retained_pages=0,occlusion_allocated_bytes=0,enrich_deferred=0
+screenshot written to C:/tmp/matter-rock-motion-v1-raster/move-raster-12.png
+wait_frames: complete 30 frame_serial=764
+STATS,move-13,30.31,0.01,29.74,0.92,5,4,524,0,1,5,0,32768,0.1,3512.0,160,90,128,56.25,1,0.000,0.000,0.000,0.000,0.000,0.00,0.400,0.021,0.181
+STATSVT,move-13,active=1,variants=5/32768,rejected=0,mesh=0.1/3512.0 MiB,pool=63/25600,pinned=5,queue=0,fills=141,evictions=0,ind=0.13/64 MiB,material_pages=63,shared_material_refs=0,coverage_only_pages=0,occlusion_pages=0,occlusion_retained_pages=0,occlusion_allocated_bytes=0,enrich_deferred=0
+screenshot written to C:/tmp/matter-rock-motion-v1-raster/move-raster-13.png
+wait_frames: complete 30 frame_serial=797
+STATS,move-14,30.77,0.01,26.01,0.81,5,3,350,0,2,5,0,32768,0.1,3512.0,160,90,128,56.25,1,0.000,0.000,0.000,0.000,0.000,0.00,0.399,0.021,0.180
+STATSVT,move-14,active=1,variants=5/32768,rejected=0,mesh=0.1/3512.0 MiB,pool=63/25600,pinned=5,queue=0,fills=141,evictions=0,ind=0.13/64 MiB,material_pages=63,shared_material_refs=0,coverage_only_pages=0,occlusion_pages=0,occlusion_retained_pages=0,occlusion_allocated_bytes=0,enrich_deferred=0
+screenshot written to C:/tmp/matter-rock-motion-v1-raster/move-raster-14.png
+wait_frames: complete 30 frame_serial=830
+STATS,move-15,30.29,0.01,30.49,0.83,5,3,350,0,2,5,0,32768,0.1,3512.0,160,90,128,56.25,1,0.000,0.000,0.000,0.000,0.000,0.00,0.405,0.021,0.181
+STATSVT,move-15,active=1,variants=5/32768,rejected=0,mesh=0.1/3512.0 MiB,pool=63/25600,pinned=5,queue=0,fills=141,evictions=0,ind=0.13/64 MiB,material_pages=63,shared_material_refs=0,coverage_only_pages=0,occlusion_pages=0,occlusion_retained_pages=0,occlusion_allocated_bytes=0,enrich_deferred=0
+screenshot written to C:/tmp/matter-rock-motion-v1-raster/move-raster-15.png
+wait_frames: complete 30 frame_serial=863
+STATS,move-16,30.41,0.01,34.29,0.70,5,3,350,0,2,5,0,32768,0.1,3512.0,160,90,128,56.25,1,0.314,0.000,0.000,0.000,0.000,0.00,0.405,0.021,0.180
+STATSVT,move-16,active=1,variants=5/32768,rejected=0,mesh=0.1/3512.0 MiB,pool=63/25600,pinned=5,queue=0,fills=141,evictions=0,ind=0.13/64 MiB,material_pages=63,shared_material_refs=0,coverage_only_pages=0,occlusion_pages=0,occlusion_retained_pages=0,occlusion_allocated_bytes=0,enrich_deferred=0
+screenshot written to C:/tmp/matter-rock-motion-v1-raster/move-raster-16.png
+wait_frames: complete 30 frame_serial=896
+STATS,move-17,30.44,0.01,29.66,0.90,5,3,350,0,2,5,0,32768,0.1,3512.0,160,90,128,56.25,1,0.000,0.000,0.000,0.000,0.000,0.00,0.407,0.021,0.184
+STATSVT,move-17,active=1,variants=5/32768,rejected=0,mesh=0.1/3512.0 MiB,pool=63/25600,pinned=5,queue=0,fills=141,evictions=0,ind=0.13/64 MiB,material_pages=63,shared_material_refs=0,coverage_only_pages=0,occlusion_pages=0,occlusion_retained_pages=0,occlusion_allocated_bytes=0,enrich_deferred=0
+screenshot written to C:/tmp/matter-rock-motion-v1-raster/move-raster-17.png
+wait_frames: complete 30 frame_serial=929
+STATS,move-18,30.40,0.01,28.94,0.97,5,4,626,0,1,5,0,32768,0.1,3512.0,160,90,128,56.25,1,0.000,0.000,0.000,0.000,0.000,0.00,0.545,0.021,0.218
+STATSVT,move-18,active=1,variants=5/32768,rejected=0,mesh=0.1/3512.0 MiB,pool=63/25600,pinned=5,queue=0,fills=143,evictions=0,ind=0.13/64 MiB,material_pages=63,shared_material_refs=0,coverage_only_pages=0,occlusion_pages=0,occlusion_retained_pages=0,occlusion_allocated_bytes=0,enrich_deferred=0
+screenshot written to C:/tmp/matter-rock-motion-v1-raster/move-raster-18.png
+wait_frames: complete 30 frame_serial=962
+STATS,move-19,30.42,0.01,30.79,0.73,5,4,626,0,1,5,0,32768,0.1,3512.0,160,90,128,56.25,1,0.000,0.000,0.000,0.000,0.000,0.00,1.098,0.022,0.243
+STATSVT,move-19,active=1,variants=5/32768,rejected=0,mesh=0.1/3512.0 MiB,pool=66/25600,pinned=5,queue=0,fills=146,evictions=0,ind=0.13/64 MiB,material_pages=66,shared_material_refs=0,coverage_only_pages=0,occlusion_pages=0,occlusion_retained_pages=0,occlusion_allocated_bytes=0,enrich_deferred=0
+screenshot written to C:/tmp/matter-rock-motion-v1-raster/move-raster-19.png
+wait_frames: complete 30 frame_serial=995
+STATS,move-20,30.45,0.01,29.21,0.95,5,4,626,0,1,5,0,32768,0.1,3512.0,160,90,128,56.25,1,0.000,0.000,0.000,0.000,0.000,0.00,0.527,0.021,0.236
+STATSVT,move-20,active=1,variants=5/32768,rejected=0,mesh=0.1/3512.0 MiB,pool=67/25600,pinned=5,queue=0,fills=147,evictions=0,ind=0.13/64 MiB,material_pages=67,shared_material_refs=0,coverage_only_pages=0,occlusion_pages=0,occlusion_retained_pages=0,occlusion_allocated_bytes=0,enrich_deferred=0
+screenshot written to C:/tmp/matter-rock-motion-v1-raster/move-raster-20.png
+wait_frames: complete 30 frame_serial=1028
+[lod-trace] 905 frames, 201 events, max 5 drawn pairs
+MATTER_CAM_PATH: complete
+vt-trace: wrote capture

@@ -134,6 +134,10 @@ public:
     matter::WorldSession* session() { return session_.get(); }
     matter::CameraDesc& camera() { return camera_; }
     const std::string& module_name() const { return module_; }
+    bool export_current(const std::string& directory, uint32_t lod,
+                        matter::AssetExportReceipt& out, std::string& error);
+    // App-thread seam before Vulkan begin_frame; UI only queues a request.
+    void process_pending_export();
 
     // W4: copies the LOD Inspector's current debug toggles (force_lod,
     // hide_child_instances) onto `opts`. Call once per frame BEFORE
@@ -221,6 +225,10 @@ private:
     std::string source_project_dir_;  // real project the part lives in
     std::string module_;              // current part module name
     bool viewport_active_ = false;
+    bool export_pending_ = false;
+    int export_lod_ = 0;
+    char export_directory_[1024]{};
+    std::string export_status_;
 
     // Params editor state (raw JSON text per top-level field, see .cpp).
     std::unique_ptr<PartWorkbenchScriptHostHolder> host_;  // hash/merged-params helper

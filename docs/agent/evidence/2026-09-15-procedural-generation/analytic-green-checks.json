@@ -1,0 +1,28 @@
+[
+  {
+    "kind": "build",
+    "name": "tileset_bake_tests",
+    "command": [
+      "./tools/build-windows-from-wsl.sh",
+      "RelWithDebInfo",
+      "tileset_bake_tests"
+    ],
+    "exit": 0,
+    "seconds": 10.281766578002134,
+    "log": "docs/agent/evidence/2026-09-15-procedural-generation/analytic-green-build-tileset_bake_tests.log",
+    "source_changes": []
+  },
+  {
+    "kind": "build",
+    "name": "tileset_physics_tests",
+    "command": [
+      "./tools/build-windows-from-wsl.sh",
+      "RelWithDebInfo",
+      "tileset_physics_tests"
+    ],
+    "exit": 1,
+    "seconds": 5.276192976991297,
+    "log": "docs/agent/evidence/2026-09-15-procedural-generation/analytic-green-build-tileset_physics_tests.log",
+    "source_changes": []
+  }
+]

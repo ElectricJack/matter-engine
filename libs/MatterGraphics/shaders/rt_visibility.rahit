@@ -1,0 +1,90 @@
+#version 460
+#extension GL_EXT_ray_tracing : require
+#extension GL_GOOGLE_include_directive : require
+
+#define RT_SURFACE_HIT_SHADER 1
+#include "rt_surface_common.glsl"
+
+struct VisibilityPayload {
+    vec3 visibility;
+    uint layers;
+};
+
+layout(location = 0) rayPayloadInEXT VisibilityPayload payload;
+hitAttributeEXT vec2 hit_barycentrics;
+
+const uint MATERIAL_ALPHA_TESTED = 1u << 2u;
+const uint MATERIAL_THIN_WALLED = 1u << 0u;
+const uint WATER_SURFACE_MATERIAL_FLAG = 1u << 4u;
+
+// Production leaves globally contended telemetry off. Fixture pipelines may
+// specialize ID 2 to one; ray-local layer counting and error handling always
+// remain active, independently of this diagnostic switch.
+layout(constant_id = 2) const uint count_visibility_diagnostics = 0u;
+
+void main() {
+    if (count_visibility_diagnostics != 0u)
+        atomicAdd(any_hit_invocations, 1u);
+    RtSurface surface = load_rt_surface(hit_barycentrics);
+    if ((surface.flags & RT_SURFACE_VALID) == 0u) {
+        payload.visibility = vec3(0.0);
+        terminateRayEXT;
+        return;
+    }
+    if (surface.material_index >= rt_materials.length()) {
+        payload.visibility = vec3(0.0);
+        terminateRayEXT;
+        return;
+    }
+    RtMaterialGpu material = rt_surface_material(surface);
+    float opacity = clamp(material.metal_opacity_spec_coat.y, 0.0, 1.0);
+    float alpha_cutoff = clamp(material.scattering_shape.z, 0.0, 1.0);
+    if ((material.flags_misc.x & MATERIAL_ALPHA_TESTED) != 0u &&
+        opacity < alpha_cutoff) {
+        ignoreIntersectionEXT;
+        return;
+    }
+
+    float subsurface = clamp(material.scattering.w, 0.0, 1.0);
+    if ((material.flags_misc.x & MATERIAL_THIN_WALLED) != 0u &&
+        subsurface > 0.0) {
+        // Thin scatterers author shadowOpacity = 1.0, which would fully
+        // block; the transmitted fraction is scattering color x subsurface.
+        payload.visibility *= clamp(material.scattering.rgb * subsurface,
+                                    0.0, 1.0);
+    } else {
+        // A water isosurface is closed, so a sunlight ray normally visits an
+        // entry and an exit candidate.  The display albedo is deliberately a
+        // dark blue, not an absorption coefficient; multiplying by it at
+        // both boundaries made even sub-metre clear water cast a nearly black
+        // shadow on its own bed.  Match the refraction walk's compatibility
+        // rule here: authored absorption controls water filtering and a zero
+        // absorption lane means clear.  Non-water glass retains its existing
+        // base-colour tint contract.
+        vec3 water_shadow_absorption = material.absorption_pad.rgb;
+        if (dot(water_shadow_absorption, water_shadow_absorption) < 1e-8)
+            water_shadow_absorption = vec3(1.0);
+        vec3 shadow_filter =
+            (material.flags_misc.x & WATER_SURFACE_MATERIAL_FLAG) != 0u
+                ? water_shadow_absorption
+                : material.base_roughness.rgb;
+        vec3 transmission_tint = clamp(
+            shadow_filter * material.transmission.x, 0.0, 1.0);
+        float shadow_opacity =
+            clamp(material.scattering_shape.w, 0.0, 1.0);
+        payload.visibility *= mix(vec3(1.0), transmission_tint,
+                                  shadow_opacity);
+    }
+    if (count_visibility_diagnostics != 0u)
+        atomicAdd(any_hit_layers, 1u);
+    ++payload.layers;
+    if (payload.layers >= 32u) {
+        if (count_visibility_diagnostics != 0u)
+            atomicAdd(capped_rays, 1u);
+        terminateRayEXT;
+    } else if (max(payload.visibility.r,
+                   max(payload.visibility.g, payload.visibility.b)) < 0.01)
+        terminateRayEXT;
+    else
+        ignoreIntersectionEXT;
+}

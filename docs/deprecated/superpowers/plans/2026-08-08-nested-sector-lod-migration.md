@@ -116,7 +116,7 @@ Make size flow per-request end to end, with the value still always `S_0`.
 - Chart density: `part_store.cpp:1082` scales terrain `texels_per_meter` by
   `S_0 / warp.sector_size` — a no-op at 64.
 - Touches: `matter_engine.cpp`, `render/part_store.cpp`,
-  `projects/world_demo/objects/WorldSector.js`.
+  `projects/world_demo/objects/templates/WorldSector.js`.
 - Tests: `run-sectorbake` gains a non-default-size bake (128 m, level-1
   rung) asserting mesh extent and double-bake determinism; `run-terrainverb`
   unchanged; full suite sweep for the params-JSON change.
@@ -203,7 +203,7 @@ anything renders nested tiles.
 - The legacy non-alpine path (`inSector()` grass/rocks) gets the same
   sub-celling; Meadow-family worlds are stale test targets (memory note) —
   verify with FloorDemo/StreamMeadow bakes, not Meadow.
-- Touches: `projects/world_demo/objects/WorldSector.js` (and no engine code).
+- Touches: `projects/world_demo/objects/templates/WorldSector.js` (and no engine code).
 - Tests: `run-sectorbake` bitwise gate; `run-worldstream` still green.
 - Visual acceptance: none needed if the bitwise gate holds (that is the
   point of it).

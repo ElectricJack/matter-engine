@@ -1,0 +1,40 @@
+{
+  "exit": 0,
+  "seconds_including_startup_and_view_waits": 28.762307988014072,
+  "source_changes": [],
+  "binary_changed": false,
+  "errors": [],
+  "vt_stats": [
+    "STATSVT,terrain-connected-pom-v3-middle-off,active=1,variants=89/32768,rejected=0,mesh=1.0/3512.0 MiB,pool=247/25600,pinned=89,queue=74,fills=173,evictions=0,ind=0.92/64 MiB",
+    "STATSVT,terrain-connected-pom-v3-middle,active=1,variants=89/32768,rejected=0,mesh=1.0/3512.0 MiB,pool=283/25600,pinned=89,queue=58,fills=225,evictions=0,ind=0.92/64 MiB",
+    "STATSVT,terrain-connected-pom-v3-close-off,active=1,variants=148/32768,rejected=0,mesh=1.6/3512.0 MiB,pool=388/25600,pinned=148,queue=101,fills=287,evictions=0,ind=1.56/64 MiB",
+    "STATSVT,terrain-connected-pom-v3-close,active=1,variants=207/32768,rejected=0,mesh=2.1/3512.0 MiB,pool=448/25600,pinned=207,queue=144,fills=304,evictions=0,ind=2.32/64 MiB",
+    "STATSVT,terrain-connected-pom-v3-far-off,active=1,variants=270/32768,rejected=0,mesh=2.6/3512.0 MiB,pool=720/25600,pinned=270,queue=193,fills=529,evictions=0,ind=3.06/64 MiB",
+    "STATSVT,terrain-connected-pom-v3-far,active=1,variants=325/32768,rejected=0,mesh=3.0/3512.0 MiB,pool=784/25600,pinned=325,queue=231,fills=555,evictions=0,ind=3.80/64 MiB",
+    "STATSVT,terrain-connected-pom-v3-grazing-off,active=1,variants=325/32768,rejected=0,mesh=3.0/3512.0 MiB,pool=835/25600,pinned=325,queue=215,fills=622,evictions=0,ind=3.80/64 MiB",
+    "STATSVT,terrain-connected-pom-v3-grazing,active=1,variants=388/32768,rejected=0,mesh=3.5/3512.0 MiB,pool=900/25600,pinned=388,queue=262,fills=640,evictions=0,ind=4.50/64 MiB",
+    "STATSVT,terrain-connected-pom-v3-rt-off,active=1,variants=447/32768,rejected=0,mesh=4.0/3512.0 MiB,pool=969/25600,pinned=447,queue=305,fills=666,evictions=0,ind=5.31/64 MiB",
+    "STATSVT,terrain-connected-pom-v3-rt,active=1,variants=506/32768,rejected=0,mesh=4.4/3512.0 MiB,pool=1037/25600,pinned=506,queue=348,fills=691,evictions=0,ind=6.03/64 MiB",
+    "STATSVT,terrain-connected-pom-v3-pom-status-off,active=1,variants=524/32768,rejected=0,mesh=4.6/3512.0 MiB,pool=1058/25600,pinned=524,queue=349,fills=711,evictions=0,ind=6.30/64 MiB",
+    "STATSVT,terrain-connected-pom-v3-pom-status,active=1,variants=567/32768,rejected=0,mesh=4.9/3512.0 MiB,pool=1101/25600,pinned=567,queue=376,fills=727,evictions=0,ind=6.70/64 MiB",
+    "STATSVT,terrain-connected-pom-v3-pom-charts-off,active=1,variants=629/32768,rejected=0,mesh=5.4/3512.0 MiB,pool=1163/25600,pinned=629,queue=421,fills=744,evictions=0,ind=7.36/64 MiB",
+    "STATSVT,terrain-connected-pom-v3-pom-charts,active=1,variants=677/32768,rejected=0,mesh=5.8/3512.0 MiB,pool=1212/25600,pinned=677,queue=453,fills=761,evictions=0,ind=8.09/64 MiB"
+  ],
+  "images": {
+    "terrain-connected-pom-v3-middle-off.png": "ec2744789f121a435b1fdaad43355691335914abff6aad30d8b23e032e360adc",
+    "terrain-connected-pom-v3-middle.png": "0d13d357a5d1f49118a63bea360930af88acfd07f9abae86fac0abab866a7df9",
+    "terrain-connected-pom-v3-close-off.png": "c46afffb8eddff2a3d8b0749c20362f2f785e3ce64360db1d8fe32f6d23b1d4f",
+    "terrain-connected-pom-v3-close.png": "464cd355950fc48191025d245e08a4500bea3f445cd38e8b2fc8f3657ae9839d",
+    "terrain-connected-pom-v3-far-off.png": "943f941321d27e310abd1b2a571ca6154dc0e5513a9d7b6ba2628d2214aec07b",
+    "terrain-connected-pom-v3-far.png": "c06c6d9e1d35dd7239fc46e24ca0e3593595605149e2d80374c6909c5edc8852",
+    "terrain-connected-pom-v3-grazing-off.png": "af384607cd71dd067f51e4fa0aa411372cb6f5d33c77d0b9ceb1fdf1efa4e86c",
+    "terrain-connected-pom-v3-grazing.png": "a0c176920b2d02958c2cee6ac7d966ede959971e5c2ea94a8d1245f22676001d",
+    "terrain-connected-pom-v3-rt-off.png": "a99b3e0544c4f08d66b60ce4448a77c6340473a2d562ed68732480203654b26c",
+    "terrain-connected-pom-v3-rt.png": "98408a2639e3bf9b555d853d625b18c2844aec5542dbd18630ac2963539ca71d",
+    "terrain-connected-pom-v3-pom-status-off.png": "650bd1d4e4b16a57916b699c2b630e0e6c371261e957855a71554ce81aa191e5",
+    "terrain-connected-pom-v3-pom-status.png": "75f34c438bbea8cd10782c4ed2bf4df43e4b5b14c41a72a9c4597fc4afdf775d",
+    "terrain-connected-pom-v3-pom-charts-off.png": "8a3eccfaa83a8609075e4deabcbbfbd4d0ad8c9223fe31d6f579e32ab6ed07ae",
+    "terrain-connected-pom-v3-pom-charts.png": "3abe2bcba0997a7576787c4944d7c708ef911f67668077cf87025483a0f76ef7"
+  },
+  "passed": true
+}
