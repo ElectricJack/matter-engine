@@ -26,6 +26,12 @@ it from the graphics module's task.
 
 ## Verification boundary
 
+The subsequent [native water/temporal move](src/native/WATER_TEMPORAL.md)
+removes the Streamline bridge's world-header include through a graphics-owned
+`DlssMode` value header. Water and temporal implementations now have one physical
+owner with legacy forwarders. The compatibility archive still uses native host
+headers/resources and is separate from the independent target audited below.
+
 The synthetic device tests execute the concrete scene backend, not a fake
 `Backend`. They exercise real buffer packing, prototype sharing, bounded assembly
 expansion, transforms, visibility, rollback, pending/failing allocation and

@@ -1,0 +1,84 @@
+make: Entering directory '/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/libs/MemoryLib'
+gcc -std=c11 -Wall -Wextra -g -Iinclude tests/bank_noalloc_tests.c src/mem_bank.c -Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=free -o build/bank_noalloc_tests
+./build/bank_noalloc_tests
+100,000 randomized bank operations: zero malloc/calloc/realloc/free calls, no overlaps.
+gcc -Wall -Wextra -g -I./include -fsanitize=address,undefined -o build/memory_tests tests/memory_tests.c build/obj/t_mem_bank.o build/obj/t_mem_pool.o build/obj/t_mem_arena.o build/obj/t_mem_array.o
+./build/memory_tests
+  Fixed bank capacity, fragmentation, alignment, lifetime and reuse passed!
+Running MemPool tests...
+max_align_t alignment: 16 bytes
+
+Testing object alignment with objectSize=12...
+  Object 0: 0x50e000000450 (addr % alignment = 0)
+  Object 1: 0x50e000000440 (addr % alignment = 0)
+  Object 2: 0x50e000000430 (addr % alignment = 0)
+  Object 3: 0x50e000000420 (addr % alignment = 0)
+  Object 4: 0x50e000000410 (addr % alignment = 0)
+  All objects properly aligned!
+Testing alloc-after-free reuse...
+  Reused Object 0: 0x50e000000410 (addr % alignment = 0)
+  Reused Object 1: 0x50e000000420 (addr % alignment = 0)
+  Reused Object 2: 0x50e000000430 (addr % alignment = 0)
+  Reused Object 3: 0x50e000000440 (addr % alignment = 0)
+  Reused Object 4: 0x50e000000450 (addr % alignment = 0)
+  Alloc-after-free reuse verified!
+  All objects properly aligned!
+
+Testing alignment across multiple pages (allocate 25 objects with objectsPerPage=10)...
+  Object 0: 0x50e000000530 (addr % alignment = 0)
+  Object 1: 0x50e000000520 (addr % alignment = 0)
+  Object 2: 0x50e000000510 (addr % alignment = 0)
+  Object 3: 0x50e000000500 (addr % alignment = 0)
+  Object 4: 0x50e0000004f0 (addr % alignment = 0)
+  Object 5: 0x50e0000004e0 (addr % alignment = 0)
+  Object 6: 0x50e0000004d0 (addr % alignment = 0)
+  Object 7: 0x50e0000004c0 (addr % alignment = 0)
+  Object 8: 0x50e0000004b0 (addr % alignment = 0)
+  Object 9: 0x50e0000004a0 (addr % alignment = 0)
+  Object 10: 0x50e000000610 (addr % alignment = 0)
+  Object 11: 0x50e000000600 (addr % alignment = 0)
+  Object 12: 0x50e0000005f0 (addr % alignment = 0)
+  Object 13: 0x50e0000005e0 (addr % alignment = 0)
+  Object 14: 0x50e0000005d0 (addr % alignment = 0)
+  Object 15: 0x50e0000005c0 (addr % alignment = 0)
+  Object 16: 0x50e0000005b0 (addr % alignment = 0)
+  Object 17: 0x50e0000005a0 (addr % alignment = 0)
+  Object 18: 0x50e000000590 (addr % alignment = 0)
+  Object 19: 0x50e000000580 (addr % alignment = 0)
+  Object 20: 0x50e0000006f0 (addr % alignment = 0)
+  Object 21: 0x50e0000006e0 (addr % alignment = 0)
+  Object 22: 0x50e0000006d0 (addr % alignment = 0)
+  Object 23: 0x50e0000006c0 (addr % alignment = 0)
+  Object 24: 0x50e0000006b0 (addr % alignment = 0)
+  All multi-page objects properly aligned!
+
+Testing MemStats...
+  MemStats tests passed!
+
+Testing arena basic alloc + alignment...
+  Arena basic tests passed!
+
+Testing arena block chaining + reset...
+  Arena chaining/reset tests passed!
+
+Testing mem_array growth + clear + free...
+  mem_array growth tests passed!
+
+Testing mem_array growth policy...
+  mem_array growth policy tests passed!
+
+Testing MemArray ensure overflow guard...
+  MemArray overflow guard tests passed!
+
+Testing mem_array NULL tolerance...
+  mem_array NULL tolerance tests passed!
+
+All tests passed!
+g++ -Wall -Wextra -g -std=c++14 -I./include -fsanitize=address,undefined -o build/memory_hpp_tests tests/memory_hpp_tests.cpp build/obj/t_mem_bank.o build/obj/t_mem_pool.o build/obj/t_mem_arena.o build/obj/t_mem_array.o
+./build/memory_hpp_tests
+Testing mem::Arena...
+Testing mem::Pool move-construction...
+Testing mem::Pool move-assignment (including self-assignment)...
+Testing mem::Arena move-assignment (including self-assignment)...
+All memory.hpp tests passed!
+make: Leaving directory '/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/libs/MemoryLib'

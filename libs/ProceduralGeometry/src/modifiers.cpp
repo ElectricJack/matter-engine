@@ -1,4 +1,7 @@
 #include "internal.h"
+#ifdef MATTER_GEOMETRY_HAVE_MESH_WORKER
+#include "mesh_worker.h"
+#endif
 #include <array>
 #include <cstring>
 #include <limits>
@@ -21,8 +24,7 @@
 namespace matter::geometry {
 using namespace detail;
 namespace {
-// remesh_op names the rejected operation; the archive audit treats any
-// "retopo" symbol as a linked backend.
+// Keep subprocess plumbing distinct from backend symbols in the archive audit.
 const std::string simplify_op="mesh.simplify", smooth_op="mesh.smooth", remesh_op="mesh.retopology";
 constexpr const char *provenance_key="matter.geometry.modifiers";
 // Conservative peak scratch for one stage per input triangle: the Tri/TriEx
@@ -37,6 +39,8 @@ struct Modifier {
     std::string operation;
     float ratio=1, lambda=0.5f, mu=-0.53f;
     int iterations=2;
+    float target_ratio=1;
+    uint32_t seed=0, timeout_seconds=60;
 };
 struct Region { std::vector<std::string> prototypes; std::vector<Modifier> modifiers; };
 
@@ -70,9 +74,7 @@ Modifier modifier(const data::Value &v,const jobs::ProcessingRequest &request,
     auto op=o.find("operation");
     require(op!=o.end(),"modifier requires an operation");
     m.operation=text(op->second,"modifier operation must be a nonempty string");
-    if(m.operation==remesh_op)
-        reject(data::ErrorCode::unsupported_capability,"mesh retopology has no supported backend in this geometry service");
-    if(m.operation!=simplify_op && m.operation!=smooth_op)
+    if(m.operation!=simplify_op && m.operation!=smooth_op && m.operation!=remesh_op)
         reject(data::ErrorCode::unsupported_capability,"unknown mesh modifier operation");
     const std::string capability="matter.operation."+m.operation;
     if(!has(supported,capability))
@@ -85,6 +87,19 @@ Modifier modifier(const data::Value &v,const jobs::ProcessingRequest &request,
         only(o,{"operation","operation_version","ratio"},"unknown mesh.simplify parameter");
         m.ratio=number(member(v,"ratio"));
         require(m.ratio>0 && m.ratio<=1,"mesh.simplify ratio must be in (0, 1]");
+    } else if(m.operation==remesh_op) {
+        only(o,{"operation","operation_version","target_ratio","iterations","seed","timeout_seconds"},"unknown mesh.retopology parameter");
+        m.iterations=3;
+        if(o.count("target_ratio")) m.target_ratio=number(o.at("target_ratio"));
+        require(m.target_ratio>0 && m.target_ratio<=4,"mesh.retopology target_ratio must be in (0, 4]");
+        if(o.count("iterations")) m.iterations=integer(o.at("iterations"),1,1024);
+        if(o.count("timeout_seconds")) m.timeout_seconds=uint32_t(integer(o.at("timeout_seconds"),0,3600));
+        if(o.count("seed")) {
+            const auto *seed=std::get_if<double>(&o.at("seed").data);
+            require(seed && std::isfinite(*seed) && *seed>=0 && *seed<=UINT32_MAX && std::floor(*seed)==*seed,
+                "mesh.retopology seed must be a uint32");
+            m.seed=uint32_t(*seed);
+        }
     } else {
         only(o,{"operation","operation_version","iterations","lambda","mu"},"unknown mesh.smooth parameter");
         if(o.count("iterations")) m.iterations=integer(o.at("iterations"),1,max_smooth_iterations);
@@ -152,6 +167,8 @@ struct Stack {
     jobs::JobMonitor &monitor;
     jobs::ResourceUsage &usage;
     Totals &document;
+    const jobs::ResourceBudget &budget;
+    const std::string &worker;
 
     // Document peak if this prototype currently held `vertices`/`indices`.
     void account(const data::MeshPrototype &old,uint64_t vertices,uint64_t indices,uint64_t triangles,uint64_t work) {
@@ -228,6 +245,13 @@ struct Stack {
             if(out.triex.size()!=out.indices.size()/3)
                 reject(data::ErrorCode::backend_failure,"mesh.simplify attribute reprojection failed",id);
             mesh=std::move(out);
+        } else if(m.operation==remesh_op) {
+#ifdef MATTER_GEOMETRY_HAVE_MESH_WORKER
+            mesh=run_mesh_worker(worker,mesh,{m.target_ratio,uint32_t(m.iterations),m.seed,m.timeout_seconds},
+                budget,monitor,usage);
+#else
+            reject(data::ErrorCode::unsupported_capability,"mesh worker omitted from this build",id);
+#endif
         } else {
             SmoothOptions options;
             options.iterations=m.iterations; options.lambda=m.lambda; options.mu=m.mu;
@@ -378,6 +402,10 @@ data::Value record(const std::vector<Region> &regions,const std::vector<std::arr
         for(const auto &m:r.modifiers) {
             data::Value::Object o{{"operation",m.operation},{"operation_version",1}};
             if(m.operation==simplify_op) o.emplace("ratio",m.ratio);
+            else if(m.operation==remesh_op) {
+                o.emplace("target_ratio",m.target_ratio); o.emplace("iterations",m.iterations);
+                o.emplace("seed",double(m.seed)); o.emplace("timeout_seconds",double(m.timeout_seconds));
+            }
             else { o.emplace("iterations",m.iterations); o.emplace("lambda",m.lambda); o.emplace("mu",m.mu); }
             modifiers.push_back(std::move(o));
         }
@@ -389,9 +417,14 @@ data::Value record(const std::vector<Region> &regions,const std::vector<std::arr
 }
 
 namespace detail {
-std::vector<data::Capability> modifier_capabilities() {
+std::vector<data::Capability> modifier_capabilities(const std::string &worker) {
+    (void)worker;
 #ifdef MATTER_GEOMETRY_HAVE_MODIFIERS
-    return {{"matter.operation."+simplify_op,1},{"matter.operation."+smooth_op,1}};
+    std::vector<data::Capability> caps{{"matter.operation."+simplify_op,1},{"matter.operation."+smooth_op,1}};
+#ifdef MATTER_GEOMETRY_HAVE_MESH_WORKER
+    if(mesh_worker_available(worker)) caps.push_back({"matter.operation."+remesh_op,1});
+#endif
+    return caps;
 #else
     return {};
 #endif
@@ -431,7 +464,7 @@ jobs::AssetResult PrimitiveGeometry::process(const jobs::JobEnvelope &job,const 
         for(size_t i=0;i<doc.meshes.size();++i) mesh_index.emplace(doc.meshes[i].id.value,i);
         std::vector<bool> modified(doc.meshes.size(),false);
         std::vector<std::array<uint64_t,2>> triangles(doc.meshes.size());
-        Stack stack{monitor,usage,document};
+        Stack stack{monitor,usage,document,options.budget,mesh_worker_.executable};
         for(const auto &region:regions)
             for(const auto &id:region.prototypes) {
                 const size_t m=mesh_index.at(id);

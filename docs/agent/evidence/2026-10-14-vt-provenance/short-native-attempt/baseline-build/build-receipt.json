@@ -1,0 +1,12 @@
+{
+    "source_root":  "D:\\mv8e8\\b",
+    "command":  "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"D:\\mv8e8\\b\\tools\\build-windows.ps1\" -Config RelWithDebInfo -Target vulkan_smoke_tests",
+    "working_directory":  "D:\\mv8e8\\b",
+    "started_at":  "2026-10-15T00:18:31.3037611Z",
+    "timeout_seconds":  1800,
+    "build_parallel_level":  "6",
+    "status":  "failed",
+    "exit_code":  -1073741510,
+    "elapsed_seconds":  72.3492033,
+    "finished_at":  "2026-10-15T00:19:43.6561796Z"
+}

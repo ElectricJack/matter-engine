@@ -1,0 +1,5 @@
+f29290e0bc6a122bdd62449ce12f7fbe5c34f356f4216f0c8aa550e0e1221d22  /tmp/keen-quest-34/build/vulkan_smoke_tests
+39cde59890c55c466fea0f5b42bac976b64e8c65ccaba051ff1317e5374cef22  MatterEngine3/shaders_gen/embedded_spirv.h
+5877cb74f2bccab8c7cef977970c4592d541a2a6047a4d1dc6ef4a657d78c9ef  libs/MatterGraphics/src/native/rt_pipeline.inl
+42f7f043781ddefa61732c403df0de0e0994169caa0b8f56d05c7f52bef2bc22  libs/MatterGraphics/src/native/rt_dispatch.inl
+f822ceeffc7176c96646aa7aacf554c08fdc93b65e2dc415fb8349d7e96581df  /tmp/keen-quest-34/trace_llvm.so
