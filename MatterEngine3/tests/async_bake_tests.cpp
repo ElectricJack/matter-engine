@@ -485,7 +485,6 @@ static bool test_returns_immediately(const std::string& sandbox) {
     auto s = engine->open_world(wd, err);
     CHECK(s != nullptr, "session opened");
     if (!s) { printf("  err: %s\n", err.c_str()); return false; }
-
     struct RequestProbe {
         std::mutex mutex;
         std::condition_variable condition;
@@ -494,16 +493,20 @@ static bool test_returns_immediately(const std::string& sandbox) {
         bool on_caller = false;
     };
     auto probe = std::make_shared<RequestProbe>();
-    s->set_test_fault_hook([probe](int) {
-        std::unique_lock<std::mutex> lock(probe->mutex);
-        probe->entered = true;
-        probe->on_caller = std::this_thread::get_id() == probe->caller;
-        probe->condition.notify_all();
-        probe->condition.wait(lock, [&] { return probe->released; });
-        probe->exited = true;
-    });
+    // BakeStarted is emitted by the actual command worker before installation.
+    // Immediate delivery holds that worker until request_bake has returned.
+    auto worker_barrier = s->events().must_subscribe<matter::events::BakeStarted>(
+        "test.async.return_barrier", matter::evt::immediate,
+        [probe](const matter::events::BakeStarted&) {
+            std::unique_lock<std::mutex> lock(probe->mutex);
+            probe->entered = true;
+            probe->on_caller = std::this_thread::get_id() == probe->caller;
+            probe->condition.notify_all();
+            probe->condition.wait(lock, [&] { return probe->released; });
+            probe->exited = true;
+        });
     // A separate caller lets us release even a broken synchronous request.
-    // The worker cannot leave its hook before the main thread observes return.
+    // The worker cannot finish event delivery before the main thread observes return.
     std::thread caller([&] {
         {
             std::lock_guard<std::mutex> lock(probe->mutex);
@@ -516,19 +519,11 @@ static bool test_returns_immediately(const std::string& sandbox) {
         }
         probe->condition.notify_all();
     });
-    bool returned_while_worker_blocked = false;
     {
         std::unique_lock<std::mutex> lock(probe->mutex);
-        returned_while_worker_blocked = probe->condition.wait_for(
-            lock, std::chrono::seconds(1), [&] {
-                return probe->entered && probe->returned && !probe->exited;
-            });
-        probe->released = true;
+        probe->condition.wait_for(lock, std::chrono::seconds(1),
+                                  [&] { return probe->returned; });
     }
-    probe->condition.notify_all();
-    caller.join();
-    CHECK(returned_while_worker_blocked && !probe->on_caller,
-          "request_bake returns while its actual worker remains blocked");
 
     // Async contract: only BakeStarted (or nothing yet) can have arrived before
     // any pump — the finalizer BakeFinished must NOT have been emitted from
@@ -549,6 +544,28 @@ static bool test_returns_immediately(const std::string& sandbox) {
            pre_pump_events, (int)pre_pump_finished);
     CHECK(!pre_pump_finished,
           "no BakeFinished/BakeError before pump (bake still in flight)");
+
+    // The command first drains the app cleanup barrier, even for a new session.
+    // Pump that barrier so the worker can reach the immediate BakeStarted probe.
+    bool returned_while_worker_blocked = false;
+    const auto barrier_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+    while (std::chrono::steady_clock::now() < barrier_deadline) {
+        s->pump_gpu_jobs(1.0);
+        std::unique_lock<std::mutex> lock(probe->mutex);
+        returned_while_worker_blocked = probe->condition.wait_for(
+            lock, std::chrono::milliseconds(2), [&] {
+                return probe->entered && probe->returned && !probe->exited;
+            });
+        if (returned_while_worker_blocked) break;
+    }
+    {
+        std::lock_guard<std::mutex> lock(probe->mutex);
+        probe->released = true;
+    }
+    probe->condition.notify_all();
+    caller.join();
+    CHECK(returned_while_worker_blocked && !probe->on_caller,
+          "request_bake returns while its actual worker remains blocked");
 
     // Events must arrive later while we pump.
     std::vector<EvRec> log;

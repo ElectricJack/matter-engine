@@ -1,4 +1,4 @@
-#include "render/water_animation_gpu.h"
+#include "water_animation_gpu.h"
 
 #include <algorithm>
 #include <charconv>

@@ -1144,6 +1144,32 @@ int main() {
     // in_normal (raster.vert), so visualizing or shading with the raw varying
     // is wrong for every rotated VT water instance.
     assert(water_forward_uses_world_normal(water_forward, water_raster));
+    // Uniform PBR suppresses texture inputs, but raster.vert still chooses
+    // the varying's coordinate space from the RAW draw slot. Even matching
+    // forward/G-buffer expressions are wrong if both use the effective slot.
+    assert(assignment_rhs(function_body(without_comments(water_raster),
+                                        "void main()"), "uint vt_slot =") ==
+           "GBUFFER_UNIFORM_PBR?0u:in_vt_slot");
+    const std::string effective_slot_forward = mutated(
+        water_forward, "vec3 normal_ws = in_vt_slot != 0u",
+        "uint vt_slot = true ? 0u : in_vt_slot;\n"
+        "    vec3 normal_ws = vt_slot != 0u");
+    const std::string effective_slot_raster = mutated(
+        water_raster, "vec3 geometric_normal_ws = in_vt_slot != 0u",
+        "vec3 geometric_normal_ws = vt_slot != 0u");
+    assert(!water_forward_uses_world_normal(water_forward, effective_slot_raster));
+    assert(!water_forward_uses_world_normal(effective_slot_forward, water_raster));
+    assert(!water_forward_uses_world_normal(effective_slot_forward,
+                                          effective_slot_raster));
+    // Raw slot zero is already world space: applying the instance transform
+    // again is as incorrect as leaving a nonzero slot in object space.
+    assert(!water_forward_uses_world_normal(
+        mutated(water_forward, "vec3 normal_ws = in_vt_slot != 0u",
+                "vec3 normal_ws = in_vt_slot == 0u"), water_raster));
+    assert(!water_forward_uses_world_normal(
+        water_forward,
+        mutated(water_raster, "vec3 geometric_normal_ws = in_vt_slot != 0u",
+                "vec3 geometric_normal_ws = in_vt_slot == 0u")));
     assert(without_whitespace(raster_vertex).find(
                "out_normal=draw.vt_slot!=0u?in_normal:normalize(mat3(model)*in_normal);") !=
            std::string::npos);
@@ -1618,7 +1644,7 @@ int main() {
                std::string::npos &&
            renderer.find("volumetrics_->invalidate_history()") !=
                std::string::npos);
-    const std::string atmosphere_host = read_shader("../src/render/vk_atmosphere.cpp");
+    const std::string atmosphere_host = read_shader("../../libs/MatterGraphics/src/native/vk_atmosphere.cpp");
     assert(!atmosphere_host.empty());
     // Review regressions: sky-view must be visible to every Task 7 consumer,
     // and the environment UBO must be mapped before its neutral std140 bytes
@@ -1667,7 +1693,7 @@ int main() {
     // The same gating covers the cloud-shadow volumes, which are transitioned
     // "readable by every shader stage" for the same reason.
     const std::string cloud_shadow_host =
-        read_shader("../src/render/vk_cloud_shadows.cpp");
+        read_shader("../../libs/MatterGraphics/src/native/vk_cloud_shadows.cpp");
     assert(!cloud_shadow_host.empty());
     assert(cloud_shadow_host.find("VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR") ==
                std::string::npos &&

@@ -122,6 +122,12 @@ resulting behavior, including high-bit seeds and RNG snapshot/restore.
 
 ## Build and verify
 
+The default test build includes a five-second seeded property gate for source
+mutation, recipe ownership, budgets, cancellation and runtime recovery.
+`MATTER_BUILD_FUZZERS=ON` adds a longer native driver. The shared
+[fuzz workflow](../../../../tests/fuzz/README.md) documents ASan/UBSan, seeds and
+the opt-in Clang libFuzzer configuration.
+
 The local Windows wrapper uses the same supported repository resolver and MSVC
 environment as the product wrapper, while configuring only this owned module:
 

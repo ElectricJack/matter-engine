@@ -1,0 +1,36 @@
+{
+  "revision": 9,
+  "width": 480,
+  "height": 270,
+  "refused": [],
+  "refused_placements": [],
+  "assets": [
+  ],
+  "draws": [
+    {"instance": "terrain.live.-1.0.-1", "raster_identity": "terrain.live.-1.0.-1", "prototype": "terrain.mesh", "material": "terrain.material.1", "mirrored": false, "winding": "ccw", "pixels": 6226, "resident_bytes": 14876},
+    {"instance": "terrain.live.-1.0.0", "raster_identity": "terrain.live.-1.0.0", "prototype": "terrain.mesh", "material": "terrain.material.1", "mirrored": false, "winding": "ccw", "pixels": 24538, "resident_bytes": 29774},
+    {"instance": "terrain.live.-1.0.1", "raster_identity": "terrain.live.-1.0.1", "prototype": "terrain.mesh", "material": "terrain.material.1", "mirrored": false, "winding": "ccw", "pixels": 9600, "resident_bytes": 29648},
+    {"instance": "terrain.live.-2.0.-1", "raster_identity": "terrain.live.-2.0.-1", "prototype": "terrain.mesh", "material": "terrain.material.1", "mirrored": false, "winding": "ccw", "pixels": 4737, "resident_bytes": 12665},
+    {"instance": "terrain.live.-2.0.0", "raster_identity": "terrain.live.-2.0.0", "prototype": "terrain.mesh", "material": "terrain.material.1", "mirrored": false, "winding": "ccw", "pixels": 3240, "resident_bytes": 14906},
+    {"instance": "terrain.live.0.0.-1", "raster_identity": "terrain.live.0.0.-1", "prototype": "terrain.mesh", "material": "terrain.material.1", "mirrored": false, "winding": "ccw", "pixels": 6220, "resident_bytes": 14827},
+    {"instance": "terrain.live.0.0.0", "raster_identity": "terrain.live.0.0.0", "prototype": "terrain.mesh", "material": "terrain.material.1", "mirrored": false, "winding": "ccw", "pixels": 24434, "resident_bytes": 29797},
+    {"instance": "terrain.live.0.0.1", "raster_identity": "terrain.live.0.0.1", "prototype": "terrain.mesh", "material": "terrain.material.1", "mirrored": false, "winding": "ccw", "pixels": 9708, "resident_bytes": 29841},
+    {"instance": "terrain.live.1.0.-1", "raster_identity": "terrain.live.1.0.-1", "prototype": "terrain.mesh", "material": "terrain.material.1", "mirrored": false, "winding": "ccw", "pixels": 4751, "resident_bytes": 14929},
+    {"instance": "terrain.live.1.0.0", "raster_identity": "terrain.live.1.0.0", "prototype": "terrain.mesh", "material": "terrain.material.1", "mirrored": false, "winding": "ccw", "pixels": 3205, "resident_bytes": 29784},
+    {"instance": "terrain.live.2.0.-1", "raster_identity": "terrain.live.2.0.-1", "prototype": "terrain.mesh", "material": "terrain.material.1", "mirrored": false, "winding": "ccw", "pixels": 79, "resident_bytes": 12691}
+  ],
+  "observations": [
+    {"instance": "terrain.live.-1.0.-1", "resident_bytes": 14876},
+    {"instance": "terrain.live.-1.0.0", "resident_bytes": 29774},
+    {"instance": "terrain.live.-1.0.1", "resident_bytes": 29648},
+    {"instance": "terrain.live.-2.0.-1", "resident_bytes": 12665},
+    {"instance": "terrain.live.-2.0.0", "resident_bytes": 14906},
+    {"instance": "terrain.live.0.0.-1", "resident_bytes": 14827},
+    {"instance": "terrain.live.0.0.0", "resident_bytes": 29797},
+    {"instance": "terrain.live.0.0.1", "resident_bytes": 29841},
+    {"instance": "terrain.live.1.0.-1", "resident_bytes": 14929},
+    {"instance": "terrain.live.1.0.0", "resident_bytes": 29784},
+    {"instance": "terrain.live.2.0.-1", "resident_bytes": 12691}
+  ],
+  "materials": [[1.000000, 1.000000, 1.000000], [1.000000, 1.000000, 1.000000], [1.000000, 1.000000, 1.000000], [1.000000, 1.000000, 1.000000], [1.000000, 1.000000, 1.000000], [1.000000, 1.000000, 1.000000], [1.000000, 1.000000, 1.000000], [1.000000, 1.000000, 1.000000], [1.000000, 1.000000, 1.000000], [1.000000, 1.000000, 1.000000], [1.000000, 1.000000, 1.000000]]
+}

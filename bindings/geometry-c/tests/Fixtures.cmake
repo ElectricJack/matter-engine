@@ -12,3 +12,6 @@ foreach(name box extrude sphere placement csg process query)
     string(APPEND _header "static const char ${name}_request[] = \"${request}\";\n")
 endforeach()
 file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/requests.h" "${_header}")
+# JS properties consume the same compile-time fixture without runtime data I/O.
+string(JSON _box GET "${_json}" box)
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/property-request.mjs" "export default ${_box};\n")
