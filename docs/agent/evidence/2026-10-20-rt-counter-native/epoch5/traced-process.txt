@@ -1,0 +1,9 @@
+    PID     TID ELAPSED %CPU     TIME   RSS STAT WCHAN                        COMMAND
+  82299   82299     278 72.8 00:03:23 3985384 SNl futex_do_wait               vulkan_smoke_te
+  82299   82309     278 27.3 00:01:16 3985384 RNl -                           vulkan_smoke_te
+  82299   82310     278  0.0 00:00:00 3985384 SNl futex_do_wait               llvmpipe-0
+  82299   82311     278  0.0 00:00:00 3985384 SNl futex_do_wait               vulkan_smoke_te
+  82299   82312     278  0.0 00:00:00 3985384 SNl futex_do_wait               vulkan_:disk$0
+  82299   82318     278  0.0 00:00:00 3985384 SNl futex_do_wait               WSI swapchain q
+  82299   82319     278  0.0 00:00:00 3985384 SNl futex_do_wait               WSI swapchain e
+  82299   82320     278  0.0 00:00:00 3985384 SNl futex_do_wait               vulkan_smoke_te

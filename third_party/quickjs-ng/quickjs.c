@@ -6737,7 +6737,7 @@ static void build_backtrace(JSContext *ctx, JSValueConst error_val,
                             int line_num, int col_num, int backtrace_flags)
 {
     JSStackFrame *sf, *sf_start;
-    JSValue stack, prepare, saved_exception;
+    JSValue stack, prepare, saved_exception, error_obj;
     DynBuf dbuf;
     const char *func_name_str;
     const char *str1;
@@ -6754,6 +6754,11 @@ static void build_backtrace(JSContext *ctx, JSValueConst error_val,
     if (rt->in_build_stack_trace)
         return;
     rt->in_build_stack_trace = true;
+    /* Callers pass the pending exception as a borrowed error_val. An
+       allocation failure below (OOM) calls JS_Throw, which frees that
+       pending exception; keep our own reference until the end
+       (quickjs-ng upstream fix). */
+    error_obj = js_dup(error_val);
 
     // Save exception because conversion to double may fail.
     saved_exception = JS_GetException(ctx);
@@ -6899,7 +6904,7 @@ static void build_backtrace(JSContext *ctx, JSValueConst error_val,
             JS_FreeValue(ctx, csd[k].func_name);
         }
         JSValueConst args[] = {
-            error_val,
+            error_obj,
             stack,
         };
         JSValue stack2 = JS_Call(ctx, prepare, ctx->error_ctor, countof(args), args);
@@ -6920,13 +6925,14 @@ static void build_backtrace(JSContext *ctx, JSValueConst error_val,
 
     if (JS_IsUndefined(ctx->error_back_trace))
         ctx->error_back_trace = js_dup(stack);
-    if (has_filter_func || can_add_backtrace(error_val)) {
-        JS_DefinePropertyValue(ctx, error_val, JS_ATOM_stack, stack,
+    if (has_filter_func || can_add_backtrace(error_obj)) {
+        JS_DefinePropertyValue(ctx, error_obj, JS_ATOM_stack, stack,
                                JS_PROP_WRITABLE | JS_PROP_CONFIGURABLE);
     } else {
         JS_FreeValue(ctx, stack);
     }
 
+    JS_FreeValue(ctx, error_obj);
     rt->in_build_stack_trace = false;
 }
 
@@ -10533,9 +10539,12 @@ do {                                                    \
     res = __a;                                          \
 } while (0)
 
-/* a != 0 */
+/* returns JS_LIMB_BITS for a == 0: clz32(0) is undefined and the top limb
+   of a normalized BigInt can be a zero sign limb (quickjs-ng upstream fix) */
 static inline js_limb_t js_limb_clz(js_limb_t a)
 {
+    if (!a)
+        return JS_LIMB_BITS;
     return clz32(a);
 }
 
@@ -11867,11 +11876,12 @@ static JSValue js_bigint_to_string1(JSContext *ctx, JSValueConst val, int radix)
                 bit_pos = i * log2_radix;
                 pos = bit_pos / JS_LIMB_BITS;
                 shift = bit_pos % JS_LIMB_BITS;
-                if (likely((shift + log2_radix) <= JS_LIMB_BITS)) {
-                    c = r->tab[pos] >> shift;
-                } else {
-                    c = (r->tab[pos] >> shift) |
-                        (r->tab[pos + 1] << (JS_LIMB_BITS - shift));
+                c = r->tab[pos] >> shift;
+                /* the last digit may straddle the top limb: never read
+                   past r->len (quickjs-ng upstream fix) */
+                if ((shift + log2_radix) > JS_LIMB_BITS &&
+                    (pos + 1) < r->len) {
+                    c |= r->tab[pos + 1] << (JS_LIMB_BITS - shift);
                 }
                 c &= (radix - 1);
                 *--q = digits[c];
@@ -53298,28 +53308,68 @@ static JSValue js_bigint_asUintN(JSContext *ctx,
         res = __JS_NewShortBigInt(ctx, 0);
     } else if (JS_VALUE_GET_TAG(a) == JS_TAG_SHORT_BIG_INT) {
         /* fast case */
-        if (bits >= JS_SHORT_BIG_INT_BITS) {
+        /* quickjs-ng upstream fix: a negative value is only unchanged by
+           asIntN; asUintN must produce 2^bits + a, which needs a long
+           BigInt with an explicit zero sign limb */
+        js_slimb_t sv = JS_VALUE_GET_SHORT_BIG_INT(a);
+        if (bits >= JS_SHORT_BIG_INT_BITS && (asIntN || sv >= 0)) {
             res = a;
-        } else {
+        } else if (bits < JS_SHORT_BIG_INT_BITS) {
             uint64_t v;
             int shift;
             shift = 64 - bits;
-            v = JS_VALUE_GET_SHORT_BIG_INT(a);
+            v = sv;
             v = v << shift;
             if (asIntN)
                 v = (int64_t)v >> shift;
             else
                 v = v >> shift;
             res = __JS_NewShortBigInt(ctx, v);
+        } else {
+            JSBigInt *r;
+            uint64_t len64 = (bits + JS_LIMB_BITS - 1) / JS_LIMB_BITS;
+            int len, shift, i;
+
+            if (len64 > JS_BIGINT_MAX_SIZE) {
+                JS_FreeValue(ctx, a);
+                return JS_ThrowRangeError(ctx, "BigInt is too large to allocate");
+            }
+            len = len64;
+            r = js_bigint_new(ctx, len);
+            if (!r) {
+                JS_FreeValue(ctx, a);
+                return JS_EXCEPTION;
+            }
+            r->len = len;
+            r->tab[0] = sv;
+            for(i = 1; i < len; i++)
+                r->tab[i] = -1;
+            shift = (-bits) & (JS_LIMB_BITS - 1);
+            r->tab[len - 1] = (r->tab[len - 1] << shift) >> shift;
+            r = js_bigint_extend(ctx, r, 0);
+            JS_FreeValue(ctx, a);
+            if (!r)
+                return JS_EXCEPTION;
+            res = JS_CompactBigInt(ctx, r);
         }
     } else {
+        /* quickjs-ng upstream fix: asUintN sign-extends negative inputs
+           to 'bits' and always leaves a non-negative result (appending a
+           zero sign limb when the top retained bit is set) */
         JSBigInt *r, *p = JS_VALUE_GET_PTR(a);
-        if (bits >= p->len * JS_LIMB_BITS) {
+        int is_neg = js_bigint_sign(p);
+        if (bits >= (uint64_t)p->len * JS_LIMB_BITS &&
+            (asIntN || !is_neg)) {
             res = a;
         } else {
+            uint64_t len64 = (bits + JS_LIMB_BITS - 1) / JS_LIMB_BITS;
             int len, shift, i;
             js_limb_t v;
-            len = (bits + JS_LIMB_BITS - 1) / JS_LIMB_BITS;
+            if (len64 > JS_BIGINT_MAX_SIZE) {
+                JS_FreeValue(ctx, a);
+                return JS_ThrowRangeError(ctx, "BigInt is too large to allocate");
+            }
+            len = len64;
             r = js_bigint_new(ctx, len);
             if (!r) {
                 JS_FreeValue(ctx, a);
@@ -53327,15 +53377,21 @@ static JSValue js_bigint_asUintN(JSContext *ctx,
             }
             r->len = len;
             for(i = 0; i < len - 1; i++)
-                r->tab[i] = p->tab[i];
+                r->tab[i] = i < p->len ? p->tab[i] : -is_neg;
             shift = (-bits) & (JS_LIMB_BITS - 1);
             /* 0 <= shift <= JS_LIMB_BITS - 1 */
-            v = p->tab[len - 1] << shift;
+            v = (len - 1 < p->len ? p->tab[len - 1] : -is_neg) << shift;
             if (asIntN)
                 v = (js_slimb_t)v >> shift;
             else
                 v = v >> shift;
             r->tab[len - 1] = v;
+            if (!asIntN)
+                r = js_bigint_extend(ctx, r, 0);
+            if (!r) {
+                JS_FreeValue(ctx, a);
+                return JS_EXCEPTION;
+            }
             r = js_bigint_normalize(ctx, r);
             JS_FreeValue(ctx, a);
             res = JS_CompactBigInt(ctx, r);

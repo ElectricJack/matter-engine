@@ -1,0 +1,14 @@
+{
+  "base_commit": "1f4ff089a9a81f8f54528df6a131a70757648853",
+  "original_lines_relocated": 246,
+  "adapter_and_build_lines_added_after_relocation": 152,
+  "other_code_lines_removed_after_relocation": 5,
+  "moves": {
+    "tests/vulkan_device_fixture.h -> examples/native_device.h": 123,
+    "tests/raster_native.h -> examples/imported_acceptance.h": 91,
+    "tests/raster_tests.cpp -> examples/graphics_sample.cpp": 13,
+    "triangle() -> examples/synthetic_asset.h": 12,
+    "ppm() -> examples/image_capture.h": 7
+  },
+  "new_file_over_50_lines": "examples/graphics_sample.cpp extends the relocated 13-line main with only facade/pass/camera/light/capture/lifecycle boundary wiring. native_device.h (123 lines) and imported_acceptance.h (91 lines) are byte-identical moves; JSON/log files over 50 lines are captured evidence, not implementations."
+}

@@ -1,9 +1,8 @@
 // Bake-time subtree flattening + error-bounded LOD ladder tests.
 // Harness convention mirrors composition_tests.cpp (CHECK + failures counter).
 //
-// Fixtures: synthetic parent/child .part v2 files written into a temp cache dir
-// (parts/<hash>.part), then flatten_part() merges them and we verify the flat
-// artifact via load_v2.
+// Fixtures: generated parent/child production bundle bytes in owned RAM.
+// flatten_part() merges them and production loaders verify the flat sections.
 #include "part_flatten.h"
 #include "matter/lod_contract.h"   // kMaxSerializedLodLevels (the over-cap guard)
 #include "impostor_bake.h"
@@ -40,14 +39,18 @@
 #endif
 
 #include "check.h"
+#include "memory_fixture_io.h"
+#include <sstream>
 
 namespace fs = std::filesystem;
 
 // Not const: the --bake-child mode (see the cross-process gate below) retargets
 // the whole suite's cache at a private directory before anything touches it.
 static std::string kCacheRootStorage =
-    (fs::temp_directory_path() / "part_flatten_tests_cache").string();
+    "/part-flatten-fixture";
 static const char* kCacheRoot = kCacheRootStorage.c_str();
+static std::shared_ptr<matter::test::MemoryCacheByteStorage> fixture_storage;
+static constexpr const char* kFixtureCellPx = "16";
 
 static void set_cache_root(const std::string& dir) {
     kCacheRootStorage = dir;
@@ -123,10 +126,8 @@ static bool save_fixture(uint64_t hash, int mat,
 
 // Whole-file byte read; the determinism gates compare artifacts with it.
 static std::vector<char> read_all_bytes(const std::string& path) {
-    std::ifstream in(path, std::ios::binary);
-    if (!in) return {};
-    return std::vector<char>((std::istreambuf_iterator<char>(in)),
-                             std::istreambuf_iterator<char>());
+    const auto bytes = fixture_storage->open(path);
+    return bytes ? std::vector<char>(bytes->begin(), bytes->end()) : std::vector<char>{};
 }
 
 static void set_translate(float m[16], float x, float y, float z) {
@@ -139,7 +140,6 @@ static void set_translate(float m[16], float x, float y, float z) {
 // (quad, material 7) at +10x and +20x. Child carries TWO LOD levels (full quad +
 // a single-tri coarse level) so the flatten must pick only level 0.
 static bool write_fixtures() {
-    fs::create_directories(fs::path(kCacheRoot) / "parts");
 
     std::vector<Tri> quad = quad_tris();
     std::vector<Tri> coarse(quad.begin(), quad.begin() + 1);   // 1 tri "LOD1"
@@ -171,9 +171,9 @@ static void drop_variants(const std::string& bundle_path, uint64_t hash) {
 }
 
 static bool read_bytes(const std::string& path, std::vector<char>& out) {
-    std::ifstream f(path, std::ios::binary);
-    if (!f) return false;
-    out.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
+    const auto bytes = fixture_storage->open(path);
+    if (!bytes) return false;
+    out.assign(bytes->begin(), bytes->end());
     return true;
 }
 
@@ -322,33 +322,50 @@ static int run_bake_child_inproc(const std::string& dir, uint8_t poison) {
     return 0;
 }
 
-static int spawn_bake_child(const fs::path& dir, uint8_t poison) {
+using ByteTree = std::map<std::string, std::vector<char>>;
+static ByteTree spawn_bake_child(const fs::path& dir, uint8_t poison, int& result) {
     char inner[2048];
     std::snprintf(inner, sizeof inner, "\"%s\" --bake-child \"%s\" %02x",
                   g_exe_path.c_str(), dir.string().c_str(), (unsigned)poison);
 #ifdef _WIN32
-    // system() runs `cmd /c <string>`. With more than one quoted token cmd
-    // strips quotes from the wrong places unless the whole line is wrapped in
-    // one more pair -- and this repo's path has spaces in it.
-    char cmd[2100];
-    std::snprintf(cmd, sizeof cmd, "\"%s\"", inner);
-    return std::system(cmd);
+    const std::string command = std::string("\"") + inner + "\"";
+    FILE* pipe = _popen(command.c_str(), "r");
 #else
-    const int rc = std::system(inner);
-    return (rc != -1 && WIFEXITED(rc)) ? WEXITSTATUS(rc) : rc;
+    FILE* pipe = popen(inner, "r");
 #endif
-}
-
-// Every regular file under `root`, keyed by its path relative to root.
-static std::map<std::string, std::vector<char>> read_tree(const fs::path& root) {
-    std::map<std::string, std::vector<char>> out;
-    if (!fs::exists(root)) return out;
-    for (const auto& de : fs::recursive_directory_iterator(root)) {
-        if (!de.is_regular_file()) continue;
-        out[fs::relative(de.path(), root).generic_string()] =
-            read_all_bytes(de.path().string());
+    ByteTree files;
+    if (!pipe) { result = -1; return files; }
+    std::string line;
+    const auto consume = [&] {
+        if (line.compare(0, 10, "AQ_BUNDLE ") != 0) return;
+        std::istringstream fields(line.substr(10));
+        std::string name, hex;
+        if (!(fields >> name >> hex) || hex.size() % 2) return;
+        std::vector<char> bytes;
+        for (size_t i = 0; i < hex.size(); i += 2) {
+            const auto nibble = [](char c) -> int {
+                if (c >= '0' && c <= '9') return c - '0';
+                if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+                return -1;
+            };
+            const int hi = nibble(hex[i]), lo = nibble(hex[i + 1]);
+            if (hi < 0 || lo < 0) return;
+            bytes.push_back(static_cast<char>((hi << 4) | lo));
+        }
+        files.emplace(name, std::move(bytes));
+    };
+    for (int c; (c = std::fgetc(pipe)) != EOF;) {
+        if (c == '\n') { consume(); line.clear(); }
+        else line.push_back(static_cast<char>(c));
     }
-    return out;
+    if (!line.empty()) consume();
+#ifdef _WIN32
+    result = _pclose(pipe);
+#else
+    const int status = pclose(pipe);
+    result = status != -1 && WIFEXITED(status) ? WEXITSTATUS(status) : status;
+#endif
+    return files;
 }
 
 static void test_cross_process_byte_identical() {
@@ -357,15 +374,10 @@ static void test_cross_process_byte_identical() {
     const fs::path base  = fs::path(kCacheRoot) / "xproc";
     const fs::path dir_a = base / "a";
     const fs::path dir_b = base / "b";
-    // COLD, both of them: a surviving bundle would be served back instead of
-    // baked, and two skipped bakes compare equal for the wrong reason.
-    std::error_code ec;
-    fs::remove_all(base, ec);
-    fs::create_directories(dir_a);
-    fs::create_directories(dir_b);
-
-    const int rc_a = spawn_bake_child(dir_a, 0x00);
-    const int rc_b = spawn_bake_child(dir_b, 0xCD);
+    // Each child owns a fresh RAM cache and an independent padding poison.
+    int rc_a = -1, rc_b = -1;
+    const auto tree_a = spawn_bake_child(dir_a, 0x00, rc_a);
+    const auto tree_b = spawn_bake_child(dir_b, 0xCD, rc_b);
     CHECK(rc_a == 0, "xproc: child A baked successfully");
     CHECK(rc_b == 0, "xproc: child B baked successfully");
     if (rc_a != 0 || rc_b != 0) {
@@ -373,8 +385,6 @@ static void test_cross_process_byte_identical() {
         return;
     }
 
-    const auto tree_a = read_tree(dir_a);
-    const auto tree_b = read_tree(dir_b);
     CHECK(!tree_a.empty(), "xproc: child A wrote artifacts");
     CHECK(tree_a.size() == tree_b.size(), "xproc: both children wrote the same file set");
 
@@ -1203,10 +1213,19 @@ static const uint64_t kBigHash = 0x4040404040404040ull;
 static void test_flatten_clustered_v3() {
     printf("=== test_flatten_clustered_v3 ===\n");
 
-    // Write a 40k-tri flat grid as a single v2 part.
+    // Keep the original dense integration workload in build qualification.
+    // Runtime exercises the same split/codec/conservation path with smaller
+    // clusters; the direct 40k splitter guards still run in this suite.
+#ifdef MATTER_CODEC_SOURCE_QUALIFICATION
     const int NX = 200, NZ = 100;
+    const uint32_t cluster_target = 16000;
+#else
+    const int NX = 20, NZ = 10;
+    const uint32_t cluster_target = 160;
+#endif
+    const uint32_t full_tris = 2 * NX * NZ;
     std::vector<Tri> big_tris = grid_sheet_tris(NX, NZ, 200.0f, 100.0f);
-    CHECK(big_tris.size() == 40000u, "big mesh: 40000 tris");
+    CHECK(big_tris.size() == full_tris, "big mesh: expected input triangle count");
 
     {
         BLASManager blas; TLASManager tlas(16);
@@ -1231,13 +1250,13 @@ static void test_flatten_clustered_v3() {
 
     part_flatten::FlattenTargets tgt;
     // Use tight cluster size so we definitely get multiple clusters.
-    tgt.cluster_target_tris = 16000;
+    tgt.cluster_target_tris = cluster_target;
 
     part_flatten::FlattenResult res = part_flatten::flatten_part(kCacheRoot, kBigHash, tgt);
     CHECK(res.ok, "big mesh: flatten_part ok");
     if (!res.ok) { printf("  error: %s\n", res.error.c_str()); return; }
 
-    CHECK(res.full_tris == 40000u, "big mesh: full_tris == 40000");
+    CHECK(res.full_tris == full_tris, "big mesh: full triangle count is preserved");
     CHECK(res.clusters > 1, "big mesh: result.clusters > 1 (split required)");
     printf("  clusters=%zu, levels=%zu, full_tris=%zu\n", res.clusters, res.levels, res.full_tris);
 
@@ -1254,7 +1273,7 @@ static void test_flatten_clustered_v3() {
 
     CHECK(clusters_in.size() == res.clusters, "big mesh: cluster count matches result");
 
-    // Every cluster level-0 tri count must be <= 16000.
+    // Every cluster level-0 tri count must stay within the selected target.
     const auto& entries = blas_in.get_entries();
     uint32_t total_l0 = 0;
     bool all_le_target = true;
@@ -1264,13 +1283,13 @@ static void test_flatten_clustered_v3() {
         for (uint32_t bi : cl.lods[0].blas_indices) {
             if (bi < entries.size()) cl_l0 += (uint32_t)entries[bi]->triangles.size();
         }
-        if (cl_l0 > 16000) { all_le_target = false; }
+        if (cl_l0 > cluster_target) { all_le_target = false; }
         total_l0 += cl_l0;
     }
-    CHECK(all_le_target, "big mesh: every cluster level-0 tri count <= 16000");
-    CHECK(total_l0 == 40000u, "big mesh: cluster level-0 tri counts sum to 40000");
+    CHECK(all_le_target, "big mesh: every cluster level-0 tri count <= target");
+    CHECK(total_l0 == full_tris, "big mesh: cluster level-0 tri counts sum to input");
 
-    printf(res.ok && res.clusters > 1 && all_le_target && total_l0 == 40000u ? "PASSED\n" : "FAILED\n");
+    printf(res.ok && res.clusters > 1 && all_le_target && total_l0 == full_tris ? "PASSED\n" : "FAILED\n");
 }
 
 // Watertight invariant (Task 8 payoff): for the 40k grid flatten, shared
@@ -1734,7 +1753,7 @@ static void test_authored_ladder_impostor_terminal() {
         mesh_radius = bake({0.0, 18.0}, {"", "decimate {\"divisor\":8}"}, r, cl, b);
         CHECK(mesh_radius > 0.0f, "imp ladder: mesh-only reference bakes");
         CHECK(r.impostors == 0, "imp ladder: no terminal declared -> no impostor");
-        CHECK(!fs::exists(fimp) ||
+        CHECK(!fixture_storage->exists(fimp) ||
                   !part_bundle::has_section(fimp, kImpostorLadderHash,
                                             part_bundle::kSectionImpostor),
               "imp ladder: an undeclared impostor is never implied");
@@ -2459,14 +2478,19 @@ static void test_flatten_retain_budget_identical() {
 
     // Two separate cache roots so the two flatten runs don't share a cached flat.
     const std::string root_a =
-        (fs::temp_directory_path() / "pftest_retain_a").string();
+        "/pftest-retain-a";
     const std::string root_b =
-        (fs::temp_directory_path() / "pftest_retain_b").string();
-    fs::create_directories(fs::path(root_a) / "parts");
-    fs::create_directories(fs::path(root_b) / "parts");
+        "/pftest-retain-b";
 
-    // Write the same 40k-tri grid source .part into both cache roots.
+    // The original dense retained/re-materialised workload remains in build
+    // qualification; runtime still compares both complete multi-cluster bytes.
+#ifdef MATTER_CODEC_SOURCE_QUALIFICATION
     const int NX = 200, NZ = 100;
+    const uint32_t cluster_target = 16000;
+#else
+    const int NX = 20, NZ = 10;
+    const uint32_t cluster_target = 160;
+#endif
     static const uint64_t kRetainHash = 0x5050505050505050ull;
     {
         std::vector<Tri> big_tris = grid_sheet_tris(NX, NZ, 200.0f, 100.0f);
@@ -2489,7 +2513,7 @@ static void test_flatten_retain_budget_identical() {
     }
 
     part_flatten::FlattenTargets tgt;
-    tgt.cluster_target_tris = 16000;
+    tgt.cluster_target_tris = cluster_target;
 
     // Run A: retention enabled (512 MB budget — takes the retained path).
     pf_set_env("MATTER_FLATTEN_RETAIN_MB", "512");
@@ -2513,6 +2537,9 @@ static void test_flatten_retain_budget_identical() {
 
     pf_set_env("MATTER_FLATTEN_RETAIN_MB", nullptr);
 
+    CHECK(res_a.full_tris == 2u * NX * NZ && res_b.full_tris == res_a.full_tris &&
+              res_a.clusters > 1 && res_b.clusters == res_a.clusters,
+          "both retention paths preserve the complete multi-cluster fixture");
     CHECK(bytes_a == bytes_b,
           "retained and streamed flatten artifacts are byte-identical");
     printf(bytes_a == bytes_b ? "PASSED\n" : "FAILED\n");
@@ -3468,7 +3495,7 @@ static void test_impostor_cell_px_parametrized() {
     CHECK(out.clusters.empty(), "nothing is handed back on rejection");
 
     // Restore the suite's pinned resolution for whatever runs after this.
-    pf_set_env("MATTER_IMPOSTOR_CELL_PX", "32");
+    pf_set_env("MATTER_IMPOSTOR_CELL_PX", kFixtureCellPx);
     printf("PASSED\n");
 }
 
@@ -3601,11 +3628,8 @@ static void test_impostor_sidecar_failability() {
     impostor::bake_cluster(0, tris, ex, part2.clusters[0]);
     CHECK(impostor::save(path2, part_hash, depicts, part2), "second sidecar written");
     {
-        std::ifstream fa(path, std::ios::binary), fb(path2, std::ios::binary);
-        std::string sa((std::istreambuf_iterator<char>(fa)),
-                       std::istreambuf_iterator<char>());
-        std::string sb((std::istreambuf_iterator<char>(fb)),
-                       std::istreambuf_iterator<char>());
+        const auto sa = read_all_bytes(path);
+        const auto sb = read_all_bytes(path2);
         CHECK(!sa.empty() && sa == sb, "two cold bakes write byte-identical sidecars");
     }
 
@@ -3639,7 +3663,7 @@ static void test_impostor_sidecar_failability() {
 
         const std::string mismatched = path + ".mismatched";
         std::error_code mismatch_ec;
-        fs::remove(mismatched, mismatch_ec);
+        fixture_storage->erase(mismatched);
         CHECK(part_bundle::write_section(mismatched, part_hash,
                                          part_bundle::kSectionImpostor,
                                          payload.data(), payload.size()),
@@ -3667,7 +3691,7 @@ static void test_impostor_sidecar_failability() {
 
     const auto republish = [&](const std::string& dst, const std::vector<uint8_t>& payload) {
         std::error_code copy_ec;
-        fs::remove(dst, copy_ec);
+        fixture_storage->erase(dst);
         return part_bundle::write_section(dst, part_hash,
                                           part_bundle::kSectionImpostor,
                                           payload.data(), payload.size());
@@ -3710,26 +3734,13 @@ static void test_impostor_sidecar_failability() {
     // produce it, which is a damaged cache and not a part without one.
     {
         const std::string rotted = path + ".rotted";
-        std::error_code rot_ec;
-        fs::remove(rotted, rot_ec);
-        fs::copy_file(path, rotted, rot_ec);
-        CHECK(!rot_ec, "rotted fixture copied");
-        if (!rot_ec) {
-            std::fstream f(rotted, std::ios::binary | std::ios::in | std::ios::out);
-            CHECK(f.good(), "rotted fixture opened for patching");
-            // Last byte of the file is deep inside the final section's payload,
-            // well past the 40-byte header and the directory.
-            f.seekg(0, std::ios::end);
-            const std::streamoff last =
-                static_cast<std::streamoff>(f.tellg()) - std::streamoff(1);
-            f.seekg(last, std::ios::beg);
-            char b = 0;
-            f.read(&b, 1);
-            b = static_cast<char>(b ^ 0x5A);
-            f.clear();
-            f.seekp(last, std::ios::beg);
-            f.write(&b, 1);
-            f.close();
+        auto bytes = read_all_bytes(path);
+        CHECK(!bytes.empty(), "rotted fixture copied");
+        if (!bytes.empty()) {
+            bytes.back() ^= 0x5A;
+            CHECK(fixture_storage->publish(rotted,
+                      std::vector<uint8_t>(bytes.begin(), bytes.end())),
+                  "rotted fixture published with original directory/checksum");
 
             CHECK(!impostor::load(rotted, part_hash, depicts, out, &fail, &reason) &&
                       fail == impostor::LoadFailure::Open,
@@ -3821,16 +3832,17 @@ int main(int argc, char** argv) {
     // Unbuffered: an abort deep in a bake must not swallow the log that
     // says which test was running when it happened.
     setvbuf(stdout, nullptr, _IONBF, 0);
+    fixture_storage = std::make_shared<matter::test::MemoryCacheByteStorage>();
+    part_bundle::ScopedStorage storage_scope(fixture_storage);
     // PIN THE CELL RESOLUTION for this suite. The impostor bake is O(cell_px^2)
-    // per view, so inheriting the 128 px default would make every impostor test
-    // here 16x slower -- this suite already runs for minutes -- while testing
-    // nothing the 32 px path does not. test_impostor_cell_px_parametrized is
-    // where the setting itself is exercised, and it restores this value.
+    // per view. Use the supported minimum of 16 px for repeated fixtures.
+    // The parametrized guard still checks 16/32 px bakes, byte scaling,
+    // cache identity and rejection across resolutions.
     //
     // AHEAD of the --bake-child dispatch below on purpose: a gate child bakes
     // the same fixture and must pin the same value itself, rather than trusting
     // that it inherited the parent's environment across the spawn.
-    pf_set_env("MATTER_IMPOSTOR_CELL_PX", "32");
+    pf_set_env("MATTER_IMPOSTOR_CELL_PX", kFixtureCellPx);
 
     // Re-entry point for the cross-process determinism gate: bake the fixtures
     // into a private cache with a given padding poison and exit. Handled before
@@ -3839,21 +3851,19 @@ int main(int argc, char** argv) {
     if (argc >= 4 && std::string(argv[1]) == "--bake-child") {
         const uint8_t poison =
             static_cast<uint8_t>(std::strtoul(argv[3], nullptr, 16));
-        return run_bake_child_inproc(argv[2], poison);
+        const int result = run_bake_child_inproc(argv[2], poison);
+        if (result != 0) return result;
+        for (const auto& entry : fixture_storage->entries()) {
+            const auto name = fs::path(entry.first).lexically_relative(kCacheRoot).generic_string();
+            std::printf("AQ_BUNDLE %s ", name.c_str());
+            for (const auto byte : *entry.second) std::printf("%02x", unsigned(byte));
+            std::printf("\n");
+        }
+        return 0;
     }
 
-    // fs::absolute keeps the "./build/..." the Makefile invokes us with usable
-    // from a child's own working directory; MinGW appends .exe at link time, so
-    // the name we were invoked by may not be the name on disk.
-    {
-        fs::path self = fs::absolute(argv[0]).lexically_normal();
-        if (!fs::exists(self)) {
-            fs::path with_exe = self;
-            with_exe += ".exe";
-            if (fs::exists(with_exe)) self = with_exe;
-        }
-        g_exe_path = self.string();
-    }
+    // The child inherits our working directory; argv[0] remains usable.
+    g_exe_path = argv[0];
 
     if (!write_fixtures()) {
         printf("FAIL: could not write fixture parts under %s\n", kCacheRoot);
