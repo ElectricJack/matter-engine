@@ -1,0 +1,85 @@
+{
+  "verified_at_utc": "2026-09-15T22:59:11.006250+00:00",
+  "native_sources": 85,
+  "binaries": 5,
+  "runs": {
+    "brick-shape-reference": {
+      "capture_passed": true,
+      "source_mismatches": [],
+      "image_mismatches": [],
+      "image_count": 8,
+      "historical_brick_recipe": "brick-before.js"
+    },
+    "brick-shape-v1": {
+      "capture_passed": true,
+      "source_mismatches": [],
+      "image_mismatches": [],
+      "image_count": 8,
+      "historical_brick_recipe": "brick-v1.js"
+    },
+    "brick-shape-v2": {
+      "capture_passed": true,
+      "source_mismatches": [],
+      "image_mismatches": [],
+      "image_count": 8,
+      "historical_brick_recipe": "brick-v2.js"
+    },
+    "brick-shape-baseline-v2": {
+      "capture_passed": true,
+      "source_mismatches": [],
+      "image_mismatches": [],
+      "image_count": 8,
+      "historical_brick_recipe": "brick-before.js"
+    },
+    "brick-shape-v3": {
+      "capture_passed": true,
+      "source_mismatches": [],
+      "image_mismatches": [],
+      "image_count": 8,
+      "historical_brick_recipe": "brick-v3.js"
+    },
+    "terrain-boundary-review": {
+      "capture_passed": true,
+      "source_mismatches": [],
+      "image_mismatches": [],
+      "image_count": 16,
+      "historical_brick_recipe": null
+    }
+  },
+  "matched_comparison": {
+    "views": true,
+    "exposure_ev": true,
+    "review_lighting": true,
+    "pom_settings": true,
+    "environment": true,
+    "timeline": true
+  },
+  "images_verified": 56,
+  "artifact_hashes": {
+    "docs/agent/evidence/2026-09-15-material-shapes/README.md": "ec2d727037274bf80771ec9e1c2bb3bb27d0eaa818f59ef5e91edd341167f4be",
+    "docs/agent/evidence/2026-09-15-material-look/capture.py": "a9a9436dc675d85ad87d833214aa5475749509882720255b25b1a188140a3676",
+    "projects/world_demo/scenes/ProceduralBrickProof/ProceduralBrickProof.js": "501deee3d532cec2bd6751ff6e2b4b8e478bcb2956809ff84aee78bd4c9c85da",
+    "projects/world_demo/scenes/ProceduralBrickProof/README.md": "1d2736b5f17f117685286d2121dba4290396b557b9264bd383891e774887646c",
+    "docs/superpowers/plans/2026-09-14-layered-surface-texturing.md": "618cd8456c6788ea97a7a6d6914e9a948ce8eb0ba8ef4af845ef8d345fa9d190",
+    "docs/superpowers/specs/2026-09-14-layered-surface-texturing-design.md": "f4c872b71bacb2e34c3b29ffc55be094bb8fdd419fde8d1c6e6220a35ca06190",
+    "docs/agent/evidence/2026-09-15-material-shapes/recipes/brick-before.js": "9994d1ebf7bd0f472b02a1da71dfaf2ae730d0543a59fdbf7bf0bf9b1822c19f",
+    "docs/agent/evidence/2026-09-15-material-shapes/recipes/brick-v1.js": "9a363908514e5438ecb47eae46798d1fb8e95d5993c3e04fe311e49010ef79e7",
+    "docs/agent/evidence/2026-09-15-material-shapes/recipes/brick-v2.js": "60c0aa3551cbe7e67bea9d0df2a908c98b628881bac3a1331b985b8cc1569fcf",
+    "docs/agent/evidence/2026-09-15-material-shapes/recipes/brick-v3.js": "501deee3d532cec2bd6751ff6e2b4b8e478bcb2956809ff84aee78bd4c9c85da",
+    "docs/agent/evidence/2026-09-15-material-shapes/recipes/terrain-before.js": "4c730f4cd9f9248d627c32e3cd5c0d6920e0025e4a9a117f9ffdba1bc097dbd9",
+    "docs/agent/evidence/2026-09-15-material-look/brick-shape-reference-source.json": "230a43d332825e5d38793edf8e57cc747bf17c85f2540587464ae498991bd939",
+    "docs/agent/evidence/2026-09-15-material-look/brick-shape-reference-result.json": "7efe9a30f906f2d4d9acc93ff5c02d7c8827b5f308b8955fd0cb5a892f62ea01",
+    "docs/agent/evidence/2026-09-15-material-look/brick-shape-v1-source.json": "1ef5b86f9292ec4f32b289a0321f9ed15b40e012eccb200f3c95c0271b5dc077",
+    "docs/agent/evidence/2026-09-15-material-look/brick-shape-v1-result.json": "1ae47ed9e05dba522d0ac79f5b4d929bc8ab636327dacc3d7dcbce08d82be62d",
+    "docs/agent/evidence/2026-09-15-material-look/brick-shape-v2-source.json": "c60535cccccbe3fbae5bbfaae8d032dee9bc860111c522b654d1f6d5900f2433",
+    "docs/agent/evidence/2026-09-15-material-look/brick-shape-v2-result.json": "41333ca3500f2643369c214376fa04a7989527de84abaaa6f2862c2c96dd93ab",
+    "docs/agent/evidence/2026-09-15-material-look/brick-shape-baseline-v2-source.json": "f46ac24c68f2fe9b2e5ca828aa1a13c2e53a486539d778af0d04749661286490",
+    "docs/agent/evidence/2026-09-15-material-look/brick-shape-baseline-v2-result.json": "afc556d64d64d20d658173e116aa0b14e15fc4eda73e37fc8178bbdb6df3c895",
+    "docs/agent/evidence/2026-09-15-material-look/brick-shape-v3-source.json": "edbb6637e24f20c84ff6ca430e7f941f8bd26d6010a3a71e66b751e6e02e5d56",
+    "docs/agent/evidence/2026-09-15-material-look/brick-shape-v3-result.json": "c81bbfe40fa83d644282a5b683bccb4f3c9a7a214e967a3f25574a776cead6d0",
+    "docs/agent/evidence/2026-09-15-material-look/terrain-boundary-review-source.json": "801c25c33e1c3e5243b8c42b9f93a75748a51a346350391ff7533c9cd5ba280d",
+    "docs/agent/evidence/2026-09-15-material-look/terrain-boundary-review-result.json": "48cd2178e23feaa4343747f958967a08d077a4b078e36b63c915a8056a4f0bd0"
+  },
+  "errors": [],
+  "passed": true
+}

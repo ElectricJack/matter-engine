@@ -1,0 +1,21 @@
+{
+  "mode": "prepare",
+  "exit_code": 0,
+  "completed": true,
+  "elapsed_seconds": 326.75260120000166,
+  "streamer_idle_seconds": 305.93731780000235,
+  "first_cache_seconds": 1.652458000004117,
+  "last_cache_seconds": 303.83716870000353,
+  "outcomes": {
+    "hit": 815
+  },
+  "compilations": 0,
+  "expected_keys_missing": [],
+  "unexpected_keys": [],
+  "failures": [],
+  "valid": true,
+  "prepared_event_count": 2441,
+  "prepared_hit_count": 0,
+  "prepared_write_count": 2441,
+  "prepared_write_failures": 0
+}

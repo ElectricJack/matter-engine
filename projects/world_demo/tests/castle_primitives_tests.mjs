@@ -174,6 +174,8 @@ for (const [emit, input, expected] of [
   const part = new RecordingPart();
   emit(part, input);
   part.balanced();
+  assert.deepEqual(part.ops.find((op) => op.kind === 'endModifier').args, [],
+    expected + ' preserves its fine mesh without unconstrained author simplification');
   assert.ok(part.ops.some((op) => op.kind === 'capsule' && op.csg === 'difference'),
     expected + ' has longitudinal checks');
   assert.ok(part.ops.some((op) => op.kind === 'sphere'), expected + ' has knot relief');

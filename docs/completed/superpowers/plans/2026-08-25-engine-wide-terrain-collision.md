@@ -17,7 +17,7 @@
 - Keep Box3D types private to `MatterEngine3/src/ecs/physics_context.cpp`. The public world definition, artifact, and worker candidate contain only engine-native data.
 - Reuse `terrain_mesher::mesh_sector_tiled`. Do not add a height-field collider, hidden boxes, a second terrain mesher, GPU readback, or a general scene `MeshCollider` component.
 - One world has one collision cell size. Region overlap canonicalizes to a sorted unique sector union.
-- Preserve the existing `projects/world_demo/objects/Crate.js`; RiverFloatLab gets a scene-local part.
+- Preserve the existing `projects/world_demo/objects/props/Crate.js`; RiverFloatLab gets a scene-local part.
 - A declared collision definition is required gameplay data. Build, validation, cache, or install failure prevents Ready.
 - Keep unrelated worktree changes and untracked files untouched. Commit only files named by the active task.
 - Update `cmake/manifests/engine-core.sources`, `cmake/MatterEngine.cmake`, and the rollback-only `MatterEngine3/tests/Makefile` registrations when adding translation units or tests, but never execute the rollback Make targets.
@@ -514,8 +514,8 @@ git commit -m "feat: gate world readiness on terrain collision"
 
 **Files:**
 
-- Create: `projects/world_demo/scenes/RiverFloatLab/objects/RiverCrate.js`
-- Modify: `projects/world_demo/scenes/RiverFloatLab/RiverFloatLab.js`
+- Create: `projects/world_demo/scenes/water/RiverFloatLab/objects/RiverCrate.js`
+- Modify: `projects/world_demo/scenes/water/RiverFloatLab/RiverFloatLab.js`
 - Modify: `projects/world_demo/tests/river_float_lab_scene_tests.mjs`
 
 ### 5.1 Write the failing scene assertions
@@ -523,7 +523,7 @@ git commit -m "feat: gate world readiness on terrain collision"
 - [ ] Stub `globalThis.terrainCollision` in the Node test with a recording builder, instantiate the scene, and invoke `collision()`.
 - [ ] Assert exactly one builder, one build, `cellSize: 0.5`, friction `0.72`, restitution `0.02`, and exactly one `river-gameplay` region from `[-64,-64,-64]` inclusive to `[384,128,64]` exclusive.
 - [ ] Change the reference-crate expectation and every crate recipe expectation to `PartInstance.part === "RiverCrate"` and `BoxCollider.halfExtents === [0.75,0.75,0.75]`.
-- [ ] Assert raft dimensions remain `[2.4,0.35,1.5]`, explicit boulder colliders remain present, and the shared `projects/world_demo/objects/Crate.js` source still describes `[1.5,1.5,1.5]` half extents.
+- [ ] Assert raft dimensions remain `[2.4,0.35,1.5]`, explicit boulder colliders remain present, and the shared `projects/world_demo/objects/props/Crate.js` source still describes `[1.5,1.5,1.5]` half extents.
 - [ ] Load the planned `RiverCrate` part through the same dynamic test harness as `RiverRaft` and assert its emitted box is centered with half extents `[0.75,0.75,0.75]`.
 - [ ] Assert equilibrium spawn Y is recomputed from the smaller height and density rather than carrying the old 3 m result.
 - [ ] Run the RED Node gate and confirm the collision method/part expectations fail:
@@ -573,7 +573,7 @@ tools/build-windows.ps1 -Config RelWithDebInfo -Target matter_editor
 - [ ] Commit only RiverFloatLab files:
 
 ```powershell
-git add projects/world_demo/scenes/RiverFloatLab/RiverFloatLab.js projects/world_demo/scenes/RiverFloatLab/objects/RiverCrate.js projects/world_demo/tests/river_float_lab_scene_tests.mjs
+git add projects/world_demo/scenes/water/RiverFloatLab/RiverFloatLab.js projects/world_demo/scenes/water/RiverFloatLab/objects/RiverCrate.js projects/world_demo/tests/river_float_lab_scene_tests.mjs
 git commit -m "feat: collide RiverFloatLab with its ravine"
 ```
 

@@ -19,9 +19,8 @@
 // vk_instance_cache_expansions, which is the metric that tells you whether the
 // cache is actually working: it should stay flat while the camera moves.
 //
-// Correctness rule: the cache is keyed on a FINGERPRINT of the resolved set,
-// never on identity or pointers, so a stale entry survives only if it is
-// byte-identical in the fields folded below.
+// Correctness rule: the flat cache compares the resolved identity fields
+// exactly, never pointers. Per-source memos retain their content fingerprints.
 
 #include "vk_scene_renderer.h"
 
@@ -64,9 +63,10 @@ uint64_t fingerprint_resolved_instances(
 // purely add resolved instances.
 class VulkanInstanceCache {
 public:
-    // True only if the flat level is valid AND `resolved` fingerprints
-    // identically — i.e. the cached instances() may be reused verbatim. Costs
-    // a full fingerprint pass over `resolved`.
+    // True only if the flat level is valid AND `resolved` has identical
+    // identity fields in the same order. A contiguous snapshot avoids the
+    // serial multiply per byte of a full-forest FNV pass, with no hash collision
+    // risk. LOD alone remains excluded: the GPU selects the draw rung live.
     bool matches(const std::vector<ResolvedInstance>& resolved) const noexcept;
     // Adopts `instances` as the expansion of `resolved` (moved, not copied) and
     // marks the flat level valid. Also bumps expansion_count(), which is what
@@ -109,12 +109,15 @@ private:
         std::vector<VkSceneInstance> instances;
     };
 
-    // Flat level: the fingerprint and element count of the resolved set that
-    // produced instances_. `valid_` is the real gate — a zero fingerprint is
-    // also what invalidate_expansion() leaves behind, so the two are always
-    // cleared together.
-    uint64_t fingerprint_ = 0;
-    size_t resolved_count_ = 0;
+    struct ResolvedKey {
+        uint64_t part_hash;
+        uint64_t stable_id;
+        float transform[16];
+        int segment;
+    };
+    // Flat level: an owned value snapshot. Padding and lod_level never enter
+    // equality, and edits to the caller's vector cannot mutate this snapshot.
+    std::vector<ResolvedKey> resolved_keys_;
     bool valid_ = false;
     uint64_t expansion_count_ = 0;
     uint64_t source_expansion_count_ = 0;

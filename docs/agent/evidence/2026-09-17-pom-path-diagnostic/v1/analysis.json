@@ -1,0 +1,241 @@
+{
+  "scope": "Successful route pixel counts, not attempted traversal work or GPU cost.",
+  "tolerance_8bit": 2,
+  "palette": {
+    "ordinary_hit": [
+      0,
+      255,
+      0
+    ],
+    "connected_hit": [
+      255,
+      255,
+      0
+    ],
+    "off": [
+      64,
+      64,
+      64
+    ],
+    "initial_boundary": [
+      255,
+      128,
+      0
+    ],
+    "path_boundary": [
+      255,
+      0,
+      0
+    ],
+    "snapshot_mismatch": [
+      255,
+      0,
+      255
+    ],
+    "travel_limit": [
+      0,
+      0,
+      255
+    ],
+    "unresolved": [
+      0,
+      255,
+      255
+    ],
+    "unsupported": [
+      255,
+      255,
+      255
+    ],
+    "zero_depth": [
+      0,
+      64,
+      0
+    ]
+  },
+  "views": {
+    "overview": {
+      "terrain_roi": [
+        128,
+        520,
+        1152,
+        800
+      ],
+      "regions": {
+        "full": {
+          "pixels": 1024000,
+          "counts": {
+            "ordinary_hit": 179719,
+            "connected_hit": 971,
+            "off": 372,
+            "initial_boundary": 1350,
+            "path_boundary": 3,
+            "snapshot_mismatch": 0,
+            "travel_limit": 0,
+            "unresolved": 614492,
+            "unsupported": 0,
+            "zero_depth": 423,
+            "unclassified": 226670
+          },
+          "connected_share_of_successful_hits": 0.005373844706403232
+        },
+        "terrain": {
+          "pixels": 286720,
+          "counts": {
+            "ordinary_hit": 149796,
+            "connected_hit": 849,
+            "off": 0,
+            "initial_boundary": 1134,
+            "path_boundary": 2,
+            "snapshot_mismatch": 0,
+            "travel_limit": 0,
+            "unresolved": 134601,
+            "unsupported": 0,
+            "zero_depth": 330,
+            "unclassified": 8
+          },
+          "connected_share_of_successful_hits": 0.005635766205317136
+        }
+      },
+      "channel_controls": {
+        "albedo": {
+          "mean_abs_8bit": 0.0,
+          "max_abs_8bit": 0,
+          "pixels_above_1": 0
+        },
+        "normal": {
+          "mean_abs_8bit": 1.1625744047619049e-06,
+          "max_abs_8bit": 1,
+          "pixels_above_1": 0
+        }
+      }
+    },
+    "grazing": {
+      "terrain_roi": [
+        0,
+        460,
+        1280,
+        800
+      ],
+      "regions": {
+        "full": {
+          "pixels": 1024000,
+          "counts": {
+            "ordinary_hit": 376040,
+            "connected_hit": 582,
+            "off": 463,
+            "initial_boundary": 1240,
+            "path_boundary": 3043,
+            "snapshot_mismatch": 0,
+            "travel_limit": 0,
+            "unresolved": 377312,
+            "unsupported": 0,
+            "zero_depth": 90,
+            "unclassified": 265230
+          },
+          "connected_share_of_successful_hits": 0.0015453159932239753
+        },
+        "terrain": {
+          "pixels": 435200,
+          "counts": {
+            "ordinary_hit": 376040,
+            "connected_hit": 582,
+            "off": 0,
+            "initial_boundary": 1240,
+            "path_boundary": 3043,
+            "snapshot_mismatch": 0,
+            "travel_limit": 0,
+            "unresolved": 54205,
+            "unsupported": 0,
+            "zero_depth": 90,
+            "unclassified": 0
+          },
+          "connected_share_of_successful_hits": 0.0015453159932239753
+        }
+      },
+      "channel_controls": {
+        "albedo": {
+          "mean_abs_8bit": 4.5189950980392155e-05,
+          "max_abs_8bit": 1,
+          "pixels_above_1": 0
+        },
+        "normal": {
+          "mean_abs_8bit": 0.00014246323529411764,
+          "max_abs_8bit": 1,
+          "pixels_above_1": 0
+        }
+      }
+    },
+    "close": {
+      "terrain_roi": [
+        0,
+        0,
+        1280,
+        800
+      ],
+      "regions": {
+        "full": {
+          "pixels": 1024000,
+          "counts": {
+            "ordinary_hit": 999532,
+            "connected_hit": 757,
+            "off": 0,
+            "initial_boundary": 1242,
+            "path_boundary": 2196,
+            "snapshot_mismatch": 0,
+            "travel_limit": 0,
+            "unresolved": 20199,
+            "unsupported": 0,
+            "zero_depth": 74,
+            "unclassified": 0
+          },
+          "connected_share_of_successful_hits": 0.0007567812902071301
+        },
+        "terrain": {
+          "pixels": 1024000,
+          "counts": {
+            "ordinary_hit": 999532,
+            "connected_hit": 757,
+            "off": 0,
+            "initial_boundary": 1242,
+            "path_boundary": 2196,
+            "snapshot_mismatch": 0,
+            "travel_limit": 0,
+            "unresolved": 20199,
+            "unsupported": 0,
+            "zero_depth": 74,
+            "unclassified": 0
+          },
+          "connected_share_of_successful_hits": 0.0007567812902071301
+        }
+      },
+      "channel_controls": {
+        "albedo": {
+          "mean_abs_8bit": 2.2786458333333334e-05,
+          "max_abs_8bit": 1,
+          "pixels_above_1": 0
+        },
+        "normal": {
+          "mean_abs_8bit": 4.9153645833333334e-05,
+          "max_abs_8bit": 1,
+          "pixels_above_1": 0
+        }
+      }
+    }
+  },
+  "timings": {
+    "overview-on": {
+      "samples": 30,
+      "gbuffer_median_ms": 33.4715
+    },
+    "grazing-on": {
+      "samples": 30,
+      "gbuffer_median_ms": 18.1025
+    },
+    "close-on": {
+      "samples": 30,
+      "gbuffer_median_ms": 6.106
+    }
+  },
+  "isolation": "Frozen r2 editor PID 9056 independently open; development measurements, not isolated acceptance."
+}

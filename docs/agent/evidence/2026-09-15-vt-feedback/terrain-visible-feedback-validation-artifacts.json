@@ -1,0 +1,156 @@
+{
+  "driver_exit": 1,
+  "elapsed_seconds": 203.41979417399853,
+  "command": [
+    "/mnt/c/Users/webde/AppData/Local/Programs/Python/Launcher/py.exe",
+    "-3",
+    "D:/Shared With Desktop/AI/matter-engine-cpp/MatterEngine3/tools/drive.py",
+    "--world",
+    "StreamMountain",
+    "--timeline",
+    "D:/tmp/matter-vt/20260915-feedback/terrain-visible-feedback-validation/timeline.txt",
+    "--out-dir",
+    "D:/tmp/matter-vt/20260915-feedback/terrain-visible-feedback-validation/run",
+    "--editor",
+    "D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor/build/windows-msvc/editor.exe",
+    "--timeout",
+    "600",
+    "--hide-ui",
+    "--env",
+    "MATTER_HIDE_WINDOW=0",
+    "--env",
+    "MATTER_WINDOW_WIDTH=1920",
+    "--env",
+    "MATTER_WINDOW_HEIGHT=1080",
+    "--env",
+    "MATTER_VSYNC=0",
+    "--env",
+    "MATTER_PRESENT_MODE=mailbox",
+    "--env",
+    "MATTER_FRAME_LIMIT=60",
+    "--env",
+    "MATTER_CAM=380,90,1600,420,55,1420",
+    "--env",
+    "MATTER_VT_TRACE=D:/tmp/matter-vt/20260915-feedback/terrain-visible-feedback-validation/vt.jsonl",
+    "--env",
+    "MATTER_VT_EVENT_LOG=0",
+    "--env",
+    "MATTER_VT_DENSITY_FRAME=0",
+    "--env",
+    "MATTER_VK_VALIDATION=1",
+    "--env",
+    "TMP=C:/Users/webde/AppData/Local/Temp",
+    "--env",
+    "TEMP=C:/Users/webde/AppData/Local/Temp",
+    "--env",
+    "MATTER_CAM_PATH=D:/tmp/matter-vt/20260915-feedback/terrain-visible-feedback-validation/camera.path",
+    "--env",
+    "MATTER_CAM_PATH_WARMUP=0",
+    "--env",
+    "MATTER_CAM_PATH_SETTLE=5",
+    "--env",
+    "MATTER_CAM_PATH_EXIT=0",
+    "--env",
+    "MATTER_PROFILE_TRACE=D:/tmp/matter-vt/20260915-feedback/terrain-visible-feedback-validation/profile.json"
+  ],
+  "source_manifest": "visibility-final-source.json",
+  "changed_inputs_during_run": [],
+  "validation_enabled": true,
+  "page_event_logging": false,
+  "validation_error_lines": [],
+  "skip_or_oversize_lines": [],
+  "analysis_command": null,
+  "analysis_exit": null,
+  "settled_counter_gate": null,
+  "full_vt_acceptance": false,
+  "artifacts": [
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-visible-feedback-validation/camera.path",
+      "bytes": 336051,
+      "sha256": "221bab96a8d6eae04c361d209b4b9cc60afcb4470b8ad30aea128d6db0cccfa5"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-visible-feedback-validation/command.json",
+      "bytes": 1518,
+      "sha256": "4f1bcb6088137f4bd0014dc6ec48548ea7a8de620aa19b89ef00abbf389b83be"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-visible-feedback-validation/crash-analysis-result.json",
+      "bytes": 570,
+      "sha256": "3db6b71959735f176748648e1449c40b602880cede9db93c31f8a48bb314f4d7"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-visible-feedback-validation/crash-analysis.log",
+      "bytes": 25113,
+      "sha256": "76c7ace6470084f4d2c3d9ddd70328644ec9f9974142f753764e7535aa93d15f"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-visible-feedback-validation/crash-editor.exe",
+      "bytes": 36579840,
+      "sha256": "9073ee0d8d182926c6f1b279f846a8b43931dbf08876f745b8c7aee14dfedc33"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-visible-feedback-validation/crash-editor.pdb",
+      "bytes": 395218944,
+      "sha256": "5630571f0a1a228d5babd2a163274d15829355daf3a222b396c28a9227e1d243"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-visible-feedback-validation/crash-locals-result.json",
+      "bytes": 532,
+      "sha256": "474e54dc21a4bb0f3e2b25133a57d17b964f6bd307be270e20247674dfd8a770"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-visible-feedback-validation/crash-locals.log",
+      "bytes": 8445,
+      "sha256": "b8042ff27d5929b17ad1ae96bf5742ac6b7b1c86fcf9deae777e9bfd8f594a8a"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-visible-feedback-validation/crash-source-locals-result.json",
+      "bytes": 558,
+      "sha256": "cd7738a9245a7920e7875395f3694159b111f4af09a09862690e3b556c051466"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-visible-feedback-validation/crash-source-locals.log",
+      "bytes": 44643,
+      "sha256": "1f63077075001830b5a2a8f4f348b6c7b3d3b3ee3eb0fc9dc31fc2f145ff6b1b"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-visible-feedback-validation/driver.log",
+      "bytes": 500723,
+      "sha256": "ca8af98fa62367f22f9d83c827af691468fc9e3db0e363060b00d9728f15742b"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-visible-feedback-validation/editor-crash.dmp",
+      "bytes": 16179079,
+      "sha256": "cbcf48b9f1113e854aa5cd096cc8279b746a39ffcf9ea50853c290d1de816be9"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-visible-feedback-validation/launch-source.json",
+      "bytes": 54176,
+      "sha256": "a8de61337ba3181b69610d0d5ada7e49e66cd84f322f291f1a5cd906b02fa5f1"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-visible-feedback-validation/result.json",
+      "bytes": 1715,
+      "sha256": "f025e735e426b288b40afc0744d2e987be31f2ec4651d92e956fa1055a8d59bc"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-visible-feedback-validation/run/cmd.txt",
+      "bytes": 226,
+      "sha256": "84408236e42e3782ead708f19e80896b4b534893c11809751fa21a3beb4366e7"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-visible-feedback-validation/run/log.txt",
+      "bytes": 500067,
+      "sha256": "1433a8d9b2dc97160499744d902492112c15675945ac88bcd48427cdb1182b78"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-visible-feedback-validation/timeline.txt",
+      "bytes": 226,
+      "sha256": "84408236e42e3782ead708f19e80896b4b534893c11809751fa21a3beb4366e7"
+    }
+  ],
+  "native_editor_exit": 3221226505,
+  "failure": "Editor terminated before observation/screenshot. Saved native dump shows uncaught std::bad_alloc from TLASManager DrawRecord reserve(65536), via WorldTracer::load_part and WorldSession::instance_info. No full memory information is present in the minidump; system commit exhaustion is not directly measured at the failure instant.",
+  "visual_review": "Unavailable: editor exited before screenshot."
+}

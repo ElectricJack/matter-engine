@@ -1,0 +1,133 @@
+{
+  "source_manifest": "tracer-green-source.json",
+  "capture_manifest": "terrain-tracer-bounded-validation-artifacts.json",
+  "changed_inputs_at_close": [],
+  "full_vt_acceptance": false,
+  "artifacts": [
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/terrain-tracer-bounded-validation-artifacts.json",
+      "bytes": 6539,
+      "sha256": "478f3b671deba810a3c275f79b1d307e7add9994f4bff356bae0c52764ebf6df"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/terrain-tracer-bounded-validation-summary.json",
+      "bytes": 1891,
+      "sha256": "1da4f59c5c9fd60cd2be99c0179d9a36befd9834db827e66538305d838a96685"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/tracer-final-verification.json",
+      "bytes": 574,
+      "sha256": "f9fe954786bdf6e06d1dd91887b334a6155e1cc66f16d1bda769cf77bfe30044"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/tracer-green-before.json",
+      "bytes": 4388,
+      "sha256": "1255f4dd371d398e2529f01d18771dd39a05e060b0a5706eccf40ce353b52049"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/tracer-green-checks.json",
+      "bytes": 5945,
+      "sha256": "67415c495a658529e2d28f9cf75cb932e292cfd5083b94ea5e91e04f4a5ddca2"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/tracer-green-editor-build.log",
+      "bytes": 1146,
+      "sha256": "2e7ce9afdd17312b8d6f6937ddf43e5f23b6481ca00c57c613bcd6f58156c61c"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/tracer-green-part_asset_flat_refs_tests-build.log",
+      "bytes": 2305,
+      "sha256": "f185f75918b4d61b45e7c151e9acce7b837e58c937452c4fcd52dedcfbb9efb8"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/tracer-green-part_asset_flat_refs_tests.log",
+      "bytes": 101,
+      "sha256": "04f13aab0ee769ffe3119a135e78fabdbc72149d90d1542eba87bc45454473a4"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/tracer-green-part_asset_v2_tests-build.log",
+      "bytes": 3578,
+      "sha256": "276d18bbbd9122417ba0d45a27406d413757fefe84a5c667201f70ace4196542"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/tracer-green-part_asset_v2_tests.log",
+      "bytes": 283,
+      "sha256": "e86fb59745f4c45ee6d500523dd6a4002ee77c05b9681c5745bfcc64a3eccdf4"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/tracer-green-partstore_tests-build.log",
+      "bytes": 2537,
+      "sha256": "a4c2b27e3f401ff20e53a45fd7989489f830bac655742563eca570c4bfd0854b"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/tracer-green-partstore_tests.log",
+      "bytes": 1124,
+      "sha256": "71a19851b7ff5db90942984ade8a592e19fa7db08795833c21f0e3c5d28e6898"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/tracer-green-source.json",
+      "bytes": 5408,
+      "sha256": "f1c9245d2aba8327b7d146129a6f1fef3fb414fe76da29221c079f6ffecc579a"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/tracer-green-surface-parallax.log",
+      "bytes": 5939,
+      "sha256": "f52b072c4efc8244f77ab7a598304e2ca044b21a64c622875c6ba35eddf13a5a"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/tracer-green-verification.json",
+      "bytes": 343,
+      "sha256": "6561b6ef71f0adec131ab100595db9c45e74c0fd198c8bdf3dc524150669c44a"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/tracer-green-vt-feedback.log",
+      "bytes": 7510,
+      "sha256": "6abfaaf300765dbae4213fabf307782079753fe32392296fea3b5f7728d07d12"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/tracer-green-vt.log",
+      "bytes": 5041,
+      "sha256": "ad7ac7051073e0e21066dac87b7b85c558f7033ecdf37e01e88adc222edbe3da"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/tracer-green-vulkan_smoke_tests-build.log",
+      "bytes": 24562,
+      "sha256": "9ed6bf21a6371ea917fdd9ae3bcdcace10ec4a406be1a6451daeb997da2c7c20"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/tracer-green-world_tracer_tests-build.log",
+      "bytes": 21507,
+      "sha256": "591ccf6e1f7dc15ff16e8f061a8e66a05a187c471d3ad897597aaaac0a8d1953"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/tracer-green-world_tracer_tests.log",
+      "bytes": 13284,
+      "sha256": "f31be2765d8ce11a7e79640af88fdef9a7a9c5f707ae23c5458e0378edbf14c8"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/tracer-red-build.json",
+      "bytes": 189,
+      "sha256": "5fc2fd015bef399ad338a7887ebf759ea9c329fae96bd7f1b78e46ed4b647310"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/tracer-red-build.log",
+      "bytes": 17530,
+      "sha256": "8ca91958db8a962984519ad683f5c1f380ea0505dcfd826dbe924663342663ec"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/tracer-red-source.json",
+      "bytes": 4388,
+      "sha256": "7caf11187fd35c27c0f3ee58efcebc86138ec3657cf96fdd366d07ce97266604"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/tracer-red-test.json",
+      "bytes": 331,
+      "sha256": "4c0243b07a9de18c23cf29186f1371f7c2f0448385b9444c0932d44a9111e9d7"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/tracer-red-test.log",
+      "bytes": 1475,
+      "sha256": "b7282d2e4e7259d518a49d466979b617d66c0483d43e963889483c477c1a1538"
+    }
+  ]
+}
