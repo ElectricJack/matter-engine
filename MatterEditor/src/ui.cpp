@@ -1,3 +1,4 @@
+#include "matter/project_layout.h"
 // MatterEditor/src/ui.cpp
 //
 // The editor's ImGui shell. See ui.h for the contract, the frame order and the
@@ -30,6 +31,7 @@
 // Everything in this file is main-thread, immediate-mode, and only valid
 // inside an ImGui frame.
 #include "ui.h"
+#include "matter/gpu_timing_sample.h"
 
 #include <array>
 #include <cmath>
@@ -37,6 +39,7 @@
 #include <cstdio>
 #include <cstring>
 #include <functional>
+#include <mutex>
 #include <set>          // scene-vs-flat layout dedup in scan_worlds
 #include <vector>
 #include <filesystem>
@@ -79,11 +82,13 @@ std::vector<WorldEntry> scan_worlds(const std::string& examples_root) {
     // A project is anything holding scenes/ or worlds/. objects/ is NOT
     // required: under the scene layout a project's shared object tier can be
     // legitimately absent when every scene carries its own.
-    auto add_entry = [&](const fs::path& project, const std::string& name) {
+    auto add_entry = [&](const fs::path& project, const std::string& name,
+                         const std::string& group = std::string()) {
         WorldEntry e;
         e.label = name;
         e.project_dir = project.string();
         e.world_name = name;
+        e.scene_group = group;
         out.push_back(std::move(e));
     };
 
@@ -96,24 +101,20 @@ std::vector<WorldEntry> scan_worlds(const std::string& examples_root) {
         const bool has_worlds = fs::is_directory(worlds, project_ec);
         if (!has_scenes && !has_worlds) return;
 
-        // Scene layout: scenes/<Name>/<Name>.js. A directory without its
+        // Scene layout: scenes/[group/]<Name>/<Name>.js. A directory without its
         // matching script is skipped silently rather than offered as a world
         // that cannot open -- that is the shape a half-finished rename leaves
         // behind, and listing it only produces a load error on click.
         std::set<std::string> seen;
         if (has_scenes) {
-            project_ec.clear();
-            for (auto sit = fs::directory_iterator(scenes, project_ec);
-                 !project_ec && sit != fs::directory_iterator();
-                 sit.increment(project_ec)) {
-                if (!fs::is_directory(sit->path(), project_ec)) continue;
-                const std::string name = sit->path().filename().string();
-                std::error_code file_ec;
-                if (!fs::is_regular_file(sit->path() / (name + ".js"), file_ec))
-                    continue;
+            matter::project_layout::Diagnostics diag;
+            for (const auto& script : matter::project_layout::scene_scripts(scenes, &diag)) {
+                const std::string name = script.stem().string();
+                const auto group = script.parent_path().parent_path().lexically_relative(scenes);
                 seen.insert(name);
-                add_entry(project, name);
+                add_entry(project, name, group == "." ? "" : group.generic_string());
             }
+            for (const auto& d : diag.duplicates) MATTER_LOGW("ui", "%s", d.c_str());
         }
 
         // Flat layout: worlds/<Name>.js. Still scanned so a project can be
@@ -287,6 +288,8 @@ bool Ui::prepare_vulkan_backend(const matter::VulkanFrame& frame,
     }
     if (frame.swapchain_recreated || frame.image_count != image_count_) {
         image_count_ = frame.image_count;
+        // May vkDeviceWaitIdle, which needs every queue the device serializes.
+        std::lock_guard<std::mutex> lock(vulkan_->queue_mutex());
         ImGui_ImplVulkan_SetMinImageCount(image_count_);
     }
     return true;
@@ -339,7 +342,11 @@ bool Ui::end_frame(const matter::VulkanFrame& frame, std::string& error) {
     rendering.colorAttachmentCount = 1;
     rendering.pColorAttachments = &attachment;
     vkCmdBeginRendering(frame.command_buffer, &rendering);
-    ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), frame.command_buffer);
+    {
+        // Texture uploads inside submit to and wait on the shared graphics queue.
+        std::lock_guard<std::mutex> lock(vulkan_->queue_mutex());
+        ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), frame.command_buffer);
+    }
     vkCmdEndRendering(frame.command_buffer);
     return true;
 }
@@ -843,6 +850,7 @@ void Ui::draw_performance_panel(matter::WorldSession* session,
     // ALWAYS drawn.
     if (matter::props::Binding* b = props.gpu())
         draw_group(*b, nullptr, true, nullptr, &props.gpu_field_veto());
+    if (matter::props::Binding* b = props.gi()) draw_group(*b, nullptr, true);
     if (matter::props::Binding* b = props.pom()) draw_group(*b, nullptr, false);
     // Directly under Ground POM: the near band used to BE the POM band, and
     // the first question anyone reading one has about the other is how far
@@ -1209,18 +1217,39 @@ void Ui::draw_profiler_panel(const ViewerStats& s) {
                                 ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::Text("FPS: %.1f  (%.2f ms)", s.fps, s.frame_ms);
         if (s.gpu_timers_supported) {
+            // Resolve public sample names instead of duplicating renderer indices.
+            const auto measured = [&s](const char* name) {
+                for (size_t i = 0; i < matter::kGpuTimingNames.size(); ++i)
+                    if (std::strcmp(matter::kGpuTimingNames[i], name) == 0)
+                        return (s.gpu_timing_valid_mask & (1u << i)) != 0;
+                return false;
+            };
+            const auto detail_timing = [&measured](const char* name,
+                                                   const char* label, float ms) {
+                if (measured(name)) ImGui::Text("  %s %.1f", label, ms);
+                else ImGui::TextDisabled("  %s: not measured", label);
+            };
             const float gpu_sum = s.gpu_cull_ms + s.gpu_gbuffer_ms +
                                   s.gpu_blas_ms + s.gpu_tlas_ms + s.gpu_rt_ms +
-                                  s.gpu_rt_gi_ms + s.gpu_denoise_ms +
+                                  s.gpu_rt_local_direct_ms + s.gpu_rt_gi_ms + s.gpu_denoise_ms +
                                   s.gpu_dlss_ms + s.gpu_composite_ms +
-                                  s.gpu_vol_ms;
+                                  s.gpu_vol_ms + (measured("hdr_lighting")
+                                      ? s.gpu_hdr_lighting_ms : 0.0f) +
+                                  (measured("primary_light_cull")
+                                      ? s.gpu_primary_light_cull_ms : 0.0f);
             ImGui::Text("GPU %.1f ms total", s.gpu_total_ms);
             ImGui::Text("  Cull %.1f  GBuf %.1f  BLAS %.1f  TLAS %.1f",
                         s.gpu_cull_ms, s.gpu_gbuffer_ms, s.gpu_blas_ms,
                         s.gpu_tlas_ms);
-            ImGui::Text("  RT-prim %.1f  RT-GI %.1f  Den %.1f",
-                        s.gpu_rt_ms, s.gpu_rt_gi_ms, s.gpu_denoise_ms);
-            ImGui::Text("  DLSS %.1f  Comp %.1f  Vol %.1f  (other %.1f)",
+            ImGui::Text("  RT-sun %.1f  RT-local %.1f  RT-GI %.1f  Den %.1f",
+                        s.gpu_rt_ms, s.gpu_rt_local_direct_ms,
+                        s.gpu_rt_gi_ms, s.gpu_denoise_ms);
+            detail_timing("rt_gi_diffuse", "GI diffuse dispatch", s.gpu_rt_gi_diffuse_ms);
+            detail_timing("rt_gi_reflection_transmission", "GI reflection/transmission dispatch",
+                          s.gpu_rt_gi_reflection_transmission_ms);
+            detail_timing("hdr_lighting", "HDR lighting", s.gpu_hdr_lighting_ms);
+            detail_timing("primary_light_cull", "Primary light culling", s.gpu_primary_light_cull_ms);
+            ImGui::Text("  DLSS %.1f  Display %.1f  Vol %.1f  (other %.1f)",
                         s.gpu_dlss_ms, s.gpu_composite_ms,
                         s.gpu_vol_ms, s.gpu_total_ms - gpu_sum);
             ImGui::Text("  Atmos %.1f  Cloud shadows %.1f", s.gpu_atmosphere_ms,
@@ -1236,13 +1265,14 @@ void Ui::draw_profiler_panel(const ViewerStats& s) {
         // Main-loop attribution: partitions the same window frame_ms covers, so
         // `other` is genuinely unmeasured code, not clock skew. `render` already
         // contains the resolve/build/draw line -- don't double-count.
-        const float loop_sum = s.loop_poll_ms + s.loop_acquire_ms +
+        const float loop_sum = s.loop_pacing_ms + s.loop_poll_ms + s.loop_acquire_ms +
                                s.loop_ui_ms + s.loop_tick_ms + s.loop_pump_ms +
                                s.loop_lab_ms + s.loop_render_ms +
                                s.loop_present_ms;
         ImGui::Text("Loop: poll %.2f  acq %.2f  ui %.2f  tick %.2f",
                     s.loop_poll_ms, s.loop_acquire_ms, s.loop_ui_ms,
                     s.loop_tick_ms);
+        ImGui::Text("      frame pacing %.2f ms", s.loop_pacing_ms);
         ImGui::Text("      pump %.2f  lab %.2f  render %.2f  present %.2f",
                     s.loop_pump_ms, s.loop_lab_ms, s.loop_render_ms,
                     s.loop_present_ms);
@@ -1705,8 +1735,9 @@ void Ui::draw_debug_panel(ViewerStats& s, const ViewerCommands& commands,
     // meaning what the captures on disk say it means.
     const char* debug_views[] = { "None", "Normals", "Depth",
                                   "Sun visibility", "Raw albedo",
-                                  "LOD levels", "Wireframe" };
-    ImGui::Combo("View", &s.debug_view_mode, debug_views, 7);
+                                  "LOD levels", "Wireframe",
+                                  "Local-light candidates" };
+    ImGui::Combo("View", &s.debug_view_mode, debug_views, 8);
     // The wireframe checkbox is the composable form: tick it with "LOD levels"
     // selected and the edges carry the rung colour, which is the pair that
     // actually shows LOD changing GEOMETRY rather than only changing a colour.

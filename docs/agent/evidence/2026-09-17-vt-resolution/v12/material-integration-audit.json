@@ -1,0 +1,72 @@
+{
+  "scope": "World positions and silhouettes unchanged. Raw-albedo regions compare production size-class material against the preceding unit-prototype material, not against plain fallback.",
+  "regions": {
+    "landmark": {
+      "v11": {
+        "mean_rgb": [
+          33.81375,
+          32.119375,
+          29.64875
+        ],
+        "stddev_rgb": [
+          2.2858939033778434,
+          1.6748506230034323,
+          1.248148003042916
+        ]
+      },
+      "v12": {
+        "mean_rgb": [
+          34.411875,
+          32.66,
+          30.2025
+        ],
+        "stddev_rgb": [
+          1.8837420164064222,
+          1.34560395362081,
+          0.7819806583285808
+        ]
+      },
+      "region_xyxy": [
+        48,
+        525,
+        112,
+        550
+      ]
+    },
+    "terrain_control": {
+      "v11": {
+        "mean_rgb": [
+          20.60825,
+          22.00625,
+          13.79775
+        ],
+        "stddev_rgb": [
+          2.319112316706608,
+          0.742435813724004,
+          1.5239241902076122
+        ]
+      },
+      "v12": {
+        "mean_rgb": [
+          20.60825,
+          22.00625,
+          13.79775
+        ],
+        "stddev_rgb": [
+          2.319112316706608,
+          0.742435813724004,
+          1.5239241902076122
+        ]
+      },
+      "region_xyxy": [
+        600,
+        630,
+        680,
+        680
+      ]
+    }
+  },
+  "source_publications": 48,
+  "gallery_sources_in_scene": true,
+  "visual_approval": false
+}

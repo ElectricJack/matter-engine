@@ -1,0 +1,22 @@
+{
+  "steps": [
+    {
+      "args": [
+        "docs/agent/evidence/2026-09-16-shared-vt-pixels/build_checks.py",
+        "sector-links-diag-v1",
+        "vulkan_smoke_tests"
+      ],
+      "exit": 0
+    },
+    {
+      "args": [
+        "docs/agent/evidence/2026-09-16-shared-vt-pixels/run_checks.py",
+        "sector-links-diag-v1",
+        "vt-sector-seam"
+      ],
+      "exit": 1
+    }
+  ],
+  "finished": true,
+  "exit": 1
+}
