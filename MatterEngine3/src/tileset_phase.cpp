@@ -40,6 +40,7 @@
 #ifdef MATTER_HAVE_SCRIPT_HOST
 
 #include "part_graph.h"      // FileModuleResolver, HostBaker, PartGraph, ChildRequest
+#include "component_adapters/authoring/engine/legacy_part_route.h"
 #include "script_host.h"     // ScriptHost, eval_requires, eval_tileset
 #include "tileset_bake.h"    // settle_tileset, BakeInputs, SettledTorus
 #include "part_asset.h"      // fnv1a64 (settle cache key: script source hash)
@@ -148,6 +149,7 @@ static bool run_tileset_phase_impl(const std::vector<std::string>& object_tiers,
     // -----------------------------------------------------------------------
     part_graph::FileModuleResolver resolver(host, object_roots, sources);
     part_graph::HostBaker baker(host, parts_cache_dir, storage);
+    baker.set_portable_route(matter::authoring_adapter::make_legacy_part_route());
     part_graph::PartGraph graph(resolver, baker);
 
     std::vector<part_graph::ChildRequest> child_roots;

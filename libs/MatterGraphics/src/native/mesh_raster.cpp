@@ -242,6 +242,24 @@ void record_mesh_gbuffer(VkCommandBuffer command_buffer, const MeshRasterRecord&
         });
     PROFILE_COUNT("raster.draw_calls", issued);
     (void)issued;
+    // The mirrored table: the same ranges offset by mirror_command_base,
+    // drawn with the clockwise front face (a negative-determinant transform
+    // reverses the authored winding on screen). Descriptor sets, push
+    // constants and buffers carry over: the pipelines share one layout.
+    if (record.mirrored_raster_pipeline != VK_NULL_HANDLE) {
+        vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                          record.mirrored_raster_pipeline);
+        for_each_opaque_indirect_run(record.draw_ranges,
+            record.draw_range_count, record.static_command_count,
+            record.max_draw_indirect_count, [&](const PartCommandRange& range) {
+                vkCmdDrawIndexedIndirect(command_buffer, record.indirect_buffer,
+                    (static_cast<VkDeviceSize>(record.mirror_command_base) +
+                     range.first_command) * sizeof(DrawCommand),
+                    range.command_count, sizeof(DrawCommand));
+            });
+        vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                          record.raster_pipeline);
+    }
     z_static.stop();
     // Accepted skin work is drawn from the per-frame compute output, never
     // from the immutable bind-pose arena.  Each draw carries the exact

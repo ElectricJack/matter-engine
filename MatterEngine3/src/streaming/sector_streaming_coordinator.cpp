@@ -599,6 +599,7 @@ void Coordinator::publish_snapshot(
         next.status.state = SectorStreamingState::Active;
         next.status.generation = worker_generation_;
         next.status.resident_sectors = snapshot_count(streamer_->resident_count());
+        next.pending_sectors = streamer_->pending_count();
         next.status.inflight_sectors = snapshot_count(streamer_->inflight_count());
         const auto visible = streamer_->visible_status();
         next.status.view_revision = worker_anchor_->view.revision;

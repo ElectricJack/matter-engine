@@ -669,10 +669,82 @@ HostBaker::HostBaker(script_host::ScriptHost& host, std::string parts_dir,
                      std::shared_ptr<matter::CacheByteStorage> storage)
     : host_(host), parts_dir_(std::move(parts_dir)), storage_(std::move(storage)) {}
 
+AuthoringRoute classify_authoring_route(const std::string& source) {
+    static const std::regex declared(R"(\bstatic\s+authoring\b)");
+    static const std::regex portable_v1(
+        R"re(\bstatic\s+authoring\s*=\s*(?:"matter\.authoring\.portable\.v1"|'matter\.authoring\.portable\.v1')\s*;)re");
+    if (!std::regex_search(source, declared)) return AuthoringRoute::Legacy;
+    return std::regex_search(source, portable_v1) ? AuthoringRoute::PortableV1
+                                                  : AuthoringRoute::Unknown;
+}
+
+bool reauthor_portable(Baker& baker, const std::unordered_map<uint64_t, BakeInputs>& plan,
+                       std::string& err) {
+    for (const auto& [hash, inputs] : plan) {
+        if (classify_authoring_route(inputs.source) != AuthoringRoute::PortableV1) continue;
+        const uint64_t again = baker.resolve_hash(inputs.source, inputs.params,
+                                                  inputs.child_hashes, nullptr);
+        if (again == hash) continue;
+        char ids[64];
+        std::snprintf(ids, sizeof ids, "%016llx re-authored to %016llx",
+                      (unsigned long long)hash, (unsigned long long)again);
+        err = "resolve cache stale: portable part '" + inputs.module + "' " + ids;
+        return false;
+    }
+    return true;
+}
+
+namespace {
+// Non-null only for a PortableV1 source with a route installed; logs and
+// sets `failed` for an Unknown marker, a missing route or children.
+PortableBakeRoute* portable_route_for(const std::string& source,
+                                      const std::shared_ptr<PortableBakeRoute>& route,
+                                      size_t child_count, const char* stage, bool& failed) {
+    failed = false;
+    switch (classify_authoring_route(source)) {
+    case AuthoringRoute::Legacy: return nullptr;
+    case AuthoringRoute::Unknown:
+        MATTER_LOGE("part", "  HostBaker::%s: unknown `static authoring` route "
+                    "(supported: matter.authoring.portable.v1)\n", stage);
+        break;
+    case AuthoringRoute::PortableV1:
+        if (!route)
+            MATTER_LOGE("part", "  HostBaker::%s: portable authoring source but no "
+                        "portable route is installed\n", stage);
+        else if (child_count)
+            MATTER_LOGE("part", "  HostBaker::%s: portable authoring sources cannot "
+                        "have legacy children\n", stage);
+        else
+            return route.get();
+        break;
+    }
+    failed = true;
+    return nullptr;
+}
+} // namespace
+
 uint64_t HostBaker::resolve_hash(const std::string& source, const Params& params,
                                  const std::vector<uint64_t>& child_hashes,
                                  std::string* merged_params_out) {
-    const uint64_t hash = host_.resolve_hash(source, params_to_json(params),
+    return resolve_hash_json(source, params_to_json(params), child_hashes, merged_params_out);
+}
+
+uint64_t HostBaker::resolve_hash_json(const std::string& source, const std::string& params_json,
+                                      const std::vector<uint64_t>& child_hashes,
+                                      std::string* merged_params_out) {
+    bool failed = false;
+    if (PortableBakeRoute* route = portable_route_for(source, portable_route_,
+                                                      child_hashes.size(), "resolve_hash", failed)) {
+        std::string merged;
+        const uint64_t hash = route->resolve(source, params_json, &merged);
+        if (merged_params_out) *merged_params_out = hash ? merged : std::string();
+        return hash;
+    }
+    if (failed) {
+        if (merged_params_out) merged_params_out->clear();
+        return 0;
+    }
+    const uint64_t hash = host_.resolve_hash(source, params_json,
                                              child_hashes.data(), child_hashes.size());
     // ScriptHost::merge_params_canonical (which resolve_hash just ran) left the
     // merged object in last_merged_params_; read it now, before the next merge
@@ -755,6 +827,19 @@ bool HostBaker::bake(const std::string& source, const Params& params,
                      const std::vector<std::string>& child_modules,
                      const std::vector<std::string>& child_params, uint64_t resolved_hash) {
     part_bundle::ScopedStorage storage(storage_);
+    bool failed = false;
+    PortableBakeRoute* route = portable_route_for(source, portable_route_,
+                                                  child_hashes.size(), "bake", failed);
+    if (failed || route) {
+        last_baked_hash_ = 0;
+        last_leaf_metadata_hash_ = 0;
+        last_child_modules_placed_.clear();
+        if (failed) return false;
+        const std::string& dir = is_transient(current_module_) ? transient_dir_ : parts_dir_;
+        if (!route->bake(source, params_to_json(params), resolved_hash, dir)) return false;
+        last_baked_hash_ = resolved_hash;
+        return true;
+    }
     // SP-2 bake_source recomputes the same hash and writes the .part via save_v2.
     // Pass parts_dir_ so bake_source writes to an absolute path rather than a
     // cwd-relative "parts/<hash>.bundle" (Task 3 Phase B: cwd-independence).
@@ -794,6 +879,8 @@ bool HostBaker::bake_lod_variants(const std::string& source, const Params& param
                                   uint64_t resolved_hash) {
     part_bundle::ScopedStorage storage(storage_);
     if (resolved_hash && last_leaf_metadata_hash_ == resolved_hash) return true;
+    // Portable recipes carry no legacy LOD statics (the route rejects them).
+    if (classify_authoring_route(source) != AuthoringRoute::Legacy) return true;
     script_host::ScriptHost::LodBudgetSpec spec = host_.eval_lod_budgets(source);
     if (spec.budgets.empty()) return true;                    // not opted in
     if (!child_hashes.empty()) {
@@ -857,6 +944,7 @@ bool HostBaker::bake_static_lods(const std::string& source, const Params& params
                                  uint64_t resolved_hash) {
     part_bundle::ScopedStorage storage(storage_);
     if (resolved_hash && last_leaf_metadata_hash_ == resolved_hash) return true;
+    if (classify_authoring_route(source) != AuthoringRoute::Legacy) return true;
     script_host::ScriptHost::LodAuthoring lods = host_.eval_lods(source);
 
     // Per-part impostor opt-out (`static noImpostor = true`, kRepresentation
