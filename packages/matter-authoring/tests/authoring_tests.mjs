@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { SourceTextModule, createContext } from 'node:vm';
@@ -7,7 +6,7 @@ import * as helpers from '../../../libs/MatterContracts/examples/contracts.mjs';
 import { AuthoringError, RecipeBuilder, SeededRng, contractServices, parameters, nodeInput, identity,
   multiply, translation, scale, legacyPart, LEGACY_VOXELS, DEFAULT_CAPABILITIES, validateRecipe } from '../index.mjs';
 import { orderedCsg, extrudedProp, repeatedAssembly } from '../examples/recipes.mjs';
-import { expectedProp, expectedRepeated } from './expected.mjs';
+import { expectedProp, expectedRepeated, expectedCsg, rngVectors } from './expected.mjs';
 
 const services = contractServices(helpers, async bytes => new Uint8Array(createHash('sha256').update(bytes).digest()));
 const source = { id: 'fixture.authoring', uri: 'fixture://authoring', revision: '1' };
@@ -20,7 +19,7 @@ function throws(code, run, inspect = () => {}) {
 }
 const documents = [extrudedProp(services), orderedCsg(services), repeatedAssembly(services)];
 const additionalDocuments = [];
-const expectations = [expectedProp, JSON.parse(readFileSync(new URL('../../../libs/MatterContracts/examples/ordered-csg.recipe.json', import.meta.url))), expectedRepeated];
+const expectations = [expectedProp, expectedCsg, expectedRepeated];
 const fixtureIds = ['SDK-PROP-v1', 'SDK-CSG-v1', 'SDK-REPEATED-v1'];
 for (let i = 0; i < documents.length; ++i) test(fixtureIds[i], () => {
   assert.deepEqual(documents[i].build(), expectations[i]);
@@ -28,8 +27,7 @@ for (let i = 0; i < documents.length; ++i) test(fixtureIds[i], () => {
   assert(Object.isFrozen(documents[i].build().nodes[0].parameters));
 });
 test('SDK-RNG-v1', () => {
-  const vectors = JSON.parse(readFileSync(new URL('../../../libs/MatterContracts/tests/rng-vectors.json', import.meta.url)));
-  for (const vector of vectors.vectors) {
+  for (const vector of rngVectors.vectors) {
     const words = new SeededRng(vector.seed, services), units = new SeededRng(vector.seed, services);
     assert.deepEqual(vector.words.map(() => words.nextU64().toString(16).padStart(16, '0')), vector.words);
     assert.deepEqual(vector.units.map(() => units.random()), vector.units);
@@ -170,6 +168,15 @@ test('SDK-OWNERSHIP-v1', () => {
 // An embedded host marshals documents into its own service realm, as a native
 // host would serialize values across its VM boundary. The SDK has no such I/O.
 const hostServices = { ...services, canonicalJson: document => helpers.canonicalJson(JSON.parse(JSON.stringify(document))) };
+const nativeCheck = process.argv[2];
+assert(nativeCheck, 'supply the CMake-built matter_authoring_contract_check for the isolated SDK source fixture');
+const sourceResult = spawnSync(nativeCheck, ['--sdk-sources'], {encoding:'utf8',maxBuffer:16*1024*1024});
+assert.equal(sourceResult.status, 0, sourceResult.stderr);
+const sources = new Map(Object.entries(JSON.parse(sourceResult.stdout)).map(([name, code]) =>
+  [new URL(`../${name}`, import.meta.url).href, code]));
+sources.set(new URL('../examples/recipes.mjs', import.meta.url).href,
+  `import {RecipeBuilder,nodeInput,parameters,identity,multiply,scale,translation} from '../index.mjs';\n`
+  + [extrudedProp, orderedCsg, repeatedAssembly].map(fn => `export ${fn.toString()}`).join('\n'));
 const context = createContext({ hostServices, Date: undefined, crypto: undefined, TextEncoder: undefined,
   fetch: undefined, process: undefined, require: undefined, Buffer: undefined, document: undefined, window: undefined, console: undefined });
 const modules = new Map();
@@ -177,7 +184,8 @@ function load(url) {
   const href = url.href;
   if (!modules.has(href)) {
     assert(href.startsWith(new URL('../', import.meta.url).href), 'portable host rejects external imports');
-    const code = readFileSync(url, 'utf8');
+    const code = sources.get(href);
+    assert.equal(typeof code, 'string', `portable host rejects missing source ${href}`);
     modules.set(href, new SourceTextModule(code, { context, identifier: href }));
   }
   return modules.get(href);
@@ -193,14 +201,13 @@ for (const b of documents) {
   assert.deepEqual(actual, expected);
 }
 console.log('PASS SDK-DIGEST-v1'); ++checks;
-const nativeCheck = process.argv[2];
-if (nativeCheck) test('SDK-NATIVE-WIRE-v1', () => {
+test('SDK-NATIVE-WIRE-v1', () => {
   const all = [...documents.map(b => b.build()), ...additionalDocuments, ...legacyDocuments];
-  for (const d of all) {
-    const result = spawnSync(nativeCheck, d.extensions.some(e => e.capability.name === LEGACY_VOXELS.name) ? [LEGACY_VOXELS.name] : [], { input: helpers.canonicalJson(d), encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 });
-    assert.equal(result.status, 0, result.stderr); assert.equal(result.stdout.trim(), helpers.canonicalJson(d));
-  }
+  const result = spawnSync(nativeCheck, ['--batch'], {input:JSON.stringify(all.map(document =>
+    ({document, legacy:document.extensions.some(e => e.capability.name === LEGACY_VOXELS.name)}))),
+    encoding:'utf8',maxBuffer:16*1024*1024});
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), all.map(helpers.canonicalJson));
   const unsupported = spawnSync(nativeCheck, [], { input: helpers.canonicalJson(legacyDocuments[0]), encoding: 'utf8' }); assert.equal(unsupported.status, 1); assert.match(unsupported.stderr, /unsupported_capability/);
 });
-else console.log('Native wire check is a separate local CMake gate; executable not supplied.');
 console.log(`ALL PASS: ${checks} authoring fixtures`);

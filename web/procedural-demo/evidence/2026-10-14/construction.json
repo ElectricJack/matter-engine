@@ -1,0 +1,40 @@
+{
+  "recipe": "arch",
+  "stages": [
+    {
+      "step": 0,
+      "name": "wall / mesh",
+      "triangles": "12"
+    },
+    {
+      "step": 1,
+      "name": "wall",
+      "triangles": "12"
+    },
+    {
+      "step": 2,
+      "name": "door / mesh",
+      "triangles": "24"
+    },
+    {
+      "step": 3,
+      "name": "door",
+      "triangles": "24"
+    },
+    {
+      "step": 4,
+      "name": "arc",
+      "triangles": "120"
+    },
+    {
+      "step": 5,
+      "name": "archway",
+      "triangles": "792"
+    },
+    {
+      "step": 6,
+      "name": "Final object",
+      "triangles": "792"
+    }
+  ]
+}

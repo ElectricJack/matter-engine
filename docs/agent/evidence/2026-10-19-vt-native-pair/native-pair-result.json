@@ -1,0 +1,60 @@
+{
+  "task": "nimble-rapids-30",
+  "claim_epoch": 15,
+  "started_at": 1792445663.6643238,
+  "status": "build_blocked",
+  "builds": [
+    {
+      "commit": "58289c187ef2565c7d0532fe28a8cfb903023e44",
+      "argv": [
+        "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "D:\\mv15-78a4\\run_native_build.ps1",
+        "-SourceRoot",
+        "D:\\mv15-78a4\\b",
+        "-EvidenceDirectory",
+        "D:\\mv15-78a4\\58289c187ef2565c7d0532fe28a8cfb903023e44-build"
+      ],
+      "driver_exit_code": 58,
+      "driver_log": "/mnt/d/mv15-78a4/58289c187ef2565c7d0532fe28a8cfb903023e44-build-driver.txt",
+      "receipt": {
+        "source_root": "D:\\mv15-78a4\\b",
+        "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"D:\\mv15-78a4\\b\\tools\\build-windows.ps1\" -Config RelWithDebInfo -Target vulkan_smoke_tests",
+        "working_directory": "D:\\mv15-78a4\\b",
+        "started_at": "2026-10-19T21:34:25.1227934Z",
+        "timeout_seconds": 1800,
+        "build_parallel_level": "6",
+        "status": "failed",
+        "exit_code": -1073741510,
+        "elapsed_seconds": 1.9015011,
+        "finished_at": "2026-10-19T21:34:27.0290971Z"
+      }
+    }
+  ],
+  "smokes": [],
+  "planned_runs": [
+    {
+      "commit": "58289c187ef2565c7d0532fe28a8cfb903023e44",
+      "mode": "vt",
+      "status": "unexecuted"
+    },
+    {
+      "commit": "58289c187ef2565c7d0532fe28a8cfb903023e44",
+      "mode": "vt-rt",
+      "status": "unexecuted"
+    },
+    {
+      "commit": "90a19c6698a03623da9a3e3c5235ad272531d462",
+      "mode": "vt",
+      "status": "unexecuted"
+    },
+    {
+      "commit": "90a19c6698a03623da9a3e3c5235ad272531d462",
+      "mode": "vt-rt",
+      "status": "unexecuted"
+    }
+  ]
+}

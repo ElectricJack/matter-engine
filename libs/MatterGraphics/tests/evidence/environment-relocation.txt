@@ -1,0 +1,339 @@
+Environment relocation evidence: clear-crest-48.4.8
+Reference commit: 6490dbab806876631465259cdf5b397f258c5837
+MSVC19.44.35211; toolset14.44.35207; Windows SDK10.0.26100.0; Vulkan SDK1.4.357.0.
+See RENDERING.md for reproduction, fixture scope and limitations.
+
+=== Module build and CTest (exit 8, 8/9 tests pass) ===
+**********************************************************************
+** Visual Studio 2022 Developer Command Prompt v17.14.7
+** Copyright (c) 2025 Microsoft Corporation
+**********************************************************************
+-- Configuring done (4.1s)
+-- Generating done (0.2s)
+-- Build files have been written to: D:/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-1/libs/MatterGraphics/build/windows-msvc/relwithdebinfo
+**********************************************************************
+** Visual Studio 2022 Developer Command Prompt v17.14.7
+** Copyright (c) 2025 Microsoft Corporation
+**********************************************************************
+[1/32] Generating composite.vert.spv
+[2/32] Generating composite.frag.spv
+[3/32] Generating atmosphere_irradiance.comp.spv
+[4/32] Generating display_transform.frag.spv
+[5/32] Generating atmosphere_multiscatter.comp.spv
+[6/32] Generating atmosphere_sky_view.comp.spv
+[7/32] Generating atmosphere_transmittance.comp.spv
+[8/32] Generating cloud_shadow_density.comp.spv
+[9/32] Generating cloud_shadow_reproject.comp.spv
+[10/32] Generating cloud_shadow_integrate.comp.spv
+[11/32] Generating vol_integrate.comp.spv
+[12/32] Generating vol_density.comp.spv
+[13/32] Generating composition_spirv.h
+[14/32] Generating vol_scatter.comp.spv
+[15/32] Generating environment_embedded_spirv.h
+[16/32] Building CXX object CMakeFiles\matter_graphics_environment.dir\src\native\vk_atmosphere.cpp.obj
+[17/32] Building CXX object CMakeFiles\matter_graphics_vulkan.dir\src\vulkan_composition.cpp.obj
+[18/32] Building CXX object CMakeFiles\matter_graphics_environment.dir\src\native\vk_cloud_shadows.cpp.obj
+[19/32] Linking CXX static library matter_graphics_vulkan.lib
+[20/32] Building CXX object CMakeFiles\matter_graphics_environment.dir\src\native\vk_volumetrics.cpp.obj
+[21/32] Linking CXX static library matter_graphics_environment.lib
+[22/32] Building CXX object CMakeFiles\matter_graphics_header_backend.dir\header-backend.cpp.obj
+[23/32] Linking CXX executable matter_graphics_atmosphere_tests.exe
+[24/32] Linking CXX executable matter_graphics_cloud_layer_tests.exe
+[25/32] Linking CXX executable matter_graphics_cloud_shadow_tests.exe
+[26/32] Linking CXX executable matter_graphics_volumetric_quality_tests.exe
+[27/32] Building CXX object CMakeFiles\matter_graphics_header_graphics.dir\header-graphics.cpp.obj
+[28/32] Building CXX object CMakeFiles\matter_graphics_header_scene_backend.dir\header-scene_backend.cpp.obj
+[29/32] Building CXX object CMakeFiles\matter_graphics_header_composition.dir\header-composition.cpp.obj
+[30/32] Building CXX object CMakeFiles\matter_graphics_header_vulkan_resources.dir\header-vulkan_resources.cpp.obj
+[31/32] Linking CXX executable matter_graphics_vulkan_tests.exe
+[32/32] Building CXX object CMakeFiles\matter_graphics_header_vulkan_composition.dir\header-vulkan_composition.cpp.obj
+Internal ctest changing into directory: D:/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-1/libs/MatterGraphics/build/windows-msvc/relwithdebinfo
+Test project D:/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-1/libs/MatterGraphics/build/windows-msvc/relwithdebinfo
+    Start 1: matter_graphics_atmosphere
+1/9 Test #1: matter_graphics_atmosphere ...........   Passed    0.11 sec
+    Start 2: matter_graphics_cloud_layer
+2/9 Test #2: matter_graphics_cloud_layer ..........   Passed    0.08 sec
+    Start 3: matter_graphics_cloud_shadow
+3/9 Test #3: matter_graphics_cloud_shadow .........***Failed    0.10 sec
+FAIL: constant full-density slab local march matches exp(-sigma times marched distance)
+FAIL: local full-density tau replaces the coarse start segment instead of double counting it
+FAIL: camera-frustum exit stops the detailed loop while the sun-space remainder stays active
+3 FAILURE(S)
+
+    Start 4: matter_graphics_volumetric_quality
+4/9 Test #4: matter_graphics_volumetric_quality ...   Passed    0.14 sec
+    Start 5: matter_graphics_lifetime
+5/9 Test #5: matter_graphics_lifetime .............   Passed    0.10 sec
+    Start 6: matter_graphics_scene
+6/9 Test #6: matter_graphics_scene ................   Passed    0.09 sec
+    Start 7: matter_graphics_composition
+7/9 Test #7: matter_graphics_composition ..........   Passed    0.05 sec
+    Start 8: matter_graphics_vulkan
+8/9 Test #8: matter_graphics_vulkan ...............   Passed    1.42 sec
+    Start 9: matter_graphics_independence
+9/9 Test #9: matter_graphics_independence .........   Passed    0.74 sec
+
+89% tests passed, 1 tests failed out of 9
+
+Total Test time (real) =   2.86 sec
+
+The following tests FAILED:
+	  3 - matter_graphics_cloud_shadow (Failed)
+Errors while running CTest
+
+=== Native atmosphere smoke (exit 0) ===
+[vk] Vulkan loader/general ERROR: loader_get_json: Failed to open JSON file D:\Epic Games\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win32.json
+[vk] Vulkan loader/general ERROR: loader_get_json: Failed to open JSON file D:\Epic Games\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win64.json
+[vk] Vulkan loader/general warning: Removing layer VK_LAYER_EOS_Overlay (C:\Program Files (x86)\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win64.json) because it is a duplicate of VK_LAYER_EOS_Overlay (C:\Program Files (x86)\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win32.json)
+[vk] present requested=auto effective=fifo(2) supported=[fifo(2),fifo_relaxed(3),mailbox(1),immediate(0),other(1000361000)] images=3 extent=320x200
+[vk] present requested=auto effective=fifo(2) supported=[fifo(2),fifo_relaxed(3),mailbox(1),immediate(0),other(1000361000)] images=3 extent=320x200
+[vk] present requested=auto effective=fifo(2) supported=[fifo(2),fifo_relaxed(3),mailbox(1),immediate(0),other(1000361000)] images=3 extent=320x200
+[vk] impostor atlas: 128 slots x 2 layers of 1024x1024 RGBA8 (cell 128 px, filtered mips) = 1365 MiB
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0] (SPIR-V Interface) [VK_SHADER_STAGE_VERTEX_BIT] has an Output value declared at Location 17 Component 0, but there is no corresponding Input declared in [VK_SHADER_STAGE_FRAGMENT_BIT].
+This is not invalid, but the write to the unused Output is discarded.
+The Output variable is:
+  pointer to Output -> uint32
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 1 not consumed by vertex shader.
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 2 not consumed by vertex shader.
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 3 not consumed by vertex shader.
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 4 not consumed by vertex shader.
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 6 not consumed by vertex shader.
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 7 not consumed by vertex shader.
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0] (SPIR-V Interface) [VK_SHADER_STAGE_VERTEX_BIT] has an Output value declared at Location 17 Component 0, but there is no corresponding Input declared in [VK_SHADER_STAGE_FRAGMENT_BIT].
+This is not invalid, but the write to the unused Output is discarded.
+The Output variable is:
+  pointer to Output -> uint32
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0] (SPIR-V Interface) [VK_SHADER_STAGE_VERTEX_BIT] has an Output value declared at Location 17 Component 0, but there is no corresponding Input declared in [VK_SHADER_STAGE_FRAGMENT_BIT].
+This is not invalid, but the write to the unused Output is discarded.
+The Output variable is:
+  pointer to Output -> uint32
+[vk] Vulkan loader/general warning: (Warning - This VUID has now been reported 10 times, which is the duplicate_message_limit value, this will be the last time reporting it).
+vkCreateGraphicsPipelines(): pCreateInfos[0] (SPIR-V Interface) [VK_SHADER_STAGE_VERTEX_BIT] has an Output value declared at Location 17 Component 0, but there is no corresponding Input declared in [VK_SHADER_STAGE_FRAGMENT_BIT].
+This is not invalid, but the write to the unused Output is discarded.
+The Output variable is:
+  pointer to Output -> uint32
+[rt] independent GI shader specialization=1
+[rt] local primary area samples=4 (0=adaptive); visibility diagnostic counters=1
+[rt] local-light selection code=0; packed budgets=0
+[rt] secondary local-light sampling=1 (0 exact, 1 importance reservoir)
+[rt] secondary surface detail mode=0 (0 reference, 1 adaptive, 2 normal-only)
+Vulkan adapter: NVIDIA GeForce RTX 4090 | driver: NVIDIA (610.74, 0x98928000) | API 1.4.341
+DLSS fallback: Streamline disabled for Vulkan test device
+[vk] static reserve: clusters 32 MiB, vertices 512 MiB, indices 256 MiB (host-visible)
+[vk] impostor atlas: 128 slots x 2 layers of 1024x1024 RGBA8 (cell 128 px, filtered mips) = 1365 MiB
+[rt] independent GI shader specialization=1
+[rt] local primary area samples=4 (0=adaptive); visibility diagnostic counters=1
+[rt] local-light selection code=0; packed budgets=0
+[rt] secondary local-light sampling=1 (0 exact, 1 importance reservoir)
+[rt] secondary surface detail mode=0 (0 reference, 1 adaptive, 2 normal-only)
+[vk] static reserve: clusters 32 MiB, vertices 512 MiB, indices 256 MiB (host-visible)
+[vk] impostor atlas: 128 slots x 2 layers of 1024x1024 RGBA8 (cell 128 px, filtered mips) = 1365 MiB
+[rt] independent GI shader specialization=1
+[rt] local primary area samples=4 (0=adaptive); visibility diagnostic counters=1
+[rt] local-light selection code=0; packed budgets=0
+[rt] secondary local-light sampling=1 (0 exact, 1 importance reservoir)
+[rt] secondary surface detail mode=0 (0 reference, 1 adaptive, 2 normal-only)
+[vk] static reserve: clusters 32 MiB, vertices 512 MiB, indices 256 MiB (host-visible)
+[vk] impostor atlas: 128 slots x 2 layers of 1024x1024 RGBA8 (cell 128 px, filtered mips) = 1365 MiB
+[rt] independent GI shader specialization=1
+[rt] local primary area samples=4 (0=adaptive); visibility diagnostic counters=1
+[rt] local-light selection code=0; packed budgets=0
+[rt] secondary local-light sampling=1 (0 exact, 1 importance reservoir)
+[rt] secondary surface detail mode=0 (0 reference, 1 adaptive, 2 normal-only)
+[vk] static reserve: clusters 32 MiB, vertices 512 MiB, indices 256 MiB (host-visible)
+[vk] impostor atlas: 128 slots x 2 layers of 1024x1024 RGBA8 (cell 128 px, filtered mips) = 1365 MiB
+[rt] independent GI shader specialization=1
+[rt] local primary area samples=4 (0=adaptive); visibility diagnostic counters=1
+[rt] local-light selection code=0; packed budgets=0
+[rt] secondary local-light sampling=1 (0 exact, 1 importance reservoir)
+[rt] secondary surface detail mode=0 (0 reference, 1 adaptive, 2 normal-only)
+atmosphere published direct e=90 luma=0.875509381 rgb=0.940386117 0.867647886 0.762347996
+atmosphere receiver direct e=90 luma=0.482671082 rgb=0.518615723 0.478271484 0.420410156
+atmosphere published direct e=5 luma=0.218877330 rgb=0.398502707 0.182868943 0.046645317
+atmosphere receiver direct e=5 luma=0.010527882 rgb=0.019165039 0.008789062 0.002319336
+[vk] static reserve: clusters 32 MiB, vertices 512 MiB, indices 256 MiB (host-visible)
+[vk] static upload frame bytes=552 pending_parts=0 publish=0.02 ms
+atmosphere native raw direct e=90 delta=6.791398048 on=30.062500/0.562012/0.521484 off=0.139526/0.010094/0.036133
+atmosphere native raw direct e=45 delta=4.929258823 on=21.906250/0.398438/0.358154 off=0.138062/0.009789/0.034332
+atmosphere native raw direct e=5 delta=0.242349803 on=1.206055/0.015144/0.015747 off=0.101135/0.004997/0.013161
+atmosphere native raw direct e=0 delta=0.000000000 on=0.053162/0.001770/0.004185 off=0.053162/0.001770/0.004185
+atmosphere native raw direct e=-5 delta=0.000000000 on=0.004753/0.000087/0.000225 off=0.004753/0.000087/0.000225
+atmosphere native raw direct e=-12 delta=0.000000000 on=0.000067/0.000000/0.000001 off=0.000067/0.000000/0.000001
+validation errors: 0
+ALL PASS
+
+=== Native froxel/cloud resize smoke (exit 0) ===
+[vk] Vulkan loader/general ERROR: loader_get_json: Failed to open JSON file D:\Epic Games\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win32.json
+[vk] Vulkan loader/general ERROR: loader_get_json: Failed to open JSON file D:\Epic Games\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win64.json
+[vk] Vulkan loader/general warning: Removing layer VK_LAYER_EOS_Overlay (C:\Program Files (x86)\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win64.json) because it is a duplicate of VK_LAYER_EOS_Overlay (C:\Program Files (x86)\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win32.json)
+[vk] present requested=auto effective=fifo(2) supported=[fifo(2),fifo_relaxed(3),mailbox(1),immediate(0),other(1000361000)] images=3 extent=320x200
+[vk] present requested=auto effective=fifo(2) supported=[fifo(2),fifo_relaxed(3),mailbox(1),immediate(0),other(1000361000)] images=3 extent=320x200
+[vk] present requested=auto effective=fifo(2) supported=[fifo(2),fifo_relaxed(3),mailbox(1),immediate(0),other(1000361000)] images=3 extent=320x200
+[vk] impostor atlas: 128 slots x 2 layers of 1024x1024 RGBA8 (cell 128 px, filtered mips) = 1365 MiB
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0] (SPIR-V Interface) [VK_SHADER_STAGE_VERTEX_BIT] has an Output value declared at Location 17 Component 0, but there is no corresponding Input declared in [VK_SHADER_STAGE_FRAGMENT_BIT].
+This is not invalid, but the write to the unused Output is discarded.
+The Output variable is:
+  pointer to Output -> uint32
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 1 not consumed by vertex shader.
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 2 not consumed by vertex shader.
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 3 not consumed by vertex shader.
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 4 not consumed by vertex shader.
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 6 not consumed by vertex shader.
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 7 not consumed by vertex shader.
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0] (SPIR-V Interface) [VK_SHADER_STAGE_VERTEX_BIT] has an Output value declared at Location 17 Component 0, but there is no corresponding Input declared in [VK_SHADER_STAGE_FRAGMENT_BIT].
+This is not invalid, but the write to the unused Output is discarded.
+The Output variable is:
+  pointer to Output -> uint32
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0] (SPIR-V Interface) [VK_SHADER_STAGE_VERTEX_BIT] has an Output value declared at Location 17 Component 0, but there is no corresponding Input declared in [VK_SHADER_STAGE_FRAGMENT_BIT].
+This is not invalid, but the write to the unused Output is discarded.
+The Output variable is:
+  pointer to Output -> uint32
+[vk] Vulkan loader/general warning: (Warning - This VUID has now been reported 10 times, which is the duplicate_message_limit value, this will be the last time reporting it).
+vkCreateGraphicsPipelines(): pCreateInfos[0] (SPIR-V Interface) [VK_SHADER_STAGE_VERTEX_BIT] has an Output value declared at Location 17 Component 0, but there is no corresponding Input declared in [VK_SHADER_STAGE_FRAGMENT_BIT].
+This is not invalid, but the write to the unused Output is discarded.
+The Output variable is:
+  pointer to Output -> uint32
+[rt] independent GI shader specialization=1
+[rt] local primary area samples=4 (0=adaptive); visibility diagnostic counters=1
+[rt] local-light selection code=0; packed budgets=0
+[rt] secondary local-light sampling=1 (0 exact, 1 importance reservoir)
+[rt] secondary surface detail mode=0 (0 reference, 1 adaptive, 2 normal-only)
+Vulkan adapter: NVIDIA GeForce RTX 4090 | driver: NVIDIA (610.74, 0x98928000) | API 1.4.341
+DLSS fallback: Streamline disabled for Vulkan test device
+[vk] static reserve: clusters 32 MiB, vertices 512 MiB, indices 256 MiB (host-visible)
+[vk] static upload frame bytes=276 pending_parts=0 publish=0.07 ms
+[vk] present requested=auto effective=fifo(2) supported=[fifo(2),fifo_relaxed(3),mailbox(1),immediate(0),other(1000361000)] images=3 extent=320x200
+task9 fog/cloud: base=(0.000673,0.001185,0.001859,0.003204) combined=(0.020462,0.020981,0.021652,0.023193) cloud=0.019989
+[vk] static upload frame bytes=376 pending_parts=0 publish=0.01 ms
+terrain cloud shadow: clear=0.0001473 occluded=0.0000000 alpha=0.0039978/0.0039978
+terrain fog-only shadow: clear=0.0003576 occluded=0.0003576 alpha=0.0039005/0.0039005
+task12 orders: 0.0212079 0.0566787 0.0814741 0.0952815 generation=6
+task12 seeded tau: center local=2.4999 total=4.5000 near=0.0863/2.0863 alpha=0.6250 edge=0.0213/4.0212 receiver=5
+froxel RT trace: step=0 requested=160x90x128 active=160x90x128 gen=8 validation=0
+froxel RT trace: step=1 requested=80x45x64 active=80x45x64 gen=9 validation=0
+froxel RT trace: step=2 requested=320x180x256 active=320x180x256 gen=10 validation=0
+froxel RT trace: step=3 requested=240x135x192 active=240x135x192 gen=11 validation=0
+froxel RT trace: step=4 requested=160x90x128 active=160x90x128 gen=12 validation=0
+froxel GPU timing: combined=1.1632 density=0.2596 scatter=0.6714 integrate=0.2317 tolerance=0.2907
+validation errors: 0
+ALL PASS
+
+=== Native empty-TLAS volume smoke (exit 0) ===
+[vk] Vulkan loader/general ERROR: loader_get_json: Failed to open JSON file D:\Epic Games\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win32.json
+[vk] Vulkan loader/general ERROR: loader_get_json: Failed to open JSON file D:\Epic Games\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win64.json
+[vk] Vulkan loader/general warning: Removing layer VK_LAYER_EOS_Overlay (C:\Program Files (x86)\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win64.json) because it is a duplicate of VK_LAYER_EOS_Overlay (C:\Program Files (x86)\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win32.json)
+[vk] present requested=auto effective=fifo(2) supported=[fifo(2),fifo_relaxed(3),mailbox(1),immediate(0),other(1000361000)] images=3 extent=320x200
+[vk] present requested=auto effective=fifo(2) supported=[fifo(2),fifo_relaxed(3),mailbox(1),immediate(0),other(1000361000)] images=3 extent=320x200
+[vk] present requested=auto effective=fifo(2) supported=[fifo(2),fifo_relaxed(3),mailbox(1),immediate(0),other(1000361000)] images=3 extent=320x200
+[vk] impostor atlas: 128 slots x 2 layers of 1024x1024 RGBA8 (cell 128 px, filtered mips) = 1365 MiB
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0] (SPIR-V Interface) [VK_SHADER_STAGE_VERTEX_BIT] has an Output value declared at Location 17 Component 0, but there is no corresponding Input declared in [VK_SHADER_STAGE_FRAGMENT_BIT].
+This is not invalid, but the write to the unused Output is discarded.
+The Output variable is:
+  pointer to Output -> uint32
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 1 not consumed by vertex shader.
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 2 not consumed by vertex shader.
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 3 not consumed by vertex shader.
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 4 not consumed by vertex shader.
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 6 not consumed by vertex shader.
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 7 not consumed by vertex shader.
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0] (SPIR-V Interface) [VK_SHADER_STAGE_VERTEX_BIT] has an Output value declared at Location 17 Component 0, but there is no corresponding Input declared in [VK_SHADER_STAGE_FRAGMENT_BIT].
+This is not invalid, but the write to the unused Output is discarded.
+The Output variable is:
+  pointer to Output -> uint32
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0] (SPIR-V Interface) [VK_SHADER_STAGE_VERTEX_BIT] has an Output value declared at Location 17 Component 0, but there is no corresponding Input declared in [VK_SHADER_STAGE_FRAGMENT_BIT].
+This is not invalid, but the write to the unused Output is discarded.
+The Output variable is:
+  pointer to Output -> uint32
+[vk] Vulkan loader/general warning: (Warning - This VUID has now been reported 10 times, which is the duplicate_message_limit value, this will be the last time reporting it).
+vkCreateGraphicsPipelines(): pCreateInfos[0] (SPIR-V Interface) [VK_SHADER_STAGE_VERTEX_BIT] has an Output value declared at Location 17 Component 0, but there is no corresponding Input declared in [VK_SHADER_STAGE_FRAGMENT_BIT].
+This is not invalid, but the write to the unused Output is discarded.
+The Output variable is:
+  pointer to Output -> uint32
+[rt] independent GI shader specialization=1
+[rt] local primary area samples=4 (0=adaptive); visibility diagnostic counters=1
+[rt] local-light selection code=0; packed budgets=0
+[rt] secondary local-light sampling=1 (0 exact, 1 importance reservoir)
+[rt] secondary surface detail mode=0 (0 reference, 1 adaptive, 2 normal-only)
+Vulkan adapter: NVIDIA GeForce RTX 4090 | driver: NVIDIA (610.74, 0x98928000) | API 1.4.341
+DLSS fallback: Streamline disabled for Vulkan test device
+[vk] static reserve: clusters 32 MiB, vertices 512 MiB, indices 256 MiB (host-visible)
+[vk] static upload frame bytes=276 pending_parts=0 publish=0.03 ms
+validation errors: 0
+ALL PASS
+
+=== Matched unmodified baseline/current full CPU test ===
+call "C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\Tools\VsDevCmd.bat" -arch=x64 -host_arch=x64 -winsdk=10.0.26100.0 -vcvars_ver=14.44.35207 && cl.exe /nologo /DWIN32 /D_WINDOWS /EHsc /O2 /Ob1 /DNDEBUG /std:c++17 /MD /Zi /I"D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-1\libs\MatterGraphics\build\probe\baseline\MatterEngine3\include" /I"C:\VulkanSDK\1.4.357.0\Include" "D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-1\libs\MatterGraphics\build\probe\baseline\MatterEngine3\tests\cloud_shadow_tests.cpp" /Fe:baseline.exe /Fo:baseline.obj /Fd:baseline.pdb
+**********************************************************************
+** Visual Studio 2022 Developer Command Prompt v17.14.7
+** Copyright (c) 2025 Microsoft Corporation
+**********************************************************************
+cloud_shadow_tests.cpp
+FAIL: constant full-density slab local march matches exp(-sigma times marched distance)
+FAIL: local full-density tau replaces the coarse start segment instead of double counting it
+FAIL: camera-frustum exit stops the detailed loop while the sun-space remainder stays active
+3 FAILURE(S)
+baseline exit: 1
+call "C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\Tools\VsDevCmd.bat" -arch=x64 -host_arch=x64 -winsdk=10.0.26100.0 -vcvars_ver=14.44.35207 && cl.exe /nologo /DWIN32 /D_WINDOWS /EHsc /O2 /Ob1 /DNDEBUG /std:c++17 /MD /Zi /I"D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-1\MatterEngine3\include" /I"C:\VulkanSDK\1.4.357.0\Include" "D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-1\MatterEngine3\tests\cloud_shadow_tests.cpp" /Fe:current.exe /Fo:current.obj /Fd:current.pdb
+**********************************************************************
+** Visual Studio 2022 Developer Command Prompt v17.14.7
+** Copyright (c) 2025 Microsoft Corporation
+**********************************************************************
+cloud_shadow_tests.cpp
+FAIL: constant full-density slab local march matches exp(-sigma times marched distance)
+FAIL: local full-density tau replaces the coarse start segment instead of double counting it
+FAIL: camera-frustum exit stops the detailed loop while the sun-space remainder stays active
+3 FAILURE(S)
+current exit: 1
+
+=== Instrumented current full CPU test, /O2 /Ob1 (exit 1) ===
+**********************************************************************
+** Visual Studio 2022 Developer Command Prompt v17.14.7
+** Copyright (c) 2025 Microsoft Corporation
+**********************************************************************
+cloud.cpp
+slab: distance=250 steps=8 local=5 coarse=2 total=2 T=0.135335 exit=0
+FAIL: constant full-density slab local march matches exp(-sigma times marched distance)
+no_overlap: distance=250 steps=8 local=2.5 coarse=2 total=2 T=0.135335 exit=0
+FAIL: local full-density tau replaces the coarse start segment instead of double counting it
+exits: distance=75 steps=8 local=1.5 coarse=2 total=2 T=0.135335 exit=1
+FAIL: camera-frustum exit stops the detailed loop while the sun-space remainder stays active
+3 FAILURE(S)
+
+=== Instrumented current full CPU test, /Od /Ob0 (exit 0) ===
+**********************************************************************
+** Visual Studio 2022 Developer Command Prompt v17.14.7
+** Copyright (c) 2025 Microsoft Corporation
+**********************************************************************
+cloud.cpp
+slab: distance=250 steps=8 local=5 coarse=2 total=7 T=0.000911882 exit=0
+no_overlap: distance=250 steps=8 local=2.5 coarse=2 total=4.5 T=0.011109 exit=0
+exits: distance=75 steps=8 local=1.5 coarse=2 total=3.5 T=0.0301974 exit=1
+ALL PASS
+
+=== Host/module shader byte identity ===
+All ten environment SPIR-V files are byte-identical between native host and module.
+atmosphere_irradiance.comp.spv 28cef73e21748c4611940718b2cd808f07c5e73fac44aafacdb93d9231a7355f
+atmosphere_multiscatter.comp.spv 1176423d940777196b8ea21dea713e111bbc74bda71f64729406d26bdb78b9ff
+atmosphere_sky_view.comp.spv 74d207782083c451ef2324f90e0ddf691582daae4ab8a9b642adee2f92e479ee
+atmosphere_transmittance.comp.spv 4930b71be5b762c749eed891c76fc268f3b6e5798fde5e6c39405945b24b6945
+cloud_shadow_density.comp.spv d1fbe660cfb6f9f059f3be159a6e22d718478a1406f90ebea55563cd22f7ce88
+cloud_shadow_integrate.comp.spv ae4b3593b8e306c4cd75b5a97899efa2052d8b44497ca64c227a98657e10a840
+cloud_shadow_reproject.comp.spv 5821574419411745e2aecc3e961c75e4e7d2ebd1db72de98229699334f6e5384
+vol_density.comp.spv 0365a9de6fbe267da10fbe89234efd0302f78a88797e26479f0f4adb3406e3d1
+vol_integrate.comp.spv cabafc87c0f40e2411ac9b26c08a9f936e1380cb585f7405a9d59efb3191027d
+vol_scatter.comp.spv 0a6015aa4fbcb65941939b7552830b19dd7e9d1831453d6fe46f73ad98cc90f5
+
+=== Exact source identities for the matched full baseline ===
+MatterEngine3/include/matter/cloud_layers.h: git blob a24fa638310bda1a6efc1d89a3eaa9fe085860b5; SHA256 aba3b2e3ffa422c953de435617b30ada2c3ef2c655f7242aeaef96ac8a688cca
+MatterEngine3/include/matter/cloud_shadow_settings.h: git blob 3525fa622a86a2c2d69b7f0f61c6a494575b9578; SHA256 08913333c08e81e039b4f258ab57bd952b1617a8358d8fc9631aa1e1c608fcac
+MatterEngine3/include/matter/compiler.h: git blob 9e8689c0f6dca89323287ad02425ae35fed3c0f1; SHA256 79fcf08292ab95dc755e5469a6cc3eb647996b74abf5023deb5f09b0175acebc
+MatterEngine3/include/matter/math_types.h: git blob f7463b9690c90e1454be462a7e621d13d58ae949; SHA256 75c425f7824cca5883a214429ea822b8dedef58d1a3261c8845f9488c4332ae9
+MatterEngine3/include/matter/volumetric_quality.h: git blob 21dadb73596bb39ffd3dbcfb7429ea4f2081f174; SHA256 d64c9c2654d6192aa460f870daa49d976f3ec77d7037d8b23efba426918ed999
+MatterEngine3/include/matter/vulkan_device.h: git blob a6121626ee97068e363313abbccd362140fb5deb; SHA256 c09b5b5ba9efef451ab2b8e5d2f5f152377a42e20377d454ffc4d2f8673d911e
+MatterEngine3/src/render/vk_cloud_shadows.h: git blob c75917910f8b1995b82ec265b77b64726f14c6c0; SHA256 9f7047247cae349452af3190aa35dc8b3c2622f1e2f4ab0eac5f965bf21d6c37
+MatterEngine3/src/render/vk_resources.h: git blob 89629967a0162fae29ba87636684e00e13636ad0; SHA256 ef1cad273cc2c299db716c5e869a9d831a63cfeae2cfe02c481e9177fd911ad0
+MatterEngine3/src/render/vk_volumetrics.h: git blob 52c713d37987367a6302e1719378a2fed83aa524; SHA256 4729a27a890de30415728db102969869a5317cfa1f1adf9e440d69b221616cb5
+MatterEngine3/tests/check.h: git blob 45e0d8e8e849c1f8c2257d154b367a7c8be4be0d; SHA256 b0d70921d661272105bf7cb75d753668917125567a4a612df927aa373a5abcfb
+MatterEngine3/tests/cloud_shadow_tests.cpp: git blob 863acb52990ad92a33836543a8bc0d920819d072; SHA256 ee21dc55b1050e935ca3ecb2191530503bcafcfcc9205ab4526ec6b3797219fb
+
+All six producer sources match the base after only include, environment_spirv namespace and Float3 sun adapter normalization. Four moved parameter headers and FogSettings/GpuVolumeEmitter blocks match byte for byte. Original relocated lines: 6892 (5526 producer files +1225 parameter headers +125 FogSettings +16 GpuVolumeEmitter). No shader source changed.
