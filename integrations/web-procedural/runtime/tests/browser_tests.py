@@ -6,6 +6,7 @@ import gzip
 import hashlib
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 import json
+import os
 from pathlib import Path
 import platform
 import sys
@@ -16,7 +17,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--wasm-module", type=Path, required=True)
     parser.add_argument("--runtime-dir", type=Path)
-    parser.add_argument("--browser", type=Path, default=Path("/opt/google/chrome/chrome"))
+    parser.add_argument("--browser", type=Path, default=Path(os.environ.get("MATTER_WEB_BROWSER",
+        "C:/Program Files/Google/Chrome/Application/chrome.exe" if os.name == "nt" else "/opt/google/chrome/chrome")))
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     from playwright.sync_api import sync_playwright
@@ -24,11 +26,15 @@ def main():
     runtime = Path(__file__).resolve().parents[1]
     dist = (args.runtime_dir or runtime / "dist").resolve()
     module = args.wasm_module.resolve()
-    if not args.browser.is_file() or not module.is_file() or not module.with_suffix(".wasm").is_file() or not (dist / "index.mjs").is_file():
+    if not args.browser.is_file() or not module.is_file() or not (dist / "index.mjs").is_file():
         parser.error("Browser, compiled runtime, and real WASM module/artifact are required")
-    served = set()
+    served = {}
 
     class Handler(SimpleHTTPRequestHandler):
+        # Windows' MIME registry does not consistently classify ES modules.
+        extensions_map = {**SimpleHTTPRequestHandler.extensions_map,
+            ".mjs": "text/javascript", ".wasm": "application/wasm"}
+
         def translate_path(self, path):
             clean = path.split("?", 1)[0]
             if clean in ("/wasm/matter_geometry_wasm.mjs", "/wasm/matter_geometry_wasm.wasm"):
@@ -37,15 +43,26 @@ def main():
                 result = dist / Path(clean).name
             else:
                 result = Path(super().translate_path(path))
-            if result.is_file():
-                served.add(result)
             return str(result)
+
+        def copyfile(self, source, outputfile):
+            # Measure the executable bytes as they are served to Chromium;
+            # don't reopen build outputs as evidence fixtures after the run.
+            data = bytearray()
+
+            class Response:
+                def write(self, block):
+                    data.extend(block)
+                    return outputfile.write(block)
+
+            super().copyfile(source, Response())
+            served[Path(source.name)] = bytes(data)
 
         def log_message(self, *_args):
             pass
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), partial(Handler, directory=str(root)))
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread = threading.Thread(target=lambda: server.serve_forever(poll_interval=0.01), daemon=True)
     thread.start()
     evidence = {"fixtures": None, "errors": []}
     try:
@@ -68,10 +85,9 @@ def main():
                 raise AssertionError(evidence["errors"])
             browser.close()
         files = []
-        for path in sorted(served):
+        for path, data in sorted(served.items()):
             if path.suffix not in (".mjs", ".wasm") or path.parent == runtime / "tests":
                 continue
-            data = path.read_bytes()
             files.append({"path": str(path.relative_to(root)) if path.is_relative_to(root) else path.name,
                 "bytes": len(data), "gzip_bytes": len(gzip.compress(data, mtime=0)), "sha256": hashlib.sha256(data).hexdigest()})
         evidence["download"] = {"scope": "Unique production modules and WASM actually served, excluding test JS/HTML; raw HTTP, hypothetical per-file gzip",

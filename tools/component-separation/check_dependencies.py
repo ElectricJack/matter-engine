@@ -74,6 +74,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
                         help="CMake generator (env MATTER_DEPCHECK_GENERATOR; default: Ninja when ninja is on PATH)")
     parser.add_argument("--make-program", default=os.environ.get("MATTER_DEPCHECK_MAKE_PROGRAM"),
                         help="CMAKE_MAKE_PROGRAM, e.g. the resolved ninja (env MATTER_DEPCHECK_MAKE_PROGRAM)")
+    parser.add_argument("--host-cache", action="append", default=[], metavar="KEY=VALUE",
+                        help="extra probe cache entry locating host tools (e.g. Vulkan_INCLUDE_DIR, MATTER_GRAPHICS_GLSLC); "
+                             "may not override a cache key the rules set")
     parser.add_argument("--build-type", default="Debug", help="CMAKE_BUILD_TYPE of the probes (default: Debug)")
     parser.add_argument("--fresh", action="store_true", help="delete each probe directory (only ones this tool created) first")
     parser.add_argument("--report", type=Path, help="write a JSON report here")
@@ -84,7 +87,25 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def resolve_toolchain(args: argparse.Namespace) -> Toolchain:
+def host_cache(entries: list[str], rules) -> dict[str, str]:
+    owned = set(rules.probe_cache)
+    for component in rules.components.values():
+        for variant in component.variants:
+            owned.update(variant.cache)
+    cache: dict[str, str] = {}
+    for entry in entries:
+        name, sep, value = entry.partition("=")
+        name = name.strip()
+        key = name.split(":", 1)[0]  # KEY:TYPE=VALUE is accepted, as by cmake -D
+        if not sep or not key:
+            raise RulesError(f"--host-cache {entry!r} is not KEY=VALUE")
+        if key in owned:
+            raise RulesError(f"--host-cache {key} would override a probe cache key the rules set")
+        cache[name] = value
+    return cache
+
+
+def resolve_toolchain(args: argparse.Namespace, rules) -> Toolchain:
     cmake = args.cmake or shutil.which("cmake")
     if not cmake or not (Path(cmake).is_file() or shutil.which(cmake)):
         raise RulesError("configure/build checks need cmake: put it on PATH or pass --cmake (MATTER_DEPCHECK_CMAKE)")
@@ -97,6 +118,7 @@ def resolve_toolchain(args: argparse.Namespace) -> Toolchain:
     if not version:
         raise RulesError(f"{cmake} --version failed; is it a working cmake?")
     return Toolchain(cmake=cmake, generator=generator, make_program=make_program, build_type=args.build_type,
+                     host_cache=host_cache(args.host_cache, rules),
                      jobs=args.jobs, fresh=args.fresh, version=version)
 
 
@@ -129,7 +151,7 @@ def run(args: argparse.Namespace) -> int:
                 print(f"{'':<20} {component.reason}")
         return 0
 
-    toolchain = resolve_toolchain(args) if "configure" in selected_checks else None
+    toolchain = resolve_toolchain(args, rules) if "configure" in selected_checks else None
     started = time.monotonic()
     files = corpus(rules.repo)
     results: list[Result] = []

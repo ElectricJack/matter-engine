@@ -18,7 +18,7 @@ Copy-Item -LiteralPath (Join-Path $RepositoryRoot 'tools\build-windows.ps1') `
     -Destination (Join-Path $fixtureRoot 'tools\build-windows.ps1')
 
 $fakeCommand = Join-Path $fixtureRoot 'fake-command.cmd'
-Set-Content -LiteralPath $fakeCommand -Encoding ASCII -Value '@exit /b 0'
+Set-Content -LiteralPath $fakeCommand -Encoding ASCII -Value @('@echo %*>>"%~dp0commands.log"', '@exit /b 0')
 $module = @'
 function Resolve-MatterWindowsToolchain {
     param([string]$RepositoryRoot)
@@ -39,7 +39,9 @@ Set-Content -LiteralPath (Join-Path $fixtureRoot 'tools\windows\MatterWindowsToo
 
 $artifact = Join-Path $fixtureRoot 'MatterEditor\build\windows-msvc\editor.exe'
 $package = Join-Path $fixtureRoot 'MatterEditor\build\dist\world_demo'
-function Invoke-Fixture([string]$Target, [bool]$CreateArtifact, [bool]$CreatePackage = $false) {
+function Invoke-Fixture([string]$Target, [bool]$CreateArtifact, [bool]$CreatePackage = $false,
+        [string]$BuildDirectory, [string]$CompilerLauncher, [switch]$ConfigureOnly) {
+    Remove-Item -LiteralPath (Join-Path $fixtureRoot 'commands.log') -Force -ErrorAction SilentlyContinue
     if (Test-Path -LiteralPath $artifact) {
         Remove-Item -LiteralPath $artifact -Force
     }
@@ -62,6 +64,9 @@ function Invoke-Fixture([string]$Target, [bool]$CreateArtifact, [bool]$CreatePac
         '-Config', 'RelWithDebInfo'
     )
     if ($Target) { $arguments += @('-Target', $Target) }
+    if ($BuildDirectory) { $arguments += @('-BuildDirectory', $BuildDirectory) }
+    if ($CompilerLauncher) { $arguments += @('-CompilerLauncher', $CompilerLauncher) }
+    if ($ConfigureOnly) { $arguments += '-ConfigureOnly' }
     $savedErrorActionPreference = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
@@ -110,6 +115,26 @@ $packageMarkers = @($dist.Output -split "`r?`n" |
 if ($dist.ExitCode -ne 0 -or $packageMarkers.Count -ne 1 -or
         $dist.Output -match 'MATTER_WINDOWS_ARTIFACT=') {
     throw "matter_dist did not emit exactly one verified package marker`n$($dist.Output)"
+}
+
+$external = Join-Path $fixtureRoot 'external build'
+$cached = Invoke-Fixture -Target compiler_portability_tests -CreateArtifact $false `
+    -BuildDirectory $external -CompilerLauncher $fakeCommand
+$commands = Get-Content -Raw (Join-Path $fixtureRoot 'commands.log')
+if ($cached.ExitCode -ne 0 -or $commands -notlike "*-B `"$external`"*" -or
+        $commands -notlike "*--build `"$external`"*" -or
+        $commands -notmatch 'CMAKE_MSVC_DEBUG_INFORMATION_FORMAT:STRING=Embedded' -or
+        $commands -notmatch 'CMAKE_CXX_COMPILER_LAUNCHER:FILEPATH=') {
+    throw "external cached build arguments were incorrect`n$commands`n$($cached.Output)"
+}
+$configureOnly = Invoke-Fixture -Target matter_editor -CreateArtifact $false `
+    -BuildDirectory $external -ConfigureOnly
+$commands = Get-Content -Raw (Join-Path $fixtureRoot 'commands.log')
+if ($configureOnly.ExitCode -ne 0 -or $commands -match '--build' -or
+        $commands -notmatch 'CMAKE_C_COMPILER_LAUNCHER:FILEPATH= ' -or
+        $commands -notmatch 'CMAKE_CXX_COMPILER_LAUNCHER:FILEPATH= ' -or
+        $commands -notmatch 'ProgramDatabase') {
+    throw "configure-only did not clear launchers or tried to build`n$commands`n$($configureOnly.Output)"
 }
 
 $repositoryPath = [System.IO.Path]::GetFullPath($RepositoryRoot)

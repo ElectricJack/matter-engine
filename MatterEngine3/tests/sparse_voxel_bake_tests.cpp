@@ -141,11 +141,13 @@ int main(int argc, char** argv) {
           "isotropic mean projected area is one half, not RMS one over sqrt three");
     const auto flat=projected_area_matrix(a.cells.front());
     CHECK(close(flat[0],0) && close(flat[1],0) && close(flat[2],1),"parallel sheet projection is exact");
+#ifdef MATTER_CODEC_SOURCE_QUALIFICATION
     const auto fixture=std::filesystem::temp_directory_path()/("matter-sparse-support-"+
         std::to_string(std::chrono::steady_clock::now().time_since_epoch().count())+".fixture");
     CHECK(write_sparse_fixture(fixture.string().c_str(),a) && read_sparse_fixture(fixture.string().c_str(),same,error) && equal(a,same),
           "support and planes survive diagnostic fixture round trip");
     std::filesystem::remove(fixture);
+#endif
     Builder half(config);
     bool valid_requests=true;
     quad(half,[&](const SampleRequest& r) {

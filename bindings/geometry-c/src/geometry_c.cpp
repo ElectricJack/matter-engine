@@ -1,6 +1,7 @@
 #include "wire.h"
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <map>
