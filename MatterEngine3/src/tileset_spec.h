@@ -107,7 +107,11 @@ struct LayerSpec {
 // default member initializer -- the verb value-initializes the record before
 // filling it in. Drops are shared across the torus: the bake replicates each
 // one onto all 16 tiles, ahead of any layer.
-struct DropChildRec { uint64_t child_hash = 0; float transform[16]; };
+struct DropChildRec {
+    uint64_t child_hash = 0;
+    float transform[16];
+    bool physics = true; // false preserves the authored pose (surface relief stamps)
+};
 
 // Ranges into DslState's op/children arrays emitted inside variant(t) for one tile.
 struct VariantRange { int tile = -1; size_t op_begin = 0, op_end = 0, child_begin = 0, child_end = 0; };

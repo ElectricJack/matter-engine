@@ -1,0 +1,18 @@
+{
+  "MatterEngine3/src/render/vt_encoded_pages.h": "af8785567c185ff14dab4bb5b2dcd21888e91aa1ac8f4e1aa52be50ad4291ce3",
+  "MatterEngine3/src/render/vt_encoded_upload.h": "7e238f8783a08096ff4dae828c7d581b052b205629d829af5dd84b7d25eb260a",
+  "MatterEngine3/tests/vt_encoded_pages_tests.cpp": "50cb30299ff87a784ca2efb2c4eb97456a67e6165987343ae2665677e9c64adf",
+  "MatterEngine3/tests/vt_compositor_tests.cpp": "12472721ce7c548832fa5e298959bc303a4700c8d821118008973962263df06f",
+  "MatterEngine3/src/render/vt_encoded_identity.h": "63984e1867613fbfbc889cf64346f67d99a3de162966b8a5d8bc6744a7b38bc6",
+  "MatterEngine3/src/render/vt_compositor.h": "631507749b754bafcd0e1b79e908eba992e6f487ffe12ea9aeb3442f0ca1bac7",
+  "MatterEngine3/src/render/vt_compositor.cpp": "c1f7a71c6d64015d036bb88fed1e4da236b9c053e233dda5c9e5d6f26728026d",
+  "MatterEngine3/src/render/vk_scene_renderer.h": "566b335431ceee3d262b8e009ea5de65aac95319cf1c281c8911484ea5012d30",
+  "MatterEngine3/src/render/vk_scene_renderer.cpp": "da1dfdb7e9ca91a76a52cb2aa3c1777b85bcfa12dd55e42fa745ab2f120e1a93",
+  "MatterEngine3/src/render/vt_encoded_store.h": "3b6ce57f262d7378095863fe08681e4002b602e93024320e4745bded0c79d659",
+  "MatterEngine3/src/render/vt_encoded_async.h": "4a7577ba144a200bc801e279f130fcd3a21d2cf64d877b62e88641ebb24a990e",
+  "MatterEngine3/src/render/vt_types.h": "939649c276d408d0a4a18486d5e797af52ad60f66bfc76f9f64aa959cf2d5901",
+  "MatterEngine3/src/render/vt_residency.cpp": "ebbbeb2da77668978d0e466ed9f834d38a137543738924d67658d7b1c6958f84",
+  "MatterEngine3/tests/vt_queue_tests.h": "f6a30322caef00f1407697d975b6d6d7a4e59f2e5c8a733848186ebecd00c002",
+  "MatterEngine3/tests/vulkan_smoke_tests.cpp": "314514df5e2484c674618521705159a290149778be0abe2e7b30c50640e451db",
+  "MatterEngine3/src/render/vt_encoded_filler.h": "5f53dae87f14a49365b6236750bd0c2c9dce04beaa91d71d75a8e80e8fd6e17a"
+}

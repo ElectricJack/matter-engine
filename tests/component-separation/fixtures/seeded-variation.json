@@ -1,0 +1,23 @@
+{
+  "kind": "analytical seeded prop variation; fixture constructor, not a new geometry operation",
+  "algorithm": "matter.splitmix64.v1",
+  "parameter_rule": "box dimensions [1, 1 + first next_unit(seed), 1]; centred at origin",
+  "samples": [
+    {
+      "seed": "0000000000000000",
+      "first_unit": 0.43152799704850997,
+      "height_metres": 1.43152799704851,
+      "expected_repeat": "exact dimensions and canonical input within pinned profile",
+      "expected_volume_metres3": 1.43152799704851
+    },
+    {
+      "seed": "0000000000000001",
+      "first_unit": 0.5665615751722809,
+      "height_metres": 1.566561575172281,
+      "expected_repeat": "exact dimensions and canonical input within pinned profile",
+      "expected_volume_metres3": 1.566561575172281
+    }
+  ],
+  "source": "fixtures/rng-splitmix64.json",
+  "legacy_geometry_case": "GEOM-SEED in C0 retains actual host seed/same-artifact and distinct-seed assertions; that suite was not rerun here"
+}

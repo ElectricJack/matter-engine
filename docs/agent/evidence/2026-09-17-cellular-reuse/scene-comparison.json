@@ -1,0 +1,122 @@
+{
+  "before": "/mnt/d/shared with desktop/ai/matter-engine-cpp/docs/agent/evidence/2026-09-17-mountain-cellular/v3",
+  "after": "/mnt/d/shared with desktop/ai/matter-engine-cpp/docs/agent/evidence/2026-09-17-mountain-cellular/v4",
+  "comparisons": [
+    {
+      "view": "overview",
+      "mode": "lit",
+      "max_channel_difference_8bit": 105,
+      "mean_channel_difference_8bit": 4.035265625,
+      "percent_pixels_different": 28.793164062499997,
+      "percent_pixels_more_than_one_level": 23.259960937499997,
+      "over_one_level_bbox_xyxy": [
+        0,
+        0,
+        1279,
+        799
+      ],
+      "foreground_y460_max_difference_8bit": null
+    },
+    {
+      "view": "overview",
+      "mode": "albedo",
+      "max_channel_difference_8bit": 1,
+      "mean_channel_difference_8bit": 3.90625e-06,
+      "percent_pixels_different": 0.001171875,
+      "percent_pixels_more_than_one_level": 0.0,
+      "over_one_level_bbox_xyxy": null,
+      "foreground_y460_max_difference_8bit": null
+    },
+    {
+      "view": "overview",
+      "mode": "normal",
+      "max_channel_difference_8bit": 1,
+      "mean_channel_difference_8bit": 3.255208333333333e-07,
+      "percent_pixels_different": 9.765625e-05,
+      "percent_pixels_more_than_one_level": 0.0,
+      "over_one_level_bbox_xyxy": null,
+      "foreground_y460_max_difference_8bit": null
+    },
+    {
+      "view": "grazing",
+      "mode": "lit",
+      "max_channel_difference_8bit": 206,
+      "mean_channel_difference_8bit": 7.776569010416667,
+      "percent_pixels_different": 58.77246093750001,
+      "percent_pixels_more_than_one_level": 54.229394531249994,
+      "over_one_level_bbox_xyxy": [
+        0,
+        0,
+        1279,
+        799
+      ],
+      "foreground_y460_max_difference_8bit": 52
+    },
+    {
+      "view": "grazing",
+      "mode": "albedo",
+      "max_channel_difference_8bit": 61,
+      "mean_channel_difference_8bit": 0.0015462239583333333,
+      "percent_pixels_different": 0.01103515625,
+      "percent_pixels_more_than_one_level": 0.01044921875,
+      "over_one_level_bbox_xyxy": [
+        2,
+        244,
+        1277,
+        391
+      ],
+      "foreground_y460_max_difference_8bit": 1
+    },
+    {
+      "view": "grazing",
+      "mode": "normal",
+      "max_channel_difference_8bit": 229,
+      "mean_channel_difference_8bit": 0.011355143229166666,
+      "percent_pixels_different": 0.19970703125,
+      "percent_pixels_more_than_one_level": 0.0484375,
+      "over_one_level_bbox_xyxy": [
+        1,
+        226,
+        1277,
+        392
+      ],
+      "foreground_y460_max_difference_8bit": 1
+    },
+    {
+      "view": "close",
+      "mode": "lit",
+      "max_channel_difference_8bit": 54,
+      "mean_channel_difference_8bit": 27.09121321614583,
+      "percent_pixels_different": 99.97470703125,
+      "percent_pixels_more_than_one_level": 99.79365234375,
+      "over_one_level_bbox_xyxy": [
+        0,
+        0,
+        1279,
+        799
+      ],
+      "foreground_y460_max_difference_8bit": null
+    },
+    {
+      "view": "close",
+      "mode": "albedo",
+      "max_channel_difference_8bit": 1,
+      "mean_channel_difference_8bit": 6.510416666666666e-07,
+      "percent_pixels_different": 0.0001953125,
+      "percent_pixels_more_than_one_level": 0.0,
+      "over_one_level_bbox_xyxy": null,
+      "foreground_y460_max_difference_8bit": null
+    },
+    {
+      "view": "close",
+      "mode": "normal",
+      "max_channel_difference_8bit": 1,
+      "mean_channel_difference_8bit": 9.765625e-07,
+      "percent_pixels_different": 0.00029296875,
+      "percent_pixels_more_than_one_level": 0.0,
+      "over_one_level_bbox_xyxy": null,
+      "foreground_y460_max_difference_8bit": null
+    }
+  ],
+  "note": "Lit differences include unfrozen temporal lighting. Pixel metrics do not establish realism or performance acceptance."
+}

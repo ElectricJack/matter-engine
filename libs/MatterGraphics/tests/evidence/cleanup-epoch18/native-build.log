@@ -1,0 +1,25 @@
+[1/21] Building CXX object CMakeFiles/matter_graphics_native_water_temporal.dir/water_field_vk.cpp.o
+[2/21] Building CXX object CMakeFiles/matter_graphics_native_water_temporal.dir/water_field_vk_resources.cpp.o
+[3/21] Building CXX object CMakeFiles/matter_graphics_native_water_temporal.dir/water_animation_gpu.cpp.o
+[4/21] Building CXX object CMakeFiles/matter_graphics_native_water_temporal.dir/water_mesh_animation_playback.cpp.o
+[5/21] Building CXX object CMakeFiles/matter_graphics_native_water_temporal.dir/water_forward_reference.cpp.o
+[6/21] Building CXX object CMakeFiles/matter_graphics_native_water_temporal.dir/water_surface_reference.cpp.o
+[7/21] Building CXX object CMakeFiles/matter_graphics_native_water_temporal.dir/vk_temporal.cpp.o
+[8/21] Building CXX object CMakeFiles/matter_graphics_native_water_temporal.dir/streamline_bridge.cpp.o
+[9/21] Linking CXX static library libmatter_graphics_native_water_temporal.a
+[10/21] Building CXX object CMakeFiles/water_playback_fixture_codec.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/MatterEngine3/src/render/gpu_meshing/gpu_visual_mesher_common.cpp.o
+[11/21] Building CXX object CMakeFiles/water_playback_fixture_codec.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/MatterEngine3/src/hydrology/water_mesh_animation_artifact.cpp.o
+[12/21] Linking CXX static library libwater_playback_fixture_codec.a
+[13/21] Building CXX object CMakeFiles/water_field_vk_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/MatterEngine3/tests/water_field_vk_tests.cpp.o
+[14/21] Linking CXX executable water_field_vk_tests
+[15/21] Building CXX object CMakeFiles/water_forward_reference_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/MatterEngine3/tests/water_forward_reference_tests.cpp.o
+[16/21] Linking CXX executable water_forward_reference_tests
+[17/21] Building CXX object CMakeFiles/water_surface_reference_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/MatterEngine3/tests/water_surface_reference_tests.cpp.o
+[18/21] Linking CXX executable water_surface_reference_tests
+[19/21] Building CXX object CMakeFiles/dlss_header.dir/dlss_header.cpp.o
+[20/21] Building CXX object CMakeFiles/water_mesh_animation_playback_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/MatterEngine3/tests/water_mesh_animation_playback_tests.cpp.o
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/MatterEngine3/tests/water_mesh_animation_playback_tests.cpp: In function ‘{anonymous}::Fixture {anonymous}::write_fixture()’:
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/MatterEngine3/tests/water_mesh_animation_playback_tests.cpp:113:16: warning: unused variable ‘stamp’ [-Wunused-variable]
+  113 |     const auto stamp =
+      |                ^~~~~
+[21/21] Linking CXX executable water_mesh_animation_playback_tests

@@ -1,0 +1,137 @@
+{
+  "source_manifest": "binding-v5-source.json",
+  "sources_checked": 124,
+  "source_changes": [],
+  "projected_faces": 48,
+  "max_projection_uv_residual_m": 9.99541953e-07,
+  "vt_brick_texels": 196608,
+  "comparison": [
+    {
+      "seed": 0,
+      "old_rmse": 0.010176867246627808,
+      "new_rmse": 0.0022418166045099497,
+      "old_max": 0.09019608795642853,
+      "new_max": 0.026093319058418274
+    },
+    {
+      "seed": 1,
+      "old_rmse": 0.01008591428399086,
+      "new_rmse": 0.002221382688730955,
+      "old_max": 0.08681736886501312,
+      "new_max": 0.030079111456871033
+    },
+    {
+      "seed": 2,
+      "old_rmse": 0.01208710577338934,
+      "new_rmse": 0.002144285012036562,
+      "old_max": 0.08784137666225433,
+      "new_max": 0.021990761160850525
+    },
+    {
+      "seed": 3,
+      "old_rmse": 0.013387962244451046,
+      "new_rmse": 0.002199751790612936,
+      "old_max": 0.08766104280948639,
+      "new_max": 0.03357350826263428
+    },
+    {
+      "seed": 4,
+      "old_rmse": 0.007615339010953903,
+      "new_rmse": 0.002257117535918951,
+      "old_max": 0.08380280435085297,
+      "new_max": 0.02383039891719818
+    },
+    {
+      "seed": 5,
+      "old_rmse": 0.012492612935602665,
+      "new_rmse": 0.0022401087917387486,
+      "old_max": 0.08640806376934052,
+      "new_max": 0.03319002687931061
+    },
+    {
+      "seed": 6,
+      "old_rmse": 0.014207704924046993,
+      "new_rmse": 0.002176201669499278,
+      "old_max": 0.08655212819576263,
+      "new_max": 0.025945767760276794
+    },
+    {
+      "seed": 7,
+      "old_rmse": 0.010439606383442879,
+      "new_rmse": 0.0022783938329666853,
+      "old_max": 0.08740656077861786,
+      "new_max": 0.02826458215713501
+    }
+  ],
+  "artifacts": {
+    "clay-projected-0.fst": {
+      "bytes": 2097368,
+      "sha256": "d228c0410c9feba1072b9883f7319e6a45189b8f0728160d25f1719a2d45effb"
+    },
+    "clay-projected-1.fst": {
+      "bytes": 2097368,
+      "sha256": "d1bb7e5d53db581163e85bec5f8b671708bd41a0d2de2cf40d0d2d52618d0751"
+    },
+    "clay-projected-2.fst": {
+      "bytes": 2097368,
+      "sha256": "defec76a0cf68a153138801faa78e80aae54f5c163b4992486ba36851b7be27e"
+    },
+    "clay-projected-3.fst": {
+      "bytes": 2097368,
+      "sha256": "d0a9e4c70d8073bff4da469f78004ad15ca6c37dedc8dd68893a40ab5206561d"
+    },
+    "clay-projected-4.fst": {
+      "bytes": 2097368,
+      "sha256": "6e8892b923a094f854d67859d50e82e4363e6ec2a0baf02a2ea2039465120774"
+    },
+    "clay-projected-5.fst": {
+      "bytes": 2097368,
+      "sha256": "a6c2a8d2788914ecadf76462d1438e254e5eecdb50ae7eeded92ade22ff00f0d"
+    },
+    "clay-projected-6.fst": {
+      "bytes": 2097368,
+      "sha256": "cde5e7a21c6e2f2f93f8fe4b8e9b5148bafd6cd9dbe9ab0a22bfc55172bebf29"
+    },
+    "clay-projected-7.fst": {
+      "bytes": 2097368,
+      "sha256": "7b1552bc2f05b16aee246f9fe45b1049abe9c19b0411b971581ba4ef58578ae3"
+    },
+    "clay-projected-0.vt.bin": {
+      "bytes": 983040,
+      "sha256": "1efee85ecab122a1ecbb891626748e82b543e9ef34f2e6c8ea11c870c1146c5c"
+    },
+    "clay-projected-1.vt.bin": {
+      "bytes": 983040,
+      "sha256": "a48ea77aabad25b29ee6d711b6277f942b28d1ff4e1b03da3f8def4c5fb94fd2"
+    },
+    "clay-projected-2.vt.bin": {
+      "bytes": 983040,
+      "sha256": "88c47daa33888ed02fd387f6a336dd8248165be074e5a3117900882388aa7dce"
+    },
+    "clay-projected-3.vt.bin": {
+      "bytes": 983040,
+      "sha256": "d0db2e548264b72893a74878792ebe50b05628810c2b8f6f5590f229599b990b"
+    },
+    "clay-projected-4.vt.bin": {
+      "bytes": 983040,
+      "sha256": "a801bbcd4dd2b22223724bdbf79ea81afa4966fdf6567827eccc9d4ce41de473"
+    },
+    "clay-projected-5.vt.bin": {
+      "bytes": 983040,
+      "sha256": "6366adff366c8739f66e44298cf4c501227b0c79eea2ac7dd28b312c8a1108da"
+    },
+    "clay-projected-6.vt.bin": {
+      "bytes": 983040,
+      "sha256": "6103a74f8c7868a728903533c5c95d6bd9bbe283883740c0dc19f6178680024c"
+    },
+    "clay-projected-7.vt.bin": {
+      "bytes": 983040,
+      "sha256": "5f30519af0ac890250b2d66b1ae145c6b31b55d4edb331f5627e4c489f32bbb4"
+    }
+  },
+  "archive": {
+    "path": "clay-vt-readback.zip",
+    "bytes": 9780529,
+    "sha256": "6b53d65e979ff4ad27ee174907492745b27d87b22be2ff4ed610a1d814d107ef"
+  }
+}

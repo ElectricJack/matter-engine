@@ -1,0 +1,28 @@
+{
+  "task": "nimble-rapids-30",
+  "claim_epoch": 8,
+  "owner_session": "7a96c3ba-eca7-490e-a511-e142fff96347",
+  "execution_authorization": "msg-f8ee60b5f905490c860e418aae1581fe",
+  "checkout_head": "d5ce2be050c789d8a7dbfba3ba4fbe2806f7746b",
+  "created_at": 1792023138.6867568,
+  "artifact_root": "/mnt/d/mv8e8",
+  "sources": [
+    {
+      "commit": "58289c187ef2565c7d0532fe28a8cfb903023e44",
+      "tree": "d53a04a7d8233438d1e775d883cd42c314d1940d",
+      "source_root": "/mnt/d/mv8e8/b",
+      "archive": "/mnt/d/matter-agent-artifacts/matter-engine-cpp/nimble-rapids-30/epoch8-230ea608/58289c187ef2565c7d0532fe28a8cfb903023e44.tar",
+      "archive_sha256": "e5245b259a6840223a0f1c107fc54cc8b24db94968c5a018ed49637ec965f7d7",
+      "inventory": "58289c187ef2565c7d0532fe28a8cfb903023e44-inventory.json.gz",
+      "inventory_sha256": "a813ff0a169d542351a65c0b2efb2ef7243eb8f727a500f0479054e81134baab",
+      "tracked_files": 10419,
+      "symlinks": 1,
+      "archive_modes_and_extracted_blobs_match_git_tree": true,
+      "previous_source_root": "D:\\matter-agent-artifacts\\matter-engine-cpp\\nimble-rapids-30\\epoch8-230ea608\\58289c187ef2565c7d0532fe28a8cfb903023e44",
+      "native_source_root": "D:\\mv8e8\\b",
+      "previous_source_root_length": 117,
+      "native_source_root_length": 10
+    }
+  ],
+  "placement_only_diagnostic": true
+}

@@ -1,0 +1,1 @@
+BIND-WASM: real primitives/extrusion/CSG/placement/query/modifiers, errors, cancellation, instances, growth and disposal passed; native equivalence=true

@@ -524,13 +524,24 @@ function joistSupports(ctx, floor, region, jAxis, cy, h) {
   });
   const members = [], trimmerCs = [];
   const edges = rectUnionEdges(region.holes);
+  // A replacement landing in this floor's plane is carried by the floor frame:
+  // a trimmer meeting its hole continues beneath the landing deck to the header
+  // on the far side instead of ending at a re-entrant corner with nothing
+  // under it.
+  const inPlane = inPlaneLandingHoles(ctx.manifest, floor);
   let n = 0;
   for (const e of edges) {
     const pos = e.pos + e.normal * off;
     if (e.dir === jAxis) {
       if (parallelStrip(pos)) continue;
-      for (const [a0, a1] of crossSection(region, jAxis, pos, { structural: true })) {
+      for (let [a0, a1] of crossSection(region, jAxis, pos, { structural: true })) {
         if (a1 < e.a0 - EPS || a0 > e.a1 + EPS || a1 - a0 < 0.3) continue;
+        for (const r of inPlane) {
+          const [h0, h1] = along(jAxis, r), [s0, s1] = across(jAxis, r);
+          if (pos <= s0 + EPS || pos >= s1 - EPS) continue;
+          if (Math.abs(a1 - h0) < 1e-4) a1 = h1 + off;
+          if (Math.abs(a0 - h1) < 1e-4) a0 = h0 - off;
+        }
         trimmerCs.push(pos);
         const from = jAxis === 'x' ? [a0, cy, pos] : [pos, cy, a0];
         const to = jAxis === 'x' ? [a1, cy, pos] : [pos, cy, a1];
@@ -549,6 +560,19 @@ function joistSupports(ctx, floor, region, jAxis, cy, h) {
     }
   }
   return { members, trimmerCs, off, halfT };
+}
+// Hole rects of a floor filled by a replacement landing at the floor's own
+// elevation. The landing takes the floor's finish (layoutLanding), so its deck
+// bottom is the floor's joist top and floor framing may pass beneath it.
+function inPlaneLandingHoles(manifest, floor) {
+  const out = [];
+  for (const hole of floor.holes || []) {
+    if (!hole.replacementLandingId) continue;
+    const landing = (manifest.stairs || []).flatMap((s) => s.landings).find((l) => l.id === hole.replacementLandingId);
+    if (!landing || Math.abs(landing.elevation - floor.elevation) > 1e-6) continue;
+    for (const r of hole.regions || [hole.footprint]) out.push(rectFromBounds(r));
+  }
+  return out;
 }
 // Open (unwalled) boundary runs of a floor: gallery void edges and open joins
 // to a neighbouring floor. normal is +-1 pointing out of this floor.
@@ -620,6 +644,22 @@ function hitsClearance(ctx, box) {
   if (!ctx.clearances) ctx.clearances = structureClearanceVolumes(ctx.manifest).concat((ctx.manifest.occupiedVolumes || [])
     .filter((v) => v.kind === 'fixture-clearance' || v.kind === 'stair-clearance').map((v) => ({ id: v.id, ...v.bounds })));
   return ctx.clearances.some((c) => overlaps(box, c));
+}
+// Oriented-box form of an axis-aligned {minX..maxZ} box.
+function aabbBox(c) {
+  return { c: [(c.minX + c.maxX) * 0.5, (c.minY + c.maxY) * 0.5, (c.minZ + c.maxZ) * 0.5], axes: [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
+    half: [(c.maxX - c.minX) * 0.5, (c.maxY - c.minY) * 0.5, (c.maxZ - c.minZ) * 0.5] };
+}
+// Exact (oriented) overlap of a member body and an axis-aligned box.
+function memberHitsBox(m, box) {
+  const b = memberBox(m);
+  return overlaps(b, box) && boxGap(b, aabbBox(box)) < -1e-4;
+}
+// Exact (oriented) test of a member body against the same clear envelopes.
+function obbHitsClearance(ctx, m) {
+  const b = memberBox(m);
+  if (!hitsClearance(ctx, b)) return false;
+  return ctx.clearances.some((c) => overlaps(b, c) && boxGap(b, aabbBox(c)) < -1e-4);
 }
 function layEdgeBeams(ctx, floor, region, jAxis, cy, h) {
   const tw = D.trimmerWidth, off = tw * 0.5 + 0.005;
@@ -999,10 +1039,25 @@ function nearWall(manifest, levelId, runAxis, c, a0, a1, reach) {
   }
   return false;
 }
-export function stairStyle(manifest, stair, requested) {
+function requestedStairStyle(manifest, stair, requested) {
   if (requested === 'stone' || requested === 'timber') return requested;
   const upper = (manifest.floors || []).find((f) => f.roomId === stair.upperRoomId && f.levelId === stair.upperLevelId);
   return upper && floorSurfaceKind(upper.floorType) === 'timber' ? 'timber' : 'stone';
+}
+// Solid stone flights and landings are built up from the stair's lower floor.
+// A stair standing anywhere over a void (stacked above the well of the stair
+// below) is framed in timber instead (diagnostic stone-stair-framed-over-void).
+export function stairStyle(manifest, stair, requested) {
+  const style = requestedStairStyle(manifest, stair, requested);
+  return style === 'stone' && !stairOverLowerFloor(manifest, stair) ? 'timber' : style;
+}
+function stairOverLowerFloor(manifest, stair) {
+  const regions = (manifest.floors || []).filter((f) => f.levelId === stair.lowerLevelId).map((f) => floorRegion(manifest, f));
+  const rects = stair.flights.map((f) => rectFromBounds(f.footprint))
+    .concat(stair.landings.filter((l) => l.kind === 'intermediate').map((l) => rectFromBounds(l.bounds)));
+  return rects.every((r) => !regions.some((g) => g.holes.some((h) => h.x0 < r.x1 - 1e-4 && h.x1 > r.x0 + 1e-4 && h.z0 < r.z1 - 1e-4 && h.z1 > r.z0 + 1e-4)) &&
+    [r.x0 + 0.01, (r.x0 + r.x1) * 0.5, r.x1 - 0.01].every((x) => [r.z0 + 0.01, (r.z0 + r.z1) * 0.5, r.z1 - 0.01]
+      .every((z) => regions.some((g) => pointInRegion(g, x, z, false)))));
 }
 // Side classification for each flight: 'wall', 'shared' (with another flight
 // of the same stair, e.g. a dog-leg), or 'open'.
@@ -1042,6 +1097,8 @@ function layoutStair(ctx, stair, style) {
   geoms.forEach((g, fi) => {
     const f = stair.flights[fi];
     const clipAt = (lift) => Math.min(g.run, (ceiling - lift - f.fromY - f.riser) / g.slope);
+    const atLanding = (y, kinds) => stair.landings.some((l) => kinds.includes(l.kind) && Math.abs(l.elevation - y) < 1e-6);
+    const sinT = Math.sin(Math.atan(g.slope));
     const cMid = (g.t0 + g.t1) * 0.5;
     for (const st of g.steps) {
       const nose = st.k === 0 ? 0 : D.nosing;
@@ -1070,8 +1127,38 @@ function layoutStair(ctx, stair, style) {
       if (style === 'timber' && side.kind !== 'shared') {
         const c = side.c + outward * (D.stringerWidth * 0.5 + 0.01);
         const drop = (D.stringerHeight * 0.5) / g.cos - 0.06;
-        const d0 = D.stringerHeight * 0.5 * Math.sin(Math.atan(g.slope)) + 0.005;
-        const d1 = Math.min(g.run - f.tread, side.kind === 'wall' ? Infinity : clipAt(0.06 + D.stringerHeight * 0.5 * Math.sin(Math.atan(g.slope))));
+        // The foot seats on its floor (the end face's lower corner 5 mm into
+        // the finish) or, leaving an intermediate landing, on that landing's
+        // edge bearer; the head runs onto an arriving landing's edge bearer
+        // (layoutLanding extends those bearers under the stringers), else stops
+        // a tread short of the destination floor (open sides below its frame).
+        const lift = 0.06 + D.stringerHeight * 0.5 * sinT, halfDepth = D.stringerHeight * 0.5 * g.cos;
+        const body = (a, b) => ({ from: g.at(Math.min(a, b), c, g.nosing(Math.min(a, b)) - drop),
+          to: g.at(Math.max(a, b), c, g.nosing(Math.max(a, b)) - drop), section: [D.stringerWidth, D.stringerHeight] });
+        // The foot: leaving a landing, the end face's lower corner sits over the
+        // edge bearer's centreline, housed into it; a wall string seats on its
+        // floor (lower corner 5 mm into the finish). An open string keeps its
+        // foot clear of the approach and is carried by its bottom newel, which
+        // stands on the floor. A seat that would enter a clear envelope (the
+        // other flight at a quarter turn) falls back to the turn newel.
+        const openFoot = D.stringerHeight * 0.5 * sinT + 0.005;
+        const seat = atLanding(f.fromY, ['intermediate']) ? -0.07 - D.stringerHeight * 0.5 * sinT
+          : side.kind === 'wall' ? (drop + halfDepth - f.riser - 0.005) / g.slope : openFoot;
+        const d0 = seat === openFoot || !obbHitsClearance(ctx, body(seat, openFoot)) ? seat : openFoot;
+        const [hx, hz] = toXZ(g.runAxis, g.start + g.sign * g.run, c);
+        const underFloor = upperFloor && Math.abs(f.toY - upperFloor.elevation) < 1e-6 &&
+          pointInRegion(floorRegion(ctx.manifest, upperFloor), hx, hz, false);
+        let d1;
+        if (underFloor || (side.kind !== 'wall' && clipAt(lift) < g.run - f.tread)) {
+          // Beneath the destination floor's edge: the head end face's upper
+          // corner stops against the underside of that floor's frame.
+          d1 = Math.min(g.run - f.tread, (ceiling + 0.02 + drop - halfDepth - f.fromY - f.riser) / g.slope);
+        } else if (atLanding(f.toY, ['intermediate', 'upper'])) {
+          // Onto the arriving landing's edge bearer; where that would enter a
+          // clear envelope (the next flight at a quarter turn) the head runs
+          // to the turn newel's line (post centre at run - 0.08) instead.
+          d1 = [g.run + 0.03, g.run - 0.03, g.run - 0.06].find((d) => !obbHitsClearance(ctx, body(g.run - f.tread, d))) ?? g.run - f.tread;
+        } else d1 = g.run - f.tread;
         if (d1 - d0 >= 0.3)
           member('flight' + fi + ':stringer' + si, 'stringer', g.at(d0, c, g.nosing(d0) - drop), g.at(d1, c, g.nosing(d1) - drop),
             [D.stringerWidth, D.stringerHeight], { joint: 2 });
@@ -1079,10 +1166,16 @@ function layoutStair(ctx, stair, style) {
       if (side.kind === 'open') {
         const c = side.c + outward * (D.postSection * 0.5 + 0.02);
         if (style === 'stone') {
+          // Where its coping would meet the destination floor's structure the
+          // parapet runs level beneath it rather than rising through the deck.
           const w0 = side.c, w1 = side.c + outward * 0.16;
-          const bottom = [[0, w0], [g.run, w0], [g.run, w1], [0, w1]].map(([d, cc]) => g.at(d, cc, lowerBase));
-          const top = [[0, w0], [g.run, w0], [g.run, w1], [0, w1]].map(([d, cc]) => g.at(d, cc, g.nosing(d) + D.railHeight));
-          ctx.op(owner, loopShell('parapet', 'stone2', bottom, top, { flightId: f.id }));
+          const coping = (d) => Math.min(g.nosing(d) + D.railHeight, ceiling);
+          const dc = clamp(clipAt(D.railHeight), 0, g.run);
+          for (const [a, b] of dc > 1e-3 && dc < g.run - 1e-3 ? [[0, dc], [dc, g.run]] : [[0, g.run]]) {
+            const loop = [[a, w0], [b, w0], [b, w1], [a, w1]];
+            ctx.op(owner, loopShell('parapet', 'stone2', loop.map(([d, cc]) => g.at(d, cc, lowerBase)),
+              loop.map(([d, cc]) => g.at(d, cc, coping(d))), { flightId: f.id }));
+          }
         } else {
           const ins = D.postSection * 0.5 + 0.01;
           const end = Math.min(g.run - ins, clipAt(D.railHeight + 0.08));
@@ -1093,8 +1186,10 @@ function layoutStair(ctx, stair, style) {
           const rail = (d, h) => g.at(d, c, g.nosing(d) + h);
           for (let i = 0; i < count; ++i) {
             const d = ins + span * i / (count - 1);
+            // The bottom newel of a flight rising from its floor stands on it.
+            const foot = i === 0 && !atLanding(f.fromY, ['intermediate']) ? f.fromY : base(d);
             member('flight' + fi + ':post' + si + ':' + i, i === 0 || i === count - 1 ? 'newel' : 'baluster-post',
-              g.at(d, c, base(d)), g.at(d, c, g.nosing(d) + D.railHeight + 0.06), [D.postSection, D.postSection]);
+              g.at(d, c, foot), g.at(d, c, g.nosing(d) + D.railHeight + 0.06), [D.postSection, D.postSection]);
           }
           member('flight' + fi + ':rail' + si, 'handrail', rail(ins, D.railHeight), rail(end, D.railHeight), [D.railSection, D.railSection]);
           member('flight' + fi + ':midrail' + si, 'mid-rail', rail(ins, D.railHeight * 0.5), rail(end, D.railHeight * 0.5), [D.railSection, D.railSection]);
@@ -1125,22 +1220,43 @@ function layoutStair(ctx, stair, style) {
       }
     });
   });
-  for (const landing of stair.landings) layoutLanding(ctx, stair, style, landing, geoms, member);
+  for (const landing of stair.landings) layoutLanding(ctx, stair, style, landing, geoms, member, members);
   layoutStairwellRails(ctx, stair, member);
-  // Newels of two flights meeting at a turn become one post spanning both.
+  // Newels of two flights meeting at a turn become one post spanning both; a
+  // guard post on a landing support post's spot becomes that post, carried up
+  // to the rail (the landing post keeps its bearing position).
+  const family = (role) => (/newel|baluster-post/.test(role) ? 'newel' : role === 'landing-post' || role === 'guard-post' ? 'post' : null);
   const kept = [];
   for (const m of members) {
-    const vertical = /newel|baluster-post/.test(m.role) && Math.abs(m.from[0] - m.to[0]) < EPS && Math.abs(m.from[2] - m.to[2]) < EPS;
-    const twin = vertical && kept.find((k) => /newel|baluster-post/.test(k.role) &&
+    const f = family(m.role);
+    const vertical = f && Math.abs(m.from[0] - m.to[0]) < EPS && Math.abs(m.from[2] - m.to[2]) < EPS;
+    const twin = vertical && kept.find((k) => family(k.role) === f && (f === 'newel' || k.role !== m.role) &&
       Math.hypot(k.from[0] - m.from[0], k.from[2] - m.from[2]) < D.postSection);
     if (!twin) { kept.push(m); continue; }
-    twin.from = [twin.from[0], Math.min(twin.from[1], m.from[1]), twin.from[2]];
-    twin.to = [twin.to[0], Math.max(twin.to[1], m.to[1]), twin.to[2]];
-    twin.role = 'newel';
+    const at = f === 'post' && m.role === 'landing-post' ? m : twin;
+    twin.from = [at.from[0], Math.min(twin.from[1], m.from[1]), at.from[2]];
+    twin.to = [at.to[0], Math.max(twin.to[1], m.to[1]), at.to[2]];
+    if (at === m) twin.id = m.id;
+    twin.role = f === 'newel' ? 'newel' : 'landing-post';
+    if (f === 'newel') twin.turn = true;
+  }
+  // A turn newel stands on the stair's lower floor when its column there is
+  // on floor and clear, carrying both flights' stringers at the turn.
+  const lowerRegions = (ctx.manifest.floors || []).filter((fl) => fl.levelId === stair.lowerLevelId).map((fl) => floorRegion(ctx.manifest, fl));
+  const half = D.postSection * 0.5;
+  for (const k of kept) {
+    if (!k.turn) continue;
+    delete k.turn;
+    const [x, z] = [k.from[0], k.from[2]];
+    const col = { minX: x - half, maxX: x + half, minZ: z - half, maxZ: z + half, minY: lowerBase, maxY: k.from[1] };
+    if (k.from[1] - lowerBase < 0.05 || ![[-1, -1], [1, -1], [1, 1], [-1, 1], [0, 0]]
+      .every(([sx, sz]) => lowerRegions.some((r) => pointInRegion(r, x + sx * half, z + sz * half, false)))) continue;
+    if (hitsClearance(ctx, col) || ctx.members.concat(kept).some((o) => o !== k && o.role !== 'stringer' && memberHitsBox(o, col))) continue;
+    k.from = [x, lowerBase, z];
   }
   for (const m of kept) ctx.member(m);
 }
-function layoutLanding(ctx, stair, style, landing, geoms, member) {
+function layoutLanding(ctx, stair, style, landing, geoms, member, members) {
   if (landing.kind === 'lower') return;
   const owner = stair.id;
   const rect = rectFromBounds(landing.bounds);
@@ -1154,8 +1270,12 @@ function layoutLanding(ctx, stair, style, landing, geoms, member) {
     ctx.op(owner, axisBox('landing-base', 'stone2', [rect.x0, lowerBase, rect.z0], [rect.x1, top - D.flagThickness, rect.z1], tag));
     return;
   }
-  // Framed deck: perimeter bearers, joists, then planks or flags on boards.
-  const surface = style === 'timber' ? 'timber' : 'stone';
+  // Framed deck: perimeter bearers, joists, then planks or flags on boards. A
+  // replacement landing in a floor's plane takes that floor's finish, so its
+  // deck sits on the same joist plane as the floor framing around it.
+  const holeFloor = landing.kind === 'upper' &&
+    (ctx.manifest.floors || []).find((f) => (f.holes || []).some((hl) => hl.replacementLandingId === landing.id));
+  const surface = holeFloor ? floorSurfaceKind(holeFloor.floorType) : style === 'timber' ? 'timber' : 'stone';
   const deckTop = surface === 'timber' ? top - D.plankThickness : top - D.flagThickness - D.bedThickness - D.boardThickness;
   if (surface === 'timber') layPlanks(ctx, owner, region, 'x', top, landing.id);
   else {
@@ -1163,30 +1283,42 @@ function layoutLanding(ctx, stair, style, landing, geoms, member) {
     ctx.op(owner, axisBox('bed', 'mortar', [rect.x0, top - D.flagThickness - D.bedThickness, rect.z0], [rect.x1, top - D.flagThickness, rect.z1], tag));
     ctx.op(owner, axisBox('deck', 'oak', [rect.x0, deckTop, rect.z0], [rect.x1, top - D.flagThickness - D.bedThickness, rect.z1], tag));
   }
-  const h = 0.2, w = 0.14, cy = deckTop - h * 0.5, inset = w * 0.5;
+  const h = 0.2, bw = 0.14, cy = deckTop - h * 0.5, inset = bw * 0.5;
   const id = landing.sourceId || landing.id;
   const [x0, x1, z0, z1] = [rect.x0 + inset, rect.x1 - inset, rect.z0 + inset, rect.z1 - inset];
-  member('landing:' + id + ':bearer-s', 'bearer', [rect.x0, cy, z0], [rect.x1, cy, z0], [w, h]);
-  member('landing:' + id + ':bearer-n', 'bearer', [rect.x0, cy, z1], [rect.x1, cy, z1], [w, h]);
+  const B = { s: { from: [rect.x0, cy, z0], to: [rect.x1, cy, z0] }, n: { from: [rect.x0, cy, z1], to: [rect.x1, cy, z1] },
+    w: { from: [x0, cy, z0], to: [x0, cy, z1] }, e: { from: [x1, cy, z0], to: [x1, cy, z1] } };
+  const posts = landingSupports(ctx, stair, landing, { B, cy, h, bw, lowerBase, corners: [x0, x1, z0, z1] }, members);
+  // The bearer on each edge a timber flight leaves or arrives at reaches under
+  // that flight's stringers, which seat on it.
+  if (style === 'timber') {
+    const sides = flightSides(ctx.manifest, stair, geoms);
+    geoms.forEach((g, fi) => {
+      const f = stair.flights[fi];
+      if (Math.abs(f.fromY - top) > 1e-6 && Math.abs(f.toY - top) > 1e-6) return;
+      const k = g.runAxis === 'z' ? (Math.abs(g.fp.z1 - rect.z0) < 1e-4 ? 's' : Math.abs(g.fp.z0 - rect.z1) < 1e-4 ? 'n' : null)
+        : (Math.abs(g.fp.x1 - rect.x0) < 1e-4 ? 'w' : Math.abs(g.fp.x0 - rect.x1) < 1e-4 ? 'e' : null);
+      if (!k || !B[k]) return;
+      const ax = g.runAxis === 'z' ? 0 : 2, b = B[k];
+      const [lo, hi] = b.from[ax] <= b.to[ax] ? ['from', 'to'] : ['to', 'from'];
+      for (const side of sides[fi]) {
+        if (side.kind === 'shared') continue;
+        const c = side.c + side.outward * (D.stringerWidth * 0.5 + 0.01), reach = D.stringerWidth * 0.5 + 0.01;
+        if (b[lo][ax] > c - reach) { b[lo] = b[lo].slice(); b[lo][ax] = round6(c - reach); }
+        if (b[hi][ax] < c + reach) { b[hi] = b[hi].slice(); b[hi][ax] = round6(c + reach); }
+      }
+    });
+  }
+  for (const k of ['s', 'n']) if (B[k]) member('landing:' + id + ':bearer-' + k, 'bearer', B[k].from, B[k].to, [bw, h]);
   const n = Math.max(1, Math.round((x1 - x0) / 0.4));
   for (let i = 1; i < n; ++i) {
     const x = round6(x0 + (x1 - x0) * i / n);
     member('landing:' + id + ':joist' + i, 'landing-joist', [x, cy, z0], [x, cy, z1], [0.12, h], { joint: 2 });
   }
-  member('landing:' + id + ':bearer-w', 'bearer', [x0, cy, z0], [x0, cy, z1], [w, h]);
-  member('landing:' + id + ':bearer-e', 'bearer', [x1, cy, z0], [x1, cy, z1], [w, h]);
+  for (const k of ['w', 'e']) if (B[k]) member('landing:' + id + ':bearer-' + k, 'bearer', B[k].from, B[k].to, [bw, h]);
+  for (const p of posts)
+    member('landing:' + id + ':post:' + round6(p.x) + ',' + round6(p.z), 'landing-post', [p.x, lowerBase, p.z], [p.x, cy, p.z], [D.postSection, D.postSection]);
   if (landing.kind === 'intermediate') {
-    // A post stands only where the stair's lower floor exists beneath it (not
-    // over a hole such as a stair well below) and blocks no stair envelope.
-    const baseFloors = (ctx.manifest.floors || []).filter((f) => f.levelId === stair.lowerLevelId);
-    const clear = (ctx.manifest.stairs || []).flatMap((s2) => stairClearanceVolumes(ctx.manifest, s2));
-    for (const [px, pz] of [[x0, z0], [x1, z0], [x1, z1], [x0, z1]]) {
-      if (!baseFloors.some((f) => pointInRegion(floorRegion(ctx.manifest, f), px, pz, false))) continue;
-      const h2 = D.postSection * 0.5;
-      const column = { minX: px - h2, maxX: px + h2, minZ: pz - h2, maxZ: pz + h2, minY: lowerBase, maxY: cy };
-      if (clear.some((c) => overlaps(column, c))) continue;
-      member('landing:' + id + ':post:' + round6(px) + ',' + round6(pz), 'landing-post', [px, lowerBase, pz], [px, cy, pz], [D.postSection, D.postSection]);
-    }
     // Guard any landing edge that is neither a flight connection nor a wall.
     for (const e of rectUnionEdges([rect])) {
       let spans = [[e.a0, e.a1]];
@@ -1202,6 +1334,105 @@ function layoutLanding(ctx, stair, style, landing, geoms, member) {
       }
     }
   }
+}
+// Supports for a framed landing's bearer frame (F.B: s/n bearers along x at the
+// south/north edges, w/e bearers along z inset from the west/east edges). A
+// bearer that a floor trimmer already occupies (a replacement landing in the
+// floor plane) is dropped: the floor frame carries that edge. Every remaining
+// corner is carried, in order of preference, by
+//   1. a post straight down to the stair's lower floor (intermediate only);
+//   2. one of its bearers extended to the centreline of an adjoining floor
+//      member at the same height (a replacement landing's trimmer/header);
+//   3. one of its bearers pocketed to the centreline of a solid wall within
+//      45 cm of the landing with no aperture across the pocket;
+//   4. one of its bearers extended past the landing edge to a post standing
+//      wholly on the lower floor (intermediate only).
+// Posts and extensions keep clear of every stair, portal, route and fixture
+// envelope and of existing members. An unreachable corner is reported.
+function landingSupports(ctx, stair, landing, F, localMembers) {
+  const M = ctx.manifest, B = F.B, half = D.postSection * 0.5, inter = landing.kind === 'intermediate';
+  const [x0, x1, z0, z1] = F.corners;
+  const ext = (p, q) => {
+    const across = Math.abs(q[0] - p[0]) > Math.abs(q[2] - p[2]) ? [0, F.bw * 0.5] : [F.bw * 0.5, 0];
+    return { minX: Math.min(p[0], q[0]) - across[0], maxX: Math.max(p[0], q[0]) + across[0],
+      minZ: Math.min(p[2], q[2]) - across[1], maxZ: Math.max(p[2], q[2]) + across[1], minY: F.cy - F.h * 0.5, maxY: F.cy + F.h * 0.5 };
+  };
+  // This stair's own stringers are not obstacles: they seat on these bearers.
+  const clear = (box, except) => !hitsClearance(ctx, box) && !ctx.members.concat(localMembers)
+    .some((m) => m !== except && !(m.owner === stair.id && m.role === 'stringer') && memberHitsBox(m, box));
+  const floorMembers = ctx.members.filter((m) => m.source === 'floor' && Math.abs(m.from[1] - m.to[1]) < 1e-6 && Math.abs(m.from[1] - F.cy) <= 0.12);
+  const lineOf = (m) => (Math.abs(m.to[0] - m.from[0]) < 1e-6 ? { axis: 'z', c: m.from[0], a0: Math.min(m.from[2], m.to[2]), a1: Math.max(m.from[2], m.to[2]) }
+    : Math.abs(m.to[2] - m.from[2]) < 1e-6 ? { axis: 'x', c: m.from[2], a0: Math.min(m.from[0], m.to[0]), a1: Math.max(m.from[0], m.to[0]) } : null);
+  for (const k of ['s', 'n', 'w', 'e']) {
+    const b = lineOf({ from: B[k].from, to: B[k].to });
+    if (floorMembers.some((m) => { const l = lineOf(m); return l && l.axis === b.axis && Math.abs(l.c - b.c) < (F.bw + m.section[0]) * 0.5 &&
+      l.a0 <= b.a0 + 0.02 && l.a1 >= b.a1 - 0.02; })) B[k] = null;
+  }
+  const lowerRegions = (M.floors || []).filter((f) => f.levelId === stair.lowerLevelId).map((f) => floorRegion(M, f));
+  const postAt = (x, z) => {
+    if (![[-1, -1], [1, -1], [1, 1], [-1, 1], [0, 0]].every(([sx, sz]) => lowerRegions.some((r) => pointInRegion(r, x + sx * half, z + sz * half, false))))
+      return null;
+    const col = { minX: x - half, maxX: x + half, minZ: z - half, maxZ: z + half, minY: F.lowerBase, maxY: F.cy };
+    return clear(col) && !wallFootprintContains(M, [stair.lowerLevelId], x, z, half - 0.001) ? { x, z } : null;
+  };
+  const memberHit = (p, d) => {
+    let best = null;
+    for (const m of floorMembers) {
+      const l = lineOf(m);
+      if (!l || l.axis === (d[0] ? 'x' : 'z')) continue;
+      const along = d[0] ? p[2] : p[0], r = (l.c - (d[0] ? p[0] : p[2])) * (d[0] || d[2]);
+      if (along < l.a0 - EPS || along > l.a1 + EPS || r <= 1e-6 || r > 0.3 || (best && r >= best.r)) continue;
+      const q = d[0] ? [l.c, F.cy, p[2]] : [p[0], F.cy, l.c];
+      if (clear(ext(p, q), m)) best = { r, q };
+    }
+    return best && best.q;
+  };
+  const wallHit = (p, d) => {
+    let best = null;
+    for (const w of M.walls || []) {
+      if (w.kind === 'open' || (d[0] ? w.from[0] !== w.to[0] : w.from[1] !== w.to[1])) continue;
+      const t2 = w.section.thickness * 0.5, c = d[0] ? w.from[0] : w.from[1], r = (c - (d[0] ? p[0] : p[2])) * (d[0] || d[2]);
+      if (r - t2 < -1e-6 || r - t2 > 0.45 || (best && r >= best.r)) continue;
+      const q = d[0] ? [c, F.cy, p[2]] : [p[0], F.cy, c], face = add(q, mul(d, -t2));
+      const across = d[0] ? [0, 0, 1] : [1, 0, 0];
+      const solid = [q, add(face, mul(d, 0.01))].every((s) => [-1, 1].every((sd) => {
+        const pt = add(s, mul(across, sd * (F.bw * 0.5 - 0.001)));
+        return solidWallAt(M, pt[0], pt[2], F.cy - F.h * 0.5, F.cy + F.h * 0.5, 0.05);
+      }));
+      if (solid && (r - t2 < 1e-6 || clear(ext(p, face)))) best = { r, q };
+    }
+    return best && best.q;
+  };
+  const offsetPost = (p, d) => {
+    for (const off of [half + 0.02, 0.2, 0.3]) {
+      const q = add(p, mul(d, off)), post = postAt(q[0], q[2]);
+      if (post && clear(ext(p, q))) return { q, post };
+    }
+    return null;
+  };
+  const corners = [
+    { name: 'sw', post: [x0, z0], ext: [['s', 'from', [-1, 0, 0]], ['w', 'from', [0, 0, -1]]] },
+    { name: 'se', post: [x1, z0], ext: [['s', 'to', [1, 0, 0]], ['e', 'from', [0, 0, -1]]] },
+    { name: 'nw', post: [x0, z1], ext: [['n', 'from', [-1, 0, 0]], ['w', 'to', [0, 0, 1]]] },
+    { name: 'ne', post: [x1, z1], ext: [['n', 'to', [1, 0, 0]], ['e', 'to', [0, 0, 1]]] },
+  ];
+  const posts = [];
+  for (const c of corners) {
+    if (c.ext.some(([k]) => !B[k])) continue;
+    if (c.ext.some(([k, end]) => solidWallAt(M, B[k][end][0], B[k][end][2], F.cy - F.h * 0.5, F.cy + F.h * 0.5, 0, false, 0.02))) continue;
+    if (inter) { const p = postAt(c.post[0], c.post[1]); if (p) { posts.push(p); continue; } }
+    let done = false;
+    for (const find of [memberHit, wallHit]) {
+      for (const [k, end, d] of c.ext) { const q = find(B[k][end], d); if (q) { B[k][end] = q; done = true; break; } }
+      if (done) break;
+    }
+    if (!done && inter) for (const [k, end, d] of c.ext) {
+      const r = offsetPost(B[k][end], d);
+      if (r) { B[k][end] = r.q; posts.push(r.post); done = true; break; }
+    }
+    if (!done) ctx.diagnostic({ stairId: stair.id, landingId: landing.id, kind: 'landing-corner-unsupported', corner: c.name });
+  }
+  return posts;
 }
 function guardRail(member, id, e, a0, a1, c, top, postBase) {
   const at = (a, y) => (e.dir === 'x' ? [a, y, c] : [c, y, a]);
@@ -1232,9 +1463,12 @@ function layoutStairwellRails(ctx, stair, member) {
     const entries = (ctx.manifest.stairs || []).filter((s2) => s2.id !== stair.id && s2.lowerLevelId === floor.levelId)
       .flatMap((s2) => s2.landings.filter((l) => l.kind === 'lower').map((l) => rectFromBounds(l.bounds))
         .concat(s2.flights.length ? [rectFromBounds(s2.flights[0].footprint)] : []));
+    const region = floorRegion(ctx.manifest, floor);
     for (const e of rectUnionEdges(rects)) {
-      let spans = [[e.a0, e.a1]];
       const railC = e.pos + e.normal * (D.postSection * 0.5 + 0.02);
+      // Posts stand on this floor: never over another void beside the well.
+      let spans = crossSection(region, e.dir, railC, {}).map(([a0, a1]) => [Math.max(a0, e.a0), Math.min(a1, e.a1)])
+        .filter(([a0, a1]) => a1 - a0 > EPS);
       for (const r of entries) {
         const [c0, c1] = e.dir === 'x' ? [r.z0, r.z1] : [r.x0, r.x1];
         if (railC > c0 - 0.35 && railC < c1 + 0.35) spans = subtractIntervals(spans, [e.dir === 'x' ? [r.x0 - 0.2, r.x1 + 0.2] : [r.z0 - 0.2, r.z1 + 0.2]]);
@@ -1311,7 +1545,7 @@ export function structureLayout(manifest, options = {}) {
   const records = new Map();
   const levelBase = new Map(manifest.levels.map((l) => [l.id, l.baseY]));
   const ctx = {
-    manifest, members: [], hints: [], diagnostics: [],
+    manifest, members: [], hints: [], diagnostics: [], gables: [],
     levelBase(id) { if (!levelBase.has(id)) fail(id, 'unknown level'); return levelBase.get(id); },
     ensure(id, kind, levelId, index) {
       if (!records.has(id)) records.set(id, { id, kind, levelId, index: index === undefined ? -1 : index, ops: [] });
@@ -1329,7 +1563,11 @@ export function structureLayout(manifest, options = {}) {
   (manifest.stairs || []).forEach((s, i) => ctx.ensure(s.id, 'stair', s.lowerLevelId, i));
   (manifest.roofs || []).forEach((r, i) => ctx.ensure(r.id, 'roof', r.levelId, i));
   for (const floor of manifest.floors || []) layoutFloor(ctx, floor);
-  for (const stair of manifest.stairs || []) layoutStair(ctx, stair, stairStyle(manifest, stair, style));
+  for (const stair of manifest.stairs || []) {
+    const st = stairStyle(manifest, stair, style);
+    if (st !== requestedStairStyle(manifest, stair, style)) ctx.diagnostic({ stairId: stair.id, kind: 'stone-stair-framed-over-void' });
+    layoutStair(ctx, stair, st);
+  }
   for (const roof of manifest.roofs || []) layoutRoof(ctx, roof);
   const graph = graphFromMembers(manifest, ctx.members, ctx.hints);
   for (const m of graph.members) {
@@ -1346,7 +1584,7 @@ export function structureLayout(manifest, options = {}) {
     r.anchor = b ? [Math.floor(b.minX), levelBase.get(r.levelId) || 0, Math.floor(b.minZ)] : [0, 0, 0];
   }
   const layout = Object.freeze({ schema: CASTLE_STRUCTURE_SCHEMA, manifestId: manifest.planId, stairStyle: style,
-    records: list, byId: new Map(list.map((r) => [r.id, r])), graph, diagnostics: ctx.diagnostics });
+    records: list, byId: new Map(list.map((r) => [r.id, r])), graph, diagnostics: ctx.diagnostics, gables: ctx.gables });
   perManifest.set(style, layout);
   return layout;
 }
@@ -1661,6 +1899,244 @@ function wallFootprintContains(manifest, levelIds, x, z, slack = 0.02) {
   }
   return false;
 }
+// Levels by id and straight walls bucketed on a 2 m plan grid (each wall in
+// every cell its footprint reaches, grown by 0.5 m for aperture pads), in
+// manifest order, so solidWallAt scans only the walls near its point.
+const WALL_INDEX = new WeakMap();
+function wallIndex(manifest) {
+  let ix = WALL_INDEX.get(manifest);
+  if (ix) return ix;
+  const C = 2, cells = new Map();
+  for (const w of manifest.walls || []) {
+    const r = w.section.thickness * 0.5 + 0.5;
+    for (let i = Math.floor((Math.min(w.from[0], w.to[0]) - r) / C); i <= Math.floor((Math.max(w.from[0], w.to[0]) + r) / C); ++i)
+      for (let k = Math.floor((Math.min(w.from[1], w.to[1]) - r) / C); k <= Math.floor((Math.max(w.from[1], w.to[1]) + r) / C); ++k) {
+        const key = i + ',' + k;
+        if (!cells.has(key)) cells.set(key, []);
+        cells.get(key).push(w);
+      }
+  }
+  ix = { level: new Map(manifest.levels.map((l) => [l.id, l])), cells, C };
+  WALL_INDEX.set(manifest, ix);
+  return ix;
+}
+// The solid straight wall or curve at plan point (x, z) standing over the
+// vertical span [y0, y1], or null. No aperture may come within `pad` of the
+// point (along the wall and vertically). With `onTop` the span only has to
+// start within the wall's height, so something seated on the wall top counts.
+// `depth` is the minimum embedment past the wall face: an end merely touching
+// the face is not a bearing. An open boundary is masonry only in the head that
+// castle_masonry builds over a finite opening (none within 10 cm of the wall
+// top); its openings never block the walls it meets.
+function solidWallAt(manifest, x, z, y0, y1, pad = 0, onTop = false, depth = 0) {
+  const { level, cells, C } = wallIndex(manifest);
+  const stands = (b, height) => y0 >= b - 0.02 && (onTop ? y0 : y1) <= b + height + 0.02;
+  const blocked = (b, bottom, top) => y1 > b + bottom - pad && y0 < b + top + pad;
+  const along = (o) => { const [fx, fz] = o.segmentFrom, [tx, tz] = o.segmentTo;
+    return ((x - fx) * (tx - fx) + (z - fz) * (tz - fz)) / Math.hypot(tx - fx, tz - fz); };
+  let hit = null;
+  for (const w of pad > 0.4 ? manifest.walls || [] : cells.get(Math.floor(x / C) + ',' + Math.floor(z / C)) || []) {
+    const b = level.get(w.levelId).baseY;
+    const dx = w.to[0] - w.from[0], dz = w.to[1] - w.from[1], L = Math.hypot(dx, dz);
+    const s = ((x - w.from[0]) * dx + (z - w.from[1]) * dz) / L;
+    const n = Math.abs((x - w.from[0]) * dz - (z - w.from[1]) * dx) / L;
+    if (n > w.section.thickness * 0.5 - depth + 1e-6 || s < -pad - 1e-6 || s > L + pad + 1e-6 || !stands(b, w.section.height)) continue;
+    if (w.kind === 'open') {
+      const over = (w.openings || []).filter((o) => { const g = along(o); return g >= o.globalStart - 1e-6 && g <= o.globalEnd + 1e-6; });
+      const top = over.length ? Math.max(...over.map((o) => o.top)) : w.section.height;
+      if (s >= -1e-6 && s <= L + 1e-6 && top < w.section.height - 0.1 && y0 >= b + top + pad - 1e-6) hit = hit || w;
+      continue;
+    }
+    for (const o of w.openings || []) {
+      const g = along(o);
+      if (g > o.globalStart - pad && g < o.globalEnd + pad && blocked(b, o.bottom, o.top)) return null;
+    }
+    if (s >= -1e-6 && s <= L + 1e-6) hit = hit || w;
+  }
+  for (const k of manifest.curves || []) {
+    const l = level.get(k.levelId), b = l.baseY;
+    if (Math.abs(Math.hypot(x - k.center[0], z - k.center[1]) - k.radius) > k.section.thickness * 0.5 - depth + 1e-6 ||
+      !stands(b, num(k.section.height, l.height))) continue;
+    const deg = (Math.atan2(z - k.center[1], x - k.center[0]) * 180 / Math.PI + 360) % 360;
+    const padDeg = pad / Math.max(k.radius, 0.1) * 180 / Math.PI;
+    for (const a of k.apertures || [])
+      for (const d of [deg, deg + 360])
+        if (d > a.startAngle - padDeg && d < a.endAngle + padDeg && blocked(b, a.bottom, a.bottom + a.height)) return null;
+    hit = hit || k;
+  }
+  return hit;
+}
+// Oriented box of a member (centre, world axes, half extents) and its AABB.
+function memberBox(m) {
+  const { R } = frameRows(memberFrame(m.from, m.to, m.roll || 0));
+  const axes = [0, 1, 2].map((j) => [R[0][j], R[1][j], R[2][j]]);
+  const half = [len(sub(m.to, m.from)) * 0.5, m.section[1] * 0.5, m.section[0] * 0.5];
+  const c = lerp3(m.from, m.to, 0.5);
+  const ext = [0, 1, 2].map((i) => axes.reduce((s, a, j) => s + Math.abs(a[i]) * half[j], 0));
+  const [lo, hi] = [sub(c, ext), add(c, ext)];
+  return { c, axes, half, minX: lo[0], minY: lo[1], minZ: lo[2], maxX: hi[0], maxY: hi[1], maxZ: hi[2] };
+}
+// Separating-axis gap between two oriented boxes (<= 0 when they overlap).
+function boxGap(A, B) {
+  const d = sub(B.c, A.c), axes = A.axes.concat(B.axes);
+  for (const a of A.axes) for (const b of B.axes) { const c = cross(a, b); if (len(c) > 1e-6) axes.push(norm(c)); }
+  let gap = -Infinity;
+  for (const L of axes) {
+    const r = (X) => X.axes.reduce((s, a, j) => s + Math.abs(dot(a, L)) * X.half[j], 0);
+    gap = Math.max(gap, Math.abs(dot(d, L)) - r(A) - r(B));
+  }
+  return gap;
+}
+// Parameters (s on ab, u on cd) of the closest points of two segments.
+function segmentClosest(a, b, c, d) {
+  const u = sub(b, a), v = sub(d, c), w = sub(a, c);
+  const A = dot(u, u), Bv = dot(u, v), C = dot(v, v), Dd = dot(u, w), E = dot(v, w), den = A * C - Bv * Bv;
+  let s = den > 1e-12 ? clamp((Bv * E - C * Dd) / den, 0, 1) : 0;
+  let t = C > 1e-12 ? clamp((Bv * s + E) / C, 0, 1) : 0;
+  s = A > 1e-12 ? clamp((Bv * t - Dd) / A, 0, 1) : 0;
+  t = C > 1e-12 ? clamp((Bv * s + E) / C, 0, 1) : 0;
+  return { s, t };
+}
+// Load path over the timber graph. A member end bears statically on the
+// ground, on a solid wall (no aperture across it) or on the walking surface of
+// a floor other than its own. Support then passes from member to member through
+// graph joints and through resting contact (a body touching, within 12 mm, one
+// whose closest centreline point lies below it: a rafter on its wall plate, a
+// purlin on a principal). A near-vertical member needs its foot supported; any
+// other member needs two supports at least 25 cm apart (or half its length),
+// so nothing hangs from one joint or balances on a single bearing. Frames that
+// only support each other never reach a bearing and stay unsupported.
+function memberLoadPath(manifest, layout) {
+  const { members, nodes } = layout.graph;
+  const minBase = Math.min(...manifest.levels.map((l) => l.baseY));
+  const floors = (manifest.floors || []).map((f) => ({ f, region: floorRegion(manifest, f), stack: floorStack(manifest, f) }));
+  const bearing = (m, p) => {
+    const vh = memberExtent(m, [0, 1, 0]) * 0.5, y0 = p[1] - vh;
+    if (y0 <= minBase + 0.02) return true;
+    if (solidWallAt(manifest, p[0], p[2], y0, p[1] + vh, 0, true)) return true;
+    return floors.some(({ f, region, stack }) => f.id !== m.owner &&
+      y0 >= (stack.suspended ? stack.joistTop : stack.bottom) - 0.03 && y0 <= f.elevation + 0.02 &&
+      pointInRegion(region, p[0], p[2], false));
+  };
+  const at = new Map(members.map((m) => [m.id, []]));
+  for (const n of nodes) for (const i of n.incident)
+    at.get(i.memberId).push({ t: i.t, by: n.incident.filter((o) => o.memberId !== i.memberId).map((o) => o.memberId) });
+  const boxes = new Map(members.map((m) => [m.id, memberBox(m)]));
+  const cell = 1, grid = new Map(), pairs = new Set();
+  for (const m of members) {
+    const b = boxes.get(m.id);
+    for (let i = Math.floor((b.minX - 0.012) / cell); i <= Math.floor((b.maxX + 0.012) / cell); ++i)
+      for (let j = Math.floor((b.minY - 0.012) / cell); j <= Math.floor((b.maxY + 0.012) / cell); ++j)
+        for (let k = Math.floor((b.minZ - 0.012) / cell); k <= Math.floor((b.maxZ + 0.012) / cell); ++k) {
+          const key = i + ',' + j + ',' + k;
+          if (!grid.has(key)) grid.set(key, []);
+          for (const o of grid.get(key)) {
+            const pk = o.id < m.id ? o.id + '|' + m.id : m.id + '|' + o.id;
+            if (pairs.has(pk)) continue;
+            pairs.add(pk);
+            if (!overlaps(boxes.get(o.id), b, -0.012) || boxGap(boxes.get(o.id), b) > 0.012) continue;
+            // Stacked on a parallel member below it (a packing plate on its
+            // ledger, a plate on the tie under it), a member bears along the
+            // shared stretch: at both of its ends when the stretch spans the
+            // upper member's midpoint (it cannot tip off), else once at its
+            // centre. Side-by-side contact falls through to the general rule.
+            const dm = memberDir(m), dO = memberDir(o);
+            if (Math.abs(dot(dm, dO)) > 0.995 && Math.abs(dm[1]) < 0.9) {
+              const Lm = len(sub(m.to, m.from)), Lo = len(sub(o.to, o.from));
+              const onM = [o.from, o.to].map((q) => clamp(dot(sub(q, m.from), dm) / Lm, 0, 1)).sort((x, y) => x - y);
+              const onO = [m.from, m.to].map((q) => clamp(dot(sub(q, o.from), dO) / Lo, 0, 1)).sort((x, y) => x - y);
+              const cm = lerp3(m.from, m.to, (onM[0] + onM[1]) * 0.5), co = lerp3(o.from, o.to, (onO[0] + onO[1]) * 0.5);
+              const side = norm(cross(dm, [0, 1, 0]));
+              const lateral = Math.abs(dot(sub(cm, co), side)), width = (memberExtent(m, side) + memberExtent(o, side)) * 0.5;
+              if ((onM[1] - onM[0]) * Lm > 0.05 && lateral < width - 0.01 && Math.abs(cm[1] - co[1]) > 0.02) {
+                const [up, on] = cm[1] > co[1] ? [m, onM] : [o, onO], lower = up === m ? o : m;
+                const ts = on[0] <= 0.5 && on[1] >= 0.5 ? on : [(on[0] + on[1]) * 0.5];
+                at.get(up.id).push(...ts.map((t) => ({ t, by: [lower.id] })));
+                continue;
+              }
+            }
+            const { s, t } = segmentClosest(m.from, m.to, o.from, o.to);
+            const pm = lerp3(m.from, m.to, s), po = lerp3(o.from, o.to, t);
+            // Resting on a member below, or an end housed/fixed against it.
+            const end = (x, a) => Math.min(x, 1 - x) * len(sub(a.to, a.from)) <= 0.2;
+            if (po[1] < pm[1] - 0.02 || end(s, m)) at.get(m.id).push({ t: s, by: [o.id] });
+            if (pm[1] < po[1] - 0.02 || end(t, o)) at.get(o.id).push({ t, by: [m.id] });
+          }
+          grid.get(key).push(m);
+        }
+  }
+  const fixed = new Map(members.map((m) => [m.id, [bearing(m, m.from) ? 0 : null, bearing(m, m.to) ? 1 : null].filter((t) => t !== null)]));
+  // A stair member whose side face lies against (within 12 mm) or in a solid
+  // wall is fixed to it there: a wall string. Apertures break that fixing.
+  for (const m of members) {
+    if (m.source !== 'stair' || Math.abs(memberDir(m)[1]) > 0.9) continue;
+    const side = boxes.get(m.id).axes[2], vh = memberExtent(m, [0, 1, 0]) * 0.5, L = len(sub(m.to, m.from));
+    const n = Math.max(2, Math.ceil(L / 0.25));
+    for (let i = 0; i <= n; ++i) {
+      const p = lerp3(m.from, m.to, i / n);
+      if ([-1, 1].some((sd) => { const q = add(p, mul(side, sd * (m.section[0] * 0.5 + 0.012)));
+        return solidWallAt(manifest, q[0], q[2], p[1] - vh, p[1] + vh); })) fixed.get(m.id).push(i / n);
+    }
+  }
+  // A horizontal member lying along a wall top (its underside at the top of a
+  // solid wall it runs with, like a gable plate running out through the verge)
+  // bears along that stretch; one built into a closed gable wall (standing on
+  // a solid wall there) bears where it passes through. A stretch spanning the
+  // member's midpoint holds it at both ends (it cannot tip off); any other
+  // stretch, and every gable passage, is a single bearing at its centre. A
+  // member crossing a wall top keeps only its end bearings.
+  const levelOf = new Map(manifest.levels.map((l) => [l.id, l]));
+  const topOf = (w) => levelOf.get(w.levelId).baseY + num(w.section.height, levelOf.get(w.levelId).height);
+  const wallTops = [...new Set((manifest.walls || []).concat(manifest.curves || []).map(topOf))];
+  const bear = (m, t0, t1) => fixed.get(m.id).push(...(t0 <= 0.5 && t1 >= 0.5 ? [t0, t1] : [(t0 + t1) * 0.5]));
+  for (const m of members) {
+    if (Math.abs(memberDir(m)[1]) > 0.1) continue;
+    const vh = memberExtent(m, [0, 1, 0]) * 0.5, L = len(sub(m.to, m.from));
+    if (wallTops.some((t) => Math.abs(t - (Math.min(m.from[1], m.to[1]) - vh)) <= 0.03)) {
+      const n = Math.max(2, Math.ceil(L / 0.25));
+      const dir = norm([m.to[0] - m.from[0], 0, m.to[2] - m.from[2]]);
+      const runsWith = (w, p) => Math.abs(w.center ? dot(dir, norm([p[2] - w.center[1], 0, w.center[0] - p[0]]))
+        : dot(dir, norm([w.to[0] - w.from[0], 0, w.to[1] - w.from[1]]))) > 0.99;
+      const onTop = (i) => { const p = lerp3(m.from, m.to, i / n), w = solidWallAt(manifest, p[0], p[2], p[1] - vh, p[1] + vh, 0, true);
+        return !!w && Math.abs(topOf(w) - (p[1] - vh)) <= 0.03 && runsWith(w, p); };
+      for (let i = 0, start = -1; i <= n + 1; ++i) {
+        const on = i <= n && onTop(i);
+        if (on && start < 0) start = i;
+        if (!on && start >= 0) { bear(m, start / n, (i - 1) / n); start = -1; }
+      }
+    }
+    for (const g of layout.gables || []) {
+      const k = g.axis === 'x' ? 0 : 2, da = m.to[k] - m.from[k];
+      if (Math.abs(da) < 1e-6) continue;
+      const [t0, t1] = [(g.ae - g.T / 2 - m.from[k]) / da, (g.ae + g.T / 2 - m.from[k]) / da].sort((a, b) => a - b);
+      if (t1 < 0 || t0 > 1) continue;
+      const tc = (Math.max(0, t0) + Math.min(1, t1)) * 0.5, p = lerp3(m.from, m.to, tc), s = p[2 - k];
+      const topAt = s <= g.sMid ? g.yLo + (g.yR - g.yLo) * (s - g.sLo) / (g.sMid - g.sLo) : g.yHi + (g.yR - g.yHi) * (g.sHi - s) / (g.sHi - g.sMid);
+      if (s < g.sLo || s > g.sHi || p[1] - vh < g.baseY - 1e-6 || p[1] + vh > topAt + 1e-6) continue;
+      const q = k === 0 ? [g.ae, s] : [s, g.ae];
+      if (solidWallAt(manifest, q[0], q[1], g.baseY - 0.05, g.baseY, 0, true)) fixed.get(m.id).push(tc);
+    }
+  }
+  const carried = (m, ts) => {
+    if (!ts.length) return false;
+    const L = len(sub(m.to, m.from));
+    if (Math.abs(memberDir(m)[1]) > 0.9) {
+      const foot = m.from[1] <= m.to[1] ? 0 : 1;
+      return ts.some((t) => Math.abs(t - foot) * L <= 0.15);
+    }
+    return (Math.max(...ts) - Math.min(...ts)) * L >= Math.min(0.25, L * 0.5);
+  };
+  const supported = new Set();
+  for (let changed = true; changed;) {
+    changed = false;
+    for (const m of members) {
+      if (supported.has(m.id)) continue;
+      const ts = fixed.get(m.id).concat(at.get(m.id).filter(({ by }) => by.some((id) => supported.has(id))).map(({ t }) => t));
+      if (carried(m, ts)) { supported.add(m.id); changed = true; }
+    }
+  }
+  return { supported, unsupported: members.filter((m) => !supported.has(m.id)) };
+}
 export function validateStructure(manifest, options = {}) {
   const layout = structureLayout(manifest, options);
   const errors = [];
@@ -1699,12 +2175,18 @@ export function validateStructure(manifest, options = {}) {
       errors.push({ kind: 'clearance-intrusion', clearanceId: c.id, clearanceKind: c.kind, solidId: s.id, role: s.role, recordId: s.recordId });
     }
   }
-  // 2. Floors never cover their holes.
+  // 2. Floors never cover their holes. Framing members may pass beneath the
+  // deck of a replacement landing that fills a hole in the floor's own plane.
   for (const floor of manifest.floors || []) {
     const record = layout.byId.get(floor.id);
+    const stack = floorStack(manifest, floor);
     const holes = (floor.holes || []).flatMap((h) => (h.regions || [h.footprint]).map(rectFromBounds));
+    const framed = stack.joistTop === null || stack.joistTop === undefined ? [] : inPlaneLandingHoles(manifest, floor);
+    const under = (b, h) => b.maxY <= stack.joistTop + 1e-6 && framed.some((r) => Math.abs(r.x0 - h.x0) < 1e-6 &&
+      Math.abs(r.x1 - h.x1) < 1e-6 && Math.abs(r.z0 - h.z0) < 1e-6 && Math.abs(r.z1 - h.z1) < 1e-6);
     record.ops.forEach((op, i) => /^joint-/.test(op.role) || opSolids(op).forEach((b) => {
-      for (const h of holes) if (b.minX < h.x1 - 1e-4 && b.maxX > h.x0 + 1e-4 && b.minZ < h.z1 - 1e-4 && b.maxZ > h.z0 + 1e-4)
+      for (const h of holes) if (b.minX < h.x1 - 1e-4 && b.maxX > h.x0 + 1e-4 && b.minZ < h.z1 - 1e-4 && b.maxZ > h.z0 + 1e-4 &&
+        !(op.memberId && under(b, h)))
         errors.push({ kind: 'floor-covers-hole', floorId: floor.id, op: i, role: op.role });
     }));
   }
@@ -1726,6 +2208,11 @@ export function validateStructure(manifest, options = {}) {
       else errors.push({ kind: 'unsupported-member-end', memberId: m.id, end, point: p });
     }
   }
+  // 3b. Every member of every source (floor, stair, roof, authored frame) has a
+  // grounded load path (memberLoadPath).
+  const load = memberLoadPath(manifest, layout);
+  for (const m of load.unsupported)
+    errors.push({ kind: 'unsupported-member', memberId: m.id, role: m.role, recordId: m.owner, source: m.source, from: m.from, to: m.to });
   // 4. Stairs: code dimensions, continuous risers, and one deck per landing.
   for (const stair of manifest.stairs || []) {
     const record = layout.byId.get(stair.id);
@@ -1768,7 +2255,7 @@ export function validateStructure(manifest, options = {}) {
   return { valid: errors.length === 0, errors, warnings, diagnostics: layout.diagnostics,
     stats: { records: layout.records.length, children, meshTriangles: triangles, members: layout.graph.members.length,
       nodes: layout.graph.nodes.length, joints: layout.graph.joints.length, aliases: layout.graph.aliases.length,
-      supportedEnds, solids: solids.length, clearances: clearances.length, roles } };
+      supportedEnds, groundedMembers: load.supported.size, solids: solids.length, clearances: clearances.length, roles } };
 }
 
 // ---------------------------------------------------------------------------
@@ -1986,6 +2473,8 @@ function layoutRectRoof(ctx, roof) {
     const loop = [W(ae - T / 2, sLo, roof.baseY), W(ae - T / 2, sHi, roof.baseY), W(ae - T / 2, sHi, yHi),
       W(ae - T / 2, sMid, yR), W(ae - T / 2, sLo, yLo)];
     ctx.op(roof.id, convexPrism('gable-infill', 'stone1', loop, mul(aVec, T), { gableAt: ae }));
+    // Masonry the ridge and purlins are built into (memberLoadPath).
+    ctx.gables.push({ roofId: roof.id, axis, ae, T, sLo, sHi, sMid, baseY: roof.baseY, yLo, yHi, yR });
   }
   // --- eave fill: closes the wall-top slot under the boarding on every eave
   // that does not abut a taller wall. Its top samples the lowest roof plane,
@@ -2011,7 +2500,9 @@ function layoutRectRoof(ctx, roof) {
   const ledger = (T + D.plateWidth) * 0.5;
   const sPlate = [ovS[0] < 0 ? s0 + ledger : s0, ovS[1] < 0 ? s1 - ledger : s1];
   const aPlate = [ovA[0] < 0 ? a0 + ledger : a0, ovA[1] < 0 ? a1 - ledger : a1];
-  for (const s of sPlate) member('plate:s' + round6(s), 'wall-plate', W(a0, s, plateY), W(a1, s, plateY), plate);
+  // Gable plates project through the verge overhang to carry the fly rafters.
+  const [pA, pB] = hip ? [a0, a1] : [Math.min(a0, aLo), Math.max(a1, aHi)];
+  for (const s of sPlate) member('plate:s' + round6(s), 'wall-plate', W(pA, s, plateY), W(pB, s, plateY), plate);
   if (hip) for (const a of aPlate) member('plate:a' + round6(a), 'wall-plate', W(a, s0, plateY), W(a, s1, plateY), plate);
   const ridgeY = yR - D.rafterHeight / cos - 0.12;
   const [rA, rB] = hip ? [a0 + ha, a1 - ha] : [aLo, aHi];
@@ -2019,7 +2510,8 @@ function layoutRectRoof(ctx, roof) {
   const purlinY = planeY(H * 0.5) - D.rafterHeight / cos - 0.1;
   for (const j of [0, 1]) {
     const s = j ? s1 - H * 0.5 : s0 + H * 0.5;
-    const [p0, p1] = hip ? [a0 + H * 0.5, a1 - H * 0.5] : [a0 + T / 2, a1 - T / 2];
+    // Gable purlins run through the gable walls to carry the fly rafters.
+    const [p0, p1] = hip ? [a0 + H * 0.5, a1 - H * 0.5] : [Math.min(a0 + T / 2, aLo), Math.max(a1 - T / 2, aHi)];
     if (p1 - p0 > 0.4) member('purlin:s' + j, 'purlin', W(p0, s, purlinY), W(p1, s, purlinY), [0.16, 0.2]);
   }
   if (hip) for (const k of [0, 1]) {
@@ -2031,14 +2523,21 @@ function layoutRectRoof(ctx, roof) {
   const [tA, tB] = hip ? [a0 + ha - 0.05, a1 - ha + 0.05] : [a0 + T / 2 + 0.05, a1 - T / 2 - 0.05];
   let trussAt = roofTies(ctx, roof).filter((t) => Math.abs(sub(t.to, t.from)[axis === 'x' ? 0 : 2]) < 1e-6)
     .map((t) => ({ a: axis === 'x' ? t.from[0] : t.from[2], y: t.from[1] })).filter((t) => t.a >= tA && t.a <= tB);
+  const ties = [];
+  const addTruss = (a) => {
+    trussAt.push({ a, y: tieY });
+    ties.push({ from: W(a, s0, tieY), to: W(a, s1, tieY), section: [0.28, 0.36] });
+    member('tie:' + a, 'roof-tie', W(a, s0, tieY), W(a, s1, tieY), [0.28, 0.36], { joint: 2, strap: 1 });
+  };
+  // A hip ridge on a single king post would balance on it, and its hips with
+  // it: trusses carry both ridge ends instead, where the hips meet it.
+  const ridged = hip && rB - rA > 0.4;
   if (!trussAt.length) {
     const span = Math.max(0, tB - tA), n = Math.max(1, Math.round(span / num(roof.trussSpacing, D.trussSpacing)));
-    trussAt = [];
-    for (let i = 0; i < n; ++i) {
-      const a = round6(n === 1 ? (tA + tB) * 0.5 : tA + span * (i + 0.5) / n);
-      trussAt.push({ a, y: tieY });
-      member('tie:' + a, 'roof-tie', W(a, s0, tieY), W(a, s1, tieY), [0.28, 0.36], { joint: 2, strap: 1 });
-    }
+    const at = ridged && n === 1 ? [rA, rB] : [...Array(n).keys()].map((i) => (n === 1 ? (tA + tB) * 0.5 : tA + span * (i + 0.5) / n));
+    for (const a of at) addTruss(round6(a));
+  } else if (ridged && trussAt.length === 1) {
+    for (const a of [rA, rB]) if (!trussAt.some((t) => Math.abs(t.a - a) < 0.3)) addTruss(round6(a));
   }
   const kingTop = rB - rA > 0.4 ? ridgeY - 0.08 : yR - D.rafterHeight / cos - 0.05;
   for (const t of trussAt) {
@@ -2052,6 +2551,61 @@ function layoutRectRoof(ctx, roof) {
     }
   }
   const nearTruss = (a) => trussAt.some((t) => Math.abs(t.a - a) < 0.3);
+  // Against an abutting wall the eave stops at its near face, so the rafter
+  // feet stand above the wall-top ledger. A pole plate under them (its top 1 cm
+  // into the heel of each square-cut rafter foot at that face) stands on short
+  // ashlar posts on the ledger, or rests on it where the rise leaves no room
+  // for posts. On a hip it runs between the hip lines, beyond which the end
+  // faces fall lower.
+  const seatD = T / 2 + 0.05, soleTop = roof.baseY + D.plateHeight;
+  const poleTop = planeY(T / 2) - rafterDrop - D.rafterHeight * 0.5 * cos + 0.01;
+  const rise = poleTop - soleTop, hp = rise - D.plateHeight < 0.06 ? rise : D.plateHeight;
+  const polePlate = (key, at, lo, hi, skip) => {
+    if (rise <= 0.01 || hi - lo < 0.5) return;
+    member('pole:' + key, 'pole-plate', at(lo, poleTop - hp * 0.5), at(hi, poleTop - hp * 0.5), [D.plateWidth, hp]);
+    if (hp === rise) return;
+    const n = Math.max(2, Math.ceil((hi - lo - 0.2) / 1.8) + 1);
+    for (let i = 0; i < n; ++i) {
+      const u = round6(lo + 0.1 + (hi - lo - 0.2) * i / (n - 1));
+      if (!skip(u)) member('ashlar:' + key + ':' + i, 'ashlar-post', at(u, soleTop), at(u, poleTop - hp), [D.postSection, D.postSection]);
+    }
+  };
+  for (const j of [0, 1]) if (ovS[j] < 0) {
+    const [lo, hi] = hip ? [a0 + seatD, a1 - seatD] : roof.gableEnds !== 'open' ? [a0 + T / 2, a1 - T / 2] : [aLo, aHi];
+    polePlate('s' + round6(sPlate[j]), (u, y) => W(u, sPlate[j], y), lo, hi, nearTruss);
+  }
+  if (hip) for (const k of [0, 1]) if (ovA[k] < 0)
+    polePlate('a' + round6(aPlate[k]), (u, y) => W(aPlate[k], u, y), s0 + seatD, s1 - seatD, () => false);
+  // A tie end over an open side (an arcade or gallery with no wall under the
+  // eave) stands on a post down to the wall top or floor of the roof's storey,
+  // stepped in along the tie until its column is clear of every walking
+  // envelope. Its top meets the tie, or the plate where that lies lower.
+  const M = ctx.manifest, foot = ctx.levelBase(roof.levelId), half = 0.12;
+  ctx.roofPosts = ctx.roofPosts || new Set();
+  const floorsAt = (M.floors || []).filter((f) => f.levelId === roof.levelId && Math.abs(f.elevation - foot) < 0.03).map((f) => floorRegion(M, f));
+  // On the top of a wall of the storey below, or wholly on this storey's floor.
+  const standsAt = (x, z) => { const w = solidWallAt(M, x, z, foot, foot + 0.1, 0, true);
+    const top = w && ctx.levelBase(w.levelId) + num(w.section.height, M.levels.find((l) => l.id === w.levelId).height);
+    return (w && Math.abs(top - foot) <= 0.03) ||
+      [[-1, -1], [1, -1], [1, 1], [-1, 1]].every(([sx, sz]) => floorsAt.some((r) => pointInRegion(r, x + sx * half, z + sz * half, false))); };
+  for (const t of roofTies(ctx, roof).concat(ties)) {
+    if (Math.abs(sub(t.to, t.from)[axis === 'x' ? 0 : 2]) > 1e-6) continue;
+    for (const [p, q] of [[t.from, t.to], [t.to, t.from]]) {
+      const sp = axis === 'x' ? p[2] : p[0];
+      if (Math.min(Math.abs(sp - s0), Math.abs(sp - s1)) > 0.05 || solidWallAt(M, p[0], p[2], roof.baseY - 0.3, roof.baseY - 0.1)) continue;
+      const inward = norm(sub(q, p)), top = Math.min(p[1] - t.section[1] * 0.5, roof.baseY);
+      const spot = [0, T / 2 + half + 0.02, 0.5].map((off) => add(p, mul(inward, off))).find(([x, , z]) => standsAt(x, z) &&
+        !hitsClearance(ctx, { minX: x - half, maxX: x + half, minZ: z - half, maxZ: z + half, minY: foot, maxY: top }));
+      const key = spot && round6(spot[0]) + ',' + round6(spot[2]) + ',' + round6(top);
+      // No wall under this end and no clear footing for a post: the tie then
+      // relies on the members it rests on (validateStructure has the verdict).
+      if (!spot) ctx.diagnostic({ recordId: roof.id, kind: 'roof-tie-end-without-post', point: p });
+      else if (top - foot > 0.5 && !ctx.roofPosts.has(key)) {
+        ctx.roofPosts.add(key);
+        member('post:' + key, 'arcade-post', [spot[0], foot, spot[2]], [spot[0], top, spot[2]], [half * 2, half * 2]);
+      }
+    }
+  }
   const rafter = (id, role, a, j, d0, d1) => {
     const sAt = (d) => (j ? s1 - d : s0 + d);
     member(id, role, W(a, sAt(d0), planeY(d0) - rafterDrop), W(a, sAt(d1), planeY(d1) - rafterDrop), [D.rafterWidth, D.rafterHeight]);

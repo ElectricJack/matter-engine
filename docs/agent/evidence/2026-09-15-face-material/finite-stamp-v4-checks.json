@@ -1,0 +1,32 @@
+[
+  {
+    "kind": "build",
+    "name": "solid_face_projection_gpu_tests",
+    "command": [
+      "./tools/build-windows-from-wsl.sh",
+      "RelWithDebInfo",
+      "solid_face_projection_gpu_tests"
+    ],
+    "exit": 0,
+    "seconds": 10.482901465002215,
+    "log": "docs/agent/evidence/2026-09-15-face-material/finite-stamp-v4-build-solid_face_projection_gpu_tests.log",
+    "source_changes": [],
+    "validation_errors": []
+  },
+  {
+    "kind": "projection",
+    "name": "clay",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      "$env:MATTER_VK_VALIDATION='1'; $env:MATTER_CLAY_FACE_DUMP='D:/tmp/matter-vt/20260915-face-material/faces'; Set-Location -LiteralPath 'D:/Shared With Desktop/AI/matter-engine-cpp'; & './MatterEditor/build/cmake/windows-msvc/relwithdebinfo/solid_face_projection_gpu_tests.exe'; exit $LASTEXITCODE"
+    ],
+    "exit": 1,
+    "seconds": 8.386377221992007,
+    "log": "docs/agent/evidence/2026-09-15-face-material/finite-stamp-v4-projection-clay.log",
+    "source_changes": [],
+    "validation_errors": []
+  }
+]

@@ -1,0 +1,7 @@
+render_path raster
+set render.gi.enabled false
+set render.pom.enabled false
+set render.cloud_shadows.enabled false
+stats cache_audit_end
+shot_now C:/tmp/matter-blas-mountain/cache-audit-prepare-v1/terrain.png
+quit
