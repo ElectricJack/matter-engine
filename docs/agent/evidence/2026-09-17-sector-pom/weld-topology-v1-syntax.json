@@ -1,0 +1,60 @@
+{
+  "syntax_only": true,
+  "gpu_run": false,
+  "source_hashes": {
+    "MatterEngine3/src/matter_engine.cpp": "31c1d453e5ceb630cd36f26ff24634bbf914d813b9644fab8d08d6458ca56163",
+    "MatterEngine3/src/render/chart_static_surface.h": "7ee6d72d52f94512ed255217c03c829113f43015eb086fb98abfd0d6c1a761b6",
+    "MatterEngine3/src/render/vk_scene_renderer.cpp": "eb6bb5b7177efb23fa7aab29f52597c19ee77e4024096b2e636c63da94dea205",
+    "MatterEngine3/src/render/vk_scene_renderer.h": "95c7090771b818d366c10be42b2fe47282f657ca67da7f8e60a58105bb986812",
+    "MatterEngine3/src/render/vt_surface_topology.h": "30d8cca9a021e260491da7319e89e2c8e4987e53db37c7ca43f7aac9f426bba6",
+    "MatterEngine3/tests/solid_face_projection_gpu_tests.cpp": "11446319724606cd2e69da724ddb633ba0c15fe5b95ffda9811bba7520533832",
+    "MatterEngine3/tests/static_surface_vt_tests.cpp": "ffee8119b419101634ece5b709bce285ec8d1b349c619d0bd24e605460e4ffe4",
+    "MatterEngine3/tests/vulkan_smoke_tests.cpp": "30193e93e808a2d43905da1a3c5ff9d1edd87be49c3f0a26445be2bea2575298",
+    "cmake/MatterViewer.cmake": "59170e504e5f9d25ce14a7455a283a69dd92f84cdbad8145363ca541a750bd2d"
+  },
+  "sources_unchanged": true,
+  "editor_sha256": "c56a0adaa271849955f3f27d99d0d80e8c25c1f1b22c36d91a31e16d4cad8d07",
+  "editor_unchanged": true,
+  "runs": [
+    {
+      "name": "engine-viewer",
+      "source": "MatterEngine3/src/matter_engine.cpp",
+      "flags_from_target": "matter_engine_viewer_objects",
+      "exit": 0,
+      "seconds": 9.681217618010123,
+      "log_sha256": "4b5e77dea9a3af7cb6b5494f32a84ab3cc145d18ed2b2134fcc805514d04fd0f"
+    },
+    {
+      "name": "engine-headless",
+      "source": "MatterEngine3/src/matter_engine.cpp",
+      "flags_from_target": "matter_engine_core",
+      "exit": 0,
+      "seconds": 7.732137635000981,
+      "log_sha256": "9cb316e175b4222d8e8ed935bf656bd5748a9d632dccad9210fabafee79c9e4c"
+    },
+    {
+      "name": "renderer",
+      "source": "MatterEngine3/src/render/vk_scene_renderer.cpp",
+      "flags_from_target": "matter_engine_viewer_objects",
+      "exit": 0,
+      "seconds": 10.357674236991443,
+      "log_sha256": "1c1aaff5a140b12ffdfcf55e8568f25aef144548e79dedc1a1ece64699347cd2"
+    },
+    {
+      "name": "static-surface",
+      "source": "MatterEngine3/tests/static_surface_vt_tests.cpp",
+      "flags_from_target": "solid_face_projection_gpu_tests",
+      "exit": 0,
+      "seconds": 5.722951706004096,
+      "log_sha256": "e7f4399baef56e97ed7380329c9e30151d1640a67e59fe21185cd7c5c5df93cb"
+    },
+    {
+      "name": "smoke",
+      "source": "MatterEngine3/tests/vulkan_smoke_tests.cpp",
+      "flags_from_target": "vulkan_smoke_tests",
+      "exit": 0,
+      "seconds": 9.621580147009809,
+      "log_sha256": "992da631a563b00fb801be15c57342ed9690ce6698e1cc84df5aa1016ab4cbad"
+    }
+  ]
+}

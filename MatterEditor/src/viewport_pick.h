@@ -34,15 +34,23 @@ namespace viewer {
 // ECS entity (id = SceneEntityId), and consumers must branch on it — the two
 // id spaces are unrelated.
 //
-// `distance` is metres along the view ray, but ONLY from the CPU fallback
-// path: the GPU identity pick has no depth to report (matter::PickIdentity
-// carries kind + ids and nothing else) and leaves it 0. Do not treat 0 as "on
-// the camera" — and note that NOTHING reads this field today, so filling it
-// properly means first adding a depth to the engine's pick result.
+// `distance` and `world_position` are available ONLY from the CPU fallback
+// path. The GPU identity pick is the authoritative, pixel-exact answer for
+// baked/streamed geometry, but matter::PickIdentity deliberately carries no
+// depth. Callers must use `geometry == CpuObbFallback` before reading either
+// value; zero is a valid CPU distance when the camera starts inside a box.
+enum class PickGeometry {
+    None,
+    GpuIdentity,
+    CpuObbFallback,
+};
+
 struct PickResult {
     bool hit = false;
     SelectedObject object;
+    PickGeometry geometry = PickGeometry::None;
     float distance = 0.0f;
+    matter::Float3 world_position{};
 };
 
 // Cast a ray from screen-space cursor into the scene and find the nearest object.

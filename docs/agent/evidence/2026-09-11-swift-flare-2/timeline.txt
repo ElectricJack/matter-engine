@@ -1,0 +1,17 @@
+render_path raster
+wait_idle 2 60
+stats local-light-gallery-before-reload
+shot C:/tmp/swift-flare-2/local-light-gallery-raster.png
+reload
+wait_idle 2 60
+stats local-light-gallery-after-reload
+shot C:/tmp/swift-flare-2/local-light-gallery-reloaded.png
+world LocalLightPointIsolation
+wait_idle 2 60
+stats local-light-point-isolation
+shot C:/tmp/swift-flare-2/local-light-point-raster.png
+world LocalLightSpotIsolation
+wait_idle 2 60
+stats local-light-spot-isolation
+shot C:/tmp/swift-flare-2/local-light-spot-raster.png
+quit

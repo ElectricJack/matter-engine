@@ -1,0 +1,1 @@
+Assertion failed: cull_shader.find("if (instance.water_pad0 != 0u) return;") != std::string::npos, file D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-2\MatterEngine3\tests\shader_source_tests.cpp, line 88

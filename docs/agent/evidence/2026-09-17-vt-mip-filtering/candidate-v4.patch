@@ -1,0 +1,598 @@
+--- a/MatterEngine3/shaders_vk/vt_common.glsl
++++ b/MatterEngine3/shaders_vk/vt_common.glsl
+@@ -138,6 +138,11 @@
+     uvec4 module_request;
+     uint material_chart; // UINT_MAX if no published mapping table applies
+     uint material_mapped_mip;
++    uint material_input_snapshot;
++    vec2 filter_uv;
++    float filter_lod;
++    uint filter_mode; // 0 raw, 1 finite receiver, 2 periodic material
++
+ };
+ 
+ // Desired virtual mip from atlas-UV derivatives. `duv_dx`/`duv_dy` are the
+@@ -167,6 +172,8 @@
+     address.module_request = uvec4(0);
+     address.material_chart = 0xffffffffu;
+     address.material_mapped_mip = 0u;
++    address.material_input_snapshot=0xffffffffu;
++    address.filter_uv=atlas_uv;address.filter_lod=lod;address.filter_mode=0u;
+     address.height_version = 0u;
+     address.physical_slot = 0u;
+     address.layer = 0u;
+@@ -213,6 +220,7 @@
+     address.physical_slot = physical_slot;
+     uvec4 page = vt_page_inputs[physical_slot].inputs;
+     address.input_snapshot = page.x;
++    address.material_input_snapshot = page.x;
+     address.height_decode = uintBitsToFloat(page.yz);
+     address.height_version = page.w;
+     uint mapped_mip = min(entry >> 16u, max_mip);
+@@ -247,7 +255,7 @@
+ }
+ 
+ // Periodic resolution is raw: module pages never recursively bind receivers.
+-VtAddress vt_resolve_periodic(uint slot, vec2 module_uv, float lod) {
++VtAddress vt_resolve_periodic_unfiltered(uint slot, vec2 module_uv, float lod) {
+     VtAddress address=vt_resolve_address(slot,module_uv,lod,true);
+     if (!address.valid) return address;
+     uvec3 desired=uvec3(address.desired_mip,address.desired_px,address.desired_py);
+@@ -300,7 +308,7 @@
+     // are unwrapped, so repeating the module never repeats the finite mask.
+     vec2 interval=uintBitsToFloat(mapping.binding.zw);
+     if (module_uv.x<interval.x || module_uv.x>interval.y) return vt_finite_material_fallback(receiver,uv);
+-    VtAddress material=vt_resolve_periodic(slot,module_uv,lod+mapping.uv_u.w);
++    VtAddress material=vt_resolve_periodic_unfiltered(slot,module_uv,lod+mapping.uv_u.w);
+     if (!material.valid || material.height_version!=1u) return vt_finite_material_fallback(receiver,uv);
+     receiver.material_uv=material.material_uv;
+     receiver.material_layer=material.material_layer;
+@@ -308,11 +316,12 @@
+     receiver.height_version=material.height_version;
+     receiver.module_request=uvec4(slot,material.desired_px,material.desired_py,material.desired_mip);
+     receiver.material_mapped_mip=material.mapped_mip;
++    receiver.material_input_snapshot=material.input_snapshot;
+     return receiver;
+ }
+ 
+ // Coverage and geometry stay finite. Only material coordinates repeat.
+-VtAddress vt_resolve(uint slot, vec2 atlas_uv, float lod) {
++VtAddress vt_resolve_unfiltered(uint slot, vec2 atlas_uv, float lod) {
+     VtAddress address=vt_resolve_address(slot,atlas_uv,lod,false);
+     if (!address.valid) return address;
+     if (vt_page_inputs[address.physical_slot].material.w==0u) return vt_finite_material_fallback(address,atlas_uv);
+@@ -325,7 +334,20 @@
+ // A geometry walk has already proved the chart; its identity takes precedence
+ // over a coarse/dilated categorical texel next to a physical edge.
+ VtAddress vt_resolve_chart(uint slot,vec2 uv,float lod,uint chart) {
+-    return vt_apply_receiver_material(vt_resolve_address(slot,uv,lod,false),uv,lod,chart);
++    VtAddress address=vt_apply_receiver_material(vt_resolve_address(slot,uv,lod,false),uv,lod,chart);
++    address.filter_uv=uv;address.filter_lod=lod;address.filter_mode=1u;
++    return address;
++}
++
++VtAddress vt_resolve(uint slot,vec2 uv,float lod) {
++    VtAddress address=vt_resolve_unfiltered(slot,uv,lod);
++    address.filter_uv=uv;address.filter_lod=lod;address.filter_mode=1u;
++    return address;
++}
++VtAddress vt_resolve_periodic(uint slot,vec2 uv,float lod) {
++    VtAddress address=vt_resolve_periodic_unfiltered(slot,uv,lod);
++    address.filter_uv=uv;address.filter_lod=lod;address.filter_mode=2u;
++    return address;
+ }
+ 
+ VtReceiverMaterial vt_receiver_mapping(VtAddress address) {
+@@ -355,6 +377,51 @@
+     value.xy=vec2(dot(transform.xy,xy),dot(transform.zw,xy))*.5+.5;
+     return value;
+ }
++
++// Adjacent mip lookup deliberately does not repeat receiver AUX selection,
++// material eligibility or finite fallback. The fine page already selected a
++// material chart; its immutable mapping and input versions must still agree.
++vec2 vt_filter_weights(VtAddress fine,out VtAddress coarse) {
++    coarse=fine;
++    if(!fine.valid || fine.filter_mode==0u)return vec2(0);
++    float material_lod=fine.filter_lod;
++    uint material_mip=fine.mapped_mip;
++    if(fine.module_request.x!=0u) {
++        material_lod+=vt_receiver_mapping(fine).uv_u.w;
++        material_mip=fine.material_mapped_mip;
++    }
++    if(material_lod<=float(material_mip) && fine.filter_lod<=float(fine.mapped_mip))return vec2(0);
++    vec2 fraction=fract(max(vec2(material_lod,fine.filter_lod),vec2(0)));
++    if(all(equal(fraction,vec2(0))))return vec2(0);
++    if(fine.filter_mode==2u)coarse=vt_resolve_periodic_unfiltered(fine.layer+1u,fine.filter_uv,fine.filter_lod+1.0);
++    else coarse=vt_resolve_address(fine.layer+1u,fine.filter_uv,fine.filter_lod+1.0,false);
++    if(!coarse.valid || fine.input_snapshot!=coarse.input_snapshot ||
++       any(notEqual(vt_page_inputs[fine.physical_slot].material.yzw,
++                    vt_page_inputs[coarse.physical_slot].material.yzw)))return vec2(0);
++    coarse.material_chart=fine.material_chart;
++    if(fine.module_request.x!=0u) {
++        VtReceiverMaterial mapping=vt_receiver_mapping(fine);
++        vec2 uv=vec2(dot(mapping.uv_u.xyz,vec3(fine.filter_uv,1)),dot(mapping.uv_v.xyz,vec3(fine.filter_uv,1)));
++        VtAddress material=vt_resolve_periodic_unfiltered(fine.module_request.x,uv,material_lod+1.0);
++        if(!material.valid)return vec2(0);
++        coarse.material_uv=material.material_uv;coarse.material_layer=material.material_layer;
++        coarse.height_decode=material.height_decode+vec2(mapping.uv_v.w,0);
++        coarse.height_version=material.height_version;
++        coarse.material_input_snapshot=material.input_snapshot;
++        coarse.module_request=fine.module_request;
++        coarse.material_mapped_mip=material.mapped_mip;
++    } else if((vt_page_inputs[coarse.physical_slot].geometry_counts.z&1u)!=0u)return vec2(0);
++    if(fine.material_input_snapshot!=coarse.material_input_snapshot || fine.height_version!=coarse.height_version)return vec2(0);
++    uint upper_mip=coarse.module_request.x!=0u ? coarse.material_mapped_mip : coarse.mapped_mip;
++    // Blend requested levels, each with its own fallback, so the result reaches
++    // the next level continuously even when an intermediate page is missing.
++    return fraction*vec2(upper_mip!=material_mip ? 1.0 : 0.0,coarse.mapped_mip!=fine.mapped_mip ? 1.0 : 0.0);
++}
++
++vec4 vt_sample_material_single(VtAddress address,int channel) {
++    return textureLod(vt_pool[channel],vec3(address.material_uv,address.material_layer),0.0);
++}
++vec3 vt_decode_normal(vec4 encoded);
+ 
+ // Keep categorical, raw material and normal reads separate. Besides avoiding
+ // unnecessary work, this prevents the RT compiler's exhaustive inliner from
+@@ -370,7 +437,7 @@
+     uint texel=uint(p.y)*136u+uint(p.x);
+     return float((VtReceiverOcclusion(pointer).values[texel>>1u]>>((texel&1u)*16u))&65535u)/65535.;
+ }
+-float vt_sample_occlusion(VtAddress address) {
++float vt_sample_occlusion_single(VtAddress address) {
+     if(!address.valid)return 1.;
+     uvec2 pointer=vt_page_inputs[address.physical_slot].occlusion.xy;
+     if(all(equal(pointer,uvec2(0))))return 1.;
+@@ -381,17 +448,37 @@
+     return mix(mix(vt_occlusion_texel(pointer,p),vt_occlusion_texel(pointer,ivec2(q.x,p.y)),f.x),
+         mix(vt_occlusion_texel(pointer,ivec2(p.x,q.y)),vt_occlusion_texel(pointer,q),f.x),f.y);
+ }
++float vt_sample_occlusion(VtAddress address) {
++    float value=vt_sample_occlusion_single(address);
++    VtAddress coarse;vec2 weights=vt_filter_weights(address,coarse);
++    return weights.y>0.0 ? mix(value,vt_sample_occlusion_single(coarse),weights.y) : value;
++}
+ vec4 vt_sample_material(VtAddress address,int channel) {
+     if (!address.valid) return vec4(0);
+-    return textureLod(vt_pool[channel],vec3(address.material_uv,address.material_layer),0.0);
++    vec4 value=vt_sample_material_single(address,channel);
++    VtAddress coarse;vec2 weights=vt_filter_weights(address,coarse);
++    return weights.x>0.0 ? mix(value,vt_sample_material_single(coarse,channel),weights.x) : value;
+ }
+ vec4 vt_sample_orm(VtAddress address) {
+-    vec4 value=vt_sample_material(address,VT_CHANNEL_ORM);
+-    value.r*=vt_sample_occlusion(address);
++    if (!address.valid) return vec4(0);
++    vec4 value=vt_sample_material_single(address,VT_CHANNEL_ORM);
++    float ao=vt_sample_occlusion_single(address);
++    VtAddress coarse;vec2 weights=vt_filter_weights(address,coarse);
++    if(weights.x>0.0)value=mix(value,vt_sample_material_single(coarse,VT_CHANNEL_ORM),weights.x);
++    if(weights.y>0.0)ao=mix(ao,vt_sample_occlusion_single(coarse),weights.y);
++    value.r*=ao;
+     return value;
+ }
+ vec4 vt_sample_normal(VtAddress address) {
+-    return vt_transform_material_normal(address,vt_sample_material(address,VT_CHANNEL_NORMAL));
++    if (!address.valid) return vec4(0);
++    vec4 value=vt_transform_material_normal(address,vt_sample_material_single(address,VT_CHANNEL_NORMAL));
++    VtAddress coarse;vec2 weights=vt_filter_weights(address,coarse);
++    if(weights.x>0.0) {
++        vec4 other=vt_transform_material_normal(coarse,vt_sample_material_single(coarse,VT_CHANNEL_NORMAL));
++        vec3 n=mix(vt_decode_normal(value),vt_decode_normal(other),weights.x);
++        if(dot(n,n)>1e-12)value.xy=normalize(n).xy*.5+.5;
++    }
++    return value;
+ }
+ vec4 vt_sample_channel(VtAddress address,int channel) {
+     if (channel==VT_CHANNEL_AUX) return vt_sample_aux(address);
+@@ -403,8 +490,12 @@
+ // Metre decode stays with the physical page when a material's range is edited.
+ float vt_sample_height_m(VtAddress address) {
+     if (!address.valid || address.height_version != 1u) return 0.0;
+-    return address.height_decode.x + address.height_decode.y *
+-           vt_sample_material(address, VT_CHANNEL_HEIGHT).r;
++    float value=address.height_decode.x + address.height_decode.y *
++           vt_sample_material_single(address, VT_CHANNEL_HEIGHT).r;
++    VtAddress coarse;vec2 weights=vt_filter_weights(address,coarse);
++    if(weights.x>0.0)value=mix(value,coarse.height_decode.x+coarse.height_decode.y*
++        vt_sample_material_single(coarse,VT_CHANNEL_HEIGHT).r,weights.x);
++    return value;
+ }
+ 
+ // AUX A: 255 legacy; 1 flat direct; 2 ordinary interior; 3 dilation; 4 crease interior.
+--- a/MatterEngine3/shaders_vk/vt_parallax.glsl
++++ b/MatterEngine3/shaders_vk/vt_parallax.glsl
+@@ -30,7 +30,7 @@
+ // and tag 4 is an interior crease requiring connected-surface traversal.
+ // Legacy/tag-1 direct pages keep their flat shading route. Large chart IDs that
+ // cannot fit in 16 bits also use tag 1 and cannot accidentally alias a chart.
+-bool vt_height_footprint_valid(VtAddress address, uint chart, bool allow_crease) {
++bool vt_height_footprint_valid_single(VtAddress address, uint chart, bool allow_crease) {
+     if (!address.valid || address.height_version != 1u) return false;
+     ivec2 size = textureSize(vt_pool[VT_CHANNEL_AUX], 0).xy;
+     ivec2 lo = ivec2(floor(address.physical_uv * vec2(size) - 0.5));
+@@ -41,6 +41,15 @@
+         if ((aux.a != 2u && !(allow_crease && aux.a == 4u)) || vt_aux_chart(aux) != chart) return false;
+     }
+     return true;
++}
++bool vt_height_footprint_valid(VtAddress address, uint chart, bool allow_crease) {
++    if(!vt_height_footprint_valid_single(address,chart,allow_crease))return false;
++    VtAddress coarse;vec2 weights=vt_filter_weights(address,coarse);
++    if(weights.x<=0.0)return true;
++    // Periodic material pixels have their own continuous domain; finite
++    // receiver pixels must prove both bilinear footprints before POM reads.
++    return all(equal(vt_height_envelope(address),vt_height_envelope(coarse))) &&
++        (address.module_request.x!=0u || vt_height_footprint_valid_single(coarse,chart,allow_crease));
+ }
+ bool vt_height_footprint_valid(VtAddress address, uint chart) {
+     return vt_height_footprint_valid(address, chart, false);
+--- a/MatterEngine3/shaders_vk/vt_surface_walk.glsl
++++ b/MatterEngine3/shaders_vk/vt_surface_walk.glsl
+@@ -218,20 +218,22 @@
+     vec3 normal;
+ };
+ 
+-bool vt_walk_sample(VtWalkContext ctx, VtWalkPoint center, float lod, bool material,
++bool vt_walk_sample_level(VtWalkContext ctx, VtWalkPoint center, float lod, bool material,
+                     out VtWalkValue value, out VtAddress address, out uint status) {
+     value.height = 0.0; value.albedo = value.orm = value.normal = vec3(0);
+     status = VT_POM_PATH_BOUNDARY;
+     address = vt_resolve_chart(ctx.slot, center.uv, lod, center.chart);
+     if (!vt_walk_same_page_inputs(ctx, address)) { status = VT_POM_SNAPSHOT_MISMATCH; return false; }
++    VtAddress sample_center=address;
++    if(sample_center.module_request.x==0u)sample_center.filter_mode=0u;
+     // The walk proves the finite surface point. An independently filtered
+     // periodic material does not inherit the coarser receiver's texel grid.
+-    if (address.module_request.x!=0u || vt_height_footprint_valid(address, center.chart, true)) {
+-        value.height = vt_sample_height_m(address);
++    if (address.module_request.x!=0u || vt_height_footprint_valid(sample_center, center.chart, true)) {
++        value.height = vt_sample_height_m(sample_center);
+         if (material) {
+-            value.albedo = vt_sample_material(address, VT_CHANNEL_ALBEDO).rgb;
+-            value.orm = vt_sample_orm(address).rgb;
+-            value.normal = vt_frame_decode(vt_decode_normal(vt_sample_normal(address)), center.normal);
++            value.albedo = vt_sample_material(sample_center, VT_CHANNEL_ALBEDO).rgb;
++            value.orm = vt_sample_orm(sample_center).rgb;
++            value.normal = vt_frame_decode(vt_decode_normal(vt_sample_normal(sample_center)), center.normal);
+         }
+         return true;
+     }
+@@ -247,6 +249,7 @@
+         if (!vt_walk_texel_point(ctx, center, tap_uv, tap)) return false;
+         VtAddress sample_address = vt_resolve_chart(ctx.slot, tap.uv, lod, tap.chart);
+         if (!vt_walk_same_page_inputs(ctx, sample_address)) { status = VT_POM_SNAPSHOT_MISMATCH; return false; }
++        if(sample_address.module_request.x==0u)sample_address.filter_mode=0u;
+         ivec2 texel = ivec2(floor(sample_address.physical_uv * vec2(pool_size)));
+         if (any(lessThan(texel, ivec2(0))) || any(greaterThanEqual(texel, pool_size))) return false;
+         ivec3 location = ivec3(texel, int(sample_address.physical_layer));
+@@ -282,4 +285,28 @@
+     if (material) value.normal = normalize(value.normal);
+     return true;
+ }
++bool vt_walk_sample(VtWalkContext ctx,VtWalkPoint center,float lod,bool material,
++                    out VtWalkValue value,out VtAddress address,out uint status) {
++    float weight=0.0;
++    for(int mip=0;mip<2;++mip) {
++        VtWalkValue current;VtAddress current_address;
++        if(!vt_walk_sample_level(ctx,center,lod+float(mip),material,current,current_address,status))return false;
++        if(mip==0) {
++            value=current;address=current_address;
++            VtAddress upper;weight=vt_filter_weights(address,upper).x;
++            // Mapped materials already filter in their independent domain.
++            if(address.module_request.x!=0u || weight<=0.0)return true;
++        } else {
++            value.height=mix(value.height,current.height,weight);
++            if(material) {
++                value.albedo=mix(value.albedo,current.albedo,weight);
++                value.orm=mix(value.orm,current.orm,weight);
++                vec3 normal=mix(value.normal,current.normal,weight);
++                if(dot(normal,normal)>1e-12)value.normal=normalize(normal);
++            }
++        }
++    }
++    return true;
++}
++
+ #endif
+--- a/MatterEngine3/src/render/vt_residency.h
++++ b/MatterEngine3/src/render/vt_residency.h
+@@ -349,6 +349,27 @@
+         return mip == o.mip && px == o.px && py == o.py;
+     }
+ };
++
++// The next mip's pages touched by this page's normalized UV rectangle. Odd
++// atlas dimensions can straddle a parent cut, so px/2 alone is insufficient.
++// At most two pages per axis overlap; integer ratios keep edge ownership exact.
++inline uint32_t vt_filter_parent_pages(const VtVariantLayout& layout,VtPageKey page,
++                                      VtPageKey (&parents)[4]) {
++    if(page.mip>=layout.mip_count || page.mip+1>=layout.mip_count ||
++       page.px>=layout.page_w[page.mip] || page.py>=layout.page_h[page.mip])return 0;
++    const auto range=[](uint32_t size,uint32_t p,uint32_t& lo,uint32_t& hi) {
++        const uint32_t parent=std::max(size>>1,1u),denominator=size*128u;
++        lo=(p*128u*parent)/denominator;
++        hi=(std::min((p+1)*128u,size)*parent-1u)/denominator;
++    };
++    uint32_t x0,x1,y0,y1;
++    range(std::max(layout.atlas_w>>page.mip,1u),page.px,x0,x1);
++    range(std::max(layout.atlas_h>>page.mip,1u),page.py,y0,y1);
++    uint32_t count=0;
++    for(uint32_t y=y0;y<=y1;++y)for(uint32_t x=x0;x<=x1;++x)
++        parents[count++]={page.mip+1,x,y};
++    return count;
++}
+ 
+ // ---------------------------------------------------------------------------
+ // Per-variant indirection mirror.
+--- a/MatterEngine3/src/render/vt_residency.cpp
++++ b/MatterEngine3/src/render/vt_residency.cpp
+@@ -2374,9 +2374,15 @@
+         if (layer >= variants_.size()) continue;
+         VariantRung& variant = variants_[layer];
+         if (!variant.live) continue;
+-        queue_page(variant, VtPageKey{uint32_t((key >> 32) & 0xFFFFu),
+-                                     uint32_t(key & 0xFFFFu),
+-                                     uint32_t((key >> 16) & 0xFFFFu)});
++        const VtPageKey page{uint32_t((key >> 32) & 0xFFFFu),
++                             uint32_t(key & 0xFFFFu),uint32_t((key >> 16) & 0xFFFFu)};
++        queue_page(variant,page);
++        // One visible request services both trilinear levels without widening
++        // feedback. queue_page deduplicates work and touches already resident
++        // upper pages, retaining their normal LRU/budget behavior.
++        VtPageKey parents[4];
++        const uint32_t parent_count=vt_filter_parent_pages(variant.layout,page,parents);
++        for(uint32_t i=0;i<parent_count;++i)queue_page(variant,parents[i]);
+     }
+ }
+ 
+--- a/MatterEngine3/tests/vt_residency_tests.cpp
++++ b/MatterEngine3/tests/vt_residency_tests.cpp
+@@ -1111,8 +1111,41 @@
+ 
+ }  // namespace
+ 
++static void test_filter_parent_coverage() {
++    // Independently sample normalized positions throughout each requested page.
++    // Include both sides of NPOT parent cuts and require the minimal set.
++    for(const auto extent:std::vector<std::pair<uint32_t,uint32_t>>{{256,128},{259,259},{1920,1080},{8192,8192}}) {
++        VtVariantLayout layout;CHECK(vt_build_layout(extent.first,extent.second,layout),"filter parents: valid layout");
++        bool coverage=true,minimal=true;
++        for(uint32_t mip=0;mip+1<layout.mip_count;++mip) {
++            const uint32_t w=std::max(layout.atlas_w>>mip,1u),h=std::max(layout.atlas_h>>mip,1u);
++            const uint32_t pw=std::max(w>>1,1u),ph=std::max(h>>1,1u);
++            for(uint32_t y=0;y<layout.page_h[mip];++y)for(uint32_t x=0;x<layout.page_w[mip];++x) {
++                VtPageKey parents[4];const auto count=vt_filter_parent_pages(layout,{mip,x,y},parents);
++                std::set<VtPageKey> actual(parents,parents+count),expected;
++                const double u0=double(x*128)/w,u1=double(std::min((x+1)*128,w))/w;
++                const double v0=double(y*128)/h,v1=double(std::min((y+1)*128,h))/h;
++                for(uint32_t py=0;py<layout.page_h[mip+1];++py)for(uint32_t px=0;px<layout.page_w[mip+1];++px)
++                    if(std::max(u0,double(px*128)/pw)<std::min(u1,double(std::min((px+1)*128,pw))/pw) &&
++                       std::max(v0,double(py*128)/ph)<std::min(v1,double(std::min((py+1)*128,ph))/ph))
++                        expected.insert({mip+1,px,py});
++                minimal=minimal && actual==expected && count<=4;
++                for(double f:{1e-7,.25,.5,.75,1.-1e-7})for(double g:{1e-7,.5,1.-1e-7})
++                    coverage=coverage && actual.count({mip+1,uint32_t((u0+(u1-u0)*f)*pw)/128,
++                        uint32_t((v0+(v1-v0)*g)*ph)/128})!=0;
++            }
++        }
++        CHECK(coverage && minimal,"filter parents: exact coverage for power-of-two and NPOT domains");
++        VtPageKey parents[4];
++        CHECK(!vt_filter_parent_pages(layout,{layout.mip_count-1,0,0},parents) &&
++              !vt_filter_parent_pages(layout,{UINT32_MAX,0,0},parents) &&
++              !vt_filter_parent_pages(layout,{0,UINT32_MAX,0},parents),"filter parents: tail and invalid demand have no parents");
++    }
++}
++
+ int main() {
+     test_layout();
++    test_filter_parent_coverage();
+     test_indirection();
+     test_indirection_dirty();
+     test_feedback_residency_equivalence();
+--- a/MatterEngine3/tests/vt_material_domain_tests.h
++++ b/MatterEngine3/tests/vt_material_domain_tests.h
+@@ -103,7 +103,7 @@
+             table[module.table+module.offsets[m]+y*pw+x]=physical|(m<<16);
+             pages.push_back({physical,material,m,x,y,-1});
+             auto& md=metadata[physical];md.inputs[0]=900;
+-            md.inputs[1]=bits(-.2f);md.inputs[2]=bits(.25f);md.inputs[3]=1;
++            md.inputs[1]=bits(-.2f+.05f*m);md.inputs[2]=bits(.25f+.07f*m);md.inputs[3]=1;
+             md.material[0]=material;
+         }
+     }
+@@ -128,7 +128,7 @@
+     }
+ 
+     std::vector<Probe> probes;
+-    struct Expected { uint32_t receiver,desired,mapped; bool shared; };
++    struct Expected { uint32_t receiver,desired,mapped; bool shared; uint32_t upper=0;float weight=0; };
+     std::vector<Expected> expected;
+     const float uv[][2]={{0,0},{1,1},{-1,-2},{-.000001f,-.000002f},
+         {.99999994f,.99999994f},{2.125f,-3.25f},{-2.75f,1.375f},
+@@ -138,9 +138,9 @@
+         {.53125f,.8125f}};
+     for(uint32_t receiver=0;receiver<3;++receiver)
+         for(uint32_t module_slot:{4u,5u,7u,8u})for(uint32_t lod:{0u,1u,2u,7u})
+-            for(auto& p:uv) {
++            for(float fraction:{0.f,.001f,.25f,.5f,.999f})for(auto& p:uv) {
+                 Probe q{};q.uv[0]=.273f;q.uv[1]=.413f;q.uv[2]=p[0];q.uv[3]=p[1];
+-                const float footprint=std::exp2(float(lod)+.25f);
++                const float footprint=std::exp2(float(lod)+fraction);
+                 q.derivatives[0]=footprint/module.w;q.derivatives[3]=footprint/module.h;
+                 q.slots[0]=receiver+1;q.slots[1]=module_slot;
+                 q.slots[2]=records[module_slot-1].generation;
+@@ -151,7 +151,14 @@
+                 if(module_slot==7)mapped=std::max(desired,1u);
+                 if(module_slot==8)mapped=desired<2 &&
+                     (p[0]-std::floor(p[0]))*129>=128?1u:2u;
+-                expected.push_back({receiver,desired,mapped,true});
++                const auto next=std::min(lod+1,module.mips-1);
++                uint32_t upper=next;
++                if(module_slot==5)upper=module.mips-1;
++                if(module_slot==7)upper=std::max(next,1u);
++                if(module_slot==8)upper=next<2 &&
++                    (p[0]-std::floor(p[0]))*129>=128?1u:2u;
++                expected.push_back({receiver,desired,mapped,true,upper,
++                    mapped==upper || lod>=module.mips-1 ? 0.f : fraction});
+             }
+     for(uint32_t receiver=0;receiver<3;++receiver)for(int failure=0;failure<7;++failure) {
+         Probe q{};q.uv[0]=.273f;q.uv[1]=.413f;q.uv[2]=-.25f;q.uv[3]=1.25f;
+@@ -263,15 +270,32 @@
+         const auto& p=probes[i];const auto& e=expected[i];const auto& r=output[i];
+         const bool valid_receiver=p.slots[0]!=0;
+         bool ok=r.slots[0]==(valid_receiver?e.receiver:0) && r.slots[2]==uint32_t(e.shared);
++        const auto dense=[&](int ch,int c,uint32_t mip) {
++            return oracle(ch,c,p.uv[2],p.uv[3],std::max(module.w>>mip,1u),std::max(module.h>>mip,1u),mip);
++        };
++        float normal[3]{};
++        if(e.shared && e.weight>0) {
++            for(int level=0;level<2;++level) {
++                const uint32_t mip=level?e.upper:e.mapped;
++                const float x=dense(1,0,mip)*2-1,y=dense(1,1,mip)*2-1;
++                const float n[]={x,y,std::sqrt(std::max(0.f,1-x*x-y*y))};
++                for(int c=0;c<3;++c)normal[c]+=n[c]*(level?e.weight:1-e.weight);
++            }
++            const float length=std::sqrt(normal[0]*normal[0]+normal[1]*normal[1]+normal[2]*normal[2]);
++            for(auto& c:normal)c/=length;
++        }
+         for(int ch=0;ch<5;++ch)for(int c=0;c<4;++c) {
+-            const float target=!valid_receiver?0:(!e.shared||ch==3)?receiver_pixel(ch,c,e.receiver)/255.f:
+-                oracle(ch,c,p.uv[2],p.uv[3],std::max(module.w>>e.mapped,1u),std::max(module.h>>e.mapped,1u),e.mapped);
++            float target=!valid_receiver?0:(!e.shared||ch==3)?receiver_pixel(ch,c,e.receiver)/255.f:
++                dense(ch,c,e.mapped)*(1-e.weight)+dense(ch,c,e.upper)*e.weight;
++            if(e.shared && ch==1 && e.weight>0)target=c<2?normal[c]*.5f+.5f:dense(ch,c,e.mapped);
+             const float delta=std::fabs(r.channels[ch][c]-target);max_error=std::max(max_error,delta);
+             ok=ok && std::isfinite(r.channels[ch][c]) && delta<.0005f;
+         }
+-        const float height=!valid_receiver?0:e.shared?-.2f+.25f*r.channels[4][0]:-.03f+.04f*r.channels[4][0];
++        const auto decoded=[&](uint32_t mip){return -.2f+.05f*mip+(.25f+.07f*mip)*dense(4,0,mip);};
++        const float height=!valid_receiver?0:e.shared?decoded(e.mapped)*(1-e.weight)+decoded(e.upper)*e.weight:
++            -.03f+.04f*r.channels[4][0];
+         max_height_error=std::max(max_height_error,std::fabs(height-r.metrics[0]));
+-        ok=ok && std::isfinite(r.metrics[0]) && std::fabs(height-r.metrics[0])<1e-6f;
++        ok=ok && std::isfinite(r.metrics[0]) && std::fabs(height-r.metrics[0])<.00015f;
+         if(valid_receiver) {
+             ok=ok && r.inputs[0]==100+e.receiver && r.inputs[2]==metadata[e.receiver].charts[0] &&
+                 r.inputs[3]==metadata[e.receiver].charts[1] && r.receiver_request[0]==e.receiver+1 &&
+@@ -290,7 +314,7 @@
+                 r.metrics[2]==float(e.mapped) && r.inputs[1]==900 && r.slots[3]==1;
+             float control_error=0;
+             for(int c=0;c<4;++c)control_error=std::max(control_error,std::fabs(r.single_lookup[c]-
+-                oracle(0,c,p.uv[2],p.uv[3],mw,mh,e.mapped)));
++                dense(0,c,e.mapped)*(1-e.weight)+dense(0,c,e.upper)*e.weight));
+             if(control_error>=.0005f)++control_failures;
+         } else for(auto word:r.material_request)ok=ok && word==0;
+         for(int c=0;c<4;++c) {
+--- a/MatterEngine3/tests/vulkan_smoke_tests.cpp
++++ b/MatterEngine3/tests/vulkan_smoke_tests.cpp
+@@ -42,6 +42,7 @@
+ #include "vt_queue_tests.h"
+ #include "vt_material_domain_tests.h"
+ #include "vt_module_residency_tests.h"
++#include "vt_filtering_tests.h"
+ #include "vt_receiver_material_tests.h"
+ #include "vt_export_tests.h"
+ #include "vt_feedback_pair_tests.h"
+@@ -17293,6 +17294,15 @@
+             glfwTerminate();
+             return check_summary();
+         }
++        if (smoke_mode && std::string(smoke_mode) == "vt-filtering") {
++            vt_filtering_tests::run(*vulkan);
++            std::printf("validation errors: %u\n", vulkan->validation_error_count());
++            vulkan->wait_idle();
++            finish_vulkan_test(vulkan);
++            if (window) glfwDestroyWindow(window);
++            glfwTerminate();
++            return check_summary();
++        }
+         if (smoke_mode && std::string(smoke_mode) == "vt-module-residency") {
+             vt_module_residency_tests::run(*vulkan);
+             std::printf("validation errors: %u\n", vulkan->validation_error_count());
+--- a/docs/agent/evidence/2026-09-16-shared-vt-pixels/build_checks.py
++++ b/docs/agent/evidence/2026-09-16-shared-vt-pixels/build_checks.py
+@@ -28,6 +28,7 @@
+     'MatterEngine3/tests/vt_material_domain_tests.h',
+     'MatterEngine3/src/render/vt_periodic_material.h',
+     'MatterEngine3/tests/vt_module_residency_tests.h',
++    'MatterEngine3/tests/vt_filtering_tests.h',
+     'MatterEngine3/tests/vt_feedback_pair_tests.h',
+     'MatterEngine3/src/render/vt_receiver_material.h',
+     'MatterEngine3/src/render/vt_occlusion_pages.h',
+--- /dev/null
++++ b/MatterEngine3/tests/vt_filtering_tests.h
+@@ -0,0 +1,72 @@
++#pragma once
++#include "vt_module_residency_tests.h"
++
++namespace vt_filtering_tests {
++inline bool run_impl(matter::VulkanDevice& vk,std::string& error) {
++    vt_queue_tests::Budgets budgets;
++    vt::VtResidency residency;vt_queue_tests::Frames frames(vk);uint64_t serial=0;
++    if(!frames.valid() || !residency.init(vk,error))return false;
++    auto producer=vt::VtCompositor::create(vk.device(),vk.physical_device(),VK_NULL_HANDLE,error);
++    if(!producer)return false;
++    vt::VtCompositorMaterial materials[2]{};producer->set_materials(materials,2);
++    residency.set_filler(std::move(producer));
++    // Deliberately different, constant material at each physical footprint.
++    // Endpoints come from the real compressed pool, isolating interpolation
++    // from codec quantization. Height remains in metres throughout.
++    const std::string tape="footprint\nconst 24\nmul r0 r1\nconst 0.8\nconst 0\nconst 1\n"
++        "const -0.5\nmul r0 r6\nmaterial 1 r5\nsource 1 r2 r2 r2 r3 r4 r5 r7 -0.03 0\n";
++    const gpu_meshing::FaceFrame frame{{0,0,0},{1,0,0},{0,1,0},{0,0,1}};
++    vt::VtPeriodicDomain domain;std::shared_ptr<const vt::VtPartSnapshot> input;
++    if(!vt::vt_make_periodic_domain(frame,{2,1},128,domain,error) ||
++       !vt::vt_make_periodic_material(domain,{},tape,1,input,error))return false;
++    vt::VtMaterialModuleLease module;if(!residency.acquire_material_module(input,module,error))return false;
++    const auto advance=[&]{return frames.next(residency,++serial);};
++    if(!vt_prepare_tests::until([&]{return advance() && residency.material_module_binding(module).slot;}))return false;
++    const auto binding=residency.material_module_binding(module);
++    vt_module_residency_tests::Sampler sampler;if(!sampler.init(vk,residency,error))return false;
++    vt_material_domain_tests::Probe probe{};
++    probe.uv[0]=probe.uv[1]=probe.uv[2]=probe.uv[3]=.4f;
++    probe.slots[0]=probe.slots[1]=binding.slot;probe.slots[2]=binding.generation;
++    using Result=vt_material_domain_tests::Result;
++    const auto sample=[&](float lod,Result& result) {
++        probe.derivatives[0]=std::exp2(lod)/256;probe.derivatives[3]=std::exp2(lod)/128;
++        return sampler.sample_probe(vk,residency,frames,serial,probe,result,error);
++    };
++    Result tail;if(!sample(0,tail))return false;
++    CHECK(tail.metrics[2]==2,"filtering: native compositor starts from a valid tail");
++    const vt::VtFeedbackRequest demand{binding.slot-1,0,0,0};
++    residency.inject_feedback_for_test(&demand,1);
++    if(!vt_prepare_tests::until([&]{return advance() &&
++        residency.resident_page_slot_for_test(binding.slot,{0,0,0})!=UINT32_MAX &&
++        residency.resident_page_slot_for_test(binding.slot,{1,0,0})!=UINT32_MAX;})) {
++        error="visible fine demand failed to produce both filtering levels";return false;
++    }
++    CHECK(residency.stats().fills_total==3,"filtering: one visible request fills fine and upper pages beside the pinned tail");
++    Result fine,upper;if(!sample(0,fine) || !sample(1,upper))return false;
++    CHECK(fine.metrics[2]==0 && upper.metrics[2]==1 &&
++        std::abs(fine.channels[0][0]-upper.channels[0][0])>.1f &&
++        std::abs(fine.metrics[0]-upper.metrics[0])>.003f,"filtering: distinct generated endpoints exercise color and metre height");
++    float max_error=0;
++    for(float lod:{.001f,.125f,.25f,.5f,.75f,.999f}) {
++        Result result;if(!sample(lod,result))return false;
++        for(int ch:{0,2,4})for(int c=0;c<3;++c)
++            max_error=std::max(max_error,std::abs(result.channels[ch][c]-
++                (fine.channels[ch][c]*(1-lod)+upper.channels[ch][c]*lod)));
++        max_error=std::max(max_error,std::abs(result.metrics[0]-(fine.metrics[0]*(1-lod)+upper.metrics[0]*lod)));
++        CHECK(result.material_request[3]==0,"filtering: fractional sampling retains original visible fine demand");
++    }
++    CHECK(max_error<.00002f,"filtering: real compressed color/ORM/height vary continuously through fractional LODs");
++    const auto fills=residency.stats().fills_total;
++    for(int i=0;i<6;++i){residency.inject_feedback_for_test(&demand,1);if(!advance())return false;}
++    CHECK(residency.stats().fills_total==fills && residency.stats().queue_depth==0 &&
++        residency.queued_requests_consistent_for_test(),"filtering: repeated demand retains both levels without regeneration or backlog");
++    std::printf("VT_FILTERING fine_color=%.6f upper_color=%.6f fine_height_m=%.8f upper_height_m=%.8f max_error=%.9f fills=%llu\n",
++        fine.channels[0][0],upper.channels[0][0],fine.metrics[0],upper.metrics[0],max_error,
++        static_cast<unsigned long long>(fills));
++    return true;
++}
++inline void run(matter::VulkanDevice& vk) {
++    std::string error;CHECK(run_impl(vk,error),error.empty()?"native mip filtering":error.c_str());
++    CHECK(vk.validation_error_count()==0,"filtering: zero Vulkan validation errors");
++}
++}

@@ -1,0 +1,9 @@
+{
+  "command": "$env:MATTER_VK_VALIDATION=\"1\"; $env:TMP=\"$env:LOCALAPPDATA\\Temp\"; $env:TEMP=$env:TMP; & \"./build/cmake/windows-msvc/relwithdebinfo/vt_compositor_tests.exe\"; exit $LASTEXITCODE",
+  "exit": 0,
+  "seconds": 6.548805725993589,
+  "binary_sha256": "f1d923ef2408da4a23ce6af5a207b52bdbf0ba5a47feded64c35e5a5bad426ee",
+  "binary_unchanged": true,
+  "source_changes": [],
+  "log_sha256": "35f409d3dd49780f5dabe8fc3374c51230a4f2174350b16e84b719505f17e5e0"
+}
