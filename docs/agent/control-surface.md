@@ -1093,6 +1093,13 @@ hard-to-diagnose failures:
 3. **Never build while `editor.exe` is running** — it holds a file lock on its
    own binary; a build started while it's up fails or silently no-ops.
 
+A harness that launches the native build as a child process with captured
+output must use `tools/run-windows-build-bounded.ps1` (or a
+`ProcessStartInfo` with `CreateNoWindow`), not `Start-Process
+-RedirectStandardOutput`: the latter gives the build its own visible Windows
+Terminal window, and closing it or pressing Ctrl+C there kills the build with
+`0xC000013A` ([finding](../findings/native-wrapper-interruption-2026-10-19.md)).
+
 - `MATTER_VT_PROP_TEXELS_PER_METER` — explicit chart-density override for prop
   rendering proofs (finite1–2048; default16). Used when preparing runtime
   chart pages; terrain staging retains its existing policy. `512` is useful

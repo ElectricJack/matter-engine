@@ -34,7 +34,8 @@ struct Stats { uint32_t geometry_hits = 0, material_hits = 0, faces = 0; size_t 
 bool prepare(const script_host::EvaluatedFiniteSurface&, const std::string& cache_root,
     const gpu_meshing::SolidFaceProjector&, const MaterialBaker&,
     std::shared_ptr<const Prepared>&, Stats&, gpu_meshing::Error&,
-    const gpu_meshing::BuildControl& = {}, SourceCache* = nullptr);
+    const gpu_meshing::BuildControl& = {}, SourceCache* = nullptr,
+    matter::CacheByteStorage* = nullptr);
 // Direct materials publish an owned GPU recipe; there is no source-image job.
 bool prepare_direct(const script_host::EvaluatedDirectSurface&,
     std::shared_ptr<const Prepared>&, gpu_meshing::Error&,
