@@ -66,7 +66,6 @@ def audit(build):
         legacy_files.update(allowed_shaders)
         # Exact native platform/data closure; never grant the whole engine tree.
         legacy_files.update(repository / "MatterEngine3" / name for name in (
-            "src/render/vk_resources.h",
             "src/render/vk_cloud_shadows.h", "src/render/vk_volumetrics.h",
             "src/render/frame_matrices.h", "src/render/gpu_matrix_pack.h",
             "include/matter/vulkan_device.h", "include/matter/camera.h",

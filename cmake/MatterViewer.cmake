@@ -26,9 +26,9 @@ matter_read_manifest(
 list(FILTER matter_engine_viewer_sources
     INCLUDE REGEX "^(MatterEngine3/src|libs/MatterGraphics/src|libs/TerrainGeneration/src)/.*\\.cpp$")
 list(LENGTH matter_engine_viewer_sources matter_engine_viewer_source_count)
-if(NOT matter_engine_viewer_source_count EQUAL 41)
+if(NOT matter_engine_viewer_source_count EQUAL 42)
     message(FATAL_ERROR
-        "engine-viewer.sources must provide exactly 41 viewer extensions; found ${matter_engine_viewer_source_count}")
+        "engine-viewer.sources must provide exactly 42 viewer extensions; found ${matter_engine_viewer_source_count}")
 endif()
 
 # The current GNU editor defaults RETOPO=1. The viewer uses a complete,
@@ -227,11 +227,11 @@ if(BUILD_TESTING)
         MatterEngine3/src/render/vk_scene_renderer.cpp
         MatterEngine3/src/render/vk_context.cpp
         MatterEngine3/src/render/vk_instance_cache.cpp
-        MatterEngine3/src/render/vk_temporal.cpp
-        MatterEngine3/src/render/vk_gi_math.cpp
-        MatterEngine3/src/render/vk_lighting_controls.cpp
-        MatterEngine3/src/render/streamline_bridge.cpp
-        MatterEngine3/src/render/raster_mesh.cpp
+        libs/MatterGraphics/src/native/vk_temporal.cpp
+        libs/MatterGraphics/src/native/vk_gi_math.cpp
+        libs/MatterGraphics/src/native/vk_lighting_controls.cpp
+        libs/MatterGraphics/src/native/streamline_bridge.cpp
+        libs/MatterGraphics/src/native/raster_mesh.cpp
         MatterEngine3/src/render/frame_matrices.cpp
         libs/MatterGraphics/src/matrix_math.cpp
         MatterEngine3/src/render/indexed_part_geometry.cpp
@@ -245,7 +245,8 @@ if(BUILD_TESTING)
         MatterEngine3/src/mesh_error.cpp
         libs/MatterSurfaceLib/src/mesh_simplifier.cpp
         libs/MatterSurfaceLib/src/mesh_indexed.cpp
-        MatterEngine3/src/render/vk_resources.cpp
+        libs/MatterGraphics/src/native/vk_resources.cpp
+        libs/MatterGraphics/src/native/vk_device_internal.cpp
         MatterEngine3/src/render/vk_pipeline.cpp
         libs/MatterGraphics/src/native/mesh_raster.cpp
         libs/MatterGraphics/src/native/mesh_pipelines.cpp
@@ -265,21 +266,21 @@ if(BUILD_TESTING)
         MatterEngine3/src/animation/animation_budget.cpp
         MatterEngine3/src/render/tileset_slicer.cpp
         MatterEngine3/src/render/bc_encode.cpp
-        MatterEngine3/src/render/vt_residency.cpp
+        libs/MatterGraphics/src/native/vt/vt_residency.cpp
         MatterEngine3/src/props/props.cpp
         MatterEngine3/src/util/json_doc.cpp
-        MatterEngine3/src/render/vt_stub_filler.cpp
+        libs/MatterGraphics/src/native/vt/vt_stub_filler.cpp
         MatterEngine3/src/render/vt_compositor.cpp
         MatterEngine3/src/render/vt_export.cpp
         MatterEngine3/src/render/vt_export_mesh.cpp
         MatterEngine3/src/render/vt_enrich.cpp
-        libs/TerrainGeneration/src/terrain_field.cpp
-        MatterEngine3/src/world_lights.cpp
+        libs/ProceduralGeometry/src/terrain_field.cpp
+        libs/MatterGraphics/src/native/world_lights.cpp
         MatterEngine3/tests/vulkan_smoke_tileset_bake_stub.cpp
         MatterEngine3/src/tileset_gtex.cpp
         MatterEngine3/src/render/vk_volumetrics.cpp
-        MatterEngine3/src/render/vk_atmosphere.cpp
-        MatterEngine3/src/render/vk_cloud_shadows.cpp
+        libs/MatterGraphics/src/native/vk_atmosphere.cpp
+        libs/MatterGraphics/src/native/vk_cloud_shadows.cpp
         MatterEngine3/src/render/vk_emitter_gather.cpp
         MatterEngine3/src/render/lod_trace.cpp
         MatterEngine3/src/render/gpu_meshing/gpu_visual_mesher_common.cpp
@@ -290,10 +291,10 @@ if(BUILD_TESTING)
         MatterEngine3/src/render/gpu_meshing/gpu_solid_face_projector_vk.cpp
         MatterEngine3/src/render/gpu_meshing/gpu_face_material_vk.cpp
         MatterEngine3/src/render/gpu_meshing/water_scene_part.cpp
-        MatterEngine3/src/render/water_field_vk.cpp
-        MatterEngine3/src/render/water_field_vk_resources.cpp
-        MatterEngine3/src/render/water_animation_gpu.cpp
-        MatterEngine3/src/render/water_mesh_animation_playback.cpp
+        libs/MatterGraphics/src/native/water_field_vk.cpp
+        libs/MatterGraphics/src/native/water_field_vk_resources.cpp
+        libs/MatterGraphics/src/native/water_animation_gpu.cpp
+        libs/MatterGraphics/src/native/water_mesh_animation_playback.cpp
         MatterEngine3/src/hydrology/hydrology_artifact.cpp
         MatterEngine3/src/hydrology/fluid_gameplay_field.cpp
         MatterEngine3/src/hydrology/physx_fluid_bake.cpp
@@ -488,7 +489,7 @@ if(BUILD_TESTING)
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
     # One ctest per smoke mode that the PowerShell fault gate
     # (MatterEditor/tools/smoke_vulkan_faults.ps1) does not run.
-    foreach(mode geometry-pages vt-queue vt-normal-frame vt-material-domain vt-pom-work vt-receiver-material vt-module-residency vt-export vt-surface-connections vt-feedback-pair rt-empty-tlas water-field-nort)
+    foreach(mode geometry-pages vt-queue vt-normal-frame vt-material-domain vt-pom-work vt-receiver-material vt-module-residency vt-export vt-surface-connections vt-feedback-pair rt-empty-tlas rt-counters water-field-nort)
         string(REPLACE "-" "_" mode_name "${mode}")
         matter_add_vulkan_smoke_test(smoke_${mode_name} "${mode}")
     endforeach()
@@ -506,10 +507,11 @@ if(BUILD_TESTING)
         MatterEngine3/src/render/vt_enrich.cpp
         MatterEngine3/src/props/props.cpp
         MatterEngine3/src/util/json_doc.cpp
-        libs/TerrainGeneration/src/terrain_field.cpp
+        libs/ProceduralGeometry/src/terrain_field.cpp
         MatterEngine3/src/render/vk_context.cpp
-        MatterEngine3/src/render/vk_resources.cpp
-        MatterEngine3/src/render/streamline_bridge.cpp
+        libs/MatterGraphics/src/native/vk_resources.cpp
+        libs/MatterGraphics/src/native/vk_device_internal.cpp
+        libs/MatterGraphics/src/native/streamline_bridge.cpp
     )
     add_library(matter_vt_compositor_test_objects OBJECT
         ${matter_vt_compositor_test_sources})

@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "data": {
+    "success": true,
+    "result": {
+      "schema_version": 1,
+      "job_id": "ad6be53d-f7dd-4ea5-91f2-b36b41ad47d5",
+      "preset": "test",
+      "input_mode": "live",
+      "input_ref": "b65847b8c69be6ca2dc1036c8efe0d593e3178be",
+      "input_stability": "unverified",
+      "state": "failed",
+      "exit_code": 1,
+      "signal": null,
+      "outcome": "failed",
+      "infra_reason": null,
+      "queue_seconds": 12.868286371231079,
+      "run_seconds": 1585.445782661438,
+      "summary": {
+        "failed": 1
+      },
+      "failing_tests": [
+        {
+          "id": "docs.agent.evidence.2026-10-20-rt-software-gi.test_native::test_software_standalone_rt",
+          "reason": "subprocess.TimeoutExpired: Command '['/usr/bin/time', '-v', 'stdbuf', '-oL', '-eL', '/tmp/keen-quest-34/build/vulkan_smoke_tests']' timed out after 1500 secondsdef test_software_standalone_rt():\n>       code, text, validation = original.run_mode('rt')\n                                 ^^^^^^^^^^^^^^^^^^^^^^^\n\ndocs/agent/evidence/2026-10-20-rt-software-gi/test_native.py:35: \n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \ndocs/agent/evidence/2026-10-20-rt-counter-native/test_rt_counter_native.py:37: in run_mode\n    child.wait(timeout=1500)\n/usr/lib/python3.12/subprocess.py:1264: in wait\n    return self._wait(timeout=timeout)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^\n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n\nself = <Popen: returncode: -15 args: ['/usr/bin/time', '-v', 'stdbuf', '-oL', '-eL'...>\ntimeout = 1500\n\n    def _wait(self, timeout):\n        \"\"\"Internal implementation of wait() on POSIX.\"\"\"\n        if self.returncode is not None:\n    ..."
+        }
+      ],
+      "excerpt": "Job ad6be53d-f7dd-4ea5-91f2-b36b41ad47d5 (test): failed; exit=1\nOutput: aq job logs ad6be53d-f7dd-4ea5-91f2-b36b41ad47d5 (retained ranges only)\ndocs.agent.evidence.2026-10-20-rt-software-gi.test_native::test_software_standalone_rt: subprocess.TimeoutExpired: Command '['/usr/bin/time', '-v', 'stdbuf', '-oL', '-eL', '/tmp/keen-quest-34/build/vulkan_smoke_tests']' timed out after 1500 secondsdef test_software_standalone_rt():\n>       code, text, validation = original.run_mode('rt')\n                                 ^^^^^^^^^^^^^^^^^^^^^^^\n\ndocs/agent/evidence/2026-10-20-rt-software-gi/test_native.py:35: \n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \ndocs/agent/evidence/2026-10-20-rt-counter-native/test_rt_counter_native.py:37: in run_mode\n    child.wait(timeout=1500)\n/usr/lib/python3.12/subprocess.py:1264: in wait\n    return self._wait(timeout=timeout)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^\n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n\nself = <Popen: returncode: -15 args: ['/usr/bin/time', '-v', 'stdbuf', '-oL', '-eL'...>\ntimeout = 1500\n\n    def _wait(self, timeout):\n      \n[omitted]\nbringing up nodes...\nbringing up nodes...\n\nF\n=================================== FAILURES ===================================\n_________________________ test_software_standalone_rt __________________________\n[gw0] linux -- Python 3.12.3 /home/jkern/dev/agent-queue2/.venv/bin/python\n\n    def test_software_standalone_rt():\n>       code, text, validation = original.run_mode('rt')\n                                 ^^^^^^^^^^^^^^^^^^^^^^^\n\ndocs/agent/evidence/2026-10-20-rt-software-gi/test_native.py:35: \n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \ndocs/agent/evidence/2026-10-20-rt-counter-native/test_rt_counter_native.py:37: in run_mode\n    child.wait(timeout=1500)\n/usr/lib/python3.12/subprocess.py:1264: in wait\n    return self._wait(timeout=timeout)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^\n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ \n\nself = <Popen: returncode: -15 args: ['/usr/bin/time', '-v', 'stdbuf', '-oL', '-eL'...>\ntimeout = 1500\n\n    def _wait(self, timeout):\n        \"\"\"Internal implementation of wait() on POSIX.\"\"\"\n        if self.returncode is not None:\n            return self.returncode\n    \n        if timeout is not None:\n            endtime = _time() + timeout\n            # Enter a busy loop if we have a timeout.  This busy loop was\n            # cribbed from Lib/threading.py in Thread.wait() at r71065.\n            delay = 0.0005 # 500 us -> initial delay of 1 ms\n            while True:\n                if self._waitpid_lock.acquire(False):\n                    try:\n                        if self.returncode is not None:\n                            break  # Another thread waited.\n                        (pid, sts) = self._try_wait(os.WNOHANG)\n                        assert pid == self.pid or pid == 0\n                        if pid == self.pid:\n                            self._handle_exitstatus(sts)\n                            break\n                    finally:\n                        self._waitpid_lock.release()\n                remaining = self._remaining_time(endtime)\n                if remaining <= 0:\n>                   raise TimeoutExpired(self.args, timeout)\nE                   subprocess.TimeoutExpired: Command '['/usr/bin/time', '-v', 'stdbuf', '-oL', '-eL', '/tmp/keen-quest-34/build/vulkan_smoke_tests']' timed out after 1500 seconds\n\n/usr/lib/python3.12/subprocess.py:2045: TimeoutExpired\n=========================== short test summary info ============================\nFAILED docs/agent/evidence/2026-10-20-rt-software-gi/test_native.py::test_software_standalone_rt\n1 failed in 1501.20s (0:25:01)\n",
+      "output_bytes_seen": 2622,
+      "output_bytes_retained": 2622,
+      "truncated": true,
+      "omitted_failure_count": 0,
+      "output_ref": "ad6be53d-f7dd-4ea5-91f2-b36b41ad47d5",
+      "parser_version": 1,
+      "parser_source": "junit",
+      "artifact_status": "valid",
+      "result_hash": "188d46058f2a596baa44e16a7aa7333149f9cce984eebc30fdc684183a7a2250"
+    }
+  }
+}
