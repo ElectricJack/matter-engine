@@ -65,7 +65,7 @@
 
 #include "../../../../MatterEngine3/src/render/gpu_matrix_pack.h"
 #include "../../../../MatterEngine3/src/render/frame_matrices.h"
-#include "matter/cloud_shadow_settings.h"
+#include "cloud_shadow_settings.h"
 #include "matter/log.h"
 #include "matter/vulkan_device.h"
 #include "fog_settings.h"
