@@ -1,0 +1,9 @@
+{
+  "observed_epoch": 1792553586.8810506,
+  "expected_executable": "/tmp/noble-zenith-31-epoch9/vulkan_smoke_tests",
+  "initial_rt_counters_process_group": 2076776,
+  "surviving_matching_processes": [],
+  "exec_session": 60820,
+  "exec_exit_code": 1,
+  "wrapper_result": "1 failed, 1 passed in 1685.38s; rt timeout1500s; timeout handler returncode -15"
+}

@@ -1,0 +1,38 @@
+**********************************************************************
+** Visual Studio 2022 Developer Command Prompt v17.14.7
+** Copyright (c) 2025 Microsoft Corporation
+**********************************************************************
+-- Configuring done (0.3s)
+-- Generating done (0.2s)
+-- Build files have been written to: D:/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-10/bindings/geometry-c/build/windows-msvc/relwithdebinfo
+**********************************************************************
+** Visual Studio 2022 Developer Command Prompt v17.14.7
+** Copyright (c) 2025 Microsoft Corporation
+**********************************************************************
+[1/11] Building CXX object matter-components\matter_geometry\CMakeFiles\matter_geometry.dir\src\csg.cpp.obj
+D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-10\MatterEngine3\src\triangle_emit.hpp(173): warning C4324: 'tri_emit::TriangleBuildBuffer': structure was padded due to alignment specifier
+D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-10\MatterEngine3\src\triangle_emit.hpp(176): warning C4324: 'tri_emit::TriangleBuildBuffer::SurfaceAttribute': structure was padded due to alignment specifier
+[2/11] Building CXX object matter-components\matter_geometry\CMakeFiles\matter_geometry.dir\src\csg_mesh.cpp.obj
+D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-10\MatterEngine3\src\triangle_emit.hpp(173): warning C4324: 'tri_emit::TriangleBuildBuffer': structure was padded due to alignment specifier
+D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-10\MatterEngine3\src\triangle_emit.hpp(176): warning C4324: 'tri_emit::TriangleBuildBuffer::SurfaceAttribute': structure was padded due to alignment specifier
+[3/11] Building CXX object matter-components\matter_geometry\CMakeFiles\matter_geometry.dir\shared_triangle_emit.cpp.obj
+D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-10\MatterEngine3\src\triangle_emit.hpp(173): warning C4324: 'tri_emit::TriangleBuildBuffer': structure was padded due to alignment specifier
+D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-10\MatterEngine3\src\triangle_emit.hpp(176): warning C4324: 'tri_emit::TriangleBuildBuffer::SurfaceAttribute': structure was padded due to alignment specifier
+[4/11] Linking CXX static library matter-components\matter_geometry\matter_geometry.lib
+[5/11] Building C object CMakeFiles\matter_geometry_c_tests.dir\tests\consumer.c.obj
+[6/11] Building CXX object CMakeFiles\matter_geometry_c.dir\src\geometry_c.cpp.obj
+[7/11] Building CXX object CMakeFiles\matter_geometry_c_allocation_tests.dir\tests\allocation.cpp.obj
+[8/11] Linking CXX static library matter_geometry_c.lib
+[9/11] Linking CXX executable matter-components\matter_geometry\matter_geometry_recipe.exe
+[10/11] Linking CXX executable matter_geometry_c_tests.exe
+[11/11] Linking CXX executable matter_geometry_c_allocation_tests.exe
+Internal ctest changing into directory: D:/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-10/bindings/geometry-c/build/windows-msvc/relwithdebinfo
+Test project D:/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-10/bindings/geometry-c/build/windows-msvc/relwithdebinfo
+    Start 1: matter_geometry_c_consumer
+1/2 Test #1: matter_geometry_c_consumer .......   Passed    0.78 sec
+    Start 2: matter_geometry_c_allocation
+2/2 Test #2: matter_geometry_c_allocation .....   Passed   17.87 sec
+
+100% tests passed, 0 tests failed out of 2
+
+Total Test time (real) =  18.67 sec
