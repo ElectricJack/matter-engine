@@ -56,6 +56,9 @@ struct NodeView {
     NodeRef self;
     std::vector<NodeRef> children;
     asset_store::PageHandle page;
+    // A published GPU node remains render-ready after its CPU payload lease
+    // is released; descriptors suffice for later cut selection.
+    bool ready = false;
 };
 // One independently validated geometry group per page. Root manifest contains
 // only root descriptors; child descriptors are paged with their parent.

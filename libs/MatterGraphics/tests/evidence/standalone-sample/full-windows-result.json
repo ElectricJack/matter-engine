@@ -1,0 +1,44 @@
+{
+  "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File tools/ci-windows.ps1",
+  "exit_code": 1,
+  "native_build": "passed; editor linked",
+  "ctest_exit_code": 8,
+  "tests": 189,
+  "passed": 184,
+  "failed": 5,
+  "seconds": 1916.96,
+  "package_creation_and_validation": "not reached because CTest failed",
+  "failures": [
+    {
+      "name": "async_bake_tests",
+      "classname": "async_bake_tests",
+      "time": "38.5244",
+      "status": "fail"
+    },
+    {
+      "name": "solid_face_projection_gpu_tests",
+      "classname": "solid_face_projection_gpu_tests",
+      "time": "54.2322",
+      "status": "fail"
+    },
+    {
+      "name": "viewer_graph_tests",
+      "classname": "viewer_graph_tests",
+      "time": "51.4378",
+      "status": "fail"
+    },
+    {
+      "name": "editor_registration_census",
+      "classname": "editor_registration_census",
+      "time": "44.539",
+      "status": "fail"
+    },
+    {
+      "name": "windows_package_tests",
+      "classname": "windows_package_tests",
+      "time": "1500.4",
+      "status": "fail"
+    }
+  ],
+  "changed_engine_or_central_build_sources": false
+}

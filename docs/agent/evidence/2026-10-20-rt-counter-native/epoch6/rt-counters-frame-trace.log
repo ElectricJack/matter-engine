@@ -1,0 +1,545 @@
+Vulkan adapter: llvmpipe (LLVM 20.1.2, 256 bits) | driver: llvmpipe (Mesa 25.2.8-0ubuntu0.24.04.2 (LLVM 20.1.2), 0x06402008) | API 1.4.318
+[vk] present requested=auto effective=fifo(2) supported=[immediate(0),mailbox(1),fifo(2),fifo_relaxed(3)] images=4 extent=320x200
+[vk.frame-trace] t=0.000ms serial=1 slot=0 phase=begin.fence_wait.enter frame_fence=signaled present_fence=none
+[vk.frame-trace] t=0.041ms serial=1 slot=0 phase=begin.fence_wait.exit frame_fence=signaled present_fence=none
+[vk.frame-trace] t=0.559ms serial=1 slot=0 phase=end.enter frame_fence=signaled present_fence=unsignaled
+[vk.frame-trace] t=0.628ms serial=1 slot=0 phase=end.command_buffer_ended frame_fence=signaled present_fence=unsignaled
+[vk] present requested=auto effective=fifo(2) supported=[immediate(0),mailbox(1),fifo(2),fifo_relaxed(3)] images=4 extent=320x200
+[vk.frame-trace] t=2.929ms serial=2 slot=0 phase=begin.fence_wait.enter frame_fence=signaled present_fence=none
+[vk.frame-trace] t=2.947ms serial=2 slot=0 phase=begin.fence_wait.exit frame_fence=signaled present_fence=none
+[vk.frame-trace] t=3.056ms serial=2 slot=0 phase=end.enter frame_fence=signaled present_fence=unsignaled
+[vk.frame-trace] t=3.088ms serial=2 slot=0 phase=end.command_buffer_ended frame_fence=signaled present_fence=unsignaled
+[vk] present requested=auto effective=fifo(2) supported=[immediate(0),mailbox(1),fifo(2),fifo_relaxed(3)] images=4 extent=320x200
+[vk.frame-trace] t=6.754ms serial=3 slot=0 phase=begin.fence_wait.enter frame_fence=signaled present_fence=none
+[vk.frame-trace] t=6.786ms serial=3 slot=0 phase=begin.fence_wait.exit frame_fence=signaled present_fence=none
+[vk.frame-trace] t=6.947ms serial=3 slot=0 phase=end.enter frame_fence=signaled present_fence=unsignaled
+[vk.frame-trace] t=6.971ms serial=3 slot=0 phase=end.command_buffer_ended frame_fence=signaled present_fence=unsignaled
+[vk.frame-trace] t=6.988ms serial=3 slot=0 phase=end.submit.enter frame_fence=unsignaled present_fence=unsignaled
+[vk.frame-trace] t=7.405ms serial=3 slot=0 phase=end.submit.exit frame_fence=unsignaled present_fence=unsignaled
+[vk.frame-trace] t=7.828ms serial=3 slot=0 phase=end.gpu_observe.complete frame_fence=signaled present_fence=unsignaled
+[vk.frame-trace] t=8.019ms serial=3 slot=0 phase=end.present_common.enter frame_fence=signaled present_fence=unsignaled
+[vk.frame-trace] t=8.162ms serial=3 slot=0 phase=end.queue_present.enter frame_fence=signaled present_fence=unsignaled
+[vk.frame-trace] t=8.517ms serial=3 slot=0 phase=end.queue_present.exit frame_fence=signaled present_fence=signaled
+DLSS fallback: Streamline disabled for Vulkan test device
+Vulkan RT available=true device=llvmpipe (LLVM 20.1.2, 256 bits) reason=none
+[vk] impostor atlas: 128 slots x 2 layers of 128x128 RGBA8 (cell 16 px, filtered mips) = 21 MiB
+[pipeline-profile] begin kind=compute caller=create_pipeline:2365 count=1
+[pipeline-profile] stage=0 flag=0x20 module=00004d000000004d entry=main
+[pipeline-profile] end kind=compute caller=create_pipeline:2365 ms=4.396485 result=0
+[pipeline-profile] begin kind=compute caller=create_pipeline:2415 count=1
+[pipeline-profile] stage=0 flag=0x20 module=00004f000000004f entry=main
+[pipeline-profile] stage=0 specialization_bytes=4 fnv64=4d25767f9dce13f5
+[pipeline-profile] end kind=compute caller=create_pipeline:2415 ms=167.467671 result=0
+[pipeline-profile] begin kind=compute caller=create_pipeline:2415 count=1
+[pipeline-profile] stage=0 flag=0x20 module=00004f000000004f entry=main
+[pipeline-profile] stage=0 specialization_bytes=4 fnv64=ad2aca7747985764
+[pipeline-profile] end kind=compute caller=create_pipeline:2415 ms=102.953354 result=0
+[pipeline-profile] shader=raster.vert.spv module=0000520000000052 spv_fnv64=cbfac7417ae13057 bytes=12232
+[pipeline-profile] shader=gbuffer.frag.spv module=0000530000000053 spv_fnv64=80e850b7f32310c3 bytes=1580976
+[pipeline-profile] shader=raster_skin.vert.spv module=0000540000000054 spv_fnv64=98960d5674f9363b bytes=11244
+[pipeline-profile] begin kind=graphics caller=operator():2473 count=1
+[pipeline-profile] stage=0 flag=0x1 module=0000520000000052 entry=main
+[pipeline-profile] stage=1 flag=0x10 module=0000530000000053 entry=main
+[vk] Vulkan loader/general warning: Validation Performance Warning: [ WARNING-Shader-OutputNotConsumed ] Object 0: handle = 0x520000000052, type = VK_OBJECT_TYPE_SHADER_MODULE; Object 1: handle = 0x530000000053, type = VK_OBJECT_TYPE_SHADER_MODULE; | MessageID = 0xc81ad50e | vkCreateGraphicsPipelines(): pCreateInfos[0] (SPIR-V Interface) VK_SHADER_STAGE_VERTEX_BIT declared to output location 17 Component 0 but is not an Input declared by VK_SHADER_STAGE_FRAGMENT_BIT.
+[pipeline-profile] end kind=graphics caller=operator():2473 ms=43049.260713 result=0
+[pipeline-profile] shader=visibility_id.vert.spv module=0000560000000056 spv_fnv64=3a4e0235a5bd2b79 bytes=2040
+[pipeline-profile] shader=visibility_id.frag.spv module=0000570000000057 spv_fnv64=18d33bd3765480ba bytes=364
+[pipeline-profile] begin kind=graphics caller=operator():2473 count=1
+[pipeline-profile] stage=0 flag=0x1 module=0000560000000056 entry=main
+[pipeline-profile] stage=1 flag=0x10 module=0000570000000057 entry=main
+[vk] Vulkan loader/general warning: Validation Performance Warning: [ WARNING-Shader-OutputNotConsumed ] Object 0: handle = 0x560000000056, type = VK_OBJECT_TYPE_SHADER_MODULE; | MessageID = 0xc81ad50e | vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 1 not consumed by vertex shader.
+[vk] Vulkan loader/general warning: Validation Performance Warning: [ WARNING-Shader-OutputNotConsumed ] Object 0: handle = 0x560000000056, type = VK_OBJECT_TYPE_SHADER_MODULE; | MessageID = 0xc81ad50e | vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 2 not consumed by vertex shader.
+[vk] Vulkan loader/general warning: Validation Performance Warning: [ WARNING-Shader-OutputNotConsumed ] Object 0: handle = 0x560000000056, type = VK_OBJECT_TYPE_SHADER_MODULE; | MessageID = 0xc81ad50e | vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 3 not consumed by vertex shader.
+[vk] Vulkan loader/general warning: Validation Performance Warning: [ WARNING-Shader-OutputNotConsumed ] Object 0: handle = 0x560000000056, type = VK_OBJECT_TYPE_SHADER_MODULE; | MessageID = 0xc81ad50e | vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 4 not consumed by vertex shader.
+[vk] Vulkan loader/general warning: Validation Performance Warning: [ WARNING-Shader-OutputNotConsumed ] Object 0: handle = 0x560000000056, type = VK_OBJECT_TYPE_SHADER_MODULE; | MessageID = 0xc81ad50e | vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 6 not consumed by vertex shader.
+[vk] Vulkan loader/general warning: Validation Performance Warning: [ WARNING-Shader-OutputNotConsumed ] Object 0: handle = 0x560000000056, type = VK_OBJECT_TYPE_SHADER_MODULE; | MessageID = 0xc81ad50e | vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 7 not consumed by vertex shader.
+[pipeline-profile] end kind=graphics caller=operator():2473 ms=0.781943 result=0
+[pipeline-profile] begin kind=graphics caller=operator():2473 count=1
+[pipeline-profile] stage=0 flag=0x1 module=0000540000000054 entry=main
+[pipeline-profile] stage=1 flag=0x10 module=0000530000000053 entry=main
+[vk] Vulkan loader/general warning: Validation Performance Warning: [ WARNING-Shader-OutputNotConsumed ] Object 0: handle = 0x540000000054, type = VK_OBJECT_TYPE_SHADER_MODULE; Object 1: handle = 0x530000000053, type = VK_OBJECT_TYPE_SHADER_MODULE; | MessageID = 0xc81ad50e | vkCreateGraphicsPipelines(): pCreateInfos[0] (SPIR-V Interface) VK_SHADER_STAGE_VERTEX_BIT declared to output location 17 Component 0 but is not an Input declared by VK_SHADER_STAGE_FRAGMENT_BIT.
+[pipeline-profile] end kind=graphics caller=operator():2473 ms=36040.614990 result=0
+[pipeline-profile] shader=raster_water.vert.spv module=00005a000000005a spv_fnv64=b83c9b57a12d749e bytes=8028
+[pipeline-profile] begin kind=graphics caller=operator():2473 count=1
+[pipeline-profile] stage=0 flag=0x1 module=00005a000000005a entry=main
+[pipeline-profile] stage=1 flag=0x10 module=0000530000000053 entry=main
+[vk] Vulkan loader/general warning: Validation Performance Warning: [ WARNING-Shader-OutputNotConsumed ] Object 0: handle = 0x5a000000005a, type = VK_OBJECT_TYPE_SHADER_MODULE; Object 1: handle = 0x530000000053, type = VK_OBJECT_TYPE_SHADER_MODULE; | MessageID = 0xc81ad50e | vkCreateGraphicsPipelines(): pCreateInfos[0] (SPIR-V Interface) VK_SHADER_STAGE_VERTEX_BIT declared to output location 17 Component 0 but is not an Input declared by VK_SHADER_STAGE_FRAGMENT_BIT.
+[pipeline-profile] end kind=graphics caller=operator():2473 ms=31399.403229 result=0
+[pipeline-profile] begin kind=graphics caller=operator():2473 count=1
+[pipeline-profile] stage=0 flag=0x1 module=0000520000000052 entry=main
+[pipeline-profile] stage=1 flag=0x10 module=0000530000000053 entry=main
+[vk] Vulkan loader/general warning: Validation Performance Warning: [ WARNING-Shader-OutputNotConsumed ] Object 0: handle = 0x520000000052, type = VK_OBJECT_TYPE_SHADER_MODULE; Object 1: handle = 0x530000000053, type = VK_OBJECT_TYPE_SHADER_MODULE; | MessageID = 0xc81ad50e | vkCreateGraphicsPipelines(): pCreateInfos[0] (SPIR-V Interface) VK_SHADER_STAGE_VERTEX_BIT declared to output location 17 Component 0 but is not an Input declared by VK_SHADER_STAGE_FRAGMENT_BIT.
+[pipeline-profile] end kind=graphics caller=operator():2473 ms=34229.951317 result=0
+[pipeline-profile] begin kind=graphics caller=operator():2473 count=1
+[pipeline-profile] stage=0 flag=0x1 module=0000540000000054 entry=main
+[pipeline-profile] stage=1 flag=0x10 module=0000530000000053 entry=main
+[vk] Vulkan loader/general warning: Validation Performance Warning: [ WARNING-Shader-OutputNotConsumed ] Object 0: handle = 0x540000000054, type = VK_OBJECT_TYPE_SHADER_MODULE; Object 1: handle = 0x530000000053, type = VK_OBJECT_TYPE_SHADER_MODULE; | MessageID = 0xc81ad50e | vkCreateGraphicsPipelines(): pCreateInfos[0] (SPIR-V Interface) VK_SHADER_STAGE_VERTEX_BIT declared to output location 17 Component 0 but is not an Input declared by VK_SHADER_STAGE_FRAGMENT_BIT.
+[pipeline-profile] end kind=graphics caller=operator():2473 ms=37796.265129 result=0
+[pipeline-profile] shader=composite.vert.spv module=0000610000000061 spv_fnv64=3fa5ead47188214f bytes=916
+[pipeline-profile] shader=composite.frag.spv module=0000620000000062 spv_fnv64=5fecb2f9ffb5dabc bytes=76012
+[pipeline-profile] begin kind=graphics caller=create_raster_pipelines:2632 count=1
+[pipeline-profile] stage=0 flag=0x1 module=0000610000000061 entry=main
+[pipeline-profile] stage=1 flag=0x10 module=0000620000000062 entry=main
+[pipeline-profile] stage=1 specialization_bytes=4 fnv64=4d25767f9dce13f5
+[pipeline-profile] end kind=graphics caller=create_raster_pipelines:2632 ms=141.321150 result=0
+[pipeline-profile] shader=raster.vert.spv module=0000710000000071 spv_fnv64=cbfac7417ae13057 bytes=12232
+[pipeline-profile] shader=raster_water.vert.spv module=0000720000000072 spv_fnv64=b83c9b57a12d749e bytes=8028
+[pipeline-profile] shader=water_forward.frag.spv module=0000730000000073 spv_fnv64=b102ba572d559f18 bytes=107740
+[pipeline-profile] begin kind=graphics caller=create_water_forward_pipelines:178 count=1
+[pipeline-profile] stage=0 flag=0x1 module=0000710000000071 entry=main
+[pipeline-profile] stage=1 flag=0x10 module=0000730000000073 entry=main
+[vk] Vulkan loader/general warning: Validation Performance Warning: [ WARNING-Shader-OutputNotConsumed ] Object 0: handle = 0x710000000071, type = VK_OBJECT_TYPE_SHADER_MODULE; Object 1: handle = 0x730000000073, type = VK_OBJECT_TYPE_SHADER_MODULE; | MessageID = 0xc81ad50e | vkCreateGraphicsPipelines(): pCreateInfos[0] (SPIR-V Interface) VK_SHADER_STAGE_VERTEX_BIT declared to output location 11 Component 0 but is not an Input declared by VK_SHADER_STAGE_FRAGMENT_BIT.
+[pipeline-profile] end kind=graphics caller=create_water_forward_pipelines:178 ms=188.227379 result=0
+[pipeline-profile] begin kind=graphics caller=create_water_forward_pipelines:193 count=1
+[pipeline-profile] stage=0 flag=0x1 module=0000720000000072 entry=main
+[pipeline-profile] stage=1 flag=0x10 module=0000730000000073 entry=main
+[vk] Vulkan loader/general warning: Validation Performance Warning: [ WARNING-Shader-OutputNotConsumed ] Object 0: handle = 0x720000000072, type = VK_OBJECT_TYPE_SHADER_MODULE; Object 1: handle = 0x730000000073, type = VK_OBJECT_TYPE_SHADER_MODULE; | MessageID = 0xc81ad50e | vkCreateGraphicsPipelines(): pCreateInfos[0] (SPIR-V Interface) VK_SHADER_STAGE_VERTEX_BIT declared to output location 11 Component 0 but is not an Input declared by VK_SHADER_STAGE_FRAGMENT_BIT.
+[pipeline-profile] end kind=graphics caller=create_water_forward_pipelines:193 ms=144.063654 result=0
+[pipeline-profile] shader=composite.vert.spv module=0000780000000078 spv_fnv64=3fa5ead47188214f bytes=916
+[pipeline-profile] shader=display_transform.frag.spv module=0000790000000079 spv_fnv64=384bdbddd6dd21ec bytes=5188
+[pipeline-profile] begin kind=graphics caller=create_display_pipeline:2807 count=1
+[pipeline-profile] stage=0 flag=0x1 module=0000780000000078 entry=main
+[pipeline-profile] stage=1 flag=0x10 module=0000790000000079 entry=main
+[pipeline-profile] end kind=graphics caller=create_display_pipeline:2807 ms=3.168858 result=0
+[pipeline-profile] shader=selection_line.vert.spv module=00007c000000007c spv_fnv64=cd31e2d21002c573 bytes=956
+[pipeline-profile] shader=selection_line.frag.spv module=00007d000000007d spv_fnv64=98a2772f10953eef bytes=312
+[pipeline-profile] begin kind=graphics caller=create_overlay_line_pipeline:2925 count=1
+[pipeline-profile] stage=0 flag=0x1 module=00007c000000007c entry=main
+[pipeline-profile] stage=1 flag=0x10 module=00007d000000007d entry=main
+[pipeline-profile] end kind=graphics caller=create_overlay_line_pipeline:2925 ms=0.385245 result=0
+[pipeline-profile] shader=gi_temporal.comp.spv module=0000810000000081 spv_fnv64=75de2fb397c76caa bytes=33640
+[pipeline-profile] begin kind=compute caller=create_gi_temporal_pipeline:57 count=1
+[pipeline-profile] stage=0 flag=0x20 module=0000810000000081 entry=main
+[pipeline-profile] end kind=compute caller=create_gi_temporal_pipeline:57 ms=53.911571 result=0
+[pipeline-profile] shader=gi_atrous.comp.spv module=0000850000000085 spv_fnv64=560a4c5f6fe2b996 bytes=10956
+[pipeline-profile] begin kind=compute caller=create_gi_atrous_pipeline:117 count=1
+[pipeline-profile] stage=0 flag=0x20 module=0000850000000085 entry=main
+[pipeline-profile] end kind=compute caller=create_gi_atrous_pipeline:117 ms=4.035622 result=0
+[rt] independent GI shader specialization=1
+[pipeline-profile] shader=rt_shadow.rgen.spv module=0000890000000089 spv_fnv64=fb2b9ab68870aae5 bytes=27272
+[pipeline-profile] shader=rt_surface_test.rgen.spv module=00008a000000008a spv_fnv64=7f86b1136f9e45dd bytes=50588
+[pipeline-profile] shader=rt_lighting.rgen.spv module=00008b000000008b spv_fnv64=3e4165d7ed37420d bytes=1390620
+[pipeline-profile] shader=rt_visibility.rmiss.spv module=00008c000000008c spv_fnv64=846e24f9cd1ca853 bytes=164
+[pipeline-profile] shader=rt_radiance.rmiss.spv module=00008d000000008d spv_fnv64=301940d946fa7b40 bytes=908
+[pipeline-profile] shader=rt_visibility.rchit.spv module=00008e000000008e spv_fnv64=6593f085f2c20144 bytes=380
+[pipeline-profile] shader=rt_visibility.rahit.spv module=00008f000000008f spv_fnv64=babf76481d46d179 bytes=12044
+[pipeline-profile] shader=rt_surface.rchit.spv module=0000900000000090 spv_fnv64=0356a6abd65779b1 bytes=1189224
+[pipeline-profile] shader=rt_surface.rahit.spv module=0000910000000091 spv_fnv64=60e3a5c72d97b8ba bytes=9664
+[pipeline-profile] shader=rt_lighting.rgen.spv module=0000920000000092 spv_fnv64=3e4165d7ed37420d bytes=1390620
+[pipeline-profile] shader=rt_lighting.rgen.spv module=0000930000000093 spv_fnv64=3e4165d7ed37420d bytes=1390620
+[rt] local primary area samples=4 (0=adaptive); visibility diagnostic counters=1
+[rt] local-light selection code=0; packed budgets=0
+[rt] secondary local-light sampling=1 (0 exact, 1 importance reservoir)
+[rt] secondary surface detail mode=0 (0 reference, 1 adaptive, 2 normal-only)
+[pipeline-profile] begin kind=ray_tracing caller=create_ray_tracing_pipeline:445 count=1
+[pipeline-profile] stage=0 flag=0x100 module=0000890000000089 entry=main
+[pipeline-profile] stage=1 flag=0x100 module=00008a000000008a entry=main
+[pipeline-profile] stage=2 flag=0x100 module=00008b000000008b entry=main
+[pipeline-profile] stage=2 specialization_bytes=20 fnv64=e64e9a595eba0950
+[pipeline-profile] stage=3 flag=0x800 module=00008c000000008c entry=main
+[pipeline-profile] stage=4 flag=0x800 module=00008d000000008d entry=main
+[pipeline-profile] stage=5 flag=0x400 module=00008e000000008e entry=main
+[pipeline-profile] stage=6 flag=0x200 module=00008f000000008f entry=main
+[pipeline-profile] stage=6 specialization_bytes=4 fnv64=ad2aca7747985764
+[pipeline-profile] stage=7 flag=0x400 module=0000900000000090 entry=main
+[pipeline-profile] stage=7 specialization_bytes=4 fnv64=4d25767f9dce13f5
+[pipeline-profile] stage=8 flag=0x200 module=0000910000000091 entry=main
+[pipeline-profile] stage=9 flag=0x100 module=0000920000000092 entry=main
+[pipeline-profile] stage=9 specialization_bytes=24 fnv64=825ee05c69fbc2e1
+[pipeline-profile] stage=10 flag=0x100 module=0000930000000093 entry=main
+[pipeline-profile] stage=10 specialization_bytes=24 fnv64=22598c64c0317f72
+[pipeline-profile] end kind=ray_tracing caller=create_ray_tracing_pipeline:445 ms=82683.310146 result=0
+[vk] static reserve: clusters 1 MiB, vertices 1 MiB, indices 1 MiB (host-visible)
+[vk.frame-trace] t=266542.419ms serial=4 slot=1 phase=begin.fence_wait.enter frame_fence=signaled present_fence=none
+[vk.frame-trace] t=266542.446ms serial=4 slot=1 phase=begin.fence_wait.exit frame_fence=signaled present_fence=none
+[vk.frame-trace] t=266659.513ms serial=4 slot=1 phase=end.enter frame_fence=signaled present_fence=unsignaled
+[vk.frame-trace] t=266659.550ms serial=4 slot=1 phase=end.command_buffer_ended frame_fence=signaled present_fence=unsignaled
+[vk.frame-trace] t=266659.563ms serial=4 slot=1 phase=end.submit.enter frame_fence=unsignaled present_fence=unsignaled
+[vk.frame-trace] t=266659.665ms serial=4 slot=1 phase=end.submit.exit frame_fence=unsignaled present_fence=unsignaled
+[vk.frame-trace] t=266745.650ms serial=4 slot=1 phase=end.gpu_observe.complete frame_fence=signaled present_fence=unsignaled
+[vk.frame-trace] t=266745.701ms serial=4 slot=1 phase=end.present_common.enter frame_fence=signaled present_fence=unsignaled
+[vk.frame-trace] t=266745.706ms serial=4 slot=1 phase=end.queue_present.enter frame_fence=signaled present_fence=unsignaled
+[vk.frame-trace] t=266745.859ms serial=4 slot=1 phase=end.queue_present.exit frame_fence=signaled present_fence=signaled
+RT counters: frame slots=2
+RT counter frame: acquire fault=0
+[vk.frame-trace] t=266746.944ms serial=5 slot=0 phase=begin.fence_wait.enter frame_fence=signaled present_fence=none
+[vk.frame-trace] t=266746.971ms serial=5 slot=0 phase=begin.fence_wait.exit frame_fence=signaled present_fence=none
+RT counter frame: begin slot=0 serial=5 retired_sample=0 fault=0
+RT counter frame: prepared serial=5 ok=1
+RT counter frame: rendered serial=5 ok=1
+RT counter frame: recorded serial=5 ok=1
+RT counter frame: end_frame.enter serial=5
+[vk.frame-trace] t=266748.287ms serial=5 slot=0 phase=end.enter frame_fence=signaled present_fence=unsignaled
+[vk.frame-trace] t=266748.301ms serial=5 slot=0 phase=end.command_buffer_ended frame_fence=signaled present_fence=unsignaled
+[vk.frame-trace] t=266748.309ms serial=5 slot=0 phase=end.submit.enter frame_fence=unsignaled present_fence=unsignaled
+[vk.frame-trace] t=266748.396ms serial=5 slot=0 phase=end.submit.exit frame_fence=unsignaled present_fence=unsignaled
+[vk.frame-trace] t=266754.500ms serial=5 slot=0 phase=end.gpu_observe.complete frame_fence=signaled present_fence=unsignaled
+[vk.frame-trace] t=266754.536ms serial=5 slot=0 phase=end.present_common.enter frame_fence=signaled present_fence=unsignaled
+[vk.frame-trace] t=266754.540ms serial=5 slot=0 phase=end.queue_present.enter frame_fence=signaled present_fence=unsignaled
+[vk.frame-trace] t=266754.747ms serial=5 slot=0 phase=end.queue_present.exit frame_fence=signaled present_fence=signaled
+RT counter frame: end_frame.exit serial=5 submitted=1
+RT counter frame: finalized serial=5
+RT counter frame: end slot=0 serial=5 recorded=1 submitted=1 candidate=0 sample=0 consumed=0 total=0 warnings=0
+RT counter frame: acquire fault=0
+[vk.frame-trace] t=266755.201ms serial=6 slot=1 phase=begin.fence_wait.enter frame_fence=signaled present_fence=none
+[vk.frame-trace] t=266755.214ms serial=6 slot=1 phase=begin.fence_wait.exit frame_fence=signaled present_fence=none
+RT counter frame: begin slot=1 serial=6 retired_sample=0 fault=0
+RT counter frame: prepared serial=6 ok=1
+RT counter frame: rendered serial=6 ok=1
+RT counter frame: recorded serial=6 ok=1
+RT counter frame: end_frame.enter serial=6
+[vk.frame-trace] t=266756.395ms serial=6 slot=1 phase=end.enter frame_fence=signaled present_fence=unsignaled
+[vk.frame-trace] t=266756.420ms serial=6 slot=1 phase=end.command_buffer_ended frame_fence=signaled present_fence=unsignaled
+[vk.frame-trace] t=266756.430ms serial=6 slot=1 phase=end.submit.enter frame_fence=unsignaled present_fence=unsignaled
+[vk.frame-trace] t=266756.547ms serial=6 slot=1 phase=end.submit.exit frame_fence=unsignaled present_fence=unsignaled
+[vk.frame-trace] t=266763.494ms serial=6 slot=1 phase=end.gpu_observe.complete frame_fence=signaled present_fence=unsignaled
+[vk.frame-trace] t=266763.554ms serial=6 slot=1 phase=end.present_common.enter frame_fence=signaled present_fence=unsignaled
+[vk.frame-trace] t=266763.561ms serial=6 slot=1 phase=end.queue_present.enter frame_fence=signaled present_fence=unsignaled
+[vk.frame-trace] t=266763.721ms serial=6 slot=1 phase=end.queue_present.exit frame_fence=signaled present_fence=signaled
+RT counter frame: end_frame.exit serial=6 submitted=1
+RT counter frame: finalized serial=6
+RT counter frame: end slot=1 serial=6 recorded=1 submitted=1 candidate=0 sample=0 consumed=0 total=0 warnings=0
+RT counter frame: acquire fault=0
+[vk.frame-trace] t=266764.286ms serial=7 slot=0 phase=begin.fence_wait.enter frame_fence=signaled present_fence=none
+[vk.frame-trace] t=266764.303ms serial=7 slot=0 phase=begin.fence_wait.exit frame_fence=signaled present_fence=none
+RT counter frame: begin slot=0 serial=7 retired_sample=0 fault=0
+RT counter frame: prepared serial=7 ok=1
+RT counter frame: rendered serial=7 ok=1
+RT counter frame: recorded serial=7 ok=1
+RT counter frame: end_frame.enter serial=7
+[vk.frame-trace] t=266765.287ms serial=7 slot=0 phase=end.enter frame_fence=signaled present_fence=signaled
+[vk.frame-trace] t=266765.312ms serial=7 slot=0 phase=end.command_buffer_ended frame_fence=signaled present_fence=signaled
+[vk.frame-trace] t=266765.324ms serial=7 slot=0 phase=end.submit.enter frame_fence=unsignaled present_fence=signaled
+[vk.frame-trace] t=266765.439ms serial=7 slot=0 phase=end.submit.exit frame_fence=unsignaled present_fence=signaled
+[vk.frame-trace] t=266771.354ms serial=7 slot=0 phase=end.gpu_observe.complete frame_fence=signaled present_fence=signaled
+[vk.frame-trace] t=266771.414ms serial=7 slot=0 phase=end.present_common.enter frame_fence=signaled present_fence=unsignaled
+[vk.frame-trace] t=266771.418ms serial=7 slot=0 phase=end.queue_present.enter frame_fence=signaled present_fence=unsignaled
+[vk.frame-trace] t=266771.580ms serial=7 slot=0 phase=end.queue_present.exit frame_fence=signaled present_fence=signaled
+RT counter frame: end_frame.exit serial=7 submitted=1
+RT counter frame: finalized serial=7
+RT counter frame: end slot=0 serial=7 recorded=1 submitted=1 candidate=0 sample=0 consumed=0 total=0 warnings=0
+RT counter frame: acquire fault=0
+[vk.frame-trace] t=266772.072ms serial=8 slot=1 phase=begin.fence_wait.enter frame_fence=signaled present_fence=none
+[vk.frame-trace] t=266772.085ms serial=8 slot=1 phase=begin.fence_wait.exit frame_fence=signaled present_fence=none
+RT counter frame: begin slot=1 serial=8 retired_sample=0 fault=0
+RT counter frame: prepared serial=8 ok=1
+RT counter frame: rendered serial=8 ok=1
+RT counter frame: recorded serial=8 ok=1
+RT counter frame: end_frame.enter serial=8
+[vk.frame-trace] t=266772.931ms serial=8 slot=1 phase=end.enter frame_fence=signaled present_fence=signaled
+[vk.frame-trace] t=266772.954ms serial=8 slot=1 phase=end.command_buffer_ended frame_fence=signaled present_fence=signaled
+[vk.frame-trace] t=266772.962ms serial=8 slot=1 phase=end.submit.enter frame_fence=unsignaled present_fence=signaled
+[vk.frame-trace] t=266773.074ms serial=8 slot=1 phase=end.submit.exit frame_fence=unsignaled present_fence=signaled
+[vk.frame-trace] t=266780.303ms serial=8 slot=1 phase=end.gpu_observe.complete frame_fence=signaled present_fence=signaled
+[vk.frame-trace] t=266780.361ms serial=8 slot=1 phase=end.present_common.enter frame_fence=signaled present_fence=unsignaled
+[vk.frame-trace] t=266780.367ms serial=8 slot=1 phase=end.queue_present.enter frame_fence=signaled present_fence=unsignaled
+[vk.frame-trace] t=266780.563ms serial=8 slot=1 phase=end.queue_present.exit frame_fence=signaled present_fence=signaled
+RT counter frame: end_frame.exit serial=8 submitted=1
+RT counter frame: finalized serial=8
+RT counter frame: end slot=1 serial=8 recorded=1 submitted=1 candidate=0 sample=0 consumed=0 total=0 warnings=0
+RT counter frame: acquire fault=0
+[vk.frame-trace] t=266781.157ms serial=9 slot=0 phase=begin.fence_wait.enter frame_fence=signaled present_fence=none
+[vk.frame-trace] t=266781.174ms serial=9 slot=0 phase=begin.fence_wait.exit frame_fence=signaled present_fence=none
+RT counter frame: begin slot=0 serial=9 retired_sample=0 fault=0
+RT counter frame: prepared serial=9 ok=1
+RT counter frame: rendered serial=9 ok=1
+RT counter frame: recorded serial=9 ok=1
+RT counter frame: end_frame.enter serial=9
+[vk.frame-trace] t=266782.314ms serial=9 slot=0 phase=end.enter frame_fence=signaled present_fence=signaled
+[vk.frame-trace] t=266782.328ms serial=9 slot=0 phase=end.command_buffer_ended frame_fence=signaled present_fence=signaled
+[vk.frame-trace] t=266782.336ms serial=9 slot=0 phase=end.submit.enter frame_fence=unsignaled present_fence=signaled
+[vk.frame-trace] t=266782.450ms serial=9 slot=0 phase=end.submit.exit frame_fence=unsignaled present_fence=signaled
+[vk.frame-trace] t=266789.540ms serial=9 slot=0 phase=end.gpu_observe.complete frame_fence=signaled present_fence=signaled
+[vk.frame-trace] t=266789.586ms serial=9 slot=0 phase=end.present_common.enter frame_fence=signaled present_fence=unsignaled
+[vk.frame-trace] t=266789.591ms serial=9 slot=0 phase=end.queue_present.enter frame_fence=signaled present_fence=unsignaled
+[vk.frame-trace] t=266789.787ms serial=9 slot=0 phase=end.queue_present.exit frame_fence=signaled present_fence=signaled
+RT counter frame: end_frame.exit serial=9 submitted=1
+RT counter frame: finalized serial=9
+RT counter frame: end slot=0 serial=9 recorded=1 submitted=1 candidate=0 sample=0 consumed=0 total=0 warnings=0
+RT counter frame: acquire fault=0
+[vk.frame-trace] t=266790.470ms serial=10 slot=1 phase=begin.fence_wait.enter frame_fence=signaled present_fence=none
+[vk.frame-trace] t=266790.491ms serial=10 slot=1 phase=begin.fence_wait.exit frame_fence=signaled present_fence=none
+RT counter frame: begin slot=1 serial=10 retired_sample=0 fault=0
+RT counter frame: prepared serial=10 ok=1
+RT counter frame: rendered serial=10 ok=1
+RT counter frame: recorded serial=10 ok=1
+RT counter frame: end_frame.enter serial=10
+[vk.frame-trace] t=266791.661ms serial=10 slot=1 phase=end.enter frame_fence=signaled present_fence=signaled
+[vk.frame-trace] t=266791.674ms serial=10 slot=1 phase=end.command_buffer_ended frame_fence=signaled present_fence=signaled
+[vk.frame-trace] t=266791.682ms serial=10 slot=1 phase=end.submit.enter frame_fence=unsignaled present_fence=signaled
+[vk.frame-trace] t=266791.768ms serial=10 slot=1 phase=end.submit.exit frame_fence=unsignaled present_fence=signaled
+[vk.frame-trace] t=266798.517ms serial=10 slot=1 phase=end.gpu_observe.complete frame_fence=signaled present_fence=signaled
+[vk.frame-trace] t=266798.578ms serial=10 slot=1 phase=end.present_common.enter frame_fence=signaled present_fence=unsignaled
+[vk.frame-trace] t=266798.586ms serial=10 slot=1 phase=end.queue_present.enter frame_fence=signaled present_fence=unsignaled
+[vk.frame-trace] t=266798.806ms serial=10 slot=1 phase=end.queue_present.exit frame_fence=signaled present_fence=signaled
+RT counter frame: end_frame.exit serial=10 submitted=1
+RT counter frame: finalized serial=10
+RT counter frame: end slot=1 serial=10 recorded=1 submitted=1 candidate=0 sample=0 consumed=0 total=0 warnings=0
+RT counter frame: acquire fault=0
+[vk.frame-trace] t=266799.231ms serial=11 slot=0 phase=begin.fence_wait.enter frame_fence=signaled present_fence=none
+[vk.frame-trace] t=266799.257ms serial=11 slot=0 phase=begin.fence_wait.exit frame_fence=signaled present_fence=none
+RT counter frame: begin slot=0 serial=11 retired_sample=0 fault=0
+RT counter frame: prepared serial=11 ok=1
+RT counter frame: rendered serial=11 ok=1
+RT counter frame: recorded serial=11 ok=1
+RT counter frame: end_frame.enter serial=11
+[vk.frame-trace] t=266800.107ms serial=11 slot=0 phase=end.enter frame_fence=signaled present_fence=signaled
+[vk.frame-trace] t=266800.120ms serial=11 slot=0 phase=end.command_buffer_ended frame_fence=signaled present_fence=signaled
+[vk.frame-trace] t=266800.126ms serial=11 slot=0 phase=end.submit.enter frame_fence=unsignaled present_fence=signaled
+[vk.frame-trace] t=266800.207ms serial=11 slot=0 phase=end.submit.exit frame_fence=unsignaled present_fence=signaled
+[vk.frame-trace] t=266806.709ms serial=11 slot=0 phase=end.gpu_observe.complete frame_fence=signaled present_fence=signaled
+[vk.frame-trace] t=266806.755ms serial=11 slot=0 phase=end.present_common.enter frame_fence=signaled present_fence=unsignaled
+[vk.frame-trace] t=266806.759ms serial=11 slot=0 phase=end.queue_present.enter frame_fence=signaled present_fence=unsignaled
+[vk.frame-trace] t=266806.964ms serial=11 slot=0 phase=end.queue_present.exit frame_fence=signaled present_fence=signaled
+RT counter frame: end_frame.exit serial=11 submitted=1
+RT counter frame: finalized serial=11
+RT counter frame: end slot=0 serial=11 recorded=1 submitted=1 candidate=0 sample=0 consumed=0 total=0 warnings=0
+RT counter frame: acquire fault=0
+[vk.frame-trace] t=266807.455ms serial=12 slot=1 phase=begin.fence_wait.enter frame_fence=signaled present_fence=none
+[vk.frame-trace] t=266807.474ms serial=12 slot=1 phase=begin.fence_wait.exit frame_fence=signaled present_fence=none
+RT counter frame: begin slot=1 serial=12 retired_sample=0 fault=0
+RT counter frame: prepared serial=12 ok=1
+RT counter frame: rendered serial=12 ok=1
+RT counter frame: recorded serial=12 ok=1
+RT counter frame: end_frame.enter serial=12
+[vk.frame-trace] t=266809.050ms serial=12 slot=1 phase=end.enter frame_fence=signaled present_fence=signaled
+[vk.frame-trace] t=266809.065ms serial=12 slot=1 phase=end.command_buffer_ended frame_fence=signaled present_fence=signaled
+[vk.frame-trace] t=266809.073ms serial=12 slot=1 phase=end.submit.enter frame_fence=unsignaled present_fence=signaled
+[vk.frame-trace] t=266809.156ms serial=12 slot=1 phase=end.submit.exit frame_fence=unsignaled present_fence=signaled
+[vk.frame-trace] t=266817.064ms serial=12 slot=1 phase=end.gpu_observe.complete frame_fence=signaled present_fence=signaled
+[vk.frame-trace] t=266817.168ms serial=12 slot=1 phase=end.present_common.enter frame_fence=signaled present_fence=unsignaled
+[vk.frame-trace] t=266817.177ms serial=12 slot=1 phase=end.queue_present.enter frame_fence=signaled present_fence=unsignaled
+[vk.frame-trace] t=266817.378ms serial=12 slot=1 phase=end.queue_present.exit frame_fence=signaled present_fence=signaled
+RT counter frame: end_frame.exit serial=12 submitted=1
+RT counter frame: finalized serial=12
+RT counter frame: end slot=1 serial=12 recorded=1 submitted=1 candidate=0 sample=0 consumed=0 total=0 warnings=0
+RT counter frame: acquire fault=0
+[vk.frame-trace] t=266817.996ms serial=13 slot=0 phase=begin.fence_wait.enter frame_fence=signaled present_fence=none
+[vk.frame-trace] t=266818.016ms serial=13 slot=0 phase=begin.fence_wait.exit frame_fence=signaled present_fence=none
+RT counter frame: begin slot=0 serial=13 retired_sample=0 fault=0
+RT counter frame: prepared serial=13 ok=1
+RT counter frame: rendered serial=13 ok=1
+RT counter frame: recorded serial=13 ok=1
+RT counter frame: end_frame.enter serial=13
+[vk.frame-trace] t=266819.441ms serial=13 slot=0 phase=end.enter frame_fence=signaled present_fence=signaled
+[vk.frame-trace] t=266819.455ms serial=13 slot=0 phase=end.command_buffer_ended frame_fence=signaled present_fence=signaled
+[vk.frame-trace] t=266819.463ms serial=13 slot=0 phase=end.submit.enter frame_fence=unsignaled present_fence=signaled
+[vk.frame-trace] t=266819.563ms serial=13 slot=0 phase=end.submit.exit frame_fence=unsignaled present_fence=signaled
+[vk.frame-trace] t=266825.806ms serial=13 slot=0 phase=end.gpu_observe.complete frame_fence=signaled present_fence=signaled
+[vk.frame-trace] t=266825.878ms serial=13 slot=0 phase=end.present_common.enter frame_fence=signaled present_fence=unsignaled
+[vk.frame-trace] t=266825.884ms serial=13 slot=0 phase=end.queue_present.enter frame_fence=signaled present_fence=unsignaled
+[vk.frame-trace] t=266826.048ms serial=13 slot=0 phase=end.queue_present.exit frame_fence=signaled present_fence=signaled
+RT counter frame: end_frame.exit serial=13 submitted=1
+RT counter frame: finalized serial=13
+RT counter frame: end slot=0 serial=13 recorded=1 submitted=1 candidate=0 sample=0 consumed=0 total=0 warnings=0
+RT counter frame: acquire fault=0
+[vk.frame-trace] t=266826.724ms serial=14 slot=1 phase=begin.fence_wait.enter frame_fence=signaled present_fence=none
+[vk.frame-trace] t=266826.782ms serial=14 slot=1 phase=begin.fence_wait.exit frame_fence=signaled present_fence=none
+RT counter frame: begin slot=1 serial=14 retired_sample=0 fault=0
+RT counter frame: prepared serial=14 ok=1
+RT counter frame: rendered serial=14 ok=1
+RT counter frame: recorded serial=14 ok=1
+RT counter frame: end_frame.enter serial=14
+[vk.frame-trace] t=266828.180ms serial=14 slot=1 phase=end.enter frame_fence=signaled present_fence=signaled
+[vk.frame-trace] t=266828.198ms serial=14 slot=1 phase=end.command_buffer_ended frame_fence=signaled present_fence=signaled
+[vk.frame-trace] t=266828.206ms serial=14 slot=1 phase=end.submit.enter frame_fence=unsignaled present_fence=signaled
+[vk.frame-trace] t=266828.299ms serial=14 slot=1 phase=end.submit.exit frame_fence=unsignaled present_fence=signaled
+[vk.frame-trace] t=266834.078ms serial=14 slot=1 phase=end.gpu_observe.complete frame_fence=signaled present_fence=signaled
+[vk.frame-trace] t=266834.130ms serial=14 slot=1 phase=end.present_common.enter frame_fence=signaled present_fence=unsignaled
+[vk.frame-trace] t=266834.134ms serial=14 slot=1 phase=end.queue_present.enter frame_fence=signaled present_fence=unsignaled
+[vk.frame-trace] t=266834.301ms serial=14 slot=1 phase=end.queue_present.exit frame_fence=signaled present_fence=signaled
+RT counter frame: end_frame.exit serial=14 submitted=1
+RT counter frame: finalized serial=14
+RT counter frame: end slot=1 serial=14 recorded=1 submitted=1 candidate=0 sample=0 consumed=0 total=0 warnings=0
+RT counter frame: acquire fault=0
+[vk.frame-trace] t=266834.803ms serial=15 slot=0 phase=begin.fence_wait.enter frame_fence=signaled present_fence=none
+[vk.frame-trace] t=266834.832ms serial=15 slot=0 phase=begin.fence_wait.exit frame_fence=signaled present_fence=none
+RT counter frame: begin slot=0 serial=15 retired_sample=0 fault=0
+RT counter frame: prepared serial=15 ok=1
+RT counter frame: rendered serial=15 ok=1
+RT counter frame: recorded serial=15 ok=1
+RT counter frame: end_frame.enter serial=15
+[vk.frame-trace] t=266836.082ms serial=15 slot=0 phase=end.enter frame_fence=signaled present_fence=signaled
+[vk.frame-trace] t=266836.098ms serial=15 slot=0 phase=end.command_buffer_ended frame_fence=signaled present_fence=signaled
+[vk.frame-trace] t=266836.105ms serial=15 slot=0 phase=end.submit.enter frame_fence=unsignaled present_fence=signaled
+[vk.frame-trace] t=266836.190ms serial=15 slot=0 phase=end.submit.exit frame_fence=unsignaled present_fence=signaled
+[vk.frame-trace] t=266841.122ms serial=15 slot=0 phase=end.gpu_observe.complete frame_fence=signaled present_fence=signaled
+[vk.frame-trace] t=266841.165ms serial=15 slot=0 phase=end.present_common.enter frame_fence=signaled present_fence=unsignaled
+[vk.frame-trace] t=266841.180ms serial=15 slot=0 phase=end.queue_present.enter frame_fence=signaled present_fence=unsignaled
+[vk.frame-trace] t=266841.438ms serial=15 slot=0 phase=end.queue_present.exit frame_fence=signaled present_fence=signaled
+RT counter frame: end_frame.exit serial=15 submitted=1
+RT counter frame: finalized serial=15
+RT counter frame: end slot=0 serial=15 recorded=1 submitted=1 candidate=0 sample=0 consumed=0 total=0 warnings=0
+RT counter frame: acquire fault=0
+[vk.frame-trace] t=266841.945ms serial=16 slot=1 phase=begin.fence_wait.enter frame_fence=signaled present_fence=none
+[vk.frame-trace] t=266841.962ms serial=16 slot=1 phase=begin.fence_wait.exit frame_fence=signaled present_fence=none
+RT counter frame: begin slot=1 serial=16 retired_sample=0 fault=0
+RT counter frame: prepared serial=16 ok=1
+RT counter frame: rendered serial=16 ok=1
+RT counter frame: recorded serial=16 ok=1
+RT counter frame: end_frame.enter serial=16
+[vk.frame-trace] t=266843.233ms serial=16 slot=1 phase=end.enter frame_fence=signaled present_fence=signaled
+[vk.frame-trace] t=266843.250ms serial=16 slot=1 phase=end.command_buffer_ended frame_fence=signaled present_fence=signaled
+[vk.frame-trace] t=266843.258ms serial=16 slot=1 phase=end.submit.enter frame_fence=unsignaled present_fence=signaled
+[vk.frame-trace] t=266843.346ms serial=16 slot=1 phase=end.submit.exit frame_fence=unsignaled present_fence=signaled
+[vk.frame-trace] t=266848.744ms serial=16 slot=1 phase=end.gpu_observe.complete frame_fence=signaled present_fence=signaled
+[vk.frame-trace] t=266848.791ms serial=16 slot=1 phase=end.present_common.enter frame_fence=signaled present_fence=unsignaled
+[vk.frame-trace] t=266848.795ms serial=16 slot=1 phase=end.queue_present.enter frame_fence=signaled present_fence=unsignaled
+[vk.frame-trace] t=266848.941ms serial=16 slot=1 phase=end.queue_present.exit frame_fence=signaled present_fence=signaled
+RT counter frame: end_frame.exit serial=16 submitted=1
+RT counter frame: finalized serial=16
+RT counter frame: end slot=1 serial=16 recorded=1 submitted=1 candidate=0 sample=0 consumed=0 total=0 warnings=0
+RT counter frame: acquire fault=0
+[vk.frame-trace] t=266849.500ms serial=17 slot=0 phase=begin.fence_wait.enter frame_fence=signaled present_fence=none
+[vk.frame-trace] t=266849.514ms serial=17 slot=0 phase=begin.fence_wait.exit frame_fence=signaled present_fence=none
+RT counter frame: begin slot=0 serial=17 retired_sample=0 fault=0
+RT counter frame: prepared serial=17 ok=1
+RT counter frame: rendered serial=17 ok=1
+RT counter frame: recorded serial=17 ok=1
+RT counter frame: end_frame.enter serial=17
+[vk.frame-trace] t=266850.423ms serial=17 slot=0 phase=end.enter frame_fence=signaled present_fence=signaled
+[vk.frame-trace] t=266850.439ms serial=17 slot=0 phase=end.command_buffer_ended frame_fence=signaled present_fence=signaled
+[vk.frame-trace] t=266850.446ms serial=17 slot=0 phase=end.submit.enter frame_fence=unsignaled present_fence=signaled
+[vk.frame-trace] t=266850.522ms serial=17 slot=0 phase=end.submit.exit frame_fence=unsignaled present_fence=signaled
+[vk.frame-trace] t=266855.209ms serial=17 slot=0 phase=end.gpu_observe.complete frame_fence=signaled present_fence=signaled
+[vk.frame-trace] t=266855.248ms serial=17 slot=0 phase=end.present_common.enter frame_fence=signaled present_fence=unsignaled
+[vk.frame-trace] t=266855.252ms serial=17 slot=0 phase=end.queue_present.enter frame_fence=signaled present_fence=unsignaled
+[vk.frame-trace] t=266855.405ms serial=17 slot=0 phase=end.queue_present.exit frame_fence=signaled present_fence=signaled
+RT counter frame: end_frame.exit serial=17 submitted=1
+RT counter frame: finalized serial=17
+RT counter frame: end slot=0 serial=17 recorded=1 submitted=1 candidate=0 sample=0 consumed=0 total=0 warnings=0
+RT counter frame: acquire fault=0
+[vk.frame-trace] t=266855.736ms serial=18 slot=1 phase=begin.fence_wait.enter frame_fence=signaled present_fence=none
+[vk.frame-trace] t=266855.755ms serial=18 slot=1 phase=begin.fence_wait.exit frame_fence=signaled present_fence=none
+RT counter frame: begin slot=1 serial=18 retired_sample=0 fault=0
+RT counter frame: prepared serial=18 ok=1
+RT counter frame: rendered serial=18 ok=1
+RT counter frame: recorded serial=18 ok=1
+RT counter frame: end_frame.enter serial=18
+[vk.frame-trace] t=266856.510ms serial=18 slot=1 phase=end.enter frame_fence=signaled present_fence=signaled
+[vk.frame-trace] t=266856.523ms serial=18 slot=1 phase=end.command_buffer_ended frame_fence=signaled present_fence=signaled
+[vk.frame-trace] t=266856.530ms serial=18 slot=1 phase=end.submit.enter frame_fence=unsignaled present_fence=signaled
+[vk.frame-trace] t=266856.603ms serial=18 slot=1 phase=end.submit.exit frame_fence=unsignaled present_fence=signaled
+[vk.frame-trace] t=266861.190ms serial=18 slot=1 phase=end.gpu_observe.complete frame_fence=signaled present_fence=signaled
+[vk.frame-trace] t=266861.225ms serial=18 slot=1 phase=end.present_common.enter frame_fence=signaled present_fence=unsignaled
+[vk.frame-trace] t=266861.230ms serial=18 slot=1 phase=end.queue_present.enter frame_fence=signaled present_fence=unsignaled
+[vk.frame-trace] t=266861.379ms serial=18 slot=1 phase=end.queue_present.exit frame_fence=signaled present_fence=signaled
+RT counter frame: end_frame.exit serial=18 submitted=1
+RT counter frame: finalized serial=18
+RT counter frame: end slot=1 serial=18 recorded=1 submitted=1 candidate=0 sample=0 consumed=0 total=0 warnings=0
+RT counter frame: acquire fault=0
+[vk.frame-trace] t=266861.894ms serial=19 slot=0 phase=begin.fence_wait.enter frame_fence=signaled present_fence=none
+[vk.frame-trace] t=266861.910ms serial=19 slot=0 phase=begin.fence_wait.exit frame_fence=signaled present_fence=none
+RT counter frame: begin slot=0 serial=19 retired_sample=0 fault=0
+RT counter frame: prepared serial=19 ok=1
+RT counter frame: rendered serial=19 ok=1
+RT counter frame: recorded serial=19 ok=1
+RT counter frame: end_frame.enter serial=19
+[vk.frame-trace] t=266862.861ms serial=19 slot=0 phase=end.enter frame_fence=signaled present_fence=signaled
+[vk.frame-trace] t=266862.875ms serial=19 slot=0 phase=end.command_buffer_ended frame_fence=signaled present_fence=signaled
+[vk.frame-trace] t=266862.882ms serial=19 slot=0 phase=end.submit.enter frame_fence=unsignaled present_fence=signaled
+[vk.frame-trace] t=266862.959ms serial=19 slot=0 phase=end.submit.exit frame_fence=unsignaled present_fence=signaled
+[vk.frame-trace] t=266867.979ms serial=19 slot=0 phase=end.gpu_observe.complete frame_fence=signaled present_fence=signaled
+[vk.frame-trace] t=266868.029ms serial=19 slot=0 phase=end.present_common.enter frame_fence=signaled present_fence=unsignaled
+[vk.frame-trace] t=266868.033ms serial=19 slot=0 phase=end.queue_present.enter frame_fence=signaled present_fence=unsignaled
+[vk.frame-trace] t=266868.185ms serial=19 slot=0 phase=end.queue_present.exit frame_fence=signaled present_fence=signaled
+RT counter frame: end_frame.exit serial=19 submitted=1
+RT counter frame: finalized serial=19
+RT counter frame: end slot=0 serial=19 recorded=1 submitted=1 candidate=0 sample=0 consumed=0 total=0 warnings=0
+RT counter frame: acquire fault=0
+[vk.frame-trace] t=266868.545ms serial=20 slot=1 phase=begin.fence_wait.enter frame_fence=signaled present_fence=none
+[vk.frame-trace] t=266868.558ms serial=20 slot=1 phase=begin.fence_wait.exit frame_fence=signaled present_fence=none
+RT counter frame: begin slot=1 serial=20 retired_sample=0 fault=0
+RT counter frame: prepared serial=20 ok=1
+RT counter frame: rendered serial=20 ok=1
+RT counter frame: recorded serial=20 ok=1
+RT counter frame: end_frame.enter serial=20
+[vk.frame-trace] t=266869.213ms serial=20 slot=1 phase=end.enter frame_fence=signaled present_fence=signaled
+[vk.frame-trace] t=266869.225ms serial=20 slot=1 phase=end.command_buffer_ended frame_fence=signaled present_fence=signaled
+[vk.frame-trace] t=266869.231ms serial=20 slot=1 phase=end.submit.enter frame_fence=unsignaled present_fence=signaled
+[vk.frame-trace] t=266869.298ms serial=20 slot=1 phase=end.submit.exit frame_fence=unsignaled present_fence=signaled
+[vk.frame-trace] t=266873.521ms serial=20 slot=1 phase=end.gpu_observe.complete frame_fence=signaled present_fence=signaled
+[vk.frame-trace] t=266873.553ms serial=20 slot=1 phase=end.present_common.enter frame_fence=signaled present_fence=unsignaled
+[vk.frame-trace] t=266873.557ms serial=20 slot=1 phase=end.queue_present.enter frame_fence=signaled present_fence=unsignaled
+[vk.frame-trace] t=266873.690ms serial=20 slot=1 phase=end.queue_present.exit frame_fence=signaled present_fence=signaled
+RT counter frame: end_frame.exit serial=20 submitted=1
+RT counter frame: finalized serial=20
+RT counter frame: end slot=1 serial=20 recorded=1 submitted=1 candidate=0 sample=0 consumed=0 total=0 warnings=0
+RT counter frame: acquire fault=0
+[vk.frame-trace] t=266874.241ms serial=21 slot=0 phase=begin.fence_wait.enter frame_fence=signaled present_fence=none
+[vk.frame-trace] t=266874.279ms serial=21 slot=0 phase=begin.fence_wait.exit frame_fence=signaled present_fence=none
+RT counter frame: begin slot=0 serial=21 retired_sample=0 fault=0
+RT counter frame: prepared serial=21 ok=1
+RT counter frame: rendered serial=21 ok=1
+RT counter frame: recorded serial=21 ok=1
+RT counter frame: end_frame.enter serial=21
+[vk.frame-trace] t=267022.476ms serial=21 slot=0 phase=end.enter frame_fence=signaled present_fence=signaled
+[vk.frame-trace] t=267022.520ms serial=21 slot=0 phase=end.command_buffer_ended frame_fence=signaled present_fence=signaled
+[vk.frame-trace] t=267022.535ms serial=21 slot=0 phase=end.submit.enter frame_fence=unsignaled present_fence=signaled
+[vk.frame-trace] t=267022.707ms serial=21 slot=0 phase=end.submit.exit frame_fence=unsignaled present_fence=signaled
+[vk.frame-trace] t=272026.645ms serial=21 slot=0 phase=end.gpu_observe.pending frame_fence=unsignaled present_fence=signaled
+[vk.frame-trace] t=277026.915ms serial=21 slot=0 phase=end.gpu_observe.pending frame_fence=unsignaled present_fence=signaled
+[vk.frame-trace] t=282030.665ms serial=21 slot=0 phase=end.gpu_observe.pending frame_fence=unsignaled present_fence=signaled
+[vk.frame-trace] t=287030.921ms serial=21 slot=0 phase=end.gpu_observe.pending frame_fence=unsignaled present_fence=signaled
+[vk.frame-trace] t=292031.596ms serial=21 slot=0 phase=end.gpu_observe.pending frame_fence=unsignaled present_fence=signaled
+[vk.frame-trace] t=297031.828ms serial=21 slot=0 phase=end.gpu_observe.pending frame_fence=unsignaled present_fence=signaled
+[vk.frame-trace] t=302032.252ms serial=21 slot=0 phase=end.gpu_observe.pending frame_fence=unsignaled present_fence=signaled
+[vk.frame-trace] t=307032.555ms serial=21 slot=0 phase=end.gpu_observe.pending frame_fence=unsignaled present_fence=signaled
+[vk.frame-trace] t=312034.620ms serial=21 slot=0 phase=end.gpu_observe.pending frame_fence=unsignaled present_fence=signaled
+[vk.frame-trace] t=317038.614ms serial=21 slot=0 phase=end.gpu_observe.pending frame_fence=unsignaled present_fence=signaled
+[vk.frame-trace] t=322038.870ms serial=21 slot=0 phase=end.gpu_observe.pending frame_fence=unsignaled present_fence=signaled
+[vk.frame-trace] t=327039.143ms serial=21 slot=0 phase=end.gpu_observe.pending frame_fence=unsignaled present_fence=signaled
+[vk.frame-trace] t=332039.341ms serial=21 slot=0 phase=end.gpu_observe.pending frame_fence=unsignaled present_fence=signaled
+[vk.frame-trace] t=337039.538ms serial=21 slot=0 phase=end.gpu_observe.pending frame_fence=unsignaled present_fence=signaled
+[vk.frame-trace] t=342039.765ms serial=21 slot=0 phase=end.gpu_observe.pending frame_fence=unsignaled present_fence=signaled
+[vk.frame-trace] t=347039.957ms serial=21 slot=0 phase=end.gpu_observe.pending frame_fence=unsignaled present_fence=signaled
+[vk.frame-trace] t=352040.098ms serial=21 slot=0 phase=end.gpu_observe.pending frame_fence=unsignaled present_fence=signaled
+[vk.frame-trace] t=357040.319ms serial=21 slot=0 phase=end.gpu_observe.pending frame_fence=unsignaled present_fence=signaled
+[vk.frame-trace] t=362040.567ms serial=21 slot=0 phase=end.gpu_observe.pending frame_fence=unsignaled present_fence=signaled
+[vk.frame-trace] t=367040.811ms serial=21 slot=0 phase=end.gpu_observe.pending frame_fence=unsignaled present_fence=signaled
+[vk.frame-trace] t=372040.987ms serial=21 slot=0 phase=end.gpu_observe.pending frame_fence=unsignaled present_fence=signaled
+[vk.frame-trace] t=377041.140ms serial=21 slot=0 phase=end.gpu_observe.pending frame_fence=unsignaled present_fence=signaled
+[vk.frame-trace] t=382041.329ms serial=21 slot=0 phase=end.gpu_observe.pending frame_fence=unsignaled present_fence=signaled
+[vk.frame-trace] t=387041.547ms serial=21 slot=0 phase=end.gpu_observe.pending frame_fence=unsignaled present_fence=signaled
+[vk.frame-trace] t=392041.784ms serial=21 slot=0 phase=end.gpu_observe.pending frame_fence=unsignaled present_fence=signaled
+[vk.frame-trace] t=397041.987ms serial=21 slot=0 phase=end.gpu_observe.pending frame_fence=unsignaled present_fence=signaled
+[vk.frame-trace] t=402042.131ms serial=21 slot=0 phase=end.gpu_observe.pending frame_fence=unsignaled present_fence=signaled
+[vk.frame-trace] t=407042.307ms serial=21 slot=0 phase=end.gpu_observe.pending frame_fence=unsignaled present_fence=signaled
+[vk.frame-trace] t=412042.440ms serial=21 slot=0 phase=end.gpu_observe.pending frame_fence=unsignaled present_fence=signaled
+[vk.frame-trace] t=417042.725ms serial=21 slot=0 phase=end.gpu_observe.pending frame_fence=unsignaled present_fence=signaled
+[vk.frame-trace] t=422042.876ms serial=21 slot=0 phase=end.gpu_observe.pending frame_fence=unsignaled present_fence=signaled
+[vk.frame-trace] t=427043.056ms serial=21 slot=0 phase=end.gpu_observe.pending frame_fence=unsignaled present_fence=signaled
+[vk.frame-trace] t=432043.276ms serial=21 slot=0 phase=end.gpu_observe.pending frame_fence=unsignaled present_fence=signaled
+[vk.frame-trace] t=437043.447ms serial=21 slot=0 phase=end.gpu_observe.pending frame_fence=unsignaled present_fence=signaled
+[vk.frame-trace] t=442043.615ms serial=21 slot=0 phase=end.gpu_observe.pending frame_fence=unsignaled present_fence=signaled
+[vk.frame-trace] t=447043.789ms serial=21 slot=0 phase=end.gpu_observe.pending frame_fence=unsignaled present_fence=signaled
+[vk.frame-trace] t=452043.978ms serial=21 slot=0 phase=end.gpu_observe.pending frame_fence=unsignaled present_fence=signaled
+[vk.frame-trace] t=457044.189ms serial=21 slot=0 phase=end.gpu_observe.pending frame_fence=unsignaled present_fence=signaled
+[vk.frame-trace] t=462044.404ms serial=21 slot=0 phase=end.gpu_observe.pending frame_fence=unsignaled present_fence=signaled
+[vk.frame-trace] t=467046.606ms serial=21 slot=0 phase=end.gpu_observe.pending frame_fence=unsignaled present_fence=signaled
+[vk.frame-trace] t=472046.812ms serial=21 slot=0 phase=end.gpu_observe.pending frame_fence=unsignaled present_fence=signaled
+[vk.frame-trace] t=477046.981ms serial=21 slot=0 phase=end.gpu_observe.pending frame_fence=unsignaled present_fence=signaled
+[vk.frame-trace] t=482047.100ms serial=21 slot=0 phase=end.gpu_observe.pending frame_fence=unsignaled present_fence=signaled
+[vk.frame-trace] t=487047.267ms serial=21 slot=0 phase=end.gpu_observe.pending frame_fence=unsignaled present_fence=signaled
+[vk.frame-trace] t=492048.265ms serial=21 slot=0 phase=end.gpu_observe.pending frame_fence=unsignaled present_fence=signaled
+[vk.frame-trace] t=497053.439ms serial=21 slot=0 phase=end.gpu_observe.pending frame_fence=unsignaled present_fence=signaled
+[vk.frame-trace] t=502053.622ms serial=21 slot=0 phase=end.gpu_observe.pending frame_fence=unsignaled present_fence=signaled
+[vk.frame-trace] t=507053.934ms serial=21 slot=0 phase=end.gpu_observe.pending frame_fence=unsignaled present_fence=signaled
+[vk.frame-trace] t=512054.187ms serial=21 slot=0 phase=end.gpu_observe.pending frame_fence=unsignaled present_fence=signaled
+[vk.frame-trace] t=517054.364ms serial=21 slot=0 phase=end.gpu_observe.pending frame_fence=unsignaled present_fence=signaled
+[vk.frame-trace] t=522054.591ms serial=21 slot=0 phase=end.gpu_observe.pending frame_fence=unsignaled present_fence=signaled
+[vk.frame-trace] t=527054.792ms serial=21 slot=0 phase=end.gpu_observe.pending frame_fence=unsignaled present_fence=signaled
+[vk.frame-trace] t=532054.988ms serial=21 slot=0 phase=end.gpu_observe.pending frame_fence=unsignaled present_fence=signaled
+[vk.frame-trace] t=537055.327ms serial=21 slot=0 phase=end.gpu_observe.pending frame_fence=unsignaled present_fence=signaled
+[vk.frame-trace] t=542055.715ms serial=21 slot=0 phase=end.gpu_observe.pending frame_fence=unsignaled present_fence=signaled
+[vk.frame-trace] t=547055.877ms serial=21 slot=0 phase=end.gpu_observe.pending frame_fence=unsignaled present_fence=signaled
+[vk.frame-trace] t=552055.977ms serial=21 slot=0 phase=end.gpu_observe.pending frame_fence=unsignaled present_fence=signaled
+[vk.frame-trace] t=557056.224ms serial=21 slot=0 phase=end.gpu_observe.pending frame_fence=unsignaled present_fence=signaled
+[vk.frame-trace] t=562056.319ms serial=21 slot=0 phase=end.gpu_observe.pending frame_fence=unsignaled present_fence=signaled
+[vk.frame-trace] t=567056.533ms serial=21 slot=0 phase=end.gpu_observe.pending frame_fence=unsignaled present_fence=signaled
+[vk.frame-trace] t=572056.745ms serial=21 slot=0 phase=end.gpu_observe.pending frame_fence=unsignaled present_fence=signaled
+[vk.frame-trace] t=577056.907ms serial=21 slot=0 phase=end.gpu_observe.pending frame_fence=unsignaled present_fence=signaled
+[vk.frame-trace] t=582057.036ms serial=21 slot=0 phase=end.gpu_observe.pending frame_fence=unsignaled present_fence=signaled
+[vk.frame-trace] t=587057.154ms serial=21 slot=0 phase=end.gpu_observe.pending frame_fence=unsignaled present_fence=signaled
+[vk.frame-trace] t=592057.317ms serial=21 slot=0 phase=end.gpu_observe.pending frame_fence=unsignaled present_fence=signaled
+[vk.frame-trace] t=597057.948ms serial=21 slot=0 phase=end.gpu_observe.pending frame_fence=unsignaled present_fence=signaled
