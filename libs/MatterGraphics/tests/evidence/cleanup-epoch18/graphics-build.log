@@ -1,0 +1,76 @@
+[1/74] Building CXX object CMakeFiles/matter_graphics.dir/src/graphics.cpp.o
+[2/74] Building CXX object CMakeFiles/matter_graphics.dir/src/scene_backend.cpp.o
+[3/74] Building CXX object CMakeFiles/matter_graphics.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/MatterEngine3/src/render/matrix_math.cpp.o
+[4/74] Building CXX object CMakeFiles/matter_graphics.dir/src/composition.cpp.o
+[5/74] Building CXX object CMakeFiles/matter_graphics_header_backend.dir/header-backend.cpp.o
+[6/74] Building CXX object CMakeFiles/matter_graphics_header_graphics.dir/header-graphics.cpp.o
+[7/74] Building CXX object CMakeFiles/matter_graphics_header_scene_backend.dir/header-scene_backend.cpp.o
+[8/74] Building CXX object CMakeFiles/matter_graphics_header_composition.dir/header-composition.cpp.o
+[9/74] Building CXX object CMakeFiles/matter_graphics_scene_tests.dir/tests/scene_tests.cpp.o
+[10/74] Building CXX object CMakeFiles/matter_graphics_composition_tests.dir/tests/composition_tests.cpp.o
+[11/74] Building CXX object CMakeFiles/matter_graphics_tests.dir/tests/graphics_tests.cpp.o
+[12/74] Generating atmosphere_irradiance.comp.spv
+[13/74] Generating atmosphere_multiscatter.comp.spv
+[14/74] Generating atmosphere_sky_view.comp.spv
+[15/74] Generating atmosphere_transmittance.comp.spv
+[16/74] Generating cloud_shadow_integrate.comp.spv
+[17/74] Generating cloud_shadow_density.comp.spv
+[18/74] Generating cloud_shadow_reproject.comp.spv
+[19/74] Generating vol_density.comp.spv
+[20/74] Generating vol_integrate.comp.spv
+[21/74] Generating environment-qualified.stamp
+PASS GFX-ENVIRONMENT-SOURCES: cloud layout/density, froxel dimensions/rejection/retirement/fallback/resize
+[22/74] Generating vol_scatter.comp.spv
+[23/74] Generating environment_embedded_spirv.h
+[24/74] Building CXX object CMakeFiles/matter_graphics_environment.dir/src/native/vk_atmosphere.cpp.o
+[25/74] Building CXX object matter-components/matter_contracts/CMakeFiles/matter_contracts.dir/src/value.cpp.o
+[26/74] Building CXX object CMakeFiles/matter_graphics_environment.dir/src/native/vk_cloud_shadows.cpp.o
+[27/74] Building CXX object CMakeFiles/matter_graphics_atmosphere_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/MatterEngine3/tests/atmosphere_tests.cpp.o
+[28/74] Building CXX object CMakeFiles/matter_graphics_environment.dir/src/native/vk_volumetrics.cpp.o
+[29/74] Linking CXX static library libmatter_graphics_environment.a
+[30/74] Linking CXX executable matter_graphics_atmosphere_tests
+[31/74] Building CXX object CMakeFiles/matter_graphics_cloud_layer_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/MatterEngine3/tests/cloud_layer_tests.cpp.o
+[32/74] Linking CXX executable matter_graphics_cloud_layer_tests
+[33/74] Building CXX object CMakeFiles/matter_graphics_volumetric_quality_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/MatterEngine3/tests/volumetric_quality_tests.cpp.o
+[34/74] Linking CXX executable matter_graphics_volumetric_quality_tests
+[35/74] Building CXX object CMakeFiles/matter_graphics_cloud_shadow_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/MatterEngine3/tests/cloud_shadow_tests.cpp.o
+[36/74] Linking CXX executable matter_graphics_cloud_shadow_tests
+[37/74] Building CXX object CMakeFiles/matter_graphics_cloud_shadow_reference_tests.dir/tests/cloud_shadow_reference_tests.cpp.o
+[38/74] Linking CXX executable matter_graphics_cloud_shadow_reference_tests
+[39/74] Building CXX object matter-components/matter_contracts/CMakeFiles/matter_contracts.dir/src/validation.cpp.o
+[40/74] Building CXX object matter-components/matter_contracts/CMakeFiles/matter_contracts.dir/src/digest.cpp.o
+[41/74] Building CXX object matter-components/matter_contracts/CMakeFiles/matter_contracts.dir/src/codec.cpp.o
+[42/74] Building CXX object matter-components/matter_contracts/CMakeFiles/matter_contracts.dir/src/services.cpp.o
+[43/74] Linking CXX static library matter-components/matter_contracts/libmatter_contracts.a
+[44/74] Linking CXX static library libmatter_graphics.a
+[45/74] Linking CXX executable matter_graphics_tests
+[46/74] Linking CXX executable matter_graphics_composition_tests
+[47/74] Linking CXX executable matter_graphics_scene_tests
+[48/74] Generating raster.vert.spv
+[49/74] Generating raster_skin.vert.spv
+[50/74] Generating raster_water.vert.spv
+[51/74] Generating visibility_id.frag.spv
+[52/74] Generating visibility_id.vert.spv
+[53/74] Generating composite.frag.spv
+[54/74] Generating composite.vert.spv
+[55/74] Generating display_transform.frag.spv
+[56/74] Generating composition_spirv.h
+[57/74] Generating gbuffer.frag.spv
+[58/74] Generating raster_spirv.h
+[59/74] Building CXX object CMakeFiles/matter_graphics_vulkan.dir/src/vulkan_composition.cpp.o
+[60/74] Building CXX object CMakeFiles/matter_graphics_vulkan.dir/src/vulkan_resources.cpp.o
+[61/74] Building CXX object CMakeFiles/matter_graphics_vulkan.dir/src/native/mesh_raster.cpp.o
+[62/74] Building CXX object CMakeFiles/matter_graphics_vulkan.dir/src/native/mesh_pipelines.cpp.o
+[63/74] Building CXX object CMakeFiles/matter_graphics_vulkan.dir/src/vulkan_raster.cpp.o
+[64/74] Linking CXX static library libmatter_graphics_vulkan.a
+[65/74] Building CXX object CMakeFiles/matter_graphics_header_vulkan_resources.dir/header-vulkan_resources.cpp.o
+[66/74] Building CXX object CMakeFiles/matter_graphics_sample.dir/examples/graphics_sample.cpp.o
+[67/74] Linking CXX executable matter_graphics_sample
+[68/74] Building CXX object CMakeFiles/matter_graphics_header_vulkan_composition.dir/header-vulkan_composition.cpp.o
+[69/74] Building CXX object CMakeFiles/matter_graphics_header_vulkan_raster.dir/header-vulkan_raster.cpp.o
+[70/74] Building CXX object CMakeFiles/matter_graphics_vulkan_tests.dir/tests/vulkan_tests.cpp.o
+[71/74] Linking CXX executable matter_graphics_vulkan_tests
+[72/74] Building CXX object CMakeFiles/matter_graphics_raster_tests.dir/examples/graphics_sample.cpp.o
+[73/74] Linking CXX executable matter_graphics_raster_tests
+[74/74] cd /tmp/fleet-rapids-48-epoch18/graphics && /home/jkern/dev/agent-queue2/.venv/bin/python3 /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/libs/MatterGraphics/tools/qualify_build.py /tmp/fleet-rapids-48-epoch18/graphics
+PASS GFX-INDEPENDENT-GRAPH: scene/facade/contracts/shared pure math plus isolated Vulkan adapter/loader and exact production shader closure; source, link and compiler dependency audit

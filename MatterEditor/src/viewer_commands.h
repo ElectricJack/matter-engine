@@ -76,6 +76,7 @@
 #include "regen_jobs.h"
 #endif
 #include "matter/props.h"
+#include "matter/fixture_io.h"
 #ifndef VIEWER_FIFO_PROPERTY_HELPERS_ONLY
 #include "matter/scene.h"  // SceneEntityId / SceneEditResult receipts (E5c)
 #include "matter/world_session.h"
@@ -83,10 +84,16 @@
 
 namespace viewer {
 
-inline bool write_screenshot_completion_marker(const std::string& path) {
+inline bool write_screenshot_completion_marker(
+        const std::string& path, matter::CacheByteStorage* storage = nullptr) {
+    static constexpr char kMarker[] = "captured\n";
+    if (storage) {
+        const matter::CacheByteStorage::Bytes bytes(
+            kMarker, kMarker + sizeof(kMarker) - 1u);
+        return storage->publish(path, bytes);
+    }
     FILE* file = std::fopen(path.c_str(), "w");
     if (!file) return false;
-    static constexpr char kMarker[] = "captured\n";
     const bool wrote =
         std::fwrite(kMarker, 1u, sizeof(kMarker) - 1u, file) ==
         sizeof(kMarker) - 1u;
@@ -134,6 +141,12 @@ struct AgentPayload {
 // deterministically ordered page of the authored entities and baked roots in
 // the current world. Ordering and paging live in scene_inventory.h; the
 // handler only snapshots the live sources.
+struct AssetExport {
+    MT_COMMAND_NAME("asset.export");
+    using Result = matter::evt::CommandResult<AgentPayload>;
+    matter::jsondoc::Value arguments;
+};
+
 struct SceneListObjects {
     MT_COMMAND_NAME("scene.list_objects");
     using Result = matter::evt::CommandResult<AgentPayload>;
@@ -155,6 +168,48 @@ struct SceneGetObject {
 // registry failure.
 struct SceneTraceProvenance {
     MT_COMMAND_NAME("scene.trace_provenance");
+    using Result = matter::evt::CommandResult<AgentPayload>;
+    matter::jsondoc::Value arguments;
+};
+
+// --- versioned agent-protocol scene comparison (scene_diff.h) --------------
+// A baked root's id IS its content hash, so "what changed" cannot be answered
+// by diffing two object lists: a rebake re-addresses every root. These four
+// carry the same AgentPayload status convention as the reads above -- an
+// unknown snapshot id or an incomparable pair of snapshots is a successful
+// query with a not_found / labelled answer, not a handler failure.
+
+// scene.capture_snapshot{label?} -- retains one bounded, ordered capture of
+// every object the editor can name, plus its measured world bounds and the
+// generation inputs the editor can attest to.
+struct SceneCaptureSnapshot {
+    MT_COMMAND_NAME("scene.capture_snapshot");
+    using Result = matter::evt::CommandResult<AgentPayload>;
+    std::string label;
+};
+
+// scene.list_snapshots{} -- what is still in the retained ring.
+struct SceneListSnapshots {
+    MT_COMMAND_NAME("scene.list_snapshots");
+    using Result = matter::evt::CommandResult<AgentPayload>;
+};
+
+// scene.diff{from,to?,kinds?,changes?,offset?,limit?} -- compares two captures
+// by LOGICAL key (module name / authored entity id), so a regeneration reads
+// as one changed row carrying the new incarnation rather than as a removal
+// plus an addition. `to` defaults to "current", captured at dispatch.
+struct SceneDiff {
+    MT_COMMAND_NAME("scene.diff");
+    using Result = matter::evt::CommandResult<AgentPayload>;
+    matter::jsondoc::Value arguments;
+};
+
+// scene.query{snapshot?,kinds?,name_contains?,module_contains?,
+//             source_path_contains?,has_provenance?,has_part_instance?,
+//             region?,offset?,limit?}
+// -- bounded name/kind/provenance and spatial-region filtering over a capture.
+struct SceneQuery {
+    MT_COMMAND_NAME("scene.query");
     using Result = matter::evt::CommandResult<AgentPayload>;
     matter::jsondoc::Value arguments;
 };
@@ -246,6 +301,19 @@ struct ViewFocus {
     agent::ObjectIdentity object;
 };
 
+// Set a complete calibrated pinhole camera. A complete replacement prevents
+// an agent from mixing fresh intrinsics with an old pose by omission.
+struct ViewSetCamera {
+    MT_COMMAND_NAME("view.set_camera");
+    using Result = matter::evt::CommandResult<AgentPayload>;
+    matter::CameraDesc camera;
+};
+
+struct RenderResetTemporal {
+    MT_COMMAND_NAME("render.reset_temporal");
+    using Result = matter::evt::CommandResult<AgentPayload>;
+};
+
 // --- typed regeneration job control (regen_jobs.h) --------------------------
 // These five make the reload / regenerate work the engine already does
 // OBSERVABLE, rather than something an agent infers from a sleep. They are
@@ -289,6 +357,22 @@ struct JobList {
     MT_COMMAND_NAME("job.list");
     using Result = matter::evt::CommandResult<AgentPayload>;
     size_t limit = jobs::kDefaultListLimit;
+};
+
+// A procedural root's effective parameter object is published by the part
+// graph. Updates are typed, session-only root overrides with a job receipt.
+struct ProceduralParameters {
+    MT_COMMAND_NAME("procedural.parameters");
+    using Result = matter::evt::CommandResult<AgentPayload>;
+    agent::ObjectIdentity object;
+};
+
+struct ProceduralUpdate {
+    MT_COMMAND_NAME("procedural.update");
+    using Result = matter::evt::CommandResult<AgentPayload>;
+    agent::ObjectIdentity object;
+    matter::jsondoc::Value changes;
+    bool dry_run = false;
 };
 
 // --- E5c scene-edit commands (event-system.md S I.14) -----------------------

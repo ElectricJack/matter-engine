@@ -1,0 +1,54 @@
+{
+  "driver_exit": 0,
+  "verified_screenshots": 1,
+  "timing_acceptance": false,
+  "density_frame": 2200,
+  "trace_observation": [
+    {
+      "serial": 2214,
+      "vt_serial": 2200,
+      "variants": 79,
+      "pool_used": 2704,
+      "pool_capacity": 33024,
+      "pinned": 79,
+      "queue": 0,
+      "mandatory_queue": 0,
+      "detail_queue": 0,
+      "fills_total": 4406,
+      "invalidations_total": 2,
+      "pages_dropped_total": 1689,
+      "evictions_total": 0,
+      "output_width": 1920,
+      "output_height": 1080,
+      "internal_width": 1920,
+      "internal_height": 1080
+    }
+  ],
+  "artifacts": [
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260914-01/castle-density/timeline.txt",
+      "bytes": 200,
+      "sha256": "a86e680543ca8e8042955b384c883832230989504eb83658eeb679ebef651ba6"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260914-01/castle-density/vt.jsonl",
+      "bytes": 1118758,
+      "sha256": "c060108ccc11930db1ed07de0f49d0e321c4b996b78162ebc165ec46c477cbfa"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260914-01/castle-density/run/log.txt",
+      "bytes": 491471,
+      "sha256": "0791ffd59c51b87f4de6a1c21ac3edb65e79a4c6f2368993804a9a8bdfa7ed19"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260914-01/castle-density/density.png",
+      "bytes": 2116716,
+      "sha256": "b0ac1ae55ccf30e9190c8210d9d7e5d1681a708956e9464250679778c60a27c2"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260914-01/castle-density/density.png.done",
+      "bytes": 10,
+      "sha256": "4c339121e4860b04ebd48181621c9dd3f84901846feda08d4e77aafaf9a6c896"
+    }
+  ]
+}

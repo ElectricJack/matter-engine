@@ -1,0 +1,32 @@
+{
+  "runs": [
+    {
+      "mode": "vt-pom-work",
+      "command": "$env:MATTER_VK_VALIDATION=\"1\"; $env:TMP=\"$env:LOCALAPPDATA\\Temp\"; $env:TEMP=$env:TMP; $env:MATTER_VK_SMOKE_MODE=\"vt-pom-work\"; $env:MATTER_VT_PROP_TEXELS_PER_METER=$null; & \"./build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe\"; exit $LASTEXITCODE",
+      "exit": 0,
+      "seconds": 1.4638172459963243,
+      "binary_sha256": "8ab9397709ef16efe6bd1fabad2f4ec9556e0543e217c04e382dee072816469b",
+      "binary_unchanged": true,
+      "source_changes": [],
+      "all_pass": true,
+      "zero_validation_errors": true,
+      "skipped_rt": false,
+      "log_sha256": "ee9a0d848e1ffa40a71493e2b39144370c41bf91425bb8f85e1e0658726a84af",
+      "passed": true
+    },
+    {
+      "mode": "vt-composed-parallax",
+      "command": "$env:MATTER_VK_VALIDATION=\"1\"; $env:TMP=\"$env:LOCALAPPDATA\\Temp\"; $env:TEMP=$env:TMP; $env:MATTER_VK_SMOKE_MODE=\"vt-composed-parallax\"; $env:MATTER_VT_PROP_TEXELS_PER_METER=$null; & \"./build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe\"; exit $LASTEXITCODE",
+      "exit": 0,
+      "seconds": 51.68078494400834,
+      "binary_sha256": "8ab9397709ef16efe6bd1fabad2f4ec9556e0543e217c04e382dee072816469b",
+      "binary_unchanged": true,
+      "source_changes": [],
+      "all_pass": true,
+      "zero_validation_errors": true,
+      "skipped_rt": false,
+      "log_sha256": "98a38f10a8af48189917c3a15be138f00a9b8605cacdf2cb0f331d85621ff78e",
+      "passed": true
+    }
+  ]
+}
