@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "frozen_before_capture": "2026-10-10",
+  "canonical_profile": "matter-exact-json-v1",
+  "coordinates": "right-handed Y-up; metres, seconds, radians; row-major parent*local; CCW",
+  "exact": ["recipe canonical bytes", "semantic IDs", "material bindings", "capabilities", "RNG words and unit draws", "job envelopes", "pinned-algorithm topology and index order"],
+  "numeric_rule": "abs(actual-expected) <= absolute + relative*abs(expected); nonfinite values always fail",
+  "profiles": {
+    "analytic-mesh-v1": {"position_metres": {"absolute": 0.000001, "relative": 0}, "normal_components": {"absolute": 0.000001, "relative": 0}, "volume_metres3": {"absolute": 0.000001, "relative": 0}, "uv": {"absolute": 0.000001, "relative": 0}},
+    "legacy-export-v1": {"position_metres": {"absolute": 0.00001, "relative": 0}, "normal_components": {"absolute": 0.0001, "relative": 0}, "uv": {"absolute": 0.00001, "relative": 0}, "material_numeric": {"absolute": 0.0001, "relative": 0}, "source": "MatterEngine3/tests/obj_export_golden_tests.cpp"},
+    "legacy-flat-terrain-v1": {"height_metres": {"absolute": 0.001, "relative": 0}, "source": "MatterEngine3/tests/terrain_mesher_tests.cpp"},
+    "legacy-csg-query-v1": {"hit_distance_metres": {"absolute": 0.02, "relative": 0}, "normal_x_min_exclusive": 0.95, "source": "MatterEngine3/tests/script_host_tests.cpp"},
+    "legacy-vt-normal-v1": {"raster_direction_cosine_min_exclusive": 0.995, "rt_direction_cosine_min_exclusive": 0.995, "raster_rt_cosine_min_exclusive": 0.998, "source": "MatterEngine3/tests/vulkan_smoke_tests.cpp"}
+  },
+  "topology": {"analytic_closed_solids": "finite nondegenerate CCW triangles; every undirected edge has two opposite directed uses; outward outer shell and inward cavity; compare bounds/volume/occupancy independently of vertex renumbering", "explicit_mesh": "exact index and attribute order", "terrain": "open upward surface; no skirt curtains; shared plane samples and explicit transition policy; legacy overlap is not exact watertightness"},
+  "visual": {"matched_view": "same camera, viewport, render path, exposure, lighting, material/instance identity and readiness", "pixel_gate": null, "status": "No portable renderer pixel tolerance qualified. Historical images are references, not cross-renderer passes."},
+  "performance": {"latency_budget_ms": null, "memory_budget_bytes": null, "status": "No product budget agreed. Preserve raw historical samples and coverage limits; synthetic/service fixtures are not performance evidence."},
+  "change_policy": "Do not loosen these thresholds to pass a regression. A new algorithm/profile requires separately reviewed fixtures and provenance."
+}

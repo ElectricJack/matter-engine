@@ -1,0 +1,2 @@
+PASS: 2 exact spec copies, 91 pinned sources, 17 fixtures and native target/CTest registrations at 98af23851dd3424ddbfc62624cd2afb850e9d09d
+Native builds, GPU execution, new portable contracts and WASM parity are not checked.
