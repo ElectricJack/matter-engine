@@ -1,0 +1,76 @@
+{
+  "runtime": "rock-review-launch.json",
+  "captured_log": "/mnt/c/tmp/matter-mountain-rock-review-20260917/stderr.log",
+  "overflows": [
+    {
+      "required_bytes": {
+        "clusters": 78336,
+        "vertices": 537422776,
+        "indices": 71183376
+      },
+      "capacity_bytes": {
+        "clusters": 33554432,
+        "vertices": 536870912,
+        "indices": 268435456
+      },
+      "elements": {
+        "clusters": {
+          "staging": 612,
+          "live": 612,
+          "free": 0
+        },
+        "vertices": {
+          "staging": 6107077,
+          "live": 6107077,
+          "free": 0
+        },
+        "indices": {
+          "staging": 17795844,
+          "live": 17795844,
+          "free": 0
+        }
+      },
+      "part_records": 612,
+      "vertex_free_fraction": 0.0
+    },
+    {
+      "required_bytes": {
+        "clusters": 107520,
+        "vertices": 1075464456,
+        "indices": 138805188
+      },
+      "capacity_bytes": {
+        "clusters": 33554432,
+        "vertices": 1073741824,
+        "indices": 268435456
+      },
+      "elements": {
+        "clusters": {
+          "staging": 840,
+          "live": 840,
+          "free": 0
+        },
+        "vertices": {
+          "staging": 12221187,
+          "live": 12185970,
+          "free": 35217
+        },
+        "indices": {
+          "staging": 34701297,
+          "live": 34614690,
+          "free": 86607
+        }
+      },
+      "part_records": 872,
+      "vertex_free_fraction": 0.002881634983574018
+    }
+  ],
+  "source": "MatterEngine3/src/render/vk_scene_renderer.cpp:14555",
+  "finding": "The live vertex set exceeds the 512 MiB and 1 GiB reservations. This path recreates three buffers and uploads the whole resident world. Free-range fragmentation is negligible in these two samples.",
+  "limits": [
+    "This is live user review, not a fixed-camera performance comparison.",
+    "No timings attribute the complete startup delay to buffer growth.",
+    "The per-part cause of the large geometry set remains to be measured.",
+    "Do not replace the runtime fix with an undocumented per-session reserve override."
+  ]
+}

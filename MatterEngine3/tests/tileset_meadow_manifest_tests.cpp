@@ -1,3 +1,4 @@
+#include "matter/project_layout.h"
 // tileset_meadow_manifest_tests.cpp — verify Meadow's world definition declares
 // ForestFloor as a tileset root. Non-GL test (parses the World class JS file only;
 // no bake).
@@ -44,7 +45,7 @@ int main() {
         d.engine_shared_lib_dir = engine_shared_lib.string();
     };
 
-    const fs::path world_path = scenes_dir / "Meadow" / "Meadow.js";
+    const fs::path world_path = matter::project_layout::scene_script(scenes_dir.parent_path(), "Meadow");
     REQUIRE(fs::exists(world_path, ec));
 
     matter::WorldLoadDesc desc;
@@ -77,7 +78,7 @@ int main() {
         matter::WorldLoadError legacy_err;
         matter::WorldLoadDesc legacy_desc;
         legacy_desc.world_path =
-            (scenes_dir / fs::path(world).stem() / world).string();
+            (matter::project_layout::scene_script(scenes_dir.parent_path(), fs::path(world).stem().string())).string();
         fill_lib_roots(legacy_desc);
         if (!matter::load_world_definition(legacy_desc, legacy, legacy_err)) {
             std::fprintf(stderr, "  %s: %s\n", world, legacy_err.message.c_str());
@@ -114,7 +115,7 @@ int main() {
         matter::WorldLoadError mountain_err;
         matter::WorldLoadDesc mountain_desc;
         mountain_desc.world_path =
-            (scenes_dir / "StreamMountain" / "StreamMountain.js").string();
+            (matter::project_layout::scene_script(scenes_dir.parent_path(), "StreamMountain")).string();
         fill_lib_roots(mountain_desc);
         const bool mountain_ok = matter::load_world_definition(
             mountain_desc, mountain, mountain_err);

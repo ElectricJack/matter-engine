@@ -1,0 +1,10 @@
+{
+  "changed_inputs": [],
+  "native_processes": "",
+  "additional_clean_dependencies": {
+    "libs/MatterSurfaceLib/src/tlas_manager.cpp": "baf8872fd795e6770d10fa8983ee52c6bf711fd78903f0283b34f59f81256292",
+    "libs/MatterSurfaceLib/include/tlas_manager.hpp": "d8699b92efce764bdfaa414679330b8389341325a21d15d772c3d6d359d391a7",
+    "libs/MatterSurfaceLib/src/blas_manager.cpp": "3f668ad3a85d507af69f3c958d8546e4d572de4c0241e423a5ab2f39067ece90",
+    "libs/MatterSurfaceLib/include/blas_manager.hpp": "47d590cf4bf8bf84e6446645a95465191e9a2883f54762534e767bc91e48b050"
+  }
+}

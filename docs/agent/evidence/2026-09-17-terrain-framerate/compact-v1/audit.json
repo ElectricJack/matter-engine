@@ -1,0 +1,194 @@
+{
+  "exit": 0,
+  "seconds": 500.85715541100944,
+  "summary": {
+    "valley-flat": {
+      "samples": 100,
+      "frame_ms": {
+        "median": 9.605,
+        "p95": 12.84
+      },
+      "resolve_ms": {
+        "median": 2.6550000000000002,
+        "p95": 4.06
+      },
+      "build_ms": {
+        "median": 0.51,
+        "p95": 1.33
+      },
+      "draw_ms": {
+        "median": 4.765000000000001,
+        "p95": 6.33
+      },
+      "gpu_total_ms": {
+        "median": 6.333,
+        "p95": 7.701
+      },
+      "gpu_cull_ms": {
+        "median": 0.042,
+        "p95": 0.062
+      },
+      "gpu_gbuffer_ms": {
+        "median": 3.635,
+        "p95": 4.527
+      }
+    },
+    "valley-pom": {
+      "samples": 100,
+      "frame_ms": {
+        "median": 18.32,
+        "p95": 18.8
+      },
+      "resolve_ms": {
+        "median": 2.615,
+        "p95": 3.61
+      },
+      "build_ms": {
+        "median": 0.41,
+        "p95": 0.85
+      },
+      "draw_ms": {
+        "median": 4.93,
+        "p95": 6.04
+      },
+      "gpu_total_ms": {
+        "median": 17.841,
+        "p95": 18.273
+      },
+      "gpu_cull_ms": {
+        "median": 0.0535,
+        "p95": 0.071
+      },
+      "gpu_gbuffer_ms": {
+        "median": 15.127500000000001,
+        "p95": 15.526
+      }
+    },
+    "cliff-flat": {
+      "samples": 100,
+      "frame_ms": {
+        "median": 17.36,
+        "p95": 19.43
+      },
+      "resolve_ms": {
+        "median": 4.18,
+        "p95": 5.59
+      },
+      "build_ms": {
+        "median": 0.695,
+        "p95": 1.24
+      },
+      "draw_ms": {
+        "median": 9.61,
+        "p95": 12.82
+      },
+      "gpu_total_ms": {
+        "median": 11.3305,
+        "p95": 12.302
+      },
+      "gpu_cull_ms": {
+        "median": 0.058,
+        "p95": 0.064
+      },
+      "gpu_gbuffer_ms": {
+        "median": 7.088,
+        "p95": 7.703
+      }
+    },
+    "cliff-pom": {
+      "samples": 100,
+      "frame_ms": {
+        "median": 109.63499999999999,
+        "p95": 111.51
+      },
+      "resolve_ms": {
+        "median": 3.605,
+        "p95": 4.57
+      },
+      "build_ms": {
+        "median": 0.68,
+        "p95": 0.89
+      },
+      "draw_ms": {
+        "median": 8.945,
+        "p95": 10.5
+      },
+      "gpu_total_ms": {
+        "median": 109.3455,
+        "p95": 110.978
+      },
+      "gpu_cull_ms": {
+        "median": 0.0625,
+        "p95": 0.074
+      },
+      "gpu_gbuffer_ms": {
+        "median": 105.137,
+        "p95": 106.735
+      }
+    }
+  },
+  "settles": [
+    {
+      "phase": "valley-flat",
+      "seconds": 271.87038489000406,
+      "state": [
+        "791",
+        "791",
+        "0",
+        "1603"
+      ],
+      "settled": true
+    },
+    {
+      "phase": "valley-pom",
+      "seconds": 14.279767036990961,
+      "state": [
+        "791",
+        "791",
+        "0",
+        "1603"
+      ],
+      "settled": true
+    },
+    {
+      "phase": "cliff-flat",
+      "seconds": 49.37801703400328,
+      "state": [
+        "1054",
+        "792",
+        "0",
+        "3921"
+      ],
+      "settled": true
+    },
+    {
+      "phase": "cliff-pom",
+      "seconds": 14.308279777993448,
+      "state": [
+        "1054",
+        "792",
+        "0",
+        "3942"
+      ],
+      "settled": true
+    }
+  ],
+  "input_lock": {
+    "enabled": false,
+    "editor_pid": 25656,
+    "driver_pid": 53704,
+    "window": 7012914
+  },
+  "presentation": [
+    "[vk] present requested=immediate effective=immediate(0) supported=[fifo(2),fifo_relaxed(3),mailbox(1),immediate(0),other(1000361000)] images=3 extent=2796x1044"
+  ],
+  "diagnostic_path": [],
+  "sample_counts_complete": true,
+  "binary_unchanged": true,
+  "shader_changes": [],
+  "missing_shots": [],
+  "wrong_dimensions": [],
+  "errors": [],
+  "connection_warning_count": 1069,
+  "acceptance_passed": false
+}

@@ -7,7 +7,7 @@
 //   beam:  length +X, width +Z, height +Y, centered at the origin.
 //   plank: length +X, width +Z, thickness +Y, centered at the origin.
 // Dimensions describe the structural core. Stone face relief may stand proud
-// by up to 45 mm; timber knots/straps may stand proud by up to 25 mm. Plank
+// by up to 6 mm; timber knots/straps may stand proud by up to 25 mm. Plank
 // thickness is clamped to 0.10 m so the native script mesher cannot erase it.
 //
 // Downstream child contract:
@@ -239,7 +239,7 @@ export function emitStone(part, input = {}) {
   const p = stoneParams(input);
   const random = generator(p.seed, 0x51f15e);
   const minDimension = Math.min(p.length, p.height, p.depth);
-  const bevel = Math.max(0.035, Math.min(0.06, minDimension * range(random, 0.15, 0.22)));
+  const bevel = Math.max(0.008, Math.min(0.018, minDimension * range(random, 0.035, 0.055)));
   const hx = p.length * 0.5, hy = p.height * 0.5, hz = p.depth * 0.5;
 
   part.beginModifier();
@@ -248,13 +248,13 @@ export function emitStone(part, input = {}) {
   part.beginVoxels(0.08);
   part.fill(p.material);
   // Low smoothing softens cutter intersections but does not crown the beds.
-  part.smoothing(Math.min(0.009, bevel * 0.22));
+  part.smoothing(Math.min(0.003, bevel * 0.18));
   chamferedBox(part, hy, p.length, p.height, p.depth, bevel);
   part.endVoxels();
 
-  part.beginVoxels(Math.max(0.018, 0.03 / p.detail));
+  part.beginVoxels(Math.max(0.003, 0.006 / p.detail));
   part.fill(p.material);
-  part.smoothing(Math.min(0.009, bevel * 0.22));
+  part.smoothing(Math.min(0.003, bevel * 0.18));
 
   // Actual, shallow SDF relief on both exposed faces. Its placement stays a
   // full bevel away from y=0/y=height, keeping mating beds consistent.
@@ -263,11 +263,16 @@ export function emitStone(part, input = {}) {
     for (let i = 0; i < undulations; ++i) {
       const x = range(random, -hx * 0.72, hx * 0.72);
       const y = range(random, bevel * 1.5, p.height - bevel * 1.5);
-      const rx = range(random, p.length * 0.07, p.length * 0.16);
-      const ry = range(random, p.height * 0.08, p.height * 0.19);
-      const rz = range(random, 0.022, Math.min(0.045, p.depth * 0.12));
-      ellipsoid(part, [x, y, side * (hz - rz * 0.45)], [rx, ry, rz]);
-      if (((i + p.seed + (side > 0 ? 1 : 0)) & 1) === 0) part.difference();
+      const rx = range(random, p.length * 0.09, p.length * 0.20);
+      const ry = range(random, p.height * 0.14, p.height * 0.28);
+      const rz = range(random, 0.016, 0.025);
+      const relief = range(random, 0.003, 0.006);
+      const subtract = ((i + p.seed + (side > 0 ? 1 : 0)) & 1) === 0;
+      // Only the cap intersects the face. A cutter centered inside the stone
+      // removes its entire radius and produces deep repeated craters.
+      const offset = subtract ? rz - relief : relief - rz;
+      ellipsoid(part, [x, y, side * (hz + offset)], [rx, ry, rz]);
+      if (subtract) part.difference();
     }
   }
 
@@ -278,7 +283,7 @@ export function emitStone(part, input = {}) {
     const sx = ((p.seed + i * 3) & 1) ? 1 : -1;
     const sy = ((p.seed * 3 + i) & 2) ? 1 : -1;
     const sz = ((p.seed * 5 + i * 7) & 4) ? 1 : -1;
-    const radius = range(random, minDimension * 0.14, minDimension * 0.25);
+    const radius = range(random, minDimension * 0.045, minDimension * 0.085);
     part.sphere([
       sx * (hx - bevel * range(random, 0.05, 0.55)),
       sy > 0 ? p.height - bevel * range(random, 0.05, 0.6)
@@ -297,7 +302,7 @@ export function emitStone(part, input = {}) {
     const dy = range(random, p.height * 0.16, p.height * 0.34);
     part.capsule([x - dy * 0.18, y - dy * 0.5, side * (hz + 0.004)],
       [x + dy * 0.18, y + dy * 0.5, side * (hz + 0.004)],
-      range(random, 0.016, Math.max(0.019, Math.min(0.028, bevel * 0.7))));
+      range(random, 0.006, 0.009));
     part.difference();
   }
 

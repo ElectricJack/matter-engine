@@ -1,0 +1,24 @@
+from pathlib import Path
+import json, subprocess, time
+ROOT=Path.cwd(); LOG=Path('/tmp/clear-crest-vt-move')
+PS='/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe'
+def win(path): return subprocess.check_output(['wslpath','-w',str(path)],text=True).strip()
+exe=win(ROOT/'MatterEditor/build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe')
+results=[]
+for mode,timeout in [('raster',60),('raster-fault',60),('rt-disabled',60),('animation-skin',150),('vt',120),('vt-surfaces',120),('vt-rt',150)]:
+    command="$env:MATTER_VK_SMOKE_MODE='"+mode+"'; $env:VK_LAYER_PATH='C:\\VulkanSDK\\1.4.357.0\\Bin'; Set-Location -LiteralPath '"+win(ROOT/'MatterEditor')+"'; & '"+exe+"'; exit $LASTEXITCODE"
+    started=time.monotonic()
+    try:
+        result=subprocess.run([PS,'-NoProfile','-Command',command],text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,timeout=timeout)
+        output=result.stdout; code=result.returncode
+    except subprocess.TimeoutExpired as e:
+        output=e.stdout or b''
+        if isinstance(output,bytes): output=output.decode(errors='replace')
+        output+='\nTIMEOUT after '+str(timeout)+' seconds\n'; code='timeout'
+    (LOG/(mode+'.log')).write_text(output)
+    passed=code==0 and 'ALL PASS' in output and 'validation errors: 0' in output
+    item={'mode':mode,'returncode':code,'pass':passed,'seconds':round(time.monotonic()-started,2),'deferred':mode.startswith('vt')}
+    results.append(item); (LOG/'smoke-results.json').write_text(json.dumps(results,indent=2)+'\n')
+    print(json.dumps(item),flush=True)
+    if code=='timeout': break
+raise SystemExit(any(not r['pass'] and not r['deferred'] for r in results))

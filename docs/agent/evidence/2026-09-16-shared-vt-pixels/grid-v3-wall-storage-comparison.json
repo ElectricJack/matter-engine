@@ -1,0 +1,77 @@
+{
+  "rows": [
+    {
+      "capture": "canonical-shared-walls-v4",
+      "receiver_pages": 183,
+      "material_pages": 183,
+      "shared_refs": 0,
+      "occupied_channel_bytes_estimate": 30462912,
+      "packed_atlas_dimensions": [
+        [
+          2176,
+          2432
+        ],
+        [
+          1664,
+          1920
+        ],
+        [
+          2560,
+          2944
+        ]
+      ]
+    },
+    {
+      "capture": "grid-shared-walls-v1",
+      "receiver_pages": 195,
+      "material_pages": 189,
+      "shared_refs": 6,
+      "occupied_channel_bytes_estimate": 31905600,
+      "packed_atlas_dimensions": [
+        [
+          2176,
+          2432
+        ],
+        [
+          1664,
+          1920
+        ],
+        [
+          2560,
+          2944
+        ]
+      ]
+    },
+    {
+      "capture": "grid-shared-walls-v2",
+      "receiver_pages": 195,
+      "material_pages": 141,
+      "shared_refs": 54,
+      "occupied_channel_bytes_estimate": 27466560,
+      "packed_atlas_dimensions": [
+        [
+          2176,
+          2432
+        ],
+        [
+          1664,
+          1920
+        ],
+        [
+          2560,
+          2944
+        ]
+      ]
+    }
+  ],
+  "unique_material_allocations_reduction_vs_pre_grid_percent": 22.95081967213115,
+  "occupied_channel_bytes_reduction_vs_pre_grid_percent": 9.836065573770492,
+  "occupied_channel_bytes_saved_vs_pre_grid": 2996352,
+  "reservation_unchanged_MiB": 4064,
+  "calculation": "136*136*(4*receiver_pages+5*material_pages); excludes metadata/allocator retirement. This is occupied channel payload, not reserved GPU memory.",
+  "limitations": [
+    "static scripted camera stops, not moving-camera acceptance",
+    "producer still shades/encodes before sharing publication",
+    "periodic material mapping and sparse weathering not implemented by this change"
+  ]
+}

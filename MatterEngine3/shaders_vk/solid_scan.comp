@@ -1,0 +1,20 @@
+#version 450
+#include "solid_field.glsl"
+layout(local_size_x = 1) in;
+layout(std430, binding = 4) buffer Blocks {
+    uint blocks[];
+};
+layout(std430, binding = 6) buffer Status {
+    uvec4 status;
+};
+// Bounded block-level scan; at most 16384 blocks under the service grid cap.
+// Replace with hierarchical scan only when measured domains justify it.
+void main() {
+    uint total = 0;
+    for (uint i = 0u; i < (limits.y + 255u) / 256u; ++i) {
+        uint n = blocks[i];
+        blocks[i] = total;
+        total += n;
+    }
+    status = uvec4(total, total > limits.z ? 1u : 0u, 0u, 0u);
+}

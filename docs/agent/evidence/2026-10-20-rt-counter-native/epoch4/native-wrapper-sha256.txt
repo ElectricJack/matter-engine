@@ -1,0 +1,1 @@
+12fdb8805fe33390f9dc3983e639bd34302664a1ffbec6cacea716c59183299a  docs/agent/evidence/2026-10-20-rt-counter-native/test_rt_counter_native.py

@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <functional>
 #include <string>
+#include <system_error>
 #include <vector>
 
 namespace terrain_field {
@@ -63,6 +64,26 @@ bool load_or_build_candidate(
 // API and may evolve with the MTCT/MTCM format.
 namespace detail {
 
+// Optional storage for behavior tests. Paths remain cache keys; the production
+// entry point always uses the filesystem. Implementations must make move
+// atomic and support concurrent callers, including competing publishers.
+class ArtifactStorage {
+public:
+    virtual ~ArtifactStorage() = default;
+    virtual bool exists(const std::filesystem::path&, std::error_code&) = 0;
+    virtual std::uintmax_t file_size(const std::filesystem::path&,
+                                   std::error_code&) = 0;
+    virtual bool read(const std::filesystem::path&, std::size_t offset,
+                      std::size_t count, std::uint8_t* destination) = 0;
+    virtual bool write(const std::filesystem::path&,
+                       const std::vector<std::uint8_t>&) = 0;
+    virtual void remove(const std::filesystem::path&) noexcept = 0;
+    // Windows-compatible result codes: 0 success, 183 destination exists.
+    virtual std::uint32_t move(const std::filesystem::path& source,
+                               const std::filesystem::path& destination,
+                               bool replace) = 0;
+};
+
 // Narrow, src-only deterministic seam for behavior tests. Production passes no
 // hooks, so these callbacks have no storage or branch-visible side effects in
 // the public load_or_build_candidate path.
@@ -89,6 +110,7 @@ enum class PublicationWinnerArtifact {
 };
 
 struct BuildTestHooks {
+    ArtifactStorage* storage = nullptr;
     std::function<bool(const terrain_field::FieldRuntime&,
                        const SectorCoordinate&,
                        std::int8_t,
@@ -132,7 +154,8 @@ bool validate_tile_artifact_bytes(const std::vector<std::uint8_t>& bytes,
 bool validate_generation_manifest(const std::filesystem::path& path,
                                   const CanonicalDefinition& definition,
                                   const TerrainCollisionCandidate& candidate,
-                                  std::string& error);
+                                  std::string& error,
+                                  ArtifactStorage* storage = nullptr);
 
 }  // namespace detail
 

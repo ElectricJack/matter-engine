@@ -1,0 +1,10 @@
+{
+  "args": [
+    "docs/agent/evidence/2026-09-16-shared-vt-pixels/build_checks.py",
+    "sector-links-v2",
+    "vulkan_smoke_tests",
+    "vt_compositor_tests"
+  ],
+  "finished": true,
+  "exit": 0
+}
