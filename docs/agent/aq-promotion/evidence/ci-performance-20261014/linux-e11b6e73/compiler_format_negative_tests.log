@@ -1,0 +1,8 @@
+MatterEngine3/tests/compiler_format_negative.cpp: In function ‘int main()’:
+MatterEngine3/tests/compiler_format_negative.cpp:8:29: error: format ‘%d’ expects argument of type ‘int’, but argument 2 has type ‘const char*’ [-Werror=format=]
+    8 |     compiler_format_probe("%d", "not-an-int");
+      |                            ~^   ~~~~~~~~~~~~
+      |                             |   |
+      |                             int const char*
+      |                            %s
+cc1plus: some warnings being treated as errors
