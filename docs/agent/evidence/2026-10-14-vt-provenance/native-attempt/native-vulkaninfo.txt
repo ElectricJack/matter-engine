@@ -1,0 +1,11 @@
+COMMAND=C:\VulkanSDK\1.4.357.0\Bin\vulkaninfo.exe --summary
+& : The term 'C:\VulkanSDK\1.4.357.0\Bin\vulkaninfo.exe' is not recognized as the name of a cmdlet, function, script 
+file, or operable program. Check the spelling of the name, or if a path was included, verify that the path is correct 
+and try again.
+At line:1 char:122
++ ... in\vulkaninfo.exe'; Write-Output "COMMAND=$p --summary"; & $p --summa ...
++                                                                ~~
+    + CategoryInfo          : ObjectNotFound: (C:\VulkanSDK\1....\vulkaninfo.exe:String) [], ParentContainsErrorRecord 
+   Exception
+    + FullyQualifiedErrorId : CommandNotFoundException
+ 

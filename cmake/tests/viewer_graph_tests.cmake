@@ -48,7 +48,7 @@ if(CMAKE_SOURCE_DIR STREQUAL MATTER_REPOSITORY_ROOT)
         get_target_property(headless_surface_sources matter_engine_surface_objects SOURCES)
         list(LENGTH headless_core_sources headless_core_count)
         list(LENGTH headless_surface_sources headless_surface_count)
-        if(NOT headless_core_count EQUAL 168 OR NOT headless_surface_count EQUAL 21)
+        if(NOT headless_core_count EQUAL 170 OR NOT headless_surface_count EQUAL 21)
             message(FATAL_ERROR
                 "accepted headless graph changed: core=${headless_core_count}, surface=${headless_surface_count}")
         endif()
@@ -79,9 +79,9 @@ if(CMAKE_SOURCE_DIR STREQUAL MATTER_REPOSITORY_ROOT)
         list(LENGTH viewer_sources viewer_count)
         list(LENGTH viewer_sources_unique viewer_unique_count)
         if(MATTER_EXPECT_RETOPO)
-            set(expected_viewer_count 219)
+            set(expected_viewer_count 234)
         else()
-            set(expected_viewer_count 218)
+            set(expected_viewer_count 233)
         endif()
         foreach(required_source IN ITEMS
                 MatterEngine3/src/projected_face_cache.cpp
@@ -92,7 +92,7 @@ if(CMAKE_SOURCE_DIR STREQUAL MATTER_REPOSITORY_ROOT)
                 libs/MatterGraphics/src/native/mesh_raster.cpp
                 libs/MatterGraphics/src/native/mesh_pipelines.cpp
                 MatterEngine3/src/render/vt_compositor.cpp
-                MatterEngine3/src/render/vt_residency.cpp)
+                libs/MatterGraphics/src/native/vt/vt_residency.cpp)
             assert_list_contains("${viewer_sources}" "${required_source}"
                 "viewer surface preparation/composition source is missing")
         endforeach()
@@ -186,4 +186,4 @@ foreach(retopo IN ITEMS ON OFF)
     endif()
 endforeach()
 
-message(STATUS "viewer graph preserves 47-source editor, isolated 168+21 headless, and coherent 218/219-source viewer boundaries")
+message(STATUS "viewer graph preserves 48-source editor, isolated 170+21 headless, and coherent 232/233-source viewer boundaries")

@@ -194,10 +194,9 @@ if (BigInt.asUintN(2**53 - 1, 5n) !== 5n || BigInt.asIntN(2**53 - 1, -5n) !== -5
 }
 const d::Value::Object &object(const d::Value &v) { return std::get<d::Value::Object>(v.data); }
 const std::string &string(const d::Value &v) { return std::get<std::string>(v.data); }
-int parity() {
-  std::string input{std::istreambuf_iterator<char>(std::cin), {}};
-  d::Value decoded; auto valid = d::parse_json(input, decoded);
-  check(valid.ok(), "invalid fixture input");
+std::string parity_request(const d::Value &decoded) {
+  std::string input;
+  check(d::canonical_json(decoded, input).ok(), "invalid fixture input");
   const auto &root = object(decoded);
   s::SourceSnapshot ss; ss.entry.value = string(root.at("entry")); ss.content = d::sha256(input);
   for (const auto &v : std::get<d::Value::Array>(root.at("modules").data)) {
@@ -210,12 +209,30 @@ int parity() {
   if (root.count("legacy_voxels")) options.validation.supported_capabilities.push_back({"matter.legacy.voxel-meshing", 1});
   s::AuthoringRequest request; request.seed = std::stoull(string(root.at("seed")), nullptr, 16); request.parameters = root.at("parameters");
   auto result = h::make_quickjs_host(options)->author(envelope, ss, request, {}, {});
-  if (!result.ok()) { std::cerr << errors(result); return 1; }
+  check(result.ok(), errors(result));
   std::string out; check(d::encode(*result.value(), out, options.validation).ok(), "encode failed");
-  std::cout << out;
+  return out;
+}
+int parity(bool batch) {
+  std::string input{std::istreambuf_iterator<char>(std::cin), {}};
+  d::Value decoded; check(d::parse_json(input, decoded).ok(), "invalid fixture input");
+  if (batch) {
+    d::Value::Array results;
+    for (const auto &request : std::get<d::Value::Array>(decoded.data))
+      results.emplace_back(parity_request(request));
+    std::string output;
+    check(d::canonical_json(d::Value(std::move(results)), output).ok(), "batch encoding failed");
+    std::cout << output;
+  } else {
+    std::cout << parity_request(decoded);
+  }
   return 0;
 }
 int main(int argc, char **argv) {
-  try { return argc == 2 && std::string(argv[1]) == "--stdin" ? parity() : controls(); }
+  try {
+    if (argc == 2 && std::string(argv[1]) == "--stdin") return parity(false);
+    if (argc == 2 && std::string(argv[1]) == "--batch") return parity(true);
+    return controls();
+  }
   catch (const std::exception &e) { std::cerr << "FAIL " << e.what() << '\n'; return 1; }
 }
