@@ -5,39 +5,25 @@
 #include "../src/part_graph.h"
 #include "../src/dsl_bindings.h"
 #include "../src/terrain_mesher.h"
-#include <chrono>
+#include "../src/part_bundle.h"
+#include "memory_fixture_io.h"
+#include <terrain_test_modules.h>
 #include <cstdio>
 #include <cstdlib>
 #include <algorithm>
-#include <filesystem>
-#include <system_error>
-#include <fstream>
-#include <sstream>
 #include <string>
 #include <vector>
 
-// Sandbox under the platform temp dir rather than a hardcoded POSIX "/tmp".
-// The literal made this suite unrunnable on Windows -- every bake failed with
-// errno=2 and the failures read like artifact bugs -- so it was red on main for
-// a reason that had nothing to do with what it tests. Same fix async_bake_tests
-// already carries.
-static std::string sandbox_dir(const char* name) {
-    namespace fs = std::filesystem;
-    const auto stamp = std::chrono::high_resolution_clock::now()
-                           .time_since_epoch().count();
-    const fs::path dir =
-        fs::temp_directory_path() / (std::string(name) + "_" +
-                                     std::to_string(stamp));
-    std::error_code ec;
-    fs::remove_all(dir, ec);
-    fs::create_directories(dir, ec);
-    return dir.string();
-}
-
 using namespace script_host;
 
-static std::string slurp(const char* path) {
-    std::ifstream f(path); std::stringstream ss; ss << f.rdbuf(); return ss.str();
+static void set_script_profile(const char* value) {
+#ifdef _WIN32
+    CHECK(_putenv_s("MATTER_SCRIPT_PROFILE", value) == 0, "set script profile environment");
+#else
+    CHECK((value[0] ? setenv("MATTER_SCRIPT_PROFILE", value, 1)
+                    : unsetenv("MATTER_SCRIPT_PROFILE")) == 0,
+          "set script profile environment");
+#endif
 }
 
 int main() {
@@ -63,8 +49,8 @@ int main() {
     // one that drops the legacy path (it always sets the alpine profile). Keep
     // this on the project tier; scene-specific behaviour belongs in
     // sector_scatter_profile.cpp, which does point at StreamMountain on purpose.
-    std::string src = slurp("../../projects/world_demo/objects/templates/WorldSector.js");
-    CHECK(!src.empty(), "WorldSector.js readable");
+    std::string src = terrain_test_modules::world_sector();
+    CHECK(!src.empty(), "actual WorldSector.js bytes are embedded");
 
     ScriptHost host;
     // BOTH roots. WorldSector.js imports rng/scatter_grid from the engine's
@@ -73,8 +59,9 @@ int main() {
     // case after `requires` failed with "module not found" and read like a
     // bake bug. Project root first, matching the resolver order the engine
     // itself uses (shared_lib_tests.cpp covers that precedence).
-    host.set_shared_lib_roots({"../../projects/world_demo/shared-lib",
-                               "../shared-lib"});  // run from MatterEngine3/tests
+    host.set_module_sources(terrain_test_modules::modules());
+    auto storage = std::make_shared<matter::test::MemoryCacheByteStorage>();
+    part_bundle::ScopedStorage storage_scope(storage);
 
     // requires: fixed asset list, independent of tx/tz
     {
@@ -99,7 +86,7 @@ int main() {
               "variant list is exactly rocks + grass + trees");
     }
 
-    const std::string parts_dir = sandbox_dir("me3_sector_bake");
+    const std::string parts_dir = "/fixtures/sector_bake";
     auto bake = [&](const char* params) {
         BakeOptions opts;
         opts.parts_dir = parts_dir;
@@ -127,8 +114,8 @@ int main() {
     // bare header, indicating terrain triangles were serialized into it.
     {
         CHECK(!r0.written_path.empty(), "bake wrote a .part file");
-        std::ifstream pf(r0.written_path, std::ios::binary | std::ios::ate);
-        long long fsz = pf ? (long long)pf.tellg() : 0LL;
+        const auto bytes = storage->open(r0.written_path);
+        const size_t fsz = bytes ? bytes->size() : 0;
         CHECK(fsz > 256, "sector .part has non-trivial size (ground geometry present)");
     }
 
@@ -806,13 +793,13 @@ class PlanPath extends Part {
         // Off by default: a script can carry prof() calls permanently without
         // paying for them. Slot allocation is the gate -- an unenabled slot()
         // returns -1 and every begin/end after it is an early return.
-        _putenv_s("MATTER_SCRIPT_PROFILE", "");
+        set_script_profile("");
         CHECK(dsl::script_profile::slot("off") < 0,
               "slot() is -1 when the profile is off");
         CHECK(dsl::script_profile::report().empty(),
               "report is empty when nothing was recorded");
 
-        _putenv_s("MATTER_SCRIPT_PROFILE", "1");
+        set_script_profile("1");
         // Toggling mid-process has to work, which is exactly why `enabled()`
         // reads the env var live instead of latching it: the first version
         // latched, and this suite could then only ever observe whichever state
@@ -890,7 +877,7 @@ class ProfProbe extends Part {
         // Leave the process as we found it so no later suite inherits an armed
         // profile (the latch means it could not be disarmed anyway, but the
         // env var should not leak to a child process either).
-        _putenv_s("MATTER_SCRIPT_PROFILE", "");
+        set_script_profile("");
         dsl::script_profile::reset();
     }
 

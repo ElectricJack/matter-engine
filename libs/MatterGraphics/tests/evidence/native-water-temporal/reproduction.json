@@ -1,0 +1,58 @@
+{
+  "task": "clear-crest-48.4.9",
+  "follow_up": "clear-crest-48.4.11",
+  "reference_source": "6490dbab806876631465259cdf5b397f258c5837",
+  "candidate_source": "1d2b2df5813aaf8f3bad1dacd5df814d782dfb9e",
+  "toolchain": {
+    "compiler": "MSVC 19.44.35211.0",
+    "tools": "14.44.35207",
+    "vulkan_sdk": "1.4.357.0",
+    "gpu": "NVIDIA GeForce RTX 4090",
+    "driver": "610.74",
+    "device_vulkan": "1.4.341"
+  },
+  "identical_native_cmake_options": {
+    "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+    "MATTER_CUDA_ROOT": "",
+    "MATTER_DIST_HYDROLOGY_ARTIFACT": "",
+    "MATTER_DIST_PROJECT": "world_demo",
+    "MATTER_ENABLE_AUTOREMESHER": "ON",
+    "MATTER_ENABLE_PHYSX": "OFF",
+    "MATTER_ENABLE_STREAMLINE": "OFF",
+    "MATTER_PHYSX_ROOT": "",
+    "MATTER_PYTHON_EXECUTABLE": "C:/Users/webde/AppData/Local/Programs/Python/Launcher/py.exe",
+    "MATTER_STREAMLINE_ROOT": ""
+  },
+  "build_command": "tools/build-windows.ps1 -Config RelWithDebInfo -Target vulkan_smoke_tests",
+  "baseline_build_parallel_level": 2,
+  "resource_gated_commands": [
+    "aq test .tmp/test_water_temporal_native.py -q",
+    "aq test .tmp/test_water_baseline_comparison.py -q"
+  ],
+  "results": {
+    "candidate_aggregate": "1 failed in 245.19s; four water modes pass, cull fails",
+    "baseline_comparison": "1 passed in 237.60s; both underlying cull fixtures fail"
+  },
+  "raw_logs": {
+    "candidate-cull.log": {
+      "sha256": "a4ec3c4d0d69444d2a2337482758434ef5a6dfdb8262b0fb9e62cb635df1483f",
+      "bytes": 20224,
+      "exit_code": 1,
+      "validation_errors": 4,
+      "failed_assertions": 2
+    },
+    "baseline-cull.log": {
+      "sha256": "5c59e9c271b491a90e44de462da252d91650bf255cd142d191247785f4bbf784",
+      "bytes": 20425,
+      "exit_code": 1,
+      "validation_errors": 4,
+      "failed_assertions": 2
+    }
+  },
+  "candidate_runner_powershell": "$ErrorActionPreference = 'Stop'\n$repo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path\nImport-Module (Join-Path $repo 'tools/windows/MatterWindowsToolchain.psm1') -Force\n$tc = Resolve-MatterWindowsToolchain -RepositoryRoot $repo\n$env:VULKAN_SDK = $tc.VulkanSdk\n$env:VK_LAYER_PATH = Join-Path $tc.VulkanSdk 'Bin'\n$env:VK_LOADER_LAYERS_DISABLE = 'VK_LAYER_OBS_HOOK,VK_LAYER_EOS_Overlay,VK_LAYER_VALVE_steam_overlay,VK_LAYER_VALVE_steam_fossilize,VK_LAYER_RENDERDOC_Capture'\n$env:VK_LAYER_ENABLES = 'VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT'\n$evidence = Join-Path $repo '.tmp/water-temporal-evidence'\nNew-Item -ItemType Directory -Force $evidence | Out-Null\n$build = Join-Path $repo 'MatterEditor/build/cmake/windows-msvc/relwithdebinfo'\nPush-Location $build\ntry {\n    foreach ($mode in @('water-field', 'water-field-nort', 'water-animation', 'water-forward', 'cull')) {\n        $env:MATTER_VK_SMOKE_MODE = $mode\n        $log = Join-Path $evidence \"$mode.log\"\n        # cmd redirects native stderr without PowerShell treating loader warnings as exceptions.\n        & $env:ComSpec /d /s /c ('vulkan_smoke_tests.exe > \"{0}\" 2>&1' -f $log)\n        if ($LASTEXITCODE -ne 0) { throw \"$mode failed ($LASTEXITCODE): $log\" }\n        $output = Get-Content $log -Raw\n        if ($output -notmatch 'ALL PASS' -or $output -match 'validation errors: [1-9]') { throw \"Invalid fixture result: $log\" }\n        Write-Output \"$mode : ALL PASS, zero validation errors\"\n    }\n} finally { Pop-Location }\nexit 0\n",
+  "baseline_runner_powershell": "$ErrorActionPreference = 'Stop'\n$repo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path\n$baseline = 'D:\\Shared With Desktop\\AI\\matter-water-baseline-48.4.9'\nImport-Module (Join-Path $baseline 'tools/windows/MatterWindowsToolchain.psm1') -Force\n$tc = Resolve-MatterWindowsToolchain -RepositoryRoot $baseline\n$env:VULKAN_SDK = $tc.VulkanSdk\n$env:VK_LAYER_PATH = Join-Path $tc.VulkanSdk 'Bin'\n$env:VK_LOADER_LAYERS_DISABLE = 'VK_LAYER_OBS_HOOK,VK_LAYER_EOS_Overlay,VK_LAYER_VALVE_steam_overlay,VK_LAYER_VALVE_steam_fossilize,VK_LAYER_RENDERDOC_Capture'\n$env:VK_LAYER_ENABLES = 'VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT'\n$env:MATTER_VK_SMOKE_MODE = 'cull'\n$log = Join-Path $repo '.tmp/water-temporal-evidence/baseline-cull.log'\nPush-Location (Join-Path $baseline 'MatterEditor/build/cmake/windows-msvc/relwithdebinfo')\ntry {\n    & $env:ComSpec /d /s /c ('vulkan_smoke_tests.exe > \"{0}\" 2>&1' -f $log)\n    exit $LASTEXITCODE\n} finally { Pop-Location }\n",
+  "comparison_harness_python": "import os\nfrom pathlib import Path\nimport re\nimport subprocess\n\n\ndef failure_signature(log):\n    lines = log.splitlines()\n    errors = []\n    for index, line in enumerate(lines):\n        if \"Vulkan validation ERROR\" in line:\n            end = index + 1\n            while end < len(lines) and not lines[end].startswith(\"[vk]\"):\n                end += 1\n            errors.append(re.sub(r\"0x[0-9a-f]+\", \"HANDLE\", \"\\n\".join(lines[index:end])))\n    assertions = [line for line in lines if line.startswith((\"FAIL:\", \"validation errors:\", \"2 FAILURE\"))]\n    return errors, assertions\n\n\ndef test_exact_pre_move_cull_failure_comparison():\n    repo = Path(__file__).resolve().parents[1]\n    script = subprocess.check_output(\n        [\"wslpath\", \"-w\", str(repo / \".tmp/check-water-baseline.ps1\")], text=True\n    ).strip()\n    result = subprocess.run(\n        [\"/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe\",\n         \"-NoProfile\", \"-ExecutionPolicy\", \"Bypass\", \"-File\", script],\n        cwd=repo, env=os.environ.copy(), capture_output=True, text=True, timeout=600,\n    )\n    assert result.returncode == 1, result.stdout + result.stderr\n    candidate = failure_signature((repo / \".tmp/water-temporal-evidence/cull.log\").read_text())\n    baseline = failure_signature((repo / \".tmp/water-temporal-evidence/baseline-cull.log\").read_text())\n    assert len(candidate[0]) == len(baseline[0]) == 4\n    assert baseline == candidate, (baseline, candidate)\n",
+  "normalization": "For each validation ERROR, capture its line and continuations until the next [vk] line. Replace only regex 0x[0-9a-f]+ with HANDLE. Compare ordered full blocks and lines starting FAIL:, validation errors:, or 2 FAILURE. Exactly four hazards and matching assertion lists required.",
+  "shader_comparison": "All 82 generated SPIR-V outputs are byte-identical. spirv-sha256.json records their common SHA-256 values.",
+  "scope": "The matched comparison proves the recorded cull failure predates the mechanical move. It is not a passing cull mode or full native/SDK qualification."
+}

@@ -98,6 +98,7 @@ struct VulkanSubmission::Impl : std::enable_shared_from_this<VulkanSubmission::I
   std::shared_ptr<Impl> pending_owner;
   std::vector<std::shared_ptr<Allocation>> allocations;
   std::vector<std::shared_ptr<DeviceBuffer>> dependencies;
+  std::vector<std::shared_ptr<void>> retained_resources;
   VkResult finish(bool wait) noexcept {
     if (!pending) return completion;
     auto r = uncertain_submit ? completion :
@@ -110,7 +111,7 @@ struct VulkanSubmission::Impl : std::enable_shared_from_this<VulkanSubmission::I
       const auto idle = vkDeviceWaitIdle(context->binding.device);
       if (idle != VK_SUCCESS && idle != VK_ERROR_DEVICE_LOST) return r;
     }
-    pending = false; completion = r; dependencies.clear(); allocations.clear();
+    pending = false; completion = r; dependencies.clear(); allocations.clear(); retained_resources.clear();
     pending_owner.reset(); return r;
   }
   ~Impl() {
@@ -215,6 +216,8 @@ data::ValidationResult VulkanResourceDevice::upload(BufferUsage usage, services:
   VkBufferUsageFlags flags = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
   if (usage == BufferUsage::vertex) flags |= VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
   if (usage == BufferUsage::index) flags |= VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
+  if (usage == BufferUsage::indirect) flags |= VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
+  if (usage == BufferUsage::uniform) flags |= VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
   std::shared_ptr<Allocation> destination, staging;
   auto r = allocate(impl_->context, bytes->size(), flags, 0, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, destination);
   if (!r.ok()) return r;
@@ -237,7 +240,8 @@ data::ValidationResult VulkanResourceDevice::upload(BufferUsage usage, services:
   });
 }
 data::ValidationResult VulkanResourceDevice::submit(const std::function<void(VkCommandBuffer)> &record,
-    const std::vector<std::shared_ptr<DeviceBuffer>> &dependencies, std::shared_ptr<VulkanSubmission> &out) {
+    const std::vector<std::shared_ptr<DeviceBuffer>> &dependencies, std::shared_ptr<VulkanSubmission> &out,
+    const std::vector<std::shared_ptr<void>> &retained_resources) {
   if (!record) return error("missing command recorder");
   impl_->reap();
   std::vector<std::shared_ptr<VulkanBuffer>> native;
@@ -248,6 +252,7 @@ data::ValidationResult VulkanResourceDevice::submit(const std::function<void(VkC
   }
   auto state = std::make_shared<VulkanSubmission::Impl>(); state->context = impl_->context;
   state->dependencies = dependencies;
+  state->retained_resources = retained_resources;
   auto submission = std::shared_ptr<VulkanSubmission>(new VulkanSubmission(state));
   for (const auto &b : native) {
     auto &uses = b->impl_->uses;

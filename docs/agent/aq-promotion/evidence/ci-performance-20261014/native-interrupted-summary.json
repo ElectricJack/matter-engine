@@ -1,0 +1,12 @@
+{
+  "status": "interrupted_for_resource_serialization",
+  "native_source": "/mnt/d/tmp/keen-current-19-59-6nfrgvv8",
+  "base": "2e67a2a5b719ef8b3d49b9a37e8689dee413aa79",
+  "compiled_actions_observed": 1298,
+  "total_planned_actions": 1305,
+  "ctest_started": false,
+  "warm_run_started": false,
+  "parallelism_before_interrupt": 12,
+  "future_local_build_limit": 2,
+  "reason": "Supervisor identified active graphics CI producer and clear99/core62 qualification order; own native benchmark stopped. No native passing receipt or under-60s result."
+}

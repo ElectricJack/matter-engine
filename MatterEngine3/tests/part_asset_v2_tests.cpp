@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <cstdint>
 #include <cstring>
+#include <chrono>
 #include <vector>
 #include <filesystem>
 #include <sys/stat.h>
@@ -28,15 +29,19 @@
 #endif
 
 #include "check.h"
+#include "memory_fixture_io.h"
 
-#ifdef _WIN32
-static const char* kCacheRoot = "part_asset_v2_tests_cache";
+#ifndef MATTER_PART_IO_QUALIFICATION
+static const char* kCacheRoot = "/part-asset-v2-fixture";
+static std::shared_ptr<matter::test::MemoryCacheByteStorage> fixture_storage;
 #else
-static const char* kCacheRoot = "/tmp/part_asset_v2_tests_cache";
+static const char* kCacheRoot = nullptr;
 #endif
 
 static void make_test_dir(const char* path) {
-#ifdef _WIN32
+#ifndef MATTER_PART_IO_QUALIFICATION
+    (void)path;
+#elif defined(_WIN32)
     _mkdir(path);
 #else
     mkdir(path, 0755);
@@ -205,6 +210,10 @@ static uint64_t rd_u64(const std::vector<uint8_t>& b, size_t off) {
     uint64_t v; memcpy(&v, b.data()+off, 8); return v;
 }
 static std::vector<uint8_t> read_file(const char* path) {
+#ifndef MATTER_PART_IO_QUALIFICATION
+    const auto bytes = fixture_storage->open(path);
+    return bytes ? *bytes : std::vector<uint8_t>{};
+#else
     FILE* f = fopen(path, "rb");
     if (!f) return {};
     fseek(f,0,SEEK_END); long n = ftell(f); fseek(f,0,SEEK_SET);
@@ -212,9 +221,21 @@ static std::vector<uint8_t> read_file(const char* path) {
     size_t got = fread(b.data(),1,n,f); fclose(f);
     b.resize(got);
     return b;
+#endif
 }
 static void write_file(const char* path, const std::vector<uint8_t>& b) {
+#ifndef MATTER_PART_IO_QUALIFICATION
+    CHECK(fixture_storage->publish(path, b), "fixture bytes published");
+#else
     FILE* f = fopen(path, "wb"); fwrite(b.data(),1,b.size(),f); fclose(f);
+#endif
+}
+static void erase_file(const std::string& path) {
+#ifndef MATTER_PART_IO_QUALIFICATION
+    CHECK(fixture_storage->erase(path), "fixture bytes erased");
+#else
+    std::remove(path.c_str());
+#endif
 }
 
 // M4: an artifact's bytes are a bundle SECTION now, not a whole file. The
@@ -235,16 +256,15 @@ static void write_artifact(const char* path, uint64_t hash, uint32_t tag,
 }
 
 static void write_text_file(const char* path, const char* text) {
-    FILE* f = fopen(path, "wb");
-    fwrite(text, 1, strlen(text), f);
-    fclose(f);
+    write_file(path, std::vector<uint8_t>(text, text + strlen(text)));
 }
 
+#ifdef MATTER_PART_IO_QUALIFICATION
 static void test_atomic_replace_preserves_target_on_failure() {
     using namespace part_asset;
     const char* target = "test_atomic_replace.target";
     const char* source = "test_atomic_replace.source";
-    remove(target); remove(source);
+    erase_file(target); erase_file(source);
     write_text_file(target, "old");
     CHECK(!replace_file_atomic(source, target),
           "atomic replace reports missing-source failure");
@@ -270,7 +290,7 @@ static void test_atomic_replace_preserves_target_on_failure() {
     CHECK(std::string(replaced.begin(), replaced.end()) == "new",
           "successful atomic replace publishes complete new bytes");
     CHECK(read_file(source).empty(), "successful atomic replace consumes source");
-    remove(target); remove(source);
+    erase_file(target); erase_file(source);
 }
 
 #ifdef _WIN32
@@ -312,7 +332,7 @@ static void test_atomic_replace_retries_transient_holder() {
     using namespace part_asset;
     const char* target = "test_atomic_replace_retry.target";
     const char* source = "test_atomic_replace_retry.source";
-    remove(target); remove(source);
+    erase_file(target); erase_file(source);
     write_text_file(target, "old");
     write_text_file(source, "new");
 
@@ -363,9 +383,11 @@ static void test_atomic_replace_retries_transient_holder() {
     std::vector<uint8_t> unconsumed = read_file(source);
     CHECK(std::string(unconsumed.begin(), unconsumed.end()) == "newer",
           "an exhausted retry leaves the source for the caller");
-    remove(target); remove(source);
+    erase_file(target); erase_file(source);
 }
 #endif
+
+#endif // MATTER_PART_IO_QUALIFICATION
 
 static void test_save_v2_header() {
     using namespace part_asset;
@@ -375,7 +397,7 @@ static void test_save_v2_header() {
     auto lods = sample_lods();
 
     const char* path = "test_v2_save.part";
-    remove(path);
+    erase_file(path);
     bool ok = save_v2(path, blas, tlas, kids.data(), kids.size(), lods, 0xABCDEF12u);
     CHECK(ok, "save_v2 returns true");
 
@@ -395,7 +417,7 @@ static void test_save_v2_header() {
     uint64_t recomputed = fnv1a64(b.data()+40, b.size()-40);
     CHECK(stored == recomputed, "content hash covers body after 40-byte header");
 
-    remove(path);
+    erase_file(path);
 }
 
 static void test_round_trip_full() {
@@ -412,7 +434,7 @@ static void test_round_trip_full() {
     const auto recsA = tlasA.get_draw_records();
 
     const char* path = "test_v2_round.part";
-    remove(path);
+    erase_file(path);
     CHECK(save_v2(path, blasA, tlasA, kids.data(), kids.size(), lods, 0x55AA55AAu),
           "round-trip save_v2 ok");
 
@@ -467,7 +489,7 @@ static void test_round_trip_full() {
     CHECK(!load_v2(path, 0xDEADBEEFu, blasC, tlasC, kc, lc),
           "load_v2 rejects wrong resolved hash");
 
-    remove(path);
+    erase_file(path);
 }
 
 static void test_round_trip_degenerate_lod() {
@@ -480,7 +502,7 @@ static void test_round_trip_degenerate_lod() {
     {
         LodLevels empty;
         const char* path = "test_v2_lod_empty.part";
-        remove(path);
+        erase_file(path);
         CHECK(save_v2(path, blasA, tlasA, kids.data(), kids.size(), empty, 0x10u),
               "empty-LOD save ok");
         BLASManager b; TLASManager t(64);
@@ -488,7 +510,7 @@ static void test_round_trip_degenerate_lod() {
         CHECK(load_v2(path, 0x10u, b, t, ko, lo), "empty-LOD load ok");
         CHECK(lo.empty(), "empty LOD array round-trips empty");
         CHECK(ko.size() == 2, "children still round-trip with empty LOD");
-        remove(path);
+        erase_file(path);
     }
 
     // Single-level LOD round-trips.
@@ -497,7 +519,7 @@ static void test_round_trip_degenerate_lod() {
         one[0].screen_size_threshold = 128.0f;
         one[0].blas_indices = { 1u };
         const char* path = "test_v2_lod_one.part";
-        remove(path);
+        erase_file(path);
         CHECK(save_v2(path, blasA, tlasA, kids.data(), kids.size(), one, 0x11u),
               "single-LOD save ok");
         BLASManager b; TLASManager t(64);
@@ -508,7 +530,7 @@ static void test_round_trip_degenerate_lod() {
               "single LOD threshold preserved");
         CHECK(lo.size() == 1 && lo[0].blas_indices == std::vector<uint32_t>{1u},
               "single LOD indices preserved");
-        remove(path);
+        erase_file(path);
     }
 }
 
@@ -522,7 +544,7 @@ static void test_round_trip_no_children() {
     std::vector<LegacyBVHNode> nodeA; blasA.generate_node_data(nodeA);
 
     const char* path = "test_v2_nokids.part";
-    remove(path);
+    erase_file(path);
     CHECK(save_v2(path, blasA, tlasA, nullptr, 0, lods, 0x20u),
           "no-children save ok");
 
@@ -542,7 +564,7 @@ static void test_round_trip_no_children() {
           memcmp(nodeA.data(), nodeB.data(), nodeA.size()*sizeof(LegacyBVHNode)) == 0,
           "prebuilt-vs-built node parity through v2");
 
-    remove(path);
+    erase_file(path);
 }
 
 static void test_v2_guards() {
@@ -553,7 +575,7 @@ static void test_v2_guards() {
     auto lods = sample_lods();
 
     const char* path = "test_v2_guard.part";
-    remove(path);
+    erase_file(path);
     CHECK(save_v2(path, blasA, tlasA, kids.data(), kids.size(), lods, 0x1234u),
           "guard save ok");
     std::vector<uint8_t> good = read_artifact(path, 0x1234u, part_bundle::kSectionRep0);
@@ -594,7 +616,7 @@ static void test_v2_guards() {
       BLASManager b; TLASManager t(64); std::vector<ChildInstance> ko; LodLevels lo;
       CHECK(!load_v2(path, 0x1234u, b, t, ko, lo), "rejects bad magic"); }
 
-    remove(path);
+    erase_file(path);
 }
 
 static void test_material_schema_guard() {
@@ -605,7 +627,7 @@ static void test_material_schema_guard() {
     auto lods = sample_lods();
 
     const char* path = "test_v2_material_schema.part";
-    remove(path);
+    erase_file(path);
     CHECK(save_v2(path, blasA, tlasA, kids.data(), kids.size(), lods, 0x4321u),
           "material-schema guard save ok");
     std::vector<uint8_t> prior = read_artifact(path, 0x4321u, part_bundle::kSectionRep0);
@@ -628,7 +650,7 @@ static void test_material_schema_guard() {
         CHECK(reason == "material schema mismatch; rebake",
               "prior material schema reports rebake reason");
     }
-    remove(path);
+    erase_file(path);
 }
 
 static void patch_body_u32_and_rehash(std::vector<uint8_t>& bytes,
@@ -662,7 +684,7 @@ static void test_cache_artifact_compatibility_probe() {
 
     const uint64_t v2_hash = 0x76543210u;
     const char* v2_path = "test_v2_compat.part";
-    remove(v2_path);
+    erase_file(v2_path);
     CHECK(save_v2(v2_path, blas, tlas, kids.data(), kids.size(), lods, v2_hash),
           "compat probe v2 fixture saved");
     CacheArtifactProbeStats stats{};
@@ -739,7 +761,7 @@ static void test_cache_artifact_compatibility_probe() {
     write_artifact(v2_path, v2_hash, part_bundle::kSectionRep0, current_v2);
     const uint64_t flat_hash = 0x12345678u;
     const char* flat_path = "test_flat_compat.flat.part";
-    remove(flat_path);
+    erase_file(flat_path);
     std::vector<FlatCluster> clusters;
     CHECK(save_flat_v3(flat_path, blas, tlas, clusters, flat_hash),
           "compat probe flat fixture saved");
@@ -823,11 +845,11 @@ static void test_cache_artifact_compatibility_probe() {
               "full loader rejects malicious truncated prefix safely");
     }
 
-    remove(v2_path);
-    remove(large_path);
-    remove(flat_path);
-    remove(oversized_path);
-    remove(truncated_path);
+    erase_file(v2_path);
+    erase_file(large_path);
+    erase_file(flat_path);
+    erase_file(oversized_path);
+    erase_file(truncated_path);
 }
 
 static void test_header_probe() {
@@ -839,7 +861,7 @@ static void test_header_probe() {
 
     const uint64_t v2_hash = 0x76543210u;
     const char* v2_path = "test_header_probe.part";
-    remove(v2_path);
+    erase_file(v2_path);
     CHECK(save_v2(v2_path, blas, tlas, kids.data(), kids.size(), lods, v2_hash),
           "header probe v2 fixture saved");
 
@@ -871,7 +893,7 @@ static void test_header_probe() {
                    corrupt_kids, corrupt_lods),
           "loader rejects corrupt body");
 
-    remove(v2_path);
+    erase_file(v2_path);
 }
 
 static void test_new_materials() {
@@ -921,11 +943,7 @@ static void test_flatten_hints_round_trip() {
 
     // Malformed-input: valid first line then non-numeric token — must be all-or-nothing.
     std::string pmal = std::string(kCacheRoot) + "/parts/malformed_hints_test.hints";
-    {
-        std::ofstream ofs(pmal);
-        ofs << "1 64\n";
-        ofs << "2 notanumber\n";
-    }
+    write_text_file(pmal.c_str(), "1 64\n2 notanumber\n");
     part_asset::FlattenHints hmal;
     CHECK(!part_asset::load_flatten_hints(pmal, h, hmal),
           "load_flatten_hints returns false for malformed file");
@@ -956,7 +974,7 @@ static void test_bundle_is_order_independent() {
     const uint64_t hash = 0x7777u;
     const char* path_a = "test_bundle_order_a.bundle";
     const char* path_b = "test_bundle_order_b.bundle";
-    remove(path_a); remove(path_b);
+    erase_file(path_a); erase_file(path_b);
 
     FlattenHints hints;
     hints.child_px[1] = 64.0f;
@@ -994,7 +1012,7 @@ static void test_bundle_is_order_independent() {
     CHECK(!load_v2(path_b, hash ^ 1ull, blasC, tlasC, kids_c, lods_c),
           "a bundle rejects a load asking for a different part hash");
 
-    remove(path_a); remove(path_b);
+    erase_file(path_a); erase_file(path_b);
 }
 
 // W5: cache_path_static_lods / save_static_lod_plan / load_static_lod_plan
@@ -1033,17 +1051,20 @@ static void test_static_lod_plan_sidecar() {
           "load_static_lod_plan returns false for a missing file");
 }
 
+#ifdef MATTER_PART_IO_QUALIFICATION
 static void count_bundle_publishes(const char *phase, double, size_t, uint32_t, void *user) {
     if (std::strcmp(phase, "bundle_atomic_replace") == 0)
         ++*static_cast<int *>(user);
 }
 
+#endif
+
 static void test_static_multi_section_publish() {
     using namespace part_asset;
     const std::string a = std::string(kCacheRoot) + "/atomic-static.bundle";
     const std::string b = std::string(kCacheRoot) + "/sequential-static.bundle";
-    std::filesystem::remove(a);
-    std::filesystem::remove(b);
+    erase_file(a);
+    erase_file(b);
     BLASManager blas;
     TLASManager tlas(8);
     BLASHandle ha, hb;
@@ -1065,11 +1086,19 @@ static void test_static_multi_section_publish() {
     CHECK(matter::save_part_render_policy(b, hash, policy), "sequential policy publish");
     CHECK(save_v2(b, blas, tlas, kids.data(), kids.size(), lods, {}, hash),
           "sequential geometry publish");
+#ifndef MATTER_PART_IO_QUALIFICATION
+    const auto before_count = fixture_storage->publication_count();
+#else
     int publishes = 0;
     part_bundle::set_write_observer(count_bundle_publishes, &publishes);
+#endif
     const bool saved =
         save_v2_with_render_policy(a, blas, tlas, kids.data(), kids.size(), lods, {}, hash, policy);
+#ifdef MATTER_PART_IO_QUALIFICATION
     part_bundle::set_write_observer(nullptr);
+#else
+    const auto publishes = fixture_storage->publication_count() - before_count;
+#endif
     CHECK(saved && publishes == 1, "static policy and geometry use exactly one durable publish");
     const auto before = read_file(a.c_str());
     CHECK(before == read_file(b.c_str()),
@@ -1094,21 +1123,45 @@ static void test_static_multi_section_publish() {
     CHECK(read_file(a.c_str()) == before, "invalid updates preserve complete prior artifact");
     // Force the same production fopen failure as an inaccessible candidate,
     // without relying on privileges, timing, or a synthetic mutation callback.
+#ifdef MATTER_PART_IO_QUALIFICATION
     std::filesystem::create_directory(a + ".tmp");
+#else
+    fixture_storage->fail_publication(true);
+#endif
     CHECK(!save_v2_with_render_policy(a, blas, tlas, kids.data(), kids.size(), lods, {}, hash,
                                       policy),
           "candidate open failure rejects atomic pair");
     CHECK(read_file(a.c_str()) == before, "candidate I/O failure preserves both prior sections");
+#ifdef MATTER_PART_IO_QUALIFICATION
     std::filesystem::remove(a + ".tmp");
-    std::filesystem::remove(a);
-    std::filesystem::remove(b);
+#else
+    fixture_storage->fail_publication(false);
+#endif
+    erase_file(a);
+    erase_file(b);
 }
 
 int main() {
+#ifdef MATTER_PART_IO_QUALIFICATION
+    const auto root = std::filesystem::temp_directory_path() /
+        ("matter-part-io-qualification-" + std::to_string(
+            std::chrono::high_resolution_clock::now().time_since_epoch().count()));
+    const auto root_name = root.string();
+    kCacheRoot = root_name.c_str();
+    struct Cleanup {
+        std::filesystem::path root;
+        ~Cleanup() { std::error_code error; std::filesystem::remove_all(root, error); }
+    } cleanup{root};
     test_atomic_replace_preserves_target_on_failure();
 #ifdef _WIN32
     test_atomic_replace_retries_transient_holder();
 #endif
+    make_test_dir(kCacheRoot);
+    make_test_dir((std::string(kCacheRoot) + "/parts").c_str());
+    test_static_multi_section_publish();
+#else
+    fixture_storage = std::make_shared<matter::test::MemoryCacheByteStorage>();
+    part_bundle::ScopedStorage storage_scope(fixture_storage);
     test_cache_path_resolved();
     test_resolved_hash();
     test_resolved_hash_carries_version_vector();
@@ -1125,6 +1178,7 @@ int main() {
     test_bundle_is_order_independent();
     test_static_lod_plan_sidecar();
     test_static_multi_section_publish();
+#endif
     if (g_failures == 0) printf("All part_asset_v2 tests passed\n");
     return g_failures == 0 ? 0 : 1;
 }
