@@ -1,0 +1,50 @@
+{
+  "source": "slot-6",
+  "observed_branch": "aq/crisp-ember-20",
+  "head": "1f4ff089a9a81f8f54528df6a131a70757648853",
+  "new_preparing_task": "fair-horizon-78",
+  "claim_file": "absent",
+  "staged_patch_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "files": [
+    {
+      "path": "MatterEngine3/src/script/portable_host/quickjs_host.cpp",
+      "git_oid": "327ca186907d020e1ab7c9a7200ae921e358e3ac",
+      "mode": "100644",
+      "stage": "0",
+      "sha256": "6050e67c48d49ee6941043d4eda82de42c84902a6c377c61ac75d1609aa6c1cd"
+    },
+    {
+      "path": "MatterEngine3/src/script/portable_host/tests/host_tests.cpp",
+      "git_oid": "adefe8c556d6907b488ece23a9ca7d22db0207bd",
+      "mode": "100644",
+      "stage": "0",
+      "sha256": "e99d0c0f88104b58d968f9ea0ae4d55a993ab8ba530b0a822441d8dd14fa5755"
+    },
+    {
+      "path": "bindings/geometry-c/src/geometry_c.cpp",
+      "git_oid": "46c7727cc8b68a531a6e725409655756aef7d7e6",
+      "mode": "100644",
+      "stage": "0",
+      "sha256": "6cc42e54345047ff4d01c4fcfac3b6f6d6a14e5f07586b886597613278c31e98"
+    },
+    {
+      "path": "bindings/geometry-c/tests/consumer.c",
+      "git_oid": "61561ddefb9ef5d3bf582ff85438e5501afef380",
+      "mode": "100644",
+      "stage": "0",
+      "sha256": "e259aa1c038d7611fa0121d42d142691aae5e1e754c875534653ed9c041b4bd0"
+    },
+    {
+      "path": "integrations/web-procedural/runtime/src/worker.mts",
+      "git_oid": "41cbc41fae990d2b3cca8cf13c5288c0d1068cc9",
+      "mode": "100644",
+      "stage": "0",
+      "sha256": "2a9bd11dd92c04d585c68eba9d7e3b901bbabd6c907adbd40b373a3c9f903ab6"
+    }
+  ],
+  "scope": "read-only staged snapshot; no source/index/branch mutation, task ownership or preparation clearance implied",
+  "initial_observation": "Earlier read saw prior aq/crisp-ember-20 branch at dev with five staged paths. Daemon preparation advanced while snapshot was captured.",
+  "snapshot_limit": "staged.patch is empty. Captured indexed blobs are a later point-in-time snapshot and are NOT verified backups of the earlier staged edits.",
+  "current_readback": "aq/fair-horizon-78 with matching claim epoch 1/session c9289239-b1ea-4bc6-9d5d-8f02996779ab; source preparation settled.",
+  "original_edits_preserved": null
+}

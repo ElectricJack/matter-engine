@@ -1,0 +1,5 @@
+source HEAD: 5a3bf2393e225b7f48fa8d96ce3edec2dcf64ed3
+007b1d2df8f289b0536e3380e89263f345b64fa15d2cb95a3e396f3bda7c5e55  docs/agent/evidence/2026-10-20-rt-counter-native/epoch7/trace_llvm.c
+5df257caa47c16b4ddfde9e5c18855cff375884aff27870ca8a5f3bf0fefbfcf  docs/agent/evidence/2026-10-20-rt-counter-native/epoch8/test_compiler_trace.py
+f822ceeffc7176c96646aa7aacf554c08fdc93b65e2dc415fb8349d7e96581df  /tmp/noble-zenith-31-epoch8/trace_llvm.so
+c9abfba6e4aa51ca394ea0e781feb1d8afd33acb7bea91a67ad8d912b592ed4b  /tmp/noble-zenith-31-epoch6/build/vulkan_smoke_tests

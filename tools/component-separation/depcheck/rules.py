@@ -153,6 +153,7 @@ class Component:
     legacy_include_dirs: list[tuple[str, str]] = field(default_factory=list)
     legacy_headers: list[tuple[str, str]] = field(default_factory=list)
     unbuilt_sources: list[tuple[str, str]] = field(default_factory=list)
+    monolith_sources: list[tuple[str, str]] = field(default_factory=list)
     configure_inputs: list[tuple[str, str]] = field(default_factory=list)
     ownership_exclude: list[str] = field(default_factory=list)
     forbidden_public_includes: list[re.Pattern] = field(default_factory=list)
@@ -249,8 +250,8 @@ def _variant(raw: dict, where: str, capabilities: dict[str, str]) -> Variant:
 COMPONENT_KEYS = {
     "name", "status", "kind", "directory", "reason", "targets", "optional_targets", "vendored_targets",
     "public_include_dirs", "allowed_components", "public_include_roots", "private_include_roots",
-    "legacy_sources", "legacy_include_dirs", "legacy_headers", "unbuilt_sources", "configure_inputs",
-    "ownership_exclude",
+    "legacy_sources", "legacy_include_dirs", "legacy_headers", "unbuilt_sources", "monolith_sources",
+    "configure_inputs", "ownership_exclude",
     "forbidden_public_includes", "forbidden_external_headers", "forbidden_symbols", "header_overrides",
     "js", "variants", "description",
 }
@@ -277,6 +278,7 @@ def _component(raw: dict, where: str, capabilities: dict[str, str], groups: dict
     component.legacy_include_dirs = _audited(raw.get("legacy_include_dirs", []), where + ".legacy_include_dirs")
     component.legacy_headers = _audited(raw.get("legacy_headers", []), where + ".legacy_headers")
     component.unbuilt_sources = _audited(raw.get("unbuilt_sources", []), where + ".unbuilt_sources")
+    component.monolith_sources = _audited(raw.get("monolith_sources", []), where + ".monolith_sources")
     component.configure_inputs = _audited(raw.get("configure_inputs", []), where + ".configure_inputs")
     component.ownership_exclude = _strings(raw.get("ownership_exclude", []), where + ".ownership_exclude")
     component.forbidden_public_includes = _compile(_strings(raw.get("forbidden_public_includes", []), where), where)

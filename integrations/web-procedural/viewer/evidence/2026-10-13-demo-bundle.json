@@ -1,0 +1,813 @@
+{
+  "errors": [],
+  "http_errors": [],
+  "requests": [
+    "http://127.0.0.1:45203/demo/index.html?seed=1",
+    "http://127.0.0.1:45203/demo/integrations/web-procedural/viewer/demo/index.html?seed=1",
+    "http://127.0.0.1:45203/demo/integrations/web-procedural/viewer/demo/demo.css",
+    "http://127.0.0.1:45203/demo/integrations/web-procedural/runtime/dist/index.mjs",
+    "http://127.0.0.1:45203/demo/integrations/web-procedural/viewer/dist/demo/app.mjs",
+    "http://127.0.0.1:45203/demo/integrations/web-procedural/viewer/vendor/three/three.module.js",
+    "http://127.0.0.1:45203/demo/integrations/web-procedural/viewer/dist/capabilities.mjs",
+    "http://127.0.0.1:45203/demo/integrations/web-procedural/viewer/dist/demo/fixtures.mjs",
+    "http://127.0.0.1:45203/demo/integrations/web-procedural/viewer/dist/demo/session.mjs",
+    "http://127.0.0.1:45203/demo/integrations/web-procedural/runtime/dist/protocol.mjs",
+    "http://127.0.0.1:45203/demo/integrations/web-procedural/viewer/dist/adapter.mjs",
+    "http://127.0.0.1:45203/demo/integrations/web-procedural/viewer/dist/errors.mjs",
+    "http://127.0.0.1:45203/demo/integrations/web-procedural/viewer/vendor/three/three.core.js",
+    "http://127.0.0.1:45203/demo/integrations/web-procedural/viewer/dist/materials.mjs",
+    "http://127.0.0.1:45203/demo/integrations/web-procedural/viewer/dist/matrix.mjs",
+    "http://127.0.0.1:45203/demo/integrations/web-procedural/runtime/dist/worker.mjs",
+    "http://127.0.0.1:45203/demo/integrations/web-procedural/runtime/dist/protocol.mjs",
+    "http://127.0.0.1:45203/demo/bindings/geometry-c/wasm/geometry.mjs",
+    "http://127.0.0.1:45203/demo/wasm/matter_geometry_wasm.mjs",
+    "http://127.0.0.1:45203/demo/wasm/matter_geometry_wasm.wasm",
+    "http://127.0.0.1:45203/demo/packages/matter-authoring/index.mjs",
+    "http://127.0.0.1:45203/demo/libs/MatterContracts/examples/contracts.mjs",
+    "http://127.0.0.1:45203/demo/packages/matter-authoring/values.mjs",
+    "http://127.0.0.1:45203/demo/packages/matter-authoring/parameters.mjs",
+    "http://127.0.0.1:45203/demo/packages/matter-authoring/rng.mjs",
+    "http://127.0.0.1:45203/demo/packages/matter-authoring/recipe.mjs",
+    "http://127.0.0.1:45203/demo/packages/matter-authoring/legacy.mjs",
+    "blob:http://127.0.0.1:45203/cc06d638-7cf6-48fe-a47b-ab3f373ec107",
+    "http://127.0.0.1:45203/demo/integrations/web-procedural/viewer/demo/index.html?seed=1",
+    "http://127.0.0.1:45203/demo/integrations/web-procedural/viewer/demo/demo.css",
+    "http://127.0.0.1:45203/demo/integrations/web-procedural/runtime/dist/index.mjs",
+    "http://127.0.0.1:45203/demo/integrations/web-procedural/viewer/dist/demo/app.mjs",
+    "http://127.0.0.1:45203/demo/integrations/web-procedural/runtime/dist/protocol.mjs",
+    "http://127.0.0.1:45203/demo/integrations/web-procedural/viewer/vendor/three/three.module.js",
+    "http://127.0.0.1:45203/demo/integrations/web-procedural/viewer/dist/capabilities.mjs",
+    "http://127.0.0.1:45203/demo/integrations/web-procedural/viewer/dist/demo/fixtures.mjs",
+    "http://127.0.0.1:45203/demo/integrations/web-procedural/viewer/dist/demo/session.mjs",
+    "http://127.0.0.1:45203/demo/integrations/web-procedural/viewer/vendor/three/three.core.js",
+    "http://127.0.0.1:45203/demo/integrations/web-procedural/viewer/dist/adapter.mjs",
+    "http://127.0.0.1:45203/demo/integrations/web-procedural/viewer/dist/errors.mjs",
+    "http://127.0.0.1:45203/demo/integrations/web-procedural/viewer/dist/materials.mjs",
+    "http://127.0.0.1:45203/demo/integrations/web-procedural/viewer/dist/matrix.mjs",
+    "http://127.0.0.1:45203/demo/integrations/web-procedural/runtime/dist/worker.mjs",
+    "http://127.0.0.1:45203/demo/integrations/web-procedural/runtime/dist/protocol.mjs",
+    "http://127.0.0.1:45203/demo/bindings/geometry-c/wasm/geometry.mjs",
+    "http://127.0.0.1:45203/demo/wasm/matter_geometry_wasm.mjs",
+    "http://127.0.0.1:45203/demo/wasm/matter_geometry_wasm.wasm",
+    "http://127.0.0.1:45203/demo/packages/matter-authoring/index.mjs",
+    "http://127.0.0.1:45203/demo/libs/MatterContracts/examples/contracts.mjs",
+    "http://127.0.0.1:45203/demo/packages/matter-authoring/values.mjs",
+    "http://127.0.0.1:45203/demo/packages/matter-authoring/parameters.mjs",
+    "http://127.0.0.1:45203/demo/packages/matter-authoring/rng.mjs",
+    "http://127.0.0.1:45203/demo/packages/matter-authoring/recipe.mjs",
+    "http://127.0.0.1:45203/demo/packages/matter-authoring/legacy.mjs",
+    "blob:http://127.0.0.1:45203/30e4c1f5-4a76-4196-91b0-1163bfad184d",
+    "blob:http://127.0.0.1:45203/cb3691dc-0c64-43fe-b47b-398dbe26449c",
+    "blob:http://127.0.0.1:45203/c09cc2ce-ae7c-4cfe-8431-2cf31a45dae0",
+    "blob:http://127.0.0.1:45203/f60732de-791b-41a6-855b-2def6c6910b0",
+    "http://127.0.0.1:45203/demo/libs/MatterContracts/examples/repeated-assembly.asset.json",
+    "blob:http://127.0.0.1:45203/729b83ec-e9e4-4844-80e4-1dc2c7fad51f",
+    "http://127.0.0.1:45203/demo/integrations/web-procedural/runtime/dist/worker.mjs",
+    "http://127.0.0.1:45203/demo/integrations/web-procedural/runtime/dist/protocol.mjs",
+    "http://127.0.0.1:45203/demo/bindings/geometry-c/wasm/geometry.mjs",
+    "http://127.0.0.1:45203/demo/wasm/matter_geometry_wasm.mjs",
+    "http://127.0.0.1:45203/demo/wasm/matter_geometry_wasm.wasm",
+    "http://127.0.0.1:45203/demo/packages/matter-authoring/index.mjs",
+    "http://127.0.0.1:45203/demo/libs/MatterContracts/examples/contracts.mjs",
+    "http://127.0.0.1:45203/demo/packages/matter-authoring/values.mjs",
+    "http://127.0.0.1:45203/demo/packages/matter-authoring/parameters.mjs",
+    "http://127.0.0.1:45203/demo/packages/matter-authoring/rng.mjs",
+    "http://127.0.0.1:45203/demo/packages/matter-authoring/recipe.mjs",
+    "http://127.0.0.1:45203/demo/packages/matter-authoring/legacy.mjs",
+    "blob:http://127.0.0.1:45203/f34ae22a-f56c-4ffb-8b74-10bf179e9c2f",
+    "blob:http://127.0.0.1:45203/98becf12-d59b-4159-b0be-42c9b9d02175",
+    "blob:http://127.0.0.1:45203/eeb8c4e6-a563-4268-90ba-c0554e6ad590",
+    "http://127.0.0.1:45203/demo/libs/MatterContracts/examples/repeated-assembly.asset.json",
+    "http://127.0.0.1:45203/demo/libs/MatterContracts/examples/repeated-assembly.asset.json",
+    "http://127.0.0.1:45203/demo/libs/MatterContracts/examples/repeated-assembly.asset.json",
+    "blob:http://127.0.0.1:45203/c80841bb-86d1-4e99-a487-f62835064411",
+    "blob:http://127.0.0.1:45203/5069f9cc-39e3-427c-8111-217f6402e1e7",
+    "blob:http://127.0.0.1:45203/6e7242c7-247a-4a45-a03b-4e46a14b604b",
+    "blob:http://127.0.0.1:45203/a33fbf30-65c3-4627-88e6-0f8056afbdac",
+    "blob:http://127.0.0.1:45203/0fe7fc69-6907-4845-b079-ebdb3fb59b4f",
+    "blob:http://127.0.0.1:45203/84ab9f1d-1b7a-4db5-a30c-24ee510d0622",
+    "blob:http://127.0.0.1:45203/4288f5e9-4474-4afe-95a6-5497fc552afd",
+    "blob:http://127.0.0.1:45203/616a712e-fff8-4abb-b5fd-43b10dcd45bd",
+    "blob:http://127.0.0.1:45203/354f33a4-5b3c-47f9-81b4-c7ccf10bef2f",
+    "blob:http://127.0.0.1:45203/b153a70f-0cc4-4b7c-8641-563d430a1f05",
+    "blob:http://127.0.0.1:45203/c275c945-a8f7-489f-a730-95236f6435ba",
+    "blob:http://127.0.0.1:45203/db5b78e6-0e52-4391-8a80-f7c664261a22",
+    "blob:http://127.0.0.1:45203/924ba37f-f877-4f8b-95c6-6fa32e7174f2",
+    "blob:http://127.0.0.1:45203/c2f23e77-731a-4e10-9d06-b8a0526333ad",
+    "blob:http://127.0.0.1:45203/efa1d6c7-0686-4d54-be8f-f56d49fc37d9",
+    "blob:http://127.0.0.1:45203/d6fdd05a-ce70-4a00-9791-f0883a96560a",
+    "blob:http://127.0.0.1:45203/c9476568-5ca7-435c-8af5-2915901fe9ff",
+    "blob:http://127.0.0.1:45203/bb01bdeb-9c2d-402c-9ec3-8c34b7befdee",
+    "blob:http://127.0.0.1:45203/11d79e14-6291-41f1-a9de-641a8738ee78",
+    "blob:http://127.0.0.1:45203/9bbf8f43-43d3-49f1-b31f-2e0e5dbb0eea",
+    "http://127.0.0.1:45203/demo/index.html?fixture=WEB-VIEW-ASSEMBLY&seed=1",
+    "http://127.0.0.1:45203/demo/integrations/web-procedural/viewer/demo/index.html?fixture=WEB-VIEW-ASSEMBLY&seed=1",
+    "http://127.0.0.1:45203/demo/integrations/web-procedural/viewer/demo/demo.css",
+    "http://127.0.0.1:45203/demo/integrations/web-procedural/runtime/dist/index.mjs",
+    "http://127.0.0.1:45203/demo/integrations/web-procedural/viewer/dist/demo/app.mjs",
+    "http://127.0.0.1:45203/demo/integrations/web-procedural/runtime/dist/protocol.mjs",
+    "http://127.0.0.1:45203/demo/integrations/web-procedural/viewer/vendor/three/three.module.js",
+    "http://127.0.0.1:45203/demo/integrations/web-procedural/viewer/dist/capabilities.mjs",
+    "http://127.0.0.1:45203/demo/integrations/web-procedural/viewer/dist/demo/fixtures.mjs",
+    "http://127.0.0.1:45203/demo/integrations/web-procedural/viewer/dist/demo/session.mjs",
+    "http://127.0.0.1:45203/demo/integrations/web-procedural/viewer/vendor/three/three.core.js",
+    "http://127.0.0.1:45203/demo/integrations/web-procedural/viewer/dist/adapter.mjs",
+    "http://127.0.0.1:45203/demo/integrations/web-procedural/viewer/dist/errors.mjs",
+    "http://127.0.0.1:45203/demo/integrations/web-procedural/viewer/dist/materials.mjs",
+    "http://127.0.0.1:45203/demo/integrations/web-procedural/viewer/dist/matrix.mjs",
+    "http://127.0.0.1:45203/demo/integrations/web-procedural/runtime/dist/worker.mjs",
+    "http://127.0.0.1:45203/demo/integrations/web-procedural/runtime/dist/protocol.mjs",
+    "http://127.0.0.1:45203/demo/bindings/geometry-c/wasm/geometry.mjs",
+    "http://127.0.0.1:45203/demo/wasm/matter_geometry_wasm.mjs",
+    "http://127.0.0.1:45203/demo/wasm/matter_geometry_wasm.wasm",
+    "http://127.0.0.1:45203/demo/packages/matter-authoring/index.mjs",
+    "http://127.0.0.1:45203/demo/libs/MatterContracts/examples/contracts.mjs",
+    "http://127.0.0.1:45203/demo/packages/matter-authoring/values.mjs",
+    "http://127.0.0.1:45203/demo/packages/matter-authoring/parameters.mjs",
+    "http://127.0.0.1:45203/demo/packages/matter-authoring/rng.mjs",
+    "http://127.0.0.1:45203/demo/packages/matter-authoring/recipe.mjs",
+    "http://127.0.0.1:45203/demo/packages/matter-authoring/legacy.mjs",
+    "blob:http://127.0.0.1:45203/666b8435-45f9-4a00-99f0-8427b0ad07de"
+  ],
+  "browser": "150.0.7871.46",
+  "frame": {
+    "status": "ok",
+    "error": null,
+    "fixture": "WEB-VIEW-PROP",
+    "triangles": 44,
+    "coverage": 0.174560546875,
+    "workers": 1
+  },
+  "demo": {
+    "fixtures": {
+      "WEB-VIEW-PROP": {
+        "status": "ok",
+        "error": null,
+        "statusText": "WEB-VIEW-PROP \u00b7 generation 2 \u00b7 103.0 ms (runtime 98.8 ms)",
+        "errorKept": null,
+        "diagnostics": [],
+        "stats": {
+          "prototypes": "2",
+          "instances": "2",
+          "draw objects": "2",
+          "batches (instanced / mirrored / individual)": "0 / 0 / 2",
+          "geometries (view)": "2",
+          "materials": "3",
+          "textures": "1",
+          "triangles drawn / uploaded": "44 / 44",
+          "GPU geometries": "2",
+          "GPU textures": "2",
+          "programs": "2",
+          "draw calls": "2",
+          "runtime workers / restarts": "1 / 0"
+        },
+        "gpu": {
+          "geometries": 2,
+          "textures": 2,
+          "programs": 2
+        },
+        "coverage": 0.174560546875
+      },
+      "WEB-VIEW-CSG": {
+        "status": "ok",
+        "error": null,
+        "statusText": "WEB-VIEW-CSG \u00b7 generation 3 \u00b7 1283.2 ms (runtime 1275.1 ms)",
+        "errorKept": null,
+        "diagnostics": [],
+        "stats": {
+          "prototypes": "1",
+          "instances": "1",
+          "draw objects": "1",
+          "batches (instanced / mirrored / individual)": "0 / 0 / 1",
+          "geometries (view)": "1",
+          "materials": "1",
+          "textures": "0",
+          "triangles drawn / uploaded": "2712 / 2712",
+          "GPU geometries": "1",
+          "GPU textures": "1",
+          "programs": "1",
+          "draw calls": "1",
+          "runtime workers / restarts": "1 / 0"
+        },
+        "gpu": {
+          "geometries": 1,
+          "textures": 1,
+          "programs": 1
+        },
+        "coverage": 0.262451171875
+      },
+      "WEB-VIEW-ASSEMBLY": {
+        "status": "ok",
+        "error": null,
+        "statusText": "WEB-VIEW-ASSEMBLY \u00b7 generation 4 \u00b7 431.6 ms (runtime 425.7 ms)",
+        "errorKept": null,
+        "diagnostics": [],
+        "stats": {
+          "prototypes": "2",
+          "instances": "16",
+          "draw objects": "6",
+          "batches (instanced / mirrored / individual)": "2 / 1 / 3",
+          "geometries (view)": "2",
+          "materials": "2",
+          "textures": "0",
+          "triangles drawn / uploaded": "2064 / 492",
+          "GPU geometries": "2",
+          "GPU textures": "1",
+          "programs": "2",
+          "draw calls": "6",
+          "runtime workers / restarts": "1 / 0"
+        },
+        "gpu": {
+          "geometries": 2,
+          "textures": 1,
+          "programs": 2
+        },
+        "coverage": 0.06705729166666667
+      },
+      "WEB-VIEW-CONTRACT": {
+        "status": "ok",
+        "error": null,
+        "statusText": "WEB-VIEW-CONTRACT \u00b7 generation 5 \u00b7 12.3 ms",
+        "errorKept": null,
+        "diagnostics": [
+          {
+            "severity": "warning",
+            "code": "fallback",
+            "text": "web fallback matter.asset.collision@1: Not rendered and not simulated"
+          },
+          {
+            "severity": "warning",
+            "code": "fallback",
+            "text": "web fallback matter.asset.lod@1: Base prototypes only; no rung selection, LOD rung meshes are not drawn"
+          },
+          {
+            "severity": "info",
+            "code": "ignored",
+            "text": "ignored optional extension demo.sparkle@1 ignored (nonsemantic)"
+          },
+          {
+            "severity": null,
+            "code": "attachment",
+            "text": "anchor socket.top at (3.000, 5.000, 1.000)"
+          }
+        ],
+        "stats": {
+          "prototypes": "1",
+          "instances": "4",
+          "draw objects": "2",
+          "batches (instanced / mirrored / individual)": "1 / 1 / 0",
+          "geometries (view)": "1",
+          "materials": "1",
+          "textures": "0",
+          "triangles drawn / uploaded": "4 / 1",
+          "GPU geometries": "1",
+          "GPU textures": "1",
+          "programs": "1",
+          "draw calls": "2",
+          "runtime workers / restarts": "1 / 0"
+        },
+        "gpu": {
+          "geometries": 1,
+          "textures": 1,
+          "programs": 1
+        },
+        "coverage": 0.047607421875
+      },
+      "WEB-VIEW-ERR-SYNTAX": {
+        "status": "error",
+        "error": {
+          "stage": "runtime",
+          "code": "backend_failure",
+          "message": "Unexpected token ';'"
+        },
+        "statusText": "WEB-VIEW-ERR-SYNTAX \u00b7 generation 6 failed: backend_failure",
+        "errorKept": "Showing the last good result (WEB-VIEW-CONTRACT, generation 5).",
+        "diagnostics": [
+          {
+            "severity": "warning",
+            "code": "fallback",
+            "text": "web fallback matter.asset.collision@1: Not rendered and not simulated"
+          },
+          {
+            "severity": "warning",
+            "code": "fallback",
+            "text": "web fallback matter.asset.lod@1: Base prototypes only; no rung selection, LOD rung meshes are not drawn"
+          },
+          {
+            "severity": "info",
+            "code": "ignored",
+            "text": "ignored optional extension demo.sparkle@1 ignored (nonsemantic)"
+          },
+          {
+            "severity": null,
+            "code": "attachment",
+            "text": "anchor socket.top at (3.000, 5.000, 1.000)"
+          }
+        ],
+        "stats": {
+          "prototypes": "1",
+          "instances": "4",
+          "draw objects": "2",
+          "batches (instanced / mirrored / individual)": "1 / 1 / 0",
+          "geometries (view)": "1",
+          "materials": "1",
+          "textures": "0",
+          "triangles drawn / uploaded": "4 / 1",
+          "GPU geometries": "1",
+          "GPU textures": "1",
+          "programs": "1",
+          "draw calls": "2",
+          "runtime workers / restarts": "0 / 1"
+        },
+        "gpu": {
+          "geometries": 1,
+          "textures": 1,
+          "programs": 1
+        },
+        "coverage": 0.047607421875
+      },
+      "WEB-VIEW-ERR-MIRROR-CSG": {
+        "status": "error",
+        "error": {
+          "stage": "runtime",
+          "code": "unsupported_capability",
+          "message": "unsupported_capability: CSG v1 accepts rotation, translation and positive uniform scale; use full affine placement outside CSG"
+        },
+        "statusText": "WEB-VIEW-ERR-MIRROR-CSG \u00b7 generation 7 failed: unsupported_capability",
+        "errorKept": "Showing the last good result (WEB-VIEW-CONTRACT, generation 5).",
+        "diagnostics": [
+          {
+            "severity": "warning",
+            "code": "fallback",
+            "text": "web fallback matter.asset.collision@1: Not rendered and not simulated"
+          },
+          {
+            "severity": "warning",
+            "code": "fallback",
+            "text": "web fallback matter.asset.lod@1: Base prototypes only; no rung selection, LOD rung meshes are not drawn"
+          },
+          {
+            "severity": "info",
+            "code": "ignored",
+            "text": "ignored optional extension demo.sparkle@1 ignored (nonsemantic)"
+          },
+          {
+            "severity": null,
+            "code": "attachment",
+            "text": "anchor socket.top at (3.000, 5.000, 1.000)"
+          }
+        ],
+        "stats": {
+          "prototypes": "1",
+          "instances": "4",
+          "draw objects": "2",
+          "batches (instanced / mirrored / individual)": "1 / 1 / 0",
+          "geometries (view)": "1",
+          "materials": "1",
+          "textures": "0",
+          "triangles drawn / uploaded": "4 / 1",
+          "GPU geometries": "1",
+          "GPU textures": "1",
+          "programs": "1",
+          "draw calls": "2",
+          "runtime workers / restarts": "1 / 1"
+        },
+        "gpu": {
+          "geometries": 1,
+          "textures": 1,
+          "programs": 1
+        },
+        "coverage": 0.047607421875
+      },
+      "WEB-VIEW-ERR-REQUIRED-EXT": {
+        "status": "error",
+        "error": {
+          "stage": "runtime",
+          "code": "unsupported_capability",
+          "message": "unsupported_capability: required demo.sparkle@1 is unavailable; supply a host/evaluator with this capability"
+        },
+        "statusText": "WEB-VIEW-ERR-REQUIRED-EXT \u00b7 generation 8 failed: unsupported_capability",
+        "errorKept": "Showing the last good result (WEB-VIEW-CONTRACT, generation 5).",
+        "diagnostics": [
+          {
+            "severity": "warning",
+            "code": "fallback",
+            "text": "web fallback matter.asset.collision@1: Not rendered and not simulated"
+          },
+          {
+            "severity": "warning",
+            "code": "fallback",
+            "text": "web fallback matter.asset.lod@1: Base prototypes only; no rung selection, LOD rung meshes are not drawn"
+          },
+          {
+            "severity": "info",
+            "code": "ignored",
+            "text": "ignored optional extension demo.sparkle@1 ignored (nonsemantic)"
+          },
+          {
+            "severity": null,
+            "code": "attachment",
+            "text": "anchor socket.top at (3.000, 5.000, 1.000)"
+          }
+        ],
+        "stats": {
+          "prototypes": "1",
+          "instances": "4",
+          "draw objects": "2",
+          "batches (instanced / mirrored / individual)": "1 / 1 / 0",
+          "geometries (view)": "1",
+          "materials": "1",
+          "textures": "0",
+          "triangles drawn / uploaded": "4 / 1",
+          "GPU geometries": "1",
+          "GPU textures": "1",
+          "programs": "1",
+          "draw calls": "2",
+          "runtime workers / restarts": "1 / 1"
+        },
+        "gpu": {
+          "geometries": 1,
+          "textures": 1,
+          "programs": 1
+        },
+        "coverage": 0.047607421875
+      },
+      "WEB-VIEW-ERR-TEXTURE-LIMIT": {
+        "status": "error",
+        "error": {
+          "stage": "adapter",
+          "code": "resource_limit",
+          "message": "resource_limit: texture 64x64 exceeds the 32 texel limit (textures/checker)"
+        },
+        "statusText": "WEB-VIEW-ERR-TEXTURE-LIMIT \u00b7 generation 9 failed: resource_limit",
+        "errorKept": "Showing the last good result (WEB-VIEW-CONTRACT, generation 5).",
+        "diagnostics": [
+          {
+            "severity": "warning",
+            "code": "fallback",
+            "text": "web fallback matter.asset.collision@1: Not rendered and not simulated"
+          },
+          {
+            "severity": "warning",
+            "code": "fallback",
+            "text": "web fallback matter.asset.lod@1: Base prototypes only; no rung selection, LOD rung meshes are not drawn"
+          },
+          {
+            "severity": "info",
+            "code": "ignored",
+            "text": "ignored optional extension demo.sparkle@1 ignored (nonsemantic)"
+          },
+          {
+            "severity": null,
+            "code": "attachment",
+            "text": "anchor socket.top at (3.000, 5.000, 1.000)"
+          }
+        ],
+        "stats": {
+          "prototypes": "1",
+          "instances": "4",
+          "draw objects": "2",
+          "batches (instanced / mirrored / individual)": "1 / 1 / 0",
+          "geometries (view)": "1",
+          "materials": "1",
+          "textures": "0",
+          "triangles drawn / uploaded": "4 / 1",
+          "GPU geometries": "1",
+          "GPU textures": "1",
+          "programs": "1",
+          "draw calls": "2",
+          "runtime workers / restarts": "1 / 1"
+        },
+        "gpu": {
+          "geometries": 1,
+          "textures": 1,
+          "programs": 1
+        },
+        "coverage": 0.047607421875
+      }
+    },
+    "screenshots": [
+      {
+        "fixture": "WEB-VIEW-PROP",
+        "sha256": "a0925435f4debf1ae34eb591e3f638b8dbf38a89440f578a7e344d9284e6efd2",
+        "bytes": 14540,
+        "file": "2026-10-13-demo-screenshots/WEB-VIEW-PROP.png"
+      },
+      {
+        "fixture": "WEB-VIEW-CSG",
+        "sha256": "08dfeb3612d0e8a85da5eecea2bd979acbba425e5934fa3a216fd2cf0839afb2",
+        "bytes": 47708,
+        "file": "2026-10-13-demo-screenshots/WEB-VIEW-CSG.png"
+      },
+      {
+        "fixture": "WEB-VIEW-ASSEMBLY",
+        "sha256": "df0c3b8c8845c0bcf8ae957d93921d7b23cb56375cb66796735fc3d0336fd521",
+        "bytes": 23038,
+        "file": "2026-10-13-demo-screenshots/WEB-VIEW-ASSEMBLY.png"
+      },
+      {
+        "fixture": "WEB-VIEW-CONTRACT",
+        "sha256": "eacfce5533d63c0c0d69b8d80731ffd6958f7730c1091b834f3b88ef39f4100e",
+        "bytes": 6912,
+        "file": "2026-10-13-demo-screenshots/WEB-VIEW-CONTRACT.png"
+      },
+      {
+        "fixture": "WEB-VIEW-ERR-SYNTAX",
+        "sha256": "eacfce5533d63c0c0d69b8d80731ffd6958f7730c1091b834f3b88ef39f4100e",
+        "bytes": 6912,
+        "file": "2026-10-13-demo-screenshots/WEB-VIEW-ERR-SYNTAX.png"
+      },
+      {
+        "fixture": "WEB-VIEW-ERR-MIRROR-CSG",
+        "sha256": "eacfce5533d63c0c0d69b8d80731ffd6958f7730c1091b834f3b88ef39f4100e",
+        "bytes": 6912,
+        "file": "2026-10-13-demo-screenshots/WEB-VIEW-ERR-MIRROR-CSG.png"
+      },
+      {
+        "fixture": "WEB-VIEW-ERR-REQUIRED-EXT",
+        "sha256": "eacfce5533d63c0c0d69b8d80731ffd6958f7730c1091b834f3b88ef39f4100e",
+        "bytes": 6912,
+        "file": "2026-10-13-demo-screenshots/WEB-VIEW-ERR-REQUIRED-EXT.png"
+      },
+      {
+        "fixture": "WEB-VIEW-ERR-TEXTURE-LIMIT",
+        "sha256": "eacfce5533d63c0c0d69b8d80731ffd6958f7730c1091b834f3b88ef39f4100e",
+        "bytes": 6912,
+        "file": "2026-10-13-demo-screenshots/WEB-VIEW-ERR-TEXTURE-LIMIT.png"
+      }
+    ],
+    "capabilities": {
+      "rows": [
+        {
+          "support": "supported",
+          "name": "matter.asset.core@1"
+        },
+        {
+          "support": "supported",
+          "name": "matter.material.pbr@1"
+        },
+        {
+          "support": "supported",
+          "name": "matter.recipe.core@1"
+        },
+        {
+          "support": "supported",
+          "name": "matter.asset.attachments@1"
+        },
+        {
+          "support": "fallback",
+          "name": "matter.asset.lod@1"
+        },
+        {
+          "support": "fallback",
+          "name": "matter.asset.collision@1"
+        },
+        {
+          "support": "fallback",
+          "name": "matter.asset.animation@1"
+        },
+        {
+          "support": "unsupported",
+          "name": "matter.asset.terrain@1"
+        }
+      ],
+      "native": [
+        {
+          "badge": "native only",
+          "feature": "native only Ray-traced lighting and shadows (Vulkan RT)"
+        },
+        {
+          "badge": "native only",
+          "feature": "native only Virtual texturing and chart atlases"
+        },
+        {
+          "badge": "native only",
+          "feature": "native only Parallax occlusion mapping"
+        },
+        {
+          "badge": "native only",
+          "feature": "native only LOD rung selection and imposters"
+        },
+        {
+          "badge": "native only",
+          "feature": "native only Vulkan compute cull"
+        },
+        {
+          "badge": "native only",
+          "feature": "native only Terrain sector streaming"
+        },
+        {
+          "badge": "native only",
+          "feature": "native only Retopology and native processing modules"
+        },
+        {
+          "badge": "native only",
+          "feature": "native only Transparency and advanced materials (extensions)"
+        }
+      ]
+    },
+    "contract": {
+      "diagnostics": [
+        {
+          "severity": "warning",
+          "code": "fallback",
+          "text": "web fallback matter.asset.collision@1: Not rendered and not simulated"
+        },
+        {
+          "severity": "warning",
+          "code": "fallback",
+          "text": "web fallback matter.asset.lod@1: Base prototypes only; no rung selection, LOD rung meshes are not drawn"
+        },
+        {
+          "severity": "info",
+          "code": "ignored",
+          "text": "ignored optional extension demo.sparkle@1 ignored (nonsemantic)"
+        },
+        {
+          "severity": null,
+          "code": "attachment",
+          "text": "anchor socket.top at (3.000, 5.000, 1.000)"
+        }
+      ],
+      "rejected": {
+        "stage": "adapter",
+        "code": "unsupported_capability",
+        "message": "unsupported_capability: matter.asset.collision@1 has only a fallback on the web (Not rendered and not simulated) and fallbacks are rejected"
+      },
+      "kept": "Showing the last good result (WEB-VIEW-CONTRACT, generation 10)."
+    },
+    "inputs": {
+      "dom_parameter": {
+        "parameters": {
+          "count": 7,
+          "ring": 2.2,
+          "spheres": 4,
+          "mirror": true,
+          "shear": true
+        },
+        "status": "ok",
+        "instances": 11
+      },
+      "dom_checkbox": {
+        "parameters": {
+          "count": 7,
+          "ring": 2.2,
+          "spheres": 4,
+          "mirror": false,
+          "shear": true
+        },
+        "status": "ok",
+        "instances": 11
+      },
+      "bad_seed": {
+        "stage": "input",
+        "code": "invalid_input",
+        "message": "seed \"abc\" is not a decimal or 0x-hex integer"
+      },
+      "hex_seed": "16"
+    },
+    "repeats": [
+      {
+        "configuration": "WEB-VIEW-PROP",
+        "gpu": {
+          "geometries": 2,
+          "textures": 2,
+          "programs": 2
+        }
+      },
+      {
+        "configuration": "WEB-VIEW-PROP sides=9",
+        "gpu": {
+          "geometries": 2,
+          "textures": 2,
+          "programs": 2
+        }
+      },
+      {
+        "configuration": "WEB-VIEW-CSG",
+        "gpu": {
+          "geometries": 1,
+          "textures": 1,
+          "programs": 1
+        }
+      },
+      {
+        "configuration": "WEB-VIEW-ASSEMBLY",
+        "gpu": {
+          "geometries": 2,
+          "textures": 1,
+          "programs": 2
+        }
+      },
+      {
+        "configuration": "WEB-VIEW-PROP",
+        "gpu": {
+          "geometries": 2,
+          "textures": 2,
+          "programs": 2
+        }
+      },
+      {
+        "configuration": "WEB-VIEW-PROP sides=9",
+        "gpu": {
+          "geometries": 2,
+          "textures": 2,
+          "programs": 2
+        }
+      },
+      {
+        "configuration": "WEB-VIEW-CSG",
+        "gpu": {
+          "geometries": 1,
+          "textures": 1,
+          "programs": 1
+        }
+      },
+      {
+        "configuration": "WEB-VIEW-ASSEMBLY",
+        "gpu": {
+          "geometries": 2,
+          "textures": 1,
+          "programs": 2
+        }
+      },
+      {
+        "configuration": "WEB-VIEW-PROP",
+        "gpu": {
+          "geometries": 2,
+          "textures": 2,
+          "programs": 2
+        }
+      },
+      {
+        "configuration": "WEB-VIEW-PROP sides=9",
+        "gpu": {
+          "geometries": 2,
+          "textures": 2,
+          "programs": 2
+        }
+      },
+      {
+        "configuration": "WEB-VIEW-CSG",
+        "gpu": {
+          "geometries": 1,
+          "textures": 1,
+          "programs": 1
+        }
+      },
+      {
+        "configuration": "WEB-VIEW-ASSEMBLY",
+        "gpu": {
+          "geometries": 2,
+          "textures": 1,
+          "programs": 2
+        }
+      },
+      {
+        "configuration": "WEB-VIEW-PROP",
+        "gpu": {
+          "geometries": 2,
+          "textures": 2,
+          "programs": 2
+        }
+      },
+      {
+        "configuration": "WEB-VIEW-PROP sides=9",
+        "gpu": {
+          "geometries": 2,
+          "textures": 2,
+          "programs": 2
+        }
+      },
+      {
+        "configuration": "WEB-VIEW-CSG",
+        "gpu": {
+          "geometries": 1,
+          "textures": 1,
+          "programs": 1
+        }
+      },
+      {
+        "configuration": "WEB-VIEW-ASSEMBLY",
+        "gpu": {
+          "geometries": 2,
+          "textures": 1,
+          "programs": 2
+        }
+      }
+    ],
+    "disposed": {
+      "view": null,
+      "disposed": true,
+      "geometries": 0,
+      "textures": 1
+    }
+  },
+  "ui_screenshot": {
+    "file": "2026-10-13-demo-screenshots/demo-ui.png",
+    "bytes": 241078,
+    "sha256": "0715bad1853daaaa9c74269296c8d59367fa4b4d22787905c4a54d8db4bbae1f"
+  },
+  "elapsed_seconds": 28.759,
+  "result": "pass"
+}

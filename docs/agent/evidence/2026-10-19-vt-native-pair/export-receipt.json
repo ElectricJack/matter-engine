@@ -1,0 +1,23 @@
+{
+  "task": "nimble-rapids-30",
+  "claim_epoch": 15,
+  "owner_session": "78a4b517-b5c5-4363-a5f9-68f2a2648e94",
+  "execution_authorization": "msg-d487a5e576894c3ab90b69ce0d8f9376",
+  "checkout_head": "4abb24a8a2b037b9b390bf7453b62c7b6649ebf7",
+  "created_at": 1792445198.3748398,
+  "artifact_root": "/mnt/d/mv15-78a4",
+  "sources": [
+    {
+      "commit": "58289c187ef2565c7d0532fe28a8cfb903023e44",
+      "tree": "d53a04a7d8233438d1e775d883cd42c314d1940d",
+      "source_root": "/mnt/d/mv15-78a4/b",
+      "archive": "/mnt/d/mv15-78a4/58289c187ef2565c7d0532fe28a8cfb903023e44.tar",
+      "archive_sha256": "e5245b259a6840223a0f1c107fc54cc8b24db94968c5a018ed49637ec965f7d7",
+      "inventory": "58289c187ef2565c7d0532fe28a8cfb903023e44-inventory.json.gz",
+      "inventory_sha256": "4a6ecb9f862ee6d1a144d4fcaa1f717af8b1269d567c0302cb249d225f4cf68f",
+      "tracked_files": 10419,
+      "symlinks": 1,
+      "archive_modes_and_extracted_blobs_match_git_tree": true
+    }
+  ]
+}

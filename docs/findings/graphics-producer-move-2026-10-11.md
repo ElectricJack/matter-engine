@@ -82,11 +82,17 @@ introduced.
 
 ## Deferred VT gap and reopen disposition
 
+The [2026-10-14 provenance follow-up](vt-smoke-provenance-2026-10-14.md) records
+historical source/shader comparisons and a pre-move scheduling/fixture mismatch.
+It does not supply a native runtime baseline or replace the failures below.
+
 The supervisor's decision supersedes the earlier reopen request to run VT and
 VT-RT on the pre-move baseline and bisect any regression. VT investigation is
 assigned to a separate follow-up; these failures no longer block this extraction.
-Their provenance remains undetermined, so neither is classified as pre-existing
-or fixed. The original results remain failures:
+**Update 2026-10-19:** the [native pre-move comparison](vt-native-pair-2026-10-19.md)
+ran both commits. Pre-move `58289c187` fails the same 7 `vt` and 12 `vt-rt`
+assertions, line for line, so both are pre-existing and not caused by this move.
+The original results remain failures:
 
 | Mode | Exit status | Failed assertions | Validation errors | Full log |
 | --- | --- | --- | --- | --- |
