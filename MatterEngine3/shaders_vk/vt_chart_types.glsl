@@ -11,8 +11,12 @@
 
 // Page geometry — MUST match chart_atlas.h (kVtPagePayload/kVtPageBorder/
 // kChartGutterTexels).
+#ifndef VT_PAGE_PAYLOAD
 #define VT_PAGE_PAYLOAD 128
+#endif
+#ifndef VT_PAGE_BORDER
 #define VT_PAGE_BORDER  4
+#endif
 #define VT_PAGE_STORE   136
 #define VT_CHART_GUTTER 4
 
@@ -21,7 +25,7 @@ struct GpuChart {
     vec4 tangent_ou;     // xyz T (unit), w = dot(origin, T)
     vec4 bitangent_ov;   // xyz B (unit), w = dot(origin, B)
     uvec4 rect;          // finest-mip atlas texels: x, y, w, h
-    uvec4 tri_range;     // x = first tri (into tris[], chart-grouped), y = count
+    uvec4 tri_range;     // first tri (chart-grouped), count, first seed node, seed node count
 };
 
 // Triangles already reordered by tri_order (chart-grouped) CPU-side, with
@@ -29,7 +33,8 @@ struct GpuChart {
 struct GpuTri {
     vec4 p0, p1, p2;     // xyz part-local position, w = plane U
     vec4 n0, n1, n2;     // xyz part-local normal,   w = plane V
-    uvec4 mat;           // x = TriEx materialId
+    uvec4 mat;           // x = TriEx materialId; optional yzw = neighbor tri+1
+                        // across edges (0,1)/(1,2)/(2,0), zero means closed
     // Per-vertex tape payload — TWO packings, selected by the request's
     // weight mode (see vt_chart_gpu.h):
     //   mode 2: u8 weight columns. wA = {v0 cols 0-3, v0 cols 4-7,
@@ -42,6 +47,17 @@ struct GpuTri {
     uvec4 wA;
     uvec4 wB;
     uvec4 wC;
+};
+
+// Compositor storage separates these immutable/mutable parts. The combined
+// GpuTri above remains the material-evaluation value and the AO stream format.
+struct GpuTriGeometry {
+    vec4 p0, p1, p2;
+    vec4 n0, n1, n2;
+    uvec4 mat;
+};
+struct GpuTriSurface {
+    uvec4 wA, wB, wC;
 };
 
 #endif  // VT_CHART_TYPES_GLSL

@@ -61,6 +61,7 @@
 #include <unordered_map>
 #include <optional>
 #include "dsl_state.h"
+#include "matter/solid_sdf_meshing.h"
 #include "tileset_spec.h"
 #include "module_resolver.h"
 #include "script/world_definition_loader.h"
@@ -121,8 +122,8 @@ struct BakeOptions {
     // stage the part without decoding the .part back off disk (10.9 ms per
     // streamed sector; see docs/sector-bake-time-findings-2026-07-30.md).
     //
-    // Does NOT change what is written: save_v2 still runs, unconditionally and
-    // with the same bytes. The only effect is that the geometry outlives the
+    // In Persistent mode this does NOT change what is written: save_v2 runs with
+    // the same bytes. The only effect is that the geometry outlives the
     // bake instead of being dropped on return.
     //
     // Default false, and the ONLY caller that sets it is
@@ -131,12 +132,19 @@ struct BakeOptions {
     // lifetime of a BakeResult is only worth it when something is about to
     // stage from it immediately.
     bool retain_geometry = false;
+    // Explicit preparation request, not a cache bypass. Requires a validated
+    // standalone static singleton leaf; excluded outputs fail closed. Implies
+    // retained geometry and never writes or creates parts_dir. The caller owns
+    // publication, cancellation/generation admission, and any later persistence.
+    enum class OutputMode { Persistent, RuntimeLeafMemory };
+    OutputMode output_mode = OutputMode::Persistent;
+
 };
 
 struct BakeResult {
     BakeError error;              // error.ok == false => nothing written
     uint64_t  resolved_hash = 0;  // valid only when error.ok
-    std::string written_path;     // cache_path of the .part (empty on error)
+    std::string written_path;     // cache_path of the .part (empty on error or memory-only success)
     // Present only for a fully committed animated bundle.  `written_path` is
     // still the final Part path so existing static callers remain unchanged.
     std::string written_anim_path;
@@ -148,6 +156,9 @@ struct BakeResult {
     // presence mask, without re-deriving placement order itself. Empty when
     // error.ok is false or the part places no children.
     std::vector<std::string> child_modules_placed;
+    // True only after source-proven static singleton metadata was durably saved
+    // with REP0. Graph hooks may skip metadata work for this exact resolved_hash.
+    bool leaf_metadata_published = false;
     // D1: EVERY animation diagnostic this bake produced, in the validator's
     // stable sorted order. `error` still carries only the first one, because a
     // pile of existing callers read exactly that; this is additive. An author
@@ -162,14 +173,87 @@ struct BakeResult {
     // just handed, so a caller can stage this part without reading back the
     // artifact it wrote. Feed it to PartStore::stage_from_bake.
     //
-    // NULL unless retain_geometry was set AND the bake succeeded AND it took
+    // NULL unless retain_geometry or RuntimeLeafMemory was requested AND the bake succeeded AND it took
     // the static path. An animated bake (which writes an ANLK-linked candidate
     // and adds its finalized LOD streams to the same manager) never sets it, so
     // a caller can treat non-null as "this is a plain static part". Callers must
-    // handle null by loading the artifact — see stage_from_bake's fallback
+    // Persistent callers can handle null by loading the artifact — see stage_from_bake's fallback
     // contract. shared_ptr, so BakeResult stays freely copyable and the type can
     // stay incomplete in this header.
     std::shared_ptr<const BakedGeometry> geometry;
+};
+
+// Owned recipe evaluation, with no meshing, GPU callback or artifact publication.
+// The DSL payload is already an owned container; job() borrows it for a synchronous
+// consumer. resolved_hash includes folded imports, canonical parameters and versions.
+struct EvaluatedSolidSource {
+    dsl::DslState::SolidSourceRequest source;
+    uint64_t resolved_hash = 0;
+    uint64_t recipe_digest = 0;
+    uint64_t generation = 0;
+    gpu_meshing::SolidJob job() const {
+        gpu_meshing::SolidJob result;
+        result.ops = source.ops.data();
+        result.op_count = static_cast<uint32_t>(source.ops.size());
+        result.voxel_m = source.voxel_m;
+        result.max_mesh_vertices = source.max_vertices;
+        result.material = source.material;
+        result.generation = generation;
+        return result;
+    }
+};
+struct SolidSourceEvaluationOptions {
+    uint64_t time_budget_ms = 1000;
+    uint64_t generation = 0;
+    gpu_meshing::BuildControl control;
+};
+
+// Optional part-local, finite material source. Read independently of build(),
+// including when the receiver geometry is already cached. Programs use the
+// same surface language as World.surfaces; all geometry and text are owned.
+struct FiniteSurfacePlacement {
+    uint32_t source = 0;
+    std::array<float,16> matrix{}; // rigid, row-major
+};
+struct FiniteSurfaceReceiver {
+    std::array<float,3> origin_m{}, u{}, v{}, n{};
+    std::array<float,4> domain_m{}; // u min, v min, width, height; origin is on the plane
+};
+struct FiniteSurfaceModule {
+    FiniteSurfaceReceiver frame;
+    std::array<float,2> period_m{};
+    float texels_per_m=0;
+    std::vector<FiniteSurfacePlacement> placements;
+    std::string base_program;
+};
+struct FiniteSurfaceMaterialMapping {
+    uint32_t module=0;
+    FiniteSurfaceReceiver frame;
+    std::array<float,2> phase{}, u_range_m{-1e20f,1e20f};
+    float datum_m=0;
+};
+struct EvaluatedFiniteSurface {
+    bool present = false;
+    uint32_t version = 1;
+    std::vector<EvaluatedFiniteSurface> sources;
+    std::vector<FiniteSurfacePlacement> placements;
+    std::vector<FiniteSurfaceReceiver> receivers;
+    std::vector<FiniteSurfaceModule> modules;
+    std::vector<FiniteSurfaceMaterialMapping> material_mappings;
+    EvaluatedSolidSource geometry;
+    std::array<float, 3> bounds_min_m{}, bounds_max_m{};
+    float pixel_m = 0;
+    std::string appearance_program, base_program;
+    uint64_t appearance_hash = 0, base_hash = 0;
+};
+
+// Complete procedural material evaluated directly on ordinary part geometry.
+// Coordinates and physical height are in part-local metres; instances share it.
+struct EvaluatedDirectSurface {
+    bool present = false;
+    uint64_t part_hash = 0, program_hash = 0, generation = 0;
+    uint32_t material = 0;
+    std::string program;
 };
 
 struct TilesetEvalResult {
@@ -241,6 +325,30 @@ public:
                            const std::string* child_modules = nullptr,
                            const std::string* child_params = nullptr);
 
+    // Evaluates the same sandbox/defaults/RNG/build path as bake_source, then
+    // returns a standalone field recipe. Imports are supported; child assets,
+    // non-solid output and unbounded evaluation are rejected. Output is unchanged
+    // on failure. No artifact directory is created and no GPU service is required.
+    bool evaluate_solid_source(const std::string& source,
+                               const std::string& params_json,
+                               EvaluatedSolidSource& output,
+                               BakeError& error,
+                               const SolidSourceEvaluationOptions& options = {});
+
+    // Missing declaration succeeds with present=false. Malformed declarations
+    // fail without replacing output. Does not construct the Part, run build(),
+    // call a GPU service, or create artifacts. Uses the same bounded sandbox.
+    bool evaluate_finite_surface(const std::string& source,
+                                 const std::string& params_json,
+                                 EvaluatedFiniteSurface& output, BakeError& error,
+                                 const SolidSourceEvaluationOptions& options = {});
+
+    // Reads either static surface() or finiteSurface() once, without build().
+    // Declarations are mutually exclusive; both outputs are atomic on failure.
+    bool evaluate_part_surface(const std::string& source, const std::string& params_json,
+                               EvaluatedDirectSurface& direct, EvaluatedFiniteSurface& finite,
+                               BakeError& error, const SolidSourceEvaluationOptions& options = {});
+
     // Hash-only: merge static+override params, fold child_hashes, return the
     // content hash WITHOUT running build()/baking. Shares the params-merge +
     // canonicalization path with bake_source so the two ALWAYS agree.
@@ -248,6 +356,15 @@ public:
                           const std::string& params_json,
                           const uint64_t* child_hashes = nullptr,
                           size_t child_count = 0);
+
+    // Exact request identity for a prepared resolved-hash manifest. Does not
+    // evaluate JS or canonicalize overrides; equivalent JSON spellings may
+    // produce different request keys. Never use this as the baked part hash.
+    // Includes transitive sources, raw overrides, children, bake mode/version.
+    uint64_t resolve_request_hash(const std::string& source,
+                                  const std::string& params_json,
+                                  const uint64_t* child_hashes = nullptr,
+                                  size_t child_count = 0);
 
     // Evaluate a World root: fresh isolated context, runs field() + biomes(),
     // accumulates the field-program op lines, and returns them as a FieldProgram
@@ -394,6 +511,17 @@ public:
     // the raw part source is hashed (legacy behavior; non-importer parts are
     // unaffected). Clearing fold_cache when the root changes ensures shared-lib
     // edits invalidate the cache (prevent stale folded sources).
+    // Explicit opt-in source mesher. The callback marshals to the device owner
+    // thread and blocks; ScriptHost never accesses Vulkan itself. Configure on
+    // this host's owner thread before a bake, like the other host state.
+    void set_solid_source_baker(gpu_meshing::SolidSourceBaker callback,
+                               gpu_meshing::BuildControl control = {},
+                               uint64_t generation = 0) {
+        solid_source_baker_ = std::move(callback);
+        solid_source_control_ = std::move(control);
+        solid_source_generation_ = generation;
+    }
+
     void set_shared_lib_root(const std::string& root) {
         set_shared_lib_roots(root.empty()
             ? std::vector<std::string>{}
@@ -418,6 +546,14 @@ public:
 
     uint64_t fold_cache_hits() const { return fold_hits_; }
     uint64_t fold_cache_misses() const { return fold_misses_; }
+
+    // Work counters for this host's lifetime. lod_evaluations counts calls to
+    // eval_lods / eval_no_impostor / eval_lod_budgets, each of which builds a
+    // fresh QuickJS runtime to read one class static. Owner-thread only, like
+    // the last_* scratch below.
+    struct Stats { uint64_t lod_evaluations = 0; };
+    const Stats& stats() const { return stats_; }
+
     // Clears the fold cache. Called by set_shared_lib_root() to invalidate cached
     // folded sources when the shared-lib root changes. Engine reload does not call
     // this because install_graph() recreates the ScriptHost (fresh cache by design).
@@ -433,12 +569,29 @@ public:
     std::string last_ambient_probe() const { return last_ambient_probe_; }
 
 private:
+    BakeResult execute_source(const std::string& source, const std::string& params_json,
+                              const BakeOptions& opts, const uint64_t* child_hashes,
+                              size_t child_count, const std::string* child_modules,
+                              const std::string* child_params,
+                              EvaluatedSolidSource* evaluated,
+                              const SolidSourceEvaluationOptions* evaluation_options,
+                              EvaluatedFiniteSurface* finite_surface = nullptr,
+                              EvaluatedDirectSurface* direct_surface = nullptr);
     // Returns canonical merged-params JSON; fills err on failure. Evals source
     // to read `static params`; does NOT call build(). Also stashes the result in
     // last_merged_params_.
     std::string merge_params_canonical(const std::string& source,
                                        const std::string& params_json,
                                        BakeError& err);
+
+    bool solid_source_is_current() const {
+        return (!solid_source_control_.cancelled || !solid_source_control_.cancelled()) &&
+               (!solid_source_control_.generation_is_current ||
+                solid_source_control_.generation_is_current(solid_source_generation_));
+    }
+    gpu_meshing::SolidSourceBaker solid_source_baker_;
+    gpu_meshing::BuildControl solid_source_control_;
+    uint64_t solid_source_generation_ = 0;
 
     std::vector<std::string> shared_lib_roots_;
     // Scratch describing the MOST RECENT call, overwritten by the next one and
@@ -454,8 +607,12 @@ private:
     // Fold cache: (source, ordered shared-lib roots) -> FoldResult (thread-safe).
     std::mutex fold_mu_;
     std::unordered_map<uint64_t, module_resolver::FoldResult> fold_cache_;
+    // Same invalidation boundary as fold_cache_; exact source keys avoid an
+    // additional hash-only alias. Prefix excludes params, children, mode/version.
+    std::unordered_map<std::string, uint64_t> request_source_prefixes_;
     uint64_t fold_hits_ = 0;
     uint64_t fold_misses_ = 0;
+    Stats stats_;
 };
 
 } // namespace script_host

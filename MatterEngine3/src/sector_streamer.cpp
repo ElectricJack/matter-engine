@@ -1317,10 +1317,33 @@ void SectorStreamer::update(float anchor_x, float anchor_y, float anchor_z) {
 // next_request()
 // ---------------------------------------------------------------------------
 
+void SectorStreamer::set_view(const StreamingView& view) {
+    view_ = view;
+    for (auto& [k, st] : sectors_) {
+        const float width = cfg_.nested_sectors
+            ? level_size(st.desired_level < 0 ? 0 : st.desired_level) : cfg_.sector_size;
+        bool visible = true;
+        if (view_.valid && cfg_.volumetric_sectors) {
+            int level; int64_t tx, ty, tz;
+            sunkey(k, level, tx, ty, tz);
+            const double lo[3] = {double(tx)*width, double(ty)*width, double(tz)*width};
+            for (const auto& plane : view_.planes) {
+                double support = plane[3], magnitude = std::abs(double(plane[3]));
+                for (int axis=0; axis<3; ++axis) {
+                    const double term = plane[axis]*(lo[axis]+(plane[axis]>=0 ? width : 0));
+                    support += term; magnitude += std::abs(term);
+                }
+                if (support < -1e-4*(1+magnitude)) { visible=false; break; }
+            }
+        }
+        st.view_visible = visible;
+    }
+}
+
 bool SectorStreamer::next_request(SectorRequest& out) {
     if (inflight_ >= cfg_.max_inflight) return false;
 
-    // Nearest first across BOTH holes and upgrades, holes winning ties
+    // Visible first, then nearest across holes and upgrades, holes winning ties
     // within one sector width. The old strict holes-first policy served
     // brand-new frontier sectors kilometers away (fog-hidden, coarsest LOD)
     // before promoting the coarse tiles directly under a moving camera —
@@ -1331,6 +1354,7 @@ bool SectorStreamer::next_request(SectorRequest& out) {
     for (;;) {
         float best_score = std::numeric_limits<float>::max();
         bool found = false;
+        bool best_visible = false;
 
         for (auto& [k, st] : sectors_) {
             if (st.inflight_rung >= 0) continue;      // already in flight
@@ -1347,7 +1371,9 @@ bool SectorStreamer::next_request(SectorRequest& out) {
                 ? level_size(st.desired_level < 0 ? 0 : st.desired_level)
                 : cfg_.sector_size;
             float score = is_hole ? st.dist - width : st.dist;
-            if (score < best_score) {
+            const bool visible = st.view_visible;
+            if (!found || (visible && !best_visible) || (visible == best_visible && score < best_score)) {
+                best_visible = visible;
                 best_score = score;
                 best_k = k;
                 found = true;
@@ -1513,6 +1539,20 @@ void SectorStreamer::clear() {
 // O(tracked sectors): there is no running total, so this walks the entire map
 // on every call. Fine for a per-frame HUD line or a test assertion; do not put
 // it inside a loop that is already iterating sectors.
+VisibleSectorStatus SectorStreamer::visible_status() const {
+    VisibleSectorStatus result;
+    result.valid = view_.valid && cfg_.volumetric_sectors;
+    if (!result.valid) return result;
+    for (const auto& [key, state] : sectors_) {
+        if (state.desired_rung < 0 || !state.view_visible) continue;
+        ++result.desired;
+        // Count missing/held/cooling-down sectors as well as issued work.
+        // A resident coarser rung is coverage, not target-detail readiness.
+        if (state.resident_rung != state.desired_rung) ++result.pending;
+    }
+    return result;
+}
+
 size_t SectorStreamer::resident_count() const {
     size_t n = 0;
     for (const auto& [k, st] : sectors_)

@@ -40,6 +40,42 @@ static std::vector<Eviction> settle(SectorStreamer& s, float x, float z) {
 
 int main() {
     Config cfg;   // defaults: rings 48/120/300/800, hysteresis 16, inflight 8
+    {
+        Config view_config;
+        view_config.sector_size=16;
+        view_config.nested_sectors=true;
+        view_config.volumetric_sectors=true;
+        view_config.terrain_bands={{160,5}};
+        view_config.y_min=-16;view_config.y_max=16;
+        SectorStreamer streamer(view_config);
+        streamer.update(0,0,0);
+        StreamingView view; view.valid=true;
+        // A distant positive-X halfspace must outrank nearby offscreen holes.
+        view.planes[0][0]=1;view.planes[0][3]=-64;
+        streamer.set_view(view);
+        const auto initial = streamer.visible_status();
+        CHECK(initial.valid && initial.desired>0 && initial.pending==initial.desired,
+              "unqueued visible holes count as pending");
+        SectorRequest first;
+        CHECK(streamer.next_request(first), "visible-first request exists");
+        CHECK(first.tx>=3, "visible distant sector precedes nearby offscreen sector");
+        streamer.on_published(first.tx,first.ty,first.tz,first.rung);
+        CHECK(streamer.visible_status().pending+1==initial.pending,
+              "published visible target reduces pending count");
+        // Camera rotation changes priority without moving the anchor or reset.
+        view.planes[0][0]=-1;
+        streamer.set_view(view);
+        SectorRequest second;
+        CHECK(streamer.next_request(second), "rotated view request exists");
+        CHECK(second.tx<=-4, "camera rotation reprioritizes pending sectors");
+        streamer.on_published(second.tx,second.ty,second.tz,second.rung);
+        view.valid=false;streamer.set_view(view);
+        CHECK(!streamer.visible_status().valid, "missing view never reports visible readiness");
+        SectorRequest third;
+        CHECK(streamer.next_request(third), "background request remains available");
+        CHECK(third.tx>=-1 && third.tx<=0, "no-view mode restores nearest-first selection");
+    }
+
 
     // --- the nested key round trip (volumetric-sectors M1) -------------------
     //

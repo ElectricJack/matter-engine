@@ -1,6 +1,9 @@
 #ifndef MATTER_VK_MATERIAL_COMMON_GLSL
 #define MATTER_VK_MATERIAL_COMMON_GLSL
 
+// Matches MaterialSurfaceFlags; stored in flags_misc.x.
+const uint MATERIAL_SURFACE_DETAIL = 1u << 5;
+
 struct MaterialGpu {
     vec4 base_roughness;
     vec4 metal_opacity_spec_coat;

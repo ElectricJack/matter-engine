@@ -92,8 +92,20 @@ struct Baker {
     virtual ~Baker() = default;
     // Content hash for one part: merge static+override params, fold child_hashes,
     // NO bake. Returns 0 on resolve failure (fail-closed => install hard-errors).
+    //
+    // `merged_params_out`, when non-null, receives the MERGED parameter object
+    // this hash was folded from: the class's `static params` defaults overlaid
+    // with `params`. Only the host can read those defaults (master C-2, the
+    // same reason the hash itself is asked for here) and it computes the object
+    // anyway to produce the hash, so reporting it costs nothing. An
+    // implementation that cannot supply it leaves the string EMPTY rather than
+    // writing "{}", so callers can tell "no defaults" from "not answered".
+    //
+    // It is an out-param, not a `last_merged_params()` getter, on purpose: a
+    // decorating Baker that forwards resolve_hash cannot then silently drop it.
     virtual uint64_t resolve_hash(const std::string& source, const Params& params,
-                                  const std::vector<uint64_t>& child_hashes) = 0;
+                                  const std::vector<uint64_t>& child_hashes,
+                                  std::string* merged_params_out) = 0;
     // True if parts/<resolved_hash>.part already exists (cache hit => skip bake).
     virtual bool cached(uint64_t resolved_hash) = 0;
     // Bake one part. child_hashes are this part's direct children's resolved hashes
@@ -236,7 +248,7 @@ private:
 
 namespace part_graph {
 
-// Reads .js modules from a SEARCH PATH of object roots, most-specific first,
+// Reads .js modules recursively from object tiers, most-specific first,
 // and evaluates `static requires` via the host's top-level eval (no build()).
 //
 // First match wins: with roots {scenes/<S>/objects, <project>/objects}, a
@@ -247,7 +259,7 @@ namespace part_graph {
 class FileModuleResolver : public ModuleResolver {
 public:
     // Single-root convenience: the flat layout, and every test/tool that has
-    // exactly one object directory.
+    // exactly one object tier (possibly containing grouping folders).
     FileModuleResolver(script_host::ScriptHost& host, std::string schemas_dir);
     FileModuleResolver(script_host::ScriptHost& host, std::vector<std::string> roots);
     bool load_source(const std::string& module, std::string& source_out) override;
@@ -271,7 +283,8 @@ class HostBaker : public Baker {
 public:
     HostBaker(script_host::ScriptHost& host, std::string parts_dir);
     uint64_t resolve_hash(const std::string& source, const Params& params,
-                          const std::vector<uint64_t>& child_hashes) override;
+                          const std::vector<uint64_t>& child_hashes,
+                          std::string* merged_params_out) override;
     bool cached(uint64_t resolved_hash) override;
     bool bake(const std::string& source, const Params& params,
               const std::vector<uint64_t>& child_hashes,
@@ -351,6 +364,9 @@ public:
     // skipped — production installs never call this setter.
     void set_bake_observer(BakeObserver* observer) { observer_ = observer; }
 
+    // The host this baker evaluates through; tests read its work counters.
+    const script_host::ScriptHost& host() const { return host_; }
+
 private:
     script_host::ScriptHost& host_;
     std::string              parts_dir_;
@@ -377,6 +393,7 @@ private:
     // only trusts these when last_baked_hash_ == the part it's asked about.
     std::vector<std::string> last_child_modules_placed_;
     uint64_t last_baked_hash_ = 0;
+    uint64_t last_leaf_metadata_hash_ = 0;
 };
 
 } // namespace part_graph

@@ -367,11 +367,13 @@ struct HeapEdge {
 // Build a collapse candidate for edge {p,q}. Returns false if the edge must
 // not collapse (both endpoints boundary-locked). When exactly one endpoint is
 // locked, that endpoint is the survivor and the target is its (frozen) position.
-static bool buildEdge(int p, int q, const std::vector<WVert>& verts, HeapEdge& e) {
+// preserve_locked_edges instead rejects either locked endpoint.
+static bool buildEdge(int p, int q, const std::vector<WVert>& verts, HeapEdge& e,
+                      bool preserve_locked_edges) {
     if (p == q) return false; // never form a self-edge (survivor==removed)
     const WVert& vp = verts[p];
     const WVert& vq = verts[q];
-    if (vp.locked && vq.locked) return false;
+    if ((vp.locked && vq.locked) || (preserve_locked_edges && (vp.locked || vq.locked))) return false;
 
     Quadric Q = vp.q; Q.add(vq.q);
     int survivor, removed;
@@ -493,7 +495,7 @@ static void decimate(std::vector<WVert>& verts, std::vector<WTri>& tris,
         int pr[3][2] = {{a,b}, {b,c}, {c,a}};
         for (auto& pe : pr) {
             HeapEdge he;
-            if (buildEdge(pe[0], pe[1], verts, he)) heap.push(he);
+            if (buildEdge(pe[0], pe[1], verts, he, opts.preserve_locked_edges)) heap.push(he);
         }
     };
     for (int t = 0; t < (int)tris.size(); ++t)

@@ -56,6 +56,8 @@
 #include <vector>
 
 #include "matter/camera.h"
+#include "matter/evaluation_channels.h"
+#include "matter/gpu_timing_sample.h"
 #include "matter/animation_debug.h"
 #include "matter/render_debug.h"
 #include "matter/ecs.h"
@@ -72,6 +74,7 @@
 
 #include "matter/events.h"
 #include "matter/query.h"
+#include "matter/asset_export.h"
 
 #include "bake_trace.h"   // bake_trace::Span — see last_bake_trace()
 #include "matter/bake_observer.h"  // optional per-rung observer (W3, Lab-only)
@@ -249,6 +252,14 @@ struct RenderOptions {
                                       // (off by default: mesh-session winding
                                       // is not guaranteed for all part kinds)
     DlssMode dlss_mode = DlssMode::Native;
+    // Whether replacing the sparse-voxel forest snapshot (streaming placement
+    // updates, catalog swaps) resets the whole-frame DLSS/temporal history.
+    // True is the conservative default: every tree pixel restarts its
+    // stochastic accumulation, which reads as the forest going coarse and
+    // re-converging after each terrain update. False keeps the accumulated
+    // history and lets the upscaler's own disocclusion handling cover the
+    // newly placed trees, the same way streamed mesh parts already behave.
+    bool vulkan_forest_history_reset = true;
     VulkanRayTracingSettings vulkan_ray_tracing{};
     VulkanGiSettings vulkan_gi{};
     VulkanLightingOverrides vulkan_lighting{};
@@ -373,6 +384,10 @@ struct FrameStats {
     uint32_t occlusion_culled  = 0;   // clusters the occlusion ID mask rejected
     uint32_t triangles         = 0;   // rasterized triangle count
     uint32_t draw_batches      = 0;   // indirect draw buckets with >=1 instance
+    // Descriptors the scene renderer wrote this frame (sum of descriptorCount
+    // over its vkUpdateDescriptorSets calls). A steady scene stays small; a
+    // frame that rewrites the 432-sampler tileset bank shows it here.
+    uint32_t descriptors_written = 0;
     // M2.5: terminal impostors holding an atlas slot right now. On the stats
     // overlay because "are any drawing?" is the question the abandoned
     // impostor tier could not answer -- it was absent for a whole generation
@@ -396,17 +411,39 @@ struct FrameStats {
     uint64_t vk_static_full_uploads = 0;
     uint64_t vk_static_append_uploads = 0;
     uint64_t vk_immediate_submits = 0;
+    // Local-light world/index census. Candidate count is the worst populated
+    // cell (including oversized fallbacks), not a world-wide light scan.
+    uint32_t local_light_count = 0;
+    uint32_t local_light_occupied_cells = 0;
+    uint32_t local_light_max_candidates = 0;
+    uint32_t local_light_oversized = 0;
+    uint64_t local_light_index_entries = 0;
+    uint64_t local_light_index_bytes = 0;
     // WP-E (chart-space virtual texturing) residency census. All zero when the
     // VT runtime never started (no chart-bearing part in the scene).
     bool     vt_active = false;
     uint32_t vt_variants = 0;          // registered (variant, rung) layers
     uint32_t vt_max_variants = 0;      // MATTER_VT_MAX_VARIANTS, post-clamp
     uint32_t vt_pool_used = 0;         // occupied physical page slots
+    uint32_t vt_material_pages = 0;
+    uint32_t vt_shared_material_references = 0;
+    uint32_t vt_coverage_only_pages = 0;
+    uint32_t vt_occlusion_pages = 0;          // published receiver factors
+    uint32_t vt_occlusion_retained_pages = 0; // includes pending GPU retirement
+    uint64_t vt_occlusion_allocated_bytes = 0; // actual slab allocations, including slack
+    uint64_t vt_enrich_deferred_total = 0;
     uint32_t vt_pool_capacity = 0;
+    uint32_t vt_replacement_reserve_pages = 0;
+    uint32_t vt_dirty_pages = 0;
+    uint64_t vt_fills_stale_total = 0;
     uint32_t vt_pool_pinned = 0;       // always-resident tails
     uint32_t vt_fills_last_frame = 0;
     uint32_t vt_requests_last_frame = 0;
     uint32_t vt_queue_depth = 0;
+    uint32_t vt_mandatory_queue_depth = 0;
+    uint32_t vt_detail_queue_depth = 0;
+    uint64_t vt_oldest_mandatory_age_frames = 0;
+    uint64_t vt_oldest_detail_age_frames = 0;
     uint32_t vt_rejected_variants = 0; // fell back to legacy (budget/layers)
     // M6: registrations that reused an existing layer because it had the same
     // parameterisation, and rebuilds a finer rung forced. shared_refs is the
@@ -415,6 +452,19 @@ struct FrameStats {
     uint64_t vt_finer_rebuilds_total = 0;
     uint64_t vt_fills_total = 0;
     uint64_t vt_evictions_total = 0;
+    uint64_t vt_invalidations_total = 0;
+    uint64_t vt_pages_dropped_total = 0;
+    uint64_t vt_fills_failed_total = 0;
+    uint64_t vt_requests_dropped_total = 0;
+    uint64_t vt_enrich_total = 0;
+    uint32_t vt_enrich_queue_depth = 0;
+    uint64_t vt_cpu_frame_serial = 0;
+    // CPU wall time for demand selection and the three VT renderer hooks.
+    // Registration is separate as draw_vt_requests_ms. No GPU duration implied.
+    double vt_cpu_demand_ms = 0;
+    double vt_cpu_begin_ms = 0;
+    double vt_cpu_pre_pass_ms = 0;
+    double vt_cpu_post_pass_ms = 0;
     uint64_t vt_pool_bytes = 0;
     uint64_t vt_mesh_bytes = 0;        // CPU mesh copies held for the filler
     uint64_t vt_mesh_budget_bytes = 0; // MATTER_VT_MESH_BUDGET_MB, in bytes
@@ -445,8 +495,8 @@ struct FrameStats {
     float gpu_gbuffer_ms        = 0;
     float gpu_blas_ms           = 0;
     float gpu_tlas_ms           = 0;
-    float gpu_rt_ms             = 0;   // primary/shadow trace only
-    float gpu_rt_gi_ms          = 0;   // GI/reflection trace (0 when GI off)
+    float gpu_rt_ms             = 0;   // sun-shadow trace only (legacy name)
+    float gpu_rt_gi_ms          = 0;   // aggregate GI/reflection/transmission trace (0 when GI off)
     float gpu_denoise_ms        = 0;
     float gpu_dlss_ms           = 0;
     float gpu_composite_ms      = 0;
@@ -494,6 +544,13 @@ struct FrameStats {
     uint64_t ecs_fixed_steps = 0;
     uint64_t ecs_dropped_steps = 0;
     uint64_t ecs_invalid_ticks = 0;
+    float gpu_rt_local_direct_ms = 0; // EMA; primary local-light trace
+    GpuTimingSample gpu_timing_sample{}; // raw, availability-gated; no EMA
+    uint32_t raster_width = 0, raster_height = 0;
+    float gpu_hdr_lighting_ms = 0; // HDR reconstruction, before display transform
+    float gpu_primary_light_cull_ms = 0; // optional GPU tile-list construction
+    float gpu_rt_gi_diffuse_ms = 0; // split-resolution child of gpu_rt_gi_ms
+    float gpu_rt_gi_reflection_transmission_ms = 0; // inseparable dispatch child
 };
 
 // Appends the stable forward-water evidence fragment used by perf JSON. Kept
@@ -594,6 +651,14 @@ public:
 
     bool readback_swapchain_rgba8(const VulkanFrame& frame,
                                   std::vector<uint8_t>& rgba,
+                                  std::string& err);
+    bool queue_evaluation_channels(const VulkanFrame& frame, std::string& err);
+    bool finish_evaluation_channels(uint64_t frame_serial, bool frame_completed,
+                                    EvaluationChannels& channels,
+                                    std::string& err);
+    bool evaluation_detail_report(const EvaluationChannels& channels,
+                                  uint32_t desired_max_lod, bool require_rt,
+                                  VisibleDetailReport& report,
                                   std::string& err);
 
     // Phase B: run queued render-thread bake work for up to ms_budget
@@ -806,6 +871,9 @@ public:
     // Copied coordinator state; no streamer or render-resource state crosses
     // the worker/app boundary.
     streaming::SectorStreamingStatus streaming_status() const;
+    // Snapshot of coarse part hashes whose closed-world refinement is not
+    // published yet. A captured visible part matching one is not detail-ready.
+    std::vector<uint64_t> pending_refinement_parts() const;
 
     // ---- Seam welding (volumetric-sectors M0-WP3b) --------------------------
     //
@@ -987,8 +1055,9 @@ public:
     // Bake Lab: snapshot of the hierarchical span trace recorded by the most
     // recent (or in-flight) bake. Valid after BakeFinished; calling during a
     // bake is safe and yields a consistent partial tree (open spans keep
-    // end_ms == bake_trace::kOpenEndMs). Root children are the execute_bake
-    // stages (install/compose/publish; a resolve-cache hit skips the first two).
+    // end_ms == bake_trace::kOpenEndMs). Root children include resolve-cache
+    // preflight spans followed by the execute_bake stages (install/compose/
+    // publish; a resolve-cache hit skips the first two stages).
     void last_bake_trace(bake_trace::Span& out) const;
 
     // Phase C Task 7: enqueue a seed-driven world reroll. Stores
@@ -1007,6 +1076,12 @@ public:
     // captured into cfg before the next LocalProvider is constructed.
     void regenerate(uint64_t world_seed);
 
+    // Apply one canonical JSON override object to one declared manifest-root
+    // module, then enqueue the same asynchronous Reload lifecycle as
+    // regenerate().  This is session-only: it never writes authored JS.
+    void regenerate_parameters(const std::string& module,
+                               const std::string& canonical_params_json);
+
     // Query API (backed by a lazily built CPU BVH; first call after a bake pays
     // the build cost).
     bool raycast(const float origin[3], const float dir[3], float max_t, RayHit& out);
@@ -1016,6 +1091,12 @@ public:
 
 
     bool part_bounds(uint64_t part_hash, PartBounds& out) const;
+
+    // Offline static asset export, app thread BEFORE begin_frame. Requires a
+    // completed bake and resident CPU geometry. Writes one NEW directory with
+    // OBJ/MTL, GLB and PBR/height PNG maps; failures preserve the destination.
+    bool export_asset(uint64_t part_hash, uint32_t lod, const std::string& directory,
+                      AssetExportReceipt& out, std::string& error);
 
     // GPU pick: read the identity buffer at a viewport pixel and resolve
     // it to a static instance (part_hash) or dynamic entity. Coordinates

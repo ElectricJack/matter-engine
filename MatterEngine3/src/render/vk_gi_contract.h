@@ -27,8 +27,9 @@
 // renderer; the defaults below are the "GI on, cheapest useful configuration"
 // baseline. The multipliers are dimensionless scales on their respective
 // contributions (1.0 = physical), max_reflection_roughness is the roughness
-// above which reflections stop being traced, and trace_scale is the GI trace
-// resolution as a fraction of the G-buffer (1.0 = full rate).
+// above which reflections stop being traced. trace_scale controls diffuse
+// resolution; reflection_trace_scale controls reflection AND transmission.
+// Both are fractions of the G-buffer (1.0 = full rate).
 // denoiser_iterations 0 means no denoise pass.
 typedef struct VulkanGiSettings {
 #ifdef __cplusplus
@@ -42,6 +43,7 @@ typedef struct VulkanGiSettings {
     float max_reflection_roughness = 1.0f;
     float transmission_multiplier = 1.0f;
     float scattering_multiplier = 1.0f;
+    float reflection_trace_scale = 1.0f;
 #else
     uint32_t enabled;
     uint32_t max_bounces;
@@ -53,6 +55,7 @@ typedef struct VulkanGiSettings {
     float max_reflection_roughness;
     float transmission_multiplier;
     float scattering_multiplier;
+    float reflection_trace_scale;
 #endif
 } VulkanGiSettings;
 

@@ -70,9 +70,17 @@ void test_validate() {
 
 void test_clear() {
     SelectionSet sel;
-    sel.replace({SelectedObject::Entity, 1});
-    sel.toggle({SelectedObject::Entity, 2});
+    assert(sel.revision() == 0);
     sel.clear();
+    assert(sel.revision() == 0);  // idempotent clear
+    sel.replace({SelectedObject::Entity, 1});
+    assert(sel.revision() == 1);
+    sel.replace({SelectedObject::Entity, 1});
+    assert(sel.revision() == 1);  // idempotent replace
+    sel.toggle({SelectedObject::Entity, 2});
+    assert(sel.revision() == 2);
+    sel.clear();
+    assert(sel.revision() == 3);
     assert(sel.empty());
     assert(sel.primary() == nullptr);
     std::printf("  clear: OK\n");

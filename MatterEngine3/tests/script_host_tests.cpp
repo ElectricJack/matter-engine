@@ -14,6 +14,9 @@ extern "C" {
 #include "part_render_policy.h"
 #include "../../libs/MatterSurfaceLib/include/blas_manager.hpp"
 #include "../../libs/MatterSurfaceLib/include/tlas_manager.hpp"
+#include "../../libs/MatterSurfaceLib/include/cell.h"
+#include <cmath>
+#include <limits>
 #include <sys/stat.h>
 #include <vector>
 
@@ -147,6 +150,16 @@ static void test_resolve_hash_matches_and_skips_build() {
         " build(p){ globalThis.__built2 = true; } }", "{}", nullptr, 0);
     CHECK(hp.last_merged_params().find("__built2") == std::string::npos,
           "resolve_hash did not run build()");
+    // Compiled base reuse must never reuse a Part class or mutable realm.
+    const char* isolated = "class Isolated extends Part { static params = { n: (Part.__probe = (Part.__probe || 0) + 1) }; build(p) {} }";
+    const auto expected = hb.bake_source(isolated, "{}", {});
+    CHECK(expected.error.ok, "isolated base reference bake succeeds");
+    for (int i = 0; i < 8; ++i) {
+        script_host::ScriptHost fresh;
+        CHECK(fresh.resolve_hash(isolated, "{}", nullptr, 0) == expected.resolved_hash &&
+              fresh.last_merged_params() == "{\"n\":1}",
+              "compiled Part base preserves hashes and fresh mutable globals");
+    }
 }
 
 static void test_bindings_record_ops_and_misuse() {
@@ -252,6 +265,102 @@ static void test_bake_writes_part() {
     CHECK(r.error.ok, "sphere bake succeeds");
     CHECK(!r.written_path.empty(), "written path reported");
     CHECK(file_exists(r.written_path), "the .part file exists on disk");
+}
+
+static void test_absolute_voxel_sampling() {
+    CHECK(choose_absolute_division_pow(1, 0.08f, 4, 6) == 4,
+          "absolute sampling preserves the coarse script lattice");
+    CHECK(choose_absolute_division_pow(1, 0.04f, 4, 6) == 5,
+          "absolute sampling selects an intermediate lattice");
+    CHECK(choose_absolute_division_pow(1, 0.026f, 4, 6) == 6,
+          "26 mm brushes select the 15.9 mm lattice");
+    CHECK(choose_absolute_division_pow(1, std::numeric_limits<float>::denorm_min(), 4, 6) == 6,
+          "arbitrarily fine requests saturate at the resource ceiling");
+    CHECK(choose_absolute_division_pow(1, std::numeric_limits<float>::quiet_NaN(), 4, 6) == 4 &&
+          choose_absolute_division_pow(1, 0, 4, 6) == 4,
+          "invalid absolute sampling inputs retain the baseline");
+    CHECK(choose_division_pow(0.026f, 0.026f, 4, 6) == 4,
+          "existing live particle resolution semantics are unchanged");
+
+    // All brushes here lower to fat primitives except the explicitly selected
+    // subtractive sphere. No additive sphere can accidentally supply detail.
+    // Keep the small fixture inside one cell for a cheap end-to-end test.
+    const char* source = R"JS(
+class SamplingProbe extends Part {
+  static params = { spacing: 0.08, detailSpacing: 0.08, height: 0.10, carve: 0 };
+  build(p) {
+    this.beginVoxels(p.spacing); this.fill(MAT.bark); this.smoothing(0);
+    this.box([0.5,0.25,0.5],[0.22,p.height/2,0.09]); this.endVoxels();
+    if (p.carve) {
+      this.beginVoxels(p.detailSpacing); this.smoothing(0);
+      if (p.carve === 1) this.capsule([0.32,0.3,0.5],[0.68,0.3,0.5],0.024);
+      else this.sphere([0.5,0.3,0.5],0.024);
+      this.difference(); this.endVoxels();
+    }
+  }
+}
+)JS";
+    auto bake = [&](const char* params) {
+        script_host::ScriptHost host;
+        auto result = host.bake_source(source, params, {});
+        CHECK(result.error.ok, "thin timber sampling fixture bakes");
+        BLASManager blas; TLASManager tlas(64);
+        std::vector<part_asset::ChildInstance> children;
+        part_asset::LodLevels lods;
+        const bool loaded = result.error.ok && part_asset::load_v2(
+            result.written_path, result.resolved_hash, blas, tlas, children, lods);
+        CHECK(loaded, "thin timber sampling fixture reloads");
+        std::vector<Tri> triangles;
+        if (loaded) blas.generate_triangle_data(triangles);
+        CHECK(!triangles.empty(), "thin timber retains a closed core");
+        for (const Tri& t : triangles) for (const auto& v : {t.vertex0, t.vertex1, t.vertex2}) {
+            CHECK(std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z),
+                  "sampled timber has finite vertices");
+            CHECK(v.x >= 0.26f && v.x <= 0.74f && v.y >= 0.17f && v.y <= 0.33f &&
+                  v.z >= 0.39f && v.z <= 0.61f,
+                  "sampled timber stays within its physical envelope");
+        }
+        return triangles;
+    };
+    const auto coarse = bake("{}");
+    const auto plank = bake("{\"spacing\":0.026}");
+    const auto beam = bake("{\"spacing\":0.026,\"height\":0.12}");
+    CHECK(plank.size() > coarse.size() * 4 && beam.size() > coarse.size() * 4,
+          "single-session 100 mm plank and 120 mm beam get finer real geometry");
+
+    const auto mixed = bake("{\"carve\":1,\"detailSpacing\":0.016}");
+    const auto all_fine = bake("{\"spacing\":0.016,\"carve\":1,\"detailSpacing\":0.016}");
+    const auto sphere_cut = bake("{\"carve\":2,\"detailSpacing\":0.016}");
+    CHECK(mixed.size() == all_fine.size() && mixed.size() > coarse.size() * 4,
+          "a fine subtractive-only session refines the entire coarse-core expression");
+    CHECK(sphere_cut.size() > coarse.size() * 4,
+          "subtractive sphere spacing contributes despite no additive particles");
+    bool same_positions = mixed.size() == all_fine.size();
+    for (size_t i = 0; same_positions && i < mixed.size(); ++i) {
+        const float3 a[] = {mixed[i].vertex0, mixed[i].vertex1, mixed[i].vertex2};
+        const float3 b[] = {all_fine[i].vertex0, all_fine[i].vertex1, all_fine[i].vertex2};
+        for (int j = 0; j < 3; ++j)
+            same_positions = same_positions && a[j].x == b[j].x &&
+                             a[j].y == b[j].y && a[j].z == b[j].z;
+    }
+    CHECK(same_positions, "first-brush spacing does not change geometry at the same global minimum");
+
+    // Vertical ray at the centre of the carved check. This tests the emitted
+    // mesh, not just analytic CSG occupancy or a triangle-count increase.
+    float top = -1;
+    for (const Tri& t : mixed) {
+        const auto a = t.vertex0, b = t.vertex1, c = t.vertex2;
+        const float det = (b.z-c.z)*(a.x-c.x) + (c.x-b.x)*(a.z-c.z);
+        if (std::fabs(det) < 1e-10f) continue;
+        const float u = ((b.z-c.z)*(0.5f-c.x) + (c.x-b.x)*(0.5f-c.z)) / det;
+        const float v = ((c.z-a.z)*(0.5f-c.x) + (a.x-c.x)*(0.5f-c.z)) / det;
+        if (u >= -1e-5f && v >= -1e-5f && u+v <= 1.00001f)
+            top = std::max(top, u*a.y + v*b.y + (1-u-v)*c.y);
+    }
+    CHECK(top > 0.26f && top < 0.289f,
+          "the baked tabletop contains the shallow 24 mm carved groove");
+    printf("absolute voxel sampling: coarse=%zu plank=%zu beam=%zu carved=%zu groove_y=%.5f\n",
+           coarse.size(), plank.size(), beam.size(), mixed.size(), top);
 }
 
 static void test_sharp_vs_smooth_seam() {
@@ -596,6 +705,17 @@ static void test_ray_tracing_policy_authoring_roundtrip() {
         CHECK(policy.child_overrides[2] == RayTracingOverride::Enabled,
               "true child rayTraced enables the placement");
     }
+
+    const BakeResult shared = host.bake_source(
+        "class Shared extends Part { static sharedSurfaces=true; build() { this.placeChild('Leaf'); } }",
+        "{}", {}, child_hashes, 1, child_names);
+    CHECK(shared.error.ok, "shared assembly metadata bakes");
+    CHECK(matter::load_part_render_policy(part_asset::cache_path_resolved(shared.resolved_hash),
+        shared.resolved_hash,1,policy) && policy.shared_surfaces && policy.ray_traced,
+        "shared assembly flag round trips without changing ray eligibility");
+    const BakeResult bad_shared = host.bake_source(
+        "class Bad extends Part { static sharedSurfaces=1; build() {} }", "{}", {});
+    CHECK(!bad_shared.error.ok, "sharedSurfaces requires an explicit boolean");
 
     const BakeResult bad_default = host.bake_source(
         "class Bad extends Part { build(p) { this.rayTraced(1); } }",
@@ -1299,8 +1419,8 @@ static void test_eval_lods_authored_ladder() {
         {"class A extends Part { static lods = [{at:0},LOD.impostor({at:50}),"
          "LOD.impostor({at:90})]; build(p){} }",
          "two impostors -> empty"},
-        {"class A extends Part { static lods = [LOD.impostor({at:0})]; build(p){} }",
-         "impostor with no mesh rung to depict -> empty"},
+        {"class A extends Part { static lods = [LOD.impostor({at:1})]; build(p){} }",
+         "a sole impostor must start at the camera -> empty"},
         {"class A extends Part { static lods = [{at:0},"
          "{at:50,impostor:true,gen:'decimate',error:1}]; build(p){} }",
          "impostor with a generator -> empty"},
@@ -1320,6 +1440,10 @@ static void test_eval_lods_authored_ladder() {
          "impostor not a boolean -> empty"},
     };
     for (const auto& c : bad_imp) CHECK(host.eval_lods(c.src).empty(), c.why);
+    const auto baked_only = host.eval_lods(
+        "class A extends Part { static lods = [LOD.impostor({at:0})]; build(p){} }");
+    CHECK(baked_only.size() == 1 && baked_only[0].impostor && baked_only[0].at == 0,
+          "a sole impostor treats build() as bake input, with no runtime source mesh");
 
     // Fail-closed, one violation per source. Each discards the WHOLE block.
     struct Case { const char* src; const char* why; };
@@ -2346,6 +2470,7 @@ int main() {
     test_csg_lowering();
     test_voxel_primitive_occupancy();
     test_bake_writes_part();
+    test_absolute_voxel_sampling();
     test_sharp_vs_smooth_seam();
     test_sub_min_box_feature_survives();
     test_determinism_identical_bytes();

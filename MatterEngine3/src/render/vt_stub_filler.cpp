@@ -36,7 +36,8 @@ namespace {
 constexpr uint32_t kBlocksPerEdge = kVtPageStride / 4u;              // 34
 constexpr uint32_t kBcPageBytes  = kBlocksPerEdge * kBlocksPerEdge * 16u;  // 18496
 constexpr uint32_t kAuxPageBytes = kVtPageStride * kVtPageStride * 4u;     // 73984
-constexpr uint32_t kPageBytesTotal = kBcPageBytes * 3u + kAuxPageBytes;
+constexpr uint32_t kHeightPageBytes = kVtPageStride * kVtPageStride * 2u;
+constexpr uint32_t kPageBytesTotal = kBcPageBytes * 3u + kAuxPageBytes + kHeightPageBytes;
 
 struct FlatPage {
     uint8_t albedo[4]{255, 255, 255, 255};
@@ -198,6 +199,12 @@ class VtStubFiller final : public VtPageFiller {
 
         for (size_t i = 0; i < usable; ++i) {
             const VtFillRequest& request = batch[i];
+            // A scalar fill cannot satisfy a periodic module's source contract.
+            if (request.part() && request.part()->periodic.version) continue;
+            if (!request.pool) continue;
+            bool complete_pool = true;
+            for (VkImage image : request.pool->image) complete_pool &= image != VK_NULL_HANDLE;
+            if (!complete_pool) continue;
             const FlatPage page = resolve_flat(request);
             const VkDeviceSize offset =
                 static_cast<VkDeviceSize>(i) * kPageBytesTotal;
@@ -225,14 +232,15 @@ class VtStubFiller final : public VtPageFiller {
             for (uint32_t t = 0; t < kVtPageStride * kVtPageStride; ++t)
                 std::memcpy(aux_dst + t * 4u, page.aux, 4);
 
+            std::memset(aux_dst + kAuxPageBytes, 0, kHeightPageBytes);
+
             uint32_t layer = 0, x = 0, y = 0;
             vt_slot_origin(request.physical_slot, layer, x, y);
             const VtPoolBinding& pool = *request.pool;
             const VkDeviceSize channel_offsets[kVtChannelCount] = {
                 offset, offset + kBcPageBytes, offset + kBcPageBytes * 2u,
-                offset + kBcPageBytes * 3u};
+                offset + kBcPageBytes * 3u, offset + kBcPageBytes * 3u + kAuxPageBytes};
             for (uint32_t c = 0; c < kVtChannelCount; ++c) {
-                if (pool.image[c] == VK_NULL_HANDLE) continue;
                 VkBufferImageCopy copy{};
                 copy.bufferOffset = channel_offsets[c];
                 copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, layer, 1};

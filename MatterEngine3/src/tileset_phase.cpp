@@ -1,3 +1,4 @@
+#include "matter/project_layout.h"
 // tileset_phase.cpp — world-bake wiring: manifest root → SettledTorus.
 //
 // Glue layer (~100 lines). No new logic; delegates to:
@@ -90,7 +91,7 @@ static std::string find_object_source(const std::vector<std::string>& object_roo
 // cache short-circuit so a warm hit publishes the same list a cold settle does.
 // On failure `err` is set and `out` is left in whatever state the failing stage
 // reached -- callers must not read it.
-static bool run_tileset_phase_impl(const std::vector<std::string>& object_roots,
+static bool run_tileset_phase_impl(const std::vector<std::string>& object_tiers,
                                    const std::string& root_module,
                                    const std::string& canonical_root_params_json,
                                    const std::string& parts_cache_dir,
@@ -98,6 +99,7 @@ static bool run_tileset_phase_impl(const std::vector<std::string>& object_roots,
                                    const std::vector<std::string>& shared_lib_roots,
                                    std::vector<uint64_t>* out_sorted_child_hashes = nullptr)
 {
+    const auto object_roots = matter::project_layout::object_roots(object_tiers);
     // -----------------------------------------------------------------------
     // 1. Load the tileset root's source.
     //    The root is NOT a Part (no .part output) — we only read its source to

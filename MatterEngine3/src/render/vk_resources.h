@@ -160,9 +160,8 @@ struct VkBufferResource {
 };
 
 // A Vulkan image, its default view and its dedicated device memory, as a
-// move-only RAII handle. Produced by `create_image`, which always makes a
-// single-mip, single-layer, OPTIMAL-tiled image -- there is no path here for
-// mip chains or array layers.
+// move-only RAII handle. Produced by `create_image`, with OPTIMAL tiling and
+// a full-subresource view, including optional mip chains and array layers.
 //
 // Same ownership model as `VkBufferResource`: `lifetime` owns the image, view
 // and memory; the handle fields are non-owning mirrors; `reset()` drops a
@@ -174,6 +173,8 @@ struct VkImageResource {
     VkDeviceMemory memory = VK_NULL_HANDLE;  // non-owning; `lifetime` owns it
     VkFormat format = VK_FORMAT_UNDEFINED;
     VkExtent3D extent{};                // texels; depth is 1 for 2D images
+    uint32_t mip_levels = 1;
+    uint32_t array_layers = 1;
     // CPU-side bookkeeping of the image's current layout, used as the
     // `oldLayout` of the next barrier. It is written by
     // `record_image_transition` at RECORD time, not at execution time, and it
@@ -298,19 +299,21 @@ bool readback_buffer(VulkanDevice& vulkan, VkBufferResource& source, void* data,
 
 // Creates an image, its dedicated memory and a full-subresource view of it.
 //
-// The image is fixed at 1 mip level, 1 array layer, 1 sample,
-// VK_IMAGE_TILING_OPTIMAL, VK_SHARING_MODE_EXCLUSIVE and an initial layout of
-// VK_IMAGE_LAYOUT_UNDEFINED -- callers needing mips or array layers must build
-// the image themselves. `extent` is in texels and every component must be
-// nonzero (depth 1 for 2D). The view type follows `type` (1D/2D/3D) and
-// `aspect` selects the view's aspect mask.
+// The image uses 1 sample, VK_IMAGE_TILING_OPTIMAL, VK_SHARING_MODE_EXCLUSIVE
+// and an initial layout of VK_IMAGE_LAYOUT_UNDEFINED. `extent` is in texels
+// and every component must be nonzero (height/depth 1 for 1D, depth 1 for 2D).
+// Mips/layers default to 1; the full view follows `type` (1D/2D/3D), using an
+// array view when layers > 1 or `array_view` is true. 3D arrays are rejected.
+// `aspect` selects the view's aspect mask. Output is unchanged on failure.
 //
 // The returned image is still in UNDEFINED layout; transition it before use.
 bool create_image(VulkanDevice& vulkan, VkImageType type, VkFormat format,
                   VkExtent3D extent, VkImageUsageFlags usage,
                   VkImageAspectFlags aspect,
                   VkMemoryPropertyFlags required_memory,
-                  VkImageResource& output, std::string& error);
+                  VkImageResource& output, std::string& error,
+                  uint32_t mip_levels = 1, uint32_t array_layers = 1,
+                  bool array_view = false);
 
 // Allocates the backing storage buffer and creates an empty acceleration
 // structure of `type` over it. `size` is the storage size in bytes, normally
@@ -352,8 +355,7 @@ inline VkPipelineStageFlags2 ray_tracing_shader_stage(
 // transitions for one image in the same order you intend them to execute, or
 // the tracked layout will not match reality.
 //
-// Covers exactly one mip level and one array layer, matching what
-// `create_image` produces.
+// Covers all mip levels and array layers tracked by the resource.
 void record_image_transition(VkCommandBuffer command_buffer,
                              VkImageResource& image,
                              VkImageLayout new_layout,

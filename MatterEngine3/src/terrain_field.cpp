@@ -44,6 +44,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <algorithm>
+#include <array>
 #include <unordered_map>
 
 // ---------------------------------------------------------------------------
@@ -75,6 +76,8 @@ static constexpr int kMaxOps = terrain_field::kMaxSurfaceOps;
 // If a forward-referencing op kind is ever added, this becomes a read of
 // uninitialised stack -- the assert in eval_regs is the tripwire for that.
 static constexpr int kMaxTapeRegs = terrain_field::kMaxHabitatOps;
+static_assert(terrain_field::kMaxSurfaceSourceOps <= kMaxTapeRegs,
+              "CPU evaluator must hold the largest source program");
 
 // ---------------------------------------------------------------------------
 // Internal noise core (file-scope anonymous namespace).
@@ -106,6 +109,16 @@ inline uint32_t hash2i(int32_t ix, int32_t iz, uint32_t seed) {
 
 inline float rand01(int32_t ix, int32_t iz, uint32_t seed) {
     return (float)(hash2i(ix, iz, seed) & 0xffffff) / (float)0x1000000;
+}
+
+// A cell hash is deliberately unfiltered: callers use it to choose a stable
+// feature's parameters, then filter the feature's coverage/relief separately.
+// Bound coordinates before float-to-int conversion (also handles NaN/Inf).
+// Mirror the domain and integer hash in vt_surface_tape.glsl.
+float cell_noise2(float x, float y, uint32_t seed) {
+    if (!(x >= -16777216.f && x < 16777216.f &&
+          y >= -16777216.f && y < 16777216.f)) return 0.f;
+    return rand01(int32_t(std::floor(x)), int32_t(std::floor(y)), seed);
 }
 
 inline float smooth5(float t) { return t * t * t * (t * (t * 6 - 15) + 10); }
@@ -795,6 +808,9 @@ void FieldRuntime::eval_regs(float regs[], int count, float x, float y, float z)
         case Op::Noise3World:
         case Op::Ridge3World:
         case Op::Fract:
+        case Op::Footprint:
+        case Op::CellNoise2:
+        case Op::Cellular3:
             // surfaces()-tape-only ops; FieldProgram::parse never emits them.
             // (The *World 3D pair stays here even though plain Noise3/Ridge3
             // moved out: the field program has no part-local frame to
@@ -1081,12 +1097,9 @@ FieldRuntime::Material FieldRuntime::material_at(float x, float z) const {
 // SurfaceProgram — surfaces() classifier tape (chart-VT Phase 4, contract C4).
 // ---------------------------------------------------------------------------
 
-// (kMaxOps IS kMaxSurfaceOps now — see the alias at the top of this file. The
-// assert that used to guard the two literals against drift is gone with the
-// second literal. The one mirror that still cannot be checked by the compiler
-// is VT_TAPE_MAX_OPS in shaders_vk/vt_surface_tape.glsl; raising the cap means
-// raising it there too, and rebuilding SPIR-V — `make -C MatterEngine3` alone
-// does not.)
+// kMaxSurfaceGpuRegisters and kMaxSurfaceSourceOps mirror VT_TAPE_MAX_REGS
+// and VT_TAPE_MAX_SOURCE_OPS in vt_surface_tape.glsl. The build regenerates
+// embedded SPIR-V whenever the shader changes.
 
 namespace {
 
@@ -1094,6 +1107,7 @@ namespace {
 const char* const kSurfaceInputNames[kSurfInCount] = {
     "lx", "ly", "lz", "ny", "slope",
     "wx", "wy", "wz", "height", "moisture", "relief", "biome", "fslope",
+    "receiver_material",
 };
 
 int surface_input_code(const std::string& name) {
@@ -1127,6 +1141,42 @@ float surface_op_fbm2(const Op& op, float x, float z, bool ridged) {
 }
 float surface_op_fbm3(const Op& op, float x, float y, float z, bool ridged) {
     return fbm3_op(op, x, y, z, ridged);
+}
+
+// Return all features from one neighborhood search. This helper owns no state;
+// the tape evaluator may reuse its result within one sample only.
+static std::array<float,3> surface_cellular3_values(float x, float y, float z, uint32_t seed) {
+    if (!(x >= -16777216.f && x < 16777216.f &&
+          y >= -16777216.f && y < 16777216.f &&
+          z >= -16777216.f && z < 16777216.f)) return {};
+    const int32_t ix=int32_t(std::floor(x)),iy=int32_t(std::floor(y)),iz=int32_t(std::floor(z));
+    const float fx=x-float(ix),fy=y-float(iy),fz=z-float(iz);
+    float first=100,second=100,value=0;
+    const auto visit=[&](int dx,int dy,int dz) {
+        const int32_t cx=ix+dx,cy=iy+dy,cz=iz+dz;
+        const float px=float(dx)+rand01_3(cx,cy,cz,seed)-fx;
+        const float py=float(dy)+rand01_3(cx,cy,cz,seed^0x9e37u)-fy;
+        const float pz=float(dz)+rand01_3(cx,cy,cz,seed^0x7f4au)-fz;
+        const float d=(px*px+py*py)+pz*pz;
+        if(d<first) {second=first;first=d;value=rand01_3(cx,cy,cz,seed^0xa511e9b3u);}
+        else if(d<second)second=d;
+    };
+    for(int dz=-1;dz<=1;++dz)for(int dy=-1;dy<=1;++dy)for(int dx=-1;dx<=1;++dx)visit(dx,dy,dz);
+    // Full-cell jitter removes the visible lattice. The common 27-site search
+    // is enough unless an unvisited cell could beat the second-nearest site.
+    const float outside=1.f+std::min({fx,1.f-fx,fy,1.f-fy,fz,1.f-fz});
+    if(second>outside*outside) {
+        // Two sites in the inner window are <=sqrt(3) away; all sites beyond
+        // this complete 5^3 window are >=2 away. Thus no farther ring is needed.
+        for(int dz=-2;dz<=2;++dz)for(int dy=-2;dy<=2;++dy)for(int dx=-2;dx<=2;++dx)
+            if(std::abs(dx)==2 || std::abs(dy)==2 || std::abs(dz)==2)visit(dx,dy,dz);
+    }
+    return {std::sqrt(first),std::max(0.f,second-first),value};
+}
+
+float surface_cellular3(float x, float y, float z, uint32_t seed, int feature) {
+    if(feature<0 || feature>2)return 0;
+    return surface_cellular3_values(x,y,z,seed)[size_t(feature)];
 }
 
 // Compile a canonical TAPE. Same line-oriented grammar and same fail-closed
@@ -1182,6 +1232,32 @@ bool SurfaceProgram::parse(const std::string& text, SurfaceProgram& out,
         auto toks = tokenize(line);
         if (toks.empty()) continue;
         const std::string& op = toks[0];
+
+        if (op == "source") {
+            if (mode != TapeMode::Surfaces || toks.size() != 11 || (toks[1] != "1" && toks[1] != "2") ||
+                out.source.version != 0) {
+                err = "source: expected one v1/v2 RGB/roughness/metallic/AO/height output and metre bounds";
+                return false;
+            }
+            for (int i = 0; i < 7; ++i) {
+                out.source.regs[i] = resolve_reg(toks[size_t(i) + 2]);
+                if (out.source.regs[i] < 0) {
+                    err = "source: expected backward register refs"; return false;
+                }
+            }
+            try {
+                size_t a = 0, b = 0;
+                out.source.height_min = std::stof(toks[9], &a);
+                out.source.height_max = std::stof(toks[10], &b);
+                if (a != toks[9].size() || b != toks[10].size() ||
+                    !std::isfinite(out.source.height_min) || !std::isfinite(out.source.height_max) ||
+                    out.source.height_max < out.source.height_min) throw 0;
+            } catch (...) {
+                err = "source: expected finite ordered height bounds in metres"; return false;
+            }
+            out.source.version = toks[1] == "2" ? 2u : 1u;
+            continue;
+        }
 
         // ---- `channel <index> r<reg>` directive (habitat tapes) ----
         // The habitat analogue of `material`: same backward-ref rule, same
@@ -1294,6 +1370,16 @@ bool SurfaceProgram::parse(const std::string& text, SurfaceProgram& out,
             continue;
         }
 
+        if (op == "coat") {
+            if (mode != TapeMode::Surfaces || toks.size()!=6 || out.has_coat()) {
+                err="coat: expected one 'coat rR rG rB rCoverage rRoughness' surface directive";return false;
+            }
+            for(unsigned k=0;k<5;++k) {
+                out.coat_reg[k]=resolve_reg(toks[k+1]);
+                if(out.coat_reg[k]<0){err="coat: expected backward register ref";return false;}
+            }
+            continue;
+        }
         // ---- op lines (same discipline as FieldProgram::parse) ----
         Op o{};
 
@@ -1331,14 +1417,63 @@ bool SurfaceProgram::parse(const std::string& text, SurfaceProgram& out,
             catch (...) { err = std::string(op) + ": invalid int"; return false; }
         };
 
-        if (op == "input") {
+        if (op == "footprint") {
+            if (toks.size() != 1 || mode != TapeMode::Surfaces) {
+                err = "footprint: direct source input takes no operands"; return false;
+            }
+            o.kind = Op::Footprint;
+        }
+        else if (op == "cellular3") {
+            if(toks.size()!=6 || toks[1].empty() ||
+               toks[1].find_first_not_of("0123456789")!=std::string::npos) {
+                err="cellular3: expected uint32 seed, feature and three backward registers";return false;
+            }
+            try {
+                const auto seed=std::stoull(toks[1]);
+                if(seed>0xffffffffULL)throw std::out_of_range("cellular3 seed");
+                o.seed=uint32_t(seed);
+            } catch(...) {err="cellular3: seed outside uint32 range";return false;}
+            if(toks[2]=="distance")o.oct=0;
+            else if(toks[2]=="gap")o.oct=1;
+            else if(toks[2]=="value")o.oct=2;
+            else {err="cellular3: feature must be distance, gap or value";return false;}
+            for(int i=3;i<6;++i)if(toks[i].size()<2 || toks[i][0]!='r' ||
+                toks[i].find_first_not_of("0123456789",1)!=std::string::npos) {
+                err="cellular3: expected backward register refs";return false;
+            }
+            if(!require_reg(3,o.a)||!require_reg(4,o.b)||!require_reg(5,o.c))return false;
+            o.kind=Op::Cellular3;
+        }
+        else if (op == "cell2") {
+            // cell2 uint32-seed x-register y-register. Do not inherit the
+            // older operators' permissive numeric-token parsing.
+            if (toks.size() != 4 || toks[1].empty() ||
+                toks[1].find_first_not_of("0123456789") != std::string::npos) {
+                err = "cell2: expected uint32 seed and two backward registers"; return false;
+            }
+            try {
+                const auto seed = std::stoull(toks[1]);
+                if (seed > 0xffffffffULL) throw std::out_of_range("cell2 seed");
+                o.seed = uint32_t(seed);
+            } catch (...) { err = "cell2: seed outside uint32 range"; return false; }
+            for (int i = 2; i < 4; ++i) {
+                if (toks[i].size() < 2 || toks[i][0] != 'r' ||
+                    toks[i].find_first_not_of("0123456789", 1) != std::string::npos) {
+                    err = "cell2: expected backward register refs"; return false;
+                }
+            }
+            if (!require_reg(2, o.a) || !require_reg(3, o.b)) return false;
+            o.kind = Op::CellNoise2;
+        }
+        else if (op == "input") {
             if (toks.size() < 2) { err = "input: missing name"; return false; }
             const int code = surface_input_code(toks[1]);
             if (code < 0) { err = "input: unknown name '" + toks[1] + "'"; return false; }
             o.kind = Op::Input;
             o.oct = code;
             out.input_mask_ |= 1u << code;
-            if (code >= kSurfaceInputWorldFirst) out.uses_world_inputs_ = true;
+            if (code >= kSurfaceInputWorldFirst && code <= kSurfInFieldSlope)
+                out.uses_world_inputs_ = true;
         }
         else if (op == "const") {
             o.kind = Op::Const;
@@ -1464,10 +1599,10 @@ bool SurfaceProgram::parse(const std::string& text, SurfaceProgram& out,
         }
 
         // Cap applies to EMITTED ops (dedup'd consts already continued above),
-        // and is PER MODE: a surfaces tape is bounded by the shader's register
-        // file, a habitat tape only by the evaluator's stack array.
+        // and is PER MODE. The source directive can follow all op lines, so
+        // the smaller legacy classifier limit is checked after parsing.
         const int op_cap =
-            (mode == TapeMode::Habitat) ? kMaxHabitatOps : kMaxOps;
+            (mode == TapeMode::Habitat) ? kMaxHabitatOps : kMaxSurfaceSourceOps;
         if ((int)out.ops.size() >= op_cap) {
             err = "too many ops (max " + std::to_string(op_cap) + ")";
             return false;
@@ -1479,6 +1614,11 @@ bool SurfaceProgram::parse(const std::string& text, SurfaceProgram& out,
     // Each mode fails closed on declaring nothing, for the same reason: a tape
     // with no outputs computed a pile of noise and threw it away, which is
     // always a bug and never intentional.
+    if ((out.input_mask_ & (1u << kSurfInReceiverMaterial)) &&
+        (mode == TapeMode::Habitat || out.source.version == 0)) {
+        err = "receiver_material: requires a direct source output";
+        return false;
+    }
     if (mode == TapeMode::Habitat) {
         if (out.channel_count == 0) {
             err = "habitat() declared no channels (missing 'channel' "
@@ -1490,6 +1630,38 @@ bool SurfaceProgram::parse(const std::string& text, SurfaceProgram& out,
     if (out.materials.empty()) {
         err = "surfaces() declared no materials (missing 'material' directives)";
         return false;
+    }
+    if (out.source.version == 0 && out.ops.size() > size_t(kMaxSurfaceOps)) {
+        err = "too many ops (max " + std::to_string(kMaxSurfaceOps) + ")";
+        return false;
+    }
+    if (out.source.version != 0) {
+        const auto& material = out.materials[0];
+        const auto& weight = out.ops[size_t(material.reg)];
+        if (out.materials.size() != 1 || material.handle > 255 ||
+            weight.kind != Op::Const || weight.f0 != 1.0f) {
+            err = "source: v1 requires one material ID in 0..255 at constant weight 1";
+            return false;
+        }
+        // v1 differentiates a continuous position/footprint height field.
+        // Interpolated receiver lanes may color the source, but their spatial
+        // derivatives are not yet available to this height-normal evaluator.
+        std::vector<bool> height_used(out.ops.size(), false);
+        height_used[size_t(out.source.regs[6])] = true;
+        for (int i = int(out.ops.size()) - 1; i >= 0; --i) if (height_used[size_t(i)]) {
+            const auto& o = out.ops[size_t(i)];
+            if (out.source.version == 1 && (o.kind == Op::FieldCurv || (o.kind == Op::Input &&
+                (o.oct == kSurfInNormalY || o.oct == kSurfInSlope ||
+                 (o.oct >= kSurfInHeight && o.oct <= kSurfInFieldSlope))))) {
+                err = "source: v1 height requires position/footprint signals; receiver lanes may drive color";
+                return false;
+            }
+            for (int reg : {o.a, o.b, o.c}) if (reg >= 0) height_used[size_t(reg)] = true;
+        }
+    } else {
+        for (const auto& o : out.ops) if (o.kind == Op::Footprint) {
+            err = "footprint: requires a direct source output"; return false;
+        }
     }
     return true;
 }
@@ -1514,7 +1686,7 @@ SurfaceRuntime::SurfaceRuntime(SurfaceProgram p)
 
 void SurfaceRuntime::eval_regs(const float pos[3], const float nrm[3],
                                const SurfaceWorldContext* world,
-                               float* regs) const {
+                               float* regs, float footprint_m, uint32_t receiver_material) const {
     // `regs` is deliberately uninitialised (see kMaxTapeRegs). That is only
     // sound while every operand is a BACKWARD reference, which the parser
     // enforces -- assert it here so a forward-referencing op added later trips
@@ -1542,6 +1714,7 @@ void SurfaceRuntime::eval_regs(const float pos[3], const float nrm[3],
     }
     in[kSurfInNormalY] = ny;
     in[kSurfInSlope] = std::max(0.0f, std::min(1.0f, 1.0f - ny));
+    in[kSurfInReceiverMaterial] = float(receiver_material & 255u);
     // Fallback constants: deterministic, never instance-dependent (the misuse
     // contract for world inputs on multi-instance variants). Field-query
     // inputs the tape never reads (input_mask) keep these values too — each
@@ -1590,12 +1763,21 @@ void SurfaceRuntime::eval_regs(const float pos[3], const float nrm[3],
     }
 
     // ---- evaluate every register (bounded by kMaxOps, enforced at parse) ----
+    // Reuse the last cellular query across its distance/gap/value outputs.
+    // Keys are evaluated coordinates, not register indices (the GPU twin
+    // reuses registers). Local lifetime prevents cross-sample/layer leakage.
+    bool have_cellular=false;
+    std::array<float,3> cellular_position{},cellular_values{};
+    uint32_t cellular_seed=0;
     const auto& ops = prog_.ops;
     for (int i = 0; i < (int)ops.size(); ++i) {
         const Op& o = ops[i];
         switch (o.kind) {
         case Op::Input:
             regs[i] = in[o.oct];
+            break;
+        case Op::Footprint:
+            regs[i] = std::isfinite(footprint_m) ? std::max(footprint_m, 0.0f) : 0.0f;
             break;
         case Op::Const:
             regs[i] = o.f0;
@@ -1642,6 +1824,18 @@ void SurfaceRuntime::eval_regs(const float pos[3], const float nrm[3],
             regs[i] = fbm3_op(o, in[kSurfInWorldX], in[kSurfInAltitude],
                               in[kSurfInWorldZ], true);
             break;
+        case Op::CellNoise2:
+            regs[i] = cell_noise2(regs[o.a], regs[o.b], o.seed);
+            break;
+        case Op::Cellular3: {
+            const std::array<float,3> p={regs[o.a],regs[o.b],regs[o.c]};
+            if(!have_cellular || o.seed!=cellular_seed || p!=cellular_position) {
+                cellular_values=surface_cellular3_values(p[0],p[1],p[2],o.seed);
+                cellular_position=p;cellular_seed=o.seed;have_cellular=true;
+            }
+            regs[i]=o.oct>=0 && o.oct<=2?cellular_values[size_t(o.oct)]:0.f;
+            break;
+        }
         case Op::Fract:
             regs[i] = regs[o.a] - std::floor(regs[o.a]);
             break;
@@ -1695,6 +1889,13 @@ void SurfaceRuntime::eval_regs(const float pos[3], const float nrm[3],
 void SurfaceRuntime::weights_at(const float pos[3], const float nrm[3],
                                 const SurfaceWorldContext* world,
                                 float* out_weights) const {
+    // Direct source v1 validates one carrier at constant weight 1. Its RGB,
+    // height and weathering are evaluated per VT texel, not for CPU vertex
+    // classification. Avoid all source noise and terrain-lane queries here.
+    if (prog_.source.version == 1 || prog_.source.version == 2) {
+        out_weights[0] = 1.0f;
+        return;
+    }
     float regs[kMaxTapeRegs];   // uninitialised on purpose -- see kMaxTapeRegs
     eval_regs(pos, nrm, world, regs);
     for (size_t k = 0; k < prog_.materials.size(); ++k)
@@ -1738,11 +1939,12 @@ void SurfaceRuntime::channels_at(float world_x, float world_z,
 
 void SurfaceRuntime::appearance_at(const float pos[3], const float nrm[3],
                                    const SurfaceWorldContext* world,
-                                   SurfaceAppearance& out) const {
+                                   SurfaceAppearance& out, float footprint_m,
+                                   uint32_t receiver_material) const {
     out = SurfaceAppearance{};   // identity for every absent directive
     if (!prog_.has_appearance()) return;
     float regs[kMaxTapeRegs];   // uninitialised on purpose -- see kMaxTapeRegs
-    eval_regs(pos, nrm, world, regs);
+    eval_regs(pos, nrm, world, regs, footprint_m, receiver_material);
     auto clamp_to = [](float v, float lo, float hi) {
         return std::max(lo, std::min(hi, v));
     };
@@ -1759,6 +1961,31 @@ void SurfaceRuntime::appearance_at(const float pos[3], const float nrm[3],
         out.wetness = clamp_to(regs[prog_.wetness_reg], 0.0f, 1.0f);
     if (prog_.has_metallic())
         out.metallic = clamp_to(regs[prog_.metallic_reg], 0.0f, 1.0f);
+    if (prog_.has_coat()) {
+        const auto unit=[&](int reg,float fallback=0.f){const float v=regs[reg];return std::isfinite(v)?clamp_to(v,0.f,1.f):fallback;};
+        for(unsigned k=0;k<3;++k)out.coat_color[k]=unit(prog_.coat_reg[k]);
+        out.coat_coverage=unit(prog_.coat_reg[3]);out.coat_roughness=unit(prog_.coat_reg[4],1.f);
+    }
+}
+
+bool SurfaceRuntime::source_at(const float pos[3], const float nrm[3],
+                               const SurfaceWorldContext* world, float footprint_m,
+                               SurfaceSourceSample& out, uint32_t receiver_material) const {
+    out = {};
+    if (prog_.source.version != 1 && prog_.source.version != 2) return false;
+    float regs[kMaxTapeRegs];
+    eval_regs(pos, nrm, world, regs, footprint_m, receiver_material);
+    const auto value = [&](int channel, float lo, float hi, float fallback) {
+        const float v = regs[prog_.source.regs[channel]];
+        return std::isfinite(v) ? std::max(lo, std::min(hi, v)) : fallback;
+    };
+    for (int c = 0; c < 3; ++c) out.albedo[c] = value(c, 0, 1, 0);
+    out.orm[0] = value(5, 0, 1, 1);
+    out.orm[1] = value(3, 0, 1, 0.8f);
+    out.orm[2] = value(4, 0, 1, 0);
+    out.height_m = value(6, prog_.source.height_min, prog_.source.height_max,
+                        prog_.source.height_min);
+    return true;
 }
 
 // One FULL tape evaluation per vertex -- there is no batching and no reuse

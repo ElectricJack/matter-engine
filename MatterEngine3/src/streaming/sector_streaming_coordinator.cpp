@@ -409,7 +409,22 @@ void Coordinator::submit_anchor(flecs::entity_t owner, float x, float y,
     const uint64_t generation = published_snapshot_.owner == owner
         ? published_snapshot_.status.generation
         : 0;
-    intended_anchor_ = AnchorSample{owner, generation, x, y, z};
+    const auto view = intended_anchor_ ? intended_anchor_->view : matter_stream::StreamingView{};
+    intended_anchor_ = AnchorSample{owner, generation, x, y, z, view};
+}
+
+uint64_t Coordinator::submit_view(flecs::entity_t owner, const matter_stream::StreamingView& view) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (owner && intended_owner_ == owner && intended_anchor_) {
+        auto& current = intended_anchor_->view;
+        bool changed = current.valid != view.valid;
+        for (int p=0;p<6;++p) for (int c=0;c<4;++c)
+            changed = changed || current.planes[p][c] != view.planes[p][c];
+        const uint64_t revision = changed ? ++next_view_revision_ : current.revision;
+        current = view; current.revision = revision;
+        return view.valid ? revision : 0;
+    }
+    return 0;
 }
 
 void Coordinator::clear_anchor(flecs::entity_t owner) {
@@ -585,6 +600,11 @@ void Coordinator::publish_snapshot(
         next.status.generation = worker_generation_;
         next.status.resident_sectors = snapshot_count(streamer_->resident_count());
         next.status.inflight_sectors = snapshot_count(streamer_->inflight_count());
+        const auto visible = streamer_->visible_status();
+        next.status.view_revision = worker_anchor_->view.revision;
+        next.status.visible_sectors_valid = visible.valid;
+        next.status.visible_sectors = visible.desired;
+        next.status.visible_sectors_pending = visible.pending;
     }
 
     std::lock_guard<std::mutex> lock(mutex_);
@@ -686,6 +706,7 @@ void Coordinator::worker_step(
             streamer_->update(worker_anchor_->x, worker_anchor_->y,
                               worker_anchor_->z);
         }
+        streamer_->set_view(worker_anchor_->view);
     }
 
     for (const auto& acknowledgement : acknowledgements) {

@@ -1,6 +1,7 @@
 #include "../include/mesh_charting.h"
 #include <cstdio>
 #include <cmath>
+#include <limits>
 using namespace mesh_charting;
 static int failures = 0;
 #define CHECK(cond, msg) do { if (!(cond)) { printf("FAIL: %s\n", msg); ++failures; } } while (0)
@@ -67,6 +68,62 @@ static void test_adjacency_non_manifold_stays_symmetric() {
     CHECK(links == 2, "exactly one pair claims the shared edge (2 half-links)");
 }
 
+static void test_surface_adjacency() {
+    // A bent receiver with duplicated vertices at the UV seam. Atlas-space
+    // proximity is immaterial: these triangles share an actual geometric edge.
+    float pos[] = {0,0,0, 1,0,0, 0,1,0, 1,0,0, 1,1,0.5f, 0,1,0,
+                   0,0,1, 0,0,-1};
+    unsigned int idx[] = {0,1,2, 3,4,5, 1,2,6, 2,1,7};
+    auto adj = build_surface_adjacency(pos, idx, 2);
+    CHECK(adj[0].nbr[1] == 1 && adj[1].nbr[2] == 0,
+          "surface adjacency crosses a bent, UV-split shared edge");
+    CHECK(adj[0].nbr[0] == -1 && adj[0].nbr[2] == -1 &&
+          adj[1].nbr[0] == -1 && adj[1].nbr[1] == -1,
+          "surface adjacency keeps actual outer edges closed");
+    for (int count : {3,4}) {
+        adj = build_surface_adjacency(pos, idx, count);
+        int links = 0;
+        for (const auto& tri : adj) for (int n : tri.nbr) links += n >= 0;
+        CHECK(links == 0, "every claimant of an ambiguous surface edge stays closed");
+    }
+    // The legacy chart segmenter still gets its documented first-pair graph.
+    const auto legacy = build_adjacency(pos, idx, 3);
+    CHECK(legacy[0].nbr[1] == 1 && legacy[1].nbr[2] == 0,
+          "surface policy does not change legacy segmentation adjacency");
+    unsigned int flipped[] = {0,1,2, 3,5,4};
+    adj = build_surface_adjacency(pos, flipped, 2);
+    CHECK(adj[0].nbr[1] == -1 && adj[1].nbr[0] == -1,
+          "same-direction edge claimants do not provide oriented traversal");
+    unsigned int duplicate[] = {0,1,2, 2,1,0};
+    adj = build_surface_adjacency(pos, duplicate, 2);
+    int links = 0;
+    for (const auto& tri : adj) for (int n : tri.nbr) links += n >= 0;
+    CHECK(links == 0, "oppositely wound duplicate triangles are not a receiver connection");
+    pos[3*3] = std::nextafter(1.0f, 2.0f);
+    adj = build_surface_adjacency(pos, idx, 2);
+    CHECK(adj[0].nbr[1] == -1 && adj[1].nbr[2] == -1,
+          "nearby distinct surface edges are not welded by a tolerance");
+    pos[3*3] = 1.0f;
+    pos[4*3+2] = std::numeric_limits<float>::quiet_NaN();
+    adj = build_surface_adjacency(pos, idx, 2);
+    CHECK(adj[0].nbr[1] == -1 && adj[1].nbr[2] == -1,
+          "non-finite triangles cannot create traversal links");
+    unsigned int degenerate[] = {0,1,2, 1,2,1};
+    adj = build_surface_adjacency(pos, degenerate, 2);
+    CHECK(adj[0].nbr[1] == -1 && adj[1].nbr[0] == -1 && adj[1].nbr[1] == -1,
+          "degenerate triangles cannot consume a real surface edge");
+    CHECK(build_surface_adjacency(nullptr, nullptr, 0).empty(),
+          "empty surface adjacency accepts no borrowed arrays");
+
+    std::vector<float> large(65539u*3u, 0.0f);
+    const float quad[] = {0,0,0, 1,0,0, 1,1,0, 0,1,0};
+    for (int i=0; i<12; ++i) large[65535u*3u+i] = quad[i];
+    const unsigned int wide[] = {65535,65536,65537, 65535,65537,65538};
+    adj = build_surface_adjacency(large.data(), wide, 2);
+    CHECK(adj[0].nbr[2] == 1 && adj[1].nbr[0] == 0,
+          "surface adjacency retains vertex indices above 65535");
+}
+
 // Every failure path must leave the outputs empty rather than handing back the
 // last rejected attempt's coordinates.
 static void test_pack_failure_clears_outputs() {
@@ -118,6 +175,7 @@ static void test_pack_paged() {
 int main(){
     test_adjacency_quad(); test_segment_one_chart();
     test_adjacency_non_manifold_stays_symmetric();
+    test_surface_adjacency();
     test_plane_basis_orthonormal(); test_pack_fits();
     test_pack_failure_clears_outputs();
     test_pack_paged();

@@ -218,8 +218,9 @@ public:
     // Purpose: let expensive work happen on a worker thread against a PRIVATE
     // manager, then hand the result over in one bounded step. No BVH is rebuilt
     // here -- a content match bumps ref_count, and a newcomer installs the
-    // staged BVH arrays via the register_prebuilt path. Cost is O(entries), not
-    // O(triangles), which is what makes it safe to run inside a frame.
+    // staged BVH arrays via the register_prebuilt path. Cost is
+    // O(triangles) for new entries because their arrays are copied. Use
+    // consume_from for a disposable worker manager to avoid these copies.
     //
     // Dedup is the same hash + exact-compare that register_triangles uses, so an
     // adopted sector sharing a rock BLAS with one already resident collapses onto
@@ -230,6 +231,13 @@ public:
     // in itself: call it on the thread that owns this manager.
     void adopt_from(const BLASManager& staged,
                     std::unordered_map<BLASHandle, BLASHandle>& remap);
+
+    // Destructive hand-off for a worker manager that will be discarded.
+    // Transfers whole entries without copying mesh/BVH arrays, deduplicates
+    // against resident geometry, and empties staged. Pointers/handles into
+    // staged must not be used afterward. Both managers require exclusive access.
+    void consume_from(BLASManager& staged,
+                      std::unordered_map<BLASHandle, BLASHandle>& remap);
 
     // Release one reference to a BLAS. When the last owner releases it, the
     // entry is removed and its GPU footprint reclaimed. No-op for invalid/0.

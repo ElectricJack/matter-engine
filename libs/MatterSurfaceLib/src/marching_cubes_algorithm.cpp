@@ -69,8 +69,9 @@ GroupMeshResult MarchingCubesAlgorithm::generate(const MeshContext& ctx) const {
         CellBounds cb = ctx.cell_bounds;
         Mesh simplified = simplify_mesh(mesh, so, &cb);
         if (simplified.vertexCount > 0 && simplified.triangleCount > 0) {
-            ComputeSurfaceNormalsWithScratch(ctx.scratch, &simplified, particles, ctx.max_radius,
-                                  particleCount, ctx.blend_width, clip, ctx.clip_count,
+            ComputeSurfaceNormalsStaged(ctx.scratch, &simplified, particles, ctx.max_radius,
+                                  particleCount, ctx.blend_width, ctx.voxel,
+                                  ctx.stages, ctx.fat, ctx.fat_count, clip, ctx.clip_count,
                                   carve, ctx.carve_count, ctx.carve_blend);
             unload_cpu_mesh(mesh);
             mesh = simplified;

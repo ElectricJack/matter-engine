@@ -284,6 +284,15 @@ bool DynamicSceneBridge::collect_animation_skinning(
 }
 
 void DynamicSceneBridge::finish_frame(uint64_t completed_serial) { slots_.finish_frame(completed_serial); }
+
+void DynamicSceneBridge::reset() {
+    // A renderer reset destroys every dynamic instance slot after waiting for
+    // the device. Retaining these slots would make the next reconcile a no-op.
+    slots_ = render::DynamicInstanceSlots(slots_.capacity());
+    tracked_.clear();
+    entity_motion_.clear();
+}
+
 uint32_t DynamicSceneBridge::active_count() const { return slots_.active_count(); }
 
 // Map a renderer pick token back to a scene entity. Linear over every tracked

@@ -63,6 +63,7 @@
 //   - std::bad_alloc from a runaway build() is caught at the bake_source and
 //     eval_tileset boundaries and turned into a BakeError, so an OOM on one
 //     part does not take the editor down with it.
+#include "sdf_candidate_bounds.h"
 #include "script_host.h"
 extern "C" {
 #include "quickjs.h"
@@ -85,6 +86,9 @@ extern "C" {
 #include "triangle_emit.hpp" // direct-triangle (mesh) session buffer
 #include "dsl_state.h"
 #include "dsl_bindings.h"
+#include "solid_source_js.h"
+#include "finite_surface_faces.h"
+#include "render/vt_surface_tape.h"
 #include "csg_lowering.h"   // NEW MatterEngine3 header
 #include "module_resolver.h" // SP-7 shared-lib fold + resolution
 #include "modifier_apply.h"  // Task 4: bake-time modifier region stack apply
@@ -112,6 +116,7 @@ extern "C" {
 #include <map>
 #include <memory>
 #include <new>       // std::bad_alloc
+#include <limits>
 #include <regex>
 #include <set>
 #include <utility>   // std::pair
@@ -420,6 +425,52 @@ static char* sh_module_normalize(JSContext* ctx, const char* /*base*/,
     return out;
 }
 
+// Process-local, bounded source-to-bytecode cache. It never owns JS values or
+// module instances. Dependencies are linked by the current context's loader.
+static JSValue compile_cached_module(JSContext* ctx, const std::string& source,
+                                     const char* name) {
+    using Bytes = std::vector<uint8_t>;
+    using Key = std::pair<std::string, std::string>;
+    struct Cache {
+        std::mutex mutex;
+        std::map<Key, std::shared_ptr<const Bytes>> entries;
+        size_t bytes = 0;
+    };
+    static Cache cache;
+    constexpr size_t budget = 32u << 20;
+    const Key key{name, source};
+    std::shared_ptr<const Bytes> hit;
+    {
+        std::lock_guard<std::mutex> lock(cache.mutex);
+        const auto found = cache.entries.find(key);
+        if (found != cache.entries.end()) hit = found->second;
+    }
+    if (hit) return JS_ReadObject(ctx, hit->data(), hit->size(), JS_READ_OBJ_BYTECODE);
+    // Compilation can recursively invoke this loader: never hold the cache
+    // mutex here, or while instantiating the bytecode in a different context.
+    JSValue function = JS_Eval(ctx, source.c_str(), source.size(), name,
+        JS_EVAL_TYPE_MODULE | JS_EVAL_FLAG_COMPILE_ONLY);
+    if (JS_IsException(function)) return function;
+    size_t size = 0;
+    uint8_t* encoded = JS_WriteObject(ctx, &size, function, JS_WRITE_OBJ_BYTECODE);
+    if (!encoded) {
+        // Caching is optional; keep the successfully compiled module usable.
+        JS_FreeValue(ctx, JS_GetException(ctx));
+        return function;
+    }
+    const size_t charge = size + source.size() + std::strlen(name);
+    if (charge <= budget) {
+        auto bytes = std::make_shared<Bytes>(encoded, encoded + size);
+        std::lock_guard<std::mutex> lock(cache.mutex);
+        if (cache.bytes + charge > budget || cache.entries.size() >= 512) {
+            cache.entries.clear(); cache.bytes = 0;
+        }
+        if (cache.entries.emplace(key, std::move(bytes)).second) cache.bytes += charge;
+    }
+    js_free(ctx, encoded);
+    return function;
+}
+
 // QuickJS module loader: compile the in-memory source for `module_name` (already
 // normalized) into a JSModuleDef. Fails (throws) if the specifier is not in the
 // resolved set — the resolver pre-gathered everything reachable, so a miss here
@@ -437,8 +488,7 @@ static JSModuleDef* sh_module_loader(JSContext* ctx, const char* module_name,
     const std::string& src = it->second;
     // Compile-only: produce a module def (tag JS_TAG_MODULE) without running it;
     // QuickJS links + evaluates it as part of the importing module's evaluation.
-    JSValue func = JS_Eval(ctx, src.c_str(), src.size(), module_name,
-                           JS_EVAL_TYPE_MODULE | JS_EVAL_FLAG_COMPILE_ONLY);
+    JSValue func = compile_cached_module(ctx, src, module_name);
     if (JS_IsException(func)) return nullptr;
     JSModuleDef* m = static_cast<JSModuleDef*>(JS_VALUE_GET_PTR(func));
     JS_FreeValue(ctx, func);
@@ -489,11 +539,17 @@ static JSValue eval_part_as_module(JSContext* ctx, JSRuntime* rt,
 struct InterruptCtx {
     std::chrono::steady_clock::time_point deadline;
     bool bounded = false;
+    const gpu_meshing::BuildControl* control = nullptr;
+    uint64_t generation = 0;
 };
 static int interrupt_cb(JSRuntime*, void* opaque) {
     InterruptCtx* ic = static_cast<InterruptCtx*>(opaque);
-    if (!ic || !ic->bounded) return 0;
-    return std::chrono::steady_clock::now() >= ic->deadline ? 1 : 0; // 1 => interrupt
+    if (!ic) return 0;
+    if (ic->control &&
+        ((ic->control->cancelled && ic->control->cancelled()) ||
+         (ic->control->generation_is_current && !ic->control->generation_is_current(ic->generation))))
+        return 1;
+    return ic->bounded && std::chrono::steady_clock::now() >= ic->deadline ? 1 : 0;
 }
 
 // Build a bake JSContext from a RAW context (no default intrinsics) and add ONLY
@@ -672,6 +728,37 @@ static BakeError harvest_exception(JSContext* ctx) {
 // Either way the surrounding intrinsics are the restricted bake set (no Date/
 // require/fetch/os). On failure returns false with `err` populated and the rt/ctx
 // already freed; on success the caller owns rt/ctx (eval result already freed).
+// Only immutable bytecode is shared. Reading it instantiates fresh functions
+// and globals in the caller's restricted context, exactly as source evaluation.
+// This cache is process-local and cannot outlive the embedded QuickJS version.
+static JSValue eval_cached_part_base(JSContext* ctx) {
+    static const std::vector<uint8_t> bytecode = [] {
+        std::vector<uint8_t> bytes;
+        JSRuntime* rt = JS_NewRuntime();
+        if (!rt) return bytes;
+        JSContext* compiler = new_bake_context(rt, false);
+        if (!compiler) { JS_FreeRuntime(rt); return bytes; }
+        JSValue function = JS_Eval(compiler, kPartBaseJS, strlen(kPartBaseJS),
+            "<part-base>", JS_EVAL_TYPE_GLOBAL | JS_EVAL_FLAG_COMPILE_ONLY);
+        if (!JS_IsException(function)) {
+            size_t size = 0;
+            uint8_t* encoded = JS_WriteObject(compiler, &size, function, JS_WRITE_OBJ_BYTECODE);
+            if (encoded) {
+                bytes.assign(encoded, encoded + size);
+                js_free(compiler, encoded);
+            }
+        }
+        JS_FreeValue(compiler, function);
+        JS_FreeContext(compiler); JS_FreeRuntime(rt);
+        return bytes;
+    }();
+    if (bytecode.empty())
+        return JS_Eval(ctx, kPartBaseJS, strlen(kPartBaseJS), "<part-base>", JS_EVAL_TYPE_GLOBAL);
+    JSValue function = JS_ReadObject(ctx, bytecode.data(), bytecode.size(), JS_READ_OBJ_BYTECODE);
+    if (JS_IsException(function)) return function;
+    return JS_EvalFunction(ctx, function); // consumes function
+}
+
 static bool eval_part_publish_class(const std::string& source,
                                     const std::string& className,
                                     ModuleStore* store,
@@ -681,8 +768,7 @@ static bool eval_part_publish_class(const std::string& source,
     if (store) JS_SetModuleLoaderFunc(rt, sh_module_normalize, sh_module_loader, store);
     ctx = new_bake_context(rt, /*want_modules*/ store != nullptr);
 
-    JSValue base = JS_Eval(ctx, kPartBaseJS, strlen(kPartBaseJS), "<part-base>",
-                           JS_EVAL_TYPE_GLOBAL);
+    JSValue base = eval_cached_part_base(ctx);
     if (JS_IsException(base)) { err = harvest_exception(ctx); JS_FreeValue(ctx, base);
         JS_FreeContext(ctx); JS_FreeRuntime(rt); rt = nullptr; ctx = nullptr; return false; }
     JS_FreeValue(ctx, base);
@@ -977,30 +1063,8 @@ std::vector<RequiredChild> ScriptHost::eval_requires(const std::string& source,
 // eval_requires), reads `static lodBudgets` (array of numbers in (0,1]) and
 // `static lodAnchorSize` (positive number), and returns them. Fail-closed:
 // any error => empty LodBudgetSpec (schema treated as not opted in).
-ScriptHost::LodBudgetSpec ScriptHost::eval_lod_budgets(const std::string& source) {
-    LodBudgetSpec out;
-
-    std::string className = find_part_class_name(source);
-    if (className.empty()) return out;
-
-    ModuleStore store;
-    bool use_module = false;
-    if (!shared_lib_roots_.empty()) {
-        module_resolver::FoldResult fr;
-        std::string ferr;
-        if (!fold_sources_cached(source, fr, ferr)) return out;
-        if (!fr.modules.empty()) { store = store_from_fold(fr); use_module = true; }
-    }
-
-    JSRuntime* rt = nullptr; JSContext* ctx = nullptr;
-    BakeError eerr;
-    if (!eval_part_publish_class(source, className, use_module ? &store : nullptr,
-                                 rt, ctx, eerr))
-        return out;
-
-    JSValue global = JS_GetGlobalObject(ctx);
-    JSValue authored = JS_GetPropertyStr(ctx, global, "__partClass");
-    JS_FreeValue(ctx, global);
+static ScriptHost::LodBudgetSpec read_lod_budgets(JSContext* ctx, JSValueConst authored) {
+    ScriptHost::LodBudgetSpec out;
     if (JS_IsFunction(ctx, authored)) {
         JSValue budgets = JS_GetPropertyStr(ctx, authored, "lodBudgets");
         if (JS_IsArray(budgets)) {
@@ -1024,6 +1088,35 @@ ScriptHost::LodBudgetSpec ScriptHost::eval_lod_budgets(const std::string& source
         }
         JS_FreeValue(ctx, anchor);
     }
+    return out;
+}
+
+ScriptHost::LodBudgetSpec ScriptHost::eval_lod_budgets(const std::string& source) {
+    ++stats_.lod_evaluations;
+    LodBudgetSpec out;
+
+    std::string className = find_part_class_name(source);
+    if (className.empty()) return out;
+
+    ModuleStore store;
+    bool use_module = false;
+    if (!shared_lib_roots_.empty()) {
+        module_resolver::FoldResult fr;
+        std::string ferr;
+        if (!fold_sources_cached(source, fr, ferr)) return out;
+        if (!fr.modules.empty()) { store = store_from_fold(fr); use_module = true; }
+    }
+
+    JSRuntime* rt = nullptr; JSContext* ctx = nullptr;
+    BakeError eerr;
+    if (!eval_part_publish_class(source, className, use_module ? &store : nullptr,
+                                 rt, ctx, eerr))
+        return out;
+
+    JSValue global = JS_GetGlobalObject(ctx);
+    JSValue authored = JS_GetPropertyStr(ctx, global, "__partClass");
+    JS_FreeValue(ctx, global);
+    out = read_lod_budgets(ctx, authored);
     JS_FreeValue(ctx, authored);
     JS_FreeContext(ctx); JS_FreeRuntime(rt);
     return out;
@@ -1035,7 +1128,20 @@ ScriptHost::LodBudgetSpec ScriptHost::eval_lod_budgets(const std::string& source
 // here is "keep the impostor" — only a field that is STRICTLY boolean true opts
 // out; absent, false, or a non-boolean value all return false so a malformed
 // opt-out can never silently strip a part's terminal billboard.
+static bool read_no_impostor(JSContext* ctx, JSValueConst authored) {
+    bool out = false;
+    if (JS_IsFunction(ctx, authored)) {
+        JSValue v = JS_GetPropertyStr(ctx, authored, "noImpostor");
+        // JS_IsBool gates out a truthy non-boolean (e.g. `= 1`), which reads as
+        // "author meant something we do not honour" rather than a silent opt-out.
+        if (JS_IsBool(v)) out = (JS_ToBool(ctx, v) == 1);
+        JS_FreeValue(ctx, v);
+    }
+    return out;
+}
+
 bool ScriptHost::eval_no_impostor(const std::string& source) {
+    ++stats_.lod_evaluations;
     std::string className = find_part_class_name(source);
     if (className.empty()) return false;
 
@@ -1058,13 +1164,7 @@ bool ScriptHost::eval_no_impostor(const std::string& source) {
     JSValue global = JS_GetGlobalObject(ctx);
     JSValue authored = JS_GetPropertyStr(ctx, global, "__partClass");
     JS_FreeValue(ctx, global);
-    if (JS_IsFunction(ctx, authored)) {
-        JSValue v = JS_GetPropertyStr(ctx, authored, "noImpostor");
-        // JS_IsBool gates out a truthy non-boolean (e.g. `= 1`), which reads as
-        // "author meant something we do not honour" rather than a silent opt-out.
-        if (JS_IsBool(v)) out = (JS_ToBool(ctx, v) == 1);
-        JS_FreeValue(ctx, v);
-    }
+    out = read_no_impostor(ctx, authored);
     JS_FreeValue(ctx, authored);
     JS_FreeContext(ctx); JS_FreeRuntime(rt);
     return out;
@@ -1073,36 +1173,11 @@ bool ScriptHost::eval_no_impostor(const std::string& source) {
 // W5 (Part Workbench): static discovery of `static lods` WITHOUT building.
 // Same restricted intrinsics / no-build discipline as eval_lod_budgets and
 // eval_requires. Fail-closed: any shape violation clears the whole list.
-ScriptHost::LodAuthoring ScriptHost::eval_lods(const std::string& source) {
-    LodAuthoring out;
-
-    std::string className = find_part_class_name(source);
-    if (className.empty()) return out;
-
-    ModuleStore store;
-    bool use_module = false;
-    if (!shared_lib_roots_.empty()) {
-        module_resolver::FoldResult fr;
-        std::string ferr;
-        if (!fold_sources_cached(source, fr, ferr)) return out;
-        if (!fr.modules.empty()) { store = store_from_fold(fr); use_module = true; }
-    }
-
-    JSRuntime* rt = nullptr; JSContext* ctx = nullptr;
-    BakeError eerr;
-    if (!eval_part_publish_class(source, className, use_module ? &store : nullptr,
-                                 rt, ctx, eerr))
-        return out;
-
+static ScriptHost::LodAuthoring read_lods(JSContext* ctx, JSValueConst authored) {
+    using LodLevelSpec = ScriptHost::LodLevelSpec;
+    ScriptHost::LodAuthoring out;
     bool ok = true;
-    JSValue global = JS_GetGlobalObject(ctx);
-    JSValue authored = JS_GetPropertyStr(ctx, global, "__partClass");
-    JS_FreeValue(ctx, global);
-    if (!JS_IsFunction(ctx, authored)) {
-        JS_FreeValue(ctx, authored);
-        JS_FreeContext(ctx); JS_FreeRuntime(rt); return out;
-    }
-
+    if (!JS_IsFunction(ctx, authored)) return out;
     // Canonicalizer shared with merge_params_canonical/eval_requires (sorted
     // keys, no whitespace) so a level's params_json is directly mergeable with
     // the base merged params by simple JS Object.assign at the call site.
@@ -1274,14 +1349,12 @@ ScriptHost::LodAuthoring ScriptHost::eval_lods(const std::string& source) {
     JS_FreeValue(ctx, lods);
     JS_FreeValue(ctx, genFn);
     JS_FreeValue(ctx, canonFn);
-    JS_FreeValue(ctx, authored);
-    JS_FreeContext(ctx); JS_FreeRuntime(rt);
 
     // M3: whole-TABLE validation. The per-entry loop above can only see one
     // entry; these rules are properties of the ladder.
     if (ok && !out.empty()) {
-        // Rep 0 is build() verbatim at the camera: no generator, and if it
-        // names a distance at all that distance is 0.
+        // Rep 0 is at the camera. A sole impostor makes build() its bake-only
+        // source; otherwise the first rep is the verbatim authored mesh.
         if (!out[0].gen.empty()) ok = false;
         if (out[0].has_at && out[0].at != 0.0) ok = false;
         // §3.4: at most one impostor, and only in last position. A mesh rep
@@ -1290,11 +1363,10 @@ ScriptHost::LodAuthoring ScriptHost::eval_lods(const std::string& source) {
         // geometry to come back to.
         for (size_t i = 0; i + 1 < out.size(); ++i)
             if (out[i].impostor) { ok = false; break; }
-        // The impostor is a picture of the coarsest mesh rung, so it needs one
-        // to exist, and it carries no geometry recipe of its own.
+        // An impostor depicts build() and carries no separate geometry recipe.
+        // It can be the only runtime rep: detailed foliage is bake input.
         if (ok && out.back().impostor) {
-            if (out.size() < 2) ok = false;
-            else if (!out.back().gen.empty() || out.back().has_params ||
+            if (!out.back().gen.empty() || out.back().has_params ||
                      !out.back().exclude.empty()) ok = false;
         }
         // Declared distances must strictly increase. A table that does not
@@ -1316,6 +1388,93 @@ ScriptHost::LodAuthoring ScriptHost::eval_lods(const std::string& source) {
 
     if (!ok) out.clear();  // fail-closed: any malformed entry discards the whole block
     return out;
+}
+
+ScriptHost::LodAuthoring ScriptHost::eval_lods(const std::string& source) {
+    ++stats_.lod_evaluations;
+    LodAuthoring out;
+
+    std::string className = find_part_class_name(source);
+    if (className.empty()) return out;
+
+    ModuleStore store;
+    bool use_module = false;
+    if (!shared_lib_roots_.empty()) {
+        module_resolver::FoldResult fr;
+        std::string ferr;
+        if (!fold_sources_cached(source, fr, ferr)) return out;
+        if (!fr.modules.empty()) { store = store_from_fold(fr); use_module = true; }
+    }
+
+    JSRuntime* rt = nullptr; JSContext* ctx = nullptr;
+    BakeError eerr;
+    if (!eval_part_publish_class(source, className, use_module ? &store : nullptr,
+                                 rt, ctx, eerr))
+        return out;
+
+    JSValue global = JS_GetGlobalObject(ctx);
+    JSValue authored = JS_GetPropertyStr(ctx, global, "__partClass");
+    JS_FreeValue(ctx, global);
+    out = read_lods(ctx, authored);
+    JS_FreeValue(ctx, authored);
+    JS_FreeContext(ctx); JS_FreeRuntime(rt);
+    return out;
+}
+
+static bool plain_static_metadata(JSContext* ctx, JSValueConst authored) {
+    JSValue object = JS_DupValue(ctx, authored);
+    for (int depth = 0; depth < 8 && !JS_IsNull(object); ++depth) {
+        for (const char* key : {"lodBudgets", "lodAnchorSize", "lods", "noImpostor", "requires"}) {
+            JSAtom atom = JS_NewAtom(ctx, key);
+            JSPropertyDescriptor desc{};
+            const int found = JS_GetOwnProperty(ctx, &desc, object, atom);
+            JS_FreeAtom(ctx, atom);
+            if (found < 0) { JS_FreeValue(ctx, object); return false; }
+            if (found) {
+                const bool accessor = !JS_IsUndefined(desc.getter) || !JS_IsUndefined(desc.setter);
+                JS_FreeValue(ctx, desc.value); JS_FreeValue(ctx, desc.getter); JS_FreeValue(ctx, desc.setter);
+                if (accessor) { JS_FreeValue(ctx, object); return false; }
+            }
+        }
+        JSValue next = JS_GetPrototype(ctx, object);
+        JS_FreeValue(ctx, object); object = next;
+        if (JS_IsException(object)) return false;
+    }
+    const bool complete = JS_IsNull(object);
+    JS_FreeValue(ctx, object);
+    return complete;
+}
+
+// Avoid invoking getters inside metadata arrays in the live build context.
+// Nonempty authored ladders stay on the original isolated graph metadata path.
+static bool plain_singleton_values(JSContext* ctx, JSValueConst authored) {
+    JSValue budgets = JS_GetPropertyStr(ctx, authored, "lodBudgets");
+    bool exact = false;
+    if (JS_IsArray(budgets)) {
+        JSValue length = JS_GetPropertyStr(ctx, budgets, "length");
+        uint32_t count = 0; JS_ToUint32(ctx, &count, length); JS_FreeValue(ctx, length);
+        if (count == 1) {
+            JSAtom atom = JS_NewAtom(ctx, "0"); JSPropertyDescriptor desc{};
+            const int found = JS_GetOwnProperty(ctx, &desc, budgets, atom); JS_FreeAtom(ctx, atom);
+            if (found > 0) {
+                double value = 0.0;
+                exact = JS_IsUndefined(desc.getter) && JS_IsUndefined(desc.setter) &&
+                    JS_IsNumber(desc.value) && JS_ToFloat64(ctx, &value, desc.value) == 0 && value == 1.0;
+                JS_FreeValue(ctx, desc.value); JS_FreeValue(ctx, desc.getter); JS_FreeValue(ctx, desc.setter);
+            }
+        }
+    }
+    JS_FreeValue(ctx, budgets);
+    if (!exact) return false;
+    JSValue lods = JS_GetPropertyStr(ctx, authored, "lods");
+    bool safe = !JS_IsObject(lods);
+    if (JS_IsArray(lods)) {
+        JSValue length = JS_GetPropertyStr(ctx, lods, "length"); uint32_t count = 1;
+        safe = JS_ToUint32(ctx, &count, length) == 0 && count == 0;
+        JS_FreeValue(ctx, length);
+    }
+    JS_FreeValue(ctx, lods);
+    return safe;
 }
 
 // Shallow-merge two JSON objects (the override wins) and re-emit them as
@@ -1367,6 +1526,47 @@ std::string ScriptHost::merge_json_shallow(const std::string& base_json,
 // this class, so a repeated resolve of the same source does not re-read the
 // shared-lib set. merge_params_canonical just above has already warmed that
 // cache entry for this exact source.
+uint64_t ScriptHost::resolve_request_hash(const std::string& source,
+                                          const std::string& params_json,
+                                          const uint64_t* child_hashes,
+                                          size_t child_count) {
+    if (child_count && !child_hashes) return 0;
+    uint64_t prefix = 0;
+    bool found = false;
+    {
+        std::lock_guard<std::mutex> lock(fold_mu_);
+        const auto it = request_source_prefixes_.find(source);
+        if (it != request_source_prefixes_.end()) { prefix = it->second; found = true; }
+    }
+    const auto length = [](std::string& target, size_t value) {
+        const uint64_t size = value;
+        for (unsigned shift=0; shift<64; shift+=8)
+            target.push_back(static_cast<char>((size >> shift) & 255));
+    };
+    if (!found) {
+        module_resolver::FoldResult folded;
+        const char* bytes = source.data();
+        size_t byte_count = source.size();
+        if (!shared_lib_roots_.empty()) {
+            std::string error;
+            if (!fold_sources_cached(source, folded, error)) return 0;
+            bytes = folded.folded.data(); byte_count = folded.folded.size();
+        }
+        std::string framed = "prepared-resolve-request-v1";
+        length(framed, byte_count); framed.append(bytes, byte_count);
+        prefix = part_asset::compute_source_hash(framed.data(), framed.size());
+        std::lock_guard<std::mutex> lock(fold_mu_);
+        request_source_prefixes_.emplace(source, prefix);
+    }
+    // Continue the exact v1 byte stream. Only the source prefix is memoized;
+    // raw overrides, sorted children, bake modes and versions are still fresh.
+    std::string params;
+    params.reserve(8 + params_json.size());
+    length(params, params_json.size()); params.append(params_json);
+    return part_asset::finish_resolved_hash(prefix, params.data(), params.size(),
+                                           child_hashes, child_count);
+}
+
 uint64_t ScriptHost::resolve_hash(const std::string& source,
                                   const std::string& params_json,
                                   const uint64_t* child_hashes,
@@ -1443,11 +1643,38 @@ static void mesh_sdf_ops(const dsl::BuildBuffer& buf,
                          const std::string& label,
                          BLASManager& blas,
                          TLASManager& tlas) {
+    BAKE_SPAN("sdf_cells");
+    size_t empty_group_cells = 0, mesh_attempted_cells = 0, nonempty_cells = 0;
     dsl::LoweredField f = dsl::lower_build_buffer(buf);
-    const float cell_size = 1.0f;   // smallest_cell_size (matches Cluster default)
+    float cell_size = 1.0f;
     const float base_detail = buf.ops.empty()
                                   ? 0.1f : buf.ops[0].spacing;
+    // Brush spacing is an absolute sampling request, regardless of shape or
+    // CSG operation. Fat primitives and subtractive spheres carry no additive
+    // particle detail_size, so inferring resolution from that subset silently
+    // left thin boxes, timber and carved details on a 66.7 mm lattice. Use one
+    // minimum for the whole expression so neighbouring cell meshes also agree.
+    float absolute_spacing = 0.0f;
+    for (const dsl::BuildOp& op : buf.ops) {
+        if (op.spacing > 0.0f && std::isfinite(op.spacing) &&
+            (absolute_spacing == 0.0f || op.spacing < absolute_spacing))
+            absolute_spacing = op.spacing;
+    }
 
+    BAKE_COUNT("requested_spacing_m", absolute_spacing);
+    // A fixed one-metre cell silently clamps all requests below 1/63 m,
+    // deleting millimetre-scale twigs. Keep the bounded 64^3 scratch grid and
+    // subdivide the spatial cells on a shared dyadic lattice instead. The
+    // 1/64 m floor bounds subdivision; finer requests retain the existing
+    // explicit achieved-spacing diagnostic rather than growing one huge grid.
+    while (absolute_spacing > 0.0f && cell_size > 1.0f / 64.0f &&
+           cell_size / 63.0f > absolute_spacing)
+        cell_size *= 0.5f;
+    BAKE_COUNT("sdf_cell_size_m", cell_size);
+    if (absolute_spacing > 0.0f) {
+        const int pow = choose_absolute_division_pow(cell_size, absolute_spacing, 4, 6);
+        BAKE_COUNT("achieved_spacing_m", cell_size / float((1 << pow) - 1));
+    }
     // group_id -> accumulated (Tri, TriEx) across all cells. std::map for
     // deterministic group iteration order.
     std::map<uint32_t, std::pair<std::vector<Tri>, std::vector<TriEx>>> region_acc;
@@ -1513,6 +1740,24 @@ static void mesh_sdf_ops(const dsl::BuildBuffer& buf,
         int y1 = (int)std::floor((fp.center.y + inf) / cell_size);
         int z0 = (int)std::floor((fp.center.z - inf) / cell_size);
         int z1 = (int)std::floor((fp.center.z + inf) / cell_size);
+        // Cell::build_group_mesh uses gridSize>=16, so k never exceeds
+        // blend_voxels * cell_size/15. Include smooth-union support before
+        // shrinking the old candidate cube; all emitted cells retain precisely
+        // the same coordinates, sphere assignment and field evaluation.
+        float blend_voxels = 0.15f;
+        if (const char* e = std::getenv("MSL_BLEND_VOXELS")) {
+            float v = (float)std::atof(e);
+            if (v >= 0.0f) blend_voxels = v;
+        }
+        mm::Vec3 lower, upper;
+        if (sdf_candidates::box_support(fp, blend_voxels*cell_size/15.0f, lower, upper)) {
+            x0 = std::max(x0, (int)std::floor(std::max(lower.x, fp.center.x-inf)/cell_size));
+            x1 = std::min(x1, (int)std::floor(std::min(upper.x, fp.center.x+inf)/cell_size));
+            y0 = std::max(y0, (int)std::floor(std::max(lower.y, fp.center.y-inf)/cell_size));
+            y1 = std::min(y1, (int)std::floor(std::min(upper.y, fp.center.y+inf)/cell_size));
+            z0 = std::max(z0, (int)std::floor(std::max(lower.z, fp.center.z-inf)/cell_size));
+            z1 = std::min(z1, (int)std::floor(std::min(upper.z, fp.center.z+inf)/cell_size));
+        }
         for (int x=x0;x<=x1;++x) for (int y=y0;y<=y1;++y) for (int z=z0;z<=z1;++z) {
             auto k = cell_key(x,y,z);
             if (!cells[k])
@@ -1544,17 +1789,9 @@ static void mesh_sdf_ops(const dsl::BuildBuffer& buf,
         }
     }
 
-    // One scratch shared across all cells. The consumed mesher's marching-cubes
-    // pass leaves the per-vertex normal buffer (scratch->pool.normals) UNWRITTEN;
-    // compute_surface_normals_impl then reads the incoming (uninitialized) normal
-    // for any degenerate vertex (vertex on a particle center / no neighbor in the
-    // gradient search) before normalizing it. A fresh scratch per cell hands each
-    // cell a freshly realloc'd (garbage) buffer, so those degenerate reads vary
-    // run-to-run and the saved .part normals are nondeterministic. Sharing one
-    // scratch keeps the pool buffer stable across the (deterministic) cell
-    // sequence; we also clear it to a fixed pattern up front so the very first
-    // cell's degenerate reads are deterministic too. surface.c/cell.cpp are
-    // read-only, so this is the only lever available to make the bake byte-stable.
+    // Reuse allocation pools and spatial hashes across cells. The mesher
+    // initializes geometric fallback normals before replacing them with the
+    // matching sphere or ordered-field gradients.
     SurfaceScratch* scratch = CreateSurfaceScratch();
     for (auto& kv : cells) {
         Cell* cell = kv.second.get();
@@ -1576,7 +1813,7 @@ static void mesh_sdf_ops(const dsl::BuildBuffer& buf,
                 cell->material_particle_indices[g]; // default-inserts empty bucket
             }
         }
-        if (cell->material_particle_indices.empty()) continue;
+        if (cell->material_particle_indices.empty()) { ++empty_group_cells; continue; }
 
         // Use the pre-built carve list for this cell (empty if no carve overlap).
         static const std::vector<Particle> kEmptyCarve;
@@ -1586,10 +1823,14 @@ static void mesh_sdf_ops(const dsl::BuildBuffer& buf,
         const Particle* carvePtr = carve.empty() ? nullptr : carve.data();
         int carveCount = (int)carve.size();
 
+        ++mesh_attempted_cells;
         CellMeshResult res = cell->build_cell_meshes(
             particles, scratch, /*simplification*/1.0f, base_detail,
             /*max_pow*/6, /*uniform_detail*/0.0f, carvePtr, carveCount,
-            gstagesPtr, fatPtr, fatCount, clusterStage);
+            gstagesPtr, fatPtr, fatCount, clusterStage, absolute_spacing);
+
+        if (std::any_of(res.groups.begin(), res.groups.end(), [](const GroupMeshResult& g) {
+                return !g.triangles.empty(); })) ++nonempty_cells;
 
         // Register each group's GL-free triangle arrays directly into the BLAS
         // and place an identity instance in the TLAS.
@@ -1617,16 +1858,9 @@ static void mesh_sdf_ops(const dsl::BuildBuffer& buf,
             // (Value-init {} does not reliably zero trailing alignment
             // padding for a class with default member initializers.)
             //
-            // Per-vertex normals: keep the mesher's smooth (SDF-gradient) normals,
-            // which are deterministic given the single shared SurfaceScratch above
-            // (a fresh-per-cell scratch handed each cell a freshly realloc'd, and
-            // therefore garbage, normal buffer; the marching-cubes pass never
-            // writes that buffer and compute_surface_normals_impl reads the
-            // uninitialized value for degenerate vertices, which then varied
-            // run-to-run). As a robustness guard against any residual degenerate
-            // vertex whose normal comes back non-finite or non-unit, fall back to
-            // the deterministic geometric face normal derived from the (byte-
-            // identical) Tri vertices.
+            // Preserve field-gradient normals. Guard non-finite/degenerate
+            // output with the deterministic geometric face normal; surface.c
+            // already initializes its own incident-face fallback each call.
             std::vector<TriEx> normEx(g.triangle_normals.size());
             for (size_t i = 0; i < g.triangle_normals.size(); ++i) {
                 TriEx e;
@@ -1673,6 +1907,11 @@ static void mesh_sdf_ops(const dsl::BuildBuffer& buf,
             }
         }
     }
+    BAKE_COUNT("candidate_cells", cells.size());
+    BAKE_COUNT("empty_group_cells", empty_group_cells);
+    BAKE_COUNT("mesh_attempted_cells", mesh_attempted_cells);
+    BAKE_COUNT("nonempty_cells", nonempty_cells);
+    BAKE_COUNT("empty_mesh_cells", mesh_attempted_cells - nonempty_cells);
     DestroySurfaceScratch(scratch);
 
     if (stack) {
@@ -1836,6 +2075,55 @@ private:
 // Control flow: the error paths are `goto done`, so anything declared between
 // the first goto and the label has to be declared before it. That is why the
 // collector guard and the phase tracker sit at the very top of the body.
+static bool source_evaluation_current(const SolidSourceEvaluationOptions& options,
+                                      BakeError& error) {
+    if (options.control.cancelled && options.control.cancelled()) {
+        error.ok = false; error.code = "solid-source-cancelled";
+        error.message = "solid source evaluation cancelled"; return false;
+    }
+    if (options.control.generation_is_current &&
+        !options.control.generation_is_current(options.generation)) {
+        error.ok = false; error.code = "solid-source-stale";
+        error.message = "solid source evaluation generation changed"; return false;
+    }
+    return true;
+}
+
+// Inspect only requires descriptors, without running an accessor in the build
+// context. A function is conservatively a child-asset declaration, even when
+// one invocation could return an empty list. Shared imports are unrelated.
+static bool source_has_no_child_requires(JSContext* ctx, JSValueConst authored) {
+    JSValue object = JS_DupValue(ctx, authored);
+    JSAtom atom = JS_NewAtom(ctx, "requires");
+    bool allowed = true;
+    for (unsigned depth = 0; depth < 32 && JS_IsObject(object); ++depth) {
+        JSPropertyDescriptor descriptor{};
+        const int found = JS_GetOwnProperty(ctx, &descriptor, object, atom);
+        if (found < 0) { allowed = false; break; }
+        if (found > 0) {
+            allowed = JS_IsUndefined(descriptor.getter) && JS_IsUndefined(descriptor.setter);
+            if (allowed && !JS_IsUndefined(descriptor.value)) {
+                allowed = false;
+                if (JS_IsArray(descriptor.value)) {
+                    JSValue length = JS_GetPropertyStr(ctx, descriptor.value, "length");
+                    uint32_t count = 1;
+                    allowed = JS_ToUint32(ctx, &count, length) == 0 && count == 0;
+                    JS_FreeValue(ctx, length);
+                }
+            }
+            JS_FreeValue(ctx, descriptor.value); JS_FreeValue(ctx, descriptor.getter);
+            JS_FreeValue(ctx, descriptor.setter);
+            break;
+        }
+        JSValue next = JS_GetPrototype(ctx, object);
+        JS_FreeValue(ctx, object); object = next;
+        if (JS_IsException(object)) { allowed = false; break; }
+        if (depth == 31 && JS_IsObject(object)) allowed = false;
+    }
+    JS_FreeAtom(ctx, atom); JS_FreeValue(ctx, object);
+    return allowed;
+}
+
 BakeResult ScriptHost::bake_source(const std::string& source,
                                    const std::string& params_json,
                                    const BakeOptions& opts,
@@ -1843,6 +2131,456 @@ BakeResult ScriptHost::bake_source(const std::string& source,
                                    size_t child_count,
                                    const std::string* child_modules,
                                    const std::string* child_params) {
+    return execute_source(source, params_json, opts, child_hashes, child_count,
+                          child_modules, child_params, nullptr, nullptr);
+}
+
+bool ScriptHost::evaluate_solid_source(const std::string& source,
+                                      const std::string& params_json,
+                                      EvaluatedSolidSource& output, BakeError& error,
+                                      const SolidSourceEvaluationOptions& options) {
+    error = {};
+    if (!options.time_budget_ms) {
+        error.ok = false; error.code = "solid-source-evaluation-limit";
+        error.message = "solid source evaluation requires a positive time budget";
+        return false;
+    }
+    if (!source_evaluation_current(options, error)) return false;
+    EvaluatedSolidSource candidate;
+    BakeOptions bake_options;
+    bake_options.time_budget_ms = options.time_budget_ms;
+    BakeResult result = execute_source(source, params_json, bake_options, nullptr, 0,
+                                      nullptr, nullptr, &candidate, &options);
+    error = result.error;
+    if (!source_evaluation_current(options, error) || !error.ok) return false;
+    output = std::move(candidate);
+    return true;
+}
+
+bool ScriptHost::evaluate_finite_surface(const std::string& source,
+                                        const std::string& params_json,
+                                        EvaluatedFiniteSurface& output, BakeError& error,
+                                        const SolidSourceEvaluationOptions& options) {
+    error = {};
+    if (!options.time_budget_ms) {
+        error.ok = false; error.code = "finite-surface-evaluation-limit";
+        error.message = "finite surface evaluation requires a positive time budget";
+        return false;
+    }
+    if (!source_evaluation_current(options, error)) return false;
+    EvaluatedFiniteSurface candidate;
+    BakeOptions bake_options;
+    bake_options.time_budget_ms = options.time_budget_ms;
+    BakeResult result = execute_source(source, params_json, bake_options, nullptr, 0,
+                                      nullptr, nullptr, nullptr, &options, &candidate);
+    error = result.error;
+    if (!source_evaluation_current(options, error) || !error.ok) return false;
+    output = std::move(candidate);
+    return true;
+}
+
+bool ScriptHost::evaluate_part_surface(const std::string& source, const std::string& params_json,
+    EvaluatedDirectSurface& direct, EvaluatedFiniteSurface& finite, BakeError& error,
+    const SolidSourceEvaluationOptions& options) {
+    error = {};
+    if (!options.time_budget_ms) {
+        error.ok=false; error.code="part-surface-evaluation-limit";
+        error.message="part surface evaluation requires a positive time budget"; return false;
+    }
+    if (!source_evaluation_current(options,error)) return false;
+    EvaluatedDirectSurface next_direct; EvaluatedFiniteSurface next_finite;
+    BakeOptions bake_options; bake_options.time_budget_ms=options.time_budget_ms;
+    const auto result=execute_source(source,params_json,bake_options,nullptr,0,nullptr,nullptr,
+                                    nullptr,&options,&next_finite,&next_direct);
+    error=result.error;
+    if (!source_evaluation_current(options,error) || !error.ok) return false;
+    direct=std::move(next_direct); finite=std::move(next_finite); return true;
+}
+
+namespace {
+struct RecipeJsValue {
+    JSContext* ctx;
+    JSValue value;
+    RecipeJsValue(JSContext* c, JSValue v) : ctx(c), value(v) {}
+    ~RecipeJsValue() { JS_FreeValue(ctx, value); }
+    RecipeJsValue(const RecipeJsValue&) = delete;
+};
+bool finite_surface_number(JSContext* ctx, JSValueConst value, float& out) {
+    double number = 0;
+    if (!JS_IsNumber(value) || JS_ToFloat64(ctx, &number, value) < 0 ||
+        !std::isfinite(number) || std::abs(number) > std::numeric_limits<float>::max())
+        return false;
+    out = static_cast<float>(number);
+    return true;
+}
+bool finite_surface_bounds(JSContext* ctx, JSValueConst descriptor, const char* key,
+                           std::array<float, 3>& out) {
+    RecipeJsValue value(ctx, JS_GetPropertyStr(ctx, descriptor, key));
+    if (!JS_IsArray(value.value)) return false;
+    RecipeJsValue length(ctx, JS_GetPropertyStr(ctx, value.value, "length"));
+    float count = 0;
+    if (!finite_surface_number(ctx, length.value, count) || count != 3) return false;
+    for (unsigned axis = 0; axis < 3; ++axis) {
+        RecipeJsValue v(ctx, JS_GetPropertyUint32(ctx, value.value, axis));
+        if (!finite_surface_number(ctx, v.value, out[axis])) return false;
+    }
+    return true;
+}
+template<size_t N>
+bool finite_surface_array(JSContext* ctx,JSValueConst descriptor,const char* key,std::array<float,N>& out) {
+    RecipeJsValue value(ctx,JS_GetPropertyStr(ctx,descriptor,key));
+    if(!JS_IsArray(value.value))return false;
+    RecipeJsValue length(ctx,JS_GetPropertyStr(ctx,value.value,"length"));float count=0;
+    if(!finite_surface_number(ctx,length.value,count) || count!=N)return false;
+    for(uint32_t i=0;i<N;++i) {
+        RecipeJsValue x(ctx,JS_GetPropertyUint32(ctx,value.value,i));
+        if(!finite_surface_number(ctx,x.value,out[i]))return false;
+    }
+    return true;
+}
+bool finite_surface_frame(JSContext* ctx,JSValueConst value,FiniteSurfaceReceiver& frame) {
+    if(!finite_surface_bounds(ctx,value,"originM",frame.origin_m) ||
+       !finite_surface_bounds(ctx,value,"u",frame.u) || !finite_surface_bounds(ctx,value,"v",frame.v) ||
+       !finite_surface_bounds(ctx,value,"n",frame.n))return false;
+    const auto dot=[](const auto& a,const auto& b){return a[0]*b[0]+a[1]*b[1]+a[2]*b[2];};
+    const auto& u=frame.u;const auto& v=frame.v;
+    const std::array<float,3> cross{u[1]*v[2]-u[2]*v[1],u[2]*v[0]-u[0]*v[2],u[0]*v[1]-u[1]*v[0]};
+    return std::abs(dot(u,u)-1)<1e-5f && std::abs(dot(v,v)-1)<1e-5f &&
+        std::abs(dot(frame.n,frame.n)-1)<1e-5f && std::abs(dot(u,v))<1e-5f && dot(cross,frame.n)>.99999f;
+}
+bool read_periodic_materials(JSContext* ctx,JSValueConst descriptor,EvaluatedFiniteSurface& out,std::string& error) {
+    const auto fail=[&](const char* text){error=text;return false;};
+    RecipeJsValue periodic(ctx,JS_GetPropertyStr(ctx,descriptor,"periodic"));
+    if(JS_IsUndefined(periodic.value))return true;
+    if(out.version<2)return fail("periodic materials require a composite source bank");
+    const auto count=[&](JSValueConst value,uint32_t maximum) {
+        if(!JS_IsArray(value))return 0u;
+        RecipeJsValue length(ctx,JS_GetPropertyStr(ctx,value,"length"));float n=0;
+        return finite_surface_number(ctx,length.value,n) && n>=1 && n<=maximum && std::floor(n)==n?uint32_t(n):0u;
+    };
+    RecipeJsValue modules(ctx,JS_GetPropertyStr(ctx,periodic.value,"modules"));
+    RecipeJsValue mappings(ctx,JS_GetPropertyStr(ctx,periodic.value,"mappings"));
+    const auto nm=count(modules.value,32),nr=count(mappings.value,4096);
+    if(!nm || !nr)return fail("invalid periodic material/mapping count");
+    out.modules.resize(nm);out.material_mappings.resize(nr);
+    uint32_t total_placements=0;
+    for(uint32_t i=0;i<nm;++i) {
+        auto& m=out.modules[i];RecipeJsValue value(ctx,JS_GetPropertyUint32(ctx,modules.value,i));
+        RecipeJsValue density(ctx,JS_GetPropertyStr(ctx,value.value,"texelsPerM"));
+        if(!finite_surface_frame(ctx,value.value,m.frame) ||
+           !finite_surface_array(ctx,value.value,"periodM",m.period_m) ||
+           !finite_surface_number(ctx,density.value,m.texels_per_m) || m.texels_per_m<1 || m.texels_per_m>8192)
+            return fail("invalid periodic frame, period or density");
+        for(float extent:m.period_m)if(!(extent>0) || double(extent)*m.texels_per_m>8192)
+            return fail("periodic material logical dimensions exceed 8192");
+        RecipeJsValue program(ctx,JS_GetPropertyStr(ctx,value.value,"baseProgram"));
+        if(!JS_IsString(program.value))return fail("periodic base program is missing");
+        size_t length=0;const char* text=JS_ToCStringLen(ctx,&length,program.value);
+        if(!text)return fail("cannot read periodic base program");
+        if(length<=1024*1024)m.base_program.assign(text,length);
+        JS_FreeCString(ctx,text);if(length>1024*1024)return fail("periodic base program exceeds 1 MiB");
+        terrain_field::SurfaceProgram parsed;vt::VtSurfaceTapePack packed;
+        if(!terrain_field::SurfaceProgram::parse(m.base_program,parsed,error) || parsed.source.version!=1 ||
+           parsed.uses_world_inputs() || !vt::vt_pack_surface_tape(parsed,false,packed) ||
+           packed.scan.count || packed.weight_reg_count!=1)return fail("periodic base needs one local direct source without field lanes");
+        for(const auto& op:parsed.ops)for(float operand:{op.f0,op.f1,op.f2,op.f3,op.wf0,op.wf1,op.wf2})
+            if(!std::isfinite(operand))return fail("nonfinite periodic material operand");
+        RecipeJsValue placements(ctx,JS_GetPropertyStr(ctx,value.value,"placements"));
+        const uint32_t np=count(placements.value,4096);
+        if(!np || np>4096-total_placements)return fail("periodic placements exceed aggregate budget 4096");
+        total_placements+=np;m.placements.resize(np);
+        for(uint32_t j=0;j<np;++j) {
+            auto& placement=m.placements[j];RecipeJsValue p(ctx,JS_GetPropertyUint32(ctx,placements.value,j));
+            RecipeJsValue source(ctx,JS_GetPropertyStr(ctx,p.value,"source"));float index=0;
+            if(!finite_surface_number(ctx,source.value,index) || index<0 || index>=out.sources.size() || std::floor(index)!=index ||
+               !finite_surface_array(ctx,p.value,"matrix",placement.matrix))return fail("invalid periodic source placement");
+            placement.source=uint32_t(index);const auto& a=placement.matrix;
+            if(a[12]!=0 || a[13]!=0 || a[14]!=0 || a[15]!=1)return fail("periodic placement must be affine");
+            for(unsigned u=0;u<3;++u)for(unsigned v=0;v<3;++v) {
+                float dot=0;for(unsigned k=0;k<3;++k)dot+=a[u*4+k]*a[v*4+k];
+                if(std::abs(dot-(u==v?1.f:0.f))>1e-5f)return fail("periodic placement must be rigid");
+            }
+            const float determinant=a[0]*(a[5]*a[10]-a[6]*a[9])-a[1]*(a[4]*a[10]-a[6]*a[8])+a[2]*(a[4]*a[9]-a[5]*a[8]);
+            if(determinant<.99999f)return fail("periodic placement must preserve handedness");
+        }
+    }
+    for(uint32_t i=0;i<nr;++i) {
+        auto& m=out.material_mappings[i];RecipeJsValue value(ctx,JS_GetPropertyUint32(ctx,mappings.value,i));
+        RecipeJsValue module(ctx,JS_GetPropertyStr(ctx,value.value,"module"));float index=0;
+        RecipeJsValue datum(ctx,JS_GetPropertyStr(ctx,value.value,"datumM"));
+        if(!finite_surface_number(ctx,module.value,index) || index<0 || index>=nm || std::floor(index)!=index ||
+           !finite_surface_frame(ctx,value.value,m.frame) || !finite_surface_array(ctx,value.value,"phase",m.phase) ||
+           !finite_surface_array(ctx,value.value,"uRangeM",m.u_range_m) || m.u_range_m[1]<=m.u_range_m[0] ||
+           !finite_surface_number(ctx,datum.value,m.datum_m))return fail("invalid periodic receiver mapping");
+        m.module=uint32_t(index);
+    }
+    return true;
+}
+bool read_finite_descriptor(JSContext* ctx, JSValueConst descriptor, uint64_t hash,
+                            uint64_t generation, EvaluatedFiniteSurface& out, BakeError& error) {
+    const auto fail = [&](const std::string& message) {
+        error.ok=false; error.code="finite-surface-invalid";
+        error.message="finiteSurface: "+message; return false;
+    };
+    if (!finite_surface_bounds(ctx, descriptor, "boundsMinM", out.bounds_min_m) ||
+        !finite_surface_bounds(ctx, descriptor, "boundsMaxM", out.bounds_max_m))
+        return fail("bounds must contain three finite metre coordinates");
+    for (unsigned axis = 0; axis < 3; ++axis)
+        if (!(out.bounds_max_m[axis] > out.bounds_min_m[axis]) ||
+            !std::isfinite(out.bounds_max_m[axis] - out.bounds_min_m[axis]))
+            return fail("bounds must have positive finite extent");
+    RecipeJsValue pixel(ctx, JS_GetPropertyStr(ctx, descriptor, "pixelM"));
+    RecipeJsValue material(ctx, JS_GetPropertyStr(ctx, descriptor, "material"));
+    float handle = 0;
+    if (!finite_surface_number(ctx, pixel.value, out.pixel_m) || out.pixel_m < .0001f ||
+        !finite_surface_number(ctx, material.value, handle) || handle < 0 ||
+        handle > 255 || std::floor(handle) != handle)
+        return fail("pixelM must be positive and the v1 material handle must be in 0..255");
+    RecipeJsValue version(ctx, JS_GetPropertyStr(ctx, descriptor, "version"));
+    float v = 0;
+    if (!finite_surface_number(ctx, version.value, v) || (v != 1 && v != 2 && v != 3)) return fail("invalid version");
+    out.version = uint32_t(v);
+    out.geometry.source.material = static_cast<uint32_t>(handle);
+    out.geometry.resolved_hash = hash;
+    out.geometry.generation = generation;
+    gpu_meshing::Error validation;
+    if (out.version == 1) {
+    RecipeJsValue solid(ctx, JS_GetPropertyStr(ctx, descriptor, "solid"));
+    if (!dsl::read_solid_source_recipe(ctx, solid.value, out.geometry.source))
+        return fail("solid must be a strict version-1 bounded physical op tape");
+    out.geometry.source.material = static_cast<uint32_t>(handle);
+    out.geometry.resolved_hash = hash;
+    out.geometry.generation = generation;
+    gpu_meshing::GridLayout layout;
+    if (!gpu_meshing::validate_solid_job(out.geometry.job(), layout, validation))
+        return fail(validation.message);
+    out.geometry.recipe_digest = gpu_meshing::solid_recipe_digest(out.geometry.job());
+    } else {
+        const auto array_count = [&](JSValueConst a, uint32_t limit) -> uint32_t {
+            if (!JS_IsArray(a)) return 0;
+            RecipeJsValue length(ctx, JS_GetPropertyStr(ctx,a,"length")); float n=0;
+            return finite_surface_number(ctx,length.value,n) && n>=1 && n<=limit ? uint32_t(n) : 0;
+        };
+        RecipeJsValue sources(ctx,JS_GetPropertyStr(ctx,descriptor,"sources"));
+        RecipeJsValue placements(ctx,JS_GetPropertyStr(ctx,descriptor,"placements"));
+        const auto ns=array_count(sources.value,32), np=array_count(placements.value,4096);
+        if (!ns || !np) return fail("composite source/placement budget exceeded");
+        out.sources.resize(ns);
+        for (uint32_t i=0;i<ns;++i) {
+            RecipeJsValue source(ctx,JS_GetPropertyUint32(ctx,sources.value,i));
+            // JS compiler admits only leaf sources. Check before recursing too.
+            RecipeJsValue sv(ctx,JS_GetPropertyStr(ctx,source.value,"version")); float kind=0;
+            if (!finite_surface_number(ctx,sv.value,kind) || kind!=1) return fail("nested composite is not supported");
+            if (!read_finite_descriptor(ctx,source.value,hash,generation,out.sources[i],error)) return false;
+        }
+        if (out.version == 3) {
+            RecipeJsValue receivers(ctx,JS_GetPropertyStr(ctx,descriptor,"receivers"));
+            const auto nr=array_count(receivers.value,4096);
+            if(!nr) return fail("explicit receiver budget exceeded");
+            out.receivers.resize(nr);
+            for(uint32_t i=0;i<nr;++i) {
+                RecipeJsValue value(ctx,JS_GetPropertyUint32(ctx,receivers.value,i));
+                auto& r=out.receivers[i];
+                if(!finite_surface_bounds(ctx,value.value,"originM",r.origin_m) ||
+                   !finite_surface_bounds(ctx,value.value,"u",r.u) ||
+                   !finite_surface_bounds(ctx,value.value,"v",r.v) ||
+                   !finite_surface_bounds(ctx,value.value,"n",r.n)) return fail("invalid receiver frame");
+                const auto dot=[](const auto& a,const auto& b){return a[0]*b[0]+a[1]*b[1]+a[2]*b[2];};
+                std::array<float,3> cross{r.u[1]*r.v[2]-r.u[2]*r.v[1],r.u[2]*r.v[0]-r.u[0]*r.v[2],r.u[0]*r.v[1]-r.u[1]*r.v[0]};
+                if(std::abs(dot(r.u,r.u)-1)>1e-5f || std::abs(dot(r.v,r.v)-1)>1e-5f ||
+                   std::abs(dot(r.n,r.n)-1)>1e-5f || std::abs(dot(r.u,r.v))>1e-5f || dot(cross,r.n)<.99999f)
+                    return fail("receiver frame must be rigid and right-handed");
+                RecipeJsValue domain(ctx,JS_GetPropertyStr(ctx,value.value,"domainM"));
+                if(array_count(domain.value,4)!=4) return fail("receiver domain requires four numbers");
+                for(uint32_t k=0;k<4;++k) {
+                    RecipeJsValue x(ctx,JS_GetPropertyUint32(ctx,domain.value,k));
+                    if(!finite_surface_number(ctx,x.value,r.domain_m[k])) return fail("nonfinite receiver domain");
+                }
+                if(r.domain_m[2]<=0 || r.domain_m[3]<=0 ||
+                   std::ceil(double(r.domain_m[2])/.25)*std::ceil(double(r.domain_m[3])/.25)>65536)
+                    return fail("receiver domain exceeds spatial grid budget");
+            }
+        }
+        out.placements.resize(np);
+        std::vector<std::array<float,6>> placed_bounds;
+        placed_bounds.reserve(np);
+        for (uint32_t i=0;i<np;++i) {
+            auto& p=out.placements[i];
+            RecipeJsValue placed(ctx,JS_GetPropertyUint32(ctx,placements.value,i));
+            RecipeJsValue source(ctx,JS_GetPropertyStr(ctx,placed.value,"source")); float index=0;
+            RecipeJsValue matrix(ctx,JS_GetPropertyStr(ctx,placed.value,"matrix"));
+            if (!finite_surface_number(ctx,source.value,index) || index<0 || index>=ns || std::floor(index)!=index ||
+                array_count(matrix.value,16)!=16) return fail("invalid composite placement");
+            p.source=uint32_t(index);
+            for (uint32_t k=0;k<16;++k) {
+                RecipeJsValue x(ctx,JS_GetPropertyUint32(ctx,matrix.value,k));
+                if (!finite_surface_number(ctx,x.value,p.matrix[k])) return fail("nonfinite placement transform");
+            }
+            const auto& m=p.matrix;
+            if (m[12]!=0 || m[13]!=0 || m[14]!=0 || m[15]!=1) return fail("placement must be affine");
+            for (unsigned a=0;a<3;++a) for (unsigned b=0;b<3;++b) {
+                float dot=0;for(unsigned k=0;k<3;++k) dot+=m[4*a+k]*m[4*b+k];
+                if (std::abs(dot-(a==b?1.f:0.f))>1e-5f) return fail("placement must be rigid without scale");
+            }
+            const float det=m[0]*(m[5]*m[10]-m[6]*m[9])-m[1]*(m[4]*m[10]-m[6]*m[8])+m[2]*(m[4]*m[9]-m[5]*m[8]);
+            if(det<.99999f) return fail("placement must preserve handedness");
+            // This first composite projects onto the six box planes. A
+            // rotated off-axis face needs a different projection/mapping and
+            // must not silently disappear from the material.
+            if(out.version==2) for(unsigned a=0;a<3;++a) for(unsigned k=0;k<3;++k)
+                if(std::abs(m[a*4+k])>1e-6f && std::abs(std::abs(m[a*4+k])-1)>1e-6f)
+                    return fail("box composite currently requires axis-aligned rigid placements");
+            const auto& src=out.sources[p.source];
+            std::array<float,6> bounds{INFINITY,INFINITY,INFINITY,-INFINITY,-INFINITY,-INFINITY};
+            for(unsigned c=0;c<8;++c) for(unsigned a=0;a<3;++a) {
+                float x=m[a*4+3];for(unsigned k=0;k<3;++k) x+=m[a*4+k]*((c&(1u<<k))?src.bounds_max_m[k]:src.bounds_min_m[k]);
+                bounds[a]=std::min(bounds[a],x);bounds[a+3]=std::max(bounds[a+3],x);
+                if(x<out.bounds_min_m[a]-.00005f || x>out.bounds_max_m[a]+.00005f)
+                    return fail("placed source exceeds receiver bounds");
+            }
+            for(size_t prior_index=0;prior_index<placed_bounds.size();++prior_index) {
+                const auto& prior=placed_bounds[prior_index];
+                bool overlap=true;
+                for(unsigned a=0;a<3;++a) overlap &= std::min(bounds[a+3],prior[a+3])-std::max(bounds[a],prior[a])>.000001f;
+                if(overlap && out.version==3) {
+                    // AABB overlap is only a broad phase for rigid off-axis
+                    // sources. SAT on both boxes' axes and their nine crosses
+                    // preserves narrow mortar joints on curved layouts.
+                    const auto& q=out.placements[prior_index];const auto& t=q.matrix;
+                    const auto& other=out.sources[q.source];
+                    float axes[6][3],half[6],delta[3]{};
+                    for(unsigned k=0;k<3;++k) {
+                        half[k]=(src.bounds_max_m[k]-src.bounds_min_m[k])*.5f;
+                        half[k+3]=(other.bounds_max_m[k]-other.bounds_min_m[k])*.5f;
+                        for(unsigned a=0;a<3;++a) {
+                            axes[k][a]=m[a*4+k];axes[k+3][a]=t[a*4+k];
+                            delta[a]+=m[a*4+k]*(src.bounds_max_m[k]+src.bounds_min_m[k])*.5f-
+                                t[a*4+k]*(other.bounds_max_m[k]+other.bounds_min_m[k])*.5f;
+                        }
+                    }
+                    for(unsigned a=0;a<3;++a) delta[a]+=m[a*4+3]-t[a*4+3];
+                    const auto separated=[&](const float* axis) {
+                        float len=0,dist=0,radius=0;
+                        for(unsigned a=0;a<3;++a){len+=axis[a]*axis[a];dist+=delta[a]*axis[a];}
+                        if(len<1e-12f) return false;
+                        for(unsigned k=0;k<6;++k) {
+                            float d=0;for(unsigned a=0;a<3;++a)d+=axes[k][a]*axis[a];
+                            radius+=half[k]*std::abs(d);
+                        }
+                        return radius-std::abs(dist)<=.000001f*std::sqrt(len);
+                    };
+                    for(unsigned k=0;k<6 && overlap;++k) if(separated(axes[k]))overlap=false;
+                    for(unsigned a=0;a<3 && overlap;++a) for(unsigned b=3;b<6 && overlap;++b) {
+                        float axis[3]{axes[a][1]*axes[b][2]-axes[a][2]*axes[b][1],
+                            axes[a][2]*axes[b][0]-axes[a][0]*axes[b][2],axes[a][0]*axes[b][1]-axes[a][1]*axes[b][0]};
+                        if(separated(axis))overlap=false;
+                    }
+                }
+                if(overlap) return fail("composite requires disjoint source bounds; depth unions are not supported yet");
+            }
+            placed_bounds.push_back(bounds);
+        }
+    }
+    for (auto entry : {std::make_pair("appearanceProgram", &out.appearance_program),
+                       std::make_pair("baseProgram", &out.base_program)}) {
+        if (out.version>=2 && entry.second==&out.appearance_program) continue;
+        RecipeJsValue program(ctx, JS_GetPropertyStr(ctx, descriptor, entry.first));
+        if (!JS_IsString(program.value)) return fail("material program must be a string");
+        size_t length = 0;
+        const char* text = JS_ToCStringLen(ctx, &length, program.value);
+        if (!text) return fail("cannot read material program");
+        if (length <= 1024 * 1024) entry.second->assign(text, length);
+        JS_FreeCString(ctx, text);
+        if (length > 1024 * 1024) return fail("material program exceeds 1 MiB");
+        terrain_field::SurfaceProgram parsed;
+        std::string message;
+        vt::VtSurfaceTapePack packed;
+        if (!terrain_field::SurfaceProgram::parse(*entry.second, parsed, message))
+            return fail(message);
+        for (const auto& op : parsed.ops)
+            for (float value : {op.f0, op.f1, op.f2, op.f3, op.wf0, op.wf1, op.wf2})
+                if (!std::isfinite(value)) return fail("material contains a nonfinite operand");
+        if (parsed.source.version != 1 || parsed.uses_world_inputs())
+            return fail("reusable materials require a part-local direct source");
+        if (!vt::vt_pack_surface_tape(parsed, false, packed)) return fail(packed.err);
+        (entry.second == &out.appearance_program ? out.appearance_hash : out.base_hash) = parsed.hash();
+    }
+    std::string periodic_error;
+    if(!read_periodic_materials(ctx,descriptor,out,periodic_error))return fail(periodic_error);
+    out.present = true;
+    std::array<FiniteSurfaceFace, 6> faces;
+    if (!plan_finite_surface_faces(out, faces, validation)) return fail(validation.message);
+    return true;
+}
+bool read_finite_surface(JSContext* ctx, JSValueConst authored, const std::string& merged,
+                         uint64_t hash, uint64_t generation, EvaluatedFiniteSurface& out,
+                         BakeError& error) {
+    const auto fail = [&](const std::string& message) {
+        error.ok = false; error.code = "finite-surface-invalid";
+        error.message = "finiteSurface: " + message; return false;
+    };
+    RecipeJsValue global(ctx, JS_GetGlobalObject(ctx));
+    RecipeJsValue compiler(ctx, JS_GetPropertyStr(ctx, global.value, "__compileFiniteSurface"));
+    RecipeJsValue params(ctx, JS_ParseJSON(ctx, merged.data(), merged.size(), "<finite-params>"));
+    JSValueConst args[] = {authored, params.value};
+    RecipeJsValue descriptor(ctx, JS_Call(ctx, compiler.value, JS_UNDEFINED, 2, args));
+    if (JS_IsException(descriptor.value)) { error = harvest_exception(ctx); return false; }
+    if (JS_IsUndefined(descriptor.value)) return true;
+    if (!source_has_no_child_requires(ctx, authored))
+        return fail("a reusable source must be a standalone part without child dependencies");
+    return read_finite_descriptor(ctx,descriptor.value,hash,generation,out,error);
+}
+
+bool read_direct_surface(JSContext* ctx, JSValueConst authored, const std::string& merged,
+    uint64_t hash, uint64_t generation, EvaluatedDirectSurface& out, BakeError& error) {
+    const auto fail=[&](const std::string& message) {
+        error.ok=false; error.code="part-surface-invalid"; error.message="surface: "+message; return false;
+    };
+    RecipeJsValue global(ctx,JS_GetGlobalObject(ctx));
+    RecipeJsValue compiler(ctx,JS_GetPropertyStr(ctx,global.value,"__compilePartSurface"));
+    RecipeJsValue params(ctx,JS_ParseJSON(ctx,merged.data(),merged.size(),"<surface-params>"));
+    JSValueConst args[]={authored,params.value};
+    RecipeJsValue descriptor(ctx,JS_Call(ctx,compiler.value,JS_UNDEFINED,2,args));
+    if (JS_IsException(descriptor.value)) {error=harvest_exception(ctx);return false;}
+    if (JS_IsUndefined(descriptor.value)) return true;
+    if (!source_has_no_child_requires(ctx,authored)) return fail("a reusable source requires a standalone part");
+    RecipeJsValue text(ctx,JS_GetPropertyStr(ctx,descriptor.value,"program"));
+    RecipeJsValue material(ctx,JS_GetPropertyStr(ctx,descriptor.value,"material"));
+    float handle=0;
+    if (!JS_IsString(text.value) || !finite_surface_number(ctx,material.value,handle) ||
+        handle<0 || handle>255 || std::floor(handle)!=handle) return fail("invalid material/program");
+    size_t length=0;const char* chars=JS_ToCStringLen(ctx,&length,text.value);
+    if (!chars) return fail("cannot read material program");
+    std::string program;
+    if (length<=1024*1024) program.assign(chars,length);
+    JS_FreeCString(ctx,chars);
+    if (length>1024*1024) return fail("material program exceeds 1 MiB");
+    terrain_field::SurfaceProgram parsed;vt::VtSurfaceTapePack packed;std::string why;
+    if (!terrain_field::SurfaceProgram::parse(program,parsed,why)) return fail(why);
+    if (parsed.source.version!=1 || parsed.uses_world_inputs())
+        return fail("a reusable recipe requires a part-local source with position-only height");
+    for (const auto& op:parsed.ops) for(float operand:{op.f0,op.f1,op.f2,op.f3,op.wf0,op.wf1,op.wf2})
+        if(!std::isfinite(operand)) return fail("nonfinite material operand");
+    if (!vt::vt_pack_surface_tape(parsed,false,packed)) return fail(packed.err);
+    if (packed.scan.count || packed.weight_reg_count!=1) return fail("one complete material without field lanes is required");
+    out.present=true;out.part_hash=hash;out.generation=generation;
+    out.material=uint32_t(handle);out.program_hash=parsed.hash();out.program=std::move(program);
+    return true;
+}
+
+} // namespace
+
+BakeResult ScriptHost::execute_source(const std::string& source,
+                                      const std::string& params_json,
+                                      const BakeOptions& opts,
+                                      const uint64_t* child_hashes,
+                                      size_t child_count,
+                                      const std::string* child_modules,
+                                      const std::string* child_params,
+                                      EvaluatedSolidSource* evaluated,
+                                      const SolidSourceEvaluationOptions* evaluation_options,
+                                      EvaluatedFiniteSurface* finite_surface,
+                                      EvaluatedDirectSurface* direct_surface) {
     BakeResult r;
 
     // Hoist rt/ctx to outer scope so the catch handler can clean them up if
@@ -1913,6 +2651,10 @@ BakeResult ScriptHost::bake_source(const std::string& source,
     ic.bounded = opts.time_budget_ms > 0;
     ic.deadline = std::chrono::steady_clock::now() +
                   std::chrono::milliseconds(opts.time_budget_ms);
+    if (evaluation_options) {
+        ic.control = &evaluation_options->control;
+        ic.generation = evaluation_options->generation;
+    }
     JS_SetInterruptHandler(rt, interrupt_cb, &ic);
 
     ctx = new_bake_context(rt, /*want_modules*/ use_module);
@@ -1925,6 +2667,11 @@ BakeResult ScriptHost::bake_source(const std::string& source,
     state.set_budget(ic.deadline, ic.bounded);
     // `merged` is populated after class eval (single-RT merge step below).
     std::string merged;
+    bool singleton_declared = false;
+    bool shared_surfaces_declared = false;
+    float vt_texels_per_meter = 0.0f;
+    bool memory_leaf_metadata_valid = false;
+    part_asset::StaticLeafMetadata leaf_metadata;
 
     last_build_ran_ = false;
     last_buffer_.clear();
@@ -1969,6 +2716,63 @@ BakeResult ScriptHost::bake_source(const std::string& source,
             r.error.ok = false; r.error.message = kNoPartClassMsg;
             goto done;
         }
+
+        if (evaluated && !source_has_no_child_requires(ctx, authored)) {
+            JS_FreeValue(ctx, authored);
+            r.error.ok = false; r.error.code = "solid-source-child-dependency";
+            r.error.message = "transient source cannot declare child asset requires";
+            goto done;
+        }
+
+        {
+            JSValue value=JS_GetPropertyStr(ctx,authored,"sharedSurfaces");
+            if(!JS_IsUndefined(value) && !JS_IsBool(value)) {
+                JS_FreeValue(ctx,value);JS_FreeValue(ctx,authored);
+                r.error.ok=false;r.error.message="static sharedSurfaces must be boolean";goto done;
+            }
+            shared_surfaces_declared=JS_IsBool(value) && JS_ToBool(ctx,value)==1;
+            JS_FreeValue(ctx,value);
+        }
+        // Inspect plain class data before build() can mutate it. Accessor-based
+        // declarations retain isolated legacy hooks so a getter cannot leak
+        // side effects/exceptions into the build context through this fast path.
+        if (plain_static_metadata(ctx, authored) && plain_singleton_values(ctx, authored)) {
+            const auto budgets = read_lod_budgets(ctx, authored);
+            if (budgets.budgets.size() == 1 && budgets.budgets[0] == 1.0 &&
+                std::isfinite(budgets.anchor_size)) {
+                JSValue requires = JS_GetPropertyStr(ctx, authored, "requires");
+                bool no_dependencies = JS_IsUndefined(requires);
+                if (JS_IsArray(requires)) {
+                    JSValue length = JS_GetPropertyStr(ctx, requires, "length");
+                    uint32_t count = 1;
+                    no_dependencies = JS_ToUint32(ctx, &count, length) == 0 && count == 0;
+                    JS_FreeValue(ctx, length);
+                }
+                JS_FreeValue(ctx, requires);
+                singleton_declared = no_dependencies && read_lods(ctx, authored).empty();
+                // Persistent metadata keeps its historical permissive parser.
+                // Memory-only preparation cannot infer an empty ladder from a
+                // malformed declaration, since no durable fallback exists.
+                if (opts.output_mode == BakeOptions::OutputMode::RuntimeLeafMemory) {
+                    JSValue declared_lods = JS_GetPropertyStr(ctx, authored, "lods");
+                    bool empty_lods = JS_IsUndefined(declared_lods);
+                    if (JS_IsArray(declared_lods)) {
+                        JSValue length = JS_GetPropertyStr(ctx, declared_lods, "length");
+                        uint32_t count = 1;
+                        empty_lods = JS_ToUint32(ctx, &count, length) == 0 && count == 0;
+                        JS_FreeValue(ctx, length);
+                    }
+                    JS_FreeValue(ctx, declared_lods);
+                    memory_leaf_metadata_valid = singleton_declared && empty_lods;
+                }
+                leaf_metadata.anchor_size = budgets.anchor_size;
+                leaf_metadata.no_impostor = read_no_impostor(ctx, authored);
+            }
+        }
+        // An invalid optional metadata declaration used to live in a separate
+        // disposable runtime. It must not turn a valid build into an exception.
+        JSValue metadata_exception = JS_GetException(ctx);
+        JS_FreeValue(ctx, metadata_exception);
 
         // Single-RT merge: extract static params from the class and merge with
         // caller overrides in this context — same logic as merge_params_canonical
@@ -2062,8 +2866,46 @@ BakeResult ScriptHost::bake_source(const std::string& source,
             // Thread the world field binding so terrainVolume can call the mesher.
             state.set_world(opts.world);
         }
+        // Read after merging params, before construction/build can mutate the
+        // declaration. The same interrupt/cancellation budget covers a method.
+        {
+            JSValue density = JS_GetPropertyStr(ctx, authored, "vtTexelsPerMeter");
+            const bool density_declared = !JS_IsUndefined(density);
+            if (JS_IsFunction(ctx, density)) {
+                JSValue params = JS_ParseJSON(ctx, merged.c_str(), merged.size(), "<merged>");
+                JSValue result = JS_IsException(params) ? JS_DupValue(ctx, params)
+                    : JS_Call(ctx, density, authored, 1, &params);
+                JS_FreeValue(ctx, params);
+                JS_FreeValue(ctx, density);
+                density = result;
+            }
+            if (JS_IsException(density)) {
+                r.error = harvest_exception(ctx);
+                JS_FreeValue(ctx, density); JS_FreeValue(ctx, authored); goto done;
+            }
+            if (density_declared) {
+                double value = 0;
+                if (!JS_IsNumber(density) || JS_ToFloat64(ctx, &value, density) < 0 ||
+                    !std::isfinite(value) || value < 1.0 || value > 2048.0) {
+                    r.error.ok = false;
+                    r.error.message = "static vtTexelsPerMeter must be a number in [1,2048] or a method returning one";
+                    JS_FreeValue(ctx, density); JS_FreeValue(ctx, authored); goto done;
+                }
+                vt_texels_per_meter = static_cast<float>(value);
+            }
+            JS_FreeValue(ctx, density);
+        }
         phases.next(bake_trace::kSpanBuild);
 
+        if (finite_surface) {
+            const bool direct_ok=!direct_surface || read_direct_surface(ctx,authored,merged,
+                r.resolved_hash,evaluation_options->generation,*direct_surface,r.error);
+            if (direct_ok && (!direct_surface || !direct_surface->present))
+                read_finite_surface(ctx, authored, merged, r.resolved_hash,
+                                evaluation_options->generation, *finite_surface, r.error);
+            JS_FreeValue(ctx, authored);
+            goto done;
+        }
         JSValue inst = JS_CallConstructor(ctx, authored, 0, nullptr);
         JS_FreeValue(ctx, authored);
         if (JS_IsException(inst)) { r.error = harvest_exception(ctx); JS_FreeValue(ctx,inst); goto done; }
@@ -2167,6 +3009,43 @@ BakeResult ScriptHost::bake_source(const std::string& source,
                           "(pushMatrix without matching popMatrix)";
     }
 
+    if (r.error.ok && opts.output_mode == BakeOptions::OutputMode::RuntimeLeafMemory) {
+        if (!memory_leaf_metadata_valid || child_count != 0 || !state.children().empty() ||
+            state.authored_animation() || state.canonical_rig() ||
+            state.has_sector_boundary() || !state.emitters().empty()) {
+            r.error.ok = false;
+            r.error.code = "runtime-leaf-memory-ineligible";
+            r.error.message = "memory preparation requires a declared standalone static singleton leaf without children, rig, terrain boundary, or emitters";
+        }
+    }
+
+    if (evaluated && r.error.ok) {
+        if (!source_evaluation_current(*evaluation_options, r.error)) goto done;
+        const auto* direct = state.triangle_buffer();
+        if (!state.solid_source_request() || !state.buffer().ops.empty() ||
+            !state.modifier_regions().empty() || (direct && !direct->triangles().empty()) ||
+            !state.children().empty() || !state.emitters().empty() ||
+            state.authored_animation() || state.canonical_rig() || state.has_sector_boundary()) {
+            r.error.ok = false; r.error.code = "solid-source-evaluation-mixed-output";
+            r.error.message = "transient evaluation requires exactly one standalone solidSource";
+            goto done;
+        }
+        evaluated->source = *state.solid_source_request();
+        evaluated->resolved_hash = r.resolved_hash;
+        evaluated->generation = evaluation_options->generation;
+        gpu_meshing::GridLayout layout;
+        gpu_meshing::Error validation;
+        const auto job = evaluated->job();
+        if (!gpu_meshing::validate_solid_job(job, layout, validation)) {
+            r.error.ok = false; r.error.code = "solid-source-evaluation-invalid";
+            r.error.message = validation.message;
+            goto done;
+        }
+        evaluated->recipe_digest = gpu_meshing::solid_recipe_digest(job);
+        if (!source_evaluation_current(*evaluation_options, r.error)) goto done;
+        goto done; // successful owned recipe; no mesh, GPU callback or disk publication
+    }
+
     // Success path: lower the build buffer to particles, surface per-cell BLAS,
     // and serialize one .part via SP-1's save_v2. Fail-closed: writes nothing on
     // any error branch above (r.error.ok already false there).
@@ -2184,6 +3063,126 @@ BakeResult ScriptHost::bake_source(const std::string& source,
         // cells, and exceeding the cap silently drops geometry from the baked part,
         // so size it generously for the part bake.
         BLASManager blas; TLASManager tlas(65536);
+
+        if (state.solid_source_request()) {
+            const auto &source = *state.solid_source_request();
+            const auto *direct = state.triangle_buffer();
+            if (!state.buffer().ops.empty() || !state.modifier_regions().empty() ||
+                (direct && !direct->triangles().empty()) || state.authored_animation()) {
+                r.error.ok = false;
+                r.error.code = "solid-source-mixed-geometry";
+                r.error.message = "solidSource is a standalone static source; mixing "
+                                  "legacy geometry, modifiers or animation is unsupported";
+                goto done;
+            }
+            if (!solid_source_baker_) {
+                r.error.ok = false;
+                r.error.code = "solid-source-unavailable";
+                r.error.message = "solidSource requires the Vulkan solid-source service; "
+                                  "no CPU fallback is enabled";
+                goto done;
+            }
+            gpu_meshing::SolidJob job;
+            job.ops = source.ops.data();
+            job.op_count = static_cast<uint32_t>(source.ops.size());
+            job.voxel_m = source.voxel_m;
+            job.max_mesh_vertices = source.max_vertices;
+            job.material = source.material;
+            job.generation = solid_source_generation_;
+            gpu_meshing::MeshResult mesh;
+            gpu_meshing::SolidStats stats;
+            gpu_meshing::Error error;
+            if (!solid_source_baker_(job, mesh, stats, error, solid_source_control_)) {
+                r.error.ok = false;
+                r.error.code = "solid-source-bake-failed";
+                r.error.message = "solidSource: " + error.message;
+                goto done;
+            }
+            if (!solid_source_is_current()) {
+                r.error.ok = false;
+                r.error.code = "solid-source-stale";
+                r.error.message =
+                    "solidSource cancelled or generation changed before host ingestion";
+                goto done;
+            }
+            const auto pack_start = std::chrono::steady_clock::now();
+            bool valid = mesh.positions.size()/3 <= job.max_mesh_vertices &&
+                         mesh.indices.size() <= job.max_mesh_vertices &&
+                         mesh.positions.size() % 3 == 0 &&
+                         mesh.normals.size() == mesh.positions.size() &&
+                         mesh.indices.size() % 3 == 0 && mesh.material == source.material;
+            for (float value : mesh.positions)
+                valid = valid && std::isfinite(value);
+            for (float value : mesh.normals)
+                valid = valid && std::isfinite(value);
+            for (size_t i=0;valid && i<mesh.normals.size();i+=3) {
+                const double x=mesh.normals[i], y=mesh.normals[i+1], z=mesh.normals[i+2];
+                valid=std::abs(x*x+y*y+z*z-1.0)<=0.002;
+            }
+            for (uint32_t index : mesh.indices)
+                valid = valid && index < mesh.positions.size() / 3;
+            if (!valid) {
+                r.error.ok = false;
+                r.error.code = "solid-source-invalid-result";
+                r.error.message =
+                    "solidSource callback returned an invalid attributed mesh";
+                goto done;
+            }
+            std::vector<Tri> triangles(mesh.indices.size() / 3);
+            std::vector<TriEx> attributes(triangles.size());
+            for (size_t triangle = 0; triangle < triangles.size(); ++triangle) {
+                auto &t = triangles[triangle];
+                auto &e = attributes[triangle];
+                std::memset(&t, 0, sizeof(t));
+                std::memset(&e, 0, sizeof(e));
+                float3 p[3], n[3];
+                for (size_t corner = 0; corner < 3; ++corner) {
+                    const size_t index = mesh.indices[triangle * 3 + corner] * size_t(3);
+                    p[corner] =
+                        make_float3(mesh.positions[index], mesh.positions[index + 1],
+                                    mesh.positions[index + 2]);
+                    n[corner] = make_float3(mesh.normals[index], mesh.normals[index + 1],
+                                            mesh.normals[index + 2]);
+                }
+                t.vertex0 = p[0];
+                t.vertex1 = p[1];
+                t.vertex2 = p[2];
+                t.centroid = make_float3((p[0].x + p[1].x + p[2].x) / 3,
+                                         (p[0].y + p[1].y + p[2].y) / 3,
+                                         (p[0].z + p[1].z + p[2].z) / 3);
+                e.N0 = n[0];
+                e.N1 = n[1];
+                e.N2 = n[2];
+                e.materialId = source.material;
+                e.tint =
+                    make_float4(source.tint.x, source.tint.y, source.tint.z, source.tint.w);
+                e.ao0 = e.ao1 = e.ao2 = 1;
+            }
+            const auto blas_start = std::chrono::steady_clock::now();
+            const double pack_ms = std::chrono::duration<double,std::milli>(blas_start-pack_start).count();
+            if (!triangles.empty()) {
+                BLASHandle handle = blas.register_triangles(triangles, attributes);
+                if (handle == INVALID_BLAS_HANDLE) {
+                    r.error.ok = false;
+                    r.error.code = "solid-source-registration-failed";
+                    r.error.message = "solidSource could not register complete mesh";
+                    goto done;
+                }
+                tlas.load_identity();
+                tlas.draw(handle, 0);
+            }
+            const double blas_ms = std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-blas_start).count();
+            if (!solid_source_is_current()) {
+                r.error.ok=false;r.error.code="solid-source-stale";
+                r.error.message="solidSource cancelled or generation changed during host ingestion";
+                goto done;
+            }
+            MATTER_LOGI(
+                "solid-source",
+                "triangles=%zu voxel_m=%.6f source_ms=%.3f gpu_ms=%.3f pack_ms=%.3f blas_ms=%.3f recipe=%016llx",
+                triangles.size(), source.voxel_m, stats.host_ms, stats.gpu_ms, pack_ms, blas_ms,
+                static_cast<unsigned long long>(stats.recipe_digest));
+        }
 
         // Partition state.buffer().ops into (base, regions[]) by the recorded
         // ModifierRegion op ranges. Regions are ordered and non-overlapping
@@ -2332,6 +3331,8 @@ BakeResult ScriptHost::bake_source(const std::string& source,
         std::vector<part_asset::ChildInstance> kids;
         matter::PartRenderPolicy render_policy;
         render_policy.ray_traced = state.ray_traced();
+        render_policy.shared_surfaces = shared_surfaces_declared;
+        render_policy.vt_texels_per_meter = vt_texels_per_meter;
         kids.reserve(state.children().size());
         render_policy.child_overrides.reserve(state.children().size());
         r.child_modules_placed.reserve(state.children().size());
@@ -2488,6 +3489,12 @@ BakeResult ScriptHost::bake_source(const std::string& source,
             }
         }
         if (!has_persisted_binding) {
+            if (state.solid_source_request() && !solid_source_is_current()) {
+                r.error.ok = false;
+                r.error.code = "solid-source-stale";
+                r.error.message = "solidSource cancelled or generation changed before artifact publication";
+                goto done;
+            }
             // EXPERIMENT (2026-07-30), off by default:
             // MATTER_STREAM_SKIP_PART_WRITE=1 measures what the artifact write
             // costs a streamed sector now that PartStore::stage_from_bake means
@@ -2502,14 +3509,20 @@ BakeResult ScriptHost::bake_source(const std::string& source,
             // to price the write, not to ship.
             static const bool skip_part_write =
                 std::getenv("MATTER_STREAM_SKIP_PART_WRITE") != nullptr;
-            if (skip_part_write && opts.retain_geometry) {
+            if (opts.output_mode == BakeOptions::OutputMode::RuntimeLeafMemory) {
+                // Eligibility was checked before meshing. This successful result
+                // has owned geometry but no artifact and no durable metadata.
+                ok = true;
+            } else if (skip_part_write && opts.retain_geometry) {
                 ok = true;
             } else {
-            ok = matter::save_part_render_policy(path, r.resolved_hash,
-                                                 render_policy) &&
-                 part_asset::save_v2(path, blas, tlas,
+            const bool singleton_leaf = singleton_declared && child_count == 0 &&
+                kids.empty() && !authored_animation && !state.has_sector_boundary();
+            ok = part_asset::save_v2_with_render_policy(path, blas, tlas,
                                      kids.empty() ? nullptr : kids.data(), kids.size(),
-                                     lods, emitters, r.resolved_hash);
+                                     lods, emitters, r.resolved_hash, render_policy,
+                                     singleton_leaf ? &leaf_metadata : nullptr);
+            r.leaf_metadata_published = ok && singleton_leaf;
             }
         } else {
             const auto root = opts.parts_dir.empty() ? std::filesystem::path(".") : std::filesystem::path(opts.parts_dir);
@@ -2542,7 +3555,8 @@ BakeResult ScriptHost::bake_source(const std::string& source,
             report_animation_diagnostics(r, diagnostics);
         }
         else {
-            r.written_path = path;
+            if (opts.output_mode == BakeOptions::OutputMode::Persistent)
+                r.written_path = path;
             part_asset::FlattenHints hints;
             {
                 const auto& kids = state.children();
@@ -2573,13 +3587,19 @@ BakeResult ScriptHost::bake_source(const std::string& source,
             // use, and `tlas` only ever held handles into it), so this moves
             // rather than copies — the whole point is to pay nothing for the
             // retention beyond the pointer.
-            if (opts.retain_geometry && !has_persisted_binding) {
+            if ((opts.retain_geometry || opts.output_mode == BakeOptions::OutputMode::RuntimeLeafMemory) &&
+                !has_persisted_binding) {
                 auto retained = std::make_shared<BakedGeometry>();
                 retained->blas = std::make_unique<BLASManager>(std::move(blas));
                 retained->children = kids;
                 retained->lods = lods;
                 retained->emitters = emitters;
                 retained->render_policy = render_policy;
+                retained->source_single_full_rep_hash = r.leaf_metadata_published ? r.resolved_hash : 0;
+                if (opts.output_mode == BakeOptions::OutputMode::RuntimeLeafMemory) {
+                    retained->validated_single_full_rep_hash = r.resolved_hash;
+                    retained->singleton_metadata = leaf_metadata;
+                }
                 // Volumetric-sectors M0-WP3a: the seam boundary record
                 // terrainVolume's mesher deposited on the DslState. Rides the
                 // SAME in-memory hand-off as the geometry, because the two
@@ -3766,6 +4786,7 @@ bool ScriptHost::fold_sources_cached(const std::string& source,
 void ScriptHost::clear_fold_cache() {
     std::lock_guard<std::mutex> lk(fold_mu_);
     fold_cache_.clear();
+    request_source_prefixes_.clear();
 }
 
 } // namespace script_host

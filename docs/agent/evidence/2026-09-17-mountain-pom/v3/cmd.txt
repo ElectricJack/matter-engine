@@ -1,0 +1,95 @@
+wait_event bake.finished 900
+render_path raster
+cam 380 20.25 1600 380 18.25 1593
+stats readiness-1
+stats readiness-2
+stats readiness-3
+stats readiness-4
+stats readiness-5
+stats readiness-6
+stats readiness-7
+stats readiness-8
+stats readiness-9
+stats readiness-10
+stats readiness-11
+stats readiness-12
+stats readiness-13
+stats readiness-14
+stats readiness-15
+stats readiness-16
+stats readiness-17
+stats readiness-18
+stats readiness-19
+stats readiness-20
+stats readiness-21
+stats readiness-22
+stats readiness-23
+stats readiness-24
+stats readiness-25
+stats readiness-26
+stats readiness-27
+stats readiness-28
+stats readiness-29
+stats readiness-30
+stats readiness-31
+stats readiness-32
+stats readiness-33
+stats readiness-34
+stats readiness-35
+stats readiness-36
+stats readiness-37
+stats readiness-38
+stats readiness-39
+stats readiness-40
+stats readiness-41
+stats readiness-42
+stats readiness-43
+stats readiness-44
+stats readiness-45
+stats readiness-46
+stats readiness-47
+stats readiness-48
+stats readiness-49
+set render.lighting.sun_elevation_deg 70
+set render.lighting.sun_azimuth_deg 0
+set render.lighting.sun_tint [1,1,1]
+set render.lighting.sky_tint [1,1,1]
+set render.lighting.sun_multiplier 1
+set render.lighting.exposure_ev 0
+set render.lighting.day_ambient_multiplier 0.5
+set render.lighting.sky_irradiance_multiplier 0.7
+set render.pom.enabled true
+wait_frames 90
+stats settled-close-pom
+shot C:/tmp/matter-mountain-pom-v3/close-pom.png
+set render.pom.enabled false
+wait_frames 60
+stats settled-close-flat
+shot C:/tmp/matter-mountain-pom-v3/close-flat.png
+set render.pom.enabled true
+set viewer.debug.debug_view_mode 4
+wait_frames 30
+shot C:/tmp/matter-mountain-pom-v3/albedo-pom.png
+set render.pom.enabled false
+wait_frames 30
+shot C:/tmp/matter-mountain-pom-v3/albedo-flat.png
+set render.pom.enabled true
+set render.pom.horizon_debug 7
+wait_frames 30
+shot C:/tmp/matter-mountain-pom-v3/pom-status.png
+set render.pom.horizon_debug 0
+set viewer.debug.debug_view_mode 0
+cam 380 20.25 1600 400 20.25 1550
+wait_idle 8 120
+wait_frames 150
+stats settled-grazing-pom
+shot C:/tmp/matter-mountain-pom-v3/grazing-pom.png
+set render.pom.enabled false
+wait_frames 60
+stats settled-grazing-flat
+shot C:/tmp/matter-mountain-pom-v3/grazing-flat.png
+set render.pom.enabled true
+render_path native_rt
+wait_frames 90
+shot C:/tmp/matter-mountain-pom-v3/grazing-native-rt.png
+quit

@@ -40,7 +40,7 @@
 // bit-exact integer hashing on purpose: shaders_vk/vt_surface_tape.glsl
 // evaluates the same surfaces tape on the GPU and must agree with the CPU
 // path. Three constants are mirrored outside this file and the compiler cannot
-// check them -- kMaxSurfaceOps against the shader's VT_TAPE_MAX_OPS,
+// check them -- kMaxSurfaceGpuRegisters against the shader's VT_TAPE_MAX_REGS,
 // kMaxSurfaceMaterials against the compositor's per-vertex weight packing, and
 // the appearance clamp ranges against the shader's VT_APP_* defines. Each
 // carries its own note below; raising one means touching the shader AND
@@ -65,18 +65,13 @@ namespace terrain_field {
 
 class HeightOverlay;
 
-// Hard cap on emitted (deduplicated) tape ops. THE authority for the surfaces
-// tape: terrain_field.cpp's kMaxOps and vt_compositor.cpp's kTapeSlotOps are
-// both aliases of this, so the only uncheckable mirror left is the shader's
-// VT_TAPE_MAX_OPS register file. Raised 64 -> 96 when the
-// StreamMountain P4 pass proved 64 binding (strata + speckle + seep terms were
-// cut for budget); the GPU cost is the register file and the arena slot, both
-// measured harmless at 64 with headroom.
-//
-// Declared here rather than down in the surfaces() section where it was born:
-// FieldRuntime::ColumnCache sizes a register file with it, and that class comes
-// first in this header.
+// Legacy classifier / terrain-field operation cap, also the GPU's physical
+// register capacity. Direct sources may contain more operations: the GPU
+// compiler reuses registers after their last use rather than enlarging each
+// shader invocation's workspace. Habitat retains its separate CPU-only cap.
 constexpr int kMaxSurfaceOps = 96;
+constexpr int kMaxSurfaceGpuRegisters = kMaxSurfaceOps;
+constexpr int kMaxSurfaceSourceOps = 512;
 
 // ---------------------------------------------------------------------------
 // Op — single instruction in the field program.
@@ -117,7 +112,10 @@ struct Op {
         Ridge3,          // 3D ridge variant (same per-octave shape as Ridge2)
         Noise3World,     // 3D fbm over WORLD (x, y, z) — world-anchored variants
         Ridge3World,
-        Fract            // x - floor(x); unary
+        Fract,           // x - floor(x); unary
+        Footprint,       // direct source only: requested texel edge in metres
+        CellNoise2,     // tape only: hash floor(a), floor(b), seed into [0,1)
+        Cellular3      // tape only: jittered sites at (a,b,c); oct selects distance/gap/value
     } kind;
     int a = -1, b = -1, c = -1;        // register operands (-1 = unused)
     float f0 = 0, f1 = 0, f2 = 0, f3 = 0; // literals: value/freq/gain/lac/edges
@@ -316,7 +314,8 @@ private:
 // ---------------------------------------------------------------------------
 
 // Per-sample inputs an `input <name>` op can read. Codes are the parse order
-// below; kSurfaceInputWorldFirst and up require a world context.
+// below; position/field codes kSurfaceInputWorldFirst..kSurfInFieldSlope
+// require a world context. Receiver identity is triangle-local.
 enum SurfaceInput : int {
     kSurfInLocalX = 0,   // part-local position, metres
     kSurfInLocalY = 1,
@@ -335,7 +334,10 @@ enum SurfaceInput : int {
                             // rise-over-run (1.0 = 45 deg). Unlike kSurfInSlope
                             // (mesh-normal derived, so LOD-rung dependent) this
                             // is stable across the whole LOD ladder.
-    kSurfInCount = 13,
+    // Categorical original mesh material, before surfaces() classification.
+    // Constant over the receiver triangle; direct sources only.
+    kSurfInReceiverMaterial = 13,
+    kSurfInCount = 14,
 };
 constexpr int kSurfaceInputWorldFirst = kSurfInWorldX;
 
@@ -376,6 +378,27 @@ struct SurfaceAppearance {
     float rough_bias = 0.0f;
     float wetness = 0.0f;
     float metallic = 0.0f;
+    float coat_color[3] = {};
+    float coat_coverage = 0.0f, coat_roughness = 1.0f;
+};
+
+// Direct sources use the same scalar program as surface masks. Outputs are
+// linear RGB, perceptual roughness, metallic, AO and height in metres. Normals
+// are derived from height by the consumer; there is no second relief signal.
+// v1 height uses continuous position/footprint signals. v2 explicitly permits
+// receiver context: the chart consumer resamples interpolated normals and f16
+// field lanes when differentiating height. Those lanes are the mesh's sampled
+// context, not a promise of exact field queries or LOD-independent interpolation.
+struct SurfaceSource {
+    uint32_t version = 0; // zero means the legacy material/appearance path
+    int regs[7] = {-1, -1, -1, -1, -1, -1, -1};
+    float height_min = 0, height_max = 0;
+};
+struct SurfaceSourceSample {
+    float albedo[3]{};
+    float orm[3] = {1, 0.8f, 0};
+    float height_m = 0;
+    float coverage = 1; // v1 is a complete base; splat masks are separate fields
 };
 
 // The world-anchored rule (contract C4): only a variant referenced by exactly
@@ -403,10 +426,10 @@ constexpr int kMaxHabitatChannels = 32;
 
 // Op cap for a HABITAT tape, distinct from the surfaces cap.
 //
-// The 96 that bounds a surfaces tape is a GPU constraint: it mirrors the
-// shader's VT_TAPE_MAX_OPS register file and the compositor's arena slot, and
-// raising it means touching both. A habitat tape never reaches the GPU -- it is
-// evaluated on the CPU at bake time -- so none of that applies.
+// The GPU surface workspace has 96 physical registers. Direct source programs
+// may contain more instructions by reusing dead registers; legacy classifiers
+// retain their 96-op cap. A habitat tape never reaches the GPU: it is evaluated
+// on the CPU at bake time and has its own stack budget.
 //
 // WHAT ACTUALLY BOUNDS IT, and why it is a compile-time constant at all: the
 // evaluator puts the register file on the STACK, one array per channels_at
@@ -474,7 +497,7 @@ struct SurfaceProgram {
     // Register refs in the text are SOURCE ordinals (the line order the JS
     // recorder emitted). Identical `const` lines are deduplicated at parse
     // time — refs are remapped, so duplicates cost no register budget and the
-    // kMaxOps cap applies to the DEDUPLICATED op count.
+    // The mode/source-specific cap applies to the DEDUPLICATED op count.
     static bool parse(const std::string& text, SurfaceProgram& out,
                       std::string& err, TapeMode mode = TapeMode::Surfaces);
 
@@ -499,6 +522,9 @@ struct SurfaceProgram {
 
     std::vector<Op> ops;
     std::vector<MaterialSlot> materials;
+    // `source 1 rR rG rB rRough rMetal rAO rHeight min_m max_m`.
+    // Exactly one material at constant weight 1 supplies fallback identity.
+    SurfaceSource source;
 
     // Habitat mode: the register each declared channel reads, indexed by the
     // channel INDEX the author used. -1 = never declared, which the runtime
@@ -514,14 +540,16 @@ struct SurfaceProgram {
     int rough_bias_reg = -1;
     int wetness_reg = -1;
     int metallic_reg = -1;
+    int coat_reg[5] = {-1,-1,-1,-1,-1}; // RGB, coverage, roughness
 
     bool has_tint() const { return tint_reg[0] >= 0; }
     bool has_rough_bias() const { return rough_bias_reg >= 0; }
     bool has_wetness() const { return wetness_reg >= 0; }
     bool has_metallic() const { return metallic_reg >= 0; }
+    bool has_coat() const { return coat_reg[0] >= 0; }
     bool has_appearance() const {
         return has_tint() || has_rough_bias() || has_wetness() ||
-               has_metallic();
+               has_metallic() || has_coat();
     }
 
 private:
@@ -540,6 +568,10 @@ private:
 // Pure accessors over the existing internals; no semantic changes.
 float surface_op_fbm2(const Op& op, float x, float z, bool ridged);
 float surface_op_fbm3(const Op& op, float x, float y, float z, bool ridged);
+// Cellular coordinates are in cell units. feature: 0=nearest distance,
+// 1=second squared distance minus first (planar cell faces), 2=site value.
+// Sites span their whole cell; all three outputs share one seed.
+float surface_cellular3(float x, float y, float z, uint32_t seed, int feature);
 
 // ---------------------------------------------------------------------------
 // HeightLattice — a rectangle of pre-sampled field heights on a WORLD-ALIGNED
@@ -683,7 +715,17 @@ public:
     // tests, tooling, and any future CPU-side consumer.
     void appearance_at(const float pos[3], const float nrm[3],
                        const SurfaceWorldContext* world,
-                       SurfaceAppearance& out) const;
+                       SurfaceAppearance& out, float footprint_m = 0,
+                       uint32_t receiver_material = 0) const;
+
+    // Raw direct material before optional appearance modifiers. Returns false
+    // for legacy programs. Values are bounded and nonfinite arithmetic uses
+    // neutral defaults, matching GPU output conversion. footprint_m >= 0.
+    // receiver_material is the original mesh material (low byte), before the
+    // direct source's constant carrier classification; tooling defaults to 0.
+    bool source_at(const float pos[3], const float nrm[3],
+                   const SurfaceWorldContext* world, float footprint_m,
+                   SurfaceSourceSample& out, uint32_t receiver_material = 0) const;
 
     // Quantized per-vertex evaluation over an indexed mesh stream (positions
     // 3*n; normals 3*n, may be null => +Y). Per vertex the weights are
@@ -705,7 +747,8 @@ private:
     // at parse). The single evaluation path behind weights_at/appearance_at,
     // so the two can never disagree about what a register holds.
     void eval_regs(const float pos[3], const float nrm[3],
-                   const SurfaceWorldContext* world, float* regs) const;
+                   const SurfaceWorldContext* world, float* regs,
+                   float footprint_m = 0, uint32_t receiver_material = 0) const;
 
     SurfaceProgram prog_;
     mutable bool misuse_noted_ = false;

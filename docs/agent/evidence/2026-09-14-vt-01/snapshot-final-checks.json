@@ -1,0 +1,111 @@
+[
+  {
+    "name": "vt-queue",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-Command",
+      "$env:MATTER_VK_SMOKE_MODE=\"vt-queue\"; $env:MATTER_VK_VALIDATION=\"1\"; $env:MATTER_HIDE_WINDOW=\"1\"; Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe\"; exit $LASTEXITCODE"
+    ],
+    "exit": 0,
+    "elapsed_seconds": 1.26,
+    "log": "docs/agent/evidence/2026-09-14-vt-01/snapshot-final-vt-queue.log"
+  },
+  {
+    "name": "vt",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-Command",
+      "$env:MATTER_VK_SMOKE_MODE=\"vt\"; $env:MATTER_VK_VALIDATION=\"1\"; $env:MATTER_HIDE_WINDOW=\"1\"; Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe\"; exit $LASTEXITCODE"
+    ],
+    "exit": 0,
+    "elapsed_seconds": 1.821,
+    "log": "docs/agent/evidence/2026-09-14-vt-01/snapshot-final-vt.log"
+  },
+  {
+    "name": "vt-surfaces",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-Command",
+      "$env:MATTER_VK_SMOKE_MODE=\"vt-surfaces\"; $env:MATTER_VK_VALIDATION=\"1\"; $env:MATTER_HIDE_WINDOW=\"1\"; Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe\"; exit $LASTEXITCODE"
+    ],
+    "exit": 0,
+    "elapsed_seconds": 2.034,
+    "log": "docs/agent/evidence/2026-09-14-vt-01/snapshot-final-vt-surfaces.log"
+  },
+  {
+    "name": "vt-enrich",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-Command",
+      "$env:MATTER_VK_SMOKE_MODE=\"vt-enrich\"; $env:MATTER_VK_VALIDATION=\"1\"; $env:MATTER_HIDE_WINDOW=\"1\"; Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe\"; exit $LASTEXITCODE"
+    ],
+    "exit": 0,
+    "elapsed_seconds": 1.742,
+    "log": "docs/agent/evidence/2026-09-14-vt-01/snapshot-final-vt-enrich.log"
+  },
+  {
+    "name": "vt-normal-frame",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-Command",
+      "$env:MATTER_VK_SMOKE_MODE=\"vt-normal-frame\"; $env:MATTER_VK_VALIDATION=\"1\"; $env:MATTER_HIDE_WINDOW=\"1\"; Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe\"; exit $LASTEXITCODE"
+    ],
+    "exit": 0,
+    "elapsed_seconds": 4.641,
+    "log": "docs/agent/evidence/2026-09-14-vt-01/snapshot-final-vt-normal-frame.log"
+  },
+  {
+    "name": "surface-parallax",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-Command",
+      "$env:MATTER_VK_SMOKE_MODE=\"surface-parallax\"; $env:MATTER_VK_VALIDATION=\"1\"; $env:MATTER_HIDE_WINDOW=\"1\"; Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe\"; exit $LASTEXITCODE"
+    ],
+    "exit": 0,
+    "elapsed_seconds": 5.302,
+    "log": "docs/agent/evidence/2026-09-14-vt-01/snapshot-final-surface-parallax.log"
+  },
+  {
+    "name": "build-cpu",
+    "command": [
+      "./tools/build-windows-from-wsl.sh",
+      "RelWithDebInfo",
+      "vt_residency_tests"
+    ],
+    "exit": 0,
+    "elapsed_seconds": 7.611,
+    "log": "docs/agent/evidence/2026-09-14-vt-01/snapshot-final-build-cpu.log"
+  },
+  {
+    "name": "cpu",
+    "command": [
+      "/mnt/c/Program Files/Microsoft Visual Studio/2022/Community/Common7/IDE/CommonExtensions/Microsoft/CMake/CMake/bin/ctest.exe",
+      "--test-dir",
+      "D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor/build/cmake/windows-msvc/relwithdebinfo",
+      "-R",
+      "^vt_residency_tests$",
+      "--output-on-failure",
+      "--no-tests=error"
+    ],
+    "exit": 0,
+    "elapsed_seconds": 0.21,
+    "log": "docs/agent/evidence/2026-09-14-vt-01/snapshot-final-cpu.log"
+  },
+  {
+    "name": "build-editor",
+    "command": [
+      "./tools/build-windows-from-wsl.sh",
+      "RelWithDebInfo",
+      "editor"
+    ],
+    "exit": 0,
+    "elapsed_seconds": 24.654,
+    "log": "docs/agent/evidence/2026-09-14-vt-01/snapshot-final-build-editor.log"
+  }
+]

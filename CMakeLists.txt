@@ -135,6 +135,7 @@ add_custom_command(
 add_custom_target(matter_embedded_shader_text DEPENDS "${matter_text_shader_header}")
 
 include(cmake/MatterPhysx.cmake)
+include(cmake/MatterStreamline.cmake)
 include(cmake/MatterEngine.cmake)
 include(cmake/MatterViewer.cmake)
 include(cmake/MatterEditor.cmake)

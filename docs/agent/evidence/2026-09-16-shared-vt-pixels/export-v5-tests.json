@@ -1,0 +1,88 @@
+{
+  "runs": [
+    {
+      "mode": "writer",
+      "command": "$env:MATTER_VK_VALIDATION=\"1\"; $env:TMP=\"$env:LOCALAPPDATA\\Temp\"; $env:TEMP=$env:TMP; $env:MATTER_VK_SMOKE_MODE=\"writer\"; & \"./build/cmake/windows-msvc/relwithdebinfo/asset_export_tests.exe\"; exit $LASTEXITCODE",
+      "exit": 0,
+      "seconds": 2.7831104899996717,
+      "binary_sha256": "0aa4bdeb32ffbce276cdfa4cf1198f1e90d9c845c779eeda4dadcde14a63cb21",
+      "binary_unchanged": true,
+      "source_changes": [],
+      "all_pass": true,
+      "zero_validation_errors": true,
+      "skipped_rt": false,
+      "log_sha256": "6b7571c4177852345e3e465c24e5db560aacdd5c60842dd53c079e045eb46385",
+      "passed": true
+    },
+    {
+      "mode": "vt-export",
+      "command": "$env:MATTER_VK_VALIDATION=\"1\"; $env:TMP=\"$env:LOCALAPPDATA\\Temp\"; $env:TEMP=$env:TMP; $env:MATTER_VK_SMOKE_MODE=\"vt-export\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe\"; exit $LASTEXITCODE",
+      "exit": 0,
+      "seconds": 1.7489017919979233,
+      "binary_sha256": "4002f1b22214d252afcb379d59d9768bf174dd5292d2374b3054ca2e575d6fe4",
+      "binary_unchanged": true,
+      "source_changes": [],
+      "all_pass": true,
+      "zero_validation_errors": true,
+      "skipped_rt": false,
+      "log_sha256": "2f90eb219ec75d9922084761cc9d7feaa6ae976e3f9d7218684b18459a8891fc",
+      "passed": true
+    },
+    {
+      "mode": "compositor",
+      "command": "$env:MATTER_VK_VALIDATION=\"1\"; $env:TMP=\"$env:LOCALAPPDATA\\Temp\"; $env:TEMP=$env:TMP; $env:MATTER_VK_SMOKE_MODE=\"compositor\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vt_compositor_tests.exe\"; exit $LASTEXITCODE",
+      "exit": 0,
+      "seconds": 7.873824811998929,
+      "binary_sha256": "cec417e936b7eff9b46826f23c4d17efe353a88b00a071ec46bf0428301ca7a8",
+      "binary_unchanged": true,
+      "source_changes": [],
+      "all_pass": true,
+      "zero_validation_errors": true,
+      "skipped_rt": false,
+      "log_sha256": "b2f418d6708ac3b83e6a35ba99c64d3369f493ea9bce10c1d1ff67b38e9101a0",
+      "passed": true
+    },
+    {
+      "mode": "vt-direct-source",
+      "command": "$env:MATTER_VK_VALIDATION=\"1\"; $env:TMP=\"$env:LOCALAPPDATA\\Temp\"; $env:TEMP=$env:TMP; $env:MATTER_VK_SMOKE_MODE=\"vt-direct-source\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe\"; exit $LASTEXITCODE",
+      "exit": 0,
+      "seconds": 26.16147085799821,
+      "binary_sha256": "4002f1b22214d252afcb379d59d9768bf174dd5292d2374b3054ca2e575d6fe4",
+      "binary_unchanged": true,
+      "source_changes": [],
+      "all_pass": true,
+      "zero_validation_errors": true,
+      "skipped_rt": false,
+      "log_sha256": "40e8e9c9fde74848de520613f841314e74ed3a771b64720c6a42c7cf73d00fa6",
+      "passed": true
+    },
+    {
+      "mode": "surface-parallax",
+      "command": "$env:MATTER_VK_VALIDATION=\"1\"; $env:TMP=\"$env:LOCALAPPDATA\\Temp\"; $env:TEMP=$env:TMP; $env:MATTER_VK_SMOKE_MODE=\"surface-parallax\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe\"; exit $LASTEXITCODE",
+      "exit": 0,
+      "seconds": 21.823340117000043,
+      "binary_sha256": "4002f1b22214d252afcb379d59d9768bf174dd5292d2374b3054ca2e575d6fe4",
+      "binary_unchanged": true,
+      "source_changes": [],
+      "all_pass": true,
+      "zero_validation_errors": true,
+      "skipped_rt": false,
+      "log_sha256": "0c0c0386aa3b5c7c7e86399b026450b1c114e77603ddb8aa03f6fcb36d04d214",
+      "passed": true
+    },
+    {
+      "mode": "vt-receiver-material",
+      "command": "$env:MATTER_VK_VALIDATION=\"1\"; $env:TMP=\"$env:LOCALAPPDATA\\Temp\"; $env:TEMP=$env:TMP; $env:MATTER_VK_SMOKE_MODE=\"vt-receiver-material\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe\"; exit $LASTEXITCODE",
+      "exit": 0,
+      "seconds": 1.5892031619987392,
+      "binary_sha256": "4002f1b22214d252afcb379d59d9768bf174dd5292d2374b3054ca2e575d6fe4",
+      "binary_unchanged": true,
+      "source_changes": [],
+      "all_pass": true,
+      "zero_validation_errors": true,
+      "skipped_rt": false,
+      "log_sha256": "bc8987063d147fdb509ca07a57dd6e524855dce6dfe36733a26e7de41cd611d1",
+      "passed": true
+    }
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "source_manifest": "docs/agent/evidence/2026-09-16-shared-vt-pixels/world-receiver-binding-v2-sources.json",
+  "documentation_only_changes": [
+    "projects/world_demo/scenes/texturing/terrain/SurfaceContactProof/README.md"
+  ],
+  "runtime_source_changes": [],
+  "editor_sha256": "c503c7d16294eddc8048f1628a692d745bb09b1cd86d5a91f5491bcfe60479c5",
+  "source_readme_sha256": "143e1cd968542598d576c266f451ae6958058b3097d3238a5b5b6d49da4e73ea",
+  "remaining_editor_pid": 9056,
+  "status": "progress_goal_active"
+}

@@ -63,4 +63,7 @@ void main() {
     output_words[26] = floatBitsToUint(vt.mapped_mip);
     output_words[27] = floatBitsToUint(surface.cone_width);
     output_words[28] = floatBitsToUint(surface.uv_density);
+    output_words[29] = floatBitsToUint(vt.normal.x);
+    output_words[30] = floatBitsToUint(vt.normal.y);
+    output_words[31] = floatBitsToUint(vt.normal.z);
 }

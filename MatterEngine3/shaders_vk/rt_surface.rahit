@@ -30,7 +30,7 @@ void main() {
     // OpaqueEXT, so the error stays visible instead of being skipped.
     if ((surface.flags & RT_SURFACE_VALID) == 0u) return;
     if (surface.material_index >= rt_materials.length()) return;
-    RtMaterialGpu material = rt_materials[surface.material_index];
+    RtMaterialGpu material = rt_surface_material(surface);
     float opacity = clamp(material.metal_opacity_spec_coat.y, 0.0, 1.0);
     float alpha_cutoff = clamp(material.scattering_shape.z, 0.0, 1.0);
     // Same material-constant alpha test rt_visibility.rahit applies for

@@ -20,6 +20,14 @@
 
 #include "bake_trace.h"
 
+#include <cmath>
+#include <filesystem>
+#include <fstream>
+#include <iomanip>
+#include <limits>
+#include <locale>
+#include <sstream>
+
 namespace bake_trace {
 
 namespace {
@@ -94,6 +102,73 @@ void Collector::reset() {
     root_.counters.clear();
     root_.children.clear();
     start_ = std::chrono::steady_clock::now();
+}
+
+namespace {
+void json_string(std::ostream& out, const char* text) {
+    if (!text) { out << "null"; return; }
+    out << '"';
+    const char* hex = "0123456789abcdef";
+    for (const unsigned char* c = reinterpret_cast<const unsigned char*>(text); *c; ++c) {
+        if (*c == '"' || *c == '\\') out << '\\' << static_cast<char>(*c);
+        else if (*c < 0x20) out << "\\u00" << hex[*c >> 4] << hex[*c & 15];
+        else out << static_cast<char>(*c);
+    }
+    out << '"';
+}
+void json_number(std::ostream& out, double value) {
+    if (std::isfinite(value)) out << value;
+    else out << "null";
+}
+void json_span(std::ostream& out, const Span& span) {
+    out << "{\"name\":"; json_string(out, span.name);
+    out << ",\"begin_ms\":"; json_number(out, span.begin_ms);
+    const bool open = span.end_ms == kOpenEndMs;
+    out << ",\"end_ms\":";
+    if (open) out << "null"; else json_number(out, span.end_ms);
+    out << ",\"duration_ms\":";
+    if (open) out << "null"; else json_number(out, span.end_ms - span.begin_ms);
+    out << ",\"open\":" << (open ? "true" : "false") << ",\"counters\":[";
+    for (size_t i = 0; i < span.counters.size(); ++i) {
+        if (i) out << ',';
+        out << "{\"name\":"; json_string(out, span.counters[i].name);
+        out << ",\"value\":"; json_number(out, span.counters[i].value); out << '}';
+    }
+    out << "],\"children\":[";
+    for (size_t i = 0; i < span.children.size(); ++i) {
+        if (i) out << ',';
+        json_span(out, span.children[i]);
+    }
+    out << "]}";
+}
+} // namespace
+
+std::string snapshot_json(const Span& snapshot) {
+    std::ostringstream out;
+    out.imbue(std::locale::classic());
+    out << std::setprecision(std::numeric_limits<double>::max_digits10);
+    out << "{\"schema_version\":1,\"time_unit\":\"ms\",\"root\":";
+    json_span(out, snapshot);
+    out << "}\n";
+    return out.str();
+}
+
+bool write_snapshot_json(const Span& snapshot, const std::string& path,
+                         std::string& error) {
+    error.clear();
+    if (!std::filesystem::path(path).is_absolute()) {
+        error = "MATTER_BAKE_TRACE requires an absolute output path: " + path;
+        return false;
+    }
+    // Serialize before opening so serialization failures cannot truncate an
+    // existing diagnostic. This export is deliberately not a durable artifact.
+    const std::string json = snapshot_json(snapshot);
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    if (!out) { error = "cannot open bake trace output: " + path; return false; }
+    out.write(json.data(), static_cast<std::streamsize>(json.size()));
+    out.close();
+    if (!out) { error = "cannot write/close bake trace output: " + path; return false; }
+    return true;
 }
 
 // Non-owning and thread-local: set at the bake entry point, cleared with nullptr

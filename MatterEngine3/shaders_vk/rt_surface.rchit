@@ -3,6 +3,7 @@
 #extension GL_GOOGLE_include_directive : require
 
 #define RT_SURFACE_HIT_SHADER 1
+#define RT_SURFACE_CLOSEST_HIT_SHADER 1
 #include "rt_surface_common.glsl"
 
 layout(location = 1) rayPayloadInEXT RtSurfacePayload surface_payload;
@@ -21,4 +22,5 @@ void main() {
         max(surface_payload.cone_width +
                 surface_payload.cone_spread * gl_HitTEXT,
             0.0);
+    apply_rt_surface_detail(surface_payload.surface);
 }

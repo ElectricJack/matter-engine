@@ -398,6 +398,18 @@ bool optional_number(JSContext* context,
     return ok;
 }
 
+bool optional_bool(JSContext* context,
+                   JSValueConst object,
+                   const char* name,
+                   bool& output) {
+    JSValue value = JS_GetPropertyStr(context, object, name);
+    const bool absent = JS_IsUndefined(value);
+    const bool ok = absent || JS_IsBool(value);
+    if (ok && !absent) output = JS_ToBool(context, value) != 0;
+    JS_FreeValue(context, value);
+    return ok;
+}
+
 // The `entity(record)` binding handed to buildEntities(). Appends the record to
 // the __matter_entities global array at its current length; extract_entities()
 // reads that array afterwards. It is defined on the instance as own,
@@ -463,7 +475,91 @@ struct LoadCollector {
     bool terrain_collision_active = false;
     bool terrain_collision_created = false;
     bool terrain_collision_built = false;
+    // giBake({...}): at most one call per world, in any phase.
+    std::optional<GiBakeSettings> gi_bake;
+    std::string gi_bake_error_path;
 };
+
+// giBake(options) — declare the world's GI lightmap bake request
+// (docs/bake-gi.md). Unlike terrainCollision() it is not tied to a lifecycle
+// hook: it may be called at module scope, in a static initializer or inside
+// any hook, because it declares data rather than driving a build. Every
+// option is optional; a second call is an error so two declarations cannot
+// silently overwrite each other. Returns a frozen copy of the effective
+// settings so a script can read back what it declared.
+JSValue gi_bake_failure(JSContext* context, LoadCollector* collector,
+                        const std::string& path, const std::string& message) {
+    if (collector) collector->gi_bake_error_path = path;
+    return JS_ThrowTypeError(context, "%s", message.c_str());
+}
+
+JSValue gi_bake_declare(JSContext* context, JSValueConst, int argc, JSValueConst* argv) {
+    auto* collector = static_cast<LoadCollector*>(JS_GetContextOpaque(context));
+    if (!collector)
+        return JS_ThrowTypeError(context, "giBake() called outside a world load");
+    if (collector->gi_bake)
+        return gi_bake_failure(context, collector, "giBake",
+                               "giBake() may be called at most once per world");
+    if (argc > 1 || (argc == 1 && !JS_IsUndefined(argv[0]) && !JS_IsObject(argv[0])))
+        return gi_bake_failure(context, collector, "giBake",
+                               "giBake(options) takes one optional options object");
+    GiBakeSettings settings;
+    if (argc == 1 && JS_IsObject(argv[0])) {
+        JSValueConst o = argv[0];
+        float samples = float(settings.samples), bounces = float(settings.bounces);
+        if (!optional_number(context, o, "samples", samples) || !std::isfinite(samples) ||
+            samples < 1.0f || samples > 4096.0f || samples != std::floor(samples))
+            return gi_bake_failure(context, collector, "giBake.samples",
+                                   "giBake.samples must be an integer in [1, 4096]");
+        if (!optional_number(context, o, "bounces", bounces) || !std::isfinite(bounces) ||
+            bounces < 0.0f || bounces > 8.0f || bounces != std::floor(bounces))
+            return gi_bake_failure(context, collector, "giBake.bounces",
+                                   "giBake.bounces must be an integer in [0, 8]");
+        if (!optional_number(context, o, "texelDensity", settings.texel_density) ||
+            !std::isfinite(settings.texel_density) || settings.texel_density <= 0.0f ||
+            settings.texel_density > 1024.0f)
+            return gi_bake_failure(context, collector, "giBake.texelDensity",
+                                   "giBake.texelDensity must be a positive number of texels per metre (<= 1024)");
+        // The seed is read in double precision: a float would round any
+        // value above 2^24 to a different stream than the author wrote.
+        double seed = double(settings.seed);
+        {
+            JSValue value = JS_GetPropertyStr(context, o, "seed");
+            const bool ok = JS_IsUndefined(value) ||
+                            (JS_IsNumber(value) && JS_ToFloat64(context, &seed, value) == 0);
+            JS_FreeValue(context, value);
+            if (!ok || !std::isfinite(seed) || seed < 0.0 || seed > 4294967295.0 ||
+                seed != std::floor(seed))
+                return gi_bake_failure(context, collector, "giBake.seed",
+                                       "giBake.seed must be an unsigned 32-bit integer");
+        }
+        if (!optional_bool(context, o, "denoise", settings.denoise))
+            return gi_bake_failure(context, collector, "giBake.denoise",
+                                   "giBake.denoise must be a boolean");
+        if (!optional_bool(context, o, "prelit", settings.prelit))
+            return gi_bake_failure(context, collector, "giBake.prelit",
+                                   "giBake.prelit must be a boolean");
+        JSValue out = JS_GetPropertyStr(context, o, "out");
+        const bool out_ok = JS_IsUndefined(out) || string_value(context, out, settings.out);
+        JS_FreeValue(context, out);
+        if (!out_ok)
+            return gi_bake_failure(context, collector, "giBake.out",
+                                   "giBake.out must be a string");
+        settings.samples = static_cast<std::uint32_t>(samples);
+        settings.bounces = static_cast<std::uint32_t>(bounces);
+        settings.seed = static_cast<std::uint32_t>(seed);
+    }
+    collector->gi_bake = settings;
+    JSValue result = JS_NewObject(context);
+    JS_SetPropertyStr(context, result, "samples", JS_NewInt32(context, int(settings.samples)));
+    JS_SetPropertyStr(context, result, "bounces", JS_NewInt32(context, int(settings.bounces)));
+    JS_SetPropertyStr(context, result, "texelDensity", JS_NewFloat64(context, settings.texel_density));
+    JS_SetPropertyStr(context, result, "seed", JS_NewFloat64(context, double(settings.seed)));
+    JS_SetPropertyStr(context, result, "denoise", JS_NewBool(context, settings.denoise));
+    JS_SetPropertyStr(context, result, "prelit", JS_NewBool(context, settings.prelit));
+    JS_SetPropertyStr(context, result, "out", JS_NewString(context, settings.out.c_str()));
+    return result;
+}
 
 struct RiverNetworkHandle {
     LoadCollector* collector = nullptr;
@@ -1640,7 +1736,7 @@ const char* const kMaterialSpecKeys[] = {
     "alphaCutoff", "shadowOpacity",
     "thinWalled", "doubleSided", "alphaTested", "volumeBoundary",
     "waterSurface",
-    "detail", "detailDensity",
+    "detail", "detailDensity", "detailMode",
 };
 
 // A typo in a spec key would otherwise shade with a silently-defaulted value,
@@ -1788,6 +1884,28 @@ JSValue define_material(JSContext* context,
             name.c_str());
     }
     JS_FreeValue(context, detail);
+
+    JSValue detail_mode = JS_GetPropertyStr(context, spec, "detailMode");
+    if (!JS_IsUndefined(detail_mode)) {
+        std::string mode;
+        if (!JS_IsString(detail_mode) || !string_value(context, detail_mode, mode) ||
+            (mode != "ground" && mode != "surface")) {
+            JS_FreeValue(context, detail_mode);
+            JS_FreeValue(context, spec);
+            return JS_ThrowTypeError(context,
+                "defineMaterial('%s'): detailMode must be 'ground' or 'surface'", name.c_str());
+        }
+        if (mode == "surface") {
+            if (record.detail_module.empty()) {
+                JS_FreeValue(context, detail_mode);
+                JS_FreeValue(context, spec);
+                return JS_ThrowTypeError(context,
+                    "defineMaterial('%s'): detailMode 'surface' requires detail", name.c_str());
+            }
+            def.surfaceFlags |= MATERIAL_SURFACE_DETAIL;
+        }
+    }
+    JS_FreeValue(context, detail_mode);
 
     float density = 0.0f;
     bool density_present = false;
@@ -2113,10 +2231,9 @@ bool extract_roots(JSContext* context,
 }
 
 // World.lights, which accepts TWO shapes:
-//   * an array of point lights, appended to definition.lights; or
-//   * an object with optional `sun` / `sky` / `spots` members, where sun and sky
-//     write renderer SETTINGS (definition.settings.sun_* / sky_color) rather
-//     than list entries, and only `spots` appends lights.
+//   * a legacy array of point lights, appended to definition.lights; or
+//   * an object with optional `sun` / `sky` / `points` / `spots` members, where
+//     sun and sky write renderer SETTINGS and points/spots append local lights.
 // The array form returns early, so a world using it gets no sun/sky authoring
 // at all. Absent means "keep the compiled defaults".
 bool extract_lights(JSContext* context,
@@ -2130,42 +2247,111 @@ bool extract_lights(JSContext* context,
         return true;
     }
 
-    std::uint32_t count = 0;
-    if (array_length(context, lights, count)) {
+    const auto extract_local_array =
+        [&](JSValueConst array, const std::string& array_path,
+            WorldLightKind kind) -> bool {
+        std::uint32_t count = 0;
+        if (!array_length(context, array, count))
+            return fail(desc, error, array_path, array_path + " must be an array");
+
         for (std::uint32_t index = 0; index < count; ++index) {
-            const std::string path = "lights[" + std::to_string(index) + "]";
-            JSValue entry = JS_GetPropertyUint32(context, lights, index);
+            const std::string path =
+                array_path + "[" + std::to_string(index) + "]";
+            JSValue entry = JS_GetPropertyUint32(context, array, index);
             WorldLight light;
+            light.kind = kind;
+
             JSValue position = JS_GetPropertyStr(context, entry, "position");
-            if (!float3_value(context, position, light.position)) {
+            if (JS_IsUndefined(position)) {
                 JS_FreeValue(context, position);
-                JS_FreeValue(context, entry);
-                JS_FreeValue(context, lights);
-                return fail(desc, error, path + ".position",
-                            "light position must contain 3 numbers");
+                position = JS_GetPropertyStr(context, entry, "pos");
             }
+            const bool position_ok =
+                float3_value(context, position, light.position);
             JS_FreeValue(context, position);
+
             JSValue color = JS_GetPropertyStr(context, entry, "color");
-            if (!JS_IsUndefined(color) && !float3_value(context, color, light.color)) {
-                JS_FreeValue(context, color);
-                JS_FreeValue(context, entry);
-                JS_FreeValue(context, lights);
-                return fail(desc, error, path + ".color",
-                            "light color must contain 3 numbers");
-            }
+            const bool color_ok = JS_IsUndefined(color) ||
+                                  float3_value(context, color, light.color);
             JS_FreeValue(context, color);
-            if (!optional_number(context, entry, "intensity", light.intensity) ||
-                !optional_number(context, entry, "range", light.range)) {
-                JS_FreeValue(context, entry);
-                JS_FreeValue(context, lights);
-                return fail(desc, error, path,
-                            "light intensity and range must be numeric");
+
+            bool direction_ok = true;
+            if (kind == WorldLightKind::Spot) {
+                JSValue direction =
+                    JS_GetPropertyStr(context, entry, "direction");
+                if (JS_IsUndefined(direction)) {
+                    JS_FreeValue(context, direction);
+                    direction = JS_GetPropertyStr(context, entry, "dir");
+                }
+                direction_ok =
+                    float3_value(context, direction, light.direction);
+                JS_FreeValue(context, direction);
+            }
+
+            const bool scalars_ok =
+                optional_number(context, entry, "intensity", light.intensity) &&
+                optional_number(context, entry, "range", light.range) &&
+                optional_number(context, entry, "sourceRadius",
+                                light.source_radius) &&
+                optional_bool(context, entry, "castsShadow",
+                              light.casts_shadow) &&
+                (kind != WorldLightKind::Spot ||
+                 (optional_number(context, entry, "inner",
+                                  light.inner_cone_degrees) &&
+                  optional_number(context, entry, "outer",
+                                  light.outer_cone_degrees)));
+            JS_FreeValue(context, entry);
+
+            const bool finite_vectors =
+                std::isfinite(light.position.x) &&
+                std::isfinite(light.position.y) &&
+                std::isfinite(light.position.z) &&
+                std::isfinite(light.color.x) &&
+                std::isfinite(light.color.y) &&
+                std::isfinite(light.color.z) &&
+                (kind != WorldLightKind::Spot ||
+                 (std::isfinite(light.direction.x) &&
+                  std::isfinite(light.direction.y) &&
+                  std::isfinite(light.direction.z)));
+            const bool finite_scalars =
+                std::isfinite(light.intensity) && std::isfinite(light.range) &&
+                std::isfinite(light.source_radius) &&
+                std::isfinite(light.inner_cone_degrees) &&
+                std::isfinite(light.outer_cone_degrees);
+            const float direction_length2 =
+                light.direction.x * light.direction.x +
+                light.direction.y * light.direction.y +
+                light.direction.z * light.direction.z;
+            const bool valid_values =
+                finite_vectors && finite_scalars && light.range > 0.0f &&
+                light.intensity >= 0.0f && light.source_radius >= 0.0f &&
+                light.color.x >= 0.0f && light.color.y >= 0.0f &&
+                light.color.z >= 0.0f &&
+                (kind != WorldLightKind::Spot ||
+                 (direction_length2 > 1.0e-16f &&
+                  light.inner_cone_degrees >= 0.0f &&
+                  light.inner_cone_degrees <= light.outer_cone_degrees &&
+                  light.outer_cone_degrees <= 180.0f));
+
+            if (!position_ok || !color_ok || !direction_ok || !scalars_ok ||
+                !valid_values) {
+                return fail(
+                    desc, error, path,
+                    kind == WorldLightKind::Spot
+                        ? "spot requires finite position/direction/color, positive range, nonnegative intensity/sourceRadius, boolean castsShadow, nonzero direction, and 0 <= inner <= outer <= 180 degrees"
+                        : "point requires finite position/color, positive range, nonnegative intensity/sourceRadius, and boolean castsShadow");
             }
             definition.lights.push_back(light);
-            JS_FreeValue(context, entry);
         }
-        JS_FreeValue(context, lights);
         return true;
+    };
+
+    std::uint32_t legacy_count = 0;
+    if (array_length(context, lights, legacy_count)) {
+        const bool ok =
+            extract_local_array(lights, "lights", WorldLightKind::Point);
+        JS_FreeValue(context, lights);
+        return ok;
     }
 
     // Compatibility with the approved World-as-JS sun/sky object. These map
@@ -2253,49 +2439,21 @@ bool extract_lights(JSContext* context,
     }
     JS_FreeValue(context, sky);
 
+    JSValue points = JS_GetPropertyStr(context, lights, "points");
+    if (!JS_IsUndefined(points) &&
+        !extract_local_array(points, "lights.points", WorldLightKind::Point)) {
+        JS_FreeValue(context, points);
+        JS_FreeValue(context, lights);
+        return false;
+    }
+    JS_FreeValue(context, points);
+
     JSValue spots = JS_GetPropertyStr(context, lights, "spots");
-    if (!JS_IsUndefined(spots)) {
-        std::uint32_t spot_count = 0;
-        if (!array_length(context, spots, spot_count)) {
-            JS_FreeValue(context, spots);
-            JS_FreeValue(context, lights);
-            return fail(desc, error, "lights.spots", "lights.spots must be an array");
-        }
-        for (std::uint32_t index = 0; index < spot_count; ++index) {
-            const std::string path = "lights.spots[" + std::to_string(index) + "]";
-            JSValue entry = JS_GetPropertyUint32(context, spots, index);
-            WorldLight light;
-            JSValue position = JS_GetPropertyStr(context, entry, "position");
-            if (JS_IsUndefined(position)) {
-                JS_FreeValue(context, position);
-                position = JS_GetPropertyStr(context, entry, "pos");
-            }
-            JSValue direction = JS_GetPropertyStr(context, entry, "direction");
-            if (JS_IsUndefined(direction)) {
-                JS_FreeValue(context, direction);
-                direction = JS_GetPropertyStr(context, entry, "dir");
-            }
-            JSValue color = JS_GetPropertyStr(context, entry, "color");
-            const bool vectors_ok = float3_value(context, position, light.position) &&
-                                    float3_value(context, direction, light.direction) &&
-                                    float3_value(context, color, light.color);
-            JS_FreeValue(context, position);
-            JS_FreeValue(context, direction);
-            JS_FreeValue(context, color);
-            const bool numbers_ok =
-                optional_number(context, entry, "intensity", light.intensity) &&
-                optional_number(context, entry, "range", light.range) &&
-                optional_number(context, entry, "inner", light.inner_cone_degrees) &&
-                optional_number(context, entry, "outer", light.outer_cone_degrees);
-            JS_FreeValue(context, entry);
-            if (!vectors_ok || !numbers_ok) {
-                JS_FreeValue(context, spots);
-                JS_FreeValue(context, lights);
-                return fail(desc, error, path,
-                            "spot position/direction/color and numeric range/cones are required");
-            }
-            definition.lights.push_back(light);
-        }
+    if (!JS_IsUndefined(spots) &&
+        !extract_local_array(spots, "lights.spots", WorldLightKind::Spot)) {
+        JS_FreeValue(context, spots);
+        JS_FreeValue(context, lights);
+        return false;
     }
     JS_FreeValue(context, spots);
     JS_FreeValue(context, lights);
@@ -2624,6 +2782,41 @@ bool extract_streaming(JSContext* context,
     // while the outermost ring bounded residency (no rings, nothing streamed
     // anyway); under nested sector LOD the outermost BAND bounds residency, so
     // such a world is meaningful and must keep its bands.
+    JSValue density = JS_GetPropertyStr(context, streaming, "terrainTexelsPerMeter");
+    if (!JS_IsUndefined(density)) {
+        float value = 0;
+        if (!JS_IsNumber(density) || !number_value(context, density, value) ||
+            !std::isfinite(value) || value < 1 || value > 2048) {
+            JS_FreeValue(context, density);
+            JS_FreeValue(context, streaming);
+            return fail(desc, error, "streaming.terrainTexelsPerMeter",
+                        "terrainTexelsPerMeter must be a finite number in [1,2048]");
+        }
+        definition.settings.terrain_texels_per_meter = value;
+    }
+    JS_FreeValue(context, density);
+
+    JSValue receivers = JS_GetPropertyStr(context, streaming, "surfaceReceivers");
+    if (!JS_IsUndefined(receivers)) {
+        std::uint32_t count = 0;
+        bool valid = array_length(context, receivers, count) && count <= 64;
+        std::set<std::string> unique;
+        for (std::uint32_t i = 0; valid && i < count; ++i) {
+            JSValue entry = JS_GetPropertyUint32(context, receivers, i);
+            std::string module;
+            valid = JS_IsString(entry) && string_value(context, entry, module) &&
+                    !module.empty() && module.size() <= 256 && unique.insert(module).second;
+            JS_FreeValue(context, entry);
+            if (valid) definition.settings.surface_receiver_modules.push_back(std::move(module));
+        }
+        if (!valid) {
+            JS_FreeValue(context, receivers);JS_FreeValue(context, streaming);
+            return fail(desc,error,"streaming.surfaceReceivers",
+                        "surfaceReceivers must be an array of at most 64 unique nonempty module names");
+        }
+    }
+    JS_FreeValue(context, receivers);
+
     JSValue rings = JS_GetPropertyStr(context, streaming, "rings");
     if (JS_IsUndefined(rings)) {
         JS_FreeValue(context, rings);
@@ -3272,6 +3465,189 @@ bool extract_prop_spec(JSContext* context,
     return true;
 }
 
+// World.exports -> WorldDefinition::exports. See matter/world_definition.h's
+// WorldExportRequest for what this metadata is FOR (the offline exporter's
+// defaults) and, just as importantly, what it is not: nothing in a world load
+// or a frame acts on it.
+//
+// Strict on purpose, in the same way the material and prop specs are: an
+// unknown key, an unknown format, or an out-of-range number fails the load with
+// the authored path. A silently clamped textureSize would hand someone an
+// export at a resolution they did not ask for and could not account for.
+const char* const kExportSpecKeys[] = {
+    "format", "out", "lod", "textureSize", "textureFormat", "chartCone",
+    "normalSpace", "modules",
+};
+
+bool extract_export_entry(JSContext* context,
+                          JSValueConst entry,
+                          const std::string& path,
+                          const WorldLoadDesc& desc,
+                          WorldExportRequest& request,
+                          WorldLoadError& error) {
+    std::string unknown;
+    if (!reject_unknown_keys(context, entry, kExportSpecKeys,
+                             sizeof(kExportSpecKeys) / sizeof(kExportSpecKeys[0]),
+                             unknown)) {
+        return fail(desc, error, path,
+                    unknown.empty() ? "export entry keys could not be read"
+                                    : "unknown export key '" + unknown + "'");
+    }
+
+    std::string format;
+    JSValue format_value = JS_GetPropertyStr(context, entry, "format");
+    const bool has_format = !JS_IsUndefined(format_value);
+    const bool format_ok = !has_format || string_value(context, format_value, format);
+    JS_FreeValue(context, format_value);
+    if (!format_ok) return fail(desc, error, path + ".format", "format must be a string");
+    if (has_format) request.format = format;
+    if (request.format != "obj")
+        return fail(desc, error, path + ".format",
+                    "only 'obj' is implemented; see docs/export-obj.md");
+
+    JSValue out_value = JS_GetPropertyStr(context, entry, "out");
+    const bool out_ok = string_value(context, out_value, request.out_dir);
+    JS_FreeValue(context, out_value);
+    if (!out_ok || request.out_dir.empty())
+        return fail(desc, error, path + ".out",
+                    "out must be a non-empty directory path");
+
+    bool present = false;
+    int lod = 0;
+    if (!spec_int(context, entry, "lod", lod, present))
+        return fail(desc, error, path + ".lod", "lod must be a number");
+    if (present) {
+        if (lod < 0 || lod > 31)
+            return fail(desc, error, path + ".lod", "lod must be between 0 and 31");
+        request.lod = static_cast<std::uint32_t>(lod);
+    }
+
+    int texture_size = 0;
+    if (!spec_int(context, entry, "textureSize", texture_size, present))
+        return fail(desc, error, path + ".textureSize", "textureSize must be a number");
+    if (present) {
+        if (texture_size < 16 || texture_size > 8192)
+            return fail(desc, error, path + ".textureSize",
+                        "textureSize must be between 16 and 8192 texels");
+        request.texture_size = static_cast<std::uint32_t>(texture_size);
+    }
+
+    std::string texture_format;
+    JSValue texture_format_value = JS_GetPropertyStr(context, entry, "textureFormat");
+    const bool has_texture_format = !JS_IsUndefined(texture_format_value);
+    const bool texture_format_ok =
+        !has_texture_format || string_value(context, texture_format_value, texture_format);
+    JS_FreeValue(context, texture_format_value);
+    if (!texture_format_ok)
+        return fail(desc, error, path + ".textureFormat", "textureFormat must be a string");
+    if (has_texture_format) {
+        if (texture_format != "png" && texture_format != "ktx2" && texture_format != "none")
+            return fail(desc, error, path + ".textureFormat",
+                        "textureFormat must be 'png', 'ktx2' or 'none'");
+        request.texture_format = texture_format;
+    }
+
+    float cone = 0.0f;
+    if (!spec_number(context, entry, "chartCone", cone, present))
+        return fail(desc, error, path + ".chartCone", "chartCone must be a number");
+    if (present) {
+        if (!(std::isfinite(cone) && cone > 0.0f && cone < 90.0f))
+            return fail(desc, error, path + ".chartCone",
+                        "chartCone must be greater than 0 and less than 90 degrees");
+        request.chart_cone_deg = cone;
+    }
+
+    std::string normal_space;
+    JSValue normal_space_value = JS_GetPropertyStr(context, entry, "normalSpace");
+    const bool has_normal_space = !JS_IsUndefined(normal_space_value);
+    const bool normal_space_ok =
+        !has_normal_space || string_value(context, normal_space_value, normal_space);
+    JS_FreeValue(context, normal_space_value);
+    if (!normal_space_ok)
+        return fail(desc, error, path + ".normalSpace", "normalSpace must be a string");
+    if (has_normal_space) {
+        if (normal_space != "smooth" && normal_space != "flat")
+            return fail(desc, error, path + ".normalSpace",
+                        "normalSpace must be 'smooth' or 'flat'");
+        request.normal_space = normal_space;
+    }
+
+    JSValue modules = JS_GetPropertyStr(context, entry, "modules");
+    if (!JS_IsUndefined(modules)) {
+        std::uint32_t length = 0;
+        if (!JS_IsArray(modules) || !array_length(context, modules, length)) {
+            JS_FreeValue(context, modules);
+            return fail(desc, error, path + ".modules",
+                        "modules must be an array of module names");
+        }
+        for (std::uint32_t index = 0; index < length; ++index) {
+            JSValue item = JS_GetPropertyUint32(context, modules, index);
+            std::string name;
+            const bool ok = string_value(context, item, name) && !name.empty();
+            JS_FreeValue(context, item);
+            if (!ok) {
+                JS_FreeValue(context, modules);
+                return fail(desc, error,
+                            path + ".modules[" + std::to_string(index) + "]",
+                            "module name must be a non-empty string");
+            }
+            request.modules.push_back(std::move(name));
+        }
+    }
+    JS_FreeValue(context, modules);
+    return true;
+}
+
+bool extract_exports(JSContext* context,
+                     JSValueConst world_class,
+                     const WorldLoadDesc& desc,
+                     WorldDefinition& definition,
+                     WorldLoadError& error) {
+    JSValue exports = JS_GetPropertyStr(context, world_class, "exports");
+    if (JS_IsUndefined(exports)) {
+        JS_FreeValue(context, exports);
+        return true;
+    }
+    // A single entry is the common case, so accept the object form as well as
+    // the array — the same shape-tolerance World.lights already has.
+    if (JS_IsObject(exports) && !JS_IsArray(exports)) {
+        WorldExportRequest request;
+        const bool ok =
+            extract_export_entry(context, exports, "exports", desc, request, error);
+        JS_FreeValue(context, exports);
+        if (ok) definition.exports.push_back(std::move(request));
+        return ok;
+    }
+    if (!JS_IsArray(exports)) {
+        JS_FreeValue(context, exports);
+        return fail(desc, error, "exports",
+                    "World.exports must be an export entry or an array of them");
+    }
+
+    std::uint32_t length = 0;
+    if (!array_length(context, exports, length)) {
+        JS_FreeValue(context, exports);
+        return fail(desc, error, "exports", "World.exports length could not be read");
+    }
+    bool ok = true;
+    for (std::uint32_t index = 0; index < length && ok; ++index) {
+        JSValue entry = JS_GetPropertyUint32(context, exports, index);
+        const std::string path = "exports[" + std::to_string(index) + "]";
+        if (!JS_IsObject(entry) || JS_IsArray(entry)) {
+            JS_FreeValue(context, entry);
+            ok = fail(desc, error, path, "an export entry must be an object");
+            break;
+        }
+        WorldExportRequest request;
+        ok = extract_export_entry(context, entry, path, desc, request, error);
+        JS_FreeValue(context, entry);
+        if (ok) definition.exports.push_back(std::move(request));
+    }
+    JS_FreeValue(context, exports);
+    if (!ok) definition.exports.clear();
+    return ok;
+}
+
 bool extract_props(JSContext* context,
                    JSValueConst world_class,
                    const WorldLoadDesc& desc,
@@ -3905,6 +4281,8 @@ class World {}
                       JS_NewCFunction(context, river_network, "riverNetwork", 1));
     JS_SetPropertyStr(context, global, "terrainCollision",
                       JS_NewCFunction(context, terrain_collision_builder, "terrainCollision", 1));
+    JS_SetPropertyStr(context, global, "giBake",
+                      JS_NewCFunction(context, gi_bake_declare, "giBake", 1));
     JS_FreeValue(context, global);
 
     const std::string wrapped = source +
@@ -3924,8 +4302,10 @@ class World {}
         const std::string message = exception_message(context);
         JS_FreeValue(context, evaluated);
         cleanup();
-        const std::string path = load_collector.terrain_collision_error_path.empty()
-            ? "source" : load_collector.terrain_collision_error_path;
+        const std::string path = !load_collector.terrain_collision_error_path.empty()
+            ? load_collector.terrain_collision_error_path
+            : !load_collector.gi_bake_error_path.empty() ? load_collector.gi_bake_error_path
+                                                          : std::string("source");
         return fail(desc, error, path, message);
     }
     JS_FreeValue(context, evaluated);
@@ -3979,6 +4359,7 @@ class World {}
               extract_cloud_shadows(context, world_class, desc, definition,
                                     error) &&
               extract_props(context, world_class, desc, definition, error) &&
+              extract_exports(context, world_class, desc, definition, error) &&
               append_static_entities(context, world_class, desc, error);
     // The legacy bounded layer becomes clouds[0] here, not inside
     // extract_fog: it has to run after extract_volumetrics' multiplier fold
@@ -4206,6 +4587,10 @@ class World {}
     JS_FreeValue(context, instance);
 
     ok = extract_entities(context, canonicalizer, desc, definition, error);
+    // giBake() is a data declaration legal in every phase — module scope,
+    // statics, hydrology()/collision() and buildEntities() — so the copy
+    // happens after the last script code has run.
+    definition.gi_bake = load_collector.gi_bake;
     JS_FreeValue(context, canonicalizer);
     JS_FreeValue(context, world_class);
     cleanup();

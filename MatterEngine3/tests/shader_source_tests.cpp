@@ -416,6 +416,155 @@ int main() {
     const std::string composite = read_shader("../shaders_vk/composite.frag");
     const std::string rt = read_shader("../shaders_vk/rt_lighting.rgen");
     const std::string volume = read_shader("../shaders_vk/vol_scatter.comp");
+    const std::string local_lighting =
+        read_shader("../shaders_vk/local_lighting.glsl");
+    assert(!local_lighting.empty());
+    for (const char* binding : {
+             "layout(set = 2, binding = 0, std430)",
+             "layout(set = 2, binding = 1, std430)",
+             "layout(set = 2, binding = 2, std430)",
+             "layout(set = 2, binding = 3, std430)",
+             "layout(set = 2, binding = 4, std430)"})
+        assert(local_lighting.find(binding) != std::string::npos);
+    assert(local_lighting.find("0x8da6b343u") != std::string::npos &&
+           local_lighting.find("0xd8163841u") != std::string::npos &&
+           local_lighting.find("0xcb1ab31fu") != std::string::npos);
+    assert(local_lighting.find("uvec3 reserved;") == std::string::npos &&
+           local_lighting.find("uint reserved0;") != std::string::npos &&
+           local_lighting.find("uint reserved1;") != std::string::npos &&
+           local_lighting.find("uint reserved2;") != std::string::npos);
+    assert(local_lighting.find("normalized_delta = delta / range") !=
+               std::string::npos &&
+           local_lighting.find("cutoff * cutoff") != std::string::npos &&
+           local_lighting.find("light.kind == LOCAL_LIGHT_SPOT") !=
+               std::string::npos);
+    assert(local_lighting.find("vec3 metal_f") == std::string::npos &&
+           local_lighting.find(
+               "mix(vec3(0.04), albedo, clamp(metallic, 0.0, 1.0))") !=
+               std::string::npos);
+    assert(composite.find("#include \"local_lighting.glsl\"") !=
+               std::string::npos &&
+           composite.find("local_light_indices[offset + candidate]") !=
+               std::string::npos &&
+           composite.find("candidate < local_light_counts.z") !=
+               std::string::npos &&
+           composite.find("candidate < local_light_counts.x") ==
+               std::string::npos);
+    assert(rt.find("#include \"local_lighting.glsl\"") !=
+               std::string::npos &&
+           rt.find("layout(set = 0, binding = 26, rgba16f)") !=
+               std::string::npos &&
+           rt.find("local_light_indices[offset + candidate]") !=
+               std::string::npos &&
+           rt.find("local_light_oversized_indices[candidate]") !=
+               std::string::npos);
+    assert(rt.find("distance_to_sample - constants.bias") !=
+               std::string::npos &&
+           rt.find("gl_RayFlagsTerminateOnFirstHitEXT |") !=
+               std::string::npos &&
+           rt.find("0x01, 0, 0, 0, origin") != std::string::npos &&
+           rt.find("0x02, 0, 0, 0,") != std::string::npos);
+    // Local-direct is dispatched separately from GI, so its dispatch bit does
+    // not describe whether composite will consume the transmission lane. Pin
+    // the independent scene-GI bit from the host all the way to the glass
+    // fallback: using gi_dispatch here leaves GI-on glass with the GI-off
+    // Fresnel-scaled diffuse weight.
+    const size_t local_direct_dispatch =
+        renderer_source.find("if (trace_local_direct) {");
+    const size_t local_direct_dispatch_open =
+        renderer_source.find('{', local_direct_dispatch);
+    const size_t local_direct_dispatch_close =
+        matching_closing_brace(renderer_source, local_direct_dispatch_open);
+    assert(renderer_source.find(
+               "constexpr uint32_t kSceneGiEnabledBit = 0x20000000u;") !=
+               std::string::npos);
+    assert(renderer_source.find(
+               "gi_settings_.enabled ? kSceneGiEnabledBit : 0u") !=
+               std::string::npos);
+    assert(local_direct_dispatch != std::string::npos &&
+           local_direct_dispatch_close != std::string::npos);
+    const std::string local_direct_dispatch_body = renderer_source.substr(
+        local_direct_dispatch,
+        local_direct_dispatch_close - local_direct_dispatch + 1u);
+    assert(local_direct_dispatch_body.find(
+               "kLocalDirectDispatchBit | scene_gi_state") !=
+           std::string::npos);
+    assert(rt.find(
+               "const bool scene_gi_enabled =\n"
+               "        (constants.shadow_samples & 0x20000000u) != 0u;") !=
+               std::string::npos);
+    assert(rt.find(
+               "if (!scene_gi_enabled && primary_transmission > 0.0)") !=
+               std::string::npos);
+    assert(rt.find("if (!gi_dispatch && primary_transmission > 0.0)") ==
+           std::string::npos);
+
+    const size_t rt_settings_setter = renderer_source.find(
+        "void VkSceneRenderer::set_ray_tracing_settings(");
+    const size_t rt_settings_open =
+        renderer_source.find('{', rt_settings_setter);
+    const size_t rt_settings_close =
+        matching_closing_brace(renderer_source, rt_settings_open);
+    assert(rt_settings_setter != std::string::npos &&
+           rt_settings_close != std::string::npos);
+    const std::string rt_settings_body = renderer_source.substr(
+        rt_settings_setter, rt_settings_close - rt_settings_setter + 1u);
+    assert(rt_settings_body.find("dlss_history_reset_pending_ = true;") !=
+               std::string::npos &&
+           rt_settings_body.find("temporal_history_changed_ = true;") !=
+               std::string::npos);
+
+    // Ground POM keeps shading/index lookup at the recessed G-buffer point,
+    // but visibility rays must start at the lifted `world` position above the
+    // undisplaced TLAS mesh. Secondary hits have no such split and therefore
+    // intentionally pass their hit position as both values.
+    const size_t visibility_helper = rt.find(
+        "vec3 local_light_visibility(LocalLightGpu light,");
+    const size_t visibility_helper_open = rt.find('{', visibility_helper);
+    const size_t visibility_helper_close =
+        matching_closing_brace(rt, visibility_helper_open);
+    assert(visibility_helper != std::string::npos &&
+           visibility_helper_close != std::string::npos);
+    const std::string visibility_helper_body = rt.substr(
+        visibility_helper,
+        visibility_helper_close - visibility_helper + 1u);
+    assert(visibility_helper_body.find(
+               "vec3 origin = ray_origin_position + receiver_normal * constants.bias;") !=
+           std::string::npos);
+    assert(visibility_helper_body.find(
+               "vec3 origin = receiver_position + receiver_normal * constants.bias;") ==
+           std::string::npos);
+    const size_t saved_shading_world = rt.find("vec3 shading_world = world;");
+    const size_t pom_lift = rt.find(
+        "world += normal * (tileset.pom_b.z + 0.02);", saved_shading_world);
+    const size_t primary_local_direct = rt.find(
+        "vec3 primary_local_direct = evaluate_rt_local_lighting(", pom_lift);
+    assert(saved_shading_world != std::string::npos &&
+           pom_lift != std::string::npos &&
+           primary_local_direct != std::string::npos &&
+           saved_shading_world < pom_lift && pom_lift < primary_local_direct);
+    const std::string primary_local_direct_call = rt.substr(
+        primary_local_direct, 320);
+    assert(primary_local_direct_call.find(
+               "shading_world, world, direct_normal, direct_normal,") !=
+           std::string::npos);
+    assert(rt.find(
+               "surface.position, surface.position, shading_normal, surface.normal") !=
+               std::string::npos &&
+           rt.find(
+               "hit.surface.position, hit.surface.position,\n"
+               "                    hit_shading_normal,") !=
+               std::string::npos);
+    assert(composite.find("layout(set = 0, binding = 11) uniform sampler2D "
+                          "local_direct_texture") != std::string::npos &&
+           composite.find("local_light_counts.w == LOCAL_DIRECT_RAY_TRACED") !=
+               std::string::npos &&
+           composite.find("texture(local_direct_texture, in_uv).rgb") !=
+               std::string::npos);
+    assert(composite.find("raw_diffuse + local_direct.diffuse") ==
+               std::string::npos &&
+           composite.find("specular + local_direct.specular") ==
+               std::string::npos);
     assert(composite.find("environment.direct_world_sun_ratio.rgb") !=
                std::string::npos &&
            composite.find("environment.sun_disc_reserved.rgb") !=
@@ -600,6 +749,11 @@ int main() {
     const std::string editor_make = read_shader("../../MatterEditor/Makefile");
     assert(engine_make.find("build/shaders_vk/vol_scatter.comp.spv: shaders_vk/environment_common.glsl") !=
            std::string::npos);
+    assert(engine_make.find(
+               "build/shaders_vk/composite.frag.spv build/shaders_vk/rt_lighting.rgen.spv: \\") !=
+               std::string::npos &&
+           engine_make.find("    shaders_vk/local_lighting.glsl") !=
+               std::string::npos);
     // 2026-08-14: MatterEditor/Makefile used to keep a second, independently
     // maintained copy of the VK_SPV list and every .glsl dependency edge,
     // regenerating the SAME shaders_gen/embedded_spirv.h -- the two drifted,

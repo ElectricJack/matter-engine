@@ -643,6 +643,8 @@ VkImageResource& VkImageResource::operator=(VkImageResource&& other) noexcept {
     memory = std::exchange(other.memory, VK_NULL_HANDLE);
     format = std::exchange(other.format, VK_FORMAT_UNDEFINED);
     extent = std::exchange(other.extent, VkExtent3D{});
+    mip_levels = std::exchange(other.mip_levels, 1u);
+    array_layers = std::exchange(other.array_layers, 1u);
     layout = std::exchange(other.layout, VK_IMAGE_LAYOUT_UNDEFINED);
     lifetime = std::move(other.lifetime);
     return *this;
@@ -665,6 +667,8 @@ void VkImageResource::reset() {
     memory = VK_NULL_HANDLE;
     format = VK_FORMAT_UNDEFINED;
     extent = {};
+    mip_levels = 1;
+    array_layers = 1;
     layout = VK_IMAGE_LAYOUT_UNDEFINED;
 }
 
@@ -1109,21 +1113,40 @@ bool create_image(VulkanDevice& vulkan, VkImageType type, VkFormat format,
                   VkExtent3D extent, VkImageUsageFlags usage,
                   VkImageAspectFlags aspect,
                   VkMemoryPropertyFlags required_memory,
-                  VkImageResource& output, std::string& error) {
+                  VkImageResource& output, std::string& error,
+                  uint32_t mip_levels, uint32_t array_layers, bool array_view) {
     if (extent.width == 0 || extent.height == 0 || extent.depth == 0) {
         error = "create_image requires a nonzero extent";
+        return false;
+    }
+    if (mip_levels == 0 || array_layers == 0 ||
+        (type == VK_IMAGE_TYPE_1D && (extent.height != 1 || extent.depth != 1)) ||
+        (type == VK_IMAGE_TYPE_2D && extent.depth != 1) ||
+        (type == VK_IMAGE_TYPE_3D && (array_layers != 1 || array_view)) ||
+        (type != VK_IMAGE_TYPE_1D && type != VK_IMAGE_TYPE_2D &&
+         type != VK_IMAGE_TYPE_3D)) {
+        error = "create_image requires valid image dimensions, mips and layers";
+        return false;
+    }
+    uint32_t max_mips = 1;
+    for (uint32_t edge = std::max(extent.width, std::max(extent.height, extent.depth));
+         edge > 1; edge >>= 1) ++max_mips;
+    if (mip_levels > max_mips) {
+        error = "create_image mip count exceeds the image extent";
         return false;
     }
     VkImageResource candidate;
     candidate.device = vulkan.device();
     candidate.format = format;
     candidate.extent = extent;
+    candidate.mip_levels = mip_levels;
+    candidate.array_layers = array_layers;
     VkImageCreateInfo create{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
     create.imageType = type;
     create.format = format;
     create.extent = extent;
-    create.mipLevels = 1;
-    create.arrayLayers = 1;
+    create.mipLevels = mip_levels;
+    create.arrayLayers = array_layers;
     create.samples = VK_SAMPLE_COUNT_1_BIT;
     create.tiling = VK_IMAGE_TILING_OPTIMAL;
     create.usage = usage;
@@ -1152,13 +1175,15 @@ bool create_image(VulkanDevice& vulkan, VkImageType type, VkFormat format,
     if (result != VK_SUCCESS) return fail_result("vkBindImageMemory", result, error);
     VkImageViewCreateInfo view{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
     view.image = candidate.image;
-    view.viewType = type == VK_IMAGE_TYPE_1D ? VK_IMAGE_VIEW_TYPE_1D
-                  : type == VK_IMAGE_TYPE_3D ? VK_IMAGE_VIEW_TYPE_3D
-                                            : VK_IMAGE_VIEW_TYPE_2D;
+    const bool use_array_view = array_view || array_layers > 1;
+    view.viewType = type == VK_IMAGE_TYPE_1D
+        ? (use_array_view ? VK_IMAGE_VIEW_TYPE_1D_ARRAY : VK_IMAGE_VIEW_TYPE_1D)
+        : type == VK_IMAGE_TYPE_3D ? VK_IMAGE_VIEW_TYPE_3D
+        : (use_array_view ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D);
     view.format = format;
     view.subresourceRange.aspectMask = aspect;
-    view.subresourceRange.levelCount = 1;
-    view.subresourceRange.layerCount = 1;
+    view.subresourceRange.levelCount = mip_levels;
+    view.subresourceRange.layerCount = array_layers;
     result = vkCreateImageView(candidate.device, &view, nullptr, &candidate.view);
     if (result != VK_SUCCESS) return fail_result("vkCreateImageView", result, error);
     track_gpu_alloc(requirements.size, selected);
@@ -1192,8 +1217,8 @@ void record_image_transition(VkCommandBuffer command_buffer,
     barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrier.image = image.image;
     barrier.subresourceRange.aspectMask = aspect;
-    barrier.subresourceRange.levelCount = 1;
-    barrier.subresourceRange.layerCount = 1;
+    barrier.subresourceRange.levelCount = image.mip_levels;
+    barrier.subresourceRange.layerCount = image.array_layers;
     VkDependencyInfo dependency{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
     dependency.imageMemoryBarrierCount = 1;
     dependency.pImageMemoryBarriers = &barrier;

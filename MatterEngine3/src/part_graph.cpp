@@ -1,3 +1,4 @@
+#include "matter/project_layout.h"
 // MatterEngine3/src/part_graph.cpp
 //
 // Implementation of SP-3 (see part_graph.h for the layer's contract and for why
@@ -169,6 +170,7 @@ struct InternalNode {
     std::vector<uint64_t> child_keys;         // direct children memo keys (topo edges)
     std::vector<std::string> child_modules;   // direct children's module names (parallel to child_hashes)
     std::vector<std::string> child_params;    // direct children's canonical params JSON (parallel to child_hashes)
+    std::string           merged_params_json;  // `static params` + overrides, as the hash folded them ("" if the baker could not say)
 };
 
 // Memo key = fnv1a64(source) combined with fnv1a64(canonical_params). Identity is the
@@ -279,7 +281,13 @@ InstallResult PartGraph::install(const std::vector<ChildRequest>& roots,
             // Hash authority is SP-2 (master C-2): ask the baker, never compute here.
             // The host merges static+override params before folding, so it sees defaults
             // SP-3 cannot. 0 => resolve failure (fail-closed).
-            node.resolved_hash = baker_.resolve_hash(source, req.params, child_hashes);
+            // The merged params come back with the hash: this is the only place
+            // the module's declared `static params` defaults are observable to
+            // SP-3, and without them a root placed with no explicit params
+            // records `{}` and every parameter surface downstream reports that
+            // the module declares nothing.
+            node.resolved_hash = baker_.resolve_hash(source, req.params, child_hashes,
+                                                     &node.merged_params_json);
             if (node.resolved_hash == 0) {
                 error = "failed to resolve hash for part: " + req.module;
                 return false;
@@ -381,6 +389,7 @@ InstallResult PartGraph::install(const std::vector<ChildRequest>& roots,
             part_graph_snapshot::Node snode;
             snode.module        = n.module;
             snode.params_json   = params_to_json(n.params);
+            snode.effective_params_json = n.merged_params_json;
             snode.resolved_hash = n.resolved_hash;
             snode.is_root       = root_modules.count(n.module) > 0;
 
@@ -587,20 +596,11 @@ namespace part_graph {
 // child placements by it); the host path reuses it for resolve_hash/bake.
 
 FileModuleResolver::FileModuleResolver(script_host::ScriptHost& host, std::string schemas_dir)
-    : host_(host) {
-    if (!schemas_dir.empty()) roots_.push_back(std::move(schemas_dir));
-}
+    : host_(host), roots_(matter::project_layout::object_roots({schemas_dir})) {}
 
 FileModuleResolver::FileModuleResolver(script_host::ScriptHost& host,
                                        std::vector<std::string> roots)
-    : host_(host), roots_(std::move(roots)) {
-    // Empty roots would make every module silently unresolvable; drop them so
-    // an unset scene tier degrades to "project tier only" rather than to
-    // "reads from the process cwd".
-    roots_.erase(std::remove_if(roots_.begin(), roots_.end(),
-                                [](const std::string& r) { return r.empty(); }),
-                 roots_.end());
-}
+    : host_(host), roots_(matter::project_layout::object_roots(roots)) {}
 
 bool FileModuleResolver::load_source(const std::string& module, std::string& out) {
     for (const std::string& root : roots_) {
@@ -655,9 +655,18 @@ HostBaker::HostBaker(script_host::ScriptHost& host, std::string parts_dir)
     : host_(host), parts_dir_(std::move(parts_dir)) {}
 
 uint64_t HostBaker::resolve_hash(const std::string& source, const Params& params,
-                                 const std::vector<uint64_t>& child_hashes) {
-    return host_.resolve_hash(source, params_to_json(params),
-                              child_hashes.data(), child_hashes.size());
+                                 const std::vector<uint64_t>& child_hashes,
+                                 std::string* merged_params_out) {
+    const uint64_t hash = host_.resolve_hash(source, params_to_json(params),
+                                             child_hashes.data(), child_hashes.size());
+    // ScriptHost::merge_params_canonical (which resolve_hash just ran) left the
+    // merged object in last_merged_params_; read it now, before the next merge
+    // on this host overwrites the single slot. A failed resolve leaves "{}"
+    // there, which would be indistinguishable from a module that declares
+    // nothing -- so report nothing at all in that case.
+    if (merged_params_out) *merged_params_out = hash ? host_.last_merged_params()
+                                                     : std::string();
+    return hash;
 }
 
 // NOT an existence check — a VALIDATION, and it does real I/O. A part counts as
@@ -673,6 +682,8 @@ uint64_t HostBaker::resolve_hash(const std::string& source, const Params& params
 // this hash, scratch is the ONLY root consulted — a transient artifact is never
 // silently satisfied from the persistent cache.
 bool HostBaker::cached(uint64_t resolved_hash) {
+    // A later hit must revalidate/repair metadata, never trust a prior bake flag.
+    last_leaf_metadata_hash_ = 0;
     // A scratch PART selects scratch as the artifact root for this hash.  This
     // intentionally mirrors PartStore's scratch-first root choice: a linked
     // scratch PART with a torn MANM/MACM sibling set must be rebuilt in scratch,
@@ -743,6 +754,7 @@ bool HostBaker::bake(const std::string& source, const Params& params,
     // W5: invalidate the fast-path cache up-front so a failed bake below never
     // leaves a stale prior part's data readable as if it were current.
     last_baked_hash_ = 0;
+    last_leaf_metadata_hash_ = 0;
     last_child_modules_placed_.clear();
     // The hash SP-3 memoized must equal where the .part landed (master C-2 guarantee).
     if (!r.error.ok) {
@@ -757,12 +769,14 @@ bool HostBaker::bake(const std::string& source, const Params& params,
     }
     last_child_modules_placed_ = r.child_modules_placed;
     last_baked_hash_ = resolved_hash;
+    last_leaf_metadata_hash_ = r.leaf_metadata_published ? resolved_hash : 0;
     return true;
 }
 
 bool HostBaker::bake_lod_variants(const std::string& source, const Params& params,
                                   const std::vector<uint64_t>& child_hashes,
                                   uint64_t resolved_hash) {
+    if (resolved_hash && last_leaf_metadata_hash_ == resolved_hash) return true;
     script_host::ScriptHost::LodBudgetSpec spec = host_.eval_lod_budgets(source);
     if (spec.budgets.empty()) return true;                    // not opted in
     if (!child_hashes.empty()) {
@@ -820,6 +834,7 @@ bool HostBaker::bake_static_lods(const std::string& source, const Params& params
                                  const std::vector<std::string>& child_modules,
                                  const std::vector<std::string>& child_params,
                                  uint64_t resolved_hash) {
+    if (resolved_hash && last_leaf_metadata_hash_ == resolved_hash) return true;
     script_host::ScriptHost::LodAuthoring lods = host_.eval_lods(source);
 
     // Per-part impostor opt-out (`static noImpostor = true`, kRepresentation

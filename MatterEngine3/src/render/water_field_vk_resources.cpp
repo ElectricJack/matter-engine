@@ -19,6 +19,7 @@ struct UploadRecord {
     std::array<matter::VkImageResource*, 4> images{};
     std::array<VkDeviceSize, 4> offsets{};
     VkExtent3D extent{};
+    VkPipelineStageFlags2 sampled_stages = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
 };
 
 void record_upload(VkCommandBuffer command_buffer, void* user_data) {
@@ -45,8 +46,7 @@ void record_upload(VkCommandBuffer command_buffer, void* user_data) {
             command_buffer, *image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
             VK_PIPELINE_STAGE_2_TRANSFER_BIT,
             VK_ACCESS_2_TRANSFER_WRITE_BIT,
-            VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
-                VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR,
+            upload.sampled_stages,
             VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
             VK_IMAGE_ASPECT_COLOR_BIT);
     }
@@ -200,6 +200,10 @@ bool WaterFieldVkResources::stage(const PackedWaterField& field,
     UploadRecord upload;
     upload.staging = staging.buffer;
     upload.extent = extent;
+    // Dummy fields are initialized even on raster-only devices. Include RT
+    // readers only when that optional device feature was actually enabled.
+    upload.sampled_stages |= matter::ray_tracing_shader_stage(
+        vulkan_->ray_tracing_available());
     for (std::uint32_t index = 0u; index != candidate.images.size(); ++index) {
         upload.images[index] = &candidate.images[index];
         upload.offsets[index] = offsets[index];

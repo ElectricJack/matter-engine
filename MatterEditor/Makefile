@@ -65,6 +65,7 @@ WIN_BOX3D_LIB = $(BOX3D_DIR)/build-mingw/libbox3d.a
 ME3_DIR     = ../MatterEngine3
 MSL_DIR     = ../libs/MatterSurfaceLib
 PROFILE_DIR = ../libs/ProfileLib
+ASSET_STORE_DIR = ../libs/AssetStoreLib
 FLECS_DIR   = ../third_party/flecs
 # Shared source-of-truth libraries (compiled from source, not copied).
 SQL_DIR     = ../libs/SpatialQueryLib
@@ -93,6 +94,7 @@ INCLUDE_PATHS = -I$(ME3_DIR)/include \
                 -I$(SQL_DIR)/include -I$(MEMLIB_DIR)/include \
                 -I$(MATHLIB_DIR)/include \
                 -I$(PROFILE_DIR)/include \
+                -I$(ASSET_STORE_DIR)/include -I$(ASSET_STORE_DIR)/src \
                 -I$(RAYLIB_PATH) \
                 -I$(IMGUI_PATH) -I$(IMGUI_PATH)/backends \
                 -I$(IMGUIZMO_PATH) \
@@ -531,7 +533,9 @@ $(VK_EMBEDDED_HEADER): FORCE
 	$(MAKE) -C $(ME3_DIR) vulkan-spirv
 
 build/windows/vulkan_smoke_tests.exe: \
+        ../libs/AssetStoreLib/src/store_hash.cpp \
         $(ME3_DIR)/tests/vulkan_smoke_tests.cpp \
+        ../libs/MeshChartingLib/src/mesh_charting.cpp \
         src/ui_lighting_controls.cpp src/ui.h \
         $(ME3_DIR)/include/matter/vulkan_device.h \
         $(ME3_DIR)/src/render/gpu_matrix_pack.h \
@@ -541,6 +545,11 @@ build/windows/vulkan_smoke_tests.exe: \
         $(ME3_DIR)/src/render/vk_resources.h \
         $(ME3_DIR)/src/render/vk_pipeline.h \
         $(ME3_DIR)/src/render/vk_scene_renderer.h \
+        $(ME3_DIR)/src/render/vk_sparse_voxel.h \
+        $(ME3_DIR)/src/sparse_voxel_bake.h \
+        $(ME3_DIR)/src/surface_proxy.h \
+        $(ME3_DIR)/tests/sparse_voxel_fixture_io.h \
+        $(ME3_DIR)/tests/sparse_voxel_vk_tests.h \
         $(ME3_DIR)/src/render/vk_volumetrics.h \
         $(ME3_DIR)/src/render/vk_atmosphere.h \
         $(ME3_DIR)/src/render/vk_cloud_shadows.h \
@@ -554,6 +563,9 @@ build/windows/vulkan_smoke_tests.exe: \
         $(ME3_DIR)/src/render/vk_resources.cpp \
         $(ME3_DIR)/src/render/vk_pipeline.cpp \
         $(ME3_DIR)/src/render/vk_scene_renderer.cpp \
+        $(ME3_DIR)/src/render/vk_sparse_voxel.cpp \
+        $(ME3_DIR)/src/sparse_voxel_bake.cpp \
+        $(ME3_DIR)/src/surface_proxy.cpp \
         $(ME3_DIR)/src/render/vk_animation_skinning.cpp \
         $(ME3_DIR)/src/render/vk_animation_bounds.cpp \
         $(ME3_DIR)/src/animation/animation_budget.cpp \
@@ -584,11 +596,16 @@ build/windows/vulkan_smoke_tests.exe: \
         $(VK_EMBEDDED_HEADER) $(GLFW_WIN_LIB) $(W_FLECS_OBJ) $(W_BC7ENC_OBJ)
 	@mkdir -p $(dir $@)
 	$(WIN_CXX) $(ME3_DIR)/tests/vulkan_smoke_tests.cpp src/ui_lighting_controls.cpp \
+	    ../libs/AssetStoreLib/src/store_hash.cpp -I../libs/AssetStoreLib/include \
+	    ../libs/MeshChartingLib/src/mesh_charting.cpp \
 	    $(ME3_DIR)/src/render/streamline_bridge.cpp \
 	    $(ME3_DIR)/src/render/vk_context.cpp \
 	    $(ME3_DIR)/src/render/vk_resources.cpp \
 	    $(ME3_DIR)/src/render/vk_pipeline.cpp \
 	    $(ME3_DIR)/src/render/vk_scene_renderer.cpp \
+	    $(ME3_DIR)/src/render/vk_sparse_voxel.cpp \
+	    $(ME3_DIR)/src/sparse_voxel_bake.cpp \
+	    $(ME3_DIR)/src/surface_proxy.cpp \
 	    $(ME3_DIR)/src/render/vk_animation_skinning.cpp \
 	    $(ME3_DIR)/src/render/vk_animation_bounds.cpp \
 	    $(ME3_DIR)/src/animation/animation_budget.cpp \
@@ -626,13 +643,14 @@ build/windows/vulkan_smoke_tests.exe: \
 	    -DMATTER_VK_TEST_LAYER_PATH='"$(VULKAN_RUNTIME_DIR)"' \
 	    -I$(ME3_DIR) -I$(ME3_DIR)/include -I$(ME3_DIR)/src \
 	    -I$(PROFILE_DIR)/include \
+	    -I$(ASSET_STORE_DIR)/include -I$(ASSET_STORE_DIR)/src \
 	    -I$(BC7ENC_DIR) \
 	    -I../third_party/raylib/src \
 	    -I../libs/MatterSurfaceLib/include \
 	    -I../libs/SpatialQueryLib/include \
 	    -I../libs/MemoryLib/include \
 	    -I../libs/MathLib/include \
-	    -I$(ME3_DIR)/tests \
+	    -I../libs/MeshChartingLib/include -I$(ME3_DIR)/tests \
 	    -I../third_party/raylib/src/external/glfw/include \
 	    -I$(OZZ_INCLUDE) \
 	    -I$(FLECS_DIR) \
@@ -674,10 +692,24 @@ build/windows/vulkan_compat_tests.exe: \
 # unbuildable for as long as those zones have existed. ProfileLib is not
 # header-only, so profile.cpp is on the source list too (same as
 # vulkan_smoke_tests.exe above).
+# Finished-page codec uses AssetStore's envelope and bank-backed page handles.
+VT_PAGE_STORE_SRC := $(addprefix ../libs/AssetStoreLib/src/,store_hash.cpp store_os.cpp blob_store.cpp ref_table.cpp asset_pages.cpp)
+VT_PAGE_MEMORY_OBJ := build/windows/vt_page_mem_arena.o build/windows/vt_page_mem_bank.o
+build/windows/vt_page_%.o: ../libs/MemoryLib/src/%.c
+	@mkdir -p $(dir $@)
+	$(WIN_CC) -std=c17 -O2 -I../libs/MemoryLib/include -c $< -o $@
+
 build/windows/vt_compositor_tests.exe: \
+        $(VT_PAGE_STORE_SRC) $(VT_PAGE_MEMORY_OBJ) \
         $(ME3_DIR)/tests/vt_compositor_tests.cpp \
+        ../libs/MeshChartingLib/src/mesh_charting.cpp \
         $(ME3_DIR)/src/render/vt_compositor.cpp \
+        $(ME3_DIR)/src/render/vt_enrich.cpp \
+        $(ME3_DIR)/src/props/props.cpp \
+        $(ME3_DIR)/src/util/json_doc.cpp \
         $(ME3_DIR)/src/render/vt_compositor.h \
+        $(ME3_DIR)/src/render/vt_enrich.h \
+        $(ME3_DIR)/src/render/vt_resolve_bvh.h \
         $(ME3_DIR)/src/render/vt_types.h \
         $(ME3_DIR)/src/render/vt_surface_tape.h \
         $(ME3_DIR)/src/render/chart_atlas.h \
@@ -690,7 +722,12 @@ build/windows/vt_compositor_tests.exe: \
         $(VK_EMBEDDED_HEADER) $(GLFW_WIN_LIB) $(W_FLECS_OBJ)
 	@mkdir -p $(dir $@)
 	$(WIN_CXX) $(ME3_DIR)/tests/vt_compositor_tests.cpp \
+	    $(VT_PAGE_STORE_SRC) $(VT_PAGE_MEMORY_OBJ) -I../libs/AssetStoreLib/include \
+	    ../libs/MeshChartingLib/src/mesh_charting.cpp \
 	    $(ME3_DIR)/src/render/vt_compositor.cpp \
+	    $(ME3_DIR)/src/render/vt_enrich.cpp \
+	    $(ME3_DIR)/src/props/props.cpp \
+	    $(ME3_DIR)/src/util/json_doc.cpp \
 	    $(ME3_DIR)/src/terrain_field.cpp \
 	    $(ME3_DIR)/src/render/vk_context.cpp \
 	    $(ME3_DIR)/src/render/vk_resources.cpp \
@@ -708,6 +745,7 @@ build/windows/vt_compositor_tests.exe: \
 	    -I$(ME3_DIR)/src/render \
 	    -I$(ME3_DIR)/tests \
 	    -I$(PROFILE_DIR)/include \
+	    -I$(ASSET_STORE_DIR)/include -I$(ASSET_STORE_DIR)/src \
 	    -I$(FLECS_DIR) \
 	    -I../third_party/raylib/src \
 	    -I../libs/MatterSurfaceLib/include \
@@ -1125,6 +1163,130 @@ build/test_selection_set.exe: tests/test_selection_set.cpp src/selection_set.cpp
 run-test-selection-set: build/test_selection_set.exe
 	./build/test_selection_set.exe
 
+# Versioned agent request/result contract. Pure CPU and filesystem only; the
+# production adapter attaches these envelopes to CommandRegistry tickets in
+# main.cpp, while this target tests hostile input and lifecycle semantics.
+build/test_agent_protocol.exe: tests/test_agent_protocol.cpp \
+        src/agent_protocol.cpp src/agent_protocol.h \
+        $(ME3_DIR)/src/util/json_doc.cpp $(ME3_DIR)/include/matter/json_doc.h
+	@mkdir -p $(dir $@)
+	$(WIN_CXX) tests/test_agent_protocol.cpp src/agent_protocol.cpp \
+	    $(ME3_DIR)/src/util/json_doc.cpp -o $@ \
+	    -std=c++17 -Wall -Wextra -Werror -Isrc -I$(ME3_DIR)/include
+
+.PHONY: run-test-agent-protocol
+run-test-agent-protocol: build/test_agent_protocol.exe
+	./build/test_agent_protocol.exe
+
+# Bounded scene enumeration + exact object inspection (scene.list_objects /
+# scene.get_object). scene_inventory.cpp is engine-free by design, so the
+# ordering, paging, id-namespace and availability rules are testable here with
+# no session, bake or renderer.
+build/test_scene_inventory.exe: tests/test_scene_inventory.cpp \
+        src/scene_inventory.cpp src/scene_inventory.h \
+        src/agent_protocol.cpp src/agent_protocol.h \
+        $(ME3_DIR)/src/util/json_doc.cpp $(ME3_DIR)/include/matter/json_doc.h
+	@mkdir -p $(dir $@)
+	$(WIN_CXX) tests/test_scene_inventory.cpp src/scene_inventory.cpp \
+	    src/agent_protocol.cpp $(ME3_DIR)/src/util/json_doc.cpp -o $@ \
+	    -std=c++17 -Wall -Wextra -Werror -Isrc -I$(ME3_DIR)/include
+
+.PHONY: run-test-scene-inventory
+run-test-scene-inventory: build/test_scene_inventory.exe
+	./build/test_scene_inventory.exe
+
+# Scene comparison and spatial queries (scene.capture_snapshot /
+# scene.list_snapshots / scene.diff / scene.query). scene_diff.cpp is
+# engine-free like scene_inventory.cpp, so logical-vs-incarnation pairing,
+# no-op and seeded regeneration, deletions, unloaded bounds, incomparable
+# snapshots, region tests and paging are all decidable here with no session.
+build/test_scene_diff.exe: tests/test_scene_diff.cpp \
+        src/scene_diff.cpp src/scene_diff.h \
+        src/scene_inventory.cpp src/scene_inventory.h \
+        src/agent_protocol.cpp src/agent_protocol.h \
+        $(ME3_DIR)/src/util/json_doc.cpp $(ME3_DIR)/include/matter/json_doc.h
+	@mkdir -p $(dir $@)
+	$(WIN_CXX) tests/test_scene_diff.cpp src/scene_diff.cpp \
+	    src/scene_inventory.cpp src/agent_protocol.cpp \
+	    $(ME3_DIR)/src/util/json_doc.cpp -o $@ \
+	    -std=c++17 -Wall -Wextra -Werror -Isrc -I$(ME3_DIR)/include
+
+.PHONY: run-test-scene-diff
+run-test-scene-diff: build/test_scene_diff.exe
+	./build/test_scene_diff.exe
+
+# Regeneration job ledger (job.start / job.status / job.wait / job.cancel /
+# job.list).  regen_jobs.cpp holds no session, bake or renderer, so overlapping
+# reloads, a superseded result, a script failure with its file:line, editor
+# shutdown and deterministic seeded regeneration are all decidable here with no
+# world open.
+build/test_regen_jobs.exe: tests/test_regen_jobs.cpp \
+        src/regen_jobs.cpp src/regen_jobs.h \
+        src/agent_protocol.cpp src/agent_protocol.h \
+        $(ME3_DIR)/src/util/json_doc.cpp $(ME3_DIR)/include/matter/json_doc.h
+	@mkdir -p $(dir $@)
+	$(WIN_CXX) tests/test_regen_jobs.cpp src/regen_jobs.cpp \
+	    src/agent_protocol.cpp $(ME3_DIR)/src/util/json_doc.cpp -o $@ \
+	    -std=c++17 -Wall -Wextra -Werror -Isrc -I$(ME3_DIR)/include
+
+.PHONY: run-test-regen-jobs
+run-test-regen-jobs: build/test_regen_jobs.exe
+	./build/test_regen_jobs.exe
+
+# Typed procedural parameter validation is renderer-free. It covers unknown
+# fields, type/range safety, all-or-nothing multi-field planning and seed
+# handling before main.cpp hands a valid plan to the existing job ledger.
+build/test_procedural_parameters.exe: tests/test_procedural_parameters.cpp \
+        src/procedural_parameters.cpp src/procedural_parameters.h \
+        src/agent_protocol.cpp src/agent_protocol.h \
+        $(ME3_DIR)/src/util/json_doc.cpp $(ME3_DIR)/include/matter/json_doc.h
+	@mkdir -p $(dir $@)
+	$(WIN_CXX) tests/test_procedural_parameters.cpp src/procedural_parameters.cpp \
+	    src/agent_protocol.cpp $(ME3_DIR)/src/util/json_doc.cpp -o $@ \
+	    -std=c++17 -Wall -Wextra -Werror -Isrc -I$(ME3_DIR)/include
+
+.PHONY: run-test-procedural-parameters
+run-test-procedural-parameters: build/test_procedural_parameters.exe
+	./build/test_procedural_parameters.exe
+
+# Typed selection operations over the shared SelectionSet.  The test keeps the
+# protocol parser, inventory and state mutation together without a renderer.
+build/test_selection_commands.exe: tests/test_selection_commands.cpp \
+        src/selection_commands.h src/selection_set.cpp src/selection_set.h \
+        src/scene_inventory.cpp src/scene_inventory.h \
+        src/reveal_part.cpp src/reveal_part.h \
+        src/agent_protocol.cpp src/agent_protocol.h \
+        $(ME3_DIR)/src/util/json_doc.cpp $(ME3_DIR)/include/matter/json_doc.h
+	@mkdir -p $(dir $@)
+	$(WIN_CXX) tests/test_selection_commands.cpp src/selection_set.cpp \
+	    src/scene_inventory.cpp src/reveal_part.cpp src/agent_protocol.cpp \
+	    $(ME3_DIR)/src/util/json_doc.cpp -o $@ \
+	    -std=c++17 -Wall -Wextra -Werror -Isrc -I$(ME3_DIR)/include -I$(ME3_DIR)/src
+
+.PHONY: run-test-selection-commands
+run-test-selection-commands: build/test_selection_commands.exe
+	./build/test_selection_commands.exe
+
+# viewport.capture: the pending-capture state machine, capture-time geometry,
+# the image<->viewport mapping viewport.pick consumes, and the selection
+# annotations projected into a captured PNG.  viewport_capture.cpp is
+# renderer-free by design, so timeout / abandoned presentation / resize /
+# pick coherence are all decidable with no window.
+build/test_viewport_capture.exe: tests/test_viewport_capture.cpp \
+        src/viewport_capture.cpp src/viewport_capture.h src/view_projection.h \
+        src/camera_calibration.h \
+        src/selection_bounds.h src/selection_set.h \
+        src/agent_protocol.cpp src/agent_protocol.h \
+        $(ME3_DIR)/src/util/json_doc.cpp $(ME3_DIR)/include/matter/json_doc.h
+	@mkdir -p $(dir $@)
+	$(WIN_CXX) tests/test_viewport_capture.cpp src/viewport_capture.cpp \
+	    src/agent_protocol.cpp $(ME3_DIR)/src/util/json_doc.cpp -o $@ \
+	    -std=c++17 -Wall -Wextra -Werror -Isrc -I$(ME3_DIR)/include
+
+.PHONY: run-test-viewport-capture
+run-test-viewport-capture: build/test_viewport_capture.exe
+	./build/test_viewport_capture.exe
+
 # Camera orbit / move / turn math (issue a4203d22 parts 1-2). Pure CPU: no
 # ImGui context, no window, no session -- camera_orbit.cpp exists precisely
 # so this math is reachable without any of them. camera_controller.cpp comes
@@ -1225,6 +1387,7 @@ build/test_issue_reporter.exe: tests/test_issue_reporter.cpp src/issue_reporter.
 	    -I../libs/MatterSurfaceLib/include -I../libs/SpatialQueryLib/include \
 	    -I../libs/MemoryLib/include -I../libs/MathLib/include \
 	    -I$(PROFILE_DIR)/include \
+	    -I$(ASSET_STORE_DIR)/include -I$(ASSET_STORE_DIR)/src \
 	    -I../third_party/imgui -I../third_party/ImGuizmo \
 	    -I../third_party/Vulkan-Headers/include -I../third_party/flecs \
 	    -I../libs/ParticleFlowLib/include -I../third_party/box3d/include \

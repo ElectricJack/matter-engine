@@ -69,7 +69,7 @@ const sharedUrl = `data:text/javascript;base64,${
 const shared = await import(sharedUrl);
 
 const sceneSource = (await requiredText(new URL(
-  '../scenes/RiverFloatLab/RiverFloatLab.js', import.meta.url),
+  '../scenes/water/RiverFloatLab/RiverFloatLab.js', import.meta.url),
   'RiverFloatLab scene')).replace(
   "'shared-lib/river_hydrology_definition'", JSON.stringify(sharedUrl)) +
   '\nexport { RiverFloatLab };';
@@ -269,12 +269,12 @@ assert.ok(accepted.roots.every(root => root.components === undefined),
   'the river generator itself still creates no boulder rigid body');
 
 const sharedCrateSource = await requiredText(new URL(
-  '../objects/Crate.js', import.meta.url), 'shared Crate part');
+  '../objects/props/Crate.js', import.meta.url), 'shared Crate part');
 assert.match(sharedCrateSource, /this\.box\(\[0, 0, 0\], \[1\.5, 1\.5, 1\.5\]\)/,
   'the shared Crate remains a centred 3 m box for other worlds');
 
 const riverCrateSource = await requiredText(new URL(
-  '../scenes/RiverFloatLab/objects/RiverCrate.js', import.meta.url),
+  '../scenes/water/RiverFloatLab/objects/RiverCrate.js', import.meta.url),
   'RiverCrate part');
 assert.match(riverCrateSource, /^class RiverCrate extends Part/m,
   'RiverCrate uses the runtime-discoverable class declaration convention');
@@ -295,7 +295,7 @@ assert.deepEqual(crateCalls.find(call => call[0] === 'box'),
   'RiverCrate visual is centred and exactly 1.5 x 1.5 x 1.5 m');
 
 const raftSource = await requiredText(new URL(
-  '../scenes/RiverFloatLab/objects/RiverRaft.js', import.meta.url),
+  '../scenes/water/RiverFloatLab/objects/RiverRaft.js', import.meta.url),
   'RiverRaft part');
 assert.match(raftSource, /^class RiverRaft extends Part/m,
   'scene-local parts use the runtime-discoverable class declaration convention');

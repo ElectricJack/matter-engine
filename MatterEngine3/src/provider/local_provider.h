@@ -53,7 +53,10 @@
 #include "part_graph.h"           // PartGraph, InstallResult, ChildRequest
 #include "part_graph_snapshot.h"  // Task 9: live-edit graph snapshot
 #include "matter/world_definition.h"
+#include "matter/project_layout.h"
 #include "matter/gpu_visual_meshing.h"
+#include "matter/solid_sdf_meshing.h"
+#include "matter/solid_face_projection.h"
 #include "hydrology/physx_fluid_bake.h"
 #include "hydrology/authored_fluid_request.h"
 #include "hydrology/hydrology_handoff_products.h"
@@ -65,6 +68,8 @@
 #endif
 
 #include <cmath>
+#include <cstdlib>
+#include <cstdio>
 #include <array>
 #include <cstdint>
 #include <functional>
@@ -73,8 +78,10 @@
 #include <memory>
 #include <optional>
 #include <set>
+#include <stdexcept>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 // Vulkan .gtex bake payload types, passed by reference through the
@@ -87,6 +94,8 @@ struct BakeInputs;
 
 namespace hydrology { struct RiverGeometry; }
 namespace terrain_field { class RiverHeightOverlay; }
+namespace part_surface { struct Prepared; struct SourceCache; }
+namespace gpu_meshing { struct FaceMaterialJob; struct FaceMaterialPatch; }
 
 namespace viewer {
 
@@ -129,12 +138,12 @@ struct LocalProviderConfig {
     std::string scene_objects_dir;
     std::string worlds_dir;   // legacy flat layout: <project>/worlds
     std::string scenes_dir;   // scene layout: <project>/scenes
-    std::string scene_dir;    // <project>/scenes/<name>, empty on the flat layout
+    std::string scene_dir;    // <project>/scenes/[group/]<name>, empty on the flat layout
     std::string world_path;
     std::string project_shared_lib_dir;
     std::string engine_shared_lib_dir;
 
-    // Build a config for <project_dir>/scenes/<world_name>/<world_name>.js when
+    // Build a config for <project_dir>/scenes/[group/]<world_name>/<world_name>.js when
     // that scene script exists, else for the legacy
     // <project_dir>/worlds/<world_name>.js layout. The scene SCRIPT existing is
     // what selects the layout, not the scenes/ directory. Probes the filesystem
@@ -150,12 +159,7 @@ struct LocalProviderConfig {
     // every entry. Deliberately shaped like shared_lib_roots() below, which
     // has stacked project-over-engine the same way since it was written.
     std::vector<std::string> object_roots() const {
-        std::vector<std::string> roots;
-        if (!scene_objects_dir.empty())
-            roots.push_back(scene_objects_dir);
-        if (!objects_dir.empty())
-            roots.push_back(objects_dir);
-        return roots;
+        return matter::project_layout::object_roots({scene_objects_dir, objects_dir});
     }
     // The project tier alone. For callers that mean "where this project keeps
     // its shared objects" rather than "where do I find module X" -- resolving
@@ -169,14 +173,8 @@ struct LocalProviderConfig {
     // needs a module's path on disk must come through here rather than
     // concatenating against a single root.
     std::string resolve_object_path(const std::string& module) const {
-        namespace fs = std::filesystem;
-        std::error_code ec;
-        for (const std::string& root : object_roots()) {
-            const std::string path = (fs::path(root) / (module + ".js")).string();
-            ec.clear();
-            if (fs::is_regular_file(path, ec)) return path;
-        }
-        return {};
+        return matter::project_layout::object_source(
+            {scene_objects_dir, objects_dir}, module).string();
     }
     std::vector<std::string> shared_lib_roots() const {
         std::vector<std::string> roots;
@@ -257,6 +255,29 @@ struct LocalProviderConfig {
                        const gpu_meshing::BuildControl& control)>
         vk_particle_visual_bake;
 
+    // Required only by explicit Part.solidSource recipes. Invoked through
+    // gpu_run on the Vulkan thread; no implicit headless approximation.
+    std::function<bool(const gpu_meshing::SolidJob&,
+                       gpu_meshing::MeshResult&, gpu_meshing::SolidStats&,
+                       gpu_meshing::Error&, const gpu_meshing::BuildControl&)>
+        vk_solid_source_bake;
+
+    // Transient finite source projection for declarative detail bakes. The
+    // provider marshals this through gpu_run; no source mesh or bundle is needed.
+    std::function<bool(const gpu_meshing::FaceJob&, gpu_meshing::FacePatch&,
+                       gpu_meshing::FaceStats&, gpu_meshing::Error&,
+                       const gpu_meshing::BuildControl&)> vk_solid_face_project;
+
+    std::function<bool(const gpu_meshing::FaceMaterialJob&, gpu_meshing::FaceMaterialPatch&,
+                       gpu_meshing::FaceStats&, gpu_meshing::Error&,
+                       const gpu_meshing::BuildControl&)> vk_face_material_bake;
+    // Complete immutable catalog, published on the renderer thread before the
+    // receiver geometry can become visible. The provider keeps its owner alive.
+    std::function<bool(std::shared_ptr<const part_surface::Prepared>, std::string&)>
+        publish_part_surface;
+    gpu_meshing::BuildControl surface_control;
+
+
     // Task 7 authored-fluid dependencies. The factory remains dormant until
     // an imperative river network explicitly selects the PhysX backend and a
     // semantic cache miss reaches the worker-owned solver phase.
@@ -283,6 +304,10 @@ struct LocalProviderConfig {
     // Populated by WorldSession::regenerate(); not used by execute_rebake_cone (cone
     // rebuilds operate on a diff of changed files, not a full root-params change).
     std::string root_params_json;
+    // Empty means every manifest root (the legacy regenerate(seed) behavior).
+    // A non-empty module restricts an editor procedural-parameter override to
+    // that declared root, avoiding a same-named key rewriting other roots.
+    std::string root_params_module;
 };
 
 // Builds the shipped engine-to-provider configuration, including the request
@@ -295,6 +320,40 @@ LocalProviderConfig make_engine_local_provider_config(
     const std::string& world_name,
     const std::string& engine_shared_lib_dir,
     FluidBakeBackendFactory backend_factory = {});
+
+// External cache identity is independent of cwd after project resolution. Relative
+// overrides are project-relative; normalization does not change source paths.
+inline std::string project_bake_cache_root(const std::filesystem::path& project,
+                                           const std::string& world) {
+    namespace fs = std::filesystem;
+    const char* value = std::getenv("MATTER_CACHE_ROOT");
+    if (!value || std::string(value).find_first_not_of(" \t\r\n") == std::string::npos)
+        return (project / ".cache" / world).string();
+    if (world.empty() || world == "." || world == ".." ||
+        world.find_first_of("/\\:") != std::string::npos)
+        throw std::invalid_argument("external bake cache requires one safe world-name component");
+    auto normalized_absolute = [](fs::path path) {
+        path = fs::absolute(path);
+        std::error_code error;
+        fs::path canonical = fs::weakly_canonical(path, error);
+        return error ? path.lexically_normal() : canonical;
+    };
+    const fs::path identity_path = normalized_absolute(project);
+    std::string identity = identity_path.generic_u8string();
+#ifdef _WIN32
+    // Windows drive letters and ordinary ASCII path case are not distinct projects.
+    for (char& c : identity) if (c >= 'A' && c <= 'Z') c += 'a' - 'A';
+#endif
+    uint64_t digest = 14695981039346656037ull;
+    for (unsigned char byte : identity) { digest ^= byte; digest *= 1099511628211ull; }
+    char hex[17];
+    std::snprintf(hex, sizeof(hex), "%016llx", static_cast<unsigned long long>(digest));
+    fs::path base(value);
+    if (base.has_root_name() && !base.has_root_directory())
+        throw std::invalid_argument("external cache base cannot be drive-relative");
+    if (base.is_relative()) base = identity_path / base;
+    return (normalized_absolute(base) / "projects" / hex / world).string();
+}
 
 inline LocalProviderConfig LocalProviderConfig::for_project(
     const std::string& project_dir_value,
@@ -322,15 +381,14 @@ inline LocalProviderConfig LocalProviderConfig::for_project(
     cfg.scenes_dir = (project / "scenes").string();
     cfg.world_name = world_name_value;
 
-    // Scene layout (preferred): scenes/<name>/<name>.js, with the scene's own
+    // Scene layout (preferred): scenes/[group/]<name>/<name>.js, with the scene's own
     // objects beside it. Flat layout (legacy): worlds/<name>.js against the
     // project object tier alone. The scene script existing is what selects the
     // layout -- not the scenes/ directory existing -- so a project part-way
     // through migration resolves each scene by where its script actually is.
-    const fs::path scene_dir = project / "scenes" / world_name_value;
-    const fs::path scene_script = scene_dir / (world_name_value + ".js");
-    ec.clear();
-    if (fs::is_regular_file(scene_script, ec)) {
+    const fs::path scene_script = matter::project_layout::scene_script(project, world_name_value);
+    if (!scene_script.empty()) {
+        const fs::path scene_dir = scene_script.parent_path();
         cfg.scene_dir = scene_dir.string();
         cfg.world_path = scene_script.string();
         const fs::path scene_objects = scene_dir / "objects";
@@ -345,7 +403,7 @@ inline LocalProviderConfig LocalProviderConfig::for_project(
     if (fs::is_directory(project_shared, ec))
         cfg.project_shared_lib_dir = project_shared.string();
     cfg.engine_shared_lib_dir = engine_shared_lib_dir_value;
-    cfg.cache_root = (project / ".cache" / world_name_value).string();
+    cfg.cache_root = project_bake_cache_root(project, world_name_value);
     return cfg;
 }
 
@@ -366,6 +424,7 @@ struct ProviderWorldDefinition {
     std::optional<matter::HydrologyWorldSettings> hydrology;
     std::optional<matter::RiverNetworkDefinition> river_network;
     std::optional<matter::TerrainCollisionDefinition> terrain_collision;
+    std::optional<matter::GiBakeSettings> gi_bake;
 };
 
 inline std::optional<matter::HydrologyWorldSettings>
@@ -426,15 +485,18 @@ inline ProceduralWorldProfile select_procedural_world_profile(
 }
 
 // Convert a loaded matter::WorldDefinition into the provider's view of it.
-// Three conversions worth knowing, all of them one-way:
+// Four conversions worth knowing, all of them one-way:
 //   - spot cone angles arrive in DEGREES and are stored as the COSINE of the
 //     half-angle (cos_inner / cos_outer);
 //   - light intensity is folded into the colour rather than kept separately;
-//   - light directions are normalized here, except a direction shorter than
-//     1e-8 which is passed through untouched.
-inline ProviderWorldDefinition adapt_world_definition(
-    const matter::WorldDefinition& definition) {
-    ProviderWorldDefinition out;
+//   - spot directions are normalized here;
+//   - the renderer-neutral spatial index and content revision are built before
+//     the result can be published.
+inline bool adapt_world_definition(const matter::WorldDefinition& definition,
+                                   ProviderWorldDefinition& out,
+                                   std::string& error) {
+    out = ProviderWorldDefinition{};
+    error.clear();
     out.roots.reserve(definition.roots.size());
     out.root_transforms.reserve(definition.roots.size());
     out.expand_flags.reserve(definition.roots.size());
@@ -461,6 +523,7 @@ inline ProviderWorldDefinition adapt_world_definition(
     out.hydrology = adapt_hydrology_definition(definition);
     out.river_network = adapt_river_network_definition(definition);
     out.terrain_collision = adapt_terrain_collision_definition(definition);
+    out.gi_bake = definition.gi_bake;
     out.lights.sun_dir[0] = definition.settings.sun_direction.x;
     out.lights.sun_dir[1] = definition.settings.sun_direction.y;
     out.lights.sun_dir[2] = definition.settings.sun_direction.z;
@@ -470,32 +533,61 @@ inline ProviderWorldDefinition adapt_world_definition(
     out.lights.sky_color[0] = definition.settings.sky_color.x;
     out.lights.sky_color[1] = definition.settings.sky_color.y;
     out.lights.sky_color[2] = definition.settings.sky_color.z;
-    out.lights.spots.reserve(definition.lights.size());
+    out.lights.local.records.reserve(definition.lights.size());
     constexpr float kPiOver180 = 3.14159265358979323846f / 180.0f;
     for (const matter::WorldLight& light : definition.lights) {
-        world_lights::SpotLight runtime{};
-        runtime.pos[0] = light.position.x;
-        runtime.pos[1] = light.position.y;
-        runtime.pos[2] = light.position.z;
-        runtime.dir[0] = light.direction.x;
-        runtime.dir[1] = light.direction.y;
-        runtime.dir[2] = light.direction.z;
-        const float length = std::sqrt(runtime.dir[0] * runtime.dir[0] +
-                                       runtime.dir[1] * runtime.dir[1] +
-                                       runtime.dir[2] * runtime.dir[2]);
-        if (length > 1e-8f) {
-            runtime.dir[0] /= length;
-            runtime.dir[1] /= length;
-            runtime.dir[2] /= length;
+        world_lights::LocalLight runtime{};
+        runtime.position[0] = light.position.x;
+        runtime.position[1] = light.position.y;
+        runtime.position[2] = light.position.z;
+        runtime.range = light.range;
+        runtime.source_radius = light.source_radius;
+        runtime.kind = light.kind == matter::WorldLightKind::Spot
+            ? static_cast<std::uint32_t>(world_lights::LocalLightKind::Spot)
+            : static_cast<std::uint32_t>(world_lights::LocalLightKind::Point);
+        runtime.flags = light.casts_shadow
+            ? world_lights::kLocalLightCastsShadow : 0u;
+        if (light.kind == matter::WorldLightKind::Spot) {
+            runtime.direction[0] = light.direction.x;
+            runtime.direction[1] = light.direction.y;
+            runtime.direction[2] = light.direction.z;
+            const float length = std::sqrt(
+                runtime.direction[0] * runtime.direction[0] +
+                runtime.direction[1] * runtime.direction[1] +
+                runtime.direction[2] * runtime.direction[2]);
+            if (length > 0.0f) {
+                runtime.direction[0] /= length;
+                runtime.direction[1] /= length;
+                runtime.direction[2] /= length;
+            }
+            runtime.cos_inner =
+                std::cos(light.inner_cone_degrees * kPiOver180);
+            runtime.cos_outer =
+                std::cos(light.outer_cone_degrees * kPiOver180);
+        } else {
+            runtime.cos_inner = -1.0f;
+            runtime.cos_outer = -1.0f;
         }
         runtime.color[0] = light.color.x * light.intensity;
         runtime.color[1] = light.color.y * light.intensity;
         runtime.color[2] = light.color.z * light.intensity;
-        runtime.range = light.range;
-        runtime.cos_inner = std::cos(light.inner_cone_degrees * kPiOver180);
-        runtime.cos_outer = std::cos(light.outer_cone_degrees * kPiOver180);
-        out.lights.spots.push_back(runtime);
+        out.lights.local.records.push_back(runtime);
     }
+    if (!world_lights::rebuild_local_light_publication(out.lights.local,
+                                                        error))
+        return false;
+    return true;
+}
+
+// Convenience overload retained for existing tools/tests. Runtime callers use
+// the error-returning overload above so an index allocation failure is reported
+// rather than publishing a partial or empty list.
+inline ProviderWorldDefinition adapt_world_definition(
+    const matter::WorldDefinition& definition) {
+    ProviderWorldDefinition out;
+    std::string error;
+    if (!adapt_world_definition(definition, out, error))
+        throw std::runtime_error(error);
     return out;
 }
 
@@ -518,6 +610,11 @@ inline ProviderWorldDefinition adapt_world_definition(
 class LocalProvider : public WorldProvider {
 public:
     explicit LocalProvider(LocalProviderConfig cfg);
+    // Defined out-of-line in local_provider.cpp: the implicit inline destructor
+    // would need part_surface::SourceCache (forward-declared above, held as a
+    // unique_ptr member) complete in every TU that destroys a LocalProvider,
+    // which the headless consumer TUs do not include.
+    ~LocalProvider();
 
     // Product assembly seam for a completed PhysX bake.  The existing
     // renderer callback is marshalled via cfg_.gpu_run here; worker lifecycle
@@ -575,10 +672,19 @@ public:
     // Task 13 (Phase C): on-demand bake primitives.
     // Bake one part (and, post-order, any unbaked children in its subtree) using
     // the retained bake_plan from the last install_graph(). cached() short-circuits
-    // per node; also runs bake_lod_variants for freshly-baked nodes. Safe to call
+    // the body bake per node; each node's authored LOD plans (static lods,
+    // lodBudgets, noImpostor) are installed on its first visit this session,
+    // cached or not, and a cached revisit skips them. Safe to call
     // from the worker thread after install_graph (host_ is idle post-install).
     // Returns false (with err set) on bake failure; true on success or already cached.
     bool ensure_part_baked(uint64_t part_hash, std::string& err);
+
+    // Prepare/publish the material for a resolved asset, including assets
+    // installed directly by a streaming world's separate dependency walk.
+    // Geometry may already be cached. Call on the install worker after
+    // install_graph(); the owned recipe survives renderer/store resets.
+    bool ensure_part_surface(uint64_t part_hash, const part_graph::BakeInputs& inputs,
+                              std::string& err);
 
     // Flatten one baked part to .flat.part (moved from compose_world's flatten_one
     // lambda into a member; identical logic incl. version sniff).
@@ -668,7 +774,8 @@ public:
         const part_graph_snapshot::Snapshot&              snapshot,
         const std::unordered_map<uint64_t, part_graph::BakeInputs>& bake_plan,
         const std::vector<uint64_t>&                      root_hashes,
-        std::string& err);
+        std::string& err, const std::string& authored_world = {});
+    const std::string& authored_world_cache() const { return authored_world_cache_; }
 
     // Task 7 fix: per-part load failures recorded during fetch_parts() when
     // get_or_load returns null (skip-and-continue; returns true even with failures).
@@ -693,6 +800,9 @@ public:
     const matter::WorldSettings& world_settings() const {
         return world_settings_;
     }
+    const world_lights::WorldLights& authored_lights() const {
+        return authored_lights_;
+    }
     const std::optional<matter::HydrologyWorldSettings>& hydrology_settings() const {
         return hydrology_settings_;
     }
@@ -701,6 +811,10 @@ public:
     }
     const std::optional<matter::TerrainCollisionDefinition>& terrain_collision() const {
         return terrain_collision_;
+    }
+    // The world script's giBake({...}) declaration, if any (docs/bake-gi.md).
+    const std::optional<matter::GiBakeSettings>& gi_bake() const {
+        return gi_bake_;
     }
     // Build the canonical first-section geometry and its immutable terrain
     // overlay together. The provider owns the authored network; callers own
@@ -758,6 +872,10 @@ public:
     }
 
 #if defined(MATTER_HAVE_SCRIPT_HOST)
+    // Bind the same owned, queued GPU source bake to installation/cache hosts
+    // and request-local streaming hosts. Configuration is immutable while
+    // those workers run; the callback captures no ScriptHost/provider pointer.
+    void bind_solid_source_baker(script_host::ScriptHost& host) const;
     // Phase C Task 9: expose the shared HostBaker so install_world can set the
     // world binding and bake sector child assets through the same baker instance.
     part_graph::HostBaker& host_baker() { return *host_baker_; }
@@ -770,11 +888,18 @@ private:
     int                  baked_tileset_count_ = 0;
     int                  install_bake_count_ = 0; // counter for install-phase on_part callbacks
     std::set<uint64_t>   baked_hashes_;  // hashes freshly baked by last install_graph()
+    // Hashes whose authored LOD plans ensure_part_baked() installed this
+    // session; a cached revisit of one skips re-deriving its plan.
+    std::unordered_set<uint64_t> lod_plans_installed_;
+    std::map<uint64_t,std::shared_ptr<const part_surface::Prepared>> part_surfaces_;
+    std::unique_ptr<part_surface::SourceCache> part_surface_cache_;
+    std::set<std::string> sources_without_surface_;
     std::map<uint64_t, std::string> module_by_hash_; // hash -> module name (from manifest roots)
     std::vector<matter::RawEntityRecipe> authored_entities_; // authored entity recipes from world script
     std::optional<matter::HydrologyWorldSettings> hydrology_settings_;
     std::optional<matter::RiverNetworkDefinition> river_network_;
     std::optional<matter::TerrainCollisionDefinition> terrain_collision_;
+    std::optional<matter::GiBakeSettings> gi_bake_;
     std::vector<hydrology::AuthoredFluidCollider> authored_fluid_colliders_;
     std::optional<hydrology::HydrologyNetworkBakeResult>
         accepted_fluid_network_;
@@ -796,6 +921,8 @@ private:
     std::string abs_engine_shared_lib_;
     std::vector<std::string> abs_shared_lib_roots_;
     std::string abs_cache_root_;
+    std::string authored_world_cache_;
+    std::string pending_authored_world_cache_;
 
     // First entry of abs_object_roots_ that actually holds <module>.js, or ""
     // when none does. The absolutized twin of LocalProviderConfig::

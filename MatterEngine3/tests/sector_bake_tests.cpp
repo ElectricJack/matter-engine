@@ -63,7 +63,7 @@ int main() {
     // one that drops the legacy path (it always sets the alpine profile). Keep
     // this on the project tier; scene-specific behaviour belongs in
     // sector_scatter_profile.cpp, which does point at StreamMountain on purpose.
-    std::string src = slurp("../../projects/world_demo/objects/WorldSector.js");
+    std::string src = slurp("../../projects/world_demo/objects/templates/WorldSector.js");
     CHECK(!src.empty(), "WorldSector.js readable");
 
     ScriptHost host;

@@ -1,4 +1,5 @@
 #version 460
+#extension GL_GOOGLE_include_directive : require
 
 layout(local_size_x = 64) in;
 
@@ -17,6 +18,7 @@ layout(local_size_x = 64) in;
 // answer. Splitting the dispatch is what lets the ID pass sit between them and
 // makes the mask same-frame.
 layout(constant_id = 0) const uint kCullPass = 1u;
+layout(constant_id = 1) const uint kGeometryHierarchy = 0u;
 
 const uint MAX_LOD = 9u;
 const uint ANIMATION_BOUND_SKIN_RASTER = 2u;
@@ -45,22 +47,7 @@ struct ClusterMeta {
     uint pad1c;
 };
 
-struct GpuInstance {
-    mat4 transform;
-    mat4 previous_transform;
-    uint part_slot;
-    uint base_lod;
-    uint cluster_start;
-    uint cluster_count;
-    uint history_valid;
-    uint instance_token;
-    uint animation_instance_slot;
-    uint animation_instance_generation;
-    uint water_binding_slot;
-    uint water_generation;
-    uint water_pad0;
-    uint water_pad1;
-};
+#include "scene_instance.glsl"
 
 struct DynamicAnimationBound {
     vec4 aabb_min;
@@ -174,6 +161,10 @@ layout(set = 1, binding = 4, std430) buffer Stats {
     uint triangles;
     uint batches;
 };
+// Aggregate diagnostic counters locally. Millions of foliage invocations
+// contending on these six global words serialized the real cull pass.
+// Draw-bucket reservations remain global and retain their existing contract.
+shared uint group_stats[6];
 layout(set = 1, binding = 8, std430) readonly buffer DynamicAnimationBounds {
     DynamicAnimationBound dynamic_animation_bounds[];
 };
@@ -338,23 +329,8 @@ bool reserve_transform_slot(uint bucket, out uint slot) {
     return true;
 }
 
-void main() {
-    const uint tid = gl_GlobalInvocationID.x;
-    if (frame.counts.y == 0u) return;
-    const uint instance_index = tid / frame.counts.y;
-    const uint local_cluster = tid % frame.counts.y;
-    if (instance_index >= frame.counts.x ||
-        instance_index >= frame.capacities.y) return;
-    const GpuInstance instance = instances[instance_index];
-    // Animated water retains its immutable static instance in the CPU RT lane
-    // as a BLAS proxy, but healthy playback must not draw the coincident proxy
-    // in either visibility-ID or G-buffer raster passes.
-    if (instance.water_pad0 != 0u) return;
-    if (local_cluster >= instance.cluster_count) return;
-
-    if (instance.cluster_start >= frame.capacities.x ||
-        local_cluster >= frame.capacities.x - instance.cluster_start) return;
-    const uint cluster_index = instance.cluster_start + local_cluster;
+void cull_cluster(GpuInstance instance, uint cluster_index, uint override_slot, uint source_vt_bucket) {
+    if (cluster_index >= frame.capacities.x) return;
     const ClusterMeta cluster = clusters[cluster_index];
     if (cluster.lod_count == 0u || cluster.lod_count > MAX_LOD) return;
 
@@ -383,11 +359,11 @@ void main() {
     // lod_bias scales the projected size exactly where the global pixel budget
     // does, so the selection loop below is untouched.
     float override_lod_bias = 1.0;
-    if (cluster.part_slot < part_draw_overrides.length()) {
-        const PartDrawOverride ov = part_draw_overrides[cluster.part_slot];
+    if (override_slot < part_draw_overrides.length()) {
+        const PartDrawOverride ov = part_draw_overrides[override_slot];
         if (ov.max_draw_distance > 0.0 &&
             distance_to_eye > ov.max_draw_distance) {
-            if (kCullPass == 1u) atomicAdd(frustum_culled, 1u);
+            if (kCullPass == 1u) atomicAdd(group_stats[0], 1u);
             return;
         }
         override_lod_bias = ov.lod_bias;
@@ -436,7 +412,7 @@ void main() {
             }
         }
         if (all_outside) {
-            if (kCullPass == 1u) atomicAdd(frustum_culled, 1u);
+            if (kCullPass == 1u) atomicAdd(group_stats[0], 1u);
             return;
         }
     }
@@ -529,7 +505,7 @@ void main() {
     if (occlusion_eligible && frame.vis_params.x != 0u) {
         const uint bit = visible_id_hash(instance.instance_token);
         if ((visible_mask[bit >> 5u] & (1u << (bit & 31u))) == 0u) {
-            atomicAdd(occlusion_culled, 1u);
+            atomicAdd(group_stats[1], 1u);
             return;
         }
     }
@@ -544,7 +520,7 @@ void main() {
     if (bucket >= frame.capacities.z) return;
     uint slot = 0u;
     if (!reserve_transform_slot(bucket, slot)) {
-        atomicAdd(overflowed, 1u);
+        atomicAdd(group_stats[3], 1u);
         return;
     }
     const uint first = commands[bucket].first_instance;
@@ -558,14 +534,60 @@ void main() {
     // per (cluster, lod) bucket. Fail closed: an out-of-range bucket (dummy
     // buffer, or a table that has not caught up with a just-registered part)
     // means "no VT" and the fragment shader takes the legacy path.
+    const uint texture_bucket = source_vt_bucket == 0xffffffffu ? bucket : source_vt_bucket;
     draw_transforms[first + slot].vt_slot =
-        bucket < vt_draw_slots.length() ? vt_draw_slots[bucket] : 0u;
+        texture_bucket < vt_draw_slots.length() ? vt_draw_slots[texture_bucket] : 0u;
     draw_transforms[first + slot].selected_lod = lod;
     draw_transforms[first + slot].water_binding_slot =
         instance.water_binding_slot;
     draw_transforms[first + slot].water_generation =
         instance.water_generation;
-    atomicAdd(emitted, 1u);
-    atomicAdd(triangles, commands[bucket].index_count / 3u);
-    if (slot == 0u) atomicAdd(batches, 1u);
+    atomicAdd(group_stats[2], 1u);
+    atomicAdd(group_stats[4], commands[bucket].index_count / 3u);
+    if (slot == 0u) atomicAdd(group_stats[5], 1u);
+}
+
+// The hierarchy pass writes a compact work list and an indirect dispatch.
+// Culling remains parallel over the selected clusters, independently of source
+// leaf count. Ordinary pipelines specialize this branch away completely.
+layout(set=1,binding=28,std430) readonly buffer GeometrySelected { uint geometry_selected[]; };
+void cull_instance() {
+    uint tid = gl_GlobalInvocationID.x;
+    if (kGeometryHierarchy != 0u) {
+        if (tid >= geometry_selected[3]) return;
+        uint p = 8u + tid*4u;
+        uint instance_index = geometry_selected[p];
+        if (instance_index >= frame.counts.x || instance_index >= frame.capacities.y) return;
+        cull_cluster(instances[instance_index], geometry_selected[p+1u], geometry_selected[p+2u], geometry_selected[p+3u]);
+        return;
+    }
+    if (frame.counts.y == 0u) return;
+    uint instance_index = tid / frame.counts.y;
+    uint local_cluster = tid % frame.counts.y;
+    if (instance_index >= frame.counts.x || instance_index >= frame.capacities.y) return;
+    GpuInstance instance = instances[instance_index];
+    if (instance.water_pad0 != 0u || local_cluster >= instance.cluster_count ||
+        instance.cluster_start >= frame.capacities.x || local_cluster >= frame.capacities.x-instance.cluster_start) return;
+    uint cluster_index = instance.cluster_start+local_cluster;
+    cull_cluster(instance, cluster_index, clusters[cluster_index].part_slot, 0xffffffffu);
+}
+
+void main() {
+    // Pass zero never writes stats. The specialization constant removes the
+    // shared storage and barriers from its executable path.
+    if (kCullPass == 0u) { cull_instance(); return; }
+    if (gl_LocalInvocationIndex < 6u) group_stats[gl_LocalInvocationIndex] = 0u;
+    barrier();
+    cull_instance();
+    // Early rejects return from the helper, so EVERY lane reaches this
+    // barrier, including the padded tail of the last workgroup.
+    barrier();
+    if (gl_LocalInvocationIndex == 0u) {
+        if (group_stats[0] != 0u) atomicAdd(frustum_culled, group_stats[0]);
+        if (group_stats[1] != 0u) atomicAdd(occlusion_culled, group_stats[1]);
+        if (group_stats[2] != 0u) atomicAdd(emitted, group_stats[2]);
+        if (group_stats[3] != 0u) atomicAdd(overflowed, group_stats[3]);
+        if (group_stats[4] != 0u) atomicAdd(triangles, group_stats[4]);
+        if (group_stats[5] != 0u) atomicAdd(batches, group_stats[5]);
+    }
 }

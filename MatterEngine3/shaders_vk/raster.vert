@@ -3,6 +3,7 @@
 
 #include "material_common.glsl"
 #include "impostor_common.glsl"
+#include "vt_normal_frame.glsl"
 
 #ifdef MATTER_WATER_ANIMATION_VERTEX_INPUT
 // Animated water remains in its 12-byte artifact ABI on the GPU. Decode in the
@@ -70,6 +71,10 @@ layout(location = 13) flat out vec3 out_model_basis_y;
 layout(location = 15) flat out uint out_water_binding_slot;
 layout(location = 16) flat out uint out_water_generation;
 layout(location = 17) flat out uint out_water_diagnostic_identity;
+// Locations 18..20 require an interface range of 84 components. No vertex
+// buffer ABI change: this matrix comes from the existing draw transform.
+layout(location = 18) flat out mat3 out_vt_normal_matrix;
+layout(location = 21) out vec3 out_part_local_pos;
 
 layout(set = 0, binding = 0, std140) uniform FrameConstants {
     mat4 world_to_clip;
@@ -387,7 +392,11 @@ void main() {
                 vec2(float(frame.temporal.z), -float(frame.temporal.w))
               : vec2(0.0),
         valid ? 1.0 : 0.0);
-    out_normal = normalize(mat3(model) * in_normal);
+    out_vt_normal_matrix = vt_instance_normal_matrix(mat3(model));
+    // VT must construct its nonlinear frame AFTER normal interpolation.
+    // All chartless and impostor consumers retain their world-normal contract.
+    out_normal = draw.vt_slot != 0u ? in_normal
+                                   : normalize(mat3(model) * in_normal);
     // The impostor's atlas normals are OBJECT space; the fragment stage has no
     // model matrix, so hand it the rotation. Two columns, third by cross.
     out_model_basis_x = normalize(model[0].xyz);
@@ -406,6 +415,7 @@ void main() {
     out_instance_token = draw.instance_token;
     out_material_valid = in_material_index < frame.counts.z ? 1u : 0u;
     out_world_pos = world.xyz;
+    out_part_local_pos = in_position;
     out_vt_slot = draw.vt_slot;
     out_selected_lod = debug_push.direct_lod_valid != 0u
                            ? debug_push.direct_lod

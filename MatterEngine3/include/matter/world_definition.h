@@ -90,14 +90,24 @@ struct WorldRoot {
                              // provider's tileset phase (detail-atlas bake)
 };
 
-// Point-light contract used by World JavaScript. Directional sun and sky values
-// remain settings because the existing renderer owns one of each, while points
-// are an ordered collection.
+enum class WorldLightKind : std::uint32_t {
+    Point = 0,
+    Spot = 1,
+};
+
+// Local-light contract used by World JavaScript. Directional sun and sky values
+// remain settings because the existing renderer owns one of each, while local
+// lights are an ordered collection. All distances are world metres. intensity
+// is a candela-equivalent scene-linear multiplier which the provider folds into
+// color when it creates the resolved GPU record.
 struct WorldLight {
+    WorldLightKind kind = WorldLightKind::Point;
     Float3 position{};
     Float3 color{1.0f, 1.0f, 1.0f};
     float intensity = 1.0f;
     float range = 10.0f;
+    float source_radius = 0.0f;
+    bool casts_shadow = false;
     // Optional spotlight shape. Defaults describe an omnidirectional point;
     // authored spot entries preserve the established renderer light contract.
     Float3 direction{};
@@ -278,17 +288,29 @@ struct TilesetPomSettings {
     // before that were relief 0.178, datum 0.105, march 0.73, steps 50,
     // distance 50.4, fade 1.0, ao 0.63, shadow 0.68, horizon 1.0.
     //
-    // enabled defaults to TRUE as of 2026-07-30, reversing the 2026-07-29
-    // opt-in default: with steps down to 30 and the reach traded for it, the
-    // march is what the ground is supposed to look like rather than a thing
-    // you switch on to inspect it.
+    // enabled defaults to FALSE as of 2026-09-28, reversing the 2026-07-30
+    // default-on. This one flag gates every POM march (ground tileset, VT
+    // chart, finished-surface detail and the RT secondary lift all read the
+    // uploaded pom_steps), so off means off for terrain and world props
+    // alike. On StreamMountain POM measured +221 ms gbuffer and +56 ms rt_gi
+    // median after 300 s (docs/findings/streammountain-frame-attribution-
+    // 2026-09-27.md §2.2), and the march is to be rewritten along the DASHR
+    // revision-2 proposal (docs/design/2026-09-28-dashr-initial-proposal.md).
+    // It is a default, not a deletion: a world opts back in with
+    // render.pom.enabled=true in its props.json (VillaDoricColumnStudy
+    // does), or live with `set render.pom.enabled true`. Returning POM to
+    // every world is flipping this back once the rewrite lands.
+    // StreamMountain also saves enabled=false explicitly; while that equals
+    // this default the sparse world-props save drops it on the next editor
+    // Save, which is harmless until the default flips back.
     //
-    // The 30-step / 1564 m pairing is the shape of this pass: steps 40 -> 30
-    // pays for max_distance 100 -> 1564, so the parallax reaches most of the
-    // way to the fog wall instead of dying just past the camera, at a slightly
-    // coarser march per texel. Relief up (0.260 -> 0.352) and datum down
-    // (0.240 -> 0.168) both deepen what that march has to bite into.
-    bool  enabled            = true;
+    // The 30-step / 1564 m pairing is the shape of the 2026-07-30 pass: steps
+    // 40 -> 30 pays for max_distance 100 -> 1564, so the parallax reaches
+    // most of the way to the fog wall instead of dying just past the camera,
+    // at a slightly coarser march per texel. Relief up (0.260 -> 0.352) and
+    // datum down (0.240 -> 0.168) both deepen what that march has to bite
+    // into.
+    bool  enabled            = false;
     float relief_cap_m       = 0.352f;  // pom_max_relief_m
     float datum_bias_m       = 0.168f;  // Ground POM datum-bias fix knob
     float max_march_m        = 1.59f;   // pom_max_march_m
@@ -340,6 +362,8 @@ struct TilesetPomSettings {
     //   used to ask it (world XZ at the roof-escape-lifted point),
     //   4 |map - march|, 5 |rt-form - march|, 6 the rt form without the
     //   roof-escape lift (3 vs 6 isolates the lift, 6 vs 1 the frame).
+    //   7 composed status, 8 chart identity, 9 ordinary/connected POM route;
+    //   10 proxy requested/resident mip, 11 proxy finest/resident world density.
     // Consumed by TilesetParamsGpu::vt_near_band[3]; see gbuffer.frag's
     // render.pom.horizon_debug block. Session-scoped in the property registry
     // so it cannot survive a relaunch.
@@ -411,6 +435,16 @@ struct WorldSettings {
     // With nesting off there are no levels to descend, so the streamer forces
     // this back off rather than half-honouring it.
     bool volumetric_sectors = false;
+
+    // Finest streamed-terrain chart density, authored as
+    // streaming.terrainTexelsPerMeter. Runtime charts are rebuilt on reload;
+    // nested levels retain the existing density/size scaling and atlas cap.
+    float terrain_texels_per_meter = 16.0f;
+
+    // Opt-in modules receiving the world's direct surface recipe, in addition
+    // to terrain. Static, singly placed, rigid receivers only; original asset
+    // materials remain authoritative for unselected/shared receivers.
+    std::vector<std::string> surface_receiver_modules;
 
     // Tile pitch in world metres. With nested_sectors on this is the LEVEL 0
     // (finest) tile and level L tiles are sector_size << L across.
@@ -543,6 +577,55 @@ inline bool operator!=(const WorldPropSpec& a, const WorldPropSpec& b) {
     return !(a == b);
 }
 
+// Authored GI lightmap bake request (docs/bake-gi.md), declared by the world
+// script's `giBake({...})` call. Every field is optional in the script and
+// defaults to the bake's own default here; the CLI's flags override these.
+// The world script chooses WHETHER a bake is meaningful for this world and
+// its default quality; the CLI (`matter bake gi`) is what actually runs it.
+struct GiBakeSettings {
+    std::uint32_t samples = 64;        // paths per texel
+    std::uint32_t bounces = 2;         // diffuse interreflections
+    float texel_density = 8.0f;        // lightmap texels per metre
+    std::uint32_t seed = 0x5EEDu;
+    bool denoise = true;
+    bool prelit = false;               // also emit albedo x lightmap textures
+    std::string out;                   // output directory, "" = the CLI decides
+};
+
+// One `World.exports` entry: a standing request to write this world's Parts out
+// in an interchange format. THE ENGINE NEVER ACTS ON THIS BY ITSELF — nothing
+// in a world load or a frame reads it. It is authoring metadata for the offline
+// exporter (`matter export obj <scene>`, MatterEngine3/src/export/export_cli.h),
+// which uses it as the DEFAULTS for a scene export so the settings a scene was
+// tuned with live next to the scene instead of in someone's shell history. Any
+// flag the caller passes still wins.
+//
+// The loader validates and rejects rather than clamping: an out-of-range
+// textureSize or an unknown textureFormat fails the world load with the
+// authored property path, because a silently substituted value would produce an
+// export nobody asked for and nobody could explain.
+struct WorldExportRequest {
+    // Interchange format. "obj" is the only value the exporter implements;
+    // the loader accepts no other, so a typo is caught at load time.
+    std::string format = "obj";
+    // Output directory, as authored. Relative paths are resolved against the
+    // PROJECT directory by the exporter, not against the process cwd.
+    std::string out_dir;
+    // Rung index into the part's LOD ladder, 0 = finest.
+    std::uint32_t lod = 0;
+    // Atlas edge in texels, 16..8192.
+    std::uint32_t texture_size = 2048;
+    // "png", "ktx2" (reserved, not implemented) or "none" (geometry only).
+    std::string texture_format = "png";
+    // Chart segmentation normal-cone half-angle in degrees, 0 < x < 90.
+    float chart_cone_deg = 45.0f;
+    // "smooth" (the glTF/three.js convention) or "flat". See
+    // MatterEngine3/src/export/texture_bake.h's NORMAL SPACE note.
+    std::string normal_space = "smooth";
+    // Root modules to export. Empty = every root of the world.
+    std::vector<std::string> modules;
+};
+
 // Everything one successful world load produced. Filled by
 // load_world_definition (world_definition_loader.cpp) and then treated as
 // immutable by its consumers; a reload or a live-edit rebake builds a fresh
@@ -563,6 +646,11 @@ struct WorldDefinition {
     std::optional<HydrologyWorldSettings> hydrology;
     std::optional<RiverNetworkDefinition> river_network;
     std::optional<TerrainCollisionDefinition> terrain_collision;
+    // Present when the script called giBake({...}); absent = the CLI defaults.
+    std::optional<GiBakeSettings> gi_bake;
+    // World.exports declaration order. Empty when the world declares none,
+    // which is every world that does not want an offline export.
+    std::vector<WorldExportRequest> exports;
 };
 
 // The inputs to one world load. EngineContext::open_world derives these from

@@ -122,10 +122,50 @@ void TriangleBuildBuffer::beginShape(ShapeType type, const mat4& transform,
     cur_tint_ = tint;
     open_     = true;
     verts_.clear();
+    surface_attrs_.clear();
 }
 
 void TriangleBuildBuffer::vertex(float3 position) {
-    if (open_) verts_.push_back(position);
+    if (open_) {
+        verts_.push_back(position);
+        if (!surface_attrs_.empty()) surface_attrs_.push_back({});
+    }
+}
+
+void TriangleBuildBuffer::surfaceVertex(float3 position, float3 normal, float2 uv) {
+    if (!open_) return;
+    if (surface_attrs_.empty()) surface_attrs_.resize(verts_.size());
+    verts_.push_back(position);
+    surface_attrs_.push_back({normal, uv, true});
+}
+
+void TriangleBuildBuffer::emitPendingTriangle(size_t a, size_t b, size_t c) {
+    emitTriangle(verts_[a], verts_[b], verts_[c], cur_mat_, cur_xf_, cur_tint_);
+    if (surface_attrs_.empty()) return;
+    if (reverses_handedness(cur_xf_)) std::swap(b, c);
+    auto& e = triex_.back();
+    // Cofactor matrix / determinant is inverse transpose. Normalize after
+    // applying it, retaining geometric fallback for a singular transform.
+    const auto* m = cur_xf_.cell;
+    const double co[9] = {
+        double(m[5])*m[10]-double(m[6])*m[9], double(m[6])*m[8]-double(m[4])*m[10], double(m[4])*m[9]-double(m[5])*m[8],
+        double(m[2])*m[9]-double(m[1])*m[10], double(m[0])*m[10]-double(m[2])*m[8], double(m[1])*m[8]-double(m[0])*m[9],
+        double(m[1])*m[6]-double(m[2])*m[5], double(m[2])*m[4]-double(m[0])*m[6], double(m[0])*m[5]-double(m[1])*m[4]};
+    const double det = m[0]*co[0]+m[1]*co[1]+m[2]*co[2];
+    const auto transfer = [&](size_t i, float3& n, float2& uv) {
+        const auto& attr = surface_attrs_[i];
+        if (!attr.present) return;
+        uv = attr.uv;
+        if (!std::isfinite(det) || std::abs(det) < 1e-30) return;
+        const double sign = det < 0 ? -1 : 1;
+        const double x = sign*(co[0]*attr.normal.x+co[1]*attr.normal.y+co[2]*attr.normal.z);
+        const double y = sign*(co[3]*attr.normal.x+co[4]*attr.normal.y+co[5]*attr.normal.z);
+        const double z = sign*(co[6]*attr.normal.x+co[7]*attr.normal.y+co[8]*attr.normal.z);
+        const double length = std::sqrt(x*x+y*y+z*z);
+        if (std::isfinite(length) && length > 1e-30)
+            n = make_float3(float(x/length),float(y/length),float(z/length));
+    };
+    transfer(a,e.N0,e.uv0); transfer(b,e.N1,e.uv1); transfer(c,e.N2,e.uv2);
 }
 
 // Assemble the pending vertices into triangles and close the shape. Leftover
@@ -139,21 +179,22 @@ void TriangleBuildBuffer::endShape() {
     switch (cur_type_) {
         case ShapeType::TRIANGLES:
             for (size_t i = 0; i + 2 < n + 1 && i + 2 < n; i += 3)
-                emitTriangle(verts_[i], verts_[i+1], verts_[i+2], cur_mat_, cur_xf_, cur_tint_);
+                emitPendingTriangle(i, i+1, i+2);
             break;
         case ShapeType::TRIANGLE_STRIP:
             for (size_t i = 0; i + 2 < n; ++i) {
                 // keep consistent winding by flipping odd triangles
-                if (i & 1) emitTriangle(verts_[i+1], verts_[i], verts_[i+2], cur_mat_, cur_xf_, cur_tint_);
-                else       emitTriangle(verts_[i], verts_[i+1], verts_[i+2], cur_mat_, cur_xf_, cur_tint_);
+                if (i & 1) emitPendingTriangle(i+1, i, i+2);
+                else       emitPendingTriangle(i, i+1, i+2);
             }
             break;
         case ShapeType::TRIANGLE_FAN:
             for (size_t i = 1; i + 1 < n; ++i)
-                emitTriangle(verts_[0], verts_[i], verts_[i+1], cur_mat_, cur_xf_, cur_tint_);
+                emitPendingTriangle(0, i, i+1);
             break;
     }
     verts_.clear();
+    surface_attrs_.clear();
     open_ = false;
 }
 
@@ -621,7 +662,7 @@ void TriangleBuildBuffer::appendTo(std::vector<Tri>& out_tris,
 }
 
 void TriangleBuildBuffer::clear() {
-    tris_.clear(); triex_.clear(); verts_.clear(); open_ = false;
+    tris_.clear(); triex_.clear(); verts_.clear(); surface_attrs_.clear(); open_ = false;
 }
 
 uint64_t VariationRecorder::instance(const void* child_source, size_t source_len,

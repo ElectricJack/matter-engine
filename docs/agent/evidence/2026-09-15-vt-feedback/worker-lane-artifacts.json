@@ -1,0 +1,52 @@
+[
+  {
+    "path": "docs/agent/evidence/2026-09-15-vt-feedback/castle-worker-active-allocation-artifacts.json",
+    "bytes": 4782,
+    "sha256": "13dc7929d6725e6e001451951a642b675e985cb61748a5096f90a74d7dfa9b2e"
+  },
+  {
+    "path": "docs/agent/evidence/2026-09-15-vt-feedback/castle-worker-active-allocation-summary.json",
+    "bytes": 7451,
+    "sha256": "63e5a55738059d1bcef652bfcf793b9a9d115234bf373f954d5aa5ba1a5cbe83"
+  },
+  {
+    "path": "docs/agent/evidence/2026-09-15-vt-feedback/castle-worker-lane-active-artifacts.json",
+    "bytes": 4722,
+    "sha256": "18a1e1c4265da5e0898d9b0b2492de8be5731efd30f78eaa6b5968cfb1b37277"
+  },
+  {
+    "path": "docs/agent/evidence/2026-09-15-vt-feedback/castle-worker-lane-active-summary.json",
+    "bytes": 6965,
+    "sha256": "5dad6e67542fedec3a75d59efd440eed746cd465a9c2cb94f3ceb18867ee8318"
+  },
+  {
+    "path": "docs/agent/evidence/2026-09-15-vt-feedback/worker-lane-before.json",
+    "bytes": 2566,
+    "sha256": "a3f6e5c9d3bd4cffbdd6b9ad535c79badfaaccff87aea04ad3b472ce41efba92"
+  },
+  {
+    "path": "docs/agent/evidence/2026-09-15-vt-feedback/worker-lane-checks.json",
+    "bytes": 1290,
+    "sha256": "c7930e3821c3584a1718124a67645e8cfe481c1772c4ea4dd1cace7cc7ba9f3d"
+  },
+  {
+    "path": "docs/agent/evidence/2026-09-15-vt-feedback/worker-lane-compositor-build.log",
+    "bytes": 2943,
+    "sha256": "77e8c9d13c2bccd606611fbd8302310a8ba85e937d6cee4cb428a98e09b62bf2"
+  },
+  {
+    "path": "docs/agent/evidence/2026-09-15-vt-feedback/worker-lane-compositor-test.log",
+    "bytes": 2929,
+    "sha256": "5db24b4e88c692e120b081497426138d1637358c4901eaf3e5a4b660255b2474"
+  },
+  {
+    "path": "docs/agent/evidence/2026-09-15-vt-feedback/worker-lane-editor-build.log",
+    "bytes": 2084,
+    "sha256": "5f1bf03a38f0eb0a1aa3ddbcf0bf3829f3511072ab1c585eadd16370ebe416da"
+  },
+  {
+    "path": "docs/agent/evidence/2026-09-15-vt-feedback/worker-lane-source.json",
+    "bytes": 2856,
+    "sha256": "dc544da776f25965fd669e2462290dc49584408c289e62c1dd771c7fc936a539"
+  }
+]

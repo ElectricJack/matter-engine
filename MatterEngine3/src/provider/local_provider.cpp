@@ -30,6 +30,8 @@
 //   - Nothing here takes a lock; see the threading paragraph in the header.
 
 #include "local_provider.h"
+#include "detail_cache_validation.h"
+#include <atomic>
 #include "script/world_definition_loader.h"
 
 #include "part_graph.h"        // -DMATTER_HAVE_SCRIPT_HOST pulls in script_host.h
@@ -38,10 +40,13 @@
 #include "world_lights.h"
 #include "world_tracer.h"
 #include "part_asset.h"   // fnv1a64
+#include "brick_bond_detail.h"
+#include "projected_face_cache.h"
 #include "tileset_gtex.h" // gtex_content_hash, gtex_cache_hit (headless cache-hit load)
 #include "blas_manager.hpp"
 #include "tlas_manager.hpp"
 #include "tileset_phase.h"
+#include "authored_world_cache.h"
 #include "bake_trace.h"        // Bake Lab task 1.3: tileset span split
 #include "bake_trace_names.h"  // kSpanTileset
 #include "material_registry.h"
@@ -75,6 +80,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include "part_surface.h"
 #include <filesystem>
 #include <iomanip>
 #include <iterator>
@@ -1499,6 +1505,151 @@ LocalProviderConfig make_engine_local_provider_config(
 }
 
 LocalProvider::LocalProvider(LocalProviderConfig cfg) : cfg_(std::move(cfg)) {}
+
+// Out-of-line so the implicit inline destructor is not emitted in every
+// including TU. LocalProvider owns unique_ptrs to part_surface::SourceCache
+// (unguarded) and, under MATTER_HAVE_SCRIPT_HOST, script_host::ScriptHost /
+// part_graph::FileModuleResolver / part_graph::HostBaker. All are complete in
+// this TU (part_surface.h, script_host.h, part_graph.h are included above), so a
+// defaulted destructor is well-formed here; a headless consumer TU that builds
+// and destroys a LocalProvider need not see those definitions.
+LocalProvider::~LocalProvider() = default;
+
+#if defined(MATTER_HAVE_SCRIPT_HOST)
+void LocalProvider::bind_solid_source_baker(script_host::ScriptHost& host) const {
+    if (!cfg_.vk_solid_source_bake) return;
+    const auto bake = cfg_.vk_solid_source_bake;
+    const auto run = cfg_.gpu_run;
+    host.set_solid_source_baker([bake,run](
+        const gpu_meshing::SolidJob& job, gpu_meshing::MeshResult& result,
+        gpu_meshing::SolidStats& stats, gpu_meshing::Error& error,
+        const gpu_meshing::BuildControl& control) {
+        gpu_meshing::GridLayout layout;
+        if (!gpu_meshing::validate_solid_job(job,layout,error)) return false;
+        // Queue envelopes own their inputs and outputs even when a cancelled
+        // or shutting-down queue discards the job without invoking its body.
+        struct Request {
+            std::vector<gpu_meshing::SolidOp> ops;
+            gpu_meshing::SolidJob job;
+            gpu_meshing::MeshResult mesh;
+            gpu_meshing::SolidStats stats;
+            gpu_meshing::Error error;
+        };
+        auto request = std::make_shared<Request>();
+        request->ops.assign(job.ops,job.ops+job.op_count);
+        request->job=job; request->job.ops=request->ops.data();
+        auto invoke = [request,bake,control](std::string& message) {
+            const bool ok=bake(request->job,request->mesh,request->stats,
+                               request->error,control);
+            if (!ok) message=request->error.message;
+            return ok;
+        };
+        std::string message;
+        const bool ok=run ? run("solid_source",invoke,message) : invoke(message);
+        if (!ok) {
+            error=request->error;
+            if (error.code==gpu_meshing::ErrorCode::None)
+                error={message=="cancelled" || message=="shutdown"
+                           ? gpu_meshing::ErrorCode::Cancelled
+                           : gpu_meshing::ErrorCode::VulkanFailure,message};
+            return false;
+        }
+        result=std::move(request->mesh); stats=request->stats; error={};
+        return true;
+    });
+}
+#endif
+
+bool LocalProvider::ensure_part_surface(uint64_t hash, const part_graph::BakeInputs& bi,
+                                        std::string& message) {
+#if defined(MATTER_HAVE_SCRIPT_HOST)
+    if (!host_) { message="part surface requires an initialized provider";return false; }
+    if (part_surfaces_.count(hash) || sources_without_surface_.count(bi.source)) return true;
+    script_host::EvaluatedFiniteSurface recipe; script_host::EvaluatedDirectSurface direct;
+    script_host::BakeError script_error;
+    script_host::SolidSourceEvaluationOptions options; options.control=cfg_.surface_control;
+    if (!host_->evaluate_part_surface(bi.source,part_graph::params_to_json(bi.params),direct,recipe,script_error,options)) {
+        message=script_error.message; return false;
+    }
+    // Presence is class metadata evaluated before parameter overrides. Within
+    // one immutable installed graph, absent source classes need only one read.
+    if (!recipe.present && !direct.present) { sources_without_surface_.insert(bi.source);return true; }
+    if (direct.present) {
+        if (direct.part_hash!=hash || !cfg_.publish_part_surface) {
+            message="direct part source identity mismatch or renderer service unavailable";return false;
+        }
+        std::shared_ptr<const part_surface::Prepared> prepared;gpu_meshing::Error error;
+        if (!part_surface::prepare_direct(direct,prepared,error,cfg_.surface_control)) {
+            message=error.message;return false;
+        }
+        const auto publish=cfg_.publish_part_surface;
+        auto invoke=[prepared,publish](std::string& text){return publish(prepared,text);};
+        if (!(cfg_.gpu_run?cfg_.gpu_run("surface_publish",invoke,message):invoke(message))) return false;
+        part_surfaces_[hash]=std::move(prepared);
+        MATTER_LOGI("part-surface","part=%016llx direct recipe_bytes=%zu source_images=0",
+            static_cast<unsigned long long>(hash),direct.program.size());
+        return true;
+    }
+    if (recipe.geometry.resolved_hash!=hash || !cfg_.publish_part_surface || !cfg_.vk_face_material_bake) {
+        message="finite part source identity mismatch or renderer service unavailable";return false;
+    }
+    const auto run=cfg_.gpu_run;
+    const auto project=cfg_.vk_solid_face_project;
+    const auto shade=cfg_.vk_face_material_bake;
+    gpu_meshing::SolidFaceProjector queued_project=[run,project](const auto& job,auto& output,
+        auto& stats,auto& error,const auto& control) {
+        if (!project) {error={gpu_meshing::ErrorCode::Unavailable,"finite face projector unavailable"};return false;}
+        struct Request {
+            std::vector<gpu_meshing::SolidOp> ops;
+            gpu_meshing::FaceJob job; gpu_meshing::FacePatch output;
+            gpu_meshing::FaceStats stats; gpu_meshing::Error error;
+        };
+        auto r=std::make_shared<Request>(); r->job=job;
+        r->ops.assign(job.source.ops,job.source.ops+job.source.op_count); r->job.source.ops=r->ops.data();
+        auto invoke=[r,project,control](std::string& text) {
+            const bool ok=project(r->job,r->output,r->stats,r->error,control);
+            if (!ok) text=r->error.message;return ok;
+        };
+        std::string text;const bool ok=run?run("finite_geometry",invoke,text):invoke(text);
+        if (!ok) {error=r->error;if(error.code==gpu_meshing::ErrorCode::None)
+            error={gpu_meshing::ErrorCode::Cancelled,text};return false;}
+        output=std::move(r->output);stats=r->stats;error={};return true;
+    };
+    part_surface::MaterialBaker queued_shade=[run,shade](const auto& job,auto& output,
+        auto& stats,auto& error,const auto& control) {
+        struct Request {
+            std::vector<gpu_meshing::SolidOp> ops; gpu_meshing::FacePatch geometry;
+            gpu_meshing::FaceMaterialJob job; gpu_meshing::FaceMaterialPatch output;
+            gpu_meshing::FaceStats stats; gpu_meshing::Error error;
+        };
+        auto r=std::make_shared<Request>();r->job=job;r->geometry=*job.geometry;r->job.geometry=&r->geometry;
+        r->ops.assign(job.geometry_job.source.ops,job.geometry_job.source.ops+job.geometry_job.source.op_count);
+        r->job.geometry_job.source.ops=r->ops.data();
+        auto invoke=[r,shade,control](std::string& text) {
+            const bool ok=shade(r->job,r->output,r->stats,r->error,control);
+            if (!ok) text=r->error.message;return ok;
+        };
+        std::string text;const bool ok=run?run("finite_material",invoke,text):invoke(text);
+        if (!ok) {error=r->error;if(error.code==gpu_meshing::ErrorCode::None)
+            error={gpu_meshing::ErrorCode::Cancelled,text};return false;}
+        output=std::move(r->output);stats=r->stats;error={};return true;
+    };
+    std::shared_ptr<const part_surface::Prepared> prepared;
+    part_surface::Stats stats;gpu_meshing::Error error;
+    if (!part_surface_cache_) part_surface_cache_=std::make_unique<part_surface::SourceCache>();
+    if (!part_surface::prepare(recipe,abs_cache_root_,queued_project,queued_shade,
+                               prepared,stats,error,cfg_.surface_control,part_surface_cache_.get())) {message=error.message;return false;}
+    const auto publish=cfg_.publish_part_surface;
+    auto invoke=[prepared,publish](std::string& text){return publish(prepared,text);};
+    if (!(run?run("finite_publish",invoke,message):invoke(message))) return false;
+    part_surfaces_[hash]=std::move(prepared);
+    MATTER_LOGI("finite-surface","part=%016llx faces=%u geometry_hits=%u material_hits=%u bytes=%zu\n",
+        static_cast<unsigned long long>(hash),stats.faces,stats.geometry_hits,stats.material_hits,stats.bytes);
+    return true;
+#else
+    (void)hash;(void)bi;message="finite source needs script host";return false;
+#endif
+}
 
 bool LocalProvider::build_accepted_fluid_artifact(
     const hydrology::FluidBakeOutput& output,
@@ -3325,6 +3476,8 @@ bool LocalProvider::prepare_paths(std::string& err) {
 //
 // Requires MATTER_HAVE_SCRIPT_HOST; the #else arm just reports that.
 bool LocalProvider::load_authored_world(std::string& err) {
+    BAKE_SPAN("provider.world-load");
+    authored_world_cache_.clear();
     roots_.clear();
     root_transforms_.clear();
     expand_flags_.clear();
@@ -3336,6 +3489,7 @@ bool LocalProvider::load_authored_world(std::string& err) {
     hydrology_settings_.reset();
     river_network_.reset();
     terrain_collision_.reset();
+    gi_bake_.reset();
     authored_entities_.clear();
 
 #if defined(MATTER_HAVE_SCRIPT_HOST)
@@ -3355,14 +3509,42 @@ bool LocalProvider::load_authored_world(std::string& err) {
 
     matter::WorldDefinition definition;
     matter::WorldLoadError load_error;
-    if (!matter::load_world_definition(load_desc, definition, load_error)) {
+    const bool world_loaded = [&] {
+        // Only this installation's key-validated resolve payload may skip JS.
+        std::string cached = std::move(pending_authored_world_cache_);
+        pending_authored_world_cache_.clear();
+        if (!cached.empty()) {
+            BAKE_SPAN("provider.world-cache-decode");
+            authored_world_cache::Snapshot snapshot;
+            if (authored_world_cache::decode(cached, snapshot) &&
+                authored_world_cache::replay_materials(snapshot)) {
+                definition = std::move(snapshot.world);
+                authored_world_cache_ = std::move(cached);
+                BAKE_COUNT("authored-world-cache-hit", 1);
+                return true;
+            }
+            // load_world_definition resets the dynamic registry on fallback.
+            BAKE_COUNT("authored-world-cache-rejected", 1);
+        }
+        BAKE_SPAN("provider.world-evaluate-validate");
+        return matter::load_world_definition(load_desc, definition, load_error);
+    }();
+    if (!world_loaded) {
         err = "load world definition " + abs_world_path_ + ": " +
               load_error.message;
         if (!load_error.property_path.empty())
             err += " [" + load_error.property_path + "]";
         return false;
     }
-    ProviderWorldDefinition adapted = adapt_world_definition(definition);
+    ProviderWorldDefinition adapted;
+    const bool world_adapted = [&] {
+        BAKE_SPAN("provider.world-adapt");
+        return adapt_world_definition(definition, adapted, err);
+    }();
+    if (!world_adapted) {
+        err = "resolve local lights: " + err;
+        return false;
+    }
     roots_ = std::move(adapted.roots);
     root_transforms_ = std::move(adapted.root_transforms);
     expand_flags_ = std::move(adapted.expand_flags);
@@ -3373,6 +3555,7 @@ bool LocalProvider::load_authored_world(std::string& err) {
     hydrology_settings_ = std::move(adapted.hydrology);
     river_network_ = std::move(adapted.river_network);
     terrain_collision_ = std::move(adapted.terrain_collision);
+    gi_bake_ = adapted.gi_bake;
     authored_entities_ = definition.entities;
     // defineMaterial() already installed these in the global registry while the
     // world script evaluated (chart-VT contract C3); what we keep here is the
@@ -3393,6 +3576,10 @@ bool LocalProvider::load_authored_world(std::string& err) {
     static const std::regex field_method("\\bfield\\s*\\(");
     if (std::regex_search(source_stream.str(), field_method))
         world_module_ = cfg_.world_name;
+    else if (authored_world_cache_.empty()) {
+        BAKE_SPAN("provider.world-cache-capture");
+        authored_world_cache::capture(definition, authored_world_cache_);
+    }
     return true;
 #else
     err = "project world loading requires MATTER_HAVE_SCRIPT_HOST";
@@ -3453,6 +3640,7 @@ void LocalProvider::append_entity_part_roots() {
 }
 
 bool LocalProvider::install_graph(std::string& err, part_graph::BakePolicy policy) {
+    pending_authored_world_cache_.clear();
     // Reset all mutable state at entry so repeated install_graph() calls are
     // idempotent. Unload any previously-loaded tileset slots so a re-connect
     // for a different world doesn't inherit stale atlases. reset_tileset_bindings
@@ -3466,6 +3654,8 @@ bool LocalProvider::install_graph(std::string& err, part_graph::BakePolicy polic
     hit_count_   = 0;
     install_bake_count_ = 0;
     baked_hashes_.clear();
+    lod_plans_installed_.clear();
+    part_surfaces_.clear(); part_surface_cache_.reset(); sources_without_surface_.clear();
 
     // Clear cross-phase state
     roots_.clear();
@@ -3506,6 +3696,7 @@ bool LocalProvider::install_graph(std::string& err, part_graph::BakePolicy polic
     // paths (Task 3 Phase B: no chdir required).
     host_ = std::make_unique<script_host::ScriptHost>();
     host_->set_shared_lib_roots(abs_shared_lib_roots_);
+    bind_solid_source_baker(*host_);
     resolver_ = std::make_unique<part_graph::FileModuleResolver>(*host_, abs_object_roots_);
     // Task 13 (Phase C): create a shared HostBaker that persists beyond install_graph()
     // so ensure_part_baked() can reuse it without reconstructing a ScriptHost.
@@ -3535,8 +3726,9 @@ bool LocalProvider::install_graph(std::string& err, part_graph::BakePolicy polic
                        LocalProviderConfig* c, int* ibc)
             : inner(b), cfg(c), install_bake_count(ibc) {}
         uint64_t resolve_hash(const std::string& source, const Params& params,
-                              const std::vector<uint64_t>& child_hashes) override {
-            return inner.resolve_hash(source, params, child_hashes);
+                              const std::vector<uint64_t>& child_hashes,
+                              std::string* merged_params_out) override {
+            return inner.resolve_hash(source, params, child_hashes, merged_params_out);
         }
         bool cached(uint64_t resolved_hash) override { return inner.cached(resolved_hash); }
         bool bake(const std::string& source, const Params& params,
@@ -3563,6 +3755,14 @@ bool LocalProvider::install_graph(std::string& err, part_graph::BakePolicy polic
                                const std::vector<uint64_t>& child_hashes,
                                uint64_t resolved_hash) override {
             return inner.bake_lod_variants(source, params, child_hashes, resolved_hash);
+        }
+        bool bake_static_lods(const std::string& source, const Params& params,
+                              const std::vector<uint64_t>& child_hashes,
+                              const std::vector<std::string>& child_modules,
+                              const std::vector<std::string>& child_params,
+                              uint64_t resolved_hash) override {
+            return inner.bake_static_lods(source, params, child_hashes,
+                                         child_modules, child_params, resolved_hash);
         }
         // Task 2: forward module notification to HostBaker for transient routing.
         void set_baking_module(const std::string& module) override {
@@ -3599,9 +3799,13 @@ bool LocalProvider::install_graph(std::string& err, part_graph::BakePolicy polic
     if (!cfg_.root_params_json.empty()) {
         Params override_params = params_from_json(cfg_.root_params_json);
         if (!override_params.empty()) {
-            for (size_t ri = 0; ri < entity_part_root_start_; ++ri)
+            for (size_t ri = 0; ri < entity_part_root_start_; ++ri) {
+                if (!cfg_.root_params_module.empty() &&
+                    roots_for_install_[ri].module != cfg_.root_params_module)
+                    continue;
                 for (const auto& kv : override_params)
                     roots_for_install_[ri].params[kv.first] = kv.second;
+            }
         }
     }
 
@@ -3666,7 +3870,8 @@ bool LocalProvider::ensure_part_baked(uint64_t part_hash, std::string& err) {
     }
 
     // Post-order DFS over bake_plan children so children are baked before parents.
-    // Each node: cached() short-circuits; otherwise bake + bake_lod_variants.
+    // Cached geometry still needs its authored representation metadata. Older
+    // deferred bakes could publish a body without its static LOD plan.
     // Visited set prevents double-visiting in a DAG (shared children).
     std::set<uint64_t> visited;
     std::string bake_err;
@@ -3688,38 +3893,48 @@ bool LocalProvider::ensure_part_baked(uint64_t part_hash, std::string& err) {
             if (!bake_subtree(child_hash)) return false;
         }
 
-        // cached() short-circuits — counts as a demand-phase cache hit.
-        if (host_baker_->cached(hash)) {
-            ++hit_count_;
-            return true;
-        }
-
-        // Fire on_part callback (demand phase, total==0 signals indeterminate count).
-        if (cfg_.on_part) {
-            const char* mod = bi.module.empty() ? nullptr : bi.module.c_str();
-            cfg_.on_part(mod, ++install_bake_count_, 0);
-        }
-
-        // Set the baking module for transient routing (must precede bake call)
+        const bool cached = host_baker_->cached(hash);
         host_baker_->set_baking_module(bi.module);
+        if (cached) {
+            ++hit_count_;
+        } else {
+            // Fire on_part callback (demand phase, total==0 signals indeterminate count).
+            if (cfg_.on_part) {
+                const char* mod = bi.module.empty() ? nullptr : bi.module.c_str();
+                cfg_.on_part(mod, ++install_bake_count_, 0);
+            }
 
-        // Bake
-        bool bake_ok = false;
-        try {
-            bake_ok = host_baker_->bake(bi.source, bi.params, bi.child_hashes,
-                                        bi.child_modules, bi.child_params, hash);
-        } catch (std::bad_alloc&) {
-            bake_err = "out of memory baking part: " + bi.module;
-            return false;
-        } catch (std::exception& e) {
-            bake_err = std::string("exception baking part: ") + bi.module + ": " + e.what();
-            return false;
-        } catch (...) {
-            bake_err = "unknown exception baking part: " + bi.module;
-            return false;
+            // Bake
+            bool bake_ok = false;
+            try {
+                bake_ok = host_baker_->bake(bi.source, bi.params, bi.child_hashes,
+                                            bi.child_modules, bi.child_params, hash);
+            } catch (std::bad_alloc&) {
+                bake_err = "out of memory baking part: " + bi.module;
+                return false;
+            } catch (std::exception& e) {
+                bake_err = std::string("exception baking part: ") + bi.module + ": " + e.what();
+                return false;
+            } catch (...) {
+                bake_err = "unknown exception baking part: " + bi.module;
+                return false;
+            }
+            if (!bake_ok) {
+                bake_err = "bake failed for part: " + bi.module;
+                return false;
+            }
         }
-        if (!bake_ok) {
-            bake_err = "bake failed for part: " + bi.module;
+
+        // Authored LOD plans reach the flattener once per hash per session.
+        // A cached node revisited by the publish loop must not rebuild three
+        // QuickJS runtimes to re-derive a plan it already installed.
+        if (cached && lod_plans_installed_.count(hash)) return true;
+
+        // Match graph install: authored parameter rungs and noImpostor must
+        // reach the flattener before a body can become drawable.
+        if (!host_baker_->bake_static_lods(bi.source, bi.params, bi.child_hashes,
+                bi.child_modules, bi.child_params, hash)) {
+            bake_err = "static-lods bake failed for part: " + bi.module;
             return false;
         }
 
@@ -3732,8 +3947,14 @@ bool LocalProvider::ensure_part_baked(uint64_t part_hash, std::string& err) {
         // Track freshly demand-baked parts in baked_count_ and baked_hashes_ so
         // frame_stats().parts_baked reflects demand-phase activity and future
         // reconcile() calls know this hash is freshly written to disk.
-        ++baked_count_;
-        baked_hashes_.insert(hash);
+        if (!ensure_part_surface(hash,bi,bake_err)) return false;
+        if (!cached) {
+            ++baked_count_;
+            baked_hashes_.insert(hash);
+        }
+        // Recorded only once the whole node succeeded: the early-out above
+        // also skips ensure_part_surface, so a failure there still retries.
+        lod_plans_installed_.insert(hash);
 
         return true;
     };
@@ -3784,6 +4005,13 @@ bool LocalProvider::ensure_part_flattened(uint64_t part_hash) {
             return true;
     }
 
+    {
+        const std::string path=root+"/"+part_asset::cache_path_resolved(part_hash);
+        part_asset::StaticPartSnapshot snapshot;matter::PartRenderPolicy policy;
+        if(part_asset::load_static_part_snapshot(path,part_hash,snapshot) &&
+           matter::load_part_render_policy(path,part_hash,snapshot.children.size(),policy) && policy.shared_surfaces)
+            return true; // Preserve the assembly; the renderer shares its local geometry.
+    }
     part_flatten::FlattenResult fr =
         part_flatten::flatten_part(root, part_hash);
     if (fr.ok) {
@@ -4074,6 +4302,204 @@ bool LocalProvider::run_tileset_deferred(
         if (on_tileset_part)
             on_tileset_part(idx, total, root_module.c_str());
 
+        // Declarative high-to-low detail recipes bypass geometry settling and
+        // intermediate part artifacts. Existing detail material/slot APIs remain
+        // the publication path for the final .gtex.
+        {
+            const std::string descriptor_path = resolve_object_path(root_module);
+            std::ifstream descriptor_file(descriptor_path, std::ios::binary);
+            if (descriptor_file) {
+                const std::string descriptor_source{std::istreambuf_iterator<char>(descriptor_file),
+                                                     std::istreambuf_iterator<char>()};
+                script_host::ScriptHost detail_host;
+                detail_host.set_shared_lib_roots(abs_shared_lib_roots_);
+                const std::string merged = detail_host.merged_params_json(
+                    descriptor_source, root_params_json);
+                detail_bake::BrickBondDescriptor descriptor;
+                bool recognized = false;
+                std::string detail_error;
+                if (!detail_bake::parse_brick_bond_descriptor(merged, descriptor,
+                                                              recognized, detail_error)) {
+                    err = "LocalProvider: detail '" + root_module + "': " + detail_error;
+                    return false;
+                }
+                if (recognized) {
+                    const int configured_density = static_cast<int>(std::lround(
+                        descriptor.bond.tile_pixels / (descriptor.bond.pitch_u_m * descriptor.bond.columns)));
+                    if (request.texels_per_meter > 0 && request.texels_per_meter != configured_density) {
+                        err = "brickBondV1 detailDensity must match its fixed512px physical periodic tile";
+                        return false;
+                    }
+                    const auto prepare_start = std::chrono::steady_clock::now();
+                    const uint64_t descriptor_hash = detail_host.resolve_hash(
+                        descriptor_source, root_params_json);
+                    if (!descriptor_hash) { err = "brick bond descriptor identity failed"; return false; }
+                    const std::string source_path = resolve_object_path(descriptor.source_module);
+                    std::ifstream source_file(source_path, std::ios::binary);
+                    if (!source_file) { err = "brick bond source module unavailable: " + descriptor.source_module; return false; }
+                    const std::string source_code{std::istreambuf_iterator<char>(source_file),
+                                                  std::istreambuf_iterator<char>()};
+                    script_host::SolidSourceEvaluationOptions evaluation_options;
+                    evaluation_options.control.cancelled = is_cancelled;
+                    evaluation_options.generation = descriptor_hash;
+                    detail_bake::PreparedBrickBond prepared;
+                    if (!detail_bake::prepare_brick_bond_sources(descriptor, descriptor_hash,
+                            source_code, detail_host, evaluation_options, prepared, detail_error)) {
+                        err = "brick bond source evaluation: " + detail_error; return false;
+                    }
+                    const double prepare_ms = std::chrono::duration<double,std::milli>(
+                        std::chrono::steady_clock::now()-prepare_start).count();
+                    const uint64_t expected = prepared.cache_key;
+                    char key[17]; std::snprintf(key,sizeof(key),"%016llx",static_cast<unsigned long long>(expected));
+                    const std::string gtex_path = abs_cache_root_ + "/brick-bond-" + key + ".gtex";
+                    const bool cache_hit = tileset::gtex_cache_hit(gtex_path,expected);
+                    bool repairing_cache = false;
+                    double projection_ms = 0, projection_wall_ms = 0, gpu_ms = 0, compose_ms = 0, save_ms = 0;
+                    uint32_t face_cache_hits = 0;
+                    double face_cache_read_ms = 0, face_cache_write_ms = 0;
+                    const auto generate_atlas = [&]() -> bool {
+                        std::array<gpu_meshing::FacePatch,16> patches;
+                        const auto projection_start = std::chrono::steady_clock::now();
+                        for (uint32_t seed = 0; seed < 8; ++seed) for (uint32_t side = 0; side < 2; ++side) {
+                            if (is_cancelled && is_cancelled()) { err = "brick bond projection cancelled"; return false; }
+                            // The queued envelope owns the source tape and outputs,
+                            // including when shutdown discards a pending GPU job.
+                            struct ProjectionRequest {
+                                script_host::EvaluatedSolidSource source;
+                                gpu_meshing::FaceJob job;
+                                gpu_meshing::FacePatch patch;
+                                gpu_meshing::FaceStats stats;
+                                gpu_meshing::Error error;
+                            };
+                            auto work = std::make_shared<ProjectionRequest>();
+                            work->source = prepared.sources[seed];
+                            work->job = detail_bake::brick_bond_face_job(descriptor,
+                                work->source.job(),work->source.resolved_hash,side!=0);
+                            const auto project = cfg_.vk_solid_face_project;
+                            const auto control = evaluation_options.control;
+                            // Geometry cache identity excludes the bond palette,
+                            // roughness and placement. Appearance-only rebakes
+                            // therefore reuse these same finite source faces.
+                            char face_key[17];
+                            std::snprintf(face_key,sizeof(face_key),"%016llx",
+                                static_cast<unsigned long long>(gpu_meshing::face_recipe_digest(work->job)));
+                            const std::string face_path = abs_cache_root_ + "/source-face-" + face_key + ".pfac";
+                            const gpu_meshing::SolidFaceProjector queued_project =
+                                [&,work,project](const gpu_meshing::FaceJob&,
+                                    gpu_meshing::FacePatch& output, gpu_meshing::FaceStats& stats,
+                                    gpu_meshing::Error& error, const gpu_meshing::BuildControl& c) {
+                                    if (!project) {
+                                        error={gpu_meshing::ErrorCode::Unavailable,
+                                            "finite face cache miss requires GPU projection service"};
+                                        return false;
+                                    }
+                                    std::string message;
+                                    const bool okay=run_gpu("detail.source_face",[work,project,c](std::string& why) {
+                                        if (!project(work->job,work->patch,work->stats,work->error,c)) {
+                                            why=work->error.message; return false;
+                                        }
+                                        return true;
+                                    },message);
+                                    if (!okay) {
+                                        error=work->error;
+                                        if (error.code==gpu_meshing::ErrorCode::None)
+                                            error={message=="cancelled" || message=="shutdown" ?
+                                                gpu_meshing::ErrorCode::Cancelled : gpu_meshing::ErrorCode::VulkanFailure,message};
+                                        return false;
+                                    }
+                                    output=std::move(work->patch); stats=work->stats; return true;
+                                };
+                            gpu_meshing::FaceCacheStats cached;
+                            gpu_meshing::Error face_error;
+                            if (!gpu_meshing::load_or_project_face(face_path,work->job,queued_project,
+                                    patches[seed*2+side],cached,face_error,control)) {
+                                err="brick bond source preparation: " + face_error.message; return false;
+                            }
+                            face_cache_hits += cached.hit ? 1u : 0u;
+                            face_cache_read_ms += cached.read_ms;
+                            face_cache_write_ms += cached.write_ms;
+                            projection_ms += cached.projection.host_ms;
+                            gpu_ms += cached.projection.gpu_ms;
+                        }
+                        projection_wall_ms = std::chrono::duration<double,std::milli>(
+                            std::chrono::steady_clock::now()-projection_start).count();
+                        if (is_cancelled && is_cancelled()) { err = "brick bond composition cancelled"; return false; }
+                        castle_bake::BrickBondAtlas atlas;
+                        const auto compose_start = std::chrono::steady_clock::now();
+                        if (!castle_bake::build_brick_bond_atlas(patches,descriptor.bond,atlas,detail_error)) {
+                            err = "brick bond composition: " + detail_error; return false;
+                        }
+                        compose_ms = std::chrono::duration<double,std::milli>(
+                            std::chrono::steady_clock::now()-compose_start).count();
+                        // GTex's existing content_hash is a versioned recipe cache
+                        // identity. The composer retains its pixel digest separately.
+                        atlas.header.content_hash = expected;
+                        if (is_cancelled && is_cancelled()) { err = "brick bond publication cancelled"; return false; }
+                        const auto save_start = std::chrono::steady_clock::now();
+                        if (!castle_bake::save_brick_bond_atlas(gtex_path,atlas,detail_error)) {
+                            err = "brick bond final atlas save: " + detail_error; return false;
+                        }
+                        save_ms = std::chrono::duration<double,std::milli>(
+                            std::chrono::steady_clock::now()-save_start).count();
+                        return true;
+                    };
+                    if (is_cancelled && is_cancelled()) { err = "brick bond slot publication cancelled"; return false; }
+                    const int slot = acquire_slot(expected,root_module);
+                    if (slot < 0) { err = "brick bond has no available detail slot"; return false; }
+                    double load_ms = 0;
+                    const auto load = cfg_.vk_tileset_load;
+                    auto backend_failed = std::make_shared<std::atomic<bool>>(false);
+                    const auto upload_atlas = [&]() -> bool {
+                        backend_failed->store(false);
+                        const auto load_start = std::chrono::steady_clock::now();
+                        const bool okay = run_gpu("detail.load_slot",[load,slot,gtex_path,backend_failed,
+                            materials=request.materials,is_cancelled](std::string& message) {
+                        if (is_cancelled && is_cancelled()) { message="brick bond slot cancelled"; return false; }
+                        if (!load) { message="brick bond requires atlas load backend"; return false; }
+                        if (!load(slot,gtex_path,message)) {
+                            backend_failed->store(true);
+                            for (int material : materials) MaterialRegistrySetGroundTilesetSlot(material,-1);
+                            return false;
+                        }
+                        if (is_cancelled && is_cancelled()) {
+                            for (int material : materials) MaterialRegistrySetGroundTilesetSlot(material,-1);
+                            message="brick bond slot cancelled after upload"; return false;
+                        }
+                        for (int material : materials) MaterialRegistrySetGroundTilesetSlot(material,slot);
+                        return true;
+                        },detail_error);
+                        load_ms += std::chrono::duration<double,std::milli>(
+                            std::chrono::steady_clock::now()-load_start).count();
+                        if (!okay) err = "brick bond atlas load/upload: " + detail_error;
+                        return okay;
+                    };
+                    const bool loaded = load_detail_with_cache_recovery(cache_hit,generate_atlas,
+                        upload_atlas,[&]() {
+                            if (!backend_failed->load() || (is_cancelled && is_cancelled())) return false;
+                            MATTER_LOGW("brick-bond", "cached atlas load failed; rebuilding once path=%s reason=%s",
+                                gtex_path.c_str(),detail_error.c_str());
+                            return true;
+                        },repairing_cache);
+                    if (!loaded) {
+                        tileset_slots_.forget(expected);
+                        for (int material : request.materials) MaterialRegistrySetGroundTilesetSlot(material,-1);
+                        if (repairing_cache) err = "brick bond failed after one cache rebuild attempt: " + err;
+                        return false;
+                    }
+                    tileset_slots_.bind(expected,request.materials);
+                    err.clear();
+                    ++baked_tileset_count_;
+                    MATTER_LOGI("brick-bond",
+                        "module=%s cache_hit=%d cache_rebuilt=%d sources=8 faces=16 source_bundles=0 source_meshes=0 prepare_ms=%.3f source_eval_ms=%.3f projection_wall_ms=%.3f projection_host_ms=%.3f projection_gpu_ms=%.3f compose_ms=%.3f save_compress_ms=%.3f load_upload_ms=%.3f face_cache_hits=%u face_cache_read_ms=%.3f face_cache_write_ms=%.3f path=%s",
+                        root_module.c_str(),cache_hit&&!repairing_cache?1:0,repairing_cache?1:0,prepare_ms,prepared.source_evaluation_ms,
+                        projection_wall_ms,projection_ms,gpu_ms,compose_ms,save_ms,load_ms,
+                        face_cache_hits,face_cache_read_ms,face_cache_write_ms,gtex_path.c_str());
+                    if (on_tileset_part) on_tileset_part(idx+1,total,root_module.c_str());
+                    continue;
+                }
+            }
+        }
+
         // Two arms, no preprocessor gate (spec §I.7): bake-capable when a
         // Vulkan bake callback is bound, load-only when it is not.
         const bool can_bake = static_cast<bool>(cfg_.vk_tileset_bake);
@@ -4240,6 +4666,8 @@ bool LocalProvider::connect(WorldManifest& out, std::string& err) {
     // After compose_world (which now skips flatten/refs in the async path),
     // eagerly flatten all placed roots and expand FlatInstanceRefs here.
     if (!install_graph(err, part_graph::BakePolicy::All)) return false;
+    for (const auto& item:ir_.bake_plan)
+        if (!ensure_part_surface(item.first,item.second,err)) return false;
     if (!compose_world(out, err)) return false;
 
     // Eager flatten: every placed root gets a .flat.part so synchronous callers
@@ -4447,9 +4875,11 @@ bool LocalProvider::restore_from_cache(
     const part_graph_snapshot::Snapshot&              snapshot,
     const std::unordered_map<uint64_t, part_graph::BakeInputs>& bake_plan,
     const std::vector<uint64_t>&                      root_hashes,
-    std::string& err)
+    std::string& err, const std::string& authored_world)
 {
 #if defined(MATTER_HAVE_SCRIPT_HOST)
+    BAKE_SPAN("provider.restore-cache");
+    pending_authored_world_cache_ = authored_world;
     // Reset mutable state (mirrors the preamble of install_graph()).
     reset_tileset_bindings();
     baked_tileset_count_ = 0;
@@ -4457,6 +4887,8 @@ bool LocalProvider::restore_from_cache(
     hit_count_    = 0;
     install_bake_count_ = 0;
     baked_hashes_.clear();
+    lod_plans_installed_.clear();
+    part_surfaces_.clear(); part_surface_cache_.reset(); sources_without_surface_.clear();
     roots_.clear();
     root_transforms_.clear();
     expand_flags_.clear();
@@ -4470,10 +4902,13 @@ bool LocalProvider::restore_from_cache(
 
     if (!prepare_paths(err)) return false;
 
+    {
+    BAKE_SPAN("provider.restore-host");
     // Initialise ScriptHost + HostBaker so ensure_part_baked() can re-bake
     // individual cache-miss parts without running a global resolve.
     host_ = std::make_unique<script_host::ScriptHost>();
     host_->set_shared_lib_roots(abs_shared_lib_roots_);
+    bind_solid_source_baker(*host_);
     resolver_ = std::make_unique<part_graph::FileModuleResolver>(*host_, abs_object_roots_);
     host_baker_ = std::make_unique<part_graph::HostBaker>(*host_, abs_cache_root_);
     // W3: thread the optional per-rung bake observer (null in production).
@@ -4482,6 +4917,8 @@ bool LocalProvider::restore_from_cache(
     // Task 2: apply transient settings to the baker (if set_transient_modules was called)
     if (!transient_modules_.empty()) {
         host_baker_->set_transient(&transient_modules_, transient_dir_);
+    }
+
     }
 
     // Reload the authored world input to populate roots/flags for the cached
@@ -4510,6 +4947,9 @@ bool LocalProvider::restore_from_cache(
     // re-evaluates its own script — and tileset scripts do not read
     // root_params_json.
 
+    BAKE_SPAN("provider.restore-payload");
+    BAKE_COUNT("bake-plan-entries", bake_plan.size());
+    BAKE_COUNT("snapshot-nodes", snapshot.nodes.size());
     // Restore cache payload into ir_.
     ir_.ok          = true;
     ir_.root_hashes = root_hashes;

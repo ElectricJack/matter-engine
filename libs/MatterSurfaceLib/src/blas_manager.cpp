@@ -415,6 +415,44 @@ void BLASManager::adopt_from(const BLASManager& staged,
     }
 }
 
+// Transfer the allocations prepared by a worker instead of allocating/copying
+// them again on the publishing thread. BVH owns pointers into BvhMesh; moving
+// their unique_ptrs together preserves the pointee addresses and those links.
+void BLASManager::consume_from(BLASManager& staged,
+                              std::unordered_map<BLASHandle, BLASHandle>& remap) {
+    remap.clear();
+    if (&staged == this) return;
+    remap.reserve(staged.entries_.size());
+    for (auto& src : staged.entries_) {
+        if (!src || src->triangles.empty()) continue;
+        const auto previous = src->handle;
+        const TriEx* extra = src->tri_extra.size() == src->triangles.size()
+            ? src->tri_extra.data() : nullptr;
+        const auto existing = find_existing_blas(src->triangles.data(),
+            static_cast<int>(src->triangles.size()), src->hash, extra);
+        if (existing != INVALID_BLAS_HANDLE) {
+            entries_[handle_to_index_.at(existing)]->ref_count += src->ref_count;
+            remap[previous] = existing;
+            continue;
+        }
+        if (!src->bvh || !src->bvh->bvhNode || !src->bvh->nodesUsed || !src->bvh->triIdx)
+            continue;
+        const auto handle = next_handle_++;
+        const auto index = entries_.size();
+        hash_to_entry_.emplace(src->hash, index);
+        handle_to_index_.emplace(handle, index);
+        src->handle = handle;
+        entries_.push_back(std::move(src));
+        remap[previous] = handle;
+        mark_dirty();
+    }
+    staged.entries_.clear();
+    staged.hash_to_entry_.clear();
+    staged.handle_to_index_.clear();
+    staged.next_handle_ = 1;
+    staged.mark_dirty();
+}
+
 // Drop ONE reference. The entry survives while other owners remain; the last
 // release erases it, freeing its mesh, BVH and triangle copies. An unknown or
 // invalid handle is silently ignored (double-release is not detected).

@@ -1,4 +1,5 @@
 #include "part_asset_v2.h"
+#include "part_render_policy.h"
 #include "part_bundle.h"   // M4: an artifact is a bundle section
 #include "../../libs/MatterSurfaceLib/include/blas_manager.hpp"
 #include "../../libs/MatterSurfaceLib/include/tlas_manager.hpp"
@@ -7,9 +8,23 @@
 #include <cstdint>
 #include <cstring>
 #include <vector>
+#include <filesystem>
 #include <sys/stat.h>
 #ifdef _WIN32
 #include <direct.h>
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef NOGDI
+#define NOGDI
+#endif
+#ifndef NOUSER
+#define NOUSER
+#endif
+#include <windows.h>
 #endif
 
 #include "check.h"
@@ -233,19 +248,124 @@ static void test_atomic_replace_preserves_target_on_failure() {
     write_text_file(target, "old");
     CHECK(!replace_file_atomic(source, target),
           "atomic replace reports missing-source failure");
+    FileReplaceDiagnostics missing;
+    CHECK(replace_file_atomic_detailed(source, target, &missing) ==
+              FileReplaceOutcome::NotReplaced,
+          "detailed atomic replace reports missing-source failure");
+    CHECK(missing.os_error != 0, "failed atomic replace reports the OS error");
+    CHECK(missing.attempts == 1,
+          "a missing source is a hard failure, not retried as transient");
     std::vector<uint8_t> old = read_file(target);
     CHECK(std::string(old.begin(), old.end()) == "old",
           "failed atomic replace preserves old target bytes");
 
     write_text_file(source, "new");
-    CHECK(replace_file_atomic(source, target),
+    FileReplaceDiagnostics published;
+    CHECK(replace_file_atomic_detailed(source, target, &published) ==
+              FileReplaceOutcome::ReplacedDurable,
           "atomic replace succeeds over existing target");
+    CHECK(published.attempts == 1 && published.os_error == 0,
+          "an uncontended replace takes one attempt and reports no error");
     std::vector<uint8_t> replaced = read_file(target);
     CHECK(std::string(replaced.begin(), replaced.end()) == "new",
           "successful atomic replace publishes complete new bytes");
     CHECK(read_file(source).empty(), "successful atomic replace consumes source");
     remove(target); remove(source);
 }
+
+#ifdef _WIN32
+// Hold `path` open the way a virus scanner or an in-process bundle reader
+// (fopen "rb") does: without FILE_SHARE_DELETE, so MoveFileEx cannot replace
+// it for as long as the handle lives.
+static HANDLE hold_without_share_delete(const char* path) {
+    return CreateFileA(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                       nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+}
+
+static bool is_transient_error(uint32_t error) {
+    return error == ERROR_SHARING_VIOLATION || error == ERROR_ACCESS_DENIED ||
+           error == ERROR_LOCK_VIOLATION;
+}
+
+struct TransientHolder {
+    HANDLE handle = INVALID_HANDLE_VALUE;
+    uint32_t retries = 0;
+    uint32_t first_error = 0;
+    bool release_on_first_retry = false;
+};
+
+static void on_replace_retry(uint32_t attempt, uint32_t os_error, void* user) {
+    TransientHolder& holder = *static_cast<TransientHolder*>(user);
+    if (holder.retries++ == 0) holder.first_error = os_error;
+    if (holder.release_on_first_retry && attempt == 0 &&
+        holder.handle != INVALID_HANDLE_VALUE) {
+        CloseHandle(holder.handle);
+        holder.handle = INVALID_HANDLE_VALUE;
+    }
+}
+
+// crisp-beacon: a cold CastleMasonry bake failed a whole part because one
+// bundle publish hit a sharing violation. The replace must ride out a holder
+// that lets go, and must still fail (bounded, target and source intact) when
+// the holder never does.
+static void test_atomic_replace_retries_transient_holder() {
+    using namespace part_asset;
+    const char* target = "test_atomic_replace_retry.target";
+    const char* source = "test_atomic_replace_retry.source";
+    remove(target); remove(source);
+    write_text_file(target, "old");
+    write_text_file(source, "new");
+
+    TransientHolder brief;
+    brief.handle = hold_without_share_delete(target);
+    brief.release_on_first_retry = true;
+    CHECK(brief.handle != INVALID_HANDLE_VALUE,
+          "test can hold the replace target open");
+    set_replace_file_atomic_test_retry_hook(on_replace_retry, &brief);
+    FileReplaceDiagnostics retried;
+    const FileReplaceOutcome retried_outcome =
+        replace_file_atomic_detailed(source, target, &retried);
+    set_replace_file_atomic_test_retry_hook(nullptr, nullptr);
+    if (brief.handle != INVALID_HANDLE_VALUE) CloseHandle(brief.handle);
+    CHECK(is_transient_error(brief.first_error),
+          "a held target fails the rename with a transient error");
+    CHECK(retried_outcome == FileReplaceOutcome::ReplacedDurable,
+          "replace succeeds once the transient holder lets go");
+    CHECK(retried.attempts == 2 && brief.retries == 1,
+          "a holder released after the first failure costs exactly one retry");
+    CHECK(retried.os_error == 0, "a replace that recovered reports no error");
+    std::vector<uint8_t> after_retry = read_file(target);
+    CHECK(std::string(after_retry.begin(), after_retry.end()) == "new",
+          "the retried replace publishes the new bytes");
+    CHECK(read_file(source).empty(), "the retried replace consumes the source");
+
+    write_text_file(source, "newer");
+    TransientHolder stuck;
+    stuck.handle = hold_without_share_delete(target);
+    CHECK(stuck.handle != INVALID_HANDLE_VALUE,
+          "test can hold the replace target open for the whole call");
+    set_replace_file_atomic_test_retry_hook(on_replace_retry, &stuck);
+    FileReplaceDiagnostics exhausted;
+    const FileReplaceOutcome exhausted_outcome =
+        replace_file_atomic_detailed(source, target, &exhausted);
+    set_replace_file_atomic_test_retry_hook(nullptr, nullptr);
+    if (stuck.handle != INVALID_HANDLE_VALUE) CloseHandle(stuck.handle);
+    CHECK(exhausted_outcome == FileReplaceOutcome::NotReplaced,
+          "replace gives up while the holder never lets go");
+    CHECK(exhausted.attempts == kReplaceFileMaxAttempts &&
+              stuck.retries == kReplaceFileMaxAttempts - 1,
+          "the transient retry budget is bounded");
+    CHECK(is_transient_error(exhausted.os_error),
+          "an exhausted retry reports the transient OS error");
+    std::vector<uint8_t> kept = read_file(target);
+    CHECK(std::string(kept.begin(), kept.end()) == "new",
+          "an exhausted retry leaves the previous target intact");
+    std::vector<uint8_t> unconsumed = read_file(source);
+    CHECK(std::string(unconsumed.begin(), unconsumed.end()) == "newer",
+          "an exhausted retry leaves the source for the caller");
+    remove(target); remove(source);
+}
+#endif
 
 static void test_save_v2_header() {
     using namespace part_asset;
@@ -913,8 +1033,82 @@ static void test_static_lod_plan_sidecar() {
           "load_static_lod_plan returns false for a missing file");
 }
 
+static void count_bundle_publishes(const char *phase, double, size_t, uint32_t, void *user) {
+    if (std::strcmp(phase, "bundle_atomic_replace") == 0)
+        ++*static_cast<int *>(user);
+}
+
+static void test_static_multi_section_publish() {
+    using namespace part_asset;
+    const std::string a = std::string(kCacheRoot) + "/atomic-static.bundle";
+    const std::string b = std::string(kCacheRoot) + "/sequential-static.bundle";
+    std::filesystem::remove(a);
+    std::filesystem::remove(b);
+    BLASManager blas;
+    TLASManager tlas(8);
+    BLASHandle ha, hb;
+    build_scene(blas, tlas, ha, hb);
+    const auto kids = sample_children();
+    const auto lods = sample_lods();
+    const uint64_t hash = 0x715AFF;
+    matter::PartRenderPolicy policy;
+    policy.ray_traced = false;
+    policy.child_overrides = {matter::RayTracingOverride::Disabled,
+                              matter::RayTracingOverride::Enabled};
+    const uint8_t sentinel[] = {1, 9, 4};
+    CHECK(
+        part_bundle::write_section(a, hash, part_bundle::kSectionStages, sentinel, sizeof sentinel),
+        "seed unrelated section A");
+    CHECK(
+        part_bundle::write_section(b, hash, part_bundle::kSectionStages, sentinel, sizeof sentinel),
+        "seed unrelated section B");
+    CHECK(matter::save_part_render_policy(b, hash, policy), "sequential policy publish");
+    CHECK(save_v2(b, blas, tlas, kids.data(), kids.size(), lods, {}, hash),
+          "sequential geometry publish");
+    int publishes = 0;
+    part_bundle::set_write_observer(count_bundle_publishes, &publishes);
+    const bool saved =
+        save_v2_with_render_policy(a, blas, tlas, kids.data(), kids.size(), lods, {}, hash, policy);
+    part_bundle::set_write_observer(nullptr);
+    CHECK(saved && publishes == 1, "static policy and geometry use exactly one durable publish");
+    const auto before = read_file(a.c_str());
+    CHECK(before == read_file(b.c_str()),
+          "multi-section file byte-identical to sequential writes including unrelated section");
+    matter::PartRenderPolicy read_policy;
+    CHECK(matter::load_part_render_policy(a, hash, kids.size(), read_policy) &&
+              !read_policy.ray_traced && read_policy.child_overrides == policy.child_overrides,
+          "policy round-trips with geometry");
+    BLASManager decoded;
+    TLASManager decoded_tlas(8);
+    std::vector<ChildInstance> decoded_kids;
+    LodLevels decoded_lods;
+    CHECK(load_v2(a, hash, decoded, decoded_tlas, decoded_kids, decoded_lods) &&
+              decoded_kids.size() == kids.size(),
+          "geometry and children round-trip from atomic bundle");
+    auto bad = policy;
+    bad.child_overrides.pop_back();
+    CHECK(!save_v2_with_render_policy(a, blas, tlas, kids.data(), kids.size(), lods, {}, hash, bad),
+          "mismatched policy count rejects before publish");
+    const part_bundle::SectionUpdate duplicate[] = {{7, sentinel, 1}, {7, sentinel, 2}};
+    CHECK(!part_bundle::write_sections(a, hash, duplicate, 2), "duplicate input tags reject");
+    CHECK(read_file(a.c_str()) == before, "invalid updates preserve complete prior artifact");
+    // Force the same production fopen failure as an inaccessible candidate,
+    // without relying on privileges, timing, or a synthetic mutation callback.
+    std::filesystem::create_directory(a + ".tmp");
+    CHECK(!save_v2_with_render_policy(a, blas, tlas, kids.data(), kids.size(), lods, {}, hash,
+                                      policy),
+          "candidate open failure rejects atomic pair");
+    CHECK(read_file(a.c_str()) == before, "candidate I/O failure preserves both prior sections");
+    std::filesystem::remove(a + ".tmp");
+    std::filesystem::remove(a);
+    std::filesystem::remove(b);
+}
+
 int main() {
     test_atomic_replace_preserves_target_on_failure();
+#ifdef _WIN32
+    test_atomic_replace_retries_transient_holder();
+#endif
     test_cache_path_resolved();
     test_resolved_hash();
     test_resolved_hash_carries_version_vector();
@@ -930,6 +1124,7 @@ int main() {
     test_flatten_hints_round_trip();
     test_bundle_is_order_independent();
     test_static_lod_plan_sidecar();
+    test_static_multi_section_publish();
     if (g_failures == 0) printf("All part_asset_v2 tests passed\n");
     return g_failures == 0 ? 0 : 1;
 }
