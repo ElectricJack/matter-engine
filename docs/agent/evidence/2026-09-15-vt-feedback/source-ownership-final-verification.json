@@ -1,0 +1,17 @@
+{
+  "source_manifest": "source-ownership-green-source.json",
+  "source_files": 41,
+  "binaries": 3,
+  "changed_inputs": [],
+  "native_process_census_command": [
+    "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+    "-NoProfile",
+    "-NonInteractive",
+    "-Command",
+    "Get-Process | Where-Object { $_.ProcessName -match \"^(editor|vulkan_smoke_tests|vt_compositor_tests|world_tracer_tests|cmake|ninja|cl|link|cdb)$\" } | Select-Object Id,ProcessName | ConvertTo-Json -Compress"
+  ],
+  "native_process_census_exit": 0,
+  "native_process_census_stdout": "",
+  "native_process_census_stderr": "",
+  "full_vt_acceptance": false
+}

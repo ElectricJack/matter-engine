@@ -1,0 +1,32 @@
+{
+  "runs": [
+    {
+      "mode": "provider",
+      "command": "$env:MATTER_VK_VALIDATION=\"1\"; $env:TMP=\"$env:LOCALAPPDATA\\Temp\"; $env:TEMP=$env:TMP; $env:MATTER_VK_SMOKE_MODE=\"provider\"; & \"./MatterEditor/build/cmake/windows-msvc/relwithdebinfo/part_surface_provider_tests.exe\"; exit $LASTEXITCODE",
+      "exit": 0,
+      "seconds": 1.0976690120005514,
+      "binary_sha256": "b4b74afda918b87cfeaf26be2308a6f610744391f1dc7c2879abad78234b547e",
+      "binary_unchanged": true,
+      "source_changes": [],
+      "all_pass": true,
+      "zero_validation_errors": true,
+      "skipped_rt": false,
+      "log_sha256": "624182f85874494b37b89a9169fabc35266bdcded29abd51b28b10890b49f633",
+      "passed": true
+    },
+    {
+      "mode": "mountain",
+      "command": "$env:MATTER_VK_VALIDATION=\"1\"; $env:TMP=\"$env:LOCALAPPDATA\\Temp\"; $env:TEMP=$env:TMP; $env:MATTER_VK_SMOKE_MODE=\"mountain\"; & \"./../../MatterEditor/build/cmake/windows-msvc/relwithdebinfo/world_definition_tests.exe\" --mountain-material; exit $LASTEXITCODE",
+      "exit": 0,
+      "seconds": 2.1500615190016106,
+      "binary_sha256": "488326e2785f95551c385a7291477129ba16a81b34c56d2673e5d2d7a8e2253e",
+      "binary_unchanged": true,
+      "source_changes": [],
+      "all_pass": true,
+      "zero_validation_errors": true,
+      "skipped_rt": false,
+      "log_sha256": "29c60da6a86886c44cdc3a8bff0699c8d35576f6d096536f8908df814abc4876",
+      "passed": true
+    }
+  ]
+}

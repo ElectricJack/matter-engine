@@ -1,0 +1,18 @@
+{
+  "runs": [
+    {
+      "mode": "static-surface",
+      "command": "$env:MATTER_VK_VALIDATION=\"1\"; $env:TMP=\"$env:LOCALAPPDATA\\Temp\"; $env:TEMP=$env:TMP; $env:MATTER_VK_SMOKE_MODE=\"static-surface\"; $env:MATTER_VT_PROP_TEXELS_PER_METER=$null; & \"./build/cmake/windows-msvc/relwithdebinfo/static_surface_vt_tests.exe\"; exit $LASTEXITCODE",
+      "exit": 1,
+      "seconds": 0.40630525301094167,
+      "binary_sha256": "58fb626f27ecca3fed4bf66ab275ea5f710a0ff6196a593afbdd3f87594f17d6",
+      "binary_unchanged": true,
+      "source_changes": [],
+      "all_pass": false,
+      "zero_validation_errors": false,
+      "skipped_rt": false,
+      "log_sha256": "ad241b9ecf0da72ec356f3bf02deb04c9238e2bf3f68ede237a239f53456619f",
+      "passed": false
+    }
+  ]
+}

@@ -1,0 +1,94 @@
+Internal ctest changing into directory: D:/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-1/MatterEditor/build/cmake/windows-msvc/relwithdebinfo
+Test project D:/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-1/MatterEditor/build/cmake/windows-msvc/relwithdebinfo
+      Start  12: vt_residency_tests
+ 1/23 Test  #12: vt_residency_tests ...............   Passed    0.45 sec
+      Start  40: geometry_hierarchy_tests
+ 2/23 Test  #40: geometry_hierarchy_tests .........   Passed    5.21 sec
+      Start  41: geometry_cut_tests
+ 3/23 Test  #41: geometry_cut_tests ...............   Passed    0.32 sec
+      Start  44: world_definition_tests
+ 4/23 Test  #44: world_definition_tests ...........   Passed  286.27 sec
+      Start  45: surface_field_tests
+ 5/23 Test  #45: surface_field_tests ..............   Passed    0.22 sec
+      Start  47: sector_lod_tests
+ 6/23 Test  #47: sector_lod_tests .................   Passed    0.37 sec
+      Start  48: sector_bake_tests
+ 7/23 Test  #48: sector_bake_tests ................   Passed    2.62 sec
+      Start  49: gi_bake_tests
+ 8/23 Test  #49: gi_bake_tests ....................   Passed    1.28 sec
+      Start  75: partstore_tests
+ 9/23 Test  #75: partstore_tests ..................   Passed    2.14 sec
+      Start  78: world_tracer_tests
+10/23 Test  #78: world_tracer_tests ...............   Passed    0.30 sec
+      Start  80: obj_export_tests
+11/23 Test  #80: obj_export_tests .................   Passed    0.38 sec
+      Start  81: obj_export_golden_tests
+12/23 Test  #81: obj_export_golden_tests ..........***Failed   26.27 sec
+-- CastleStone
+FAIL: golden CastleStone: digest differs
+  the part's RESOLVED HASH changed (resolved_hash 8e3a0967ba2d2dc4 -> resolved_hash 730a3217c9a13581): the bake moved, not the
+  exporter. Regenerate with MATTER_EXPORT_GOLDEN_UPDATE=1 and review the
+  new digest.
+  line 2: want 'resolved_hash 8e3a0967ba2d2dc4' got 'resolved_hash 730a3217c9a13581'
+  line 6: want 'vertices 2977' got 'vertices 45506'
+  line 7: want 'triangles 3382' got 'triangles 54054'
+  line 8: want 'charts 24' got 'charts 223'
+  line 12: want 'material mat_8 8 3382' got 'material mat_8 8 54054'
+  line 13: want 'map albedo a75ebc4d79f7c7c2' got 'map albedo 0473d9caa5d6987e'
+  line 14: want 'map normal 2ada090620e8762a' got 'map normal 281757a9a9886a07'
+  line 15: want 'map roughness 9ce14626a3a068e4' got 'map roughness 2ced7296228f8a00'
+-- CastlePavingSlab
+FAIL: golden CastlePavingSlab: digest differs
+  the part's RESOLVED HASH changed (resolved_hash 6fc0e819cd769001 -> resolved_hash b57b33e2797b2792): the bake moved, not the
+  exporter. Regenerate with MATTER_EXPORT_GOLDEN_UPDATE=1 and review the
+  new digest.
+  line 2: want 'resolved_hash 6fc0e819cd769001' got 'resolved_hash b57b33e2797b2792'
+-- AlpineFlower
+FAIL: golden AlpineFlower: digest differs
+  the part's RESOLVED HASH changed (resolved_hash 9fd57fdb5699f695 -> resolved_hash 62dd2578800bd70e): the bake moved, not the
+  exporter. Regenerate with MATTER_EXPORT_GOLDEN_UPDATE=1 and review the
+  new digest.
+  line 2: want 'resolved_hash 9fd57fdb5699f695' got 'resolved_hash 62dd2578800bd70e'
+-- World.exports (DSL binding)
+3 FAILURE(S)
+
+      Start  82: eval_world_tests
+13/23 Test  #82: eval_world_tests .................   Passed    0.90 sec
+      Start  83: vertex_cache_order_tests
+14/23 Test  #83: vertex_cache_order_tests .........   Passed    0.34 sec
+      Start  92: terrain_field_tests
+15/23 Test  #92: terrain_field_tests ..............   Passed    0.15 sec
+      Start  93: terrain_mesher_tests
+16/23 Test  #93: terrain_mesher_tests .............   Passed    1.86 sec
+      Start 134: shader_source_tests
+17/23 Test #134: shader_source_tests ..............Exit code 0xc0000409
+***Exception:   0.43 sec
+Assertion failed: cull_shader.find("if (instance.water_pad0 != 0u) return;") != std::string::npos, file D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-1\MatterEngine3\tests\shader_source_tests.cpp, line 88
+
+      Start 135: geometry_runtime_tests
+18/23 Test #135: geometry_runtime_tests ...........   Passed    0.52 sec
+      Start 136: geometry_runtime_gpu_tests
+19/23 Test #136: geometry_runtime_gpu_tests .......   Passed    1.08 sec
+      Start 139: geometry_pages_gpu_tests
+20/23 Test #139: geometry_pages_gpu_tests .........   Passed   17.96 sec
+      Start 143: vt_surface_material_tests
+21/23 Test #143: vt_surface_material_tests ........   Passed  314.21 sec
+      Start 149: smoke_vt_normal_frame
+22/23 Test #149: smoke_vt_normal_frame ............   Passed   95.92 sec
+      Start 162: viewer_graph_tests
+23/23 Test #162: viewer_graph_tests ...............   Passed   13.68 sec
+
+91% tests passed, 2 tests failed out of 23
+
+Label Time Summary:
+compiler-policy    =  13.68 sec*proc (1 test)
+cpu                = 330.02 sec*proc (18 tests)
+vulkan             = 429.17 sec*proc (4 tests)
+
+Total Test time (real) = 772.92 sec
+
+The following tests FAILED:
+	 81 - obj_export_golden_tests (Failed)                  cpu
+	134 - shader_source_tests (Exit code 0xc0000409
+Errors while running CTest
+)       cpu
