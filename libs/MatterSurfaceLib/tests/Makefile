@@ -113,7 +113,7 @@ run-blas: $(BLAS_TARGET)
 # C sources must be compiled with the C compiler so their symbols stay
 # unmangled (cell.cpp references GenerateMesh et al. via extern "C").
 CELL_TARGET = build/cell_bounds_tests
-CELL_CPP = cell_bounds_tests.cpp ../src/cell.cpp ../src/mesh_simplifier.cpp \
+CELL_CPP = cell_bounds_tests.cpp ../src/cell.cpp ../src/mesh_simplifier.cpp ../src/mesh_indexed.cpp \
            ../src/blas_manager.cpp $(SQL)/src/bvh.cpp $(SQL)/src/bvh_analyzer.cpp \
            ../src/mesh_build_utils.cpp ../src/meshing_algorithm.cpp \
            ../src/marching_cubes_algorithm.cpp ../src/oriented_cube_algorithm.cpp \
@@ -136,7 +136,7 @@ run-cell: $(CELL_TARGET)
 # needs the SurfaceLib C sources + the simplifier. C sources via gcc to keep
 # their symbols unmangled for the extern "C" decls.
 CONT_TARGET = build/mesh_continuity_tests
-CONT_CPP = mesh_continuity_tests.cpp ../src/mesh_simplifier.cpp
+CONT_CPP = mesh_continuity_tests.cpp ../src/mesh_simplifier.cpp ../src/mesh_indexed.cpp
 CONT_C   = ../src/surface.c ../src/fat_primitive.c \
            $(SQL)/src/spatial_hash.c $(MEMLIB)/src/mem_pool.c
 
@@ -198,7 +198,7 @@ run-ao: $(AO_TARGET)
 # Mirrors the CELL target's C-source handling (gcc for unmangled extern "C")
 # plus the worker pool. Never calls UploadMesh, so no GL context is needed.
 PAR_TARGET = build/parallel_mesh_tests
-PAR_CPP = parallel_mesh_tests.cpp ../src/cell.cpp ../src/mesh_simplifier.cpp \
+PAR_CPP = parallel_mesh_tests.cpp ../src/cell.cpp ../src/mesh_simplifier.cpp ../src/mesh_indexed.cpp \
           ../src/blas_manager.cpp $(SQL)/src/bvh.cpp $(SQL)/src/bvh_analyzer.cpp \
           ../src/mesh_worker_pool.cpp ../src/mesh_build_utils.cpp \
           ../src/meshing_algorithm.cpp ../src/marching_cubes_algorithm.cpp \
