@@ -1,0 +1,77 @@
+{
+  "elapsedMs": 12098.229872,
+  "catalog": [
+    {
+      "id": "rock",
+      "triangles": 72,
+      "objectPixels": 63992
+    },
+    {
+      "id": "tree",
+      "triangles": 480,
+      "objectPixels": 26913
+    },
+    {
+      "id": "pillar",
+      "triangles": 212,
+      "objectPixels": 93583
+    },
+    {
+      "id": "arch",
+      "triangles": 792,
+      "objectPixels": 78032
+    },
+    {
+      "id": "gear",
+      "triangles": 352,
+      "objectPixels": 84561
+    },
+    {
+      "id": "vase",
+      "triangles": 384,
+      "objectPixels": 75039
+    },
+    {
+      "id": "chair",
+      "triangles": 156,
+      "objectPixels": 86296
+    },
+    {
+      "id": "crystals",
+      "triangles": 168,
+      "objectPixels": 42657
+    },
+    {
+      "id": "stairs",
+      "triangles": 60,
+      "objectPixels": 74230
+    },
+    {
+      "id": "chain",
+      "triangles": 1080,
+      "objectPixels": 23942
+    },
+    {
+      "id": "terrain",
+      "triangles": 192,
+      "objectPixels": 91643
+    },
+    {
+      "id": "facade",
+      "triangles": 252,
+      "objectPixels": 107746
+    },
+    {
+      "id": "bracket",
+      "triangles": 1480,
+      "objectPixels": 107744
+    }
+  ],
+  "workers": [
+    "http://127.0.0.1:46821/workshop/matter-procedural-wasm/worker.mjs"
+  ],
+  "errors": [],
+  "wasmRequests": [
+    "/workshop/matter-procedural-wasm/matter_geometry_wasm.wasm"
+  ]
+}

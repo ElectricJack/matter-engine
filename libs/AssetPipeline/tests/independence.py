@@ -13,20 +13,28 @@ def main():
     parser.add_argument("--build-root", type=Path, required=True)
     args = parser.parse_args()
     repo = Path(__file__).resolve().parents[3]
+    adapters_off = ["-DMATTER_ASSET_STORAGE=OFF", "-DMATTER_ASSET_GLTF=OFF", "-DMATTER_ASSET_LEGACY=OFF"]
+    kernels = {"matter_asset_lod_kernels", "matter_geometry"}
+    # (name, module, required targets, options, extra forbidden targets)
+    surface_off = ["-DMATTER_ASSET_SURFACE=OFF", "-DMATTER_ASSET_SURFACE_NATIVE=OFF"]
     cases = [
-        ("geometry", "ProceduralGeometry", "matter_geometry", ["-DMATTER_GEOMETRY_TESTS=OFF"]),
-        ("graphics", "MatterGraphics", "matter_graphics", ["-DMATTER_GRAPHICS_VULKAN=OFF"]),
-        ("archive-only", "AssetPipeline", "matter_asset_archive", [
-            "-DMATTER_ASSET_STORAGE=OFF", "-DMATTER_ASSET_GLTF=OFF", "-DMATTER_ASSET_LEGACY=OFF",
-            "-DMATTER_ASSET_SURFACE=OFF", "-DMATTER_ASSET_SURFACE_NATIVE=OFF"]),
-        ("surface-portable", "AssetPipeline", "matter_asset_surface", [
-            "-DMATTER_ASSET_STORAGE=OFF", "-DMATTER_ASSET_GLTF=OFF", "-DMATTER_ASSET_LEGACY=OFF",
-            "-DMATTER_ASSET_SURFACE=ON", "-DMATTER_ASSET_SURFACE_NATIVE=OFF"]),
-        ("surface-native", "AssetPipeline", "matter_asset_surface_native", [
-            "-DMATTER_ASSET_STORAGE=OFF", "-DMATTER_ASSET_GLTF=OFF", "-DMATTER_ASSET_LEGACY=OFF",
-            "-DMATTER_ASSET_SURFACE=ON", "-DMATTER_ASSET_SURFACE_NATIVE=ON"]),
+        ("geometry", "ProceduralGeometry", {"matter_geometry"}, ["-DMATTER_GEOMETRY_TESTS=OFF"], set()),
+        ("graphics", "MatterGraphics", {"matter_graphics"}, ["-DMATTER_GRAPHICS_VULKAN=OFF"], set()),
+        # Prepared loading without any generation kernel or surface producer.
+        ("archive-only", "AssetPipeline", {"matter_asset_archive", "matter_asset_prepared"},
+         adapters_off + surface_off + ["-DMATTER_ASSET_LOD=OFF"], kernels),
+        # LOD generation pulls the geometry stages but no I/O adapter.
+        ("lod-only", "AssetPipeline", {"matter_asset_prepared", "matter_asset_lod"} | kernels,
+         adapters_off + surface_off, set()),
+        ("surface-portable", "AssetPipeline", {"matter_asset_surface"},
+         adapters_off + ["-DMATTER_ASSET_LOD=OFF", "-DMATTER_ASSET_SURFACE=ON",
+                         "-DMATTER_ASSET_SURFACE_NATIVE=OFF"], kernels),
+        # The native producer links only geometry's lean field-kernel target.
+        ("surface-native", "AssetPipeline", {"matter_asset_surface_native", "matter_geometry_field"},
+         adapters_off + ["-DMATTER_ASSET_LOD=OFF", "-DMATTER_ASSET_SURFACE=ON",
+                         "-DMATTER_ASSET_SURFACE_NATIVE=ON"], kernels),
     ]
-    for name, module, expected, options in cases:
+    for name, module, expected, options, excluded in cases:
         build = (args.build_root / name).resolve()
         query = build / ".cmake/api/v1/query"
         query.mkdir(parents=True, exist_ok=True)
@@ -42,21 +50,29 @@ def main():
         model = json.loads((reply / index["reply"]["codemodel-v2"]["jsonFile"]).read_text())
         targets = model["configurations"][0]["targets"]
         names = {t["name"] for t in targets}
-        assert expected in names and "matter_contracts" in names, names
+        assert expected <= names and "matter_contracts" in names, (name, names)
         forbidden = {"matter_asset_pipeline", "matter_asset_storage", "matter_asset_gltf", "matter_asset_legacy"}
         if name not in ("surface-portable", "surface-native"):
             forbidden.add("matter_asset_surface")
         if name != "surface-native":
-            forbidden.update({"matter_asset_surface_native", "matter_asset_surface_runtime"})
+            forbidden.add("matter_asset_surface_native")
+        if name in ("archive-only", "surface-portable"):
+            forbidden.add("matter_geometry_field")
         if module == "AssetPipeline":
-            forbidden.update({"matter_geometry", "matter_terrain", "matter_graphics", "matter_host_quickjs"})
+            forbidden.update({"matter_terrain", "matter_graphics", "matter_host_quickjs"})
+        forbidden |= excluded
+        # Optional animation, physics and compute modules never ride in a basic configuration.
+        forbidden |= {"matter_animation_asset", "matter_animation_native", "matter_collision",
+                      "matter_physics_generation", "matter_settle_native",
+                      "matter_collision_terrain_adapter", "matter_geometry_compute"}
         if module != "AssetPipeline":
-            forbidden.add("matter_asset_archive")
+            forbidden |= {"matter_asset_archive", "matter_asset_prepared", "matter_asset_lod"}
         assert not names.intersection(forbidden), (name, names)
         if name in ("surface-portable", "surface-native"):
-            allowed = {"matter_contracts", "matter_asset_archive", "matter_asset_surface"}
+            allowed = {"matter_contracts", "matter_asset_archive", "matter_asset_prepared",
+                       "matter_asset_lod", "matter_asset_surface"}
             if name == "surface-native":
-                allowed.update({"matter_asset_surface_native", "matter_asset_surface_runtime"})
+                allowed.update({"matter_asset_surface_native", "matter_geometry_field"})
             assert names == allowed, (name, names)
             # Inspect the actual compiler dependency closure too: private
             # inclusion of a renderer/host header counts as a dependency.

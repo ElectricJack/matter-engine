@@ -1285,9 +1285,9 @@ static Mesh GenerateMeshInternal(SurfaceScratch* scratch, Particle* particles, f
     }
     
     for (int i = 0; i < triangleCount; i++) {
-        mesh.indices[i*3] = triangles[i].indices[0];
-        mesh.indices[i*3+1] = triangles[i].indices[1];
-        mesh.indices[i*3+2] = triangles[i].indices[2];
+        mesh.indices[i*3] = (unsigned short)triangles[i].indices[0];
+        mesh.indices[i*3+1] = (unsigned short)triangles[i].indices[1];
+        mesh.indices[i*3+2] = (unsigned short)triangles[i].indices[2];
     }
 
     // Overwrite the per-cell face normals with the cross-cell-continuous SDF
@@ -1303,7 +1303,7 @@ static Mesh GenerateMeshInternal(SurfaceScratch* scratch, Particle* particles, f
     }
 
     // Set material IDs as vertex colors
-    mesh.colors = (unsigned char*)RL_MALLOC(vertexCount * 4 * sizeof(unsigned char));
+    mesh.colors = (unsigned char*)RL_MALLOC((size_t)(unsigned int)vertexCount * 4 * sizeof(unsigned char));
     for (int i = 0; i < vertexCount; i++) {
         Color color = GetMaterialColor(materials[i]);
         mesh.colors[i*4+0] = color.r;
@@ -1544,7 +1544,9 @@ static float smin_set(const float* vals, int n, float fmin, float k) {
     if (k <= 1e-5f || n == 1) return fmin;
     float sum = 0.0f;
     for (int i = 0; i < n; ++i) sum += expf(-(vals[i] - fmin) / k);
-    return fmin - k * logf(sum);
+    // Float libm error is amplified by finite-difference normals. Evaluate
+    // the logarithm in double precision, then explicitly round back to float.
+    return fmin - k * (float)log((double)sum);
 }
 
 // Ordered-CSG staged field evaluation (Phase 1). Folds the authored stages in
