@@ -94,18 +94,12 @@ public:
     struct DrawRecord {
         BLASHandle blas_handle;
         mm::Mat4 transform;
-        mm::Mat4 inv_transform;
         uint32_t material_id;
         uint32_t instance_id;
         bool is_imposter = false;
 
         DrawRecord(BLASHandle handle, const mm::Mat4& trans, uint32_t mat_id, uint32_t inst_id)
-            : blas_handle(handle), transform(trans), material_id(mat_id), instance_id(inst_id) {
-            // Left as identity: inv_transform is never read. The GPU upload path
-            // (tlas_manager.cpp) uses BVHInstance::GetInvTransform() instead. The
-            // field is dead — see tech-debt.md §1.
-            inv_transform = mm::Mat4();
-        }
+            : blas_handle(handle), transform(trans), material_id(mat_id), instance_id(inst_id) {}
     };
 
     explicit TLASManager(int max_instances = 100);
@@ -224,7 +218,6 @@ private:
     std::vector<DrawRecord>  draw_records_;
     std::unique_ptr<TLAS>    tlas_;
     std::vector<BVHInstance> instance_storage_; // backing array owned by the manager; TLAS holds a raw pointer into it
-    std::vector<std::unique_ptr<BVHInstance>> instances_; // Deprecated - kept for compatibility
     uint32_t      next_instance_id_;
     int           max_instances_;
 

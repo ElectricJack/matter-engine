@@ -1,0 +1,14 @@
+Internal ctest changing into directory: /tmp/fleet-rapids-48-epoch18/native
+Test project /tmp/fleet-rapids-48-epoch18/native
+    Start 1: water_field_vk
+1/4 Test #1: water_field_vk ...................   Passed    0.00 sec
+    Start 2: water_surface_reference
+2/4 Test #2: water_surface_reference ..........   Passed    0.02 sec
+    Start 3: water_forward_reference
+3/4 Test #3: water_forward_reference ..........   Passed    0.00 sec
+    Start 4: water_mesh_animation_playback
+4/4 Test #4: water_mesh_animation_playback ....   Passed    0.01 sec
+
+100% tests passed, 0 tests failed out of 4
+
+Total Test time (real) =   0.03 sec

@@ -5,7 +5,7 @@ target_link_libraries(matter_contracts PRIVATE matter_wasm_profile)
 function(matter_contract_smoke name)
     add_executable(${name} ${ARGN})
     target_link_libraries(${name} PRIVATE matter_geometry_c matter_wasm_profile)
-    target_link_options(${name} PRIVATE "-sEXPORTED_RUNTIME_METHODS=callMain,HEAPU8" "-sEXIT_RUNTIME=1")
+    target_link_options(${name} PRIVATE "-sEXPORTED_RUNTIME_METHODS=callMain,HEAPU8" "-sEXIT_RUNTIME=1" "-sSINGLE_FILE=1")
     set_target_properties(${name} PROPERTIES SUFFIX ".mjs" C_STANDARD 11 C_STANDARD_REQUIRED YES)
     add_test(NAME ${name} COMMAND "${MATTER_WASM_NODE}"
         "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/run-smoke.mjs" "$<TARGET_FILE:${name}>")
