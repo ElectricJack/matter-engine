@@ -1,0 +1,6 @@
+{
+    "Name":  "powershell.exe",
+    "ProcessId":  30924,
+    "ParentProcessId":  22500,
+    "CommandLine":  "powershell.exe -NoProfile -Command \"Get-CimInstance Win32_Process | Where-Object { $_.Name -match \\\"^(cl|link|ninja|cmake|glslc|powershell|vulkan.*|editor)\\.exe$\\\" } | Select-Object Name,ProcessId,ParentProcessId,CommandLine | ConvertTo-Json -Depth 4\""
+}

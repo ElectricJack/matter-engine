@@ -1,0 +1,55 @@
+Task: noble-zenith-31
+Source: 9d846e66961cf275be4fb29182281961018f93e5
+Branch: aq/epic/make-rt-diagnostic-counters-consume-each-valid-retired
+Approved report: rev-agile-stone revision 1
+Approved content SHA256: 4ebdbd5aa3151c65135f09a52ba1a094aae8fd5784be7203be96d2688e7c4b11
+
+Status: BLOCKED before characterization and production edits.
+The adjacent Python file is the prepared actual-reporter characterization
+probe from the approved report, restricted to the counter case and pointed
+at the assigned slot-1 checkout. It asserts predicted faulty behavior; it is
+an unrun research artifact, not a regression gate or a passing test result.
+It must be revisited if the source checkout or renderer changes.
+
+Attempt 1:
+aq test --aq-timeout 75 /tmp/noble-zenith-31/test_counter_characterization.py -q -s
+Exit: 75
+Result: no test slot free after 75 seconds; all six reported held by
+agile-stone-80. Full captured output: characterization-admission.log.
+Pytest, C++ compilation and probe executable: NOT RUN.
+
+Supervisor response: msg-f7a188752e9c473dbf424acfbe0d7b00, replying to
+msg-c81b6b6704bf4af58ecd4a15c060f547 in noble-zenith-31-validation.
+Allowed one managed attempt, explicitly requiring failed close if refused.
+Durable reply wait b4bf795c-b16f-4c5a-b216-7c51e7b8cc1b satisfied/consumed.
+
+Attempt 2 (exact supervisor command):
+aq test --aq-detach --aq-wait --aq-idempotency-key noble-zenith-31-characterization-v1 --aq-timeout 120 /tmp/noble-zenith-31/test_counter_characterization.py -q -s
+Exit: 2
+Actual output:
+Usage: aq test [OPTIONS] [PYTEST_ARGS]...
+Try 'aq test --aq-help' for help.
+
+Error: Detached jobs use server-owned admission and resource caps
+
+No job ID or test completion wait was returned. No resubmission or admission
+bypass followed. The supervisor explicitly said to close this attempt as
+failure on managed submission refusal; reproduce-before-fix remains unmet.
+
+Source-only characterization:
+- Clean starting HEAD equals approved source 9d846e66.
+- git diff --exit-code cfe95490 HEAD -- libs/MatterGraphics/src/native/rt_dispatch.inl
+  exited 0: counter reporter source matches the historical evidence commit.
+- Reporter reads a buffer based only on its handle, with no producer guard.
+- Equal count returns before accumulation; stale alternating slots are read
+  repeatedly. These findings have not been confirmed by an executed probe.
+
+Required results NOT RUN / NOT MET:
+- Actual-reporter characterization (poison/equal/stale).
+- Production lifecycle/accounting fix and focused implementation regressions.
+- Linux native Vulkan disabled/unavailable/empty/culled/failure/reset coverage.
+- Native invalid-record RT fixture on an existing RT-capable device.
+Devices exercised: none. Capability banner: none. GPU validation: not run.
+Supervisor supplied no verified RT-capable runner. Windows CI is waived by
+task policy. No rendering, allocator-origin, synchronization or performance
+claim is established. No production code or existing assertion was changed.

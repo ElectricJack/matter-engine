@@ -38,8 +38,8 @@ static void progress(void *p,double fraction,matter_bytes_view stage) {
     failure(eval(state->api,box_request,NULL),MATTER_BACKEND_FAILURE);
 }
 int main(int argc,char **argv) {
-    matter_geometry_api api={HEADER(matter_geometry_api)},other={HEADER(matter_geometry_api)},stale;
-    matter_geometry_config config={HEADER(matter_geometry_config)};
+    matter_geometry_api api={.header=HEADER(matter_geometry_api)},other={.header=HEADER(matter_geometry_api)},stale;
+    matter_geometry_config config={.header=HEADER(matter_geometry_config)};
     matter_bytes_view view={0}; matter_call_result r,box,sphere;
     uint64_t required=0; uint8_t text[16384]; unsigned i;
     job.header=(matter_abi_header)HEADER(matter_job_envelope);
@@ -104,7 +104,7 @@ int main(int argc,char **argv) {
     CHECK(api.release(api.instance,box.result)==MATTER_INVALID_HANDLE);
     CHECK(api.read(api.instance,box.result,&view)==MATTER_INVALID_HANDLE);
     for(i=0;i<100;++i) { r=eval(&api,box_request,NULL); success(&api,r); CHECK(r.result!=box.result); CHECK(api.release(api.instance,r.result)==MATTER_OK); }
-    { matter_geometry_api limited={HEADER(matter_geometry_api)};
+    { matter_geometry_api limited={.header=HEADER(matter_geometry_api)};
       config.max_results=1; CHECK(matter_geometry_create(&config,&limited)==MATTER_OK);
       r=eval(&limited,box_request,NULL); success(&limited,r); failure(eval(&limited,box_request,NULL),MATTER_RESOURCE_LIMIT);
       CHECK(limited.release(limited.instance,r.result)==MATTER_OK); r=eval(&limited,box_request,NULL); success(&limited,r);

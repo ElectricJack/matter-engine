@@ -53,11 +53,30 @@ if(BUILD_TESTING)
     endif()
     add_test(NAME matter_geometry_compute COMMAND matter_geometry_compute_tests)
     set_tests_properties(matter_geometry_compute PROPERTIES TIMEOUT 120)
-    if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
-        file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/compute-dependencies.txt" CONTENT
-            "$<TARGET_PROPERTY:matter_compute_device,LINK_LIBRARIES>\n$<TARGET_PROPERTY:matter_geometry_compute,LINK_LIBRARIES>\n")
-        add_test(NAME matter_geometry_compute_dependencies COMMAND "${CMAKE_COMMAND}"
-            "-DBUILD=${CMAKE_CURRENT_BINARY_DIR}" "-DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}"
-            -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/dependencies.cmake")
+    # Source/build reads are qualification, never runtime test fixture reads.
+    # Request CMake's generated graph rather than assume a Ninja generator.
+    set(_qualification_graph_args)
+    if(COMMAND cmake_file_api)
+        cmake_file_api(QUERY API_VERSION 1 CODEMODEL 2)
+    elseif(CMAKE_GENERATOR STREQUAL "Ninja")
+        # Keep the existing 3.25/Ninja toolchain supported. Other generators
+        # need the current-invocation file-api query introduced in 3.27.
+        list(APPEND _qualification_graph_args "-DNINJA=${CMAKE_MAKE_PROGRAM}")
+    else()
+        message(FATAL_ERROR "Compute graph qualification requires CMake 3.27 or Ninja")
     endif()
+    file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/compute-dependencies-$<CONFIG>.txt" CONTENT
+        "$<TARGET_PROPERTY:matter_compute_device,LINK_LIBRARIES>\n$<TARGET_PROPERTY:matter_geometry_compute,LINK_LIBRARIES>\n")
+    # Always recheck: source edits, added headers, regenerated graphs and changed
+    # transitive links must not reuse a stale success stamp. This also protects
+    # an explicit build of the runtime test instead of the default ALL target.
+    add_custom_target(matter_geometry_compute_qualification ALL
+        COMMAND "${CMAKE_COMMAND}"
+            "-DBUILD=${CMAKE_BINARY_DIR}" "-DSOURCE=${CMAKE_CURRENT_SOURCE_DIR}"
+            "-DLINKS=${CMAKE_CURRENT_BINARY_DIR}/compute-dependencies-$<CONFIG>.txt"
+            "-DCONFIG=$<CONFIG>"
+            ${_qualification_graph_args}
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/dependencies.cmake"
+        VERBATIM)
+    add_dependencies(matter_geometry_compute_tests matter_geometry_compute_qualification)
 endif()
