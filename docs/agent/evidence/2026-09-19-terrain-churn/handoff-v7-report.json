@@ -1,0 +1,2828 @@
+{
+  "event_logging_seen": true,
+  "marker_prefix": "",
+  "sections": {
+    "": {
+      "events": {
+        "page": 2371,
+        "page_recorded": 2371
+      },
+      "dirty_reasons": {},
+      "owner_retire_reasons": {},
+      "park_timeout_warnings": 0,
+      "same_lifetime_eviction_refills": {
+        "count": 0,
+        "within_60_frames": 0,
+        "min_frames": null,
+        "median_frames": null
+      },
+      "released_owner_returns": {
+        "count": 0,
+        "within_60_frames": 0,
+        "min_frames": null
+      },
+      "evicted_owner_count": 0,
+      "most_evicted_owners": [],
+      "largest_event_bursts": [
+        [
+          22,
+          17
+        ],
+        [
+          25,
+          17
+        ],
+        [
+          27,
+          17
+        ],
+        [
+          31,
+          17
+        ],
+        [
+          33,
+          17
+        ]
+      ]
+    },
+    "travel_start": {
+      "events": {
+        "page": 1066,
+        "page_recorded": 1066,
+        "release": 9
+      },
+      "dirty_reasons": {},
+      "owner_retire_reasons": {
+        "part_release": 515,
+        "unwanted_rung": 1
+      },
+      "park_timeout_warnings": 0,
+      "stats_at_marker": {
+        "active": "1",
+        "variants": "672/32768",
+        "rejected": "0",
+        "mesh": "266.8/3512.0",
+        "pool": "2371/25600",
+        "pinned": "672",
+        "queue": "0",
+        "fills": "2371",
+        "evictions": "0",
+        "ind": "59.60/128",
+        "material_pages": "2371",
+        "shared_material_refs": "0",
+        "coverage_only_pages": "0",
+        "occlusion_pages": "0",
+        "occlusion_retained_pages": "0",
+        "occlusion_allocated_bytes": "0",
+        "enrich_deferred": "0"
+      },
+      "same_lifetime_eviction_refills": {
+        "count": 0,
+        "within_60_frames": 0,
+        "min_frames": null,
+        "median_frames": null
+      },
+      "released_owner_returns": {
+        "count": 0,
+        "within_60_frames": 0,
+        "min_frames": null
+      },
+      "evicted_owner_count": 0,
+      "most_evicted_owners": [],
+      "largest_event_bursts": [
+        [
+          1848,
+          15
+        ],
+        [
+          1847,
+          13
+        ],
+        [
+          1849,
+          12
+        ],
+        [
+          1859,
+          10
+        ],
+        [
+          1846,
+          9
+        ]
+      ]
+    },
+    "flight_1": {
+      "events": {
+        "page": 4071,
+        "page_recorded": 4071,
+        "release": 2
+      },
+      "dirty_reasons": {},
+      "owner_retire_reasons": {
+        "part_release": 112
+      },
+      "park_timeout_warnings": 0,
+      "stats_at_marker": {
+        "active": "1",
+        "variants": "681/32768",
+        "rejected": "0",
+        "mesh": "268.4/3512.0",
+        "pool": "3008/25600",
+        "pinned": "681",
+        "queue": "214",
+        "fills": "3437",
+        "evictions": "0",
+        "ind": "60.20/128",
+        "material_pages": "3008",
+        "shared_material_refs": "0",
+        "coverage_only_pages": "0",
+        "occlusion_pages": "0",
+        "occlusion_retained_pages": "0",
+        "occlusion_allocated_bytes": "0",
+        "enrich_deferred": "0"
+      },
+      "same_lifetime_eviction_refills": {
+        "count": 0,
+        "within_60_frames": 0,
+        "min_frames": null,
+        "median_frames": null
+      },
+      "released_owner_returns": {
+        "count": 0,
+        "within_60_frames": 0,
+        "min_frames": null
+      },
+      "evicted_owner_count": 0,
+      "most_evicted_owners": [],
+      "largest_event_bursts": [
+        [
+          2175,
+          10
+        ],
+        [
+          1982,
+          9
+        ],
+        [
+          2016,
+          9
+        ],
+        [
+          2017,
+          9
+        ],
+        [
+          2022,
+          9
+        ]
+      ]
+    },
+    "flight_2": {
+      "events": {
+        "page": 490,
+        "page_recorded": 490,
+        "release": 1
+      },
+      "dirty_reasons": {},
+      "owner_retire_reasons": {
+        "part_release": 36
+      },
+      "park_timeout_warnings": 0,
+      "stats_at_marker": {
+        "active": "1",
+        "variants": "685/32768",
+        "rejected": "0",
+        "mesh": "269.6/3512.0",
+        "pool": "7025/25600",
+        "pinned": "685",
+        "queue": "0",
+        "fills": "7508",
+        "evictions": "0",
+        "ind": "60.51/128",
+        "material_pages": "7025",
+        "shared_material_refs": "0",
+        "coverage_only_pages": "0",
+        "occlusion_pages": "0",
+        "occlusion_retained_pages": "0",
+        "occlusion_allocated_bytes": "0",
+        "enrich_deferred": "0"
+      },
+      "same_lifetime_eviction_refills": {
+        "count": 0,
+        "within_60_frames": 0,
+        "min_frames": null,
+        "median_frames": null
+      },
+      "released_owner_returns": {
+        "count": 0,
+        "within_60_frames": 0,
+        "min_frames": null
+      },
+      "evicted_owner_count": 0,
+      "most_evicted_owners": [],
+      "largest_event_bursts": [
+        [
+          2582,
+          10
+        ],
+        [
+          2585,
+          9
+        ],
+        [
+          2630,
+          9
+        ],
+        [
+          2635,
+          9
+        ],
+        [
+          2577,
+          8
+        ]
+      ]
+    },
+    "flight_3": {
+      "events": {
+        "page": 3802,
+        "page_recorded": 3802,
+        "release": 17
+      },
+      "dirty_reasons": {},
+      "owner_retire_reasons": {
+        "part_release": 1381,
+        "unwanted_rung": 3
+      },
+      "park_timeout_warnings": 0,
+      "stats_at_marker": {
+        "active": "1",
+        "variants": "687/32768",
+        "rejected": "0",
+        "mesh": "271.0/3512.0",
+        "pool": "7503/25600",
+        "pinned": "687",
+        "queue": "0",
+        "fills": "7998",
+        "evictions": "0",
+        "ind": "60.76/128",
+        "material_pages": "7503",
+        "shared_material_refs": "0",
+        "coverage_only_pages": "0",
+        "occlusion_pages": "0",
+        "occlusion_retained_pages": "0",
+        "occlusion_allocated_bytes": "0",
+        "enrich_deferred": "0"
+      },
+      "same_lifetime_eviction_refills": {
+        "count": 0,
+        "within_60_frames": 0,
+        "min_frames": null,
+        "median_frames": null
+      },
+      "released_owner_returns": {
+        "count": 0,
+        "within_60_frames": 0,
+        "min_frames": null
+      },
+      "evicted_owner_count": 0,
+      "most_evicted_owners": [],
+      "largest_event_bursts": [
+        [
+          3251,
+          14
+        ],
+        [
+          2698,
+          11
+        ],
+        [
+          2704,
+          11
+        ],
+        [
+          2884,
+          10
+        ],
+        [
+          3252,
+          10
+        ]
+      ]
+    },
+    "flight_4": {
+      "events": {
+        "page": 995,
+        "page_recorded": 995,
+        "release": 12
+      },
+      "dirty_reasons": {},
+      "owner_retire_reasons": {
+        "part_release": 873,
+        "unwanted_rung": 2
+      },
+      "park_timeout_warnings": 0,
+      "stats_at_marker": {
+        "active": "1",
+        "variants": "707/32768",
+        "rejected": "0",
+        "mesh": "273.1/3512.0",
+        "pool": "9606/25600",
+        "pinned": "707",
+        "queue": "256",
+        "fills": "11800",
+        "evictions": "0",
+        "ind": "61.88/128",
+        "material_pages": "9606",
+        "shared_material_refs": "0",
+        "coverage_only_pages": "0",
+        "occlusion_pages": "0",
+        "occlusion_retained_pages": "0",
+        "occlusion_allocated_bytes": "0",
+        "enrich_deferred": "0"
+      },
+      "same_lifetime_eviction_refills": {
+        "count": 0,
+        "within_60_frames": 0,
+        "min_frames": null,
+        "median_frames": null
+      },
+      "released_owner_returns": {
+        "count": 0,
+        "within_60_frames": 0,
+        "min_frames": null
+      },
+      "evicted_owner_count": 0,
+      "most_evicted_owners": [],
+      "largest_event_bursts": [
+        [
+          3299,
+          11
+        ],
+        [
+          3317,
+          11
+        ],
+        [
+          3331,
+          11
+        ],
+        [
+          3329,
+          10
+        ],
+        [
+          3330,
+          10
+        ]
+      ]
+    },
+    "flight_5": {
+      "events": {
+        "page": 4409,
+        "page_recorded": 4409,
+        "release": 9
+      },
+      "dirty_reasons": {},
+      "owner_retire_reasons": {
+        "part_release": 539
+      },
+      "park_timeout_warnings": 4,
+      "stats_at_marker": {
+        "active": "1",
+        "variants": "716/32768",
+        "rejected": "0",
+        "mesh": "273.1/3512.0",
+        "pool": "9370/25600",
+        "pinned": "716",
+        "queue": "256",
+        "fills": "12795",
+        "evictions": "0",
+        "ind": "62.21/128",
+        "material_pages": "9370",
+        "shared_material_refs": "0",
+        "coverage_only_pages": "0",
+        "occlusion_pages": "0",
+        "occlusion_retained_pages": "0",
+        "occlusion_allocated_bytes": "0",
+        "enrich_deferred": "0"
+      },
+      "same_lifetime_eviction_refills": {
+        "count": 0,
+        "within_60_frames": 0,
+        "min_frames": null,
+        "median_frames": null
+      },
+      "released_owner_returns": {
+        "count": 0,
+        "within_60_frames": 0,
+        "min_frames": null
+      },
+      "evicted_owner_count": 0,
+      "most_evicted_owners": [],
+      "largest_event_bursts": [
+        [
+          3438,
+          12
+        ],
+        [
+          3439,
+          12
+        ],
+        [
+          3619,
+          10
+        ],
+        [
+          3620,
+          10
+        ],
+        [
+          3421,
+          9
+        ]
+      ]
+    },
+    "flight_6": {
+      "events": {
+        "page": 972,
+        "page_recorded": 972,
+        "release": 11
+      },
+      "dirty_reasons": {},
+      "owner_retire_reasons": {
+        "part_release": 576,
+        "unwanted_rung": 1
+      },
+      "park_timeout_warnings": 0,
+      "stats_at_marker": {
+        "active": "1",
+        "variants": "726/32768",
+        "rejected": "0",
+        "mesh": "275.2/3512.0",
+        "pool": "13080/25600",
+        "pinned": "726",
+        "queue": "0",
+        "fills": "17204",
+        "evictions": "0",
+        "ind": "62.99/128",
+        "material_pages": "13080",
+        "shared_material_refs": "0",
+        "coverage_only_pages": "0",
+        "occlusion_pages": "0",
+        "occlusion_retained_pages": "0",
+        "occlusion_allocated_bytes": "0",
+        "enrich_deferred": "0"
+      },
+      "same_lifetime_eviction_refills": {
+        "count": 0,
+        "within_60_frames": 0,
+        "min_frames": null,
+        "median_frames": null
+      },
+      "released_owner_returns": {
+        "count": 0,
+        "within_60_frames": 0,
+        "min_frames": null
+      },
+      "evicted_owner_count": 0,
+      "most_evicted_owners": [],
+      "largest_event_bursts": [
+        [
+          4090,
+          11
+        ],
+        [
+          4029,
+          10
+        ],
+        [
+          4089,
+          10
+        ],
+        [
+          4019,
+          9
+        ],
+        [
+          4021,
+          9
+        ]
+      ]
+    },
+    "flight_7": {
+      "events": {
+        "page": 3200,
+        "page_recorded": 3200,
+        "release": 15
+      },
+      "dirty_reasons": {},
+      "owner_retire_reasons": {
+        "part_release": 705,
+        "unwanted_rung": 2
+      },
+      "park_timeout_warnings": 2,
+      "stats_at_marker": {
+        "active": "1",
+        "variants": "727/32768",
+        "rejected": "0",
+        "mesh": "275.3/3512.0",
+        "pool": "13189/25600",
+        "pinned": "727",
+        "queue": "256",
+        "fills": "18176",
+        "evictions": "0",
+        "ind": "63.06/128",
+        "material_pages": "13189",
+        "shared_material_refs": "0",
+        "coverage_only_pages": "0",
+        "occlusion_pages": "0",
+        "occlusion_retained_pages": "0",
+        "occlusion_allocated_bytes": "0",
+        "enrich_deferred": "0"
+      },
+      "same_lifetime_eviction_refills": {
+        "count": 0,
+        "within_60_frames": 0,
+        "min_frames": null,
+        "median_frames": null
+      },
+      "released_owner_returns": {
+        "count": 0,
+        "within_60_frames": 0,
+        "min_frames": null
+      },
+      "evicted_owner_count": 0,
+      "most_evicted_owners": [],
+      "largest_event_bursts": [
+        [
+          4169,
+          11
+        ],
+        [
+          4139,
+          10
+        ],
+        [
+          4159,
+          10
+        ],
+        [
+          4160,
+          10
+        ],
+        [
+          4166,
+          10
+        ]
+      ]
+    },
+    "flight_8": {
+      "events": {
+        "page": 969,
+        "page_recorded": 969,
+        "release": 8
+      },
+      "dirty_reasons": {},
+      "owner_retire_reasons": {
+        "part_release": 296,
+        "unwanted_rung": 1
+      },
+      "park_timeout_warnings": 3,
+      "stats_at_marker": {
+        "active": "1",
+        "variants": "737/32768",
+        "rejected": "0",
+        "mesh": "277.4/3512.0",
+        "pool": "15453/25600",
+        "pinned": "737",
+        "queue": "0",
+        "fills": "21376",
+        "evictions": "0",
+        "ind": "63.72/128",
+        "material_pages": "15453",
+        "shared_material_refs": "0",
+        "coverage_only_pages": "0",
+        "occlusion_pages": "0",
+        "occlusion_retained_pages": "0",
+        "occlusion_allocated_bytes": "0",
+        "enrich_deferred": "0"
+      },
+      "same_lifetime_eviction_refills": {
+        "count": 0,
+        "within_60_frames": 0,
+        "min_frames": null,
+        "median_frames": null
+      },
+      "released_owner_returns": {
+        "count": 0,
+        "within_60_frames": 0,
+        "min_frames": null
+      },
+      "evicted_owner_count": 0,
+      "most_evicted_owners": [],
+      "largest_event_bursts": [
+        [
+          4740,
+          12
+        ],
+        [
+          4762,
+          11
+        ],
+        [
+          4742,
+          10
+        ],
+        [
+          4748,
+          10
+        ],
+        [
+          4744,
+          9
+        ]
+      ]
+    },
+    "flight_9": {
+      "events": {
+        "page": 4890,
+        "page_recorded": 4890,
+        "release": 18
+      },
+      "dirty_reasons": {},
+      "owner_retire_reasons": {
+        "part_release": 1516,
+        "unwanted_rung": 2
+      },
+      "park_timeout_warnings": 22,
+      "stats_at_marker": {
+        "active": "1",
+        "variants": "740/32768",
+        "rejected": "0",
+        "mesh": "277.0/3512.0",
+        "pool": "16018/25600",
+        "pinned": "740",
+        "queue": "256",
+        "fills": "22345",
+        "evictions": "0",
+        "ind": "63.79/128",
+        "material_pages": "16018",
+        "shared_material_refs": "0",
+        "coverage_only_pages": "0",
+        "occlusion_pages": "0",
+        "occlusion_retained_pages": "0",
+        "occlusion_allocated_bytes": "0",
+        "enrich_deferred": "0"
+      },
+      "same_lifetime_eviction_refills": {
+        "count": 0,
+        "within_60_frames": 0,
+        "min_frames": null,
+        "median_frames": null
+      },
+      "released_owner_returns": {
+        "count": 0,
+        "within_60_frames": 0,
+        "min_frames": null
+      },
+      "evicted_owner_count": 0,
+      "most_evicted_owners": [],
+      "largest_event_bursts": [
+        [
+          4906,
+          11
+        ],
+        [
+          5299,
+          11
+        ],
+        [
+          4860,
+          10
+        ],
+        [
+          4868,
+          10
+        ],
+        [
+          4872,
+          10
+        ]
+      ]
+    },
+    "flight_10": {
+      "events": {
+        "page": 981,
+        "page_recorded": 981,
+        "release": 12
+      },
+      "dirty_reasons": {},
+      "owner_retire_reasons": {
+        "part_release": 576
+      },
+      "park_timeout_warnings": 1,
+      "stats_at_marker": {
+        "active": "1",
+        "variants": "776/32768",
+        "rejected": "0",
+        "mesh": "280.8/3512.0",
+        "pool": "16954/25600",
+        "pinned": "776",
+        "queue": "256",
+        "fills": "27235",
+        "evictions": "0",
+        "ind": "65.86/128",
+        "material_pages": "16954",
+        "shared_material_refs": "0",
+        "coverage_only_pages": "0",
+        "occlusion_pages": "0",
+        "occlusion_retained_pages": "0",
+        "occlusion_allocated_bytes": "0",
+        "enrich_deferred": "0"
+      },
+      "same_lifetime_eviction_refills": {
+        "count": 0,
+        "within_60_frames": 0,
+        "min_frames": null,
+        "median_frames": null
+      },
+      "released_owner_returns": {
+        "count": 0,
+        "within_60_frames": 0,
+        "min_frames": null
+      },
+      "evicted_owner_count": 0,
+      "most_evicted_owners": [],
+      "largest_event_bursts": [
+        [
+          5492,
+          10
+        ],
+        [
+          5520,
+          10
+        ],
+        [
+          5465,
+          9
+        ],
+        [
+          5468,
+          9
+        ],
+        [
+          5470,
+          9
+        ]
+      ]
+    },
+    "flight_11": {
+      "events": {
+        "page": 4833,
+        "page_recorded": 4833,
+        "release": 18
+      },
+      "dirty_reasons": {},
+      "owner_retire_reasons": {
+        "part_release": 983,
+        "unwanted_rung": 2
+      },
+      "park_timeout_warnings": 11,
+      "stats_at_marker": {
+        "active": "1",
+        "variants": "786/32768",
+        "rejected": "0",
+        "mesh": "282.5/3512.0",
+        "pool": "17001/25600",
+        "pinned": "786",
+        "queue": "256",
+        "fills": "28216",
+        "evictions": "0",
+        "ind": "66.52/128",
+        "material_pages": "17001",
+        "shared_material_refs": "0",
+        "coverage_only_pages": "0",
+        "occlusion_pages": "0",
+        "occlusion_retained_pages": "0",
+        "occlusion_allocated_bytes": "0",
+        "enrich_deferred": "0"
+      },
+      "same_lifetime_eviction_refills": {
+        "count": 0,
+        "within_60_frames": 0,
+        "min_frames": null,
+        "median_frames": null
+      },
+      "released_owner_returns": {
+        "count": 0,
+        "within_60_frames": 0,
+        "min_frames": null
+      },
+      "evicted_owner_count": 0,
+      "most_evicted_owners": [],
+      "largest_event_bursts": [
+        [
+          5580,
+          10
+        ],
+        [
+          5622,
+          10
+        ],
+        [
+          5583,
+          9
+        ],
+        [
+          5586,
+          9
+        ],
+        [
+          5589,
+          9
+        ]
+      ]
+    },
+    "flight_12": {
+      "events": {
+        "page": 976,
+        "page_recorded": 976,
+        "release": 10
+      },
+      "dirty_reasons": {},
+      "owner_retire_reasons": {
+        "part_release": 517
+      },
+      "park_timeout_warnings": 2,
+      "stats_at_marker": {
+        "active": "1",
+        "variants": "803/32768",
+        "rejected": "0",
+        "mesh": "284.9/3512.0",
+        "pool": "20187/25600",
+        "pinned": "803",
+        "queue": "256",
+        "fills": "33049",
+        "evictions": "0",
+        "ind": "67.43/128",
+        "material_pages": "20187",
+        "shared_material_refs": "0",
+        "coverage_only_pages": "0",
+        "occlusion_pages": "0",
+        "occlusion_retained_pages": "0",
+        "occlusion_allocated_bytes": "0",
+        "enrich_deferred": "0"
+      },
+      "same_lifetime_eviction_refills": {
+        "count": 0,
+        "within_60_frames": 0,
+        "min_frames": null,
+        "median_frames": null
+      },
+      "released_owner_returns": {
+        "count": 0,
+        "within_60_frames": 0,
+        "min_frames": null
+      },
+      "evicted_owner_count": 0,
+      "most_evicted_owners": [],
+      "largest_event_bursts": [
+        [
+          6188,
+          11
+        ],
+        [
+          6179,
+          10
+        ],
+        [
+          6189,
+          10
+        ],
+        [
+          6185,
+          9
+        ],
+        [
+          6186,
+          9
+        ]
+      ]
+    },
+    "flight_13": {
+      "events": {
+        "page": 4853,
+        "page_recorded": 4852,
+        "page_producer_refused": 1,
+        "release": 22
+      },
+      "dirty_reasons": {},
+      "owner_retire_reasons": {
+        "part_release": 1889
+      },
+      "park_timeout_warnings": 14,
+      "stats_at_marker": {
+        "active": "1",
+        "variants": "804/32768",
+        "rejected": "0",
+        "mesh": "285.1/3512.0",
+        "pool": "20413/25600",
+        "pinned": "804",
+        "queue": "256",
+        "fills": "34025",
+        "evictions": "0",
+        "ind": "67.49/128",
+        "material_pages": "20413",
+        "shared_material_refs": "0",
+        "coverage_only_pages": "0",
+        "occlusion_pages": "0",
+        "occlusion_retained_pages": "0",
+        "occlusion_allocated_bytes": "0",
+        "enrich_deferred": "0"
+      },
+      "same_lifetime_eviction_refills": {
+        "count": 0,
+        "within_60_frames": 0,
+        "min_frames": null,
+        "median_frames": null
+      },
+      "released_owner_returns": {
+        "count": 0,
+        "within_60_frames": 0,
+        "min_frames": null
+      },
+      "evicted_owner_count": 0,
+      "most_evicted_owners": [],
+      "largest_event_bursts": [
+        [
+          6631,
+          10
+        ],
+        [
+          6693,
+          10
+        ],
+        [
+          6305,
+          9
+        ],
+        [
+          6308,
+          9
+        ],
+        [
+          6329,
+          9
+        ]
+      ]
+    },
+    "flight_14": {
+      "events": {
+        "page": 840,
+        "page_recorded": 840,
+        "release": 1
+      },
+      "dirty_reasons": {},
+      "owner_retire_reasons": {
+        "part_release": 22,
+        "unwanted_rung": 1
+      },
+      "park_timeout_warnings": 0,
+      "stats_at_marker": {
+        "active": "1",
+        "variants": "835/32768",
+        "rejected": "0",
+        "mesh": "291.0/3512.0",
+        "pool": "21061/25600",
+        "pinned": "835",
+        "queue": "256",
+        "fills": "38877",
+        "evictions": "0",
+        "ind": "69.51/128",
+        "material_pages": "21061",
+        "shared_material_refs": "0",
+        "coverage_only_pages": "0",
+        "occlusion_pages": "0",
+        "occlusion_retained_pages": "0",
+        "occlusion_allocated_bytes": "0",
+        "enrich_deferred": "0"
+      },
+      "same_lifetime_eviction_refills": {
+        "count": 0,
+        "within_60_frames": 0,
+        "min_frames": null,
+        "median_frames": null
+      },
+      "released_owner_returns": {
+        "count": 0,
+        "within_60_frames": 0,
+        "min_frames": null
+      },
+      "evicted_owner_count": 0,
+      "most_evicted_owners": [],
+      "largest_event_bursts": [
+        [
+          6901,
+          9
+        ],
+        [
+          6903,
+          9
+        ],
+        [
+          6899,
+          8
+        ],
+        [
+          6900,
+          8
+        ],
+        [
+          6902,
+          8
+        ]
+      ]
+    },
+    "flight_15": {
+      "events": {
+        "page": 4849,
+        "page_recorded": 4849,
+        "release": 22
+      },
+      "dirty_reasons": {},
+      "owner_retire_reasons": {
+        "part_release": 1630,
+        "unwanted_rung": 4
+      },
+      "park_timeout_warnings": 1,
+      "stats_at_marker": {
+        "active": "1",
+        "variants": "835/32768",
+        "rejected": "0",
+        "mesh": "290.8/3512.0",
+        "pool": "21900/25600",
+        "pinned": "835",
+        "queue": "0",
+        "fills": "39717",
+        "evictions": "0",
+        "ind": "69.51/128",
+        "material_pages": "21900",
+        "shared_material_refs": "0",
+        "coverage_only_pages": "0",
+        "occlusion_pages": "0",
+        "occlusion_retained_pages": "0",
+        "occlusion_allocated_bytes": "0",
+        "enrich_deferred": "0"
+      },
+      "same_lifetime_eviction_refills": {
+        "count": 0,
+        "within_60_frames": 0,
+        "min_frames": null,
+        "median_frames": null
+      },
+      "released_owner_returns": {
+        "count": 0,
+        "within_60_frames": 0,
+        "min_frames": null
+      },
+      "evicted_owner_count": 0,
+      "most_evicted_owners": [],
+      "largest_event_bursts": [
+        [
+          7021,
+          12
+        ],
+        [
+          7072,
+          10
+        ],
+        [
+          7024,
+          9
+        ],
+        [
+          7026,
+          9
+        ],
+        [
+          7031,
+          9
+        ]
+      ]
+    },
+    "flight_16": {
+      "events": {
+        "page": 878,
+        "page_recorded": 878,
+        "release": 6
+      },
+      "dirty_reasons": {},
+      "owner_retire_reasons": {
+        "part_release": 382,
+        "unwanted_rung": 1
+      },
+      "park_timeout_warnings": 3,
+      "stats_at_marker": {
+        "active": "1",
+        "variants": "870/32768",
+        "rejected": "0",
+        "mesh": "294.5/3512.0",
+        "pool": "22443/25600",
+        "pinned": "870",
+        "queue": "256",
+        "fills": "44566",
+        "evictions": "0",
+        "ind": "71.49/128",
+        "material_pages": "22443",
+        "shared_material_refs": "0",
+        "coverage_only_pages": "0",
+        "occlusion_pages": "0",
+        "occlusion_retained_pages": "0",
+        "occlusion_allocated_bytes": "0",
+        "enrich_deferred": "0"
+      },
+      "same_lifetime_eviction_refills": {
+        "count": 0,
+        "within_60_frames": 0,
+        "min_frames": null,
+        "median_frames": null
+      },
+      "released_owner_returns": {
+        "count": 0,
+        "within_60_frames": 0,
+        "min_frames": null
+      },
+      "evicted_owner_count": 0,
+      "most_evicted_owners": [],
+      "largest_event_bursts": [
+        [
+          7619,
+          9
+        ],
+        [
+          7622,
+          9
+        ],
+        [
+          7624,
+          9
+        ],
+        [
+          7630,
+          9
+        ],
+        [
+          7631,
+          9
+        ]
+      ]
+    },
+    "flight_17": {
+      "events": {
+        "page": 3921,
+        "page_recorded": 3921,
+        "release": 60
+      },
+      "dirty_reasons": {},
+      "owner_retire_reasons": {
+        "part_release": 3267
+      },
+      "park_timeout_warnings": 6,
+      "stats_at_marker": {
+        "active": "1",
+        "variants": "869/32768",
+        "rejected": "0",
+        "mesh": "294.3/3512.0",
+        "pool": "22865/25600",
+        "pinned": "869",
+        "queue": "0",
+        "fills": "45444",
+        "evictions": "0",
+        "ind": "71.43/128",
+        "material_pages": "22865",
+        "shared_material_refs": "0",
+        "coverage_only_pages": "0",
+        "occlusion_pages": "0",
+        "occlusion_retained_pages": "0",
+        "occlusion_allocated_bytes": "0",
+        "enrich_deferred": "0"
+      },
+      "same_lifetime_eviction_refills": {
+        "count": 0,
+        "within_60_frames": 0,
+        "min_frames": null,
+        "median_frames": null
+      },
+      "released_owner_returns": {
+        "count": 4,
+        "within_60_frames": 0,
+        "min_frames": 4856
+      },
+      "evicted_owner_count": 0,
+      "most_evicted_owners": [],
+      "largest_event_bursts": [
+        [
+          8189,
+          17
+        ],
+        [
+          8151,
+          16
+        ],
+        [
+          8183,
+          16
+        ],
+        [
+          8185,
+          14
+        ],
+        [
+          8119,
+          13
+        ]
+      ]
+    },
+    "flight_18": {
+      "events": {
+        "page": 716,
+        "page_recorded": 716,
+        "release": 5
+      },
+      "dirty_reasons": {},
+      "owner_retire_reasons": {
+        "part_release": 427
+      },
+      "park_timeout_warnings": 0,
+      "stats_at_marker": {
+        "active": "1",
+        "variants": "855/32768",
+        "rejected": "0",
+        "mesh": "292.4/3512.0",
+        "pool": "22841/25600",
+        "pinned": "855",
+        "queue": "188",
+        "fills": "49365",
+        "evictions": "0",
+        "ind": "70.75/128",
+        "material_pages": "22840",
+        "shared_material_refs": "0",
+        "coverage_only_pages": "0",
+        "occlusion_pages": "0",
+        "occlusion_retained_pages": "0",
+        "occlusion_allocated_bytes": "0",
+        "enrich_deferred": "0"
+      },
+      "same_lifetime_eviction_refills": {
+        "count": 0,
+        "within_60_frames": 0,
+        "min_frames": null,
+        "median_frames": null
+      },
+      "released_owner_returns": {
+        "count": 0,
+        "within_60_frames": 0,
+        "min_frames": null
+      },
+      "evicted_owner_count": 0,
+      "most_evicted_owners": [],
+      "largest_event_bursts": [
+        [
+          8342,
+          9
+        ],
+        [
+          8343,
+          9
+        ],
+        [
+          8346,
+          9
+        ],
+        [
+          8348,
+          9
+        ],
+        [
+          8358,
+          9
+        ]
+      ]
+    },
+    "flight_19": {
+      "events": {
+        "page": 2975,
+        "page_recorded": 2975,
+        "release": 9
+      },
+      "dirty_reasons": {},
+      "owner_retire_reasons": {
+        "part_release": 340,
+        "unwanted_rung": 3
+      },
+      "park_timeout_warnings": 0,
+      "stats_at_marker": {
+        "active": "1",
+        "variants": "856/32768",
+        "rejected": "0",
+        "mesh": "293.3/3512.0",
+        "pool": "22887/25600",
+        "pinned": "856",
+        "queue": "0",
+        "fills": "50081",
+        "evictions": "0",
+        "ind": "70.93/128",
+        "material_pages": "22887",
+        "shared_material_refs": "0",
+        "coverage_only_pages": "0",
+        "occlusion_pages": "0",
+        "occlusion_retained_pages": "0",
+        "occlusion_allocated_bytes": "0",
+        "enrich_deferred": "0"
+      },
+      "same_lifetime_eviction_refills": {
+        "count": 0,
+        "within_60_frames": 0,
+        "min_frames": null,
+        "median_frames": null
+      },
+      "released_owner_returns": {
+        "count": 0,
+        "within_60_frames": 0,
+        "min_frames": null
+      },
+      "evicted_owner_count": 0,
+      "most_evicted_owners": [],
+      "largest_event_bursts": [
+        [
+          8462,
+          11
+        ],
+        [
+          8824,
+          10
+        ],
+        [
+          8472,
+          9
+        ],
+        [
+          8654,
+          9
+        ],
+        [
+          8662,
+          9
+        ]
+      ]
+    },
+    "flight_20": {
+      "events": {
+        "page": 610,
+        "page_recorded": 610,
+        "release": 5
+      },
+      "dirty_reasons": {},
+      "owner_retire_reasons": {
+        "part_release": 251,
+        "unwanted_rung": 2
+      },
+      "park_timeout_warnings": 0,
+      "stats_at_marker": {
+        "active": "1",
+        "variants": "869/32768",
+        "rejected": "0",
+        "mesh": "293.5/3512.0",
+        "pool": "24282/25600",
+        "pinned": "869",
+        "queue": "4",
+        "fills": "53056",
+        "evictions": "0",
+        "ind": "71.49/128",
+        "material_pages": "24282",
+        "shared_material_refs": "0",
+        "coverage_only_pages": "0",
+        "occlusion_pages": "0",
+        "occlusion_retained_pages": "0",
+        "occlusion_allocated_bytes": "0",
+        "enrich_deferred": "0"
+      },
+      "same_lifetime_eviction_refills": {
+        "count": 0,
+        "within_60_frames": 0,
+        "min_frames": null,
+        "median_frames": null
+      },
+      "released_owner_returns": {
+        "count": 0,
+        "within_60_frames": 0,
+        "min_frames": null
+      },
+      "evicted_owner_count": 0,
+      "most_evicted_owners": [],
+      "largest_event_bursts": [
+        [
+          9063,
+          10
+        ],
+        [
+          9065,
+          9
+        ],
+        [
+          9093,
+          9
+        ],
+        [
+          9094,
+          9
+        ],
+        [
+          9095,
+          9
+        ]
+      ]
+    },
+    "flight_21": {
+      "events": {
+        "page": 2855,
+        "page_recorded": 2855,
+        "release": 14
+      },
+      "dirty_reasons": {},
+      "owner_retire_reasons": {
+        "part_release": 1269
+      },
+      "park_timeout_warnings": 13,
+      "stats_at_marker": {
+        "active": "1",
+        "variants": "867/32768",
+        "rejected": "0",
+        "mesh": "292.2/3512.0",
+        "pool": "24462/25600",
+        "pinned": "867",
+        "queue": "0",
+        "fills": "53666",
+        "evictions": "0",
+        "ind": "71.21/128",
+        "material_pages": "24462",
+        "shared_material_refs": "0",
+        "coverage_only_pages": "0",
+        "occlusion_pages": "0",
+        "occlusion_retained_pages": "0",
+        "occlusion_allocated_bytes": "0",
+        "enrich_deferred": "0"
+      },
+      "same_lifetime_eviction_refills": {
+        "count": 0,
+        "within_60_frames": 0,
+        "min_frames": null,
+        "median_frames": null
+      },
+      "released_owner_returns": {
+        "count": 0,
+        "within_60_frames": 0,
+        "min_frames": null
+      },
+      "evicted_owner_count": 0,
+      "most_evicted_owners": [],
+      "largest_event_bursts": [
+        [
+          9189,
+          9
+        ],
+        [
+          9190,
+          9
+        ],
+        [
+          9194,
+          9
+        ],
+        [
+          9196,
+          9
+        ],
+        [
+          9197,
+          9
+        ]
+      ]
+    },
+    "flight_22": {
+      "events": {
+        "release": 8,
+        "page": 423,
+        "page_recorded": 423
+      },
+      "dirty_reasons": {},
+      "owner_retire_reasons": {
+        "part_release": 439,
+        "unwanted_rung": 1
+      },
+      "park_timeout_warnings": 1,
+      "stats_at_marker": {
+        "active": "1",
+        "variants": "880/32768",
+        "rejected": "0",
+        "mesh": "294.5/3512.0",
+        "pool": "24540/25600",
+        "pinned": "880",
+        "queue": "0",
+        "fills": "56521",
+        "evictions": "0",
+        "ind": "72.07/128",
+        "material_pages": "24540",
+        "shared_material_refs": "0",
+        "coverage_only_pages": "0",
+        "occlusion_pages": "0",
+        "occlusion_retained_pages": "0",
+        "occlusion_allocated_bytes": "0",
+        "enrich_deferred": "0"
+      },
+      "same_lifetime_eviction_refills": {
+        "count": 0,
+        "within_60_frames": 0,
+        "min_frames": null,
+        "median_frames": null
+      },
+      "released_owner_returns": {
+        "count": 0,
+        "within_60_frames": 0,
+        "min_frames": null
+      },
+      "evicted_owner_count": 0,
+      "most_evicted_owners": [],
+      "largest_event_bursts": [
+        [
+          9783,
+          9
+        ],
+        [
+          9786,
+          9
+        ],
+        [
+          9782,
+          8
+        ],
+        [
+          9784,
+          8
+        ],
+        [
+          9785,
+          8
+        ]
+      ]
+    },
+    "flight_23": {
+      "events": {
+        "page": 2258,
+        "page_recorded": 2258,
+        "release": 4
+      },
+      "dirty_reasons": {},
+      "owner_retire_reasons": {
+        "part_release": 367,
+        "unwanted_rung": 2
+      },
+      "park_timeout_warnings": 1,
+      "stats_at_marker": {
+        "active": "1",
+        "variants": "877/32768",
+        "rejected": "0",
+        "mesh": "294.1/3512.0",
+        "pool": "23365/25600",
+        "pinned": "877",
+        "queue": "0",
+        "fills": "56944",
+        "evictions": "0",
+        "ind": "71.88/128",
+        "material_pages": "23365",
+        "shared_material_refs": "0",
+        "coverage_only_pages": "0",
+        "occlusion_pages": "0",
+        "occlusion_retained_pages": "0",
+        "occlusion_allocated_bytes": "0",
+        "enrich_deferred": "0"
+      },
+      "same_lifetime_eviction_refills": {
+        "count": 0,
+        "within_60_frames": 0,
+        "min_frames": null,
+        "median_frames": null
+      },
+      "released_owner_returns": {
+        "count": 0,
+        "within_60_frames": 0,
+        "min_frames": null
+      },
+      "evicted_owner_count": 0,
+      "most_evicted_owners": [],
+      "largest_event_bursts": [
+        [
+          9903,
+          10
+        ],
+        [
+          9907,
+          9
+        ],
+        [
+          9910,
+          9
+        ],
+        [
+          10124,
+          9
+        ],
+        [
+          10137,
+          9
+        ]
+      ]
+    },
+    "flight_24": {
+      "events": {
+        "page": 360,
+        "page_recorded": 360,
+        "release": 1,
+        "evict": 93
+      },
+      "dirty_reasons": {},
+      "owner_retire_reasons": {
+        "part_release": 21,
+        "unwanted_rung": 1
+      },
+      "park_timeout_warnings": 0,
+      "stats_at_marker": {
+        "active": "1",
+        "variants": "881/32768",
+        "rejected": "0",
+        "mesh": "294.9/3512.0",
+        "pool": "25270/25600",
+        "pinned": "881",
+        "queue": "0",
+        "fills": "59202",
+        "evictions": "0",
+        "ind": "72.13/128",
+        "material_pages": "25270",
+        "shared_material_refs": "0",
+        "coverage_only_pages": "0",
+        "occlusion_pages": "0",
+        "occlusion_retained_pages": "0",
+        "occlusion_allocated_bytes": "0",
+        "enrich_deferred": "0"
+      },
+      "same_lifetime_eviction_refills": {
+        "count": 0,
+        "within_60_frames": 0,
+        "min_frames": null,
+        "median_frames": null
+      },
+      "released_owner_returns": {
+        "count": 0,
+        "within_60_frames": 0,
+        "min_frames": null
+      },
+      "evicted_owner_count": 9,
+      "most_evicted_owners": [
+        [
+          "83ff9a62cae47971",
+          27
+        ],
+        [
+          "d0169bb94279af89",
+          21
+        ],
+        [
+          "edf40a34d79a64b4",
+          18
+        ],
+        [
+          "400deb9377d02004",
+          8
+        ],
+        [
+          "3ac991171680f56c",
+          8
+        ],
+        [
+          "5b917e9f546be00a",
+          6
+        ],
+        [
+          "dad97ab87091914c",
+          3
+        ],
+        [
+          "8f061d1a5a78bae2",
+          1
+        ]
+      ],
+      "largest_event_bursts": [
+        [
+          10537,
+          16
+        ],
+        [
+          10538,
+          16
+        ],
+        [
+          10539,
+          16
+        ],
+        [
+          10540,
+          16
+        ],
+        [
+          10541,
+          16
+        ]
+      ]
+    },
+    "flight_25": {
+      "events": {
+        "evict": 555,
+        "page": 4407,
+        "page_recorded": 4407,
+        "release": 10
+      },
+      "dirty_reasons": {},
+      "owner_retire_reasons": {
+        "part_release": 840,
+        "unwanted_rung": 2
+      },
+      "park_timeout_warnings": 5,
+      "stats_at_marker": {
+        "active": "1",
+        "variants": "882/32768",
+        "rejected": "0",
+        "mesh": "294.4/3512.0",
+        "pool": "25536/25600",
+        "pinned": "882",
+        "queue": "0",
+        "fills": "59562",
+        "evictions": "93",
+        "ind": "72.10/128",
+        "material_pages": "25536",
+        "shared_material_refs": "0",
+        "coverage_only_pages": "0",
+        "occlusion_pages": "0",
+        "occlusion_retained_pages": "0",
+        "occlusion_allocated_bytes": "0",
+        "enrich_deferred": "0"
+      },
+      "same_lifetime_eviction_refills": {
+        "count": 0,
+        "within_60_frames": 0,
+        "min_frames": null,
+        "median_frames": null
+      },
+      "released_owner_returns": {
+        "count": 0,
+        "within_60_frames": 0,
+        "min_frames": null
+      },
+      "evicted_owner_count": 40,
+      "most_evicted_owners": [
+        [
+          "ba91d4c363093435",
+          66
+        ],
+        [
+          "8f061d1a5a78bae2",
+          49
+        ],
+        [
+          "de9c7dc5474f7863",
+          37
+        ],
+        [
+          "400deb9377d02004",
+          36
+        ],
+        [
+          "dad97ab87091914c",
+          30
+        ],
+        [
+          "9232f2b21d60cbd4",
+          27
+        ],
+        [
+          "d8a3d8710ea2fd95",
+          27
+        ],
+        [
+          "ede3ff7cb0c03e1f",
+          22
+        ]
+      ],
+      "largest_event_bursts": [
+        [
+          10624,
+          19
+        ],
+        [
+          10697,
+          17
+        ],
+        [
+          10698,
+          17
+        ],
+        [
+          10623,
+          16
+        ],
+        [
+          10625,
+          16
+        ]
+      ]
+    },
+    "flight_26": {
+      "events": {
+        "page": 762,
+        "page_recorded": 762,
+        "evict": 645
+      },
+      "dirty_reasons": {},
+      "owner_retire_reasons": {
+        "part_release": 3
+      },
+      "park_timeout_warnings": 3,
+      "stats_at_marker": {
+        "active": "1",
+        "variants": "899/32768",
+        "rejected": "0",
+        "mesh": "295.4/3512.0",
+        "pool": "25420/25600",
+        "pinned": "899",
+        "queue": "176",
+        "fills": "63969",
+        "evictions": "657",
+        "ind": "72.85/128",
+        "material_pages": "25420",
+        "shared_material_refs": "0",
+        "coverage_only_pages": "0",
+        "occlusion_pages": "0",
+        "occlusion_retained_pages": "0",
+        "occlusion_allocated_bytes": "0",
+        "enrich_deferred": "0"
+      },
+      "same_lifetime_eviction_refills": {
+        "count": 0,
+        "within_60_frames": 0,
+        "min_frames": null,
+        "median_frames": null
+      },
+      "released_owner_returns": {
+        "count": 0,
+        "within_60_frames": 0,
+        "min_frames": null
+      },
+      "evicted_owner_count": 54,
+      "most_evicted_owners": [
+        [
+          "6f2986cd0d64ab37",
+          75
+        ],
+        [
+          "80f64d90f28c72a8",
+          53
+        ],
+        [
+          "d0169bb94279af89",
+          52
+        ],
+        [
+          "9e624464c55819e2",
+          33
+        ],
+        [
+          "c9222d45e4887c96",
+          30
+        ],
+        [
+          "7a748d77092aa263",
+          30
+        ],
+        [
+          "ba91d4c363093435",
+          25
+        ],
+        [
+          "dad97ab87091914c",
+          23
+        ]
+      ],
+      "largest_event_bursts": [
+        [
+          11271,
+          17
+        ],
+        [
+          11237,
+          16
+        ],
+        [
+          11238,
+          16
+        ],
+        [
+          11239,
+          16
+        ],
+        [
+          11240,
+          16
+        ]
+      ]
+    },
+    "flight_27": {
+      "events": {
+        "evict": 1574,
+        "page": 3195,
+        "page_recorded": 3195,
+        "release": 14
+      },
+      "dirty_reasons": {},
+      "owner_retire_reasons": {
+        "part_release": 1084,
+        "unwanted_rung": 2
+      },
+      "park_timeout_warnings": 14,
+      "stats_at_marker": {
+        "active": "1",
+        "variants": "901/32768",
+        "rejected": "0",
+        "mesh": "295.8/3512.0",
+        "pool": "25536/25600",
+        "pinned": "901",
+        "queue": "0",
+        "fills": "64731",
+        "evictions": "1303",
+        "ind": "73.04/128",
+        "material_pages": "25536",
+        "shared_material_refs": "0",
+        "coverage_only_pages": "0",
+        "occlusion_pages": "0",
+        "occlusion_retained_pages": "0",
+        "occlusion_allocated_bytes": "0",
+        "enrich_deferred": "0"
+      },
+      "same_lifetime_eviction_refills": {
+        "count": 0,
+        "within_60_frames": 0,
+        "min_frames": null,
+        "median_frames": null
+      },
+      "released_owner_returns": {
+        "count": 0,
+        "within_60_frames": 0,
+        "min_frames": null
+      },
+      "evicted_owner_count": 79,
+      "most_evicted_owners": [
+        [
+          "e1997d1efd7d199f",
+          67
+        ],
+        [
+          "40528c9ba884f61b",
+          57
+        ],
+        [
+          "83ff9a62cae47971",
+          54
+        ],
+        [
+          "a5e24eb5601b88d1",
+          53
+        ],
+        [
+          "1211d8077ff9c8d3",
+          51
+        ],
+        [
+          "8f061d1a5a78bae2",
+          48
+        ],
+        [
+          "88aa2efc55522318",
+          48
+        ],
+        [
+          "8c282facbe34fd72",
+          45
+        ]
+      ],
+      "largest_event_bursts": [
+        [
+          11344,
+          18
+        ],
+        [
+          11387,
+          17
+        ],
+        [
+          11611,
+          17
+        ],
+        [
+          11769,
+          17
+        ],
+        [
+          11775,
+          17
+        ]
+      ]
+    },
+    "flight_28": {
+      "events": {
+        "page": 973,
+        "page_recorded": 973,
+        "release": 5
+      },
+      "dirty_reasons": {},
+      "owner_retire_reasons": {
+        "part_release": 468
+      },
+      "park_timeout_warnings": 10,
+      "stats_at_marker": {
+        "active": "1",
+        "variants": "929/32768",
+        "rejected": "0",
+        "mesh": "299.2/3512.0",
+        "pool": "23406/25600",
+        "pinned": "929",
+        "queue": "256",
+        "fills": "67926",
+        "evictions": "2892",
+        "ind": "74.65/128",
+        "material_pages": "23406",
+        "shared_material_refs": "0",
+        "coverage_only_pages": "0",
+        "occlusion_pages": "0",
+        "occlusion_retained_pages": "0",
+        "occlusion_allocated_bytes": "0",
+        "enrich_deferred": "0"
+      },
+      "same_lifetime_eviction_refills": {
+        "count": 0,
+        "within_60_frames": 0,
+        "min_frames": null,
+        "median_frames": null
+      },
+      "released_owner_returns": {
+        "count": 0,
+        "within_60_frames": 0,
+        "min_frames": null
+      },
+      "evicted_owner_count": 0,
+      "most_evicted_owners": [],
+      "largest_event_bursts": [
+        [
+          11946,
+          9
+        ],
+        [
+          11947,
+          9
+        ],
+        [
+          11948,
+          9
+        ],
+        [
+          11949,
+          9
+        ],
+        [
+          11951,
+          9
+        ]
+      ]
+    },
+    "flight_29": {
+      "events": {
+        "release": 16,
+        "page": 3690,
+        "page_recorded": 3690
+      },
+      "dirty_reasons": {},
+      "owner_retire_reasons": {
+        "part_release": 726
+      },
+      "park_timeout_warnings": 5,
+      "stats_at_marker": {
+        "active": "1",
+        "variants": "929/32768",
+        "rejected": "0",
+        "mesh": "299.2/3512.0",
+        "pool": "23374/25600",
+        "pinned": "929",
+        "queue": "256",
+        "fills": "68899",
+        "evictions": "2892",
+        "ind": "74.65/128",
+        "material_pages": "23374",
+        "shared_material_refs": "0",
+        "coverage_only_pages": "0",
+        "occlusion_pages": "0",
+        "occlusion_retained_pages": "0",
+        "occlusion_allocated_bytes": "0",
+        "enrich_deferred": "0"
+      },
+      "same_lifetime_eviction_refills": {
+        "count": 0,
+        "within_60_frames": 0,
+        "min_frames": null,
+        "median_frames": null
+      },
+      "released_owner_returns": {
+        "count": 0,
+        "within_60_frames": 0,
+        "min_frames": null
+      },
+      "evicted_owner_count": 0,
+      "most_evicted_owners": [],
+      "largest_event_bursts": [
+        [
+          12501,
+          12
+        ],
+        [
+          12075,
+          9
+        ],
+        [
+          12076,
+          9
+        ],
+        [
+          12077,
+          9
+        ],
+        [
+          12078,
+          9
+        ]
+      ]
+    },
+    "flight_30": {
+      "events": {
+        "release": 5,
+        "page": 729,
+        "page_recorded": 729
+      },
+      "dirty_reasons": {},
+      "owner_retire_reasons": {
+        "part_release": 158,
+        "unwanted_rung": 1
+      },
+      "park_timeout_warnings": 2,
+      "stats_at_marker": {
+        "active": "1",
+        "variants": "944/32768",
+        "rejected": "0",
+        "mesh": "301.7/3512.0",
+        "pool": "24354/25600",
+        "pinned": "944",
+        "queue": "0",
+        "fills": "72589",
+        "evictions": "2892",
+        "ind": "75.53/128",
+        "material_pages": "24354",
+        "shared_material_refs": "0",
+        "coverage_only_pages": "0",
+        "occlusion_pages": "0",
+        "occlusion_retained_pages": "0",
+        "occlusion_allocated_bytes": "0",
+        "enrich_deferred": "0"
+      },
+      "same_lifetime_eviction_refills": {
+        "count": 0,
+        "within_60_frames": 0,
+        "min_frames": null,
+        "median_frames": null
+      },
+      "released_owner_returns": {
+        "count": 0,
+        "within_60_frames": 0,
+        "min_frames": null
+      },
+      "evicted_owner_count": 0,
+      "most_evicted_owners": [],
+      "largest_event_bursts": [
+        [
+          12665,
+          9
+        ],
+        [
+          12712,
+          9
+        ],
+        [
+          12714,
+          9
+        ],
+        [
+          12745,
+          9
+        ],
+        [
+          12664,
+          8
+        ]
+      ]
+    },
+    "flight_31": {
+      "events": {
+        "page": 4148,
+        "page_recorded": 4148,
+        "release": 24
+      },
+      "dirty_reasons": {},
+      "owner_retire_reasons": {
+        "part_release": 1444,
+        "unwanted_rung": 4
+      },
+      "park_timeout_warnings": 2,
+      "stats_at_marker": {
+        "active": "1",
+        "variants": "941/32768",
+        "rejected": "0",
+        "mesh": "300.8/3512.0",
+        "pool": "24599/25600",
+        "pinned": "941",
+        "queue": "0",
+        "fills": "73318",
+        "evictions": "2892",
+        "ind": "75.21/128",
+        "material_pages": "24599",
+        "shared_material_refs": "0",
+        "coverage_only_pages": "0",
+        "occlusion_pages": "0",
+        "occlusion_retained_pages": "0",
+        "occlusion_allocated_bytes": "0",
+        "enrich_deferred": "0"
+      },
+      "same_lifetime_eviction_refills": {
+        "count": 0,
+        "within_60_frames": 0,
+        "min_frames": null,
+        "median_frames": null
+      },
+      "released_owner_returns": {
+        "count": 0,
+        "within_60_frames": 0,
+        "min_frames": null
+      },
+      "evicted_owner_count": 0,
+      "most_evicted_owners": [],
+      "largest_event_bursts": [
+        [
+          12785,
+          12
+        ],
+        [
+          13009,
+          10
+        ],
+        [
+          12833,
+          9
+        ],
+        [
+          12966,
+          9
+        ],
+        [
+          12968,
+          9
+        ]
+      ]
+    },
+    "flight_32": {
+      "events": {
+        "page": 8,
+        "page_recorded": 8
+      },
+      "dirty_reasons": {},
+      "owner_retire_reasons": {},
+      "park_timeout_warnings": 1,
+      "stats_at_marker": {
+        "active": "1",
+        "variants": "986/32768",
+        "rejected": "0",
+        "mesh": "304.5/3512.0",
+        "pool": "23405/25600",
+        "pinned": "986",
+        "queue": "256",
+        "fills": "77466",
+        "evictions": "2892",
+        "ind": "77.61/128",
+        "material_pages": "23405",
+        "shared_material_refs": "0",
+        "coverage_only_pages": "0",
+        "occlusion_pages": "0",
+        "occlusion_retained_pages": "0",
+        "occlusion_allocated_bytes": "0",
+        "enrich_deferred": "0"
+      },
+      "same_lifetime_eviction_refills": {
+        "count": 0,
+        "within_60_frames": 0,
+        "min_frames": null,
+        "median_frames": null
+      },
+      "released_owner_returns": {
+        "count": 0,
+        "within_60_frames": 0,
+        "min_frames": null
+      },
+      "evicted_owner_count": 0,
+      "most_evicted_owners": [],
+      "largest_event_bursts": [
+        [
+          13383,
+          8
+        ]
+      ]
+    },
+    "stationary_0": {
+      "events": {
+        "page": 2332,
+        "page_recorded": 2332,
+        "evict": 209
+      },
+      "dirty_reasons": {},
+      "owner_retire_reasons": {},
+      "park_timeout_warnings": 8,
+      "stats_at_marker": {
+        "active": "1",
+        "variants": "986/32768",
+        "rejected": "0",
+        "mesh": "304.5/3512.0",
+        "pool": "23413/25600",
+        "pinned": "986",
+        "queue": "256",
+        "fills": "77474",
+        "evictions": "2892",
+        "ind": "77.61/128",
+        "material_pages": "23413",
+        "shared_material_refs": "0",
+        "coverage_only_pages": "0",
+        "occlusion_pages": "0",
+        "occlusion_retained_pages": "0",
+        "occlusion_allocated_bytes": "0",
+        "enrich_deferred": "0"
+      },
+      "same_lifetime_eviction_refills": {
+        "count": 0,
+        "within_60_frames": 0,
+        "min_frames": null,
+        "median_frames": null
+      },
+      "released_owner_returns": {
+        "count": 0,
+        "within_60_frames": 0,
+        "min_frames": null
+      },
+      "evicted_owner_count": 21,
+      "most_evicted_owners": [
+        [
+          "8f061d1a5a78bae2",
+          36
+        ],
+        [
+          "400deb9377d02004",
+          23
+        ],
+        [
+          "e591db106f5e80fc",
+          22
+        ],
+        [
+          "305418bb1dbe5fb0",
+          21
+        ],
+        [
+          "88aa2efc55522318",
+          20
+        ],
+        [
+          "c27af4c3361c58bd",
+          14
+        ],
+        [
+          "330e517484bbfa0e",
+          13
+        ],
+        [
+          "fedb40d5fa736073",
+          13
+        ]
+      ],
+      "largest_event_bursts": [
+        [
+          13650,
+          16
+        ],
+        [
+          13651,
+          16
+        ],
+        [
+          13652,
+          16
+        ],
+        [
+          13653,
+          16
+        ],
+        [
+          13654,
+          16
+        ]
+      ]
+    },
+    "stationary_1": {
+      "events": {
+        "page": 5,
+        "page_recorded": 5,
+        "release": 1
+      },
+      "dirty_reasons": {},
+      "owner_retire_reasons": {
+        "part_release": 101
+      },
+      "park_timeout_warnings": 1,
+      "stats_at_marker": {
+        "active": "1",
+        "variants": "987/32768",
+        "rejected": "0",
+        "mesh": "304.6/3512.0",
+        "pool": "25536/25600",
+        "pinned": "987",
+        "queue": "0",
+        "fills": "79806",
+        "evictions": "3101",
+        "ind": "77.74/128",
+        "material_pages": "25536",
+        "shared_material_refs": "0",
+        "coverage_only_pages": "0",
+        "occlusion_pages": "0",
+        "occlusion_retained_pages": "0",
+        "occlusion_allocated_bytes": "0",
+        "enrich_deferred": "0"
+      },
+      "same_lifetime_eviction_refills": {
+        "count": 0,
+        "within_60_frames": 0,
+        "min_frames": null,
+        "median_frames": null
+      },
+      "released_owner_returns": {
+        "count": 0,
+        "within_60_frames": 0,
+        "min_frames": null
+      },
+      "evicted_owner_count": 0,
+      "most_evicted_owners": [],
+      "largest_event_bursts": [
+        [
+          14302,
+          1
+        ],
+        [
+          14428,
+          1
+        ],
+        [
+          14432,
+          1
+        ],
+        [
+          14563,
+          1
+        ],
+        [
+          14577,
+          1
+        ]
+      ]
+    },
+    "stationary_2": {
+      "events": {
+        "page": 10,
+        "page_recorded": 10,
+        "release": 10
+      },
+      "dirty_reasons": {},
+      "owner_retire_reasons": {
+        "part_release": 381
+      },
+      "park_timeout_warnings": 0,
+      "stats_at_marker": {
+        "active": "1",
+        "variants": "991/32768",
+        "rejected": "0",
+        "mesh": "305.6/3512.0",
+        "pool": "25342/25600",
+        "pinned": "991",
+        "queue": "0",
+        "fills": "79811",
+        "evictions": "3103",
+        "ind": "78.05/128",
+        "material_pages": "25342",
+        "shared_material_refs": "0",
+        "coverage_only_pages": "0",
+        "occlusion_pages": "0",
+        "occlusion_retained_pages": "0",
+        "occlusion_allocated_bytes": "0",
+        "enrich_deferred": "0"
+      },
+      "same_lifetime_eviction_refills": {
+        "count": 0,
+        "within_60_frames": 0,
+        "min_frames": null,
+        "median_frames": null
+      },
+      "released_owner_returns": {
+        "count": 1,
+        "within_60_frames": 0,
+        "min_frames": 5832
+      },
+      "evicted_owner_count": 0,
+      "most_evicted_owners": [],
+      "largest_event_bursts": [
+        [
+          14650,
+          4
+        ],
+        [
+          14657,
+          4
+        ],
+        [
+          14622,
+          1
+        ],
+        [
+          14641,
+          1
+        ],
+        [
+          14649,
+          1
+        ]
+      ]
+    },
+    "stationary_3": {
+      "events": {
+        "page": 7,
+        "page_recorded": 7
+      },
+      "dirty_reasons": {},
+      "owner_retire_reasons": {},
+      "park_timeout_warnings": 0,
+      "stats_at_marker": {
+        "active": "1",
+        "variants": "991/32768",
+        "rejected": "0",
+        "mesh": "305.9/3512.0",
+        "pool": "25034/25600",
+        "pinned": "991",
+        "queue": "0",
+        "fills": "79821",
+        "evictions": "3103",
+        "ind": "78.12/128",
+        "material_pages": "25034",
+        "shared_material_refs": "0",
+        "coverage_only_pages": "0",
+        "occlusion_pages": "0",
+        "occlusion_retained_pages": "0",
+        "occlusion_allocated_bytes": "0",
+        "enrich_deferred": "0"
+      },
+      "same_lifetime_eviction_refills": {
+        "count": 0,
+        "within_60_frames": 0,
+        "min_frames": null,
+        "median_frames": null
+      },
+      "released_owner_returns": {
+        "count": 0,
+        "within_60_frames": 0,
+        "min_frames": null
+      },
+      "evicted_owner_count": 0,
+      "most_evicted_owners": [],
+      "largest_event_bursts": [
+        [
+          15264,
+          1
+        ],
+        [
+          15428,
+          1
+        ],
+        [
+          15457,
+          1
+        ],
+        [
+          15540,
+          1
+        ],
+        [
+          15598,
+          1
+        ]
+      ]
+    },
+    "stationary_4": {
+      "events": {
+        "page": 6,
+        "page_recorded": 6,
+        "release": 1
+      },
+      "dirty_reasons": {},
+      "owner_retire_reasons": {
+        "part_release": 7
+      },
+      "park_timeout_warnings": 0,
+      "stats_at_marker": {
+        "active": "1",
+        "variants": "998/32768",
+        "rejected": "0",
+        "mesh": "306.8/3512.0",
+        "pool": "25041/25600",
+        "pinned": "998",
+        "queue": "0",
+        "fills": "79828",
+        "evictions": "3103",
+        "ind": "78.38/128",
+        "material_pages": "25041",
+        "shared_material_refs": "0",
+        "coverage_only_pages": "0",
+        "occlusion_pages": "0",
+        "occlusion_retained_pages": "0",
+        "occlusion_allocated_bytes": "0",
+        "enrich_deferred": "0"
+      },
+      "same_lifetime_eviction_refills": {
+        "count": 0,
+        "within_60_frames": 0,
+        "min_frames": null,
+        "median_frames": null
+      },
+      "released_owner_returns": {
+        "count": 0,
+        "within_60_frames": 0,
+        "min_frames": null
+      },
+      "evicted_owner_count": 0,
+      "most_evicted_owners": [],
+      "largest_event_bursts": [
+        [
+          15869,
+          1
+        ],
+        [
+          15980,
+          1
+        ],
+        [
+          15982,
+          1
+        ],
+        [
+          16017,
+          1
+        ],
+        [
+          16113,
+          1
+        ]
+      ]
+    },
+    "stationary_5": {
+      "events": {
+        "page": 7,
+        "page_recorded": 7,
+        "release": 3
+      },
+      "dirty_reasons": {},
+      "owner_retire_reasons": {
+        "part_release": 113
+      },
+      "park_timeout_warnings": 4,
+      "stats_at_marker": {
+        "active": "1",
+        "variants": "1003/32768",
+        "rejected": "0",
+        "mesh": "308.2/3512.0",
+        "pool": "25046/25600",
+        "pinned": "1003",
+        "queue": "0",
+        "fills": "79834",
+        "evictions": "3103",
+        "ind": "78.94/128",
+        "material_pages": "25046",
+        "shared_material_refs": "0",
+        "coverage_only_pages": "0",
+        "occlusion_pages": "0",
+        "occlusion_retained_pages": "0",
+        "occlusion_allocated_bytes": "0",
+        "enrich_deferred": "0"
+      },
+      "same_lifetime_eviction_refills": {
+        "count": 0,
+        "within_60_frames": 0,
+        "min_frames": null,
+        "median_frames": null
+      },
+      "released_owner_returns": {
+        "count": 0,
+        "within_60_frames": 0,
+        "min_frames": null
+      },
+      "evicted_owner_count": 0,
+      "most_evicted_owners": [],
+      "largest_event_bursts": [
+        [
+          16445,
+          1
+        ],
+        [
+          16449,
+          1
+        ],
+        [
+          16545,
+          1
+        ],
+        [
+          16548,
+          1
+        ],
+        [
+          16631,
+          1
+        ]
+      ]
+    },
+    "stationary_6": {
+      "events": {},
+      "dirty_reasons": {},
+      "owner_retire_reasons": {},
+      "park_timeout_warnings": 2,
+      "stats_at_marker": {
+        "active": "1",
+        "variants": "1007/32768",
+        "rejected": "0",
+        "mesh": "308.7/3512.0",
+        "pool": "25050/25600",
+        "pinned": "1007",
+        "queue": "0",
+        "fills": "79841",
+        "evictions": "3103",
+        "ind": "79.10/128",
+        "material_pages": "25050",
+        "shared_material_refs": "0",
+        "coverage_only_pages": "0",
+        "occlusion_pages": "0",
+        "occlusion_retained_pages": "0",
+        "occlusion_allocated_bytes": "0",
+        "enrich_deferred": "0"
+      },
+      "same_lifetime_eviction_refills": {
+        "count": 0,
+        "within_60_frames": 0,
+        "min_frames": null,
+        "median_frames": null
+      },
+      "released_owner_returns": {
+        "count": 0,
+        "within_60_frames": 0,
+        "min_frames": null
+      },
+      "evicted_owner_count": 0,
+      "most_evicted_owners": [],
+      "largest_event_bursts": []
+    }
+  }
+}

@@ -1,0 +1,431 @@
+[1/98] Building CXX object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/vk_temporal.cpp.o
+[2/98] Building CXX object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/vk_gi_math.cpp.o
+[3/98] Building CXX object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/vk_lighting_controls.cpp.o
+[4/98] Building CXX object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/streamline_bridge.cpp.o
+[5/98] Building CXX object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/vk_context.cpp.o
+[6/98] Building CXX object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/raster_mesh.cpp.o
+[7/98] Building CXX object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/matrix_math.cpp.o
+[8/98] Building CXX object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/frame_matrices.cpp.o
+[9/98] Building CXX object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/vk_instance_cache.cpp.o
+In file included from /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/../../../libs/MatterGraphics/src/native/vt/vt_snapshot.h:7,
+                 from /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/../../../libs/MatterGraphics/src/native/vt/vt_residency.h:92,
+                 from /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/vt_residency.h:3,
+                 from /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/vk_scene_renderer.h:127,
+                 from /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/vk_instance_cache.h:25,
+                 from /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/vk_instance_cache.cpp:15:
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/../../../libs/MatterGraphics/src/native/vt/../../../../../MatterEngine3/src/render/vt_finite_sources.h: In function ‘bool vt::vt_make_finite_sources(const std::vector<VtFiniteSourceBinding>&, std::shared_ptr<const VtFiniteSources>&, std::string&, const std::vector<VtFiniteReceiver>&, const std::vector<std::shared_ptr<const surface_stamp::Stamp> >&)’:
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/../../../libs/MatterGraphics/src/native/vt/../../../../../MatterEngine3/src/render/vt_finite_sources.h:157:17: warning: this ‘if’ clause does not guard... [-Wmisleading-indentation]
+  157 |                 if(used[id]) return fail("duplicate composite candidate");used[id]=true;
+      |                 ^~
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/../../../libs/MatterGraphics/src/native/vt/../../../../../MatterEngine3/src/render/vt_finite_sources.h:157:75: note: ...this statement, but the latter is misleadingly indented as if it were guarded by the ‘if’
+  157 |                 if(used[id]) return fail("duplicate composite candidate");used[id]=true;
+      |                                                                           ^~~~
+[10/98] Building CXX object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/indexed_part_geometry.cpp.o
+[11/98] Building CXX object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/geometry/geometry_pages.cpp.o
+[12/98] Building CXX object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/geometry/geometry_cut.cpp.o
+[13/98] Building CXX object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/geometry/geometry_compiler.cpp.o
+[14/98] Building CXX object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/mesh_error.cpp.o
+[15/98] Building CXX object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/geometry/geometry_residency.cpp.o
+[16/98] Building CXX object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/libs/MatterSurfaceLib/src/mesh_indexed.cpp.o
+[17/98] Building CXX object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/libs/MatterSurfaceLib/src/mesh_simplifier.cpp.o
+[18/98] Building CXX object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/libs/MatterGraphics/src/native/mesh_raster.cpp.o
+[19/98] Building CXX object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/libs/MatterGraphics/src/native/mesh_pipelines.cpp.o
+[20/98] Building CXX object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/vk_resources.cpp.o
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/vk_resources.cpp: In function ‘matter::ProcessMemoryStats matter::process_memory_stats()’:
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/vk_resources.cpp:246:23: warning: use of assignment suppression and length modifier together in gnu_scanf format [-Wformat=]
+  246 |         if (fscanf(f, "%*ld %ld", &pages) == 1)
+      |                       ^~~~~~~~~~
+[21/98] Building CXX object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/sparse_voxel_bake.cpp.o
+[22/98] Building CXX object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/vk_pipeline.cpp.o
+[23/98] Building CXX object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/surface_proxy.cpp.o
+[24/98] Building CXX object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/projected_face_cache.cpp.o
+[25/98] Building CXX object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/vk_sparse_voxel.cpp.o
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/vk_sparse_voxel.cpp: In static member function ‘static std::shared_ptr<viewer::VkSparseVoxelScene> viewer::VkSparseVoxelScene::create_impl(matter::VulkanDevice&, const std::vector<viewer::SparseVoxelBatch>&, std::string&, const std::vector<viewer::SparseHierarchyPrototype>*, const std::vector<viewer::SparseHierarchyPlacement>*, const viewer::SparseHierarchyConfig*, bool, const std::vector<viewer::SparseSharedObject>*)’:
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/vk_sparse_voxel.cpp:668:5: warning: this ‘if’ clause does not guard... [-Wmisleading-indentation]
+  668 |     if(bricks.empty()) bricks.emplace_back(); if(cells.empty()) cells.emplace_back();
+      |     ^~
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/vk_sparse_voxel.cpp:668:47: note: ...this statement, but the latter is misleadingly indented as if it were guarded by the ‘if’
+  668 |     if(bricks.empty()) bricks.emplace_back(); if(cells.empty()) cells.emplace_back();
+      |                                               ^~
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/vk_sparse_voxel.cpp:669:5: warning: this ‘if’ clause does not guard... [-Wmisleading-indentation]
+  669 |     if(surfaces.empty()) surfaces.emplace_back(); if(texture_mips.empty()) texture_mips.emplace_back();
+      |     ^~
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/vk_sparse_voxel.cpp:669:51: note: ...this statement, but the latter is misleadingly indented as if it were guarded by the ‘if’
+  669 |     if(surfaces.empty()) surfaces.emplace_back(); if(texture_mips.empty()) texture_mips.emplace_back();
+      |                                                   ^~
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/vk_sparse_voxel.cpp:676:5: warning: this ‘if’ clause does not guard... [-Wmisleading-indentation]
+  676 |     if(children.empty()) children.emplace_back(); if(root_placements.empty()) root_placements.emplace_back();
+      |     ^~
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/vk_sparse_voxel.cpp:676:51: note: ...this statement, but the latter is misleadingly indented as if it were guarded by the ‘if’
+  676 |     if(children.empty()) children.emplace_back(); if(root_placements.empty()) root_placements.emplace_back();
+      |                                                   ^~
+[26/98] Building CXX object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/part_surface.cpp.o
+In file included from /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/part_surface.h:4,
+                 from /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/part_surface.cpp:1:
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/vt_finite_sources.h: In function ‘bool vt::vt_make_finite_sources(const std::vector<VtFiniteSourceBinding>&, std::shared_ptr<const VtFiniteSources>&, std::string&, const std::vector<VtFiniteReceiver>&, const std::vector<std::shared_ptr<const surface_stamp::Stamp> >&)’:
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/vt_finite_sources.h:157:17: warning: this ‘if’ clause does not guard... [-Wmisleading-indentation]
+  157 |                 if(used[id]) return fail("duplicate composite candidate");used[id]=true;
+      |                 ^~
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/vt_finite_sources.h:157:75: note: ...this statement, but the latter is misleadingly indented as if it were guarded by the ‘if’
+  157 |                 if(used[id]) return fail("duplicate composite candidate");used[id]=true;
+      |                                                                           ^~~~
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/part_surface.cpp: In function ‘bool part_surface::prepare(const script_host::EvaluatedFiniteSurface&, const std::string&, const gpu_meshing::SolidFaceProjector&, const MaterialBaker&, std::shared_ptr<const Prepared>&, Stats&, gpu_meshing::Error&, const gpu_meshing::BuildControl&, SourceCache*, matter::CacheByteStorage*)’:
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/part_surface.cpp:183:17: warning: this ‘for’ clause does not guard... [-Wmisleading-indentation]
+  183 |                 for(float f:m.phase)add(f);for(float f:m.u_range_m)add(f);add(m.datum_m);
+      |                 ^~~
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/part_surface.cpp:183:44: note: ...this statement, but the latter is misleadingly indented as if it were guarded by the ‘for’
+  183 |                 for(float f:m.phase)add(f);for(float f:m.u_range_m)add(f);add(m.datum_m);
+      |                                            ^~~
+[27/98] Building CXX object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/face_material_bake.cpp.o
+[28/98] Building CXX object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/finite_surface_stamp.cpp.o
+[29/98] Building CXX object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/libs/MatterSurfaceLib/src/part_asset.cpp.o
+[30/98] Building CXX object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/libs/MatterSurfaceLib/src/blas_manager.cpp.o
+[31/98] Building CXX object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/libs/MatterSurfaceLib/src/tlas_manager.cpp.o
+[32/98] Building CXX object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/part_asset_v2.cpp.o
+[33/98] Building CXX object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/vk_animation_skinning.cpp.o
+[34/98] Building CXX object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/vk_animation_bounds.cpp.o
+[35/98] Building CXX object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/animation/animation_budget.cpp.o
+[36/98] Building CXX object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/tileset_slicer.cpp.o
+[37/98] Building CXX object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/bc_encode.cpp.o
+[38/98] Building CXX object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/util/json_doc.cpp.o
+[39/98] Building CXX object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/props/props.cpp.o
+[40/98] Building CXX object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/vt_stub_filler.cpp.o
+In file included from /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/../../../libs/MatterGraphics/src/native/vt/vt_snapshot.h:7,
+                 from /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/../../../libs/MatterGraphics/src/native/vt/vt_residency.h:92,
+                 from /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/../../../libs/MatterGraphics/src/native/vt/vt_stub_filler.cpp:30,
+                 from /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/vt_stub_filler.cpp:2:
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/../../../libs/MatterGraphics/src/native/vt/../../../../../MatterEngine3/src/render/vt_finite_sources.h: In function ‘bool vt::vt_make_finite_sources(const std::vector<VtFiniteSourceBinding>&, std::shared_ptr<const VtFiniteSources>&, std::string&, const std::vector<VtFiniteReceiver>&, const std::vector<std::shared_ptr<const surface_stamp::Stamp> >&)’:
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/../../../libs/MatterGraphics/src/native/vt/../../../../../MatterEngine3/src/render/vt_finite_sources.h:157:17: warning: this ‘if’ clause does not guard... [-Wmisleading-indentation]
+  157 |                 if(used[id]) return fail("duplicate composite candidate");used[id]=true;
+      |                 ^~
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/../../../libs/MatterGraphics/src/native/vt/../../../../../MatterEngine3/src/render/vt_finite_sources.h:157:75: note: ...this statement, but the latter is misleadingly indented as if it were guarded by the ‘if’
+  157 |                 if(used[id]) return fail("duplicate composite candidate");used[id]=true;
+      |                                                                           ^~~~
+[41/98] Building CXX object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/vt_export.cpp.o
+In file included from /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/../../../libs/MatterGraphics/src/native/vt/vt_snapshot.h:7,
+                 from /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/vt_snapshot.h:3,
+                 from /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/vt_export.h:4,
+                 from /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/vt_export.cpp:1:
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/../../../libs/MatterGraphics/src/native/vt/../../../../../MatterEngine3/src/render/vt_finite_sources.h: In function ‘bool vt::vt_make_finite_sources(const std::vector<VtFiniteSourceBinding>&, std::shared_ptr<const VtFiniteSources>&, std::string&, const std::vector<VtFiniteReceiver>&, const std::vector<std::shared_ptr<const surface_stamp::Stamp> >&)’:
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/../../../libs/MatterGraphics/src/native/vt/../../../../../MatterEngine3/src/render/vt_finite_sources.h:157:17: warning: this ‘if’ clause does not guard... [-Wmisleading-indentation]
+  157 |                 if(used[id]) return fail("duplicate composite candidate");used[id]=true;
+      |                 ^~
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/../../../libs/MatterGraphics/src/native/vt/../../../../../MatterEngine3/src/render/vt_finite_sources.h:157:75: note: ...this statement, but the latter is misleadingly indented as if it were guarded by the ‘if’
+  157 |                 if(used[id]) return fail("duplicate composite candidate");used[id]=true;
+      |                                                                           ^~~~
+[42/98] Building CXX object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/vt_export_mesh.cpp.o
+In file included from /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/../part_surface.h:4,
+                 from /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/vt_export_mesh.cpp:2:
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/../render/vt_finite_sources.h: In function ‘bool vt::vt_make_finite_sources(const std::vector<VtFiniteSourceBinding>&, std::shared_ptr<const VtFiniteSources>&, std::string&, const std::vector<VtFiniteReceiver>&, const std::vector<std::shared_ptr<const surface_stamp::Stamp> >&)’:
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/../render/vt_finite_sources.h:157:17: warning: this ‘if’ clause does not guard... [-Wmisleading-indentation]
+  157 |                 if(used[id]) return fail("duplicate composite candidate");used[id]=true;
+      |                 ^~
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/../render/vt_finite_sources.h:157:75: note: ...this statement, but the latter is misleadingly indented as if it were guarded by the ‘if’
+  157 |                 if(used[id]) return fail("duplicate composite candidate");used[id]=true;
+      |                                                                           ^~~~
+[43/98] Building CXX object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/vk_scene_renderer.cpp.o
+In file included from /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/../../../libs/MatterGraphics/src/native/vt/vt_snapshot.h:7,
+                 from /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/../../../libs/MatterGraphics/src/native/vt/vt_residency.h:92,
+                 from /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/vt_residency.h:3,
+                 from /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/vk_scene_renderer.h:127,
+                 from /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/vk_scene_renderer.cpp:109:
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/../../../libs/MatterGraphics/src/native/vt/../../../../../MatterEngine3/src/render/vt_finite_sources.h: In function ‘bool vt::vt_make_finite_sources(const std::vector<VtFiniteSourceBinding>&, std::shared_ptr<const VtFiniteSources>&, std::string&, const std::vector<VtFiniteReceiver>&, const std::vector<std::shared_ptr<const surface_stamp::Stamp> >&)’:
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/../../../libs/MatterGraphics/src/native/vt/../../../../../MatterEngine3/src/render/vt_finite_sources.h:157:17: warning: this ‘if’ clause does not guard... [-Wmisleading-indentation]
+  157 |                 if(used[id]) return fail("duplicate composite candidate");used[id]=true;
+      |                 ^~
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/../../../libs/MatterGraphics/src/native/vt/../../../../../MatterEngine3/src/render/vt_finite_sources.h:157:75: note: ...this statement, but the latter is misleadingly indented as if it were guarded by the ‘if’
+  157 |                 if(used[id]) return fail("duplicate composite candidate");used[id]=true;
+      |                                                                           ^~~~
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/vk_scene_renderer.cpp: In member function ‘bool viewer::VkSceneRenderer::create_raster_pipelines(std::string&)’:
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/vk_scene_renderer.cpp:2542:43: warning: enumerated and non-enumerated type in conditional expression [-Wextra]
+ 2542 |         (vulkan_->ray_tracing_available() ? VK_SHADER_STAGE_RAYGEN_BIT_KHR
+      |          ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+ 2543 |                                           : VkShaderStageFlags{0});
+      |                                           ~~~~~~~~~~~~~~~~~~~~~~~
+[44/98] Building CXX object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/terrain_field.cpp.o
+[45/98] Building CXX object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/vt_residency.cpp.o
+In file included from /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/../../../libs/MatterGraphics/src/native/vt/vt_snapshot.h:7,
+                 from /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/../../../libs/MatterGraphics/src/native/vt/vt_residency.h:92,
+                 from /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/../../../libs/MatterGraphics/src/native/vt/vt_residency.cpp:68,
+                 from /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/vt_residency.cpp:2:
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/../../../libs/MatterGraphics/src/native/vt/../../../../../MatterEngine3/src/render/vt_finite_sources.h: In function ‘bool vt::vt_make_finite_sources(const std::vector<VtFiniteSourceBinding>&, std::shared_ptr<const VtFiniteSources>&, std::string&, const std::vector<VtFiniteReceiver>&, const std::vector<std::shared_ptr<const surface_stamp::Stamp> >&)’:
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/../../../libs/MatterGraphics/src/native/vt/../../../../../MatterEngine3/src/render/vt_finite_sources.h:157:17: warning: this ‘if’ clause does not guard... [-Wmisleading-indentation]
+  157 |                 if(used[id]) return fail("duplicate composite candidate");used[id]=true;
+      |                 ^~
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/../../../libs/MatterGraphics/src/native/vt/../../../../../MatterEngine3/src/render/vt_finite_sources.h:157:75: note: ...this statement, but the latter is misleadingly indented as if it were guarded by the ‘if’
+  157 |                 if(used[id]) return fail("duplicate composite candidate");used[id]=true;
+      |                                                                           ^~~~
+[46/98] Building CXX object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/world_lights.cpp.o
+[47/98] Building CXX object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/tests/vulkan_smoke_tileset_bake_stub.cpp.o
+[48/98] Building CXX object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/vt_compositor.cpp.o
+In file included from /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/../../../libs/MatterGraphics/src/native/vt/vt_snapshot.h:7,
+                 from /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/vt_snapshot.h:3,
+                 from /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/vt_prepare.h:7,
+                 from /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/vt_compositor.cpp:59:
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/../../../libs/MatterGraphics/src/native/vt/../../../../../MatterEngine3/src/render/vt_finite_sources.h: In function ‘bool vt::vt_make_finite_sources(const std::vector<VtFiniteSourceBinding>&, std::shared_ptr<const VtFiniteSources>&, std::string&, const std::vector<VtFiniteReceiver>&, const std::vector<std::shared_ptr<const surface_stamp::Stamp> >&)’:
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/../../../libs/MatterGraphics/src/native/vt/../../../../../MatterEngine3/src/render/vt_finite_sources.h:157:17: warning: this ‘if’ clause does not guard... [-Wmisleading-indentation]
+  157 |                 if(used[id]) return fail("duplicate composite candidate");used[id]=true;
+      |                 ^~
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/../../../libs/MatterGraphics/src/native/vt/../../../../../MatterEngine3/src/render/vt_finite_sources.h:157:75: note: ...this statement, but the latter is misleadingly indented as if it were guarded by the ‘if’
+  157 |                 if(used[id]) return fail("duplicate composite candidate");used[id]=true;
+      |                                                                           ^~~~
+[49/98] Building CXX object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/vt_enrich.cpp.o
+[50/98] Building CXX object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/tileset_gtex.cpp.o
+[51/98] Building CXX object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/vk_atmosphere.cpp.o
+[52/98] Building CXX object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/vk_emitter_gather.cpp.o
+[53/98] Building CXX object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/lod_trace.cpp.o
+[54/98] Building CXX object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/gpu_meshing/gpu_visual_mesher_common.cpp.o
+[55/98] Building CXX object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/vk_cloud_shadows.cpp.o
+[56/98] Building CXX object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/gpu_meshing/gpu_solid_mesher_common.cpp.o
+[57/98] Building CXX object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/gpu_meshing/gpu_visual_mesher_vk.cpp.o
+[58/98] Building CXX object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/gpu_meshing/solid_face_projection_common.cpp.o
+[59/98] Building CXX object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/gpu_meshing/gpu_solid_mesher_vk.cpp.o
+[60/98] Building CXX object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/vk_volumetrics.cpp.o
+In file included from /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/../../../libs/MatterGraphics/src/native/vt/vt_snapshot.h:7,
+                 from /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/../../../libs/MatterGraphics/src/native/vt/vt_residency.h:92,
+                 from /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/vt_residency.h:3,
+                 from /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/vk_scene_renderer.h:127,
+                 from /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/vk_volumetrics.cpp:4:
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/../../../libs/MatterGraphics/src/native/vt/../../../../../MatterEngine3/src/render/vt_finite_sources.h: In function ‘bool vt::vt_make_finite_sources(const std::vector<VtFiniteSourceBinding>&, std::shared_ptr<const VtFiniteSources>&, std::string&, const std::vector<VtFiniteReceiver>&, const std::vector<std::shared_ptr<const surface_stamp::Stamp> >&)’:
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/../../../libs/MatterGraphics/src/native/vt/../../../../../MatterEngine3/src/render/vt_finite_sources.h:157:17: warning: this ‘if’ clause does not guard... [-Wmisleading-indentation]
+  157 |                 if(used[id]) return fail("duplicate composite candidate");used[id]=true;
+      |                 ^~
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/../../../libs/MatterGraphics/src/native/vt/../../../../../MatterEngine3/src/render/vt_finite_sources.h:157:75: note: ...this statement, but the latter is misleadingly indented as if it were guarded by the ‘if’
+  157 |                 if(used[id]) return fail("duplicate composite candidate");used[id]=true;
+      |                                                                           ^~~~
+[61/98] Building CXX object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/gpu_meshing/gpu_solid_face_projector_vk.cpp.o
+[62/98] Building CXX object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/gpu_meshing/gpu_face_material_vk.cpp.o
+[63/98] Building CXX object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/water_field_vk.cpp.o
+[64/98] Building CXX object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/water_field_vk_resources.cpp.o
+[65/98] Building CXX object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/water_animation_gpu.cpp.o
+[66/98] Building CXX object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/water_mesh_animation_playback.cpp.o
+[67/98] Building CXX object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/hydrology/fluid_gameplay_field.cpp.o
+[68/98] Building CXX object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/hydrology/hydrology_artifact.cpp.o
+[69/98] Building CXX object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/gpu_meshing/water_scene_part.cpp.o
+In file included from /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/../../../libs/MatterGraphics/src/native/vt/vt_snapshot.h:7,
+                 from /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/../../../libs/MatterGraphics/src/native/vt/vt_residency.h:92,
+                 from /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/vt_residency.h:3,
+                 from /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/vk_scene_renderer.h:127,
+                 from /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/gpu_meshing/water_scene_part.h:4,
+                 from /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/gpu_meshing/water_scene_part.cpp:1:
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/../../../libs/MatterGraphics/src/native/vt/../../../../../MatterEngine3/src/render/vt_finite_sources.h: In function ‘bool vt::vt_make_finite_sources(const std::vector<VtFiniteSourceBinding>&, std::shared_ptr<const VtFiniteSources>&, std::string&, const std::vector<VtFiniteReceiver>&, const std::vector<std::shared_ptr<const surface_stamp::Stamp> >&)’:
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/../../../libs/MatterGraphics/src/native/vt/../../../../../MatterEngine3/src/render/vt_finite_sources.h:157:17: warning: this ‘if’ clause does not guard... [-Wmisleading-indentation]
+  157 |                 if(used[id]) return fail("duplicate composite candidate");used[id]=true;
+      |                 ^~
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/../../../libs/MatterGraphics/src/native/vt/../../../../../MatterEngine3/src/render/vt_finite_sources.h:157:75: note: ...this statement, but the latter is misleadingly indented as if it were guarded by the ‘if’
+  157 |                 if(used[id]) return fail("duplicate composite candidate");used[id]=true;
+      |                                                                           ^~~~
+[70/98] Building CXX object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/hydrology/river_presentation_field.cpp.o
+[71/98] Building CXX object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/hydrology/water_visual_products.cpp.o
+[72/98] Building CXX object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/hydrology/water_mesh_animation_artifact.cpp.o
+[73/98] Building CXX object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/tests/gpu_solid_mesher_tests.cpp.o
+[74/98] Building C object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/libs/MatterSurfaceLib/src/fat_primitive.c.o
+[75/98] Building CXX object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/hydrology/physx_fluid_bake.cpp.o
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/hydrology/physx_fluid_bake.cpp:20:6: warning: ‘bool hydrology::{anonymous}::finite(const matter::Float2&)’ defined but not used [-Wunused-function]
+   20 | bool finite(const matter::Float2& value) noexcept {
+      |      ^~~~~~
+[76/98] Building C object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/libs/MatterSurfaceLib/src/material_registry.c.o
+[77/98] Building C object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/libs/MemoryLib/src/mem_pool.c.o
+[78/98] Building C object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/libs/MatterSurfaceLib/src/surface.c.o
+[79/98] Building C object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/libs/SpatialQueryLib/src/spatial_hash.c.o
+[80/98] Building C object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/libs/MemoryLib/src/mem_bank.c.o
+[81/98] Building C object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/libs/MemoryLib/src/mem_arena.c.o
+[82/98] Building C object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/libs/MemoryLib/src/mem_array.c.o
+[83/98] Building CXX object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/libs/AssetStoreLib/src/store_hash.cpp.o
+[84/98] Building CXX object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/libs/AssetStoreLib/src/store_os.cpp.o
+[85/98] Building CXX object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEditor/src/ui_lighting_controls.cpp.o
+[86/98] Building CXX object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/libs/AssetStoreLib/src/blob_store.cpp.o
+[87/98] Building CXX object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/libs/AssetStoreLib/src/ref_table.cpp.o
+[88/98] Building CXX object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/tests/gpu_visual_mesher_vk_tests.cpp.o
+In file included from /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/../../../libs/MatterGraphics/src/native/vt/vt_snapshot.h:7,
+                 from /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/../../../libs/MatterGraphics/src/native/vt/vt_residency.h:92,
+                 from /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/vt_residency.h:3,
+                 from /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/vk_scene_renderer.h:127,
+                 from /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/gpu_meshing/water_scene_part.h:4,
+                 from /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/tests/gpu_visual_mesher_vk_tests.cpp:30:
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/../../../libs/MatterGraphics/src/native/vt/../../../../../MatterEngine3/src/render/vt_finite_sources.h: In function ‘bool vt::vt_make_finite_sources(const std::vector<VtFiniteSourceBinding>&, std::shared_ptr<const VtFiniteSources>&, std::string&, const std::vector<VtFiniteReceiver>&, const std::vector<std::shared_ptr<const surface_stamp::Stamp> >&)’:
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/../../../libs/MatterGraphics/src/native/vt/../../../../../MatterEngine3/src/render/vt_finite_sources.h:157:17: warning: this ‘if’ clause does not guard... [-Wmisleading-indentation]
+  157 |                 if(used[id]) return fail("duplicate composite candidate");used[id]=true;
+      |                 ^~
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/../../../libs/MatterGraphics/src/native/vt/../../../../../MatterEngine3/src/render/vt_finite_sources.h:157:75: note: ...this statement, but the latter is misleadingly indented as if it were guarded by the ‘if’
+  157 |                 if(used[id]) return fail("duplicate composite candidate");used[id]=true;
+      |                                                                           ^~~~
+[89/98] Building CXX object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/libs/AssetStoreLib/src/asset_pages.cpp.o
+[90/98] Building CXX object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/third_party/bc7enc/bc7enc.cpp.o
+[91/98] Building CXX object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/third_party/bc7enc/rgbcx.cpp.o
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/third_party/bc7enc/rgbcx.cpp: In function ‘void rgbcx::encode_bc1(uint32_t, void*, const uint8_t*, bool, bool, const uint8_t*)’:
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/third_party/bc7enc/rgbcx.cpp:1725:48: warning: enumerated and non-enumerated type in conditional expression [-Wextra]
+ 1725 |                         flags |= (allow_3color ? cEncodeBC1Use3ColorBlocks : 0) | (allow_transparent_texels_for_black ? cEncodeBC1Use3ColorBlocksForBlackPixels : 0);
+      |                                   ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/third_party/bc7enc/rgbcx.cpp:1725:119: warning: enumerated and non-enumerated type in conditional expression [-Wextra]
+ 1725 |                         flags |= (allow_3color ? cEncodeBC1Use3ColorBlocks : 0) | (allow_transparent_texels_for_black ? cEncodeBC1Use3ColorBlocksForBlackPixels : 0);
+      |                                                                                    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/third_party/bc7enc/rgbcx.cpp:1729:48: warning: enumerated and non-enumerated type in conditional expression [-Wextra]
+ 1729 |                         flags |= (allow_3color ? cEncodeBC1Use3ColorBlocks : 0) | (allow_transparent_texels_for_black ? cEncodeBC1Use3ColorBlocksForBlackPixels : 0);
+      |                                   ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/third_party/bc7enc/rgbcx.cpp:1729:119: warning: enumerated and non-enumerated type in conditional expression [-Wextra]
+ 1729 |                         flags |= (allow_3color ? cEncodeBC1Use3ColorBlocks : 0) | (allow_transparent_texels_for_black ? cEncodeBC1Use3ColorBlocksForBlackPixels : 0);
+      |                                                                                    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/third_party/bc7enc/rgbcx.cpp:1733:48: warning: enumerated and non-enumerated type in conditional expression [-Wextra]
+ 1733 |                         flags |= (allow_3color ? cEncodeBC1Use3ColorBlocks : 0) | (allow_transparent_texels_for_black ? cEncodeBC1Use3ColorBlocksForBlackPixels : 0);
+      |                                   ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/third_party/bc7enc/rgbcx.cpp:1733:119: warning: enumerated and non-enumerated type in conditional expression [-Wextra]
+ 1733 |                         flags |= (allow_3color ? cEncodeBC1Use3ColorBlocks : 0) | (allow_transparent_texels_for_black ? cEncodeBC1Use3ColorBlocksForBlackPixels : 0);
+      |                                                                                    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/third_party/bc7enc/rgbcx.cpp:1738:48: warning: enumerated and non-enumerated type in conditional expression [-Wextra]
+ 1738 |                         flags |= (allow_3color ? cEncodeBC1Use3ColorBlocks : 0) | (allow_transparent_texels_for_black ? cEncodeBC1Use3ColorBlocksForBlackPixels : 0);
+      |                                   ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/third_party/bc7enc/rgbcx.cpp:1738:119: warning: enumerated and non-enumerated type in conditional expression [-Wextra]
+ 1738 |                         flags |= (allow_3color ? cEncodeBC1Use3ColorBlocks : 0) | (allow_transparent_texels_for_black ? cEncodeBC1Use3ColorBlocksForBlackPixels : 0);
+      |                                                                                    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/third_party/bc7enc/rgbcx.cpp:1743:48: warning: enumerated and non-enumerated type in conditional expression [-Wextra]
+ 1743 |                         flags |= (allow_3color ? cEncodeBC1Use3ColorBlocks : 0) | (allow_transparent_texels_for_black ? cEncodeBC1Use3ColorBlocksForBlackPixels : 0);
+      |                                   ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/third_party/bc7enc/rgbcx.cpp:1743:119: warning: enumerated and non-enumerated type in conditional expression [-Wextra]
+ 1743 |                         flags |= (allow_3color ? cEncodeBC1Use3ColorBlocks : 0) | (allow_transparent_texels_for_black ? cEncodeBC1Use3ColorBlocksForBlackPixels : 0);
+      |                                                                                    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/third_party/bc7enc/rgbcx.cpp:1749:48: warning: enumerated and non-enumerated type in conditional expression [-Wextra]
+ 1749 |                         flags |= (allow_3color ? cEncodeBC1Use3ColorBlocks : 0) | (allow_transparent_texels_for_black ? cEncodeBC1Use3ColorBlocksForBlackPixels : 0);
+      |                                   ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/third_party/bc7enc/rgbcx.cpp:1749:119: warning: enumerated and non-enumerated type in conditional expression [-Wextra]
+ 1749 |                         flags |= (allow_3color ? cEncodeBC1Use3ColorBlocks : 0) | (allow_transparent_texels_for_black ? cEncodeBC1Use3ColorBlocksForBlackPixels : 0);
+      |                                                                                    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/third_party/bc7enc/rgbcx.cpp:1755:48: warning: enumerated and non-enumerated type in conditional expression [-Wextra]
+ 1755 |                         flags |= (allow_3color ? cEncodeBC1Use3ColorBlocks : 0) | (allow_transparent_texels_for_black ? cEncodeBC1Use3ColorBlocksForBlackPixels : 0);
+      |                                   ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/third_party/bc7enc/rgbcx.cpp:1755:119: warning: enumerated and non-enumerated type in conditional expression [-Wextra]
+ 1755 |                         flags |= (allow_3color ? cEncodeBC1Use3ColorBlocks : 0) | (allow_transparent_texels_for_black ? cEncodeBC1Use3ColorBlocksForBlackPixels : 0);
+      |                                                                                    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/third_party/bc7enc/rgbcx.cpp:1761:48: warning: enumerated and non-enumerated type in conditional expression [-Wextra]
+ 1761 |                         flags |= (allow_3color ? cEncodeBC1Use3ColorBlocks : 0) | (allow_transparent_texels_for_black ? cEncodeBC1Use3ColorBlocksForBlackPixels : 0);
+      |                                   ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/third_party/bc7enc/rgbcx.cpp:1761:119: warning: enumerated and non-enumerated type in conditional expression [-Wextra]
+ 1761 |                         flags |= (allow_3color ? cEncodeBC1Use3ColorBlocks : 0) | (allow_transparent_texels_for_black ? cEncodeBC1Use3ColorBlocksForBlackPixels : 0);
+      |                                                                                    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/third_party/bc7enc/rgbcx.cpp:1767:48: warning: enumerated and non-enumerated type in conditional expression [-Wextra]
+ 1767 |                         flags |= (allow_3color ? cEncodeBC1Use3ColorBlocks : 0) | (allow_transparent_texels_for_black ? cEncodeBC1Use3ColorBlocksForBlackPixels : 0);
+      |                                   ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/third_party/bc7enc/rgbcx.cpp:1767:119: warning: enumerated and non-enumerated type in conditional expression [-Wextra]
+ 1767 |                         flags |= (allow_3color ? cEncodeBC1Use3ColorBlocks : 0) | (allow_transparent_texels_for_black ? cEncodeBC1Use3ColorBlocksForBlackPixels : 0);
+      |                                                                                    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/third_party/bc7enc/rgbcx.cpp:1773:48: warning: enumerated and non-enumerated type in conditional expression [-Wextra]
+ 1773 |                         flags |= (allow_3color ? cEncodeBC1Use3ColorBlocks : 0) | (allow_transparent_texels_for_black ? cEncodeBC1Use3ColorBlocksForBlackPixels : 0);
+      |                                   ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/third_party/bc7enc/rgbcx.cpp:1773:119: warning: enumerated and non-enumerated type in conditional expression [-Wextra]
+ 1773 |                         flags |= (allow_3color ? cEncodeBC1Use3ColorBlocks : 0) | (allow_transparent_texels_for_black ? cEncodeBC1Use3ColorBlocksForBlackPixels : 0);
+      |                                                                                    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/third_party/bc7enc/rgbcx.cpp:1779:48: warning: enumerated and non-enumerated type in conditional expression [-Wextra]
+ 1779 |                         flags |= (allow_3color ? cEncodeBC1Use3ColorBlocks : 0) | (allow_transparent_texels_for_black ? cEncodeBC1Use3ColorBlocksForBlackPixels : 0);
+      |                                   ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/third_party/bc7enc/rgbcx.cpp:1779:119: warning: enumerated and non-enumerated type in conditional expression [-Wextra]
+ 1779 |                         flags |= (allow_3color ? cEncodeBC1Use3ColorBlocks : 0) | (allow_transparent_texels_for_black ? cEncodeBC1Use3ColorBlocksForBlackPixels : 0);
+      |                                                                                    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/third_party/bc7enc/rgbcx.cpp:1785:48: warning: enumerated and non-enumerated type in conditional expression [-Wextra]
+ 1785 |                         flags |= (allow_3color ? cEncodeBC1Use3ColorBlocks : 0) | (allow_transparent_texels_for_black ? cEncodeBC1Use3ColorBlocksForBlackPixels : 0);
+      |                                   ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/third_party/bc7enc/rgbcx.cpp:1785:119: warning: enumerated and non-enumerated type in conditional expression [-Wextra]
+ 1785 |                         flags |= (allow_3color ? cEncodeBC1Use3ColorBlocks : 0) | (allow_transparent_texels_for_black ? cEncodeBC1Use3ColorBlocksForBlackPixels : 0);
+      |                                                                                    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/third_party/bc7enc/rgbcx.cpp:1791:48: warning: enumerated and non-enumerated type in conditional expression [-Wextra]
+ 1791 |                         flags |= (allow_3color ? cEncodeBC1Use3ColorBlocks : 0) | (allow_transparent_texels_for_black ? cEncodeBC1Use3ColorBlocksForBlackPixels : 0);
+      |                                   ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/third_party/bc7enc/rgbcx.cpp:1791:119: warning: enumerated and non-enumerated type in conditional expression [-Wextra]
+ 1791 |                         flags |= (allow_3color ? cEncodeBC1Use3ColorBlocks : 0) | (allow_transparent_texels_for_black ? cEncodeBC1Use3ColorBlocksForBlackPixels : 0);
+      |                                                                                    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/third_party/bc7enc/rgbcx.cpp:1797:48: warning: enumerated and non-enumerated type in conditional expression [-Wextra]
+ 1797 |                         flags |= (allow_3color ? cEncodeBC1Use3ColorBlocks : 0) | (allow_transparent_texels_for_black ? cEncodeBC1Use3ColorBlocksForBlackPixels : 0);
+      |                                   ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/third_party/bc7enc/rgbcx.cpp:1797:119: warning: enumerated and non-enumerated type in conditional expression [-Wextra]
+ 1797 |                         flags |= (allow_3color ? cEncodeBC1Use3ColorBlocks : 0) | (allow_transparent_texels_for_black ? cEncodeBC1Use3ColorBlocksForBlackPixels : 0);
+      |                                                                                    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/third_party/bc7enc/rgbcx.cpp:1804:48: warning: enumerated and non-enumerated type in conditional expression [-Wextra]
+ 1804 |                         flags |= (allow_3color ? cEncodeBC1Use3ColorBlocks : 0) | (allow_transparent_texels_for_black ? cEncodeBC1Use3ColorBlocksForBlackPixels : 0);
+      |                                   ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/third_party/bc7enc/rgbcx.cpp:1804:119: warning: enumerated and non-enumerated type in conditional expression [-Wextra]
+ 1804 |                         flags |= (allow_3color ? cEncodeBC1Use3ColorBlocks : 0) | (allow_transparent_texels_for_black ? cEncodeBC1Use3ColorBlocksForBlackPixels : 0);
+      |                                                                                    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+[92/98] Building CXX object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/libs/ProfileLib/src/profile.cpp.o
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/libs/ProfileLib/src/profile.cpp: In function ‘bool matter::profile::dump_chrome_trace(const char*)’:
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/libs/ProfileLib/src/profile.cpp:589:46: warning: array subscript 128 is above array bounds of ‘const uint64_t [128]’ {aka ‘const long unsigned int [128]’} [-Warray-bounds=]
+  589 |             const double dur_us = r.zone_ns[z] / 1000.0;
+      |                                   ~~~~~~~~~~~^
+In file included from /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/libs/ProfileLib/src/profile.cpp:39:
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/libs/ProfileLib/include/profile.h:189:14: note: while referencing ‘matter::profile::FrameRecord::zone_ns’
+  189 |     uint64_t zone_ns[kMaxZones] = {};       // indexed by zone id; sums BOTH lanes
+      |              ^~~~~~~
+[93/98] Building CXX object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/libs/MeshChartingLib/src/mesh_charting.cpp.o
+[94/98] Building CXX object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/libs/SpatialQueryLib/src/bvh.cpp.o
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/libs/SpatialQueryLib/src/bvh.cpp: In constructor ‘BvhMesh::BvhMesh(uint)’:
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/libs/SpatialQueryLib/src/bvh.cpp:170:15: warning: ‘void* memset(void*, int, size_t)’ clearing an object of non-trivial type ‘struct TriEx’; use assignment or value-initialization instead [-Wclass-memaccess]
+  170 |         memset( triEx, 0, primCount * sizeof( TriEx ) );
+      |         ~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+In file included from /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/libs/SpatialQueryLib/src/../include/bvh.h:60,
+                 from /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/libs/SpatialQueryLib/src/bvh.cpp:59:
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/libs/SpatialQueryLib/src/../include/tri.h:80:8: note: ‘struct TriEx’ declared here
+   80 | struct TriEx {
+      |        ^~~~~
+[95/98] Building CXX object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/libs/SpatialQueryLib/src/bvh_analyzer.cpp.o
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/libs/SpatialQueryLib/src/bvh_analyzer.cpp: In static member function ‘static BVHTreeAnalysis BVHAnalyzer::AnalyzeBVH(const BVH*, const BvhMesh*, const std::string&)’:
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/libs/SpatialQueryLib/src/bvh_analyzer.cpp:275:97: warning: unused parameter ‘name’ [-Wunused-parameter]
+  275 | BVHTreeAnalysis BVHAnalyzer::AnalyzeBVH(const BVH* bvh, const BvhMesh* mesh, const std::string& name) {
+      |                                                                              ~~~~~~~~~~~~~~~~~~~^~~~
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/libs/SpatialQueryLib/src/bvh_analyzer.cpp: In static member function ‘static TLASAnalysis BVHAnalyzer::AnalyzeTLAS(const TLAS*, const std::string&)’:
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/libs/SpatialQueryLib/src/bvh_analyzer.cpp:385:76: warning: unused parameter ‘name’ [-Wunused-parameter]
+  385 | TLASAnalysis BVHAnalyzer::AnalyzeTLAS(const TLAS* tlas, const std::string& name) {
+      |                                                         ~~~~~~~~~~~~~~~~~~~^~~~
+[96/98] Building C object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/third_party/flecs/flecs.c.o
+[97/98] Building CXX object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/tests/vulkan_smoke_tests.cpp.o
+In file included from /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/../../../libs/MatterGraphics/src/native/vt/vt_snapshot.h:7,
+                 from /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/../../../libs/MatterGraphics/src/native/vt/vt_residency.h:92,
+                 from /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/vt_residency.h:3,
+                 from /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/vk_scene_renderer.h:127,
+                 from /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/vk_instance_cache.h:25,
+                 from /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/tests/vulkan_smoke_tests.cpp:37:
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/../../../libs/MatterGraphics/src/native/vt/../../../../../MatterEngine3/src/render/vt_finite_sources.h: In function ‘bool vt::vt_make_finite_sources(const std::vector<VtFiniteSourceBinding>&, std::shared_ptr<const VtFiniteSources>&, std::string&, const std::vector<VtFiniteReceiver>&, const std::vector<std::shared_ptr<const surface_stamp::Stamp> >&)’:
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/../../../libs/MatterGraphics/src/native/vt/../../../../../MatterEngine3/src/render/vt_finite_sources.h:157:17: warning: this ‘if’ clause does not guard... [-Wmisleading-indentation]
+  157 |                 if(used[id]) return fail("duplicate composite candidate");used[id]=true;
+      |                 ^~
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/../../../libs/MatterGraphics/src/native/vt/../../../../../MatterEngine3/src/render/vt_finite_sources.h:157:75: note: ...this statement, but the latter is misleadingly indented as if it were guarded by the ‘if’
+  157 |                 if(used[id]) return fail("duplicate composite candidate");used[id]=true;
+      |                                                                           ^~~~
+In file included from /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/tests/vulkan_smoke_tests.cpp:47:
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/tests/vt_material_domain_tests.h: In function ‘bool vt_material_domain_tests::run_impl(matter::VulkanDevice&, std::string&)’:
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/tests/vt_material_domain_tests.h:302:53: warning: unused variable ‘py’ [-Wunused-variable]
+  302 |             const uint32_t px=uint32_t(u*w)/payload,py=uint32_t(v*h)/payload;
+      |                                                     ^~
+In file included from /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/tests/vulkan_smoke_tests.cpp:50:
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/tests/vt_surface_connection_tests.h: In function ‘bool vt_surface_connection_tests::run_impl(matter::VulkanDevice&, std::string&)’:
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/tests/vt_surface_connection_tests.h:109:5: warning: this ‘if’ clause does not guard... [-Wmisleading-indentation]
+  109 |     if(!replacement)return false;slots[1]=replacement;
+      |     ^~
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/tests/vt_surface_connection_tests.h:109:34: note: ...this statement, but the latter is misleadingly indented as if it were guarded by the ‘if’
+  109 |     if(!replacement)return false;slots[1]=replacement;
+      |                                  ^~~~~
+In file included from /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/tests/sparse_voxel_vk_tests.h:1300,
+                 from /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/tests/vulkan_smoke_tests.cpp:16744:
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/tests/sparse_voxel_temporal_tests.h: In function ‘void sparse_voxel_gpu_test::temporal_motion(matter::VulkanDevice&)’:
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/tests/sparse_voxel_temporal_tests.h:78:9: warning: this ‘if’ clause does not guard... [-Wmisleading-indentation]
+   78 |         if(!draw(history,frame,false,pixel,&rejected))return;check_motion(frame,pixel,true);
+      |         ^~
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/tests/sparse_voxel_temporal_tests.h:78:62: note: ...this statement, but the latter is misleadingly indented as if it were guarded by the ‘if’
+   78 |         if(!draw(history,frame,false,pixel,&rejected))return;check_motion(frame,pixel,true);
+      |                                                              ^~~~~~~~~~~~
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/tests/sparse_voxel_temporal_tests.h:79:9: warning: this ‘if’ clause does not guard... [-Wmisleading-indentation]
+   79 |         if(!draw(history,frame,true,pixel,&retried))return;check_motion(frame,pixel,true);
+      |         ^~
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/tests/sparse_voxel_temporal_tests.h:79:60: note: ...this statement, but the latter is misleadingly indented as if it were guarded by the ‘if’
+   79 |         if(!draw(history,frame,true,pixel,&retried))return;check_motion(frame,pixel,true);
+      |                                                            ^~~~~~~~~~~~
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/tests/sparse_voxel_temporal_tests.h:83:9: warning: this ‘if’ clause does not guard... [-Wmisleading-indentation]
+   83 |         if(!draw(history,frame,true,pixel))return;check_motion(frame,pixel,false);
+      |         ^~
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/tests/sparse_voxel_temporal_tests.h:83:51: note: ...this statement, but the latter is misleadingly indented as if it were guarded by the ‘if’
+   83 |         if(!draw(history,frame,true,pixel))return;check_motion(frame,pixel,false);
+      |                                                   ^~~~~~~~~~~~
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/tests/sparse_voxel_temporal_tests.h:97:9: warning: this ‘if’ clause does not guard... [-Wmisleading-indentation]
+   97 |         if(!draw(history,frame,true,pixel))return;check_motion(frame,pixel,false);
+      |         ^~
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/tests/sparse_voxel_temporal_tests.h:97:51: note: ...this statement, but the latter is misleadingly indented as if it were guarded by the ‘if’
+   97 |         if(!draw(history,frame,true,pixel))return;check_motion(frame,pixel,false);
+      |                                                   ^~~~~~~~~~~~
+[98/98] Linking CXX executable vulkan_smoke_tests

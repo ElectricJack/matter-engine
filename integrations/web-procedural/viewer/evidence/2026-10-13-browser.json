@@ -1,0 +1,1319 @@
+{
+  "fixtures": {
+    "passed": [
+      "COLOR-SRGB",
+      "TEX-ORIENT",
+      "UVSET1",
+      "WINDING",
+      "COORDS",
+      "SHEAR",
+      "TANGENT-MIRROR",
+      "DISPOSE",
+      "ERRORS",
+      "E2E-PROP",
+      "E2E-CSG",
+      "E2E-ASSEMBLY",
+      "E2E-REPEAT",
+      "E2E-SUPERSEDE",
+      "E2E-ERROR-KEEPS",
+      "E2E-ERROR-FIXTURES",
+      "E2E-CONTRACT",
+      "E2E-DISPOSED"
+    ],
+    "measurements": {
+      "COLOR-SRGB": {
+        "srgb": [
+          127,
+          127,
+          127
+        ],
+        "srgbRef": [
+          127,
+          127,
+          127
+        ],
+        "linear": [
+          187,
+          187,
+          187
+        ],
+        "linearRef": [
+          187,
+          187,
+          187
+        ]
+      },
+      "TEX-ORIENT": {
+        "bl": [
+          253,
+          0,
+          0
+        ],
+        "br": [
+          0,
+          253,
+          0
+        ],
+        "tl": [
+          0,
+          0,
+          253
+        ],
+        "tr": [
+          253,
+          253,
+          253
+        ]
+      },
+      "UVSET1": {
+        "glTextures": 1,
+        "stats": {
+          "prototypes": 1,
+          "geometries": 1,
+          "materials": 1,
+          "textures": 1,
+          "textureObjects": 2,
+          "instances": 1,
+          "drawObjects": 1,
+          "batches": {
+            "instanced": 0,
+            "mirroredInstanced": 0,
+            "individual": 1
+          },
+          "triangles": 2,
+          "uploadedTriangles": 2
+        }
+      },
+      "WINDING": {
+        "a": [
+          253,
+          253,
+          253
+        ],
+        "b": [
+          255,
+          0,
+          255
+        ],
+        "c": [
+          253,
+          253,
+          253
+        ],
+        "d": [
+          253,
+          253,
+          253
+        ],
+        "single": [
+          253,
+          253,
+          253
+        ]
+      },
+      "COORDS": {
+        "lit": [
+          [
+            253,
+            253,
+            253
+          ],
+          [
+            253,
+            253,
+            253
+          ],
+          [
+            253,
+            253,
+            253
+          ],
+          [
+            253,
+            253,
+            253
+          ],
+          [
+            253,
+            253,
+            253
+          ]
+        ],
+        "empty": [
+          255,
+          0,
+          255
+        ]
+      },
+      "SHEAR": {
+        "s1": [
+          182,
+          182,
+          182
+        ],
+        "s2": [
+          182,
+          182,
+          182
+        ],
+        "f": [
+          159,
+          159,
+          159
+        ],
+        "r": [
+          182,
+          182,
+          182
+        ]
+      },
+      "TANGENT-MIRROR": {
+        "mirrored": [
+          [
+            185,
+            185,
+            185
+          ],
+          [
+            185,
+            185,
+            185
+          ]
+        ],
+        "orthogonal": [
+          125,
+          125,
+          125
+        ],
+        "reference": [
+          185,
+          185,
+          185
+        ],
+        "single": [
+          185,
+          185,
+          185
+        ]
+      },
+      "DISPOSE": {
+        "iterations": 20,
+        "baseline": {
+          "Buffer": 0,
+          "Texture": 5,
+          "VertexArray": 0,
+          "Program": 0
+        },
+        "loaded": {
+          "Buffer": 11,
+          "Texture": 7,
+          "VertexArray": 3,
+          "Program": 3
+        },
+        "stats": {
+          "prototypes": 2,
+          "geometries": 3,
+          "materials": 2,
+          "textures": 2,
+          "textureObjects": 3,
+          "instances": 5,
+          "drawObjects": 4,
+          "batches": {
+            "instanced": 0,
+            "mirroredInstanced": 1,
+            "individual": 3
+          },
+          "triangles": 10,
+          "uploadedTriangles": 4
+        }
+      },
+      "ERRORS": {
+        "cases": [
+          {
+            "case": "alpha below 1",
+            "code": "invalid_input",
+            "message": "invalid_input: opaque base_color.factor must be RGB in [0,1] with alpha 1 (materials/m)"
+          },
+          {
+            "case": "undeclared LOD product",
+            "code": "invalid_input",
+            "message": "invalid_input: document carries lods but does not declare matter.asset.lod@1"
+          },
+          {
+            "case": "singular transform",
+            "code": "invalid_input",
+            "message": "invalid_input: transform has a singular or near-dependent linear part (instances/i0)"
+          },
+          {
+            "case": "missing product array",
+            "code": "invalid_input",
+            "message": "invalid_input: rigs must be an array"
+          },
+          {
+            "case": "nonfinite position",
+            "code": "invalid_input",
+            "message": "invalid_input: nonfinite positions (meshes/q)"
+          },
+          {
+            "case": "null source",
+            "code": "invalid_input",
+            "message": "invalid_input: source must be a geometry result or {asset}"
+          },
+          {
+            "case": "non-asset result",
+            "code": "invalid_input",
+            "message": "invalid_input: result kind recipe carries no renderable asset"
+          },
+          {
+            "case": "duplicate capability",
+            "code": "invalid_input",
+            "message": "invalid_input: duplicate capability matter.asset.core@1"
+          },
+          {
+            "case": "schema major 2",
+            "code": "unsupported_version",
+            "message": "unsupported_version: schema_version {\"major\":2,\"minor\":0} is not 1.0"
+          },
+          {
+            "case": "canonical profile",
+            "code": "unsupported_version",
+            "message": "unsupported_version: canonical_profile matter-exact-json-v2 is not matter-exact-json-v1"
+          },
+          {
+            "case": "unknown capability",
+            "code": "unsupported_capability",
+            "message": "unsupported_capability: matter.asset.hair@1 is unknown to the web adapter"
+          },
+          {
+            "case": "terrain",
+            "code": "unsupported_capability",
+            "message": "unsupported_capability: matter.asset.terrain@1: Rejected: terrain regions need sector boundaries and streaming"
+          },
+          {
+            "case": "required extension",
+            "code": "unsupported_capability",
+            "message": "unsupported_capability: required extension demo.sparkle@1 is not implemented by the web adapter"
+          },
+          {
+            "case": "UV set 4",
+            "code": "unsupported_capability",
+            "message": "unsupported_capability: base_color.uv_set 4 exceeds the 4 UV channels three.js materials can sample (materials/m)"
+          },
+          {
+            "case": "core version 2",
+            "code": "unsupported_capability",
+            "message": "unsupported_capability: matter.asset.core@2 is not supported (web adapter implements version 1)"
+          },
+          {
+            "case": "LOD fallback rejected",
+            "code": "unsupported_capability",
+            "message": "unsupported_capability: matter.asset.lod@1 has only a fallback on the web (Base prototypes only; no rung selection, LOD rung meshes are not drawn) and fallbacks are rejected"
+          },
+          {
+            "case": "unknown submesh material",
+            "code": "missing_dependency",
+            "message": "missing_dependency: submesh material nope is not declared (meshes/q)"
+          },
+          {
+            "case": "missing texture bytes",
+            "code": "missing_dependency",
+            "message": "missing_dependency: bytes for resource orient.texels were not supplied (textures/orient)"
+          },
+          {
+            "case": "instance parent cycle",
+            "code": "cycle",
+            "message": "cycle: cyclic instance parent chain (instances/a)"
+          },
+          {
+            "case": "assembly cycle",
+            "code": "cycle",
+            "message": "cycle: cyclic assembly reference (assemblies/A)"
+          },
+          {
+            "case": "instance limit",
+            "code": "resource_limit",
+            "message": "resource_limit: more than 1 mesh placements (b)"
+          },
+          {
+            "case": "texture size limit",
+            "code": "resource_limit",
+            "message": "resource_limit: texture 2x2 exceeds the 1 texel limit (textures/orient)"
+          },
+          {
+            "case": "assembly depth limit",
+            "code": "resource_limit",
+            "message": "resource_limit: assembly nesting depth exceeds 1 (assemblies/outer)"
+          }
+        ],
+        "released": {
+          "material": 7,
+          "texture": 1,
+          "geometry": 0
+        }
+      },
+      "E2E-PROP": {
+        "stats": {
+          "prototypes": 2,
+          "geometries": 2,
+          "materials": 3,
+          "textures": 1,
+          "textureObjects": 1,
+          "instances": 2,
+          "drawObjects": 2,
+          "batches": {
+            "instanced": 0,
+            "mirroredInstanced": 0,
+            "individual": 2
+          },
+          "triangles": 60,
+          "uploadedTriangles": 60
+        },
+        "materials": [
+          "painted",
+          "stone",
+          "geometry.default"
+        ],
+        "vertices": {
+          "six": 72,
+          "eight": 96
+        },
+        "uv": {
+          "prism": {
+            "min": [
+              0,
+              0
+            ],
+            "max": [
+              1,
+              1.5
+            ]
+          },
+          "plinth": null
+        },
+        "checker": {
+          "texels": {
+            "even": [
+              175,
+              150,
+              111
+            ],
+            "odd": [
+              138,
+              67,
+              236
+            ]
+          },
+          "pixels": [
+            [
+              228,
+              197,
+              150
+            ],
+            [
+              182,
+              99,
+              255
+            ],
+            [
+              228,
+              197,
+              150
+            ],
+            [
+              182,
+              99,
+              255
+            ]
+          ]
+        }
+      },
+      "E2E-CSG": {
+        "stats": {
+          "prototypes": 1,
+          "geometries": 1,
+          "materials": 1,
+          "textures": 0,
+          "textureObjects": 0,
+          "instances": 1,
+          "drawObjects": 1,
+          "batches": {
+            "instanced": 0,
+            "mirroredInstanced": 0,
+            "individual": 1
+          },
+          "triangles": 2712,
+          "uploadedTriangles": 2712
+        }
+      },
+      "E2E-ASSEMBLY": {
+        "stats": {
+          "prototypes": 2,
+          "geometries": 2,
+          "materials": 2,
+          "textures": 0,
+          "textureObjects": 0,
+          "instances": 16,
+          "drawObjects": 6,
+          "batches": {
+            "instanced": 2,
+            "mirroredInstanced": 1,
+            "individual": 3
+          },
+          "triangles": 2064,
+          "uploadedTriangles": 492
+        }
+      },
+      "E2E-REPEAT": {
+        "iterations": 25,
+        "perConfiguration": {
+          "WEB-VIEW-PROP": {
+            "Buffer": 7,
+            "Texture": 6,
+            "VertexArray": 2,
+            "Program": 2
+          },
+          "WEB-VIEW-ASSEMBLY": {
+            "Buffer": 9,
+            "Texture": 5,
+            "VertexArray": 4,
+            "Program": 2
+          },
+          "WEB-VIEW-CSG": {
+            "Buffer": 3,
+            "Texture": 5,
+            "VertexArray": 1,
+            "Program": 1
+          }
+        },
+        "info": {
+          "geometries": 2,
+          "textures": 2
+        }
+      },
+      "E2E-SUPERSEDE": {
+        "statuses": [
+          "superseded",
+          "superseded",
+          "superseded",
+          "superseded",
+          "superseded",
+          "superseded",
+          "superseded",
+          "ok"
+        ]
+      },
+      "E2E-ERROR-FIXTURES": {
+        "WEB-VIEW-ERR-SYNTAX": {
+          "stage": "runtime",
+          "code": "backend_failure",
+          "message": "Unexpected token ';'"
+        },
+        "WEB-VIEW-ERR-MIRROR-CSG": {
+          "stage": "runtime",
+          "code": "unsupported_capability",
+          "message": "unsupported_capability: CSG v1 accepts rotation, translation and positive uniform scale; use full affine placement outside CSG"
+        },
+        "WEB-VIEW-ERR-REQUIRED-EXT": {
+          "stage": "runtime",
+          "code": "unsupported_capability",
+          "message": "unsupported_capability: required demo.sparkle@1 is unavailable; supply a host/evaluator with this capability"
+        },
+        "WEB-VIEW-ERR-TEXTURE-LIMIT": {
+          "stage": "adapter",
+          "code": "resource_limit",
+          "message": "resource_limit: texture 64x64 exceeds the 32 texel limit (textures/checker)"
+        }
+      },
+      "E2E-CONTRACT": {
+        "anchor": [
+          3,
+          5,
+          1
+        ],
+        "diagnostics": [
+          {
+            "severity": "warning",
+            "code": "fallback",
+            "message": "matter.asset.collision@1: Not rendered and not simulated",
+            "capability": "matter.asset.collision@1"
+          },
+          {
+            "severity": "warning",
+            "code": "fallback",
+            "message": "matter.asset.lod@1: Base prototypes only; no rung selection, LOD rung meshes are not drawn",
+            "capability": "matter.asset.lod@1"
+          },
+          {
+            "severity": "info",
+            "code": "ignored",
+            "message": "optional extension demo.sparkle@1 ignored (nonsemantic)",
+            "capability": "demo.sparkle@1"
+          }
+        ],
+        "rejected": "unsupported_capability: matter.asset.collision@1 has only a fallback on the web (Not rendered and not simulated) and fallbacks are rejected"
+      },
+      "runtime": {
+        "active": 0,
+        "queued": 0,
+        "workers": 1,
+        "restarts": 8,
+        "rejectedLateMessages": 0,
+        "disposed": false
+      },
+      "environment": {
+        "three": "186",
+        "renderer": "WebGL 2.0 (OpenGL ES 3.0 Chromium)",
+        "unmaskedRenderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)"
+      }
+    }
+  },
+  "errors": [],
+  "console": [],
+  "http_errors": [],
+  "vendor": {
+    "package": "three",
+    "version": "0.186.1",
+    "files": {
+      "three.module.js": "9052042d676cb0fdc1ddfefe193053f34b7ac0513a616fdac4535d49987812ea",
+      "three.core.js": "9edde002b066a9a05676a6127f67735b62baf399bdea529f2f7e31657da769e6",
+      "LICENSE": "8b378ebe60e2fe500158cb0ac71cb5e8b7d92953c2abcc63a0eb90499653b5bc"
+    }
+  },
+  "static_scan": {
+    "roots": [
+      "integrations/web-procedural/runtime/src",
+      "packages/matter-authoring",
+      "bindings/geometry-c/wasm"
+    ],
+    "files": 24,
+    "offenders": []
+  },
+  "runtime_program": {
+    "command": "tsc -p integrations/web-procedural/runtime/tsconfig.json --listFilesOnly",
+    "project_files": [
+      "bindings/geometry-c/wasm/geometry.d.ts",
+      "packages/matter-authoring/index.d.mts",
+      "integrations/web-procedural/runtime/src/types.mts",
+      "integrations/web-procedural/runtime/src/protocol.mts",
+      "integrations/web-procedural/runtime/src/index.mts",
+      "integrations/web-procedural/runtime/src/worker.mts"
+    ],
+    "lib_files": 58
+  },
+  "environment": {
+    "browser": "150.0.7871.46",
+    "executable": "/opt/google/chrome/chrome",
+    "chrome_args": [
+      "--no-sandbox",
+      "--enable-precise-memory-info",
+      "--disable-background-networking",
+      "--use-angle=swiftshader",
+      "--enable-unsafe-swiftshader"
+    ],
+    "python": "3.12.3",
+    "platform": "Linux-6.18.33.2-microsoft-standard-WSL2-x86_64-with-glibc2.39"
+  },
+  "runtime_only": {
+    "report": {
+      "kind": "asset",
+      "meshes": 1,
+      "triangles": 12,
+      "bounds": {
+        "max": [
+          0.5,
+          1,
+          1.5
+        ],
+        "min": [
+          -0.5,
+          -1,
+          -1.5
+        ]
+      },
+      "three": false,
+      "importMap": false
+    },
+    "served": [
+      "/tmp/calm-ember-53-viewer/runtime/index.mjs",
+      "/tmp/calm-ember-53-viewer/runtime/protocol.mjs",
+      "/tmp/calm-ember-53-viewer/runtime/worker.mjs",
+      "/tmp/calm-ember-53-wasm/matter_geometry_wasm.mjs",
+      "/tmp/calm-ember-53-wasm/matter_geometry_wasm.wasm",
+      "bindings/geometry-c/wasm/geometry.mjs",
+      "integrations/web-procedural/viewer/tests/runtime_only.html",
+      "libs/MatterContracts/examples/contracts.mjs",
+      "packages/matter-authoring/index.mjs",
+      "packages/matter-authoring/legacy.mjs",
+      "packages/matter-authoring/parameters.mjs",
+      "packages/matter-authoring/recipe.mjs",
+      "packages/matter-authoring/rng.mjs",
+      "packages/matter-authoring/values.mjs"
+    ]
+  },
+  "demo": {
+    "fixtures": {
+      "WEB-VIEW-PROP": {
+        "status": "ok",
+        "error": null,
+        "statusText": "WEB-VIEW-PROP \u00b7 generation 2 \u00b7 82.9 ms (runtime 78.9 ms)",
+        "errorKept": null,
+        "diagnostics": [],
+        "stats": {
+          "prototypes": "2",
+          "instances": "2",
+          "draw objects": "2",
+          "batches (instanced / mirrored / individual)": "0 / 0 / 2",
+          "geometries (view)": "2",
+          "materials": "3",
+          "textures": "1",
+          "triangles drawn / uploaded": "44 / 44",
+          "GPU geometries": "2",
+          "GPU textures": "2",
+          "programs": "2",
+          "draw calls": "2",
+          "runtime workers / restarts": "1 / 0"
+        },
+        "gpu": {
+          "geometries": 2,
+          "textures": 2,
+          "programs": 2
+        },
+        "coverage": 0.174560546875
+      },
+      "WEB-VIEW-CSG": {
+        "status": "ok",
+        "error": null,
+        "statusText": "WEB-VIEW-CSG \u00b7 generation 3 \u00b7 1614.5 ms (runtime 1600.1 ms)",
+        "errorKept": null,
+        "diagnostics": [],
+        "stats": {
+          "prototypes": "1",
+          "instances": "1",
+          "draw objects": "1",
+          "batches (instanced / mirrored / individual)": "0 / 0 / 1",
+          "geometries (view)": "1",
+          "materials": "1",
+          "textures": "0",
+          "triangles drawn / uploaded": "2712 / 2712",
+          "GPU geometries": "1",
+          "GPU textures": "1",
+          "programs": "1",
+          "draw calls": "1",
+          "runtime workers / restarts": "1 / 0"
+        },
+        "gpu": {
+          "geometries": 1,
+          "textures": 1,
+          "programs": 1
+        },
+        "coverage": 0.262451171875
+      },
+      "WEB-VIEW-ASSEMBLY": {
+        "status": "ok",
+        "error": null,
+        "statusText": "WEB-VIEW-ASSEMBLY \u00b7 generation 4 \u00b7 534.0 ms (runtime 528.8 ms)",
+        "errorKept": null,
+        "diagnostics": [],
+        "stats": {
+          "prototypes": "2",
+          "instances": "16",
+          "draw objects": "6",
+          "batches (instanced / mirrored / individual)": "2 / 1 / 3",
+          "geometries (view)": "2",
+          "materials": "2",
+          "textures": "0",
+          "triangles drawn / uploaded": "2064 / 492",
+          "GPU geometries": "2",
+          "GPU textures": "1",
+          "programs": "2",
+          "draw calls": "6",
+          "runtime workers / restarts": "1 / 0"
+        },
+        "gpu": {
+          "geometries": 2,
+          "textures": 1,
+          "programs": 2
+        },
+        "coverage": 0.06705729166666667
+      },
+      "WEB-VIEW-CONTRACT": {
+        "status": "ok",
+        "error": null,
+        "statusText": "WEB-VIEW-CONTRACT \u00b7 generation 5 \u00b7 84.7 ms",
+        "errorKept": null,
+        "diagnostics": [
+          {
+            "severity": "warning",
+            "code": "fallback",
+            "text": "web fallback matter.asset.collision@1: Not rendered and not simulated"
+          },
+          {
+            "severity": "warning",
+            "code": "fallback",
+            "text": "web fallback matter.asset.lod@1: Base prototypes only; no rung selection, LOD rung meshes are not drawn"
+          },
+          {
+            "severity": "info",
+            "code": "ignored",
+            "text": "ignored optional extension demo.sparkle@1 ignored (nonsemantic)"
+          },
+          {
+            "severity": null,
+            "code": "attachment",
+            "text": "anchor socket.top at (3.000, 5.000, 1.000)"
+          }
+        ],
+        "stats": {
+          "prototypes": "1",
+          "instances": "4",
+          "draw objects": "2",
+          "batches (instanced / mirrored / individual)": "1 / 1 / 0",
+          "geometries (view)": "1",
+          "materials": "1",
+          "textures": "0",
+          "triangles drawn / uploaded": "4 / 1",
+          "GPU geometries": "1",
+          "GPU textures": "1",
+          "programs": "1",
+          "draw calls": "2",
+          "runtime workers / restarts": "1 / 0"
+        },
+        "gpu": {
+          "geometries": 1,
+          "textures": 1,
+          "programs": 1
+        },
+        "coverage": 0.047607421875
+      },
+      "WEB-VIEW-ERR-SYNTAX": {
+        "status": "error",
+        "error": {
+          "stage": "runtime",
+          "code": "backend_failure",
+          "message": "Unexpected token ';'"
+        },
+        "statusText": "WEB-VIEW-ERR-SYNTAX \u00b7 generation 6 failed: backend_failure",
+        "errorKept": "Showing the last good result (WEB-VIEW-CONTRACT, generation 5).",
+        "diagnostics": [
+          {
+            "severity": "warning",
+            "code": "fallback",
+            "text": "web fallback matter.asset.collision@1: Not rendered and not simulated"
+          },
+          {
+            "severity": "warning",
+            "code": "fallback",
+            "text": "web fallback matter.asset.lod@1: Base prototypes only; no rung selection, LOD rung meshes are not drawn"
+          },
+          {
+            "severity": "info",
+            "code": "ignored",
+            "text": "ignored optional extension demo.sparkle@1 ignored (nonsemantic)"
+          },
+          {
+            "severity": null,
+            "code": "attachment",
+            "text": "anchor socket.top at (3.000, 5.000, 1.000)"
+          }
+        ],
+        "stats": {
+          "prototypes": "1",
+          "instances": "4",
+          "draw objects": "2",
+          "batches (instanced / mirrored / individual)": "1 / 1 / 0",
+          "geometries (view)": "1",
+          "materials": "1",
+          "textures": "0",
+          "triangles drawn / uploaded": "4 / 1",
+          "GPU geometries": "1",
+          "GPU textures": "1",
+          "programs": "1",
+          "draw calls": "2",
+          "runtime workers / restarts": "0 / 1"
+        },
+        "gpu": {
+          "geometries": 1,
+          "textures": 1,
+          "programs": 1
+        },
+        "coverage": 0.047607421875
+      },
+      "WEB-VIEW-ERR-MIRROR-CSG": {
+        "status": "error",
+        "error": {
+          "stage": "runtime",
+          "code": "unsupported_capability",
+          "message": "unsupported_capability: CSG v1 accepts rotation, translation and positive uniform scale; use full affine placement outside CSG"
+        },
+        "statusText": "WEB-VIEW-ERR-MIRROR-CSG \u00b7 generation 7 failed: unsupported_capability",
+        "errorKept": "Showing the last good result (WEB-VIEW-CONTRACT, generation 5).",
+        "diagnostics": [
+          {
+            "severity": "warning",
+            "code": "fallback",
+            "text": "web fallback matter.asset.collision@1: Not rendered and not simulated"
+          },
+          {
+            "severity": "warning",
+            "code": "fallback",
+            "text": "web fallback matter.asset.lod@1: Base prototypes only; no rung selection, LOD rung meshes are not drawn"
+          },
+          {
+            "severity": "info",
+            "code": "ignored",
+            "text": "ignored optional extension demo.sparkle@1 ignored (nonsemantic)"
+          },
+          {
+            "severity": null,
+            "code": "attachment",
+            "text": "anchor socket.top at (3.000, 5.000, 1.000)"
+          }
+        ],
+        "stats": {
+          "prototypes": "1",
+          "instances": "4",
+          "draw objects": "2",
+          "batches (instanced / mirrored / individual)": "1 / 1 / 0",
+          "geometries (view)": "1",
+          "materials": "1",
+          "textures": "0",
+          "triangles drawn / uploaded": "4 / 1",
+          "GPU geometries": "1",
+          "GPU textures": "1",
+          "programs": "1",
+          "draw calls": "2",
+          "runtime workers / restarts": "1 / 1"
+        },
+        "gpu": {
+          "geometries": 1,
+          "textures": 1,
+          "programs": 1
+        },
+        "coverage": 0.047607421875
+      },
+      "WEB-VIEW-ERR-REQUIRED-EXT": {
+        "status": "error",
+        "error": {
+          "stage": "runtime",
+          "code": "unsupported_capability",
+          "message": "unsupported_capability: required demo.sparkle@1 is unavailable; supply a host/evaluator with this capability"
+        },
+        "statusText": "WEB-VIEW-ERR-REQUIRED-EXT \u00b7 generation 8 failed: unsupported_capability",
+        "errorKept": "Showing the last good result (WEB-VIEW-CONTRACT, generation 5).",
+        "diagnostics": [
+          {
+            "severity": "warning",
+            "code": "fallback",
+            "text": "web fallback matter.asset.collision@1: Not rendered and not simulated"
+          },
+          {
+            "severity": "warning",
+            "code": "fallback",
+            "text": "web fallback matter.asset.lod@1: Base prototypes only; no rung selection, LOD rung meshes are not drawn"
+          },
+          {
+            "severity": "info",
+            "code": "ignored",
+            "text": "ignored optional extension demo.sparkle@1 ignored (nonsemantic)"
+          },
+          {
+            "severity": null,
+            "code": "attachment",
+            "text": "anchor socket.top at (3.000, 5.000, 1.000)"
+          }
+        ],
+        "stats": {
+          "prototypes": "1",
+          "instances": "4",
+          "draw objects": "2",
+          "batches (instanced / mirrored / individual)": "1 / 1 / 0",
+          "geometries (view)": "1",
+          "materials": "1",
+          "textures": "0",
+          "triangles drawn / uploaded": "4 / 1",
+          "GPU geometries": "1",
+          "GPU textures": "1",
+          "programs": "1",
+          "draw calls": "2",
+          "runtime workers / restarts": "1 / 1"
+        },
+        "gpu": {
+          "geometries": 1,
+          "textures": 1,
+          "programs": 1
+        },
+        "coverage": 0.047607421875
+      },
+      "WEB-VIEW-ERR-TEXTURE-LIMIT": {
+        "status": "error",
+        "error": {
+          "stage": "adapter",
+          "code": "resource_limit",
+          "message": "resource_limit: texture 64x64 exceeds the 32 texel limit (textures/checker)"
+        },
+        "statusText": "WEB-VIEW-ERR-TEXTURE-LIMIT \u00b7 generation 9 failed: resource_limit",
+        "errorKept": "Showing the last good result (WEB-VIEW-CONTRACT, generation 5).",
+        "diagnostics": [
+          {
+            "severity": "warning",
+            "code": "fallback",
+            "text": "web fallback matter.asset.collision@1: Not rendered and not simulated"
+          },
+          {
+            "severity": "warning",
+            "code": "fallback",
+            "text": "web fallback matter.asset.lod@1: Base prototypes only; no rung selection, LOD rung meshes are not drawn"
+          },
+          {
+            "severity": "info",
+            "code": "ignored",
+            "text": "ignored optional extension demo.sparkle@1 ignored (nonsemantic)"
+          },
+          {
+            "severity": null,
+            "code": "attachment",
+            "text": "anchor socket.top at (3.000, 5.000, 1.000)"
+          }
+        ],
+        "stats": {
+          "prototypes": "1",
+          "instances": "4",
+          "draw objects": "2",
+          "batches (instanced / mirrored / individual)": "1 / 1 / 0",
+          "geometries (view)": "1",
+          "materials": "1",
+          "textures": "0",
+          "triangles drawn / uploaded": "4 / 1",
+          "GPU geometries": "1",
+          "GPU textures": "1",
+          "programs": "1",
+          "draw calls": "2",
+          "runtime workers / restarts": "1 / 1"
+        },
+        "gpu": {
+          "geometries": 1,
+          "textures": 1,
+          "programs": 1
+        },
+        "coverage": 0.047607421875
+      }
+    },
+    "screenshots": [
+      {
+        "fixture": "WEB-VIEW-PROP",
+        "sha256": "a0925435f4debf1ae34eb591e3f638b8dbf38a89440f578a7e344d9284e6efd2",
+        "bytes": 14540,
+        "file": "2026-10-13-demo-screenshots/WEB-VIEW-PROP.png"
+      },
+      {
+        "fixture": "WEB-VIEW-CSG",
+        "sha256": "08dfeb3612d0e8a85da5eecea2bd979acbba425e5934fa3a216fd2cf0839afb2",
+        "bytes": 47708,
+        "file": "2026-10-13-demo-screenshots/WEB-VIEW-CSG.png"
+      },
+      {
+        "fixture": "WEB-VIEW-ASSEMBLY",
+        "sha256": "df0c3b8c8845c0bcf8ae957d93921d7b23cb56375cb66796735fc3d0336fd521",
+        "bytes": 23038,
+        "file": "2026-10-13-demo-screenshots/WEB-VIEW-ASSEMBLY.png"
+      },
+      {
+        "fixture": "WEB-VIEW-CONTRACT",
+        "sha256": "eacfce5533d63c0c0d69b8d80731ffd6958f7730c1091b834f3b88ef39f4100e",
+        "bytes": 6912,
+        "file": "2026-10-13-demo-screenshots/WEB-VIEW-CONTRACT.png"
+      },
+      {
+        "fixture": "WEB-VIEW-ERR-SYNTAX",
+        "sha256": "eacfce5533d63c0c0d69b8d80731ffd6958f7730c1091b834f3b88ef39f4100e",
+        "bytes": 6912,
+        "file": "2026-10-13-demo-screenshots/WEB-VIEW-ERR-SYNTAX.png"
+      },
+      {
+        "fixture": "WEB-VIEW-ERR-MIRROR-CSG",
+        "sha256": "eacfce5533d63c0c0d69b8d80731ffd6958f7730c1091b834f3b88ef39f4100e",
+        "bytes": 6912,
+        "file": "2026-10-13-demo-screenshots/WEB-VIEW-ERR-MIRROR-CSG.png"
+      },
+      {
+        "fixture": "WEB-VIEW-ERR-REQUIRED-EXT",
+        "sha256": "eacfce5533d63c0c0d69b8d80731ffd6958f7730c1091b834f3b88ef39f4100e",
+        "bytes": 6912,
+        "file": "2026-10-13-demo-screenshots/WEB-VIEW-ERR-REQUIRED-EXT.png"
+      },
+      {
+        "fixture": "WEB-VIEW-ERR-TEXTURE-LIMIT",
+        "sha256": "eacfce5533d63c0c0d69b8d80731ffd6958f7730c1091b834f3b88ef39f4100e",
+        "bytes": 6912,
+        "file": "2026-10-13-demo-screenshots/WEB-VIEW-ERR-TEXTURE-LIMIT.png"
+      }
+    ],
+    "capabilities": {
+      "rows": [
+        {
+          "support": "supported",
+          "name": "matter.asset.core@1"
+        },
+        {
+          "support": "supported",
+          "name": "matter.material.pbr@1"
+        },
+        {
+          "support": "supported",
+          "name": "matter.recipe.core@1"
+        },
+        {
+          "support": "supported",
+          "name": "matter.asset.attachments@1"
+        },
+        {
+          "support": "fallback",
+          "name": "matter.asset.lod@1"
+        },
+        {
+          "support": "fallback",
+          "name": "matter.asset.collision@1"
+        },
+        {
+          "support": "fallback",
+          "name": "matter.asset.animation@1"
+        },
+        {
+          "support": "unsupported",
+          "name": "matter.asset.terrain@1"
+        }
+      ],
+      "native": [
+        {
+          "badge": "native only",
+          "feature": "native only Ray-traced lighting and shadows (Vulkan RT)"
+        },
+        {
+          "badge": "native only",
+          "feature": "native only Virtual texturing and chart atlases"
+        },
+        {
+          "badge": "native only",
+          "feature": "native only Parallax occlusion mapping"
+        },
+        {
+          "badge": "native only",
+          "feature": "native only LOD rung selection and imposters"
+        },
+        {
+          "badge": "native only",
+          "feature": "native only Vulkan compute cull"
+        },
+        {
+          "badge": "native only",
+          "feature": "native only Terrain sector streaming"
+        },
+        {
+          "badge": "native only",
+          "feature": "native only Retopology and native processing modules"
+        },
+        {
+          "badge": "native only",
+          "feature": "native only Transparency and advanced materials (extensions)"
+        }
+      ]
+    },
+    "contract": {
+      "diagnostics": [
+        {
+          "severity": "warning",
+          "code": "fallback",
+          "text": "web fallback matter.asset.collision@1: Not rendered and not simulated"
+        },
+        {
+          "severity": "warning",
+          "code": "fallback",
+          "text": "web fallback matter.asset.lod@1: Base prototypes only; no rung selection, LOD rung meshes are not drawn"
+        },
+        {
+          "severity": "info",
+          "code": "ignored",
+          "text": "ignored optional extension demo.sparkle@1 ignored (nonsemantic)"
+        },
+        {
+          "severity": null,
+          "code": "attachment",
+          "text": "anchor socket.top at (3.000, 5.000, 1.000)"
+        }
+      ],
+      "rejected": {
+        "stage": "adapter",
+        "code": "unsupported_capability",
+        "message": "unsupported_capability: matter.asset.collision@1 has only a fallback on the web (Not rendered and not simulated) and fallbacks are rejected"
+      },
+      "kept": "Showing the last good result (WEB-VIEW-CONTRACT, generation 10)."
+    },
+    "inputs": {
+      "dom_parameter": {
+        "parameters": {
+          "count": 7,
+          "ring": 2.2,
+          "spheres": 4,
+          "mirror": true,
+          "shear": true
+        },
+        "status": "ok",
+        "instances": 11
+      },
+      "dom_checkbox": {
+        "parameters": {
+          "count": 7,
+          "ring": 2.2,
+          "spheres": 4,
+          "mirror": false,
+          "shear": true
+        },
+        "status": "ok",
+        "instances": 11
+      },
+      "bad_seed": {
+        "stage": "input",
+        "code": "invalid_input",
+        "message": "seed \"abc\" is not a decimal or 0x-hex integer"
+      },
+      "hex_seed": "16"
+    },
+    "repeats": [
+      {
+        "configuration": "WEB-VIEW-PROP",
+        "gpu": {
+          "geometries": 2,
+          "textures": 2,
+          "programs": 2
+        }
+      },
+      {
+        "configuration": "WEB-VIEW-PROP sides=9",
+        "gpu": {
+          "geometries": 2,
+          "textures": 2,
+          "programs": 2
+        }
+      },
+      {
+        "configuration": "WEB-VIEW-CSG",
+        "gpu": {
+          "geometries": 1,
+          "textures": 1,
+          "programs": 1
+        }
+      },
+      {
+        "configuration": "WEB-VIEW-ASSEMBLY",
+        "gpu": {
+          "geometries": 2,
+          "textures": 1,
+          "programs": 2
+        }
+      },
+      {
+        "configuration": "WEB-VIEW-PROP",
+        "gpu": {
+          "geometries": 2,
+          "textures": 2,
+          "programs": 2
+        }
+      },
+      {
+        "configuration": "WEB-VIEW-PROP sides=9",
+        "gpu": {
+          "geometries": 2,
+          "textures": 2,
+          "programs": 2
+        }
+      },
+      {
+        "configuration": "WEB-VIEW-CSG",
+        "gpu": {
+          "geometries": 1,
+          "textures": 1,
+          "programs": 1
+        }
+      },
+      {
+        "configuration": "WEB-VIEW-ASSEMBLY",
+        "gpu": {
+          "geometries": 2,
+          "textures": 1,
+          "programs": 2
+        }
+      },
+      {
+        "configuration": "WEB-VIEW-PROP",
+        "gpu": {
+          "geometries": 2,
+          "textures": 2,
+          "programs": 2
+        }
+      },
+      {
+        "configuration": "WEB-VIEW-PROP sides=9",
+        "gpu": {
+          "geometries": 2,
+          "textures": 2,
+          "programs": 2
+        }
+      },
+      {
+        "configuration": "WEB-VIEW-CSG",
+        "gpu": {
+          "geometries": 1,
+          "textures": 1,
+          "programs": 1
+        }
+      },
+      {
+        "configuration": "WEB-VIEW-ASSEMBLY",
+        "gpu": {
+          "geometries": 2,
+          "textures": 1,
+          "programs": 2
+        }
+      },
+      {
+        "configuration": "WEB-VIEW-PROP",
+        "gpu": {
+          "geometries": 2,
+          "textures": 2,
+          "programs": 2
+        }
+      },
+      {
+        "configuration": "WEB-VIEW-PROP sides=9",
+        "gpu": {
+          "geometries": 2,
+          "textures": 2,
+          "programs": 2
+        }
+      },
+      {
+        "configuration": "WEB-VIEW-CSG",
+        "gpu": {
+          "geometries": 1,
+          "textures": 1,
+          "programs": 1
+        }
+      },
+      {
+        "configuration": "WEB-VIEW-ASSEMBLY",
+        "gpu": {
+          "geometries": 2,
+          "textures": 1,
+          "programs": 2
+        }
+      }
+    ],
+    "disposed": {
+      "view": null,
+      "disposed": true,
+      "geometries": 0,
+      "textures": 1
+    }
+  },
+  "result": "pass"
+}
