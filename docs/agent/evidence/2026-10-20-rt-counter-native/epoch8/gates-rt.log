@@ -1,0 +1,152 @@
+Vulkan adapter: llvmpipe (LLVM 20.1.2, 256 bits) | driver: llvmpipe (Mesa 25.2.8-0ubuntu0.24.04.2 (LLVM 20.1.2), 0x06402008) | API 1.4.318
+[vk] present requested=auto effective=fifo(2) supported=[immediate(0),mailbox(1),fifo(2),fifo_relaxed(3)] images=4 extent=320x200
+[vk] present requested=auto effective=fifo(2) supported=[immediate(0),mailbox(1),fifo(2),fifo_relaxed(3)] images=4 extent=320x200
+[vk] present requested=auto effective=fifo(2) supported=[immediate(0),mailbox(1),fifo(2),fifo_relaxed(3)] images=4 extent=320x200
+DLSS fallback: Streamline disabled for Vulkan test device
+[vk] impostor atlas: 128 slots x 2 layers of 128x128 RGBA8 (cell 16 px, filtered mips) = 21 MiB
+[pipeline-profile] begin kind=compute caller=create_pipeline:2371 count=1
+[pipeline-profile] stage=0 flag=0x20 module=00004d000000004d entry=main
+[pipeline-profile] end kind=compute caller=create_pipeline:2371 ms=2.139485 result=0
+[pipeline-profile] begin kind=compute caller=create_pipeline:2421 count=1
+[pipeline-profile] stage=0 flag=0x20 module=00004f000000004f entry=main
+[pipeline-profile] stage=0 specialization_bytes=4 fnv64=4d25767f9dce13f5
+[pipeline-profile] end kind=compute caller=create_pipeline:2421 ms=42.596267 result=0
+[pipeline-profile] begin kind=compute caller=create_pipeline:2421 count=1
+[pipeline-profile] stage=0 flag=0x20 module=00004f000000004f entry=main
+[pipeline-profile] stage=0 specialization_bytes=4 fnv64=ad2aca7747985764
+[pipeline-profile] end kind=compute caller=create_pipeline:2421 ms=36.433354 result=0
+[pipeline-profile] shader=raster.vert.spv module=0000520000000052 spv_fnv64=cbfac7417ae13057 bytes=12232
+[pipeline-profile] shader=gbuffer.frag.spv module=0000530000000053 spv_fnv64=80e850b7f32310c3 bytes=1580976
+[pipeline-profile] shader=raster_skin.vert.spv module=0000540000000054 spv_fnv64=98960d5674f9363b bytes=11244
+[pipeline-profile] begin kind=graphics caller=operator():2479 count=1
+[pipeline-profile] stage=0 flag=0x1 module=0000520000000052 entry=main
+[pipeline-profile] stage=1 flag=0x10 module=0000530000000053 entry=main
+[vk] Vulkan loader/general warning: Validation Performance Warning: [ WARNING-Shader-OutputNotConsumed ] Object 0: handle = 0x520000000052, type = VK_OBJECT_TYPE_SHADER_MODULE; Object 1: handle = 0x530000000053, type = VK_OBJECT_TYPE_SHADER_MODULE; | MessageID = 0xc81ad50e | vkCreateGraphicsPipelines(): pCreateInfos[0] (SPIR-V Interface) VK_SHADER_STAGE_VERTEX_BIT declared to output location 17 Component 0 but is not an Input declared by VK_SHADER_STAGE_FRAGMENT_BIT.
+[pipeline-profile] end kind=graphics caller=operator():2479 ms=26645.512266 result=0
+[pipeline-profile] shader=visibility_id.vert.spv module=0000560000000056 spv_fnv64=3a4e0235a5bd2b79 bytes=2040
+[pipeline-profile] shader=visibility_id.frag.spv module=0000570000000057 spv_fnv64=18d33bd3765480ba bytes=364
+[pipeline-profile] begin kind=graphics caller=operator():2479 count=1
+[pipeline-profile] stage=0 flag=0x1 module=0000560000000056 entry=main
+[pipeline-profile] stage=1 flag=0x10 module=0000570000000057 entry=main
+[vk] Vulkan loader/general warning: Validation Performance Warning: [ WARNING-Shader-OutputNotConsumed ] Object 0: handle = 0x560000000056, type = VK_OBJECT_TYPE_SHADER_MODULE; | MessageID = 0xc81ad50e | vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 1 not consumed by vertex shader.
+[vk] Vulkan loader/general warning: Validation Performance Warning: [ WARNING-Shader-OutputNotConsumed ] Object 0: handle = 0x560000000056, type = VK_OBJECT_TYPE_SHADER_MODULE; | MessageID = 0xc81ad50e | vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 2 not consumed by vertex shader.
+[vk] Vulkan loader/general warning: Validation Performance Warning: [ WARNING-Shader-OutputNotConsumed ] Object 0: handle = 0x560000000056, type = VK_OBJECT_TYPE_SHADER_MODULE; | MessageID = 0xc81ad50e | vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 3 not consumed by vertex shader.
+[vk] Vulkan loader/general warning: Validation Performance Warning: [ WARNING-Shader-OutputNotConsumed ] Object 0: handle = 0x560000000056, type = VK_OBJECT_TYPE_SHADER_MODULE; | MessageID = 0xc81ad50e | vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 4 not consumed by vertex shader.
+[vk] Vulkan loader/general warning: Validation Performance Warning: [ WARNING-Shader-OutputNotConsumed ] Object 0: handle = 0x560000000056, type = VK_OBJECT_TYPE_SHADER_MODULE; | MessageID = 0xc81ad50e | vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 6 not consumed by vertex shader.
+[vk] Vulkan loader/general warning: Validation Performance Warning: [ WARNING-Shader-OutputNotConsumed ] Object 0: handle = 0x560000000056, type = VK_OBJECT_TYPE_SHADER_MODULE; | MessageID = 0xc81ad50e | vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 7 not consumed by vertex shader.
+[pipeline-profile] end kind=graphics caller=operator():2479 ms=0.737859 result=0
+[pipeline-profile] begin kind=graphics caller=operator():2479 count=1
+[pipeline-profile] stage=0 flag=0x1 module=0000540000000054 entry=main
+[pipeline-profile] stage=1 flag=0x10 module=0000530000000053 entry=main
+[vk] Vulkan loader/general warning: Validation Performance Warning: [ WARNING-Shader-OutputNotConsumed ] Object 0: handle = 0x540000000054, type = VK_OBJECT_TYPE_SHADER_MODULE; Object 1: handle = 0x530000000053, type = VK_OBJECT_TYPE_SHADER_MODULE; | MessageID = 0xc81ad50e | vkCreateGraphicsPipelines(): pCreateInfos[0] (SPIR-V Interface) VK_SHADER_STAGE_VERTEX_BIT declared to output location 17 Component 0 but is not an Input declared by VK_SHADER_STAGE_FRAGMENT_BIT.
+[pipeline-profile] end kind=graphics caller=operator():2479 ms=24339.121766 result=0
+[pipeline-profile] shader=raster_water.vert.spv module=00005a000000005a spv_fnv64=b83c9b57a12d749e bytes=8028
+[pipeline-profile] begin kind=graphics caller=operator():2479 count=1
+[pipeline-profile] stage=0 flag=0x1 module=00005a000000005a entry=main
+[pipeline-profile] stage=1 flag=0x10 module=0000530000000053 entry=main
+[vk] Vulkan loader/general warning: Validation Performance Warning: [ WARNING-Shader-OutputNotConsumed ] Object 0: handle = 0x5a000000005a, type = VK_OBJECT_TYPE_SHADER_MODULE; Object 1: handle = 0x530000000053, type = VK_OBJECT_TYPE_SHADER_MODULE; | MessageID = 0xc81ad50e | vkCreateGraphicsPipelines(): pCreateInfos[0] (SPIR-V Interface) VK_SHADER_STAGE_VERTEX_BIT declared to output location 17 Component 0 but is not an Input declared by VK_SHADER_STAGE_FRAGMENT_BIT.
+[pipeline-profile] end kind=graphics caller=operator():2479 ms=19681.196137 result=0
+[pipeline-profile] begin kind=graphics caller=operator():2479 count=1
+[pipeline-profile] stage=0 flag=0x1 module=0000520000000052 entry=main
+[pipeline-profile] stage=1 flag=0x10 module=0000530000000053 entry=main
+[vk] Vulkan loader/general warning: Validation Performance Warning: [ WARNING-Shader-OutputNotConsumed ] Object 0: handle = 0x520000000052, type = VK_OBJECT_TYPE_SHADER_MODULE; Object 1: handle = 0x530000000053, type = VK_OBJECT_TYPE_SHADER_MODULE; | MessageID = 0xc81ad50e | vkCreateGraphicsPipelines(): pCreateInfos[0] (SPIR-V Interface) VK_SHADER_STAGE_VERTEX_BIT declared to output location 17 Component 0 but is not an Input declared by VK_SHADER_STAGE_FRAGMENT_BIT.
+[pipeline-profile] end kind=graphics caller=operator():2479 ms=26475.661353 result=0
+[pipeline-profile] begin kind=graphics caller=operator():2479 count=1
+[pipeline-profile] stage=0 flag=0x1 module=0000540000000054 entry=main
+[pipeline-profile] stage=1 flag=0x10 module=0000530000000053 entry=main
+[vk] Vulkan loader/general warning: Validation Performance Warning: [ WARNING-Shader-OutputNotConsumed ] Object 0: handle = 0x540000000054, type = VK_OBJECT_TYPE_SHADER_MODULE; Object 1: handle = 0x530000000053, type = VK_OBJECT_TYPE_SHADER_MODULE; | MessageID = 0xc81ad50e | vkCreateGraphicsPipelines(): pCreateInfos[0] (SPIR-V Interface) VK_SHADER_STAGE_VERTEX_BIT declared to output location 17 Component 0 but is not an Input declared by VK_SHADER_STAGE_FRAGMENT_BIT.
+[pipeline-profile] end kind=graphics caller=operator():2479 ms=28343.753713 result=0
+[pipeline-profile] shader=composite.vert.spv module=0000610000000061 spv_fnv64=3fa5ead47188214f bytes=916
+[pipeline-profile] shader=composite.frag.spv module=0000620000000062 spv_fnv64=5fecb2f9ffb5dabc bytes=76012
+[pipeline-profile] begin kind=graphics caller=create_raster_pipelines:2638 count=1
+[pipeline-profile] stage=0 flag=0x1 module=0000610000000061 entry=main
+[pipeline-profile] stage=1 flag=0x10 module=0000620000000062 entry=main
+[pipeline-profile] stage=1 specialization_bytes=4 fnv64=4d25767f9dce13f5
+[pipeline-profile] end kind=graphics caller=create_raster_pipelines:2638 ms=126.025240 result=0
+[pipeline-profile] shader=raster.vert.spv module=0000710000000071 spv_fnv64=cbfac7417ae13057 bytes=12232
+[pipeline-profile] shader=raster_water.vert.spv module=0000720000000072 spv_fnv64=b83c9b57a12d749e bytes=8028
+[pipeline-profile] shader=water_forward.frag.spv module=0000730000000073 spv_fnv64=b102ba572d559f18 bytes=107740
+[pipeline-profile] begin kind=graphics caller=create_water_forward_pipelines:178 count=1
+[pipeline-profile] stage=0 flag=0x1 module=0000710000000071 entry=main
+[pipeline-profile] stage=1 flag=0x10 module=0000730000000073 entry=main
+[vk] Vulkan loader/general warning: Validation Performance Warning: [ WARNING-Shader-OutputNotConsumed ] Object 0: handle = 0x710000000071, type = VK_OBJECT_TYPE_SHADER_MODULE; Object 1: handle = 0x730000000073, type = VK_OBJECT_TYPE_SHADER_MODULE; | MessageID = 0xc81ad50e | vkCreateGraphicsPipelines(): pCreateInfos[0] (SPIR-V Interface) VK_SHADER_STAGE_VERTEX_BIT declared to output location 11 Component 0 but is not an Input declared by VK_SHADER_STAGE_FRAGMENT_BIT.
+[pipeline-profile] end kind=graphics caller=create_water_forward_pipelines:178 ms=153.764768 result=0
+[pipeline-profile] begin kind=graphics caller=create_water_forward_pipelines:193 count=1
+[pipeline-profile] stage=0 flag=0x1 module=0000720000000072 entry=main
+[pipeline-profile] stage=1 flag=0x10 module=0000730000000073 entry=main
+[vk] Vulkan loader/general warning: Validation Performance Warning: [ WARNING-Shader-OutputNotConsumed ] Object 0: handle = 0x720000000072, type = VK_OBJECT_TYPE_SHADER_MODULE; Object 1: handle = 0x730000000073, type = VK_OBJECT_TYPE_SHADER_MODULE; | MessageID = 0xc81ad50e | vkCreateGraphicsPipelines(): pCreateInfos[0] (SPIR-V Interface) VK_SHADER_STAGE_VERTEX_BIT declared to output location 11 Component 0 but is not an Input declared by VK_SHADER_STAGE_FRAGMENT_BIT.
+[pipeline-profile] end kind=graphics caller=create_water_forward_pipelines:193 ms=144.580955 result=0
+[pipeline-profile] shader=composite.vert.spv module=0000780000000078 spv_fnv64=3fa5ead47188214f bytes=916
+[pipeline-profile] shader=display_transform.frag.spv module=0000790000000079 spv_fnv64=384bdbddd6dd21ec bytes=5188
+[pipeline-profile] begin kind=graphics caller=create_display_pipeline:2813 count=1
+[pipeline-profile] stage=0 flag=0x1 module=0000780000000078 entry=main
+[pipeline-profile] stage=1 flag=0x10 module=0000790000000079 entry=main
+[pipeline-profile] end kind=graphics caller=create_display_pipeline:2813 ms=2.778074 result=0
+[pipeline-profile] shader=selection_line.vert.spv module=00007c000000007c spv_fnv64=cd31e2d21002c573 bytes=956
+[pipeline-profile] shader=selection_line.frag.spv module=00007d000000007d spv_fnv64=98a2772f10953eef bytes=312
+[pipeline-profile] begin kind=graphics caller=create_overlay_line_pipeline:2931 count=1
+[pipeline-profile] stage=0 flag=0x1 module=00007c000000007c entry=main
+[pipeline-profile] stage=1 flag=0x10 module=00007d000000007d entry=main
+[pipeline-profile] end kind=graphics caller=create_overlay_line_pipeline:2931 ms=0.267666 result=0
+[pipeline-profile] shader=gi_temporal.comp.spv module=0000810000000081 spv_fnv64=75de2fb397c76caa bytes=33640
+[pipeline-profile] begin kind=compute caller=create_gi_temporal_pipeline:57 count=1
+[pipeline-profile] stage=0 flag=0x20 module=0000810000000081 entry=main
+[pipeline-profile] end kind=compute caller=create_gi_temporal_pipeline:57 ms=35.716344 result=0
+[pipeline-profile] shader=gi_atrous.comp.spv module=0000850000000085 spv_fnv64=560a4c5f6fe2b996 bytes=10956
+[pipeline-profile] begin kind=compute caller=create_gi_atrous_pipeline:117 count=1
+[pipeline-profile] stage=0 flag=0x20 module=0000850000000085 entry=main
+[pipeline-profile] end kind=compute caller=create_gi_atrous_pipeline:117 ms=4.868450 result=0
+[rt] independent GI shader specialization=1
+[pipeline-profile] shader=rt_shadow.rgen.spv module=0000890000000089 spv_fnv64=fb2b9ab68870aae5 bytes=27272
+[pipeline-profile] shader=rt_surface_test.rgen.spv module=00008a000000008a spv_fnv64=7f86b1136f9e45dd bytes=50588
+[pipeline-profile] shader=rt_lighting.rgen.spv module=00008b000000008b spv_fnv64=3e4165d7ed37420d bytes=1390620
+[pipeline-profile] shader=rt_visibility.rmiss.spv module=00008c000000008c spv_fnv64=846e24f9cd1ca853 bytes=164
+[pipeline-profile] shader=rt_radiance.rmiss.spv module=00008d000000008d spv_fnv64=301940d946fa7b40 bytes=908
+[pipeline-profile] shader=rt_visibility.rchit.spv module=00008e000000008e spv_fnv64=6593f085f2c20144 bytes=380
+[pipeline-profile] shader=rt_visibility.rahit.spv module=00008f000000008f spv_fnv64=babf76481d46d179 bytes=12044
+[pipeline-profile] shader=rt_surface.rchit.spv module=0000900000000090 spv_fnv64=0356a6abd65779b1 bytes=1189224
+[pipeline-profile] shader=rt_surface.rahit.spv module=0000910000000091 spv_fnv64=60e3a5c72d97b8ba bytes=9664
+[pipeline-profile] shader=rt_lighting.rgen.spv module=0000920000000092 spv_fnv64=3e4165d7ed37420d bytes=1390620
+[pipeline-profile] shader=rt_lighting.rgen.spv module=0000930000000093 spv_fnv64=3e4165d7ed37420d bytes=1390620
+[rt] local primary area samples=4 (0=adaptive); visibility diagnostic counters=1
+[rt] local-light selection code=0; packed budgets=0
+[rt] secondary local-light sampling=1 (0 exact, 1 importance reservoir)
+[rt] secondary surface detail mode=0 (0 reference, 1 adaptive, 2 normal-only)
+[pipeline-profile] begin kind=ray_tracing caller=create_ray_tracing_pipeline:456 count=1
+[pipeline-profile] stage=0 flag=0x100 module=0000890000000089 entry=main
+[pipeline-profile] stage=1 flag=0x100 module=00008a000000008a entry=main
+[pipeline-profile] stage=2 flag=0x100 module=00008b000000008b entry=main
+[pipeline-profile] stage=2 specialization_bytes=20 fnv64=e64e9a595eba0950
+[pipeline-profile] stage=3 flag=0x800 module=00008c000000008c entry=main
+[pipeline-profile] stage=4 flag=0x800 module=00008d000000008d entry=main
+[pipeline-profile] stage=5 flag=0x400 module=00008e000000008e entry=main
+[pipeline-profile] stage=6 flag=0x200 module=00008f000000008f entry=main
+[pipeline-profile] stage=6 specialization_bytes=4 fnv64=ad2aca7747985764
+[pipeline-profile] stage=7 flag=0x400 module=0000900000000090 entry=main
+[pipeline-profile] stage=7 specialization_bytes=4 fnv64=4d25767f9dce13f5
+[pipeline-profile] stage=8 flag=0x200 module=0000910000000091 entry=main
+[pipeline-profile] stage=9 flag=0x100 module=0000920000000092 entry=main
+[pipeline-profile] stage=9 specialization_bytes=24 fnv64=825ee05c69fbc2e1
+[pipeline-profile] stage=10 flag=0x100 module=0000930000000093 entry=main
+[pipeline-profile] stage=10 specialization_bytes=24 fnv64=22598c64c0317f72
+[pipeline-profile] end kind=ray_tracing caller=create_ray_tracing_pipeline:456 ms=65439.037766 result=0
+[pipeline-profile] begin kind=ray_tracing_shadow caller=operator():569 count=1
+[pipeline-profile] stage=0 flag=0x100 module=0000890000000089 entry=main
+[pipeline-profile] stage=1 flag=0x800 module=00008c000000008c entry=main
+[pipeline-profile] stage=2 flag=0x400 module=00008e000000008e entry=main
+[pipeline-profile] stage=3 flag=0x200 module=00008f000000008f entry=main
+[pipeline-profile] stage=3 specialization_bytes=4 fnv64=ad2aca7747985764
+[pipeline-profile] end kind=ray_tracing_shadow caller=operator():569 ms=26.409240 result=0
+[pipeline-profile] begin kind=ray_tracing_surface_test caller=operator():569 count=1
+[pipeline-profile] stage=0 flag=0x100 module=00008a000000008a entry=main
+[pipeline-profile] stage=1 flag=0x800 module=00008c000000008c entry=main
+[pipeline-profile] stage=2 flag=0x800 module=00008d000000008d entry=main
+[pipeline-profile] stage=3 flag=0x400 module=00008e000000008e entry=main
+[pipeline-profile] stage=4 flag=0x200 module=00008f000000008f entry=main
+[pipeline-profile] stage=4 specialization_bytes=4 fnv64=ad2aca7747985764
+[pipeline-profile] stage=5 flag=0x400 module=0000900000000090 entry=main
+[pipeline-profile] stage=5 specialization_bytes=4 fnv64=4d25767f9dce13f5
+[pipeline-profile] stage=6 flag=0x200 module=0000910000000091 entry=main
+[pipeline-profile] end kind=ray_tracing_surface_test caller=operator():569 ms=14427.981343 result=0
+[vk] static reserve: clusters 1 MiB, vertices 1 MiB, indices 1 MiB (host-visible)
+[vk] static upload frame bytes=1104 pending_parts=0 publish=0.03 ms

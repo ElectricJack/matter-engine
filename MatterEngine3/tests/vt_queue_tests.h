@@ -34,6 +34,7 @@ struct Budgets {
         current.mesh_budget_mb = 4;
         current.fills_per_frame = 8;
         current.tail_fills_per_frame = 16;
+        current.fill_budget_ms = 0.0f; // legacy page-count scenarios below
         current.queue_cap = 256;
         current.enrich_per_frame = 0;
     }
@@ -365,6 +366,25 @@ inline void run_page_probe(matter::VulkanDevice& vulkan) {
               "queue probe: the stale tail's durable dirty entry is retired on the next frame");
         residency.release_variant(0x9011u);
     }
+    // The shared time target limits tails as well as detail pages, using the
+    // retired GPU sample to lower admission after a costly frame. Disabling
+    // it restores the separate page-count limits for callers without timers.
+    auto& limits = matter::vt_residency_budgets();
+    limits.tail_fills_per_frame = 16;
+    limits.fill_budget_ms = 32.0f;
+    for (uint64_t hash = 0x9020u; hash < 0x9025u; ++hash) {
+        context.variant_hash = hash;
+        CHECK(residency.register_variant(hash, 0, atlas, context) != vt::kVtNoSlot,
+              "VT fill time: tail owner admitted");
+    }
+    CHECK(frames.next(residency, 11) && residency.recorded_fill_count() == 2,
+          "VT fill time: initial 32 ms target records at most two tails");
+    residency.observe_gpu_fill_ms(100.0f, 2);
+    CHECK(frames.next(residency, 12) && residency.recorded_fill_count() == 1,
+          "VT fill time: a slow retired sample lowers the next frame to one tail");
+    limits.fill_budget_ms = 0.0f;
+    CHECK(frames.next(residency, 13) && residency.recorded_fill_count() == 2,
+          "VT fill time: disabling the target drains remaining tails");
 }
 
 // A registration whose pinned tail must recycle a live unpinned page retires
@@ -635,6 +655,98 @@ inline void run_replacements(matter::VulkanDevice& vulkan) {
           "VT replacement: released owner cannot publish into retiring slots");
     CHECK(vulkan.validation_error_count() == errors_before, "VT replacement: zero Vulkan validation errors");
     run_tail_recycling(vulkan);
+}
+
+inline void run_slice_publication(matter::VulkanDevice& vulkan) {
+    Budgets budgets;
+    auto& limits = matter::vt_residency_budgets();
+    limits.pool_mb = 100; limits.fill_budget_ms = limits.enrich_budget_ms = 4;
+    Frames frames(vulkan); vt::VtResidency residency; std::string error;
+    CHECK(frames.valid() && residency.init(vulkan,error), "sliced publication: runtime initialized");
+    if (!frames.valid() || !residency.available()) return;
+    auto writer = vt::make_vt_stub_filler(vulkan,64,error);
+    if (!writer) { CHECK(false, "sliced publication: writer created"); return; }
+    auto production = std::make_unique<PublicationWriter>(vulkan,std::move(writer));
+    // The custom factor producer does not dereference geometry; this lease
+    // tests residency's metadata publication and cancellation, with real writes.
+    production->geometry.lifetime = std::make_shared<uint32_t>(7);
+    class Slices final : public vt::VtPageFiller {
+    public:
+        std::unique_ptr<vt::VtPageFiller> producer;
+        std::vector<uint64_t> owners;
+        bool supports_incremental_fill() const override { return true; }
+        void fill(VkCommandBuffer cmd,const vt::VtFillRequest* requests,size_t count) override {
+            CHECK(count == 1 && requests[0].work_tiles <= 4, "sliced publication: one priced slice admitted");
+            owners.push_back(requests[0].owner_key);
+            if (owners.size() % 4) requests[0].mark_pending();
+            else producer->fill(cmd,requests,count);
+        }
+    };
+    auto slices = std::make_unique<Slices>(); auto* observed = slices.get();
+    slices->producer = std::move(production); residency.set_filler(std::move(slices));
+    chart_atlas::ChartAtlasRung atlas;
+    atlas.atlas_w = atlas.atlas_h = 128; atlas.charts.resize(1); atlas.tri_order = {0};
+    auto& chart = atlas.charts[0]; chart.rect_w = chart.rect_h = 128; chart.tri_count = 1; chart.texels_per_meter = 1;
+    const float positions[] = {0,0,0,1,0,0,0,1,0}; const uint32_t indices[] = {0,1,2};
+    vt::VtPartContext context; context.positions = positions; context.vertex_count = 3;
+    context.indices = indices; context.triangle_count = 1;
+    uint32_t owners[2];
+    for (uint32_t i=0;i<2;++i) {
+        context.variant_hash = 0xB100+i;
+        owners[i] = residency.register_variant(context.variant_hash,0,atlas,context);
+        CHECK(owners[i] != vt::kVtNoSlot, "sliced publication: tail admitted");
+    }
+    for (uint64_t frame=1;frame<=8;++frame) {
+        CHECK(frames.next(residency,frame), "sliced publication: frame submitted");
+        CHECK(residency.stats().fills_total == frame/4 && residency.stats().fills_failed_total == 0 &&
+              residency.queued_requests_consistent_for_test(), "sliced publication: pending pages preserve queue and success accounting");
+    }
+    CHECK(observed->owners.size()==8 && observed->owners[0]==observed->owners[3] &&
+          observed->owners[4]==observed->owners[7] && observed->owners[0]!=observed->owners[4],
+          "sliced publication: continuation finishes before another tail can replace scratch");
+    class Factors final : public vt::VtPageEnricher {
+    public:
+        std::vector<uint32_t> starts;
+        std::vector<uint64_t> addresses;
+        bool supports_separate_occlusion() const override { return true; }
+        bool supports_incremental_enrichment() const override { return true; }
+        void enrich(VkCommandBuffer cmd,const vt::VtEnrichRequest* requests,size_t count) override {
+            CHECK(count==1, "sliced AO: one private factor admitted");
+            const auto& r = requests[0]; starts.push_back(r.tile_begin); addresses.push_back(r.occlusion_address);
+            CHECK(r.tile_count<=4 && r.occlusion_buffer, "sliced AO: bounded real factor storage");
+            for (uint32_t tile=r.tile_begin;tile<r.tile_begin+r.tile_count;++tile) {
+                const uint32_t x=(tile%vt::kVtPageTilesPerRow)*vt::kVtPageTileWidth;
+                const uint32_t texel=(tile/vt::kVtPageTilesPerRow)*vt::kVtPageStride+x;
+                const uint32_t width=std::min(vt::kVtPageTileWidth,vt::kVtPageStride-x);
+                vkCmdFillBuffer(cmd,r.occlusion_buffer,r.occlusion_offset+texel*2u,width*2u,0x80008000u);
+            }
+            r.mark_enriched();
+        }
+        void invalidate_part(uint64_t) override {}
+        uint32_t sample_count() const override { return 1; }
+        float max_footprint_meters() const override { return 1000; }
+    };
+    auto factors = std::make_unique<Factors>(); auto* factor_probe = factors.get();
+    limits.enrich_per_frame = 2; residency.set_enricher(std::move(factors));
+    CHECK(frames.next(residency,9) && factor_probe->starts.size()==1 &&
+          residency.stats().occlusion_pages==0 && residency.stats().enrich_total==0,
+          "sliced AO: first factor slice stays unpublished");
+    CHECK(frames.next(residency,10) && factor_probe->starts.back()==2 &&
+          factor_probe->addresses[0]==factor_probe->addresses[1] && residency.stats().occlusion_pages==0,
+          "sliced AO: next frame retains private factor and cursor");
+    residency.invalidate_owners({owners[0]});
+    residency.observe_gpu_fill_ms(12,1,1); residency.observe_gpu_enrich_ms(12,1);
+    CHECK(frames.next(residency,11) && residency.recorded_fill_tiles()==1 && residency.recorded_enrich_tiles()==0,
+          "sliced pair budget: an expensive fill advances while AO waits");
+    CHECK(frames.next(residency,12) && residency.recorded_fill_tiles()==0 && residency.recorded_enrich_tiles()==1,
+          "sliced pair budget: the next frame advances AO while fill waits");
+    for (uint64_t frame=13;frame<1600 && residency.stats().enrich_total<2;++frame)
+        CHECK(frames.next(residency,frame), "sliced AO: cancellation and completion frames submitted");
+    CHECK(residency.stats().enrich_total==2 && residency.stats().occlusion_pages==2 &&
+          residency.stats().enrich_queue_depth==0,
+          "sliced AO: superseded factor is retired and both complete pages eventually publish");
+    CHECK(factor_probe->addresses.size()>2 && factor_probe->addresses[2]!=factor_probe->addresses[0] &&
+          factor_probe->starts[2]==0, "sliced AO: invalidated rows cannot enter a new factor");
 }
 
 inline void run_shared_enrichment_transition(matter::VulkanDevice& vulkan) {
@@ -1354,6 +1466,7 @@ inline void run_finite_source_edits(matter::VulkanDevice& vulkan) {
 }
 
 inline void run(matter::VulkanDevice& vulkan) {
+    run_slice_publication(vulkan);
     run_finite_source_edits(vulkan);
     run_preparation_owners(vulkan);
     const uint32_t errors_before = vulkan.validation_error_count();

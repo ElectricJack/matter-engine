@@ -26,8 +26,9 @@ harnesses cover them, and neither covers all of them:
     -TimeoutMilliseconds 30000
 ```
 
-Each mode is its own process, run from `MatterEditor/`, with a per-mode
-timeout (`rt` 90 s, `rt-transmission` 45 s). Every mode must print
+Each mode is its own process, run from `MatterEditor/`, with a 30 s default
+timeout (`rt` 180 s, `rt-transmission` 45 s, `animation-skin` 120 s,
+`vt-rt` 120 s). Every mode must print
 `validation errors: 0` and `ALL PASS`, exit 0, or the gate fails. Pass
 `-TestPath`: the script's default still points at the retired MinGW
 `build/windows/` exe. Its modes: `streamline-missing-instance-proxy`,
