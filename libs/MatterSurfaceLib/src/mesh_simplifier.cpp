@@ -50,7 +50,6 @@
 #include <cmath>
 #include <cstdint>
 #include <algorithm>
-#include <cstring>
 #include <unordered_map>
 #include <cstdio>
 
@@ -281,7 +280,7 @@ static void buildTopology(const Mesh& m, std::vector<WVert>& verts, std::vector<
 // over-65535-vertex refusal below — callers must treat vertexCount == 0 as
 // "no mesh", not as success.
 static Mesh buildMesh(const std::vector<WVert>& verts, const std::vector<WTri>& tris) {
-    Mesh out = {0};
+    Mesh out = {};
     std::vector<int> remap(verts.size(), -1);
     int nv = 0;
     for (size_t i = 0; i < verts.size(); ++i)
@@ -573,7 +572,7 @@ static void decimate(std::vector<WVert>& verts, std::vector<WTri>& tris,
 // `simplify(MeshIndexed)` overload below for anything that might exceed that.
 Mesh simplify_mesh(const Mesh& input, const SimplifyOptions& opts, const CellBounds* bounds) {
     if (input.vertexCount == 0 || input.triangleCount == 0 || !input.vertices) {
-        Mesh empty = {0};
+        Mesh empty = {};
         return empty;
     }
     std::vector<WVert> verts;

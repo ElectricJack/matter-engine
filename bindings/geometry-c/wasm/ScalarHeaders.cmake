@@ -42,12 +42,4 @@ ${_suffix}
 static_assert(sizeof(TriEx)==96 && sizeof(float3)==12);
 static_assert(offsetof(Tri,vertex1)==16 && offsetof(Tri,vertex2)==32 && offsetof(Tri,centroid)==48);
 ")
-read_scalar_source("MatterEngine3/src/triangle_emit.hpp" _emitter)
-string(FIND "${_emitter}" "// Variation binding. SP-1" _seam)
-if(_seam LESS 0)
-    message(FATAL_ERROR "Scalar emitter declaration seam changed; audit cache coupling")
-endif()
-string(SUBSTRING "${_emitter}" 0 ${_seam} _emitter)
-string(REGEX REPLACE "#include \"part_asset_v2.h\"[^\n]*" "" _emitter "${_emitter}")
-file(WRITE "${_scalar_headers}/triangle_emit.hpp" "${_emitter}\n} // namespace tri_emit\n")
 target_include_directories(matter_geometry BEFORE PRIVATE "${_scalar_headers}")
