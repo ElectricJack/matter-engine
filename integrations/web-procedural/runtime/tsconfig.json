@@ -1,0 +1,8 @@
+{
+  "compilerOptions": {
+    "target": "ES2022", "module": "NodeNext", "moduleResolution": "NodeNext",
+    "strict": true, "declaration": true, "outDir": "dist", "rootDir": "src",
+    "lib": ["ES2022", "DOM"], "types": [], "noEmitOnError": true
+  },
+  "files": ["src/index.mts", "src/worker.mts", "src/protocol.mts", "src/types.mts"]
+}

@@ -3,6 +3,7 @@
 #include "render/geometry_raster_adapter.h"
 #include "render/matrix_math.h"
 #include "geometry_cut_gpu_probe.h"
+#include "geometry/geometry_indexed_cut.h"
 #include <filesystem>
 
 namespace geometry_page_vk_test {
@@ -116,6 +117,18 @@ inline void run(matter::VulkanDevice& vulkan) {
             renderer.finish_dynamic_frame(frame.serial); vulkan.wait_idle();
             CHECK(ok, error.c_str()); return ok;
         };
+        if (!frame()) return;
+        // Default source draws use only a neutral geometry descriptor. Changes
+        // to static instance counts must not upload inactive paging headers.
+        for (int recycle = 0; recycle < 4; ++recycle) if (!frame()) return;
+        const auto inactive_uploads = renderer.test_geometry_cut_uploads();
+        CHECK(renderer.update_instances({{100, viewer::mat4_identity(), 100},
+                                         {100, viewer::mat4_identity(), 101}}, error), error.c_str());
+        for (int recycle = 0; recycle < 4; ++recycle) if (!frame()) return;
+        CHECK(renderer.test_geometry_cut_uploads() == inactive_uploads,
+              "source instance growth does not publish inactive VG headers");
+        CHECK(renderer.take_geometry_page_requests().empty(), "source draws emit no geometry page requests");
+        CHECK(renderer.update_instances({{100, viewer::mat4_identity(), 100}}, error), error.c_str());
         if (!frame()) return;
         viewer::VkRasterPixel reference_pixel;
         auto extent = renderer.test_opaque_extent();
@@ -319,6 +332,7 @@ inline void run(matter::VulkanDevice& vulkan) {
         std::map<asset_store::BlobHash, uint32_t> node_ids;
         for (size_t i = 0; i < snapshot.nodes.size(); ++i) node_ids[snapshot.nodes[i].self.page] = static_cast<uint32_t>(i);
         std::vector<viewer::VkGeometryCutNode> gpu_nodes;
+        std::vector<geometry::IndexedCutNode> cpu_nodes;
         std::vector<uint32_t> gpu_roots;
         for (const auto& root : snapshot.roots) gpu_roots.push_back(node_ids.at(root.page));
         for (const auto& node : snapshot.nodes) {
@@ -329,18 +343,24 @@ inline void run(matter::VulkanDevice& vulkan) {
             for (size_t c = 0; c < node.children.size(); ++c) gpu.children[c] = node_ids.at(node.children[c].page);
             if (node.ready) gpu.ready_part_hash = gpu_ids.at(node.self.page);
             gpu_nodes.push_back(gpu);
+            geometry::IndexedCutNode cpu;
+            cpu.self=node.self;cpu.ready=node.ready;
+            cpu.child_count=static_cast<uint32_t>(node.children.size());
+            for (size_t c=0;c<node.children.size();++c) cpu.children[c]=gpu.children[c];
+            cpu_nodes.push_back(cpu);
         }
-        for (bool fine : {true, false}) {
+        geometry::PersistentIndexedCut persistent_cut;
+        for (bool fine : {true, false, true}) {
             geometry::ResidentCut expected;
             CHECK(residency.select(lease, [fine](const geometry::NodeRef&) { return fine; }, {}, expected, error), error.c_str());
+            CHECK(persistent_cut.update(cpu_nodes,gpu_roots,[fine](const geometry::NodeRef&){return fine;}),
+                  "persistent native CPU cut updates across refine/coarsen/refine");
             viewer::VkSceneInstance controller{100, viewer::mat4_identity(), 100}; controller.ray_traced = false;
             std::vector<viewer::VkSceneInstance> candidates{controller};
             for (const auto& node : snapshot.resources) {
                 viewer::VkSceneInstance proxy{gpu_ids.at(node->node.self.page), viewer::mat4_identity(), 100};
                 proxy.rt_proxy_only = true;
-                proxy.ray_traced = std::any_of(expected.resources.begin(), expected.resources.end(), [&](const auto& selected) {
-                    return selected->node.self.page == node->node.self.page;
-                });
+                proxy.ray_traced = persistent_cut.contains(node_ids.at(node->node.self.page));
                 candidates.push_back(proxy);
             }
             CHECK(renderer.set_geometry_cut(gpu_nodes, gpu_roots,
