@@ -1,0 +1,10 @@
+{
+  "pid": 891202,
+  "result": "docs/agent/evidence/2026-09-17-sector-pom/existing-seam-v1-result.json",
+  "log": "docs/agent/evidence/2026-09-17-sector-pom/existing-seam-v1-supervisor.log",
+  "args": [
+    "docs/agent/evidence/2026-09-16-shared-vt-pixels/run_checks.py",
+    "sector-pom-v1",
+    "vt-composed-seam"
+  ]
+}

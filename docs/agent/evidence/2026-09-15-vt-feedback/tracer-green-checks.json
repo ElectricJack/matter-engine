@@ -1,0 +1,152 @@
+[
+  {
+    "name": "world_tracer_tests-build",
+    "command": [
+      "./tools/build-windows-from-wsl.sh",
+      "RelWithDebInfo",
+      "world_tracer_tests"
+    ],
+    "exit": 0,
+    "elapsed_seconds": 17.704406899996684,
+    "log": "docs/agent/evidence/2026-09-15-vt-feedback/tracer-green-world_tracer_tests-build.log"
+  },
+  {
+    "name": "world_tracer_tests",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-Command",
+      "Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEngine3/tests\"; & \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor/build/cmake/windows-msvc/relwithdebinfo/world_tracer_tests.exe\"; exit $LASTEXITCODE"
+    ],
+    "exit": 0,
+    "elapsed_seconds": 0.5887532950000605,
+    "log": "docs/agent/evidence/2026-09-15-vt-feedback/tracer-green-world_tracer_tests.log"
+  },
+  {
+    "name": "part_asset_v2_tests-build",
+    "command": [
+      "./tools/build-windows-from-wsl.sh",
+      "RelWithDebInfo",
+      "part_asset_v2_tests"
+    ],
+    "exit": 0,
+    "elapsed_seconds": 7.624964631002513,
+    "log": "docs/agent/evidence/2026-09-15-vt-feedback/tracer-green-part_asset_v2_tests-build.log"
+  },
+  {
+    "name": "part_asset_v2_tests",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-Command",
+      "Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEngine3/tests\"; & \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor/build/cmake/windows-msvc/relwithdebinfo/part_asset_v2_tests.exe\"; exit $LASTEXITCODE"
+    ],
+    "exit": 0,
+    "elapsed_seconds": 2.798850962994038,
+    "log": "docs/agent/evidence/2026-09-15-vt-feedback/tracer-green-part_asset_v2_tests.log"
+  },
+  {
+    "name": "part_asset_flat_refs_tests-build",
+    "command": [
+      "./tools/build-windows-from-wsl.sh",
+      "RelWithDebInfo",
+      "part_asset_flat_refs_tests"
+    ],
+    "exit": 0,
+    "elapsed_seconds": 7.419970226001169,
+    "log": "docs/agent/evidence/2026-09-15-vt-feedback/tracer-green-part_asset_flat_refs_tests-build.log"
+  },
+  {
+    "name": "part_asset_flat_refs_tests",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-Command",
+      "Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEngine3/tests\"; & \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor/build/cmake/windows-msvc/relwithdebinfo/part_asset_flat_refs_tests.exe\"; exit $LASTEXITCODE"
+    ],
+    "exit": 0,
+    "elapsed_seconds": 1.925425029003236,
+    "log": "docs/agent/evidence/2026-09-15-vt-feedback/tracer-green-part_asset_flat_refs_tests.log"
+  },
+  {
+    "name": "partstore_tests-build",
+    "command": [
+      "./tools/build-windows-from-wsl.sh",
+      "RelWithDebInfo",
+      "partstore_tests"
+    ],
+    "exit": 0,
+    "elapsed_seconds": 8.965115419996437,
+    "log": "docs/agent/evidence/2026-09-15-vt-feedback/tracer-green-partstore_tests-build.log"
+  },
+  {
+    "name": "partstore_tests",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-Command",
+      "Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEngine3/tests\"; & \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor/build/cmake/windows-msvc/relwithdebinfo/partstore_tests.exe\"; exit $LASTEXITCODE"
+    ],
+    "exit": 0,
+    "elapsed_seconds": 0.959824095996737,
+    "log": "docs/agent/evidence/2026-09-15-vt-feedback/tracer-green-partstore_tests.log"
+  },
+  {
+    "name": "vulkan_smoke_tests-build",
+    "command": [
+      "./tools/build-windows-from-wsl.sh",
+      "RelWithDebInfo",
+      "vulkan_smoke_tests"
+    ],
+    "exit": 0,
+    "elapsed_seconds": 16.690626083996904,
+    "log": "docs/agent/evidence/2026-09-15-vt-feedback/tracer-green-vulkan_smoke_tests-build.log"
+  },
+  {
+    "name": "editor-build",
+    "command": [
+      "./tools/build-windows-from-wsl.sh",
+      "RelWithDebInfo",
+      "editor"
+    ],
+    "exit": 0,
+    "elapsed_seconds": 6.163666853004543,
+    "log": "docs/agent/evidence/2026-09-15-vt-feedback/tracer-green-editor-build.log"
+  },
+  {
+    "name": "vt-feedback",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-Command",
+      "$env:MATTER_VK_SMOKE_MODE=\"vt-feedback\"; $env:MATTER_VK_VALIDATION=\"1\"; Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe\"; exit $LASTEXITCODE"
+    ],
+    "exit": 0,
+    "elapsed_seconds": 5.631972994997341,
+    "log": "docs/agent/evidence/2026-09-15-vt-feedback/tracer-green-vt-feedback.log"
+  },
+  {
+    "name": "vt",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-Command",
+      "$env:MATTER_VK_SMOKE_MODE=\"vt\"; $env:MATTER_VK_VALIDATION=\"1\"; Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe\"; exit $LASTEXITCODE"
+    ],
+    "exit": 0,
+    "elapsed_seconds": 1.8145614390014089,
+    "log": "docs/agent/evidence/2026-09-15-vt-feedback/tracer-green-vt.log"
+  },
+  {
+    "name": "surface-parallax",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-Command",
+      "$env:MATTER_VK_SMOKE_MODE=\"surface-parallax\"; $env:MATTER_VK_VALIDATION=\"1\"; Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe\"; exit $LASTEXITCODE"
+    ],
+    "exit": 0,
+    "elapsed_seconds": 5.501831244000641,
+    "log": "docs/agent/evidence/2026-09-15-vt-feedback/tracer-green-surface-parallax.log"
+  }
+]

@@ -65,6 +65,7 @@ WIN_BOX3D_LIB = $(BOX3D_DIR)/build-mingw/libbox3d.a
 ME3_DIR     = ../MatterEngine3
 MSL_DIR     = ../libs/MatterSurfaceLib
 PROFILE_DIR = ../libs/ProfileLib
+ASSET_STORE_DIR = ../libs/AssetStoreLib
 FLECS_DIR   = ../third_party/flecs
 # Shared source-of-truth libraries (compiled from source, not copied).
 SQL_DIR     = ../libs/SpatialQueryLib
@@ -93,6 +94,7 @@ INCLUDE_PATHS = -I$(ME3_DIR)/include \
                 -I$(SQL_DIR)/include -I$(MEMLIB_DIR)/include \
                 -I$(MATHLIB_DIR)/include \
                 -I$(PROFILE_DIR)/include \
+                -I$(ASSET_STORE_DIR)/include -I$(ASSET_STORE_DIR)/src \
                 -I$(RAYLIB_PATH) \
                 -I$(IMGUI_PATH) -I$(IMGUI_PATH)/backends \
                 -I$(IMGUIZMO_PATH) \
@@ -363,6 +365,10 @@ endif
 # built by exactly the compiler that links it, and so a caller who overrode
 # VULKAN_INCLUDE for this build gets it honored inside the archive too.
 VIEWER_LIB = $(ME3_DIR)/build/libmatter_engine3_viewer.a
+# The viewer archive's legacy part route links the authoring pipeline's
+# archives, which MatterEngine3's viewer-lib target builds beside it.
+include $(ME3_DIR)/authoring_adapter.mk
+VIEWER_AUTHORING_LIBS = $(addprefix $(ME3_DIR)/build/authoring_adapter/,$(AUTHORING_ADAPTER_ARCHIVES))
 
 VIEWER_LIB_MAKE_ARGS = \
     VIEWER_CXX="$(WIN_CXX)" VIEWER_CC="$(WIN_CC)" VIEWER_AR="$(WIN_AR)" \
@@ -531,7 +537,9 @@ $(VK_EMBEDDED_HEADER): FORCE
 	$(MAKE) -C $(ME3_DIR) vulkan-spirv
 
 build/windows/vulkan_smoke_tests.exe: \
+        ../libs/AssetStoreLib/src/store_hash.cpp \
         $(ME3_DIR)/tests/vulkan_smoke_tests.cpp \
+        ../libs/MeshChartingLib/src/mesh_charting.cpp \
         src/ui_lighting_controls.cpp src/ui.h \
         $(ME3_DIR)/include/matter/vulkan_device.h \
         $(ME3_DIR)/src/render/gpu_matrix_pack.h \
@@ -541,6 +549,11 @@ build/windows/vulkan_smoke_tests.exe: \
         $(ME3_DIR)/src/render/vk_resources.h \
         $(ME3_DIR)/src/render/vk_pipeline.h \
         $(ME3_DIR)/src/render/vk_scene_renderer.h \
+        $(ME3_DIR)/src/render/vk_sparse_voxel.h \
+        $(ME3_DIR)/src/sparse_voxel_bake.h \
+        $(ME3_DIR)/src/surface_proxy.h \
+        $(ME3_DIR)/tests/sparse_voxel_fixture_io.h \
+        $(ME3_DIR)/tests/sparse_voxel_vk_tests.h \
         $(ME3_DIR)/src/render/vk_volumetrics.h \
         $(ME3_DIR)/src/render/vk_atmosphere.h \
         $(ME3_DIR)/src/render/vk_cloud_shadows.h \
@@ -549,71 +562,85 @@ build/windows/vulkan_smoke_tests.exe: \
         $(ME3_DIR)/src/render/vk_instance_cache.cpp \
         $(ME3_DIR)/src/render/vk_lighting_controls.h \
         $(ME3_DIR)/src/render/streamline_bridge.h \
-        $(ME3_DIR)/src/render/streamline_bridge.cpp \
+        ../libs/MatterGraphics/src/native/streamline_bridge.cpp \
         $(ME3_DIR)/src/render/vk_context.cpp \
-        $(ME3_DIR)/src/render/vk_resources.cpp \
+        ../libs/MatterGraphics/src/native/vk_resources.cpp \
+        ../libs/MatterGraphics/src/native/vk_device_internal.cpp \
         $(ME3_DIR)/src/render/vk_pipeline.cpp \
         $(ME3_DIR)/src/render/vk_scene_renderer.cpp \
+        ../libs/MatterGraphics/src/native/mesh_raster.cpp \
+        ../libs/MatterGraphics/src/native/mesh_pipelines.cpp \
+        $(ME3_DIR)/src/render/vk_sparse_voxel.cpp \
+        $(ME3_DIR)/src/sparse_voxel_bake.cpp \
+        $(ME3_DIR)/src/surface_proxy.cpp \
         $(ME3_DIR)/src/render/vk_animation_skinning.cpp \
         $(ME3_DIR)/src/render/vk_animation_bounds.cpp \
         $(ME3_DIR)/src/animation/animation_budget.cpp \
         $(ME3_DIR)/src/render/tileset_slicer.cpp \
         $(ME3_DIR)/src/render/bc_encode.cpp \
-        $(ME3_DIR)/src/render/vt_residency.cpp \
+        ../libs/MatterGraphics/src/native/vt/vt_residency.cpp \
         $(ME3_DIR)/include/matter/vt_budgets.h \
         $(ME3_DIR)/src/props/props.cpp \
         $(ME3_DIR)/src/util/json_doc.cpp \
-        $(ME3_DIR)/src/render/vt_stub_filler.cpp \
+        ../libs/MatterGraphics/src/native/vt/vt_stub_filler.cpp \
         $(ME3_DIR)/src/render/vt_compositor.cpp \
         $(ME3_DIR)/src/render/vt_enrich.cpp \
         $(ME3_DIR)/src/render/vt_surface_tape.h \
-        $(ME3_DIR)/src/terrain_field.cpp \
+        ../libs/ProceduralGeometry/src/terrain_field.cpp \
         $(ME3_DIR)/tests/vulkan_smoke_tileset_bake_stub.cpp \
         $(ME3_DIR)/src/tileset_gtex.cpp \
         $(ME3_DIR)/src/render/vk_volumetrics.cpp \
-        $(ME3_DIR)/src/render/vk_atmosphere.cpp \
-        $(ME3_DIR)/src/render/vk_cloud_shadows.cpp \
+        ../libs/MatterGraphics/src/native/vk_atmosphere.cpp \
+        ../libs/MatterGraphics/src/native/vk_cloud_shadows.cpp \
         $(ME3_DIR)/src/render/vk_emitter_gather.cpp \
-        $(ME3_DIR)/src/render/raster_mesh.cpp $(ME3_DIR)/src/render/indexed_part_geometry.cpp \
+        ../libs/MatterGraphics/src/native/raster_mesh.cpp $(ME3_DIR)/src/render/indexed_part_geometry.cpp \
         $(ME3_DIR)/src/render/frame_matrices.cpp \
-        $(ME3_DIR)/src/render/vk_temporal.cpp \
-        $(ME3_DIR)/src/render/vk_gi_math.cpp \
-        $(ME3_DIR)/src/render/vk_lighting_controls.cpp \
-        $(ME3_DIR)/src/render/matrix_math.cpp \
+        ../libs/MatterGraphics/src/native/vk_temporal.cpp \
+        ../libs/MatterGraphics/src/native/vk_gi_math.cpp \
+        ../libs/MatterGraphics/src/native/vk_lighting_controls.cpp \
+        $(ME3_DIR)/../libs/MatterGraphics/src/matrix_math.cpp \
         $(ME3_DIR)/src/render/lod_trace.cpp \
         $(VK_EMBEDDED_HEADER) $(GLFW_WIN_LIB) $(W_FLECS_OBJ) $(W_BC7ENC_OBJ)
 	@mkdir -p $(dir $@)
 	$(WIN_CXX) $(ME3_DIR)/tests/vulkan_smoke_tests.cpp src/ui_lighting_controls.cpp \
-	    $(ME3_DIR)/src/render/streamline_bridge.cpp \
+	    ../libs/AssetStoreLib/src/store_hash.cpp -I../libs/AssetStoreLib/include \
+	    ../libs/MeshChartingLib/src/mesh_charting.cpp \
+	    ../libs/MatterGraphics/src/native/streamline_bridge.cpp \
 	    $(ME3_DIR)/src/render/vk_context.cpp \
-	    $(ME3_DIR)/src/render/vk_resources.cpp \
+	    ../libs/MatterGraphics/src/native/vk_resources.cpp \
+	    ../libs/MatterGraphics/src/native/vk_device_internal.cpp \
 	    $(ME3_DIR)/src/render/vk_pipeline.cpp \
 	    $(ME3_DIR)/src/render/vk_scene_renderer.cpp \
+	    ../libs/MatterGraphics/src/native/mesh_raster.cpp \
+	    ../libs/MatterGraphics/src/native/mesh_pipelines.cpp \
+	    $(ME3_DIR)/src/render/vk_sparse_voxel.cpp \
+	    $(ME3_DIR)/src/sparse_voxel_bake.cpp \
+	    $(ME3_DIR)/src/surface_proxy.cpp \
 	    $(ME3_DIR)/src/render/vk_animation_skinning.cpp \
 	    $(ME3_DIR)/src/render/vk_animation_bounds.cpp \
 	    $(ME3_DIR)/src/animation/animation_budget.cpp \
 	    $(ME3_DIR)/src/render/tileset_slicer.cpp \
 	    $(ME3_DIR)/src/render/bc_encode.cpp \
-	    $(ME3_DIR)/src/render/vt_residency.cpp \
+	    ../libs/MatterGraphics/src/native/vt/vt_residency.cpp \
 	    $(ME3_DIR)/src/props/props.cpp \
 	    $(ME3_DIR)/src/util/json_doc.cpp \
-	    $(ME3_DIR)/src/render/vt_stub_filler.cpp \
+	    ../libs/MatterGraphics/src/native/vt/vt_stub_filler.cpp \
 	    $(ME3_DIR)/src/render/vt_compositor.cpp \
 	    $(ME3_DIR)/src/render/vt_enrich.cpp \
-	    $(ME3_DIR)/src/terrain_field.cpp \
+	    ../libs/ProceduralGeometry/src/terrain_field.cpp \
 	    $(ME3_DIR)/tests/vulkan_smoke_tileset_bake_stub.cpp \
 	    $(ME3_DIR)/src/tileset_gtex.cpp \
 	    $(ME3_DIR)/src/render/vk_volumetrics.cpp \
-	    $(ME3_DIR)/src/render/vk_atmosphere.cpp \
-	    $(ME3_DIR)/src/render/vk_cloud_shadows.cpp \
+	    ../libs/MatterGraphics/src/native/vk_atmosphere.cpp \
+	    ../libs/MatterGraphics/src/native/vk_cloud_shadows.cpp \
 	    $(ME3_DIR)/src/render/vk_emitter_gather.cpp \
-	    $(ME3_DIR)/src/render/raster_mesh.cpp $(ME3_DIR)/src/render/indexed_part_geometry.cpp \
+	    ../libs/MatterGraphics/src/native/raster_mesh.cpp $(ME3_DIR)/src/render/indexed_part_geometry.cpp \
 	    $(ME3_DIR)/src/render/vk_instance_cache.cpp \
 	    $(ME3_DIR)/src/render/frame_matrices.cpp \
-	    $(ME3_DIR)/src/render/vk_temporal.cpp \
-	    $(ME3_DIR)/src/render/vk_gi_math.cpp \
-	    $(ME3_DIR)/src/render/vk_lighting_controls.cpp \
-	    $(ME3_DIR)/src/render/matrix_math.cpp \
+	    ../libs/MatterGraphics/src/native/vk_temporal.cpp \
+	    ../libs/MatterGraphics/src/native/vk_gi_math.cpp \
+	    ../libs/MatterGraphics/src/native/vk_lighting_controls.cpp \
+	    $(ME3_DIR)/../libs/MatterGraphics/src/matrix_math.cpp \
 	    $(ME3_DIR)/src/render/lod_trace.cpp \
 	    $(PROFILE_DIR)/src/profile.cpp \
 	    $(GLFW_WIN_LIB) $(W_FLECS_OBJ) $(W_BC7ENC_OBJ) -o $@ \
@@ -626,13 +653,14 @@ build/windows/vulkan_smoke_tests.exe: \
 	    -DMATTER_VK_TEST_LAYER_PATH='"$(VULKAN_RUNTIME_DIR)"' \
 	    -I$(ME3_DIR) -I$(ME3_DIR)/include -I$(ME3_DIR)/src \
 	    -I$(PROFILE_DIR)/include \
+	    -I$(ASSET_STORE_DIR)/include -I$(ASSET_STORE_DIR)/src \
 	    -I$(BC7ENC_DIR) \
 	    -I../third_party/raylib/src \
 	    -I../libs/MatterSurfaceLib/include \
 	    -I../libs/SpatialQueryLib/include \
 	    -I../libs/MemoryLib/include \
 	    -I../libs/MathLib/include \
-	    -I$(ME3_DIR)/tests \
+	    -I../libs/MeshChartingLib/include -I$(ME3_DIR)/tests \
 	    -I../third_party/raylib/src/external/glfw/include \
 	    -I$(OZZ_INCLUDE) \
 	    -I$(FLECS_DIR) \
@@ -674,27 +702,48 @@ build/windows/vulkan_compat_tests.exe: \
 # unbuildable for as long as those zones have existed. ProfileLib is not
 # header-only, so profile.cpp is on the source list too (same as
 # vulkan_smoke_tests.exe above).
+# Finished-page codec uses AssetStore's envelope and bank-backed page handles.
+VT_PAGE_STORE_SRC := $(addprefix ../libs/AssetStoreLib/src/,store_hash.cpp store_os.cpp blob_store.cpp ref_table.cpp asset_pages.cpp)
+VT_PAGE_MEMORY_OBJ := build/windows/vt_page_mem_arena.o build/windows/vt_page_mem_bank.o
+build/windows/vt_page_%.o: ../libs/MemoryLib/src/%.c
+	@mkdir -p $(dir $@)
+	$(WIN_CC) -std=c17 -O2 -I../libs/MemoryLib/include -c $< -o $@
+
 build/windows/vt_compositor_tests.exe: \
+        $(VT_PAGE_STORE_SRC) $(VT_PAGE_MEMORY_OBJ) \
         $(ME3_DIR)/tests/vt_compositor_tests.cpp \
+        ../libs/MeshChartingLib/src/mesh_charting.cpp \
         $(ME3_DIR)/src/render/vt_compositor.cpp \
+        $(ME3_DIR)/src/render/vt_enrich.cpp \
+        $(ME3_DIR)/src/props/props.cpp \
+        $(ME3_DIR)/src/util/json_doc.cpp \
         $(ME3_DIR)/src/render/vt_compositor.h \
+        $(ME3_DIR)/src/render/vt_enrich.h \
+        $(ME3_DIR)/src/render/vt_resolve_bvh.h \
         $(ME3_DIR)/src/render/vt_types.h \
         $(ME3_DIR)/src/render/vt_surface_tape.h \
         $(ME3_DIR)/src/render/chart_atlas.h \
-        $(ME3_DIR)/src/terrain_field.cpp \
+        ../libs/ProceduralGeometry/src/terrain_field.cpp \
         $(ME3_DIR)/src/terrain_field.h \
         $(ME3_DIR)/src/render/vk_context.cpp \
-        $(ME3_DIR)/src/render/vk_resources.cpp \
-        $(ME3_DIR)/src/render/streamline_bridge.cpp \
+        ../libs/MatterGraphics/src/native/vk_resources.cpp \
+        ../libs/MatterGraphics/src/native/vk_device_internal.cpp \
+        ../libs/MatterGraphics/src/native/streamline_bridge.cpp \
         $(PROFILE_DIR)/src/profile.cpp \
         $(VK_EMBEDDED_HEADER) $(GLFW_WIN_LIB) $(W_FLECS_OBJ)
 	@mkdir -p $(dir $@)
 	$(WIN_CXX) $(ME3_DIR)/tests/vt_compositor_tests.cpp \
+	    $(VT_PAGE_STORE_SRC) $(VT_PAGE_MEMORY_OBJ) -I../libs/AssetStoreLib/include \
+	    ../libs/MeshChartingLib/src/mesh_charting.cpp \
 	    $(ME3_DIR)/src/render/vt_compositor.cpp \
-	    $(ME3_DIR)/src/terrain_field.cpp \
+	    $(ME3_DIR)/src/render/vt_enrich.cpp \
+	    $(ME3_DIR)/src/props/props.cpp \
+	    $(ME3_DIR)/src/util/json_doc.cpp \
+	    ../libs/ProceduralGeometry/src/terrain_field.cpp \
 	    $(ME3_DIR)/src/render/vk_context.cpp \
-	    $(ME3_DIR)/src/render/vk_resources.cpp \
-	    $(ME3_DIR)/src/render/streamline_bridge.cpp \
+	    ../libs/MatterGraphics/src/native/vk_resources.cpp \
+	    ../libs/MatterGraphics/src/native/vk_device_internal.cpp \
+	    ../libs/MatterGraphics/src/native/streamline_bridge.cpp \
 	    $(PROFILE_DIR)/src/profile.cpp \
 	    $(GLFW_WIN_LIB) $(W_FLECS_OBJ) -o $@ \
 	    -std=c++17 -Wall -Wextra -Werror -Wno-missing-field-initializers \
@@ -708,6 +757,7 @@ build/windows/vt_compositor_tests.exe: \
 	    -I$(ME3_DIR)/src/render \
 	    -I$(ME3_DIR)/tests \
 	    -I$(PROFILE_DIR)/include \
+	    -I$(ASSET_STORE_DIR)/include -I$(ASSET_STORE_DIR)/src \
 	    -I$(FLECS_DIR) \
 	    -I../third_party/raylib/src \
 	    -I../libs/MatterSurfaceLib/include \
@@ -777,7 +827,7 @@ FORCE:
 # other way round) and before $(WIN_LIBS)/$(GLFW_WIN_LIB)/$(AR_CORE_LDFLAGS),
 # which the archive itself draws on -- box3d, Ozz, GLFW and autoremesher_core.
 windows: $(WIN_FEATURES) $(VK_EMBEDDED_HEADER) $(GLFW_WIN_LIB) $(AR_CORE_DEP) $(VIEWER_LIB) $(W_ALL_OBJ)
-	$(WIN_CXX) $(W_ALL_OBJ) -Wl,--whole-archive $(VIEWER_LIB) -Wl,--no-whole-archive -o $(W_DIR)/editor.exe $(CFLAGS) -static -s -Wl,--gc-sections $(WIN_LIBS) $(GLFW_WIN_LIB) $(AR_CORE_LDFLAGS) $(WIN_SYSTEM_LIBS) -L$(VULKAN_LIB_DIR) -Wl,-Bdynamic -lvulkan-1 -Wl,-Bstatic
+	$(WIN_CXX) $(W_ALL_OBJ) -Wl,--whole-archive $(VIEWER_LIB) -Wl,--no-whole-archive $(VIEWER_AUTHORING_LIBS) -o $(W_DIR)/editor.exe $(CFLAGS) -static -s -Wl,--gc-sections $(WIN_LIBS) $(GLFW_WIN_LIB) $(AR_CORE_LDFLAGS) $(WIN_SYSTEM_LIBS) -L$(VULKAN_LIB_DIR) -Wl,-Bdynamic -lvulkan-1 -Wl,-Bstatic
 	@if [ "$(HAVE_STREAMLINE)" = "1" ]; then cp -f "$(STREAMLINE_DLL_DIR)"/*.dll $(W_DIR)/; fi
 	@objdump="$$($(WIN_CXX) -print-prog-name=objdump)"; \
 	 imports="$$("$$objdump" -p $(W_DIR)/editor.exe)"; \
@@ -912,6 +962,7 @@ L_ALL_OBJ   = $(L_CPP_OBJ)
 #     "accidentally build Linux with Streamline on" stays unreachable.
 # UNVERIFIED, like everything else in this section: never compiled anywhere.
 LINUX_VIEWER_LIB = $(ME3_DIR)/build/libmatter_engine3_viewer_linux.a
+LINUX_VIEWER_AUTHORING_LIBS = $(addprefix $(ME3_DIR)/build/authoring_adapter_linux/,$(AUTHORING_ADAPTER_ARCHIVES))
 
 LINUX_VIEWER_LIB_MAKE_ARGS = \
     VIEWER_TAG=_linux \
@@ -1018,9 +1069,40 @@ linux: $(VK_EMBEDDED_HEADER) $(GLFW_LINUX_LIB) $(BOX3D_LIB) $(AR_CORE_DEP) \
        $(LINUX_VIEWER_LIB) $(L_ALL_OBJ)
 	$(LINUX_CXX) $(L_ALL_OBJ) \
 	    -Wl,--whole-archive $(LINUX_VIEWER_LIB) -Wl,--no-whole-archive \
-	    -o $(L_DIR)/editor $(CFLAGS) -Wl,--gc-sections \
+	    $(LINUX_VIEWER_AUTHORING_LIBS) -o $(L_DIR)/editor $(CFLAGS) -Wl,--gc-sections \
 	    $(BOX3D_LIB) $(GLFW_LINUX_LIB) $(AR_CORE_LDFLAGS) $(OZZ_OFFLINE_LIBS) \
 	    $(LINUX_SYSTEM_LIBS) -L$(VULKAN_LIB_DIR) -lvulkan
+
+# VulkanDevice -> MatterGraphics VulkanDeviceBinding lease, teardown and
+# shared queue-mutex cases (component_adapters/graphics). Needs a Vulkan
+# device; without a display GLFW's null platform takes VK_EXT_headless_surface.
+LINUX_GRAPHICS_BINDING_TEST = $(L_DIR)/graphics_binding_tests
+$(LINUX_GRAPHICS_BINDING_TEST): $(ME3_DIR)/tests/graphics_binding_tests.cpp \
+                                $(GLFW_LINUX_LIB) $(LINUX_VIEWER_LIB)
+	$(LINUX_CXX) -std=c++17 -O2 $< ../libs/MatterGraphics/src/vulkan_resources.cpp -o $@ \
+	    $(INCLUDE_PATHS) -I../libs/MatterGraphics/include -I../libs/MatterContracts/include \
+	    $(LINUX_VIEWER_LIB) $(LINUX_VIEWER_AUTHORING_LIBS) $(GLFW_LINUX_LIB) \
+	    $(LINUX_SYSTEM_LIBS) -L$(VULKAN_LIB_DIR) -lvulkan
+
+.PHONY: run-test-graphics-binding
+run-test-graphics-binding: $(LINUX_GRAPHICS_BINDING_TEST)
+	./$(LINUX_GRAPHICS_BINDING_TEST)
+
+# PortableScene on a live device: shared instances, dynamic-material refusal,
+# a late product under unchanged instances (baked by a child process, restored
+# here) and removal, read back from the adapter's own VulkanRaster capture.
+LINUX_PORTABLE_SCENE_TEST = $(L_DIR)/portable_scene_tests
+$(LINUX_PORTABLE_SCENE_TEST): $(ME3_DIR)/tests/portable_scene_tests.cpp \
+                              $(GLFW_LINUX_LIB) $(LINUX_VIEWER_LIB)
+	$(LINUX_CXX) -std=c++17 -O2 $< ../libs/MatterGraphics/src/vulkan_resources.cpp -o $@ \
+	    $(CXX_FLAGS_BUILD_LINUX_COMMON) -I$(ME3_DIR)/tests -I../libs/MatterGraphics/include -I../libs/MatterContracts/include \
+	    -Wl,--whole-archive $(LINUX_VIEWER_LIB) -Wl,--no-whole-archive \
+	    $(LINUX_VIEWER_AUTHORING_LIBS) $(GLFW_LINUX_LIB) $(BOX3D_LIB) $(AR_CORE_LDFLAGS) $(OZZ_OFFLINE_LIBS) \
+	    $(LINUX_SYSTEM_LIBS) -L$(VULKAN_LIB_DIR) -lvulkan
+
+.PHONY: run-test-portable-scene
+run-test-portable-scene: $(LINUX_PORTABLE_SCENE_TEST)
+	./$(LINUX_PORTABLE_SCENE_TEST)
 
 # Linux .d files use plain Unix paths, not the D:/-style paths that make the
 # Windows .d include conditional on MSYSTEM above -- safe to include
@@ -1157,6 +1239,26 @@ build/test_scene_inventory.exe: tests/test_scene_inventory.cpp \
 run-test-scene-inventory: build/test_scene_inventory.exe
 	./build/test_scene_inventory.exe
 
+# Scene comparison and spatial queries (scene.capture_snapshot /
+# scene.list_snapshots / scene.diff / scene.query). scene_diff.cpp is
+# engine-free like scene_inventory.cpp, so logical-vs-incarnation pairing,
+# no-op and seeded regeneration, deletions, unloaded bounds, incomparable
+# snapshots, region tests and paging are all decidable here with no session.
+build/test_scene_diff.exe: tests/test_scene_diff.cpp \
+        src/scene_diff.cpp src/scene_diff.h \
+        src/scene_inventory.cpp src/scene_inventory.h \
+        src/agent_protocol.cpp src/agent_protocol.h \
+        $(ME3_DIR)/src/util/json_doc.cpp $(ME3_DIR)/include/matter/json_doc.h
+	@mkdir -p $(dir $@)
+	$(WIN_CXX) tests/test_scene_diff.cpp src/scene_diff.cpp \
+	    src/scene_inventory.cpp src/agent_protocol.cpp \
+	    $(ME3_DIR)/src/util/json_doc.cpp -o $@ \
+	    -std=c++17 -Wall -Wextra -Werror -Isrc -I$(ME3_DIR)/include
+
+.PHONY: run-test-scene-diff
+run-test-scene-diff: build/test_scene_diff.exe
+	./build/test_scene_diff.exe
+
 # Regeneration job ledger (job.start / job.status / job.wait / job.cancel /
 # job.list).  regen_jobs.cpp holds no session, bake or renderer, so overlapping
 # reloads, a superseded result, a script failure with its file:line, editor
@@ -1196,12 +1298,14 @@ run-test-procedural-parameters: build/test_procedural_parameters.exe
 build/test_selection_commands.exe: tests/test_selection_commands.cpp \
         src/selection_commands.h src/selection_set.cpp src/selection_set.h \
         src/scene_inventory.cpp src/scene_inventory.h \
+        src/reveal_part.cpp src/reveal_part.h \
         src/agent_protocol.cpp src/agent_protocol.h \
         $(ME3_DIR)/src/util/json_doc.cpp $(ME3_DIR)/include/matter/json_doc.h
 	@mkdir -p $(dir $@)
 	$(WIN_CXX) tests/test_selection_commands.cpp src/selection_set.cpp \
-	    src/scene_inventory.cpp src/agent_protocol.cpp $(ME3_DIR)/src/util/json_doc.cpp -o $@ \
-	    -std=c++17 -Wall -Wextra -Werror -Isrc -I$(ME3_DIR)/include
+	    src/scene_inventory.cpp src/reveal_part.cpp src/agent_protocol.cpp \
+	    $(ME3_DIR)/src/util/json_doc.cpp -o $@ \
+	    -std=c++17 -Wall -Wextra -Werror -Isrc -I$(ME3_DIR)/include -I$(ME3_DIR)/src
 
 .PHONY: run-test-selection-commands
 run-test-selection-commands: build/test_selection_commands.exe
@@ -1214,6 +1318,7 @@ run-test-selection-commands: build/test_selection_commands.exe
 # pick coherence are all decidable with no window.
 build/test_viewport_capture.exe: tests/test_viewport_capture.cpp \
         src/viewport_capture.cpp src/viewport_capture.h src/view_projection.h \
+        src/camera_calibration.h \
         src/selection_bounds.h src/selection_set.h \
         src/agent_protocol.cpp src/agent_protocol.h \
         $(ME3_DIR)/src/util/json_doc.cpp $(ME3_DIR)/include/matter/json_doc.h
@@ -1280,6 +1385,17 @@ build/test_asset_browser_ids.exe: tests/test_asset_browser_ids.cpp \
 run-test-asset-browser-ids: build/test_asset_browser_ids.exe
 	./build/test_asset_browser_ids.exe
 
+# Asset-root search order: asset_root.cpp is <filesystem> plus the
+# executable-path call, so this links with no engine archive and no ImGui.
+build/test_asset_root.exe: tests/test_asset_root.cpp src/asset_root.cpp src/asset_root.h
+	@mkdir -p $(dir $@)
+	$(WIN_CXX) tests/test_asset_root.cpp src/asset_root.cpp -o $@ \
+	    -std=c++17 -Wall -Wextra -Isrc
+
+.PHONY: run-test-asset-root
+run-test-asset-root: build/test_asset_root.exe
+	./build/test_asset_root.exe
+
 # Animation panel model headless test: animation_panel_model.cpp holds the
 # ImGui-free presentation logic (animation_panel.cpp does the drawing), so this
 # links with no ImGui and no engine archive -- only the public debug headers.
@@ -1326,6 +1442,7 @@ build/test_issue_reporter.exe: tests/test_issue_reporter.cpp src/issue_reporter.
 	    -I../libs/MatterSurfaceLib/include -I../libs/SpatialQueryLib/include \
 	    -I../libs/MemoryLib/include -I../libs/MathLib/include \
 	    -I$(PROFILE_DIR)/include \
+	    -I$(ASSET_STORE_DIR)/include -I$(ASSET_STORE_DIR)/src \
 	    -I../third_party/imgui -I../third_party/ImGuizmo \
 	    -I../third_party/Vulkan-Headers/include -I../third_party/flecs \
 	    -I../libs/ParticleFlowLib/include -I../third_party/box3d/include \
@@ -1335,7 +1452,7 @@ build/test_issue_reporter.exe: tests/test_issue_reporter.cpp src/issue_reporter.
 run-test-issue-reporter: build/test_issue_reporter.exe
 	./build/test_issue_reporter.exe
 
-.PHONY: editor windows clean dist regen-processed-shader mingw-box3d embedded-shaders embedded-spirv build-engine-lib viewer-lib linux-viewer-lib vulkan-instancing-perf linux check-animation-production-sources
+.PHONY: editor windows clean dist regen-processed-shader mingw-box3d embedded-shaders embedded-spirv build-engine-lib viewer-lib linux-viewer-lib vulkan-instancing-perf linux check-animation-production-sources run-test-asset-root
 
 # The editor's engine TU list moved into MatterEngine3's viewer-lib, so the
 # source half of this check moved with it: MatterEngine3's own

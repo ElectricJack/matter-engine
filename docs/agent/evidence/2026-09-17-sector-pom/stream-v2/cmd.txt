@@ -1,0 +1,140 @@
+set render.pom.enabled false
+wait_event bake.finished 300
+set render.lighting.sun_elevation_deg 70
+set render.lighting.sun_azimuth_deg 0
+set render.lighting.sun_tint [1,1,1]
+set render.lighting.sky_tint [1,1,1]
+set render.lighting.sun_multiplier 1
+set render.lighting.exposure_ev 0
+set render.lighting.day_ambient_multiplier 0.5
+set render.lighting.sky_irradiance_multiplier 0.7
+set render.fog.density 0
+set render.clouds.layer0_max_density 0
+set render.cloud_shadows.enabled false
+render_path raster
+set viewer.debug.debug_view_mode 0
+set render.pom.horizon_debug 0
+set render.pom.enabled false
+cam 380 90 1600 420 55 1420
+wait_idle 4 90
+stats ready-0-1
+stats ready-0-2
+stats ready-0-3
+stats ready-0-4
+stats ready-0-5
+stats ready-0-6
+stats ready-0-7
+stats ready-0-8
+stats ready-0-9
+stats ready-0-10
+stats ready-0-11
+stats ready-0-12
+stats ready-0-13
+stats ready-0-14
+stats ready-0-15
+stats ready-0-16
+stats ready-0-17
+stats ready-0-18
+stats ready-0-19
+stats ready-0-20
+stats ready-0-21
+stats ready-0-22
+stats ready-0-23
+stats ready-0-24
+stats ready-0-25
+stats ready-0-26
+stats ready-0-27
+stats ready-0-28
+stats ready-0-29
+stats ready-0-30
+stats ready-0-31
+stats ready-0-32
+stats ready-0-33
+stats ready-0-34
+stats ready-0-35
+stats ready-0-36
+stats ready-0-37
+wait_frames 90
+stats overview-raster-lit
+shot C:/tmp/matter-sector-pom-stream-v2/overview-raster-lit.png
+set viewer.debug.debug_view_mode 4
+wait_frames 30
+shot C:/tmp/matter-sector-pom-stream-v2/overview-albedo.png
+set render.pom.horizon_debug 9
+wait_frames 30
+shot C:/tmp/matter-sector-pom-stream-v2/overview-connections.png
+set render.pom.horizon_debug 0
+set viewer.debug.debug_view_mode 0
+render_path native_rt
+set render.gi.enabled true
+wait_frames 90
+stats overview-native-rt
+shot C:/tmp/matter-sector-pom-stream-v2/overview-native-rt.png
+render_path raster
+set render.pom.enabled false
+wait_frames 60
+shot C:/tmp/matter-sector-pom-stream-v2/overview-flat.png
+set render.pom.enabled false
+render_path raster
+set viewer.debug.debug_view_mode 0
+set render.pom.horizon_debug 0
+set render.pom.enabled false
+cam 383.9 20.3 1600 384.1 18.24 1596
+wait_idle 4 90
+stats ready-1-38
+stats ready-1-39
+stats ready-1-40
+stats ready-1-41
+wait_frames 90
+stats sector-close-raster-lit
+shot C:/tmp/matter-sector-pom-stream-v2/sector-close-raster-lit.png
+set viewer.debug.debug_view_mode 4
+wait_frames 30
+shot C:/tmp/matter-sector-pom-stream-v2/sector-close-albedo.png
+set render.pom.horizon_debug 9
+wait_frames 30
+shot C:/tmp/matter-sector-pom-stream-v2/sector-close-connections.png
+set render.pom.horizon_debug 0
+set viewer.debug.debug_view_mode 0
+render_path native_rt
+set render.gi.enabled true
+wait_frames 90
+stats sector-close-native-rt
+shot C:/tmp/matter-sector-pom-stream-v2/sector-close-native-rt.png
+render_path raster
+set render.pom.enabled false
+wait_frames 60
+shot C:/tmp/matter-sector-pom-stream-v2/sector-close-flat.png
+set render.pom.enabled false
+render_path raster
+set viewer.debug.debug_view_mode 0
+set render.pom.horizon_debug 0
+set render.pom.enabled false
+cam 383.8 20.25 1600 390 20.25 1550
+wait_idle 4 90
+stats ready-2-42
+stats ready-2-43
+stats ready-2-44
+stats ready-2-45
+wait_frames 90
+stats sector-grazing-raster-lit
+shot C:/tmp/matter-sector-pom-stream-v2/sector-grazing-raster-lit.png
+set viewer.debug.debug_view_mode 4
+wait_frames 30
+shot C:/tmp/matter-sector-pom-stream-v2/sector-grazing-albedo.png
+set render.pom.horizon_debug 9
+wait_frames 30
+shot C:/tmp/matter-sector-pom-stream-v2/sector-grazing-connections.png
+set render.pom.horizon_debug 0
+set viewer.debug.debug_view_mode 0
+render_path native_rt
+set render.gi.enabled true
+wait_frames 90
+stats sector-grazing-native-rt
+shot C:/tmp/matter-sector-pom-stream-v2/sector-grazing-native-rt.png
+render_path raster
+set render.pom.enabled false
+wait_frames 60
+shot C:/tmp/matter-sector-pom-stream-v2/sector-grazing-flat.png
+set render.pom.enabled false
+quit

@@ -1,0 +1,10 @@
+{
+  "stage": "red publication fixture; old destructive behavior plus transfer-source usage and read-only test seam",
+  "sha256": {
+    "MatterEngine3/src/render/vt_residency.cpp": "e96b34c0be67b5a851801b2d056490a112cfe0a35c3285ec810ca8a4a6128da2",
+    "MatterEngine3/src/render/vt_residency.h": "4188160610e252806b5f9c0cf2110db5b3e89e8e4b95559396328c47dcc47f4f",
+    "MatterEngine3/tests/vt_queue_tests.h": "1ceddd2c6a15f6d96870b0309b3064c40d297bd3ba1ee11b623f38e772e59326",
+    "MatterEngine3/tests/vulkan_smoke_tests.cpp": "c84e92457c98301af4c6a8d33d651e255acdeafeb016c6e038f105e0e4fabf44",
+    "MatterEditor/build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe": "c94adbe0ee48f22c953de0bbbc3efb738650fb97997b7482a38201052b3d1b8e"
+  }
+}

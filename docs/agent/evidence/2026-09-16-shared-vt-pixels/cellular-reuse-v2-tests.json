@@ -1,0 +1,46 @@
+{
+  "runs": [
+    {
+      "mode": "surface",
+      "command": "$env:MATTER_VK_VALIDATION=\"1\"; $env:TMP=\"$env:LOCALAPPDATA\\Temp\"; $env:TEMP=$env:TMP; $env:MATTER_VK_SMOKE_MODE=\"surface\"; & \"./build/cmake/windows-msvc/relwithdebinfo/surface_field_tests.exe\"; exit $LASTEXITCODE",
+      "exit": 0,
+      "seconds": 0.860838139000407,
+      "binary_sha256": "a45fd6d14a4bff4cd911d0ceaf5378b2ba04ebc0d5573d48413402e6ed70ea88",
+      "binary_unchanged": true,
+      "source_changes": [],
+      "all_pass": true,
+      "zero_validation_errors": true,
+      "skipped_rt": false,
+      "log_sha256": "8880eeb12062315d221513d364bc91ed13023d0f9cab8c56b658d94c4e08c8bb",
+      "passed": true
+    },
+    {
+      "mode": "mountain",
+      "command": "$env:MATTER_VK_VALIDATION=\"1\"; $env:TMP=\"$env:LOCALAPPDATA\\Temp\"; $env:TEMP=$env:TMP; $env:MATTER_VK_SMOKE_MODE=\"mountain\"; & \"./../../MatterEditor/build/cmake/windows-msvc/relwithdebinfo/world_definition_tests.exe\" --mountain-material; exit $LASTEXITCODE",
+      "exit": 0,
+      "seconds": 0.987827135999396,
+      "binary_sha256": "9adb4fb4d9492944a04df2155b75eb837a4a33190088e9c5c9469c6176ede90e",
+      "binary_unchanged": true,
+      "source_changes": [],
+      "all_pass": true,
+      "zero_validation_errors": true,
+      "skipped_rt": false,
+      "log_sha256": "a4318b4e8c7c8f71ffec74bafe90e3fc90853adee6419789e0f0982413fa49c9",
+      "passed": true
+    },
+    {
+      "mode": "compositor",
+      "command": "$env:MATTER_VK_VALIDATION=\"1\"; $env:TMP=\"$env:LOCALAPPDATA\\Temp\"; $env:TEMP=$env:TMP; $env:MATTER_VK_SMOKE_MODE=\"compositor\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vt_compositor_tests.exe\"; exit $LASTEXITCODE",
+      "exit": 0,
+      "seconds": 11.04821346099925,
+      "binary_sha256": "7fb62332cbc8a0623402df5254c5853d30b89c08a9a2ed5ad946a2c9a2b05f6c",
+      "binary_unchanged": true,
+      "source_changes": [],
+      "all_pass": true,
+      "zero_validation_errors": true,
+      "skipped_rt": false,
+      "log_sha256": "914f4581f5ba6c05b14a4a2b769945cbd739cdcc9c648f732c50e67dd676cbf6",
+      "passed": true
+    }
+  ]
+}
