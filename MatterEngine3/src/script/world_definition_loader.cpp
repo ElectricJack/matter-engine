@@ -121,7 +121,9 @@ std::string canonical_specifier(std::string specifier) {
     return specifier;
 }
 
-bool read_text_file(const std::string& path, std::string& contents) {
+bool read_text_file(const std::string& path, std::string& contents,
+                    const std::shared_ptr<const SourceSnapshot>& sources = {}) {
+    if (sources) return sources->read(path, contents);
     std::ifstream input(path, std::ios::binary);
     if (!input) return false;
     std::ostringstream stream;
@@ -177,8 +179,8 @@ bool gather_modules(const std::string& world_source,
             join_path(desc.project_shared_lib_dir, filename);
         const std::string engine_path =
             join_path(desc.engine_shared_lib_dir, filename);
-        if ((project_path.empty() || !read_text_file(project_path, module_source)) &&
-            (engine_path.empty() || !read_text_file(engine_path, module_source))) {
+        if ((project_path.empty() || !read_text_file(project_path, module_source, desc.source_snapshot)) &&
+            (engine_path.empty() || !read_text_file(engine_path, module_source, desc.source_snapshot))) {
             message = "module not found in project or engine shared-lib: " + specifier;
             return false;
         }
@@ -4187,7 +4189,7 @@ bool load_world_definition(const WorldLoadDesc& desc,
     MaterialRegistryResetDynamic();
 
     std::string source;
-    if (!read_text_file(desc.world_path, source)) {
+    if (!read_text_file(desc.world_path, source, desc.source_snapshot)) {
         return fail(desc, error, "source", "unable to read world source");
     }
     const std::string class_name =

@@ -1,0 +1,995 @@
+{
+  "source_commit": "e2bf6305115ff05101b1d8b4e193a25cc881a18e",
+  "source_directory": "/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/libs/MatterGraphics",
+  "build_directory": "/tmp/matter-graphics-e34",
+  "compiled_targets": [
+    {
+      "name": "matter_contracts",
+      "type": "STATIC_LIBRARY",
+      "sources": [
+        {
+          "backtrace": 1,
+          "compileGroupIndex": 0,
+          "path": "/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/libs/MatterContracts/src/value.cpp",
+          "sourceGroupIndex": 0
+        },
+        {
+          "backtrace": 1,
+          "compileGroupIndex": 0,
+          "path": "/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/libs/MatterContracts/src/codec.cpp",
+          "sourceGroupIndex": 0
+        },
+        {
+          "backtrace": 1,
+          "compileGroupIndex": 0,
+          "path": "/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/libs/MatterContracts/src/validation.cpp",
+          "sourceGroupIndex": 0
+        },
+        {
+          "backtrace": 1,
+          "compileGroupIndex": 0,
+          "path": "/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/libs/MatterContracts/src/digest.cpp",
+          "sourceGroupIndex": 0
+        },
+        {
+          "backtrace": 1,
+          "compileGroupIndex": 0,
+          "path": "/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/libs/MatterContracts/src/services.cpp",
+          "sourceGroupIndex": 0
+        }
+      ],
+      "dependencies": [],
+      "link": {}
+    },
+    {
+      "name": "matter_graphics",
+      "type": "STATIC_LIBRARY",
+      "sources": [
+        {
+          "backtrace": 1,
+          "compileGroupIndex": 0,
+          "path": "src/graphics.cpp",
+          "sourceGroupIndex": 0
+        },
+        {
+          "backtrace": 1,
+          "compileGroupIndex": 0,
+          "path": "src/scene_backend.cpp",
+          "sourceGroupIndex": 0
+        },
+        {
+          "backtrace": 1,
+          "compileGroupIndex": 0,
+          "path": "src/composition.cpp",
+          "sourceGroupIndex": 0
+        },
+        {
+          "backtrace": 1,
+          "compileGroupIndex": 0,
+          "path": "/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/matrix_math.cpp",
+          "sourceGroupIndex": 0
+        }
+      ],
+      "dependencies": [
+        {
+          "backtrace": 2,
+          "id": "matter_contracts::@f4a8b35b14089136bb24"
+        }
+      ],
+      "link": {}
+    },
+    {
+      "name": "matter_graphics_atmosphere_tests",
+      "type": "EXECUTABLE",
+      "sources": [
+        {
+          "backtrace": 3,
+          "compileGroupIndex": 0,
+          "path": "/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/tests/atmosphere_tests.cpp",
+          "sourceGroupIndex": 0
+        }
+      ],
+      "dependencies": [
+        {
+          "backtrace": 4,
+          "id": "matter_graphics_environment::@6890427a1f51a3e7e1df"
+        }
+      ],
+      "link": {
+        "commandFragments": [
+          {
+            "fragment": "-g",
+            "role": "flags"
+          },
+          {
+            "fragment": "",
+            "role": "flags"
+          },
+          {
+            "backtrace": 4,
+            "fragment": "libmatter_graphics_environment.a",
+            "role": "libraries"
+          },
+          {
+            "backtrace": 5,
+            "fragment": "/usr/lib/x86_64-linux-gnu/libvulkan.so.1",
+            "role": "libraries"
+          }
+        ],
+        "language": "CXX"
+      }
+    },
+    {
+      "name": "matter_graphics_cloud_layer_tests",
+      "type": "EXECUTABLE",
+      "sources": [
+        {
+          "backtrace": 3,
+          "compileGroupIndex": 0,
+          "path": "/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/tests/cloud_layer_tests.cpp",
+          "sourceGroupIndex": 0
+        }
+      ],
+      "dependencies": [
+        {
+          "backtrace": 4,
+          "id": "matter_graphics_environment::@6890427a1f51a3e7e1df"
+        }
+      ],
+      "link": {
+        "commandFragments": [
+          {
+            "fragment": "-g",
+            "role": "flags"
+          },
+          {
+            "fragment": "",
+            "role": "flags"
+          },
+          {
+            "backtrace": 4,
+            "fragment": "libmatter_graphics_environment.a",
+            "role": "libraries"
+          },
+          {
+            "backtrace": 5,
+            "fragment": "/usr/lib/x86_64-linux-gnu/libvulkan.so.1",
+            "role": "libraries"
+          }
+        ],
+        "language": "CXX"
+      }
+    },
+    {
+      "name": "matter_graphics_cloud_shadow_reference_tests",
+      "type": "EXECUTABLE",
+      "sources": [
+        {
+          "backtrace": 3,
+          "compileGroupIndex": 0,
+          "path": "tests/cloud_shadow_reference_tests.cpp",
+          "sourceGroupIndex": 0
+        }
+      ],
+      "dependencies": [
+        {
+          "backtrace": 4,
+          "id": "matter_graphics_environment::@6890427a1f51a3e7e1df"
+        }
+      ],
+      "link": {
+        "commandFragments": [
+          {
+            "fragment": "-g",
+            "role": "flags"
+          },
+          {
+            "fragment": "",
+            "role": "flags"
+          },
+          {
+            "backtrace": 4,
+            "fragment": "libmatter_graphics_environment.a",
+            "role": "libraries"
+          },
+          {
+            "backtrace": 5,
+            "fragment": "/usr/lib/x86_64-linux-gnu/libvulkan.so.1",
+            "role": "libraries"
+          }
+        ],
+        "language": "CXX"
+      }
+    },
+    {
+      "name": "matter_graphics_cloud_shadow_tests",
+      "type": "EXECUTABLE",
+      "sources": [
+        {
+          "backtrace": 3,
+          "compileGroupIndex": 0,
+          "path": "/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/tests/cloud_shadow_tests.cpp",
+          "sourceGroupIndex": 0
+        }
+      ],
+      "dependencies": [
+        {
+          "backtrace": 4,
+          "id": "matter_graphics_environment::@6890427a1f51a3e7e1df"
+        }
+      ],
+      "link": {
+        "commandFragments": [
+          {
+            "fragment": "-g",
+            "role": "flags"
+          },
+          {
+            "fragment": "",
+            "role": "flags"
+          },
+          {
+            "backtrace": 4,
+            "fragment": "libmatter_graphics_environment.a",
+            "role": "libraries"
+          },
+          {
+            "backtrace": 5,
+            "fragment": "/usr/lib/x86_64-linux-gnu/libvulkan.so.1",
+            "role": "libraries"
+          }
+        ],
+        "language": "CXX"
+      }
+    },
+    {
+      "name": "matter_graphics_composition_tests",
+      "type": "EXECUTABLE",
+      "sources": [
+        {
+          "backtrace": 1,
+          "compileGroupIndex": 0,
+          "path": "tests/composition_tests.cpp",
+          "sourceGroupIndex": 0
+        }
+      ],
+      "dependencies": [
+        {
+          "backtrace": 2,
+          "id": "matter_graphics::@6890427a1f51a3e7e1df"
+        },
+        {
+          "backtrace": 2,
+          "id": "matter_contracts::@f4a8b35b14089136bb24"
+        }
+      ],
+      "link": {
+        "commandFragments": [
+          {
+            "fragment": "-g",
+            "role": "flags"
+          },
+          {
+            "fragment": "",
+            "role": "flags"
+          },
+          {
+            "backtrace": 2,
+            "fragment": "libmatter_graphics.a",
+            "role": "libraries"
+          },
+          {
+            "backtrace": 3,
+            "fragment": "matter-components/matter_contracts/libmatter_contracts.a",
+            "role": "libraries"
+          }
+        ],
+        "language": "CXX"
+      }
+    },
+    {
+      "name": "matter_graphics_environment",
+      "type": "STATIC_LIBRARY",
+      "sources": [
+        {
+          "backtrace": 3,
+          "compileGroupIndex": 0,
+          "path": "src/native/vk_atmosphere.cpp",
+          "sourceGroupIndex": 0
+        },
+        {
+          "backtrace": 3,
+          "compileGroupIndex": 0,
+          "path": "src/native/vk_cloud_shadows.cpp",
+          "sourceGroupIndex": 0
+        },
+        {
+          "backtrace": 3,
+          "compileGroupIndex": 0,
+          "path": "src/native/vk_volumetrics.cpp",
+          "sourceGroupIndex": 0
+        },
+        {
+          "backtrace": 3,
+          "isGenerated": true,
+          "path": "/tmp/matter-graphics-e34/environment_embedded_spirv.h",
+          "sourceGroupIndex": 1
+        },
+        {
+          "backtrace": 0,
+          "isGenerated": true,
+          "path": "/tmp/matter-graphics-e34/environment_embedded_spirv.h.rule",
+          "sourceGroupIndex": 2
+        },
+        {
+          "backtrace": 0,
+          "isGenerated": true,
+          "path": "/tmp/matter-graphics-e34/atmosphere_irradiance.comp.spv.rule",
+          "sourceGroupIndex": 2
+        },
+        {
+          "backtrace": 0,
+          "isGenerated": true,
+          "path": "/tmp/matter-graphics-e34/atmosphere_multiscatter.comp.spv.rule",
+          "sourceGroupIndex": 2
+        },
+        {
+          "backtrace": 0,
+          "isGenerated": true,
+          "path": "/tmp/matter-graphics-e34/atmosphere_sky_view.comp.spv.rule",
+          "sourceGroupIndex": 2
+        },
+        {
+          "backtrace": 0,
+          "isGenerated": true,
+          "path": "/tmp/matter-graphics-e34/atmosphere_transmittance.comp.spv.rule",
+          "sourceGroupIndex": 2
+        },
+        {
+          "backtrace": 0,
+          "isGenerated": true,
+          "path": "/tmp/matter-graphics-e34/cloud_shadow_density.comp.spv.rule",
+          "sourceGroupIndex": 2
+        },
+        {
+          "backtrace": 0,
+          "isGenerated": true,
+          "path": "/tmp/matter-graphics-e34/cloud_shadow_integrate.comp.spv.rule",
+          "sourceGroupIndex": 2
+        },
+        {
+          "backtrace": 0,
+          "isGenerated": true,
+          "path": "/tmp/matter-graphics-e34/cloud_shadow_reproject.comp.spv.rule",
+          "sourceGroupIndex": 2
+        },
+        {
+          "backtrace": 0,
+          "isGenerated": true,
+          "path": "/tmp/matter-graphics-e34/vol_density.comp.spv.rule",
+          "sourceGroupIndex": 2
+        },
+        {
+          "backtrace": 0,
+          "isGenerated": true,
+          "path": "/tmp/matter-graphics-e34/vol_integrate.comp.spv.rule",
+          "sourceGroupIndex": 2
+        },
+        {
+          "backtrace": 0,
+          "isGenerated": true,
+          "path": "/tmp/matter-graphics-e34/vol_scatter.comp.spv.rule",
+          "sourceGroupIndex": 2
+        }
+      ],
+      "dependencies": [],
+      "link": {}
+    },
+    {
+      "name": "matter_graphics_header_backend",
+      "type": "OBJECT_LIBRARY",
+      "sources": [
+        {
+          "backtrace": 1,
+          "compileGroupIndex": 0,
+          "path": "/tmp/matter-graphics-e34/header-backend.cpp",
+          "sourceGroupIndex": 0
+        }
+      ],
+      "dependencies": [
+        {
+          "backtrace": 2,
+          "id": "matter_graphics::@6890427a1f51a3e7e1df"
+        },
+        {
+          "backtrace": 2,
+          "id": "matter_contracts::@f4a8b35b14089136bb24"
+        }
+      ],
+      "link": {}
+    },
+    {
+      "name": "matter_graphics_header_composition",
+      "type": "OBJECT_LIBRARY",
+      "sources": [
+        {
+          "backtrace": 1,
+          "compileGroupIndex": 0,
+          "path": "/tmp/matter-graphics-e34/header-composition.cpp",
+          "sourceGroupIndex": 0
+        }
+      ],
+      "dependencies": [
+        {
+          "backtrace": 2,
+          "id": "matter_graphics::@6890427a1f51a3e7e1df"
+        },
+        {
+          "backtrace": 2,
+          "id": "matter_contracts::@f4a8b35b14089136bb24"
+        }
+      ],
+      "link": {}
+    },
+    {
+      "name": "matter_graphics_header_graphics",
+      "type": "OBJECT_LIBRARY",
+      "sources": [
+        {
+          "backtrace": 1,
+          "compileGroupIndex": 0,
+          "path": "/tmp/matter-graphics-e34/header-graphics.cpp",
+          "sourceGroupIndex": 0
+        }
+      ],
+      "dependencies": [
+        {
+          "backtrace": 2,
+          "id": "matter_graphics::@6890427a1f51a3e7e1df"
+        },
+        {
+          "backtrace": 2,
+          "id": "matter_contracts::@f4a8b35b14089136bb24"
+        }
+      ],
+      "link": {}
+    },
+    {
+      "name": "matter_graphics_header_scene_backend",
+      "type": "OBJECT_LIBRARY",
+      "sources": [
+        {
+          "backtrace": 1,
+          "compileGroupIndex": 0,
+          "path": "/tmp/matter-graphics-e34/header-scene_backend.cpp",
+          "sourceGroupIndex": 0
+        }
+      ],
+      "dependencies": [
+        {
+          "backtrace": 2,
+          "id": "matter_graphics::@6890427a1f51a3e7e1df"
+        },
+        {
+          "backtrace": 2,
+          "id": "matter_contracts::@f4a8b35b14089136bb24"
+        }
+      ],
+      "link": {}
+    },
+    {
+      "name": "matter_graphics_header_vulkan_composition",
+      "type": "OBJECT_LIBRARY",
+      "sources": [
+        {
+          "backtrace": 1,
+          "compileGroupIndex": 0,
+          "path": "/tmp/matter-graphics-e34/header-vulkan_composition.cpp",
+          "sourceGroupIndex": 0
+        }
+      ],
+      "dependencies": [
+        {
+          "backtrace": 2,
+          "id": "matter_graphics::@6890427a1f51a3e7e1df"
+        },
+        {
+          "backtrace": 2,
+          "id": "matter_graphics_vulkan::@6890427a1f51a3e7e1df"
+        },
+        {
+          "backtrace": 2,
+          "id": "matter_contracts::@f4a8b35b14089136bb24"
+        }
+      ],
+      "link": {}
+    },
+    {
+      "name": "matter_graphics_header_vulkan_raster",
+      "type": "OBJECT_LIBRARY",
+      "sources": [
+        {
+          "backtrace": 1,
+          "compileGroupIndex": 0,
+          "path": "/tmp/matter-graphics-e34/header-vulkan_raster.cpp",
+          "sourceGroupIndex": 0
+        }
+      ],
+      "dependencies": [
+        {
+          "backtrace": 2,
+          "id": "matter_graphics::@6890427a1f51a3e7e1df"
+        },
+        {
+          "backtrace": 2,
+          "id": "matter_graphics_vulkan::@6890427a1f51a3e7e1df"
+        },
+        {
+          "backtrace": 2,
+          "id": "matter_contracts::@f4a8b35b14089136bb24"
+        }
+      ],
+      "link": {}
+    },
+    {
+      "name": "matter_graphics_header_vulkan_resources",
+      "type": "OBJECT_LIBRARY",
+      "sources": [
+        {
+          "backtrace": 1,
+          "compileGroupIndex": 0,
+          "path": "/tmp/matter-graphics-e34/header-vulkan_resources.cpp",
+          "sourceGroupIndex": 0
+        }
+      ],
+      "dependencies": [
+        {
+          "backtrace": 2,
+          "id": "matter_graphics::@6890427a1f51a3e7e1df"
+        },
+        {
+          "backtrace": 2,
+          "id": "matter_graphics_vulkan::@6890427a1f51a3e7e1df"
+        },
+        {
+          "backtrace": 2,
+          "id": "matter_contracts::@f4a8b35b14089136bb24"
+        }
+      ],
+      "link": {}
+    },
+    {
+      "name": "matter_graphics_raster_tests",
+      "type": "EXECUTABLE",
+      "sources": [
+        {
+          "backtrace": 1,
+          "compileGroupIndex": 0,
+          "path": "examples/graphics_sample.cpp",
+          "sourceGroupIndex": 0
+        }
+      ],
+      "dependencies": [
+        {
+          "backtrace": 2,
+          "id": "matter_graphics::@6890427a1f51a3e7e1df"
+        },
+        {
+          "backtrace": 2,
+          "id": "matter_graphics_vulkan::@6890427a1f51a3e7e1df"
+        },
+        {
+          "backtrace": 2,
+          "id": "matter_contracts::@f4a8b35b14089136bb24"
+        }
+      ],
+      "link": {
+        "commandFragments": [
+          {
+            "fragment": "-g",
+            "role": "flags"
+          },
+          {
+            "fragment": "",
+            "role": "flags"
+          },
+          {
+            "backtrace": 2,
+            "fragment": "libmatter_graphics_vulkan.a",
+            "role": "libraries"
+          },
+          {
+            "backtrace": 3,
+            "fragment": "libmatter_graphics.a",
+            "role": "libraries"
+          },
+          {
+            "backtrace": 4,
+            "fragment": "matter-components/matter_contracts/libmatter_contracts.a",
+            "role": "libraries"
+          },
+          {
+            "backtrace": 3,
+            "fragment": "/usr/lib/x86_64-linux-gnu/libvulkan.so.1",
+            "role": "libraries"
+          }
+        ],
+        "language": "CXX"
+      }
+    },
+    {
+      "name": "matter_graphics_sample",
+      "type": "EXECUTABLE",
+      "sources": [
+        {
+          "backtrace": 1,
+          "compileGroupIndex": 0,
+          "path": "examples/graphics_sample.cpp",
+          "sourceGroupIndex": 0
+        }
+      ],
+      "dependencies": [
+        {
+          "backtrace": 2,
+          "id": "matter_graphics::@6890427a1f51a3e7e1df"
+        },
+        {
+          "backtrace": 2,
+          "id": "matter_graphics_vulkan::@6890427a1f51a3e7e1df"
+        },
+        {
+          "backtrace": 2,
+          "id": "matter_contracts::@f4a8b35b14089136bb24"
+        }
+      ],
+      "link": {
+        "commandFragments": [
+          {
+            "fragment": "-g",
+            "role": "flags"
+          },
+          {
+            "fragment": "",
+            "role": "flags"
+          },
+          {
+            "backtrace": 2,
+            "fragment": "libmatter_graphics_vulkan.a",
+            "role": "libraries"
+          },
+          {
+            "backtrace": 3,
+            "fragment": "libmatter_graphics.a",
+            "role": "libraries"
+          },
+          {
+            "backtrace": 4,
+            "fragment": "matter-components/matter_contracts/libmatter_contracts.a",
+            "role": "libraries"
+          },
+          {
+            "backtrace": 3,
+            "fragment": "/usr/lib/x86_64-linux-gnu/libvulkan.so.1",
+            "role": "libraries"
+          }
+        ],
+        "language": "CXX"
+      }
+    },
+    {
+      "name": "matter_graphics_scene_tests",
+      "type": "EXECUTABLE",
+      "sources": [
+        {
+          "backtrace": 1,
+          "compileGroupIndex": 0,
+          "path": "tests/scene_tests.cpp",
+          "sourceGroupIndex": 0
+        }
+      ],
+      "dependencies": [
+        {
+          "backtrace": 2,
+          "id": "matter_graphics::@6890427a1f51a3e7e1df"
+        },
+        {
+          "backtrace": 2,
+          "id": "matter_contracts::@f4a8b35b14089136bb24"
+        }
+      ],
+      "link": {
+        "commandFragments": [
+          {
+            "fragment": "-g",
+            "role": "flags"
+          },
+          {
+            "fragment": "",
+            "role": "flags"
+          },
+          {
+            "backtrace": 2,
+            "fragment": "libmatter_graphics.a",
+            "role": "libraries"
+          },
+          {
+            "backtrace": 3,
+            "fragment": "matter-components/matter_contracts/libmatter_contracts.a",
+            "role": "libraries"
+          }
+        ],
+        "language": "CXX"
+      }
+    },
+    {
+      "name": "matter_graphics_tests",
+      "type": "EXECUTABLE",
+      "sources": [
+        {
+          "backtrace": 1,
+          "compileGroupIndex": 0,
+          "path": "tests/graphics_tests.cpp",
+          "sourceGroupIndex": 0
+        }
+      ],
+      "dependencies": [
+        {
+          "backtrace": 2,
+          "id": "matter_graphics::@6890427a1f51a3e7e1df"
+        },
+        {
+          "backtrace": 2,
+          "id": "matter_contracts::@f4a8b35b14089136bb24"
+        }
+      ],
+      "link": {
+        "commandFragments": [
+          {
+            "fragment": "-g",
+            "role": "flags"
+          },
+          {
+            "fragment": "",
+            "role": "flags"
+          },
+          {
+            "backtrace": 2,
+            "fragment": "libmatter_graphics.a",
+            "role": "libraries"
+          },
+          {
+            "backtrace": 3,
+            "fragment": "matter-components/matter_contracts/libmatter_contracts.a",
+            "role": "libraries"
+          }
+        ],
+        "language": "CXX"
+      }
+    },
+    {
+      "name": "matter_graphics_volumetric_quality_tests",
+      "type": "EXECUTABLE",
+      "sources": [
+        {
+          "backtrace": 3,
+          "compileGroupIndex": 0,
+          "path": "/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/tests/volumetric_quality_tests.cpp",
+          "sourceGroupIndex": 0
+        }
+      ],
+      "dependencies": [
+        {
+          "backtrace": 4,
+          "id": "matter_graphics_environment::@6890427a1f51a3e7e1df"
+        }
+      ],
+      "link": {
+        "commandFragments": [
+          {
+            "fragment": "-g",
+            "role": "flags"
+          },
+          {
+            "fragment": "",
+            "role": "flags"
+          },
+          {
+            "backtrace": 4,
+            "fragment": "libmatter_graphics_environment.a",
+            "role": "libraries"
+          },
+          {
+            "backtrace": 5,
+            "fragment": "/usr/lib/x86_64-linux-gnu/libvulkan.so.1",
+            "role": "libraries"
+          }
+        ],
+        "language": "CXX"
+      }
+    },
+    {
+      "name": "matter_graphics_vulkan",
+      "type": "STATIC_LIBRARY",
+      "sources": [
+        {
+          "backtrace": 1,
+          "compileGroupIndex": 0,
+          "path": "src/vulkan_resources.cpp",
+          "sourceGroupIndex": 0
+        },
+        {
+          "backtrace": 1,
+          "compileGroupIndex": 0,
+          "path": "src/vulkan_composition.cpp",
+          "sourceGroupIndex": 0
+        },
+        {
+          "backtrace": 1,
+          "compileGroupIndex": 0,
+          "path": "src/vulkan_raster.cpp",
+          "sourceGroupIndex": 0
+        },
+        {
+          "backtrace": 1,
+          "isGenerated": true,
+          "path": "/tmp/matter-graphics-e34/raster_spirv.h",
+          "sourceGroupIndex": 1
+        },
+        {
+          "backtrace": 1,
+          "compileGroupIndex": 1,
+          "path": "src/native/mesh_raster.cpp",
+          "sourceGroupIndex": 0
+        },
+        {
+          "backtrace": 1,
+          "compileGroupIndex": 1,
+          "path": "src/native/mesh_pipelines.cpp",
+          "sourceGroupIndex": 0
+        },
+        {
+          "backtrace": 1,
+          "isGenerated": true,
+          "path": "/tmp/matter-graphics-e34/composition_spirv.h",
+          "sourceGroupIndex": 1
+        },
+        {
+          "backtrace": 0,
+          "isGenerated": true,
+          "path": "/tmp/matter-graphics-e34/raster_spirv.h.rule",
+          "sourceGroupIndex": 2
+        },
+        {
+          "backtrace": 0,
+          "isGenerated": true,
+          "path": "/tmp/matter-graphics-e34/composition_spirv.h.rule",
+          "sourceGroupIndex": 2
+        },
+        {
+          "backtrace": 0,
+          "isGenerated": true,
+          "path": "/tmp/matter-graphics-e34/gbuffer.frag.spv.rule",
+          "sourceGroupIndex": 2
+        },
+        {
+          "backtrace": 0,
+          "isGenerated": true,
+          "path": "/tmp/matter-graphics-e34/raster.vert.spv.rule",
+          "sourceGroupIndex": 2
+        },
+        {
+          "backtrace": 0,
+          "isGenerated": true,
+          "path": "/tmp/matter-graphics-e34/raster_skin.vert.spv.rule",
+          "sourceGroupIndex": 2
+        },
+        {
+          "backtrace": 0,
+          "isGenerated": true,
+          "path": "/tmp/matter-graphics-e34/raster_water.vert.spv.rule",
+          "sourceGroupIndex": 2
+        },
+        {
+          "backtrace": 0,
+          "isGenerated": true,
+          "path": "/tmp/matter-graphics-e34/visibility_id.frag.spv.rule",
+          "sourceGroupIndex": 2
+        },
+        {
+          "backtrace": 0,
+          "isGenerated": true,
+          "path": "/tmp/matter-graphics-e34/visibility_id.vert.spv.rule",
+          "sourceGroupIndex": 2
+        },
+        {
+          "backtrace": 0,
+          "isGenerated": true,
+          "path": "/tmp/matter-graphics-e34/composite.frag.spv.rule",
+          "sourceGroupIndex": 2
+        },
+        {
+          "backtrace": 0,
+          "isGenerated": true,
+          "path": "/tmp/matter-graphics-e34/composite.vert.spv.rule",
+          "sourceGroupIndex": 2
+        },
+        {
+          "backtrace": 0,
+          "isGenerated": true,
+          "path": "/tmp/matter-graphics-e34/display_transform.frag.spv.rule",
+          "sourceGroupIndex": 2
+        }
+      ],
+      "dependencies": [
+        {
+          "backtrace": 2,
+          "id": "matter_graphics::@6890427a1f51a3e7e1df"
+        },
+        {
+          "backtrace": 2,
+          "id": "matter_contracts::@f4a8b35b14089136bb24"
+        }
+      ],
+      "link": {}
+    },
+    {
+      "name": "matter_graphics_vulkan_tests",
+      "type": "EXECUTABLE",
+      "sources": [
+        {
+          "backtrace": 1,
+          "compileGroupIndex": 0,
+          "path": "tests/vulkan_tests.cpp",
+          "sourceGroupIndex": 0
+        }
+      ],
+      "dependencies": [
+        {
+          "backtrace": 2,
+          "id": "matter_graphics::@6890427a1f51a3e7e1df"
+        },
+        {
+          "backtrace": 2,
+          "id": "matter_graphics_vulkan::@6890427a1f51a3e7e1df"
+        },
+        {
+          "backtrace": 2,
+          "id": "matter_contracts::@f4a8b35b14089136bb24"
+        }
+      ],
+      "link": {
+        "commandFragments": [
+          {
+            "fragment": "-g",
+            "role": "flags"
+          },
+          {
+            "fragment": "",
+            "role": "flags"
+          },
+          {
+            "backtrace": 2,
+            "fragment": "libmatter_graphics_vulkan.a",
+            "role": "libraries"
+          },
+          {
+            "backtrace": 3,
+            "fragment": "libmatter_graphics.a",
+            "role": "libraries"
+          },
+          {
+            "backtrace": 4,
+            "fragment": "matter-components/matter_contracts/libmatter_contracts.a",
+            "role": "libraries"
+          },
+          {
+            "backtrace": 3,
+            "fragment": "/usr/lib/x86_64-linux-gnu/libvulkan.so.1",
+            "role": "libraries"
+          }
+        ],
+        "language": "CXX"
+      }
+    }
+  ]
+}

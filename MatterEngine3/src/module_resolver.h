@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -60,6 +61,13 @@ struct FoldResult {
     // no-file-access contract intact. Same ordering as resolved_specifiers.
     std::vector<ResolvedModule> modules;
 };
+
+// Loader owns its captured state and returns the actual bytes to hash and run.
+// It receives a validated canonical specifier (without the optional .js suffix).
+// Failure never falls back to the filesystem. FoldResult owns the returned bytes.
+using SourceLoader = std::function<bool(const std::string&, ResolvedModule&, std::string&)>;
+bool fold_sources_with_loader(const std::string& part_source, const SourceLoader& loader,
+                              FoldResult& out, std::string& err);
 
 // Parse the part's imports, transitively resolve + read every shared-lib module,
 // and produce the canonical fold buffer. Returns false (err set) on any missing
