@@ -64,6 +64,12 @@ static void page_dependency_checks() {
         }
         CHECK(geometry::page_sets_intersect(left,right)==((a&b)!=0),
               "sorted page dependencies match exhaustive subset oracle with duplicates");
+        CHECK(geometry::cut_publication_changed(left,right,{},false)==((a&b)!=0),
+              "unrelated partial roots do not invalidate displayed geometry");
+        CHECK(geometry::cut_publication_changed(left,{},right,false)==((a&b)!=0),
+              "pending hierarchy dependencies invalidate the displayed cut too");
+        CHECK(geometry::cut_publication_changed(left,{}, {},true)==(a!=0),
+              "first complete root coverage leaves source fallback on publication");
     }
 }
 static void visibility_priority_checks(asset_store::PageCache& cache) {
@@ -449,6 +455,7 @@ static void part_cache_checks(const std::filesystem::path& directory) {
         std::string cache_error;
         CHECK(store.save_prepared_sector(staged,"policy-a",cache_error),cache_error.c_str());
         viewer::PartStore fresh(path);
+        fresh.set_geometry_pages_enabled(true);
         auto restored=fresh.load_prepared_sector(hash,"policy-a",cache_error);
         CHECK(restored.ok,cache_error.c_str());
         if(restored.ok){
@@ -625,10 +632,51 @@ static void prepared_parallel_readers_test() {
     std::filesystem::remove_all(directory);
 }
 
+#ifndef MATTER_CODEC_SOURCE_QUALIFICATION
+// Owned pages use the production wire codec and immutable lease, without a
+// persistent store. Child references retain their real content hashes.
+class MemoryHierarchyPages {
+    std::map<asset_store::BlobHash, asset_store::PageHandle> pages_;
+public:
+    bool encode(const geometry::Hierarchy& hierarchy, const asset_store::PageLimits& limits,
+                std::vector<geometry::NodeRef>& roots, std::string& error) {
+        std::vector<geometry::NodeRef> refs;
+        for (size_t id = 0; id < hierarchy.nodes.size(); ++id) {
+            const auto& node = hierarchy.nodes[id];
+            std::vector<geometry::NodeRef> children;
+            for (auto child : node.children) {
+                if (child >= id) return false;
+                children.push_back(refs[child]);
+            }
+            auto bytes = std::make_shared<std::vector<uint8_t>>();
+            if (!geometry::encode_node(node, children, limits, *bytes, error)) return false;
+            auto page = std::make_shared<asset_store::CachedPage>();
+            page->allocation = bytes;
+            page->bytes = bytes->data(); page->size = bytes->size();
+            page->hash = asset_store::hash_bytes(page->bytes, page->size);
+            if (!asset_store::decode_page(page->bytes, page->size, limits, page->view, error)) return false;
+            pages_[page->hash] = page;
+            refs.push_back({page->hash, node.bounds, node.error, node.source_triangles,
+                            static_cast<uint32_t>(node.mesh.indices.size()/3)});
+        }
+        roots.clear();
+        for (auto root : hierarchy.roots) roots.push_back(refs.at(root));
+        return true;
+    }
+    asset_store::PageHandle read(asset_store::BlobHash hash) const {
+        const auto found = pages_.find(hash);
+        return found == pages_.end() ? asset_store::PageHandle{} : found->second;
+    }
+};
+#endif
+
 int main(int argc,char** argv) {
+#ifdef MATTER_CODEC_SOURCE_QUALIFICATION
     prepared_identity_manifest_test();
     prepared_parallel_readers_test();
     prepared_surface_shape_test();
+#endif
+    page_dependency_checks();
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     displacement_checks();
     using namespace geometry;
@@ -678,6 +726,7 @@ int main(int argc,char** argv) {
     Hierarchy again;CHECK(compile(source,config,again,error),error.c_str());
     CHECK(again.nodes.size()==hierarchy.nodes.size()&&again.roots==hierarchy.roots,"deterministic hierarchy structure");
     asset_store::PageLimits limits;
+#ifdef MATTER_CODEC_SOURCE_QUALIFICATION
     const auto stamp=std::chrono::steady_clock::now().time_since_epoch().count();
     const auto path=std::filesystem::temp_directory_path()/ ("matter_geometry_pages_"+std::to_string(stamp));
     asset_store::StoreConfig sc;sc.dir=path.string();
@@ -784,6 +833,14 @@ int main(int argc,char** argv) {
             CHECK(select_cut(roots,only_root,[](const NodeRef&){return true;},{},fallback,error)&&coverage(fallback)==source.triex.size(),"real page-budget failure preserves root coverage");
         }
     }
+#else
+    MemoryHierarchyPages pages;
+    std::vector<NodeRef> roots, again_roots;
+    CHECK(pages.encode(hierarchy, limits, roots, error), error.c_str());
+    CHECK(pages.encode(again, limits, again_roots, error), error.c_str());
+    CHECK(!roots.empty() && !again_roots.empty() && roots[0].page == again_roots[0].page,
+          "deterministic binary hierarchy identity");
+#endif
     std::vector<uint8_t> leaf_bytes;
     CHECK(encode_node(hierarchy.nodes.front(),{},limits,leaf_bytes,error),error.c_str());
     {
@@ -807,7 +864,14 @@ int main(int argc,char** argv) {
         NodeView rejected;CHECK(!decode_node(malformed,rejected,error),"typed page validation rejects an out-of-range index even with a valid blob identity");
     }
     std::map<asset_store::BlobHash,NodeView> resident;
-    const auto load=[&](asset_store::BlobHash hash){auto page=cache->read({hash})[0];NodeView node;if(!decode_node(page.page,node,error))return false;resident[hash]=std::move(node);return true;};
+    const auto load=[&](asset_store::BlobHash hash){
+#ifdef MATTER_CODEC_SOURCE_QUALIFICATION
+        auto page=cache->read({hash})[0].page;
+#else
+        auto page=pages.read(hash);
+#endif
+        NodeView node;if(!decode_node(page,node,error))return false;resident[hash]=std::move(node);return true;
+    };
     for(const auto& r:roots)CHECK(load(r.page),error.c_str());
     const auto lookup=[&](const NodeRef& ref,NodeView& node){auto it=resident.find(ref.page);if(it==resident.end())return false;node=it->second;return true;};
     Cut cut;CutConfig cut_config;
@@ -836,13 +900,22 @@ int main(int argc,char** argv) {
     CompileConfig tiny_config=config;tiny_config.leaf_triangles=8;
     Hierarchy tiny;CHECK(compile(grid(4),tiny_config,tiny,error),error.c_str());
     std::vector<NodeRef> tiny_roots;
+#ifdef MATTER_CODEC_SOURCE_QUALIFICATION
     CHECK(write_hierarchy(tiny,*store,*refs,"tiny",limits,tiny_roots,error),error.c_str());
     CHECK(cache->refresh(),"refresh tiny hierarchy commit");
+#else
+    CHECK(pages.encode(tiny,limits,tiny_roots,error),error.c_str());
+#endif
     std::map<asset_store::BlobHash,NodeView> all_tiny;
     std::vector<asset_store::BlobHash> pending_tiny;for(const auto& r:tiny_roots)pending_tiny.push_back(r.page);
     while(!pending_tiny.empty()) {
         auto h=pending_tiny.back();pending_tiny.pop_back();if(all_tiny.count(h))continue;
-        NodeView v;CHECK(decode_node(cache->read({h})[0].page,v,error),error.c_str());
+#ifdef MATTER_CODEC_SOURCE_QUALIFICATION
+        auto page=cache->read({h})[0].page;
+#else
+        auto page=pages.read(h);
+#endif
+        NodeView v;CHECK(decode_node(page,v,error),error.c_str());
         for(const auto& child:v.children)pending_tiny.push_back(child.page);all_tiny[h]=v;
     }
     std::vector<asset_store::BlobHash> optional;
@@ -1004,7 +1077,9 @@ int main(int argc,char** argv) {
     auto small=config;small.max_output_triangles=1;
     CHECK(!compile(source,small,hierarchy,error)&&hierarchy.nodes.size()==before,"compiler output budget is enforced");
     std::atomic<bool> cancel{true};CHECK(!compile(source,config,hierarchy,error,&cancel),"cancelled compiler does not publish");
+#ifdef MATTER_CODEC_SOURCE_QUALIFICATION
     pressure_cache.reset();cache.reset();refs.reset();store.reset();std::filesystem::remove_all(path);
+#endif
     printf("Geometry proof: %zu source triangles, %zu groups, %zu coarse triangles, error <= %.6f, compiler %.3f ms\n",source.triex.size(),again.nodes.size(),again.nodes[again.roots[0]].mesh.triex.size(),again.nodes[again.roots[0]].error,compile_ms);
     uint32_t reasons[5]{};for(const auto& node:again.nodes)++reasons[static_cast<uint32_t>(node.simplification)];
     printf("Simplification: reduced=%u, attribute_seams=%u, changed_borders=%u, no_reduction=%u; root_border=%u, root_result=%u\n",

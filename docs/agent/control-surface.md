@@ -5,6 +5,48 @@ The complete external control surface of `MatterEditor/build/windows/editor.exe`
 
 ## a) How control works
 
+### Virtual geometry startup policy
+
+Ordinary editor startup and scene presets, including StreamMountain, use the
+static/source geometry path. Virtual geometry (VG) is a development opt-in:
+only the exact startup value `MATTER_GEOMETRY_PAGES=1` requests it. Unset,
+empty, `0`, and other values keep it disabled. `MATTER_GEOMETRY_TERRAIN=1`,
+module filters, budgets and profiling variables do not enable it themselves.
+The store also requires native RT support or an explicit
+`MATTER_GEOMETRY_RASTER_ONLY=1` opt-in.
+
+Disabled sessions start no VG paging worker lanes, commit no VG root or page
+payload banks, scan no VG admitted-instance/cut lists, and load no prepared
+paged terrain in the world-streaming path. Ordinary source-sector streaming,
+static mesh uploads, terrain materials, VT and RT/GI remain active according
+to their own settings. The common Vulkan descriptor layout retains small
+neutral geometry bindings; inactive headers do not republish on source
+instance-count changes. POM remains off by default independently of VG.
+
+For the explicit raster development demo, run
+`tools/launch-mountain-geometry.ps1` (optionally `-Build`) from native
+PowerShell. It sets the master/terrain/module switches and disables RT
+lighting, GI and POM for its inspection view. For matched production-shading
+measurements use `PAGED_TERRAIN=1 VARIANTS=pom_off
+tools/streammountain_attribution.sh C:/tmp/vg-opt-in`; without `PAGED_TERRAIN=1`
+that driver explicitly selects the source path even in a VG-configured shell.
+From WSL, forward any custom launch variables through `WSLENV` as shown below.
+
+VG coverage, material/detail parity and pacing remain development limitations;
+the [September 30 decision](../findings/hdgeo-performance-pass-2026-09-30.md)
+does not authorize default promotion. Retained historical stress-site timings
+do not establish performance for a changed rock population.
+
+Build the focused regression binaries with
+`./tools/build-windows-from-wsl.sh RelWithDebInfo geometry_default_off_checks`.
+Run CTest with `-j 1 -R
+'^(geometry_runtime_tests|geometry_runtime_gpu_tests|partstore_tests|geometry_hierarchy_tests|geometry_cut_tests|geometry_pages_gpu_tests)$'`
+against the RelWithDebInfo preset build directory. The runtime GPU test covers
+disabled forwarding, preparation-only mode, lazy first use and reset/reuse;
+the geometry-pages smoke checks real raster/RT cuts and source-draw header
+inactivity. These are correctness checks, not StreamMountain performance or
+visual-parity acceptance.
+
 `main()` in `MatterEditor/src/main.cpp` takes **no arguments** — there is no
 argv-based CLI. Every startup and runtime behavior is driven by:
 
@@ -622,7 +664,10 @@ select the streaming/LOD scheme. `MATTER_NO_SEAM_WELD`, `MATTER_NO_SEAM_WELD_DRA
 Budget/sizing fields are property-registry `.env()` bindings, declared together
 in `MatterEngine3/include/matter/vt_budgets.h`: `MATTER_VT_MAX_VARIANTS`
 (read-only after launch), `MATTER_VT_FILLS_PER_FRAME`,
-`MATTER_VT_TAIL_FILLS_PER_FRAME`, `MATTER_VT_ENRICH_PER_FRAME`,
+`MATTER_VT_TAIL_FILLS_PER_FRAME`, `MATTER_VT_FILL_BUDGET_MS` (shared
+GPU 32-texel slice target for tail and detail fills, default 4 ms; 0 restores
+whole-page dispatch), `MATTER_VT_ENRICH_BUDGET_MS` (separate AO 32-texel slice
+target, default 4 ms; 0 restores whole-page dispatch), `MATTER_VT_ENRICH_PER_FRAME`,
 `MATTER_VT_MESH_BUDGET_MB`, `MATTER_VT_INDIRECTION_MB` (read-only),
 `MATTER_VT_POOL_MB` (read-only — pool is allocated once at renderer init),
 `MATTER_VT_POOL_PAGES` (read-only, kept for backwards compatibility with
@@ -701,19 +746,30 @@ to change them):
   restart required. Set 1 to enable the additional profiling timestamp pairs for
   `hdr_lighting` (zone 21), `rt_gi_diffuse` (22),
   `rt_gi_reflection_transmission` (23), and `primary_light_cull` (24).
-  Rendering and the original `rt_gi`
-  aggregate and `composite` display-transform timers remain unchanged.
-  Previous zone indices remain intact in the 25-zone contract: disabled detail zones have
+  GI uses separate diffuse and reflection/transmission dispatches even when
+  their extents match, so both child zones receive samples at unchanged ray
+  counts, source pixels and random streams. The original `rt_gi` aggregate
+  and `composite` display-transform timers remain. Previous zone indices
+  remain intact in the 28-zone contract: disabled detail zones have
   no written timestamps or validity bits, so raw perf statistics report zero
   samples with null median/p95 (EMA fields report 0). Use matching restarted
   captures to measure the incremental cost of these timestamp barriers. From
   WSL, include this variable in `WSLENV` when launching the native editor.
+- `MATTER_RT_GI_SPECIALIZE=0|1` — default 1, restart required. Compiles
+  diffuse and reflection/transmission ownership separately from the shared GI
+  implementation, preserving rays, resolutions, source pixels and random
+  streams. Set 0 to use the original runtime-masked shader; equal extents then
+  combine unless detailed timers request a split. Separate compiled lanes use
+  disjoint output images. `LIGHTING_DETAIL=1 GI_SPECIALIZE=0|1` in
+  `tools/streammountain_attribution.sh` compares their child timings. The
+  POM-off hit path skips march-only metrics and redundant parallax lookup in
+  both modes; this switch changes raygen specialization only.
 - `MATTER_PRIMARY_LIGHT_CULLING=0|1` — default 0, restart required. Builds
   conservative 16×16 primary receiver masks and compact light lists from
   current jittered G-buffer depth, rejecting finite-range and spotlight-cone
   misses before raster/RT direct BRDF evaluation. Primary shading chooses the
   shorter tile/world list. Secondary/reflection/transmission hits keep the
-  world-space lists and original GI shader. Candidate order and shadow sample
+  world-space lists and shared GI implementation. Candidate order and shadow sample
   counts are preserved. Masks plus list capacity are capped at 64 MiB and device limits; over-budget or
   invalid metadata selects the exact world-list path without truncating lights.
 - `MATTER_RT_PRIMARY_ONLY=0|1` — default 0, restart required. Selects a smaller
@@ -738,8 +794,8 @@ to change them):
   Diagnostics add atomics; disable them for performance comparisons. Fixed
   1..4 stages compile adaptive policy out entirely. Adaptive primary has its
   own raygen and optional history descriptor set 3; the original scene,
-  environment and local-light sets retain their layout. GI retains the fixed
-  lighting stage and its normal sample policy.
+  environment and local-light sets retain their layout. GI retains its normal
+  sample policy.
 - `MATTER_RT_VISIBILITY_COUNTERS=0|1` — any-hit diagnostic atomics; default 0
   in normal builds, 1 in fault-injection tests. Disabling counters does not
   disable transparent visibility or the per-ray layer limit.
@@ -778,6 +834,15 @@ when supported and logs the driver's executable statistics for `gbuffer.frag`
 and `vt_composite.comp` at pipeline creation. The script's `PIPELINE_STATS=1`
 switch passes it through WSL interop. Driver statistics are static compilation
 properties, not runtime occupancy counters.
+`MATTER_GBUFFER_WORKLOAD=1` instead records runtime Vulkan pipeline statistics
+for the G-buffer: input primitives, vertex shader invocations, primitives after
+clipping, and fragment shader invocations. The optional query pool belongs to
+each fenced frame slot; unsupported devices log a warning and continue.
+`GBUFFER_WORKLOAD=1 tools/streammountain_attribution.sh ...` passes the flag
+through WSL and retains `[gbuffer-workload]` lines in each capture log. Counts
+include helper fragment invocations, so fragments divided by pixel count is
+workload per pixel, not an exact visible-surface overdraw count. The logged
+frame serial is the readback frame, not the older query's submission serial.
 
 `MATTER_VSYNC`, `MATTER_VK_ROBUSTNESS`, `MATTER_VK_SMOKE_MODE` (§ QA cookbook
 recipe 6), `MATTER_VK_STATIC_RESERVE_CLUSTER_MB` / `_VERTEX_MB` / `_INDEX_MB`
@@ -1027,6 +1092,13 @@ hard-to-diagnose failures:
    all cwd-relative to `MatterEditor/`.
 3. **Never build while `editor.exe` is running** — it holds a file lock on its
    own binary; a build started while it's up fails or silently no-ops.
+
+A harness that launches the native build as a child process with captured
+output must use `tools/run-windows-build-bounded.ps1` (or a
+`ProcessStartInfo` with `CreateNoWindow`), not `Start-Process
+-RedirectStandardOutput`: the latter gives the build its own visible Windows
+Terminal window, and closing it or pressing Ctrl+C there kills the build with
+`0xC000013A` ([finding](../findings/native-wrapper-interruption-2026-10-19.md)).
 
 - `MATTER_VT_PROP_TEXELS_PER_METER` — explicit chart-density override for prop
   rendering proofs (finite1–2048; default16). Used when preparing runtime

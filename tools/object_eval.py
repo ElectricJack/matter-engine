@@ -6,12 +6,14 @@ See docs/agent/object-evaluation.md for the versioned input and receipt format.
 from __future__ import annotations
 
 import argparse
+from array import array
 import hashlib
 import json
 import math
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import struct
 import sys
@@ -27,6 +29,15 @@ import matter_agent
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMA = 1
 MODEL_PATH = re.compile(r"^projects/world_demo/(objects/[^/]+(?:/[^/]+)*/[^/]+\.js|scenes/[^/]+/[^/]+/(objects/[^/]+\.js|presets/[^/]+\.json)|materials/[^/]+\.js)$")
+VIEW_FILE = re.compile(r"[A-Za-z0-9_.-]+\.png")
+PLANE_COUNT = 6
+IDENTITY_PLANE = "identity"
+IDENTITY_FORMAT = "rg32_uint"
+IDENTITY_BYTES_PER_PIXEL = 8
+IDENTITY_BACKGROUND = 0xFFFFFFFF
+# A silhouette that covers more of the frame than this is a coverage or
+# background failure, not an object.
+MAX_MASK_COVERAGE = .9
 
 
 class EvaluationError(Exception):
@@ -268,9 +279,110 @@ def check_channels(path: Path, result: dict) -> dict:
         if int(plane["offset_bytes"]) != end:
             raise EvaluationError("numeric channel plane offsets are not contiguous")
         end += int(plane["size_bytes"])
-    if len(planes) != 6 or path.stat().st_size != end:
+    if len(planes) != PLANE_COUNT or path.stat().st_size != end:
         raise EvaluationError("numeric channel bundle is incomplete")
     return {"path": str(path), "sha256": file_hash(path), "width": width, "height": height}
+
+
+def identity_coverage(channels_path: Path, channels: dict) -> tuple[int, int, list[bool]]:
+    """Object coverage of one capture from its own identity plane: UINT32_MAX in
+    both lanes is background, any other pair is a rasterized pixel of some
+    object. Nothing here infers coverage from rendered color."""
+    width, height = int(channels["width"]), int(channels["height"])
+    if width < 1 or height < 1:
+        raise EvaluationError("numeric channel dimensions must be positive")
+    planes = [plane for plane in channels.get("planes", []) if plane.get("name") == IDENTITY_PLANE]
+    if len(planes) != 1 or planes[0].get("format") != IDENTITY_FORMAT:
+        raise EvaluationError("channel bundle has no single rg32_uint identity plane")
+    plane = planes[0]
+    expected = width * height * IDENTITY_BYTES_PER_PIXEL
+    if int(plane["size_bytes"]) != expected:
+        raise EvaluationError("identity plane size differs from the channel grid")
+    with channels_path.open("rb") as stream:
+        stream.seek(int(plane["offset_bytes"]))
+        raw = stream.read(expected)
+    if len(raw) != expected:
+        raise EvaluationError("identity plane is truncated")
+    lanes = array("I")
+    lanes.frombytes(raw)
+    if lanes.itemsize != 4:
+        raise EvaluationError("host integers are not 32 bits")
+    if sys.byteorder != "little":
+        lanes.byteswap()
+    return width, height, [(material != IDENTITY_BACKGROUND) or (token != IDENTITY_BACKGROUND)
+                           for material, token in zip(lanes[0::2], lanes[1::2])]
+
+
+def resample_mask(covered: list[bool], source: tuple[int, int],
+                  target: tuple[int, int]) -> list[bool]:
+    """Nearest-neighbour transfer of coverage between two raster grids. The
+    internal extent can differ from the display PNG when scaling is active."""
+    if source == target:
+        return list(covered)
+    source_width, source_height = source
+    target_width, target_height = target
+    columns = [(x * source_width) // target_width for x in range(target_width)]
+    return [covered[base + column]
+            for base in ((y * source_height) // target_height * source_width for y in range(target_height))
+            for column in columns]
+
+
+def mask_bounds(mask: list[bool], size: tuple[int, int]) -> tuple[dict | None, int]:
+    """Bounding box and set-pixel count of a mask. Every index is inside the
+    frame by construction; the box reports what the mask claims."""
+    width, height = size
+    set_pixels = [index for index, value in enumerate(mask) if value]
+    if not set_pixels:
+        return None, 0
+    columns = [index % width for index in set_pixels]
+    rows = [index // width for index in set_pixels]
+    return ({"min_x": min(columns), "max_x": max(columns),
+             "min_y": min(rows), "max_y": max(rows)}, len(set_pixels))
+
+
+def audit_mask(mask: list[bool], size: tuple[int, int], channel_size: tuple[int, int]) -> dict:
+    """Mechanical audit of one derived mask. Nonempty, inside the frame, on the
+    channel raster grid, and inside a sane area bound."""
+    if len(mask) != size[0] * size[1]:
+        raise EvaluationError("derived mask does not cover exactly one frame")
+    bounds, count = mask_bounds(mask, size)
+    coverage = round(count / (size[0] * size[1]), 6)
+    checks = {"nonempty": count > 0,
+              "inside_frame": bounds is not None and 0 <= bounds["min_x"] <= bounds["max_x"] < size[0]
+                               and 0 <= bounds["min_y"] <= bounds["max_y"] < size[1],
+              "matches_channel_dimensions": size == channel_size,
+              "area_within_bounds": 0 < coverage <= MAX_MASK_COVERAGE}
+    return {"audited": all(checks.values()),
+            "failures": sorted(name for name, passed in checks.items() if not passed),
+            "width": size[0], "height": size[1],
+            "channel_width": channel_size[0], "channel_height": channel_size[1],
+            "resampled_to_image": size != channel_size,
+            "object_pixels": count, "coverage_fraction": coverage, "bounds": bounds,
+            **checks}
+
+
+def emit_candidate_mask(run_dir: Path, view_name: str, channels_path: Path, channels: dict,
+                        image_size: tuple[int, int]) -> dict:
+    """Derive one view's candidate mask from the capture's identity plane, write
+    it beside the image and audit it. The written file is what the scorer later
+    reads, so it is re-read before the audit is recorded."""
+    width, height, covered = identity_coverage(channels_path, channels)
+    mask = resample_mask(covered, (width, height), image_size)
+    path = run_dir / f"{view_name}.mask.png"
+    if path.exists():
+        raise EvaluationError(f"stale mask at unique capture path: {path}")
+    expected = bytes(255 if value else 0 for value in mask)
+    Image.frombytes("L", image_size, expected).save(path, format="PNG")
+    with Image.open(path) as image:
+        image.load()
+        if image.format != "PNG" or image.mode != "L" or image.size != image_size:
+            raise EvaluationError(f"mask is not an 8-bit grayscale PNG at capture size: {path}")
+        if image.tobytes() != expected:
+            raise EvaluationError(f"mask PNG does not hold the derived coverage: {path}")
+    audit = audit_mask(mask, image_size, (width, height))
+    audit["path"] = str(path)
+    audit["sha256"] = file_hash(path)
+    return audit
 
 
 def capture(bundle: Path, run_dir: Path, editor_exe: Path, timeout: float) -> dict:
@@ -353,8 +465,15 @@ def capture(bundle: Path, run_dir: Path, editor_exe: Path, timeout: float) -> di
                 if not math.isfinite(camera[key]) or abs(camera[key] - expected) > 1e-3:
                     raise EvaluationError("capture projection differs from rig")
             image = check_png(path, raw)
-            channels = check_channels(Path(str(path) + ".channels.bin"), raw)
-            receipt["views"][view["name"]].update(image=image, channels=channels)
+            channel_path = Path(str(path) + ".channels.bin")
+            channels = check_channels(channel_path, raw)
+            mask_audited = emit_candidate_mask(run_dir, view["name"], channel_path, raw["channels"],
+                                               (image["width"], image["height"]))
+            receipt["views"][view["name"]].update(image=image, channels=channels,
+                                                  mask_audited=mask_audited)
+            if not mask_audited["audited"]:
+                raise EvaluationError(f"candidate mask audit failed for {view['name']}: "
+                                      f"{', '.join(mask_audited['failures'])}")
             receipt["timing_seconds"][f"{view['name']}.capture"] = time.monotonic() - t
         verify_bundle(bundle)
         if file_hash(editor_exe) != receipt["editor_sha256"]:
@@ -382,6 +501,33 @@ def mask_pixels(path: Path, size: tuple[int, int]) -> list[bool]:
     if any(v not in (0, 255) for v in values) or not any(values):
         raise EvaluationError(f"mask must be nonempty binary 0/255: {path}")
     return [v == 255 for v in values]
+
+
+def view_file(directory: Path, raw: object, label: str) -> Path:
+    """Resolve one named PNG inside a run or reference directory. Both are
+    untrusted inputs, so a path that is not a plain filename in that directory
+    is refused instead of followed."""
+    if not isinstance(raw, str) or not VIEW_FILE.fullmatch(raw):
+        raise EvaluationError(f"{label} must be a plain PNG filename: {raw!r}")
+    path = directory / raw
+    if not path.is_file():
+        raise EvaluationError(f"{label} is missing: {raw}")
+    return path
+
+
+def audited_mask(run_dir: Path, row: dict, name: str) -> dict:
+    """The capture receipt's own audit for one view, or a refusal. Scoring only
+    ever reads a mask the capture already derived and audited."""
+    audit = row.get("mask_audited")
+    if not isinstance(audit, dict) or audit.get("audited") is not True:
+        raise EvaluationError(f"candidate mask was not audited: {name}")
+    path = run_dir / f"{name}.mask.png"
+    if not path.is_file() or file_hash(path) != audit.get("sha256"):
+        raise EvaluationError(f"audited candidate mask is missing or changed: {name}")
+    if (audit.get("width"), audit.get("height")) != (row.get("image", {}).get("width"),
+                                                    row.get("image", {}).get("height")):
+        raise EvaluationError(f"audited mask size differs from the capture image: {name}")
+    return audit
 
 
 def contour(mask: list[bool], width: int, height: int) -> list[int]:
@@ -459,11 +605,12 @@ def score(run_dir: Path, reference_path: Path) -> dict:
         if file_hash(image_path) != row["image"]["sha256"]:
             raise EvaluationError(f"capture image changed: {name}")
         view = reference["views"][name]
+        audited_mask(run_dir, row, name)
         with Image.open(image_path) as image:
             image.load()
             size = image.size
             candidate_rgb = image.convert("RGB")
-        reference_image = (reference_path.parent / view["image"]).resolve()
+        reference_image = view_file(reference_path.parent, view.get("image"), f"reference image {name}")
         with Image.open(reference_image) as image:
             image.load()
             if image.size != size:
@@ -471,8 +618,10 @@ def score(run_dir: Path, reference_path: Path) -> dict:
             target_rgb = image.convert("RGB")
         if file_hash(reference_image) != view["image_sha256"]:
             raise EvaluationError(f"reference image changed: {name}")
-        candidate_mask_path = run_dir / view["candidate_mask"]
-        target_mask_path = reference_path.parent / view["reference_mask"]
+        candidate_mask_path = view_file(run_dir, view.get("candidate_mask"), f"candidate mask {name}")
+        if candidate_mask_path.name != f"{name}.mask.png":
+            raise EvaluationError(f"candidate mask is not this run's audited mask: {name}")
+        target_mask_path = view_file(reference_path.parent, view.get("reference_mask"), f"reference mask {name}")
         if file_hash(target_mask_path) != view["reference_mask_sha256"]:
             raise EvaluationError(f"reference mask changed: {name}")
         candidate_mask = mask_pixels(candidate_mask_path, size)
@@ -523,6 +672,51 @@ def noise(score_paths: list[Path]) -> dict:
             "minimum_gain": max(.01, differences[index])}
 
 
+def reference_from_run(run_dir: Path, output: Path | None) -> dict:
+    """Build a version 1 reference from a baseline run: the run's own rig hash
+    and, per view, its image and its audited mask. This is a self-reference --
+    it pins the run's silhouette exactly, so scoring that same run must return
+    IoU 1.0 for every view. It never authors a mask."""
+    capture_record = load_json(run_dir / "capture.json")
+    if capture_record.get("status") != "complete":
+        raise EvaluationError("capture is incomplete; a reference cannot be built")
+    rig_sha256 = capture_record.get("rig_sha256")
+    if not isinstance(rig_sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", rig_sha256):
+        raise EvaluationError("capture run has no usable rig hash")
+    rows = capture_record.get("views")
+    if not isinstance(rows, dict) or not rows:
+        raise EvaluationError("capture run has no views")
+    views = {}
+    for name in sorted(rows):
+        row = rows[name]
+        audited = audited_mask(run_dir, row, name)
+        image_path = view_file(run_dir, f"{name}.png", f"capture image {name}")
+        if file_hash(image_path) != row["image"]["sha256"]:
+            raise EvaluationError(f"capture image changed: {name}")
+        size = (row["image"]["width"], row["image"]["height"])
+        mask_pixels(run_dir / f"{name}.mask.png", size)
+        views[name] = {"image": image_path.name, "image_sha256": file_hash(image_path),
+                       "reference_mask": f"{name}.mask.png",
+                       "reference_mask_sha256": audited["sha256"],
+                       "candidate_mask": f"{name}.mask.png"}
+    destination = output if output is not None else run_dir / "reference.json"
+    if destination.exists():
+        raise EvaluationError(f"reference already exists; a baseline is never rewritten: {destination}")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if destination.parent.resolve() != run_dir.resolve():
+        # The scorer resolves reference entries beside the reference JSON, so an
+        # output elsewhere has to carry its own copy of every pinned PNG.
+        for entry in views.values():
+            for key in ("image", "reference_mask"):
+                source, target = run_dir / entry[key], destination.parent / entry[key]
+                if target.exists() and file_hash(target) != file_hash(source):
+                    raise EvaluationError(f"refusing to overwrite a different file: {target}")
+                shutil.copy2(source, target)
+    reference = {"version": SCHEMA, "rig_sha256": rig_sha256, "views": views}
+    destination.write_bytes(canonical(reference) + b"\n")
+    return {"reference": str(destination), "rig_sha256": rig_sha256, "views": sorted(views)}
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="action", required=True)
@@ -534,6 +728,9 @@ def main(argv=None) -> int:
     p.add_argument("run_dir", type=Path)
     p.add_argument("--editor", type=Path, default=ROOT / "MatterEditor/build/windows-msvc/editor.exe")
     p.add_argument("--timeout", type=float, default=120)
+    p = sub.add_parser("reference-from-run")
+    p.add_argument("run_dir", type=Path)
+    p.add_argument("--output", type=Path)
     p = sub.add_parser("score")
     p.add_argument("run_dir", type=Path)
     p.add_argument("reference", type=Path)
@@ -547,6 +744,8 @@ def main(argv=None) -> int:
             output = capture(args.bundle, args.run_dir, args.editor, args.timeout)
             if output["status"] != "complete":
                 raise EvaluationError(output["error"])
+        elif args.action == "reference-from-run":
+            output = reference_from_run(args.run_dir, args.output)
         elif args.action == "score":
             output = score(args.run_dir, args.reference)
         else:

@@ -1,0 +1,56 @@
+{
+  "compiler": "/tmp/graphics-e34-toolchain/root/usr/bin/glslc",
+  "compiler_version": "shaderc 2023.8-1build1\nspirv-tools 2023.6~rc1-2\nglslang 14.0.0-2\n\nTarget: SPIR-V 1.0\n",
+  "flags": "--target-env=vulkan1.3 -O -I<snapshot>/MatterEngine3/shaders_vk",
+  "scope": "Historical baseline/move equality with one Linux compiler; no GPU execution or Windows parity",
+  "results": [
+    {
+      "ref": "58289c187ef2565c7d0532fe28a8cfb903023e44",
+      "shader": "raster.vert",
+      "bytes": 12232,
+      "sha256": "6ebc6078ec0fc9949d60373426de26b4c2c593cce9d7c0f45e20f85af6bd2476"
+    },
+    {
+      "ref": "58289c187ef2565c7d0532fe28a8cfb903023e44",
+      "shader": "gbuffer.frag",
+      "bytes": 1580600,
+      "sha256": "19dad041a35f00419d6c86c3da73c623798c47e5e6875fe72f416c9e2ab0efe3"
+    },
+    {
+      "ref": "58289c187ef2565c7d0532fe28a8cfb903023e44",
+      "shader": "raster_skin.vert",
+      "bytes": 11244,
+      "sha256": "c22551d4d766ce60b0ddceb53730a54195cac1bd4aff12c2a24a025ccffb93e3"
+    },
+    {
+      "ref": "58289c187ef2565c7d0532fe28a8cfb903023e44",
+      "shader": "raster_water.vert",
+      "bytes": 8028,
+      "sha256": "6302563a8f8ea1d8087eab56ec30f31169ff6f9cfaaa6a62a3c05665d9b841a7"
+    },
+    {
+      "ref": "90a19c6698a03623da9a3e3c5235ad272531d462",
+      "shader": "raster.vert",
+      "bytes": 12232,
+      "sha256": "6ebc6078ec0fc9949d60373426de26b4c2c593cce9d7c0f45e20f85af6bd2476"
+    },
+    {
+      "ref": "90a19c6698a03623da9a3e3c5235ad272531d462",
+      "shader": "gbuffer.frag",
+      "bytes": 1580600,
+      "sha256": "19dad041a35f00419d6c86c3da73c623798c47e5e6875fe72f416c9e2ab0efe3"
+    },
+    {
+      "ref": "90a19c6698a03623da9a3e3c5235ad272531d462",
+      "shader": "raster_skin.vert",
+      "bytes": 11244,
+      "sha256": "c22551d4d766ce60b0ddceb53730a54195cac1bd4aff12c2a24a025ccffb93e3"
+    },
+    {
+      "ref": "90a19c6698a03623da9a3e3c5235ad272531d462",
+      "shader": "raster_water.vert",
+      "bytes": 8028,
+      "sha256": "6302563a8f8ea1d8087eab56ec30f31169ff6f9cfaaa6a62a3c05665d9b841a7"
+    }
+  ]
+}

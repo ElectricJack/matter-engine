@@ -30,6 +30,7 @@
 // executable form of this contract and a readback oracle for tests. It is
 // never on the production dispatch path.
 #include "animation/animation_budget.h"
+#include "../../../libs/MatterGraphics/src/native/raster_skin_types.h"
 
 // These POD types are shared verbatim with shaders_vk/animation_skin.comp in
 // C2. Keep this header free of Vulkan and engine implementation types: it is
@@ -202,24 +203,6 @@ struct alignas(16) VkSkinSourceVertex {
     uint32_t pad[3]{};
 };
 static_assert(sizeof(VkSkinSourceVertex) == 80, "VkSkinSourceVertex std430 ABI");
-
-// Compute output, consumed directly as the skinned raster vertex buffer.
-// `previous_position` is the previous frame's skinned position of the SAME
-// vertex, which is what makes deformation motion vectors possible; when
-// history is invalid it ends up equal to `position` (see
-// kVkSkinHistoryInvalid above). `tint`, `surface` and `material_index` are
-// copied through from the source vertex unchanged; only position and normal
-// are actually skinned.
-struct alignas(16) VkSkinVertex {
-    float position[4]{};
-    float previous_position[4]{};
-    float normal[4]{};
-    float tint[4]{};
-    float surface[4]{};
-    uint32_t material_index = 0;
-    uint32_t pad[3]{};
-};
-static_assert(sizeof(VkSkinVertex) == 96, "VkSkinVertex std430 ABI");
 
 inline float vk_skin_decode_weight(uint16_t weight) noexcept {
     return static_cast<float>(weight) / 65535.0f;
