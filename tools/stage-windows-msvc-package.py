@@ -380,9 +380,44 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def windows_worktree_git_dir(root: Path) -> str | None:
+    """Return a native Git directory for a WSL-created Windows worktree.
+
+    Git worktrees created from WSL record their gitdir in ``.git`` as an
+    absolute POSIX path (for example, ``/mnt/d/repository/.git/worktrees/x``).
+    Native Windows Git cannot interpret that spelling, even when the worktree
+    itself is on the same mounted drive.  Supplying the translated gitdir
+    explicitly keeps the metadata intact for both Git implementations.
+    """
+    if os.name != "nt":
+        return None
+    git_file = root / ".git"
+    if not git_file.is_file():
+        return None
+    try:
+        contents = git_file.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    prefix = "gitdir: "
+    if not contents.startswith(prefix):
+        return None
+    match = re.fullmatch(r"/mnt/([A-Za-z])(?:/(.*))?", contents[len(prefix) :])
+    if not match:
+        return None
+    drive, relative = match.groups()
+    windows_relative = relative.replace("/", "\\") if relative else ""
+    return f"{drive.upper()}:\\{windows_relative}"
+
+
 def run_git(root: Path, *arguments: str, text: bool = True) -> str | bytes:
+    git_directory = windows_worktree_git_dir(root)
+    command = ["git"]
+    if git_directory is None:
+        command.extend(["-C", str(root)])
+    else:
+        command.extend(["--git-dir", git_directory, "--work-tree", str(root)])
     result = subprocess.run(
-        ["git", "-C", str(root), *arguments],
+        [*command, *arguments],
         check=False,
         capture_output=True,
         text=text,
@@ -476,6 +511,49 @@ def ignored(_directory: str, names: list[str]) -> set[str]:
         or name.endswith(".bak")
         or name.endswith(".pyc")
     }
+
+
+STREAMLINE_RUNTIME_NAMES = (
+    "sl.interposer.dll", "sl.common.dll", "sl.dlss.dll", "nvngx_dlss.dll",
+)
+STREAMLINE_LICENSE_FILES = (
+    ("nvidia_streamline", "license.txt", "NVIDIA_Streamline_LICENSE.txt"),
+    ("nvidia_dlss", "bin/x64/nvngx_dlss.license.txt", "nvngx_dlss.license.txt"),
+)
+
+
+def validate_streamline_inputs(*, enabled: bool, sdk_root: Path | None) -> None:
+    """Require the production DLSS SR bundle before replacing a package."""
+    if not enabled:
+        if sdk_root is not None:
+            raise ValueError("disabled Streamline packaging cannot accept an SDK root")
+        return
+    if sdk_root is None or not sdk_root.is_dir():
+        raise ValueError("enabled Streamline packaging requires an existing SDK root")
+    required = [sdk_root / "bin/x64" / name for name in STREAMLINE_RUNTIME_NAMES]
+    required += [sdk_root / source for _, source, _ in STREAMLINE_LICENSE_FILES]
+    for path in required:
+        if not path.is_file() or path.stat().st_size == 0:
+            raise ValueError(f"Streamline runtime or license is missing or empty: {path}")
+
+
+def stage_streamline_runtime_bundle(
+    dist: Path, *, enabled: bool, sdk_root: Path | None,
+) -> tuple[list[str], list[tuple[str, Path]]]:
+    validate_streamline_inputs(enabled=enabled, sdk_root=sdk_root)
+    if not enabled:
+        return [], []
+    assert sdk_root is not None
+    for name in STREAMLINE_RUNTIME_NAMES:
+        shutil.copy2(sdk_root / "bin/x64" / name, dist / name)
+    licenses = dist / "licenses"
+    licenses.mkdir(exist_ok=True)
+    notices = []
+    for identity, source, destination in STREAMLINE_LICENSE_FILES:
+        staged = licenses / destination
+        shutil.copy2(sdk_root / source, staged)
+        notices.append((identity, staged))
+    return list(STREAMLINE_RUNTIME_NAMES), notices
 
 
 def stage_physx_runtime_bundle(
@@ -735,6 +813,8 @@ def main() -> int:
     parser.add_argument("--vulkan-sdk", required=True)
     parser.add_argument("--autoremesher", choices=("true", "false"), required=True)
     parser.add_argument("--physx", choices=("true", "false"), required=True)
+    parser.add_argument("--streamline", choices=("true", "false"), default="false")
+    parser.add_argument("--streamline-root", type=Path)
     parser.add_argument("--physx-runtime", type=Path)
     parser.add_argument("--physx-license", type=Path)
     parser.add_argument("--cuda-license", type=Path)
@@ -790,6 +870,12 @@ def main() -> int:
     for path, label in required:
         if not path.exists():
             raise SystemExit(f"{label} is missing: {path}")
+    try:
+        validate_streamline_inputs(
+            enabled=args.streamline == "true", sdk_root=args.streamline_root
+        )
+    except ValueError as error:
+        raise SystemExit(f"invalid Streamline package inputs: {error}") from error
     dependency_libraries = parse_dependency_libraries(args.dependency_library)
 
     revision = str(run_git(root, "rev-parse", "HEAD")).strip()
@@ -831,6 +917,11 @@ def main() -> int:
         )
     except ValueError as error:
         raise SystemExit(f"invalid PhysX package inputs: {error}") from error
+    streamline_runtime, streamline_notices = stage_streamline_runtime_bundle(
+        dist, enabled=args.streamline == "true", sdk_root=args.streamline_root
+    )
+    runtime_dlls.extend(streamline_runtime)
+    nvidia_notices.extend(streamline_notices)
     assert args.hydrology_cache is not None or args.physx == "false"
     if args.hydrology_cache is not None:
         try:
@@ -916,7 +1007,7 @@ def main() -> int:
         "notices": notice_labels,
         "features": {
             "autoremesher": args.autoremesher == "true",
-            "streamline": False,
+            "streamline": args.streamline == "true",
             "physx": args.physx == "true",
             "cuda": args.physx == "true",
             "vulkan_renderer": True,

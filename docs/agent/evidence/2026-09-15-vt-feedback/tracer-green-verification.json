@@ -1,0 +1,19 @@
+{
+  "changed_inputs": [],
+  "checks_all_zero": true,
+  "gpu_tests": {
+    "vt-feedback": {
+      "all_pass": true,
+      "validation_errors": []
+    },
+    "vt": {
+      "all_pass": true,
+      "validation_errors": []
+    },
+    "surface-parallax": {
+      "all_pass": true,
+      "validation_errors": []
+    }
+  },
+  "native_processes": ""
+}

@@ -1,0 +1,24 @@
+{
+  "native_checks": 10,
+  "native_checks_passed": true,
+  "native_source_count": 83,
+  "native_source_mismatches": [],
+  "binary_mismatches": [],
+  "captures": {
+    "brick-layer-v2": {
+      "capture_passed": true,
+      "source_mismatches": [],
+      "image_mismatches": [],
+      "image_count": 5,
+      "all_recorded_queues_zero": true
+    },
+    "terrain-layer-v2": {
+      "capture_passed": true,
+      "source_mismatches": [],
+      "image_mismatches": [],
+      "image_count": 5,
+      "all_recorded_queues_zero": true
+    }
+  },
+  "verified_checkpoint": true
+}

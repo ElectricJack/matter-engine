@@ -1,0 +1,32 @@
+{
+  "runs": [
+    {
+      "mode": "surface",
+      "command": "$env:MATTER_VK_VALIDATION=\"1\"; $env:TMP=\"$env:LOCALAPPDATA\\Temp\"; $env:TEMP=$env:TMP; $env:MATTER_VK_SMOKE_MODE=\"surface\"; & \"./build/cmake/windows-msvc/relwithdebinfo/surface_field_tests.exe\"; exit $LASTEXITCODE",
+      "exit": 0,
+      "seconds": 0.9797682099961094,
+      "binary_sha256": "4f675795b6113b33b89c5d076b00a1c50d69d94b34b7bbbfa40f7aee7c486324",
+      "binary_unchanged": true,
+      "source_changes": [],
+      "all_pass": true,
+      "zero_validation_errors": true,
+      "skipped_rt": false,
+      "log_sha256": "6301ff4799a79c2989c1f97b6c435f38ccb0eb5be216957639bc1cb739eb12a1",
+      "passed": true
+    },
+    {
+      "mode": "world",
+      "command": "$env:MATTER_VK_VALIDATION=\"1\"; $env:TMP=\"$env:LOCALAPPDATA\\Temp\"; $env:TEMP=$env:TMP; $env:MATTER_VK_SMOKE_MODE=\"world\"; & \"./../../MatterEditor/build/cmake/windows-msvc/relwithdebinfo/world_definition_tests.exe\"; exit $LASTEXITCODE",
+      "exit": 255,
+      "seconds": 215.7166056299975,
+      "binary_sha256": "d619a3048ba9aa3793aad166d7ac0b24165ad5cecff39f66c531c538a50c0097",
+      "binary_unchanged": true,
+      "source_changes": [],
+      "all_pass": false,
+      "zero_validation_errors": true,
+      "skipped_rt": false,
+      "log_sha256": "206e67c17e3aca98da10b6fd80c7c82739ed0664f0855a2b4bee4ed9155f8908",
+      "passed": false
+    }
+  ]
+}

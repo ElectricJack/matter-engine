@@ -41,8 +41,7 @@
 //     content must re-check content_revision() and redo the work.
 //   - Pointers from get_bvh()/get_mesh()/get_entry() are borrowed and are
 //     invalidated by the next release_blas() / clear().
-//   - The Legacy* types below are historical layout mirrors kept for
-//     compatibility; note that generate_node_data() still emits LegacyBVHNode.
+//   - generate_node_data() emits the historical LegacyBVHNode layout.
 //   - clear() restarts handle issuance at 1, so handles minted afterwards
 //     collide numerically with ones handed out before it.
 // ---------------------------------------------------------------------------
@@ -58,19 +57,6 @@
 
 // BVH types are now in global namespace
 using uint = unsigned int;
-// float3 types come from precomp.h (global namespace)
-// using ::float3;  // Already available globally
-// using ::make_float3;  // Already available globally
-// using ::normalize;  // Already available globally
-// using ::cross;  // Already available globally
-
-// Legacy Triangle struct for backward compatibility (where needed for different layouts)
-struct LegacyTriangle {
-    float3 v0, v1, v2;
-    float3 centroid;
-    float3 normal;
-    int material_id;
-};
 
 // Legacy BVHNode struct for backward compatibility (where needed for different layouts)
 struct LegacyBVHNode {
@@ -79,9 +65,6 @@ struct LegacyBVHNode {
     float3 aabbMax;
     uint32_t triCount;
 };
-
-// Type aliases for backward compatibility (using different names to avoid conflicts)
-using Triangle = LegacyTriangle;
 
 // Opaque, manager-issued id for one registered BLAS. Handles are dense small
 // integers starting at 1 and are meaningful only to the manager that issued
@@ -207,10 +190,6 @@ public:
                                  const BVHNode* nodes, uint nodes_used, const uint* tri_idx,
                                  uint32_t hash, uint32_t ref_count);
 
-    // Legacy interface for old Triangle format
-    //BLASHandle register_triangles_legacy(const std::vector<LegacyTriangle>& triangles);
-    //BLASHandle register_triangles_legacy(LegacyTriangle* triangles, int triangle_count);
-    
     // Adopt every entry of `staged` into this manager, deduping against content
     // already here. `remap` receives staged-handle -> this-manager-handle for
     // every adopted entry; callers patch their own handle references through it.
@@ -218,8 +197,9 @@ public:
     // Purpose: let expensive work happen on a worker thread against a PRIVATE
     // manager, then hand the result over in one bounded step. No BVH is rebuilt
     // here -- a content match bumps ref_count, and a newcomer installs the
-    // staged BVH arrays via the register_prebuilt path. Cost is O(entries), not
-    // O(triangles), which is what makes it safe to run inside a frame.
+    // staged BVH arrays via the register_prebuilt path. Cost is
+    // O(triangles) for new entries because their arrays are copied. Use
+    // consume_from for a disposable worker manager to avoid these copies.
     //
     // Dedup is the same hash + exact-compare that register_triangles uses, so an
     // adopted sector sharing a rock BLAS with one already resident collapses onto
@@ -230,6 +210,13 @@ public:
     // in itself: call it on the thread that owns this manager.
     void adopt_from(const BLASManager& staged,
                     std::unordered_map<BLASHandle, BLASHandle>& remap);
+
+    // Destructive hand-off for a worker manager that will be discarded.
+    // Transfers whole entries without copying mesh/BVH arrays, deduplicates
+    // against resident geometry, and empties staged. Pointers/handles into
+    // staged must not be used afterward. Both managers require exclusive access.
+    void consume_from(BLASManager& staged,
+                      std::unordered_map<BLASHandle, BLASHandle>& remap);
 
     // Release one reference to a BLAS. When the last owner releases it, the
     // entry is removed and its GPU footprint reclaimed. No-op for invalid/0.
@@ -293,12 +280,6 @@ public:
     // Generate combined data for GPU upload
     void generate_triangle_data(std::vector<Tri>& output_triangles) const;
     void generate_node_data(std::vector<LegacyBVHNode>& output_nodes) const;
-    
-    // Legacy interface for old Triangle format
-    //void generate_triangle_data_legacy(std::vector<LegacyTriangle>& output_triangles) const;
-
-    // Legacy interface for old Triangle format
-    //void generate_triangle_texture_data_legacy(LegacyTriangle* output_triangles) const;
 
     // Statistics and debugging
     void print_stats() const;
@@ -328,10 +309,6 @@ private:
         totals_dirty_ = true;
     }
     
-    // Conversion utilities
-    static Tri convert_triangle(const LegacyTriangle& old_tri);
-    static LegacyTriangle convert_triangle_back(const Tri& new_tri);
-    
     // Hash calculation. Per-triangle materialId participates in identity so that
     // two byte-identical geometries carrying DIFFERENT materials are NOT deduped
     // (a multi-material mesh must keep its own materials, not inherit another's).
@@ -342,10 +319,6 @@ private:
 
     // Find existing BLAS by hash and triangle data
     BLASHandle find_existing_blas(const Tri* triangles, int count, uint32_t hash, const TriEx* triex) const;
-    
-    // Legacy hash calculation for old Triangle format
-    //uint32_t calculate_hash_legacy(const LegacyTriangle* triangles, int count) const;
-    //BLASHandle find_existing_blas_legacy(const LegacyTriangle* triangles, int count, uint32_t hash) const;
     
     // Update cached totals
     void update_totals() const;
@@ -369,11 +342,6 @@ namespace BLASFactory {
     std::vector<Tri> create_cube_triangles(float size = 1.0f);
     std::vector<Tri> create_sphere_triangles(float radius, int segments, int rings);
     std::vector<Tri> create_plane_triangles(float width, float height);
-    
-    // Legacy functions for backward compatibility
-    // std::vector<LegacyTriangle> create_cube_triangles_legacy(float size = 1.0f);
-    // std::vector<LegacyTriangle> create_sphere_triangles_legacy(float radius, int segments, int rings);
-    // std::vector<LegacyTriangle> create_plane_triangles_legacy(float width, float height);
     
     BLASHandle register_cube(BLASManager& manager, float size = 1.0f);
     BLASHandle register_sphere(BLASManager& manager, float radius, int segments = 32, int rings = 16);

@@ -159,12 +159,10 @@ struct BLASSlice {
 // traced rather than what the file contains. A part that loads with no triangles
 // is a valid degenerate: inverted (empty) bounds, ok=true.
 struct LoadedTracePart {
-    // Owning managers — kept alive for the tracer's lifetime. BOTH NULL when
-    // the part came from the resident source: the slices then point into the
-    // caller's manager and this side owns nothing (which is the whole point —
-    // no second copy of the geometry, and no TLASManager(65536) per part).
+    // Own only geometry used by the tracer. Null for resident-source and
+    // failed parts. The loader's temporary TLAS is discarded after decoding;
+    // tracing uses the instance BVH below, not that TLAS or its draw records.
     std::unique_ptr<BLASManager> blas_mgr;
-    std::unique_ptr<TLASManager> tlas_mgr;
     // Entries to trace (into blas_mgr, or into the caller's manager).
     std::vector<BLASSlice> slices;
     // Children from the compositional file (empty if loaded from flat artifact).
@@ -307,9 +305,9 @@ struct WorldTracer::Impl {
     //
     // Source order: the resident callback first (counts into resident_hits_,
     // borrows the caller's entries, allocates nothing); otherwise disk
-    // (disk_loads_), which decodes the artifact into a private BLASManager plus
-    // a TLASManager(65536) owned by the record — genuinely expensive, and the
-    // reason ResidentSource exists. On the disk path the scratch dir is checked
+    // (disk_loads_), which decodes the artifact into a private BLASManager.
+    // The TLAS required by the loader is temporary and sized to the artifact's
+    // actual draw count. On the disk path the scratch dir is checked
     // before cache_root, and the flat artifact before the compositional .part.
     //
     // LOD choice: it traces the COARSEST level's entries (lods.back()) and falls
@@ -348,14 +346,11 @@ struct WorldTracer::Impl {
         ++disk_loads_;
 
         auto ltp = std::make_unique<LoadedTracePart>();
-        ltp->blas_mgr = std::make_unique<BLASManager>();
-        ltp->tlas_mgr = std::make_unique<TLASManager>(65536);
 
         std::vector<part_asset::ChildInstance> children;
         part_asset::LodLevels lods;
 
         // Try flat artifact first; fall back to compositional.
-        bool loaded = false;
         auto file_exists = [](const std::string& p) {
             struct stat st; return ::stat(p.c_str(), &st) == 0;
         };
@@ -368,18 +363,18 @@ struct WorldTracer::Impl {
             if (file_exists(sc)) comp_path = sc;
         }
 
-        if (part_asset::load_v2(flat_path, hash,
-                                *ltp->blas_mgr, *ltp->tlas_mgr,
-                                children, lods)) {
-            loaded = true;
-            ltp->loaded_flat = true;
-        } else if (part_asset::load_v2(comp_path, hash,
-                                       *ltp->blas_mgr, *ltp->tlas_mgr,
-                                       children, lods)) {
-            loaded = true;
-            ltp->loaded_flat = false;
-        }
-        if (!loaded) {
+        const auto try_load = [&](const std::string& path, bool flat) {
+            auto blas = std::make_unique<BLASManager>();
+            TLASManager scratch_tlas(0);
+            if (!part_asset::load_v2(path, hash, *blas, scratch_tlas, children, lods))
+                return false;
+            ltp->blas_mgr = std::move(blas);
+            ltp->loaded_flat = flat;
+            return true;
+        };
+        // Each attempt owns its scratch state. A failed flat cannot contaminate
+        // the compositional retry, and a negative cache entry retains no manager.
+        if (!try_load(flat_path, true) && !try_load(comp_path, false)) {
             err = "world_tracer: load_v2 failed for hash "
                   + std::to_string(hash) + " (tried flat + compositional)";
             ltp->ok = false;
@@ -605,11 +600,13 @@ struct WorldTracer::Impl {
     // which the BVH tolerates.
     //
     // best_mat is the registry index, or -1 when the entry carries no per-tri
-    // extras.
+    // extras. best_ex, when the caller supplies it, receives the hit triangle's
+    // TriEx (null when the entry has none) so trace() can report its tint.
     bool intersect_instance(const ExpandedInst& ei,
                             const float worldO[3], const float worldD[3],
                             float& best_t,
-                            float best_normal[3], int& best_mat) const {
+                            float best_normal[3], int& best_mat,
+                            const TriEx** best_ex = nullptr) const {
         // Transform to local space WITHOUT normalizing direction — preserves world t.
         float localO[3], localD[3];
         xform_point(ei.inv, worldO, localO);
@@ -675,8 +672,10 @@ struct WorldTracer::Impl {
                     if (!s.entry->tri_extra.empty() &&
                         tri_idx < (uint32_t)s.entry->tri_extra.size()) {
                         best_mat = s.entry->tri_extra[tri_idx].materialId % 1000000;
+                        if (best_ex) *best_ex = &s.entry->tri_extra[tri_idx];
                     } else {
                         best_mat = -1;
+                        if (best_ex) *best_ex = nullptr;
                     }
                 }
             }
@@ -701,7 +700,7 @@ struct WorldTracer::Impl {
                        const float rD_world[3],
                        float& best_t,
                        float best_normal[3], int& best_mat,
-                       int& best_inst) const {
+                       int& best_inst, const TriEx** best_ex = nullptr) const {
         const IBVHNode& node = ibvh_[node_idx];
         if (!aabb_hit(node.bmin, node.bmax, worldO, rD_world, best_t)) return;
 
@@ -711,15 +710,16 @@ struct WorldTracer::Impl {
                 int inst_idx = order[i];
                 const ExpandedInst& ei = expanded_[inst_idx];
                 if (!aabb_hit(ei.world_mn, ei.world_mx, worldO, rD_world, best_t)) continue;
-                if (intersect_instance(ei, worldO, worldD, best_t, best_normal, best_mat)) {
+                if (intersect_instance(ei, worldO, worldD, best_t, best_normal, best_mat,
+                                       best_ex)) {
                     best_inst = inst_idx;
                 }
             }
         } else {
             traverse_ibvh(node.left,  order, worldO, worldD, rD_world,
-                          best_t, best_normal, best_mat, best_inst);
+                          best_t, best_normal, best_mat, best_inst, best_ex);
             traverse_ibvh(node.right, order, worldO, worldD, rD_world,
-                          best_t, best_normal, best_mat, best_inst);
+                          best_t, best_normal, best_mat, best_inst, best_ex);
         }
     }
 
@@ -801,6 +801,7 @@ bool WorldTracer::trace(const float origin[3], const float dir[3],
     float best_normal[3] = {0,0,1};
     int   best_mat = -1;
     int   best_inst = -1;
+    const TriEx* best_ex = nullptr;
 
     float rD_world[3];
     rD_world[0] = (std::fabs(dir[0]) > 1e-30f) ? 1.f/dir[0] : 1e30f;
@@ -808,7 +809,7 @@ bool WorldTracer::trace(const float origin[3], const float dir[3],
     rD_world[2] = (std::fabs(dir[2]) > 1e-30f) ? 1.f/dir[2] : 1e30f;
 
     im.traverse_ibvh(0, im.ibvh_order_, origin, dir, rD_world,
-                     best_t, best_normal, best_mat, best_inst);
+                     best_t, best_normal, best_mat, best_inst, &best_ex);
 
     if (best_t >= max_t - 1e-7f) return false;
 
@@ -818,7 +819,14 @@ bool WorldTracer::trace(const float origin[3], const float dir[3],
     hit.normal[2] = best_normal[2];
     hit.material_id = best_mat;
     hit.instance = (best_inst >= 0) ? (uint32_t)best_inst : 0xffffffffu;
+    if (best_ex) {
+        hit.tint[0] = best_ex->tint.x; hit.tint[1] = best_ex->tint.y;
+        hit.tint[2] = best_ex->tint.z; hit.tint[3] = best_ex->tint.w;
+    } else {
+        hit.tint[0] = hit.tint[1] = hit.tint[2] = 1.f; hit.tint[3] = 0.f;
+    }
 
+    hit.emission_color[0] = hit.emission_color[1] = hit.emission_color[2] = 0.f;
     if (best_mat >= 0) {
         const MaterialDef* mat = MaterialRegistryGet(best_mat);
         hit.emission = mat ? mat->emission : 0.f;
@@ -826,6 +834,18 @@ bool WorldTracer::trace(const float origin[3], const float dir[3],
             hit.albedo[0] = mat->albedo[0];
             hit.albedo[1] = mat->albedo[1];
             hit.albedo[2] = mat->albedo[2];
+            hit.emission_color[0] = mat->emissionColor[0];
+            hit.emission_color[1] = mat->emissionColor[1];
+            hit.emission_color[2] = mat->emissionColor[2];
+            // Same rule as MaterialRegistryPackRtForGPU: a legacy emissive
+            // material authors emission > 0 with a black emission colour and
+            // means "emit the albedo".
+            if (mat->emission > 0.f && mat->emissionColor[0] <= 0.f &&
+                mat->emissionColor[1] <= 0.f && mat->emissionColor[2] <= 0.f) {
+                hit.emission_color[0] = mat->albedo[0];
+                hit.emission_color[1] = mat->albedo[1];
+                hit.emission_color[2] = mat->albedo[2];
+            }
         } else {
             hit.albedo[0] = hit.albedo[1] = hit.albedo[2] = 0.5f;
         }

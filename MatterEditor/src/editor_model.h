@@ -149,6 +149,12 @@ public:
     // it across a frame.
     const std::vector<HierarchyRow>& rows() const { return filtered_rows_; }
     uint32_t row_count() const { return static_cast<uint32_t>(filtered_rows_.size()); }
+    // The UNFILTERED flattened hierarchy. `filter()` is a panel affordance the
+    // user types into; a programmatic reader (the agent protocol's
+    // scene.list_objects, which does its own filtering) must not have its
+    // answer silently narrowed by whatever is in the outliner's search box.
+    // Same invalidation rule as rows().
+    const std::vector<HierarchyRow>& all_rows() const { return all_rows_; }
     // Monotonic authoritative scene-row revision, exposed to the agent
     // protocol as a decimal string. Filters do not change it.
     uint64_t revision() const { return rev_counter_; }

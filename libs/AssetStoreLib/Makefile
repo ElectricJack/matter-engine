@@ -25,7 +25,7 @@ SRC_DIR = src
 OBJ_DIR = build/obj
 
 SRCS = $(SRC_DIR)/store_hash.cpp $(SRC_DIR)/store_os.cpp \
-       $(SRC_DIR)/blob_store.cpp $(SRC_DIR)/ref_table.cpp
+       $(SRC_DIR)/blob_store.cpp $(SRC_DIR)/ref_table.cpp $(SRC_DIR)/asset_pages.cpp
 OBJS = $(SRCS:$(SRC_DIR)/%.cpp=$(OBJ_DIR)/%.o)
 
 TARGET = build/libasset_store.a

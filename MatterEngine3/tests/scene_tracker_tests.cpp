@@ -509,7 +509,7 @@ void test_character_edits_rejected_before_mutation() {
 // -------------------------------------------------------------------------
 // 11. Runtime ids land in the reserved half of the SceneEntityId value space.
 //
-// scene_registry.h splits SceneEntityId::value by kRuntimeIdBit: authored ids
+// matter/scene.h splits SceneEntityId::value by kRuntimeIdBit: authored ids
 // are hash_authored_id() FNV-1a hashes with the bit CLEARED, ids minted by
 // SceneService carry it SET. allocate_id() used to hand out a bare counter, so
 // runtime ids sat inside the authored namespace and the "no collision" claim

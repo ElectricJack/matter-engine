@@ -1,0 +1,132 @@
+{
+  "task": "clear-crest-48.1.4",
+  "schema_version": {
+    "major": 1,
+    "minor": 0
+  },
+  "abi_version": {
+    "major": 1,
+    "minor": 0
+  },
+  "canonical_profile": "matter-exact-json-v1",
+  "rng_algorithm": "matter.splitmix64.v1",
+  "production_extraction": false,
+  "prerequisite_commits": {
+    "C1": "73d1432e37d13e7d4863ec5ef5bab55a3429c3f1",
+    "C2": "9425ecbf9c53b921f9d583ef60188affee1e089c",
+    "integration_base": "6ef108e22f7ed00ed1b7eb8d136f70b22ba8ab5e"
+  },
+  "sha256": {
+    "libs/MatterContracts/include/matter/contracts/abi.h": "76475a7604fc8c78e9eece244b4dd09b654b14cf1579e507096e563607ed9f04",
+    "libs/MatterContracts/include/matter/contracts/contracts.h": "a05428c46c43f760edc841c03314b0545d4460826be1327dacd2c15fdd012f35",
+    "libs/MatterContracts/include/matter/contracts/generation.h": "f876648a821e95913d9ee6c004beca8e9691b15b6c36d4d3a40c50a6962437c2",
+    "libs/MatterContracts/include/matter/contracts/graphics.h": "d59ae3b2e1c8723ad5c7837633e78567ebab9f13cffe228e929dd88089f99ab2",
+    "libs/MatterContracts/include/matter/contracts/hosts.h": "9066324fc444f9b0afbcc7b1eff73347e8445adb921b8f39d62fd61e3b91f8bc",
+    "libs/MatterContracts/include/matter/contracts/jobs.h": "f73b563a11f63cb51457a9968c53395c3c4376d004ee27c1efe2a4499ae5b167",
+    "libs/MatterContracts/include/matter/contracts/terrain.h": "daad2a902b1523c4031214f8fe25216fe0ca6fb87dde9b5beee634adeb13f6f3",
+    "libs/MathLib/include/matter_math.h": "0605da47cfcd82a8789f3ac7f92f6af7bdbae34d619278b8f6c0070e6d765e68",
+    "libs/MathLib/include/matter_math_c.h": "4033bc5ba12c073715d70f06c146207162a147585fa15683451053a95b67855f",
+    "libs/MatterContracts/schema-v1.json": "43bcb39035ffc3dd1fa45df6d7fa4460f49516c4b138d4d592907e483186103b",
+    "libs/MatterContracts/tests/rng-vectors.json": "3e1ee8f6d006802de5808253ff82de7d098cfc8127c31d02f68fb6652e86b06b",
+    "libs/MatterContracts/examples/contracts.mjs": "628e44ba6f15e94694accdbf46bc49879bfb2eb99f91918fe60cf588b227c93e",
+    "libs/MatterContracts/examples/ordered-csg.recipe.json": "5c9771832231fb103743ee1ef0350029d0f04bbd1d69224f27f1a8b7b6004079",
+    "libs/MatterContracts/examples/repeated-assembly.asset.json": "0c57c1fc2b5f17224a6f11694e492dca61f3266523c320da21d0668a379915ea",
+    "MatterEngine3/src/dsl_rng.h": "bc22641625132fbb203d02d647b5e2e7deee5cd4e56a60ba0bcba59b3cbb3564",
+    "third_party/raylib/src/raymath.h": "55b207f611aa9b8c2095f5a4947c56c2dace4016d1e800de461f97770c360a07",
+    "libs/MatterContracts/component-ownership.json": "7ec2de8973055928d9c1b103a036da013acc7048ffd8c5931c7bfb0ad133e43c"
+  },
+  "scaffolds": [
+    {
+      "option": "MATTER_SCAFFOLD_GEOMETRY",
+      "target": "matter_geometry",
+      "directory": "libs/ProceduralGeometry",
+      "dependencies": [
+        "matter_contracts"
+      ],
+      "implemented": false
+    },
+    {
+      "option": "MATTER_SCAFFOLD_BUILD",
+      "target": "matter_build",
+      "directory": "libs/ProceduralBuild",
+      "dependencies": [
+        "matter_contracts"
+      ],
+      "implemented": false
+    },
+    {
+      "option": "MATTER_SCAFFOLD_GRAPHICS",
+      "target": "matter_graphics",
+      "directory": "libs/MatterGraphics",
+      "dependencies": [
+        "matter_contracts"
+      ],
+      "implemented": false
+    },
+    {
+      "option": "MATTER_SCAFFOLD_TERRAIN",
+      "target": "matter_terrain",
+      "directory": "libs/TerrainGeneration",
+      "dependencies": [
+        "matter_contracts",
+        "matter_geometry"
+      ],
+      "implemented": false
+    },
+    {
+      "option": "MATTER_SCAFFOLD_ASSET_PIPELINE",
+      "target": "matter_asset_pipeline",
+      "directory": "libs/AssetPipeline",
+      "dependencies": [
+        "matter_contracts",
+        "matter_geometry"
+      ],
+      "implemented": false
+    },
+    {
+      "option": "MATTER_SCAFFOLD_GEOMETRY_C",
+      "target": "matter_geometry_c",
+      "directory": "bindings/geometry-c",
+      "dependencies": [
+        "matter_contracts",
+        "matter_geometry"
+      ],
+      "implemented": false
+    },
+    {
+      "option": "MATTER_SCAFFOLD_HOST_QUICKJS",
+      "target": "matter_host_quickjs",
+      "directory": "MatterEngine3/src/script/portable_host",
+      "dependencies": [
+        "matter_contracts"
+      ],
+      "implemented": false
+    }
+  ],
+  "fixtures": [
+    "GATE-C1-PRIMITIVE",
+    "GATE-C1-EXTRUDE",
+    "GATE-C1-CSG",
+    "GATE-C1-CANONICAL",
+    "GATE-C1-ASSEMBLY",
+    "GATE-C1-MATERIAL",
+    "GATE-C1-AFFINE",
+    "GATE-C1-MALFORMED",
+    "GATE-C1-EXHAUSTION",
+    "GATE-C1-TERRAIN-EXTENSION",
+    "GATE-C2-RESOLVED-INDEX",
+    "GATE-C2-RESOLVED-LENGTH",
+    "GATE-C2-OWNER",
+    "GATE-C2-CANCEL",
+    "GATE-C2-BUDGET",
+    "GATE-C2-TERRAIN",
+    "GATE-C2-LATE",
+    "GATE-C2-CAPS",
+    "GATE-C2-GRAPHICS",
+    "GATE-C-ABI",
+    "GATE-LEGACY-MATH",
+    "GATE-LEGACY-RNG",
+    "GATE-MANIFEST",
+    "GATE-INDEPENDENT-GRAPH"
+  ]
+}

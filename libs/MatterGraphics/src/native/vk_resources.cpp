@@ -1,0 +1,1235 @@
+// libs/MatterGraphics/src/native/vk_resources.cpp
+//
+// Implementation of the Vulkan resource helpers declared in vk_resources.h,
+// plus three pieces of process-wide bookkeeping that live here because every
+// allocation in the engine funnels through this file:
+//
+//  1. GPU memory accounting (the `g_gpu_*` atomics) -- byte and allocation
+//     counters split into device-local and host-visible, published by
+//     `gpu_memory_stats()` and surfaced in the editor's Memory panel.
+//  2. The device-address registry (`g_live_device_addresses` and the bounded
+//     `g_freed_device_addresses` ring) -- every device-addressable range is
+//     recorded at creation and moved to the freed ring at destruction, so a
+//     faulting GPU VA reported by VK_EXT_device_fault can be attributed to a
+//     concrete allocation and to its allocation site. See
+//     `debug_describe_device_address`.
+//  3. The `detail::Vk*Allocation` types -- DeviceLifetimeControl subclasses
+//     that actually own the Vulkan objects behind every `Vk*Resource`. They
+//     are what lets a handle be dropped while work is still in flight: the
+//     objects die with the last shared_ptr, and if the VkDevice is torn down
+//     first the shared DeviceAccessToken invalidates them so `live_device()`
+//     returns VK_NULL_HANDLE and no destroy call is issued against a dead
+//     device.
+//
+// Threading. The counters (atomics) and the registry (guarded by
+// `g_device_address_mutex`) are safe from any thread. The resource wrappers
+// themselves are not synchronized. `submit_immediate` -- and therefore
+// `upload_buffer`, `readback_buffer`, `transition_image` and
+// `create_acceleration_structure` -- blocks on a fence, so calling it while
+// holding a lock the GPU-completion path also needs will deadlock.
+//
+// Portability. Allocation sites are captured with `__builtin_return_address`
+// (GCC/Clang), and the Win32 entry points used for process memory are
+// declared by hand and resolved at runtime rather than by including
+// <windows.h> or linking psapi.
+#include "image_transitions.h"
+#include "vk_resources.h"
+
+#include <algorithm>
+#include <array>
+#include <atomic>
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <deque>
+#include <limits>
+#include <mutex>
+#include <sstream>
+#include <unordered_map>
+#include <utility>
+
+#include "matter/vulkan_device.h"
+#include "matter/compiler.h"
+#include "vk_device_internal.h"
+
+namespace matter {
+
+// Device-address registry for VK_ERROR_DEVICE_LOST forensics: every
+// device-addressable range (buffers created with SHADER_DEVICE_ADDRESS and
+// acceleration structures) is recorded at creation and moved to a bounded
+// freed-history ring when its allocation is actually destroyed (which happens
+// only after per-frame retention releases it). debug_describe_device_address
+// matches a faulting GPU VA from VK_EXT_device_fault against both sets.
+namespace {
+
+struct DeviceAddressRange {
+    uint64_t base = 0;
+    uint64_t size = 0;
+    const char* kind = "";
+    // Return address of whoever called create_buffer /
+    // create_acceleration_structure, so a fault names the allocation SITE and
+    // not merely the resource class. Resolve the printed +0x<rva> against an
+    // unstripped relink of the same build.
+    const void* site = nullptr;
+    uint64_t created_frame = 0;
+    uint64_t freed_frame = 0;
+    std::chrono::steady_clock::time_point created{};
+    std::chrono::steady_clock::time_point freed{};
+};
+
+std::mutex g_device_address_mutex;
+std::unordered_map<uint64_t, DeviceAddressRange> g_live_device_addresses;
+std::deque<DeviceAddressRange> g_freed_device_addresses;
+// Sized so the ring spans minutes of streaming churn, not seconds: a fault
+// whose address matched nothing has to mean "never tracked", never "the
+// evidence aged out". ~64 bytes a record, so this is a few MB.
+constexpr size_t kMaxFreedDeviceAddressRecords = 262144;
+// Records discarded because the ring was full. Non-zero turns a "no match"
+// report from a conclusion into an unknown, so it is always printed.
+uint64_t g_dropped_device_address_records = 0;
+// Presented-frame counter, advanced by the swapchain loop. Wall-clock ages are
+// ambiguous across a stall (a device-lost fence wait can block for a minute),
+// so retirement questions -- "was this freed two frames or two thousand frames
+// before the fault?" -- are answered in frames, not milliseconds.
+std::atomic<uint64_t> g_device_address_frame{0};
+
+// GPU memory accounting: every vkAllocateMemory increments, every vkFreeMemory
+// decrements. Separated by memory property so the UI can show VRAM vs staging.
+std::atomic<uint64_t> g_gpu_device_local_bytes{0};
+std::atomic<uint64_t> g_gpu_host_visible_bytes{0};
+std::atomic<uint64_t> g_gpu_allocation_count{0};
+
+// Device-local vs host-visible is decided solely by the DEVICE_LOCAL bit, so
+// anything without it -- including memory that is neither, which does not
+// occur on the devices this runs on -- lands in the host-visible bucket.
+void track_gpu_alloc(VkDeviceSize bytes, VkMemoryPropertyFlags props) {
+    if (props & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
+        g_gpu_device_local_bytes.fetch_add(bytes, std::memory_order_relaxed);
+    else
+        g_gpu_host_visible_bytes.fetch_add(bytes, std::memory_order_relaxed);
+    g_gpu_allocation_count.fetch_add(1, std::memory_order_relaxed);
+}
+
+void track_gpu_free(VkDeviceSize bytes, VkMemoryPropertyFlags props) {
+    if (props & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
+        g_gpu_device_local_bytes.fetch_sub(bytes, std::memory_order_relaxed);
+    else
+        g_gpu_host_visible_bytes.fetch_sub(bytes, std::memory_order_relaxed);
+    g_gpu_allocation_count.fetch_sub(1, std::memory_order_relaxed);
+}
+
+// Records a live device-addressable range. `kind` must be a string literal
+// with static storage -- the record keeps the pointer, not a copy. A zero
+// `base` or `size` is silently ignored, which is how the not-device-addressable
+// case is filtered out at the call sites.
+void register_device_address(uint64_t base, uint64_t size, const char* kind,
+                             const void* site) {
+    if (base == 0 || size == 0) return;
+    DeviceAddressRange range;
+    range.base = base;
+    range.size = size;
+    range.kind = kind;
+    range.site = site;
+    range.created_frame = g_device_address_frame.load(std::memory_order_relaxed);
+    range.created = std::chrono::steady_clock::now();
+    std::lock_guard<std::mutex> lock(g_device_address_mutex);
+    g_live_device_addresses[base] = range;
+}
+
+// Moves a range from live to the freed-history ring, stamping the wall-clock
+// and frame at which it died. Called from the allocation destructors, i.e. at
+// the moment the memory really goes away -- which for a retained resource is
+// well after the owning handle was reset.
+void release_device_address(uint64_t base) {
+    if (base == 0) return;
+    std::lock_guard<std::mutex> lock(g_device_address_mutex);
+    const auto found = g_live_device_addresses.find(base);
+    if (found == g_live_device_addresses.end()) return;
+    DeviceAddressRange freed = found->second;
+    freed.freed = std::chrono::steady_clock::now();
+    freed.freed_frame = g_device_address_frame.load(std::memory_order_relaxed);
+    g_live_device_addresses.erase(found);
+    g_freed_device_addresses.push_back(freed);
+    if (g_freed_device_addresses.size() > kMaxFreedDeviceAddressRecords) {
+        g_freed_device_addresses.pop_front();
+        ++g_dropped_device_address_records;
+    }
+}
+
+#if defined(_WIN32) && !defined(_WINDOWS_)
+// Declared rather than pulling in <windows.h>, which would drag min/max and a
+// few thousand macros into a header-light translation unit. If a prior Vulkan
+// platform include already pulled in Windows.h, use its canonical declarations.
+extern "C" __declspec(dllimport) void* __stdcall GetModuleHandleW(
+    const wchar_t*);
+extern "C" __declspec(dllimport) void* __stdcall GetProcAddress(
+    void* hModule, const char* lpProcName);
+#endif
+
+// The allocation site as a module-relative offset: absolute addresses move with
+// ASLR, RVAs match `nm`/`addr2line` output directly.
+uint64_t site_rva(const void* site) {
+    if (!site) return 0;
+    const uintptr_t absolute = reinterpret_cast<uintptr_t>(site);
+#ifdef _WIN32
+    const uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+    if (base != 0 && absolute >= base) return absolute - base;
+#endif
+    return absolute;
+}
+
+}  // namespace
+
+void debug_advance_device_address_frame() {
+    g_device_address_frame.fetch_add(1, std::memory_order_relaxed);
+}
+
+GpuMemoryStats gpu_memory_stats() noexcept {
+    GpuMemoryStats s;
+    s.device_local_bytes = g_gpu_device_local_bytes.load(std::memory_order_relaxed);
+    s.host_visible_bytes = g_gpu_host_visible_bytes.load(std::memory_order_relaxed);
+    s.total_bytes = s.device_local_bytes + s.host_visible_bytes;
+    s.allocation_count = g_gpu_allocation_count.load(std::memory_order_relaxed);
+    return s;
+}
+
+void gpu_memory_track_alloc(VkDeviceSize bytes, VkMemoryPropertyFlags props) {
+    track_gpu_alloc(bytes, props);
+}
+void gpu_memory_track_free(VkDeviceSize bytes, VkMemoryPropertyFlags props) {
+    track_gpu_free(bytes, props);
+}
+
+// Windows: `PMC` is a hand-mirrored PROCESS_MEMORY_COUNTERS -- its field order
+// and types must stay byte-compatible with the OS struct, since only `cb` is
+// checked. K32GetProcessMemoryInfo is resolved once from kernel32 so the
+// binary need not link psapi, and everything degrades to zeroes if it is
+// missing. Linux: resident pages from /proc/self/statm at an assumed 4 KiB
+// page size, and the peak from /proc/self/status's `VmHWM` (high-water mark,
+// reported in KiB). Either read failing leaves its field at 0.
+ProcessMemoryStats process_memory_stats() noexcept {
+    ProcessMemoryStats s;
+#ifdef _WIN32
+    struct PMC {
+        uint32_t cb;
+        uint32_t PageFaultCount;
+        size_t PeakWorkingSetSize;
+        size_t WorkingSetSize;
+        size_t QuotaPeakPagedPoolUsage;
+        size_t QuotaPagedPoolUsage;
+        size_t QuotaPeakNonPagedPoolUsage;
+        size_t QuotaNonPagedPoolUsage;
+        size_t PagefileUsage;
+        size_t PeakPagefileUsage;
+    };
+    using Fn = int(__stdcall*)(void*, PMC*, uint32_t);
+    static const Fn fn = [] {
+        auto k32 = GetModuleHandleW(L"kernel32.dll");
+        return k32 ? reinterpret_cast<Fn>(GetProcAddress(k32,
+                         "K32GetProcessMemoryInfo"))
+                   : nullptr;
+    }();
+    if (fn) {
+        PMC pmc{};
+        pmc.cb = sizeof(pmc);
+        void* self = reinterpret_cast<void*>(static_cast<intptr_t>(-1));
+        if (fn(self, &pmc, sizeof(pmc))) {
+            s.working_set_bytes = pmc.WorkingSetSize;
+            s.peak_working_set_bytes = pmc.PeakWorkingSetSize;
+        }
+    }
+#else
+    FILE* f = fopen("/proc/self/statm", "r");
+    if (f) {
+        long pages = 0;
+        if (fscanf(f, "%*ld %ld", &pages) == 1)
+            s.working_set_bytes = static_cast<uint64_t>(pages) * 4096;
+        fclose(f);
+    }
+    if (FILE* st = fopen("/proc/self/status", "r")) {
+        char line[256];
+        while (fgets(line, sizeof(line), st)) {
+            unsigned long kib = 0;
+            if (sscanf(line, "VmHWM: %lu kB", &kib) == 1) {
+                s.peak_working_set_bytes = static_cast<uint64_t>(kib) * 1024;
+                break;
+            }
+        }
+        fclose(st);
+    }
+#endif
+    return s;
+}
+
+std::string debug_describe_device_address(uint64_t address, uint64_t span) {
+    const auto now = std::chrono::steady_clock::now();
+    const auto age_ms = [&](std::chrono::steady_clock::time_point then) {
+        return std::chrono::duration_cast<std::chrono::milliseconds>(now -
+                                                                     then)
+            .count();
+    };
+    // Half-open intersection with the precision window. A range need not
+    // contain the reported base to be the culprit -- with precision 0x1000 the
+    // real access is anywhere in the page.
+    const uint64_t window = span == 0 ? 1 : span;
+    const auto in_range = [address, window](const DeviceAddressRange& range) {
+        return range.base < address + window && address < range.base + range.size;
+    };
+    const uint64_t frame = g_device_address_frame.load(std::memory_order_relaxed);
+    std::ostringstream out;
+    out << std::hex;
+    size_t live_matches = 0;
+    std::lock_guard<std::mutex> lock(g_device_address_mutex);
+    for (const auto& entry : g_live_device_addresses) {
+        const DeviceAddressRange& range = entry.second;
+        if (!in_range(range)) continue;
+        out << "live " << range.kind << " [0x" << range.base << " +0x"
+            << range.size << ") from +0x" << site_rva(range.site)
+            << ", created " << std::dec << age_ms(range.created) << " ms ago ("
+            << (frame - range.created_frame) << " frames)" << std::hex << "; ";
+        ++live_matches;
+    }
+    // Newest-first: with VA reuse the most recent tenant of the range is the
+    // interesting one -- which is exactly why the freed history gets its OWN
+    // budget rather than sharing one running count with the live loop above.
+    // Sharing it meant a fault inside a heavily aliased region (16+ live
+    // matches) skipped the freed scan entirely and omitted the likeliest
+    // culprit.
+    constexpr size_t kMaxFreedReported = 16;
+    size_t freed_matches = 0;
+    for (auto it = g_freed_device_addresses.rbegin();
+         it != g_freed_device_addresses.rend() &&
+         freed_matches < kMaxFreedReported;
+         ++it) {
+        if (!in_range(*it)) continue;
+        out << "FREED " << it->kind << " [0x" << it->base << " +0x" << it->size
+            << ") from +0x" << site_rva(it->site) << ", destroyed " << std::dec
+            << age_ms(it->freed) << " ms ago (" << (frame - it->freed_frame)
+            << " frames), lived "
+            << std::chrono::duration_cast<std::chrono::milliseconds>(
+                   it->freed - it->created)
+                   .count()
+            << " ms" << std::hex << "; ";
+        ++freed_matches;
+    }
+    if (freed_matches == kMaxFreedReported)
+        out << std::dec << "(freed matches capped at " << kMaxFreedReported
+            << ")" << std::hex << "; ";
+    if (live_matches + freed_matches == 0) {
+        // A miss is only evidence if the ring actually still holds the window
+        // the fault could have come from. Say how far back it reaches, and
+        // whether anything was evicted, so "untracked memory" and "aged out"
+        // stay distinguishable.
+        std::ostringstream miss;
+        miss << "no tracked device-address range covers this address ("
+             << std::dec << g_live_device_addresses.size() << " live, "
+             << g_freed_device_addresses.size() << " freed records";
+        if (!g_freed_device_addresses.empty()) {
+            miss << " reaching back "
+                 << age_ms(g_freed_device_addresses.front().freed) << " ms / "
+                 << (frame - g_freed_device_addresses.front().freed_frame)
+                 << " frames";
+        }
+        if (g_dropped_device_address_records != 0)
+            miss << ", " << g_dropped_device_address_records
+                 << " DROPPED - ring overflowed, a match may have aged out";
+        miss << ")";
+        return miss.str();
+    }
+    return out.str();
+}
+
+namespace detail {
+
+// The real owner behind `VkBufferResource`. One instance per buffer, held by
+// shared_ptr, so the VkBuffer/VkDeviceMemory pair is destroyed only when the
+// last handle AND the last in-flight submission that listed it as a dependency
+// have gone.
+//
+// `release_device_objects` is also invoked by DeviceAccessToken when the
+// VkDevice is destroyed first; every step re-checks `live_device()` for that
+// reason, and the function is idempotent (it nulls what it destroys).
+// `tracked_alloc_size` / `tracked_mem_props` are remembered purely so the free
+// can decrement the same GPU memory counters the allocation incremented.
+struct VkBufferAllocation final : DeviceLifetimeControl {
+    explicit VkBufferAllocation(std::shared_ptr<DeviceAccessToken> device_access)
+        : DeviceLifetimeControl(std::move(device_access)) {}
+
+    VkBuffer buffer = VK_NULL_HANDLE;
+    VkDeviceMemory memory = VK_NULL_HANDLE;
+    void* mapped = nullptr;
+    uint64_t device_address = 0;
+    VkDeviceSize tracked_alloc_size = 0;
+    VkMemoryPropertyFlags tracked_mem_props = 0;
+
+    ~VkBufferAllocation() override { release_device_objects(); }
+
+protected:
+    void release_device_objects() noexcept override {
+        const VkDevice device = live_device();
+        if (device != VK_NULL_HANDLE && mapped && memory != VK_NULL_HANDLE)
+            vkUnmapMemory(device, memory);
+        if (device != VK_NULL_HANDLE && buffer != VK_NULL_HANDLE)
+            vkDestroyBuffer(device, buffer, nullptr);
+        if (device != VK_NULL_HANDLE && memory != VK_NULL_HANDLE) {
+            vkFreeMemory(device, memory, nullptr);
+            if (tracked_alloc_size > 0)
+                track_gpu_free(tracked_alloc_size, tracked_mem_props);
+        }
+        release_device_address(device_address);
+        device_address = 0;
+        buffer = VK_NULL_HANDLE;
+        memory = VK_NULL_HANDLE;
+        mapped = nullptr;
+        tracked_alloc_size = 0;
+    }
+};
+
+// Owner behind `VkImageResource`: the view, the image and its memory, torn
+// down in that order. Same contract as `VkBufferAllocation` -- shared, may be
+// released by the device teardown path, idempotent. Images carry no device
+// address, so nothing here touches the address registry.
+struct VkImageAllocation final : DeviceLifetimeControl {
+    explicit VkImageAllocation(std::shared_ptr<DeviceAccessToken> device_access)
+        : DeviceLifetimeControl(std::move(device_access)) {}
+
+    VkImage image = VK_NULL_HANDLE;
+    VkImageView view = VK_NULL_HANDLE;
+    VkDeviceMemory memory = VK_NULL_HANDLE;
+    VkDeviceSize tracked_alloc_size = 0;
+    VkMemoryPropertyFlags tracked_mem_props = 0;
+
+    ~VkImageAllocation() override { release_device_objects(); }
+
+protected:
+    void release_device_objects() noexcept override {
+        const VkDevice device = live_device();
+        if (device != VK_NULL_HANDLE && view != VK_NULL_HANDLE)
+            vkDestroyImageView(device, view, nullptr);
+        if (device != VK_NULL_HANDLE && image != VK_NULL_HANDLE)
+            vkDestroyImage(device, image, nullptr);
+        if (device != VK_NULL_HANDLE && memory != VK_NULL_HANDLE) {
+            vkFreeMemory(device, memory, nullptr);
+            if (tracked_alloc_size > 0)
+                track_gpu_free(tracked_alloc_size, tracked_mem_props);
+        }
+        image = VK_NULL_HANDLE;
+        view = VK_NULL_HANDLE;
+        memory = VK_NULL_HANDLE;
+        tracked_alloc_size = 0;
+    }
+};
+
+// Owner behind `VkAccelerationStructureResource`. `storage` is the backing
+// buffer's own allocation, held by shared_ptr, so the storage cannot be freed
+// while the structure still refers to it. Teardown order matters: the
+// structure handle is destroyed first, and only then is the storage reference
+// dropped.
+//
+// vkDestroyAccelerationStructureKHR is looked up per destruction rather than
+// cached, so a device without ray tracing simply never destroys anything here.
+struct VkAccelerationStructureAllocation final : DeviceLifetimeControl {
+    explicit VkAccelerationStructureAllocation(
+        std::shared_ptr<DeviceAccessToken> device_access)
+        : DeviceLifetimeControl(std::move(device_access)) {}
+    VkAccelerationStructureKHR handle = VK_NULL_HANDLE;
+    std::shared_ptr<void> storage;
+    uint64_t device_address = 0;
+    ~VkAccelerationStructureAllocation() override { release_device_objects(); }
+protected:
+    void release_device_objects() noexcept override {
+        const VkDevice device = live_device();
+        if (device != VK_NULL_HANDLE && handle != VK_NULL_HANDLE) {
+            const auto destroy = reinterpret_cast<PFN_vkDestroyAccelerationStructureKHR>(
+                vkGetDeviceProcAddr(device, "vkDestroyAccelerationStructureKHR"));
+            if (destroy) destroy(device, handle, nullptr);
+        }
+        release_device_address(device_address);
+        device_address = 0;
+        handle = VK_NULL_HANDLE;
+        storage.reset();
+    }
+};
+
+}  // namespace detail
+
+namespace {
+std::atomic<uint64_t> g_immediate_submit_count{0};
+}  // namespace
+namespace {
+
+const char* result_name(VkResult result) {
+    switch (result) {
+        case VK_SUCCESS: return "VK_SUCCESS";
+        case VK_ERROR_OUT_OF_HOST_MEMORY: return "VK_ERROR_OUT_OF_HOST_MEMORY";
+        case VK_ERROR_OUT_OF_DEVICE_MEMORY: return "VK_ERROR_OUT_OF_DEVICE_MEMORY";
+        case VK_ERROR_DEVICE_LOST: return "VK_ERROR_DEVICE_LOST";
+        case VK_ERROR_MEMORY_MAP_FAILED: return "VK_ERROR_MEMORY_MAP_FAILED";
+        default: return "VkResult error";
+    }
+}
+
+bool fail_result(const char* operation, VkResult result, std::string& error) {
+    error = std::string(operation) + " failed: " + result_name(result) +
+            " (" + std::to_string(static_cast<int>(result)) + ")";
+    return false;
+}
+
+VkDeviceSize align_down(VkDeviceSize value, VkDeviceSize alignment) {
+    return value - value % alignment;
+}
+
+// Saturates instead of wrapping: an overflowing round-up returns
+// VkDeviceSize max, which callers then clamp against `allocation_size`.
+VkDeviceSize align_up(VkDeviceSize value, VkDeviceSize alignment) {
+    if (value > std::numeric_limits<VkDeviceSize>::max() - (alignment - 1)) {
+        return std::numeric_limits<VkDeviceSize>::max();
+    }
+    return ((value + alignment - 1) / alignment) * alignment;
+}
+
+struct CopyBufferRecord {
+    VkBuffer source;
+    VkBuffer destination;
+    VkBufferCopy region;
+};
+
+// Records one buffer copy followed by a deliberately maximal pair of memory
+// barriers: TRANSFER_WRITE to ALL_COMMANDS read/write, and TRANSFER_WRITE to
+// HOST_READ. This is the shared record callback for both `upload_buffer` and
+// `readback_buffer`, which do not know what the copied bytes will be used for,
+// so the barriers cover every consumer including a subsequent host map.
+void record_copy_buffer(VkCommandBuffer command_buffer, void* user_data) {
+    const auto& copy = *static_cast<const CopyBufferRecord*>(user_data);
+    vkCmdCopyBuffer(command_buffer, copy.source, copy.destination, 1,
+                    &copy.region);
+    VkMemoryBarrier2 barriers[2]{};
+    barriers[0].sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
+    barriers[0].srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+    barriers[0].srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    barriers[0].dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+    barriers[0].dstAccessMask =
+        VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
+    barriers[1].sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
+    barriers[1].srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+    barriers[1].srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    barriers[1].dstStageMask = VK_PIPELINE_STAGE_2_HOST_BIT;
+    barriers[1].dstAccessMask = VK_ACCESS_2_HOST_READ_BIT;
+    VkDependencyInfo dependency{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+    dependency.memoryBarrierCount = 2;
+    dependency.pMemoryBarriers = barriers;
+    vkCmdPipelineBarrier2(command_buffer, &dependency);
+}
+
+struct TransitionRecord {
+    VkImageResource* image;
+    VkImageLayout new_layout;
+    VkPipelineStageFlags2 source_stage;
+    VkAccessFlags2 source_access;
+    VkPipelineStageFlags2 destination_stage;
+    VkAccessFlags2 destination_access;
+    VkImageAspectFlags aspect;
+};
+
+void record_transition(VkCommandBuffer command_buffer, void* user_data) {
+    auto& transition = *static_cast<TransitionRecord*>(user_data);
+    record_image_transition(command_buffer, *transition.image,
+                            transition.new_layout, transition.source_stage,
+                            transition.source_access,
+                            transition.destination_stage,
+                            transition.destination_access, transition.aspect);
+}
+
+// Escrow for a `submit_immediate` whose completion could not be proven.
+//
+// Normally the command pool and fence are destroyed as soon as the fence
+// signals. When the wait does not come back clean -- a lost device, most
+// often -- destroying them (or the dependency shared_ptrs, which may be the
+// only thing keeping a buffer the GPU is reading alive) would be a
+// use-after-free. `abandon` transfers the pool and fence into this object
+// instead, and it is then handed to the device's retention list, where it
+// lives until the VkDevice is destroyed. Deliberately a leak with a bounded
+// lifetime, traded against an unbounded correctness hazard.
+class ImmediateSubmissionRetention final
+    : public detail::DeviceRetainedResource {
+public:
+    ImmediateSubmissionRetention(
+        VkDevice device, std::vector<std::shared_ptr<void>> dependencies)
+        : device_(device), dependencies_(std::move(dependencies)) {}
+
+    ~ImmediateSubmissionRetention() override {
+        dependencies_.clear();
+        if (fence_ != VK_NULL_HANDLE) vkDestroyFence(device_, fence_, nullptr);
+        if (pool_ != VK_NULL_HANDLE) vkDestroyCommandPool(device_, pool_, nullptr);
+    }
+
+    void abandon(VkCommandPool& pool, VkFence& fence) noexcept {
+        pool_ = std::exchange(pool, VK_NULL_HANDLE);
+        fence_ = std::exchange(fence, VK_NULL_HANDLE);
+    }
+
+private:
+    VkDevice device_ = VK_NULL_HANDLE;
+    VkCommandPool pool_ = VK_NULL_HANDLE;
+    VkFence fence_ = VK_NULL_HANDLE;
+    std::vector<std::shared_ptr<void>> dependencies_;
+};
+
+}  // namespace
+
+VkBufferResource::~VkBufferResource() { reset(); }
+
+VkBufferResource::VkBufferResource(VkBufferResource&& other) noexcept {
+    *this = std::move(other);
+}
+
+VkBufferResource& VkBufferResource::operator=(VkBufferResource&& other) noexcept {
+    if (this == &other) return *this;
+    reset();
+    device = std::exchange(other.device, VK_NULL_HANDLE);
+    buffer = std::exchange(other.buffer, VK_NULL_HANDLE);
+    memory = std::exchange(other.memory, VK_NULL_HANDLE);
+    size = std::exchange(other.size, 0);
+    address = std::exchange(other.address, 0);
+    mapped = std::exchange(other.mapped, nullptr);
+    allocation_size = std::exchange(other.allocation_size, 0);
+    non_coherent_atom_size = std::exchange(other.non_coherent_atom_size, 1);
+    memory_properties = std::exchange(other.memory_properties, 0);
+    lifetime = std::move(other.lifetime);
+    return *this;
+}
+
+// Releases this handle's claim and returns the struct to its default state.
+//
+// The two branches are not equivalent. With a `lifetime` (everything
+// `create_buffer` produces) this only drops a reference -- the Vulkan objects
+// may outlive the call. The fallback branch, for a hand-assembled resource
+// that never got a `lifetime`, destroys immediately and does NOT decrement the
+// GPU memory counters, because nothing incremented them for it either.
+void VkBufferResource::reset() {
+    if (lifetime) {
+        lifetime.reset();
+    } else {
+        if (device != VK_NULL_HANDLE && mapped && memory != VK_NULL_HANDLE)
+            vkUnmapMemory(device, memory);
+        if (device != VK_NULL_HANDLE && buffer != VK_NULL_HANDLE)
+            vkDestroyBuffer(device, buffer, nullptr);
+        if (device != VK_NULL_HANDLE && memory != VK_NULL_HANDLE)
+            vkFreeMemory(device, memory, nullptr);
+    }
+    device = VK_NULL_HANDLE;
+    buffer = VK_NULL_HANDLE;
+    memory = VK_NULL_HANDLE;
+    size = 0;
+    address = 0;
+    mapped = nullptr;
+    allocation_size = 0;
+    non_coherent_atom_size = 1;
+    memory_properties = 0;
+}
+
+VkImageResource::~VkImageResource() { reset(); }
+
+VkImageResource::VkImageResource(VkImageResource&& other) noexcept {
+    *this = std::move(other);
+}
+
+VkImageResource& VkImageResource::operator=(VkImageResource&& other) noexcept {
+    if (this == &other) return *this;
+    reset();
+    device = std::exchange(other.device, VK_NULL_HANDLE);
+    image = std::exchange(other.image, VK_NULL_HANDLE);
+    view = std::exchange(other.view, VK_NULL_HANDLE);
+    memory = std::exchange(other.memory, VK_NULL_HANDLE);
+    format = std::exchange(other.format, VK_FORMAT_UNDEFINED);
+    extent = std::exchange(other.extent, VkExtent3D{});
+    mip_levels = std::exchange(other.mip_levels, 1u);
+    array_layers = std::exchange(other.array_layers, 1u);
+    layout = std::exchange(other.layout, VK_IMAGE_LAYOUT_UNDEFINED);
+    lifetime = std::move(other.lifetime);
+    return *this;
+}
+
+void VkImageResource::reset() {
+    if (lifetime) {
+        lifetime.reset();
+    } else {
+        if (device != VK_NULL_HANDLE && view != VK_NULL_HANDLE)
+            vkDestroyImageView(device, view, nullptr);
+        if (device != VK_NULL_HANDLE && image != VK_NULL_HANDLE)
+            vkDestroyImage(device, image, nullptr);
+        if (device != VK_NULL_HANDLE && memory != VK_NULL_HANDLE)
+            vkFreeMemory(device, memory, nullptr);
+    }
+    device = VK_NULL_HANDLE;
+    image = VK_NULL_HANDLE;
+    view = VK_NULL_HANDLE;
+    memory = VK_NULL_HANDLE;
+    format = VK_FORMAT_UNDEFINED;
+    extent = {};
+    mip_levels = 1;
+    array_layers = 1;
+    layout = VK_IMAGE_LAYOUT_UNDEFINED;
+}
+
+VkAccelerationStructureResource::~VkAccelerationStructureResource() { reset(); }
+VkAccelerationStructureResource::VkAccelerationStructureResource(
+    VkAccelerationStructureResource&& other) noexcept { *this = std::move(other); }
+VkAccelerationStructureResource& VkAccelerationStructureResource::operator=(
+    VkAccelerationStructureResource&& other) noexcept {
+    if (this == &other) return *this;
+    reset();
+    device = std::exchange(other.device, VK_NULL_HANDLE);
+    handle = std::exchange(other.handle, VK_NULL_HANDLE);
+    address = std::exchange(other.address, 0);
+    size = std::exchange(other.size, 0);
+    lifetime = std::move(other.lifetime);
+    return *this;
+}
+void VkAccelerationStructureResource::reset() {
+    lifetime.reset();
+    device = VK_NULL_HANDLE;
+    handle = VK_NULL_HANDLE;
+    address = 0;
+    size = 0;
+}
+
+bool create_acceleration_structure(
+    VulkanDevice& vulkan, VkAccelerationStructureTypeKHR type,
+    VkDeviceSize size, VkAccelerationStructureResource& output,
+    std::string& error) {
+    if (!vulkan.ray_tracing_available()) {
+        error = vulkan.ray_tracing_unavailable_reason();
+        return false;
+    }
+    auto storage = std::make_shared<VkBufferResource>();
+    if (!create_buffer(vulkan, size,
+                       VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR |
+                           VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                       VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, 0, *storage,
+                       error)) return false;
+    const auto create = reinterpret_cast<PFN_vkCreateAccelerationStructureKHR>(
+        vkGetDeviceProcAddr(vulkan.device(), "vkCreateAccelerationStructureKHR"));
+    const auto get_address =
+        reinterpret_cast<PFN_vkGetAccelerationStructureDeviceAddressKHR>(
+            vkGetDeviceProcAddr(vulkan.device(),
+                                "vkGetAccelerationStructureDeviceAddressKHR"));
+    if (!create || !get_address) {
+        error = "native ray tracing entry points are unavailable";
+        return false;
+    }
+    VkAccelerationStructureResource candidate;
+    candidate.device = vulkan.device();
+    candidate.size = size;
+    VkAccelerationStructureCreateInfoKHR info{
+        VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR};
+    info.buffer = storage->buffer;
+    info.size = size;
+    info.type = type;
+    VkResult result = create(candidate.device, &info, nullptr, &candidate.handle);
+    if (result != VK_SUCCESS)
+        return fail_result("vkCreateAccelerationStructureKHR", result, error);
+    candidate.lifetime =
+        std::make_shared<detail::VkAccelerationStructureAllocation>(
+            detail::DeviceLifetimeAccess::token(vulkan));
+    candidate.lifetime->handle = candidate.handle;
+    candidate.lifetime->storage = storage->lifetime;
+    VkAccelerationStructureDeviceAddressInfoKHR address_info{
+        VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR};
+    address_info.accelerationStructure = candidate.handle;
+    candidate.address = get_address(candidate.device, &address_info);
+    if (candidate.address == 0) {
+        error = "vkGetAccelerationStructureDeviceAddressKHR returned zero";
+        return false;
+    }
+    candidate.lifetime->device_address = candidate.address;
+    register_device_address(candidate.address, size, "acceleration structure",
+                            matter::diagnostics::return_address());
+    output = std::move(candidate);
+    return true;
+}
+
+bool find_memory_type(VkPhysicalDevice physical_device,
+                      uint32_t allowed_type_bits,
+                      VkMemoryPropertyFlags required,
+                      VkMemoryPropertyFlags preferred,
+                      uint32_t& memory_type,
+                      VkMemoryPropertyFlags& selected_properties,
+                      std::string& error) {
+    VkPhysicalDeviceMemoryProperties properties{};
+    vkGetPhysicalDeviceMemoryProperties(physical_device, &properties);
+    uint32_t fallback = UINT32_MAX;
+    for (uint32_t i = 0; i < properties.memoryTypeCount; ++i) {
+        if ((allowed_type_bits & (uint32_t{1} << i)) == 0) continue;
+        const VkMemoryPropertyFlags flags =
+            properties.memoryTypes[i].propertyFlags;
+        if ((flags & required) != required) continue;
+        if (fallback == UINT32_MAX) fallback = i;
+        if ((flags & preferred) == preferred) {
+            memory_type = i;
+            selected_properties = flags;
+            return true;
+        }
+    }
+    if (fallback != UINT32_MAX) {
+        memory_type = fallback;
+        selected_properties = properties.memoryTypes[fallback].propertyFlags;
+        return true;
+    }
+    error = "no Vulkan memory type satisfies required flags " +
+            std::to_string(required) + " for type mask " +
+            std::to_string(allowed_type_bits);
+    return false;
+}
+
+bool create_buffer(VulkanDevice& vulkan, VkDeviceSize size,
+                   VkBufferUsageFlags usage,
+                   VkMemoryPropertyFlags required_memory,
+                   VkMemoryPropertyFlags preferred_memory,
+                   VkBufferResource& output, std::string& error) {
+    if (size == 0) {
+        error = "create_buffer requires a nonzero size";
+        return false;
+    }
+    VkBufferResource candidate;
+    candidate.device = vulkan.device();
+    candidate.size = size;
+
+    VkBufferCreateInfo create{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+    create.size = size;
+    create.usage = usage;
+    create.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    VkResult result = vkCreateBuffer(candidate.device, &create, nullptr,
+                                     &candidate.buffer);
+    if (result != VK_SUCCESS) return fail_result("vkCreateBuffer", result, error);
+
+    VkMemoryRequirements requirements{};
+    vkGetBufferMemoryRequirements(candidate.device, candidate.buffer,
+                                  &requirements);
+    uint32_t memory_type = 0;
+    if (!find_memory_type(vulkan.physical_device(), requirements.memoryTypeBits,
+                          required_memory, preferred_memory, memory_type,
+                          candidate.memory_properties, error)) {
+        return false;
+    }
+    candidate.allocation_size = requirements.size;
+    VkPhysicalDeviceProperties physical_properties{};
+    vkGetPhysicalDeviceProperties(vulkan.physical_device(),
+                                  &physical_properties);
+    candidate.non_coherent_atom_size =
+        std::max<VkDeviceSize>(1, physical_properties.limits.nonCoherentAtomSize);
+
+    VkMemoryAllocateFlagsInfo flags{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO};
+    if ((usage & VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT) != 0) {
+        flags.flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT;
+    }
+    VkMemoryAllocateInfo allocate{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    allocate.pNext = flags.flags ? &flags : nullptr;
+    allocate.allocationSize = requirements.size;
+    allocate.memoryTypeIndex = memory_type;
+    result = vkAllocateMemory(candidate.device, &allocate, nullptr,
+                              &candidate.memory);
+    if (result != VK_SUCCESS) return fail_result("vkAllocateMemory", result, error);
+    result = vkBindBufferMemory(candidate.device, candidate.buffer,
+                                candidate.memory, 0);
+    if (result != VK_SUCCESS) {
+        return fail_result("vkBindBufferMemory", result, error);
+    }
+    if ((usage & VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT) != 0) {
+        VkBufferDeviceAddressInfo address_info{
+            VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
+        address_info.buffer = candidate.buffer;
+        candidate.address =
+            vkGetBufferDeviceAddress(candidate.device, &address_info);
+        if (candidate.address == 0) {
+            error = "vkGetBufferDeviceAddress returned zero";
+            return false;
+        }
+    }
+    track_gpu_alloc(requirements.size, candidate.memory_properties);
+    candidate.lifetime = std::make_shared<detail::VkBufferAllocation>(
+        detail::DeviceLifetimeAccess::token(vulkan));
+    candidate.lifetime->buffer = candidate.buffer;
+    candidate.lifetime->memory = candidate.memory;
+    candidate.lifetime->mapped = candidate.mapped;
+    candidate.lifetime->tracked_alloc_size = requirements.size;
+    candidate.lifetime->tracked_mem_props = candidate.memory_properties;
+    if (candidate.address != 0) {
+        candidate.lifetime->device_address = candidate.address;
+        register_device_address(candidate.address, candidate.allocation_size,
+                                "buffer", matter::diagnostics::return_address());
+    }
+    output = std::move(candidate);
+    return true;
+}
+
+bool map_buffer(VkBufferResource& resource, std::string& error) {
+    if ((resource.memory_properties & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) == 0) {
+        error = "cannot map non-host-visible Vulkan memory";
+        return false;
+    }
+    if (resource.mapped) return true;
+    VkResult result = vkMapMemory(resource.device, resource.memory, 0,
+                                  VK_WHOLE_SIZE, 0, &resource.mapped);
+    if (result == VK_SUCCESS && resource.lifetime)
+        resource.lifetime->mapped = resource.mapped;
+    return result == VK_SUCCESS || fail_result("vkMapMemory", result, error);
+}
+
+bool flush_buffer(VkBufferResource& resource, VkDeviceSize offset,
+                  VkDeviceSize size, std::string& error) {
+    if (offset > resource.size || size > resource.size - offset) {
+        error = "flush range exceeds buffer size";
+        return false;
+    }
+    if (size == 0) return true;
+    if (!resource.mapped) {
+        error = "cannot flush Vulkan memory before it is mapped";
+        return false;
+    }
+    if ((resource.memory_properties & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) != 0)
+        return true;
+    const VkDeviceSize aligned_offset =
+        align_down(offset, resource.non_coherent_atom_size);
+    const VkDeviceSize end =
+        std::min(resource.allocation_size,
+                 align_up(offset + size, resource.non_coherent_atom_size));
+    VkMappedMemoryRange range{VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE};
+    range.memory = resource.memory;
+    range.offset = aligned_offset;
+    range.size = end == resource.allocation_size ? VK_WHOLE_SIZE
+                                                 : end - aligned_offset;
+    const VkResult result = vkFlushMappedMemoryRanges(resource.device, 1, &range);
+    return result == VK_SUCCESS ||
+           fail_result("vkFlushMappedMemoryRanges", result, error);
+}
+
+bool invalidate_buffer(VkBufferResource& resource, VkDeviceSize offset,
+                       VkDeviceSize size, std::string& error) {
+    if (offset > resource.size || size > resource.size - offset) {
+        error = "invalidate range exceeds buffer size";
+        return false;
+    }
+    if (size == 0) return true;
+    if (!resource.mapped) {
+        error = "cannot invalidate Vulkan memory before it is mapped";
+        return false;
+    }
+    if ((resource.memory_properties & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) != 0)
+        return true;
+    const VkDeviceSize aligned_offset =
+        align_down(offset, resource.non_coherent_atom_size);
+    const VkDeviceSize end =
+        std::min(resource.allocation_size,
+                 align_up(offset + size, resource.non_coherent_atom_size));
+    VkMappedMemoryRange range{VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE};
+    range.memory = resource.memory;
+    range.offset = aligned_offset;
+    range.size = end == resource.allocation_size ? VK_WHOLE_SIZE
+                                                 : end - aligned_offset;
+    const VkResult result =
+        vkInvalidateMappedMemoryRanges(resource.device, 1, &range);
+    return result == VK_SUCCESS ||
+           fail_result("vkInvalidateMappedMemoryRanges", result, error);
+}
+
+bool submit_immediate(VulkanDevice& vulkan, ImmediateRecordFn record,
+                      void* user_data, std::string& error,
+                      ImmediateSubmitPhase phase,
+                      std::vector<std::shared_ptr<void>> dependencies) {
+    g_immediate_submit_count.fetch_add(1, std::memory_order_relaxed);
+    if (!record) {
+        error = "submit_immediate requires a record callback";
+        return false;
+    }
+    const VkDevice device = vulkan.device();
+    auto retained = std::make_unique<ImmediateSubmissionRetention>(
+        device, std::move(dependencies));
+    VkCommandPool pool = VK_NULL_HANDLE;
+    VkCommandBuffer command_buffer = VK_NULL_HANDLE;
+    VkFence fence = VK_NULL_HANDLE;
+    auto cleanup = [&]() {
+        if (fence != VK_NULL_HANDLE) vkDestroyFence(device, fence, nullptr);
+        if (pool != VK_NULL_HANDLE) vkDestroyCommandPool(device, pool, nullptr);
+    };
+
+    VkCommandPoolCreateInfo pool_info{
+        VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+    pool_info.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+    pool_info.queueFamilyIndex = vulkan.graphics_queue_family();
+    VkResult result = vkCreateCommandPool(device, &pool_info, nullptr, &pool);
+    if (result != VK_SUCCESS) {
+        cleanup();
+        return fail_result("vkCreateCommandPool", result, error);
+    }
+    VkCommandBufferAllocateInfo allocate{
+        VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+    allocate.commandPool = pool;
+    allocate.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    allocate.commandBufferCount = 1;
+    result = vkAllocateCommandBuffers(device, &allocate, &command_buffer);
+    if (result != VK_SUCCESS) {
+        cleanup();
+        return fail_result("vkAllocateCommandBuffers", result, error);
+    }
+    VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+    begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    result = vkBeginCommandBuffer(command_buffer, &begin);
+    if (result != VK_SUCCESS) {
+        cleanup();
+        return fail_result("vkBeginCommandBuffer", result, error);
+    }
+    record(command_buffer, user_data);
+    result = vkEndCommandBuffer(command_buffer);
+    if (result != VK_SUCCESS) {
+        cleanup();
+        return fail_result("vkEndCommandBuffer", result, error);
+    }
+    VkFenceCreateInfo fence_info{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+    result = vkCreateFence(device, &fence_info, nullptr, &fence);
+    if (result != VK_SUCCESS) {
+        cleanup();
+        return fail_result("vkCreateFence", result, error);
+    }
+    // `completion_proven` is the load-bearing output, not `submitted`: it
+    // answers "is the GPU definitely done with this command buffer?", which is
+    // the only condition under which the pool, fence and dependencies may be
+    // destroyed here. A submission can fail while still leaving work queued.
+    bool completion_proven = false;
+    const char* phase_name = nullptr;
+    switch (phase) {
+        case ImmediateSubmitPhase::staging_upload:
+            phase_name = "staging-upload";
+            break;
+        case ImmediateSubmitPhase::staging_readback:
+            phase_name = "staging-readback";
+            break;
+        case ImmediateSubmitPhase::image_transition:
+            phase_name = "image-transition";
+            break;
+        case ImmediateSubmitPhase::compute_dispatch:
+            phase_name = "dispatch-moved-buffer";
+            break;
+        case ImmediateSubmitPhase::raster_submission:
+            phase_name = "raster-submission";
+            break;
+    }
+    const bool submitted = detail::DeviceSubmitAccess::submit_and_wait(
+        vulkan, command_buffer, fence, completion_proven, phase_name, error);
+    if (!completion_proven) {
+        // Completion is ambiguous: atomically transfer the command objects and
+        // every caller-registered dependency to device-lifetime ownership.
+        retained->abandon(pool, fence);
+        detail::DeviceRetentionAccess::retain(vulkan, std::move(retained));
+    }
+    bool result_ok = submitted;
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+    const char* force_completed_failure =
+        std::getenv("MATTER_VK_TEST_FORCE_IMMEDIATE_COMPLETED_FAILURE");
+    if (submitted && completion_proven && force_completed_failure &&
+        std::strcmp(force_completed_failure, phase_name) == 0) {
+        error = "forced completed immediate failure for raster fault test";
+        result_ok = false;
+    }
+#endif
+    cleanup();
+    return result_ok;
+}
+
+uint64_t immediate_submit_count() noexcept {
+    return g_immediate_submit_count.load(std::memory_order_relaxed);
+}
+
+bool upload_buffer(VulkanDevice& vulkan, VkBufferResource& destination,
+                   const void* data, size_t byte_count, VkDeviceSize offset,
+                   std::string& error) {
+    if (!data || offset > destination.size ||
+        byte_count > destination.size - offset) {
+        error = "upload range exceeds destination buffer";
+        return false;
+    }
+    if ((destination.memory_properties & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0) {
+        if (!map_buffer(destination, error)) return false;
+        std::memcpy(static_cast<std::byte*>(destination.mapped) + offset, data,
+                    byte_count);
+        return flush_buffer(destination, offset, byte_count, error);
+    }
+    VkBufferResource staging;
+    if (!create_buffer(vulkan, byte_count, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+                       VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, staging, error) ||
+        !map_buffer(staging, error)) {
+        return false;
+    }
+    std::memcpy(staging.mapped, data, byte_count);
+    if (!flush_buffer(staging, 0, byte_count, error)) return false;
+    CopyBufferRecord copy{staging.buffer, destination.buffer,
+                          {0, offset, byte_count}};
+    std::vector<std::shared_ptr<void>> dependencies{staging.lifetime,
+                                                    destination.lifetime};
+    return submit_immediate(vulkan, record_copy_buffer, &copy, error,
+                            ImmediateSubmitPhase::staging_upload,
+                            std::move(dependencies));
+}
+
+bool readback_buffer(VulkanDevice& vulkan, VkBufferResource& source, void* data,
+                     size_t byte_count, VkDeviceSize offset,
+                     std::string& error) {
+    if (!data || offset > source.size || byte_count > source.size - offset) {
+        error = "readback range exceeds source buffer";
+        return false;
+    }
+    if ((source.memory_properties & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0) {
+        if (!map_buffer(source, error) ||
+            !invalidate_buffer(source, offset, byte_count, error)) {
+            return false;
+        }
+        std::memcpy(data, static_cast<const std::byte*>(source.mapped) + offset,
+                    byte_count);
+        return true;
+    }
+    VkBufferResource staging;
+    if (!create_buffer(vulkan, byte_count, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                       VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
+                       VK_MEMORY_PROPERTY_HOST_CACHED_BIT, staging, error)) {
+        return false;
+    }
+    CopyBufferRecord copy{source.buffer, staging.buffer,
+                          {offset, 0, byte_count}};
+    std::vector<std::shared_ptr<void>> dependencies{source.lifetime,
+                                                    staging.lifetime};
+    if (!submit_immediate(vulkan, record_copy_buffer, &copy, error,
+                          ImmediateSubmitPhase::staging_readback,
+                          std::move(dependencies)) ||
+        !map_buffer(staging, error) ||
+        !invalidate_buffer(staging, 0, byte_count, error)) {
+        return false;
+    }
+    std::memcpy(data, staging.mapped, byte_count);
+    return true;
+}
+
+bool create_image(VulkanDevice& vulkan, VkImageType type, VkFormat format,
+                  VkExtent3D extent, VkImageUsageFlags usage,
+                  VkImageAspectFlags aspect,
+                  VkMemoryPropertyFlags required_memory,
+                  VkImageResource& output, std::string& error,
+                  uint32_t mip_levels, uint32_t array_layers, bool array_view) {
+    if (extent.width == 0 || extent.height == 0 || extent.depth == 0) {
+        error = "create_image requires a nonzero extent";
+        return false;
+    }
+    if (mip_levels == 0 || array_layers == 0 ||
+        (type == VK_IMAGE_TYPE_1D && (extent.height != 1 || extent.depth != 1)) ||
+        (type == VK_IMAGE_TYPE_2D && extent.depth != 1) ||
+        (type == VK_IMAGE_TYPE_3D && (array_layers != 1 || array_view)) ||
+        (type != VK_IMAGE_TYPE_1D && type != VK_IMAGE_TYPE_2D &&
+         type != VK_IMAGE_TYPE_3D)) {
+        error = "create_image requires valid image dimensions, mips and layers";
+        return false;
+    }
+    uint32_t max_mips = 1;
+    for (uint32_t edge = std::max(extent.width, std::max(extent.height, extent.depth));
+         edge > 1; edge >>= 1) ++max_mips;
+    if (mip_levels > max_mips) {
+        error = "create_image mip count exceeds the image extent";
+        return false;
+    }
+    VkImageResource candidate;
+    candidate.device = vulkan.device();
+    candidate.format = format;
+    candidate.extent = extent;
+    candidate.mip_levels = mip_levels;
+    candidate.array_layers = array_layers;
+    VkImageCreateInfo create{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+    create.imageType = type;
+    create.format = format;
+    create.extent = extent;
+    create.mipLevels = mip_levels;
+    create.arrayLayers = array_layers;
+    create.samples = VK_SAMPLE_COUNT_1_BIT;
+    create.tiling = VK_IMAGE_TILING_OPTIMAL;
+    create.usage = usage;
+    create.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    create.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    VkResult result =
+        vkCreateImage(candidate.device, &create, nullptr, &candidate.image);
+    if (result != VK_SUCCESS) return fail_result("vkCreateImage", result, error);
+    VkMemoryRequirements requirements{};
+    vkGetImageMemoryRequirements(candidate.device, candidate.image, &requirements);
+    uint32_t memory_type = 0;
+    VkMemoryPropertyFlags selected = 0;
+    if (!find_memory_type(vulkan.physical_device(), requirements.memoryTypeBits,
+                          required_memory, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+                          memory_type, selected, error)) {
+        return false;
+    }
+    VkMemoryAllocateInfo allocate{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    allocate.allocationSize = requirements.size;
+    allocate.memoryTypeIndex = memory_type;
+    result = vkAllocateMemory(candidate.device, &allocate, nullptr,
+                              &candidate.memory);
+    if (result != VK_SUCCESS) return fail_result("vkAllocateMemory", result, error);
+    result = vkBindImageMemory(candidate.device, candidate.image,
+                               candidate.memory, 0);
+    if (result != VK_SUCCESS) return fail_result("vkBindImageMemory", result, error);
+    VkImageViewCreateInfo view{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+    view.image = candidate.image;
+    const bool use_array_view = array_view || array_layers > 1;
+    view.viewType = type == VK_IMAGE_TYPE_1D
+        ? (use_array_view ? VK_IMAGE_VIEW_TYPE_1D_ARRAY : VK_IMAGE_VIEW_TYPE_1D)
+        : type == VK_IMAGE_TYPE_3D ? VK_IMAGE_VIEW_TYPE_3D
+        : (use_array_view ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D);
+    view.format = format;
+    view.subresourceRange.aspectMask = aspect;
+    view.subresourceRange.levelCount = mip_levels;
+    view.subresourceRange.layerCount = array_layers;
+    result = vkCreateImageView(candidate.device, &view, nullptr, &candidate.view);
+    if (result != VK_SUCCESS) return fail_result("vkCreateImageView", result, error);
+    track_gpu_alloc(requirements.size, selected);
+    candidate.lifetime = std::make_shared<detail::VkImageAllocation>(
+        detail::DeviceLifetimeAccess::token(vulkan));
+    candidate.lifetime->image = candidate.image;
+    candidate.lifetime->view = candidate.view;
+    candidate.lifetime->memory = candidate.memory;
+    candidate.lifetime->tracked_alloc_size = requirements.size;
+    candidate.lifetime->tracked_mem_props = selected;
+    output = std::move(candidate);
+    return true;
+}
+
+void record_image_transition(VkCommandBuffer command_buffer,
+                             VkImageResource& image,
+                             VkImageLayout new_layout,
+                             VkPipelineStageFlags2 source_stage,
+                             VkAccessFlags2 source_access,
+                             VkPipelineStageFlags2 destination_stage,
+                             VkAccessFlags2 destination_access,
+                             VkImageAspectFlags aspect) {
+    viewer::raster_detail::record_image_transition(command_buffer, image.image,
+        image.layout, image.mip_levels, image.array_layers, new_layout,
+        source_stage, source_access, destination_stage, destination_access, aspect);
+}
+
+bool transition_image(VulkanDevice& vulkan, VkImageResource& image,
+                      VkImageLayout new_layout,
+                      VkPipelineStageFlags2 source_stage,
+                      VkAccessFlags2 source_access,
+                      VkPipelineStageFlags2 destination_stage,
+                      VkAccessFlags2 destination_access,
+                      VkImageAspectFlags aspect, std::string& error) {
+    const VkImageLayout old_layout = image.layout;
+    TransitionRecord transition{&image, new_layout, source_stage, source_access,
+                                destination_stage, destination_access, aspect};
+    std::vector<std::shared_ptr<void>> dependencies{image.lifetime};
+    if (!submit_immediate(vulkan, record_transition, &transition, error,
+                          ImmediateSubmitPhase::image_transition,
+                          std::move(dependencies))) {
+        if (image.device != VK_NULL_HANDLE) image.layout = old_layout;
+        return false;
+    }
+    return true;
+}
+
+}  // namespace matter

@@ -1,0 +1,325 @@
+# render-mountain static w45 recipe, Linux lavapipe functional run
+# driver: /tmp/claude-1000/-home-jkern-dev-matter-engine-cpp--aq-worktrees-slot-1/591b0957-eb68-4859-98ef-8a6cb1c50b85/scratchpad/named/mountain.sh (env: MATTER_DISABLE_VK_RT=1 MATTER_VK_TEST_FORCE_RT_UNAVAILABLE=1 MATTER_VOLUMETRICS=0)
+# driver.txt: exit 1 elapsed 1278.785479105
+# run.log with [tileset]/[local_provider] lines and repeated per-frame warnings dropped; counts below
+# 'produced no LOD geometry': 63  'No draw records to build TLAS': 83  '[vk] RT rejected': 13
+Vulkan adapter: llvmpipe (LLVM 20.1.2, 256 bits) | driver: llvmpipe (Mesa 25.2.8-0ubuntu0.24.04.2 (LLVM 20.1.2), 0x06402008) | API 1.4.318
+[vk] present requested=immediate effective=immediate(0) supported=[immediate(0),mailbox(1),fifo(2),fifo_relaxed(3)] images=4 extent=1920x1080
+worlds available (74):
+  [0] AnimatedRigGallery  ($REPO/projects/world_demo)
+  [1] AtmospherePresentationFixture  ($REPO/projects/world_demo)
+  [2] BranchGallery  ($REPO/projects/world_demo)
+  [3] CastleAngledBailey  ($REPO/projects/world_demo)
+  [4] CastleBentPalace  ($REPO/projects/world_demo)
+  [5] CastleCloister  ($REPO/projects/world_demo)
+  [6] CastleClusteredCourt  ($REPO/projects/world_demo)
+  [7] CastleConnectorFixture  ($REPO/projects/world_demo)
+  [8] CastleCourtyard  ($REPO/projects/world_demo)
+  [9] CastleFastBakeProof  ($REPO/projects/world_demo)
+  [10] CastleFurnishings  ($REPO/projects/world_demo)
+  [11] CastleGallery  ($REPO/projects/world_demo)
+  [12] CastleMasonry  ($REPO/projects/world_demo)
+  [13] CastleMasonryPreview  ($REPO/projects/world_demo)
+  [14] CastleMaterials  ($REPO/projects/world_demo)
+  [15] CastleRoundKeep  ($REPO/projects/world_demo)
+  [16] CastleSiteGallery  ($REPO/projects/world_demo)
+  [17] CastleStructure  ($REPO/projects/world_demo)
+  [18] CastleTimberProbe  ($REPO/projects/world_demo)
+  [19] CastleUpgraded  ($REPO/projects/world_demo)
+  [20] CastleWalkProbe  ($REPO/projects/world_demo)
+  [21] CastleWalkProbeCloister  ($REPO/projects/world_demo)
+  [22] CastleWalkProbeRoundKeep  ($REPO/projects/world_demo)
+  [23] CastleWallBakeProof  ($REPO/projects/world_demo)
+  [24] CastleWingStudy  ($REPO/projects/world_demo)
+  [25] ChartVtProof  ($REPO/projects/world_demo)
+  [26] ClayBrickGeometryProof  ($REPO/projects/world_demo)
+  [27] ClayBrickMaterialProof  ($REPO/projects/world_demo)
+  [28] ClayBrickMaze  ($REPO/projects/world_demo)
+  [29] ClayBrickWallProof  ($REPO/projects/world_demo)
+  [30] ClayBrickWallSurfaceProof  ($REPO/projects/world_demo)
+  [31] CloudLab  ($REPO/projects/world_demo)
+  [32] CloudLegacy  ($REPO/projects/world_demo)
+  [33] ConiferForest  ($REPO/projects/world_demo)
+  [34] ConiferLab  ($REPO/projects/world_demo)
+  [35] CornellBox  ($REPO/projects/world_demo)
+  [36] Demo  ($REPO/projects/world_demo)
+  [37] FloorDemo  ($REPO/projects/world_demo)
+  [38] FogLab  ($REPO/projects/world_demo)
+  [39] GeometryDetailProof  ($REPO/projects/world_demo)
+  [40] Kreuzenstein  ($REPO/projects/world_demo)
+  [41] LightingGarden  ($REPO/projects/world_demo)
+  [42] LocalLightGallery  ($REPO/projects/world_demo)
+  [43] LocalLightPointIsolation  ($REPO/projects/world_demo)
+  [44] LocalLightRtGallery  ($REPO/projects/world_demo)
+  [45] LocalLightSpotIsolation  ($REPO/projects/world_demo)
+  [46] Meadow  ($REPO/projects/world_demo)
+  [47] MetalProof  ($REPO/projects/world_demo)
+  [48] ObjectEvalRock  ($REPO/projects/world_demo)
+  [49] PeriodicBrickWallProof  ($REPO/projects/world_demo)
+  [50] PhysicsPlayground  ($REPO/projects/world_demo)
+  [51] PomProof  ($REPO/projects/world_demo)
+  [52] PomProofBrick  ($REPO/projects/world_demo)
+  [53] PortableCrateFixture  ($REPO/projects/world_demo)
+  [54] Primitives  ($REPO/projects/primitive_demo)
+  [55] ProceduralBrickProof  ($REPO/projects/world_demo)
+  [56] ProceduralTerrainProof  ($REPO/projects/world_demo)
+  [57] RedwoodGrove  ($REPO/projects/world_demo)
+  [58] RiverFloatLab  ($REPO/projects/world_demo)
+  [59] RiverHydrology  ($REPO/projects/world_demo)
+  [60] RockFormationProof  ($REPO/projects/world_demo)
+  [61] RockGallery  ($REPO/projects/world_demo)
+  [62] RockScaleProof  ($REPO/projects/world_demo)
+  [63] SeamLab  ($REPO/projects/world_demo)
+  [64] SharedBrickWallProof  ($REPO/projects/world_demo)
+  [65] StreamCaverns  ($REPO/projects/world_demo)
+  [66] StreamMeadow  ($REPO/projects/world_demo)
+  [67] StreamMountain  ($REPO/projects/world_demo)
+  [68] SurfaceContactProof  ($REPO/projects/world_demo)
+  [69] TilesetGallery  ($REPO/projects/world_demo)
+  [70] VegetationGallery  ($REPO/projects/world_demo)
+  [71] VillaDoricColumnStudy  ($REPO/projects/world_demo)
+  [72] VillaGoldTreasury  ($REPO/projects/world_demo)
+  [73] VillaWebsiteKit  ($REPO/projects/world_demo)
+Vulkan RT available=true enabled=false reason=disabled by render.gpu.ray_tracing (MATTER_DISABLE_VK_RT / Performance panel)
+Vulkan wireframe available=true reason=none
+issues: reports go to $REPO/issues
+viewer: UI hidden by MATTER_HIDE_UI
+MATTER_CMD_FIFO: listening on $SCRATCH/named/mountain-w45/commands.txt
+DLSS selected=Native active=Native internal=1920x1080 output=1920x1080 resets=0 reason=Streamline SDK not found: build with HAVE_STREAMLINE=1 to enable DLSS
+Vulkan RT observed effective=false dispatches=0 reason=world session disconnected
+o-[Process     ] Using posix threads
+                 Multithreading enabled
+                 Available cores = 24
+                 Max used threads = 24
+                 Cancel mode disabled
+   0 : 4.0214863840e+02 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 5.276742e-07
+   0 : 2.0031447891e+02 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 6.418230e-07
+   0 : 1.0966191721e+02 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 5.990147e-07
+   0 : 7.4262249046e+01 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 5.377808e-07
+   0 : 4.8156938047e+01 -- 5.2236884934e-11
+in OpenNL : ||Ax-b||/||b|| = 4.951296e-07
+ check_that multiplicity are respected
+New LS iteration 
+   0 : 8.4882775643e+01 -- 8.4882775643e-11
+in OpenNL : ||Ax-b||/||b|| = 8.984158e-07
+New LS iteration 
+Try enforce mutiplicity equality with snap size  0
+   0 : 4.0175789032e+01 -- 1.7974005946e-09
+in OpenNL : ||Ax-b||/||b|| = 7.377547e-07
+Extract connections...
+Extract connections done
+Extract edges...
+Extract edges done
+Extract mesh...
+Extract mesh done
+Searching boundaries...
+Searching boundaries done
+Searching boundaries...
+Searching boundaries done
+debug: Quad mesh breakdown: total 17 ms | voxel 0 ms | split 0 ms | build 0 ms | parallel 16 ms   (param 11 ms | extract 1 ms) | merge 0 ms
+[vt] surfaces() tape compiled: 1 materials, world inputs, hash=b720b34c13666548
+[habitat] tape compiled: 31 channels (altitude, slope, moisture, exposure, dryness, forest, forestEdge, treeCluster, shrubPatch, meadowPatch, flowerPatch, groundCoverPatch, treeSuit0, treeSuit1, treeSuit2, treeSuit3, treeSuit4, treeSuit5, shrubSuit0, shrubSuit1, shrubSuit2, shrubSuit3, groundCoverSuit0, groundCoverSuit1, flowerSuit0, flowerSuit1, flowerSuit2, grassSuit0, grassSuit1, grassSuit2, grassSuit3), world inputs, hash=7baba303c9baa129
+[stream] WorldSector requires 55 child variants
+[part-surface] part=41c2b071016a6a99 direct recipe_bytes=1089 source_images=0
+[part-surface] part=1f82c9850647528d direct recipe_bytes=1089 source_images=0
+[part-surface] part=8450a23b7bee974b direct recipe_bytes=1089 source_images=0
+[part-surface] part=d7476b27c852ee22 direct recipe_bytes=1089 source_images=0
+[part-surface] part=9aeb337116113390 direct recipe_bytes=1089 source_images=0
+[part-surface] part=42b17c583be61b9f direct recipe_bytes=1089 source_images=0
+[part-surface] part=a63eeb08176ddec2 direct recipe_bytes=1089 source_images=0
+[part-surface] part=04069294ba36763d direct recipe_bytes=1089 source_images=0
+[part-surface] part=ada4278dcbdb2a13 direct recipe_bytes=1089 source_images=0
+[part-surface] part=2ecabca0989dfdff direct recipe_bytes=1089 source_images=0
+[part-surface] part=b873b70ecd7666bf direct recipe_bytes=1089 source_images=0
+[part-surface] part=80b95391184ba0a5 direct recipe_bytes=1089 source_images=0
+[part-surface] part=4a047caf07de5f25 direct recipe_bytes=1091 source_images=0
+[part-surface] part=555de6c5314cafc1 direct recipe_bytes=1091 source_images=0
+[part-surface] part=09b3c67ea066e3f9 direct recipe_bytes=1091 source_images=0
+[part-surface] part=7b3b59eac5d4f7d6 direct recipe_bytes=1091 source_images=0
+[part-surface] part=c4b2e3391396cdd1 direct recipe_bytes=1091 source_images=0
+[part-surface] part=9a2891135b15042f direct recipe_bytes=1091 source_images=0
+[part-surface] part=0f0ca7df795cd0e1 direct recipe_bytes=1091 source_images=0
+[part-surface] part=0b1d6c2e1532e639 direct recipe_bytes=1091 source_images=0
+[part-surface] part=92b56dfa53dd4f23 direct recipe_bytes=1091 source_images=0
+[part-surface] part=bade690ac5f3149c direct recipe_bytes=1091 source_images=0
+[part-surface] part=49cedb585654b77f direct recipe_bytes=1091 source_images=0
+[part-surface] part=7b798ddc6045ddc3 direct recipe_bytes=1091 source_images=0
+[part-surface] part=d22ffec8164df58f direct recipe_bytes=1095 source_images=0
+[part-surface] part=ceac23b423719109 direct recipe_bytes=1095 source_images=0
+[part-surface] part=9fdafd3099426c49 direct recipe_bytes=1095 source_images=0
+[part-surface] part=8edcd78f4217010c direct recipe_bytes=1095 source_images=0
+[part-surface] part=f9440294a1869573 direct recipe_bytes=1095 source_images=0
+[part-surface] part=6a6c3b45e1aef4c6 direct recipe_bytes=1095 source_images=0
+[part-surface] part=8b13c3f8b366f94c direct recipe_bytes=1095 source_images=0
+[part-surface] part=8ff941419af28830 direct recipe_bytes=1095 source_images=0
+[part-surface] part=650bfab883dfac1b direct recipe_bytes=1095 source_images=0
+[part-surface] part=dc9563c01c54edc9 direct recipe_bytes=1095 source_images=0
+[part-surface] part=b649712361006f06 direct recipe_bytes=1095 source_images=0
+[part-surface] part=998928916356d4a3 direct recipe_bytes=1095 source_images=0
+[part-surface] part=3eb2ef614af8b9cc direct recipe_bytes=1099 source_images=0
+[part-surface] part=208b042576c093f5 direct recipe_bytes=1099 source_images=0
+[part-surface] part=ebc38498eb22fc5b direct recipe_bytes=1099 source_images=0
+[part-surface] part=42f6f99fda0e50cc direct recipe_bytes=1099 source_images=0
+[part-surface] part=3706dcd837152b65 direct recipe_bytes=1099 source_images=0
+[part-surface] part=80c2042a82c22b59 direct recipe_bytes=1099 source_images=0
+[part-surface] part=253e5cdf7edd1c0e direct recipe_bytes=1099 source_images=0
+[part-surface] part=ddcbbd2c595a53d6 direct recipe_bytes=1099 source_images=0
+[part-surface] part=62cc13cd5a1cf17d direct recipe_bytes=1099 source_images=0
+[part-surface] part=c27b21b3f63c603d direct recipe_bytes=1099 source_images=0
+[part-surface] part=cd83cde2c3a977d5 direct recipe_bytes=1099 source_images=0
+[part-surface] part=520bbbd13077588f direct recipe_bytes=1099 source_images=0
+[stream] asset install complete: 55 child hashes, field_hash=ba925128f5c830e3, sector_size=64.0, sea_level=-80.00
+[stream] tiling: VOLUMETRIC (octree cubes), octree extent y -96.0..704.0, S_0 64.0 m
+[stream] NESTED sector LOD: level 0 = 64 m tiles, 6 levels (the outermost BAND bounds residency; rings grade scatter only)
+[stream] resolver activation radius: 20000 m (outermost terrain band)
+[part-store] loaded v3 FLAT part 41c2b071016a6a99 (3 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 1f82c9850647528d (3 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 8450a23b7bee974b (3 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part d7476b27c852ee22 (3 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 9aeb337116113390 (3 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 42b17c583be61b9f (3 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part a63eeb08176ddec2 (3 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 04069294ba36763d (3 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part ada4278dcbdb2a13 (3 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 2ecabca0989dfdff (3 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part b873b70ecd7666bf (3 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 80b95391184ba0a5 (3 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 4a047caf07de5f25 (3 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 555de6c5314cafc1 (3 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 09b3c67ea066e3f9 (3 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 7b3b59eac5d4f7d6 (3 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part c4b2e3391396cdd1 (3 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 9a2891135b15042f (3 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 0f0ca7df795cd0e1 (3 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 0b1d6c2e1532e639 (3 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 92b56dfa53dd4f23 (3 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part bade690ac5f3149c (3 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 49cedb585654b77f (3 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 7b798ddc6045ddc3 (3 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part d22ffec8164df58f (3 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part ceac23b423719109 (3 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 9fdafd3099426c49 (3 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 8edcd78f4217010c (3 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part f9440294a1869573 (3 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 6a6c3b45e1aef4c6 (3 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 8b13c3f8b366f94c (3 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 8ff941419af28830 (3 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 650bfab883dfac1b (3 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part dc9563c01c54edc9 (3 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part b649712361006f06 (3 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 998928916356d4a3 (3 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 3eb2ef614af8b9cc (3 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 208b042576c093f5 (3 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part ebc38498eb22fc5b (3 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 42f6f99fda0e50cc (3 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 3706dcd837152b65 (3 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 80c2042a82c22b59 (3 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 253e5cdf7edd1c0e (3 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part ddcbbd2c595a53d6 (3 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 62cc13cd5a1cf17d (3 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part c27b21b3f63c603d (3 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part cd83cde2c3a977d5 (3 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[part-store] loaded v3 FLAT part 520bbbd13077588f (3 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[shared-surface] mesh=6bdbab877bbc602e source=111464 surfaces=111464 textures=0 shadow_cells=1207
+[shared-surface] mesh=6db2d46fde574ddd source=313536 surfaces=313536 textures=0 shadow_cells=5620
+[shared-surface] mesh=e8d9761feb887b3f source=5800 surfaces=394 textures=147 shadow_cells=2250
+[shared-surface] mesh=9079ab88ce01ac79 source=5800 surfaces=392 textures=146 shadow_cells=2279
+[shared-surface] mesh=21e6775647419ec5 source=5800 surfaces=392 textures=146 shadow_cells=2247
+[shared-surface] mesh=e2c6ee3b96d52bf9 source=5800 surfaces=396 textures=148 shadow_cells=2266
+[shared-surface] mesh=2cf7749e0a9fca0a source=314192 surfaces=314192 textures=0 shadow_cells=5552
+[shared-surface] mesh=e457320ac25af4da source=11760 surfaces=11760 textures=0 shadow_cells=8
+[shared-surface] mesh=0ff676acacaf77cd source=11760 surfaces=11760 textures=0 shadow_cells=8
+[shared-surface] mesh=59b8922da8c77ee0 source=101616 surfaces=101616 textures=0 shadow_cells=2004
+[shared-surface] mesh=e8b4ed7f1641c26e source=102192 surfaces=102192 textures=0 shadow_cells=2008
+[shared-surface] mesh=5ff1a7ca5b170d86 source=28916 surfaces=28916 textures=0 shadow_cells=640
+[shared-surface] mesh=d2411e6fb17fffed source=28536 surfaces=28536 textures=0 shadow_cells=615
+[shared-surface] assembly=327248efee08708d prototypes=13 visited=44861 radius=14.2533
+[shared-surface] mesh=0a90b6af9d1624ce source=151568 surfaces=151568 textures=0 shadow_cells=1105
+[shared-surface] mesh=cd516774de418a76 source=343528 surfaces=343528 textures=0 shadow_cells=6132
+[shared-surface] mesh=34610a95fbfea74d source=10600 surfaces=190 textures=9 shadow_cells=331
+[shared-surface] mesh=56910163da1bf27d source=10600 surfaces=170 textures=11 shadow_cells=337
+[shared-surface] mesh=92b0f782e8577353 source=10600 surfaces=170 textures=11 shadow_cells=349
+[shared-surface] mesh=73bd377eed6d74e9 source=10600 surfaces=194 textures=11 shadow_cells=355
+[shared-surface] mesh=cf9e231d78559a77 source=331248 surfaces=331248 textures=0 shadow_cells=6038
+[shared-surface] mesh=c0e6dec5717002fd source=105980 surfaces=105980 textures=0 shadow_cells=2125
+[shared-surface] mesh=f2735a0cd7eba3a7 source=107848 surfaces=107848 textures=0 shadow_cells=2172
+[shared-surface] mesh=69702c2f84209abf source=27308 surfaces=27308 textures=0 shadow_cells=24
+[shared-surface] mesh=e44f78f1104765f1 source=27308 surfaces=27308 textures=0 shadow_cells=24
+[shared-surface] mesh=d40bb97073b8619e source=28060 surfaces=28060 textures=0 shadow_cells=604
+[shared-surface] mesh=2e872b0e0246c52f source=28440 surfaces=28440 textures=0 shadow_cells=638
+[shared-surface] assembly=64c7eaac0a241c70 prototypes=13 visited=83049 radius=16.0571
+[shared-surface] mesh=5178a09b3e383ad3 source=186508 surfaces=186508 textures=0 shadow_cells=1597
+[shared-surface] mesh=6b4aab6d7bf1bec3 source=316676 surfaces=316676 textures=0 shadow_cells=5747
+[shared-surface] mesh=ea410d230afa28ac source=9400 surfaces=118 textures=9 shadow_cells=242
+[shared-surface] mesh=9f172556da9ae836 source=9400 surfaces=114 textures=7 shadow_cells=254
+[shared-surface] mesh=733e80493ab3d8fd source=9400 surfaces=118 textures=9 shadow_cells=241
+[shared-surface] mesh=549cd77b3c7ebc2b source=319104 surfaces=319104 textures=0 shadow_cells=5663
+[shared-surface] mesh=309906901725fd51 source=3740 surfaces=3740 textures=0 shadow_cells=2
+[shared-surface] mesh=c775f4c7cda9d96f source=3740 surfaces=3740 textures=0 shadow_cells=2
+[shared-surface] mesh=c799042e3e3daeb3 source=101840 surfaces=101840 textures=0 shadow_cells=2036
+[shared-surface] mesh=baadcf66cb691f1c source=101228 surfaces=101228 textures=0 shadow_cells=2036
+[shared-surface] mesh=92a23658303e1eb6 source=1960 surfaces=144 textures=7 shadow_cells=95
+[shared-surface] mesh=fd566649d115fd9f source=28952 surfaces=28952 textures=0 shadow_cells=644
+[shared-surface] mesh=d69d6af5f01523cc source=28984 surfaces=28984 textures=0 shadow_cells=632
+[shared-surface] assembly=864e7bdf02823d16 prototypes=13 visited=61094 radius=62.3606
+[shared-surface] mesh=d24c3372cd5a6c13 source=225476 surfaces=225476 textures=0 shadow_cells=32731
+[shared-surface] mesh=39eeff8b06888131 source=361804 surfaces=361804 textures=0 shadow_cells=1620
+[shared-surface] mesh=8c12a27f75d44259 source=118968 surfaces=118968 textures=0 shadow_cells=1386
+[shared-surface] mesh=5b89996eb24c4600 source=124932 surfaces=124932 textures=0 shadow_cells=1393
+[shared-surface] assembly=141c5f976e038476 prototypes=16 visited=165370 radius=55.9072
+[part-store] loaded v3 FLAT part 4ef6b53ceaa307f8 (9 LOD levels, 16 clusters, 0 refs, 16 impostors)
+[part-store] loaded v3 FLAT part fb566bcb434a1383 (9 LOD levels, 16 clusters, 0 refs, 16 impostors)
+[part-store] loaded v3 FLAT part 01955826dcebc7ac (9 LOD levels, 16 clusters, 0 refs, 16 impostors)
+[stream] pre-warmed 55/55 child variants
+[gpu-job] bake.reset took 47389.6 ms
+Vulkan RT observed effective=false dispatches=0 reason=disabled by render options
+[resolve]   resolve census: 0 parts baked, 0 cache hits, version digest 144cdeb99c68f1a7
+[bake] bake finished (0 errors)
+world camera: eye(380.0,90.0,1600.0) target(420.0,55.0,1420.0)
+viewer: bake ready
+bake 0/3 ConiferBarkDetail
+event: bake.finished
+[streaming] auto-attached sector streaming anchor entity 565 (world-kind session, sea level -80.00)
+wait_frames: complete 2 frame_serial=36932
+[vk] impostor atlas: 128 slots x 2 layers of 1024x1024 RGBA8 (cell 128 px, filtered mips) = 1365 MiB
+[rt] independent GI shader specialization=1
+[rt] local primary area samples=4 (0=adaptive); visibility diagnostic counters=0
+[rt] local-light selection code=0; packed budgets=0
+[rt] secondary local-light sampling=1 (0 exact, 1 importance reservoir)
+[rt] secondary surface detail mode=0 (0 reference, 1 adaptive, 2 normal-only)
+[vk] static reserve: clusters 32 MiB, vertices 512 MiB, indices 256 MiB (host-visible)
+[gpu-job] ConiferBarkDetail took 421130.3 ms
+bake 1/3 ConiferBarkDetail
+bake 1/3 ConiferBranchDetail
+[gpu-job] ConiferBranchDetail took 38363.0 ms
+bake 2/3 ConiferBranchDetail
+bake 2/3 RedwoodBarkDetail
+STATS,probe,3921.80,0.00,0.00,0.00,0,0,0,0,0,0,0,0,0.0,0.0,0,0,0,0.00,0,0.000,0.000,0.000,0.000,0.000,0.00,0.000,0.000,0.000
+STATSVT,probe,active=0,variants=0/0,rejected=0,mesh=0.0/0.0 MiB,pool=0/0,pinned=0,queue=0,fills=0,evictions=0,ind=0.00/0 MiB,material_pages=0,shared_material_refs=0,coverage_only_pages=0,occlusion_pages=0,occlusion_retained_pages=0,occlusion_allocated_bytes=0,enrich_deferred=0
+[gpu-job] RedwoodBarkDetail took 74171.2 ms
+[refine] controller built: 0 tiles
+[stream] Runtime coordinator profile ready for world-kind session
+[bake-timing] install=45ms world=555096ms publish=584429ms total=1139591ms (world-kind: ROOTS ONLY — the sector fill is NOT in this number, see [stream.fill])
+bake 3/3 RedwoodBarkDetail
+[stream] bake pool: 12 workers
+[local-light] published 0 lights, 0 cells/0 buckets, 48 index bytes, max 0 candidates
+[vk] chart-space VT online: 12800 page pool (2032 MiB), 32768 variant slots (MATTER_VT_MAX_VARIANTS, soft bound), 64 MiB indirection arena (MATTER_VT_INDIRECTION_MB, exact-sized tables), 1024 MiB mesh budget (MATTER_VT_MESH_BUDGET_MB), 8 fills/frame, filler=tier-1 compositor, tier2=hemisphere AO (32 rays/texel, 2 pages/frame)
+[gpu-job] stream.publish took 78.0 ms
+[gpu-job] stream.publish took 60.2 ms
+[gpu-job] stream.publish took 52.9 ms
+[vk] slow impostor adoption hash=4ef6b53ceaa307f8 slots=16 bytes=178913280 filter=3.925 staging=577.444 submit=206.159 patch=37.246 ms
+[vk] slow part registration hash=4ef6b53ceaa307f8 vertices=696494 indices=2645184 clusters=16 prepared=1 ms=985.746 validate=3.979 vertex=96.547 impostor=853.266 index=31.386 rt=0.393 vt=0.164 tail=0.010
+[vk] slow impostor adoption hash=fb566bcb434a1383 slots=16 bytes=178913280 filter=0.093 staging=292.296 submit=272.751 patch=37.680 ms
+[vk] slow part registration hash=fb566bcb434a1383 vertices=717548 indices=2569644 clusters=16 prepared=1 ms=884.490 validate=4.171 vertex=203.685 impostor=637.684 index=38.502 rt=0.309 vt=0.132 tail=0.006
+[vk] slow impostor adoption hash=01955826dcebc7ac slots=16 bytes=178913280 filter=0.086 staging=354.002 submit=332.780 patch=43.490 ms
+[vk] slow part registration hash=01955826dcebc7ac vertices=605231 indices=2389158 clusters=16 prepared=1 ms=947.057 validate=4.519 vertex=129.860 impostor=763.393 index=47.773 rt=1.109 vt=0.382 tail=0.021
+[editor] FATAL: render: surface prototype exceeds GPU triangle buffer limit
+issue: auto-filed device fault report to $REPO/issues/915b7e48-684f-69b1-2b7d-8b8eaffdad42
+profile: wrote trace to $SCRATCH/named/mountain-w45/trace.json
+[gpu-job] stream.apply_evictions took 113.7 ms
+Command exited with non-zero status 1
+wall 1277.93 s maxrss 14271148 KB
