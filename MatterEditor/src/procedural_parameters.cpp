@@ -33,6 +33,28 @@ bool finite(const Value& value) {
     return true;
 }
 
+// The root-parameter override the applied path carries is parsed by
+// part_graph::params_from_json, whose ParamValue is number|bool|string only:
+// a nested object or array in `static params` round-trips through
+// `procedural.parameters` but would be DROPPED on the way back in, so an
+// update naming one would return an ok receipt and a job that changed nothing.
+// Say so instead, in both the description and the plan.
+bool overridable(const Value& value) {
+    switch (value.kind) {
+        case Value::Kind::Bool:
+        case Value::Kind::Number:
+        case Value::Kind::UInt64:
+        case Value::Kind::String:
+            return true;
+        default:
+            return false;
+    }
+}
+
+const char* kNotOverridable =
+    "the root-parameter override path carries only numbers, booleans and "
+    "strings";
+
 bool compatible(const Value& current, const Value& next) {
     // JSON represents ordinary integral defaults as Number and only lifts
     // values beyond 2^53 to UInt64; accepting either preserves that contract.
@@ -70,6 +92,10 @@ Value describe_json(const Root& root) {
         range.set("available", boolean(false));
         range.set("reason", string("static params record no portable range metadata"));
         field.set("range", std::move(range));
+        Value writable = object();
+        writable.set("available", boolean(overridable(entry.second)));
+        if (!overridable(entry.second)) writable.set("reason", string(kNotOverridable));
+        field.set("overridable", std::move(writable));
         fields.arr.push_back(std::move(field));
     }
     result.set("parameters", std::move(fields));
@@ -94,6 +120,12 @@ bool make_plan(const Root& root, const Value& changes, Plan& out, std::string& e
         if (!finite(entry.second)) { error = "parameter '" + entry.first + "' must be finite"; return false; }
         if (!compatible(*declared, entry.second)) {
             error = "parameter '" + entry.first + "' must be " + type_name(declared->kind);
+            return false;
+        }
+        // After the type check, so a scalar field given an object still reports
+        // the plain type error rather than this one.
+        if (!overridable(entry.second)) {
+            error = "parameter '" + entry.first + "' is not overridable: " + kNotOverridable;
             return false;
         }
         const std::string old_json = matter::jsondoc::write_json(*declared);

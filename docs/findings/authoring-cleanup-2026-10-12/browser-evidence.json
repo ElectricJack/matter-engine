@@ -1,0 +1,159 @@
+{
+  "fixtures": {
+    "passed": [
+      "WEB-PROP",
+      "WEB-ASSEMBLY",
+      "WEB-STAGED",
+      "WEB-REPEAT-OWNERSHIP",
+      "WEB-CANCEL-RESTART",
+      "WEB-RESTART",
+      "WEB-DEADLINE",
+      "WEB-BOUNDS-QUEUED-CANCEL",
+      "WEB-REVISION-EPOCH",
+      "WEB-ERROR-RELEASE-CAPS",
+      "WEB-RESPONSIVENESS",
+      "WEB-DISPOSE",
+      "WEB-REALM-RECYCLE",
+      "WEB-LATE-MESSAGE-ADMISSION",
+      "WEB-INPUT-SNAPSHOT-LIMITS"
+    ],
+    "measurements": {
+      "WEB-PROP": {
+        "elapsedMs": 408.2000000476837,
+        "stages": 1,
+        "wasmHeapBytes": 33554432,
+        "transferredBytes": 3780
+      },
+      "WEB-ASSEMBLY": {
+        "elapsedMs": 120.80000007152557,
+        "stages": 1,
+        "wasmHeapBytes": 33554432,
+        "transferredBytes": 5661
+      },
+      "WEB-STAGED": {
+        "elapsedMs": 86.09999990463257,
+        "stages": 3,
+        "wasmHeapBytes": 33554432,
+        "transferredBytes": 4054
+      },
+      "WEB-REPEAT": {
+        "iterations": 24,
+        "wasmHeapBytes": 33554432,
+        "lastWasmHeapBytes": 33554432
+      },
+      "WEB-RESPONSIVENESS": {
+        "elapsedMs": 379.8000000715256,
+        "timerTicks": 75,
+        "intervalMs": 5,
+        "maxTimerGapMs": 10.399999976158142,
+        "worker": {
+          "elapsedMs": 376.39999997615814,
+          "stages": 1,
+          "wasmHeapBytes": 33554432,
+          "transferredBytes": 3790
+        },
+        "pageUsedJSHeapBytes": 2402603,
+        "scope": "Warmed 350ms worker CPU probe; page JS heap excludes worker WASM heaps; heap capacity is not allocator peak"
+      }
+    }
+  },
+  "errors": [],
+  "environment": {
+    "browser": "150.0.7871.46",
+    "executable": "/opt/google/chrome/chrome",
+    "python": "3.12.3",
+    "platform": "Linux-6.18.33.2-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+    "wasm_profile": "matter-wasm32-worker-v1",
+    "concurrency": 2
+  },
+  "download": {
+    "scope": "Unique production modules and WASM actually served, excluding test JS/HTML; raw HTTP, hypothetical per-file gzip",
+    "fixtures": [
+      "WEB-PROP",
+      "WEB-ASSEMBLY",
+      "WEB-STAGED"
+    ],
+    "bytes": 1042110,
+    "gzip_bytes": 340864,
+    "files": [
+      {
+        "path": "bindings/geometry-c/wasm/geometry.mjs",
+        "bytes": 7986,
+        "gzip_bytes": 2821,
+        "sha256": "aefa071ffd31aaa2b0f259ccc6c36db6c82b7cf17c8fc4ffe4388fc2672c3ff4"
+      },
+      {
+        "path": "libs/MatterContracts/examples/contracts.mjs",
+        "bytes": 5568,
+        "gzip_bytes": 2107,
+        "sha256": "628e44ba6f15e94694accdbf46bc49879bfb2eb99f91918fe60cf588b227c93e"
+      },
+      {
+        "path": "packages/matter-authoring/index.mjs",
+        "bytes": 399,
+        "gzip_bytes": 260,
+        "sha256": "76769e4aec9d8ec67a89463e9bcd9cfc07b1940731d24b2b958493e4db85331e"
+      },
+      {
+        "path": "packages/matter-authoring/legacy.mjs",
+        "bytes": 8294,
+        "gzip_bytes": 2756,
+        "sha256": "f87a6f127306a9ec6bd25eea04c7a2ace06ec1dd99875bc1a6b04e3b59407645"
+      },
+      {
+        "path": "packages/matter-authoring/parameters.mjs",
+        "bytes": 2118,
+        "gzip_bytes": 772,
+        "sha256": "8a49c1013ef4f3633a0d5e9312ad625cb8aaf0c01d4d325999b585f232497632"
+      },
+      {
+        "path": "packages/matter-authoring/recipe.mjs",
+        "bytes": 29052,
+        "gzip_bytes": 7759,
+        "sha256": "77a893c269709c5f4618deafed6a4de419c44c3efce8e46d5bb36a686ea016a0"
+      },
+      {
+        "path": "packages/matter-authoring/rng.mjs",
+        "bytes": 2322,
+        "gzip_bytes": 1013,
+        "sha256": "33ee813f2f9fead752530e7a8042d5155fd08f7bc53866371e23872cb33b96d7"
+      },
+      {
+        "path": "packages/matter-authoring/values.mjs",
+        "bytes": 9118,
+        "gzip_bytes": 3347,
+        "sha256": "ffc2a46a89694540538f66179871cf68a0f35a705a1cd69ed6d8255f85fb8e16"
+      },
+      {
+        "path": "index.mjs",
+        "bytes": 11570,
+        "gzip_bytes": 3190,
+        "sha256": "ff2bbd00ebe76eb0c38fd4cace13760ab59c6e9d12622716e959cf9eee594a32"
+      },
+      {
+        "path": "protocol.mjs",
+        "bytes": 2472,
+        "gzip_bytes": 944,
+        "sha256": "2d5069491d89d98ce11b4ebf571d13b74305fd0077a52892c850c44c5b53d086"
+      },
+      {
+        "path": "worker.mjs",
+        "bytes": 6355,
+        "gzip_bytes": 2299,
+        "sha256": "5ec769c383fcbbef4d4fc478e7f7585c4af97eed18040620a1653f51befa24b9"
+      },
+      {
+        "path": "matter_geometry_wasm.mjs",
+        "bytes": 42633,
+        "gzip_bytes": 11558,
+        "sha256": "9d1cb11966047c2ce0c62ff97a2d19af4a360d33f55678ddbc4fb2c1790f664f"
+      },
+      {
+        "path": "matter_geometry_wasm.wasm",
+        "bytes": 914223,
+        "gzip_bytes": 302038,
+        "sha256": "4a0ebd8e7817e30ea716f862b8aed7b61debb1fadad7496e51c63fea121cd6aa"
+      }
+    ]
+  }
+}

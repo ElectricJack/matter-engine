@@ -1,0 +1,15 @@
+Vulkan adapter: llvmpipe (LLVM 20.1.2, 256 bits) | driver: llvmpipe (Mesa 25.2.8-0ubuntu0.24.04.2 (LLVM 20.1.2), 0x06402008) | API 1.4.318
+[bake-timing] install=86ms world=127934ms publish=17517ms total=145546ms (world-kind: ROOTS ONLY — the sector fill is NOT in this number, see [stream.fill])
+[terrain] live terrain collision installed: key=3909000712764386650 shapes=25 regions=25
+[terrain] live terrain scene: +8 -0 regions=25 generated=25 cached=25 collision=3909000712764386650
+[terrain] live terrain scene: +8 -0 regions=25 generated=25 cached=25 collision=3909000712764386650
+[terrain] live terrain scene: +8 -0 regions=25 generated=25 cached=25 collision=3909000712764386650
+[terrain] live terrain scene: +1 -0 regions=25 generated=25 cached=25 collision=3909000712764386650
+[graphics] portable scene captured 11 draws at revision 4 to <run>/portable
+[terrain] live terrain scene: +0 -25 regions=25 generated=25 cached=25 collision=3909000712764386650
+[graphics] portable scene captured 0 draws at revision 5 to <run>/portable
+[terrain] live terrain scene: +8 -0 regions=25 generated=25 cached=25 collision=3909000712764386650
+[terrain] live terrain scene: +8 -0 regions=25 generated=25 cached=25 collision=3909000712764386650
+[terrain] live terrain scene: +8 -0 regions=25 generated=25 cached=25 collision=3909000712764386650
+[terrain] live terrain scene: +1 -0 regions=25 generated=25 cached=25 collision=3909000712764386650
+[graphics] portable scene captured 11 draws at revision 9 to <run>/portable

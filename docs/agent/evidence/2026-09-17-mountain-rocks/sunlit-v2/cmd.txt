@@ -1,0 +1,174 @@
+wait_event bake.finished 180
+render_path raster
+set render.fog.density 0
+set render.clouds.layer0_max_density 0
+set render.cloud_shadows.enabled false
+set render.lighting.sun_elevation_deg 55
+set render.lighting.sun_azimuth_deg 30
+set render.lighting.sun_tint [1,1,1]
+set render.lighting.sun_multiplier 1
+set render.lighting.sky_irradiance_multiplier 0.5
+set render.lighting.day_ambient_multiplier 0.5
+set render.lighting.sun_elevation_deg 25
+set render.lighting.sun_azimuth_deg -120
+cam -0.768883929 0.181659321 0.456833751 -0.210495359 0.279159321 0.138720634
+wait_frames 120
+stats size-0p5-near
+wait_frames 60
+shot C:/tmp/matter-rock-sunlit-v2/size-0p5-near-lit.png
+set render.pom.horizon_debug 0
+set viewer.debug.debug_view_mode 0
+set render.pom.enabled false
+wait_frames 60
+shot C:/tmp/matter-rock-sunlit-v2/size-0p5-near-flat.png
+set render.pom.enabled true
+render_path native_rt
+wait_frames 90
+wait_frames 60
+shot C:/tmp/matter-rock-sunlit-v2/size-0p5-near-rt-lit.png
+set render.pom.enabled false
+wait_frames 60
+shot C:/tmp/matter-rock-sunlit-v2/size-0p5-near-rt-flat.png
+set render.pom.enabled true
+render_path raster
+cam -0.0540062293 0.241659321 0.912739304 -0.210495359 0.279159321 0.138720634
+wait_frames 120
+stats size-0p5-grazing
+wait_frames 60
+shot C:/tmp/matter-rock-sunlit-v2/size-0p5-grazing-lit.png
+set render.pom.horizon_debug 0
+set viewer.debug.debug_view_mode 0
+set render.pom.enabled false
+wait_frames 60
+shot C:/tmp/matter-rock-sunlit-v2/size-0p5-grazing-flat.png
+set render.pom.enabled true
+render_path native_rt
+wait_frames 90
+wait_frames 60
+shot C:/tmp/matter-rock-sunlit-v2/size-0p5-grazing-rt-lit.png
+set render.pom.enabled false
+wait_frames 60
+shot C:/tmp/matter-rock-sunlit-v2/size-0p5-grazing-rt-flat.png
+set render.pom.enabled true
+render_path raster
+cam 2.59962999 1.01913729 0.872995652 3.15801856 1.11663729 0.554882536
+wait_frames 120
+stats size-2-near
+wait_frames 60
+shot C:/tmp/matter-rock-sunlit-v2/size-2-near-lit.png
+set render.pom.horizon_debug 0
+set viewer.debug.debug_view_mode 0
+set render.pom.enabled false
+wait_frames 60
+shot C:/tmp/matter-rock-sunlit-v2/size-2-near-flat.png
+set render.pom.enabled true
+render_path native_rt
+wait_frames 90
+wait_frames 60
+shot C:/tmp/matter-rock-sunlit-v2/size-2-near-rt-lit.png
+set render.pom.enabled false
+wait_frames 60
+shot C:/tmp/matter-rock-sunlit-v2/size-2-near-rt-flat.png
+set render.pom.enabled true
+render_path raster
+cam 3.31450769 1.07913729 1.32890121 3.15801856 1.11663729 0.554882536
+wait_frames 120
+stats size-2-grazing
+wait_frames 60
+shot C:/tmp/matter-rock-sunlit-v2/size-2-grazing-lit.png
+set render.pom.horizon_debug 0
+set viewer.debug.debug_view_mode 0
+set render.pom.enabled false
+wait_frames 60
+shot C:/tmp/matter-rock-sunlit-v2/size-2-grazing-flat.png
+set render.pom.enabled true
+render_path native_rt
+wait_frames 90
+wait_frames 60
+shot C:/tmp/matter-rock-sunlit-v2/size-2-grazing-rt-lit.png
+set render.pom.enabled false
+wait_frames 60
+shot C:/tmp/matter-rock-sunlit-v2/size-2-grazing-rt-flat.png
+set render.pom.enabled true
+render_path raster
+cam 16.0736857 4.36904914 2.53764326 16.6320742 4.46654914 2.21953014
+wait_frames 120
+stats size-8-near
+wait_frames 60
+shot C:/tmp/matter-rock-sunlit-v2/size-8-near-lit.png
+set render.pom.horizon_debug 0
+set viewer.debug.debug_view_mode 0
+set render.pom.enabled false
+wait_frames 60
+shot C:/tmp/matter-rock-sunlit-v2/size-8-near-flat.png
+set render.pom.enabled true
+render_path native_rt
+wait_frames 90
+wait_frames 60
+shot C:/tmp/matter-rock-sunlit-v2/size-8-near-rt-lit.png
+set render.pom.enabled false
+wait_frames 60
+shot C:/tmp/matter-rock-sunlit-v2/size-8-near-rt-flat.png
+set render.pom.enabled true
+render_path raster
+cam 16.7885634 4.42904914 2.99354881 16.6320742 4.46654914 2.21953014
+wait_frames 120
+stats size-8-grazing
+wait_frames 60
+shot C:/tmp/matter-rock-sunlit-v2/size-8-grazing-lit.png
+set render.pom.horizon_debug 0
+set viewer.debug.debug_view_mode 0
+set render.pom.enabled false
+wait_frames 60
+shot C:/tmp/matter-rock-sunlit-v2/size-8-grazing-flat.png
+set render.pom.enabled true
+render_path native_rt
+wait_frames 90
+wait_frames 60
+shot C:/tmp/matter-rock-sunlit-v2/size-8-grazing-rt-lit.png
+set render.pom.enabled false
+wait_frames 60
+shot C:/tmp/matter-rock-sunlit-v2/size-8-grazing-rt-flat.png
+set render.pom.enabled true
+render_path raster
+cam 55.9699084 17.7686966 9.19623369 56.528297 17.8661966 8.87812057
+wait_frames 120
+stats size-32-near
+wait_frames 60
+shot C:/tmp/matter-rock-sunlit-v2/size-32-near-lit.png
+set render.pom.horizon_debug 0
+set viewer.debug.debug_view_mode 0
+set render.pom.enabled false
+wait_frames 60
+shot C:/tmp/matter-rock-sunlit-v2/size-32-near-flat.png
+set render.pom.enabled true
+render_path native_rt
+wait_frames 90
+wait_frames 60
+shot C:/tmp/matter-rock-sunlit-v2/size-32-near-rt-lit.png
+set render.pom.enabled false
+wait_frames 60
+shot C:/tmp/matter-rock-sunlit-v2/size-32-near-rt-flat.png
+set render.pom.enabled true
+render_path raster
+cam 56.6847861 17.8286966 9.65213924 56.528297 17.8661966 8.87812057
+wait_frames 120
+stats size-32-grazing
+wait_frames 60
+shot C:/tmp/matter-rock-sunlit-v2/size-32-grazing-lit.png
+set render.pom.horizon_debug 0
+set viewer.debug.debug_view_mode 0
+set render.pom.enabled false
+wait_frames 60
+shot C:/tmp/matter-rock-sunlit-v2/size-32-grazing-flat.png
+set render.pom.enabled true
+render_path native_rt
+wait_frames 90
+wait_frames 60
+shot C:/tmp/matter-rock-sunlit-v2/size-32-grazing-rt-lit.png
+set render.pom.enabled false
+wait_frames 60
+shot C:/tmp/matter-rock-sunlit-v2/size-32-grazing-rt-flat.png
+set render.pom.enabled true
+render_path raster
+quit
