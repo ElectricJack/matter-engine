@@ -92,10 +92,11 @@ struct WorldEntry {
     std::string label;        // display name (world .js filename stem)
     std::string project_dir;  // project containing objects/ and worlds/
     std::string world_name;   // e.g. "Demo"
+    std::string scene_group;  // folder relative to scenes/, empty for flat scenes
 };
 
-// Scan a root like "../projects" for projects containing objects/ + worlds/.
-// Every regular worlds/*.js file contributes one entry, sorted by label.
+// Scan projects for scenes/[group/]<Name>/<Name>.js and legacy worlds/*.js.
+// Groups affect presentation only; scene names and cache identities stay stable.
 std::vector<WorldEntry> scan_worlds(const std::string& examples_root);
 
 // ViewerCommands — the plain-std::function bridge by which UI panels ISSUE the
@@ -377,6 +378,8 @@ struct ViewerStats {
     // of them are DRAWN. Freezing only the cull leaves the streamer refining
     // the world around a camera the cull cannot see.
     bool  freeze_cull_camera    = false;
+    // RenderOptions::live_terrain_graphics (MATTER_LIVE_TERRAIN=1 sessions).
+    bool  live_terrain_graphics = true;
     // Cull draws against the ID pass's mask (RenderOptions::
     // occlusion_draw_cull): a sector that owned no pixel is not rasterised at
     // all. ON by default since 2026-08-13, tracking the engine's own default --

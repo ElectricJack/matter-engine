@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { projectLayout } from './project_layout.mjs';
 // Actual authored Part dependency/placement census; no renderer, meshing or GPU.
 // node --experimental-vm-modules tools/castle_bake_census.mjs --output /tmp/castle-census.json
 // --declarations-only skips build(): fast dependency counts, not placement proof.
@@ -66,11 +67,12 @@ async function loader(){
   });
   if(m.status!=='evaluated')await m.evaluate();return m.namespace.default;
  }
+ const layout=projectLayout(PROJECT);
  async function part(name,scene){
-  const file=[path.join(PROJECT,'scenes',scene,'objects',name+'.js'),path.join(PROJECT,'objects',name+'.js')].find(fs.existsSync);
+  const file=layout.object(name,scene);
   assert.ok(file,'missing Part '+name);if(!parts.has(file))parts.set(file,await entry(file));return {ctor:parts.get(file),file};
  }
- return {files,materials,async world(scene){return entry(path.join(PROJECT,'scenes',scene,scene+'.js'));},
+ return {files,materials,async world(scene){return entry(path.join(layout.scene(scene),scene+'.js'));},
   async describe(name,params,scene,build){
    const {ctor,file}=await part(name,scene),merged=flat({...ctor.params,...params},name);
    const requirements=typeof ctor.requires==='function'?ctor.requires(merged):(ctor.requires??[]);

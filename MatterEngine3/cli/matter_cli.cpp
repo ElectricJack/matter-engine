@@ -18,6 +18,7 @@
 
 #include "gi_bake.h"
 #include "gi_bake_scene.h"
+#include "matter_bake_cli.h"
 
 #include <chrono>
 #include <cstdio>
@@ -247,9 +248,6 @@ int bake_gi(int argc, char** argv) {
 
 } // namespace
 
-int main(int argc, char** argv) {
-    if (argc >= 3 && !std::strcmp(argv[1], "bake") && !std::strcmp(argv[2], "gi"))
-        return bake_gi(argc - 3, argv + 3);
-    usage();
-    return 2;
+int matter_bake_gi_cli_main(int argc, char** argv) {
+    return bake_gi(argc, argv);
 }

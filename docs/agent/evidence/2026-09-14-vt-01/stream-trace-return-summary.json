@@ -1,0 +1,50 @@
+{
+  "schema": 1,
+  "trace": "/mnt/d/tmp/matter-vt/20260914-01/stream-trace-baseline/vt.jsonl",
+  "selected_rows": 601,
+  "distinct_active_vt_frames": 601,
+  "dropped_rows": 0,
+  "owner_frame_resets": 0,
+  "changed_frame_pairs": {
+    "variants": 0,
+    "fills_total": 0,
+    "evictions_total": 0,
+    "invalidations_total": 0,
+    "pages_dropped_total": 0,
+    "fills_failed_total": 0,
+    "enrich_total": 0,
+    "resident_sectors": 0,
+    "vertex_uploads": 0,
+    "cluster_uploads": 0
+  },
+  "queue_empty_throughout": true,
+  "queue_classes": {
+    "available": false
+  },
+  "settled_interval_counter_gate": true,
+  "required_frames": 600,
+  "cpu_scope": "VT hooks plus registration; initial runtime creation and source loading separate",
+  "gpu_scope": "VT pre-pass plus feedback readback; shader feedback writes and sampling remain inside gbuffer",
+  "cpu_vt_hooks_and_registration": {
+    "samples": 601,
+    "p50_ms": 0.6047,
+    "p95_ms": 0.9236,
+    "p99_ms": 0.9922000000000001,
+    "max_ms": 1.1876
+  },
+  "gpu_vt": {
+    "samples": 601,
+    "p50_ms": 0.011423999443650246,
+    "p95_ms": 0.1016639992594719,
+    "p99_ms": 0.18825599551200867,
+    "max_ms": 0.2335360050201416
+  },
+  "gpu_vt_available": true,
+  "full_vt_acceptance": false,
+  "limits": [
+    "Counter stability does not prove image continuity or page identity.",
+    "Request-to-visible latency is not measured by this schema.",
+    "GPU VT time must be supplied by dedicated timestamps; null is unavailable.",
+    "The marked camera/quality settings require the capture manifest and images."
+  ]
+}

@@ -1,12 +1,38 @@
 # MatterEngine roadmap
 
-**Updated:** 2026-08-30
+**Updated:** 2026-09-15
 
 This is the current product priority list. Completed implementation records
 live under `docs/completed/`; superseded directions live under
 `docs/deprecated/`. The
 [implementation-gap audit](docs/findings/spec-implementation-gap-audit-2026-08-28.md)
 contains the supporting inventory.
+
+## Texturing workstream — procedural materials and visual development
+
+The user reprioritized texturing on 2026-09-15: improve terrain and building
+appearance now, then complete strict performance acceptance once the material
+model is established. Preserve VT correctness, valid fallback and bounded work;
+keep lightweight timings during visual iteration. Original VT targets remain
+open and unchanged.
+
+1. Implement the [layered texturing design](docs/superpowers/specs/2026-09-14-layered-surface-texturing-design.md)
+   and [current working objective/plan](docs/superpowers/plans/2026-09-14-layered-surface-texturing.md):
+   direct DSP/SDF generation, analytically placed geometry, explicitly selected
+   and cached physics, coherent material/height composition and generated/authored
+   splats baked into VT. Start with a quiet rock/soil/moss slope and a varied
+   brick wall with peeling paint. Retain Wang sources for suitable repeating
+   materials and existing content. Develop POM and contact blending through
+   these proofs before broad content conversion.
+2. Maintain the [VT reliability design](docs/superpowers/specs/2026-09-14-vt-reliability-and-throughput-design.md)
+   and its [implementation plan](docs/superpowers/plans/2026-09-14-vt-reliability-and-throughput.md).
+   [Current evidence](docs/agent/evidence/2026-09-15-vt-feedback/README.md) covers
+   retained raster/RT/POM inputs and ordinary VT wait removal. Complete the
+   deferred correctness/performance acceptance; visual priority does not mark
+   the VT foundation complete or lower its measured frame/latency targets.
+
+These documents define the texturing workstream. Existing water, geometry and
+other renderer acceptance obligations below remain open on their own merits.
 
 ## Now — finish raster-water quality and acceptance
 
@@ -79,8 +105,9 @@ These are preserved ideas, not scheduled commitments:
   true round extrusion joins, and the interactive Settle Lab;
 - animation additions: gameplay bindings, general constrained IK, and an
   explicit deforming-mesh RT policy; and
-- material/rendering additions: part-local AO, ground macro variation,
-  RT ice/snow, decals, and emissive-mesh lighting of volumetric fog.
+- material/rendering additions beyond the texturing workstream: part-local AO,
+  RT ice/snow, dynamic projected decals/tracks, and emissive-mesh lighting of
+  volumetric fog.
 
 Any deferred item needs a current design and priority decision before work
 begins. The gap audit retains its original evidence.

@@ -79,6 +79,12 @@ uint64_t compute_resolved_hash(const void* source_bytes, size_t source_len,
                                const void* params_bytes, size_t params_len,
                                const uint64_t* child_hashes, size_t child_count);
 
+// Reuse a source prefix across many parameter sets without changing identity.
+// finish_resolved_hash appends params/children and CURRENT mode/version salts.
+uint64_t compute_source_hash(const void* source_bytes, size_t source_len);
+uint64_t finish_resolved_hash(uint64_t source_hash, const void* params_bytes, size_t params_len,
+                              const uint64_t* child_hashes, size_t child_count);
+
 // Child-instance record: a reference to ANOTHER part by resolved hash + placement.
 // transform is row-major, world placement under the parent's frame. Kept padding-free
 // (8 + 64 = 72 bytes) so sizeof(ChildInstance) is a stable layout guard.

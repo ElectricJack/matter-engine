@@ -1,0 +1,24 @@
+{
+  "compressed_png_roundtrip": "pass",
+  "maps": [
+    "material_0-clearcoat.png",
+    "material_0-roughness.png",
+    "material_1-normal.png",
+    "material_0-basecolor.png",
+    "material_1-height.png",
+    "material_0-height.png",
+    "material_1-normal-obj.png",
+    "material_1-roughness.png",
+    "material_0-normal-obj.png",
+    "material_1-orm.png",
+    "material_1-basecolor.png",
+    "material_1-occlusion.png",
+    "material_0-occlusion.png",
+    "material_1-metallic.png",
+    "material_0-normal.png",
+    "material_0-orm.png",
+    "material_0-metallic.png"
+  ],
+  "true_16_bit_height": "pass",
+  "total_png_bytes": 1340
+}

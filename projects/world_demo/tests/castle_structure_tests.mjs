@@ -1,3 +1,4 @@
+import { objectFile } from './helpers/project_layout.mjs';
 // Acceptance tests for shared-lib/castle_structure.js (task clear-apex.4).
 //
 // Run from the repo root:
@@ -622,11 +623,7 @@ function section7() {
 // Section 9: scene
 // ===========================================================================
 function fileExistsAsModule(moduleName) {
-  const candidates = [
-    path.join(__dirname, '..', 'scenes', 'CastleStructure', 'objects', moduleName + '.js'),
-    path.join(__dirname, '..', 'objects', moduleName + '.js'),
-  ];
-  return candidates.some((p) => fs.existsSync(p));
+  return !!objectFile(moduleName, 'CastleStructure');
 }
 async function section9() {
   const materialCalls = [];
@@ -643,7 +640,7 @@ async function section9() {
     // Import for real: this exercises the file exactly as the engine's world
     // loader would (its `shared-lib/...` specifiers resolve via the hooks
     // registered above), proving it evaluates without throwing.
-    await import('../scenes/CastleStructure/CastleStructure.js');
+    await import('../scenes/castles/layouts/CastleStructure/CastleStructure.js');
   } finally {
     delete globalThis.World;
     delete globalThis.MAT;

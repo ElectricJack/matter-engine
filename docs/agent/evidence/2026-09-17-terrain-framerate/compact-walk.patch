@@ -1,0 +1,365 @@
+--- a/MatterEngine3/shaders_vk/vt_material_domain_probe.comp
++++ b/MatterEngine3/shaders_vk/vt_material_domain_probe.comp
+@@ -70,7 +70,7 @@
+     results[i].pom=vec4(0);
+     if (seed_probe && receiver.valid) {
+         VtWalkContext ctx;
+-        ctx.metadata=vt_page_inputs[receiver.physical_slot];ctx.slot=p.slots.x;
++        ctx.metadata_page=receiver.physical_slot;ctx.metadata_pointer=uvec2(0);ctx.slot=p.slots.x;
+         VtVariantRecord record=vt_variants[ctx.slot-1u];
+         ctx.atlas_size=vec2(record.atlas_w,record.atlas_h);
+         ctx.root_to_owner=mat3(1);ctx.offset=vec3(0);ctx.root_tpm=1.0/p.derivatives.w;
+--- a/MatterEngine3/shaders_vk/vt_parallax.glsl
++++ b/MatterEngine3/shaders_vk/vt_parallax.glsl
+@@ -232,7 +232,7 @@
+     VT_POM_CONNECTED_VISIT();
+     vt_walk_neighbor_request=uvec4(0);vt_walk_missing_neighbor=false;vt_walk_root_slot=slot;
+     VtWalkContext ctx;
+-    ctx.metadata = vt_page_inputs[base.address.physical_slot];
++    ctx.metadata_page = base.address.physical_slot; ctx.metadata_pointer=uvec2(0);
+     ctx.slot = slot;
+     VtVariantRecord record = vt_variants[slot - 1u];
+     ctx.atlas_size = vec2(record.atlas_w, record.atlas_h);
+@@ -253,7 +253,7 @@
+     float nominal_step = min(relief * fade / inward, max_ray_m) / float(clamp(steps, 1, 128));
+     bool crossed = false;
+     for (int i = 0; i < 128; ++i) {
+-        GpuChart chart = VtWalkCharts(ctx.metadata.charts).values[point.chart];
++        GpuChart chart = VtWalkCharts(vt_walk_metadata(ctx).charts).values[point.chart];
+         float local_scale=requested_scale*chart.origin_tpm.w/ctx.root_tpm;
+         vec3 local_ray=ctx.root_to_owner*ray_local;
+         float half_texel_step = 0.5 * local_scale / max(length(local_ray) * chart.origin_tpm.w, 1e-8);
+@@ -292,7 +292,7 @@
+     result.connected = true;
+     result.albedo = value.albedo; result.orm = value.orm; result.normal_local = transpose(ctx.root_to_owner)*value.normal;
+     result.neighbor_request=vt_walk_neighbor_request;
+-    result.uv_density_scale=(VtWalkCharts(ctx.metadata.charts).values[point.chart].origin_tpm.w/ctx.root_tpm)*
++    result.uv_density_scale=(VtWalkCharts(vt_walk_metadata(ctx).charts).values[point.chart].origin_tpm.w/ctx.root_tpm)*
+         max(float(record.atlas_w),float(record.atlas_h))/max(ctx.atlas_size.x,ctx.atlas_size.y);
+     result.status = VT_POM_HIT;
+     return result;
+--- a/MatterEngine3/shaders_vk/vt_seed_walk.glsl
++++ b/MatterEngine3/shaders_vk/vt_seed_walk.glsl
+@@ -15,27 +15,29 @@
+ #define VT_SEED_FORCE_LINEAR false
+ #endif
+ 
+-bool vt_seed_contains(VtWalkContext ctx, uint index, vec3 proxy, float texel_m) {
++bool vt_seed_contains(uvec2 triangles, uint index, vec3 proxy, float texel_m) {
+     VT_SEED_TRIANGLE_VISIT();
+-    GpuTriGeometry tri = VtWalkTriangles(ctx.metadata.triangles).values[index];
++    GpuTriGeometry tri = VtWalkTriangles(triangles).values[index];
+     vec3 bary, face_normal;
+-    return vt_walk_projection(tri, proxy, bary, face_normal) &&
+-        all(greaterThanEqual(bary, vec3(-2e-6))) &&
+-        abs(dot(proxy - tri.p0.xyz, face_normal)) <= max(1e-5, texel_m * 0.01);
++    if (!vt_walk_projection(tri, proxy, bary, face_normal) ||
++        any(lessThan(bary, vec3(-2e-6))) ||
++        abs(dot(proxy - tri.p0.xyz, face_normal)) > max(1e-5, texel_m * 0.01)) return false;
++    return true;
+ }
+ 
+ bool vt_seed_search(inout VtWalkContext ctx, uint chart_id, GpuChart chart,
+                     vec3 proxy, float texel_m, out VtWalkPoint point) {
++    VtPageMetadata metadata=vt_walk_metadata(ctx);
+     uint count = min(chart.tri_range.y, 2048u);
+-    uint node_count = ctx.metadata.geometry_counts.w;
++    uint node_count = metadata.geometry_counts.w;
+     bool accelerated = !VT_SEED_FORCE_LINEAR && chart.tri_range.w > 0u &&
+         chart.tri_range.w <= 511u && chart.tri_range.z <= node_count &&
+         chart.tri_range.w <= node_count - chart.tri_range.z;
+     if (accelerated) {
+         // Full-width byte offset without requiring shaderInt64 arithmetic.
+         uint high, low;
+-        umulExtended(ctx.metadata.geometry_counts.y, 112u, high, low);
+-        uvec2 pointer = ctx.metadata.triangles;
++        umulExtended(metadata.geometry_counts.y, 112u, high, low);
++        uvec2 pointer = metadata.triangles;
+         uint address_low = pointer.x + low;
+         pointer.y += high + uint(address_low < pointer.x);
+         pointer.x = address_low;
+@@ -57,7 +59,7 @@
+                 node.range.y > count - (node.range.x - chart.tri_range.x)) return false;
+             for (uint i = 0u; i < node.range.y; ++i) {
+                 uint index = node.range.x + i;
+-                if (!vt_seed_contains(ctx, index, proxy, texel_m)) continue;
++                if (!vt_seed_contains(metadata.triangles, index, proxy, texel_m)) continue;
+                 point.chart = chart_id; point.triangle = index;
+                 return vt_walk_locate(ctx, proxy, point);
+             }
+@@ -68,7 +70,7 @@
+     // Small charts and legacy producers retain the original search exactly.
+     for (uint i = 0u; i < count; ++i) {
+         uint index = chart.tri_range.x + i;
+-        if (!vt_seed_contains(ctx, index, proxy, texel_m)) continue;
++        if (!vt_seed_contains(metadata.triangles, index, proxy, texel_m)) continue;
+         point.chart = chart_id; point.triangle = index;
+         return vt_walk_locate(ctx, proxy, point);
+     }
+--- a/MatterEngine3/shaders_vk/vt_surface_walk.glsl
++++ b/MatterEngine3/shaders_vk/vt_surface_walk.glsl
+@@ -23,13 +23,23 @@
+ readonly buffer VtWalkTriangles { GpuTriGeometry values[]; };
+ 
+ struct VtWalkContext {
+-    VtPageMetadata metadata;
++    // Root pages and crossed-owner link records are immutable for this draw.
++    // Keep their location instead of copying 80 bytes through every neighbor
++    // candidate, filter tap and refinement checkpoint.
++    uint metadata_page; // UINT_MAX selects the retained link-record pointer
++    uvec2 metadata_pointer;
+     uint slot;
+     vec2 atlas_size;
+     mat3 root_to_owner;
+     vec3 offset;
+     float root_tpm;
+ };
++layout(buffer_reference, std430, buffer_reference_align = 16)
++readonly buffer VtWalkMetadata { VtPageMetadata value; };
++VtPageMetadata vt_walk_metadata(VtWalkContext ctx) {
++    if (ctx.metadata_page != 0xffffffffu) return vt_page_inputs[ctx.metadata_page];
++    return VtWalkMetadata(ctx.metadata_pointer).value;
++}
+ struct VtSurfaceLink {
+     uvec4 edge, target;
+     VtPageMetadata metadata;
+@@ -54,17 +64,18 @@
+ 
+ bool vt_walk_neighbor(VtWalkContext ctx,uint triangle,int edge,vec3 local_point,
+                       out VtWalkContext next,out uint next_triangle) {
+-    GpuTriGeometry tri=VtWalkTriangles(ctx.metadata.triangles).values[triangle];
++    VtPageMetadata metadata=vt_walk_metadata(ctx);
++    GpuTriGeometry tri=VtWalkTriangles(metadata.triangles).values[triangle];
+     uint neighbor=tri.mat[edge+1];next=ctx;
+     if(neighbor!=0u) {
+-        next_triangle=neighbor-1u;return neighbor<=ctx.metadata.geometry_counts.y;
++        next_triangle=neighbor-1u;return neighbor<=metadata.geometry_counts.y;
+     }
+     VtVariantRecord record=vt_variants[ctx.slot-1u];
+     uvec2 pointer=uvec2(record.surface_links_low,record.surface_links_high);
+     if(all(equal(pointer,uvec2(0))))return false;
+     VtSurfaceLinks table=VtSurfaceLinks(pointer);
+     if(table.source.x!=ctx.slot || table.source.y!=record.generation || table.source.z>262144u ||
+-       !vt_walk_same_metadata(table.metadata,ctx.metadata))return false;
++       !vt_walk_same_metadata(table.metadata,metadata))return false;
+     vec3 vertices[3]=vec3[3](tri.p0.xyz,tri.p1.xyz,tri.p2.xyz);
+     vec3 delta=vertices[(edge+1)%3]-vertices[edge];
+     float parameter=dot(local_point-vertices[edge],delta)/dot(delta,delta);
+@@ -82,7 +93,12 @@
+         if(target.generation!=link.target.y || (target.flags&1u)==0u ||
+            link.edge.z>=link.metadata.geometry_counts.y)return false;
+         mat3 rotation=transpose(mat3(link.transform0.xyz,link.transform1.xyz,link.transform2.xyz));
+-        next.metadata=link.metadata;next.slot=link.target.x;next.atlas_size=vec2(link.target.zw);
++        // source.z is capped at 262144 above, so this byte offset fits u32.
++        // Header 96 + metadata offset 32, link stride 176 (host ABI assertions).
++        next.metadata_page=0xffffffffu;
++        next.metadata_pointer=uvec2(pointer.x+128u+i*176u,pointer.y);
++        next.metadata_pointer.y+=uint(next.metadata_pointer.x<pointer.x);
++        next.slot=link.target.x;next.atlas_size=vec2(link.target.zw);
+         next.root_to_owner=rotation*ctx.root_to_owner;
+         next.offset=rotation*ctx.offset+vec3(link.transform0.w,link.transform1.w,link.transform2.w);
+         next_triangle=link.edge.z;return true;
+@@ -91,7 +107,7 @@
+ }
+ 
+ float vt_walk_lod(VtWalkContext ctx,uint chart,float lod) {
+-    float tpm=VtWalkCharts(ctx.metadata.charts).values[chart].origin_tpm.w;
++    float tpm=VtWalkCharts(vt_walk_metadata(ctx).charts).values[chart].origin_tpm.w;
+     return lod+log2(max(tpm/max(ctx.root_tpm,1e-8),1e-8));
+ }
+ void vt_walk_request(VtAddress address) {
+@@ -105,17 +121,29 @@
+     uint chart;
+     uint triangle;
+     vec3 bary;
+-    vec3 position;
+-    vec3 normal;
+     vec2 uv;
+     float recess; // signed distance inside the local triangle's proxy plane
+ };
+ 
++// Height steps need position/UV and signed depth, not an interpolated shading
++// normal. Reconstruct that only for the final material samples, using exactly
++// the barycentrics accepted by the geometry walk.
++vec3 vt_walk_normal(VtWalkContext ctx, VtWalkPoint point) {
++    GpuTriGeometry tri=VtWalkTriangles(vt_walk_metadata(ctx).triangles).values[point.triangle];
++    vec3 normal=tri.n0.xyz*point.bary.x+tri.n1.xyz*point.bary.y+tri.n2.xyz*point.bary.z;
++    if(dot(normal,normal)>1e-20) return normalize(normal);
++    vec3 face_normal=cross(tri.p1.xyz-tri.p0.xyz,tri.p2.xyz-tri.p0.xyz);
++    face_normal*=inversesqrt(dot(face_normal,face_normal));
++    if(dot(face_normal,tri.n0.xyz+tri.n1.xyz+tri.n2.xyz)<0.0) face_normal=-face_normal;
++    return face_normal;
++}
++
+ bool vt_walk_available(VtWalkContext ctx) {
+-    return any(notEqual(ctx.metadata.charts, uvec2(0))) &&
+-           any(notEqual(ctx.metadata.triangles, uvec2(0))) &&
+-           ctx.metadata.geometry_counts.x > 0u && ctx.metadata.geometry_counts.x <= 65536u &&
+-           ctx.metadata.geometry_counts.y > 0u;
++    VtPageMetadata metadata=vt_walk_metadata(ctx);
++    return any(notEqual(metadata.charts, uvec2(0))) &&
++           any(notEqual(metadata.triangles, uvec2(0))) &&
++           metadata.geometry_counts.x > 0u && metadata.geometry_counts.x <= 65536u &&
++           metadata.geometry_counts.y > 0u;
+ }
+ 
+ bool vt_walk_projection(GpuTriGeometry tri, vec3 p, out vec3 bary, out vec3 normal) {
+@@ -139,31 +167,33 @@
+ }
+ 
+ bool vt_walk_chart(VtWalkContext ctx, uint triangle, inout uint chart) {
+-    if (chart < ctx.metadata.geometry_counts.x && vt_walk_chart_contains(
+-            VtWalkCharts(ctx.metadata.charts).values[chart], triangle,
+-            ctx.metadata.geometry_counts.y)) return true;
++    VtPageMetadata metadata=vt_walk_metadata(ctx);
++    if (chart < metadata.geometry_counts.x && vt_walk_chart_contains(
++            VtWalkCharts(metadata.charts).values[chart], triangle,
++            metadata.geometry_counts.y)) return true;
+     // Emission is chart-grouped, including zero-sized ranges. Upper bound of
+     // first-triangle selects the last range starting at/before this triangle.
+-    uint lo = 0u, hi = ctx.metadata.geometry_counts.x;
++    uint lo = 0u, hi = metadata.geometry_counts.x;
+     for (int i = 0; i < 17 && lo < hi; ++i) {
+         uint mid = lo + (hi - lo) / 2u;
+-        if (VtWalkCharts(ctx.metadata.charts).values[mid].tri_range.x <= triangle) lo = mid + 1u;
++        if (VtWalkCharts(metadata.charts).values[mid].tri_range.x <= triangle) lo = mid + 1u;
+         else hi = mid;
+     }
+     if (lo == 0u || lo != hi) return false;
+     chart = lo - 1u;
+-    return vt_walk_chart_contains(VtWalkCharts(ctx.metadata.charts).values[chart],
+-                                 triangle, ctx.metadata.geometry_counts.y);
++    return vt_walk_chart_contains(VtWalkCharts(metadata.charts).values[chart],
++                                 triangle, metadata.geometry_counts.y);
+ }
+ 
+ bool vt_walk_locate(inout VtWalkContext ctx, vec3 root_p, inout VtWalkPoint point) {
+     uint previous = 0xffffffffu;
+     uint previous_slot=0u;
+     for (int hop = 0; hop < 32; ++hop) {
++        VtPageMetadata metadata=vt_walk_metadata(ctx);
+         VT_WALK_LOCATE_VISIT();
+         vec3 p=ctx.root_to_owner*root_p+ctx.offset;
+-        if (point.triangle >= ctx.metadata.geometry_counts.y) return false;
+-        GpuTriGeometry tri = VtWalkTriangles(ctx.metadata.triangles).values[point.triangle];
++        if (point.triangle >= metadata.geometry_counts.y) return false;
++        GpuTriGeometry tri = VtWalkTriangles(metadata.triangles).values[point.triangle];
+         vec3 bary, face_normal;
+         if (!vt_walk_projection(tri, p, bary, face_normal)) return false;
+         // Adjacent offset faces meet at the edge's normal bisector. Testing
+@@ -179,7 +209,7 @@
+             VtWalkContext neighbor_ctx;uint neighbor;
+             bool connected = vt_walk_neighbor(ctx,point.triangle,edge,p,neighbor_ctx,neighbor);
+             if (connected) {
+-                GpuTriGeometry other = VtWalkTriangles(neighbor_ctx.metadata.triangles).values[neighbor];
++                GpuTriGeometry other = VtWalkTriangles(vt_walk_metadata(neighbor_ctx).triangles).values[neighbor];
+                 vec3 unused, other_normal;
+                 if (!vt_walk_projection(other, neighbor_ctx.root_to_owner*root_p+neighbor_ctx.offset, unused, other_normal))return false;
+                 other_normal=ctx.root_to_owner*transpose(neighbor_ctx.root_to_owner)*other_normal;
+@@ -204,16 +234,14 @@
+         if (crossed_edge < 0) {
+             if (outside_triangle) return false;
+             if (!vt_walk_chart(ctx, point.triangle, point.chart)) return false;
+-            GpuChart chart = VtWalkCharts(ctx.metadata.charts).values[point.chart];
++            GpuChart chart = VtWalkCharts(metadata.charts).values[point.chart];
+             if (!(chart.origin_tpm.w > 0.0)) return false;
+             point.bary = max(bary, vec3(0));
+             point.bary /= dot(point.bary, vec3(1));
+-            point.position = tri.p0.xyz * point.bary.x + tri.p1.xyz * point.bary.y + tri.p2.xyz * point.bary.z;
+-            vec3 normal = tri.n0.xyz * point.bary.x + tri.n1.xyz * point.bary.y + tri.n2.xyz * point.bary.z;
+-            point.normal = dot(normal, normal) > 1e-20 ? normalize(normal) : face_normal;
++            vec3 position = tri.p0.xyz * point.bary.x + tri.p1.xyz * point.bary.y + tri.p2.xyz * point.bary.z;
+             point.recess = dot(tri.p0.xyz - p, face_normal);
+-            vec2 plane = vec2(dot(point.position, chart.tangent_ou.xyz),
+-                              dot(point.position, chart.bitangent_ov.xyz));
++            vec2 plane = vec2(dot(position, chart.tangent_ou.xyz),
++                              dot(position, chart.bitangent_ov.xyz));
+             point.uv = (vec2(chart.rect.xy) + float(VT_CHART_GUTTER) + chart.origin_tpm.w *
+                 (plane - vec2(chart.tangent_ou.w, chart.bitangent_ov.w))) / ctx.atlas_size;
+             return !any(lessThan(point.uv, vec2(0))) && !any(greaterThanEqual(point.uv, vec2(1)));
+@@ -230,17 +258,18 @@
+ 
+ bool vt_walk_seed(inout VtWalkContext ctx, uint chart_id, vec3 proxy, float texel_m,
+                   out VtWalkPoint point) {
+-    if (!vt_walk_available(ctx) || chart_id >= ctx.metadata.geometry_counts.x) return false;
+-    GpuChart chart = VtWalkCharts(ctx.metadata.charts).values[chart_id];
+-    if (chart.tri_range.x > ctx.metadata.geometry_counts.y ||
+-        chart.tri_range.y > ctx.metadata.geometry_counts.y - chart.tri_range.x) return false;
++    VtPageMetadata metadata=vt_walk_metadata(ctx);
++    if (!vt_walk_available(ctx) || chart_id >= metadata.geometry_counts.x) return false;
++    GpuChart chart = VtWalkCharts(metadata.charts).values[chart_id];
++    if (chart.tri_range.x > metadata.geometry_counts.y ||
++        chart.tri_range.y > metadata.geometry_counts.y - chart.tri_range.x) return false;
+     return vt_seed_search(ctx, chart_id, chart, proxy, texel_m, point);
+ }
+ 
+ bool vt_walk_same_page_inputs(VtWalkContext ctx, VtAddress address) {
+     if (!address.valid || address.height_version != 1u) return false;
+     VtPageMetadata other = vt_page_inputs[address.physical_slot];
+-    return vt_walk_same_metadata(other,ctx.metadata);
++    return vt_walk_same_metadata(other,vt_walk_metadata(ctx));
+ }
+ 
+ // Fold an extended filter tap across each connected edge. Orthogonal projection
+@@ -250,9 +279,10 @@
+     uint previous = 0xffffffffu;
+     uint previous_slot=0u;
+     for (int hop = 0; hop < 32; ++hop) {
++        VtPageMetadata metadata=vt_walk_metadata(ctx);
+         vec3 p=ctx.root_to_owner*root_p+ctx.offset;
+-        if (point.triangle >= ctx.metadata.geometry_counts.y) return false;
+-        GpuTriGeometry tri = VtWalkTriangles(ctx.metadata.triangles).values[point.triangle];
++        if (point.triangle >= metadata.geometry_counts.y) return false;
++        GpuTriGeometry tri = VtWalkTriangles(metadata.triangles).values[point.triangle];
+         vec3 bary, normal;
+         if (!vt_walk_projection(tri, p, bary, normal)) return false;
+         if (all(greaterThanEqual(bary, vec3(-2e-6)))) return vt_walk_locate(ctx, root_p, point);
+@@ -272,7 +302,7 @@
+             next = candidate; neighbor = candidate_triangle;
+         }
+         if (edge < 0) return false;
+-        GpuTriGeometry other = VtWalkTriangles(next.metadata.triangles).values[neighbor];
++        GpuTriGeometry other = VtWalkTriangles(vt_walk_metadata(next).triangles).values[neighbor];
+         vec3 unused, next_normal;
+         if (!vt_walk_projection(other, next.root_to_owner*root_p+next.offset, unused, next_normal)) return false;
+         next_normal=ctx.root_to_owner*transpose(next.root_to_owner)*next_normal;
+@@ -294,8 +324,9 @@
+ // the footprint through real surface connectivity. Atlas adjacency proves nothing.
+ bool vt_walk_texel_point(inout VtWalkContext ctx, VtWalkPoint center, vec2 uv,
+                          out VtWalkPoint point) {
+-    GpuChart chart = VtWalkCharts(ctx.metadata.charts).values[center.chart];
+-    GpuTriGeometry tri = VtWalkTriangles(ctx.metadata.triangles).values[center.triangle];
++    VtPageMetadata metadata=vt_walk_metadata(ctx);
++    GpuChart chart = VtWalkCharts(metadata.charts).values[center.chart];
++    GpuTriGeometry tri = VtWalkTriangles(metadata.triangles).values[center.triangle];
+     vec2 q = (uv * ctx.atlas_size - vec2(chart.rect.xy) - float(VT_CHART_GUTTER)) /
+              chart.origin_tpm.w + vec2(chart.tangent_ou.w, chart.bitangent_ov.w);
+     vec2 a = vec2(tri.p0.w, tri.n0.w), b = vec2(tri.p1.w, tri.n1.w), c = vec2(tri.p2.w, tri.n2.w);
+@@ -331,7 +362,7 @@
+         if (material) {
+             value.albedo = vt_sample_material(address, VT_CHANNEL_ALBEDO).rgb;
+             value.orm = vt_sample_orm(address).rgb;
+-            value.normal = vt_frame_decode(vt_decode_normal(vt_sample_normal(address)), center.normal);
++            value.normal = vt_frame_decode(vt_decode_normal(vt_sample_normal(address)), vt_walk_normal(ctx,center));
+         }
+         return true;
+     }
+@@ -378,7 +409,7 @@
+             value.orm += weight * orm;
+             value.normal += weight * ctx.root_to_owner*transpose(tap_ctx.root_to_owner)*vt_frame_decode(
+                 vt_decode_normal(mapped ? vt_sample_normal(sample_address) :
+-                    texelFetch(vt_pool[VT_CHANNEL_NORMAL], location, 0)), tap.normal);
++                    texelFetch(vt_pool[VT_CHANNEL_NORMAL], location, 0)), vt_walk_normal(tap_ctx,tap));
+         }
+     }
+     if (material) value.normal = normalize(value.normal);
+--- a/MatterEngine3/src/render/vt_surface_connections.h
++++ b/MatterEngine3/src/render/vt_surface_connections.h
+@@ -21,5 +21,7 @@
+ };
+ static_assert(sizeof(VtSurfaceLinkGpu)==176 && sizeof(VtSurfaceLinksHeaderGpu)==96,
+               "vt_surface_walk.glsl immutable connection table ABI");
++static_assert(offsetof(VtSurfaceLinkGpu,metadata)==32,
++              "vt_surface_walk.glsl retained metadata-reference offset");
+ struct VtSurfaceConnectionState;
+ } // namespace vt

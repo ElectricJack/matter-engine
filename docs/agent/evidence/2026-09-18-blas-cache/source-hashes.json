@@ -1,0 +1,10 @@
+{
+  "MatterEngine3/src/render/blas_disk_cache.h": "a8bbf6a67b16536d2b058aa4d37325b89f84810efe14ddf6ac245317d1946b55",
+  "MatterEngine3/src/render/vk_blas_cache.h": "0866c4c0ec349e141617ff568c634292de3f7ad3d270160166b9e581dbc6ad73",
+  "MatterEngine3/src/render/geometry_world_runtime.cpp": "cf895f11ddb2c8b7e5135f3130633eca22f7b6e61bff1e7ffcaa31eaea79ab07",
+  "MatterEngine3/src/render/vk_scene_renderer.cpp": "00bec0107e182ab152f6ba64654495a6f833e0b11a4f3cfbe84da71b71bc8b36",
+  "MatterEngine3/src/render/vk_scene_renderer.h": "2e3356f57e8e30206a841f564e95093b5929faa9692624f592db39dc59887abe",
+  "MatterEngine3/tests/blas_disk_cache_tests.cpp": "ff88ef8a73d3bf0261509ebb2d4d2913974f7e317d16df8b3c08fb8c84ec40d9",
+  "MatterEngine3/tests/geometry_page_vk_tests.h": "7e3bc2909422aa9a135e77eb4f5b1e52aab164e0ab3db90134f8786968d780e1",
+  "MatterEditor/build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe": "3b7d33ae338b1717be386ee4d1d39cc05394cc2fb3a0959eec2c7ffa25f51908"
+}

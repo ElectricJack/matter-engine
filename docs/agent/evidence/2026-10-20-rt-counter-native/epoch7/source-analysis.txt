@@ -1,0 +1,69 @@
+noble-zenith-31 epoch 7: source investigation before any new native run
+Base: own published e279a1fc, fast-forwarded from clean assigned 9d846e66.
+No production source or fixture/assertion changed in this investigation.
+
+The epoch 6 interpretation "CPU-bound execution of the RT trace dispatch"
+does not distinguish driver compilation from shader execution. Its thread
+sample (queue thread running, llvmpipe-0 asleep) is consistent with deferred
+LLVM compilation. This is a source-supported hypothesis, not runtime proof.
+
+Actual frame 21 workload:
+- vulkan_smoke_tests.cpp:8756 disables GI, and the fixture installs no local
+  lights. rt_dispatch.inl:1502 skips the local-direct/GI block. Therefore
+  there is ONE production trace at 320x200, not three active trace passes.
+- rt_shadow.rgen:332 clamps samples to [1,16]. The two triangles and finite
+  sample loop do not explain an unbounded scene-sized shader loop. Its
+  raygen helpers do not iterate the local-light or VT chart trees.
+- vk_context.cpp:2515-2532 waits on the acquired image's binary semaphore
+  and signals render_finished. There is no counter-specific semaphore wait.
+  The prior observation alone cannot prove completion of the acquire wait.
+- rt_pipeline.inl:220-255 includes the test, full lighting, optional primary,
+  diffuse-only and reflection-only raygens in the same pipeline, regardless
+  of which SBT raygen the first shadow dispatch actually selects.
+
+Mesa 25.2.8 source (matching reported release, not claimed identical distro
+build source) establishes this path:
+1. lvp_ray_tracing_pipeline.c:1042-1125 combines ALL raygen groups with
+   runtime SBT-index branches into one compute shader. Turning scene GI off
+   does not remove the other raygens from the compiled pipeline.
+2. lvp_execute.c:4579-4612 binds that compute shader and calls launch_grid.
+3. lp_state_cs.c:1771-1808 calls llvmpipe_cs_update_derived BEFORE queueing
+   cs_exec_fn to shader worker threads. update_cs_variant calls
+   generate_variant on a cache miss (line 1438).
+4. generate_variant:1328-1343 builds LLVM, compiles the module, then obtains
+   the JIT function. lp_bld_init.c:423 invokes lp_passmgr_run and :505 calls
+   LLVMGetPointerToGlobal. The installed libvulkan_lvp.so imports both
+   LLVMRunPasses@LLVM_20.1 and LLVMGetPointerToGlobal@LLVM_20.1 (nm -D).
+
+Primary source URLs (read-only research; no driver replacement):
+https://raw.githubusercontent.com/chaotic-cx/mesa-mirror/mesa-25.2.8/src/gallium/frontends/lavapipe/lvp_ray_tracing_pipeline.c
+https://raw.githubusercontent.com/chaotic-cx/mesa-mirror/mesa-25.2.8/src/gallium/frontends/lavapipe/lvp_execute.c
+https://raw.githubusercontent.com/chaotic-cx/mesa-mirror/mesa-25.2.8/src/gallium/drivers/llvmpipe/lp_state_cs.c
+https://raw.githubusercontent.com/chaotic-cx/mesa-mirror/mesa-25.2.8/src/gallium/auxiliary/gallivm/lp_bld_init.c
+
+Concrete next diagnostic proposed to the supervisor:
+Use the SAME epoch6/test_frame_trace.py counter-only runner, 600 s hard cap,
+existing executable/device/display/extent/resource caps/validation layer,
+MATTER_PIPELINE_PROFILE=1 and MATTER_VK_END_FRAME_TRACE=1. Add only the
+adjacent trace_llvm.c interposer via LD_PRELOAD. It forwards original LLVM
+arguments/results and logs flushed enter/exit timestamps, module/function
+names and TIDs around the two exported compiler operations. No optimization
+toggle, sample/extent change, assertion waiver, or replacement shader.
+
+If frame 21 remains inside LLVMRunPasses or LLVMGetPointerToGlobal, this
+proves compiler work is blocking retirement, not counter consumption. If
+both return, it refutes that narrow explanation and preserves the remaining
+execution question. Either result must be reported honestly; the original
+native matrix and real invalid-record fixture remain UNMET until executed.
+
+Reason to ask before execution: latest supervisor instruction requires a
+source-backed bounded/correct workload before another long run. An unchanged
+workload plus compiler tracing is a diagnostic clarification, not that fix.
+Splitting pipeline groups or changing shader algorithms is outside this
+task's explicitly owned counter functions and requires a scope decision.
+
+Preparation status at commit 9df4935e: native run NOT STARTED.
+Subsequent authorized attempt: instrumentation failed before frame 21;
+see validation.txt and native-attempt.log. The compilation hypothesis is
+still unproven. No GPU, allocator, synchronization, performance or Windows
+acceptance claimed.
