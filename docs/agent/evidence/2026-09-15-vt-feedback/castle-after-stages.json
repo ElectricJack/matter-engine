@@ -1,0 +1,155 @@
+{
+  "units": {
+    "zones": "milliseconds",
+    "counters": "count"
+  },
+  "scope": "512-frame profiler tail; descriptive stage attribution, no end-to-end acceptance claim",
+  "zones": {
+    "vt.candidates": {
+      "samples": 2,
+      "p50": 0.004900000000000001,
+      "p95": 0.0165,
+      "max": 0.0165
+    },
+    "vt.collect": {
+      "samples": 512,
+      "p50": 0.0029,
+      "p95": 0.0045,
+      "max": 0.015
+    },
+    "vt.descriptors": {
+      "samples": 512,
+      "p50": 0.033299999999999996,
+      "p95": 0.053200000000000004,
+      "max": 0.1405
+    },
+    "vt.drain_feedback": {
+      "samples": 512,
+      "p50": 0.2139,
+      "p95": 0.35819999999999996,
+      "max": 0.49539999999999995
+    },
+    "vt.enrich": {
+      "samples": 512,
+      "p50": 0.0005,
+      "p95": 0.0012,
+      "max": 0.0021000000000000003
+    },
+    "vt.fb_dedup": {
+      "samples": 512,
+      "p50": 0.018600000000000002,
+      "p95": 0.0248,
+      "max": 0.0531
+    },
+    "vt.fb_queue": {
+      "samples": 512,
+      "p50": 0.0675,
+      "p95": 0.1003,
+      "max": 0.154
+    },
+    "vt.fb_scan": {
+      "samples": 512,
+      "p50": 0.1175,
+      "p95": 0.2512,
+      "max": 0.36819999999999997
+    },
+    "vt.feedback_target": {
+      "samples": 511,
+      "p50": 0.0005,
+      "p95": 0.0011,
+      "max": 0.0028
+    },
+    "vt.fill": {
+      "samples": 2,
+      "p50": 0.1255,
+      "p95": 0.2076,
+      "max": 0.2076
+    },
+    "vt.fill_select": {
+      "samples": 2,
+      "p50": 0.0040999999999999995,
+      "p95": 0.0073,
+      "max": 0.0073
+    },
+    "vt.invalidations": {
+      "samples": 489,
+      "p50": 0.0003,
+      "p95": 0.0008,
+      "max": 0.0012
+    },
+    "vt.mesh_entry": {
+      "samples": 2,
+      "p50": 0.0013,
+      "p95": 0.0022,
+      "max": 0.0022
+    },
+    "vt.push_inputs": {
+      "samples": 512,
+      "p50": 0.0009,
+      "p95": 0.0016,
+      "max": 0.0037
+    },
+    "vt.residency_begin": {
+      "samples": 512,
+      "p50": 0.2195,
+      "p95": 0.36419999999999997,
+      "max": 0.5033
+    },
+    "vt.table_upload": {
+      "samples": 512,
+      "p50": 0.0045,
+      "p95": 0.0083,
+      "max": 0.056600000000000004
+    }
+  },
+  "counters": {
+    "vt.fb_hits_filtered": {
+      "samples": 512,
+      "p50": 668,
+      "p95": 700,
+      "max": 721
+    },
+    "vt.fb_hits_raw": {
+      "samples": 512,
+      "p50": 16780,
+      "p95": 16780,
+      "max": 16780
+    },
+    "vt.fb_hits_runlength": {
+      "samples": 512,
+      "p50": 2349,
+      "p95": 2379,
+      "max": 2400
+    },
+    "vt.fb_texels": {
+      "samples": 512,
+      "p50": 32400,
+      "p95": 32400,
+      "max": 32400
+    },
+    "vt.feedback_requests": {
+      "samples": 512,
+      "p50": 658,
+      "p95": 689,
+      "max": 710
+    },
+    "vt.fill_batch": {
+      "samples": 2,
+      "p50": 1,
+      "p95": 1,
+      "max": 1
+    },
+    "vt.queue_depth": {
+      "samples": 2,
+      "p50": 1,
+      "p95": 1,
+      "max": 1
+    },
+    "vt.variants": {
+      "samples": 512,
+      "p50": 79,
+      "p95": 79,
+      "max": 79
+    }
+  }
+}

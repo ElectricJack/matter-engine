@@ -1,0 +1,41 @@
+{
+  "driver_exit": 0,
+  "verified_screenshots": 2,
+  "artifacts": [
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260914-01/castle-trace-baseline/timeline.txt",
+      "bytes": 509,
+      "sha256": "ebf09cc16dc9aa23908446a7d7c601a07750c9c9d18b9c7ba11f1612b545ad7c"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260914-01/castle-trace-baseline/vt.jsonl",
+      "bytes": 960187,
+      "sha256": "aaaa631782ad3a88edc8d0f99074ad96ac615f44ca56906b4517f4d73f5b7dc3"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260914-01/castle-trace-baseline/run/log.txt",
+      "bytes": 46492,
+      "sha256": "822b04fc7d0c2c098b8dbd3fe05769a8d9d1e07111bc0459742c1621a6b64e72"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260914-01/castle-trace-baseline/settled.png",
+      "bytes": 2143800,
+      "sha256": "aee888df86871b79ada2673b6204c5013e0a10c900ea7b2532d50f738a0c4b01"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260914-01/castle-trace-baseline/settled.png.done",
+      "bytes": 10,
+      "sha256": "4c339121e4860b04ebd48181621c9dd3f84901846feda08d4e77aafaf9a6c896"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260914-01/castle-trace-baseline/returned.png",
+      "bytes": 2118547,
+      "sha256": "f9691bd324d25b906bafb9e7721f93787e5bbf69807cdaa254e4b7b7c09a200b"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260914-01/castle-trace-baseline/returned.png.done",
+      "bytes": 10,
+      "sha256": "4c339121e4860b04ebd48181621c9dd3f84901846feda08d4e77aafaf9a6c896"
+    }
+  ]
+}

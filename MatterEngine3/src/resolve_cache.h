@@ -2,7 +2,8 @@
 // MatterEngine3/src/resolve_cache.h
 // resolve_cache.h — internal header for the resolve/manifest cache.
 // Saves and loads the full output of LocalProvider::install_graph() +
-// compose_world() so warm launches skip QuickJS script evaluation entirely.
+// compose_world(). Supported static worlds also retain a validated authored
+// definition and material snapshot; unsupported worlds re-evaluate world JS.
 //
 // File: <cache_root>/cache/<world_name>.resolve
 // Format: little-endian binary (magic, format-version, cache-key u64,
@@ -40,10 +41,11 @@ namespace resolve_cache {
 // Opaque payload restored from a cache hit.
 // Caller populates LocalProvider internals and WorldManifest from these fields.
 // Plain aggregate: no ownership, no OS or GPU resources, freely copied and
-// moved.  save() only reads it.  load() overwrites all five members on success
+// moved.  save() only reads it.  load() overwrites all six members on success
 // and, on a false return, leaves it PARTIALLY populated — discard it rather
 // than reusing it.
 struct ResolveCachePayload {
+    std::string authored_world; // versioned, checksummed declarative snapshot; empty = JS fallback
     // WorldManifest fields.
     std::vector<viewer::WorldManifestEntry> instances;
     // Local-light records are serialized; load reconstructs their index and
@@ -74,7 +76,8 @@ uint64_t compute_key(const std::string& world_path,
                      const std::string& root_params_json,
                      const std::string& objects_dir,
                      const std::string& project_shared_lib_dir,
-                     const std::string& engine_shared_lib_dir);
+                     const std::string& engine_shared_lib_dir,
+                     const matter::SourceSnapshot* sources = nullptr);
 
 // Scene-layout overload. scene_objects_dir may be "" (treated exactly as the
 // overload above). Passing the scene tier is NOT optional for a scene that has
@@ -86,7 +89,8 @@ uint64_t compute_key(const std::string& world_path,
                      const std::string& scene_objects_dir,
                      const std::string& objects_dir,
                      const std::string& project_shared_lib_dir,
-                     const std::string& engine_shared_lib_dir);
+                     const std::string& engine_shared_lib_dir,
+                     const matter::SourceSnapshot* sources = nullptr);
 
 // Save a resolved payload to <cache_root>/cache/<world_name>.resolve.
 // Writes the whole payload to "<path>.tmp" and then publishes it in one step,
@@ -100,7 +104,8 @@ uint64_t compute_key(const std::string& world_path,
 bool save(const std::string& cache_root,
           const std::string& world_name,
           uint64_t           cache_key,
-          const ResolveCachePayload& p);
+          const ResolveCachePayload& p,
+          matter::CacheByteStorage* storage = nullptr);
 
 // Load and validate a previously saved cache file.
 // Returns false on: missing file, bad magic, version/key mismatch, truncation.
@@ -109,6 +114,7 @@ bool save(const std::string& cache_root,
 bool load(const std::string& cache_root,
           const std::string& world_name,
           uint64_t           expected_key,
-          ResolveCachePayload& out);
+          ResolveCachePayload& out,
+          matter::CacheByteStorage* storage = nullptr);
 
 } // namespace resolve_cache

@@ -1,0 +1,68 @@
+{
+  "movement": {
+    "count": 959,
+    "median_ms": 27.912899999999354,
+    "p95_ms": 39.63270000000193,
+    "max_ms": 68.04100000000471
+  },
+  "scopes": {
+    "geometry.update": {
+      "mean_ms": 21.5675130859375,
+      "max_ms": 47.764900000000004
+    },
+    "pf.vtslots": {
+      "mean_ms": 0.8005634765625,
+      "max_ms": 4.4515
+    },
+    "pf.flushtmpl": {
+      "mean_ms": 3.295947265625,
+      "max_ms": 8.5016
+    },
+    "build.prepare_frame": {
+      "mean_ms": 5.405234765625,
+      "max_ms": 11.8508
+    }
+  },
+  "stages": {
+    "update_cpu": {
+      "count": 960,
+      "total_ms": 17635.751,
+      "max_ms": 47.473,
+      "mean_ms": 18.370573958333335
+    },
+    "hierarchy_pack": {
+      "count": 711557,
+      "total_ms": 1386.444,
+      "max_ms": 0.764,
+      "mean_ms": 0.001948465126476164
+    },
+    "publish_cpu": {
+      "count": 960,
+      "total_ms": 3513.3419999999996,
+      "max_ms": 10.317,
+      "mean_ms": 3.6597312499999997
+    },
+    "cut_upload_cpu": {
+      "count": 917,
+      "total_ms": 3271.0080000000003,
+      "max_ms": 8.699,
+      "mean_ms": 3.567075245365322
+    }
+  },
+  "queues": {
+    "reads_sampled_peak": 0,
+    "decode_queue_sampled_peak": 177,
+    "completions_sampled_peak": 162,
+    "prepared_sampled_peak": 615,
+    "uploads_sampled_peak": 189,
+    "published": 51549,
+    "reservation_stalls": 0,
+    "upload_limit_frames": 60,
+    "cpu_deferrals": 0,
+    "failures": 0,
+    "watchdogs": 0,
+    "gpu_stalls": 0,
+    "scratch_stalls": 0,
+    "evictions": 0
+  }
+}

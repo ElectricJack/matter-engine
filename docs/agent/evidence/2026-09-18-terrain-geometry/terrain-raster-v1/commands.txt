@@ -1,0 +1,4 @@
+render_path raster
+set render.gi.enabled false
+set render.pom.enabled false
+shot_now C:/tmp/matter-blas-mountain/terrain-raster-v1/terrain-first.png

@@ -1,0 +1,730 @@
+{
+  "url": "http://127.0.0.1:42553/workshop/",
+  "catalog": [
+    {
+      "id": "rock",
+      "triangles": 72,
+      "instances": "1",
+      "elapsed": "70.8 ms"
+    },
+    {
+      "id": "tree",
+      "triangles": 480,
+      "instances": "13",
+      "elapsed": "316.3 ms"
+    },
+    {
+      "id": "pillar",
+      "triangles": 212,
+      "instances": "3",
+      "elapsed": "126.7 ms"
+    },
+    {
+      "id": "arch",
+      "triangles": 792,
+      "instances": "1",
+      "elapsed": "373.8 ms"
+    },
+    {
+      "id": "gear",
+      "triangles": 352,
+      "instances": "1",
+      "elapsed": "212.4 ms"
+    },
+    {
+      "id": "vase",
+      "triangles": 384,
+      "instances": "1",
+      "elapsed": "408.4 ms"
+    },
+    {
+      "id": "chair",
+      "triangles": 156,
+      "instances": "13",
+      "elapsed": "79.6 ms"
+    },
+    {
+      "id": "crystals",
+      "triangles": 168,
+      "instances": "7",
+      "elapsed": "30.2 ms"
+    },
+    {
+      "id": "stairs",
+      "triangles": 60,
+      "instances": "1",
+      "elapsed": "33.1 ms"
+    },
+    {
+      "id": "chain",
+      "triangles": 1080,
+      "instances": "5",
+      "elapsed": "208.8 ms"
+    },
+    {
+      "id": "terrain",
+      "triangles": 192,
+      "instances": "1",
+      "elapsed": "150.1 ms"
+    },
+    {
+      "id": "facade",
+      "triangles": 252,
+      "instances": "11",
+      "elapsed": "60.4 ms"
+    },
+    {
+      "id": "bracket",
+      "triangles": 1480,
+      "instances": "1",
+      "elapsed": "711.5 ms"
+    }
+  ],
+  "construction": [
+    {
+      "id": "rock",
+      "steps": [
+        {
+          "step": 0,
+          "label": "boulder",
+          "triangles": "72"
+        },
+        {
+          "step": 1,
+          "label": "Final object",
+          "triangles": "72"
+        }
+      ]
+    },
+    {
+      "id": "tree",
+      "steps": [
+        {
+          "step": 0,
+          "label": "trunk",
+          "triangles": "48"
+        },
+        {
+          "step": 1,
+          "label": "branch / 0",
+          "triangles": "88"
+        },
+        {
+          "step": 2,
+          "label": "fork / 0",
+          "triangles": "120"
+        },
+        {
+          "step": 3,
+          "label": "branch / 1",
+          "triangles": "160"
+        },
+        {
+          "step": 4,
+          "label": "fork / 1",
+          "triangles": "192"
+        },
+        {
+          "step": 5,
+          "label": "branch / 2",
+          "triangles": "232"
+        },
+        {
+          "step": 6,
+          "label": "fork / 2",
+          "triangles": "264"
+        },
+        {
+          "step": 7,
+          "label": "branch / 3",
+          "triangles": "304"
+        },
+        {
+          "step": 8,
+          "label": "fork / 3",
+          "triangles": "336"
+        },
+        {
+          "step": 9,
+          "label": "branch / 4",
+          "triangles": "376"
+        },
+        {
+          "step": 10,
+          "label": "fork / 4",
+          "triangles": "408"
+        },
+        {
+          "step": 11,
+          "label": "branch / 5",
+          "triangles": "448"
+        },
+        {
+          "step": 12,
+          "label": "fork / 5",
+          "triangles": "480"
+        },
+        {
+          "step": 13,
+          "label": "Final object",
+          "triangles": "480"
+        }
+      ]
+    },
+    {
+      "id": "pillar",
+      "steps": [
+        {
+          "step": 0,
+          "label": "shaft / profile",
+          "triangles": "—"
+        },
+        {
+          "step": 1,
+          "label": "shaft",
+          "triangles": "188"
+        },
+        {
+          "step": 2,
+          "label": "shaft / placed",
+          "triangles": "188"
+        },
+        {
+          "step": 3,
+          "label": "plinth / mesh",
+          "triangles": "200"
+        },
+        {
+          "step": 4,
+          "label": "plinth",
+          "triangles": "200"
+        },
+        {
+          "step": 5,
+          "label": "capital / mesh",
+          "triangles": "212"
+        },
+        {
+          "step": 6,
+          "label": "capital",
+          "triangles": "212"
+        },
+        {
+          "step": 7,
+          "label": "Final object",
+          "triangles": "212"
+        }
+      ]
+    },
+    {
+      "id": "arch",
+      "steps": [
+        {
+          "step": 0,
+          "label": "wall / mesh",
+          "triangles": "12"
+        },
+        {
+          "step": 1,
+          "label": "wall",
+          "triangles": "12"
+        },
+        {
+          "step": 2,
+          "label": "door / mesh",
+          "triangles": "24"
+        },
+        {
+          "step": 3,
+          "label": "door",
+          "triangles": "24"
+        },
+        {
+          "step": 4,
+          "label": "arc",
+          "triangles": "120"
+        },
+        {
+          "step": 5,
+          "label": "archway",
+          "triangles": "792"
+        },
+        {
+          "step": 6,
+          "label": "Final object",
+          "triangles": "792"
+        }
+      ]
+    },
+    {
+      "id": "gear",
+      "steps": [
+        {
+          "step": 0,
+          "label": "gear / profile",
+          "triangles": "—"
+        },
+        {
+          "step": 1,
+          "label": "gear",
+          "triangles": "352"
+        },
+        {
+          "step": 2,
+          "label": "Final object",
+          "triangles": "352"
+        }
+      ]
+    },
+    {
+      "id": "vase",
+      "steps": [
+        {
+          "step": 0,
+          "label": "vase",
+          "triangles": "384"
+        },
+        {
+          "step": 1,
+          "label": "Final object",
+          "triangles": "384"
+        }
+      ]
+    },
+    {
+      "id": "chair",
+      "steps": [
+        {
+          "step": 0,
+          "label": "seat / mesh",
+          "triangles": "12"
+        },
+        {
+          "step": 1,
+          "label": "seat",
+          "triangles": "12"
+        },
+        {
+          "step": 2,
+          "label": "leg / -1 / -1 / mesh",
+          "triangles": "24"
+        },
+        {
+          "step": 3,
+          "label": "leg / -1 / -1",
+          "triangles": "24"
+        },
+        {
+          "step": 4,
+          "label": "leg / -1 / 1 / mesh",
+          "triangles": "36"
+        },
+        {
+          "step": 5,
+          "label": "leg / -1 / 1",
+          "triangles": "36"
+        },
+        {
+          "step": 6,
+          "label": "leg / 1 / -1 / mesh",
+          "triangles": "48"
+        },
+        {
+          "step": 7,
+          "label": "leg / 1 / -1",
+          "triangles": "48"
+        },
+        {
+          "step": 8,
+          "label": "leg / 1 / 1 / mesh",
+          "triangles": "60"
+        },
+        {
+          "step": 9,
+          "label": "leg / 1 / 1",
+          "triangles": "60"
+        },
+        {
+          "step": 10,
+          "label": "post / -1 / mesh",
+          "triangles": "72"
+        },
+        {
+          "step": 11,
+          "label": "post / -1",
+          "triangles": "72"
+        },
+        {
+          "step": 12,
+          "label": "post / 1 / mesh",
+          "triangles": "84"
+        },
+        {
+          "step": 13,
+          "label": "post / 1",
+          "triangles": "84"
+        },
+        {
+          "step": 14,
+          "label": "back / rail / mesh",
+          "triangles": "96"
+        },
+        {
+          "step": 15,
+          "label": "back / rail",
+          "triangles": "96"
+        },
+        {
+          "step": 16,
+          "label": "slat / mesh",
+          "triangles": "108"
+        },
+        {
+          "step": 17,
+          "label": "slat",
+          "triangles": "108"
+        },
+        {
+          "step": 18,
+          "label": "back / slat / 0",
+          "triangles": "108"
+        },
+        {
+          "step": 19,
+          "label": "back / slat / 1",
+          "triangles": "120"
+        },
+        {
+          "step": 20,
+          "label": "back / slat / 2",
+          "triangles": "132"
+        },
+        {
+          "step": 21,
+          "label": "back / slat / 3",
+          "triangles": "144"
+        },
+        {
+          "step": 22,
+          "label": "back / slat / 4",
+          "triangles": "156"
+        },
+        {
+          "step": 23,
+          "label": "Final object",
+          "triangles": "156"
+        }
+      ]
+    },
+    {
+      "id": "crystals",
+      "steps": [
+        {
+          "step": 0,
+          "label": "crystal",
+          "triangles": "24"
+        },
+        {
+          "step": 1,
+          "label": "satellite / 1",
+          "triangles": "24"
+        },
+        {
+          "step": 2,
+          "label": "satellite / 2",
+          "triangles": "48"
+        },
+        {
+          "step": 3,
+          "label": "satellite / 3",
+          "triangles": "72"
+        },
+        {
+          "step": 4,
+          "label": "satellite / 4",
+          "triangles": "96"
+        },
+        {
+          "step": 5,
+          "label": "satellite / 5",
+          "triangles": "120"
+        },
+        {
+          "step": 6,
+          "label": "satellite / 6",
+          "triangles": "144"
+        },
+        {
+          "step": 7,
+          "label": "Final object",
+          "triangles": "168"
+        }
+      ]
+    },
+    {
+      "id": "stairs",
+      "steps": [
+        {
+          "step": 0,
+          "label": "stairs / profile",
+          "triangles": "—"
+        },
+        {
+          "step": 1,
+          "label": "stairs",
+          "triangles": "60"
+        },
+        {
+          "step": 2,
+          "label": "stairs / placed",
+          "triangles": "60"
+        },
+        {
+          "step": 3,
+          "label": "Final object",
+          "triangles": "60"
+        }
+      ]
+    },
+    {
+      "id": "chain",
+      "steps": [
+        {
+          "step": 0,
+          "label": "link",
+          "triangles": "216"
+        },
+        {
+          "step": 1,
+          "label": "chain / 0",
+          "triangles": "216"
+        },
+        {
+          "step": 2,
+          "label": "chain / 1",
+          "triangles": "432"
+        },
+        {
+          "step": 3,
+          "label": "chain / 2",
+          "triangles": "648"
+        },
+        {
+          "step": 4,
+          "label": "chain / 3",
+          "triangles": "864"
+        },
+        {
+          "step": 5,
+          "label": "chain / 4",
+          "triangles": "1,080"
+        },
+        {
+          "step": 6,
+          "label": "Final object",
+          "triangles": "1,080"
+        }
+      ]
+    },
+    {
+      "id": "terrain",
+      "steps": [
+        {
+          "step": 0,
+          "label": "terrain",
+          "triangles": "192"
+        },
+        {
+          "step": 1,
+          "label": "Final object",
+          "triangles": "192"
+        }
+      ]
+    },
+    {
+      "id": "facade",
+      "steps": [
+        {
+          "step": 0,
+          "label": "panel / profile",
+          "triangles": "—"
+        },
+        {
+          "step": 1,
+          "label": "panel",
+          "triangles": "32"
+        },
+        {
+          "step": 2,
+          "label": "panel / placed",
+          "triangles": "32"
+        },
+        {
+          "step": 3,
+          "label": "windows / 0",
+          "triangles": "32"
+        },
+        {
+          "step": 4,
+          "label": "windows / 1",
+          "triangles": "64"
+        },
+        {
+          "step": 5,
+          "label": "windows / 2",
+          "triangles": "96"
+        },
+        {
+          "step": 6,
+          "label": "windows / 3",
+          "triangles": "128"
+        },
+        {
+          "step": 7,
+          "label": "windows / 4",
+          "triangles": "160"
+        },
+        {
+          "step": 8,
+          "label": "windows / 5",
+          "triangles": "192"
+        },
+        {
+          "step": 9,
+          "label": "border / -1 / mesh",
+          "triangles": "204"
+        },
+        {
+          "step": 10,
+          "label": "border / -1",
+          "triangles": "204"
+        },
+        {
+          "step": 11,
+          "label": "border / 1 / mesh",
+          "triangles": "216"
+        },
+        {
+          "step": 12,
+          "label": "border / 1",
+          "triangles": "216"
+        },
+        {
+          "step": 13,
+          "label": "border / bottom / mesh",
+          "triangles": "228"
+        },
+        {
+          "step": 14,
+          "label": "border / bottom",
+          "triangles": "228"
+        },
+        {
+          "step": 15,
+          "label": "border / top / mesh",
+          "triangles": "240"
+        },
+        {
+          "step": 16,
+          "label": "border / top",
+          "triangles": "240"
+        },
+        {
+          "step": 17,
+          "label": "cornice / mesh",
+          "triangles": "252"
+        },
+        {
+          "step": 18,
+          "label": "cornice",
+          "triangles": "252"
+        },
+        {
+          "step": 19,
+          "label": "Final object",
+          "triangles": "252"
+        }
+      ]
+    },
+    {
+      "id": "bracket",
+      "steps": [
+        {
+          "step": 0,
+          "label": "foot / mesh",
+          "triangles": "12"
+        },
+        {
+          "step": 1,
+          "label": "foot",
+          "triangles": "12"
+        },
+        {
+          "step": 2,
+          "label": "back / mesh",
+          "triangles": "24"
+        },
+        {
+          "step": 3,
+          "label": "back",
+          "triangles": "24"
+        },
+        {
+          "step": 4,
+          "label": "body",
+          "triangles": "1,440"
+        },
+        {
+          "step": 5,
+          "label": "foot / hole / -1",
+          "triangles": "1,488"
+        },
+        {
+          "step": 6,
+          "label": "back / hole / -1",
+          "triangles": "1,536"
+        },
+        {
+          "step": 7,
+          "label": "foot / hole / 1",
+          "triangles": "1,584"
+        },
+        {
+          "step": 8,
+          "label": "back / hole / 1",
+          "triangles": "1,632"
+        },
+        {
+          "step": 9,
+          "label": "bracket",
+          "triangles": "1,480"
+        },
+        {
+          "step": 10,
+          "label": "Final object",
+          "triangles": "1,480"
+        }
+      ]
+    }
+  ],
+  "lod": {
+    "baseTriangles": 1944,
+    "reducedTriangles": 666
+  },
+  "errors": [],
+  "wasmRequests": [
+    "/workshop/matter-procedural-wasm/matter_geometry_wasm.wasm",
+    "/workshop/matter-procedural-wasm/matter_geometry_wasm.wasm",
+    "/workshop/matter-procedural-wasm/matter_geometry_wasm.wasm",
+    "/workshop/matter-procedural-wasm/matter_geometry_wasm.wasm",
+    "/workshop/matter-procedural-wasm/matter_geometry_wasm.wasm",
+    "/workshop/matter-procedural-wasm/matter_geometry_wasm.wasm",
+    "/workshop/matter-procedural-wasm/matter_geometry_wasm.wasm"
+  ],
+  "screenshots": [
+    "arch-wireframe-normals.png",
+    "chair-workshop.png",
+    "chain-lod.png",
+    "mobile.png"
+  ]
+}

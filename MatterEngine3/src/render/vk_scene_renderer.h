@@ -1,5 +1,8 @@
 #pragma once
 
+#include "matter/gpu_timing_sample.h"
+#include "matter/evaluation_channels.h"
+
 // MatterEngine3/src/render/vk_scene_renderer.h
 //
 // VkSceneRenderer — the scene renderer's declaration, and with it the POD types
@@ -70,6 +73,7 @@
 //    shaders need a build that regenerates SPIR-V.
 
 #include <vulkan/vulkan.h>
+#include "../../../libs/MatterGraphics/src/native/raster_types.h"
 
 #include <algorithm>
 #include <array>
@@ -88,6 +92,7 @@
 
 #include "chart_atlas.h"   // WP-E: per-rung chart tables travel with a part
 #include "frame_matrices.h"
+#include "vk_sparse_voxel.h"
 #include "matter/draw_overrides.h"  // per-module draw overrides (GPU lane)
 #include "matter/cloud_shadow_settings.h"
 #include "matter/atmosphere_lighting.h"
@@ -95,6 +100,8 @@
 #include "gpu_matrix_pack.h"
 #include "matter/lod_contract.h"
 #include "matter/gpu_visual_meshing.h"
+#include "matter/solid_sdf_meshing.h"
+#include "matter/solid_face_projection.h"
 #include "matter/math_types.h"
 #include "matter/world_definition.h"
 #include "material_registry.h"
@@ -105,6 +112,7 @@
 #include "vk_animation_bounds.h"
 #include "vk_draw_command.h"
 #include "vk_resources.h"
+#include "../../../libs/MatterGraphics/src/native/frame_image_layouts.h"
 #include "water_field_vk.h"
 #include "water_field_vk_resources.h"
 #include "water_animation_gpu.h"
@@ -113,6 +121,7 @@
 // that used to be this header's other user was deleted in M4).
 #include "vk_pipeline.h"
 #include "vk_temporal.h"
+namespace vt::encoded { class Filler; }
 #include "vt_compositor.h"  // WP-D: tier-1 page compositor (the filler)
 #include "vt_enrich.h"      // WP-H: tier-2 hemisphere AO page enrichment
 #include "vt_residency.h"  // WP-E: chart-space virtual texturing runtime
@@ -129,14 +138,22 @@ struct TilesetPomSettings;
 
 namespace gpu_meshing {
 class GpuVisualMesher;
+class GpuSolidMesher;
+class GpuSolidFaceProjector;
+class GpuFaceMaterialBaker;
+struct FaceMaterialJob;
+struct FaceMaterialPatch;
 }
+namespace part_surface { struct Prepared; }
 
 namespace tileset {
 struct SettledTorus;
 struct BakeInputs;
 }
 
+namespace asset_export { struct Mesh; struct Material; }
 namespace viewer {
+class VkBlasCache;
 
 class VkVolumetrics;
 struct FroxelDispatchGrid;
@@ -299,48 +316,6 @@ inline uint32_t vulkan_history_token(uint64_t instance_id) {
     return folded != 0 ? folded : 1u;
 }
 
-// The graphics push contract shared by raster.vert and gbuffer.frag. Indirect
-// mesh draws leave the override off and read DrawTransform::selected_lod, which
-// cull.comp wrote. Direct draws (the skin tail) have no cull-written transform
-// tail of their own, so they carry their exact selected rung in the first two
-// words -- that separation is what lets two skin clusters of one instance keep
-// different rungs.
-//
-// `wireframe_enabled` is set only when the frame is genuinely being recorded
-// with the VK_POLYGON_MODE_LINE pipelines. It is what tells gbuffer.frag to
-// stop shading and emit a flat, self-lit line colour, so it must never be
-// raised on a device that fell back to fill -- see select_raster_pipelines,
-// which is the single place that decides both at once.
-struct alignas(16) RasterDebugPushConstants {
-    uint32_t direct_lod = 0;
-    uint32_t direct_lod_valid = 0;
-    uint32_t lod_tint_enabled = 0;
-    uint32_t wireframe_enabled = 0;
-    // Intra-cell impostor parallax (gbuffer.frag): the two extra atlas taps
-    // that offset the sample by in_impostor_parallax.xy to fake depth as the
-    // view moves off the baked axis, plus its shade modulation. Default ON --
-    // this is a toggle for judging whether the effect earns its cost, not a
-    // behaviour change.
-    //
-    // NOTE: distinct from tileset POM, which already excludes impostors
-    // outright (`tileset_slot >= 0 && !is_impostor`).
-    uint32_t impostor_parallax_enabled = 1;
-    // Zero is the static-water sentinel. Animated direct draws replace this
-    // first pre-existing padding word with a hash of their playback identity.
-    uint32_t water_diagnostic_identity = 0u;
-    uint32_t water_padding0[2]{};
-    float water_bounds_min[4]{};
-    float water_bounds_extent[4]{};
-    uint32_t water_material_index = 0u;
-    uint32_t water_padding1[3]{};
-};
-// Five aligned vec4 records. The GLSL block is declared identically in BOTH
-// gbuffer.frag and raster.vert; all three must be changed together. The default
-// `make -C MatterEngine3` target rebuilds SPIR-V whenever a shader source
-// changes, so no separate shader target has to be remembered.
-static_assert(sizeof(RasterDebugPushConstants) == 80,
-              "raster push constants must remain five aligned vec4 records");
-
 // Keep raster-pipeline choice atomic: an unavailable or partially created line
 // variant must never produce a mixed fill/line frame, and must never leave the
 // push constant claiming wireframe while filled triangles are drawn.
@@ -371,24 +346,6 @@ inline RasterPipelineSelection select_raster_pipelines(
     if (!wireframe_requested || !wireframe_available || !line_complete)
         return {{fill.static_mesh, fill.skinned_mesh}, false};
     return {{line.static_mesh, line.skinned_mesh}, true};
-}
-
-// A line-mode copy of the fill raster state. Copying rather than mutating is
-// the point: the fill pipelines' create-info aliases one rasterization struct,
-// and the composite pass historically aliased the input-assembly struct next
-// to it, so an in-place polygonMode/topology edit for the wireframe variants
-// silently changes pipelines built afterwards.
-//
-// Backface culling is dropped for the line pass on purpose. Wireframe exists
-// to show triangle DENSITY; hiding the far side of a shell halves the edge
-// count the view is supposed to be measuring.
-inline VkPipelineRasterizationStateCreateInfo make_wireframe_rasterization(
-    const VkPipelineRasterizationStateCreateInfo& fill) noexcept {
-    VkPipelineRasterizationStateCreateInfo line = fill;
-    line.polygonMode = VK_POLYGON_MODE_LINE;
-    line.cullMode = VK_CULL_MODE_NONE;
-    line.lineWidth = 1.0f;
-    return line;
 }
 
 inline RasterDebugPushConstants make_raster_debug_push_constants(
@@ -514,38 +471,6 @@ struct VkSceneCluster {
     std::vector<VkSceneLod> lods;
 };
 
-// The interleaved raster vertex, and a hard shader contract: raster.vert
-// consumes it as vertex attributes AND the ray-tracing hit shaders decode it
-// manually by word offset out of the part's rt_geometry buffer. Stride is 88
-// bytes (it grew from 72 by APPENDING the warp block below — see that comment
-// for why every pre-existing word offset had to stay put).
-//
-// position/normal are part-local metres; tint is linear RGBA; `surface` is the
-// per-vertex surface parameter set, whose .x carries impostor::kQuadMarker on
-// the two triangles of a terminal billboard (the sentinel raster.vert,
-// gbuffer.frag and vk_scene_detail::lod_is_billboard all branch on, and the one
-// adopt_part_impostors patches with the assigned atlas slot).
-// material_index == UINT32_MAX means "no material record".
-struct VkRasterVertex {
-    matter::Float3 position{};
-    matter::Float3 normal{};
-    matter::Float4 tint{};
-    matter::Float4 surface{};
-    uint32_t material_index = UINT32_MAX;
-    uint32_t pad[3]{};
-    // Warp field (VT Phase 2), appended AFTER the historical 72-byte layout
-    // so every pre-existing word offset (RT's manual decode reads material
-    // at word 14) is unchanged; only the stride grew 72 -> 88. warp_uv is
-    // the warped ground coordinate in world-anchored metres; warp_tangent
-    // is the octahedral-encoded frame tangent (2 x f16); warp_scales packs
-    // (su, sv) as 2 x f16 — grad u = su * T, grad v = sv * (N x T). All
-    // zero (su == 0) means "no warp": the fragment shader falls back to the
-    // shipped world-XZ march addressing.
-    matter::Float2 warp_uv{};
-    uint32_t warp_tangent = 0;
-    uint32_t warp_scales = 0;
-};
-
 // WP-E (chart-space VT): the CPU-side rung mesh a VT page filler reads.
 // De-interleaved on purpose — it is exactly the shape vt::VtPartContext pins,
 // so the residency layer can adopt these arrays without a repack. Supplied
@@ -581,6 +506,14 @@ struct VkScenePartImpostor {
     uint32_t cluster = 0;
     uint32_t ordinal = 0;   // this impostor's index within the part
     std::vector<uint8_t> atlas;   // impostor::kAtlasBytes: shade layer, tint layer
+    struct UploadMip {
+        uint32_t edge = 0;
+        size_t shade_offset = 0;
+        size_t tint_offset = 0;
+    };
+    // Worker-prepared offsets into VkScenePart::impostor_upload_bytes. Empty
+    // for fixtures and callers that still supply only the base atlas.
+    std::vector<UploadMip> upload_mips;
 };
 
 // Everything the renderer needs to register one part, assembled by the caller
@@ -660,6 +593,17 @@ struct VkScenePart {
     // so existing positional fixtures continue to omit it safely.
     WaterFieldBinding water_field_binding{};
     bool raster_water_surface = false;
+    // Optional device-derived RT cache; key is immutable geometry page content.
+    std::string blas_cache_directory, blas_cache_content;
+    std::shared_ptr<const void> geometry_budget_claim;
+    // Immutable registration policy; appended to preserve aggregate initializers.
+    bool geometry_raster_only = false;
+    // Stream workers prepare the RT material sets before publication. Fixtures
+    // and synchronous callers leave this false and derive them in ensure_part.
+    bool rt_material_ids_prepared = false;
+    std::vector<uint32_t> rt_material_ids;
+    std::vector<std::vector<uint32_t>> rt_lod_material_ids;
+    std::vector<uint8_t> impostor_upload_bytes;
 };
 
 // Demand-driven VT: one wanted-but-unregistered (part, rung), surfaced by the
@@ -780,7 +724,38 @@ struct VkSceneInstance {
     // animation owns visibility. This flag never grants RT participation;
     // engine-generated water keeps ray_traced false in active and fallback.
     bool rt_proxy_only = false;
+    // Paged terrain traces page triangles using the owning sector chart atlas.
+    uint64_t rt_vt_source_hash = 0;
 };
+
+// Immutable hierarchy snapshot for the cull shader. Jobs reference admitted
+// controller instances; page instances reserve indirect buckets and supply the
+// CPU RT mirror, but are not individually dispatched for raster selection.
+struct VkGeometryCutNode {
+    // The first twelve words are the shader node layout. Preparation workers
+    // fill this once; scene publication copies it without scalar re-encoding.
+    float lo[3]{};
+    float error = 0;
+    float hi[3]{};
+    uint32_t reserved = 0;
+    uint32_t children[2]{UINT32_MAX, UINT32_MAX};
+    uint32_t ready = 0, cluster = 0;
+    uint64_t ready_part_hash = 0;
+    uint64_t page_lo = 0, page_hi = 0;
+    uint32_t ready_slot = UINT32_MAX;
+};
+static_assert(offsetof(VkGeometryCutNode,error)==12 && offsetof(VkGeometryCutNode,hi)==16 &&
+    offsetof(VkGeometryCutNode,children)==32 && offsetof(VkGeometryCutNode,ready)==40 &&
+    offsetof(VkGeometryCutNode,ready_part_hash)==48,"geometry shader node layout");
+struct VkGeometryCutJob {
+    uint32_t instance_index = 0, first_root = 0, root_count = 0;
+    float scale = 1, error_reach = 0;
+    uint64_t owner_lease = 0;
+    bool source_vt = false; // use controller sector rung 0 for all selected pages
+    // Child links are local to this immutable block; roots/feedback stay global.
+    uint32_t node_base = 0;
+};
+struct VkGeometryPageRequest { uint64_t owner_lease = 0, page_lo = 0, page_hi = 0; };
 
 // The counters cull.comp accumulates into a frame slot's `stats` buffer.
 // Reading them back costs a round trip, so the production path caches the last
@@ -798,6 +773,9 @@ struct VkCullStats {
 struct VkRasterAttachment {
     VkImage image = VK_NULL_HANDLE;
     VkFormat format = VK_FORMAT_UNDEFINED;
+    // Snapshot of the renderer's tracked layout. Readbacks must restore it;
+    // presentation and earlier readbacks need not leave a sampling layout.
+    VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
 };
 
 // A handle view of the G-buffer the raster pass writes and the RT/composite
@@ -916,10 +894,23 @@ struct RtSurfaceHit {
     uint32_t vt_slot = 0;            // 0 = the hit rung carries no chart table
     bool vt_applied = false;         // a VT page actually resolved and sampled
     matter::Float3 vt_albedo{};      // tinted VT albedo at the hit
+    matter::Float3 vt_normal{};      // decoded world normal (test words 29..31)
     float vt_desired_mip = 0.0f;     // virtual mip the ray cone asked for
     float vt_mapped_mip = 0.0f;      // mip that was actually resident
     float cone_width = 0.0f;         // world-space cone footprint at the hit
     float uv_density = 0.0f;         // atlas UV per metre across the hit triangle
+};
+
+// A raw signal texel, optionally with the primary receiver sampled by that
+// texel. Coordinates are in signal space, including reduced diffuse targets.
+struct GiTemporalGpuTexelPatch {
+    GiPixelCoord pixel{3, 3};
+    matter::Float4 raw{200.0f, 200.0f, 200.0f, 1.0f};
+    bool patch_geometry = false;
+    float depth = 0.5f;
+    matter::Float4 normal{0.0f, 0.0f, 1.0f, 0.0f};
+    uint32_t material_index = 7;
+    uint32_t instance_token = 41;
 };
 
 struct GiTemporalGpuFixture {
@@ -933,8 +924,11 @@ struct GiTemporalGpuFixture {
     uint32_t instance_token = 41;
     float reactivity = 0.0f;
     matter::Float4 previous_radiance{0.25f, 0.5f, 0.75f, 1.0f};
+    bool patch_previous_radiance = false;
+    matter::Float4 previous_radiance_patch{200.0f, 200.0f, 200.0f, 1.0f};
     matter::Float3 previous_moments{};
     uint32_t previous_history_length = 3;
+    uint32_t previous_history_background_length = 0;
     float previous_depth = 0.5f;
     matter::Float4 previous_normal{0.0f, 0.0f, 1.0f, 0.0f};
     uint32_t previous_material_index = 7;
@@ -943,6 +937,9 @@ struct GiTemporalGpuFixture {
     GiPixelCoord output_pixel{3, 3};
     GiPixelCoord history_patch_pixel{3, 3};
     bool reset = false;
+    std::vector<GiTemporalGpuTexelPatch> current_patches;
+    // Diffuse-only sequences read the preceding fixture's complete GPU output.
+    bool reuse_previous_output = false;
 };
 
 struct GiTemporalGpuResult {
@@ -954,6 +951,8 @@ struct GiTemporalGpuResult {
 };
 
 struct GiAtrousGpuFixture {
+    uint32_t signal_mode = 0;
+    std::vector<uint32_t> instance_token;
     VkExtent2D extent{9, 9};
     std::vector<matter::Float4> signal;
     std::vector<matter::Float3> moments;
@@ -1065,10 +1064,13 @@ struct alignas(16) LocalLightGpuMeta {
     float cell_size = 8.0f;
     float inverse_cell_size = 0.125f;
     uint32_t max_candidates_per_cell = 0;
-    uint32_t reserved = 0;
+    uint32_t selection_budgets = 0; // primary/secondary bytes; 0=unlimited
+    uint32_t primary_tiles_x = 0, primary_tiles_y = 0;
+    uint32_t primary_words_per_tile = 0, primary_culling_enabled = 0;
 };
-static_assert(sizeof(LocalLightGpuMeta) == 32,
-              "local-light metadata must remain two aligned vec4 lanes");
+static_assert(offsetof(LocalLightGpuMeta, primary_tiles_x) == 32);
+static_assert(sizeof(LocalLightGpuMeta) == 48,
+              "local-light metadata is three aligned vec4 lanes");
 
 // Exactly one stage owns primary local-direct radiance. This task publishes
 // Raster; the RT lighting task may publish RayTraced only after its separate
@@ -1100,39 +1102,25 @@ struct LocalLightRenderStats {
 
 // Monotonic upload census for one renderer, surfaced by upload_counters().
 // Observation only — nothing branches on these. The interesting ratios are
-// static_full vs static_append (a full count that climbs with resident parts is
-// the O(N^2) streaming regression) and static_capacity_overflows, which the
-// reservation floor exists to hold at zero.
+// static_full vs static_append/static_growth. A full count that climbs with
+// resident parts is the O(N^2) streaming regression.
 struct VkSceneUploadCounters {
     uint64_t vertex_uploads = 0;
     uint64_t cluster_uploads = 0;
     uint64_t instance_uploads = 0;
     uint64_t command_uploads = 0;
     uint64_t command_layout_rebuilds = 0;
-    // How the cluster/vertex/index staging reached the GPU: a full pass
-    // recreates the buffers and rewrites every byte (O(world)); an append
-    // writes only the staging tail past the already-uploaded counts
-    // (O(new part)). Streaming publishes must take the append path — a full
-    // count that climbs with resident parts is the O(N^2) load regression.
+    // How cluster/vertex/index staging reached the GPU: append writes only
+    // changed ranges, growth also copies unchanged ranges on the GPU, and
+    // full recreates all buffers and rewrites every byte from the CPU.
     uint64_t static_full_uploads = 0;
     uint64_t static_append_uploads = 0;
-    // Times the append path found a buffer too small and had to escalate to the
-    // O(world) rewrite. The reservation floor in upload_scene_buffers exists to
-    // hold this at ZERO after the initial allocation; a non-zero value in a
-    // steady-state world means the reservation is too small for it.
+    // Capacity growth copied the unchanged resident ranges on the GPU and
+    // uploaded only dirty ranges from the CPU staging arrays.
+    uint64_t static_growth_uploads = 0;
+    // Times append found an undersized buffer and grew it. A rising count in a
+    // settled world indicates fragmentation or a reserve that is too small.
     uint64_t static_capacity_overflows = 0;
-};
-
-// The slice of the indirect draw-command buffer that belongs to one part slot:
-// commands [first_command, first_command + command_count) of command_template_
-// and of the frame's `commands` buffer. Built by the command-layout rebuild,
-// and snapshotted per frame into recorded_draw_ranges_ so a test can assert
-// which parts a frame actually recorded.
-struct PartCommandRange {
-    uint32_t first_command = 0;
-    uint32_t command_count = 0;
-    uint32_t part_slot = 0;
-    bool raster_water_surface = false;
 };
 
 // The scene renderer: one object per world session that owns every GPU resource
@@ -1193,6 +1181,7 @@ public:
     // fill_rt_instances() hands the current list out for inspection.
     struct RtInstance {
         uint64_t part_hash = 0;
+        uint64_t vt_source_hash = 0;
         float transform[16]{};
         // Animated instances must pick their LOD from the same dynamic joint
         // bounds the raster lanes use, not from the part's static cluster
@@ -1206,6 +1195,55 @@ public:
 
     explicit VkSceneRenderer(matter::VulkanDevice& vulkan);
     ~VkSceneRenderer();
+
+    // Publish an immutable sparse-brick snapshot between frames. Uploads are
+    // setup work; old snapshots remain retained by their submitted frames.
+    bool set_sparse_voxels(const std::vector<SparseVoxelBatch>&, std::string& error);
+    bool set_shared_surfaces(const std::vector<SparseSharedObject>&,std::string& error);
+    bool set_shared_surface_forest(const std::vector<SparseSharedObject>& surfaces,
+        const std::vector<SparseShadowObject>& shadows,std::string& error);
+    // Update only outer tree transforms; the accepted local catalog is immutable.
+    bool set_shared_surface_forest_placements(
+        const std::vector<std::vector<SparseVoxelInstance>>& placements,std::string& error);
+
+    uint64_t sparse_primary_gpu_bytes() const {return sparse_voxels_?sparse_voxels_->gpu_bytes():0;}
+    // Current dedicated allocations for the three static scene buffers.
+    // HOST_VISIBLE memory may also be DEVICE_LOCAL on a resizable BAR, so
+    // report both properties independently rather than assuming a heap.
+    struct StaticBufferMemory {
+        uint64_t clusters = 0, vertices = 0, indices = 0;
+        uint64_t device_local = 0, host_visible = 0;
+    };
+    StaticBufferMemory static_buffer_memory() const {
+        StaticBufferMemory result;
+        const auto add = [&](const matter::VkBufferResource& buffer, uint64_t& size) {
+            size = buffer.allocation_size;
+            if (buffer.memory_properties & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
+                result.device_local += size;
+            if (buffer.memory_properties & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)
+                result.host_visible += size;
+        };
+        add(clusters_, result.clusters);
+        add(vertices_, result.vertices);
+        add(indices_, result.indices);
+        return result;
+    }
+    // Independent immutable sun casters; empty input removes the snapshot.
+    bool set_sparse_shadow_casters(const std::vector<SparseVoxelBatch>&,std::string& error);
+    bool set_shared_sparse_shadow_casters(const std::vector<SparseShadowObject>&,std::string& error);
+    bool readback_sparse_shadow_ms(uint32_t frame_slot,double& ms,std::string& error) const;
+    uint64_t sparse_shadow_gpu_bytes() const {return sparse_shadows_?sparse_shadows_->gpu_bytes():0;}
+    // Diagnostic readback after the caller has completed this frame slot.
+    // Timing covers sparse selection/visibility, excluding composite and shadows.
+    bool readback_sparse_frame(uint32_t slot,SparseVoxelTimings& timing,SparseHierarchyStats& stats,std::string& error) const {
+        timing={};stats={};
+        if(!sparse_voxels_) {error.clear();return true;}
+        return sparse_voxels_->readback_timings(*vulkan_,slot,timing,error) &&
+               sparse_voxels_->readback_hierarchy_stats(*vulkan_,slot,stats,error);
+    }
+
+    bool set_sparse_hierarchy(const std::vector<SparseHierarchyPrototype>&,
+        const std::vector<SparseHierarchyPlacement>&,const SparseHierarchyConfig&,std::string& error);
     VkSceneRenderer(const VkSceneRenderer&) = delete;
     VkSceneRenderer& operator=(const VkSceneRenderer&) = delete;
 
@@ -1237,6 +1275,22 @@ public:
         gpu_meshing::Stats& stats,
         gpu_meshing::Error& error,
         const gpu_meshing::BuildControl& control = {});
+    // Source geometry bake on the app/Vulkan thread, outside an active frame.
+    // The service retains pipelines and scratch across distinct part recipes.
+    bool build_solid_source(
+        const gpu_meshing::SolidJob& job,
+        gpu_meshing::MeshResult& result,
+        gpu_meshing::SolidStats& stats,
+        gpu_meshing::Error& error,
+        const gpu_meshing::BuildControl& control = {});
+    // Projects a transient source field directly into finite surface texels.
+    bool project_solid_face(
+        const gpu_meshing::FaceJob& job, gpu_meshing::FacePatch& result,
+        gpu_meshing::FaceStats& stats, gpu_meshing::Error& error,
+        const gpu_meshing::BuildControl& control = {});
+    bool bake_face_material(const gpu_meshing::FaceMaterialJob&, gpu_meshing::FaceMaterialPatch&,
+        gpu_meshing::FaceStats&, gpu_meshing::Error&, const gpu_meshing::BuildControl& = {});
+    bool publish_part_surface(std::shared_ptr<const part_surface::Prepared>, std::string& error);
     // Registers `part` (or returns the slot it already has) and hands back the
     // dense part_slot every GPU table is indexed by, or -1 on failure. Stages
     // the part's clusters, vertices and indices into the static staging arrays
@@ -1283,6 +1337,12 @@ public:
     // tell a shading-only edit from one that changes geometry-affecting
     // properties. Also dirties the per-part occluder-class table, because
     // MATERIAL_ALPHA_TESTED is what that table is derived from.
+    // Offline export uses a private compositor and immutable retained source inputs.
+    bool export_part_material(const chart_atlas::ChartAtlasRung& atlas,
+        const vt::VtPartContext& context, const float transform[16],
+        const std::vector<float>& baked_ao, asset_export::Mesh& mesh,
+        asset_export::Material& material, std::string& error);
+
     bool update_materials(const std::vector<MaterialGpuRecord>& records,
                           uint64_t shading_revision,
                           uint64_t geometry_revision, std::string& error);
@@ -1321,22 +1381,92 @@ public:
     // WP-E: pool occupancy / fills / evictions for the FrameStats channel.
     // All-zero when the VT runtime never started (no chart-bearing part).
     vt::VtResidency::Stats vt_stats() const {
-        return vt_ ? vt_->stats() : vt::VtResidency::Stats{};
+        if (!vt_ || !vt_->available()) return {};
+        auto result = vt_->stats();
+        result.cpu_frame_serial = vt_frame_serial_;
+        result.cpu_demand_ms = vt_cpu_demand_ms_;
+        result.cpu_begin_ms = vt_cpu_begin_ms_;
+        result.cpu_pre_pass_ms = vt_cpu_pre_pass_ms_;
+        result.cpu_post_pass_ms = vt_cpu_post_pass_ms_;
+        return result;
     }
     bool vt_active() const { return vt_ && vt_->available(); }
+    // Lifetime AO geometry-preparation builds; material-only edits should
+    // leave this unchanged even when their pages are filled/enriched again.
+    uint64_t vt_enrich_as_build_count() const {
+        return vt_enricher_ ? vt_enricher_->stats().as_builds : 0;
+    }
+    uint64_t vt_geometry_build_count() const {
+        return vt_compositor_ ? vt_compositor_->stats().geometry_builds : 0;
+    }
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+    // Exercise the production demand-eviction path without a camera heuristic.
+    void test_evict_vt_rung(uint64_t part_hash, uint32_t rung) {
+        const auto found = slot_of_.find(part_hash);
+        if (found != slot_of_.end()) evict_vt_rung(parts_[found->second], rung);
+    }
+    void test_advance_vt_demand_frame() { ++vt_demand_frame_; }
+    void test_update_vt_demand(matter::Float3 eye, float budget) {
+        update_vt_demand(eye, budget);
+    }
+    void test_rebuild_vt_demand() { vt_demand_cache_valid_ = false; }
+    void test_freeze_vt_demand_eye(matter::Float3 eye) {
+        frozen_cull_eye_ = eye;
+        cull_camera_frozen_ = cull_camera_freeze_requested_ = true;
+    }
+    uint64_t test_vt_demand_builds() const { return vt_demand_builds_; }
+    uint64_t test_vt_wanted_stamp(uint64_t hash, uint32_t rung) const {
+        const auto it = slot_of_.find(hash);
+        return it != slot_of_.end() && rung < kVkMaxChartRung
+            ? vt_wanted_stamp(parts_[it->second], rung) : 0;
+    }
+    uint32_t test_vt_registered_rung(uint64_t hash, uint32_t rung) const {
+        const auto it = slot_of_.find(hash);
+        return it != slot_of_.end() && rung < parts_[it->second].vt_slots.size()
+            ? parts_[it->second].vt_slots[rung] : vt::kVtNoSlot;
+    }
+    bool test_vt_input_update_pending() const { return vt_inputs_dirty_; }
+    // A rejected input push must release the residency fill gate.
+    bool test_vt_fills_gated() const { return vt_ && vt_->input_update_pending(); }
+    // Reject the next compositor input push before any setter runs.
+    void test_fail_next_vt_input_push() noexcept { test_fail_next_vt_input_push_ = true; }
+    void test_pause_vt_page_fills(bool paused) {
+        if (vt_) vt_->pause_page_fills_for_test(paused);
+    }
+    uint32_t test_vt_page_slot(uint64_t part_hash, uint32_t rung,
+                               vt::VtPageKey page) const {
+        return vt_ ? vt_->resident_page_slot_for_test(
+                         vt_->slot_for(part_hash, rung), page) : UINT32_MAX;
+    }
+#endif
     // WP-E frame hooks. Public only so the file-local raster recorder in
     // vk_scene_renderer.cpp can reach them; not part of the app-facing API.
-    // pre  = pool/indirection transitions, bounded page fills, feedback clear
+    // pre  = pool/indirection transitions, bounded page fills, feedback attachment transition
     //        (recorded BEFORE vkCmdBeginRendering — they are transfers).
-    // post = feedback image -> host-visible readback (AFTER vkCmdEndRendering).
+    // post = visible feedback -> compact host-visible readback (AFTER vkCmdEndRendering).
     void vt_record_pre_pass(VkCommandBuffer command_buffer);
     void vt_record_post_pass(VkCommandBuffer command_buffer);
     bool rt_geometry_classification_dirty(uint64_t part_hash) const;
+    // Prepare a single-group geometry page without adding it to raster or RT
+    // instance membership. Publication waits for geometry_page_render_ready().
+    // Bounded queue; work is recorded in the existing frame/BLAS lifecycle.
+    bool queue_geometry_page_warmup(uint64_t part_hash, std::string& error);
+    // Query before allocation. Includes private RT/BLAS allocation requirements
+    // and the page's occupied share of the existing raster arenas. Scratch is
+    // a simultaneous-build reservation; frame-pool capacity is reported apart.
+    bool geometry_page_upload_cost(const VkScenePart&, uint64_t& geometry_bytes,
+                                   uint64_t& scratch_bytes, std::string& error) const;
+    bool geometry_page_render_ready(uint64_t part_hash) const;
+    // Capture on the renderer owner lane before handing immutable input to a worker.
+    bool resolve_geometry_page(VkGeometryCutNode&) const;
+    // Retain the accepted page's actual GPU resources in a residency snapshot.
+    // Range ownership still follows ensure_part/release_part on the owner lane.
+    std::shared_ptr<const void> geometry_page_resources(uint64_t part_hash) const;
     // Unregisters a part: erases it from slot_of_ (bumping slot_of_version_),
     // returns its cluster / vertex / index ranges to the free-range lists —
     // O(part), with no compaction and no O(world) re-upload — hands back its
     // impostor atlas slots, and releases its VT variants through the deferred
-    // invalidation queue rather than stalling the device. No-op for an unknown
+    // producer retirement rather than stalling the device. No-op for an unknown
     // hash. Instances still naming the hash no longer resolve, so the caller
     // must re-send its instance list.
     void release_part(uint64_t part_hash);
@@ -1500,11 +1630,21 @@ public:
     // reports success, so an abandoned frame can never leave the cache claiming
     // content the GPU never wrote.
     void finish_ray_tracing_frame(uint64_t frame_serial, bool succeeded);
+    std::array<uint64_t, 4> blas_cache_stats() const;
     const std::vector<PartCommandRange>& test_recorded_draw_ranges() const {
         return recorded_draw_ranges_;
     }
     VkSceneUploadCounters upload_counters() const noexcept {
         return upload_counters_;
+    }
+    // Descriptors (the sum of VkWriteDescriptorSet::descriptorCount) this
+    // renderer has written since the current frame began -- prepare_frame(),
+    // or dispatch_culling() on the legacy test path. Read once the frame is
+    // recorded, it is that frame's descriptor churn. Sets owned by the VT
+    // runtime, volumetrics, atmosphere and cloud-shadow objects are written
+    // by those objects and are not counted here.
+    uint32_t frame_descriptors_written() const noexcept {
+        return frame_descriptors_written_;
     }
     VkCullStats cached_cull_stats() const noexcept { return cached_stats_; }
 
@@ -1517,8 +1657,15 @@ public:
         const world_lights::LocalLightPublication& publication,
         std::string& error);
     LocalLightRenderStats local_light_stats() const noexcept;
+    // Caller must have retired this slot's submission and call before reusing it.
+    bool readback_primary_light_list(uint32_t frame_slot, uint32_t tile_x,
+        uint32_t tile_y, std::vector<uint32_t>& ids, std::string& error);
+    bool readback_primary_light_mask(uint32_t frame_slot, uint32_t tile_x,
+        uint32_t tile_y, LocalLightGpuMeta& header,
+        std::vector<uint32_t>& words, std::string& error);
     LocalDirectLightingContract local_direct_contract() const noexcept {
-        return {LocalDirectOwner::Raster, local_light_revision_, 0u};
+        return {local_direct_owner_, local_light_revision_,
+                local_direct_lane_revision_};
     }
 
     // ---- occlusion culling (M4) -------------------------------------------
@@ -1562,6 +1709,8 @@ public:
                    : live_eye;
     }
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
+    bool test_gi_specialization_enabled() const noexcept { return rt_specialize_gi_; }
+    void test_set_gi_specialization_enabled(bool enabled) noexcept { rt_specialize_gi_ = enabled; }
     bool part_is_raster_water(uint64_t part_hash) const noexcept;
     VkPipeline test_water_forward_static_pipeline() const noexcept {
         return water_forward_static_pipeline_;
@@ -1590,6 +1739,7 @@ public:
     VkFormat test_opaque_depth_format() const noexcept {
         return opaque_depth_.format;
     }
+    uint64_t test_geometry_cut_uploads() const noexcept { return test_geometry_cut_uploads_; }
     VkExtent2D test_opaque_extent() const noexcept {
         return {opaque_hdr_.extent.width, opaque_hdr_.extent.height};
     }
@@ -1649,6 +1799,24 @@ public:
     // production path records through record_cull_and_render above.
     bool dispatch_culling(const FrameMatrices& frame, matter::Float3 camera_eye,
                           float pixel_budget, std::string& error);
+    bool readback_sparse_voxel_counts(std::vector<uint32_t>& visible,std::string& error) const {
+        if (!sparse_voxels_) { visible.clear(); error.clear(); return true; }
+        return sparse_voxels_->readback_counts(*vulkan_,active_frame_index_,visible,error);
+    }
+    uint64_t test_sparse_voxel_gpu_bytes() const { return sparse_voxels_?sparse_voxels_->gpu_bytes():0; }
+    // The published sun-caster snapshot, for readbacks the renderer never makes on it.
+    std::shared_ptr<const VkSparseVoxelScene> test_sparse_shadow_snapshot() const { return sparse_shadows_; }
+    // Exercise stochastic sequence / motion contracts without pretending a
+    // mock or unavailable DLSS implementation has resolved the image.
+    void test_set_sparse_accumulation(bool enabled) { sparse_voxel_test_accumulation_=enabled; }
+    bool readback_sparse_hierarchy_stats(SparseHierarchyStats& out,std::string& error) const {
+        if(!sparse_voxels_) { out={}; error.clear(); return true; }
+        return sparse_voxels_->readback_hierarchy_stats(*vulkan_,active_frame_index_,out,error);
+    }
+    bool readback_sparse_voxel_timings(SparseVoxelTimings& out,std::string& error) const {
+        if(!sparse_voxels_) { out={}; error.clear(); return true; }
+        return sparse_voxels_->readback_timings(*vulkan_,active_frame_index_,out,error);
+    }
     bool cull_stats(VkCullStats& stats, std::string& error);
     bool readback_commands(std::vector<DrawCommand>& commands,
                            std::string& error);
@@ -1674,6 +1842,13 @@ public:
     // as well as the raster instance buffer.
     void set_part_draw_overrides(
         const std::vector<matter::PartDrawOverrideEntry>& entries);
+    matter::PartDrawOverrideGpu part_draw_override(uint64_t source_hash) const;
+    bool set_geometry_cut(const std::vector<VkGeometryCutNode>&,
+                          const std::vector<uint32_t>& roots,
+                          const std::vector<VkGeometryCutJob>&, std::string& error,
+                          bool raster_only = false);
+    void set_geometry_view_revision(uint64_t revision) { geometry_view_revision_ = revision; }
+    std::vector<VkGeometryPageRequest> take_geometry_page_requests();
     void set_lighting(const VkSceneLighting& lighting);
     void set_atmosphere_settings(const matter::AtmosphereSettings& settings);
     const ResolvedAtmosphereStatus& resolved_atmosphere_status() const noexcept {
@@ -1694,12 +1869,13 @@ public:
     bool wireframe_available() const noexcept;
     void set_ray_tracing_settings(
         const matter::VulkanRayTracingSettings& settings);
-    void set_gi_settings(const matter::VulkanGiSettings& settings) {
-        gi_settings_ = settings;
-        gi_settings_.max_bounces = 1u;
-        gi_settings_.samples_per_pixel = 1u;
-        gi_settings_.trace_scale = std::max(0.125f, std::min(settings.trace_scale, 1.0f));
+    void set_gi_settings(const matter::VulkanGiSettings& settings);
+    // See RenderOptions::vulkan_forest_history_reset.
+    void set_forest_history_reset(bool enabled) noexcept { forest_history_reset_ = enabled; }
+    void request_dlss_history_reset() noexcept {
+        dlss_history_reset_pending_ = true;
     }
+    void note_sparse_snapshot_changed();
     void set_volumetrics_settings(const matter::VulkanVolumetricsSettings& s,
                                   const matter::FogSettings& fog);
     void set_volumetrics_settings(const matter::VulkanVolumetricsSettings& s,
@@ -1744,7 +1920,7 @@ public:
     bool cloud_shadows_active() const;
     uint64_t cloud_shadow_persistent_bytes() const;
     uint64_t impostor_atlas_total_bytes() const {
-        return impostor_atlas_bytes_ * kImpostorMaxSlots;
+        return impostor_gpu_bytes_per_slot_ * kImpostorMaxSlots;
     }
     matter::CloudShadowLevelDesc cloud_shadow_level_desc(uint32_t level) const;
     VkFormat cloud_shadow_density_format(uint32_t level) const;
@@ -1791,7 +1967,7 @@ public:
         uint32_t index, std::string& error);
     // Ground POM live-tunables (viewer "Ground POM" UI). Stores the settings
     // and immediately re-writes the tileset params UBO (cheap -- see
-    // write_tileset_params_buffer) so the next frame's gbuffer/RT tileset
+    // stage_tileset_params) so the next frame's gbuffer/RT tileset
     // sampling picks up the change; slot-derived fields (height ranges,
     // mean albedo, tile sizes) stay renderer-owned and are re-derived from
     // tileset_slots_ on every call, same as the sun_dir_intensity mirror.
@@ -1814,15 +1990,19 @@ public:
     bool record_composite_to_swapchain(const matter::VulkanFrame& frame,
                                        std::string& error);
     VkRasterAttachments raster_attachments() const;
-    // Logs when the RT hit shader rejects a part record. A rejection means a
-    // stale or unwritten rt_parts slot was traced, which is the signal that
-    // confirms (or refutes) the stale-tail clear in emit_ray_instances. The
-    // shader has always counted these, but the only reader was a test-only
-    // readback compiled out of shipping builds, so in a real session the
-    // count was invisible. Deliberately NOT inside the test guard.
+    // Consumes the slot's retired RT counter sample, if it has one, and logs
+    // rejected RT surface lookups (a stale or unwritten rt_parts slot was
+    // traced -- the signal that confirms or refutes the stale-tail clear in
+    // emit_ray_instances). Deliberately NOT inside the test guard: in a real
+    // session this is the only reader of the counter.
     void report_rt_trace_counters(uint32_t frame_slot);
-    uint32_t rt_invalid_part_records_last_ = 0;
-    uint64_t rt_invalid_part_records_total_ = 0;
+    // Renderer-lifetime accounting: survives reset() and frame-resource
+    // replacement, which only retire pending samples. The total accumulates
+    // EVERY consumed sample; the last-logged value only suppresses repeated
+    // identical warnings and never affects the total.
+    uint64_t rt_rejected_surface_lookups_total_ = 0;
+    uint64_t rt_rejected_surface_lookup_samples_ = 0;
+    uint32_t rt_rejected_surface_lookups_last_logged_ = 0;
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
     struct EnvironmentSamplingGpuFixture {
         std::array<matter::Float3, 192 * 108> lut{};
@@ -1842,12 +2022,57 @@ public:
         std::string&);
     VkSampler test_sky_view_sampler() const;
     VkSampler test_composite_sampler() const;
+    void test_force_primary_light_fallback(bool fallback) {
+        test_force_primary_light_fallback_ = fallback;
+        for (auto& slot : frames_) slot.primary_light_extent = {};
+    }
     void test_force_rt_unavailable(bool unavailable) {
         test_force_rt_unavailable_ = unavailable;
     }
+    // Set before init for geometry-only software Vulkan fixtures. Dispatching
+    // GI or local lighting with these pipelines omitted is an explicit error.
+    void test_use_rt_geometry_pipelines_only(bool geometry_only) {
+        test_rt_geometry_pipelines_only_ = geometry_only;
+    }
+    // RT counter provenance probes for the production reporter. The seed is
+    // written into invalid_part_records where emit_ray_instances zeroes the
+    // counter, so a real recorded dispatch retires a known count. Poison
+    // overwrites every slot's counter bytes host-side and creates NO sample:
+    // bytes nobody traced must never be read, logged or accumulated.
+    void test_seed_rt_counter(uint32_t rejected) {
+        test_rt_counter_seed_ = rejected;
+    }
+    void test_fail_next_rt_dispatch_record() {
+        test_fail_next_rt_dispatch_record_ = true;
+    }
+    bool test_poison_rt_counters(uint32_t value, std::string& error);
+    void test_report_rt_trace_counters(uint32_t frame_slot) {
+        report_rt_trace_counters(frame_slot);
+    }
+    uint64_t test_rt_rejected_surface_lookups_total() const {
+        return rt_rejected_surface_lookups_total_;
+    }
+    uint64_t test_rt_counter_samples_consumed() const {
+        return rt_rejected_surface_lookup_samples_;
+    }
+    uint64_t test_rt_counter_candidate_serial(uint32_t frame_slot) const {
+        return frame_slot < frames_.size()
+                   ? frames_[frame_slot].rt_counter_candidate_serial : 0;
+    }
+    uint64_t test_rt_counter_sample_serial(uint32_t frame_slot) const {
+        return frame_slot < frames_.size()
+                   ? frames_[frame_slot].rt_counter_sample_serial : 0;
+    }
+    size_t test_frame_slot_count() const { return frames_.size(); }
     void test_skip_volumetrics(bool skip) { test_skip_volumetrics_ = skip; }
     bool readback_raster_pixel(uint32_t x, uint32_t y,
                                VkRasterPixel& pixel, std::string& error);
+    // Reads only the full-resolution native-RT local-direct lane. Keeping this
+    // separate avoids perturbing the long-standing multi-attachment readback
+    // transition contract for raster/GI tests that do not use this lane.
+    bool readback_local_direct_pixel(uint32_t x, uint32_t y,
+                                     matter::Float4& value,
+                                     std::string& error);
     bool readback_materials(std::vector<MaterialGpuRecord>& records,
                             std::string& error);
     uint64_t test_material_upload_record_count(uint32_t frame_slot) const {
@@ -1866,6 +2091,26 @@ public:
         return frame_slot < frames_.size()
                    ? frames_[frame_slot].material_upload.memory_properties
                    : 0;
+    }
+    bool test_static_triangle_buffers_device_local() const {
+        return (vertices_.memory_properties & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) != 0 &&
+               (indices_.memory_properties & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) != 0;
+    }
+    void test_set_static_upload_budget(VkDeviceSize bytes) {
+        static_upload_budget_bytes_ = std::max<VkDeviceSize>(bytes, sizeof(VkRasterVertex));
+    }
+    bool test_triangle_resident(uint64_t hash) const {
+        const int slot = part_slot_lookup(hash);
+        return slot >= 0 && parts_[slot].triangle_resident;
+    }
+    VkDeviceSize test_static_upload_bytes() const { return static_upload_frame_bytes_; }
+    bool test_scene_buffers_device_local(uint32_t frame_slot) const {
+        if (frame_slot >= frames_.size()) return false;
+        const auto& f = frames_[frame_slot];
+        return ((f.instances.memory_properties & f.commands.memory_properties &
+                 f.draw_transforms.memory_properties & f.vis_commands.memory_properties &
+                 f.vis_draw_transforms.memory_properties) &
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) != 0;
     }
     VkDeviceAddress test_rt_geometry_address(uint64_t part_hash) const;
     // WP-G: cone_width/cone_spread drive the ray cone the test ray carries
@@ -1890,6 +2135,22 @@ public:
     bool test_readback_reflection_sample_counts(uint32_t& base_samples,
                                                 uint32_t& coat_samples,
                                                 std::string& error);
+    uint64_t test_local_direct_presented_token() const {
+        return local_direct_history_state_.presented_token;
+    }
+    bool test_local_direct_candidate_reset() const {
+        return local_direct_history_state_.candidate_reset;
+    }
+    bool test_composite_uses_local_direct_filter() const {
+        return local_direct_history_state_.candidate_serial != 0 &&
+               local_direct_history_state_.filtered_valid;
+    }
+    bool readback_filtered_local_direct_pixel(uint32_t x, uint32_t y,
+                                             matter::Float4& value,
+                                             std::string& error);
+    bool test_readback_gi_history(uint32_t x, uint32_t y,
+                                  uint32_t (&history)[2], uint32_t (&rejection)[2],
+                                  matter::Float3& specular_aux, std::string& error);
     bool test_dispatch_gi_temporal_fixture(
         const GiTemporalGpuFixture& fixture, GiTemporalGpuResult& result,
         std::string& error);
@@ -1908,15 +2169,15 @@ public:
     bool test_rt_blas_built(uint64_t part_hash) const;
     uint64_t test_rt_blas_candidate_serial(uint64_t part_hash) const;
     std::weak_ptr<void> test_rt_blas_lifetime(uint64_t part_hash) const;
-    VkDeviceAddress test_rt_sbt_address() const { return rt_sbt_address_; }
+    VkDeviceAddress test_rt_sbt_address() const { return rt_shadow_pipeline_.raygen.deviceAddress; }
     VkDeviceAddress test_rt_test_raygen_address() const {
-        return rt_sbt_test_raygen_address_;
+        return rt_surface_test_pipeline_.raygen.deviceAddress;
     }
-    VkDeviceSize test_rt_sbt_stride() const { return rt_sbt_stride_; }
-    VkDeviceAddress test_rt_miss_address() const { return rt_sbt_miss_address_; }
-    VkDeviceAddress test_rt_hit_address() const { return rt_sbt_hit_address_; }
-    VkDeviceSize test_rt_miss_region_size() const { return rt_sbt_miss_size_; }
-    VkDeviceSize test_rt_hit_region_size() const { return rt_sbt_hit_size_; }
+    VkDeviceSize test_rt_sbt_stride() const { return rt_surface_test_pipeline_.raygen.stride; }
+    VkDeviceAddress test_rt_miss_address() const { return rt_surface_test_pipeline_.miss.deviceAddress; }
+    VkDeviceAddress test_rt_hit_address() const { return rt_surface_test_pipeline_.hit.deviceAddress; }
+    VkDeviceSize test_rt_miss_region_size() const { return rt_surface_test_pipeline_.miss.size; }
+    VkDeviceSize test_rt_hit_region_size() const { return rt_surface_test_pipeline_.hit.size; }
     uint32_t test_surface_trace_dispatches() const {
         return test_surface_trace_dispatches_;
     }
@@ -1929,6 +2190,7 @@ public:
     VkFormat test_visibility_format() const { return visibility_.format; }
     VkFormat test_raw_diffuse_format() const { return raw_diffuse_.format; }
     VkExtent2D test_raw_diffuse_extent() const { return raw_diffuse_extent_; }
+    VkExtent2D test_raw_reflection_extent() const { return raw_reflection_extent_; }
     uint32_t test_gi_presented_history_index() const {
         return gi_presented_history_index_;
     }
@@ -1966,6 +2228,19 @@ public:
                                 uint32_t& instance_token,
                                 std::string& error);
 
+    // Record all numeric evaluation planes into the active frame. Decode only
+    // after VulkanDevice::end_frame has completed its screenshot fence wait.
+    bool queue_evaluation_channels(const matter::VulkanFrame& frame,
+                                   std::string& error);
+    bool finish_evaluation_channels(uint64_t frame_serial,
+                                    matter::EvaluationChannels& out,
+                                    std::string& error);
+    bool evaluation_detail_report(const matter::EvaluationChannels& channels,
+                                  uint32_t desired_max_lod, bool require_rt,
+                                  matter::VisibleDetailReport& report,
+                                  std::string& error);
+    void abandon_evaluation_channels() { evaluation_pending_ = false; }
+
     int fill_rt_instances(std::vector<RtInstance>& output) const;
 
     uint32_t raster_width() const { return raster_extent_.width; }
@@ -1995,12 +2270,10 @@ public:
     static constexpr uint32_t kGpuZoneVolumetrics  = 9;
     // WP-E: the VT page-fill pass (residency uploads + the tier-1 compositor's
     // dispatches and pool copies), recorded just before the G-buffer zone.
-    static constexpr uint32_t kGpuZoneVt           = 10;
-    // The RT pass is two dispatches: kGpuZoneRt now brackets ONLY the primary/
-    // shadow trace (full-res cmd_trace), and this zone brackets the separate GI/
-    // reflection trace (rt_lighting raygen at raw_diffuse_extent), which only
-    // runs when GI is enabled. Splitting them tells primary-ray BLAS traversal
-    // cost (dense foliage) apart from the GI bounce cost.
+    static constexpr uint32_t kGpuZoneVt           = matter::kGpuTimingVt;
+    // kGpuZoneRt brackets only sun-shadow tracing. This zone brackets the
+    // aggregate GI dispatch interval (combined or split-resolution) when enabled.
+    // Primary local-light tracing has its own append-only zone below.
     static constexpr uint32_t kGpuZoneRtGi         = 11;
     // Append-only: external captures consume the established zones by index.
     static constexpr uint32_t kGpuZoneAtmosphere    = 12;
@@ -2011,7 +2284,17 @@ public:
     static constexpr uint32_t kGpuZoneWaterDecode   = 17;
     static constexpr uint32_t kGpuZoneWaterDraw     = 18;
     static constexpr uint32_t kGpuZoneWaterDirectDraw = 19;
-    static constexpr uint32_t kGpuZoneCount         = 20;
+    static constexpr uint32_t kGpuZoneRtLocalDirect = 20;
+    // HDR composite.frag lighting reconstruction, before the display transform.
+    static constexpr uint32_t kGpuZoneHdrLighting = 21;
+    // Children of RtGi, available for split extents or detailed profiling.
+    static constexpr uint32_t kGpuZoneRtGiDiffuse = 22;
+    static constexpr uint32_t kGpuZoneRtGiReflectionTransmission = 23;
+    static constexpr uint32_t kGpuZonePrimaryLightCull = 24;
+    static constexpr uint32_t kGpuZoneVtFeedbackReadback = matter::kGpuTimingVtFeedbackReadback;
+    static constexpr uint32_t kGpuZoneVtFill = matter::kGpuTimingVtFill;
+    static constexpr uint32_t kGpuZoneVtEnrich = matter::kGpuTimingVtEnrich;
+    static constexpr uint32_t kGpuZoneCount         = 28;
     bool gpu_timers_supported() const { return gpu_timers_supported_; }
     float gpu_zone_ms(uint32_t zone) const {
         return zone < kGpuZoneCount ? gpu_smoothed_ms_[zone] : 0.0f;
@@ -2019,6 +2302,8 @@ public:
     float gpu_zone_last_ms(uint32_t zone) const {
         return zone < kGpuZoneCount ? gpu_last_ms_[zone] : 0.0f;
     }
+    uint64_t gpu_sample_sequence() const { return gpu_sample_sequence_; }
+    uint32_t gpu_sample_valid_mask() const { return gpu_sample_valid_mask_; }
     std::uint64_t water_animation_upload_count() const noexcept {
         return water_animation_upload_count_;
     }
@@ -2125,6 +2410,7 @@ public:
     static StaticUploadCensus static_upload_census();
 
 private:
+    friend class ScenePublication;
     // Mirrors ClusterMeta in shaders_vk/cull.comp — the 128-byte size asserted
     // below, the field order and the padding are all a shader contract; change
     // this and the .comp together, and rebuild SPIR-V. One entry per GLOBAL
@@ -2171,7 +2457,9 @@ private:
         uint32_t water_generation = 0;
         // Nonzero suppresses cull/raster only. CPU RT selection never reads it.
         uint32_t water_pad0 = 0;
-        uint32_t water_pad1 = 0;
+        // Nonzero when det(object_to_world) < 0. cull.comp routes such draws
+        // to the bucket's mirrored command range, drawn front-face clockwise.
+        uint32_t mirrored = 0;
     };
     // The per-DRAW transform record: cull.comp writes one per emitted draw and
     // raster.vert reads it back by firstInstance. The CPU writes this struct
@@ -2217,14 +2505,15 @@ private:
     // yet the referenced one. Both are shared_ptr because a frame in flight can
     // still be reading a structure the CPU has already replaced.
     struct RtLodRecord {
+        uint64_t cache_ticket = 0;
+        std::string cache_key;
+        bool cache_checked = false;
+        std::shared_ptr<const std::vector<uint8_t>> cached_blas;
         uint32_t cluster_index = 0;
         uint32_t lod_index = 0;
-        // first_index is part-local and is NOT rebased, because there is
-        // nothing to rebase it against: RT indices live in the part's OWN
-        // rt_index buffer (PartRecord::rt_index), not in a shared arena the
-        // way the raster lane's index_staging_ works. Consumers address that
-        // buffer directly via this offset.
-        uint32_t first_index = 0;    // part-local index into rt_index buffer
+        // First index stays part-local; RT consumers add PartRecord::index_start
+        // when addressing the shared raster/RT index buffer.
+        uint32_t first_index = 0;
         uint32_t index_count = 0;    // 3 × triangle count
         uint32_t primitive_count = 0;
         std::shared_ptr<matter::VkAccelerationStructureResource> blas;
@@ -2244,11 +2533,28 @@ private:
     //
     // The record carries three families of state: the static staging ranges
     // (cluster/vertex/index start+count, all GLOBAL offsets into the shared
-    // staging arrays), the ray-tracing lane (rt_geometry / rt_index buffers,
+    // staging arrays), the ray-tracing lane (shared raster buffer offsets,
     // rt_lods and the two derived early-out bounds), and the VT bookkeeping
     // (transported slots plus the demand-driven mask and LRU stamps).
     struct PartRecord {
+        // Keep the raster readiness/binding fields together. Hierarchy
+        // publication visits these for every node; strings and RT/VT vectors
+        // below should not require extra cache-line fetches for raster pages.
         uint64_t hash = 0;
+        uint32_t cluster_start = 0;
+        uint32_t cluster_count = 0;
+        uint32_t vertex_start = 0;   // global raster/RT vertex range
+        uint32_t vertex_count = 0;
+        uint32_t index_start = 0;    // global raster/RT index range
+        uint32_t index_count = 0;
+        bool live = false;
+        // Shared raster/RT gate: allocation and registration do not mean that
+        // the bounded vertex/index transfers have finished recording.
+        bool triangle_resident = false;
+        bool geometry_raster_only = false;
+        std::string blas_cache_directory, blas_cache_content;
+        std::shared_ptr<const void> geometry_budget_claim;
+        std::shared_ptr<const part_surface::Prepared> finite_surface;
         uint32_t water_binding_slot = UINT32_MAX;
         uint32_t water_generation = 0;
         // RT instance-level early-out, precomputed once at registration so
@@ -2267,15 +2573,6 @@ private:
         //   can be than the instance origin.
         float rt_mesh_span = std::numeric_limits<float>::infinity();
         float rt_center_extent = 0.0f;
-        uint32_t cluster_start = 0;
-        uint32_t cluster_count = 0;
-        uint32_t vertex_start = 0;   // kept for Task 4 vertexOffset; NOT folded into lod offsets
-        uint32_t vertex_count = 0;
-        uint32_t index_start = 0;    // global offset into index_staging_
-        uint32_t index_count = 0;
-        bool live = false;
-        std::shared_ptr<matter::VkBufferResource> rt_geometry;
-        std::shared_ptr<matter::VkBufferResource> rt_index;
         std::vector<RtLodRecord> rt_lods;
         std::vector<uint32_t> rt_cluster_lod_offsets;
         // M2.5: per cluster, the number of leading MESH rungs
@@ -2294,15 +2591,18 @@ private:
         // chart table in the part store and may be registered on demand; zero
         // means the part is eager (or chartless) and the demand pass leaves
         // it alone entirely — eager registrations are never auto-evicted.
-        // vt_last_wanted[r] is the vt_demand_frame_ stamp of the last frame
-        // whose CPU LOD mirror selected rung r for any of this part's
-        // clusters; it is both the LRU key and the this-frame guard.
-        // vt_last_requested[r] throttles duplicate registration requests
-        // while one is already in flight to the engine.
+        // Unselected rungs keep their last demand-frame stamp here. Selected
+        // rungs share vt_demand_cache_frame_ (see vt_wanted_stamp), avoiding
+        // per-part writes on unchanged views. Entry indices deduplicate the
+        // selection and retain the maximum priority across instances.
         uint32_t vt_rung_mask = 0;
+        // Chart-bearing rungs, including eager registration failures. This is
+        // distinct from vt_rung_mask, which controls deferred demand only.
+        uint32_t vt_expected_rung_mask = 0;
         // Indexed by CHART RUNG, not LOD index — see kVkMaxChartRung.
         std::array<uint64_t, kVkMaxChartRung> vt_last_wanted{};
-        std::array<uint64_t, kVkMaxChartRung> vt_last_requested{};
+        std::array<uint32_t, kVkMaxChartRung> vt_demand_entry_index{};
+        uint32_t vt_cached_wanted_mask = 0;
         bool raster_water_surface = false;
     };
 
@@ -2337,17 +2637,9 @@ private:
         kTilesetChannelCount = 6,
     };
 
-    // Raw-handle image, manually created/destroyed: matter::VkImageResource's
-    // create_image() only supports a single mip level and array layer
-    // (vk_resources.cpp), so the 16-layer, full-mip-chain images this feature
-    // requires are built directly with vkCreateImage/vkCreateImageView here,
-    // reusing the public matter::find_memory_type/create_buffer/submit_immediate
-    // helpers for memory allocation and upload plumbing.
-    struct TilesetImage {
-        VkImage image = VK_NULL_HANDLE;
-        VkImageView view = VK_NULL_HANDLE;  // VK_IMAGE_VIEW_TYPE_2D_ARRAY
-        VkDeviceMemory memory = VK_NULL_HANDLE;
-    };
+    // Move-only allocation ownership can also be retained by compositor
+    // batches and submissions after the renderer replaces a tileset slot.
+    using TilesetImage = matter::VkImageResource;
 
     struct TilesetSlotGpu {
         bool loaded = false;
@@ -2358,11 +2650,12 @@ private:
         // dummy and the horizon helpers in tileset_common.glsl must read as
         // fully unoccluded. Folded into TilesetParamsGpu.slot_mean_albedo's
         // valid flag rather than adding a new field (see
-        // write_tileset_params_buffer).
+        // stage_tileset_params).
         bool has_horizon = false;
         TilesetImage channels[kTilesetChannelCount];
         float tile_size_m = 0.0f;
         float texels_per_meter = 0.0f;
+        uint64_t pixel_hash[2]{}; // content of uploaded core channels, not Vk handles
         float height_min = 0.0f;
         float height_max = 0.0f;
         float mean_albedo[3] = {0.0f, 0.0f, 0.0f};
@@ -2406,19 +2699,23 @@ private:
     // shader unpacks with TILESET_SLOT_SCALAR(field, slot). The C++ side can
     // keep writing them as a flat float[kMaxTilesetSlots] because that is
     // byte-identical to vec4[kMaxTilesetSlots/4].
+    static constexpr uint32_t kTilesetSourceSlots =
+        tileset::kMaxTilesetSlots * (1u + vt::kVtMaxInputSnapshots);
+    static constexpr uint32_t kTilesetSourceDescriptors = kTilesetSourceSlots * kTilesetChannelCount;
+    static constexpr uint32_t kVtDrawMaterials = vt::VtCompositor::kMaxMaterials;
     struct alignas(16) TilesetParamsGpu {
-        float slot_tile_size_m[tileset::kMaxTilesetSlots]{};
-        float slot_texels_per_meter[tileset::kMaxTilesetSlots]{};
-        float slot_height_min[tileset::kMaxTilesetSlots]{};
-        float slot_height_max[tileset::kMaxTilesetSlots]{};
+        float slot_tile_size_m[kTilesetSourceSlots]{};
+        float slot_texels_per_meter[kTilesetSourceSlots]{};
+        float slot_height_min[kTilesetSourceSlots]{};
+        float slot_height_max[kTilesetSourceSlots]{};
         // rgb + valid/has_horizon flag in [.][3]: 0 = not loaded, 1 = loaded
         // (no horizon), 2 = loaded (with horizon). See file comment above.
-        float slot_mean_albedo[tileset::kMaxTilesetSlots][4]{};
+        float slot_mean_albedo[kTilesetSourceSlots][4]{};
         // Phase 0: whole-atlas mean of the slot's ORM channel, rgb + unused
         // .w. The near-band composite in gbuffer.frag divides the live
         // detail's occlusion/roughness by these so the page keeps its own
         // (macro) level and the detail contributes only its deviation.
-        float slot_mean_orm[tileset::kMaxTilesetSlots][4]{};
+        float slot_mean_orm[kTilesetSourceSlots][4]{};
         float pom_steps = 50.0f;
         float pom_refine_steps = 4.0f;
         float pom_max_distance_m = 50.4f;
@@ -2446,7 +2743,7 @@ private:
         // dir.y <= 0 (sun below horizon) or intensity <= 0.
         float sun_dir_intensity[4] = {0.0f, 1.0f, 0.0f, 1.0f};
         // Ground POM UI knobs (matter::TilesetPomSettings, mirrored into the
-        // UBO by write_tileset_params_buffer): x = datum_bias_m -- subtracted
+        // UBO by stage_tileset_params): x = datum_bias_m -- subtracted
         // from the decoded relief height before the clamp in
         // tileset_relief_h, letting baked litter stand proud of a recessed
         // dirt floor instead of clamping flat at the datum. y = ao_strength,
@@ -2480,12 +2777,24 @@ private:
     static_assert(MATERIAL_MAX_DETAIL_SLOTS == tileset::kMaxTilesetSlots,
                   "material_registry.h's slot-override validation bound must "
                   "match the renderer's descriptor-array slot count");
-    // 4 scalar arrays x 8 floats (= 4 x two vec4) + 8 mean_albedo vec4
-    // + 8 mean_orm vec4 + 5 trailing vec4 (pom_a, pom_b, sun_dir_intensity,
-    // pom_c, vt_near).
-    static_assert(sizeof(TilesetParamsGpu) == 464,
-                  "TilesetParamsGpu must remain twenty-nine vec4 records "
+    // Four scalar arrays and two mean vec4 arrays cover the live source bank
+    // plus eight retained banks; five trailing vec4s carry frame settings.
+    static_assert(sizeof(TilesetParamsGpu) == kTilesetSourceSlots * 48u + 80u,
+                  "TilesetParamsGpu source banks and five global vec4 records "
                   "(std140)");
+
+    struct alignas(16) VtDrawInputGpu {
+        uint32_t meta[4]{}; // material count; remaining words reserved
+        MaterialGpuRecord materials[kVtDrawMaterials]{};
+    };
+    static_assert(sizeof(VtDrawInputGpu) == 16u + kVtDrawMaterials * sizeof(MaterialGpuRecord),
+                  "VT draw material bank must match the shader std430 stride");
+    struct VtDrawInputSnapshot {
+        VtDrawInputGpu gpu;
+        TilesetParamsGpu params;
+        std::array<VkDescriptorImageInfo, tileset::kMaxTilesetSlots * kTilesetChannelCount> images{};
+        std::array<std::shared_ptr<void>, tileset::kMaxTilesetSlots * kTilesetChannelCount> image_lifetimes{};
+    };
 
     // Everything that must exist ONCE PER FRAME IN FLIGHT. frames_ holds one of
     // these per swapchain frame slot (sized from VulkanFrame::frame_slot_count)
@@ -2511,6 +2820,18 @@ private:
     // two of them were merged.
     struct FrameResources {
         matter::VkBufferResource frame_constants;
+        matter::VkBufferResource tileset_params;
+        matter::VkBufferResource vt_draw_inputs;
+        TilesetParamsGpu tileset_params_cache{};
+        bool tileset_bindings_valid = false;
+        std::array<uint64_t, tileset::kMaxTilesetSlots> tileset_source_revisions{};
+        std::array<std::shared_ptr<const vt::VtInputSnapshot>, vt::kVtMaxInputSnapshots> vt_input_snapshots{};
+        std::array<VkDescriptorImageInfo, kTilesetSourceDescriptors> tileset_image_infos{};
+        std::array<std::shared_ptr<void>, tileset::kMaxTilesetSlots * kTilesetChannelCount> live_tileset_lifetimes{};
+        // tileset_descriptor_revision_ when this slot's RT set last received
+        // its tileset bindings (15/16/28); 0 = never written.
+        uint64_t rt_tileset_descriptor_revision = 0;
+
         matter::VkBufferResource water_forward_constants;
         WaterForwardConstants water_forward_constants_cache{};
         // Set-1 physical environment state is deliberately per frame slot so
@@ -2525,10 +2846,21 @@ private:
         matter::VkBufferResource local_light_indices;
         matter::VkBufferResource local_light_oversized_indices;
         matter::VkBufferResource local_light_meta;
+        LocalLightGpuMeta local_light_header{};
+        VkExtent2D primary_light_extent{};
+        VkDescriptorSet primary_light_cull_set = VK_NULL_HANDLE;
+        std::shared_ptr<void> primary_light_cull_pool;
+        bool primary_light_audit_pending = false;
         matter::VkBufferResource instances;
         matter::VkBufferResource commands;
         matter::VkBufferResource draw_transforms;
         matter::VkBufferResource stats;
+        // Persistent, fenced upload arenas for GPU-local scene data. Draw
+        // transforms are generated on the GPU except for the two direct tails.
+        matter::VkBufferResource instance_upload;
+        matter::VkBufferResource command_upload;
+        matter::VkBufferResource skin_transform_upload;
+        matter::VkBufferResource water_transform_upload;
         // ---- identity-buffer visibility (M4) --------------------------------
         // The bitmask visible_ids.comp ORs this frame's surviving instance
         // tokens into, and the pipeline that writes it.
@@ -2548,6 +2880,10 @@ private:
         matter::VkComputePipelineResource visibility_id_reduce;
         matter::VkBufferResource animation_bounds;
         matter::VkBufferResource material_upload;
+        // Reused per frame slot while static geometry resides in device-local
+        // memory. The slot fence protects recorded copies from staging reuse.
+        matter::VkBufferResource static_vertex_upload;
+        matter::VkBufferResource static_index_upload;
         matter::VkBufferResource materials;
         matter::VkImageResource dlss_output;
         matter::VkBufferResource rt_instances;
@@ -2556,7 +2892,16 @@ private:
         matter::VkAccelerationStructureResource rt_tlas;
         matter::VkBufferResource rt_parts;
         matter::VkBufferResource rt_error_counter;
+        // rt_error_counter provenance. A buffer handle or the RT-enabled flag
+        // says nothing about whether the bytes describe a submitted trace:
+        // candidate = serial whose recorded dispatch wrote the counter,
+        // promoted to sample only when that serial was submitted; sample =
+        // submitted, not yet consumed. report_rt_trace_counters reads only a
+        // sample, once, after the slot fence retired it.
+        uint64_t rt_counter_candidate_serial = 0;
+        uint64_t rt_counter_sample_serial = 0;
         matter::VkBufferResource rt_test_output;
+        bool rt_adaptive_diagnostics_pending = false;
         matter::VkBufferResource gi_atrous_markers;
         // C2 compute deformation resources.  Sources alias the immutable
         // raster vertex arena; all other streams are per-frame so C1 fences
@@ -2578,6 +2923,14 @@ private:
         // them as occluders (and the mask may cull them); 0 = excluded from
         // occlusion on both sides.
         matter::VkBufferResource part_occluder_class;
+        matter::VkBufferResource geometry_cut;
+        matter::VkBufferResource geometry_selected;
+        matter::VkBufferResource geometry_feedback;
+        std::vector<std::array<uint64_t,2>> geometry_node_pages;
+        std::vector<uint64_t> geometry_job_owners;
+        uint64_t geometry_feedback_pending_serial = 0;
+        uint64_t geometry_feedback_serial = 0, geometry_feedback_view_revision = 0;
+        bool geometry_feedback_valid = false;
         // Immutable river-field records. Descriptor arrays live in this
         // frame slot's scene/RT sets; the buffer is per-slot so a generation
         // replacement never rewrites storage an in-flight frame reads.
@@ -2602,11 +2955,17 @@ private:
         // temporal set each and three a-trous ping-pong sets each.
         VkDescriptorSet gi_temporal_descriptor_sets[3]{};
         VkDescriptorSet gi_atrous_descriptor_sets[9]{};
+        VkDescriptorSet local_direct_temporal_descriptor_set = VK_NULL_HANDLE;
+        VkDescriptorSet local_direct_filter_descriptor_set = VK_NULL_HANDLE;
         uint64_t static_generation = 0;
         uint64_t instance_generation = 0;
+        uint64_t geometry_cut_generation = 0;
         uint64_t command_generation = 0;
         uint64_t material_generation = 0;
         uint64_t local_light_generation = 0;
+        LocalDirectOwner local_direct_owner = LocalDirectOwner::Raster;
+        uint64_t local_direct_lane_revision = 0;
+        uint64_t local_direct_candidate_serial = 0;
         uint64_t material_upload_record_count = 0;
         VkDeviceSize pending_material_bytes = 0;
         bool stats_valid = false;
@@ -2666,6 +3025,10 @@ private:
         bool rt_tlas_valid = false;
         // GPU timestamp query pool: one begin/end pair per kGpuZone* lane.
         VkQueryPool ts_pool = VK_NULL_HANDLE;
+        VkQueryPool raster_stats_pool = VK_NULL_HANDLE;
+        bool raster_stats_written = false;
+        uint32_t vt_recorded_fills = 0;
+        uint32_t vt_fill_tiles = 0, vt_enrich_tiles = 0;
         // Per zone: bit 0 set when begin was written, bit 1 when end was.
         uint8_t ts_written[kGpuZoneCount]{};
         // True when the previous recording wrote at least the total zone.
@@ -2688,6 +3051,7 @@ private:
         std::shared_ptr<matter::VkAccelerationStructureResource> target;
         VkDeviceSize scratch_size = 0;
         VkDeviceSize scratch_offset = 0;
+        bool restored = false;
     };
 
     bool build_ray_geometry(
@@ -2697,7 +3061,7 @@ private:
         PFN_vkCmdBuildAccelerationStructuresKHR cmd_build,
         std::vector<RtBuildSel>& selected_geometry,
         std::vector<RtBlasPending>& pending,
-        std::string& error);
+        std::string& error, bool warmup_only = false);
     bool emit_ray_instances(
         const matter::VulkanFrame& frame,
         PFN_vkGetAccelerationStructureBuildSizesKHR get_sizes,
@@ -2728,6 +3092,9 @@ private:
                                std::string& error);
     bool ensure_dlss_output(FrameResources& frame, VkExtent2D output_extent,
                             std::string& error);
+    bool readback_local_direct_image(matter::VkImageResource& image,
+                                    uint32_t x, uint32_t y,
+                                    matter::Float4& value, std::string& error);
     bool record_gi_temporal(const matter::VulkanFrame& frame,
                             std::string& error, bool retain = true);
     bool record_gi_temporal_signal(const matter::VulkanFrame& frame,
@@ -2744,13 +3111,20 @@ private:
                              std::string& error, bool* replaced = nullptr);
     bool ensure_buffer(matter::VkBufferResource& buffer,
                        VkDeviceSize required_size, VkBufferUsageFlags usage,
-                       std::string& error, bool* replaced = nullptr);
+                       std::string& error, bool* replaced = nullptr,
+                       bool device_local = false);
     bool ensure_build_buffer(matter::VkBufferResource& buffer,
                              VkDeviceSize required_size,
                              VkBufferUsageFlags usage, std::string& error);
     void update_descriptor(VkDescriptorSet set, uint32_t binding,
                            VkDescriptorType type,
                            const matter::VkBufferResource& buffer);
+    // vkUpdateDescriptorSets, plus the frame_descriptors_written() tally.
+    // Every descriptor write in this renderer goes through here.
+    void update_descriptor_sets(VkDevice device, uint32_t write_count,
+                                const VkWriteDescriptorSet* writes,
+                                uint32_t copy_count,
+                                const VkCopyDescriptorSet* copies);
     bool ensure_frame_resources(uint32_t frame_slot_count,
                                 std::string& error);
     void update_frame_descriptors(FrameResources& frame);
@@ -2768,6 +3142,12 @@ private:
     void update_composite_descriptor(FrameResources& frame);
     void update_local_light_descriptor(FrameResources& frame);
     bool upload_local_lights(FrameResources& frame, std::string& error);
+    bool record_primary_light_cull(const matter::VulkanFrame& frame,
+        const FrameMatrices& matrices, std::string& error);
+    bool publish_local_direct_owner(FrameResources& frame,
+                                    LocalDirectOwner owner,
+                                    uint64_t lane_revision,
+                                    std::string& error);
     void update_water_forward_descriptor(FrameResources& frame);
     bool upload_water_forward_constants(FrameResources& frame,
                                         const FrameMatrices& matrices,
@@ -2785,7 +3165,7 @@ private:
     void resolve_live_atmosphere(uint32_t change_mask, bool full_commit);
     void update_display_descriptor(VkDescriptorSet set, VkImageView view);
     bool upload_scene_buffers(FrameResources& frame,
-                              VkCommandBuffer material_command_buffer,
+                              const matter::VulkanFrame* upload_frame,
                               bool reset_stats, std::string& error);
     void record_material_upload(VkCommandBuffer command_buffer,
                                 FrameResources& frame);
@@ -2804,6 +3184,8 @@ private:
     void note_command_layout_rebuild();
     bool rebuild_command_template(std::string& error);
     bool apply_dynamic_command_layout(std::string& error);
+    void rebuild_mirror_command_template(const std::vector<uint32_t>& totals,
+                                         const std::vector<uint32_t>& mirrored);
     bool load_device_limits(std::string& error);
     bool fail_if_poisoned(std::string& error) const;
     bool poison(std::string& error);
@@ -2811,8 +3193,8 @@ private:
     void destroy_pipeline();
 
     // --- Phase 1 tileset Vulkan port (Task 6) ------------------------------
-    // Creates the shared sampler, the three format-family dummy images, and
-    // the TilesetParams UBO on first use. Idempotent (tileset_infra_ready_
+    // Creates the shared sampler and three format-family dummy images.
+    // Tileset parameter/material buffers belong to the fenced frame slots. Idempotent (tileset_infra_ready_
     // guards re-entry). Called from init().
     bool ensure_tileset_infra(std::string& error);
     bool create_tileset_image(VkFormat format, uint32_t edge_px,
@@ -2821,13 +3203,14 @@ private:
     void destroy_tileset_image(TilesetImage& image);
     // Real slot view if loaded, else the format-matched dummy's view.
     VkImageView tileset_channel_view(int slot, int channel) const;
-    void write_tileset_params_buffer();
-    // Writes bindings 6 (16-entry sampler2DArray) and 7 (TilesetParams UBO)
-    // for one raster (set 1) descriptor set, sourced from current renderer
-    // state (loaded slots or dummies). Called once per frame at frame-resource
-    // creation/growth (update_frame_descriptors) and again for every frame
-    // slot whenever a tileset slot loads or unloads.
-    void write_tileset_descriptors_for_frame(VkDescriptorSet set);
+    const TilesetImage& tileset_channel_image(int slot, int channel) const;
+    void stage_tileset_params();
+    // Captures live and residency-owned source banks into this retired frame
+    // slot, including source lifetimes, parameter bytes and material rows.
+    // Matching captures skip descriptor/material rewrites. Load/unload still
+    // refresh every slot under their existing idle wait until that migration
+    // is complete; ordinary recording updates only its fenced slot.
+    void write_tileset_descriptors_for_frame(FrameResources& frame);
 
     // --- WP-E: chart-space virtual texturing -------------------------------
     // Creates the fallback (dummy) VT descriptor sources. Always available, so
@@ -2841,6 +3224,9 @@ private:
     // Registers a part's chart-bearing rungs with the residency layer and
     // records their transported slots into parts_[slot].vt_slots.
     void register_vt_part(int part_slot, const VkScenePart& part);
+    bool bind_vt_materials(uint64_t part_hash,uint32_t rung,
+        const part_surface::Prepared&,const chart_atlas::ChartAtlasRung&,
+        const vt::VtPartContext&,std::string& error);
     // The single (cluster, lod) -> transported VT slot rule, shared by the
     // raster table below and WP-G's GpuRtPartRecord::vt_slot so a ray hit and
     // a raster fragment on the same rung resolve the same indirection layer.
@@ -2860,17 +3246,15 @@ private:
     // hides the sectors visible through its cutouts), 1 otherwise. Unknown
     // stays 1 -- the pre-exclusion behaviour.
     void rebuild_part_occluder_table();
+    uint32_t part_occluder_class(uint32_t slot) const;
     // Feeds the tier-1 compositor the two inputs only the renderer knows: the
     // bound detail tileset slots and the materialId -> (detail slot, fallback
-    // albedo/ORM) table. vt_compositor.h requires the device to be idle with
-    // respect to prior fills for both setters, so this waits before pushing —
-    // which is why it is driven by a dirty flag and not called per frame.
-    // A push that is not the runtime's first also invalidates the residency
-    // layer's resident pages: they were baked from the inputs being replaced.
+    // albedo/ORM) table. Source images and draw input rows are retained by
+    // immutable snapshots. Capacity pressure coalesces desired changes while
+    // the last published inputs keep serving fills. Accepted inputs dirty
+    // their dependencies; repeated rejected pushes have a bounded retry budget.
     void push_vt_compositor_inputs();
-    // Retires deferred VtCompositor::invalidate_part calls whose fills can no
-    // longer be in flight (see vt_pending_invalidate_).
-    void drain_vt_invalidations(uint64_t serial);
+    void note_vt_input_push_failure(const char* why);
     // Writes scene-set bindings 9-13 (draw-slot table, pool, indirection,
     // variant records, feedback image) for one frame's descriptor set.
     void write_vt_descriptors_for_frame(FrameResources& frame);
@@ -2882,26 +3266,16 @@ private:
     // legacy immediate path has no serial, and the LRU/retirement logic only
     // needs monotonicity.
     void vt_begin_frame(FrameResources& frame, uint32_t frame_slot);
-    // Frame counter at which a compositor mesh cache dropped now can no longer
-    // be read by an unretired fill. VtCompositor::kMaxBatchesInFlight is 4 and
-    // one batch is recorded per frame, so twice that is a comfortable margin.
-    uint64_t vt_invalidate_retire_serial() const {
-        // Covers BOTH page passes' in-flight windows (WP-D's fills and WP-H's
-        // enrichments), which is why the max of the two ring depths is used.
-        static_assert(vt::VtEnricher::kMaxBatchesInFlight <=
-                          vt::VtCompositor::kMaxBatchesInFlight,
-                      "the retirement horizon must cover the deeper ring");
-        return vt_frame_serial_ + 2u * vt::VtCompositor::kMaxBatchesInFlight;
-    }
 
 public:
     // --- WP-F: surfaces()-tape live update ----------------------------------
     // Replaces registered parts' per-vertex tape classification when the
     // world's surfaces() tape is edited (a new tape hash) without re-uploading
-    // any geometry. Usage: begin (waits the device idle so no fill still
-    // borrows the old weight arrays), any number of per-part updates, end
-    // (drops every resident page so the next frames re-fill from the new
-    // weights). All three are no-ops when the VT runtime never started.
+    // any geometry. Render-thread usage, outside fill/enrich recording: begin,
+    // any number of per-part updates, end (queues changed owners' replacement
+    // pages while retaining current content). GPU preparation owns its input
+    // copies and retires old resources, so no device-wide wait is needed.
+    // All three are no-ops when the VT runtime never started.
     void begin_vt_surface_update();
     // rung_weights is indexed by rung; an empty entry leaves that rung
     // stripped of classification. `materials` are the tape's declared
@@ -2911,13 +3285,16 @@ public:
     // P2 appends (defaulted; older callers keep compiling): the canonical
     // tape text plus per-rung f16 field lanes (rung_lanes indexed by rung,
     // lane_count halves per vertex) for the GPU interpreter (mode 3).
+    // Optional float[12] world frame is part of the same immutable update.
     bool update_vt_part_surface(
         uint64_t part_hash,
         const std::vector<std::vector<uint8_t>>& rung_weights,
         const std::vector<uint32_t>& materials, uint64_t tape_hash,
         const char* tape_text = nullptr,
         const std::vector<std::vector<uint16_t>>* rung_lanes = nullptr,
-        uint32_t lane_count = 0);
+        uint32_t lane_count = 0,
+        const float* local_to_world = nullptr,
+        uint32_t world_anchored = 0);
     void end_vt_surface_update();
 
     // --- Demand-driven VT variant registration ------------------------------
@@ -2928,6 +3305,11 @@ public:
     // service is simply dropped — the demand pass re-surfaces the rung next
     // frame for as long as it stays wanted.
     void take_vt_rung_requests(std::vector<VtRungRequest>& out);
+    // A parked source-VT terrain sector must prepare rung zero before it can
+    // replace drawn coverage. Retains demand until the caller exposes or drops
+    // the part; does not draw it or synchronously generate any texture.
+    void set_vt_part_prewarm(uint64_t part_hash, bool wanted);
+    bool vt_part_coverage_ready(uint64_t part_hash) const;
     // Registers ONE deferred (part, rung) variant. Starts the VT runtime on
     // first use. When the layer pool or the CPU mesh budget is full, evicts
     // least-recently-wanted demand-managed variants (never eager ones, never
@@ -2937,11 +3319,29 @@ public:
     // now, not a permanent verdict. Returns true when the rung ends up
     // registered. `atlas` and every array `context` points at are borrowed
     // for the call only (the residency layer copies synchronously).
+    bool set_vt_surface_connections(const std::vector<vt::VtSurfaceConnectionPair>& pairs,std::string& error);
+    // Physical terrain connections use the same selection as demand/culling,
+    // independently of which older rungs remain resident. False for absent or
+    // multiple selected rungs; streamed terrain and welds have one cluster.
+    bool vt_surface_selected_rung(uint64_t part_hash, uint32_t& rung) const;
+    uint64_t vt_surface_selection_revision() const { return vt_surface_selection_revision_; }
     bool register_vt_rung(uint64_t part_hash, uint32_t rung,
                           const chart_atlas::ChartAtlasRung& atlas,
                           const vt::VtPartContext& context);
 
 private:
+    std::shared_ptr<VkSparseVoxelScene> sparse_voxels_;
+    std::shared_ptr<VkSparseVoxelScene> sparse_shadows_;
+    std::vector<SparseSharedObject> shared_forest_catalog_;
+    std::vector<SparseShadowObject> shared_forest_shadow_catalog_;
+    std::weak_ptr<VkSparseVoxelScene> sparse_presented_,sparse_candidate_;
+    uint64_t sparse_candidate_serial_=0,sparse_candidate_index_=0,sparse_presented_index_=UINT64_MAX;
+    SparseVoxelTemporal sparse_temporal() const;
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+    FrameMatrices sparse_voxel_test_matrices_{};
+    float sparse_voxel_test_pixel_budget_ = 1.0f;
+    bool sparse_voxel_test_accumulation_=false;
+#endif
     // Per-frame working-set maintenance for demand-driven VT. Mirrors
     // cull.comp's LOD selection exactly (same clusters, same thresholds, same
     // projected-size formula) over the static instance set to stamp
@@ -2949,15 +3349,26 @@ private:
     // rungs with no slot, and release variants that stayed unwanted for
     // MATTER_VT_LINGER_FRAMES. Cheap no-op while no deferred part is live.
     void update_vt_demand(matter::Float3 camera_eye, float pixel_budget);
+    uint64_t vt_wanted_stamp(const PartRecord& record, uint32_t rung) const {
+        return (record.vt_cached_wanted_mask & (1u << rung)) != 0
+            ? vt_demand_cache_frame_ : record.vt_last_wanted[rung];
+    }
     // Releases one demand-managed (part, rung) variant: residency layer,
     // vt_slots entry, draw-slot table dirty, deferred filler-cache
     // invalidation (same retirement discipline as release_part).
-    void evict_vt_rung(PartRecord& record, uint32_t rung);
+    void evict_vt_rung(PartRecord& record, uint32_t rung,
+                       const char* reason = "explicit");
 
     matter::VulkanDevice* vulkan_ = nullptr;
     WaterFieldVk water_fields_;
     WaterFieldVkResources water_field_resources_;
     std::unique_ptr<gpu_meshing::GpuVisualMesher> gpu_visual_mesher_;
+    std::unique_ptr<gpu_meshing::GpuSolidMesher> gpu_solid_mesher_;
+    std::unique_ptr<gpu_meshing::GpuSolidFaceProjector> gpu_solid_face_projector_;
+    std::unique_ptr<gpu_meshing::GpuFaceMaterialBaker> gpu_face_material_baker_;
+    // Weak discovery table survives scene reset; providers and live part
+    // records own catalogs. Expired entries are reclaimed at publication.
+    std::unordered_map<uint64_t,std::weak_ptr<const part_surface::Prepared>> part_surfaces_;
     VkAnimationSkinning animation_skinning_;
     std::vector<VkSkinFallback> consumed_animation_skin_fallbacks_;
     VkAnimationBounds animation_bounds_;
@@ -2968,9 +3379,14 @@ private:
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
     std::unique_ptr<matter::StreamlineBridge> test_dlss_bridge_override_;
     bool test_force_rt_unavailable_ = false;
+    bool test_rt_geometry_pipelines_only_ = false;
+    uint32_t test_rt_counter_seed_ = 0;
+    bool test_fail_next_rt_dispatch_record_ = false;
+    bool test_force_primary_light_fallback_ = false;
     bool test_skip_volumetrics_ = false;
     std::vector<RtGeometryDebugRecord> test_last_rt_geometry_records_;
     uint32_t test_last_rt_blas_build_count_ = 0;
+    uint64_t test_geometry_cut_uploads_ = 0;
     RasterPipelineDrawDebug test_last_raster_pipeline_draw_{};
     std::vector<PartCommandRange> recorded_visibility_id_ranges_;
     uint32_t recorded_water_draw_count_ = 0u;
@@ -2978,6 +3394,7 @@ private:
 #endif
     matter::DlssMode selected_dlss_mode_ = static_cast<matter::DlssMode>(0);
     bool dlss_history_reset_pending_ = false;
+    bool forest_history_reset_ = true;
     uint64_t dlss_reset_count_ = 0;
     VkDescriptorSetLayout set_layouts_[2]{};
     VkDescriptorSetLayout skin_set_layout_ = VK_NULL_HANDLE;
@@ -2987,8 +3404,15 @@ private:
     // cull.comp specialized to kCullPass = 0: the ID pass's unfiltered list.
     // Same module, same layout, same descriptor sets as pipeline_ above.
     VkPipeline vis_pipeline_ = VK_NULL_HANDLE;
+    VkPipeline geometry_pipeline_ = VK_NULL_HANDLE;
+    VkPipeline geometry_vis_pipeline_ = VK_NULL_HANDLE;
+    VkPipeline geometry_select_pipeline_ = VK_NULL_HANDLE;
+    bool ensure_geometry_cull_pipelines(std::string& error);
     VkPipeline skin_pipeline_ = VK_NULL_HANDLE;
     VkPipeline raster_pipeline_ = VK_NULL_HANDLE;
+    // raster_pipeline_ with a clockwise front face. It draws the per-bucket
+    // mirrored command ranges (instances with det(object_to_world) < 0).
+    VkPipeline mirrored_raster_pipeline_ = VK_NULL_HANDLE;
     // Same descriptors/fragment stage as raster_pipeline_, but a 96-byte
     // VkSkinVertex binding with an explicit previous-position attribute.
     VkPipeline skinned_raster_pipeline_ = VK_NULL_HANDLE;
@@ -3012,6 +3436,12 @@ private:
     VkPipelineLayout composite_pipeline_layout_ = VK_NULL_HANDLE;
     VkPipeline composite_pipeline_ = VK_NULL_HANDLE;
     VkSampler composite_sampler_ = VK_NULL_HANDLE;
+    bool primary_light_culling_ = false;
+    bool primary_light_audit_ = false;
+    uint64_t primary_light_audit_frames_ = 0;
+    VkDescriptorSetLayout primary_light_cull_set_layout_ = VK_NULL_HANDLE;
+    VkPipelineLayout primary_light_cull_layout_ = VK_NULL_HANDLE;
+    VkPipeline primary_light_cull_pipeline_ = VK_NULL_HANDLE;
     VkSampler sky_view_linear_sampler_ = VK_NULL_HANDLE;
     VkSampler vol_linear_sampler_ = VK_NULL_HANDLE;  // trilinear for froxel volume
     VkDescriptorSetLayout display_set_layout_ = VK_NULL_HANDLE;
@@ -3028,10 +3458,21 @@ private:
     VkPipelineLayout gi_atrous_pipeline_layout_ = VK_NULL_HANDLE;
     VkPipeline gi_atrous_pipeline_ = VK_NULL_HANDLE;
     VkDescriptorSetLayout rt_set_layout_ = VK_NULL_HANDLE;
+    VkDescriptorSetLayout rt_adaptive_set_layout_ = VK_NULL_HANDLE;
     VkPipelineLayout rt_pipeline_layout_ = VK_NULL_HANDLE;
-    VkPipeline rt_pipeline_ = VK_NULL_HANDLE;
+    // Each dispatch compiles only its own raygen and reachable miss/hit groups.
+    // Handles in each SBT belong to that pipeline, including miss/hit handles.
+    struct RtTracePipeline {
+        VkPipeline pipeline = VK_NULL_HANDLE;
+        matter::VkBufferResource sbt;
+        VkStridedDeviceAddressRegionKHR raygen{}, miss{}, hit{};
+    };
+    RtTracePipeline rt_shadow_pipeline_, rt_surface_test_pipeline_;
+    RtTracePipeline rt_lighting_pipeline_, rt_primary_pipeline_;
+    RtTracePipeline rt_diffuse_pipeline_, rt_reflection_pipeline_;
     VkDescriptorPool rt_descriptor_pool_ = VK_NULL_HANDLE;
     std::vector<VkDescriptorSet> rt_descriptor_sets_;
+    std::vector<VkDescriptorSet> rt_adaptive_descriptor_sets_;
     VkDescriptorPool descriptor_pool_ = VK_NULL_HANDLE;
     VkDescriptorPool water_forward_descriptor_pool_ = VK_NULL_HANDLE;
     bool initialized_ = false;
@@ -3072,11 +3513,19 @@ private:
     std::vector<std::uint32_t> water_animation_direct_transform_slots_;
 
     matter::VkImageResource albedo_;
+    FrameImageLayouts frame_image_layouts_;
     matter::VkImageResource normal_;
     matter::VkImageResource orm_;
     matter::VkImageResource velocity_;
     matter::VkImageResource material_instance_;
+    matter::VkBufferResource evaluation_readback_;
+    std::array<VkDeviceSize, matter::EvaluationChannels::Count>
+        evaluation_offsets_{};
+    uint64_t evaluation_frame_serial_ = 0;
+    bool evaluation_pending_ = false;
     matter::VkImageResource reactivity_;
+    // Full-resolution depth-tested requests; CPU transport remains 1/8 per axis.
+    matter::VkImageResource vt_feedback_;
     matter::VkImageResource depth_;
     matter::VkImageResource hdr_;
     matter::VkImageResource opaque_hdr_;
@@ -3089,8 +3538,15 @@ private:
     // RT PBR Phase 1: (hit_t, roughness) sibling of raw_specular_aux_ for the
     // transmission denoiser lane.
     matter::VkImageResource raw_transmission_aux_;
+    matter::VkImageResource raw_local_direct_;
     matter::VkImageResource vol_dummy_3d_;
     VkExtent2D raw_diffuse_extent_{};
+    VkExtent2D raw_reflection_extent_{};
+    // Denoiser modes: diffuse0, reflection1, transmission2, primary direct3.
+    VkExtent2D gi_signal_extent(uint32_t mode) const {
+        return mode == 3u ? raster_extent_
+             : mode == 0u ? raw_diffuse_extent_ : raw_reflection_extent_;
+    }
 
     // --- Phase 1 tileset Vulkan port (Task 6) ------------------------------
     TilesetSlotGpu tileset_slots_[tileset::kMaxTilesetSlots]{};
@@ -3114,6 +3570,7 @@ private:
     // resolution at creation; every upload is validated against them.
     uint32_t impostor_layer_px_ = 0;
     size_t   impostor_atlas_bytes_ = 0;
+    size_t   impostor_gpu_bytes_per_slot_ = 0;
     VkSampler    impostor_sampler_ = VK_NULL_HANDLE;
     // Bump allocator with a free list. Slots are returned on release_part, so
     // a streaming world recycles them; exhaustion is a LOGGED load failure
@@ -3196,7 +3653,7 @@ private:
     // therefore discard.
     void adopt_part_impostors(const VkScenePart& part, uint32_t part_slot,
                               uint32_t vertex_base);
-    matter::VkBufferResource tileset_params_;
+    TilesetParamsGpu tileset_params_staging_{};
     bool tileset_infra_ready_ = false;
 
     // --- WP-E: chart-space virtual texturing -------------------------------
@@ -3209,7 +3666,7 @@ private:
     bool vt_init_attempted_ = false;
     bool vt_unavailable_ = false;
     std::string vt_unavailable_reason_;
-    TilesetImage vt_dummy_feedback_;      // R16G16B16A16_UINT 1x1x1, GENERAL
+    TilesetImage vt_dummy_feedback_;      // kVtFeedbackFormat 1x1x1, GENERAL
     // Dummy storage buffer standing in for the indirection buffer (11/18) and
     // the variant table (12/19) until the VT runtime is live.
     matter::VkBufferResource vt_dummy_storage_;
@@ -3226,6 +3683,24 @@ private:
     // state. Calling it unconditionally is what makes the lane survive a
     // renderer reset without the host having to notice.
     std::vector<matter::PartDrawOverrideEntry> part_draw_override_entries_;
+    std::vector<uint32_t> geometry_page_capacities_;
+    std::vector<uint32_t> geometry_cut_words_{0,0,0,0,0,0,0,0};
+    bool geometry_page_render_ready_slot(uint32_t slot) const;
+    // Build the next immutable cut without discarding the preceding allocation.
+    std::vector<uint32_t> geometry_cut_scratch_words_, geometry_cut_scratch_capacities_;
+    std::vector<std::array<uint64_t,2>> geometry_cut_scratch_pages_;
+    std::vector<uint64_t> geometry_cut_scratch_owners_;
+    uint64_t geometry_cut_generation_ = 1;
+    std::vector<std::array<uint64_t,2>> geometry_node_pages_;
+    std::vector<uint64_t> geometry_job_owners_;
+    uint64_t geometry_view_revision_ = 0;
+    std::vector<VkGeometryPageRequest> geometry_page_requests_;
+    bool consume_geometry_feedback(FrameResources&, std::string& error);
+    uint32_t geometry_cull_instance_count() const {
+        return geometry_cut_words_[0] ? geometry_cut_words_[0] +
+            static_cast<uint32_t>(instance_staging_.size() - static_instance_count_) :
+            static_cast<uint32_t>(instance_staging_.size());
+    }
     std::vector<matter::PartDrawOverrideGpu> part_draw_override_table_;
     bool part_draw_overrides_dirty_ = true;
     // Per-part_slot occlusion class for the ID pass (see
@@ -3236,37 +3711,71 @@ private:
     // Borrowed: the residency layer owns the filler. Null when the compositor
     // could not be created and the WP-E stub filler is standing in.
     vt::VtCompositor* vt_compositor_ = nullptr;
+    vt::encoded::Filler* vt_encoded_filler_ = nullptr; // borrowed from residency
+    bool vt_encoded_geometry_only_ = false;
+    double vt_encoded_log_time_ = 0;
     // WP-H: borrowed likewise (the residency layer owns the enricher). Null
     // when hardware ray tracing is unavailable or the enricher failed to
     // create -- tier-2 is additive, so that is a quality loss, not a fault.
     vt::VtEnricher* vt_enricher_ = nullptr;
     bool vt_inputs_dirty_ = true;
-    // Set by the first push_vt_compositor_inputs() that actually pushed. A
-    // later push means the inputs CHANGED, which makes every resident page
-    // stale (see the invalidate_all_content call there); the first one is the
-    // runtime's own start, where nothing is resident yet.
+    uint32_t vt_input_push_failures_ = 0;
+    // Last effective inputs used by the compositor. Revisions alone are not
+    // content changes; material/source differences select dependent owners.
     bool vt_inputs_pushed_ = false;
-    // invalidate_part() frees GPU mesh caches a recorded fill may still read,
-    // and its contract wants the device idle w.r.t. fills. Rather than stall a
-    // streaming world on every sector unload, invalidations are held until the
-    // frame serial is far enough past kMaxBatchesInFlight that no fill
-    // referencing them can still be unretired.
-    std::vector<std::pair<uint64_t, uint64_t>> vt_pending_invalidate_;
-    // Monotonic VT frame counter (LRU timestamps + invalidation retirement).
+    std::vector<vt::VtCompositorMaterial> vt_materials_pushed_;
+    std::array<MaterialGpuRecord, kVtDrawMaterials> vt_draw_materials_pushed_{};
+    uint32_t vt_draw_material_count_pushed_ = 0;
+    std::array<std::weak_ptr<const vt::VtInputSnapshot>, vt::kVtMaxInputSnapshots> vt_draw_snapshot_registry_{};
+
+    std::array<uint64_t, tileset::kMaxTilesetSlots> vt_tileset_revisions_{};
+    std::array<uint64_t, tileset::kMaxTilesetSlots> vt_tileset_revisions_pushed_{};
+    // Bumped whenever write_tileset_descriptors_for_frame() rebuilds a frame
+    // slot's tileset_image_infos. The RT set mirrors those bindings and
+    // rewrites them only when its slot's recorded revision differs. Starts at
+    // 1 so a fresh slot (revision 0) always writes them once.
+    uint64_t tileset_descriptor_revision_ = 1;
+    // Monotonic VT frame counter (LRU timestamps + resource retirement).
     // Deliberately independent of VulkanFrame::serial, which the legacy
     // immediate render path does not have.
     uint64_t vt_frame_serial_ = 0;
+    double vt_cpu_demand_ms_ = 0;
+    double vt_cpu_begin_ms_ = 0;
+    double vt_cpu_pre_pass_ms_ = 0;
+    double vt_cpu_post_pass_ms_ = 0;
     // WP-F: surfaces()-tape live-update bracket state (begin/update/end).
     bool vt_surface_update_open_ = false;
-    uint32_t vt_surface_updates_applied_ = 0;
+    std::vector<uint32_t> vt_surface_dirty_owners_;
     // Demand-driven VT working-set state. vt_demand_frame_ is the demand
     // pass's own monotonic clock (one tick per update_vt_demand call);
-    // vt_last_wanted/vt_last_requested stamps compare against it.
+    // Effective wanted stamps compare against it (including cached views).
     // vt_deferred_parts_ counts live PartRecords with a nonzero vt_rung_mask
     // so the per-frame pass can no-op in scenes with no deferred parts.
     uint64_t vt_demand_frame_ = 0;
     uint32_t vt_deferred_parts_ = 0;
     std::vector<VtRungRequest> vt_rung_requests_;
+    std::vector<uint32_t> vt_prewarm_parts_;
+    // The selection is a pure function of these scene generations and the
+    // effective LOD eye/budget. Registration and linger are separate: a cached
+    // selection must retry requests and age unselected registrations normally.
+    struct VtDemandEntry {
+        uint32_t part_slot;
+        uint32_t rung;
+        float priority;
+    };
+    std::vector<VtDemandEntry> vt_demand_entries_;
+    matter::Float3 vt_demand_eye_{};
+    float vt_demand_pixel_budget_ = 0;
+    uint64_t vt_demand_instance_generation_ = 0;
+    uint64_t vt_demand_static_generation_ = 0;
+    uint64_t vt_demand_command_generation_ = 0;
+    uint64_t vt_demand_slot_version_ = 0;
+    uint64_t vt_demand_cache_frame_ = 0;
+    uint64_t vt_demand_builds_ = 0;
+    uint64_t vt_surface_selection_revision_ = 1;
+    bool vt_demand_cache_valid_ = false;
+    bool vt_demand_registrations_pending_ = true;
+    bool vt_demand_linger_pending_ = true;
     // Working-set knobs, refreshed from matter::VtResidencyBudgets on every
     // demand pass: linger_frames (how long a variant survives unwanted before
     // its layer is reclaimed, MATTER_VT_LINGER_FRAMES) and requests_per_frame
@@ -3289,6 +3798,22 @@ private:
     // RT PBR Phase 1: transmission history mirrors the specular chain
     // (signal mode 2 in gi_temporal.comp / gi_atrous.comp).
     GiHistorySet gi_trans_history_[2];
+    // Full-rate primary radiance is independent of the optional, scaled GI
+    // lanes. Only successful submissions promote this lane's candidate.
+    GiHistorySet local_direct_history_[2];
+    matter::VkImageResource local_direct_filtered_;
+    struct LocalDirectHistoryState {
+        uint32_t presented_index = 0;
+        uint32_t candidate_index = 1;
+        uint64_t presented_token = 0;
+        uint64_t candidate_token = 0;
+        uint64_t candidate_serial = 0;
+        uint64_t presented_scene_key = 0;
+        uint64_t candidate_scene_key = 0;
+        bool reset_pending = true;
+        bool filtered_valid = false;
+        bool candidate_reset = true;
+    } local_direct_history_state_;
     matter::VkImageResource gi_atrous_[2];
     matter::VkImageResource gi_spec_atrous_[2];
     matter::VkImageResource gi_trans_atrous_[2];
@@ -3301,6 +3826,8 @@ private:
     uint64_t gi_candidate_attempt_token_ = 0;
     uint64_t gi_presented_attempt_token_ = 0;
     uint64_t gi_history_reset_count_ = 0;
+    uint64_t gi_presented_scene_key_ = 0;
+    uint64_t gi_candidate_scene_key_ = 0;
     bool gi_candidate_was_reset_ = false;
     bool gi_candidate_used_diffuse_reset_ = false;
     bool gi_candidate_used_reflection_reset_ = false;
@@ -3310,15 +3837,11 @@ private:
     VkImageUsageFlags depth_usage_ = 0;
     VkImageUsageFlags opaque_hdr_usage_ = 0;
     VkImageUsageFlags opaque_depth_usage_ = 0;
-    matter::VkBufferResource rt_sbt_;
-    VkDeviceAddress rt_sbt_address_ = 0;
-    VkDeviceAddress rt_sbt_test_raygen_address_ = 0;
-    VkDeviceAddress rt_sbt_lighting_raygen_address_ = 0;
-    VkDeviceAddress rt_sbt_miss_address_ = 0;
-    VkDeviceAddress rt_sbt_hit_address_ = 0;
-    VkDeviceSize rt_sbt_stride_ = 0;
-    VkDeviceSize rt_sbt_miss_size_ = 0;
-    VkDeviceSize rt_sbt_hit_size_ = 0;
+    bool rt_specialize_gi_ = true;
+    bool rt_primary_adaptive_ = false;
+    bool rt_separate_primary_ = false;
+    bool rt_adaptive_diagnostics_ = false;
+    uint64_t rt_adaptive_diagnostic_frames_ = 0;
     // The INTERNAL raster extent the G-buffer and HDR targets were built at —
     // the pre-upscale resolution when DLSS is active, not the swapchain's.
     // raster_width()/raster_height() report it.
@@ -3386,11 +3909,25 @@ private:
 
     std::vector<uint32_t> part_instance_counts_;
     std::vector<DrawCommand> command_template_;
+    // Mirrored instances (GpuInstance::mirrored) per part, static baseline
+    // like part_instance_counts_; dynamic ones are added per frame.
+    std::vector<uint32_t> part_mirrored_counts_;
+    // Indexed like command_template_: bucket b's mirrored command, whose
+    // transform region is the last mirrored[part] slots of b's region. Empty
+    // when no instance is mirrored. Uploaded after the primary table in the
+    // same `commands` buffer (see cull.comp's vis_params.z) and drawn with
+    // mirrored_raster_pipeline_.
+    std::vector<DrawCommand> mirror_command_template_;
+    // The primary + mirrored tables as one contiguous upload source.
+    std::vector<DrawCommand> command_upload_scratch_;
     std::vector<PartCommandRange> part_command_ranges_;
     std::vector<PartCommandRange> recorded_draw_ranges_;
     std::vector<uint8_t> raster_command_enabled_;
     std::vector<uint8_t> uploaded_raster_command_enabled_;
     std::vector<RtInstance> rt_instances_;
+    std::unique_ptr<VkBlasCache> blas_cache_;
+    std::vector<uint64_t> geometry_page_warmups_;
+    mutable std::map<uint64_t,std::array<uint64_t,2>> geometry_page_cost_cache_;
     size_t static_rt_instance_count_ = 0;
     // Bumped by every event that can change or free the memory an already-built
     // TLAS points at: a recorded BLAS build (which also covers the later
@@ -3411,6 +3948,8 @@ private:
     world_lights::LocalLightPublication local_light_publication_{};
     uint64_t local_light_revision_ = 0;
     uint64_t local_light_generation_ = 1;
+    LocalDirectOwner local_direct_owner_ = LocalDirectOwner::Raster;
+    uint64_t local_direct_lane_revision_ = 0;
     bool gi_history_reset_pending_ = false;
     bool gi_diffuse_history_reset_pending_ = false;
     bool gi_reflection_history_reset_pending_ = false;
@@ -3450,6 +3989,9 @@ private:
     // height and spread 4x, because that is literally the slab's matrix.
     uint32_t skin_transform_base_ = 0;
     uint32_t uploaded_command_count_ = 0;
+    // The `commands` buffer carries mirror_command_template_ after the
+    // uploaded_command_count_ primary commands.
+    bool uploaded_mirror_commands_ = false;
     uint32_t uploaded_transform_slots_ = 0;
     uint32_t uploaded_cluster_count_ = 0;
     std::vector<RtInstance> uploaded_rt_instances_;
@@ -3542,15 +4084,10 @@ private:
     uint64_t static_generation_ = 1;
     uint64_t command_generation_ = 1;
     // What the next upload_scene_buffers() owes the static cluster/vertex/
-    // index buffers. kAppend is only valid while every mutation since the
-    // last upload was a pure tail-append (register_part) or a write into a
-    // range the free lists have quarantined for a full in-flight window;
-    // anything that rewrites bytes an in-flight frame may still read must
-    // escalate to kFull, because kFull allocates NEW buffers and moves them
-    // in. Today the only escalation left is a static-capacity overflow in
-    // upload_scene_buffers -- release_part does NOT compact (it just returns
-    // ranges to the recyclers) and reset() idles the device and restarts from
-    // kClean.
+    // index buffers. kAppend is valid for tail appends and settled recycled
+    // ranges. An overflow grows just the undersized buffers and copies the
+    // unchanged prefix on the GPU. kFull remains the forced recovery/test
+    // path; release_part does not compact or request it.
     enum class StaticUpload : uint8_t { kClean, kAppend, kFull };
     // kCLEAN, not kFull. The buffers are RESERVED at init(), so seeding is just
     // an append of every registered range -- register_part is the only writer
@@ -3568,6 +4105,7 @@ private:
     // rebuild_command_template (the update_instances layout rebuild or
     // flush_command_template before a frame consumes the template).
     bool command_template_dirty_ = false;
+    size_t command_metadata_dirty_cluster_ = 0;
     bool flush_command_template(std::string& error);
     // Free-range recycling for the static cluster/vertex/index staging and
     // buffers. release_part() returns a part's ranges here (O(part) — no
@@ -3604,12 +4142,18 @@ private:
     std::vector<std::pair<uint32_t, uint32_t>> dirty_cluster_ranges_;
     std::vector<std::pair<uint32_t, uint32_t>> dirty_vertex_ranges_;
     std::vector<std::pair<uint32_t, uint32_t>> dirty_index_ranges_;
+    VkDeviceSize static_upload_budget_bytes_ = 32ull * 1024ull * 1024ull;
+    VkDeviceSize static_upload_frame_bytes_ = 0;
+    uint64_t static_upload_budget_serial_ = UINT64_MAX;
+    std::vector<uint32_t> pending_triangle_parts_;
+    std::vector<GpuInstance> resident_instance_scratch_;
     // Escalate-only: never lets an append downgrade an owed full rewrite.
     void mark_static_append() {
         if (static_upload_dirty_ == StaticUpload::kClean)
             static_upload_dirty_ = StaticUpload::kAppend;
     }
     VkSceneUploadCounters upload_counters_{};
+    uint32_t frame_descriptors_written_ = 0;
     VkCullStats cached_stats_{};
     // Identity-buffer visibility (M4). `visibility_reduce_` is the caller's
     // switch; `visibility_descriptors_valid_` says the per-slot sets have been
@@ -3661,6 +4205,8 @@ private:
     // Most recently retired raw sample per zone. Acceptance/perf capture uses
     // this rather than an EMA so median and p95 retain their meaning.
     float gpu_last_ms_[kGpuZoneCount]{};
+    uint64_t gpu_sample_sequence_ = 0;
+    uint32_t gpu_sample_valid_mask_ = 0;
     std::uint64_t water_animation_upload_count_ = 0u;
     std::uint64_t water_animation_decode_dispatch_count_ = 0u;
     // Helper recorded per-frame to stamp the command buffer.
@@ -3683,6 +4229,7 @@ private:
     bool test_fail_animation_bounds_upload_once_ = false;
     bool test_fail_next_environment_flush_ = false;
     bool test_fail_next_atmosphere_generation_ = false;
+    bool test_fail_next_vt_input_push_ = false;
     bool test_fail_next_atmosphere_descriptor_publication_ = false;
 #endif
 };

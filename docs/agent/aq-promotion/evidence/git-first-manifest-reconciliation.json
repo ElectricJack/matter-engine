@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "authenticated_generator_message": "msg-dbe933c0d0654205929dfe4dcb486426",
+  "message_seq": 10096,
+  "generated_sha256": "73bf03ce85880f5fb53800cf9ec64b8c494a462c26d9e2cf7b3e4cc0f6d7efe1",
+  "generated_identity_and_checks_preserved": true,
+  "reviewed_extensions_added": {
+    "promotion_attestation_names": [
+      "Agent Queue Promotion Attestation (staging)",
+      "Agent Queue Promotion Attestation (release)"
+    ],
+    "check_sets": {
+      "promotion-source-audit": [
+        "unattested-ci / Native Windows build and tests",
+        "unattested-ci / Linux foundation build and tests"
+      ]
+    }
+  },
+  "generated_to_production_diff": [
+    {
+      "field": "promotion_attestation_names",
+      "kind": "identity",
+      "expected": [],
+      "committed": [
+        "Agent Queue Promotion Attestation (staging)",
+        "Agent Queue Promotion Attestation (release)"
+      ],
+      "committed_present": true
+    },
+    {
+      "field": "check_sets",
+      "kind": "check_set",
+      "expected": {},
+      "committed": {
+        "promotion-source-audit": [
+          "unattested-ci / Native Windows build and tests",
+          "unattested-ci / Linux foundation build and tests"
+        ]
+      },
+      "committed_present": true
+    }
+  ],
+  "production_sha256": "4ba1582f5ef9dc0656d04739034f5891261a05017125fcbb4421adb2667b6f13",
+  "production_byte_identical_to_qualified_8f25": true,
+  "limitation": "Authenticated base plus existing reviewed extensions is repository preparation. Actual delivered default-head App readiness/flow bootstrap ordering still requires owner receipt."
+}

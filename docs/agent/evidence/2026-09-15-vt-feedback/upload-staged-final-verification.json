@@ -1,0 +1,16 @@
+{
+  "checked_at_utc": "2026-09-15T11:39:13.130166+00:00",
+  "source_manifest": "upload-staged-final-source.json",
+  "source_count": 22,
+  "binary_count": 3,
+  "changed_inputs": [],
+  "process_census_command": [
+    "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+    "-NoProfile",
+    "-Command",
+    "$p = @(Get-Process -Name editor,vulkan_smoke_tests,vt_compositor_tests,vt_residency_tests,cl,ninja,cmake -ErrorAction SilentlyContinue | Select-Object ProcessName,Id); ConvertTo-Json -InputObject $p -Compress; exit 0"
+  ],
+  "process_census_exit": 0,
+  "processes": [],
+  "full_vt_acceptance": false
+}

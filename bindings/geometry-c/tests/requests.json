@@ -1,0 +1,830 @@
+{
+  "box": {
+    "binding_version": 1,
+    "recipe": {
+      "asset_dependencies": [],
+      "canonical_profile": "matter-exact-json-v1",
+      "document_type": "recipe",
+      "extensions": [],
+      "materials": [
+        {
+          "base_color": {
+            "factor": [
+              0.75,
+              0.25,
+              0.125,
+              1
+            ],
+            "texture": null,
+            "uv_set": 0
+          },
+          "emissive": [
+            0,
+            0,
+            0
+          ],
+          "emissive_texture": null,
+          "id": "clay",
+          "metallic": 0,
+          "metallic_roughness_texture": null,
+          "normal_scale": 1,
+          "normal_texture": null,
+          "roughness": 0.800000011920929
+        }
+      ],
+      "metadata": {},
+      "nodes": [
+        {
+          "id": "box",
+          "operation": "primitive.box",
+          "operation_version": 1,
+          "output_type": "mesh",
+          "parameters": {
+            "size": [
+              2,
+              4,
+              6
+            ]
+          },
+          "inputs": [],
+          "transform": [
+            1,
+            0,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            1
+          ],
+          "materials": [
+            "clay"
+          ]
+        }
+      ],
+      "outputs": [
+        "box"
+      ],
+      "parameters": {
+        "enabled": true,
+        "width": 0.1
+      },
+      "required_capabilities": [
+        {
+          "name": "matter.recipe.core",
+          "version": 1
+        },
+        {
+          "name": "matter.material.pbr",
+          "version": 1
+        }
+      ],
+      "resources": [],
+      "rng_algorithm": "matter.splitmix64.v1",
+      "schema_version": {
+        "major": 1,
+        "minor": 0
+      },
+      "seed": "0123456789abcdef",
+      "source": {
+        "content": null,
+        "id": "binding.box",
+        "legacy_hashes": [],
+        "revision": "1",
+        "uri": "fixture://binding/box"
+      },
+      "source_map": {},
+      "textures": []
+    }
+  },
+  "extrude": {
+    "binding_version": 1,
+    "recipe": {
+      "asset_dependencies": [],
+      "canonical_profile": "matter-exact-json-v1",
+      "document_type": "recipe",
+      "extensions": [],
+      "materials": [
+        {
+          "base_color": {
+            "factor": [
+              0.75,
+              0.25,
+              0.125,
+              1
+            ],
+            "texture": null,
+            "uv_set": 0
+          },
+          "emissive": [
+            0,
+            0,
+            0
+          ],
+          "emissive_texture": null,
+          "id": "clay",
+          "metallic": 0,
+          "metallic_roughness_texture": null,
+          "normal_scale": 1,
+          "normal_texture": null,
+          "roughness": 0.800000011920929
+        }
+      ],
+      "metadata": {},
+      "nodes": [
+        {
+          "id": "profile",
+          "operation": "profile.polygon",
+          "operation_version": 1,
+          "output_type": "profile",
+          "parameters": {
+            "points": [
+              [
+                0,
+                0
+              ],
+              [
+                1,
+                0
+              ],
+              [
+                1,
+                1
+              ],
+              [
+                0,
+                1
+              ]
+            ]
+          },
+          "inputs": [],
+          "transform": [
+            1,
+            0,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            1
+          ],
+          "materials": []
+        },
+        {
+          "id": "extrude",
+          "operation": "profile.extrude",
+          "operation_version": 1,
+          "output_type": "mesh",
+          "parameters": {
+            "depth": 2
+          },
+          "inputs": [
+            {
+              "kind": "node",
+              "port": "operand",
+              "reference": "profile",
+              "type": "profile"
+            }
+          ],
+          "transform": [
+            1,
+            0,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            1
+          ],
+          "materials": [
+            "clay"
+          ]
+        }
+      ],
+      "outputs": [
+        "extrude"
+      ],
+      "parameters": {
+        "enabled": true,
+        "width": 0.1
+      },
+      "required_capabilities": [
+        {
+          "name": "matter.recipe.core",
+          "version": 1
+        },
+        {
+          "name": "matter.material.pbr",
+          "version": 1
+        }
+      ],
+      "resources": [],
+      "rng_algorithm": "matter.splitmix64.v1",
+      "schema_version": {
+        "major": 1,
+        "minor": 0
+      },
+      "seed": "0123456789abcdef",
+      "source": {
+        "content": null,
+        "id": "binding.extrude",
+        "legacy_hashes": [],
+        "revision": "1",
+        "uri": "fixture://binding/extrude"
+      },
+      "source_map": {},
+      "textures": []
+    }
+  },
+  "sphere": {
+    "binding_version": 1,
+    "recipe": {
+      "asset_dependencies": [],
+      "canonical_profile": "matter-exact-json-v1",
+      "document_type": "recipe",
+      "extensions": [],
+      "materials": [
+        {
+          "base_color": {
+            "factor": [
+              0.75,
+              0.25,
+              0.125,
+              1
+            ],
+            "texture": null,
+            "uv_set": 0
+          },
+          "emissive": [
+            0,
+            0,
+            0
+          ],
+          "emissive_texture": null,
+          "id": "clay",
+          "metallic": 0,
+          "metallic_roughness_texture": null,
+          "normal_scale": 1,
+          "normal_texture": null,
+          "roughness": 0.800000011920929
+        }
+      ],
+      "metadata": {},
+      "nodes": [
+        {
+          "id": "sphere",
+          "operation": "primitive.sphere",
+          "operation_version": 1,
+          "output_type": "mesh",
+          "parameters": {
+            "radius": 1,
+            "segments": 8
+          },
+          "inputs": [],
+          "transform": [
+            1,
+            0,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            1
+          ],
+          "materials": [
+            "clay"
+          ]
+        }
+      ],
+      "outputs": [
+        "sphere"
+      ],
+      "parameters": {
+        "enabled": true,
+        "width": 0.1
+      },
+      "required_capabilities": [
+        {
+          "name": "matter.recipe.core",
+          "version": 1
+        },
+        {
+          "name": "matter.material.pbr",
+          "version": 1
+        }
+      ],
+      "resources": [],
+      "rng_algorithm": "matter.splitmix64.v1",
+      "schema_version": {
+        "major": 1,
+        "minor": 0
+      },
+      "seed": "0123456789abcdef",
+      "source": {
+        "content": null,
+        "id": "binding.sphere",
+        "legacy_hashes": [],
+        "revision": "1",
+        "uri": "fixture://binding/sphere"
+      },
+      "source_map": {},
+      "textures": []
+    }
+  },
+  "placement": {
+    "binding_version": 1,
+    "recipe": {
+      "asset_dependencies": [],
+      "canonical_profile": "matter-exact-json-v1",
+      "document_type": "recipe",
+      "extensions": [],
+      "materials": [
+        {
+          "base_color": {
+            "factor": [
+              0.75,
+              0.25,
+              0.125,
+              1
+            ],
+            "texture": null,
+            "uv_set": 0
+          },
+          "emissive": [
+            0,
+            0,
+            0
+          ],
+          "emissive_texture": null,
+          "id": "clay",
+          "metallic": 0,
+          "metallic_roughness_texture": null,
+          "normal_scale": 1,
+          "normal_texture": null,
+          "roughness": 0.800000011920929
+        }
+      ],
+      "metadata": {},
+      "nodes": [
+        {
+          "id": "box",
+          "operation": "primitive.box",
+          "operation_version": 1,
+          "output_type": "mesh",
+          "parameters": {
+            "size": [
+              2,
+              4,
+              6
+            ]
+          },
+          "inputs": [],
+          "transform": [
+            1,
+            0,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            1
+          ],
+          "materials": [
+            "clay"
+          ]
+        },
+        {
+          "id": "left",
+          "operation": "placement.affine",
+          "operation_version": 1,
+          "output_type": "mesh",
+          "parameters": {},
+          "inputs": [
+            {
+              "kind": "node",
+              "port": "operand",
+              "reference": "box",
+              "type": "mesh"
+            }
+          ],
+          "transform": [
+            1,
+            0,
+            0,
+            -3,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            1
+          ],
+          "materials": []
+        },
+        {
+          "id": "right",
+          "operation": "placement.affine",
+          "operation_version": 1,
+          "output_type": "mesh",
+          "parameters": {},
+          "inputs": [
+            {
+              "kind": "node",
+              "port": "operand",
+              "reference": "box",
+              "type": "mesh"
+            }
+          ],
+          "transform": [
+            -2,
+            0,
+            0,
+            3,
+            0,
+            3,
+            0,
+            0,
+            0,
+            0,
+            4,
+            0,
+            0,
+            0,
+            0,
+            1
+          ],
+          "materials": []
+        }
+      ],
+      "outputs": [
+        "left",
+        "right"
+      ],
+      "parameters": {
+        "enabled": true,
+        "width": 0.1
+      },
+      "required_capabilities": [
+        {
+          "name": "matter.recipe.core",
+          "version": 1
+        },
+        {
+          "name": "matter.material.pbr",
+          "version": 1
+        }
+      ],
+      "resources": [],
+      "rng_algorithm": "matter.splitmix64.v1",
+      "schema_version": {
+        "major": 1,
+        "minor": 0
+      },
+      "seed": "0123456789abcdef",
+      "source": {
+        "content": null,
+        "id": "binding.placement",
+        "legacy_hashes": [],
+        "revision": "1",
+        "uri": "fixture://binding/placement"
+      },
+      "source_map": {},
+      "textures": []
+    }
+  },
+  "csg": {
+    "binding_version": 1,
+    "recipe": {
+      "asset_dependencies": [],
+      "canonical_profile": "matter-exact-json-v1",
+      "document_type": "recipe",
+      "extensions": [],
+      "materials": [
+        {
+          "base_color": {
+            "factor": [
+              0.75,
+              0.25,
+              0.125,
+              1
+            ],
+            "texture": null,
+            "uv_set": 0
+          },
+          "emissive": [
+            0,
+            0,
+            0
+          ],
+          "emissive_texture": null,
+          "id": "clay",
+          "metallic": 0,
+          "metallic_roughness_texture": null,
+          "normal_scale": 1,
+          "normal_texture": null,
+          "roughness": 0.800000011920929
+        }
+      ],
+      "metadata": {},
+      "nodes": [
+        {
+          "id": "sphere",
+          "operation": "primitive.sphere",
+          "operation_version": 1,
+          "output_type": "mesh",
+          "parameters": {
+            "radius": 1,
+            "segments": 8
+          },
+          "inputs": [],
+          "transform": [
+            1,
+            0,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            1
+          ],
+          "materials": [
+            "clay"
+          ]
+        },
+        {
+          "id": "cutter",
+          "operation": "primitive.box",
+          "operation_version": 1,
+          "output_type": "mesh",
+          "parameters": {
+            "size": [
+              1,
+              1,
+              1
+            ]
+          },
+          "inputs": [],
+          "transform": [
+            1,
+            0,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            1
+          ],
+          "materials": [
+            "clay"
+          ]
+        },
+        {
+          "id": "cutter.placed",
+          "operation": "placement.affine",
+          "operation_version": 1,
+          "output_type": "mesh",
+          "parameters": {},
+          "inputs": [
+            {
+              "port": "mesh",
+              "kind": "node",
+              "reference": "cutter",
+              "type": "mesh"
+            }
+          ],
+          "transform": [
+            1,
+            0,
+            0,
+            0.5,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            1
+          ],
+          "materials": []
+        },
+        {
+          "id": "cut",
+          "operation": "solid.ordered",
+          "operation_version": 1,
+          "output_type": "mesh",
+          "parameters": {
+            "operations": [
+              "union",
+              "subtract"
+            ],
+            "spacing": 0.25,
+            "smoothing": 0
+          },
+          "inputs": [
+            {
+              "kind": "node",
+              "port": "operand",
+              "reference": "sphere",
+              "type": "mesh"
+            },
+            {
+              "kind": "node",
+              "port": "operand",
+              "reference": "cutter.placed",
+              "type": "mesh"
+            }
+          ],
+          "transform": [
+            1,
+            0,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            1
+          ],
+          "materials": [
+            "clay"
+          ]
+        }
+      ],
+      "outputs": [
+        "cut"
+      ],
+      "parameters": {
+        "enabled": true,
+        "width": 0.1
+      },
+      "required_capabilities": [
+        {
+          "name": "matter.recipe.core",
+          "version": 1
+        },
+        {
+          "name": "matter.material.pbr",
+          "version": 1
+        },
+        {
+          "name": "matter.operation.solid.ordered",
+          "version": 1
+        }
+      ],
+      "resources": [],
+      "rng_algorithm": "matter.splitmix64.v1",
+      "schema_version": {
+        "major": 1,
+        "minor": 0
+      },
+      "seed": "0123456789abcdef",
+      "source": {
+        "content": null,
+        "id": "binding.csg",
+        "legacy_hashes": [],
+        "revision": "1",
+        "uri": "fixture://binding/csg"
+      },
+      "source_map": {},
+      "textures": []
+    }
+  },
+  "process": {
+    "binding_version": 1,
+    "required_capabilities": [
+      {
+        "name": "matter.operation.mesh.simplify",
+        "version": 1
+      },
+      {
+        "name": "matter.operation.mesh.smooth",
+        "version": 1
+      }
+    ],
+    "settings": {
+      "regions": [
+        {
+          "prototypes": [
+            "sphere"
+          ],
+          "modifiers": [
+            {
+              "operation": "mesh.simplify",
+              "ratio": 0.6
+            },
+            {
+              "operation": "mesh.smooth",
+              "iterations": 2,
+              "lambda": 0.5,
+              "mu": -0.53
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "query": {
+    "binding_version": 1,
+    "samples": [
+      {
+        "prototype": "box",
+        "kind": "ray_surface",
+        "position": [
+          0,
+          10,
+          0
+        ],
+        "direction": [
+          0,
+          -2,
+          0
+        ],
+        "max_distance_metres": 20
+      },
+      {
+        "prototype": "box",
+        "kind": "closest_surface",
+        "position": [
+          10,
+          0,
+          0
+        ],
+        "max_distance_metres": 1
+      }
+    ]
+  }
+}
