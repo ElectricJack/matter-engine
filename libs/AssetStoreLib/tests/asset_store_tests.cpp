@@ -27,11 +27,15 @@
  * The suite spawns itself as a child in three modes -- see main(). */
 
 #include "asset_store.h"
+#include "asset_pages.h"
+#include "../src/store_format.h"
 /* Internal, but the checksum is the mechanism behind "corruption is a miss", so
  * the suite verifies it directly rather than only through its effects. */
 #include "../src/store_hash.h"
 
 #include <atomic>
+#include <filesystem>
+#include <chrono>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -958,22 +962,10 @@ static void test_crc32_is_correct() {
     CHECK(missed == 0, "every single-bit flip changed the checksum (%d missed)", missed);
 }
 
-/* reload_index() skips the reload when os::stamp_of() reports the same stamp,
- * so a stamp that can repeat across a real commit is a silent stale read.
- *
- * The narrowest way to make two DIFFERENT indexes the same length is a
- * compact() that keeps everything: pack count and entry count are unchanged,
- * so index.bin is byte-for-byte the same SIZE while its generation, offsets
- * and CRC all move. Run back to back it also lands inside one second. That is
- * exactly the case the old POSIX stamp -- whole-second st_mtime XOR size --
- * could not see, leaving the reader pinned to a generation whose pack files
- * had just been deleted. (Win32's 100 ns file time always caught it, so this
- * test only ever went red on POSIX; it is here so it stays that way.)
- *
- * The check is on the effect, not on the stamp: after the writer commits, a
- * reader that calls reload_index() must be able to read the blob. */
-static void test_reload_sees_a_same_size_commit(const std::string& root) {
-    printf("- reload: a same-second, same-length index commit is not missed\n");
+/* Maintenance cannot retire packs still reachable from a reader snapshot,
+ * including a reader that has never opened its first pack. */
+static void test_quiescent_compaction(const std::string& root) {
+    printf("- maintenance: lazy readers prevent compaction until they retire\n");
     std::string dir = root + "/reload";
     rm_tree(dir);
 
@@ -1002,7 +994,12 @@ static void test_reload_sees_a_same_size_commit(const std::string& root) {
 
     /* Keep everything: one pack, one entry, before and after. */
     CompactStats cs;
+    CHECK(!w->compact(&h, 1, &cs), "lazy reader blocks pack retirement");
+    CHECK(w->generation() == 0, "failed maintenance preserves prior generation");
+    r.reset();
     CHECK(w->compact(&h, 1, &cs), "compact keeping every blob");
+    r = BlobStore::open(rcfg, &err);
+    CHECK(r != nullptr, "reader reopens after maintenance"); if (!r) return;
     CHECK(cs.blobs_kept == 1, "the blob survived compaction");
     CHECK(w->generation() == 1, "compaction started a new generation");
 
@@ -1095,9 +1092,419 @@ static void test_read_only_cannot_write(const std::string& root) {
     rm_tree(dir);
 }
 
+static void test_manifest_directory_reuse(const std::string& root) {
+    printf("- manifest directory: reuse unchanged data and observe replacement/removal\n");
+    StoreConfig cfg;cfg.dir=root+"/manifest_reuse";std::string error;
+    auto writer=BlobStore::open(cfg,&error);CHECK(writer!=nullptr,"manifest writer");if(!writer)return;
+    auto refs=RefTable::open(*writer,{},&error);CHECK(refs!=nullptr,"manifest refs");if(!refs)return;
+    PageLimits limits;PageSection section{1,1,1,{1,2,3,4}};
+    std::vector<uint8_t> bytes;BlobHash first,second;
+    CHECK(encode_page(1,{section},{},limits,bytes,error),"encode first manifest");
+    CHECK(publish_page_manifest(*writer,*refs,"asset",bytes,limits,first,error),"publish first manifest");
+    PageCacheConfig cc;cc.store=cfg;auto reader=PageCache::open(cc,error);
+    CHECK(reader!=nullptr,"manifest reader");if(!reader)return;
+    for(int i=0;i<16;++i){auto result=reader->read_manifest("asset");CHECK(result.page&&result.page->hash==first,"unchanged manifest remains readable");}
+    CHECK(reader->stats().reference_reloads==1,"warm lookup parses the directory once");
+    section.bytes[0]=9;CHECK(encode_page(1,{section},{},limits,bytes,error),"encode same-size replacement");
+    CHECK(publish_page_manifest(*writer,*refs,"asset",bytes,limits,second,error),"publish replacement manifest");
+    auto result=reader->read_manifest("asset");CHECK(result.page&&result.page->hash==second,"existing reader observes same-size atomic reference replacement");
+    CHECK(reader->stats().reference_reloads==2,"changed directory reloads once");
+    CHECK(refs->erase("asset")&&refs->flush(),"publish erased reference");
+    CHECK(reader->read_manifest("asset").status==PageStatus::Missing,"erased manifest cannot survive in the directory cache");
+    CHECK(reader->stats().reference_reloads==3,"erased directory reloads once");
+    CHECK(publish_page_manifest(*writer,*refs,"asset",bytes,limits,second,error),"republish reference");
+    result=reader->read_manifest("asset");CHECK(result.page&&result.page->hash==second,"missing reference recovers after publication");
+}
+
+static void test_bounded_reads(const std::string& root) {
+    printf("- bounded reads: span, total holes, deduplicated checksums and exact reservation\n");
+    for (int mode = 0; mode < 3; ++mode) {
+        StoreConfig cfg; cfg.dir = root + "/bounded" + std::to_string(mode);
+        cfg.batch_max_bytes = mode == 0 ? 240 : 4096;
+        cfg.batch_max_overread_bytes = mode == 1 ? 32 : 4096;
+        cfg.batch_gap_bytes = mode == 2 ? 0 : 4096;
+        std::string error; auto store = BlobStore::open(cfg, &error);
+        CHECK(store != nullptr, "open bounded store"); if (!store) continue;
+        std::vector<BlobHash> hashes;
+        for (int i = 0; i < 5; ++i) {
+            std::vector<uint8_t> data(100, static_cast<uint8_t>(i)); BlobHash h;
+            CHECK(store->put(data.data(), data.size(), &h) == Status::Ok, "put bounded blob"); hashes.push_back(h);
+        }
+        ReadBatch batch(*store);
+        for (auto h : hashes) { batch.add(h); batch.add(h); }
+        const size_t needed = batch.allocation_bytes();
+        auto* arena = mem_arena_create(needed);
+        CHECK(batch.submit(arena), "bounded submit");
+        CHECK(batch.stats().chunk_reads == (mode == 0 ? 3u : 5u), "span/holes bound read count");
+        CHECK(batch.stats().checksum_count == 5 && batch.stats().duplicate_requests == 5, "validate unique blobs only");
+        CHECK(batch.stats().unique_bytes_delivered == 500 && batch.stats().bytes_delivered == 1000, "dedup accounting");
+        MemStats st{}; mem_arena_get_stats(arena, &st);
+        CHECK(st.pageCount == 1 && st.liveBytes == needed, "reservation exact, no arena growth");
+        for (size_t i = 0; i < batch.size(); i += 2)
+            CHECK(batch.result(i).data == batch.result(i+1).data && batch.result(i).status == Status::Ok, "duplicate shared view");
+        mem_arena_destroy(arena);
+    }
+}
+
+static void test_failed_page_publication(const std::string& root) {
+    printf("- page commits: failed flush/ref publication retains the accepted revision\n");
+    StoreConfig cfg; cfg.dir = root + "/failed_page_commit";
+    std::string error; auto writer = BlobStore::open(cfg, &error);
+    CHECK(writer != nullptr, "open failed-commit writer"); if (!writer) return;
+    auto refs = RefTable::open(*writer, {}, &error); CHECK(refs != nullptr, "refs"); if (!refs) return;
+    PageLimits limits; PageSection section{1,1,1,{1,2,3,4}};
+    std::vector<uint8_t> first, second;
+    CHECK(encode_page(1, {section}, {}, limits, first, error), "first manifest");
+    BlobHash accepted;
+    CHECK(publish_page_manifest(*writer, *refs, "asset", first, limits, accepted, error), "accept first revision");
+    section.bytes[0] = 9;
+    CHECK(encode_page(1, {section}, {}, limits, second, error), "second manifest");
+    std::filesystem::create_directory(cfg.dir + "/refs.tmp");
+    BlobHash attempted;
+    CHECK(!publish_page_manifest(*writer, *refs, "asset", second, limits, attempted, error), "ref write failure refused");
+    RefInfo info;CHECK(refs->peek("asset", &info) && info.hash == accepted, "in-memory ref restored");
+    PageCacheConfig pc;pc.store = cfg;auto reader = PageCache::open(pc,error);
+    CHECK(reader && reader->read_manifest("asset").page && reader->read_manifest("asset").page->hash == accepted, "on-disk ref retains accepted revision");
+    std::filesystem::remove(cfg.dir + "/refs.tmp");
+    reader.reset();refs.reset();writer.reset();
+    cfg.debug_fail_pack_flush = true;
+    writer = BlobStore::open(cfg, &error);refs = RefTable::open(*writer, {}, &error);
+    section.bytes[0] = 10;CHECK(encode_page(1, {section}, {}, limits, second, error), "third manifest");
+    CHECK(!publish_page_manifest(*writer, *refs, "asset", second, limits, attempted, error), "payload flush failure prevents index and ref publication");
+    pc.store = cfg;reader = PageCache::open(pc,error);
+    CHECK(reader && reader->read_manifest("asset").page && reader->read_manifest("asset").page->hash == accepted, "failed durability leaves old accepted revision readable");
+    CHECK(reader && reader->read({hash_bytes(second.data(),second.size())})[0].status == PageStatus::Missing, "failed flush payload is invisible");
+}
+
+static void test_bulk_append(const std::string& root) {
+    printf("- bulk append: bounded staging, dedup, rollover and visibility\n");
+    StoreConfig cfg; cfg.dir = root + "/bulk"; cfg.max_pack_bytes = 300;
+    std::string error; auto writer = BlobStore::open(cfg, &error);
+    CHECK(writer != nullptr, "open bulk writer"); if (!writer) return;
+    auto rcfg = cfg; rcfg.read_only = true;
+    auto reader = BlobStore::open(rcfg, &error); CHECK(reader != nullptr, "open old reader"); if (!reader) return;
+    std::vector<uint8_t> a(100, 1), b(100, 2), c(100, 3);
+    std::vector<BlobInput> input{{a.data(), a.size()}, {b.data(), b.size()}, {a.data(), a.size()}, {c.data(), c.size()}};
+    std::vector<BlobHash> hashes; WriteBatchStats stats;
+    CHECK(writer->put_batch(input, 200, hashes, &stats) == Status::IoError && writer->blob_count() == 0, "reject oversized before any append");
+    CHECK(writer->put_batch(input, 1024, hashes, &stats) == Status::Ok, "bulk append");
+    CHECK(hashes.size() == 4 && hashes[0] == hashes[2], "caller-order hashes and dedup");
+    CHECK(stats.write_calls == 2 && stats.blobs_written == 3 && stats.bytes_written == 408, "one write per pack");
+    CHECK(!reader->contains(hashes[0]), "uncommitted invisible");
+    CHECK(writer->flush_index() && reader->reload_index(), "commit and refresh");
+    CHECK(reader->contains(hashes[3]), "reader sees whole batch");
+    CHECK(writer->put_batch(input, 1, hashes, &stats) == Status::Ok && stats.write_calls == 0, "all duplicate batch writes nothing");
+    auto* arena = mem_arena_create(1024); ReadBatch read(*reader);
+    for (auto h : hashes) read.add(h);
+    CHECK(read.submit(arena), "read bulk pages");
+    for (size_t i = 0; i < read.size(); ++i)
+        CHECK(read.result(i).status == Status::Ok && hash_bytes(read.result(i).data, read.result(i).size) == hashes[i], "bulk byte identity");
+    mem_arena_destroy(arena);
+}
+
+static void test_asset_pages(const std::string& root) {
+    printf("- binary pages: validation, warm reuse, pins, cancellation and manifest ordering\n");
+    PageLimits limits; std::string error; std::vector<uint8_t> bytes;
+    PageSection section; section.type = 7; section.stride = 4; section.bytes.assign(64, 42);
+    CHECK(encode_page(9, {section}, {}, limits, bytes, error), "encode page");
+    PageView view;
+    CHECK(decode_page(bytes.data(), bytes.size(), limits, view, error), "decode page");
+    CHECK(view.find(7) && view.find(7)->count == 16 && view.find(7)->data[0] == 42, "offset view");
+    for (size_t n = 0; n < bytes.size(); ++n)
+        CHECK(!decode_page(bytes.data(), n, limits, view, error), "reject truncated page at %zu", n);
+    const size_t fields[] = {0, 4, 12, 16, 20, 24, 28, 32, 36, 40, 44, 48, 52, 56};
+    for (size_t offset : fields) {
+        auto bad = bytes; put_u32(bad.data() + offset, 0xFFFFFFFFu);
+        // Nonzero section type/schema are application-defined, not a generic parser restriction.
+        if (offset == 32 || offset == 36) continue;
+        CHECK(!decode_page(bad.data(), bad.size(), limits, view, error), "reject corrupt field %zu", offset);
+    }
+    CHECK(!encode_page(9, {section,section}, {}, limits, bytes, error), "reject duplicate sections");
+    StoreConfig cfg; cfg.dir = root + "/pages";
+    auto writer = BlobStore::open(cfg, &error); CHECK(writer != nullptr, "open page writer"); if (!writer) return;
+    BlobHash first, second, third;
+    CHECK(writer->put(bytes.data(), bytes.size(), &first) == Status::Ok, "write first page");
+    section.bytes[0] = 13; CHECK(encode_page(9, {section}, {}, limits, bytes, error), "second page");
+    CHECK(writer->put(bytes.data(), bytes.size(), &second) == Status::Ok, "write second page");
+    section.bytes[0] = 14; CHECK(encode_page(9, {section}, {}, limits, bytes, error), "third page");
+    CHECK(writer->put(bytes.data(), bytes.size(), &third) == Status::Ok, "write third page");
+    CHECK(writer->flush_index(), "commit pages");
+    PageCacheConfig cc; cc.store = cfg; cc.resident_bytes = 288; // two 128-byte pages and a record header
+    auto cache = PageCache::open(cc, error); CHECK(cache != nullptr, "open cache"); if (!cache) return;
+    auto result = cache->read({second, first, first});
+    CHECK(result[0].status == PageStatus::Ok && result[1].status == PageStatus::Ok, "cold pages");
+    CHECK(result[1].page == result[2].page, "deduplicated handles");
+    CHECK(cache->stats().disk_reads == 1 && cache->stats().checksums == 2, "one read, two checksums");
+    auto warm = cache->read({first});
+    CHECK(warm[0].page == result[1].page && cache->stats().disk_reads == 1 && cache->stats().checksums == 2, "warm read skips disk and CRC");
+    auto blocked = cache->read({third});
+    CHECK(blocked[0].status == PageStatus::BudgetExceeded, "pinned cache allocation blocks admission");
+    auto still_warm = cache->read({first});
+    CHECK(still_warm[0].page == warm[0].page && cache->stats().disk_reads == 1, "pressure preserves lookup of pinned ranges");
+    still_warm.clear();
+    cache->clear();
+    CHECK(cache->stats().resident_payload_bytes == 288, "eviction still charges externally pinned coalesced range");
+    auto pressure = cache->read({third}); CHECK(pressure[0].status == PageStatus::BudgetExceeded, "cannot exceed budget through pins");
+    result.clear(); warm.clear();
+    CHECK(cache->stats().resident_payload_bytes == 0, "last pin releases allocation");
+    auto next = cache->read({third}); CHECK(next[0].status == PageStatus::Ok, "retry after pins retire");
+    std::atomic<bool> cancel{true};
+    auto cancelled = cache->read({third}, &cancel);
+    CHECK(cancelled[0].status == PageStatus::Cancelled && !cancelled[0].page, "cancelled request never exposes page");
+    cache.reset();
+    CHECK(next[0].page && next[0].page->view.find(7)->data[0] == 14, "handle survives cache teardown");
+    // Reopening caches shares the original fixed bank, including old external pins.
+    PageCacheConfig bank_cfg; bank_cfg.store = cfg; bank_cfg.resident_bytes = 256;
+    bank_cfg.bank = PageBank::create(256, 64, 4);
+    auto bank_cache = PageCache::open(bank_cfg, error);
+    auto pinned = bank_cache->read({first, second});
+    CHECK(pinned[0].status == PageStatus::BudgetExceeded, "rounded coalesced batch exceeds bank");
+    pinned = bank_cache->read({first});
+    CHECK(pinned[0].status == PageStatus::Ok, "bank page read");
+    const auto* address = pinned[0].page->bytes;
+    bank_cache.reset();
+    bank_cache = PageCache::open(bank_cfg, error);
+    auto second_pin = bank_cache->read({second});
+    CHECK(second_pin[0].status == PageStatus::Ok, "second lease uses remaining bank capacity");
+    CHECK(bank_cache->read({third})[0].status == PageStatus::BudgetExceeded, "shared bank pins enforce capacity across reopen");
+    CHECK(pinned[0].page->view.find(7)->data[0] == 42, "old cache handle remains valid");
+    pinned.clear();
+    auto reused = bank_cache->read({third});
+    CHECK(reused[0].status == PageStatus::Ok && reused[0].page->bytes == address, "released bank range reused");
+    CHECK(bank_cache->stats().bank.backing_allocations == 1, "no payload backing allocation on reopen or reread");
+    bank_cache->clear(); second_pin.clear(); reused.clear();
+    CHECK(bank_cfg.bank->stats().occupied == 0, "all leases retired");
+    auto cross_thread = bank_cache->read({first});
+    auto cross_thread_second = bank_cache->read({second});
+    bank_cache->clear();
+    std::thread retire([held = std::move(cross_thread)]() mutable { held.clear(); });
+    auto racing = bank_cache->read({third});
+    CHECK(racing[0].status == PageStatus::Ok || racing[0].status == PageStatus::BudgetExceeded,
+          "cross-thread retirement has bounded admission");
+    retire.join();
+    CHECK(bank_cache->read({third})[0].status == PageStatus::Ok, "admission succeeds after cross-thread retirement");
+    bank_cache->clear(); racing.clear(); cross_thread_second.clear();
+    CHECK(bank_cfg.bank->stats().occupied == 0, "cross-thread leases fully retire");
+    PageCacheConfig ahead; ahead.store=cfg; ahead.resident_bytes=4096; ahead.read_ahead_bytes=1024;
+    auto prefetch=PageCache::open(ahead,error);
+    auto demanded_page=prefetch->read({first});
+    CHECK(demanded_page[0].status==PageStatus::Ok && prefetch->stats().prefetched_pages==2,
+          "physical neighbors prefetched with first demand");
+    CHECK(prefetch->stats().disk_reads==1,"neighbor pages share one contiguous physical read");
+    auto neighbors=prefetch->read({second,third});
+    CHECK(neighbors[0].status==PageStatus::Ok && neighbors[1].status==PageStatus::Ok && prefetch->stats().disk_reads==1,
+          "later neighboring requests avoid disk reads");
+    ahead.resident_bytes=128;auto tiny_prefetch=PageCache::open(ahead,error);
+    CHECK(tiny_prefetch->read({first})[0].status==PageStatus::Ok && tiny_prefetch->stats().prefetched_pages==0,
+          "speculative read drops out before displacing mandatory demand under pressure");
+    section.bytes[0]=15;BlobHash fourth;
+    CHECK(encode_page(9,{section},{},limits,bytes,error) && writer->put(bytes.data(),bytes.size(),&fourth)==Status::Ok && writer->flush_index(),
+          "append neighboring page without a compaction generation change");
+    demanded_page.clear();neighbors.clear();prefetch->clear();
+    CHECK(prefetch->refresh(),"reload appended physical directory");
+    const auto prefetched_before=prefetch->stats().prefetched_pages;
+    CHECK(prefetch->read({first})[0].status==PageStatus::Ok && prefetch->stats().prefetched_pages==prefetched_before+3,
+          "physical locality refresh discovers appended neighbor");
+    PageCacheConfig partitioned_config;partitioned_config.store=cfg;partitioned_config.resident_bytes=4096;
+    partitioned_config.max_read_bytes=128;
+    auto partitioned=PageCache::open(partitioned_config,error);
+    auto ordered=partitioned->read_partitioned({third,first,second});
+    CHECK(ordered[0].status==PageStatus::Ok && ordered[1].status==PageStatus::Ok && ordered[2].status==PageStatus::Ok,
+          "oversized demand batch splits into admitted reads instead of starving valid pages");
+    CHECK(ordered[0].page->hash==third && ordered[1].page->hash==first && ordered[2].page->hash==second,
+          "partitioned reads preserve caller order");
+    // Fixed-buffer reads reject undersized storage without touching sentinels.
+    ReadBatch bounded(*writer); bounded.add(first);
+    std::vector<uint64_t> storage((bounded.allocation_bytes()+7)/8+2, UINT64_MAX);
+    CHECK(!bounded.submit(storage.data()+1, bounded.allocation_bytes()-1), "bounded read rejects undersized buffer");
+    CHECK(storage[1] == UINT64_MAX && bounded.stats().chunk_reads == 0, "undersized read performs no IO or writes");
+    CHECK(bounded.submit(storage.data()+1, bounded.allocation_bytes()), "bounded read succeeds");
+    CHECK(storage.front() == UINT64_MAX && storage.back() == UINT64_MAX, "bounded read leaves guards intact");
+    auto refs = RefTable::open(*writer, {}, &error); CHECK(refs != nullptr, "open refs"); if (!refs) return;
+    std::vector<uint8_t> manifest;
+    CHECK(encode_page(10, {}, {first, second}, limits, manifest, error), "encode manifest");
+    BlobHash mh;
+    CHECK(publish_page_manifest(*writer, *refs, "asset/one", manifest, limits, mh, error), "publish manifest after pages");
+    RefInfo ri; CHECK(refs->peek("asset/one", &ri) && ri.hash == mh, "published identity");
+    PageCacheConfig batch_config; batch_config.store = cfg;
+    auto batch_reader = PageCache::open(batch_config, error);
+    CHECK(batch_reader && !batch_reader->read_manifest("asset/batched").page, "reader starts before batched publication");
+    BlobHash batched_hash;
+    CHECK(publish_page_manifest(*writer, *refs, "asset/batched", manifest, limits, batched_hash, error, false),
+          "stage manifest without committing");
+    CHECK(batch_reader && !batch_reader->read_manifest("asset/batched").page, "uncommitted reference is invisible to readers");
+    CHECK(writer->flush_index() && refs->flush(), "commit a batch in index then reference order");
+    CHECK(batch_reader && batch_reader->read_manifest("asset/batched").page, "existing reader observes committed batch");
+    PageCacheConfig memory_config; memory_config.store = cfg; memory_config.resident_bytes = manifest.size();
+    auto memory_cache = PageCache::open(memory_config, error);
+    CHECK(memory_cache != nullptr, "open in-memory page admission cache");
+    if (memory_cache) {
+        auto admitted = memory_cache->insert(manifest, error);
+        CHECK(admitted.page && admitted.page->hash == batched_hash && memory_cache->stats().disk_reads == 0,
+              "encoded producer page is admitted without a disk read");
+        CHECK(memory_cache->insert(manifest, error).page == admitted.page, "producer pages reuse existing immutable allocations");
+        CHECK(memory_cache->insert(bytes, error).status == PageStatus::BudgetExceeded, "producer admission cannot exceed pinned budget");
+        auto corrupt = manifest; corrupt[0] ^= 1;
+        CHECK(memory_cache->insert(corrupt, error).status == PageStatus::Corrupt, "invalid producer page is rejected");
+        memory_cache.reset();
+        CHECK(admitted.page && admitted.page->view.kind == 10, "producer page remains valid after cache teardown");
+    }
+    auto invalid = hash_bytes("absent", 6);
+    CHECK(encode_page(10, {}, {invalid}, limits, manifest, error), "encode missing dependency");
+    CHECK(!publish_page_manifest(*writer, *refs, "asset/one", manifest, limits, mh, error), "reject missing dependency");
+    CHECK(refs->peek("asset/one", &ri) && ri.hash == mh, "previous reference retained");
+    PageCacheConfig oversized; oversized.store = cfg; oversized.limits.max_bytes = 64;
+    auto limited = PageCache::open(oversized, error);
+    CHECK(limited && limited->read({first})[0].status == PageStatus::Corrupt, "oversized page rejected before allocating");
+    CHECK(limited && limited->stats().resident_payload_bytes == 0, "no oversized allocation");
+}
+
+static void test_page_reachability(const std::string& root) {
+    printf("- page maintenance: transitive children survive, orphans are reclaimed\n");
+    StoreConfig cfg;cfg.dir=root+"/page_gc";std::string error;
+    auto writer=BlobStore::open(cfg,&error);CHECK(writer!=nullptr,"GC writer");if(!writer)return;
+    auto refs=RefTable::open(*writer,{},&error);CHECK(refs!=nullptr,"GC refs");if(!refs)return;
+    PageLimits limits;std::vector<uint8_t> bytes;BlobHash child,parent,manifest,orphan;
+    PageSection section{1,1,1,{7,8,9}};
+    CHECK(encode_page(1,{section},{},limits,bytes,error),"child page");writer->put(bytes.data(),bytes.size(),&child);
+    CHECK(encode_page(2,{}, {child},limits,bytes,error),"parent page");writer->put(bytes.data(),bytes.size(),&parent);
+    CHECK(encode_page(3,{}, {parent},limits,bytes,error),"root manifest");
+    CHECK(publish_page_manifest(*writer,*refs,"asset",bytes,limits,manifest,error),"publish dependency chain");
+    section.bytes[0]=99;encode_page(1,{section},{},limits,bytes,error);writer->put(bytes.data(),bytes.size(),&orphan);writer->flush_index();
+    PageCacheConfig cc;cc.store=cfg;auto reader=PageCache::open(cc,error);CHECK(reader!=nullptr,"GC reader");
+    CompactStats stats;
+    CHECK(!compact_page_store(*writer,*refs,{},limits,100,stats,error),"active reader defers maintenance");
+    reader.reset();
+    CHECK(!compact_page_store(*writer,*refs,{},limits,1,stats,error)&&writer->contains(orphan),"traversal limit cannot publish partial reachability");
+    CHECK(compact_page_store(*writer,*refs,{},limits,100,stats,error),"%s",error.c_str());
+    CHECK(writer->contains(child)&&writer->contains(parent)&&writer->contains(manifest)&&!writer->contains(orphan),"transitive reachability retained");
+    CHECK(stats.blobs_kept==3&&stats.blobs_dropped==1,"maintenance accounting");
+    reader=PageCache::open(cc,error);
+    CHECK(reader&&reader->read({child})[0].status==PageStatus::Ok,"reopened reader uses compacted child");
+}
+
+static void test_index_extent_validation(const std::string& root) {
+    printf("- index validation: bounded allocation, overflowing/overlapping extents and duplicate IDs\n");
+    StoreConfig cfg;cfg.dir=root+"/index_bounds";std::string error;
+    auto writer=BlobStore::open(cfg,&error);CHECK(writer!=nullptr,"index writer");if(!writer)return;
+    const std::vector<uint8_t> a(64,1),b(64,2);BlobHash hash;
+    writer->put(a.data(),a.size(),&hash);writer->put(b.data(),b.size(),&hash);CHECK(writer->flush_index(),"base index");
+    std::vector<uint8_t> original;CHECK(read_whole_file(cfg.dir+"/index.bin",original),"read index fixture");
+    const size_t entry=kIndexHeaderBytes+8;
+    const auto write=[&](const std::vector<uint8_t>& bytes){FILE* f=fopen((cfg.dir+"/index.bin").c_str(),"wb");if(!f)return false;const bool ok=fwrite(bytes.data(),1,bytes.size(),f)==bytes.size();fclose(f);return ok;};
+    auto rcfg=cfg;rcfg.read_only=true;
+    for(int mutation=0;mutation<8;++mutation) {
+        auto bad=original;
+        switch(mutation) {
+        case 0:put_u64(bad.data()+entry+16,UINT64_MAX-7);break;
+        case 1:put_u32(bad.data()+entry+28,0);break;
+        case 2:put_u64(bad.data()+entry+16,33);break;
+        case 3:put_u32(bad.data()+entry+28,UINT32_MAX);break;
+        case 4:put_u64(bad.data()+entry,0);put_u64(bad.data()+entry+8,0);break;
+        case 5:put_u64(bad.data()+entry+16,16);break;
+        case 6:put_u64(bad.data()+entry+kIndexEntryBytes+16,get_u64(bad.data()+entry+16));break;
+        case 7:put_u64(bad.data()+entry+kIndexEntryBytes,get_u64(bad.data()+entry));put_u64(bad.data()+entry+kIndexEntryBytes+8,get_u64(bad.data()+entry+8));break;
+        }
+        put_u32(bad.data()+bad.size()-4,crc32(bad.data(),bad.size()-4));
+        CHECK(write(bad),"write malformed index");
+        CHECK(!BlobStore::open(rcfg,&error),"reject malformed checksummed index %d",mutation);
+    }
+    CHECK(write(original),"restore valid index");
+    rcfg.max_index_bytes=original.size()-1;
+    CHECK(!BlobStore::open(rcfg,&error),"index byte limit rejects before allocation");
+    rcfg.max_index_bytes=original.size();CHECK(BlobStore::open(rcfg,&error)!=nullptr,"exact index budget accepted");
+}
+
+static void test_repair_same_identity(const std::string& root) {
+    printf("- corruption repair: append a regenerated page, atomically refresh same-size index\n");
+    StoreConfig cfg;cfg.dir=root+"/repair";std::string error;
+    auto writer=BlobStore::open(cfg,&error);CHECK(writer!=nullptr,"repair writer");if(!writer)return;
+    std::vector<uint8_t> payload(512,37);BlobHash hash;
+    CHECK(writer->put(payload.data(),payload.size(),&hash)==Status::Ok&&writer->flush_index(),"original commit");
+    BlobLocation location;CHECK(writer->locate(hash,&location),"original location");
+    auto reader_cfg=cfg;reader_cfg.read_only=true;auto reader=BlobStore::open(reader_cfg,&error);
+    CHECK(reader!=nullptr,"old snapshot reader");if(!reader)return;
+    FILE* f=fopen(writer->pack_path(location.pack).c_str(),"r+b");CHECK(f!=nullptr,"open corruptible pack");if(!f)return;
+    fseek(f,static_cast<long>(location.offset),SEEK_SET);fputc(99,f);fclose(f);
+    auto* arena=mem_arena_create(2048);const uint8_t* bytes=nullptr;size_t length=0;
+    CHECK(reader->read(hash,arena,&bytes,&length)==Status::Corrupt,"old payload is corrupt");
+    const auto index_size=raw_file_size(cfg.dir+"/index.bin");
+    CHECK(writer->repair_blob(hash,"wrong",5)==Status::IoError,"repair rejects wrong identity");
+    CHECK(writer->repair_blob(hash,payload.data(),payload.size())==Status::Ok,"regenerated payload appended");
+    CHECK(reader->read(hash,arena,&bytes,&length)==Status::Corrupt,"repair is not visible before index commit");
+    CHECK(writer->flush_index(),"commit repair");
+    CHECK(index_size==raw_file_size(cfg.dir+"/index.bin"),"repair index has same byte length");
+    CHECK(reader->reload_index(),"same-size index refresh");
+    CHECK(reader->read(hash,arena,&bytes,&length)==Status::Ok&&length==payload.size()&&!memcmp(bytes,payload.data(),length),"new snapshot resolves the repaired bytes");
+    mem_arena_destroy(arena);
+}
+
+static void test_refresh_during_publication(const std::string& root) {
+    printf("- refresh race: newer commit during index read remains discoverable\n");
+    StoreConfig cfg;cfg.dir=root+"/refresh_race";std::string error;
+    auto writer=BlobStore::open(cfg,&error);CHECK(writer!=nullptr,"race writer");if(!writer)return;
+    CHECK(writer->put("old",3,nullptr)==Status::Ok&&writer->flush_index(),"old revision");
+    struct Context { BlobStore* writer; BlobHash hash; bool done=false; } context{writer.get(),{}};
+    cfg.read_only=true;cfg.debug_after_index_read_context=&context;
+    cfg.debug_after_index_read=[](void* opaque) {
+        auto& c=*static_cast<Context*>(opaque);if(c.done)return;c.done=true;
+        CHECK(c.writer->put("new",3,&c.hash)==Status::Ok&&c.writer->flush_index(),"interleaved commit");
+    };
+    auto reader=BlobStore::open(cfg,&error);CHECK(reader!=nullptr,"race reader");if(!reader)return;
+    CHECK(context.done&&!reader->contains(context.hash),"reader holds original captured bytes");
+    CHECK(reader->reload_index()&&reader->contains(context.hash),"next refresh sees interleaved revision");
+}
+
+static int page_benchmark() {
+    using Clock=std::chrono::steady_clock;
+    const auto directory=std::filesystem::temp_directory_path()/ ("matter_page_benchmark_"+std::to_string(Clock::now().time_since_epoch().count()));
+    printf("page_bytes,pages,write_ms,first_read_ms,retained_read_ms,disk_reads,disk_bytes,resident_payload_bytes,warm_extra_reads,warm_extra_checksums\n");
+    for(uint32_t size:{65536u,262144u,1048576u}) {
+        StoreConfig cfg;cfg.dir=(directory/std::to_string(size)).string();std::string error;
+        auto store=BlobStore::open(cfg,&error);if(!store)return 1;
+        const uint32_t count=32u*1024*1024/size;
+        const uint32_t batch_count=4u*1024*1024/size;
+        std::vector<std::vector<uint8_t>> pages;pages.reserve(count);PageLimits limits;
+        for(uint32_t i=0;i<count;++i) {
+            PageSection section;section.type=1;fill_payload(section.bytes,20000+i,size-64);
+            std::vector<uint8_t> bytes;if(!encode_page(1,{section},{},limits,bytes,error))return 2;pages.push_back(std::move(bytes));
+        }
+        std::vector<BlobHash> hashes;
+        const auto write_start=Clock::now();
+        for(uint32_t first=0;first<count;first+=batch_count) {
+            std::vector<BlobInput> inputs;for(uint32_t i=first;i<first+batch_count;++i)inputs.push_back({pages[i].data(),pages[i].size()});
+            std::vector<BlobHash> batch;
+            if(store->put_batch(inputs,8u*1024*1024,batch)!=Status::Ok)return 3;
+            hashes.insert(hashes.end(),batch.begin(),batch.end());
+        }
+        if(!store->flush_index())return 4;
+        const double write_ms=std::chrono::duration<double,std::milli>(Clock::now()-write_start).count();
+        PageCacheConfig pc;pc.store=cfg;auto cache=PageCache::open(pc,error);if(!cache)return 5;
+        const auto read_all=[&] {
+            for(uint32_t first=0;first<count;first+=batch_count) {
+                auto result=cache->read({hashes.begin()+first,hashes.begin()+first+batch_count});
+                for(const auto& page:result)if(page.status!=PageStatus::Ok)return false;
+            }
+            return true;
+        };
+        const auto read_start=Clock::now();if(!read_all())return 6;
+        const double read_ms=std::chrono::duration<double,std::milli>(Clock::now()-read_start).count();
+        const auto before=cache->stats();const auto warm_start=Clock::now();
+        constexpr uint32_t repeats=100;
+        for(uint32_t i=0;i<repeats;++i)if(!read_all())return 7;
+        const double warm_ms=std::chrono::duration<double,std::milli>(Clock::now()-warm_start).count()/repeats;
+        const auto after=cache->stats();
+        printf("%u,%u,%.3f,%.3f,%.3f,%llu,%llu,%llu,%llu,%llu\n",size,count,write_ms,read_ms,warm_ms,
+               (unsigned long long)after.disk_reads,(unsigned long long)after.disk_bytes,(unsigned long long)after.resident_payload_bytes,
+               (unsigned long long)(after.disk_reads-before.disk_reads),(unsigned long long)(after.checksums-before.checksums));
+    }
+    std::filesystem::remove_all(directory);return 0;
+}
+
 /* ==================================================================== main */
 
 int main(int argc, char** argv) {
+    if (argc == 2 && std::string(argv[1]) == "--page-bench") return page_benchmark();
     /* Child modes. The suite re-executes itself so the crash test can kill a
      * real process and the lock test can contend across process boundaries. */
     if (argc >= 3) {
@@ -1130,7 +1537,16 @@ int main(int argc, char** argv) {
     test_determinism(root);
     test_batch_coalescing(root);
     test_arena_landing(root);
-    test_reload_sees_a_same_size_commit(root);
+    test_bounded_reads(root);
+    test_manifest_directory_reuse(root);
+    test_asset_pages(root);
+    test_bulk_append(root);
+    test_failed_page_publication(root);
+    test_page_reachability(root);
+    test_index_extent_validation(root);
+    test_repair_same_identity(root);
+    test_refresh_during_publication(root);
+    test_quiescent_compaction(root);
     test_read_only_cannot_write(root);
 
     rm_tree(root);

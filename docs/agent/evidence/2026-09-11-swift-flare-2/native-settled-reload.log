@@ -1,0 +1,80 @@
+Vulkan adapter: NVIDIA GeForce RTX 4090 | driver: NVIDIA (610.74, 0x98928000) | API 1.4.341
+worlds available (29):
+  [0] AnimatedRigGallery  (D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-3\projects\world_demo)
+  [1] AtmospherePresentationFixture  (D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-3\projects\world_demo)
+  [2] BranchGallery  (D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-3\projects\world_demo)
+  [3] ChartVtProof  (D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-3\projects\world_demo)
+  [4] CloudLab  (D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-3\projects\world_demo)
+  [5] CloudLegacy  (D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-3\projects\world_demo)
+  [6] CornellBox  (D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-3\projects\world_demo)
+  [7] Demo  (D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-3\projects\world_demo)
+  [8] FloorDemo  (D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-3\projects\world_demo)
+  [9] FogLab  (D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-3\projects\world_demo)
+  [10] LightingGarden  (D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-3\projects\world_demo)
+  [11] LocalLightGallery  (D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-3\projects\world_demo)
+  [12] LocalLightPointIsolation  (D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-3\projects\world_demo)
+  [13] LocalLightSpotIsolation  (D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-3\projects\world_demo)
+  [14] Meadow  (D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-3\projects\world_demo)
+  [15] MetalProof  (D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-3\projects\world_demo)
+  [16] PhysicsPlayground  (D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-3\projects\world_demo)
+  [17] PomProof  (D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-3\projects\world_demo)
+  [18] PomProofBrick  (D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-3\projects\world_demo)
+  [19] Primitives  (D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-3\projects\primitive_demo)
+  [20] RiverFloatLab  (D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-3\projects\world_demo)
+  [21] RiverHydrology  (D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-3\projects\world_demo)
+  [22] RockGallery  (D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-3\projects\world_demo)
+  [23] SeamLab  (D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-3\projects\world_demo)
+  [24] StreamCaverns  (D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-3\projects\world_demo)
+  [25] StreamMeadow  (D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-3\projects\world_demo)
+  [26] StreamMountain  (D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-3\projects\world_demo)
+  [27] TilesetGallery  (D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-3\projects\world_demo)
+  [28] VegetationGallery  (D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-3\projects\world_demo)
+Vulkan RT available=true enabled=true reason=none
+Vulkan wireframe available=true reason=none
+issues: reports go to D:\Shared With Desktop\AI\matter-engine-cpp\issues
+viewer: UI hidden by MATTER_HIDE_UI
+MATTER_CMD_FIFO: polling command file D:/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-3/docs/agent/evidence/2026-09-11-swift-flare-2/settled-reload-timeline.txt
+render_path: raster
+DLSS selected=Native active=Native internal=960x540 output=960x540 resets=0 reason=Streamline SDK not found: build with HAVE_STREAMLINE=1 to enable DLSS
+Vulkan RT observed effective=false dispatches=0 reason=world session disconnected
+[resolve] resolve cache: hit 702c48fdf59d7943
+[bake-timing] install=0ms compose=0ms (resolve-cache-hit) publish=...ms total(pre-publish)=7ms
+[gpu-job] bake.reset took 81.0 ms
+Vulkan RT observed effective=false dispatches=0 reason=disabled by render options
+[part-store] loaded v3 FLAT part fd1a102725e2bcab (7 LOD levels, 1 clusters, 0 refs, 1 impostors)
+[gpu-job] bake.publish took 109.1 ms
+bake 1/1 LocalLightGalleryFixture
+[vk] impostor atlas: 128 slots x 2 layers of 1024x1024 RGBA8 (cell 128 px) = 1024 MiB
+[local-light] published 291 lights, 236 cells/512 buckets, 22208 index bytes, max 11 candidates
+[vk] static reserve: clusters 32 MiB, vertices 512 MiB, indices 256 MiB (host-visible)
+[resolve]   resolve census: 0 parts baked, 1 cache hits, version digest 1635658ed503b185
+[refine] controller built: 0 tiles
+[bake-timing] install=0ms compose=0ms publish=751ms total=758ms (resolve-cache-hit)
+[vk] chart-space VT online: 33024 page pool (4078 MiB), 32768 variant slots (MATTER_VT_MAX_VARIANTS, soft bound), 64 MiB indirection arena (MATTER_VT_INDIRECTION_MB, exact-sized tables), 1024 MiB mesh budget (MATTER_VT_MESH_BUDGET_MB), 8 fills/frame, filler=tier-1 compositor, tier2=hemisphere AO (32 rays/texel, 2 pages/frame)
+bake finished (0 errors)
+world camera: eye(0.0,58.0,69.0) target(0.0,0.0,0.0)
+selected world LocalLightGallery hash fd1a102725e2bcab
+viewer: bake ready
+idle: settled after 2.1s
+wait_frames: complete 120 frame_serial=150
+screenshot written to C:/tmp/swift-flare-2/settled-pre-reload-a.png
+wait_frames: complete 120 frame_serial=273
+screenshot written to C:/tmp/swift-flare-2/settled-pre-reload-b.png
+[resolve] resolve cache: hit 702c48fdf59d7943
+[bake-timing] install=0ms compose=0ms (resolve-cache-hit) publish=...ms total(pre-publish)=8ms
+[gpu-job] bake.reset took 84.7 ms
+[part-store] loaded v3 FLAT part fd1a102725e2bcab (7 LOD levels, 1 clusters, 0 refs, 1 impostors)
+b[gpu-job] bake.publish took 128.5 ms
+ake 1/1 LocalLightGalleryFixture
+[local-light] published 291 lights, 236 cells/512 buckets, 22208 index bytes, max 11 candidates
+[resolve]   resolve census: 0 parts baked, 1 cache hits, version digest 1635658ed503b185
+[refine] controller built: 0 tiles
+[bake-timing] install=0ms compose=0ms publish=518ms total=526ms (resolve-cache-hit)
+bake finished (0 errors)
+world camera: eye(0.0,58.0,69.0) target(0.0,0.0,0.0)
+viewer: bake ready
+idle: settled after 2.0s
+wait_frames: complete 120 frame_serial=424
+screenshot written to C:/tmp/swift-flare-2/settled-post-reload-a.png
+wait_frames: complete 120 frame_serial=547
+screenshot written to C:/tmp/swift-flare-2/settled-post-reload-b.png

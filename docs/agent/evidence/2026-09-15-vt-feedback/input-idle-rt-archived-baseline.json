@@ -1,0 +1,17 @@
+{
+  "command": [
+    "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+    "-NoProfile",
+    "-NonInteractive",
+    "-Command",
+    "$env:MATTER_VK_SMOKE_MODE=\"rt\"; $env:MATTER_VK_VALIDATION=\"1\"; Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor\"; & \"D:/tmp/matter-vt/20260915-feedback/draw-bindings-evaluated-build/MatterEditor/build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe\"; exit $LASTEXITCODE"
+  ],
+  "exe_sha256": "b7002fc8d8e23693b73cbf7daa49e5ed4e6950edb577ed8bda70b71f03ef418b",
+  "source_manifest": "/mnt/d/tmp/matter-vt/20260915-feedback/draw-bindings-evaluated-build/source.json",
+  "exit": 1,
+  "elapsed_seconds": 39.25261648799642,
+  "failures": [
+    "FAIL: GPU temporal variance bounds reject radiance outlier"
+  ],
+  "validation_errors": []
+}

@@ -402,7 +402,7 @@ bool bake_tileset_vk(matter::VulkanDevice& vulkan, const SettledTorus& settled,
         if (entries.empty()) { err = "bake_tileset_vk: no BLAS entries"; return false; }
 
         std::unordered_map<BLASHandle, uint32_t> handle_to_index;
-        std::vector<float> tri_data;   // 18 floats per triangle (v0..v2, n0..n2)
+        std::vector<float> tri_data;   // 22 floats: v0..v2, n0..n2, tint RGBA
         std::vector<int32_t> tri_mat;  // per-triangle material id (-1 fallback)
         std::vector<uint32_t> tri_first(entries.size(), 0);
         std::vector<BakeBlas> bake_blas(entries.size());
@@ -418,7 +418,7 @@ bool bake_tileset_vk(matter::VulkanDevice& vulkan, const SettledTorus& settled,
             std::vector<float> verts;       // 3 * ntri vec3 positions (12B each)
             std::vector<uint32_t> idx(ntri * 3);
             verts.reserve(ntri * 9);
-            tri_data.reserve(tri_data.size() + ntri * 18);
+            tri_data.reserve(tri_data.size() + ntri * 22);
             tri_mat.reserve(tri_mat.size() + ntri);
 
             for (size_t ti = 0; ti < ntri; ++ti) {
@@ -446,10 +446,12 @@ bool bake_tileset_vk(matter::VulkanDevice& vulkan, const SettledTorus& settled,
                               a.x * b.y - a.y * b.x};
                     n0 = n1 = n2 = fn;
                 }
-                const float packed[18] = {
+                const float4 tint = have_ex ? e.tri_extra[ti].tint : make_float4(1, 1, 1, 0);
+                const float packed[22] = {
                     v0.x, v0.y, v0.z, v1.x, v1.y, v1.z, v2.x, v2.y, v2.z,
-                    n0.x, n0.y, n0.z, n1.x, n1.y, n1.z, n2.x, n2.y, n2.z};
-                tri_data.insert(tri_data.end(), packed, packed + 18);
+                    n0.x, n0.y, n0.z, n1.x, n1.y, n1.z, n2.x, n2.y, n2.z,
+                    tint.x, tint.y, tint.z, tint.w};
+                tri_data.insert(tri_data.end(), packed, packed + 22);
                 tri_mat.push_back(have_ex ? (int32_t)e.tri_extra[ti].materialId
                                           : (int32_t)-1);
             }
@@ -701,7 +703,8 @@ bool bake_tileset_vk(matter::VulkanDevice& vulkan, const SettledTorus& settled,
             return false;
 
         // 11. Output images (RGBA8 / RG8 / RGBA8 / R16) + readback buffers.
-        const int W = kTorusN * (int)settled.cfg.size * settled.cfg.texels_per_meter;
+        const int W = gtex_atlas_extent(settled.cfg.size, settled.cfg.texels_per_meter, kTorusN);
+        if (W == 0) { err = "tileset bake: invalid tile extent"; return false; }
         const int H = W;
         const VkExtent3D extent{(uint32_t)W, (uint32_t)H, 1};
         const VkImageUsageFlags img_usage =

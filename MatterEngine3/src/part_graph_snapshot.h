@@ -24,13 +24,34 @@ namespace part_graph_snapshot {
 struct Node {
     std::string module;                       // live_edit::PartId
     std::string source_path;                  // absolute <schemas_dir>/<module>.js
-    std::string params_json;                  // canonical params at install
+    std::string params_json;                  // params the PLACEMENT passed at install
+    // The parameter object the resolved hash was actually folded from: the
+    // module's `static params` defaults overlaid with `params_json`. Only the
+    // script host can read those defaults, so the graph takes them from the
+    // Baker alongside the hash (part_graph.h's Baker::resolve_hash
+    // `merged_params_out`) instead of re-deriving them here. Empty when no
+    // host answered -- host-free logic tests, or a node whose hash resolve
+    // failed -- so read it through effective_params() below, not directly.
+    std::string effective_params_json;
     std::vector<std::string> children;        // child module names (deduped, insert order)
     std::vector<std::string> shared_imports;  // shared-lib module names found in source
     std::vector<std::string> shared_source_paths; // selected direct/transitive files
     uint64_t resolved_hash = 0;
     bool is_root = false;
 };
+
+// The parameters a reader should attribute this node's generated content to.
+// One spelling for every consumer: `scene.trace_provenance`'s
+// `generation_inputs`, `scene.list_objects`' root rows and
+// `procedural.parameters` all answer about the SAME parameter object, and a
+// surface that reported the bare placement params would omit every default the
+// module declared and never overrode -- which is exactly what made
+// `procedural.parameters` return an empty set for a root placed with no
+// overrides. Falls back to the placement params when no host merged them.
+inline const std::string& effective_params(const Node& node) {
+    return node.effective_params_json.empty() ? node.params_json
+                                              : node.effective_params_json;
+}
 
 // The whole recorded graph plus two reverse indices, both built at install
 // time: `by_file` answers "an editor saved this path — which modules changed?"

@@ -1,0 +1,131 @@
+{
+  "command": [
+    "/mnt/c/Users/webde/AppData/Local/Programs/Python/Launcher/py.exe",
+    "-3",
+    "D:/Shared With Desktop/AI/matter-engine-cpp/MatterEngine3/tools/drive.py",
+    "--world",
+    "StreamMountain",
+    "--timeline",
+    "D:/tmp/matter-vt/20260915-feedback/terrain-geometry-validation/timeline.txt",
+    "--out-dir",
+    "D:/tmp/matter-vt/20260915-feedback/terrain-geometry-validation/run",
+    "--editor",
+    "D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor/build/windows-msvc/editor.exe",
+    "--timeout",
+    "600",
+    "--hide-ui",
+    "--env",
+    "MATTER_HIDE_WINDOW=0",
+    "--env",
+    "MATTER_WINDOW_WIDTH=1920",
+    "--env",
+    "MATTER_WINDOW_HEIGHT=1080",
+    "--env",
+    "MATTER_VSYNC=0",
+    "--env",
+    "MATTER_PRESENT_MODE=mailbox",
+    "--env",
+    "MATTER_FRAME_LIMIT=60",
+    "--env",
+    "MATTER_CAM=380,90,1600,420,55,1420",
+    "--env",
+    "MATTER_VT_TRACE=D:/tmp/matter-vt/20260915-feedback/terrain-geometry-validation/vt.jsonl",
+    "--env",
+    "MATTER_VT_EVENT_LOG=0",
+    "--env",
+    "MATTER_VT_DENSITY_FRAME=0",
+    "--env",
+    "MATTER_VK_VALIDATION=1",
+    "--env",
+    "TMP=C:/Users/webde/AppData/Local/Temp",
+    "--env",
+    "TEMP=C:/Users/webde/AppData/Local/Temp",
+    "--env",
+    "MATTER_CAM_PATH=D:/tmp/matter-vt/20260915-feedback/terrain-geometry-validation/camera.path",
+    "--env",
+    "MATTER_CAM_PATH_WARMUP=0",
+    "--env",
+    "MATTER_CAM_PATH_SETTLE=5",
+    "--env",
+    "MATTER_CAM_PATH_EXIT=0",
+    "--env",
+    "MATTER_PROFILE_TRACE=D:/tmp/matter-vt/20260915-feedback/terrain-geometry-validation/profile.json"
+  ],
+  "driver_exit": 0,
+  "elapsed_seconds": 363.22545766830444,
+  "source_manifest": "geometry-integration-source.json",
+  "validation_effective": true,
+  "visual_review": "1920x1080 screenshot reviewed; reference valley/terrain framing retained. Final frame only, not intermediate continuity evidence.",
+  "full_vt_acceptance": false,
+  "validation_error_lines": 0,
+  "markers": [
+    "STATSVT,settle_begin,active=1,variants=789/32768,rejected=0,mesh=225.9/3512.0 MiB,pool=1630/33024,pinned=789,queue=0,fills=1630,evictions=0,ind=2.40/64 MiB",
+    "STATSVT,settle_end,active=1,variants=789/32768,rejected=0,mesh=225.9/3512.0 MiB,pool=1630/33024,pinned=789,queue=0,fills=1630,evictions=0,ind=2.40/64 MiB"
+  ],
+  "artifacts": [
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-geometry-validation/camera.path",
+      "bytes": 336051,
+      "sha256": "221bab96a8d6eae04c361d209b4b9cc60afcb4470b8ad30aea128d6db0cccfa5"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-geometry-validation/command.json",
+      "bytes": 1478,
+      "sha256": "47e134b02a168bead6e9d469f52f5916842662a2797439ea9801c060c810f63c"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-geometry-validation/driver.log",
+      "bytes": 639480,
+      "sha256": "e1e45be79ae12ec0839195ac5edc099315077e988f39ddcd5932af8b8f5e3890"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-geometry-validation/launch-source.json",
+      "bytes": 33803,
+      "sha256": "f265765de30e28ccd369abd658cc58e155249eae4a10242882122cb58a26acc8"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-geometry-validation/profile.json",
+      "bytes": 3705060,
+      "sha256": "4dd51e1595885e7bcffc202141644258608e6b85f6c80a5ca777ab03bab3e577"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-geometry-validation/result.json",
+      "bytes": 1658,
+      "sha256": "6e7d2900b44748b6373d7b6e8fe7690e27f956c1be0fc583a2ae0d2a3d5479b6"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-geometry-validation/run/cmd.txt",
+      "bytes": 218,
+      "sha256": "3a86191a7c9a0c4147264d59c9caa4a73651685fbbabd729e145645e177a3519"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-geometry-validation/run/log.txt",
+      "bytes": 638999,
+      "sha256": "f964a64ce408a12359469212d8d358275a4298c93189a8223c936ca11585a1ef"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-geometry-validation/settled.png",
+      "bytes": 5909594,
+      "sha256": "8f679faf63973f1a7b048775902e1d46a9e5d0f66faabc9af8731a0a4a7e9650",
+      "dimensions": [
+        1920,
+        1080
+      ]
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-geometry-validation/settled.png.done",
+      "bytes": 10,
+      "sha256": "4c339121e4860b04ebd48181621c9dd3f84901846feda08d4e77aafaf9a6c896"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-geometry-validation/timeline.txt",
+      "bytes": 218,
+      "sha256": "3a86191a7c9a0c4147264d59c9caa4a73651685fbbabd729e145645e177a3519"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-geometry-validation/vt.jsonl",
+      "bytes": 1770276,
+      "sha256": "e77f18ecbaac2b7bb1b4f988484def3895cd08b6deaa4a15dcad66cd039f2de7"
+    }
+  ]
+}

@@ -1,3 +1,4 @@
+#include "matter/project_layout.h"
 // MatterEngine3 Vulkan world viewer. The production path creates a GLFW
 // NO_API window and presents genuine WorldSession data through VkSceneRenderer.
 // MATTER_CAM, MATTER_WORLD, MATTER_SCREENSHOT and FIFO commands are retained
@@ -164,6 +165,8 @@
 //   passed persist=false and ImGui's IniFilename is cleared, so a headless
 //   capture can neither inherit nor overwrite an interactive session's files.
 #include "matter/engine_context.h"
+#include "asset_root.h"
+#include "perf_gpu_stats.h"
 #include "matter/vulkan_device.h"
 #include "matter/world_session.h"
 #include "matter/ecs.h"
@@ -180,6 +183,7 @@
 #include "camera_orbit.h"
 #include "editor_model.h"
 #include "editor_props.h"
+#include "vt_trace.h"
 #include "image_preview.h"
 #include "issue_reporter.h"
 #include "profile.h"
@@ -198,10 +202,14 @@
 #include "console_panel.h"
 #include "matter/log.h"
 #include "ui.h"
+#include "frame_pacer.h"
 #include "wireframe_controls.h"
 #include "session_binding.h"
 #include "scene_model_adapter.h"
 #include "scene_inventory.h"
+#include "scene_diff.h"
+#include "regen_jobs.h"
+#include "procedural_parameters.h"
 #include "viewer_commands.h"
 #include "matter/event/event_hub.h"
 #include "matter/event/command.h"
@@ -213,11 +221,13 @@
 #include "matter/events/bake_events.h"
 #include "matter/events/stream_events.h"
 #include "viewport_capture.h"
+#include "camera_calibration.h"
 #include "viewport_pick.h"
 #include "viewport_pick_command.h"
 #include "dsl_bindings.h"
 
 #include "imgui.h"
+#include "render/scene_admission.h"
 #include "quickjs.h"
 
 #define GLFW_INCLUDE_NONE
@@ -226,6 +236,7 @@
 #include "external/stb_image_write.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cctype>
@@ -237,6 +248,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
+#include <limits>
 #include <memory>
 #include <new>
 #include <sstream>
@@ -252,6 +264,27 @@
 #endif
 
 namespace {
+
+// regen_jobs.h mirrors matter::BakeErrorCode by VALUE so the job ledger can
+// stay engine-free and still report the engine's own classification. This is
+// the one place the two are held together: adding a code to matter/events.h
+// without adding it there is a compile error here, not a silently mislabelled
+// diagnostic in an agent's result.
+static_assert(static_cast<int>(matter::BakeErrorCode::None) ==
+                  static_cast<int>(viewer::jobs::ErrorCode::None) &&
+              static_cast<int>(matter::BakeErrorCode::Cancelled) ==
+                  static_cast<int>(viewer::jobs::ErrorCode::Cancelled) &&
+              static_cast<int>(matter::BakeErrorCode::OutOfMemory) ==
+                  static_cast<int>(viewer::jobs::ErrorCode::OutOfMemory) &&
+              static_cast<int>(matter::BakeErrorCode::ScriptError) ==
+                  static_cast<int>(viewer::jobs::ErrorCode::ScriptError) &&
+              static_cast<int>(matter::BakeErrorCode::GpuError) ==
+                  static_cast<int>(viewer::jobs::ErrorCode::GpuError) &&
+              static_cast<int>(matter::BakeErrorCode::IoError) ==
+                  static_cast<int>(viewer::jobs::ErrorCode::IoError) &&
+              static_cast<int>(matter::BakeErrorCode::Internal) ==
+                  static_cast<int>(viewer::jobs::ErrorCode::Internal),
+              "viewer::jobs::ErrorCode must mirror matter::BakeErrorCode");
 
 // ---------------------------------------------------------------------------
 // Console log sink. Bridges the engine-wide matter::log facility into the
@@ -776,58 +809,16 @@ bool write_png(const std::string& path, const std::vector<uint8_t>& rgba,
                           static_cast<int>(width * 4)) != 0;
 }
 
-// Directory holding this executable, or empty if it cannot be determined.
-static std::filesystem::path executable_dir() {
-#ifdef _WIN32
-    wchar_t buf[MAX_PATH];
-    const DWORD n = GetModuleFileNameW(nullptr, buf, MAX_PATH);
-    if (n == 0 || n >= MAX_PATH) return {};
-    return std::filesystem::path(buf, buf + n).parent_path();
-#else
-    std::error_code ec;
-    auto p = std::filesystem::read_symlink("/proc/self/exe", ec);
-    if (ec) return {};
-    return p.parent_path();
-#endif
-}
-
 // Locate an asset directory by NAME rather than by a fixed number of "../".
 //
-// Three layouts have to work and they sit at different depths:
-//   dev, launched from MatterEditor/      -> ../projects
-//   dev, launched beside the binary       -> ../../../projects  (build/windows/)
-//   a packaged build (`make dist`)        -> ./projects         (next to the exe)
-//
-// Hard-coding "../" for one breaks the others -- which is exactly what happened
-// when the binary moved from MatterEditor/ into MatterEditor/build/windows/.
-// Search next to the executable first (so a package always wins), then upward
-// from the executable, then upward from the working directory.
-static std::string resolve_asset_root(const char* name) {
-    namespace fs = std::filesystem;
-    std::error_code ec;
+// The search order -- exe-adjacent first (so `make dist` keeps winning), then
+// the working directory's checkout, then the exe dir's tree, then the bare
+// name -- lives in asset_root.cpp, along with the reasoning that put the
+// working directory ahead of the exe walk-up. examples_root(),
+// issues_root() and shared_lib_root() below are its three callers and share
+// that order verbatim; tests/test_asset_root.cpp pins it.
 
-    auto walk_up = [&](fs::path dir) -> std::string {
-        for (int depth = 0; depth < 8 && !dir.empty(); ++depth) {
-            const fs::path candidate = dir / name;
-            if (fs::is_directory(candidate, ec))
-                return candidate.string();
-            const fs::path parent = dir.parent_path();
-            if (parent == dir) break;   // reached the filesystem root
-            dir = parent;
-        }
-        return {};
-    };
-
-    if (const fs::path exe = executable_dir(); !exe.empty())
-        if (std::string hit = walk_up(exe); !hit.empty()) return hit;
-
-    if (fs::path cwd = fs::current_path(ec); !ec)
-        if (std::string hit = walk_up(cwd); !hit.empty()) return hit;
-
-    return name;   // preserve the old string so the failure message stays familiar
-}
-
-std::string examples_root() { return resolve_asset_root("projects"); }
+std::string examples_root() { return viewer::assets::resolve_asset_root("projects"); }
 
 // Repo-root issues/ directory, resolved the same way as the asset roots above.
 // issues/ has been gitignored since 0cbb5e92 (untracked, not committed), so
@@ -835,15 +826,17 @@ std::string examples_root() { return resolve_asset_root("projects"); }
 // developers who have generated reports into it; the MatterEditor/ fallback
 // covers a tree where it is absent.
 std::string issues_root() {
-    if (std::string hit = resolve_asset_root("issues"); hit != "issues")
+    if (std::string hit = viewer::assets::resolve_asset_root("issues"); hit != "issues")
         return hit;
-    if (std::string editor = resolve_asset_root("MatterEditor");
+    if (std::string editor = viewer::assets::resolve_asset_root("MatterEditor");
         editor != "MatterEditor")
         return (std::filesystem::path(editor).parent_path() / "issues").string();
     return "issues";
 }
 
-std::string shared_lib_root() { return resolve_asset_root("MatterEngine3/shared-lib"); }
+std::string shared_lib_root() {
+    return viewer::assets::resolve_asset_root("MatterEngine3/shared-lib");
+}
 
 // A timed performance run, configured entirely by MATTER_PERF_OUTPUT /
 // MATTER_PERF_WARMUP_SECONDS / MATTER_PERF_SAMPLE_SECONDS — all three or none
@@ -870,6 +863,44 @@ struct PerfCounters {
     uint64_t water_animation_uploads = 0;
     uint64_t water_animation_decode_dispatches = 0;
     uint64_t water_animation_steady_state_allocations = 0;
+};
+
+// Optional bounded diagnostic history. Written only after sampling finishes,
+// so per-frame disk I/O cannot manufacture the stalls being investigated.
+struct PerfFrameTrace {
+    static constexpr size_t kMaxRows = 262144;
+    static constexpr const char* kColumns[] = {
+        "serial", "slot", "image", "start_ms", "start_interval_ms", "loop_ms",
+        "poll_ms", "acquire_phase_ms", "ui_ms", "tick_ms", "pump_ms", "lab_ms",
+        "render_ms", "present_phase_ms", "begin_ms", "frame_fence_ms",
+        "retained_clear_ms", "acquire_fence_ms", "acquire_ms", "present_fence_ms",
+        "submit_ms", "present_ms", "gpu_readback_sequence", "gpu_total_ms",
+        "pacing_ms", "present_interval_ms"};
+    using Row = std::array<double, std::size(kColumns)>;
+    std::vector<Row> rows;
+    size_t dropped_rows = 0;
+
+    void append_json(std::ostream& out) const {
+        out << ",\"frame_timing_trace\":{\"dropped_rows\":" << dropped_rows
+            << ",\"gpu_time_basis\":\"latest_retired_readback_not_current_frame\","
+               "\"columns\":[";
+        for (size_t i = 0; i < std::size(kColumns); ++i) {
+            if (i) out << ',';
+            out << '"' << kColumns[i] << '"';
+        }
+        out << "],\"rows\":[";
+        for (size_t r = 0; r < rows.size(); ++r) {
+            if (r) out << ',';
+            out << '[';
+            for (size_t c = 0; c < rows[r].size(); ++c) {
+                if (c) out << ',';
+                if (std::isfinite(rows[r][c])) out << rows[r][c];
+                else out << "null";
+            }
+            out << ']';
+        }
+        out << "]}";
+    }
 };
 
 bool parse_perf_seconds(const char* value, const char* name, double& result,
@@ -1073,16 +1104,21 @@ void emit_registration_census(
 // `frame_times` is taken BY VALUE and sorted in place (milliseconds per frame,
 // end-to-end loop cadence). The median and p95 come out of that sorted vector;
 // p95 is element ceil(0.95 * n) - 1, so a one-frame run reports that frame for
-// both.
+// both. `frame_times_ms` repeats the unsorted samples in capture order, so a
+// reader (tools/frame_attribution.py) can take p99 or look for a time pattern.
 //
 // Two different time bases live in the output and mixing them up is the usual
 // mistake: the `*_delta` fields are end-minus-start over the whole sampling
-// window, while every gpu_*_ms / cpu_*_ms / loop_*_ms field is the LAST
-// SAMPLED FRAME only. The inline comments in the body say why each group was
-// added.
+// window, while legacy gpu_*_ms are the latest EMA (except raw water animation)
+// and cpu_*_ms / loop_*_ms are the latest observation. gpu_pass_statistics
+// contains percentiles of unique, available RAW timestamp pairs. Its window
+// is readback observation time; asynchronous retirement can lag presentation.
 bool write_perf_result(const PerfRunConfig& config, const std::string& world,
                        std::vector<double> frame_times,
+                       std::vector<double> present_intervals,
                        std::vector<double> water_animation_times,
+                       const viewer::PerfGpuStats& gpu_pass_stats,
+                       const PerfFrameTrace& frame_trace,
                        const PerfCounters& start,
                        const PerfCounters& finish,
                        const matter::FrameStats& frame_stats,
@@ -1094,11 +1130,17 @@ bool write_perf_result(const PerfRunConfig& config, const std::string& world,
         error = "no performance frames were sampled";
         return false;
     }
+    const std::vector<double> frame_times_in_order = frame_times;
     std::sort(frame_times.begin(), frame_times.end());
     const double median_frame_ms = median_of_sorted(frame_times);
     const size_t p95_index = static_cast<size_t>(
         std::ceil(static_cast<double>(frame_times.size()) * 0.95)) - 1;
     const double p95_frame_ms = frame_times[p95_index];
+    if (present_intervals.size() != frame_times.size()) {
+        error = "present-cadence samples do not match performance frames";
+        return false;
+    }
+    std::sort(present_intervals.begin(), present_intervals.end());
     if (water_animation_times.size() != frame_times.size()) {
         error = "water-animation GPU samples do not match performance frames";
         return false;
@@ -1188,7 +1230,7 @@ bool write_perf_result(const PerfRunConfig& config, const std::string& world,
            << ",\"loop_present_ms\":" << loop_stats.loop_present_ms
            << ",\"loop_peak_pump_ms\":" << loop_stats.loop_peak_pump_ms
            << ",\"loop_peak_acquire_ms\":" << loop_stats.loop_peak_acquire_ms
-           // GPU pass timers, as of the last sampled frame. These are the
+           // Legacy GPU EMA snapshots, as of the last sampled frame. These are the
            // only way to cost a compute pass that is small next to the frame:
            // at 220 fps the froxel passes are well under the run-to-run
            // spread of median_frame_ms, so a sweep over them reads as pure
@@ -1205,8 +1247,8 @@ bool write_perf_result(const PerfRunConfig& config, const std::string& world,
            << ",\"vol_memory_bytes\":" << frame_stats.vol_memory_bytes
            << ",\"cloud_shadow_memory_bytes\":"
            << frame_stats.cloud_shadow_memory_bytes
-           // Full per-pass GPU zone breakdown (last sampled frame). rt is the
-           // primary/shadow trace; rt_gi is the separate GI/reflection trace.
+           // Full per-pass GPU EMA breakdown (latest observation). rt is the
+           // sun-shadow trace; rt_gi aggregates GI/reflection/transmission dispatches.
            // Added so a fly-through capture can attribute a heavy RT frame to
            // primary-ray traversal (dense foliage) vs the GI bounce.
            << ",\"gpu_cull_ms\":" << frame_stats.gpu_cull_ms
@@ -1214,14 +1256,44 @@ bool write_perf_result(const PerfRunConfig& config, const std::string& world,
            << ",\"gpu_blas_ms\":" << frame_stats.gpu_blas_ms
            << ",\"gpu_tlas_ms\":" << frame_stats.gpu_tlas_ms
            << ",\"gpu_rt_ms\":" << frame_stats.gpu_rt_ms
+           << ",\"gpu_rt_local_direct_ms\":" << frame_stats.gpu_rt_local_direct_ms
            << ",\"gpu_rt_gi_ms\":" << frame_stats.gpu_rt_gi_ms
+           << ",\"gpu_hdr_lighting_ms\":" << frame_stats.gpu_hdr_lighting_ms
+           << ",\"gpu_primary_light_cull_ms\":" << frame_stats.gpu_primary_light_cull_ms
+           << ",\"gpu_rt_gi_diffuse_ms\":" << frame_stats.gpu_rt_gi_diffuse_ms
+           << ",\"gpu_rt_gi_reflection_transmission_ms\":" << frame_stats.gpu_rt_gi_reflection_transmission_ms
            << ",\"gpu_denoise_ms\":" << frame_stats.gpu_denoise_ms
            << ",\"gpu_dlss_ms\":" << frame_stats.gpu_dlss_ms
            << ",\"gpu_composite_ms\":" << frame_stats.gpu_composite_ms
            << ",\"gpu_vt_ms\":" << frame_stats.gpu_vt_ms
            << ",\"gpu_water_animation_ms\":"
-           << frame_stats.gpu_water_animation_ms;
+           << frame_stats.gpu_water_animation_ms
+           << ",\"local_light_count\":" << frame_stats.local_light_count
+           << ",\"local_light_cells\":"
+           << frame_stats.local_light_occupied_cells
+           << ",\"local_light_index_entries\":"
+           << frame_stats.local_light_index_entries
+           << ",\"local_light_index_bytes\":"
+           << frame_stats.local_light_index_bytes
+           << ",\"local_light_max_candidates\":"
+           << frame_stats.local_light_max_candidates
+           << ",\"local_light_oversized\":"
+           << frame_stats.local_light_oversized;
     matter::append_water_forward_perf_json(output, frame_stats);
+    gpu_pass_stats.append_json(output);
+    output << ",\"gpu_legacy_metric\":\"latest_ema_except_raw_water_animation\""
+           << ",\"gpu_rt_metric\":\"sun_shadow\""
+           << ",\"gpu_timers_supported\":" << (frame_stats.gpu_timers_supported ? "true" : "false")
+           << ",\"raster_width\":" << frame_stats.raster_width
+           << ",\"raster_height\":" << frame_stats.raster_height
+           << ",\"gbuffer_profile_mode\":\""
+           << json_string(std::getenv("MATTER_GBUFFER_PROFILE_MODE")
+                              ? std::getenv("MATTER_GBUFFER_PROFILE_MODE")
+                              : "full") << "\""
+           << ",\"pom_enabled\":" << (loop_stats.tileset_pom.enabled ? "true" : "false")
+           << ",\"pom_steps\":" << loop_stats.tileset_pom.steps
+           << ",\"pom_max_distance_m\":" << loop_stats.tileset_pom.max_distance_m
+           << ",\"pom_relief_cap_m\":" << loop_stats.tileset_pom.relief_cap_m;
     // CPU render-thread split (last sampled frame).
     output << ",\"cpu_resolve_ms\":" << frame_stats.resolve_ms
            << ",\"cpu_build_ms\":" << frame_stats.build_ms
@@ -1230,7 +1302,36 @@ bool write_perf_result(const PerfRunConfig& config, const std::string& world,
            << ",\"cpu_draw_cull_render_ms\":" << frame_stats.draw_cull_render_ms
            << ",\"cpu_draw_skin_seal_ms\":" << frame_stats.draw_skin_seal_ms
            << ",\"cpu_draw_composite_ms\":" << frame_stats.draw_composite_ms
-           << ",\"validation_errors\":" << validation_errors << "}\n";
+           << ",\"loop_pacing_ms\":" << loop_stats.loop_pacing_ms
+           << ",\"validation_errors\":" << validation_errors;
+    double present_sum = 0.0;
+    for (double ms : present_intervals) present_sum += ms;
+    const double present_mean = present_sum / present_intervals.size();
+    double present_variance = 0.0;
+    for (double ms : present_intervals)
+        present_variance += (ms - present_mean) * (ms - present_mean);
+    output << ",\"present_cadence_statistics\":{"
+              "\"metric\":\"cpu_present_call_return_interval_not_display\","
+              "\"samples\":" << present_intervals.size()
+           << ",\"mean_ms\":" << present_mean
+           << ",\"mean_fps\":" << (present_mean > 0.0 ? 1000.0 / present_mean : 0.0)
+           << ",\"median_ms\":" << median_of_sorted(present_intervals)
+           << ",\"p95_ms\":" << present_intervals[p95_index]
+           << ",\"p99_ms\":" << present_intervals[static_cast<size_t>(
+                  std::ceil(present_intervals.size() * 0.99)) - 1]
+           << ",\"min_ms\":" << present_intervals.front()
+           << ",\"max_ms\":" << present_intervals.back()
+           << ",\"stddev_ms\":" << std::sqrt(present_variance / present_intervals.size())
+           << '}';
+    output << ",\"frame_times_ms\":[";
+    for (size_t i = 0; i < frame_times_in_order.size(); ++i) {
+        if (i) output << ',';
+        if (std::isfinite(frame_times_in_order[i])) output << frame_times_in_order[i];
+        else output << "null";
+    }
+    output << ']';
+    if (!frame_trace.rows.empty()) frame_trace.append_json(output);
+    output << "}\n";
     if (!output) {
         error = "failed while writing MATTER_PERF_OUTPUT '" + config.output_path + "'";
         return false;
@@ -1284,13 +1385,17 @@ int main() {
     }
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
     glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
-    // Perf mode is an automated GPU measurement, not an interactive editor
-    // session. Keeping its window hidden prevents the Windows desktop manager
-    // from clipping oversized acceptance resolutions to the work area or
-    // throttling an occluded surface to roughly one present per second.
-    if (registration_census_mode || perf.enabled)
+    // Automated measurements default to hidden for oversized acceptance
+    // resolutions. An explicit MATTER_HIDE_WINDOW=0 must still permit visible
+    // profiling; otherwise a requested interactive measurement silently hides.
+    const char* hide_window_env = std::getenv("MATTER_HIDE_WINDOW");
+    const bool force_visible =
+        hide_window_env && std::strcmp(hide_window_env, "0") == 0;
+    if (((registration_census_mode || perf.enabled) && !force_visible) ||
+        (hide_window_env && std::strcmp(hide_window_env, "1") == 0))
         glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
-    if (perf.enabled)
+    const char* vt_trace_path = std::getenv("MATTER_VT_TRACE");
+    if (perf.enabled || (vt_trace_path && vt_trace_path[0]))
         glfwWindowHint(GLFW_DECORATED, GLFW_FALSE);
     int initial_window_width = replay.valid && replay.frame_width > 0
         ? static_cast<int>(replay.frame_width) : 1280;
@@ -1353,16 +1458,11 @@ int main() {
     // matching what the frame loop does. (smoke_vulkan_viewer.ps1 greps the
     // line, not its position.)
     matter::EngineDesc engine_desc;
-    // Phase 1 cache-leak fix: MATTER_CACHE_ROOT is an explicit override and
-    // still wins when set, but it is canonicalized to absolute here (rather
-    // than handed to the engine as-is) so a relative override behaves
-    // identically regardless of the directory editor.exe was launched from.
-    // EngineContext::create() also canonicalizes/requires cache_root itself
-    // (see matter_engine.cpp), but engine_desc.cache_root is informational
-    // only -- the per-world cache_root actually used for baking is derived
-    // from WorldDesc::project_dir via LocalProviderConfig::for_project() in
-    // open_world() -- so cache_root must never be left null here or
-    // EngineContext::create() fails loudly for no functional reason.
+    // EngineDesc still needs a non-null absolute cache root for initialization.
+    // Actual per-world artifacts use LocalProviderConfig::for_project(), which
+    // applies MATTER_CACHE_ROOT as an external base with project/world isolation.
+    // That provider resolves relative overrides against the opened project;
+    // this informational EngineDesc path is not the per-world artifact path.
     const char* cache_root_env = std::getenv("MATTER_CACHE_ROOT");
     std::string cache_root_abs;
     {
@@ -1740,11 +1840,35 @@ int main() {
     console_log.push(viewer::LogSeverity::Info,
                       "Connected to " + worlds[initial_world].world_name);
 
-    // Task 9: cached part graph snapshot for the Properties panel's baked-root
-    // info card. Refreshed only when graph_generation() changes so the panel
-    // doesn't re-copy the whole snapshot every frame.
+    // Task 9: cached part graph snapshot, shared by the Properties panel's
+    // baked-root info card, `viewer.reveal_part`, and the per-frame selection
+    // prune. Refreshed only when graph_generation() changes so none of them
+    // re-copies the whole snapshot every frame.
     part_graph_snapshot::Snapshot cached_snapshot;
     uint64_t cached_graph_gen = 0;
+    // The one refresh rule, so the three consumers cannot observe different
+    // graphs. The empty-cache retest is not redundant with the generation
+    // compare: graph_generation() can sit at 0 for a whole session
+    // (resolve-cache-hit worlds), and the 0-initialized sentinel would then
+    // never trigger a first fetch.
+    auto refresh_graph_cache = [&]() -> const part_graph_snapshot::Snapshot& {
+        if (session) {
+            const uint64_t gen = session->graph_generation();
+            if ((gen != cached_graph_gen || cached_snapshot.nodes.empty()) &&
+                session->graph_snapshot(cached_snapshot))
+                cached_graph_gen = gen;
+        }
+        return cached_snapshot;
+    };
+    // Liveness of one BakedRoot selection entry (reveal_part.h). Refreshes the
+    // cache itself rather than leaning on the draw site, which only runs under
+    // `!hide_ui` — the prune below runs headlessly too (drive.py /
+    // MATTER_SCREENSHOT), and pruning against a never-fetched snapshot would
+    // drop live selections in exactly the runs QA scripts.
+    auto baked_root_alive = [&](uint64_t resolved_hash) {
+        if (!session) return false;
+        return viewer::baked_root_selectable(refresh_graph_cache(), resolved_hash);
+    };
     viewer::SceneCommands scene_commands;
     // E5c (event-system.md S I.14): the mutation closures are assigned
     // LATER (after the command registry + scene-edit handlers exist) so each
@@ -2500,6 +2624,9 @@ int main() {
     // buffer with tomorrow's pose.
     matter::CameraDesc presented_camera = camera;
     bool presented_camera_available = false;
+    matter::CameraDesc previous_evaluation_camera = camera;
+    bool previous_evaluation_camera_available = false;
+    uint32_t stable_camera_frames = 0;
     bool presented_production_view = false;
     uint64_t presented_session_generation = 0;
     // viewport.capture's one in-flight request. A screenshot is the only agent
@@ -2508,6 +2635,19 @@ int main() {
     // failure seams beside it), not from the app-lane handler. At most one is
     // armed at a time -- see viewport_capture.h.
     viewer::capture::Tracker agent_capture;
+    // The regeneration job ledger (regen_jobs.h) and its bounded waits. The
+    // ledger is written at exactly two places: the post-frame seam, which is
+    // the only point a reload/regenerate may actually run, and the poll_event
+    // drain below, which is where the engine's own bake events arrive. Nothing
+    // else may transition a job -- a state derived anywhere else would be a
+    // guess, and guessing is what the ledger exists to replace.
+    viewer::jobs::Registry regen_jobs;
+    viewer::jobs::WaitList regen_waits;
+    // The retained scene-snapshot ring behind scene.capture_snapshot /
+    // scene.diff (scene_diff.h). App-scoped like the job ledger, and bounded
+    // for the same reason: a snapshot holds one row per named object, so an
+    // unbounded ring is an unbounded editor.
+    viewer::scenediff::SnapshotStore scene_snapshots;
     // D-03: wall-clock deadman for a `shot`/`shot_now` that can never
     // complete (a world where presents never succeed, or where
     // instances_drawn never goes positive so shot_settle can never reach
@@ -2605,12 +2745,12 @@ int main() {
     // -- see the fifo_quit_pending resolution after end_frame below.
     bool fifo_quit_pending = false;
 
-    matter::RenderPath fifo_render_path = matter::RenderPath::GpuDriven;
-    bool fifo_render_path_override = false;
     stats.session_status.native_rt_available =
         vulkan->ray_tracing_available();
     bool quit_requested = false;
     bool fatal_error = false;
+    bool scene_automation_failed = false;
+    std::string scene_admission_diagnostic;
     // Captured only at the Vulkan/device-surfacing fatal sites (render(),
     // end_frame(), the ImGui Vulkan backend prepare/end_frame calls, and
     // exhausted screenshot-readback retries) -- see mark_device_fatal below.
@@ -2634,7 +2774,15 @@ int main() {
     PerfCounters perf_start_counters{};
     uint64_t perf_start_dlss_resets = 0;
     std::vector<double> perf_frame_times;
+    std::vector<double> perf_present_intervals;
     std::vector<double> perf_water_animation_times;
+    viewer::PerfGpuStats perf_gpu_pass_stats;
+    PerfFrameTrace perf_frame_trace;
+    editor::VtTrace vt_trace(vt_trace_path);
+    const auto vt_trace_start = std::chrono::steady_clock::now();
+    auto perf_previous_frame_start = std::chrono::steady_clock::now();
+    auto perf_previous_present = perf_previous_frame_start;
+    viewer::FramePacer frame_pacer;
     auto previous_time = std::chrono::steady_clock::now();
     double hud_frame_ms = 0.0;
 
@@ -2752,6 +2900,14 @@ int main() {
          {"limit", "integer", false, "Rows to return, 1 through 200 (default 100)"}},
         "object", false, {}});
     agent_protocol.add_command({
+        "asset.export", "Export a completed static asset as OBJ/MTL, GLB and PBR/height PNG maps in a new folder",
+        {{"directory", "string", true, "New output folder; existing folders are refused"},
+         {"source", "string", false, "world (default) or workbench"},
+         {"module", "string", false, "Published world root module; required unless part_hash is supplied"},
+         {"part_hash", "string", false, "Decimal root part hash; selects one variant of a repeated module"},
+         {"lod", "integer", false, "Mesh LOD 0 through 15, default 0; children use their nearest available LOD"}},
+        "object", true, {}});
+    agent_protocol.add_command({
         "scene.get_object",
         "Inspect one object by typed id: naming, placement, visibility, "
         "selection, provenance availability and supported operations",
@@ -2768,6 +2924,60 @@ int main() {
          {"max_depth", "integer", false, "Graph hops, 0 through 8 (default 3)"},
          {"max_nodes", "integer", false,
           "Returned graph nodes, 1 through 100 (default 64)"}},
+        "object", false, {}});
+    // Scene comparison and spatial queries (scene_diff.h). Available before
+    // the first bake for the same reason the reads are: a capture of a world
+    // that is still filling in is a fact, and `context.scene.ready` says so.
+    agent_protocol.add_command({
+        "scene.capture_snapshot",
+        "Retain a bounded, ordered capture of the scene plus its measured "
+        "world bounds and generation inputs",
+        {{"label", "string", false,
+          "Caller-chosen label echoed back on the snapshot record"}},
+        "object", false, {}});
+    agent_protocol.add_command({
+        "scene.list_snapshots",
+        "List the retained scene snapshots, oldest first", {}, "object", false, {}});
+    agent_protocol.add_command({
+        "scene.diff",
+        "Compare two scene captures by logical identity: added, removed and "
+        "changed objects, bounds and generation inputs",
+        {{"from", "string", true,
+          "Retained snapshot id from scene.capture_snapshot"},
+         {"to", "string", false,
+          "Retained snapshot id, or \"current\" (the default) to capture the "
+          "live scene at dispatch"},
+         {"kinds", "array", false,
+          "Subset of [\"entity\",\"baked_root\"]; omitted means both"},
+         {"changes", "array", false,
+          "Subset of [\"added\",\"removed\",\"changed\",\"unchanged\"]; "
+          "omitted means the first three"},
+         {"offset", "integer", false, "Rows to skip within the matched set"},
+         {"limit", "integer", false, "Rows to return, 1 through 200 (default 100)"}},
+        "object", false, {}});
+    agent_protocol.add_command({
+        "scene.query",
+        "Filter a scene capture by kind, name, provenance and world-space region",
+        {{"snapshot", "string", false,
+          "Retained snapshot id, or \"current\" (the default)"},
+         {"kinds", "array", false,
+          "Subset of [\"entity\",\"baked_root\"]; omitted means both"},
+         {"name_contains", "string", false,
+          "Case-insensitive substring of the object name"},
+         {"module_contains", "string", false,
+          "Case-insensitive substring of the recorded provenance module"},
+         {"source_path_contains", "string", false,
+          "Case-insensitive substring of the recorded source path"},
+         {"has_provenance", "boolean", false,
+          "Keep only objects that do (or do not) carry part-graph provenance"},
+         {"has_part_instance", "boolean", false,
+          "Keep only objects whose live ECS row does (or does not) place a part"},
+         {"region", "object", false,
+          "{\"type\":\"aabb\",\"min\":[x,y,z],\"max\":[x,y,z]} or "
+          "{\"type\":\"sphere\",\"center\":[x,y,z],\"radius\":r}, with "
+          "optional \"mode\":\"intersects\"|\"contains\""},
+         {"offset", "integer", false, "Rows to skip within the matched set"},
+         {"limit", "integer", false, "Rows to return, 1 through 200 (default 100)"}},
         "object", false, {}});
     agent_protocol.add_command({
         "selection.replace", "Replace selection with typed scene objects",
@@ -2816,7 +3026,13 @@ int main() {
         {{"path", "string", true,
           "Absolute .png path; the same safety rules the shot_now FIFO verb applies"},
          {"annotate_selection", "boolean", false,
-          "Also return each selected object's typed id and projected image rectangle"}},
+          "Also return each selected object's typed id and projected image rectangle"},
+         {"export_channels", "boolean", false,
+          "Write synchronized raw identity, depth, normal, linear color and material planes"},
+         {"desired_max_lod", "number", false,
+          "Highest accepted visible VG LOD index; 0 requires finest"},
+         {"require_rt", "boolean", false,
+          "Require native RT and ready visible BLAS resources"}},
         "object", false, {}});
     agent_protocol.add_command({
         "view.focus",
@@ -2824,6 +3040,70 @@ int main() {
         "changing the selection",
         {{"object", "object_id", false,
           "{kind,id} pair to frame; omitted frames the current selection"}},
+        "object", false, {}});
+    agent_protocol.add_command({
+        "view.set_camera",
+        "Set a complete calibrated pinhole camera for the next presented frame",
+        {{"position", "array", true, "Eye in world meters, [x,y,z]"},
+         {"target", "array", true, "Look target in world meters, [x,y,z]"},
+         {"up", "array", true, "Nonparallel up direction, [x,y,z]"},
+         {"vertical_fov_radians", "number", true, "Vertical field of view [0.05,3.0]"},
+         {"near_plane", "number", true, "Near clip in meters, at least 0.001"},
+         {"far_plane", "number", true, "Far clip in meters, above near and at most 1e7"}},
+        "object", false, {}});
+    agent_protocol.add_command({
+        "render.reset_temporal",
+        "Reset presentation histories before a controlled capture sequence",
+        {}, "object", false, {}});
+    // Regeneration job control (regen_jobs.h). `seed` and `job_id` are decimal
+    // STRINGS for the same reason every other id here is: a 64-bit seed does
+    // not survive an IEEE-754 double. Ranges and the per-operation seed rules
+    // are checked at dispatch so they report invalid_input.
+    agent_protocol.add_command({
+        "job.start",
+        "Queue a world reload or seeded regeneration and return its job id",
+        {{"operation", "string", true,
+          "\"reload\" (rebake the world as authored) or \"regenerate\" "
+          "(rebake with a worldSeed override)"},
+         {"seed", "string", false,
+          "Unsigned 64-bit decimal string; required for \"regenerate\" and "
+          "refused for \"reload\""}},
+        "object", false, {}});
+    agent_protocol.add_command({
+        "job.status",
+        "Read one regeneration job: state, progress, diagnostics and result",
+        {{"job_id", "string", true, "Decimal job id returned by job.start"}},
+        "object", false, {}});
+    agent_protocol.add_command({
+        "job.wait",
+        "Wait, bounded by this request's timeout_ms, for one job to reach a "
+        "terminal state",
+        {{"job_id", "string", true, "Decimal job id returned by job.start"}},
+        "object", false, {}});
+    agent_protocol.add_command({
+        "job.cancel",
+        "Cancel a job that is still queued; report unsupported for one the "
+        "engine is already running",
+        {{"job_id", "string", true, "Decimal job id returned by job.start"}},
+        "object", false, {}});
+    agent_protocol.add_command({
+        "job.list", "List the most recent regeneration jobs, oldest first",
+        {{"limit", "integer", false, "Rows to return, 1 through 64 (default 16)"}},
+        "object", false, {}});
+    agent_protocol.add_command({
+        "procedural.parameters",
+        "Describe one baked root's typed effective procedural parameters",
+        {{"object", "object_id", true,
+          "baked_root identity returned by scene.list_objects"}},
+        "object", false, {}});
+    agent_protocol.add_command({
+        "procedural.update",
+        "Validate or atomically apply typed root parameter changes without rewriting JS",
+        {{"object", "object_id", true,
+          "baked_root identity returned by scene.list_objects"},
+         {"changes", "object", true,
+          "Non-empty object of declared parameter values"},
+         {"dry_run", "boolean", false, "Validate only; default false"}},
         "object", false, {}});
 
     auto reg_agent_commands =
@@ -2899,7 +3179,9 @@ int main() {
                     out.resolved_hash = node.resolved_hash;
                     out.module = node.module.empty() ? module_name : node.module;
                     out.source_path = node.source_path;
-                    out.params_json = node.params_json;
+                    // The declared-defaults-inclusive object, not the bare
+                    // placement params -- see part_graph_snapshot::effective_params.
+                    out.params_json = part_graph_snapshot::effective_params(node);
                     root_rows.push_back(std::move(out));
                 }
             }
@@ -2934,7 +3216,7 @@ int main() {
             viewer::inventory::ProvenanceNode out;
             out.module = node.module.empty() ? module_name : node.module;
             out.source_path = node.source_path;
-            out.params_json = node.params_json;
+            out.params_json = part_graph_snapshot::effective_params(node);
             out.children = node.children;
             out.shared_imports = node.shared_imports;
             out.shared_source_paths = node.shared_source_paths;
@@ -2944,6 +3226,232 @@ int main() {
         }
         return nodes;
     };
+
+    // The published root snapshot is the authoritative bridge from a typed
+    // baked-root identity to its module and effective canonical parameters.
+    auto procedural_root_for = [&](const viewer::agent::ObjectIdentity& object,
+                                   viewer::procedural::Root& out) {
+        if (!session || object.kind !=
+                             viewer::agent::ObjectIdentity::Kind::BakedRoot)
+            return false;
+        part_graph_snapshot::Snapshot graph;
+        if (!session->graph_snapshot(graph)) return false;
+        for (const auto& entry : graph.nodes) {
+            const auto& node = entry.second;
+            if (!node.is_root || node.resolved_hash != object.id) continue;
+            out.object = object;
+            out.module = node.module.empty() ? entry.first : node.module;
+            out.source_path = node.source_path;
+            out.params_json = part_graph_snapshot::effective_params(node);
+            return true;
+        }
+        return false;
+    };
+    auto procedural_root_module_count = [&](const std::string& module) {
+        if (!session) return std::size_t{0};
+        part_graph_snapshot::Snapshot graph;
+        if (!session->graph_snapshot(graph)) return std::size_t{0};
+        std::size_t count = 0;
+        for (const auto& entry : graph.nodes) {
+            const auto& node = entry.second;
+            if (node.is_root && (node.module.empty() ? entry.first : node.module) == module)
+                ++count;
+        }
+        return count;
+    };
+
+    // --- scene.capture_snapshot / scene.diff / scene.query (scene_diff.h) ---
+    // One capture routine behind all three: a diff of "this snapshot against
+    // the live scene" and a query of the live scene must observe the world the
+    // same way, and two capture paths would eventually not.
+    //
+    // Bounds are measured with bounds_for_object_set -- the whole-population
+    // form of the SAME resolver the selection outline and the viewport pick
+    // use -- so an agent's spatial answer and the box on screen are one
+    // measurement. It costs ONE ECS scan for the entire population.
+    auto capture_scene_snapshot = [&](std::string label) {
+        const viewer::inventory::Snapshot inventory_snapshot = build_scene_inventory();
+
+        std::vector<viewer::scenediff::MeasuredBounds> measured(
+            inventory_snapshot.entries.size());
+        if (!session) {
+            for (viewer::scenediff::MeasuredBounds& bounds : measured)
+                bounds.reason = "no world session is open, so nothing has a "
+                                "world placement to measure";
+        } else if (!inventory_snapshot.entries.empty()) {
+            std::vector<viewer::SelectedObject> targets;
+            targets.reserve(inventory_snapshot.entries.size());
+            for (const viewer::inventory::Entry& entry : inventory_snapshot.entries) {
+                targets.push_back(viewer::SelectedObject{
+                    entry.object.kind ==
+                            viewer::agent::ObjectIdentity::Kind::BakedRoot
+                        ? viewer::SelectedObject::BakedRoot
+                        : viewer::SelectedObject::Entity,
+                    entry.object.id});
+            }
+            std::vector<viewer::SelectionBounds> boxes(targets.size());
+            // A plain bool array, not std::vector<bool>: the resolver writes
+            // through a bool*, and the vector specialisation has no such
+            // storage to hand out.
+            std::unique_ptr<bool[]> resolved(new bool[targets.size()]);
+            viewer::bounds_for_object_set(targets.data(), targets.size(),
+                                          *session, boxes.data(), resolved.get());
+            for (std::size_t index = 0; index < targets.size(); ++index) {
+                viewer::scenediff::MeasuredBounds& out = measured[index];
+                const bool is_entity =
+                    targets[index].kind == viewer::SelectedObject::Entity;
+                if (!resolved[index]) {
+                    out.reason =
+                        is_entity
+                            ? "this entity is in the scene rows but has no "
+                              "resolvable transform in the live ECS"
+                            : "this baked root is in the part graph but has no "
+                              "placed instance in the current world";
+                    continue;
+                }
+                // All eight transformed corners: the transformed min/max would
+                // be wrong under rotation, and this is the one derivation
+                // scene.get_object's `world_bounds` already uses.
+                if (!viewer::inventory::world_aabb_from_local(
+                        boxes[index].local_min, boxes[index].local_max,
+                        boxes[index].world_matrix, out.world_min, out.world_max)) {
+                    out.reason =
+                        "this object's local-to-world matrix is not finite, so "
+                        "it has no world box";
+                    continue;
+                }
+                out.resolved = true;
+            }
+        }
+
+        viewer::scenediff::CaptureContext context;
+        context.session_open = session != nullptr;
+        context.scene_ready = bake_ready;
+        context.session_id = binding.current_session_id();
+        context.session_generation = binding.current_generation();
+        context.scene_generation = session ? session->graph_generation() : 0;
+        context.scene_revision = editor_model.revision();
+
+        viewer::scenediff::GenerationInputs inputs;
+        const std::string world_name = worlds.empty()
+                                           ? std::string()
+                                           : worlds[stats.world_current].world_name;
+        const std::string project_dir = worlds.empty()
+                                            ? std::string()
+                                            : worlds[stats.world_current].project_dir;
+        inputs.world.available = !world_name.empty();
+        inputs.world_value = world_name;
+        if (!inputs.world.available)
+            inputs.world.reason = "the editor has no current world entry";
+        inputs.project.available = !project_dir.empty();
+        inputs.project_value = project_dir;
+        if (!inputs.project.available)
+            inputs.project.reason = "the editor recorded no project directory";
+
+        // The same digest job.status reports: FNV-1a over the SORTED published
+        // (module, resolved hash) roots. A world that publishes no roots (a
+        // streamed world installs sector assets instead) has nothing for the
+        // digest to distinguish, and says so rather than returning the
+        // empty-set constant as if it were content.
+        std::vector<viewer::jobs::RootDigest> roots;
+        if (session) {
+            part_graph_snapshot::Snapshot graph;
+            if (session->graph_snapshot(graph)) {
+                for (const auto& [module_name, node] : graph.nodes) {
+                    if (!node.is_root) continue;
+                    roots.push_back(viewer::jobs::RootDigest{
+                        node.module.empty() ? module_name : node.module,
+                        node.resolved_hash});
+                }
+            }
+        }
+        if (roots.empty()) {
+            inputs.content_digest.reason =
+                session ? "this world published no part-graph roots, so there is "
+                          "no content digest to compare"
+                        : "no world session is open";
+        } else {
+            inputs.content_digest.available = true;
+            inputs.content_digest_value = viewer::jobs::content_digest(roots);
+        }
+
+        // A world seed is claimed only when a COMPLETED seeded regeneration
+        // published the very scene generation being captured. A seed from some
+        // earlier bake would name an input this scene was not built from.
+        inputs.world_seed.reason =
+            "no completed seeded regeneration in this editor session produced "
+            "the scene generation being captured";
+        const std::vector<const viewer::jobs::Job*> recent =
+            regen_jobs.recent(viewer::jobs::kDefaultHistoryLimit);
+        for (auto it = recent.rbegin(); it != recent.rend(); ++it) {
+            const viewer::jobs::Job& job = **it;
+            if (!job.request.has_seed) continue;
+            if (job.state != viewer::jobs::State::Completed) continue;
+            if (!job.has_result_scene) continue;
+            if (job.result_scene_generation != context.scene_generation) continue;
+            inputs.world_seed.available = true;
+            inputs.world_seed.reason.clear();
+            inputs.world_seed_value = job.request.seed;
+            inputs.world_seed_source =
+                "regeneration job " + std::to_string(job.id);
+            break;
+        }
+
+        return viewer::scenediff::capture(inventory_snapshot, measured, context,
+                                          inputs, std::move(label));
+    };
+
+    auto reg_asset_export = registry.must_register_handler<viewer::AssetExport>(
+        matter::evt::CommandScope::App,app_lane,[&](const viewer::AssetExport& command){
+            using Value=matter::jsondoc::Value;
+            viewer::AgentPayload payload;
+            const auto invalid=[&](const std::string& why){payload.status=viewer::agent::Status::InvalidInput;payload.message=why;return viewer::AssetExport::Result::succeeded(std::move(payload));};
+            std::string directory,module,source="world";uint32_t lod=0;uint64_t requested_hash=0;
+            for(const auto& [key,value]:command.arguments.obj){
+                if(key=="lod"){
+                    if(value.kind!=Value::Kind::Number || !std::isfinite(value.num) || value.num<0 || value.num>15 || std::floor(value.num)!=value.num)
+                        return invalid("lod must be an integer between 0 and 15");
+                    lod=uint32_t(value.num);
+                } else {
+                    if(value.kind!=Value::Kind::String || value.str.size()>4096 || value.str.find('\0')!=std::string::npos)
+                        return invalid("export text arguments must be bounded strings without NUL characters");
+                    if(key=="directory")directory=value.str;else if(key=="module")module=value.str;else if(key=="source")source=value.str;
+                    else if(key=="part_hash") {
+                        if(value.str.empty())return invalid("part_hash must be a decimal uint64 string");
+                        for(char digit:value.str){if(digit<'0'||digit>'9'||requested_hash>(UINT64_MAX-uint32_t(digit-'0'))/10)return invalid("part_hash must be a decimal uint64 string");requested_hash=requested_hash*10+uint32_t(digit-'0');}
+                        if(!requested_hash)return invalid("part_hash cannot be zero");
+                    }
+                    else return invalid("unknown asset.export argument");
+                }
+            }
+            if(directory.empty() || (source!="world" && source!="workbench"))return invalid("directory is required; source must be world or workbench");
+            matter::AssetExportReceipt receipt;std::string error;bool ok=false;
+            if(source=="workbench"){
+                if(requested_hash)return invalid("part_hash is only accepted for source=world");
+                if(!module.empty() && module!=bake_lab.workbench().module_name())return invalid("module does not match the open workbench asset");
+                ok=bake_lab.workbench().export_current(directory,lod,receipt,error);
+            } else {
+                if(module.empty() && !requested_hash)return invalid("module or part_hash is required when exporting from the world");
+                part_graph_snapshot::Snapshot graph;uint64_t hash=0;
+                if(session && session->graph_snapshot(graph))for(const auto& [key,node]:graph.nodes)
+                    if(node.is_root && (module.empty() || key==module || node.module==module) && (!requested_hash || node.resolved_hash==requested_hash)){
+                        if(hash && hash!=node.resolved_hash)return invalid("module selects more than one root variant");hash=node.resolved_hash;
+                    }
+                if(!hash)error="module has no published root in the current world";
+                else ok=session->export_asset(hash,lod,directory,receipt,error);
+            }
+            if(!ok){payload.status=viewer::agent::Status::ExecutionFailure;payload.message=error;}
+            else {
+                payload.value.kind=Value::Kind::Object;
+                const auto text_value=[](const std::string& s){Value v;v.kind=Value::Kind::String;v.str=s;return v;};
+                const auto number_value=[](uint64_t n){Value v;v.kind=Value::Kind::UInt64;v.uint64_value=n;return v;};
+                payload.value.set("directory",text_value(receipt.directory));payload.value.set("source_hash",text_value(std::to_string(receipt.source_hash)));
+                payload.value.set("lod",number_value(receipt.lod));payload.value.set("triangles",number_value(receipt.triangles));
+                payload.value.set("vertices",number_value(receipt.vertices));payload.value.set("materials",number_value(receipt.materials));
+                Value files;files.kind=Value::Kind::Array;for(const auto& f:receipt.files)files.arr.push_back(text_value(f));payload.value.set("files",std::move(files));
+            }
+            return viewer::AssetExport::Result::succeeded(std::move(payload));
+        });
 
     auto reg_scene_list_objects =
         registry.must_register_handler<viewer::SceneListObjects>(
@@ -3090,6 +3598,118 @@ int main() {
                 return viewer::SceneTraceProvenance::Result::succeeded(
                     std::move(payload));
             });
+
+    auto reg_scene_capture_snapshot =
+        registry.must_register_handler<viewer::SceneCaptureSnapshot>(
+            matter::evt::CommandScope::App, app_lane,
+            [&](const viewer::SceneCaptureSnapshot& command) {
+                viewer::AgentPayload payload;
+                const std::uint64_t id =
+                    scene_snapshots.retain(capture_scene_snapshot(command.label));
+                payload.value = viewer::scenediff::capture_result_json(
+                    *scene_snapshots.find(id), scene_snapshots);
+                return viewer::SceneCaptureSnapshot::Result::succeeded(
+                    std::move(payload));
+            });
+
+    auto reg_scene_list_snapshots =
+        registry.must_register_handler<viewer::SceneListSnapshots>(
+            matter::evt::CommandScope::App, app_lane,
+            [&](const viewer::SceneListSnapshots&) {
+                viewer::AgentPayload payload;
+                payload.value =
+                    viewer::scenediff::snapshot_list_json(scene_snapshots);
+                return viewer::SceneListSnapshots::Result::succeeded(
+                    std::move(payload));
+            });
+
+    auto reg_scene_diff = registry.must_register_handler<viewer::SceneDiff>(
+        matter::evt::CommandScope::App, app_lane,
+        [&](const viewer::SceneDiff& command) {
+            viewer::AgentPayload payload;
+            viewer::scenediff::DiffQuery query;
+            std::string error;
+            // Re-parsed rather than trusted, exactly as scene.list_objects
+            // re-parses: a handler that assumes its input was checked elsewhere
+            // is one refactor from not being.
+            if (!viewer::scenediff::parse_diff_query(command.arguments, query,
+                                                     error)) {
+                payload.status = viewer::agent::Status::InvalidInput;
+                payload.message = error;
+                return viewer::SceneDiff::Result::succeeded(std::move(payload));
+            }
+            const viewer::scenediff::Snapshot* from =
+                scene_snapshots.find(query.from_id);
+            if (!from) {
+                payload.status = viewer::agent::Status::NotFound;
+                payload.message = "no such retained snapshot";
+                payload.value = viewer::scenediff::missing_snapshot_json(
+                    query.from_id, scene_snapshots,
+                    "this snapshot id was never captured, or has been evicted "
+                    "from the retained ring");
+                return viewer::SceneDiff::Result::succeeded(std::move(payload));
+            }
+            // The live capture is held here for the lifetime of the response:
+            // `to` may point at it, and the diff borrows both snapshots' rows.
+            viewer::scenediff::Snapshot live;
+            const viewer::scenediff::Snapshot* to = nullptr;
+            if (query.to_is_current) {
+                live = capture_scene_snapshot("current");
+                to = &live;
+            } else {
+                to = scene_snapshots.find(query.to_id);
+                if (!to) {
+                    payload.status = viewer::agent::Status::NotFound;
+                    payload.message = "no such retained snapshot";
+                    payload.value = viewer::scenediff::missing_snapshot_json(
+                        query.to_id, scene_snapshots,
+                        "this snapshot id was never captured, or has been "
+                        "evicted from the retained ring");
+                    return viewer::SceneDiff::Result::succeeded(std::move(payload));
+                }
+            }
+            const viewer::scenediff::Diff diff =
+                viewer::scenediff::compare(*from, *to);
+            payload.value = viewer::scenediff::diff_result_json(
+                *from, *to, diff, query,
+                viewer::scenediff::page_diff(diff, query));
+            return viewer::SceneDiff::Result::succeeded(std::move(payload));
+        });
+
+    auto reg_scene_query = registry.must_register_handler<viewer::SceneQuery>(
+        matter::evt::CommandScope::App, app_lane,
+        [&](const viewer::SceneQuery& command) {
+            viewer::AgentPayload payload;
+            viewer::scenediff::ObjectQuery query;
+            std::string error;
+            if (!viewer::scenediff::parse_object_query(command.arguments, query,
+                                                       error)) {
+                payload.status = viewer::agent::Status::InvalidInput;
+                payload.message = error;
+                return viewer::SceneQuery::Result::succeeded(std::move(payload));
+            }
+            viewer::scenediff::Snapshot live;
+            const viewer::scenediff::Snapshot* snapshot = nullptr;
+            if (query.snapshot_is_current) {
+                live = capture_scene_snapshot("current");
+                snapshot = &live;
+            } else {
+                snapshot = scene_snapshots.find(query.snapshot_id);
+                if (!snapshot) {
+                    payload.status = viewer::agent::Status::NotFound;
+                    payload.message = "no such retained snapshot";
+                    payload.value = viewer::scenediff::missing_snapshot_json(
+                        query.snapshot_id, scene_snapshots,
+                        "this snapshot id was never captured, or has been "
+                        "evicted from the retained ring");
+                    return viewer::SceneQuery::Result::succeeded(std::move(payload));
+                }
+            }
+            payload.value = viewer::scenediff::query_result_json(
+                *snapshot, query,
+                viewer::scenediff::query_objects(*snapshot, query));
+            return viewer::SceneQuery::Result::succeeded(std::move(payload));
+        });
 
     // Selection commands share exactly the SelectionSet read by picking,
     // outlines and the gizmo.  The auxiliary Scene-tree highlight is only a
@@ -3514,6 +4134,296 @@ int main() {
             return viewer::ViewFocus::Result::succeeded(std::move(payload));
         });
 
+    auto reg_view_set_camera =
+        registry.must_register_handler<viewer::ViewSetCamera>(
+            matter::evt::CommandScope::App, app_lane,
+            [&](const viewer::ViewSetCamera& command) {
+                viewer::AgentPayload payload;
+                std::string error;
+                if (!viewer::camera_calibration::valid(command.camera, error)) {
+                    payload.status = viewer::agent::Status::InvalidInput;
+                    payload.message = error;
+                    return viewer::ViewSetCamera::Result::succeeded(std::move(payload));
+                }
+                if (!session) {
+                    payload.status = viewer::agent::Status::NotReady;
+                    payload.message = "no world session is loaded";
+                    return viewer::ViewSetCamera::Result::succeeded(std::move(payload));
+                }
+                camera = command.camera;
+                // camera.prefs pushes this field into CameraDesc every frame.
+                camera_prefs.far_plane = camera.far_plane;
+                auto value = viewer::agent::json::object();
+                value.set("applies_at", viewer::agent::json::string(
+                    "next_presented_frame"));
+                value.set("position", viewer::agent::json::vec3(
+                    camera.position.x, camera.position.y, camera.position.z));
+                value.set("target", viewer::agent::json::vec3(
+                    camera.target.x, camera.target.y, camera.target.z));
+                value.set("up", viewer::agent::json::vec3(
+                    camera.up.x, camera.up.y, camera.up.z));
+                value.set("vertical_fov_radians", viewer::agent::json::number(
+                    camera.vertical_fov_radians));
+                value.set("near_plane", viewer::agent::json::number(camera.near_plane));
+                value.set("far_plane", viewer::agent::json::number(camera.far_plane));
+                payload.value = std::move(value);
+                return viewer::ViewSetCamera::Result::succeeded(std::move(payload));
+            });
+    auto reg_render_reset_temporal =
+        registry.must_register_handler<viewer::RenderResetTemporal>(
+            matter::evt::CommandScope::App, app_lane,
+            [&](const viewer::RenderResetTemporal&) {
+                viewer::AgentPayload payload;
+                if (!session) {
+                    payload.status = viewer::agent::Status::NotReady;
+                    payload.message = "no world session is loaded";
+                    return viewer::RenderResetTemporal::Result::succeeded(
+                        std::move(payload));
+                }
+                session->request_atmosphere_history_reset();
+                stable_camera_frames = 0;
+                previous_evaluation_camera_available = false;
+                auto value = viewer::agent::json::object();
+                value.set("applies_at", viewer::agent::json::string(
+                    "next_presented_frame"));
+                value.set("minimum_stable_frames", viewer::agent::json::number(3));
+                payload.value = std::move(value);
+                return viewer::RenderResetTemporal::Result::succeeded(
+                    std::move(payload));
+            });
+
+    // --- regeneration job control (regen_jobs.h) ---------------------------
+    // job.start ACCEPTS: it records a ledger entry and returns. The heavy
+    // session operation runs at the post-frame seam below, because destroying
+    // and rebuilding world content mid-draw is exactly what SessionBinding
+    // exists to prevent. Everything else here is a read of that ledger.
+    auto reg_job_start = registry.must_register_handler<viewer::JobStart>(
+        matter::evt::CommandScope::App, app_lane,
+        [&](const viewer::JobStart& command) {
+            viewer::AgentPayload payload;
+            if (!session) {
+                payload.status = viewer::agent::Status::NotReady;
+                payload.message = "no world session is open to regenerate";
+                return viewer::JobStart::Result::succeeded(std::move(payload));
+            }
+            viewer::jobs::StartRequest request = command.request;
+            // The world is the editor's, not the caller's: naming it in the
+            // record is what makes a job id readable after a world switch.
+            request.world = worlds[stats.world_current].world_name;
+            request.project = worlds[stats.world_current].project_dir;
+            const uint64_t id = regen_jobs.accept(
+                std::move(request), editor_model.revision(),
+                session->graph_generation(), viewer::jobs::Clock::now());
+            const viewer::jobs::Job* job = regen_jobs.find(id);
+            payload.value = viewer::jobs::start_result_json(
+                *job, viewer::jobs::Clock::now());
+            return viewer::JobStart::Result::succeeded(std::move(payload));
+        });
+
+    auto reg_procedural_parameters =
+        registry.must_register_handler<viewer::ProceduralParameters>(
+            matter::evt::CommandScope::App, app_lane,
+            [&](const viewer::ProceduralParameters& command) {
+                viewer::AgentPayload payload;
+                viewer::procedural::Root root;
+                if (!procedural_root_for(command.object, root)) {
+                    payload.status = viewer::agent::Status::NotFound;
+                    payload.message = "no published baked root matches this typed identity";
+                } else {
+                    payload.value = viewer::procedural::describe_json(root);
+                }
+                return viewer::ProceduralParameters::Result::succeeded(
+                    std::move(payload));
+            });
+
+    auto reg_procedural_update =
+        registry.must_register_handler<viewer::ProceduralUpdate>(
+            matter::evt::CommandScope::App, app_lane,
+            [&](const viewer::ProceduralUpdate& command) {
+                viewer::AgentPayload payload;
+                viewer::procedural::Root root;
+                if (!procedural_root_for(command.object, root)) {
+                    payload.status = viewer::agent::Status::NotFound;
+                    payload.message = "no published baked root matches this typed identity";
+                    return viewer::ProceduralUpdate::Result::succeeded(
+                        std::move(payload));
+                }
+                if (procedural_root_module_count(root.module) != 1) {
+                    payload.status = viewer::agent::Status::UnsupportedCommand;
+                    payload.message =
+                        "this module is published as multiple roots; a module-wide "
+                        "override would not identify one owner";
+                    return viewer::ProceduralUpdate::Result::succeeded(
+                        std::move(payload));
+                }
+                viewer::procedural::Plan plan;
+                std::string error;
+                if (!viewer::procedural::make_plan(root, command.changes, plan, error)) {
+                    payload.status = viewer::agent::Status::InvalidInput;
+                    payload.message = error;
+                    return viewer::ProceduralUpdate::Result::succeeded(
+                        std::move(payload));
+                }
+                payload.value = viewer::procedural::plan_json(plan, command.dry_run);
+                if (!command.dry_run && !plan.changed.empty()) {
+                    viewer::jobs::StartRequest request;
+                    request.kind = viewer::jobs::Kind::Parameters;
+                    request.parameter_module = root.module;
+                    request.parameters_json = matter::jsondoc::write_json(plan.after);
+                    request.world = worlds[stats.world_current].world_name;
+                    request.project = worlds[stats.world_current].project_dir;
+                    const uint64_t id = regen_jobs.accept(
+                        std::move(request), editor_model.revision(),
+                        session->graph_generation(), viewer::jobs::Clock::now());
+                    const viewer::jobs::Job* job = regen_jobs.find(id);
+                    payload.value.set("job", viewer::jobs::start_result_json(
+                        *job, viewer::jobs::Clock::now()));
+                }
+                return viewer::ProceduralUpdate::Result::succeeded(
+                    std::move(payload));
+            });
+
+    auto reg_job_status = registry.must_register_handler<viewer::JobStatus>(
+        matter::evt::CommandScope::App, app_lane,
+        [&](const viewer::JobStatus& command) {
+            viewer::AgentPayload payload;
+            const viewer::jobs::Job* job = regen_jobs.find(command.job_id);
+            if (!job) {
+                // A read of a job that is gone is not_found with the window
+                // that IS answerable, so "aged out" and "never existed" stay
+                // distinguishable.
+                payload.status = viewer::agent::Status::NotFound;
+                payload.message = "no such regeneration job at this id";
+                payload.value =
+                    viewer::jobs::missing_result_json(regen_jobs, command.job_id);
+                return viewer::JobStatus::Result::succeeded(std::move(payload));
+            }
+            // A status READ succeeds even when the job it describes failed:
+            // the failure is in `job.state`, not in the query.
+            payload.value =
+                viewer::jobs::status_result_json(*job, viewer::jobs::Clock::now());
+            return viewer::JobStatus::Result::succeeded(std::move(payload));
+        });
+
+    auto reg_job_list = registry.must_register_handler<viewer::JobList>(
+        matter::evt::CommandScope::App, app_lane,
+        [&](const viewer::JobList& command) {
+            viewer::AgentPayload payload;
+            payload.value = viewer::jobs::list_result_json(
+                regen_jobs, command.limit, viewer::jobs::Clock::now());
+            return viewer::JobList::Result::succeeded(std::move(payload));
+        });
+
+    auto reg_job_cancel = registry.must_register_handler<viewer::JobCancel>(
+        matter::evt::CommandScope::App, app_lane,
+        [&](const viewer::JobCancel& command) {
+            viewer::AgentPayload payload;
+            const viewer::jobs::CancelOutcome outcome =
+                regen_jobs.cancel(command.job_id, viewer::jobs::Clock::now());
+            if (outcome == viewer::jobs::CancelOutcome::NotFound) {
+                payload.status = viewer::agent::Status::NotFound;
+                payload.message = "no such regeneration job at this id";
+                payload.value =
+                    viewer::jobs::missing_result_json(regen_jobs, command.job_id);
+                return viewer::JobCancel::Result::succeeded(std::move(payload));
+            }
+            const viewer::jobs::Job* job = regen_jobs.find(command.job_id);
+            if (outcome == viewer::jobs::CancelOutcome::UnsupportedRunning) {
+                // WorldSession has no cancel entry point -- supersession is
+                // the only mechanism the backend has. Saying so with the
+                // protocol's own "known but unavailable" code is the honest
+                // answer; reporting ok would claim a stop that never happened.
+                payload.status = viewer::agent::Status::UnsupportedCommand;
+                payload.message =
+                    "this job is already running and the engine exposes no "
+                    "cancel; start a newer job to supersede it";
+            }
+            payload.value = viewer::jobs::cancel_result_json(
+                *job, outcome, viewer::jobs::Clock::now());
+            return viewer::JobCancel::Result::succeeded(std::move(payload));
+        });
+
+    // job.wait is the second command (after viewport.capture) whose answer is
+    // not knowable on the app lane. The handler decides only whether a wait can
+    // be ARMED -- an already-terminal job answers here and now, a missing one
+    // is not_found -- and the frame loop below emits the one terminal record
+    // when the job ends or the deadline passes.
+    auto reg_job_wait = registry.must_register_handler<viewer::JobWait>(
+        matter::evt::CommandScope::App, app_lane,
+        [&](const viewer::JobWait& command) {
+            viewer::AgentPayload payload;
+            const viewer::jobs::Job* job = regen_jobs.find(command.job_id);
+            if (!job) {
+                payload.status = viewer::agent::Status::NotFound;
+                payload.message = "no such regeneration job at this id";
+                payload.value =
+                    viewer::jobs::missing_result_json(regen_jobs, command.job_id);
+            } else if (regen_waits.size() >= viewer::jobs::kMaxWaiters) {
+                payload.status = viewer::agent::Status::NotReady;
+                payload.message = "too many bounded waits are already pending";
+            }
+            return viewer::JobWait::Result::succeeded(std::move(payload));
+        });
+
+    // The ONE place a released bounded wait becomes a terminal result. Three
+    // callers: the frame-loop sweep, the shutdown drain after the loop, and the
+    // dispatch bridge's immediate answer for a job that was already terminal.
+    // Completing a request the protocol has already expired is a no-op, which
+    // is what keeps "exactly one terminal record" true here too.
+    auto resolve_regen_wait = [&](const viewer::jobs::Waiter& waiter,
+                                  bool timed_out) {
+        const viewer::jobs::Job* job = regen_jobs.find(waiter.job_id);
+        const viewer::jobs::Clock::time_point now = viewer::jobs::Clock::now();
+        if (!job) {
+            // The job aged out of the retained window while the wait was open.
+            // There is no outcome to report, so this is a timeout rather than
+            // an invented completion.
+            agent_protocol.complete(
+                waiter.request_id, waiter.ticket_id, viewer::agent::Status::Timeout,
+                viewer::jobs::missing_result_json(regen_jobs, waiter.job_id),
+                "the job aged out of the retained history before this wait ended");
+            return;
+        }
+        const viewer::agent::Status status =
+            timed_out ? viewer::agent::Status::Timeout
+                      : viewer::jobs::wait_status(job->state);
+        const std::string message =
+            timed_out ? "the bounded wait expired with the job in state '" +
+                            std::string(viewer::jobs::to_string(job->state)) + "'"
+                      : viewer::jobs::wait_message(*job);
+        agent_protocol.complete(
+            waiter.request_id, waiter.ticket_id, status,
+            viewer::jobs::wait_result_json(*job, timed_out, now), message);
+    };
+
+    // FNV-1a over the published part-graph ROOTS, sorted, so "the same seed
+    // produced the same world" is answerable. It is the roots and their
+    // resolved content hashes -- the same identities scene.list_objects hands
+    // out as baked_root ids -- and not a render or a screenshot, so it is
+    // decided by what was baked rather than by what a frame happened to draw.
+    //
+    // An EMPTY root set is reported as unavailable rather than digested. A
+    // world-kind (streamed) session installs sector assets and publishes no
+    // graph roots at all, so a digest over zero roots is the same constant for
+    // every such world and for every seed -- offering it as a content identity
+    // would be a signal that cannot distinguish anything.
+    auto regen_content_digest = [&](bool& available) -> uint64_t {
+        available = false;
+        if (!session) return 0;
+        part_graph_snapshot::Snapshot graph;
+        if (!session->graph_snapshot(graph)) return 0;
+        std::vector<viewer::jobs::RootDigest> roots;
+        for (const auto& [module_name, node] : graph.nodes) {
+            if (!node.is_root) continue;
+            roots.push_back(viewer::jobs::RootDigest{
+                node.module.empty() ? module_name : node.module,
+                node.resolved_hash});
+        }
+        if (roots.empty()) return 0;
+        available = true;
+        return viewer::jobs::content_digest(std::move(roots));
+    };
+
     // The ONE place a pending viewport.capture becomes a terminal result. Four
     // frame-loop seams call it: the successful PNG write, the readback/write
     // failure beside it, the `shot` deadman that abandons a capture the editor
@@ -3614,14 +4524,8 @@ int main() {
         matter::evt::CommandScope::App, app_lane, [&](const viewer::ViewerRevealPart& cmd) {
             // Reveal = the Scene tree's baked-root click + Focus, addressed by
             // module name (Asset Browser "Reveal"). Reuses the loop's cached
-            // snapshot, refreshed by generation like the draw site below —
-            // plus an empty-cache fetch, because graph_generation() can sit
-            // at 0 for a whole session (resolve-cache-hit worlds) and the
-            // loop's 0-initialized sentinel then never fetches at all.
-            const uint64_t gen = session->graph_generation();
-            if ((gen != cached_graph_gen || cached_snapshot.nodes.empty()) &&
-                session->graph_snapshot(cached_snapshot))
-                cached_graph_gen = gen;
+            // snapshot through the shared refresh rule.
+            refresh_graph_cache();
             const uint64_t hash =
                 viewer::reveal_part_in_world(cached_snapshot, cmd.module, selection_set);
             if (hash == 0) {
@@ -3673,8 +4577,16 @@ int main() {
                     return viewer::FifoRenderPath::Result::failed(
                         "native RT unavailable");
                 }
-                fifo_render_path = cmd.requested;
-                fifo_render_path_override = true;
+                // Use the checkbox's live property. A separate FIFO override
+                // makes later UI changes silently ineffective for this session.
+                const auto result = viewer::fifo_set_property(
+                    editor_props.registry(), "render.gpu.ray_tracing",
+                    cmd.requested == matter::RenderPath::Raytrace ? "true"
+                                                                : "false");
+                if (!result.success) {
+                    std::printf("render_path: %s\n", result.line.c_str());
+                    return viewer::FifoRenderPath::Result::failed(result.line);
+                }
                 stats.session_status.render_path =
                     cmd.requested == matter::RenderPath::Raytrace
                         ? viewer::ViewerRenderPathStatus::NativeRt
@@ -4119,12 +5031,16 @@ int main() {
         // This starts before event polling and begin_frame(), whose fence wait and
         // swapchain acquire are part of the user-visible frame cadence.
         const auto perf_frame_start = std::chrono::steady_clock::now();
+        const double perf_start_interval_ms = std::chrono::duration<double, std::milli>(
+            perf_frame_start - perf_previous_frame_start).count();
+        perf_previous_frame_start = perf_frame_start;
         // Main-loop phase attribution (ViewerStats::loop_*_ms). Rolling split
         // timer: each phase_split() returns the ms since the previous split, so
         // the phases exactly partition perf_frame_start..end_frame. Added
         // because resolve/build/draw accounted for under a third of the frame
         // and the remainder had no attribution at all.
         struct LoopPhase {
+            double pacing = 0;
             double poll = 0, acquire = 0, ui = 0, tick = 0;
             double pump = 0, lab = 0, render = 0, present = 0;
         } phase{};
@@ -4136,6 +5052,11 @@ int main() {
             phase_mark = split_now;
             return ms;
         };
+        frame_pacer.wait(editor_props.gpu_prefs().frame_limit, [&] {
+            glfwPollEvents();
+            return glfwWindowShouldClose(window) != 0;
+        });
+        phase.pacing = phase_split();
         glfwPollEvents();
         // Also disarm while minimized: begin_frame may skip the later input
         // sample, and holding Space through refocus must not create a press.
@@ -4365,6 +5286,9 @@ int main() {
                     if (begun.request.command == "agent.commands") {
                         attach_agent_ticket(registry.dispatch(viewer::AgentCommands{}),
                                             metadata_terminal);
+                    } else if (begun.request.command == "asset.export") {
+                        viewer::AssetExport command;command.arguments=begun.request.arguments;
+                        attach_agent_ticket(registry.dispatch(std::move(command)),payload_terminal);
                     } else if (begun.request.command == "scene.list_objects") {
                         // Range/enum validation happens HERE so a bad limit or
                         // an unknown kind is invalid_input rather than a handler
@@ -4407,6 +5331,72 @@ int main() {
                                 registry.dispatch(std::move(command)),
                                 payload_terminal);
                         }
+                    } else if (begun.request.command == "scene.capture_snapshot") {
+                        // `label` is optional and free-form, but it is echoed
+                        // in every later record, so it is bounded here rather
+                        // than at the point it is printed.
+                        bool duplicated = false;
+                        const matter::jsondoc::Value* label =
+                            viewer::inventory::unique_argument(
+                                begun.request.arguments, "label", duplicated);
+                        if (duplicated) {
+                            agent_protocol.reject_accepted(
+                                request_id, viewer::agent::Status::InvalidInput,
+                                "label was supplied more than once");
+                        } else if (label &&
+                                   (label->kind !=
+                                        matter::jsondoc::Value::Kind::String ||
+                                    label->str.size() >
+                                        viewer::scenediff::kMaxCapturedTextBytes)) {
+                            agent_protocol.reject_accepted(
+                                request_id, viewer::agent::Status::InvalidInput,
+                                "label must be a string of at most 256 bytes");
+                        } else {
+                            viewer::SceneCaptureSnapshot command;
+                            if (label) command.label = label->str;
+                            attach_agent_ticket(
+                                registry.dispatch(std::move(command)),
+                                payload_terminal);
+                        }
+                    } else if (begun.request.command == "scene.list_snapshots") {
+                        attach_agent_ticket(
+                            registry.dispatch(viewer::SceneListSnapshots{}),
+                            payload_terminal);
+                    } else if (begun.request.command == "scene.diff" ||
+                               begun.request.command == "scene.query") {
+                        // Same rule as the other scene reads: range, enum and
+                        // region validation happen HERE so a bad limit, an
+                        // unknown change class or an inverted box is
+                        // invalid_input rather than a handler failure. The
+                        // descriptor only checked JSON types.
+                        std::string query_error;
+                        bool valid = false;
+                        if (begun.request.command == "scene.diff") {
+                            viewer::scenediff::DiffQuery query;
+                            valid = viewer::scenediff::parse_diff_query(
+                                begun.request.arguments, query, query_error);
+                        } else {
+                            viewer::scenediff::ObjectQuery query;
+                            valid = viewer::scenediff::parse_object_query(
+                                begun.request.arguments, query, query_error);
+                        }
+                        if (!valid) {
+                            agent_protocol.reject_accepted(
+                                request_id, viewer::agent::Status::InvalidInput,
+                                query_error);
+                        } else if (begun.request.command == "scene.diff") {
+                            viewer::SceneDiff command;
+                            command.arguments = begun.request.arguments;
+                            attach_agent_ticket(
+                                registry.dispatch(std::move(command)),
+                                payload_terminal);
+                        } else {
+                            viewer::SceneQuery command;
+                            command.arguments = begun.request.arguments;
+                            attach_agent_ticket(
+                                registry.dispatch(std::move(command)),
+                                payload_terminal);
+                        }
                     } else if (begun.request.command == "scene.trace_provenance") {
                         // Keep the boundary validation identical to the handler:
                         // malformed typed ids and traversal bounds are protocol
@@ -4424,6 +5414,48 @@ int main() {
                             attach_agent_ticket(
                                 registry.dispatch(std::move(command)),
                                 payload_terminal);
+                        }
+                    } else if (begun.request.command == "procedural.parameters" ||
+                               begun.request.command == "procedural.update") {
+                        const matter::jsondoc::Value* requested =
+                            begun.request.arguments.find("object");
+                        viewer::agent::ObjectIdentity object;
+                        std::string object_error;
+                        if (!requested || !viewer::agent::parse_object_identity(
+                                              *requested, object, object_error)) {
+                            agent_protocol.reject_accepted(
+                                request_id, viewer::agent::Status::InvalidInput,
+                                object_error.empty() ? "object must be {kind,id}"
+                                                     : object_error);
+                        } else if (object.kind !=
+                                   viewer::agent::ObjectIdentity::Kind::BakedRoot) {
+                            agent_protocol.reject_accepted(
+                                request_id, viewer::agent::Status::InvalidInput,
+                                "procedural parameters are owned by baked_root objects");
+                        } else if (begun.request.command == "procedural.parameters") {
+                            viewer::ProceduralParameters command;
+                            command.object = object;
+                            attach_agent_ticket(registry.dispatch(std::move(command)),
+                                                payload_terminal);
+                        } else {
+                            const matter::jsondoc::Value* changes =
+                                begun.request.arguments.find("changes");
+                            if (!changes || changes->kind !=
+                                                matter::jsondoc::Value::Kind::Object) {
+                                agent_protocol.reject_accepted(
+                                    request_id, viewer::agent::Status::InvalidInput,
+                                    "changes must be an object");
+                            } else {
+                                viewer::ProceduralUpdate command;
+                                command.object = object;
+                                command.changes = *changes;
+                                if (const matter::jsondoc::Value* dry =
+                                        begun.request.arguments.find("dry_run"))
+                                    command.dry_run = dry->b;
+                                attach_agent_ticket(
+                                    registry.dispatch(std::move(command)),
+                                    payload_terminal);
+                            }
                         }
                     } else if (begun.request.command == "viewport.pick" ||
                                begun.request.command == "viewport.pick_select") {
@@ -4499,6 +5531,9 @@ int main() {
                                 viewer::capture::Clock::now() +
                                 std::chrono::milliseconds(begun.request.timeout_ms);
                             const bool annotate = arguments.annotate;
+                            const bool export_channels = arguments.export_channels;
+                            const uint32_t desired_max_lod = arguments.desired_max_lod;
+                            const bool require_rt = arguments.require_rt;
                             const std::string path = arguments.path;
                             auto ticket = registry.dispatch(std::move(command));
                             const uint64_t ticket_id = ticket.id();
@@ -4511,6 +5546,7 @@ int main() {
                                 ticket.then(
                                     app_lane,
                                     [&, request_id, ticket_id, path, annotate,
+                                     export_channels, desired_max_lod, require_rt,
                                      deadline](const auto& result) {
                                         // Unlike every other agent command, a
                                         // Success here is NOT a terminal answer:
@@ -4543,6 +5579,9 @@ int main() {
                                         pending.ticket_id = ticket_id;
                                         pending.path = path;
                                         pending.annotate = annotate;
+                                        pending.export_channels = export_channels;
+                                        pending.desired_max_lod = desired_max_lod;
+                                        pending.require_rt = require_rt;
                                         pending.deadline = deadline;
                                         if (!agent_capture.arm(std::move(pending))) {
                                             agent_protocol.complete(
@@ -4564,6 +5603,23 @@ int main() {
                                             std::chrono::steady_clock::now();
                                     });
                             }
+                        }
+                    } else if (begun.request.command == "render.reset_temporal") {
+                        attach_agent_ticket(
+                            registry.dispatch(viewer::RenderResetTemporal{}),
+                            payload_terminal);
+                    } else if (begun.request.command == "view.set_camera") {
+                        viewer::ViewSetCamera command;
+                        std::string camera_error;
+                        if (!viewer::camera_calibration::parse(
+                                begun.request.arguments, command.camera,
+                                camera_error)) {
+                            agent_protocol.reject_accepted(
+                                request_id, viewer::agent::Status::InvalidInput,
+                                camera_error);
+                        } else {
+                            attach_agent_ticket(registry.dispatch(std::move(command)),
+                                                payload_terminal);
                         }
                     } else if (begun.request.command == "view.focus") {
                         // `object` is OPTIONAL here, so unlike scene.get_object
@@ -4629,6 +5685,130 @@ int main() {
                     } else if (begun.request.command == "selection.list") {
                         attach_agent_ticket(registry.dispatch(viewer::SelectionList{}),
                                             payload_terminal);
+                    } else if (begun.request.command == "job.start") {
+                        // The operation enum and the per-operation seed rules
+                        // are checked HERE so a seed on a reload is
+                        // invalid_input rather than a handler failure; the
+                        // descriptor only checked JSON types.
+                        viewer::jobs::StartRequest request;
+                        std::string request_error;
+                        if (!viewer::jobs::parse_start_arguments(
+                                begun.request.arguments, request, request_error)) {
+                            agent_protocol.reject_accepted(
+                                request_id, viewer::agent::Status::InvalidInput,
+                                request_error);
+                        } else {
+                            viewer::JobStart command;
+                            command.request = std::move(request);
+                            attach_agent_ticket(registry.dispatch(std::move(command)),
+                                                payload_terminal);
+                        }
+                    } else if (begun.request.command == "job.status" ||
+                               begun.request.command == "job.cancel" ||
+                               begun.request.command == "job.wait") {
+                        uint64_t job_id = 0;
+                        std::string job_error;
+                        if (!viewer::jobs::parse_job_id(begun.request.arguments,
+                                                        job_id, job_error)) {
+                            agent_protocol.reject_accepted(
+                                request_id, viewer::agent::Status::InvalidInput,
+                                job_error);
+                        } else if (begun.request.command == "job.status") {
+                            viewer::JobStatus command;
+                            command.job_id = job_id;
+                            attach_agent_ticket(registry.dispatch(std::move(command)),
+                                                payload_terminal);
+                        } else if (begun.request.command == "job.cancel") {
+                            viewer::JobCancel command;
+                            command.job_id = job_id;
+                            attach_agent_ticket(registry.dispatch(std::move(command)),
+                                                payload_terminal);
+                        } else {
+                            // job.wait: like viewport.capture, a Success from
+                            // the handler means "waitable", not "finished".
+                            // The deadline is the request's own, recomputed
+                            // here because Protocol keeps its copy private;
+                            // whichever of the two fires first emits the ONE
+                            // terminal record.
+                            const auto deadline =
+                                viewer::jobs::Clock::now() +
+                                std::chrono::milliseconds(begun.request.timeout_ms);
+                            viewer::JobWait command;
+                            command.job_id = job_id;
+                            auto ticket = registry.dispatch(std::move(command));
+                            const uint64_t ticket_id = ticket.id();
+                            if (!agent_protocol.attach_ticket(request_id, ticket_id)) {
+                                agent_protocol.reject_accepted(
+                                    request_id,
+                                    viewer::agent::Status::ExecutionFailure,
+                                    "could not attach CommandRegistry ticket");
+                            } else {
+                                ticket.then(
+                                    app_lane,
+                                    [&, request_id, ticket_id, job_id, deadline](
+                                        const auto& result) {
+                                        if (result.status !=
+                                            matter::evt::CommandStatus::Success) {
+                                            agent_protocol.complete(
+                                                request_id, ticket_id,
+                                                result.status ==
+                                                        matter::evt::CommandStatus::StaleScope
+                                                    ? viewer::agent::Status::StaleRevision
+                                                    : viewer::agent::Status::ExecutionFailure,
+                                                matter::jsondoc::Value{},
+                                                result.error);
+                                            return;
+                                        }
+                                        if (result.value &&
+                                            result.value->status !=
+                                                viewer::agent::Status::Ok) {
+                                            agent_protocol.complete(
+                                                request_id, ticket_id,
+                                                result.value->status,
+                                                result.value->value,
+                                                result.value->message);
+                                            return;
+                                        }
+                                        viewer::jobs::Waiter waiter;
+                                        waiter.request_id = request_id;
+                                        waiter.ticket_id = ticket_id;
+                                        waiter.job_id = job_id;
+                                        waiter.deadline = deadline;
+                                        // A job that is ALREADY terminal is
+                                        // answered now rather than parked for
+                                        // a frame -- the wait has nothing left
+                                        // to wait for.
+                                        const viewer::jobs::Job* job =
+                                            regen_jobs.find(job_id);
+                                        if (job && viewer::jobs::is_terminal(job->state)) {
+                                            resolve_regen_wait(waiter, false);
+                                            return;
+                                        }
+                                        if (!regen_waits.add(std::move(waiter))) {
+                                            agent_protocol.complete(
+                                                request_id, ticket_id,
+                                                viewer::agent::Status::NotReady,
+                                                matter::jsondoc::Value{},
+                                                "too many bounded waits are "
+                                                "already pending");
+                                        }
+                                    });
+                            }
+                        }
+                    } else if (begun.request.command == "job.list") {
+                        std::size_t limit = 0;
+                        std::string limit_error;
+                        if (!viewer::jobs::parse_list_limit(begun.request.arguments,
+                                                            limit, limit_error)) {
+                            agent_protocol.reject_accepted(
+                                request_id, viewer::agent::Status::InvalidInput,
+                                limit_error);
+                        } else {
+                            viewer::JobList command;
+                            command.limit = limit;
+                            attach_agent_ticket(registry.dispatch(std::move(command)),
+                                                payload_terminal);
+                        }
                     } else {
                         const matter::jsondoc::Value* requested =
                             begun.request.arguments.find("command");
@@ -4777,11 +5957,8 @@ int main() {
                     // module's source, mirroring how the browser scopes its rows.
                     std::string project_dir;
                     for (const viewer::WorldEntry& w : worlds) {
-                        std::error_code probe_ec;
-                        if (std::filesystem::is_regular_file(
-                                std::filesystem::path(w.project_dir) / "objects" /
-                                    (std::string(word) + ".js"),
-                                probe_ec)) {
+                        if (!matter::project_layout::object_source(
+                                {(std::filesystem::path(w.project_dir) / "objects").string()}, word).empty()) {
                             project_dir = w.project_dir;
                             break;
                         }
@@ -5006,6 +6183,7 @@ int main() {
         // and the camera snapshot — so a FIFO `cam`/`budget` applies to THIS
         // frame's render exactly as the old inline handling did.
         registry.pump(app_lane, 5.0);
+        bake_lab.workbench().process_pending_export();
         // The armed capture's deadline, checked BEFORE the protocol's generic
         // expiry so the capture-specific timeout message is the one that lands
         // in the ordinary case. Both deadlines are the same request's, so
@@ -5019,6 +6197,13 @@ int main() {
             resolve_agent_capture(viewer::capture::Resolution::TimedOut, nullptr,
                                   nullptr, nullptr);
         }
+        // Bounded job waits, swept beside the capture deadline and before the
+        // protocol's generic expiry so the job-specific timeout message is the
+        // one that lands in the ordinary case. Both deadlines belong to the
+        // same request, so whichever wins still emits exactly one record.
+        for (const viewer::jobs::WaitList::Ready& released :
+             regen_waits.collect(regen_jobs, viewer::jobs::Clock::now()))
+            resolve_regen_wait(released.waiter, released.timed_out);
         agent_protocol.expire();
         if (const std::string agent_error = agent_protocol.take_io_error();
             !agent_error.empty())
@@ -5086,6 +6271,7 @@ int main() {
         matter::VulkanFrame frame{};
         if (!vulkan->begin_frame(frame, error)) {
             if (error.find("zero-sized") != std::string::npos) {
+                frame_pacer.reset();
                 glfwWaitEventsTimeout(0.05);
                 continue;
             }
@@ -5601,8 +6787,13 @@ int main() {
 
         selection_set.validate([&](const viewer::SelectedObject& obj) {
             if (obj.kind == viewer::SelectedObject::BakedRoot) {
-                matter::InstanceInfo info;
-                return session->instance_info_by_hash(obj.id, info);
+                // Alive == "still a root in the part graph", NOT "placed in
+                // this world". The agent protocol's selection commands admit
+                // a root on exactly that rule (inventory::find_object), the
+                // Scene tree's [Baked] rows and Reveal select on it too, and a
+                // stricter rule here silently undid all three one frame later
+                // while the command had already answered changed:true.
+                return baked_root_alive(obj.id);
             }
             // Entity selections are keyed by SceneEntityId (the stable
             // authored-id hash), not by flecs entity id — resolve through the
@@ -5617,12 +6808,12 @@ int main() {
         // carries matter::streaming::SectorStreaming — that component is what
         // makes the coordinator claim an owner and build a SectorStreamer.
         // Nothing else in the viewer creates one since the sector panel was
-        // retired, so auto-create + attach the anchor as soon as the session is
-        // Ready. Runs every frame on purpose: it is idempotent against live ECS
-        // state, so a reload or world switch (which resets bake_ready and
+        // retired, so attach during loading: initial fill is a prerequisite
+        // of scene admission, not a consequence of BakeFinished. Runs every
+        // frame: it is idempotent against live ECS state, so a reload or world switch (which resets bake_ready and
         // installs a fresh Flecs world) transparently re-creates the anchor. A
         // no-op for closed-world sessions.
-        if (bake_ready) ui.ensure_streaming_anchor(*session);
+        ui.ensure_streaming_anchor(*session);
         ui.update_sector_streaming(*session, frame_camera,
                                    !stats.freeze_stream_anchor);
         viewer::CharacterWalkInput walk_input{};
@@ -5693,11 +6884,42 @@ int main() {
         bake_lab.tick_frame(viewer::BakeLab::kDefaultTickBudgetMs);
         matter::Event event;
         while (session->poll_event(event)) {
+            // Regeneration-job ingestion (regen_jobs.h). This drain is the ONE
+            // place the engine's bake lifecycle is observed, so it is also the
+            // one place a job may progress or finish. Every call below applies
+            // to the job the post-frame seam marked running and to nothing
+            // else; an event arriving with no running job (the startup bake, a
+            // world switch's own bake, the deferred tileset phase that follows
+            // a BakeFinished) is dropped rather than attributed to whichever
+            // job happens to be newest.
+            if (event.type == matter::EventType::BakeStarted) {
+                bake_ready = false;
+                regen_jobs.on_bake_started(viewer::jobs::Clock::now());
+            } else if (event.type == matter::EventType::BakePartDone)
+                regen_jobs.on_part_done(event.module, event.phase, event.done,
+                                        event.total);
+            else if (event.type == matter::EventType::BakeError)
+                regen_jobs.on_bake_error(
+                    event.module, event.phase,
+                    static_cast<viewer::jobs::ErrorCode>(event.code),
+                    event.message);
+            if (event.type == matter::EventType::BakeFinished &&
+                regen_jobs.running_id() != 0) {
+                bool digest_available = false;
+                const uint64_t digest = regen_content_digest(digest_available);
+                regen_jobs.on_bake_finished(
+                    event.errors, editor_model.revision(),
+                    session ? session->graph_generation() : 0, digest_available,
+                    digest, viewer::jobs::Clock::now());
+            }
             if (event.type == matter::EventType::BakePartDone)
                 std::printf("bake %d/%d %s\n", event.done, event.total,
                             event.module.c_str());
             else if (event.type == matter::EventType::BakeFinished) {
-                std::printf("bake finished (%d errors)\n", event.errors);
+                // Share the engine log sink with background detail publication.
+                // Mixing buffered stdout with that sink could split this readiness
+                // record mid-word, leaving command-line capture drivers waiting.
+                MATTER_LOGI("bake", "bake finished (%d errors)", event.errors);
                 bake_ready = event.errors == 0;
                 if (bake_ready && apply_world_camera_after_bake) {
                     if (session->apply_authored_camera(camera)) {
@@ -5824,10 +7046,7 @@ int main() {
         // — and are cleared again for the Part Workbench's isolation session,
         // which has its own world and its own authored fog and sun.
         matter::RenderOptions options;
-        const bool native_rt_requested =
-            fifo_render_path_override
-                ? fifo_render_path == matter::RenderPath::Raytrace
-                : editor_props.gpu_prefs().ray_tracing;
+        const bool native_rt_requested = editor_props.gpu_prefs().ray_tracing;
         const bool native_rt_enabled =
             vulkan->ray_tracing_available() && native_rt_requested;
         options.path = native_rt_enabled ? matter::RenderPath::Raytrace
@@ -5867,9 +7086,12 @@ int main() {
             stats.frozen_cull_camera_valid = false;
         }
         options.freeze_cull_camera = stats.freeze_cull_camera;
+        options.live_terrain_graphics = stats.live_terrain_graphics;
         options.pixel_budget = stats.pixel_budget;
         options.min_projected_size = stats.min_projected_size;
         options.dlss_mode = selected_dlss_mode();
+        options.vulkan_forest_history_reset =
+            editor_props.gpu_prefs().forest_history_reset;
         options.vulkan_lighting = stats.lighting;
         // ViewerStats index -> composite.frag mode. The two numberings differ
         // and always have; keep this in step with kDebugViewLabels
@@ -5878,12 +7100,13 @@ int main() {
         // visibility, 4 -> 4.0 raw GBuffer albedo (the horizon diagnostic).
         // 5 (LOD levels) and 6 (Wireframe) are geometry views and deliberately
         // fall through to 0.0 here -- both are already in the G-buffer albedo
-        // this composites.
+        // this composites. 7 is the appended local-light candidate heatmap.
         options.vulkan_lighting.composite_debug_view =
             stats.debug_view_mode == 1   ? 2.0f
             : stats.debug_view_mode == 2 ? 3.0f
             : stats.debug_view_mode == 3 ? 1.0f
             : stats.debug_view_mode == 4 ? 4.0f
+            : stats.debug_view_mode == 7 ? 5.0f
                                          : 0.0f;
         options.atmosphere = stats.atmosphere;
         options.volumetrics = stats.volumetrics;
@@ -5924,6 +7147,12 @@ int main() {
         // the checkbox live — see the group definition in editor_props.cpp for
         // the trace proving the renderer tolerates the flip.
         options.vulkan_ray_tracing.enabled = native_rt_enabled;
+        options.vulkan_gi.enabled = editor_props.gi_prefs().enabled ? 1u : 0u;
+        options.vulkan_gi.diffuse_multiplier =
+            editor_props.gi_prefs().diffuse_multiplier;
+        options.vulkan_gi.trace_scale = editor_props.gi_prefs().trace_scale;
+        options.vulkan_gi.reflection_trace_scale =
+            editor_props.gi_prefs().reflection_trace_scale;
         // Part Workbench (W2, "modal isolation" — see part_workbench.h):
         // VulkanFrame/render() always draws the whole frame extent and
         // begin_frame() yields exactly one frame per call, so only ONE
@@ -5961,10 +7190,30 @@ int main() {
             viewer::submit_selection_overlay_lines(selection_set, *session);
         else
             render_session->submit_overlay_lines(nullptr, 0);
-        if (!render_session->render(render_camera, render_frame, options, error)) {
+        const bool scene_rendered=render_session->render(render_camera, render_frame, options, error);
+        const bool scene_admission_rejected=!scene_rendered && viewer::admission::rejected(error);
+        if(scene_admission_rejected) {
+            if(scene_admission_diagnostic!=error) {
+                scene_admission_diagnostic=error;
+                MATTER_LOGW("editor","Scene admission rejected: %s\n",error.c_str());
+            }
+            // A shell or retained accepted revision cannot qualify the requested
+            // scene. Fail automation without filing a device-fault issue.
+            if(!screenshot_path.empty() || perf.enabled) {
+                scene_automation_failed=true;quit_requested=true;
+            }
+            if(agent_capture.armed())
+                resolve_agent_capture(viewer::capture::Resolution::Abandoned,nullptr,nullptr,nullptr);
+            if(shot_settle>0 || !fifo_present.pending_screenshot_path().empty())
+                std::printf("shot: rejected requested scene (%s)\n",error.c_str());
+            shot_settle=0;fifo_present.cancel_pending_screenshot();
+            if(fifo_block==FifoBlockKind::Shot) fifo_block=FifoBlockKind::None;
+            stable_camera_frames=0;presented_camera_available=false;
+        } else if(!scene_rendered) {
             MATTER_LOGE("editor", "FATAL: render: %s\n", error.c_str());
             mark_device_fatal(error);
         } else if (!show_isolation) {
+            scene_admission_diagnostic.clear();
             camera_input_order.render_scene();
             matter::ResolvedAtmospherePresentationStatus committed{};
             if (session->resolved_atmosphere_status(committed)) {
@@ -6056,6 +7305,21 @@ int main() {
         // The long assignment block further down copies it field-by-field into
         // ViewerStats, which is what the HUD and every panel actually read.
         const matter::FrameStats& frame_stats = session->frame_stats();
+        // Cache audit uses actual streaming activity, not only a plateau in
+        // resident count while a long-running worker is still cooking.
+        static const bool cache_audit = std::getenv("MATTER_TERRAIN_CACHE_AUDIT") != nullptr;
+        static auto cache_audit_last = std::chrono::steady_clock::now();
+        if (cache_audit && std::chrono::duration<double>(std::chrono::steady_clock::now()-cache_audit_last).count() >= 1.0) {
+            cache_audit_last = std::chrono::steady_clock::now();
+            const auto state = session->streaming_status();
+            std::printf("CACHE_AUDIT state=%u resident=%u inflight=%u bake_ready=%u\n",
+                unsigned(state.state), state.resident_sectors, state.inflight_sectors, unsigned(bake_ready));
+            std::printf("CACHE_VISIBLE_SECTORS revision=%llu valid=%u desired=%u pending=%u\n",
+                (unsigned long long)state.view_revision, unsigned(state.visible_sectors_valid),
+                state.visible_sectors, state.visible_sectors_pending);
+            std::fflush(stdout);
+        }
+
         // QA timeline: wait_idle / wait_event release checks. Here (frame_stats
         // just refreshed, and bake_ready reflects this frame's poll_event
         // drain above) so both waits observe up-to-date state once per frame;
@@ -6270,6 +7534,7 @@ int main() {
         stats.parts_baked = static_cast<int>(frame_stats.parts_baked);
         stats.cache_hits = static_cast<int>(frame_stats.cache_hits);
         stats.gpu_timers_supported   = frame_stats.gpu_timers_supported;
+        stats.gpu_timing_valid_mask  = frame_stats.gpu_timing_sample.valid_mask;
         stats.gpu_total_ms           = frame_stats.gpu_total_ms;
         stats.gpu_cull_ms            = frame_stats.gpu_cull_ms;
         stats.gpu_gbuffer_ms         = frame_stats.gpu_gbuffer_ms;
@@ -6277,6 +7542,11 @@ int main() {
         stats.gpu_tlas_ms            = frame_stats.gpu_tlas_ms;
         stats.gpu_rt_ms              = frame_stats.gpu_rt_ms;
         stats.gpu_rt_gi_ms           = frame_stats.gpu_rt_gi_ms;
+        stats.gpu_hdr_lighting_ms = frame_stats.gpu_hdr_lighting_ms;
+        stats.gpu_primary_light_cull_ms = frame_stats.gpu_primary_light_cull_ms;
+        stats.gpu_rt_gi_diffuse_ms = frame_stats.gpu_rt_gi_diffuse_ms;
+        stats.gpu_rt_gi_reflection_transmission_ms = frame_stats.gpu_rt_gi_reflection_transmission_ms;
+        stats.gpu_rt_local_direct_ms = frame_stats.gpu_rt_local_direct_ms;
         stats.gpu_denoise_ms         = frame_stats.gpu_denoise_ms;
         stats.gpu_dlss_ms            = frame_stats.gpu_dlss_ms;
         stats.gpu_composite_ms       = frame_stats.gpu_composite_ms;
@@ -6351,6 +7621,14 @@ int main() {
             stats.process_peak_working_set_bytes = proc.peak_working_set_bytes;
         }
 
+        if(ui_frame_ready && scene_admission_rejected) {
+            ImGui::SetNextWindowSize(ImVec2(520,0),ImGuiCond_FirstUseEver);
+            if(ImGui::Begin("Scene capacity")) {
+                ImGui::TextWrapped("%s",scene_admission_diagnostic.c_str());
+                ImGui::TextWrapped("The requested scene is not rendering. Select a smaller world or correct its assets to retry.");
+            }
+            ImGui::End();
+        }
         bool ui_frame_completed = false;
         if (ui_frame_ready) {
             ui_frame_completed = ui.end_frame(frame, error);
@@ -6378,13 +7656,13 @@ int main() {
         bool issue_capture = false;
         bool fifo_immediate_capture = false;
         std::string capture_path;
-        if (!screenshot_path.empty() && bake_ready && frame_stats.instances_drawn > 0 &&
+        if (!scene_admission_rejected && !screenshot_path.empty() && bake_ready && frame_stats.instances_drawn > 0 &&
             ++screenshot_settle >= settle_frames) {
             capture = true; capture_path = screenshot_path;
-        } else if (shot_settle > 0 && frame_stats.instances_drawn > 0 &&
+        } else if (!scene_admission_rejected && shot_settle > 0 && frame_stats.instances_drawn > 0 &&
                    --shot_settle == 0) {
             capture = true; capture_path = shot_path;
-        } else if (!fifo_present.pending_screenshot_path().empty()) {
+        } else if (!scene_admission_rejected && !fifo_present.pending_screenshot_path().empty()) {
             capture = true;
             fifo_immediate_capture = true;
             capture_path = fifo_present.pending_screenshot_path();
@@ -6413,21 +7691,51 @@ int main() {
                 mark_device_fatal(error);
             }
         }
+        const bool numeric_requested = capture &&
+            agent_capture.owns(capture_path) &&
+            agent_capture.request().export_channels;
+        bool numeric_queued = false;
+        std::string numeric_error;
+        matter::EvaluationChannels numeric_channels;
+        if (numeric_requested) {
+            numeric_queued = session->queue_evaluation_channels(frame, numeric_error);
+        }
         bool frame_presented = false;
         const bool frame_completed =
             vulkan->end_frame(frame, frame_presented, error);
+        if (numeric_queued &&
+            !session->finish_evaluation_channels(
+                frame.serial, frame_completed, numeric_channels, numeric_error)) {
+            numeric_queued = false;
+        }
         session->finish_vulkan_frame(
-            frame.serial, frame_presented && !fatal_error);
+            frame.serial, frame_presented && !fatal_error && !scene_admission_rejected);
         const viewer::FifoPresentUpdate fifo_present_update =
             fifo_present.advance(frame_completed && frame_presented &&
-                                     !fatal_error,
+                                     !fatal_error && !scene_admission_rejected,
                                  !fifo_immediate_capture || capture);
-        if (frame_completed && frame_presented && !fatal_error) {
+        if (frame_completed && frame_presented && !fatal_error && !scene_admission_rejected) {
             // frame_camera is the production pose the interactive picker uses.
             presented_camera = frame_camera;
             presented_camera_available = true;
             presented_production_view = !show_isolation;
             presented_session_generation = binding.current_generation();
+            const auto same_vec = [](const matter::Float3& a,
+                                     const matter::Float3& b) {
+                return a.x == b.x && a.y == b.y && a.z == b.z;
+            };
+            const bool same_camera = previous_evaluation_camera_available &&
+                same_vec(render_camera.position, previous_evaluation_camera.position) &&
+                same_vec(render_camera.target, previous_evaluation_camera.target) &&
+                same_vec(render_camera.up, previous_evaluation_camera.up) &&
+                render_camera.vertical_fov_radians ==
+                    previous_evaluation_camera.vertical_fov_radians &&
+                render_camera.near_plane == previous_evaluation_camera.near_plane &&
+                render_camera.far_plane == previous_evaluation_camera.far_plane;
+            stable_camera_frames = same_camera
+                ? std::min(stable_camera_frames + 1u, 1000000u) : 1u;
+            previous_evaluation_camera = render_camera;
+            previous_evaluation_camera_available = true;
         }
         stats.session_status.presented_frame_serial =
             fifo_present.presented_frame_serial();
@@ -6446,6 +7754,16 @@ int main() {
         // end_frame() records the queue submit and present boundary. The
         // smoothed cadence below also feeds the HUD frame time on the next frame.
         phase.present = phase_split();
+        const auto perf_present_time = std::chrono::steady_clock::now();
+        const double perf_present_interval_ms = std::chrono::duration<double, std::milli>(
+            perf_present_time - perf_previous_present).count();
+        perf_previous_present = perf_present_time;
+        if (frame_presented && vt_trace.enabled()) {
+            vt_trace.record(frame.serial,
+                std::chrono::duration<double, std::milli>(
+                    perf_present_time - vt_trace_start).count(),
+                frame_stats, stats_label);
+        }
         const double perf_frame_cadence_ms = std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - perf_frame_start).count();
         hud_frame_ms = hud_frame_ms <= 0.0
@@ -6459,6 +7777,7 @@ int main() {
                                     : prev * 0.9f + (float)sample * 0.1f;
             };
             stats.loop_poll_ms    = ema(stats.loop_poll_ms,    phase.poll);
+            stats.loop_pacing_ms  = ema(stats.loop_pacing_ms,  phase.pacing);
             stats.loop_acquire_ms = ema(stats.loop_acquire_ms, phase.acquire);
             stats.loop_ui_ms      = ema(stats.loop_ui_ms,      phase.ui);
             stats.loop_tick_ms    = ema(stats.loop_tick_ms,    phase.tick);
@@ -6764,8 +8083,24 @@ int main() {
                             nullptr, nullptr);
                     fatal_error = true;
                 } else {
-                    bool completion_written = true;
-                    if (capture_path == shot_path || fifo_immediate_capture) {
+                    bool numeric_failed = false;
+                    const std::string numeric_path =
+                        capture_path + ".channels.bin";
+                    if (numeric_requested) {
+                        if (!numeric_queued || !numeric_error.empty()) {
+                            numeric_failed = true;
+                        } else if (!viewer::capture::write_channel_bundle(
+                                       numeric_path, numeric_channels,
+                                       numeric_error)) {
+                            numeric_failed = true;
+                        }
+                        if (numeric_failed)
+                            MATTER_LOGE("capture", "numeric channels failed: %s\n",
+                                        numeric_error.c_str());
+                    }
+                    bool completion_written = !numeric_failed;
+                    if (completion_written &&
+                        (capture_path == shot_path || fifo_immediate_capture)) {
                         const std::string done = capture_path + ".done";
                         completion_written =
                             viewer::write_screenshot_completion_marker(done);
@@ -6779,7 +8114,7 @@ int main() {
                             resolve_agent_capture(
                                 viewer::capture::Resolution::WriteFailed, nullptr,
                                 nullptr, nullptr);
-                        fatal_error = true;
+                        if (!numeric_failed) fatal_error = true;
                     } else {
                         screenshot_failures = 0;
                         std::printf("screenshot written to %s\n",
@@ -6809,6 +8144,54 @@ int main() {
                             geometry.image_origin_x = out_origin_x;
                             geometry.image_origin_y = out_origin_y;
                             geometry.production_view = !show_isolation;
+                            if (numeric_requested) {
+                                geometry.channels_path = numeric_path;
+                                geometry.channels_width = numeric_channels.width;
+                                geometry.channels_height = numeric_channels.height;
+                                auto& readiness = geometry.readiness_input;
+                                readiness.production_view = geometry.production_view;
+                                readiness.scene_ready = bake_ready;
+                                readiness.gpu_jobs_idle = session->gpu_jobs_idle();
+                                readiness.require_rt = agent_capture.request().require_rt;
+                                readiness.rt_available = frame_stats.vk_rt_available;
+                                readiness.rt_effective = frame_stats.vk_rt_effective;
+                                readiness.stable_camera_frames = stable_camera_frames;
+                                readiness.vt_queue_depth = frame_stats.vt_queue_depth +
+                                    frame_stats.vt_enrich_queue_depth;
+                                readiness.vt_dirty_pages = frame_stats.vt_dirty_pages;
+                                readiness.vt_rejected_variants =
+                                    frame_stats.vt_rejected_variants;
+                                const auto streaming = session->streaming_status();
+                                if (streaming.state ==
+                                    matter::streaming::SectorStreamingState::Active) {
+                                    readiness.visible_streaming_known =
+                                        streaming.visible_sectors_valid;
+                                    readiness.visible_sectors_pending =
+                                        streaming.visible_sectors_pending;
+                                } else if (streaming.state !=
+                                           matter::streaming::SectorStreamingState::Detached) {
+                                    readiness.visible_streaming_known = false;
+                                }
+                                if (!session->evaluation_detail_report(
+                                        numeric_channels,
+                                        agent_capture.request().desired_max_lod,
+                                        readiness.require_rt, readiness.detail,
+                                        readiness.detail_error)) {
+                                    MATTER_LOGW("capture", "visible detail census: %s",
+                                                readiness.detail_error.c_str());
+                                }
+                                const auto pending_refinement =
+                                    session->pending_refinement_parts();
+                                for (const auto& part : readiness.detail.parts) {
+                                    if (std::find(pending_refinement.begin(),
+                                                  pending_refinement.end(),
+                                                  part.part_hash) !=
+                                        pending_refinement.end())
+                                        ++readiness.visible_refinement_pending;
+                                }
+                                geometry.readiness =
+                                    viewer::capture::evaluate_readiness(readiness);
+                            }
                             // The same batched bounds the selection overlay
                             // draws from, so an annotation rectangle and the
                             // box on screen describe one box.
@@ -6887,7 +8270,7 @@ int main() {
             fifo_issue_capture_active = false;
         }
 
-        if (perf.enabled && perf_phase != PerfPhase::Complete && !fatal_error) {
+        if (perf.enabled && perf_phase != PerfPhase::Complete && !fatal_error && !scene_admission_rejected) {
             const auto perf_now = std::chrono::steady_clock::now();
             if (perf_phase == PerfPhase::WaitingForBake) {
                 if (bake_ready && frame_stats.instances_drawn > 0) {
@@ -6920,11 +8303,40 @@ int main() {
                 perf_start_counters = capture_perf_counters(frame_stats);
                 perf_start_dlss_resets = frame_stats.dlss_reset_count;
                 perf_frame_times.clear();
+                perf_present_intervals.clear();
                 perf_water_animation_times.clear();
+                perf_gpu_pass_stats.reset(frame_stats.gpu_timing_sample.sequence);
+                if (vulkan->frame_timings().enabled)
+                    perf_frame_trace.rows.reserve(4096);
                 std::printf("perf: sampling for %.3f seconds\n",
                             perf.sample_seconds);
             } else if (perf_phase == PerfPhase::Sampling) {
                 perf_frame_times.push_back(perf_frame_cadence_ms);
+                perf_present_intervals.push_back(perf_present_interval_ms);
+                perf_gpu_pass_stats.add(frame_stats.gpu_timing_sample);
+                const auto device_timing = vulkan->frame_timings();
+                if (device_timing.enabled && device_timing.frame_serial == frame.serial) {
+                    if (perf_frame_trace.rows.size() < PerfFrameTrace::kMaxRows) {
+                        const auto& gpu_sample = frame_stats.gpu_timing_sample;
+                        perf_frame_trace.rows.push_back({
+                            static_cast<double>(frame.serial),
+                            static_cast<double>(device_timing.frame_slot),
+                            static_cast<double>(device_timing.image_index),
+                            std::chrono::duration<double, std::milli>(
+                                perf_frame_start - perf_phase_start).count(),
+                            perf_start_interval_ms, perf_frame_cadence_ms,
+                            phase.poll, phase.acquire, phase.ui, phase.tick,
+                            phase.pump, phase.lab, phase.render, phase.present,
+                            device_timing.begin_ms, device_timing.frame_fence_ms,
+                            device_timing.retained_clear_ms, device_timing.acquire_fence_ms,
+                            device_timing.acquire_ms, device_timing.present_fence_ms,
+                            device_timing.submit_ms, device_timing.present_ms,
+                            static_cast<double>(gpu_sample.sequence),
+                            (gpu_sample.valid_mask & 1u) ? gpu_sample.milliseconds[0]
+                                : std::numeric_limits<double>::quiet_NaN(),
+                            phase.pacing, perf_present_interval_ms});
+                    } else ++perf_frame_trace.dropped_rows;
+                }
                 perf_water_animation_times.push_back(
                     frame_stats.gpu_water_animation_ms);
                 if (std::chrono::duration<double>(perf_now - perf_phase_start)
@@ -6936,7 +8348,10 @@ int main() {
                     if (!write_perf_result(
                             perf, worlds[stats.world_current].world_name,
                             perf_frame_times,
+                            perf_present_intervals,
                             perf_water_animation_times,
+                            perf_gpu_pass_stats,
+                            perf_frame_trace,
                             perf_start_counters,
                             perf_finish_counters, frame_stats, stats,
                             perf_start_dlss_resets,
@@ -7010,7 +8425,9 @@ int main() {
             std::fprintf(stderr,
                         "STATSVT,%s,active=%d,variants=%u/%u,rejected=%u,"
                         "mesh=%.1f/%.1f MiB,pool=%u/%u,pinned=%u,queue=%u,"
-                        "fills=%llu,evictions=%llu,ind=%.2f/%.0f MiB\n",
+                        "fills=%llu,evictions=%llu,ind=%.2f/%.0f MiB,material_pages=%u,shared_material_refs=%u,"
+                        "coverage_only_pages=%u,occlusion_pages=%u,occlusion_retained_pages=%u,"
+                        "occlusion_allocated_bytes=%llu,enrich_deferred=%llu\n",
                         stats_label.c_str(),
                         frame_stats.vt_active ? 1 : 0,
                         frame_stats.vt_variants,
@@ -7034,7 +8451,14 @@ int main() {
                             (1024.0 * 1024.0),
                         static_cast<double>(
                             frame_stats.vt_indirection_capacity_bytes) /
-                            (1024.0 * 1024.0));
+                            (1024.0 * 1024.0),
+                        frame_stats.vt_material_pages,
+                        frame_stats.vt_shared_material_references,
+                        frame_stats.vt_coverage_only_pages,
+                        frame_stats.vt_occlusion_pages,
+                        frame_stats.vt_occlusion_retained_pages,
+                        static_cast<unsigned long long>(frame_stats.vt_occlusion_allocated_bytes),
+                        static_cast<unsigned long long>(frame_stats.vt_enrich_deferred_total));
             std::fflush(stderr);
             stats_label.clear();
         }
@@ -7046,8 +8470,12 @@ int main() {
         // session op is applied HERE — after end_frame, never mid-ImGui-draw —
         // matching the original flag-based timing. Both UI and FIFO switch/
         // reload funnel to this single apply point.
-        if (binding.pending_reload()) {
-            binding.clear_pending_reload();
+        // The world-reload prologue, shared by the viewer.reload path and the
+        // job ledger's own reload/regenerate. It is the SAME prologue in both
+        // cases by construction: a seeded regeneration is a reload that also
+        // carries a worldSeed override, and letting the two drift would mean a
+        // job-driven reroll quietly kept the previous world's fog or sun.
+        auto prepare_reload_seam = [&]() {
             bake_ready = false;
             screenshot_settle = 0;
             apply_world_camera_after_bake =
@@ -7070,6 +8498,17 @@ int main() {
                                    worlds[stats.world_current].world_name);
             apply_world_props_after_bake = true;
             viewer::prepare_world_reload(stats);
+        };
+        if (binding.pending_reload()) {
+            binding.clear_pending_reload();
+            // A reload that did not come from the job queue (the toolbar
+            // button, the `reload` FIFO verb) still supersedes a running job.
+            // Recorded here rather than inferred from the engine's cancellation
+            // BakeError, which names no job.
+            regen_jobs.note_external_restart(
+                "an editor reload restarted the world while this job was running",
+                viewer::jobs::Clock::now());
+            prepare_reload_seam();
             binding.reload();  // clears app models + session->reload()
         }
         const int pending_switch = binding.pending_switch();
@@ -7100,6 +8539,14 @@ int main() {
                 editor_props.adopt_draw_overrides(session->draw_overrides());
                 viewer::complete_world_switch(stats, false);
             } else {
+                // The switch tore down the session a running job was baking in
+                // and requested a bake on a different world. Recorded only on
+                // the success path: a FAILED open leaves the old session and
+                // its in-flight bake completely intact, so nothing was
+                // superseded there.
+                regen_jobs.note_external_restart(
+                    "the editor switched worlds while this job was running",
+                    viewer::jobs::Clock::now());
                 apply_world_props_after_bake = true;
                 viewer::complete_world_switch(stats, true);
                 stats.world_current = selected;
@@ -7122,6 +8569,66 @@ int main() {
                                               min_projected_size, stats);
             }
         }
+        // Queued regeneration jobs (regen_jobs.h) are applied LAST and only
+        // when nothing else already restarted the world this frame: a job that
+        // began here would otherwise be superseded by the very reload or
+        // switch that ran a few lines above, before the engine ever saw it.
+        // One job per seam, which is what makes `superseded` a recorded
+        // decision -- begin_next() ends the previous job in the same call.
+        if (!binding.pending_reload() && binding.pending_switch() < 0 &&
+            regen_jobs.has_queued()) {
+            viewer::jobs::Job started;
+            if (regen_jobs.begin_next(viewer::jobs::Clock::now(), started)) {
+                prepare_reload_seam();
+                if (started.request.kind == viewer::jobs::Kind::Regenerate) {
+                    binding.regenerate(started.request.seed);
+                    console_log.push(viewer::LogSeverity::Info,
+                                     "Job " + std::to_string(started.id) +
+                                         ": regenerating with seed " +
+                                         std::to_string(started.request.seed));
+                } else if (started.request.kind == viewer::jobs::Kind::Parameters) {
+                    binding.regenerate_parameters(started.request.parameter_module,
+                                                  started.request.parameters_json);
+                    console_log.push(viewer::LogSeverity::Info,
+                                     "Job " + std::to_string(started.id) +
+                                         ": regenerating " +
+                                         started.request.parameter_module +
+                                         " with typed parameter override");
+                } else {
+                    binding.reload();
+                    console_log.push(viewer::LogSeverity::Info,
+                                     "Job " + std::to_string(started.id) +
+                                         ": reloading the world");
+                }
+            }
+        }
+    }
+
+    // ---- Regeneration jobs: shutdown is a terminal outcome ----------------
+    // The frame loop is over, so no queued job will ever run and no running
+    // bake will ever report. Every live job fails HERE with that as its
+    // reason, and every open bounded wait gets its one terminal record, so an
+    // agent that was waiting learns the editor stopped rather than reading
+    // "running" as the last word and timing out against a dead process.
+    // Placed before any teardown: the protocol, its result-file sink and the
+    // ledger are all still alive at this point.
+    {
+        const viewer::jobs::Clock::time_point shutdown_at = viewer::jobs::Clock::now();
+        std::vector<viewer::jobs::Waiter> abandoned = regen_waits.drain();
+        regen_jobs.shutdown("the editor shut down before this job finished",
+                            shutdown_at);
+        for (const viewer::jobs::Waiter& waiter : abandoned) {
+            const viewer::jobs::Job* job = regen_jobs.find(waiter.job_id);
+            agent_protocol.complete(
+                waiter.request_id, waiter.ticket_id,
+                viewer::agent::Status::ExecutionFailure,
+                job ? viewer::jobs::wait_result_json(*job, false, shutdown_at)
+                    : viewer::jobs::missing_result_json(regen_jobs, waiter.job_id),
+                "the editor shut down before this job finished");
+        }
+        if (const std::string agent_error = agent_protocol.take_io_error();
+            !agent_error.empty())
+            std::fprintf(stderr, "agent protocol: %s\n", agent_error.c_str());
     }
 
     // ---- Auto-file an issue report on a fatal device/Vulkan error ---------
@@ -7274,6 +8781,10 @@ int main() {
                              trace_path);
         }
     }
+    if (vt_trace.enabled()) {
+        if (vt_trace.write()) std::printf("vt-trace: wrote capture\n");
+        else MATTER_LOGW("vt", "vt-trace: could not write capture\n");
+    }
     // Flush a debounced User-scope autosave that the last frames did not reach.
     // World scope stays explicit-save (plus the automatic flush at every
     // world-change seam) — a save-on-exit prompt is Stage 3.
@@ -7306,5 +8817,5 @@ int main() {
                      validation_errors);
         return 1;
     }
-    return fatal_error ? 1 : 0;
+    return (fatal_error || scene_automation_failed) ? 1 : 0;
 }

@@ -1,0 +1,10 @@
+{
+  "baseline_executable": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/MatterEditor/build/windows-msvc/editor-vt-baseline.exe",
+  "sha256": "18afc23f05ec9d73b1eb963c796d8a88859d390ead880a6f05d3640ac9cba2d3",
+  "source_snapshot": "initial-source.json",
+  "notes": [
+    "Baseline editor build succeeded on incremental relink after a transient LNK1104; no editor process was found holding the output.",
+    "castle-initial capture exited 1 because its screenshot path containing spaces was truncated by the command path. Its perf.json is diagnostic only, not a passing capture."
+  ],
+  "stream_capture_dir": "D:/tmp/matter-vt/20260914-01/stream-initial"
+}

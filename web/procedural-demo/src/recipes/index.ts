@@ -1,0 +1,17 @@
+import { rock } from './rock.ts';
+import { tree } from './tree.ts';
+import { pillar } from './pillar.ts';
+import { arch } from './arch.ts';
+import { gear } from './gear.ts';
+import { vase } from './vase.ts';
+import { chair } from './chair.ts';
+import { crystals } from './crystals.ts';
+import { stairs } from './stairs.ts';
+import { chain } from './chain.ts';
+import { terrain } from './terrain.ts';
+import { facade } from './facade.ts';
+import { bracket } from './bracket.ts';
+import type { RecipeDefinition } from './common.ts';
+export type { RecipeDefinition, NumericParameter, ParameterValues } from './common.ts';
+export const recipes = Object.freeze([rock, tree, pillar, arch, gear, vase, chair, crystals, stairs, chain, terrain, facade, bracket]);
+export const recipeById: ReadonlyMap<string, RecipeDefinition> = new Map(recipes.map(recipe => [recipe.id, recipe]));
