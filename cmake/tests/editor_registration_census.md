@@ -17,7 +17,7 @@ was corroborating evidence, not the authority for accepting its names.
 
 | Set | Source of the reviewed names |
 | --- | --- |
-| world (73) | `MatterEditor/src/ui.cpp::scan_worlds` and `MatterEngine3/include/matter/project_layout.h::scene_scripts`: the 72 checked-in matching `projects/world_demo/scenes/**/<Name>/<Name>.js` scripts plus `projects/primitive_demo/worlds/Primitives.js`. Group folders are traversed recursively; object/helper directories and descendants of a recognized scene are excluded. |
+| world (74) | `MatterEditor/src/ui.cpp::scan_worlds` and `MatterEngine3/include/matter/project_layout.h::scene_scripts`: the 73 checked-in matching `projects/world_demo/scenes/**/<Name>/<Name>.js` scripts plus `projects/primitive_demo/worlds/Primitives.js`. Group folders are traversed recursively; object/helper directories and descendants of a recognized scene are excluded. |
 | dsl (107) | The executed `bind(...)` calls in `MatterEngine3/src/dsl_bindings.cpp::install_bindings` and `MatterEngine3/src/pf_bindings.cpp::install_pf_bindings`. The census measures newly installed QuickJS globals, so the `Math.random` member replacement is not a new global. The commented-out `__terrainVolume` binding is intentionally absent; `__terrainVolumeTiled`, `__dsl_rayTraced`, `__dsl_solidSource`, and `__dsl_surfaceVertex` are present. |
 | property (22) | The bindings executed by `MatterEditor/src/editor_props.cpp::EditorProps::init`, including the local `s_gi` schema bound as `render.gi`. Most schemas are local; `ui.h` supplies the two viewer status groups, `streaming_lod_prefs.h` supplies `stream.lod`, and `matter/stream_settings.h` plus `matter/vt_budgets.h` supply `stream.runtime`, `vt.residency`, and `vt.enrich`. World-specific dynamic groups are not yet installed at this startup seam. |
 | editor (53) | The live `must_register_handler<T>` handles before the census return in `MatterEditor/src/main.cpp`, mapped to their `MT_COMMAND_NAME` declarations in `MatterEditor/src/viewer_commands.h`. This includes the accepted `fifo.character` handler, the three ticketed `agent.*` metadata commands, the six typed `selection.*` commands, the three `viewport.*` commands (`pick`, `pick_select`, `capture`), `view.focus`, `view.set_camera`, and `render.reset_temporal`. |
@@ -36,6 +36,17 @@ The added property is the `s_gi` schema bound by `EditorProps::init`; the added
 editor commands are `ViewSetCamera` and `RenderResetTemporal`, both registered
 before the census return. No existing name was removed. Runtime output was
 only corroborating evidence.
+
+On 2026-10-20 the world set gained `PortableCrateFixture`
+(`projects/world_demo/scenes/examples/PortableCrateFixture/PortableCrateFixture.js`,
+`class PortableCrateFixture extends World`), the matched-view fixture for the
+portable authoring/graphics route. Nothing else changed.
+
+Later on 2026-10-20 it gained `LiveTerrainFixture`
+(`projects/world_demo/scenes/examples/LiveTerrainFixture/LiveTerrainFixture.js`,
+`class LiveTerrainFixture extends World`), the native live-terrain editor
+fixture. The new `viewer.debug.live_terrain_graphics` field rides in the
+existing `viewer.debug` group, so the property set is unchanged.
 
 For an intentional registration change, review the declaring source and the
 live registry consumer, edit the manifest explicitly in that same change, and

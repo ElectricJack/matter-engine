@@ -21,7 +21,7 @@ bool VkSceneRenderer::record_test_surface_ray(
     matter::Float3 direction, uint32_t invalid_part_slot, float cone_width,
     float cone_spread, std::string& error) {
     error.clear();
-    if (!vulkan_->ray_tracing_available() || rt_pipeline_ == VK_NULL_HANDLE ||
+    if (!vulkan_->ray_tracing_available() || rt_surface_test_pipeline_.pipeline == VK_NULL_HANDLE ||
         frame.command_buffer == VK_NULL_HANDLE ||
         frame.frame_slot >= frames_.size() ||
         frame.frame_slot >= rt_descriptor_sets_.size()) {
@@ -96,7 +96,7 @@ bool VkSceneRenderer::record_test_surface_ray(
                            VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
                            VK_IMAGE_ASPECT_COLOR_BIT);
     vkCmdBindPipeline(frame.command_buffer,
-                      VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, rt_pipeline_);
+                      VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, rt_surface_test_pipeline_.pipeline);
     const VkDescriptorSet descriptor_set =
         rt_descriptor_sets_[frame.frame_slot];
     vkCmdBindDescriptorSets(frame.command_buffer,
@@ -112,14 +112,10 @@ bool VkSceneRenderer::record_test_surface_ray(
         error = "vkCmdTraceRaysKHR unavailable for test surface ray";
         return false;
     }
-    const VkStridedDeviceAddressRegionKHR raygen{
-        rt_sbt_test_raygen_address_, rt_sbt_stride_, rt_sbt_stride_};
-    const VkStridedDeviceAddressRegionKHR miss{
-        rt_sbt_miss_address_, rt_sbt_stride_, rt_sbt_miss_size_};
-    const VkStridedDeviceAddressRegionKHR hit{
-        rt_sbt_hit_address_, rt_sbt_stride_, rt_sbt_hit_size_};
     const VkStridedDeviceAddressRegionKHR callable{};
-    trace(frame.command_buffer, &raygen, &miss, &hit, &callable, 1, 1, 1);
+    trace(frame.command_buffer, &rt_surface_test_pipeline_.raygen,
+          &rt_surface_test_pipeline_.miss, &rt_surface_test_pipeline_.hit,
+          &callable, 1, 1, 1);
     matter::record_image_transition(
         frame.command_buffer, visibility_,
         VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
@@ -249,6 +245,21 @@ bool VkSceneRenderer::readback_rt_trace_counters(
         static_cast<const GpuRtCounters*>(selected.rt_error_counter.mapped);
     counters = {gpu->invalid_part_records, gpu->any_hit_invocations,
                 gpu->any_hit_layers, gpu->capped_rays};
+    return true;
+}
+
+bool VkSceneRenderer::test_poison_rt_counters(uint32_t value,
+                                              std::string& error) {
+    error.clear();
+    for (FrameResources& slot : frames_) {
+        if (slot.rt_error_counter.buffer == VK_NULL_HANDLE) continue;
+        if (!matter::map_buffer(slot.rt_error_counter, error)) return false;
+        auto* words = static_cast<uint32_t*>(slot.rt_error_counter.mapped);
+        for (size_t i = 0; i < sizeof(GpuRtCounters) / sizeof(uint32_t); ++i)
+            words[i] = value;
+        if (!matter::flush_buffer(slot.rt_error_counter, 0,
+                                  sizeof(GpuRtCounters), error)) return false;
+    }
     return true;
 }
 

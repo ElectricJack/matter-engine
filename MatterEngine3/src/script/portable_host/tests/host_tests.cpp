@@ -1,5 +1,6 @@
 // Public header consumer: no QuickJS, editor, graphics or bake includes.
 #include <matter/portable_host/quickjs_host.h>
+#include <atomic>
 #include <chrono>
 #include <iostream>
 #include <iterator>
@@ -160,14 +161,42 @@ let rejected=false; try { BigInt.asUintN(64n,1n); } catch { rejected=true; }
 if(!rejected) throw Error('BigInt width accepted');
 )JS" + valid_source)));
   std::cout << "PASS HOST-BIGINT-CONFORMANCE-v1\n";
+  // The vendor intrinsics themselves (no setup.js override): limb-boundary
+  // widths, signed truncation, every binary radix plus 10/36 against a
+  // division reference, and the allocation ceiling for huge widths.
+  passed(author(snapshot(R"JS(
+const values = [0n, 1n, -1n, 2n, -2n, 0x7fffffffn, 0x80000000n, -0x80000000n, 0xffffffffn,
+  2n**63n - 1n, 2n**63n, -(2n**63n), 2n**64n - 1n, -(2n**64n - 1n), 2n**64n, 2n**95n,
+  2n**96n - 1n, 2n**126n, 2n**127n + 12345n, 2n**128n - 1n, -(2n**128n), 0x9e3779b97f4a7c15n];
+for (const width of [0,1,2,31,32,33,63,64,65,95,96,97,127,128,129,200]) {
+  const modulus = 1n << BigInt(width), half = modulus >> 1n;
+  for (const n of values) {
+    const u = ((n % modulus) + modulus) % modulus, s = width && u >= half ? u - modulus : u;
+    if (BigInt.asUintN(width, n) !== u) throw Error(`asUintN(${width}, ${n})`);
+    if (BigInt.asIntN(width, n) !== s) throw Error(`asIntN(${width}, ${n})`);
+  }
+}
+const digits = '0123456789abcdefghijklmnopqrstuvwxyz';
+for (const radix of [2, 4, 8, 10, 16, 32, 36]) {
+  for (const n of values) {
+    let a = n < 0n ? -n : n, expected = '';
+    do { expected = digits[Number(a % BigInt(radix))] + expected; a /= BigInt(radix); } while (a);
+    if (n.toString(radix) !== (n < 0n ? '-' : '') + expected) throw Error(`${n}.toString(${radix})`);
+  }
+}
+if ((2n**63n).toString(2) !== '1' + '0'.repeat(63)) throw Error('binary radix formatting');
+let range = false; try { BigInt.asUintN(2**53 - 1, -1n); } catch (e) { range = e instanceof RangeError; }
+if (!range) throw Error('oversized asUintN accepted');
+if (BigInt.asUintN(2**53 - 1, 5n) !== 5n || BigInt.asIntN(2**53 - 1, -5n) !== -5n) throw Error('wide identity');
+)JS" + valid_source)));
+  std::cout << "PASS HOST-BIGINT-VENDOR-v1\n";
   return 0;
 }
 const d::Value::Object &object(const d::Value &v) { return std::get<d::Value::Object>(v.data); }
 const std::string &string(const d::Value &v) { return std::get<std::string>(v.data); }
-int parity() {
-  std::string input{std::istreambuf_iterator<char>(std::cin), {}};
-  d::Value decoded; auto valid = d::parse_json(input, decoded);
-  check(valid.ok(), "invalid fixture input");
+std::string parity_request(const d::Value &decoded) {
+  std::string input;
+  check(d::canonical_json(decoded, input).ok(), "invalid fixture input");
   const auto &root = object(decoded);
   s::SourceSnapshot ss; ss.entry.value = string(root.at("entry")); ss.content = d::sha256(input);
   for (const auto &v : std::get<d::Value::Array>(root.at("modules").data)) {
@@ -180,12 +209,30 @@ int parity() {
   if (root.count("legacy_voxels")) options.validation.supported_capabilities.push_back({"matter.legacy.voxel-meshing", 1});
   s::AuthoringRequest request; request.seed = std::stoull(string(root.at("seed")), nullptr, 16); request.parameters = root.at("parameters");
   auto result = h::make_quickjs_host(options)->author(envelope, ss, request, {}, {});
-  if (!result.ok()) { std::cerr << errors(result); return 1; }
+  check(result.ok(), errors(result));
   std::string out; check(d::encode(*result.value(), out, options.validation).ok(), "encode failed");
-  std::cout << out;
+  return out;
+}
+int parity(bool batch) {
+  std::string input{std::istreambuf_iterator<char>(std::cin), {}};
+  d::Value decoded; check(d::parse_json(input, decoded).ok(), "invalid fixture input");
+  if (batch) {
+    d::Value::Array results;
+    for (const auto &request : std::get<d::Value::Array>(decoded.data))
+      results.emplace_back(parity_request(request));
+    std::string output;
+    check(d::canonical_json(d::Value(std::move(results)), output).ok(), "batch encoding failed");
+    std::cout << output;
+  } else {
+    std::cout << parity_request(decoded);
+  }
   return 0;
 }
 int main(int argc, char **argv) {
-  try { return argc == 2 && std::string(argv[1]) == "--stdin" ? parity() : controls(); }
+  try {
+    if (argc == 2 && std::string(argv[1]) == "--stdin") return parity(false);
+    if (argc == 2 && std::string(argv[1]) == "--batch") return parity(true);
+    return controls();
+  }
   catch (const std::exception &e) { std::cerr << "FAIL " << e.what() << '\n'; return 1; }
 }
