@@ -1,4 +1,5 @@
 #include "internal.h"
+#include "csg.h"
 #include <map>
 #include <set>
 
@@ -6,10 +7,10 @@ namespace matter::geometry {
 using namespace detail;
 namespace {
 const std::vector<std::string> extra_ops={"primitive.line","primitive.cylinder","primitive.cone","primitive.capsule",
-    "mesh.triangles","profile.contours","profile.sweep","profile.fill"};
+    "mesh.triangles","profile.contours","profile.sweep","profile.fill","solid.ordered"};
 bool builtin(const std::string &s) {
     return s=="primitive.box" || s=="primitive.sphere" || s=="profile.polygon" ||
-        s=="profile.extrude" || s=="placement.affine";
+        s=="profile.extrude" || s=="placement.affine" || s=="solid.csg";
 }
 void keys(const data::RecipeNode &n,std::initializer_list<const char *> allowed) {
     const auto *p=std::get_if<data::Value::Object>(&n.parameters.data);
@@ -67,8 +68,9 @@ data::MeshPrototype convert(const tri_emit::TriangleBuildBuffer &buffer,const da
 
 std::vector<data::Capability> PrimitiveGeometry::capabilities() const {
     std::vector<data::Capability> caps={{"matter.recipe.core",1},{"matter.asset.core",1},{"matter.material.pbr",1},
-        {"matter.geometry.primitive.v1",1}};
+        {"matter.geometry.primitive.v1",1},{"matter.geometry.csg.cpu.v1",1},{"matter.geometry.query.cpu.v1",1}};
     for(const auto &op:extra_ops) caps.push_back({"matter.operation."+op,1});
+    for(auto &op:modifier_capabilities(mesh_worker_.executable)) caps.push_back(std::move(op));
     return caps;
 }
 jobs::AssetResult PrimitiveGeometry::evaluate(const jobs::JobEnvelope &job,const data::RecipeDocument &recipe,
@@ -102,7 +104,8 @@ jobs::AssetResult PrimitiveGeometry::evaluate(const jobs::JobEnvelope &job,const
             if(n.operation=="placement.affine") require(n.materials.empty(),"placement cannot override shared prototype materials");
             else require(n.materials.size()<=1,"primitive geometry requires at most one material binding");
             if(!builtin(n.operation)) {
-                require((n.operation=="profile.sweep" || n.operation=="profile.fill") ? n.inputs.size()==1 : n.inputs.empty(),"invalid geometry operation inputs");
+                require(n.operation=="solid.ordered" ? !n.inputs.empty() :
+                    (n.operation=="profile.sweep" || n.operation=="profile.fill") ? n.inputs.size()==1 : n.inputs.empty(),"invalid geometry operation inputs");
                 require(n.output_type==(n.operation=="profile.contours"?data::ProductType::profile:data::ProductType::mesh),"invalid geometry operation output type");
                 if(n.operation=="profile.sweep" || n.operation=="profile.fill") require(n.inputs[0].kind==data::InputKind::node &&
                     n.inputs[0].type==data::ProductType::profile,"sweep requires a profile node");
@@ -115,7 +118,7 @@ jobs::AssetResult PrimitiveGeometry::evaluate(const jobs::JobEnvelope &job,const
         std::string default_material="geometry.default";
         while(std::any_of(asset.materials.begin(),asset.materials.end(),[&](const auto &m){return m.id.value==default_material;})) default_material+=".default";
         bool default_added=false;
-        struct Product { std::optional<size_t> mesh; std::shared_ptr<CheckedProfile> profile; data::Mat4 transform{}; };
+        struct Product { std::optional<size_t> mesh; std::shared_ptr<CheckedProfile> profile; data::Mat4 transform{}; bool empty=false; };
         std::map<std::string,Product> products;
         std::map<std::string,const data::RecipeNode *> nodes;
         for(const auto &n:recipe.nodes) nodes.emplace(n.id.value,&n);
@@ -133,9 +136,15 @@ jobs::AssetResult PrimitiveGeometry::evaluate(const jobs::JobEnvelope &job,const
             Product product;
             if(n.operation=="placement.affine") {
                 product=eval(n.inputs[0].reference.value,depth+1); active=id;
-                require(product.mesh.has_value(),"placement requires generated mesh");
+                require(product.mesh.has_value()||product.empty,"placement requires generated mesh");
                 product.transform=mm::multiply(n.transform,product.transform);
                 checked(data::validate_transform(product.transform));
+            } else if(n.operation=="solid.csg" || n.operation=="solid.ordered") {
+                auto field=lower_csg(n,nodes,csg_settings_,monitor,usage);
+                auto mesh=mesh_csg(field,n,monitor,usage);
+                product.transform=n.transform;
+                if(mesh) { product.mesh=asset.meshes.size(); asset.meshes.push_back(std::move(*mesh)); }
+                else product.empty=true;
             } else if(n.operation=="profile.polygon" || n.operation=="profile.contours") {
                 keys(n,n.operation=="profile.polygon"?std::initializer_list<const char *>{"points"}:std::initializer_list<const char *>{"points","holes"});
                 product.profile=std::make_shared<CheckedProfile>(detail::profile(n,monitor,usage));
@@ -265,6 +274,7 @@ jobs::AssetResult PrimitiveGeometry::evaluate(const jobs::JobEnvelope &job,const
                 b.endShape();
                 product.mesh=asset.meshes.size(); asset.meshes.push_back(convert(b,n));
             }
+            if(product.empty) continue;
             require(product.mesh.has_value(),"recipe output has no mesh");
             const auto &mesh=asset.meshes[*product.mesh];
             asset.instances.push_back({out,mesh.id,data::InstanceTarget::mesh,{},product.transform});
@@ -274,24 +284,8 @@ jobs::AssetResult PrimitiveGeometry::evaluate(const jobs::JobEnvelope &job,const
         checked(monitor.report({1,"complete"}));
         auto bounded=options; bounded.validation=validation;
         jobs::ResolvedInputs output_resources; output_resources.resources=inputs.resources;
-        auto result=jobs::finish_asset(admitted_job,std::move(asset),bounded,monitor,usage,std::move(output_resources));
-        // Frozen contracts-v1 JobResult::success discards diagnostics when its
-        // final envelope encoding runs out of memory. Entry admission already
-        // validated this immutable envelope. Its exact late fallback therefore
-        // means allocation failure, not a newly invalid caller envelope. Keep
-        // the workaround local until JobResult preserves that validation error.
-        if(!result.ok() && result.diagnostics().size()==1) {
-            const auto &d=result.diagnostics()[0];
-            if(d.code==data::ErrorCode::invalid_input &&
-                d.message=="invalid result envelope or failure without an error") {
-                // Also require a still-valid owned envelope. The success path
-                // supplies no diagnostics; with immutable valid fields its
-                // failed validation can only be the swallowed resource error.
-                checked(jobs::validate(admitted_job));
-                return jobs::AssetResult::failure(admitted_job,data::ErrorCode::resource_limit,"geometry publication allocation failed");
-            }
-        }
-        return result;
+        return published(jobs::finish_asset(admitted_job,std::move(asset),bounded,monitor,usage,std::move(output_resources)),
+            admitted_job,"geometry publication allocation failed");
     } catch(const Failure &f) {
         data::Diagnostic d{data::Severity::error,f.code,f.message,f.node.empty()?active:f.node,{},{}};
         auto source=recipe.source_map.find(d.node_id); if(source!=recipe.source_map.end()) d.source=source->second;
@@ -303,14 +297,6 @@ jobs::AssetResult PrimitiveGeometry::evaluate(const jobs::JobEnvelope &job,const
     } catch(...) {
         return jobs::AssetResult::failure(job,data::ErrorCode::backend_failure,"geometry backend exception");
     }
-}
-jobs::QueryResult PrimitiveGeometry::query(const jobs::JobEnvelope &job,const jobs::AssetProduct &,
-    const jobs::QueryBatch &,const jobs::EvaluationOptions &,const jobs::JobControl &) {
-    return jobs::QueryResult::failure(job,data::ErrorCode::unsupported_capability,"spatial queries belong to the subsequent geometry extraction");
-}
-jobs::AssetResult PrimitiveGeometry::process(const jobs::JobEnvelope &job,const jobs::AssetProduct &,
-    const jobs::ProcessingRequest &,const jobs::EvaluationOptions &,const jobs::JobControl &) {
-    return jobs::AssetResult::failure(job,data::ErrorCode::unsupported_capability,"processing is not implemented by primitive geometry");
 }
 data::ValidationResult bake_placement(const data::MeshPrototype &source,const data::Mat4 &transform,
     data::MeshPrototype &destination) {
