@@ -5,7 +5,7 @@ import fs from 'node:fs';
 const source = fs.readFileSync(new URL('../scenes/streaming/StreamMountain/objects/WorldSector.js', import.meta.url), 'utf8')
   .replace(/^import[\s\S]*?;\s*/gm, '');
 const unexpected = () => { throw new Error('terrain-only scene attempted scatter/catalog work'); };
-const placed = [];
+const placed = [], siteOptions = [];
 class Part {
   terrainVolumeTiled(...args) { this.terrain = args; }
   placeChild(...args) { placed.push(args); }
@@ -18,8 +18,9 @@ const Sector = new Function('Part', 'MAT', 'MOUNTAIN_FOREST_MIN_LOD',
   'mountainRockCatalog', 'mountainForestCatalog', 'mountainGeometrySamples', 'mountainGeometryCatalog',
   source + '\nreturn WorldSector;')(Part, {grass:1,dirt:2,rock:3,snow:4}, 3,
     unexpected, unexpected,
-    (material) => [{x: 4, z: 4, params: {size: 1, material}}],
-    (material) => [{module: 'MountainDetailRock', params: {size: 1, material}}]);
+    (material, options) => (siteOptions.push(options), [{x: 4, z: 4, params: {size: 1, material}}]),
+    (material, options) => (siteOptions.push(options),
+      [{module: 'MountainDetailRock', params: {size: 1, material}}]));
 const terrainOnly = JSON.stringify({__terrainOnly:true, __terrain:{material:'dirt'}});
 assert.deepEqual(Sector.requires({biomes: terrainOnly}), []);
 // terrainLod -> voxel rung follows WorldSector.js's stress profile
@@ -36,6 +37,13 @@ assert.deepEqual(Sector.requires({biomes: withRocks}),
 new Sector().build({tx:0,ty:0,tz:0,terrainLod:0,biomes: withRocks});
 assert.equal(placed.length, 1, 'terrain-only with geometry rocks places the geometry site samples');
 assert.equal(placed[0][0], 'MountainDetailRock');
+assert.deepEqual(siteOptions, [{stress: false}, {stress: false}],
+  'the detailed-rock site defaults to the three-rock inspection site');
+const withStress = JSON.stringify({...JSON.parse(withRocks), __geometryRockStress: true});
+Sector.requires({biomes: withStress});
+new Sector().build({tx:0,ty:0,tz:0,terrainLod:0,biomes: withStress});
+assert.deepEqual(siteOptions.slice(2), [{stress: true}, {stress: true}],
+  'only an explicit __geometryRockStress selects the stress benchmark');
 console.log('Terrain-only sectors: terrain retained at each rung; catalogs and placement only with __geometryRocks');
 
 const worldSource = fs.readFileSync(new URL('../scenes/streaming/StreamMountain/StreamMountain.js', import.meta.url), 'utf8')
@@ -55,10 +63,16 @@ const world = new Mountain();
 assert.equal(world.biomes().__terrainOnly, false, 'terrainOnly defaults off');
 assert.ok(world.biomes().__vegetation.materials.barkMaterial);
 assert.deepEqual(world.biomes().__geometryRocks, {material: geometryRock});
+assert.equal(Mountain.params.geometryRockStress, false, 'the shipped scene uses the restored rock density');
+assert.equal(world.biomes().__geometryRockStress, false);
 Mountain.params.terrainOnly = true;
 assert.equal(world.biomes().__terrainOnly, true);
 assert.equal(world.biomes().__vegetation, undefined);
 assert.deepEqual(world.biomes().__geometryRocks, {material: geometryRock},
   'terrain-only keeps the geometry-rock site');
+Mountain.params.geometryRockStress = true;
+assert.equal(world.biomes().__geometryRockStress, true, 'the stress benchmark is an explicit world param');
+assert.deepEqual(world.biomes().__geometryRocks, {material: geometryRock});
+Mountain.params.geometryRockStress = false;
 assert.equal(registered.length, registeredAtLoad, 'toggling terrainOnly registers nothing');
 console.log('StreamMountain biomes: forest only without terrainOnly; geometry-rock site in both modes');

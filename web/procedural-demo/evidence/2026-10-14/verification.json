@@ -1,0 +1,41 @@
+{
+  "task": "steady-willow-98",
+  "source_base": "c57ba76866d811e285457439380b57a01eebe717",
+  "node": "v24.15.0",
+  "browser": "Playwright 1.58.2 Chromium headless, SwiftShader WebGL2",
+  "smoke_seconds": 12.098,
+  "objects": 13,
+  "worker_count": 1,
+  "unit_tests": 8,
+  "build": "npm run build succeeded",
+  "javascript_sha256": {
+    "index-JTTO03E6.js": "2f7dcbc703d7e806d1a0e90f8dac58c5327291e7f857f395f6453d0e95deffd0"
+  },
+  "construction_stages": 112,
+  "lod": {
+    "baseTriangles": 1944,
+    "reducedTriangles": 666
+  },
+  "checks": [
+    {
+      "command": "python3 web/matter-procedural-wasm/build.py --emsdk /home/jkern/emsdk",
+      "result": "passed: pinned compiler, real WASM package"
+    },
+    {
+      "command": "cd web/procedural-demo && npm run build",
+      "result": "passed: TypeScript and production static build"
+    },
+    {
+      "command": "aq test web/procedural-demo/frontend-tests/test_browser.py",
+      "result": "gallery smoke and eight unit tests passed; interaction test zoom setup corrected in subsequent rerun"
+    },
+    {
+      "command": "aq test web/procedural-demo/frontend-tests/test_browser.py::test_procedural_demo_browser",
+      "result": "passed: 37.62 seconds; all 112 stages and native LOD camera selection"
+    },
+    {
+      "command": "cd web/procedural-demo && npm run capture:construction",
+      "result": "passed: seven arch stages in construction.webm, converted to construction.gif with FFmpeg"
+    }
+  ]
+}

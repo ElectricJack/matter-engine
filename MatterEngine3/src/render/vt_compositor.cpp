@@ -1,6 +1,6 @@
 // vt_compositor.cpp — WP-D tier-1 chart-page compositor + GPU BC encode.
 // See vt_compositor.h for the module contract and shaders_vk/vt_composite.comp
-// / vt_bc_encode.comp for the GPU passes this records.
+// / vt_height_normal.comp / vt_bc_encode.comp for the GPU passes this records.
 //
 // WHAT ONE fill() DOES, end to end:
 //   1. On the very first call only, record_init() transitions every ring's
@@ -14,7 +14,8 @@
 //      GpuFillRequest into the ring's request buffer — including the
 //      weight-seam mode this page will run in.
 //   4. In groups of kBatchStride: dispatch vt_composite.comp once per page
-//      into the group's intermediate image layer, barrier, dispatch
+//      into the group's intermediate image layer, barrier, resolve ordinary
+//      direct-source normals from those heights, barrier, dispatch
 //      vt_bc_encode.comp once per page into the ring's block buffers,
 //      barrier, then copy the three compressed channels and the uncompressed
 //      aux layer into each page's destination pool slot.
@@ -425,6 +426,7 @@ struct VtCompositor::Impl {
     VkPipelineLayout composite_pl = VK_NULL_HANDLE;
     VkPipelineLayout encode_pl = VK_NULL_HANDLE;
     VkPipeline composite_pipe = VK_NULL_HANDLE;
+    VkPipeline height_normal_pipe = VK_NULL_HANDLE;
     VkPipeline encode_pipe = VK_NULL_HANDLE;
     VkDescriptorPool descriptor_pool = VK_NULL_HANDLE;
     VkSampler sampler = VK_NULL_HANDLE;
@@ -485,6 +487,24 @@ struct VtCompositor::Impl {
     };
     Ring rings[kMaxBatchesInFlight];
     uint32_t ring_cursor = 0;
+    // Only one incremental page occupies scratch. Requests and descriptors
+    // still rotate through fence-safe rings; the preceding ring's page is
+    // copied forward before another slice. No borrowed output pointer survives.
+    struct PartialPage {
+        VtPreparationKey key{};
+        std::shared_ptr<const VtPartSnapshot> snapshot;
+        std::shared_ptr<const VtInputSnapshot> inputs;
+        uint64_t revision = 0, material_revision = 0;
+        uint16_t mip = 0, x = 0, y = 0;
+        uint32_t tiles = 0, ring = 0;
+        bool live = false, coverage_only = false;
+        bool matches(const VtFillRequest& req, uint64_t material) const {
+            return live && key == req.preparation_key() && snapshot == req.part_snapshot &&
+                inputs == req.input_snapshot && revision == req.content_revision &&
+                material_revision == material && mip == req.mip && x == req.page_x &&
+                y == req.page_y && coverage_only == req.coverage_only;
+        }
+    } partial;
 
     // The GPU streams for one (variant_hash, rung): the chart table, the
     // chart-grouped triangle stream (both built by vt_chart_gpu.h) and the
@@ -497,6 +517,7 @@ struct VtCompositor::Impl {
         VkDevice device = VK_NULL_HANDLE;
         RawBuffer charts;
         RawBuffer tris;
+        RawBuffer resolve_bvh;
         VtPreparedCorners corners;
         std::shared_ptr<const VtSurfaceBoundary> boundary;
         uint32_t chart_count = 0;
@@ -504,6 +525,7 @@ struct VtCompositor::Impl {
         ~GeometryEntry() {
             destroy_raw_buffer(device, charts);
             destroy_raw_buffer(device, tris);
+            destroy_raw_buffer(device, resolve_bvh);
         }
     };
     struct FinitePayloadEntry {
@@ -563,7 +585,7 @@ struct VtCompositor::Impl {
         MeshEntry entry;
         uint64_t requested_epoch = 0;
         size_t charts_copied = 0, geometry_copied = 0, surface_copied = 0, tape_copied = 0;
-        size_t seed_nodes_copied = 0;
+        size_t seed_nodes_copied = 0, resolve_charts_copied = 0, resolve_nodes_copied = 0;
         size_t finite_ids_copied=0;
         bool initialized = false, new_geometry = false;
     };
@@ -715,6 +737,7 @@ struct VtCompositor::Impl {
                 for (auto& source : slot) source.reset();
         for (auto& slot : tileset_slots) slot = VtTilesetSlotViews{};
         if (composite_pipe) vkDestroyPipeline(device, composite_pipe, nullptr);
+        if (height_normal_pipe) vkDestroyPipeline(device, height_normal_pipe, nullptr);
         if (encode_pipe) vkDestroyPipeline(device, encode_pipe, nullptr);
         if (composite_pl) vkDestroyPipelineLayout(device, composite_pl, nullptr);
         if (encode_pl) vkDestroyPipelineLayout(device, encode_pl, nullptr);
@@ -804,8 +827,7 @@ struct VtCompositor::Impl {
 //                                         9 tape-op arena, 10 R16 height
 //   set 0  encode_layout (per Ring):      0-2 the same three intermediates,
 //                                         3-5 the BC block output buffers
-// Push constants: composite takes 4 bytes (the request's index into the ring
-// request buffer), encode takes 8 (the group slot, written twice).
+// Composite/normal push constants: request index and first row. Encode: source layer/output slot.
 bool VtCompositor::Impl::init(std::string& err) {
     VkFormatProperties height_format{};
     vkGetPhysicalDeviceFormatProperties(phys, VK_FORMAT_R16_UNORM, &height_format);
@@ -878,7 +900,7 @@ bool VtCompositor::Impl::init(std::string& err) {
 
     // ---- pipeline layouts ----
     {
-        VkPushConstantRange push{VK_SHADER_STAGE_COMPUTE_BIT, 0, 4};
+        VkPushConstantRange push{VK_SHADER_STAGE_COMPUTE_BIT, 0, 8};
         VkDescriptorSetLayout sets[2] = {mesh_layout, batch_layout};
         VkPipelineLayoutCreateInfo info{
             VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
@@ -909,6 +931,9 @@ bool VtCompositor::Impl::init(std::string& err) {
 
     if (!create_pipeline("vt_composite.comp.spv", composite_pl, composite_pipe,
                          err))
+        return false;
+    if (!create_pipeline("vt_height_normal.comp.spv", composite_pl,
+                         height_normal_pipe, err))
         return false;
     if (!create_pipeline("vt_bc_encode.comp.spv", encode_pl, encode_pipe, err))
         return false;
@@ -1029,7 +1054,7 @@ bool VtCompositor::Impl::init(std::string& err) {
                 return false;
         }
         const VkImageUsageFlags inter_usage =
-            VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+            VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
         for (RawImage* img : {&r.inter_albedo, &r.inter_normal, &r.inter_orm,
                               &r.inter_aux}) {
             if (!create_raw_image_array(device, phys, kPageStore, kPageStore,
@@ -1329,6 +1354,14 @@ bool VtCompositor::Impl::advance_mesh_entry(PendingMesh& pending,
                                    prepared.seed_nodes.data(), seed_bytes, pending.seed_nodes_copied)) return false;
         }
     }
+    if (pending.new_geometry) {
+        const size_t table_bytes = prepared.resolve_charts.size()*sizeof(VtResolveChart);
+        const size_t node_bytes = prepared.resolve_nodes.size()*sizeof(VtResolveNode);
+        if (!allocate(entry.geometry->resolve_bvh,table_bytes+node_bytes,true)) return false;
+        if (!copy(entry.geometry->resolve_bvh.mapped,prepared.resolve_charts.data(),table_bytes,pending.resolve_charts_copied) ||
+            !copy(static_cast<uint8_t*>(entry.geometry->resolve_bvh.mapped)+table_bytes,
+                prepared.resolve_nodes.data(),node_bytes,pending.resolve_nodes_copied)) return false;
+    }
     const auto& surface = entry.tape_slot >= 0 ? prepared.lanes : prepared.weights;
     const size_t surface_bytes = surface.size() * sizeof(GpuTriSurface);
     if (!allocate(entry.surface, surface_bytes)) return false;
@@ -1608,7 +1641,8 @@ std::array<uint64_t, 2> VtCompositor::encoded_input_identity() const {
     // includes. The CPU preparation policy still carries kVtBakeVersion above.
     static const auto shader_identity = [] {
         std::vector<uint8_t> identity;
-        for (const char* name : {"vt_composite.comp.spv", "vt_bc_encode.comp.spv"}) {
+        for (const char* name : {"vt_composite.comp.spv", "vt_height_normal.comp.spv",
+                                 "vt_bc_encode.comp.spv"}) {
             const auto shader = matter::find_spirv(name);
             if (!shader.words || !shader.word_count) return asset_store::BlobHash{};
             const auto hash = asset_store::hash_bytes(shader.words, shader.word_count*sizeof(uint32_t));
@@ -1656,9 +1690,11 @@ void VtCompositor::set_weight_mode(WeightMode mode, uint32_t debug_mat_a,
     impl_->debug_mat_b = debug_mat_b;
     impl_->debug_blend_start = debug_blend_start_m;
     impl_->debug_blend_width = debug_blend_width_m;
+    ++impl_->input_revision;
 }
 
 void VtCompositor::invalidate_part(uint64_t variant_hash) {
+    if (impl_->partial.key.variant_hash == variant_hash) impl_->partial = {};
     impl_->cpu_preparer.cancel_part(variant_hash);
     for (auto it = impl_->draw_geometries.begin(); it != impl_->draw_geometries.end();)
         if (it->first.variant_hash == variant_hash) it = impl_->draw_geometries.erase(it); else ++it;
@@ -1687,6 +1723,7 @@ bool VtCompositor::tape_gpu_enabled() const {
 }
 
 void VtCompositor::release_preparation(const VtPreparationKey& key) {
+    if (impl_->partial.key == key) impl_->partial = {};
     impl_->cpu_preparer.cancel(key);
     impl_->draw_geometries.erase(key);
     impl_->cancel_gpu_preparation(key);
@@ -1709,6 +1746,7 @@ void VtCompositor::invalidate_surface(uint64_t variant_hash) {
 }
 
 void VtCompositor::invalidate_surface(const VtPreparationKey& key) {
+    if (impl_->partial.key == key) impl_->partial = {};
     impl_->cpu_preparer.cancel(key);
     impl_->cancel_gpu_preparation(key);
     const auto it = impl_->mesh_cache.find(key);
@@ -1746,7 +1784,7 @@ VtCompositor::PreparationMemory VtCompositor::preparation_memory() const {
         if (!geometry || std::find(geometries.begin(), geometries.end(), geometry) !=
                              geometries.end()) return;
         geometries.push_back(geometry);
-        result.geometry_gpu_bytes += geometry->charts.size + geometry->tris.size;
+        result.geometry_gpu_bytes += geometry->charts.size + geometry->tris.size + geometry->resolve_bvh.size;
         result.corner_cpu_bytes += geometry->corners ? geometry->corners->capacity() * sizeof(VtTriangleCorners) : 0;
         result.boundary_cpu_bytes += geometry->boundary ? geometry->boundary->bytes() : 0;
         ++result.geometries;
@@ -2136,6 +2174,9 @@ void VtCompositor::fill(VkCommandBuffer cmd, const VtFillRequest* batch,
         std::fill(std::begin(g.material_dv),std::end(g.material_dv),0.f);
         std::fill(std::begin(g.material_normal),std::end(g.material_normal),0.f);
         std::fill(std::begin(g.canonical),std::end(g.canonical),0u);
+        const auto resolve_address = req.linear_resolve ? 0 : entry->geometry->resolve_bvh.address;
+        g.canonical[2] = uint32_t(resolve_address);
+        g.canonical[3] = uint32_t(resolve_address >> 32);
         std::fill(std::begin(g.periodic),std::end(g.periodic),0u);
         VtCanonicalPage canonical;
         if(ctx->periodic.version) {
@@ -2170,6 +2211,48 @@ void VtCompositor::fill(VkCommandBuffer cmd, const VtFillRequest* batch,
     }
     if (recs.empty()) return;
 
+    const bool incremental = count == 1 && recs.size() == 1 && batch[0].work_tiles > 0;
+    uint32_t tile_begin = 0, tile_count = kVtPageTiles;
+    if (incremental) {
+        const auto& request = *recs[0].request;
+        if (!im.partial.matches(request, im.input_revision)) {
+            im.partial = {};
+            im.partial.key = request.preparation_key();
+            im.partial.snapshot = request.part_snapshot;
+            im.partial.inputs = request.input_snapshot;
+            im.partial.revision = request.content_revision;
+            im.partial.material_revision = im.input_revision;
+            im.partial.mip = request.mip;
+            im.partial.x = request.page_x; im.partial.y = request.page_y;
+            im.partial.coverage_only = request.coverage_only;
+            im.partial.live = true;
+        } else if (im.partial.tiles && im.partial.ring != ring_index) {
+            // Queue order and these transfer dependencies protect both rings,
+            // including submissions that are still in flight.
+            cmd_memory_barrier(cmd, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+                VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT);
+            const auto& previous = im.rings[im.partial.ring];
+            const RawImage* src[] = {&previous.inter_albedo, &previous.inter_normal,
+                &previous.inter_orm, &previous.inter_aux, &previous.inter_height};
+            const RawImage* dst[] = {&ring.inter_albedo, &ring.inter_normal,
+                &ring.inter_orm, &ring.inter_aux, &ring.inter_height};
+            VkImageCopy copy{};
+            copy.srcSubresource = copy.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+            copy.extent = {kPageStore, kPageStore, 1};
+            for (uint32_t c = 0; c < 5; ++c)
+                vkCmdCopyImage(cmd, src[c]->image, VK_IMAGE_LAYOUT_GENERAL,
+                    dst[c]->image, VK_IMAGE_LAYOUT_GENERAL, 1, &copy);
+            cmd_memory_barrier(cmd, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
+        }
+        tile_begin = im.partial.tiles;
+        tile_count = std::min(batch[0].work_tiles, kVtPageTiles - tile_begin);
+        im.partial.ring = ring_index;
+    } else im.partial = {};
+
     for (size_t group_start = 0; group_start < recs.size();
          group_start += kBatchStride) {
         const size_t group_end =
@@ -2198,9 +2281,43 @@ void VtCompositor::fill(VkCommandBuffer cmd, const VtFillRequest* batch,
             VkDescriptorSet sets[2] = {rec.entry->set, ring.batch_set};
             vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
                                     im.composite_pl, 0, 2, sets, 0, nullptr);
+            const uint32_t push[2] = {rec.req_index, tile_begin};
             vkCmdPushConstants(cmd, im.composite_pl,
-                               VK_SHADER_STAGE_COMPUTE_BIT, 0, 4,
-                               &rec.req_index);
+                               VK_SHADER_STAGE_COMPUTE_BIT, 0, 8, push);
+            if (tile_count) vkCmdDispatch(cmd, tile_count, 1, 1);
+        }
+
+        if (incremental && tile_count) {
+            im.partial.tiles += tile_count;
+            // Normal resolve and encoding get a separate frame, even after
+            // the last slice; none of the destination pool has changed yet.
+            recs[0].request->mark_pending(tile_count);
+            return;
+        }
+
+        cmd_memory_barrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                           VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                           VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                           VK_ACCESS_2_SHADER_STORAGE_READ_BIT |
+                               VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
+
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+                          im.height_normal_pipe);
+        for (size_t r = group_start; r < group_end; ++r) {
+            const Rec& rec = recs[r];
+            const GpuFillRequest& request = gpu_reqs[rec.req_index];
+            if (request.periodic[3] == 1u || request.periodic[2] != 0u ||
+                request.height_output[2] != 0.0f ||
+                request.source_range[1] <= request.source_range[0] ||
+                (request.source_b[3] != 1u && request.source_b[3] != 2u) ||
+                request.b[2] != static_cast<uint32_t>(WeightMode::kSurfaceTapeGpu))
+                continue;
+            VkDescriptorSet sets[2] = {rec.entry->set, ring.batch_set};
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                    im.composite_pl, 0, 2, sets, 0, nullptr);
+            const uint32_t push[2] = {rec.req_index, 0};
+            vkCmdPushConstants(cmd, im.composite_pl,
+                               VK_SHADER_STAGE_COMPUTE_BIT, 0, 8, push);
             vkCmdDispatch(cmd, kPageStore / 8, kPageStore / 8, 1);
         }
 
@@ -2311,6 +2428,7 @@ void VtCompositor::fill(VkCommandBuffer cmd, const VtFillRequest* batch,
             ++stats_.pages_filled;
         }
     }
+    im.partial = {};
 }
 
 }  // namespace vt

@@ -64,6 +64,12 @@ static void page_dependency_checks() {
         }
         CHECK(geometry::page_sets_intersect(left,right)==((a&b)!=0),
               "sorted page dependencies match exhaustive subset oracle with duplicates");
+        CHECK(geometry::cut_publication_changed(left,right,{},false)==((a&b)!=0),
+              "unrelated partial roots do not invalidate displayed geometry");
+        CHECK(geometry::cut_publication_changed(left,{},right,false)==((a&b)!=0),
+              "pending hierarchy dependencies invalidate the displayed cut too");
+        CHECK(geometry::cut_publication_changed(left,{}, {},true)==(a!=0),
+              "first complete root coverage leaves source fallback on publication");
     }
 }
 static void visibility_priority_checks(asset_store::PageCache& cache) {
@@ -89,14 +95,20 @@ static void visibility_priority_checks(asset_store::PageCache& cache) {
     residency.set_visible_assets({shared.id,a.id,a.id});
     CHECK(residency.page_visible(root.page),"shared root follows any visible owner");
     CHECK(residency.page_visible(child),"child follows visible owner");
-    auto work=residency.dispatch(1,0);
+    CHECK(residency.visible_stats().assets==2 && residency.visible_stats().unready_assets==0,
+          "visible readiness counts leases without duplicate camera entries");
+    CHECK(residency.dispatch(1,0,true,true).empty(),
+          "root-only pressure gate parks refinement and offscreen roots");
+    auto work=residency.dispatch(1,0,true,false);
     CHECK(work.size()==1 && work[0].page==child,"visible refinement precedes offscreen mandatory roots");
     if(work.empty())return;
+    CHECK(!residency.root_page(work[0]),"refinement ticket is optional");
     residency.defer(work[0],1);
     residency.set_visible_assets({background.id});
     CHECK(!residency.page_visible(child),"camera turn demotes queued old-view refinement");
-    work=residency.dispatch(1,1);
+    work=residency.dispatch(1,1,true,true);
     CHECK(work.size()==1 && work[0].page!=child,"new-view root precedes old-view refinement");
+    if(!work.empty())CHECK(residency.root_page(work[0]),"new-view ticket is a root");
     if(!work.empty())residency.defer(work[0],2);
     residency.set_visible_assets({a.id});
     work=residency.dispatch(1,2);
@@ -196,6 +208,9 @@ static void residency_checks(asset_store::PageCache& cache) {
     CHECK(residency.reserve_upload(root, 100, 10), "reserve root geometry and BLAS scratch");
     CHECK(!residency.ready(a), "uploading root is not render-ready");
     CHECK(residency.publish(root, std::make_shared<int>(1)), "publish raster and RT together");
+    CHECK(residency.resident(root.page) && residency.resident(root.page)->node.ready &&
+          !residency.resident(root.page)->node.page,
+          "published root releases its CPU payload while remaining render-ready");
     CHECK(residency.ready(a) && residency.ready(b), "both owners see ready shared root");
     CHECK(residency.stats().gpu_bytes == 100 && residency.stats().scratch_bytes == 0, "build scratch retires after ready publication");
     CHECK(!residency.evict(root.page), "mandatory root cannot be evicted");
@@ -440,6 +455,7 @@ static void part_cache_checks(const std::filesystem::path& directory) {
         std::string cache_error;
         CHECK(store.save_prepared_sector(staged,"policy-a",cache_error),cache_error.c_str());
         viewer::PartStore fresh(path);
+        fresh.set_geometry_pages_enabled(true);
         auto restored=fresh.load_prepared_sector(hash,"policy-a",cache_error);
         CHECK(restored.ok,cache_error.c_str());
         if(restored.ok){
@@ -616,10 +632,51 @@ static void prepared_parallel_readers_test() {
     std::filesystem::remove_all(directory);
 }
 
+#ifndef MATTER_CODEC_SOURCE_QUALIFICATION
+// Owned pages use the production wire codec and immutable lease, without a
+// persistent store. Child references retain their real content hashes.
+class MemoryHierarchyPages {
+    std::map<asset_store::BlobHash, asset_store::PageHandle> pages_;
+public:
+    bool encode(const geometry::Hierarchy& hierarchy, const asset_store::PageLimits& limits,
+                std::vector<geometry::NodeRef>& roots, std::string& error) {
+        std::vector<geometry::NodeRef> refs;
+        for (size_t id = 0; id < hierarchy.nodes.size(); ++id) {
+            const auto& node = hierarchy.nodes[id];
+            std::vector<geometry::NodeRef> children;
+            for (auto child : node.children) {
+                if (child >= id) return false;
+                children.push_back(refs[child]);
+            }
+            auto bytes = std::make_shared<std::vector<uint8_t>>();
+            if (!geometry::encode_node(node, children, limits, *bytes, error)) return false;
+            auto page = std::make_shared<asset_store::CachedPage>();
+            page->allocation = bytes;
+            page->bytes = bytes->data(); page->size = bytes->size();
+            page->hash = asset_store::hash_bytes(page->bytes, page->size);
+            if (!asset_store::decode_page(page->bytes, page->size, limits, page->view, error)) return false;
+            pages_[page->hash] = page;
+            refs.push_back({page->hash, node.bounds, node.error, node.source_triangles,
+                            static_cast<uint32_t>(node.mesh.indices.size()/3)});
+        }
+        roots.clear();
+        for (auto root : hierarchy.roots) roots.push_back(refs.at(root));
+        return true;
+    }
+    asset_store::PageHandle read(asset_store::BlobHash hash) const {
+        const auto found = pages_.find(hash);
+        return found == pages_.end() ? asset_store::PageHandle{} : found->second;
+    }
+};
+#endif
+
 int main(int argc,char** argv) {
+#ifdef MATTER_CODEC_SOURCE_QUALIFICATION
     prepared_identity_manifest_test();
     prepared_parallel_readers_test();
     prepared_surface_shape_test();
+#endif
+    page_dependency_checks();
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     displacement_checks();
     using namespace geometry;
@@ -669,6 +726,7 @@ int main(int argc,char** argv) {
     Hierarchy again;CHECK(compile(source,config,again,error),error.c_str());
     CHECK(again.nodes.size()==hierarchy.nodes.size()&&again.roots==hierarchy.roots,"deterministic hierarchy structure");
     asset_store::PageLimits limits;
+#ifdef MATTER_CODEC_SOURCE_QUALIFICATION
     const auto stamp=std::chrono::steady_clock::now().time_since_epoch().count();
     const auto path=std::filesystem::temp_directory_path()/ ("matter_geometry_pages_"+std::to_string(stamp));
     asset_store::StoreConfig sc;sc.dir=path.string();
@@ -713,6 +771,33 @@ int main(int argc,char** argv) {
               "root budget rejection is not mislabeled as corrupt geometry");
     }
     {
+        const auto manifest = cache->read_manifest("unique").page;
+        CHECK(manifest != nullptr, "streamed root fixture has a manifest");
+        if (manifest) {
+            RootCache metadata_roots(path.string(), manifest->size + 8);
+            CacheLoadStatus status = CacheLoadStatus::Failed;
+            const auto asset = metadata_roots.load("unique", error, &status, false);
+            CHECK(asset && status == CacheLoadStatus::Hit && asset->roots.empty() &&
+                  asset->root_refs.size() == roots.size() &&
+                  std::equal(asset->root_refs.begin(), asset->root_refs.end(), roots.begin(),
+                             [](const NodeRef& a, const NodeRef& b) {
+                                 return a.page == b.page && a.triangles == b.triangles &&
+                                        a.source_triangles == b.source_triangles;
+                             }),
+                  "terrain admission retains root descriptors without pinning root payloads");
+            CHECK(!metadata_roots.load("unique", error) &&
+                  error.find("budget exceeded") != std::string::npos,
+                  "fixture root payload exceeds the metadata-only bank");
+            if (asset && !asset->root_refs.empty()) {
+                const auto streamed = cache->read({asset->root_refs.front().page})[0];
+                NodeView node;
+                CHECK(streamed.page && decode_node(streamed.page, node, error) &&
+                      node.self.page == asset->root_refs.front().page,
+                      "runtime page cache can stream an admitted root by descriptor");
+            }
+        }
+    }
+    {
         CacheReport report;
         RootCache tiny(path.string(), 32);
         CHECK(!cache_asset(path.string(), "unique", source, config, {}, error, &tiny, &report) &&
@@ -748,8 +833,26 @@ int main(int argc,char** argv) {
             CHECK(select_cut(roots,only_root,[](const NodeRef&){return true;},{},fallback,error)&&coverage(fallback)==source.triex.size(),"real page-budget failure preserves root coverage");
         }
     }
+#else
+    MemoryHierarchyPages pages;
+    std::vector<NodeRef> roots, again_roots;
+    CHECK(pages.encode(hierarchy, limits, roots, error), error.c_str());
+    CHECK(pages.encode(again, limits, again_roots, error), error.c_str());
+    CHECK(!roots.empty() && !again_roots.empty() && roots[0].page == again_roots[0].page,
+          "deterministic binary hierarchy identity");
+#endif
     std::vector<uint8_t> leaf_bytes;
     CHECK(encode_node(hierarchy.nodes.front(),{},limits,leaf_bytes,error),error.c_str());
+    {
+        Node with_unused_vertex=hierarchy.nodes.front();
+        with_unused_vertex.mesh.positions.push_back(make_float3(1000,1000,1000));
+        std::vector<uint8_t> unused_bytes;
+        CHECK(encode_node(with_unused_vertex,{},limits,unused_bytes,error),
+              "an unused simplifier vertex outside draw bounds does not reject a geometry page");
+        with_unused_vertex.mesh.indices[0]=static_cast<uint32_t>(with_unused_vertex.mesh.positions.size()-1);
+        CHECK(!encode_node(with_unused_vertex,{},limits,unused_bytes,error),
+              "a referenced vertex outside draw bounds still rejects a geometry page");
+    }
     auto malformed=std::make_shared<asset_store::CachedPage>();
     CHECK(asset_store::decode_page(leaf_bytes.data(),leaf_bytes.size(),limits,malformed->view,error),error.c_str());
     auto index_section=malformed->view.find(3);
@@ -761,7 +864,14 @@ int main(int argc,char** argv) {
         NodeView rejected;CHECK(!decode_node(malformed,rejected,error),"typed page validation rejects an out-of-range index even with a valid blob identity");
     }
     std::map<asset_store::BlobHash,NodeView> resident;
-    const auto load=[&](asset_store::BlobHash hash){auto page=cache->read({hash})[0];NodeView node;if(!decode_node(page.page,node,error))return false;resident[hash]=std::move(node);return true;};
+    const auto load=[&](asset_store::BlobHash hash){
+#ifdef MATTER_CODEC_SOURCE_QUALIFICATION
+        auto page=cache->read({hash})[0].page;
+#else
+        auto page=pages.read(hash);
+#endif
+        NodeView node;if(!decode_node(page,node,error))return false;resident[hash]=std::move(node);return true;
+    };
     for(const auto& r:roots)CHECK(load(r.page),error.c_str());
     const auto lookup=[&](const NodeRef& ref,NodeView& node){auto it=resident.find(ref.page);if(it==resident.end())return false;node=it->second;return true;};
     Cut cut;CutConfig cut_config;
@@ -790,13 +900,22 @@ int main(int argc,char** argv) {
     CompileConfig tiny_config=config;tiny_config.leaf_triangles=8;
     Hierarchy tiny;CHECK(compile(grid(4),tiny_config,tiny,error),error.c_str());
     std::vector<NodeRef> tiny_roots;
+#ifdef MATTER_CODEC_SOURCE_QUALIFICATION
     CHECK(write_hierarchy(tiny,*store,*refs,"tiny",limits,tiny_roots,error),error.c_str());
     CHECK(cache->refresh(),"refresh tiny hierarchy commit");
+#else
+    CHECK(pages.encode(tiny,limits,tiny_roots,error),error.c_str());
+#endif
     std::map<asset_store::BlobHash,NodeView> all_tiny;
     std::vector<asset_store::BlobHash> pending_tiny;for(const auto& r:tiny_roots)pending_tiny.push_back(r.page);
     while(!pending_tiny.empty()) {
         auto h=pending_tiny.back();pending_tiny.pop_back();if(all_tiny.count(h))continue;
-        NodeView v;CHECK(decode_node(cache->read({h})[0].page,v,error),error.c_str());
+#ifdef MATTER_CODEC_SOURCE_QUALIFICATION
+        auto page=cache->read({h})[0].page;
+#else
+        auto page=pages.read(h);
+#endif
+        NodeView v;CHECK(decode_node(page,v,error),error.c_str());
         for(const auto& child:v.children)pending_tiny.push_back(child.page);all_tiny[h]=v;
     }
     std::vector<asset_store::BlobHash> optional;
@@ -958,7 +1077,9 @@ int main(int argc,char** argv) {
     auto small=config;small.max_output_triangles=1;
     CHECK(!compile(source,small,hierarchy,error)&&hierarchy.nodes.size()==before,"compiler output budget is enforced");
     std::atomic<bool> cancel{true};CHECK(!compile(source,config,hierarchy,error,&cancel),"cancelled compiler does not publish");
+#ifdef MATTER_CODEC_SOURCE_QUALIFICATION
     pressure_cache.reset();cache.reset();refs.reset();store.reset();std::filesystem::remove_all(path);
+#endif
     printf("Geometry proof: %zu source triangles, %zu groups, %zu coarse triangles, error <= %.6f, compiler %.3f ms\n",source.triex.size(),again.nodes.size(),again.nodes[again.roots[0]].mesh.triex.size(),again.nodes[again.roots[0]].error,compile_ms);
     uint32_t reasons[5]{};for(const auto& node:again.nodes)++reasons[static_cast<uint32_t>(node.simplification)];
     printf("Simplification: reduced=%u, attribute_seams=%u, changed_borders=%u, no_reduction=%u; root_border=%u, root_result=%u\n",

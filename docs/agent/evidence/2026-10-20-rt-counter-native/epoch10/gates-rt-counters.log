@@ -1,0 +1,727 @@
+Vulkan adapter: llvmpipe (LLVM 20.1.2, 256 bits) | driver: llvmpipe (Mesa 25.2.8-0ubuntu0.24.04.2 (LLVM 20.1.2), 0x06402008) | API 1.4.318
+[vk] present requested=auto effective=fifo(2) supported=[immediate(0),mailbox(1),fifo(2),fifo_relaxed(3)] images=4 extent=320x200
+[vk] present requested=auto effective=fifo(2) supported=[immediate(0),mailbox(1),fifo(2),fifo_relaxed(3)] images=4 extent=320x200
+[vk] present requested=auto effective=fifo(2) supported=[immediate(0),mailbox(1),fifo(2),fifo_relaxed(3)] images=4 extent=320x200
+DLSS fallback: Streamline disabled for Vulkan test device
+Vulkan RT available=true device=llvmpipe (LLVM 20.1.2, 256 bits) reason=none
+[vk] impostor atlas: 128 slots x 2 layers of 128x128 RGBA8 (cell 16 px, filtered mips) = 21 MiB
+[pipeline-profile] begin kind=compute caller=create_pipeline:2359 count=1
+[pipeline-profile] stage=0 flag=0x20 module=00004d000000004d entry=main
+[pipeline-profile] end kind=compute caller=create_pipeline:2359 ms=1.940508 result=0
+[pipeline-profile] begin kind=compute caller=create_pipeline:2409 count=1
+[pipeline-profile] stage=0 flag=0x20 module=00004f000000004f entry=main
+[pipeline-profile] stage=0 specialization_bytes=4 fnv64=4d25767f9dce13f5
+[pipeline-profile] end kind=compute caller=create_pipeline:2409 ms=37.106389 result=0
+[pipeline-profile] begin kind=compute caller=create_pipeline:2409 count=1
+[pipeline-profile] stage=0 flag=0x20 module=00004f000000004f entry=main
+[pipeline-profile] stage=0 specialization_bytes=4 fnv64=ad2aca7747985764
+[pipeline-profile] end kind=compute caller=create_pipeline:2409 ms=36.817590 result=0
+[pipeline-profile] shader=raster.vert.spv module=0000520000000052 spv_fnv64=cbfac7417ae13057 bytes=12232
+[pipeline-profile] shader=gbuffer.frag.spv module=0000530000000053 spv_fnv64=80e850b7f32310c3 bytes=1580976
+[pipeline-profile] shader=raster_skin.vert.spv module=0000540000000054 spv_fnv64=98960d5674f9363b bytes=11244
+[pipeline-profile] begin kind=graphics caller=operator():2467 count=1
+[pipeline-profile] stage=0 flag=0x1 module=0000520000000052 entry=main
+[pipeline-profile] stage=1 flag=0x10 module=0000530000000053 entry=main
+[vk] Vulkan loader/general warning: Validation Performance Warning: [ WARNING-Shader-OutputNotConsumed ] Object 0: handle = 0x520000000052, type = VK_OBJECT_TYPE_SHADER_MODULE; Object 1: handle = 0x530000000053, type = VK_OBJECT_TYPE_SHADER_MODULE; | MessageID = 0xc81ad50e | vkCreateGraphicsPipelines(): pCreateInfos[0] (SPIR-V Interface) VK_SHADER_STAGE_VERTEX_BIT declared to output location 17 Component 0 but is not an Input declared by VK_SHADER_STAGE_FRAGMENT_BIT.
+[pipeline-profile] end kind=graphics caller=operator():2467 ms=19845.000114 result=0
+[pipeline-profile] shader=visibility_id.vert.spv module=0000560000000056 spv_fnv64=3a4e0235a5bd2b79 bytes=2040
+[pipeline-profile] shader=visibility_id.frag.spv module=0000570000000057 spv_fnv64=18d33bd3765480ba bytes=364
+[pipeline-profile] begin kind=graphics caller=operator():2467 count=1
+[pipeline-profile] stage=0 flag=0x1 module=0000560000000056 entry=main
+[pipeline-profile] stage=1 flag=0x10 module=0000570000000057 entry=main
+[vk] Vulkan loader/general warning: Validation Performance Warning: [ WARNING-Shader-OutputNotConsumed ] Object 0: handle = 0x560000000056, type = VK_OBJECT_TYPE_SHADER_MODULE; | MessageID = 0xc81ad50e | vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 1 not consumed by vertex shader.
+[vk] Vulkan loader/general warning: Validation Performance Warning: [ WARNING-Shader-OutputNotConsumed ] Object 0: handle = 0x560000000056, type = VK_OBJECT_TYPE_SHADER_MODULE; | MessageID = 0xc81ad50e | vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 2 not consumed by vertex shader.
+[vk] Vulkan loader/general warning: Validation Performance Warning: [ WARNING-Shader-OutputNotConsumed ] Object 0: handle = 0x560000000056, type = VK_OBJECT_TYPE_SHADER_MODULE; | MessageID = 0xc81ad50e | vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 3 not consumed by vertex shader.
+[vk] Vulkan loader/general warning: Validation Performance Warning: [ WARNING-Shader-OutputNotConsumed ] Object 0: handle = 0x560000000056, type = VK_OBJECT_TYPE_SHADER_MODULE; | MessageID = 0xc81ad50e | vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 4 not consumed by vertex shader.
+[vk] Vulkan loader/general warning: Validation Performance Warning: [ WARNING-Shader-OutputNotConsumed ] Object 0: handle = 0x560000000056, type = VK_OBJECT_TYPE_SHADER_MODULE; | MessageID = 0xc81ad50e | vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 6 not consumed by vertex shader.
+[vk] Vulkan loader/general warning: Validation Performance Warning: [ WARNING-Shader-OutputNotConsumed ] Object 0: handle = 0x560000000056, type = VK_OBJECT_TYPE_SHADER_MODULE; | MessageID = 0xc81ad50e | vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 7 not consumed by vertex shader.
+[pipeline-profile] end kind=graphics caller=operator():2467 ms=0.679928 result=0
+[pipeline-profile] begin kind=graphics caller=operator():2467 count=1
+[pipeline-profile] stage=0 flag=0x1 module=0000540000000054 entry=main
+[pipeline-profile] stage=1 flag=0x10 module=0000530000000053 entry=main
+[vk] Vulkan loader/general warning: Validation Performance Warning: [ WARNING-Shader-OutputNotConsumed ] Object 0: handle = 0x540000000054, type = VK_OBJECT_TYPE_SHADER_MODULE; Object 1: handle = 0x530000000053, type = VK_OBJECT_TYPE_SHADER_MODULE; | MessageID = 0xc81ad50e | vkCreateGraphicsPipelines(): pCreateInfos[0] (SPIR-V Interface) VK_SHADER_STAGE_VERTEX_BIT declared to output location 17 Component 0 but is not an Input declared by VK_SHADER_STAGE_FRAGMENT_BIT.
+[pipeline-profile] end kind=graphics caller=operator():2467 ms=21573.881569 result=0
+[pipeline-profile] shader=raster_water.vert.spv module=00005a000000005a spv_fnv64=b83c9b57a12d749e bytes=8028
+[pipeline-profile] begin kind=graphics caller=operator():2467 count=1
+[pipeline-profile] stage=0 flag=0x1 module=00005a000000005a entry=main
+[pipeline-profile] stage=1 flag=0x10 module=0000530000000053 entry=main
+[vk] Vulkan loader/general warning: Validation Performance Warning: [ WARNING-Shader-OutputNotConsumed ] Object 0: handle = 0x5a000000005a, type = VK_OBJECT_TYPE_SHADER_MODULE; Object 1: handle = 0x530000000053, type = VK_OBJECT_TYPE_SHADER_MODULE; | MessageID = 0xc81ad50e | vkCreateGraphicsPipelines(): pCreateInfos[0] (SPIR-V Interface) VK_SHADER_STAGE_VERTEX_BIT declared to output location 17 Component 0 but is not an Input declared by VK_SHADER_STAGE_FRAGMENT_BIT.
+[pipeline-profile] end kind=graphics caller=operator():2467 ms=21526.928443 result=0
+[pipeline-profile] begin kind=graphics caller=operator():2467 count=1
+[pipeline-profile] stage=0 flag=0x1 module=0000520000000052 entry=main
+[pipeline-profile] stage=1 flag=0x10 module=0000530000000053 entry=main
+[vk] Vulkan loader/general warning: Validation Performance Warning: [ WARNING-Shader-OutputNotConsumed ] Object 0: handle = 0x520000000052, type = VK_OBJECT_TYPE_SHADER_MODULE; Object 1: handle = 0x530000000053, type = VK_OBJECT_TYPE_SHADER_MODULE; | MessageID = 0xc81ad50e | vkCreateGraphicsPipelines(): pCreateInfos[0] (SPIR-V Interface) VK_SHADER_STAGE_VERTEX_BIT declared to output location 17 Component 0 but is not an Input declared by VK_SHADER_STAGE_FRAGMENT_BIT.
+[pipeline-profile] end kind=graphics caller=operator():2467 ms=23989.836476 result=0
+[pipeline-profile] begin kind=graphics caller=operator():2467 count=1
+[pipeline-profile] stage=0 flag=0x1 module=0000540000000054 entry=main
+[pipeline-profile] stage=1 flag=0x10 module=0000530000000053 entry=main
+[vk] Vulkan loader/general warning: Validation Performance Warning: [ WARNING-Shader-OutputNotConsumed ] Object 0: handle = 0x540000000054, type = VK_OBJECT_TYPE_SHADER_MODULE; Object 1: handle = 0x530000000053, type = VK_OBJECT_TYPE_SHADER_MODULE; | MessageID = 0xc81ad50e | vkCreateGraphicsPipelines(): pCreateInfos[0] (SPIR-V Interface) VK_SHADER_STAGE_VERTEX_BIT declared to output location 17 Component 0 but is not an Input declared by VK_SHADER_STAGE_FRAGMENT_BIT.
+[pipeline-profile] end kind=graphics caller=operator():2467 ms=23224.135169 result=0
+[pipeline-profile] shader=composite.vert.spv module=0000610000000061 spv_fnv64=3fa5ead47188214f bytes=916
+[pipeline-profile] shader=composite.frag.spv module=0000620000000062 spv_fnv64=5fecb2f9ffb5dabc bytes=76012
+[pipeline-profile] begin kind=graphics caller=create_raster_pipelines:2626 count=1
+[pipeline-profile] stage=0 flag=0x1 module=0000610000000061 entry=main
+[pipeline-profile] stage=1 flag=0x10 module=0000620000000062 entry=main
+[pipeline-profile] stage=1 specialization_bytes=4 fnv64=4d25767f9dce13f5
+[pipeline-profile] end kind=graphics caller=create_raster_pipelines:2626 ms=107.449597 result=0
+[pipeline-profile] shader=raster.vert.spv module=0000710000000071 spv_fnv64=cbfac7417ae13057 bytes=12232
+[pipeline-profile] shader=raster_water.vert.spv module=0000720000000072 spv_fnv64=b83c9b57a12d749e bytes=8028
+[pipeline-profile] shader=water_forward.frag.spv module=0000730000000073 spv_fnv64=b102ba572d559f18 bytes=107740
+[pipeline-profile] begin kind=graphics caller=create_water_forward_pipelines:178 count=1
+[pipeline-profile] stage=0 flag=0x1 module=0000710000000071 entry=main
+[pipeline-profile] stage=1 flag=0x10 module=0000730000000073 entry=main
+[vk] Vulkan loader/general warning: Validation Performance Warning: [ WARNING-Shader-OutputNotConsumed ] Object 0: handle = 0x710000000071, type = VK_OBJECT_TYPE_SHADER_MODULE; Object 1: handle = 0x730000000073, type = VK_OBJECT_TYPE_SHADER_MODULE; | MessageID = 0xc81ad50e | vkCreateGraphicsPipelines(): pCreateInfos[0] (SPIR-V Interface) VK_SHADER_STAGE_VERTEX_BIT declared to output location 11 Component 0 but is not an Input declared by VK_SHADER_STAGE_FRAGMENT_BIT.
+[pipeline-profile] end kind=graphics caller=create_water_forward_pipelines:178 ms=121.773404 result=0
+[pipeline-profile] begin kind=graphics caller=create_water_forward_pipelines:193 count=1
+[pipeline-profile] stage=0 flag=0x1 module=0000720000000072 entry=main
+[pipeline-profile] stage=1 flag=0x10 module=0000730000000073 entry=main
+[vk] Vulkan loader/general warning: Validation Performance Warning: [ WARNING-Shader-OutputNotConsumed ] Object 0: handle = 0x720000000072, type = VK_OBJECT_TYPE_SHADER_MODULE; Object 1: handle = 0x730000000073, type = VK_OBJECT_TYPE_SHADER_MODULE; | MessageID = 0xc81ad50e | vkCreateGraphicsPipelines(): pCreateInfos[0] (SPIR-V Interface) VK_SHADER_STAGE_VERTEX_BIT declared to output location 11 Component 0 but is not an Input declared by VK_SHADER_STAGE_FRAGMENT_BIT.
+[pipeline-profile] end kind=graphics caller=create_water_forward_pipelines:193 ms=113.625834 result=0
+[pipeline-profile] shader=composite.vert.spv module=0000780000000078 spv_fnv64=3fa5ead47188214f bytes=916
+[pipeline-profile] shader=display_transform.frag.spv module=0000790000000079 spv_fnv64=384bdbddd6dd21ec bytes=5188
+[pipeline-profile] begin kind=graphics caller=create_display_pipeline:2801 count=1
+[pipeline-profile] stage=0 flag=0x1 module=0000780000000078 entry=main
+[pipeline-profile] stage=1 flag=0x10 module=0000790000000079 entry=main
+[pipeline-profile] end kind=graphics caller=create_display_pipeline:2801 ms=2.358106 result=0
+[pipeline-profile] shader=selection_line.vert.spv module=00007c000000007c spv_fnv64=cd31e2d21002c573 bytes=956
+[pipeline-profile] shader=selection_line.frag.spv module=00007d000000007d spv_fnv64=98a2772f10953eef bytes=312
+[pipeline-profile] begin kind=graphics caller=create_overlay_line_pipeline:2919 count=1
+[pipeline-profile] stage=0 flag=0x1 module=00007c000000007c entry=main
+[pipeline-profile] stage=1 flag=0x10 module=00007d000000007d entry=main
+[pipeline-profile] end kind=graphics caller=create_overlay_line_pipeline:2919 ms=0.255819 result=0
+[pipeline-profile] shader=gi_temporal.comp.spv module=0000810000000081 spv_fnv64=75de2fb397c76caa bytes=33640
+[pipeline-profile] begin kind=compute caller=create_gi_temporal_pipeline:57 count=1
+[pipeline-profile] stage=0 flag=0x20 module=0000810000000081 entry=main
+[pipeline-profile] end kind=compute caller=create_gi_temporal_pipeline:57 ms=32.355232 result=0
+[pipeline-profile] shader=gi_atrous.comp.spv module=0000850000000085 spv_fnv64=560a4c5f6fe2b996 bytes=10956
+[pipeline-profile] begin kind=compute caller=create_gi_atrous_pipeline:117 count=1
+[pipeline-profile] stage=0 flag=0x20 module=0000850000000085 entry=main
+[pipeline-profile] end kind=compute caller=create_gi_atrous_pipeline:117 ms=3.261810 result=0
+[rt] independent GI shader specialization=1
+[pipeline-profile] shader=rt_shadow.rgen.spv module=0000890000000089 spv_fnv64=fb2b9ab68870aae5 bytes=27272
+[pipeline-profile] shader=rt_surface_test.rgen.spv module=00008a000000008a spv_fnv64=7f86b1136f9e45dd bytes=50588
+[pipeline-profile] shader=rt_lighting.rgen.spv module=00008b000000008b spv_fnv64=3e4165d7ed37420d bytes=1390620
+[pipeline-profile] shader=rt_visibility.rmiss.spv module=00008c000000008c spv_fnv64=846e24f9cd1ca853 bytes=164
+[pipeline-profile] shader=rt_radiance.rmiss.spv module=00008d000000008d spv_fnv64=301940d946fa7b40 bytes=908
+[pipeline-profile] shader=rt_visibility.rchit.spv module=00008e000000008e spv_fnv64=6593f085f2c20144 bytes=380
+[pipeline-profile] shader=rt_visibility.rahit.spv module=00008f000000008f spv_fnv64=babf76481d46d179 bytes=12044
+[pipeline-profile] shader=rt_surface.rchit.spv module=0000900000000090 spv_fnv64=0356a6abd65779b1 bytes=1189224
+[pipeline-profile] shader=rt_surface.rahit.spv module=0000910000000091 spv_fnv64=60e3a5c72d97b8ba bytes=9664
+[pipeline-profile] shader=rt_lighting.rgen.spv module=0000920000000092 spv_fnv64=3e4165d7ed37420d bytes=1390620
+[pipeline-profile] shader=rt_lighting.rgen.spv module=0000930000000093 spv_fnv64=3e4165d7ed37420d bytes=1390620
+[rt] local primary area samples=4 (0=adaptive); visibility diagnostic counters=1
+[rt] local-light selection code=0; packed budgets=0
+[rt] secondary local-light sampling=1 (0 exact, 1 importance reservoir)
+[rt] secondary surface detail mode=0 (0 reference, 1 adaptive, 2 normal-only)
+[pipeline-profile] begin kind=ray_tracing_shadow caller=operator():480 count=1
+[pipeline-profile] stage=0 flag=0x100 module=0000890000000089 entry=main
+[pipeline-profile] stage=1 flag=0x800 module=00008c000000008c entry=main
+[pipeline-profile] stage=2 flag=0x400 module=00008e000000008e entry=main
+[pipeline-profile] stage=3 flag=0x200 module=00008f000000008f entry=main
+[pipeline-profile] stage=3 specialization_bytes=4 fnv64=ad2aca7747985764
+[pipeline-profile] end kind=ray_tracing_shadow caller=operator():480 ms=25.330145 result=0
+[pipeline-profile] begin kind=ray_tracing_surface_test caller=operator():480 count=1
+[pipeline-profile] stage=0 flag=0x100 module=00008a000000008a entry=main
+[pipeline-profile] stage=1 flag=0x800 module=00008c000000008c entry=main
+[pipeline-profile] stage=2 flag=0x800 module=00008d000000008d entry=main
+[pipeline-profile] stage=3 flag=0x400 module=00008e000000008e entry=main
+[pipeline-profile] stage=4 flag=0x200 module=00008f000000008f entry=main
+[pipeline-profile] stage=4 specialization_bytes=4 fnv64=ad2aca7747985764
+[pipeline-profile] stage=5 flag=0x400 module=0000900000000090 entry=main
+[pipeline-profile] stage=5 specialization_bytes=4 fnv64=4d25767f9dce13f5
+[pipeline-profile] stage=6 flag=0x200 module=0000910000000091 entry=main
+[pipeline-profile] end kind=ray_tracing_surface_test caller=operator():480 ms=16305.631484 result=0
+[pipeline-profile] begin kind=ray_tracing_lighting caller=operator():480 count=1
+[pipeline-profile] stage=0 flag=0x100 module=00008b000000008b entry=main
+[pipeline-profile] stage=0 specialization_bytes=20 fnv64=e64e9a595eba0950
+[pipeline-profile] stage=1 flag=0x800 module=00008c000000008c entry=main
+[pipeline-profile] stage=2 flag=0x800 module=00008d000000008d entry=main
+[pipeline-profile] stage=3 flag=0x400 module=00008e000000008e entry=main
+[pipeline-profile] stage=4 flag=0x200 module=00008f000000008f entry=main
+[pipeline-profile] stage=4 specialization_bytes=4 fnv64=ad2aca7747985764
+[pipeline-profile] stage=5 flag=0x400 module=0000900000000090 entry=main
+[pipeline-profile] stage=5 specialization_bytes=4 fnv64=4d25767f9dce13f5
+[pipeline-profile] stage=6 flag=0x200 module=0000910000000091 entry=main
+[pipeline-profile] end kind=ray_tracing_lighting caller=operator():480 ms=37463.549424 result=0
+[pipeline-profile] begin kind=ray_tracing_diffuse caller=operator():480 count=1
+[pipeline-profile] stage=0 flag=0x100 module=0000920000000092 entry=main
+[pipeline-profile] stage=0 specialization_bytes=24 fnv64=825ee05c69fbc2e1
+[pipeline-profile] stage=1 flag=0x800 module=00008c000000008c entry=main
+[pipeline-profile] stage=2 flag=0x800 module=00008d000000008d entry=main
+[pipeline-profile] stage=3 flag=0x400 module=00008e000000008e entry=main
+[pipeline-profile] stage=4 flag=0x200 module=00008f000000008f entry=main
+[pipeline-profile] stage=4 specialization_bytes=4 fnv64=ad2aca7747985764
+[pipeline-profile] stage=5 flag=0x400 module=0000900000000090 entry=main
+[pipeline-profile] stage=5 specialization_bytes=4 fnv64=4d25767f9dce13f5
+[pipeline-profile] stage=6 flag=0x200 module=0000910000000091 entry=main
+[pipeline-profile] end kind=ray_tracing_diffuse caller=operator():480 ms=21301.792070 result=0
+[pipeline-profile] begin kind=ray_tracing_reflection caller=operator():480 count=1
+[pipeline-profile] stage=0 flag=0x100 module=0000930000000093 entry=main
+[pipeline-profile] stage=0 specialization_bytes=24 fnv64=22598c64c0317f72
+[pipeline-profile] stage=1 flag=0x800 module=00008c000000008c entry=main
+[pipeline-profile] stage=2 flag=0x800 module=00008d000000008d entry=main
+[pipeline-profile] stage=3 flag=0x400 module=00008e000000008e entry=main
+[pipeline-profile] stage=4 flag=0x200 module=00008f000000008f entry=main
+[pipeline-profile] stage=4 specialization_bytes=4 fnv64=ad2aca7747985764
+[pipeline-profile] stage=5 flag=0x400 module=0000900000000090 entry=main
+[pipeline-profile] stage=5 specialization_bytes=4 fnv64=4d25767f9dce13f5
+[pipeline-profile] stage=6 flag=0x200 module=0000910000000091 entry=main
+[pipeline-profile] end kind=ray_tracing_reflection caller=operator():480 ms=21096.592182 result=0
+[vk] static reserve: clusters 1 MiB, vertices 1 MiB, indices 1 MiB (host-visible)
+RT counters: frame slots=2
+RT counter frame: acquire fault=0
+RT counter frame: begin slot=0 serial=5 retired_sample=0 fault=0
+RT counter frame: prepared serial=5 ok=1
+RT counter frame: rendered serial=5 ok=1
+RT counter frame: recorded serial=5 ok=1
+RT counter frame: end_frame.enter serial=5
+RT counter frame: end_frame.exit serial=5 submitted=1
+RT counter frame: finalized serial=5
+RT counter frame: end slot=0 serial=5 recorded=1 submitted=1 candidate=0 sample=0 consumed=0 total=0 warnings=0
+RT counter frame: acquire fault=0
+RT counter frame: begin slot=1 serial=6 retired_sample=0 fault=0
+RT counter frame: prepared serial=6 ok=1
+RT counter frame: rendered serial=6 ok=1
+RT counter frame: recorded serial=6 ok=1
+RT counter frame: end_frame.enter serial=6
+RT counter frame: end_frame.exit serial=6 submitted=1
+RT counter frame: finalized serial=6
+RT counter frame: end slot=1 serial=6 recorded=1 submitted=1 candidate=0 sample=0 consumed=0 total=0 warnings=0
+RT counter frame: acquire fault=0
+RT counter frame: begin slot=0 serial=7 retired_sample=0 fault=0
+RT counter frame: prepared serial=7 ok=1
+RT counter frame: rendered serial=7 ok=1
+RT counter frame: recorded serial=7 ok=1
+RT counter frame: end_frame.enter serial=7
+RT counter frame: end_frame.exit serial=7 submitted=1
+RT counter frame: finalized serial=7
+RT counter frame: end slot=0 serial=7 recorded=1 submitted=1 candidate=0 sample=0 consumed=0 total=0 warnings=0
+RT counter frame: acquire fault=0
+RT counter frame: begin slot=1 serial=8 retired_sample=0 fault=0
+RT counter frame: prepared serial=8 ok=1
+RT counter frame: rendered serial=8 ok=1
+RT counter frame: recorded serial=8 ok=1
+RT counter frame: end_frame.enter serial=8
+RT counter frame: end_frame.exit serial=8 submitted=1
+RT counter frame: finalized serial=8
+RT counter frame: end slot=1 serial=8 recorded=1 submitted=1 candidate=0 sample=0 consumed=0 total=0 warnings=0
+RT counter frame: acquire fault=0
+RT counter frame: begin slot=0 serial=9 retired_sample=0 fault=0
+RT counter frame: prepared serial=9 ok=1
+RT counter frame: rendered serial=9 ok=1
+RT counter frame: recorded serial=9 ok=1
+RT counter frame: end_frame.enter serial=9
+RT counter frame: end_frame.exit serial=9 submitted=1
+RT counter frame: finalized serial=9
+RT counter frame: end slot=0 serial=9 recorded=1 submitted=1 candidate=0 sample=0 consumed=0 total=0 warnings=0
+RT counter frame: acquire fault=0
+RT counter frame: begin slot=1 serial=10 retired_sample=0 fault=0
+RT counter frame: prepared serial=10 ok=1
+RT counter frame: rendered serial=10 ok=1
+RT counter frame: recorded serial=10 ok=1
+RT counter frame: end_frame.enter serial=10
+RT counter frame: end_frame.exit serial=10 submitted=1
+RT counter frame: finalized serial=10
+RT counter frame: end slot=1 serial=10 recorded=1 submitted=1 candidate=0 sample=0 consumed=0 total=0 warnings=0
+RT counter frame: acquire fault=0
+RT counter frame: begin slot=0 serial=11 retired_sample=0 fault=0
+RT counter frame: prepared serial=11 ok=1
+RT counter frame: rendered serial=11 ok=1
+RT counter frame: recorded serial=11 ok=1
+RT counter frame: end_frame.enter serial=11
+RT counter frame: end_frame.exit serial=11 submitted=1
+RT counter frame: finalized serial=11
+RT counter frame: end slot=0 serial=11 recorded=1 submitted=1 candidate=0 sample=0 consumed=0 total=0 warnings=0
+RT counter frame: acquire fault=0
+RT counter frame: begin slot=1 serial=12 retired_sample=0 fault=0
+RT counter frame: prepared serial=12 ok=1
+RT counter frame: rendered serial=12 ok=1
+RT counter frame: recorded serial=12 ok=1
+RT counter frame: end_frame.enter serial=12
+RT counter frame: end_frame.exit serial=12 submitted=1
+RT counter frame: finalized serial=12
+RT counter frame: end slot=1 serial=12 recorded=1 submitted=1 candidate=0 sample=0 consumed=0 total=0 warnings=0
+RT counter frame: acquire fault=0
+RT counter frame: begin slot=0 serial=13 retired_sample=0 fault=0
+RT counter frame: prepared serial=13 ok=1
+RT counter frame: rendered serial=13 ok=1
+RT counter frame: recorded serial=13 ok=1
+RT counter frame: end_frame.enter serial=13
+RT counter frame: end_frame.exit serial=13 submitted=1
+RT counter frame: finalized serial=13
+RT counter frame: end slot=0 serial=13 recorded=1 submitted=1 candidate=0 sample=0 consumed=0 total=0 warnings=0
+RT counter frame: acquire fault=0
+RT counter frame: begin slot=1 serial=14 retired_sample=0 fault=0
+RT counter frame: prepared serial=14 ok=1
+RT counter frame: rendered serial=14 ok=1
+RT counter frame: recorded serial=14 ok=1
+RT counter frame: end_frame.enter serial=14
+RT counter frame: end_frame.exit serial=14 submitted=1
+RT counter frame: finalized serial=14
+RT counter frame: end slot=1 serial=14 recorded=1 submitted=1 candidate=0 sample=0 consumed=0 total=0 warnings=0
+RT counter frame: acquire fault=0
+RT counter frame: begin slot=0 serial=15 retired_sample=0 fault=0
+RT counter frame: prepared serial=15 ok=1
+RT counter frame: rendered serial=15 ok=1
+RT counter frame: recorded serial=15 ok=1
+RT counter frame: end_frame.enter serial=15
+RT counter frame: end_frame.exit serial=15 submitted=1
+RT counter frame: finalized serial=15
+RT counter frame: end slot=0 serial=15 recorded=1 submitted=1 candidate=0 sample=0 consumed=0 total=0 warnings=0
+RT counter frame: acquire fault=0
+RT counter frame: begin slot=1 serial=16 retired_sample=0 fault=0
+RT counter frame: prepared serial=16 ok=1
+RT counter frame: rendered serial=16 ok=1
+RT counter frame: recorded serial=16 ok=1
+RT counter frame: end_frame.enter serial=16
+RT counter frame: end_frame.exit serial=16 submitted=1
+RT counter frame: finalized serial=16
+RT counter frame: end slot=1 serial=16 recorded=1 submitted=1 candidate=0 sample=0 consumed=0 total=0 warnings=0
+RT counter frame: acquire fault=0
+RT counter frame: begin slot=0 serial=17 retired_sample=0 fault=0
+RT counter frame: prepared serial=17 ok=1
+RT counter frame: rendered serial=17 ok=1
+RT counter frame: recorded serial=17 ok=1
+RT counter frame: end_frame.enter serial=17
+RT counter frame: end_frame.exit serial=17 submitted=1
+RT counter frame: finalized serial=17
+RT counter frame: end slot=0 serial=17 recorded=1 submitted=1 candidate=0 sample=0 consumed=0 total=0 warnings=0
+RT counter frame: acquire fault=0
+RT counter frame: begin slot=1 serial=18 retired_sample=0 fault=0
+RT counter frame: prepared serial=18 ok=1
+RT counter frame: rendered serial=18 ok=1
+RT counter frame: recorded serial=18 ok=1
+RT counter frame: end_frame.enter serial=18
+RT counter frame: end_frame.exit serial=18 submitted=1
+RT counter frame: finalized serial=18
+RT counter frame: end slot=1 serial=18 recorded=1 submitted=1 candidate=0 sample=0 consumed=0 total=0 warnings=0
+RT counter frame: acquire fault=0
+RT counter frame: begin slot=0 serial=19 retired_sample=0 fault=0
+RT counter frame: prepared serial=19 ok=1
+RT counter frame: rendered serial=19 ok=1
+RT counter frame: recorded serial=19 ok=1
+RT counter frame: end_frame.enter serial=19
+RT counter frame: end_frame.exit serial=19 submitted=1
+RT counter frame: finalized serial=19
+RT counter frame: end slot=0 serial=19 recorded=1 submitted=1 candidate=0 sample=0 consumed=0 total=0 warnings=0
+RT counter frame: acquire fault=0
+RT counter frame: begin slot=1 serial=20 retired_sample=0 fault=0
+RT counter frame: prepared serial=20 ok=1
+RT counter frame: rendered serial=20 ok=1
+RT counter frame: recorded serial=20 ok=1
+RT counter frame: end_frame.enter serial=20
+RT counter frame: end_frame.exit serial=20 submitted=1
+RT counter frame: finalized serial=20
+RT counter frame: end slot=1 serial=20 recorded=1 submitted=1 candidate=0 sample=0 consumed=0 total=0 warnings=0
+RT counter frame: acquire fault=0
+RT counter frame: begin slot=0 serial=21 retired_sample=0 fault=0
+RT counter frame: prepared serial=21 ok=1
+RT counter frame: rendered serial=21 ok=1
+RT counter frame: recorded serial=21 ok=1
+RT counter frame: end_frame.enter serial=21
+RT counter frame: end_frame.exit serial=21 submitted=1
+RT counter frame: finalized serial=21
+RT counter frame: end slot=0 serial=21 recorded=1 submitted=1 candidate=1 sample=21 consumed=0 total=0 warnings=0
+RT counter frame: acquire fault=0
+RT counter frame: begin slot=1 serial=22 retired_sample=0 fault=0
+RT counter frame: prepared serial=22 ok=1
+RT counter frame: rendered serial=22 ok=1
+RT counter frame: recorded serial=22 ok=1
+RT counter frame: end_frame.enter serial=22
+RT counter frame: end_frame.exit serial=22 submitted=1
+RT counter frame: finalized serial=22
+RT counter frame: end slot=1 serial=22 recorded=1 submitted=1 candidate=1 sample=22 consumed=0 total=0 warnings=0
+RT counter frame: acquire fault=0
+RT counter frame: begin slot=0 serial=23 retired_sample=21 fault=0
+RT counter frame: prepared serial=23 ok=1
+[rt-counter] consumer=report_rt_trace_counters slot=0 serial=21 rejected=7 samples=1 total=7
+[vk] RT rejected 7 surface lookup(s) in the last retired RT sample (7 total) -- a rejected lookup traced a stale or unwritten rt_parts record
+RT counter frame: rendered serial=23 ok=1
+RT counter frame: recorded serial=23 ok=1
+RT counter frame: end_frame.enter serial=23
+RT counter frame: end_frame.exit serial=23 submitted=1
+RT counter frame: finalized serial=23
+RT counter frame: end slot=0 serial=23 recorded=1 submitted=1 candidate=0 sample=0 consumed=1 total=7 warnings=1
+RT counter frame: acquire fault=0
+RT counter frame: begin slot=1 serial=24 retired_sample=22 fault=0
+RT counter frame: prepared serial=24 ok=1
+[rt-counter] consumer=report_rt_trace_counters slot=1 serial=22 rejected=7 samples=2 total=14
+RT counter frame: rendered serial=24 ok=1
+RT counter frame: recorded serial=24 ok=1
+RT counter frame: end_frame.enter serial=24
+RT counter frame: end_frame.exit serial=24 submitted=1
+RT counter frame: finalized serial=24
+RT counter frame: end slot=1 serial=24 recorded=1 submitted=1 candidate=0 sample=0 consumed=2 total=14 warnings=1
+RT counter frame: acquire fault=0
+RT counter frame: begin slot=0 serial=25 retired_sample=0 fault=0
+RT counter frame: prepared serial=25 ok=1
+RT counter frame: rendered serial=25 ok=1
+RT counter frame: recorded serial=25 ok=1
+RT counter frame: end_frame.enter serial=25
+RT counter frame: end_frame.exit serial=25 submitted=1
+RT counter frame: finalized serial=25
+RT counter frame: end slot=0 serial=25 recorded=1 submitted=1 candidate=0 sample=0 consumed=2 total=14 warnings=1
+RT counter frame: acquire fault=0
+RT counter frame: begin slot=1 serial=26 retired_sample=0 fault=0
+RT counter frame: prepared serial=26 ok=1
+RT counter frame: rendered serial=26 ok=1
+RT counter frame: recorded serial=26 ok=1
+RT counter frame: end_frame.enter serial=26
+RT counter frame: end_frame.exit serial=26 submitted=1
+RT counter frame: finalized serial=26
+RT counter frame: end slot=1 serial=26 recorded=1 submitted=1 candidate=0 sample=0 consumed=2 total=14 warnings=1
+RT counter frame: acquire fault=0
+RT counter frame: begin slot=0 serial=27 retired_sample=0 fault=0
+RT counter frame: prepared serial=27 ok=1
+RT counter frame: rendered serial=27 ok=1
+RT counter frame: recorded serial=27 ok=1
+RT counter frame: end_frame.enter serial=27
+RT counter frame: end_frame.exit serial=27 submitted=1
+RT counter frame: finalized serial=27
+RT counter frame: end slot=0 serial=27 recorded=1 submitted=1 candidate=1 sample=27 consumed=2 total=14 warnings=1
+RT counter frame: acquire fault=0
+RT counter frame: begin slot=1 serial=28 retired_sample=0 fault=0
+RT counter frame: prepared serial=28 ok=1
+RT counter frame: rendered serial=28 ok=1
+RT counter frame: recorded serial=28 ok=1
+RT counter frame: end_frame.enter serial=28
+RT counter frame: end_frame.exit serial=28 submitted=1
+RT counter frame: finalized serial=28
+RT counter frame: end slot=1 serial=28 recorded=1 submitted=1 candidate=1 sample=28 consumed=2 total=14 warnings=1
+RT counter frame: acquire fault=0
+RT counter frame: begin slot=0 serial=29 retired_sample=27 fault=0
+RT counter frame: prepared serial=29 ok=1
+[rt-counter] consumer=report_rt_trace_counters slot=0 serial=27 rejected=2 samples=3 total=16
+[vk] RT rejected 2 surface lookup(s) in the last retired RT sample (16 total) -- a rejected lookup traced a stale or unwritten rt_parts record
+RT counter frame: rendered serial=29 ok=1
+RT counter frame: recorded serial=29 ok=1
+RT counter frame: end_frame.enter serial=29
+RT counter frame: end_frame.exit serial=29 submitted=1
+RT counter frame: finalized serial=29
+RT counter frame: end slot=0 serial=29 recorded=1 submitted=1 candidate=0 sample=0 consumed=3 total=16 warnings=2
+RT counter frame: acquire fault=0
+RT counter frame: begin slot=1 serial=30 retired_sample=28 fault=0
+RT counter frame: prepared serial=30 ok=1
+[rt-counter] consumer=report_rt_trace_counters slot=1 serial=28 rejected=3 samples=4 total=19
+[vk] RT rejected 3 surface lookup(s) in the last retired RT sample (19 total) -- a rejected lookup traced a stale or unwritten rt_parts record
+RT counter frame: rendered serial=30 ok=1
+RT counter frame: recorded serial=30 ok=1
+RT counter frame: end_frame.enter serial=30
+RT counter frame: end_frame.exit serial=30 submitted=1
+RT counter frame: finalized serial=30
+RT counter frame: end slot=1 serial=30 recorded=1 submitted=1 candidate=0 sample=0 consumed=4 total=19 warnings=3
+RT counter frame: acquire fault=0
+RT counter frame: begin slot=0 serial=31 retired_sample=0 fault=0
+RT counter frame: prepared serial=31 ok=1
+RT counter frame: rendered serial=31 ok=1
+RT counter frame: recorded serial=31 ok=1
+RT counter frame: end_frame.enter serial=31
+RT counter frame: end_frame.exit serial=31 submitted=1
+RT counter frame: finalized serial=31
+RT counter frame: end slot=0 serial=31 recorded=1 submitted=1 candidate=0 sample=0 consumed=4 total=19 warnings=3
+RT counter frame: acquire fault=0
+RT counter frame: begin slot=1 serial=32 retired_sample=0 fault=0
+RT counter frame: prepared serial=32 ok=1
+RT counter frame: rendered serial=32 ok=1
+RT counter frame: recorded serial=32 ok=1
+RT counter frame: end_frame.enter serial=32
+RT counter frame: end_frame.exit serial=32 submitted=1
+RT counter frame: finalized serial=32
+RT counter frame: end slot=1 serial=32 recorded=1 submitted=1 candidate=0 sample=0 consumed=4 total=19 warnings=3
+RT counter frame: acquire fault=0
+RT counter frame: begin slot=0 serial=33 retired_sample=0 fault=0
+RT counter frame: prepared serial=33 ok=1
+RT counter frame: rendered serial=33 ok=1
+RT counter frame: recorded serial=33 ok=1
+RT counter frame: end_frame.enter serial=33
+RT counter frame: end_frame.exit serial=33 submitted=1
+RT counter frame: finalized serial=33
+RT counter frame: end slot=0 serial=33 recorded=1 submitted=1 candidate=0 sample=0 consumed=4 total=19 warnings=3
+RT counter frame: acquire fault=0
+RT counter frame: begin slot=1 serial=34 retired_sample=0 fault=0
+RT counter frame: prepared serial=34 ok=1
+RT counter frame: rendered serial=34 ok=1
+RT counter frame: recorded serial=34 ok=1
+RT counter frame: end_frame.enter serial=34
+RT counter frame: end_frame.exit serial=34 submitted=1
+RT counter frame: finalized serial=34
+RT counter frame: end slot=1 serial=34 recorded=1 submitted=1 candidate=0 sample=0 consumed=4 total=19 warnings=3
+RT counter frame: acquire fault=0
+RT counter frame: begin slot=0 serial=35 retired_sample=0 fault=0
+RT counter frame: prepared serial=35 ok=1
+RT counter frame: rendered serial=35 ok=1
+RT counter frame: recorded serial=35 ok=1
+RT counter frame: end_frame.enter serial=35
+RT counter frame: end_frame.exit serial=35 submitted=1
+RT counter frame: finalized serial=35
+RT counter frame: end slot=0 serial=35 recorded=1 submitted=1 candidate=0 sample=0 consumed=4 total=19 warnings=3
+RT counter frame: acquire fault=0
+RT counter frame: begin slot=1 serial=36 retired_sample=0 fault=0
+RT counter frame: prepared serial=36 ok=1
+RT counter frame: rendered serial=36 ok=1
+RT counter frame: recorded serial=36 ok=1
+RT counter frame: end_frame.enter serial=36
+RT counter frame: end_frame.exit serial=36 submitted=1
+RT counter frame: finalized serial=36
+RT counter frame: end slot=1 serial=36 recorded=1 submitted=1 candidate=0 sample=0 consumed=4 total=19 warnings=3
+RT counter frame: acquire fault=0
+RT counter frame: begin slot=0 serial=37 retired_sample=0 fault=0
+RT counter frame: prepared serial=37 ok=1
+RT counter frame: rendered serial=37 ok=1
+RT counter frame: recorded serial=37 ok=1
+RT counter frame: end_frame.enter serial=37
+RT counter frame: end_frame.exit serial=37 submitted=1
+RT counter frame: finalized serial=37
+RT counter frame: end slot=0 serial=37 recorded=1 submitted=1 candidate=1 sample=37 consumed=4 total=19 warnings=3
+RT counter frame: acquire fault=0
+RT counter frame: begin slot=1 serial=38 retired_sample=0 fault=0
+RT counter frame: prepared serial=38 ok=1
+RT counter frame: rendered serial=38 ok=1
+RT counter frame: recorded serial=38 ok=1
+RT counter frame: end_frame.enter serial=38
+RT counter frame: end_frame.exit serial=38 submitted=1
+RT counter frame: finalized serial=38
+RT counter frame: end slot=1 serial=38 recorded=1 submitted=1 candidate=0 sample=0 consumed=4 total=19 warnings=3
+RT counter frame: acquire fault=0
+RT counter frame: begin slot=0 serial=39 retired_sample=37 fault=0
+RT counter frame: prepared serial=39 ok=1
+[rt-counter] consumer=report_rt_trace_counters slot=0 serial=37 rejected=4 samples=5 total=23
+[vk] RT rejected 4 surface lookup(s) in the last retired RT sample (23 total) -- a rejected lookup traced a stale or unwritten rt_parts record
+RT counter frame: rendered serial=39 ok=1
+RT counter frame: recorded serial=39 ok=1
+RT counter frame: end_frame.enter serial=39
+RT counter frame: end_frame.exit serial=39 submitted=1
+RT counter frame: finalized serial=39
+RT counter frame: end slot=0 serial=39 recorded=1 submitted=1 candidate=0 sample=0 consumed=5 total=23 warnings=4
+RT counter frame: acquire fault=0
+RT counter frame: begin slot=1 serial=40 retired_sample=0 fault=0
+RT counter frame: prepared serial=40 ok=1
+RT counter frame: rendered serial=40 ok=1
+RT counter frame: recorded serial=40 ok=1
+RT counter frame: end_frame.enter serial=40
+RT counter frame: end_frame.exit serial=40 submitted=1
+RT counter frame: finalized serial=40
+RT counter frame: end slot=1 serial=40 recorded=1 submitted=1 candidate=0 sample=0 consumed=5 total=23 warnings=4
+RT counter frame: acquire fault=0
+RT counter frame: begin slot=0 serial=41 retired_sample=0 fault=0
+RT counter frame: prepared serial=41 ok=1
+RT counter frame: rendered serial=41 ok=1
+RT counter frame: recorded serial=41 ok=1
+RT counter frame: end_frame.enter serial=41
+RT counter frame: end_frame.exit serial=41 submitted=1
+RT counter frame: finalized serial=41
+RT counter frame: end slot=0 serial=41 recorded=1 submitted=1 candidate=0 sample=0 consumed=5 total=23 warnings=4
+RT counter frame: acquire fault=1
+RT counter frame: begin slot=1 serial=42 retired_sample=0 fault=1
+RT counter frame: prepared serial=42 ok=1
+RT counter frame: rendered serial=42 ok=0
+RT counter frame: recorded serial=42 ok=0
+RT counter frame: end slot=1 serial=42 recorded=0 submitted=0 candidate=0 sample=0 consumed=5 total=23 warnings=4
+RT counter frame: acquire fault=2
+[vk] present requested=auto effective=fifo(2) supported=[immediate(0),mailbox(1),fifo(2),fifo_relaxed(3)] images=4 extent=320x200
+RT counter frame: begin slot=1 serial=43 retired_sample=0 fault=2
+RT counter frame: prepared serial=43 ok=1
+RT counter frame: rendered serial=43 ok=1
+RT counter frame: recorded serial=43 ok=1
+RT counter frame: end slot=1 serial=43 recorded=1 submitted=0 candidate=1 sample=0 consumed=5 total=23 warnings=4
+RT counter frame: acquire fault=3
+[vk] present requested=auto effective=fifo(2) supported=[immediate(0),mailbox(1),fifo(2),fifo_relaxed(3)] images=4 extent=320x200
+RT counter frame: begin slot=1 serial=44 retired_sample=0 fault=3
+RT counter frame: prepared serial=44 ok=1
+RT counter frame: rendered serial=44 ok=1
+RT counter frame: recorded serial=44 ok=1
+RT counter frame: end slot=1 serial=44 recorded=1 submitted=0 candidate=1 sample=0 consumed=5 total=23 warnings=4
+RT counter frame: acquire fault=0
+[vk] present requested=auto effective=fifo(2) supported=[immediate(0),mailbox(1),fifo(2),fifo_relaxed(3)] images=4 extent=320x200
+RT counter frame: begin slot=1 serial=45 retired_sample=0 fault=0
+RT counter frame: prepared serial=45 ok=1
+RT counter frame: rendered serial=45 ok=1
+RT counter frame: recorded serial=45 ok=1
+RT counter frame: end_frame.enter serial=45
+RT counter frame: end_frame.exit serial=45 submitted=1
+RT counter frame: finalized serial=45
+RT counter frame: end slot=1 serial=45 recorded=1 submitted=1 candidate=0 sample=0 consumed=5 total=23 warnings=4
+RT counter frame: acquire fault=0
+RT counter frame: begin slot=0 serial=46 retired_sample=0 fault=0
+RT counter frame: prepared serial=46 ok=1
+RT counter frame: rendered serial=46 ok=1
+RT counter frame: recorded serial=46 ok=1
+RT counter frame: end_frame.enter serial=46
+RT counter frame: end_frame.exit serial=46 submitted=1
+RT counter frame: finalized serial=46
+RT counter frame: end slot=0 serial=46 recorded=1 submitted=1 candidate=0 sample=0 consumed=5 total=23 warnings=4
+RT counter frame: acquire fault=0
+RT counter frame: begin slot=1 serial=47 retired_sample=0 fault=0
+RT counter frame: prepared serial=47 ok=1
+RT counter frame: rendered serial=47 ok=1
+RT counter frame: recorded serial=47 ok=1
+RT counter frame: end_frame.enter serial=47
+RT counter frame: end_frame.exit serial=47 submitted=1
+RT counter frame: finalized serial=47
+RT counter frame: end slot=1 serial=47 recorded=1 submitted=1 candidate=0 sample=0 consumed=5 total=23 warnings=4
+RT counter frame: acquire fault=0
+RT counter frame: begin slot=0 serial=48 retired_sample=0 fault=0
+RT counter frame: prepared serial=48 ok=1
+RT counter frame: rendered serial=48 ok=1
+RT counter frame: recorded serial=48 ok=1
+RT counter frame: end_frame.enter serial=48
+RT counter frame: end_frame.exit serial=48 submitted=1
+RT counter frame: finalized serial=48
+RT counter frame: end slot=0 serial=48 recorded=1 submitted=1 candidate=0 sample=0 consumed=5 total=23 warnings=4
+RT counter frame: acquire fault=0
+RT counter frame: begin slot=1 serial=49 retired_sample=0 fault=0
+RT counter frame: prepared serial=49 ok=1
+RT counter frame: rendered serial=49 ok=1
+RT counter frame: recorded serial=49 ok=1
+RT counter frame: end_frame.enter serial=49
+RT counter frame: end_frame.exit serial=49 submitted=1
+RT counter frame: finalized serial=49
+RT counter frame: end slot=1 serial=49 recorded=1 submitted=1 candidate=1 sample=49 consumed=5 total=23 warnings=4
+[rt-counter] consumer=report_rt_trace_counters slot=1 serial=49 rejected=6 samples=6 total=29
+[vk] RT rejected 6 surface lookup(s) in the last retired RT sample (29 total) -- a rejected lookup traced a stale or unwritten rt_parts record
+RT counter frame: acquire fault=0
+RT counter frame: begin slot=0 serial=50 retired_sample=0 fault=0
+RT counter frame: prepared serial=50 ok=1
+RT counter frame: rendered serial=50 ok=1
+RT counter frame: recorded serial=50 ok=1
+RT counter frame: end_frame.enter serial=50
+RT counter frame: end_frame.exit serial=50 submitted=1
+RT counter frame: finalized serial=50
+RT counter frame: end slot=0 serial=50 recorded=1 submitted=1 candidate=0 sample=0 consumed=6 total=29 warnings=5
+RT counter frame: acquire fault=0
+RT counter frame: begin slot=1 serial=51 retired_sample=0 fault=0
+RT counter frame: prepared serial=51 ok=1
+RT counter frame: rendered serial=51 ok=1
+RT counter frame: recorded serial=51 ok=1
+RT counter frame: end_frame.enter serial=51
+RT counter frame: end_frame.exit serial=51 submitted=1
+RT counter frame: finalized serial=51
+RT counter frame: end slot=1 serial=51 recorded=1 submitted=1 candidate=0 sample=0 consumed=6 total=29 warnings=5
+RT counter frame: acquire fault=0
+RT counter frame: begin slot=0 serial=52 retired_sample=0 fault=0
+RT counter frame: prepared serial=52 ok=1
+RT counter frame: rendered serial=52 ok=1
+RT counter frame: recorded serial=52 ok=1
+RT counter frame: end_frame.enter serial=52
+RT counter frame: end_frame.exit serial=52 submitted=1
+RT counter frame: finalized serial=52
+RT counter frame: end slot=0 serial=52 recorded=1 submitted=1 candidate=0 sample=0 consumed=6 total=29 warnings=5
+RT counter frame: acquire fault=0
+RT counter frame: begin slot=1 serial=53 retired_sample=0 fault=0
+RT counter frame: prepared serial=53 ok=1
+RT counter frame: rendered serial=53 ok=1
+RT counter frame: recorded serial=53 ok=1
+RT counter frame: end_frame.enter serial=53
+RT counter frame: end_frame.exit serial=53 submitted=1
+RT counter frame: finalized serial=53
+RT counter frame: end slot=1 serial=53 recorded=1 submitted=1 candidate=0 sample=0 consumed=6 total=29 warnings=5
+RT counter frame: acquire fault=0
+RT counter frame: begin slot=1 serial=55 retired_sample=0 fault=0
+RT counter frame: prepared serial=55 ok=1
+RT counter frame: rendered serial=55 ok=1
+RT counter frame: recorded serial=55 ok=1
+RT counter frame: end_frame.enter serial=55
+RT counter frame: end_frame.exit serial=55 submitted=1
+RT counter frame: finalized serial=55
+RT counter frame: end slot=1 serial=55 recorded=1 submitted=1 candidate=0 sample=0 consumed=6 total=29 warnings=5
+RT counter frame: acquire fault=0
+RT counter frame: begin slot=0 serial=56 retired_sample=54 fault=0
+RT counter frame: prepared serial=56 ok=1
+[rt-counter] consumer=report_rt_trace_counters slot=0 serial=54 rejected=1 samples=7 total=30
+[vk] RT rejected 1 surface lookup(s) in the last retired RT sample (30 total) -- a rejected lookup traced a stale or unwritten rt_parts record
+RT counter frame: rendered serial=56 ok=1
+RT counter frame: recorded serial=56 ok=1
+RT counter frame: end_frame.enter serial=56
+RT counter frame: end_frame.exit serial=56 submitted=1
+RT counter frame: finalized serial=56
+RT counter frame: end slot=0 serial=56 recorded=1 submitted=1 candidate=0 sample=0 consumed=7 total=30 warnings=6
+RT counter frame: acquire fault=0
+RT counter frame: begin slot=1 serial=57 retired_sample=0 fault=0
+RT counter frame: prepared serial=57 ok=1
+RT counter frame: rendered serial=57 ok=1
+RT counter frame: recorded serial=57 ok=1
+RT counter frame: end_frame.enter serial=57
+RT counter frame: end_frame.exit serial=57 submitted=1
+RT counter frame: finalized serial=57
+RT counter frame: end slot=1 serial=57 recorded=1 submitted=1 candidate=0 sample=0 consumed=7 total=30 warnings=6
+RT counter frame: acquire fault=0
+RT counter frame: begin slot=0 serial=58 retired_sample=0 fault=0
+RT counter frame: prepared serial=58 ok=1
+RT counter frame: rendered serial=58 ok=1
+RT counter frame: recorded serial=58 ok=1
+RT counter frame: end_frame.enter serial=58
+RT counter frame: end_frame.exit serial=58 submitted=1
+RT counter frame: finalized serial=58
+RT counter frame: end slot=0 serial=58 recorded=1 submitted=1 candidate=0 sample=0 consumed=7 total=30 warnings=6
+RT counter frame: acquire fault=0
+RT counter frame: begin slot=1 serial=59 retired_sample=0 fault=0
+RT counter frame: prepared serial=59 ok=1
+RT counter frame: rendered serial=59 ok=1
+RT counter frame: recorded serial=59 ok=1
+RT counter frame: end_frame.enter serial=59
+RT counter frame: end_frame.exit serial=59 submitted=1
+RT counter frame: finalized serial=59
+RT counter frame: end slot=1 serial=59 recorded=1 submitted=1 candidate=1 sample=59 consumed=7 total=30 warnings=6
+RT counter frame: acquire fault=0
+RT counter frame: begin slot=0 serial=60 retired_sample=0 fault=0
+[vk] static upload frame bytes=552 pending_parts=0 publish=0.00 ms
+RT counter frame: prepared serial=60 ok=1
+RT counter frame: rendered serial=60 ok=1
+RT counter frame: recorded serial=60 ok=1
+RT counter frame: end_frame.enter serial=60
+RT counter frame: end_frame.exit serial=60 submitted=1
+RT counter frame: finalized serial=60
+RT counter frame: end slot=0 serial=60 recorded=1 submitted=1 candidate=0 sample=0 consumed=7 total=30 warnings=6
+RT counter frame: acquire fault=0
+RT counter frame: begin slot=1 serial=61 retired_sample=0 fault=0
+RT counter frame: prepared serial=61 ok=1
+RT counter frame: rendered serial=61 ok=1
+RT counter frame: recorded serial=61 ok=1
+RT counter frame: end_frame.enter serial=61
+RT counter frame: end_frame.exit serial=61 submitted=1
+RT counter frame: finalized serial=61
+RT counter frame: end slot=1 serial=61 recorded=1 submitted=1 candidate=0 sample=0 consumed=7 total=30 warnings=6
+RT counter frame: acquire fault=0
+RT counter frame: begin slot=0 serial=62 retired_sample=0 fault=0
+RT counter frame: prepared serial=62 ok=1
+RT counter frame: rendered serial=62 ok=1
+RT counter frame: recorded serial=62 ok=1
+RT counter frame: end_frame.enter serial=62
+RT counter frame: end_frame.exit serial=62 submitted=1
+RT counter frame: finalized serial=62
+RT counter frame: end slot=0 serial=62 recorded=1 submitted=1 candidate=0 sample=0 consumed=7 total=30 warnings=6
+RT counter frame: acquire fault=0
+RT counter frame: begin slot=1 serial=63 retired_sample=0 fault=0
+RT counter frame: prepared serial=63 ok=1
+RT counter frame: rendered serial=63 ok=1
+RT counter frame: recorded serial=63 ok=1
+RT counter frame: end_frame.enter serial=63
+RT counter frame: end_frame.exit serial=63 submitted=1
+RT counter frame: finalized serial=63
+RT counter frame: end slot=1 serial=63 recorded=1 submitted=1 candidate=0 sample=0 consumed=7 total=30 warnings=6
+RT counters: rejected surface lookups total=30 samples=7 warnings=6
+validation errors: 0
+ALL PASS
+	Command being timed: "stdbuf -oL -eL /tmp/noble-zenith-31-epoch10/vulkan_smoke_tests"
+	User time (seconds): 811.31
+	System time (seconds): 6.58
+	Percent of CPU this job got: 99%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 13:38.46
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 5643804
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 44
+	Minor (reclaiming a frame) page faults: 1817249
+	Voluntary context switches: 2626
+	Involuntary context switches: 1873
+	Swaps: 0
+	File system inputs: 119184
+	File system outputs: 2584
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0

@@ -1,0 +1,5 @@
+PASS: 37 source moves reconstruct reference exactly
+PASS: exact optimized SPIR-V vt_feedback.comp
+PASS: exact optimized SPIR-V vt_bc_encode.comp
+PASS: exact optimized SPIR-V gbuffer.frag
+PASS: exact optimized SPIR-V rt_surface_test.rgen

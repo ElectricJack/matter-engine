@@ -1,0 +1,22 @@
+aq test: no interpreter found for /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-1 (no .venv, no resources.test_interpreters entry); using /usr/bin/python3.12
+aq test: slot 1 of 6, -n 6
+$ /usr/bin/python3.12 -m pytest --dist loadfile -m 'not perf and not migration and not slow and not tmux and not integration' -n 0 docs/agent/evidence/2026-10-20-rt-counter-native/epoch7/test_compiler_trace.py -q -s
+
+[rt-counters] exit=134 rss_kb=108452 wall=0:00.77 validation=[] banner=[]
+F
+=================================== FAILURES ===================================
+____________________________ test_mode[rt-counters] ____________________________
+
+mode = 'rt-counters'
+
+    @pytest.mark.parametrize('mode', ['rt-counters'])
+    def test_mode(mode):
+        code, text, validation = run_mode(mode)
+>       assert code == 0, f'{mode} exited {code}'
+E       AssertionError: rt-counters exited 134
+E       assert 134 == 0
+
+docs/agent/evidence/2026-10-20-rt-counter-native/epoch7/test_compiler_trace.py:81: AssertionError
+=========================== short test summary info ============================
+FAILED docs/agent/evidence/2026-10-20-rt-counter-native/epoch7/test_compiler_trace.py::test_mode[rt-counters]
+1 failed in 1.08s
