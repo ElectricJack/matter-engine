@@ -41,7 +41,7 @@
 - `MatterEngine3/src/render/gpu_meshing/water_scene_part.{h,cpp}`: resolved water material/domain and explicit field-slot metadata.
 - `MatterEngine3/shaders_vk/water_surface.glsl`: shared field sampling, bounded RK2 backtrace, wave, foam, optical modulation, and temporal reactivity.
 - `MatterEngine3/shaders_vk/{raster.vert,gbuffer.frag,rt_surface_common.glsl,rt_lighting.rgen}`: transport water identity into raster/RT and consume the shared evaluator.
-- `projects/world_demo/scenes/RiverFloatLab/`: deterministic acceptance scene, raft part, crate/raft recipes, and water appearance.
+- `projects/world_demo/scenes/water/RiverFloatLab/`: deterministic acceptance scene, raft part, crate/raft recipes, and water appearance.
 - `MatterEngine3/tools/river_float_lab.timeline` and `tools/run-river-float-lab-acceptance.ps1`: fixed-camera stills, timed sequences, traces, performance gates, and evidence validation.
 
 ---
@@ -476,14 +476,14 @@ git commit -m "feat: float Box3D bodies on accepted river fields"
 
 **Files:**
 - Create: `projects/world_demo/shared-lib/river_hydrology_definition.js`
-- Create: `projects/world_demo/scenes/RiverFloatLab/RiverFloatLab.js`
-- Create: `projects/world_demo/scenes/RiverFloatLab/objects/RiverRaft.js`
+- Create: `projects/world_demo/scenes/water/RiverFloatLab/RiverFloatLab.js`
+- Create: `projects/world_demo/scenes/water/RiverFloatLab/objects/RiverRaft.js`
 - Create: `projects/world_demo/tests/river_float_lab_scene_tests.mjs`
 - Create: `MatterEngine3/tools/river_float_physics.timeline`
 - Create: `tools/run-river-float-physics-proof.ps1`
-- Modify: `projects/world_demo/scenes/RiverHydrology/RiverHydrology.js`
+- Modify: `projects/world_demo/scenes/water/RiverHydrology/RiverHydrology.js`
 - Modify: `projects/world_demo/tests/river_hydrology_scene_tests.mjs`
-- Modify: `projects/world_demo/objects/Crate.js`
+- Modify: `projects/world_demo/objects/props/Crate.js`
 - Modify: `docs/agent/qa-cookbook.md`
 
 **Interfaces:**
@@ -553,7 +553,7 @@ Expected: both Node tests pass; the two reference bodies traverse upper, fall, p
 - [ ] **Step 6: Commit the playable physics proof**
 
 ```powershell
-git add projects/world_demo/shared-lib/river_hydrology_definition.js projects/world_demo/scenes/RiverFloatLab/RiverFloatLab.js projects/world_demo/scenes/RiverFloatLab/objects/RiverRaft.js projects/world_demo/tests/river_float_lab_scene_tests.mjs MatterEngine3/tools/river_float_physics.timeline tools/run-river-float-physics-proof.ps1 projects/world_demo/scenes/RiverHydrology/RiverHydrology.js projects/world_demo/tests/river_hydrology_scene_tests.mjs projects/world_demo/objects/Crate.js docs/agent/qa-cookbook.md
+git add projects/world_demo/shared-lib/river_hydrology_definition.js projects/world_demo/scenes/water/RiverFloatLab/RiverFloatLab.js projects/world_demo/scenes/water/RiverFloatLab/objects/RiverRaft.js projects/world_demo/tests/river_float_lab_scene_tests.mjs MatterEngine3/tools/river_float_physics.timeline tools/run-river-float-physics-proof.ps1 projects/world_demo/scenes/water/RiverHydrology/RiverHydrology.js projects/world_demo/tests/river_hydrology_scene_tests.mjs projects/world_demo/objects/props/Crate.js docs/agent/qa-cookbook.md
 git commit -m "feat: add RiverFloatLab physics proof"
 ```
 
@@ -573,7 +573,7 @@ git commit -m "feat: add RiverFloatLab physics proof"
 - Modify: `MatterEngine3/tests/world_definition_tests.cpp`
 - Modify: `MatterEngine3/tests/river_network_tests.cpp`
 - Modify: `MatterEngine3/tests/gpu_water_render_tests.cpp`
-- Modify: `projects/world_demo/scenes/RiverFloatLab/RiverFloatLab.js`
+- Modify: `projects/world_demo/scenes/water/RiverFloatLab/RiverFloatLab.js`
 - Modify: `cmake/manifests/engine-core.sources`
 
 **Interfaces:**
@@ -680,7 +680,7 @@ Expected: all tests pass; the RiverFloatLab material is dynamically resolved, id
 - [x] **Step 6: Commit the dedicated water-domain slice**
 
 ```powershell
-git add libs/MatterSurfaceLib/include/material_registry.h libs/MatterSurfaceLib/src/material_registry.c libs/MatterSurfaceLib/tests/material_registry_tests.cpp MatterEngine3/include/matter/river_network.h MatterEngine3/src/hydrology/river_network_builder.h MatterEngine3/src/hydrology/river_network_builder.cpp MatterEngine3/src/script/world_definition_loader.cpp MatterEngine3/src/render/gpu_meshing/water_scene_part.h MatterEngine3/src/render/gpu_meshing/water_scene_part.cpp MatterEngine3/src/matter_engine.cpp MatterEngine3/tests/world_definition_tests.cpp MatterEngine3/tests/river_network_tests.cpp MatterEngine3/tests/gpu_water_render_tests.cpp projects/world_demo/scenes/RiverFloatLab/RiverFloatLab.js cmake/manifests/engine-core.sources
+git add libs/MatterSurfaceLib/include/material_registry.h libs/MatterSurfaceLib/src/material_registry.c libs/MatterSurfaceLib/tests/material_registry_tests.cpp MatterEngine3/include/matter/river_network.h MatterEngine3/src/hydrology/river_network_builder.h MatterEngine3/src/hydrology/river_network_builder.cpp MatterEngine3/src/script/world_definition_loader.cpp MatterEngine3/src/render/gpu_meshing/water_scene_part.h MatterEngine3/src/render/gpu_meshing/water_scene_part.cpp MatterEngine3/src/matter_engine.cpp MatterEngine3/tests/world_definition_tests.cpp MatterEngine3/tests/river_network_tests.cpp MatterEngine3/tests/gpu_water_render_tests.cpp projects/world_demo/scenes/water/RiverFloatLab/RiverFloatLab.js cmake/manifests/engine-core.sources
 git commit -m "feat: add dedicated authored water surface domain"
 ```
 
@@ -1073,7 +1073,7 @@ git commit -m "feat: add bounded ray-traced river optics"
 - Modify: `MatterEditor/src/ui.cpp`
 - Modify: `MatterEngine3/include/matter/world_session.h`
 - Modify: `MatterEngine3/src/render/vk_scene_renderer.cpp`
-- Modify: `projects/world_demo/scenes/RiverFloatLab/RiverFloatLab.js`
+- Modify: `projects/world_demo/scenes/water/RiverFloatLab/RiverFloatLab.js`
 - Modify: `docs/agent/control-surface.md`
 - Modify: `docs/agent/qa-cookbook.md`
 - Modify: `docs/README.md`
@@ -1167,7 +1167,7 @@ Launch the worktree MSVC editor in `RiverFloatLab`, enter Play, and let the user
 Document the new binding API, float-body fields, water DSL, renderer quality controls, performance JSON, evidence directory, and fallback counters. Then commit:
 
 ```powershell
-git add MatterEngine3/tools/river_float_lab.timeline tools/run-river-float-lab-acceptance.ps1 tools/tests/river_float_package_tests.ps1 MatterEditor/src/main.cpp MatterEditor/src/ui.cpp MatterEngine3/include/matter/world_session.h MatterEngine3/src/render/vk_scene_renderer.cpp projects/world_demo/scenes/RiverFloatLab/RiverFloatLab.js docs/agent/control-surface.md docs/agent/qa-cookbook.md docs/README.md cmake/MatterEngine.cmake
+git add MatterEngine3/tools/river_float_lab.timeline tools/run-river-float-lab-acceptance.ps1 tools/tests/river_float_package_tests.ps1 MatterEditor/src/main.cpp MatterEditor/src/ui.cpp MatterEngine3/include/matter/world_session.h MatterEngine3/src/render/vk_scene_renderer.cpp projects/world_demo/scenes/water/RiverFloatLab/RiverFloatLab.js docs/agent/control-surface.md docs/agent/qa-cookbook.md docs/README.md cmake/MatterEngine.cmake
 git commit -m "test: prove real-time RiverFloatLab acceptance"
 ```
 

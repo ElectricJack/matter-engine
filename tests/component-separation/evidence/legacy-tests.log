@@ -1,0 +1,80 @@
+**********************************************************************
+** Visual Studio 2022 Developer Command Prompt v17.14.7
+** Copyright (c) 2025 Microsoft Corporation
+**********************************************************************
+Preset CMake variables:
+
+  BUILD_TESTING="ON"
+  CMAKE_BUILD_TYPE="RelWithDebInfo"
+
+-- Configuring done (0.7s)
+-- Generating done (2.7s)
+-- Build files have been written to: D:/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-5/MatterEditor/build/cmake/windows-msvc/relwithdebinfo
+**********************************************************************
+** Visual Studio 2022 Developer Command Prompt v17.14.7
+** Copyright (c) 2025 Microsoft Corporation
+**********************************************************************
+[0/2] Re-checking globbed directories...
+ninja: no work to do.
+**********************************************************************
+** Visual Studio 2022 Developer Command Prompt v17.14.7
+** Copyright (c) 2025 Microsoft Corporation
+**********************************************************************
+[0/2] Re-checking globbed directories...
+[1/9] Building CXX object CMakeFiles\obj_export_golden_tests.dir\MatterEngine3\tests\obj_export_golden_tests.cpp.obj
+D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-5\MatterEngine3\tests\obj_parser.h(89): warning C4996: 'fopen': This function or variable may be unsafe. Consider using fopen_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details.
+D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-5\MatterEngine3\tests\obj_export_golden_tests.cpp(79): warning C4996: 'getenv': This function or variable may be unsafe. Consider using _dupenv_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details.
+D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-5\MatterEngine3\tests\obj_export_golden_tests.cpp(90): warning C4996: 'fopen': This function or variable may be unsafe. Consider using fopen_s instead. To disable deprecation, use _CRT_SECURE_NO_WARNINGS. See online help for details.
+[2/9] Building CXX object CMakeFiles\solid_source_evaluation_tests.dir\MatterEngine3\tests\solid_source_evaluation_tests.cpp.obj
+[3/9] Building CXX object CMakeFiles\terrain_mesher_tests.dir\MatterEngine3\tests\terrain_mesher_tests.cpp.obj
+[4/9] Linking CXX executable solid_source_evaluation_tests.exe
+[5/9] Building CXX object CMakeFiles\shader_source_tests.dir\MatterEngine3\tests\shader_source_tests.cpp.obj
+[6/9] Linking CXX executable terrain_mesher_tests.exe
+[7/9] Linking CXX executable obj_export_golden_tests.exe
+[8/9] Linking CXX executable shader_source_tests.exe
+Internal ctest changing into directory: D:/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-5/MatterEditor/build/cmake/windows-msvc/relwithdebinfo
+Test project D:/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-5/MatterEditor/build/cmake/windows-msvc/relwithdebinfo
+    Start  19: solid_source_evaluation_tests
+1/5 Test  #19: solid_source_evaluation_tests ....   Passed    0.35 sec
+    Start  74: part_graph_tests
+2/5 Test  #74: part_graph_tests .................   Passed    0.26 sec
+    Start  81: obj_export_golden_tests
+3/5 Test  #81: obj_export_golden_tests ..........***Failed   40.45 sec
+-- CastleStone
+-- CastlePavingSlab
+FAIL: CastlePavingSlab: golden vertex count
+FAIL: CastlePavingSlab: golden normal count
+FAIL: CastlePavingSlab: golden uv count
+FAIL: CastlePavingSlab: golden face count
+FAIL: CastlePavingSlab: golden usemtl groups
+FAIL: CastlePavingSlab: golden mtllib
+-- AlpineFlower
+FAIL: AlpineFlower: golden vertex count
+FAIL: AlpineFlower: golden normal count
+FAIL: AlpineFlower: golden uv count
+FAIL: AlpineFlower: golden face count
+FAIL: AlpineFlower: golden usemtl groups
+FAIL: AlpineFlower: golden mtllib
+-- World.exports (DSL binding)
+12 FAILURE(S)
+
+    Start  93: terrain_mesher_tests
+4/5 Test  #93: terrain_mesher_tests .............   Passed    2.65 sec
+    Start 134: shader_source_tests
+5/5 Test #134: shader_source_tests ..............Exit code 0xc0000409
+***Exception:   0.48 sec
+Assertion failed: cull_shader.find("if (instance.water_pad0 != 0u) return;") != std::string::npos, file D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-5\MatterEngine3\tests\shader_source_tests.cpp, line 88
+
+
+60% tests passed, 2 tests failed out of 5
+
+Errors while running CTest
+Label Time Summary:
+cpu    =  44.19 sec*proc (5 tests)
+
+Total Test time (real) =  44.23 sec
+
+The following tests FAILED:
+	 81 - obj_export_golden_tests (Failed)                  cpu
+	134 - shader_source_tests (Exit code 0xc0000409
+)       cpu

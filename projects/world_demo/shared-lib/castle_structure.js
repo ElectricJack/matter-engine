@@ -1166,10 +1166,16 @@ function layoutStair(ctx, stair, style) {
       if (side.kind === 'open') {
         const c = side.c + outward * (D.postSection * 0.5 + 0.02);
         if (style === 'stone') {
+          // Where its coping would meet the destination floor's structure the
+          // parapet runs level beneath it rather than rising through the deck.
           const w0 = side.c, w1 = side.c + outward * 0.16;
-          const bottom = [[0, w0], [g.run, w0], [g.run, w1], [0, w1]].map(([d, cc]) => g.at(d, cc, lowerBase));
-          const top = [[0, w0], [g.run, w0], [g.run, w1], [0, w1]].map(([d, cc]) => g.at(d, cc, g.nosing(d) + D.railHeight));
-          ctx.op(owner, loopShell('parapet', 'stone2', bottom, top, { flightId: f.id }));
+          const coping = (d) => Math.min(g.nosing(d) + D.railHeight, ceiling);
+          const dc = clamp(clipAt(D.railHeight), 0, g.run);
+          for (const [a, b] of dc > 1e-3 && dc < g.run - 1e-3 ? [[0, dc], [dc, g.run]] : [[0, g.run]]) {
+            const loop = [[a, w0], [b, w0], [b, w1], [a, w1]];
+            ctx.op(owner, loopShell('parapet', 'stone2', loop.map(([d, cc]) => g.at(d, cc, lowerBase)),
+              loop.map(([d, cc]) => g.at(d, cc, coping(d))), { flightId: f.id }));
+          }
         } else {
           const ins = D.postSection * 0.5 + 0.01;
           const end = Math.min(g.run - ins, clipAt(D.railHeight + 0.08));

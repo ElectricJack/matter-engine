@@ -1,0 +1,26 @@
+{
+  "exit": 0,
+  "seconds_including_startup_and_view_waits": 34.29479981100303,
+  "source_changes": [],
+  "binary_changed": false,
+  "errors": [],
+  "vt_stats": [
+    "STATSVT,clay-shape-v1-group,active=1,variants=8/32768,rejected=0,mesh=28.3/3512.0 MiB,pool=89/25600,pinned=8,queue=0,fills=89,evictions=0,ind=0.02/64 MiB",
+    "STATSVT,clay-shape-v1-close,active=1,variants=8/32768,rejected=0,mesh=28.3/3512.0 MiB,pool=127/25600,pinned=8,queue=0,fills=127,evictions=0,ind=0.02/64 MiB",
+    "STATSVT,clay-shape-v1-grazing,active=1,variants=8/32768,rejected=0,mesh=28.3/3512.0 MiB,pool=145/25600,pinned=8,queue=0,fills=145,evictions=0,ind=0.02/64 MiB",
+    "STATSVT,clay-shape-v1-rt,active=1,variants=8/32768,rejected=0,mesh=28.3/3512.0 MiB,pool=145/25600,pinned=8,queue=0,fills=145,evictions=0,ind=0.02/64 MiB",
+    "STATSVT,clay-shape-v1-albedo,active=1,variants=8/32768,rejected=0,mesh=28.3/3512.0 MiB,pool=145/25600,pinned=8,queue=0,fills=145,evictions=0,ind=0.02/64 MiB",
+    "STATSVT,clay-shape-v1-normals,active=1,variants=8/32768,rejected=0,mesh=28.3/3512.0 MiB,pool=145/25600,pinned=8,queue=0,fills=145,evictions=0,ind=0.02/64 MiB",
+    "STATSVT,clay-shape-v1-wireframe,active=1,variants=8/32768,rejected=0,mesh=28.3/3512.0 MiB,pool=184/25600,pinned=8,queue=0,fills=184,evictions=0,ind=0.02/64 MiB"
+  ],
+  "images": {
+    "clay-shape-v1-group.png": "f773e132b67d1e83543c081a3a39ee82fd282c88726dfe183a1c7185968902f3",
+    "clay-shape-v1-close.png": "d38735edf0463d5d1fca2330ab6719d418ce054f098b6aeebaf6209ff2665cc0",
+    "clay-shape-v1-grazing.png": "c2dc39c34cca5226b72d7158896cb4f392d0930aa285aa6b221187ac74f8a5e6",
+    "clay-shape-v1-rt.png": "2c9926e20a906e143fee1c2d8d0970c9329c7f8cd674a941f7b946978db7b29d",
+    "clay-shape-v1-albedo.png": "62cf6e359f7c5bc5e2bc8c6d4735ed6043f24a8dcfc4e266f7aaca13714bc455",
+    "clay-shape-v1-normals.png": "1a16f65fabf450210d71c88227b195407b713350fa42dad78045e5f04b683af7",
+    "clay-shape-v1-wireframe.png": "95f7f3378322ad605544101d87dc984c4f54dbfba92d02bdfaf5d787f4a9be30"
+  },
+  "passed": true
+}

@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-10
 **Status:** design — not yet implemented
-**Test world:** `projects/world_demo/scenes/StreamCaverns` (built for exactly this)
+**Test world:** `projects/world_demo/scenes/streaming/StreamCaverns` (built for exactly this)
 **Prior art this builds on:** `docs/deprecated/terrain-nested-sector-lod-2026-08-08.md` (the XZ nested
 system this generalizes), `docs/lod-vt-redesign-2026-08-04.md` §6 (the unbuilt occlusion
 sketch this adopts and concretizes)

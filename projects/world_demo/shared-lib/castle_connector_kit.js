@@ -2,18 +2,16 @@
 // world coordinates; Part parameters stay flat scalars. The site compiler owns
 // placement, while this module owns every visible/collidable connector solid.
 
-import {
-  beamParams,
-  stoneParams,
-} from 'shared-lib/castle_primitives';
+import { primitiveStock } from 'shared-lib/castle_stock';
 
 export const CONNECTOR_MIN_CAPSULE_RADIUS = 0.4;
 export const CONNECTOR_MIN_SIDE_CLEARANCE = 0.2;
 export const CONNECTOR_MIN_PASSAGE_WIDTH =
   2 * (CONNECTOR_MIN_CAPSULE_RADIUS + CONNECTOR_MIN_SIDE_CLEARANCE);
-export const CASTLE_CUT_STONE_VARIANT_COUNT = 12;
+export const CASTLE_CUT_STONE_VARIANT_COUNT = 2;
 
 const EPS = 1e-8;
+const RAFTER_WIDTH = 0.14, RAFTER_HEIGHT = 0.18;
 
 function fail(path, message) {
   throw new Error(`castle connector ${path}: ${message}`);
@@ -101,6 +99,27 @@ function canonicalPolygon(input, path = 'clearPolygon') {
   return polygon.slice(first).concat(polygon.slice(0, first));
 }
 
+function convexHull(points, path) {
+  const sorted = points.map((point, index) => point2(point, `${path}[${index}]`))
+    .sort((a, b) => a[0] - b[0] || a[1] - b[1])
+    .filter((point, index, values) => index === 0 ||
+      Math.hypot(point[0] - values[index - 1][0], point[1] - values[index - 1][1]) > EPS);
+  if (sorted.length < 3) fail(path, 'must contain at least three distinct points');
+  const cross = (a, b, c) => (b[0] - a[0]) * (c[1] - a[1]) -
+    (b[1] - a[1]) * (c[0] - a[0]);
+  const half = values => {
+    const result = [];
+    for (const point of values) {
+      while (result.length >= 2 && cross(result.at(-2), result.at(-1), point) <= EPS)
+        result.pop();
+      result.push(point);
+    }
+    return result;
+  };
+  return canonicalPolygon(half(sorted).slice(0, -1)
+    .concat(half([...sorted].reverse()).slice(0, -1)), path);
+}
+
 function normalize2(value, path) {
   const v = point2(value, path);
   const length = Math.hypot(v[0], v[1]);
@@ -132,6 +151,25 @@ export function insetConvexPolygon(input, distance) {
   if (inset.length < 3 || Math.abs(signedArea(inset)) <= EPS)
     fail('clearPolygon', `cannot retain ${distance}m radial clearance`);
   return canonicalPolygon(inset, 'clearancePolygon');
+}
+
+function outsetConvexPolygon(input, distance) {
+  const polygon = canonicalPolygon(input);
+  if (distance <= EPS) return polygon;
+  return polygon.map((point, index) => {
+    const previous = polygon[(index + polygon.length - 1) % polygon.length];
+    const next = polygon[(index + 1) % polygon.length];
+    const previousDirection = normalize2(
+      [point[0] - previous[0], point[1] - previous[1]], `roof.edge[${index}].previous`);
+    const nextDirection = normalize2(
+      [next[0] - point[0], next[1] - point[1]], `roof.edge[${index}].next`);
+    const previousPoint = [point[0] + previousDirection[1] * distance,
+      point[1] - previousDirection[0] * distance];
+    const nextPoint = [point[0] + nextDirection[1] * distance,
+      point[1] - nextDirection[0] * distance];
+    return lineIntersection(previousPoint, previousDirection, nextPoint, nextDirection,
+      `roof.vertex[${index}]`);
+  });
 }
 
 function pointInsideConvex(point, polygon, tolerance = EPS) {
@@ -196,6 +234,10 @@ function normalizeSpan(input, index) {
     (input.from && input.to ? [input.from, input.to] : undefined);
   const segment = [point2(segmentInput?.[0], `${path}.segment[0]`),
     point2(segmentInput?.[1], `${path}.segment[1]`)];
+  const segmentLength = Math.hypot(segment[1][0] - segment[0][0],
+    segment[1][1] - segment[0][1]);
+  if (segmentLength < 0.18 - EPS)
+    fail(`${path}.segment`, 'must retain at least 0.18m of masonry run');
   const tangent = normalize2(input.tangent ?? input.tangentXZ, `${path}.tangent`);
   const normal = normalize2(input.normal ?? input.outward ?? input.outwardXZ, `${path}.normal`);
   const along = normalize2([segment[1][0] - segment[0][0],
@@ -213,7 +255,14 @@ function normalizeSpan(input, index) {
   const thickness = positive(input.thickness, `${path}.thickness`);
   if (thickness < 0.16 - EPS)
     fail(`${path}.thickness`, 'must be at least 0.16m for exact masonry geometry');
-  return {
+  const trimPlanes = Array.isArray(input.trimPlanes) ? input.trimPlanes.map((plane, planeIndex) =>
+    normalizeTrimPlane(plane, `${path}.trimPlanes[${planeIndex}]`)) :
+    fail(`${path}.trimPlanes`, 'must be an array');
+  for (const [planeIndex, plane] of trimPlanes.entries()) for (const endpoint of segment)
+    if (plane.keepSign * (plane.normal[0] * endpoint[0] +
+      plane.normal[1] * endpoint[1] - plane.offset) < -1e-6)
+      fail(`${path}.trimPlanes[${planeIndex}]`, 'must preserve both declared span endpoints');
+  const span = {
     id: requiredString(input.id, `${path}.id`), segment, tangent, normal,
     thickness,
     courseOrigin: point3(input.courseOrigin, `${path}.courseOrigin`),
@@ -221,10 +270,12 @@ function normalizeSpan(input, index) {
       [input.startJointOwnerId, input.endJointOwnerId], 'cornerOwners'),
     jambOwners: ownership(input.jambOwners ??
       [input.startJointOwnerId, input.endJointOwnerId], 'jambOwners'),
-    trimPlanes: Array.isArray(input.trimPlanes) ? input.trimPlanes.map((plane, planeIndex) =>
-      normalizeTrimPlane(plane, `${path}.trimPlanes[${planeIndex}]`)) :
-      fail(`${path}.trimPlanes`, 'must be an array'),
+    trimPlanes,
   };
+  const { front, back } = spanBedRanges(span);
+  if (Math.min(front[1] - front[0], back[1] - back[0]) < 0.16 - EPS)
+    fail(path, 'trimmed front and back masonry beds must retain at least 0.16m');
+  return span;
 }
 
 function normalizedRecord(input) {
@@ -240,7 +291,12 @@ function normalizedRecord(input) {
   if (portalIds.size !== 2) fail('mouths', 'must refer to two distinct portals');
   if (!Array.isArray(input.wallSpans) || input.wallSpans.length < 2)
     fail('wallSpans', 'must contain finite boundary spans');
-  const wallSpans = input.wallSpans.map(normalizeSpan);
+  const wallSpans = input.wallSpans.map(normalizeSpan)
+    .sort((a, b) => a.id.localeCompare(b.id));
+  const mouthJambOwners = new Set(mouths.map(mouth => mouth.jambOwner));
+  for (const span of wallSpans) for (const owner of span.jambOwners)
+    if (!mouthJambOwners.has(owner))
+      fail(`wallSpans.${span.id}.jambOwners`, `${owner} is not owned by either connector mouth`);
   const floor = {
     thickness: positive(input.floor?.thickness, 'floor.thickness'),
     material: input.floor?.material ?? 'stone',
@@ -256,6 +312,7 @@ function normalizedRecord(input) {
     material: input.roof?.material ?? 'tile',
     overhang: input.roof?.overhang === undefined ? 0 : finite(input.roof.overhang, 'roof.overhang'),
   };
+  if (roof.overhang < 0) fail('roof.overhang', 'must be non-negative');
   if (roof.kind !== 'low-hip') fail('roof.kind', 'only low-hip is supported');
   if (!Array.isArray(input.routeWaypoints) || input.routeWaypoints.length < 2)
     fail('routeWaypoints', 'must contain a continuous route');
@@ -294,8 +351,13 @@ function normalizedRecord(input) {
   }
   const clearancePolygon = insetConvexPolygon(clearPolygon,
     CONNECTOR_MIN_CAPSULE_RADIUS + CONNECTOR_MIN_SIDE_CLEARANCE);
-  return { id, level, baseY, clearPolygon, mouths, wallSpans, floor,
+  const record = { id, level, baseY, clearPolygon, mouths, wallSpans, floor,
     height, clearHeight, roof, routeWaypoints, clearancePolygon };
+  for (const rafter of roofClearance(record))
+    if (rafter.clearance < -1e-7)
+      fail(`roof.rafters[${rafter.index}]`,
+        `finite beam intrudes ${(-rafter.clearance).toFixed(4)}m into promised clearHeight; increase enclosure height`);
+  return record;
 }
 
 export function validateConnectorRecord(input) {
@@ -487,14 +549,15 @@ function wrappedSeed(value) {
 }
 
 export function connectorCutStoneParams(input = {}) {
+  const geometry = value => Math.round(value * 1e6) / 1e6;
   const params = {
     seed: wrappedSeed(input.seed),
-    height: Math.max(0.12, Number.isFinite(input.height) ? input.height : 0.28),
-    depth: Math.max(0.16, Number.isFinite(input.depth) ? input.depth : 0.42),
-    leftFront: Number.isFinite(input.leftFront) ? input.leftFront : -0.36,
-    leftBack: Number.isFinite(input.leftBack) ? input.leftBack : -0.36,
-    rightFront: Number.isFinite(input.rightFront) ? input.rightFront : 0.36,
-    rightBack: Number.isFinite(input.rightBack) ? input.rightBack : 0.36,
+    height: geometry(Math.max(0.12, Number.isFinite(input.height) ? input.height : 0.28)),
+    depth: geometry(Math.max(0.16, Number.isFinite(input.depth) ? input.depth : 0.42)),
+    leftFront: geometry(Number.isFinite(input.leftFront) ? input.leftFront : -0.36),
+    leftBack: geometry(Number.isFinite(input.leftBack) ? input.leftBack : -0.36),
+    rightFront: geometry(Number.isFinite(input.rightFront) ? input.rightFront : 0.36),
+    rightBack: geometry(Number.isFinite(input.rightBack) ? input.rightBack : 0.36),
     material: Math.max(0, Math.floor(Number.isFinite(input.material) ? input.material : 8)),
     detail: Math.max(0.5, Math.min(3, Number.isFinite(input.detail) ? input.detail : 1)),
   };
@@ -555,6 +618,60 @@ export function emitConnectorCutStone(part, input = {}) {
   return p;
 }
 
+// Canonical CCW triangle (-.5,-.5),(.5,-.5),(-.5,.5), height .3m.
+// Its hypotenuse is an internal fan seam and deliberately has no dress losses.
+export function triangularStoneParams(input = {}) {
+  return { seed: wrappedSeed(input.seed),
+    material: Math.max(0, Math.floor(Number.isFinite(input.material) ? input.material : 8)),
+    detail: Math.max(0.5, Math.min(3, Number.isFinite(input.detail) ? input.detail : 1)) };
+}
+
+export function emitTriangularStone(part, input = {}) {
+  const p = triangularStoneParams(input), height = 0.3;
+  part.beginModifier(); part.beginVoxels(0.018 / p.detail);
+  part.fill(p.material); part.smoothing(0);
+  part.box([0, height * 0.5, 0], [0.5, height * 0.5, 0.5]);
+  // Dressed/chiseled exterior vertical faces. All marks stay away from the
+  // three vertical corners, horizontal beds and the undressed shared diagonal.
+  for (let face = 0; face < 2; ++face) for (let mark = 0; mark < 4; ++mark) {
+    const t = ((mark * 7 + p.seed * 3 + face * 5) % 17) / 17;
+    const along = -0.32 + t * 0.48, y = 0.065 + ((mark + p.seed) % 3) * 0.08;
+    const a = face === 0 ? [along - 0.035, y, -0.507] : [-0.507, y, along - 0.035];
+    const b = face === 0 ? [along + 0.03, y + 0.018, -0.507] : [-0.507, y + 0.018, along + 0.03];
+    part.capsule(a, b, 0.019); part.difference();
+  }
+  for (let mark = 0; mark < 2; ++mark) {
+    part.sphere([-0.29 + mark * 0.12, height + 0.015,
+      -0.26 + p.seed * 0.06], 0.027); part.difference();
+  }
+  // Final hard clips define the exact prism; no union or smoothing follows.
+  cutPlane(part, [-0.5, 0], [1, 0], height, 1);
+  cutPlane(part, [0, -0.5], [0, 1], height, 1);
+  cutPlane(part, [0, 0], [-Math.SQRT1_2, -Math.SQRT1_2], height, 1);
+  part.endVoxels(); part.endModifier([]);
+  return p;
+}
+
+export function cutStoneTrianglePlacements(input) {
+  const p = connectorCutStoneParams(input), h = p.depth * 0.5;
+  const polygon = [[p.leftFront, -h], [p.rightFront, -h],
+    [p.rightBack, h], [p.leftBack, h]];
+  // Each triangle's first corner joins its TWO exterior faces. Its opposite
+  // edge is the shared diagonal, mapping to the stock's undressed hypotenuse.
+  const triangles = [[polygon[1], polygon[2], polygon[0]],
+    [polygon[3], polygon[0], polygon[2]]];
+  const params = triangularStoneParams(p);
+  return triangles.map(triangle => {
+    const [a, b, c] = triangle, ax = b[0] - a[0], az = b[1] - a[1];
+    const bx = c[0] - a[0], bz = c[1] - a[1];
+    if (ax * bz - bx * az <= EPS) fail('cutStone.triangle', 'affine fit must have positive determinant');
+    return { module: 'CastleTriangularStone', params, polygon: triangle,
+      matrix: [ax, 0, bx, (b[0] + c[0]) * 0.5,
+        0, p.height / 0.3, 0, 0,
+        az, 0, bz, (b[1] + c[1]) * 0.5, 0, 0, 0, 1] };
+  });
+}
+
 export function connectorCutStoneChildVariants(base = {}, seeds) {
   const variants = seeds ?? Array.from({ length: CASTLE_CUT_STONE_VARIANT_COUNT }, (_, seed) => seed);
   if (!Array.isArray(variants)) fail('cutStoneChildVariants.seeds', 'must be an array');
@@ -574,6 +691,19 @@ function materialId(materials, key, fallback) {
   return Number.isFinite(value) ? value : fallback;
 }
 
+function recipeParams(recordIndex, materials, detail) {
+  return {
+    connectorIndex: recordIndex,
+    seed: wrappedSeed(recordIndex),
+    detail: Math.max(0.5, Math.min(3, detail)),
+    stoneMaterial: materialId(materials, 'stone', 8),
+    mortarMaterial: materialId(materials, 'mortar', 9),
+    floorMaterial: materialId(materials, 'floor', 8),
+    tileMaterial: materialId(materials, 'tile', 10),
+    timberMaterial: materialId(materials, 'timber', 14),
+  };
+}
+
 export function connectorRecipes(siteOrRecords, {
   module = 'CastleConnector', materials = {}, detail = 1,
 } = {}) {
@@ -581,16 +711,7 @@ export function connectorRecipes(siteOrRecords, {
     .sort((a, b) => a.id.localeCompare(b.id));
   return records.map((record, recordIndex) => ({
     module,
-    params: {
-      connectorIndex: recordIndex,
-      seed: wrappedSeed(recordIndex),
-      detail: Math.max(0.5, Math.min(3, detail)),
-      stoneMaterial: materialId(materials, 'stone', 8),
-      mortarMaterial: materialId(materials, 'mortar', 9),
-      floorMaterial: materialId(materials, 'floor', 8),
-      tileMaterial: materialId(materials, 'tile', 10),
-      timberMaterial: materialId(materials, 'timber', 14),
-    },
+    params: recipeParams(recordIndex, materials, detail),
     recordId: record.id,
     expand: false,
     expanded: false,
@@ -598,11 +719,39 @@ export function connectorRecipes(siteOrRecords, {
   }));
 }
 
+// Native-safe split: inline exact polygons remain in an unexpanded mesh root;
+// high-detail stones and rafters live in an expanded child-only root so their
+// triangles stay instanced instead of flattening into one giant asset.
+export function connectorLayerRecipes(siteOrRecords, {
+  meshModule = 'CastleConnectorMesh',
+  assemblyModule = 'CastleConnectorAssembly',
+  materials = {}, detail = 1,
+} = {}) {
+  const records = connectorRecords(siteOrRecords).map(record => normalizedRecord(record))
+    .sort((a, b) => a.id.localeCompare(b.id));
+  return records.flatMap((record, recordIndex) => {
+    const params = recipeParams(recordIndex, materials, detail);
+    return [{
+      module: meshModule, params: { ...params }, recordId: record.id,
+      layer: 'mesh', expand: false, expanded: false, inlineGeometry: true,
+    }, {
+      module: assemblyModule, params: { ...params }, recordId: record.id,
+      layer: 'children', expand: true, expanded: true, inlineGeometry: false,
+    }];
+  });
+}
+
 function emitPolygonPrism(part, polygon, bottomY, topY, material) {
   if (topY - bottomY <= EPS) return;
   part.fill(material);
   part.beginShape(SHAPE.polygon);
-  for (const point of polygon) part.vertex(point[0], point[1]);
+  // The extruder's +Y-path frame maps profile (u,v) to world (-v,-u).
+  // Reverse the CCW XZ ring while applying that basis inverse so the emitted
+  // prism exactly matches its world-coordinate collision polygon.
+  for (let index = polygon.length - 1; index >= 0; --index) {
+    const point = polygon[index];
+    part.vertex(-point[1], -point[0]);
+  }
   part.endShape();
   part.extrude([[0, bottomY, 0], [0, topY, 0]]);
 }
@@ -629,6 +778,49 @@ function gridClippedPolygons(polygon, cellSize) {
   return pieces;
 }
 
+function floorLayout(record, params) {
+  return gridClippedPolygons(record.clearPolygon, params.flagSize ?? 0.9)
+    .map((polygon, index) => ({
+      id: `${record.id}:floor:${index}`, polygon,
+      rectangle: orientedRectangle(polygon),
+    }));
+}
+
+function floorPieceStock(piece, record, params, seed) {
+  if (!piece.rectangle) return null;
+  const rectangle = piece.rectangle;
+  const stock = primitiveStock('CastleStone', {
+    seed, length: rectangle.length, height: record.floor.thickness,
+    depth: rectangle.depth, material: params.floorMaterial, detail: params.detail,
+  });
+  const desired = [rectangle.length, record.floor.thickness, rectangle.depth];
+  if (desired.some((value, axis) =>
+    Math.abs(stock.params[['length', 'height', 'depth'][axis]] * stock.scale[axis] - value) > EPS))
+    return null;
+  return stock;
+}
+
+function placeFloorChildren(part, record, params) {
+  const placements = [];
+  for (const piece of floorLayout(record, params)) {
+    const stock = floorPieceStock(piece, record, params,
+      params.seed + placements.length * 7);
+    if (!stock) continue;
+    const rectangle = piece.rectangle;
+    const childParams = stock.params, scale = stock.scale;
+    part.pushMatrix();
+    part.translate(rectangle.center[0], record.baseY - record.floor.thickness,
+      rectangle.center[1]);
+    part.rotateY(rectangle.yaw);
+    part.scale(...scale);
+    part.placeChild('CastleStone', childParams);
+    part.popMatrix();
+    placements.push({ id: piece.id, polygon: piece.polygon,
+      module: 'CastleStone', params: childParams, scale });
+  }
+  return placements;
+}
+
 function localCoordinates(point, origin, tangent, normal) {
   const delta = [point[0] - origin[0], point[1] - origin[1]];
   return [delta[0] * tangent[0] + delta[1] * tangent[1],
@@ -649,20 +841,47 @@ function sectionRangeAtZ(localPolygon, z) {
   return [Math.min(...xs), Math.max(...xs)];
 }
 
-function placeWallCourses(part, record, span, params) {
+function placedCutProfile(span, profile) {
+  // rotateY maps local +X to tangent and local +Z to tangent's left normal.
+  // South/right-handed spans therefore need their authored front/back beds
+  // exchanged so the child profile still follows span.normal in world XZ.
+  const placedNormal = [-span.tangent[1], span.tangent[0]];
+  const sameNormal = placedNormal[0] * span.normal[0] +
+    placedNormal[1] * span.normal[1] > 0;
+  return sameNormal ? profile : {
+    leftFront: profile.leftBack,
+    leftBack: profile.leftFront,
+    rightFront: profile.rightBack,
+    rightBack: profile.rightFront,
+  };
+}
+
+function spanBedRanges(span) {
   const footprint = spanFootprint(span);
-  const center = [(span.segment[0][0] + span.segment[1][0]) * 0.5 + span.normal[0] * span.thickness * 0.5,
-    (span.segment[0][1] + span.segment[1][1]) * 0.5 + span.normal[1] * span.thickness * 0.5];
+  const center = [
+    (span.segment[0][0] + span.segment[1][0]) * 0.5 + span.normal[0] * span.thickness * 0.5,
+    (span.segment[0][1] + span.segment[1][1]) * 0.5 + span.normal[1] * span.thickness * 0.5,
+  ];
   const local = footprint.map(point => localCoordinates(point, center, span.tangent, span.normal));
-  const front = sectionRangeAtZ(local, -span.thickness * 0.5 + 1e-7);
-  const back = sectionRangeAtZ(local, span.thickness * 0.5 - 1e-7);
+  return {
+    footprint, center, local,
+    front: sectionRangeAtZ(local, -span.thickness * 0.5 + 1e-7),
+    back: sectionRangeAtZ(local, span.thickness * 0.5 - 1e-7),
+  };
+}
+
+function placeWallCourses(part, record, span, params) {
+  const { footprint, center, front, back } = spanBedRanges(span);
   const runMin = Math.min(front[0], back[0]), runMax = Math.max(front[1], back[1]);
-  const courseCount = Math.max(1, Math.ceil(record.height / 0.29));
+  // Match castle_masonry's nominal 0.3m course grid at the shared base.
+  const courseCount = Math.max(1, Math.round(record.height / 0.3));
   const courseHeight = record.height / courseCount;
+  const courseOrigin = localCoordinates(
+    [span.courseOrigin[0], span.courseOrigin[2]], center, span.tangent, span.normal)[0];
   const bricks = [], cutStones = [];
   for (let course = 0; course < courseCount; ++course) {
     const target = 0.70;
-    const offset = course & 1 ? target * 0.5 : 0;
+    const offset = courseOrigin + (course & 1 ? target * 0.5 : 0);
     const breaks = [runMin];
     const firstSafeBreak = Math.max(front[0], back[0]) + 0.18;
     const lastSafeBreak = Math.min(front[1], back[1]) - 0.18;
@@ -684,23 +903,38 @@ function placeWallCourses(part, record, span, params) {
       part.translate(world[0], record.baseY + course * courseHeight, world[1]);
       part.rotateY(Math.atan2(-span.tangent[1], span.tangent[0]));
       const seed = wrappedSeed(params.seed + course * 17 + index * 5);
-      const isCut = first || last || Math.abs(lf - lb) > 1e-6 || Math.abs(rf - rb) > 1e-6;
+      const isCut = Math.abs(lf - lb) > 1e-6 || Math.abs(rf - rb) > 1e-6;
+      let childParams, childScale = [1, 1, 1];
       if (isCut) {
-        const childParams = connectorCutStoneParams({ seed, height: courseHeight,
-          depth: span.thickness, leftFront: lf, leftBack: lb, rightFront: rf,
-          rightBack: rb, material: params.stoneMaterial, detail: params.detail });
-        part.placeChild('CastleConnectorCutStone', childParams);
-        cutStones.push({ spanId: span.id, course, index, world, params: childParams,
+        const placedProfile = placedCutProfile(span, {
+          leftFront: lf, leftBack: lb, rightFront: rf, rightBack: rb,
+        });
+        childParams = connectorCutStoneParams({ seed, height: courseHeight,
+          depth: span.thickness, ...placedProfile,
+          material: params.stoneMaterial, detail: params.detail });
+        const triangles = cutStoneTrianglePlacements(childParams);
+        for (const triangle of triangles) {
+          part.pushMatrix(); part.applyMatrix(triangle.matrix);
+          part.placeChild(triangle.module, triangle.params); part.popMatrix();
+        }
+        cutStones.push({ spanId: span.id, course, index, world, params: childParams, triangles,
+          yaw: Math.atan2(-span.tangent[1], span.tangent[0]),
           owners: first ? [span.cornerOwners[0], span.jambOwners[0]] :
             [span.cornerOwners[1], span.jambOwners[1]] });
       } else {
-        const childParams = stoneParams({ seed, length: b - a,
-          height: courseHeight, depth: span.thickness,
-          material: params.stoneMaterial, detail: params.detail });
+        const stock = primitiveStock('CastleStone', {
+          seed, length: b - a, height: courseHeight, depth: span.thickness,
+          material: params.stoneMaterial, detail: params.detail,
+        });
+        childParams = stock.params;
+        childScale = stock.scale;
+        part.scale(...childScale);
         part.placeChild('CastleStone', childParams);
       }
       part.popMatrix();
-      bricks.push({ spanId: span.id, course, index, from: a, to: b, cut: isCut });
+      bricks.push({ spanId: span.id, course, index, from: a, to: b, cut: isCut,
+        module: isCut ? 'CastleTriangularStone' : 'CastleStone',
+        params: childParams, scale: childScale });
     }
   }
   return { bricks, cutStones, footprint };
@@ -726,65 +960,153 @@ function placeBeamBetween(part, a, b, params, seed) {
   part.pushMatrix();
   part.translate((a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5, (a[2] + b[2]) * 0.5);
   part.rotateY(yaw); part.rotateZ(pitch);
-  part.placeChild('CastleBeam', beamParams({ seed, length, width: 0.14, height: 0.18,
+  const stock = primitiveStock('CastleBeam', {
+    seed, length, width: RAFTER_WIDTH, height: RAFTER_HEIGHT,
     material: params.timberMaterial, endMaterial: params.timberMaterial,
-    ironMaterial: params.timberMaterial, joint: 1, strap: 0, detail: params.detail }));
+    ironMaterial: params.timberMaterial, joint: 1, strap: 0, detail: params.detail,
+  });
+  part.scale(...stock.scale);
+  part.placeChild('CastleBeam', stock.params);
   part.popMatrix();
 }
 
-function emitRoof(part, record, params) {
-  const polygon = record.clearPolygon;
-  const eaveY = record.baseY + record.height;
+function roofLayout(record) {
+  const shellPolygon = convexHull([
+    ...record.clearPolygon,
+    ...record.wallSpans.flatMap(span => spanFootprint(span)),
+  ], 'roof.shellPolygon');
+  const polygon = outsetConvexPolygon(shellPolygon, record.roof.overhang);
+  // Put the full shell above enclosure height, preserving promised headroom.
+  const shellThickness = 0.08;
+  const eaveY = record.baseY + record.height + shellThickness;
   const centroid = polygon.reduce((sum, point) => [sum[0] + point[0], sum[1] + point[1]], [0, 0])
     .map(value => value / polygon.length);
   const apex = [centroid[0], eaveY + record.roof.rise, centroid[1]];
-  const facets = [], tiles = [], rafters = [];
+  const rafterDrop = shellThickness + RAFTER_HEIGHT * 0.5 + 0.01;
+  const rafters = polygon.map(point => [
+    [point[0], eaveY - rafterDrop, point[1]],
+    [apex[0], apex[1] - rafterDrop, apex[2]],
+  ]);
+  return { polygon, shellThickness, eaveY, apex, rafters };
+}
+
+function rafterBoxFaces([a, b]) {
+  const delta = b.map((value, axis) => value - a[axis]);
+  const length = Math.hypot(...delta), horizontal = Math.hypot(delta[0], delta[2]);
+  const along = delta.map(value => value / length);
+  const up = [-delta[0] / horizontal * delta[1] / length, horizontal / length,
+    -delta[2] / horizontal * delta[1] / length];
+  const side = [-delta[2] / horizontal, 0, delta[0] / horizontal];
+  const center = a.map((value, axis) => (value + b[axis]) * 0.5);
+  const vertices = [];
+  for (let mask = 0; mask < 8; ++mask) vertices.push(center.map((value, axis) =>
+    value + along[axis] * (mask & 1 ? 1 : -1) * length * 0.5 +
+    up[axis] * (mask & 2 ? 1 : -1) * RAFTER_HEIGHT * 0.5 +
+    side[axis] * (mask & 4 ? 1 : -1) * RAFTER_WIDTH * 0.5));
+  return [[0, 2, 6, 4], [1, 3, 7, 5], [0, 1, 5, 4],
+    [2, 3, 7, 6], [0, 1, 3, 2], [4, 5, 7, 6]]
+    .map(indices => indices.map(index => vertices[index]));
+}
+
+function clipFaceToClearPolygon(face, polygon) {
+  let clipped = face;
+  for (let edge = 0; edge < polygon.length && clipped.length; ++edge) {
+    const a = polygon[edge], b = polygon[(edge + 1) % polygon.length];
+    const distance = point => (b[0] - a[0]) * (point[2] - a[1]) -
+      (b[1] - a[1]) * (point[0] - a[0]);
+    const input = clipped;
+    clipped = [];
+    for (let i = 0; i < input.length; ++i) {
+      const from = input[i], to = input[(i + 1) % input.length];
+      const d0 = distance(from), d1 = distance(to);
+      if (d0 >= -EPS) clipped.push(from);
+      if ((d0 < -EPS && d1 >= -EPS) || (d0 >= -EPS && d1 < -EPS))
+        clipped.push(mix3(from, to, d0 / (d0 - d1)));
+    }
+  }
+  return clipped;
+}
+
+export function connectorRoofClearance(input) {
+  const record = normalizedRecord(input);
+  return roofClearance(record);
+}
+
+function roofClearance(record) {
+  const layout = roofLayout(record);
+  return layout.rafters.map((segment, index) => {
+    const faces = rafterBoxFaces(segment);
+    const clipped = faces.map(face => clipFaceToClearPolygon(face, record.clearPolygon));
+    const minimumY = Math.min(...clipped.flat().map(point => point[1]));
+    return { index, segment, faces, minimumY,
+      requiredY: record.baseY + record.clearHeight,
+      clearance: minimumY - (record.baseY + record.clearHeight) };
+  });
+}
+
+function emitRoof(part, record, params, { mesh = true, children = true } = {}) {
+  const { polygon, shellThickness, eaveY, apex, rafters: rafterSegments } = roofLayout(record);
+  const facets = [], undersides = [], fascias = [], tiles = [], rafters = [];
   for (let edge = 0; edge < polygon.length; ++edge) {
     const pa = polygon[edge], pb = polygon[(edge + 1) % polygon.length];
     const a = [pa[0], eaveY, pa[1]], b = [pb[0], eaveY, pb[1]];
-    emitTriangle(part, a, b, apex, params.tileMaterial);
-    facets.push([a, b, apex]);
+    if (mesh) emitTriangle(part, b, a, apex, params.tileMaterial);
+    facets.push([b, a, apex]);
+    const lower = point => [point[0], point[1] - shellThickness, point[2]];
+    const underA = lower(a), underB = lower(b), underApex = lower(apex);
+    const underside = [underA, underB, underApex];
+    const fascia = [[a, b, underB], [a, underB, underA]];
+    if (mesh) {
+      emitTriangle(part, ...underside, params.timberMaterial);
+      for (const triangle of fascia) emitTriangle(part, ...triangle, params.timberMaterial);
+    }
+    undersides.push(underside);
+    fascias.push(...fascia);
     const rows = Math.max(2, Math.ceil(Math.hypot(apex[0] - (a[0] + b[0]) * 0.5,
       apex[2] - (a[2] + b[2]) * 0.5) / 0.42));
     for (let row = 0; row < rows; ++row) {
-      const t0 = row / rows, t1 = (row + 1) / rows;
+      // Small open joints expose the roof bed below instead of tessellating
+      // one perfectly coplanar sheet that only pretends to be separate tiles.
+      const t0 = (row + 0.018) / rows, t1 = (row + 0.982) / rows;
       const left0 = mix3(a, apex, t0), right0 = mix3(b, apex, t0);
       const left1 = mix3(a, apex, t1), right1 = mix3(b, apex, t1);
       const columns = Math.max(1, Math.ceil(Math.hypot(
         right0[0] - left0[0], right0[2] - left0[2]) / 0.36));
       for (let column = 0; column < columns; ++column) {
-        const u0 = column / columns, u1 = (column + 1) / columns;
+        const u0 = (column + 0.018) / columns, u1 = (column + 0.982) / columns;
         const q0 = mix3(left0, right0, u0), q1 = mix3(left0, right0, u1);
         const q2 = mix3(left1, right1, Math.min(1, u1));
         const q3 = mix3(left1, right1, Math.min(1, u0));
         for (const q of [q0, q1, q2, q3]) q[1] += 0.025;
-        emitTriangle(part, q0, q1, q2, params.tileMaterial);
-        if (Math.hypot(q2[0] - q3[0], q2[2] - q3[2]) > EPS)
-          emitTriangle(part, q0, q2, q3, params.tileMaterial);
-        tiles.push([q0, q1, q2, q3]);
+        if (mesh) {
+          emitTriangle(part, q0, q2, q1, params.tileMaterial);
+          if (Math.hypot(q2[0] - q3[0], q2[2] - q3[2]) > EPS)
+            emitTriangle(part, q0, q3, q2, params.tileMaterial);
+        }
+        tiles.push([q0, q3, q2, q1]);
       }
     }
-    placeBeamBetween(part, a, apex, params, wrappedSeed(params.seed + edge));
-    rafters.push([a, apex]);
+    // Rafters support the timber soffit from below. Centering them on the
+    // upper tile plane exposed their upper half through the finished roof.
+    const [rafterA, rafterApex] = rafterSegments[edge];
+    if (children)
+      placeBeamBetween(part, rafterA, rafterApex, params, wrappedSeed(params.seed + edge));
+    rafters.push([rafterA, rafterApex]);
   }
-  return { facets, tiles, rafters };
+  return { facets, undersides, fascias, tiles, rafters };
 }
 
 export function connectorChildVariants(input, params = {}) {
   const record = normalizedRecord(input);
-  const p = {
-    seed: wrappedSeed(params.seed), detail: Math.max(0.5, Math.min(3, params.detail ?? 1)),
-    stoneMaterial: params.stoneMaterial ?? 8,
-    timberMaterial: params.timberMaterial ?? 14,
-  };
+  const p = normalizedEmitParams(params);
   const variants = [];
   const collector = {
-    pushMatrix() {}, popMatrix() {}, translate() {}, rotateY() {}, rotateZ() {},
-    fill() {}, beginShape() {}, vertex() {}, endShape() {},
+    pushMatrix() {}, popMatrix() {}, translate() {}, scale() {}, rotateY() {}, rotateZ() {}, applyMatrix() {},
     placeChild(module, childParams) { variants.push({ module, params: childParams }); },
   };
+  placeFloorChildren(collector, record, p);
   for (const span of record.wallSpans) placeWallCourses(collector, record, span, p);
-  emitRoof(collector, record, p);
+  emitRoof(collector, record, p, { mesh: false, children: true });
   const seen = new Set();
   return variants.filter(variant => {
     const key = `${variant.module}:${JSON.stringify(variant.params)}`;
@@ -794,33 +1116,157 @@ export function connectorChildVariants(input, params = {}) {
   });
 }
 
-export function emitConnector(part, input, params = {}) {
-  const record = normalizedRecord(input);
-  const p = {
+function normalizedEmitParams(params) {
+  return {
     seed: wrappedSeed(params.seed), detail: Math.max(0.5, Math.min(3, params.detail ?? 1)),
     stoneMaterial: params.stoneMaterial ?? 8, mortarMaterial: params.mortarMaterial ?? 9,
     floorMaterial: params.floorMaterial ?? 8, tileMaterial: params.tileMaterial ?? 10,
-    timberMaterial: params.timberMaterial ?? 14,
+    timberMaterial: params.timberMaterial ?? 14, flagSize: params.flagSize ?? 0.9,
   };
-  const floorPieces = gridClippedPolygons(record.clearPolygon, params.flagSize ?? 0.9);
-  for (const polygon of floorPieces)
-    emitPolygonPrism(part, polygon, record.baseY - record.floor.thickness,
+}
+
+export function emitConnectorMesh(part, input, params = {}) {
+  const record = normalizedRecord(input);
+  const p = normalizedEmitParams(params);
+  const floorPieces = floorLayout(record, p);
+  const inlineFloorPieces = floorPieces.filter(piece =>
+    !floorPieceStock(piece, record, p, p.seed));
+  for (const piece of inlineFloorPieces)
+    emitPolygonPrism(part, piece.polygon, record.baseY - record.floor.thickness,
       record.baseY, p.floorMaterial);
-  const wallBricks = [], cutStones = [];
   for (const span of record.wallSpans) {
-    const mortar = spanFootprint({ ...span, thickness: span.thickness * 0.86 });
+    // Recess every face, including oblique jamb trim planes. Recessing only
+    // the two long faces leaves mortar coplanar with the end stones and
+    // produces visible striping/z-fighting on native trimmed jambs.
+    const recess = Math.min(0.025, span.thickness * 0.07);
+    const mortar = insetConvexPolygon(spanFootprint(span), recess);
     emitPolygonPrism(part, mortar, record.baseY + 0.012,
       record.baseY + record.height - 0.012, p.mortarMaterial);
+  }
+  const roof = emitRoof(part, record, p, { mesh: true, children: false });
+  return {
+    id: record.id, floorPieces: floorPieces.map(piece => piece.polygon),
+    inlineFloorPieces: inlineFloorPieces.map(piece => piece.polygon),
+    roofFacets: roof.facets, roofUndersides: roof.undersides, roofFascias: roof.fascias, roofTiles: roof.tiles,
+  };
+}
+
+export function emitConnectorChildren(part, input, params = {}) {
+  const record = normalizedRecord(input);
+  const p = normalizedEmitParams(params);
+  const floorStones = placeFloorChildren(part, record, p);
+  const wallBricks = [], cutStones = [];
+  for (const span of record.wallSpans) {
     const result = placeWallCourses(part, record, span, p);
     wallBricks.push(...result.bricks); cutStones.push(...result.cutStones);
   }
-  const roof = emitRoof(part, record, p);
+  const roof = emitRoof(part, record, p, { mesh: false, children: true });
+  return { id: record.id, floorStones, wallBricks, cutStones, rafters: roof.rafters };
+}
+
+export function emitConnector(part, input, params = {}) {
+  const record = normalizedRecord(input);
+  const mesh = emitConnectorMesh(part, record, params);
+  const children = emitConnectorChildren(part, record, params);
   return {
     id: record.id,
-    floorPieces,
-    wallBricks, cutStones,
-    roofFacets: roof.facets, roofTiles: roof.tiles, rafters: roof.rafters,
+    floorPieces: mesh.floorPieces, inlineFloorPieces: mesh.inlineFloorPieces,
+    floorStones: children.floorStones,
+    wallBricks: children.wallBricks, cutStones: children.cutStones,
+    roofFacets: mesh.roofFacets, roofUndersides: mesh.roofUndersides,
+    roofFascias: mesh.roofFascias, roofTiles: mesh.roofTiles, rafters: children.rafters,
     solidVolumes: connectorSolidVolumes(record),
     clearancePolygon: record.clearancePolygon,
   };
+}
+
+// Opt-in finished structural envelope. Material detail replaces individual
+// stone children; dimensions are authored directly into triangle positions.
+// The existing volume compiler remains the source of collision footprints.
+function emitFinishedConvex(part, inputFaces, material, id) {
+  const points=inputFaces.flat();
+  const center=[0,1,2].map(axis=>points.reduce((n,p)=>n+p[axis],0)/points.length);
+  const minus=(a,b)=>a.map((v,i)=>v-b[i]);
+  const dot=(a,b)=>a.reduce((n,v,i)=>n+v*b[i],0);
+  const cross=(a,b)=>[a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]];
+  const faces=[];
+  for(const input of inputFaces) {
+    const face=input.map(p=>[...p]);
+    let n=[0,0,0];
+    for(let i=2;i<face.length&&Math.hypot(...n)<EPS;i++)n=cross(minus(face[i-1],face[0]),minus(face[i],face[0]));
+    const magnitude=Math.hypot(...n);
+    if(magnitude<EPS)continue;
+    n=n.map(v=>v/magnitude);
+    if(dot(n,minus(face[0],center))<0){face.reverse();n=n.map(v=>-v);}
+    const horizontal=Math.hypot(n[0],n[2]);
+    // Metric world-space phase keeps brick courses continuous across mitres.
+    const u=horizontal>EPS?[n[2]/horizontal,0,-n[0]/horizontal]:[1,0,0];
+    const v=cross(n,u),uv=face.map(p=>[dot(p,u),dot(p,v)]);
+    part.fill(material);part.beginShape(SHAPE.triangles);
+    for(let i=1;i+1<face.length;i++)for(const j of [0,i,i+1]) {
+      if(typeof part.surfaceVertex==='function')part.surfaceVertex(...face[j],...n,...uv[j]);
+      else part.vertex(...face[j]);
+    }
+    part.endShape();
+    faces.push({positions:face,normal:n,uv});
+  }
+  return {id,material,faces};
+}
+function finishedPrismFaces(polygon,bottom,top) {
+  const low=polygon.map(p=>[p[0],bottom,p[1]]),high=polygon.map(p=>[p[0],top,p[1]]);
+  return [low,high,...low.map((p,i)=>[p,low[(i+1)%low.length],high[(i+1)%low.length],high[i]])];
+}
+
+// The legacy roof author emits position-only triangles. Attribute that exact
+// stream explicitly before batching: neither winding nor roof placement changes.
+function surfaceConnectorSink(part) {
+  const buckets=new Map();let active,pending=[];
+  const sink={
+    fill(material){if(!buckets.has(material))buckets.set(material,[]);active=buckets.get(material);},
+    beginShape(){pending=[];},
+    surfaceVertex(...v){active.push(v);},
+    vertex(...p){pending.push(p);},
+    endShape(){
+      for(let i=0;i<pending.length;i+=3){
+        const tri=pending.slice(i,i+3),a=tri[1].map((v,j)=>v-tri[0][j]),b=tri[2].map((v,j)=>v-tri[0][j]);
+        const cross=(a,b)=>[a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]];
+        const raw=cross(a,b),length=Math.hypot(...raw);
+        if(length<=1e-14)throw new Error('Degenerate connector roof triangle');
+        const n=raw.map(v=>v/length),horizontal=Math.hypot(n[0],n[2]);
+        const u=horizontal>EPS?[n[2]/horizontal,0,-n[0]/horizontal]:[1,0,0],v=cross(n,u);
+        const dot=(a,b)=>a.reduce((s,x,j)=>s+x*b[j],0);
+        for(const p of tri)active.push([...p,...n,dot(p,u),dot(p,v)]);
+      }
+    },
+  };
+  return {sink,flush(){
+    for(const [material,vertices] of buckets){
+      part.fill(material);part.beginShape(SHAPE.triangles);
+      for(const vertex of vertices){
+        if(typeof part.surfaceVertex==='function')part.surfaceVertex(...vertex);
+        else part.vertex(...vertex.slice(0,3));
+      }
+      part.endShape();
+    }
+    return buckets.size;
+  }};
+}
+
+export function emitSurfaceConnector(part,input,params={}) {
+  const record=normalizedRecord(input),p=normalizedEmitParams(params);
+  const solids=connectorSolidVolumes(record,p),shells=[];
+  const batch=surfaceConnectorSink(part),sink=batch.sink;
+  // Includes rectangles formerly owned by CastleStone children, ensuring a
+  // complete walkable floor after removing the old assembly root.
+  for(const solid of solids) shells.push(emitFinishedConvex(sink,
+    finishedPrismFaces(solid.polygon,solid.bottomY,solid.topY),
+    solid.kind==='wall'?p.stoneMaterial:p.floorMaterial,solid.id));
+  const roof=emitRoof(sink,record,p,{mesh:true,children:false});
+  for(const [i,segment] of roof.rafters.entries())shells.push(emitFinishedConvex(sink,
+    rafterBoxFaces(segment),p.timberMaterial,record.id+':rafter:'+i));
+  const materialBatches=batch.flush();
+  return {id:record.id,shells,floorPieces:solids.filter(s=>s.kind==='floor').map(s=>s.polygon),
+    solidVolumes:solids,clearancePolygon:record.clearancePolygon,
+    roofFacets:roof.facets,roofUndersides:roof.undersides,roofFascias:roof.fascias,roofTiles:roof.tiles,
+    rafters:roof.rafters,children:0,materialBatches};
 }

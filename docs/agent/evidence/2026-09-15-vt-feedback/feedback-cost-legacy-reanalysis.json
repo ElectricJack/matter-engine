@@ -1,0 +1,42 @@
+[
+  {
+    "command": [
+      "python3",
+      "tools/vt_acceptance.py",
+      "--trace",
+      "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-input-idle-performance/vt.jsonl",
+      "--output",
+      "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/terrain-input-idle-performance-full-cpu-reanalysis.json",
+      "--begin-marker",
+      "settle_begin",
+      "--end-marker",
+      "settle_end",
+      "--require-settled"
+    ],
+    "exit": 0,
+    "settled_gate": true,
+    "full_cpu_available": false,
+    "full_cpu_p95_ms": null,
+    "missing_cpu_frames": 601
+  },
+  {
+    "command": [
+      "python3",
+      "tools/vt_acceptance.py",
+      "--trace",
+      "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-input-idle-repeat/vt.jsonl",
+      "--output",
+      "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/terrain-input-idle-repeat-full-cpu-reanalysis.json",
+      "--begin-marker",
+      "settle_begin",
+      "--end-marker",
+      "settle_end",
+      "--require-settled"
+    ],
+    "exit": 0,
+    "settled_gate": true,
+    "full_cpu_available": false,
+    "full_cpu_p95_ms": null,
+    "missing_cpu_frames": 601
+  }
+]

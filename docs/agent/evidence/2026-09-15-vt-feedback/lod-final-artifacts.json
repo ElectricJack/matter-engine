@@ -1,0 +1,181 @@
+{
+  "files": {
+    "docs/agent/evidence/2026-09-15-vt-feedback/lod-final-checks.json": {
+      "bytes": 7461,
+      "sha256": "5b02fb91514401c2ae96e0eabbe0d708e0c14896e9792dad32871bc0f2979bcc"
+    },
+    "docs/agent/evidence/2026-09-15-vt-feedback/lod-final-compositor-build.log": {
+      "bytes": 827,
+      "sha256": "510db1e5e773265f95ea56ecfb254dec56b1b8f6019e13c50382214b7c572296"
+    },
+    "docs/agent/evidence/2026-09-15-vt-feedback/lod-final-compositor-test.log": {
+      "bytes": 3031,
+      "sha256": "ea6462a53c606cb3aaeb29a0b33e36d5f62d5f99a551e5e9b0abfc71e9bf6faf"
+    },
+    "docs/agent/evidence/2026-09-15-vt-feedback/lod-final-editor-build.log": {
+      "bytes": 1146,
+      "sha256": "acecd92d6c8274d16f75bf2753bf870cdb7de5a1663217ca3b618baa091ec25f"
+    },
+    "docs/agent/evidence/2026-09-15-vt-feedback/lod-final-residency-build.log": {
+      "bytes": 827,
+      "sha256": "b4301f1ec441d9aa0aebeea60d35497344dfbb29c18bd73f39ce9c374edf2311"
+    },
+    "docs/agent/evidence/2026-09-15-vt-feedback/lod-final-residency-test.log": {
+      "bytes": 39,
+      "sha256": "9e23733e86ca4ca41fe830668a5be05615274b5d747466d07e45445284439296"
+    },
+    "docs/agent/evidence/2026-09-15-vt-feedback/lod-final-smoke-build.log": {
+      "bytes": 4012,
+      "sha256": "324843c13ec9f68744aaca4a98ccb414ae7a50ca4985f583b6cc100899023a4f"
+    },
+    "docs/agent/evidence/2026-09-15-vt-feedback/lod-final-source.json": {
+      "bytes": 2601,
+      "sha256": "a821cbafb94a8e67cb5aafd77ed49e68b493256d89a26e5d7e3b4370029b0ac4"
+    },
+    "docs/agent/evidence/2026-09-15-vt-feedback/lod-final-surface-parallax.log": {
+      "bytes": 5939,
+      "sha256": "f52b072c4efc8244f77ab7a598304e2ca044b21a64c622875c6ba35eddf13a5a"
+    },
+    "docs/agent/evidence/2026-09-15-vt-feedback/lod-final-vt-enrich-nort.log": {
+      "bytes": 5414,
+      "sha256": "5ad6dcac92a7398943d672707a7a5b7e30ae744aca5cae3d49539dff1ea5df72"
+    },
+    "docs/agent/evidence/2026-09-15-vt-feedback/lod-final-vt-enrich.log": {
+      "bytes": 5859,
+      "sha256": "c7c795389ba1df0d3f6373b8cfa0e9272933539b73abfb9dfa22136327cc5a43"
+    },
+    "docs/agent/evidence/2026-09-15-vt-feedback/lod-final-vt-normal-frame.log": {
+      "bytes": 5963,
+      "sha256": "5bea7d198ea21ae6bd9e7f966bf3613c722687bfb9e48591d756acaff756e7c2"
+    },
+    "docs/agent/evidence/2026-09-15-vt-feedback/lod-final-vt-queue.log": {
+      "bytes": 1989,
+      "sha256": "e8e167c0a42d4f969e7cb6e7b1f01fd0edb0e1db0103fc24e5fb1b4e207985d9"
+    },
+    "docs/agent/evidence/2026-09-15-vt-feedback/lod-final-vt-rt.log": {
+      "bytes": 5186,
+      "sha256": "1924bb48c7941e45a1cbea9b5273bcf28fb7d8cd8ac6b0a994ac615eb96966db"
+    },
+    "docs/agent/evidence/2026-09-15-vt-feedback/lod-final-vt-surfaces.log": {
+      "bytes": 4821,
+      "sha256": "000f8b10797692de99de1dc7d0fd3654873766eae29b4241c257db1dbdb6dff1"
+    },
+    "docs/agent/evidence/2026-09-15-vt-feedback/lod-final-vt.log": {
+      "bytes": 5041,
+      "sha256": "c483bf3079131a5979823f6dda3bd4c3f6f866b9b275fef5d87b7b87aaf253a1"
+    },
+    "docs/agent/evidence/2026-09-15-vt-feedback/lod-integration-checks.json": {
+      "bytes": 6022,
+      "sha256": "015b73a506a86048a694ab1794fab405b1245c8af64052d74d01e806966aaf65"
+    },
+    "docs/agent/evidence/2026-09-15-vt-feedback/lod-integration-compositor-build.log": {
+      "bytes": 827,
+      "sha256": "33a48de5cd8b4a76b807d59f4650404e0352b42450802a588386207aae2ac32b"
+    },
+    "docs/agent/evidence/2026-09-15-vt-feedback/lod-integration-compositor-test.log": {
+      "bytes": 3031,
+      "sha256": "ad36163e053e241808028006489938a07532af2bd223838283f3f3f8911c4ea6"
+    },
+    "docs/agent/evidence/2026-09-15-vt-feedback/lod-integration-editor-build.log": {
+      "bytes": 1146,
+      "sha256": "3aafd9c63789e66e70cb8107e332adb2e65366a4abc567703142194960e2a388"
+    },
+    "docs/agent/evidence/2026-09-15-vt-feedback/lod-integration-residency-build.log": {
+      "bytes": 2396,
+      "sha256": "cbeab6df54635d2cc89123201064337fd9ce0b922a2f70ab0bb9dc5f21ec155a"
+    },
+    "docs/agent/evidence/2026-09-15-vt-feedback/lod-integration-residency-test.log": {
+      "bytes": 39,
+      "sha256": "9e23733e86ca4ca41fe830668a5be05615274b5d747466d07e45445284439296"
+    },
+    "docs/agent/evidence/2026-09-15-vt-feedback/lod-integration-source.json": {
+      "bytes": 2601,
+      "sha256": "41404d469e6693a97a2c42eeea046d542dfa5bb7b3fadee6a23ece38b9243176"
+    },
+    "docs/agent/evidence/2026-09-15-vt-feedback/lod-integration-surface-parallax.log": {
+      "bytes": 5939,
+      "sha256": "f52b072c4efc8244f77ab7a598304e2ca044b21a64c622875c6ba35eddf13a5a"
+    },
+    "docs/agent/evidence/2026-09-15-vt-feedback/lod-integration-vt-enrich-nort.log": {
+      "bytes": 5414,
+      "sha256": "d3b730a7aa1ff7c25299bd4be5b43c6348b56f77b34c372ea85577f04063c0ef"
+    },
+    "docs/agent/evidence/2026-09-15-vt-feedback/lod-integration-vt-normal-frame.log": {
+      "bytes": 5963,
+      "sha256": "5bea7d198ea21ae6bd9e7f966bf3613c722687bfb9e48591d756acaff756e7c2"
+    },
+    "docs/agent/evidence/2026-09-15-vt-feedback/lod-integration-vt-rt.log": {
+      "bytes": 5186,
+      "sha256": "3631327eebaa758981f900ed8c36b7b7f0e841aff74d36417bbde92940d0e243"
+    },
+    "docs/agent/evidence/2026-09-15-vt-feedback/lod-integration-vt-surfaces.log": {
+      "bytes": 4821,
+      "sha256": "000f8b10797692de99de1dc7d0fd3654873766eae29b4241c257db1dbdb6dff1"
+    },
+    "docs/agent/evidence/2026-09-15-vt-feedback/lod-integration-vt.log": {
+      "bytes": 5041,
+      "sha256": "c89abe1f083ec0209994f4523348e2bfb353d1f15073e23ccf72b4202d9b6964"
+    },
+    "docs/agent/evidence/2026-09-15-vt-feedback/lod-promotion-green-checks.json": {
+      "bytes": 1630,
+      "sha256": "50d1967608e7df07e3fcc3d9f433ac0f51ae5f1a5dfb1e81f2777a9af3ec1e0a"
+    },
+    "docs/agent/evidence/2026-09-15-vt-feedback/lod-promotion-green-smoke-build.log": {
+      "bytes": 64240,
+      "sha256": "94dc91e4e04982e54b1b171cd1c94096922cda7f3575b2506764603989b5792e"
+    },
+    "docs/agent/evidence/2026-09-15-vt-feedback/lod-promotion-green-source.json": {
+      "bytes": 1702,
+      "sha256": "c09ea717209ace3547c194ec1b9bfdb86e8e2e0d26d71b0862500efbcd9bba0e"
+    },
+    "docs/agent/evidence/2026-09-15-vt-feedback/lod-promotion-green-vt-enrich.log": {
+      "bytes": 5859,
+      "sha256": "ed2ed632d250b1ca5538e43bf9e121060cbf332f333ab9e0310123eec6466e86"
+    },
+    "docs/agent/evidence/2026-09-15-vt-feedback/lod-promotion-green-vt-queue.log": {
+      "bytes": 1994,
+      "sha256": "11d4a5704e74ded73d94c605f1162812c6ad674c40bc7fbfe29222bdfd5c89f9"
+    },
+    "docs/agent/evidence/2026-09-15-vt-feedback/lod-promotion-red-checks.json": {
+      "bytes": 1503,
+      "sha256": "94f7852fe71ed0e11a5020f9fe1db7a5d98da107d931b64f20d987d4b2f2db45"
+    },
+    "docs/agent/evidence/2026-09-15-vt-feedback/lod-promotion-red-smoke-build.log": {
+      "bytes": 15638,
+      "sha256": "bcfcad8732e32f9de8889fb71148cf41147c1a05e306dc9f6e464caa33df7df9"
+    },
+    "docs/agent/evidence/2026-09-15-vt-feedback/lod-promotion-red-source.json": {
+      "bytes": 1635,
+      "sha256": "f8c4461708d49b7f6d2389386d21c86cbcfb084412dec864b2403b8626858c89"
+    },
+    "docs/agent/evidence/2026-09-15-vt-feedback/lod-promotion-red-vt-enrich.log": {
+      "bytes": 5194,
+      "sha256": "7e6f8fcaecbcad8cdbd16fb0cd996034cd650fc976c92ba0e9a2f1e84ef51fd0"
+    },
+    "docs/agent/evidence/2026-09-15-vt-feedback/lod-promotion-red-vt-queue.log": {
+      "bytes": 2079,
+      "sha256": "d58f805444e1178f8a58c79570ad74a23ad33d8138a1a518812e78c133d0bda4"
+    },
+    "docs/agent/evidence/2026-09-15-vt-feedback/lod-render-checks.json": {
+      "bytes": 1577,
+      "sha256": "bcbfdc04ef633b8d9d947f09b71ad553dc0743a3e208c5817bc31dae9df89ead"
+    },
+    "docs/agent/evidence/2026-09-15-vt-feedback/lod-render-smoke-build.log": {
+      "bytes": 15638,
+      "sha256": "24cbf98a1a29600ba9ff08a59a02ffbf04a1fda5089e52cc6d4f864c63bac12a"
+    },
+    "docs/agent/evidence/2026-09-15-vt-feedback/lod-render-source.json": {
+      "bytes": 1702,
+      "sha256": "c606df1b1186fb371b6bf28888dd849cdd4fe63fa9c51a8df3a8583516b94e2a"
+    },
+    "docs/agent/evidence/2026-09-15-vt-feedback/lod-render-vt-enrich.log": {
+      "bytes": 5859,
+      "sha256": "e905ed8dac6078be85dbdb9645dd7a05451305a6598e5021120d004fad3044f1"
+    },
+    "docs/agent/evidence/2026-09-15-vt-feedback/lod-render-vt-queue.log": {
+      "bytes": 1994,
+      "sha256": "11d4a5704e74ded73d94c605f1162812c6ad674c40bc7fbfe29222bdfd5c89f9"
+    }
+  },
+  "scope": "native compatible LOD promotion and canonical surface-edit correctness; not repeated scene performance acceptance"
+}

@@ -4,22 +4,37 @@ const primitiveSource = readFileSync(new URL(
   '../shared-lib/castle_primitives.js', import.meta.url), 'utf8');
 const primitiveUrl = `data:text/javascript;base64,${Buffer.from(
   primitiveSource + '\n//# sourceURL=castle_primitives.test.mjs').toString('base64')}`;
+const stockSource = readFileSync(new URL(
+  '../shared-lib/castle_stock.js', import.meta.url), 'utf8').replace(
+  "'shared-lib/castle_primitives'", JSON.stringify(primitiveUrl));
+const stockUrl = `data:text/javascript;base64,${Buffer.from(
+  stockSource + '\n//# sourceURL=castle_stock.test.mjs').toString('base64')}`;
 const connectorSource = readFileSync(new URL(
   '../shared-lib/castle_connector_kit.js', import.meta.url), 'utf8').replace(
-  "'shared-lib/castle_primitives'", JSON.stringify(primitiveUrl));
+  "'shared-lib/castle_stock'", JSON.stringify(stockUrl));
 const connectorUrl = `data:text/javascript;base64,${Buffer.from(
   connectorSource + '\n//# sourceURL=castle_connector_kit.test.mjs').toString('base64')}`;
 const {
   connectorChildVariants,
   connectorClearanceVolumes,
   connectorCollisionEntities,
+  connectorLayerRecipes,
   connectorRecipes,
+  connectorRoofClearance,
   connectorSolidVolumes,
   emitConnector,
+  emitConnectorChildren,
   emitConnectorCutStone,
+  emitTriangularStone,
+  emitConnectorMesh,
+  validateConnectorGeometry,
   validateConnectorRecord,
   validateConnectorRecords,
 } = await import(connectorUrl);
+const fixtureModuleSource = readFileSync(new URL(
+  '../shared-lib/castle_connector_fixture.js', import.meta.url), 'utf8');
+const fixtureModule = await import(`data:text/javascript;base64,${Buffer.from(
+  fixtureModuleSource + '\n//# sourceURL=castle_connector_fixture.test.mjs').toString('base64')}`);
 
 const fixture = JSON.parse(readFileSync(
   new URL('./fixtures/castle_connector_records.json', import.meta.url), 'utf8'));
@@ -38,6 +53,27 @@ globalThis.SHAPE = Object.freeze({ polygon: 3, triangles: 0 });
 
 function clone(value) { return JSON.parse(JSON.stringify(value)); }
 
+function translatedRecord(input, dx, dz) {
+  const record = clone(input);
+  const point2 = point => { point[0] += dx; point[1] += dz; };
+  const point3 = point => { point[0] += dx; point[2] += dz; };
+  record.clearPolygon.forEach(point2);
+  record.routeWaypoints.forEach(point3);
+  for (const mouth of record.mouths) {
+    point3(mouth.inside); point3(mouth.outside);
+    mouth.segment.forEach(point2);
+    mouth.insideSegment.forEach(point2);
+    mouth.outsideSegment.forEach(point2);
+  }
+  for (const span of record.wallSpans) {
+    span.segment.forEach(point2);
+    point3(span.courseOrigin);
+    for (const plane of span.trimPlanes)
+      plane.offset += plane.normal[0] * dx + plane.normal[1] * dz;
+  }
+  return record;
+}
+
 function polygonArea(polygon) {
   let twiceArea = 0;
   for (let index = 0; index < polygon.length; ++index) {
@@ -52,14 +88,19 @@ function cross(a, b, point) {
     (b[1] - a[1]) * (point[0] - a[0]);
 }
 
-function insideConvex(polygon, point) {
+function insideConvex(polygon, point, tolerance = EPSILON) {
   const sign = Math.sign(polygonArea(polygon));
   return polygon.every((vertex, index) =>
-    sign * cross(vertex, polygon[(index + 1) % polygon.length], point) >= -EPSILON);
+    sign * cross(vertex, polygon[(index + 1) % polygon.length], point) >= -tolerance);
 }
 
 function normalized(vector) {
   return Math.abs(Math.hypot(...vector) - 1) < 1e-6;
+}
+
+function triangleNormalY([a, b, c]) {
+  return (b[2] - a[2]) * (c[0] - a[0]) -
+    (b[0] - a[0]) * (c[2] - a[2]);
 }
 
 function flatScalars(value) {
@@ -139,6 +180,7 @@ class RecordingPart {
   popMatrix() { assert.ok(this.matrixDepth-- > 0); this.record('popMatrix'); }
   translate(...args) { this.record('translate', args); }
   scale(...args) { this.record('scale', args); }
+  applyMatrix(matrix) { this.record('applyMatrix', [matrix]); }
   rotateX(value) { this.record('rotateX', [value]); }
   rotateY(value) { this.record('rotateY', [value]); }
   rotateZ(value) { this.record('rotateZ', [value]); }
@@ -155,15 +197,25 @@ class RecordingPart {
 assert.equal(fixture.schema, 'matter.castle-connectors/v1');
 assert.deepEqual(records.map(record => record.id),
   ['core-hall-30', 'core-hall-15', 'core-hall-45', 'core-hall-neg-30']);
+assert.deepEqual(fixtureModule.CASTLE_CONNECTOR_FIXTURE.hall.origin,
+  [16, 0, 2.5358983849]);
+assert.deepEqual(records, fixtureModule.CASTLE_CONNECTOR_FIXTURE.records,
+  'JSON contract fixture and executable/native fixture are byte-exact records');
+for (const record of fixtureModule.CASTLE_CONNECTOR_FIXTURE.records) {
+  assert.equal(validateConnectorRecord(record).valid, true,
+    record.id + ' executable native fixture record validates');
+  assert.equal(validateConnectorGeometry(record).valid, true,
+    record.id + ' executable native fixture geometry validates');
+}
 
 // The canonical fixture is the frozen-spec arrangement: its two portal-mouth
 // centres are [12, 0, 6] and [18, 0, 6], and the moving hall uses yaw +30.
 const canonical = records[0];
 assert.deepEqual(Object.keys(canonical).sort(), [
-  'baseY', 'clearHeight', 'clearPolygon', 'floor', 'id', 'level', 'mouths',
+  'baseY', 'clearHeight', 'clearPolygon', 'floor', 'height', 'id', 'level', 'mouths',
   'roof', 'routeWaypoints', 'wallSpans',
 ]);
-assert.deepEqual(canonical.mouths[0].segment, [[11.7, 5.2], [11.7, 6.8]]);
+assert.deepEqual(canonical.mouths[0].segment, [[12, 5.2], [12, 6.8]]);
 assert.ok(Math.abs((canonical.mouths[1].inside[0] +
   canonical.mouths[1].outside[0]) * 0.5 - 18) < EPSILON);
 assert.ok(Math.abs((canonical.mouths[1].inside[2] +
@@ -186,6 +238,8 @@ for (const record of records) {
     insideConvex(record.clearPolygon, point)), record.id + ' clearance stays inside the throat');
   assert.ok(record.routeWaypoints.every(point => point[1] === record.baseY),
     record.id + ' route stays on the walkable floor elevation');
+  assert.equal(validateConnectorGeometry(record).valid, true,
+    record.id + ' concrete JSON fixture geometry validates');
   for (const mouth of record.mouths) {
     assert.ok(insideConvex(record.clearPolygon, [mouth.inside[0], mouth.inside[2]]));
     assert.ok(mouth.insideSegment.every(point => insideConvex(record.clearPolygon, point)));
@@ -216,6 +270,43 @@ thinMasonry.wallSpans[0].thickness = 0.1;
 assert.equal(validateConnectorRecord(thinMasonry).valid, false,
   'wall thickness below exact stone/cut-stone support is rejected');
 
+const shortMasonry = clone(canonical);
+shortMasonry.id = 'short-masonry-run';
+const shortSpan = shortMasonry.wallSpans[0];
+shortSpan.segment[1] = [shortSpan.segment[0][0] + shortSpan.tangent[0] * 0.1,
+  shortSpan.segment[0][1] + shortSpan.tangent[1] * 0.1];
+assert.equal(validateConnectorRecord(shortMasonry).valid, false,
+  'wall runs below exact stock support are rejected before bake placement');
+
+const taperedMasonry = clone(canonical);
+taperedMasonry.id = 'subminimum-trimmed-bed';
+const taperedSpan = taperedMasonry.wallSpans[0];
+const taperedLength = Math.hypot(
+  taperedSpan.segment[1][0] - taperedSpan.segment[0][0],
+  taperedSpan.segment[1][1] - taperedSpan.segment[0][1]);
+const taper = (taperedLength * 0.5 - 0.05) / taperedSpan.thickness;
+const startNormal = [
+  taperedSpan.tangent[0] - taper * taperedSpan.normal[0],
+  taperedSpan.tangent[1] - taper * taperedSpan.normal[1],
+];
+const endNormal = [
+  taperedSpan.tangent[0] + taper * taperedSpan.normal[0],
+  taperedSpan.tangent[1] + taper * taperedSpan.normal[1],
+];
+taperedSpan.trimPlanes = [{
+  normal: startNormal,
+  offset: startNormal[0] * taperedSpan.segment[0][0] +
+    startNormal[1] * taperedSpan.segment[0][1],
+  keepSign: 1,
+}, {
+  normal: endNormal,
+  offset: endNormal[0] * taperedSpan.segment[0][0] +
+    endNormal[1] * taperedSpan.segment[0][1] + taperedLength,
+  keepSign: -1,
+}];
+assert.equal(validateConnectorRecord(taperedMasonry).valid, false,
+  'trimmed wall beds below exact cut-stone support are rejected during validation');
+
 const nonConvex = clone(canonical);
 nonConvex.id = 'non-convex';
 nonConvex.clearPolygon = [canonical.clearPolygon[0], canonical.clearPolygon[2],
@@ -223,11 +314,91 @@ nonConvex.clearPolygon = [canonical.clearPolygon[0], canonical.clearPolygon[2],
 assert.equal(validateConnectorRecord(nonConvex).valid, false);
 assert.ok(validateConnectorRecord(nonConvex).errors.some(error => /convex|polygon/i.test(String(error))));
 
+const tallerEnclosure = clone(canonical);
+tallerEnclosure.id = 'taller-enclosure';
+tallerEnclosure.height = 4;
+tallerEnclosure.clearHeight = 3.2;
+const tallerSolids = connectorSolidVolumes(tallerEnclosure, params);
+assert.ok(tallerSolids.filter(volume => volume.kind === 'wall').every(volume =>
+  Math.abs(volume.topY - 4) < EPSILON), 'wall solids rise to optional enclosure height');
+assert.equal(connectorClearanceVolumes(tallerEnclosure)[0].topY, 3.2,
+  'walk clearance remains capped by physical portal headroom');
+const tallerMesh = emitConnectorMesh(new RecordingPart(), tallerEnclosure, params);
+assert.ok(tallerMesh.roofFacets.every(facet =>
+  Math.abs(facet[0][1] - 4.08) < EPSILON && Math.abs(facet[1][1] - 4.08) < EPSILON),
+  'roof eaves use enclosure height without overstating route headroom');
+
+for (const record of records) {
+  assert.ok(connectorRoofClearance(record).every(rafter => rafter.clearance >= -EPSILON),
+    record.id + ' finite oriented beam cores preserve full polygon headroom');
+  const insufficient = clone(record);
+  insufficient.height = insufficient.clearHeight;
+  assert.equal(validateConnectorRecord(insufficient).valid, false,
+    'equal enclosure/passage height cannot hide low eave rafters');
+  assert.match(validateConnectorRecord(insufficient).errors.join(' '), /finite beam.*clearHeight/);
+}
+// A long low-rise curtain is particularly sensitive to centerline-only checks.
+// Stretch its complete contract in X (including finite wall frames/trim planes).
+const longLowRoof = clone(canonical);
+const stretch = 8;
+longLowRoof.height = longLowRoof.clearHeight;
+longLowRoof.roof.rise = 0.1;
+for (const point of longLowRoof.clearPolygon) point[0] *= stretch;
+for (const point of longLowRoof.routeWaypoints) point[0] *= stretch;
+for (const mouth of longLowRoof.mouths) {
+  for (const key of ['inside', 'outside']) mouth[key][0] *= stretch;
+  for (const key of ['segment', 'insideSegment', 'outsideSegment'])
+    for (const point of mouth[key]) point[0] *= stretch;
+}
+for (const span of longLowRoof.wallSpans) {
+  for (const point of span.segment) point[0] *= stretch;
+  span.courseOrigin[0] *= stretch;
+  const dx = span.segment[1][0] - span.segment[0][0];
+  const dz = span.segment[1][1] - span.segment[0][1];
+  const length = Math.hypot(dx, dz);
+  const sign = span.normal[0] * -span.tangent[1] + span.normal[1] * span.tangent[0] > 0 ? 1 : -1;
+  span.tangent = [dx / length, dz / length];
+  span.normal = [-dz / length * sign, dx / length * sign];
+  for (const plane of span.trimPlanes) {
+    const normal = [plane.normal[0] / stretch, plane.normal[1]];
+    const length = Math.hypot(...normal);
+    plane.normal = normal.map(value => value / length);
+    plane.offset /= length;
+  }
+}
+assert.match(validateConnectorRecord(longLowRoof).errors.join(' '), /finite beam.*clearHeight/,
+  'long shallow roof fails explicitly when structural headroom is missing');
+longLowRoof.height += 0.3;
+assert.equal(validateConnectorRecord(longLowRoof).valid, true,
+  'an explicit raised enclosure provides the required structural headroom');
+
 const missingOwner = clone(canonical);
 missingOwner.id = 'missing-jamb-owner';
 delete missingOwner.mouths[1].jambOwner;
 assert.equal(validateConnectorRecord(missingOwner).valid, false);
 assert.ok(validateConnectorRecord(missingOwner).errors.some(error => /jamb|owner/i.test(String(error))));
+
+const foreignJamb = clone(canonical);
+foreignJamb.id = 'foreign-jamb-owner';
+foreignJamb.wallSpans[0].jambOwners[0] = 'wing:core:owns-this-jamb';
+assert.equal(validateConnectorRecord(foreignJamb).valid, false,
+  'connector refuses to emit an endpoint assigned to a foreign owner');
+
+const rectangularEnds = clone(canonical);
+rectangularEnds.id = 'rectangular-end-stock';
+for (const span of rectangularEnds.wallSpans) {
+  const [a, b] = span.segment, tangent = span.tangent;
+  span.trimPlanes = [
+    { normal: tangent, offset: a[0] * tangent[0] + a[1] * tangent[1], keepSign: 1 },
+    { normal: tangent, offset: b[0] * tangent[0] + b[1] * tangent[1], keepSign: -1 },
+  ];
+}
+const rectangularChildren = emitConnectorChildren(
+  new RecordingPart(), rectangularEnds, params);
+assert.equal(rectangularChildren.cutStones.length, 0,
+  'orthogonally trimmed endpoint bricks reuse ordinary stock, not cut wrappers');
+assert.ok(rectangularChildren.wallBricks.every(brick =>
+  brick.module === 'CastleStone' && brick.cut === false));
 
 const reused = clone(canonical);
 reused.id = 'same-sockets-twice';
@@ -255,21 +426,6 @@ assert.ok(Math.abs(floorArea - polygonArea(canonical.clearPolygon)) < 1e-6,
   'floor collider prisms support exactly the clipped connector polygon');
 assert.ok(floorVolumes.every(volume => volume.polygon.every(point =>
   insideConvex(canonical.clearPolygon, point))), 'no floor piece grows outside the opening');
-
-const tallerEnclosure = clone(canonical);
-tallerEnclosure.id = 'taller-enclosure';
-tallerEnclosure.height = 4;
-tallerEnclosure.clearHeight = 3.2;
-const tallerVolumes = connectorSolidVolumes(tallerEnclosure, params);
-assert.ok(tallerVolumes.filter(volume => volume.kind === 'wall').every(volume =>
-  Math.abs(volume.topY - 4) < EPSILON), 'wall solids rise to optional enclosure height');
-assert.equal(connectorClearanceVolumes(tallerEnclosure)[0].topY, 3.2,
-  'walk clearance remains capped by physical portal headroom');
-const tallerPart = new RecordingPart();
-const tallerEmitted = emitConnector(tallerPart, tallerEnclosure, params);
-assert.ok(tallerEmitted.roofFacets.every(facet =>
-  Math.abs(facet[0][1] - 4) < EPSILON && Math.abs(facet[1][1] - 4) < EPSILON),
-  'roof eaves use enclosure height without overstating route headroom');
 
 const collision = connectorCollisionEntities(canonical, { prefix: 'fixture:' });
 assert.equal(collision.length, volumes.length, 'each declared solid has exactly one collider');
@@ -302,6 +458,11 @@ const reordered = clone(canonical);
 reordered.wallSpans.reverse();
 assert.equal(JSON.stringify(connectorRecipes([reordered], recipeOptions)), JSON.stringify(recipes),
   'authored wall-span order does not affect recipe identity');
+assert.equal(JSON.stringify(connectorSolidVolumes(reordered, params)), JSON.stringify(volumes),
+  'authored wall-span order does not affect solid-volume identity');
+assert.equal(JSON.stringify(connectorChildVariants(reordered, params)),
+  JSON.stringify(connectorChildVariants(canonical, params)),
+  'authored wall-span order does not affect child-variant identity');
 
 const distinct = clone(records[2]);
 for (const mouth of distinct.mouths) {
@@ -313,10 +474,22 @@ const orderedRecipes = connectorRecipes([canonical, distinct], recipeOptions);
 assert.equal(JSON.stringify(connectorRecipes([distinct, canonical], recipeOptions)),
   JSON.stringify(orderedRecipes), 'connector-record input order does not affect recipe identity');
 
+const layers = connectorLayerRecipes([canonical], {
+  meshModule: 'CastleConnectorFixtureMesh',
+  assemblyModule: 'CastleConnectorFixtureAssembly',
+  materials: recipeOptions.materials,
+  detail: recipeOptions.detail,
+});
+assert.equal(layers.length, 2, 'each connector publishes an inline and child-only layer');
+assert.deepEqual(layers.map(layer => [layer.layer, layer.expand, layer.inlineGeometry]), [
+  ['mesh', false, true], ['children', true, false],
+]);
+assert.ok(layers.every(layer => flatScalars(layer.params)));
+
 const childVariants = connectorChildVariants(canonical, params);
 assert.ok(childVariants.length > 0, 'requires can declare the cut-stone bake catalogue');
 assert.ok(childVariants.every(variant =>
-  ['CastleConnectorCutStone', 'CastleStone', 'CastleBeam'].includes(variant.module) &&
+  ['CastleTriangularStone', 'CastleStone', 'CastleBeam'].includes(variant.module) &&
   flatScalars(variant.params)), 'Part boundary parameters remain flat finite scalars');
 assert.equal(new Set(childVariants.map(variant =>
   variant.module + ':' + JSON.stringify(variant.params))).size, childVariants.length,
@@ -332,17 +505,218 @@ assert.ok(emitted.cutStones.length >= 4, 'both angled ends own asymmetric jamb/m
 assert.ok(emitted.roofFacets.length >= 4, 'low hip is made from clipped facets');
 assert.ok(emitted.roofTiles.length > emitted.roofFacets.length, 'roof facets carry individual tiles');
 assert.ok(emitted.rafters.length > 0, 'roof includes structural rafters');
+for (let edge = 0; edge < emitted.rafters.length; ++edge) {
+  const [rafterEave, rafterApex] = emitted.rafters[edge];
+  const underside = emitted.roofUndersides[edge];
+  assert.ok(rafterEave[1] + 0.09 < underside[0][1] &&
+    rafterApex[1] + 0.09 < underside[2][1],
+    'rafter top stays below the soffit instead of poking through roof tiles');
+}
 assert.deepEqual(emitted.solidVolumes, volumes);
 assert.deepEqual(emitted.clearancePolygon, validateConnectorRecord(canonical).clearancePolygon);
 assert.ok(part.placements.length > 0, 'detailed cut stone/timber pieces are real child placements');
 assert.ok(part.ops.some(operation => operation.kind === 'extrude'),
   'floor and mortar geometry use real polygon prisms');
+const firstShape = part.ops.findIndex(operation =>
+  operation.kind === 'beginShape' && operation.args[0] === SHAPE.polygon);
+const firstShapeEnd = part.ops.findIndex((operation, index) =>
+  index > firstShape && operation.kind === 'endShape');
+const emittedProfileXZ = part.ops.slice(firstShape + 1, firstShapeEnd)
+  .filter(operation => operation.kind === 'vertex')
+  .map(operation => [-operation.args[1], -operation.args[0]])
+  .map(point => point.map(value => value.toFixed(8)).join(','))
+  .sort();
+const expectedFloorXZ = emitted.floorPieces[0]
+  .map(point => point.map(value => value.toFixed(8)).join(','))
+  .sort();
+assert.deepEqual(emittedProfileXZ, expectedFloorXZ,
+  'vertical extrusion basis inverse preserves exact world XZ floor polygon');
+
+const meshPart = new RecordingPart();
+const meshOnly = emitConnectorMesh(meshPart, canonical, params);
+meshPart.assertBalanced();
+const mortarPolygons = [];
+let activeMortar = null;
+for (const op of meshPart.ops) {
+  if (op.kind === 'beginShape' && op.material === params.mortarMaterial)
+    activeMortar = [];
+  if (op.kind === 'vertex' && activeMortar)
+    activeMortar.push([-op.args[1], -op.args[0]]);
+  if (op.kind === 'endShape' && activeMortar) {
+    mortarPolygons.push(activeMortar); activeMortar = null;
+  }
+}
+const mortarWalls = connectorSolidVolumes(canonical).filter(volume => volume.kind === 'wall');
+assert.equal(mortarPolygons.length, mortarWalls.length);
+for (let i=0;i<mortarWalls.length;i++) {
+  const wall = mortarWalls[i].polygon;
+  for (const point of mortarPolygons[i]) for (let edge=0;edge<wall.length;edge++) {
+    const a=wall[edge],b=wall[(edge+1)%wall.length];
+    const distance=cross(a,b,point)/Math.hypot(b[0]-a[0],b[1]-a[1]);
+    assert.ok(distance >= 0.025-EPSILON,
+      'mortar is recessed from every wall face including angled jamb trim planes');
+  }
+}
+
+assert.equal(meshPart.placements.length, 0,
+  'unexpanded mesh layer contains no child placements');
+assert.ok(meshPart.ops.some(operation => operation.kind === 'extrude'));
+assert.ok(meshOnly.inlineFloorPieces.length > 0,
+  'fractional boundary flags remain exact inline polygons');
+assert.ok(meshOnly.roofFacets.flatMap(facet => facet.slice(0, 2)).some(point =>
+  !insideConvex(canonical.clearPolygon, [point[0], point[2]])),
+  'roof facets honor the authored overhang beyond the clear support polygon');
+const roofEavePolygon = meshOnly.roofFacets.map(facet =>
+  [facet[1][0], facet[1][2]]);
+assert.ok(volumes.filter(volume => volume.kind === 'wall').every(volume =>
+  volume.polygon.every(point => insideConvex(roofEavePolygon, point))),
+  'roof eaves cover the complete masonry shell before adding overhang');
+// The roof must form a closed oriented shell, including a visible underside.
+assert.ok(meshOnly.roofUndersides.every(facet => triangleNormalY(facet) < -EPSILON));
+assert.ok(meshOnly.roofUndersides.flat().every(point => point[1] >= canonical.clearHeight));
+const shellEdges = new Map();
+for (const triangle of [...meshOnly.roofFacets, ...meshOnly.roofUndersides,
+  ...meshOnly.roofFascias]) {
+  for (let i = 0; i < 3; ++i) {
+    const a = triangle[i].map(v => v.toFixed(7)).join(',');
+    const b = triangle[(i + 1) % 3].map(v => v.toFixed(7)).join(',');
+    const key = [a, b].sort().join('|');
+    const entry = shellEdges.get(key) ?? { count: 0, winding: 0 };
+    entry.count++; entry.winding += a < b ? 1 : -1;
+    shellEdges.set(key, entry);
+  }
+}
+assert.ok([...shellEdges.values()].every(edge => edge.count === 2 && edge.winding === 0),
+  'roof shell is watertight and every shared edge has opposite winding');
+assert.ok(meshOnly.roofFacets.every(facet => triangleNormalY(facet) > EPSILON),
+  'hip facets are wound upward');
+assert.ok(meshOnly.roofTiles.every(tile => Math.max(
+  triangleNormalY(tile.slice(0, 3)),
+  triangleNormalY([tile[0], tile[2], tile[3]])) > EPSILON),
+  'individual roof tiles are wound upward');
+
+const childPart = new RecordingPart();
+const childrenOnly = emitConnectorChildren(childPart, canonical, params);
+childPart.assertBalanced();
+assert.equal(childPart.ops.some(operation => operation.kind === 'beginShape'), false,
+  'expanded assembly layer contains no inline mesh');
+assert.ok(childPart.placements.some(placement => placement.module === 'CastleStone'),
+  'rectangular interior flags reuse CastleStone children');
+assert.ok(childrenOnly.cutStones.every(stone =>
+  Math.abs(stone.params.height - 0.3) < EPSILON),
+  'connector courses match castle_masonry nominal 0.3m cadence');
+const placementVariants = new Set(childPart.placements.map(placement =>
+  placement.module + ':' + JSON.stringify(placement.params)));
+assert.deepEqual(new Set(childVariants.map(variant =>
+  variant.module + ':' + JSON.stringify(variant.params))), placementVariants,
+  'declared requires exactly cover child-only assembly placements');
+
+const translated = translatedRecord(canonical, 0.75, 0);
+const translatedParams = { ...params };
+const translatedMesh = emitConnectorMesh(new RecordingPart(), translated, translatedParams);
+const translatedChildPart = new RecordingPart();
+const translatedChildren = emitConnectorChildren(
+  translatedChildPart, translated, translatedParams);
+assert.ok(translatedMesh.inlineFloorPieces.length > 0,
+  'fractional non-rectangular flags remain exact inline geometry');
+assert.ok(translatedMesh.inlineFloorPieces.some(polygon =>
+  Math.abs(polygonArea(polygon)) < 0.18 * 0.9),
+  'subminimum rectangular slivers remain inline instead of clamping stock dimensions');
+for (const stone of translatedChildren.floorStones) {
+  assert.ok(Math.abs(stone.params.length * stone.scale[0] *
+    stone.params.depth * stone.scale[2] -
+    Math.abs(polygonArea(stone.polygon))) < 1e-6,
+  stone.id + ' scaled stock floor child preserves its exact plan area');
+  assert.ok(Math.abs(stone.params.height * stone.scale[1] -
+    translated.floor.thickness) < EPSILON,
+  stone.id + ' scaled stock floor child preserves exact floor thickness');
+}
+const resizedParams = { ...params, flagSize: 0.75 };
+const resizedPart = new RecordingPart();
+emitConnectorChildren(resizedPart, translated, resizedParams);
+const resizedPlacementVariants = new Set(resizedPart.placements.map(placement =>
+  placement.module + ':' + JSON.stringify(placement.params)));
+assert.deepEqual(new Set(connectorChildVariants(translated, resizedParams).map(variant =>
+  variant.module + ':' + JSON.stringify(variant.params))), resizedPlacementVariants,
+  'non-default flagSize child catalogue exactly matches emitted placements');
+
+const ordinaryVariants = childVariants.filter(variant => variant.module === 'CastleStone');
+assert.ok(ordinaryVariants.length <= 10,
+  'five material palettes use at most two ordinary stock stones each');
+assert.ok(ordinaryVariants.every(variant => variant.params.length === 0.72 &&
+  variant.params.height === 0.28 && variant.params.depth === 0.42 &&
+  variant.params.seed < 2), 'ordinary stone variants use shared canonical size and two seeds');
+const beamVariants = childVariants.filter(variant => variant.module === 'CastleBeam');
+assert.ok(beamVariants.length <= 2 && beamVariants.every(variant =>
+  variant.params.length === 4 && variant.params.seed < 2),
+  'rafters reuse the shared two-seed canonical beam stock');
+for (const brick of childrenOnly.wallBricks.filter(brick => !brick.cut)) {
+  assert.ok(Math.abs(brick.params.length * brick.scale[0] -
+    (brick.to - brick.from)) < EPSILON,
+  brick.spanId + ' stock brick scale preserves exact run length');
+  assert.ok(Math.abs(brick.params.height * brick.scale[1] - 0.3) < EPSILON,
+    brick.spanId + ' stock brick scale preserves course height');
+}
+
+for (const record of records) {
+  const emittedRecord = emitConnectorChildren(new RecordingPart(), record, params);
+  const wallVolumes = connectorSolidVolumes(record, params)
+    .filter(volume => volume.kind === 'wall');
+  for (const stone of emittedRecord.cutStones) {
+    const wall = wallVolumes.find(volume => volume.id.endsWith(`wall:${stone.spanId}`));
+    assert.ok(wall, stone.spanId + ' has a declared solid footprint');
+    const cosine = Math.cos(stone.yaw), sine = Math.sin(stone.yaw);
+    const p = stone.params, halfDepth = p.depth * 0.5;
+    assert.equal(stone.triangles.length, 2);
+    const expectedPolygon = [[p.leftFront, -halfDepth], [p.rightFront, -halfDepth],
+      [p.rightBack, halfDepth], [p.leftBack, halfDepth]];
+    let area = 0;
+    for (const triangle of stone.triangles) {
+      const m = triangle.matrix;
+      assert.ok((m[0] * m[10] - m[2] * m[8]) * m[5] > 0,
+        'full affine stock fit preserves handedness');
+      const fitted = [[-.5,-.5],[.5,-.5],[-.5,.5]].map(([x,z]) =>
+        [m[0]*x+m[2]*z+m[3],m[8]*x+m[10]*z+m[11]]);
+      for (let i=0;i<3;i++) for (let axis=0;axis<2;axis++)
+        assert.ok(Math.abs(fitted[i][axis]-triangle.polygon[i][axis]) < EPSILON);
+      assert.ok(fitted.every(point => insideConvex(expectedPolygon, point)));
+      assert.ok(Math.abs(m[5]*.3-p.height)<EPSILON);
+      area += polygonArea(fitted);
+    }
+    assert.ok(Math.abs(area-polygonArea(expectedPolygon))<EPSILON,
+      'triangular stock prisms cover the complete original brick without insets');
+    assert.deepEqual(stone.triangles[0].polygon.slice(1),
+      stone.triangles[1].polygon.slice(1).reverse(),
+      'undressed hypotenuses coincide exactly in opposite directions');
+
+    for (const [x, z] of [
+      [p.leftFront, -halfDepth], [p.rightFront, -halfDepth],
+      [p.rightBack, halfDepth], [p.leftBack, halfDepth],
+    ]) {
+      const worldPoint = [stone.world[0] + cosine * x + sine * z,
+        stone.world[1] - sine * x + cosine * z];
+      assert.ok(insideConvex(wall.polygon, worldPoint, 2e-6),
+        `${record.id} ${stone.spanId} cut stone stays inside its wall solid`);
+    }
+  }
+}
 
 const cutPart = new RecordingPart();
-const cutVariant = childVariants.find(variant => variant.module === 'CastleConnectorCutStone');
+const cutVariant = childVariants.find(variant => variant.module === 'CastleTriangularStone');
 assert.ok(cutVariant, 'angled courses require a connector-owned cut-stone variant');
-emitConnectorCutStone(cutPart, cutVariant.params);
+assert.equal(childVariants.filter(variant => variant.module === 'CastleTriangularStone').length, 2,
+  'all genuine angled profiles share only two rough triangular stock keys');
+assert.equal(childVariants.filter(variant => variant.module === 'CastleConnectorCutStone').length, 0);
+
+emitTriangularStone(cutPart, cutVariant.params);
 cutPart.assertBalanced();
+for (const operation of cutPart.ops.filter(op => op.kind === 'capsule' || op.kind === 'sphere')) {
+  const radius = operation.args.at(-1);
+  const centers = operation.kind === 'capsule' ? operation.args.slice(0,2) : [operation.args[0]];
+  assert.ok(centers.every(point => -(point[0]+point[2])/Math.SQRT2 > radius),
+    'dressing never reaches the shared diagonal to create internal grout or cracks');
+}
+
 assert.ok(cutPart.ops.some(operation => operation.kind === 'beginVoxels'),
   'asymmetric cut stone uses voxel CSG rather than overlapping rotated boxes');
 assert.ok(cutPart.ops.some(operation => operation.csg === 'difference'),

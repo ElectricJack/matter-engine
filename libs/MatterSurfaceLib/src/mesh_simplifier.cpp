@@ -50,7 +50,6 @@
 #include <cmath>
 #include <cstdint>
 #include <algorithm>
-#include <cstring>
 #include <unordered_map>
 #include <cstdio>
 
@@ -281,7 +280,7 @@ static void buildTopology(const Mesh& m, std::vector<WVert>& verts, std::vector<
 // over-65535-vertex refusal below — callers must treat vertexCount == 0 as
 // "no mesh", not as success.
 static Mesh buildMesh(const std::vector<WVert>& verts, const std::vector<WTri>& tris) {
-    Mesh out = {0};
+    Mesh out = {};
     std::vector<int> remap(verts.size(), -1);
     int nv = 0;
     for (size_t i = 0; i < verts.size(); ++i)
@@ -367,11 +366,13 @@ struct HeapEdge {
 // Build a collapse candidate for edge {p,q}. Returns false if the edge must
 // not collapse (both endpoints boundary-locked). When exactly one endpoint is
 // locked, that endpoint is the survivor and the target is its (frozen) position.
-static bool buildEdge(int p, int q, const std::vector<WVert>& verts, HeapEdge& e) {
+// preserve_locked_edges instead rejects either locked endpoint.
+static bool buildEdge(int p, int q, const std::vector<WVert>& verts, HeapEdge& e,
+                      bool preserve_locked_edges) {
     if (p == q) return false; // never form a self-edge (survivor==removed)
     const WVert& vp = verts[p];
     const WVert& vq = verts[q];
-    if (vp.locked && vq.locked) return false;
+    if ((vp.locked && vq.locked) || (preserve_locked_edges && (vp.locked || vq.locked))) return false;
 
     Quadric Q = vp.q; Q.add(vq.q);
     int survivor, removed;
@@ -493,7 +494,7 @@ static void decimate(std::vector<WVert>& verts, std::vector<WTri>& tris,
         int pr[3][2] = {{a,b}, {b,c}, {c,a}};
         for (auto& pe : pr) {
             HeapEdge he;
-            if (buildEdge(pe[0], pe[1], verts, he)) heap.push(he);
+            if (buildEdge(pe[0], pe[1], verts, he, opts.preserve_locked_edges)) heap.push(he);
         }
     };
     for (int t = 0; t < (int)tris.size(); ++t)
@@ -571,7 +572,7 @@ static void decimate(std::vector<WVert>& verts, std::vector<WTri>& tris,
 // `simplify(MeshIndexed)` overload below for anything that might exceed that.
 Mesh simplify_mesh(const Mesh& input, const SimplifyOptions& opts, const CellBounds* bounds) {
     if (input.vertexCount == 0 || input.triangleCount == 0 || !input.vertices) {
-        Mesh empty = {0};
+        Mesh empty = {};
         return empty;
     }
     std::vector<WVert> verts;
@@ -691,4 +692,63 @@ MeshIndexed simplify(const MeshIndexed& in,
     // Degenerate fallback — matches the pre-refactor raylib::Mesh path.
     if (out.indices.empty()) return in;
     return out;
+}
+
+namespace {
+
+// Visit the caller's original positions so the Tri adapter's AABB does not
+// change when from_tri merges nearby vertices onto one representative.
+template<class VisitPositions>
+MeshIndexed decimate_to_error_impl(const MeshIndexed& in, float epsilon,
+                                   bool use_aabb_bounds, VisitPositions visit) {
+    if (in.indices.empty()) return {};
+
+    SimplifyOptions opts;
+    // The triangle floor is one; the error bound controls earlier stopping.
+    opts.target_ratio = 0.0f;
+    opts.max_error = epsilon * epsilon;
+    opts.lock_boundary = true;
+
+    CellBounds cb{{1e30f, 1e30f, 1e30f}, {-1e30f, -1e30f, -1e30f}};
+    if (use_aabb_bounds) {
+        visit([&](const float3& v) {
+            cb.min_bound.x = std::min(cb.min_bound.x, v.x);
+            cb.min_bound.y = std::min(cb.min_bound.y, v.y);
+            cb.min_bound.z = std::min(cb.min_bound.z, v.z);
+            cb.max_bound.x = std::max(cb.max_bound.x, v.x);
+            cb.max_bound.y = std::max(cb.max_bound.y, v.y);
+            cb.max_bound.z = std::max(cb.max_bound.z, v.z);
+        });
+    }
+
+    MeshIndexed out = simplify(in, opts, use_aabb_bounds ? &cb : nullptr);
+    if (out.positions.empty() || out.indices.empty()) return in;
+    return out;
+}
+
+} // namespace
+
+MeshIndexed decimate_to_error(const MeshIndexed& in, float epsilon,
+                              bool use_aabb_bounds) {
+    return decimate_to_error_impl(in, epsilon, use_aabb_bounds, [&](auto add) {
+        for (uint32_t index : in.indices) add(in.positions[index]);
+    });
+}
+
+std::vector<Tri> decimate_to_error(const std::vector<Tri>& tris, float epsilon,
+                                  bool use_aabb_bounds) {
+    if (tris.empty()) return {};
+
+    MeshIndexed out = decimate_to_error_impl(from_tri(tris, nullptr), epsilon,
+                                            use_aabb_bounds, [&](auto add) {
+        for (const Tri& t : tris) {
+            add(t.vertex0);
+            add(t.vertex1);
+            add(t.vertex2);
+        }
+    });
+    std::vector<Tri> out_tris;
+    std::vector<TriEx> out_triex_unused;
+    to_tri(out, out_tris, out_triex_unused);
+    return out_tris.empty() ? tris : out_tris;
 }

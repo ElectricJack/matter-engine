@@ -1,0 +1,147 @@
+[
+  {
+    "name": "lod-integration-compositor-build",
+    "command": [
+      "./tools/build-windows-from-wsl.sh",
+      "RelWithDebInfo",
+      "vt_compositor_tests"
+    ],
+    "exit": 0,
+    "elapsed_seconds": 7.918449640274048,
+    "log": "docs/agent/evidence/2026-09-15-vt-feedback/lod-integration-compositor-build.log"
+  },
+  {
+    "name": "lod-integration-compositor-test",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-Command",
+      "Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vt_compositor_tests.exe\"; exit $LASTEXITCODE"
+    ],
+    "exit": 0,
+    "elapsed_seconds": 2.1856982707977295,
+    "log": "docs/agent/evidence/2026-09-15-vt-feedback/lod-integration-compositor-test.log",
+    "all_pass": true,
+    "zero_validation_errors": true
+  },
+  {
+    "name": "lod-integration-vt",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-Command",
+      "$env:MATTER_VK_SMOKE_MODE=\"vt\"; $env:MATTER_VK_VALIDATION=\"1\"; Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe\"; exit $LASTEXITCODE"
+    ],
+    "exit": 0,
+    "elapsed_seconds": 1.7819983959197998,
+    "log": "docs/agent/evidence/2026-09-15-vt-feedback/lod-integration-vt.log",
+    "all_pass": true,
+    "zero_validation_errors": true
+  },
+  {
+    "name": "lod-integration-vt-surfaces",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-Command",
+      "$env:MATTER_VK_SMOKE_MODE=\"vt-surfaces\"; $env:MATTER_VK_VALIDATION=\"1\"; Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe\"; exit $LASTEXITCODE"
+    ],
+    "exit": 0,
+    "elapsed_seconds": 5.114462375640869,
+    "log": "docs/agent/evidence/2026-09-15-vt-feedback/lod-integration-vt-surfaces.log",
+    "all_pass": true,
+    "zero_validation_errors": true
+  },
+  {
+    "name": "lod-integration-vt-enrich-nort",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-Command",
+      "$env:MATTER_VK_SMOKE_MODE=\"vt-enrich-nort\"; $env:MATTER_VK_VALIDATION=\"1\"; Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe\"; exit $LASTEXITCODE"
+    ],
+    "exit": 0,
+    "elapsed_seconds": 1.3699846267700195,
+    "log": "docs/agent/evidence/2026-09-15-vt-feedback/lod-integration-vt-enrich-nort.log",
+    "all_pass": true,
+    "zero_validation_errors": true
+  },
+  {
+    "name": "lod-integration-vt-normal-frame",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-Command",
+      "$env:MATTER_VK_SMOKE_MODE=\"vt-normal-frame\"; $env:MATTER_VK_VALIDATION=\"1\"; Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe\"; exit $LASTEXITCODE"
+    ],
+    "exit": 0,
+    "elapsed_seconds": 4.721953392028809,
+    "log": "docs/agent/evidence/2026-09-15-vt-feedback/lod-integration-vt-normal-frame.log",
+    "all_pass": true,
+    "zero_validation_errors": true
+  },
+  {
+    "name": "lod-integration-vt-rt",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-Command",
+      "$env:MATTER_VK_SMOKE_MODE=\"vt-rt\"; $env:MATTER_VK_VALIDATION=\"1\"; Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe\"; exit $LASTEXITCODE"
+    ],
+    "exit": 0,
+    "elapsed_seconds": 2.0841033458709717,
+    "log": "docs/agent/evidence/2026-09-15-vt-feedback/lod-integration-vt-rt.log",
+    "all_pass": true,
+    "zero_validation_errors": true
+  },
+  {
+    "name": "lod-integration-surface-parallax",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-Command",
+      "$env:MATTER_VK_SMOKE_MODE=\"surface-parallax\"; $env:MATTER_VK_VALIDATION=\"1\"; Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe\"; exit $LASTEXITCODE"
+    ],
+    "exit": 0,
+    "elapsed_seconds": 5.36358118057251,
+    "log": "docs/agent/evidence/2026-09-15-vt-feedback/lod-integration-surface-parallax.log",
+    "all_pass": true,
+    "zero_validation_errors": true
+  },
+  {
+    "name": "lod-integration-editor-build",
+    "command": [
+      "./tools/build-windows-from-wsl.sh",
+      "RelWithDebInfo",
+      "editor"
+    ],
+    "exit": 0,
+    "elapsed_seconds": 49.0657753944397,
+    "log": "docs/agent/evidence/2026-09-15-vt-feedback/lod-integration-editor-build.log"
+  },
+  {
+    "name": "lod-integration-residency-build",
+    "command": [
+      "./tools/build-windows-from-wsl.sh",
+      "RelWithDebInfo",
+      "vt_residency_tests"
+    ],
+    "exit": 0,
+    "elapsed_seconds": 8.122355461120605,
+    "log": "docs/agent/evidence/2026-09-15-vt-feedback/lod-integration-residency-build.log"
+  },
+  {
+    "name": "lod-integration-residency-test",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-Command",
+      "Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vt_residency_tests.exe\"; exit $LASTEXITCODE"
+    ],
+    "exit": 0,
+    "elapsed_seconds": 0.6066913604736328,
+    "log": "docs/agent/evidence/2026-09-15-vt-feedback/lod-integration-residency-test.log",
+    "all_pass": true,
+    "zero_validation_errors": null
+  }
+]

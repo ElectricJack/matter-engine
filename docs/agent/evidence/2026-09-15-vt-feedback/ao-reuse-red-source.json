@@ -1,0 +1,35 @@
+{
+  "checks": [
+    {
+      "name": "ao-reuse-red-build",
+      "command": [
+        "./tools/build-windows-from-wsl.sh",
+        "RelWithDebInfo",
+        "vulkan_smoke_tests"
+      ],
+      "exit": 0,
+      "elapsed_seconds": 24.36688733100891,
+      "log": "docs/agent/evidence/2026-09-15-vt-feedback/ao-reuse-red-build.log"
+    },
+    {
+      "name": "ao-reuse-red-vt-enrich",
+      "command": [
+        "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+        "-NoProfile",
+        "-Command",
+        "$env:MATTER_VK_SMOKE_MODE=\"vt-enrich\"; $env:MATTER_VK_VALIDATION=\"1\"; Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe\"; exit $LASTEXITCODE"
+      ],
+      "exit": 1,
+      "elapsed_seconds": 2.958810567855835,
+      "log": "docs/agent/evidence/2026-09-15-vt-feedback/ao-reuse-red-vt-enrich.log"
+    }
+  ],
+  "sha256": {
+    "MatterEngine3/src/render/vk_scene_renderer.h": "18d1002426938bbe7264ebee96a1901d411e62f504d7b932be180e5211978e28",
+    "MatterEngine3/src/render/vk_scene_renderer.cpp": "651fa8a99cd5c59d2e35af2830e64eea183bab0a10b5cc9bdbfc409721719d9d",
+    "MatterEngine3/src/render/vt_enrich.cpp": "68c03d34916f33920c2a166a65ecd6284bb68270396c6fa39e2fb1f31ceadf72",
+    "MatterEngine3/src/render/vt_enrich.h": "01fc85779c4f067821026f8e9a71ce33224a31872a6590becc43b9863c636ade",
+    "MatterEngine3/tests/vulkan_smoke_tests.cpp": "b7a1453eea783676051354c82cca0ab4766a163738dc987b3cb213f88ac5bf4c",
+    "MatterEditor/build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe": "bd812e6479165e9ae19eb457d67f803d8e3bf00ff77db5751fbed2cfa165d158"
+  }
+}

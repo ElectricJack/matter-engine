@@ -1,0 +1,4 @@
+Checked UTC: 2026-10-21T02:13:23.077041+00:00
+Exact executable or argv-token matches: []
+Original wrapper enforces process-group termination on timeout. This post-run scan checks remaining processes naming the executable; it does not reconstruct historical process-group membership.
+Executable SHA256: bbc86837801f60f8cc7d7b4cad5b19bafd65674689ae2a6b426e754fe3547e7a
