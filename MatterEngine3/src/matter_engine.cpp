@@ -153,6 +153,8 @@
 #include "render/vk_temporal.h"
 #include "render/vk_resources.h"
 #include "render/vk_scene_renderer.h"
+#include "component_adapters/graphics/portable_scene.h"
+#include "component_adapters/terrain_coordinator/engine/live_terrain_session.h"
 #include "render/vertex_cache_order.h"
 #include "render/impostor_mips.h"
 #include "render/geometry_world_runtime.h"
@@ -1018,6 +1020,23 @@ struct WorldSession::Impl : WorldRenderPublication {
     void set_authored_sun(const matter::WorldSettings& settings);
 
 #ifdef MATTER_VULKAN_VIEWER
+    // MatterGraphics consumer of the portable-authored instances admitted
+    // below; presentation stays with vk_scene. Created on the first frame.
+    std::unique_ptr<graphics_adapter::PortableScene> portable_scene;
+    // MATTER_LIVE_TERRAIN=1: the world's field program re-generated around the
+    // camera by the terrain coordinator (update_live_terrain). Uploads through
+    // portable_scene's graphics service, so it is declared after it and reset
+    // before it. install_world (worker) publishes the program under the mutex.
+    const bool live_terrain_requested = [] {
+        const char* env = std::getenv("MATTER_LIVE_TERRAIN");
+        return env && std::string(env) == "1";
+    }();
+    std::unique_ptr<terrain_coordinator::LiveTerrainSession> live_terrain;
+    std::mutex live_terrain_source_mutex;
+    std::string live_terrain_program;    // guarded by live_terrain_source_mutex
+    uint64_t live_terrain_revision = 0;  // guarded by live_terrain_source_mutex
+    uint64_t live_terrain_applied = 0;
+    std::string live_terrain_error;      // last logged, so a refusal logs once
     // Written atomically by the bake worker; never swapped during replay.
     std::shared_ptr<const AuthoredFluidRenderBinding> failed_fluid_debug_binding;
     std::atomic<float> water_animation_time_seconds{0.0f};
@@ -1629,6 +1648,9 @@ struct WorldSession::Impl : WorldRenderPublication {
                        TerrainCollisionPublication& terrain_collision,
                        bool& terrain_collision_failed,
                        std::string& err);
+#ifdef MATTER_VULKAN_VIEWER
+    void update_live_terrain(const Float3& eye, bool graphics);
+#endif
     // WP-F: posted (as a GpuJob) when install_world compiles a surfaces()
     // tape whose hash differs from the previous generation's — re-evaluates
     // the per-vertex weight columns of every RESIDENT sector against the new
@@ -5829,6 +5851,74 @@ void WorldSession::Impl::execute_refine_step() {
     // execute_refine_step call, after the GL job has written result_slot.
 }
 
+#ifdef MATTER_VULKAN_VIEWER
+// ---------------------------------------------------------------------------
+// WorldSession::Impl::update_live_terrain
+// App thread, once per frame beside the portable scene: applies the latest
+// installed field program, re-plans tiles around `eye`, places GPU-resident
+// tiles in the portable scene and installs the live collision whenever the
+// physics context holds a different key (including after a legacy publication).
+// ---------------------------------------------------------------------------
+void WorldSession::Impl::update_live_terrain(const Float3& eye, bool graphics) {
+    auto report = [this](const std::string& error) {
+        if (error != live_terrain_error) MATTER_LOGE("terrain", "live terrain: %s", error.c_str());
+        live_terrain_error = error;
+    };
+    auto message = [](const contracts::ValidationResult& result) {
+        return result.diagnostics.empty() ? std::string("rejected") : result.diagnostics.front().message;
+    };
+    std::string err;
+    if (!live_terrain) {
+        auto* service = portable_scene->service(err);
+        if (!service) return report(err);
+        live_terrain = std::make_unique<terrain_coordinator::LiveTerrainSession>(service);
+    }
+    {
+        std::lock_guard<std::mutex> lock(live_terrain_source_mutex);
+        if (live_terrain_applied != live_terrain_revision) {
+            live_terrain_applied = live_terrain_revision;
+            if (live_terrain_program.empty()) {  // Refused at install: unplace, then drop.
+                std::vector<services::SceneInstance> upsert;
+                std::vector<contracts::SemanticId> remove;
+                (void)live_terrain->live().drop_graphics();
+                live_terrain->live().scene_delta(upsert, remove);
+                portable_scene->place(upsert, remove);
+                live_terrain.reset();
+            } else if (auto valid = live_terrain->set_source(
+                         live_terrain_program, "world." + std::to_string(live_terrain_applied));
+                     !valid.ok())
+                return report(message(valid));
+        }
+    }
+    if (!live_terrain || !live_terrain->has_source()) return;
+    if (auto valid = live_terrain->update({eye.x, eye.y, eye.z}, graphics); !valid.ok())
+        return report(message(valid));
+    std::vector<services::SceneInstance> upsert;
+    std::vector<contracts::SemanticId> remove;
+    live_terrain->live().scene_delta(upsert, remove);
+    portable_scene->place(upsert, remove);
+
+    std::lock_guard<std::recursive_mutex> generation_lock(terrain_collision_generation_mutex);
+    auto& physics_context = physics::detail::context(ecs_runtime.world());
+    if (!upsert.empty() || !remove.empty())
+        MATTER_LOGI("terrain", "live terrain scene: +%zu -%zu regions=%zu generated=%llu cached=%zu collision=%llu",
+                    upsert.size(), remove.size(), live_terrain->live().regions().size(),
+                    static_cast<unsigned long long>(live_terrain->generated()), live_terrain->cache().size(),
+                    static_cast<unsigned long long>(physics_context.terrain_collision_stats().installation_key));
+    terrain_collision::TerrainCollisionCandidate candidate;
+    if (!live_terrain->collision_changed(physics_context.terrain_collision_stats().installation_key,
+                                         candidate, err)) {
+        if (!err.empty()) report(err);
+        return;
+    }
+    if (!physics_context.replace_terrain_collision(candidate, err)) return report(err);
+    const auto installed = physics_context.terrain_collision_stats();
+    MATTER_LOGI("terrain", "live terrain collision installed: key=%llu shapes=%u regions=%zu",
+                static_cast<unsigned long long>(installed.installation_key), installed.shape_count,
+                live_terrain->live().regions().size());
+}
+#endif
+
 // ---------------------------------------------------------------------------
 // WorldSession::Impl::install_world
 // Phase C Task 9: called from execute_bake after install_graph when
@@ -5892,6 +5982,17 @@ bool WorldSession::Impl::install_world(
         std::move(prog), installed_overlay);
     world_river_geometry = std::move(installed_river_geometry);
     world_river_height_overlay = std::move(installed_overlay);
+#ifdef MATTER_VULKAN_VIEWER
+    if (live_terrain_requested) {
+        // The portable generator samples the bare program; a river overlay
+        // would make live tiles disagree with the installed field, so refuse.
+        std::lock_guard<std::mutex> lock(live_terrain_source_mutex);
+        live_terrain_program = world_river_height_overlay ? std::string() : r.field_program;
+        ++live_terrain_revision;
+        if (world_river_height_overlay)
+            MATTER_LOGW("terrain", "live terrain: river overlays are unsupported; live terrain disabled");
+    }
+#endif
 
     // 3b. WP-F: parse the surfaces() tape -> SurfaceRuntime (optional).
     //     Fail-closed on a malformed tape or an unknown material handle; a
@@ -6375,9 +6476,9 @@ bool WorldSession::Impl::install_world(
         }
         visiting.pop_back();
 
-        uint64_t hash = host.resolve_hash(source, params_json,
-                                          kid_hashes.empty() ? nullptr : kid_hashes.data(),
-                                          kid_hashes.size());
+        // Through the HostBaker so a `static authoring` source takes its route.
+        uint64_t hash = provider->host_baker().resolve_hash_json(source, params_json,
+                                                                 kid_hashes, nullptr);
 
         const auto& receivers=provider->world_settings().surface_receiver_modules;
         if(std::find(receivers.begin(),receivers.end(),module)!=receivers.end()) {
@@ -11842,6 +11943,8 @@ WorldSession::~WorldSession() {
 #ifdef MATTER_VULKAN_VIEWER
     impl_->vk_world_publication.commit();
     impl_->vk_instance_cache.invalidate();
+    impl_->live_terrain.reset();
+    impl_->portable_scene.reset();
     if (impl_->vk_scene) impl_->vk_geometry_pages.reset(*impl_->vk_scene);
     impl_->vk_scene.reset();
 #endif
@@ -14484,8 +14587,8 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
             animation_skin_queue_pending_seal = true;
         }
     }
-    if (!replaying) {
     viewer::VkSceneLighting lighting{};
+    if (!replaying) {
     const auto controls =
         viewer::sanitize_vulkan_lighting_overrides(opts.vulkan_lighting);
     // --- Sun orientation and size ------------------------------------------
@@ -14613,6 +14716,30 @@ bool WorldSession::render(const CameraDesc& cam, const VulkanFrame& frame,
             impl_->vk_temporal.discard_failed_attempt(temporal.attempt_token);
             return false;
         }
+    }
+    if (!replaying) {
+        PROFILE_SCOPE("build.portable_scene");
+        const bool created = !impl_->portable_scene;
+        if (created)
+            impl_->portable_scene = std::make_unique<graphics_adapter::PortableScene>(
+                *impl_->engine->render_device);
+        graphics_adapter::PortableView view;
+        view.world_to_view = temporal.current_unjittered.world_to_view;
+        view.view_to_clip = temporal.current_unjittered.view_to_clip;
+        view.sun_direction = lighting.sun_direction;
+        view.sun_color = lighting.authored_sun_rgb;
+        view.width = internal_extent.width;
+        view.height = internal_extent.height;
+        // Live terrain installs collision too. Keep the accepted collision
+        // until the complete replacement passes the scene admission gate.
+        if (impl_->live_terrain_requested && !impl_->vk_world_pending) {
+            PROFILE_SCOPE("build.live_terrain");
+            impl_->update_live_terrain(cam.position, opts.live_terrain_graphics);
+        }
+        std::string portable_err;
+        if (!impl_->portable_scene->update(instances, created || instance_span_rebuilt,
+                                           view, portable_err))
+            MATTER_LOGE("graphics", "%s", portable_err.c_str());
     }
     z_build.stop();
     const auto build_end = std::chrono::steady_clock::now();

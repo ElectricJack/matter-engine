@@ -13,7 +13,7 @@ function(matter_add_vulkan_smoke_test name mode)
         full geometry-pages vt-feedback vt-input-snapshot vt-direct-source
         vt-surfaces sparse-voxel vt-queue vt-normal-frame vt-material-domain
         vt-pom-work vt-receiver-material vt-module-residency vt-export
-        vt-surface-connections vt-feedback-pair rt-empty-tlas water-field-nort)
+        vt-surface-connections vt-feedback-pair rt-empty-tlas rt-counters water-field-nort)
     if(mode IN_LIST heavy_modes)
         if(NOT MATTER_ENABLE_HEAVY_VULKAN_SMOKE_TESTS)
             return()

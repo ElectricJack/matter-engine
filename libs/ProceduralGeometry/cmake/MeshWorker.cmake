@@ -1,5 +1,5 @@
 # Use the canonical vendor manifest without loading the editor's other vendors
-# or changing central build ownership. Like shared_triangle_emit.cpp, this is a
+# or changing central build ownership. Like the shared_surface_math.h extraction, this is a
 # guarded configure-time extraction, not a second checked-in implementation.
 if(NOT TARGET matter_autoremesher)
     set(_manifest "${MATTER_GEOMETRY_ROOT}/cmake/MatterThirdParty.cmake")

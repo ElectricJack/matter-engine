@@ -112,6 +112,7 @@
 #include "vk_animation_bounds.h"
 #include "vk_draw_command.h"
 #include "vk_resources.h"
+#include "../../../libs/MatterGraphics/src/native/frame_image_layouts.h"
 #include "water_field_vk.h"
 #include "water_field_vk_resources.h"
 #include "water_animation_gpu.h"
@@ -1989,15 +1990,19 @@ public:
     bool record_composite_to_swapchain(const matter::VulkanFrame& frame,
                                        std::string& error);
     VkRasterAttachments raster_attachments() const;
-    // Logs when the RT hit shader rejects a part record. A rejection means a
-    // stale or unwritten rt_parts slot was traced, which is the signal that
-    // confirms (or refutes) the stale-tail clear in emit_ray_instances. The
-    // shader has always counted these, but the only reader was a test-only
-    // readback compiled out of shipping builds, so in a real session the
-    // count was invisible. Deliberately NOT inside the test guard.
+    // Consumes the slot's retired RT counter sample, if it has one, and logs
+    // rejected RT surface lookups (a stale or unwritten rt_parts slot was
+    // traced -- the signal that confirms or refutes the stale-tail clear in
+    // emit_ray_instances). Deliberately NOT inside the test guard: in a real
+    // session this is the only reader of the counter.
     void report_rt_trace_counters(uint32_t frame_slot);
-    uint32_t rt_invalid_part_records_last_ = 0;
-    uint64_t rt_invalid_part_records_total_ = 0;
+    // Renderer-lifetime accounting: survives reset() and frame-resource
+    // replacement, which only retire pending samples. The total accumulates
+    // EVERY consumed sample; the last-logged value only suppresses repeated
+    // identical warnings and never affects the total.
+    uint64_t rt_rejected_surface_lookups_total_ = 0;
+    uint64_t rt_rejected_surface_lookup_samples_ = 0;
+    uint32_t rt_rejected_surface_lookups_last_logged_ = 0;
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
     struct EnvironmentSamplingGpuFixture {
         std::array<matter::Float3, 192 * 108> lut{};
@@ -2024,6 +2029,41 @@ public:
     void test_force_rt_unavailable(bool unavailable) {
         test_force_rt_unavailable_ = unavailable;
     }
+    // Set before init for geometry-only software Vulkan fixtures. Dispatching
+    // GI or local lighting with these pipelines omitted is an explicit error.
+    void test_use_rt_geometry_pipelines_only(bool geometry_only) {
+        test_rt_geometry_pipelines_only_ = geometry_only;
+    }
+    // RT counter provenance probes for the production reporter. The seed is
+    // written into invalid_part_records where emit_ray_instances zeroes the
+    // counter, so a real recorded dispatch retires a known count. Poison
+    // overwrites every slot's counter bytes host-side and creates NO sample:
+    // bytes nobody traced must never be read, logged or accumulated.
+    void test_seed_rt_counter(uint32_t rejected) {
+        test_rt_counter_seed_ = rejected;
+    }
+    void test_fail_next_rt_dispatch_record() {
+        test_fail_next_rt_dispatch_record_ = true;
+    }
+    bool test_poison_rt_counters(uint32_t value, std::string& error);
+    void test_report_rt_trace_counters(uint32_t frame_slot) {
+        report_rt_trace_counters(frame_slot);
+    }
+    uint64_t test_rt_rejected_surface_lookups_total() const {
+        return rt_rejected_surface_lookups_total_;
+    }
+    uint64_t test_rt_counter_samples_consumed() const {
+        return rt_rejected_surface_lookup_samples_;
+    }
+    uint64_t test_rt_counter_candidate_serial(uint32_t frame_slot) const {
+        return frame_slot < frames_.size()
+                   ? frames_[frame_slot].rt_counter_candidate_serial : 0;
+    }
+    uint64_t test_rt_counter_sample_serial(uint32_t frame_slot) const {
+        return frame_slot < frames_.size()
+                   ? frames_[frame_slot].rt_counter_sample_serial : 0;
+    }
+    size_t test_frame_slot_count() const { return frames_.size(); }
     void test_skip_volumetrics(bool skip) { test_skip_volumetrics_ = skip; }
     bool readback_raster_pixel(uint32_t x, uint32_t y,
                                VkRasterPixel& pixel, std::string& error);
@@ -2129,15 +2169,15 @@ public:
     bool test_rt_blas_built(uint64_t part_hash) const;
     uint64_t test_rt_blas_candidate_serial(uint64_t part_hash) const;
     std::weak_ptr<void> test_rt_blas_lifetime(uint64_t part_hash) const;
-    VkDeviceAddress test_rt_sbt_address() const { return rt_sbt_address_; }
+    VkDeviceAddress test_rt_sbt_address() const { return rt_shadow_pipeline_.raygen.deviceAddress; }
     VkDeviceAddress test_rt_test_raygen_address() const {
-        return rt_sbt_test_raygen_address_;
+        return rt_surface_test_pipeline_.raygen.deviceAddress;
     }
-    VkDeviceSize test_rt_sbt_stride() const { return rt_sbt_stride_; }
-    VkDeviceAddress test_rt_miss_address() const { return rt_sbt_miss_address_; }
-    VkDeviceAddress test_rt_hit_address() const { return rt_sbt_hit_address_; }
-    VkDeviceSize test_rt_miss_region_size() const { return rt_sbt_miss_size_; }
-    VkDeviceSize test_rt_hit_region_size() const { return rt_sbt_hit_size_; }
+    VkDeviceSize test_rt_sbt_stride() const { return rt_surface_test_pipeline_.raygen.stride; }
+    VkDeviceAddress test_rt_miss_address() const { return rt_surface_test_pipeline_.miss.deviceAddress; }
+    VkDeviceAddress test_rt_hit_address() const { return rt_surface_test_pipeline_.hit.deviceAddress; }
+    VkDeviceSize test_rt_miss_region_size() const { return rt_surface_test_pipeline_.miss.size; }
+    VkDeviceSize test_rt_hit_region_size() const { return rt_surface_test_pipeline_.hit.size; }
     uint32_t test_surface_trace_dispatches() const {
         return test_surface_trace_dispatches_;
     }
@@ -2417,7 +2457,9 @@ private:
         uint32_t water_generation = 0;
         // Nonzero suppresses cull/raster only. CPU RT selection never reads it.
         uint32_t water_pad0 = 0;
-        uint32_t water_pad1 = 0;
+        // Nonzero when det(object_to_world) < 0. cull.comp routes such draws
+        // to the bucket's mirrored command range, drawn front-face clockwise.
+        uint32_t mirrored = 0;
     };
     // The per-DRAW transform record: cull.comp writes one per emitted draw and
     // raster.vert reads it back by firstInstance. The CPU writes this struct
@@ -2850,6 +2892,14 @@ private:
         matter::VkAccelerationStructureResource rt_tlas;
         matter::VkBufferResource rt_parts;
         matter::VkBufferResource rt_error_counter;
+        // rt_error_counter provenance. A buffer handle or the RT-enabled flag
+        // says nothing about whether the bytes describe a submitted trace:
+        // candidate = serial whose recorded dispatch wrote the counter,
+        // promoted to sample only when that serial was submitted; sample =
+        // submitted, not yet consumed. report_rt_trace_counters reads only a
+        // sample, once, after the slot fence retired it.
+        uint64_t rt_counter_candidate_serial = 0;
+        uint64_t rt_counter_sample_serial = 0;
         matter::VkBufferResource rt_test_output;
         bool rt_adaptive_diagnostics_pending = false;
         matter::VkBufferResource gi_atrous_markers;
@@ -3134,6 +3184,8 @@ private:
     void note_command_layout_rebuild();
     bool rebuild_command_template(std::string& error);
     bool apply_dynamic_command_layout(std::string& error);
+    void rebuild_mirror_command_template(const std::vector<uint32_t>& totals,
+                                         const std::vector<uint32_t>& mirrored);
     bool load_device_limits(std::string& error);
     bool fail_if_poisoned(std::string& error) const;
     bool poison(std::string& error);
@@ -3327,6 +3379,9 @@ private:
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
     std::unique_ptr<matter::StreamlineBridge> test_dlss_bridge_override_;
     bool test_force_rt_unavailable_ = false;
+    bool test_rt_geometry_pipelines_only_ = false;
+    uint32_t test_rt_counter_seed_ = 0;
+    bool test_fail_next_rt_dispatch_record_ = false;
     bool test_force_primary_light_fallback_ = false;
     bool test_skip_volumetrics_ = false;
     std::vector<RtGeometryDebugRecord> test_last_rt_geometry_records_;
@@ -3355,6 +3410,9 @@ private:
     bool ensure_geometry_cull_pipelines(std::string& error);
     VkPipeline skin_pipeline_ = VK_NULL_HANDLE;
     VkPipeline raster_pipeline_ = VK_NULL_HANDLE;
+    // raster_pipeline_ with a clockwise front face. It draws the per-bucket
+    // mirrored command ranges (instances with det(object_to_world) < 0).
+    VkPipeline mirrored_raster_pipeline_ = VK_NULL_HANDLE;
     // Same descriptors/fragment stage as raster_pipeline_, but a 96-byte
     // VkSkinVertex binding with an explicit previous-position attribute.
     VkPipeline skinned_raster_pipeline_ = VK_NULL_HANDLE;
@@ -3402,7 +3460,16 @@ private:
     VkDescriptorSetLayout rt_set_layout_ = VK_NULL_HANDLE;
     VkDescriptorSetLayout rt_adaptive_set_layout_ = VK_NULL_HANDLE;
     VkPipelineLayout rt_pipeline_layout_ = VK_NULL_HANDLE;
-    VkPipeline rt_pipeline_ = VK_NULL_HANDLE;
+    // Each dispatch compiles only its own raygen and reachable miss/hit groups.
+    // Handles in each SBT belong to that pipeline, including miss/hit handles.
+    struct RtTracePipeline {
+        VkPipeline pipeline = VK_NULL_HANDLE;
+        matter::VkBufferResource sbt;
+        VkStridedDeviceAddressRegionKHR raygen{}, miss{}, hit{};
+    };
+    RtTracePipeline rt_shadow_pipeline_, rt_surface_test_pipeline_;
+    RtTracePipeline rt_lighting_pipeline_, rt_primary_pipeline_;
+    RtTracePipeline rt_diffuse_pipeline_, rt_reflection_pipeline_;
     VkDescriptorPool rt_descriptor_pool_ = VK_NULL_HANDLE;
     std::vector<VkDescriptorSet> rt_descriptor_sets_;
     std::vector<VkDescriptorSet> rt_adaptive_descriptor_sets_;
@@ -3446,6 +3513,7 @@ private:
     std::vector<std::uint32_t> water_animation_direct_transform_slots_;
 
     matter::VkImageResource albedo_;
+    FrameImageLayouts frame_image_layouts_;
     matter::VkImageResource normal_;
     matter::VkImageResource orm_;
     matter::VkImageResource velocity_;
@@ -3769,23 +3837,11 @@ private:
     VkImageUsageFlags depth_usage_ = 0;
     VkImageUsageFlags opaque_hdr_usage_ = 0;
     VkImageUsageFlags opaque_depth_usage_ = 0;
-    matter::VkBufferResource rt_sbt_;
-    VkDeviceAddress rt_sbt_address_ = 0;
-    VkDeviceAddress rt_sbt_test_raygen_address_ = 0;
-    VkDeviceAddress rt_sbt_lighting_raygen_address_ = 0;
-    VkDeviceAddress rt_sbt_primary_raygen_address_ = 0;
-    VkDeviceAddress rt_sbt_diffuse_raygen_address_ = 0;
-    VkDeviceAddress rt_sbt_reflection_raygen_address_ = 0;
     bool rt_specialize_gi_ = true;
     bool rt_primary_adaptive_ = false;
     bool rt_separate_primary_ = false;
     bool rt_adaptive_diagnostics_ = false;
     uint64_t rt_adaptive_diagnostic_frames_ = 0;
-    VkDeviceAddress rt_sbt_miss_address_ = 0;
-    VkDeviceAddress rt_sbt_hit_address_ = 0;
-    VkDeviceSize rt_sbt_stride_ = 0;
-    VkDeviceSize rt_sbt_miss_size_ = 0;
-    VkDeviceSize rt_sbt_hit_size_ = 0;
     // The INTERNAL raster extent the G-buffer and HDR targets were built at —
     // the pre-upscale resolution when DLSS is active, not the swapchain's.
     // raster_width()/raster_height() report it.
@@ -3853,6 +3909,17 @@ private:
 
     std::vector<uint32_t> part_instance_counts_;
     std::vector<DrawCommand> command_template_;
+    // Mirrored instances (GpuInstance::mirrored) per part, static baseline
+    // like part_instance_counts_; dynamic ones are added per frame.
+    std::vector<uint32_t> part_mirrored_counts_;
+    // Indexed like command_template_: bucket b's mirrored command, whose
+    // transform region is the last mirrored[part] slots of b's region. Empty
+    // when no instance is mirrored. Uploaded after the primary table in the
+    // same `commands` buffer (see cull.comp's vis_params.z) and drawn with
+    // mirrored_raster_pipeline_.
+    std::vector<DrawCommand> mirror_command_template_;
+    // The primary + mirrored tables as one contiguous upload source.
+    std::vector<DrawCommand> command_upload_scratch_;
     std::vector<PartCommandRange> part_command_ranges_;
     std::vector<PartCommandRange> recorded_draw_ranges_;
     std::vector<uint8_t> raster_command_enabled_;
@@ -3922,6 +3989,9 @@ private:
     // height and spread 4x, because that is literally the slab's matrix.
     uint32_t skin_transform_base_ = 0;
     uint32_t uploaded_command_count_ = 0;
+    // The `commands` buffer carries mirror_command_template_ after the
+    // uploaded_command_count_ primary commands.
+    bool uploaded_mirror_commands_ = false;
     uint32_t uploaded_transform_slots_ = 0;
     uint32_t uploaded_cluster_count_ = 0;
     std::vector<RtInstance> uploaded_rt_instances_;
