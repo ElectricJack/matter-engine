@@ -19,12 +19,17 @@ matter_read_manifest("${CMAKE_SOURCE_DIR}/cmake/manifests/vendor.sources" matter
 set(matter_quickjs_sources ${matter_vendor_sources})
 list(FILTER matter_quickjs_sources INCLUDE REGEX "^third_party/quickjs-ng/.*\\.c$")
 add_library(matter_quickjs STATIC ${matter_quickjs_sources})
-target_include_directories(matter_quickjs PUBLIC "${CMAKE_SOURCE_DIR}/third_party/quickjs-ng")
+# SYSTEM, as in portable_host's standalone definition: its /W4 /WX consumer must
+# not inherit vendor-header warnings (quickjs.h's BigInt C4244 narrowing).
+target_include_directories(matter_quickjs SYSTEM PUBLIC "${CMAKE_SOURCE_DIR}/third_party/quickjs-ng")
 target_compile_definitions(matter_quickjs PRIVATE
     CONFIG_VERSION="0.10.0"
     WIN32_LEAN_AND_MEAN
 )
 matter_configure_vendor_target(matter_quickjs)
+# The vendored quickjs.c carries the build_backtrace exception-retention fix
+# (third_party/quickjs-ng/MATTER_PATCHES.md); portable_host checks this flag.
+set_property(TARGET matter_quickjs PROPERTY MATTER_QUICKJS_BACKTRACE_OWNERSHIP_FIXED TRUE)
 
 set(matter_flecs_sources ${matter_vendor_sources})
 list(FILTER matter_flecs_sources INCLUDE REGEX "^third_party/flecs/flecs\\.c$")
