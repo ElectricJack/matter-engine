@@ -1,0 +1,46 @@
+{
+  "checks": [
+    {
+      "name": "geometry-mode-fixture-red-compositor-build",
+      "command": [
+        "./tools/build-windows-from-wsl.sh",
+        "RelWithDebInfo",
+        "vt_compositor_tests"
+      ],
+      "exit": 0,
+      "elapsed_seconds": 16.01067852973938,
+      "log": "docs/agent/evidence/2026-09-15-vt-feedback/geometry-mode-fixture-red-compositor-build.log"
+    },
+    {
+      "name": "geometry-mode-fixture-red-compositor-test",
+      "command": [
+        "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+        "-NoProfile",
+        "-Command",
+        "Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vt_compositor_tests.exe\"; exit $LASTEXITCODE"
+      ],
+      "exit": 1,
+      "elapsed_seconds": 1.719480037689209,
+      "log": "docs/agent/evidence/2026-09-15-vt-feedback/geometry-mode-fixture-red-compositor-test.log",
+      "all_pass": false,
+      "zero_validation_errors": true
+    }
+  ],
+  "sha256": {
+    "MatterEngine3/src/render/vt_compositor.cpp": "c86e7bcedef6303e378de77072c751d56437ec43a484d6e414b3f96d5b44af2e",
+    "MatterEngine3/src/render/vt_compositor.h": "2edba9d8aca48e97c5f680f3c9e8c7bc2344b3091066b7966b5b9ef6efc04478",
+    "MatterEngine3/src/render/vt_chart_gpu.h": "d7d8993caf4293852d62f7396473e6520168a0c5ca27227d1bfda9fe7c06e68c",
+    "MatterEngine3/src/render/vk_scene_renderer.cpp": "78a5dfa462627d198b7c4d7ade524793e66923e6996a46ebcaf5de4a9fb01082",
+    "MatterEngine3/src/render/vk_scene_renderer.h": "474cb4097507a04ed6dde021648e827ef58361c55fc21209c95ba59c7a379395",
+    "MatterEngine3/src/render/vt_enrich.cpp": "68c03d34916f33920c2a166a65ecd6284bb68270396c6fa39e2fb1f31ceadf72",
+    "MatterEngine3/src/render/vt_enrich.h": "8d57e3709bfeb72ac4316fe70371ff99c4b6a534ac37adb3263dacad9428e843",
+    "MatterEngine3/shaders_vk/vt_composite.comp": "c7a3f8da5247108274e9e72fd25be58164a01fe70e24d576df1316462817f431",
+    "MatterEngine3/shaders_vk/vt_chart_types.glsl": "fc7ddbc9b837542d4bc7bbe26a613c03967bb44ae45a20c48abf1f60696ca4a5",
+    "MatterEngine3/shaders_vk/vt_chart_resolve.glsl": "ca7a1add9a2408bef74fe89e85f73996d225c803c1bf3e5e123f38b62ce4e2c8",
+    "MatterEngine3/tests/vt_compositor_tests.cpp": "d2e80586eeba3aa088d351e37a6e19bef6502174f43e494d4c6ac76a4b9d123d",
+    "MatterEngine3/tests/vulkan_smoke_tests.cpp": "de6a97fdd6eb19f351c6f42b473374684eebcab7e1b02d4a0d6a4f0ecc863094",
+    "MatterEditor/build/cmake/windows-msvc/relwithdebinfo/vt_compositor_tests.exe": "de6811ce2d4c78396c67d29e8dca68c98b5cc5061976dad81d054caf4f6c0169",
+    "MatterEditor/build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe": "0140dcf37b30f3cda3af3fc5861ec00f8465ae677a9acb71b8ffca5dd2be30d1",
+    "MatterEditor/build/windows-msvc/editor.exe": "7d6cc1da4422c4cefd0e76edfa9dba1af1d0f3d9bee02eb88c4a68d00dcd24c6"
+  }
+}

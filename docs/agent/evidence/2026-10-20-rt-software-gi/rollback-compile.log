@@ -1,0 +1,6 @@
+In file included from /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/libs/MatterGraphics/src/native/frame_image_layouts.h:3,
+                 from /tmp/pytest-of-jkern/pytest-864/test_image_layout_submission_r0/probe.cpp:2:
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/libs/MatterGraphics/src/native/vk_resources.h:55:10: fatal error: vulkan/vulkan.h: No such file or directory
+   55 | #include <vulkan/vulkan.h>
+      |          ^~~~~~~~~~~~~~~~~
+compilation terminated.

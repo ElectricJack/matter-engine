@@ -1,0 +1,3 @@
+revision 5 480x270 draws=0 refused=[] refused_placements=[]
+background pixels=129600 depth=[0.0, 0.0]
+terrain draws with pixels: 0

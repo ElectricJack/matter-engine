@@ -1,0 +1,292 @@
+#version 460
+#extension GL_KHR_shader_subgroup_basic : require
+#extension GL_KHR_shader_subgroup_ballot : require
+#extension GL_KHR_shader_subgroup_arithmetic : require
+layout(local_size_x=64) in;
+struct Instance { mat4 grid_to_world; mat4 world_to_grid; uvec4 identity; vec4 surface; };
+struct Root { vec4 sphere; vec4 lod_sphere; uvec4 output_range; };
+struct Level { uint first_brick; uint brick_count; uint first_visible; float switch_distance; vec4 grid; uvec4 flags; };
+struct Child { mat4 transform; mat4 inverse_transform; uvec4 node; };
+layout(std430,set=0,binding=2) buffer Instances { Instance instances[]; };
+layout(std430,set=0,binding=4) readonly buffer Roots { Root roots[]; };
+layout(std430,set=0,binding=5) buffer Commands { uvec4 commands[]; };
+layout(std430,set=0,binding=6) readonly buffer Levels { Level levels[]; };
+// control[0]: allocated nodes, wave begin/end, reserved primitive budget
+// control[1]: emitted voxel/surface packet counts, node/primitive budget fallbacks
+// control[2]: indirect dispatch xyz, primitive capacity (for graphics).
+// After finalization y holds the independently emitted surface triangle count.
+// control[3]: visible leaves, culled nodes, expanded nodes, node capacity
+// records: node metadata followed by one shared draw-item range. Voxels grow
+// from its front and surface packets from its back. Primitive reservation
+// still counts every surface triangle and therefore bounds the packet count.
+layout(std430,set=0,binding=11) buffer Work { uvec4 control[4]; uvec4 records[]; };
+layout(std430,set=0,binding=12) readonly buffer Children { Child children[]; };
+layout(std430,set=0,binding=13) readonly buffer Placements { Instance placements[]; };
+layout(push_constant) uniform Selection { vec4 planes[6]; uvec4 counts; vec4 eye_budget; } selection;
+const uint invalid=0xffffffffu;
+uint path_hash(uint x) {
+    x^=x>>16; x*=0x7feb352du; x^=x>>15; x*=0x846ca68bu; return x^(x>>16);
+}
+// A subgroup requests one contiguous range. Only its elected invocation
+// touches the contended counter; prefix sums distribute whole child sets.
+uint reserve_nodes(uint count) {
+    uint prefix=subgroupExclusiveAdd(count),total=subgroupAdd(count),first=0u,granted=0u;
+    if(subgroupElect()) {
+        // Requests are monotonic within a wave. Out-of-capacity ranges are
+        // never written, and the next dispatch clamps the published count.
+        first=atomicAdd(control[0].x,total);
+        granted=first<selection.counts.y?min(total,selection.counts.y-first):0u;
+    }
+    first=subgroupBroadcastFirst(first); granted=subgroupBroadcastFirst(granted);
+    bool accepted=count<=granted && prefix<=granted-count;
+    // A partially fitting final child set must remain inactive. The parent
+    // stays visible; no later reservation can reuse these monotonic slots.
+    if(!accepted && prefix<granted)
+        for(uint i=prefix;i<granted;++i) records[first+i]=uvec4(0);
+    uint failures=subgroupAdd(accepted?0u:1u);
+    if(subgroupElect()) atomicAdd(control[1].z,failures);
+    return accepted?first+prefix:invalid;
+}
+bool replace_primitive_budget(uint old_count,uint new_count,bool report_failure) {
+    if(new_count==old_count) return true;
+    if(new_count<old_count) {
+        uint returned=subgroupAdd(old_count-new_count);
+        if(subgroupElect()) atomicAdd(control[0].w,0u-returned);
+        return true;
+    }
+    uint count=new_count-old_count;
+    if(count>selection.counts.z) {
+        uint failures=subgroupAdd(1u); if(report_failure && subgroupElect()) atomicAdd(control[1].w,failures);
+        return false;
+    }
+    uint prefix=subgroupExclusiveAdd(count),total=subgroupAdd(count),granted=0u;
+    bool bounded_add=(selection.counts.w&0x80000000u)!=0u && (selection.counts.w&255u)==1u;
+    if(subgroupElect()) {
+        uint old;
+        if(bounded_add) {
+            old=atomicAdd(control[0].w,total);
+            granted=old<selection.counts.z?min(total,selection.counts.z-old):0u;
+        } else {
+            old=atomicAdd(control[0].w,0u);
+            for(;;) {
+                uint take=min(total,selection.counts.z-old);
+                uint found=atomicCompSwap(control[0].w,old,old+take);
+                if(found==old) {granted=take;break;}
+                old=found;
+            }
+        }
+    }
+    granted=subgroupBroadcastFirst(granted);
+    bool accepted=count<=granted && prefix<=granted-count;
+    uint used=subgroupAdd(accepted?count:0u),failures=subgroupAdd(accepted?0u:1u);
+    if(subgroupElect()) {
+        // Return a partially reserved last primitive set. No draw addresses
+        // have been assigned yet, so this cannot alias another node's work.
+        uint booked=bounded_add?total:granted;
+        if(used<booked) atomicAdd(control[0].w,used-booked);
+        if(report_failure && failures>0u) atomicAdd(control[1].w,failures);
+    }
+    return accepted;
+}
+uint reserve_draws(bool surface,uint count) {
+    uint first=0u,prefix=0u;
+    if(surface) {
+        prefix=subgroupExclusiveAdd(count); uint total=subgroupAdd(count);
+        if(subgroupElect()) first=atomicAdd(control[1].y,total);
+        first=subgroupBroadcastFirst(first);
+    } else {
+        prefix=subgroupExclusiveAdd(count); uint total=subgroupAdd(count);
+        if(subgroupElect()) first=atomicAdd(control[1].x,total);
+        first=subgroupBroadcastFirst(first);
+    }
+    return first+prefix;
+}
+uint spatial_priority(Instance instance,Root root) {
+    vec3 center=(instance.grid_to_world*vec4(root.sphere.xyz,1)).xyz;
+    float radius=root.sphere.w*length(instance.grid_to_world[0].xyz);
+    float distance=max(0.0,length(center-selection.eye_budget.xyz)-radius);
+    return uint(clamp(floor(log2(max(distance,1.0)))-2.0,0.0,7.0));
+}
+bool outside(Instance instance,Root root) {
+    vec3 center=(instance.grid_to_world*vec4(root.sphere.xyz,1)).xyz;
+    float radius=root.sphere.w*length(instance.grid_to_world[0].xyz);
+    for(int i=0;i<6;++i) if(dot(selection.planes[i].xyz,center)+selection.planes[i].w < -radius) return true;
+    return false;
+}
+void release_culled(uint primitives) {
+    uint removed=subgroupAdd(1u),returned=subgroupAdd(primitives);
+    if(subgroupElect()) {atomicAdd(control[3].y,removed);atomicAdd(control[0].w,0u-returned);}
+}
+void enqueue(uint index,uint bin) {
+    records[index].w=bin;
+    for(uint b=0u;b<8u;++b) if(bin==b) {
+        uint prefix=subgroupExclusiveAdd(1u),count=subgroupAdd(1u),first=0u;
+        if(subgroupElect()) first=atomicAdd(records[selection.counts.y+b/4u][b%4u],count);
+        first=subgroupBroadcastFirst(first);
+        uint word=b*selection.counts.y+first+prefix;
+        records[selection.counts.y+9u+word/4u][word%4u]=index;
+    }
+}
+void main() {
+    uint lane=gl_GlobalInvocationID.x,mode=selection.counts.w&255u,priority=(selection.counts.w>>8u)&255u;
+    if(mode==0u) { // Initialize a complete coarsest cover, reserved by the CPU.
+        if(lane>=selection.counts.x) return;
+        Instance instance=placements[lane]; uint prototype=instance.identity.x;
+        Root root=roots[prototype];
+        instance.identity.xy=root.output_range.xy;
+        instance.surface.y=uintBitsToFloat(path_hash(instance.identity.w^path_hash(lane+1u)));
+        instances[lane]=instance;
+        records[lane]=uvec4(prototype,root.output_range.x+root.output_range.y-1u,1u,0u);
+        if(outside(instance,root)) {
+            records[lane].z=0u; release_culled(levels[records[lane].y].brick_count); return;
+        }
+        enqueue(lane,spatial_priority(instance,root)); return;
+    }
+    if(mode==2u || mode==4u || mode==5u || mode==7u) {
+        if(lane!=0u) return;
+        control[0].x=min(control[0].x,selection.counts.y);
+        if(mode==2u) { // Select the unprocessed range of this spatial queue.
+            control[0].y=records[selection.counts.y+2u+priority/4u][priority%4u];
+            control[0].z=records[selection.counts.y+priority/4u][priority%4u];
+            records[selection.counts.y+2u+priority/4u][priority%4u]=control[0].z;
+            control[2].xyz=uvec3((control[0].z-control[0].y+63u)/64u,1,1);
+        } else if(mode==4u) {
+            control[2].xyz=uvec3((control[0].x+63u)/64u,1,1);
+            for(uint i=0u;i<9u;++i) records[selection.counts.y+i]=uvec4(0);
+            commands[0].w=0u; // Temporary emission count, consumed before drawing.
+        } else if(mode==7u) {
+            uint count=records[selection.counts.y+priority/4u][priority%4u];
+            uint positive=records[selection.counts.y+2u+priority/4u][priority%4u];
+            uint overflow=records[selection.counts.y+4u+priority/4u][priority%4u];
+            uint negative=records[selection.counts.y+6u+priority/4u][priority%4u];
+            bool complete=overflow==0u && positive<=selection.counts.z-control[0].w;
+            records[selection.counts.y+8u].x=complete?1u:0u;
+            if(complete) control[0].w+=positive-negative;
+            control[2].xyz=uvec3((count+63u)/64u,1,1);
+        } else {
+            control[2].y=commands[0].w;
+            commands[0]=uvec4(6,control[1].x,0,0);
+            commands[1]=uvec4(3u*((selection.counts.w>>16u)&255u),control[1].y,0,0);
+        }
+        return;
+    }
+    if(mode==3u) { // Compact only the final cover into two indirect draws.
+        if(lane>=control[0].x || records[lane].z==0u) return;
+        uint selected=records[lane].y; Level level=levels[selected];
+        bool surface=level.flags.x!=0u;
+        if(surface) {
+            uint emitted=subgroupAdd(level.brick_count);
+            if(subgroupElect()) atomicAdd(commands[0].w,emitted);
+        }
+        uint stride=surface?level.flags.z:1u;
+        uint count=(level.brick_count+stride-1u)/stride;
+        uint first=reserve_draws(surface,count);
+        for(uint i=0u;i<count;++i) {
+            uint address=selection.counts.y+(surface?selection.counts.z-1u-first-i:first+i);
+            records[address]=uvec4(lane,selected,i*stride,0);
+        }
+        uint leaves=subgroupAdd(1u); if(subgroupElect()) atomicAdd(control[3].x,leaves); return;
+    }
+    if(mode==8u) {
+        uint count=records[selection.counts.y+priority/4u][priority%4u];
+        if(lane>=count) return;
+        uint word=priority*selection.counts.y+lane;
+        uint index=records[selection.counts.y+9u+word/4u][word%4u];
+        uvec4 node=records[index];
+        if(records[selection.counts.y+8u].x!=0u) records[index].y=node.w;
+        else {
+            // A failed finest request must try the intermediate rungs before
+            // retaining the coarsest fallback. Solid strip ladders otherwise
+            // lost useful detail even when an intermediate mesh fit the pool.
+            for(uint candidate=node.w;candidate<node.y;++candidate)
+                if(replace_primitive_budget(levels[node.y].brick_count,levels[candidate].brick_count,false)) {
+                    records[index].y=candidate;break;
+                }
+            uint failures=subgroupAdd(records[index].y==node.w?0u:1u);
+            if(subgroupElect() && failures>0u) atomicAdd(control[1].w,failures);
+        }
+        return;
+    }
+    uint index=lane;
+    if(mode!=6u) {
+        if(lane>=control[0].z-control[0].y) return;
+        uint word=priority*selection.counts.y+control[0].y+lane;
+        index=records[selection.counts.y+9u+word/4u][word%4u];
+    }
+    if(index>=min(control[0].x,selection.counts.y) || records[index].z==0u) return;
+    uvec4 node=records[index]; Root root=roots[node.x]; Instance instance=instances[index];
+    float scale=length(instance.grid_to_world[0].xyz);
+    if(mode!=6u && outside(instance,root)) {
+        records[index].z=0u; release_culled(levels[node.y].brick_count); return;
+    }
+    vec3 lod_center=(instance.grid_to_world*vec4(root.lod_sphere.xyz,1)).xyz;
+    float distance_to_eye=max(length(lod_center-selection.eye_budget.xyz),0.01);
+    float reach=root.lod_sphere.w*scale*selection.eye_budget.w;
+    if(mode==6u) {
+        uint selected=root.output_range.x+root.output_range.y-1u;
+        for(uint i=0u;i<root.output_range.y;++i) {
+            uint candidate=root.output_range.x+i; float limit=levels[candidate].switch_distance;
+            if(isinf(limit) || distance_to_eye<=limit*reach) {selected=candidate;break;}
+        }
+        records[index].w=selected;
+        // Refine topology first, then spend extra primitive budget from near
+        // to far. Eight bins cover <8, 8-16, ... 256-512, >=512 world metres.
+        float near_distance=max(0.0,distance_to_eye-root.lod_sphere.w*scale);
+        uint bin=uint(clamp(floor(log2(max(near_distance,1.0)))-2.0,0.0,7.0));
+        for(uint b=0u;b<8u;++b) if(bin==b) {
+            uint prefix=subgroupExclusiveAdd(1u),count=subgroupAdd(1u),first=0u;
+            uint old_count=levels[node.y].brick_count,new_count=levels[selected].brick_count;
+            uint positive=new_count>old_count?new_count-old_count:0u;
+            uint negative=subgroupAdd(old_count>new_count?old_count-new_count:0u);
+            uint impossible=subgroupAdd(positive>selection.counts.z?1u:0u);
+            uint total=subgroupAdd(positive<=selection.counts.z?positive:0u);
+            if(subgroupElect()) {
+                first=atomicAdd(records[selection.counts.y+b/4u][b%4u],count);
+                // Two words record positive demand without a 64-bit atomic.
+                // Only zero high-word bins can take the all-fit fast path.
+                uint previous=atomicAdd(records[selection.counts.y+2u+b/4u][b%4u],total);
+                uint carry=previous>0xffffffffu-total?1u:0u;
+                if(carry+impossible>0u) atomicAdd(records[selection.counts.y+4u+b/4u][b%4u],carry+impossible);
+                if(negative>0u) atomicAdd(records[selection.counts.y+6u+b/4u][b%4u],negative);
+            }
+            first=subgroupBroadcastFirst(first);
+            uint word=b*selection.counts.y+first+prefix;
+            records[selection.counts.y+9u+word/4u][word%4u]=index;
+        }
+        return;
+    }
+    // Exactly the normalized switch-distance contract in lod_distance.h.
+    float refine=uintBitsToFloat(levels[root.output_range.x].flags.y);
+    bool descend=root.output_range.w>0u && (isinf(refine) || distance_to_eye<=refine*reach);
+    if(descend) {
+        uint count=root.output_range.w,first=reserve_nodes(count);
+        if(first!=invalid) {
+            uint child_primitives=0u;
+            for(uint i=0u;i<count;++i) {
+                Root child=roots[children[root.output_range.z+i].node.x];
+                child_primitives+=levels[child.output_range.x+child.output_range.y-1u].brick_count;
+                records[first+i]=uvec4(0); // Also initialize unused reservations.
+            }
+            if(replace_primitive_budget(levels[node.y].brick_count,child_primitives,true)) {
+                for(uint i=0u;i<count;++i) {
+                    Child child=children[root.output_range.z+i]; Root prototype=roots[child.node.x];
+                    Instance output_instance=instance;
+                    output_instance.grid_to_world=instance.grid_to_world*child.transform;
+                    output_instance.world_to_grid=child.inverse_transform*instance.world_to_grid;
+                    output_instance.identity.xy=prototype.output_range.xy;
+                    // Stable graph path, independent of the queue allocation
+                    // order. Picking retains the original tree identity.
+                    output_instance.surface.y=uintBitsToFloat(path_hash(floatBitsToUint(instance.surface.y)^path_hash(i+1u)));
+                    instances[first+i]=output_instance;
+                    records[first+i]=uvec4(child.node.x,prototype.output_range.x+prototype.output_range.y-1u,1u,0u);
+                    // Child queues never move behind the current priority.
+                    // Each accepted node is processed exactly once.
+                    enqueue(first+i,max(priority,spatial_priority(output_instance,prototype)));
+                }
+                records[index].z=0u; uint expanded=subgroupAdd(1u); if(subgroupElect()) atomicAdd(control[3].z,expanded); return;
+            }
+        }
+    }
+    // Keep the current fallback until topology selection has finished.
+    // Upsampling distant roots here would starve nearby child refinement.
+}
