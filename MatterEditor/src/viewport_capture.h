@@ -34,6 +34,7 @@
 #include "agent_protocol.h"
 #include "matter/camera.h"
 #include "matter/evaluation_channels.h"
+#include "matter/fixture_io.h"
 #include "matter/json_doc.h"
 #include "selection_bounds.h"
 
@@ -260,6 +261,7 @@ bool parse_arguments(const matter::jsondoc::Value& arguments, Arguments& out,
 // after this succeeds, so a partial bundle is never a completed capture.
 bool write_channel_bundle(const std::string& path,
                           const matter::EvaluationChannels& channels,
-                          std::string& error);
+                          std::string& error,
+                          matter::CacheByteStorage* storage = nullptr);
 
 }  // namespace viewer::capture
