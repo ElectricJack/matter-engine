@@ -1,0 +1,156 @@
+{
+  "full_vt_acceptance": false,
+  "source_manifest": "source-ownership-green-source.json",
+  "files": [
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/source-ownership-final-verification.json",
+      "bytes": 649,
+      "sha256": "fe256544e0d9ae0afaada39526b28c6717199cba7082e10119c5129f91e9eaf7"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/source-ownership-green-build-checks.json",
+      "bytes": 347,
+      "sha256": "3ffa698cd9a14ba5efb94096b2c689773b2420a2e0e1c9a692999547f5d76281"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/source-ownership-green-compositor-build.log",
+      "bytes": 10441,
+      "sha256": "63acd77912a232695bbb8c9b00843fbc11649cda8850c1481abbeac2bfa2b499"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/source-ownership-green-retry-checks.json",
+      "bytes": 12665,
+      "sha256": "529ba6bbdaf8593010aad8ed9b24bafbfbdfca3530ffc7c2e5f9f2d18d86042c"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/source-ownership-green-retry-compositor-build.log",
+      "bytes": 858,
+      "sha256": "449027bf7fa23cb4dadedff3bda94fa8ad55e9be9f1059c051776f87019914d4"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/source-ownership-green-retry-compositor.log",
+      "bytes": 2929,
+      "sha256": "dd32c5e0a0bcbef14145c49bf016056ca92a0a5b1a46758b5cfd567d040f8c17"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/source-ownership-green-retry-editor-build.log",
+      "bytes": 1232,
+      "sha256": "8973ddf2844625e9fdadbe69fb5570724d01463cd7cd115b82cb825f4b12e74c"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/source-ownership-green-retry-outlive-resources.log",
+      "bytes": 1248,
+      "sha256": "02f338456ce62b3779c93da2fb14212c08442fb624e1a1bb082689486e0d6aa1"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/source-ownership-green-retry-outlive-unproven.log",
+      "bytes": 1388,
+      "sha256": "890c35f567ca7eab2b49162f275051da78020c3ef9c08d6bee5dc4075107403c"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/source-ownership-green-retry-raster.log",
+      "bytes": 5179,
+      "sha256": "1d5ae1edd1927b5f73ec5967443a14459953bba3953d90e0cd08c1d3d33386e4"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/source-ownership-green-retry-retention-fault-image-transition.log",
+      "bytes": 1248,
+      "sha256": "02f338456ce62b3779c93da2fb14212c08442fb624e1a1bb082689486e0d6aa1"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/source-ownership-green-retry-smoke-build.log",
+      "bytes": 81863,
+      "sha256": "5f822f78d3dc2f4f5b96a0da1cf1f2aaa04b74249504609c880d0295b7ad3de7"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/source-ownership-green-retry-surface-parallax.log",
+      "bytes": 5939,
+      "sha256": "f52b072c4efc8244f77ab7a598304e2ca044b21a64c622875c6ba35eddf13a5a"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/source-ownership-green-retry-tileset.log",
+      "bytes": 4741,
+      "sha256": "0be8989224c34da1fe61922225c8cbc85e1a9aef798b2466acb38feab2c1002e"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/source-ownership-green-retry-vt-enrich-nort.log",
+      "bytes": 5414,
+      "sha256": "a394e9b0a0e1d777a5cffbd8b68666aab87663fb850c2f100ee16a4eb6aef212"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/source-ownership-green-retry-vt-enrich.log",
+      "bytes": 5859,
+      "sha256": "0ddedeb267e6f22eb9026b19ae5de0278c4563d0b18470d0105b6b86d11c4b8a"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/source-ownership-green-retry-vt-feedback.log",
+      "bytes": 7510,
+      "sha256": "6abfaaf300765dbae4213fabf307782079753fe32392296fea3b5f7728d07d12"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/source-ownership-green-retry-vt-normal-frame.log",
+      "bytes": 5963,
+      "sha256": "5bea7d198ea21ae6bd9e7f966bf3613c722687bfb9e48591d756acaff756e7c2"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/source-ownership-green-retry-vt-queue.log",
+      "bytes": 1989,
+      "sha256": "e8e167c0a42d4f969e7cb6e7b1f01fd0edb0e1db0103fc24e5fb1b4e207985d9"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/source-ownership-green-retry-vt-rt.log",
+      "bytes": 5186,
+      "sha256": "c43e5ae5baf19c2a83013ee13869fb21a8cf3f746d26d107b10e19862bd1d8b3"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/source-ownership-green-retry-vt-surfaces.log",
+      "bytes": 4821,
+      "sha256": "000f8b10797692de99de1dc7d0fd3654873766eae29b4241c257db1dbdb6dff1"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/source-ownership-green-retry-vt.log",
+      "bytes": 5041,
+      "sha256": "180b62906546198829af25ec32ab15492a5729d28f2003dfccfce752cf4bab79"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/source-ownership-green-retry-water-field-nort.log",
+      "bytes": 4148,
+      "sha256": "650c682a10bccb8dcf74f43956a928205dcabd1f3110216a24dd637c435e4743"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/source-ownership-green-retry-water-field.log",
+      "bytes": 4435,
+      "sha256": "e671b533b0c7132bfa402de1fc9d700d5185330169ccc9dc399e07b226e714dc"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/source-ownership-green-source.json",
+      "bytes": 5158,
+      "sha256": "e8d0295916cf5e8c962e8d7c136b3fa6f0057f23c7a58f5a8b2eeb101098fdaa"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/source-ownership-red-build.log",
+      "bytes": 3116,
+      "sha256": "0c84441cc2b9c53d5c09653a98c202d6dbd929c9b70bb8048fff38b76ea0e3a5"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/source-ownership-red-checks.json",
+      "bytes": 901,
+      "sha256": "c52a9e913a75b7edfb737183c85b81602e3a8784151c3e7a996bee65105e8c80"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/source-ownership-red-source.json",
+      "bytes": 4889,
+      "sha256": "09625cd9cd7b890db8b1565dcdb39ed2549d3a47e455bc424c06e945b453fe7c"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/source-ownership-red-test.log",
+      "bytes": 3225,
+      "sha256": "48d168e1059a7cd72279e200a68a4210ce1a40a65c5389e37a49335c43f7701d"
+    }
+  ],
+  "check_runner": {
+    "path": "/mnt/d/tmp/matter-vt/20260915-feedback/run_source_ownership_checks.py",
+    "sha256": "78100ec921f6244bd2c333b48024c9a119226e3ffbd67489c31341b95af1e67b"
+  },
+  "report": "docs/agent/evidence/2026-09-15-vt-feedback/README.md"
+}

@@ -35,6 +35,29 @@
 namespace matter::terrain_collision {
 namespace {
 
+// Scoped per caller, so concurrent builds may use different stores and nested
+// callback builds restore the outer store. The ordinary entry point sees null.
+thread_local detail::ArtifactStorage* test_storage = nullptr;
+class StorageScope {
+public:
+    explicit StorageScope(detail::ArtifactStorage* storage)
+        : previous_(test_storage) { test_storage = storage; }
+    ~StorageScope() { test_storage = previous_; }
+private:
+    detail::ArtifactStorage* previous_;
+};
+
+bool cache_exists(const std::filesystem::path& path, std::error_code& error) {
+    return test_storage ? test_storage->exists(path, error)
+                        : std::filesystem::exists(path, error);
+}
+
+std::uintmax_t cache_file_size(const std::filesystem::path& path,
+                              std::error_code& error) {
+    return test_storage ? test_storage->file_size(path, error)
+                        : std::filesystem::file_size(path, error);
+}
+
 constexpr std::array<std::uint8_t, 8> kTileMagic = {
     'M', 'T', 'C', 'T', 'L', 'E', '0', '1'};
 constexpr std::array<std::uint8_t, 8> kManifestMagic = {
@@ -528,6 +551,11 @@ bool read_exact_file(const std::filesystem::path& path,
     std::streamsize read_size = 0;
     if (!to_streamsize(allocation_size, read_size))
         return fail(error, "terrain collision cache file exceeds stream limits");
+    if (test_storage) {
+        bytes.resize(allocation_size);
+        return test_storage->read(path, 0, allocation_size, bytes.data()) ||
+            fail(error, "could not read complete terrain collision cache file");
+    }
     std::ifstream stream(path, std::ios::binary);
     if (!stream) {
 #ifdef _WIN32
@@ -552,26 +580,31 @@ bool load_tile_file(const std::filesystem::path& path,
     if (open_error) *open_error = 0u;
     std::error_code filesystem_error;
     const std::uintmax_t file_size =
-        std::filesystem::file_size(path, filesystem_error);
+        cache_file_size(path, filesystem_error);
     if (filesystem_error || file_size < kTileHeaderBytes ||
         file_size > std::numeric_limits<std::uint64_t>::max()) {
         if (open_error && filesystem_error)
             *open_error = static_cast<std::uint32_t>(filesystem_error.value());
         return fail(error, "MTCT file size is invalid");
     }
-    std::ifstream header_stream(path, std::ios::binary);
-    if (!header_stream) {
-#ifdef _WIN32
-        if (open_error) *open_error = static_cast<std::uint32_t>(GetLastError());
-#endif
-        return fail(error, "could not open MTCT header");
-    }
     std::array<std::uint8_t, static_cast<std::size_t>(kTileHeaderBytes)> header_bytes{};
-    header_stream.read(reinterpret_cast<char*>(header_bytes.data()),
-                       static_cast<std::streamsize>(header_bytes.size()));
-    if (!header_stream || header_stream.gcount() !=
-                              static_cast<std::streamsize>(header_bytes.size()))
-        return fail(error, "could not read complete MTCT header");
+    if (test_storage) {
+        if (!test_storage->read(path, 0, header_bytes.size(), header_bytes.data()))
+            return fail(error, "could not read complete MTCT header");
+    } else {
+        std::ifstream header_stream(path, std::ios::binary);
+        if (!header_stream) {
+#ifdef _WIN32
+            if (open_error) *open_error = static_cast<std::uint32_t>(GetLastError());
+#endif
+            return fail(error, "could not open MTCT header");
+        }
+        header_stream.read(reinterpret_cast<char*>(header_bytes.data()),
+                           static_cast<std::streamsize>(header_bytes.size()));
+        if (!header_stream || header_stream.gcount() !=
+                                  static_cast<std::streamsize>(header_bytes.size()))
+            return fail(error, "could not read complete MTCT header");
+    }
     TileHeader header{};
     std::uint64_t expected_bytes = 0u;
     const Clock::time_point header_start = Clock::now();
@@ -792,7 +825,7 @@ bool artifact_sizes_from_files(const std::filesystem::path& manifest_path,
         manifest_path.parent_path().parent_path() / "tiles";
     for (const TileCandidate& tile : candidate.tiles) {
         std::error_code filesystem_error;
-        const std::uintmax_t size = std::filesystem::file_size(
+        const std::uintmax_t size = cache_file_size(
             tile_directory / (key_hex(tile.tile_key) + ".mtct"), filesystem_error);
         if (filesystem_error || size > std::numeric_limits<std::uint64_t>::max())
             return fail(error, "MTCM references a missing or oversized tile artifact");
@@ -811,7 +844,7 @@ bool read_manifest_file(const std::filesystem::path& path,
     if (open_error) *open_error = 0u;
     std::error_code filesystem_error;
     const std::uintmax_t file_size =
-        std::filesystem::file_size(path, filesystem_error);
+        cache_file_size(path, filesystem_error);
     if (filesystem_error || file_size <
             kManifestHeaderBytes + kManifestTrailerBytes ||
         file_size > std::numeric_limits<std::uint64_t>::max()) {
@@ -819,20 +852,24 @@ bool read_manifest_file(const std::filesystem::path& path,
             *open_error = static_cast<std::uint32_t>(filesystem_error.value());
         return fail(error, "MTCM file size is invalid");
     }
-    std::ifstream header_stream(path, std::ios::binary);
-    if (!header_stream) {
+    std::array<std::uint8_t, static_cast<std::size_t>(kManifestHeaderBytes)> header_bytes{};
+    if (test_storage) {
+        if (!test_storage->read(path, 0, header_bytes.size(), header_bytes.data()))
+            return fail(error, "could not read complete MTCM header");
+    } else {
+        std::ifstream header_stream(path, std::ios::binary);
+        if (!header_stream) {
 #ifdef _WIN32
-        if (open_error) *open_error = static_cast<std::uint32_t>(GetLastError());
+            if (open_error) *open_error = static_cast<std::uint32_t>(GetLastError());
 #endif
-        return fail(error, "could not open MTCM header");
+            return fail(error, "could not open MTCM header");
+        }
+        header_stream.read(reinterpret_cast<char*>(header_bytes.data()),
+                           static_cast<std::streamsize>(header_bytes.size()));
+        if (!header_stream || header_stream.gcount() !=
+                                  static_cast<std::streamsize>(header_bytes.size()))
+            return fail(error, "could not read complete MTCM header");
     }
-    std::array<std::uint8_t, static_cast<std::size_t>(kManifestHeaderBytes)>
-        header_bytes{};
-    header_stream.read(reinterpret_cast<char*>(header_bytes.data()),
-                       static_cast<std::streamsize>(header_bytes.size()));
-    if (!header_stream || header_stream.gcount() !=
-                              static_cast<std::streamsize>(header_bytes.size()))
-        return fail(error, "could not read complete MTCM header");
     std::uint64_t expected_bytes = 0u;
     if (!parse_manifest_size(header_bytes.data(), header_bytes.size(), definition,
                              candidate, expected_bytes, error))
@@ -865,6 +902,7 @@ std::filesystem::path unique_temp_path(
 }
 
 void remove_temp(const std::filesystem::path& path) noexcept {
+    if (test_storage) { test_storage->remove(path); return; }
     std::error_code ignored;
     std::filesystem::remove(path, ignored);
 }
@@ -873,6 +911,11 @@ bool write_temp_file(const std::filesystem::path& destination,
                      const std::vector<std::uint8_t>& bytes,
                      std::filesystem::path& temp_path,
                      std::string& error) {
+    if (test_storage) {
+        temp_path = unique_temp_path(destination);
+        return test_storage->write(temp_path, bytes) ||
+            fail(error, "could not create terrain collision temporary file");
+    }
     std::error_code filesystem_error;
     std::filesystem::create_directories(destination.parent_path(), filesystem_error);
     if (filesystem_error)
@@ -920,6 +963,10 @@ DWORD move_file_windows(
                 ? hooks->publication_move_error(operation, attempt) : 0u;
         if (injected_error != 0u) {
             move_error = static_cast<DWORD>(injected_error);
+        } else if (test_storage) {
+            move_error = test_storage->move(source, destination,
+                (flags & MOVEFILE_REPLACE_EXISTING) != 0);
+            if (move_error == ERROR_SUCCESS) return ERROR_SUCCESS;
         } else if (MoveFileExW(source.c_str(), destination.c_str(), flags) != 0) {
             return ERROR_SUCCESS;
         } else {
@@ -943,6 +990,9 @@ bool replace_file(const std::filesystem::path& source,
         return fail(error, "could not publish terrain collision cache file");
 #else
     (void)hooks;
+    if (test_storage)
+        return test_storage->move(source, destination, true) == 0u ||
+            fail(error, "could not publish terrain collision cache file");
     if (std::rename(source.c_str(), destination.c_str()) != 0)
         return fail(error, "could not publish terrain collision cache file");
 #endif
@@ -970,6 +1020,13 @@ PublishNoReplaceResult publish_file_no_replace(
         return PublishNoReplaceResult::DestinationExists;
 #else
     (void)hooks;
+    if (test_storage) {
+        const auto result = test_storage->move(source, destination, false);
+        if (result == 0u) return PublishNoReplaceResult::Published;
+        if (result == 183u) return PublishNoReplaceResult::DestinationExists;
+        fail(error, "could not publish terrain collision cache file");
+        return PublishNoReplaceResult::Failure;
+    }
     if (::link(source.c_str(), destination.c_str()) == 0) {
         if (::unlink(source.c_str()) == 0)
             return PublishNoReplaceResult::Published;
@@ -1111,7 +1168,7 @@ bool publish_tile_file(const std::filesystem::path& destination,
 
     std::error_code filesystem_error;
     const bool destination_exists =
-        std::filesystem::exists(destination, filesystem_error);
+        cache_exists(destination, filesystem_error);
     if (filesystem_error) {
         remove_temp(temp_path);
         return fail(error, "could not inspect terrain collision tile destination");
@@ -1222,7 +1279,7 @@ bool publish_manifest_file(const std::filesystem::path& destination,
 
     std::error_code filesystem_error;
     const bool destination_exists =
-        std::filesystem::exists(destination, filesystem_error);
+        cache_exists(destination, filesystem_error);
     if (filesystem_error) {
         remove_temp(temp_path);
         return fail(error, "could not inspect terrain collision manifest destination");
@@ -1345,7 +1402,7 @@ bool load_or_build_candidate_impl(
         std::uint64_t tile_file_bytes = 0u;
         bool cache_hit = false;
         std::error_code filesystem_error;
-        if (std::filesystem::exists(path, filesystem_error) && !filesystem_error) {
+        if (cache_exists(path, filesystem_error) && !filesystem_error) {
             const Clock::time_point load_start = Clock::now();
             std::string load_error;
             cache_hit = load_tile_file(path, definition, coordinate, tile,
@@ -1407,7 +1464,7 @@ bool load_or_build_candidate_impl(
         manifest_path_for(cache_root, definition.installation_key);
     std::error_code filesystem_error;
     bool manifest_valid = false;
-    if (std::filesystem::exists(manifest, filesystem_error) && !filesystem_error) {
+    if (cache_exists(manifest, filesystem_error) && !filesystem_error) {
         std::vector<std::uint8_t> existing_bytes;
         const Clock::time_point validation_start = Clock::now();
         std::string manifest_error;
@@ -1465,6 +1522,7 @@ bool load_or_build_candidate_with_test_hooks(
     const BuildTestHooks& hooks,
     TerrainCollisionCandidate& out,
     std::string& error) {
+    StorageScope storage_scope(hooks.storage);
     return load_or_build_candidate_catching(
         field, definition, cache_root, cancelled, &hooks, out, error);
 }
@@ -1688,7 +1746,9 @@ bool validate_tile_artifact_bytes(const std::vector<std::uint8_t>& bytes,
 bool validate_generation_manifest(const std::filesystem::path& path,
                                   const CanonicalDefinition& definition,
                                   const TerrainCollisionCandidate& candidate,
-                                  std::string& error) {
+                                  std::string& error,
+                                  ArtifactStorage* storage) {
+    StorageScope storage_scope(storage);
     std::vector<std::uint64_t> artifact_sizes;
     if (!artifact_sizes_from_files(path, candidate, artifact_sizes, error))
         return false;
@@ -1706,6 +1766,7 @@ bool load_or_build_candidate(
     const CancelCheck& cancelled,
     TerrainCollisionCandidate& out,
     std::string& error) {
+    StorageScope storage_scope(nullptr);
     return load_or_build_candidate_catching(
         field, definition, cache_root, cancelled, nullptr, out, error);
 }

@@ -1,0 +1,4 @@
+make: Entering directory '/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/libs/MeshChartingLib/tests'
+make: 'build/mesh_charting_tests' is up to date.
+make: Leaving directory '/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/libs/MeshChartingLib/tests'
+All mesh_charting tests passed

@@ -1,0 +1,12 @@
+{
+  "node_exit": 0,
+  "sources": {
+    "projects/world_demo/shared-lib/brick_wall_layout.js": "f7bca5896554a97459493329684eca406f07ea8358f417415733735e90f6a2b3",
+    "projects/world_demo/shared-lib/brick_wall_geometry.js": "beecfde4302c1e5baaedbf0de9553a0dec25cbc654e353e1a6517e2107203a98",
+    "projects/world_demo/objects/ClayBrickWall.js": "4643a01b7a7256135d13d7c43b9b37b210bb4b6694bc3266ac2feac49a08760d",
+    "projects/world_demo/tests/brick_wall_layout_tests.mjs": "eeff7eb30a7cb3acf2b2bec4cf0cfb8ffb11337da7ab1ff9bb5cc445d698095c",
+    "projects/world_demo/scenes/ClayBrickWallProof/ClayBrickWallProof.js": "8d292e02b0400e8e4076c424b9ea1b585e222e57cc63c2c44b3bb0bab087249b"
+  },
+  "capture_sources_match_current": true,
+  "binary_matches_capture": true
+}

@@ -1,0 +1,78 @@
+{
+  "schema": 1,
+  "trace": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-input-idle-repeat/vt.jsonl",
+  "selected_rows": 601,
+  "distinct_active_vt_frames": 601,
+  "dropped_rows": 0,
+  "owner_frame_resets": 0,
+  "changed_frame_pairs": {
+    "variants": 0,
+    "fills_total": 0,
+    "evictions_total": 0,
+    "invalidations_total": 0,
+    "pages_dropped_total": 0,
+    "fills_failed_total": 0,
+    "requests_dropped_total": 0,
+    "enrich_total": 0,
+    "resident_sectors": 0,
+    "vertex_uploads": 0,
+    "cluster_uploads": 0,
+    "fills_stale_total": 0
+  },
+  "queue_empty_throughout": true,
+  "replacement": {
+    "available": true,
+    "dirty_empty_throughout": true,
+    "max_dirty_pages": 0,
+    "reserve_pages": 64
+  },
+  "queue_classes": {
+    "available": true,
+    "max_mandatory_queue": 0,
+    "max_detail_queue": 0,
+    "max_oldest_mandatory_age_frames": 0,
+    "max_oldest_detail_age_frames": 0
+  },
+  "settled_interval_counter_gate": true,
+  "required_frames": 600,
+  "cpu_scope": "VT hooks plus registration; initial runtime creation and source loading separate",
+  "gpu_scope": "VT pre-pass plus feedback readback; shader feedback writes and sampling remain inside gbuffer",
+  "cpu_vt_hooks_and_registration": {
+    "samples": 601,
+    "p50_ms": 0.20350000004749744,
+    "p95_ms": 0.3068,
+    "p99_ms": 0.4074,
+    "max_ms": 0.5255000001899898
+  },
+  "cpu_vt_demand": {
+    "samples": 0,
+    "p50_ms": null,
+    "p95_ms": null,
+    "p99_ms": null,
+    "max_ms": null
+  },
+  "cpu_vt_render_thread": {
+    "samples": 0,
+    "p50_ms": null,
+    "p95_ms": null,
+    "p99_ms": null,
+    "max_ms": null
+  },
+  "cpu_vt_render_thread_available": false,
+  "cpu_vt_render_thread_missing_frames": 601,
+  "gpu_vt": {
+    "samples": 601,
+    "p50_ms": 0.025280000641942024,
+    "p95_ms": 0.040800001472234726,
+    "p99_ms": 0.22367998957633972,
+    "max_ms": 0.24505600333213806
+  },
+  "gpu_vt_available": true,
+  "full_vt_acceptance": false,
+  "limits": [
+    "Counter stability does not prove image continuity or page identity.",
+    "Request-to-visible latency is not measured by this schema.",
+    "GPU VT time must be supplied by dedicated timestamps; null is unavailable.",
+    "The marked camera/quality settings require the capture manifest and images."
+  ]
+}

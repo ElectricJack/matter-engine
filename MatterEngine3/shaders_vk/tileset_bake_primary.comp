@@ -27,7 +27,7 @@ layout(r16,   set = 0, binding = 3) uniform writeonly image2D heightImg;
 layout(set = 0, binding = 4) uniform accelerationStructureEXT tlas;
 
 // Per-triangle geometry, global (concatenated across all BLAS entries). Layout
-// is 18 floats per triangle: v0.xyz, v1.xyz, v2.xyz, n0.xyz, n1.xyz, n2.xyz.
+// is 22 floats: v0.xyz, v1.xyz, v2.xyz, n0.xyz, n1.xyz, n2.xyz, tint.rgba.
 layout(std430, set = 0, binding = 5) readonly buffer TriDataBuf { float triData[]; };
 // Per-triangle material id (global). -1 = "fall back to instance material".
 layout(std430, set = 0, binding = 6) readonly buffer TriMatBuf  { int   triMat[];  };
@@ -56,7 +56,7 @@ float mat_metal(int id)  { return mats[id * 12 + 4]; }
 bool  mat_flat(int id)   { return mats[id * 12 + 9] > 0.5; }
 
 vec3 tri_vec3(uint tri, int slot) {
-    uint b = tri * 18u + uint(slot) * 3u;
+    uint b = tri * 22u + uint(slot) * 3u;
     return vec3(triData[b + 0u], triData[b + 1u], triData[b + 2u]);
 }
 
@@ -122,7 +122,11 @@ void main() {
     float hnorm = clamp((hitY - pc.heightMin) / max(pc.heightMax - pc.heightMin, 1e-6),
                         0.0, 1.0);
 
-    imageStore(albedoImg, xy, vec4(mat_albedo(mid), 1.0));
+    uint tintBase = gtri * 22u + 18u;
+    vec4 tint = vec4(triData[tintBase], triData[tintBase + 1u],
+                     triData[tintBase + 2u], triData[tintBase + 3u]);
+    vec3 albedo = mix(mat_albedo(mid), tint.rgb, clamp(tint.a, 0.0, 1.0));
+    imageStore(albedoImg, xy, vec4(albedo, 1.0));
     imageStore(normalImg, xy, vec4(nrm_rg, 0.0, 0.0));
     imageStore(ormImg,    xy, vec4(1.0, mat_rough(mid), mat_metal(mid), 1.0));
     imageStore(heightImg, xy, vec4(hnorm, 0.0, 0.0, 0.0));

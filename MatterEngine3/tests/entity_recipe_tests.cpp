@@ -3,11 +3,15 @@
 
 #include "check.h"
 #include "matter/ecs.h"
+#include "matter/event/event_hub.h"
+#include "matter/event/subscription.h"
 #include "matter/physics.h"
 #include "matter/scene.h"
+#include "matter/scene/scene_events.h"
 #include "matter/streaming.h"
 #include "matter/world_definition.h"
 #include "ecs/scene_registry.h"
+#include "scene/scene_change_tracker.h"
 
 #include "flecs.h"
 
@@ -396,6 +400,163 @@ static void test_bootstrap_transactional_replaces_prior_scene() {
 }
 
 // ---------------------------------------------------------------------------
+// Reload as the editor sees it: bootstrap_transactional + SceneChangeTracker.
+//
+// These two are only ever exercised together in production (ecs_runtime.cpp's
+// Ready command bootstraps the batch, and WorldSession::tick flushes the
+// tracker at the end of the same app tick), and the bug they hid needed both:
+// a reload destructs every prior scene entity and re-instantiates the batch
+// under the SAME SceneEntityId VALUES -- instantiate() hashes the authored id,
+// so only the generation moves. The tracker used to let the destruct win for
+// the whole tick, so the re-created rows were never marked dirty and flush()
+// published removals with no matching upserts. MatterEditor's
+// SceneModelAdapter applied exactly what it was told and dropped every
+// authored row, which is why scene.list_objects answered entity:0 after a
+// bake that reported success (smart-dune.8).
+// ---------------------------------------------------------------------------
+
+// Captures the two canonical scene-delta batches in emission order.
+struct TrackerCapture {
+    struct Batch {
+        bool is_remove = false;
+        uint64_t sequence = 0;
+        std::vector<SceneRecord> rows;
+        std::vector<SceneEntityId> ids;
+    };
+    std::vector<Batch> batches;
+    matter::evt::SubscriptionSet subs;
+
+    void bind(matter::evt::Hub& hub) {
+        subs += hub.must_subscribe<SceneRowsUpserted>(
+            "test.recipe.up", matter::evt::immediate,
+            [this](const SceneRowsUpserted& e) {
+                batches.push_back({false, e.sequence, e.rows, {}});
+            });
+        subs += hub.must_subscribe<SceneRowsRemoved>(
+            "test.recipe.rm", matter::evt::immediate,
+            [this](const SceneRowsRemoved& e) {
+                batches.push_back({true, e.sequence, {}, e.ids});
+            });
+    }
+
+    bool was_removed(uint64_t id) const {
+        for (const Batch& b : batches) {
+            if (!b.is_remove) continue;
+            for (const SceneEntityId& v : b.ids)
+                if (v.value == id) return true;
+        }
+        return false;
+    }
+
+    const SceneRecord* upserted(uint64_t id) const {
+        for (const Batch& b : batches) {
+            if (b.is_remove) continue;
+            for (const SceneRecord& r : b.rows)
+                if (r.id.value == id) return &r;
+        }
+        return nullptr;
+    }
+};
+
+static void test_reload_republishes_every_reinstantiated_row() {
+    matter::evt::Hub hub;
+    flecs::world world = make_world();
+    matter::scene::SceneChangeTracker tracker(world, hub);
+    TrackerCapture capture;
+    capture.bind(hub);
+
+    const std::vector<RawEntityRecipe> recipes = {
+        {"floor-body", "Floor", "", "{}"},
+        {"crate-0", "Crate0", "", R"({"RigidBody": {}, "BoxCollider": {}})"},
+        {"crate-1", "Crate1", "", R"({"RigidBody": {}, "BoxCollider": {}})"},
+    };
+
+    SceneGeneration gen;
+    RecipeError err;
+    CHECK(bootstrap_transactional(world, recipes, gen, nullptr, err),
+          "first bootstrap should succeed");
+    tracker.flush();
+    capture.batches.clear();
+
+    // The reload: the world script re-evaluates to the same recipes, so the
+    // batch is destructed and re-instantiated inside this one tick.
+    CHECK(bootstrap_transactional(world, recipes, gen, nullptr, err),
+          "reload bootstrap should succeed");
+    CHECK(gen.value == 2, "reload should commit the next scene generation");
+
+    const int batches = tracker.flush();
+    CHECK(batches == 1,
+          "a reload of the same recipes publishes exactly one batch");
+    CHECK(capture.batches.size() == 1 && !capture.batches.front().is_remove,
+          "that batch is an upsert: a reload of the same recipes removes nothing");
+
+    for (const RawEntityRecipe& recipe : recipes) {
+        const uint64_t id = hash_authored_id(recipe.authored_id);
+        CHECK(!capture.was_removed(id),
+              "a re-created authored id must not be published as removed");
+        const SceneRecord* row = capture.upserted(id);
+        CHECK(row != nullptr,
+              "every re-instantiated authored id must be published as an upsert");
+        if (row) {
+            CHECK(row->name == recipe.display_name,
+                  "the re-published row carries the authored display name");
+            CHECK(row->id.generation == 2,
+                  "the re-published row carries the new scene generation");
+        }
+    }
+
+    // The tracker's own view of the world agrees: nothing was lost.
+    std::vector<SceneRecord> rows;
+    uint64_t sequence = 0;
+    tracker.scene_snapshot(rows, sequence);
+    CHECK(rows.size() == recipes.size(),
+          "the post-reload snapshot still holds every authored entity");
+}
+
+static void test_reload_removes_only_entities_the_new_batch_dropped() {
+    matter::evt::Hub hub;
+    flecs::world world = make_world();
+    matter::scene::SceneChangeTracker tracker(world, hub);
+    TrackerCapture capture;
+    capture.bind(hub);
+
+    SceneGeneration gen;
+    RecipeError err;
+    const std::vector<RawEntityRecipe> before = {
+        {"kept", "Kept", "", "{}"},
+        {"dropped", "Dropped", "", "{}"},
+    };
+    CHECK(bootstrap_transactional(world, before, gen, nullptr, err),
+          "first bootstrap should succeed");
+    tracker.flush();
+    capture.batches.clear();
+
+    const std::vector<RawEntityRecipe> after = {
+        {"kept", "Kept", "", "{}"},
+        {"added", "Added", "", "{}"},
+    };
+    CHECK(bootstrap_transactional(world, after, gen, nullptr, err),
+          "reload bootstrap should succeed");
+    CHECK(tracker.flush() == 2,
+          "a reload that drops an entity publishes one removal and one upsert batch");
+
+    CHECK(capture.batches.size() == 2 && capture.batches[0].is_remove &&
+              !capture.batches[1].is_remove,
+          "removals are published before upserts");
+
+    CHECK(capture.was_removed(hash_authored_id("dropped")),
+          "an authored id absent from the new batch is published as removed");
+    CHECK(!capture.was_removed(hash_authored_id("kept")),
+          "a surviving authored id is never published as removed");
+    CHECK(capture.upserted(hash_authored_id("kept")) != nullptr,
+          "a surviving authored id is re-published as an upsert");
+    CHECK(capture.upserted(hash_authored_id("added")) != nullptr,
+          "a newly authored id is published as an upsert");
+    CHECK(capture.upserted(hash_authored_id("dropped")) == nullptr,
+          "a dropped authored id is not also published as an upsert");
+}
+
+// ---------------------------------------------------------------------------
 // normalize() packaging.
 // ---------------------------------------------------------------------------
 
@@ -453,6 +614,9 @@ int main() {
     test_failed_reload_retains_prior_generation_and_entities();
     test_failed_reload_due_to_missing_part_retains_scene();
     test_bootstrap_transactional_replaces_prior_scene();
+
+    test_reload_republishes_every_reinstantiated_row();
+    test_reload_removes_only_entities_the_new_batch_dropped();
 
     test_normalize_success_candidate();
     test_normalize_failure_candidate_is_empty();
