@@ -1,0 +1,2 @@
+# Test-only structural schema validator, never a library/runtime dependency.
+jsonschema==4.26.0

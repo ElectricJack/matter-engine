@@ -76,7 +76,8 @@ uint64_t compute_key(const std::string& world_path,
                      const std::string& root_params_json,
                      const std::string& objects_dir,
                      const std::string& project_shared_lib_dir,
-                     const std::string& engine_shared_lib_dir);
+                     const std::string& engine_shared_lib_dir,
+                     const matter::SourceSnapshot* sources = nullptr);
 
 // Scene-layout overload. scene_objects_dir may be "" (treated exactly as the
 // overload above). Passing the scene tier is NOT optional for a scene that has
@@ -88,7 +89,8 @@ uint64_t compute_key(const std::string& world_path,
                      const std::string& scene_objects_dir,
                      const std::string& objects_dir,
                      const std::string& project_shared_lib_dir,
-                     const std::string& engine_shared_lib_dir);
+                     const std::string& engine_shared_lib_dir,
+                     const matter::SourceSnapshot* sources = nullptr);
 
 // Save a resolved payload to <cache_root>/cache/<world_name>.resolve.
 // Writes the whole payload to "<path>.tmp" and then publishes it in one step,
@@ -102,7 +104,8 @@ uint64_t compute_key(const std::string& world_path,
 bool save(const std::string& cache_root,
           const std::string& world_name,
           uint64_t           cache_key,
-          const ResolveCachePayload& p);
+          const ResolveCachePayload& p,
+          matter::CacheByteStorage* storage = nullptr);
 
 // Load and validate a previously saved cache file.
 // Returns false on: missing file, bad magic, version/key mismatch, truncation.
@@ -111,6 +114,7 @@ bool save(const std::string& cache_root,
 bool load(const std::string& cache_root,
           const std::string& world_name,
           uint64_t           expected_key,
-          ResolveCachePayload& out);
+          ResolveCachePayload& out,
+          matter::CacheByteStorage* storage = nullptr);
 
 } // namespace resolve_cache

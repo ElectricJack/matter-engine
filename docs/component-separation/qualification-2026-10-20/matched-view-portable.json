@@ -1,0 +1,23 @@
+{
+  "revision": 1,
+  "width": 480,
+  "height": 270,
+  "refused": [],
+  "refused_placements": [],
+  "assets": [
+    {"part_hash": "de3dac951365ed3c", "ready": true, "product": "0x7ae95804a310", "meshes": 1}
+  ],
+  "draws": [
+    {"instance": "39082e5e2f24ae48/part.1", "raster_identity": "39082e5e2f24ae48/part.1", "prototype": "part.0", "material": "matter.legacy.material.18", "mirrored": false, "winding": "ccw", "pixels": 1599, "resident_bytes": 1296},
+    {"instance": "44366aa842c611c9/part.1", "raster_identity": "44366aa842c611c9/part.1", "prototype": "part.0", "material": "matter.legacy.material.18", "mirrored": false, "winding": "ccw", "pixels": 2039, "resident_bytes": 1296},
+    {"instance": "8db58308f1cbfb47/part.1", "raster_identity": "8db58308f1cbfb47/part.1", "prototype": "part.0", "material": "matter.legacy.material.18", "mirrored": true, "winding": "ccw", "pixels": 2392, "resident_bytes": 1296},
+    {"instance": "970d0641c9a8b10e/part.1", "raster_identity": "970d0641c9a8b10e/part.1", "prototype": "part.0", "material": "matter.legacy.material.18", "mirrored": false, "winding": "ccw", "pixels": 2615, "resident_bytes": 1296}
+  ],
+  "observations": [
+    {"instance": "39082e5e2f24ae48/part.1", "resident_bytes": 1296},
+    {"instance": "44366aa842c611c9/part.1", "resident_bytes": 1296},
+    {"instance": "8db58308f1cbfb47/part.1", "resident_bytes": 1296},
+    {"instance": "970d0641c9a8b10e/part.1", "resident_bytes": 1296}
+  ],
+  "materials": [[0.820000, 0.780000, 0.720000], [0.820000, 0.780000, 0.720000], [0.820000, 0.780000, 0.720000], [0.820000, 0.780000, 0.720000]]
+}
