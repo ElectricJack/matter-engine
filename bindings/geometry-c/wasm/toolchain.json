@@ -1,0 +1,18 @@
+{
+  "profile": "matter-wasm32-worker-v1",
+  "emscripten": "5.0.2",
+  "emscripten_revision": "dc80f645ee70178c11666de0c3860d9e064d50e4",
+  "node": "22.16.0",
+  "cmake": "3.28.3",
+  "ninja": "1.11.1",
+  "python": "3.12.3",
+  "compile_options": ["-fexceptions", "-fno-fast-math", "-ffp-contract=off", "-mno-simd128", "-mno-relaxed-simd"],
+  "link_options": [
+    "-fexceptions", "-sDISABLE_EXCEPTION_CATCHING=0", "-sFILESYSTEM=0",
+    "-sSHARED_MEMORY=0", "-sWASM_WORKERS=0", "-sMEMORY64=0",
+    "-sALLOW_MEMORY_GROWTH=1", "-sINITIAL_MEMORY=33554432", "-sMAXIMUM_MEMORY=268435456",
+    "-sSTACK_SIZE=1048576", "-sABORTING_MALLOC=0", "-sASSERTIONS=1",
+    "-sMODULARIZE=1", "-sEXPORT_ES6=1", "-sENVIRONMENT=web,worker,node",
+    "-sEXPORTED_RUNTIME_METHODS=callMain,HEAPU8", "-sEXIT_RUNTIME=1"
+  ]
+}

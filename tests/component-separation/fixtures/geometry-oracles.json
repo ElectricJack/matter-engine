@@ -1,0 +1,219 @@
+{
+  "primitive": {
+    "bounds": {
+      "min": [
+        -1,
+        -1,
+        -1
+      ],
+      "max": [
+        1,
+        1,
+        1
+      ]
+    },
+    "volume_metres3": 8,
+    "closed": true,
+    "material": "clay",
+    "explicit_oracle": "fixtures/cube.asset.json",
+    "shell_components": 1
+  },
+  "extrude": {
+    "bounds": {
+      "min": [
+        0,
+        0,
+        0
+      ],
+      "max": [
+        1,
+        1,
+        2
+      ]
+    },
+    "volume_metres3": 2,
+    "triangles": 12,
+    "closed": true,
+    "material": "clay",
+    "explicit_oracle": "fixtures/extrude-oracle.asset.json",
+    "profile_plane": "XY; extrusion along +Z (synthetic oracle convention)",
+    "shell_components": 1
+  },
+  "ordered_csg": {
+    "bounds": {
+      "min": [
+        -1,
+        -1,
+        -1
+      ],
+      "max": [
+        1,
+        1,
+        1
+      ]
+    },
+    "volume_metres3": 7,
+    "shell_components": 2,
+    "closed": true,
+    "ordered_operands": [
+      "outer",
+      "cutter"
+    ],
+    "occupancy": [
+      {
+        "position": [
+          0,
+          0,
+          0
+        ],
+        "inside": false
+      },
+      {
+        "position": [
+          0.75,
+          0,
+          0
+        ],
+        "inside": true
+      },
+      {
+        "position": [
+          2,
+          0,
+          0
+        ],
+        "inside": false
+      }
+    ],
+    "reversed_volume_metres3": 0,
+    "status": "analytic closed-box subtraction oracle; no production mesh captured by contract validator",
+    "explicit_oracle": "fixtures/csg-oracle.asset.json",
+    "material": "clay"
+  },
+  "affine": {
+    "point_in": [
+      1,
+      2,
+      3
+    ],
+    "point_out": [
+      8,
+      26,
+      42
+    ],
+    "normal_in": [
+      1,
+      1,
+      0
+    ],
+    "normal_out": [
+      -0.8320502943378437,
+      0.5547001962252291,
+      0
+    ],
+    "reverse_indices": [
+      0,
+      2,
+      1
+    ],
+    "tangent_w": -1,
+    "bounds": {
+      "min": [
+        8,
+        20,
+        30
+      ],
+      "max": [
+        10,
+        23,
+        30
+      ]
+    }
+  },
+  "assembly": {
+    "unique_meshes": 1,
+    "unique_assemblies": 1,
+    "child_ids": [
+      "child.a",
+      "child.b"
+    ],
+    "root_ids": [
+      "placed.a",
+      "placed.b"
+    ],
+    "flattened_ids": [
+      "placed.a/child.a",
+      "placed.a/child.b",
+      "placed.b/child.a",
+      "placed.b/child.b"
+    ],
+    "triangle_instances": 4,
+    "delete_one_root_remaining_instances": 2
+  },
+  "material": {
+    "material_triangles": {
+      "clay": 1,
+      "metal": 1
+    },
+    "texture_origin": "row zero v=0, column zero u=0; no vertical flip",
+    "texture_srgb_rgb": true,
+    "alpha_linear": true,
+    "roughness_channel": "G",
+    "metallic_channel": "B",
+    "view_status": "fixed matched-view recipe; no rendered pixel pass",
+    "views": [
+      {
+        "id": "front",
+        "position": [
+          0.5,
+          0.5,
+          3
+        ],
+        "target": [
+          0.5,
+          0.5,
+          0
+        ],
+        "up": [
+          0,
+          1,
+          0
+        ],
+        "fov_radians": 0.8,
+        "viewport": [
+          512,
+          512
+        ]
+      },
+      {
+        "id": "oblique",
+        "position": [
+          2,
+          1.5,
+          3
+        ],
+        "target": [
+          0.5,
+          0.5,
+          0
+        ],
+        "up": [
+          0,
+          1,
+          0
+        ],
+        "fov_radians": 0.8,
+        "viewport": [
+          512,
+          512
+        ]
+      }
+    ],
+    "render_settings": {
+      "exposure_ev": 0,
+      "render_path": "raster",
+      "temporal": false,
+      "lighting": "unlit base color and separate normal/ORM/instance channels"
+    }
+  }
+}

@@ -1,0 +1,7 @@
+coverage {'portable_only': 0, 'legacy_only': 0, 'both': 8645} portable background hw depth values [0.0]
+portable albedo over crates {(209, 199, 184)}
+39082e5e2f24ae48/part.1 mirrored=False px=1599 (json 1599) normal>tol 0 (0.00%, max 1) depth>tol 0 (0.00%, max 1) albedo>tol 0 (0.00%, max 0) PASS
+44366aa842c611c9/part.1 mirrored=False px=2039 (json 2039) normal>tol 0 (0.00%, max 1) depth>tol 0 (0.00%, max 1) albedo>tol 0 (0.00%, max 0) PASS
+8db58308f1cbfb47/part.1 mirrored=True px=2392 (json 2392) normal>tol 0 (0.00%, max 1) depth>tol 0 (0.00%, max 1) albedo>tol 0 (0.00%, max 0) PASS
+970d0641c9a8b10e/part.1 mirrored=False px=2615 (json 2615) normal>tol 0 (0.00%, max 1) depth>tol 0 (0.00%, max 1) albedo>tol 0 (0.00%, max 0) PASS
+RESULT PASS (channel-tol 2, max-diff-pct 0.5)

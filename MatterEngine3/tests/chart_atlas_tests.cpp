@@ -16,6 +16,15 @@
 #include "check.h"
 #include "lod_bake.h"          // build_chart_rung, bake_lods, chart_atlas, part_asset_v2
 #include "part_store.h"        // viewer::PartStore (flat fast path)
+#include "memory_fixture_io.h"
+static auto fixture_storage = std::make_shared<matter::test::MemoryCacheByteStorage>();
+static void clear_fixture(const std::filesystem::path& root) {
+    const auto prefix = matter::SourceSnapshot::key(root.string()) + "/";
+    for (const auto& entry : fixture_storage->entries())
+        if (entry.first.compare(0, prefix.size(), prefix) == 0)
+            fixture_storage->erase(entry.first);
+}
+
 #include "raster_mesh.h"       // viewer::build_raster_mesh_data
 #include "render/vt_canonical_page.h"
 #include "../../libs/MeshChartingLib/include/mesh_charting.h"
@@ -951,17 +960,8 @@ void test_ladder_charts() {
 }
 
 std::vector<uint8_t> read_file_bytes(const std::string& path) {
-    std::vector<uint8_t> bytes;
-    FILE* f = std::fopen(path.c_str(), "rb");
-    if (!f) return bytes;
-    std::fseek(f, 0, SEEK_END);
-    const long sz = std::ftell(f);
-    std::fseek(f, 0, SEEK_SET);
-    bytes.resize((size_t)(sz > 0 ? sz : 0));
-    if (!bytes.empty() && std::fread(bytes.data(), 1, bytes.size(), f) != bytes.size())
-        bytes.clear();
-    std::fclose(f);
-    return bytes;
+    const auto bytes=fixture_storage->open(path);
+    return bytes ? *bytes : std::vector<uint8_t>{};
 }
 
 void test_sidecar_roundtrip() {
@@ -1038,9 +1038,9 @@ void test_sidecar_roundtrip() {
               "sidecar: chart-aware load_v2 accepts a chartless part");
         CHECK(loaded.empty(), "sidecar: chartless part loads with charts = 0");
     }
-    std::remove(with_charts.c_str());
-    std::remove(legacy.c_str());
-    std::remove(empty_charts.c_str());
+    fixture_storage->erase(with_charts);
+    fixture_storage->erase(legacy);
+    fixture_storage->erase(empty_charts);
 }
 
 // ---------------------------------------------------------------------------
@@ -1051,8 +1051,7 @@ void test_sidecar_roundtrip() {
 void test_terrain_authored_density() {
     namespace fs = std::filesystem;
     const fs::path root = fs::path("build") / "chart_terrain_density_fixture";
-    fs::create_directories(root / "parts");
-    struct Cleanup { fs::path root; ~Cleanup() { std::error_code ec; fs::remove_all(root, ec); } } cleanup{root};
+    struct Cleanup { fs::path root; ~Cleanup() { std::error_code ec; clear_fixture(root); } } cleanup{root};
     constexpr uint64_t hash = 0x7e22a164ull;
     const std::vector<Tri> tris = {
         make_tri(make_float3(-32,0,-32),make_float3(-32,0,32),make_float3(32,0,-32)),
@@ -1062,7 +1061,7 @@ void test_terrain_authored_density() {
     source.register_triangles(const_cast<Tri*>(tris.data()),int(tris.size()),ex.data());
     CHECK(part_asset::save_v2((root / part_asset::cache_path_resolved(hash)).string(),
                              source,tlas,nullptr,0,{},hash), "terrain density fixture saves");
-    viewer::PartStore store(root.string());
+    viewer::PartStore store(root.string(), fixture_storage);
     viewer::PartStore::WarpAnchor anchor;
     anchor.valid=true;anchor.sector_size=64;anchor.base_sector_size=64;
     auto base=store.stage_load(hash,0,true,anchor);
@@ -1104,11 +1103,10 @@ void test_flat_load_charts() {
     namespace fs = std::filesystem;
     const fs::path root = fs::path("build") / "chart_atlas_flat_fixture";
     std::error_code ec;
-    fs::remove_all(root, ec);
-    fs::create_directories(root / "parts", ec);
+    clear_fixture(root);
     struct Cleanup {
         fs::path root;
-        ~Cleanup() { std::error_code ignored; fs::remove_all(root, ignored); }
+        ~Cleanup() { std::error_code ignored; clear_fixture(root); }
     } cleanup{root};
     constexpr uint64_t hash = 0xF1A7C4A75ull;
 
@@ -1158,7 +1156,7 @@ void test_flat_load_charts() {
               "flat-path: .flat.part fixture saves");
     }
 
-    viewer::PartStore store(root.string());
+    viewer::PartStore store(root.string(), fixture_storage);
     const viewer::LoadedPart* lp = store.get_or_load(hash);
     CHECK(lp != nullptr, "flat-path: get_or_load succeeds");
     if (!lp) return;
@@ -1237,7 +1235,7 @@ void test_flat_load_charts() {
 #else
         setenv("MATTER_VT_UNIFY", "1", 1);
 #endif
-        viewer::PartStore ustore(root.string());
+        viewer::PartStore ustore(root.string(), fixture_storage);
         const viewer::LoadedPart* up = ustore.get_or_load(hash);
         CHECK(up != nullptr, "flat-path/unify: reload succeeds");
         bool all_agree = up != nullptr && !up->clusters.empty();
@@ -1349,6 +1347,7 @@ int measure_flat(const char* path_arg) {
 int main(int argc, char** argv) {
     if (argc == 3 && std::strcmp(argv[1], "--measure-flat") == 0)
         return measure_flat(argv[2]);
+    part_bundle::ScopedStorage cache_scope(fixture_storage);
     // Fixture 1: cube (hard edges, one chart per face at the 45-degree cone).
     {
         const std::vector<Tri> tris = build_cube();
