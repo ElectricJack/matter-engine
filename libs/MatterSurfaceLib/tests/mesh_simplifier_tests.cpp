@@ -1,6 +1,7 @@
 #include <cstdio>
 #include <cassert>
 #include <cmath>
+#include <cstring>
 #include <vector>
 #include <array>
 #include <map>
@@ -360,18 +361,21 @@ static void test_simplify_meshindexed_overload_delegates() {
 // A modifier-region `{ simplify: X }` stack on a large voxel isosurface bake
 // (Tree/TreeBranch at VOX=0.06 → 172K verts) was therefore a no-op, blowing
 // the Meadow bake's flatten cluster count from ~32 to ~256 and the .flat.part
-// past the GPU region-buffer budget. This test builds a synthetic mesh with
-// well over 65535 unique vertices, calls simplify, and asserts the output tri
-// count actually shrank.
-static void test_simplify_meshindexed_over_65535_verts() {
+// past the GPU region-buffer budget. Keep the cheap default above the same
+// input-size and index boundary. The original dense workload remains available
+// with --dense-qem.
+static void test_simplify_meshindexed_over_65535_verts(bool dense) {
     printf("=== test_simplify_meshindexed_over_65535_verts ===\n");
-    // 320 x 260 grid of quads (2 tris each) = 166,400 tris; each cell has 4
-    // unique corners so vertex count = 321 * 261 = 83,781 verts — well above
-    // 65535. Each quad is a 1-unit square in the XY plane; each is a topological
-    // island (no vertex sharing across cells) so QEM has plenty to collapse.
+    // Default: 128 real triangles whose indices ALL exceed UINT16_MAX. Padding
+    // vertices are unreferenced and outside the grid: truncating an index must
+    // fail the reduction/position checks, rather than accidentally finding the
+    // same grid in the first 64K vertices. QEM still welds and decimates a real
+    // connected planar surface. Dense mode retains the original 166,400 tris
+    // and 83,781 distinct referenced positions for scalability diagnostics.
     MeshIndexed in;
-    const int W = 320, H = 260;
-    in.positions.reserve((size_t)W * H * 4);
+    const int W = dense ? 320 : 8, H = dense ? 260 : 8;
+    if (!dense) in.positions.resize(65536, make_float3(-1000, -1000, -1000));
+    in.positions.reserve(in.positions.size() + (size_t)W * H * 4);
     in.indices.reserve((size_t)W * H * 6);
     for (int j = 0; j < H; ++j) {
         for (int i = 0; i < W; ++i) {
@@ -391,6 +395,8 @@ static void test_simplify_meshindexed_over_65535_verts() {
         }
     }
     assert(in.positions.size() > 65535);
+    if (!dense)
+        for (uint32_t index : in.indices) assert(index > 65535);
 
     const size_t in_tris = in.indices.size() / 3;
     SimplifyOptions opts;
@@ -408,6 +414,12 @@ static void test_simplify_meshindexed_over_65535_verts() {
     assert(out_tris > 0);
     assert(out_tris < in_tris);   // decimation actually happened
     assert(out_tris < in_tris / 2u); // significantly reduced (well over 50% off)
+    for (uint32_t index : out.indices) {
+        assert(index < out.positions.size());
+        const float3 p = out.positions[index];
+        assert(std::isfinite(p.x) && std::isfinite(p.y) && p.z == 0);
+        assert(p.x >= 0 && p.x <= W && p.y >= 0 && p.y <= H);
+    }
     printf("PASSED\n");
 }
 
@@ -436,7 +448,49 @@ static void test_group_border_edges() {
     printf("PASSED\n");
 }
 
-int main() {
+static void test_error_bounded_entrypoints() {
+    printf("=== test_error_bounded_entrypoints ===\n");
+    assert(decimate_to_error(MeshIndexed{}, 1.0f).indices.empty());
+    assert(decimate_to_error(std::vector<Tri>{}, 1.0f).empty());
+
+    Mesh grid = makeGrid(8, 4.0f);
+    MeshIndexed input;
+    for (int i = 0; i < grid.vertexCount; ++i)
+        input.positions.push_back(make_float3(grid.vertices[3*i],
+                                              grid.vertices[3*i+1],
+                                              grid.vertices[3*i+2]));
+    input.indices.assign(grid.indices, grid.indices + 3*grid.triangleCount);
+    UnloadMesh(grid);
+
+    // On a planar mesh the AABB face lock freezes every vertex. Turning it
+    // off must allow interior reduction while preserving the open rim.
+    MeshIndexed locked = decimate_to_error(input, 1.0f);
+    assert(locked.indices.size() == input.indices.size());
+    MeshIndexed reduced = decimate_to_error(input, 1.0f, false);
+    assert(!reduced.indices.empty());
+    assert(reduced.indices.size() < input.indices.size() / 2);
+    for (const float3& v : input.positions) {
+        if (v.x != 0 && v.x != 4 && v.y != 0 && v.y != 4) continue;
+        bool found = false;
+        for (uint32_t index : reduced.indices) {
+            const float3& p = reduced.positions[index];
+            if (p.x == v.x && p.y == v.y && p.z == v.z) found = true;
+        }
+        assert(found);
+    }
+
+    std::vector<Tri> tris;
+    std::vector<TriEx> unused;
+    to_tri(input, tris, unused);
+    assert(decimate_to_error(tris, 1.0f).size() == tris.size());
+    const auto reduced_tris = decimate_to_error(tris, 1.0f, false);
+    assert(reduced_tris.size() == reduced.indices.size() / 3);
+    printf("PASSED\n");
+}
+
+int main(int argc, char** argv) {
+    const bool dense = argc == 2 && std::strcmp(argv[1], "--dense-qem") == 0;
+    if (argc > 1 && !dense) return 2;
     printf("=== Mesh Simplifier Tests ===\n");
     test_indices_in_range_sphere();
     test_empty_input();
@@ -450,9 +504,10 @@ int main() {
     test_no_degenerate_triangles();
     test_boundary_preserved();
     test_group_border_edges();
+    test_error_bounded_entrypoints();
     test_watertight_seam();
     test_simplify_meshindexed_overload_delegates();
-    test_simplify_meshindexed_over_65535_verts();
+    test_simplify_meshindexed_over_65535_verts(dense);
     printf("\nAll mesh simplifier tests PASSED\n");
     return 0;
 }

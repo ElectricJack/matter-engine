@@ -627,7 +627,7 @@ int main() {
         WeldSide four;
         four.rung = fine_rung;
         const FaceRecord (*tiles)[2] = q;
-        four.at = [tiles](int64_t a, int64_t b) {
+        four.at = [tiles, split](int64_t a, int64_t b) {
             return tiles[a < split ? 0 : 1][b < split ? 0 : 1].find(a, b);
         };
         WeldMesh m_four; WeldStats s_four;
