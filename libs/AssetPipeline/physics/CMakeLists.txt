@@ -42,10 +42,11 @@ if(MATTER_PHYSICS_BOX3D)
         add_subdirectory("${_physics_repo}/third_party/box3d/src" "${CMAKE_CURRENT_BINARY_DIR}/box3d")
         set(_physics_solver box3d)
     endif()
-    # Keep the authoritative legacy implementation until ordered integration
-    # moves it. No monolithic engine archive, ECS, JS, or graphics dependency.
+    # The settle core lives in this module; bake_trace.cpp is the engine's bake
+    # observer, compiled in place. No monolithic engine archive, ECS, JS, or
+    # graphics dependency.
     add_library(matter_settle_native STATIC
-        "${_physics_repo}/MatterEngine3/src/tileset_settle.cpp"
+        src/tileset_settle.cpp
         "${_physics_repo}/MatterEngine3/src/bake_trace.cpp")
     target_compile_features(matter_settle_native PUBLIC cxx_std_17)
     target_include_directories(matter_settle_native PUBLIC "${_physics_repo}/MatterEngine3/src")
@@ -55,7 +56,7 @@ if(MATTER_PHYSICS_BOX3D)
     file(GLOB_RECURSE _solver_inputs CONFIGURE_DEPENDS
         "${_physics_repo}/third_party/box3d/src/*.c" "${_physics_repo}/third_party/box3d/src/*.h"
         "${_physics_repo}/third_party/box3d/src/*.inl" "${_physics_repo}/third_party/box3d/include/*.h")
-    list(APPEND _solver_inputs "${_physics_repo}/MatterEngine3/src/tileset_settle.cpp" "${_physics_repo}/MatterEngine3/src/tileset_settle.h")
+    list(APPEND _solver_inputs "${CMAKE_CURRENT_SOURCE_DIR}/src/tileset_settle.cpp" "${CMAKE_CURRENT_SOURCE_DIR}/src/tileset_settle.h")
     list(SORT _solver_inputs)
     set(_solver_hashes "")
     foreach(input IN LISTS _solver_inputs)

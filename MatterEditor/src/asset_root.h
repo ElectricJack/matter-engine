@@ -9,6 +9,7 @@
 // filesystem code, and tests/test_asset_root.cpp drives it with injected exe
 // and working directories.
 #include <filesystem>
+#include <functional>
 #include <string>
 
 namespace viewer::assets {
@@ -23,6 +24,15 @@ std::filesystem::path executable_dir();
 std::string resolve_asset_root_from(const char* name,
                                     const std::filesystem::path& exe_dir,
                                     const std::filesystem::path& cwd);
+
+// The same search with directory lookup supplied by the caller. This keeps
+// fixture layouts in memory; the production overload above uses error-code
+// filesystem queries so an inaccessible candidate falls through.
+using DirectoryLookup = std::function<bool(const std::filesystem::path&)>;
+std::string resolve_asset_root_from(const char* name,
+                                    const std::filesystem::path& exe_dir,
+                                    const std::filesystem::path& cwd,
+                                    const DirectoryLookup& is_directory);
 
 // resolve_asset_root_from(name, executable_dir(), current_path()) -- what
 // examples_root(), issues_root() and shared_lib_root() call.

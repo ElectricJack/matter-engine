@@ -1,0 +1,1283 @@
+{
+  "schema": "matter.historical-ci-diagnostic.v1",
+  "source_sha": "2fb388d7739fc38437cfdbc1e14230409c8914ad",
+  "run_url": "https://github.com/ElectricJack/matter-engine/actions/runs/38514005777",
+  "job_id": 115688674618,
+  "status": "failed",
+  "tests": 189,
+  "failures": 1,
+  "skipped": 0,
+  "ctest_wall_seconds": 1901.03,
+  "build_wall_seconds": null,
+  "build_time_note": "No standalone build phase timing artifact supplied; do not infer it from job wall time.",
+  "qualification_baseline": false,
+  "timing_limitation": "Supervisor reports overlap with local native builds. These durations are diagnostic and are not clean baseline floors or controlled before/after results.",
+  "test_inventory_scope": "Exact 189-name JUnit execution inventory for graphics head, not the held branch CTest registration inventory.",
+  "slowest_20": [
+    {
+      "name": "vulkan_smoke_tests",
+      "seconds": 949.457,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "windows_package_tests",
+      "seconds": 418.478,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "world_definition_tests",
+      "seconds": 310.125,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "viewer_logic_tests",
+      "seconds": 243.245,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "matter_third_party_binary_audit",
+      "seconds": 148.209,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "sector_streamer_tests",
+      "seconds": 136.884,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "vt_feedback_visibility_tests",
+      "seconds": 128.642,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "part_flatten_tests",
+      "seconds": 113.251,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "static_surface_vt_tests",
+      "seconds": 85.8177,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "smoke_vt_material_domain",
+      "seconds": 64.6015,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "vt_surface_material_tests",
+      "seconds": 58.0318,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "vt_direct_source_tests",
+      "seconds": 48.9032,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "sparse_voxel_gpu_tests",
+      "seconds": 48.1369,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "obj_export_golden_tests",
+      "seconds": 27.6812,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "mesh_simplifier_tests",
+      "seconds": 25.4184,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "geometry_pages_gpu_tests",
+      "seconds": 22.4515,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "vt_input_snapshot_tests",
+      "seconds": 19.6726,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "solid_face_projection_gpu_tests",
+      "seconds": 18.3664,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "smoke_vt_normal_frame",
+      "seconds": 17.9426,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "vt_compositor_tests",
+      "seconds": 16.7548,
+      "failed": false,
+      "skipped": false
+    }
+  ],
+  "all_tests": [
+    {
+      "name": "matter_memory_tests",
+      "seconds": 0.0845852,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "matter_memory_hpp_tests",
+      "seconds": 0.0658226,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "matter_math_tests",
+      "seconds": 0.0523112,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "matter_math_c_smoke",
+      "seconds": 0.0495491,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "matter_spatial_tests",
+      "seconds": 0.0840243,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "matter_bvh_tests",
+      "seconds": 0.170352,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "matter_profile_tests",
+      "seconds": 0.116807,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "matter_particle_flow_tests",
+      "seconds": 0.216112,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "matter_mesh_charting_tests",
+      "seconds": 0.0699472,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "matter_asset_store_tests",
+      "seconds": 3.78433,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "mat_math_tests",
+      "seconds": 0.0519106,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "vt_residency_tests",
+      "seconds": 0.296789,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "compiler_portability_tests",
+      "seconds": 0.069418,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "matter_engine_headless_consumer_tests",
+      "seconds": 0.149196,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "compiler_format_negative_tests",
+      "seconds": 2.58609,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "compiler_return_address_gnu_tests",
+      "seconds": 1.3245,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "physx_dependency_contract_tests",
+      "seconds": 6.37201,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "matter_mesh_allocator_policy_tests",
+      "seconds": 0.0515304,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "solid_source_evaluation_tests",
+      "seconds": 0.460938,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "finite_surface_recipe_tests",
+      "seconds": 2.69167,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "vt_encoded_pages_tests",
+      "seconds": 0.468543,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "asset_export_tests",
+      "seconds": 0.122033,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "part_surface_provider_tests",
+      "seconds": 1.19688,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "brick_bond_detail_tests",
+      "seconds": 0.291524,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "brick_bond_atlas_tests",
+      "seconds": 1.18014,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "solid_face_projection_tests",
+      "seconds": 0.151602,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "projected_face_cache_tests",
+      "seconds": 0.247772,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "face_material_bake_tests",
+      "seconds": 0.257636,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "finite_surface_stamp_tests",
+      "seconds": 0.304771,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "sparse_voxel_hierarchy_tests",
+      "seconds": 0.234894,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "sparse_voxel_bake_tests",
+      "seconds": 0.0982574,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "surface_proxy_tests",
+      "seconds": 9.30139,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "mesh_simplifier_tests",
+      "seconds": 25.4184,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "indirect_draw_runs_tests",
+      "seconds": 0.247867,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "blas_refcount_tests",
+      "seconds": 0.104587,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "blas_disk_cache_tests",
+      "seconds": 0.333567,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "blas_cache_queue_tests",
+      "seconds": 0.120901,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "async_queue_tests",
+      "seconds": 0.212977,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "async_stage_pipeline_tests",
+      "seconds": 0.227712,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "geometry_hierarchy_tests",
+      "seconds": 6.91728,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "geometry_cut_tests",
+      "seconds": 0.265063,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "mesh_error_tests",
+      "seconds": 0.0792184,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "bake_trace_tests",
+      "seconds": 0.188186,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "world_definition_tests",
+      "seconds": 310.125,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "surface_field_tests",
+      "seconds": 0.199883,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "world_state_delta_tests",
+      "seconds": 0.688632,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "sector_lod_tests",
+      "seconds": 0.439698,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "sector_bake_tests",
+      "seconds": 2.81486,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "gi_bake_tests",
+      "seconds": 1.21854,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "local_light_index_tests",
+      "seconds": 0.0997842,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "primary_light_culling_tests",
+      "seconds": 0.363963,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "resolve_cache_tests",
+      "seconds": 0.530324,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "authored_world_cache_tests",
+      "seconds": 0.137891,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "authored_world_provider_cache_tests",
+      "seconds": 0.599858,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "material_registry_tests",
+      "seconds": 0.0953513,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "terrain_collision_definition_tests",
+      "seconds": 0.0913027,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "terrain_collision_artifact_tests",
+      "seconds": 1.15243,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "shared_lib_tests",
+      "seconds": 0.637358,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "river_network_tests",
+      "seconds": 0.170723,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "river_geometry_tests",
+      "seconds": 0.107964,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "authored_fluid_colliders_tests",
+      "seconds": 0.0866483,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "river_section_graph_tests",
+      "seconds": 0.102584,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "spillway_handoff_tests",
+      "seconds": 0.0743556,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "dsl_determinism_tests",
+      "seconds": 0.117896,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "script_host_tests",
+      "seconds": 3.92227,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "tileset_bake_tests",
+      "seconds": 1.11352,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "tileset_physics_tests",
+      "seconds": 0.230531,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "part_flatten_tests",
+      "seconds": 113.251,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "modifier_apply_tests",
+      "seconds": 0.0824918,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "staged_normals_tests",
+      "seconds": 0.0735574,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "sdf_candidate_bounds_tests",
+      "seconds": 0.546041,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "surface_vertex_tests",
+      "seconds": 0.139103,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "castle_singleton_tests",
+      "seconds": 0.805514,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "part_graph_tests",
+      "seconds": 0.215929,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "partstore_tests",
+      "seconds": 2.01514,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "chart_atlas_tests",
+      "seconds": 3.40838,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "part_asset_v2_tests",
+      "seconds": 1.0417,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "world_tracer_tests",
+      "seconds": 0.284387,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "part_asset_flat_refs_tests",
+      "seconds": 0.528204,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "obj_export_tests",
+      "seconds": 0.247614,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "obj_export_golden_tests",
+      "seconds": 27.6812,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "eval_world_tests",
+      "seconds": 0.833333,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "vertex_cache_order_tests",
+      "seconds": 0.335591,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "lod_distance_tests",
+      "seconds": 0.33846,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "event_channel_tests",
+      "seconds": 0.234802,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "event_hub_tests",
+      "seconds": 14.6352,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "error_events_tests",
+      "seconds": 0.0950544,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "event_command_tests",
+      "seconds": 0.140998,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "event_property_tests",
+      "seconds": 0.0729912,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "sector_streamer_tests",
+      "seconds": 136.884,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "sector_streaming_coordinator_tests",
+      "seconds": 0.111113,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "terrain_field_tests",
+      "seconds": 0.128838,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "terrain_mesher_tests",
+      "seconds": 1.5311,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "seam_weld_tests",
+      "seconds": 0.0646566,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "contour_seam_tests",
+      "seconds": 0.345582,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "contour_mesh_tests",
+      "seconds": 0.0735093,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "contour_engine_tests",
+      "seconds": 0.313204,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "viewer_logic_tests",
+      "seconds": 243.245,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "props_tests",
+      "seconds": 0.31607,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "physics_tests",
+      "seconds": 2.11467,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "ecs_tests",
+      "seconds": 2.40229,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "character_controller_tests",
+      "seconds": 2.68326,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "character_walk_controller_tests",
+      "seconds": 1.68555,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "terrain_collision_physics_tests",
+      "seconds": 1.64948,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "terrain_collision_session_tests",
+      "seconds": 3.94851,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "river_float_system_tests",
+      "seconds": 1.24622,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "scene_registry_tests",
+      "seconds": 0.419855,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "simulation_control_tests",
+      "seconds": 0.195851,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "scene_tracker_tests",
+      "seconds": 0.118446,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "entity_recipe_tests",
+      "seconds": 0.130469,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "dynamic_instance_slots_tests",
+      "seconds": 0.0140817,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "dynamic_scene_bridge_tests",
+      "seconds": 0.177822,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "animation_rigid_bridge_tests",
+      "seconds": 0.0296201,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "gpu_visual_mesher_cpu_tests",
+      "seconds": 0.0189386,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "water_mesh_animation_capture_tests",
+      "seconds": 0.022179,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "water_mesh_animation_tests",
+      "seconds": 0.0186332,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "water_mesh_animation_artifact_tests",
+      "seconds": 0.0218454,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "water_boundary_animation_source_tests",
+      "seconds": 0.0264142,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "water_mesh_animation_playback_tests",
+      "seconds": 0.0630109,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "river_presentation_field_tests",
+      "seconds": 0.018769,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "river_runtime_tests",
+      "seconds": 0.0204644,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "hydrology_artifact_tests",
+      "seconds": 0.150406,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "hydrology_network_artifact_tests",
+      "seconds": 0.871207,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "river_section_coordinator_tests",
+      "seconds": 0.0242359,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "hydrology_handoff_products_tests",
+      "seconds": 0.671718,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "physx_adapter_contract_tests",
+      "seconds": 6.65865,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "async_bake_tests",
+      "seconds": 6.46594,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "conifer_lod_provider_tests",
+      "seconds": 3.39825,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "gpu_water_render_tests",
+      "seconds": 0.0166097,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "gpu_water_animation_render_tests",
+      "seconds": 0.0140454,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "water_field_vk_tests",
+      "seconds": 0.0131363,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "water_surface_reference_tests",
+      "seconds": 0.0169836,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "water_forward_reference_tests",
+      "seconds": 0.0296044,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "shader_source_tests",
+      "seconds": 0.493039,
+      "failed": true,
+      "skipped": false,
+      "diagnostic": "Assertion failed: water_forward_uses_world_normal(water_forward, water_raster), file C:\\actions-runner-matter\\_work\\matter-engine\\matter-engine\\MatterEngine3\\tests\\shader_source_tests.cpp, line 1163\n"
+    },
+    {
+      "name": "geometry_runtime_tests",
+      "seconds": 0.769187,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "geometry_runtime_gpu_tests",
+      "seconds": 2.30132,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "vulkan_compat_tests",
+      "seconds": 0.0920971,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "vulkan_smoke_tests",
+      "seconds": 949.457,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "geometry_pages_gpu_tests",
+      "seconds": 22.4515,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "vt_feedback_visibility_tests",
+      "seconds": 128.642,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "vt_input_snapshot_tests",
+      "seconds": 19.6726,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "vt_direct_source_tests",
+      "seconds": 48.9032,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "vt_surface_material_tests",
+      "seconds": 58.0318,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "sparse_voxel_gpu_tests",
+      "seconds": 48.1369,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "static_surface_vt_tests",
+      "seconds": 85.8177,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "solid_face_projection_gpu_tests",
+      "seconds": 18.3664,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "smoke_geometry_pages",
+      "seconds": 11.1193,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "smoke_vt_queue",
+      "seconds": 1.90306,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "smoke_vt_normal_frame",
+      "seconds": 17.9426,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "smoke_vt_material_domain",
+      "seconds": 64.6015,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "smoke_vt_pom_work",
+      "seconds": 1.05701,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "smoke_vt_receiver_material",
+      "seconds": 1.336,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "smoke_vt_module_residency",
+      "seconds": 1.37123,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "smoke_vt_export",
+      "seconds": 1.00462,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "smoke_vt_surface_connections",
+      "seconds": 1.0978,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "smoke_vt_feedback_pair",
+      "seconds": 1.07211,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "smoke_rt_empty_tlas",
+      "seconds": 8.1605,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "smoke_water_field_nort",
+      "seconds": 4.67833,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "vulkan_scene_oracle_tests",
+      "seconds": 1.03834,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "vt_compositor_tests",
+      "seconds": 16.7548,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "vt_link_inventory_tests",
+      "seconds": 0.743038,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "viewer_graph_tests",
+      "seconds": 15.0439,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "python_contract_tests",
+      "seconds": 1.86267,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "shader_rebuild_tests",
+      "seconds": 11.0754,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "shader_input_list_tests",
+      "seconds": 2.73769,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "frame_pacer_tests",
+      "seconds": 0.115146,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "perf_gpu_stats_tests",
+      "seconds": 0.150576,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "agent_protocol_tests",
+      "seconds": 0.357905,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "scene_inventory_tests",
+      "seconds": 0.219414,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "scene_diff_tests",
+      "seconds": 0.473494,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "regen_job_tests",
+      "seconds": 0.261324,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "procedural_parameter_tests",
+      "seconds": 0.098342,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "selection_command_tests",
+      "seconds": 0.108132,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "viewport_capture_tests",
+      "seconds": 0.0961339,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "asset_root_tests",
+      "seconds": 0.246062,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "matter_agent_client_tests",
+      "seconds": 0.671514,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "windows_build_wrapper_contract",
+      "seconds": 5.25851,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "editor_registration_census",
+      "seconds": 9.15507,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "package_project_name_tests",
+      "seconds": 1.653,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "windows_package_stage_tests",
+      "seconds": 3.92812,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "vt_density_tests",
+      "seconds": 0.806642,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "vt_acceptance_tests",
+      "seconds": 3.62843,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "geometry_paging_report_tests",
+      "seconds": 0.888119,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "frame_attribution_tests",
+      "seconds": 1.98688,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "windows_package_tests",
+      "seconds": 418.478,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "matter_third_party_smoke",
+      "seconds": 0.909428,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "matter_third_party_binary_audit",
+      "seconds": 148.209,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "matter_third_party_review_policy",
+      "seconds": 11.3022,
+      "failed": false,
+      "skipped": false
+    },
+    {
+      "name": "matter_third_party_audit_rejects_graph_archive",
+      "seconds": 8.48302,
+      "failed": false,
+      "skipped": false
+    }
+  ],
+  "failed_oracle": {
+    "name": "shader_source_tests",
+    "assertion": "water_forward_uses_world_normal(water_forward, water_raster)",
+    "original_exit_code": "0xc0000409",
+    "ctest_exit_code": 8,
+    "native_ci_exit_code": 1,
+    "current_disposition": "Mandatory exact-name source lint, required in every native run; existing assertions and negative mutations unchanged on the held branch. Core62 owns the production/fixture fix."
+  }
+}
