@@ -1,0 +1,13 @@
+{
+    "pid":  44040,
+    "parent_pid":  3512,
+    "console_window":  1968112,
+    "console_window_visible":  true,
+    "console_window_class":  "PseudoConsoleWindow",
+    "console_process_ids":  [
+                                44040
+                            ],
+    "console_processes":  [
+                              "44040:powershell.exe"
+                          ]
+}

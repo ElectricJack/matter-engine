@@ -12,13 +12,13 @@
 //   4. the bare name             unchanged failure message
 //
 // resolve_asset_root_from() takes both roots as arguments, so every layout
-// below is a directory tree this test builds under the temp dir rather than a
-// process it has to fake.
+// below is a directory tree held in memory.
 
 #include "asset_root.h"
 
 #include <cstdio>
 #include <filesystem>
+#include <set>
 #include <string>
 
 namespace {
@@ -37,16 +37,20 @@ int failures = 0;
 
 namespace fs = std::filesystem;
 
-// mkdir -p of a directory whose existence is the whole point of a case: a
-// projects/ folder only has to BE a directory for the resolver to find it.
+std::set<fs::path> directories;
+
+// Only directory membership matters to the search. Keep the layout in memory
+// so concurrent runs cannot remove or populate another process's fixture.
 fs::path make_dir(const fs::path& dir) {
-    std::error_code ec;
-    fs::create_directories(dir, ec);
+    directories.insert(dir.lexically_normal());
     return dir;
 }
 
 std::string resolve(const char* name, const fs::path& exe_dir, const fs::path& cwd) {
-    return viewer::assets::resolve_asset_root_from(name, exe_dir, cwd);
+    return viewer::assets::resolve_asset_root_from(name, exe_dir, cwd,
+        [](const fs::path& candidate) {
+            return directories.count(candidate.lexically_normal()) != 0;
+        });
 }
 
 fs::path root;
@@ -121,7 +125,9 @@ void test_nested_and_sibling_resolvers_share_the_order() {
 
     CHECK(resolve("issues", built_exe, author) == author_issues.string(),
           "issues_root()'s lookup follows the cwd before the exe tree");
-    CHECK(resolve("MatterEngine3/shared-lib", built_exe, author) == author_shared.string(),
+    // A nested name contains '/', while Windows path joins use '\\'. Compare
+    // path components so separator spelling cannot obscure the selected root.
+    CHECK(fs::path(resolve("MatterEngine3/shared-lib", built_exe, author)) == author_shared,
           "shared_lib_root()'s nested lookup walks up to the cwd's engine root");
 }
 
@@ -139,10 +145,7 @@ void test_missing_everything_returns_the_bare_name() {
 
 int main() {
     std::printf("test_asset_root\n");
-    root = fs::temp_directory_path() / "matter_asset_root_test";
-    std::error_code ec;
-    fs::remove_all(root, ec);
-    fs::create_directories(root, ec);
+    root = fs::path("fixture") / "matter_asset_root_test";
 
     test_dev_layout_uses_the_cwd_checkout();
     test_cwd_outranks_the_exe_walk_up_deep_in_the_tree();
@@ -151,7 +154,6 @@ int main() {
     test_nested_and_sibling_resolvers_share_the_order();
     test_missing_everything_returns_the_bare_name();
 
-    fs::remove_all(root, ec);
     if (failures) {
         std::printf("FAILED (%d)\n", failures);
         return 1;
