@@ -20,9 +20,10 @@ inline constexpr std::array<const char*, 28> kGpuTimingNames{{
 static_assert(kGpuTimingNames.size() <= 32, "GPU timing validity mask capacity");
 // composite: final swapchain display transform; hdr_lighting: HDR reconstruction.
 // rt_gi is the aggregate of all GI dispatches. Its two child zones are written
-// only when diffuse and reflection/transmission execute at separate extents.
-// Equal extents use one inseparable dispatch (rt_gi only); absent child queries
-// stay unavailable, never synthetic zero measurements. Do not sum children
+// when detailed lighting profiling is enabled; it splits equal extents too.
+// Without profiling equal extents use one combined dispatch (rt_gi only);
+// absent child queries stay unavailable, never synthetic zero measurements.
+// Do not sum children
 // with rt_gi. Reflection and transmission share a dispatch and cannot be split.
 // vt is the page/indirection/enrichment pre-pass. vt_fill and vt_enrich are
 // child intervals of vt; their remaining time includes table transfers and
