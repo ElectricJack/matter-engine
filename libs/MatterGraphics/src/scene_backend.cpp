@@ -1,5 +1,5 @@
 #include <matter/graphics/scene_backend.h>
-#include "matrix_math.h" // Compile the existing renderer math implementation.
+#include "matrix_math.h" // Renderer math owned by this component.
 #include <algorithm>
 #include <cmath>
 #include <cstring>
