@@ -1,0 +1,14 @@
+{
+    "VisualStudioRoot":  "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community",
+    "VisualStudioProductId":  "Microsoft.VisualStudio.Product.Community",
+    "VsDevCmd":  "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\Common7\\Tools\\VsDevCmd.bat",
+    "MsvcToolsVersion":  "14.44.35207",
+    "WindowsSdkVersion":  "10.0.26100.0",
+    "CMake":  "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\Common7\\IDE\\CommonExtensions\\Microsoft\\CMake\\CMake\\bin\\cmake.exe",
+    "Ninja":  "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\Common7\\IDE\\CommonExtensions\\Microsoft\\CMake\\Ninja\\ninja.exe",
+    "Python":  "C:\\Users\\webde\\AppData\\Local\\Programs\\Python\\Launcher\\py.exe",
+    "PythonVersion":  "Python 3.13.14",
+    "VulkanSdk":  "C:\\VulkanSDK\\1.4.357.0",
+    "Glslc":  "C:\\VulkanSDK\\1.4.357.0\\Bin\\glslc.exe"
+}
+
