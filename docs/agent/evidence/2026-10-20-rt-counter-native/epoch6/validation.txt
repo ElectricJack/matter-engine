@@ -1,0 +1,104 @@
+noble-zenith-31 epoch 6 -- bounded end_frame phase trace of the RT counter stall
+Date: 2026-10-20. Base 55dd4f26. Linux (WSL2 Ubuntu 24.04), llvmpipe
+(LLVM 20.1.2, Mesa 25.2.8), Vulkan 1.4.318, software RT available=true,
+extent 320x200, FIFO, 4 swapchain images, 2 frame slots.
+
+Result: UNMET. The one permitted 600 s run reached its cap. The blocking call
+is identified; no in-scope fix exists, so nothing was changed in the counter code.
+
+Instrumentation (diagnostic only, off unless MATTER_VK_END_FRAME_TRACE is set):
+- MatterEngine3/src/render/vk_context.cpp: Impl::trace_frame_phase() writes
+  a flushed MATTER_LOGI line with a monotonic timestamp, serial, slot, phase,
+  and vkGetFenceStatus of the frame fence and the present fence. Phases logged:
+  begin.fence_wait.enter/exit, end.enter, end.command_buffer_ended,
+  end.submit.enter/exit, end.gpu_observe.{pending,complete,error},
+  end.readback_wait.enter/exit, end.present_common.enter, and
+  end.queue_present.enter/exit. While tracing is on, end_frame waits on the
+  frame fence in 5 s slices after submit and logs each slice that times out.
+  Binary semaphores have no host-queryable value, so fence state is the only
+  observable value.
+- MatterEngine3/tests/vulkan_smoke_tests.cpp run_frame: flushed markers
+  end_frame.enter, end_frame.exit and finalized (finish_ray_tracing_frame).
+  Counter consumption (report_rt_trace_counters) runs inside
+  record_cull_and_render of the next frame on the same slot, and that frame
+  was never reached.
+
+Command (once, epoch-5 environment, 600 s Popen cap, start_new_session +
+killpg containment unchanged):
+  DISPLAY=:0 VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json
+  MATTER_VK_LAYER_DIR=/tmp/fleet-rapids-48-epoch18/toolchain/usr/share/vulkan/explicit_layer.d
+  MATTER_VK_LAYER_LIB=/tmp/fleet-rapids-48-epoch18/toolchain/usr/lib/x86_64-linux-gnu
+  LP_NUM_THREADS=1 MESA_GLTHREAD=false MATTER_PIPELINE_PROFILE=1
+  MATTER_VK_STATIC_RESERVE_{CLUSTER,VERTEX,INDEX}_MB=1
+  MATTER_VK_CPU_RESERVE_{VERTEX,INDEX}_MB=0 MATTER_IMPOSTOR_CELL_PX=16
+  MATTER_SMOKE_EXE=/tmp/noble-zenith-31-epoch6/build/vulkan_smoke_tests
+  MATTER_SMOKE_LOG_DIR=/tmp/noble-zenith-31-epoch6/trace
+  aq test --aq-timeout 75 -n 0 docs/agent/evidence/2026-10-20-rt-counter-native/epoch6/test_frame_trace.py -k rt-counters -q -s
+  -> 1 failed in 600.26s: subprocess.TimeoutExpired after 600 s; the process
+     group was killed and no process survived (pgrep checked).
+Build: gen_linux_smoke_cmake.py "$PWD" /tmp/noble-zenith-31-epoch6/cmakeproj;
+  cmake -G Ninja -DCMAKE_BUILD_TYPE=Release; ninja -j4, 98/98, 0 errors.
+  SPIR-V regenerated first with make -C MatterEngine3 vulkan-spirv (glslc from
+  /tmp/sharp-zenith-52-shaderc), exit 0.
+
+Timeline (rt-counters-frame-trace.log; t is ms since the first trace line):
+  t=0 .. 266 s   serials 1-4 run during device bring-up, then pipeline creation.
+                 MATTER_PIPELINE_PROFILE totals 266.0 s: gbuffer graphics
+                 variants take 31-43 s each, and the ray_tracing pipeline
+                 (rt_lighting.rgen 1.39 MB, rt_surface.rchit 1.19 MB SPIR-V)
+                 takes 82.7 s. Every pipeline returned result=0.
+  serials 5-20   no-writer frames. Each submit completes on the device in a
+                 few ms (serial 20: submit.exit 266869.298, gpu_observe.complete
+                 266873.521, queue_present.exit 266873.690). 18 frames
+                 completed in total.
+  serial 21      slot 0, the first frame with set_rt(true) and
+                 test_seed_rt_counter(7). prepared/rendered/recorded ok=1.
+                 end.submit.enter 267022.535, end.submit.exit 267022.707
+                 (vkQueueSubmit2 returns VK_SUCCESS in 0.17 ms). After that
+                 come 66 consecutive end.gpu_observe.pending lines with
+                 frame_fence=unsignaled, the last at t=597057.948 (330 s after
+                 submit). present_common and queue_present were never entered.
+
+Exact blocking point: the submit itself completes. The device never signals
+serial 21's frame fence, i.e. lavapipe never finishes executing that
+submission. It is not stuck in present, readback, counter retirement or
+consumption, finalization, or begin_frame. Without tracing (earlier epochs), the
+same unfinished submission would be waited on next by queue_present or the
+next begin_frame fence wait; which of those the earlier runs blocked in was
+not recorded.
+
+Thread sample during the stall (/proc/635122/task, about t=590 s):
+  635185 R  utime 25505 -> 25809 ticks in 3 s (100% CPU, about 258 s total):
+            lavapipe queue thread executing the command buffer
+  635122 S  futex (main thread, in the bounded fence observe)
+  635186 llvmpipe-0 S futex (worker idle; LP_NUM_THREADS=1)
+  WSI swapchain threads S
+Serial 21's command buffer records up to three vkCmdTraceRaysKHR passes
+(rt_dispatch.inl:1498 at trace_extent, :1593 at raster_extent_, and :1626),
+each 320x200 here. One CPU thread runs them.
+
+Interpretation and limits:
+- The stall is CPU-bound execution of the RT trace dispatch on the software
+  device. It is independent of the counter bookkeeping: the counter code runs on
+  the host before submit and after retirement, and neither point is reached.
+  This matches epoch 4, where the unchanged `rt` surface-query fixture also
+  hit its timeout, and the 2026-10-14 budget run, where rt-empty-tlas exited
+  124. No RT-writing frame has been observed to complete on this machine.
+- Within 600 s this run cannot tell a non-terminating ray shader from one that
+  is very slow on llvmpipe (more than 330 s per frame). Telling them apart would
+  need a longer run or a smaller trace extent. The first is a forbidden longer
+  diagnostic; the second changes the fixture and is not authorised here.
+- No counter duplicate or drop was observed. Serial 21's sample never retired,
+  so consumed-exactly-once on a real writer frame remains UNVERIFIED natively.
+  The CPU accounting cases (test_rt_counter_cpu.py, 9 cases) are unchanged from
+  epoch 5 and were not re-run, because no counter code changed.
+- NOT RUN: native UI, hardware RT, device performance, Windows/MSVC.
+  Pipeline and frame timings are llvmpipe observations, not performance claims.
+- No assertion was waived, no test duplicated, and no wait re-armed. Writer,
+  input and lifecycle assertions, the software device and the display are
+  unchanged.
+
+Next decision for the owner: run the native RT counter matrix on a host whose
+device completes an RT frame (hardware RT, or llvmpipe with a reduced trace
+extent if the owner authorises changing the fixture), or accept CPU-level
+coverage for this task.
