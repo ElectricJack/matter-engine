@@ -25,7 +25,8 @@ bool prepare_direct(const script_host::EvaluatedDirectSurface& recipe,
 bool prepare(const script_host::EvaluatedFiniteSurface& recipe, const std::string& root,
     const gpu_meshing::SolidFaceProjector& project, const MaterialBaker& shade,
     std::shared_ptr<const Prepared>& out, Stats& stats, gpu_meshing::Error& error,
-    const gpu_meshing::BuildControl& control, SourceCache* source_cache) {
+    const gpu_meshing::BuildControl& control, SourceCache* source_cache,
+    matter::CacheByteStorage* storage) {
     using namespace gpu_meshing;
     stats = {}; error = {};
     const auto current = [&] {
@@ -61,7 +62,7 @@ bool prepare(const script_host::EvaluatedFiniteSurface& recipe, const std::strin
         std::vector<std::shared_ptr<const Prepared>> bank;
         for (const auto& source:recipe.sources) {
             std::shared_ptr<const Prepared> prepared; Stats child;
-            if (!prepare(source,root,project,shade,prepared,child,error,control,source_cache)) return false;
+            if (!prepare(source,root,project,shade,prepared,child,error,control,source_cache,storage)) return false;
             stats.geometry_hits+=child.geometry_hits;stats.material_hits+=child.material_hits;stats.faces+=child.faces;
             bank.push_back(std::move(prepared));
         }
@@ -90,6 +91,10 @@ bool prepare(const script_host::EvaluatedFiniteSurface& recipe, const std::strin
                     m[4]*x[0]+m[5]*x[1]+m[6]*x[2],m[8]*x[0]+m[9]*x[1]+m[10]*x[2]};
                 if(point){v.x+=m[3];v.y+=m[7];v.z+=m[11];}return v;
             };
+            if(p.source>=bank.size()||!bank[p.source]||!bank[p.source]->sources) {
+                error={ErrorCode::InvalidInput,"finite placement references source "+
+                    std::to_string(p.source)+" of "+std::to_string(bank.size())};return false;
+            }
             const auto& catalog=*bank[p.source]->sources;
             for(size_t b=0;b<catalog.bindings.size();++b) {
                 const auto& original=catalog.bindings[b];
@@ -136,6 +141,10 @@ bool prepare(const script_host::EvaluatedFiniteSurface& recipe, const std::strin
                         m[4]*x[0]+m[5]*x[1]+m[6]*x[2]+(point?m[7]:0),
                         m[8]*x[0]+m[9]*x[1]+m[10]*x[2]+(point?m[11]:0)};
                 };
+                if(p.source>=bank.size()||!bank[p.source]||!bank[p.source]->sources) {
+                    error={ErrorCode::InvalidInput,"periodic placement references source "+
+                        std::to_string(p.source)+" of "+std::to_string(bank.size())};return false;
+                }
                 const auto& catalog=*bank[p.source]->sources;
                 const auto before=placed.size();
                 for(const auto& original:catalog.bindings) {
@@ -179,9 +188,11 @@ bool prepare(const script_host::EvaluatedFiniteSurface& recipe, const std::strin
         stats.bytes=result->sources->bytes();out=std::move(result);return true;
     }
     const auto directory=std::filesystem::path(root)/"finite-surfaces";
-    std::error_code io_error;
-    std::filesystem::create_directories(directory,io_error);
-    if (io_error) {error={ErrorCode::Unavailable,"finite source cache directory: "+io_error.message()};return false;}
+    if (!storage) {
+        std::error_code io_error;
+        std::filesystem::create_directories(directory,io_error);
+        if (io_error) {error={ErrorCode::Unavailable,"finite source cache directory: "+io_error.message()};return false;}
+    }
     auto result=std::make_shared<Prepared>();
     result->part_hash=recipe.geometry.resolved_hash;
     result->base_hash=recipe.base_hash; result->base_program=recipe.base_program;
@@ -201,7 +212,7 @@ bool prepare(const script_host::EvaluatedFiniteSurface& recipe, const std::strin
             static_cast<unsigned long long>(face_recipe_digest(face.geometry)));
         FacePatch geometry; FaceCacheStats cached;
         const auto path=(directory/name).string();
-        if (!load_or_project_face(path,face.geometry,project,geometry,cached,error,control)) return false;
+        if (!load_or_project_face(path,face.geometry,project,geometry,cached,error,control,storage)) return false;
         stats.geometry_hits+=cached.hit ? 1u : 0u;
         FaceMaterialJob material{face.geometry,&geometry,recipe.appearance_program};
         FaceMaterialPatch pixels; FaceStats timing;

@@ -1,0 +1,132 @@
+noble-zenith-31 epoch8: deferred LLVM compilation confirmed
+
+Authorization: latest supervisor comment at 1792543470.5956163 permits ONE
+600-second repaired RTLD_NOLOAD diagnostic. The earlier instrumentation abort
+was explicitly excluded from that budget. The subsequent separately authorized original gates are recorded below.
+
+Source: own published 5a3bf239, recovered by fast-forward from clean assigned
+9d846e66. The diagnostic used the existing epoch6 native executable; exact
+source, wrapper, tracer and executable hashes are in attempt-provenance.txt.
+
+Executed once:
+aq test --aq-timeout 75 -n 0 docs/agent/evidence/2026-10-20-rt-counter-native/epoch8/test_compiler_trace.py -q -s
+Result: 1 FAILED in600.27s, subprocess.TimeoutExpired at600s. The wrapper
+terminated the entire process group; containment.txt confirms no survivors.
+
+Device: llvmpipe (LLVM20.1.2), Mesa25.2.8-0ubuntu0.24.04.2, Vulkan1.4.318,
+existing DISPLAY=:0, LP_NUM_THREADS=1, unchanged320x200 fixture and validation
+layer. Native-child-only preload forwards LLVM arguments/results unchanged.
+
+Measured sequence, native-trace.log:
+- Serial21 submits successfully at frame trace241745.878ms.
+- Queue thread1084942 enters LLVMRunPasses(cs5_variant0) at265589.175047207
+  and exits at265589.243096156 (monotonic seconds).
+- The next LLVMRunPasses enters265589.243152040, exits265636.213508365
+  (46.970356s).
+- LLVMGetPointerToGlobal(cs_variant) enters265636.320546934 on the same
+  queue thread. There is NO matching exit before the cap. The last fence
+  marker at596762.685ms still reports serial21 unsignaled, roughly302s
+  after that compiler call began.
+- Present/readback/retirement/consumption/finalization for frame21 are not
+  reached. There is no final validation-error count, so zero errors is NOT
+  established by this partial run.
+
+This confirms the deferred LLVM/JIT path blocks retirement; it does not
+establish an infinite shader loop, counter defect, or a driver deadlock.
+
+Authorized code response (subsequent native results below): isolate the unchanged
+shadow and surface-test raygens from lighting into separate pipelines/SBTs.
+Shadow retains visibility miss/hit index0; surface queries retain both
+miss/hit categories and index1. Specialization data and descriptor layout
+are reused. Each SBT contains handles retrieved from its own pipeline.
+Lighting remains on its original pipeline. Buffers remain retained until
+submission retirement and cleanup includes partial initialization.
+
+Fresh focused CPU checks:
+aq test --aq-timeout 75 -n 0 MatterEngine3/tests/test_rt_counter_cpu.py MatterEngine3/tests/test_rt_pipeline_subset.py -q
+10 PASS in1.11s. The new subset check compiles production group setup and
+remapping, checks the actual selected groups with/without separate primary,
+preserves specialization pointers/index1 and rejects lighting stages in
+shadow/test pipelines. CPU checks do not validate Vulkan synchronization.
+
+Linux incremental build: PASS (cmake --build /tmp/noble-zenith-31-epoch6/build --parallel 4), including final link. Build output is build.log; the new executable is preserved separately and hashed in fixed-binary-sha256.txt. Native followup: executed once under supervisor approval msg-124ada897d2c4fccbee440c8bcb957d9. Native acceptance remains UNMET; final results below.
+Windows is waived; no Windows, hardware-RT or performance claim is made.
+
+Implementation commit: 9f321633. Original gates invocation (EXECUTED ONCE):
+env -u LD_PRELOAD -u MATTER_VK_END_FRAME_TRACE
+DISPLAY=:0 VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json
+MATTER_VK_LAYER_DIR=/tmp/fleet-rapids-48-epoch18/toolchain/usr/share/vulkan/explicit_layer.d
+MATTER_VK_LAYER_LIB=/tmp/fleet-rapids-48-epoch18/toolchain/usr/lib/x86_64-linux-gnu
+LP_NUM_THREADS=1 MESA_GLTHREAD=false MATTER_PIPELINE_PROFILE=1
+MATTER_VK_STATIC_RESERVE_CLUSTER_MB=1 MATTER_VK_STATIC_RESERVE_VERTEX_MB=1
+MATTER_VK_STATIC_RESERVE_INDEX_MB=1 MATTER_VK_CPU_RESERVE_VERTEX_MB=0
+MATTER_VK_CPU_RESERVE_INDEX_MB=0 MATTER_IMPOSTOR_CELL_PX=16
+MATTER_SMOKE_EXE=/tmp/noble-zenith-31-epoch8/vulkan_smoke_tests
+MATTER_SMOKE_LOG_DIR=/tmp/noble-zenith-31-epoch8/gates
+aq test --aq-timeout 75 -n 0 docs/agent/evidence/2026-10-20-rt-counter-native/test_rt_counter_native.py -q -s
+The original wrapper runs rt-counters and rt sequentially, each bounded to
+1500s with process-group cleanup. No diagnostic LLVM preload, optimizer or
+fixture changes; no increased worker count. Exact wrapper is unchanged.
+
+
+FINAL ORIGINAL GATES: FAIL / acceptance UNMET
+Supervisor approval msg-124ada897d2c4fccbee440c8bcb957d9 permitted one
+invocation of the unchanged original wrapper, rt-counters then rt, 1500s
+per mode. It requires publishing and closing honestly UNMET on failure or
+cap; no further native runs. Timer wait a5fae19a-ed5b-4000-ab42-48448be08db4
+was consumed and the foreground runner returned exit1. No retries occurred.
+Source implementation 9f321633; preceding evidence HEAD7c993554.
+Executable SHA256 bbc86837801f60f8cc7d7b4cad5b19bafd65674689ae2a6b426e754fe3547e7a.
+
+Full captured outputs: gates-pytest.log, gates-rt-counters.log, gates-rt.log.
+Trailing whitespace in the pytest log was stripped for git hygiene.
+Pytest: 2 failed in2286.71s (38:06).
+rt-counters: exit1, /usr/bin/time wall13:29.82, maximum RSS5436484kB.
+RT available=true on llvmpipe (LLVM20.1.2,256bits).
+Counter accounting/fixture assertions completed; final rejected-lookups
+  total=30 samples=7 warnings=6.
+The only three FAIL assertion labels are:
+- RT counter lifecycle has no Vulkan validation errors
+- no Vulkan validation errors before device teardown
+- no Vulkan validation errors through retained device teardown
+
+The three preteardown validation errors are image-layout mismatches reported
+at vkQueueSubmit2 on serial45, following injected dispatch42, record43 and
+submit44 failures (gates-rt-counters.log:523-525):
+- 0x3520000000352 and 0x34c000000034c: expected GENERAL,
+  actual SHADER_READ_ONLY_OPTIMAL.
+- 0x33a000000033a: expected GENERAL, actual COLOR_ATTACHMENT_OPTIMAL.
+All three are UNASSIGNED-CoreValidation-DrawState-InvalidImageLayout.
+The reported preteardown validation total is3. During teardown, an additional
+VUID-vkDestroyDevice-device-05137 reports query pool0x23e000000023e still live
+(line691). Three failed assertions do not mean only three validation messages.
+
+Successful partial evidence (does NOT waive the native acceptance failure):
+- consecutive writer counts7/7 retire at23/24: total7 then14, samples1/2;
+- counts2/3 retire: total16 then19, remains stable after disabling RT;
+- count4: total23 samples5;
+- duplicate reporting count6: total29 samples6;
+- actual invalid-record fixture: total30 samples7;
+- reset/no-writer frames retain total30 samples7 warnings6.
+
+Standalone rt: hit1500s cap and was terminated by the original wrapper.
+Its truncated log ends after static upload1104bytes, following pipeline
+creation. No final validation total or RT-available banner was emitted.
+There was no LLVM tracer in this run; its blocking cause is NOT established.
+Although rt-counters completed its invalid-record case, the required standalone
+rt gate remains incomplete. Zero Vulkan validation errors is not established.
+Post-run executable/process scan is recorded in gate-containment.txt.
+
+Followup source pointers, without claiming isolated reproduction/root cause:
+- MatterEngine3/tests/vulkan_smoke_tests.cpp:8864 and9030: failed-frame
+  recording/submit fixture sequence; layout errors follow that sequence.
+- libs/MatterGraphics/src/native/vk_scene_renderer.cpp:3253 candidate cleanup
+  handles descriptor pools; next_frames timestamp query pools allocated at3499
+  can precede a later candidate failure. Successful replacement cleans old
+  query pools at3540. This is a source-supported hypothesis for the leaked
+  query pool during injected growth rollback (test around8790), not a separate
+  native reproduction.
+
+No further fixes or native runs performed after this result. CPU10/10 and
+Linux build passed as recorded above. Windows waived. No hardware-RT,
+performance, or full native acceptance claim. Close outcome FAIL / UNMET.

@@ -27,7 +27,6 @@
 #include "marching_cubes_algorithm.h"
 #include "mesh_build_utils.h"
 #include "mesh_simplifier.hpp"   // simplify_mesh, SimplifyOptions
-#include <cstdio>
 #include <utility>               // std::move
 extern "C" {
 #include "spatial_hash.h"        // sh_query_radius_nearest

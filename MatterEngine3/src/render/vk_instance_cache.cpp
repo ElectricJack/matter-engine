@@ -15,6 +15,7 @@
 #include "vk_instance_cache.h"
 
 #include "../provider/sector_resolver.h"
+#include "profile.h"
 
 #include <cstring>
 #include <utility>
@@ -65,6 +66,7 @@ uint64_t fingerprint_resolved_instances(
 
 bool VulkanInstanceCache::matches(
     const std::vector<ResolvedInstance>& resolved) const noexcept {
+    PROFILE_SCOPE("instance_cache.match");
     if (!valid_ || resolved_keys_.size() != resolved.size()) return false;
     for (size_t i = 0; i < resolved.size(); ++i) {
         const auto& source = resolved[i];

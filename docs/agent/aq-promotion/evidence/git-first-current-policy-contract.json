@@ -1,0 +1,61 @@
+{
+  "schema_version": 1,
+  "local_aq_revision": "73509417ffeb31c197ac7419d3aa5491d196eec6",
+  "reported_deployed_revision": "73509417ffeb31c197ac7419d3aa5491d196eec6",
+  "deployed_provenance": "supervisor owner direction msg-432950 seq10086 and msg-6c533 seq10088",
+  "supplied_policy_sha256": "e7d01545c033b00d573b74d920ec9781d2ac7e4cce95b3f6fd24aca736362cdf",
+  "mirror_byte_identical": true,
+  "value_validation": "passed",
+  "serialized_absent_routes_omitted": true,
+  "root_admission": "authorized",
+  "parent_admission": "reviewed",
+  "both_repair_exhaustion": "continue",
+  "authored_ci_block": false,
+  "ci_default_source": "hosted",
+  "both_ci_producer": "15368",
+  "required_checks": [
+    "Native Windows build and tests",
+    "Linux foundation build and tests"
+  ],
+  "unbound_generated_shape_comparison": {
+    "present": true,
+    "valid": true,
+    "identity_equal": false,
+    "check_set_equal": false,
+    "canonical": true,
+    "status": "fail",
+    "code": "trust_manifest_mismatch",
+    "warnings": [],
+    "diff": [
+      {
+        "field": "promotion_attestation_names",
+        "kind": "identity",
+        "expected": [],
+        "committed": [
+          "Agent Queue Promotion Attestation (staging)",
+          "Agent Queue Promotion Attestation (release)"
+        ],
+        "committed_present": true
+      },
+      {
+        "field": "check_sets",
+        "kind": "check_set",
+        "expected": {},
+        "committed": {
+          "promotion-source-audit": [
+            "unattested-ci / Native Windows build and tests",
+            "unattested-ci / Linux foundation build and tests"
+          ]
+        },
+        "committed_present": true
+      }
+    ],
+    "error": null
+  },
+  "authenticated_generator": {
+    "exit_code": 4,
+    "error": "out_of_scope: integration_trust_manifest",
+    "written": false
+  },
+  "limitation": "Local validation and source-based manifest shape comparison do not replace authenticated generator output or actual runtime readiness. Unbound-flow promotion-name difference requires owner assessment."
+}
