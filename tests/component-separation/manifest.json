@@ -1,0 +1,2439 @@
+{
+  "schema_version": 1,
+  "task": "clear-crest-48.7.1",
+  "recorded_date": "2026-10-10",
+  "source_commit": "406b72509dbcf4dd644b73a7f095792ce2512ba5",
+  "canonical_profile": "matter-exact-json-v1",
+  "c0": {
+    "baseline": "docs/component-separation/baseline.json",
+    "fixtures": "docs/component-separation/fixtures.json",
+    "source_commit": "98af23851dd3424ddbfc62624cd2afb850e9d09d",
+    "baseline_sha256": "c1115f41e0518a3f543d381d6b0a469462275e1e0ca90928de13efb5e2172249",
+    "fixtures_sha256": "b9ade82857adbb37ab5860712d82edec24103f3ba20f7f8ca0bb7d91e3768de8"
+  },
+  "comparison_policy": "comparison-policy.json",
+  "mandatory_cases": [
+    "primitive",
+    "extruded_prop",
+    "ordered_csg",
+    "repeated_child_assembly",
+    "material_assignment",
+    "mirrored_nonuniform_placement",
+    "deterministic_seeded_variation",
+    "malformed_recipe",
+    "resource_exhaustion",
+    "cancellation",
+    "terrain_adjacent_chunks",
+    "terrain_resolution_changes",
+    "terrain_late_invalidation"
+  ],
+  "samples": [
+    {
+      "id": "PROP-SLAB",
+      "kind": "retained C0 case",
+      "covers": [
+        "primitive",
+        "material_assignment"
+      ],
+      "sources": [
+        "projects/world_demo/objects/castle/materials/CastlePavingSlab.js",
+        "projects/world_demo/shared-lib/castle_paving.js",
+        "MatterEngine3/tests/fixtures/export/CastlePavingSlab.golden",
+        "MatterEngine3/tests/fixtures/export/CastlePavingSlab.mtl",
+        "MatterEngine3/tests/obj_export_golden_tests.cpp",
+        "projects/world_demo/shared-lib/castle_primitives.js",
+        "projects/world_demo/shared-lib/castle_stock.js"
+      ],
+      "inputs": [
+        "fixtures/legacy-assets.json"
+      ],
+      "oracles": [
+        "fixtures/legacy-assets.json"
+      ],
+      "expected": {
+        "legacy": "LOD0: 24 vertices, 12 triangles, 6 charts, 1 LOD; material 9 owns 12 triangles; 256 texture/atlas. Exact digest in golden; parsed OBJ/MTL use existing numeric tolerance.",
+        "parameters": {
+          "part": "CastlePavingSlab",
+          "lod": 0,
+          "texture_size": 256,
+          "golden_update": false,
+          "part_parameters": "{} (generator defaults)"
+        }
+      },
+      "checks": [
+        {
+          "suite": "obj_export_golden_tests",
+          "capture_at_assigned_head": "fail (12 mismatches due to absent slab/flower OBJ fixtures; metadata/MTL/other checks passed)"
+        }
+      ],
+      "commands": [
+        "./tools/build-windows-from-wsl.sh RelWithDebInfo obj_export_golden_tests",
+        "& $componentCTest --test-dir MatterEditor/build/cmake/windows-msvc/relwithdebinfo --output-on-failure -j 1 -R '^(obj_export_golden_tests)$'"
+      ]
+    },
+    {
+      "id": "PROP-FLOWER",
+      "kind": "retained C0 case",
+      "covers": [
+        "material_assignment",
+        "deterministic_seeded_variation"
+      ],
+      "sources": [
+        "projects/world_demo/objects/vegetation/alpine/AlpineFlower.js",
+        "projects/world_demo/shared-lib/vegetation.js",
+        "MatterEngine3/tests/fixtures/export/AlpineFlower.golden",
+        "MatterEngine3/tests/fixtures/export/AlpineFlower.mtl",
+        "MatterEngine3/tests/obj_export_golden_tests.cpp",
+        "MatterEngine3/shared-lib/rng.js"
+      ],
+      "inputs": [
+        "fixtures/legacy-assets.json"
+      ],
+      "oracles": [
+        "fixtures/legacy-assets.json"
+      ],
+      "expected": {
+        "legacy": "LOD0: 228 vertices, 76 triangles, 42 charts, 2 LODs; material17 owns48 triangles and material29 owns28. Exact metadata/texture digest; thin geometry and materials survive export.",
+        "parameters": {
+          "part": "AlpineFlower",
+          "lod": 0,
+          "texture_size": 256,
+          "golden_update": false,
+          "part_parameters": "{} (generator defaults)"
+        }
+      },
+      "checks": [
+        {
+          "suite": "obj_export_golden_tests",
+          "capture_at_assigned_head": "fail (12 mismatches due to absent slab/flower OBJ fixtures; metadata/MTL/other checks passed)"
+        }
+      ],
+      "commands": [
+        "./tools/build-windows-from-wsl.sh RelWithDebInfo obj_export_golden_tests",
+        "& $componentCTest --test-dir MatterEditor/build/cmake/windows-msvc/relwithdebinfo --output-on-failure -j 1 -R '^(obj_export_golden_tests)$'"
+      ]
+    },
+    {
+      "id": "PROP-STONE",
+      "kind": "retained C0 case",
+      "covers": [
+        "primitive"
+      ],
+      "sources": [
+        "projects/world_demo/objects/castle/materials/CastleStone.js",
+        "projects/world_demo/shared-lib/castle_primitives.js",
+        "MatterEngine3/tests/fixtures/export/CastleStone.golden",
+        "MatterEngine3/tests/fixtures/export/CastleStone.mtl",
+        "MatterEngine3/tests/obj_export_golden_tests.cpp"
+      ],
+      "inputs": [
+        "fixtures/legacy-assets.json"
+      ],
+      "oracles": [
+        "fixtures/legacy-assets.json"
+      ],
+      "expected": {
+        "legacy": "LOD0: 45506 vertices, 54054 triangles, 223 charts, 1 LOD, material8 owns54054 triangles; 0.006m authored detail retained. Digest and MTL pinned; stone OBJ is intentionally not pinned. Old 3382-triangle golden is superseded.",
+        "parameters": {
+          "part": "CastleStone",
+          "lod": 0,
+          "texture_size": 256,
+          "golden_update": false,
+          "part_parameters": "{} (generator defaults)"
+        }
+      },
+      "checks": [
+        {
+          "suite": "obj_export_golden_tests",
+          "capture_at_assigned_head": "fail (12 mismatches due to absent slab/flower OBJ fixtures; metadata/MTL/other checks passed)"
+        }
+      ],
+      "commands": [
+        "./tools/build-windows-from-wsl.sh RelWithDebInfo obj_export_golden_tests",
+        "& $componentCTest --test-dir MatterEditor/build/cmake/windows-msvc/relwithdebinfo --output-on-failure -j 1 -R '^(obj_export_golden_tests)$'"
+      ]
+    },
+    {
+      "id": "GEOM-EXTRUDE",
+      "kind": "retained C0 case",
+      "covers": [
+        "extruded_prop"
+      ],
+      "sources": [
+        "MatterEngine3/tests/script_host_tests.cpp",
+        "MatterEngine3/src/triangle_emit.cpp"
+      ],
+      "inputs": [],
+      "oracles": [],
+      "expected": {
+        "legacy": "Square profile +/-0.5 swept from(0,0,0) to(0,0,2) gives12 triangles and no extra flat face; unclaimed square flat-fill gives2; MITER versus BEVEL changes corner counts. Invalid voxel/open/missing profile produces errors.",
+        "parameters": {
+          "profile": [
+            [
+              -0.5,
+              -0.5,
+              0
+            ],
+            [
+              0.5,
+              -0.5,
+              0
+            ],
+            [
+              0.5,
+              0.5,
+              0
+            ],
+            [
+              -0.5,
+              0.5,
+              0
+            ]
+          ],
+          "path": [
+            [
+              0,
+              0,
+              0
+            ],
+            [
+              0,
+              0,
+              2
+            ]
+          ]
+        }
+      },
+      "checks": [
+        {
+          "suite": "script_host_tests",
+          "capture_at_assigned_head": "not rerun; retained C0 assertion and reproduction command"
+        }
+      ],
+      "commands": [
+        "./tools/build-windows-from-wsl.sh RelWithDebInfo script_host_tests",
+        "& $componentCTest --test-dir MatterEditor/build/cmake/windows-msvc/relwithdebinfo --output-on-failure -j 1 -R '^(script_host_tests)$'"
+      ]
+    },
+    {
+      "id": "GEOM-CSG",
+      "kind": "retained C0 case",
+      "covers": [
+        "ordered_csg"
+      ],
+      "sources": [
+        "MatterEngine3/tests/script_host_tests.cpp",
+        "MatterEngine3/src/csg_lowering.cpp"
+      ],
+      "inputs": [],
+      "oracles": [],
+      "expected": {
+        "legacy": "Sphere union then difference box lowers to additive sphere/material3 and one oriented box in an ordered Difference stage; two-sphere occupancy discriminates union/difference/intersection. ScriptHost raycast regression subtracts a box from a sphere: cut face x0.4 within0.02m, normal+x>0.95.",
+        "parameters": {
+          "voxel_m": 0.25,
+          "material": 3,
+          "sphere_radius": 1,
+          "box_center": [
+            1,
+            0,
+            0
+          ],
+          "box_half_extents": [
+            0.05,
+            0.05,
+            0.05
+          ]
+        }
+      },
+      "checks": [
+        {
+          "suite": "script_host_tests",
+          "capture_at_assigned_head": "not rerun; retained C0 assertion and reproduction command"
+        }
+      ],
+      "commands": [
+        "./tools/build-windows-from-wsl.sh RelWithDebInfo script_host_tests",
+        "& $componentCTest --test-dir MatterEditor/build/cmake/windows-msvc/relwithdebinfo --output-on-failure -j 1 -R '^(script_host_tests)$'"
+      ]
+    },
+    {
+      "id": "GEOM-TRANSFORM",
+      "kind": "retained C0 case",
+      "covers": [
+        "mirrored_nonuniform_placement"
+      ],
+      "sources": [
+        "MatterEngine3/tests/dsl_determinism_tests.cpp",
+        "tests/vt_normal_frame_reference_tests.mjs"
+      ],
+      "inputs": [],
+      "oracles": [],
+      "expected": {
+        "legacy": "Five-level mixed rotations/nonuniform scales and ordered CSG determinism; singular scale(1,0,1) exercises zero-determinant guard. Independent JS algebra tests inverse-transpose directions for unit, nonuniform(2,.7,1.3), and mirrored(-1,1,1) scales:480 probes, distance<1e-12, back-face reversal.",
+        "parameters": "Inline parameters/defaults in the pinned source; do not substitute a simplified fixture."
+      },
+      "checks": [
+        {
+          "suite": "dsl_determinism_tests",
+          "capture_at_assigned_head": "not rerun; retained C0 assertion and reproduction command"
+        }
+      ],
+      "commands": [
+        "./tools/build-windows-from-wsl.sh RelWithDebInfo dsl_determinism_tests",
+        "& $componentCTest --test-dir MatterEditor/build/cmake/windows-msvc/relwithdebinfo --output-on-failure -j 1 -R '^(dsl_determinism_tests)$'"
+      ]
+    },
+    {
+      "id": "GEOM-SEED",
+      "kind": "retained C0 case",
+      "covers": [
+        "deterministic_seeded_variation"
+      ],
+      "sources": [
+        "MatterEngine3/tests/script_host_tests.cpp",
+        "MatterEngine3/shared-lib/rng.js"
+      ],
+      "inputs": [],
+      "oracles": [],
+      "expected": {
+        "legacy": "Seed1 evaluated in two hosts yields same resolved hash and artifact bytes; seed2 differs. Ambient Date/require/fetch/os are undefined. Preserve explicit portable seeding; do not expose native host ambient randomness.",
+        "parameters": "Inline parameters/defaults in the pinned source; do not substitute a simplified fixture."
+      },
+      "checks": [
+        {
+          "suite": "script_host_tests",
+          "capture_at_assigned_head": "not rerun; retained C0 assertion and reproduction command"
+        }
+      ],
+      "commands": [
+        "./tools/build-windows-from-wsl.sh RelWithDebInfo script_host_tests",
+        "& $componentCTest --test-dir MatterEditor/build/cmake/windows-msvc/relwithdebinfo --output-on-failure -j 1 -R '^(script_host_tests)$'"
+      ]
+    },
+    {
+      "id": "BUILD-SHARED",
+      "kind": "retained C0 case",
+      "covers": [
+        "repeated_child_assembly"
+      ],
+      "sources": [
+        "MatterEngine3/tests/part_graph_tests.cpp",
+        "MatterEngine3/src/part_graph.cpp"
+      ],
+      "inputs": [],
+      "oracles": [],
+      "expected": {
+        "legacy": "Root->P1/P2->Bolt(len2) bakes4 unique artifacts children-first; len2/len3 splits into2 Bolt artifacts plusRoot; a->b->a fails naming cycle and bakes nothing. Fake resolver and baker isolate graph semantics.",
+        "parameters": "Inline parameters/defaults in the pinned source; do not substitute a simplified fixture."
+      },
+      "checks": [
+        {
+          "suite": "part_graph_tests",
+          "capture_at_assigned_head": "pass (logic suite with real legacy serializers, fake resolver/baker)"
+        }
+      ],
+      "commands": [
+        "./tools/build-windows-from-wsl.sh RelWithDebInfo part_graph_tests",
+        "& $componentCTest --test-dir MatterEditor/build/cmake/windows-msvc/relwithdebinfo --output-on-failure -j 1 -R '^(part_graph_tests)$'"
+      ]
+    },
+    {
+      "id": "BUILD-CASTLE",
+      "kind": "retained C0 case",
+      "covers": [
+        "repeated_child_assembly"
+      ],
+      "sources": [
+        "projects/world_demo/tests/fixtures/castle_plan_two_room_two_level.js",
+        "projects/world_demo/shared-lib/castle_plan.js",
+        "projects/world_demo/shared-lib/castle_structure.js",
+        "projects/world_demo/shared-lib/castle_structure_fixture.js",
+        "projects/world_demo/tests/castle_plan_tests.mjs",
+        "projects/world_demo/shared-lib/castle_primitives.js",
+        "projects/world_demo/shared-lib/castle_stock.js",
+        "MatterEngine3/tests/part_flatten_tests.cpp"
+      ],
+      "inputs": [],
+      "oracles": [],
+      "expected": {
+        "legacy": "Two-room/two-level deterministic plan fixture exercises stairs, floors and repeated structure pieces; castle_plan_tests reports40 walls/9 modules and structural assertions. Use small plan/recording DSL before full castle rendering.",
+        "parameters": {
+          "fixture_id": "two-room-two-level",
+          "seed": 240911
+        }
+      },
+      "checks": [
+        {
+          "suite": "part_flatten_tests",
+          "capture_at_assigned_head": "not rerun; retained C0 assertion and reproduction command"
+        }
+      ],
+      "commands": [
+        "./tools/build-windows-from-wsl.sh RelWithDebInfo part_flatten_tests",
+        "& $componentCTest --test-dir MatterEditor/build/cmake/windows-msvc/relwithdebinfo --output-on-failure -j 1 -R '^(part_flatten_tests)$'"
+      ]
+    },
+    {
+      "id": "EVAL-BOUNDED",
+      "kind": "retained C0 case",
+      "covers": [
+        "resource_exhaustion",
+        "cancellation"
+      ],
+      "sources": [
+        "MatterEngine3/tests/solid_source_evaluation_tests.cpp",
+        "projects/world_demo/objects/castle/materials/CastleStoneSource.js",
+        "projects/world_demo/shared-lib/castle_solid_source.js"
+      ],
+      "inputs": [],
+      "oracles": [],
+      "expected": {
+        "legacy": "Owned source evaluation captures material at declaration, calls no GPU mesher and writes no artifacts; malformed/mixed/child-dependent/missing source fails preserving prior result. Precancellation and runaway-loop cancellation report solid-source-cancelled; stale generation reports solid-source-stale; budget0 rejected; infinite loop bounded at5ms. Seeds0..7 of real CastleStoneSource each yield23 physical operations and8 distinct recipe/field identities; imported-source edits invalidate identity.",
+        "parameters": "Inline parameters/defaults in the pinned source; do not substitute a simplified fixture."
+      },
+      "checks": [
+        {
+          "suite": "solid_source_evaluation_tests",
+          "capture_at_assigned_head": "pass (actual native evaluation bounds/cancel/stale fixture)"
+        }
+      ],
+      "commands": [
+        "./tools/build-windows-from-wsl.sh RelWithDebInfo solid_source_evaluation_tests",
+        "& $componentCTest --test-dir MatterEditor/build/cmake/windows-msvc/relwithdebinfo --output-on-failure -j 1 -R '^(solid_source_evaluation_tests)$'"
+      ]
+    },
+    {
+      "id": "BUILD-CANCEL",
+      "kind": "retained C0 case",
+      "covers": [
+        "cancellation"
+      ],
+      "sources": [
+        "MatterEngine3/tests/async_bake_tests.cpp"
+      ],
+      "inputs": [],
+      "oracles": [],
+      "expected": {
+        "legacy": "Existing asynchronous baking tests exercise superseded/seed-reroll jobs and cancellation; allow a job that legitimately finished before cancellation. New coordinator must admit only matching requestId/sourceRevision/epoch products.",
+        "parameters": "Inline parameters/defaults in the pinned source; do not substitute a simplified fixture."
+      },
+      "checks": [
+        {
+          "suite": "async_bake_tests",
+          "capture_at_assigned_head": "not rerun; retained C0 assertion and reproduction command"
+        }
+      ],
+      "commands": [
+        "./tools/build-windows-from-wsl.sh RelWithDebInfo async_bake_tests",
+        "& $componentCTest --test-dir MatterEditor/build/cmake/windows-msvc/relwithdebinfo --output-on-failure -j 1 -R '^(async_bake_tests)$'"
+      ]
+    },
+    {
+      "id": "TERRAIN-FLAT",
+      "kind": "retained C0 case",
+      "covers": [
+        "terrain_resolution_changes"
+      ],
+      "sources": [
+        "MatterEngine3/tests/terrain_mesher_tests.cpp",
+        "MatterEngine3/tests/terrain_field_tests.cpp",
+        "MatterEngine3/src/terrain_mesher.cpp",
+        "MatterEngine3/src/terrain_field.cpp"
+      ],
+      "inputs": [],
+      "oracles": [],
+      "expected": {
+        "legacy": "kFlat5 height5/moisture.5/relief.5/sea0/biome(.65,.35); sector16m/slab[-64,192], rung0 gives128 upward surface triangles at y5 and0 skirt curtains; rung1 gives4x; rung4 and reversed slab rejected. Field tests retain deterministic tape/noise semantics.",
+        "parameters": {
+          "height": 5,
+          "sector_size_m": 16,
+          "slab_m": [
+            -64,
+            192
+          ],
+          "rungs": [
+            0,
+            1,
+            4
+          ]
+        }
+      },
+      "checks": [
+        {
+          "suite": "terrain_mesher_tests",
+          "capture_at_assigned_head": "pass (native terrain field and mesher)"
+        },
+        {
+          "suite": "terrain_field_tests",
+          "capture_at_assigned_head": "not rerun; retained C0 assertion and reproduction command"
+        }
+      ],
+      "commands": [
+        "./tools/build-windows-from-wsl.sh RelWithDebInfo terrain_mesher_tests",
+        "./tools/build-windows-from-wsl.sh RelWithDebInfo terrain_field_tests",
+        "& $componentCTest --test-dir MatterEditor/build/cmake/windows-msvc/relwithdebinfo --output-on-failure -j 1 -R '^(terrain_mesher_tests|terrain_field_tests)$'"
+      ]
+    },
+    {
+      "id": "TERRAIN-ADJACENT",
+      "kind": "retained C0 case",
+      "covers": [
+        "terrain_adjacent_chunks"
+      ],
+      "sources": [
+        "MatterEngine3/tests/terrain_mesher_tests.cpp",
+        "MatterEngine3/src/seam_weld.cpp",
+        "MatterEngine3/tests/seam_weld_tests.cpp"
+      ],
+      "inputs": [],
+      "oracles": [],
+      "expected": {
+        "legacy": "kNoise seed1234/frequency.02/octaves4/gain.5/lacunarity2/amplitude20/sea-100; repeat at(3,-2),rung2 has byte-identical positions within the same build. Adjacent16m rung1 surfaces overlap without skirts; nested/cross-rung/negative-face and cross-size seam-weld tests retain their current gap/error bounds. Do not relabel overlap as canonical bit-identical chunk boundaries.",
+        "parameters": "Inline parameters/defaults in the pinned source; do not substitute a simplified fixture."
+      },
+      "checks": [
+        {
+          "suite": "terrain_mesher_tests",
+          "capture_at_assigned_head": "pass (native terrain field and mesher)"
+        },
+        {
+          "suite": "seam_weld_tests",
+          "capture_at_assigned_head": "not rerun; retained C0 assertion and reproduction command"
+        }
+      ],
+      "commands": [
+        "./tools/build-windows-from-wsl.sh RelWithDebInfo terrain_mesher_tests",
+        "./tools/build-windows-from-wsl.sh RelWithDebInfo seam_weld_tests",
+        "& $componentCTest --test-dir MatterEditor/build/cmake/windows-msvc/relwithdebinfo --output-on-failure -j 1 -R '^(terrain_mesher_tests|seam_weld_tests)$'"
+      ]
+    },
+    {
+      "id": "TERRAIN-CONTOUR",
+      "kind": "retained C0 case",
+      "covers": [
+        "terrain_resolution_changes"
+      ],
+      "sources": [
+        "MatterEngine3/tests/contour_seam_tests.cpp"
+      ],
+      "inputs": [],
+      "oracles": [],
+      "expected": {
+        "legacy": "Independent analytic multi-octave/tunnel field harness checks bitwise coarse/fine contour agreement on a world-anchored lattice, negative tile-anchor control, tracing versus sampling equivalence and contour cost. Same-libm analytic foundation evidence; not a production terrain mesher or full topology acceptance.",
+        "parameters": "Inline parameters/defaults in the pinned source; do not substitute a simplified fixture."
+      },
+      "checks": [
+        {
+          "suite": "contour_seam_tests",
+          "capture_at_assigned_head": "not rerun; retained C0 assertion and reproduction command"
+        }
+      ],
+      "commands": [
+        "./tools/build-windows-from-wsl.sh RelWithDebInfo contour_seam_tests",
+        "& $componentCTest --test-dir MatterEditor/build/cmake/windows-msvc/relwithdebinfo --output-on-failure -j 1 -R '^(contour_seam_tests)$'"
+      ]
+    },
+    {
+      "id": "TERRAIN-LATE",
+      "kind": "retained C0 case",
+      "covers": [
+        "terrain_late_invalidation"
+      ],
+      "sources": [
+        "MatterEngine3/tests/sector_streaming_coordinator_tests.cpp",
+        "MatterEngine3/src/streaming/sector_streaming_coordinator.cpp"
+      ],
+      "inputs": [],
+      "oracles": [],
+      "expected": {
+        "legacy": "Tagged owner/generation/issuance coordinator tests exercise superseded generations, retained completion capacity, retryable evictions/acknowledgements and independent cleanup. No renderer device needed for the coordinator fixture.",
+        "parameters": "Inline parameters/defaults in the pinned source; do not substitute a simplified fixture."
+      },
+      "checks": [
+        {
+          "suite": "sector_streaming_coordinator_tests",
+          "capture_at_assigned_head": "not rerun; retained C0 assertion and reproduction command"
+        }
+      ],
+      "commands": [
+        "./tools/build-windows-from-wsl.sh RelWithDebInfo sector_streaming_coordinator_tests",
+        "& $componentCTest --test-dir MatterEditor/build/cmake/windows-msvc/relwithdebinfo --output-on-failure -j 1 -R '^(sector_streaming_coordinator_tests)$'"
+      ]
+    },
+    {
+      "id": "RENDER-NORMAL",
+      "kind": "retained C0 case",
+      "covers": [
+        "material_assignment"
+      ],
+      "sources": [
+        "MatterEngine3/tests/vulkan_smoke_tests.cpp",
+        "tests/vt_normal_frame_reference_tests.mjs",
+        "cmake/MatterViewer.cmake"
+      ],
+      "inputs": [],
+      "oracles": [],
+      "expected": {
+        "legacy": "Hand-built VT normal-frame fixture waits for5 stable page-generation frames; raster and RT directional cosines>.995 and parity>.998, raster material ownership and traced page validity checked. Existing120s CTest timeout. JS480-probe algebra covers mirrored/nonuniform transforms independently of GPU.",
+        "parameters": "Inline parameters/defaults in the pinned source; do not substitute a simplified fixture."
+      },
+      "checks": [
+        {
+          "suite": "vulkan_smoke_tests",
+          "capture_at_assigned_head": "not rerun; retained C0 assertion and reproduction command"
+        }
+      ],
+      "commands": [
+        "./tools/build-windows-from-wsl.sh RelWithDebInfo vulkan_smoke_tests",
+        "& $componentCTest --test-dir MatterEditor/build/cmake/windows-msvc/relwithdebinfo --output-on-failure -j 1 -R '^(smoke_vt_normal_frame)$'"
+      ]
+    },
+    {
+      "id": "RENDER-MOUNTAIN",
+      "kind": "retained C0 case",
+      "covers": [
+        "terrain_adjacent_chunks"
+      ],
+      "sources": [
+        "projects/world_demo/scenes/streaming/StreamMountain/StreamMountain.js",
+        "projects/world_demo/scenes/streaming/StreamMountain/objects/WorldSector.js",
+        "projects/world_demo/scenes/streaming/StreamMountain/props.json",
+        "projects/world_demo/shared-lib/mountain_geometry_site.js",
+        "projects/world_demo/objects/terrain/MountainDetailRock.js",
+        "projects/world_demo/tests/mountain_geometry_site_tests.mjs",
+        "projects/world_demo/tests/mountain_terrain_only_tests.mjs",
+        "docs/agent/evidence/2026-09-30-static-default-candidate/README.md",
+        "projects/world_demo/shared-lib/mountain_surface.js",
+        "projects/world_demo/shared-lib/alpine_ecology.js",
+        "projects/world_demo/shared-lib/mountain_forest.js",
+        "MatterEngine3/shared-lib/scatter_grid.js",
+        "projects/world_demo/shared-lib/mountain_rocks.js",
+        "projects/world_demo/shared-lib/mountain_rock_scatter.js",
+        "projects/world_demo/shared-lib/mountain_detail_rocks.js",
+        "MatterEngine3/shared-lib/rng.js",
+        "projects/world_demo/shared-lib/castle_surface_shells.js",
+        "projects/world_demo/shared-lib/mountain_rock_sizes.js"
+      ],
+      "inputs": [],
+      "oracles": [],
+      "expected": {
+        "legacy": "Default:3 focal placements/3 dense128-resolution assets, at(416,1456),(425,1458),(422,1448), seeds0,1,2, sizes6,4,7, shapes0,2,1. Stress only explicit:1283 placements/19 assets, pinned source-record SHA cb4e9f79e99013ea81bab0bbba4ec5c7b0e5e2c7c74170975b0457512e5d48ee. Half-open tile ownership at64/128/256/512m; terrain-only retains terrain each tested rung and site only when __geometryRocks present. Preserve natural mountain rocks/forest. Historical actual GPU capture is not a current extraction pass.",
+        "parameters": {
+          "scene_seed": 20260722,
+          "resolution": [
+            1920,
+            1080
+          ],
+          "camera_position": [
+            380,
+            90,
+            1600
+          ],
+          "camera_target": [
+            420,
+            55,
+            1420
+          ],
+          "geometryRockStress": false,
+          "geometry_pages_default": false,
+          "pom_default": false,
+          "authored_site_triangles": 589824,
+          "terrain_texels_per_m": 128,
+          "finest_terrain_spacing_m": 0.25
+        }
+      },
+      "checks": [
+        {
+          "historical_reference": "evidence/historical-render.json"
+        }
+      ],
+      "commands": []
+    },
+    {
+      "id": "CORPUS-PRIMITIVE",
+      "kind": "synthetic analytical or contract fixture",
+      "covers": [
+        "primitive"
+      ],
+      "sources": [
+        "tests/component-separation/fixtures/primitive.recipe.json",
+        "tests/component-separation/fixtures/geometry-oracles.json",
+        "tests/component-separation/fixtures/cube.asset.json"
+      ],
+      "inputs": [
+        "fixtures/primitive.recipe.json"
+      ],
+      "oracles": [
+        "fixtures/geometry-oracles.json",
+        "fixtures/cube.asset.json"
+      ],
+      "expected": {
+        "bounds": {
+          "min": [
+            -1,
+            -1,
+            -1
+          ],
+          "max": [
+            1,
+            1,
+            1
+          ]
+        },
+        "volume_metres3": 8,
+        "closed": true,
+        "material": "clay",
+        "explicit_oracle": "fixtures/cube.asset.json",
+        "shell_components": 1
+      },
+      "checks": [
+        "native.cpp: codec/identity",
+        "verify.py: independent bounds, volume, closed topology and materials; occupancy for CSG",
+        "test_oracles.py: corruption rejection"
+      ]
+    },
+    {
+      "id": "CORPUS-EXTRUDE",
+      "kind": "synthetic analytical or contract fixture",
+      "covers": [
+        "extruded_prop"
+      ],
+      "sources": [
+        "tests/component-separation/fixtures/extrude.recipe.json",
+        "tests/component-separation/fixtures/geometry-oracles.json",
+        "tests/component-separation/fixtures/extrude-oracle.asset.json"
+      ],
+      "inputs": [
+        "fixtures/extrude.recipe.json"
+      ],
+      "oracles": [
+        "fixtures/geometry-oracles.json",
+        "fixtures/extrude-oracle.asset.json"
+      ],
+      "expected": {
+        "bounds": {
+          "min": [
+            0,
+            0,
+            0
+          ],
+          "max": [
+            1,
+            1,
+            2
+          ]
+        },
+        "volume_metres3": 2,
+        "triangles": 12,
+        "closed": true,
+        "material": "clay",
+        "explicit_oracle": "fixtures/extrude-oracle.asset.json",
+        "profile_plane": "XY; extrusion along +Z (synthetic oracle convention)",
+        "shell_components": 1
+      },
+      "checks": [
+        "native.cpp: codec/identity",
+        "verify.py: independent bounds, volume, closed topology and materials; occupancy for CSG",
+        "test_oracles.py: corruption rejection"
+      ]
+    },
+    {
+      "id": "CORPUS-ORDERED_CSG",
+      "kind": "synthetic analytical or contract fixture",
+      "covers": [
+        "ordered_csg"
+      ],
+      "sources": [
+        "tests/component-separation/fixtures/ordered-csg.recipe.json",
+        "tests/component-separation/fixtures/geometry-oracles.json",
+        "tests/component-separation/fixtures/csg-oracle.asset.json"
+      ],
+      "inputs": [
+        "fixtures/ordered-csg.recipe.json"
+      ],
+      "oracles": [
+        "fixtures/geometry-oracles.json",
+        "fixtures/csg-oracle.asset.json"
+      ],
+      "expected": {
+        "bounds": {
+          "min": [
+            -1,
+            -1,
+            -1
+          ],
+          "max": [
+            1,
+            1,
+            1
+          ]
+        },
+        "volume_metres3": 7,
+        "shell_components": 2,
+        "closed": true,
+        "ordered_operands": [
+          "outer",
+          "cutter"
+        ],
+        "occupancy": [
+          {
+            "position": [
+              0,
+              0,
+              0
+            ],
+            "inside": false
+          },
+          {
+            "position": [
+              0.75,
+              0,
+              0
+            ],
+            "inside": true
+          },
+          {
+            "position": [
+              2,
+              0,
+              0
+            ],
+            "inside": false
+          }
+        ],
+        "reversed_volume_metres3": 0,
+        "status": "analytic closed-box subtraction oracle; no production mesh captured by contract validator",
+        "explicit_oracle": "fixtures/csg-oracle.asset.json",
+        "material": "clay"
+      },
+      "checks": [
+        "native.cpp: codec/identity",
+        "verify.py: independent bounds, volume, closed topology and materials; occupancy for CSG",
+        "test_oracles.py: corruption rejection"
+      ]
+    },
+    {
+      "id": "CORPUS-CSG-REVERSED",
+      "kind": "synthetic analytical or contract fixture",
+      "covers": [
+        "ordered_csg"
+      ],
+      "sources": [
+        "tests/component-separation/fixtures/reversed-csg.recipe.json",
+        "tests/component-separation/fixtures/geometry-oracles.json"
+      ],
+      "inputs": [
+        "fixtures/reversed-csg.recipe.json"
+      ],
+      "oracles": [
+        "fixtures/geometry-oracles.json"
+      ],
+      "expected": {
+        "empty_volume_metres3": 0,
+        "preserve_operand_order": true
+      },
+      "checks": [
+        "native.cpp: canonical wire/digest differs from ordered subtraction",
+        "analytical empty-solid expectation; production result not captured"
+      ]
+    },
+    {
+      "id": "CORPUS-REPEATED-ASSEMBLY",
+      "kind": "synthetic analytical or contract fixture",
+      "covers": [
+        "repeated_child_assembly"
+      ],
+      "sources": [
+        "tests/component-separation/fixtures/repeated-assembly.asset.json",
+        "tests/component-separation/fixtures/geometry-oracles.json"
+      ],
+      "inputs": [
+        "fixtures/repeated-assembly.asset.json"
+      ],
+      "oracles": [
+        "fixtures/geometry-oracles.json"
+      ],
+      "expected": {
+        "oracle_key": "assembly",
+        "sharing": "one mesh prototype; distinct authored roots/children, four flattened identities"
+      },
+      "checks": [
+        "native.cpp: asset schema/roundtrip",
+        "verify.py: prototype counts and semantic IDs"
+      ]
+    },
+    {
+      "id": "CORPUS-MATERIAL-VIEWS",
+      "kind": "synthetic analytical or contract fixture",
+      "covers": [
+        "material_assignment"
+      ],
+      "sources": [
+        "tests/component-separation/fixtures/material.asset.json",
+        "tests/component-separation/fixtures/material-albedo.rgba8",
+        "tests/component-separation/fixtures/geometry-oracles.json"
+      ],
+      "inputs": [
+        "fixtures/material.asset.json",
+        "fixtures/material-albedo.rgba8"
+      ],
+      "oracles": [
+        "fixtures/geometry-oracles.json"
+      ],
+      "expected": {
+        "oracle_key": "material",
+        "matched_views": [
+          "front",
+          "oblique"
+        ],
+        "pixel_pass": false
+      },
+      "checks": [
+        "native.cpp: material/texture/resource schema",
+        "verify.py: material histogram, bytes digest, sRGB and view policy"
+      ]
+    },
+    {
+      "id": "CORPUS-AFFINE",
+      "kind": "synthetic analytical or contract fixture",
+      "covers": [
+        "mirrored_nonuniform_placement"
+      ],
+      "sources": [
+        "tests/component-separation/fixtures/affine.asset.json",
+        "tests/component-separation/fixtures/geometry-oracles.json"
+      ],
+      "inputs": [
+        "fixtures/affine.asset.json"
+      ],
+      "oracles": [
+        "fixtures/geometry-oracles.json"
+      ],
+      "expected": {
+        "oracle_key": "affine",
+        "inverse_transpose": true,
+        "mirrored_winding_and_tangent_w": true
+      },
+      "checks": [
+        "native.cpp: actual public point/normal/determinant functions"
+      ]
+    },
+    {
+      "id": "CORPUS-CANONICAL-PARAMS",
+      "kind": "synthetic analytical or contract fixture",
+      "covers": [],
+      "sources": [
+        "tests/component-separation/fixtures/params.json",
+        "tests/component-separation/fixtures/params.json"
+      ],
+      "inputs": [
+        "fixtures/params.json"
+      ],
+      "oracles": [
+        "fixtures/params.json"
+      ],
+      "expected": {
+        "legacy_profile": "legacy-matter-part-graph-v1",
+        "portable_profile": "matter-exact-json-v1",
+        "legacy_limit": "memo separators/string quoting noninjective; namespaces retained"
+      },
+      "checks": [
+        "native.cpp: actual part_graph.cpp legacy memo/JSON and portable canonical output",
+        "check-js.mjs: portable profile"
+      ]
+    },
+    {
+      "id": "CORPUS-SEEDED-VARIATION",
+      "kind": "synthetic analytical or contract fixture",
+      "covers": [
+        "deterministic_seeded_variation"
+      ],
+      "sources": [
+        "tests/component-separation/fixtures/seeded-variation.json",
+        "tests/component-separation/fixtures/rng-splitmix64.json",
+        "tests/component-separation/fixtures/rng-xoshiro128.json",
+        "tests/component-separation/fixtures/seeded-variation.json"
+      ],
+      "inputs": [
+        "fixtures/seeded-variation.json",
+        "fixtures/rng-splitmix64.json",
+        "fixtures/rng-xoshiro128.json"
+      ],
+      "oracles": [
+        "fixtures/seeded-variation.json"
+      ],
+      "expected": {
+        "streams": [
+          "matter.splitmix64.v1",
+          "legacy.shared.xoshiro128-star-star.splitmix32"
+        ],
+        "same_seed": "exact repeat",
+        "different_seed": "distinct frozen draw and analytical prop dimensions"
+      },
+      "checks": [
+        "native.cpp: actual native legacy and portable RNG known answers",
+        "check-js.mjs: actual shared-library xoshiro and portable SplitMix64 known answers",
+        "verify.py: analytical dimension/volume expectations"
+      ]
+    },
+    {
+      "id": "CORPUS-TERRAIN-BOUNDARY",
+      "kind": "synthetic analytical or contract fixture",
+      "covers": [
+        "terrain_adjacent_chunks",
+        "terrain_resolution_changes"
+      ],
+      "sources": [
+        "tests/component-separation/fixtures/terrain.json",
+        "tests/component-separation/fixtures/terrain.json"
+      ],
+      "inputs": [
+        "fixtures/terrain.json"
+      ],
+      "oracles": [
+        "fixtures/terrain.json"
+      ],
+      "expected": {
+        "flat_height_metres": 5,
+        "coarse_and_fine": "shared plane with explicit linear transition policy",
+        "origin": "binary64 large origin plus local mesh coordinates",
+        "legacy_overlap": "retained separately from exact analytical plane"
+      },
+      "checks": [
+        "terrain_mesher_tests: actual legacy flat/rung/no-skirt/noise repeat",
+        "verify.py/test_oracles.py: analytical boundary/interpolation regression gate"
+      ]
+    },
+    {
+      "id": "ERROR-MISSING-REFERENCE",
+      "kind": "public contract failure fixture",
+      "covers": [
+        "malformed_recipe"
+      ],
+      "sources": [
+        "tests/component-separation/fixtures/missing-reference.recipe.json",
+        "tests/component-separation/fixtures/validation-cases.json"
+      ],
+      "inputs": [
+        "fixtures/missing-reference.recipe.json"
+      ],
+      "oracles": [
+        "fixtures/validation-cases.json"
+      ],
+      "expected": {
+        "id": "ERROR-MISSING-REFERENCE",
+        "kind": "recipe",
+        "input": "fixtures/missing-reference.recipe.json",
+        "expected_code": "missing_dependency",
+        "expected_publish": false
+      },
+      "checks": [
+        "native.cpp: actual decode/parse; exact diagnostic code and unchanged previous output"
+      ]
+    },
+    {
+      "id": "ERROR-CYCLE",
+      "kind": "public contract failure fixture",
+      "covers": [
+        "malformed_recipe"
+      ],
+      "sources": [
+        "tests/component-separation/fixtures/cycle.recipe.json",
+        "tests/component-separation/fixtures/validation-cases.json"
+      ],
+      "inputs": [
+        "fixtures/cycle.recipe.json"
+      ],
+      "oracles": [
+        "fixtures/validation-cases.json"
+      ],
+      "expected": {
+        "id": "ERROR-CYCLE",
+        "kind": "recipe",
+        "input": "fixtures/cycle.recipe.json",
+        "expected_code": "cycle",
+        "expected_publish": false
+      },
+      "checks": [
+        "native.cpp: actual decode/parse; exact diagnostic code and unchanged previous output"
+      ]
+    },
+    {
+      "id": "ERROR-UNKNOWN-REQUIRED",
+      "kind": "public contract failure fixture",
+      "covers": [
+        "malformed_recipe"
+      ],
+      "sources": [
+        "tests/component-separation/fixtures/unknown-required.recipe.json",
+        "tests/component-separation/fixtures/validation-cases.json"
+      ],
+      "inputs": [
+        "fixtures/unknown-required.recipe.json"
+      ],
+      "oracles": [
+        "fixtures/validation-cases.json"
+      ],
+      "expected": {
+        "id": "ERROR-UNKNOWN-REQUIRED",
+        "kind": "recipe",
+        "input": "fixtures/unknown-required.recipe.json",
+        "expected_code": "unsupported_capability",
+        "expected_publish": false
+      },
+      "checks": [
+        "native.cpp: actual decode/parse; exact diagnostic code and unchanged previous output"
+      ]
+    },
+    {
+      "id": "ERROR-UNSUPPORTED-VERSION",
+      "kind": "public contract failure fixture",
+      "covers": [
+        "malformed_recipe"
+      ],
+      "sources": [
+        "tests/component-separation/fixtures/unsupported-version.recipe.json",
+        "tests/component-separation/fixtures/validation-cases.json"
+      ],
+      "inputs": [
+        "fixtures/unsupported-version.recipe.json"
+      ],
+      "oracles": [
+        "fixtures/validation-cases.json"
+      ],
+      "expected": {
+        "id": "ERROR-UNSUPPORTED-VERSION",
+        "kind": "recipe",
+        "input": "fixtures/unsupported-version.recipe.json",
+        "expected_code": "unsupported_version",
+        "expected_publish": false
+      },
+      "checks": [
+        "native.cpp: actual decode/parse; exact diagnostic code and unchanged previous output"
+      ]
+    },
+    {
+      "id": "ERROR-NEGATIVE-SIZE",
+      "kind": "public contract failure fixture",
+      "covers": [
+        "malformed_recipe"
+      ],
+      "sources": [
+        "tests/component-separation/fixtures/negative-size.recipe.json",
+        "tests/component-separation/fixtures/validation-cases.json"
+      ],
+      "inputs": [
+        "fixtures/negative-size.recipe.json"
+      ],
+      "oracles": [
+        "fixtures/validation-cases.json"
+      ],
+      "expected": {
+        "id": "ERROR-NEGATIVE-SIZE",
+        "kind": "recipe",
+        "input": "fixtures/negative-size.recipe.json",
+        "expected_code": "invalid_input",
+        "expected_publish": false
+      },
+      "checks": [
+        "native.cpp: actual decode/parse; exact diagnostic code and unchanged previous output"
+      ]
+    },
+    {
+      "id": "ERROR-INVALID-INDEX",
+      "kind": "public contract failure fixture",
+      "covers": [
+        "malformed_recipe"
+      ],
+      "sources": [
+        "tests/component-separation/fixtures/invalid-index.asset.json",
+        "tests/component-separation/fixtures/validation-cases.json"
+      ],
+      "inputs": [
+        "fixtures/invalid-index.asset.json"
+      ],
+      "oracles": [
+        "fixtures/validation-cases.json"
+      ],
+      "expected": {
+        "id": "ERROR-INVALID-INDEX",
+        "kind": "asset",
+        "input": "fixtures/invalid-index.asset.json",
+        "expected_code": "invalid_input",
+        "expected_publish": false
+      },
+      "checks": [
+        "native.cpp: actual decode/parse; exact diagnostic code and unchanged previous output"
+      ]
+    },
+    {
+      "id": "ERROR-SINGULAR-TRANSFORM",
+      "kind": "public contract failure fixture",
+      "covers": [
+        "malformed_recipe"
+      ],
+      "sources": [
+        "tests/component-separation/fixtures/singular-transform.asset.json",
+        "tests/component-separation/fixtures/validation-cases.json"
+      ],
+      "inputs": [
+        "fixtures/singular-transform.asset.json"
+      ],
+      "oracles": [
+        "fixtures/validation-cases.json"
+      ],
+      "expected": {
+        "id": "ERROR-SINGULAR-TRANSFORM",
+        "kind": "asset",
+        "input": "fixtures/singular-transform.asset.json",
+        "expected_code": "invalid_input",
+        "expected_publish": false
+      },
+      "checks": [
+        "native.cpp: actual decode/parse; exact diagnostic code and unchanged previous output"
+      ]
+    },
+    {
+      "id": "ERROR-CSG-NONUNIFORM",
+      "kind": "public contract failure fixture",
+      "covers": [
+        "malformed_recipe"
+      ],
+      "sources": [
+        "tests/component-separation/fixtures/csg-nonuniform.recipe.json",
+        "tests/component-separation/fixtures/validation-cases.json"
+      ],
+      "inputs": [
+        "fixtures/csg-nonuniform.recipe.json"
+      ],
+      "oracles": [
+        "fixtures/validation-cases.json"
+      ],
+      "expected": {
+        "id": "ERROR-CSG-NONUNIFORM",
+        "kind": "recipe",
+        "input": "fixtures/csg-nonuniform.recipe.json",
+        "expected_code": "unsupported_capability",
+        "expected_publish": false
+      },
+      "checks": [
+        "native.cpp: actual decode/parse; exact diagnostic code and unchanged previous output"
+      ]
+    },
+    {
+      "id": "ERROR-DUPLICATE-KEY",
+      "kind": "public contract failure fixture",
+      "covers": [
+        "malformed_recipe"
+      ],
+      "sources": [
+        "tests/component-separation/fixtures/duplicate-key.json",
+        "tests/component-separation/fixtures/validation-cases.json"
+      ],
+      "inputs": [
+        "fixtures/duplicate-key.json"
+      ],
+      "oracles": [
+        "fixtures/validation-cases.json"
+      ],
+      "expected": {
+        "id": "ERROR-DUPLICATE-KEY",
+        "kind": "json",
+        "input": "fixtures/duplicate-key.json",
+        "expected_code": "invalid_input",
+        "expected_publish": false
+      },
+      "checks": [
+        "native.cpp: actual decode/parse; exact diagnostic code and unchanged previous output"
+      ]
+    },
+    {
+      "id": "ERROR-NONFINITE",
+      "kind": "public contract failure fixture",
+      "covers": [
+        "malformed_recipe"
+      ],
+      "sources": [
+        "tests/component-separation/fixtures/nonfinite.json",
+        "tests/component-separation/fixtures/validation-cases.json"
+      ],
+      "inputs": [
+        "fixtures/nonfinite.json"
+      ],
+      "oracles": [
+        "fixtures/validation-cases.json"
+      ],
+      "expected": {
+        "id": "ERROR-NONFINITE",
+        "kind": "json",
+        "input": "fixtures/nonfinite.json",
+        "expected_code": "invalid_input",
+        "expected_publish": false
+      },
+      "checks": [
+        "native.cpp: actual decode/parse; exact diagnostic code and unchanged previous output"
+      ]
+    },
+    {
+      "id": "SCHEMA-BUDGET-NODES",
+      "kind": "public contract failure fixture",
+      "covers": [
+        "resource_exhaustion"
+      ],
+      "sources": [
+        "tests/component-separation/fixtures/ordered-csg.recipe.json",
+        "tests/component-separation/fixtures/validation-cases.json"
+      ],
+      "inputs": [
+        "fixtures/ordered-csg.recipe.json"
+      ],
+      "oracles": [
+        "fixtures/validation-cases.json"
+      ],
+      "expected": {
+        "id": "BUDGET-NODES",
+        "kind": "recipe",
+        "input": "fixtures/ordered-csg.recipe.json",
+        "limit": "max_nodes",
+        "value": 2,
+        "expected_code": "resource_limit"
+      },
+      "checks": [
+        "native.cpp: actual decode/parse; exact diagnostic code and unchanged previous output"
+      ]
+    },
+    {
+      "id": "SCHEMA-BUDGET-VERTICES",
+      "kind": "public contract failure fixture",
+      "covers": [
+        "resource_exhaustion"
+      ],
+      "sources": [
+        "tests/component-separation/fixtures/cube.asset.json",
+        "tests/component-separation/fixtures/validation-cases.json"
+      ],
+      "inputs": [
+        "fixtures/cube.asset.json"
+      ],
+      "oracles": [
+        "fixtures/validation-cases.json"
+      ],
+      "expected": {
+        "id": "BUDGET-VERTICES",
+        "kind": "asset",
+        "input": "fixtures/cube.asset.json",
+        "limit": "max_vertices",
+        "value": 7,
+        "expected_code": "resource_limit"
+      },
+      "checks": [
+        "native.cpp: actual decode/parse; exact diagnostic code and unchanged previous output"
+      ]
+    },
+    {
+      "id": "SCHEMA-BUDGET-INDICES",
+      "kind": "public contract failure fixture",
+      "covers": [
+        "resource_exhaustion"
+      ],
+      "sources": [
+        "tests/component-separation/fixtures/cube.asset.json",
+        "tests/component-separation/fixtures/validation-cases.json"
+      ],
+      "inputs": [
+        "fixtures/cube.asset.json"
+      ],
+      "oracles": [
+        "fixtures/validation-cases.json"
+      ],
+      "expected": {
+        "id": "BUDGET-INDICES",
+        "kind": "asset",
+        "input": "fixtures/cube.asset.json",
+        "limit": "max_indices",
+        "value": 35,
+        "expected_code": "resource_limit"
+      },
+      "checks": [
+        "native.cpp: actual decode/parse; exact diagnostic code and unchanged previous output"
+      ]
+    },
+    {
+      "id": "SCHEMA-BUDGET-JSON",
+      "kind": "public contract failure fixture",
+      "covers": [
+        "resource_exhaustion"
+      ],
+      "sources": [
+        "tests/component-separation/fixtures/primitive.recipe.json",
+        "tests/component-separation/fixtures/validation-cases.json"
+      ],
+      "inputs": [
+        "fixtures/primitive.recipe.json"
+      ],
+      "oracles": [
+        "fixtures/validation-cases.json"
+      ],
+      "expected": {
+        "id": "BUDGET-JSON",
+        "kind": "json",
+        "input": "fixtures/primitive.recipe.json",
+        "limit": "max_value_nodes",
+        "value": 2,
+        "expected_code": "resource_limit"
+      },
+      "checks": [
+        "native.cpp: actual decode/parse; exact diagnostic code and unchanged previous output"
+      ]
+    },
+    {
+      "id": "JOB-BUDGET-OPERATIONS",
+      "kind": "public cooperative job boundary fixture; no producer task executed",
+      "covers": [
+        "resource_exhaustion"
+      ],
+      "sources": [
+        "tests/component-separation/fixtures/job-cases.json",
+        "tests/component-separation/fixtures/job-cases.json"
+      ],
+      "inputs": [
+        "fixtures/job-cases.json"
+      ],
+      "oracles": [
+        "fixtures/job-cases.json"
+      ],
+      "expected": {
+        "id": "BUDGET-OPERATIONS",
+        "field": "operations",
+        "ceiling": 1,
+        "expected_code": "resource_limit",
+        "expected_publish": false
+      },
+      "checks": [
+        "native.cpp: actual JobMonitor/JobResult/admit; no publication and preserve prior owner"
+      ]
+    },
+    {
+      "id": "JOB-BUDGET-VERTICES",
+      "kind": "public cooperative job boundary fixture; no producer task executed",
+      "covers": [
+        "resource_exhaustion"
+      ],
+      "sources": [
+        "tests/component-separation/fixtures/job-cases.json",
+        "tests/component-separation/fixtures/job-cases.json"
+      ],
+      "inputs": [
+        "fixtures/job-cases.json"
+      ],
+      "oracles": [
+        "fixtures/job-cases.json"
+      ],
+      "expected": {
+        "id": "BUDGET-VERTICES",
+        "field": "vertices",
+        "ceiling": 2,
+        "expected_code": "resource_limit",
+        "expected_publish": false
+      },
+      "checks": [
+        "native.cpp: actual JobMonitor/JobResult/admit; no publication and preserve prior owner"
+      ]
+    },
+    {
+      "id": "JOB-BUDGET-INDICES",
+      "kind": "public cooperative job boundary fixture; no producer task executed",
+      "covers": [
+        "resource_exhaustion"
+      ],
+      "sources": [
+        "tests/component-separation/fixtures/job-cases.json",
+        "tests/component-separation/fixtures/job-cases.json"
+      ],
+      "inputs": [
+        "fixtures/job-cases.json"
+      ],
+      "oracles": [
+        "fixtures/job-cases.json"
+      ],
+      "expected": {
+        "id": "BUDGET-INDICES",
+        "field": "indices",
+        "ceiling": 2,
+        "expected_code": "resource_limit",
+        "expected_publish": false
+      },
+      "checks": [
+        "native.cpp: actual JobMonitor/JobResult/admit; no publication and preserve prior owner"
+      ]
+    },
+    {
+      "id": "JOB-BUDGET-OUTPUT_BYTES",
+      "kind": "public cooperative job boundary fixture; no producer task executed",
+      "covers": [
+        "resource_exhaustion"
+      ],
+      "sources": [
+        "tests/component-separation/fixtures/job-cases.json",
+        "tests/component-separation/fixtures/job-cases.json"
+      ],
+      "inputs": [
+        "fixtures/job-cases.json"
+      ],
+      "oracles": [
+        "fixtures/job-cases.json"
+      ],
+      "expected": {
+        "id": "BUDGET-OUTPUT_BYTES",
+        "field": "output_bytes",
+        "ceiling": 47,
+        "expected_code": "resource_limit",
+        "expected_publish": false
+      },
+      "checks": [
+        "native.cpp: actual JobMonitor/JobResult/admit; no publication and preserve prior owner"
+      ]
+    },
+    {
+      "id": "JOB-BUDGET-WORKING_BYTES",
+      "kind": "public cooperative job boundary fixture; no producer task executed",
+      "covers": [
+        "resource_exhaustion"
+      ],
+      "sources": [
+        "tests/component-separation/fixtures/job-cases.json",
+        "tests/component-separation/fixtures/job-cases.json"
+      ],
+      "inputs": [
+        "fixtures/job-cases.json"
+      ],
+      "oracles": [
+        "fixtures/job-cases.json"
+      ],
+      "expected": {
+        "id": "BUDGET-WORKING_BYTES",
+        "field": "working_bytes",
+        "ceiling": 63,
+        "expected_code": "resource_limit",
+        "expected_publish": false
+      },
+      "checks": [
+        "native.cpp: actual JobMonitor/JobResult/admit; no publication and preserve prior owner"
+      ]
+    },
+    {
+      "id": "JOB-BUDGET-QUERIES",
+      "kind": "public cooperative job boundary fixture; no producer task executed",
+      "covers": [
+        "resource_exhaustion"
+      ],
+      "sources": [
+        "tests/component-separation/fixtures/job-cases.json",
+        "tests/component-separation/fixtures/job-cases.json"
+      ],
+      "inputs": [
+        "fixtures/job-cases.json"
+      ],
+      "oracles": [
+        "fixtures/job-cases.json"
+      ],
+      "expected": {
+        "id": "BUDGET-QUERIES",
+        "field": "queries",
+        "ceiling": 1,
+        "expected_code": "resource_limit",
+        "expected_publish": false
+      },
+      "checks": [
+        "native.cpp: actual JobMonitor/JobResult/admit; no publication and preserve prior owner"
+      ]
+    },
+    {
+      "id": "JOB-BUDGET-DEPENDENCY_DEPTH",
+      "kind": "public cooperative job boundary fixture; no producer task executed",
+      "covers": [
+        "resource_exhaustion"
+      ],
+      "sources": [
+        "tests/component-separation/fixtures/job-cases.json",
+        "tests/component-separation/fixtures/job-cases.json"
+      ],
+      "inputs": [
+        "fixtures/job-cases.json"
+      ],
+      "oracles": [
+        "fixtures/job-cases.json"
+      ],
+      "expected": {
+        "id": "BUDGET-DEPENDENCY_DEPTH",
+        "field": "dependency_depth",
+        "ceiling": 1,
+        "expected_code": "resource_limit",
+        "expected_publish": false
+      },
+      "checks": [
+        "native.cpp: actual JobMonitor/JobResult/admit; no publication and preserve prior owner"
+      ]
+    },
+    {
+      "id": "JOB-BUDGET-ZERO-QUERIES",
+      "kind": "public cooperative job boundary fixture; no producer task executed",
+      "covers": [
+        "resource_exhaustion"
+      ],
+      "sources": [
+        "tests/component-separation/fixtures/job-cases.json",
+        "tests/component-separation/fixtures/job-cases.json"
+      ],
+      "inputs": [
+        "fixtures/job-cases.json"
+      ],
+      "oracles": [
+        "fixtures/job-cases.json"
+      ],
+      "expected": {
+        "id": "BUDGET-ZERO-QUERIES",
+        "field": "queries",
+        "ceiling": 0,
+        "expected_code": "invalid_input",
+        "expected_publish": false
+      },
+      "checks": [
+        "native.cpp: actual JobMonitor/JobResult/admit; no publication and preserve prior owner"
+      ]
+    },
+    {
+      "id": "JOB-CANCEL-PRE",
+      "kind": "public cooperative job boundary fixture; no producer task executed",
+      "covers": [
+        "cancellation"
+      ],
+      "sources": [
+        "tests/component-separation/fixtures/job-cases.json",
+        "tests/component-separation/fixtures/job-cases.json"
+      ],
+      "inputs": [
+        "fixtures/job-cases.json"
+      ],
+      "oracles": [
+        "fixtures/job-cases.json"
+      ],
+      "expected": {
+        "id": "CANCEL-PRE",
+        "when": "before_checkpoint",
+        "expected_code": "cancelled",
+        "expected_publish": false
+      },
+      "checks": [
+        "native.cpp: actual JobMonitor/JobResult/admit; no publication and preserve prior owner"
+      ]
+    },
+    {
+      "id": "JOB-CANCEL-PROGRESS",
+      "kind": "public cooperative job boundary fixture; no producer task executed",
+      "covers": [
+        "cancellation"
+      ],
+      "sources": [
+        "tests/component-separation/fixtures/job-cases.json",
+        "tests/component-separation/fixtures/job-cases.json"
+      ],
+      "inputs": [
+        "fixtures/job-cases.json"
+      ],
+      "oracles": [
+        "fixtures/job-cases.json"
+      ],
+      "expected": {
+        "id": "CANCEL-PROGRESS",
+        "when": "progress_callback",
+        "expected_code": "cancelled",
+        "expected_publish": false
+      },
+      "checks": [
+        "native.cpp: actual JobMonitor/JobResult/admit; no publication and preserve prior owner"
+      ]
+    },
+    {
+      "id": "JOB-LATE-REQUEST",
+      "kind": "public cooperative job boundary fixture; no producer task executed",
+      "covers": [
+        "terrain_late_invalidation"
+      ],
+      "sources": [
+        "tests/component-separation/fixtures/job-cases.json",
+        "tests/component-separation/fixtures/job-cases.json"
+      ],
+      "inputs": [
+        "fixtures/job-cases.json"
+      ],
+      "oracles": [
+        "fixtures/job-cases.json"
+      ],
+      "expected": {
+        "id": "LATE-REQUEST",
+        "field": "request_id",
+        "replacement": "superseding-job",
+        "expected_code": "stale_result",
+        "preserve_previous": true
+      },
+      "checks": [
+        "native.cpp: actual JobMonitor/JobResult/admit; no publication and preserve prior owner"
+      ]
+    },
+    {
+      "id": "JOB-LATE-REVISION",
+      "kind": "public cooperative job boundary fixture; no producer task executed",
+      "covers": [
+        "terrain_late_invalidation"
+      ],
+      "sources": [
+        "tests/component-separation/fixtures/job-cases.json",
+        "tests/component-separation/fixtures/job-cases.json"
+      ],
+      "inputs": [
+        "fixtures/job-cases.json"
+      ],
+      "oracles": [
+        "fixtures/job-cases.json"
+      ],
+      "expected": {
+        "id": "LATE-REVISION",
+        "field": "source_revision",
+        "replacement": "field-v2",
+        "expected_code": "stale_result",
+        "preserve_previous": true
+      },
+      "checks": [
+        "native.cpp: actual JobMonitor/JobResult/admit; no publication and preserve prior owner"
+      ]
+    },
+    {
+      "id": "JOB-LATE-EPOCH",
+      "kind": "public cooperative job boundary fixture; no producer task executed",
+      "covers": [
+        "terrain_late_invalidation"
+      ],
+      "sources": [
+        "tests/component-separation/fixtures/job-cases.json",
+        "tests/component-separation/fixtures/job-cases.json"
+      ],
+      "inputs": [
+        "fixtures/job-cases.json"
+      ],
+      "oracles": [
+        "fixtures/job-cases.json"
+      ],
+      "expected": {
+        "id": "LATE-EPOCH",
+        "field": "generation_epoch",
+        "replacement": 8,
+        "expected_code": "stale_result",
+        "preserve_previous": true
+      },
+      "checks": [
+        "native.cpp: actual JobMonitor/JobResult/admit; no publication and preserve prior owner"
+      ]
+    }
+  ],
+  "sources": [
+    {
+      "path": "MatterEngine3/shared-lib/rng.js",
+      "commit": "406b72509dbcf4dd644b73a7f095792ce2512ba5",
+      "sha256": "e2087da48a2b0e1a0655ac0aedd6f38e8f8502edcf9a594309c45064ac5f6538"
+    },
+    {
+      "path": "MatterEngine3/shared-lib/scatter_grid.js",
+      "commit": "406b72509dbcf4dd644b73a7f095792ce2512ba5",
+      "sha256": "1a39ae6ca1784d1c235536439daf2e6cc9ac5952fa55d19eb3c45704d497a96f"
+    },
+    {
+      "path": "MatterEngine3/src/csg_lowering.cpp",
+      "commit": "406b72509dbcf4dd644b73a7f095792ce2512ba5",
+      "sha256": "eb4c9d6ff7db201c815649cd6f80b5247af6520f4210ab4fd31b5e401ad57207"
+    },
+    {
+      "path": "MatterEngine3/src/dsl_rng.h",
+      "commit": "406b72509dbcf4dd644b73a7f095792ce2512ba5",
+      "sha256": "bc22641625132fbb203d02d647b5e2e7deee5cd4e56a60ba0bcba59b3cbb3564"
+    },
+    {
+      "path": "MatterEngine3/src/part_graph.cpp",
+      "commit": "406b72509dbcf4dd644b73a7f095792ce2512ba5",
+      "sha256": "46a8605c460aaaf3dc4cfbf093e5a44553437d15e2cdfd12458679bbd8a8bc79"
+    },
+    {
+      "path": "MatterEngine3/src/part_graph.h",
+      "commit": "406b72509dbcf4dd644b73a7f095792ce2512ba5",
+      "sha256": "b266b8e11999e27a82725f35ddcd84914b15f46a92a0bd99d15353c2c9c83497"
+    },
+    {
+      "path": "MatterEngine3/src/seam_weld.cpp",
+      "commit": "406b72509dbcf4dd644b73a7f095792ce2512ba5",
+      "sha256": "f750e2723819f20f38ac551f91e7990708275fa8a40aefd41e63060fecd27690"
+    },
+    {
+      "path": "MatterEngine3/src/streaming/sector_streaming_coordinator.cpp",
+      "commit": "406b72509dbcf4dd644b73a7f095792ce2512ba5",
+      "sha256": "698fbae1326291b7e5a082b9bf0d35d2d7cd0618920dfa4c42dc1a56244a5ed9"
+    },
+    {
+      "path": "MatterEngine3/src/terrain_field.cpp",
+      "commit": "406b72509dbcf4dd644b73a7f095792ce2512ba5",
+      "sha256": "a84f23d6158e34bf1eb1f2ed568a495887169099423e9a541af653cf010c3716"
+    },
+    {
+      "path": "MatterEngine3/src/terrain_mesher.cpp",
+      "commit": "406b72509dbcf4dd644b73a7f095792ce2512ba5",
+      "sha256": "6c8263571b56c03a8ad945f9d783e170521c19817be2f8bcd9ea0021fe58bec0"
+    },
+    {
+      "path": "MatterEngine3/src/triangle_emit.cpp",
+      "commit": "406b72509dbcf4dd644b73a7f095792ce2512ba5",
+      "sha256": "eabd7f0ea3ad03e4a8a7817cf9e54e84d864df5fc6f8e3b2bff30e1d1b0c2973"
+    },
+    {
+      "path": "MatterEngine3/tests/async_bake_tests.cpp",
+      "commit": "406b72509dbcf4dd644b73a7f095792ce2512ba5",
+      "sha256": "a65a28f10d609972f5e2f713d2cc36e618f09f8a2f6721da94c615b557268762"
+    },
+    {
+      "path": "MatterEngine3/tests/contour_seam_tests.cpp",
+      "commit": "406b72509dbcf4dd644b73a7f095792ce2512ba5",
+      "sha256": "6cad34710614372a725bbf9127995111f6c27f64f1a151aacfeec9e9ce99365c"
+    },
+    {
+      "path": "MatterEngine3/tests/dsl_determinism_tests.cpp",
+      "commit": "406b72509dbcf4dd644b73a7f095792ce2512ba5",
+      "sha256": "c4d013125fc55d386c500443e7de529b9914e669230a32226671c6555255e1b9"
+    },
+    {
+      "path": "MatterEngine3/tests/fixtures/export/AlpineFlower.golden",
+      "commit": "406b72509dbcf4dd644b73a7f095792ce2512ba5",
+      "sha256": "90e902e0bd57f4a52b95a6054fb6dfc476ff8cf5d6de97e6b669270c0fd9a991"
+    },
+    {
+      "path": "MatterEngine3/tests/fixtures/export/AlpineFlower.mtl",
+      "commit": "406b72509dbcf4dd644b73a7f095792ce2512ba5",
+      "sha256": "ca1c27315dcc9e3b37ceeef176c3a3ef2ff27e66a56286f1733772e7c8f076be"
+    },
+    {
+      "path": "MatterEngine3/tests/fixtures/export/CastlePavingSlab.golden",
+      "commit": "406b72509dbcf4dd644b73a7f095792ce2512ba5",
+      "sha256": "5c67254ecd4ee38cb3a81538ef3ce5efe6ad0f3f354aa6471568260dfa9ff002"
+    },
+    {
+      "path": "MatterEngine3/tests/fixtures/export/CastlePavingSlab.mtl",
+      "commit": "406b72509dbcf4dd644b73a7f095792ce2512ba5",
+      "sha256": "fdeef93ffb2dabbaf4710abd141531ff9782ea393aa8cc1a7333a0a7d75c715b"
+    },
+    {
+      "path": "MatterEngine3/tests/fixtures/export/CastleStone.golden",
+      "commit": "406b72509dbcf4dd644b73a7f095792ce2512ba5",
+      "sha256": "a9569f95c4b76092375ca6cc62b4b4a41697f1c20e311567bfbccfca4cd5e06e"
+    },
+    {
+      "path": "MatterEngine3/tests/fixtures/export/CastleStone.mtl",
+      "commit": "406b72509dbcf4dd644b73a7f095792ce2512ba5",
+      "sha256": "e0615e42088b5f59928b9878f3f89787a59c5f98c5c30a9b66afe3cb00d959a4"
+    },
+    {
+      "path": "MatterEngine3/tests/obj_export_golden_tests.cpp",
+      "commit": "406b72509dbcf4dd644b73a7f095792ce2512ba5",
+      "sha256": "fa1dd94fbd06ad2b477691f66bd45b4fe8e8df2de219b2a2b5ce45c411aee945"
+    },
+    {
+      "path": "MatterEngine3/tests/part_flatten_tests.cpp",
+      "commit": "406b72509dbcf4dd644b73a7f095792ce2512ba5",
+      "sha256": "ac58d0d7318816961f8f7fd067e34e3b9ef6105eb24eac8bf173b40cba09a4d6"
+    },
+    {
+      "path": "MatterEngine3/tests/part_graph_tests.cpp",
+      "commit": "406b72509dbcf4dd644b73a7f095792ce2512ba5",
+      "sha256": "9572ea433f1413341de603039f8e5d665c88a86fa69547ff5f94d7f380bc66f5"
+    },
+    {
+      "path": "MatterEngine3/tests/script_host_tests.cpp",
+      "commit": "406b72509dbcf4dd644b73a7f095792ce2512ba5",
+      "sha256": "a1102a95fb6d5949189f7f63bf9d3c5711bdfae2afa04a0b13539fb863da377f"
+    },
+    {
+      "path": "MatterEngine3/tests/seam_weld_tests.cpp",
+      "commit": "406b72509dbcf4dd644b73a7f095792ce2512ba5",
+      "sha256": "43f2414b7041efbe6e749cced00f8835f55830ec58bdaed10a92c07028b1be4e"
+    },
+    {
+      "path": "MatterEngine3/tests/sector_streaming_coordinator_tests.cpp",
+      "commit": "406b72509dbcf4dd644b73a7f095792ce2512ba5",
+      "sha256": "f04543a78ebdaf59368cd7fce70ff8046c748139cd631c3e82a5e4564da9ca6a"
+    },
+    {
+      "path": "MatterEngine3/tests/solid_source_evaluation_tests.cpp",
+      "commit": "406b72509dbcf4dd644b73a7f095792ce2512ba5",
+      "sha256": "163b0e01c7b87e5fd3e9911cff5d5a4e854db3883ac72623b99c4ec182624a3a"
+    },
+    {
+      "path": "MatterEngine3/tests/terrain_field_tests.cpp",
+      "commit": "406b72509dbcf4dd644b73a7f095792ce2512ba5",
+      "sha256": "bf0935ebe263b7ab77355465bafcbce216b429e7adfa9fa120282d53523ee868"
+    },
+    {
+      "path": "MatterEngine3/tests/terrain_mesher_tests.cpp",
+      "commit": "406b72509dbcf4dd644b73a7f095792ce2512ba5",
+      "sha256": "215d71578cef0b345bdf00bc34e4c74f6fa77e63c4de71978eef9a7f99513010"
+    },
+    {
+      "path": "MatterEngine3/tests/vulkan_smoke_tests.cpp",
+      "commit": "406b72509dbcf4dd644b73a7f095792ce2512ba5",
+      "sha256": "dd421866929e48bd2abc29fb964d514876f4b7704e15aeb5f417370508b690b0"
+    },
+    {
+      "path": "cmake/MatterViewer.cmake",
+      "commit": "406b72509dbcf4dd644b73a7f095792ce2512ba5",
+      "sha256": "c71a2d939268dfc7299e93f8e5a489e9344771c70062bcab3d9457e799ef8dc1"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-30-static-default-candidate/README.md",
+      "commit": "406b72509dbcf4dd644b73a7f095792ce2512ba5",
+      "sha256": "f4e234c83472ebd262cc2c43858db6774c41a445d721343de22b8c77c88b8f89"
+    },
+    {
+      "path": "libs/MatterContracts/examples/contracts.mjs",
+      "commit": "406b72509dbcf4dd644b73a7f095792ce2512ba5",
+      "sha256": "628e44ba6f15e94694accdbf46bc49879bfb2eb99f91918fe60cf588b227c93e"
+    },
+    {
+      "path": "libs/MatterContracts/examples/ordered-csg.recipe.json",
+      "commit": "406b72509dbcf4dd644b73a7f095792ce2512ba5",
+      "sha256": "5c9771832231fb103743ee1ef0350029d0f04bbd1d69224f27f1a8b7b6004079"
+    },
+    {
+      "path": "libs/MatterContracts/examples/repeated-assembly.asset.json",
+      "commit": "406b72509dbcf4dd644b73a7f095792ce2512ba5",
+      "sha256": "0c57c1fc2b5f17224a6f11694e492dca61f3266523c320da21d0668a379915ea"
+    },
+    {
+      "path": "libs/MatterContracts/include/matter/contracts/contracts.h",
+      "commit": "406b72509dbcf4dd644b73a7f095792ce2512ba5",
+      "sha256": "a05428c46c43f760edc841c03314b0545d4460826be1327dacd2c15fdd012f35"
+    },
+    {
+      "path": "libs/MatterContracts/include/matter/contracts/jobs.h",
+      "commit": "406b72509dbcf4dd644b73a7f095792ce2512ba5",
+      "sha256": "f73b563a11f63cb51457a9968c53395c3c4376d004ee27c1efe2a4499ae5b167"
+    },
+    {
+      "path": "libs/MatterContracts/schema-v1.json",
+      "commit": "406b72509dbcf4dd644b73a7f095792ce2512ba5",
+      "sha256": "43bcb39035ffc3dd1fa45df6d7fa4460f49516c4b138d4d592907e483186103b"
+    },
+    {
+      "path": "libs/MatterContracts/src/codec.cpp",
+      "commit": "406b72509dbcf4dd644b73a7f095792ce2512ba5",
+      "sha256": "e755ad6d50b3c0a890ad3b23538a33195e4b102f14d9693049e503c971165d59"
+    },
+    {
+      "path": "libs/MatterContracts/src/services.cpp",
+      "commit": "406b72509dbcf4dd644b73a7f095792ce2512ba5",
+      "sha256": "da810359b42b646caee8a8040f15303169b7022587b3c540342905d9154e7dcc"
+    },
+    {
+      "path": "libs/MatterContracts/src/validation.cpp",
+      "commit": "406b72509dbcf4dd644b73a7f095792ce2512ba5",
+      "sha256": "75d7aca553082f072d13703522a3db74cb28610c0507be0453bb625acb4d4f1f"
+    },
+    {
+      "path": "libs/MatterContracts/tests/gate-manifest-v1.json",
+      "commit": "406b72509dbcf4dd644b73a7f095792ce2512ba5",
+      "sha256": "dbbea9e4e744533a60caf0f2ca0c9e0cafebac4246f219b97dc79ddffddda360"
+    },
+    {
+      "path": "libs/MatterContracts/tests/rng-vectors.json",
+      "commit": "406b72509dbcf4dd644b73a7f095792ce2512ba5",
+      "sha256": "3e1ee8f6d006802de5808253ff82de7d098cfc8127c31d02f68fb6652e86b06b"
+    },
+    {
+      "path": "libs/ProceduralGeometry/README.md",
+      "commit": "406b72509dbcf4dd644b73a7f095792ce2512ba5",
+      "sha256": "cbbc7af35597285234ac2d0af39b4942bb710abcf7998bcc99d67c9e0b1b6e5a"
+    },
+    {
+      "path": "projects/world_demo/objects/castle/materials/CastlePavingSlab.js",
+      "commit": "406b72509dbcf4dd644b73a7f095792ce2512ba5",
+      "sha256": "276c2a38fc87b4dc5a28c95543c66936957b0c2ec4683fa215ce6220121a6822"
+    },
+    {
+      "path": "projects/world_demo/objects/castle/materials/CastleStone.js",
+      "commit": "406b72509dbcf4dd644b73a7f095792ce2512ba5",
+      "sha256": "fb3becc1dbc78e8e33a80428f158d1f34761dcb41cd8d8bed2d208e929450273"
+    },
+    {
+      "path": "projects/world_demo/objects/castle/materials/CastleStoneSource.js",
+      "commit": "406b72509dbcf4dd644b73a7f095792ce2512ba5",
+      "sha256": "8ceb6b45ae2e3e15dd7b9f032d73456ab3ef9b693b38fdbd057cc3a7dbb430a4"
+    },
+    {
+      "path": "projects/world_demo/objects/terrain/MountainDetailRock.js",
+      "commit": "406b72509dbcf4dd644b73a7f095792ce2512ba5",
+      "sha256": "5ec3ef4208cf0370a6b6590e425707856f1b10afd0c2299534a808714869945c"
+    },
+    {
+      "path": "projects/world_demo/objects/vegetation/alpine/AlpineFlower.js",
+      "commit": "406b72509dbcf4dd644b73a7f095792ce2512ba5",
+      "sha256": "b32b499908752e4031b615d2c8a2c5dcbad5ea22c60f0a399acdb3387817ba74"
+    },
+    {
+      "path": "projects/world_demo/scenes/streaming/StreamMountain/StreamMountain.js",
+      "commit": "406b72509dbcf4dd644b73a7f095792ce2512ba5",
+      "sha256": "ee8339526dff2408e0683d0fcab818b85212882d7ed02d3e758c8b428f466eac"
+    },
+    {
+      "path": "projects/world_demo/scenes/streaming/StreamMountain/objects/WorldSector.js",
+      "commit": "406b72509dbcf4dd644b73a7f095792ce2512ba5",
+      "sha256": "8d59321476da2f54e11a30ed9c2b2ea2100a8161d66d76d3af93dd9ac2785d8d"
+    },
+    {
+      "path": "projects/world_demo/scenes/streaming/StreamMountain/props.json",
+      "commit": "406b72509dbcf4dd644b73a7f095792ce2512ba5",
+      "sha256": "c39d0e6837f9b62afaace9dcaed322a7481a171cf6b8d5a1c73dd4d1f3a68ffb"
+    },
+    {
+      "path": "projects/world_demo/shared-lib/alpine_ecology.js",
+      "commit": "406b72509dbcf4dd644b73a7f095792ce2512ba5",
+      "sha256": "3f3da8df3b16f747b17819543cbff8d7d39f54b28d41b0dc9860de7f93bd6253"
+    },
+    {
+      "path": "projects/world_demo/shared-lib/castle_paving.js",
+      "commit": "406b72509dbcf4dd644b73a7f095792ce2512ba5",
+      "sha256": "d897eee57822ba142869c5124d89ead6d349a8ded64cabcba76554ac071d3711"
+    },
+    {
+      "path": "projects/world_demo/shared-lib/castle_plan.js",
+      "commit": "406b72509dbcf4dd644b73a7f095792ce2512ba5",
+      "sha256": "5556f48a4f94cc1fd3c04f2eacff38a32f6c91aa155402b11d8850d0cf188135"
+    },
+    {
+      "path": "projects/world_demo/shared-lib/castle_primitives.js",
+      "commit": "406b72509dbcf4dd644b73a7f095792ce2512ba5",
+      "sha256": "3baa45c17cd0a6cebd5b77e3133974d830da3633a520d42de68e1b3ef4f2c6be"
+    },
+    {
+      "path": "projects/world_demo/shared-lib/castle_solid_source.js",
+      "commit": "406b72509dbcf4dd644b73a7f095792ce2512ba5",
+      "sha256": "2184ee225694bbed5ad3ce3a6a679a988dc71bdddeb87d87c8b798586a7e4a6f"
+    },
+    {
+      "path": "projects/world_demo/shared-lib/castle_stock.js",
+      "commit": "406b72509dbcf4dd644b73a7f095792ce2512ba5",
+      "sha256": "e6f1b1f5bbc97ea29042bcdadaf1a6f7ea2aa4311149806274c304a6dfa63372"
+    },
+    {
+      "path": "projects/world_demo/shared-lib/castle_structure.js",
+      "commit": "406b72509dbcf4dd644b73a7f095792ce2512ba5",
+      "sha256": "28eea7651e386baacad4552b6a756d0347231754984f24321b73101d7d6a3dac"
+    },
+    {
+      "path": "projects/world_demo/shared-lib/castle_structure_fixture.js",
+      "commit": "406b72509dbcf4dd644b73a7f095792ce2512ba5",
+      "sha256": "449ebb471ba40cb4c9d11489f33b5376887668b65cd8a16aa3e68370b5f68b50"
+    },
+    {
+      "path": "projects/world_demo/shared-lib/castle_surface_shells.js",
+      "commit": "406b72509dbcf4dd644b73a7f095792ce2512ba5",
+      "sha256": "a00dbf69bebb10698464d729967af328189130d62aff7f5633b785628fd3ac23"
+    },
+    {
+      "path": "projects/world_demo/shared-lib/mountain_detail_rocks.js",
+      "commit": "406b72509dbcf4dd644b73a7f095792ce2512ba5",
+      "sha256": "fb76939a1b7e167e7caa5fba16535a86b584739b2587399007e4bc238778c0ec"
+    },
+    {
+      "path": "projects/world_demo/shared-lib/mountain_forest.js",
+      "commit": "406b72509dbcf4dd644b73a7f095792ce2512ba5",
+      "sha256": "e280ced9c0fee329c9b1f3b4ccc6d26dbe5de38b4f402a6e260385a33879851e"
+    },
+    {
+      "path": "projects/world_demo/shared-lib/mountain_geometry_site.js",
+      "commit": "406b72509dbcf4dd644b73a7f095792ce2512ba5",
+      "sha256": "0bc4a490ee751a3e3d0597fbf3138ad7a641f5474a73fb76fceb096b7c22164f"
+    },
+    {
+      "path": "projects/world_demo/shared-lib/mountain_rock_scatter.js",
+      "commit": "406b72509dbcf4dd644b73a7f095792ce2512ba5",
+      "sha256": "25e67212eb0d375a9a94947a4ed786827e3c41ec6cc0f1d1ad0cf1aa26b01823"
+    },
+    {
+      "path": "projects/world_demo/shared-lib/mountain_rock_sizes.js",
+      "commit": "406b72509dbcf4dd644b73a7f095792ce2512ba5",
+      "sha256": "ec26f99b3a9c6895d286ce0f2cf108ded741c90b6cec444cef68fe07c3a276fe"
+    },
+    {
+      "path": "projects/world_demo/shared-lib/mountain_rocks.js",
+      "commit": "406b72509dbcf4dd644b73a7f095792ce2512ba5",
+      "sha256": "feae87d25f16a0c6b5a7304d51295737b4b2585f06e0d0847cb3b265a45f5de9"
+    },
+    {
+      "path": "projects/world_demo/shared-lib/mountain_surface.js",
+      "commit": "406b72509dbcf4dd644b73a7f095792ce2512ba5",
+      "sha256": "67d4c81faf2a9b1e18d0a0c178d5d430bf6a8b9a2da3041e12db11c8269fca3e"
+    },
+    {
+      "path": "projects/world_demo/shared-lib/vegetation.js",
+      "commit": "406b72509dbcf4dd644b73a7f095792ce2512ba5",
+      "sha256": "1f95381b10af87a11629653ec56f83579a8e423154232cfb2def9e1f984e663a"
+    },
+    {
+      "path": "projects/world_demo/tests/castle_plan_tests.mjs",
+      "commit": "406b72509dbcf4dd644b73a7f095792ce2512ba5",
+      "sha256": "fbf090740ca17cd6cdb6aeecb77284b81b62c3edc381b3e9da28343e9a119ee1"
+    },
+    {
+      "path": "projects/world_demo/tests/fixtures/castle_plan_two_room_two_level.js",
+      "commit": "406b72509dbcf4dd644b73a7f095792ce2512ba5",
+      "sha256": "6b7f9cd569f837e9b7d690c0ec1852e0d0b96111b50550eb2205847c04d1b0f8"
+    },
+    {
+      "path": "projects/world_demo/tests/mountain_geometry_site_tests.mjs",
+      "commit": "406b72509dbcf4dd644b73a7f095792ce2512ba5",
+      "sha256": "2057d32540aae3f0b9830d24aed1d4a9c55be06dc15baaaff08fdfeb2fa632f0"
+    },
+    {
+      "path": "projects/world_demo/tests/mountain_terrain_only_tests.mjs",
+      "commit": "406b72509dbcf4dd644b73a7f095792ce2512ba5",
+      "sha256": "19258c8c0c8b864450cccdb4b4623b6e43464d8d0d606f2fd301fc28e80a3aee"
+    },
+    {
+      "path": "tests/vt_normal_frame_reference_tests.mjs",
+      "commit": "406b72509dbcf4dd644b73a7f095792ce2512ba5",
+      "sha256": "ec1189633d9c568f058094b6332c905548c34b449874c3522e46d8abab676ba1"
+    }
+  ],
+  "known_failures_and_limits": [
+    {
+      "id": "MANIFEST-MEMBANK",
+      "status": "reproduced_existing_failure",
+      "command": "python3 tools/check-source-manifests.py --root .",
+      "exit_code": 1,
+      "diagnostic": "ERROR: unclassified compilable source in libs/MemoryLib/src: libs/MemoryLib/src/mem_bank.c",
+      "note": "Tracked at live baseline. No manifest/source fix in docs task.",
+      "current_capture": "reproduced at assigned HEAD; evidence/source-manifest.log"
+    },
+    {
+      "id": "SHADER-SOURCE",
+      "status": "historical_native_failure_retained_not_rerun",
+      "test": "shader_source_tests",
+      "source": "docs/findings/static-default-candidate-validation-2026-09-30.md",
+      "diagnostic": "Line88 missing literal if (instance.water_pad0 != 0u) return;",
+      "note": "Historical final22/23 native suites; assert and shader retained. No new native pass or skip claimed.",
+      "current_capture": "reproduced at assigned HEAD; evidence/legacy-tests.log"
+    },
+    {
+      "id": "NORMAL-READINESS",
+      "status": "historical_failure_repaired",
+      "source": "docs/findings/vt-normal-frame-readiness-2026-09-29.md",
+      "note": "Old fixture sampled too early; readiness repair preserves .995/.998 oracles and120s timeout. Not a current known failure."
+    },
+    {
+      "id": "PERFORMANCE-PARITY",
+      "status": "unproven",
+      "note": "Historical static-default/native captures do not prove visual parity, equal rendered coverage or16.7ms. Browser, WASM, independent components and numeric budgets remain unverified."
+    },
+    {
+      "id": "OBJ-FIXTURE-MISSING",
+      "status": "reproduced_native_failure",
+      "diagnostic": "12 OBJ comparisons fail; missing MatterEngine3/tests/fixtures/export/CastlePavingSlab.obj and AlpineFlower.obj read as empty fixtures",
+      "source": "MatterEngine3/tests/obj_export_golden_tests.cpp",
+      "captured_outputs": "fixtures/native-export/; generated with golden-update unset, separately retained",
+      "note": "Digest/MTL/native structural assertions pass. No legacy fixture backfill or skipped test."
+    }
+  ],
+  "capture": "evidence/capture.json",
+  "historical_render": "evidence/historical-render.json",
+  "provenance_policy": "C0 assertions retain original baseline. Producer/source blobs for new captures are pinned to assigned HEAD. Hand-authored mesh oracles are mathematical expectations, not extracted producer results. Canonical snapshots derived from delivered JS contract helper and checked against native codec. RNG known answers are frozen rather than regenerated by check commands.",
+  "qualification": "Corpus/data/contract checks are acceptance for these test assets. Producer portability, actual terrain transitions, GPU parity, WASM and performance acceptance require later integration checks.",
+  "commands": [
+    "python3 tests/component-separation/verify.py",
+    "aq test tests/component-separation/test_oracles.py -q",
+    "node tests/component-separation/check-js.mjs",
+    "powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/component-separation/run-legacy.ps1",
+    "powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/component-separation/build-windows.ps1"
+  ],
+  "files": [
+    {
+      "path": "comparison-policy.json",
+      "sha256": "ae035c775c1b23c9153a7baf594aef872cea941009627cd290515fc116f029a8"
+    },
+    {
+      "path": "evidence/c0-verify.log",
+      "sha256": "633907c43c59da9bebd15a663c0fc2aa5722b428bebe103557c4754828129c59"
+    },
+    {
+      "path": "evidence/capture.json",
+      "sha256": "73d89c5f416ec1e0c0c0d8619365ec09f5ba021daead25dd502f1178d9b6694c"
+    },
+    {
+      "path": "evidence/corpus-native.log",
+      "sha256": "545fd87508d7698f35b94e0aaac0698c31dc3bcd4960ba42a9e02542b3418241"
+    },
+    {
+      "path": "evidence/export-compare.log",
+      "sha256": "e5660b59bcfd5f8b94b7c216c2c8c9eba9e74217ce54a680440a240118bdc1a4"
+    },
+    {
+      "path": "evidence/historical-gpu.txt",
+      "sha256": "65de54cff2a54b62601124ce5e9e7e5d0028a1f5e6c53b3ec0e9b0126c6fa3b1"
+    },
+    {
+      "path": "evidence/historical-render.json",
+      "sha256": "a5ef65e907b2d84cf9849371c4c1d276f5a0458b7269b76e8d47c5ccbfc8285e"
+    },
+    {
+      "path": "evidence/js.log",
+      "sha256": "d8213430e7a619d06a981c89378910d7eb37b033658a856d887e0385e19f3d42"
+    },
+    {
+      "path": "evidence/legacy-build.log",
+      "sha256": "181de88adda2955864a9f57d2f71309ff3589a629b9dd5b7682c1f7ae9a40b9f"
+    },
+    {
+      "path": "evidence/legacy-tests.log",
+      "sha256": "9cb7808db196381d047b2d77d57835ef997487e6f675115604dfe03f63303efd"
+    },
+    {
+      "path": "evidence/machine.json",
+      "sha256": "3bf776cc45dac4fa25843f67a696f6ea884e961bc0d98e24e88292730fd4cc8a"
+    },
+    {
+      "path": "evidence/native-checks.log",
+      "sha256": "7c52f89a7738617ec279a2db6017d051bff68f70afeebac3e51c562fda353af4"
+    },
+    {
+      "path": "evidence/oracle-tests.log",
+      "sha256": "2a2e7f415beb8eaa0af742e6f5b35adf4f116bb1a5a1c45bc56807b3d36f12c6"
+    },
+    {
+      "path": "evidence/preflight.log",
+      "sha256": "941b873ad5beb36796b37c77f86bb48f555ec4db98904cdd8717814c5c51755f"
+    },
+    {
+      "path": "evidence/source-manifest.log",
+      "sha256": "723a035fc7a8b6566713ee1571f956cdd66b474f7cf4b9158629e6260370ce20"
+    },
+    {
+      "path": "fixtures/affine.asset.canonical.json",
+      "sha256": "d20158d10da6f35424c92d320fb4c078b8b2c73baa2fd91eaaf766b92e2a8a00"
+    },
+    {
+      "path": "fixtures/affine.asset.json",
+      "sha256": "96d0233d1dc90fbaa46876059419cedf640d195213cacfcc7524f12ebc1bf2dc"
+    },
+    {
+      "path": "fixtures/csg-nonuniform.recipe.json",
+      "sha256": "9ec7ecd35ba5d14be1c81b99d736e5681e4169899c43c32196d9b52530d8e375"
+    },
+    {
+      "path": "fixtures/csg-oracle.asset.json",
+      "sha256": "ee82b06a711cf97ad75b31e3a84f5a561fdef7bc9fa7248fb30528b4cfbf7f97"
+    },
+    {
+      "path": "fixtures/cube.asset.canonical.json",
+      "sha256": "48243ce46499069e30066446f76de28038adbd3c7998a283c9cffee5d5b8c53a"
+    },
+    {
+      "path": "fixtures/cube.asset.json",
+      "sha256": "bc7d3cb425199bcd19215d01da92b18de4dc0c8dd897d172804d7cb5a13c8744"
+    },
+    {
+      "path": "fixtures/cycle.recipe.json",
+      "sha256": "b441644458ca350d4d49b0fba855d563a06d4d72f016b7684b39dbecb86ec9f3"
+    },
+    {
+      "path": "fixtures/documents.json",
+      "sha256": "a5b63dbcf8f75194c2a1d096d055a3d5d79e64ba0b6cee5bd6c9ec0da01914a6"
+    },
+    {
+      "path": "fixtures/duplicate-key.json",
+      "sha256": "70f09e61d50f608b090093a666c8f5995ed46fd99d0a96e33169bfa3a616b451"
+    },
+    {
+      "path": "fixtures/extrude-oracle.asset.json",
+      "sha256": "8d7db13722b370ec90ee0ad09b6de465d86a44e6a212a740bebd8e7afb5b3a78"
+    },
+    {
+      "path": "fixtures/extrude.recipe.canonical.json",
+      "sha256": "1cb16ea2160f225c0002ef5356a956791c65428e047235ef0f5bb0a9110cb164"
+    },
+    {
+      "path": "fixtures/extrude.recipe.json",
+      "sha256": "0a8aac7cbd00b8d6adfa45279200a668f6ab6b7f7d271340a2a79fa1459f8f7d"
+    },
+    {
+      "path": "fixtures/geometry-oracles.json",
+      "sha256": "b5eec1e2546c37d78cfe5e5b05a2e1e4672a6bcbade48234d2ec327782155439"
+    },
+    {
+      "path": "fixtures/invalid-index.asset.json",
+      "sha256": "c8e65370f4556fada22182c66ee6aa57ea6839315cad2044ebc00fef5002db28"
+    },
+    {
+      "path": "fixtures/job-cases.json",
+      "sha256": "36a920b577aa0a8a5a6094b30e6183c5e7dbda9ad0f3294d3173fadd816451bb"
+    },
+    {
+      "path": "fixtures/legacy-assets.json",
+      "sha256": "779d01521d639fbbb0f09e42834014ac316e84b6aa6c83ab6f74246e6459d77a"
+    },
+    {
+      "path": "fixtures/material-albedo.rgba8",
+      "sha256": "3606d5541b38c9a5457df2c7dcfd1847beb2a5cc071de3a12e81c7073e214359"
+    },
+    {
+      "path": "fixtures/material.asset.canonical.json",
+      "sha256": "833a8d40ea7cdea503f0228ad953a9b1d5cf815499c65be4ec6a917987e0c797"
+    },
+    {
+      "path": "fixtures/material.asset.json",
+      "sha256": "384a746f0a80e55d16ae0bd6b4ea954762f5b148aa4afe15ca8d1c6ea6828c46"
+    },
+    {
+      "path": "fixtures/missing-reference.recipe.json",
+      "sha256": "1e0a097eadcd85ef7e421663e8be1452a22c2d9df2d682bb856b03669a05eb76"
+    },
+    {
+      "path": "fixtures/native-export/AlpineFlower.mtl",
+      "sha256": "ca1c27315dcc9e3b37ceeef176c3a3ef2ff27e66a56286f1733772e7c8f076be"
+    },
+    {
+      "path": "fixtures/native-export/AlpineFlower.obj",
+      "sha256": "17eeaaa1bcdef615b5af3a0b958c7aa6a529ee275add767f8daead2b86146116"
+    },
+    {
+      "path": "fixtures/native-export/AlpineFlower_albedo.png",
+      "sha256": "479370a5d8adb430a7e649a1a7250354533146fb0dae46c608c18b45bf1567a5"
+    },
+    {
+      "path": "fixtures/native-export/AlpineFlower_ao.png",
+      "sha256": "59970949a5e53862093722160aa67146585da5e020fe7716121f8061df47cb7d"
+    },
+    {
+      "path": "fixtures/native-export/AlpineFlower_metallic.png",
+      "sha256": "96345cfd9f8052e2a1a976ac1e558ba8f60ce02b69d1decc945bf61a25246b4d"
+    },
+    {
+      "path": "fixtures/native-export/AlpineFlower_normal.png",
+      "sha256": "437dd4fcb4f01798c6ad0f48c86cb474ceee6181a9769724ab560c1fdfbe23eb"
+    },
+    {
+      "path": "fixtures/native-export/AlpineFlower_roughness.png",
+      "sha256": "b86eada0e723ab255db85a42bfd00beb48aac165e5be908fa94386134ff6629d"
+    },
+    {
+      "path": "fixtures/native-export/CastlePavingSlab.mtl",
+      "sha256": "fdeef93ffb2dabbaf4710abd141531ff9782ea393aa8cc1a7333a0a7d75c715b"
+    },
+    {
+      "path": "fixtures/native-export/CastlePavingSlab.obj",
+      "sha256": "227f72e872dfb879116854c25afa0a5889447ef75168b8e2e64f2e9475244cc6"
+    },
+    {
+      "path": "fixtures/native-export/CastlePavingSlab_albedo.png",
+      "sha256": "ba529df37569f2279146fbaf2e71dcede041438da77925284c9766550a1bd82e"
+    },
+    {
+      "path": "fixtures/native-export/CastlePavingSlab_ao.png",
+      "sha256": "59970949a5e53862093722160aa67146585da5e020fe7716121f8061df47cb7d"
+    },
+    {
+      "path": "fixtures/native-export/CastlePavingSlab_metallic.png",
+      "sha256": "96345cfd9f8052e2a1a976ac1e558ba8f60ce02b69d1decc945bf61a25246b4d"
+    },
+    {
+      "path": "fixtures/native-export/CastlePavingSlab_normal.png",
+      "sha256": "122d3ab2318c8c6d9bb394a19a91fb0a94766cf2f6c603ee805a27f39a245f46"
+    },
+    {
+      "path": "fixtures/native-export/CastlePavingSlab_roughness.png",
+      "sha256": "81a0d9753851020d03b4e719c23cfe285bdbad71bd3237d75eab03410d4fda8f"
+    },
+    {
+      "path": "fixtures/native-export/files.json",
+      "sha256": "43d34ab059c2de622339bd2e8fcb3e5c60bc4deef027a724e3bdb6f90f2e25d1"
+    },
+    {
+      "path": "fixtures/negative-size.recipe.json",
+      "sha256": "d77045f5b2ee8c466332db2adb2c037b7778b85a149b192970ce27a35461a83b"
+    },
+    {
+      "path": "fixtures/nonfinite.json",
+      "sha256": "4f1fcd9f1806fb2b76f682f64d5bdb68f32c96a39208b39fe68b6756010f9ae5"
+    },
+    {
+      "path": "fixtures/ordered-csg.recipe.canonical.json",
+      "sha256": "2d8c013ecdb3810a11d9b84c7b9e4df6f33fa9715abece2673f8039e9b50b7ce"
+    },
+    {
+      "path": "fixtures/ordered-csg.recipe.json",
+      "sha256": "713e0857ed15925efa1e228c6bdbef21c495f4902ccaafee61280dd292709628"
+    },
+    {
+      "path": "fixtures/params.json",
+      "sha256": "fd2b34b04c1058416e201d89d0550078e2c2b66ceb026520f6cfca0d99e29a1a"
+    },
+    {
+      "path": "fixtures/primitive.recipe.canonical.json",
+      "sha256": "c5ab160936a6f45db8810bcd33964af5aea91933a0086b986609e867d09fce28"
+    },
+    {
+      "path": "fixtures/primitive.recipe.json",
+      "sha256": "d9598c459316cb6726bc7c43a5748140782f0b625118b0dd31bf9c25ce5f7167"
+    },
+    {
+      "path": "fixtures/repeated-assembly.asset.canonical.json",
+      "sha256": "31d3176e9b9f27939771d84bebd989a7e6cd7f401c840fcdd1c5b733f9b834fc"
+    },
+    {
+      "path": "fixtures/repeated-assembly.asset.json",
+      "sha256": "f7726afedc79a80e7a0421e43440ac0989bd78d1133a39b805266cb9626afdba"
+    },
+    {
+      "path": "fixtures/reversed-csg.recipe.canonical.json",
+      "sha256": "93177a09f6ef339e0beefbe9053fb06f8af132e05d08531109221454bd18607a"
+    },
+    {
+      "path": "fixtures/reversed-csg.recipe.json",
+      "sha256": "966590668331ef235e73fc22e58e66dcc511d1ed542bbc6229dfee3c8a26c9c1"
+    },
+    {
+      "path": "fixtures/rng-splitmix64.json",
+      "sha256": "3e1ee8f6d006802de5808253ff82de7d098cfc8127c31d02f68fb6652e86b06b"
+    },
+    {
+      "path": "fixtures/rng-xoshiro128.json",
+      "sha256": "dbb7f6ae495073d2970f7be7c1f96f9f1a76ab26f53e5d53aadabe28c7300e05"
+    },
+    {
+      "path": "fixtures/seeded-variation.json",
+      "sha256": "2ef814cc177d861396eb5281a99c56bf3d36818d5069823228f3175654924480"
+    },
+    {
+      "path": "fixtures/singular-transform.asset.json",
+      "sha256": "ed474ff686002d0e0e71f64d11959fba43b7b7002ea901c1a65729a2275495e7"
+    },
+    {
+      "path": "fixtures/terrain.json",
+      "sha256": "eaddcb576c76c430055848acceb29e8b1b74cf2edcfded37f3d9179aa4c440f6"
+    },
+    {
+      "path": "fixtures/unknown-required.recipe.json",
+      "sha256": "c3eeb8d8150d3270fe6f83300a274034edaea3acf3298f0944fdbde23ee47db0"
+    },
+    {
+      "path": "fixtures/unsupported-version.recipe.json",
+      "sha256": "ab85e27c13e9055f7a2dff710476c3cfc288e89823ab3e5a7e8c2edc5a5d6e8f"
+    },
+    {
+      "path": "fixtures/validation-cases.json",
+      "sha256": "9087be40cb63d362badef86be76034ba0366aeaf7f99e25e9626df39cab38bed"
+    }
+  ]
+}

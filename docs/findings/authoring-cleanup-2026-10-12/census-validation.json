@@ -1,0 +1,138 @@
+{
+  "authorization": "msg-fc42ae14f8494af99718a366a675576f",
+  "original_cleanup_head": "49103fc124d8b23c216b12f941fa5b184362191a",
+  "claim_epoch": 3,
+  "correction": {
+    "file": "cmake/tests/viewer_graph_tests.cmake",
+    "source_added": 4,
+    "source_removed_or_replaced": 2,
+    "before_blob": "feb6a749cb307f5ce3f41dba71ae909274a9cccf",
+    "after_blob": "f0d72bd24298ea448967833dd8893a45aa5244ca",
+    "qualified_owner_blob": "f0d72bd24298ea448967833dd8893a45aa5244ca"
+  },
+  "qualification": "Portable actual production inventory, viewer census/uniqueness/C3/required-source predicates only. Full target definitions/links/native build/runtime qualification remains required on the new hosted exact head; not claimed by this check. No competing local Windows configure or build.",
+  "commands": {
+    "before": [
+      "python3",
+      "docs/findings/authoring-cleanup-2026-10-12/check-viewer-census.py",
+      "--helper",
+      "/tmp/crisp-ember-20-validation/census/helper-before.cmake"
+    ],
+    "after": [
+      "python3",
+      "docs/findings/authoring-cleanup-2026-10-12/check-viewer-census.py"
+    ]
+  },
+  "runs": {
+    "before": {
+      "helper_sha256": "f1f225f17c17bd44972312d8b275d5b30c72576ef83431c300f9cb8bbb50dd07",
+      "inputs_sha256": {
+        "cmake/ManifestSources.cmake": "24ff2fbcff42da8354da7d62579dacdf584cdc8e85870c1ccc54f66db41b0ce6",
+        "cmake/MatterEngine.cmake": "f3ff0fe6756150fa23fab48697e9c14e4c8af1df0e9a0771836cfb22c582d073",
+        "cmake/MatterViewer.cmake": "753d6e855f961c822d355077830618daab27c66f887f2499596c47a8732eb579",
+        "cmake/manifests/engine-core.sources": "5e4fc706622106d5ce6efe240da4c3ece1433e6b833a62d9b316aafa5af577e6",
+        "cmake/manifests/matter-surface.sources": "322065c3b2ca227f9a8e0a33b94c8ca152b5a6f5a2b27a7bfe7cbe6857c4384d",
+        "cmake/manifests/engine-viewer.sources": "f6da6332d6ac47f90badc8ce40504946bfc296640ebf8074222033adf9f5cdf6"
+      },
+      "runs": [
+        {
+          "retopology": "ON",
+          "exit": 1,
+          "elapsed_seconds": 0.9637,
+          "inventory": {
+            "core": 168,
+            "surface": 21,
+            "viewer": 219,
+            "unique": 219
+          },
+          "stdout": "",
+          "stderr": "CMake Error at /tmp/matter-viewer-census-omtl22dl/ON.cmake:116 (message):\n  viewer source census is wrong for retopo=ON; count=219, unique=219,\n  expected=217\n\n\n",
+          "inventory_sha256": "d09250f02bef9f39f4f8fd2f00d7c933b860876f7227bf192c779bfa33a58ec9",
+          "required_mesh_members": {
+            "libs/MatterGraphics/src/native/mesh_raster.cpp": true,
+            "libs/MatterGraphics/src/native/mesh_pipelines.cpp": true
+          },
+          "all_inventory_files_exist": true
+        },
+        {
+          "retopology": "OFF",
+          "exit": 1,
+          "elapsed_seconds": 0.7865,
+          "inventory": {
+            "core": 168,
+            "surface": 21,
+            "viewer": 218,
+            "unique": 218
+          },
+          "stdout": "",
+          "stderr": "CMake Error at /tmp/matter-viewer-census-omtl22dl/OFF.cmake:116 (message):\n  viewer source census is wrong for retopo=OFF; count=218, unique=218,\n  expected=216\n\n\n",
+          "inventory_sha256": "b82a5a14fb1b946ee10582397558158858d1850522760b42202380ce6c0b016b",
+          "required_mesh_members": {
+            "libs/MatterGraphics/src/native/mesh_raster.cpp": true,
+            "libs/MatterGraphics/src/native/mesh_pipelines.cpp": true
+          },
+          "all_inventory_files_exist": true
+        }
+      ]
+    },
+    "after": {
+      "helper_sha256": "3ae79de41328ce89e9458c3d9195513a7010c85b878e72a533f41af7128e5f79",
+      "inputs_sha256": {
+        "cmake/ManifestSources.cmake": "24ff2fbcff42da8354da7d62579dacdf584cdc8e85870c1ccc54f66db41b0ce6",
+        "cmake/MatterEngine.cmake": "f3ff0fe6756150fa23fab48697e9c14e4c8af1df0e9a0771836cfb22c582d073",
+        "cmake/MatterViewer.cmake": "753d6e855f961c822d355077830618daab27c66f887f2499596c47a8732eb579",
+        "cmake/manifests/engine-core.sources": "5e4fc706622106d5ce6efe240da4c3ece1433e6b833a62d9b316aafa5af577e6",
+        "cmake/manifests/matter-surface.sources": "322065c3b2ca227f9a8e0a33b94c8ca152b5a6f5a2b27a7bfe7cbe6857c4384d",
+        "cmake/manifests/engine-viewer.sources": "f6da6332d6ac47f90badc8ce40504946bfc296640ebf8074222033adf9f5cdf6"
+      },
+      "runs": [
+        {
+          "retopology": "ON",
+          "exit": 0,
+          "elapsed_seconds": 0.5326,
+          "inventory": {
+            "core": 168,
+            "surface": 21,
+            "viewer": 219,
+            "unique": 219,
+            "c_sources": 3
+          },
+          "stdout": "",
+          "stderr": "",
+          "inventory_sha256": "d09250f02bef9f39f4f8fd2f00d7c933b860876f7227bf192c779bfa33a58ec9",
+          "required_mesh_members": {
+            "libs/MatterGraphics/src/native/mesh_raster.cpp": true,
+            "libs/MatterGraphics/src/native/mesh_pipelines.cpp": true
+          },
+          "all_inventory_files_exist": true
+        },
+        {
+          "retopology": "OFF",
+          "exit": 0,
+          "elapsed_seconds": 0.5706,
+          "inventory": {
+            "core": 168,
+            "surface": 21,
+            "viewer": 218,
+            "unique": 218,
+            "c_sources": 3
+          },
+          "stdout": "",
+          "stderr": "",
+          "inventory_sha256": "b82a5a14fb1b946ee10582397558158858d1850522760b42202380ce6c0b016b",
+          "required_mesh_members": {
+            "libs/MatterGraphics/src/native/mesh_raster.cpp": true,
+            "libs/MatterGraphics/src/native/mesh_pipelines.cpp": true
+          },
+          "all_inventory_files_exist": true
+        }
+      ]
+    }
+  },
+  "prior_implementation_and_evidence_preserved": true,
+  "cost": {
+    "local_native_builds": 0,
+    "unchanged_component_suites_rerun": 0
+  },
+  "other_helper_predicates_byte_preserved": true
+}

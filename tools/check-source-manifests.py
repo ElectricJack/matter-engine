@@ -30,8 +30,31 @@ EXCLUDED_SOURCES = frozenset({
     "libs/MatterSurfaceLib/src/mesh_retopo.cpp",  # conditionally/default compiled via RETOPO/EXTRA_RETOPO_CPP, outside base manifests
     "libs/MatterSurfaceLib/src/shader_preprocessor.cpp",  # unused helper
     "libs/MatterSurfaceLib/src/voxel_imposter.cpp",  # retired implementation
-    "libs/MemoryLib/src/mem_arena.c",  # standalone library API, not linked here
-    "libs/MemoryLib/src/mem_array.c",  # standalone library API, not linked here
+    # cmake/MatterTargets.cmake lists the MemoryLib sources directly in
+    # matter_memory (only mem_pool.c also rides in matter-surface.sources).
+    "libs/MemoryLib/src/mem_arena.c",
+    "libs/MemoryLib/src/mem_array.c",
+    "libs/MemoryLib/src/mem_bank.c",
+    # The authoring adapter and the QuickJS host it links keep their own
+    # CMakeLists; cmake/MatterEngine.cmake adds them as a subdirectory.
+    "MatterEngine3/src/component_adapters/authoring/src/pipeline.cpp",
+    "MatterEngine3/src/component_adapters/authoring/tests/authoring_e2e_tests.cpp",
+    "MatterEngine3/src/script/portable_host/quickjs_host.cpp",
+    "MatterEngine3/src/script/portable_host/tests/compiler_oom_tests.c",
+    "MatterEngine3/src/script/portable_host/tests/host_tests.cpp",
+    "MatterEngine3/src/script/portable_host/tests/parser_oom_tests.c",
+    "MatterEngine3/src/script/portable_host/tests/properties.cpp",
+    # The terrain coordinator keeps its own CMakeLists (added as a subdirectory);
+    # live_terrain.cpp is compiled by the live_terrain_tests target only.
+    "MatterEngine3/src/component_adapters/terrain_coordinator/src/cache.cpp",
+    "MatterEngine3/src/component_adapters/terrain_coordinator/src/coordinator.cpp",
+    "MatterEngine3/src/component_adapters/terrain_coordinator/tests/coordinator_tests.cpp",
+    "MatterEngine3/src/component_adapters/terrain_coordinator/engine/live_terrain.cpp",
+    # Optional AssetPipeline modules add these adapters as subdirectories:
+    # libs/AssetPipeline/physics/CMakeLists.txt (collision) and
+    # libs/AssetPipeline/animation/CMakeLists.txt (animation).
+    "MatterEngine3/src/component_adapters/collision/terrain.cpp",
+    "MatterEngine3/src/component_adapters/animation/native.cpp",
 })
 
 

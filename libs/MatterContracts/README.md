@@ -2,10 +2,12 @@
 
 `matter_contracts` is the owned, neutral recipe/asset boundary described in
 [contracts v1](../../docs/component-separation/2026-10-10-matter-component-contracts-v1.md).
-It compiles from four implementation files and public
-[`contracts.h`](include/matter/contracts/contracts.h), using only the C++17
-standard library and MathLib's neutral headers. There is no evaluator, resolver,
-cache, scheduler, graphics API, script host, ECS or domain runtime here.
+It implements data validation and service-boundary checks, using only the C++17
+standard library and MathLib's neutral headers. Public interfaces describe
+geometry, resolver/cache/host, graphics and terrain services; production
+evaluators, backends, scheduling and domain runtimes are supplied separately.
+See [service contracts](SERVICES.md) for ownership, callbacks, ABI rules,
+fixture IDs and independently selectable build scaffolds.
 
 The local CMake file works standalone and with `add_subdirectory`. Central
 registration belongs to the ordered integration work. Nothing in this target
@@ -17,7 +19,9 @@ From native Windows PowerShell, the local wrapper uses the repository's supporte
 `Resolve-MatterWindowsToolchain` resolver and pinned MSVC environment:
 
 ```powershell
-libs/MatterContracts/build-windows.ps1 -Config RelWithDebInfo -Test
+libs/MatterContracts/tests/prepare-test-python.ps1
+libs/MatterContracts/build-windows.ps1 -Config RelWithDebInfo -Test -Matrix `
+  -TestPython "$PWD/libs/MatterContracts/build/test-python/Scripts/python.exe"
 ```
 
 From WSL, run that same wrapper with Windows PowerShell and a Windows path:
@@ -26,7 +30,8 @@ From WSL, run that same wrapper with Windows PowerShell and a Windows path:
 /mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe \
   -NoProfile -ExecutionPolicy Bypass \
   -File "$(wslpath -w "$PWD/libs/MatterContracts/build-windows.ps1")" \
-  -Config RelWithDebInfo -Test
+  -Config RelWithDebInfo -Test -Matrix \
+  -TestPython "$(wslpath -w "$PWD/libs/MatterContracts/build/test-python/Scripts/python.exe")"
 ```
 
 The standalone portability check on Unix uses:
@@ -40,10 +45,15 @@ python3 libs/MatterContracts/tests/schema_tests.py \
   --vectors /tmp/matter-contracts-build/matter_contracts_vectors
 ```
 
-The last check uses the test-only Python `jsonschema` package. It is not a library
-or build dependency. CTest always runs `matter_contracts_tests`; it also registers
-`matter_contracts_js_vectors` when Node is available. A missing Node executable
-means the JS check was unavailable, not passed. The latter launches the native
+The schema check uses the test-only Python `jsonschema` package pinned in
+`tests/requirements.txt`. It is not a library/runtime dependency. The preparation
+script creates an isolated native venv using the supported toolchain resolver;
+from WSL invoke it through native PowerShell in the same way as the build wrapper.
+With `BUILD_TESTING=ON`, Python and Node are required and CTest runs the schema,
+frozen manifest, independent native/C ABI/graphics consumers, legacy MathLib/RNG
+compatibility and existing data/service checks. Missing tools/dependencies fail
+the gate. `BUILD_TESTING=OFF` consumers do not need Python or Node.
+The JS check launches the native
 vector executable and checks actual cross-language numeric encodings, SHA-256,
 RNG words/unit draws and document digests. Both public-header consumers link only
 `matter_contracts`. The native build treats library warnings as errors.
@@ -238,3 +248,54 @@ maps to 0x9e3779b97f4a7c15; arithmetic wraps modulo 2^64; unit draws use the top
 53 bits divided by 2^53. This is distinct from shared-lib/rng.js's xoshiro128**.
 The numeric corpus additionally checks 267 binary64 patterns, including signed
 zeros, extrema, subnormals, exponent transitions and fractional values.
+
+## Property tests and fuzzing
+
+The default CTest build includes `matter_contracts_property_json`,
+`matter_contracts_property_recipe` and `matter_contracts_property_asset`. Each
+has a five-second timeout. They generate small, seeded, in-memory inputs without
+reading fixtures from disk. Failures print the area and seed, including in Release
+builds; replay a document case with `matter_contracts_properties recipe <seed>`
+or `matter_contracts_properties asset <seed>`. The oracles check exact canonical
+round trips, binary64 preservation,
+unchanged outputs on failure, independent copies of nested data, ordered CSG
+identity, metadata exclusion, and rejection of malformed graphs, buffers and
+budgets. Run them with `ctest --test-dir <build> -L property --output-on-failure`.
+
+The longer harness is opt-in and is not registered with CTest. A Linux sanitizer
+build instruments both the contract implementation and the driver:
+
+```bash
+cmake -S libs/MatterContracts -B /tmp/contracts-fuzz -G Ninja \
+  -DBUILD_TESTING=ON -DMATTER_CONTRACTS_BUILD_FUZZER=ON \
+  -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_COMPILER=clang++ \
+  -DCMAKE_CXX_FLAGS='-fsanitize=address,undefined -fno-omit-frame-pointer' \
+  -DCMAKE_EXE_LINKER_FLAGS='-fsanitize=address,undefined'
+cmake --build /tmp/contracts-fuzz --parallel 2
+ctest --test-dir /tmp/contracts-fuzz --output-on-failure -j 1
+/tmp/contracts-fuzz/matter_contracts_fuzz 10000 1718975098
+```
+
+The standalone arguments are iteration count and unsigned decimal seed. It mixes
+valid JSON trees, recipes/assets, truncated documents and arbitrary bytes. Every
+input also selects a generated document with structural mutations. Replaying the
+same driver seed/count reproduces the sequence; an oracle failure prints the
+individual document seed.
+
+For coverage-guided fuzzing on Unix with Clang, enable
+`MATTER_CONTRACTS_LIBFUZZER` (this mode adds ASan/UBSan itself):
+
+```bash
+cmake -S libs/MatterContracts -B /tmp/contracts-libfuzzer -G Ninja \
+  -DBUILD_TESTING=OFF -DMATTER_CONTRACTS_BUILD_FUZZER=ON \
+  -DMATTER_CONTRACTS_LIBFUZZER=ON -DCMAKE_CXX_COMPILER=clang++ \
+  -DCMAKE_BUILD_TYPE=RelWithDebInfo
+cmake --build /tmp/contracts-libfuzzer --parallel 2
+/tmp/contracts-libfuzzer/matter_contracts_fuzz -max_total_time=60 \
+  -max_len=8192 -seed=1718975098
+```
+
+The driver exports `LLVMFuzzerTestOneInput`; byte inputs over 8192 bytes are
+ignored, and decoder budgets bound depth, counts, strings and diagnostics.
+Production budgets are unchanged. Optional corpus paths and libFuzzer crash
+artifacts belong to the caller's fuzz run, outside the deterministic CTest suite.

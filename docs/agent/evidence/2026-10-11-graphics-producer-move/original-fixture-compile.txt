@@ -1,0 +1,5 @@
+In file included from /tmp/bright-torrent-validation/vulkan_tests.cpp:215:
+/tmp/bright-torrent-validation/raster_native.h:2:10: fatal error: matter/graphics/vulkan_raster.h: No such file or directory
+    2 | #include <matter/graphics/vulkan_raster.h>
+      |          ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+compilation terminated.

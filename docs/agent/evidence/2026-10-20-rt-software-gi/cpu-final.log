@@ -1,0 +1,5 @@
+aq test: no interpreter found for /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0 (no .venv, no resources.test_interpreters entry); using /usr/bin/python3.12
+aq test: slot 1 of 6, -n 6
+$ /usr/bin/python3.12 -m pytest --dist loadfile -m 'not perf and not migration and not slow and not tmux and not integration' -n 0 MatterEngine3/tests/test_rt_counter_cpu.py MatterEngine3/tests/test_rt_pipeline_subset.py -q
+..........                                                               [100%]
+10 passed in 1.31s
