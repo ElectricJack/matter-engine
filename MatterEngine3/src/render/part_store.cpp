@@ -38,6 +38,7 @@
 // measurably distorted this engine's own profiling before.
 
 #include "part_store.h"
+#include "part_bundle.h"
 #include "profile.h"
 #include "animation/anim_bundle.h"
 #include "animation/animation_binding_bake.h"
@@ -65,6 +66,7 @@
 #include <limits>
 #include <unordered_map>
 #include <unordered_set>
+#include <climits>
 #include <sys/stat.h>
 
 namespace viewer {
@@ -358,9 +360,12 @@ uint64_t geometry_root_budget() {
     return end && !*end && mb >= 1 && mb <= 4096 ? mb << 20 : 16ull << 20;
 }
 }
-PartStore::PartStore(std::string cache_root)
-    : cache_root_(std::move(cache_root)), geometry_roots_(cache_root_ + "/geometry-pages", geometry_root_budget()),
-      prepared_sectors_(std::make_shared<prepared_sector::Cache>(cache_root_ + "/prepared-sectors")) {
+PartStore::PartStore(std::string cache_root,
+                     std::shared_ptr<matter::CacheByteStorage> storage)
+    : cache_root_(std::move(cache_root)), cache_storage_(std::move(storage)), geometry_roots_(cache_root_ + "/geometry-pages", geometry_root_budget()),
+      prepared_sectors_(nullptr) {
+    const char* prepared_switch=std::getenv("MATTER_PREPARED_SECTOR_CACHE");
+    if(prepared_switch && std::string(prepared_switch)!="0")prepared_sectors();
     const char* enabled=std::getenv("MATTER_PREPARED_IDENTITY_CACHE");
     const char* cook=std::getenv("MATTER_PREPARED_IDENTITY_COOK");
     if(enabled && std::string(enabled)=="1")
@@ -368,6 +373,20 @@ PartStore::PartStore(std::string cache_root)
 }
 uint64_t PartStore::prepared_identity_lookup(uint64_t request) {
     return prepared_identities_ ? prepared_identities_->lookup(request) : 0;
+}
+prepared_sector::Cache& PartStore::prepared_sectors() {
+    std::lock_guard<std::mutex> lock(prepared_sectors_mutex_);
+    if(!prepared_sectors_)
+        prepared_sectors_=std::make_shared<prepared_sector::Cache>(cache_root_ + "/prepared-sectors");
+    return *prepared_sectors_;
+}
+bool PartStore::prepared_sector_cache_active() const {
+    std::lock_guard<std::mutex> lock(prepared_sectors_mutex_);
+    return prepared_sectors_ != nullptr;
+}
+void PartStore::set_geometry_pages_enabled(bool enabled) {
+    if(enabled)prepared_sectors();
+    geometry_pages_enabled_=enabled;
 }
 PartStore::~PartStore() { flush_geometry_writer(); }
 bool PartStore::flush_geometry_writer() {
@@ -537,7 +556,7 @@ static std::string resolve_artifact_path(uint64_t part_hash, const std::string& 
     struct stat st;
     if (!scratch_dir.empty()) {
         std::string scratch_path = scratch_dir + "/" + part_asset::cache_path_resolved(part_hash);
-        if (::stat(scratch_path.c_str(), &st) == 0) {
+        if (part_bundle::ScopedStorage::current() ? part_bundle::exists(scratch_path) : ::stat(scratch_path.c_str(), &st) == 0) {
             return scratch_path;
         }
     }
@@ -553,7 +572,7 @@ static std::string select_artifact_root(uint64_t part_hash, const std::string& s
     struct stat st;
     if (!scratch_dir.empty()) {
         const std::string scratch_path = scratch_dir + "/" + part_asset::cache_path_resolved(part_hash);
-        if (::stat(scratch_path.c_str(), &st) == 0) return scratch_dir;
+        if (part_bundle::ScopedStorage::current() ? part_bundle::exists(scratch_path) : ::stat(scratch_path.c_str(), &st) == 0) return scratch_dir;
     }
     return cache_root;
 }
@@ -639,9 +658,11 @@ static bool resolve_uniform_flat_render_policy(
 }
 
 bool PartStore::has(uint64_t part_hash) const {
+    part_bundle::ScopedStorage storage(cache_storage_);
     if (loaded_.count(part_hash)) return true;
     struct stat st;
-    return ::stat(resolve_artifact_path(part_hash, scratch_dir_, cache_root_).c_str(), &st) == 0;
+    const auto path = resolve_artifact_path(part_hash, scratch_dir_, cache_root_);
+    return cache_storage_ ? cache_storage_->exists(path) : ::stat(path.c_str(), &st) == 0;
 }
 
 // Flat-preferred load: a bake-time flattened artifact (<hash>.flat.part) already
@@ -651,6 +672,7 @@ bool PartStore::has(uint64_t part_hash) const {
 // the file is absent or fails to load in either format.
 bool PartStore::load_flat(uint64_t part_hash, const std::string& artifact_root,
                           const matter::PartRenderPolicy& policy, LoadedPart& lp) {
+    part_bundle::ScopedStorage storage(cache_storage_);
     const bool profile = std::getenv("MATTER_PARTSTORE_PROFILE") != nullptr;
     using ProfileClock = std::chrono::steady_clock;
     auto profile_last = profile ? ProfileClock::now() : ProfileClock::time_point{};
@@ -1260,6 +1282,7 @@ bool PartStore::load_flat(uint64_t part_hash, const std::string& artifact_root,
 
 bool PartStore::read_coherent_snapshot(uint64_t part_hash,
                                        CoherentSnapshot& out) const {
+    part_bundle::ScopedStorage storage(cache_storage_);
     // The manifest is published last, so a reader can legitimately observe a
     // new PART before its matching MANM/MACM manifest. Such a window is a cache
     // miss, never a static fallback; retrying a few fresh snapshots lets an
@@ -1341,6 +1364,7 @@ std::string geometry_part_key(uint64_t hash) {
 }
 }
 PartStore::StagedPart PartStore::stage_geometry_cached(uint64_t part_hash) {
+    part_bundle::ScopedStorage storage(cache_storage_);
     StagedPart staged; staged.part_hash = part_hash;
     if (!geometry_pages_for(part_hash)) return staged;
     std::string error;
@@ -1637,7 +1661,8 @@ PartStore::StagedPart PartStore::stage_from_snapshot(
             const char* cache_only_env = std::getenv("MATTER_GEOMETRY_CACHE_ONLY");
             const bool cache_only = cache_only_env && std::string(cache_only_env) == "1";
             staged.lp.geometry_pages = geometry::cache_asset(cache_root_ + "/geometry-pages", key,
-                geometry_source, config, {}, error, &geometry_roots_, &cache_report, cache_only);
+                geometry_source, config, {}, error, &geometry_roots_, &cache_report, cache_only,
+                false);
             if (std::getenv("MATTER_GEOMETRY_PAGES_PROFILE"))
                 MATTER_LOGI("geometry", "terrain_cache key=%s outcome=%s compiled=%u lookup_ms=%.3f compile_ms=%.3f write_ms=%.3f reason=%s",
                     key, cache_report.lookup == geometry::CacheLoadStatus::Hit ? "hit" :
@@ -1647,7 +1672,7 @@ PartStore::StagedPart PartStore::stage_from_snapshot(
             if (std::getenv("MATTER_GEOMETRY_PAGES_PROFILE"))
                 MATTER_LOGI("geometry", "terrain_prepare_end hash=%016llx ready=%u roots=%zu ms=%.3f",
                     static_cast<unsigned long long>(part_hash), staged.lp.geometry_pages ? 1u : 0u,
-                    staged.lp.geometry_pages ? staged.lp.geometry_pages->roots.size() : 0,
+                    staged.lp.geometry_pages ? staged.lp.geometry_pages->root_refs.size() : 0,
                     std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-terrain_page_start).count());
             staged.lp.geometry_source_vt = bool(staged.lp.geometry_pages);
             if (!staged.lp.geometry_pages) MATTER_LOGW("geometry", "terrain %016llx paging failed: %s",
@@ -1848,6 +1873,7 @@ PartStore::StagedPart PartStore::stage_load(uint64_t part_hash,
                                             bool terrain_sector,
                                             const WarpAnchor& warp,
                                             float terrain_texels_per_meter) {
+    part_bundle::ScopedStorage storage(cache_storage_);
     if (!terrain_sector && geometry_pages_for(part_hash)) {
         auto cached = stage_geometry_cached(part_hash);
         if (cached.ok) { cached.ok = flush_geometry_writer(); return cached; }
@@ -1967,6 +1993,7 @@ PartStore::StagedPart PartStore::stage_from_bake(
         uint64_t part_hash, const script_host::BakedGeometry& baked,
         size_t first_rung, bool terrain_sector, const WarpAnchor& warp,
         float terrain_texels_per_meter) {
+    part_bundle::ScopedStorage storage(cache_storage_);
     StagedPart staged;
     staged.part_hash = part_hash;
     CoherentSnapshot snapshot;
@@ -2152,10 +2179,11 @@ std::string prepared_key(uint64_t hash,const std::string& policy) {
 }
 }
 PartStore::StagedPart PartStore::load_prepared_sector(uint64_t hash,const std::string& policy,std::string& error) {
+    part_bundle::ScopedStorage storage(cache_storage_);
     const auto start=std::chrono::steady_clock::now();StagedPart out;
     try {
         prepared_sector::ReadTiming read_timing;
-        auto page=prepared_sectors_->read(prepared_key(hash,policy),error,&read_timing);if(!page)return out;
+        auto page=prepared_sectors().read(prepared_key(hash,policy),error,&read_timing);if(!page)return out;
         const auto source_start=std::chrono::steady_clock::now();
         if(!std::filesystem::exists(cache_root_+"/"+part_asset::cache_path_resolved(hash))){error="prepared source artifact missing";return out;}
         const auto decode_start=std::chrono::steady_clock::now();
@@ -2167,6 +2195,7 @@ PartStore::StagedPart PartStore::load_prepared_sector(uint64_t hash,const std::s
         if(out.part_hash!=hash)throw std::runtime_error("prepared sector identity");
         const auto roots_start=std::chrono::steady_clock::now();
         if(!geometry_key.empty()){
+            if (!geometry_pages_enabled_) throw std::runtime_error("prepared geometry requires virtual geometry opt-in");
             const auto lookup_start=std::chrono::steady_clock::now();
             out.lp.geometry_pages=geometry_roots_.load(geometry_key,error);
             if(!out.lp.geometry_pages || out.lp.geometry_pages->manifest->hash!=manifest)throw std::runtime_error("prepared geometry dependency unavailable or changed");
@@ -2185,7 +2214,11 @@ PartStore::StagedPart PartStore::load_prepared_sector(uint64_t hash,const std::s
     }catch(const std::exception& e){error=e.what();return {};}
 }
 bool PartStore::save_prepared_sector(StagedPart& s,const std::string& policy,std::string& error) {
+    part_bundle::ScopedStorage storage(cache_storage_);
     const auto& p=s.lp;
+    if (p.geometry_pages && !geometry_pages_enabled_) {
+        error = "prepared geometry requires virtual geometry opt-in"; return false;
+    }
     if(!s.ok || !s.staging || !p.children.empty() || p.animation_asset || p.shared_surface || !p.rigid_lod_mesh_data.empty() ||
        !p.flat_refs.empty() || !p.impostors.empty() || !p.render_policy.child_overrides.empty() || p.render_policy.shared_surfaces ||
        (!p.lod_mesh_data.empty() && !p.geometry_pages)){error="unsupported prepared sector";return false;}
@@ -2205,7 +2238,7 @@ bool PartStore::save_prepared_sector(StagedPart& s,const std::string& policy,std
         prepared_sector::Archive a;std::string key=p.geometry_pages?p.geometry_pages->key:"";
         asset_store::BlobHash manifest=p.geometry_pages?p.geometry_pages->manifest->hash:asset_store::BlobHash{};
         prepared_sector::transfer(a,s,key,manifest);
-        return prepared_sectors_->write(prepared_key(s.part_hash,policy),std::move(a.bytes),error);
+        return prepared_sectors().write(prepared_key(s.part_hash,policy),std::move(a.bytes),error);
     }catch(const std::exception& e){error=e.what();return false;}
 }
 
@@ -2260,6 +2293,7 @@ const LoadedPart* PartStore::commit_staged(StagedPart staged) {
 }
 
 const LoadedPart* PartStore::get_or_load(uint64_t part_hash) {
+    part_bundle::ScopedStorage storage(cache_storage_);
     auto cached = loaded_.find(part_hash);
     if (cached != loaded_.end()) return &cached->second;
     if (geometry_pages_for(part_hash)) {
