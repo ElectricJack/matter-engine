@@ -424,7 +424,8 @@ bool StreamlineBridge::query_dlss_optimal_settings(
 // The resources are tagged eValidUntilEvaluate, so the caller may reuse them
 // after this returns, but they must stay alive for the submitted frame.
 bool StreamlineBridge::evaluate_dlss(
-    VkCommandBuffer command_buffer, uint64_t attempt_token,
+    [[maybe_unused]] VkCommandBuffer command_buffer,
+    [[maybe_unused]] uint64_t attempt_token,
     const DlssOptions& options, const DlssConstants& constants,
     const DlssResources& resources, DlssEvaluationOutput& output,
     std::string& error) {

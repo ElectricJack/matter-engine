@@ -1,0 +1,15 @@
+Vulkan adapter: NVIDIA GeForce RTX 4090 | driver: NVIDIA (610.88, 0x98960000) | API 1.4.341
+DLSS fallback: Streamline disabled for Vulkan test device
+[vk] static reserve: clusters 32 MiB, vertices 512 MiB, indices 256 MiB (host-visible)
+vt frame cost: filling=0.000 ms settled=2.218 ms (submit+wait, 160x160)
+vt stats: variants=1 pool=1/256 pinned=1 fills_total=0 evictions=0 queue=1 requests_last=0 mesh_bytes=768 pool_bytes=42614784
+FAIL: vt: at least the pinned tail page was filled
+FAIL: vt: the G-buffer feedback pass produced page requests
+FAIL: vt: the feedback loop drained a page beyond the pinned tail
+FAIL: vt: every resident slot was actually filled (tail included)
+vt post-edit stats: invalidations=1 dropped=0 pool=1/256 pinned=1 fills_total=0
+FAIL: vt: replacements complete without dropping the old resident pages
+FAIL: vt: the invalidated pages were re-filled
+FAIL: vt: the in-place tail re-fill did not burn a second slot
+validation errors: 0
+7 FAILURE(S)
