@@ -1,0 +1,10 @@
+Internal ctest changing into directory: /tmp/crisp-ember-20-validation/binding
+Test project /tmp/crisp-ember-20-validation/binding
+    Start 1: matter_geometry_c_consumer
+1/2 Test #1: matter_geometry_c_consumer .......   Passed    3.10 sec
+    Start 2: matter_geometry_c_allocation
+2/2 Test #2: matter_geometry_c_allocation .....   Passed   97.02 sec
+
+100% tests passed, 0 tests failed out of 2
+
+Total Test time (real) = 100.15 sec
