@@ -1,0 +1,111 @@
+{
+  "envelope": {
+    "request_id": "corpus-job",
+    "source_revision": "field-v1",
+    "generation_epoch": 7
+  },
+  "usage": {
+    "operations": 2,
+    "vertices": 3,
+    "indices": 3,
+    "output_bytes": 48,
+    "working_bytes": 64,
+    "queries": 2,
+    "dependency_depth": 2
+  },
+  "budgets": [
+    {
+      "id": "BUDGET-OPERATIONS",
+      "field": "operations",
+      "ceiling": 1,
+      "expected_code": "resource_limit",
+      "expected_publish": false
+    },
+    {
+      "id": "BUDGET-VERTICES",
+      "field": "vertices",
+      "ceiling": 2,
+      "expected_code": "resource_limit",
+      "expected_publish": false
+    },
+    {
+      "id": "BUDGET-INDICES",
+      "field": "indices",
+      "ceiling": 2,
+      "expected_code": "resource_limit",
+      "expected_publish": false
+    },
+    {
+      "id": "BUDGET-OUTPUT_BYTES",
+      "field": "output_bytes",
+      "ceiling": 47,
+      "expected_code": "resource_limit",
+      "expected_publish": false
+    },
+    {
+      "id": "BUDGET-WORKING_BYTES",
+      "field": "working_bytes",
+      "ceiling": 63,
+      "expected_code": "resource_limit",
+      "expected_publish": false
+    },
+    {
+      "id": "BUDGET-QUERIES",
+      "field": "queries",
+      "ceiling": 1,
+      "expected_code": "resource_limit",
+      "expected_publish": false
+    },
+    {
+      "id": "BUDGET-DEPENDENCY_DEPTH",
+      "field": "dependency_depth",
+      "ceiling": 1,
+      "expected_code": "resource_limit",
+      "expected_publish": false
+    },
+    {
+      "id": "BUDGET-ZERO-QUERIES",
+      "field": "queries",
+      "ceiling": 0,
+      "expected_code": "invalid_input",
+      "expected_publish": false
+    }
+  ],
+  "cancellations": [
+    {
+      "id": "CANCEL-PRE",
+      "when": "before_checkpoint",
+      "expected_code": "cancelled",
+      "expected_publish": false
+    },
+    {
+      "id": "CANCEL-PROGRESS",
+      "when": "progress_callback",
+      "expected_code": "cancelled",
+      "expected_publish": false
+    }
+  ],
+  "late_results": [
+    {
+      "id": "LATE-REQUEST",
+      "field": "request_id",
+      "replacement": "superseding-job",
+      "expected_code": "stale_result",
+      "preserve_previous": true
+    },
+    {
+      "id": "LATE-REVISION",
+      "field": "source_revision",
+      "replacement": "field-v2",
+      "expected_code": "stale_result",
+      "preserve_previous": true
+    },
+    {
+      "id": "LATE-EPOCH",
+      "field": "generation_epoch",
+      "replacement": 8,
+      "expected_code": "stale_result",
+      "preserve_previous": true
+    }
+  ]
+}

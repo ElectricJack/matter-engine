@@ -170,19 +170,19 @@ are supplied by the host rather than inferred from VM-specific stack traces.
 From the repository root, without installing dependencies:
 
 ```sh
-node --experimental-vm-modules packages/matter-authoring/tests/authoring_tests.mjs
-tsc -p packages/matter-authoring/tests/tsconfig.json
-node packages/matter-authoring/tests/browser_tests.mjs
 cmake -S packages/matter-authoring -B /tmp/matter-authoring-check -DBUILD_TESTING=ON
 cmake --build /tmp/matter-authoring-check --parallel 2
 ctest --test-dir /tmp/matter-authoring-check --output-on-failure
+node --experimental-vm-modules packages/matter-authoring/tests/authoring_tests.mjs /tmp/matter-authoring-check/matter_authoring_contract_check
+tsc -p packages/matter-authoring/tests/tsconfig.json
+node packages/matter-authoring/tests/browser_tests.mjs
 ```
 
 The CMake harness links the actual `matter_contracts` library and checks native
 decode/validation/canonical re-encoding, including extension capability rejection.
 It registers Chrome/Chromium conformance when a browser is found. For a standalone
 browser run, set `MATTER_AUTHORING_BROWSER` to the executable path if needed.
-Browser reads are local fixture files with external DNS disabled. The portable
+Browser fixtures are generated in memory, with external DNS disabled. The portable
 VM harness disables Node/DOM/crypto/TextEncoder/clock globals and Math.random,
 then compares full canonical output with independent expected fixtures. It is a
 portable host conformance test; installing a QuickJS execution adapter remains

@@ -1,0 +1,67 @@
+aq test: no interpreter found for /tmp/eager-nexus-71-epoch4 (no .venv, no resources.test_interpreters entry); using /usr/bin/python3.12
+aq test: slot 1 of 6, -n 6
+$ /usr/bin/python3.12 -m pytest --dist loadfile -m 'not perf and not migration and not slow and not tmux and not integration' -n0 /tmp/eager-nexus-71-epoch4/test_graphics.py -k editor_raster -q -s
+F
+=================================== FAILURES ===================================
+____________________ test_editor_raster_first_load_capture _____________________
+
+    def test_editor_raster_first_load_capture():
+        root=Path('/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-3')
+        shot=OUT/'floor-demo-raster.png'
+        shot.unlink(missing_ok=True)
+        env=environment();env.update(MATTER_WORLD='FloorDemo',MATTER_SCREENSHOT=str(shot),
+            MATTER_SCREENSHOT_SETTLE='3',MATTER_DISABLE_VK_RT='1',MATTER_WINDOW_WIDTH='320',
+            MATTER_WINDOW_HEIGHT='240',MATTER_HIDE_UI='1')
+        with (OUT/'editor-raster-first-load.log').open('w') as log:
+>           r=subprocess.run(['stdbuf','-oL','-eL',str(root/'MatterEditor/build/linux/editor')],cwd=root/'MatterEditor',env=env,stdout=log,stderr=subprocess.STDOUT,timeout=600)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+/tmp/eager-nexus-71-epoch4/test_graphics.py:64: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+/usr/lib/python3.12/subprocess.py:550: in run
+    stdout, stderr = process.communicate(input, timeout=timeout)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/usr/lib/python3.12/subprocess.py:1209: in communicate
+    stdout, stderr = self._communicate(input, endtime, timeout)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/usr/lib/python3.12/subprocess.py:2141: in _communicate
+    self.wait(timeout=self._remaining_time(endtime))
+/usr/lib/python3.12/subprocess.py:1264: in wait
+    return self._wait(timeout=timeout)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <Popen: returncode: -9 args: ['stdbuf', '-oL', '-eL', '/home/jkern/dev/matte...>
+timeout = 599.9999762950174
+
+    def _wait(self, timeout):
+        """Internal implementation of wait() on POSIX."""
+        if self.returncode is not None:
+            return self.returncode
+    
+        if timeout is not None:
+            endtime = _time() + timeout
+            # Enter a busy loop if we have a timeout.  This busy loop was
+            # cribbed from Lib/threading.py in Thread.wait() at r71065.
+            delay = 0.0005 # 500 us -> initial delay of 1 ms
+            while True:
+                if self._waitpid_lock.acquire(False):
+                    try:
+                        if self.returncode is not None:
+                            break  # Another thread waited.
+                        (pid, sts) = self._try_wait(os.WNOHANG)
+                        assert pid == self.pid or pid == 0
+                        if pid == self.pid:
+                            self._handle_exitstatus(sts)
+                            break
+                    finally:
+                        self._waitpid_lock.release()
+                remaining = self._remaining_time(endtime)
+                if remaining <= 0:
+>                   raise TimeoutExpired(self.args, timeout)
+E                   subprocess.TimeoutExpired: Command '['stdbuf', '-oL', '-eL', '/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-3/MatterEditor/build/linux/editor']' timed out after 599.9999762950174 seconds
+
+/usr/lib/python3.12/subprocess.py:2045: TimeoutExpired
+=========================== short test summary info ============================
+FAILED ../../../../../../../tmp/eager-nexus-71-epoch4/test_graphics.py::test_editor_raster_first_load_capture
+1 failed, 4 deselected in 600.88s (0:10:00)

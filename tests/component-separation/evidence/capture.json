@@ -1,0 +1,115 @@
+{
+  "task": "clear-crest-48.7.1",
+  "source_commit": "406b72509dbcf4dd644b73a7f095792ce2512ba5",
+  "baseline_commit": "98af23851dd3424ddbfc62624cd2afb850e9d09d",
+  "capture_date_local": "2026-10-10",
+  "supported_build": "Windows MSVC v143 19.44.35211.0, tools 14.44.35207, SDK 10.0.26100.0, RelWithDebInfo",
+  "working_directory": "repository root; CTest sets MatterEngine3/tests for legacy suites",
+  "machine": "evidence/machine.json",
+  "golden_update": false,
+  "diagnostic_log_normalization": "CRLF converted to LF only for checked-in text; numeric results/diagnostics preserved",
+  "native_binaries": [
+    {
+      "path": "MatterEditor/build/cmake/windows-msvc/relwithdebinfo/part_graph_tests.exe",
+      "sha256": "8b9cd96b6d54fa54f6f6944310651881fb5a4d975a0f18666e7cedca9dc0ce34"
+    },
+    {
+      "path": "MatterEditor/build/cmake/windows-msvc/relwithdebinfo/obj_export_golden_tests.exe",
+      "sha256": "78ad1f73993093afaba5695875aa9e794f5fbda7d80c9b159461ad40887e7cfe"
+    },
+    {
+      "path": "MatterEditor/build/cmake/windows-msvc/relwithdebinfo/solid_source_evaluation_tests.exe",
+      "sha256": "273671bb0f0a29a7f5274e5cf382e4189ad06550c823e7a6e7c61d0e8eb6e1e7"
+    },
+    {
+      "path": "MatterEditor/build/cmake/windows-msvc/relwithdebinfo/terrain_mesher_tests.exe",
+      "sha256": "dac9fea0a52455d904e8030ca43e8879284960f2221f7bb4fbe857ca0727a408"
+    },
+    {
+      "path": "MatterEditor/build/cmake/windows-msvc/relwithdebinfo/shader_source_tests.exe",
+      "sha256": "30dfcf4854edb1162fc1982935236a46a53591266738ffd2aa355cb43a6bedad"
+    },
+    {
+      "path": "tests/component-separation/build/windows-msvc-relwithdebinfo/corpus_native.exe",
+      "sha256": "926b604ecbeecc7ee250dcd61d70b11b52cfa1125c113e6e64431432fc86cfa2"
+    }
+  ],
+  "checks": [
+    {
+      "command": "./tools/build-windows-from-wsl.sh RelWithDebInfo preflight",
+      "exit_code": 0,
+      "log": "evidence/preflight.log"
+    },
+    {
+      "command": "./tools/build-windows-from-wsl.sh RelWithDebInfo part_graph_tests",
+      "exit_code": 0,
+      "log": "evidence/legacy-build.log"
+    },
+    {
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/component-separation/run-legacy.ps1",
+      "exit_code": 8,
+      "log": "evidence/legacy-tests.log",
+      "passed": [
+        "solid_source_evaluation_tests",
+        "part_graph_tests",
+        "terrain_mesher_tests"
+      ],
+      "failed": [
+        "obj_export_golden_tests",
+        "shader_source_tests"
+      ],
+      "reason": "Retained baseline failures; no producer or legacy fixture edits."
+    },
+    {
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests/component-separation/build-windows.ps1",
+      "exit_code": 0,
+      "log": "evidence/corpus-native.log"
+    },
+    {
+      "command": "node tests/component-separation/check-js.mjs",
+      "exit_code": 0,
+      "log": "evidence/js.log"
+    },
+    {
+      "command": "aq test tests/component-separation/test_oracles.py -q",
+      "exit_code": 0,
+      "log": "evidence/oracle-tests.log",
+      "result": "14 passed; analytical output/geometry, export tolerance and corruption gates"
+    },
+    {
+      "command": "python3 tests/component-separation/capture-exports.py --output tests/component-separation/fixtures/native-export",
+      "exit_code": 0,
+      "result": "Two bounded OBJ/MTL/texture snapshots; separate from absent legacy OBJ goldens"
+    },
+    {
+      "command": "python3 docs/component-separation/verify.py",
+      "exit_code": 0,
+      "log": "evidence/c0-verify.log"
+    },
+    {
+      "command": "python3 tools/check-source-manifests.py --root .",
+      "exit_code": 1,
+      "log": "evidence/source-manifest.log",
+      "reason": "Retained MANIFEST-MEMBANK unclassified source"
+    },
+    {
+      "command": "python3 tests/component-separation/verify.py --exports tests/component-separation/fixtures/native-export",
+      "exit_code": 0,
+      "log": "evidence/export-compare.log",
+      "result": "Native snapshot schema/text/numeric and exact texture-byte comparison"
+    },
+    {
+      "command": "python3 tests/component-separation/verify.py",
+      "exit_code": 0,
+      "result": "54 samples, 13 mandatory cases; artifact and source Git-object verification. Latest result in task evidence; no self-hashed result log."
+    }
+  ],
+  "limits": [
+    "Native contract runner compiles original legacy part_graph.cpp and links existing supported headless/spatial/memory/profile archives for legacy FNV dependencies; it is not a component-independence gate.",
+    "Recipe codec validation and hand-authored solids are not production geometry execution.",
+    "Legacy terrain tests passed; portable adjacent/resolution fixtures are analytical expectations.",
+    "CTest times are diagnostic and not product latency measurements.",
+    "New rendered material views, browser/WASM comparisons and portable performance budgets remain unqualified."
+  ],
+  "native_check_result": "PASS 172 corpus checks: contract codec/errors, actual legacy params/RNG, affine math, cooperative jobs."
+}

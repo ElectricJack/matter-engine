@@ -1,5 +1,4 @@
-#include <matter/terrain/field.h>
-#include "terrain_field.h"
+#include "field_internal.h"
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -198,6 +197,10 @@ struct RegionState {
 struct FieldAccess {
   static const detail::RegionState &state(const FrozenRegion &r) { return *r.state_; }
 };
+detail::MeshingField detail::meshing_field(const FrozenRegion &r) {
+  const auto &s = FieldAccess::state(r);
+  return {s.runtime, s.cost, s.retained_bytes};
+}
 FrozenRegion::FrozenRegion(std::shared_ptr<const detail::RegionState> state) : state_(std::move(state)) {}
 const services::TerrainRequest &FrozenRegion::request() const { return state_->request; }
 bool FrozenRegion::is_heightfield() const { return state_->runtime.is_heightfield(); }
