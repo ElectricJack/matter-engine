@@ -149,7 +149,7 @@ Do not trust the analysis. Prove it, then delete:
 
 ```bash
 # StreamMountain sets the alpine profile => isAlpineProfile(table) is true
-grep -n "profile" projects/world_demo/scenes/StreamMountain/StreamMountain.js
+grep -n "profile" projects/world_demo/scenes/streaming/StreamMountain/StreamMountain.js
 ```
 
 The alpine branch at `WorldSector.js:344` returns at `:363`. Confirm

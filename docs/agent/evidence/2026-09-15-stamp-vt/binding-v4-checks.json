@@ -1,0 +1,78 @@
+[
+  {
+    "kind": "build",
+    "name": "vt_compositor_tests",
+    "command": [
+      "./tools/build-windows-from-wsl.sh",
+      "RelWithDebInfo",
+      "vt_compositor_tests"
+    ],
+    "exit": 0,
+    "seconds": 47.43005829800677,
+    "log": "docs/agent/evidence/2026-09-15-stamp-vt/binding-v4-build-vt_compositor_tests.log",
+    "source_changes": [],
+    "validation_errors": []
+  },
+  {
+    "kind": "gpu",
+    "name": "compositor",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      "$env:MATTER_VK_SMOKE_MODE=\"compositor\"; $env:MATTER_VK_VALIDATION=\"1\"; Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vt_compositor_tests.exe\"; exit $LASTEXITCODE"
+    ],
+    "exit": 0,
+    "seconds": 3.65021397601231,
+    "log": "docs/agent/evidence/2026-09-15-stamp-vt/binding-v4-gpu-compositor.log",
+    "source_changes": [],
+    "validation_errors": []
+  },
+  {
+    "kind": "build",
+    "name": "solid_face_projection_gpu_tests",
+    "command": [
+      "./tools/build-windows-from-wsl.sh",
+      "RelWithDebInfo",
+      "solid_face_projection_gpu_tests"
+    ],
+    "exit": 0,
+    "seconds": 25.637920719003887,
+    "log": "docs/agent/evidence/2026-09-15-stamp-vt/binding-v4-build-solid_face_projection_gpu_tests.log",
+    "source_changes": [],
+    "validation_errors": []
+  },
+  {
+    "kind": "projection",
+    "name": "clay",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      "$env:MATTER_VK_VALIDATION='1'; $env:MATTER_CLAY_FACE_DUMP='D:/tmp/matter-vt/20260915-stamp-vt/faces'; Set-Location -LiteralPath 'D:/Shared With Desktop/AI/matter-engine-cpp'; & './MatterEditor/build/cmake/windows-msvc/relwithdebinfo/solid_face_projection_gpu_tests.exe'; exit $LASTEXITCODE"
+    ],
+    "exit": 0,
+    "seconds": 9.764506719002384,
+    "log": "docs/agent/evidence/2026-09-15-stamp-vt/binding-v4-projection-clay.log",
+    "source_changes": [],
+    "validation_errors": []
+  },
+  {
+    "kind": "clay",
+    "name": "compositor",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      "$env:MATTER_VT_CLAY_FIXTURE='D:/tmp/matter-vt/20260915-stamp-vt/faces'; $env:MATTER_VK_SMOKE_MODE=\"compositor\"; $env:MATTER_VK_VALIDATION=\"1\"; Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vt_compositor_tests.exe\"; exit $LASTEXITCODE"
+    ],
+    "exit": 1,
+    "seconds": 3.348029103988665,
+    "log": "docs/agent/evidence/2026-09-15-stamp-vt/binding-v4-clay-compositor.log",
+    "source_changes": [],
+    "validation_errors": []
+  }
+]

@@ -1,0 +1,9 @@
+-- CastleStone
+  updated fixtures for CastleStone
+-- CastlePavingSlab
+  updated fixtures for CastlePavingSlab
+-- AlpineFlower
+  updated fixtures for AlpineFlower
+-- World.exports (DSL binding)
+All obj export golden tests passed
+ALL PASS

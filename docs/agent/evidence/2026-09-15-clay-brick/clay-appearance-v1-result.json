@@ -1,0 +1,26 @@
+{
+  "exit": 0,
+  "seconds_including_startup_and_view_waits": 32.225608781998744,
+  "source_changes": [],
+  "binary_changed": false,
+  "errors": [],
+  "vt_stats": [
+    "STATSVT,clay-appearance-v1-group,active=1,variants=8/32768,rejected=0,mesh=28.3/3512.0 MiB,pool=91/25600,pinned=8,queue=0,fills=91,evictions=0,ind=0.02/64 MiB",
+    "STATSVT,clay-appearance-v1-close,active=1,variants=8/32768,rejected=0,mesh=28.3/3512.0 MiB,pool=169/25600,pinned=8,queue=0,fills=169,evictions=0,ind=0.02/64 MiB",
+    "STATSVT,clay-appearance-v1-grazing,active=1,variants=8/32768,rejected=0,mesh=28.3/3512.0 MiB,pool=207/25600,pinned=8,queue=0,fills=207,evictions=0,ind=0.02/64 MiB",
+    "STATSVT,clay-appearance-v1-rt,active=1,variants=8/32768,rejected=0,mesh=28.3/3512.0 MiB,pool=207/25600,pinned=8,queue=0,fills=207,evictions=0,ind=0.02/64 MiB",
+    "STATSVT,clay-appearance-v1-albedo,active=1,variants=8/32768,rejected=0,mesh=28.3/3512.0 MiB,pool=207/25600,pinned=8,queue=0,fills=207,evictions=0,ind=0.02/64 MiB",
+    "STATSVT,clay-appearance-v1-normals,active=1,variants=8/32768,rejected=0,mesh=28.3/3512.0 MiB,pool=207/25600,pinned=8,queue=0,fills=207,evictions=0,ind=0.02/64 MiB",
+    "STATSVT,clay-appearance-v1-wireframe,active=1,variants=8/32768,rejected=0,mesh=28.3/3512.0 MiB,pool=287/25600,pinned=8,queue=0,fills=287,evictions=0,ind=0.02/64 MiB"
+  ],
+  "images": {
+    "clay-appearance-v1-group.png": "5eb40bdf0784e11e67957e3ea471fb3ba65f96be456f5b06e3e49581fe097193",
+    "clay-appearance-v1-close.png": "8af93e4dc205b54185ede8f9c7cfdb1e327da539906287b7182bc719895fad20",
+    "clay-appearance-v1-grazing.png": "1fc046a74f5c93b1dfbde5060cee65f4bf5eb65bb8a0b6dc73d979a1d3a0a949",
+    "clay-appearance-v1-rt.png": "2417ca3e2097bb6de0cccfe9885828f28424fd75db6330afcfd2681a1bfffbcd",
+    "clay-appearance-v1-albedo.png": "7b9228f80b8324a440dccf0cc6aec545261571e644665f966d97cd60ae1e665d",
+    "clay-appearance-v1-normals.png": "1db4f7b6234caa7de6ef042e339d7cc644f735359412c87763206c747c68ae3d",
+    "clay-appearance-v1-wireframe.png": "fef1c26b74417e3fd7139f67ab1277d4ce0d0db89a67ba9017d2db98b5fd2085"
+  },
+  "passed": true
+}

@@ -1,0 +1,14 @@
+{
+  "documents": {
+    "ROADMAP.md": "fb71d98511dda1d995ddf7a6a994a81ab667f8a2adc67437df2ded757f61fbc4",
+    "docs/README.md": "352c97869993ab9c13ca1349f14bc02751300fdfdc2e84277852d74d49ad5ecc",
+    "docs/agent/evidence/2026-09-15-vt-feedback/README.md": "9f18431de3a6c70d0054a27ea27d945a0affc87c64c93593ed701c539b84dd00",
+    "docs/superpowers/plans/2026-09-14-layered-surface-texturing.md": "93bfc5d2501f5d87285a6e6b40635b016713de3e32470690afd0686556ef89b3",
+    "docs/superpowers/plans/2026-09-14-vt-reliability-and-throughput.md": "cdbcca08fa90640775e9fdd789c1bba2916f649123ac34ce50334e3f125f0508",
+    "docs/superpowers/specs/2026-09-14-layered-surface-texturing-design.md": "3727517afcefa1a574882005c7531f2ca75af595ccfd7a73ac9cdb6eb7c33e42",
+    "docs/superpowers/specs/2026-09-14-vt-reliability-and-throughput-design.md": "f8c2156ecb85f697e9177dc3356d091468e80227ebc979bdc044ab387c92c5df",
+    "docs/agent/evidence/2026-09-15-procedural-generation/README.md": "c28fd47a91dbb58e724cab7286c9eced383cf84148656fb42c7a1c5954db8729"
+  },
+  "missing_links_or_fences": [],
+  "runtime_feature_acceptance": false
+}

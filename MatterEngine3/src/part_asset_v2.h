@@ -42,6 +42,8 @@
 #include <string>
 #include <vector>
 
+namespace matter { struct PartRenderPolicy; }
+
 namespace part_asset {
 
 // M4: these are ALIASES of the version vector's format components, not
@@ -76,6 +78,12 @@ constexpr uint32_t kFormatVersionFlat = matter_version::components::kFlatFormat;
 uint64_t compute_resolved_hash(const void* source_bytes, size_t source_len,
                                const void* params_bytes, size_t params_len,
                                const uint64_t* child_hashes, size_t child_count);
+
+// Reuse a source prefix across many parameter sets without changing identity.
+// finish_resolved_hash appends params/children and CURRENT mode/version salts.
+uint64_t compute_source_hash(const void* source_bytes, size_t source_len);
+uint64_t finish_resolved_hash(uint64_t source_hash, const void* params_bytes, size_t params_len,
+                              const uint64_t* child_hashes, size_t child_count);
 
 // Child-instance record: a reference to ANOTHER part by resolved hash + placement.
 // transform is row-major, world placement under the parent's frame. Kept padding-free
@@ -130,6 +138,10 @@ struct LodVariants {
 // False if the section is missing or unparseable (callers fall back to QEM).
 bool load_lod_sidecar(const std::string& path, uint64_t resolved_hash,
                       LodVariants& out);
+// Strict proof for the static source-singleton fallback, distinct from the
+// compatibility reader above. Rejects malformed/trailing tokens and foreign refs.
+bool load_single_full_lod_policy(const std::string& path, uint64_t resolved_hash);
+
 bool save_lod_sidecar(const std::string& path, uint64_t resolved_hash,
                       const LodVariants& variants);
 
@@ -253,6 +265,22 @@ bool save_v2(const std::string& path, const BLASManager& blas,
              const std::vector<VolumeEmitter>& emitters,
              uint64_t resolved_hash);
 
+// Proof supplied only after a static leaf's own class declared exactly [1].
+// Existing VARS/PLAN formats encode these values; this is not a new disk format.
+struct StaticLeafMetadata {
+    double anchor_size = 0.0;
+    bool no_impostor = false;
+};
+
+// Static-only atomic RNDR + REP0 publish. The animation/candidate APIs below
+// retain their existing ordering and never use this convenience entry point.
+bool save_v2_with_render_policy(const std::string& path, const BLASManager& blas,
+             const TLASManager& tlas,
+             const ChildInstance* children, size_t child_count,
+             const LodLevels& lods, const std::vector<VolumeEmitter>& emitters,
+             uint64_t resolved_hash, const matter::PartRenderPolicy& policy,
+             const StaticLeafMetadata* leaf_metadata = nullptr);
+
 // Animated parts — appends a tagged "ANLK" trailer (after any EMIT block)
 // carrying the PartAnimationLink that binds this Part to its animation bundle.
 // Static writers never call this overload, so their bytes stay unchanged.
@@ -282,7 +310,19 @@ bool save_v2(const std::string& path, const BLASManager& blas,
              uint64_t resolved_hash);
 
 // Atomically publish source_path at target_path, replacing an existing target
-// without deleting it first. Failure leaves the previous target intact.
+// without deleting it first. Failure leaves the previous target intact and the
+// source in place; the caller decides whether to delete the source.
+//
+// TRANSIENT FAILURES (Windows). MoveFileEx refuses to replace a target that
+// some other handle holds open without FILE_SHARE_DELETE: an antivirus or
+// indexer scanning a freshly closed file, or an in-process part_bundle reader
+// (bundle reads take no lock). None of that is a corruption hazard, only a
+// liveness one, so ERROR_SHARING_VIOLATION / ERROR_ACCESS_DENIED /
+// ERROR_LOCK_VIOLATION are retried with exponential backoff (1, 2, 4 ... ms)
+// for up to kReplaceFileMaxAttempts renames, about 0.5 s of waiting, before
+// the call gives up with NotReplaced. Any other error fails on the first
+// attempt. POSIX rename has no such failure mode and is attempted once.
+inline constexpr uint32_t kReplaceFileMaxAttempts = 10;
 enum class FileReplaceOutcome {
     NotReplaced,        // the rename failed; the previous target is still intact
     ReplacedDurable,    // renamed AND the directory entry was flushed to disk
@@ -291,13 +331,30 @@ enum class FileReplaceOutcome {
                                      // the test seam fired): the file is correct
                                      // now but may not survive power loss
 };
-FileReplaceOutcome replace_file_atomic_detailed(const std::string& source_path,
-                                                const std::string& target_path);
+// Why a replace failed, for callers that log it. os_error is the last failed
+// rename's GetLastError() (Windows) or errno (POSIX), and 0 once the rename
+// succeeded; attempts counts rename calls, so anything above 1 means transient
+// retries happened.
+struct FileReplaceDiagnostics {
+    uint32_t os_error = 0;
+    uint32_t attempts = 0;
+};
+FileReplaceOutcome replace_file_atomic_detailed(
+    const std::string& source_path, const std::string& target_path,
+    FileReplaceDiagnostics* diagnostics = nullptr);
 bool replace_file_atomic(const std::string& source_path,
                          const std::string& target_path);
 // Deterministic test seam: makes the next completed rename report that parent
 // directory durability could not be confirmed.
 void set_replace_file_atomic_test_post_rename_failure_once();
+// Deterministic test seam for the Windows transient-retry loop: called after
+// every failed rename that WILL be retried, with its 0-based attempt index and
+// OS error, before the backoff sleep. A test holding the target open releases
+// it here. Pass nullptr to clear; production never sets it.
+using ReplaceFileRetryHook = void (*)(uint32_t attempt, uint32_t os_error,
+                                      void* user);
+void set_replace_file_atomic_test_retry_hook(ReplaceFileRetryHook hook,
+                                             void* user);
 
 // Reconstruct managers from a v2 file; returns the child table and LOD levels to the
 // caller (passive — no backend action). Returns false (caller regenerates) on any
@@ -427,6 +484,12 @@ bool load_flat_v3(const std::string& path, uint64_t expected_resolved_hash,
                   BLASManager& blas, TLASManager& tlas,
                   std::vector<FlatCluster>& clusters_out,
                   std::vector<FlatInstanceRef>& instance_refs_out);
+// Validated refs-only scan: same header, full checksum and common/FLAT grammar
+// as the non-emitter loader, without BLAS/TLAS construction or geometry copies.
+// Optional trailing EMIT data is ignored, as in that overload. Failure leaves
+// output unchanged; success replaces it (including the zero-ref case).
+bool load_flat_instance_refs(const std::string& path, uint64_t expected_resolved_hash,
+                             std::vector<FlatInstanceRef>& instance_refs_out);
 // Back-compat overload: discards the instance_refs trailer (still validates it).
 bool load_flat_v3(const std::string& path, uint64_t expected_resolved_hash,
                   BLASManager& blas, TLASManager& tlas,

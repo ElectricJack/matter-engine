@@ -122,4 +122,19 @@ void SessionBinding::reload() {
     if (session_) session_->reload();
 }
 
+void SessionBinding::regenerate(uint64_t world_seed) {
+    // Same seam, same order, same epoch as reload() -- WorldSession::regenerate
+    // stores the seed override and enqueues a Reload with the engine's ordinary
+    // supersession semantics, so the only difference from reload() is the
+    // override it captures before the next provider is built.
+    if (clear_models_) clear_models_();
+    if (session_) session_->regenerate(world_seed);
+}
+
+void SessionBinding::regenerate_parameters(const std::string& module,
+                                           const std::string& canonical_params_json) {
+    if (clear_models_) clear_models_();
+    if (session_) session_->regenerate_parameters(module, canonical_params_json);
+}
+
 }  // namespace viewer

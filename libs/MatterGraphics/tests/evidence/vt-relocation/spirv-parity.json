@@ -1,0 +1,18 @@
+{
+  "vt_feedback.comp": {
+    "bytes": 2024,
+    "sha256": "03fc2e2fc02c1d2f44d01f375309f0da6b63c489bfd92f27f941174dea3716a4"
+  },
+  "vt_bc_encode.comp": {
+    "bytes": 41284,
+    "sha256": "e2807019fab4c7551c12d4f25bd7b136906734381a8a4ab53d4f04d2cf89b9fa"
+  },
+  "gbuffer.frag": {
+    "bytes": 1594540,
+    "sha256": "dd2d3049991cd6a6ae535dfeccc56db80b76f03bb6d7e9c503dbbc2830365464"
+  },
+  "rt_surface_test.rgen": {
+    "bytes": 50836,
+    "sha256": "22203dffc8c6fbbbc8687bc1c88f1c333f7e4ba2264fe3440433ba84f1cca6c3"
+  }
+}

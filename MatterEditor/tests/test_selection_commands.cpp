@@ -1,4 +1,6 @@
+#include "../src/reveal_part.h"
 #include "../src/selection_commands.h"
+#include "../src/viewport_pick_command.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -143,12 +145,136 @@ void test_rebake_and_world_switch_prune() {
           "selection list reports typed empty state and current revisions");
 }
 
+// The frame prune and the command-admission check must name the SAME
+// population.  They did not: selection commands admit any root
+// inventory::find_object knows (part graph), while main.cpp's once-a-frame
+// SelectionSet::validate asked the session for a PLACED instance.  A baked
+// root that is in the graph but placed nowhere -- which scene.get_object
+// answers found:true / placement.available:false for -- therefore reported
+// changed:true and was gone by the next read, burning two selection_revisions
+// per attempt (one for the accepted mutation, one for the prune).
+void test_unplaced_baked_root_survives_frame_prune() {
+    part_graph_snapshot::Snapshot graph;
+    part_graph_snapshot::Node placed;
+    placed.module = "RootOne";
+    placed.resolved_hash = 1;
+    placed.is_root = true;
+    graph.nodes.emplace("RootOne", placed);
+    part_graph_snapshot::Node unplaced;  // in the graph, no world instance
+    unplaced.module = "RootNine";
+    unplaced.resolved_hash = 9;
+    unplaced.is_root = true;
+    graph.nodes.emplace("RootNine", unplaced);
+    part_graph_snapshot::Node composed;  // only exists inside another part
+    composed.module = "Panel";
+    composed.resolved_hash = 33;
+    composed.is_root = false;
+    graph.nodes.emplace("Panel", composed);
+
+    CHECK(viewer::baked_root_selectable(graph, 9),
+          "a root with no placed instance is still selectable");
+    CHECK(!viewer::baked_root_selectable(graph, 33),
+          "a non-root node has no world instance to select");
+    CHECK(!viewer::baked_root_selectable(graph, 0),
+          "an unresolved (zero) hash is never selectable");
+
+    // The frame predicate, exactly as main.cpp composes it.
+    const auto frame_alive = [&](const viewer::SelectedObject& item) {
+        return item.kind == viewer::SelectedObject::BakedRoot
+                   ? viewer::baked_root_selectable(graph, item.id)
+                   : true;
+    };
+
+    viewer::SelectionSet selection;
+    const inv::Snapshot current = snapshot();
+    expect_ok(selcmd::apply(selection, current, selcmd::Operation::Replace,
+                            {root(9)}),
+              true, "selection.replace admits the unplaced root");
+    const std::uint64_t after_replace = selection.revision();
+
+    selection.validate(frame_alive);
+    CHECK(selection.size() == 1 &&
+              selection.contains({viewer::SelectedObject::BakedRoot, 9}),
+          "the frame prune keeps a selection the command reported as changed");
+    CHECK(selection.revision() == after_replace,
+          "a prune that drops nothing does not advance selection_revision");
+
+    // Repeating the add must now be a genuine no-op, which is only true
+    // because the prune above left the selection alone.
+    expect_ok(selcmd::apply(selection, current, selcmd::Operation::Add,
+                            {root(9)}),
+              false, "repeated add on the unplaced root is idempotent");
+    CHECK(selection.revision() == after_replace,
+          "idempotent add retains selection_revision");
+
+    // Staleness is still caught: a rebake republishes new resolved hashes.
+    part_graph_snapshot::Snapshot rebaked;
+    part_graph_snapshot::Node fresh;
+    fresh.module = "RootNine";
+    fresh.resolved_hash = 11;
+    fresh.is_root = true;
+    rebaked.nodes.emplace("RootNine", fresh);
+    selection.validate([&](const viewer::SelectedObject& item) {
+        return item.kind == viewer::SelectedObject::BakedRoot
+                   ? viewer::baked_root_selectable(rebaked, item.id)
+                   : true;
+    });
+    CHECK(selection.empty() && selection.revision() != after_replace,
+          "a rebaked-away root is still pruned");
+}
+
+void test_viewport_pick_arguments() {
+    Value arguments;
+    arguments.kind = Value::Kind::Object;
+    Value x;
+    x.kind = Value::Kind::Number;
+    x.num = 27.5;
+    Value y;
+    y.kind = Value::Kind::Number;
+    y.num = 13.0;
+    arguments.set("x", x);
+    arguments.set("y", y);
+
+    viewer::viewport_pick_command::Coordinates coordinates;
+    std::string error;
+    CHECK(viewer::viewport_pick_command::parse_coordinates(arguments, coordinates, error) &&
+              coordinates.x == 27.5f && coordinates.y == 13.0f,
+          "viewport logical coordinates parse exactly");
+
+    viewer::viewport_pick_command::SelectionMode mode;
+    CHECK(viewer::viewport_pick_command::parse_selection_mode(arguments, mode, error) &&
+              mode == viewer::viewport_pick_command::SelectionMode::Replace,
+          "viewport selection mode defaults to replace");
+    Value mode_value;
+    mode_value.kind = Value::Kind::String;
+    mode_value.str = "toggle";
+    arguments.set("mode", mode_value);
+    CHECK(viewer::viewport_pick_command::parse_selection_mode(arguments, mode, error) &&
+              mode == viewer::viewport_pick_command::SelectionMode::Toggle,
+          "viewport selection mode accepts toggle");
+
+    x.num = -0.5;
+    arguments.set("x", x);
+    CHECK(!viewer::viewport_pick_command::parse_coordinates(arguments, coordinates, error) &&
+              !error.empty(),
+          "negative viewport-local coordinates are rejected before picking");
+    x.num = 1.0;
+    arguments.set("x", x);
+    mode_value.str = "remove";
+    arguments.set("mode", mode_value);
+    CHECK(!viewer::viewport_pick_command::parse_selection_mode(arguments, mode, error) &&
+              !error.empty(),
+          "unsupported viewport selection mode is rejected");
+}
+
 }  // namespace
 
 int main() {
     test_mixed_operations_and_primary();
     test_validation_is_atomic_and_typed();
     test_rebake_and_world_switch_prune();
+    test_unplaced_baked_root_survives_frame_prune();
+    test_viewport_pick_arguments();
     std::printf("Selection command tests passed.\n");
     return 0;
 }

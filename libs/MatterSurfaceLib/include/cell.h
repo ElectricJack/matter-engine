@@ -97,6 +97,13 @@ std::vector<Particle> build_clip_particles(
 // clamp(base_pow + max(0,tier), base_pow, max_pow). GL-free / pure.
 int choose_division_pow(float detail_size_min, float base_detail, int base_pow, int max_pow);
 
+// Absolute lattice spacing in cell-local metres. Chooses the first bounded
+// rung whose interval cell_size/(2^pow-1) is <= spacing. Requests finer than
+// max_pow saturate there; invalid inputs fall back to base_pow. Unlike the
+// relative particle-detail rule above, a single fine brush can select a fine
+// lattice without an artificial coarse first brush.
+int choose_absolute_division_pow(float cell_size, float spacing, int base_pow, int max_pow);
+
 // One subdivision cell and the geometry baked for it.
 //
 // Created and owned by Cluster (held by unique_ptr in `Cluster::cells_`); it
@@ -161,7 +168,11 @@ struct Cell {
                                      // from which the cell builds its local particle->stage map.
                                      const FieldStages* stages = nullptr,
                                      const FatPrim* fat = nullptr, int fatCount = 0,
-                                     const int* clusterStage = nullptr) const;
+                                     const int* clusterStage = nullptr,
+                                     // Optional absolute spacing, shared by ALL cells of
+                                     // one expression to keep their boundaries aligned.
+                                     // Zero preserves the legacy particle-detail rule.
+                                     float absolute_spacing = 0.0f) const;
     // Main-thread commit of a CellMeshResult: UploadMesh (GL), BLAS registration,
     // BVH report, and material_meshes/material_blas writes. Sets has_meshes.
     void commit_cell_meshes(CellMeshResult& result, BLASManager& blas_manager);
@@ -197,7 +208,7 @@ struct Cell {
     mm::Vec3 get_size() const { return mm::Vec3{actual_size, actual_size, actual_size}; }
     
 private:
-    void calculate_bounds(float smallest_cell_size);
+    void calculate_bounds();
     // CPU-only build of one merge group's mesh + tagged triangles (no GL/BLAS).
     GroupMeshResult build_group_mesh(uint32_t group_id, const std::vector<StaticParticle>& cluster_particles,
                                      SurfaceScratch* scratch,
@@ -205,7 +216,8 @@ private:
                                      const Particle* carveParticles, int carveCount,
                                      const FieldStages* stages = nullptr,
                                      const FatPrim* fat = nullptr, int fatCount = 0,
-                                     const int* clusterStage = nullptr) const;
+                                     const int* clusterStage = nullptr,
+                                     float absolute_spacing = 0.0f) const;
     // Main-thread commit of one group's result (UploadMesh + BLAS + BVH report).
     void commit_group_mesh(GroupMeshResult& result, BLASManager& blas_manager);
 };
