@@ -1,0 +1,32 @@
+{
+  "runs": [
+    {
+      "mode": "provider",
+      "command": "$env:MATTER_VK_VALIDATION=\"1\"; $env:TMP=\"$env:LOCALAPPDATA\\Temp\"; $env:TEMP=$env:TMP; $env:MATTER_VK_SMOKE_MODE=\"provider\"; $env:MATTER_VT_PROP_TEXELS_PER_METER=$null; & \"./MatterEditor/build/cmake/windows-msvc/relwithdebinfo/part_surface_provider_tests.exe\"; exit $LASTEXITCODE",
+      "exit": 1,
+      "seconds": 0.9679845039936481,
+      "binary_sha256": "845bb203dc1aa9af8fb185bcb22381e262130188d317d7274bb499d1995400f6",
+      "binary_unchanged": true,
+      "source_changes": [],
+      "all_pass": false,
+      "zero_validation_errors": true,
+      "skipped_rt": false,
+      "log_sha256": "892fad6ddd910ca44477a39babb63bdf6c4f07c7ebfb50f933a640fe924b53d2",
+      "passed": false
+    },
+    {
+      "mode": "partstore",
+      "command": "$env:MATTER_VK_VALIDATION=\"1\"; $env:TMP=\"$env:LOCALAPPDATA\\Temp\"; $env:TEMP=$env:TMP; $env:MATTER_VK_SMOKE_MODE=\"partstore\"; $env:MATTER_VT_PROP_TEXELS_PER_METER=$null; & \"./build/cmake/windows-msvc/relwithdebinfo/partstore_tests.exe\"; exit $LASTEXITCODE",
+      "exit": 0,
+      "seconds": 1.2831583869992755,
+      "binary_sha256": "f05cc4c0a1ee240005b7c4ac609ff6ac3a8f17a0bbd3bcb4f271a144a78e822a",
+      "binary_unchanged": true,
+      "source_changes": [],
+      "all_pass": true,
+      "zero_validation_errors": true,
+      "skipped_rt": false,
+      "log_sha256": "9449aa14963796dfb8a5cd79ce6d328f50ca63c3964e74d56124966b786979a8",
+      "passed": true
+    }
+  ]
+}

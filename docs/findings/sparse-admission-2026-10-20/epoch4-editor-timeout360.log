@@ -1,0 +1,93 @@
+Vulkan adapter: llvmpipe (LLVM 20.1.2, 256 bits) | driver: llvmpipe (Mesa 25.2.8-0ubuntu0.24.04.2 (LLVM 20.1.2), 0x06402008) | API 1.4.318
+[vk] present requested=auto effective=fifo(2) supported=[immediate(0),mailbox(1),fifo(2),fifo_relaxed(3)] images=4 extent=1280x720
+worlds available (73):
+  [0] AnimatedRigGallery  (/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-3/projects/world_demo)
+  [1] AtmospherePresentationFixture  (/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-3/projects/world_demo)
+  [2] BranchGallery  (/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-3/projects/world_demo)
+  [3] CastleAngledBailey  (/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-3/projects/world_demo)
+  [4] CastleBentPalace  (/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-3/projects/world_demo)
+  [5] CastleCloister  (/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-3/projects/world_demo)
+  [6] CastleClusteredCourt  (/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-3/projects/world_demo)
+  [7] CastleConnectorFixture  (/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-3/projects/world_demo)
+  [8] CastleCourtyard  (/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-3/projects/world_demo)
+  [9] CastleFastBakeProof  (/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-3/projects/world_demo)
+  [10] CastleFurnishings  (/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-3/projects/world_demo)
+  [11] CastleGallery  (/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-3/projects/world_demo)
+  [12] CastleMasonry  (/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-3/projects/world_demo)
+  [13] CastleMasonryPreview  (/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-3/projects/world_demo)
+  [14] CastleMaterials  (/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-3/projects/world_demo)
+  [15] CastleRoundKeep  (/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-3/projects/world_demo)
+  [16] CastleSiteGallery  (/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-3/projects/world_demo)
+  [17] CastleStructure  (/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-3/projects/world_demo)
+  [18] CastleTimberProbe  (/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-3/projects/world_demo)
+  [19] CastleUpgraded  (/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-3/projects/world_demo)
+  [20] CastleWalkProbe  (/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-3/projects/world_demo)
+  [21] CastleWalkProbeCloister  (/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-3/projects/world_demo)
+  [22] CastleWalkProbeRoundKeep  (/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-3/projects/world_demo)
+  [23] CastleWallBakeProof  (/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-3/projects/world_demo)
+  [24] CastleWingStudy  (/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-3/projects/world_demo)
+  [25] ChartVtProof  (/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-3/projects/world_demo)
+  [26] ClayBrickGeometryProof  (/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-3/projects/world_demo)
+  [27] ClayBrickMaterialProof  (/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-3/projects/world_demo)
+  [28] ClayBrickMaze  (/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-3/projects/world_demo)
+  [29] ClayBrickWallProof  (/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-3/projects/world_demo)
+  [30] ClayBrickWallSurfaceProof  (/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-3/projects/world_demo)
+  [31] CloudLab  (/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-3/projects/world_demo)
+  [32] CloudLegacy  (/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-3/projects/world_demo)
+  [33] ConiferForest  (/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-3/projects/world_demo)
+  [34] ConiferLab  (/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-3/projects/world_demo)
+  [35] CornellBox  (/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-3/projects/world_demo)
+  [36] Demo  (/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-3/projects/world_demo)
+  [37] FloorDemo  (/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-3/projects/world_demo)
+  [38] FogLab  (/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-3/projects/world_demo)
+  [39] GeometryDetailProof  (/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-3/projects/world_demo)
+  [40] Kreuzenstein  (/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-3/projects/world_demo)
+  [41] LightingGarden  (/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-3/projects/world_demo)
+  [42] LocalLightGallery  (/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-3/projects/world_demo)
+  [43] LocalLightPointIsolation  (/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-3/projects/world_demo)
+  [44] LocalLightRtGallery  (/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-3/projects/world_demo)
+  [45] LocalLightSpotIsolation  (/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-3/projects/world_demo)
+  [46] Meadow  (/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-3/projects/world_demo)
+  [47] MetalProof  (/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-3/projects/world_demo)
+  [48] ObjectEvalRock  (/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-3/projects/world_demo)
+  [49] PeriodicBrickWallProof  (/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-3/projects/world_demo)
+  [50] PhysicsPlayground  (/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-3/projects/world_demo)
+  [51] PomProof  (/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-3/projects/world_demo)
+  [52] PomProofBrick  (/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-3/projects/world_demo)
+  [53] Primitives  (/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-3/projects/primitive_demo)
+  [54] ProceduralBrickProof  (/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-3/projects/world_demo)
+  [55] ProceduralTerrainProof  (/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-3/projects/world_demo)
+  [56] RedwoodGrove  (/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-3/projects/world_demo)
+  [57] RiverFloatLab  (/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-3/projects/world_demo)
+  [58] RiverHydrology  (/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-3/projects/world_demo)
+  [59] RockFormationProof  (/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-3/projects/world_demo)
+  [60] RockGallery  (/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-3/projects/world_demo)
+  [61] RockScaleProof  (/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-3/projects/world_demo)
+  [62] SeamLab  (/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-3/projects/world_demo)
+  [63] SharedBrickWallProof  (/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-3/projects/world_demo)
+  [64] StreamCaverns  (/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-3/projects/world_demo)
+  [65] StreamMeadow  (/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-3/projects/world_demo)
+  [66] StreamMountain  (/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-3/projects/world_demo)
+  [67] SurfaceContactProof  (/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-3/projects/world_demo)
+  [68] TilesetGallery  (/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-3/projects/world_demo)
+  [69] VegetationGallery  (/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-3/projects/world_demo)
+  [70] VillaDoricColumnStudy  (/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-3/projects/world_demo)
+  [71] VillaGoldTreasury  (/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-3/projects/world_demo)
+  [72] VillaWebsiteKit  (/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-3/projects/world_demo)
+Vulkan RT available=true enabled=true reason=none
+Vulkan wireframe available=true reason=none
+issues: reports go to /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-3/issues
+DLSS selected=Native active=Native internal=0x0 output=0x0 resets=0 reason=none
+[resolve] resolve cache: hit e8baf17468b2bb0e
+[bake-timing] install=0ms compose=0ms (resolve-cache-hit) publish=...ms total(pre-publish)=14ms
+[part-store] loaded v3 FLAT part 9d9e27a2cf3fdb4e (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[resolve]   resolve census: 0 parts baked, 1 cache hits, version digest 144cdeb99c68f1a7
+bake 1/1 FloorDemo
+[refine] controller built: 0 tiles
+[local-light] published 0 lights, 0 cells/0 buckets, 48 index bytes, max 0 candidates
+[vk] impostor atlas: 128 slots x 2 layers of 128x128 RGBA8 (cell 16 px, filtered mips) = 21 MiB
+[rt] independent GI shader specialization=1
+[rt] local primary area samples=4 (0=adaptive); visibility diagnostic counters=0
+[rt] local-light selection code=0; packed budgets=0
+[rt] secondary local-light sampling=1 (0 exact, 1 importance reservoir)
+[rt] secondary surface detail mode=0 (0 reference, 1 adaptive, 2 normal-only)

@@ -1,0 +1,78 @@
+{
+  "schema": 1,
+  "frame": 4200,
+  "pool_capacity_pages": 33024,
+  "occupied_pages": 1630,
+  "occupied_fraction": 0.04935804263565891,
+  "pool_format_bytes": 4275683328,
+  "occupied_slot_format_bytes": 211039360,
+  "physical_border_fraction_of_slot": 0.11418685121107264,
+  "groups": {
+    "all": {
+      "pages": 1630,
+      "geometry_unavailable_pages": 0,
+      "unfilled_tail_pages": 0,
+      "payload_texels": 26705920,
+      "atlas_texels": 15345329,
+      "chart_block_texels": 14317901,
+      "triangle_covered_texels": 3407889,
+      "triangle_fraction_of_payload": 0.12760799852616947,
+      "triangle_fraction_of_stored_slot": 0.11303684298511898,
+      "payload_partition": {
+        "outside_atlas": 11360591,
+        "between_chart_blocks": 1027428,
+        "block_padding_outside_gutter_bounds": 8755346,
+        "gutter_bounds_outside_content_bounds": 420411,
+        "inside_content_bounds_outside_triangles": 1734255,
+        "triangle_covered": 3407889
+      }
+    },
+    "pinned": {
+      "pages": 789,
+      "geometry_unavailable_pages": 0,
+      "unfilled_tail_pages": 0,
+      "payload_texels": 12926976,
+      "atlas_texels": 1847025,
+      "chart_block_texels": 1644013,
+      "triangle_covered_texels": 87898,
+      "triangle_fraction_of_payload": 0.006799579422132446,
+      "triangle_fraction_of_stored_slot": 0.006023156858359537,
+      "payload_partition": {
+        "outside_atlas": 11079951,
+        "between_chart_blocks": 203012,
+        "block_padding_outside_gutter_bounds": 1506410,
+        "gutter_bounds_outside_content_bounds": 15538,
+        "inside_content_bounds_outside_triangles": 34167,
+        "triangle_covered": 87898
+      }
+    },
+    "detail": {
+      "pages": 841,
+      "geometry_unavailable_pages": 0,
+      "unfilled_tail_pages": 0,
+      "payload_texels": 13778944,
+      "atlas_texels": 13498304,
+      "chart_block_texels": 12673888,
+      "triangle_covered_texels": 3319991,
+      "triangle_fraction_of_payload": 0.2409466937379236,
+      "triangle_fraction_of_stored_slot": 0.21343374947027144,
+      "payload_partition": {
+        "outside_atlas": 280640,
+        "between_chart_blocks": 824416,
+        "block_padding_outside_gutter_bounds": 7248936,
+        "gutter_bounds_outside_content_bounds": 404873,
+        "inside_content_bounds_outside_triangles": 1700088,
+        "triangle_covered": 3319991
+      }
+    }
+  },
+  "limits": [
+    "CPU geometric center coverage after command recording, not a GPU completion or visible-pixel metric.",
+    "Counts occupied cached pages, including offscreen content; aliases count once per physical slot.",
+    "Filtering and dilation need some uncovered texels; these are not all reclaimable bytes.",
+    "Page partitions use one payload denominator and exclude physical borders, which are reported separately.",
+    "Pool format bytes exclude allocation alignment and other VT resources.",
+    "This costly diagnostic is excluded from timing acceptance."
+  ],
+  "log": "/mnt/d/tmp/matter-vt/20260914-01/stream-density/run/log.txt"
+}

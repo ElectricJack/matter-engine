@@ -1,0 +1,27 @@
+{
+  "manifest": "docs/agent/evidence/2026-09-15-direct-source/weathering-occlusion-source.json",
+  "native_check_count": 3,
+  "native_checks_passed": true,
+  "source_mismatches": [],
+  "binary_mismatches": [],
+  "captures": {
+    "brick-weathering-v3": {
+      "passed_at_capture": true,
+      "current_source_differences": [],
+      "same_editor": true,
+      "image_count": 5,
+      "image_mismatches": [],
+      "all_view_queues_empty": true
+    },
+    "terrain-weathering-v2": {
+      "passed_at_capture": true,
+      "current_source_differences": [
+        "MatterEngine3/tests/eval_world_tests.cpp"
+      ],
+      "same_editor": true,
+      "image_count": 5,
+      "image_mismatches": [],
+      "all_view_queues_empty": true
+    }
+  }
+}

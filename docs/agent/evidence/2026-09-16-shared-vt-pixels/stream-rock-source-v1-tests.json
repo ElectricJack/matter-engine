@@ -1,0 +1,18 @@
+{
+  "runs": [
+    {
+      "mode": "provider",
+      "command": "$env:MATTER_VK_VALIDATION=\"1\"; $env:TMP=\"$env:LOCALAPPDATA\\Temp\"; $env:TEMP=$env:TMP; $env:MATTER_VK_SMOKE_MODE=\"provider\"; $env:MATTER_VT_PROP_TEXELS_PER_METER=$null; & \"./MatterEditor/build/cmake/windows-msvc/relwithdebinfo/part_surface_provider_tests.exe\"; exit $LASTEXITCODE",
+      "exit": 0,
+      "seconds": 1.0892055339936633,
+      "binary_sha256": "9e7999e476f31cc47154a1e0c7a14c9263cb78f1c4e7a987c3718a75215d381f",
+      "binary_unchanged": true,
+      "source_changes": [],
+      "all_pass": true,
+      "zero_validation_errors": true,
+      "skipped_rt": false,
+      "log_sha256": "46e55593a13f0d0c24d9f0eae6f3850dbcf6b7b74b7d29ec11dea98ba63843cd",
+      "passed": true
+    }
+  ]
+}

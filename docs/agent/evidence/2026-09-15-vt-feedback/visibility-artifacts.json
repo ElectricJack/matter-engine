@@ -1,0 +1,257 @@
+{
+  "source_manifest": "visibility-final-source.json",
+  "verification": "visibility-final-verification.json",
+  "full_vt_acceptance": false,
+  "artifacts": [
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/README.md",
+      "bytes": 74699,
+      "sha256": "3e05ac540a8f85eeb95be40a4c38b72cf83d7826af63042b5681252c7137523c"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/castle-visible-feedback-scopes.json",
+      "bytes": 2218,
+      "sha256": "7dfff631a9b8eacd5d3de1ad57d51af3531218e53311e6ff9f0e47252175c2cb"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/castle-visible-feedback-validation-artifacts.json",
+      "bytes": 5924,
+      "sha256": "1a913fd7e19c19a4dee83873d39dbd961e480b3eb583ad728fc4c1997e9d52b2"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/castle-visible-feedback-validation-events.json",
+      "bytes": 472,
+      "sha256": "019d3d2fcaae84eeb46efd3d019ce55825b2238bdcaceb10faed0124f9eff21a"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/castle-visible-feedback-validation-summary.json",
+      "bytes": 1931,
+      "sha256": "ef2c78d29bd0016933f23f8263ba0b5dd9b7876c39fd33ab4329ce0e22ab7daf"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/terrain-visible-feedback-validation-artifacts.json",
+      "bytes": 6367,
+      "sha256": "30edb0817b59ee407b03faac616e7eb6ac732b9369ad61db4a9af2faf9a88b46"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/visibility-final-animation-skin.log",
+      "bytes": 9872,
+      "sha256": "cd6ae8a08cd377ae45a99c721aa05af3770dd8f99843123303f049111f379174"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/visibility-final-before.json",
+      "bytes": 3938,
+      "sha256": "d5138e47cbe3bbf211d387f9cd98a4d5994fe66e6934ea0a7d5b41b23c2e6030"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/visibility-final-checks.json",
+      "bytes": 10414,
+      "sha256": "04d252053800f3d6af34f7a7f38abff300346d3065f5436ac98664250af328de"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/visibility-final-compositor-build.log",
+      "bytes": 2150,
+      "sha256": "e6df0ae6138af5b9847f34788c1535063fcda0f3aeb0c9264c89d30ccc6c7f69"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/visibility-final-compositor.log",
+      "bytes": 2929,
+      "sha256": "652c31722c0d197981eeb5c7ca8a77ecd92c7739f8ba8120e86270e678f39fd5"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/visibility-final-editor-build.log",
+      "bytes": 1146,
+      "sha256": "2e7ce9afdd17312b8d6f6937ddf43e5f23b6481ca00c57c613bcd6f58156c61c"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/visibility-final-rt-disabled.log",
+      "bytes": 5179,
+      "sha256": "1d5ae1edd1927b5f73ec5967443a14459953bba3953d90e0cd08c1d3d33386e4"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/visibility-final-smoke-build.log",
+      "bytes": 63827,
+      "sha256": "77edd275ae8075c2c70bea2fd2216212148ada4f2b8d113adbe479cb9064bd34"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/visibility-final-source.json",
+      "bytes": 4403,
+      "sha256": "18e4ef190ed0685dc808fc55c1b5fe00d12c7ea34198bddbba022ba8829281ca"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/visibility-final-sparse-voxel.log",
+      "bytes": 9551,
+      "sha256": "4bf21ff46fce53847377be5b184e8d5efde7a4386770f34cc537e567954b3c10"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/visibility-final-surface-parallax.log",
+      "bytes": 5939,
+      "sha256": "f52b072c4efc8244f77ab7a598304e2ca044b21a64c622875c6ba35eddf13a5a"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/visibility-final-verification.json",
+      "bytes": 622,
+      "sha256": "29eed075785dda723b86bd84ff1511582e620f534b88e2db6cd9266ecfb131cd"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/visibility-final-vt-enrich-nort.log",
+      "bytes": 5414,
+      "sha256": "ffdc1c165ea9bdf47a49412eaa4124a5418bacd2a5099d896b6423516311636a"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/visibility-final-vt-enrich.log",
+      "bytes": 5859,
+      "sha256": "2a6725db87038271f458e2ff1fe9a173ee64ba802bc2edd8c4e43893da4a5f66"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/visibility-final-vt-feedback.log",
+      "bytes": 7510,
+      "sha256": "6abfaaf300765dbae4213fabf307782079753fe32392296fea3b5f7728d07d12"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/visibility-final-vt-normal-frame.log",
+      "bytes": 5963,
+      "sha256": "5bea7d198ea21ae6bd9e7f966bf3613c722687bfb9e48591d756acaff756e7c2"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/visibility-final-vt-queue.log",
+      "bytes": 1989,
+      "sha256": "e8e167c0a42d4f969e7cb6e7b1f01fd0edb0e1db0103fc24e5fb1b4e207985d9"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/visibility-final-vt-rt.log",
+      "bytes": 5186,
+      "sha256": "0cf29147c203a3454538e894e0fb9f5b967ee011e17dbae3fb8d2a9db5b573df"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/visibility-final-vt-surfaces.log",
+      "bytes": 4821,
+      "sha256": "000f8b10797692de99de1dc7d0fd3654873766eae29b4241c257db1dbdb6dff1"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/visibility-final-vt.log",
+      "bytes": 5041,
+      "sha256": "1560abf7648c696ca911581e1889cbd7b4bd0fd477b31c780f25c9119782390a"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/visibility-final-water-field-nort.log",
+      "bytes": 4148,
+      "sha256": "650c682a10bccb8dcf74f43956a928205dcabd1f3110216a24dd637c435e4743"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/visibility-final-water-field.log",
+      "bytes": 4435,
+      "sha256": "e671b533b0c7132bfa402de1fc9d700d5185330169ccc9dc399e07b226e714dc"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/visibility-green-before.json",
+      "bytes": 3938,
+      "sha256": "62057800b5912e60a439df41773eb934618b4e65918aeb63646ee18f83c3006e"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/visibility-green-build.log",
+      "bytes": 70855,
+      "sha256": "ea168c8cb42b068c92bcad2be3b592723bc8b8e2e5c53c76050b51c08bb21329"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/visibility-green-checks.json",
+      "bytes": 869,
+      "sha256": "7c15c845eb2c5732a79ef8ce23aa20d00460a06224fabb691f6854e1fc3e7b4c"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/visibility-green-source.json",
+      "bytes": 4133,
+      "sha256": "ab99f815ce288d7bdaf0f8270e9068668845e5dbd8d4da6a2c65c0398a5178a8"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/visibility-green-vt-feedback.log",
+      "bytes": 7510,
+      "sha256": "6abfaaf300765dbae4213fabf307782079753fe32392296fea3b5f7728d07d12"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/visibility-integration-before.json",
+      "bytes": 3938,
+      "sha256": "c8f5d1fdb10b840d3b91a2820d93551fbfdc3bd8ba69a603a28b0170e22ffbff"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/visibility-integration-checks.json",
+      "bytes": 2202,
+      "sha256": "99a0a26c206774ef9824e474172854a6bae8b8d84767d3c3a3e726767d977113"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/visibility-integration-smoke-build.log",
+      "bytes": 64238,
+      "sha256": "7cb0c172a8578f644aa07d0938a395d06bc5896a4be6946d1a6412407c9354a7"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/visibility-integration-source.json",
+      "bytes": 4403,
+      "sha256": "806f1116ccbf252c3fa2bed27eb5c13943fc799ea4344f7834189ac281e471de"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/visibility-integration-vt-feedback.log",
+      "bytes": 7510,
+      "sha256": "6abfaaf300765dbae4213fabf307782079753fe32392296fea3b5f7728d07d12"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/visibility-integration-vt-queue.log",
+      "bytes": 1989,
+      "sha256": "e8e167c0a42d4f969e7cb6e7b1f01fd0edb0e1db0103fc24e5fb1b4e207985d9"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/visibility-integration-vt.log",
+      "bytes": 6428,
+      "sha256": "48333501761f10e54c3a200ee6a97d3ef2721a5a0e2543200d0ff98b1a92332e"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/visibility-red-before.json",
+      "bytes": 2794,
+      "sha256": "c62204d787c784e00950247aee1fb2b5cd9a79a231057209a424a3c6a96c6a2d"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/visibility-red-build.log",
+      "bytes": 60302,
+      "sha256": "88669c60fb81bcf2624ba83519ffd74d84177628a9844b20e27d9b889c3d29f1"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/visibility-red-checks.json",
+      "bytes": 866,
+      "sha256": "b498d56ea7b3e0f589e09ba280ff61fb70011bcac8077ea8a6e0893982a17586"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/visibility-red-source.json",
+      "bytes": 2989,
+      "sha256": "e10a08f9064f1719a01a0a4152034f08a6578c2e6170cbe6f453613e217279f3"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/visibility-red-vt-feedback.log",
+      "bytes": 7790,
+      "sha256": "72532d8317acef5a40e013caac6d8bff0157414ea653b6fafdc0945b474a6b34"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/visibility-terrain-crash-events.json",
+      "bytes": 2789,
+      "sha256": "4443d40450768ad0e5416e5bf6f546601fd1880fa899606d65838292b326c1d6"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-15-vt-feedback/visibility-terrain-memory-after-crash.json",
+      "bytes": 1370,
+      "sha256": "4cf38e4cd0582cfd96145bb44ece6bf0cb6063215c9af75e4f940ad953e9783f"
+    },
+    {
+      "path": "docs/agent/qa-cookbook.md",
+      "bytes": 33993,
+      "sha256": "4da9f8b38105440c4816586a597b4b54c8229f900f85e51111246b0a44ef22ed"
+    },
+    {
+      "path": "docs/findings/vt-memory-density-2026-09-14.md",
+      "bytes": 8711,
+      "sha256": "29b35b810ebf90b82b3842343c8d7492ec775edfd095f6a76e6b72e498dc3af1"
+    },
+    {
+      "path": "docs/superpowers/plans/2026-09-14-vt-reliability-and-throughput.md",
+      "bytes": 19293,
+      "sha256": "fef3ecf348badaa5916cd1bfb9d9c929a752198a22f0b41cf3ede0dbd2c866b8"
+    }
+  ]
+}
