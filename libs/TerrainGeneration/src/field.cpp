@@ -1,5 +1,3 @@
-#include <matter/terrain/field.h>
-#include "terrain_field.h"
 #include "field_internal.h"
 #include <algorithm>
 #include <cmath>

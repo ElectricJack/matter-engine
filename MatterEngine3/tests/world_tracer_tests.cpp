@@ -1,6 +1,8 @@
 #include "world_tracer.h"
 #include "tlas_manager.hpp"
 #include "check.h"
+#include "memory_fixture_io.h"
+#include "part_bundle.h"
 
 #include <algorithm>
 #include <chrono>
@@ -134,13 +136,10 @@ static void test_disk_geometry(const std::string& root) {
 }
 
 int main() {
-    // A private directory avoids depending on, or deleting, production caches.
-    const auto root = std::filesystem::temp_directory_path() /
-        ("matter-world-tracer-tests-" + std::to_string(
-            std::chrono::steady_clock::now().time_since_epoch().count()));
-    std::filesystem::create_directories(root / "parts");
-    test_missing_parts(root.string());
-    test_disk_geometry(root.string());
-    std::filesystem::remove_all(root);
+    const std::string root="/world-tracer-fixture";
+    auto storage=std::make_shared<matter::test::MemoryCacheByteStorage>();
+    part_bundle::ScopedStorage cache_scope(storage);
+    test_missing_parts(root);
+    test_disk_geometry(root);
     return check_summary();
 }

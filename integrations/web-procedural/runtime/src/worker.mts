@@ -39,9 +39,9 @@ async function run(message: Start): Promise<void> {
       instance.release(result); live.delete(result);
     };
     let result: GeometryResult;
-    if (message.input.kind === 'evaluate') result = call(() => instance.evaluate(message.input.kind === 'evaluate' ? message.input.request : {}, options));
+    const input = message.input;
+    if (input.kind === 'evaluate') result = call(() => instance.evaluate(input.request, options));
     else {
-      const input = message.input;
       const [sdk, contracts] = await Promise.all([import(message.config.sdkURL), import(message.config.contractsURL)]);
       const context: AuthoringContext = Object.freeze({
         sdk, job: freeze({...input.job}), parameters: freeze(input.parameters ?? {}), seed: input.seed ?? 1n,
