@@ -1,0 +1,25 @@
+Profile windows: 26
+Stage                      samples       total ms      mean ms       max ms
+update_cpu                     3057       8901.505        2.912      137.972
+worker_queue                  17954      98401.052        5.481      794.757
+admission_cpu                  3057        636.906        0.208        1.726
+dispatch_cpu                   3057          9.579        0.003        0.099
+cpu_cut                      189594        146.635        0.001        0.145
+snapshot                       4566        436.840        0.096        1.162
+hierarchy_pack               189594        750.220        0.004        0.693
+cut_upload_cpu                  430        487.163        1.133        4.473
+cache_open                        1        142.854      142.854      142.854
+index_refresh                   537         36.765        0.068        0.313
+page_read_batch                 537       1328.559        2.474      794.590
+decode_page                   17954       3601.679        0.201        5.363
+completion_queue              17954     340936.335       18.989      242.503
+prepared_queue                17954      37767.304        2.104      145.781
+upload_cpu                    17954        512.548        0.029      130.187
+render_ready_wait             17954     668774.230       37.249      259.122
+request_to_publish            17954    1283047.673       71.463      840.958
+I/O: {"bytes": 380762376, "cpu_payload_peak": 380773376, "hits": 8165, "prefetched": 66112, "reads": 487, "requests": 8678}
+CPU payload bank: {"backing_allocations_peak": 1, "capacity_peak": 1073741824, "largest_free_last": 692968448, "occupied_last": 380773376, "occupied_peak": 380773376}
+Queues/counters: {"completions_sampled_peak": 58, "cpu_deferrals": 0, "decode_queue_sampled_peak": 63, "evictions": 0, "failures": 0, "gpu_stalls": 0, "prepared_sampled_peak": 0, "published": 17954, "reads_sampled_peak": 121, "reservation_stalls": 0, "scratch_stalls": 0, "upload_limit_frames": 13, "uploads_sampled_peak": 62, "watchdogs": 0}
+Stages overlap; do not sum them. Wait times are per-page elapsed latency, not CPU/GPU execution time.
+Page reads are per batch and include validation. Disk bytes count storage API reads, which may hit the OS cache.
+Queue peaks are sampled at log windows. Unfinished requests and the unlogged tail are excluded from timing totals.

@@ -1,0 +1,164 @@
+[vk] Vulkan loader/general ERROR: loader_get_json: Failed to open JSON file D:\Epic Games\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win32.json
+[vk] Vulkan loader/general ERROR: loader_get_json: Failed to open JSON file D:\Epic Games\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win64.json
+[vk] Vulkan loader/general warning: Removing layer VK_LAYER_EOS_Overlay (C:\Program Files (x86)\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win64.json) because it is a duplicate of VK_LAYER_EOS_Overlay (C:\Program Files (x86)\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win32.json)
+Vulkan adapter: NVIDIA GeForce RTX 4090 | driver: NVIDIA (610.74, 0x98928000) | API 1.4.341
+[vk] present requested=auto effective=fifo(2) supported=[fifo(2),fifo_relaxed(3),mailbox(1),immediate(0),other(1000361000)] images=3 extent=1280x800
+worlds available (67):
+  [0] AnimatedRigGallery  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [1] AtmospherePresentationFixture  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [2] BranchGallery  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [3] CastleAngledBailey  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [4] CastleBentPalace  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [5] CastleCloister  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [6] CastleClusteredCourt  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [7] CastleConnectorFixture  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [8] CastleCourtyard  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [9] CastleFastBakeProof  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [10] CastleFurnishings  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [11] CastleGallery  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [12] CastleMasonry  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [13] CastleMasonryPreview  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [14] CastleMaterials  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [15] CastleRoundKeep  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [16] CastleSiteGallery  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [17] CastleStructure  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [18] CastleTimberProbe  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [19] CastleUpgraded  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [20] CastleWalkProbe  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [21] CastleWalkProbeCloister  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [22] CastleWalkProbeRoundKeep  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [23] CastleWallBakeProof  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [24] CastleWingStudy  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [25] ChartVtProof  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [26] ClayBrickGeometryProof  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [27] ClayBrickMaterialProof  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [28] ClayBrickMaze  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [29] ClayBrickWallProof  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [30] ClayBrickWallSurfaceProof  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [31] CloudLab  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [32] CloudLegacy  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [33] ConiferForest  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [34] ConiferLab  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [35] CornellBox  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [36] Demo  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [37] FloorDemo  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [38] FogLab  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [39] Kreuzenstein  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [40] LightingGarden  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [41] LocalLightGallery  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [42] LocalLightPointIsolation  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [43] LocalLightRtGallery  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [44] LocalLightSpotIsolation  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [45] Meadow  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [46] MetalProof  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [47] PeriodicBrickWallProof  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [48] PhysicsPlayground  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [49] PomProof  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [50] PomProofBrick  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [51] Primitives  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\primitive_demo)
+  [52] ProceduralBrickProof  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [53] ProceduralTerrainProof  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [54] RedwoodGrove  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [55] RiverFloatLab  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [56] RiverHydrology  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [57] RockGallery  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [58] SeamLab  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [59] SharedBrickWallProof  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [60] StreamCaverns  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [61] StreamMeadow  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [62] StreamMountain  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [63] TilesetGallery  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [64] VegetationGallery  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [65] VillaDoricColumnStudy  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+  [66] VillaWebsiteKit  (D:\Shared With Desktop\AI\matter-engine-cpp\projects\world_demo)
+Vulkan RT available=true enabled=true reason=none
+Vulkan wireframe available=true reason=none
+issues: reports go to D:\Shared With Desktop\AI\matter-engine-cpp\issues
+viewer: UI hidden by MATTER_HIDE_UI
+MATTER_CMD_FIFO: polling command file C:\tmp\matter-receiver-ao-walls-v3\cmd.txt
+DLSS selected=Native active=Native internal=1280x800 output=1280x800 resets=0 reason=Streamline SDK not found: build with HAVE_STREAMLINE=1 to enable DLSS
+Vulkan RT observed effective=false dispatches=0 reason=world session disconnected
+[resolve] resolve cache: hit 817dc31fb125fb03
+[bake-timing] install=0ms compose=0ms (resolve-cache-hit) publish=...ms total(pre-publish)=17ms
+Vulkan RT observed effective=false dispatches=0 reason=no drawable instances
+[finite-surface] part=f60ad04e61be07df faces=48 geometry_hits=48 material_hits=0 bytes=87016856
+[part-store] loaded v3 FLAT part f60ad04e61be07df (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+bake 1/3 ClayBrickWallSurface
+[local-light] published 0 lights, 0 cells/0 buckets, 48 index bytes, max 0 candidates
+[vk] impostor atlas: 128 slots x 2 layers of 1024x1024 RGBA8 (cell 128 px, filtered mips) = 1365 MiB
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0] (SPIR-V Interface) [VK_SHADER_STAGE_VERTEX_BIT] has an Output value declared at Location 17 Component 0, but there is no corresponding Input declared in [VK_SHADER_STAGE_FRAGMENT_BIT].
+This is not invalid, but the write to the unused Output is discarded.
+The Output variable is:
+  pointer to Output -> uint32
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 1 not consumed by vertex shader.
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 2 not consumed by vertex shader.
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 3 not consumed by vertex shader.
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 4 not consumed by vertex shader.
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 6 not consumed by vertex shader.
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 7 not consumed by vertex shader.
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0] (SPIR-V Interface) [VK_SHADER_STAGE_VERTEX_BIT] has an Output value declared at Location 17 Component 0, but there is no corresponding Input declared in [VK_SHADER_STAGE_FRAGMENT_BIT].
+This is not invalid, but the write to the unused Output is discarded.
+The Output variable is:
+  pointer to Output -> uint32
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0] (SPIR-V Interface) [VK_SHADER_STAGE_VERTEX_BIT] has an Output value declared at Location 17 Component 0, but there is no corresponding Input declared in [VK_SHADER_STAGE_FRAGMENT_BIT].
+This is not invalid, but the write to the unused Output is discarded.
+The Output variable is:
+  pointer to Output -> uint32
+[vk] Vulkan loader/general warning: (Warning - This VUID has now been reported 10 times, which is the duplicate_message_limit value, this will be the last time reporting it).
+vkCreateGraphicsPipelines(): pCreateInfos[0] (SPIR-V Interface) [VK_SHADER_STAGE_VERTEX_BIT] has an Output value declared at Location 17 Component 0, but there is no corresponding Input declared in [VK_SHADER_STAGE_FRAGMENT_BIT].
+This is not invalid, but the write to the unused Output is discarded.
+The Output variable is:
+  pointer to Output -> uint32
+[rt] local primary area samples=4 (0=adaptive); visibility diagnostic counters=0
+[rt] local-light selection code=0; packed budgets=0
+[rt] secondary local-light sampling=1 (0 exact, 1 importance reservoir)
+[rt] secondary surface detail mode=0 (0 reference, 1 adaptive, 2 normal-only)
+[vk] static reserve: clusters 32 MiB, vertices 512 MiB, indices 256 MiB (host-visible)
+Vulkan RT observed effective=true dispatches=2 reason=none
+[finite-surface] part=d3e359961124678b faces=48 geometry_hits=0 material_hits=48 bytes=86959192
+[vk] chart-space VT online: 25600 page pool (4064 MiB), 32768 variant slots (MATTER_VT_MAX_VARIANTS, soft bound), 64 MiB indirection arena (MATTER_VT_INDIRECTION_MB, exact-sized tables), 3512 MiB mesh budget (MATTER_VT_MESH_BUDGET_MB), 8 fills/frame, filler=tier-1 compositor, tier2=hemisphere AO (32 rays/texel, 2 pages/frame)
+[vt-material] receiver=f60ad04e61be07df rung=0 mapped_charts=2 unique_modules=2
+[part-store] loaded v3 FLAT part d3e359961124678b (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+bake 2/3 ClayBrickWallSurface
+[finite-surface] part=974e6cef3ee98b60 faces=48 geometry_hits=0 material_hits=48 bytes=87185192
+[vt-material] receiver=d3e359961124678b rung=0 mapped_charts=2 unique_modules=2
+[part-store] loaded v3 FLAT part 974e6cef3ee98b60 (1 LOD levels, 1 clusters, 0 refs, 0 impostors)
+[resolve]   resolve census: 0 parts baked, 3 cache hits, version digest 144cdeb99c68f1a7
+bake 3/3 ClayBrickWallSurface
+[bake] bake finished (0 errors)
+world camera: eye(11.0,6.0,[refine] controller built: 0 tiles
+17.0) targe[bake-timing] install=0ms compose=0ms publish=4704ms total=4721ms (resolve-cache-hit)
+t(5.1,0.8,0.1)
+selected world PeriodicBrickWallProof hash f60ad04e61be07df
+viewer: bake ready
+event: bake.finished
+[vt-material] receiver=974e6cef3ee98b60 rung=0 mapped_charts=2 unique_modules=2
+idle: settled after 3.0s
+render_path: raster
+Vulkan RT observed effective=false dispatches=0 reason=disabled by render options
+wait_frames: complete 240 frame_serial=452
+STATS,raster-overview,31.22,0.01,0.14,0.79,3,3,36,0,0,5,0,32768,278.0,3512.0,160,90,128,56.25,1,0.000,0.221,0.000,0.000,0.000,14.25,9.114,0.023,8.679
+STATSVT,raster-overview,active=1,variants=5/32768,rejected=0,mesh=278.0/3512.0 MiB,pool=27/25600,pinned=5,queue=0,fills=27,evictions=0,ind=0.01/64 MiB,material_pages=27,shared_material_refs=0,coverage_only_pages=0,occlusion_pages=22,occlusion_retained_pages=22,occlusion_allocated_bytes=1183744,enrich_deferred=0
+screenshot written to C:/tmp/matter-receiver-ao-walls-v3/raster-overview.png
+wait_frames: complete 240 frame_serial=695
+STATS,raster-close,31.44,0.01,0.17,0.83,3,1,12,2,0,5,0,32768,278.0,3512.0,160,90,128,56.25,1,0.000,0.160,0.000,0.000,0.000,14.25,5.154,0.025,4.684
+STATSVT,raster-close,active=1,variants=5/32768,rejected=0,mesh=278.0/3512.0 MiB,pool=146/25600,pinned=5,queue=0,fills=146,evictions=0,ind=0.01/64 MiB,material_pages=79,shared_material_refs=0,coverage_only_pages=67,occlusion_pages=123,occlusion_retained_pages=123,occlusion_allocated_bytes=4734976,enrich_deferred=0
+screenshot written to C:/tmp/matter-receiver-ao-walls-v3/raster-close.png
+wait_frames: complete 240 frame_serial=938
+STATS,raster-grazing,31.28,0.01,0.28,0.93,3,1,12,2,0,5,0,32768,278.0,3512.0,160,90,128,56.25,1,0.000,0.162,0.000,0.000,0.000,14.25,8.047,0.017,7.655
+STATSVT,raster-grazing,active=1,variants=5/32768,rejected=0,mesh=278.0/3512.0 MiB,pool=174/25600,pinned=5,queue=0,fills=174,evictions=0,ind=0.01/64 MiB,material_pages=101,shared_material_refs=0,coverage_only_pages=73,occlusion_pages=146,occlusion_retained_pages=146,occlusion_allocated_bytes=5918720,enrich_deferred=0
+screenshot written to C:/tmp/matter-receiver-ao-walls-v3/raster-grazing.png
+render_path: native_rt
+Vulkan RT observed effective=true dispatches=2 reason=none
+wait_frames: complete 240 frame_serial=1181
+STATS,native_rt-overview,31.27,0.01,0.20,2.16,3,3,36,0,0,5,0,32768,278.0,3512.0,160,90,128,56.25,1,0.000,0.095,0.000,0.000,0.000,14.25,8.877,0.010,3.195
+STATSVT,native_rt-overview,active=1,variants=5/32768,rejected=0,mesh=278.0/3512.0 MiB,pool=174/25600,pinned=5,queue=0,fills=174,evictions=0,ind=0.01/64 MiB,material_pages=101,shared_material_refs=0,coverage_only_pages=73,occlusion_pages=146,occlusion_retained_pages=146,occlusion_allocated_bytes=5918720,enrich_deferred=0
+screenshot written to C:/tmp/matter-receiver-ao-walls-v3/native_rt-overview.png
+wait_frames: complete 240 frame_serial=1424
+STATS,native_rt-close,31.11,0.01,0.14,1.86,3,1,12,2,0,5,0,32768,278.0,3512.0,160,90,128,56.25,1,0.000,0.068,0.000,0.000,0.000,14.25,21.721,0.023,1.759
+STATSVT,native_rt-close,active=1,variants=5/32768,rejected=0,mesh=278.0/3512.0 MiB,pool=174/25600,pinned=5,queue=0,fills=174,evictions=0,ind=0.01/64 MiB,material_pages=101,shared_material_refs=0,coverage_only_pages=73,occlusion_pages=146,occlusion_retained_pages=146,occlusion_allocated_bytes=5918720,enrich_deferred=0
+screenshot written to C:/tmp/matter-receiver-ao-walls-v3/native_rt-close.png
+wait_frames: complete 240 frame_serial=1667
+STATS,native_rt-grazing,31.22,0.01,0.21,2.16,3,1,12,2,0,5,0,32768,278.0,3512.0,160,90,128,56.25,1,0.000,0.068,0.000,0.000,0.000,14.25,12.201,0.018,2.803
+STATSVT,native_rt-grazing,active=1,variants=5/32768,rejected=0,mesh=278.0/3512.0 MiB,pool=174/25600,pinned=5,queue=0,fills=174,evictions=0,ind=0.01/64 MiB,material_pages=101,shared_material_refs=0,coverage_only_pages=73,occlusion_pages=146,occlusion_retained_pages=146,occlusion_allocated_bytes=5918720,enrich_deferred=0
+screenshot written to C:/tmp/matter-receiver-ao-walls-v3/native_rt-grazing.png

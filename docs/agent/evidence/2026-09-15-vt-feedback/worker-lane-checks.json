@@ -1,0 +1,38 @@
+[
+  {
+    "name": "compositor-build",
+    "command": [
+      "./tools/build-windows-from-wsl.sh",
+      "RelWithDebInfo",
+      "vt_compositor_tests"
+    ],
+    "exit": 0,
+    "elapsed_seconds": 17.581760807996034,
+    "log": "docs/agent/evidence/2026-09-15-vt-feedback/worker-lane-compositor-build.log"
+  },
+  {
+    "name": "compositor-test",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-Command",
+      "$env:TMP=\"C:/Users/webde/AppData/Local/Temp\"; $env:TEMP=\"C:/Users/webde/AppData/Local/Temp\"; $env:MATTER_VK_VALIDATION=\"1\"; Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vt_compositor_tests.exe\"; exit $LASTEXITCODE"
+    ],
+    "exit": 0,
+    "elapsed_seconds": 1.9130806129978737,
+    "log": "docs/agent/evidence/2026-09-15-vt-feedback/worker-lane-compositor-test.log",
+    "zero_validation_errors": true,
+    "all_pass": true
+  },
+  {
+    "name": "editor-build",
+    "command": [
+      "./tools/build-windows-from-wsl.sh",
+      "RelWithDebInfo",
+      "editor"
+    ],
+    "exit": 0,
+    "elapsed_seconds": 8.937936094996985,
+    "log": "docs/agent/evidence/2026-09-15-vt-feedback/worker-lane-editor-build.log"
+  }
+]

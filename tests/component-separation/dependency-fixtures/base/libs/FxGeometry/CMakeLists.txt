@@ -1,0 +1,11 @@
+# Fixture: geometry. Allowed to depend on contracts only.
+cmake_minimum_required(VERSION 3.25)
+if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+  project(fx_geometry LANGUAGES CXX)
+endif()
+if(NOT TARGET fx_contracts)
+  add_subdirectory("${CMAKE_CURRENT_LIST_DIR}/../FxContracts" "${CMAKE_BINARY_DIR}/fx_contracts")
+endif()
+add_library(fx_geometry STATIC src/fx_mesh.cpp)
+target_include_directories(fx_geometry PUBLIC include)
+target_link_libraries(fx_geometry PUBLIC fx_contracts)

@@ -1,0 +1,134 @@
+{
+  "log_sha256": "d61ac9aba9283c3428633bc7975f2dcec895c89148f4d0591628ee9b72db80be",
+  "shots": [
+    {
+      "name": "move-rt-00.png",
+      "expected": "native_rt",
+      "actual": "native_rt",
+      "passed": true
+    },
+    {
+      "name": "move-rt-01.png",
+      "expected": "native_rt",
+      "actual": "native_rt",
+      "passed": true
+    },
+    {
+      "name": "move-rt-02.png",
+      "expected": "native_rt",
+      "actual": "native_rt",
+      "passed": true
+    },
+    {
+      "name": "move-rt-03.png",
+      "expected": "native_rt",
+      "actual": "native_rt",
+      "passed": true
+    },
+    {
+      "name": "move-rt-04.png",
+      "expected": "native_rt",
+      "actual": "native_rt",
+      "passed": true
+    },
+    {
+      "name": "move-rt-05.png",
+      "expected": "native_rt",
+      "actual": "native_rt",
+      "passed": true
+    },
+    {
+      "name": "move-rt-06.png",
+      "expected": "native_rt",
+      "actual": "native_rt",
+      "passed": true
+    },
+    {
+      "name": "move-rt-07.png",
+      "expected": "native_rt",
+      "actual": "native_rt",
+      "passed": true
+    },
+    {
+      "name": "move-rt-08.png",
+      "expected": "native_rt",
+      "actual": "native_rt",
+      "passed": true
+    },
+    {
+      "name": "move-rt-09.png",
+      "expected": "native_rt",
+      "actual": "native_rt",
+      "passed": true
+    },
+    {
+      "name": "move-rt-10.png",
+      "expected": "native_rt",
+      "actual": "native_rt",
+      "passed": true
+    },
+    {
+      "name": "move-rt-11.png",
+      "expected": "native_rt",
+      "actual": "native_rt",
+      "passed": true
+    },
+    {
+      "name": "move-rt-12.png",
+      "expected": "native_rt",
+      "actual": "native_rt",
+      "passed": true
+    },
+    {
+      "name": "move-rt-13.png",
+      "expected": "native_rt",
+      "actual": "native_rt",
+      "passed": true
+    },
+    {
+      "name": "move-rt-14.png",
+      "expected": "native_rt",
+      "actual": "native_rt",
+      "passed": true
+    },
+    {
+      "name": "move-rt-15.png",
+      "expected": "native_rt",
+      "actual": "native_rt",
+      "passed": true
+    },
+    {
+      "name": "move-rt-16.png",
+      "expected": "native_rt",
+      "actual": "native_rt",
+      "passed": true
+    },
+    {
+      "name": "move-rt-17.png",
+      "expected": "native_rt",
+      "actual": "native_rt",
+      "passed": true
+    },
+    {
+      "name": "move-rt-18.png",
+      "expected": "native_rt",
+      "actual": "native_rt",
+      "passed": true
+    },
+    {
+      "name": "move-rt-19.png",
+      "expected": "native_rt",
+      "actual": "native_rt",
+      "passed": true
+    },
+    {
+      "name": "move-rt-20.png",
+      "expected": "native_rt",
+      "actual": "native_rt",
+      "passed": true
+    }
+  ],
+  "missing_receipts": [],
+  "command_errors": [],
+  "passed": true
+}

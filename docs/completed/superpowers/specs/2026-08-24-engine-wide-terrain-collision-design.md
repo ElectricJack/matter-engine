@@ -262,7 +262,7 @@ sector-aligned region covering the complete accepted upper/lower ravine,
 waterfall, pools, spillways, banks, and reasonable escape margin. It does not
 enable collision for the rest of the streamed world.
 
-The shared 3 x 3 x 3 m `projects/world_demo/objects/Crate.js` remains unchanged.
+The shared 3 x 3 x 3 m `projects/world_demo/objects/props/Crate.js` remains unchanged.
 RiverFloatLab gains a scene-local `RiverCrate` part measuring exactly
 1.5 x 1.5 x 1.5 m. Every RiverFloatLab crate recipe uses:
 

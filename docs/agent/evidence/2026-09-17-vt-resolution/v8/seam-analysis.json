@@ -1,0 +1,95 @@
+{
+  "limits": "Fixed cameras only. POM changes sample positions, so on/off pixel differences are expected. Chart colors alias every 16 IDs; detected color boundaries are a subset. Edge statistics describe correlation, not the cause of an artifact.",
+  "views": {
+    "cliff": {
+      "path_pixels": {
+        "hit": 917873,
+        "connected_hit": 101116,
+        "initial_boundary": 2693,
+        "path_boundary": 2308,
+        "snapshot_mismatch": 0,
+        "travel_limit": 0,
+        "unresolved": 10,
+        "unsupported": 0,
+        "zero_depth": 0,
+        "off": 0,
+        "unclassified": 0
+      },
+      "normal_pom_difference": {
+        "mean_absolute_byte_error": 8.058181966145833,
+        "fraction_pixels_over_3_bytes": 0.5983974609375
+      },
+      "albedo_pom_difference": {
+        "mean_absolute_byte_error": 1.0118639322916667,
+        "fraction_pixels_over_3_bytes": 0.0560732421875
+      },
+      "boundary_failures_near_chart_color_boundary": {
+        "total": 5001,
+        "within_3_pixels": 5000
+      },
+      "unresolved_in_top_tenth": 0,
+      "normal_flat_near_chart_color_boundary": {
+        "pixels": 16719,
+        "mean_max_channel_jump": 6.500747652371554,
+        "p95_max_channel_jump": 28.0
+      },
+      "normal_flat_away_from_chart_color_boundary": {
+        "pixels": 1007281,
+        "mean_max_channel_jump": 6.3283790719769355,
+        "p95_max_channel_jump": 27.0
+      }
+    },
+    "close": {
+      "path_pixels": {
+        "hit": 999476,
+        "connected_hit": 988,
+        "initial_boundary": 1172,
+        "path_boundary": 2090,
+        "snapshot_mismatch": 0,
+        "travel_limit": 0,
+        "unresolved": 20199,
+        "unsupported": 0,
+        "zero_depth": 75,
+        "off": 0,
+        "unclassified": 0
+      },
+      "normal_pom_difference": {
+        "mean_absolute_byte_error": 2.980232421875,
+        "fraction_pixels_over_3_bytes": 0.5576259765625
+      },
+      "albedo_pom_difference": {
+        "mean_absolute_byte_error": 2.0035185546875,
+        "fraction_pixels_over_3_bytes": 0.2368125
+      },
+      "boundary_failures_near_chart_color_boundary": {
+        "total": 3262,
+        "within_3_pixels": 2733
+      },
+      "unresolved_in_top_tenth": 20199,
+      "normal_flat_near_chart_color_boundary": {
+        "pixels": 12133,
+        "mean_max_channel_jump": 2.5705101788510674,
+        "p95_max_channel_jump": 8.0
+      },
+      "normal_flat_away_from_chart_color_boundary": {
+        "pixels": 1011867,
+        "mean_max_channel_jump": 2.915858507096288,
+        "p95_max_channel_jump": 9.0
+      }
+    }
+  },
+  "inputs": {
+    "cliff-seam-path.png": "fbe084dcea757bc879bc1589a312ef558ad6dacea6916c13f7f98aa93db4e157",
+    "cliff-normal.png": "c293b2503b7196eeaa9bf1113487ec2ba314010b4a97a3fce1ba0fe9b70b9a83",
+    "cliff-seam-normal-flat.png": "029de2f4db995b6e3c9227483cc90af661c76cc375461751ab7b0e42523bd8bc",
+    "cliff-albedo.png": "1a547df94cef4aa4942d7260a1a53380e8aff415488f32909e8082178a7d52c4",
+    "cliff-seam-albedo-flat.png": "ef8775967a530b49f03b1a2997712e05ca50e4796cec03004cf7d084dfbc782d",
+    "cliff-seam-chart-flat.png": "0c7cbec95dd419f4598e639f1f68a928c6540d38aa78f313ad99f384df921786",
+    "close-seam-path.png": "d7431525364c388ecec2362849df7fe691acacf759728c4f2823e1fc3c3bc4f1",
+    "close-normal.png": "0dc7d2bfdfc33952307533644f79edfe0f79418bd640204f75573fa12368537c",
+    "close-seam-normal-flat.png": "a409530ca847ad980e21a410834efcd2a7b0782e9e744a4af43cedf7f089da86",
+    "close-albedo.png": "9bc08a57325ef02d06db3b617a4e754a2c92e199f2a7fdbfbc6e70bbda10c3aa",
+    "close-seam-albedo-flat.png": "1ce6a5782be522db212105179c73441aaf2827e40a2d660edda9f67791c4fd16",
+    "close-seam-chart-flat.png": "256d33b0dab5d9a0c32f8267c1d65c9af22ea67b4022f73975cfdc5782fd6b4b"
+  }
+}

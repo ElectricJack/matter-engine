@@ -1,0 +1,4 @@
+{
+  "accepted": false,
+  "reason": "Requested azimuth 240 was clamped to 180; expected direction requires -120. All frames were 1156x694 rather than requested 1280x800. Renderer/path audit alone does not establish the intended lighting control."
+}

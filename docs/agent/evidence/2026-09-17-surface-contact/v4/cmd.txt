@@ -1,0 +1,145 @@
+wait_event bake.finished 300
+stats ready-1
+stats ready-2
+render_path raster
+set render.lighting.sun_elevation_deg 55
+set render.lighting.sun_azimuth_deg 20
+set render.lighting.sun_tint [1,1,1]
+set render.lighting.sky_tint [1,1,1]
+set render.lighting.sun_multiplier 1
+set render.lighting.exposure_ev 0
+set render.lighting.day_ambient_multiplier 0.5
+set render.lighting.sky_irradiance_multiplier 0.7
+set render.pom.enabled true
+agent {"version": 1, "request_id": "receivers", "command": "scene.list_objects", "args": {"kinds": ["baked_root"]}}
+agent {"version": 1, "request_id": "snapshot", "command": "scene.capture_snapshot", "args": {}}
+cam 12.2 3.6 14.4 8 .6 8.4
+wait_frames 90
+stats ready-3
+stats ready-4
+stats ready-5
+stats ready-6
+set viewer.debug.debug_view_mode 0
+wait_frames 60
+stats overview
+set viewer.debug.debug_view_mode 0
+wait_frames 30
+shot C:/tmp/matter-surface-contact-v4/overview-lit.png
+set viewer.debug.debug_view_mode 4
+wait_frames 30
+shot C:/tmp/matter-surface-contact-v4/overview-albedo.png
+set viewer.debug.debug_view_mode 1
+wait_frames 30
+shot C:/tmp/matter-surface-contact-v4/overview-normal.png
+set viewer.debug.debug_view_mode 0
+wait_frames 30
+shot C:/tmp/matter-surface-contact-v4/overview-finished.png
+cam 8.8 1.1 10.5 7.4 .5 8.4
+wait_frames 90
+stats ready-7
+stats ready-8
+stats ready-9
+stats ready-10
+set viewer.debug.debug_view_mode 0
+wait_frames 60
+stats close
+set viewer.debug.debug_view_mode 0
+wait_frames 30
+shot C:/tmp/matter-surface-contact-v4/close-lit.png
+set viewer.debug.debug_view_mode 4
+wait_frames 30
+shot C:/tmp/matter-surface-contact-v4/close-albedo.png
+set viewer.debug.debug_view_mode 1
+wait_frames 30
+shot C:/tmp/matter-surface-contact-v4/close-normal.png
+set viewer.debug.debug_view_mode 0
+set render.pom.enabled false
+wait_frames 60
+shot C:/tmp/matter-surface-contact-v4/close-flat.png
+set render.pom.enabled true
+render_path native_rt
+wait_frames 120
+shot C:/tmp/matter-surface-contact-v4/close-rt.png
+render_path raster
+wait_frames 30
+shot C:/tmp/matter-surface-contact-v4/close-finished.png
+cam 10.7 .65 9.1 6.7 .46 8.5
+wait_frames 90
+stats ready-11
+stats ready-12
+stats ready-13
+stats ready-14
+set viewer.debug.debug_view_mode 0
+wait_frames 60
+stats grazing
+set viewer.debug.debug_view_mode 0
+wait_frames 30
+shot C:/tmp/matter-surface-contact-v4/grazing-lit.png
+set viewer.debug.debug_view_mode 4
+wait_frames 30
+shot C:/tmp/matter-surface-contact-v4/grazing-albedo.png
+set viewer.debug.debug_view_mode 1
+wait_frames 30
+shot C:/tmp/matter-surface-contact-v4/grazing-normal.png
+set viewer.debug.debug_view_mode 0
+set render.pom.enabled false
+wait_frames 60
+shot C:/tmp/matter-surface-contact-v4/grazing-flat.png
+set render.pom.enabled true
+wait_frames 30
+shot C:/tmp/matter-surface-contact-v4/grazing-finished.png
+cam 12 2 6.8 8 1 7.8
+wait_frames 90
+stats ready-15
+stats ready-16
+stats ready-17
+stats ready-18
+set viewer.debug.debug_view_mode 0
+wait_frames 60
+stats back
+set viewer.debug.debug_view_mode 0
+wait_frames 30
+shot C:/tmp/matter-surface-contact-v4/back-lit.png
+set viewer.debug.debug_view_mode 4
+wait_frames 30
+shot C:/tmp/matter-surface-contact-v4/back-albedo.png
+set viewer.debug.debug_view_mode 0
+wait_frames 30
+shot C:/tmp/matter-surface-contact-v4/back-finished.png
+cam 12 2.8 7.0 8 .55 6.2
+wait_frames 90
+stats ready-19
+stats ready-20
+stats ready-21
+stats ready-22
+set viewer.debug.debug_view_mode 0
+wait_frames 60
+stats depth
+set viewer.debug.debug_view_mode 0
+wait_frames 30
+shot C:/tmp/matter-surface-contact-v4/depth-lit.png
+set viewer.debug.debug_view_mode 4
+wait_frames 30
+shot C:/tmp/matter-surface-contact-v4/depth-albedo.png
+set viewer.debug.debug_view_mode 0
+wait_frames 30
+shot C:/tmp/matter-surface-contact-v4/depth-finished.png
+cam 11.4 1.5 10.3 9.5 .72 8.7
+wait_frames 90
+stats ready-23
+stats ready-24
+stats ready-25
+stats ready-26
+set viewer.debug.debug_view_mode 0
+wait_frames 60
+stats shelf
+set viewer.debug.debug_view_mode 0
+wait_frames 30
+shot C:/tmp/matter-surface-contact-v4/shelf-lit.png
+set viewer.debug.debug_view_mode 4
+wait_frames 30
+shot C:/tmp/matter-surface-contact-v4/shelf-albedo.png
+set viewer.debug.debug_view_mode 0
+wait_frames 30
+shot C:/tmp/matter-surface-contact-v4/shelf-finished.png
+quit
