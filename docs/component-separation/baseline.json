@@ -1,0 +1,794 @@
+{
+  "schema_version": 1,
+  "task": "clear-crest-48.1.1",
+  "recorded_date": "2026-10-10",
+  "live_commit": "98af23851dd3424ddbfc62624cd2afb850e9d09d",
+  "live_subject": "Merge main into vg-vt-improvements to start dev",
+  "live_parents": [
+    "2cb5ef1b138b78a8224e556a5d7daad6f94d2bf3",
+    "e04dfdd27a6f706fa78326535a71f90c43a0cb5f"
+  ],
+  "design_inspected_commit": "d006f20e91e4193d9b6e5a3dd2a165e2c3171143",
+  "observed_refs": {
+    "main": "d753087d88417ab5b77cf77369c1e38e22cee6b9",
+    "vg-vt-improvements": "d006f20e91e4193d9b6e5a3dd2a165e2c3171143",
+    "origin/dev": "98af23851dd3424ddbfc62624cd2afb850e9d09d",
+    "origin/main": "e04dfdd27a6f706fa78326535a71f90c43a0cb5f",
+    "origin/vg-vt-improvements": "2cb5ef1b138b78a8224e556a5d7daad6f94d2bf3"
+  },
+  "ref_note": "Local main and vg-vt-improvements are stale. Observed remote-tracking refs are a local snapshot, not a fresh fetch or future delivery proof. No branch reset/merge/history rewrite performed.",
+  "initial_worktree_status": "clean",
+  "reconciliation": {
+    "changed_path_count": 272,
+    "diff_shortstat": "272 files changed, 46492 insertions(+), 977 deletions(-)",
+    "changed_paths": [
+      ".claude/settings.json",
+      ".claude/skills/qa-smoke/SKILL.md",
+      ".mcp.json",
+      "CLAUDE.md",
+      "MatterEditor/Makefile",
+      "MatterEditor/src/asset_browser.cpp",
+      "MatterEditor/src/asset_root.cpp",
+      "MatterEditor/src/asset_root.h",
+      "MatterEditor/src/camera_calibration.h",
+      "MatterEditor/src/main.cpp",
+      "MatterEditor/src/perf_gpu_stats.h",
+      "MatterEditor/src/ui.cpp",
+      "MatterEditor/src/viewer_commands.h",
+      "MatterEditor/src/viewport_capture.cpp",
+      "MatterEditor/src/viewport_capture.h",
+      "MatterEditor/tests/test_asset_root.cpp",
+      "MatterEditor/tests/test_perf_gpu_stats.cpp",
+      "MatterEditor/tests/test_viewport_capture.cpp",
+      "MatterEditor/tools/smoke_vulkan_faults.ps1",
+      "MatterEngine3/Makefile",
+      "MatterEngine3/cli/matter_bake_cli.h",
+      "MatterEngine3/cli/matter_cli.cpp",
+      "MatterEngine3/docs/README.md",
+      "MatterEngine3/include/matter/evaluation_channels.h",
+      "MatterEngine3/include/matter/gpu_timing_sample.h",
+      "MatterEngine3/include/matter/project_layout.h",
+      "MatterEngine3/include/matter/vt_budgets.h",
+      "MatterEngine3/include/matter/world_definition.h",
+      "MatterEngine3/include/matter/world_session.h",
+      "MatterEngine3/shaders_vk/gbuffer.frag",
+      "MatterEngine3/shaders_vk/rt_lighting_impl.glsl",
+      "MatterEngine3/shaders_vk/rt_surface_common.glsl",
+      "MatterEngine3/shaders_vk/vt_chart_resolve.glsl",
+      "MatterEngine3/shaders_vk/vt_composite.comp",
+      "MatterEngine3/shaders_vk/vt_enrich_ao.comp",
+      "MatterEngine3/shaders_vk/vt_fill_request.glsl",
+      "MatterEngine3/shaders_vk/vt_height_normal.comp",
+      "MatterEngine3/shaders_vk/vt_parallax.glsl",
+      "MatterEngine3/shaders_vk/vt_surface_tape.glsl",
+      "MatterEngine3/src/async_bake.cpp",
+      "MatterEngine3/src/async_bake.h",
+      "MatterEngine3/src/export/export_cli.cpp",
+      "MatterEngine3/src/export/export_cli.h",
+      "MatterEngine3/src/export/export_image.cpp",
+      "MatterEngine3/src/export/export_image.h",
+      "MatterEngine3/src/export/export_text.h",
+      "MatterEngine3/src/export/mesh_export.cpp",
+      "MatterEngine3/src/export/mesh_export.h",
+      "MatterEngine3/src/export/obj_writer.cpp",
+      "MatterEngine3/src/export/obj_writer.h",
+      "MatterEngine3/src/export/part_export.cpp",
+      "MatterEngine3/src/export/part_export.h",
+      "MatterEngine3/src/export/texture_bake.cpp",
+      "MatterEngine3/src/export/texture_bake.h",
+      "MatterEngine3/src/geometry/geometry_asset.cpp",
+      "MatterEngine3/src/geometry/geometry_asset.h",
+      "MatterEngine3/src/geometry/geometry_cut.cpp",
+      "MatterEngine3/src/geometry/geometry_hierarchy.h",
+      "MatterEngine3/src/geometry/geometry_indexed_cut.h",
+      "MatterEngine3/src/geometry/geometry_options.h",
+      "MatterEngine3/src/geometry/geometry_page_dependencies.h",
+      "MatterEngine3/src/geometry/geometry_pages.cpp",
+      "MatterEngine3/src/geometry/geometry_residency.cpp",
+      "MatterEngine3/src/geometry/geometry_residency.h",
+      "MatterEngine3/src/gi_bake.cpp",
+      "MatterEngine3/src/gi_bake.h",
+      "MatterEngine3/src/gi_bake_image.cpp",
+      "MatterEngine3/src/gi_bake_image.h",
+      "MatterEngine3/src/gi_bake_scene.cpp",
+      "MatterEngine3/src/gi_bake_scene.h",
+      "MatterEngine3/src/matter_engine.cpp",
+      "MatterEngine3/src/part_graph.h",
+      "MatterEngine3/src/part_surface.cpp",
+      "MatterEngine3/src/part_surface.h",
+      "MatterEngine3/src/provider/local_provider.cpp",
+      "MatterEngine3/src/provider/local_provider.h",
+      "MatterEngine3/src/provider/resolvers.cpp",
+      "MatterEngine3/src/render/geometry_world_runtime.cpp",
+      "MatterEngine3/src/render/geometry_world_runtime.h",
+      "MatterEngine3/src/render/part_store.cpp",
+      "MatterEngine3/src/render/part_store.h",
+      "MatterEngine3/src/render/prepared_sector_cache.h",
+      "MatterEngine3/src/render/vertex_cache_order.h",
+      "MatterEngine3/src/render/vk_context.cpp",
+      "MatterEngine3/src/render/vk_instance_cache.cpp",
+      "MatterEngine3/src/render/vk_pipeline_stats.h",
+      "MatterEngine3/src/render/vk_scene_renderer.cpp",
+      "MatterEngine3/src/render/vk_scene_renderer.h",
+      "MatterEngine3/src/render/vk_sparse_voxel.cpp",
+      "MatterEngine3/src/render/vt_compositor.cpp",
+      "MatterEngine3/src/render/vt_compositor.h",
+      "MatterEngine3/src/render/vt_encoded_filler.h",
+      "MatterEngine3/src/render/vt_enrich.cpp",
+      "MatterEngine3/src/render/vt_enrich.h",
+      "MatterEngine3/src/render/vt_prepare.h",
+      "MatterEngine3/src/render/vt_residency.cpp",
+      "MatterEngine3/src/render/vt_residency.h",
+      "MatterEngine3/src/render/vt_resolve_bvh.h",
+      "MatterEngine3/src/render/vt_types.h",
+      "MatterEngine3/src/render/vt_work_budget.h",
+      "MatterEngine3/src/script/world_definition_loader.cpp",
+      "MatterEngine3/src/script_host.cpp",
+      "MatterEngine3/src/script_host.h",
+      "MatterEngine3/src/streaming/async_stage_pipeline.h",
+      "MatterEngine3/src/world_tracer.cpp",
+      "MatterEngine3/src/world_tracer.h",
+      "MatterEngine3/tests/Makefile",
+      "MatterEngine3/tests/async_bake_tests.cpp",
+      "MatterEngine3/tests/async_queue_tests.cpp",
+      "MatterEngine3/tests/async_stage_pipeline_tests.cpp",
+      "MatterEngine3/tests/conifer_lod_provider_tests.cpp",
+      "MatterEngine3/tests/eval_world_tests.cpp",
+      "MatterEngine3/tests/fixtures/export/AlpineFlower.golden",
+      "MatterEngine3/tests/fixtures/export/AlpineFlower.mtl",
+      "MatterEngine3/tests/fixtures/export/CastlePavingSlab.golden",
+      "MatterEngine3/tests/fixtures/export/CastlePavingSlab.mtl",
+      "MatterEngine3/tests/fixtures/export/CastleStone.golden",
+      "MatterEngine3/tests/fixtures/export/CastleStone.mtl",
+      "MatterEngine3/tests/fixtures/export/README.md",
+      "MatterEngine3/tests/geometry_cut_tests.cpp",
+      "MatterEngine3/tests/geometry_hierarchy_tests.cpp",
+      "MatterEngine3/tests/geometry_page_vk_tests.h",
+      "MatterEngine3/tests/geometry_runtime_tests.cpp",
+      "MatterEngine3/tests/gi_bake_tests.cpp",
+      "MatterEngine3/tests/obj_export_golden_tests.cpp",
+      "MatterEngine3/tests/obj_export_tests.cpp",
+      "MatterEngine3/tests/obj_parser.h",
+      "MatterEngine3/tests/part_surface_provider_tests.cpp",
+      "MatterEngine3/tests/partstore_tests.cpp",
+      "MatterEngine3/tests/sparse_voxel_shadow_tests.h",
+      "MatterEngine3/tests/vertex_cache_order_tests.cpp",
+      "MatterEngine3/tests/vt_compositor_tests.cpp",
+      "MatterEngine3/tests/vt_queue_tests.h",
+      "MatterEngine3/tests/vt_residency_tests.cpp",
+      "MatterEngine3/tests/vulkan_smoke_tests.cpp",
+      "MatterEngine3/tests/world_definition_tests.cpp",
+      "MatterEngine3/tools/castle_part_profile.py",
+      "MatterEngine3/tools/matter_cli.cpp",
+      "build-all.sh",
+      "cmake/MatterEditor.cmake",
+      "cmake/MatterEngine.cmake",
+      "cmake/MatterPackaging.cmake",
+      "cmake/MatterViewer.cmake",
+      "cmake/manifests/editor.sources",
+      "cmake/manifests/engine-core.sources",
+      "cmake/tests/viewer_graph_tests.cmake",
+      "cmake/tests/vt_link_inventory_test.ps1",
+      "docs/README.md",
+      "docs/agent/agent-protocol.md",
+      "docs/agent/control-surface.md",
+      "docs/agent/evidence/2026-09-30-hdgeo-performance/README.md",
+      "docs/agent/evidence/2026-09-30-hdgeo-performance/capture_campaign.py",
+      "docs/agent/evidence/2026-09-30-hdgeo-performance/host-load.csv",
+      "docs/agent/evidence/2026-09-30-hdgeo-performance/images.json",
+      "docs/agent/evidence/2026-09-30-hdgeo-performance/inputs_sha256.json",
+      "docs/agent/evidence/2026-09-30-hdgeo-performance/protocol.json",
+      "docs/agent/evidence/2026-09-30-hdgeo-performance/reduce_captures.py",
+      "docs/agent/evidence/2026-09-30-hdgeo-performance/retained-cr9-local-direct.log",
+      "docs/agent/evidence/2026-09-30-hdgeo-performance/retained-cr9-rt.log",
+      "docs/agent/evidence/2026-09-30-hdgeo-performance/retained-cr9-shader-source.log",
+      "docs/agent/evidence/2026-09-30-hdgeo-performance/retained-cr9-transmission.log",
+      "docs/agent/evidence/2026-09-30-hdgeo-performance/retained-cr9-vt-composed.log",
+      "docs/agent/evidence/2026-09-30-hdgeo-performance/review.json",
+      "docs/agent/evidence/2026-09-30-hdgeo-performance/static-w300-r2.png",
+      "docs/agent/evidence/2026-09-30-hdgeo-performance/static-w45-r1.png",
+      "docs/agent/evidence/2026-09-30-hdgeo-performance/summary.json",
+      "docs/agent/evidence/2026-09-30-hdgeo-performance/vg-w300-r2.png",
+      "docs/agent/evidence/2026-09-30-hdgeo-performance/vg-w45-r1.png",
+      "docs/agent/evidence/2026-09-30-rock-density-restore/population.json",
+      "docs/agent/evidence/2026-09-30-rock-density-restore/population.mjs",
+      "docs/agent/evidence/2026-09-30-static-default-candidate/README.md",
+      "docs/agent/evidence/2026-09-30-static-default-candidate/archives.json",
+      "docs/agent/evidence/2026-09-30-static-default-candidate/attribution-tests.log",
+      "docs/agent/evidence/2026-09-30-static-default-candidate/campaign.log",
+      "docs/agent/evidence/2026-09-30-static-default-candidate/capture.py",
+      "docs/agent/evidence/2026-09-30-static-default-candidate/ctest-detail.log",
+      "docs/agent/evidence/2026-09-30-static-default-candidate/ctest.log",
+      "docs/agent/evidence/2026-09-30-static-default-candidate/golden-rerun.log",
+      "docs/agent/evidence/2026-09-30-static-default-candidate/golden-update.log",
+      "docs/agent/evidence/2026-09-30-static-default-candidate/gpu-holder-check.txt",
+      "docs/agent/evidence/2026-09-30-static-default-candidate/host-load.csv",
+      "docs/agent/evidence/2026-09-30-static-default-candidate/make-source-census.log",
+      "docs/agent/evidence/2026-09-30-static-default-candidate/native_checks.ps1",
+      "docs/agent/evidence/2026-09-30-static-default-candidate/ollama-holder-check.txt",
+      "docs/agent/evidence/2026-09-30-static-default-candidate/population.log",
+      "docs/agent/evidence/2026-09-30-static-default-candidate/protocol.json",
+      "docs/agent/evidence/2026-09-30-static-default-candidate/reduce.py",
+      "docs/agent/evidence/2026-09-30-static-default-candidate/smoke.log",
+      "docs/agent/evidence/2026-09-30-static-default-candidate/static-w300.png",
+      "docs/agent/evidence/2026-09-30-static-default-candidate/static-w300.tar.gz",
+      "docs/agent/evidence/2026-09-30-static-default-candidate/static-w45.png",
+      "docs/agent/evidence/2026-09-30-static-default-candidate/static-w45.tar.gz",
+      "docs/agent/evidence/2026-09-30-static-default-candidate/summary.json",
+      "docs/agent/evidence/2026-09-30-static-default-candidate/vg-w300.png",
+      "docs/agent/evidence/2026-09-30-static-default-candidate/vg-w300.tar.gz",
+      "docs/agent/evidence/2026-09-30-static-default-candidate/vg-w45.png",
+      "docs/agent/evidence/2026-09-30-static-default-candidate/vg-w45.tar.gz",
+      "docs/agent/evidence/2026-09-30-vg-integration-audit/audit.json",
+      "docs/agent/evidence/2026-09-30-vg-integration-audit/audit.mjs",
+      "docs/agent/object-evaluation-rock-v1.json",
+      "docs/agent/object-evaluation.md",
+      "docs/agent/qa-cookbook.md",
+      "docs/bake-gi.md",
+      "docs/design/2026-09-28-ai-object-script-pipeline-astra.md",
+      "docs/design/2026-09-28-ai-object-script-pipeline-codex.md",
+      "docs/design/2026-09-28-ai-object-script-pipeline-combined.md",
+      "docs/design/2026-09-28-dashr-initial-proposal.md",
+      "docs/export-obj.md",
+      "docs/findings/hdgeo-performance-pass-2026-09-30.md",
+      "docs/findings/static-default-candidate-validation-2026-09-30.md",
+      "docs/findings/streammountain-frame-attribution-2026-09-27.md",
+      "docs/findings/streammountain-gbuffer-cache-order-2026-09-29.md",
+      "docs/findings/streammountain-gbuffer-split-2026-09-28.md",
+      "docs/findings/streammountain-gi-attribution-2026-09-29.md",
+      "docs/findings/streammountain-persistent-cut-2026-09-29.md",
+      "docs/findings/streammountain-pom-off-baseline-2026-09-28.md",
+      "docs/findings/streammountain-rock-density-restore-2026-09-30.md",
+      "docs/findings/streammountain-root-paging-2026-09-29.md",
+      "docs/findings/streammountain-static-growth-2026-09-29.md",
+      "docs/findings/streammountain-vram-cap-2026-09-29.md",
+      "docs/findings/streammountain-vt-fill-2026-09-29.md",
+      "docs/findings/vg-integration-provenance-and-rock-population-2026-09-30.md",
+      "docs/findings/vt-normal-frame-readiness-2026-09-29.md",
+      "docs/perf/gi-bake-baseline-2026-09-15.md",
+      "docs/superpowers/plans/2026-09-15-gi-lightmap-bake.md",
+      "docs/superpowers/plans/2026-09-27-vg-vt-stabilization-and-measurement.md",
+      "docs/vg-vt-work-queue-2026-09-19.md",
+      "libs/AssetStoreLib/include/asset_pages.h",
+      "libs/AssetStoreLib/src/asset_pages.cpp",
+      "libs/AssetStoreLib/tests/asset_store_tests.cpp",
+      "projects/world_demo/README.md",
+      "projects/world_demo/objects/KreuzensteinBrick.js",
+      "projects/world_demo/objects/architecture/villa/VillaAmphora.js",
+      "projects/world_demo/objects/architecture/villa/VillaBench.js",
+      "projects/world_demo/objects/architecture/villa/VillaDoorway.js",
+      "projects/world_demo/objects/architecture/villa/VillaDoricColumnPilot.js",
+      "projects/world_demo/objects/architecture/villa/VillaEntablature.js",
+      "projects/world_demo/objects/architecture/villa/VillaHerbs.js",
+      "projects/world_demo/objects/architecture/villa/VillaMosaicVessel.js",
+      "projects/world_demo/objects/architecture/villa/VillaNetworkRelief.js",
+      "projects/world_demo/objects/architecture/villa/VillaOlive.js",
+      "projects/world_demo/objects/architecture/villa/VillaPaving.js",
+      "projects/world_demo/objects/architecture/villa/VillaPlanter.js",
+      "projects/world_demo/objects/architecture/villa/VillaPoolBasin.js",
+      "projects/world_demo/objects/architecture/villa/VillaPoolCoping.js",
+      "projects/world_demo/objects/architecture/villa/VillaPoolCorner.js",
+      "projects/world_demo/objects/architecture/villa/VillaSeedSculpture.js",
+      "projects/world_demo/objects/architecture/villa/VillaStairs.js",
+      "projects/world_demo/objects/architecture/villa/VillaStrataSculpture.js",
+      "projects/world_demo/objects/architecture/villa/VillaTieredFountain.js",
+      "projects/world_demo/objects/architecture/villa/VillaWallFountain.js",
+      "projects/world_demo/objects/architecture/villa/VillaWallMedallion.js",
+      "projects/world_demo/objects/architecture/villa/VillaWallPanel.js",
+      "projects/world_demo/scenes/architecture/villa/VillaDoricColumnStudy/README.md",
+      "projects/world_demo/scenes/architecture/villa/VillaWebsiteKit/README.md",
+      "projects/world_demo/scenes/castles/layouts/Kreuzenstein/README.md",
+      "projects/world_demo/scenes/castles/proofs/CastleWallBakeProof/README.md",
+      "projects/world_demo/scenes/streaming/StreamMountain/StreamMountain.js",
+      "projects/world_demo/scenes/streaming/StreamMountain/objects/WorldSector.js",
+      "projects/world_demo/scenes/terrain/ObjectEvalRock/ObjectEvalRock.js",
+      "projects/world_demo/scenes/texturing/pom/PomProof/README.md",
+      "projects/world_demo/shared-lib/mountain_geometry_site.js",
+      "projects/world_demo/tests/kreuzenstein_scene_tests.mjs",
+      "projects/world_demo/tests/mountain_detail_rocks_tests.mjs",
+      "projects/world_demo/tests/mountain_geometry_site_tests.mjs",
+      "projects/world_demo/tests/mountain_terrain_only_tests.mjs",
+      "tools/frame_attribution.py",
+      "tools/object_eval.py",
+      "tools/streammountain_attribution.sh",
+      "tools/terrain_cache_audit.py",
+      "tools/tests/test_frame_attribution.py",
+      "tools/tests/test_object_eval.py"
+    ],
+    "current_source_counts": {
+      "core": 168,
+      "surface": 21,
+      "viewer": 27
+    },
+    "viewer_with_default_retopology": 217,
+    "viewer_without_retopology": 216,
+    "changes_retained": [
+      "Static-default dev integration from VG and main; VG stays opt-in and disabled paging runtime inert.",
+      "Three focal 128-resolution rocks restored; explicit stress population opt-in; natural rocks, forest, terrain density retained.",
+      "Main GI bake and OBJ export retained; current version13/representation4 goldens, CastleStone fine-SDF detail.",
+      "VT readiness/normal-frame repair, geometry paging fallback, bank/residency/memory budgets and culling/mesh/RT fixes.",
+      "Object evaluation identity-plane candidate masking and calibrated capture; editor cwd-first asset roots.",
+      "Canonical native CMake/source census and supported wrappers retained; promotion CI workflow currently triggers main and aq/**, not dev. Separate promotion owner and component CI task must coordinate."
+    ]
+  },
+  "spec_sources": [
+    {
+      "repository_path": "docs/component-separation/2026-10-10-matter-engine-component-separation-design.md",
+      "vault_path": "projects/matter-engine-cpp/specs/2026-10-10-matter-engine-component-separation-design.md",
+      "sha256": "a454e9ee7d8e160e63959e0c2d1bb1d0a0c384b61d29af9e7816e7dd57cadd2c",
+      "bytes": 21676,
+      "status_preserved": "draft",
+      "authorized_messages": [
+        "msg-1e6270b29c7545ea8d0f69dbaae51a6f",
+        "msg-2699e83859e4493c8ca2817e77eb09a5"
+      ]
+    },
+    {
+      "repository_path": "docs/component-separation/2026-10-10-matter-component-contracts-v1.md",
+      "vault_path": "projects/matter-engine-cpp/specs/2026-10-10-matter-component-contracts-v1.md",
+      "sha256": "65f2228b71c3c832ab4dfe23cfd9c8852cf22436eb8d5ed9894fcf00704ca426",
+      "bytes": 15150,
+      "status_preserved": "implementation_baseline",
+      "authorized_messages": [
+        "msg-77d2ba835e2d4ed9a5eee735c38b6b2b",
+        "msg-1d94909c3b354ea8b976447c951fba64",
+        "msg-15962d94408640aebd730d773ddbf3dd"
+      ]
+    }
+  ],
+  "vault_access": "Direct aq file read denied out of scope; supervisor sent exact contents through authorized AQ messages. Copies verified by full SHA-256; vault restrictions were not bypassed.",
+  "central_ownership_message": "msg-afc082c85be24456920f99962b9d7f69",
+  "pinned_sources": [
+    {
+      "path": ".github/workflows/native-windows.yml",
+      "sha256": "65af2a12405f74a5281c3a064f1e625cc110000ae4fad4e37ef071204a10fc91"
+    },
+    {
+      "path": "CMakeLists.txt",
+      "sha256": "7972c3ae62e423499590505b2873ebdc95ec1bc62d99a0351853b9c865b64845"
+    },
+    {
+      "path": "CMakePresets.json",
+      "sha256": "5424e0fd77e5a6415fed98fbf1cb9c878da16b60d0f1f7c2a749bcfc37eb7900"
+    },
+    {
+      "path": "MatterEngine3/shaders_vk/cull.comp",
+      "sha256": "036a4971fe7dd95f6d1e45671d841b05062ee1e5e34daa6a7a9f17349a60910f"
+    },
+    {
+      "path": "MatterEngine3/shared-lib/rng.js",
+      "sha256": "e2087da48a2b0e1a0655ac0aedd6f38e8f8502edcf9a594309c45064ac5f6538"
+    },
+    {
+      "path": "MatterEngine3/shared-lib/scatter_grid.js",
+      "sha256": "1a39ae6ca1784d1c235536439daf2e6cc9ac5952fa55d19eb3c45704d497a96f"
+    },
+    {
+      "path": "MatterEngine3/src/csg_lowering.cpp",
+      "sha256": "eb4c9d6ff7db201c815649cd6f80b5247af6520f4210ab4fd31b5e401ad57207"
+    },
+    {
+      "path": "MatterEngine3/src/part_graph.cpp",
+      "sha256": "46a8605c460aaaf3dc4cfbf093e5a44553437d15e2cdfd12458679bbd8a8bc79"
+    },
+    {
+      "path": "MatterEngine3/src/seam_weld.cpp",
+      "sha256": "f750e2723819f20f38ac551f91e7990708275fa8a40aefd41e63060fecd27690"
+    },
+    {
+      "path": "MatterEngine3/src/streaming/sector_streaming_coordinator.cpp",
+      "sha256": "698fbae1326291b7e5a082b9bf0d35d2d7cd0618920dfa4c42dc1a56244a5ed9"
+    },
+    {
+      "path": "MatterEngine3/src/terrain_field.cpp",
+      "sha256": "a84f23d6158e34bf1eb1f2ed568a495887169099423e9a541af653cf010c3716"
+    },
+    {
+      "path": "MatterEngine3/src/terrain_mesher.cpp",
+      "sha256": "6c8263571b56c03a8ad945f9d783e170521c19817be2f8bcd9ea0021fe58bec0"
+    },
+    {
+      "path": "MatterEngine3/src/triangle_emit.cpp",
+      "sha256": "eabd7f0ea3ad03e4a8a7817cf9e54e84d864df5fc6f8e3b2bff30e1d1b0c2973"
+    },
+    {
+      "path": "MatterEngine3/tests/async_bake_tests.cpp",
+      "sha256": "a65a28f10d609972f5e2f713d2cc36e618f09f8a2f6721da94c615b557268762"
+    },
+    {
+      "path": "MatterEngine3/tests/contour_seam_tests.cpp",
+      "sha256": "6cad34710614372a725bbf9127995111f6c27f64f1a151aacfeec9e9ce99365c"
+    },
+    {
+      "path": "MatterEngine3/tests/dsl_determinism_tests.cpp",
+      "sha256": "c4d013125fc55d386c500443e7de529b9914e669230a32226671c6555255e1b9"
+    },
+    {
+      "path": "MatterEngine3/tests/fixtures/export/AlpineFlower.golden",
+      "sha256": "90e902e0bd57f4a52b95a6054fb6dfc476ff8cf5d6de97e6b669270c0fd9a991"
+    },
+    {
+      "path": "MatterEngine3/tests/fixtures/export/AlpineFlower.mtl",
+      "sha256": "ca1c27315dcc9e3b37ceeef176c3a3ef2ff27e66a56286f1733772e7c8f076be"
+    },
+    {
+      "path": "MatterEngine3/tests/fixtures/export/CastlePavingSlab.golden",
+      "sha256": "5c67254ecd4ee38cb3a81538ef3ce5efe6ad0f3f354aa6471568260dfa9ff002"
+    },
+    {
+      "path": "MatterEngine3/tests/fixtures/export/CastlePavingSlab.mtl",
+      "sha256": "fdeef93ffb2dabbaf4710abd141531ff9782ea393aa8cc1a7333a0a7d75c715b"
+    },
+    {
+      "path": "MatterEngine3/tests/fixtures/export/CastleStone.golden",
+      "sha256": "a9569f95c4b76092375ca6cc62b4b4a41697f1c20e311567bfbccfca4cd5e06e"
+    },
+    {
+      "path": "MatterEngine3/tests/fixtures/export/CastleStone.mtl",
+      "sha256": "e0615e42088b5f59928b9878f3f89787a59c5f98c5c30a9b66afe3cb00d959a4"
+    },
+    {
+      "path": "MatterEngine3/tests/obj_export_golden_tests.cpp",
+      "sha256": "fa1dd94fbd06ad2b477691f66bd45b4fe8e8df2de219b2a2b5ce45c411aee945"
+    },
+    {
+      "path": "MatterEngine3/tests/part_flatten_tests.cpp",
+      "sha256": "ac58d0d7318816961f8f7fd067e34e3b9ef6105eb24eac8bf173b40cba09a4d6"
+    },
+    {
+      "path": "MatterEngine3/tests/part_graph_tests.cpp",
+      "sha256": "9572ea433f1413341de603039f8e5d665c88a86fa69547ff5f94d7f380bc66f5"
+    },
+    {
+      "path": "MatterEngine3/tests/script_host_tests.cpp",
+      "sha256": "a1102a95fb6d5949189f7f63bf9d3c5711bdfae2afa04a0b13539fb863da377f"
+    },
+    {
+      "path": "MatterEngine3/tests/seam_weld_tests.cpp",
+      "sha256": "43f2414b7041efbe6e749cced00f8835f55830ec58bdaed10a92c07028b1be4e"
+    },
+    {
+      "path": "MatterEngine3/tests/sector_streaming_coordinator_tests.cpp",
+      "sha256": "f04543a78ebdaf59368cd7fce70ff8046c748139cd631c3e82a5e4564da9ca6a"
+    },
+    {
+      "path": "MatterEngine3/tests/shader_source_tests.cpp",
+      "sha256": "d5b1a488662f9e19a285c6083e52f6c27c74e1799d870d95772e3c01b5759604"
+    },
+    {
+      "path": "MatterEngine3/tests/solid_source_evaluation_tests.cpp",
+      "sha256": "163b0e01c7b87e5fd3e9911cff5d5a4e854db3883ac72623b99c4ec182624a3a"
+    },
+    {
+      "path": "MatterEngine3/tests/terrain_field_tests.cpp",
+      "sha256": "bf0935ebe263b7ab77355465bafcbce216b429e7adfa9fa120282d53523ee868"
+    },
+    {
+      "path": "MatterEngine3/tests/terrain_mesher_tests.cpp",
+      "sha256": "215d71578cef0b345bdf00bc34e4c74f6fa77e63c4de71978eef9a7f99513010"
+    },
+    {
+      "path": "MatterEngine3/tests/vulkan_smoke_tests.cpp",
+      "sha256": "dd421866929e48bd2abc29fb964d514876f4b7704e15aeb5f417370508b690b0"
+    },
+    {
+      "path": "MatterEngine3/tests/world_tracer_tests.cpp",
+      "sha256": "b705ee2b217f9f69439c18688f4b4c4570fd51ca9917d10693a285c731843d5a"
+    },
+    {
+      "path": "cmake/ManifestSources.cmake",
+      "sha256": "24ff2fbcff42da8354da7d62579dacdf584cdc8e85870c1ccc54f66db41b0ce6"
+    },
+    {
+      "path": "cmake/MatterCompiler.cmake",
+      "sha256": "bc9c8c189f9e00de3d8f2f83d7933b5d5aaf7da553ce2ac07931b60b1846e429"
+    },
+    {
+      "path": "cmake/MatterEditor.cmake",
+      "sha256": "9fa74f5bcb0c8cdb444a80048289f256a5b5b40f6e20b129fcbd1949298a1008"
+    },
+    {
+      "path": "cmake/MatterEngine.cmake",
+      "sha256": "f3ff0fe6756150fa23fab48697e9c14e4c8af1df0e9a0771836cfb22c582d073"
+    },
+    {
+      "path": "cmake/MatterPackageValidation.cmake",
+      "sha256": "d41cce70d4cd0cee80029c7dc6a6da6c03dffbbbcd93d3046b3ac9bc289227b8"
+    },
+    {
+      "path": "cmake/MatterPackaging.cmake",
+      "sha256": "6e1c45b8ed676cb46e6c56de8fcadb103dfdf4b794a036e412dd5a8d139119c3"
+    },
+    {
+      "path": "cmake/MatterPhysx.cmake",
+      "sha256": "bde2f2b0d57d2ec6e104a90d3b0e1682525a2b7c5f8bba1f104ec8593cda019e"
+    },
+    {
+      "path": "cmake/MatterShaders.cmake",
+      "sha256": "6f0642218f7f8836cbf912fd830f2996f7da62bbfd5131165b6bb4b3491f5205"
+    },
+    {
+      "path": "cmake/MatterStreamline.cmake",
+      "sha256": "b8a46df12820c21908efc68c9350326baf173d7fefa63f2c8837bf1992c91ce5"
+    },
+    {
+      "path": "cmake/MatterTargets.cmake",
+      "sha256": "944cc29c19044ceaadfd3cc8f6e83f3cd5a811c9ff640071f3bc9166318fe4e6"
+    },
+    {
+      "path": "cmake/MatterThirdParty.cmake",
+      "sha256": "bfa4e4df5e8fcd2366ca60bbb1fff6fc5744a1825ecc41fc3fdad9c6d040b47f"
+    },
+    {
+      "path": "cmake/MatterViewer.cmake",
+      "sha256": "c71a2d939268dfc7299e93f8e5a489e9344771c70062bcab3d9457e799ef8dc1"
+    },
+    {
+      "path": "cmake/manifests/editor.sources",
+      "sha256": "233fc5cc860dd423d236c4bee94e2de3b4c25963903a88bab59f7051d8c12119"
+    },
+    {
+      "path": "cmake/manifests/engine-core.sources",
+      "sha256": "5e4fc706622106d5ce6efe240da4c3ece1433e6b833a62d9b316aafa5af577e6"
+    },
+    {
+      "path": "cmake/manifests/engine-viewer.sources",
+      "sha256": "bb19a4e0dcf748d5e4fcfc01fd1e512bcc624dcb100670e9745f2a6b1e4acdd7"
+    },
+    {
+      "path": "cmake/manifests/matter-surface.sources",
+      "sha256": "322065c3b2ca227f9a8e0a33b94c8ca152b5a6f5a2b27a7bfe7cbe6857c4384d"
+    },
+    {
+      "path": "cmake/manifests/vendor.sources",
+      "sha256": "494e189269cb5a83ba1a941b1fa8402aa9d8c74116f9acb08b4f7c39b4cadfd3"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-30-static-default-candidate/README.md",
+      "sha256": "f4e234c83472ebd262cc2c43858db6774c41a445d721343de22b8c77c88b8f89"
+    },
+    {
+      "path": "docs/findings/static-default-candidate-validation-2026-09-30.md",
+      "sha256": "5f8dd3014b3068fc041e650e5049326f826a65d148012491d22efd41815595ad"
+    },
+    {
+      "path": "docs/findings/vt-normal-frame-readiness-2026-09-29.md",
+      "sha256": "5f8da374890b1e3865b717a4087aae3aa062e8e0c42d5ede702eb68625675786"
+    },
+    {
+      "path": "libs/MemoryLib/src/mem_bank.c",
+      "sha256": "f2dd21881bc2edf815902e479580cc3c4a2246bd619637b4adc30fe7af46e1e1"
+    },
+    {
+      "path": "projects/world_demo/objects/castle/materials/CastlePavingSlab.js",
+      "sha256": "276c2a38fc87b4dc5a28c95543c66936957b0c2ec4683fa215ce6220121a6822"
+    },
+    {
+      "path": "projects/world_demo/objects/castle/materials/CastleStone.js",
+      "sha256": "fb3becc1dbc78e8e33a80428f158d1f34761dcb41cd8d8bed2d208e929450273"
+    },
+    {
+      "path": "projects/world_demo/objects/castle/materials/CastleStoneSource.js",
+      "sha256": "8ceb6b45ae2e3e15dd7b9f032d73456ab3ef9b693b38fdbd057cc3a7dbb430a4"
+    },
+    {
+      "path": "projects/world_demo/objects/terrain/MountainDetailRock.js",
+      "sha256": "5ec3ef4208cf0370a6b6590e425707856f1b10afd0c2299534a808714869945c"
+    },
+    {
+      "path": "projects/world_demo/objects/vegetation/alpine/AlpineFlower.js",
+      "sha256": "b32b499908752e4031b615d2c8a2c5dcbad5ea22c60f0a399acdb3387817ba74"
+    },
+    {
+      "path": "projects/world_demo/scenes/streaming/StreamMountain/StreamMountain.js",
+      "sha256": "ee8339526dff2408e0683d0fcab818b85212882d7ed02d3e758c8b428f466eac"
+    },
+    {
+      "path": "projects/world_demo/scenes/streaming/StreamMountain/objects/WorldSector.js",
+      "sha256": "8d59321476da2f54e11a30ed9c2b2ea2100a8161d66d76d3af93dd9ac2785d8d"
+    },
+    {
+      "path": "projects/world_demo/scenes/streaming/StreamMountain/props.json",
+      "sha256": "c39d0e6837f9b62afaace9dcaed322a7481a171cf6b8d5a1c73dd4d1f3a68ffb"
+    },
+    {
+      "path": "projects/world_demo/shared-lib/alpine_ecology.js",
+      "sha256": "3f3da8df3b16f747b17819543cbff8d7d39f54b28d41b0dc9860de7f93bd6253"
+    },
+    {
+      "path": "projects/world_demo/shared-lib/castle_paving.js",
+      "sha256": "d897eee57822ba142869c5124d89ead6d349a8ded64cabcba76554ac071d3711"
+    },
+    {
+      "path": "projects/world_demo/shared-lib/castle_plan.js",
+      "sha256": "5556f48a4f94cc1fd3c04f2eacff38a32f6c91aa155402b11d8850d0cf188135"
+    },
+    {
+      "path": "projects/world_demo/shared-lib/castle_primitives.js",
+      "sha256": "3baa45c17cd0a6cebd5b77e3133974d830da3633a520d42de68e1b3ef4f2c6be"
+    },
+    {
+      "path": "projects/world_demo/shared-lib/castle_solid_source.js",
+      "sha256": "2184ee225694bbed5ad3ce3a6a679a988dc71bdddeb87d87c8b798586a7e4a6f"
+    },
+    {
+      "path": "projects/world_demo/shared-lib/castle_stock.js",
+      "sha256": "e6f1b1f5bbc97ea29042bcdadaf1a6f7ea2aa4311149806274c304a6dfa63372"
+    },
+    {
+      "path": "projects/world_demo/shared-lib/castle_structure.js",
+      "sha256": "28eea7651e386baacad4552b6a756d0347231754984f24321b73101d7d6a3dac"
+    },
+    {
+      "path": "projects/world_demo/shared-lib/castle_structure_fixture.js",
+      "sha256": "449ebb471ba40cb4c9d11489f33b5376887668b65cd8a16aa3e68370b5f68b50"
+    },
+    {
+      "path": "projects/world_demo/shared-lib/castle_surface_shells.js",
+      "sha256": "a00dbf69bebb10698464d729967af328189130d62aff7f5633b785628fd3ac23"
+    },
+    {
+      "path": "projects/world_demo/shared-lib/mountain_detail_rocks.js",
+      "sha256": "fb76939a1b7e167e7caa5fba16535a86b584739b2587399007e4bc238778c0ec"
+    },
+    {
+      "path": "projects/world_demo/shared-lib/mountain_forest.js",
+      "sha256": "e280ced9c0fee329c9b1f3b4ccc6d26dbe5de38b4f402a6e260385a33879851e"
+    },
+    {
+      "path": "projects/world_demo/shared-lib/mountain_geometry_site.js",
+      "sha256": "0bc4a490ee751a3e3d0597fbf3138ad7a641f5474a73fb76fceb096b7c22164f"
+    },
+    {
+      "path": "projects/world_demo/shared-lib/mountain_rock_scatter.js",
+      "sha256": "25e67212eb0d375a9a94947a4ed786827e3c41ec6cc0f1d1ad0cf1aa26b01823"
+    },
+    {
+      "path": "projects/world_demo/shared-lib/mountain_rock_sizes.js",
+      "sha256": "ec26f99b3a9c6895d286ce0f2cf108ded741c90b6cec444cef68fe07c3a276fe"
+    },
+    {
+      "path": "projects/world_demo/shared-lib/mountain_rocks.js",
+      "sha256": "feae87d25f16a0c6b5a7304d51295737b4b2585f06e0d0847cb3b265a45f5de9"
+    },
+    {
+      "path": "projects/world_demo/shared-lib/mountain_surface.js",
+      "sha256": "67d4c81faf2a9b1e18d0a0c178d5d430bf6a8b9a2da3041e12db11c8269fca3e"
+    },
+    {
+      "path": "projects/world_demo/shared-lib/vegetation.js",
+      "sha256": "1f95381b10af87a11629653ec56f83579a8e423154232cfb2def9e1f984e663a"
+    },
+    {
+      "path": "projects/world_demo/tests/castle_plan_tests.mjs",
+      "sha256": "fbf090740ca17cd6cdb6aeecb77284b81b62c3edc381b3e9da28343e9a119ee1"
+    },
+    {
+      "path": "projects/world_demo/tests/fixtures/castle_plan_two_room_two_level.js",
+      "sha256": "6b7f9cd569f837e9b7d690c0ec1852e0d0b96111b50550eb2205847c04d1b0f8"
+    },
+    {
+      "path": "projects/world_demo/tests/mountain_geometry_site_tests.mjs",
+      "sha256": "2057d32540aae3f0b9830d24aed1d4a9c55be06dc15baaaff08fdfeb2fa632f0"
+    },
+    {
+      "path": "projects/world_demo/tests/mountain_terrain_only_tests.mjs",
+      "sha256": "19258c8c0c8b864450cccdb4b4623b6e43464d8d0d606f2fd301fc28e80a3aee"
+    },
+    {
+      "path": "tests/vt_normal_frame_reference_tests.mjs",
+      "sha256": "ec1189633d9c568f058094b6332c905548c34b449874c3522e46d8abab676ba1"
+    },
+    {
+      "path": "tools/build-windows-from-wsl.sh",
+      "sha256": "7375a596e816b11a384aac52ba86f86dcb0b66d93bd6dd9924a063ee41ab71ca"
+    },
+    {
+      "path": "tools/build-windows.ps1",
+      "sha256": "2d1c0db494fb8fd474966f096879eba39c0a1b064090e1fcc05b17c714096505"
+    },
+    {
+      "path": "tools/check-source-manifests.py",
+      "sha256": "ec1149877695e9278fa5f87cfa289724b56d6d13d31692cc3ce10f3ee294bab6"
+    },
+    {
+      "path": "tools/ci-windows.ps1",
+      "sha256": "e911d2d677954a2bd6f278f9c3336eee40073668854ca63ecd492f6d4185f98d"
+    },
+    {
+      "path": "tools/tests/test_source_manifests.py",
+      "sha256": "065fe8090d8e57c60029f363f45da46c302838eab13a43686e7a0e490ae8e165"
+    },
+    {
+      "path": "tools/windows/MatterWindowsToolchain.psm1",
+      "sha256": "d5e919ca1a3d521dd7cc246967767114b058cd588eef41427461b0409df5a769"
+    }
+  ],
+  "known_failures_and_limits": [
+    {
+      "id": "MANIFEST-MEMBANK",
+      "status": "reproduced_existing_failure",
+      "command": "python3 tools/check-source-manifests.py --root .",
+      "exit_code": 1,
+      "diagnostic": "ERROR: unclassified compilable source in libs/MemoryLib/src: libs/MemoryLib/src/mem_bank.c",
+      "note": "Tracked at live baseline. No manifest/source fix in docs task."
+    },
+    {
+      "id": "SHADER-SOURCE",
+      "status": "historical_native_failure_retained_not_rerun",
+      "test": "shader_source_tests",
+      "source": "docs/findings/static-default-candidate-validation-2026-09-30.md",
+      "diagnostic": "Line88 missing literal if (instance.water_pad0 != 0u) return;",
+      "note": "Historical final22/23 native suites; assert and shader retained. No new native pass or skip claimed."
+    },
+    {
+      "id": "NORMAL-READINESS",
+      "status": "historical_failure_repaired",
+      "source": "docs/findings/vt-normal-frame-readiness-2026-09-29.md",
+      "note": "Old fixture sampled too early; readiness repair preserves .995/.998 oracles and120s timeout. Not a current known failure."
+    },
+    {
+      "id": "PERFORMANCE-PARITY",
+      "status": "unproven",
+      "note": "Historical static-default/native captures do not prove visual parity, equal rendered coverage or16.7ms. Browser, WASM, independent components and numeric budgets remain unverified."
+    }
+  ],
+  "checks_this_task": [
+    {
+      "command": "aq test tools/tests/test_source_manifests.py -q",
+      "result": "pass",
+      "detail": "6 tests passed,1.54s"
+    },
+    {
+      "command": "python3 tools/check-source-manifests.py --root .",
+      "result": "existing_failure",
+      "detail": "MANIFEST-MEMBANK; exit1"
+    },
+    {
+      "command": "./tools/build-windows-from-wsl.sh RelWithDebInfo preflight",
+      "result": "pass",
+      "detail": "VS2022 Community/MSVC14.44.35207, WinSDK10.0.26100.0, nativePython3.13.14, VulkanSDK1.4.357.0 tools resolved; no full native build"
+    },
+    {
+      "command": "node projects/world_demo/tests/castle_plan_tests.mjs",
+      "result": "pass",
+      "detail": "40 walls,9 modules, all checks passed"
+    },
+    {
+      "command": "node projects/world_demo/tests/mountain_geometry_site_tests.mjs",
+      "result": "pass",
+      "detail": "3 placements/3 assets default;1283/19 stress; stable nested ownership"
+    },
+    {
+      "command": "node projects/world_demo/tests/mountain_terrain_only_tests.mjs",
+      "result": "pass",
+      "detail": "Terrain retained each rung; catalogs/placement only with __geometryRocks; world forest terrainOnly isolation assertions"
+    },
+    {
+      "command": "node tests/vt_normal_frame_reference_tests.mjs",
+      "result": "pass",
+      "detail": "480 transformed directional probes including nonuniform scale, reflection and back-face checks"
+    },
+    {
+      "command": "python3 docs/component-separation/verify.py",
+      "result": "pass",
+      "detail": "2 exact spec copies,91 pinned sources,17 fixture IDs, source anchors and native target/CTest registrations; commit98af238"
+    },
+    {
+      "command": "git diff --check",
+      "result": "pass",
+      "detail": "Whitespace check; final staged check also required before commit"
+    },
+    {
+      "command": "Authored documentation link and inventory-path audit against pinned git tree",
+      "result": "pass",
+      "detail": "Local authored Markdown links resolve; incorrect shorthand world_session.cpp corrected to actual public header and matter_engine.cpp implementation"
+    }
+  ],
+  "historical_evidence": {
+    "source": "docs/findings/static-default-candidate-validation-2026-09-30.md",
+    "status": "reported_by_existing_document_not_reexecuted_here",
+    "native": "Canonical MSVC RelWithDebInfo; final22 passing/23 suites with shader-source failure; repaired OBJ golden update-disabled rerun passes; GPU modes zero validation errors.",
+    "warning": "Older candidate/source/editor commits are identified in that document; do not attribute their native results to98af238 or extraction code."
+  }
+}

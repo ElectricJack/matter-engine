@@ -378,6 +378,8 @@ struct ViewerStats {
     // of them are DRAWN. Freezing only the cull leaves the streamer refining
     // the world around a camera the cull cannot see.
     bool  freeze_cull_camera    = false;
+    // RenderOptions::live_terrain_graphics (MATTER_LIVE_TERRAIN=1 sessions).
+    bool  live_terrain_graphics = true;
     // Cull draws against the ID pass's mask (RenderOptions::
     // occlusion_draw_cull): a sector that owned no pixel is not rasterised at
     // all. ON by default since 2026-08-13, tracking the engine's own default --

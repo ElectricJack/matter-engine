@@ -90,9 +90,12 @@ per-brush `tint`, so color is supplied through material handles.
 The uniquely named `shared-lib/kreuzenstein.js` contains the architectural
 helpers. The engine resolver accepts flat shared-lib imports, so it lives at
 project level; only this scene imports it. Scene-local object files own the
-building composition and dimensions. `KreuzensteinBrick` lives in the project
-`objects/` tier because the shared library places it by name and can be
-imported by other scenes.
+building composition and dimensions. `KreuzensteinBrick` is the one object in
+the project `objects/` tier rather than `scenes/castles/layouts/Kreuzenstein/objects/`: the
+shared-lib helper places it by name, and a shared-lib module is reachable from
+every scene that imports it, so `world_definition_tests` requires anything
+shared-lib names to live in the project tier (the same rule that keeps the
+`Alpine*` vegetation named by `alpine_ecology.js` there).
 
 Each building is evaluated in two stages. `masonry` emits brick placements and
 is an `expand: true` world root, promoting the stones to independent scene
