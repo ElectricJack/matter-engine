@@ -1,0 +1,282 @@
+# Named measurements and corpus cases, 2026-10-20 (task clear-crest-48.9.8)
+# Host: WSL2, 1 CPU, GCC 13.3 (MatterEngine3/tests/Makefile, Linux), Node v24.15.0.
+# Every run: /usr/bin/time -f "wall %e s maxrss %M KB" <binary>, from MatterEngine3/tests
+# (node suites from the repo root). Builds: make build/<suite> (build time = make wall time,
+# serial on 1 CPU, in the order listed; an object shared by several suites is built by the
+# first suite that needs it). One process per suite; no warmup protocol.
+#
+# solid_source_evaluation_tests is a CMake-only suite (cmake/MatterEngine.cmake); it was linked
+# for Linux with a one-rule makefile fragment over the same objects:
+#   make -f Makefile -f sse.mk build/solid_source_evaluation_tests
+# with sse.mk:
+#   # Linux link of cmake/MatterEngine.cmake's solid_source_evaluation_tests (CMake-only
+#   # suite): the test object plus script_host_tests' object list minus its main.
+#   SSE_SRC := solid_source_evaluation_tests.cpp
+#   $(eval $(call objrule_cpp,qjs,$(SSE_SRC)))
+#   $(call obj_of,qjs,$(SSE_SRC)): build/test-fixtures/embedded_world_modules.h
+#   SSE_OBJS := $(call obj_of,qjs,$(SSE_SRC)) $(filter-out $(call obj_of,qjs,script_host_tests.cpp),$(SCRIPT_OBJS))
+#   build/solid_source_evaluation_tests: $(SSE_OBJS)
+#   	$(CC) $(SSE_OBJS) -o $@ $(CFLAGS) $(INCLUDE_PATHS) $(QJS_INC) $(LDFLAGS) $(LDLIBS) $(OZZ_OFFLINE_LIBS)
+#
+# obj_export_golden_q is obj_export_golden_tests compiled with -DMATTER_CODEC_SOURCE_QUALIFICATION
+# (the real-bake path: CastleStone, CastlePavingSlab, AlpineFlower and World.exports are baked,
+# not read from embedded fixtures), linked with the run-obj-export-golden link line. Its wall time
+# was taken while another build was running on the single CPU.
+
+## build times
+=== build build/obj_export_golden_tests
+exit=0
+build 15.88 s
+=== build build/part_flatten_tests
+exit=0
+build 775.87 s
+=== build build/part_graph_tests
+exit=0
+build 7.96 s
+=== build build/terrain_mesher_tests
+exit=0
+build 5.66 s
+=== build build/terrain_field_tests
+exit=0
+build 1.49 s
+=== build build/seam_weld_tests
+exit=0
+build 2.08 s
+=== build build/contour_seam_tests
+exit=0
+build 0.72 s
+build build/solid_source_evaluation_tests: build 126.09 s
+
+## castle_plan_tests
+castle_plan_tests: 40 walls, 9 modules, all checks passed
+wall 0.15 s maxrss 78916 KB
+
+## mountain_geometry_site_tests
+Rock inspection site: 3 placements / 3 dense assets by default; stress profile 1283 placements / 19 assets; stable nested ownership
+wall 0.03 s maxrss 57348 KB
+
+## mountain_terrain_only_tests
+Terrain-only sectors: terrain retained at each rung; catalogs and placement only with __geometryRocks
+StreamMountain biomes: forest only without terrainOnly; geometry-rock site in both modes
+wall 0.03 s maxrss 49132 KB
+
+## obj_export_golden_tests
+All obj export golden tests passed
+ALL PASS
+wall 0.00 s maxrss 5048 KB
+exit=0
+
+## obj_export_golden_q
+-- CastleStone
+-- CastlePavingSlab
+-- AlpineFlower
+-- World.exports (DSL binding)
+All obj export golden tests passed
+ALL PASS
+wall 76.72 s maxrss 876632 KB
+exit=0
+
+## part_graph_tests
+All part_graph tests passed
+wall 0.00 s maxrss 4656 KB
+exit=0
+
+## part_flatten_tests
+=== test_impostor_cell_px_parametrized ===
+PASSED
+=== test_impostor_atlas_padding ===
+PASSED
+=== test_cross_process_byte_identical ===
+  compared 2 artifact file(s) across two processes
+=== test_topological_boundary_lock ===
+  input: 128 tris, 32 boundary verts
+  output: 30 tris, 32 verts
+PASSED
+=== test_cluster_split_40k ===
+  clusters: 4, total tris: 40000
+PASSED
+=== test_cluster_split_small (100 tris => 1 cluster) ===
+PASSED
+=== test_cluster_split_deterministic ===
+PASSED
+=== test_v3_round_trip ===
+PASSED
+=== test_v3_empty_children_and_lods ===
+PASSED
+=== test_v3_cross_version_guards ===
+PASSED
+=== test_peek_format_version ===
+PASSED
+=== test_v2_byte_stability ===
+PASSED
+=== test_flatten_clustered_v3 ===
+  clusters=4, levels=3, full_tris=400
+PASSED
+=== test_flatten_watertight_invariant ===
+  shared boundary vertices: 33
+PASSED
+=== test_small_part_gets_ladder ===
+  levels=6, coarsest_tris=28, full_tris=360
+PASSED
+=== test_ratio2_ladder_shape ===
+  levels=9, clusters=2, full_tris=21360
+PASSED
+=== test_budget_ladder_assembly ===
+  t0=360 t1=30 thr0=0.0101 clusters=1 levels=2
+  test_budget_ladder_assembly OK
+=== test_authored_ladder_switch_distances ===
+  t=360/332/90 radius=1.7321 thr=0.09623/0.03849/0.0
+  test_authored_ladder_switch_distances OK
+=== test_authored_ladder_impostor_terminal ===
+  radius=3.0141 (mesh-only 3.0141) thr=0.16745/0.02153/0.0
+  test_authored_ladder_impostor_terminal OK
+=== test_no_impostor_optout_terminal ===
+  unflagged: levels=6 impostors=1 | flagged: levels=5 impostors=0
+  test_no_impostor_optout_terminal OK
+=== test_impostor_source_and_distance ===
+  impostor switch threshold 0.00582 -> 0.01163 (larger = nearer)
+  test_impostor_source_and_distance OK
+=== test_w5_plan_does_not_drive_the_ladder ===
+  test_w5_plan_does_not_drive_the_ladder OK
+=== test_instance_boundary_records_refs ===
+  instance_refs=10 inlined_tris=1 clusters=1
+  test_instance_boundary_records_refs OK
+=== test_generous_budget_inlines ===
+  total_tris=105193 clusters=8
+  test_generous_budget_inlines OK
+  test_flat_version_bump OK
+  test_cutover_helpers OK
+=== test_flatten_segmented ===
+  fine_l0=2 coarse_l0=314 coarse_input=314 cutover=0.07449
+  test_flatten_segmented OK
+=== test_flatten_unhinted_unchanged ===
+  test_flatten_unhinted_unchanged OK
+=== test_flatten_retain_budget_identical ===
+PASSED
+=== test_flatten_trace_spans ===
+=== test_lod_rung_trace_spans ===
+=== test_bake_lods_observer_rungs ===
+  test_bake_lods_observer_rungs OK (3 rungs)
+=== test_emitter_flat_round_trip ===
+=== test_impostor_eligibility ===
+PASSED
+=== test_impostor_bake_deterministic ===
+PASSED
+=== test_impostor_view_index_inverse ===
+PASSED
+=== test_impostor_elevation_rings_differ ===
+PASSED
+=== test_impostor_quad_shape ===
+PASSED
+=== test_impostor_bakes_material_albedo ===
+PASSED
+=== test_impostor_sidecar_failability ===
+PASSED
+=== test_flatten_appends_impostor_rung ===
+  terminal mesh rung = 28 tris -> impostor = 2 tris
+PASSED
+=== test_mesh_rung_cap_and_stale_rejection ===
+  default ladder: 8 levels
+[flatten]   part_asset: flat a110000055550001 carries ladder shape b05aa6ef5df302b0, this bake is 19c1d03c327d6cdf; rejecting it as stale (it will be re-flattened).
+[flatten]   part_asset: flat a110000055550001 carries ladder shape b05aa6ef5df302b0, this bake is 19c1d03c327d6cdf; rejecting it as stale (it will be re-flattened).
+  capped ladder: 3 levels
+  impostor switch threshold 0.00145 -> 0.04653 (larger = nearer)
+[flatten]   part_asset: flat a110000055550001 carries ladder shape 19c1d03c327d6cdf, this bake is b05aa6ef5df302b0; rejecting it as stale (it will be re-flattened).
+[flatten]   part_asset: flat a110000055550001 carries ladder shape b05aa6ef5df302b0, this bake is a3c8c249f875db24; rejecting it as stale (it will be re-flattened).
+  cap=1 ladder: 2 levels
+  test_mesh_rung_cap_and_stale_rejection OK
+part_flatten_tests: ALL PASS
+wall 29.71 s maxrss 195684 KB
+exit=0
+
+## terrain_field_tests
+ALL PASS
+wall 0.00 s maxrss 4516 KB
+exit=0
+
+## terrain_mesher_tests
+  nested L0/1 (voxel 2/4 m): nested 28/31 cols, step 0.5432 | uniform 28/31 cols, step 0.5432
+  nested L1/2 (voxel 4/8 m): nested 31/31 cols, step 1.8299 | uniform 31/31 cols, step 1.8299
+  nested L2/3 (voxel 8/16 m): nested 31/31 cols, step 2.9544 | uniform 31/31 cols, step 2.9544
+  nested L3/4 (voxel 16/32 m): nested 31/31 cols, step 5.2852 | uniform 31/31 cols, step 5.2852
+  nested L4/5 (voxel 32/64 m): nested 31/31 cols, step 4.6643 | uniform 31/31 cols, step 4.6643
+  nested vs uniform: worst mismatch ratio 1.0000 (level 0)
+  seam -x L0/1 (voxel 2/4 m): 26/31 rows gapped, worst run 1.750 m (0.88 fine voxels)
+  seam -x L1/2 (voxel 4/8 m): 31/31 rows gapped, worst run 4.000 m (1.00 fine voxels)
+  seam -x L2/3 (voxel 8/16 m): 31/31 rows gapped, worst run 7.000 m (0.88 fine voxels)
+  seam -x L3/4 (voxel 16/32 m): 31/31 rows gapped, worst run 14.000 m (0.88 fine voxels)
+  seam -x: worst uncovered run 1.00 fine voxels (level 1) -- open by construction until the welder runs
+  seam -z L0/1: 27/31 rows gapped, worst run 2.250 m (1.12 fine voxels)
+  seam -z L1/2: 30/31 rows gapped, worst run 4.000 m (1.00 fine voxels)
+  seam -z L2/3: 29/31 rows gapped, worst run 7.000 m (0.88 fine voxels)
+  nested corner: lower 31/31 cols step 1.8299, upper 29/31 cols step 1.4236
+  volumetric equal-rung seam: a=612 b=342 shared-row verts, 348 shared cells, worst x disagreement 3.81e-06 m
+  volumetric cross-rung plane: 481/1600 samples where the raw fine density equals the coarse interpolant, worst delta 1.0178
+  boundary flat: -x 8 verts (plane 24, layer 24), +x 8 verts (plane 32, layer 31)
+  boundary cell-box: 1522 entries, 0 outside their own cell, worst overshoot 0.000000 m
+  boundary determinism: 1410 verts across 6 faces, 0 differing bytes-wise
+  boundary equal-rung: A+x 158 verts, B-x 172 verts, 115 shared (a,b), 0 sign mismatches, worst vertex separation 4.016 m
+  boundary equal-rung: 43 cells only in A, 57 only in B (cells whose crossing is off the shared plane)
+  boundary 2:1: fine 409 verts (y cells 13..81 -> 6..40), coarse 399 verts (y cells 6..40); 409/409 land in the coarse z domain, 299 onto a coarse cell
+  M0-WP7 mesh identity: 6 configurations pinned bitwise against the pre-band build (mesh + boundary record)
+  M0-WP7 band extent: -x band 2606 tris spanning x-x0 in [-5.19, -0.00] m = [-2.59, -0.00] voxels; -z band 1690 tris
+  M2 tile-local Y: ty=1 (world y in [4,8)) surface at local y in [1.000, 1.000] -- world 5 means local 1
+  M2 vertical equal-rung: A+y 64 verts, B-y 68 verts, 55 shared (a,b), 0 sign mismatches, 9 only-A, 13 only-B
+  M2 bridge direction: upper tile reaches to local y -1.168 (-0.58 voxels below its origin); lower tile tops out at local y 63.648 (0.18 voxels below its top)
+  M2 determinism: 11808 tris, 1353 boundary verts, 2746 band tris; 0 differing record bytes
+  M2 -y band: 736 tris spanning y-y0 in [-5.19, -0.01] m = [-2.60, -0.00] voxels
+  M2 vertical 2:1: fine 68 verts, coarse 277 verts; 68/68 halve into the coarse tile's (x,z) cell box, 62 onto a coarse cell
+ALL PASS
+wall 3.77 s maxrss 10416 KB
+exit=0
+
+## seam_weld_tests
+=== seam welder (M0-WP3) ===
+[1] equal rung (21 + 21 record verts) -> 0 tris, crossings 0
+[2] rung gap 2 rejected: "seam_weld: rung difference exceeds one level (restrict_levels guarantees +/-1 across faces; the fan implements exactly one)"
+[3] flat 2:1 (fine rung 2 / coarse rung 1): crossings 50 = quads 25 + tris 25, missing 0, 75 tris, 225 emitted verts all from the 60+36 record verts
+[4] winding sweep, 3 axes x 2 fine sides: 1080 tris, 1080 testable, 0 backwards, worst cos = 0.9135
+[5] collapse parity: crossings 120 (oracle 120), tris 60 (oracle 60), quads 60 (oracle 60) -> 50.0% collapsed to the 2:1 fan
+[6] residue: removed coarse cell (-1,7) -> 2 caps + 1 coarse-pair drops (+0 fine); tris 180 -> 177; quads 60 -> 58, tris 60 -> 61
+[6b] cap: anchor (-14,3), removed coarse cell (-8,1) -> caps 1, missing 0, 2 -> 1 tris, 3 corners all from records, winding 1/1 ok (worst cos 0.9991)
+[7] corner adjacency: 2x2 split at a=b=0 into 32/29/32/30 verts; 120 crossings, 4 straddling a tile border; output byte-identical to the single-tile weld (180 tris)
+[7b] sign conflicts: cell (0,-16) signs 0xC -> 0x3 gives 2 conflicts (was 0)
+[8] determinism: 2 buckets, 180 tris, 12960 bytes, identical twice
+[9] overlap band: 99 tris without, 102 with (3 band, 9 of 9 vertices verbatim after rebase); equal-rung and coarse-side bands both suppressed
+=== seam welder ALL PASS
+wall 0.02 s maxrss 3940 KB
+exit=0
+
+## contour_seam_tests
+=== contour seam foundation (docs/contour-seam-design-2026-08-13.md) ===
+  [1] L1 (64 m) vs L0 (32 m): 20 shared vertices, BITWISE IDENTICAL
+  [1] L2 (128 m) vs L1 (64 m): 38 shared vertices, BITWISE IDENTICAL
+  [1] L3 (256 m) vs L2 (128 m): 76 shared vertices, BITWISE IDENTICAL
+  [2] negative control: tile-anchored lattice DISAGREES (as it must)
+  [3] L1 (64 m, own voxel 4 m): sampled 38, traced 38 -- IDENTICAL
+  [3] L2 (128 m, own voxel 8 m): sampled 76, traced 76 -- IDENTICAL
+  [3] L3 (256 m, own voxel 16 m): sampled 150, traced 150 -- IDENTICAL
+  [4] cost, one vertical face, this field:
+      level    tile m  contour v   interior c      ratio
+      0            32         20          256       0.08
+      1            64         38          256       0.15
+      2           128         76          256       0.30
+      3           256        150          256       0.59
+      4           512        301          256       1.18
+      5          1024        604          256       2.36
+  [5] tunnel fixture: canonical 104 verts, traced from an 8x own-rung seed set 76 -- 28 fine-only
+=== contour seam foundation ALL PASS
+wall 0.05 s maxrss 5908 KB
+exit=0
+
+## solid_source_evaluation_tests
+SOURCE_EVAL seed=0 ops=23 eval_ms=2.276831 artifact_writes=0 gpu_calls=0 hash=abd4d664ec5a932f
+SOURCE_EVAL seed=1 ops=23 eval_ms=2.858658 artifact_writes=0 gpu_calls=0 hash=ec3e12bfde0a23d5
+SOURCE_EVAL seed=2 ops=23 eval_ms=1.926645 artifact_writes=0 gpu_calls=0 hash=b6734dc68b92e16f
+SOURCE_EVAL seed=3 ops=23 eval_ms=1.898821 artifact_writes=0 gpu_calls=0 hash=fc49fdfc1857f570
+SOURCE_EVAL seed=4 ops=23 eval_ms=2.003135 artifact_writes=0 gpu_calls=0 hash=b4a7b6f939b9bf1f
+SOURCE_EVAL seed=5 ops=23 eval_ms=1.948038 artifact_writes=0 gpu_calls=0 hash=55e4c7a67e9cb855
+SOURCE_EVAL seed=6 ops=23 eval_ms=2.231618 artifact_writes=0 gpu_calls=0 hash=e4cd91b61632ea6c
+SOURCE_EVAL seed=7 ops=23 eval_ms=2.221292 artifact_writes=0 gpu_calls=0 hash=3aa00ddab07e083e
+ALL PASS
+wall 0.05 s maxrss 8992 KB
