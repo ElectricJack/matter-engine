@@ -1,0 +1,108 @@
+{
+  "version": 1,
+  "task": "clear-crest-48.1.3",
+  "status": "interface_scaffolding_only",
+  "authority": "docs/component-separation/ownership.md",
+  "contracts": {
+    "target": "matter_contracts",
+    "directory": "libs/MatterContracts",
+    "dependencies": [],
+    "public_headers": [
+      "contracts.h",
+      "jobs.h",
+      "generation.h",
+      "hosts.h",
+      "graphics.h",
+      "terrain.h",
+      "abi.h"
+    ]
+  },
+  "modules": [
+    {
+      "option": "MATTER_SCAFFOLD_GEOMETRY",
+      "target": "matter_geometry",
+      "directory": "libs/ProceduralGeometry",
+      "dependencies": [
+        "matter_contracts"
+      ],
+      "implemented": false
+    },
+    {
+      "option": "MATTER_SCAFFOLD_BUILD",
+      "target": "matter_build",
+      "directory": "libs/ProceduralBuild",
+      "dependencies": [
+        "matter_contracts"
+      ],
+      "implemented": false
+    },
+    {
+      "option": "MATTER_SCAFFOLD_GRAPHICS",
+      "target": "matter_graphics",
+      "directory": "libs/MatterGraphics",
+      "dependencies": [
+        "matter_contracts"
+      ],
+      "implemented": false
+    },
+    {
+      "option": "MATTER_SCAFFOLD_TERRAIN",
+      "target": "matter_terrain",
+      "directory": "libs/TerrainGeneration",
+      "dependencies": [
+        "matter_contracts",
+        "matter_geometry"
+      ],
+      "implemented": false
+    },
+    {
+      "option": "MATTER_SCAFFOLD_ASSET_PIPELINE",
+      "target": "matter_asset_pipeline",
+      "directory": "libs/AssetPipeline",
+      "dependencies": [
+        "matter_contracts",
+        "matter_geometry"
+      ],
+      "implemented": false
+    },
+    {
+      "option": "MATTER_SCAFFOLD_GEOMETRY_C",
+      "target": "matter_geometry_c",
+      "directory": "bindings/geometry-c",
+      "dependencies": [
+        "matter_contracts",
+        "matter_geometry"
+      ],
+      "implemented": false
+    },
+    {
+      "option": "MATTER_SCAFFOLD_HOST_QUICKJS",
+      "target": "matter_host_quickjs",
+      "directory": "MatterEngine3/src/script/portable_host",
+      "dependencies": [
+        "matter_contracts"
+      ],
+      "implemented": false
+    }
+  ],
+  "non_native": [
+    {
+      "target": "matter_authoring",
+      "directory": "packages/matter-authoring",
+      "kind": "javascript",
+      "implemented": false
+    },
+    {
+      "directory": "integrations/web-procedural",
+      "kind": "browser",
+      "implemented": false
+    }
+  ],
+  "central_integration_owners": [
+    "clear-crest-48.9.1",
+    "clear-crest-48.9.3",
+    "clear-crest-48.9.4",
+    "clear-crest-48.9.5"
+  ],
+  "extraction_gate": "clear-crest-48.1.4"
+}

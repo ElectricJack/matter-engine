@@ -28,6 +28,7 @@ projects/world_demo/
 | [texturing/pom](scenes/texturing/pom/) | General parallax occlusion mapping proof |
 | [texturing/terrain](scenes/texturing/terrain/) | Procedural terrain material proof |
 | [texturing/virtual_texture](scenes/texturing/virtual_texture/) | Chart VT and seam proofs |
+| [architecture/villa](scenes/architecture/villa/) | Villa Doric column study, website kit and gold treasury |
 | [castles/layouts](scenes/castles/layouts/) | Castle layouts, assemblies, galleries and Kreuzenstein |
 | [castles/materials](scenes/castles/materials/) | Masonry and material studies |
 | [castles/furnishings](scenes/castles/furnishings/) | Furnishings gallery |
@@ -46,6 +47,7 @@ projects/world_demo/
 | Folder | Contents |
 | --- | --- |
 | [texturing/bricks](objects/texturing/bricks/) | Clay brick sources, surfaces and wall generators |
+| [architecture/villa](objects/architecture/villa/) | Villa website-kit parts and the Doric column, named by `shared-lib/villa_*.js` |
 | [castle](objects/castle/) | `materials/`, `structure/`, `furnishings/`, `fixtures/` |
 | [vegetation](objects/vegetation/) | `alpine/`, `conifer/`, `trees/`, `groundcover/` |
 | [terrain](objects/terrain/) | Rocks, scree, pebbles and snow |
