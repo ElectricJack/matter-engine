@@ -1,5 +1,6 @@
 #pragma once
 #include <matter/contracts/generation.h>
+#include <utility>
 
 namespace matter::geometry {
 namespace data = matter::contracts;
@@ -13,11 +14,18 @@ struct CsgMeshingSettings {
     float reference_radius = 0;
 };
 
+struct MeshWorkerSettings {
+    // Absolute path to the optional worker executable. Empty disables it.
+    // Configuration belongs to the host, never to an authored recipe.
+    std::string executable;
+};
+
 // Native synchronous evaluator. Owned contract values are its entire public
 // boundary; legacy triangle/POD types are private implementation details.
 class PrimitiveGeometry final : public jobs::GeometryService {
 public:
-    explicit PrimitiveGeometry(CsgMeshingSettings settings = {}) : csg_settings_(settings) {}
+    explicit PrimitiveGeometry(CsgMeshingSettings settings = {}, MeshWorkerSettings worker = {})
+        : csg_settings_(settings), mesh_worker_(std::move(worker)) {}
     std::vector<data::Capability> capabilities() const override;
     jobs::AssetResult evaluate(const jobs::JobEnvelope &, const data::RecipeDocument &,
         const jobs::ResolvedInputs &, const jobs::EvaluationOptions &, const jobs::JobControl &) override;
@@ -27,6 +35,7 @@ public:
         const jobs::ProcessingRequest &, const jobs::EvaluationOptions &, const jobs::JobControl &) override;
 private:
     CsgMeshingSettings csg_settings_;
+    MeshWorkerSettings mesh_worker_;
 };
 
 struct Profile {

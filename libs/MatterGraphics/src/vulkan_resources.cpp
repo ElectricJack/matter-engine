@@ -216,6 +216,7 @@ data::ValidationResult VulkanResourceDevice::upload(BufferUsage usage, services:
   VkBufferUsageFlags flags = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
   if (usage == BufferUsage::vertex) flags |= VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
   if (usage == BufferUsage::index) flags |= VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
+  if (usage == BufferUsage::indirect) flags |= VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
   if (usage == BufferUsage::uniform) flags |= VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
   std::shared_ptr<Allocation> destination, staging;
   auto r = allocate(impl_->context, bytes->size(), flags, 0, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, destination);

@@ -141,7 +141,17 @@ bool part_matches_binding(const BLASManager& blas, const part_asset::LodLevels& 
     }
     return true;
 }
-bool read(const std::filesystem::path&p,std::vector<uint8_t>&b){FILE*f=std::fopen(p.string().c_str(),"rb");if(!f)return false;std::fseek(f,0,SEEK_END);long n=std::ftell(f);std::fseek(f,0,SEEK_SET);if(n<0){std::fclose(f);return false;}b.resize(size_t(n));bool ok=std::fread(b.data(),1,b.size(),f)==b.size();std::fclose(f);return ok;}
+bool read(const std::filesystem::path&p,std::vector<uint8_t>&b){
+    // The caller's explicit bundle storage also owns the commit-manifest
+    // bytes. Missing RAM data must stay a miss rather than probe the disk.
+    if (const auto& storage = part_bundle::ScopedStorage::current()) {
+        const auto bytes = storage->open(p.string());
+        if (!bytes) return false;
+        b = *bytes;
+        return true;
+    }
+    FILE*f=std::fopen(p.string().c_str(),"rb");if(!f)return false;std::fseek(f,0,SEEK_END);long n=std::ftell(f);std::fseek(f,0,SEEK_SET);if(n<0){std::fclose(f);return false;}b.resize(size_t(n));bool ok=std::fread(b.data(),1,b.size(),f)==b.size();std::fclose(f);return ok;
+}
 bool durable_flush(FILE* f) { if(std::fflush(f)!=0)return false;
 #ifdef _WIN32
 return _commit(_fileno(f))==0;
