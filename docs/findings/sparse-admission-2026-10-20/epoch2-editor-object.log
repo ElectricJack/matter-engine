@@ -1,0 +1,26 @@
+make: Entering directory '/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/MatterEditor'
+make -C ../MatterEngine3 shaders_gen/embedded_shaders.h
+make[1]: Entering directory '/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/MatterEngine3'
+make[1]: 'shaders_gen/embedded_shaders.h' is up to date.
+make[1]: Leaving directory '/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/MatterEngine3'
+make -C ../MatterEngine3 vulkan-spirv
+make[1]: Entering directory '/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/MatterEngine3'
+make[1]: Nothing to be done for 'vulkan-spirv'.
+make[1]: Leaving directory '/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/MatterEngine3'
+g++ -c src/main.cpp -o build/linux/obj/main.o -std=c++17 -O2 -Wall -Wno-missing-braces -Wno-unused-variable -DPLATFORM_DESKTOP -DNDEBUG -DMATTER_HAVE_SCRIPT_HOST -DMATTER_VULKAN_VIEWER -DMATTER_VULKAN_ONLY -DMATTER_HAVE_STREAMLINE=0 -I/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/third_party/Vulkan-Headers/include -I../MatterEngine3/include -I../MatterEngine3/src -I../libs/MatterSurfaceLib/include -I../libs/SpatialQueryLib/include -I../libs/MemoryLib/include -I../libs/MathLib/include -I../libs/ProfileLib/include -I../libs/AssetStoreLib/include -I../libs/AssetStoreLib/src -I../third_party/raylib/src -I../third_party/imgui -I../third_party/imgui/backends -I../third_party/ImGuizmo -I../third_party/raylib/src/external/glfw/include -I../third_party/box3d/include -I../third_party/flecs -I../third_party/ozz-animation/include -I../third_party/bc7enc -I../third_party/Vulkan-Headers/include -I../MatterEngine3 -I../MatterEngine3/src -I../MatterEngine3/src/render -I../MatterEngine3/src/provider -I../libs/MatterSurfaceLib/src -I../third_party/flecs -I../libs/ParticleFlowLib/include -I../third_party/box3d/include -I../third_party/quickjs-ng -DMATTER_HAVE_AUTOREMESHER -I../third_party/autoremesher_core/include -ffunction-sections -fdata-sections -MMD -MP
+src/main.cpp: In function ‘bool {anonymous}::component_fetch(flecs::entity, matter::scene::ComponentKind, void*)’:
+src/main.cpp:398:12: warning: enumeration value ‘RiverFloatBody’ not handled in switch [-Wswitch]
+  398 |     switch (kind) {
+      |            ^
+src/main.cpp: In function ‘bool {anonymous}::component_store(flecs::entity, matter::scene::ComponentKind, const void*)’:
+src/main.cpp:425:12: warning: enumeration value ‘RiverFloatBody’ not handled in switch [-Wswitch]
+  425 |     switch (kind) {
+      |            ^
+src/main.cpp: In lambda function:
+src/main.cpp:3438:25: warning: this ‘if’ clause does not guard... [-Wmisleading-indentation]
+ 3438 |                         if(hash && hash!=node.resolved_hash)return invalid("module selects more than one root variant");hash=node.resolved_hash;
+      |                         ^~
+src/main.cpp:3438:121: note: ...this statement, but the latter is misleadingly indented as if it were guarded by the ‘if’
+ 3438 |                         if(hash && hash!=node.resolved_hash)return invalid("module selects more than one root variant");hash=node.resolved_hash;
+      |                                                                                                                         ^~~~
+make: Leaving directory '/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/MatterEditor'

@@ -106,6 +106,14 @@ OZZ_OFFLINE_LIB = $(OZZ_BUILD_DIR)/src/animation/offline/libozz_animation_offlin
 OZZ_RUNTIME_LIBS = $(OZZ_ANIMATION_LIB) $(OZZ_BASE_LIB)
 OZZ_OFFLINE_LIBS = $(OZZ_OFFLINE_LIB) $(OZZ_RUNTIME_LIBS)
 
+# The portable authoring pipeline behind engine-core's legacy part route
+# (component_adapters/authoring/engine/legacy_part_route.cpp). The components
+# keep their own CMake builds; consumers link the archives that build makes.
+AUTHORING_INCLUDE = -I../libs/MatterContracts/include -I../libs/ProceduralGeometry/include \
+                    -I../libs/ProceduralBuild/include -Isrc/script/portable_host/include \
+                    -Isrc/component_adapters/authoring/include
+include authoring_adapter.mk
+
 # Include directories: NEW MatterEngine3 headers, consumed MatterSurfaceLib
 # headers, vendored QuickJS-ng, then raylib (for the BLAS/Tri/TriEx types).
 QJS_DIR       = ../third_party/quickjs-ng
@@ -126,7 +134,8 @@ INCLUDE_PATHS = -I. -Iinclude -Isrc -Isrc/render -Isrc/provider \
                 -I$(PFL_DIR)/include \
                 -I$(FLECS_DIR) \
                 -I$(OZZ_INCLUDE) \
-                -I../third_party/Vulkan-Headers/include $(EXTRA_INCLUDE)
+                -I../third_party/Vulkan-Headers/include $(EXTRA_INCLUDE) \
+                $(AUTHORING_INCLUDE)
 
 # Vendored QuickJS-ng engine. v0.10.0 needs xsum.c (xsum_small_* symbols) beyond
 # the core four. Compiled via gcc (C) so the embedding symbols stay unmangled.
@@ -139,6 +148,9 @@ QJS_OBJ = $(addprefix $(OBJDIR)/,quickjs.o libregexp.o libunicode.o cutils.o xsu
 # Flecs is C17 and must never be compiled by the C++ rule below.
 FLECS_C   = $(call manifest_engine_paths,$(filter third_party/flecs/flecs.c,$(VENDOR_MANIFEST_ALL)))
 FLECS_OBJ = $(addprefix $(OBJDIR)/,flecs.o)
+ifeq ($(UNAME_S),Linux)
+FLECS_PLATFORM_FLAGS = -D_POSIX_C_SOURCE=200809L
+endif
 
 # MatterEngine3 C++ sources: full pipeline — bake/script/DSL/CSG, part-graph,
 # LOD flatten/select, tileset pipeline, render, provider, and facade.
@@ -234,10 +246,10 @@ SHADER_LOGICAL := shaders/raster.vs shaders/raster.fs shaders/tileset_sampling.g
 # under MatterSurfaceLib, for make's dependency tracking.
 SHADER_FILES := $(patsubst shaders/%,$(MSL_SHADER_DIR)/%,$(SHADER_LOGICAL))
 
-.PHONY: all clean test vulkan-spirv viewer-lib check-me3-source-basenames check-animation-production-sources check-animation-runtime-boundary
+.PHONY: all clean test vulkan-spirv viewer-lib authoring-adapter check-me3-source-basenames check-animation-production-sources check-animation-runtime-boundary
 
 # all MUST be the first target so it is the default goal.
-all: $(LIB)
+all: $(LIB) authoring-adapter
 
 $(OBJDIR) build:
 	@mkdir -p $@
@@ -313,6 +325,8 @@ GLSLC ?= glslc
 # shaders_gen/embedded_shaders.h) instead of keeping its own copy, so there
 # is only ever one list to update when a shader is added.
 VK_SPV = build/shaders_vk/transform_probe.comp.spv \
+         build/shaders_vk/smoke_triangle.vert.spv \
+         build/shaders_vk/smoke_triangle.frag.spv \
          build/shaders_vk/vt_material_domain_probe.comp.spv \
          build/shaders_vk/gpu_mesh_scan_blocks.comp.spv \
          build/shaders_vk/gpu_mesh_scan_add.comp.spv \
@@ -608,16 +622,24 @@ build/shaders_vk/raster.vert.spv build/shaders_vk/raster_skin.vert.spv \
 shaders_gen/embedded_spirv.h: $(VK_SPV) tools/embed_spirv.py
 	python3 tools/embed_spirv.py $@ $(VK_SPV)
 
+# MatterGraphics' VulkanRaster embeds its own subset of the same .spv files,
+# in the component's symbol layout (libs/MatterGraphics/CMakeLists.txt).
+GRAPHICS_RASTER_SPV = $(addprefix build/shaders_vk/,raster.vert.spv raster_skin.vert.spv \
+                      raster_water.vert.spv gbuffer.frag.spv visibility_id.vert.spv \
+                      visibility_id.frag.spv)
+shaders_gen/raster_spirv.h: $(GRAPHICS_RASTER_SPV) ../libs/MatterGraphics/tools/embed_shaders.py
+	python3 ../libs/MatterGraphics/tools/embed_shaders.py $@ $(GRAPHICS_RASTER_SPV)
+
 vulkan-spirv: shaders_gen/embedded_spirv.h
 
 # Per-file pattern rules enable safe parallel compilation with `make -j`.
 # vpath directs Make to search source directories by basename.
-vpath %.cpp src src/geometry src/export src/animation src/render src/hydrology src/provider src/script src/ecs src/scene src/streaming src/event src/util src/props $(MSL_DIR)/src $(SQL_DIR)/src $(PFL_DIR)/src $(MCL_DIR)/src $(ASSET_DIR)/src
+vpath %.cpp src src/component_adapters/authoring/engine src/component_adapters/graphics src/component_adapters/terrain_coordinator/engine src/component_adapters/terrain_coordinator/src src/terrain_collision src/geometry src/export src/animation src/render src/render/gpu_meshing src/hydrology src/provider src/script src/ecs src/scene src/streaming src/event src/util src/props $(MSL_DIR)/src $(SQL_DIR)/src $(PFL_DIR)/src $(MCL_DIR)/src $(ASSET_DIR)/src ../libs/ProceduralGeometry/src ../libs/MatterGraphics/src ../libs/MatterGraphics/src/native ../libs/MatterGraphics/src/native/vt ../libs/TerrainGeneration/src ../libs/AssetPipeline/physics/src
 vpath %.c $(QJS_DIR) $(MSL_DIR)/src $(FLECS_DIR)
 
 # Flecs C source (gcc C17, never g++).
 $(FLECS_OBJ): $(FLECS_C) | $(OBJDIR)
-	$(CCACHE) gcc -c $< -o $@ -std=c17 -O2 -I$(FLECS_DIR) -MMD -MP
+	$(CCACHE) gcc -c $< -o $@ -std=c17 -O2 $(FLECS_PLATFORM_FLAGS) -I$(FLECS_DIR) -MMD -MP
 
 # QuickJS C sources (gcc, extern "C" safe).
 $(OBJDIR)/%.o: $(QJS_DIR)/%.c | $(OBJDIR)
@@ -756,7 +778,7 @@ VIEWER_AR  ?= ar
 VULKAN_INCLUDE ?= /ucrt64/include
 
 # MATTER_HAVE_STREAMLINE is a compile-time gate read by
-# src/render/streamline_bridge.cpp. MatterEditor owns the switch (its `dist`
+# libs/MatterGraphics/src/native/streamline_bridge.cpp. MatterEditor owns the switch (its `dist`
 # target flips it) and passes it down; the flag stamp below tracks changes.
 HAVE_STREAMLINE ?= 0
 STREAMLINE_PATH ?=
@@ -780,6 +802,9 @@ VIEWER_LIB_FLAGS_STAMP = build/.viewer_lib_flags$(VIEWER_TAG)
 VIEWER_GLFW_INCLUDE = $(RAYLIB_PATH)/external/glfw/include
 
 VIEWER_INCLUDE_PATHS = -I$(VULKAN_INCLUDE) $(INCLUDE_PATHS) -I$(VIEWER_GLFW_INCLUDE) \
+                       -I../libs/MatterGraphics/include \
+                       -Isrc/component_adapters/terrain_coordinator/include \
+                       -I../libs/TerrainGeneration/include \
                        $(if $(filter 1,$(HAVE_STREAMLINE)),-I"$(STREAMLINE_PATH)/include")
 
 # Mirrors MatterEditor's CXX_FLAGS_BUILD_WIN_COMMON exactly, minus the include
@@ -843,6 +868,8 @@ $(VIEWER_OBJDIR)/mesh_raster.o: ../libs/MatterGraphics/src/native/mesh_raster.cp
 	$(VIEWER_CXX) -c $< -o $@ $(VIEWER_CFLAGS) $(VIEWER_INCLUDE_PATHS) -MMD -MP
 $(VIEWER_OBJDIR)/mesh_pipelines.o: ../libs/MatterGraphics/src/native/mesh_pipelines.cpp | $(VIEWER_OBJDIR)
 	$(VIEWER_CXX) -c $< -o $@ $(VIEWER_CFLAGS) $(VIEWER_INCLUDE_PATHS) -MMD -MP
+$(VIEWER_OBJDIR)/vulkan_raster.o: ../libs/MatterGraphics/src/vulkan_raster.cpp | $(VIEWER_OBJDIR) shaders_gen/raster_spirv.h
+	$(VIEWER_CXX) -c $< -o $@ $(VIEWER_CFLAGS) $(VIEWER_INCLUDE_PATHS) -Ishaders_gen -MMD -MP
 
 # Sources deliberately kept off vpath (see the $(OBJDIR) twins above for why)
 # need explicit rules. bc7enc/rgbcx get a trailing -w for the same reason the
@@ -864,7 +891,7 @@ $(VIEWER_QJS_OBJ): $(VIEWER_OBJDIR)/%.o: $(QJS_DIR)/%.c | $(VIEWER_OBJDIR)
 	$(VIEWER_CC) -c $< -o $@ -DCONFIG_VERSION='"0.10.0"' -I$(QJS_DIR) $(VIEWER_C_COMMON)
 
 $(VIEWER_FLECS_OBJ): $(VIEWER_OBJDIR)/%.o: $(FLECS_DIR)/%.c | $(VIEWER_OBJDIR)
-	$(VIEWER_CC) -c $< -o $@ -std=c17 -I$(FLECS_DIR) $(VIEWER_C_COMMON)
+	$(VIEWER_CC) -c $< -o $@ -std=c17 $(FLECS_PLATFORM_FLAGS) -I$(FLECS_DIR) $(VIEWER_C_COMMON)
 
 # spatial_hash and mem_pool come from their source-of-truth libraries, so they
 # cannot share the MSL static pattern rule -- same split as the $(OBJDIR) rules.
@@ -893,7 +920,21 @@ $(VIEWER_LIB): $(VIEWER_ALL_OBJ) | check-me3-source-basenames
 	rm -f $@
 	$(VIEWER_AR) rcs $@ $(VIEWER_ALL_OBJ)
 
-viewer-lib: $(VIEWER_LIB)
+viewer-lib: $(VIEWER_LIB) authoring-adapter
+
+# Both archives carry the legacy part route, so whoever links one links these
+# too. MATTER_AUTHORING_HOST_KERNELS=ON, as in the root graph: matter_geometry
+# drops the CPU kernels (triangle_emit, mesh_simplifier, ...) this archive
+# already compiles and resolves them from it at final link. VIEWER_TAG keeps one
+# tree per toolchain; a ccache launcher in the compiler variable is stripped.
+AUTHORING_ADAPTER_BUILD = build/authoring_adapter$(VIEWER_TAG)
+AUTHORING_ADAPTER_LIBS = $(addprefix $(AUTHORING_ADAPTER_BUILD)/,$(AUTHORING_ADAPTER_ARCHIVES))
+authoring-adapter:
+	@test -f $(AUTHORING_ADAPTER_BUILD)/CMakeCache.txt || \
+	  cmake -S src/component_adapters/authoring -B $(AUTHORING_ADAPTER_BUILD) \
+	        -DBUILD_TESTING=OFF -DMATTER_AUTHORING_HOST_KERNELS=ON -DCMAKE_BUILD_TYPE=Release \
+	        -DCMAKE_C_COMPILER=$(lastword $(VIEWER_CC)) -DCMAKE_CXX_COMPILER=$(lastword $(VIEWER_CXX))
+	cmake --build $(AUTHORING_ADAPTER_BUILD) --target matter_authoring_adapter
 
 # `matter` command-line tool (matter bake gi / export obj), rollback/Unix
 # build: links the headless kernel archive plus the vendored physics/animation
@@ -901,9 +942,10 @@ viewer-lib: $(VIEWER_LIB)
 # CLAUDE.md "Worktree setup"). The canonical build is CMake's `matter_cli`.
 CLI_BIN = build/matter
 cli: $(CLI_BIN)
-$(CLI_BIN): tools/matter_cli.cpp cli/matter_cli.cpp $(LIB) $(BOX3D_LIB) | build
+$(CLI_BIN): tools/matter_cli.cpp cli/matter_cli.cpp $(LIB) $(BOX3D_LIB) authoring-adapter | build
 	$(CC) tools/matter_cli.cpp cli/matter_cli.cpp -o $@ $(CFLAGS) \
-	    -DMATTER_ENABLE_GI_CLI $(INCLUDE_PATHS) $(LIB) \
+	    -DMATTER_ENABLE_GI_CLI $(INCLUDE_PATHS) \
+	    -Wl,--start-group $(LIB) $(AUTHORING_ADAPTER_LIBS) -Wl,--end-group \
 	    $(BOX3D_LIB) $(OZZ_OFFLINE_LIBS) $(RAYLIB_PATH)/libraylib.a -lpthread -lm -ldl
 
 # Delegate to the test suite (headless, GL-free host + raylib-linked BLAS path).
