@@ -58,7 +58,6 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
-#include <cstdio>
 #include <cstring>
 #include <memory>
 #include <utility>
@@ -66,13 +65,13 @@
 
 #include "../../../../MatterEngine3/src/render/gpu_matrix_pack.h"
 #include "../../../../MatterEngine3/src/render/frame_matrices.h"
-#include "matter/cloud_shadow_settings.h"
+#include "cloud_shadow_settings.h"
 #include "matter/log.h"
 #include "matter/vulkan_device.h"
 #include "fog_settings.h"
 #include "environment_spirv.h"
 #include "gpu_volume_emitter.h"
-#include "../../../../MatterEngine3/src/render/vk_resources.h"
+#include "vk_resources.h"
 
 namespace viewer {
 
@@ -96,8 +95,8 @@ bool create_shader_module_from_spirv(VkDevice device, const char* name,
         error = std::string("embedded SPIR-V not found: ") + name;
         return false;
     }
-    VkShaderModuleCreateInfo create{
-        VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+    VkShaderModuleCreateInfo create{};
+    create.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
     create.codeSize = spirv.word_count * sizeof(uint32_t);
     create.pCode = spirv.words;
     const VkResult result =
@@ -299,7 +298,8 @@ bool VkVolumetrics::create_noise_texture(matter::VulkanDevice& vulkan,
         const auto& ci = *static_cast<const CopyInfo*>(user_data);
 
         // Transition to TRANSFER_DST.
-        VkImageMemoryBarrier2 barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
+        VkImageMemoryBarrier2 barrier{};
+        barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
         barrier.srcStageMask = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT;
         barrier.srcAccessMask = 0;
         barrier.dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
@@ -310,7 +310,8 @@ bool VkVolumetrics::create_noise_texture(matter::VulkanDevice& vulkan,
         barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         barrier.image = ci.dst;
         barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-        VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+        VkDependencyInfo dep{};
+        dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
         dep.imageMemoryBarrierCount = 1;
         dep.pImageMemoryBarriers = &barrier;
         vkCmdPipelineBarrier2(cmd, &dep);
@@ -448,7 +449,8 @@ bool VkVolumetrics::create_bundle_descriptors(FroxelBundle& bundle,
         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2},
         {VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 4},
     };
-    VkDescriptorPoolCreateInfo pool_info{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+    VkDescriptorPoolCreateInfo pool_info{};
+    pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
     pool_info.maxSets = 7;
     pool_info.poolSizeCount = static_cast<uint32_t>(std::size(sizes));
     pool_info.pPoolSizes = sizes;
@@ -467,7 +469,8 @@ bool VkVolumetrics::create_bundle_descriptors(FroxelBundle& bundle,
         scatter_set_layout_, scatter_set_layout_,
         integrate_set_layout_, integrate_set_layout_};
     VkDescriptorSet sets[7]{};
-    VkDescriptorSetAllocateInfo alloc{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+    VkDescriptorSetAllocateInfo alloc{};
+    alloc.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
     alloc.descriptorPool = bundle.descriptor_pool;
     alloc.descriptorSetCount = static_cast<uint32_t>(std::size(layouts));
     alloc.pSetLayouts = layouts;
@@ -499,27 +502,27 @@ bool VkVolumetrics::create_bundle_descriptors(FroxelBundle& bundle,
     cloud_density.imageView = (bundle.enhanced_clouds ? bundle.cloud_density : cloud_density_dummy_).view;
     cloud_density.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
     VkWriteDescriptorSet density_writes[5]{};
-    density_writes[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+    density_writes[0] = {}; density_writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     density_writes[0].dstSet = bundle.density_set;
     density_writes[0].dstBinding = 0; density_writes[0].descriptorCount = 1;
     density_writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
     density_writes[0].pImageInfo = &density;
-    density_writes[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+    density_writes[1] = {}; density_writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     density_writes[1].dstSet = bundle.density_set;
     density_writes[1].dstBinding = 1; density_writes[1].descriptorCount = 1;
     density_writes[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     density_writes[1].pImageInfo = &noise;
-    density_writes[2] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+    density_writes[2] = {}; density_writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     density_writes[2].dstSet = bundle.density_set;
     density_writes[2].dstBinding = 2; density_writes[2].descriptorCount = 1;
     density_writes[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     density_writes[2].pBufferInfo = &emitters;
-    density_writes[3] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+    density_writes[3] = {}; density_writes[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     density_writes[3].dstSet = bundle.density_set;
     density_writes[3].dstBinding = 3; density_writes[3].descriptorCount = 1;
     density_writes[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     density_writes[3].pBufferInfo = &clouds;
-    density_writes[4] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+    density_writes[4] = {}; density_writes[4].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     density_writes[4].dstSet = bundle.density_set;
     density_writes[4].dstBinding = 4; density_writes[4].descriptorCount = 1;
     density_writes[4].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
@@ -542,16 +545,16 @@ bool VkVolumetrics::create_bundle_descriptors(FroxelBundle& bundle,
             ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
             : VK_IMAGE_LAYOUT_GENERAL;
         VkWriteDescriptorSet writes[4]{};
-        writes[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}; writes[0].dstSet = bundle.scatter_sets[slot][i];
+        writes[0] = {}; writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; writes[0].dstSet = bundle.scatter_sets[slot][i];
         writes[0].dstBinding = 0; writes[0].descriptorCount = 1;
         writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; writes[0].pImageInfo = &media;
-        writes[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}; writes[1].dstSet = bundle.scatter_sets[slot][i];
+        writes[1] = {}; writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; writes[1].dstSet = bundle.scatter_sets[slot][i];
         writes[1].dstBinding = 1; writes[1].descriptorCount = 1;
         writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE; writes[1].pImageInfo = &write;
-        writes[2] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}; writes[2].dstSet = bundle.scatter_sets[slot][i];
+        writes[2] = {}; writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; writes[2].dstSet = bundle.scatter_sets[slot][i];
         writes[2].dstBinding = 2; writes[2].descriptorCount = 1;
         writes[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; writes[2].pImageInfo = &history;
-        writes[3] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}; writes[3].dstSet = bundle.scatter_sets[slot][i];
+        writes[3] = {}; writes[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; writes[3].dstSet = bundle.scatter_sets[slot][i];
         writes[3].dstBinding = 5; writes[3].descriptorCount = 1;
         writes[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; writes[3].pImageInfo = &cloud;
         vkUpdateDescriptorSets(device_, 4, writes, 0, nullptr);
@@ -565,10 +568,10 @@ bool VkVolumetrics::create_bundle_descriptors(FroxelBundle& bundle,
         integrated.imageView = bundle.integrated.view;
         integrated.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
         VkWriteDescriptorSet writes[2]{};
-        writes[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}; writes[0].dstSet = bundle.integrate_sets[i];
+        writes[0] = {}; writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; writes[0].dstSet = bundle.integrate_sets[i];
         writes[0].dstBinding = 0; writes[0].descriptorCount = 1;
         writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; writes[0].pImageInfo = &scatter;
-        writes[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}; writes[1].dstSet = bundle.integrate_sets[i];
+        writes[1] = {}; writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET; writes[1].dstSet = bundle.integrate_sets[i];
         writes[1].dstBinding = 1; writes[1].descriptorCount = 1;
         writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE; writes[1].pImageInfo = &integrated;
         vkUpdateDescriptorSets(device_, 2, writes, 0, nullptr);
@@ -720,7 +723,8 @@ bool VkVolumetrics::create_cloud_buffer(matter::VulkanDevice& vulkan,
 bool VkVolumetrics::create_samplers(matter::VulkanDevice& vulkan,
                                      std::string& error) {
     (void)vulkan;  // device handle comes from device_; kept for API symmetry
-    VkSamplerCreateInfo info{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+    VkSamplerCreateInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
     info.magFilter = VK_FILTER_LINEAR;
     info.minFilter = VK_FILTER_LINEAR;
     info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
@@ -774,8 +778,8 @@ bool VkVolumetrics::create_density_pipeline(matter::VulkanDevice& vulkan,
                      VK_SHADER_STAGE_COMPUTE_BIT),
     };
 
-    VkDescriptorSetLayoutCreateInfo set_info{
-        VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+    VkDescriptorSetLayoutCreateInfo set_info{};
+    set_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
     set_info.bindingCount = 5;
     set_info.pBindings = bindings;
     VkResult result = vkCreateDescriptorSetLayout(device_, &set_info, nullptr,
@@ -789,8 +793,8 @@ bool VkVolumetrics::create_density_pipeline(matter::VulkanDevice& vulkan,
     push.offset = 0;
     push.size = sizeof(DensityConstants);
 
-    VkPipelineLayoutCreateInfo layout_info{
-        VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+    VkPipelineLayoutCreateInfo layout_info{};
+    layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
     layout_info.setLayoutCount = 1;
     layout_info.pSetLayouts = &density_set_layout_;
     layout_info.pushConstantRangeCount = 1;
@@ -834,15 +838,15 @@ bool VkVolumetrics::create_density_pipeline(matter::VulkanDevice& vulkan,
             spec.dataSize = sizeof(values);
             spec.pData = values;
 
-            VkPipelineShaderStageCreateInfo stage{
-                VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+            VkPipelineShaderStageCreateInfo stage{};
+            stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
             stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
             stage.module = shader;
             stage.pName = "main";
             stage.pSpecializationInfo = &spec;
 
-            VkComputePipelineCreateInfo create{
-                VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+            VkComputePipelineCreateInfo create{};
+            create.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
             create.stage = stage;
             create.layout = density_pipeline_layout_;
             result = vkCreateComputePipelines(device_, VK_NULL_HANDLE, 1,
@@ -893,8 +897,8 @@ bool VkVolumetrics::create_scatter_pipeline(matter::VulkanDevice& vulkan,
                      VK_SHADER_STAGE_COMPUTE_BIT),
     };
 
-    VkDescriptorSetLayoutCreateInfo set_info{
-        VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+    VkDescriptorSetLayoutCreateInfo set_info{};
+    set_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
     set_info.bindingCount = 6;
     set_info.pBindings = bindings;
     VkResult result = vkCreateDescriptorSetLayout(device_, &set_info, nullptr,
@@ -909,8 +913,8 @@ bool VkVolumetrics::create_scatter_pipeline(matter::VulkanDevice& vulkan,
     push.offset = 0;
     push.size = sizeof(ScatterConstants);
 
-    VkPipelineLayoutCreateInfo layout_info{
-        VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+    VkPipelineLayoutCreateInfo layout_info{};
+    layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
     const VkDescriptorSetLayout scatter_sets[] = {scatter_set_layout_,
                                                    environment_set_layout_};
     layout_info.setLayoutCount = 2;
@@ -933,14 +937,14 @@ bool VkVolumetrics::create_scatter_pipeline(matter::VulkanDevice& vulkan,
         const VkSpecializationMapEntry entry{0, 0, sizeof(uint32_t)};
         const VkSpecializationInfo specialization{
             1, &entry, sizeof(enhanced), &enhanced};
-        VkPipelineShaderStageCreateInfo stage{
-            VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+        VkPipelineShaderStageCreateInfo stage{};
+        stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
         stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
         stage.module = shader;
         stage.pName = "main";
         stage.pSpecializationInfo = &specialization;
-        VkComputePipelineCreateInfo create{
-            VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+        VkComputePipelineCreateInfo create{};
+        create.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
         create.stage = stage;
         create.layout = scatter_pipeline_layout_;
         result = vkCreateComputePipelines(
@@ -983,8 +987,8 @@ bool VkVolumetrics::create_integrate_pipeline(matter::VulkanDevice& vulkan,
                      VK_SHADER_STAGE_COMPUTE_BIT),
     };
 
-    VkDescriptorSetLayoutCreateInfo set_info{
-        VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+    VkDescriptorSetLayoutCreateInfo set_info{};
+    set_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
     set_info.bindingCount = 2;
     set_info.pBindings = bindings;
     VkResult result = vkCreateDescriptorSetLayout(device_, &set_info, nullptr,
@@ -993,8 +997,8 @@ bool VkVolumetrics::create_integrate_pipeline(matter::VulkanDevice& vulkan,
         return vk_fail("vkCreateDescriptorSetLayout(integrate)", result, error);
 
     // No push constants for the integrate shader.
-    VkPipelineLayoutCreateInfo layout_info{
-        VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+    VkPipelineLayoutCreateInfo layout_info{};
+    layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
     layout_info.setLayoutCount = 1;
     layout_info.pSetLayouts = &integrate_set_layout_;
     result = vkCreatePipelineLayout(device_, &layout_info, nullptr,
@@ -1008,13 +1012,13 @@ bool VkVolumetrics::create_integrate_pipeline(matter::VulkanDevice& vulkan,
                                          shader, error)) {
         return false;
     }
-    VkPipelineShaderStageCreateInfo stage{
-        VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+    VkPipelineShaderStageCreateInfo stage{};
+    stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
     stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
     stage.module = shader;
     stage.pName = "main";
-    VkComputePipelineCreateInfo create{
-        VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+    VkComputePipelineCreateInfo create{};
+    create.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
     create.stage = stage;
     create.layout = integrate_pipeline_layout_;
     result = vkCreateComputePipelines(device_, VK_NULL_HANDLE, 1, &create,
@@ -1188,8 +1192,8 @@ bool VkVolumetrics::record(VkCommandBuffer cmd,
         depth_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
         // Binding 4: TLAS.
-        VkWriteDescriptorSetAccelerationStructureKHR as_write{
-            VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR};
+        VkWriteDescriptorSetAccelerationStructureKHR as_write{};
+        as_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR;
         as_write.accelerationStructureCount = 1;
         as_write.pAccelerationStructures = &tlas;
 

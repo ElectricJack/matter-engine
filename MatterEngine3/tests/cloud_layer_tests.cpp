@@ -18,6 +18,8 @@
 //                       |<->|           |<->|
 //                    falloff_min     falloff_max
 
+// Production GLSL/wiring predicates run in MatterGraphics' shared build-time
+// qualifier through both CMake and Make; this binary uses numerical fixtures.
 #include "check.h"
 #include "matter/cloud_layers.h"
 #include "../../libs/MatterGraphics/src/native/fog_settings.h"
@@ -27,8 +29,6 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdint>
-#include <fstream>
-#include <iterator>
 #include <string>
 
 namespace {
@@ -622,20 +622,6 @@ void test_gpu_packing_round_trip() {
 // This is the ABI boundary for the cloud SSBO. The density shader may not use
 // the new controls until Task 9, but changing C++ stride without extending its
 // GLSL mirror would make every following element read at the wrong offset.
-void test_gpu_cloud_layer_shader_layout_contract() {
-    std::ifstream input("../shaders_vk/vol_common.glsl", std::ios::binary);
-    CHECK(static_cast<bool>(input), "cloud GLSL source is available to pin the SSBO contract");
-    const std::string source((std::istreambuf_iterator<char>(input)),
-                             std::istreambuf_iterator<char>());
-    CHECK(source.find("GpuCloudLayer in matter/cloud_layers.h (96 bytes std430)") !=
-              std::string::npos,
-          "GLSL mirror declares the 96-byte cloud-layer stride");
-    CHECK(source.find("vec4 weather_scale_influence_detail_scale_detail_erosion;") !=
-              std::string::npos,
-          "GLSL appends weatherScale, weatherInfluence, detailScale, detailErosion as one vec4");
-    CHECK(source.find("vec4 shape_bias_padding;") != std::string::npos,
-          "GLSL appends shapeBias plus three zero padding lanes as one vec4");
-}
 
 // The octave ceiling is a frame-cost guard, not a preference: octaves
 // multiply the per-froxel work directly across 1.84M froxels.
@@ -669,56 +655,6 @@ void test_sanitize_clamps_the_cost_dials() {
     CHECK(!degenerate.enabled, "an inverted layer is switched off, not kept");
 }
 
-void test_task9_shared_density_and_optional_r16f_contract() {
-    std::ifstream density("../shaders_vk/cloud_density.glsl", std::ios::binary);
-    const std::string shared((std::istreambuf_iterator<char>(density)),
-                             std::istreambuf_iterator<char>());
-    std::ifstream shader("../shaders_vk/vol_density.comp", std::ios::binary);
-    const std::string volume((std::istreambuf_iterator<char>(shader)),
-                             std::istreambuf_iterator<char>());
-    std::ifstream host("../../libs/MatterGraphics/src/native/vk_volumetrics.cpp", std::ios::binary);
-    const std::string vk((std::istreambuf_iterator<char>(host)),
-                         std::istreambuf_iterator<char>());
-    std::ifstream composite_file("../shaders_vk/composite.frag", std::ios::binary);
-    const std::string composite((std::istreambuf_iterator<char>(composite_file)),
-                                std::istreambuf_iterator<char>());
-    CHECK(shared.find("CloudDensitySample evaluate_cloud_density") != std::string::npos &&
-              volume.find("ENHANCED_CLOUDS") != std::string::npos &&
-              volume.find("vol_cloud_density") != std::string::npos &&
-              vk.find("VK_FORMAT_R16_SFLOAT") != std::string::npos &&
-              vk.find("density_pipelines_[count][enhanced]") != std::string::npos &&
-              vk.find("cloud_density_dummy_") != std::string::npos,
-          "Task 9 shares cloud density and only allocates R16F extinction for enhanced clouds");
-    const size_t cloud_debug = composite.find("Cloud density must precede every GBuffer/sky early-out");
-    const size_t sky_early_out = composite.find("if (normal_length_squared <= 1e-20)");
-    CHECK(cloud_debug != std::string::npos && sky_early_out != std::string::npos &&
-              cloud_debug < sky_early_out &&
-              composite.find("for (int z = 0; z < depth_slices; ++z)") != std::string::npos &&
-              volume.find("fog_albedo * non_cloud_extinction + vec3(0.99) * cloud_extinction") !=
-                  std::string::npos,
-          "Task 9 debug covers full sky rays and enhanced scattering excludes cloud double-counting");
-    // The same-process static-repeat gate this used to pin lived in the QA
-    // capture script MatterEngine3/tools/atmosphere_cloud_shots.sh, which was
-    // deleted on purpose in ac1c04dc ("Remove helper script that's not needed
-    // any longer"). Reading the missing file yielded an empty string, so the
-    // assertion could never pass again. The shipped Task 9 surface (shared
-    // density GLSL, the enhanced-cloud R16F allocation, and the composite
-    // ordering) is still pinned by the CHECKs above and below; nothing about
-    // the retired script remains to assert.
-    CHECK(shared.find("if (L.weather_scale_influence_detail_scale_detail_erosion.y > 0.0)") !=
-              std::string::npos &&
-              shared.find("if (L.shape_bias_padding.x != 0.0)") !=
-                  std::string::npos &&
-              shared.find("result.full = profile * L.max_density * full_shape;") !=
-                  std::string::npos &&
-              shared.find("if (L.weather_scale_influence_detail_scale_detail_erosion.w > 0.0)") !=
-                  std::string::npos,
-          "neutral density preserves the authored full-octave multiplication before optional controls");
-    CHECK(vk.find("enhanced_clouds_requested_ =\n"
-                  "        matter::enhanced_cloud_lighting(vol, shadows);") !=
-              std::string::npos,
-          "Task 9 runtime allocation uses the canonical enhanced-cloud predicate");
-}
 
 matter::GpuCloudLayer task9_numerical_layer(int index = 0) {
     matter::CloudLayer layer = make_layer(100.0f, 300.0f, 0.0375f, 20.0f, 30.0f);
@@ -832,9 +768,7 @@ int main() {
     test_disabled_layer_survives_compaction_and_reenable();
     test_seed_default_cloud_layer_makes_a_degenerate_layer_live();
     test_gpu_packing_round_trip();
-    test_gpu_cloud_layer_shader_layout_contract();
     test_sanitize_clamps_the_cost_dials();
-    test_task9_shared_density_and_optional_r16f_contract();
     test_task9_neutral_density_numerical_parity();
     test_task9_density_semantics();
     test_task9_derived_seeds_decorrelate_density_samples();
