@@ -1,0 +1,15 @@
+aq test: no interpreter found for /tmp/eager-nexus-71-epoch4 (no .venv, no resources.test_interpreters entry); using /usr/bin/python3.12
+aq test: slot 2 of 6, -n 6
+$ /usr/bin/python3.12 -m pytest --dist loadfile -m 'not perf and not migration and not slow and not tmux and not integration' -n0 /tmp/eager-nexus-71-epoch4/test_graphics.py -k display -q -s
+name of display:    :0
+version number:    11.0
+vendor string:    The X.Org Foundation
+vendor release number:    12401006
+X.Org version: 24.1.6
+maximum request size:  16777212 bytes
+motion buffer size:  256
+bitmap unit, bit order, padding:    32, LSBFirst, 32
+image byte order:    LSBFirst
+number of supported pixmap formats:    7
+.
+1 passed, 2 deselected in 0.90s

@@ -329,6 +329,8 @@ GeometryWorldRuntime::Impl::Impl() {
 }
 GeometryWorldRuntime::GeometryWorldRuntime() = default;
 GeometryWorldRuntime::~GeometryWorldRuntime() = default;
+GeometryWorldRuntime::GeometryWorldRuntime(GeometryWorldRuntime&&) noexcept = default;
+GeometryWorldRuntime& GeometryWorldRuntime::operator=(GeometryWorldRuntime&&) noexcept = default;
 void GeometryWorldRuntime::reset(VkSceneRenderer& renderer) {
     if (!d_) return;
     auto& d = *d_;

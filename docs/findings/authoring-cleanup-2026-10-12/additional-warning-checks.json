@@ -1,0 +1,54 @@
+[
+  {
+    "target": "matter_geometry_c_allocation_tests",
+    "command": [
+      "/usr/bin/c++",
+      "-I/tmp/crisp-ember-20-validation/binding",
+      "-I/mnt/d/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-10/bindings/geometry-c/include",
+      "-I/mnt/d/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-10/libs/MatterContracts/include",
+      "-I/mnt/d/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-10/libs/MatterContracts/../MathLib/include",
+      "-I/mnt/d/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-10/libs/ProceduralGeometry/include",
+      "-g",
+      "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-10/bindings/geometry-c/tests/allocation.cpp",
+      "-Wall",
+      "-Wextra",
+      "-Wpedantic",
+      "-fsyntax-only"
+    ],
+    "exit_code": 0,
+    "log": "matter_geometry_c_allocation_tests-after-warnings.log"
+  },
+  {
+    "target": "matter_authoring_contract_check",
+    "command": [
+      "/usr/bin/c++",
+      "-I/mnt/d/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-10/libs/MatterContracts/include",
+      "-I/mnt/d/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-10/libs/MatterContracts/../MathLib/include",
+      "-g",
+      "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-10/packages/matter-authoring/tests/contract_check.cpp",
+      "-Wall",
+      "-Wextra",
+      "-Wpedantic",
+      "-fsyntax-only"
+    ],
+    "exit_code": 0,
+    "log": "matter_authoring_contract_check-after-warnings.log"
+  },
+  {
+    "target": "matter_host_quickjs_tests",
+    "command": [
+      "/usr/bin/c++",
+      "-I/mnt/d/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-10/MatterEngine3/src/script/portable_host/include",
+      "-I/mnt/d/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-10/libs/MatterContracts/include",
+      "-I/mnt/d/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-10/libs/MatterContracts/../MathLib/include",
+      "-g",
+      "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-10/MatterEngine3/src/script/portable_host/tests/host_tests.cpp",
+      "-Wall",
+      "-Wextra",
+      "-Wpedantic",
+      "-fsyntax-only"
+    ],
+    "exit_code": 0,
+    "log": "matter_host_quickjs_tests-after-warnings.log"
+  }
+]

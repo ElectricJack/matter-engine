@@ -62,6 +62,21 @@ An UNTESTED result is never counted as a pass. The summary lists it separately.
 
 Use `--require-capability NAME` where a capability must be present. `check-windows.ps1` passes `vulkan-sdk`, because the supported Windows toolchain installs it. An unknown capability name is an error, never ignored.
 
+`--host-cache KEY=VALUE` (repeatable) adds a probe cache entry that locates a host tool, for example a Vulkan SDK outside the default search path:
+
+```bash
+mkdir -p /tmp/vulkan-sdk && cp -r third_party/Vulkan-Headers/include /tmp/vulkan-sdk/
+VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json \
+python3 tools/component-separation/check_dependencies.py --checks configure,build --component graphics \
+  --host-cache Vulkan_INCLUDE_DIR=/tmp/vulkan-sdk/include \
+  --host-cache Vulkan_LIBRARY=/usr/lib/x86_64-linux-gnu/libvulkan.so.1 \
+  --host-cache MATTER_GRAPHICS_GLSLC=/path/to/glslc --require-capability vulkan-sdk
+```
+
+The headers are copied out of the repository because the variant allows Vulkan include directories only as external SDK paths. Pointed at `third_party/Vulkan-Headers/include` in place, the probe reports it as a repository directory that consumers inherit (`include-dir.public-leak`). The probe build directory keeps its CMake cache, so delete `build/component-deps/<platform>/graphics-vulkan` before a run that should not reuse earlier host entries.
+
+A host entry may not override a key the rules set (`probe_cache` or a variant's `cache`); that is a rules error (exit 2), so a host flag cannot switch a component back on.
+
 ## Rules (`rules.json`)
 
 The schema is `matter.component-dependency-rules.v1`. Loading is strict: an unknown key is an error, so a misspelt allowance cannot silently widen anything.
@@ -89,37 +104,63 @@ Each component also has a `kind` (`native`, `javascript`, `browser`, `adapter`),
 
 Every tolerated item is listed in the passing result's notes (shown with `--verbose`), so the debt stays visible. Remove an entry once its code moves.
 
+The legacy lists are audited before the foreign-owner check, so a component that still compiles or includes another component's file in place (named `BOUNDARY DEBT` in its reason) is reported as audited debt, not as an allowed dependency. `allowed_components` is never widened to make such a build pass.
+
+**Monolith sources (`monolith_sources`).** A component source the probe does not compile because the monolith still does (for example `graphics`' Vulkan scene renderer) may be listed here. The entry is honoured only when `cmake/manifests/*.sources` actually compiles that file, directly or through a listed forwarding entrypoint that `#include`s it (`depcheck/monolith.py`). Otherwise `unbuilt-sources` fails with `source.monolith-unlisted`: a stale manifest can neither silently keep relinking the monolith copy nor silently drop it.
+
+**Variant sources and headers.** A variant's `sources` (relative to the component directory) are excused from `unbuilt-sources` in the other variants, and a variant's `public_headers` are left out of the other variants' probe, so an optional module (`asset_pipeline/products`) is proven only in the configuration that builds it.
+
 **Forbidden lists.** These are `forbidden_public_includes`, `forbidden_external_headers` and `forbidden_symbols`. `forbidden_symbols` names entries in the top-level `symbol_groups`.
 
-**JavaScript (`js`).** The settings are `include`/`exclude` globs, `forbidden_specifiers` (regular expressions) and `allowed_bare_specifiers`.
+**JavaScript (`js`).** The settings are `include`/`exclude` globs, `forbidden_specifiers` (regular expressions) and `allowed_bare_specifiers`. A relative import that leaves the package is allowed only when it lands in a component listed in `allowed_components` (noted as `imports allowed component …`); anything else fails `js-import.escapes-package`.
 
 ### Current repository state
 
-Implemented and checked:
+Every component is `implemented` and checked (`--list`):
 
-- `contracts`
-- `geometry`
+- `contracts`, `geometry`, `terrain`, `build`, `host_quickjs`, `geometry_c`
 - `graphics`, with a `vulkan` variant that needs `vulkan-sdk`
-- `terrain`
-- `host_quickjs`
-- `authoring` (JavaScript)
-
-Scaffold, reported UNTESTED with reasons:
-
-- `build`
-- `asset_pipeline`
-- `geometry_c`
-
-Absent, reported UNTESTED with reasons:
-
-- `web_procedural`
+- `asset_pipeline`, with `minimal` (all optional modules off) and `products` (animation and collision modules on) variants
+- `authoring` (JavaScript), `web_procedural` (browser)
 - `component_adapters`
 
-As each component is extracted, flip its status to `implemented`. It is then checked automatically, and the checks fail until its own rules are complete.
+A new component starts as `scaffold` or `absent`; flip it to `implemented` when it is extracted. It is then checked automatically, and the checks fail until its own rules are complete.
 
 ## CI
 
-A focused CI job needs no workflow-specific logic. Run the command, keep the report, and gate on the exit code:
+`tools/ci-component-matrix.py` is the CI entrypoint (the `component-matrix` job in `.github/workflows/tests.yml`). It configures, builds and runs CTest for each component configuration from its own directory, with nothing else in the build:
+
+| Row | Source directory |
+|---|---|
+| `contracts` | `libs/MatterContracts` |
+| `geometry-headless` | `libs/ProceduralGeometry` |
+| `graphics-only` | `libs/MatterGraphics` |
+| `terrain-only` | `libs/TerrainGeneration` |
+| `build` | `libs/ProceduralBuild` |
+| `asset-pipeline` | `libs/AssetPipeline` |
+| `geometry-c` | `bindings/geometry-c` |
+| `host-quickjs` | `MatterEngine3/src/script/portable_host` |
+| `authoring-adapter` | `MatterEngine3/src/component_adapters/authoring` |
+| `terrain-coordinator` | `MatterEngine3/src/component_adapters/terrain_coordinator` |
+
+The gates then run in this order:
+
+1. `source-manifests`: `tools/check-source-manifests.py`.
+2. `dependency-rules`: this checker with `static,duplicates,configure`.
+3. `dependency-fixtures`: the fixture suite below.
+4. `wasm`: `bindings/geometry-c/wasm/build-smoke.py`. This WASM conformance gate uses the native `geometry-c` consumer as its oracle.
+
+The WASM gate needs an Emscripten SDK (`--emsdk` or `EMSDK`). Without one it is NOT RUN, which is never a pass. `--require wasm` turns NOT RUN into a failure. Every row writes a log, and `summary.json` (`matter.component-matrix-run.v1`) lists each row's commands, exit codes and seconds, plus `not_run` and `failed`. Any failed row exits 1.
+
+```bash
+python3 tools/ci-component-matrix.py --jobs 4                                # hosted CI: wasm NOT RUN
+python3 tools/ci-component-matrix.py --jobs 2 --emsdk ~/emsdk --require wasm  # full local run
+python3 tools/ci-component-matrix.py --only asset-pipeline --only dependency-rules
+```
+
+The full native editor and package stay with `tools/ci-windows.ps1`. Wall times are recorded as evidence only and never decide pass or fail.
+
+A focused job can also run the checker alone. Run the command, keep the report, and gate on the exit code:
 
 ```bash
 python3 tools/component-separation/check_dependencies.py --checks static,duplicates --report out/component-deps-static.json
@@ -149,6 +190,7 @@ The configure check is the cheap gate. The build check suits a nightly or path-f
 `tests/component-separation/test_dependency_checks.py` runs the checker against a miniature repository (`tests/component-separation/dependency-fixtures/base`). Each case adds one deliberate violation, and the test asserts the exact violation codes and failing results. It also asserts that every violation code the checker can emit is exercised by some case. Cases that need cmake, Ninja and a compiler are skipped, with the reason, when the toolchain is missing.
 
 ```bash
+python3 tests/component-separation/test_dependency_checks.py                  # no pytest needed
 python3 -m pytest tests/component-separation/test_dependency_checks.py -q
 python3 -m pytest tests/component-separation/test_dependency_checks.py -q -k public_header   # one family
 MATTER_DEPCHECK_KEEP_FIXTURES=1 python3 -m pytest ... -k probe_raw_library -s              # keep the tree

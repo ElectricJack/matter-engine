@@ -149,6 +149,13 @@ unfinished or explicitly deferred. They do not outrank the roadmap.
 
 ## Findings and measurements
 
+- [Historical VT native comparison: VT/VT-RT failures predate the graphics move](findings/vt-native-pair-2026-10-19.md)
+  shows that pre-move `58289c187` and move `90a19c669` fail the same 7 `vt` and
+  12 `vt-rt` assertions natively, so the move is not the cause.
+- [Native wrapper interruption](findings/native-wrapper-interruption-2026-10-19.md)
+  traces the 0xC000013A native-build deaths to a Start-Process launch that
+  handed the build a closable Windows Terminal console, and records the
+  windowless bounded runner that replaces it.
 - [Static-default integration candidate validation](findings/static-default-candidate-validation-2026-09-30.md)
   records the merged main/VG candidate, restored population, native checks,
   and serial captures, with loaded-coverage and visual-parity limits.

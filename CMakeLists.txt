@@ -52,6 +52,9 @@ file(GLOB matter_vulkan_shader_stages
     "${matter_shader_source_dir}/*.rchit"
     "${matter_shader_source_dir}/*.rahit"
 )
+include(libs/MatterGraphics/cmake/NativeRayShaders.cmake)
+list(APPEND matter_vulkan_shader_stages raster.vert gbuffer.frag
+    ${matter_graphics_native_ray_stages})
 list(SORT matter_vulkan_shader_stages)
 
 # MatterEngine3/Makefile remains the canonical logical SPIR-V inventory during
@@ -104,6 +107,10 @@ matter_add_vulkan_shader_pipeline(
     PYTHON_ARGUMENTS ${matter_python_arguments}
     EMBED_SCRIPT "${CMAKE_SOURCE_DIR}/MatterEngine3/tools/embed_spirv.py"
     SHADERS ${matter_vulkan_shader_stages}
+    SOURCE_OVERRIDES
+        ${matter_graphics_native_ray_overrides}
+        "raster.vert|${CMAKE_SOURCE_DIR}/libs/MatterGraphics/shaders/raster.vert"
+        "gbuffer.frag|${CMAKE_SOURCE_DIR}/libs/MatterGraphics/shaders/gbuffer.frag"
     SPECIALIZATIONS
         "raster_skin.vert|raster.vert|MATTER_SKINNED_VERTEX_INPUT"
         "raster_water.vert|raster.vert|MATTER_WATER_ANIMATION_VERTEX_INPUT"
@@ -145,4 +152,17 @@ include(cmake/MatterPackaging.cmake)
 if(BUILD_TESTING)
     add_subdirectory(cmake/tests/third_party_smoke)
     include(cmake/MatterCiTests.cmake)
+
+    # The native Windows runner has one GPU. Concurrent Vulkan processes
+    # contend for its memory, shader compilation and queues, exhausting VT
+    # readiness deadlines even when each test passes alone. Keep CPU tests
+    # parallel while giving every GPU test the same exclusive CTest resource.
+    # Apply this after all root-directory tests have been registered.
+    get_property(matter_registered_tests DIRECTORY PROPERTY TESTS)
+    foreach(matter_test IN LISTS matter_registered_tests)
+        get_property(matter_test_labels TEST "${matter_test}" PROPERTY LABELS)
+        if("vulkan" IN_LIST matter_test_labels OR "gpu" IN_LIST matter_test_labels)
+            set_property(TEST "${matter_test}" APPEND PROPERTY RESOURCE_LOCK matter_gpu)
+        endif()
+    endforeach()
 endif()

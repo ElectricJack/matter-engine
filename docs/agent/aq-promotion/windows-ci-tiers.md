@@ -18,14 +18,17 @@ The prior implementation/evidence is preserved in
 
 ## Active workflow
 
-`.github/workflows/native-windows.yml` is the sole active CI workflow in this
-checkout. PRs target `dev`, `staging` or `main`; pushes trigger only on those three
-branches. AQ branch pushes no longer queue a second native run before their PR.
-Concurrency uses the PR head SHA (otherwise push SHA). Checkout uses that exact
-SHA. Existing runs are allowed to finish; canceling a same-SHA run must not abort
-an unrelated source measurement or leave a partial build as a reusable baseline.
-Required names remain `Linux foundation build and tests` and
-`Native Windows build and tests`. There is no active advisory fast check.
+The merged checkout uses `.github/workflows/tests.yml`; `dev` removed the
+separate `native-windows.yml` producer. AQ branch pushes, explicit dispatch and
+reusable calls retain the existing trigger and per-branch cancellation policy.
+The Linux job runs the attestation verifier followed by `tools/ci-linux.py`,
+which builds/tests the portable foundations and runs mandatory source qualifiers,
+then uploads its complete timing and failure evidence.
+
+The existing native scope job and native runner remain configured by `dev`.
+Windows results are still waived for this delivery; this merge adds no Windows
+completion requirement. The retained tier selection below describes the local
+`tools/ci-windows.ps1` interface, including reusable callers' ref selection.
 
 | Event | Behavioral selection | Source/build lint | Packaging |
 | --- | --- | --- | --- |
