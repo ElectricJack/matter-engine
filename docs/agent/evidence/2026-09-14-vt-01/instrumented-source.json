@@ -1,0 +1,16 @@
+{
+  "stage": "instrumented baseline before queue behavior changes",
+  "executable": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/MatterEditor/build/windows-msvc/editor-vt-trace-baseline.exe",
+  "executable_sha256": "5dc57d0251934d08625ece8bc0b6228b50f7cbf94ecc6762902c511a24b95432",
+  "sha256": {
+    "MatterEditor/src/vt_trace.h": "825ed7af8b26441b2e15f78764935ecf85f7d39f713b320c2b60125c65a21d9b",
+    "MatterEditor/src/main.cpp": "a8d8cf164ed13fca39e1298a7444332d44fb5430f7d7dd5ae37829e58627c6b2",
+    "MatterEngine3/include/matter/gpu_timing_sample.h": "6b4772a97e089eb1189e7b563b149efac02e28419ea46e09e145f3cb04160491",
+    "MatterEngine3/include/matter/world_session.h": "0b21e2276abf6967f11fa80541d2afb14ee1b49a37ff92069a2814b1b16008e9",
+    "MatterEngine3/src/render/vt_residency.h": "eaf092f5f53f62c7db073ab0c9fc80d70b218f6c8190f192e3ab6e4fa38246cd",
+    "MatterEngine3/src/render/vt_residency.cpp": "cc8202082fa45d875d98b515eaa03708b8d2d7be4faf06ba8878939f110481f3",
+    "MatterEngine3/src/render/vk_scene_renderer.h": "ee1386ba09d797219ad0ce237509094e20015133bdd93a0b4f8bfef214f33b98",
+    "MatterEngine3/src/render/vk_scene_renderer.cpp": "5ec3592fb85265e50cf5f1139b05857b51808dcb6c1ba43c0e10bf5b2503bead",
+    "MatterEngine3/src/matter_engine.cpp": "0676aa8538ec05170290aea65a8e03b0ec5a66fdcf5476ac0132513fc66fcd6e"
+  }
+}

@@ -1,0 +1,103 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#extension GL_EXT_buffer_reference2 : require
+#extension GL_EXT_buffer_reference_uvec2 : require
+#define VT_SET 0
+#define VT_POOL_BINDING 0
+#define VT_INDIRECTION_BINDING 1
+#define VT_VARIANTS_BINDING 2
+#define VT_INPUT_BINDING 3
+#include "vt_material_domain.glsl"
+uint vt_pom_footprint_visits;
+uint vt_pom_connected_visits;
+uint vt_seed_triangle_visits, vt_seed_node_visits;
+bool vt_seed_force_linear;
+#define VT_POM_FOOTPRINT_VISIT() vt_pom_footprint_visits++
+#define VT_POM_CONNECTED_VISIT() vt_pom_connected_visits++
+#define VT_SEED_TRIANGLE_VISIT() vt_seed_triangle_visits++
+#define VT_SEED_NODE_VISIT() vt_seed_node_visits++
+#define VT_SEED_FORCE_LINEAR vt_seed_force_linear
+#include "vt_parallax.glsl"
+layout(local_size_x = 64) in;
+struct Probe {
+    vec4 uv;                 // receiver xy, module zw
+    vec4 derivatives;        // module dx.xy, dy.zw (unwrapped)
+    uvec4 slots;             // receiver, module, expected generation, reserved
+};
+struct Result {
+    vec4 albedo, normal, orm, aux, height;
+    uvec4 receiver_request, material_request;
+    uvec4 slots;             // receiver slot, material slot, uses module, height version
+    vec4 metrics;            // decoded height, receiver/module mapped mip, module LOD
+    uvec4 inputs;            // immutable input snapshots + receiver geometry identity
+    vec4 single_lookup;     // control: the ordinary one-load receiver lookup
+    uvec4 visible_feedback; // production pair packing, including primary-input tags
+    vec4 pom; // production chart marcher: ray depth/status/envelope
+};
+layout(set=0,binding=4,std430) readonly buffer Probes { Probe probes[]; };
+layout(set=0,binding=5,std430) writeonly buffer Results { Result results[]; };
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= probes.length()) return;
+    Probe p = probes[i];
+    vt_pom_footprint_visits=vt_pom_connected_visits=0u;
+    vt_seed_triangle_visits=vt_seed_node_visits=0u;
+    vt_seed_force_linear=(p.slots.w & 0x08000000u)!=0u;
+    bool seed_probe=(p.slots.w & 0x10000000u)!=0u;
+    bool mapped_probe=(p.slots.w & 0x80000000u)!=0u;
+    VtAddress receiver = vt_resolve(p.slots.x, p.uv.xy, mapped_probe?p.uv.z:0.0);
+    // Exercise the production safety fallback without corrupting a live table
+    // or releasing a module still owned by published receiver pages.
+    if((p.slots.w & 0x40000000u)!=0u)
+        receiver=vt_finite_material_fallback(vt_resolve_address(p.slots.x,p.uv.xy,0.,false),p.uv.xy);
+    VtMaterialBinding b = vt_resolve_material_domain(receiver, p.slots.y,
+        p.slots.z, p.uv.zw, p.derivatives.xy, p.derivatives.zw);
+    results[i].albedo = vt_material_channel(b, VT_CHANNEL_ALBEDO);
+    results[i].normal = vt_material_channel(b, VT_CHANNEL_NORMAL);
+    results[i].orm = vt_material_channel(b, VT_CHANNEL_ORM);
+    results[i].aux = vt_material_channel(b, VT_CHANNEL_AUX);
+    results[i].height = vt_material_channel(b, VT_CHANNEL_HEIGHT);
+    results[i].receiver_request = vt_feedback_request(b.receiver);
+    results[i].material_request = vt_material_feedback(b);
+    uvec4 visible = vt_material_visible_feedback(b);
+    visible.w = vt_visible_input_word(visible.w, p.slots.w) | VT_VISIBLE_COMPOSED_HEIGHT;
+    results[i].visible_feedback = visible;
+    results[i].slots = uvec4(b.receiver.physical_slot, b.material.physical_slot,
+                           (b.uses_module || b.material.module_request.x!=0u) ? 1u : 0u, b.material.height_version);
+    results[i].metrics = vec4(vt_material_height_m(b), b.receiver.mapped_mip,
+        (b.material.module_request.x!=0u ? b.material.material_mapped_mip : b.material.mapped_mip), b.uses_module ?
+        vt_desired_mip(p.slots.y, p.derivatives.xy, p.derivatives.zw) : 0.0);
+    results[i].pom=vec4(0);
+    if (seed_probe && receiver.valid) {
+        VtWalkContext ctx;
+        ctx.metadata_page=receiver.physical_slot;ctx.metadata_pointer=uvec2(0);ctx.slot=p.slots.x;
+        VtVariantRecord record=vt_variants[ctx.slot-1u];
+        ctx.atlas_size=vec2(record.atlas_w,record.atlas_h);
+        ctx.root_to_owner=mat3(1);ctx.offset=vec3(0);ctx.root_tpm=1.0/p.derivatives.w;
+        vt_walk_neighbor_request=uvec4(0);vt_walk_missing_neighbor=false;vt_walk_root_slot=ctx.slot;
+        uint chart=vt_aux_chart(uvec4(vt_sample_aux(receiver)*255.0+0.5));
+        VtWalkPoint point;
+        if(vt_walk_seed(ctx,chart,vec3(p.uv.x*2.0,p.uv.y,0),p.derivatives.w,point))
+            results[i].pom=vec4(float(point.triangle),1,point.bary.xy);
+    }
+    if (mapped_probe) {
+        VtParallaxSample hit;
+        if((p.slots.w & 0x20000000u)!=0u)
+            hit=vt_parallax_sample(p.slots.x,p.uv.xy,p.uv.z,p.derivatives.xy,
+                p.derivatives.z,p.derivatives.w,p.uv.w,64,10,.2,.2,uintBitsToFloat(p.slots.z),
+                vec3(p.uv.x*2.0,p.uv.y,0.0),vec3(0,0,-1));
+        else hit=vt_parallax_chart_sample(p.slots.x,p.uv.xy,p.uv.z,p.derivatives.xy,
+            p.derivatives.z,p.derivatives.w,.0001,64,10,.2,.2,1.0);
+        results[i].pom=vec4(hit.ray_t,float(hit.status),vt_height_envelope(receiver));
+    }
+    results[i].inputs = uvec4(b.receiver.input_snapshot, b.material.input_snapshot,
+        vt_page_inputs[b.receiver.physical_slot].charts);
+    results[i].single_lookup = b.uses_module ? vt_sample_channel(
+        vt_resolve(p.slots.y, fract(p.uv.zw),
+            vt_desired_mip(p.slots.y, p.derivatives.xy, p.derivatives.zw)),
+        VT_CHANNEL_ALBEDO) : vec4(0);
+    if((p.slots.w & 0x20000000u)!=0u)
+        results[i].single_lookup=vec4(float(vt_pom_footprint_visits),float(vt_pom_connected_visits),0,0);
+    if(seed_probe)
+        results[i].single_lookup=vec4(float(vt_seed_triangle_visits),float(vt_seed_node_visits),0,0);
+}

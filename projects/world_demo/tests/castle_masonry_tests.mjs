@@ -10,8 +10,11 @@ function dataUrl(source) {
   return `data:text/javascript;base64,${Buffer.from(source).toString('base64')}`;
 }
 const primitivesUrl = dataUrl(readFileSync(new URL('../shared-lib/castle_primitives.js', import.meta.url), 'utf8'));
+const stockUrl = dataUrl(readFileSync(new URL('../shared-lib/castle_stock.js', import.meta.url), 'utf8')
+  .replace("'shared-lib/castle_primitives'", JSON.stringify(primitivesUrl)));
 const masonrySource = readFileSync(new URL('../shared-lib/castle_masonry.js', import.meta.url), 'utf8')
-  .replace("'shared-lib/castle_primitives'", JSON.stringify(primitivesUrl));
+  .replace("'shared-lib/castle_primitives'", JSON.stringify(primitivesUrl))
+  .replace("'shared-lib/castle_stock'", JSON.stringify(stockUrl));
 const M = await import(dataUrl(masonrySource));
 const P = await import(primitivesUrl);
 

@@ -209,6 +209,62 @@ int main() {
         std::remove(path);
     }
 
+    // Exhaustion must not attribute unrelated work to the final valid name.
+    // This occurs in real editor captures when late VT counters exceed the
+    // registry budget. Existing names must still resolve after saturation.
+    {
+        const int overflow_parent = register_zone("capacity.parent");
+        const int overflow_child = register_zone("capacity.child");
+        while (zone_count() < kMaxZones - 1)
+            register_zone(("capacity.zone." + std::to_string(zone_count())).c_str());
+        while (counter_count() < kMaxCounters - 1)
+            register_counter(("capacity.counter." + std::to_string(counter_count())).c_str());
+        const int last_zone = register_zone("capacity.last.zone");
+        const int last_counter = register_counter("capacity.last.counter");
+        const int rejected_zone = register_zone("capacity.excess.zone");
+        const int rejected_counter = register_counter("capacity.excess.counter");
+        CHECK(rejected_zone == -1, "zone overflow returns an invalid id");
+        CHECK(rejected_counter == -1, "counter overflow returns an invalid id");
+        CHECK(register_zone("alpha") == a, "existing zone survives full registry");
+        CHECK(register_counter("capacity.last.counter") == last_counter,
+              "existing counter survives full registry");
+        CHECK(zone_count() == kMaxZones && counter_count() == kMaxCounters,
+              "registries stay bounded after overflow");
+        frame_mark();
+        add_ns(last_zone, 7);
+        add_ns(rejected_zone, 9000);
+        add_count(last_counter, 11);
+        add_count(rejected_counter, 9000);
+        frame_mark();
+        FrameRecord r[1];
+        CHECK(copy_recent(r, 1) == 1, "overflow frame is available");
+        CHECK(r[0].zone_ns[last_zone] == 7, "overflow cannot contaminate a valid zone");
+        CHECK(r[0].counter[last_counter] == 11, "overflow cannot contaminate a valid counter");
+        {
+            Scope parent(overflow_parent);
+            Scope ignored(rejected_zone);
+            Scope child(overflow_child);
+        }
+        CHECK(zone_parent(overflow_child) == overflow_parent,
+              "rejected scope leaves valid nesting intact");
+        const char* path = "profile_overflow_test.json";
+        CHECK(dump_chrome_trace(path), "overflow trace writes a file");
+        std::FILE* rf = std::fopen(path, "rb");
+        CHECK(rf != nullptr, "overflow trace is readable");
+        if (rf) {
+            std::string body;
+            char buf[4096];
+            size_t got;
+            while ((got = std::fread(buf, 1, sizeof(buf), rf)) > 0) body.append(buf, got);
+            std::fclose(rf);
+            CHECK(body.find("\"rejected_zone_registrations\":1") != std::string::npos,
+                  "trace discloses missing zone registrations");
+            CHECK(body.find("\"rejected_counter_registrations\":1") != std::string::npos,
+                  "trace discloses missing counter registrations");
+        }
+        std::remove(path);
+    }
+
     if (g_failures == 0)
         std::printf("ALL PASS (ProfileLib P0)\n");
     else

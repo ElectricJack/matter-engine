@@ -1,0 +1,15 @@
+'\\wsl.localhost\Ubuntu\home\jkern\dev\matter-engine-cpp\.aq\worktrees\slot-0'
+CMD.EXE was started with the above path as the current directory.
+UNC paths are not supported.  Defaulting to Windows directory.
+**********************************************************************
+** Visual Studio 2022 Developer Command Prompt v17.14.7
+** Copyright (c) 2025 Microsoft Corporation
+**********************************************************************
+CMake Error: Could not read presets from C:/Windows:
+File not found: C:/Windows/CMakePresets.json
+Native build failed: 1
+At \\wsl.localhost\Ubuntu\home\jkern\dev\matter-engine-cpp\.aq\worktrees\slot-0\tools\ci-windows.ps1:26 char:32
++ ...  ($LASTEXITCODE -ne 0) { throw "Native build failed: $LASTEXITCODE" }
++                              ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : OperationStopped: (Native build failed: 1:String) [], RuntimeException
+    + FullyQualifiedErrorId : Native build failed: 1

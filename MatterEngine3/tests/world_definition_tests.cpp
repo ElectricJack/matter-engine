@@ -6,12 +6,20 @@
 #include "../src/hydrology/river_geometry.h"
 #include "../src/terrain_river_overlay.h"
 #include "../src/tileset_slot_allocator.h"
+#include "../src/script_host.h"
+#include "../src/render/vt_surface_tape.h"
+#include "../src/render/part_store.h"
+#include "../src/part_flatten.h"
+#ifndef MATTER_WORLD_SOURCE_QUALIFICATION
+#include "embedded_shared_modules.h"
+#endif
 
 extern "C" {
 #include "material_registry.h"
 }
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <filesystem>
@@ -25,10 +33,34 @@ namespace fs = std::filesystem;
 
 namespace {
 
+struct ScopedCacheRootEnv {
+    bool existed = false;
+    std::string previous;
+    explicit ScopedCacheRootEnv(const char* value) {
+        if (const char* old = std::getenv("MATTER_CACHE_ROOT")) {
+            existed = true; previous = old;
+        }
+        set(value);
+    }
+    static void set(const char* value) {
+#ifdef _WIN32
+        _putenv_s("MATTER_CACHE_ROOT", value ? value : "");
+#else
+        if (value) setenv("MATTER_CACHE_ROOT", value, 1);
+        else unsetenv("MATTER_CACHE_ROOT");
+#endif
+    }
+    ~ScopedCacheRootEnv() { set(existed ? previous.c_str() : nullptr); }
+};
+
 struct Fixture {
     fs::path root;
+#ifndef MATTER_WORLD_SOURCE_QUALIFICATION
+    matter::SourceSnapshot::Files files;
+#endif
 
     Fixture() {
+#ifdef MATTER_WORLD_SOURCE_QUALIFICATION
         const auto stamp = std::chrono::high_resolution_clock::now()
                                .time_since_epoch().count();
         root = fs::temp_directory_path() /
@@ -36,18 +68,28 @@ struct Fixture {
         fs::create_directories(root / "objects");
         fs::create_directories(root / "project-shared");
         fs::create_directories(root / "engine-shared");
+#else
+        static std::atomic<unsigned> next_id{0};
+        root = fs::path("/matter-world-definition") / std::to_string(next_id++);
+#endif
     }
 
     ~Fixture() {
+#ifdef MATTER_WORLD_SOURCE_QUALIFICATION
         std::error_code ignored;
         fs::remove_all(root, ignored);
+#endif
     }
 
     fs::path write(const fs::path& relative, const std::string& contents) {
         const fs::path path = root / relative;
+#ifdef MATTER_WORLD_SOURCE_QUALIFICATION
         fs::create_directories(path.parent_path());
         std::ofstream out(path, std::ios::binary);
         out << contents;
+#else
+        files[matter::SourceSnapshot::key(path.string())] = contents;
+#endif
         return path;
     }
 
@@ -57,12 +99,35 @@ struct Fixture {
         result.objects_dir = (root / "objects").string();
         result.project_shared_lib_dir = (root / "project-shared").string();
         result.engine_shared_lib_dir = (root / "engine-shared").string();
+#ifndef MATTER_WORLD_SOURCE_QUALIFICATION
+        result.source_snapshot = std::make_shared<const matter::SourceSnapshot>(files);
+#endif
         result.world_seed = 77;
         result.canonical_params_json = "{\"difficulty\":3}";
         return result;
     }
 };
 
+void test_lexical_project_cache_identity() {
+#ifdef _WIN32
+    const fs::path project("C:/matter-cache-identity/project");
+#else
+    const fs::path project("/matter-cache-identity/project");
+#endif
+    ScopedCacheRootEnv env((project.parent_path() / "external").string().c_str());
+    auto cache = [](const fs::path& path) {
+        return viewer::project_bake_cache_root(path, "Demo", true);
+    };
+    CHECK(cache(project / "unused" / "..") == cache(project),
+          "RAM project aliases share cache identity");
+    CHECK(cache(project / "") == cache(project),
+          "RAM project trailing separator shares cache identity");
+    const auto root = project.root_path();
+    CHECK(cache(root / "unused" / "..") == cache(root),
+          "cache identity normalization preserves the filesystem root");
+}
+
+#ifdef MATTER_WORLD_SOURCE_QUALIFICATION
 void test_project_layout_derives_runtime_paths() {
     Fixture fixture;
     fs::create_directories(fixture.root / "worlds");
@@ -178,6 +243,59 @@ void test_scene_object_shadows_project_object() {
           "an unresolvable module reports empty, not a composed guess");
 }
 
+void test_grouped_scene_and_object_resolution() {
+    Fixture fixture;
+    const auto script = fixture.write("scenes/texturing/bricks/BrickProof/BrickProof.js", "class BrickProof extends World {}\n");
+    const auto local = fixture.write("scenes/texturing/bricks/BrickProof/objects/fixtures/Brick.js", "// local brick");
+    fixture.write("objects/masonry/Brick.js", "// shared brick");
+    const auto rock = fixture.write("objects/terrain/Rock.js", "// shared rock");
+    fixture.write("scenes/.hidden/Hidden/Hidden.js", "// hidden scene");
+    fixture.write("scenes/texturing/bricks/BrickProof/objects/Fake/Fake.js", "// object, not scene");
+    fixture.write("scenes/incomplete/Absent/props.json", "{}");
+    fixture.write("objects/.hidden/Rock.js", "// ignored");
+    const auto scripts = matter::project_layout::scene_scripts(fixture.root / "scenes");
+    CHECK(scripts == std::vector<fs::path>{script}, "discover grouped scenes without descending into scene content or hidden folders");
+    const auto cfg = viewer::LocalProviderConfig::for_project(fixture.root.string(), "BrickProof", "");
+    CHECK(fs::path(cfg.world_path) == script, "bare scene identity resolves through groups");
+    CHECK(fs::path(cfg.scene_dir) == script.parent_path(), "settings stay with the grouped scene");
+    CHECK(fs::path(cfg.cache_root) == (fixture.root / ".cache/BrickProof"), "grouping preserves cache identity");
+    CHECK(fs::path(cfg.resolve_object_path("Brick")) == local, "nested scene-local module shadows shared module");
+    CHECK(fs::path(cfg.resolve_object_path("Rock")) == rock, "grouped shared module resolves");
+    CHECK(matter::project_layout::object_files(fixture.root / "objects").size() == 2, "hidden object folders are skipped");
+
+    script_host::ScriptHost host;
+    part_graph::FileModuleResolver resolver(host, std::vector<std::string>{cfg.scene_objects_dir, cfg.objects_dir});
+    std::string source;
+    CHECK(resolver.load_source("Brick", source) && source == "// local brick", "file resolver respects grouped local precedence");
+    CHECK(fs::path(resolver.source_path_for("Rock")) == rock, "resolver and provider agree on shared paths");
+    part_graph::FileModuleResolver expanded(host, cfg.object_roots());
+    CHECK(expanded.load_source("Brick", source) && source == "// local brick", "already-expanded roots preserve precedence");
+    part_graph::FileModuleResolver shared(host, cfg.objects_dir);
+    CHECK(shared.load_source("Rock", source) && source == "// shared rock", "single-root callers discover groups too");
+
+    const auto another_rock = fixture.write("objects/another/Rock.js", "// ambiguous");
+    matter::project_layout::Diagnostics diag;
+    const auto roots = matter::project_layout::object_roots({cfg.scene_objects_dir, cfg.objects_dir}, &diag);
+    CHECK(diag.duplicates.size() == 1 && diag.duplicates[0].find("Duplicate object 'Rock'") != std::string::npos,
+          "duplicate module names inside a tier are reported");
+    CHECK(!roots.empty(), "duplicate module names do not abort root discovery");
+    CHECK(fs::path(resolver.source_path_for("Rock")) == rock, "the first Rock in sorted order still resolves");
+    part_graph::FileModuleResolver rediscovered(host, std::vector<std::string>{cfg.scene_objects_dir, cfg.objects_dir});
+    CHECK(fs::path(rediscovered.source_path_for("Rock")) == another_rock,
+          "rediscovery picks the first Rock in sorted directory order");
+    fixture.write("scenes/other/BrickProof/BrickProof.js", "// ambiguous");
+    diag = {};
+    const auto deduped = matter::project_layout::scene_scripts(fixture.root / "scenes", &diag);
+    CHECK(diag.duplicates.size() == 1 && diag.duplicates[0].find("Duplicate scene 'BrickProof'") != std::string::npos,
+          "duplicate scene identities are reported");
+    CHECK(deduped == std::vector<fs::path>{fixture.root / "scenes/other/BrickProof/BrickProof.js"},
+          "the first BrickProof in sorted order wins and the loser is not listed");
+    bool threw = false;
+    try { (void)viewer::LocalProviderConfig::for_project(fixture.root.string(), "BrickProof", ""); }
+    catch (const std::exception&) { threw = true; }
+    CHECK(!threw, "a duplicate scene never throws out of for_project");
+}
+
 // Phase 1 (repo-layout-and-cache-consolidation plan) cache-leak fix:
 // LocalProviderConfig::for_project() must never hand back a relative
 // cache_root. Before the fix, cache_root was built by appending
@@ -192,6 +310,71 @@ void test_scene_object_shadows_project_object() {
 // at the moment of each write, not next to the project -- the exact bug
 // behind the stray parts/, imposters/, and libs/MatterSurfaceLib/parts/
 // directories this phase cleans up.
+void test_external_project_cache_root() {
+    Fixture fixture;
+    const fs::path first = fixture.root / "project-a";
+    const fs::path second = fixture.root / "project-b";
+    fs::create_directories(first);
+    fs::create_directories(second);
+    const fs::path base = fixture.root / "external";
+    ScopedCacheRootEnv env(base.string().c_str());
+    auto config = [&](const fs::path &project, const char *world) {
+        return viewer::LocalProviderConfig::for_project(project.string(), world, "");
+    };
+    const auto a = config(first, "Demo"), b = config(second, "Demo"), c = config(first, "Other");
+    CHECK(a.cache_root != b.cache_root, "external cache isolates projects");
+    CHECK(a.cache_root != c.cache_root, "external cache isolates worlds");
+    const fs::path path(a.cache_root);
+    CHECK(path.is_absolute() && path.filename() == "Demo",
+          "external cache is absolute and world scoped");
+    CHECK(path.parent_path().filename().string().size() == 16 &&
+              path.parent_path().parent_path() == fs::weakly_canonical(base) / "projects",
+          "external cache uses stable project digest below selected base");
+    CHECK(config(first / "unused" / "..", "Demo").cache_root == a.cache_root,
+          "lexical project aliases share cache identity");
+    CHECK(a.project_dir == fs::absolute(first).string(),
+          "cache normalization preserves source project path");
+    ScopedCacheRootEnv::set("../relative-external");
+    const auto relative = config(first, "Demo");
+    CHECK(fs::path(relative.cache_root).parent_path().parent_path() ==
+              fs::weakly_canonical(fixture.root / "relative-external") / "projects",
+          "relative external base is anchored to opened project");
+    {
+        struct CwdGuard {
+            fs::path saved = fs::current_path();
+            ~CwdGuard() {
+                std::error_code ignored;
+                fs::current_path(saved, ignored);
+            }
+        } guard;
+        fs::current_path(second);
+        CHECK(config(first, "Demo").cache_root == relative.cache_root,
+              "cwd changes cannot redirect project-relative external cache");
+    }
+    bool rejected = false;
+    try {
+        (void)config(first, "../escape");
+    } catch (const std::invalid_argument &) {
+        rejected = true;
+    }
+    CHECK(rejected, "external world component cannot escape project isolation");
+#ifdef _WIN32
+    ScopedCacheRootEnv::set("C:relative-cache");
+    rejected = false;
+    try { (void)config(first, "Demo"); }
+    catch (const std::invalid_argument&) { rejected = true; }
+    CHECK(rejected, "drive-relative cache base cannot depend on hidden drive cwd");
+#endif
+    for (const char *blank : {"", " \t\r\n"}) {
+        ScopedCacheRootEnv::set(blank);
+        CHECK(config(first, "Demo").cache_root == (first / ".cache" / "Demo").string(),
+              "blank override preserves default project cache");
+    }
+    ScopedCacheRootEnv::set(nullptr);
+    CHECK(config(first, "Demo").cache_root == (first / ".cache" / "Demo").string(),
+          "unset override preserves default project cache");
+}
+
 void test_relative_project_dir_yields_absolute_cache_root() {
     const std::string relative_project = "world_definition_relcache_fixture";
     const fs::path expected_project_abs = fs::absolute(fs::path(relative_project));
@@ -215,6 +398,8 @@ void test_relative_project_dir_yields_absolute_cache_root() {
     CHECK(cfg_from_absolute.cache_root == cfg.cache_root,
           "an already-absolute project_dir produces the identical cache_root");
 }
+
+#endif // MATTER_WORLD_SOURCE_QUALIFICATION
 
 void test_rejects_non_world_base_with_location_and_property() {
     Fixture fixture;
@@ -576,28 +761,360 @@ bool nearly_equal(float a, float b) {
 //
 // The loader gets its OWN JS context with its OWN prelude -- separate from
 // part_base.js.h and world_base.js.h -- and this is the only gate on it.
+void test_surface_receiver_authoring() {
+    Fixture fixture;
+    for(const auto* value:{"'ContactReceiver'","[7]","['']","['R','R']",
+                           "Array.from({length:65},(_,i)=>'R'+i)"}) {
+        const auto path=fixture.write("Receiver.js",std::string("class Receiver extends World { static streaming={surfaceReceivers:")+
+            value+"}; }");
+        matter::WorldDefinition definition;matter::WorldLoadError error;
+        CHECK(!matter::load_world_definition(fixture.desc(path),definition,error),
+              "world receiver selection: malformed or ambiguous module lists fail closed");
+    }
+    const auto path=fixture.write("Receiver.js","class Receiver extends World {static streaming={surfaceReceivers:['Rock','Wall']};}");
+    matter::WorldDefinition definition;matter::WorldLoadError error;
+    CHECK(matter::load_world_definition(fixture.desc(path),definition,error) &&
+          definition.settings.surface_receiver_modules.size()==2,
+          "world receiver selection: explicit modules survive native world loading");
+}
+
+#ifdef MATTER_WORLD_SOURCE_QUALIFICATION
+void test_surface_contact_material() {
+    const fs::path project = "../../projects/world_demo";
+    const fs::path path = project / "scenes/texturing/terrain/SurfaceContactProof/SurfaceContactProof.js";
+    matter::WorldLoadDesc desc;
+    desc.world_path=path.string(); desc.objects_dir=(project/"objects").string();
+    desc.project_shared_lib_dir=(project/"shared-lib").string(); desc.engine_shared_lib_dir="../shared-lib";
+    matter::WorldDefinition definition; matter::WorldLoadError load_error;
+    const bool loaded=matter::load_world_definition(desc,definition,load_error);
+    CHECK(loaded,load_error.message.c_str()); if(!loaded) return;
+    CHECK(definition.settings.terrain_texels_per_meter==128,
+          "contact proof: explicit bounded terrain review density is loaded");
+    CHECK(definition.settings.surface_receiver_modules==std::vector<std::string>{"ContactReceiver"},
+          "contact proof: placed receivers explicitly opt into the world source");
+    CHECK(definition.roots.empty() && tileset::plan_detail_bakes({},definition.materials).empty(),
+          "contact proof: streaming places sector children without root atlas or settling jobs");
+    std::ifstream input(path);std::string source((std::istreambuf_iterator<char>(input)),{});
+    script_host::ScriptHost host;
+    host.set_shared_lib_roots({desc.project_shared_lib_dir,desc.engine_shared_lib_dir});
+    std::ifstream sector_file(path.parent_path()/"objects/WorldSector.js");
+    const std::string sector((std::istreambuf_iterator<char>(sector_file)),{});
+    const auto children=host.eval_requires(sector,"{}");
+    CHECK(children.size()==4,"contact proof: sector installs the four distinct receiver variants");
+    const auto enabled=host.eval_world(source,"{}");
+    const auto call=source.find("surfaceContact(s)");
+    CHECK(call!=std::string::npos,"contact proof: explicit layered recipe");if(call==std::string::npos)return;
+    source.replace(call,std::strlen("surfaceContact(s)"),"surfaceContact(s, false)");
+    const auto disabled=host.eval_world(source,"{}");
+    CHECK(enabled.ok && disabled.ok,"contact proof: native JS authors layered and base-only recipes");
+    if(!enabled.ok || !disabled.ok)return;
+    terrain_field::SurfaceProgram layer_program,base_program;std::string error;
+    const bool parsed=terrain_field::SurfaceProgram::parse(enabled.surface_program,layer_program,error) &&
+                      terrain_field::SurfaceProgram::parse(disabled.surface_program,base_program,error);
+    CHECK(parsed,error.c_str());if(!parsed)return;
+    vt::VtSurfaceTapePack packed;
+    CHECK(vt::vt_pack_surface_tape(layer_program,true,packed),"contact proof: actual GPU budget fits");
+    terrain_field::SurfaceRuntime layers(layer_program),base(base_program);
+    const float identity[]={1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1};
+    terrain_field::SurfaceWorldContext world;world.local_to_world=identity;
+    const float n[]={0,1,0};float largest_deposit=0,smallest=1,largest=-1;
+    for(uint32_t id:{16u,11u,9u,17u}) for(int i=0;i<96;++i) {
+        const float p[]={6.f+(i%12)*.33f,.1f+(i/12)*.085f,8.5f};
+        terrain_field::SurfaceSourceSample a,b;
+        CHECK(layers.source_at(p,n,&world,.005f,a,id) && base.source_at(p,n,&world,.005f,b,id),
+              "contact proof: material evaluates on original receiver");
+        CHECK(a.height_m>=layer_program.source.height_min && a.height_m<=layer_program.source.height_max,
+              "contact proof: composed metre displacement stays inside declared POM bounds");
+        if(id==17) {
+            CHECK(a.height_m==b.height_m && std::equal(a.albedo,a.albedo+3,b.albedo) && std::equal(a.orm,a.orm+3,b.orm),
+                  "contact proof: overlapping excluded receiver receives no channel changes");
+        } else {
+            CHECK(a.height_m>=b.height_m-1e-7f,"contact proof: dirt and moss are positive deposits");
+            largest_deposit=std::max(largest_deposit,a.height_m-b.height_m);
+        }
+        smallest=std::min(smallest,a.height_m);largest=std::max(largest,a.height_m);
+        for(const auto& outside:std::vector<std::array<float,3>>{{8,.12f,5},{8,2.4f,8.5f},{12,.12f,8.5f}}) {
+            layers.source_at(outside.data(),n,&world,.005f,a,id);base.source_at(outside.data(),n,&world,.005f,b,id);
+            CHECK(a.height_m==b.height_m && std::equal(a.albedo,a.albedo+3,b.albedo) && std::equal(a.orm,a.orm+3,b.orm),
+                  "contact proof: projection depth, height and lateral bounds prevent leakage");
+        }
+    }
+    CHECK(largest_deposit>.001f && largest-smallest>.008f,
+          "contact proof: retained substrate relief and measurable moss/dirt POM thickness");
+    const float translated[]={1,0,0,8,0,1,0,0,0,0,1,8,0,0,0,1};
+    auto neighbor=world;neighbor.local_to_world=translated;
+    const float global[]={8,.15f,8.5f},local[]={0,.15f,.5f};
+    for(uint32_t id:{16u,11u,9u}) {
+        terrain_field::SurfaceSourceSample a,b;
+        layers.source_at(global,n,&world,.005f,a,id);layers.source_at(local,n,&neighbor,.005f,b,id);
+        CHECK(a.height_m==b.height_m && std::equal(a.albedo,a.albedo+3,b.albedo) && std::equal(a.orm,a.orm+3,b.orm),
+              "contact proof: translated objects evaluate identical world fields");
+    }
+    std::printf("CONTACT_MATERIAL gpu_ops=%zu height=[%.6f,%.6f] max_deposit_m=%.6f\n",
+                packed.ops.size(),smallest,largest,largest_deposit);
+}
+
+void test_mountain_rock_catalog() {
+    const fs::path project="../../projects/world_demo";
+    const auto read=[](const fs::path& p) {std::ifstream f(p);return std::string(std::istreambuf_iterator<char>(f),{});};
+    const auto source=read(project/"objects/terrain/MountainRock.js");
+    const auto sector=read(project/"scenes/streaming/StreamMountain/objects/WorldSector.js");
+    CHECK(!source.empty()&&!sector.empty(),"mountain rock sources exist");
+    if(source.empty()||sector.empty())return;
+    script_host::ScriptHost host;host.set_shared_lib_roots({(project/"shared-lib").string(),"../shared-lib"});
+    auto requires_a=host.eval_requires(sector,"{\"tx\":-2,\"tz\":3,\"sectorSize\":64}");
+    auto requires_b=host.eval_requires(sector,"{\"tx\":8,\"tz\":-4,\"sectorSize\":256}");
+    CHECK(requires_a.size()==52 && requires_b.size()==52,"mountain uses forty-eight rock prototypes and four evergreen assemblies");
+    std::set<std::string> variants;
+    for(size_t i=0;i<requires_a.size()&&i<requires_b.size();++i) {
+        CHECK(requires_a[i].module_specifier==requires_b[i].module_specifier &&
+              requires_a[i].params_json==requires_b[i].params_json,"rock catalog independent of streaming tile identity");
+        if(requires_a[i].module_specifier=="MountainRock")variants.insert(requires_a[i].params_json);
+    }
+    CHECK(variants.size()==48,"twelve native silhouettes in four physical size classes");
+    Fixture fixture;script_host::BakeOptions opts;opts.retain_geometry=true;
+    opts.parts_dir=(fixture.root/"parts").string();fs::create_directories(opts.parts_dir);
+    part_graph::HostBaker ladder_baker(host,opts.parts_dir);
+    size_t triangle_count=0;
+    double bake_ms=0,chart_stage_ms=0;
+    for(const auto& params:variants) {
+        const auto values=part_graph::params_from_json(params);
+        const float reference=float(values.at("referenceSizeM").num);
+        const auto started=std::chrono::steady_clock::now();
+        const auto baked=host.bake_source(source,params,opts);
+        bake_ms+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-started).count();
+        CHECK(baked.error.ok,baked.error.message.c_str());
+        CHECK(baked.geometry&&baked.geometry->blas,"rock native bake retains render/collision geometry");
+        if(!baked.geometry||!baked.geometry->blas)continue;
+        CHECK(baked.geometry->render_policy.vt_texels_per_meter==192,
+              "mountain rocks carry production density without a renderer override");
+        std::vector<Tri> triangles;baked.geometry->blas->generate_triangle_data(triangles);
+        CHECK(triangles.size()>=100&&triangles.size()<400,"native rock geometry stays within its silhouette budget");
+        double volume=0;
+        for(const auto& tri:triangles) {
+            for(const auto& p:{tri.vertex0,tri.vertex1,tri.vertex2})
+                CHECK(std::isfinite(p.x)&&std::isfinite(p.y)&&std::isfinite(p.z)&&p.y>=-.00001f&&
+                      p.x*p.x+p.y*p.y+p.z*p.z<2.25f*reference*reference,"native rock preserves its ground datum and conservative clearance");
+            const auto& a=tri.vertex0;const auto& b=tri.vertex1;const auto& c=tri.vertex2;
+            volume+=(a.x*(b.y*c.z-b.z*c.y)+a.y*(b.z*c.x-b.x*c.z)+a.z*(b.x*c.y-b.y*c.x))/6.;
+        }
+        CHECK(volume/std::pow(reference,3)>.08&&volume/std::pow(reference,3)<2.,"native rock has outward solid volume");
+        triangle_count+=triangles.size();
+        {
+            viewer::PartStore store(opts.parts_dir);
+            const auto stage_started=std::chrono::steady_clock::now();
+            auto staged=store.stage_from_bake(baked.resolved_hash,*baked.geometry);
+            chart_stage_ms+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-stage_started).count();
+            CHECK(staged.ok && !staged.lp.lod_charts.empty() && !staged.lp.lod_charts[0].charts.empty(),
+                  "physical rock classes produce nonempty VT charts");
+            float minimum=192,maximum=0;
+            if(!staged.lp.lod_charts.empty())for(const auto& chart:staged.lp.lod_charts[0].charts) {
+                minimum=std::min(minimum,chart.texels_per_meter);maximum=std::max(maximum,chart.texels_per_meter);
+            }
+            CHECK(minimum>=128 && maximum<=192,"all physical rock classes retain useful finest chart density");
+            std::printf("MOUNTAIN_ROCK_DENSITY shape=%.0f seed=%.0f reference_m=%.1f finest_tpm=[%.3f,%.3f]\n",
+                        values.at("shape").num,values.at("seed").num,reference,minimum,maximum);
+        }
+        if(values.at("seed").num==0) {
+            CHECK(ladder_baker.bake_static_lods(source,values,{},{},{},baked.resolved_hash),
+                  "rock derives its authored ladder from the detailed bake");
+            part_asset::StaticLodPlan plan;
+            CHECK(part_asset::load_static_lod_plan(opts.parts_dir+"/"+
+                  part_asset::cache_path_static_lods(baked.resolved_hash),baked.resolved_hash,plan) &&
+                  plan.level_hashes.size()==3 &&
+                  std::all_of(plan.level_hashes.begin(),plan.level_hashes.end(),
+                    [&](uint64_t hash){return hash==baked.resolved_hash;}),
+                  "rock ladder reuses one detailed geometry source instead of rebuilding budget variants");
+            const auto started=std::chrono::steady_clock::now();
+            const auto flat=part_flatten::flatten_part(opts.parts_dir,baked.resolved_hash);
+            CHECK(flat.ok,flat.error.c_str());
+            viewer::PartStore store(opts.parts_dir);
+            // Streamed asset installation loads the flattened artifact here;
+            // stage_load is the compositional/terrain worker path and would
+            // synthesize its own ratio ladder instead of reading this plan.
+            const auto* loaded=store.get_or_load(baked.resolved_hash);
+            CHECK(loaded && loaded->lod_blas.size()==3 && loaded->lod_mesh_data.size()>=3 &&
+                  loaded->lod_charts.size()==3,"rock loads three real mesh representations");
+            if(loaded && loaded->lod_mesh_data.size()>=3 && loaded->lod_charts.size()==3) {
+                size_t counts[3]{};
+                for(unsigned i=0;i<3;++i)counts[i]=loaded->lod_mesh_data[i].indices.size()/3;
+                CHECK(counts[0]==triangles.size() && counts[1]<counts[0] && counts[2]<counts[1] && counts[2]>0,
+                      "rock preserves the detailed silhouette and reduces triangles in both distant representations");
+                // Production currently charts each mesh representation.
+                // MATTER_VT_UNIFY remains an experimental engine-wide opt-in;
+                // this asset does not silently enable it or assume page reuse.
+                for(const auto& atlas:loaded->lod_charts)
+                    CHECK(!atlas.charts.empty() &&
+                          std::all_of(atlas.charts.begin(),atlas.charts.end(),
+                            [](const auto& chart){return chart.texels_per_meter>=128;}),
+                          "every rock representation retains a valid material atlas at useful density");
+                std::printf("MOUNTAIN_ROCK_LOD shape=%.0f reference_m=%.1f triangles=%zu,%zu,%zu stage_ms=%.3f\n",
+                    values.at("shape").num,reference,counts[0],counts[1],counts[2],
+                    std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-started).count());
+            }
+        }
+    }
+    std::printf("MOUNTAIN_ROCKS prototypes=%zu triangles=%zu bake_ms=%.3f chart_stage_ms=%.3f\n",
+        variants.size(),triangle_count,bake_ms,chart_stage_ms);
+    std::set<uint64_t> materials;
+    std::map<int,std::vector<float>> metric_heights;
+    for(const auto& params:variants) {
+        script_host::EvaluatedDirectSurface direct;script_host::EvaluatedFiniteSurface finite;
+        script_host::BakeError error;
+        const bool ok=host.evaluate_part_surface(source,params,direct,finite,error);
+        CHECK(ok,error.message.c_str());if(!ok)continue;
+        CHECK(direct.present && !finite.present,"rock owns a direct local source without finite geometry preparation");
+        terrain_field::SurfaceProgram program;std::string why;vt::VtSurfaceTapePack packed;
+        const bool parsed=terrain_field::SurfaceProgram::parse(direct.program,program,why);
+        CHECK(parsed,why.c_str());if(!parsed)continue;
+        CHECK(vt::vt_pack_surface_tape(program,false,packed),packed.err.c_str());
+        terrain_field::SurfaceRuntime runtime(program);
+        const auto values=part_graph::params_from_json(params);
+        const int silhouette=int(values.at("shape").num)*4+int(values.at("seed").num);
+        auto& reference_heights=metric_heights[silhouette];
+        const bool first_size=reference_heights.empty();
+        float lo=1,hi=-1,rendered_lo=1,rendered_hi=-1;
+        for(int i=0;i<128;++i) {
+            const float p[]={float(i%13)*.09f-.5f,float(i%11)*.08f,float(i%17)*.07f-.5f};
+            const float n[]={0,1,0};terrain_field::SurfaceSourceSample near,far,rendered;
+            CHECK(runtime.source_at(p,n,nullptr,.002f,near) && runtime.source_at(p,n,nullptr,.2f,far) &&
+                  runtime.source_at(p,n,nullptr,.0065f,rendered),
+                  "rock evaluates in local coordinates without world context");
+            for(float c:near.albedo)CHECK(std::isfinite(c)&&c>=0&&c<=1,"bounded mineral pigment");
+            CHECK(near.height_m>=program.source.height_min && near.height_m<=program.source.height_max,
+                  "rock relief stays inside declared physical envelope");
+            if(first_size)reference_heights.push_back(near.height_m);
+            else CHECK(near.height_m==reference_heights[size_t(i)],
+                       "physical grain and POM height are identical across size classes at the same metre coordinate");
+            CHECK(std::abs(far.height_m+.004f)<1e-7f,"unresolved rock microrelief filters to a stable datum");
+            lo=std::min(lo,near.height_m);hi=std::max(hi,near.height_m);
+            rendered_lo=std::min(rendered_lo,rendered.height_m);rendered_hi=std::max(rendered_hi,rendered.height_m);
+        }
+        CHECK(rendered_hi-rendered_lo>.003f,"rock erosion retains millimetre relief at production texel footprints");
+        materials.insert(direct.program_hash);
+        std::printf("MOUNTAIN_ROCK_MATERIAL ops=%zu height=[%.6f,%.6f] production_height=[%.6f,%.6f]\n",
+                    packed.ops.size(),lo,hi,rendered_lo,rendered_hi);
+    }
+    CHECK(materials.size()==48,"each physical prototype has a stable distinct mineral recipe");
+}
+
+void test_stream_mountain_direct_material() {
+    const fs::path project = "../../projects/world_demo";
+    const fs::path path = project / "scenes/streaming/StreamMountain/StreamMountain.js";
+    matter::WorldLoadDesc desc;
+    desc.world_path = path.string(); desc.objects_dir = (project / "objects").string();
+    desc.project_shared_lib_dir = (project / "shared-lib").string(); desc.engine_shared_lib_dir = "../shared-lib";
+    matter::WorldDefinition definition; matter::WorldLoadError load_error;
+    const bool loaded = matter::load_world_definition(desc, definition, load_error);
+    CHECK(loaded, load_error.message.c_str()); if (!loaded) return;
+    CHECK(definition.settings.terrain_texels_per_meter == 128,
+          "StreamMountain requests 128 texels/m for near terrain");
+    const auto plan = tileset::plan_detail_bakes({}, definition.materials);
+    std::set<std::string> detail_modules;
+    for (const auto& request : plan) detail_modules.insert(request.module);
+    CHECK(definition.roots.empty() && detail_modules == std::set<std::string>({
+          "ConiferBarkDetail", "ConiferBranchDetail", "RedwoodBarkDetail"}),
+          "StreamMountain: terrain requests no source atlas/settle; forest bark stays available");
+    std::ifstream input(path); std::string source((std::istreambuf_iterator<char>(input)), {});
+    script_host::ScriptHost host;
+    host.set_shared_lib_roots({desc.project_shared_lib_dir, desc.engine_shared_lib_dir});
+    const auto evaluated = host.eval_world(source, "{}");
+    CHECK(evaluated.ok, evaluated.message.c_str()); if (!evaluated.ok) return;
+    terrain_field::SurfaceProgram program; std::string error;
+    const bool parsed = terrain_field::SurfaceProgram::parse(evaluated.surface_program, program, error);
+    CHECK(parsed, error.c_str()); if (!parsed) return;
+    vt::VtSurfaceTapePack packed;
+    CHECK(program.source.version == 2 && vt::vt_pack_surface_tape(program, true, packed),
+          "StreamMountain: authored direct source fits the real GPU op/register budgets");
+    unsigned cellular_searches=0,cellular_reuses=0;
+    for(const auto& op:packed.ops) {
+        cellular_searches+=(op.kind_oct&255u)==vt::kVtSopCellular3;
+        cellular_reuses+=(op.kind_oct&255u)==vt::kVtSopCellular3Reuse;
+    }
+    CHECK(cellular_searches==2 && cellular_reuses==3,
+          "StreamMountain: gravel and bedrock each reuse their neighborhood search");
+    std::printf("MOUNTAIN_CELLULAR searches=%u reused_features=%u\n",cellular_searches,cellular_reuses);
+    terrain_field::FieldProgram field_program;
+    const bool field_parsed = terrain_field::FieldProgram::parse(evaluated.field_program,field_program,error);
+    CHECK(field_parsed,error.c_str()); if (!field_parsed) return;
+    terrain_field::FieldRuntime field(field_program);
+    terrain_field::SurfaceRuntime runtime(program);
+    const float identity[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
+    terrain_field::SurfaceWorldContext world; world.local_to_world = identity; world.field=&field;
+    float min_height=1, max_height=-1, context_height_delta=0;
+    for (int i=0; i<256; ++i) {
+        const float pos[3] = {float(i*17-2100), float(i*3-64), float(i*23-2900)};
+        const float normal[3] = {0,1,0};
+        terrain_field::SurfaceSourceSample value, distant;
+        CHECK(runtime.source_at(pos,normal,&world,.002f,value) &&
+              runtime.source_at(pos,normal,&world,2.f,distant), "StreamMountain: native source evaluation");
+        for (float c : value.albedo) CHECK(std::isfinite(c) && c>=0 && c<=1, "mountain material: finite bounded RGB");
+        CHECK(value.orm[1]>=.65f && value.orm[1]<=1 && value.orm[2]==0,
+              "mountain material: rough dielectric terrain");
+        min_height=std::min(min_height,value.height_m);max_height=std::max(max_height,value.height_m);
+        CHECK(std::abs(distant.height_m + .050f)<1e-6f,
+              "mountain material: unresolved relief filters to its mean at distant footprints");
+        float weight=0;runtime.weights_at(pos,normal,&world,&weight);
+        CHECK(weight==1, "mountain material: constant carrier classification");
+        const float cliff_normal[]={1.f,0.f,0.f};terrain_field::SurfaceSourceSample cliff_value;
+        CHECK(runtime.source_at(pos,cliff_normal,&world,.002f,cliff_value),"mountain material: cliff height evaluation");
+        context_height_delta=std::max(context_height_delta,std::abs(value.height_m-cliff_value.height_m));
+    }
+    CHECK(min_height>=program.source.height_min && max_height<=program.source.height_max &&
+          max_height-min_height>.001f,
+          "mountain material: bounded nonflat metre relief");
+    CHECK(context_height_delta>.005f,"mountain material: cliffs replace loose-ground displacement, not just pigment");
+    std::printf("MOUNTAIN_CONTEXT max_ground_cliff_height_delta_m=%.6f\n",context_height_delta);
+    // Paired spatial averages reveal footprint-driven material drift that a
+    // min/max bound cannot catch. Broad geology is identical in each pair.
+    double near_color=0,far_color=0,near_height=0,far_height=0;
+    for(int i=0;i<1024;++i) {
+        const float pos[]={380.f+float((i*127)%1021)*.031f,18.24f,1600.f+float((i*367)%1021)*.031f};
+        const float normal[]={0.f,1.f,0.f};terrain_field::SurfaceSourceSample near,far;
+        runtime.source_at(pos,normal,&world,1.f/64,near);runtime.source_at(pos,normal,&world,2.f,far);
+        near_color+=near.albedo[0];far_color+=far.albedo[0];near_height+=near.height_m;far_height+=far.height_m;
+    }
+    std::printf("MOUNTAIN_FILTER_MEAN near_color=%.6f far_color=%.6f near_height_m=%.6f far_height_m=%.6f\n",
+        near_color/1024,far_color/1024,near_height/1024,far_height/1024);
+    const float translated[16]={1,0,0,64, 0,1,0,0, 0,0,1,-64, 0,0,0,1};
+    auto neighbor=world;neighbor.local_to_world=translated;
+    const float world_pos[3]={64,120,-64}, local_pos[3]={0,120,0}, up[3]={0,1,0};
+    terrain_field::SurfaceSourceSample a,b;
+    runtime.source_at(world_pos,up,&world,.01f,a);runtime.source_at(local_pos,up,&neighbor,.01f,b);
+    bool same=std::abs(a.height_m-b.height_m)<1e-6f;
+    for(int k=0;k<3;++k) same=same && std::abs(a.albedo[k]-b.albedo[k])<1e-6f && std::abs(a.orm[k]-b.orm[k])<1e-6f;
+    CHECK(same,"mountain material: translated receiver frames share world-space color, ORM and height");
+    std::printf("MOUNTAIN_MATERIAL ops=%zu gpu_ops=%zu detail_atlases=%zu height=[%.6f,%.6f]\n",
+                program.ops.size(),packed.ops.size(),plan.size(),min_height,max_height);
+    for(const auto& xz:std::vector<std::array<float,2>>{{380,1600},{400,1450},{420,1420},{470,1300}})
+        std::printf("MOUNTAIN_HEIGHT x=%.1f z=%.1f y=%.5f\n",xz[0],xz[1],field.height_at(xz[0],xz[1]));
+    // Derive a repeatable cliff view from the real field, rather than guessing
+    // an eye position that may lie inside terrain. This is capture guidance.
+    float nearest=1e30f;std::array<float,6> cliff{};
+    for(float z=-800;z<=2800;z+=16) for(float x=-1200;x<=2000;x+=16) {
+        const float y=field.height_at(x,z);
+        const float gx=(field.height_at(x+1,z)-field.height_at(x-1,z))*.5f;
+        const float gz=(field.height_at(x,z+1)-field.height_at(x,z-1))*.5f;
+        const float len=std::sqrt(gx*gx+gz*gz);
+        const float distance=(x-380)*(x-380)+(z-1600)*(z-1600);
+        if(len>1.5f && y>35 && y<250 && distance<nearest) {
+            const float eye_x=x-6*gx/len,eye_z=z-6*gz/len;
+            if(field.height_at(eye_x,eye_z)<y) {
+                nearest=distance;cliff={eye_x,y+1,eye_z,x,y,z};
+            }
+        }
+    }
+    if(nearest<1e30f) std::printf("MOUNTAIN_CLIFF_CAMERA %.3f %.3f %.3f %.3f %.3f %.3f\n",
+        cliff[0],cliff[1],cliff[2],cliff[3],cliff[4],cliff[5]);
+}
+
 void test_every_shipped_world_loads() {
     const fs::path project = fs::path("../../projects/world_demo");
     const fs::path scenes_dir = project / "scenes";
     CHECK(fs::is_directory(scenes_dir), "world_demo exposes scenes/");
 
-    // Walk scenes/<Name>/<Name>.js. Walking the DIRECTORY rather than a pinned
-    // list is the whole point of this gate: a scene added later is covered
-    // without anyone remembering to add it. A scene folder whose script is
-    // missing or misnamed is a hard failure here, not a silent skip -- that is
-    // exactly the state a half-finished rename leaves behind, and the editor
-    // would simply stop listing the scene.
-    std::vector<fs::path> world_files;
-    for (const auto& entry : fs::directory_iterator(scenes_dir)) {
-        if (!entry.is_directory()) continue;
-        const std::string name = entry.path().filename().string();
-        const fs::path script = entry.path() / (name + ".js");
-        CHECK(fs::is_regular_file(script),
-              (name + " scene folder contains " + name + ".js").c_str());
-        if (fs::is_regular_file(script)) world_files.push_back(script);
-    }
-    std::sort(world_files.begin(), world_files.end());
-    CHECK(world_files.size() >= 6, "found the shipped worlds");
+    const auto world_files = matter::project_layout::scene_scripts(scenes_dir);
+    CHECK(world_files.size() >= 62, "found the shipped worlds");
 
     size_t loaded = 0;
     for (const fs::path& world : world_files) {
@@ -643,15 +1160,9 @@ void test_shared_lib_only_names_shared_objects() {
     // really object modules rather than arbitrary identifiers.
     std::set<std::string> scene_local;
     const fs::path scenes = project / "scenes";
-    for (const auto& scene : fs::directory_iterator(scenes)) {
-        if (!scene.is_directory()) continue;
-        std::error_code ec;
-        const fs::path dir = scene.path() / "objects";
-        if (!fs::is_directory(dir, ec)) continue;
-        for (const auto& obj : fs::directory_iterator(dir))
-            if (obj.path().extension() == ".js")
-                scene_local.insert(obj.path().stem().string());
-    }
+    for (const auto& script : matter::project_layout::scene_scripts(scenes))
+        for (const auto& obj : matter::project_layout::object_files(script.parent_path() / "objects"))
+            scene_local.insert(obj.stem().string());
 
     std::size_t checked = 0;
     for (const auto& entry : fs::directory_iterator(shared_lib)) {
@@ -665,7 +1176,7 @@ void test_shared_lib_only_names_shared_objects() {
                 const std::string needle = std::string(1, quote) + module + quote;
                 if (src.find(needle) == std::string::npos) continue;
                 ++checked;
-                CHECK(fs::is_regular_file(objects / (module + ".js")),
+                CHECK(!matter::project_layout::object_source({objects.string()}, module).empty(),
                       (entry.path().filename().string() + " names '" + module +
                        "', which lives only in a scene folder -- shared-lib is "
                        "reachable from every importing scene, so it must be in "
@@ -704,12 +1215,11 @@ void test_example_worlds_preserve_manifest_authoring() {
           "example project no longer exposes the legacy schemas/ directory");
 
     for (const ExpectedExampleWorld& expected : worlds) {
-        CHECK(fs::is_regular_file(
-                  project / "scenes" / expected.name / (std::string(expected.name) + ".js")),
+        const auto cfg = viewer::LocalProviderConfig::for_project(project.string(), expected.name, "../shared-lib");
+        CHECK(fs::is_regular_file(cfg.world_path),
               (std::string(expected.name) + " remains a selectable identity").c_str());
         matter::WorldLoadDesc desc;
-        desc.world_path =
-            (project / "scenes" / expected.name / (std::string(expected.name) + ".js")).string();
+        desc.world_path = cfg.world_path;
         desc.objects_dir = (project / "objects").string();
         desc.project_shared_lib_dir = (project / "shared-lib").string();
         desc.engine_shared_lib_dir = "../shared-lib";
@@ -728,11 +1238,7 @@ void test_example_worlds_preserve_manifest_authoring() {
             // this used to do, and it would now fail for every scene that owns
             // its objects while still passing for a module that had been
             // deleted from the scene and left behind in the shared tier.
-            const fs::path scene_copy = project / "scenes" / expected.name /
-                                        "objects" / (std::string(root.module) + ".js");
-            const fs::path shared_copy =
-                project / "objects" / (std::string(root.module) + ".js");
-            CHECK(fs::is_regular_file(scene_copy) || fs::is_regular_file(shared_copy),
+            CHECK(!cfg.resolve_object_path(root.module).empty(),
                   (std::string(root.module) +
                    " resolves in the scene or project object tier").c_str());
             if (index >= definition.roots.size()) break;
@@ -785,6 +1291,8 @@ void test_example_worlds_preserve_manifest_authoring() {
               (std::string(expected.name) + " procedural settings").c_str());
     }
 }
+
+#endif // MATTER_WORLD_SOURCE_QUALIFICATION
 
 void test_authored_entity_override_cannot_intercept_collection() {
     Fixture fixture;
@@ -1273,6 +1781,25 @@ class Extreme extends World {
               "octaves clamped to the ceiling rather than failing the load");
         CHECK(nearly_equal(definition.settings.fog.clouds[0].coverage, 1.0f),
               "coverage clamped to 1");
+    }
+}
+
+void test_terrain_texture_density() {
+    Fixture fixture;
+    for (const std::string value : {"undefined", "1", "64", "2048", "0", "-1",
+                                    "2049", "NaN", "Infinity", "'64'", "null", "true"}) {
+        const auto path = fixture.write("DensityWorld.js",
+            "class DensityWorld extends World { static streaming = {terrainTexelsPerMeter:" + value + "}; }");
+        matter::WorldDefinition definition;
+        matter::WorldLoadError error;
+        const bool valid = value == "undefined" || value == "1" || value == "64" || value == "2048";
+        const bool loaded = matter::load_world_definition(fixture.desc(path), definition, error);
+        CHECK(loaded == valid, ("terrain density validation: " + value).c_str());
+        if (loaded) CHECK(definition.settings.terrain_texels_per_meter ==
+                          (value == "undefined" ? 16 : std::stof(value)),
+                          "terrain density defaults/preserves authored value without rings");
+        else CHECK(error.message.find("terrainTexelsPerMeter") != std::string::npos,
+                   "invalid density identifies the authoring property");
     }
 }
 
@@ -1853,6 +2380,143 @@ void test_props_validation_paths() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// World.exports — the DSL binding for offline asset export (docs/export-obj.md).
+//
+// Worth stating what these tests are protecting, because the field is inert at
+// runtime: `static exports` is the only place a scene can record HOW it wants
+// to be exported, so the exporter reads it as its defaults. A silently dropped
+// or silently clamped value would produce an export nobody asked for and
+// nobody could trace, which is why the loader rejects instead of coercing and
+// why the rejection paths below are enumerated one by one.
+// ---------------------------------------------------------------------------
+
+bool load_exports_world(Fixture& fixture, const char* body,
+                        matter::WorldDefinition& definition,
+                        matter::WorldLoadError& error) {
+    const std::string source = std::string(
+        "class ExportsWorld extends World {\n"
+        "  static roots = [{ module: 'Terrain' }];\n"
+        "  static exports = ") + body + ";\n}\n";
+    const fs::path path = fixture.write("ExportsWorld.js", source);
+    return matter::load_world_definition(fixture.desc(path), definition, error);
+}
+
+void test_exports_extraction() {
+    Fixture fixture;
+    matter::WorldDefinition definition;
+    matter::WorldLoadError error;
+    const bool loaded = load_exports_world(
+        fixture,
+        "[{ format: 'obj', out: 'export/web', lod: 1, textureSize: 1024,\n"
+        "   textureFormat: 'none', chartCone: 30, normalSpace: 'flat',\n"
+        "   modules: ['Terrain', 'Rock'] },\n"
+        " { out: 'export/full' }]",
+        definition, error);
+    CHECK(loaded, error.message.c_str());
+    if (!loaded) return;
+
+    CHECK(definition.exports.size() == 2, "every declared export entry is recorded");
+    if (definition.exports.size() != 2) return;
+
+    const matter::WorldExportRequest& first = definition.exports[0];
+    CHECK(first.format == "obj", "format carried through");
+    CHECK(first.out_dir == "export/web", "out carried through");
+    CHECK(first.lod == 1u, "lod carried through");
+    CHECK(first.texture_size == 1024u, "textureSize carried through");
+    CHECK(first.texture_format == "none", "textureFormat carried through");
+    CHECK(nearly_equal(first.chart_cone_deg, 30.0f), "chartCone carried through");
+    CHECK(first.normal_space == "flat", "normalSpace carried through");
+    CHECK(first.modules.size() == 2u && first.modules[0] == "Terrain" &&
+              first.modules[1] == "Rock",
+          "modules carried through in declaration order");
+
+    // An entry that declares only `out` takes every other default, which is
+    // what makes the common case one line.
+    const matter::WorldExportRequest& second = definition.exports[1];
+    CHECK(second.format == "obj" && second.lod == 0u && second.texture_size == 2048u &&
+              second.texture_format == "png" && second.normal_space == "smooth" &&
+              nearly_equal(second.chart_cone_deg, 45.0f) && second.modules.empty(),
+          "an entry with only `out` takes the documented defaults");
+}
+
+void test_exports_single_object_form() {
+    Fixture fixture;
+    matter::WorldDefinition definition;
+    matter::WorldLoadError error;
+    const bool loaded =
+        load_exports_world(fixture, "{ out: 'export/one' }", definition, error);
+    CHECK(loaded, error.message.c_str());
+    CHECK(definition.exports.size() == 1 && definition.exports[0].out_dir == "export/one",
+          "a bare object is accepted as a single export entry");
+}
+
+void test_exports_absent() {
+    Fixture fixture;
+    const fs::path path = fixture.write("NoExports.js", R"JS(
+class NoExports extends World {
+  static roots = [{ module: 'Terrain' }];
+}
+)JS");
+    matter::WorldDefinition definition;
+    matter::WorldLoadError error;
+    CHECK(matter::load_world_definition(fixture.desc(path), definition, error),
+          error.message.c_str());
+    CHECK(definition.exports.empty(),
+          "a world that declares no exports records none");
+}
+
+void test_exports_validation_paths() {
+    struct Case {
+        const char* body;
+        const char* property_path;
+        const char* what;
+    };
+    const Case cases[] = {
+        {"'export/web'", "exports",
+         "a bare string is not an export entry"},
+        {"[7]", "exports[0]", "a non-object entry is rejected"},
+        {"[{ }]", "exports[0].out", "a missing out is rejected"},
+        {"[{ out: '' }]", "exports[0].out", "an empty out is rejected"},
+        {"[{ out: 'x', format: 'gltf' }]", "exports[0].format",
+         "an unimplemented format is rejected rather than ignored"},
+        {"[{ out: 'x', textureSize: 8 }]", "exports[0].textureSize",
+         "a textureSize below the atlas minimum is rejected, not clamped"},
+        {"[{ out: 'x', textureSize: 16384 }]", "exports[0].textureSize",
+         "a textureSize above the atlas maximum is rejected, not clamped"},
+        {"[{ out: 'x', lod: -1 }]", "exports[0].lod", "a negative lod is rejected"},
+        {"[{ out: 'x', textureFormat: 'jpeg' }]", "exports[0].textureFormat",
+         "an unknown textureFormat is rejected"},
+        {"[{ out: 'x', chartCone: 90 }]", "exports[0].chartCone",
+         "a chartCone at 90 degrees is rejected"},
+        {"[{ out: 'x', chartCone: 0 }]", "exports[0].chartCone",
+         "a chartCone of 0 is rejected"},
+        {"[{ out: 'x', normalSpace: 'object' }]", "exports[0].normalSpace",
+         "an unknown normalSpace is rejected"},
+        {"[{ out: 'x', modules: 'Rock' }]", "exports[0].modules",
+         "a non-array modules is rejected"},
+        {"[{ out: 'x', modules: ['Rock', 7] }]", "exports[0].modules[1]",
+         "a non-string module name is rejected"},
+        {"[{ out: 'x', textureSizes: 1024 }]", "exports[0]",
+         "a mistyped key is rejected rather than silently defaulted"},
+    };
+
+    for (const Case& item : cases) {
+        Fixture fixture;
+        matter::WorldDefinition definition;
+        matter::WorldLoadError error;
+        const bool loaded = load_exports_world(fixture, item.body, definition, error);
+        CHECK(!loaded, item.what);
+        CHECK(error.property_path == item.property_path,
+              (std::string(item.what) + " -> property_path '" + item.property_path +
+               "' (got '" + error.property_path + "')")
+                  .c_str());
+        CHECK(!error.message.empty(), "an export rejection carries a message");
+        CHECK(definition.exports.empty(),
+              "a rejected exports block leaves no partial entries behind");
+    }
+}
+
 void test_props_getprop_diagnostics() {
     Fixture fixture;
     // Unknown name from buildEntities.
@@ -2101,6 +2765,42 @@ class WaterMaterials extends World {
           "volume-boundary glass is not inferred to be river water");
 }
 
+void test_define_material_surface_detail_mode() {
+    Fixture fixture;
+    const fs::path path = fixture.write("SurfaceDetail.js", R"JS(
+defineMaterial('Finished', {detail:'BrickDetail', detailMode:'surface'});
+defineMaterial('Ground', {detail:'GroundDetail', detailMode:'ground'});
+defineMaterial('Default', {detail:'GroundDetail'});
+class SurfaceDetail extends World { static roots = []; }
+)JS");
+    matter::WorldDefinition definition;
+    matter::WorldLoadError error;
+    CHECK(matter::load_world_definition(fixture.desc(path), definition, error), error.message.c_str());
+    CHECK(definition.materials.size() == 3, "all detail domains register");
+    if (definition.materials.size() == 3) {
+        CHECK((MaterialRegistryGet(definition.materials[0].index)->surfaceFlags & MATERIAL_SURFACE_DETAIL) != 0,
+              "surface mode transported in material flags");
+        for (size_t i = 1; i < 3; ++i)
+            CHECK((MaterialRegistryGet(definition.materials[i].index)->surfaceFlags & MATERIAL_SURFACE_DETAIL) == 0,
+                  "explicit ground and omitted mode preserve defaults");
+    }
+    for (const std::string spec : {"{detailMode:'surface'}", "{detail:'D',detailMode:true}",
+                                  "{detail:'D',detailMode:'typo'}", "{detail:'D',detailMode:null}"}) {
+        const auto invalid = fixture.write("InvalidSurface.js",
+            "defineMaterial('Invalid'," + spec + "); class Invalid extends World { static roots=[]; }");
+        CHECK(!matter::load_world_definition(fixture.desc(invalid), definition, error),
+              "invalid surface mode fails typed validation");
+        CHECK(error.message.find("detailMode") != std::string::npos, "error identifies detailMode");
+    }
+    const auto conflict = fixture.write("ConflictingSurface.js", R"JS(
+defineMaterial('Same', {detail:'D',detailMode:'surface'});
+defineMaterial('Same', {detail:'D',detailMode:'ground'});
+class ConflictingSurface extends World { static roots=[]; }
+)JS");
+    CHECK(!matter::load_world_definition(fixture.desc(conflict), definition, error),
+          "domain change invalidates repeated material identity");
+}
+
 void test_detail_bake_plan_ordering_and_merging() {
     // The deprecated alias alone must produce exactly what the hardcoded path
     // produced: one request for the root module bound to material 16.
@@ -2248,11 +2948,12 @@ class RiverHydrology extends World {
           "hydrology dimensions are parsed as typed domain extents");
 }
 
+#ifdef MATTER_WORLD_SOURCE_QUALIFICATION
 void test_checked_in_river_hydrology_uses_the_imperative_section_contract() {
     const fs::path project = fs::path("../../projects/world_demo");
     matter::WorldLoadDesc load{};
     load.world_path =
-        (project / "scenes/RiverHydrology/RiverHydrology.js").string();
+        (project / "scenes/water/RiverHydrology/RiverHydrology.js").string();
     load.objects_dir = (project / "objects").string();
     load.project_shared_lib_dir = (project / "shared-lib").string();
     load.engine_shared_lib_dir = "../shared-lib";
@@ -2407,6 +3108,8 @@ void test_checked_in_river_hydrology_uses_the_imperative_section_contract() {
     CHECK(collider_footprints_clear_terrain,
           "every boulder collider clears the rounded-V terrain across its footprint");
 }
+
+#endif // MATTER_WORLD_SOURCE_QUALIFICATION
 
 void test_world_loader_leaves_hydrology_empty_when_absent() {
     Fixture fixture;
@@ -2730,6 +3433,11 @@ class CanonicalWaterWorld extends World {
 
 void test_world_loader_preserves_completed_dsl_curve_and_profile() {
     Fixture fixture;
+#ifndef MATTER_WORLD_SOURCE_QUALIFICATION
+    const auto shared_sources = embedded_shared_test_sources();
+    fixture.files.emplace("../shared-lib/river_curve.js",
+                          shared_sources.at("../shared-lib/river_curve.js"));
+#endif
     const fs::path path = fixture.write("AuthoredCurve.js", R"JS(
 import { riverCurve } from 'shared-lib/river_curve';
 class AuthoredCurve extends World {
@@ -3133,16 +3841,148 @@ void test_slot_binder_reset_union_is_exact() {
 
 } // namespace
 
-int main() {
+// giBake({...}) — the GI lightmap bake declaration (docs/bake-gi.md). A data
+// call, not a lifecycle hook: legal at module scope, in a static initializer
+// and inside hooks; every field optional; at most one call per world.
+void test_world_loader_accepts_gi_bake_call() {
+    {
+        Fixture fixture;
+        const fs::path path = fixture.write("GiWorld.js", R"JS(
+const gi = giBake({ samples: 128, bounces: 3, texelDensity: 12.5, seed: 42, prelit: true, denoise: false, out: 'gi-out' });
+if (gi.samples !== 128 || gi.bounces !== 3 || gi.texelDensity !== 12.5 || gi.prelit !== true || gi.out !== 'gi-out')
+  throw new Error('giBake did not echo its settings');
+class GiWorld extends World {
+  static settings = { sectorSize: 64 };
+}
+)JS");
+        matter::WorldDefinition definition;
+        matter::WorldLoadError error;
+        CHECK(matter::load_world_definition(fixture.desc(path), definition, error),
+              error.message.c_str());
+        CHECK(definition.gi_bake.has_value(), "giBake() publishes a GI bake declaration");
+        if (definition.gi_bake) {
+            const matter::GiBakeSettings& g = *definition.gi_bake;
+            CHECK(g.samples == 128 && g.bounces == 3 && g.texel_density == 12.5f && g.seed == 42,
+                  "giBake numeric fields are retained");
+            CHECK(g.prelit && !g.denoise && g.out == "gi-out", "giBake flags and out dir are retained");
+        }
+    }
+    {
+        // Static-initializer call with no options: every field defaults.
+        Fixture fixture;
+        const fs::path path = fixture.write("GiDefaults.js", R"JS(
+class GiDefaults extends World {
+  static settings = { sectorSize: 64 };
+  static gi = giBake();
+}
+)JS");
+        matter::WorldDefinition definition;
+        matter::WorldLoadError error;
+        CHECK(matter::load_world_definition(fixture.desc(path), definition, error),
+              error.message.c_str());
+        CHECK(definition.gi_bake.has_value() && definition.gi_bake->samples == 64 &&
+                  definition.gi_bake->bounces == 2 && definition.gi_bake->texel_density == 8.0f &&
+                  definition.gi_bake->denoise && !definition.gi_bake->prelit &&
+                  definition.gi_bake->out.empty(),
+              "giBake() with no options records the defaults");
+    }
+    {
+        // A call from buildEntities() — the last hook to run — is recorded too,
+        // and a large seed survives with full 32-bit precision.
+        Fixture fixture;
+        const fs::path path = fixture.write("GiLate.js", R"JS(
+class GiLate extends World {
+  static settings = { sectorSize: 64 };
+  buildEntities() { giBake({ samples: 256, seed: 4294967295 }); }
+}
+)JS");
+        matter::WorldDefinition definition;
+        matter::WorldLoadError error;
+        CHECK(matter::load_world_definition(fixture.desc(path), definition, error),
+              error.message.c_str());
+        CHECK(definition.gi_bake.has_value() && definition.gi_bake->samples == 256 &&
+                  definition.gi_bake->seed == 4294967295u,
+              "giBake() inside buildEntities() is recorded with an exact u32 seed");
+    }
+    {
+        Fixture fixture;
+        const fs::path path = fixture.write("NoGi.js", R"JS(
+class NoGi extends World { static settings = { sectorSize: 64 }; }
+)JS");
+        matter::WorldDefinition definition;
+        matter::WorldLoadError error;
+        CHECK(matter::load_world_definition(fixture.desc(path), definition, error),
+              error.message.c_str());
+        CHECK(!definition.gi_bake.has_value(), "a world without giBake() has no declaration");
+    }
+}
+
+void test_world_loader_rejects_invalid_gi_bake() {
+    const auto rejects = [](const char* filename, const std::string& body, const char* expected_path) {
+        Fixture fixture;
+        const fs::path path = fixture.write(
+            filename, body + "\nclass Bad extends World { static settings = { sectorSize: 64 }; }\n");
+        matter::WorldDefinition definition;
+        matter::WorldLoadError error;
+        CHECK(!matter::load_world_definition(fixture.desc(path), definition, error),
+              "invalid giBake authoring is rejected");
+        CHECK(error.property_path.find(expected_path) != std::string::npos,
+              (std::string("giBake diagnostic names the field: ") + expected_path +
+               " (got '" + error.property_path + "')").c_str());
+    };
+    rejects("GiSamples.js", "giBake({ samples: 0 });", "giBake.samples");
+    rejects("GiSamplesBig.js", "giBake({ samples: 5000 });", "giBake.samples");
+    rejects("GiBounces.js", "giBake({ bounces: 9 });", "giBake.bounces");
+    rejects("GiDensity.js", "giBake({ texelDensity: -1 });", "giBake.texelDensity");
+    rejects("GiDensityNaN.js", "giBake({ texelDensity: 'dense' });", "giBake.texelDensity");
+    rejects("GiSeedBig.js", "giBake({ seed: 4294967296 });", "giBake.seed");
+    rejects("GiSeedFrac.js", "giBake({ seed: 1.5 });", "giBake.seed");
+    rejects("GiPrelit.js", "giBake({ prelit: 'yes' });", "giBake.prelit");
+    rejects("GiOut.js", "giBake({ out: 7 });", "giBake.out");
+    rejects("GiTwice.js", "giBake({}); giBake({ samples: 8 });", "giBake");
+    rejects("GiArg.js", "giBake(12);", "giBake");
+}
+
+int main(int argc, char** argv) {
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
+    ScopedCacheRootEnv clean_cache_environment(nullptr);
+    test_lexical_project_cache_identity();
+#ifdef MATTER_WORLD_SOURCE_QUALIFICATION
+    if (argc == 2 && std::string(argv[1]) == "--surface-contact") {
+        test_surface_receiver_authoring();
+        test_surface_contact_material();
+        return check_summary();
+    }
+    if (argc == 2 && std::string(argv[1]) == "--mountain-material") {
+        test_terrain_texture_density();
+        test_mountain_rock_catalog();
+        test_stream_mountain_direct_material();
+        return check_summary();
+    }
+    test_external_project_cache_root();
     test_project_layout_derives_runtime_paths();
     test_scene_layout_derives_runtime_paths();
     test_shared_lib_only_names_shared_objects();
     test_scene_without_objects_falls_back_to_project_tier();
     test_flat_layout_still_resolves_when_scene_script_absent();
     test_scene_object_shadows_project_object();
+    test_grouped_scene_and_object_resolution();
     test_relative_project_dir_yields_absolute_cache_root();
     test_every_shipped_world_loads();
+    test_mountain_rock_catalog();
+    test_stream_mountain_direct_material();
+    test_surface_contact_material();
+    test_surface_receiver_authoring();
     test_example_worlds_preserve_manifest_authoring();
+    test_checked_in_river_hydrology_uses_the_imperative_section_contract();
+    return check_summary();
+#else
+    if (argc != 1) {
+        std::fprintf(stderr, "Source qualification options moved to matter_world_source_qualifier.\n");
+        return 2;
+    }
+    (void)argv;
+    test_surface_receiver_authoring();
     test_rejects_non_world_base_with_location_and_property();
     test_extracts_statics_without_calling_field_and_uses_project_override();
     test_local_light_object_forms_and_runtime_publication();
@@ -3161,6 +4001,7 @@ int main() {
     test_fog_extraction_with_authored_values();
     test_fog_defaults_when_absent();
     test_streaming_ring_extraction();
+    test_terrain_texture_density();
     test_nested_sectors_flag();
     test_volumetric_sectors_flag();
     test_vulkan_volumetrics_settings_defaults();
@@ -3177,16 +4018,20 @@ int main() {
     test_props_absent_and_empty();
     test_props_validation_paths();
     test_props_getprop_diagnostics();
+    test_exports_extraction();
+    test_exports_single_object_form();
+    test_exports_absent();
+    test_exports_validation_paths();
     test_define_material_round_trip();
     test_define_material_reset_between_worlds();
     test_define_material_name_collision_rules();
     test_define_material_rejects_bad_specs();
     test_define_material_authors_water_surface_domain();
+    test_define_material_surface_detail_mode();
     test_detail_bake_plan_ordering_and_merging();
     test_slot_allocator_eviction_order();
     test_slot_binder_reports_displaced_materials();
     test_world_loader_reads_static_hydrology();
-    test_checked_in_river_hydrology_uses_the_imperative_section_contract();
     test_world_loader_leaves_hydrology_empty_when_absent();
     test_world_loader_rejects_invalid_static_hydrology();
     test_world_loader_rejects_every_unknown_hydrology_property();
@@ -3204,6 +4049,9 @@ int main() {
     test_world_loader_rejects_terrain_collision_outside_collision_phase();
     test_world_loader_rejects_invalid_terrain_collision_builder_lifecycle();
     test_terrain_collision_adapter_preserves_optional_definition();
+    test_world_loader_accepts_gi_bake_call();
+    test_world_loader_rejects_invalid_gi_bake();
     test_slot_binder_reset_union_is_exact();
     return check_summary();
+#endif
 }

@@ -1,0 +1,37 @@
+{
+  "editor_exit": 0,
+  "validation_errors": 0,
+  "source_changes": [],
+  "gpu_jobs_ms": {
+    "bake.reset": "47908.4",
+    "ConiferBarkDetail": "3892.6",
+    "ConiferBranchDetail": "2097.6",
+    "RedwoodBarkDetail": "2252.8",
+    "stream.publish": "630.1"
+  },
+  "stats": [
+    "STATS,after-v4-overview,43.72,2.75,1.59,5.34,218,46,98801,170,0,217,0,32768,20.0,3512.0,320,180,256,478.12,2,0.000,0.265,0.000,0.000,0.000,84.00,37.875,0.025,36.105",
+    "STATSVT,after-v4-overview,active=1,variants=217/32768,rejected=0,mesh=20.0/3512.0 MiB,pool=324/25600,pinned=217,queue=101,fills=223,evictions=0,ind=2.32/64 MiB,material_pages=223,shared_material_refs=0,coverage_only_pages=0,occlusion_pages=0,occlusion_retained_pages=0,occlusion_allocated_bytes=0,enrich_deferred=0",
+    "STATS,after-v4-close,50.73,1.95,0.77,6.24,460,45,119311,370,44,460,0,32768,81.2,3512.0,320,180,256,478.12,2,0.000,0.264,0.000,0.000,0.000,84.00,48.279,0.042,44.742",
+    "STATSVT,after-v4-close,active=1,variants=460/32768,rejected=0,mesh=81.2/3512.0 MiB,pool=708/25600,pinned=460,queue=164,fills=547,evictions=0,ind=5.76/64 MiB,material_pages=544,shared_material_refs=0,coverage_only_pages=0,occlusion_pages=0,occlusion_retained_pages=0,occlusion_allocated_bytes=0,enrich_deferred=0",
+    "STATS,after-v4-close-refined,51.62,3.15,0.46,4.71,788,45,119311,699,44,788,0,32768,258.3,3512.0,320,180,256,478.12,2,0.000,0.263,0.000,0.000,0.000,84.00,50.913,0.050,48.553",
+    "STATSVT,after-v4-close-refined,active=1,variants=788/32768,rejected=0,mesh=258.3/3512.0 MiB,pool=1065/25600,pinned=788,queue=0,fills=1068,evictions=0,ind=10.03/64 MiB,material_pages=1065,shared_material_refs=0,coverage_only_pages=0,occlusion_pages=0,occlusion_retained_pages=0,occlusion_allocated_bytes=0,enrich_deferred=0",
+    "STATS,after-v4-grazing,63.31,2.72,0.32,3.89,788,54,136497,689,45,788,0,32768,258.3,3512.0,320,180,256,478.12,2,0.000,0.263,0.000,0.000,0.000,84.00,62.794,0.037,60.515",
+    "STATSVT,after-v4-grazing,active=1,variants=788/32768,rejected=0,mesh=258.3/3512.0 MiB,pool=1243/25600,pinned=788,queue=0,fills=1246,evictions=0,ind=10.03/64 MiB,material_pages=1243,shared_material_refs=0,coverage_only_pages=0,occlusion_pages=0,occlusion_retained_pages=0,occlusion_allocated_bytes=0,enrich_deferred=0"
+  ],
+  "files": {
+    "bake-trace.json": "bf98f6f57fe50d5c46640720e84c7508243a003d16643ca6f19a2f908c241ec0",
+    "close-refined.png": "9dcda968e8305da937f15fb4489696c7b2a21b19f540444ebece59affa279be9",
+    "close-refined.png.done": "4c339121e4860b04ebd48181621c9dd3f84901846feda08d4e77aafaf9a6c896",
+    "close.png": "bfdb0ecafe775a2893111f80c6c3a497a7e0a9054ade4f49f223e99c8bf4dee4",
+    "close.png.done": "4c339121e4860b04ebd48181621c9dd3f84901846feda08d4e77aafaf9a6c896",
+    "cmd.txt": "7c1af4a2e68f2ed5f3972eae2000324fc8e79c8723cc06abea37c7e8e3c58bed",
+    "grazing.png": "1a1a721bc34df069858ec36696d4b8125e6643af9d16ac42578c900129af1f69",
+    "grazing.png.done": "4c339121e4860b04ebd48181621c9dd3f84901846feda08d4e77aafaf9a6c896",
+    "log.txt": "d882c48c58b189edb3d52fb25572166d0594827b2597b93ab15a8c21fc2fd889",
+    "mountain_surface.js": "c498488f8cefce2013fae01ee4a7ff7b0a2b0a9fea1ef62b0d89a26e1e03ba1a",
+    "overview.png": "afd28425984f77c7bf17b675444baf68f66c96afcc191c3a22c949668457c8bf",
+    "overview.png.done": "4c339121e4860b04ebd48181621c9dd3f84901846feda08d4e77aafaf9a6c896",
+    "StreamMountain.js": "2f78cad20a2a38cc6069f8b868ee2a34798b576c4f470fea8aa070e7808b5dc5"
+  }
+}

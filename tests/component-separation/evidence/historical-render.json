@@ -1,0 +1,102 @@
+{
+  "kind": "historical references; no new visual/performance pass",
+  "capture_source_commit": "b387c15d81ff4d5b26a195b14f1afd6793b6ad6b",
+  "editor_sha256": "22bb85901df3a2313bf4966545686a8c47580937a64853f4d385bbe07b28671c",
+  "toolchain": "native Windows MSVC RelWithDebInfo (historical configured toolchain; exact compiler patch not recorded in campaign)",
+  "machine": {
+    "gpu": "NVIDIA GeForce RTX 4090",
+    "driver": "610.74",
+    "vulkan_api": "1.4.341",
+    "cpu": null,
+    "os_build": null,
+    "machine_identifier": null,
+    "missing_machine_fields": "Original CPU/OS build/host identifier not recorded; current machine.json must not be backdated to this campaign."
+  },
+  "machine_source": "docs/agent/evidence/2026-09-30-static-default-candidate/static-w45.tar.gz: static-w45/pom_off.gpu_before.txt and pom_off.log",
+  "extracted_machine_log": "evidence/historical-gpu.txt",
+  "protocol": {
+    "camera_eye": [
+      380,
+      90,
+      1600
+    ],
+    "camera_target": [
+      420,
+      55,
+      1420
+    ],
+    "viewport": [
+      1920,
+      1080
+    ],
+    "seed": 20260722,
+    "warmup_seconds": [
+      45,
+      300
+    ],
+    "measurement_seconds": 20,
+    "pom": "off",
+    "execution": "four serial captures; idle-memory admission less than 2048 MiB",
+    "source": "docs/agent/evidence/2026-09-30-static-default-candidate/protocol.json"
+  },
+  "reproduce": [
+    "python3 docs/agent/evidence/2026-09-30-static-default-candidate/capture.py",
+    "python3 docs/agent/evidence/2026-09-30-static-default-candidate/reduce.py"
+  ],
+  "artifacts": [
+    {
+      "path": "docs/agent/evidence/2026-09-30-static-default-candidate/protocol.json",
+      "sha256": "99fb874779058f370e3ebf46dd66e8c8421604ea5eaf106825797a07bac496f7"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-30-static-default-candidate/summary.json",
+      "sha256": "788b17e788cc9a86f50f9e13802e813c969120eebbeaa654255f4bcf9838008d"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-30-static-default-candidate/archives.json",
+      "sha256": "e7c7a6bc92ba9b759c822da869b868359ae57dbc607d7802171b605122cecadb"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-30-static-default-candidate/README.md",
+      "sha256": "f4e234c83472ebd262cc2c43858db6774c41a445d721343de22b8c77c88b8f89"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-30-static-default-candidate/static-w45.png",
+      "sha256": "42645dfab09d380991e73002e53b2a1d1b5ebe24e7ff545f398f10073aee2d50"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-30-static-default-candidate/static-w300.png",
+      "sha256": "0a0479d1facd57f759e7dda0064cca2035b8d0d53525d7c5738d79ccfdb07edc"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-30-static-default-candidate/vg-w45.png",
+      "sha256": "4ed956e1954e727c00287cdc10344946ad88a062157f2ef9229066021b09c900"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-30-static-default-candidate/vg-w300.png",
+      "sha256": "4c5eadfea8348ad6b36235aca19f231023d656d04fa13728b88f249b7ebf7aed"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-30-static-default-candidate/static-w45.tar.gz",
+      "sha256": "3a77da720e77f35fc11530f2b8207e94e07c9ac243b0ff2f5d713c3b6b6e1b83"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-30-static-default-candidate/static-w300.tar.gz",
+      "sha256": "6944356185016ec9d5733b0eaeaf7b0dba9ea73ddecb14dc635b80a0cff0c8b3"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-30-static-default-candidate/vg-w45.tar.gz",
+      "sha256": "bb015436a862c002582de3f9ba88519d88d2a4ed10346dd965e53cbe0771881e"
+    },
+    {
+      "path": "docs/agent/evidence/2026-09-30-static-default-candidate/vg-w300.tar.gz",
+      "sha256": "8d042aafeee7307c005eeb0f5302c91f9ee444ed4626b9a40806e3f041c85f5f"
+    }
+  ],
+  "limits": [
+    "Original renderer output; no pixel tolerance qualified for portable adapters.",
+    "Coverage differs between configurations; preserve raw summary and archived logs.",
+    "No equal-coverage, 16.7ms, browser/WASM, CPU latency or memory acceptance claim.",
+    "Rerun only at the recorded source commit and compatible binary/assets, with the documented serial GPU admission."
+  ]
+}

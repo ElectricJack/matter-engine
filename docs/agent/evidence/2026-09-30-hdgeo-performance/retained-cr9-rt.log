@@ -1,0 +1,171 @@
+[vk] Vulkan loader/general ERROR: loader_get_json: Failed to open JSON file D:\Epic Games\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win32.json
+[vk] Vulkan loader/general ERROR: loader_get_json: Failed to open JSON file D:\Epic Games\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win64.json
+[vk] Vulkan loader/general warning: Removing layer VK_LAYER_EOS_Overlay (C:\Program Files (x86)\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win64.json) because it is a duplicate of VK_LAYER_EOS_Overlay (C:\Program Files (x86)\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win32.json)
+[vk] present requested=auto effective=fifo(2) supported=[fifo(2),fifo_relaxed(3),mailbox(1),immediate(0),other(1000361000)] images=3 extent=320x200
+[vk] present requested=auto effective=fifo(2) supported=[fifo(2),fifo_relaxed(3),mailbox(1),immediate(0),other(1000361000)] images=3 extent=320x200
+[vk] present requested=auto effective=fifo(2) supported=[fifo(2),fifo_relaxed(3),mailbox(1),immediate(0),other(1000361000)] images=3 extent=320x200
+[vk] impostor atlas: 128 slots x 2 layers of 1024x1024 RGBA8 (cell 128 px, filtered mips) = 1365 MiB
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0] (SPIR-V Interface) [VK_SHADER_STAGE_VERTEX_BIT] has an Output value declared at Location 17 Component 0, but there is no corresponding Input declared in [VK_SHADER_STAGE_FRAGMENT_BIT].
+This is not invalid, but the write to the unused Output is discarded.
+The Output variable is:
+  pointer to Output -> uint32
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 1 not consumed by vertex shader.
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 2 not consumed by vertex shader.
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 3 not consumed by vertex shader.
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 4 not consumed by vertex shader.
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 6 not consumed by vertex shader.
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 7 not consumed by vertex shader.
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0] (SPIR-V Interface) [VK_SHADER_STAGE_VERTEX_BIT] has an Output value declared at Location 17 Component 0, but there is no corresponding Input declared in [VK_SHADER_STAGE_FRAGMENT_BIT].
+This is not invalid, but the write to the unused Output is discarded.
+The Output variable is:
+  pointer to Output -> uint32
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0] (SPIR-V Interface) [VK_SHADER_STAGE_VERTEX_BIT] has an Output value declared at Location 17 Component 0, but there is no corresponding Input declared in [VK_SHADER_STAGE_FRAGMENT_BIT].
+This is not invalid, but the write to the unused Output is discarded.
+The Output variable is:
+  pointer to Output -> uint32
+[vk] Vulkan loader/general warning: (Warning - This VUID has now been reported 10 times, which is the duplicate_message_limit value, this will be the last time reporting it).
+vkCreateGraphicsPipelines(): pCreateInfos[0] (SPIR-V Interface) [VK_SHADER_STAGE_VERTEX_BIT] has an Output value declared at Location 17 Component 0, but there is no corresponding Input declared in [VK_SHADER_STAGE_FRAGMENT_BIT].
+This is not invalid, but the write to the unused Output is discarded.
+The Output variable is:
+  pointer to Output -> uint32
+[rt] independent GI shader specialization=1
+[rt] local primary area samples=4 (0=adaptive); visibility diagnostic counters=1
+[rt] local-light selection code=0; packed budgets=0
+[rt] secondary local-light sampling=1 (0 exact, 1 importance reservoir)
+[rt] secondary surface detail mode=0 (0 reference, 1 adaptive, 2 normal-only)
+Vulkan adapter: NVIDIA GeForce RTX 4090 | driver: NVIDIA (610.74, 0x98928000) | API 1.4.341
+DLSS fallback: Streamline disabled for Vulkan test device
+[vk] static reserve: clusters 32 MiB, vertices 512 MiB, indices 256 MiB (host-visible)
+[vk] static upload frame bytes=1104 pending_parts=0 publish=0.02 ms
+[vk] impostor atlas: 128 slots x 2 layers of 1024x1024 RGBA8 (cell 128 px, filtered mips) = 1365 MiB
+[rt] independent GI shader specialization=1
+[rt] local primary area samples=4 (0=adaptive); visibility diagnostic counters=1
+[rt] local-light selection code=0; packed budgets=0
+[rt] secondary local-light sampling=1 (0 exact, 1 importance reservoir)
+[rt] secondary surface detail mode=0 (0 reference, 1 adaptive, 2 normal-only)
+[vk] static reserve: clusters 32 MiB, vertices 512 MiB, indices 256 MiB (host-visible)
+[vk] impostor atlas: 128 slots x 2 layers of 1024x1024 RGBA8 (cell 128 px, filtered mips) = 1365 MiB
+[rt] independent GI shader specialization=1
+[rt] local primary area samples=4 (0=adaptive); visibility diagnostic counters=1
+[rt] local-light selection code=0; packed budgets=0
+[rt] secondary local-light sampling=1 (0 exact, 1 importance reservoir)
+[rt] secondary surface detail mode=0 (0 reference, 1 adaptive, 2 normal-only)
+[vk] static reserve: clusters 32 MiB, vertices 512 MiB, indices 256 MiB (host-visible)
+[vk] static upload frame bytes=276 pending_parts=0 publish=0.01 ms
+[vk] present requested=auto effective=fifo(2) supported=[fifo(2),fifo_relaxed(3),mailbox(1),immediate(0),other(1000361000)] images=3 extent=320x200
+task9 fog/cloud: base=(0.000673,0.001185,0.001859,0.003204) combined=(0.020462,0.020981,0.021652,0.023193) cloud=0.019989
+[vk] static upload frame bytes=376 pending_parts=0 publish=0.00 ms
+terrain cloud shadow: clear=0.0001473 occluded=0.0000000 alpha=0.0039978/0.0039978
+terrain fog-only shadow: clear=0.0003576 occluded=0.0003576 alpha=0.0039005/0.0039005
+task12 orders: 0.0212079 0.0566787 0.0814741 0.0952815 generation=6
+task12 seeded tau: center local=2.4999 total=4.5000 near=0.0863/2.0863 alpha=0.6250 edge=0.0213/4.0212 receiver=5
+[vk] impostor atlas: 128 slots x 2 layers of 1024x1024 RGBA8 (cell 128 px, filtered mips) = 1365 MiB
+[rt] independent GI shader specialization=1
+[rt] local primary area samples=4 (0=adaptive); visibility diagnostic counters=1
+[rt] local-light selection code=0; packed budgets=0
+[rt] secondary local-light sampling=1 (0 exact, 1 importance reservoir)
+[rt] secondary surface detail mode=0 (0 reference, 1 adaptive, 2 normal-only)
+froxel RT trace: step=0 requested=160x90x128 active=160x90x128 gen=8 validation=0
+froxel RT trace: step=1 requested=80x45x64 active=80x45x64 gen=9 validation=0
+froxel RT trace: step=2 requested=320x180x256 active=320x180x256 gen=10 validation=0
+froxel RT trace: step=3 requested=240x135x192 active=240x135x192 gen=11 validation=0
+froxel RT trace: step=4 requested=160x90x128 active=160x90x128 gen=12 validation=0
+froxel GPU timing: combined=0.8887 density=0.2080 scatter=0.5944 integrate=0.0853 tolerance=0.2219
+[vk] static reserve: clusters 32 MiB, vertices 512 MiB, indices 256 MiB (host-visible)
+[vk] static upload frame bytes=552 pending_parts=0 publish=0.02 ms
+[vk] impostor atlas: 128 slots x 2 layers of 1024x1024 RGBA8 (cell 128 px, filtered mips) = 1365 MiB
+[rt] independent GI shader specialization=1
+[rt] local primary area samples=4 (0=adaptive); visibility diagnostic counters=1
+[rt] local-light selection code=0; packed budgets=0
+[rt] secondary local-light sampling=1 (0 exact, 1 importance reservoir)
+[rt] secondary surface detail mode=0 (0 reference, 1 adaptive, 2 normal-only)
+[vk] static reserve: clusters 32 MiB, vertices 512 MiB, indices 256 MiB (host-visible)
+[vk] impostor atlas: 128 slots x 2 layers of 1024x1024 RGBA8 (cell 128 px, filtered mips) = 1365 MiB
+[rt] independent GI shader specialization=1
+[rt] local primary area samples=4 (0=adaptive); visibility diagnostic counters=1
+[rt] local-light selection code=0; packed budgets=0
+[rt] secondary local-light sampling=1 (0 exact, 1 importance reservoir)
+[rt] secondary surface detail mode=0 (0 reference, 1 adaptive, 2 normal-only)
+[vk] static reserve: clusters 32 MiB, vertices 512 MiB, indices 256 MiB (host-visible)
+[vk] static upload frame bytes=552 pending_parts=0 publish=0.01 ms
+[vk] impostor atlas: 128 slots x 2 layers of 1024x1024 RGBA8 (cell 128 px, filtered mips) = 1365 MiB
+[rt] independent GI shader specialization=1
+[rt] local primary area samples=4 (0=adaptive); visibility diagnostic counters=1
+[rt] local-light selection code=0; packed budgets=0
+[rt] secondary local-light sampling=1 (0 exact, 1 importance reservoir)
+[rt] secondary surface detail mode=0 (0 reference, 1 adaptive, 2 normal-only)
+[vk] static reserve: clusters 32 MiB, vertices 512 MiB, indices 256 MiB (host-visible)
+[vk] static upload frame bytes=552 pending_parts=0 publish=0.01 ms
+[vk] impostor atlas: 128 slots x 2 layers of 1024x1024 RGBA8 (cell 128 px, filtered mips) = 1365 MiB
+[rt] independent GI shader specialization=1
+[rt] local primary area samples=4 (0=adaptive); visibility diagnostic counters=1
+[rt] local-light selection code=0; packed budgets=0
+[rt] secondary local-light sampling=1 (0 exact, 1 importance reservoir)
+[rt] secondary surface detail mode=0 (0 reference, 1 adaptive, 2 normal-only)
+[vk] static reserve: clusters 32 MiB, vertices 512 MiB, indices 256 MiB (host-visible)
+[vk] static upload frame bytes=828 pending_parts=0 publish=0.01 ms
+[vk] impostor atlas: 128 slots x 2 layers of 1024x1024 RGBA8 (cell 128 px, filtered mips) = 1365 MiB
+[rt] independent GI shader specialization=1
+[rt] local primary area samples=4 (0=adaptive); visibility diagnostic counters=1
+[rt] local-light selection code=0; packed budgets=0
+[rt] secondary local-light sampling=1 (0 exact, 1 importance reservoir)
+[rt] secondary surface detail mode=0 (0 reference, 1 adaptive, 2 normal-only)
+[vk] static reserve: clusters 32 MiB, vertices 512 MiB, indices 256 MiB (host-visible)
+[vk] static upload frame bytes=552 pending_parts=0 publish=0.02 ms
+[vk] impostor atlas: 128 slots x 2 layers of 1024x1024 RGBA8 (cell 128 px, filtered mips) = 1365 MiB
+[rt] independent GI shader specialization=1
+[rt] local primary area samples=4 (0=adaptive); visibility diagnostic counters=1
+[rt] local-light selection code=0; packed budgets=0
+[rt] secondary local-light sampling=1 (0 exact, 1 importance reservoir)
+[rt] secondary surface detail mode=0 (0 reference, 1 adaptive, 2 normal-only)
+[vk] static reserve: clusters 32 MiB, vertices 512 MiB, indices 256 MiB (host-visible)
+[vk] static upload frame bytes=9108 pending_parts=0 publish=0.02 ms
+[vk] impostor atlas: 128 slots x 2 layers of 1024x1024 RGBA8 (cell 128 px, filtered mips) = 1365 MiB
+[rt] independent GI shader specialization=1
+[rt] local primary area samples=4 (0=adaptive); visibility diagnostic counters=1
+[rt] local-light selection code=0; packed budgets=0
+[rt] secondary local-light sampling=1 (0 exact, 1 importance reservoir)
+[rt] secondary surface detail mode=0 (0 reference, 1 adaptive, 2 normal-only)
+[vk] static reserve: clusters 32 MiB, vertices 512 MiB, indices 256 MiB (host-visible)
+[vk] static upload frame bytes=552 pending_parts=0 publish=0.01 ms
+[vk] impostor atlas: 128 slots x 2 layers of 1024x1024 RGBA8 (cell 128 px, filtered mips) = 1365 MiB
+[rt] independent GI shader specialization=1
+[rt] local primary area samples=4 (0=adaptive); visibility diagnostic counters=1
+[rt] local-light selection code=0; packed budgets=0
+[rt] secondary local-light sampling=1 (0 exact, 1 importance reservoir)
+[rt] secondary surface detail mode=0 (0 reference, 1 adaptive, 2 normal-only)
+aligned visibility: opaque=0.00000 cutout=1.00000 glass=0.25000 colored=0.79980/0.39990/0.19995
+[vk] static reserve: clusters 32 MiB, vertices 512 MiB, indices 256 MiB (host-visible)
+[local-light] published 1 lights, 8 cells/16 buckets, 592 index bytes, max 1 candidates
+[vk] static upload frame bytes=828 pending_parts=0 publish=0.01 ms
+[local-light] published 1 lights, 8 cells/16 buckets, 592 index bytes, max 1 candidates
+[vk] static upload frame bytes=376 pending_parts=0 publish=0.00 ms
+[local-light] published 1 lights, 8 cells/16 buckets, 592 index bytes, max 1 candidates
+[local-light] published 0 lights, 0 cells/0 buckets, 48 index bytes, max 0 candidates
+[vk] impostor atlas: 128 slots x 2 layers of 1024x1024 RGBA8 (cell 128 px, filtered mips) = 1365 MiB
+[rt] independent GI shader specialization=1
+[rt] local primary area samples=4 (0=adaptive); visibility diagnostic counters=1
+[rt] local-light selection code=0; packed budgets=0
+[rt] secondary local-light sampling=1 (0 exact, 1 importance reservoir)
+[rt] secondary surface detail mode=0 (0 reference, 1 adaptive, 2 normal-only)
+local-direct glass: off=0.62354/0.46777/0.31177 on=0.55469/0.41626/0.27734 weights=0.232/0.200
+local-direct filter: raw mean/variance=1.136292/0.227917 filtered=1.089752/0.000530 history=1
+secondary diffuse: raw mean/variance=0.9821429/2.963966837 filtered=0.9135045/0.000009713
+secondary reflection: raw mean/variance=0.0114217/0.001695932 filtered=0.0114188/0.000000110
+[vk] static reserve: clusters 32 MiB, vertices 512 MiB, indices 256 MiB (host-visible)
+[vk] static upload frame bytes=552 pending_parts=0 publish=0.01 ms
+[vk] static upload frame bytes=276 pending_parts=0 publish=0.01 ms
+[vk] static upload frame bytes=276 pending_parts=0 publish=0.00 ms
+[vk] static upload frame bytes=276 pending_parts=0 publish=0.00 ms
+[vk] static upload frame bytes=276 pending_parts=0 publish=0.00 ms
+[vk] static upload frame bytes=276 pending_parts=0 publish=0.00 ms
+Isolated history outlier: RGB=2.4316/1.3096/0.7798 luminance=1.5099
+A-trous GPU: variance 0.122500->0.001019 0.062499->0.000374 pass5=0.044922
+lighting reset counts: before=4 changed=5 stable=5
+emission ratios: primary=2.000 secondary=2.000
+secondary sun: blocked_delta=0.000000 unblocked_delta=35.365448 | bz=0.00000 0.00000 0.00000 bh=0.00000 0.00000 0.00000 uz=0.04080 0.00334 0.01447 uh=35.40625 0.60938 0.47412
+specular lobe: mirror lit=8/8 peak=0.049561 mean=0.049561 p/m=1.0000 | rough lit=6/8 peak=0.651367 mean=0.108715 p/m=5.9915
+AO-zero GI: seen=1 raw=0.000000 visibility=0.000..0.000
+RT visibility range: 0.000 .. 1.000
+validation errors: 0
+ALL PASS

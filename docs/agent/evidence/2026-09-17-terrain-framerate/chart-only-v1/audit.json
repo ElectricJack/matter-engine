@@ -1,0 +1,190 @@
+{
+  "exit": 0,
+  "seconds": 340.26824241100985,
+  "summary": {
+    "valley-flat": {
+      "samples": 100,
+      "frame_ms": {
+        "median": 11.1,
+        "p95": 13.23
+      },
+      "resolve_ms": {
+        "median": 2.5949999999999998,
+        "p95": 3.8
+      },
+      "build_ms": {
+        "median": 0.655,
+        "p95": 1.44
+      },
+      "draw_ms": {
+        "median": 4.779999999999999,
+        "p95": 7.74
+      },
+      "gpu_total_ms": {
+        "median": 8.187000000000001,
+        "p95": 9.282
+      },
+      "gpu_cull_ms": {
+        "median": 0.0445,
+        "p95": 0.057
+      },
+      "gpu_gbuffer_ms": {
+        "median": 4.6915,
+        "p95": 5.317
+      }
+    },
+    "valley-pom": {
+      "samples": 100,
+      "frame_ms": {
+        "median": 7.23,
+        "p95": 8.67
+      },
+      "resolve_ms": {
+        "median": 1.8450000000000002,
+        "p95": 2.26
+      },
+      "build_ms": {
+        "median": 0.31,
+        "p95": 0.67
+      },
+      "draw_ms": {
+        "median": 3.755,
+        "p95": 4.92
+      },
+      "gpu_total_ms": {
+        "median": 6.5525,
+        "p95": 7.077
+      },
+      "gpu_cull_ms": {
+        "median": 0.034,
+        "p95": 0.054
+      },
+      "gpu_gbuffer_ms": {
+        "median": 3.916,
+        "p95": 4.208
+      }
+    },
+    "cliff-flat": {
+      "samples": 100,
+      "frame_ms": {
+        "median": 12.620000000000001,
+        "p95": 13.96
+      },
+      "resolve_ms": {
+        "median": 2.975,
+        "p95": 3.85
+      },
+      "build_ms": {
+        "median": 0.57,
+        "p95": 0.92
+      },
+      "draw_ms": {
+        "median": 7.21,
+        "p95": 8.85
+      },
+      "gpu_total_ms": {
+        "median": 10.9245,
+        "p95": 11.736
+      },
+      "gpu_cull_ms": {
+        "median": 0.0595,
+        "p95": 0.065
+      },
+      "gpu_gbuffer_ms": {
+        "median": 6.7495,
+        "p95": 7.288
+      }
+    },
+    "cliff-pom": {
+      "samples": 100,
+      "frame_ms": {
+        "median": 14.27,
+        "p95": 18.2
+      },
+      "resolve_ms": {
+        "median": 3.45,
+        "p95": 4.26
+      },
+      "build_ms": {
+        "median": 0.685,
+        "p95": 1.44
+      },
+      "draw_ms": {
+        "median": 7.99,
+        "p95": 10.4
+      },
+      "gpu_total_ms": {
+        "median": 13.0325,
+        "p95": 17.622
+      },
+      "gpu_cull_ms": {
+        "median": 0.0675,
+        "p95": 0.084
+      },
+      "gpu_gbuffer_ms": {
+        "median": 8.301,
+        "p95": 11.152
+      }
+    }
+  },
+  "settles": [
+    {
+      "phase": "valley-flat",
+      "seconds": 176.10205914899416,
+      "state": [
+        "791",
+        "791",
+        "0",
+        "1603"
+      ],
+      "settled": true
+    },
+    {
+      "phase": "valley-pom",
+      "seconds": 14.38496346899774,
+      "state": [
+        "791",
+        "791",
+        "0",
+        "1603"
+      ],
+      "settled": true
+    },
+    {
+      "phase": "cliff-flat",
+      "seconds": 49.63711923999654,
+      "state": [
+        "1054",
+        "807",
+        "0",
+        "3969"
+      ],
+      "settled": true
+    },
+    {
+      "phase": "cliff-pom",
+      "seconds": 14.404148186004022,
+      "state": [
+        "1054",
+        "807",
+        "0",
+        "3969"
+      ],
+      "settled": true
+    }
+  ],
+  "presentation": [
+    "[vk] present requested=immediate effective=immediate(0) supported=[fifo(2),fifo_relaxed(3),mailbox(1),immediate(0),other(1000361000)] images=3 extent=2796x1044"
+  ],
+  "diagnostic_path": [
+    "[terrain-profile] G-buffer POM path=chart_only (diagnostic; connected relief omitted)"
+  ],
+  "sample_counts_complete": true,
+  "binary_unchanged": true,
+  "shader_changes": [],
+  "missing_shots": [],
+  "wrong_dimensions": [],
+  "errors": [],
+  "connection_warning_count": 1042,
+  "acceptance_passed": false
+}
