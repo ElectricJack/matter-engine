@@ -1,0 +1,121 @@
+Task noble-zenith-31, claim epoch 4, 2026-10-20
+Recovered source: d2d73ff4 (production implementation 975b0b9c).
+New CPU regression commit: ace2deff23c774853cdb29a007ae07592b01f6e7.
+
+Read and verified rev-agile-stone revision 1 approval and content SHA256
+4ebdbd5aa3151c65135f09a52ba1a094aae8fd5784be7203be96d2688e7c4b11.
+Recovered own published branch by fast-forward from assigned clean 9d846e66.
+No production changes: six relevant renderer/fixture files match 975b0b9c
+byte-for-byte (source-sha256.txt). No unrelated sparse capacity changes.
+
+Executed original reporter characterization:
+  aq test --aq-timeout 75 -n 0 /tmp/noble-zenith-31-epoch4/test_counter_characterization.py -q -s
+  PASS: 1 passed in 0.55s, exit 0; characterization.log.
+  Probe copied from the preserved evidence, changing only ROOT to git-show
+  exports of eeae129c rt_dispatch.inl and rt_contract.inl. The adjacent
+  test_counter_characterization.py preserves the executed source and
+  source-sha256.txt identifies those pristine inputs.
+  Observed: poisoned buffers yield 6 warnings and total 15949192134;
+  equal count-7 samples yield total 7; stale count-2/count-3 buffers yield 15.
+  This is retrospective characterization of the original source, NOT a claim
+  that execution preceded the implementation from epoch 2. Earlier epochs'
+  admission refusals and NOT RUN records remain unchanged.
+
+Executed fixed-code CPU regression:
+  aq test --aq-timeout 75 -n 0 MatterEngine3/tests/test_rt_counter_cpu.py -q -s
+  PASS: 9 passed in 0.99s, exit 0; regression.log.
+  The harness compiles the actual reporter and the whole production
+  rt_frame_commit.inl unchanged. It stubs buffer I/O, logging, and unrelated
+  renderer state, with empty unrelated histories/BLAS state. g++ C++17 -O0.
+  Cases: poison/no producer over six two-slot cycles (zero reads/logs/total);
+  equal 7+7=14 (one warning); distinct 2+3=5 and repeated slots; failed/zero/
+  mismatched submit serials; duplicate report and duplicate commit; a zero
+  sample and subsequent logging; map/invalidate failures consume provenance;
+  missing-buffer read retires provenance before a new handle appears.
+  These tests do NOT prove actual writer selection/recording, allocation/init/
+  rollback, reset/replacement, frame-fence retirement, RT toggles/capability,
+  GPU writes, noncoherent synchronization, or allocator origin. Native tests
+  are needed for those behaviors. No assertion was weakened or skipped.
+
+Capability correction observed this epoch:
+  Existing /tmp/.X11-unix/X0 socket, DISPLAY=:0 xdpyinfo exited 0 and
+  reported X.Org 24.1.6 (display-info.log). DISPLAY was absent from this
+  worker's environment; absence of the variable did not prove no display.
+  No display, runner, host, package, or driver was provisioned. /dev/dri absent.
+  This supersedes the earlier no-display assumption for this current run;
+  it does not retrospectively change epoch-3 NOT RUN evidence.
+
+Preserved native executable, used without rebuild:
+  /tmp/claude-1000/-home-jkern-dev-matter-engine-cpp--aq-worktrees-slot-1/0b036f9d-10e9-478d-820c-1b88fe42800a/scratchpad/cmakebuild/vulkan_smoke_tests
+  SHA256 9e2f24e77193a5e22ea7ad7a0e4c3316a50f4605cb0097468975f7c2acf47605
+  Historical Linux compile/link evidence and its nonowned-TU _putenv_s shim
+  are documented in ../validation.txt; this epoch does not claim a rebuild.
+
+Native run command (one admitted submission):
+  DISPLAY=:0
+  VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json
+  MATTER_SMOKE_EXE=<preserved executable above>
+  MATTER_SMOKE_LOG_DIR=/tmp/noble-zenith-31-epoch4/native
+  MATTER_VK_LAYER_DIR=/tmp/fleet-rapids-48-epoch18/toolchain/usr/share/vulkan/explicit_layer.d
+  MATTER_VK_LAYER_LIB=/tmp/fleet-rapids-48-epoch18/toolchain/usr/lib/x86_64-linux-gnu
+  aq test --aq-timeout 75 -n 0 docs/agent/evidence/2026-10-20-rt-counter-native/test_rt_counter_native.py -q -s
+  The six environment assignments above prefix the single command.
+  Uses the existing display and software Vulkan; it is NOT headless.
+  Each native mode has the preserved wrapper's 1500-second timeout.
+  rt-counters: FAILED, subprocess.TimeoutExpired at the preserved 1500-second limit.
+  Log reached the actual device banner: llvmpipe (LLVM20.1.2,256bits),
+  Mesa25.2.8, Vulkan API1.4.318; Vulkan RT available=true reason=none.
+  No matrix summary or final validation-error count was emitted. Therefore
+  native lifecycle acceptance is INCOMPLETE, not a pass or zero-error claim.
+  The existing wrapper times /usr/bin/time; subprocess.run timeout killed
+  that direct process but left its native child PID3130636 reparented to1.
+  Verified this exact executable and own claim, then terminated only that
+  known orphan via pidfd SIGTERM. Exit was confirmed; timeout-cleanup.log.
+  No other task/process was signalled; no slot was reaped. This is an observed
+  wrapper cleanup limitation to account for before reusing the old script.
+  The same original pytest invocation continued to planned mode rt:
+  rt: FAILED, subprocess.TimeoutExpired at the preserved 1500-second limit.
+  Its log reached initial static upload but no fixture summary or final
+  validation-error count. The rt-counters mode logged RT available=true;
+  rt logged the same llvmpipe adapter but no separate capability banner.
+  Aggregate: 2 failed in 3000.84s (0:50:00), aq test exit 1;
+  complete tracebacks in native-pytest.log, per-mode output in rt-counters.log
+  and rt.log. The exact reason neither mode completed is NOT established.
+  At final inspection the second mode's known time PID3420451 and native
+  PID3420453 no longer existed; no additional signal was sent. Their exit
+  mechanism is not inferred. See timeout-cleanup.log.
+  There was no resubmission, timeout extension or assertion weakening.
+  Native acceptance was EXECUTED but TIMED OUT/UNMET, not NOT RUN or PASS.
+
+Hardware RT, Windows MSVC, editor UI qualification, and performance acceptance
+remain NOT RUN. Windows is waived; unavailable hardware/device/performance
+qualification remains owner-deferred. Software execution does not establish
+hardware RT or performance acceptance.
+
+Final acceptance coverage detail:
+- Poisoned unwritten bytes over complete slot cycles: CPU test
+  test_counter_accounting[poison] PASS, no map/invalidate calls. Real disabled,
+  forced-unavailable, empty, and culled-to-empty renderer paths NOT COMPLETED.
+- Equal samples: test_counter_accounting[equal] PASS (14,2 samples,1 warning).
+- Distinct samples followed by no producers: [stale] PASS (5,2 samples),
+  but a real enabled-to-disabled renderer transition NOT COMPLETED.
+- Submission matching, failures, zero/unmatched serial: [submission] PASS;
+  actual dispatch-record and queue-submit fault injection NOT COMPLETED.
+- Duplicate reporter/commit calls: [duplicate] PASS.
+- Zero-count sample/log suppression reset: [zero] PASS.
+- Consume-once on failed read: [map-failure], [invalidate-failure] PASS.
+- Missing buffer cannot resurrect a consumed serial: [missing-buffer] PASS;
+  actual allocation/init/flush rollback, reset and resource replacement
+  NOT COMPLETED. The missing-buffer CPU case is not a replacement test.
+- Actual invalid-record surface-query fixture: rt mode EXECUTED but TIMED OUT;
+  no completed fixture result, acceptance UNMET.
+- Actual Vulkan final validation-error count: not available from timed-out
+  modes. Startup performance warnings demonstrate validation-layer
+  activity, not final zero-error acceptance.
+
+No production, native fixture, assertion, timeout, or performance-policy edits
+were made this epoch. The two new CPU-test files are the only new test code.
+
+Final disposition: preserve/publish evidence and close this attempt fail/blocked
+with unmet native-regression acceptance. CPU passes do not waive the required
+software Vulkan matrix. No new runner, owner wait or test resubmission.

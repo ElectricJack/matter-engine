@@ -1644,7 +1644,7 @@ int main() {
                std::string::npos &&
            renderer.find("volumetrics_->invalidate_history()") !=
                std::string::npos);
-    const std::string atmosphere_host = read_shader("../src/render/vk_atmosphere.cpp");
+    const std::string atmosphere_host = read_shader("../../libs/MatterGraphics/src/native/vk_atmosphere.cpp");
     assert(!atmosphere_host.empty());
     // Review regressions: sky-view must be visible to every Task 7 consumer,
     // and the environment UBO must be mapped before its neutral std140 bytes
@@ -1693,7 +1693,7 @@ int main() {
     // The same gating covers the cloud-shadow volumes, which are transitioned
     // "readable by every shader stage" for the same reason.
     const std::string cloud_shadow_host =
-        read_shader("../src/render/vk_cloud_shadows.cpp");
+        read_shader("../../libs/MatterGraphics/src/native/vk_cloud_shadows.cpp");
     assert(!cloud_shadow_host.empty());
     assert(cloud_shadow_host.find("VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR") ==
                std::string::npos &&
