@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "data": {
+    "success": true,
+    "result": {
+      "schema_version": 1,
+      "job_id": "33d8e031-1c0e-4248-afb4-453b6f7af14d",
+      "preset": "test",
+      "input_mode": "live",
+      "input_ref": "b65847b8c69be6ca2dc1036c8efe0d593e3178be",
+      "input_stability": "unverified",
+      "state": "succeeded",
+      "exit_code": 0,
+      "signal": null,
+      "outcome": "passed",
+      "infra_reason": null,
+      "queue_seconds": 18.262134552001953,
+      "run_seconds": 1075.9120252132416,
+      "summary": {
+        "passed": 1
+      },
+      "failing_tests": [],
+      "excerpt": "Job 33d8e031-1c0e-4248-afb4-453b6f7af14d (test): passed; exit=0\nOutput: aq job logs 33d8e031-1c0e-4248-afb4-453b6f7af14d (retained ranges only)\nbringing up nodes...\nbringing up nodes...\n\n.\n1 passed in 1073.55s (0:17:53)\n",
+      "output_bytes_seen": 76,
+      "output_bytes_retained": 76,
+      "truncated": false,
+      "omitted_failure_count": 0,
+      "output_ref": "33d8e031-1c0e-4248-afb4-453b6f7af14d",
+      "parser_version": 1,
+      "parser_source": "junit",
+      "artifact_status": "valid",
+      "result_hash": "34f8c093082f041593afde277980b0273bcdd1c694f3ba68807dd7ab8dcb1201"
+    }
+  }
+}
