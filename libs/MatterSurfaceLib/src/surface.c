@@ -1544,7 +1544,9 @@ static float smin_set(const float* vals, int n, float fmin, float k) {
     if (k <= 1e-5f || n == 1) return fmin;
     float sum = 0.0f;
     for (int i = 0; i < n; ++i) sum += expf(-(vals[i] - fmin) / k);
-    return fmin - k * logf(sum);
+    // Float libm error is amplified by finite-difference normals. Evaluate
+    // the logarithm in double precision, then explicitly round back to float.
+    return fmin - k * (float)log((double)sum);
 }
 
 // Ordered-CSG staged field evaluation (Phase 1). Folds the authored stages in

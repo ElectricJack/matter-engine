@@ -36,6 +36,7 @@
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <memory>
 #include <set>
 #include <string>
 #include <unordered_map>
@@ -281,8 +282,39 @@ private:
     std::shared_ptr<const matter::SourceSnapshot> sources_;
 };
 
+// Content dispatch between the legacy DSL and the portable authoring
+// pipeline. A part opts in with the exact class field
+//   static authoring = "matter.authoring.portable.v1";
+// Sources without a `static authoring` field stay Legacy; any other value is
+// Unknown and fails explicitly rather than falling back.
+enum class AuthoringRoute { Legacy, PortableV1, Unknown };
+AuthoringRoute classify_authoring_route(const std::string& source);
+
+// Re-authors every PortableV1 node of a restored bake plan through `baker`
+// from its pinned source and params, so a warm resolve cache retains the same
+// immutable products a cold resolve would. The portable hash folds the
+// pipeline implementation, route version and recipe digest, so getting each
+// cached hash back proves the product is the one its cached .part was baked
+// from. False (with `err` naming the part) on the first node that re-authors
+// to anything else; legacy nodes are untouched.
+bool reauthor_portable(Baker& baker, const std::unordered_map<uint64_t, BakeInputs>& plan,
+                       std::string& err);
+
+// The portable route a HostBaker hands PortableV1 sources to. Implemented by
+// the authoring component adapter (component_adapters/authoring), which owns
+// the authoring -> host -> Coordinator -> geometry wiring; the kernel only
+// sees this interface. resolve returns 0 on failure; both log their reason.
+struct PortableBakeRoute {
+    virtual ~PortableBakeRoute() = default;
+    virtual uint64_t resolve(const std::string& source, const std::string& params_json,
+                             std::string* merged_params_out) = 0;
+    virtual bool bake(const std::string& source, const std::string& params_json,
+                      uint64_t resolved_hash, const std::string& parts_dir) = 0;
+};
+
 // Checks parts/<hash>.part existence (SP-1 cache_path_resolved) and delegates hashing/baking to
 // SP-2 ScriptHost (resolve_hash + bake_source). SP-2 is the hash authority (master C-2).
+// PortableV1 sources go to the installed PortableBakeRoute instead.
 class HostBaker : public Baker {
 public:
     HostBaker(script_host::ScriptHost& host, std::string parts_dir,
@@ -290,6 +322,11 @@ public:
     uint64_t resolve_hash(const std::string& source, const Params& params,
                           const std::vector<uint64_t>& child_hashes,
                           std::string* merged_params_out) override;
+    // resolve_hash for callers that already hold canonical params JSON (the
+    // streaming asset installer), so they dispatch exactly like the graph.
+    uint64_t resolve_hash_json(const std::string& source, const std::string& params_json,
+                               const std::vector<uint64_t>& child_hashes,
+                               std::string* merged_params_out);
     bool cached(uint64_t resolved_hash) override;
     bool bake(const std::string& source, const Params& params,
               const std::vector<uint64_t>& child_hashes,
@@ -372,8 +409,15 @@ public:
     // The host this baker evaluates through; tests read its work counters.
     const script_host::ScriptHost& host() const { return host_; }
 
+    // Installs the route PortableV1 sources resolve and bake through. Without
+    // one, a PortableV1 source fails explicitly.
+    void set_portable_route(std::shared_ptr<PortableBakeRoute> route) {
+        portable_route_ = std::move(route);
+    }
+
 private:
     script_host::ScriptHost& host_;
+    std::shared_ptr<PortableBakeRoute> portable_route_;
     std::string              parts_dir_;
     std::shared_ptr<matter::CacheByteStorage> storage_;
 

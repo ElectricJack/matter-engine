@@ -1107,8 +1107,12 @@ void test_steady_state_has_zero_observed_allocations() {
             "matter::physics::MatterRiverFloatMeasurementEnd");
         const flecs::entity real_system = runtime.world().lookup(
             "matter::physics::MatterRiverFloatForces");
-        CHECK(!old_begin.is_alive() && !old_end.is_alive() &&
-                  real_system.is_alive(),
+        // lookup returns entity 0 for an absent name; ecs_is_alive requires a
+        // nonzero entity. Retain the absence and real-system guards without
+        // asking Flecs to validate that sentinel.
+        CHECK((!old_begin || !old_begin.is_alive()) &&
+                  (!old_end || !old_end.is_alive()) &&
+                  real_system && real_system.is_alive(),
               "allocation hook brackets inside the single real float-system callback");
         for (int i = 0; i < 1000; ++i) {
             const auto result = runtime.tick({1.0f / 60.0f, 1.0f / 60.0f, 1});

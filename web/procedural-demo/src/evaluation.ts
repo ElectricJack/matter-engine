@@ -40,10 +40,21 @@ export class EvaluationController {
     this.controller = controller;
     this.publish({ kind: 'busy' });
     try {
-      const result = await this.engine.evaluate(recipe, {
+      const options = {
         signal: controller.signal,
         budget: { operations: 20_000_000, vertices: 200_000, indices: 600_000 },
-      });
+      };
+      let result = await this.engine.evaluate(recipe, options);
+      if (this.disposed || generation !== this.generation) return;
+      const counts = new Map(result.meshes.map(mesh => [mesh.id, mesh.indices.length / 3]));
+      const triangles = result.instances.reduce((sum, instance) => sum + (counts.get(instance.meshId) ?? 0), 0);
+      // Small objects need no extra work. Heavy results get a native simplified
+      // level on the same reusable worker; retain the exact authored base too.
+      if (triangles > 1500) {
+        const baseMs = result.measurements.elapsedMs;
+        result = await this.engine.evaluate(recipe, { ...options, lodRatios: [0.35] });
+        result.measurements.elapsedMs += baseMs;
+      }
       if (this.disposed || generation !== this.generation) return;
       this.cache.set(stage, result);
       if (this.cache.size > 4) this.cache.delete(this.cache.keys().next().value!);
@@ -63,7 +74,7 @@ export async function loadEngine(): Promise<ProceduralEngine> {
   const url = new URL(`${import.meta.env.BASE_URL}matter-procedural-wasm/index.mjs`, document.baseURI).href;
   // A public package must stay intact; bundling it would break worker/module URLs.
   const { createProceduralEngine } = await import(/* @vite-ignore */ url) as {
-    createProceduralEngine(): Promise<ProceduralEngine>;
+    createProceduralEngine(options: { concurrency: number }): Promise<ProceduralEngine>;
   };
-  return createProceduralEngine();
+  return createProceduralEngine({ concurrency: 1 });
 }
