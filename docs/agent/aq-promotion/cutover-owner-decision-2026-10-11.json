@@ -1,0 +1,38 @@
+{
+  "decision_date": "2026-10-11",
+  "authority": "Jack, relayed by project supervisor",
+  "message_id": "msg-58dd9298eba84be4a758dbb3f6b0470e",
+  "message_created_seq": 9956,
+  "recording_task": "sound-impact-80.3",
+  "decision": {
+    "skip_import_and_activation": [
+      "parent-integration",
+      "root-train"
+    ],
+    "reason": "Supervisor relays that these playbooks were retired for agent-queue on 2026-10-11 and git-first train delivery is driven in code.",
+    "proceed_with": [
+      "Switch matter-engine-cpp to the git-first train using supported owner controls.",
+      "Create staging from the current green dev head.",
+      "Activate the dev -> staging -> main promotion flow.",
+      "Activate promotion-continuous and promotion-request through applicable reviews and exact artifact identities."
+    ]
+  },
+  "execution_boundary": {
+    "repository_implementation_owner": "fleet-ridge-94",
+    "this_task": "Verify source qualification and actual bootstrap delivery, including exact delivered-head checks.",
+    "operator_only_steps": "Send exact commands to supervisor; preserve capability refusals and current-state guards.",
+    "release": "No approval for an actual staging -> main release was requested or granted by this cutover decision."
+  },
+  "bootstrap_state": {
+    "qualified_source_sha": "8f25e4b8297d8db04e992aa04f557ff10ba59183",
+    "run_id": 38146618710,
+    "windows_check_id": 114491219806,
+    "linux_check_id": 114491219575,
+    "producer_app_id": 15368,
+    "source_result": "success",
+    "owner_delivery": "pending actual receipt",
+    "delivered_head_checks": "pending actual delivered head",
+    "evidence": "evidence/bootstrap_delivery.json"
+  },
+  "interpretation": "This decision supersedes the plan revision 5 requirement to import/activate the two retired train playbooks. It does not itself prove any configuration change, delivery, staging creation, activation, or promotion. Bootstrap acceptance still requires owner old/new dev OIDs, source containment, required files and both exact-delivered-head App15368 checks."
+}

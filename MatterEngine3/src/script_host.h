@@ -68,7 +68,23 @@
 #include "matter/bake_observer.h"  // optional per-rung observer (W3, Lab-only)
 #include "matter/animation_diagnostic.h"  // full animation diagnostic list (D1)
 
+class BLASManager;
+class TLASManager;
+struct Tri;
+struct TriEx;
+
 namespace script_host {
+
+// The first `class <Name> extends Part` in the source (a text scan, not a
+// parse), or "" when there is none. The bake and the portable route both name
+// the authored class this way.
+std::string find_part_class_name(const std::string& source);
+
+// Registers a literal triangle stream as one BLAS entry drawn by an identity
+// TLAS instance, exactly as the bake's direct-triangle path does.
+void register_direct_triangles(BLASManager& blas, TLASManager& tlas,
+                               const std::vector<Tri>& tris,
+                               const std::vector<TriEx>& extra);
 
 // The in-memory geometry a bake hands to save_v2, retained when
 // BakeOptions::retain_geometry asks for it (see BakeResult::geometry).
@@ -208,6 +224,54 @@ struct SolidSourceEvaluationOptions {
     gpu_meshing::BuildControl control;
 };
 
+// Optional part-local, finite material source. Read independently of build(),
+// including when the receiver geometry is already cached. Programs use the
+// same surface language as World.surfaces; all geometry and text are owned.
+struct FiniteSurfacePlacement {
+    uint32_t source = 0;
+    std::array<float,16> matrix{}; // rigid, row-major
+};
+struct FiniteSurfaceReceiver {
+    std::array<float,3> origin_m{}, u{}, v{}, n{};
+    std::array<float,4> domain_m{}; // u min, v min, width, height; origin is on the plane
+};
+struct FiniteSurfaceModule {
+    FiniteSurfaceReceiver frame;
+    std::array<float,2> period_m{};
+    float texels_per_m=0;
+    std::vector<FiniteSurfacePlacement> placements;
+    std::string base_program;
+};
+struct FiniteSurfaceMaterialMapping {
+    uint32_t module=0;
+    FiniteSurfaceReceiver frame;
+    std::array<float,2> phase{}, u_range_m{-1e20f,1e20f};
+    float datum_m=0;
+};
+struct EvaluatedFiniteSurface {
+    bool present = false;
+    uint32_t version = 1;
+    std::vector<EvaluatedFiniteSurface> sources;
+    std::vector<FiniteSurfacePlacement> placements;
+    std::vector<FiniteSurfaceReceiver> receivers;
+    std::vector<FiniteSurfaceModule> modules;
+    std::vector<FiniteSurfaceMaterialMapping> material_mappings;
+    EvaluatedSolidSource geometry;
+    std::array<float, 3> bounds_min_m{}, bounds_max_m{};
+    float pixel_m = 0;
+    std::string appearance_program, base_program;
+    uint64_t appearance_hash = 0, base_hash = 0;
+};
+
+// Complete procedural material evaluated directly on ordinary part geometry.
+// Coordinates and physical height are in part-local metres; instances share it.
+struct EvaluatedDirectSurface {
+    bool present = false;
+    uint64_t part_hash = 0, program_hash = 0, generation = 0;
+    uint32_t material = 0;
+    std::string program;
+};
+
 struct TilesetEvalResult {
     BakeError error;
     tileset::TilesetSpec spec;
@@ -287,6 +351,20 @@ public:
                                BakeError& error,
                                const SolidSourceEvaluationOptions& options = {});
 
+    // Missing declaration succeeds with present=false. Malformed declarations
+    // fail without replacing output. Does not construct the Part, run build(),
+    // call a GPU service, or create artifacts. Uses the same bounded sandbox.
+    bool evaluate_finite_surface(const std::string& source,
+                                 const std::string& params_json,
+                                 EvaluatedFiniteSurface& output, BakeError& error,
+                                 const SolidSourceEvaluationOptions& options = {});
+
+    // Reads either static surface() or finiteSurface() once, without build().
+    // Declarations are mutually exclusive; both outputs are atomic on failure.
+    bool evaluate_part_surface(const std::string& source, const std::string& params_json,
+                               EvaluatedDirectSurface& direct, EvaluatedFiniteSurface& finite,
+                               BakeError& error, const SolidSourceEvaluationOptions& options = {});
+
     // Hash-only: merge static+override params, fold child_hashes, return the
     // content hash WITHOUT running build()/baking. Shares the params-merge +
     // canonicalization path with bake_source so the two ALWAYS agree.
@@ -294,6 +372,15 @@ public:
                           const std::string& params_json,
                           const uint64_t* child_hashes = nullptr,
                           size_t child_count = 0);
+
+    // Exact request identity for a prepared resolved-hash manifest. Does not
+    // evaluate JS or canonicalize overrides; equivalent JSON spellings may
+    // produce different request keys. Never use this as the baked part hash.
+    // Includes transitive sources, raw overrides, children, bake mode/version.
+    uint64_t resolve_request_hash(const std::string& source,
+                                  const std::string& params_json,
+                                  const uint64_t* child_hashes = nullptr,
+                                  size_t child_count = 0);
 
     // Evaluate a World root: fresh isolated context, runs field() + biomes(),
     // accumulates the field-program op lines, and returns them as a FieldProgram
@@ -466,6 +553,15 @@ public:
         return shared_lib_roots_;
     }
 
+    // Installs an owned source snapshot, including the empty snapshot. Imports
+    // are folded and evaluated from these exact bytes, without disk fallback.
+    // Configure on the host's owner thread before evaluating; replacing the
+    // snapshot invalidates folds. nullopt restores the shared-lib search path.
+    void set_module_sources(std::optional<std::vector<module_resolver::ResolvedModule>> sources) {
+        module_sources_ = std::move(sources);
+        clear_fold_cache();
+    }
+
     // Cached fold_sources: looks up (source, shared_lib_root) by FNV1a64 hash key.
     // Returns true on success (fold succeeded); false on fold failure (err set).
     // Increments fold_cache_hits on cache hit, fold_cache_misses on miss.
@@ -475,6 +571,14 @@ public:
 
     uint64_t fold_cache_hits() const { return fold_hits_; }
     uint64_t fold_cache_misses() const { return fold_misses_; }
+
+    // Work counters for this host's lifetime. lod_evaluations counts calls to
+    // eval_lods / eval_no_impostor / eval_lod_budgets, each of which builds a
+    // fresh QuickJS runtime to read one class static. Owner-thread only, like
+    // the last_* scratch below.
+    struct Stats { uint64_t lod_evaluations = 0; };
+    const Stats& stats() const { return stats_; }
+
     // Clears the fold cache. Called by set_shared_lib_root() to invalidate cached
     // folded sources when the shared-lib root changes. Engine reload does not call
     // this because install_graph() recreates the ScriptHost (fresh cache by design).
@@ -495,7 +599,9 @@ private:
                               size_t child_count, const std::string* child_modules,
                               const std::string* child_params,
                               EvaluatedSolidSource* evaluated,
-                              const SolidSourceEvaluationOptions* evaluation_options);
+                              const SolidSourceEvaluationOptions* evaluation_options,
+                              EvaluatedFiniteSurface* finite_surface = nullptr,
+                              EvaluatedDirectSurface* direct_surface = nullptr);
     // Returns canonical merged-params JSON; fills err on failure. Evals source
     // to read `static params`; does NOT call build(). Also stashes the result in
     // last_merged_params_.
@@ -513,6 +619,7 @@ private:
     uint64_t solid_source_generation_ = 0;
 
     std::vector<std::string> shared_lib_roots_;
+    std::optional<std::vector<module_resolver::ResolvedModule>> module_sources_;
     // Scratch describing the MOST RECENT call, overwritten by the next one and
     // meaningless before the first. Surfaced through the `last_*` accessors
     // above; unguarded, unlike the fold cache below.
@@ -526,8 +633,12 @@ private:
     // Fold cache: (source, ordered shared-lib roots) -> FoldResult (thread-safe).
     std::mutex fold_mu_;
     std::unordered_map<uint64_t, module_resolver::FoldResult> fold_cache_;
+    // Same invalidation boundary as fold_cache_; exact source keys avoid an
+    // additional hash-only alias. Prefix excludes params, children, mode/version.
+    std::unordered_map<std::string, uint64_t> request_source_prefixes_;
     uint64_t fold_hits_ = 0;
     uint64_t fold_misses_ = 0;
+    Stats stats_;
 };
 
 } // namespace script_host

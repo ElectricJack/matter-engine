@@ -1,0 +1,807 @@
+{
+  "schema": "matter-engine.promotion-inputs-qualification.v1",
+  "task_id": "vivid-lantern-44.1",
+  "deliverable": "promotion_inputs_evidence",
+  "actor": {
+    "session_id": "b2990af4-be7d-4485-b109-ef7c43594400",
+    "task_id": "vivid-lantern-44.1",
+    "claim_epoch": 2,
+    "branch": "aq/vivid-lantern-44.1"
+  },
+  "checked_at_utc": "2026-10-11T03:12:46Z",
+  "source_sha": "f84195c34ade6dd7b5bd6f1bd4e933e3906f4b8d",
+  "source_tree": "164ff9aa6bc81f710421971470e9ed22990da4b5",
+  "approved_plan": {
+    "path": "/home/jkern/.agent-queue/vault/projects/matter-engine-cpp/plans/2026-10-10-matter-engine-git-first-train-and-promotion-cutover.md",
+    "revision": 5,
+    "sha256": "sha256:cf799382b6c6e358b44bd58e44d57eb972b8e96279ff469a0159c922585751d0",
+    "matches_repo_trust_evidence_plan_sha256": true,
+    "approval_record": "docs/agent/aq-promotion/evidence/repo_trust.json approved_plan (review rev-azure-torrent r5, human:local-operator)"
+  },
+  "qualification_scope": "Reviewed promotion flow file and the two reviewed project promotion playbook packages from the owner-confirmed policy profile, plus flow/manifest/workflow/verifier/check/attestation agreement and the supported LOCAL activation procedure. Separate from the parent-integration and root-train routes. Does NOT establish deployed policy-diff acceptance, deployed execution fingerprints, hosted CI success, delivery of the trust manifest to dev, flow activation, playbook import/approval/activation, or any promotion.",
+  "non_substitution": "Local drafts, offline compilation and offline validation in this file do not substitute for live activation or promotion. No `aq project set ... promotion-flow`, `aq policy apply`, review decision or `aq playbook activate` was run by this task.",
+  "aq_source_used_offline": {
+    "path": "/home/jkern/dev/agent-queue2",
+    "commit": "e48f6da0fa250bf269ba300e54ec5dfdffb5a573",
+    "python": "/home/jkern/dev/agent-queue2/.venv/bin/python",
+    "role": "Installed CLI checkout used for offline FlowSchema, materialize, compile, validate_definition and propose. NOT verified as the deployed daemon source; the deployed daemon SHA is unverified."
+  },
+  "remote_refs_observed": {
+    "observed_at_utc": "2026-10-11T03:12:46Z",
+    "refs/heads/dev": "f84195c34ade6dd7b5bd6f1bd4e933e3906f4b8d",
+    "refs/heads/main": "e04dfdd27a6f706fa78326535a71f90c43a0cb5f",
+    "refs/heads/staging": null,
+    "refs/heads/aq/fleet-ridge-94": "35289874a52630a6439353666ed26179dd334ab2",
+    "note": "Observations only; never reuse as live mutation values (CAS generations/OIDs must be re-read at operation time)."
+  },
+  "flow": {
+    "path": "/home/jkern/.agent-queue/vault/projects/matter-engine-cpp/policy/promotion/flow.json",
+    "sha256": "sha256:1760070c181f4c148dbe0aae9e4053d1b2b18a43fef5ed2a41e686f5f1c76634",
+    "bytes": 950,
+    "schema": "src.integration.promotion_steps.FlowSchema (JSON Schema Draft 2020-12) at AQ e48f6da0f",
+    "schema_errors": 0,
+    "schema_errors_whole_document": 0,
+    "document": {
+      "promotion_flow": [
+        {
+          "id": "staging",
+          "type": "continuous",
+          "source": "dev",
+          "target": "staging",
+          "gate": {
+            "approval": "none",
+            "attestation": "Agent Queue Promotion Attestation (staging)",
+            "checks": "inherit",
+            "request_ttl": "7d"
+          },
+          "after": {
+            "backmerge": true,
+            "deploy_hook": null,
+            "github_release": false
+          },
+          "notes": {
+            "kind": "none",
+            "bootstrap_sha": null
+          },
+          "versioning": {
+            "kind": "none"
+          }
+        },
+        {
+          "id": "release",
+          "type": "request",
+          "source": "staging",
+          "target": "main",
+          "gate": {
+            "approval": "operator",
+            "attestation": "Agent Queue Promotion Attestation (release)",
+            "checks": "inherit",
+            "request_ttl": "7d"
+          },
+          "after": {
+            "backmerge": true,
+            "deploy_hook": null,
+            "github_release": false
+          },
+          "notes": {
+            "kind": "none",
+            "bootstrap_sha": null
+          },
+          "versioning": {
+            "kind": "none"
+          }
+        }
+      ]
+    },
+    "expected_semantics": {
+      "staging": {
+        "type": "continuous",
+        "source": "dev",
+        "target": "staging",
+        "approval": "none",
+        "attestation": "Agent Queue Promotion Attestation (staging)"
+      },
+      "release": {
+        "type": "request",
+        "source": "staging",
+        "target": "main",
+        "approval": "operator",
+        "attestation": "Agent Queue Promotion Attestation (release)"
+      },
+      "both": {
+        "checks": "inherit",
+        "request_ttl": "7d",
+        "backmerge": true,
+        "deploy_hook": null,
+        "github_release": false,
+        "notes": "none",
+        "versioning": "none"
+      }
+    },
+    "semantics_match": true,
+    "live_promote_validate": {
+      "command": "aq --json promote validate --project matter-engine-cpp --file \"$HOME/.agent-queue/vault/projects/matter-engine-cpp/policy/promotion/flow.json\"",
+      "ran_at_utc": "2026-10-11T03:12:47Z",
+      "exit_code": 1,
+      "outcome": "invalid",
+      "valid": false,
+      "failing_layer": 3,
+      "layers_passed": [
+        1,
+        2
+      ],
+      "problems": [
+        {
+          "code": "attestation_not_in_manifest",
+          "pointer": "/promotion_flow/0/gate/attestation",
+          "message": "Attestation is not trusted by the manifest.",
+          "layer": 3
+        },
+        {
+          "code": "attestation_not_in_manifest",
+          "pointer": "/promotion_flow/1/gate/attestation",
+          "message": "Attestation is not trusted by the manifest.",
+          "layer": 3
+        }
+      ],
+      "warnings": [],
+      "receipt_sha256": "sha256:799deda180c33a88d984cff1251e04279ec64fcec8b63c053afd8920ba948466",
+      "interpretation": "Schema and chain layers pass. The trust layer fails only because current dev f84195c34 does not yet contain the fleet-ridge-94 trust manifest that lists both promotion attestation names. Recipe 15 orders validation after the manifest and workflows reach dev; this is an expected retained gate, not a flow defect."
+    }
+  },
+  "reconciliation": {
+    "flow_file_changed": false,
+    "semantics_changed": false,
+    "profile_item_0012": {
+      "id": "promotion_flow:project:flow",
+      "checksum": "sha256:a572c77f664200d99dabb8575d8ffb9e8cd26979bbed3ceaf796e4332fb83f99",
+      "materialized_equals_flow_file": false,
+      "finding": "Item 0012 is the agent-queue project's own flow (file_template release notes src/releases/notes/{version}.md, semver/pyproject versioning, bootstrap_sha). It must not be imported for matter-engine-cpp. Recipe 15 excludes it with two --only selectors and supplies the matter flow only via `aq project set ... promotion-flow <flow.json>`. Owner reply confirms: exclude item 0012."
+    },
+    "recipe": {
+      "name": "QA recipe 15 (Promotion CI and attestation audit)",
+      "path": "docs/agent/qa-cookbook.md",
+      "lines": "711-792",
+      "commit": "35289874a52630a6439353666ed26179dd334ab2",
+      "blob": "ceb02b390a2baa4e68a543e3a8c1287c27297e43",
+      "profile_path_in_recipe": "$HOME/.agent-queue/policy-profiles/agent-queue-2026-10-11",
+      "profile_path_matches_owner_selection": true,
+      "correction": "The recipe says to activate 'the imported project playbooks with their reviewed artifact hashes'. The imported ids are matter-engine-cpp.promotion-continuous and matter-engine-cpp.promotion-request (not the bare item names), and the activatable artifact hash exists only in each import review's approved pin; see activation_identity."
+    }
+  },
+  "policy_profile": {
+    "format": "aq.policy.v1",
+    "item_count": 14,
+    "manifest_bytes": 4415,
+    "manifest_sha256": "sha256:480ad15b729526bd2a4d51d76afc18f7ea67fa81b4366de5a62cf2d536496643",
+    "name": "agent-queue policy 2026-10-11",
+    "path": "/home/jkern/.agent-queue/policy-profiles/agent-queue-2026-10-11",
+    "placeholders": [
+      "branch_4",
+      "branch_5",
+      "default_branch",
+      "project_id"
+    ],
+    "source_aq_version": "0.1.0",
+    "manifest_sha256_owner_verified": true,
+    "substitutions": {
+      "default_branch": "dev",
+      "branch_4": "staging",
+      "branch_5": "main",
+      "project_id": "matter-engine-cpp (implicit from --project)"
+    }
+  },
+  "packages": {
+    "promotion-continuous": {
+      "profile_item": {
+        "checksum": "sha256:7ff859470648922f73e9c3a073aa336650dc3eab59002a7f9b72a639a2de3004",
+        "file": "items/0003.json",
+        "id": "playbook:project:promotion-continuous",
+        "name": "promotion-continuous",
+        "original_scope": "project",
+        "type": "playbook"
+      },
+      "template_payload_checksum": "sha256:7ff859470648922f73e9c3a073aa336650dc3eab59002a7f9b72a639a2de3004",
+      "template": {
+        "id": "promotion-continuous",
+        "scope": {
+          "project_id": "{{project_id}}",
+          "type": "project"
+        },
+        "schema_version": 2,
+        "compiler_build": "playbook-v2-compiler/1",
+        "compiled_at": "2026-10-07T20:32:01.955249Z",
+        "artifact_sha256": "sha256:b43c2f216aa56701ce93dd8ed60fbe616f234d5009715875100d641d8183ad2e",
+        "embedded_source_hash": "sha256:805796971f7c8aac22ee2a79f842c8269dd6abcd6ce5164656540df663cab0f7",
+        "source_digest": "sha256:805796971f7c8aac22ee2a79f842c8269dd6abcd6ce5164656540df663cab0f7",
+        "source_hash_matches": true
+      },
+      "materialized_pre_import": {
+        "artifact_sha256": "sha256:7fb3cebd506fc8aeb1e6fff8a4adf525c65108685de1f8aa729efc126a37c964",
+        "id": "promotion-continuous",
+        "scope": {
+          "project_id": "matter-engine-cpp",
+          "type": "project"
+        },
+        "source_hash": "sha256:1ba064473851ec2d5f3d83dfd7e8871ead694293867d479f3333076a9ddab41f",
+        "validate_payload": "ok"
+      },
+      "imported_pre_review_identity": {
+        "playbook_id": "matter-engine-cpp.promotion-continuous",
+        "scope": {
+          "project_id": "matter-engine-cpp",
+          "type": "project"
+        },
+        "schema_version": 2,
+        "compiler_build": "playbook-v2-compiler/1",
+        "source_hash": "sha256:2e834c92d771ee30cc748ffc80533d60de0d78de9a633ea9fc95300668b3fffc",
+        "artifact_sha256": "sha256:b3e871d7ee5ccf3a01c3046b5e27bd5e8fff9eea0152316d4b572ae61901c227",
+        "canonical_bytes": 30646,
+        "rules": [
+          "advance-source",
+          "explicit-request",
+          "hotfix-completed",
+          "visit-intent",
+          "backmerge-delivered"
+        ],
+        "step_count": 27
+      },
+      "compiled_against_commands": {
+        "integration_backmerge_source": "sha256:81577430d8662cecdf334156fd274dff96b915ecb905dc0e7efb560f2ad24a26",
+        "integration_promotion_policy_input": "sha256:dcb0ce1e78349524bf6581b7678fec227bc5476393a1f2b6143fe098211ed352",
+        "integration_promotion_publish": "sha256:884c13f3b1d58bfd89fa02e542493f4a6381e11ea3ad190a6d7aedc29b5c3654",
+        "message_send": "sha256:2329e6f64009790df340eafbc4b4bd6e7792f537770431f6bc11b5908db34b2a",
+        "promote_cancel": "sha256:5957c77edd6192b9519e8fe185030923c4c598c20914610a0642dd557709bfeb",
+        "promote_request": "sha256:6701bc830f7599a920f8b0e1e77f706e292c27e0001cc5e3471085788ba12b4c"
+      },
+      "compiled_against_profiles": {},
+      "frontmatter": {
+        "enabled": false,
+        "id": "matter-engine-cpp.promotion-continuous",
+        "scope": "project:matter-engine-cpp",
+        "triggers": [
+          "promotion.source_settled",
+          "promotion.request_due",
+          "promotion.hotfix_completed",
+          "promotion.intent_due",
+          "promotion.delivered"
+        ],
+        "version": 1
+      },
+      "import_destinations_not_yet_present": {
+        "/home/jkern/.agent-queue/vault/projects/matter-engine-cpp/playbooks/matter-engine-cpp.promotion-continuous.md": {
+          "bytes": 3598,
+          "exists": false,
+          "sha256": "sha256:1f4fd99fba26cf13dd52a832fa99d9fbc0ade18e62fad734d92db1c0774b9cea"
+        },
+        "/home/jkern/.agent-queue/vault/projects/matter-engine-cpp/policy/pending-playbooks/matter-engine-cpp.promotion-continuous/artifact.json": {
+          "bytes": 41678,
+          "exists": false,
+          "sha256": "sha256:566e3ac2b35ad2ca3f72dfb1ad34170d695cf4cd8536afa2841ec877d8925c68"
+        },
+        "/home/jkern/.agent-queue/vault/projects/matter-engine-cpp/policy/pending-playbooks/matter-engine-cpp.promotion-continuous/semantic-body.json": {
+          "bytes": 40586,
+          "exists": false,
+          "sha256": "sha256:3181f181a376979eeb794d98f64ea2ab31cfc1455a6b49a6a7b3865fba76b15f"
+        },
+        "/home/jkern/.agent-queue/vault/projects/matter-engine-cpp/policy/pending-playbooks/matter-engine-cpp.promotion-continuous/source.md": {
+          "bytes": 3598,
+          "exists": false,
+          "sha256": "sha256:1f4fd99fba26cf13dd52a832fa99d9fbc0ade18e62fad734d92db1c0774b9cea"
+        },
+        "/home/jkern/.agent-queue/vault/projects/matter-engine-cpp/policy/playbook/promotion-continuous.json": {
+          "bytes": 47734,
+          "exists": false,
+          "sha256": "sha256:2a13f124d18dcc2877ef1881c8fd9aebba86500920b9011b49e85cc74d9c5645"
+        }
+      },
+      "offline_validation": {
+        "pending_artifact_validate_definition": {
+          "artifact_sha256": "sha256:b3e871d7ee5ccf3a01c3046b5e27bd5e8fff9eea0152316d4b572ae61901c227",
+          "errors": 0,
+          "warnings": 0,
+          "questions": 0,
+          "info": 4,
+          "info_codes": [
+            "type_unknown /inputs/request_id",
+            "type_unknown /inputs/source_sha"
+          ]
+        },
+        "review_recompile_propose": {
+          "activatable": true,
+          "questions": 0,
+          "errors": 0,
+          "warnings": 0,
+          "info": 4,
+          "source_hash": "sha256:2e834c92d771ee30cc748ffc80533d60de0d78de9a633ea9fc95300668b3fffc",
+          "source_hash_equals_import": true,
+          "this_run_artifact_sha256_NOT_FOR_ACTIVATION": "sha256:f014e1bd7c4130c1525b15a55a780e85740e06b5a5b4b977e98707598745866b"
+        },
+        "embedded_fingerprints_equal_source_registry": true
+      }
+    },
+    "promotion-request": {
+      "profile_item": {
+        "checksum": "sha256:9459a9f189d3afee843af4af12f29b19f6f7150411f678b1e5a193e0aa40815e",
+        "file": "items/0004.json",
+        "id": "playbook:project:promotion-request",
+        "name": "promotion-request",
+        "original_scope": "project",
+        "type": "playbook"
+      },
+      "template_payload_checksum": "sha256:9459a9f189d3afee843af4af12f29b19f6f7150411f678b1e5a193e0aa40815e",
+      "template": {
+        "id": "promotion-request",
+        "scope": {
+          "project_id": "{{project_id}}",
+          "type": "project"
+        },
+        "schema_version": 2,
+        "compiler_build": "playbook-v2-compiler/1",
+        "compiled_at": "2026-10-07T20:32:01.889679Z",
+        "artifact_sha256": "sha256:56f07777b4d975b55e1c419a9b7e0dfe424c84f67c773b28c980afa67181077a",
+        "embedded_source_hash": "sha256:9d6b3dfcb010caa4a0b2ac191c308b55480ebeb6182c88208abc4f6e0d3b51e3",
+        "source_digest": "sha256:9d6b3dfcb010caa4a0b2ac191c308b55480ebeb6182c88208abc4f6e0d3b51e3",
+        "source_hash_matches": true
+      },
+      "materialized_pre_import": {
+        "artifact_sha256": "sha256:aa23f367516ab9fb5afb114ac31f1759ed13f1b01b2318c3c236be1f447e237f",
+        "id": "promotion-request",
+        "scope": {
+          "project_id": "matter-engine-cpp",
+          "type": "project"
+        },
+        "source_hash": "sha256:483320956a3214e83ba88548f10b16223f2e0eeb66ba06c7551184d899ceb291",
+        "validate_payload": "ok"
+      },
+      "imported_pre_review_identity": {
+        "playbook_id": "matter-engine-cpp.promotion-request",
+        "scope": {
+          "project_id": "matter-engine-cpp",
+          "type": "project"
+        },
+        "schema_version": 2,
+        "compiler_build": "playbook-v2-compiler/1",
+        "source_hash": "sha256:0ede448fdadb46f97a046d8c97f30ef9556c6f15db8157bc087d65fb06987033",
+        "artifact_sha256": "sha256:fcfbf5231545214a06ef23585db2cbf8b4177f0ce5a610f174c0d0f13c1d1b7a",
+        "canonical_bytes": 21789,
+        "rules": [
+          "advance-source",
+          "explicit-request",
+          "hotfix-completed",
+          "visit-intent",
+          "backmerge-delivered"
+        ],
+        "step_count": 21
+      },
+      "compiled_against_commands": {
+        "integration_backmerge_source": "sha256:81577430d8662cecdf334156fd274dff96b915ecb905dc0e7efb560f2ad24a26",
+        "integration_promotion_policy_input": "sha256:dcb0ce1e78349524bf6581b7678fec227bc5476393a1f2b6143fe098211ed352",
+        "integration_promotion_publish": "sha256:884c13f3b1d58bfd89fa02e542493f4a6381e11ea3ad190a6d7aedc29b5c3654",
+        "message_send": "sha256:2329e6f64009790df340eafbc4b4bd6e7792f537770431f6bc11b5908db34b2a",
+        "promote_request": "sha256:6701bc830f7599a920f8b0e1e77f706e292c27e0001cc5e3471085788ba12b4c"
+      },
+      "compiled_against_profiles": {},
+      "frontmatter": {
+        "enabled": false,
+        "id": "matter-engine-cpp.promotion-request",
+        "scope": "project:matter-engine-cpp",
+        "triggers": [
+          "promotion.source_settled",
+          "promotion.request_due",
+          "promotion.hotfix_completed",
+          "promotion.intent_due",
+          "promotion.delivered"
+        ],
+        "version": 1
+      },
+      "import_destinations_not_yet_present": {
+        "/home/jkern/.agent-queue/vault/projects/matter-engine-cpp/playbooks/matter-engine-cpp.promotion-request.md": {
+          "bytes": 3589,
+          "exists": false,
+          "sha256": "sha256:d47f04c4862d9175e0079aef89992ac748c55d289a412b99c44636a1f254b7a7"
+        },
+        "/home/jkern/.agent-queue/vault/projects/matter-engine-cpp/policy/pending-playbooks/matter-engine-cpp.promotion-request/artifact.json": {
+          "bytes": 29751,
+          "exists": false,
+          "sha256": "sha256:332c3ff136672539d100b0035203f852c2a428cf4fcd82a094fd54ed1b910c04"
+        },
+        "/home/jkern/.agent-queue/vault/projects/matter-engine-cpp/policy/pending-playbooks/matter-engine-cpp.promotion-request/semantic-body.json": {
+          "bytes": 28761,
+          "exists": false,
+          "sha256": "sha256:10f3afbf4437e5704054ce398ef29c8b5e408f53844e5946416140ff3cdd6bbf"
+        },
+        "/home/jkern/.agent-queue/vault/projects/matter-engine-cpp/policy/pending-playbooks/matter-engine-cpp.promotion-request/source.md": {
+          "bytes": 3589,
+          "exists": false,
+          "sha256": "sha256:d47f04c4862d9175e0079aef89992ac748c55d289a412b99c44636a1f254b7a7"
+        },
+        "/home/jkern/.agent-queue/vault/projects/matter-engine-cpp/policy/playbook/promotion-request.json": {
+          "bytes": 35178,
+          "exists": false,
+          "sha256": "sha256:047931811d17d3729128b2e729e9ccb90ccc9580e3195bb2104e92f6012085ae"
+        }
+      },
+      "offline_validation": {
+        "pending_artifact_validate_definition": {
+          "artifact_sha256": "sha256:fcfbf5231545214a06ef23585db2cbf8b4177f0ce5a610f174c0d0f13c1d1b7a",
+          "errors": 0,
+          "warnings": 0,
+          "questions": 0,
+          "info": 2,
+          "info_codes": [
+            "type_unknown /inputs/source_sha"
+          ]
+        },
+        "review_recompile_propose": {
+          "activatable": true,
+          "questions": 0,
+          "errors": 0,
+          "warnings": 0,
+          "info": 2,
+          "source_hash": "sha256:0ede448fdadb46f97a046d8c97f30ef9556c6f15db8157bc087d65fb06987033",
+          "source_hash_equals_import": true,
+          "this_run_artifact_sha256_NOT_FOR_ACTIVATION": "sha256:eac580b1cb9a79f410dc5d32e5646d73efe15a3793a8f1b3bd4300f470513263"
+        },
+        "embedded_fingerprints_equal_source_registry": true
+      }
+    }
+  },
+  "activation_identity": {
+    "statement": "The deployable activation artifact_sha256 for each package cannot be precomputed and is NOT recorded here. `aq policy apply` submits an import review (kind other, title 'Imported policy playbook: <id>', activate_on_approval false); the review pin recompiles the source with compiled_at=now, an authoritative field inside the canonical artifact bytes. The only valid activation hash is pin.meta.artifact_sha256 of the approved import review, returned as next_step 'aq playbook activate --playbook-id <id> --artifact-sha256 <sha>'.",
+    "source_refs_at_aq_e48f6da0f": [
+      "src/playbooks/proposal.py:43-60 (AUTHORITATIVE_FIELDS includes compiled_at)",
+      "src/playbooks/proposal.py:371 (compiled_at=datetime.now(UTC))",
+      "src/commands/review_commands.py:635-649 (pin meta artifact_sha256)",
+      "src/commands/review_commands.py:654-694 (approval outcome next_step; no activation when activate_on_approval false)",
+      "src/commands/policy_commands.py:455-458 (import review title, activate_on_approval False)"
+    ],
+    "demonstration": "Two offline recompiles of the same source produced different artifact_sha256 values (pending vs this-run fields under packages.*.offline_validation); both are pre-import identities only.",
+    "historical_or_precomputed_hashes_usable_for_activation": false
+  },
+  "command_fingerprints": {
+    "source_registry_at_aq_e48f6da0f": {
+      "integration_backmerge_source": "sha256:81577430d8662cecdf334156fd274dff96b915ecb905dc0e7efb560f2ad24a26",
+      "integration_promotion_policy_input": "sha256:dcb0ce1e78349524bf6581b7678fec227bc5476393a1f2b6143fe098211ed352",
+      "integration_promotion_publish": "sha256:884c13f3b1d58bfd89fa02e542493f4a6381e11ea3ad190a6d7aedc29b5c3654",
+      "message_send": "sha256:2329e6f64009790df340eafbc4b4bd6e7792f537770431f6bc11b5908db34b2a",
+      "promote_cancel": "sha256:5957c77edd6192b9519e8fe185030923c4c598c20914610a0642dd557709bfeb",
+      "promote_request": "sha256:6701bc830f7599a920f8b0e1e77f706e292c27e0001cc5e3471085788ba12b4c"
+    },
+    "embedded_in_both_packages_equal_source_registry": true,
+    "deployed_catalog": {
+      "receipt": "owner-run `aq --json playbook commands` (exit 0), supervisor message msg-cd25166949ec4a0cb80c73111802fed2",
+      "receipt_path_at_capture": "/tmp/matter-8860-playbook-commands.json",
+      "receipt_sha256": "sha256:6eb3f9c09dc57ac78c045b2fc2e19aa0cebdd18b4fcefc7e277e5c62bc412ee6",
+      "receipt_sha256_rechecked": "sha256:6eb3f9c09dc57ac78c045b2fc2e19aa0cebdd18b4fcefc7e277e5c62bc412ee6",
+      "deployed_count": 198,
+      "source_count": 198,
+      "only_deployed": [],
+      "only_source": [],
+      "parameters_schema_mismatches": [],
+      "promotion_commands": {
+        "integration_backmerge_source": {
+          "present_in_deployed_catalog": true,
+          "deployed_parameters_schema_sha256": "6f6245fa6ca22bfbebf4a10bec63210cd64635fe3073fd46ba9712897057a409",
+          "parameters_schema_equal": true
+        },
+        "integration_promotion_policy_input": {
+          "present_in_deployed_catalog": true,
+          "deployed_parameters_schema_sha256": "0689a6e7b2fb1b19a1ff3198e90e5ca9a0f216f9d08fbdad9d6123e203496e8c",
+          "parameters_schema_equal": true
+        },
+        "integration_promotion_publish": {
+          "present_in_deployed_catalog": true,
+          "deployed_parameters_schema_sha256": "20465596219bc8a3e2cab0c00b517fe9555aea00b633e980b2dff984980304f0",
+          "parameters_schema_equal": true
+        },
+        "message_send": {
+          "present_in_deployed_catalog": true,
+          "deployed_parameters_schema_sha256": "4a572fd9f8b468dce67c429add2fc02fe17dfe8e7e831fabda25f72dcc284a94",
+          "parameters_schema_equal": true
+        },
+        "promote_cancel": {
+          "present_in_deployed_catalog": true,
+          "deployed_parameters_schema_sha256": "3290d380d2c5b94a6655f2f9153c948fe19300b931015e8237ccc7dbc036db3d",
+          "parameters_schema_equal": true
+        },
+        "promote_request": {
+          "present_in_deployed_catalog": true,
+          "deployed_parameters_schema_sha256": "787ee6961486f2724f56d1c3337bc533797dde20b6b3b487d7f4adbbc527c9c3",
+          "parameters_schema_equal": true
+        }
+      },
+      "limit": "The deployed catalog exposes name/title/summary/docs_url/parameters_schema only. The execution fingerprint also covers the result model, outcomes, capability, side-effect, idempotency and effects, so deployed execution-fingerprint equality is NOT proven; only args-schema parity across all 198 commands is."
+    }
+  },
+  "trust_agreement": {
+    "owner_commit": "35289874a52630a6439353666ed26179dd334ab2",
+    "owner_tree": "0af92e1426511d01bec9e15c1851502f6c728115",
+    "owner_ref": "refs/heads/aq/fleet-ridge-94",
+    "on_dev": false,
+    "files": {
+      ".github/agent-queue-integration.json": {
+        "blob": "68eee601b503f7fcd1fc418ecde7d6d131bf2b71",
+        "bytes": 776,
+        "sha256": "sha256:4ba1582f5ef9dc0656d04739034f5891261a05017125fcbb4421adb2667b6f13"
+      },
+      ".github/workflows/tests.yml": {
+        "blob": "f49807729e7b17f0e5370d4e5b7d59100b805de0",
+        "bytes": 1579,
+        "sha256": "sha256:0152245bc69dfad488d1b2398f5179e74f2a3997a73d35bf28f10c8523b42833"
+      },
+      ".github/workflows/main-attestation.yml": {
+        "blob": "12b23908b1145eaf3f498ec5108214f724a6bf8d",
+        "bytes": 1930,
+        "sha256": "sha256:af025abfe818d11fbe91e274992285bb93d76df01cba9299e5f0185abd0403d7"
+      },
+      "tools/aq_attestation.py": {
+        "blob": "be5ecfbde3c9ee8e596b96058b08a6b34af3beff",
+        "bytes": 21907,
+        "sha256": "sha256:46a72ad761bb1f6f5748c634b760b34a5606cb2cadbbcc102a11bd8e9a7a1ff4"
+      },
+      "tools/tests/test_aq_attestation.py": {
+        "blob": "23a2cf3c2fc15d8653241ea4e717d9c784e0bf13",
+        "bytes": 11618,
+        "sha256": "sha256:bfe723dbe728e92190652ba4dae633a519d5b0c1ae0f18f8dbf084e0a4c0e260"
+      },
+      "tools/aq_attestation.LICENSE": {
+        "blob": "b8fd5625d61b6956493ca16a59e90cd204c1d8b3",
+        "bytes": 1066,
+        "sha256": "sha256:fc4033b37c661304517f650694715e37a4e14e965293215f56b796fc00cc6c5e"
+      },
+      "docs/agent/qa-cookbook.md": {
+        "blob": "ceb02b390a2baa4e68a543e3a8c1287c27297e43",
+        "bytes": 43026,
+        "sha256": "sha256:e7ae496d75870654900831a8a977aeac8fafaf41bd64daa69133c7bb5c1b6853"
+      },
+      "docs/agent/aq-promotion/train-policy.proposal.json": {
+        "blob": "263265c2ba16db4e8b8513f1c7a1466893414111",
+        "bytes": 3175,
+        "sha256": "sha256:cbdf69cdfc043fd929a92e31dbfc192a26127fc4de8c5442d6a565e26a7b69d7"
+      }
+    },
+    "manifest": {
+      "attestation_app_id": 5075923,
+      "attestation_name": "Agent Queue Integration Attestation",
+      "canonical_repository_id": "matter-engine-cpp",
+      "check_sets": {
+        "promotion-source-audit": [
+          "unattested-ci / Native Windows build and tests",
+          "unattested-ci / Linux foundation build and tests"
+        ]
+      },
+      "ci_producer_app_id": 15368,
+      "full_name": "ElectricJack/matter-engine",
+      "promotion_attestation_names": [
+        "Agent Queue Promotion Attestation (staging)",
+        "Agent Queue Promotion Attestation (release)"
+      ],
+      "repository_id": 1266132968,
+      "required_checks": {
+        "names": [
+          "Native Windows build and tests",
+          "Linux foundation build and tests"
+        ],
+        "version": "matter-engine-ci-v1"
+      },
+      "schema": "aq.integration-trust.v1"
+    },
+    "workflow_mapping": {
+      "file": ".github/workflows/main-attestation.yml",
+      "trigger": "push to dev, staging, main",
+      "ATTESTATION_NAME": {
+        "staging": "Agent Queue Promotion Attestation (staging)",
+        "main": "Agent Queue Promotion Attestation (release)",
+        "other": "Agent Queue Integration Attestation"
+      },
+      "STEP": {
+        "staging": "staging",
+        "main": "release",
+        "other": ""
+      },
+      "TARGET_REF": "github.ref",
+      "APP_ID": "vars.AQ_INTEGRATION_ATTESTATION_APP_ID",
+      "CHECK_VERSION": "vars.AQ_INTEGRATION_REQUIRED_CHECK_VERSION",
+      "fallback": "unattested-ci uses ./.github/workflows/tests.yml"
+    },
+    "checks_workflow": {
+      "file": ".github/workflows/tests.yml",
+      "jobs": {
+        "linux-foundations": "Linux foundation build and tests (ubuntu-latest)",
+        "native": "Native Windows build and tests ([self-hosted, Windows, X64, matter-engine-msvc])"
+      }
+    },
+    "verifier": {
+      "file": "tools/aq_attestation.py",
+      "promotion_schema": "aq.promotion-attestation.v1",
+      "binds": "payload.attestation_name == ATTESTATION_NAME, payload.step == STEP, payload.target_ref == TARGET_REF (tools/aq_attestation.py:141-146)"
+    },
+    "agreement": [
+      {
+        "step": "staging",
+        "flow_attestation": "Agent Queue Promotion Attestation (staging)",
+        "in_manifest_promotion_attestation_names": true,
+        "workflow_ref": "refs/heads/staging",
+        "verifier_step": "staging",
+        "flow_target": "staging"
+      },
+      {
+        "step": "release",
+        "flow_attestation": "Agent Queue Promotion Attestation (release)",
+        "in_manifest_promotion_attestation_names": true,
+        "workflow_ref": "refs/heads/main",
+        "verifier_step": "release",
+        "flow_target": "main"
+      },
+      {
+        "checks": "inherit",
+        "manifest_required_checks": {
+          "names": [
+            "Native Windows build and tests",
+            "Linux foundation build and tests"
+          ],
+          "version": "matter-engine-ci-v1"
+        },
+        "tests_yml_job_names_equal": true,
+        "source_audit_check_set": [
+          "unattested-ci / Native Windows build and tests",
+          "unattested-ci / Linux foundation build and tests"
+        ]
+      }
+    ],
+    "agreement_result": "pass",
+    "verifier_tests": {
+      "command": "python3 -m unittest discover -s tools/tests -p test_aq_attestation.py",
+      "cwd": "git archive of tools/aq_attestation.py + tools/tests/test_aq_attestation.py at 35289874a52630a6439353666ed26179dd334ab2",
+      "python": "3.12.3",
+      "ran_at_utc": "2026-10-11T03:14:07Z",
+      "exit_code": 0,
+      "tests": 17,
+      "result": "OK"
+    }
+  },
+  "scope_denials": {
+    "worker": [
+      {
+        "command": "aq --json policy diff <profile> --project matter-engine-cpp --only ...continuous --only ...request --set ...",
+        "at_utc": "2026-10-11T03:02:22Z",
+        "error": "out_of_scope: policy_diff",
+        "exit_code": 4
+      },
+      {
+        "command": "aq --json playbook activation-health (both ids)",
+        "at_utc": "2026-10-11T03:02:32Z",
+        "error": "out_of_scope: playbook_activation_health",
+        "exit_code": 4
+      },
+      {
+        "command": "aq --json playbook artifacts (both ids)",
+        "at_utc": "2026-10-11T03:05:00Z",
+        "error": "out_of_scope: playbook_artifacts",
+        "exit_code": 4
+      },
+      {
+        "command": "aq --json playbook commands",
+        "at_utc": "2026-10-11T03:05:02Z",
+        "error": "out_of_scope: playbook_commands",
+        "exit_code": 4
+      }
+    ],
+    "supervisor": [
+      {
+        "command": "the exact requested aq --json policy diff",
+        "error": "out_of_scope: capability denied: policy_diff",
+        "exit_code": 4,
+        "receipt_sha256": "sha256:d1f96381136a98bcf36af8a44a1482accab30e2f836faf0034959dc11659a714"
+      }
+    ],
+    "bypass_attempted": false
+  },
+  "owner_selection": {
+    "source": "supervisor reply msg-cd25166949ec4a0cb80c73111802fed2 (system:supervisor) at 2026-10-11T03:09:46.155468+00:00",
+    "selection": "/home/jkern/.agent-queue/policy-profiles/agent-queue-2026-10-11 with only playbook:project:promotion-continuous and playbook:project:promotion-request, dev/staging/main substitutions, item 0012 excluded",
+    "manifest_sha256_independently_verified_by_owner": "sha256:480ad15b729526bd2a4d51d76afc18f7ea67fa81b4366de5a62cf2d536496643",
+    "fleet_ridge_94_checkpoint": "35289874a52630a6439353666ed26179dd334ab2",
+    "owner_instruction": "Preserve the policy-diff refusal; do not equate offline activatability with installed activation."
+  },
+  "coordination_wait": {
+    "request_message": "msg-eb32b874e8d842ffaabfb986074f57ed",
+    "request_created_seq": 8860,
+    "thread": "vivid-lantern-44.1:promotion-inputs",
+    "to": "session:supervisor-matter-engine-cpp",
+    "id": "d63bea2e-6b41-4f97-baa7-36e96b7b536a",
+    "after_seq": 8860,
+    "idempotency_key": "vivid-lantern-44.1-promotion-inputs-v1",
+    "timeout_seconds": 7200,
+    "result_state": "satisfied",
+    "result_ref": "message:msg-cd25166949ec4a0cb80c73111802fed2",
+    "result_created_seq": 8862,
+    "consumed": true,
+    "outcome_inspected": true,
+    "meaning": "Owner selection confirmation and deployed catalog receipt; not proof of deployed policy-diff acceptance, deployed execution fingerprints or activation."
+  },
+  "local_activation_procedure": {
+    "actor": "LOCAL operator only (project config, flow activation, import review decision and playbook activation are operator-owned; workers are out of scope)",
+    "preconditions": [
+      "fleet-ridge-94's trust manifest and workflows are delivered to dev (re-read refs; do not reuse the observations above)",
+      "aq promote validate on flow.json returns valid with no layer-3 problems against the delivered dev head",
+      "Hosted required checks pass on the exact source (Native Windows is currently failing per windows_runner.json)",
+      "Re-verify flow.json sha256:1760070c..., profile manifest sha256:480ad15b..., items 0003 sha256:7ff85947... and 0004 sha256:9459a9f1... before use"
+    ],
+    "steps": [
+      {
+        "n": 1,
+        "command": "aq --json promote validate --project matter-engine-cpp --file \"$HOME/.agent-queue/vault/projects/matter-engine-cpp/policy/promotion/flow.json\"",
+        "expect": "valid true"
+      },
+      {
+        "n": 2,
+        "command": "aq --json integration status matter-engine-cpp --control-only",
+        "expect": "read the CURRENT integration generation (never a historical value)"
+      },
+      {
+        "n": 3,
+        "command": "aq project set matter-engine-cpp promotion-flow \"$HOME/.agent-queue/vault/projects/matter-engine-cpp/policy/promotion/flow.json\" --expected-integration-generation <current-generation> --reason \"<audit reason>\"",
+        "expect": "flow activated; missing staging created from dev by create-only push; release keeps approval operator"
+      },
+      {
+        "n": 4,
+        "command": "aq --json policy diff \"$HOME/.agent-queue/policy-profiles/agent-queue-2026-10-11\" --project matter-engine-cpp --only playbook:project:promotion-continuous --only playbook:project:promotion-request --set default_branch=dev --set branch_4=staging --set branch_5=main",
+        "expect": "exactly two new project playbook items; no 0012 flow; zero errors/questions (this is the deployed check workers and supervisor could not run)"
+      },
+      {
+        "n": 5,
+        "command": "aq policy apply \"$HOME/.agent-queue/policy-profiles/agent-queue-2026-10-11\" --project matter-engine-cpp --only playbook:project:promotion-continuous --only playbook:project:promotion-request --set default_branch=dev --set branch_4=staging --set branch_5=main",
+        "expect": "two import reviews 'Imported policy playbook: matter-engine-cpp.promotion-continuous' / '...promotion-request' (activate_on_approval false)"
+      },
+      {
+        "n": 6,
+        "command": "aq --json review show <review-id> ; aq review decide --review-id <review-id> --revision <n> --decision approve",
+        "expect": "approval outcome stored=true with next_step carrying the pinned artifact_sha256; confirm pinned source_sha256 equals sha256:2e834c92... (continuous) / sha256:0ede448f... (request)"
+      },
+      {
+        "n": 7,
+        "command": "aq playbook activate --playbook-id matter-engine-cpp.promotion-continuous --artifact-sha256 <pinned sha from step 6>",
+        "expect": "activated, not blocked (operator chooses --enabled/--no-enabled; authored frontmatter enabled is false)"
+      },
+      {
+        "n": 8,
+        "command": "aq playbook activate --playbook-id matter-engine-cpp.promotion-request --artifact-sha256 <pinned sha from step 6>",
+        "expect": "activated, not blocked"
+      },
+      {
+        "n": 9,
+        "command": "aq --json promote status --project matter-engine-cpp --step staging",
+        "expect": "report the first automatic promotion only when delivery of the exact source SHA is recorded"
+      }
+    ]
+  },
+  "pending_gates": [
+    "Deployed `aq policy diff` for the exact selection: refused for worker and supervisor (out_of_scope); LOCAL operator must run it (procedure step 4).",
+    "Deployed execution-fingerprint equality and deployed daemon source SHA: unverified (catalog args-schema parity only).",
+    "promote validate trust layer: fails until the fleet-ridge-94 manifest reaches dev.",
+    "Hosted Native Windows CI on the owner source is failing (windows_runner.json: job 114343132642, 7/189 CTest suites).",
+    "Flow activation, playbook import, review approval, playbook activation and any promotion: not performed (operator-owned).",
+    "fleet-ridge-94 remains IN_PROGRESS and owns the implementation; this task did not modify it."
+  ],
+  "conclusion": "The reviewed flow.json is schema-valid and semantically exact; both owner-confirmed promotion packages are identified by exact template, source and pre-import digests, use playbook-v2-compiler/1 schema 2 with command fingerprints equal to the AQ source registry, and compile activatable with zero errors, warnings and questions. Flow, manifest, workflow, verifier, check and attestation names agree at fleet-ridge-94 35289874a. The activatable hashes do not exist until the operator's import reviews, so none is recorded. The deployed policy diff, trust-layer validation on dev, hosted CI, activation and promotion remain retained gates and are not claimed.",
+  "result": "pass",
+  "evidence_integrity": {
+    "result": "pass",
+    "fleet_git_file_hashes_checked": 8,
+    "packages_qualified": 2,
+    "assertions": [
+      "flow semantics exact",
+      "flow attestations == manifest promotion_attestation_names",
+      "required check names agree",
+      "deployed catalog receipt digest rechecked",
+      "per-package zero error/warning/question",
+      "recompile activatable + source_hash stable",
+      "embedded fingerprints == source registry",
+      "template source_hash integrity"
+    ],
+    "credentials_included": false
+  },
+  "evidence_finalized_at_utc": "2026-10-11T03:16:37.342601+00:00"
+}

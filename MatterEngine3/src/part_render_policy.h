@@ -6,6 +6,8 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <cmath>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -14,12 +16,20 @@ namespace matter {
 struct PartRenderPolicy {
     bool ray_traced = true;
     std::vector<RayTracingOverride> child_overrides;
+    bool shared_surfaces = false;
+    // Finest chart density in this material owner's local metres. Zero uses
+    // the renderer default; child instances keep their own owner's policy.
+    float vt_texels_per_meter = 0.0f;
 };
+
+inline bool valid_part_vt_density(float value) {
+    return value == 0.0f || (std::isfinite(value) && value >= 1.0f && value <= 2048.0f);
+}
 
 namespace render_policy_detail {
 
 inline constexpr std::uint32_t kMagic = 0x5054524du;  // "MRTP"
-inline constexpr std::uint32_t kVersion = 1u;
+inline constexpr std::uint32_t kVersion = 3u;
 
 inline void put_u32(std::vector<std::uint8_t>& out, std::uint32_t value) {
     for (unsigned shift = 0; shift != 32; shift += 8)
@@ -55,12 +65,15 @@ inline bool encode_part_render_policy(std::uint64_t resolved_hash,
                                       const PartRenderPolicy& policy,
                                       std::vector<std::uint8_t>& bytes) {
     bytes.clear();
-    if (policy.child_overrides.size() > UINT32_MAX) return false;
-    bytes.reserve(21u + policy.child_overrides.size());
+    if (policy.child_overrides.size() > UINT32_MAX ||
+        !valid_part_vt_density(policy.vt_texels_per_meter)) return false;
+    const bool has_density = policy.vt_texels_per_meter > 0.0f;
+    bytes.reserve(21u + policy.child_overrides.size() + (has_density ? 4u : 0u));
     render_policy_detail::put_u32(bytes, render_policy_detail::kMagic);
-    render_policy_detail::put_u32(bytes, render_policy_detail::kVersion);
+    // Keep unchanged parts byte-identical to the existing v2 cache format.
+    render_policy_detail::put_u32(bytes, has_density ? render_policy_detail::kVersion : 2u);
     render_policy_detail::put_u64(bytes, resolved_hash);
-    bytes.push_back(policy.ray_traced ? 1u : 0u);
+    bytes.push_back((policy.ray_traced ? 1u : 0u) | (policy.shared_surfaces ? 2u : 0u));
     render_policy_detail::put_u32(
         bytes, static_cast<std::uint32_t>(policy.child_overrides.size()));
     for (RayTracingOverride override_value : policy.child_overrides) {
@@ -68,6 +81,12 @@ inline bool encode_part_render_policy(std::uint64_t resolved_hash,
         if (encoded > static_cast<std::uint8_t>(RayTracingOverride::Enabled))
             return false;
         bytes.push_back(encoded);
+    }
+    if (has_density) {
+        std::uint32_t bits;
+        static_assert(sizeof(bits) == sizeof(policy.vt_texels_per_meter));
+        std::memcpy(&bits, &policy.vt_texels_per_meter, sizeof(bits));
+        render_policy_detail::put_u32(bytes, bits);
     }
     return true;
 }
@@ -87,6 +106,8 @@ inline bool load_part_render_policy(const std::string& path,
                                     std::size_t expected_child_count,
                                     PartRenderPolicy& policy) {
     policy.ray_traced = true;
+    policy.shared_surfaces = false;
+    policy.vt_texels_per_meter = 0.0f;
     policy.child_overrides.assign(expected_child_count,
                                   RayTracingOverride::Inherit);
 
@@ -110,10 +131,10 @@ inline bool load_part_render_policy(const std::string& path,
     const std::uint8_t part_ray_traced = bytes[at++];
     if (!render_policy_detail::get_u32(bytes, at, child_count)) return false;
     if (magic != render_policy_detail::kMagic ||
-        version != render_policy_detail::kVersion ||
-        stored_hash != resolved_hash || part_ray_traced > 1u ||
+        (version != 1u && version != 2u && version != render_policy_detail::kVersion) ||
+        stored_hash != resolved_hash || part_ray_traced > (version==1u?1u:3u) ||
         child_count != expected_child_count ||
-        bytes.size() - at != static_cast<std::size_t>(child_count))
+        bytes.size() - at != static_cast<std::size_t>(child_count) + (version == 3u ? 4u : 0u))
         return false;
 
     std::vector<RayTracingOverride> overrides;
@@ -124,8 +145,17 @@ inline bool load_part_render_policy(const std::string& path,
             return false;
         overrides.push_back(static_cast<RayTracingOverride>(encoded));
     }
-    policy.ray_traced = part_ray_traced != 0u;
+    float density = 0.0f;
+    if (version == 3u) {
+        std::uint32_t bits;
+        if (!render_policy_detail::get_u32(bytes, at, bits)) return false;
+        std::memcpy(&density, &bits, sizeof(density));
+        if (!valid_part_vt_density(density) || density == 0.0f) return false;
+    }
+    policy.ray_traced = (part_ray_traced & 1u) != 0u;
+    policy.shared_surfaces = (part_ray_traced & 2u) != 0u;
     policy.child_overrides = std::move(overrides);
+    policy.vt_texels_per_meter = density;
     return true;
 }
 

@@ -1,0 +1,8 @@
+wait_event bake.finished 900
+wait_idle 3 45
+render_path raster
+cam 380 90 1600 420 55 1420
+wait_frames 300
+stats baseline-overview
+shot C:/tmp/matter-mountain-material-baseline/overview.png
+quit

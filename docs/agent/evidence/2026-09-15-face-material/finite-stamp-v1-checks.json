@@ -1,0 +1,76 @@
+[
+  {
+    "kind": "build",
+    "name": "finite_surface_stamp_tests",
+    "command": [
+      "./tools/build-windows-from-wsl.sh",
+      "RelWithDebInfo",
+      "finite_surface_stamp_tests"
+    ],
+    "exit": 0,
+    "seconds": 16.958241045998875,
+    "log": "docs/agent/evidence/2026-09-15-face-material/finite-stamp-v1-build-finite_surface_stamp_tests.log",
+    "source_changes": [],
+    "validation_errors": []
+  },
+  {
+    "kind": "rootcpu",
+    "name": "finite_surface_stamp_tests",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      "Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp\"; & \"./MatterEditor/build/cmake/windows-msvc/relwithdebinfo/finite_surface_stamp_tests.exe\"; exit $LASTEXITCODE"
+    ],
+    "exit": 0,
+    "seconds": 0.49515370999870356,
+    "log": "docs/agent/evidence/2026-09-15-face-material/finite-stamp-v1-rootcpu-finite_surface_stamp_tests.log",
+    "source_changes": [],
+    "validation_errors": []
+  },
+  {
+    "kind": "build",
+    "name": "solid_face_projection_gpu_tests",
+    "command": [
+      "./tools/build-windows-from-wsl.sh",
+      "RelWithDebInfo",
+      "solid_face_projection_gpu_tests"
+    ],
+    "exit": 0,
+    "seconds": 22.224365476999083,
+    "log": "docs/agent/evidence/2026-09-15-face-material/finite-stamp-v1-build-solid_face_projection_gpu_tests.log",
+    "source_changes": [],
+    "validation_errors": []
+  },
+  {
+    "kind": "projection",
+    "name": "clay",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      "$env:MATTER_VK_VALIDATION='1'; $env:MATTER_CLAY_FACE_DUMP='D:/tmp/matter-vt/20260915-face-material/faces'; Set-Location -LiteralPath 'D:/Shared With Desktop/AI/matter-engine-cpp'; & './MatterEditor/build/cmake/windows-msvc/relwithdebinfo/solid_face_projection_gpu_tests.exe'; exit $LASTEXITCODE"
+    ],
+    "exit": 0,
+    "seconds": 13.261568478992558,
+    "log": "docs/agent/evidence/2026-09-15-face-material/finite-stamp-v1-projection-clay.log",
+    "source_changes": [],
+    "validation_errors": []
+  },
+  {
+    "kind": "build",
+    "name": "matter_editor",
+    "command": [
+      "./tools/build-windows-from-wsl.sh",
+      "RelWithDebInfo",
+      "matter_editor"
+    ],
+    "exit": 0,
+    "seconds": 9.243359599000541,
+    "log": "docs/agent/evidence/2026-09-15-face-material/finite-stamp-v1-build-matter_editor.log",
+    "source_changes": [],
+    "validation_errors": []
+  }
+]

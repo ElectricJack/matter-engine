@@ -2,8 +2,9 @@
 // vt_composite.comp — WP-D tier-1 chart-page compositor (chart-space virtual
 // texturing, spec Phase 2b).
 //
-// One dispatch per requested page: 17x17 workgroups of 8x8 cover the full
-// 136^2 physical page (128 payload + 4-texel border on every side). Per
+// Linear 32-texel tiles cover the 136^2 physical page (128 payload plus a
+// 4-texel border). tile_begin selects a horizontal warp; the last tile in
+// each row masks its padded lanes. Bounded slices retain warp-sized work. Per
 // texel:
 //   1. Map the physical texel to its virtual-atlas texel at the request's
 //      mip, then to finest-mip coordinates (texel centers).
@@ -37,12 +38,16 @@
 // strict '<' (first candidate wins). Identical inputs => identical texels.
 
 #extension GL_EXT_nonuniform_qualifier : require
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_buffer_reference_uvec2 : require
+
+layout(buffer_reference,std430,buffer_reference_align=16) buffer VtExportPoints {uvec4 values[];};
 
 #include "wang_common.glsl"
 #include "vt_chart_types.glsl"
 #include "vt_normal_frame.glsl"
 
-layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+layout(local_size_x = 32, local_size_y = 1, local_size_z = 1) in;
 
 // MUST equal vt::VtCompositor::kMaxDetailSlots (vt_compositor.h).
 #define VT_MAX_SLOTS 8
@@ -59,33 +64,20 @@ layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 // vt_chart_types.glsl / vt_chart_gpu.h. ------------------------------------
 
 layout(std430, set = 0, binding = 0) readonly buffer ChartsBuf { GpuChart charts[]; };
-layout(std430, set = 0, binding = 1) readonly buffer TrisBuf   { GpuTri tris[]; };
+layout(std430, set = 0, binding = 1) readonly buffer TrisBuf   { GpuTriGeometry tris[]; };
+layout(std430, set = 0, binding = 2) readonly buffer SurfaceBuf { GpuTriSurface surfaces[]; };
+#define STAMP_SET 0
+#define STAMP_PIXELS_BINDING 3
+#define STAMP_LEVELS_BINDING 4
+#include "finite_surface_stamp.glsl"
+struct GpuFiniteSource { vec4 origin_datum,u,v,n,domain; uvec4 levels; };
+layout(std430,set=0,binding=5) readonly buffer FiniteSources { GpuFiniteSource finite_sources[]; };
+layout(std430,set=0,binding=6) readonly buffer FiniteIds { uint finite_ids[]; };
+layout(std430,set=0,binding=7) readonly buffer FiniteLookup { uvec4 finite_lookup[]; };
 
 // ---- set 1: per-batch-slot resources --------------------------------------
 
-struct GpuFillRequest {
-    uvec4 a;             // x page_x, y page_y, z mip, w out_layer (intermediate)
-    uvec4 b;             // x cand_offset, y cand_count, z weight_mode,
-                         // w debug materials (mat_a | mat_b << 16)
-    vec4 debug_params;   // weight_mode 1: x = blend start (plane U, meters),
-                         //                y = blend width (meters)
-    uvec4 tape;          // weight modes 2/3: x = tape material ids for columns
-                         // 0-3 (u8 each), y = ids for columns 4-7, z = count,
-                         // w = field-lane count (mode 3)
-    // P2 (weight-seam mode 3): the part's packed tape in the shared op arena
-    // plus its world transform.
-    uvec4 tape2;         // x = op offset into tape_ops[], y = op count,
-                         // z = weight registers for columns 0-3 (u8 each),
-                         // w = weight registers for columns 4-7
-    vec4 xform0;         // local_to_world rows (row-major 4x3); identity for
-    vec4 xform1;         // non-world-anchored parts (never read there: the
-    vec4 xform2;         // packer pre-resolved their world ops to consts)
-    // P3 (appearance lanes, mode 3): the tape registers the output directives
-    // read. x = tint regs (r | g << 8 | b << 16), y = roughbias reg,
-    // z = wetness reg, w = pad. Each byte VT_APP_NO_REG (0xFF) when the tape
-    // declares no such directive.
-    uvec4 app;
-};
+#include "vt_fill_request.glsl"
 struct GpuVtMaterial {
     vec4 albedo;         // scalar fallback albedo (rgb) when no detail slot
     vec4 orm;            // xyz scalar fallback ORM
@@ -100,6 +92,8 @@ layout(set = 1, binding = 3, std140) uniform VtTilesetParams {
     // tileset_common.glsl's TilesetParams — read via VT_SLOT_SCALAR).
     vec4 tile_size_m[VT_MAX_SLOTS / 4];
     vec4 texels_per_meter[VT_MAX_SLOTS / 4];
+    vec4 height_min_m[VT_MAX_SLOTS / 4];
+    vec4 height_max_m[VT_MAX_SLOTS / 4];
 } vtp;
 #define VT_SLOT_SCALAR(field, slot) (vtp.field[(slot) >> 2][(slot) & 3])
 
@@ -110,10 +104,12 @@ layout(set = 1, binding = 5, rgba8) uniform writeonly image2DArray outAlbedo;
 layout(set = 1, binding = 6, rgba8) uniform writeonly image2DArray outNormal;
 layout(set = 1, binding = 7, rgba8) uniform writeonly image2DArray outOrm;
 layout(set = 1, binding = 8, rgba8) uniform writeonly image2DArray outAux;
+layout(set = 1, binding = 10, r16) uniform writeonly image2DArray outHeight;
 
-layout(push_constant) uniform Push { uint req_index; } pc;
+layout(push_constant) uniform Push { uint req_index; uint tile_begin; } pc;
 
 // Shared chart resolve (needs charts[]/tris[]/cand_charts[] declared above).
+#define VT_RESOLVE_TRIANGLE_TYPE GpuTriGeometry
 #include "vt_chart_resolve.glsl"
 
 // ---- P2: the shared tape-op arena + the GPU tape interpreter (mode 3) ------
@@ -130,6 +126,7 @@ struct SurfSample {
     vec3 delta_n;    // part-local normal perturbation (added, then normalized)
     vec3 orm;
     float height;    // normalized [0,1] tileset height (0.5 for flat/scalar)
+    float physical_height;
 };
 
 vec4 vt_tileset_lod(int slot, int channel, vec2 planarM, float lod) {
@@ -150,6 +147,7 @@ SurfSample sample_material(uint mat_id, vec3 pos, vec3 nrm, float footprint_m) {
         s.albedo = m.albedo.rgb;
         s.orm    = m.orm.xyz;
         s.height = 0.5;
+        s.physical_height = 0.0;
         return s;
     }
     // |n|^4 triplanar weights, normalized.
@@ -190,6 +188,8 @@ SurfSample sample_material(uint mat_id, vec3 pos, vec3 nrm, float footprint_m) {
     s.albedo = albedo;
     s.orm    = orm;
     s.height = height;
+    s.physical_height=mix(VT_SLOT_SCALAR(height_min_m,slot),VT_SLOT_SCALAR(height_max_m,slot),height)
+        - (m.slot.y!=0 ? VT_SLOT_SCALAR(height_max_m,slot) : 0.);
     s.delta_n = dn;
     return s;
 }
@@ -213,7 +213,7 @@ SurfSample sample_material(uint mat_id, vec3 pos, vec3 nrm, float footprint_m) {
 // P3: the mode-3 register file survives the seam so the appearance lanes can
 // read their directive registers after the height blend (main() below). Set
 // only on the mode-3 path; g_tape_regs is meaningless unless g_tape_ready.
-float g_tape_regs[VT_TAPE_MAX_OPS];
+float g_tape_regs[VT_TAPE_MAX_REGS];
 bool g_tape_ready = false;
 
 // Shared top-2 selection over per-column weights (modes 2/3): fixed ascending
@@ -251,7 +251,7 @@ void vt_top2_select(uint count, float col_w[8], uvec4 tape, uint tri_mat,
 }
 
 void vt_material_weights(GpuFillRequest req, GpuTri tri, vec3 bary,
-                         vec3 pos, vec3 nrm, vec2 plane_uv,
+                         vec3 pos, vec3 nrm, vec2 plane_uv, float footprint_m,
                          out uint m0, out float w0, out uint m1, out float w1) {
     uint weight_mode = req.b.z;
     uint debug_mats = req.b.w;
@@ -293,7 +293,7 @@ void vt_material_weights(GpuFillRequest req, GpuTri tri, vec3 bary,
         vec3 wpos = vec3(dot(req.xform0, ph), dot(req.xform1, ph),
                          dot(req.xform2, ph));
         vt_tape_eval(req.tape2.x, req.tape2.y, pos, ny, slope, wpos,
-                     tri, bary, g_tape_regs);
+                     tri, bary, footprint_m, g_tape_regs);
         g_tape_ready = true;   // P3 reads the same registers after the blend
         uint count = min(req.tape.z, 8u);
         float col_w[8];
@@ -312,8 +312,81 @@ void vt_material_weights(GpuFillRequest req, GpuTri tri, vec3 bary,
     m1 = tri_mat; w1 = 0.0;
 }
 
+// Resample the piecewise-linear receiver context at a height-normal offset.
+// A neighbor walk handles chart edges without searching unrelated surfaces.
+// At a closed edge the current triangle supplies a one-sided extension; all
+// source outputs retain their declared bounds. Work is bounded at eight faces.
+void vt_source_context_at(uint start_tri, inout GpuTri tri, inout vec3 bary,
+                          inout vec3 pos, inout vec3 nrm) {
+    uint index=start_tri;
+    for(uint step=0u;step<8u;++step) {
+        vec3 a=tri.p1.xyz-tri.p0.xyz, b=tri.p2.xyz-tri.p0.xyz, q=pos-tri.p0.xyz;
+        float aa=dot(a,a),ab=dot(a,b),bb=dot(b,b),aq=dot(a,q),bq=dot(b,q);
+        float det=aa*bb-ab*ab;
+        if(!(det>1e-12*max(aa*bb,1e-12))) break;
+        float y=(bb*aq-ab*bq)/det,z=(aa*bq-ab*aq)/det;
+        bary=vec3(1.-y-z,y,z);
+        if(min(bary.x,min(bary.y,bary.z))>=-1e-6 || step==7u) break;
+        uint edge=bary.x<bary.y ? (bary.x<bary.z?1u:0u) : (bary.y<bary.z?2u:0u);
+        uint next=tri.mat[edge+1u];
+        if(next==0u || next>uint(tris.length()) || next-1u==index) break;
+        index=next-1u;
+        GpuTriGeometry g=tris[index];GpuTriSurface s=surfaces[index];
+        tri.p0=g.p0;tri.p1=g.p1;tri.p2=g.p2;
+        tri.n0=g.n0;tri.n1=g.n1;tri.n2=g.n2;tri.mat=g.mat;
+        tri.wA=s.wA;tri.wB=s.wB;tri.wC=s.wC;
+    }
+    pos=bary.x*tri.p0.xyz+bary.y*tri.p1.xyz+bary.z*tri.p2.xyz;
+    vec3 normal=bary.x*tri.n0.xyz+bary.y*tri.n1.xyz+bary.z*tri.n2.xyz;
+    float len=length(normal);
+    if(len>1e-6)nrm=normal/len;
+}
+
+float vt_source_height_at(GpuFillRequest req, uint start_tri, GpuTri tri, vec3 bary,
+                          vec3 pos, vec3 nrm, float footprint_m) {
+    if(req.source_b.w==2u) vt_source_context_at(start_tri,tri,bary,pos,nrm);
+    if(req.periodic.z==1u) {
+        vec3 relative=pos-req.material_origin.xyz;
+        vec2 uv=vec2(dot(relative,req.material_du.xyz)/dot(req.material_du.xyz,req.material_du.xyz),
+                     dot(relative,req.material_dv.xyz)/dot(req.material_dv.xyz,req.material_dv.xyz));
+        pos=req.material_origin.xyz+fract(uv.x)*req.material_du.xyz+fract(uv.y)*req.material_dv.xyz;
+    }
+    float regs[VT_TAPE_MAX_REGS];
+    vec4 ph = vec4(pos, 1.0);
+    vec3 wpos = vec3(dot(req.xform0, ph), dot(req.xform1, ph), dot(req.xform2, ph));
+    vt_tape_eval(req.tape2.x, req.tape2.y, pos, nrm.y,
+                 clamp(1.0 - nrm.y, 0.0, 1.0), wpos, tri, bary, footprint_m, regs);
+    return vt_source_value(regs[req.source_b.z], req.source_range.x,
+                            req.source_range.y, req.source_range.x);
+}
+
+bool vt_near_surface_crease(VtSurfacePoint sp, float relief) {
+    if (!sp.inside || !(relief > 0.0)) return false;
+    GpuTriGeometry tri = tris[sp.tri];
+    vec3 n = normalize(cross(tri.p1.xyz - tri.p0.xyz, tri.p2.xyz - tri.p0.xyz));
+    vec3 vertices[3] = vec3[3](tri.p0.xyz, tri.p1.xyz, tri.p2.xyz);
+    for (int edge = 0; edge < 3; ++edge) {
+        uint neighbor = tri.mat[edge + 1];
+        if (neighbor == 0u || neighbor > uint(tris.length())) continue;
+        GpuTriGeometry other = tris[neighbor - 1u];
+        vec3 m = normalize(cross(other.p1.xyz - other.p0.xyz, other.p2.xyz - other.p0.xyz));
+        float cosine = clamp(dot(n, m), -1.0, 1.0);
+        if (cosine > 0.99999) continue;
+        // A recess D moves the shared miter D*tan(dihedral/2) into a face.
+        // Include the texel footprint so bilinear filtering cannot skip the
+        // marked region. Path sampling still checks every encountered page.
+        float band = relief * sqrt((1.0 - cosine) / max(1.0 + cosine, 1e-6)) +
+                     1.5 * sp.footprint_m;
+        vec3 side = normalize(cross(vertices[(edge + 1) % 3] - vertices[edge], n));
+        if (abs(dot(sp.pos - vertices[edge], side)) <= band) return true;
+    }
+    return false;
+}
+
 void main() {
-    uvec2 t = gl_GlobalInvocationID.xy;
+    const uint tiles_per_row = (uint(VT_PAGE_STORE) + 31u) / 32u;
+    uint tile = gl_WorkGroupID.x + pc.tile_begin;
+    uvec2 t = uvec2((tile % tiles_per_row) * 32u + gl_LocalInvocationID.x, tile / tiles_per_row);
     if (t.x >= uint(VT_PAGE_STORE) || t.y >= uint(VT_PAGE_STORE)) return;
     GpuFillRequest req = requests[pc.req_index];
     int out_layer = int(req.a.w);
@@ -322,37 +395,117 @@ void main() {
     uint mip = req.a.z;
 
     // ---- resolve owning surface point over the candidate charts ----
-    VtSurfacePoint sp =
-        vt_resolve_page_texel(t, req.a.xy, mip, req.b.x, req.b.y);
+    VtSurfacePoint sp;
+    if(req.periodic.z==1u) {
+        // Wrap integer sample centres, including all four gutter texels and
+        // padding in partial final pages. Actual mip dimensions own the metric;
+        // shifting a finest-level coordinate would distort odd-sized periods.
+        uvec2 size=max(req.periodic.xy>>mip,uvec2(1));
+        // GLSL integer remainder is undefined for negative operands. Apply
+        // the gutter offset as a positive modular subtraction, even at a
+        // one-texel mip; no invocation may underflow before the remainder.
+        uvec2 wrapped=(req.a.xy*128u+t+size-(uvec2(4)%size))%size;
+        vec2 uv=(vec2(wrapped)+.5)/vec2(size);
+        sp.found=true;sp.inside=true;sp.chart=0u;sp.tri=0u;sp.bary=vec3(1,0,0);
+        sp.pos=req.material_origin.xyz+uv.x*req.material_du.xyz+uv.y*req.material_dv.xyz;
+        sp.nrm=req.material_normal.xyz;
+        sp.plane_uv=uv*vec2(length(req.material_du.xyz),length(req.material_dv.xyz));
+        sp.footprint_m=max(length(req.material_du.xyz)/float(size.x),length(req.material_dv.xyz)/float(size.y));
+    } else sp=vt_resolve_page_texel(t, req.a.xy, mip, req.b.x, req.b.y, req.canonical.zw);
 
+    if(req.periodic.w==1u) {
+        // Residency proved a single mapped chart and matching carrier. Keep
+        // exactly the normal coverage/crease tags without evaluating the base
+        // tape, sampling source geometry, or touching material intermediates.
+        vec4 aux=vec4(1.,1.,0.,1.);
+        if(sp.found && sp.chart<=65535u) {
+            float tag=sp.inside?2.:3.;
+            if(vt_near_surface_crease(sp,req.height_output.y-req.height_output.x)) tag=4.;
+            aux=vec4(float(req.tape.x&255u),float(sp.chart&255u),float(sp.chart>>8u),tag)/255.;
+        }
+        imageStore(outAux,store_at,aux);
+        return;
+    }
+
+    uvec2 export_address=req.export_data.xy;
+    if(any(notEqual(export_address,uvec2(0))))
+        VtExportPoints(export_address).values[t.y*uint(VT_PAGE_STORE)+t.x]=
+            uvec4(sp.found?sp.tri:0xffffffffu,floatBitsToUint(sp.bary));
     if (!sp.found) {
         // No candidates (page over empty atlas space) — neutral fill.
         imageStore(outAlbedo, store_at, vec4(0.5, 0.5, 0.5, 1.0));
         imageStore(outNormal, store_at, vec4(0.5, 0.5, 0.0, 0.0));
         imageStore(outOrm,    store_at, vec4(1.0, 0.8, 0.0, 1.0));
         imageStore(outAux,    store_at, vec4(1.0, 1.0, 0.0, 1.0));
+        imageStore(outHeight, store_at, vec4(0.0));
         return;
     }
 
-    GpuTri tri = tris[sp.tri];
+    GpuTriGeometry geometry = tris[sp.tri];
+    GpuTriSurface surface = surfaces[sp.tri];
+    GpuTri tri;
+    tri.p0 = geometry.p0; tri.p1 = geometry.p1; tri.p2 = geometry.p2;
+    tri.n0 = geometry.n0; tri.n1 = geometry.n1; tri.n2 = geometry.n2;
+    tri.mat = geometry.mat;
+    tri.wA = surface.wA; tri.wB = surface.wB; tri.wC = surface.wC;
     vec3 pos = sp.pos;
     vec3 nrm = sp.nrm;
     vec2 plane_uv = sp.plane_uv;
     float footprint_m = sp.footprint_m;
+    if(req.material_origin.w==1.) {
+        // A proven planar rectangle uses the same material grid regardless of
+        // its triangle sizes or atlas packing. Coverage/traversal stays private.
+        pos=req.material_origin.xyz+float(t.x)*req.material_du.xyz+float(t.y)*req.material_dv.xyz;
+        nrm=req.material_normal.xyz;footprint_m=req.material_normal.w;
+    }
 
     // ---- material weights (seam) + top-2 height blend ----
     uint m0, m1; float w0, w1;
-    vt_material_weights(req, tri, sp.bary, pos, nrm, plane_uv, m0, w0, m1, w1);
+    vt_material_weights(req, tri, sp.bary, pos, nrm, plane_uv, footprint_m,
+                         m0, w0, m1, w1);
 
     vec3 albedo, orm, dn;
     float blend;
-    if (w1 <= 0.0) {
+    float height_unorm = 0.0;
+    float height_m=0.0;
+    bool direct_source = g_tape_ready && (req.source_b.w == 1u || req.source_b.w == 2u);
+    // The ordinary direct source gets its normal from this page's composed
+    // height in vt_height_normal.comp. Special finite/periodic sources retain
+    // the receiver-aware point probes below.
+    bool deferred_normal = direct_source && req.periodic.z == 0u &&
+        req.height_output.z == 0.0 && req.source_range.y > req.source_range.x &&
+        sp.chart <= 65535u;
+    if (direct_source) {
+        VtSourceSample s = vt_source_sample(req.source_a, req.source_b,
+                                            req.source_range.xy, g_tape_regs);
+        albedo = s.albedo; orm = s.orm; dn = vec3(0.0);
+        height_m=s.height_m;
+        float height_range = req.height_output.y - req.height_output.x;
+        if (height_range > 0.0)
+            height_unorm = clamp((s.height_m - req.height_output.x) / height_range, 0.0, 1.0);
+        m1 = m0; blend = 0.0;
+        if (req.source_range.y > req.source_range.x && !deferred_normal) {
+            // Derive the normal from the same metre-valued height. Evaluate
+            // in continuous physical coordinates, including outside the page;
+            // no page-local image edge or random seed enters the derivative.
+            mat3 basis = vt_normal_frame(nrm);
+            float eps = max(0.5 * footprint_m, 0.0001);
+            vec3 du = basis[0] * eps, dv = basis[1] * eps;
+            float hu = vt_source_height_at(req, sp.tri, tri, sp.bary, pos + du, nrm, footprint_m) -
+                       vt_source_height_at(req, sp.tri, tri, sp.bary, pos - du, nrm, footprint_m);
+            float hv = vt_source_height_at(req, sp.tri, tri, sp.bary, pos + dv, nrm, footprint_m) -
+                       vt_source_height_at(req, sp.tri, tri, sp.bary, pos - dv, nrm, footprint_m);
+            dn = -(basis[0] * hu + basis[1] * hv) / (2.0 * eps);
+        }
+    } else if (w1 <= 0.0) {
         SurfSample s0 = sample_material(m0, pos, nrm, footprint_m);
         albedo = s0.albedo; orm = s0.orm; dn = s0.delta_n;
+        height_m=s0.physical_height;
         m1 = m0; blend = 0.0;
     } else if (w0 <= 0.0) {
         SurfSample s1 = sample_material(m1, pos, nrm, footprint_m);
         albedo = s1.albedo; orm = s1.orm; dn = s1.delta_n;
+        height_m=s1.physical_height;
         // Dominant aux slot carries the surviving material.
         m0 = m1; blend = 0.0;
     } else {
@@ -371,6 +524,100 @@ void main() {
         albedo = mix(s0.albedo, s1.albedo, blend);
         orm    = mix(s0.orm,    s1.orm,    blend);
         dn     = mix(s0.delta_n, s1.delta_n, blend);
+        height_m=mix(s0.physical_height,s1.physical_height,blend);
+    }
+
+    if (direct_source && req.height_output.z>0.) {
+        // One categorical assignment per receiver triangle, never an
+        // interpolation of source IDs. Padding resolves the same triangle.
+        uint id=finite_ids[sp.tri];
+        if (req.height_output.w>0. && id>0u && id<=uint(req.height_output.w)) {
+            uint header=(id-1u)*6u;
+            vec4 origin=uintBitsToFloat(finite_lookup[header]);
+            vec4 axis_u=uintBitsToFloat(finite_lookup[header+1u]);
+            vec4 axis_v=uintBitsToFloat(finite_lookup[header+2u]);
+            vec4 axis_n=uintBitsToFloat(finite_lookup[header+3u]);
+            vec4 domain=uintBitsToFloat(finite_lookup[header+4u]);
+            uvec4 grid=finite_lookup[header+5u];
+            vec3 relative=pos-origin.xyz;
+            vec2 uv=vec2(dot(relative,axis_u.xyz),dot(relative,axis_v.xyz));
+            if (dot(nrm,axis_n.xyz)>=axis_n.w && abs(dot(relative,axis_n.xyz)-origin.w)<=axis_u.w) {
+                uvec2 first=uvec2(clamp(floor((uv-.5*footprint_m-domain.xy)/domain.zw*vec2(grid.xy)),vec2(0),vec2(grid.xy)-1));
+                uvec2 last=uvec2(clamp(floor((uv+.5*footprint_m-domain.xy)/domain.zw*vec2(grid.xy)),vec2(0),vec2(grid.xy)-1));
+                bool canonical=req.material_origin.w==1.;
+                if(canonical) {first=uvec2(0);last=uvec2(0);}
+                float covered=0., weighted_height=0.;
+                vec3 color=vec3(0), material=vec3(0), normal=vec3(0), slope=vec3(0);
+                for(uint y=first.y;y<=last.y;++y) for(uint x=first.x;x<=last.x;++x) {
+                    uvec4 cell=canonical?uvec4(req.canonical.xy,0,0):finite_lookup[grid.z+y*grid.x+x];
+                    for(uint i=0u;i<cell.y;++i) {
+                        uvec4 item=canonical?uvec4(cand_charts[cell.x+i],0,0,0):finite_lookup[cell.x+i];
+                        if(!canonical && any(notEqual(uvec2(x,y),max(first,item.yz)))) continue;
+                        GpuFiniteSource source=finite_sources[item.x];
+                        vec3 local=pos-source.origin_datum.xyz;
+                        vec2 st=vec2(dot(local,source.u.xyz),dot(local,source.v.xyz));
+                        StampChannels sampled=sample_finite_stamp(source.levels.x,source.levels.y,source.domain,st,footprint_m);
+                        float c=clamp(sampled.albedo_coverage.a,0.,1.);
+                        if(c<=0.) continue;
+                        float h=sampled.orm_height.w-dot(local,source.n.xyz);
+                        covered+=c; weighted_height+=c*h;
+                        color+=c*sampled.albedo_coverage.rgb;
+                        material+=c*vec3(sampled.orm_height.r,sampled.orm_height.g*sampled.orm_height.g,sampled.orm_height.b);
+                        normal+=c*(mat3(source.u.xyz,source.v.xyz,source.n.xyz)*sampled.normal_detail.xyz);
+                        if(c<1.) {
+                            float eps=max(.5*footprint_m,.0001);
+                            float cu=sample_finite_stamp(source.levels.x,source.levels.y,source.domain,st+vec2(eps,0),footprint_m).albedo_coverage.a-
+                                     sample_finite_stamp(source.levels.x,source.levels.y,source.domain,st-vec2(eps,0),footprint_m).albedo_coverage.a;
+                            float cv=sample_finite_stamp(source.levels.x,source.levels.y,source.domain,st+vec2(0,eps),footprint_m).albedo_coverage.a-
+                                     sample_finite_stamp(source.levels.x,source.levels.y,source.domain,st-vec2(0,eps),footprint_m).albedo_coverage.a;
+                            slope+=(h-height_m)*(source.u.xyz*cu+source.v.xyz*cv)/(2.*eps);
+                        }
+                    }
+                }
+                // Disjoint structural footprints contribute area, including
+                // coarse texels spanning several bricks and mortar joints.
+                float inv=1./max(1.,covered), base=max(0.,1.-covered);
+                albedo=albedo*base+color*inv;
+                orm=vec3(orm.r*base+material.r*inv,
+                    sqrt(orm.g*orm.g*base+material.g*inv),orm.b*base+material.b*inv);
+                dn=normalize(normalize(nrm+dn)*base+(normal-slope)*inv)-nrm;
+                height_m=height_m*base+weighted_height*inv;
+            }
+        } else if (req.height_output.w==0. && id>0u && id<=uint(req.height_output.z)) {
+            GpuFiniteSource source=finite_sources[id-1u];
+            vec3 relative=pos-source.origin_datum.xyz;
+            float depth=dot(relative,source.n.xyz);
+            if (dot(nrm,source.n.xyz)>=source.n.w && abs(depth-source.origin_datum.w)<=source.u.w) {
+                vec2 uv=vec2(dot(relative,source.u.xyz),dot(relative,source.v.xyz));
+                StampChannels s=sample_finite_stamp(source.levels.x,source.levels.y,source.domain,uv,footprint_m);
+                float coverage=clamp(s.albedo_coverage.a,0.,1.);
+                if (coverage>0.) {
+                    float candidate_height=s.orm_height.w-depth;
+                    vec3 candidate_normal=mat3(source.u.xyz,source.v.xyz,source.n.xyz)*s.normal_detail.xyz;
+                    vec3 mixed=normalize(mix(normalize(nrm+dn),candidate_normal,coverage));
+                    if (coverage<1.) {
+                        // Add only the coverage transition's height slope.
+                        // Interior relief is already represented by the baked
+                        // source normal, and must not be differentiated twice.
+                        float eps=max(.5*footprint_m,.0001);
+                        float cu=sample_finite_stamp(source.levels.x,source.levels.y,source.domain,uv+vec2(eps,0),footprint_m).albedo_coverage.a-
+                                 sample_finite_stamp(source.levels.x,source.levels.y,source.domain,uv-vec2(eps,0),footprint_m).albedo_coverage.a;
+                        float cv=sample_finite_stamp(source.levels.x,source.levels.y,source.domain,uv+vec2(0,eps),footprint_m).albedo_coverage.a-
+                                 sample_finite_stamp(source.levels.x,source.levels.y,source.domain,uv-vec2(0,eps),footprint_m).albedo_coverage.a;
+                        vec3 gradient=(source.u.xyz*cu+source.v.xyz*cv)/(2*eps);
+                        mixed=normalize(mixed-(candidate_height-height_m)*gradient);
+                    }
+                    dn=mixed-nrm;
+                    albedo=mix(albedo,s.albedo_coverage.rgb,coverage);
+                    orm=vec3(mix(orm.r,s.orm_height.r,coverage),
+                             sqrt(mix(orm.g*orm.g,s.orm_height.g*s.orm_height.g,coverage)),
+                             mix(orm.b,s.orm_height.b,coverage));
+                    height_m=mix(height_m,candidate_height,coverage);
+                }
+            }
+        }
+        float range=req.height_output.y-req.height_output.x;
+        height_unorm=range>0.?clamp((height_m-req.height_output.x)/range,0.,1.):0.;
     }
 
     // ---- P3 appearance lanes: albedo tint / roughness bias / wetness,
@@ -384,6 +631,7 @@ void main() {
     // the near-band handoff still keys off (dominant, secondary, blend).
     if (g_tape_ready) {
         vt_apply_appearance(req.app, g_tape_regs, albedo, orm);
+        vt_apply_coating(req.coat,g_tape_regs,albedo,orm);
     }
 
     // Encode against the interpolated OBJECT-local normal. Consumers decode
@@ -395,10 +643,29 @@ void main() {
     // so z >= 0 is the overwhelming case anyway).
     if (ts.z < 0.05) { ts.z = 0.05; ts = normalize(ts); }
 
+    if(!direct_source && any(notEqual(export_address,uvec2(0)))) {
+        float range=req.height_output.y-req.height_output.x;
+        height_unorm=range>0.?clamp((height_m-req.height_output.x)/range,0.,1.):0.;
+    }
+    imageStore(outHeight, store_at, vec4(height_unorm, 0.0, 0.0, 0.0));
     imageStore(outAlbedo, store_at, vec4(albedo, 1.0));
-    imageStore(outNormal, store_at, vec4(ts.xy * 0.5 + 0.5, 0.0, 0.0));
+    // The normal pass reads the base normal from this temporary slot; BC
+    // encoding sees only its completed tangent-space result after the barrier.
+    imageStore(outNormal, store_at, deferred_normal
+        ? vec4(nrm * 0.5 + 0.5, 0.0)
+        : vec4(ts.xy * 0.5 + 0.5, 0.0, 0.0));
     imageStore(outOrm,    store_at, vec4(orm, 1.0));
-    imageStore(outAux,    store_at,
-               vec4(float(m0 & 0xFFu) / 255.0, float(m1 & 0xFFu) / 255.0,
-                    blend, 1.0));
+    // Direct v2: R is the carrier material, GB is the lossless chart ID,
+    // A=2 means ordinary interior, A=3 dilation, A=4 connected-crease interior.
+    // A=1 keeps a flat direct
+    // source when a chart ID cannot fit. Legacy RG/blend/A=255 is unchanged.
+    vec4 aux = vec4(float(m0 & 0xFFu) / 255.0, float(m1 & 0xFFu) / 255.0,
+                    blend, direct_source ? 1.0 / 255.0 : 1.0);
+    if (direct_source && sp.chart <= 65535u) {
+        float tag = sp.inside ? 2.0 : 3.0;
+        if (vt_near_surface_crease(sp, req.height_output.y - req.height_output.x)) tag = 4.0;
+        aux = vec4(float(m0 & 0xFFu), float(sp.chart & 255u),
+                   float(sp.chart >> 8u), tag) / 255.0;
+    }
+    imageStore(outAux, store_at, aux);
 }

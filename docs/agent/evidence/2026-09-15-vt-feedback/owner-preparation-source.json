@@ -1,0 +1,21 @@
+{
+  "sources": {
+    "MatterEngine3/src/render/vk_scene_renderer.h": "ebffcac00a0fd1312785c595e7a3cc86e15917ce015ecf3b63899fc7bfcb7c61",
+    "MatterEngine3/src/render/vk_scene_renderer.cpp": "5518681573706435cb1b54f01f9bd0096b3c576dc3b94537e675d39d6460fda5",
+    "MatterEngine3/src/render/vt_types.h": "5301ccdcf237398eb0aa36a39f9139f63aaa3900838e5d2e850f63cc196e71ca",
+    "MatterEngine3/src/render/vt_residency.cpp": "193eb1dc60b772d29c287e10d461d95c435bf7ac73d4a07f78708f5f9da00615",
+    "MatterEngine3/src/render/vt_residency.h": "40b769ed33ba66a5f0a92ec94c9e7dd71b91fe37e68e2262147ccca9d4ea6612",
+    "MatterEngine3/src/render/vt_compositor.cpp": "f969a38fe260cb7f1d33ceee54c7180a941a2b036516570aacb5905828d05ef7",
+    "MatterEngine3/src/render/vt_compositor.h": "3901435848dcaefbf07146f18dd793c21927c4263e82e8454788956e333136f9",
+    "MatterEngine3/src/render/vt_enrich.cpp": "fa9d59d47f53b8307c6ed29d344a7db2459938ad0095c0c6721d2b30fc6d36f7",
+    "MatterEngine3/src/render/vt_enrich.h": "12d1af6452d2051dec120ab88592aafa5d5386cb32a4371ebcb0fdb938cb5b41",
+    "MatterEngine3/src/render/vt_chart_gpu.h": "d7d8993caf4293852d62f7396473e6520168a0c5ca27227d1bfda9fe7c06e68c",
+    "MatterEngine3/tests/vulkan_smoke_tests.cpp": "3d4d22f6e822f99350036104b8bdbcbd8d72cf9024e21db0608f5ddc8d2e3129",
+    "MatterEngine3/tests/vt_compositor_tests.cpp": "fb7be27598e38af5a2abf56d738e7df365a6178e53a7f6d3cda1929d004ca7fd",
+    "MatterEngine3/tests/vt_queue_tests.h": "732c1efc98d45b54ecb675776d9c51e3fe2023cfc67195e952bcee6f0307f116"
+  },
+  "binaries": {
+    "MatterEditor/build/cmake/windows-msvc/relwithdebinfo/vt_compositor_tests.exe": "f1792be3e44285cad7fedf8247f0f86a9ead9f62c947806f051470187b00b3c4",
+    "MatterEditor/build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe": "a98cab169581d42fb8b3fbcfa5e59b45241ae27b8ab9a18b37d820eee84fe249"
+  }
+}

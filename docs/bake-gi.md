@@ -24,8 +24,8 @@ with the same settings produce byte-identical files.
 
 ```bash
 # canonical (Windows MSVC): tools/build-windows-from-wsl.sh RelWithDebInfo matter_cli
-MatterEditor/build/cmake/windows-msvc/relwithdebinfo/matter.exe bake gi CastleCourtyard --out C:/tmp/gi-castle
-MatterEditor/build/cmake/windows-msvc/relwithdebinfo/matter.exe bake gi Primitives --out C:/tmp/gi-prims --samples 128 --bounces 3 --texel-density 16 --prelit
+MatterEngine3/build/windows-msvc/matter.exe bake gi CastleCourtyard --out C:/tmp/gi-castle
+MatterEngine3/build/windows-msvc/matter.exe bake gi Primitives --out C:/tmp/gi-prims --samples 128 --bounces 3 --texel-density 16 --prelit
 ```
 
 ```
