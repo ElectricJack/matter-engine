@@ -1,0 +1,14 @@
+{
+    "source_root":  "D:\\mv15-78a4\\m16",
+    "working_directory":  "D:\\mv15-78a4\\m16\\MatterEditor",
+    "executable":  "D:\\mv15-78a4\\m16\\MatterEditor\\build\\cmake\\windows-msvc\\relwithdebinfo\\vulkan_smoke_tests.exe",
+    "executable_sha256":  "e1d9bf8bccd733d0de09f520c61a6234a874219d26f1ea4965dffa4b9be39017",
+    "mode":  "vt",
+    "validation_layer_path":  "C:\\VulkanSDK\\1.4.357.0\\Bin",
+    "started_at":  "2026-10-19T21:59:00.9187966Z",
+    "timeout_seconds":  240,
+    "status":  "completed",
+    "exit_code":  1,
+    "elapsed_seconds":  8.8367217,
+    "finished_at":  "2026-10-19T21:59:09.7585181Z"
+}
