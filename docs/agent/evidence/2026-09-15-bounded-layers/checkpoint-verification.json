@@ -1,0 +1,8 @@
+{
+  "manifest": "docs/agent/evidence/2026-09-15-direct-source/bounded-layers-green-source.json",
+  "check_count": 10,
+  "all_checks_passed": true,
+  "source_count": 83,
+  "source_mismatches": [],
+  "binary_mismatches": []
+}

@@ -1,0 +1,15 @@
+{
+    "captured_at":  "2026-10-19T21:35:51.5045240Z",
+    "powershell_version":  "5.1.26100.9711",
+    "os":  "Microsoft Windows NT 10.0.26200.0",
+    "gpu":  [
+                {
+                    "Name":  "NVIDIA GeForce RTX 4090",
+                    "DriverVersion":  "32.0.16.1088",
+                    "DriverDate":  "\/Date(1784678400000)\/"
+                }
+            ],
+    "relevant_processes":  [
+
+                           ]
+}

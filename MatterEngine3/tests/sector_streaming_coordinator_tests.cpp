@@ -243,6 +243,25 @@ static_assert(
     "idle worker exception boundary must be noexcept");
 
 int main() {
+    {
+        Coordinator coordinator;
+        CHECK(coordinator.attach(kOwnerA), "view revision owner attaches");
+        coordinator.submit_anchor(kOwnerA,0,0,0);
+        matter_stream::StreamingView view;view.valid=true;view.planes[0][0]=1;
+        const auto first=coordinator.submit_view(kOwnerA,view);
+        CHECK(first!=0, "accepted view has nonzero identity");
+        CHECK(coordinator.submit_view(kOwnerA,view)==first, "unchanged view keeps identity");
+        coordinator.submit_anchor(kOwnerA,1,0,0);
+        CHECK(coordinator.submit_view(kOwnerA,view)==first, "anchor sampling preserves camera identity");
+        view.planes[0][0]=-1;
+        const auto rotated=coordinator.submit_view(kOwnerA,view);
+        CHECK(rotated>first, "rotation invalidates prior view identity");
+        CHECK(coordinator.submit_view(kOwnerB,view)==0, "foreign owner cannot publish camera identity");
+        coordinator.clear_anchor(kOwnerA);
+        coordinator.submit_anchor(kOwnerA,0,0,0);
+        CHECK(coordinator.submit_view(kOwnerA,view)>rotated, "recreated anchor cannot reuse stale camera identity");
+    }
+
     // Streamer eviction ownership remains at the source when coordinator
     // destination allocation fails. A later worker retry transfers the full
     // batch exactly once and permits every app resource to be cleaned.

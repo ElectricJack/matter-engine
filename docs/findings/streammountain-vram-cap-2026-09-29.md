@@ -1,0 +1,166 @@
+# StreamMountain paged VRAM cap — 2026-09-29
+
+Task `clear-ridge.4`, the VRAM-budget first part of queue row 1.6. The two
+captures below used `tools/streammountain_attribution.sh`, `PAGED_TERRAIN=1`,
+`VARIANTS=pom_off`, one run each, 1920×1080, immediate presentation, and a
+20 s sample after 300 s warmup. Both perf JSON files confirm POM was disabled.
+Raw logs, traces, perf JSON, and `nvidia-smi` samples are in
+`C:/tmp/clear-ridge-4-{before,after}-paged-300/`.
+
+## Budgets and observations
+
+The before editor was built from `635d38b4` (SHA-256 `6d021404…e4`). It used
+the former 4,096 MiB VT budget, which allocated 25,600 slots and 4,064 MiB of
+physical images, and the paged tool's former 1,024 MiB geometry cap. The after
+editor was built from the changed source later committed as `0cb883ee`
+(SHA-256 `d8912b11…0f5`): the
+default VT budget is 2,048 MiB (12,800 slots, 2,032 MiB allocated), and the
+terrain geometry page reservation is capped at 3,072 MiB by default. The
+capture and cache-audit tools use those same defaults. Explicit
+`MATTER_VT_POOL_MB`, `MATTER_GEOMETRY_GPU_MB`, `PAGED_VT_MB`, and `PAGED_GPU_MB`
+overrides remain available.
+
+| 300 s warmup, POM off | Before | After |
+|---|---:|---:|
+| Sampled frames | 73 | 151 |
+| GPU total median / p99 / max, ms | 162.74 / 206.08 / 206.08 | 115.01 / 128.01 / 128.32 |
+| Frame interval median / p99 / max, ms | 259.76 / 451.01 / 451.01 | 132.19 / 231.49 / 240.95 |
+| Frame intervals over 100 ms | 73 / 73 | 128 / 151 |
+| Frame intervals over 1 s | 0 | 0 |
+| Static uploads during 20 s sample | 2 | 146 |
+| Peak whole-GPU use (`nvidia-smi`), MiB | 12,456 | 10,259 |
+| Peak geometry page reservation, MiB | 1,023.99 / 1,024 cap | 1,274.89 / 3,072 cap |
+| Last global source fallbacks | 29 | 71 |
+| Device-memory exhaustion / static-capacity overflow | 0 / 0 | 0 / 0 |
+
+This is a memory-safety comparison, not a frame-time speedup claim. The
+terrain cache was still filling and the sampled scenes differed: the CPU
+trace counted 49,643 RT-scanned instances per frame before and 13,681 after.
+The after run's 146 static uploads and rising source fallbacks show it had not
+reached a settled paged scene. It survived the 300 s warmup and sample window
+without OOM; the cache preparation and bounded load below establish the
+separate in-view readiness result.
+
+A separate `terrain_cache_audit.py prepare` pass ran for its 5,400 s deadline
+with the new budgets. The editor exited normally after its active cooks
+finished (5,564 s elapsed), with no paging failure or Vulkan validation error.
+It compiled and persisted 444 missing geometry assets and hit 236 cached
+assets. At the deadline all 335 desired visible sectors were ready, the
+geometry coverage counters were `(0, 0, 0)`, and VT had no queued pages or
+rejected variants. Twelve geometry cooks remained in flight, so the audit
+correctly marked this pass incomplete. A second, warm preparation pass was
+stopped cleanly after 2,886 s to replace its short deadline with a longer
+one. It recorded 528 cache hits, no new compilations, no coverage gaps or
+failures, and 1,852 resident sectors with 12 cooks still in flight. Neither
+pass qualifies as steady-state acceptance; both retained their durable
+geometry cache entries for the longer continuation.
+
+The longer continuation **completed and validated** after 6,268 s. It read
+680 cached geometry assets, compiled and persisted 136 more, and reported no
+failed outcomes, paging failures, or device-memory fault. Its final state was
+2,441 resident sectors, zero cooks in flight, bake ready, all 335 desired
+visible sectors ready, and geometry coverage `(0, 0, 0)`. The audit's
+15-second stable-residency check passed. This establishes a fully prepared
+cache for the separate cache-only paged-load test.
+
+The first cache-only load read all 816 expected geometry assets as hits, with
+zero misses, compilations, paging failures, or device-memory faults. It reached
+2,441 resident sectors and zero sector cooks, and VT reached an empty request
+queue. After 5,735 s, the geometry reservation was exactly at its 3,072 MiB
+cap, with 641 unready assets and source fallbacks. It continued to evict and
+reload fine pages at the cap, so I ended the run after more than 300 s at that
+limit. The strict audit correctly reported `completed=false` and `valid=false`;
+the no-OOM result alone does not establish settled paged coverage. Its output is
+`C:/tmp/clear-ridge-4-load-cache-only/result.json`.
+
+The 816 prepared assets advertised 137,100 root descriptors in that load.
+Keeping every offscreen root resident under a fixed 3 GiB geometry budget is
+not possible. The runtime now reports in-view root readiness separately and
+pauses offscreen page reads above 75% of the reservation and optional fine-page
+reads above 90%. Already decoded optional work is deferred at those thresholds.
+This keeps headroom for roots that enter the view and prevents optional detail
+from driving continuous eviction at the cap. A bounded cache-only audit can
+require all in-view roots without treating offscreen source fallbacks as a
+failure; it still requires an idle page pipeline, VT readiness, and all
+prepared-cache hits.
+
+The bounded cache-only load **completed and validated** after 5,591 s with
+the final pressure gate and two prepared-sector readers. It recorded all 816
+expected geometry-cache hits, zero misses or compilations, all 2,441 sectors
+resident, zero sector cooks, zero geometry pages in flight, and an empty VT
+queue. All 153 in-view geometry assets had their 16,523 root descriptors ready.
+The 641 offscreen assets retained source fallback. The geometry reservation
+peaked at 2,764.81 MiB of its 3,072 MiB cap and deferred 83 optional uploads
+at the threshold; it reported zero reservation stalls and evictions. The
+allocation tracker peaked at 7,148.01 MiB device-local and 5,003.48 MiB
+host-visible, including a 2,032.03 MiB VT physical pool and 4,640 MiB of
+host-visible static scene buffers. Two static-buffer capacity growth events
+occurred, but there was no paging failure, Vulkan validation failure, or OOM.
+The audit's 15 s stable-readiness check passed. Raw output is in
+`C:/tmp/clear-ridge-4-load-bounded/result.json`.
+
+An additional 300 s POM-off sample after a 300 s warmup used the diagnostic
+editor before this pressure gate (`19f5a8fe…ecb7e36`). It wrote 1,123 frames:
+GPU total median/p99/max 266.12/285.38/291.97 ms, frame interval
+median/p99/max 266.55/449.47/898.89 ms, 1,123/1,123 intervals above 100 ms,
+and none above 1 s. Peak whole-GPU use was 10,632 MiB, with zero OOM or paging
+failures. There were 1,123 static uploads in the sample, and in-view assets
+grew from 90 to 120, so it was still loading and is not a steady-state timing
+result. Raw artifacts are in `C:/tmp/clear-ridge-4-after-paged-300sample/`.
+
+The final editor with the pressure gate (`162b0962…a9e732b6`) then ran the
+same POM-off 300 s warmup and 300 s sample. It wrote 1,166 frames: GPU total
+median/p99/max 256.34/299.85/308.13 ms, frame interval median/p99/max
+254.53/450.52/992.45 ms, 1,166/1,166 intervals above 100 ms, and none above
+1 s. Peak whole-GPU use was 10,764 MiB. There were zero OOMs, paging failures,
+or static-capacity overflows. All 1,166 sampled frames included static uploads,
+and the view grew to 119 geometry assets, of which 35 still awaited roots at
+the last profile. This is a full 300 s no-OOM timing observation, not a
+steady-state speedup claim. The separate bounded load above establishes
+settled in-view coverage. Raw artifacts are in
+`C:/tmp/clear-ridge-4-final-paged-300sample/`.
+
+Task 1's shipped, non-paged POM-off baseline had GPU total medians of
+402.1–454.2 ms and p99/max of 433.5–811.4 ms at 300 s; its pooled frame
+interval counts were 138/141 over 100 ms and 1/141 over 1 s. The paged
+captures above render a different mix of resident geometry and source
+fallbacks, so the lower medians cannot be credited to this budget change.
+
+## Per-consumer memory
+
+The after editor logs a `vram` line every 120 frames when geometry profiling
+is enabled. The peak reported values during the capture were:
+
+| Consumer or ledger | MiB | Meaning |
+|---|---:|---|
+| Tracked device-local allocation | 6,914.28 | Process-wide Vulkan allocation tracker; includes the consumers below |
+| VT physical pool | 2,032.03 | Five fixed physical page images, 12,800 slots |
+| VT indirection capacity | 64.00 | Fixed GPU buffer |
+| VT occlusion pages | 50.80 | Current GPU allocation |
+| Geometry pages | 1,274.89 | Reservation ledger, bounded by 3,072 MiB; not raw `vkAllocateMemory` bytes |
+| Static scene buffers | 800.00 host-visible, 0 device-local | Allocated cluster, vertex, and index buffers on this RTX 4090 |
+| Tracked host-visible allocation | 1,364.84 | Process-wide tracker; includes the static buffers |
+| Whole GPU (`nvidia-smi`) | 10,259 | Driver-wide peak, including allocations outside this process |
+
+The before binary did not have the per-consumer line. Its log still identifies
+the 4,064 MiB VT pool and 1,024 MiB geometry cap, and the paging census reached
+1,073,736,140 bytes reserved against that cap. The after numbers are not
+additive: geometry is a logical reservation, and the process-wide tracker
+already includes VT and other Vulkan allocations. The static buffers use a
+host-visible memory type on this driver; their size should not be labeled as
+device-local VRAM even though allocation pressure can still affect Vulkan.
+
+At the end of the after sample, VT used 1,584 of 12,800 slots, with 132 pinned
+tails. It recorded zero evictions and zero calls to the O(pool) `pick_lru`
+victim scan. The scan did not appear in this profile, so this task leaves its
+algorithm in place and keeps the new cumulative scan count/time diagnostic for
+future full-pool measurements.
+
+## Verification
+
+MSVC RelWithDebInfo `matter_editor` built successfully. The
+`vt_residency_tests`, `geometry_hierarchy_tests`, and `props_tests` executables
+each reported `ALL PASS`; `vulkan_smoke_tests` reported `ALL PASS` with zero
+validation errors. The suites were built and run serially. `bash -n` on the
+capture script, `python3 -m py_compile` on the audit tool, and
+`git diff --check` also passed.

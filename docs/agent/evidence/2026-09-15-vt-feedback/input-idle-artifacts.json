@@ -1,0 +1,386 @@
+{
+  "full_vt_acceptance": false,
+  "implementation": "Primary RT displayed input compatibility; held source-height POM coverage; three ordinary VT device-idle sites removed; recorded-but-unsubmitted source replacement/unload regression.",
+  "source_manifest": "input-idle-integration-source.json",
+  "verification": "input-idle-final-verification.json",
+  "known_renderer_failure_comparison": "input-idle-rt-failure-comparison.json",
+  "evidence_link_check": "pass",
+  "task_diff_whitespace_check_exit": 0,
+  "artifacts": [
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/ROADMAP.md",
+      "bytes": 6018,
+      "sha256": "f27a7b22c1d095c1fe206072cab32f6702c8da7e6ea38337fdad6c9c7835e307"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/README.md",
+      "bytes": 7438,
+      "sha256": "8f5b118ab80fc7e41156c6bcff84c1af62adc7899e6fd4e942d48d927eb61638"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/README.md",
+      "bytes": 114216,
+      "sha256": "2f451ab2e25c55badc3108f1cd12dfc40ca6958437f359301b94af6667076a3e"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/input-idle-comparison-check-initial.json",
+      "bytes": 425,
+      "sha256": "2ce432ab1a6620536395f727382c1cd2dcb0636a69d70a71a28ecce66700756c"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/input-idle-ctest.json",
+      "bytes": 697,
+      "sha256": "e91b74a3bd35b4c1e323bfbcf3892caa2db44be144833f8285ffeae98d41b733"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/input-idle-ctest.log",
+      "bytes": 496,
+      "sha256": "49e276168084e6d19849ce556e124585f50807e31be9be4714b1cabe85af3621"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/input-idle-final-verification.json",
+      "bytes": 2394,
+      "sha256": "ae6a2f163360d6464aadb14223760aea64abaa2ee76776c89c183c31f99dfcce"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/input-idle-green-build-matter_editor.log",
+      "bytes": 1146,
+      "sha256": "acecd92d6c8274d16f75bf2753bf870cdb7de5a1663217ca3b618baa091ec25f"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/input-idle-green-build-vt_compositor_tests.log",
+      "bytes": 2150,
+      "sha256": "fe41019f31ec9fc946151304bd39ebd61425075699c28a08a176e07aadca70f1"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/input-idle-green-build-vulkan_smoke_tests.log",
+      "bytes": 19907,
+      "sha256": "93ea38b1448917ef8de3fd36b76ec469b2b2d600df365d50311eaf92d53bce32"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/input-idle-green-checks.json",
+      "bytes": 3355,
+      "sha256": "9a578fad32870f11f9ce4c31438a057b3b3764d1dcab636747ba7081f1c66b7c"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/input-idle-green-source.json",
+      "bytes": 7068,
+      "sha256": "a75a5e22318bf79b405c95a1238292cc6bf87eea5cbcc4b7bbb5572078ddf26d"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/input-idle-green-test-compositor.log",
+      "bytes": 2929,
+      "sha256": "79a824b2097022c7811ee5ccc8130740ffa4623cc89a17072c65225eda92cf49"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/input-idle-green-test-tileset.log",
+      "bytes": 4741,
+      "sha256": "0be8989224c34da1fe61922225c8cbc85e1a9aef798b2466acb38feab2c1002e"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/input-idle-green-test-vt-input-snapshot.log",
+      "bytes": 7606,
+      "sha256": "77108812570ced06b145952d3f2bb082b01a421f45c10a171e03e7e8fab66104"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/input-idle-integration-checks.json",
+      "bytes": 9889,
+      "sha256": "08e1468d15dc8997c09e87c78e6532ba578e411c0b345060d0462b75efafd8ab"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/input-idle-integration-source.json",
+      "bytes": 7068,
+      "sha256": "f5a25950a0b066915c9364be5afd6914ec224fe72189e6c013a868abbb5bc476"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/input-idle-integration-test-cull.log",
+      "bytes": 11111,
+      "sha256": "83df7e9775b39e7c37468657a0d2add7ce2f1ef27b8e12d9c69025b62cc54d85"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/input-idle-integration-test-raster.log",
+      "bytes": 5179,
+      "sha256": "1d5ae1edd1927b5f73ec5967443a14459953bba3953d90e0cd08c1d3d33386e4"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/input-idle-integration-test-rt-disabled.log",
+      "bytes": 5179,
+      "sha256": "1d5ae1edd1927b5f73ec5967443a14459953bba3953d90e0cd08c1d3d33386e4"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/input-idle-integration-test-surface-parallax.log",
+      "bytes": 5939,
+      "sha256": "f52b072c4efc8244f77ab7a598304e2ca044b21a64c622875c6ba35eddf13a5a"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/input-idle-integration-test-vt-enrich-nort.log",
+      "bytes": 5414,
+      "sha256": "a98894cef8b2d8b7e9e24cd229be657e9ca7081dc7a0f0d61438c2bf4622c334"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/input-idle-integration-test-vt-enrich.log",
+      "bytes": 5859,
+      "sha256": "3792ec86251358d7f798c40135b72bdb204a22bb20f1554ebd2bf6e5c55ff3e3"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/input-idle-integration-test-vt-feedback.log",
+      "bytes": 7510,
+      "sha256": "6abfaaf300765dbae4213fabf307782079753fe32392296fea3b5f7728d07d12"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/input-idle-integration-test-vt-normal-frame.log",
+      "bytes": 5963,
+      "sha256": "5bea7d198ea21ae6bd9e7f966bf3613c722687bfb9e48591d756acaff756e7c2"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/input-idle-integration-test-vt-queue.log",
+      "bytes": 1989,
+      "sha256": "e8e167c0a42d4f969e7cb6e7b1f01fd0edb0e1db0103fc24e5fb1b4e207985d9"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/input-idle-integration-test-vt-rt.log",
+      "bytes": 5186,
+      "sha256": "2d018d6ee70d0ff938d266e0dc34412e12c9fe479e43a120218624275647d1b6"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/input-idle-integration-test-vt-surfaces.log",
+      "bytes": 4821,
+      "sha256": "000f8b10797692de99de1dc7d0fd3654873766eae29b4241c257db1dbdb6dff1"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/input-idle-integration-test-vt.log",
+      "bytes": 5041,
+      "sha256": "8f6beeeff36ec6879274c56d9ffc788ec349cefb4de6b36261b7dd9ed7a44a08"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/input-idle-integration-test-water-field-nort.log",
+      "bytes": 4148,
+      "sha256": "650c682a10bccb8dcf74f43956a928205dcabd1f3110216a24dd637c435e4743"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/input-idle-integration-test-water-field.log",
+      "bytes": 4435,
+      "sha256": "e671b533b0c7132bfa402de1fc9d700d5185330169ccc9dc399e07b226e714dc"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/input-idle-overlap-build-vulkan_smoke_tests.log",
+      "bytes": 18371,
+      "sha256": "14aeb8a0324033ac103ea53c64da4ce5f311ce86489c932eb08106f94115ab0f"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/input-idle-overlap-checks.json",
+      "bytes": 1146,
+      "sha256": "8824d37a5ff9f8294f4178ad34529f93cc55a5a69139e0b4ecfedc0c226f857b"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/input-idle-overlap-source.json",
+      "bytes": 7068,
+      "sha256": "f5a25950a0b066915c9364be5afd6914ec224fe72189e6c013a868abbb5bc476"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/input-idle-overlap-test-vt-input-snapshot.log",
+      "bytes": 8791,
+      "sha256": "63a460cc0da70abff54e89d90ab25af98ec6e56ed57eb8ad8e5888e9fa5b75e4"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/input-idle-primary-cull-archived-baseline.json",
+      "bytes": 1316,
+      "sha256": "36f6b82c70f7b10c15e722a7d21a0079b032fc487e01f830cee1a9ead8c0dfd4"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/input-idle-primary-cull-archived-baseline.log",
+      "bytes": 5119,
+      "sha256": "873849f490ba70711309662a07ce9f59df44a2ab2e7ade9a5b046588ddc440d6"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/input-idle-primary-cull-checks.json",
+      "bytes": 1195,
+      "sha256": "807efe8a2b30416b6c8a4417a4b27206fbb9d204c636579a708df3e2fdeef1b7"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/input-idle-primary-cull-source.json",
+      "bytes": 6627,
+      "sha256": "b7e13bea5700686551377ede8d85737f4bfa73607c1334ca00a0471db6a18184"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/input-idle-primary-cull-test-primary-light-cull.log",
+      "bytes": 5119,
+      "sha256": "873849f490ba70711309662a07ce9f59df44a2ab2e7ade9a5b046588ddc440d6"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/input-idle-red-build-vulkan_smoke_tests.log",
+      "bytes": 16303,
+      "sha256": "e226a8edcd272de617bc5c03b4ccf85e48f4937a4c14f643e6eb56800ba27a21"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/input-idle-red-checks.json",
+      "bytes": 3876,
+      "sha256": "1442d299be5975fb37828820bd9ad3ab7478caa7a68191a2cab6f1ec1c8713f6"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/input-idle-red-source.json",
+      "bytes": 7068,
+      "sha256": "5e1fb85ffa6b8d7f5d27507ce9c31c623ee352425801af23c32ef568aae67c0d"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/input-idle-red-test-vt-input-snapshot.log",
+      "bytes": 10065,
+      "sha256": "12370a068c677e4b9b233e652c7fd6f9861c4c51f364693809653f3b0c5d13dd"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/input-idle-rt-archived-baseline.json",
+      "bytes": 832,
+      "sha256": "5ad00610e501455f7cbe07422c3233f1e987dcdad9a708d3f212969568770b18"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/input-idle-rt-archived-baseline.log",
+      "bytes": 12289,
+      "sha256": "2629fb4134949a7e3d27908e759c3c38eeef1c065c95a5332de869f2df39ead2"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/input-idle-rt-failure-comparison.json",
+      "bytes": 1284,
+      "sha256": "8b9798d58d66088a21fe575a9524cfd546df74b2dcad380239116dd32adc1148"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/input-idle-rt-integration-checks.json",
+      "bytes": 760,
+      "sha256": "dc80ca8d8b90b8055b8ae2163cc738bbeb3ae88af2f1c096f9a982b110331e9c"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/input-idle-rt-integration-source.json",
+      "bytes": 6627,
+      "sha256": "b7e13bea5700686551377ede8d85737f4bfa73607c1334ca00a0471db6a18184"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/input-idle-rt-integration-test-rt.log",
+      "bytes": 12289,
+      "sha256": "f64f221a846bb5c2dcd34a087efd264dcf1d379fed4f3ee31ffcad2e277cab71"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/primary-input-draft-review.md",
+      "bytes": 7013,
+      "sha256": "697c871c9faf5bc0a09fd4cf0aa5e73963b6d35642295ee8cf1e39aad67134b6"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/primary-input-green-build-matter_editor.log",
+      "bytes": 1146,
+      "sha256": "acecd92d6c8274d16f75bf2753bf870cdb7de5a1663217ca3b618baa091ec25f"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/primary-input-green-build-vulkan_smoke_tests.log",
+      "bytes": 30651,
+      "sha256": "0f34f1ae92f5608a6f695d2bb8bcdd0697fd8415fa621680411b9c84668ee16b"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/primary-input-green-checks.json",
+      "bytes": 2257,
+      "sha256": "ab3ceed1c0db9681cd4b66b8239fcf6400dbe5b171256c2fa3a5d8edfd84233b"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/primary-input-green-source.json",
+      "bytes": 6591,
+      "sha256": "30848309ce4b35cb57ebc2fa73cb69e445044efb479c406adb3a8f650fd14b33"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/primary-input-green-test-vt-feedback.log",
+      "bytes": 7510,
+      "sha256": "6abfaaf300765dbae4213fabf307782079753fe32392296fea3b5f7728d07d12"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/primary-input-green-test-vt-input-snapshot.log",
+      "bytes": 7606,
+      "sha256": "77108812570ced06b145952d3f2bb082b01a421f45c10a171e03e7e8fab66104"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/primary-input-red-build-vulkan_smoke_tests.log",
+      "bytes": 16303,
+      "sha256": "c4e29984c7cf3e5c45d7a4f5dcb2d259de2a3e93806a2114fb270696f4743f36"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/primary-input-red-checks.json",
+      "bytes": 1428,
+      "sha256": "5621965e399264f8e1f5f7594d1882b5b0374ffe6f2b02e7164d4fa6a402f8d6"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/primary-input-red-source.json",
+      "bytes": 5872,
+      "sha256": "3d1209a9e4f181530e7f56e4a0154972b0402b208ecddf6e7606c04c848b5ba8"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/primary-input-red-test-vt-input-snapshot.log",
+      "bytes": 7858,
+      "sha256": "993559f0581bf37f395533b08685072638ac46df9082b192513ca7bae22b4d19"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/terrain-input-idle-performance-artifacts.json",
+      "bytes": 14365,
+      "sha256": "a293e70382c683930211966fdc6942db4f027e888df7f4ebabad617375b87003"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/terrain-input-idle-performance-summary.json",
+      "bytes": 1933,
+      "sha256": "577d5c8962701fafd50a1e50f856383cec2041b490311c672f1e2384aba234ad"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/terrain-input-idle-repeat-artifacts.json",
+      "bytes": 14252,
+      "sha256": "1ae79e3185754e80f2d64443b5d45a1373a4cedaa5f9c0a5c5f743f98547dfd3"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/terrain-input-idle-repeat-summary.json",
+      "bytes": 1931,
+      "sha256": "d72246147f58978df16ce72459fb364a6a8c341326b052791a427bce1b051e82"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/superpowers/plans/2026-09-14-vt-reliability-and-throughput.md",
+      "bytes": 23509,
+      "sha256": "98c2f479b965c7593fa2c67dc56fb58764bfd35775674c46382916bfd788310a"
+    },
+    {
+      "path": "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/superpowers/specs/2026-09-14-vt-reliability-and-throughput-design.md",
+      "bytes": 16120,
+      "sha256": "f012d44b2d5f0783ce7bc3369f1cb06ef0e0a21432ed11fd8aa96953ff7e5ec5"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/input-idle-fixture.patch",
+      "bytes": 13849,
+      "sha256": "9ee3ab36fa9214388be9a05660c00314329b325fbbf548e8855943eedaa0b42f"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/input-idle-production.patch",
+      "bytes": 5945,
+      "sha256": "6b982f43eb9d65d6326f97f3b19bd72cbd448eafcb943a5e444820cc5cd02d03"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/primary-input-work/primary-input-production.patch",
+      "bytes": 18721,
+      "sha256": "3ea7adc1e4245d4f5bd2bb45a5dd8202a5cbd4773cbca4b2d47574b46cea5781"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/run_current_performance.py",
+      "bytes": 2553,
+      "sha256": "4ec1b41ad2bb3de4f735655dc882ce86789650320c0c7c8f6eee36b5748e4eae"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/run_idle_checks.py",
+      "bytes": 2875,
+      "sha256": "7d0939bf7f287f5dafaf425d7a7952bb487a2f12929e7272a3e1bea4fa3f7e58"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/run_primary_checks.py",
+      "bytes": 2653,
+      "sha256": "0e2a7ccd4f5209190874ec001471ae0926101ffcc43e136d237fa92b16baaad5"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/run_without_validation.py",
+      "bytes": 462,
+      "sha256": "f4dfbf924a1637fc2c3d0293e39cc1f723dee34338d1f0610bd74fe2c8a390b3"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/summarize_input_idle_performance.py",
+      "bytes": 3647,
+      "sha256": "3cb6d7f8de9469c8fc418760ca35beb29603b5c838dae7613c0bbb3b293d158f"
+    }
+  ]
+}
