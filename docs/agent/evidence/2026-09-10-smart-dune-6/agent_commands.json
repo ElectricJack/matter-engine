@@ -1,0 +1,269 @@
+{
+ "protocol": "matter-agent",
+ "version": 1,
+ "type": "result",
+ "request_id": "acc-p1-0001",
+ "command": "agent.commands",
+ "ticket_id": "6",
+ "ok": true,
+ "code": "ok",
+ "message": "",
+ "context": {
+  "session": {
+   "id": "1",
+   "generation": "1"
+  },
+  "scene": {
+   "generation": "1",
+   "revision": "2",
+   "ready": true
+  },
+  "selection": {
+   "revision": "0"
+  },
+  "frame": {
+   "id": "26487"
+  },
+  "view": {
+   "id": "26487"
+  }
+ },
+ "result": {
+  "protocol": "matter-agent",
+  "version": 1,
+  "commands": [
+   {
+    "name": "agent.commands",
+    "summary": "List commands and current availability",
+    "availability": {
+     "available": true,
+     "code": "ok"
+    }
+   },
+   {
+    "name": "agent.help",
+    "summary": "Describe one command and its arguments",
+    "availability": {
+     "available": true,
+     "code": "ok"
+    }
+   },
+   {
+    "name": "agent.schema",
+    "summary": "Return the v1 envelopes, limits and one command schema",
+    "availability": {
+     "available": true,
+     "code": "ok"
+    }
+   },
+   {
+    "name": "agent.subscribe",
+    "summary": "Reserved event streaming operation",
+    "availability": {
+     "available": false,
+     "code": "unsupported_command",
+     "reason": "protocol v1 is request/result only; event subscription is unsupported"
+    }
+   },
+   {
+    "name": "job.cancel",
+    "summary": "Cancel a job that is still queued; report unsupported for one the engine is already running",
+    "availability": {
+     "available": true,
+     "code": "ok"
+    }
+   },
+   {
+    "name": "job.list",
+    "summary": "List the most recent regeneration jobs, oldest first",
+    "availability": {
+     "available": true,
+     "code": "ok"
+    }
+   },
+   {
+    "name": "job.start",
+    "summary": "Queue a world reload or seeded regeneration and return its job id",
+    "availability": {
+     "available": true,
+     "code": "ok"
+    }
+   },
+   {
+    "name": "job.status",
+    "summary": "Read one regeneration job: state, progress, diagnostics and result",
+    "availability": {
+     "available": true,
+     "code": "ok"
+    }
+   },
+   {
+    "name": "job.wait",
+    "summary": "Wait, bounded by this request's timeout_ms, for one job to reach a terminal state",
+    "availability": {
+     "available": true,
+     "code": "ok"
+    }
+   },
+   {
+    "name": "procedural.parameters",
+    "summary": "Describe one baked root's typed effective procedural parameters",
+    "availability": {
+     "available": true,
+     "code": "ok"
+    }
+   },
+   {
+    "name": "procedural.update",
+    "summary": "Validate or atomically apply typed root parameter changes without rewriting JS",
+    "availability": {
+     "available": true,
+     "code": "ok"
+    }
+   },
+   {
+    "name": "scene.capture_snapshot",
+    "summary": "Retain a bounded, ordered capture of the scene plus its measured world bounds and generation inputs",
+    "availability": {
+     "available": true,
+     "code": "ok"
+    }
+   },
+   {
+    "name": "scene.diff",
+    "summary": "Compare two scene captures by logical identity: added, removed and changed objects, bounds and generation inputs",
+    "availability": {
+     "available": true,
+     "code": "ok"
+    }
+   },
+   {
+    "name": "scene.get_object",
+    "summary": "Inspect one object by typed id: naming, placement, visibility, selection, provenance availability and supported operations",
+    "availability": {
+     "available": true,
+     "code": "ok"
+    }
+   },
+   {
+    "name": "scene.list_objects",
+    "summary": "List scene objects with typed ids, ordered by (kind, id)",
+    "availability": {
+     "available": true,
+     "code": "ok"
+    }
+   },
+   {
+    "name": "scene.list_snapshots",
+    "summary": "List the retained scene snapshots, oldest first",
+    "availability": {
+     "available": true,
+     "code": "ok"
+    }
+   },
+   {
+    "name": "scene.query",
+    "summary": "Filter a scene capture by kind, name, provenance and world-space region",
+    "availability": {
+     "available": true,
+     "code": "ok"
+    }
+   },
+   {
+    "name": "scene.trace_provenance",
+    "summary": "Trace an inspected object to recorded procedural modules and inputs",
+    "availability": {
+     "available": true,
+     "code": "ok"
+    }
+   },
+   {
+    "name": "selection.add",
+    "summary": "Add typed scene objects to selection",
+    "availability": {
+     "available": true,
+     "code": "ok"
+    }
+   },
+   {
+    "name": "selection.clear",
+    "summary": "Clear the shared editor selection",
+    "availability": {
+     "available": true,
+     "code": "ok"
+    }
+   },
+   {
+    "name": "selection.list",
+    "summary": "List selected typed objects and the primary",
+    "availability": {
+     "available": true,
+     "code": "ok"
+    }
+   },
+   {
+    "name": "selection.remove",
+    "summary": "Remove typed scene objects from selection",
+    "availability": {
+     "available": true,
+     "code": "ok"
+    }
+   },
+   {
+    "name": "selection.replace",
+    "summary": "Replace selection with typed scene objects",
+    "availability": {
+     "available": true,
+     "code": "ok"
+    }
+   },
+   {
+    "name": "selection.toggle",
+    "summary": "Toggle typed scene objects in selection",
+    "availability": {
+     "available": true,
+     "code": "ok"
+    }
+   },
+   {
+    "name": "view.focus",
+    "summary": "Frame the camera on the selection, or on one named object without changing the selection",
+    "availability": {
+     "available": true,
+     "code": "ok"
+    }
+   },
+   {
+    "name": "viewport.capture",
+    "summary": "Capture the next presented frame to a PNG and return its geometry, captured revisions and optional selection annotations",
+    "availability": {
+     "available": true,
+     "code": "ok"
+    }
+   },
+   {
+    "name": "viewport.pick",
+    "summary": "Read the object at viewport-local logical pixels without changing selection",
+    "availability": {
+     "available": true,
+     "code": "ok"
+    }
+   },
+   {
+    "name": "viewport.pick_select",
+    "summary": "Pick at viewport-local logical pixels and update the shared selection",
+    "availability": {
+     "available": true,
+     "code": "ok"
+    }
+   }
+  ],
+  "limits": {
+   "request_bytes": 65536,
+   "result_bytes": 1048576,
+   "default_timeout_ms": 5000,
+   "max_timeout_ms": 30000,
+   "max_pending": 256
+  }
+ }
+}

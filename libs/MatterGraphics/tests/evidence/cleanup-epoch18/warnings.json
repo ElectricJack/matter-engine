@@ -1,0 +1,418 @@
+[
+  {
+    "source": "libs/MatterGraphics/src/composition.cpp",
+    "variant": "before",
+    "exit_code": 0,
+    "warnings": 0,
+    "errors": 0,
+    "log": "warnings-before/libs__MatterGraphics__src__composition.cpp.log"
+  },
+  {
+    "source": "libs/MatterGraphics/src/graphics.cpp",
+    "variant": "before",
+    "exit_code": 0,
+    "warnings": 0,
+    "errors": 0,
+    "log": "warnings-before/libs__MatterGraphics__src__graphics.cpp.log"
+  },
+  {
+    "source": "libs/MatterGraphics/src/native/mesh_pipelines.cpp",
+    "variant": "before",
+    "exit_code": 0,
+    "warnings": 140,
+    "errors": 0,
+    "log": "warnings-before/libs__MatterGraphics__src__native__mesh_pipelines.cpp.log"
+  },
+  {
+    "source": "libs/MatterGraphics/src/native/mesh_raster.cpp",
+    "variant": "before",
+    "exit_code": 0,
+    "warnings": 26,
+    "errors": 0,
+    "log": "warnings-before/libs__MatterGraphics__src__native__mesh_raster.cpp.log"
+  },
+  {
+    "source": "libs/MatterGraphics/src/native/raster_mesh.cpp",
+    "variant": "before",
+    "exit_code": 0,
+    "warnings": 0,
+    "errors": 0,
+    "log": "warnings-before/libs__MatterGraphics__src__native__raster_mesh.cpp.log"
+  },
+  {
+    "source": "libs/MatterGraphics/src/native/streamline_bridge.cpp",
+    "variant": "before",
+    "exit_code": 0,
+    "warnings": 2,
+    "errors": 0,
+    "log": "warnings-before/libs__MatterGraphics__src__native__streamline_bridge.cpp.log"
+  },
+  {
+    "source": "libs/MatterGraphics/src/native/vk_atmosphere.cpp",
+    "variant": "before",
+    "exit_code": 0,
+    "warnings": 75,
+    "errors": 0,
+    "log": "warnings-before/libs__MatterGraphics__src__native__vk_atmosphere.cpp.log"
+  },
+  {
+    "source": "libs/MatterGraphics/src/native/vk_cloud_shadows.cpp",
+    "variant": "before",
+    "exit_code": 0,
+    "warnings": 62,
+    "errors": 0,
+    "log": "warnings-before/libs__MatterGraphics__src__native__vk_cloud_shadows.cpp.log"
+  },
+  {
+    "source": "libs/MatterGraphics/src/native/vk_gi_math.cpp",
+    "variant": "before",
+    "exit_code": 0,
+    "warnings": 0,
+    "errors": 0,
+    "log": "warnings-before/libs__MatterGraphics__src__native__vk_gi_math.cpp.log"
+  },
+  {
+    "source": "libs/MatterGraphics/src/native/vk_lighting_controls.cpp",
+    "variant": "before",
+    "exit_code": 0,
+    "warnings": 0,
+    "errors": 0,
+    "log": "warnings-before/libs__MatterGraphics__src__native__vk_lighting_controls.cpp.log"
+  },
+  {
+    "source": "libs/MatterGraphics/src/native/vk_temporal.cpp",
+    "variant": "before",
+    "exit_code": 0,
+    "warnings": 0,
+    "errors": 0,
+    "log": "warnings-before/libs__MatterGraphics__src__native__vk_temporal.cpp.log"
+  },
+  {
+    "source": "libs/MatterGraphics/src/native/vk_volumetrics.cpp",
+    "variant": "before",
+    "exit_code": 0,
+    "warnings": 217,
+    "errors": 0,
+    "log": "warnings-before/libs__MatterGraphics__src__native__vk_volumetrics.cpp.log"
+  },
+  {
+    "source": "libs/MatterGraphics/src/native/vt/vt_residency.cpp",
+    "variant": "before",
+    "exit_code": 0,
+    "warnings": 115,
+    "errors": 0,
+    "log": "warnings-before/libs__MatterGraphics__src__native__vt__vt_residency.cpp.log"
+  },
+  {
+    "source": "libs/MatterGraphics/src/native/vt/vt_stub_filler.cpp",
+    "variant": "before",
+    "exit_code": 0,
+    "warnings": 1,
+    "errors": 0,
+    "log": "warnings-before/libs__MatterGraphics__src__native__vt__vt_stub_filler.cpp.log"
+  },
+  {
+    "source": "libs/MatterGraphics/src/native/water_animation_gpu.cpp",
+    "variant": "before",
+    "exit_code": 0,
+    "warnings": 0,
+    "errors": 0,
+    "log": "warnings-before/libs__MatterGraphics__src__native__water_animation_gpu.cpp.log"
+  },
+  {
+    "source": "libs/MatterGraphics/src/native/water_field_vk.cpp",
+    "variant": "before",
+    "exit_code": 0,
+    "warnings": 0,
+    "errors": 0,
+    "log": "warnings-before/libs__MatterGraphics__src__native__water_field_vk.cpp.log"
+  },
+  {
+    "source": "libs/MatterGraphics/src/native/water_field_vk_resources.cpp",
+    "variant": "before",
+    "exit_code": 0,
+    "warnings": 17,
+    "errors": 0,
+    "log": "warnings-before/libs__MatterGraphics__src__native__water_field_vk_resources.cpp.log"
+  },
+  {
+    "source": "libs/MatterGraphics/src/native/water_forward_reference.cpp",
+    "variant": "before",
+    "exit_code": 0,
+    "warnings": 0,
+    "errors": 0,
+    "log": "warnings-before/libs__MatterGraphics__src__native__water_forward_reference.cpp.log"
+  },
+  {
+    "source": "libs/MatterGraphics/src/native/water_mesh_animation_playback.cpp",
+    "variant": "before",
+    "exit_code": 0,
+    "warnings": 0,
+    "errors": 0,
+    "log": "warnings-before/libs__MatterGraphics__src__native__water_mesh_animation_playback.cpp.log"
+  },
+  {
+    "source": "libs/MatterGraphics/src/native/water_surface_reference.cpp",
+    "variant": "before",
+    "exit_code": 0,
+    "warnings": 0,
+    "errors": 0,
+    "log": "warnings-before/libs__MatterGraphics__src__native__water_surface_reference.cpp.log"
+  },
+  {
+    "source": "libs/MatterGraphics/src/native/world_lights.cpp",
+    "variant": "before",
+    "exit_code": 0,
+    "warnings": 0,
+    "errors": 0,
+    "log": "warnings-before/libs__MatterGraphics__src__native__world_lights.cpp.log"
+  },
+  {
+    "source": "libs/MatterGraphics/src/scene_backend.cpp",
+    "variant": "before",
+    "exit_code": 0,
+    "warnings": 0,
+    "errors": 0,
+    "log": "warnings-before/libs__MatterGraphics__src__scene_backend.cpp.log"
+  },
+  {
+    "source": "libs/MatterGraphics/src/vulkan_composition.cpp",
+    "variant": "before",
+    "exit_code": 0,
+    "warnings": 0,
+    "errors": 0,
+    "log": "warnings-before/libs__MatterGraphics__src__vulkan_composition.cpp.log"
+  },
+  {
+    "source": "libs/MatterGraphics/src/vulkan_raster.cpp",
+    "variant": "before",
+    "exit_code": 0,
+    "warnings": 0,
+    "errors": 0,
+    "log": "warnings-before/libs__MatterGraphics__src__vulkan_raster.cpp.log"
+  },
+  {
+    "source": "libs/MatterGraphics/src/vulkan_resources.cpp",
+    "variant": "before",
+    "exit_code": 0,
+    "warnings": 0,
+    "errors": 0,
+    "log": "warnings-before/libs__MatterGraphics__src__vulkan_resources.cpp.log"
+  },
+  {
+    "source": "MatterEngine3/src/render/raster_mesh.cpp",
+    "variant": "before",
+    "exit_code": 0,
+    "warnings": 0,
+    "errors": 0,
+    "log": "warnings-before/MatterEngine3__src__render__raster_mesh.cpp.log"
+  },
+  {
+    "source": "libs/MatterGraphics/src/composition.cpp",
+    "variant": "after",
+    "exit_code": 0,
+    "warnings": 0,
+    "errors": 0,
+    "log": "warnings-after/libs__MatterGraphics__src__composition.cpp.log"
+  },
+  {
+    "source": "libs/MatterGraphics/src/graphics.cpp",
+    "variant": "after",
+    "exit_code": 0,
+    "warnings": 0,
+    "errors": 0,
+    "log": "warnings-after/libs__MatterGraphics__src__graphics.cpp.log"
+  },
+  {
+    "source": "libs/MatterGraphics/src/native/mesh_pipelines.cpp",
+    "variant": "after",
+    "exit_code": 0,
+    "warnings": 0,
+    "errors": 0,
+    "log": "warnings-after/libs__MatterGraphics__src__native__mesh_pipelines.cpp.log"
+  },
+  {
+    "source": "libs/MatterGraphics/src/native/mesh_raster.cpp",
+    "variant": "after",
+    "exit_code": 0,
+    "warnings": 0,
+    "errors": 0,
+    "log": "warnings-after/libs__MatterGraphics__src__native__mesh_raster.cpp.log"
+  },
+  {
+    "source": "libs/MatterGraphics/src/native/raster_mesh.cpp",
+    "variant": "after",
+    "exit_code": 0,
+    "warnings": 0,
+    "errors": 0,
+    "log": "warnings-after/libs__MatterGraphics__src__native__raster_mesh.cpp.log"
+  },
+  {
+    "source": "libs/MatterGraphics/src/native/streamline_bridge.cpp",
+    "variant": "after",
+    "exit_code": 0,
+    "warnings": 0,
+    "errors": 0,
+    "log": "warnings-after/libs__MatterGraphics__src__native__streamline_bridge.cpp.log"
+  },
+  {
+    "source": "libs/MatterGraphics/src/native/vk_atmosphere.cpp",
+    "variant": "after",
+    "exit_code": 0,
+    "warnings": 0,
+    "errors": 0,
+    "log": "warnings-after/libs__MatterGraphics__src__native__vk_atmosphere.cpp.log"
+  },
+  {
+    "source": "libs/MatterGraphics/src/native/vk_cloud_shadows.cpp",
+    "variant": "after",
+    "exit_code": 0,
+    "warnings": 0,
+    "errors": 0,
+    "log": "warnings-after/libs__MatterGraphics__src__native__vk_cloud_shadows.cpp.log"
+  },
+  {
+    "source": "libs/MatterGraphics/src/native/vk_gi_math.cpp",
+    "variant": "after",
+    "exit_code": 0,
+    "warnings": 0,
+    "errors": 0,
+    "log": "warnings-after/libs__MatterGraphics__src__native__vk_gi_math.cpp.log"
+  },
+  {
+    "source": "libs/MatterGraphics/src/native/vk_lighting_controls.cpp",
+    "variant": "after",
+    "exit_code": 0,
+    "warnings": 0,
+    "errors": 0,
+    "log": "warnings-after/libs__MatterGraphics__src__native__vk_lighting_controls.cpp.log"
+  },
+  {
+    "source": "libs/MatterGraphics/src/native/vk_temporal.cpp",
+    "variant": "after",
+    "exit_code": 0,
+    "warnings": 0,
+    "errors": 0,
+    "log": "warnings-after/libs__MatterGraphics__src__native__vk_temporal.cpp.log"
+  },
+  {
+    "source": "libs/MatterGraphics/src/native/vk_volumetrics.cpp",
+    "variant": "after",
+    "exit_code": 0,
+    "warnings": 0,
+    "errors": 0,
+    "log": "warnings-after/libs__MatterGraphics__src__native__vk_volumetrics.cpp.log"
+  },
+  {
+    "source": "libs/MatterGraphics/src/native/vt/vt_residency.cpp",
+    "variant": "after",
+    "exit_code": 0,
+    "warnings": 1,
+    "errors": 0,
+    "log": "warnings-after/libs__MatterGraphics__src__native__vt__vt_residency.cpp.log"
+  },
+  {
+    "source": "libs/MatterGraphics/src/native/vt/vt_stub_filler.cpp",
+    "variant": "after",
+    "exit_code": 0,
+    "warnings": 1,
+    "errors": 0,
+    "log": "warnings-after/libs__MatterGraphics__src__native__vt__vt_stub_filler.cpp.log"
+  },
+  {
+    "source": "libs/MatterGraphics/src/native/water_animation_gpu.cpp",
+    "variant": "after",
+    "exit_code": 0,
+    "warnings": 0,
+    "errors": 0,
+    "log": "warnings-after/libs__MatterGraphics__src__native__water_animation_gpu.cpp.log"
+  },
+  {
+    "source": "libs/MatterGraphics/src/native/water_field_vk.cpp",
+    "variant": "after",
+    "exit_code": 0,
+    "warnings": 0,
+    "errors": 0,
+    "log": "warnings-after/libs__MatterGraphics__src__native__water_field_vk.cpp.log"
+  },
+  {
+    "source": "libs/MatterGraphics/src/native/water_field_vk_resources.cpp",
+    "variant": "after",
+    "exit_code": 0,
+    "warnings": 0,
+    "errors": 0,
+    "log": "warnings-after/libs__MatterGraphics__src__native__water_field_vk_resources.cpp.log"
+  },
+  {
+    "source": "libs/MatterGraphics/src/native/water_forward_reference.cpp",
+    "variant": "after",
+    "exit_code": 0,
+    "warnings": 0,
+    "errors": 0,
+    "log": "warnings-after/libs__MatterGraphics__src__native__water_forward_reference.cpp.log"
+  },
+  {
+    "source": "libs/MatterGraphics/src/native/water_mesh_animation_playback.cpp",
+    "variant": "after",
+    "exit_code": 0,
+    "warnings": 0,
+    "errors": 0,
+    "log": "warnings-after/libs__MatterGraphics__src__native__water_mesh_animation_playback.cpp.log"
+  },
+  {
+    "source": "libs/MatterGraphics/src/native/water_surface_reference.cpp",
+    "variant": "after",
+    "exit_code": 0,
+    "warnings": 0,
+    "errors": 0,
+    "log": "warnings-after/libs__MatterGraphics__src__native__water_surface_reference.cpp.log"
+  },
+  {
+    "source": "libs/MatterGraphics/src/native/world_lights.cpp",
+    "variant": "after",
+    "exit_code": 0,
+    "warnings": 0,
+    "errors": 0,
+    "log": "warnings-after/libs__MatterGraphics__src__native__world_lights.cpp.log"
+  },
+  {
+    "source": "libs/MatterGraphics/src/scene_backend.cpp",
+    "variant": "after",
+    "exit_code": 0,
+    "warnings": 0,
+    "errors": 0,
+    "log": "warnings-after/libs__MatterGraphics__src__scene_backend.cpp.log"
+  },
+  {
+    "source": "libs/MatterGraphics/src/vulkan_composition.cpp",
+    "variant": "after",
+    "exit_code": 0,
+    "warnings": 0,
+    "errors": 0,
+    "log": "warnings-after/libs__MatterGraphics__src__vulkan_composition.cpp.log"
+  },
+  {
+    "source": "libs/MatterGraphics/src/vulkan_raster.cpp",
+    "variant": "after",
+    "exit_code": 0,
+    "warnings": 0,
+    "errors": 0,
+    "log": "warnings-after/libs__MatterGraphics__src__vulkan_raster.cpp.log"
+  },
+  {
+    "source": "libs/MatterGraphics/src/vulkan_resources.cpp",
+    "variant": "after",
+    "exit_code": 0,
+    "warnings": 0,
+    "errors": 0,
+    "log": "warnings-after/libs__MatterGraphics__src__vulkan_resources.cpp.log"
+  },
+  {
+    "source": "MatterEngine3/src/render/raster_mesh.cpp",
+    "variant": "after",
+    "exit_code": 0,
+    "warnings": 0,
+    "errors": 0,
+    "log": "warnings-after/MatterEngine3__src__render__raster_mesh.cpp.log"
+  }
+]

@@ -40,7 +40,7 @@ globalThis.Tileset = class Tileset extends Part {
                                        o.edgeStripWidth, o.cornerClearRadius); }
   base(fn, mat)        { __dsl_ts_base(fn, mat); }
   layer(module, opts)  { __dsl_ts_layer(module, opts || {}); }
-  dropChild(module, p) { __dsl_ts_dropChild(module, p); }
+  dropChild(module, p, opts) { __dsl_ts_dropChild(module, p, opts); }
   variant(fn)          { __dsl_ts_variant(fn); }
 };
 )JS";

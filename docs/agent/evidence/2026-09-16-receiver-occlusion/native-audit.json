@@ -1,0 +1,41 @@
+{
+  "prefix": "receiver-ao-v2",
+  "scope": "native AO-factor and existing VT functional regressions; not visual or performance acceptance",
+  "source_count": 996,
+  "source_changes": [],
+  "binary_changes": [],
+  "log_changes": [],
+  "build_manifest": "docs/agent/evidence/2026-09-16-shared-vt-pixels/receiver-ao-v2-build-manifest.json",
+  "build_manifest_sha256": "ae67674fe3989d6e53728d0243ab320033d131b77f33ff7e9479513040806ff3",
+  "test_manifest": "docs/agent/evidence/2026-09-16-shared-vt-pixels/receiver-ao-v2-tests.json",
+  "test_manifest_sha256": "5fa4e9d97ecb3512f188880055db1808f668d360415d67f92ed398a55620e6ce",
+  "binaries": {
+    "MatterEditor/build/cmake/windows-msvc/relwithdebinfo/vt_residency_tests.exe": "6db45c8e17b086e46bd8d80095d2e33e8363f96f57b45ee7e516c4f404c61c8f",
+    "MatterEditor/build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe": "ca4543d33539b954b56c550bdbe889a3f575a891d3df9b40650f83226082c939",
+    "MatterEditor/build/cmake/windows-msvc/relwithdebinfo/vt_compositor_tests.exe": "f1dd623cd7a72f9265cebeadc0f3c1965e10a4ed360290602511b14ce3791efc",
+    "MatterEditor/build/windows-msvc/editor.exe": "38b5f4a6836982b97ad90900987ca7da13b048b699aa222053740846d2d50f44"
+  },
+  "passed_modes": [
+    "cpu",
+    "vt-receiver-material",
+    "vt-enrich",
+    "vt-material-domain",
+    "vt-queue",
+    "vt-input-snapshot",
+    "vt-direct-source",
+    "surface-parallax",
+    "vt-composed-seam",
+    "vt-export",
+    "compositor"
+  ],
+  "gpu_validation_errors": 0,
+  "rt_skips": false,
+  "receiver_occlusion": {
+    "clear": 0.8,
+    "occluded": 0.119997,
+    "post_write_refusals": 8,
+    "allocated_before_release_bytes": 1183744,
+    "after_retirement_bytes": 0,
+    "enrichment_pages_per_frame": 2
+  }
+}

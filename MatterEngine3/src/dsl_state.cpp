@@ -401,4 +401,56 @@ void DslState::emit_volume(const VolumeEmitter& e) {
     emitters_.push_back(normed);
 }
 
+void DslState::solid_source(std::vector<gpu_meshing::SolidOp> ops, float voxel_m,
+                            uint32_t max_vertices) {
+    if (has_error_)
+        return;
+    if (solid_source_ || session_ != Session::None || region_open_ ||
+        generating_animation() || rig_open() || clip_open() || motion_open()) {
+        set_error("solidSource requires one static source outside "
+                  "geometry/modifier/animation sessions");
+        return;
+    }
+    const auto transform = top();
+    if (transform.m[12] != 0 || transform.m[13] != 0 || transform.m[14] != 0 ||
+        transform.m[15] != 1) {
+        set_error("solidSource requires an affine proper rotation and translation");
+        return;
+    }
+    // Compose primitive world-to-local rows with the inverse outer rigid frame.
+    // Validation below rejects non-rigid matrices; no scaling is approximated.
+    for (auto &op : ops) {
+        const auto old = op;
+        const std::array<float, 4> *rows[] = {&old.row0, &old.row1, &old.row2};
+        std::array<float, 4> *result[] = {&op.row0, &op.row1, &op.row2};
+        for (int r = 0; r < 3; ++r) {
+            for (int c = 0; c < 3; ++c) {
+                (*result[r])[c] = 0;
+                for (int k = 0; k < 3; ++k)
+                    (*result[r])[c] += (*rows[r])[k] * transform.m[c * 4 + k];
+            }
+            (*result[r])[3] = (*rows[r])[3];
+            for (int k = 0; k < 3; ++k)
+                (*result[r])[3] -= (*result[r])[k] * transform.m[k * 4 + 3];
+        }
+    }
+    gpu_meshing::SolidJob job;
+    job.ops = ops.data();
+    job.op_count = static_cast<uint32_t>(ops.size());
+    job.voxel_m = voxel_m;
+    job.max_mesh_vertices = max_vertices;
+    gpu_meshing::GridLayout layout;
+    gpu_meshing::Error error;
+    if (!gpu_meshing::validate_solid_job(job, layout, error)) {
+        set_error("solidSource: " + error.message);
+        return;
+    }
+    SolidSourceRequest request;
+    request.ops = std::move(ops);
+    request.voxel_m = voxel_m;
+    request.max_vertices = max_vertices;
+    request.material = material_;
+    request.tint = tint_;
+    solid_source_ = std::move(request);
+}
 } // namespace dsl

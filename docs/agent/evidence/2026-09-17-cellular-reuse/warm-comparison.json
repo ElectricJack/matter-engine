@@ -1,0 +1,144 @@
+{
+  "runs": [
+    {
+      "variant": "reuse",
+      "command": "$env:MATTER_VK_VALIDATION=\"1\"; $env:TMP=\"$env:LOCALAPPDATA\\Temp\"; $env:TEMP=$env:TMP; & \"./build/cmake/windows-msvc/relwithdebinfo/vt_compositor_tests.exe\"; exit $LASTEXITCODE",
+      "exit": 0,
+      "seconds": 5.0619178080014535,
+      "source_manifest": "cellular-reuse-v5-sources.json",
+      "binary_sha256": "d3a608784292ab857b11f6ad2f686e271cab347407e8dfcf8df1708e11166ee7",
+      "binary_unchanged": true,
+      "working_source_changes": [],
+      "samples_ms_per_page": [
+        0.121364,
+        0.120924,
+        0.135,
+        0.121884,
+        0.120708,
+        0.120564,
+        0.120644,
+        0.120444,
+        0.120422
+      ],
+      "median_ms_per_page": 0.120708,
+      "page_hashes": [
+        "feature=0 mip=0 hash=d919053680b58e53",
+        "feature=0 mip=1 hash=c90b02becd1c3e2e",
+        "feature=1 mip=0 hash=02ddf02249b8eef6",
+        "feature=1 mip=1 hash=015077224a1d63c3",
+        "feature=2 mip=0 hash=01d7a1406532f9e1",
+        "feature=2 mip=1 hash=bcbab0cc20021cf8"
+      ],
+      "log_sha256": "ca7f881e4339b58ec78dc460f6938eab9025c701c9edcd237c1536227bf4404a",
+      "passed": true
+    },
+    {
+      "variant": "reference",
+      "command": "$env:MATTER_VK_VALIDATION=\"1\"; $env:TMP=\"$env:LOCALAPPDATA\\Temp\"; $env:TEMP=$env:TMP; & \"./build/cmake/windows-msvc/relwithdebinfo/vt_compositor_reference_tests.exe\"; exit $LASTEXITCODE",
+      "exit": 0,
+      "seconds": 9.51209909300087,
+      "source_manifest": "cellular-reuse-v4-reference-sources.json",
+      "binary_sha256": "14be4e2502fc1d57a5e61fa8477441edcef13912d93373fc8dba51f6038cf416",
+      "binary_unchanged": true,
+      "working_source_changes": [],
+      "samples_ms_per_page": [
+        0.123216,
+        0.122928,
+        0.123758,
+        0.12236,
+        0.122284,
+        0.122348,
+        0.122622,
+        0.122742,
+        0.13778
+      ],
+      "median_ms_per_page": 0.122742,
+      "page_hashes": [
+        "feature=0 mip=0 hash=d919053680b58e53",
+        "feature=0 mip=1 hash=c90b02becd1c3e2e",
+        "feature=1 mip=0 hash=02ddf02249b8eef6",
+        "feature=1 mip=1 hash=015077224a1d63c3",
+        "feature=2 mip=0 hash=01d7a1406532f9e1",
+        "feature=2 mip=1 hash=bcbab0cc20021cf8"
+      ],
+      "log_sha256": "c64b7ae6747d72731d32073c7bfe6c9d74c9e6f6dbf41b6f419f1c3e53551fd5",
+      "passed": true
+    },
+    {
+      "variant": "reuse",
+      "command": "$env:MATTER_VK_VALIDATION=\"1\"; $env:TMP=\"$env:LOCALAPPDATA\\Temp\"; $env:TEMP=$env:TMP; & \"./build/cmake/windows-msvc/relwithdebinfo/vt_compositor_tests.exe\"; exit $LASTEXITCODE",
+      "exit": 0,
+      "seconds": 5.034108922998712,
+      "source_manifest": "cellular-reuse-v5-sources.json",
+      "binary_sha256": "d3a608784292ab857b11f6ad2f686e271cab347407e8dfcf8df1708e11166ee7",
+      "binary_unchanged": true,
+      "working_source_changes": [],
+      "samples_ms_per_page": [
+        0.122082,
+        0.12162,
+        0.121072,
+        0.121564,
+        0.121156,
+        0.12135,
+        0.121436,
+        0.120604,
+        0.136244
+      ],
+      "median_ms_per_page": 0.121436,
+      "page_hashes": [
+        "feature=0 mip=0 hash=d919053680b58e53",
+        "feature=0 mip=1 hash=c90b02becd1c3e2e",
+        "feature=1 mip=0 hash=02ddf02249b8eef6",
+        "feature=1 mip=1 hash=015077224a1d63c3",
+        "feature=2 mip=0 hash=01d7a1406532f9e1",
+        "feature=2 mip=1 hash=bcbab0cc20021cf8"
+      ],
+      "log_sha256": "d7b390f527d2a6164bdc016238e73139ddeee4559ed4d0e167aef90253d5d922",
+      "passed": true
+    },
+    {
+      "variant": "reference",
+      "command": "$env:MATTER_VK_VALIDATION=\"1\"; $env:TMP=\"$env:LOCALAPPDATA\\Temp\"; $env:TEMP=$env:TMP; & \"./build/cmake/windows-msvc/relwithdebinfo/vt_compositor_reference_tests.exe\"; exit $LASTEXITCODE",
+      "exit": 0,
+      "seconds": 5.124894009997661,
+      "source_manifest": "cellular-reuse-v4-reference-sources.json",
+      "binary_sha256": "14be4e2502fc1d57a5e61fa8477441edcef13912d93373fc8dba51f6038cf416",
+      "binary_unchanged": true,
+      "working_source_changes": [],
+      "samples_ms_per_page": [
+        0.125134,
+        0.12452,
+        0.125116,
+        0.12473,
+        0.12536,
+        0.125404,
+        0.125132,
+        0.124132,
+        0.125294
+      ],
+      "median_ms_per_page": 0.125132,
+      "page_hashes": [
+        "feature=0 mip=0 hash=d919053680b58e53",
+        "feature=0 mip=1 hash=c90b02becd1c3e2e",
+        "feature=1 mip=0 hash=02ddf02249b8eef6",
+        "feature=1 mip=1 hash=015077224a1d63c3",
+        "feature=2 mip=0 hash=01d7a1406532f9e1",
+        "feature=2 mip=1 hash=bcbab0cc20021cf8"
+      ],
+      "log_sha256": "bf95cf56973b0f7286bae1c9da23e5a77b1831b7eaed97c0697d890cc7d34cdf",
+      "passed": true
+    }
+  ],
+  "median_ms_per_page": {
+    "reference": 0.124326,
+    "reuse": 0.121253
+  },
+  "reduction_percent": 2.471727554976433,
+  "all_page_hashes_equal": true,
+  "shader_hashes": {
+    "MatterEditor/build/cmake/windows-msvc/relwithdebinfo/MatterEngine3/shaders_vk/vt_composite.comp.spv": "221de74bdf161bbba02451690f878f55c543bf12c03ff180b768074405f439a6",
+    "MatterEditor/build/cmake/windows-msvc/relwithdebinfo/MatterEngine3/shaders_vk/face_material.comp.spv": "fefcfc27b2445a1072f0d48dfa4b096886374d0fbca137f1a0c66e92e5b84adc"
+  },
+  "shader_changes": [],
+  "isolation": "Frozen r2 editor independently open. Fixture result, not whole-scene acceptance."
+}

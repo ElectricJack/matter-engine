@@ -1,0 +1,71 @@
+Task noble-zenith-31, claim epoch 5. Base recovered by ff-only: 46a32f01.
+Authorization: latest supervisor continuation, bounded diagnosis (~30min runtime)
+before focused checks and original gates; no unchanged full suite rerun.
+
+Completed:
+- Original research approval and exact content hash read; prior claims remain
+  historical evidence, not new test claims.
+- First counter-only diagnostic, preserved binary 9e2f24e77193a5e2..., 600s bound:
+  TIMEOUT. Pipeline trace: G-buffer variants28-36s; RT pipeline84.5s. Reached
+  frame slots=2. No matrix summary/final validation count, no accounting
+  conclusion. AQ exit1, one failed/one deselected,600.19s.
+- Fixed wrapper timeout containment: process group includes time and native
+  child; known own PIDs28182/28185 absent after the timed-out test.
+- Added opt-in consumed-sample serial/count logging and native fixture frame
+  stage/candidate/sample/totals logging, preserving lifecycle and assertions.
+- Actual reporter + full commit CPU regression:9PASS in0.78s, AQ exit0.
+- Fresh own Linux build:97 sources, serial ninja, compile/link exit0;
+  canonical source-list generator and existing GLFW archive. Existing nonowned
+  _putenv_s shim retained; warnings in build logs. Stage-trace incremental
+  rebuild also exit0. Exact sources/executable hashes in source-sha256.txt.
+
+Final bounded diagnosis result:
+- Fresh instrumented counter-only native diagnostic: TIMEOUT at1200s;
+  AQ exit1, one failed/one deselected in1200.49s. Combined native timeout
+  budgets600+1200=1800s, plus pytest setup/teardown overhead0.68s.
+- All16 no-writer frames (serial5..20, two frame slots) completed with
+  recorded=1/submitted=1 and candidate=sample=consumed=total=warnings=0.
+  These cover disabled, forced unavailable, culled empty, and empty inputs.
+- First actual seeded RT writer frame, serial21 slot0, printed successful
+  prepare/render/record markers, then did not return from vulkan.end_frame
+  before the bound. There was no completed frame submission marker, promoted
+  writer sample, or retired/consumed writer sample in this trace.
+- The marker locates the stall within end_frame, which includes command-buffer
+  finalization, submission, optional readback waiting, and presentation. It
+  does not identify the precise driver call or prove completed queue submission.
+- No duplicate/drop accounting defect was established and no new lifecycle
+  correction was made in epoch5. CPU coverage passes; native acceptance remains
+  UNMET. No full-suite rerun after the authorized diagnosis cap, no assertion
+  waiver, and no hardware RT/performance claim. Epoch4 gate results stay failures.
+- Process-group timeout cleanup returned child status-15. Known own native
+  PID82299 was absent after completion; containment.txt records the exact
+  executable/process scan. No foreign process was signalled.
+- Supervisor message msg-b2b836c3448f446e94964e7dab6a2cde directed this bounded
+  result and honest unmet close. Sole timer6a51e93a-de59-456a-a82d-284ddbe83c47
+  was consumed; no further run or timer registered.
+
+Environment for both diagnostics:
+DISPLAY=:0
+VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json
+MATTER_VK_LAYER_DIR=/tmp/fleet-rapids-48-epoch18/toolchain/usr/share/vulkan/explicit_layer.d
+MATTER_VK_LAYER_LIB=/tmp/fleet-rapids-48-epoch18/toolchain/usr/lib/x86_64-linux-gnu
+LP_NUM_THREADS=1 MESA_GLTHREAD=false MATTER_PIPELINE_PROFILE=1
+MATTER_VK_STATIC_RESERVE_CLUSTER_MB=1 MATTER_VK_STATIC_RESERVE_VERTEX_MB=1
+MATTER_VK_STATIC_RESERVE_INDEX_MB=1 MATTER_VK_CPU_RESERVE_VERTEX_MB=0
+MATTER_VK_CPU_RESERVE_INDEX_MB=0 MATTER_IMPOSTOR_CELL_PX=16
+Reserve/thread caps copied from sibling measured ef1cec45. No renderer feature
+was bypassed. Pipeline timings are diagnostic observations, not performance
+acceptance. Device banner llvmpipe LLVM20.1.2, Mesa25.2.8, Vulkan1.4.318,
+RT available=true (software); no hardware RT, Windows, or product UI claim.
+
+Commands (environment above prefixed; wrappers select mode via -k):
+aq test --aq-timeout 75 -n 0 /tmp/noble-zenith-31-epoch5/test_diagnostic.py -k rt-counters -q -s
+  MATTER_SMOKE_EXE=preserved executable from epoch4/validation.txt
+  MATTER_SMOKE_LOG_DIR=/tmp/noble-zenith-31-epoch5/diagnostic
+aq test --aq-timeout 75 -n 0 /tmp/noble-zenith-31-epoch5/test_traced_diagnostic.py -k rt-counters -q -s
+  MATTER_SMOKE_EXE=/tmp/noble-zenith-31-epoch5/build/vulkan_smoke_tests
+  MATTER_SMOKE_LOG_DIR=/tmp/noble-zenith-31-epoch5/traced
+aq test --aq-timeout 75 -n 0 MatterEngine3/tests/test_rt_counter_cpu.py -q -s
+python3 -I docs/agent/evidence/2026-10-20-rt-counter-native/gen_linux_smoke_cmake.py "$PWD" /tmp/noble-zenith-31-epoch5/cmakeproj
+cmake -S /tmp/noble-zenith-31-epoch5/cmakeproj -B /tmp/noble-zenith-31-epoch5/build -G Ninja -DCMAKE_BUILD_TYPE=Release
+ninja -C /tmp/noble-zenith-31-epoch5/build -j1

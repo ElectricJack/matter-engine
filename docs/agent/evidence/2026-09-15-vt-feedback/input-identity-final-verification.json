@@ -1,0 +1,25 @@
+{
+  "verified_utc": "2026-09-15T13:58:32.366055+00:00",
+  "source_count": 41,
+  "binary_count": 3,
+  "changes": {
+    "sources": [],
+    "binaries": []
+  },
+  "passing_final_revision_builds": 3,
+  "passing_gpu_executions": 11,
+  "known_visible_regression_failures": 12,
+  "validation_errors": [],
+  "native_process_census": {
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      "Get-Process | Where-Object { $_.ProcessName -match \"^(editor|vulkan_smoke_tests|vt_compositor_tests|ninja|cl|link|cmake)$\" } | Select-Object ProcessName,Id | ConvertTo-Json -Compress"
+    ],
+    "exit": 0,
+    "stdout": "",
+    "stderr": ""
+  }
+}
