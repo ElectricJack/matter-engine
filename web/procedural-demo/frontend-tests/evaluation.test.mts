@@ -39,3 +39,41 @@ test('parameter invalidation clears stage cache; disposal cancels jobs and preve
   assert.equal(disposed, 1); assert.equal(calls, 7);
   assert.equal(states.at(-1)!.kind, 'ready');
 });
+
+test('heavy placements request one native LOD, reuse the engine and cache the complete result', async () => {
+  const heavy = result(3);
+  heavy.meshes = [{ id: 'shared', indices: new Uint32Array(2400) } as EvaluationResult['meshes'][number]];
+  heavy.instances = [{ meshId: 'shared' }, { meshId: 'shared' }] as EvaluationResult['instances'];
+  const calls: Parameters<ProceduralEngine['evaluate']>[1][] = [];
+  const states: EvaluationState[] = [];
+  const engine: ProceduralEngine = { dispose() {}, async evaluate(_recipe, options) {
+    calls.push(options);
+    return calls.length === 1 ? heavy : { ...heavy, lods: [{ meshes: [], instances: [], bounds: heavy.bounds, ratio: 0.35 }], measurements: { ...heavy.measurements, elapsedMs: 5 } };
+  } };
+  const controller = new EvaluationController(engine, state => states.push(state));
+  await controller.evaluate(0, recipe); await controller.evaluate(0, recipe);
+  assert.equal(calls.length, 2);
+  assert.deepEqual(calls[1]!.lodRatios, [0.35]);
+  assert.equal(calls[0]!.signal, calls[1]!.signal);
+  const last = states.at(-1)!;
+  assert.equal(last.kind, 'ready');
+  if (last.kind === 'ready') {
+    assert.equal(last.result.measurements.elapsedMs, 8);
+    assert.equal(last.result.lods.length, 1); assert.equal(last.cached, true);
+  }
+  controller.dispose();
+});
+
+test('a late heavy result cannot schedule LOD work after selection changes', async () => {
+  const jobs: ((value: EvaluationResult) => void)[] = [];
+  const engine: ProceduralEngine = { dispose() {}, evaluate() { return new Promise(resolve => jobs.push(resolve)); } };
+  const controller = new EvaluationController(engine, () => {});
+  const old = controller.evaluate(0, recipe);
+  controller.invalidate();
+  const heavy = result(1);
+  heavy.meshes = [{ id: 'shared', indices: new Uint32Array(6000) } as EvaluationResult['meshes'][number]];
+  heavy.instances = [{ meshId: 'shared' }] as EvaluationResult['instances'];
+  jobs[0](heavy); await old;
+  assert.equal(jobs.length, 1);
+  controller.dispose();
+});

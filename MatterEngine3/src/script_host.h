@@ -68,7 +68,23 @@
 #include "matter/bake_observer.h"  // optional per-rung observer (W3, Lab-only)
 #include "matter/animation_diagnostic.h"  // full animation diagnostic list (D1)
 
+class BLASManager;
+class TLASManager;
+struct Tri;
+struct TriEx;
+
 namespace script_host {
+
+// The first `class <Name> extends Part` in the source (a text scan, not a
+// parse), or "" when there is none. The bake and the portable route both name
+// the authored class this way.
+std::string find_part_class_name(const std::string& source);
+
+// Registers a literal triangle stream as one BLAS entry drawn by an identity
+// TLAS instance, exactly as the bake's direct-triangle path does.
+void register_direct_triangles(BLASManager& blas, TLASManager& tlas,
+                               const std::vector<Tri>& tris,
+                               const std::vector<TriEx>& extra);
 
 // The in-memory geometry a bake hands to save_v2, retained when
 // BakeOptions::retain_geometry asks for it (see BakeResult::geometry).
