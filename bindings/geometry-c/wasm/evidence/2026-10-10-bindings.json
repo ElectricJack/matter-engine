@@ -1,0 +1,286 @@
+{
+  "profile": "matter-wasm32-worker-v1",
+  "emscripten_revision": "dc80f645ee70178c11666de0c3860d9e064d50e4",
+  "toolchain_lock_sha256": "6c6c21a68246031a357b3679005ec18e99c57f86fc540e121e2dee5215e0a362",
+  "tools": {
+    "emscripten": {
+      "version": "5.0.2",
+      "path": "/home/jkern/emsdk/upstream/emscripten/emcc"
+    },
+    "node": {
+      "version": "22.16.0",
+      "path": "/home/jkern/emsdk/node/22.16.0_64bit/bin/node"
+    },
+    "cmake": {
+      "version": "3.28.3",
+      "path": "/usr/bin/cmake"
+    },
+    "ninja": {
+      "version": "1.11.1",
+      "path": "/usr/bin/ninja"
+    }
+  },
+  "python": "3.12.3",
+  "platform": "Linux-6.18.33.2-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+  "commands": [
+    [
+      "cmake",
+      "-S",
+      "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-6/bindings/geometry-c",
+      "-B",
+      "/tmp/matter-cabi-slot6-clean-wasm",
+      "-G",
+      "Ninja",
+      "-DCMAKE_TOOLCHAIN_FILE=/home/jkern/emsdk/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake",
+      "-DCMAKE_BUILD_TYPE=Release",
+      "-DMATTER_GEOMETRY_C_WASM_SMOKE=ON",
+      "-DMATTER_GEOMETRY_C_NATIVE_CONSUMER=/tmp/matter-cabi-slot6-native/matter_geometry_c_tests"
+    ],
+    [
+      "cmake",
+      "--build",
+      "/tmp/matter-cabi-slot6-clean-wasm",
+      "--parallel",
+      "1"
+    ],
+    [
+      "ctest",
+      "--test-dir",
+      "/tmp/matter-cabi-slot6-clean-wasm",
+      "--output-on-failure",
+      "--parallel",
+      "1"
+    ]
+  ],
+  "checks": [
+    {
+      "command": [
+        "cmake",
+        "-S",
+        "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-6/bindings/geometry-c",
+        "-B",
+        "/tmp/matter-cabi-slot6-clean-wasm",
+        "-G",
+        "Ninja",
+        "-DCMAKE_TOOLCHAIN_FILE=/home/jkern/emsdk/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake",
+        "-DCMAKE_BUILD_TYPE=Release",
+        "-DMATTER_GEOMETRY_C_WASM_SMOKE=ON",
+        "-DMATTER_GEOMETRY_C_NATIVE_CONSUMER=/tmp/matter-cabi-slot6-native/matter_geometry_c_tests"
+      ],
+      "exit_code": 0
+    },
+    {
+      "command": [
+        "cmake",
+        "--build",
+        "/tmp/matter-cabi-slot6-clean-wasm",
+        "--parallel",
+        "1"
+      ],
+      "exit_code": 0
+    },
+    {
+      "command": [
+        "ctest",
+        "--test-dir",
+        "/tmp/matter-cabi-slot6-clean-wasm",
+        "--output-on-failure",
+        "--parallel",
+        "1"
+      ],
+      "exit_code": 0
+    }
+  ],
+  "artifacts": {
+    "matter_geometry_c_tests.wasm": {
+      "bytes": 945238,
+      "sha256": "c372c00fbd48b1819f4ececec85ce0ed73d971557f5dcfec23ac2551f25770d0"
+    },
+    "matter_geometry_wasm.wasm": {
+      "bytes": 914223,
+      "sha256": "4a0ebd8e7817e30ea716f862b8aed7b61debb1fadad7496e51c63fea121cd6aa"
+    },
+    "wasm_contract_c_ownership.wasm": {
+      "bytes": 99463,
+      "sha256": "4cd9835d423f1acc1a6d5b8f1260a7c205098f1b970db72b2f6d35ec3a55ed2f"
+    },
+    "wasm_contract_services.wasm": {
+      "bytes": 768039,
+      "sha256": "8b025d6b7758ec60c5e225c5a67e89c668eb12dcf7b855714f8d0c1c3e966c03"
+    },
+    "wasm_contract_values.wasm": {
+      "bytes": 836833,
+      "sha256": "d7806bbd977c191fab845cda50e7e670a4033ca4c794d251f339d6fd19489c9d"
+    },
+    "wasm_contract_vectors.wasm": {
+      "bytes": 562856,
+      "sha256": "0089405b58f5bc1124f8c1d9dcad78cd866edf9cc870f8cef2fd4e1b1ea3cfb6"
+    }
+  },
+  "task": "clear-crest-48.6.2",
+  "recorded_utc": "2026-10-11T05:38:39.095908+00:00",
+  "base_commit": "3fbb0928da988db2580878b5ae1f366341297d6d",
+  "fixture_ids": [
+    "BIND-C-OWNERSHIP",
+    "BIND-ALLOCATION",
+    "BIND-WASM"
+  ],
+  "geometry_vectors": [
+    "box",
+    "extrude",
+    "sphere",
+    "placement",
+    "csg",
+    "query",
+    "process"
+  ],
+  "comparison": {
+    "exact": [
+      "topology",
+      "materials",
+      "prototypes",
+      "instances",
+      "transforms",
+      "metadata",
+      "job identity"
+    ],
+    "geometry_absolute": 1e-06,
+    "geometry_relative": 1e-06,
+    "csg_normal_absolute": 0.002
+  },
+  "clean_wasm_ctest": "Start testing: Oct 10 22:37 PDT\n----------------------------------------------------------\n1/6 Testing: matter_geometry_wasm_wrapper\n1/6 Test: matter_geometry_wasm_wrapper\nCommand: \"/home/jkern/emsdk/node/22.16.0_64bit/bin/node\" \"/mnt/d/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-6/bindings/geometry-c/wasm/../tests/wasm.mjs\" \"/tmp/matter-cabi-slot6-clean-wasm/matter_geometry_wasm.mjs\" \"/tmp/matter-cabi-slot6-native/matter_geometry_c_tests\"\nDirectory: /tmp/matter-cabi-slot6-clean-wasm\n\"matter_geometry_wasm_wrapper\" start time: Oct 10 22:37 PDT\nOutput:\n----------------------------------------------------------\nBIND-WASM: real primitives/extrusion/CSG/placement/query/modifiers, errors, cancellation, instances, growth and disposal passed; native equivalence=true\n<end of output>\nTest time =   2.89 sec\n----------------------------------------------------------\nTest Passed.\n\"matter_geometry_wasm_wrapper\" end time: Oct 10 22:37 PDT\n\"matter_geometry_wasm_wrapper\" time elapsed: 00:00:02\n----------------------------------------------------------\n\n2/6 Testing: matter_geometry_c_consumer\n2/6 Test: matter_geometry_c_consumer\nCommand: \"/home/jkern/emsdk/node/22.16.0_64bit/bin/node\" \"/mnt/d/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-6/bindings/geometry-c/wasm/run-smoke.mjs\" \"/tmp/matter-cabi-slot6-clean-wasm/matter_geometry_c_tests.mjs\"\nDirectory: /tmp/matter-cabi-slot6-clean-wasm\n\"matter_geometry_c_consumer\" start time: Oct 10 22:37 PDT\nOutput:\n----------------------------------------------------------\nBIND-C-OWNERSHIP: 490 checks passed; private worker memory\n<end of output>\nTest time =   1.14 sec\n----------------------------------------------------------\nTest Passed.\n\"matter_geometry_c_consumer\" end time: Oct 10 22:37 PDT\n\"matter_geometry_c_consumer\" time elapsed: 00:00:01\n----------------------------------------------------------\n\n3/6 Testing: wasm_contract_values\n3/6 Test: wasm_contract_values\nCommand: \"/home/jkern/emsdk/node/22.16.0_64bit/bin/node\" \"/mnt/d/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-6/bindings/geometry-c/wasm/run-smoke.mjs\" \"/tmp/matter-cabi-slot6-clean-wasm/wasm_contract_values.mjs\"\nDirectory: /tmp/matter-cabi-slot6-clean-wasm\n\"wasm_contract_values\" start time: Oct 10 22:37 PDT\nOutput:\n----------------------------------------------------------\nALL PASS: 208 contract checks; fixtures ordered-csg-v1, extruded-prop-v1, repeated-assembly-v1, typed-products-v1, malformed-v1, exhaustion-v1; private worker memory\n<end of output>\nTest time =   0.34 sec\n----------------------------------------------------------\nTest Passed.\n\"wasm_contract_values\" end time: Oct 10 22:37 PDT\n\"wasm_contract_values\" time elapsed: 00:00:00\n----------------------------------------------------------\n\n4/6 Testing: wasm_contract_services\n4/6 Test: wasm_contract_services\nCommand: \"/home/jkern/emsdk/node/22.16.0_64bit/bin/node\" \"/mnt/d/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-6/bindings/geometry-c/wasm/run-smoke.mjs\" \"/tmp/matter-cabi-slot6-clean-wasm/wasm_contract_services.mjs\"\nDirectory: /tmp/matter-cabi-slot6-clean-wasm\n\"wasm_contract_services\" start time: Oct 10 22:37 PDT\nOutput:\n----------------------------------------------------------\nservice contract fixtures: 155 checks passed (fake services only); private worker memory\n<end of output>\nTest time =   0.36 sec\n----------------------------------------------------------\nTest Passed.\n\"wasm_contract_services\" end time: Oct 10 22:37 PDT\n\"wasm_contract_services\" time elapsed: 00:00:00\n----------------------------------------------------------\n\n5/6 Testing: wasm_contract_c_ownership\n5/6 Test: wasm_contract_c_ownership\nCommand: \"/home/jkern/emsdk/node/22.16.0_64bit/bin/node\" \"/mnt/d/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-6/bindings/geometry-c/wasm/run-smoke.mjs\" \"/tmp/matter-cabi-slot6-clean-wasm/wasm_contract_c_ownership.mjs\"\nDirectory: /tmp/matter-cabi-slot6-clean-wasm\n\"wasm_contract_c_ownership\" start time: Oct 10 22:37 PDT\nOutput:\n----------------------------------------------------------\nC ABI ownership fixtures: 7011 checks passed (fake provider only); private worker memory\n<end of output>\nTest time =   0.28 sec\n----------------------------------------------------------\nTest Passed.\n\"wasm_contract_c_ownership\" end time: Oct 10 22:37 PDT\n\"wasm_contract_c_ownership\" time elapsed: 00:00:00\n----------------------------------------------------------\n\n6/6 Testing: wasm_contract_vectors\n6/6 Test: wasm_contract_vectors\nCommand: \"/home/jkern/emsdk/node/22.16.0_64bit/bin/node\" \"/mnt/d/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-6/bindings/geometry-c/wasm/run-smoke.mjs\" \"/tmp/matter-cabi-slot6-clean-wasm/wasm_contract_vectors.mjs\"\nDirectory: /tmp/matter-cabi-slot6-clean-wasm\n\"wasm_contract_vectors\" start time: Oct 10 22:37 PDT\nOutput:\n----------------------------------------------------------\nPASS: WASM/JS 267 numeric/SHA vectors, frozen RNG and recipe/asset digests; private worker memory\n<end of output>\nTest time =   0.42 sec\n----------------------------------------------------------\nTest Passed.\n\"wasm_contract_vectors\" end time: Oct 10 22:37 PDT\n\"wasm_contract_vectors\" time elapsed: 00:00:00\n----------------------------------------------------------\n\nEnd testing: Oct 10 22:37 PDT\n",
+  "additional_checks": [
+    {
+      "name": "GNU native C and allocation tests",
+      "commands": [
+        [
+          "cmake",
+          "-S",
+          "bindings/geometry-c",
+          "-B",
+          "/tmp/matter-cabi-slot6-native",
+          "-G",
+          "Ninja",
+          "-DCMAKE_BUILD_TYPE=Debug"
+        ],
+        [
+          "cmake",
+          "--build",
+          "/tmp/matter-cabi-slot6-native",
+          "-j",
+          "2"
+        ],
+        [
+          "ctest",
+          "--test-dir",
+          "/tmp/matter-cabi-slot6-native",
+          "--output-on-failure",
+          "-j",
+          "1"
+        ]
+      ],
+      "exit_code": 0,
+      "ctest_passed": 2,
+      "ownership_checks": 490,
+      "allocation_failure_positions": 6739
+    },
+    {
+      "name": "Supported Windows MSVC native C and allocation tests",
+      "commands": [
+        [
+          "powershell.exe",
+          "-NoProfile",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-File",
+          "bindings/geometry-c/build-windows.ps1",
+          "-Config",
+          "RelWithDebInfo",
+          "-Test"
+        ]
+      ],
+      "exit_code": 0,
+      "ctest_passed": 2,
+      "ownership_checks": 490,
+      "allocation_failure_positions": 7375
+    },
+    {
+      "name": "MSVC and WASM equivalence",
+      "commands": [
+        [
+          "/home/jkern/emsdk/node/22.16.0_64bit/bin/node",
+          "bindings/geometry-c/tests/wasm.mjs",
+          "/tmp/matter-cabi-slot6-wasm/matter_geometry_wasm.mjs",
+          "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-6/bindings/geometry-c/build/windows-msvc/relwithdebinfo/matter_geometry_c_tests.exe"
+        ]
+      ],
+      "exit_code": 0,
+      "output": "BIND-WASM: real primitives/extrusion/CSG/placement/query/modifiers, errors, cancellation, instances, growth and disposal passed; native equivalence=true\n"
+    },
+    {
+      "name": "AddressSanitizer UndefinedBehaviorSanitizer and leak detection",
+      "commands": [
+        [
+          "cmake",
+          "-S",
+          "bindings/geometry-c",
+          "-B",
+          "/tmp/matter-cabi-slot6-asan",
+          "-G",
+          "Ninja",
+          "-DCMAKE_BUILD_TYPE=Debug",
+          "-DCMAKE_C_FLAGS=-fsanitize=address,undefined -fno-omit-frame-pointer",
+          "-DCMAKE_CXX_FLAGS=-fsanitize=address,undefined -fno-omit-frame-pointer",
+          "-DCMAKE_EXE_LINKER_FLAGS=-fsanitize=address,undefined"
+        ],
+        [
+          "cmake",
+          "--build",
+          "/tmp/matter-cabi-slot6-asan",
+          "--target",
+          "matter_geometry_c_tests",
+          "-j",
+          "2"
+        ],
+        [
+          "/tmp/matter-cabi-slot6-asan/matter_geometry_c_tests"
+        ],
+        [
+          "/tmp/matter-cabi-slot6-asan/matter_geometry_c_tests",
+          "--vectors"
+        ]
+      ],
+      "run_environment": {
+        "ASAN_OPTIONS": "detect_leaks=1"
+      },
+      "exit_code": 0,
+      "ownership_checks": 490,
+      "sanitizer_diagnostics": []
+    }
+  ],
+  "scope": "Node worker_threads WASM caller; no browser rendering/performance or live editor integration claim.",
+  "source_sha256": {
+    "bindings/geometry-c/.gitignore": "020c2606e8ed484089c2083e0be438b9d0736bee1558a6b76af0d58bd23f69cf",
+    "bindings/geometry-c/CMakeLists.txt": "a4388b81d5004dc8f7a60e9f94d0fb398cea05105c82d546619ad4cd4104daf2",
+    "bindings/geometry-c/README.md": "3c28353185164fdd825869a0869276a0878644abae2089d0cf37c87b767b7860",
+    "bindings/geometry-c/build-windows.ps1": "fc0301cab38f17410e97bd84e20b80096a46916a45dc4201acc560439ef86e92",
+    "bindings/geometry-c/include/matter/geometry_c.h": "34d9f8d66999e282285a9af8bdb82346f57e887af9c1f9e0f0fad77e50e88b35",
+    "bindings/geometry-c/src/geometry_c.cpp": "6cc42e54345047ff4d01c4fcfac3b6f6d6a14e5f07586b886597613278c31e98",
+    "bindings/geometry-c/src/wire.cpp": "485d54f84e1853e024aab2fa89958f082cd476dd206444800cca8f499e2f88ed",
+    "bindings/geometry-c/src/wire.h": "dcf2478fd1aaab3f6c7df7d3e5be371e8eeaa4064886c0b31dcebb02924ca0ef",
+    "bindings/geometry-c/tests/Fixtures.cmake": "e5ee61893d5a0ed303f4941eadb95423ba738e5155265eb235c08a2ea1b78160",
+    "bindings/geometry-c/tests/allocation.cpp": "7e956e30f1be84736d5ca6f5359e6fa2a836bc73acc81c5c69af309e0bfe700f",
+    "bindings/geometry-c/tests/consumer.c": "e259aa1c038d7611fa0121d42d142691aae5e1e754c875534653ed9c041b4bd0",
+    "bindings/geometry-c/tests/requests.json": "4698382f4f611caa4759e250e5423f48aa909e52e09fa927b643a21375b23687",
+    "bindings/geometry-c/tests/wasm.mjs": "2b8efd281297d6f14498eec2425e9f3599fe8b3bf35ea4e73fae4f4cccdd7029",
+    "bindings/geometry-c/wasm/Module.cmake": "a67a10f3fef6c981ed74c5736119c91fe733998846226825f38bca5919629a79",
+    "bindings/geometry-c/wasm/Profile.cmake": "a68607334671d25198108014abaec2477a5a8e05b544bcd826774fcfed222386",
+    "bindings/geometry-c/wasm/ScalarHeaders.cmake": "cef72fc6d3ad24987857c51540e9428dcbfe17a53bec57c579ce6edfa64c3ee6",
+    "bindings/geometry-c/wasm/Smoke.cmake": "b4902a9946b87f5aad6dc5375d996daaf701dfebc9e8c723a849275eb168e9c7",
+    "bindings/geometry-c/wasm/build-smoke.py": "6040817a18c0b7306e5b50a7e4d7dc332827c75c6555f490f369b01cd3425f47",
+    "bindings/geometry-c/wasm/exports.inc": "cbf54fce9dec0bf9464be9491f52516cb15c5688c971957741e04a02dd20f64c",
+    "bindings/geometry-c/wasm/geometry.d.ts": "da2de0bb3dc03f034ec327676f14d4c0380740a40e54120421f7c554bfbd06d4",
+    "bindings/geometry-c/wasm/geometry.mjs": "aefa071ffd31aaa2b0f259ccc6c36db6c82b7cf17c8fc4ffe4388fc2672c3ff4",
+    "bindings/geometry-c/wasm/portability-baseline.md": "2b5cf7291342acc41779ef06babef1f1b371fddb3da9ad05e54007fadf7dcd53"
+  }
+}

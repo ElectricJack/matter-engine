@@ -1,0 +1,183 @@
+{
+  "schema": "matter.linux-ci-run.v1",
+  "source_sha": "2e67a2a5b719ef8b3d49b9a37e8689dee413aa79",
+  "source_dirty": true,
+  "hosted": false,
+  "parallelism": 3,
+  "scope": "portable-foundations",
+  "suites": [
+    {
+      "name": "MemoryLib",
+      "phases": [
+        {
+          "phase": "build_and_test",
+          "command": [
+            "make",
+            "-C",
+            "libs/MemoryLib",
+            "-j1",
+            "test"
+          ],
+          "seconds": 1.8898229970000102,
+          "exit_code": 0
+        }
+      ],
+      "passed": true,
+      "seconds": 1.8898229970000102
+    },
+    {
+      "name": "MeshChartingLib",
+      "phases": [
+        {
+          "phase": "build",
+          "command": [
+            "make",
+            "-C",
+            "libs/MeshChartingLib/tests",
+            "-j1",
+            "build/mesh_charting_tests"
+          ],
+          "seconds": 0.023664049000217346,
+          "exit_code": 0
+        },
+        {
+          "phase": "test",
+          "command": [
+            "./libs/MeshChartingLib/tests/build/mesh_charting_tests"
+          ],
+          "seconds": 0.003515624000101525,
+          "exit_code": 0
+        }
+      ],
+      "passed": true,
+      "seconds": 0.02717967300031887
+    },
+    {
+      "name": "AssetStoreLib",
+      "phases": [
+        {
+          "phase": "build",
+          "command": [
+            "make",
+            "-C",
+            "libs/AssetStoreLib",
+            "-j1"
+          ],
+          "seconds": 0.011116933000266727,
+          "exit_code": 0
+        },
+        {
+          "phase": "build",
+          "command": [
+            "make",
+            "-C",
+            "libs/AssetStoreLib/tests",
+            "-j1",
+            "build/asset_store_tests"
+          ],
+          "seconds": 0.0339417590002995,
+          "exit_code": 0
+        },
+        {
+          "phase": "test",
+          "command": [
+            "./libs/AssetStoreLib/tests/build/asset_store_tests"
+          ],
+          "seconds": 4.676502999999684,
+          "exit_code": 0
+        }
+      ],
+      "passed": true,
+      "seconds": 4.72156169200025
+    }
+  ],
+  "slowest_20": [
+    {
+      "name": "AssetStoreLib",
+      "phases": [
+        {
+          "phase": "build",
+          "command": [
+            "make",
+            "-C",
+            "libs/AssetStoreLib",
+            "-j1"
+          ],
+          "seconds": 0.011116933000266727,
+          "exit_code": 0
+        },
+        {
+          "phase": "build",
+          "command": [
+            "make",
+            "-C",
+            "libs/AssetStoreLib/tests",
+            "-j1",
+            "build/asset_store_tests"
+          ],
+          "seconds": 0.0339417590002995,
+          "exit_code": 0
+        },
+        {
+          "phase": "test",
+          "command": [
+            "./libs/AssetStoreLib/tests/build/asset_store_tests"
+          ],
+          "seconds": 4.676502999999684,
+          "exit_code": 0
+        }
+      ],
+      "passed": true,
+      "seconds": 4.72156169200025
+    },
+    {
+      "name": "MemoryLib",
+      "phases": [
+        {
+          "phase": "build_and_test",
+          "command": [
+            "make",
+            "-C",
+            "libs/MemoryLib",
+            "-j1",
+            "test"
+          ],
+          "seconds": 1.8898229970000102,
+          "exit_code": 0
+        }
+      ],
+      "passed": true,
+      "seconds": 1.8898229970000102
+    },
+    {
+      "name": "MeshChartingLib",
+      "phases": [
+        {
+          "phase": "build",
+          "command": [
+            "make",
+            "-C",
+            "libs/MeshChartingLib/tests",
+            "-j1",
+            "build/mesh_charting_tests"
+          ],
+          "seconds": 0.023664049000217346,
+          "exit_code": 0
+        },
+        {
+          "phase": "test",
+          "command": [
+            "./libs/MeshChartingLib/tests/build/mesh_charting_tests"
+          ],
+          "seconds": 0.003515624000101525,
+          "exit_code": 0
+        }
+      ],
+      "passed": true,
+      "seconds": 0.02717967300031887
+    }
+  ],
+  "total_seconds": 4.728016482999919,
+  "build_and_test_under_60_seconds": true,
+  "status": "passed"
+}

@@ -1,4 +1,5 @@
 #pragma once
+#include "matter/fixture_io.h"
 // tileset_bake.h — settle orchestrator: TilesetSpec → SettledTorus
 //
 // Instance ordering (test-guarded):
@@ -188,8 +189,10 @@ bool settle_tileset(const TilesetSpec& spec, const BakeInputs& in,
 //                    kBox3dVersion fields this used to append were replaced in
 //                    M4 by that single version-vector fold.
 // Plain little-endian binary with a version header; reject on version/key mismatch.
-bool settle_cache_load(const std::string& cache_root, uint64_t key, SettledTorus& out);
-bool settle_cache_save(const std::string& cache_root, uint64_t key, const SettledTorus& s);
+bool settle_cache_load(const std::string& cache_root, uint64_t key, SettledTorus& out,
+                       matter::CacheByteStorage* storage = nullptr);
+bool settle_cache_save(const std::string& cache_root, uint64_t key, const SettledTorus& s,
+                       matter::CacheByteStorage* storage = nullptr);
 
 // Compute the settle cache key from its inputs.
 // sorted_child_hashes must be sorted in ascending order by caller.

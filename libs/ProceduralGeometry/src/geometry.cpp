@@ -70,7 +70,7 @@ std::vector<data::Capability> PrimitiveGeometry::capabilities() const {
     std::vector<data::Capability> caps={{"matter.recipe.core",1},{"matter.asset.core",1},{"matter.material.pbr",1},
         {"matter.geometry.primitive.v1",1},{"matter.geometry.csg.cpu.v1",1},{"matter.geometry.query.cpu.v1",1}};
     for(const auto &op:extra_ops) caps.push_back({"matter.operation."+op,1});
-    for(auto &op:modifier_capabilities()) caps.push_back(std::move(op));
+    for(auto &op:modifier_capabilities(mesh_worker_.executable)) caps.push_back(std::move(op));
     return caps;
 }
 jobs::AssetResult PrimitiveGeometry::evaluate(const jobs::JobEnvelope &job,const data::RecipeDocument &recipe,
