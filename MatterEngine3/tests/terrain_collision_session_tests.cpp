@@ -7,8 +7,16 @@
 #include "ecs/physics_context.h"
 #include "bake_mode.h"
 #include "terrain_collision/terrain_collision_artifact.h"
+#include "terrain_collision/fixture_artifact_storage.h"
+#include "memory_fixture_io.h"
 #include "terrain_mesher.h"
 #include "terrain_river_overlay.h"
+#include "render/world_scene_publication.h"
+#include "provider/world_source.h"
+#include "render/scene_admission.h"
+#include "scene_admission_test.h"
+#include "matter/streaming.h"
+#include "matter/scene.h"
 
 #include <atomic>
 #include <chrono>
@@ -17,9 +25,9 @@
 #include <cstring>
 #include <cstdio>
 #include <filesystem>
-#include <fstream>
 #include <functional>
 #include <iomanip>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <sstream>
@@ -37,21 +45,6 @@ using matter::terrain_collision::CanonicalDefinition;
 using matter::terrain_collision::TerrainCollisionCandidate;
 using matter::terrain_collision::TileCandidate;
 
-bool write_file(const fs::path& path, const std::string& body) {
-    std::error_code error;
-    fs::create_directories(path.parent_path(), error);
-    if (error) return false;
-    std::ofstream stream(path, std::ios::binary | std::ios::trunc);
-    if (!stream) return false;
-    stream << body;
-    return stream.good();
-}
-
-void remove_tree(const fs::path& path) {
-    std::error_code ignored;
-    fs::remove_all(path, ignored);
-}
-
 std::string hex_key(std::uint64_t value) {
     std::ostringstream stream;
     stream << std::hex << std::nouppercase << std::setfill('0')
@@ -65,10 +58,9 @@ fs::path manifest_path(const fs::path& cache_root,
            (hex_key(installation_key) + ".mtcm");
 }
 
-bool write_world_object(const fs::path& root,
-                        bool collision,
-                        float friction = 0.55f,
-                        const char* region_max_x = "32") {
+std::string world_source(bool collision,
+                         float friction,
+                         const char* region_max_x, bool admission = false) {
     std::ostringstream source;
     source << "class TerrainSession extends World {\n"
            << "  static roots=[{module:'TerrainRoot',transform:[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]}];\n"
@@ -79,6 +71,11 @@ bool write_world_object(const fs::path& root,
            << "    return { density: heightToDensity(h), moisture: h, relief: h, seaLevel: -8 };\n"
            << "  }\n"
            << "  biomes() { return { meadow: { grass: 1 } }; }\n";
+    if (admission) {
+        source << "  static streaming = { rings: [{radius:1,rung:0}], terrainBands:[{radius:1,lod:5}] };\n"
+               << "  static entities = [{id:'accepted-entity',name:'Authored',components:{LocalTransform:{translation:["
+               << friction << ",0,0]}}}];\n";
+    }
     if (collision) {
         source << "  collision() {\n"
                << "    const c = terrainCollision({cellSize:0.5,friction:"
@@ -89,53 +86,71 @@ bool write_world_object(const fs::path& root,
                << "  }\n";
     }
     source << "}\n";
-    return write_file(root / "worlds" / "TerrainSession.js", source.str());
+    return source.str();
 }
 
-bool build_project(const fs::path& root,
-                   bool collision = true,
-                   float friction = 0.55f,
-                   const char* region_max_x = "32") {
-    remove_tree(root);
-    std::error_code error;
-    fs::create_directories(root / ".cache" / "TerrainSession" / "parts", error);
-    if (error) return false;
-    if (!write_world_object(root, collision, friction, region_max_x)) return false;
-    if (!write_file(root / "objects" / "TerrainRoot.js",
+std::shared_ptr<const matter::SourceSnapshot> project_snapshot(
+    const fs::path& root, bool collision, float friction,
+    const char* region_max_x, bool admission = false) {
+    matter::SourceSnapshot::Files files;
+    files[(root / "worlds" / "TerrainSession.js").generic_string()] =
+        world_source(collision, friction, region_max_x, admission);
+    files[(root / "objects" / "TerrainRoot.js").generic_string()] =
         "class TerrainRoot extends Part {\n"
         "  build(p) {\n"
         "    this.fill(MAT.stone); this.beginShape(SHAPE.triangles);\n"
         "    this.vertex(0,0,0); this.vertex(1,0,0); this.vertex(0,0,1);\n"
         "    this.endShape();\n"
         "  }\n"
-        "}\n")) return false;
-    return write_file(root / "objects" / "WorldSector.js",
+        "}\n";
+    files[(root / "objects" / "WorldSector.js").generic_string()] =
         "class WorldSector extends Part {\n"
         "  static params={tx:0,ty:0,tz:0,rung:0,volumetric:0,worldSeed:0,fieldHash:'',biomes:''};\n"
         "  static requires=[];\n"
         "  build(p) { this.terrainVolumeTiled(p.tx,p.ty|0,p.tz,p.rung,[MAT.grass,MAT.dirt,MAT.rock,MAT.snow]); }\n"
-        "}\n");
+        "}\n";
+    if (admission) {
+        // Tiny real streamed part keeps the native first-fill fixture bounded.
+        files[(root / "objects" / "WorldSector.js").generic_string()] =
+            "class WorldSector extends Part { static params={tx:0,ty:0,tz:0,rung:0,volumetric:0,worldSeed:0,fieldHash:'',biomes:''};"
+            " static requires=[]; build(p) { this.fill(MAT.stone); this.beginShape(SHAPE.triangles);"
+            " this.vertex(0,0,0); this.vertex(1,0,0); this.vertex(0,0,1); this.endShape(); } }";
+    }
+    return std::make_shared<const matter::SourceSnapshot>(std::move(files),
+        std::vector<std::string>{
+            (root / "objects").generic_string(),
+            (root / "worlds").generic_string(),
+            (root / "shared-lib").generic_string(),
+            (root / "engine-shared-lib").generic_string(),
+            (root / ".cache" / "TerrainSession" / "parts").generic_string()});
 }
 
 struct SessionFixture {
     fs::path root;
     std::string cache_root;
     std::string project_root;
+    std::string engine_shared_lib;
+    std::shared_ptr<matter::test::MemoryCacheByteStorage> cache =
+        std::make_shared<matter::test::MemoryCacheByteStorage>();
+    std::mutex source_mutex;
+    std::shared_ptr<const matter::SourceSnapshot> next_sources;
     std::unique_ptr<matter::EngineContext> engine;
     std::unique_ptr<matter::WorldSession> session;
+    bool admission = false;
 
     explicit SessionFixture(const char* label,
                             bool collision = true,
                             float friction = 0.55f,
-                            const char* region_max_x = "32") {
+                            const char* region_max_x = "32",
+                            bool deferred_admission = false) : admission(deferred_admission) {
         static std::atomic<std::uint64_t> serial{0};
-        root = fs::temp_directory_path() /
+        root = fs::path("/generated/terrain-session") /
             (std::string("me3_terrain_session_") + label + "_" +
              std::to_string(serial.fetch_add(1, std::memory_order_relaxed)));
-        CHECK(build_project(root, collision, friction, region_max_x),
-              "terrain collision session fixture is created");
+        next_sources = project_snapshot(root, collision, friction, region_max_x, admission);
         cache_root = (root / ".cache").string();
         project_root = root.string();
+        engine_shared_lib = (root / "engine-shared-lib").string();
         matter::EngineDesc engine_desc{};
         engine_desc.cache_root = cache_root.c_str();
         engine_desc.allow_gl_lt_46 = true;
@@ -146,7 +161,11 @@ struct SessionFixture {
         matter::WorldDesc world_desc{};
         world_desc.project_dir = project_root.c_str();
         world_desc.world_name = "TerrainSession";
-        world_desc.engine_shared_lib_dir = "../shared-lib";
+        world_desc.engine_shared_lib_dir = engine_shared_lib.c_str();
+        auto io = std::make_shared<matter::WorldFixtureIO>();
+        io->sources = next_sources;
+        io->cache = cache;
+        world_desc.fixture_io = std::move(io);
         session = engine->open_world(world_desc, error);
         CHECK(session != nullptr, error.c_str());
     }
@@ -154,7 +173,25 @@ struct SessionFixture {
     ~SessionFixture() {
         session.reset();
         engine.reset();
-        remove_tree(root);
+    }
+
+    // Only this test-owned staging pointer changes. Every enqueued Reload owns
+    // a separate immutable snapshot; an in-flight worker retains its old IO.
+    bool stage_world(bool collision, float friction = 0.55f,
+                     const char* region_max_x = "32") {
+        auto snapshot = project_snapshot(root, collision, friction, region_max_x, admission);
+        std::lock_guard<std::mutex> guard(source_mutex);
+        next_sources = std::move(snapshot);
+        return true;
+    }
+
+    void reload() {
+        std::shared_ptr<const matter::SourceSnapshot> snapshot;
+        {
+            std::lock_guard<std::mutex> guard(source_mutex);
+            snapshot = next_sources;
+        }
+        session->reload_fixture_sources(std::move(snapshot));
     }
 };
 
@@ -272,6 +309,9 @@ terrain_mesher::SectorMesh one_triangle_mesh() {
 }
 
 struct TerminalEvents {
+    int started = 0;
+    int aborted = 0;
+    std::map<uint64_t, unsigned> terminal_generations;
     int finished = 0;
     int errors = 0;
     int cancelled = 0;
@@ -284,8 +324,14 @@ void poll_terminal_events(matter::WorldSession& session,
                           TerminalEvents& events) {
     matter::Event event{};
     while (session.poll_event(event)) {
-        if (event.type == matter::EventType::BakeFinished) {
+        if (event.type == matter::EventType::BakeStarted) {
+            ++events.started;
+        } else if (event.type == matter::EventType::BakeAborted) {
+            ++events.aborted;
+            ++events.terminal_generations[event.bake_generation];
+        } else if (event.type == matter::EventType::BakeFinished) {
             ++events.finished;
+            ++events.terminal_generations[event.bake_generation];
         } else if (event.type == matter::EventType::BakeError) {
             if (event.code == matter::BakeErrorCode::Cancelled) {
                 ++events.cancelled;
@@ -355,6 +401,63 @@ bool status_snapshot_is_consistent(const matter::TerrainCollisionStatus& status)
     return false;
 }
 
+void test_real_worker_fixture_cache_cold_and_warm() {
+    std::printf("-- real_worker_fixture_cache_cold_and_warm\n");
+    SessionFixture fixture("real_cache", true, 0.55f, "16");
+    if (!fixture.session) return;
+    // No build callback: exercise the production mesher, artifact codec,
+    // worker-selected fixture storage, and Box3D installation together.
+    fixture.session->request_bake();
+    TerminalEvents cold_events{};
+    CHECK(pump_until(*fixture.session, [&] {
+              return cold_events.finished == 1 || cold_events.errors != 0;
+          }, cold_events), "real cold collision build reaches a terminal event");
+    const auto cold = fixture.session->terrain_collision_status();
+    const auto cold_physics = matter::physics::detail::context(
+        fixture.session->ecs()).terrain_collision_stats();
+    const auto manifest = manifest_path(
+        fixture.root / ".cache" / "TerrainSession", cold.generation_key);
+    const auto manifest_bytes = fixture.cache->open(manifest.generic_string());
+    CHECK(cold_events.finished == 1 && cold_events.errors == 0 &&
+              cold.state == matter::TerrainCollisionState::Installed &&
+              cold.triangle_count != 0 && cold_physics.shape_count == 1u &&
+              cold_physics.installation_key == cold.generation_key &&
+              manifest_bytes && !manifest_bytes->empty(),
+          "real worker publishes encoded collision bytes in the retained memory cache before Ready");
+
+    const auto artifact_root =
+        (fixture.root / ".cache" / "TerrainSession" /
+         "terrain_collision" / "v1").generic_string() + "/";
+    std::map<std::string, matter::CacheByteStorage::ReadHandle> artifacts;
+    for (const auto& entry : fixture.cache->entries()) {
+        if (entry.first.compare(0, artifact_root.size(), artifact_root) == 0)
+            artifacts.emplace(entry);
+    }
+    CHECK(artifacts.size() == 2u,
+          "one real tile and its generation manifest reside in the fixture byte store");
+
+    fixture.reload();
+    TerminalEvents warm_events{};
+    CHECK(pump_until(*fixture.session, [&] {
+              return warm_events.finished == 1 || warm_events.errors != 0;
+          }, warm_events), "real warm collision reload reaches a terminal event");
+    const auto warm = fixture.session->terrain_collision_status();
+    const auto warm_physics = matter::physics::detail::context(
+        fixture.session->ecs()).terrain_collision_stats();
+    CHECK(warm_events.finished == 1 && warm_events.errors == 0 &&
+              warm.state == matter::TerrainCollisionState::Installed &&
+              warm.generation_key == cold.generation_key &&
+              warm.geometry_key == cold.geometry_key &&
+              warm.triangle_count == cold.triangle_count &&
+              warm_physics.installation_key == cold_physics.installation_key &&
+              warm_physics.shape_count == cold_physics.shape_count,
+          "snapshot reload retains the real cache and restores the same accepted collision identity");
+    for (const auto& entry : artifacts) {
+        CHECK(fixture.cache->open(entry.first) == entry.second,
+              "warm collision validation reuses each immutable artifact without republishing it");
+    }
+}
+
 void test_worker_build_app_install_ready_gate_and_identity() {
     std::printf("-- worker_build_app_install_ready_gate_and_identity\n");
     SessionFixture fixture("gate");
@@ -389,8 +492,10 @@ void test_worker_build_app_install_ready_gate_and_identity() {
                 definition.cell_size_m == 0.5f && definition.rung == 2 &&
                 definition.regions.size() == 1u &&
                 definition.sectors.size() == 2u &&
-                cache_root ==
-                    (fixture.root / ".cache" / "TerrainSession").string(),
+                // The provider lexically normalizes a fixture project root,
+                // which on Windows rewrites every separator to a backslash.
+                cache_root == (fixture.root / ".cache" / "TerrainSession")
+                                  .lexically_normal().string(),
                 std::memory_order_release);
             candidate = candidate_for(definition);
             return true;
@@ -475,9 +580,9 @@ void test_omitted_collision_clears_before_ready() {
     CHECK(matter::physics::detail::context(fixture.session->ecs())
               .terrain_collision_stats().shape_count != 0u,
           "generation A has live terrain physics");
-    CHECK(write_world_object(fixture.root, false),
+    CHECK(fixture.stage_world(false),
           "generation B removes collision authoring");
-    fixture.session->reload();
+    fixture.reload();
     TerminalEvents second{};
     CHECK(pump_until(*fixture.session, [&] {
               return second.finished == 1 || second.errors != 0;
@@ -604,9 +709,9 @@ void test_throwing_builder_copy_failure_is_atomic_and_disconnects() {
         std::move(throwing_builder));
     copy_state->armed.store(true, std::memory_order_release);
     fixture.session->set_test_terrain_collision_failure_record_bad_alloc(true);
-    CHECK(write_world_object(fixture.root, true, 0.68f),
+    CHECK(fixture.stage_world(true, 0.68f),
           "throwing-copy reload changes collision identity");
-    fixture.session->reload();
+    fixture.reload();
     TerminalEvents events{};
     CHECK(pump_until(*fixture.session, [&] { return events.errors == 1; }, events),
           "throwing callback copy reaches collision-specific terminal failure");
@@ -662,9 +767,9 @@ void test_app_job_exception_before_install_preserves_prior_and_fails_coherently(
             {nullptr});
         context_hidden.store(true, std::memory_order_release);
     });
-    CHECK(write_world_object(fixture.root, true, 0.68f),
+    CHECK(fixture.stage_world(true, 0.68f),
           "pre-install exception reload changes collision identity");
-    fixture.session->reload();
+    fixture.reload();
 
     const auto candidate_deadline = Clock::now() + std::chrono::seconds(60);
     while (Clock::now() < candidate_deadline &&
@@ -775,9 +880,9 @@ void test_post_commit_log_exception_cannot_reject_installed_generation() {
 
     ThrowingTerrainInstallLogGuard log_guard;
     throw_terrain_install_log.store(true, std::memory_order_release);
-    CHECK(write_world_object(fixture.root, true, 0.68f),
+    CHECK(fixture.stage_world(true, 0.68f),
           "post-commit exception reload changes collision identity");
-    fixture.session->reload();
+    fixture.reload();
     TerminalEvents events{};
     CHECK(pump_until(*fixture.session, [&] {
               return events.finished == 1 || events.errors != 0;
@@ -804,6 +909,62 @@ void test_post_commit_log_exception_cannot_reject_installed_generation() {
           "post-commit diagnostic failure cannot report the committed generation as failed");
 }
 
+// Uses a real session-owned Box3D world and the visual ownership gate. This is
+// a CPU integration fixture, not execution of WorldSession's Vulkan render loop.
+void test_visual_admission_preserves_session_collision_handles() {
+    SessionFixture fixture("visual_admission");
+    if (!fixture.session) return;
+    TerrainCollisionCandidate next;
+    fixture.session->set_test_terrain_collision_build_callback(
+        [&](const terrain_field::FieldRuntime&, const CanonicalDefinition& definition,
+            const std::string&, const std::function<bool()>&,
+            TerrainCollisionCandidate& candidate, std::string&) {
+            candidate = candidate_for(definition);
+            next = candidate;
+            return true;
+        });
+    fixture.session->request_bake();
+    TerminalEvents events{};
+    CHECK(pump_until(*fixture.session, [&] {
+        return events.finished == 1 || events.errors != 0;
+    }, events) && events.errors == 0, "accepted session collision installs");
+    auto& physics = matter::physics::detail::context(fixture.session->ecs());
+    matter::physics::detail::TerrainCollisionPhysicsTileState old_tile{};
+    CHECK(physics.terrain_collision_tile_state_for_test(0, old_tile),
+          "accepted collision has inspectable native handles");
+    const auto old = physics.terrain_collision_stats();
+    viewer::WorldScenePublication<viewer::WorldState> publication;
+    viewer::WorldManifest manifest;
+    viewer::WorldManifestEntry entry{}; entry.instance_id=7; entry.part_hash=7;
+    manifest.instances.push_back(entry);
+    viewer::WorldState world; world.reset(manifest);
+    publication.stage(world, viewer::WorldState{}, true);
+    viewer::WorldDelta eviction; eviction.removed.push_back(7); world.apply(eviction);
+    CHECK(publication.retained()->find(7), "candidate eviction preserves accepted world identity");
+    next.installation_key ^= 0x1234;
+    next.friction = 0.73f;
+    publication.defer([&](std::string& error) {
+        return physics.replace_terrain_collision(next, error);
+    });
+    viewer::admission::Plan plan(128ull*1024*1024);
+    CHECK(!plan.add(viewer::admission::Buffer::triangles,838861,160,0),
+          "oversized candidate is rejected before collision publication");
+    CHECK(physics.terrain_collision_stats().installation_key == old.installation_key &&
+          physics.terrain_collision_handles_are_valid_for_test(old_tile.body_handle, old_tile.shape_handle),
+          "capacity rejection preserves actual accepted collision handles");
+    std::string error;
+    matter::physics::detail::fail_terrain_collision_mesh_create_on_tile_for_test(physics,1);
+    CHECK(!publication.finish(error) && publication.retained()->find(7),
+          "collision preparation failure preserves accepted visual owner");
+    CHECK(physics.terrain_collision_handles_are_valid_for_test(old_tile.body_handle, old_tile.shape_handle),
+          "collision preparation failure preserves accepted physics owner");
+    viewer::admission::Plan smaller(128ull*1024*1024);
+    CHECK(smaller.add(viewer::admission::Buffer::triangles,1,160,0) && publication.finish(error),
+          "smaller admitted successor commits the existing physics transaction");
+    CHECK(!publication.retained() && physics.terrain_collision_stats().installation_key == next.installation_key,
+          "successful successor retires accepted world and promotes collision together");
+}
+
 void test_transactional_replacement_failure_retains_prior() {
     std::printf("-- transactional_replacement_failure_retains_prior\n");
     SessionFixture fixture("replace", true, 0.41f);
@@ -819,9 +980,9 @@ void test_transactional_replacement_failure_retains_prior() {
     TerminalEvents first{};
     CHECK(pump_until(*fixture.session, [&] { return first.finished == 1; }, first),
           "replacement generation A finishes");
-    CHECK(write_world_object(fixture.root, true, 0.62f),
+    CHECK(fixture.stage_world(true, 0.62f),
           "replacement generation B changes material identity");
-    fixture.session->reload();
+    fixture.reload();
     TerminalEvents second{};
     CHECK(pump_until(*fixture.session, [&] { return second.finished == 1; }, second),
           "replacement generation B finishes");
@@ -831,9 +992,9 @@ void test_transactional_replacement_failure_retains_prior() {
           "A to B performs exactly one successful transactional replacement");
     matter::physics::detail::fail_terrain_collision_mesh_create_on_tile_for_test(
         context, 1u);
-    CHECK(write_world_object(fixture.root, true, 0.77f),
+    CHECK(fixture.stage_world(true, 0.77f),
           "replacement generation C changes material identity");
-    fixture.session->reload();
+    fixture.reload();
     TerminalEvents third{};
     CHECK(pump_until(*fixture.session, [&] { return third.errors == 1; }, third),
           "injected generation C install failure reaches terminal error");
@@ -876,7 +1037,7 @@ void test_cancelled_at_publication_barrier_skips_replacement() {
     CHECK(baseline.installation_key != 0 && baseline.shape_count != 0,
           "publication-barrier baseline installs collision");
 
-    CHECK(write_world_object(fixture.root, true, 0.68f),
+    CHECK(fixture.stage_world(true, 0.68f),
           "publication-barrier generation changes collision identity");
     std::atomic<bool> barrier_reached{false};
     std::atomic<bool> prior_physics_intact{false};
@@ -890,11 +1051,11 @@ void test_cancelled_at_publication_barrier_skips_replacement() {
                 at_barrier.shape_count == baseline.shape_count,
             std::memory_order_release);
         replacement_world_removed.store(
-            write_world_object(fixture.root, false),
+            fixture.stage_world(false),
             std::memory_order_release);
-        fixture.session->reload();
+        fixture.reload();
     });
-    fixture.session->reload();
+    fixture.reload();
     TerminalEvents events{};
     CHECK(pump_until(*fixture.session, [&] {
               return events.finished == 1 || events.errors != 0;
@@ -934,9 +1095,9 @@ void test_cancelled_after_collision_job_skips_visual_publication() {
                 return;
             }
             replacement_world_removed.store(
-                write_world_object(fixture.root, false),
+                fixture.stage_world(false),
                 std::memory_order_release);
-            fixture.session->reload();
+            fixture.reload();
         });
     fixture.session->request_bake();
     TerminalEvents events{};
@@ -999,9 +1160,9 @@ void test_cancelled_queued_collision_job_releases_before_worker_continues() {
     fixture.session->set_test_terrain_collision_publication_hook([&] {
         publication_hook_calls.fetch_add(1, std::memory_order_acq_rel);
     });
-    CHECK(write_world_object(fixture.root, true, 0.68f),
+    CHECK(fixture.stage_world(true, 0.68f),
           "queued generation changes collision identity");
-    fixture.session->reload();
+    fixture.reload();
 
     // Reload may need earlier install-world GPU work before collision
     // publication. Drain one job at a time only until CandidateReady, then
@@ -1030,9 +1191,9 @@ void test_cancelled_queued_collision_job_releases_before_worker_continues() {
           "candidate is alive while its blocking collision job is queued without pumping");
 
     fixture.session->set_test_terrain_collision_publication_hook({});
-    CHECK(write_world_object(fixture.root, false),
+    CHECK(fixture.stage_world(false),
           "successor removes collision before cancelling queued generation");
-    fixture.session->reload();
+    fixture.reload();
     fixture.session->pump_gpu_jobs(0.0f);
     const auto release_deadline = Clock::now() + std::chrono::seconds(60);
     while (Clock::now() < release_deadline &&
@@ -1086,7 +1247,7 @@ void test_cancelled_build_publishes_no_manifest_or_physics() {
         fixture.session->ecs()).terrain_collision_stats();
     CHECK(baseline.installation_key != 0 && baseline.shape_count != 0,
           "cancellation fixture starts with an active physics generation");
-    CHECK(write_world_object(fixture.root, true, 0.68f),
+    CHECK(fixture.stage_world(true, 0.68f),
           "candidate generation changes collision installation identity");
     std::mutex mutex;
     std::condition_variable cv;
@@ -1102,7 +1263,9 @@ void test_cancelled_build_publishes_no_manifest_or_physics() {
             std::string& error) {
             cancelled_installation_key.store(
                 definition.installation_key, std::memory_order_release);
+            matter::terrain_collision::detail::FixtureArtifactStorage storage(fixture.cache);
             matter::terrain_collision::detail::BuildTestHooks hooks{};
+            hooks.storage = &storage;
             std::atomic<int> tile_number{0};
             hooks.mesh_tile = [&](const terrain_field::FieldRuntime&,
                                   const matter::terrain_collision::SectorCoordinate&,
@@ -1124,7 +1287,7 @@ void test_cancelled_build_publishes_no_manifest_or_physics() {
                     field, definition, cache_root, cancelled, hooks,
                     candidate, error);
         });
-    fixture.session->reload();
+    fixture.reload();
     const auto deadline = Clock::now() + std::chrono::seconds(60);
     while (Clock::now() < deadline) {
         {
@@ -1146,9 +1309,9 @@ void test_cancelled_build_publishes_no_manifest_or_physics() {
     CHECK(while_candidate.installation_key == baseline.installation_key &&
               while_candidate.shape_count == baseline.shape_count,
           "tile-N candidate leaves the accepted physics generation active");
-    CHECK(write_world_object(fixture.root, false),
+    CHECK(fixture.stage_world(false),
           "generation B removes collision while A is building");
-    fixture.session->reload();
+    fixture.reload();
     {
         std::lock_guard<std::mutex> lock(mutex);
         release_second_tile = true;
@@ -1159,8 +1322,8 @@ void test_cancelled_build_publishes_no_manifest_or_physics() {
           "superseding collision-free generation B finishes");
     const auto physics = matter::physics::detail::context(
         fixture.session->ecs()).terrain_collision_stats();
-    CHECK(!fs::exists(manifest_path(
-              fixture.root / ".cache" / "TerrainSession", generation_a)),
+    CHECK(!fixture.cache->exists(manifest_path(
+              fixture.root / ".cache" / "TerrainSession", generation_a).generic_string()),
           "cancelled tile-N build publishes no generation manifest");
     CHECK(physics.installation_key == 0 && physics.shape_count == 0 &&
               fixture.session->terrain_collision_status().state ==
@@ -1168,10 +1331,136 @@ void test_cancelled_build_publishes_no_manifest_or_physics() {
           "cancelled A changes no physics and B explicitly publishes Disabled");
 }
 
+// Runs the actual WorldSession worker -> app finalize -> streaming -> admission
+// -> collision -> Ready -> terminal sequence. Only visual device preparation is
+// injected; this is deliberately NOT a Vulkan or editor rendering result.
+void test_world_session_admission_sequence() {
+    std::printf("-- world_session_admission_sequence\n");
+    matter::detail::SceneAdmissionTest admission;
+    matter::detail::ScopedSceneAdmissionTest scoped(admission);
+    int decision = 0;
+    unsigned decisions = 0;
+    admission.visual = [&](std::string& error) {
+        ++decisions;
+        if (decision < 0) {
+            viewer::admission::Plan plan(128ull * 1024 * 1024);
+            CHECK(!plan.add(viewer::admission::Buffer::triangles, 838861, 160, 0),
+                  "real planner rejects injected requested scene");
+            error = plan.failure.message();
+        }
+        return decision;
+    };
+    SessionFixture fixture("actual_admission", true, 0.41f, "16", true);
+    if (!fixture.session) return;
+    fixture.session->set_test_terrain_collision_build_callback(
+        [](const terrain_field::FieldRuntime&, const CanonicalDefinition& definition,
+           const std::string&, const std::function<bool()>&,
+           TerrainCollisionCandidate& candidate, std::string&) {
+            candidate = candidate_for(definition);
+            return true;
+        });
+    auto& world = fixture.session->ecs();
+    auto& physics = matter::physics::detail::context(world);
+    // The editor now attaches this same ordinary ECS anchor during loading.
+    // It is not an authored SceneEntityId and survives authored bootstrap.
+    auto anchor = world.entity().set<matter::ecs::LocalTransform>({});
+    anchor.add<matter::streaming::SectorStreaming>();
+    auto generation = [&] { return world.get<matter::ecs::WorldRuntimeState>().content_generation; };
+    auto authored = [&] {
+        flecs::entity_t id = 0;
+        world.each([&](flecs::entity e, const matter::scene::SceneEntityId&) { id = e.id(); });
+        return id;
+    };
+    // At the grid corner this 1m ring requests no sectors. An active empty
+    // fill must finish without publishing success or ECS before admission.
+    fixture.session->request_bake();
+    TerminalEvents first;
+    CHECK(pump_until(*fixture.session, [&] { return admission.finalized && admission.fill_ready; }, first),
+          "first fill progresses while Ready and BakeFinished are withheld");
+    CHECK(first.finished == 0 && first.errors == 0 && generation() == 0 && authored() == 0 &&
+              physics.terrain_collision_stats().installation_key == 0,
+          "unadmitted first scene has no Ready, entities, physics or terminal success");
+    decision = -1;
+    CHECK(pump_until(*fixture.session, [&] { return first.errors > 0 && first.aborted == 1; }, first),
+          "first-load capacity rejection terminates the actual worker run");
+    CHECK(first.finished == 0 && generation() == 0 && authored() == 0,
+          "first-load rejection leaves usable session with no accepted generation");
+    // A smaller request succeeds on the same session after rejection.
+    admission.finalized = false; admission.fill_ready = false; decision = 0;
+    matter::ecs::LocalTransform anchor_transform{};
+    anchor_transform.translation = {8.0f, 0.0f, 8.0f};
+    anchor.set<matter::ecs::LocalTransform>(anchor_transform);
+    fixture.stage_world(true, 0.42f, "16"); fixture.reload();
+    TerminalEvents accepted;
+    CHECK(pump_until(*fixture.session, [&] { return admission.finalized && admission.fill_ready; }, accepted),
+          "nonempty first fill completes while worker success is withheld");
+    const auto* filled = anchor.try_get<matter::streaming::SectorStreamingStatus>();
+    CHECK(filled && filled->resident_sectors > 0 && accepted.finished == 0 && generation() == 0,
+          "real streamed sector is resident before initial Ready and terminal success");
+    decision = 1;
+    CHECK(pump_until(*fixture.session, [&] { return accepted.finished == 1 || accepted.errors; }, accepted),
+          "smaller successor completes through actual admission path");
+    CHECK(accepted.finished == 1 && accepted.errors == 0 && generation() == 1 && authored() != 0,
+          "accepted successor publishes exactly one generation and authored ECS");
+    const auto old_entity = authored();
+    const auto old_physics = physics.terrain_collision_stats();
+    matter::physics::detail::TerrainCollisionPhysicsTileState tile{};
+    CHECK(physics.terrain_collision_tile_state_for_test(0, tile), "accepted native terrain exists");
+    auto retained = [&] {
+        return generation() == 1 && world.is_alive(old_entity) && authored() == old_entity &&
+            physics.terrain_collision_stats().installation_key == old_physics.installation_key &&
+            physics.terrain_collision_handles_are_valid_for_test(tile.body_handle, tile.shape_handle);
+    };
+    // Rejection after successful publication must preserve accepted entity and
+    // actual Box3D handles, not just values in an isolated transaction helper.
+    admission.finalized = false; decision = 0;
+    fixture.stage_world(true, 0.63f, "16"); fixture.reload();
+    TerminalEvents rejected;
+    CHECK(pump_until(*fixture.session, [&] { return admission.finalized; }, rejected), "replacement finalizes");
+    CHECK(retained() && rejected.finished == 0, "finalize cannot replace accepted ECS/physics");
+    decision = -1;
+    CHECK(pump_until(*fixture.session, [&] { return rejected.errors > 0 && rejected.aborted == 1; }, rejected), "replacement rejects");
+    CHECK(retained() && rejected.finished == 0, "rejected replacement preserves accepted identity");
+    // Supersede a fully finalized pending command. Its terminal scope remains
+    // worker-owned and must abort before the successor begins.
+    admission.finalized = false; decision = 0;
+    fixture.stage_world(true, 0.64f, "16"); fixture.reload();
+    TerminalEvents superseded;
+    CHECK(pump_until(*fixture.session, [&] { return admission.finalized; }, superseded), "superseded candidate finalizes");
+    CHECK(retained(), "pending candidate preserves accepted identity");
+    admission.finalized = false;
+    fixture.stage_world(true, 0.65f, "16"); fixture.reload();
+    CHECK(pump_until(*fixture.session, [&] { return admission.finalized && superseded.cancelled > 0; }, superseded),
+          "supersession cancels old run and advances new worker pipeline");
+    CHECK(retained() && superseded.finished == 0, "superseded run never announces success");
+    decision = 1;
+    CHECK(pump_until(*fixture.session, [&] { return superseded.finished == 1 || superseded.errors; }, superseded),
+          "new candidate is admitted after supersession");
+    CHECK(superseded.finished == 1 && superseded.errors == 0 && generation() == 2 &&
+              !world.is_alive(old_entity) && authored() != 0 &&
+              physics.terrain_collision_stats().installation_key != old_physics.installation_key,
+          "only accepted successor replaces ECS and collision generation");
+    CHECK(first.started == 1 && first.aborted == 1 &&
+              accepted.started == 1 && accepted.aborted == 0 &&
+              rejected.started == 1 && rejected.aborted == 1 &&
+              superseded.started == 2 && superseded.aborted == 1,
+          "each actual worker run has exactly one matching terminal");
+    for (const auto* events : {&first, &accepted, &rejected, &superseded}) {
+        CHECK(events->terminal_generations.size() == size_t(events->started),
+              "all started generations reach their own terminal");
+        for (const auto& terminal : events->terminal_generations)
+            CHECK(terminal.first != 0 && terminal.second == 1,
+                  "terminal generation is nonzero and never duplicated");
+    }
+    CHECK(decisions > 0, "fixture supplied only visual decisions to real session");
+}
+
 }  // namespace
 
 int main() {
     std::printf("== terrain_collision_session_tests ==\n");
+    test_world_session_admission_sequence();
+    test_real_worker_fixture_cache_cold_and_warm();
     test_worker_build_app_install_ready_gate_and_identity();
     test_omitted_collision_clears_before_ready();
     test_builder_failure_reports_once_and_never_ready();
@@ -1181,6 +1470,7 @@ int main() {
     test_empty_publication_exception_uses_nonempty_diagnostic();
     test_post_commit_log_exception_cannot_reject_installed_generation();
     test_transactional_replacement_failure_retains_prior();
+    test_visual_admission_preserves_session_collision_handles();
     test_cancelled_at_publication_barrier_skips_replacement();
     test_cancelled_after_collision_job_skips_visual_publication();
     test_cancelled_queued_collision_job_releases_before_worker_continues();

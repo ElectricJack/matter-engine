@@ -1,0 +1,4 @@
+[1/429] Building C object CMakeFiles\matter_memory.dir\libs\MemoryLib\src\mem_bank.c.obj
+[128/429] Compiling Vulkan shader vt_material_domain_probe.comp
+[129/429] Compiling Vulkan shader rt_lighting.rgen
+[428/429] Linking CXX executable vulkan_smoke_tests.exe

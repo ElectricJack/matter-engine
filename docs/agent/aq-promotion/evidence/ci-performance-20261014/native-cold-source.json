@@ -1,0 +1,16 @@
+{
+  "base": "2e67a2a5b719ef8b3d49b9a37e8689dee413aa79",
+  "export": "git archive HEAD at task checkpoint; only listed files replaced/deleted before run",
+  "native_source": "/mnt/d/tmp/keen-current-19-59-6nfrgvv8",
+  "modified_inputs": {
+    ".github/workflows/native-windows.yml": "1d70070283df4801387b3fe9ba61e10a1211a078530f7ff8116040f01abcf8f0",
+    "cmake/MatterCiTests.cmake": "ec5f990140120fe2a8a6294b01beff4a186632b7d454d6bf99ae06514df2d6c7",
+    "tools/ci-windows.ps1": "9ea42c110cf223dce02f3e67fabda6f76249b6a8f49ca3c580b4bc82fabc187b",
+    "tools/windows/MatterWindowsCi.psm1": "2a92eccff44f2746fad435d48c043e30703a384753948ddf833d93d50acc1c85",
+    "tools/ci-test-report.py": "997575b9f982188a148f6d8ac08a321759c5e593caf3be85cc7d7a08d5750220",
+    "tools/tests/test_ci_test_report.py": "27becdd1cdba4152afb5ad7194a328d7aeead21ed56a67c1b60fbcee21bbe44a",
+    "tools/tests/windows_ci_contract_tests.ps1": null,
+    "tools/lint/windows_ci_contract_lint.ps1": "14372536a12acda51ea665ad7a3473d8836abb07ed47ef5d11e0c46c656f509b",
+    "tools/ci-linux.py": "8bb9fd43074e46b489eb7a38b3e16bdf44e1f116777a03509cb04c4899604e53"
+  }
+}
