@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="Linux-c++"
+	tests="4"
+	failures="0"
+	disabled="0"
+	skipped="0"
+	hostname="DESKTOP-EB8UOME"
+	time="0"
+	timestamp="2026-10-19T15:11:29"
+	>
+	<testcase name="water_field_vk" classname="water_field_vk" time="0.00326248" status="run">
+		<properties/>
+		<system-out>ALL PASS
+</system-out>
+	</testcase>
+	<testcase name="water_surface_reference" classname="water_surface_reference" time="0.0171567" status="run">
+		<properties/>
+		<system-out>ALL PASS
+</system-out>
+	</testcase>
+	<testcase name="water_forward_reference" classname="water_forward_reference" time="0.00295665" status="run">
+		<properties/>
+		<system-out>ALL PASS
+</system-out>
+	</testcase>
+	<testcase name="water_mesh_animation_playback" classname="water_mesh_animation_playback" time="0.00608134" status="run">
+		<properties/>
+		<system-out>ALL PASS
+</system-out>
+	</testcase>
+</testsuite>

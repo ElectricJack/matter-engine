@@ -1,0 +1,16 @@
+{
+  "attestation_app_id": 5075923,
+  "attestation_name": "Agent Queue Integration Attestation",
+  "canonical_repository_id": "matter-engine-cpp",
+  "ci_producer_app_id": 15368,
+  "full_name": "ElectricJack/matter-engine",
+  "repository_id": 1266132968,
+  "required_checks": {
+    "names": [
+      "Native Windows build and tests",
+      "Linux foundation build and tests"
+    ],
+    "version": "matter-engine-ci-v1"
+  },
+  "schema": "aq.integration-trust.v1"
+}

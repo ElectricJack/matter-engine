@@ -1,0 +1,101 @@
+{
+  "version": 1,
+  "parent": {
+    "required_checks": {
+      "version": "matter-engine-ci-v1",
+      "names": [
+        "Native Windows build and tests",
+        "Linux foundation build and tests"
+      ],
+      "producer_id": "15368"
+    },
+    "admission": "reviewed",
+    "authorized_task_ids": [],
+    "repair": {
+      "primary_seconds": 1800,
+      "primary_attempts": 3,
+      "debug_seconds": 3600,
+      "debug_attempts": 3,
+      "debug_intelligence_class": "standard-high",
+      "conflict_scope": "member",
+      "on_exhausted": "human",
+      "source_ci": false
+    },
+    "route": {
+      "playbook_id": "parent-integration",
+      "scope": "system",
+      "scope_identifier": "",
+      "activation_id": null,
+      "artifact": {
+        "playbook_id": "parent-integration",
+        "artifact_sha256": "sha256:a7455b7c3a2d2bdca62365e6d1d7f4ebe158a47aa0db5009812b8294349ddacd",
+        "schema_generation": 2,
+        "contract_fingerprint": "sha256:a4b6e09f12c8c3111b1987f4d09fd86c45b973a1cc83b9d689f566d4e937b4c0",
+        "source_digest": "sha256:7dcad46a111fc4f0c9eae94ca3b57ed44252212c236f934aafa2957e7d4de13c",
+        "compiler_build": "playbook-v2-compiler/1",
+        "compiled_at": "2026-10-05T03:32:07.874929Z",
+        "version": 1
+      }
+    },
+    "primary_intelligence_class": "standard-high",
+    "verifier_intelligence_class": "standard-high"
+  },
+  "root": {
+    "required_checks": {
+      "version": "matter-engine-ci-v1",
+      "names": [
+        "Native Windows build and tests",
+        "Linux foundation build and tests"
+      ],
+      "producer_id": "15368"
+    },
+    "admission": "reviewed",
+    "authorized_task_ids": [],
+    "repair": {
+      "primary_seconds": 1800,
+      "primary_attempts": 3,
+      "debug_seconds": 3600,
+      "debug_attempts": 3,
+      "debug_intelligence_class": "standard-high",
+      "conflict_scope": "batch",
+      "on_exhausted": "human",
+      "source_ci": true
+    },
+    "route": {
+      "playbook_id": "root-train",
+      "scope": "system",
+      "scope_identifier": "",
+      "activation_id": null,
+      "artifact": {
+        "playbook_id": "root-train",
+        "artifact_sha256": "sha256:6e28d8dbc4eb93c255813417c6b5d03fdda5bf099dd1be70cf039fb67aa2ed52",
+        "schema_generation": 2,
+        "contract_fingerprint": "sha256:33581303bf8556083f103154d1b94b810df3c398a49c2dbe90bcf68d37697e41",
+        "source_digest": "sha256:37a6a9659c6cbe46244f1e45a25987bbe47669399bdf33691f924a16933f41d6",
+        "compiler_build": "playbook-v2-compiler/1",
+        "compiled_at": "2026-10-05T03:32:07.804192Z",
+        "version": 1
+      }
+    },
+    "primary_intelligence_class": "standard-high",
+    "verifier_intelligence_class": "standard-high"
+  },
+  "branchless_parent": "verifier",
+  "on_failed_child": "block",
+  "on_main_moved": "rebuild",
+  "cleanup": {
+    "max_attempts": 5,
+    "retry_base_seconds": 30.0,
+    "retry_max_seconds": 3600.0,
+    "successful_source_refs": "delete",
+    "failed_work_retention_seconds": 604800
+  },
+  "ci": {
+    "source": "hosted"
+  },
+  "train": {
+    "cadence_seconds": 300,
+    "settling_cap_seconds": 1800
+  },
+  "prerequisite_branches": "wait-for-parent"
+}

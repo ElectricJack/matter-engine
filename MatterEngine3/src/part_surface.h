@@ -34,13 +34,17 @@ struct Stats { uint32_t geometry_hits = 0, material_hits = 0, faces = 0; size_t 
 bool prepare(const script_host::EvaluatedFiniteSurface&, const std::string& cache_root,
     const gpu_meshing::SolidFaceProjector&, const MaterialBaker&,
     std::shared_ptr<const Prepared>&, Stats&, gpu_meshing::Error&,
-    const gpu_meshing::BuildControl& = {}, SourceCache* = nullptr);
+    const gpu_meshing::BuildControl& = {}, SourceCache* = nullptr,
+    matter::CacheByteStorage* = nullptr);
 // Direct materials publish an owned GPU recipe; there is no source-image job.
 bool prepare_direct(const script_host::EvaluatedDirectSurface&,
     std::shared_ptr<const Prepared>&, gpu_meshing::Error&,
     const gpu_meshing::BuildControl& = {});
-// Scratch survives registration (residency takes its own copy). Require each
-// receiver vertex to match exactly one outward source plane; no texture scale.
+// Scratch survives registration (residency takes its own copy). The returned
+// context ALSO aliases `prepared`: surface_tape_text and surface_materials point
+// into it. The caller must keep the same shared_ptr<const Prepared> alive until
+// VtResidency::register_variant / update_variant_surface has returned. Require
+// each receiver vertex to match exactly one outward source plane; no texture scale.
 struct BindingScratch { std::vector<uint32_t> ids; std::vector<uint8_t> weights; };
 bool bind(const Prepared&, vt::VtPartContext&, BindingScratch&, std::string& error);
 }
