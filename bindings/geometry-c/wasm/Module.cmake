@@ -19,4 +19,8 @@ if(MATTER_GEOMETRY_C_TESTS)
         "${CMAKE_CURRENT_LIST_DIR}/../tests/wasm.mjs" "$<TARGET_FILE:matter_geometry_wasm>"
         ${MATTER_GEOMETRY_C_NATIVE_CONSUMER})
     set_tests_properties(matter_geometry_wasm_wrapper PROPERTIES TIMEOUT 120)
+    add_test(NAME matter_geometry_wasm_properties COMMAND "${MATTER_WASM_NODE}"
+        "${CMAKE_CURRENT_LIST_DIR}/../tests/properties.mjs" "$<TARGET_FILE:matter_geometry_wasm>"
+        "${CMAKE_CURRENT_BINARY_DIR}/property-request.mjs")
+    set_tests_properties(matter_geometry_wasm_properties PROPERTIES TIMEOUT 5 LABELS "property;wasm")
 endif()

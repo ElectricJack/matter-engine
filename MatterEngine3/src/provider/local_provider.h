@@ -350,10 +350,19 @@ inline std::string project_bake_cache_root(const std::filesystem::path& project,
         throw std::invalid_argument("external bake cache requires one safe world-name component");
     auto normalized_absolute = [lexical_only](fs::path path) {
         path = fs::absolute(path);
-        if (lexical_only) return path.lexically_normal();
-        std::error_code error;
-        fs::path canonical = fs::weakly_canonical(path, error);
-        return error ? path.lexically_normal() : canonical;
+        if (lexical_only) {
+            path = path.lexically_normal();
+        } else {
+            std::error_code error;
+            fs::path canonical = fs::weakly_canonical(path, error);
+            path = error ? path.lexically_normal() : canonical;
+        }
+        // A nonexistent suffix ending in ".." can canonicalize to a trailing
+        // separator. Directory spelling must not create another cache identity.
+        // Strip only after canonicalization so symlink traversal is preserved.
+        if (path.filename().empty() && path != path.root_path())
+            path = path.parent_path();
+        return path;
     };
     const fs::path identity_path = normalized_absolute(project);
     std::string identity = identity_path.generic_u8string();

@@ -1,0 +1,7 @@
+e5245b259a6840223a0f1c107fc54cc8b24db94968c5a018ed49637ec965f7d7  b.tar
+56fc58a6f3051f423c81a84d8a42055334e5ace4a7a9bb45fc75eda1213ec88d  probe-build/build.stdout.txt
+e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  probe-build/build.stderr.txt
+ed142d5ff79a4fdba7a961f849c997bc62cdba4d4d3038275e24bc4a58789c2d  b/MatterEditor/build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe
+{
+    "source_root":  "D:\\azl65\\b",
+    "command":  "powershell.exe -NoProfile -ExecutionPolicy Bypass -File D:\\azl65\\b\\tools\\build-windows.ps1 -Config RelWithDebInfo -Target vulkan_smoke_tests",
