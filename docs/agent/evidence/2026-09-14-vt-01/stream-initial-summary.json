@@ -1,0 +1,33 @@
+{
+  "status": "diagnostic baseline; V0 not complete",
+  "capture_exit": 0,
+  "requested_extent": [
+    1920,
+    1080
+  ],
+  "observed_extent": [
+    1732,
+    1065
+  ],
+  "phase_rows": [
+    "STATSVT,vt_initial,active=1,variants=32/32768,rejected=0,mesh=0.8/3512.0 MiB,pool=129/33024,pinned=32,queue=0,fills=129,evictions=0,ind=0.01/64 MiB",
+    "STATSVT,vt_settle_begin,active=1,variants=35/32768,rejected=0,mesh=0.9/3512.0 MiB,pool=132/33024,pinned=35,queue=0,fills=132,evictions=0,ind=0.01/64 MiB",
+    "STATSVT,vt_settle_end,active=1,variants=486/32768,rejected=0,mesh=65.4/3512.0 MiB,pool=1317/33024,pinned=486,queue=0,fills=1317,evictions=0,ind=0.82/64 MiB",
+    "STATSVT,vt_return_begin,active=1,variants=554/32768,rejected=0,mesh=94.4/3512.0 MiB,pool=1867/33024,pinned=554,queue=0,fills=1867,evictions=0,ind=1.14/64 MiB",
+    "STATSVT,vt_return_end,active=1,variants=699/32768,rejected=0,mesh=174.3/3512.0 MiB,pool=2013/33024,pinned=699,queue=0,fills=2013,evictions=0,ind=1.91/64 MiB"
+  ],
+  "limits": [
+    "The fixed-camera segment was still streaming geometry; it is not a settled-residency pass.",
+    "TLAS draw-capacity warnings occurred during initial preparation.",
+    "The profile export retains only 512 frames; full 600-frame timing/counter evidence needs the new VT trace."
+  ],
+  "artifacts": {
+    "/mnt/d/tmp/matter-vt/20260914-01/stream-initial/timeline.txt": "75c87251fa70242b01cefa5447e512acd6f38151fb1a1b077fa7d5e8561a4e2a",
+    "/mnt/d/tmp/matter-vt/20260914-01/stream-initial/run/log.txt": "a5c6eb57668b72613b0241882f98ce04698ea452f45eec8a9ed29dd28dd7b03f",
+    "/mnt/d/tmp/matter-vt/20260914-01/stream-initial/initial.png": "bbf32dc0929a5875b808419d861b85959cdd1208b2061bcdaf5c2144db5efd76",
+    "/mnt/d/tmp/matter-vt/20260914-01/stream-initial/initial.png.done": "4c339121e4860b04ebd48181621c9dd3f84901846feda08d4e77aafaf9a6c896",
+    "/mnt/d/tmp/matter-vt/20260914-01/stream-initial/returned.png": "bc3270b288cb791a2eb18410e97bd3803ae0e966c0d2652a03fe3d1a79acec46",
+    "/mnt/d/tmp/matter-vt/20260914-01/stream-initial/returned.png.done": "4c339121e4860b04ebd48181621c9dd3f84901846feda08d4e77aafaf9a6c896",
+    "/mnt/d/tmp/matter-vt/20260914-01/stream-initial/profile.json": "b11fd6dcfdb07479f6faf8e79d509a80ddc429261d4abeb47d7e8c169e5ea0b2"
+  }
+}

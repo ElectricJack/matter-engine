@@ -1,4 +1,18 @@
 #pragma once
+// MatterEngine3/src/live_edit.h
+//
+// The SP-5 dev live-edit loop: watch the project's script files, and when one
+// changes rebake exactly the parts that can be affected and re-flatten the
+// roots above them, without restarting the editor.
+//
+// The session is deliberately made of nothing but interfaces -- FileWatcher
+// (file_watcher.h) plus GraphResolver / Baker / Flattener / ErrorSink
+// (live_edit_interfaces.h) -- so the scoping and ordering rules can be tested
+// against fakes with no engine, no filesystem and no clock. live_edit_prod.h
+// supplies the production implementations.
+//
+// See docs/superpowers/specs/2026-06-24-dev-live-edit-design.md for the
+// design; the SP-N references in these comments point into it.
 #include "file_watcher.h"
 #include "live_edit_interfaces.h"
 #include <set>
@@ -8,17 +22,36 @@ namespace live_edit {
 
 struct LiveEditConfig {
     long long debounce_ms = 150;   // coalesce saves within this window into one rebuild
-    long long bake_budget_ms = 2000; // dev time budget per bake (SP-2); <=0 = unbounded
+    // Forwarded verbatim to Baker::bake as its budget_ms argument; <=0 means
+    // unbounded. THE PRODUCTION BAKER IGNORES IT -- the dev time budget was
+    // retired, ProdBaker leaves BakeOptions.time_budget_ms at 0, and the engine
+    // passes 0 here (matter_engine.cpp). The parameter and
+    // LiveEditError::Cause::BudgetExceeded survive as part of the Baker seam:
+    // dev_live_edit_tests' BudgetBaker asserts the value arrives and returns
+    // that cause, which is what pins the session's fail-closed handling of it.
+    // So this default bounds nothing today; it is left non-zero only because
+    // it is what the seam's fakes have always been handed.
+    long long bake_budget_ms = 2000;
 };
 
 // Result of one processed rebuild pass (for test instrumentation).
 struct RebuildReport {
     std::vector<PartId> rebaked;       // exactly the upward cone, topo order
     std::vector<PartId> reflattened;   // affected roots
+    // False means the pass STOPPED at the first bad bake or flatten, so
+    // `rebaked`/`reflattened` above hold only what completed before it. Work
+    // already done is not undone -- this is a partial-progress record, not a
+    // rollback log.
     bool succeeded = true;             // false => fail-closed, last-good kept
     std::vector<LiveEditError> errors; // structured errors surfaced this pass
 };
 
+// All five collaborators are held BY REFERENCE for the session's lifetime, so
+// each must outlive it. The session has no thread affinity of its own and
+// takes no lock: it runs entirely on whichever thread calls tick() or
+// rebuild(), and the callee interfaces are responsible for their own
+// threading.
+//
 // Owns the dev live-edit loop. Pulls debounced events from the watcher, maps
 // each changed file to its parts (SP-3 reverse map), computes the upward cone,
 // rebakes it in topo order under the dev budget (SP-2), then re-flattens each

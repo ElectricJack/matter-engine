@@ -1,6 +1,54 @@
 #ifndef CELL_H
 #define CELL_H
 
+// ---------------------------------------------------------------------------
+// libs/MatterSurfaceLib/include/cell.h
+// ---------------------------------------------------------------------------
+// A Cell is one axis-aligned cubic region of a Cluster's spatial subdivision.
+// It owns the geometry produced for that region -- one mesh and one BLAS
+// handle per merge group -- plus the list of cluster particle indices that
+// fall inside it (including the halo, see below).
+//
+// How it fits
+//   Cluster (cluster.h) creates cells on demand, distributes particles into
+//   them and drives rebuilds. Cell turns its particle bucket into an
+//   isosurface through surface.h's C field evaluator / marching cubes and
+//   registers the result with BLASManager (blas_manager.hpp).
+//
+// Merge groups, not materials
+//   Every member here named "material_*" is actually keyed by MERGE GROUP id.
+//   Shades of one material share a group, feed one SDF field and blend into a
+//   single mesh; distinct material types stay separate.
+//   add_particle_index() does the material-id -> merge-group translation, so
+//   its `material_id` argument is a real material id while the resulting map
+//   key is not.
+//
+// Two-phase meshing
+//   build_cell_meshes() is the CPU half: GL-free, touches no BLAS or global
+//   state, and reentrant on the caller's per-thread SurfaceScratch, so it runs
+//   on a mesh worker. commit_cell_meshes() is the main-thread half (mesh
+//   upload plus BLAS registration). rebuild_meshes() is the fused,
+//   single-threaded convenience path that does both.
+//
+// Conventions and gotchas
+//   - Every position here is CLUSTER-LOCAL, never world. `coordinates` holds
+//     integer cell indices stored in a float vector for convenience.
+//   - A Cell does not own particles. It stores indices into the Cluster's
+//     particle vector, which must outlive any meshing call.
+//   - clear_meshes() called without a BLASManager drops the handles without
+//     releasing their references, so the BLAS entries leak. Pass the manager
+//     unless you are deliberately transferring ownership elsewhere.
+//   - All meshed cells must share one marching-cubes resolution: MC grids are
+//     only watertight between same-level neighbours, so a mixed per-cell
+//     divisionPow cracks the surface. That is what `uniform_detail` exists for.
+//   - Particles are distributed by an intersects_sphere halo test, so one
+//     particle normally lands in several neighbouring cells' index lists.
+//
+// The two free functions below (build_clip_particles, choose_division_pow) are
+// pure and GL-free so the headless tests exercise exactly the code the live
+// mesher runs.
+// ---------------------------------------------------------------------------
+
 // Phase 4 (Step 4) of docs/superpowers/plans/2026-07-25-mathlib-and-raylib-removal.md:
 // this header used to include raylib.h for Vector3/Matrix. It is C++-only (no
 // C consumer), so it uses matter_math.h's mm::Vec3/mm::Mat4 instead.
@@ -49,6 +97,24 @@ std::vector<Particle> build_clip_particles(
 // clamp(base_pow + max(0,tier), base_pow, max_pow). GL-free / pure.
 int choose_division_pow(float detail_size_min, float base_detail, int base_pow, int max_pow);
 
+// Absolute lattice spacing in cell-local metres. Chooses the first bounded
+// rung whose interval cell_size/(2^pow-1) is <= spacing. Requests finer than
+// max_pow saturate there; invalid inputs fall back to base_pow. Unlike the
+// relative particle-detail rule above, a single fine brush can select a fine
+// lattice without an artificial coarse first brush.
+int choose_absolute_division_pow(float cell_size, float spacing, int base_pow, int max_pow);
+
+// One subdivision cell and the geometry baked for it.
+//
+// Created and owned by Cluster (held by unique_ptr in `Cluster::cells_`); it
+// holds a BLAS reference per merge group, so it must be destroyed -- or have
+// clear_meshes(&blas_manager) called -- while its BLASManager is still alive.
+// Copying a Cell would duplicate those handles without bumping ref counts, so
+// treat it as non-copyable in practice.
+//
+// The public fields are written by Cluster during distribution and by the
+// meshing calls; `is_dirty` is set by anything that changes the particle
+// bucket and is what rebuild_dirty_cells() selects on.
 struct Cell {
     // Cell identification and spatial properties
     mm::Vec3 coordinates;      // Integer coordinates in cluster space (stored as floats for convenience)
@@ -102,37 +168,47 @@ struct Cell {
                                      // from which the cell builds its local particle->stage map.
                                      const FieldStages* stages = nullptr,
                                      const FatPrim* fat = nullptr, int fatCount = 0,
-                                     const int* clusterStage = nullptr) const;
+                                     const int* clusterStage = nullptr,
+                                     // Optional absolute spacing, shared by ALL cells of
+                                     // one expression to keep their boundaries aligned.
+                                     // Zero preserves the legacy particle-detail rule.
+                                     float absolute_spacing = 0.0f) const;
     // Main-thread commit of a CellMeshResult: UploadMesh (GL), BLAS registration,
     // BVH report, and material_meshes/material_blas writes. Sets has_meshes.
     void commit_cell_meshes(CellMeshResult& result, BLASManager& blas_manager);
     // Drops this cell's meshes. When blas_manager is provided, the cell's BLAS
     // references are released so stale entries don't accumulate on the GPU.
     void clear_meshes(BLASManager* blas_manager = nullptr);
+    // Both take CLUSTER-LOCAL positions and test against min_bound/max_bound.
+    // intersects_sphere() is the halo test that decides which cells a particle
+    // (additive or carve) is distributed into, which is why one particle
+    // normally appears in several neighbouring cells' index lists -- that
+    // overlap is what keeps the field continuous across cell boundaries.
     bool contains_point(const mm::Vec3& local_point) const;
     bool intersects_sphere(const mm::Vec3& center, float radius) const;
     
     // Particle management
+    // Records `particle_index` under MaterialMergeGroup(material_id): the
+    // argument is a material id, the bucket key is a merge group. Sets
+    // is_dirty. Rejects duplicates with a linear scan, so it is O(n) in the
+    // size of that group's bucket -- use the _unchecked variant below when the
+    // caller already guarantees uniqueness.
     void add_particle_index(uint32_t particle_index, uint32_t material_id);
     // Fast variant used during rebuild_dirty_cells: caller guarantees particle_index
     // has not already been added to this cell (skips the O(n) std::find check).
     void add_particle_index_unchecked(uint32_t particle_index, uint32_t material_id);
-    void remove_particle_index(uint32_t particle_index, uint32_t material_id);
     void clear_particle_indices();
     
     // Visitor pattern support
     void accept(CellVisitor& visitor) const;
-    void accept_transformed(CellRenderVisitor& visitor, const mm::Mat4& transform) const;
 
     // BLAS access
     const std::map<uint32_t, BLASHandle>& get_material_blas() const { return material_blas; }
 
-    // Utilities
-    float get_diagonal_length() const;
     mm::Vec3 get_size() const { return mm::Vec3{actual_size, actual_size, actual_size}; }
     
 private:
-    void calculate_bounds(float smallest_cell_size);
+    void calculate_bounds();
     // CPU-only build of one merge group's mesh + tagged triangles (no GL/BLAS).
     GroupMeshResult build_group_mesh(uint32_t group_id, const std::vector<StaticParticle>& cluster_particles,
                                      SurfaceScratch* scratch,
@@ -140,7 +216,8 @@ private:
                                      const Particle* carveParticles, int carveCount,
                                      const FieldStages* stages = nullptr,
                                      const FatPrim* fat = nullptr, int fatCount = 0,
-                                     const int* clusterStage = nullptr) const;
+                                     const int* clusterStage = nullptr,
+                                     float absolute_spacing = 0.0f) const;
     // Main-thread commit of one group's result (UploadMesh + BLAS + BVH report).
     void commit_group_mesh(GroupMeshResult& result, BLASManager& blas_manager);
 };

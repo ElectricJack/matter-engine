@@ -93,12 +93,25 @@ static const matter::ecs::WorldRuntimeState& runtime_state(
 }
 
 int main() {
+    // Unbuffered: every failure here is an assert(), and abort() discards
+    // whatever printf left in stdio's buffer -- which is exactly the
+    // diagnostic printout that says why the assertion failed.
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
     SetConfigFlags(FLAG_WINDOW_HIDDEN);
     InitWindow(640, 360, "world_stream_tests");
 
     std::string err;
     matter::EngineDesc ed;
     ed.cache_root = "cache";
+    // Headless kernel session: no interactive renderer. Despite its legacy
+    // name, allow_gl_lt_46 means exactly "this caller does not need a render
+    // device" (see EngineContext::create in matter_engine.cpp), and that is
+    // the truth here -- every assertion below is bake, ECS, streaming or
+    // sea-level state, and WorldSession::render() is the MATTER_VULKAN_ONLY
+    // no-op stub this binary is compiled against (see the triangles check at
+    // step 3). Without this flag create() correctly refuses with "an
+    // interactive session requires a Vulkan render device".
+    ed.allow_gl_lt_46 = true;
     auto engine = matter::EngineContext::create(ed, err);
     if (!engine) { printf("FAIL create: %s\n", err.c_str()); CloseWindow(); return 1; }
 
@@ -464,24 +477,56 @@ int main() {
         CloseWindow();
         return 1;
     }
-    for (int i = 0; i < 30; ++i) {
-        closed_session->pump_gpu_jobs(16.0f);
-        closed_session->tick({0.0f, 1.0f / 60.0f, 4});
+    // Settle on WALL CLOCK, not on an iteration count. The UnsupportedWorld
+    // marker reaches the anchor entity only after the coordinator publishes a
+    // snapshot carrying it, and the only thing that publishes one is the
+    // session worker's IDLE step -- reached through a 50 ms timed pop on the
+    // command queue. pump_gpu_jobs/tick with nothing to do return
+    // immediately, so a fixed loop of them (this was `for i < 30`, then 600)
+    // can burn every iteration inside a single 50 ms slot and observe
+    // nothing. That is what made this read as "the engine never reports the
+    // error" rather than "the test never waited".
+    {
+        const double settle_start = GetTime();
+        while (GetTime() - settle_start < 5.0) {
+            closed_session->pump_gpu_jobs(16.0f);
+            closed_session->tick({0.0f, 1.0f / 60.0f, 4});
+            if (closed_anchor.try_get<matter::streaming::SectorStreamingError>())
+                break;
+        }
+        printf("closed world: settled in %.3f s\n", GetTime() - settle_start);
     }
     const auto* closed_error =
         closed_anchor.try_get<matter::streaming::SectorStreamingError>();
+    // Reported term by term: as ONE compound assert every failure printed the
+    // same 6-clause expression and said nothing about which clause broke.
+    printf("closed world: state=%d gen=%llu status=%d error=%s code=%d resident=%u frame_resident=%u\n",
+           (int)closed_session->streaming_status().state,
+           (unsigned long long)closed_session->streaming_status().generation,
+           (int)runtime_state(*closed_session).status,
+           closed_error ? "present" : "ABSENT",
+           closed_error ? (int)closed_error->code : -1,
+           closed_session->streaming_status().resident_sectors,
+           closed_session->frame_stats().resident_sectors);
     assert(runtime_state(*closed_session).status ==
                matter::ecs::WorldStatus::Ready &&
-           closed_error != nullptr &&
-           closed_error->code ==
+           "closed-world bake reaches Ready");
+    assert(closed_error != nullptr &&
+           "closed-world activation reports a streaming error on the anchor");
+    assert(closed_error->code ==
                matter::streaming::SectorStreamingErrorCode::UnsupportedWorld &&
-           closed_session->streaming_status().resident_sectors == 0 &&
+           "the closed-world streaming error is the recoverable UnsupportedWorld");
+    assert(closed_session->streaming_status().resident_sectors == 0 &&
            closed_session->frame_stats().resident_sectors == 0 &&
-           "closed-world activation is recoverable and non-streaming");
+           "a closed world streams zero sectors");
     closed_session.reset();
 
     // 10. Destroy the successful session, then open a replacement whose bake
-    // deterministically fails because its world directory does not exist.
+    // deterministically fails. The failure has to be at BAKE time, not open
+    // time: this used to name a world that did not exist, but open_world
+    // validates the world source now and refuses outright, so the session
+    // under test never existed. worlds/FatalBake.js opens fine and names a
+    // module that does not, which is the missing-module hard error.
     printf("destroying session...\n");
     session->set_test_fault_hook([](int stage) {
         if (stage == -2) {
@@ -492,7 +537,7 @@ int main() {
     printf("session destroyed cleanly\n");
 
     matter::WorldDesc bad_wd = wd;
-    bad_wd.world_name = "Task6MissingWorldForFatalBake";
+    bad_wd.world_name = "FatalBake";
     auto replacement = engine->open_world(bad_wd, err);
     if (!replacement) {
         printf("FAIL replacement open_world: %s\n", err.c_str());

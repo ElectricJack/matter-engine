@@ -4,8 +4,8 @@
 //
 // Usage: slab_bake_probe <Module> [seed ...]        (default seeds: 0 1 2 3)
 //
-// Unlike rock_bake_profile this uses a std::filesystem sandbox (no /tmp, no
-// system("rm -rf")), so it runs on Windows where those suites are red.
+// Bakes into a scratch sandbox via test_sandbox.h — the same portable helpers
+// rock_bake_profile and the other bake harnesses now use.
 #include "part_graph.h"
 #include "part_asset_v2.h"
 #include "blas_manager.hpp"
@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "portable_realpath.h"
+#include "test_sandbox.h"
 
 using namespace part_graph;
 
@@ -51,11 +52,8 @@ int main(int argc, char** argv) {
     const std::string shared_lib = abspath("../shared-lib");
 
     namespace fs = std::filesystem;
-    const fs::path sandbox = fs::absolute("build/slab_probe_sandbox");
+    const std::string sandbox = make_sandbox("sandbox/slab_probe");
     std::error_code ec;
-    fs::remove_all(sandbox, ec);
-    fs::create_directories(sandbox / "parts", ec);
-    if (ec) { printf("FAIL: sandbox mkdir: %s\n", ec.message().c_str()); return 1; }
     fs::current_path(sandbox, ec);
     if (ec) { printf("FAIL: chdir sandbox: %s\n", ec.message().c_str()); return 1; }
 

@@ -1,5 +1,31 @@
 #pragma once
 
+// MatterEngine3/include/matter/animation_debug.h
+//
+// Diagnostic snapshots of animated rigs, and the pure helpers that validate
+// and transform them for drawing. Header-only: no engine state, no Vulkan, no
+// allocation beyond the vectors the caller fills.
+//
+// FLOW. `WorldSession` (declared in matter/world_session.h, implemented in
+// MatterEngine3/src/matter_engine.cpp) fills a
+// `std::vector<AnimationDebugInstanceSnapshot>` by COPYING out of the live
+// animation runtime. MatterEditor consumes it in
+// `animation_panel_model.cpp` (which keeps only the snapshots that pass
+// `valid_animation_debug_snapshot`) and draws it in
+// `animation_debug_overlay.cpp`.
+//
+// SPACES. `AnimationDebugPoseSnapshot::local_pose` is per-joint local (TRS);
+// `model_pose` and `skin_palette` are model space; `world_transform` is the
+// ECS owner's model->world matrix. All Mat4f are row-major storage with
+// column-vector algebra (matter/math_types.h), which is why the pole helper
+// below reads BASIS COLUMNS out of them.
+//
+// TRUST BOUNDARY. Everything here is disposable diagnostics, so validation is
+// all-or-nothing: `valid_animation_debug_snapshot` rejects the entire snapshot
+// on the first bad index or non-finite value rather than letting a partially
+// trusted array index another array. Call it before drawing; the drawing code
+// then indexes without re-checking.
+
 #include "matter/animation.h"
 
 #include <cmath>
@@ -17,17 +43,33 @@ namespace matter {
 // rig already carries them; dropping them here only made the editor unable to
 // label anything. They are copies, so they extend no engine lifetime.
 struct AnimationDebugJoint {
+    // Index into the same `joints` array; UINT16_MAX = root. The array is
+    // topologically ordered — the validator requires parent < own index — so
+    // a single forward pass can concatenate parent transforms.
     uint16_t parent = UINT16_MAX;
+    // Drawn bone radius in model-space units. Must be finite and > 0 or the
+    // whole snapshot is rejected.
     float radius = 0.0f;
     std::string name;
 };
 
+// An authored attachment point. `joint` indexes
+// AnimationDebugAssetSnapshot::joints (UINT16_MAX = unset, which the validator
+// rejects); `local` is the socket's transform in that joint's space.
 struct AnimationDebugSocket {
     uint16_t joint = UINT16_MAX;
     AnimationTransform local{};
     std::string name;
 };
 
+// One authored IK target as the author declared it (the per-frame evaluated
+// side is AnimationDebugTargetState, in the same order).
+//
+//   chain — EXACTLY three joint indices; the validator enforces the length,
+//           because the solver is two-bone.
+//   pole  — the authored pole direction in MODEL space, only meaningful when
+//           `has_pole`. Convert with animation_debug_world_pole_direction()
+//           below; do not multiply it by the owner transform directly.
 struct AnimationDebugTargetDefinition {
     std::vector<uint16_t> chain;
     Float3 pole{};
@@ -42,6 +84,10 @@ struct AnimationDebugTargetDefinition {
     bool cadence_is_fixed = false;
 };
 
+// The evaluated state of one IK target this frame, positionally matched to
+// AnimationDebugAssetSnapshot::targets (the validator enforces equal sizes).
+// `weight` is normalized 0-1. `available` distinguishes "this target produced
+// no state" from "it produced a zeroed one".
 struct AnimationDebugTargetState {
     AnimationTransform evaluated{};
     float weight = 0.0f;
@@ -49,18 +95,37 @@ struct AnimationDebugTargetState {
     bool available = false;
 };
 
+// A per-joint axis-aligned box carried for the overlay. `joint` indexes
+// `joints`; the validator requires minimum <= maximum on every axis.
 struct AnimationDebugJointBound {
     uint16_t joint = UINT16_MAX;
     Float3 minimum{};
     Float3 maximum{};
 };
 
+// One LOD0 skinned vertex, for drawing the skin binding.
+//
+//   bind_position — the vertex in bind pose.
+//   joints        — up to four joint indices; UINT16_MAX marks an unused lane,
+//                   which pairs with a zero weight.
+//   weights       — 16-bit normalized fixed point. The USED lanes must sum to
+//                   EXACTLY 65535 (1.0); the validator rejects anything else,
+//                   so a producer that renormalizes in float must round its
+//                   last lane to make the total land on the nose.
 struct AnimationDebugVertexInfluence {
     Float3 bind_position{};
     uint16_t joints[4] = {UINT16_MAX, UINT16_MAX, UINT16_MAX, UINT16_MAX};
     uint16_t weights[4] = {};
 };
 
+// The rig side of a snapshot: everything that comes from the asset and does
+// not change per frame. Copied, so it extends no engine lifetime.
+//
+// `resolved_hash` (plus the two nonce halves) identifies which resolved rig
+// this is; the validator treats a zero `resolved_hash` as "not a real
+// snapshot" and rejects. Every vector here is optional except `joints` —
+// an empty `lod0_influences` simply means "no skin to draw", and relaxes the
+// skin_palette length requirement accordingly.
 struct AnimationDebugAssetSnapshot {
     uint64_t resolved_hash = 0;
     uint64_t nonce_high = 0;
@@ -74,6 +139,13 @@ struct AnimationDebugAssetSnapshot {
     std::vector<uint64_t> rigid_part_hashes;
 };
 
+// The per-frame side of a snapshot. `fixed_tick` and `frame_serial` say WHEN
+// it was sampled, so a consumer can tell a stale copy from a fresh one.
+//
+// Lengths are contractual and checked by valid_animation_debug_snapshot:
+// `model_pose` matches the asset's joint count; `skin_palette` matches it too
+// whenever the asset carries LOD0 influences; `targets` matches the asset's
+// target list one-for-one.
 struct AnimationDebugPoseSnapshot {
     AnimatorInstanceHandle instance{};
     uint64_t fixed_tick = 0;
@@ -84,6 +156,10 @@ struct AnimationDebugPoseSnapshot {
     std::vector<AnimationDebugTargetState> targets;
 };
 
+// One animated instance, complete and self-contained: the rig, the pose, and
+// where the owner is in the world. This is the unit that crosses the
+// engine/viewer boundary and the unit that
+// valid_animation_debug_snapshot() accepts or rejects whole.
 struct AnimationDebugInstanceSnapshot {
     AnimationDebugAssetSnapshot asset;
     AnimationDebugPoseSnapshot pose;
@@ -182,6 +258,9 @@ inline bool valid_animation_debug_snapshot(
 // inverse-rotates the authored pole by the chain-root model rotation, so debug
 // rendering must perform that same conversion before applying the ECS owner's
 // world rotation. Translation and scale are deliberately ignored.
+// Returns false — and leaves `out` zeroed — when any input is non-finite or
+// when either matrix has a degenerate (near-zero-length) basis column, so the
+// caller can simply skip drawing that pole. On success `out` is normalized.
 inline bool animation_debug_world_pole_direction(
     const Mat4f& owner_world, const Mat4f& chain_root_model,
     const Float3& authored_pole, Float3& out) {

@@ -1,3 +1,45 @@
+#include "matter/project_layout.h"
+// MatterEditor/src/editor_props.cpp
+//
+// The editor's property SCHEMA plus the layer machinery around it. Each
+// tunable struct gets one static `props::group<T>` describing its fields;
+// EditorProps::init() binds schema + live instance + scope into the registry;
+// the rest of the file moves values between the compiled defaults, the world
+// JS, the two override files, the environment and the panels.
+//
+// Reading order. Everything above EditorProps::init() is declarative: a group
+// names a struct, a path (`render.fog`), a display label, and one prop() per
+// field carrying its range, units, enum labels, env var and doc string. The
+// doc strings are the real documentation of what each value MEANS — many of
+// them record why a value is what it is — and they are also the tooltips the
+// panels show. Actual code starts at init().
+//
+// Layer order (S4) is listed in editor_props.h; this file realizes it:
+// registry_.bind() captures the compiled default as the baseline; set_world()
+// repoints at the incoming scene's file and rebuilds the RequiresReload groups
+// there, because those are INPUTS to the connect; on_world_connected()
+// re-captures the baseline for every other World group (so layer 2 is what the
+// world JS authored) and then applies the world file and the env layer;
+// tick() debounces the User-scope save.
+//
+// Where the files are: World overrides live in
+// <project>/scenes/<world>/props.json (the pre-scene-layout
+// editor/worlds/<world>.props.json is still honoured when there is no scene
+// folder), User overrides in ./editor_settings.json — relative to the cwd, and
+// the editor is always launched from MatterEditor/. Both are SPARSE: only
+// values differing from their baseline are written, which is why the baseline
+// rules above matter so much. Nothing is read or written at all when
+// persistence is off (a MATTER_REPLAY run).
+//
+// Adding a tunable: add a prop() row to the right group, or a new
+// props::group<T> plus a registry_.bind() in init() and an accessor in the
+// header. That alone makes the field visible in Tunables, persistable at its
+// scope, settable from env if it is given .env(), and reachable from the
+// headless FIFO command `set <group.path>.<field> <value>`
+// (docs/agent/control-surface.md) — no per-field plumbing anywhere else.
+//
+// Main/UI thread only.
+
 #include "editor_props.h"
 
 #include "animation_debug_overlay.h"
@@ -32,7 +74,9 @@ std::string world_props_path(const std::string& project_dir,
                              const std::string& world_name) {
     namespace fs = std::filesystem;
     std::error_code ec;
-    const fs::path scene_dir = fs::path(project_dir) / "scenes" / world_name;
+    const auto script = matter::project_layout::scene_script(project_dir, world_name);
+    const fs::path scene_dir = script.empty()
+        ? fs::path(project_dir) / "scenes" / world_name : script.parent_path();
     if (fs::is_directory(scene_dir, ec))
         return (scene_dir / "props.json").string();
     return project_dir + "/editor/worlds/" + world_name + ".props.json";
@@ -51,6 +95,11 @@ using matter::props::Scope;
 //     every frame from ViewerStats::debug_view_mode / vol_debug_view, so a
 //     persisted value would be a lie.
 
+// viewer.budget — Scope::User, bound to the editor's own ViewerStats. One
+// field, and it is the QA knob: `set viewer.budget.pixel_budget 0.8` in a FIFO
+// timeline is how a headless capture forces coarser LOD without touching the
+// world. It feeds LOD selection, whose single rule lives in
+// MatterEngine3/src/render/lod_distance.h.
 const auto s_budget = matter::props::group<ViewerStats>(
     "viewer.budget", "Viewer Budget",
     prop(&ViewerStats::pixel_budget, "pixel_budget")
@@ -145,6 +194,11 @@ const auto s_lighting = matter::props::group<matter::VulkanLightingOverrides>(
               "resolves into a penumbra with several rays. Costs GPU time "
               "linearly."));
 
+// render.atmosphere — Scope::World, bound to ViewerStats::atmosphere. The
+// physical sky model's coefficients. Every field carries an env name, which is
+// what lets a headless MATTER_REPLAY capture sweep them; the multipliers are
+// dimensionless scales on the model's own constants, while sea_level_y is a
+// world-space Y in metres (the altitude the density profile is measured from).
 const auto s_atmosphere = matter::props::group<matter::AtmosphereSettings>(
     "render.atmosphere", "Atmosphere",
     prop(&matter::AtmosphereSettings::sea_level_y, "sea_level_y")
@@ -228,6 +282,13 @@ const char* const kNearDepthLabels[] = {"16", "32", "48"};
 const char* const kFarResolutionLabels[] = {"64", "128", "256"};
 const char* const kFarDepthLabels[] = {"16", "24", "32"};
 
+// render.cloud_shadows — Scope::World, bound to ViewerStats::cloud_shadows.
+// Two cascades of a cloud-shadow volume, near and far, each with its own
+// resolution, depth-slice count and coverage radius in metres. The resolution
+// and slice rows are ENUMS over fixed label tables (kNear*/kFar* above), so
+// only the listed sizes can be selected — they are not free integers.
+// update_fraction runs from 1/16 to 1 and is the share of the volume the
+// frame refreshes.
 const auto s_cloud_shadows = matter::props::group<matter::CloudShadowSettings>(
     "render.cloud_shadows", "Cloud Shadows",
     prop(&matter::CloudShadowSettings::enabled, "enabled").label("Enable"),
@@ -254,8 +315,19 @@ const auto s_cloud_shadows = matter::props::group<matter::CloudShadowSettings>(
 const char* const kHorizonDebugLabels[] = {
     "Off", "Map (addressed frame)", "March (reference)",
     "Map (rt_shadow world XZ)", "|Map - March|", "|RT form - March|",
-    "Map (world XZ, no lift)"};
+    "Map (world XZ, no lift)", "Composed VT status", "Composed VT charts",
+    "Composed POM path (raster)", "VT proxy mip (raster)",
+    "VT proxy density (raster)"};
 
+// render.pom — Scope::World, bound to ViewerStats::tileset_pom. Ground
+// parallax-occlusion mapping over the tileset's height channel: how deep the
+// relief goes (relief_cap_m / datum_bias_m), how far and in how many steps the
+// march runs (max_march_m / steps), out to what distance it is applied at all
+// (max_distance_m / fade_band_m), and how the baked horizon term shades the
+// result. Note that render.pom's reach is a COST boundary and is no longer
+// what sets the chart-VT near band — that is render.vt above, and the comment
+// there explains the split. horizon_debug is .no_serialize(): a diagnostic
+// view, never persisted.
 const auto s_pom = matter::props::group<matter::TilesetPomSettings>(
     "render.pom", "Ground POM",
     prop(&matter::TilesetPomSettings::enabled, "enabled").label("Enable"),
@@ -288,13 +360,18 @@ const auto s_pom = matter::props::group<matter::TilesetPomSettings>(
         .doc("Blends the baked per-direction horizon occlusion toward 0. No "
              "effect on slots loaded from a v1 .gtex."),
     prop(&matter::TilesetPomSettings::horizon_debug, "horizon_debug")
-        .label("Horizon debug").enums(kHorizonDebugLabels, 7).no_serialize()
+        .label("Surface debug").enums(kHorizonDebugLabels, 12).no_serialize()
         .doc("Draws the horizon term over the parallaxed ground in place of "
              "its albedo. Read it with Viewer Debug > Debug view > Raw "
              "albedo; anything lit is unreadable as a field. The march is "
              "the reference -- it steps the same height field the parallax "
              "displaced along, so wherever it and the map disagree, the map "
-             "is misregistered."));
+             "is misregistered. Composed VT modes show traversal status or "
+             "chart identity through the same raw-albedo view. Proxy mip "
+             "encodes requested/resident mip in red/green (divide by 8); "
+             "density encodes log2 finest/resident texels per world metre "
+             "(divide by 12). Blue marks a valid ordinary chart; magenta "
+             "marks unsupported module/metric, black means no VT."));
 
 // render.vt — the chart-VT near band (Phase 0 of the decal/ground-compositing
 // design). Two rows, and they exist because until now there were none: the
@@ -506,6 +583,13 @@ static_assert(matter::kMaxCloudLayers == 4,
 #undef CLOUD_PROP
 #undef CLOUD_OFF
 
+// camera.prefs — Scope::User, bound to the editor's CameraPrefs
+// (camera_controller.h). Per-machine feel rather than project data: fly speed,
+// look sensitivity, and the step sizes the Camera panel's button pads use, so
+// it follows the user's machine and not the scene. The orbit_* fields are the
+// inputs to camera_orbit.h; orbit_selection chooses the pivot (the selection's
+// focus point rather than the view target), and it is the same field the
+// Camera panel's checkbox edits.
 const auto s_camera = matter::props::group<CameraPrefs>(
     "camera.prefs", "Camera",
     prop(&CameraPrefs::far_plane, "far_plane")
@@ -656,7 +740,8 @@ const auto s_overlay = matter::props::group<AnimationDebugOverlayOptions>(
 // tint, and this index is the single-int form a shot descriptor can store.
 const char* const kDebugViewLabels[] = {"None", "Normals", "Depth",
                                         "Sun visibility", "Raw albedo",
-                                        "LOD levels", "Wireframe"};
+                                        "LOD levels", "Wireframe",
+                                        "Local-light candidates"};
 const char* const kVolDebugLabels[] = {"Off", "Density", "Scatter",
                                        "Integrated", "Cloud density",
                                        "Cloud shadow transmittance"};
@@ -664,8 +749,8 @@ const char* const kVolDebugLabels[] = {"Off", "Density", "Scatter",
 const auto s_viewer_debug = matter::props::group<ViewerStats>(
     "viewer.debug", "Viewer Debug Views",
     prop(&ViewerStats::debug_view_mode, "debug_view_mode")
-        .label("Debug view").enums(kDebugViewLabels, 7)
-        .doc("0-4 select composite views; \"LOD levels\" tints each surface by "
+        .label("Debug view").enums(kDebugViewLabels, 8)
+        .doc("Composite views include indexed local-light candidates; \"LOD levels\" tints each surface by "
              "the rung the GPU cull actually selected for it, and "
              "\"Wireframe\" draws its edges."),
     prop(&ViewerStats::wireframe, "wireframe")
@@ -694,6 +779,12 @@ const auto s_viewer_debug = matter::props::group<ViewerStats>(
              "selection with it (same eye). Pair with \"Freeze terrain "
              "streaming\", which holds which tiles exist rather than which "
              "are drawn."),
+    prop(&ViewerStats::live_terrain_graphics, "live_terrain_graphics")
+        .label("Live terrain graphics")
+        .doc("MATTER_LIVE_TERRAIN=1 only. Off releases every live terrain "
+             "tile's GPU residency; the generated products stay cached and the "
+             "terrain collision stays installed. On re-uploads from the cache "
+             "without regenerating."),
     prop(&ViewerStats::occlusion_draw_cull, "occlusion_draw_cull")
         .label("Occlusion culling")
         .doc("Do not rasterise sectors that owned no pixel THIS frame.\n\n"
@@ -767,7 +858,48 @@ const auto s_gpu = matter::props::group<GpuPrefs>(
         .env("MATTER_DLSS_MODE")
         .doc("Native renders at output resolution; the upscaling modes render "
              "smaller and reconstruct. Watch dlss internal/output in the HUD "
-             "to see it land."));
+             "to see it land."),
+    prop(&GpuPrefs::frame_limit, "frame_limit")
+        .label("Frame rate limit (0 = unlimited)")
+        .range(0, 360)
+        .env("MATTER_FRAME_LIMIT")
+        .doc("Pace frames before input sampling. Choose a rate the scene can "
+             "sustain with some GPU headroom. Does not lower rendering quality "
+             "or change VSync; zero disables the limit."),
+    prop(&GpuPrefs::forest_history_reset, "forest_history_reset")
+        .label("Reset temporal history on forest streaming")
+        .doc("On: every terrain streaming update that replaces the sparse-voxel "
+             "forest snapshot restarts the DLSS history, so trees go coarse and "
+             "re-converge over the next frames. Off: the accumulated history is "
+             "kept and tree detail stays stable across streaming updates; newly "
+             "placed trees rely on the upscaler's disocclusion handling. No "
+             "effect in Native mode. Takes effect on the next frame."));
+
+const auto s_gi = matter::props::group<GiPrefs>(
+    "render.gi", "Ray-Traced GI",
+    prop(&GiPrefs::enabled, "enabled")
+        .label("GI enabled")
+        .doc("Enables diffuse GI, reflections and transmission. Traced local "
+             "direct lighting remains active when this is off."),
+    prop(&GiPrefs::diffuse_multiplier, "diffuse_multiplier")
+        .label("Diffuse bounce strength")
+        .range(0.0f, 4.0f)
+        .doc("Scales diffuse indirect lighting. Zero skips diffuse bounce rays "
+             "while retaining traced reflections, glass and direct shadows. "
+             "Other values change brightness, not the amount of ray work."),
+    prop(&GiPrefs::trace_scale, "trace_scale")
+        .label("Diffuse GI resolution scale")
+        .range(0.125f, 1.0f)
+        .doc("Resolution of soft diffuse bounce lighting only. 0.125 traces "
+             "one eighth of the width and height. Guided reconstruction "
+             "applies that lighting to full-resolution material detail. "
+             "Reflections, glass and direct shadows keep their own resolution."),
+    prop(&GiPrefs::reflection_trace_scale, "reflection_trace_scale")
+        .label("Reflections and glass resolution scale")
+        .range(0.125f, 1.0f)
+        .doc("Resolution of traced reflections and refraction, independent "
+             "of diffuse GI. Keep at 1 for sharp glass and reflected detail. "
+             "Reducing this can lose thin geometry and sharp highlights."));
 // ---------------------------------------------------------------------------
 // One-shot world-file migration: render.volumetrics' fog multipliers
 // (issue 80c66789)
@@ -967,6 +1099,18 @@ const char* const kDlssModeLabels[4] = {
     kDlssModeLabelStorage[0], kDlssModeLabelStorage[1],
     kDlssModeLabelStorage[2], kDlssModeLabelStorage[3]};
 
+// Bind every static group, then run the User file layer and the env layer.
+//
+// Call exactly once, before the first world is opened. All four struct
+// references are BORROWED for the lifetime of this object: the registry stores
+// bare pointers into them, so every one of them must outlive the EditorProps.
+// Three engine-owned structs are bound here too (VT residency budgets, VT
+// enrich, stream runtime) — the engine keeps reading them directly and this
+// only adds UI, persistence and the env layer on top.
+//
+// World-scope groups are bound here but do NOT get their real values yet;
+// those arrive at on_world_connected(). The final loop clears every dirty flag
+// so a fresh launch does not present itself as having unsaved edits.
 void EditorProps::init(ViewerStats& stats, CameraPrefs& camera,
                        ToolbarState& toolbar, ConsolePanelState& console,
                        bool persist) {
@@ -991,6 +1135,7 @@ void EditorProps::init(ViewerStats& stats, CameraPrefs& camera,
     // trace rays and how hard DLSS should upscale is a property of the machine
     // sitting in front of the user, not of the project.
     gpu_ = registry_.bind(s_gpu, &gpu_prefs_, Scope::User);
+    gi_ = registry_.bind(s_gi, &gi_prefs_, Scope::Session);
     // Same engine-owned deal, with one extra step: `workers` has no compiled
     // default worth showing (it scales with the machine), so the engine's own
     // env pass — which also seeds that default — must run BEFORE bind captures
@@ -1035,6 +1180,11 @@ void EditorProps::init(ViewerStats& stats, CameraPrefs& camera,
     for (size_t i = 0; i < registry_.size(); ++i) registry_.at(i).set_dirty(false);
 }
 
+// Release the two session-owned DynamicGroup bindings and flush a pending
+// User-scope autosave immediately — the debounce timer is abandoned, not
+// waited out. A pending WORLD save is NOT flushed here: that happens at the
+// world-switch seam in set_world(), the last point at which the outgoing
+// world's path is still current. Safe to call without init().
 void EditorProps::shutdown() {
     release_world_props();
     release_draw_overrides();
@@ -1045,6 +1195,12 @@ void EditorProps::shutdown() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Named accessors. Each returns null when its group was never bound (init()
+// not called). The Binding is owned by the registry — re-fetch it rather than
+// caching it, and that goes double for world_props()/draw_overrides(), which
+// are unbound and re-bound at every world connect.
+// ---------------------------------------------------------------------------
 matter::props::Binding* EditorProps::budget() { return registry_.get(budget_); }
 matter::props::Binding* EditorProps::lighting() { return registry_.get(lighting_); }
 matter::props::Binding* EditorProps::atmosphere() {
@@ -1071,6 +1227,7 @@ matter::props::Binding* EditorProps::vt_enrich() {
 }
 
 matter::props::Binding* EditorProps::gpu() { return registry_.get(gpu_); }
+matter::props::Binding* EditorProps::gi() { return registry_.get(gi_); }
 
 bool EditorProps::set_dlss_mode(int index) {
     matter::props::Binding* b = registry_.get(gpu_);
@@ -1125,13 +1282,6 @@ matter::props::Binding* EditorProps::animation_overlay() {
 matter::props::Binding* EditorProps::viewer_debug() {
     return registry_.get(viewer_debug_);
 }
-matter::props::Binding* EditorProps::viewer_session_status() {
-    return registry_.get(viewer_session_status_);
-}
-matter::props::Binding* EditorProps::viewer_atmosphere_status() {
-    return registry_.get(viewer_atmosphere_status_);
-}
-
 matter::props::Binding* EditorProps::world_props() {
     if (!world_props_) return nullptr;
     return registry_.get(world_props_->binding());

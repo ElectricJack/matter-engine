@@ -1,6 +1,24 @@
 #pragma once
 // Installs the native __dsl_* DSL bindings (and the seeded Math.random override)
 // onto a QuickJS-ng context. The context's opaque must point at a dsl::DslState.
+// ---------------------------------------------------------------------------
+// MatterEngine3/src/dsl_bindings.h
+//
+// The public face of `dsl_bindings.cpp`. Three unrelated things live here
+// because they share one implementation TU:
+//
+//   1. `install_bindings` — the only entry point the script host needs. Call it
+//      once per JSContext, after `JS_SetContextOpaque(ctx, dsl_state)` and
+//      before evaluating any part module.
+//   2. `TerrainVerbCensus` — process-wide monotonic counters for the world
+//      field verbs, read by the bake reporting path.
+//   3. `script_profile` — the named-timer API a bake script opens and closes
+//      itself, plus its `report()` table.
+//
+// Both counter sets are PROCESS-wide and summed across every bake worker, so
+// their totals are thread-time, not wall time, and readers that want a window
+// must take deltas (or call `script_profile::reset()`).
+// ---------------------------------------------------------------------------
 #include <string>
 struct JSContext;
 namespace dsl {
@@ -12,6 +30,8 @@ void install_bindings(JSContext* ctx);
 // calls heightAt/slopeAt/biomeAt once per candidate. Splitting them is what
 // says whether to attack the mesher or the scatter. Readers take deltas.
 struct TerrainVerbCensus {
+    // terrainVolumeTiled: call count, microseconds inside the native mesher
+    // (summed across workers), and triangles emitted.
     unsigned long long volume_calls = 0, volume_us = 0, volume_tris = 0;
     unsigned long long height_calls = 0, height_us = 0;  // heightAt/slopeAt/
     unsigned long long biome_calls  = 0, biome_us  = 0;  // moistureAt/biomeAt

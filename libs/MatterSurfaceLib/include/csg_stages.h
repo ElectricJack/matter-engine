@@ -1,6 +1,16 @@
 #ifndef CSG_STAGES_H
 #define CSG_STAGES_H
 
+// libs/MatterSurfaceLib/include/csg_stages.h
+//
+// How it is plumbed: a FieldStages is built by the caller that lowers authored
+// CSG into particles + primitives, handed to Cell::build_cell_meshes()
+// (cell.h) as a BORROWED pointer, carried through MeshContext::stages
+// (meshing_algorithm.h) and finally read by the C field evaluator in
+// surface.c. Nothing here owns anything: the struct is a view over arrays the
+// caller keeps alive for the duration of the mesh build, and it is deliberately
+// C-compatible so the C mesher and the C++ lowering share one declaration.
+//
 // Ordered-CSG stage description for the field evaluator (Phase 1).
 //
 // Today's pipeline sorted ops into two buckets (additive union, then carve) which

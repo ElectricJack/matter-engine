@@ -27,6 +27,27 @@
 // unchanged), does not change page content identity, does not exist on props,
 // and does not feed placement grids. It is exactly one thing: the runtime
 // coordinate for live ground content and its march.
+//
+// How to use it, per sector:
+//   1. warp_field::solve(tris, n, skirt_mask, opts, field) at stage time.
+//      opts.anchor_x/anchor_z MUST be the sector's world anchor; solving with
+//      the wrong anchor yields a field that is internally consistent and
+//      discontinuous at every border.
+//   2. warp_field::evaluate(field, positions, normals, count, uv, frame) once
+//      per ladder rung mesh, to bake the per-vertex uv + packed frame.
+//   3. Keep the Field alive for as long as any rung still needs evaluating;
+//      it is a plain value type (vectors only, no GPU or OS resource) and is
+//      copyable, but it is large -- several arrays sized by the sector's
+//      welded vertex and triangle counts.
+//
+// Threading: solve() and evaluate() are single-threaded, take no locks, and
+// touch no shared state except the census counters; two sectors may be solved
+// concurrently on different threads. The census functions are the only
+// deliberately cross-thread part (relaxed atomics).
+//
+// Fail-soft everywhere: a mesh too small or degenerate to parameterise gives
+// an invalid Field, and evaluate() on one writes the "no warp" values the
+// shader reads as plain world-XZ addressing. No path throws or asserts.
 
 #include "tri.h"  // Tri, float2/float3 (SpatialQueryLib)
 
@@ -139,6 +160,12 @@ struct FieldStats {
 // A solved field: the welded solve mesh, per-vertex uv + Jacobian rows, and a
 // uniform-grid triangle index for evaluate(). Positions are SECTOR-LOCAL
 // (exactly the bitwise Tri corner values); uv is world-anchored.
+// Ownership: a self-contained value, safe to move or copy; `indices` and the
+// grid arrays index into this Field's own `positions`, so a copy stays
+// internally consistent. Only `evaluate()` and the gates read it, and none of
+// them mutate it. `valid == false` means every accessor should be treated as
+// empty -- a solve that failed leaves a default-constructed Field, not a
+// partially filled one.
 struct Field {
     bool valid = false;
     std::vector<float3> positions;   // welded, first-appearance order
@@ -184,6 +211,13 @@ FieldStats world_xz_stats(const Tri* tris, size_t tri_count,
 // ladder rungs, skirt verts — takes the nearest solve triangle's barycentric
 // interpolation. An empty/invalid field writes uv = 0 and su = 0, which the
 // shader reads as "no warp" (fail-soft to world-XZ addressing).
+// Cost: a hash map over the field's vertices is rebuilt on every call, and any
+// vertex that does not weld exactly falls back to an expanding grid search for
+// the nearest triangle. Evaluate a whole rung mesh in ONE call rather than per
+// vertex, and expect coarse rungs (no exact hits) to cost far more than
+// rung 0. out_uv needs 2 floats and out_frame 2 uint32s per vertex; both are
+// fully initialised before any lookup runs. Does not update the census --
+// the caller times it and reports via warp_census_add_evaluate_us().
 void evaluate(const Field& field, const float* positions, const float* normals,
               size_t count, float* out_uv, uint32_t* out_frame);
 
@@ -211,6 +245,13 @@ struct WarpCensus {
     uint64_t tris = 0;         // solve-domain triangles
     uint64_t folds = 0;        // folded triangles left after fold-relax
 };
+// Counters are relaxed atomics, so any thread may read or contribute. Each
+// value is exact, but one warp_census() result is not an atomic snapshot
+// across the six counters -- do not derive an invariant from comparing two of
+// them mid-flight. `sectors` counts solve ATTEMPTS and is bumped before the
+// early-outs, so sectors - solved is the number of meshes that could not be
+// parameterised. solve() maintains everything except evaluate_us, which only
+// moves when a caller reports through warp_census_add_evaluate_us().
 WarpCensus warp_census();
 void warp_census_add_evaluate_us(uint64_t us);
 

@@ -1,19 +1,25 @@
 #ifndef MATTER_ENVIRONMENT_COMMON_GLSL
 #define MATTER_ENVIRONMENT_COMMON_GLSL
 
-// Stable physical-environment ABI.  All raster, RT, and froxel consumers bind
-// this identical set at set 1; the neutral cloud fields make the declaration
-// valid before cloud-shadow production exists.
+// Stable physical-environment ABI. Existing raster, RT, and froxel consumers
+// default to set 1. Forward water relocates the same complete ABI to set 3;
+// the sampling fixture remains the one-binding set-0 specialization.
+#ifndef ENVIRONMENT_SET
 #ifdef MATTER_ENVIRONMENT_SAMPLING_TEST
-layout(set = 0, binding = 0) uniform sampler2D atmosphere_sky_view;
+#define ENVIRONMENT_SET 0
 #else
-layout(set = 1, binding = 0) uniform sampler2D atmosphere_sky_view;
-layout(set = 1, binding = 1) uniform sampler2D atmosphere_irradiance_sh;
-layout(set = 1, binding = 2) uniform sampler3D cloud_shadow_near_0;
-layout(set = 1, binding = 3) uniform sampler3D cloud_shadow_near_1;
-layout(set = 1, binding = 4) uniform sampler3D cloud_shadow_far_0;
-layout(set = 1, binding = 5) uniform sampler3D cloud_shadow_far_1;
-layout(set = 1, binding = 6, std140) uniform EnvironmentBlock {
+#define ENVIRONMENT_SET 1
+#endif
+#endif
+
+layout(set = ENVIRONMENT_SET, binding = 0) uniform sampler2D atmosphere_sky_view;
+#ifndef MATTER_ENVIRONMENT_SAMPLING_TEST
+layout(set = ENVIRONMENT_SET, binding = 1) uniform sampler2D atmosphere_irradiance_sh;
+layout(set = ENVIRONMENT_SET, binding = 2) uniform sampler3D cloud_shadow_near_0;
+layout(set = ENVIRONMENT_SET, binding = 3) uniform sampler3D cloud_shadow_near_1;
+layout(set = ENVIRONMENT_SET, binding = 4) uniform sampler3D cloud_shadow_far_0;
+layout(set = ENVIRONMENT_SET, binding = 5) uniform sampler3D cloud_shadow_far_1;
+layout(set = ENVIRONMENT_SET, binding = 6, std140) uniform EnvironmentBlock {
     mat4 cloud_world_to_uvw[2];
     vec4 cloud_state;
     vec4 cloud_filter;

@@ -38,18 +38,64 @@ pool's `totalObjects`/`freeObjects`).
 ## Build & test
 
 ```bash
-make            # builds the demo/self-test binary ./memorylib
+make            # builds the demo/self-test binary ./build/memorylib
 make test       # ASan+UBSan test suites (C + C++)
 ```
 
 ## Consumers
 
-SpatialQueryLib, SurfaceLib, OpenParticleSurfaceLib, GPURayTraceExample and
-ParticleDynamicsExample compile `src/mem_pool.c` directly via
-`-I../MemoryLib/include` (see their Makefiles). MatterSurfaceLib keeps its
-own vendored copy by design.
+Nothing copies or symlinks these sources — consumers add
+`-I../MemoryLib/include` and compile the `.c` from here, per CLAUDE.md.
+
+- **`mem_pool.c`** — the only in-tree caller is
+  `libs/SpatialQueryLib/src/spatial_hash.c`, so every project that compiles
+  the spatial hash also compiles the pool: `libs/SpatialQueryLib/Makefile`,
+  `MatterEngine3/Makefile` (both the kernel archive and the editor's viewer
+  archive, which is how MatterEditor gets it), `MatterEngine3/tests/Makefile`
+  and `libs/MatterSurfaceLib/tests/Makefile`.
+  `Prototypes/GPURayTraceExample/Makefile` also compiles it, but Prototypes is
+  a frozen snapshot excluded from `build-all.sh`.
+- **`mem_arena.c`** — `libs/AssetStoreLib` uses the arena in its public API
+  (`ReadBatch` lands blobs in a caller's arena) and compiles it in
+  `tests/Makefile`. `libasset_store.a` deliberately does not contain the
+  arena's object, so a consumer that already compiles `mem_arena.c` cannot get
+  duplicate symbols.
+- **`mem_array.c` / `memory.hpp`** — no consumers outside MemoryLib's own
+  tests yet; they are here as the blessed idiom for new code.
 
 ## History
 
 Formerly `ObjectAllocatorLib` (fixed-size pool only). Renamed 2026-07-08 when
 arena/array/stats were added; `git log --follow` traces the old history.
+
+## Fixed backing banks (`mem_bank.h`)
+
+`MemBank` reserves its backing storage and bounded lease metadata at creation.
+Acquisition rounds bytes up to the configured power-of-two quantum and returns
+an aligned, generation-checked range. Capacity must be a multiple of that
+quantum. Release returns the range for reuse; adjacent free space is implicitly
+coalesced. Neither operation allocates or frees backing storage or metadata.
+Exhaustion or fragmentation fails admission; the bank never grows. Destroying a
+bank with live leases fails and leaves it intact.
+
+Owned CPU storage is aligned and zero-touched at initialization. External
+storage is borrowed; external mode with a null pointer manages offsets only,
+for callers owning GPU buffers. GPU fencing and resource lifetime remain the
+caller's responsibility. The C API is thread-confined; AssetStoreLib's shared
+`PageBank` wrapper synchronizes cross-thread lease retirement.
+
+The current implementation keeps a bounded sorted array of live ranges:
+first-fit search and insertion/release are O(live leases), without a metadata
+allocation per base quantum. This supports tiny compatibility quanta without
+large bitmaps. Size-class free lists are a possible later optimization if
+measured contention or range-search cost warrants them.
+
+`mem_bank_stats` exposes committed capacity, occupied/requested bytes, largest
+free range, active/peak leases, failures and backing allocation count. Payload
+padding is `occupied - requested`; free space can be fragmented. These figures
+exclude allocator metadata and alignment slack.
+
+The MemoryLib test target checks alignment, exhaustion, fragmentation, stale
+leases and reuse. On Linux it also runs 100,000 randomized operations with
+linker-wrapped libc allocation functions, asserting zero calls during bank
+acquisition/release and no overlapping live ranges.

@@ -33,6 +33,8 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
+
+#include "matter/compiler.h"
 #include <mutex>
 #include <string>
 #include <vector>
@@ -130,16 +132,13 @@ inline void remove_sink(Sink fn, void* user = nullptr) {
 // Core emit. Formats the message, tees to stderr (unless compiled out), and
 // fans out to every registered sink. Callers use the MATTER_LOG* macros below
 // rather than calling this directly, so severity gating happens at compile time.
+// gnu_printf, not printf: on MinGW the plain `printf` archetype maps to the
+// MSVCRT format checker, which rejects %zu/%llu/%lld and would fire -Wformat
+// (a hard error under the smoke build's -Werror) on migrated calls. The
+// compiler boundary keeps that checking on GNU-family compilers and makes the
+// declaration portable to MSVC.
 inline void write(Level level, const char* tag, const char* fmt, ...)
-#if defined(__GNUC__)
-    // gnu_printf, not printf: on MinGW the plain `printf` archetype maps to the
-    // MSVCRT format checker, which rejects %zu/%llu/%lld and would fire -Wformat
-    // (a hard error under the smoke build's -Werror) on migrated calls. The
-    // codebase compiles with MinGW-ANSI stdio, whose own printf decls use
-    // gnu_printf -- matching that keeps our checking identical to theirs.
-    __attribute__((format(gnu_printf, 3, 4)))
-#endif
-    ;
+    MATTER_PRINTF_FORMAT(3, 4);
 
 inline void write(Level level, const char* tag, const char* fmt, ...) {
     char stackbuf[1024];

@@ -1,11 +1,21 @@
 #pragma once
 
+// MatterEditor/src/animation_panel.h
+//
 // Part Workbench animation tabs — ImGui drawing over AnimationPanelModel.
 //
 // All presentation logic lives in animation_panel_model.{h,cpp}, which has no
 // ImGui dependency and is covered by tests/test_animation_panel_model.cpp. This
 // file is deliberately thin: it renders the model's rows and forwards the one
 // interactive affordance (a target gizmo edit) to the caller.
+//
+// Host: BakeLab owns the AnimationPanelModel (`animation_model_` in
+// MatterEditor/src/bake_lab.h) and calls draw_animation_panel from its
+// Animation tab. The host must have refreshed the model for this frame before
+// drawing -- nothing here queries the engine.
+//
+// Render thread only: every entry point is an ImGui call, valid only between
+// ImGui::NewFrame and ImGui::Render.
 
 #include "animation_panel_model.h"
 #include "animation_debug_overlay.h"
@@ -28,12 +38,19 @@ struct AnimationTargetWriter {
                        const matter::AnimationTransform& desired)> set_transform;
     std::function<bool(matter::AnimatorInstanceHandle, const char* target_name)> snap;
 
+    // True when a write path is wired up. Tests set_transform only: a writer
+    // carrying `snap` but no `set_transform` counts as unbound, and the panel
+    // renders the Gizmo column as read-only.
     bool bound() const { return static_cast<bool>(set_transform); }
 };
 
 // Draws the six observational tabs: Rig, Skin, Clips, Graph, Targets, Render.
 // `overlay` is the same options struct the viewport overlay draws with, so the
 // Render tab can toggle visualization without a second source of truth.
+// `model` is mutated: the panel records the active tab and the selected
+// instance on it. `writer` may be left default-constructed, in which case the
+// Targets tab is read-only. Only the status banner and the bake diagnostics are
+// drawn unless the model's status is Ready.
 void draw_animation_panel(AnimationPanelModel& model,
                           AnimationDebugOverlayOptions& overlay,
                           const AnimationTargetWriter& writer = {});

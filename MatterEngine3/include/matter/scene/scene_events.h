@@ -26,6 +26,29 @@
 // deltas") because tracker flush and model update are both app-thread-affine;
 // sequence values therefore cannot be skipped by a queue policy. E5b only
 // defines and publishes the events — no editor consumer yet.
+// ---------------------------------------------------------------------------
+// Using these events
+// ---------------------------------------------------------------------------
+// Payload structs only — no behavior. MT_EVENT_NAME
+// (matter/event/event_name.h) declares the dotted registry/trace name and a
+// stable per-type id. Emit and subscribe through the per-session evt::Hub
+// (matter/event/event_hub.h); must_subscribe is [[nodiscard]] and returns a
+// Subscription that owns the registration (matter/event/subscription.h).
+//
+// A row is a scene::SceneRecord (matter/scene.h): id, parent_id (zero when the
+// entity is a root), display name, and the list of component names — copied
+// data safe to hold across frames. Internal entities without a SceneEntityId
+// are never exposed, so they never appear in a batch.
+//
+// Cost: Hub::emit takes the event BY VALUE and a queued lane stores its own
+// copied envelope, so routing scene.rows_upserted through a lane deep-copies
+// the whole row vector — every name and component-name string in it — once
+// more per distinct lane. The immediate subscription the sequencing contract
+// above already demands is also the cheap one.
+//
+// `sequence` counts PUBLISHED batches, not ticks: a tick that publishes
+// nothing does not advance it, so consumers must not treat it as a frame
+// counter.
 #pragma once
 #include <cstdint>
 #include <vector>
@@ -51,6 +74,9 @@ struct SceneRowsUpserted {
 // destroyed, so the tracker captures the whole subtree naturally.
 struct SceneRowsRemoved {
     MT_EVENT_NAME("scene.rows_removed");
+    // Shares the tracker's single per-batch counter with
+    // SceneRowsUpserted::sequence; when one tick publishes both, the removal
+    // batch takes the lower value (flush emits removals first).
     uint64_t sequence = 0;
     std::vector<SceneEntityId> ids;     // ids ascending (flush invariant)
 };

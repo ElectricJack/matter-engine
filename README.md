@@ -58,10 +58,17 @@ See [`ROADMAP.md`](./ROADMAP.md) for the design intent behind each project and w
 
 ## Architecture
 
-- **One repo, many independent projects.** Each sub-project has its own `Makefile` and produces its own binary/archive. There's no umbrella build target — `build-all.sh` just walks the list.
+- **One repo, many independently testable projects.** The shipping Windows
+  editor and its complete dependency graph use the root CMake target graph;
+  the per-project Makefiles remain useful on Unix and as a temporary Windows
+  rollback path.
 - **Code sharing** between sub-projects is via `-I../OtherProject/include` in Makefiles, compiling the sibling's sources directly from where they live — never copied, never symlinked (symlinks were tried and abandoned; see `CLAUDE.md`).
 - **Vendored third-party deps** live under `third_party/`: raylib, Dear ImGui, box3d (physics), quickjs-ng (the JS DSL host), autoremesher_core (retopology), ozz-animation, flecs, and Vulkan-Headers.
-- **Windows (MSYS2/UCRT64) is the verified platform** for the editor and kernel library today. `MatterEditor/Makefile` also carries an unverified Linux Vulkan target (written with no Linux machine available to test it); there is no macOS target for the editor. The lower-level `libs/` projects are plain portable C/C++ and build on Linux/macOS/Windows independently.
+- **Windows x64 with Visual Studio 2022 MSVC is the verified editor platform.**
+  Native PowerShell and Ubuntu/WSL agents both drive the same Windows
+  CMake/Ninja/MSVC graph through repository wrappers. The lower-level `libs/`
+  projects remain plain portable C/C++ and build independently on
+  Linux/macOS/Windows.
 
 ## Building & running
 
@@ -82,13 +89,19 @@ MeshChartingLib, MathLib, AssetStoreLib, and MatterEngine3's `run-*` targets
 (script host, bake pipeline, tileset pipeline, event system, and more), plus
 GPU suites when a capable driver is detected.
 
-Per-project builds (see `CLAUDE.md` for the current Windows/MSYS2 toolchain
-incantation, which changes more often than this file does):
+Canonical Windows builds (see `CLAUDE.md` for dependency and worktree details):
 
-```bash
-make -C MatterEngine3        # -> build/libmatter_engine3.a
-make -C MatterEditor windows # -> build/windows/editor.exe
+```powershell
+tools/build-windows.ps1 -Config RelWithDebInfo -Target matter_editor
+tools/build-windows.ps1 -Config RelWithDebInfo -Target matter_dist
+tools/check-windows-msvc-package.ps1 -DistPath MatterEditor/build/dist/world_demo
 ```
+
+From WSL, use
+`./tools/build-windows-from-wsl.sh RelWithDebInfo matter_dist`; it invokes the
+same native Windows compiler rather than cross-compiling with Linux GCC. The
+old `make -C MatterEditor windows` MSYS2/UCRT64 path is rollback-only pending a
+separate removal commit.
 
 ### Prerequisites (Linux/WSL)
 
@@ -103,11 +116,11 @@ not a reference for current engine code.
 
 ## Status
 
-As of the latest commit, `./build-all.sh test` on Windows/MSYS2 exercises the
-full stack described above: every `libs/` project's headless suite, plus
-MatterEngine3's script-host/bake/tileset/event-system `run-*` targets. The
-editor is a Vulkan-only application now — there is no OpenGL renderer or
-raylib window anywhere in `MatterEditor`'s production build.
+The canonical MSVC CTest graph exercises the required Windows CPU suites plus
+Vulkan compatibility, smoke, compositor, shader-rebuild, and editor contract
+gates. `./build-all.sh test` remains the portable/legacy aggregate for the
+independent Make projects. The editor is Vulkan-only — there is no OpenGL
+renderer or raylib window anywhere in its production build.
 
 See [`ROADMAP.md`](./ROADMAP.md) for what's done and what's planned.
 

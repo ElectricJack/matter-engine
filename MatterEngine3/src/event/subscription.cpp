@@ -30,6 +30,10 @@ namespace {
 
 std::atomic<uint32_t> g_next_lane_id{4};
 
+// The out-of-the-box behaviour for a registration/lifetime violation: report on
+// stderr and std::abort(). Tests swap in a recording handler that RETURNS, which
+// is why every fail_fast call site must be written to cope with the call coming
+// back (see the early returns after fail_fast throughout this subsystem).
 void default_fail_fast_handler(const char* what) {
     MATTER_LOGE("evt", "FATAL registration/lifetime error: %s\n", what);
     std::fflush(stderr);
@@ -41,13 +45,24 @@ FailFastHandler g_fail_fast_handler = default_fail_fast_handler;
 
 }  // namespace
 
+// Mints a fresh, process-unique lane id. Thread-safe. Ids start at 4 so a domain
+// lane can never collide with lane::app / legacy_poll / diagnostics. Ids are
+// never recycled, and there is no way to retire a lane.
 lane make_lane() { return lane(g_next_lane_id.fetch_add(1, std::memory_order_relaxed)); }
 
+// Replaces the PROCESS-WIDE fail-fast handler (there is one, not one per hub).
+// Passing an empty handler restores the aborting default rather than disabling
+// the check.
 void set_fail_fast_handler(FailFastHandler handler) {
     std::lock_guard<std::mutex> lk(g_fail_fast_mu);
     g_fail_fast_handler = handler ? std::move(handler) : FailFastHandler(default_fail_fast_handler);
 }
 
+// Reports an unrecoverable registration/lifetime violation. The handler is
+// COPIED under the lock and then invoked with the lock released, so a handler
+// may itself call back into the event system without self-deadlocking. With the
+// default handler this does not return; with a test handler it does, so callers
+// must not treat it as noreturn.
 void fail_fast(const char* what) {
     FailFastHandler h;
     {
@@ -57,6 +72,16 @@ void fail_fast(const char* what) {
     h(what);
 }
 
+// Deactivates every subscription in the set and does not return until no
+// callback of any of them is still executing anywhere. This is the teardown call
+// an object with subscriptions makes before destroying the state its callbacks
+// capture.
+//
+// Calling it from inside one of this set's own callbacks (or from the affected
+// lane's pump mid-dispatch) is fail_fast rather than a deadlock. Phase 2 is a
+// busy-wait with a 50 microsecond sleep, so this blocks the calling thread for as
+// long as the slowest in-flight callback takes. The set is reset afterwards, so
+// a second call is a no-op.
 void SubscriptionSet::unsubscribe_all_and_wait() {
     std::vector<std::shared_ptr<SubscriptionBlock>> blocks;
     {

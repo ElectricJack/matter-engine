@@ -3,13 +3,23 @@
 #include "../src/provider/local_provider.h"
 #include "../src/script/world_definition_loader.h"
 #include "../src/detail_bake_plan.h"
+#include "../src/hydrology/river_geometry.h"
+#include "../src/terrain_river_overlay.h"
 #include "../src/tileset_slot_allocator.h"
+#include "../src/script_host.h"
+#include "../src/render/vt_surface_tape.h"
+#include "../src/render/part_store.h"
+#include "../src/part_flatten.h"
+#ifndef MATTER_WORLD_SOURCE_QUALIFICATION
+#include "embedded_shared_modules.h"
+#endif
 
 extern "C" {
 #include "material_registry.h"
 }
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <filesystem>
@@ -23,10 +33,34 @@ namespace fs = std::filesystem;
 
 namespace {
 
+struct ScopedCacheRootEnv {
+    bool existed = false;
+    std::string previous;
+    explicit ScopedCacheRootEnv(const char* value) {
+        if (const char* old = std::getenv("MATTER_CACHE_ROOT")) {
+            existed = true; previous = old;
+        }
+        set(value);
+    }
+    static void set(const char* value) {
+#ifdef _WIN32
+        _putenv_s("MATTER_CACHE_ROOT", value ? value : "");
+#else
+        if (value) setenv("MATTER_CACHE_ROOT", value, 1);
+        else unsetenv("MATTER_CACHE_ROOT");
+#endif
+    }
+    ~ScopedCacheRootEnv() { set(existed ? previous.c_str() : nullptr); }
+};
+
 struct Fixture {
     fs::path root;
+#ifndef MATTER_WORLD_SOURCE_QUALIFICATION
+    matter::SourceSnapshot::Files files;
+#endif
 
     Fixture() {
+#ifdef MATTER_WORLD_SOURCE_QUALIFICATION
         const auto stamp = std::chrono::high_resolution_clock::now()
                                .time_since_epoch().count();
         root = fs::temp_directory_path() /
@@ -34,18 +68,28 @@ struct Fixture {
         fs::create_directories(root / "objects");
         fs::create_directories(root / "project-shared");
         fs::create_directories(root / "engine-shared");
+#else
+        static std::atomic<unsigned> next_id{0};
+        root = fs::path("/matter-world-definition") / std::to_string(next_id++);
+#endif
     }
 
     ~Fixture() {
+#ifdef MATTER_WORLD_SOURCE_QUALIFICATION
         std::error_code ignored;
         fs::remove_all(root, ignored);
+#endif
     }
 
     fs::path write(const fs::path& relative, const std::string& contents) {
         const fs::path path = root / relative;
+#ifdef MATTER_WORLD_SOURCE_QUALIFICATION
         fs::create_directories(path.parent_path());
         std::ofstream out(path, std::ios::binary);
         out << contents;
+#else
+        files[matter::SourceSnapshot::key(path.string())] = contents;
+#endif
         return path;
     }
 
@@ -55,12 +99,35 @@ struct Fixture {
         result.objects_dir = (root / "objects").string();
         result.project_shared_lib_dir = (root / "project-shared").string();
         result.engine_shared_lib_dir = (root / "engine-shared").string();
+#ifndef MATTER_WORLD_SOURCE_QUALIFICATION
+        result.source_snapshot = std::make_shared<const matter::SourceSnapshot>(files);
+#endif
         result.world_seed = 77;
         result.canonical_params_json = "{\"difficulty\":3}";
         return result;
     }
 };
 
+void test_lexical_project_cache_identity() {
+#ifdef _WIN32
+    const fs::path project("C:/matter-cache-identity/project");
+#else
+    const fs::path project("/matter-cache-identity/project");
+#endif
+    ScopedCacheRootEnv env((project.parent_path() / "external").string().c_str());
+    auto cache = [](const fs::path& path) {
+        return viewer::project_bake_cache_root(path, "Demo", true);
+    };
+    CHECK(cache(project / "unused" / "..") == cache(project),
+          "RAM project aliases share cache identity");
+    CHECK(cache(project / "") == cache(project),
+          "RAM project trailing separator shares cache identity");
+    const auto root = project.root_path();
+    CHECK(cache(root / "unused" / "..") == cache(root),
+          "cache identity normalization preserves the filesystem root");
+}
+
+#ifdef MATTER_WORLD_SOURCE_QUALIFICATION
 void test_project_layout_derives_runtime_paths() {
     Fixture fixture;
     fs::create_directories(fixture.root / "worlds");
@@ -176,6 +243,59 @@ void test_scene_object_shadows_project_object() {
           "an unresolvable module reports empty, not a composed guess");
 }
 
+void test_grouped_scene_and_object_resolution() {
+    Fixture fixture;
+    const auto script = fixture.write("scenes/texturing/bricks/BrickProof/BrickProof.js", "class BrickProof extends World {}\n");
+    const auto local = fixture.write("scenes/texturing/bricks/BrickProof/objects/fixtures/Brick.js", "// local brick");
+    fixture.write("objects/masonry/Brick.js", "// shared brick");
+    const auto rock = fixture.write("objects/terrain/Rock.js", "// shared rock");
+    fixture.write("scenes/.hidden/Hidden/Hidden.js", "// hidden scene");
+    fixture.write("scenes/texturing/bricks/BrickProof/objects/Fake/Fake.js", "// object, not scene");
+    fixture.write("scenes/incomplete/Absent/props.json", "{}");
+    fixture.write("objects/.hidden/Rock.js", "// ignored");
+    const auto scripts = matter::project_layout::scene_scripts(fixture.root / "scenes");
+    CHECK(scripts == std::vector<fs::path>{script}, "discover grouped scenes without descending into scene content or hidden folders");
+    const auto cfg = viewer::LocalProviderConfig::for_project(fixture.root.string(), "BrickProof", "");
+    CHECK(fs::path(cfg.world_path) == script, "bare scene identity resolves through groups");
+    CHECK(fs::path(cfg.scene_dir) == script.parent_path(), "settings stay with the grouped scene");
+    CHECK(fs::path(cfg.cache_root) == (fixture.root / ".cache/BrickProof"), "grouping preserves cache identity");
+    CHECK(fs::path(cfg.resolve_object_path("Brick")) == local, "nested scene-local module shadows shared module");
+    CHECK(fs::path(cfg.resolve_object_path("Rock")) == rock, "grouped shared module resolves");
+    CHECK(matter::project_layout::object_files(fixture.root / "objects").size() == 2, "hidden object folders are skipped");
+
+    script_host::ScriptHost host;
+    part_graph::FileModuleResolver resolver(host, std::vector<std::string>{cfg.scene_objects_dir, cfg.objects_dir});
+    std::string source;
+    CHECK(resolver.load_source("Brick", source) && source == "// local brick", "file resolver respects grouped local precedence");
+    CHECK(fs::path(resolver.source_path_for("Rock")) == rock, "resolver and provider agree on shared paths");
+    part_graph::FileModuleResolver expanded(host, cfg.object_roots());
+    CHECK(expanded.load_source("Brick", source) && source == "// local brick", "already-expanded roots preserve precedence");
+    part_graph::FileModuleResolver shared(host, cfg.objects_dir);
+    CHECK(shared.load_source("Rock", source) && source == "// shared rock", "single-root callers discover groups too");
+
+    const auto another_rock = fixture.write("objects/another/Rock.js", "// ambiguous");
+    matter::project_layout::Diagnostics diag;
+    const auto roots = matter::project_layout::object_roots({cfg.scene_objects_dir, cfg.objects_dir}, &diag);
+    CHECK(diag.duplicates.size() == 1 && diag.duplicates[0].find("Duplicate object 'Rock'") != std::string::npos,
+          "duplicate module names inside a tier are reported");
+    CHECK(!roots.empty(), "duplicate module names do not abort root discovery");
+    CHECK(fs::path(resolver.source_path_for("Rock")) == rock, "the first Rock in sorted order still resolves");
+    part_graph::FileModuleResolver rediscovered(host, std::vector<std::string>{cfg.scene_objects_dir, cfg.objects_dir});
+    CHECK(fs::path(rediscovered.source_path_for("Rock")) == another_rock,
+          "rediscovery picks the first Rock in sorted directory order");
+    fixture.write("scenes/other/BrickProof/BrickProof.js", "// ambiguous");
+    diag = {};
+    const auto deduped = matter::project_layout::scene_scripts(fixture.root / "scenes", &diag);
+    CHECK(diag.duplicates.size() == 1 && diag.duplicates[0].find("Duplicate scene 'BrickProof'") != std::string::npos,
+          "duplicate scene identities are reported");
+    CHECK(deduped == std::vector<fs::path>{fixture.root / "scenes/other/BrickProof/BrickProof.js"},
+          "the first BrickProof in sorted order wins and the loser is not listed");
+    bool threw = false;
+    try { (void)viewer::LocalProviderConfig::for_project(fixture.root.string(), "BrickProof", ""); }
+    catch (const std::exception&) { threw = true; }
+    CHECK(!threw, "a duplicate scene never throws out of for_project");
+}
+
 // Phase 1 (repo-layout-and-cache-consolidation plan) cache-leak fix:
 // LocalProviderConfig::for_project() must never hand back a relative
 // cache_root. Before the fix, cache_root was built by appending
@@ -190,6 +310,71 @@ void test_scene_object_shadows_project_object() {
 // at the moment of each write, not next to the project -- the exact bug
 // behind the stray parts/, imposters/, and libs/MatterSurfaceLib/parts/
 // directories this phase cleans up.
+void test_external_project_cache_root() {
+    Fixture fixture;
+    const fs::path first = fixture.root / "project-a";
+    const fs::path second = fixture.root / "project-b";
+    fs::create_directories(first);
+    fs::create_directories(second);
+    const fs::path base = fixture.root / "external";
+    ScopedCacheRootEnv env(base.string().c_str());
+    auto config = [&](const fs::path &project, const char *world) {
+        return viewer::LocalProviderConfig::for_project(project.string(), world, "");
+    };
+    const auto a = config(first, "Demo"), b = config(second, "Demo"), c = config(first, "Other");
+    CHECK(a.cache_root != b.cache_root, "external cache isolates projects");
+    CHECK(a.cache_root != c.cache_root, "external cache isolates worlds");
+    const fs::path path(a.cache_root);
+    CHECK(path.is_absolute() && path.filename() == "Demo",
+          "external cache is absolute and world scoped");
+    CHECK(path.parent_path().filename().string().size() == 16 &&
+              path.parent_path().parent_path() == fs::weakly_canonical(base) / "projects",
+          "external cache uses stable project digest below selected base");
+    CHECK(config(first / "unused" / "..", "Demo").cache_root == a.cache_root,
+          "lexical project aliases share cache identity");
+    CHECK(a.project_dir == fs::absolute(first).string(),
+          "cache normalization preserves source project path");
+    ScopedCacheRootEnv::set("../relative-external");
+    const auto relative = config(first, "Demo");
+    CHECK(fs::path(relative.cache_root).parent_path().parent_path() ==
+              fs::weakly_canonical(fixture.root / "relative-external") / "projects",
+          "relative external base is anchored to opened project");
+    {
+        struct CwdGuard {
+            fs::path saved = fs::current_path();
+            ~CwdGuard() {
+                std::error_code ignored;
+                fs::current_path(saved, ignored);
+            }
+        } guard;
+        fs::current_path(second);
+        CHECK(config(first, "Demo").cache_root == relative.cache_root,
+              "cwd changes cannot redirect project-relative external cache");
+    }
+    bool rejected = false;
+    try {
+        (void)config(first, "../escape");
+    } catch (const std::invalid_argument &) {
+        rejected = true;
+    }
+    CHECK(rejected, "external world component cannot escape project isolation");
+#ifdef _WIN32
+    ScopedCacheRootEnv::set("C:relative-cache");
+    rejected = false;
+    try { (void)config(first, "Demo"); }
+    catch (const std::invalid_argument&) { rejected = true; }
+    CHECK(rejected, "drive-relative cache base cannot depend on hidden drive cwd");
+#endif
+    for (const char *blank : {"", " \t\r\n"}) {
+        ScopedCacheRootEnv::set(blank);
+        CHECK(config(first, "Demo").cache_root == (first / ".cache" / "Demo").string(),
+              "blank override preserves default project cache");
+    }
+    ScopedCacheRootEnv::set(nullptr);
+    CHECK(config(first, "Demo").cache_root == (first / ".cache" / "Demo").string(),
+          "unset override preserves default project cache");
+}
+
 void test_relative_project_dir_yields_absolute_cache_root() {
     const std::string relative_project = "world_definition_relcache_fixture";
     const fs::path expected_project_abs = fs::absolute(fs::path(relative_project));
@@ -213,6 +398,8 @@ void test_relative_project_dir_yields_absolute_cache_root() {
     CHECK(cfg_from_absolute.cache_root == cfg.cache_root,
           "an already-absolute project_dir produces the identical cache_root");
 }
+
+#endif // MATTER_WORLD_SOURCE_QUALIFICATION
 
 void test_rejects_non_world_base_with_location_and_property() {
     Fixture fixture;
@@ -266,6 +453,7 @@ class FixtureWorld extends World {
     });
   }
 }
+
 )JS");
 
     matter::WorldDefinition definition;
@@ -286,9 +474,26 @@ class FixtureWorld extends World {
               "expand flag extracted");
         CHECK(definition.roots[1].tileset && !definition.roots[1].expand,
               "tileset flag extracted");
+        // roots[1] authors no `transform`, so it keeps the WorldRoot default.
+        // That default is IDENTITY -- a zeroed Mat4f would hand the provider a
+        // degenerate zero-scale placement for every root that omits the field.
+        {
+            const float identity[16] = {1, 0, 0, 0,
+                                        0, 1, 0, 0,
+                                        0, 0, 1, 0,
+                                        0, 0, 0, 1};
+            bool is_identity = true;
+            for (int element = 0; element < 16; ++element)
+                is_identity = is_identity &&
+                    definition.roots[1].transform.m[element] == identity[element];
+            CHECK(is_identity,
+                  "root without an authored transform defaults to identity");
+        }
     }
     CHECK(definition.lights.size() == 1, "one light extracted");
     if (definition.lights.size() == 1) {
+        CHECK(definition.lights[0].kind == matter::WorldLightKind::Point,
+              "legacy World.lights array remains a point-light form");
         CHECK(definition.lights[0].position.x == 1.0f &&
                   definition.lights[0].position.y == 2.0f &&
                   definition.lights[0].position.z == 3.0f,
@@ -314,6 +519,178 @@ class FixtureWorld extends World {
                   "{\"SeedProbe\":{\"difficulty\":3,\"seed\":77}}",
               "seed and canonical parameters are explicit build bindings");
     }
+}
+
+void test_local_light_object_forms_and_runtime_publication() {
+    Fixture fixture;
+    const fs::path path = fixture.write("LocalLights.js", R"JS(
+class LocalLights extends World {
+  static roots = [{ module: 'Root' }];
+  static lights = {
+    points: [
+      { position: [-8, 2, 4], color: [1, 0.5, 0.25], intensity: 12,
+        range: 9, sourceRadius: 0.15, castsShadow: true },
+      { pos: [16, 3, -2] },
+    ],
+    spots: [
+      { pos: [1, 5, 2], dir: [0, -4, 0], color: [0.25, 0.5, 1],
+        intensity: 20, range: 18, sourceRadius: 0.25,
+        castsShadow: false, inner: 15, outer: 32 },
+    ],
+  };
+}
+)JS");
+
+    matter::WorldDefinition definition;
+    matter::WorldLoadError error;
+    CHECK(matter::load_world_definition(fixture.desc(path), definition, error),
+          error.message.c_str());
+    CHECK(definition.lights.size() == 3u,
+          "object points and spots share one deterministic ordered list");
+    if (definition.lights.size() != 3u) return;
+    CHECK(definition.lights[0].kind == matter::WorldLightKind::Point &&
+              definition.lights[1].kind == matter::WorldLightKind::Point &&
+              definition.lights[2].kind == matter::WorldLightKind::Spot,
+          "object points precede spots independent of object property order");
+    CHECK(definition.lights[0].source_radius == 0.15f &&
+              definition.lights[0].casts_shadow,
+          "point sourceRadius and castsShadow survive authoring");
+    CHECK(definition.lights[1].color.x == 1.0f &&
+              definition.lights[1].intensity == 1.0f &&
+              definition.lights[1].range == 10.0f,
+          "object points retain legacy defaults and accept pos alias");
+
+    const viewer::ProviderWorldDefinition adapted =
+        viewer::adapt_world_definition(definition);
+    CHECK(adapted.lights.local.records.size() == 3u,
+          "resolved local records reach the provider publication");
+    CHECK(adapted.lights.local.revision != 0u &&
+              !adapted.lights.local.index.cells.empty(),
+          "provider publishes a versioned spatial index");
+    if (adapted.lights.local.records.size() == 3u) {
+        const auto& point = adapted.lights.local.records[0];
+        const auto& spot = adapted.lights.local.records[2];
+        CHECK(point.color[0] == 12.0f && point.range == 9.0f &&
+                  point.source_radius == 0.15f &&
+                  point.flags == world_lights::kLocalLightCastsShadow,
+              "point record folds intensity and packs radius/flags");
+        CHECK(spot.kind == static_cast<std::uint32_t>(
+                               world_lights::LocalLightKind::Spot) &&
+                  spot.direction[0] == 0.0f && spot.direction[1] == -1.0f &&
+                  spot.direction[2] == 0.0f &&
+                  spot.cos_inner > spot.cos_outer,
+              "spot record normalizes direction and resolves cone cosines");
+    }
+}
+
+void test_local_light_validation_rejects_invalid_values() {
+    const auto rejects = [](const char* name, const std::string& lights,
+                            const char* expected_path) {
+        Fixture fixture;
+        const fs::path path = fixture.write(
+            name, "class InvalidLight extends World { static lights = " +
+                      lights + "; }\n");
+        matter::WorldDefinition definition;
+        matter::WorldLoadError error;
+        CHECK(!matter::load_world_definition(fixture.desc(path), definition,
+                                             error),
+              "invalid local light authoring is rejected");
+        CHECK(error.property_path.find(expected_path) != std::string::npos,
+              "local light error identifies the authored list entry");
+    };
+
+    rejects("NonFinitePosition.js",
+            "{ points: [{ position: [0, 0/0, 0] }] }", "lights.points[0]");
+    rejects("ZeroRange.js",
+            "[{ position: [0, 0, 0], range: 0 }]", "lights[0]");
+    rejects("NegativeIntensity.js",
+            "{ points: [{ position: [0, 0, 0], intensity: -1 }] }",
+            "lights.points[0]");
+    rejects("NegativeRadius.js",
+            "{ points: [{ position: [0, 0, 0], sourceRadius: -0.1 }] }",
+            "lights.points[0]");
+    rejects("NonBooleanShadow.js",
+            "{ points: [{ position: [0, 0, 0], castsShadow: 1 }] }",
+            "lights.points[0]");
+    rejects("ZeroSpotDirection.js",
+            "{ spots: [{ position: [0, 0, 0], direction: [0, 0, 0] }] }",
+            "lights.spots[0]");
+    rejects("UnorderedCone.js",
+            "{ spots: [{ position: [0, 0, 0], direction: [0, -1, 0], inner: 50, outer: 20 }] }",
+            "lights.spots[0]");
+    rejects("InvalidCone.js",
+            "{ spots: [{ position: [0, 0, 0], direction: [0, -1, 0], inner: 10, outer: 181 }] }",
+            "lights.spots[0]");
+}
+
+void test_world_loader_preserves_root_fluid_colliders() {
+    Fixture fixture;
+    const fs::path path = fixture.write("FluidColliderRoots.js", R"JS(
+class FluidColliderRoots extends World {
+  static roots = [{
+    id: "upper-midstream-rock",
+    module: "Rock",
+    params: { seed: 41, size: 3.2, detail: 1.0 },
+    transform: [1,0,0,52, 0,1,0,24, 0,0,1,-3, 0,0,0,1],
+    fluidCollider: { shape: "sphere", radius: 2.4, center: [0, 1.2, 0] },
+  }];
+}
+)JS");
+    matter::WorldDefinition definition{};
+    matter::WorldLoadError error{};
+    CHECK(matter::load_world_definition(fixture.desc(path), definition, error),
+          error.message.c_str());
+    CHECK(definition.roots.size() == 1u,
+          "a collider-bearing rendered root is not duplicated");
+    if (definition.roots.size() != 1u) return;
+    CHECK(definition.roots[0].id == "upper-midstream-rock",
+          "fluid collider roots preserve their stable DSL id");
+    CHECK(definition.roots[0].fluid_collider.shape ==
+              matter::WorldFluidColliderShape::Sphere &&
+              definition.roots[0].fluid_collider.radius_m == 2.4f &&
+              definition.roots[0].fluid_collider.center_m.y == 1.2f,
+          "root collider shape, dimensions, and local center survive world loading");
+    const viewer::ProviderWorldDefinition adapted =
+        viewer::adapt_world_definition(definition);
+    CHECK(adapted.roots.size() == 1u && adapted.fluid_colliders.size() == 1u &&
+              adapted.fluid_colliders[0].id == "upper-midstream-rock" &&
+              adapted.fluid_colliders[0].object_to_world.m[3] == 52.0f,
+          "provider adaptation retains one collider beside one rendered root");
+}
+
+void test_world_loader_rejects_invalid_root_fluid_colliders() {
+    Fixture fixture;
+    const auto rejects = [&](const char* name, const char* root,
+                             const char* expected_path) {
+        const fs::path path = fixture.write(
+            name, std::string("class Reject extends World { static roots=[") +
+                      root + "]; }\n");
+        matter::WorldDefinition definition{};
+        matter::WorldLoadError error{};
+        CHECK(!matter::load_world_definition(fixture.desc(path), definition,
+                                             error),
+              name);
+        CHECK(error.property_path == expected_path, expected_path);
+    };
+    rejects("MissingColliderId.js",
+            "{module:'Rock',fluidCollider:{shape:'sphere',radius:2}}",
+            "roots[0].id");
+    rejects("UnknownColliderShape.js",
+            "{id:'rock',module:'Rock',fluidCollider:{shape:'capsule',radius:2}}",
+            "roots[0].fluidCollider.shape");
+    rejects("BadSphereRadius.js",
+            "{id:'rock',module:'Rock',fluidCollider:{shape:'sphere',radius:0}}",
+            "roots[0].fluidCollider.radius");
+    rejects("BadColliderCenter.js",
+            "{id:'rock',module:'Rock',fluidCollider:{shape:'sphere',radius:1,center:[0,1]}}",
+            "roots[0].fluidCollider.center");
+    rejects("ShearedCollider.js",
+            "{id:'rock',module:'Rock',transform:[1,.5,0,0,0,1,0,0,0,0,1,0,0,0,0,1],fluidCollider:{shape:'box',halfExtents:[1,1,1]}}",
+            "roots[0].transform");
+    rejects("DuplicateColliderId.js",
+            "{id:'same',module:'Rock',fluidCollider:{shape:'sphere',radius:1}},"
+            "{id:'same',module:'Rock',fluidCollider:{shape:'sphere',radius:1}}",
+            "roots[1].id");
 }
 
 void test_engine_shared_fallback_and_no_entity_world() {
@@ -384,28 +761,360 @@ bool nearly_equal(float a, float b) {
 //
 // The loader gets its OWN JS context with its OWN prelude -- separate from
 // part_base.js.h and world_base.js.h -- and this is the only gate on it.
+void test_surface_receiver_authoring() {
+    Fixture fixture;
+    for(const auto* value:{"'ContactReceiver'","[7]","['']","['R','R']",
+                           "Array.from({length:65},(_,i)=>'R'+i)"}) {
+        const auto path=fixture.write("Receiver.js",std::string("class Receiver extends World { static streaming={surfaceReceivers:")+
+            value+"}; }");
+        matter::WorldDefinition definition;matter::WorldLoadError error;
+        CHECK(!matter::load_world_definition(fixture.desc(path),definition,error),
+              "world receiver selection: malformed or ambiguous module lists fail closed");
+    }
+    const auto path=fixture.write("Receiver.js","class Receiver extends World {static streaming={surfaceReceivers:['Rock','Wall']};}");
+    matter::WorldDefinition definition;matter::WorldLoadError error;
+    CHECK(matter::load_world_definition(fixture.desc(path),definition,error) &&
+          definition.settings.surface_receiver_modules.size()==2,
+          "world receiver selection: explicit modules survive native world loading");
+}
+
+#ifdef MATTER_WORLD_SOURCE_QUALIFICATION
+void test_surface_contact_material() {
+    const fs::path project = "../../projects/world_demo";
+    const fs::path path = project / "scenes/texturing/terrain/SurfaceContactProof/SurfaceContactProof.js";
+    matter::WorldLoadDesc desc;
+    desc.world_path=path.string(); desc.objects_dir=(project/"objects").string();
+    desc.project_shared_lib_dir=(project/"shared-lib").string(); desc.engine_shared_lib_dir="../shared-lib";
+    matter::WorldDefinition definition; matter::WorldLoadError load_error;
+    const bool loaded=matter::load_world_definition(desc,definition,load_error);
+    CHECK(loaded,load_error.message.c_str()); if(!loaded) return;
+    CHECK(definition.settings.terrain_texels_per_meter==128,
+          "contact proof: explicit bounded terrain review density is loaded");
+    CHECK(definition.settings.surface_receiver_modules==std::vector<std::string>{"ContactReceiver"},
+          "contact proof: placed receivers explicitly opt into the world source");
+    CHECK(definition.roots.empty() && tileset::plan_detail_bakes({},definition.materials).empty(),
+          "contact proof: streaming places sector children without root atlas or settling jobs");
+    std::ifstream input(path);std::string source((std::istreambuf_iterator<char>(input)),{});
+    script_host::ScriptHost host;
+    host.set_shared_lib_roots({desc.project_shared_lib_dir,desc.engine_shared_lib_dir});
+    std::ifstream sector_file(path.parent_path()/"objects/WorldSector.js");
+    const std::string sector((std::istreambuf_iterator<char>(sector_file)),{});
+    const auto children=host.eval_requires(sector,"{}");
+    CHECK(children.size()==4,"contact proof: sector installs the four distinct receiver variants");
+    const auto enabled=host.eval_world(source,"{}");
+    const auto call=source.find("surfaceContact(s)");
+    CHECK(call!=std::string::npos,"contact proof: explicit layered recipe");if(call==std::string::npos)return;
+    source.replace(call,std::strlen("surfaceContact(s)"),"surfaceContact(s, false)");
+    const auto disabled=host.eval_world(source,"{}");
+    CHECK(enabled.ok && disabled.ok,"contact proof: native JS authors layered and base-only recipes");
+    if(!enabled.ok || !disabled.ok)return;
+    terrain_field::SurfaceProgram layer_program,base_program;std::string error;
+    const bool parsed=terrain_field::SurfaceProgram::parse(enabled.surface_program,layer_program,error) &&
+                      terrain_field::SurfaceProgram::parse(disabled.surface_program,base_program,error);
+    CHECK(parsed,error.c_str());if(!parsed)return;
+    vt::VtSurfaceTapePack packed;
+    CHECK(vt::vt_pack_surface_tape(layer_program,true,packed),"contact proof: actual GPU budget fits");
+    terrain_field::SurfaceRuntime layers(layer_program),base(base_program);
+    const float identity[]={1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1};
+    terrain_field::SurfaceWorldContext world;world.local_to_world=identity;
+    const float n[]={0,1,0};float largest_deposit=0,smallest=1,largest=-1;
+    for(uint32_t id:{16u,11u,9u,17u}) for(int i=0;i<96;++i) {
+        const float p[]={6.f+(i%12)*.33f,.1f+(i/12)*.085f,8.5f};
+        terrain_field::SurfaceSourceSample a,b;
+        CHECK(layers.source_at(p,n,&world,.005f,a,id) && base.source_at(p,n,&world,.005f,b,id),
+              "contact proof: material evaluates on original receiver");
+        CHECK(a.height_m>=layer_program.source.height_min && a.height_m<=layer_program.source.height_max,
+              "contact proof: composed metre displacement stays inside declared POM bounds");
+        if(id==17) {
+            CHECK(a.height_m==b.height_m && std::equal(a.albedo,a.albedo+3,b.albedo) && std::equal(a.orm,a.orm+3,b.orm),
+                  "contact proof: overlapping excluded receiver receives no channel changes");
+        } else {
+            CHECK(a.height_m>=b.height_m-1e-7f,"contact proof: dirt and moss are positive deposits");
+            largest_deposit=std::max(largest_deposit,a.height_m-b.height_m);
+        }
+        smallest=std::min(smallest,a.height_m);largest=std::max(largest,a.height_m);
+        for(const auto& outside:std::vector<std::array<float,3>>{{8,.12f,5},{8,2.4f,8.5f},{12,.12f,8.5f}}) {
+            layers.source_at(outside.data(),n,&world,.005f,a,id);base.source_at(outside.data(),n,&world,.005f,b,id);
+            CHECK(a.height_m==b.height_m && std::equal(a.albedo,a.albedo+3,b.albedo) && std::equal(a.orm,a.orm+3,b.orm),
+                  "contact proof: projection depth, height and lateral bounds prevent leakage");
+        }
+    }
+    CHECK(largest_deposit>.001f && largest-smallest>.008f,
+          "contact proof: retained substrate relief and measurable moss/dirt POM thickness");
+    const float translated[]={1,0,0,8,0,1,0,0,0,0,1,8,0,0,0,1};
+    auto neighbor=world;neighbor.local_to_world=translated;
+    const float global[]={8,.15f,8.5f},local[]={0,.15f,.5f};
+    for(uint32_t id:{16u,11u,9u}) {
+        terrain_field::SurfaceSourceSample a,b;
+        layers.source_at(global,n,&world,.005f,a,id);layers.source_at(local,n,&neighbor,.005f,b,id);
+        CHECK(a.height_m==b.height_m && std::equal(a.albedo,a.albedo+3,b.albedo) && std::equal(a.orm,a.orm+3,b.orm),
+              "contact proof: translated objects evaluate identical world fields");
+    }
+    std::printf("CONTACT_MATERIAL gpu_ops=%zu height=[%.6f,%.6f] max_deposit_m=%.6f\n",
+                packed.ops.size(),smallest,largest,largest_deposit);
+}
+
+void test_mountain_rock_catalog() {
+    const fs::path project="../../projects/world_demo";
+    const auto read=[](const fs::path& p) {std::ifstream f(p);return std::string(std::istreambuf_iterator<char>(f),{});};
+    const auto source=read(project/"objects/terrain/MountainRock.js");
+    const auto sector=read(project/"scenes/streaming/StreamMountain/objects/WorldSector.js");
+    CHECK(!source.empty()&&!sector.empty(),"mountain rock sources exist");
+    if(source.empty()||sector.empty())return;
+    script_host::ScriptHost host;host.set_shared_lib_roots({(project/"shared-lib").string(),"../shared-lib"});
+    auto requires_a=host.eval_requires(sector,"{\"tx\":-2,\"tz\":3,\"sectorSize\":64}");
+    auto requires_b=host.eval_requires(sector,"{\"tx\":8,\"tz\":-4,\"sectorSize\":256}");
+    CHECK(requires_a.size()==52 && requires_b.size()==52,"mountain uses forty-eight rock prototypes and four evergreen assemblies");
+    std::set<std::string> variants;
+    for(size_t i=0;i<requires_a.size()&&i<requires_b.size();++i) {
+        CHECK(requires_a[i].module_specifier==requires_b[i].module_specifier &&
+              requires_a[i].params_json==requires_b[i].params_json,"rock catalog independent of streaming tile identity");
+        if(requires_a[i].module_specifier=="MountainRock")variants.insert(requires_a[i].params_json);
+    }
+    CHECK(variants.size()==48,"twelve native silhouettes in four physical size classes");
+    Fixture fixture;script_host::BakeOptions opts;opts.retain_geometry=true;
+    opts.parts_dir=(fixture.root/"parts").string();fs::create_directories(opts.parts_dir);
+    part_graph::HostBaker ladder_baker(host,opts.parts_dir);
+    size_t triangle_count=0;
+    double bake_ms=0,chart_stage_ms=0;
+    for(const auto& params:variants) {
+        const auto values=part_graph::params_from_json(params);
+        const float reference=float(values.at("referenceSizeM").num);
+        const auto started=std::chrono::steady_clock::now();
+        const auto baked=host.bake_source(source,params,opts);
+        bake_ms+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-started).count();
+        CHECK(baked.error.ok,baked.error.message.c_str());
+        CHECK(baked.geometry&&baked.geometry->blas,"rock native bake retains render/collision geometry");
+        if(!baked.geometry||!baked.geometry->blas)continue;
+        CHECK(baked.geometry->render_policy.vt_texels_per_meter==192,
+              "mountain rocks carry production density without a renderer override");
+        std::vector<Tri> triangles;baked.geometry->blas->generate_triangle_data(triangles);
+        CHECK(triangles.size()>=100&&triangles.size()<400,"native rock geometry stays within its silhouette budget");
+        double volume=0;
+        for(const auto& tri:triangles) {
+            for(const auto& p:{tri.vertex0,tri.vertex1,tri.vertex2})
+                CHECK(std::isfinite(p.x)&&std::isfinite(p.y)&&std::isfinite(p.z)&&p.y>=-.00001f&&
+                      p.x*p.x+p.y*p.y+p.z*p.z<2.25f*reference*reference,"native rock preserves its ground datum and conservative clearance");
+            const auto& a=tri.vertex0;const auto& b=tri.vertex1;const auto& c=tri.vertex2;
+            volume+=(a.x*(b.y*c.z-b.z*c.y)+a.y*(b.z*c.x-b.x*c.z)+a.z*(b.x*c.y-b.y*c.x))/6.;
+        }
+        CHECK(volume/std::pow(reference,3)>.08&&volume/std::pow(reference,3)<2.,"native rock has outward solid volume");
+        triangle_count+=triangles.size();
+        {
+            viewer::PartStore store(opts.parts_dir);
+            const auto stage_started=std::chrono::steady_clock::now();
+            auto staged=store.stage_from_bake(baked.resolved_hash,*baked.geometry);
+            chart_stage_ms+=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-stage_started).count();
+            CHECK(staged.ok && !staged.lp.lod_charts.empty() && !staged.lp.lod_charts[0].charts.empty(),
+                  "physical rock classes produce nonempty VT charts");
+            float minimum=192,maximum=0;
+            if(!staged.lp.lod_charts.empty())for(const auto& chart:staged.lp.lod_charts[0].charts) {
+                minimum=std::min(minimum,chart.texels_per_meter);maximum=std::max(maximum,chart.texels_per_meter);
+            }
+            CHECK(minimum>=128 && maximum<=192,"all physical rock classes retain useful finest chart density");
+            std::printf("MOUNTAIN_ROCK_DENSITY shape=%.0f seed=%.0f reference_m=%.1f finest_tpm=[%.3f,%.3f]\n",
+                        values.at("shape").num,values.at("seed").num,reference,minimum,maximum);
+        }
+        if(values.at("seed").num==0) {
+            CHECK(ladder_baker.bake_static_lods(source,values,{},{},{},baked.resolved_hash),
+                  "rock derives its authored ladder from the detailed bake");
+            part_asset::StaticLodPlan plan;
+            CHECK(part_asset::load_static_lod_plan(opts.parts_dir+"/"+
+                  part_asset::cache_path_static_lods(baked.resolved_hash),baked.resolved_hash,plan) &&
+                  plan.level_hashes.size()==3 &&
+                  std::all_of(plan.level_hashes.begin(),plan.level_hashes.end(),
+                    [&](uint64_t hash){return hash==baked.resolved_hash;}),
+                  "rock ladder reuses one detailed geometry source instead of rebuilding budget variants");
+            const auto started=std::chrono::steady_clock::now();
+            const auto flat=part_flatten::flatten_part(opts.parts_dir,baked.resolved_hash);
+            CHECK(flat.ok,flat.error.c_str());
+            viewer::PartStore store(opts.parts_dir);
+            // Streamed asset installation loads the flattened artifact here;
+            // stage_load is the compositional/terrain worker path and would
+            // synthesize its own ratio ladder instead of reading this plan.
+            const auto* loaded=store.get_or_load(baked.resolved_hash);
+            CHECK(loaded && loaded->lod_blas.size()==3 && loaded->lod_mesh_data.size()>=3 &&
+                  loaded->lod_charts.size()==3,"rock loads three real mesh representations");
+            if(loaded && loaded->lod_mesh_data.size()>=3 && loaded->lod_charts.size()==3) {
+                size_t counts[3]{};
+                for(unsigned i=0;i<3;++i)counts[i]=loaded->lod_mesh_data[i].indices.size()/3;
+                CHECK(counts[0]==triangles.size() && counts[1]<counts[0] && counts[2]<counts[1] && counts[2]>0,
+                      "rock preserves the detailed silhouette and reduces triangles in both distant representations");
+                // Production currently charts each mesh representation.
+                // MATTER_VT_UNIFY remains an experimental engine-wide opt-in;
+                // this asset does not silently enable it or assume page reuse.
+                for(const auto& atlas:loaded->lod_charts)
+                    CHECK(!atlas.charts.empty() &&
+                          std::all_of(atlas.charts.begin(),atlas.charts.end(),
+                            [](const auto& chart){return chart.texels_per_meter>=128;}),
+                          "every rock representation retains a valid material atlas at useful density");
+                std::printf("MOUNTAIN_ROCK_LOD shape=%.0f reference_m=%.1f triangles=%zu,%zu,%zu stage_ms=%.3f\n",
+                    values.at("shape").num,reference,counts[0],counts[1],counts[2],
+                    std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-started).count());
+            }
+        }
+    }
+    std::printf("MOUNTAIN_ROCKS prototypes=%zu triangles=%zu bake_ms=%.3f chart_stage_ms=%.3f\n",
+        variants.size(),triangle_count,bake_ms,chart_stage_ms);
+    std::set<uint64_t> materials;
+    std::map<int,std::vector<float>> metric_heights;
+    for(const auto& params:variants) {
+        script_host::EvaluatedDirectSurface direct;script_host::EvaluatedFiniteSurface finite;
+        script_host::BakeError error;
+        const bool ok=host.evaluate_part_surface(source,params,direct,finite,error);
+        CHECK(ok,error.message.c_str());if(!ok)continue;
+        CHECK(direct.present && !finite.present,"rock owns a direct local source without finite geometry preparation");
+        terrain_field::SurfaceProgram program;std::string why;vt::VtSurfaceTapePack packed;
+        const bool parsed=terrain_field::SurfaceProgram::parse(direct.program,program,why);
+        CHECK(parsed,why.c_str());if(!parsed)continue;
+        CHECK(vt::vt_pack_surface_tape(program,false,packed),packed.err.c_str());
+        terrain_field::SurfaceRuntime runtime(program);
+        const auto values=part_graph::params_from_json(params);
+        const int silhouette=int(values.at("shape").num)*4+int(values.at("seed").num);
+        auto& reference_heights=metric_heights[silhouette];
+        const bool first_size=reference_heights.empty();
+        float lo=1,hi=-1,rendered_lo=1,rendered_hi=-1;
+        for(int i=0;i<128;++i) {
+            const float p[]={float(i%13)*.09f-.5f,float(i%11)*.08f,float(i%17)*.07f-.5f};
+            const float n[]={0,1,0};terrain_field::SurfaceSourceSample near,far,rendered;
+            CHECK(runtime.source_at(p,n,nullptr,.002f,near) && runtime.source_at(p,n,nullptr,.2f,far) &&
+                  runtime.source_at(p,n,nullptr,.0065f,rendered),
+                  "rock evaluates in local coordinates without world context");
+            for(float c:near.albedo)CHECK(std::isfinite(c)&&c>=0&&c<=1,"bounded mineral pigment");
+            CHECK(near.height_m>=program.source.height_min && near.height_m<=program.source.height_max,
+                  "rock relief stays inside declared physical envelope");
+            if(first_size)reference_heights.push_back(near.height_m);
+            else CHECK(near.height_m==reference_heights[size_t(i)],
+                       "physical grain and POM height are identical across size classes at the same metre coordinate");
+            CHECK(std::abs(far.height_m+.004f)<1e-7f,"unresolved rock microrelief filters to a stable datum");
+            lo=std::min(lo,near.height_m);hi=std::max(hi,near.height_m);
+            rendered_lo=std::min(rendered_lo,rendered.height_m);rendered_hi=std::max(rendered_hi,rendered.height_m);
+        }
+        CHECK(rendered_hi-rendered_lo>.003f,"rock erosion retains millimetre relief at production texel footprints");
+        materials.insert(direct.program_hash);
+        std::printf("MOUNTAIN_ROCK_MATERIAL ops=%zu height=[%.6f,%.6f] production_height=[%.6f,%.6f]\n",
+                    packed.ops.size(),lo,hi,rendered_lo,rendered_hi);
+    }
+    CHECK(materials.size()==48,"each physical prototype has a stable distinct mineral recipe");
+}
+
+void test_stream_mountain_direct_material() {
+    const fs::path project = "../../projects/world_demo";
+    const fs::path path = project / "scenes/streaming/StreamMountain/StreamMountain.js";
+    matter::WorldLoadDesc desc;
+    desc.world_path = path.string(); desc.objects_dir = (project / "objects").string();
+    desc.project_shared_lib_dir = (project / "shared-lib").string(); desc.engine_shared_lib_dir = "../shared-lib";
+    matter::WorldDefinition definition; matter::WorldLoadError load_error;
+    const bool loaded = matter::load_world_definition(desc, definition, load_error);
+    CHECK(loaded, load_error.message.c_str()); if (!loaded) return;
+    CHECK(definition.settings.terrain_texels_per_meter == 128,
+          "StreamMountain requests 128 texels/m for near terrain");
+    const auto plan = tileset::plan_detail_bakes({}, definition.materials);
+    std::set<std::string> detail_modules;
+    for (const auto& request : plan) detail_modules.insert(request.module);
+    CHECK(definition.roots.empty() && detail_modules == std::set<std::string>({
+          "ConiferBarkDetail", "ConiferBranchDetail", "RedwoodBarkDetail"}),
+          "StreamMountain: terrain requests no source atlas/settle; forest bark stays available");
+    std::ifstream input(path); std::string source((std::istreambuf_iterator<char>(input)), {});
+    script_host::ScriptHost host;
+    host.set_shared_lib_roots({desc.project_shared_lib_dir, desc.engine_shared_lib_dir});
+    const auto evaluated = host.eval_world(source, "{}");
+    CHECK(evaluated.ok, evaluated.message.c_str()); if (!evaluated.ok) return;
+    terrain_field::SurfaceProgram program; std::string error;
+    const bool parsed = terrain_field::SurfaceProgram::parse(evaluated.surface_program, program, error);
+    CHECK(parsed, error.c_str()); if (!parsed) return;
+    vt::VtSurfaceTapePack packed;
+    CHECK(program.source.version == 2 && vt::vt_pack_surface_tape(program, true, packed),
+          "StreamMountain: authored direct source fits the real GPU op/register budgets");
+    unsigned cellular_searches=0,cellular_reuses=0;
+    for(const auto& op:packed.ops) {
+        cellular_searches+=(op.kind_oct&255u)==vt::kVtSopCellular3;
+        cellular_reuses+=(op.kind_oct&255u)==vt::kVtSopCellular3Reuse;
+    }
+    CHECK(cellular_searches==2 && cellular_reuses==3,
+          "StreamMountain: gravel and bedrock each reuse their neighborhood search");
+    std::printf("MOUNTAIN_CELLULAR searches=%u reused_features=%u\n",cellular_searches,cellular_reuses);
+    terrain_field::FieldProgram field_program;
+    const bool field_parsed = terrain_field::FieldProgram::parse(evaluated.field_program,field_program,error);
+    CHECK(field_parsed,error.c_str()); if (!field_parsed) return;
+    terrain_field::FieldRuntime field(field_program);
+    terrain_field::SurfaceRuntime runtime(program);
+    const float identity[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
+    terrain_field::SurfaceWorldContext world; world.local_to_world = identity; world.field=&field;
+    float min_height=1, max_height=-1, context_height_delta=0;
+    for (int i=0; i<256; ++i) {
+        const float pos[3] = {float(i*17-2100), float(i*3-64), float(i*23-2900)};
+        const float normal[3] = {0,1,0};
+        terrain_field::SurfaceSourceSample value, distant;
+        CHECK(runtime.source_at(pos,normal,&world,.002f,value) &&
+              runtime.source_at(pos,normal,&world,2.f,distant), "StreamMountain: native source evaluation");
+        for (float c : value.albedo) CHECK(std::isfinite(c) && c>=0 && c<=1, "mountain material: finite bounded RGB");
+        CHECK(value.orm[1]>=.65f && value.orm[1]<=1 && value.orm[2]==0,
+              "mountain material: rough dielectric terrain");
+        min_height=std::min(min_height,value.height_m);max_height=std::max(max_height,value.height_m);
+        CHECK(std::abs(distant.height_m + .050f)<1e-6f,
+              "mountain material: unresolved relief filters to its mean at distant footprints");
+        float weight=0;runtime.weights_at(pos,normal,&world,&weight);
+        CHECK(weight==1, "mountain material: constant carrier classification");
+        const float cliff_normal[]={1.f,0.f,0.f};terrain_field::SurfaceSourceSample cliff_value;
+        CHECK(runtime.source_at(pos,cliff_normal,&world,.002f,cliff_value),"mountain material: cliff height evaluation");
+        context_height_delta=std::max(context_height_delta,std::abs(value.height_m-cliff_value.height_m));
+    }
+    CHECK(min_height>=program.source.height_min && max_height<=program.source.height_max &&
+          max_height-min_height>.001f,
+          "mountain material: bounded nonflat metre relief");
+    CHECK(context_height_delta>.005f,"mountain material: cliffs replace loose-ground displacement, not just pigment");
+    std::printf("MOUNTAIN_CONTEXT max_ground_cliff_height_delta_m=%.6f\n",context_height_delta);
+    // Paired spatial averages reveal footprint-driven material drift that a
+    // min/max bound cannot catch. Broad geology is identical in each pair.
+    double near_color=0,far_color=0,near_height=0,far_height=0;
+    for(int i=0;i<1024;++i) {
+        const float pos[]={380.f+float((i*127)%1021)*.031f,18.24f,1600.f+float((i*367)%1021)*.031f};
+        const float normal[]={0.f,1.f,0.f};terrain_field::SurfaceSourceSample near,far;
+        runtime.source_at(pos,normal,&world,1.f/64,near);runtime.source_at(pos,normal,&world,2.f,far);
+        near_color+=near.albedo[0];far_color+=far.albedo[0];near_height+=near.height_m;far_height+=far.height_m;
+    }
+    std::printf("MOUNTAIN_FILTER_MEAN near_color=%.6f far_color=%.6f near_height_m=%.6f far_height_m=%.6f\n",
+        near_color/1024,far_color/1024,near_height/1024,far_height/1024);
+    const float translated[16]={1,0,0,64, 0,1,0,0, 0,0,1,-64, 0,0,0,1};
+    auto neighbor=world;neighbor.local_to_world=translated;
+    const float world_pos[3]={64,120,-64}, local_pos[3]={0,120,0}, up[3]={0,1,0};
+    terrain_field::SurfaceSourceSample a,b;
+    runtime.source_at(world_pos,up,&world,.01f,a);runtime.source_at(local_pos,up,&neighbor,.01f,b);
+    bool same=std::abs(a.height_m-b.height_m)<1e-6f;
+    for(int k=0;k<3;++k) same=same && std::abs(a.albedo[k]-b.albedo[k])<1e-6f && std::abs(a.orm[k]-b.orm[k])<1e-6f;
+    CHECK(same,"mountain material: translated receiver frames share world-space color, ORM and height");
+    std::printf("MOUNTAIN_MATERIAL ops=%zu gpu_ops=%zu detail_atlases=%zu height=[%.6f,%.6f]\n",
+                program.ops.size(),packed.ops.size(),plan.size(),min_height,max_height);
+    for(const auto& xz:std::vector<std::array<float,2>>{{380,1600},{400,1450},{420,1420},{470,1300}})
+        std::printf("MOUNTAIN_HEIGHT x=%.1f z=%.1f y=%.5f\n",xz[0],xz[1],field.height_at(xz[0],xz[1]));
+    // Derive a repeatable cliff view from the real field, rather than guessing
+    // an eye position that may lie inside terrain. This is capture guidance.
+    float nearest=1e30f;std::array<float,6> cliff{};
+    for(float z=-800;z<=2800;z+=16) for(float x=-1200;x<=2000;x+=16) {
+        const float y=field.height_at(x,z);
+        const float gx=(field.height_at(x+1,z)-field.height_at(x-1,z))*.5f;
+        const float gz=(field.height_at(x,z+1)-field.height_at(x,z-1))*.5f;
+        const float len=std::sqrt(gx*gx+gz*gz);
+        const float distance=(x-380)*(x-380)+(z-1600)*(z-1600);
+        if(len>1.5f && y>35 && y<250 && distance<nearest) {
+            const float eye_x=x-6*gx/len,eye_z=z-6*gz/len;
+            if(field.height_at(eye_x,eye_z)<y) {
+                nearest=distance;cliff={eye_x,y+1,eye_z,x,y,z};
+            }
+        }
+    }
+    if(nearest<1e30f) std::printf("MOUNTAIN_CLIFF_CAMERA %.3f %.3f %.3f %.3f %.3f %.3f\n",
+        cliff[0],cliff[1],cliff[2],cliff[3],cliff[4],cliff[5]);
+}
+
 void test_every_shipped_world_loads() {
     const fs::path project = fs::path("../../projects/world_demo");
     const fs::path scenes_dir = project / "scenes";
     CHECK(fs::is_directory(scenes_dir), "world_demo exposes scenes/");
 
-    // Walk scenes/<Name>/<Name>.js. Walking the DIRECTORY rather than a pinned
-    // list is the whole point of this gate: a scene added later is covered
-    // without anyone remembering to add it. A scene folder whose script is
-    // missing or misnamed is a hard failure here, not a silent skip -- that is
-    // exactly the state a half-finished rename leaves behind, and the editor
-    // would simply stop listing the scene.
-    std::vector<fs::path> world_files;
-    for (const auto& entry : fs::directory_iterator(scenes_dir)) {
-        if (!entry.is_directory()) continue;
-        const std::string name = entry.path().filename().string();
-        const fs::path script = entry.path() / (name + ".js");
-        CHECK(fs::is_regular_file(script),
-              (name + " scene folder contains " + name + ".js").c_str());
-        if (fs::is_regular_file(script)) world_files.push_back(script);
-    }
-    std::sort(world_files.begin(), world_files.end());
-    CHECK(world_files.size() >= 6, "found the shipped worlds");
+    const auto world_files = matter::project_layout::scene_scripts(scenes_dir);
+    CHECK(world_files.size() >= 62, "found the shipped worlds");
 
     size_t loaded = 0;
     for (const fs::path& world : world_files) {
@@ -451,15 +1160,9 @@ void test_shared_lib_only_names_shared_objects() {
     // really object modules rather than arbitrary identifiers.
     std::set<std::string> scene_local;
     const fs::path scenes = project / "scenes";
-    for (const auto& scene : fs::directory_iterator(scenes)) {
-        if (!scene.is_directory()) continue;
-        std::error_code ec;
-        const fs::path dir = scene.path() / "objects";
-        if (!fs::is_directory(dir, ec)) continue;
-        for (const auto& obj : fs::directory_iterator(dir))
-            if (obj.path().extension() == ".js")
-                scene_local.insert(obj.path().stem().string());
-    }
+    for (const auto& script : matter::project_layout::scene_scripts(scenes))
+        for (const auto& obj : matter::project_layout::object_files(script.parent_path() / "objects"))
+            scene_local.insert(obj.stem().string());
 
     std::size_t checked = 0;
     for (const auto& entry : fs::directory_iterator(shared_lib)) {
@@ -473,7 +1176,7 @@ void test_shared_lib_only_names_shared_objects() {
                 const std::string needle = std::string(1, quote) + module + quote;
                 if (src.find(needle) == std::string::npos) continue;
                 ++checked;
-                CHECK(fs::is_regular_file(objects / (module + ".js")),
+                CHECK(!matter::project_layout::object_source({objects.string()}, module).empty(),
                       (entry.path().filename().string() + " names '" + module +
                        "', which lives only in a scene folder -- shared-lib is "
                        "reachable from every importing scene, so it must be in "
@@ -512,12 +1215,11 @@ void test_example_worlds_preserve_manifest_authoring() {
           "example project no longer exposes the legacy schemas/ directory");
 
     for (const ExpectedExampleWorld& expected : worlds) {
-        CHECK(fs::is_regular_file(
-                  project / "scenes" / expected.name / (std::string(expected.name) + ".js")),
+        const auto cfg = viewer::LocalProviderConfig::for_project(project.string(), expected.name, "../shared-lib");
+        CHECK(fs::is_regular_file(cfg.world_path),
               (std::string(expected.name) + " remains a selectable identity").c_str());
         matter::WorldLoadDesc desc;
-        desc.world_path =
-            (project / "scenes" / expected.name / (std::string(expected.name) + ".js")).string();
+        desc.world_path = cfg.world_path;
         desc.objects_dir = (project / "objects").string();
         desc.project_shared_lib_dir = (project / "shared-lib").string();
         desc.engine_shared_lib_dir = "../shared-lib";
@@ -536,11 +1238,7 @@ void test_example_worlds_preserve_manifest_authoring() {
             // this used to do, and it would now fail for every scene that owns
             // its objects while still passing for a module that had been
             // deleted from the scene and left behind in the shared tier.
-            const fs::path scene_copy = project / "scenes" / expected.name /
-                                        "objects" / (std::string(root.module) + ".js");
-            const fs::path shared_copy =
-                project / "objects" / (std::string(root.module) + ".js");
-            CHECK(fs::is_regular_file(scene_copy) || fs::is_regular_file(shared_copy),
+            CHECK(!cfg.resolve_object_path(root.module).empty(),
                   (std::string(root.module) +
                    " resolves in the scene or project object tier").c_str());
             if (index >= definition.roots.size()) break;
@@ -593,6 +1291,8 @@ void test_example_worlds_preserve_manifest_authoring() {
               (std::string(expected.name) + " procedural settings").c_str());
     }
 }
+
+#endif // MATTER_WORLD_SOURCE_QUALIFICATION
 
 void test_authored_entity_override_cannot_intercept_collection() {
     Fixture fixture;
@@ -1081,6 +1781,25 @@ class Extreme extends World {
               "octaves clamped to the ceiling rather than failing the load");
         CHECK(nearly_equal(definition.settings.fog.clouds[0].coverage, 1.0f),
               "coverage clamped to 1");
+    }
+}
+
+void test_terrain_texture_density() {
+    Fixture fixture;
+    for (const std::string value : {"undefined", "1", "64", "2048", "0", "-1",
+                                    "2049", "NaN", "Infinity", "'64'", "null", "true"}) {
+        const auto path = fixture.write("DensityWorld.js",
+            "class DensityWorld extends World { static streaming = {terrainTexelsPerMeter:" + value + "}; }");
+        matter::WorldDefinition definition;
+        matter::WorldLoadError error;
+        const bool valid = value == "undefined" || value == "1" || value == "64" || value == "2048";
+        const bool loaded = matter::load_world_definition(fixture.desc(path), definition, error);
+        CHECK(loaded == valid, ("terrain density validation: " + value).c_str());
+        if (loaded) CHECK(definition.settings.terrain_texels_per_meter ==
+                          (value == "undefined" ? 16 : std::stof(value)),
+                          "terrain density defaults/preserves authored value without rings");
+        else CHECK(error.message.find("terrainTexelsPerMeter") != std::string::npos,
+                   "invalid density identifies the authoring property");
     }
 }
 
@@ -1661,6 +2380,143 @@ void test_props_validation_paths() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// World.exports — the DSL binding for offline asset export (docs/export-obj.md).
+//
+// Worth stating what these tests are protecting, because the field is inert at
+// runtime: `static exports` is the only place a scene can record HOW it wants
+// to be exported, so the exporter reads it as its defaults. A silently dropped
+// or silently clamped value would produce an export nobody asked for and
+// nobody could trace, which is why the loader rejects instead of coercing and
+// why the rejection paths below are enumerated one by one.
+// ---------------------------------------------------------------------------
+
+bool load_exports_world(Fixture& fixture, const char* body,
+                        matter::WorldDefinition& definition,
+                        matter::WorldLoadError& error) {
+    const std::string source = std::string(
+        "class ExportsWorld extends World {\n"
+        "  static roots = [{ module: 'Terrain' }];\n"
+        "  static exports = ") + body + ";\n}\n";
+    const fs::path path = fixture.write("ExportsWorld.js", source);
+    return matter::load_world_definition(fixture.desc(path), definition, error);
+}
+
+void test_exports_extraction() {
+    Fixture fixture;
+    matter::WorldDefinition definition;
+    matter::WorldLoadError error;
+    const bool loaded = load_exports_world(
+        fixture,
+        "[{ format: 'obj', out: 'export/web', lod: 1, textureSize: 1024,\n"
+        "   textureFormat: 'none', chartCone: 30, normalSpace: 'flat',\n"
+        "   modules: ['Terrain', 'Rock'] },\n"
+        " { out: 'export/full' }]",
+        definition, error);
+    CHECK(loaded, error.message.c_str());
+    if (!loaded) return;
+
+    CHECK(definition.exports.size() == 2, "every declared export entry is recorded");
+    if (definition.exports.size() != 2) return;
+
+    const matter::WorldExportRequest& first = definition.exports[0];
+    CHECK(first.format == "obj", "format carried through");
+    CHECK(first.out_dir == "export/web", "out carried through");
+    CHECK(first.lod == 1u, "lod carried through");
+    CHECK(first.texture_size == 1024u, "textureSize carried through");
+    CHECK(first.texture_format == "none", "textureFormat carried through");
+    CHECK(nearly_equal(first.chart_cone_deg, 30.0f), "chartCone carried through");
+    CHECK(first.normal_space == "flat", "normalSpace carried through");
+    CHECK(first.modules.size() == 2u && first.modules[0] == "Terrain" &&
+              first.modules[1] == "Rock",
+          "modules carried through in declaration order");
+
+    // An entry that declares only `out` takes every other default, which is
+    // what makes the common case one line.
+    const matter::WorldExportRequest& second = definition.exports[1];
+    CHECK(second.format == "obj" && second.lod == 0u && second.texture_size == 2048u &&
+              second.texture_format == "png" && second.normal_space == "smooth" &&
+              nearly_equal(second.chart_cone_deg, 45.0f) && second.modules.empty(),
+          "an entry with only `out` takes the documented defaults");
+}
+
+void test_exports_single_object_form() {
+    Fixture fixture;
+    matter::WorldDefinition definition;
+    matter::WorldLoadError error;
+    const bool loaded =
+        load_exports_world(fixture, "{ out: 'export/one' }", definition, error);
+    CHECK(loaded, error.message.c_str());
+    CHECK(definition.exports.size() == 1 && definition.exports[0].out_dir == "export/one",
+          "a bare object is accepted as a single export entry");
+}
+
+void test_exports_absent() {
+    Fixture fixture;
+    const fs::path path = fixture.write("NoExports.js", R"JS(
+class NoExports extends World {
+  static roots = [{ module: 'Terrain' }];
+}
+)JS");
+    matter::WorldDefinition definition;
+    matter::WorldLoadError error;
+    CHECK(matter::load_world_definition(fixture.desc(path), definition, error),
+          error.message.c_str());
+    CHECK(definition.exports.empty(),
+          "a world that declares no exports records none");
+}
+
+void test_exports_validation_paths() {
+    struct Case {
+        const char* body;
+        const char* property_path;
+        const char* what;
+    };
+    const Case cases[] = {
+        {"'export/web'", "exports",
+         "a bare string is not an export entry"},
+        {"[7]", "exports[0]", "a non-object entry is rejected"},
+        {"[{ }]", "exports[0].out", "a missing out is rejected"},
+        {"[{ out: '' }]", "exports[0].out", "an empty out is rejected"},
+        {"[{ out: 'x', format: 'gltf' }]", "exports[0].format",
+         "an unimplemented format is rejected rather than ignored"},
+        {"[{ out: 'x', textureSize: 8 }]", "exports[0].textureSize",
+         "a textureSize below the atlas minimum is rejected, not clamped"},
+        {"[{ out: 'x', textureSize: 16384 }]", "exports[0].textureSize",
+         "a textureSize above the atlas maximum is rejected, not clamped"},
+        {"[{ out: 'x', lod: -1 }]", "exports[0].lod", "a negative lod is rejected"},
+        {"[{ out: 'x', textureFormat: 'jpeg' }]", "exports[0].textureFormat",
+         "an unknown textureFormat is rejected"},
+        {"[{ out: 'x', chartCone: 90 }]", "exports[0].chartCone",
+         "a chartCone at 90 degrees is rejected"},
+        {"[{ out: 'x', chartCone: 0 }]", "exports[0].chartCone",
+         "a chartCone of 0 is rejected"},
+        {"[{ out: 'x', normalSpace: 'object' }]", "exports[0].normalSpace",
+         "an unknown normalSpace is rejected"},
+        {"[{ out: 'x', modules: 'Rock' }]", "exports[0].modules",
+         "a non-array modules is rejected"},
+        {"[{ out: 'x', modules: ['Rock', 7] }]", "exports[0].modules[1]",
+         "a non-string module name is rejected"},
+        {"[{ out: 'x', textureSizes: 1024 }]", "exports[0]",
+         "a mistyped key is rejected rather than silently defaulted"},
+    };
+
+    for (const Case& item : cases) {
+        Fixture fixture;
+        matter::WorldDefinition definition;
+        matter::WorldLoadError error;
+        const bool loaded = load_exports_world(fixture, item.body, definition, error);
+        CHECK(!loaded, item.what);
+        CHECK(error.property_path == item.property_path,
+              (std::string(item.what) + " -> property_path '" + item.property_path +
+               "' (got '" + error.property_path + "')")
+                  .c_str());
+        CHECK(!error.message.empty(), "an export rejection carries a message");
+        CHECK(definition.exports.empty(),
+              "a rejected exports block leaves no partial entries behind");
+    }
+}
+
 void test_props_getprop_diagnostics() {
     Fixture fixture;
     // Unknown name from buildEntities.
@@ -1877,6 +2733,74 @@ class LateWorld extends World {
           "the too-late diagnostic explains the ordering requirement");
 }
 
+void test_define_material_authors_water_surface_domain() {
+    Fixture fixture;
+    const fs::path path = fixture.write("WaterMaterials.js", R"JS(
+const RIVER = defineMaterial('RiverSurface', {
+  albedo: [0.05, 0.14, 0.18], roughness: 0.06,
+  transmission: 0.98, ior: 1.333, volumeBoundary: true,
+  waterSurface: true,
+});
+const GLASS = defineMaterial('OrdinaryGlass', {
+  transmission: 0.98, ior: 1.5, volumeBoundary: true,
+});
+class WaterMaterials extends World {
+  static roots = [{ module: 'WaterIds', params: { river: RIVER, glass: GLASS } }];
+}
+)JS");
+    matter::WorldDefinition definition;
+    matter::WorldLoadError error;
+    CHECK(matter::load_world_definition(fixture.desc(path), definition, error),
+          error.message.c_str());
+    CHECK(definition.materials.size() == 2u,
+          "water and ordinary glass use the same dynamic material registry");
+    if (definition.materials.size() != 2u) return;
+    const MaterialDef* river =
+        MaterialRegistryGet(definition.materials[0].index);
+    const MaterialDef* glass =
+        MaterialRegistryGet(definition.materials[1].index);
+    CHECK((river->surfaceFlags & MATERIAL_WATER_SURFACE) != 0u,
+          "waterSurface authoring marks the generic water material domain");
+    CHECK((glass->surfaceFlags & MATERIAL_WATER_SURFACE) == 0u,
+          "volume-boundary glass is not inferred to be river water");
+}
+
+void test_define_material_surface_detail_mode() {
+    Fixture fixture;
+    const fs::path path = fixture.write("SurfaceDetail.js", R"JS(
+defineMaterial('Finished', {detail:'BrickDetail', detailMode:'surface'});
+defineMaterial('Ground', {detail:'GroundDetail', detailMode:'ground'});
+defineMaterial('Default', {detail:'GroundDetail'});
+class SurfaceDetail extends World { static roots = []; }
+)JS");
+    matter::WorldDefinition definition;
+    matter::WorldLoadError error;
+    CHECK(matter::load_world_definition(fixture.desc(path), definition, error), error.message.c_str());
+    CHECK(definition.materials.size() == 3, "all detail domains register");
+    if (definition.materials.size() == 3) {
+        CHECK((MaterialRegistryGet(definition.materials[0].index)->surfaceFlags & MATERIAL_SURFACE_DETAIL) != 0,
+              "surface mode transported in material flags");
+        for (size_t i = 1; i < 3; ++i)
+            CHECK((MaterialRegistryGet(definition.materials[i].index)->surfaceFlags & MATERIAL_SURFACE_DETAIL) == 0,
+                  "explicit ground and omitted mode preserve defaults");
+    }
+    for (const std::string spec : {"{detailMode:'surface'}", "{detail:'D',detailMode:true}",
+                                  "{detail:'D',detailMode:'typo'}", "{detail:'D',detailMode:null}"}) {
+        const auto invalid = fixture.write("InvalidSurface.js",
+            "defineMaterial('Invalid'," + spec + "); class Invalid extends World { static roots=[]; }");
+        CHECK(!matter::load_world_definition(fixture.desc(invalid), definition, error),
+              "invalid surface mode fails typed validation");
+        CHECK(error.message.find("detailMode") != std::string::npos, "error identifies detailMode");
+    }
+    const auto conflict = fixture.write("ConflictingSurface.js", R"JS(
+defineMaterial('Same', {detail:'D',detailMode:'surface'});
+defineMaterial('Same', {detail:'D',detailMode:'ground'});
+class ConflictingSurface extends World { static roots=[]; }
+)JS");
+    CHECK(!matter::load_world_definition(fixture.desc(conflict), definition, error),
+          "domain change invalidates repeated material identity");
+}
+
 void test_detail_bake_plan_ordering_and_merging() {
     // The deprecated alias alone must produce exactly what the hardcoded path
     // produced: one request for the root module bound to material 16.
@@ -2000,20 +2924,1071 @@ void test_slot_binder_reports_displaced_materials() {
     CHECK(binder.allocator().size() == 0, "reset empties the pool");
 }
 
+void test_world_loader_reads_static_hydrology() {
+    Fixture fixture;
+    const fs::path path = fixture.write("RiverHydrology.js", R"JS(
+class RiverHydrology extends World {
+  static hydrology = {
+    enabled: true,
+    origin: [-8, -2, -16], dimensions: [96, 20, 48], cellSize: 0.5,
+    dt: 0.005, gravity: 9.81, downstream: [1, 0],
+    residualGrade: [-0.01, 0],
+    inletFlow: 1.0, inletHead: 4.0, outletHead: 1.5,
+    batchSteps: 256, maxSteps: 16384
+  };
+}
+)JS");
+    matter::WorldDefinition definition;
+    matter::WorldLoadError error;
+    CHECK(matter::load_world_definition(fixture.desc(path), definition, error),
+          error.message.c_str());
+    CHECK(definition.hydrology.has_value(),
+          "a complete static hydrology declaration is retained");
+    CHECK(definition.hydrology && definition.hydrology->domain.nx == 96,
+          "hydrology dimensions are parsed as typed domain extents");
+}
+
+#ifdef MATTER_WORLD_SOURCE_QUALIFICATION
+void test_checked_in_river_hydrology_uses_the_imperative_section_contract() {
+    const fs::path project = fs::path("../../projects/world_demo");
+    matter::WorldLoadDesc load{};
+    load.world_path =
+        (project / "scenes/water/RiverHydrology/RiverHydrology.js").string();
+    load.objects_dir = (project / "objects").string();
+    load.project_shared_lib_dir = (project / "shared-lib").string();
+    load.engine_shared_lib_dir = "../shared-lib";
+    matter::WorldDefinition definition{};
+    matter::WorldLoadError load_error{};
+    CHECK(matter::load_world_definition(load, definition, load_error),
+          load_error.message.c_str());
+    CHECK(!definition.hydrology.has_value(),
+          "the checked-in river scene has no legacy static equilibrium object");
+    CHECK(definition.river_network.has_value(),
+          "the checked-in river scene publishes an imperative canonical network");
+    if (!definition.river_network) return;
+    const auto& network = *definition.river_network;
+    CHECK(network.rivers.size() == 1u && network.sections.size() == 2u &&
+              network.sections[0].river == "main" &&
+              network.sections[0].id == "upper" &&
+              network.sections[1].id == "lower" &&
+              network.sections[1].after_section_ids ==
+                  std::vector<std::string>{"upper"} &&
+              network.sections[1].upstream_spillway_section_ids ==
+                  std::vector<std::string>{"upper"} &&
+              network.bake_sequential,
+          "the checked-in scene selects two serial river sections");
+    if (network.rivers.empty()) return;
+    const auto& river = network.rivers.front();
+    CHECK(river.curve.size() > 600u &&
+              river.curve.front().x == 0.0f &&
+              river.curve.front().y == 72.0f &&
+              river.curve.front().z == 0.0f &&
+              river.curve.back().x == 294.0f &&
+              river.curve.back().y == 22.0f &&
+              river.curve.back().z == 0.0f,
+          "the acceptance world retains its complete descending authored curve");
+    CHECK(river.channel_profile.size() == 13u &&
+              nearly_equal(river.channel_profile.front().width_m, 14.0f) &&
+              river.channel_profile[1].width_m == 24.0f &&
+              river.channel_profile[4].width_m == 34.0f &&
+              river.channel_profile[8].width_m == 22.0f &&
+              river.channel_profile[9].width_m == 28.0f &&
+              river.channel_profile[11].width_m == 38.0f &&
+              river.channel_profile.front().depth_m == 8.0f &&
+              river.channel_profile[0].asymmetry == 0.18f,
+          "the DSL profile widens both rapids and pools before each spillway");
+    CHECK(network.canonical_text.find("boulders=") == std::string::npos,
+          "native boulder generation is absent from the canonical contract");
+    CHECK(network.sections[0].dry_margin_m == 15.0f &&
+              network.sections[1].dry_margin_m == 15.0f &&
+              network.sections[0].to_m - network.sections[0].from_m >= 100.0f &&
+              network.sections[1].to_m - network.sections[1].from_m >= 100.0f &&
+              network.sections[0].waterfalls.size() == 1u &&
+              nearly_equal(network.sections[0].waterfalls[0].expected_drop_m,
+                           12.0f) &&
+              network.fluid.backend == matter::HydrologyBackend::Physx &&
+              network.fluid.limits.batch_steps == 256u &&
+              network.fluid.limits.max_steps == 8192u &&
+              network.fluid.limits.max_particles == 4000000u &&
+              network.fluid.fill_sensor.upstream_offset_m == 3.0f &&
+              network.fluid.fill_sensor.length_m == 16.0f &&
+              nearly_equal(network.fluid.fill_sensor.height_m, 0.6f) &&
+              network.fluid.fill_sensor.resolution_x == 12u &&
+              network.fluid.fill_sensor.resolution_y == 1u &&
+              network.fluid.fill_sensor.resolution_z == 12u &&
+              network.fluid.fill_sensor.crest_wet_fraction == 0.80f &&
+              network.fluid.fill_sensor.stable_wet_steps == 120u &&
+              network.fluid.fill_sensor.minimum_particles_per_cell == 8u,
+          "the scene retains the dry margin, explicit work budget, and dense fill-level surface gate");
+    CHECK(network.fluid.emitters.size() == 1u &&
+              network.fluid.emitters[0].id == "upstream-inlet" &&
+              network.fluid.emitters[0].flow_m3s == 600.0f &&
+              nearly_equal(network.fluid.emitters[0].radius_m, 4.472136f) &&
+              network.fluid.emitters[0].position_m.y == 84.0f &&
+              network.fluid.emitters[0].initial_velocity_mps.x == 1.72f &&
+              network.fluid.emitters[0].initial_velocity_mps.y == -0.28f &&
+              nearly_equal(
+                  network.fluid.emitters[0].stop_time_s,
+                  network.fluid.pbd.fixed_step_seconds *
+                      static_cast<float>(network.fluid.limits.max_steps)) &&
+              river.inlet.flow_m3s == 600.0f &&
+              network.sections[0].terminal_spillway &&
+              network.sections[1].terminal_spillway &&
+              network.sections[0].terminal_spillway->width_m == 10.0f &&
+              network.sections[1].terminal_spillway->width_m == 10.0f &&
+              network.sections[0].terminal_spillway->dam_offset_m == 4.0f &&
+              network.fluid.pbd.particle_spacing_m == 0.20f &&
+              network.fluid.pbd.fixed_step_seconds == 1.0f / 120.0f &&
+              network.fluid.quality.particle_radius_m == 0.13f &&
+              network.fluid.quality.visual_voxel_m == 0.15f &&
+              network.fluid.quality.visual_blend_width_m == 0.10f &&
+              network.fluid.quality.coarse_voxel_m == 0.65f &&
+              network.fluid.quality.gameplay_cell_m == 0.50f,
+          "the checked-in scene keeps the bounded 0.20 m / 600 m3s experiment and authors every product quality");
+    CHECK(definition.roots.size() == 12u &&
+              std::all_of(definition.roots.begin(), definition.roots.end(),
+                          [](const matter::WorldRoot& root) {
+                              const auto& m = root.transform.m;
+                              const float x_scale = std::hypot(m[0], m[8]);
+                              const float y_scale = std::fabs(m[5]);
+                              const float z_scale = std::hypot(m[2], m[10]);
+                              return !root.id.empty() &&
+                                  nearly_equal(x_scale, 1.0f) &&
+                                  nearly_equal(y_scale, 1.0f) &&
+                                  nearly_equal(z_scale, 1.0f) &&
+                                  root.fluid_collider.shape ==
+                                      matter::WorldFluidColliderShape::Sphere;
+                          }),
+          "all twelve deterministic DSL boulders use unit-scale placement transforms and matching fluid colliders");
+
+    hydrology::RiverGeometry geometry{};
+    std::string geometry_error;
+    CHECK(hydrology::build_river_geometry(network, "main", geometry,
+                                           geometry_error),
+          geometry_error.c_str());
+    std::shared_ptr<const terrain_field::RiverHeightOverlay> overlay;
+    CHECK(terrain_field::RiverHeightOverlay::build(
+              geometry, overlay, geometry_error),
+          geometry_error.c_str());
+    bool collider_footprints_clear_terrain = overlay != nullptr;
+    if (overlay) {
+        constexpr float kPi = 3.14159265358979323846f;
+        for (const auto& root : definition.roots) {
+            const auto& transform = root.transform.m;
+            const auto local = root.fluid_collider.center_m;
+            const matter::Float3 center{
+                transform[0] * local.x + transform[1] * local.y +
+                    transform[2] * local.z + transform[3],
+                transform[4] * local.x + transform[5] * local.y +
+                    transform[6] * local.z + transform[7],
+                transform[8] * local.x + transform[9] * local.y +
+                    transform[10] * local.z + transform[11],
+            };
+            const float radius = root.fluid_collider.radius_m;
+            for (float radial_fraction : {0.0f, 0.25f, 0.5f, 0.75f, 0.95f}) {
+                const float radial = radius * radial_fraction;
+                const float bottom = center.y -
+                    std::sqrt(std::max(0.0f, radius * radius - radial * radial));
+                for (int sector = 0; sector < 32; ++sector) {
+                    const float angle = 2.0f * kPi *
+                        static_cast<float>(sector) / 32.0f;
+                    const float x = center.x + radial * std::cos(angle);
+                    const float z = center.z + radial * std::sin(angle);
+                    const float terrain = overlay->height_at(x, z, 200.0f);
+                    if (!(bottom >= terrain + 0.05f)) {
+                        collider_footprints_clear_terrain = false;
+                        break;
+                    }
+                }
+                if (!collider_footprints_clear_terrain) break;
+            }
+            if (!collider_footprints_clear_terrain) break;
+        }
+    }
+    CHECK(collider_footprints_clear_terrain,
+          "every boulder collider clears the rounded-V terrain across its footprint");
+}
+
+#endif // MATTER_WORLD_SOURCE_QUALIFICATION
+
+void test_world_loader_leaves_hydrology_empty_when_absent() {
+    Fixture fixture;
+    const fs::path path = fixture.write("Dry.js", "class Dry extends World {}\n");
+    matter::WorldDefinition definition;
+    matter::WorldLoadError error;
+    CHECK(matter::load_world_definition(fixture.desc(path), definition, error),
+          error.message.c_str());
+    CHECK(!definition.hydrology.has_value(),
+          "worlds without static hydrology preserve the existing no-hydrology path");
+}
+
+void test_world_loader_rejects_invalid_static_hydrology() {
+    const auto rejects = [](const char* name, const char* declaration) {
+        Fixture fixture;
+        const fs::path path = fixture.write(
+            name, std::string("class Bad extends World { static hydrology = ") +
+                      declaration + "; }\n");
+        matter::WorldDefinition definition;
+        matter::WorldLoadError error;
+        CHECK(!matter::load_world_definition(fixture.desc(path), definition, error),
+              "invalid static hydrology must reject the world definition");
+        CHECK(error.property_path.rfind("hydrology", 0) == 0,
+              "hydrology validation identifies its static declaration");
+    };
+    rejects("Nonfinite.js", R"JS({
+      enabled: true, origin: [-8, -2, -16], dimensions: [96, 20, 48], cellSize: Infinity,
+      dt: 0.005, gravity: 9.81, downstream: [1, 0], residualGrade: [-0.01, 0],
+      inletFlow: 1.0, inletHead: 4.0, outletHead: 1.5, batchSteps: 256, maxSteps: 16384
+    })JS");
+    rejects("FractionalDimension.js", R"JS({
+      enabled: true, origin: [-8, -2, -16], dimensions: [96.5, 20, 48], cellSize: 0.5,
+      dt: 0.005, gravity: 9.81, downstream: [1, 0], residualGrade: [-0.01, 0],
+      inletFlow: 1.0, inletHead: 4.0, outletHead: 1.5, batchSteps: 256, maxSteps: 16384
+    })JS");
+    rejects("UnknownHydrologyKey.js", R"JS({
+      enabled: true, origin: [-8, -2, -16], dimensions: [96, 20, 48], cellSize: 0.5,
+      dt: 0.005, gravity: 9.81, downstream: [1, 0], residualGrade: [-0.01, 0],
+      inletFlow: 1.0, inletHead: 4.0, outletHead: 1.5, batchSteps: 256, maxSteps: 16384,
+      misspelled: 1
+    })JS");
+    Fixture fixture;
+    const fs::path accessor = fixture.write("AccessorHydrology.js", R"JS(
+class Bad extends World { static get hydrology() { return {}; } }
+)JS");
+    matter::WorldDefinition definition;
+    matter::WorldLoadError error;
+    CHECK(!matter::load_world_definition(fixture.desc(accessor), definition, error),
+          "a hydrology accessor is not a hermetic plain-data declaration");
+}
+
+void test_world_loader_rejects_every_unknown_hydrology_property() {
+    const auto rejects = [](const char* name, const char* declaration) {
+        Fixture fixture;
+        const fs::path path = fixture.write(
+            name, std::string("class Bad extends World { static hydrology = ") +
+                      declaration + "; }\n");
+        matter::WorldDefinition definition;
+        matter::WorldLoadError error;
+        CHECK(!matter::load_world_definition(fixture.desc(path), definition, error),
+              "every own hydrology property must be allow-listed");
+        CHECK(error.property_path.rfind("hydrology", 0) == 0,
+              "unknown hydrology properties are reported at the declaration");
+    };
+    rejects("SymbolHydrologyKey.js", R"JS({
+      enabled: true, origin: [-8, -2, -16], dimensions: [96, 20, 48], cellSize: 0.5,
+      dt: 0.005, gravity: 9.81, downstream: [1, 0], residualGrade: [-0.01, 0],
+      inletFlow: 1.0, inletHead: 4.0, outletHead: 1.5, batchSteps: 256, maxSteps: 16384,
+      [Symbol("hidden")]: 1
+    })JS");
+    rejects("AllowedNameSymbolHydrologyKey.js", R"JS({
+      enabled: true, origin: [-8, -2, -16], dimensions: [96, 20, 48], cellSize: 0.5,
+      dt: 0.005, gravity: 9.81, downstream: [1, 0], residualGrade: [-0.01, 0],
+      inletFlow: 1.0, inletHead: 4.0, outletHead: 1.5, batchSteps: 256, maxSteps: 16384,
+      [Symbol("enabled")]: 1
+    })JS");
+    rejects("HiddenHydrologyKey.js", R"JS((() => {
+      const h = {
+        enabled: true, origin: [-8, -2, -16], dimensions: [96, 20, 48], cellSize: 0.5,
+        dt: 0.005, gravity: 9.81, downstream: [1, 0], residualGrade: [-0.01, 0],
+        inletFlow: 1.0, inletHead: 4.0, outletHead: 1.5, batchSteps: 256, maxSteps: 16384
+      };
+      Object.defineProperty(h, "hidden", { value: 1 });
+      return h;
+    })())JS");
+}
+
+void test_world_loader_rejects_uint32_overflow_before_narrowing() {
+    const auto rejects_during_integer_parsing = [](const char* name,
+                                                    const char* declaration) {
+        Fixture fixture;
+        const fs::path path = fixture.write(
+            name, std::string("class Bad extends World { static hydrology = ") +
+                      declaration + "; }\n");
+        matter::WorldDefinition definition;
+        matter::WorldLoadError error;
+        CHECK(!matter::load_world_definition(fixture.desc(path), definition, error),
+              "out-of-range integer fields must reject the declaration");
+        CHECK(error.message.find("complete finite typed values") != std::string::npos,
+              "uint32 overflow must reject before narrowing into the typed domain");
+    };
+    rejects_during_integer_parsing("DimensionUInt32Overflow.js", R"JS({
+      enabled: true, origin: [-8, -2, -16], dimensions: [4294967296, 20, 48], cellSize: 0.5,
+      dt: 0.005, gravity: 9.81, downstream: [1, 0], residualGrade: [-0.01, 0],
+      inletFlow: 1.0, inletHead: 4.0, outletHead: 1.5, batchSteps: 256, maxSteps: 16384
+    })JS");
+    rejects_during_integer_parsing("StepUInt32Extreme.js", R"JS({
+      enabled: true, origin: [-8, -2, -16], dimensions: [96, 20, 48], cellSize: 0.5,
+      dt: 0.005, gravity: 9.81, downstream: [1, 0], residualGrade: [-0.01, 0],
+      inletFlow: 1.0, inletHead: 4.0, outletHead: 1.5, batchSteps: 1e100, maxSteps: 16384
+    })JS");
+}
+
+void test_world_loader_builds_imperative_river_network() {
+    Fixture fixture;
+    const fs::path path = fixture.write("River.js", R"JS(
+const RIVER_WATER = defineMaterial("RiverWater", {
+  albedo: [0.05, 0.14, 0.18], roughness: 0.06,
+  transmission: 0.98, ior: 1.333, volumeBoundary: true,
+  waterSurface: true,
+});
+class River extends World {
+  hydrology() {
+    const network = riverNetwork({
+      cellSize: 0.5,
+      seed: this.worldSeed ^ 0x52495645,
+    });
+    const main = network.river("main")
+      .inlet([0, 36, 0], { flow: 1.0 })
+      .curve([[0,36,0], [105,30,0], [117,18,0], [145,18,0],
+              [255,3,0], [275,3,0]])
+      .channelProfile([
+        {at: 0, width: 7, depth: 2.5, asymmetry: 0.35},
+        {at: 145, width: 10, depth: 3, asymmetry: -0.2},
+        {at: 275, width: 8, depth: 2.25, asymmetry: 0.1},
+      ]);
+    network.waterSurface(RIVER_WATER)
+      .optics({
+        shallowAbsorption: [0.03, 0.015, 0.008], shallowDistance: 8,
+        deepAbsorption: [0.18, 0.055, 0.025], deepDistance: 2.5,
+        scatteringColor: [0.08, 0.22, 0.24], scatteringDistance: 7,
+        anisotropy: 0.35, ior: 1.333,
+      })
+      .waveBand({wavelength: 7.5, amplitude: 0.16, speed: 0.8, response: 0.35})
+      .waveBand({wavelength: 1.6, amplitude: 0.24, speed: 1.4, response: 0.75})
+      .waveBand({wavelength: 0.28, amplitude: 0.08, speed: 2.1, response: 0.20})
+      .foam({threshold: 0.42, gain: 1.8, persistence: 2.5,
+             breakupScale: 0.7, roughnessGain: 0.55,
+             scatteringGain: 1.4, transmissionLoss: 0.72,
+             normalSoftening: 0.6})
+      .localOverride({shape: "sphere", center: [111, 46, 5], radius: 14,
+                      foamMultiplier: 1.25, waveMultiplier: 1.1,
+                      thresholdOffset: -0.08});
+    network.backend("physx");
+    network.pbd({particleSpacing: .2, restDensity: 1000, fixedStep: 1 / 120,
+                 iterations: 4, maxNeighbors: 96});
+    network.meshAnimation({framesPerSecond: 30, duration: 1.0,
+                           phaseOffset: 0.5});
+    network.limits({batchSteps: 256, maxSteps: 65536, maxParticles: 1000000});
+    network.escapePolicy({absoluteCount: 32, ratio: .0001});
+    network.emitter({id: "main-inlet", position: [0,18,0], direction: [1,0,0],
+                     initialVelocity: [1,0,0], flow: 1, radius: 2,
+                     startTime: 0, stopTime: 64});
+    network.emitter({id: "future-tributary", position: [32,14,8], direction: [1,0,0],
+                     initialVelocity: [1,0,0], flow: .25, radius: 1,
+                     startTime: 2, stopTime: 32});
+    network.virtualDam({height: 8, thickness: .5});
+    network.fillSensor({upstreamOffset: 2, length: 1, height: 6,
+                        resolution: [24,1,12], crestWetFraction: .8,
+                        stableWetSteps: 32, minimumParticlesPerCell: 1});
+    network.quality({particleRadius: .13, visualVoxel: .1,
+                     visualBlendWidth: .05, coarseVoxel: .4, gameplayCell: .5,
+                     maxGridVertices: 4194304, maxMeshVertices: 12582912,
+                     maxMeshIndices: 12582912});
+    main.section("upper", {from: 0, to: 145, dryMargin: 15})
+      .emitters(["main-inlet"])
+      .waterfall({lipAt: 105, landingAt: 117, expectedDrop: 12})
+      .pool({from: 117, to: 145, fillLevel: 24})
+      .spillway({id: "pool-one", at: 145, width: 10,
+                 effectiveDepth: 2, overlap: 5, damOffset: 4});
+    main.section("lower", {from: 145, to: 275, dryMargin: 15})
+      .after("upper")
+      .fromSpillway("upper")
+      .pool({from: 255, to: 275, fillLevel: 3})
+      .spillway({id: "pool-two", at: 275, width: 10,
+                 effectiveDepth: 2, overlap: 5, damOffset: 4});
+    network.bakeSequential();
+    network.build();
+  }
+}
+
+)JS");
+    matter::WorldDefinition definition;
+    matter::WorldLoadError error;
+    CHECK(matter::load_world_definition(fixture.desc(path), definition, error),
+          error.message.c_str());
+    CHECK(definition.river_network.has_value(),
+          "hydrology() publishes one canonical river network");
+    if (!definition.river_network) return;
+    CHECK(definition.river_network->rivers.size() == 1u &&
+              definition.river_network->rivers[0].name == "main",
+          "the loader retains the canonical named river");
+    CHECK(definition.river_network->rivers[0].curve.size() == 6u &&
+              definition.river_network->rivers[0].channel_profile.size() == 3u &&
+              definition.river_network->rivers[0].channel_profile[1].width_m == 10.0f,
+          "the loader retains the completed curve and ordered channel profile");
+    CHECK(definition.river_network->sections.size() == 2u &&
+              definition.river_network->sections[0].id == "upper" &&
+              definition.river_network->sections[0].waterfalls.size() == 1u &&
+              definition.river_network->sections[0].waterfalls[0].expected_drop_m == 12.0f &&
+              definition.river_network->sections[1].id == "lower" &&
+              definition.river_network->sections[1].after_section_ids ==
+                  std::vector<std::string>{"upper"} &&
+              definition.river_network->sections[1].upstream_spillway_section_ids ==
+                  std::vector<std::string>{"upper"} &&
+              definition.river_network->bake_sequential &&
+              definition.river_network->fluid.backend ==
+                  matter::HydrologyBackend::Physx &&
+              definition.river_network->fluid.emitters.size() == 2u &&
+              definition.river_network->fluid.limits.batch_steps == 256u &&
+              definition.river_network->fluid.limits.escape_policy.absolute_count == 32u &&
+              definition.river_network->fluid.limits.escape_policy.ratio == 0.0001f &&
+              definition.river_network->fluid.mesh_animation.enabled &&
+              definition.river_network->fluid.mesh_animation.frame_count == 30u &&
+              definition.river_network->fluid.mesh_animation.sample_step_stride == 4u &&
+              definition.river_network->fluid.mesh_animation.phase_offset_frames == 15u,
+          "the loader retains builder-style sections and authored fluid settings");
+    CHECK(!definition.river_network->canonical_text.empty() &&
+              definition.river_network->canonical_hash != 0u,
+          "the loader publishes canonical bytes and their deterministic key");
+    CHECK(definition.river_network->water_surface.has_value() &&
+              definition.river_network->water_surface->material_id ==
+                  static_cast<std::uint32_t>(
+                      definition.materials.front().index) &&
+              definition.river_network->water_surface->wave_bands.size() == 3u &&
+              definition.river_network->water_surface->local_overrides.size() == 1u &&
+              definition.river_network->water_surface->appearance_hash != 0u,
+          "the dedicated water builder publishes material, optics, waves, foam, and overrides");
+    const auto adapted = viewer::adapt_river_network_definition(definition);
+    CHECK(adapted.has_value() &&
+              adapted->canonical_text ==
+                  definition.river_network->canonical_text &&
+              adapted->canonical_hash ==
+                  definition.river_network->canonical_hash,
+          "the provider adapter preserves canonical river bytes and key unchanged");
+}
+
+void test_water_surface_object_key_order_is_canonical() {
+    const auto source = [](const std::string& optics,
+                           const std::string& foam) {
+        return std::string(R"JS(
+const WATER = defineMaterial("CanonicalWater", {
+  transmission: 0.98, ior: 1.333, volumeBoundary: true, waterSurface: true,
+});
+class CanonicalWaterWorld extends World {
+  hydrology() {
+    const n = riverNetwork({cellSize: 0.5, seed: 77});
+    const r = n.river("main").inlet([0, 8, 0], {flow: 1})
+      .curve([[0, 8, 0], [100, 0, 0]])
+      .channelProfile([{at: 0, width: 8, depth: 3, asymmetry: 0}]);
+    n.waterSurface(WATER).optics()JS") + optics + R"JS()
+      .waveBand({wavelength: 7.5, amplitude: 0.16, speed: 0.8, response: 0.35})
+      .waveBand({wavelength: 1.6, amplitude: 0.24, speed: 1.4, response: 0.75})
+      .waveBand({wavelength: 0.28, amplitude: 0.08, speed: 2.1, response: 0.20})
+      .foam()JS" + foam + R"JS();
+    r.section("upper", {from: 0, to: 100, dryMargin: 4})
+      .pool({from: 90, to: 100, fillLevel: 3})
+      .spillway({id: "pool-one", at: 100, width: 8,
+                 effectiveDepth: 2, overlap: 4, damOffset: 2});
+    n.bakeSequential();
+    n.build();
+  }
+}
+)JS";
+    };
+    const std::string optics_a = R"JS({
+      shallowAbsorption: [0.03, 0.015, 0.008], shallowDistance: 8,
+      deepAbsorption: [0.18, 0.055, 0.025], deepDistance: 2.5,
+      scatteringColor: [0.08, 0.22, 0.24], scatteringDistance: 7,
+      anisotropy: 0.35, ior: 1.333,
+    })JS";
+    const std::string optics_b = R"JS({
+      ior: 1.333, anisotropy: 0.35, scatteringDistance: 7,
+      scatteringColor: [0.08, 0.22, 0.24], deepDistance: 2.5,
+      deepAbsorption: [0.18, 0.055, 0.025], shallowDistance: 8,
+      shallowAbsorption: [0.03, 0.015, 0.008],
+    })JS";
+    const std::string foam_a = R"JS({
+      threshold: 0.42, gain: 1.8, persistence: 2.5, breakupScale: 0.7,
+      roughnessGain: 0.55, scatteringGain: 1.4,
+      transmissionLoss: 0.72, normalSoftening: 0.6,
+    })JS";
+    const std::string foam_b = R"JS({
+      normalSoftening: 0.6, transmissionLoss: 0.72,
+      scatteringGain: 1.4, roughnessGain: 0.55, breakupScale: 0.7,
+      persistence: 2.5, gain: 1.8, threshold: 0.42,
+    })JS";
+
+    Fixture first_fixture;
+    const fs::path first_path =
+        first_fixture.write("First.js", source(optics_a, foam_a));
+    matter::WorldDefinition first;
+    matter::WorldLoadError error;
+    CHECK(matter::load_world_definition(first_fixture.desc(first_path), first, error),
+          error.message.c_str());
+    Fixture second_fixture;
+    const fs::path second_path =
+        second_fixture.write("Second.js", source(optics_b, foam_b));
+    matter::WorldDefinition second;
+    CHECK(matter::load_world_definition(second_fixture.desc(second_path), second, error),
+          error.message.c_str());
+    CHECK(first.river_network && second.river_network &&
+              first.river_network->water_surface &&
+              second.river_network->water_surface &&
+              first.river_network->water_surface->canonical_text ==
+                  second.river_network->water_surface->canonical_text &&
+              first.river_network->water_surface->appearance_hash ==
+                  second.river_network->water_surface->appearance_hash,
+          "JavaScript object-key order does not change canonical water appearance");
+}
+
+void test_world_loader_preserves_completed_dsl_curve_and_profile() {
+    Fixture fixture;
+#ifndef MATTER_WORLD_SOURCE_QUALIFICATION
+    const auto shared_sources = embedded_shared_test_sources();
+    fixture.files.emplace("../shared-lib/river_curve.js",
+                          shared_sources.at("../shared-lib/river_curve.js"));
+#endif
+    const fs::path path = fixture.write("AuthoredCurve.js", R"JS(
+import { riverCurve } from 'shared-lib/river_curve';
+class AuthoredCurve extends World {
+  hydrology() {
+    const curve = riverCurve([0, 18, 0]);
+    curve.lineTo([30, 12, 8]).lineTo([65, 4, -3]);
+    const network = riverNetwork({cellSize: 0.5, seed: 77});
+    const main = network.river("main")
+      .inlet([0, 18, 0], {flow: 1})
+      .curve(curve.build())
+      .channelProfile([
+        {at: 0, width: 7, depth: 2.5, asymmetry: 0.35},
+        {at: 40, width: 10, depth: 3, asymmetry: -0.25},
+        {at: 80, width: 8, depth: 2, asymmetry: 0.1},
+      ]);
+    main.section("upper", {from: 0, to: 60, dryMargin: 4})
+      .pool({from: 55, to: 60, fillLevel: 4})
+      .spillway({id: "pool-one", at: 60, width: 8,
+                 effectiveDepth: 2, overlap: 4, damOffset: 2});
+    network.bakeSequential();
+    network.build();
+  }
+}
+)JS");
+    auto desc = fixture.desc(path);
+    desc.engine_shared_lib_dir = "../shared-lib";
+    matter::WorldDefinition definition;
+    matter::WorldLoadError error;
+    CHECK(matter::load_world_definition(desc, definition, error),
+          error.message.c_str());
+    CHECK(definition.river_network.has_value(),
+          "completed DSL curve publishes a canonical river network");
+    if (!definition.river_network ||
+        definition.river_network->rivers.empty()) return;
+    const std::vector<matter::Float3> expected_curve = {
+        {0.0f, 18.0f, 0.0f}, {30.0f, 12.0f, 8.0f},
+        {65.0f, 4.0f, -3.0f}};
+    const auto& river = definition.river_network->rivers.front();
+    CHECK(river.curve.size() == expected_curve.size() &&
+              river.curve[1].x == expected_curve[1].x &&
+              river.curve[1].y == expected_curve[1].y &&
+              river.curve[1].z == expected_curve[1].z,
+          "the completed DSL curve is the native source of truth");
+    CHECK(river.channel_profile.size() == 3u &&
+              river.channel_profile[1].distance_m == 40.0f &&
+              river.channel_profile[1].width_m == 10.0f &&
+              river.channel_profile[1].depth_m == 3.0f &&
+              river.channel_profile[1].asymmetry == -0.25f,
+          "channelProfile survives world loading unchanged");
+    CHECK(definition.river_network->canonical_text.find("boulders=") ==
+              std::string::npos,
+          "native boulder generation is absent from the canonical contract");
+}
+
+void test_world_loader_rejects_imperative_river_failures() {
+    const auto rejects = [](const char* filename, const std::string& body,
+                            const char* expected_path) {
+        Fixture fixture;
+        const fs::path path = fixture.write(
+            filename, "class Bad extends World { hydrology() { " + body +
+                          " } }\n");
+        matter::WorldDefinition definition;
+        matter::WorldLoadError error;
+        CHECK(!matter::load_world_definition(fixture.desc(path), definition, error),
+              filename);
+        CHECK(error.property_path == expected_path, filename);
+        CHECK(!definition.river_network.has_value(), filename);
+    };
+    rejects("MissingBuild.js",
+            "const n=riverNetwork({cellSize:.5,seed:1});",
+            "hydrology.build");
+    rejects("RepeatedBuild.js", R"JS(
+      const n=riverNetwork({cellSize:.5,seed:1});
+      const r=n.river("main")
+        .inlet([0,1,0],{flow:1})
+        .curve([[0,1,0],[100,0,0]])
+        .channelProfile([{at:0,width:5,depth:2,asymmetry:0}]);
+      r.section("upper",{from:0,to:100,dryMargin:4})
+        .pool({from:90,to:100,fillLevel:2})
+        .spillway({id:"pool-one",at:100,width:5,effectiveDepth:1,overlap:2,damOffset:1});
+      n.bakeSequential();
+      n.build(); n.build();
+    )JS", "hydrology.build");
+    rejects("Nonfinite.js",
+            "const n=riverNetwork({cellSize:Infinity,seed:1}); n.build();",
+            "hydrology.cellSize");
+    rejects("DecreasingProfile.js", R"JS(
+      const n=riverNetwork({cellSize:.5,seed:1});
+      const r=n.river("main");
+      r.channelProfile([
+        {at:64,width:5,depth:2,asymmetry:0},
+        {at:32,width:5,depth:2,asymmetry:0},
+      ]);
+    )JS", "hydrology.main.channelProfile[1].at");
+    rejects("ShortCurve.js", R"JS(
+      const n=riverNetwork({cellSize:.5,seed:1});
+      n.river("main").curve([[0,0,0]]);
+    )JS", "hydrology.main.curve");
+    rejects("JoinsReserved.js", R"JS(
+      const n=riverNetwork({cellSize:.5,seed:1});
+      const main=n.river("main");
+      n.river("side").joins(main);
+    )JS", "hydrology.side.joins");
+    rejects("DuplicateRiver.js", R"JS(
+      const n=riverNetwork({cellSize:.5,seed:1});
+      n.river("main"); n.river("main");
+    )JS", "hydrology.main.name");
+    rejects("GlassIsNotWater.js", R"JS(
+      const n=riverNetwork({cellSize:.5,seed:1});
+      n.waterSurface(4);
+    )JS", "hydrology.waterSurface.material");
+    rejects("InvalidWaterIor.js", R"JS(
+      const n=riverNetwork({cellSize:.5,seed:1});
+      n.waterSurface(7).optics({
+        shallowAbsorption:[0,0,0],shallowDistance:8,
+        deepAbsorption:[0,0,0],deepDistance:2,
+        scatteringColor:[0,0,0],scatteringDistance:7,
+        anisotropy:0,ior:.9
+      });
+    )JS", "hydrology.waterSurface.optics.ior");
+    rejects("InvalidWaterOverrideShape.js", R"JS(
+      const n=riverNetwork({cellSize:.5,seed:1});
+      n.waterSurface(7).localOverride({shape:"capsule"});
+    )JS", "hydrology.waterSurface.localOverride.shape");
+    rejects("InvalidMeshAnimationRate.js", R"JS(
+      const n=riverNetwork({cellSize:.5,seed:1});
+      n.pbd({particleSpacing:.2,restDensity:1000,fixedStep:1/120,
+             iterations:4,maxNeighbors:96});
+      n.meshAnimation({framesPerSecond:31,duration:1,phaseOffset:.5});
+    )JS", "hydrology.meshAnimation.framesPerSecond");
+    rejects("IncompatibleMeshAnimationStep.js", R"JS(
+      const n=riverNetwork({cellSize:.5,seed:1});
+      n.pbd({particleSpacing:.2,restDensity:1000,fixedStep:1/100,
+             iterations:4,maxNeighbors:96});
+      n.meshAnimation({framesPerSecond:30,duration:1,phaseOffset:.5});
+    )JS", "hydrology.meshAnimation.fixedStep");
+}
+
+void test_world_loader_rejects_dual_hydrology_configuration() {
+    Fixture fixture;
+    const fs::path path = fixture.write("Dual.js", R"JS(
+class Dual extends World {
+  static hydrology = {
+    enabled: true, origin: [-8, -2, -16], dimensions: [96, 20, 48], cellSize: 0.5,
+    dt: 0.005, gravity: 9.81, downstream: [1, 0], residualGrade: [-0.01, 0],
+    inletFlow: 1.0, inletHead: 4.0, outletHead: 1.5, batchSteps: 256, maxSteps: 16384
+  };
+  hydrology() {
+    const n = riverNetwork({ cellSize: 0.5, seed: 1 });
+    n.build();
+  }
+}
+)JS");
+    matter::WorldDefinition definition;
+    matter::WorldLoadError error;
+    CHECK(!matter::load_world_definition(fixture.desc(path), definition, error),
+          "legacy static and imperative hydrology are mutually exclusive");
+    CHECK(error.property_path == "hydrology",
+          "dual hydrology configuration reports the shared declaration path");
+}
+
+void test_world_loader_rejects_module_scope_river_build() {
+    Fixture fixture;
+    const fs::path path = fixture.write("ModuleScopeRiver.js", R"JS(
+const network = riverNetwork({cellSize: 0.5, seed: 1});
+const main = network.river("main")
+  .inlet([0, 1, 0], {flow: 1})
+  .curve([[0, 1, 0], [100, 0, 0]])
+  .channelProfile([{at: 0, width: 5, depth: 2, asymmetry: 0}]);
+main.section("upper", {from:0,to:100,dryMargin:4})
+  .pool({from:90,to:100,fillLevel:2})
+  .spillway({id:"pool-one",at:100,width:5,effectiveDepth:1,overlap:2,damOffset:1});
+network.bakeSequential();
+network.build();
+class ModuleScopeRiver extends World { hydrology() {} }
+)JS");
+    matter::WorldDefinition definition;
+    matter::WorldLoadError error;
+    CHECK(!matter::load_world_definition(fixture.desc(path), definition, error),
+          "module scope cannot pre-build a network for an empty hydrology method");
+    CHECK(error.message.find("only available inside hydrology()") !=
+              std::string::npos,
+          "module-scope riverNetwork misuse names the allowed phase");
+    CHECK(!definition.river_network.has_value(),
+          "a module-scope river build never publishes canonical state");
+}
+
+void test_world_loader_rejects_build_entities_river_build() {
+    Fixture fixture;
+    const fs::path path = fixture.write("BuildEntitiesRiver.js", R"JS(
+class BuildEntitiesRiver extends World {
+  buildEntities() {
+    const network = riverNetwork({cellSize: 0.5, seed: 1});
+    const main = network.river("main")
+      .inlet([0, 1, 0], {flow: 1})
+      .curve([[0, 1, 0], [100, 0, 0]])
+      .channelProfile([{at: 0, width: 5, depth: 2, asymmetry: 0}]);
+    main.section("upper", {from:0,to:100,dryMargin:4})
+      .pool({from:90,to:100,fillLevel:2})
+      .spillway({id:"pool-one",at:100,width:5,effectiveDepth:1,overlap:2,damOffset:1});
+    network.bakeSequential();
+    network.build();
+  }
+}
+)JS");
+    matter::WorldDefinition definition;
+    matter::WorldLoadError error;
+    CHECK(!matter::load_world_definition(fixture.desc(path), definition, error),
+          "buildEntities cannot create a silently discarded river network");
+    CHECK(error.property_path == "buildEntities" &&
+              error.message.find("only available inside hydrology()") !=
+                  std::string::npos,
+          "buildEntities riverNetwork misuse identifies both method and phase");
+    CHECK(!definition.river_network.has_value(),
+          "a buildEntities river build never publishes canonical state");
+}
+
+void test_world_loader_closes_river_handles_after_hydrology() {
+    Fixture fixture;
+    const fs::path path = fixture.write("LateRiverHandle.js", R"JS(
+class LateRiverHandle extends World {
+  hydrology() {
+    const network = riverNetwork({cellSize: 0.5, seed: 1});
+    const main = network.river("main")
+      .inlet([0, 1, 0], {flow: 1})
+      .curve([[0, 1, 0], [100, 0, 0]])
+      .channelProfile([{at: 0, width: 5, depth: 2, asymmetry: 0}]);
+    main.section("upper", {from:0,to:100,dryMargin:4})
+      .pool({from:90,to:100,fillLevel:2})
+      .spillway({id:"pool-one",at:100,width:5,effectiveDepth:1,overlap:2,damOffset:1});
+    network.bakeSequential();
+    network.build();
+    this.savedNetwork = network;
+  }
+  buildEntities() { this.savedNetwork.river("late"); }
+}
+)JS");
+    matter::WorldDefinition definition;
+    matter::WorldLoadError error;
+    CHECK(!matter::load_world_definition(fixture.desc(path), definition, error),
+          "opaque river handles stop accepting calls after hydrology returns");
+    CHECK(error.property_path == "buildEntities" &&
+              error.message.find("only available inside hydrology()") !=
+                  std::string::npos,
+          "late opaque-handle use reports the closed hydrology phase");
+    CHECK(!definition.river_network.has_value(),
+          "late handle misuse clears the partial world definition");
+}
+
+void test_world_loader_builds_terrain_collision_definition() {
+    Fixture fixture;
+    const fs::path path = fixture.write("Collision.js", R"JS(
+class Collision extends World {
+  static settings = { sectorSize: 64 };
+  collision() {
+    if (this.worldSeed !== 77 || this.params.difficulty !== 3)
+      throw new Error('collision did not receive normal world state');
+    const collision = terrainCollision({ cellSize: 0.5, friction: 0.72, restitution: 0.02 });
+    collision.region('river-gameplay', { min: [-64, -64, -64], max: [128, 64, 64] });
+    collision.region('bank', { min: [128, -64, -64], max: [192, 64, 64] });
+    collision.build();
+    return { ignored: true };
+  }
+}
+)JS");
+    matter::WorldDefinition definition;
+    matter::WorldLoadError error;
+    CHECK(matter::load_world_definition(fixture.desc(path), definition, error),
+          error.message.c_str());
+    CHECK(definition.terrain_collision.has_value(),
+          "collision() publishes a completed terrain collision definition");
+    if (!definition.terrain_collision) return;
+    const auto& collision = *definition.terrain_collision;
+    CHECK(collision.cell_size_m == 0.5f && collision.rung == 2,
+          "collision cell size retains its exact terrain rung");
+    CHECK(collision.friction == 0.72f && collision.restitution == 0.02f,
+          "collision material values are retained");
+    CHECK(collision.regions.size() == 2 &&
+              collision.regions[0].id == "river-gameplay" &&
+              collision.regions[0].min_m.x == -64.0f &&
+              collision.regions[1].max_m.x == 192.0f,
+          "collision region labels and bounds are retained in authoring order");
+}
+
+void test_world_loader_omits_terrain_collision_without_changing_other_data() {
+    Fixture fixture;
+    const fs::path path = fixture.write("NoCollision.js", R"JS(
+class NoCollision extends World {
+  static settings = { sectorSize: 32, yMin: -12, yMax: 88 };
+  static roots = [{ module: 'Ground' }];
+}
+)JS");
+    matter::WorldDefinition definition;
+    matter::WorldLoadError error;
+    CHECK(matter::load_world_definition(fixture.desc(path), definition, error),
+          error.message.c_str());
+    CHECK(!definition.terrain_collision.has_value(),
+          "worlds without collision() retain an empty optional definition");
+    CHECK(definition.settings.sector_size == 32.0f && definition.roots.size() == 1,
+          "collision omission leaves ordinary world definition data unchanged");
+}
+
+void test_world_loader_rejects_terrain_collision_outside_collision_phase() {
+    const auto rejects = [](const char* filename, const std::string& source,
+                            const char* phase) {
+        Fixture fixture;
+        const fs::path path = fixture.write(filename, source);
+        matter::WorldDefinition definition;
+        matter::WorldLoadError error;
+        CHECK(!matter::load_world_definition(fixture.desc(path), definition, error),
+              "terrainCollision outside collision() is rejected");
+        CHECK(error.message.find("only available inside collision()") != std::string::npos &&
+                  error.message.find(phase) != std::string::npos,
+              "terrainCollision phase diagnostics identify the active hook");
+    };
+    rejects("CollisionModule.js", R"JS(
+const bad = terrainCollision({ cellSize: 0.5 });
+class CollisionModule extends World {}
+)JS", "module");
+    rejects("CollisionHydrology.js", R"JS(
+class CollisionHydrology extends World { hydrology() { terrainCollision({ cellSize: 0.5 }); } }
+)JS", "hydrology");
+    rejects("CollisionEntities.js", R"JS(
+class CollisionEntities extends World { buildEntities() { terrainCollision({ cellSize: 0.5 }); } }
+)JS", "buildEntities");
+}
+
+void test_world_loader_rejects_invalid_terrain_collision_builder_lifecycle() {
+    const auto rejects = [](const char* filename, const std::string& body,
+                            const char* expected_path) {
+        Fixture fixture;
+        const fs::path path = fixture.write(
+            filename, "class Bad extends World { static settings = { sectorSize: 64 }; collision() { " +
+                body + " } }");
+        matter::WorldDefinition definition;
+        matter::WorldLoadError error;
+        CHECK(!matter::load_world_definition(fixture.desc(path), definition, error),
+              "invalid terrain collision authoring is rejected");
+        CHECK(error.property_path.find(expected_path) != std::string::npos,
+              "terrain collision rejection identifies the failing builder field");
+    };
+    rejects("TwoBuilders.js", "terrainCollision({cellSize:0.5}); terrainCollision({cellSize:0.5});", "terrainCollision");
+    rejects("TwoBuilds.js", "const c=terrainCollision({cellSize:0.5}); c.region('a',{min:[0,0,0],max:[64,64,64]}); c.build(); c.build();", "terrainCollision.build");
+    rejects("NoRegion.js", "terrainCollision({cellSize:0.5}).build();", "terrainCollision.build");
+    rejects("DuplicateRegion.js", "const c=terrainCollision({cellSize:0.5}); c.region('a',{min:[0,0,0],max:[64,64,64]}); c.region('a',{min:[64,0,0],max:[128,64,64]}); c.build();", "terrainCollision.region");
+    rejects("LateRegion.js", "const c=terrainCollision({cellSize:0.5}); c.region('a',{min:[0,0,0],max:[64,64,64]}); c.build(); c.region('b',{min:[64,0,0],max:[128,64,64]});", "terrainCollision.region");
+    rejects("NoBuild.js", "terrainCollision({cellSize:0.5});", "collision");
+    rejects("BadCell.js", "terrainCollision({cellSize:0.75});", "terrainCollision.cellSize");
+    rejects("StringCell.js", "terrainCollision({cellSize:'0.5'});", "terrainCollision.cellSize");
+    rejects("BadMaterial.js", "terrainCollision({cellSize:0.5,friction:2});", "terrainCollision.friction");
+    rejects("BooleanFriction.js", "terrainCollision({cellSize:0.5,friction:true});", "terrainCollision.friction");
+    rejects("NullRestitution.js", "terrainCollision({cellSize:0.5,restitution:null});", "terrainCollision.restitution");
+    rejects("BadVector.js", "terrainCollision({cellSize:0.5}).region('a',{min:[0,0],max:[64,64,64]});", "terrainCollision.region[a].min");
+    rejects("StringVector.js", "terrainCollision({cellSize:0.5}).region('a',{min:['0',0,0],max:[64,64,64]});", "terrainCollision.region[a].min");
+    rejects("BooleanVector.js", "terrainCollision({cellSize:0.5}).region('a',{min:[0,0,0],max:[64,false,64]});", "terrainCollision.region[a].max");
+    rejects("Misaligned.js", "const c=terrainCollision({cellSize:0.5}); c.region('a',{min:[1,0,0],max:[64,64,64]}); c.build();", "terrainCollision.region[a].min");
+}
+
+void test_terrain_collision_adapter_preserves_optional_definition() {
+    matter::WorldDefinition source;
+    source.terrain_collision = matter::TerrainCollisionDefinition{};
+    source.terrain_collision->cell_size_m = 0.5f;
+    source.terrain_collision->rung = 2;
+    source.terrain_collision->regions.push_back(
+        {"adapter", {-64.0f, 0.0f, 0.0f}, {0.0f, 64.0f, 64.0f}});
+    const viewer::ProviderWorldDefinition adapted = viewer::adapt_world_definition(source);
+    CHECK(adapted.terrain_collision.has_value(),
+          "provider adapter preserves an authored terrain collision definition");
+    CHECK(adapted.terrain_collision && adapted.terrain_collision->rung == 2 &&
+              adapted.terrain_collision->regions[0].id == "adapter",
+          "provider adapter preserves terrain collision payload values exactly");
+    source.terrain_collision.reset();
+    CHECK(!viewer::adapt_world_definition(source).terrain_collision.has_value(),
+          "provider adapter retains collision omission as empty");
+}
+
+// reset() derives its material union from the live per-key lists rather than
+// maintaining a running set, so neither a rebind that SHRINKS a key's list nor a
+// material bound by two atlases at once can skew what it reports.
+void test_slot_binder_reset_union_is_exact() {
+    tileset::DetailSlotBinder binder(2);
+
+    binder.acquire(0x11u);
+    binder.bind(0x11u, {16, 17});
+    binder.bind(0x11u, {16});      // rebind DROPS 17
+
+    binder.acquire(0x22u);
+    binder.bind(0x22u, {16, 30});  // 16 is now bound by two atlases
+
+    const auto third = binder.acquire(0x33u);
+    CHECK(third.evicted && third.evicted_key == 0x11u,
+          "the LRU atlas is the victim");
+    binder.bind(0x33u, {31});
+
+    const std::vector<int> released = binder.reset();
+    CHECK(released.size() == 3 && released[0] == 16 && released[1] == 30 &&
+              released[2] == 31,
+          "reset reports the exact ascending union of the live bindings: 17 was "
+          "rebound away, and 16 survives its other atlas being evicted");
+}
+
 } // namespace
 
-int main() {
+// giBake({...}) — the GI lightmap bake declaration (docs/bake-gi.md). A data
+// call, not a lifecycle hook: legal at module scope, in a static initializer
+// and inside hooks; every field optional; at most one call per world.
+void test_world_loader_accepts_gi_bake_call() {
+    {
+        Fixture fixture;
+        const fs::path path = fixture.write("GiWorld.js", R"JS(
+const gi = giBake({ samples: 128, bounces: 3, texelDensity: 12.5, seed: 42, prelit: true, denoise: false, out: 'gi-out' });
+if (gi.samples !== 128 || gi.bounces !== 3 || gi.texelDensity !== 12.5 || gi.prelit !== true || gi.out !== 'gi-out')
+  throw new Error('giBake did not echo its settings');
+class GiWorld extends World {
+  static settings = { sectorSize: 64 };
+}
+)JS");
+        matter::WorldDefinition definition;
+        matter::WorldLoadError error;
+        CHECK(matter::load_world_definition(fixture.desc(path), definition, error),
+              error.message.c_str());
+        CHECK(definition.gi_bake.has_value(), "giBake() publishes a GI bake declaration");
+        if (definition.gi_bake) {
+            const matter::GiBakeSettings& g = *definition.gi_bake;
+            CHECK(g.samples == 128 && g.bounces == 3 && g.texel_density == 12.5f && g.seed == 42,
+                  "giBake numeric fields are retained");
+            CHECK(g.prelit && !g.denoise && g.out == "gi-out", "giBake flags and out dir are retained");
+        }
+    }
+    {
+        // Static-initializer call with no options: every field defaults.
+        Fixture fixture;
+        const fs::path path = fixture.write("GiDefaults.js", R"JS(
+class GiDefaults extends World {
+  static settings = { sectorSize: 64 };
+  static gi = giBake();
+}
+)JS");
+        matter::WorldDefinition definition;
+        matter::WorldLoadError error;
+        CHECK(matter::load_world_definition(fixture.desc(path), definition, error),
+              error.message.c_str());
+        CHECK(definition.gi_bake.has_value() && definition.gi_bake->samples == 64 &&
+                  definition.gi_bake->bounces == 2 && definition.gi_bake->texel_density == 8.0f &&
+                  definition.gi_bake->denoise && !definition.gi_bake->prelit &&
+                  definition.gi_bake->out.empty(),
+              "giBake() with no options records the defaults");
+    }
+    {
+        // A call from buildEntities() — the last hook to run — is recorded too,
+        // and a large seed survives with full 32-bit precision.
+        Fixture fixture;
+        const fs::path path = fixture.write("GiLate.js", R"JS(
+class GiLate extends World {
+  static settings = { sectorSize: 64 };
+  buildEntities() { giBake({ samples: 256, seed: 4294967295 }); }
+}
+)JS");
+        matter::WorldDefinition definition;
+        matter::WorldLoadError error;
+        CHECK(matter::load_world_definition(fixture.desc(path), definition, error),
+              error.message.c_str());
+        CHECK(definition.gi_bake.has_value() && definition.gi_bake->samples == 256 &&
+                  definition.gi_bake->seed == 4294967295u,
+              "giBake() inside buildEntities() is recorded with an exact u32 seed");
+    }
+    {
+        Fixture fixture;
+        const fs::path path = fixture.write("NoGi.js", R"JS(
+class NoGi extends World { static settings = { sectorSize: 64 }; }
+)JS");
+        matter::WorldDefinition definition;
+        matter::WorldLoadError error;
+        CHECK(matter::load_world_definition(fixture.desc(path), definition, error),
+              error.message.c_str());
+        CHECK(!definition.gi_bake.has_value(), "a world without giBake() has no declaration");
+    }
+}
+
+void test_world_loader_rejects_invalid_gi_bake() {
+    const auto rejects = [](const char* filename, const std::string& body, const char* expected_path) {
+        Fixture fixture;
+        const fs::path path = fixture.write(
+            filename, body + "\nclass Bad extends World { static settings = { sectorSize: 64 }; }\n");
+        matter::WorldDefinition definition;
+        matter::WorldLoadError error;
+        CHECK(!matter::load_world_definition(fixture.desc(path), definition, error),
+              "invalid giBake authoring is rejected");
+        CHECK(error.property_path.find(expected_path) != std::string::npos,
+              (std::string("giBake diagnostic names the field: ") + expected_path +
+               " (got '" + error.property_path + "')").c_str());
+    };
+    rejects("GiSamples.js", "giBake({ samples: 0 });", "giBake.samples");
+    rejects("GiSamplesBig.js", "giBake({ samples: 5000 });", "giBake.samples");
+    rejects("GiBounces.js", "giBake({ bounces: 9 });", "giBake.bounces");
+    rejects("GiDensity.js", "giBake({ texelDensity: -1 });", "giBake.texelDensity");
+    rejects("GiDensityNaN.js", "giBake({ texelDensity: 'dense' });", "giBake.texelDensity");
+    rejects("GiSeedBig.js", "giBake({ seed: 4294967296 });", "giBake.seed");
+    rejects("GiSeedFrac.js", "giBake({ seed: 1.5 });", "giBake.seed");
+    rejects("GiPrelit.js", "giBake({ prelit: 'yes' });", "giBake.prelit");
+    rejects("GiOut.js", "giBake({ out: 7 });", "giBake.out");
+    rejects("GiTwice.js", "giBake({}); giBake({ samples: 8 });", "giBake");
+    rejects("GiArg.js", "giBake(12);", "giBake");
+}
+
+int main(int argc, char** argv) {
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
+    ScopedCacheRootEnv clean_cache_environment(nullptr);
+    test_lexical_project_cache_identity();
+#ifdef MATTER_WORLD_SOURCE_QUALIFICATION
+    if (argc == 2 && std::string(argv[1]) == "--surface-contact") {
+        test_surface_receiver_authoring();
+        test_surface_contact_material();
+        return check_summary();
+    }
+    if (argc == 2 && std::string(argv[1]) == "--mountain-material") {
+        test_terrain_texture_density();
+        test_mountain_rock_catalog();
+        test_stream_mountain_direct_material();
+        return check_summary();
+    }
+    test_external_project_cache_root();
     test_project_layout_derives_runtime_paths();
     test_scene_layout_derives_runtime_paths();
     test_shared_lib_only_names_shared_objects();
     test_scene_without_objects_falls_back_to_project_tier();
     test_flat_layout_still_resolves_when_scene_script_absent();
     test_scene_object_shadows_project_object();
+    test_grouped_scene_and_object_resolution();
     test_relative_project_dir_yields_absolute_cache_root();
     test_every_shipped_world_loads();
+    test_mountain_rock_catalog();
+    test_stream_mountain_direct_material();
+    test_surface_contact_material();
+    test_surface_receiver_authoring();
     test_example_worlds_preserve_manifest_authoring();
+    test_checked_in_river_hydrology_uses_the_imperative_section_contract();
+    return check_summary();
+#else
+    if (argc != 1) {
+        std::fprintf(stderr, "Source qualification options moved to matter_world_source_qualifier.\n");
+        return 2;
+    }
+    (void)argv;
+    test_surface_receiver_authoring();
     test_rejects_non_world_base_with_location_and_property();
     test_extracts_statics_without_calling_field_and_uses_project_override();
+    test_local_light_object_forms_and_runtime_publication();
+    test_local_light_validation_rejects_invalid_values();
+    test_world_loader_preserves_root_fluid_colliders();
+    test_world_loader_rejects_invalid_root_fluid_colliders();
     test_engine_shared_fallback_and_no_entity_world();
     test_authored_entity_override_cannot_intercept_collection();
     test_rejects_undefined_or_non_json_owned_values();
@@ -2026,6 +4001,7 @@ int main() {
     test_fog_extraction_with_authored_values();
     test_fog_defaults_when_absent();
     test_streaming_ring_extraction();
+    test_terrain_texture_density();
     test_nested_sectors_flag();
     test_volumetric_sectors_flag();
     test_vulkan_volumetrics_settings_defaults();
@@ -2042,12 +4018,40 @@ int main() {
     test_props_absent_and_empty();
     test_props_validation_paths();
     test_props_getprop_diagnostics();
+    test_exports_extraction();
+    test_exports_single_object_form();
+    test_exports_absent();
+    test_exports_validation_paths();
     test_define_material_round_trip();
     test_define_material_reset_between_worlds();
     test_define_material_name_collision_rules();
     test_define_material_rejects_bad_specs();
+    test_define_material_authors_water_surface_domain();
+    test_define_material_surface_detail_mode();
     test_detail_bake_plan_ordering_and_merging();
     test_slot_allocator_eviction_order();
     test_slot_binder_reports_displaced_materials();
+    test_world_loader_reads_static_hydrology();
+    test_world_loader_leaves_hydrology_empty_when_absent();
+    test_world_loader_rejects_invalid_static_hydrology();
+    test_world_loader_rejects_every_unknown_hydrology_property();
+    test_world_loader_rejects_uint32_overflow_before_narrowing();
+    test_world_loader_builds_imperative_river_network();
+    test_water_surface_object_key_order_is_canonical();
+    test_world_loader_preserves_completed_dsl_curve_and_profile();
+    test_world_loader_rejects_imperative_river_failures();
+    test_world_loader_rejects_dual_hydrology_configuration();
+    test_world_loader_rejects_module_scope_river_build();
+    test_world_loader_rejects_build_entities_river_build();
+    test_world_loader_closes_river_handles_after_hydrology();
+    test_world_loader_builds_terrain_collision_definition();
+    test_world_loader_omits_terrain_collision_without_changing_other_data();
+    test_world_loader_rejects_terrain_collision_outside_collision_phase();
+    test_world_loader_rejects_invalid_terrain_collision_builder_lifecycle();
+    test_terrain_collision_adapter_preserves_optional_definition();
+    test_world_loader_accepts_gi_bake_call();
+    test_world_loader_rejects_invalid_gi_bake();
+    test_slot_binder_reset_union_is_exact();
     return check_summary();
+#endif
 }

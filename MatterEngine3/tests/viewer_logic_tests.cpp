@@ -9,6 +9,7 @@
 #include "../src/render/frame_matrices.h"
 #include "../src/render/matrix_math.h"
 #include "lod_select.h"   // PartLodTable, PartLod
+#include "source_snapshot_modules.h"
 #include "part_graph.h"   // PartGraph + FileModuleResolver/HostBaker (script-host guarded)
 #include "part_asset_v2.h"
 #include "part_flatten.h"  // Task 11: flatten_part for regen sniff test
@@ -31,11 +32,48 @@
 #include <string>
 #include <sys/stat.h>
 #include <vector>
+#ifdef _WIN32
+#include <direct.h>
+#else
 #include <unistd.h>
+#endif
 
 #include "check.h"
+#include "memory_fixture_io.h"
 
 #include <array>
+
+static std::shared_ptr<matter::test::MemoryCacheByteStorage> fixture_storage;
+static std::shared_ptr<const matter::SourceSnapshot> fixture_sources;
+static const std::string fixture_project = "/viewer-logic-project";
+static viewer::LocalProviderConfig fixture_config() {
+#ifdef MATTER_VIEWER_SOURCE_QUALIFICATION
+    return viewer::LocalProviderConfig::for_project(
+        "../../projects/world_demo", "Demo", "../shared-lib");
+#else
+    auto io = std::make_shared<matter::WorldFixtureIO>();
+    io->sources = fixture_sources;
+    io->cache = fixture_storage;
+    return viewer::LocalProviderConfig::for_project(fixture_project, "Demo", "", io);
+#endif
+}
+
+#ifdef MATTER_VIEWER_SOURCE_QUALIFICATION
+static char* test_getcwd(char* buffer, size_t size) {
+#ifdef _WIN32
+    return _getcwd(buffer, static_cast<int>(size));
+#else
+    return getcwd(buffer, size);
+#endif
+}
+
+static int test_chdir(const char* path) {
+#ifdef _WIN32
+    return _chdir(path);
+#else
+    return chdir(path);
+#endif
+}
 
 // Shared PartStore and WorldManifest populated once by test_local_provider_cache's cold run
 // and reused by subsequent tests that need loaded parts. This avoids re-running the
@@ -66,6 +104,19 @@ static void remove_test_dir(const std::string& root) {
     std::error_code ec;
     std::filesystem::remove_all(root, ec);
 }
+
+#else
+static std::string test_tmp(const char* name) { return std::string("/viewer-logic-fixture/") + name; }
+static void remove_test_dir(const std::string& root) {
+    for (const auto& entry : fixture_storage->entries())
+        if (entry.first.compare(0, root.size() + 1, root + "/") == 0)
+            fixture_storage->erase(entry.first);
+}
+static void reset_test_dir(const std::string& root, bool = false) { remove_test_dir(root); }
+static void ensure_parts_dir(const std::string&) {}
+static viewer::PartStore* g_shared_store = nullptr;
+static viewer::WorldManifest g_shared_manifest;
+#endif
 
 static bool camera_close3(matter::Float3 a, matter::Float3 b, float epsilon) {
     return std::fabs(a.x - b.x) <= epsilon &&
@@ -565,7 +616,7 @@ static void test_resolvers() {
 }
 
 static void test_part_store_missing() {
-    viewer::PartStore store(test_tmp("me3_viewer_test_cache_empty"));
+    viewer::PartStore store(test_tmp("me3_viewer_test_cache_empty"), fixture_storage);
     CHECK(!store.has(0xDEADBEEFULL), "fresh store reports unknown hash as absent");
     CHECK(store.loaded_count() == 0, "fresh store has nothing loaded");
 }
@@ -574,8 +625,7 @@ static void test_local_provider_cache() {
     const std::string cache = test_tmp("me3_viewer_cache_test");
 
     // Resolve committed example assets relative to MatterEngine3/tests (cwd).
-    auto cfg = viewer::LocalProviderConfig::for_project(
-        "../../projects/world_demo", "Demo", "../shared-lib");
+    auto cfg = fixture_config();
     cfg.cache_root = cache;
 
     // --- First connect: bake anything missing, then load into the shared store. ---
@@ -600,7 +650,7 @@ static void test_local_provider_cache() {
         // leaving the store empty. We must ensure lod_bake runs exactly ONCE per process
         // (here) so downstream tests can call get_or_load cheaply (memoized).
         delete g_shared_store;
-        g_shared_store = new viewer::PartStore(cache);
+        g_shared_store = new viewer::PartStore(cache, fixture_storage);
         auto want = prov.reconcile(m, *g_shared_store);
         CHECK(prov.fetch_parts(want, *g_shared_store, err), "fetch_parts loads all wanted parts");
         CHECK(prov.fetch_failed().empty(), "fetch_parts had no per-part failures");
@@ -645,29 +695,24 @@ static void test_local_provider_cache() {
         CHECK(prov.baked_count() == 0, "warm connect bakes nothing (all cache hits)");
 
         // Use a temporary store (just for the reconcile assertion; don't need to load).
-        viewer::PartStore store(cache);
+        viewer::PartStore store(cache, fixture_storage);
         auto want = prov.reconcile(m, store);
         CHECK(want.empty(), "warm reconcile wants nothing (instant reload)");
     }
 }
 
-static std::string read_file(const std::string& path) {
-    std::ifstream f(path, std::ios::binary);
-    std::ostringstream ss; ss << f.rdbuf();
-    return ss.str();
-}
-
 // Task 10 (updated for bake-time flattening): the PartStore serves parts two ways.
-//  - A PLACED ROOT (whatever the demo manifest places — currently TreeGallery)
+//  - A PLACED ROOT (the seed-42 Tree expanded from TreeGallery)
 //    has a flat artifact (<hash>.flat.part, written by LocalProvider::connect):
 //    loaded flat-preferred with its STORED LOD ladder and an EMPTY child table
 //    (the whole subtree is merged into the mesh).
-//  - A non-flattened part (the Tree, never placed as a manifest root) loads
+//  - A non-flattened part (a seed-1 Tree, never placed by TreeGallery) loads
 //    through the compositional path and must KEEP its baked child-instance
 //    table for the WorldComposer to expand.
 static void test_partstore_keeps_children() {
     namespace pg = part_graph;
 
+#ifdef MATTER_VIEWER_SOURCE_QUALIFICATION
     // Resolve the demo schemas + shared-lib to ABSOLUTE paths BEFORE we chdir, so
     // they still resolve from inside the sandbox (they are repo-relative to tests/).
     std::error_code path_error;
@@ -681,46 +726,79 @@ static void test_partstore_keeps_children() {
     if (schemas.empty() || sharedlib.empty()) return;
 
     // Reuse the warm cache already built by test_local_provider_cache. The gallery
-    // bakes seed-variant Trees, so the default-params Tree installed here is its own
-    // cache entry: cold-baked once on the first-ever run, a disk cache hit (no
+    // places seeds 42 + 101*s, including the default Tree. Seed 1 remains a
+    // separate compositional cache entry: cold-baked once, a disk cache hit (no
     // re-bake) on every run after that since the test cache persists.
     const std::string root = test_tmp("me3_viewer_cache_test");
     ensure_parts_dir(root);   // ensure exists (may already)
 
-    char prevcwd[4096]; if (!getcwd(prevcwd, sizeof prevcwd)) prevcwd[0] = '\0';
-    CHECK(chdir(root.c_str()) == 0, "chdir into keep-children sandbox");
+    char prevcwd[4096]; if (!test_getcwd(prevcwd, sizeof prevcwd)) prevcwd[0] = '\0';
+    CHECK(test_chdir(root.c_str()) == 0, "chdir into keep-children sandbox");
 
+#else
+    const std::string schemas = fixture_project + "/objects";
+    const std::string sharedlib;
+    const std::string root = test_tmp("me3_viewer_cache_test");
+#endif
     script_host::ScriptHost host;
     host.set_shared_lib_root(sharedlib);
-    pg::FileModuleResolver resolver(host, schemas);
-    pg::HostBaker baker(host, ".");
+    if (fixture_sources) host.set_module_sources(matter::source_snapshot_modules(
+        *fixture_sources, sharedlib.empty() ? std::vector<std::string>{} : std::vector<std::string>{sharedlib}));
+    pg::FileModuleResolver resolver(host, schemas, fixture_sources);
+    pg::HostBaker baker(host, root, fixture_storage);
     pg::PartGraph graph(resolver, baker);
 
-    pg::InstallResult ir = graph.install({ pg::ChildRequest{ "Tree", pg::Params{} } });
+    const pg::Params compositional_params{{"seed", pg::ParamValue::number(1)}};
+    pg::InstallResult ir = graph.install({ pg::ChildRequest{ "Tree", compositional_params } });
     CHECK(ir.ok, "demo Tree installs into sandbox cache");
+    CHECK(ir.failed.empty(), "compositional Tree install has no skipped parts");
     if (!ir.ok) printf("  install error: %s\n", ir.error.c_str());
 
     // Recompute the hash chain exactly as the graph did: Leaf (no children) folds
-    // into TreeBranch, which folds into Tree. Use the SAME host (shared-lib root
-    // set) so the imported module sources fold identically.
-    uint64_t leaf_hash = host.resolve_hash(read_file(schemas + "/Leaf.js"), "{}");
+    // into TreeBranch, which folds into Tree. Use the SAME resolver and host
+    // so grouped object directories and imported sources fold identically.
+    std::string leaf_source, branch_source, tree_source;
+    const bool sources_loaded = resolver.load_source("Leaf", leaf_source) &&
+        resolver.load_source("TreeBranch", branch_source) &&
+        resolver.load_source("Tree", tree_source) &&
+        !leaf_source.empty() && !branch_source.empty() && !tree_source.empty();
+    CHECK(sources_loaded, "resolved grouped Leaf, TreeBranch, and Tree sources");
+    if (!sources_loaded) {
+        #ifdef MATTER_VIEWER_SOURCE_QUALIFICATION
+        if (prevcwd[0]) (void)test_chdir(prevcwd);
+#endif
+        return;
+    }
+    uint64_t leaf_hash = host.resolve_hash(leaf_source, "{}");
     uint64_t branch_kids[1] = { leaf_hash };
-    uint64_t branch_hash = host.resolve_hash(read_file(schemas + "/TreeBranch.js"), "{}",
+    uint64_t branch_hash = host.resolve_hash(branch_source, "{}",
                                              branch_kids, 1);
     uint64_t tree_kids[1] = { branch_hash };
-    uint64_t tree_hash = host.resolve_hash(read_file(schemas + "/Tree.js"), "{}",
+    const uint64_t placed_tree_hash = host.resolve_hash(tree_source, "{}",
+                                                        tree_kids, 1);
+    uint64_t tree_hash = host.resolve_hash(tree_source, pg::params_to_json(compositional_params),
                                            tree_kids, 1);
+    CHECK(ir.root_hashes.size() == 1 && ir.root_hashes[0] == tree_hash && tree_hash != 0,
+          "compositional Tree hash matches installed grouped sources");
 
     // Reuse the shared PartStore (already has the manifest root loaded) to avoid a
     // second lod_bake pass. The shared store points at the same cache root.
-    if (!g_shared_store) { CHECK(false, "keep-children: shared store not set"); if (prevcwd[0]) chdir(prevcwd); return; }
+    if (!g_shared_store) { CHECK(false, "keep-children: shared store not set"); return; }
 
-    // Placed root (from the manifest; LocalProvider::connect wrote its flat
-    // artifact) -> flat-preferred: merged mesh, stored ladder, EMPTY child table.
+    // TreeGallery itself is a geometry-free assembly whose flat artifact emits
+    // instance refs. Its expanded seed-42 Tree is the geometry-bearing root
+    // that exercises flat-preferred loading; select its identity independently
+    // of whether any loaded part happens to satisfy the assertions below.
     CHECK(!g_shared_manifest.instances.empty(), "shared manifest has a placed root");
-    const viewer::LoadedPart* root_part = g_shared_manifest.instances.empty()
-        ? nullptr
-        : g_shared_store->get_or_load(g_shared_manifest.instances[0].part_hash);
+    bool placed_tree_present = false, compositional_tree_placed = false;
+    for (const auto& entry : g_shared_manifest.instances) {
+        placed_tree_present |= entry.part_hash == placed_tree_hash;
+        compositional_tree_placed |= entry.part_hash == tree_hash;
+    }
+    CHECK(placed_tree_present, "gallery manifest contains the seed-42 Tree root");
+    CHECK(!compositional_tree_placed, "seed-1 Tree is not a placed root");
+    const viewer::LoadedPart* root_part = placed_tree_present
+        ? g_shared_store->get_or_load(placed_tree_hash) : nullptr;
     CHECK(root_part != nullptr, "placed root loads from PartStore");
     CHECK(root_part && !root_part->lod_blas.empty(), "flat root carries LOD geometry");
     CHECK(root_part && root_part->children.empty(), "flat root has an empty child table");
@@ -731,7 +809,7 @@ static void test_partstore_keeps_children() {
     if (root_part) printf("  flat root: %zu LOD level(s), %zu children\n",
                           root_part->lod_blas.size(), root_part->children.size());
 
-    // Non-flattened part (the Tree — never placed as a manifest root, so no flat
+    // Non-flattened part (seed-1 Tree — never placed as a manifest root, so no flat
     // artifact) -> compositional path, which must KEEP the baked child-instance
     // table for the WorldComposer to expand.
     const viewer::LoadedPart* tree = g_shared_store->get_or_load(tree_hash);
@@ -746,7 +824,9 @@ static void test_partstore_keeps_children() {
     const viewer::LoadedPart* branch = g_shared_store->get_or_load(branch_hash);
     CHECK(branch != nullptr, "branch part loads from PartStore");
 
-    if (prevcwd[0]) (void)chdir(prevcwd);
+    #ifdef MATTER_VIEWER_SOURCE_QUALIFICATION
+        if (prevcwd[0]) (void)test_chdir(prevcwd);
+#endif
     // Do not remove root — it is the shared warm cache reused by other tests.
 }
 
@@ -800,7 +880,7 @@ static void test_compose_expands_children() {
     CHECK(save_part(parent_hash, kids), "synthetic parent part saved");
     CHECK(save_part(assembler_hash, kids, false), "synthetic assembly root saved");
 
-    viewer::PartStore store(root);
+    viewer::PartStore store(root, fixture_storage);
     const viewer::LoadedPart* parent = store.get_or_load(parent_hash);
     CHECK(parent != nullptr, "synthetic parent loads (compositional path)");
     CHECK(parent && parent->children.size() == 2, "loaded parent keeps its child table");
@@ -930,6 +1010,28 @@ static void test_indexed_weld() {
     // First corner of tri 1 is 'b' = (1,0,0).
     CHECK(soup.vertices[9] == 1.0f && soup.vertices[10] == 0.0f,
           "expand_indexed: triangle order preserved");
+
+    // Warp channels survive the unweld. They are filled by a later pass than
+    // build_raster_mesh_data, so they are attached by hand here — exactly the
+    // shape a terrain-sector rung carries. Dropping them used to make a
+    // round-tripped sector silently fall back to world-XZ ground addressing.
+    auto warped = m;
+    warped.warp_uvs.assign(static_cast<size_t>(warped.vertex_count) * 2, 0.0f);
+    warped.warp_frames.assign(static_cast<size_t>(warped.vertex_count) * 2, 0u);
+    for (int v = 0; v < warped.vertex_count; ++v) {
+        warped.warp_uvs[static_cast<size_t>(v) * 2] = static_cast<float>(v);
+        warped.warp_frames[static_cast<size_t>(v) * 2 + 1] =
+            static_cast<uint32_t>(100 + v);
+    }
+    auto warped_soup = viewer::expand_indexed(warped);
+    CHECK(warped_soup.warp_uvs.size() == 12 &&
+              warped_soup.warp_frames.size() == 12,
+          "expand_indexed: warp channels are 2 per soup vertex");
+    // Soup vertex 3 is the first corner of tri 1, i.e. input vertex m.indices[3].
+    const uint32_t src = m.indices[3];
+    CHECK(warped_soup.warp_uvs[6] == static_cast<float>(src) &&
+              warped_soup.warp_frames[7] == 100u + src,
+          "expand_indexed: warp values follow their source vertex");
 }
 
 static void test_sector_lod_floor_cull() {
@@ -957,16 +1059,25 @@ static void test_sector_lod_floor_cull() {
 
 // Helper: read raw file bytes into a string; returns empty string if missing.
 static std::string read_file_bytes(const std::string& path) {
+#ifndef MATTER_VIEWER_SOURCE_QUALIFICATION
+    auto bytes = fixture_storage->open(path);
+    return bytes ? std::string(bytes->begin(), bytes->end()) : std::string{};
+#else
     std::ifstream f(path, std::ios::binary);
     if (!f) return {};
     std::ostringstream ss; ss << f.rdbuf();
     return ss.str();
+#endif
 }
 
 // Helper: check that a file exists (returns true if stat() succeeds).
 static bool file_exists(const std::string& path) {
+#ifndef MATTER_VIEWER_SOURCE_QUALIFICATION
+    return !!fixture_storage->open(path);
+#else
     struct stat st;
     return ::stat(path.c_str(), &st) == 0;
+#endif
 }
 
 // Task 12 deleted test_raster_composer_lights: RasterComposer now depends on
@@ -1044,8 +1155,12 @@ static void test_provider_regen_stale_v2_flat() {
 //  (b) the legacy lp.lod_blas / lp.thresholds are still populated (whole-part RT view),
 //  (c) legacy lod0 tri total == sum of cluster lod0 tri counts,
 //  (d) bound_radius > 0,
-//  (e) loading a v2 flat still works (produces 1 synthetic cluster + non-empty legacy view),
+//  (e) a bundled v2 canonical part is not misidentified as a legacy flat and
+//      still produces one exact-bounds synthetic cluster,
 //  (f) the compositional path publishes one exact-bounds synthetic cluster.
+//
+// The fixture writes the canonical `.part` beside every flat it saves, because
+// a flat is only admitted as an acceleration of one (8d4291df).
 static void test_partstore_cluster_loading() {
     printf("=== test_partstore_cluster_loading ===\n");
 
@@ -1097,6 +1212,20 @@ static void test_partstore_cluster_loading() {
             clusters[1].lods.push_back(L);
         }
 
+        // A flat section is admitted only beside an exact static canonical
+        // PART snapshot. Seed that coherent sibling before adding FLAT to the
+        // same bundle; a flat-only bundle is intentionally rejected.
+        part_asset::LodLevels canonical_lods;
+        part_asset::LodLevel canonical_lod;
+        canonical_lod.screen_size_threshold = 0.0f;
+        canonical_lod.blas_indices = {bi0, bi1};
+        canonical_lods.push_back(canonical_lod);
+        const std::string part_path = root + "/" + part_asset::cache_path_resolved(kV3Hash);
+        bool canonical_ok = part_asset::save_v2(
+            part_path, scratch, scratch_tlas, nullptr, 0, canonical_lods, kV3Hash);
+        CHECK(canonical_ok, "cluster test: canonical static part saved");
+        if (!canonical_ok) return;
+
         const std::string flat_path = root + "/" + part_asset::cache_path_flat(kV3Hash);
         bool ok = part_asset::save_flat_v3(flat_path, scratch, scratch_tlas, clusters, kV3Hash);
         CHECK(ok, "cluster test: v3 flat artifact saved");
@@ -1106,7 +1235,7 @@ static void test_partstore_cluster_loading() {
 
     // (a)-(d): Load the v3 flat via PartStore and check clusters + legacy view.
     {
-        viewer::PartStore store(root);
+        viewer::PartStore store(root, fixture_storage);
         const viewer::LoadedPart* lp = store.get_or_load(kV3Hash);
         CHECK(lp != nullptr, "cluster test: v3 flat part loads");
         if (!lp) return;
@@ -1154,7 +1283,9 @@ static void test_partstore_cluster_loading() {
         CHECK(lp->bound_radius > 0.0f, "v3 load: bound_radius > 0");
     }
 
-    // (e): v2 flat still works (1 synthetic cluster + non-empty legacy view).
+    // (e): a v2 canonical PART has no FLAT section in the bundle. It must not
+    // take the obsolete legacy-flat path, but its compositional load still
+    // publishes one synthetic cluster and the non-empty legacy view.
     const uint64_t kV2Hash = 0xA1A2A3A4B1B2B3B4ull;
     {
         BLASManager scratch2; TLASManager scratch_tlas2(64);
@@ -1165,21 +1296,23 @@ static void test_partstore_cluster_loading() {
         lods.push_back(Lv2);
         const std::string flat_path2 = root + "/" + part_asset::cache_path_flat(kV2Hash);
         bool ok2 = part_asset::save_v2(flat_path2, scratch2, scratch_tlas2, nullptr, 0, lods, kV2Hash);
-        CHECK(ok2, "cluster test: v2 flat saved");
-        CHECK(part_asset::peek_format_version(flat_path2) == 2, "cluster test: v2 flat is v2");
+        CHECK(ok2, "cluster test: v2 canonical part saved");
+        CHECK(part_asset::peek_format_version(flat_path2) == 0,
+              "cluster test: v2 canonical part is not reported as FLAT");
     }
     {
-        viewer::PartStore store2(root);
+        viewer::PartStore store2(root, fixture_storage);
         const viewer::LoadedPart* lp2 = store2.get_or_load(kV2Hash);
-        CHECK(lp2 != nullptr, "v2 flat: loads successfully");
+        CHECK(lp2 != nullptr, "v2 canonical part: loads compositionally");
         if (lp2) {
-            CHECK(!lp2->lod_blas.empty(), "v2 flat: legacy lod_blas non-empty");
-            CHECK(lp2->clusters.size() == 1, "v2 flat: produces exactly 1 synthetic cluster");
+            CHECK(!lp2->lod_blas.empty(), "v2 canonical part: legacy lod_blas non-empty");
+            CHECK(lp2->clusters.size() == 1,
+                  "v2 canonical part: produces exactly 1 synthetic cluster");
             // Task 7 guards: unsegmented flat has fine_cluster_count == clusters.size()
             // and no flat_refs (v2 format has no instance-refs trailer).
             CHECK(lp2->fine_cluster_count == lp2->clusters.size(),
-                  "v2 flat: fine_cluster_count == clusters.size() (unsegmented)");
-            CHECK(lp2->flat_refs.empty(), "v2 flat: flat_refs empty (unsegmented)");
+                   "v2 canonical part: fine_cluster_count == clusters.size()");
+            CHECK(lp2->flat_refs.empty(), "v2 canonical part: flat_refs empty");
         }
     }
 
@@ -1197,7 +1330,7 @@ static void test_partstore_cluster_loading() {
         CHECK(ok3, "comp path: v2 .part saved (no flat artifact)");
     }
     {
-        viewer::PartStore store3(root);
+        viewer::PartStore store3(root, fixture_storage);
         const viewer::LoadedPart* lp3 = store3.get_or_load(kCompHash);
         CHECK(lp3 != nullptr, "comp path: part loads via compositional path");
         if (lp3) {
@@ -1264,7 +1397,7 @@ static void test_partstore_cluster_loading() {
     // (g) Task 7 guard on the v3 flat: unsegmented v3 has fine_cluster_count == clusters.size()
     // and flat_refs empty (the fixture used at top of this test has no instance_refs).
     {
-        viewer::PartStore store4(root);
+        viewer::PartStore store4(root, fixture_storage);
         const viewer::LoadedPart* lp4 = store4.get_or_load(kV3Hash);
         if (lp4) {
             CHECK(lp4->fine_cluster_count == (uint32_t)lp4->clusters.size(),
@@ -1517,8 +1650,7 @@ static void test_install_phase_on_part_progress() {
     // Records (done, total) pairs from all on_part callbacks in order.
     std::vector<std::pair<int,int>> callbacks;
 
-    auto cfg = viewer::LocalProviderConfig::for_project(
-        "../../projects/world_demo", "Demo", "../shared-lib");
+    auto cfg = fixture_config();
     cfg.cache_root = cold_cache;
     cfg.on_part = [&](const char* /*module*/, int done, int total) {
         callbacks.emplace_back(done, total);
@@ -1549,7 +1681,7 @@ static void test_install_phase_on_part_progress() {
     if (!cw_ok) printf("  compose_world error: %s\n", err.c_str());
 
     // Now fetch_parts: on_part should fire with total == want.size() (not 0).
-    viewer::PartStore store(cold_cache);
+    viewer::PartStore store(cold_cache, fixture_storage);
     auto want = prov.reconcile(m, store);
     if (!want.empty()) {
         size_t pre = callbacks.size();
@@ -1575,6 +1707,21 @@ static void test_install_phase_on_part_progress() {
 }
 
 int main() {
+#ifdef MATTER_VIEWER_SOURCE_QUALIFICATION
+    test_local_provider_cache();
+    test_partstore_keeps_children();
+    test_install_phase_on_part_progress();
+#else
+    fixture_storage = std::make_shared<matter::test::MemoryCacheByteStorage>();
+    part_bundle::ScopedStorage cache_scope(fixture_storage);
+    matter::SourceSnapshot::Files files;
+    const std::string geometry = "this.fill(MAT.stone); this.beginShape(SHAPE.triangles); this.vertex(0,0,0); this.vertex(1,0,0); this.vertex(0,1,0); this.endShape();";
+    files[fixture_project + "/objects/trees/Leaf.js"] = "class Leaf extends Part { build(p) {" + geometry + "} }";
+    files[fixture_project + "/objects/trees/TreeBranch.js"] = "class TreeBranch extends Part { static requires = [{module:'Leaf'}]; build(p) {" + geometry + "this.placeChild('Leaf');} }";
+    files[fixture_project + "/objects/trees/Tree.js"] = "class Tree extends Part { static params = {seed:42}; static requires = [{module:'TreeBranch'}]; build(p) {" + geometry + "this.placeChild('TreeBranch');} }";
+    files[fixture_project + "/scenes/Demo/objects/TreeGallery.js"] = "class TreeGallery extends Part { static requires = [{module:'Tree',params:{seed:42}}]; build(p) { this.placeChild('Tree',{seed:42});} }";
+    files[fixture_project + "/scenes/Demo/Demo.js"] = "class Demo extends World { static roots = [{module:'TreeGallery',expand:true}]; }";
+    fixture_sources = std::make_shared<const matter::SourceSnapshot>(std::move(files));
     test_forward_moves_along_camera_forward();
     test_yaw_turns_camera_analytically();
     test_huge_pitch_delta_stops_before_crossing_pole();
@@ -1623,6 +1770,7 @@ int main() {
     test_build_expansion_leaf_and_children();
     // Task 5 (Phase B): install_graph() fires on_part with total==0; fetch_parts carries want.size()
     test_install_phase_on_part_progress();
+#endif
     delete g_shared_store; g_shared_store = nullptr;
     printf("\n%s\n", g_failures == 0 ? "viewer-logic OK" : "viewer-logic FAILED");
     return g_failures == 0 ? 0 : 1;

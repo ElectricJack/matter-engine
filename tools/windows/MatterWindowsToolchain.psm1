@@ -1,0 +1,146 @@
+Set-StrictMode -Version Latest
+
+function Require-MatterFile {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Description
+    )
+
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        throw "$Description was not found: $Path"
+    }
+
+    return $Path
+}
+
+function Find-MatterWindowsPython {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string[]]$Candidates,
+        [scriptblock]$Probe
+    )
+
+    if (-not $Probe) {
+        $Probe = {
+            param([string]$Candidate, [string[]]$Arguments)
+
+            $output = (& $Candidate @Arguments 2>&1 | Out-String).Trim()
+            return [PSCustomObject]@{ ExitCode = $LASTEXITCODE; Output = $output }
+        }
+    }
+
+    foreach ($candidate in $Candidates) {
+        if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) {
+            continue
+        }
+
+        $candidateArguments = if ([System.IO.Path]::GetFileName($candidate) -ieq 'py.exe') {
+            @('-3.13', '--version')
+        } else {
+            @('--version')
+        }
+        try {
+            $probeResult = & $Probe -Candidate $candidate -Arguments $candidateArguments
+        }
+        catch {
+            # App Execution Alias stubs can exist without being executable by the
+            # current account. Continue to the next supported native launcher.
+            continue
+        }
+        if ($probeResult.ExitCode -eq 0 -and $probeResult.Output -match '^Python 3\.13\.') {
+            return [PSCustomObject]@{ Path = $candidate; Version = $probeResult.Output }
+        }
+    }
+
+    return $null
+}
+
+function Resolve-MatterWindowsToolchain {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$RepositoryRoot,
+        [switch]$Json
+    )
+
+    if ($RepositoryRoot.StartsWith('\\')) {
+        throw "Repository root must be on a local Windows drive, not a UNC path: $RepositoryRoot"
+    }
+
+    if (-not (Test-Path -LiteralPath $RepositoryRoot -PathType Container)) {
+        throw "Repository root was not found: $RepositoryRoot"
+    }
+
+    $repositoryRootPath = (Resolve-Path -LiteralPath $RepositoryRoot).Path
+    if ($repositoryRootPath.StartsWith('\\')) {
+        throw "Repository root must be on a local Windows drive, not a UNC path: $repositoryRootPath"
+    }
+
+    $vswhere = Require-MatterFile -Path (Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe') -Description 'Visual Studio Locator (vswhere.exe)'
+    $visualStudioRoot = @(
+        & $vswhere -version '[17.0,18.0)' -products '*' `
+            -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+            -property installationPath
+    ) | Where-Object { $_ } | Select-Object -First 1
+    if (-not $visualStudioRoot) {
+        throw 'Visual Studio 2022 with Microsoft.VisualStudio.Component.VC.Tools.x86.x64 was not found'
+    }
+    $visualStudioRoot = (Resolve-Path -LiteralPath $visualStudioRoot).Path
+    $visualStudioProductId = (& $vswhere -path $visualStudioRoot -property productId | Select-Object -First 1).Trim()
+    if ($visualStudioProductId -ne 'Microsoft.VisualStudio.Product.Community') {
+        throw "Visual Studio 2022 Community was required, but selected $visualStudioProductId at $visualStudioRoot"
+    }
+
+    $msvcToolsVersion = '14.44.35207'
+    $windowsSdkVersion = '10.0.26100.0'
+    $vsDevCmd = Require-MatterFile -Path (Join-Path $visualStudioRoot 'Common7\Tools\VsDevCmd.bat') -Description 'Visual Studio developer command prompt'
+    Require-MatterFile -Path (Join-Path $visualStudioRoot "VC\Tools\MSVC\$msvcToolsVersion\bin\Hostx64\x64\cl.exe") -Description "MSVC v143 x64 compiler $msvcToolsVersion" | Out-Null
+    $cmake = Require-MatterFile -Path (Join-Path $visualStudioRoot 'Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe') -Description 'Visual Studio-bundled CMake'
+    $ninja = Require-MatterFile -Path (Join-Path $visualStudioRoot 'Common7\IDE\CommonExtensions\Microsoft\CMake\Ninja\ninja.exe') -Description 'Visual Studio-bundled Ninja'
+
+    $windowsKitsRoot = 'C:\Program Files (x86)\Windows Kits\10'
+    Require-MatterFile -Path (Join-Path $windowsKitsRoot "Include\$windowsSdkVersion\um\Windows.h") -Description "Windows SDK $windowsSdkVersion UM headers" | Out-Null
+    Require-MatterFile -Path (Join-Path $windowsKitsRoot "Include\$windowsSdkVersion\shared\winerror.h") -Description "Windows SDK $windowsSdkVersion shared headers" | Out-Null
+    Require-MatterFile -Path (Join-Path $windowsKitsRoot "Lib\$windowsSdkVersion\um\x64\kernel32.lib") -Description "Windows SDK $windowsSdkVersion UM x64 import libraries" | Out-Null
+    Require-MatterFile -Path (Join-Path $windowsKitsRoot "Lib\$windowsSdkVersion\ucrt\x64\ucrt.lib") -Description "Windows SDK $windowsSdkVersion UCRT x64 import libraries" | Out-Null
+
+    $pythonCandidates = @(
+        (Join-Path $env:WINDIR 'py.exe'),
+        (Join-Path $env:LOCALAPPDATA 'Programs\Python\Launcher\py.exe'),
+        (Get-Command py.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -First 1),
+        (Get-Command python.exe -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -First 1)
+    ) | Where-Object { $_ } | Select-Object -Unique
+    $pythonDiscovery = Find-MatterWindowsPython -Candidates $pythonCandidates
+    if (-not $pythonDiscovery) {
+        throw 'Native Windows Python 3.13 was not found through py.exe or python.exe. Install Python 3.13.14 with the launcher enabled.'
+    }
+    $python = $pythonDiscovery.Path
+    $pythonVersion = $pythonDiscovery.Version
+
+    $vulkanSdk = 'C:\VulkanSDK\1.4.357.0'
+    Require-MatterFile -Path (Join-Path $vulkanSdk 'Include\vulkan\vulkan.h') -Description 'Vulkan SDK 1.4.357.0 headers' | Out-Null
+    Require-MatterFile -Path (Join-Path $vulkanSdk 'Lib\vulkan-1.lib') -Description 'Vulkan SDK 1.4.357.0 x64 import library' | Out-Null
+    Require-MatterFile -Path (Join-Path $vulkanSdk 'Bin\VkLayer_khronos_validation.json') -Description 'Vulkan SDK 1.4.357.0 validation layer manifest' | Out-Null
+    $glslc = Require-MatterFile -Path (Join-Path $vulkanSdk 'Bin\glslc.exe') -Description 'Vulkan SDK 1.4.357.0 glslc.exe'
+
+    $result = [PSCustomObject][ordered]@{
+        VisualStudioRoot = $visualStudioRoot
+        VisualStudioProductId = $visualStudioProductId
+        VsDevCmd = $vsDevCmd
+        MsvcToolsVersion = $msvcToolsVersion
+        WindowsSdkVersion = $windowsSdkVersion
+        CMake = $cmake
+        Ninja = $ninja
+        Python = $python
+        PythonVersion = $pythonVersion
+        VulkanSdk = $vulkanSdk
+        Glslc = $glslc
+    }
+
+    if ($Json) {
+        return ($result | ConvertTo-Json -Depth 2 -Compress)
+    }
+
+    return $result
+}
+
+Export-ModuleMember -Function Resolve-MatterWindowsToolchain

@@ -1,8 +1,8 @@
 # Chart-Space Virtual Texturing — Glossary
 
 Reference vocabulary for the chart-VT system, as built (2026-07-30). Design:
-`docs/superpowers/specs/2026-07-29-chart-virtual-texturing-design.md`; plan:
-`docs/superpowers/plans/2026-07-29-chart-virtual-texturing-plan.md`. Companion
+`docs/completed/superpowers/specs/2026-07-29-chart-virtual-texturing-design.md`; plan:
+`docs/completed/superpowers/plans/2026-07-29-chart-virtual-texturing-plan.md`. Companion
 PBR spec: `docs/superpowers/specs/2026-07-29-rt-pbr-ice-snow-design.md`.
 
 Terms are grouped by where each concept lives in the pipeline. Numbers are the

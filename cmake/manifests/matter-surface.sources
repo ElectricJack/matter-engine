@@ -1,0 +1,27 @@
+# MatterSurfaceLib and sibling foundation sources directly archived by MatterEngine3.
+libs/MatterSurfaceLib/src/cluster.cpp|all
+libs/MatterSurfaceLib/src/cell.cpp|all
+libs/MatterSurfaceLib/src/mesh_simplifier.cpp|all
+libs/MatterSurfaceLib/src/mesh_indexed.cpp|all
+libs/MatterSurfaceLib/src/mesh_smooth.cpp|all
+libs/MatterSurfaceLib/src/mesh_transform.cpp|all
+libs/MatterSurfaceLib/src/blas_manager.cpp|all
+libs/SpatialQueryLib/src/bvh.cpp|all
+libs/SpatialQueryLib/src/bvh_analyzer.cpp|all
+libs/MatterSurfaceLib/src/mesh_worker_pool.cpp|all
+libs/MatterSurfaceLib/src/mesh_build_utils.cpp|all
+libs/MatterSurfaceLib/src/meshing_algorithm.cpp|all
+libs/MatterSurfaceLib/src/marching_cubes_algorithm.cpp|all
+libs/MatterSurfaceLib/src/oriented_cube_algorithm.cpp|all
+libs/MatterSurfaceLib/src/vertex_ao.cpp|all
+libs/MatterSurfaceLib/src/occupancy.cpp|all
+libs/MatterSurfaceLib/src/tlas_manager.cpp|all
+libs/MatterSurfaceLib/src/part_asset.cpp|all
+libs/MatterSurfaceLib/src/lattice.cpp|all
+libs/MatterSurfaceLib/src/particle_culling.cpp|all
+libs/MeshChartingLib/src/mesh_charting.cpp|all
+libs/MatterSurfaceLib/src/surface.c|all
+libs/SpatialQueryLib/src/spatial_hash.c|all
+libs/MemoryLib/src/mem_pool.c|all
+libs/MatterSurfaceLib/src/material_registry.c|all
+libs/MatterSurfaceLib/src/fat_primitive.c|all

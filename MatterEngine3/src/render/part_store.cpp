@@ -1,8 +1,49 @@
+#include "prepared_sector_cache.h"
+#include "prepared_identity_cache.h"
+#include "asset_binary.h"
+// MatterEngine3/src/render/part_store.cpp
+//
+// Implementation of PartStore (part_store.h). FOUR load paths land in this
+// file, and knowing which one ran explains most questions about a part's
+// contents:
+//
+//   1. get_or_load() -> load_flat(): a bake-time flattened `<hash>.flat.part`
+//      (v3 clustered, or legacy v2). Uses the artifact's stored per-cluster
+//      ladders directly, resolves the terminal impostor rung against its
+//      `.fimp` sidecar, and leaves `children` empty. The collapsed path that
+//      authored props take.
+//   2. get_or_load() -> read_coherent_snapshot() -> the partitioned-animation
+//      branch: an ANLK-linked artifact whose skin and rigid streams stay
+//      separate. It registers straight into the shared manager, so it is NOT
+//      stageable off-thread.
+//   3. get_or_load() -> stage_from_snapshot() -> commit_staged(): the ordinary
+//      compositional part, ladder re-baked from LOD0.
+//   4. stage_load() / stage_from_bake() on a streaming worker, then
+//      commit_staged() on the owning thread. The same stage_from_snapshot body
+//      as (3), split so the expensive half runs off the render thread.
+//
+// One rule shapes the code: everything expensive (artifact decode, QEM
+// decimation, TriEx reprojection, BVH build, chart bake, warp solve) runs
+// against a PRIVATE BLASManager, and the only shared-state step is
+// commit_staged()'s bounded adopt-and-insert. The comments through this file
+// record the measurements that forced that split — see
+// docs/sector-bake-time-findings-2026-07-30.md.
+//
+// Diagnostics. This file still reports through printf/fprintf rather than the
+// repo's matter/log.h. Two env vars gate the noisy ones — MATTER_FLAT_GATE_LOG
+// (why a flat artifact was rejected) and MATTER_PARTSTORE_PROFILE (the
+// flat-path timing split) — and the same questions are answerable from the
+// PROFILE_COUNT counters partstore.flat_ok / flat_reject / flat_relinked /
+// flat_no_snapshot and expansion.coldload without per-item stderr, which has
+// measurably distorted this engine's own profiling before.
+
 #include "part_store.h"
+#include "part_bundle.h"
 #include "profile.h"
 #include "animation/anim_bundle.h"
 #include "animation/animation_binding_bake.h"
 #include "matrix_math.h"
+#include "shared_surface_compile.h"
 
 #include "part_asset_v2.h"     // load_v2, cache_path_resolved, ChildInstance, LodLevels
 #include "lod_bake.h"          // lod_bake::bake_lods, BakeTargets
@@ -10,6 +51,7 @@
 #include "tlas_manager.hpp"    // TLASManager (load_v2 signature needs one)
 #include "part_flatten.h"      // part_flatten::transform_uniform_scale
 #include "matter/log.h"
+#include "../../../libs/MatterSurfaceLib/include/mesh_transform.hpp"
 
 #include <algorithm>
 #include <cassert>
@@ -22,10 +64,26 @@
 #include <functional>
 #include <memory>
 #include <limits>
+#include <unordered_map>
 #include <unordered_set>
+#include <climits>
 #include <sys/stat.h>
 
 namespace viewer {
+
+// Authored owner density, with a diagnostic override. Invalid overrides retain
+// the authored value (or the legacy 16 t/m default). Terrain has its own policy.
+static float prop_chart_texels_per_meter(const matter::PartRenderPolicy& policy) {
+    const float fallback = policy.vt_texels_per_meter > 0.0f &&
+        matter::valid_part_vt_density(policy.vt_texels_per_meter)
+        ? policy.vt_texels_per_meter : 16.0f;
+    const char* text = std::getenv("MATTER_VT_PROP_TEXELS_PER_METER");
+    if (!text || !*text) return fallback;
+    char* end = nullptr;
+    const float value = std::strtof(text, &end);
+    return end != text && *end == '\0' && std::isfinite(value) &&
+           value >= 1.0f && value <= 2048.0f ? value : fallback;
+}
 
 // Release exactly the references this LoadedPart registered.  Legacy view
 // arrays are deliberately not authoritative: v2 mirrors a registration into a
@@ -49,6 +107,13 @@ static void release_loaded_part_blas(BLASManager& blas, const LoadedPart& lp) {
     }
 }
 
+// Structural precondition for an INDEXED mesh: positive vertex count, a
+// non-empty index list that is a multiple of three, every channel present at
+// its exact per-vertex stride, and every index in range. Used wherever a mesh
+// is about to be sliced or re-triangulated so a malformed stream fails closed
+// instead of reading out of bounds. Note it REQUIRES surface_uvs, material_ids
+// and baked_ao, so a mesh built without them counts as invalid here even
+// though it would draw.
 static bool valid_indexed_mesh(const RasterMeshData& mesh) {
     if (mesh.vertex_count <= 0 || mesh.indices.empty() || mesh.indices.size() % 3 != 0)
         return false;
@@ -62,6 +127,10 @@ static bool valid_indexed_mesh(const RasterMeshData& mesh) {
                        [vertices](uint32_t index) { return index < vertices; });
 }
 
+// Append one source vertex to `out` across every channel. `out.material_ids`
+// grows exactly once per appended vertex, which is what lets
+// slice_rigid_segment_mesh use its size as the running output vertex count.
+// The warp channels are not carried across.
 static void append_indexed_vertex(const RasterMeshData& source, uint32_t old_index,
                                   RasterMeshData& out) {
     const size_t vertex = static_cast<size_t>(old_index);
@@ -79,6 +148,14 @@ static void append_indexed_vertex(const RasterMeshData& source, uint32_t old_ind
     out.baked_ao.push_back(source.baked_ao[vertex]);
 }
 
+// Carve the triangles named by `ranges` out of an indexed source mesh into a
+// new, compacted mesh, remapping indices so `out` holds only the vertices its
+// own triangles reference. Output triangle order follows `ranges` order rather
+// than source order.
+//
+// Fails closed — returns false, leaving `out` partially filled — for an
+// invalid source, an empty or inverted range, a range past the end, or two
+// ranges claiming the same triangle. Callers must discard `out` on false.
 static bool slice_rigid_segment_mesh(
         const RasterMeshData& source,
         const std::vector<matter::animation::BindingGeometryRange>& ranges,
@@ -111,6 +188,11 @@ static bool slice_rigid_segment_mesh(
     return out.vertex_count > 0 && !out.indices.empty();
 }
 
+// Deterministic content identity for one rigid segment carved out of a source
+// part: FNV-1a over a format tag, the source hash, the segment ordinal and the
+// mesh's own geometry signature. Stable across runs and processes, which is
+// what lets build_rigid_segment_subparts memoize a set and detect a repeat.
+// Never returns 0 — that value is reserved as "no part".
 static uint64_t rigid_subpart_hash(uint64_t source_hash, uint32_t segment_ordinal,
                                    const RasterMeshData& mesh) {
     uint64_t hash = 1469598103934665603ull;
@@ -130,7 +212,14 @@ static uint64_t rigid_subpart_hash(uint64_t source_hash, uint32_t segment_ordina
     return hash ? hash : 1ull;
 }
 
+// Half the AABB diagonal of the mesh's own vertices, in part-local metres —
+// the same definition LoadedPart::bound_radius uses everywhere else. An empty
+// mesh returns 0 rather than the NaN the seeded infinities would produce
+// (inf - inf): a zero radius reads as "a point", which every LOD and cull
+// consumer already handles, while a NaN radius poisons every comparison
+// downstream of it and fails no test on the way.
 static float subpart_bound_radius(const RasterMeshData& mesh) {
+    if (mesh.vertex_count <= 0) return 0.0f;
     float minimum[3] = {std::numeric_limits<float>::infinity(), std::numeric_limits<float>::infinity(), std::numeric_limits<float>::infinity()};
     float maximum[3] = {-std::numeric_limits<float>::infinity(), -std::numeric_limits<float>::infinity(), -std::numeric_limits<float>::infinity()};
     for (int index = 0; index != mesh.vertex_count; ++index) {
@@ -146,6 +235,12 @@ static float subpart_bound_radius(const RasterMeshData& mesh) {
     return 0.5f * std::sqrt(dx * dx + dy * dy + dz * dz);
 }
 
+// Convert an indexed mesh back into the parallel Tri / TriEx arrays
+// BLASManager registers. Positions, normals, chart UVs and AO stay per-CORNER,
+// but the two per-triangle attributes are taken from the FIRST corner only:
+// `materialId` from material_ids[a] and `tint` from colors[a] (unpacked 0-255
+// to 0-1). A triangle whose corners disagree therefore inherits corner a's
+// material and tint. `centroid` is filled here because the BVH build needs it.
 static void mesh_to_triangles(const RasterMeshData& mesh, std::vector<Tri>& triangles,
                               std::vector<TriEx>& extras) {
     triangles.reserve(mesh.indices.size() / 3);
@@ -189,21 +284,34 @@ static void mesh_to_triangles(const RasterMeshData& mesh, std::vector<Tri>& tria
 // build_expansion, WorldComposer::compose, and the main.cpp TLAS-sizing walk.
 // ---------------------------------------------------------------------------
 
+using PolicyVisitor =
+    std::function<void(const viewer::LoadedPart*, uint64_t, const float[16],
+                       int, bool)>;
+
 static void walk_rec(uint64_t hash, const float parent_rel[16], int depth,
+                     matter::RayTracingOverride incoming_override,
                      const std::function<const viewer::LoadedPart*(uint64_t)>& getter,
-                     const std::function<void(const viewer::LoadedPart*, uint64_t,
-                                              const float[16], int)>& visitor) {
+                     const PolicyVisitor& visitor) {
     if (depth > 8) return;
     const viewer::LoadedPart* lp = getter(hash);
     if (!lp) return;
-    visitor(lp, hash, parent_rel, depth);
-    for (const auto& c : lp->children) {
+    const bool ray_traced = matter::resolve_ray_traced(
+        incoming_override, lp->render_policy.ray_traced);
+    visitor(lp, hash, parent_rel, depth, ray_traced);
+    if(lp->shared_surface) return;
+    for (size_t child_index = 0; child_index != lp->children.size(); ++child_index) {
+        const auto& c = lp->children[child_index];
         matter::Mat4f parent{};
         matter::Mat4f child{};
         std::memcpy(parent.m, parent_rel, sizeof parent.m);
         std::memcpy(child.m, c.transform, sizeof child.m);
         const matter::Mat4f rel = viewer::mat4_mul(parent, child);
-        walk_rec(c.child_resolved_hash, rel.m, depth + 1, getter, visitor);
+        const matter::RayTracingOverride child_override =
+            child_index < lp->render_policy.child_overrides.size()
+                ? lp->render_policy.child_overrides[child_index]
+                : matter::RayTracingOverride::Inherit;
+        walk_rec(c.child_resolved_hash, rel.m, depth + 1, child_override,
+                 getter, visitor);
     }
 }
 
@@ -212,7 +320,10 @@ void walk_part_tree(uint64_t root_hash,
         const std::function<void(const LoadedPart*, uint64_t,
                                  const float[16], int)>& visitor) {
     static const float kIdentity[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
-    walk_rec(root_hash, kIdentity, 0, getter, visitor);
+    walk_rec(root_hash, kIdentity, 0, matter::RayTracingOverride::Inherit,
+             getter,
+             [&](const LoadedPart* lp, uint64_t hash, const float rel[16],
+                 int depth, bool) { visitor(lp, hash, rel, depth); });
 }
 
 // ---------------------------------------------------------------------------
@@ -222,21 +333,93 @@ void walk_part_tree(uint64_t root_hash,
 void build_expansion(uint64_t root_hash,
         const std::function<const LoadedPart*(uint64_t)>& getter,
         std::vector<ExpandedNode>& out) {
-    walk_part_tree(root_hash, getter,
-        [&](const LoadedPart* lp, uint64_t hash, const float rel[16], int depth) {
-            if (lp->lod_mesh_data.empty()) return;
+    static const float kIdentity[16] =
+        {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
+    walk_rec(root_hash, kIdentity, 0, matter::RayTracingOverride::Inherit,
+        getter,
+        [&](const LoadedPart* lp, uint64_t hash, const float rel[16], int depth,
+            bool ray_traced) {
+            if (lp->lod_mesh_data.empty() && !lp->shared_surface) return;
             ExpandedNode n;
             n.part_hash = hash;
             memcpy(n.rel_transform, rel, sizeof n.rel_transform);
             n.depth = depth;
+            n.ray_traced = ray_traced;
             out.push_back(n);
         });
 }
 
 // ---------------------------------------------------------------------------
 
-PartStore::PartStore(std::string cache_root) : cache_root_(std::move(cache_root)) {}
+namespace {
+uint64_t geometry_root_budget() {
+    const char* value = std::getenv("MATTER_GEOMETRY_ROOT_MB");
+    if (!value || !*value) return 16ull << 20;
+    char* end = nullptr;
+    const auto mb = std::strtoull(value, &end, 10);
+    return end && !*end && mb >= 1 && mb <= 4096 ? mb << 20 : 16ull << 20;
+}
+}
+PartStore::PartStore(std::string cache_root,
+                     std::shared_ptr<matter::CacheByteStorage> storage)
+    : cache_root_(std::move(cache_root)), cache_storage_(std::move(storage)), geometry_roots_(cache_root_ + "/geometry-pages", geometry_root_budget()),
+      prepared_sectors_(nullptr) {
+    const char* prepared_switch=std::getenv("MATTER_PREPARED_SECTOR_CACHE");
+    if(prepared_switch && std::string(prepared_switch)!="0")prepared_sectors();
+    const char* enabled=std::getenv("MATTER_PREPARED_IDENTITY_CACHE");
+    const char* cook=std::getenv("MATTER_PREPARED_IDENTITY_COOK");
+    if(enabled && std::string(enabled)=="1")
+        prepared_identities_=std::make_shared<prepared_identity::Cache>(cache_root_+"/prepared-identities",cook && std::string(cook)=="1");
+}
+uint64_t PartStore::prepared_identity_lookup(uint64_t request) {
+    return prepared_identities_ ? prepared_identities_->lookup(request) : 0;
+}
+prepared_sector::Cache& PartStore::prepared_sectors() {
+    std::lock_guard<std::mutex> lock(prepared_sectors_mutex_);
+    if(!prepared_sectors_)
+        prepared_sectors_=std::make_shared<prepared_sector::Cache>(cache_root_ + "/prepared-sectors");
+    return *prepared_sectors_;
+}
+bool PartStore::prepared_sector_cache_active() const {
+    std::lock_guard<std::mutex> lock(prepared_sectors_mutex_);
+    return prepared_sectors_ != nullptr;
+}
+void PartStore::set_geometry_pages_enabled(bool enabled) {
+    if(enabled)prepared_sectors();
+    geometry_pages_enabled_=enabled;
+}
+PartStore::~PartStore() { flush_geometry_writer(); }
+bool PartStore::flush_geometry_writer() {
+    std::string error;
+    if (!geometry_roots_.flush_writer(error)) {
+        MATTER_LOGW("geometry", "bake batch commit failed: %s", error.c_str());
+        return false;
+    }
+    return true;
+}
+bool PartStore::prepared_identity_remember(uint64_t request,uint64_t resolved,std::string& error) {
+    return prepared_identities_ && prepared_identities_->remember(request,resolved,error);
+}
 
+// Materialize each rigid segment of an already-loaded animated part as an
+// independent, immutable subpart, admitted to loaded_ under its own
+// deterministic hash (rigid_subpart_hash) and returned through `out_hashes`.
+//
+// Two sources, in preference order. An EXACT partition — the artifact carried
+// per-segment LOD streams in rigid_lod_mesh_data with matching thresholds — is
+// registered rung for rung. Otherwise LOD0 of the source is sliced by the
+// binding's authored triangle ranges and a fresh ladder is baked per slice.
+// LOD0 deliberately: the ranges name triangles in the undecimated stream, so
+// slicing a coarser rung would silently re-assign ownership.
+//
+// All-or-nothing. `admitted` plus the rollback lambda undo every insertion and
+// every shared-BLAS registration on any failure, so a false return leaves the
+// store exactly as it was found. The result is memoized per source hash in
+// rigid_subparts_: a repeat call with the same hash set returns the cached set,
+// and a hash colliding with the source or with an already-loaded part is
+// refused outright.
+//
+// Owning-thread only — it registers into the shared blas_ and mutates loaded_.
 bool PartStore::build_rigid_segment_subparts(
         uint64_t source_part_hash, const matter::animation::BindingBake& binding,
         std::vector<uint64_t>& out_hashes) {
@@ -367,18 +550,13 @@ bool PartStore::build_rigid_segment_subparts(
     return true;
 }
 
-std::string PartStore::disk_path(uint64_t part_hash) const {
-    // cache_path_resolved returns the RELATIVE "parts/<hash>.bundle"; prefix cache_root_.
-    return cache_root_ + "/" + part_asset::cache_path_resolved(part_hash);
-}
-
 // Task 2: resolve the actual disk path, checking scratch dir first, then cache.
 static std::string resolve_artifact_path(uint64_t part_hash, const std::string& scratch_dir,
                                          const std::string& cache_root) {
     struct stat st;
     if (!scratch_dir.empty()) {
         std::string scratch_path = scratch_dir + "/" + part_asset::cache_path_resolved(part_hash);
-        if (::stat(scratch_path.c_str(), &st) == 0) {
+        if (part_bundle::ScopedStorage::current() ? part_bundle::exists(scratch_path) : ::stat(scratch_path.c_str(), &st) == 0) {
             return scratch_path;
         }
     }
@@ -394,15 +572,97 @@ static std::string select_artifact_root(uint64_t part_hash, const std::string& s
     struct stat st;
     if (!scratch_dir.empty()) {
         const std::string scratch_path = scratch_dir + "/" + part_asset::cache_path_resolved(part_hash);
-        if (::stat(scratch_path.c_str(), &st) == 0) return scratch_dir;
+        if (part_bundle::ScopedStorage::current() ? part_bundle::exists(scratch_path) : ::stat(scratch_path.c_str(), &st) == 0) return scratch_dir;
     }
     return cache_root;
 }
 
+// A flat merges every drawable reached by the canonical part walk into one
+// renderer-facing drawable, so it can carry only one resolved RT eligibility.
+// Prove that value from canonical REP0+RNDR metadata before load_flat touches
+// the shared BLAS. Mixed, malformed, cyclic, or otherwise unprovable trees
+// fail closed to the compositional path, which retains per-node policy.
+static bool resolve_uniform_flat_render_policy(
+        const std::string& artifact_root, uint64_t root_hash,
+        const part_asset::StaticPartSnapshot& root_snapshot,
+        matter::PartRenderPolicy& flat_policy_out) {
+    struct CanonicalPolicyNode {
+        part_asset::StaticPartSnapshot snapshot;
+        matter::PartRenderPolicy policy;
+    };
+    std::unordered_map<uint64_t, std::unique_ptr<CanonicalPolicyNode>> cache;
+    std::unordered_set<uint64_t> active;
+    uint8_t eligibility_mask = 0;
+
+    const auto load_node = [&](uint64_t hash) -> CanonicalPolicyNode* {
+        const auto found = cache.find(hash);
+        if (found != cache.end()) return found->second.get();
+        auto node = std::make_unique<CanonicalPolicyNode>();
+        const std::string path =
+            artifact_root + "/" + part_asset::cache_path_resolved(hash);
+        if (hash == root_hash) {
+            node->snapshot = root_snapshot;
+        } else if (!part_asset::load_static_part_snapshot(
+                       path, hash, node->snapshot)) {
+            return nullptr;
+        }
+        if (!matter::load_part_render_policy(
+                path, hash, node->snapshot.children.size(), node->policy)) {
+            return nullptr;
+        }
+        CanonicalPolicyNode* result = node.get();
+        cache.emplace(hash, std::move(node));
+        return result;
+    };
+
+    std::function<bool(uint64_t, matter::RayTracingOverride, int)> walk;
+    walk = [&](uint64_t hash, matter::RayTracingOverride incoming, int depth) {
+        // Matches FlattenTargets::max_depth and walk_part_tree: nodes through
+        // depth 8 are included; deeper descendants are not in the flat.
+        if (depth > 8) return true;
+        if (!active.insert(hash).second) return false;
+        CanonicalPolicyNode* node = load_node(hash);
+        if (!node || node->policy.shared_surfaces) {
+            active.erase(hash);
+            return false;
+        }
+        if (node->snapshot.has_geometry) {
+            const bool resolved = matter::resolve_ray_traced(
+                incoming, node->policy.ray_traced);
+            eligibility_mask |= resolved ? 0x2u : 0x1u;
+            if (eligibility_mask == 0x3u) {
+                active.erase(hash);
+                return false;
+            }
+        }
+        for (size_t index = 0; index != node->snapshot.children.size(); ++index) {
+            if (!walk(node->snapshot.children[index].child_resolved_hash,
+                      node->policy.child_overrides[index], depth + 1)) {
+                active.erase(hash);
+                return false;
+            }
+        }
+        active.erase(hash);
+        return true;
+    };
+
+    if (!walk(root_hash, matter::RayTracingOverride::Inherit, 0) ||
+        eligibility_mask == 0)
+        return false;
+    flat_policy_out = {};
+    flat_policy_out.ray_traced = eligibility_mask == 0x2u;
+    // A flattened part is one material owner in root-local metres. Merged
+    // geometry uses that owner's density; retained instances use their own.
+    flat_policy_out.vt_texels_per_meter = cache.at(root_hash)->policy.vt_texels_per_meter;
+    return true;
+}
+
 bool PartStore::has(uint64_t part_hash) const {
+    part_bundle::ScopedStorage storage(cache_storage_);
     if (loaded_.count(part_hash)) return true;
     struct stat st;
-    return ::stat(resolve_artifact_path(part_hash, scratch_dir_, cache_root_).c_str(), &st) == 0;
+    const auto path = resolve_artifact_path(part_hash, scratch_dir_, cache_root_);
+    return cache_storage_ ? cache_storage_->exists(path) : ::stat(path.c_str(), &st) == 0;
 }
 
 // Flat-preferred load: a bake-time flattened artifact (<hash>.flat.part) already
@@ -410,7 +670,20 @@ bool PartStore::has(uint64_t part_hash) const {
 // Tries v3 first (Task 11 format: clustered flat); falls back to legacy v2 flat
 // if v3 is unavailable. Returns false (fall back to the compositional .part) when
 // the file is absent or fails to load in either format.
-bool PartStore::load_flat(uint64_t part_hash, const std::string& artifact_root, LoadedPart& lp) {
+bool PartStore::load_flat(uint64_t part_hash, const std::string& artifact_root,
+                          const matter::PartRenderPolicy& policy, LoadedPart& lp) {
+    part_bundle::ScopedStorage storage(cache_storage_);
+    const bool profile = std::getenv("MATTER_PARTSTORE_PROFILE") != nullptr;
+    using ProfileClock = std::chrono::steady_clock;
+    auto profile_last = profile ? ProfileClock::now() : ProfileClock::time_point{};
+    const auto profile_split = [&](const char* phase) {
+        if (!profile) return;
+        const auto now = ProfileClock::now();
+        MATTER_LOGI("partstore", "%016llx flat_%s=%.3f ms\n",
+                    (unsigned long long)part_hash, phase,
+                    std::chrono::duration<double, std::milli>(now - profile_last).count());
+        profile_last = now;
+    };
     // The caller has already selected and validated the canonical `.part`
     // from this root as ANLK-free.  Do not independently probe scratch/cache:
     // a flat is only valid beside that exact canonical static Part.
@@ -437,6 +710,8 @@ bool PartStore::load_flat(uint64_t part_hash, const std::string& artifact_root, 
                         (unsigned long long)part_hash, path.c_str());
             return false;
         }
+
+        profile_split("decode");
 
         // Determine if the flat is segmented (has any coarse-segment clusters).
         bool segmented = std::any_of(clusters_in.begin(), clusters_in.end(),
@@ -472,16 +747,35 @@ bool PartStore::load_flat(uint64_t part_hash, const std::string& artifact_root, 
         if (!segmented) {
             const auto& probe_entries = scratch.get_entries();
             uint64_t depicts = impostor::depicts_hash_begin();
+            uint64_t source_only_depicts = 0;
+            bool source_only = false;
             bool any_rung = false;
             for (size_t ci = 0; ci < clusters_in.size(); ++ci) {
                 const auto& lods = clusters_in[ci].lods;
-                if (lods.size() < 2) continue;
+                if (lods.empty()) continue;
                 const auto& last = lods.back().blas_indices;
                 if (last.size() != 1 || last[0] >= probe_entries.size()) continue;
                 const BLASManager::BLASEntry* e = probe_entries[last[0]].get();
                 if (!e || e->triangles.size() != 2 || e->tri_extra.size() != 2 ||
                     !(e->tri_extra[0].uv0.x >= impostor::kQuadMarker))
                     continue;
+                if (lods.size() == 1) {
+                    // No source mesh in the runtime flat. Verify the atlas
+                    // against the canonical bake source, in temporary CPU
+                    // storage, instead of uploading every individual needle.
+                    std::string reason;
+                    if (clusters_in.size() != 1 || !refs_in.empty() ||
+                        !part_flatten::impostor_only_source_digest(
+                            artifact_root, part_hash, source_only_depicts, reason)) {
+                        MATTER_LOGW("part-store", "impostor-only source unusable for %016llx: %s\n",
+                            (unsigned long long)part_hash, reason.c_str());
+                        return false;
+                    }
+                    impostor_rung[ci] = 0;
+                    source_only = true;
+                    any_rung = true;
+                    continue;
+                }
                 // What the billboard DEPICTS is rep 0 -- the authored mesh --
                 // not the rung it takes over from. This used to read
                 // lods[size-2]; the bake changed to source rep 0 (see
@@ -515,7 +809,8 @@ bool PartStore::load_flat(uint64_t part_hash, const std::string& artifact_root, 
                 impostor::LoadFailure fail = impostor::LoadFailure::None;
                 std::string reason;
                 if (impostor::load(imp_path, part_hash,
-                                   impostor::depicts_hash_finish(depicts),
+                                   source_only ? source_only_depicts :
+                                       impostor::depicts_hash_finish(depicts),
                                    loaded_impostors, &fail, &reason)) {
                     for (const auto& c : loaded_impostors.clusters) {
                         if (c.cluster_index < impostor_data.size() &&
@@ -548,6 +843,7 @@ bool PartStore::load_flat(uint64_t part_hash, const std::string& artifact_root, 
                 // artifact reads exactly as a mesh-only ladder would.
                 for (size_t ci = 0; ci < clusters_in.size(); ++ci) {
                     if (impostor_rung[ci] == SIZE_MAX || impostor_data[ci]) continue;
+                    if (clusters_in[ci].lods.size() == 1) return false;
                     clusters_in[ci].lods.pop_back();
                     impostor_rung[ci] = SIZE_MAX;
                 }
@@ -580,7 +876,7 @@ bool PartStore::load_flat(uint64_t part_hash, const std::string& artifact_root, 
         // --- Step 1: Legacy whole-part view for the RT path (WorldComposer/TLAS). ---
         // IMPORTANT: lp.lod_mesh_data[0..max_lods-1] are the whole-part entries (parallel
         // to lp.lod_blas). Per-cluster mesh-data is appended AFTER these entries so that
-        // the RasterComposer's `lp.lod_mesh_data[level]` access remains correct.
+        // the whole-part `lp.lod_mesh_data[level]` access remains correct.
         //
         // Legacy level i = concatenation over clusters of level min(i, cluster.levels-1).
         //   When segmented: over COARSE clusters only (segment==1). That is the merged
@@ -608,6 +904,17 @@ bool PartStore::load_flat(uint64_t part_hash, const std::string& artifact_root, 
         chart_atlas::ChartAtlasRung chart_base;
         std::vector<Tri> chart_base_tris;
 
+        // Record the exact ordered source ranges used by each completed legacy
+        // rung. Reuse requires equality, not merely a single cluster: skipped
+        // entries/rungs or a different concatenation must keep the old path.
+        std::vector<std::vector<uint32_t>> legacy_sources(max_lods);
+        std::vector<int> legacy_mesh_indices(max_lods, -1);
+        profile_split("prepare");
+        double chart_ms = 0, blas_ms = 0, raster_ms = 0;
+        size_t adopted_prebuilt_rungs = 0;
+        const auto elapsed_ms = [](ProfileClock::time_point begin) {
+            return std::chrono::duration<double, std::milli>(ProfileClock::now() - begin).count();
+        };
         for (size_t li = 0; li < max_lods; ++li) {
             std::vector<Tri> tris;
             std::vector<TriEx> triex;
@@ -626,6 +933,7 @@ bool PartStore::load_flat(uint64_t part_hash, const std::string& artifact_root, 
                 thr = std::fmax(thr, cl.lods[use_li].screen_size_threshold);
                 for (uint32_t bi : cl.lods[use_li].blas_indices) {
                     if (bi >= entries.size()) continue;
+                    legacy_sources[li].push_back(bi);
                     tris.insert(tris.end(), entries[bi]->triangles.begin(), entries[bi]->triangles.end());
                     triex.insert(triex.end(), entries[bi]->tri_extra.begin(), entries[bi]->tri_extra.end());
                 }
@@ -640,14 +948,55 @@ bool PartStore::load_flat(uint64_t part_hash, const std::string& artifact_root, 
             std::vector<TriEx> charted;
             chart_atlas::ChartAtlasRung rung_table;
             bool charted_ok = false;
+            const auto chart_begin = profile ? ProfileClock::now() : ProfileClock::time_point{};
             if (ex && !legacy_impostor) {
                 charted.assign(triex.begin(), triex.end());
                 charted_ok = lod_bake::chart_rung_unified(
-                    tris, charted, 16.0f, chart_atlas::kChartNormalConeDeg,
-                    unify_charts, chart_base, chart_base_tris, rung_table);
+                    tris, charted, prop_chart_texels_per_meter(policy), chart_atlas::kChartNormalConeDeg,
+                    unify_charts, chart_base, chart_base_tris, rung_table, true);
                 if (charted_ok) ex = charted.data();
             }
-            BLASHandle h = blas_.register_triangles(tris.data(), (int)tris.size(), ex);
+            if (profile) chart_ms += elapsed_ms(chart_begin);
+            const auto blas_begin = profile ? ProfileClock::now() : ProfileClock::time_point{};
+            legacy_mesh_indices[li] = static_cast<int>(lp.lod_mesh_data.size());
+            BLASHandle h = INVALID_BLAS_HANDLE;
+            // A static singleton's saved BVH already accelerates this exact
+            // ordered triangle stream. Charting only changes UVs, not positions,
+            // material/tint hash or BVH topology. Refresh its private attributes
+            // and adopt once instead of rebuilding the persisted tree. Keep the
+            // ordinary path for concatenated/repeated ranges and other ladders.
+            const bool singleton_prebuilt = !segmented && clusters_in.size() == 1 &&
+                max_lods == 1 && impostor_rung[0] == SIZE_MAX && entries.size() == 1 &&
+                legacy_sources[li].size() == 1 && legacy_sources[li][0] == 0 &&
+                entries[0]->triangles.size() == tris.size() &&
+                std::memcmp(entries[0]->triangles.data(), tris.data(), tris.size() * sizeof(Tri)) == 0 &&
+                entries[0]->bvh && entries[0]->bvh->bvhNode &&
+                entries[0]->bvh->nodesUsed > 0 && entries[0]->bvh->triIdx;
+            if (singleton_prebuilt) {
+                auto& source = *entries[0];
+                if (charted_ok) {
+                    source.tri_extra = charted;
+                    // Keep the scratch manager internally coherent until its
+                    // destruction; adopt_from reads tri_extra, not mesh->triEx.
+                    if (source.mesh && source.mesh->triEx)
+                        std::memcpy(source.mesh->triEx, charted.data(), charted.size() * sizeof(TriEx));
+                }
+                // Disk ownership belongs to the writer. This LoadedPart owns
+                // exactly one registration, shared by its whole/cluster views.
+                source.ref_count = 1;
+                const BLASHandle source_handle = source.handle;
+                std::unordered_map<BLASHandle, BLASHandle> remap;
+                blas_.adopt_from(scratch, remap);
+                const auto adopted = remap.find(source_handle);
+                if (adopted != remap.end()) {
+                    h = adopted->second;
+                    ++adopted_prebuilt_rungs;
+                }
+            }
+            if (h == INVALID_BLAS_HANDLE)
+                h = blas_.register_triangles(tris.data(), (int)tris.size(), ex);
+            if (profile) blas_ms += elapsed_ms(blas_begin);
+            const auto raster_begin = profile ? ProfileClock::now() : ProfileClock::time_point{};
             lp.owned_blas.push_back(h);
             lp.thresholds.push_back(thr);
             lp.lod_blas.push_back(h);
@@ -669,8 +1018,14 @@ bool PartStore::load_flat(uint64_t part_hash, const std::string& artifact_root, 
                 lp.lod_mesh_data.push_back({});
             }
             lp.lod_charts.push_back(std::move(rung_table));   // parallel to lod_mesh_data
+            if (profile) raster_ms += elapsed_ms(raster_begin);
         }
         if (lp.lod_blas.empty()) return rollback();
+        profile_split("whole_rungs");
+        if (profile) MATTER_LOGI("partstore",
+            "%016llx flat_chart=%.3f flat_blas=%.3f flat_raster=%.3f ms prebuilt_rungs=%zu\n",
+            (unsigned long long)part_hash, chart_ms, blas_ms, raster_ms, adopted_prebuilt_rungs);
+        size_t reused_rungs = 0;
 
         // --- Step 2: Per-cluster data (for Task 13 per-cluster GPU culling). ---
         // Each cluster gets its own LoadedCluster with parallel thresholds / lod_blas /
@@ -706,6 +1061,23 @@ bool PartStore::load_flat(uint64_t part_hash, const std::string& artifact_root, 
 
             for (size_t li = 0; li < cl_in.lods.size(); ++li) {
                 const auto& lod_in = cl_in.lods[li];
+                const bool reuse_whole_rung = !segmented && clusters_in.size() == 1 &&
+                    impostor_rung[ci] == SIZE_MAX && li < legacy_mesh_indices.size() &&
+                    legacy_mesh_indices[li] >= 0 &&
+                    legacy_sources[li] == lod_in.blas_indices;
+                if (reuse_whole_rung) {
+                    // Both views reference exactly the same ordered geometry and
+                    // chart lineage. owned_blas records registrations, not views;
+                    // do not register/retain/release a second reference here.
+                    const int mesh_index = legacy_mesh_indices[li];
+                    assert(static_cast<size_t>(mesh_index) < lp.lod_blas.size());
+                    assert(legacy_sources[li] == lod_in.blas_indices);
+                    cl_out.thresholds.push_back(lod_in.screen_size_threshold);
+                    cl_out.lod_blas.push_back(lp.lod_blas[mesh_index]);
+                    cl_out.lod_mesh.push_back(mesh_index);
+                    ++reused_rungs;
+                    continue;
+                }
                 // Gather tris from this cluster's lod level.
                 std::vector<Tri> ctris;
                 std::vector<TriEx> ctriex;
@@ -726,8 +1098,8 @@ bool PartStore::load_flat(uint64_t part_hash, const std::string& artifact_root, 
                 if (cex && !is_impostor) {
                     ccharted.assign(ctriex.begin(), ctriex.end());
                     ccharted_ok = lod_bake::chart_rung_unified(
-                        ctris, ccharted, 16.0f, chart_atlas::kChartNormalConeDeg,
-                        unify_charts, cchart_base, cchart_base_tris, crung_table);
+                        ctris, ccharted, prop_chart_texels_per_meter(policy), chart_atlas::kChartNormalConeDeg,
+                        unify_charts, cchart_base, cchart_base_tris, crung_table, true);
                     if (ccharted_ok) cex = ccharted.data();
                 }
                 BLASHandle ch = blas_.register_triangles(ctris.data(), (int)ctris.size(), cex);
@@ -771,6 +1143,12 @@ bool PartStore::load_flat(uint64_t part_hash, const std::string& artifact_root, 
             lp.clusters.push_back(std::move(cl_out));
         }
         if (lp.clusters.empty()) return rollback();
+        profile_split("cluster_rungs");
+        if (profile) {
+            MATTER_LOGI("partstore", "%016llx flat_reused_rungs=%zu meshes=%zu registrations=%zu\n",
+                        (unsigned long long)part_hash, reused_rungs,
+                        lp.lod_mesh_data.size(), lp.owned_blas.size());
+        }
 
         // Set fine_cluster_count: for segmented flats, count pushed fine clusters;
         // for unsegmented flats, all clusters are "fine" (fine_cluster_count == size).
@@ -836,9 +1214,9 @@ bool PartStore::load_flat(uint64_t part_hash, const std::string& artifact_root, 
             if (ex) {
                 charted.assign(triex.begin(), triex.end());
                 charted_ok = lod_bake::chart_rung_unified(
-                    tris, charted, 16.0f, chart_atlas::kChartNormalConeDeg,
+                    tris, charted, prop_chart_texels_per_meter(policy), chart_atlas::kChartNormalConeDeg,
                     unify_charts_v2, chart_base_v2, chart_base_v2_tris,
-                    rung_table);
+                    rung_table, true);
                 if (charted_ok) ex = charted.data();
             }
             BLASHandle h = blas_.register_triangles(tris.data(), (int)tris.size(), ex);
@@ -904,6 +1282,7 @@ bool PartStore::load_flat(uint64_t part_hash, const std::string& artifact_root, 
 
 bool PartStore::read_coherent_snapshot(uint64_t part_hash,
                                        CoherentSnapshot& out) const {
+    part_bundle::ScopedStorage storage(cache_storage_);
     // The manifest is published last, so a reader can legitimately observe a
     // new PART before its matching MANM/MACM manifest. Such a window is a cache
     // miss, never a static fallback; retrying a few fresh snapshots lets an
@@ -921,12 +1300,17 @@ bool PartStore::read_coherent_snapshot(uint64_t part_hash,
         std::vector<part_asset::ChildInstance> candidate_children;
         part_asset::LodLevels candidate_lods;
         std::vector<part_asset::VolumeEmitter> candidate_emitters;
+        matter::PartRenderPolicy candidate_render_policy;
         std::optional<part_asset::PartAnimationLink> candidate_link;
         if (!part_asset::load_v2(path, part_hash, *candidate_scratch, candidate_tlas,
                                  candidate_children, candidate_lods, candidate_emitters,
                                  candidate_link)) {
             continue;
         }
+        if (!matter::load_part_render_policy(path, part_hash,
+                                             candidate_children.size(),
+                                             candidate_render_policy))
+            continue;
 
         matter::animation::AnimAsset candidate_animation;
         if (candidate_link) {
@@ -952,6 +1336,9 @@ bool PartStore::read_coherent_snapshot(uint64_t part_hash,
         out.children = std::move(candidate_children);
         out.lods_in = std::move(candidate_lods);
         out.emitters = std::move(candidate_emitters);
+        out.render_policy = std::move(candidate_render_policy);
+        out.source_single_full_rep = !candidate_link && out.children.empty() &&
+            part_asset::load_single_full_lod_policy(path, part_hash);
         out.animation_link = candidate_link;
         if (candidate_link) out.loaded_animation = std::move(candidate_animation);
         coherent = true;
@@ -959,10 +1346,73 @@ bool PartStore::read_coherent_snapshot(uint64_t part_hash,
     return coherent;
 }
 
+namespace {
+constexpr uint32_t geometry_policy_section = 0x80000001u;
+// The source mesh is used to compile pages, but retaining it as the static
+// fallback defeats paging on dense terrain. At the observed 1,500 resident
+// StreamMountain sectors this bounds fallback uploads to a few million tris.
+constexpr size_t terrain_static_fallback_triangles = 4096;
+uint64_t geometry_min_triangles() {
+    const char* value = std::getenv("MATTER_GEOMETRY_MIN_TRIANGLES");
+    if (!value || !*value) return 256;
+    char* end = nullptr; const auto count = std::strtoull(value, &end, 10);
+    return end && !*end && count >= 256 && count <= (1u << 20) ? count : 256;
+}
+std::string geometry_part_key(uint64_t hash) {
+    char key[64]; std::snprintf(key, sizeof(key), "part-geometry-v1-%016llx", static_cast<unsigned long long>(hash));
+    return key;
+}
+}
+PartStore::StagedPart PartStore::stage_geometry_cached(uint64_t part_hash) {
+    part_bundle::ScopedStorage storage(cache_storage_);
+    StagedPart staged; staged.part_hash = part_hash;
+    if (!geometry_pages_for(part_hash)) return staged;
+    std::string error;
+    auto asset = geometry_roots_.load(geometry_part_key(part_hash), error);
+    if (!asset) return staged;
+    uint64_t source_triangles = 0;
+    for (const auto& root : asset->roots) source_triangles += root.self.source_triangles;
+    if (source_triangles < geometry_min_triangles()) return staged;
+    const auto* policy = asset->manifest->view.find(geometry_policy_section);
+    if (!policy || policy->schema != 1 || policy->stride != 16 || policy->count != 1 ||
+        asset_store::get_u64(policy->data) != part_hash || asset_store::get_u32(policy->data + 8) > 1) return staged;
+    float density = 0;
+    const uint32_t density_bits = asset_store::get_u32(policy->data + 12);
+    std::memcpy(&density, &density_bits, sizeof(density));
+    if (!matter::valid_part_vt_density(density)) return staged;
+    staged.staging = std::make_unique<BLASManager>();
+    std::vector<Tri> triangles; std::vector<TriEx> shading;
+    float lo[3] = {INFINITY,INFINITY,INFINITY}, hi[3] = {-INFINITY,-INFINITY,-INFINITY};
+    for (const auto& root : asset->roots) {
+        MeshIndexed mesh; if (!geometry::decode_mesh(root, mesh, error)) return staged;
+        std::vector<Tri> tris; std::vector<TriEx> extra; to_tri(mesh, tris, extra);
+        triangles.insert(triangles.end(), tris.begin(), tris.end());
+        shading.insert(shading.end(), extra.begin(), extra.end());
+        for (int k = 0; k < 3; ++k) { lo[k] = std::min(lo[k], root.self.bounds.lo[k]); hi[k] = std::max(hi[k], root.self.bounds.hi[k]); }
+    }
+    if (triangles.empty() || triangles.size() > static_cast<size_t>(INT_MAX)) return staged;
+    const auto handle = staged.staging->register_triangles(triangles.data(), static_cast<int>(triangles.size()), shading.data());
+    if (handle == INVALID_BLAS_HANDLE) return staged;
+    auto& part = staged.lp;
+    part.geometry_pages = std::move(asset);
+    part.render_policy.ray_traced = asset_store::get_u32(policy->data + 8) != 0;
+    part.render_policy.vt_texels_per_meter = density;
+    part.lod_blas.push_back(handle); part.owned_blas.push_back(handle); part.thresholds.push_back(0);
+    part.lod_charts.emplace_back();
+    part.lod_mesh_data.push_back(build_raster_mesh_data(triangles.data(), shading.data(), static_cast<int>(triangles.size())));
+    LoadedCluster cluster{}; std::copy(lo, lo+3, cluster.aabb_min); std::copy(hi, hi+3, cluster.aabb_max);
+    const float x=hi[0]-lo[0], y=hi[1]-lo[1], z=hi[2]-lo[2];
+    part.bound_radius = cluster.radius = .5f*std::sqrt(x*x+y*y+z*z);
+    cluster.thresholds.push_back(0); cluster.lod_blas.push_back(handle); cluster.lod_mesh.push_back(0);
+    part.clusters.push_back(std::move(cluster)); part.fine_cluster_count = 1;
+    staged.ok = true; return staged;
+}
+
 PartStore::StagedPart PartStore::stage_from_snapshot(
         uint64_t part_hash, CoherentSnapshot& snapshot,
         const matter::animation::AnimAsset* animation_asset,
-        size_t first_rung, bool terrain_sector, const WarpAnchor& warp) {
+        size_t first_rung, bool terrain_sector, const WarpAnchor& warp,
+        float terrain_texels_per_meter) {
     StagedPart staged;
     staged.part_hash = part_hash;
     staged.staging   = std::make_unique<BLASManager>();
@@ -991,6 +1441,46 @@ PartStore::StagedPart PartStore::stage_from_snapshot(
     // a partial/absent table would misalign materials.
     const std::vector<TriEx>* triex_ptr = (triex.size() == tris.size() && !triex.empty())
                                           ? &triex : nullptr;
+
+    const char* terrain_pages_env = std::getenv("MATTER_GEOMETRY_TERRAIN");
+    const bool terrain_pages = geometry_pages_enabled_ && terrain_sector &&
+        terrain_pages_env && std::string(terrain_pages_env) == "1" &&
+        !animation_asset && !snapshot.render_policy.shared_surfaces && triex_ptr && !tris.empty();
+
+    // Compile only static standalone leaves on this initial opt-in boundary.
+    // Assemblies/animation/shared foliage retain their existing ownership path.
+    if (!terrain_sector && geometry_pages_for(part_hash) && !animation_asset && children.empty() &&
+        !snapshot.render_policy.shared_surfaces && triex_ptr && tris.size() >= geometry_min_triangles()) {
+        auto cached = stage_geometry_cached(part_hash);
+        if (cached.ok) return cached;
+        asset_store::PageSection policy{geometry_policy_section, 1, 16, {}};
+        asset_store::push_u64(policy.bytes, part_hash);
+        asset_store::push_u32(policy.bytes, snapshot.render_policy.ray_traced ? 1 : 0);
+        uint32_t density_bits = 0;
+        std::memcpy(&density_bits, &snapshot.render_policy.vt_texels_per_meter, sizeof(density_bits));
+        asset_store::push_u32(policy.bytes, density_bits);
+        geometry::CompileConfig config;
+        std::string error;
+        const auto geometry_start = std::chrono::steady_clock::now();
+        if (std::getenv("MATTER_GEOMETRY_PAGES_PROFILE"))
+            MATTER_LOGI("geometry", "compile %016llx source=%zu triangles\n",
+                static_cast<unsigned long long>(part_hash), tris.size());
+        auto asset = geometry::cache_asset(cache_root_ + "/geometry-pages", geometry_part_key(part_hash),
+            from_tri(tris, &triex), config, {policy}, error, &geometry_roots_);
+        if (asset) {
+            if (std::getenv("MATTER_GEOMETRY_PAGES_PROFILE")) {
+                uint64_t coarse = 0; for (const auto& root : asset->roots) coarse += root.self.triangles;
+                MATTER_LOGI("geometry", "compiled %016llx roots=%zu coarse=%llu source=%zu %.1f ms\n",
+                    static_cast<unsigned long long>(part_hash), asset->roots.size(),
+                    static_cast<unsigned long long>(coarse), tris.size(),
+                    std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now()-geometry_start).count());
+            }
+            cached = stage_geometry_cached(part_hash);
+            if (cached.ok) return cached;
+        }
+        MATTER_LOGW("geometry", "part %016llx page compile deferred: %s\n",
+                    static_cast<unsigned long long>(part_hash), error.c_str());
+    }
 
     // Bound radius = half AABB diagonal (drives projected-size LOD math).
     float mn[3] = {1e30f,1e30f,1e30f}, mx[3] = {-1e30f,-1e30f,-1e30f};
@@ -1021,11 +1511,12 @@ PartStore::StagedPart PartStore::stage_from_snapshot(
 
     staged.lp.bound_radius = radius;
     staged.lp.children = std::move(children);   // keep the baked child-instance table for the WorldComposer
+    staged.lp.render_policy = std::move(snapshot.render_policy);
     staged.lp.animation_asset = animation_asset;
     // Bake the ladder into a PRIVATE manager, then adopt it into the shared one
     // in a single bounded step.
     //
-    // This is the seam for getting the load off the app/GL thread. Everything
+    // This is the seam for getting the load off the app/render thread. Everything
     // above already works on a local `scratch`, so `staging` makes the whole
     // expensive stretch -- decimation, TriEx reprojection, BVH construction --
     // touch no shared state at all. What is left against blas_ is adopt_from:
@@ -1075,11 +1566,19 @@ PartStore::StagedPart PartStore::stage_from_snapshot(
         radius >= 32.0f && (terrain_sector || legacy_skirted_tile);
     // WP-A (chart-space VT): every staged part gets per-rung chart tables and
     // chart UVs in its TriEx (flowing to the render vertex surface.xy through
-    // build_raster_mesh_data below). Density policy: props 16 t/m at every
-    // rung; terrain sectors 16 t/m at rung 0 halving per coarser rung. A rung
+    // build_raster_mesh_data below). Terrain uses its authored finest density
+    // (default 16 t/m), halving per coarser rung. A rung
     // whose chart build fails ships an empty table (charts = 0, legacy path).
     lod_bake::ChartBakeOptions chart_opts;
-    chart_opts.texels_per_meter = 16.0f;
+    const float terrain_density = std::isfinite(terrain_texels_per_meter) &&
+        terrain_texels_per_meter >= 1 && terrain_texels_per_meter <= 2048
+        ? terrain_texels_per_meter : 16.0f;
+    // Small streamed sectors still own terrain material density even when the
+    // radius guard selects the ordinary geometry ladder for them.
+    const bool terrain_charts = terrain_sector || terrain_tile;
+    chart_opts.texels_per_meter = terrain_charts ? terrain_density
+        : prop_chart_texels_per_meter(staged.lp.render_policy);
+    chart_opts.align_material_grid = !terrain_tile;
     // Nested sector LOD: a level-L terrain tile is 2^L times wider than a
     // level-0 one for the SAME triangle count, so a fixed texels-per-metre
     // would ask for 2^L times the texels across -- a 2 km level-5 tile would
@@ -1089,7 +1588,7 @@ PartStore::StagedPart PartStore::stage_from_snapshot(
     // which is the same ratio a level-0 sector has today. Density at a given
     // DISTANCE is therefore unchanged, because level replaces exactly the
     // per-rung halving it displaces. Inert at level 0 (ratio 1).
-    if (terrain_tile && warp.valid && warp.sector_size > 0.0f &&
+    if (terrain_charts && warp.valid && warp.sector_size > 0.0f &&
         warp.base_sector_size > 0.0f) {
         const float ratio = warp.base_sector_size / warp.sector_size;
         if (ratio > 0.0f && ratio < 1.0f) chart_opts.texels_per_meter *= ratio;
@@ -1110,14 +1609,142 @@ PartStore::StagedPart PartStore::stage_from_snapshot(
     // 0 (every non-streaming caller) is exactly today's behaviour.
     lod_bake::TerrainBakeTargets terrain_targets;
     terrain_targets.first_rung = first_rung;
-    lod_bake::LodLevels lods = terrain_tile
-        ? lod_bake::bake_terrain_lods(tris, skirt_mask, radius,
-                                      terrain_targets,
-                                      *staged.staging, triex_ptr, observer_,
-                                      &lod_handles, &chart_opts, &rung_charts)
-        : lod_bake::bake_lods(tris, lod_bake::BakeTargets{}, *staged.staging,
-                              triex_ptr, observer_, &lod_handles,
-                              &chart_opts, &rung_charts);
+    lod_bake::BakeTargets regular_targets;
+    const bool single_rung_source = snapshot.source_single_full_rep && !terrain_sector && !terrain_tile &&
+        !animation_asset && !snapshot.animation_link && children.empty();
+    const auto bake_ladder = [&](const lod_bake::BakeTargets& targets) {
+        lod_handles.clear();
+        rung_charts.clear();
+        return terrain_tile && !terrain_pages
+            ? lod_bake::bake_terrain_lods(tris, skirt_mask, radius, terrain_targets,
+                                          *staged.staging, triex_ptr, observer_,
+                                          &lod_handles, &chart_opts, &rung_charts)
+            : lod_bake::bake_lods(tris, targets, *staged.staging, triex_ptr, observer_,
+                                  &lod_handles, &chart_opts, &rung_charts);
+    };
+    if (terrain_pages || single_rung_source) {
+        regular_targets.keep_ratio.resize(1);
+        regular_targets.threshold.resize(1);
+    }
+    lod_bake::LodLevels lods = bake_ladder(regular_targets);
+    // The source rung remains the sector's VT receiver and initial coverage.
+    // Geometry pages retain its chart UVs and exact outer boundaries. Children
+    // remain independently owned by the sector expansion.
+    if (terrain_pages && !lod_handles.empty()) {
+        const auto* source = staged.staging->get_entry(lod_handles.front());
+        if (!source || source->tri_extra.size() != source->triangles.size()) {
+            MATTER_LOGW("geometry", "terrain %016llx: source rung lacks per-triangle attributes; no pages",
+                        static_cast<unsigned long long>(part_hash));
+        } else {
+            geometry::CompileConfig config;
+            config.packed_root_triangles = 512;
+            // Terrain source cells are metres across. Millimetre convergence
+            // with 24 subdivisions is unnecessary here. Depth-limited error
+            // measurement still returns a conservative upper bound; looser
+            // convergence can retain more detail, never understate mesh error.
+            config.verification.tolerance = .02;
+            config.verification.max_depth = 8;
+            std::string error;
+            auto geometry_source = from_tri(source->triangles, &source->tri_extra);
+            const auto zero_area_removed = geometry::remove_zero_area_triangles(geometry_source);
+            char key[128]; std::snprintf(key, sizeof(key), "terrain-charted-geometry-%s-%016llx-%016llx",
+                "v3-packed512-z1",
+                static_cast<unsigned long long>(part_hash),
+                static_cast<unsigned long long>(rung_charts.empty() ? 0 : chart_atlas::parameterisation_id(rung_charts.front())));
+            const auto terrain_page_start = std::chrono::steady_clock::now();
+            if (std::getenv("MATTER_GEOMETRY_PAGES_PROFILE"))
+                MATTER_LOGI("geometry", "terrain_prepare_begin hash=%016llx triangles=%zu",
+                    static_cast<unsigned long long>(part_hash), source->triangles.size());
+            if (zero_area_removed && std::getenv("MATTER_GEOMETRY_PAGES_PROFILE"))
+                MATTER_LOGI("geometry", "terrain_source_clean key=%s zero_area_removed=%u", key, zero_area_removed);
+            geometry::CacheReport cache_report;
+            const char* cache_only_env = std::getenv("MATTER_GEOMETRY_CACHE_ONLY");
+            const bool cache_only = cache_only_env && std::string(cache_only_env) == "1";
+            staged.lp.geometry_pages = geometry::cache_asset(cache_root_ + "/geometry-pages", key,
+                geometry_source, config, {}, error, &geometry_roots_, &cache_report, cache_only,
+                false);
+            if (std::getenv("MATTER_GEOMETRY_PAGES_PROFILE"))
+                MATTER_LOGI("geometry", "terrain_cache key=%s outcome=%s compiled=%u lookup_ms=%.3f compile_ms=%.3f write_ms=%.3f reason=%s",
+                    key, cache_report.lookup == geometry::CacheLoadStatus::Hit ? "hit" :
+                    cache_report.lookup == geometry::CacheLoadStatus::Missing ? "missing" : "failed",
+                    unsigned(cache_report.compiled), cache_report.lookup_ms, cache_report.compile_ms,
+                    cache_report.write_ms, cache_report.reason.c_str());
+            if (std::getenv("MATTER_GEOMETRY_PAGES_PROFILE"))
+                MATTER_LOGI("geometry", "terrain_prepare_end hash=%016llx ready=%u roots=%zu ms=%.3f",
+                    static_cast<unsigned long long>(part_hash), staged.lp.geometry_pages ? 1u : 0u,
+                    staged.lp.geometry_pages ? staged.lp.geometry_pages->root_refs.size() : 0,
+                    std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-terrain_page_start).count());
+            staged.lp.geometry_source_vt = bool(staged.lp.geometry_pages);
+            if (!staged.lp.geometry_pages) MATTER_LOGW("geometry", "terrain %016llx paging failed: %s",
+                static_cast<unsigned long long>(part_hash), error.c_str());
+        }
+    }
+    if (terrain_pages && !lod_handles.empty()) {
+        // Page compilation needs the charted full source. The static renderer
+        // does not: it is only first coverage while pages become resident, or
+        // the fallback when their root bank is full. Keep one bounded rung in
+        // both cases, so a failed page admission cannot turn into an unbounded
+        // collection of full source meshes in Vulkan static buffers.
+        const auto source_handles = lod_handles;
+        const auto* source = staged.staging->get_entry(source_handles.front());
+        const std::vector<Tri>& source_tris = source ? source->triangles : tris;
+        const size_t source_triangle_count = source_tris.size();
+        const std::vector<TriEx>& source_ex = source && source->tri_extra.size() == source_tris.size()
+            ? source->tri_extra : triex;
+        const auto source_chart = rung_charts.empty() ? chart_atlas::ChartAtlasRung{} : rung_charts.front();
+        const float ratio = std::min(1.0f, float(terrain_static_fallback_triangles) / source_triangle_count);
+        std::vector<Tri> fallback_tris = ratio < 1.0f
+            ? lod_bake::decimate_tris(source_tris, ratio) : source_tris;
+        // A boundary-locked QEM pass may stop above its requested ratio. The
+        // hard cap still applies; clipping is the last-resort visible degrade.
+        if (fallback_tris.size() > terrain_static_fallback_triangles) {
+            MATTER_LOGW("geometry", "terrain %016llx: bounded fallback clipped %zu to %zu triangles",
+                static_cast<unsigned long long>(part_hash), fallback_tris.size(),
+                terrain_static_fallback_triangles);
+            fallback_tris.resize(terrain_static_fallback_triangles);
+        }
+        std::vector<TriEx> fallback_ex;
+        chart_atlas::ChartAtlasRung fallback_chart;
+        if (source_ex.size() == source_tris.size() && !fallback_tris.empty()) {
+            if (ratio >= 1.0f) {
+                fallback_ex = source_ex;
+                fallback_chart = source_chart;
+            } else {
+                MeshIndexed source_mesh = from_tri(source_tris, &source_ex);
+                ReprojectSource projection(source_mesh, ReprojectNormals::SampleSource);
+                MeshIndexed fallback_mesh = from_tri(fallback_tris, nullptr);
+                reproject_triex(projection, fallback_mesh);
+                std::vector<Tri> unused;
+                to_tri(fallback_mesh, unused, fallback_ex);
+                if (!source_chart.charts.empty() && fallback_ex.size() == fallback_tris.size()) {
+                    // Preserve the page source's VT parameterisation.
+                    lod_bake::apply_chart_rung(fallback_tris, fallback_ex,
+                                               source_tris, source_chart, fallback_chart);
+                }
+            }
+        }
+        rung_charts.clear();
+        rung_charts.push_back(std::move(fallback_chart));
+        lod_handles.clear();
+        lods.clear();
+        const TriEx* attrs = fallback_ex.size() == fallback_tris.size() ? fallback_ex.data() : nullptr;
+        const auto handle = staged.staging->register_triangles(fallback_tris.data(),
+            static_cast<int>(fallback_tris.size()), attrs);
+        if (handle != INVALID_BLAS_HANDLE) {
+            lod_handles.push_back(handle);
+            part_asset::LodLevel level;
+            level.screen_size_threshold = 0.0f;
+            const auto& entries = staged.staging->get_entries();
+            for (size_t i = 0; i < entries.size(); ++i)
+                if (entries[i]->handle == handle) { level.blas_indices.push_back(static_cast<uint32_t>(i)); break; }
+            lods.push_back(std::move(level));
+        }
+        for (const auto source_handle : source_handles) staged.staging->release_blas(source_handle);
+        if (std::getenv("MATTER_GEOMETRY_PAGES_PROFILE"))
+            MATTER_LOGI("geometry", "terrain %016llx static fallback: %zu -> %zu triangles, pages=%u",
+                static_cast<unsigned long long>(part_hash), source_triangle_count, fallback_tris.size(),
+                staged.lp.geometry_pages ? 1u : 0u);
+    }
     staged.ladder_ms = stage_split();
     assert(lod_handles.size() == lods.size());
     for (size_t li = 0; li < lods.size() && li < lod_handles.size(); ++li) {
@@ -1244,7 +1871,13 @@ PartStore::StagedPart PartStore::stage_from_snapshot(
 PartStore::StagedPart PartStore::stage_load(uint64_t part_hash,
                                             size_t first_rung,
                                             bool terrain_sector,
-                                            const WarpAnchor& warp) {
+                                            const WarpAnchor& warp,
+                                            float terrain_texels_per_meter) {
+    part_bundle::ScopedStorage storage(cache_storage_);
+    if (!terrain_sector && geometry_pages_for(part_hash)) {
+        auto cached = stage_geometry_cached(part_hash);
+        if (cached.ok) { cached.ok = flush_geometry_writer(); return cached; }
+    }
     StagedPart staged;
     staged.part_hash = part_hash;
     CoherentSnapshot snapshot;
@@ -1259,8 +1892,11 @@ PartStore::StagedPart PartStore::stage_load(uint64_t part_hash,
     if (snapshot.animation_link) { staged.read_ms = read_ms; return staged; }
     StagedPart out =
         stage_from_snapshot(part_hash, snapshot, nullptr, first_rung,
-                            terrain_sector, warp);
+                            terrain_sector, warp, terrain_texels_per_meter);
     out.read_ms = read_ms;
+    // This staging job is returning to the bake coordinator. Publish the
+    // batch before runtime readers can request its fine-page dependencies.
+    if (!flush_geometry_writer() && out.lp.geometry_pages) out.ok = false;
     return out;
 }
 
@@ -1294,7 +1930,8 @@ PartStore::StagedPart PartStore::stage_load(uint64_t part_hash,
 // ---------------------------------------------------------------------------
 bool PartStore::snapshot_from_baked(const script_host::BakedGeometry& baked,
                                     CoherentSnapshot& out) {
-    if (!baked.blas) return false;
+    if (!baked.blas || !matter::valid_part_vt_density(baked.render_policy.vt_texels_per_meter))
+        return false;
     // save_v2's staging copy hardcodes 92 named bytes. Pin that here too: if
     // TriEx ever grows a member, BOTH the writer's normalization and this
     // reconstruction are wrong, and a build break is the only honest outcome.
@@ -1341,6 +1978,10 @@ bool PartStore::snapshot_from_baked(const script_host::BakedGeometry& baked,
     out.children = baked.children;
     out.lods_in = baked.lods;
     out.emitters = baked.emitters;
+    out.render_policy = baked.render_policy;
+    out.source_single_full_rep = (baked.source_single_full_rep_hash != 0 ||
+        baked.validated_single_full_rep_hash != 0) &&
+        baked.children.empty() && !baked.boundary;
     // No ANLK: BakedGeometry is retained only on the static save path, so the
     // artifact this stands in for carries no animation link either.
     out.animation_link.reset();
@@ -1350,7 +1991,9 @@ bool PartStore::snapshot_from_baked(const script_host::BakedGeometry& baked,
 
 PartStore::StagedPart PartStore::stage_from_bake(
         uint64_t part_hash, const script_host::BakedGeometry& baked,
-        size_t first_rung, bool terrain_sector, const WarpAnchor& warp) {
+        size_t first_rung, bool terrain_sector, const WarpAnchor& warp,
+        float terrain_texels_per_meter) {
+    part_bundle::ScopedStorage storage(cache_storage_);
     StagedPart staged;
     staged.part_hash = part_hash;
     CoherentSnapshot snapshot;
@@ -1358,13 +2001,16 @@ PartStore::StagedPart PartStore::stage_from_bake(
     // [stream.stage] telemetry keeps reading as "cost of getting the geometry
     // in front of the ladder" on both paths and the saving is legible there.
     const auto read_t0 = std::chrono::steady_clock::now();
-    const bool built = snapshot_from_baked(baked, snapshot);
+    const bool valid_policy =
+        (baked.source_single_full_rep_hash == 0 || baked.source_single_full_rep_hash == part_hash) &&
+        (baked.validated_single_full_rep_hash == 0 || baked.validated_single_full_rep_hash == part_hash);
+    const bool built = valid_policy && snapshot_from_baked(baked, snapshot);
     const double read_ms = std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - read_t0).count();
     if (!built) { staged.read_ms = read_ms; return staged; }
     StagedPart out =
         stage_from_snapshot(part_hash, snapshot, nullptr, first_rung,
-                            terrain_sector, warp);
+                            terrain_sector, warp, terrain_texels_per_meter);
     out.read_ms = read_ms;
     // Volumetric-sectors M0-WP3a. Carried HERE and not inside
     // stage_from_snapshot because the snapshot is the artifact's contents and
@@ -1372,6 +2018,7 @@ PartStore::StagedPart PartStore::stage_from_bake(
     // is the one staging path holding the bake's own output. A pointer copy,
     // so it costs nothing and cannot diverge from what the bake produced.
     out.lp.boundary = baked.boundary;
+    if (!flush_geometry_writer() && out.lp.geometry_pages) out.ok = false;
     return out;
 }
 
@@ -1479,6 +2126,14 @@ bool staged_parts_equal(const PartStore::StagedPart& a,
     if (!bitwise_equal(x.owned_blas, y.owned_blas))     return differ("owned_blas");
     // ChildInstance is padding-free by static_assert, so a flat memcmp is exact.
     if (!bitwise_equal(x.children, y.children))         return differ("children");
+    if (x.render_policy.ray_traced != y.render_policy.ray_traced)
+        return differ("render_policy.ray_traced");
+    if (x.render_policy.child_overrides != y.render_policy.child_overrides)
+        return differ("render_policy.child_overrides");
+    if (x.render_policy.shared_surfaces != y.render_policy.shared_surfaces)
+        return differ("render_policy.shared_surfaces");
+    if (!bitwise_equal(x.render_policy.vt_texels_per_meter, y.render_policy.vt_texels_per_meter))
+        return differ("render_policy.vt_texels_per_meter");
     if (!bitwise_equal(x.flat_refs, y.flat_refs))       return differ("flat_refs");
     if (x.animation_asset != y.animation_asset)         return differ("animation_asset");
 
@@ -1516,6 +2171,77 @@ bool staged_parts_equal(const PartStore::StagedPart& a,
     return true;
 }
 
+namespace {
+std::string prepared_key(uint64_t hash,const std::string& policy) {
+    char key[128];std::snprintf(key,sizeof(key),"sector-v1-%016llx-%016llx-%016llx",
+        (unsigned long long)hash,(unsigned long long)matter_version::digest(),
+        (unsigned long long)part_asset::fnv1a64(policy.data(),policy.size()));return key;
+}
+}
+PartStore::StagedPart PartStore::load_prepared_sector(uint64_t hash,const std::string& policy,std::string& error) {
+    part_bundle::ScopedStorage storage(cache_storage_);
+    const auto start=std::chrono::steady_clock::now();StagedPart out;
+    try {
+        prepared_sector::ReadTiming read_timing;
+        auto page=prepared_sectors().read(prepared_key(hash,policy),error,&read_timing);if(!page)return out;
+        const auto source_start=std::chrono::steady_clock::now();
+        if(!std::filesystem::exists(cache_root_+"/"+part_asset::cache_path_resolved(hash))){error="prepared source artifact missing";return out;}
+        const auto decode_start=std::chrono::steady_clock::now();
+        const auto* section=page->view.find(1);
+        if(page->view.kind!=prepared_sector::kind || !section || section->schema!=1)throw std::runtime_error("prepared sector schema");
+        prepared_sector::Archive a;a.reading=true;a.data=section->data;a.size=section->size;
+        std::string geometry_key;asset_store::BlobHash manifest;
+        prepared_sector::transfer(a,out,geometry_key,manifest);
+        if(out.part_hash!=hash)throw std::runtime_error("prepared sector identity");
+        const auto roots_start=std::chrono::steady_clock::now();
+        if(!geometry_key.empty()){
+            if (!geometry_pages_enabled_) throw std::runtime_error("prepared geometry requires virtual geometry opt-in");
+            const auto lookup_start=std::chrono::steady_clock::now();
+            out.lp.geometry_pages=geometry_roots_.load(geometry_key,error);
+            if(!out.lp.geometry_pages || out.lp.geometry_pages->manifest->hash!=manifest)throw std::runtime_error("prepared geometry dependency unavailable or changed");
+            out.lp.geometry_source_vt=true;
+            if(std::getenv("MATTER_GEOMETRY_PAGES_PROFILE"))MATTER_LOGI("geometry","terrain_cache key=%s outcome=hit compiled=0 lookup_ms=%.3f compile_ms=0 write_ms=0 reason=prepared-sector",
+                geometry_key.c_str(),std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-lookup_start).count());
+        }
+        const auto finish=std::chrono::steady_clock::now();
+        if(std::getenv("MATTER_GEOMETRY_PAGES_PROFILE"))MATTER_LOGI("geometry",
+            "prepared_stage bytes=%llu wait_ms=%.3f io_ms=%.3f source_ms=%.3f decode_ms=%.3f roots_ms=%.3f",
+            (unsigned long long)section->size,read_timing.wait_ms,read_timing.io_ms,
+            std::chrono::duration<double,std::milli>(decode_start-source_start).count(),
+            std::chrono::duration<double,std::milli>(roots_start-decode_start).count(),
+            std::chrono::duration<double,std::milli>(finish-roots_start).count());
+        out.read_ms=std::chrono::duration<double,std::milli>(finish-start).count();error.clear();return out;
+    }catch(const std::exception& e){error=e.what();return {};}
+}
+bool PartStore::save_prepared_sector(StagedPart& s,const std::string& policy,std::string& error) {
+    part_bundle::ScopedStorage storage(cache_storage_);
+    const auto& p=s.lp;
+    if (p.geometry_pages && !geometry_pages_enabled_) {
+        error = "prepared geometry requires virtual geometry opt-in"; return false;
+    }
+    if(!s.ok || !s.staging || !p.children.empty() || p.animation_asset || p.shared_surface || !p.rigid_lod_mesh_data.empty() ||
+       !p.flat_refs.empty() || !p.impostors.empty() || !p.render_policy.child_overrides.empty() || p.render_policy.shared_surfaces ||
+       (!p.lod_mesh_data.empty() && !p.geometry_pages)){error="unsupported prepared sector";return false;}
+    if (p.geometry_pages && !geometry_roots_.flush_writer(error)) return false;
+    try {
+        // Keep the canonical source for CPU tracing/export consumers. Transient
+        // eviction may delete its scratch copy after publication.
+        const auto source=resolve_artifact_path(s.part_hash,scratch_dir_,cache_root_);
+        const auto target=cache_root_+"/"+part_asset::cache_path_resolved(s.part_hash);
+        if(source!=target){
+            std::filesystem::create_directories(std::filesystem::path(target).parent_path());
+            const auto temporary=target+".prepared-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
+            std::filesystem::copy_file(source,temporary,std::filesystem::copy_options::overwrite_existing);
+            if(!part_asset::replace_file_atomic(temporary,target)){std::filesystem::remove(temporary);error="prepared source publication failed";return false;}
+        }
+        if(!std::filesystem::exists(target)){error="prepared source artifact missing";return false;}
+        prepared_sector::Archive a;std::string key=p.geometry_pages?p.geometry_pages->key:"";
+        asset_store::BlobHash manifest=p.geometry_pages?p.geometry_pages->manifest->hash:asset_store::BlobHash{};
+        prepared_sector::transfer(a,s,key,manifest);
+        return prepared_sectors().write(prepared_key(s.part_hash,policy),std::move(a.bytes),error);
+    }catch(const std::exception& e){error=e.what();return false;}
+}
+
 const LoadedPart* PartStore::commit_staged(StagedPart staged) {
     if (!staged.ok || !staged.staging) return nullptr;
     const uint64_t part_hash = staged.part_hash;
@@ -1526,7 +2252,7 @@ const LoadedPart* PartStore::commit_staged(StagedPart staged) {
     {
         PROFILE_SCOPE("commit.adopt");
         std::unordered_map<BLASHandle, BLASHandle> remap;
-        blas_.adopt_from(*staged.staging, remap);
+        blas_.consume_from(*staged.staging, remap);
         PROFILE_COUNT("adopt_entries", remap.size());
         auto patch = [&remap](std::vector<BLASHandle>& handles) {
             for (BLASHandle& h : handles) {
@@ -1567,8 +2293,18 @@ const LoadedPart* PartStore::commit_staged(StagedPart staged) {
 }
 
 const LoadedPart* PartStore::get_or_load(uint64_t part_hash) {
+    part_bundle::ScopedStorage storage(cache_storage_);
     auto cached = loaded_.find(part_hash);
     if (cached != loaded_.end()) return &cached->second;
+    if (geometry_pages_for(part_hash)) {
+        auto paged = stage_geometry_cached(part_hash);
+        if (paged.ok) {
+            // A staging worker may still own an uncommitted batch. Pending
+            // roots are readable in memory, but fine pages need the index.
+            if (!flush_geometry_writer()) return nullptr;
+            return commit_staged(std::move(paged));
+        }
+    }
     // A cold decode. On the render thread (via build_expansion during a publish)
     // this is the hitch the install-time child pre-warm exists to eliminate; the
     // counter is the observable invariant (must read 0 per render frame during a
@@ -1581,11 +2317,11 @@ const LoadedPart* PartStore::get_or_load(uint64_t part_hash) {
     // first, parse its exact suffix, and only then admit that root's flat
     // sibling.  A linked PART always takes the coherent PART/MANM/MACM path;
     // it must never silently downgrade to a static flat from either root.
-    {
+    if (!geometry_pages_for(part_hash)) {
         const std::string selected_root = select_artifact_root(part_hash, scratch_dir_, cache_root_);
         const std::string canonical_part =
             selected_root + "/" + part_asset::cache_path_resolved(part_hash);
-        uint64_t canonical_fingerprint = 0;
+        part_asset::StaticPartSnapshot canonical_snapshot;
         LoadedPart flat;
         // MATTER_FLAT_GATE_LOG: which admission gate rejects a written flat.
         // Fable's hypothesis is that installed variants are LINKED, so gate #1
@@ -1593,14 +2329,45 @@ const LoadedPart* PartStore::get_or_load(uint64_t part_hash) {
         // child subtree runs instead -- the uncollapsed walk.
         static const bool flat_gate_log =
             std::getenv("MATTER_FLAT_GATE_LOG") != nullptr;
+        const bool admission_profile = std::getenv("MATTER_PARTSTORE_PROFILE") != nullptr;
+        using AdmissionClock = std::chrono::steady_clock;
+        const auto admission_begin = admission_profile ? AdmissionClock::now() : AdmissionClock::time_point{};
+        // REP0 admission, RNDR policy and FLAT decode share one fully verified
+        // bundle generation. The final fingerprint check below must not share it.
+        part_bundle::ScopedReadSnapshot bundle_snapshot(canonical_part, part_hash);
         const bool snap_ok = part_asset::load_static_part_snapshot(
-            canonical_part, part_hash, canonical_fingerprint);
-        const bool flat_ok = snap_ok && load_flat(part_hash, selected_root, flat);
+            canonical_part, part_hash, canonical_snapshot);
+        matter::PartRenderPolicy own_policy;
+        if(snap_ok && matter::load_part_render_policy(canonical_part,part_hash,
+            canonical_snapshot.children.size(),own_policy) && own_policy.shared_surfaces) {
+            std::string error;
+            auto assembly=compile_shared_surface_assembly(part_hash,[&](uint64_t hash){
+                return resolve_artifact_path(hash,scratch_dir_,cache_root_);
+            },shared_surface_meshes_,error);
+            if(!assembly) {MATTER_LOGE("shared-surface","%016llx: %s\n",(unsigned long long)part_hash,error.c_str());return nullptr;}
+            LoadedPart loaded;loaded.render_policy=own_policy;loaded.shared_surface=std::move(assembly);
+            loaded.bound_radius=loaded.shared_surface->bound_radius;loaded.thresholds={INFINITY};
+            return &loaded_.emplace(part_hash,std::move(loaded)).first->second;
+        }
+        const auto snapshot_done = admission_profile ? AdmissionClock::now() : AdmissionClock::time_point{};
+        matter::PartRenderPolicy flat_render_policy;
+        const bool policy_ok = snap_ok && resolve_uniform_flat_render_policy(
+            selected_root, part_hash, canonical_snapshot, flat_render_policy);
+        const auto policy_done = admission_profile ? AdmissionClock::now() : AdmissionClock::time_point{};
+        bool flat_loaded = false;
+        const bool flat_ok = policy_ok &&
+            (flat_loaded = load_flat(part_hash, selected_root, flat_render_policy, flat));
+        bundle_snapshot.close(); // revalidation and test replacement hooks read the live file
+        if (admission_profile) MATTER_LOGI("partstore",
+            "%016llx flat_verified_bundle_bytes=%zu reused_section_reads=%zu\n",
+            (unsigned long long)part_hash, bundle_snapshot.file_bytes, bundle_snapshot.reused_reads);
+        if (flat_ok) flat.render_policy = std::move(flat_render_policy);
         if (flat_gate_log && !flat_ok)
             MATTER_LOGD("flatgate",
-                         "%016llx REJECT snapshot=%d load_flat=%d\n",
+                         "%016llx REJECT snapshot=%d policy=%d load_flat=%d\n",
                          (unsigned long long)part_hash, snap_ok ? 1 : 0,
-                         snap_ok ? (flat_ok ? 1 : 0) : -1);
+                         snap_ok ? (policy_ok ? 1 : 0) : -1,
+                         policy_ok ? (flat_loaded ? 1 : 0) : -1);
         // Same question as MATTER_FLAT_GATE_LOG, as a counter rather than a
         // console line -- a rejection rate is what matters here, not each
         // individual hash, and per-item stderr has measurably distorted this
@@ -1633,11 +2400,20 @@ const LoadedPart* PartStore::get_or_load(uint64_t part_hash) {
             // selected before loading the flat.  A replacement (including a
             // newly linked generation) invalidates this static acceleration;
             // fall through and re-probe the normal coherent loader instead.
+            const auto validation_begin = admission_profile ? AdmissionClock::now() : AdmissionClock::time_point{};
             uint64_t final_fingerprint = 0;
             const bool fingerprint_stable =
                 part_asset::load_static_part_snapshot(canonical_part, part_hash,
                                                       final_fingerprint) &&
-                final_fingerprint == canonical_fingerprint;
+                final_fingerprint == canonical_snapshot.fingerprint;
+            if (admission_profile) {
+                const auto ms = [](auto begin, auto end) {
+                    return std::chrono::duration<double, std::milli>(end - begin).count();
+                };
+                MATTER_LOGI("partstore", "%016llx flat_snapshot=%.3f flat_policy=%.3f flat_revalidate=%.3f ms\n",
+                    (unsigned long long)part_hash, ms(admission_begin, snapshot_done),
+                    ms(snapshot_done, policy_done), ms(validation_begin, AdmissionClock::now()));
+            }
             // The SECOND way a flat is abandoned: it loaded fine, but the part
             // was replaced (a newly linked generation) between the two
             // snapshots, so this falls through to the coherent loader too.
@@ -1652,7 +2428,7 @@ const LoadedPart* PartStore::get_or_load(uint64_t part_hash) {
                 loaded_.emplace(part_hash, std::move(flat));
 
                 // MATTER_PARTSTORE_PROFILE: split the flat path. This function
-                // runs inside the stream.publish GpuJob on the app/GL thread,
+                // runs inside the stream.publish GpuJob on the app/render thread,
                 // where it measured 3-6 s per sector while the Vulkan
                 // registration next to it took 0.4 ms -- so the whole streaming
                 // stall lives in here and nothing said which part of it.
@@ -1685,10 +2461,11 @@ const LoadedPart* PartStore::get_or_load(uint64_t part_hash) {
                 loaded_[part_hash].expansion = std::move(exp);
                 return &loaded_[part_hash];
             }
-            // The decoded flat was never published. Undo every shared-BLAS
-            // registration before retrying the coherent Part path below.
-            release_loaded_part_blas(blas_, flat);
         }
+        // Track decode independently from every subsequent admission gate. A
+        // decoded flat that is not published must always surrender every
+        // shared-BLAS registration before the coherent fallback starts.
+        if (flat_loaded) release_loaded_part_blas(blas_, flat);
     }
 
     // Read a linked artifact as a bounded coherent snapshot (see
@@ -1750,6 +2527,7 @@ const LoadedPart* PartStore::get_or_load(uint64_t part_hash) {
 
         LoadedPart partitioned;
         partitioned.children = std::move(children);
+        partitioned.render_policy = std::move(snapshot_.render_policy);
         partitioned.animation_asset = animation_asset;
         partitioned.rigid_lod_mesh_data.resize(partition.rigid_segments.size());
         partitioned.rigid_lod_thresholds.reserve(level_count);
@@ -1820,6 +2598,7 @@ const LoadedPart* PartStore::get_or_load(uint64_t part_hash) {
     // Non-partitioned coherent part: stage it (touches no shared state) then
     // commit it (bounded). Split so a streaming worker can call stage_load().
     StagedPart staged = stage_from_snapshot(part_hash, snapshot_, animation_asset);
+    if (!flush_geometry_writer() && staged.lp.geometry_pages) return nullptr;
     if (!staged.ok) return nullptr;
     return commit_staged(std::move(staged));
 }

@@ -4,10 +4,12 @@
 # rule in CLAUDE.md: consumers add -I to the sibling's include/ and compile the
 # sibling's sources from where they live. Nothing is copied.
 #
-# The archive deliberately does NOT contain MemoryLib's objects. A consumer that
-# already compiles mem_arena.c (MatterEngine3 and MatterEditor both do) would
-# otherwise get duplicate symbols. Consumers link this .a and keep compiling
-# MemoryLib themselves; tests/Makefile does exactly that.
+# The archive deliberately does NOT contain MemoryLib's objects, so that a
+# consumer which already compiles mem_arena.c cannot get duplicate symbols.
+# Consumers link this .a and keep compiling MemoryLib themselves; tests/Makefile
+# does exactly that. (No engine project compiles mem_arena.c today -- this
+# library's own tests are its only in-tree consumer. The rule is there so
+# adopting the store as the bake cache does not turn into a link error.)
 
 # Shared build config (TMP/TEMP, GLSLC, parallelism, ccache detection).
 include ../../platform.mk
@@ -23,7 +25,7 @@ SRC_DIR = src
 OBJ_DIR = build/obj
 
 SRCS = $(SRC_DIR)/store_hash.cpp $(SRC_DIR)/store_os.cpp \
-       $(SRC_DIR)/blob_store.cpp $(SRC_DIR)/ref_table.cpp
+       $(SRC_DIR)/blob_store.cpp $(SRC_DIR)/ref_table.cpp $(SRC_DIR)/asset_pages.cpp
 OBJS = $(SRCS:$(SRC_DIR)/%.cpp=$(OBJ_DIR)/%.o)
 
 TARGET = build/libasset_store.a

@@ -10,6 +10,7 @@ using matter::render::DynamicInstanceSlots;
 using matter::render::DynamicSlotChangeKind;
 using matter::render::DynamicSlotHandle;
 using matter::render::SlotResult;
+using matter::RayTracingOverride;
 
 namespace {
 
@@ -114,6 +115,35 @@ void test_part_change_emits_bind() {
     if (changes.size() == 1) {
         CHECK(changes[0].kind == DynamicSlotChangeKind::Bind, "part_change: kind is Bind");
         CHECK(changes[0].part_hash == 200, "part_change: part_hash updated");
+    }
+}
+
+void test_eligibility_only_change_emits_one_update() {
+    DynamicInstanceSlots slots(4);
+    DynamicInstanceInput in;
+    in.key.entity_id = entity(1).value;
+    in.part_hash = 100;
+    in.policy_part_hash = 900;
+    in.object_to_world = identity();
+    in.ray_tracing_override = RayTracingOverride::Inherit;
+
+    slots.upsert(in);
+    slots.drain();
+
+    in.ray_tracing_override = RayTracingOverride::Disabled;
+    const auto result = slots.upsert(in);
+    CHECK(result.result == SlotResult::Ok,
+          "eligibility_change: upsert succeeds");
+    const auto changes = slots.drain();
+    CHECK(changes.size() == 1,
+          "eligibility_change: exactly one update is emitted");
+    if (changes.size() == 1) {
+        CHECK(changes[0].kind == DynamicSlotChangeKind::Transform,
+              "eligibility_change: policy-only update keeps the binding");
+        CHECK(changes[0].policy_part_hash == 900 &&
+                  changes[0].ray_tracing_override ==
+                      RayTracingOverride::Disabled,
+              "eligibility_change: update carries unresolved source policy");
     }
 }
 
@@ -280,6 +310,7 @@ int main() {
     test_noop_upsert();
     test_transform_change();
     test_part_change_emits_bind();
+    test_eligibility_only_change_emits_one_update();
     test_remove_emits_change_and_stale_handle();
     test_capacity_exhausted();
     test_deferred_reuse();

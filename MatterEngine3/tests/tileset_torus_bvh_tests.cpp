@@ -100,9 +100,16 @@ static void test_placement_smoke() {
 
     // Stable hash for the synthetic fixture — chosen so that (a) it doesn't
     // collide with any real baked part hash in tests/parts/, and (b) the file
-    // path resolves to ./parts/0000000000000001.part which is unambiguous.
+    // path is unambiguous.
+    //
+    // The path comes from cache_path_resolved, NOT from a literal: M4 moved
+    // every part artifact into one "parts/<16-hex>.bundle", and the literal
+    // "./parts/<hash>.part" this used to hardcode stopped being the file the
+    // loader opens. The fixture was written where nothing would read it and the
+    // suite went red on a missing bundle it had just "created".
     const uint64_t kFixtureHash = 0x0000000000000001ULL;
-    const std::string kFixturePath = "./parts/0000000000000001.part";
+    const std::string kFixturePath =
+        "./" + part_asset::cache_path_resolved(kFixtureHash);
 
     // Generate (or regenerate) the fixture part. We build a one-triangle BLAS
     // and call save_v2 with kFixtureHash. load_v2 validates sizeof(MaterialDef)
@@ -148,7 +155,7 @@ static void test_placement_smoke() {
     st.instances.push_back(inst);
 
     BakeInputs bi;
-    bi.parts_cache_dir = ".";  // tests/ cwd; resolves to ./parts/<hash>.part
+    bi.parts_cache_dir = ".";  // tests/ cwd; resolves to ./parts/<hash>.bundle
 
     BLASManager blas;
     TLASManager tlas(64);
@@ -180,8 +187,10 @@ static void test_placement_smoke() {
 static void test_multi_entry_part_registers_every_placement() {
     using namespace tileset;
 
+    // Path via cache_path_resolved, not a literal — see test_placement_smoke.
     const uint64_t kFixtureHash = 0x0000000000000002ULL;
-    const std::string kFixturePath = "./parts/0000000000000002.part";
+    const std::string kFixturePath =
+        "./" + part_asset::cache_path_resolved(kFixtureHash);
 
     // Part-local offsets for the four draws (entry 2 is drawn twice).
     const float kLocalX[4] = {0.0f, 0.25f, 0.5f, 0.75f};

@@ -1,0 +1,205 @@
+#version 450
+
+#include "gpu_mesh_common.glsl"
+
+layout(local_size_x = 256) in;
+layout(std430, binding = 0) readonly buffer ParamsBuffer {
+    GpuMeshFieldParams params;
+};
+layout(std430, binding = 1) readonly buffer ParticleBuffer {
+    GpuMeshParticle particles[];
+};
+layout(std430, binding = 2) readonly buffer CountBuffer {
+    uint counts[];
+};
+layout(std430, binding = 3) readonly buffer OffsetBuffer {
+    uint offsets[];
+};
+layout(std430, binding = 4) readonly buffer IdBuffer {
+    uint particleIds[];
+};
+layout(std430, binding = 5) writeonly buffer FieldBuffer {
+    float field[];
+};
+
+float evaluateSourceField(uint source, vec3 point,
+                          float queryRadiusSquared,
+                          ivec3 binMin, ivec3 binMax) {
+    float minimum = uintBitsToFloat(0x7f800000u);
+    uint neighborCount = 0u;
+    float onlyWeight = 0.0;
+    for (int bz = binMin.z; bz <= binMax.z; ++bz) {
+        for (int by = binMin.y; by <= binMax.y; ++by) {
+            for (int bx = binMin.x; bx <= binMax.x; ++bx) {
+                const uint bin = gpuMeshLinearBin(uvec3(bx, by, bz),
+                                                  params.binDimsAndCount.xyz);
+                const uint begin = offsets[bin];
+                const uint end = begin + counts[bin];
+                for (uint cursor = begin; cursor < end; ++cursor) {
+                    const uint particleId = particleIds[cursor];
+                    const float phaseWeight = gpuMeshSourceParticleWeight(
+                        source, particleId, params);
+                    if (phaseWeight == 0.0) continue;
+                    const GpuMeshParticle particle = particles[particleId];
+                    const vec3 delta = point - particle.positionM;
+                    const float distanceSquared = dot(delta, delta);
+                    if (distanceSquared > queryRadiusSquared) continue;
+                    minimum = min(minimum,
+                                  sqrt(distanceSquared) - particle.radiusM);
+                    onlyWeight = phaseWeight;
+                    ++neighborCount;
+                }
+            }
+        }
+    }
+    if (neighborCount == 0u || params.spacingAndBlend.w <= 1e-5 ||
+        (neighborCount == 1u && onlyWeight == 1.0)) {
+        return minimum;
+    }
+
+    float sum = 0.0;
+    for (int bz = binMin.z; bz <= binMax.z; ++bz) {
+        for (int by = binMin.y; by <= binMax.y; ++by) {
+            for (int bx = binMin.x; bx <= binMax.x; ++bx) {
+                const uint bin = gpuMeshLinearBin(uvec3(bx, by, bz),
+                                                  params.binDimsAndCount.xyz);
+                const uint begin = offsets[bin];
+                const uint end = begin + counts[bin];
+                for (uint cursor = begin; cursor < end; ++cursor) {
+                    const uint particleId = particleIds[cursor];
+                    const float phaseWeight = gpuMeshSourceParticleWeight(
+                        source, particleId, params);
+                    if (phaseWeight == 0.0) continue;
+                    const GpuMeshParticle particle = particles[particleId];
+                    const vec3 delta = point - particle.positionM;
+                    const float distanceSquared = dot(delta, delta);
+                    if (distanceSquared > queryRadiusSquared) continue;
+                    const float distance =
+                        sqrt(distanceSquared) - particle.radiusM;
+                    sum += phaseWeight * exp(-(distance - minimum) /
+                                             params.spacingAndBlend.w);
+                }
+            }
+        }
+    }
+    return minimum - params.spacingAndBlend.w * log(sum);
+}
+
+void main() {
+    const uint sampleIndex = gl_GlobalInvocationID.x;
+    if (sampleIndex >= params.sampleDimsAndCount.w) return;
+    const uvec3 dimensions = params.sampleDimsAndCount.xyz;
+    const uint x = sampleIndex % dimensions.x;
+    const uint yz = sampleIndex / dimensions.x;
+    const uint y = yz % dimensions.y;
+    const uint z = yz / dimensions.y;
+    const vec3 point = params.originAndIso.xyz +
+        params.spacingAndBlend.xyz * vec3(x, y, z);
+
+    const float queryRadius = params.queryRadiusAndPadding.x;
+    const float queryRadiusSquared = queryRadius * queryRadius;
+    const vec3 relativeMin =
+        (point - vec3(queryRadius) - params.binOriginAndSize.xyz) /
+        params.binOriginAndSize.w;
+    const vec3 relativeMax =
+        (point + vec3(queryRadius) - params.binOriginAndSize.xyz) /
+        params.binOriginAndSize.w;
+    const ivec3 maxCoordinate = ivec3(params.binDimsAndCount.xyz) - ivec3(1);
+    const ivec3 binMin = clamp(ivec3(floor(relativeMin)), ivec3(0),
+                               maxCoordinate);
+    const ivec3 binMax = clamp(ivec3(floor(relativeMax)), ivec3(0),
+                               maxCoordinate);
+
+    if (params.sourceBlendOriginAndEnabled.w != 0.0) {
+        const float upstream = evaluateSourceField(
+            0u, point, queryRadiusSquared, binMin, binMax);
+        const float downstream = evaluateSourceField(
+            1u, point, queryRadiusSquared, binMin, binMax);
+        const float along = dot(
+            point - params.sourceBlendOriginAndEnabled.xyz,
+            params.sourceBlendDirection.xyz);
+        if (along <= params.sourceBlendDistancesAndPadding.x) {
+            field[sampleIndex] = upstream;
+            return;
+        }
+        if (along >= params.sourceBlendDistancesAndPadding.y) {
+            field[sampleIndex] = downstream;
+            return;
+        }
+        const bool upstreamWet = !isinf(upstream) && !isnan(upstream);
+        const bool downstreamWet = !isinf(downstream) && !isnan(downstream);
+        if (!upstreamWet) {
+            field[sampleIndex] = downstream;
+            return;
+        }
+        if (!downstreamWet || upstream == downstream) {
+            field[sampleIndex] = upstream;
+            return;
+        }
+        const float amount = smoothstep(
+            params.sourceBlendDistancesAndPadding.x,
+            params.sourceBlendDistancesAndPadding.y, along);
+        field[sampleIndex] = mix(upstream, downstream, amount);
+        return;
+    }
+
+    float minimum = uintBitsToFloat(0x7f800000u);
+    uint neighborCount = 0u;
+    float onlyWeight = 0.0;
+    for (int bz = binMin.z; bz <= binMax.z; ++bz) {
+        for (int by = binMin.y; by <= binMax.y; ++by) {
+            for (int bx = binMin.x; bx <= binMax.x; ++bx) {
+                const uint bin = gpuMeshLinearBin(uvec3(bx, by, bz),
+                                                  params.binDimsAndCount.xyz);
+                const uint begin = offsets[bin];
+                const uint end = begin + counts[bin];
+                for (uint cursor = begin; cursor < end; ++cursor) {
+                    const uint particleId = particleIds[cursor];
+                    const float phaseWeight =
+                        gpuMeshParticlePhaseWeight(particleId, params);
+                    if (phaseWeight == 0.0) continue;
+                    const GpuMeshParticle particle = particles[particleId];
+                    const vec3 delta = point - particle.positionM;
+                    const float distanceSquared = dot(delta, delta);
+                    if (distanceSquared > queryRadiusSquared) continue;
+                    minimum = min(minimum,
+                                  sqrt(distanceSquared) - particle.radiusM);
+                    onlyWeight = phaseWeight;
+                    ++neighborCount;
+                }
+            }
+        }
+    }
+    if (neighborCount == 0u || params.spacingAndBlend.w <= 1e-5 ||
+        (neighborCount == 1u && onlyWeight == 1.0)) {
+        field[sampleIndex] = minimum;
+        return;
+    }
+
+    float sum = 0.0;
+    for (int bz = binMin.z; bz <= binMax.z; ++bz) {
+        for (int by = binMin.y; by <= binMax.y; ++by) {
+            for (int bx = binMin.x; bx <= binMax.x; ++bx) {
+                const uint bin = gpuMeshLinearBin(uvec3(bx, by, bz),
+                                                  params.binDimsAndCount.xyz);
+                const uint begin = offsets[bin];
+                const uint end = begin + counts[bin];
+                for (uint cursor = begin; cursor < end; ++cursor) {
+                    const uint particleId = particleIds[cursor];
+                    const float phaseWeight =
+                        gpuMeshParticlePhaseWeight(particleId, params);
+                    if (phaseWeight == 0.0) continue;
+                    const GpuMeshParticle particle = particles[particleId];
+                    const vec3 delta = point - particle.positionM;
+                    const float distanceSquared = dot(delta, delta);
+                    if (distanceSquared > queryRadiusSquared) continue;
+                    const float distance =
+                        sqrt(distanceSquared) - particle.radiusM;
+                    sum += phaseWeight * exp(-(distance - minimum) /
+                                             params.spacingAndBlend.w);
+                }
+            }
+        }
+    }
+    field[sampleIndex] = minimum - params.spacingAndBlend.w * log(sum);
+}

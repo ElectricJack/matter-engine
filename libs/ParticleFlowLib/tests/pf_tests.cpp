@@ -287,6 +287,104 @@ static void test_attract_consume_and_kill() {
     printf("  attract consume/kill OK\n");
 }
 
+// Each Attract field must steer with ITS OWN influence / kill_radius /
+// kill_on_consume. attract_dir used to look up the first FieldType::Attract
+// entry in the config and use that one's parameters no matter which field was
+// being evaluated, so every Attract field past the first behaved like the
+// first. Field 0 here has an influence too small to ever reach the attractor;
+// field 1 has a wide one. Under the old behaviour field 1 inherited field 0's
+// tiny influence and nothing was ever consumed.
+static void test_attract_uses_each_fields_own_params() {
+    SimConfig base;
+    base.seed = 13; base.dt = 1.0f; base.max_turn_rate = 0.6f;
+    base.deposit_every = 1e9f;
+    base.speed_target = 0.2f; base.speed_relax = 1.0f;
+
+    FieldConfig narrow; narrow.type = FieldType::Attract; narrow.mode = FieldMode::Steer;
+    narrow.weight = 1.0f; narrow.influence = 0.01f; narrow.kill_radius = 0.25f;
+    narrow.kill_on_consume = false;
+
+    FieldConfig wide = narrow;
+    wide.influence = 10.0f;
+    wide.kill_on_consume = true;
+
+    const float cloud[3] = { 3, 0, 0 };
+
+    // Control: the narrow field alone reaches nothing.
+    {
+        SimConfig c = base;
+        c.fields = {narrow};
+        Sim s(c);
+        s.set_attractors(cloud, 1);
+        s.emit_particle({0.5f, 0, 0}, {0.2f, 0, 0}, nullptr);
+        s.run(40);
+        assert(s.attractors_remaining() == 1 &&
+               "a field whose influence cannot reach must consume nothing");
+        assert(s.alive_count() == 1 && "and must not kill the strand");
+    }
+
+    // The discriminator: the wide field is SECOND, so it is the one whose
+    // parameters used to be ignored.
+    {
+        SimConfig c = base;
+        c.fields = {narrow, wide};
+        Sim s(c);
+        s.set_attractors(cloud, 1);
+        s.emit_particle({0.5f, 0, 0}, {0.2f, 0, 0}, nullptr);
+        s.run(40);
+        assert(s.attractors_remaining() == 0 &&
+               "the second Attract field must use its own influence");
+        assert(s.alive_count() == 0 &&
+               "and its own kill_on_consume");
+    }
+    printf("  attract per-field params OK\n");
+}
+
+// An emitter must be able to initialize EVERY declared channel. The staging
+// buffers used to be fixed 16-element stack arrays, so channels 16 and up
+// silently started at 0 whatever the emitter asked for.
+static void test_emitter_initializes_all_channels() {
+    const int kChannels = 20;   // deliberately past the old 16-element cap
+    SimConfig c;
+    c.seed = 21; c.dt = 1.0f; c.deposit_every = 1e9f;
+    EmitterConfig em;
+    em.shape = 0; em.rate = 1.0f; em.vel0 = 0.0f;
+    for (int i = 0; i < kChannels; ++i) {
+        c.attributes.push_back("a" + std::to_string(i));
+        c.state.push_back("s" + std::to_string(i));
+        em.attr_init.push_back(100.0f + (float)i);
+        em.state_init.push_back(200.0f + (float)i);
+    }
+    c.emitters = {em};
+
+    Sim s(c);
+    s.run(1);
+    assert(s.alive_count() == 1 && "the emitter produced one particle");
+    const uint32_t slot = s.born_this_tick().empty() ? 0 : s.born_this_tick()[0];
+
+    for (int i = 0; i < kChannels; ++i) {
+        assert(s.attr_data((uint32_t)i)[slot] == 100.0f + (float)i &&
+               "every attribute channel is initialized from attr_init");
+        assert(s.state_data((uint32_t)i)[slot] == 200.0f + (float)i &&
+               "every state channel is initialized from state_init");
+    }
+
+    // A short init vector still leaves the rest at zero.
+    SimConfig c2;
+    c2.seed = 22; c2.dt = 1.0f; c2.deposit_every = 1e9f;
+    c2.attributes = {"a0", "a1", "a2"};
+    EmitterConfig em2;
+    em2.shape = 0; em2.rate = 1.0f; em2.vel0 = 0.0f;
+    em2.attr_init = {5.0f};
+    c2.emitters = {em2};
+    Sim s2(c2);
+    s2.run(1);
+    assert(s2.alive_count() == 1);
+    assert(s2.attr_data(0)[0] == 5.0f && s2.attr_data(1)[0] == 0.0f &&
+           s2.attr_data(2)[0] == 0.0f && "a short attr_init zero-fills the rest");
+    printf("  emitter channel init OK (%d channels)\n", kChannels);
+}
+
 static void test_surface_normal() {
     SimConfig c; c.seed = 14; c.deposit_every = 1e9f;
     Sim s(c);
@@ -406,6 +504,8 @@ int main() {
     test_adhere_pulls_toward_deposited();
     test_separate_pushes_apart();
     test_attract_consume_and_kill();
+    test_attract_uses_each_fields_own_params();
+    test_emitter_initializes_all_channels();
     test_surface_normal();
     test_curl_is_deterministic_and_bounded();
     test_path_recorder();

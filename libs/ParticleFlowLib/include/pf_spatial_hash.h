@@ -1,6 +1,21 @@
 #pragma once
 // Included by particle_flow.h after V3 is defined; do not include directly.
 // V3 must be defined in pf namespace before this is included.
+//
+// libs/ParticleFlowLib/include/pf_spatial_hash.h
+//
+// Insert-and-query point hash backing the two neighborhood structures a `Sim`
+// keeps: `deposited_hash()` (append-only, grows for the whole run) and
+// `live_hash()` (rebuilt from scratch at the top of every tick). Adhere, Align
+// and Separate in `src/pf_fields.cpp` are its only readers.
+//
+// Name collision warning: this `pf::SpatialHash` is unrelated to the C
+// `SpatialHash` in `libs/SpatialQueryLib/include/spatial_hash.h`. Different
+// library, different API, different storage — they only share a name.
+//
+// It has no dependencies beyond the standard library, which is why it lives
+// here rather than being borrowed from SpatialQueryLib: ParticleFlowLib is a
+// leaf and takes on no repo dependencies.
 #include <cmath>
 #include <unordered_map>
 #include <utility>
@@ -14,6 +29,21 @@ namespace pf {
 // (all candidates are exact-distance filtered); key collisions only cost time.
 // Deterministic: cells are visited in fixed (z,y,x) loop order and points in
 // insertion order, so query callbacks always fire in the same sequence.
+// Storage and cost
+//   - Points are COPIED in (position + caller index). Nothing is owned, and
+//     there is no erase: `clear()` — which drops every cell and resets the
+//     count — is the only way to remove anything. `Sim` exploits exactly that:
+//     the live hash is cleared and refilled each tick, the deposit hash never
+//     is.
+//   - `cell` is clamped up to 1e-6 so a zero or negative cell size cannot make
+//     the grid math blow up; it is otherwise taken as given.
+//   - `query` walks every cell overlapping the query AABB, so its cost scales
+//     with (2r/cell)^3 in cells visited. Size `cell` near the typical query
+//     radius (`Sim` derives it from the largest field radius by default).
+//   - Memory is one `std::pair` per inserted point plus the bucket overhead;
+//     it only ever grows between `clear()` calls.
+//   - No thread safety, and none needed: a `Sim` owns both of its hashes and
+//     is single-threaded.
 class SpatialHash {
 public:
     explicit SpatialHash(float cell) : cell_(cell > 1e-6f ? cell : 1e-6f) {}

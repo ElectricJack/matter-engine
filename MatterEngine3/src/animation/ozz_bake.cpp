@@ -1,3 +1,36 @@
+// MatterEngine3/src/animation/ozz_bake.cpp
+//
+// Offline (bake-time) half of the ozz adapter: turns an authored
+// `RigDefinition` / `ClipDefinition` into the ozz runtime objects that
+// `ozz_adapter.cpp` serializes, samples and blends.  This is the only file
+// that includes ozz's `animation/offline/*` headers -- keeping them out of
+// `ozz_adapter.h` is why `ozz_adapter_internal.h` exists.
+//
+// How it fits: the ANIM DSL produces the IR (`animation/animation_ir.h`),
+// `animation_validate.cpp` accepts it and returns a canonical build, then
+// `build_skeleton()` / `build_clip()` here produce the runtime skeleton and
+// animation that get written into the animation asset.
+//
+// Conventions and gotchas
+//   - `canonical_order()` below IS the definition of Matter's canonical joint
+//     order: a depth-first walk from the rig's single root.  It is recomputed
+//     from the rig rather than passed in, so it must stay identical to the
+//     walk `animation_validate.cpp` performs when it builds the canonical rig.
+//     `deserialize_skeleton()` re-checks that ozz's own joint order agrees.
+//   - Failures return false after appending an `ozz-skeleton` /
+//     `ozz-animation` diagnostic, leaving the out-parameters untouched.  Some
+//     structural checks here duplicate the validator's on purpose: ozz's
+//     builders assert on malformed input instead of reporting it, so this
+//     layer must catch it first.
+//   - `build_clip()` emits a track for EVERY joint, not only the authored
+//     ones; a joint with no clip track gets a single key holding its bind
+//     local.
+//   - Additive clips are authored as ordinary absolute local poses and
+//     converted to bind-relative deltas here, once, at bake time.
+//   - The raw animation goes through ozz's `AnimationOptimizer` before the
+//     builder, so the baked key set is deliberately not the authored key set;
+//     only the sampled result is meaningful.
+
 #include "animation/ozz_adapter_internal.h"
 #include "animation/animation_math.h"
 
@@ -45,6 +78,14 @@ AnimationTransform bind_relative_delta(const AnimationTransform& reference,
     return delta;
 }
 
+// Depth-first walk from the rig's single root, children visited in authored
+// declaration order.  The returned vector maps canonical index -> authored
+// index, and this ordering is what every `JointIndex` in the engine means.
+//
+// An empty result is ALWAYS an error (a rig with no joints cannot get this
+// far): zero or multiple roots, a parent that is not declared, or a hierarchy
+// that does not reach every joint.  Each case adds an `ozz-skeleton`
+// diagnostic before returning.
 std::vector<std::size_t> canonical_order(const RigDefinition& rig, Diagnostics& diagnostics) {
     std::unordered_map<std::string, std::size_t> index;
     for (std::size_t i=0; i<rig.joints.size(); ++i) index.emplace(rig.joints[i].name, i);
@@ -71,6 +112,15 @@ void build_raw_children(const RigDefinition& rig, const std::vector<std::vector<
     for (std::size_t child : children[index]) { raw.children.emplace_back(); build_raw_children(rig, children, child, raw.children.back()); }
 }
 
+// Builds ozz's runtime skeleton from the authored rig, and -- when `parents`
+// and `subtrees` are BOTH non-null -- the Matter-side metadata that travels
+// with it: canonical parent indices, plus half-open subtree ranges
+// accumulated bottom-up so each joint's range covers all its descendants.
+// Pass nulls when only the skeleton itself is wanted; `build_clip()` does,
+// because it needs a skeleton purely as input to the animation optimizer.
+//
+// Enforces `kMaxJoints` here as well as in the validator, since ozz's builder
+// is reached directly from this path.
 bool make_runtime_skeleton(const RigDefinition& rig, ozz::unique_ptr<ozz::animation::Skeleton>& runtime, std::vector<JointIndex>* parents, std::vector<JointRange>* subtrees, Diagnostics& diagnostics) {
     const std::vector<std::size_t> order = canonical_order(rig, diagnostics);
     if (order.empty()) return false;
@@ -103,6 +153,13 @@ bool make_runtime_skeleton(const RigDefinition& rig, ozz::unique_ptr<ozz::animat
 
 } // namespace
 
+// Bakes the authored rig into a runtime skeleton handle.  `rest_locals` are
+// the authored bind locals in canonical order, retained so runtime code can
+// restore an authored offset (root locking, for instance) without reaching
+// into ozz -- see `OzzSkeleton::rest_local()`.
+//
+// `canonical_order()` is walked twice here, once inside `make_runtime_skeleton`
+// and once for the rest pose; rigs are small and this runs offline.
 bool build_skeleton(const RigDefinition& rig, OzzSkeleton& skeleton, Diagnostics& diagnostics) {
     ozz::unique_ptr<ozz::animation::Skeleton> runtime; std::vector<JointIndex> parents; std::vector<JointRange> subtrees;
     if (!make_runtime_skeleton(rig, runtime, &parents, &subtrees, diagnostics)) return false;
@@ -113,6 +170,18 @@ bool build_skeleton(const RigDefinition& rig, OzzSkeleton& skeleton, Diagnostics
     skeleton.impl_->runtime=std::move(runtime); skeleton.impl_->parents=std::move(parents); skeleton.impl_->subtrees=std::move(subtrees); return true;
 }
 
+// Bakes one clip against the rig it was authored for.
+//
+//  - An additive clip is rejected up front if any joint's bind scale has a
+//    zero component, because the delta divides by it.
+//  - Every canonical joint gets a track, in canonical order; joints the clip
+//    does not animate contribute a single bind-pose key so ozz sees a complete
+//    animation.  Authored key times are used verbatim and the raw duration is
+//    the authored `clip.duration`.
+//  - Additive clips are converted to bind-relative deltas against each joint's
+//    bind local before the keys are emitted.
+//  - The result is optimized (key reduction) before the builder runs, so the
+//    baked track key counts do not match the authored ones.
 bool build_clip(const RigDefinition& rig, const ClipDefinition& clip, OzzAnimation& animation, Diagnostics& diagnostics) {
     if (clip.additive) {
         for (const JointDef& joint : rig.joints) {

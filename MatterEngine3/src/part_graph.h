@@ -1,9 +1,42 @@
 #pragma once
+// MatterEngine3/src/part_graph.h
+//
+// SP-3, the part graph. Given a list of ROOT module requests it resolves the
+// whole reachable module DAG, deduplicates it, topologically sorts it, and
+// bakes every node children-first into the content-addressed part cache.
+//
+// THE TWO SEAMS BELOW ARE THE POINT. `ModuleResolver` answers "what is this
+// module's source, and what children does its `static requires` ask for at
+// these params"; `Baker` answers "what is this part's resolved hash, is it
+// already cached, and bake it". The graph algorithm in part_graph.cpp depends
+// on nothing else, so the logic tests drive it with fakes and never start a
+// script host. The production implementations (`FileModuleResolver`,
+// `HostBaker`) live at the bottom of this header behind
+// MATTER_HAVE_SCRIPT_HOST.
+//
+// HASH AUTHORITY IS THE HOST, NOT THIS LAYER (master C-2). A part's resolved
+// hash folds the MERGED params — the schema's `static params` defaults overlaid
+// with the parent's overrides — and only the script host can read those
+// defaults, so SP-3 asks `Baker::resolve_hash` and memoizes the answer. The
+// separate memo key computed inside part_graph.cpp is a DIFFERENT number: it
+// identifies a node for DAG dedup within one install and never leaves the
+// process.
+//
+// IDENTITY IS THE SOURCE BYTES, not the module path: two roots that load
+// byte-identical source with identical params are one node, so a renamed copy
+// of a schema does not bake twice.
+//
+// THREADING. `install()` runs on the WORKER thread under the async session and
+// is the sole graph mutator; nothing here takes a lock. Callers today are
+// `src/provider/local_provider.cpp` (with a snapshot and a BakePolicy) and
+// `src/tileset_phase.cpp`.
 #include "part_graph_snapshot.h"
 #include "matter/bake_observer.h"  // optional per-rung observer (W3, Lab-only)
+#include "matter/fixture_io.h"
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <memory>
 #include <set>
 #include <string>
 #include <unordered_map>
@@ -61,8 +94,20 @@ struct Baker {
     virtual ~Baker() = default;
     // Content hash for one part: merge static+override params, fold child_hashes,
     // NO bake. Returns 0 on resolve failure (fail-closed => install hard-errors).
+    //
+    // `merged_params_out`, when non-null, receives the MERGED parameter object
+    // this hash was folded from: the class's `static params` defaults overlaid
+    // with `params`. Only the host can read those defaults (master C-2, the
+    // same reason the hash itself is asked for here) and it computes the object
+    // anyway to produce the hash, so reporting it costs nothing. An
+    // implementation that cannot supply it leaves the string EMPTY rather than
+    // writing "{}", so callers can tell "no defaults" from "not answered".
+    //
+    // It is an out-param, not a `last_merged_params()` getter, on purpose: a
+    // decorating Baker that forwards resolve_hash cannot then silently drop it.
     virtual uint64_t resolve_hash(const std::string& source, const Params& params,
-                                  const std::vector<uint64_t>& child_hashes) = 0;
+                                  const std::vector<uint64_t>& child_hashes,
+                                  std::string* merged_params_out) = 0;
     // True if parts/<resolved_hash>.part already exists (cache hit => skip bake).
     virtual bool cached(uint64_t resolved_hash) = 0;
     // Bake one part. child_hashes are this part's direct children's resolved hashes
@@ -120,15 +165,10 @@ std::string params_to_json(const Params& params);
 // SP-3 v1 only handles the shapes eval_requires emits (flat numbers/bools/strings).
 Params params_from_json(const std::string& json);
 
-// Resolved node in the graph (one per unique (source_hash, canonical_params)).
-struct ResolvedNode {
-    uint64_t              resolved_hash = 0;
-    std::string           module;        // representative module name (for diagnostics)
-    std::string           source;        // module source bytes
-    Params                params;        // effective params
-    std::vector<uint64_t> child_hashes;  // direct children's resolved hashes (sorted by SP-1)
-    std::vector<uint64_t> child_keys;    // direct children's memo keys (for topo edges)
-};
+// (A `ResolvedNode` struct used to sit here, declared and never constructed by
+// anything. The resolve pass uses the file-local `InternalNode` in
+// part_graph.cpp, and what escapes an install is `BakeInputs` via
+// InstallResult::bake_plan.)
 
 // Bake policy controlling which nodes are actually baked during install().
 // All     = today's behavior: every reachable node is baked (or cache-hit).
@@ -156,6 +196,12 @@ struct FailedPart {
     uint64_t    resolved_hash = 0;  // 0 if hash could not be determined
 };
 
+// Outcome of one install. Note the two-tier failure model: `ok` is false only
+// for a STRUCTURAL failure that aborts the whole install (a cycle, a module
+// that cannot be loaded, a failed lod-variant sidecar). Everything else is
+// skip-and-continue — `ok` stays true and the casualties are listed in
+// `failed`, with the corresponding entry in `root_hashes` zeroed. A caller that
+// only checks `ok` will happily place a world with parts missing.
 struct InstallResult {
     bool                     ok = false;
     std::string              error;       // human-readable; names the offending part on failure
@@ -172,6 +218,11 @@ struct InstallResult {
     std::unordered_map<uint64_t, BakeInputs> bake_plan;
 };
 
+// The graph algorithm itself: resolve, dedup, topo-sort, bake. Holds nothing
+// but REFERENCES to its two seams, which must outlive it; it carries no state
+// between calls, so one instance can be installed repeatedly (each call builds
+// its own memo table from scratch) and two instances over the same seams are
+// indistinguishable from one.
 class PartGraph {
 public:
     PartGraph(ModuleResolver& resolver, Baker& baker);
@@ -199,7 +250,7 @@ private:
 
 namespace part_graph {
 
-// Reads .js modules from a SEARCH PATH of object roots, most-specific first,
+// Reads .js modules recursively from object tiers, most-specific first,
 // and evaluates `static requires` via the host's top-level eval (no build()).
 //
 // First match wins: with roots {scenes/<S>/objects, <project>/objects}, a
@@ -210,9 +261,11 @@ namespace part_graph {
 class FileModuleResolver : public ModuleResolver {
 public:
     // Single-root convenience: the flat layout, and every test/tool that has
-    // exactly one object directory.
-    FileModuleResolver(script_host::ScriptHost& host, std::string schemas_dir);
-    FileModuleResolver(script_host::ScriptHost& host, std::vector<std::string> roots);
+    // exactly one object tier (possibly containing grouping folders).
+    FileModuleResolver(script_host::ScriptHost& host, std::string schemas_dir,
+                       std::shared_ptr<const matter::SourceSnapshot> sources = {});
+    FileModuleResolver(script_host::ScriptHost& host, std::vector<std::string> roots,
+                       std::shared_ptr<const matter::SourceSnapshot> sources = {});
     bool load_source(const std::string& module, std::string& source_out) override;
     bool get_requires(const std::string& module, const Params& params,
                       std::vector<ChildRequest>& children_out) override;
@@ -226,15 +279,54 @@ public:
 private:
     script_host::ScriptHost&  host_;
     std::vector<std::string>  roots_;
+    std::shared_ptr<const matter::SourceSnapshot> sources_;
+};
+
+// Content dispatch between the legacy DSL and the portable authoring
+// pipeline. A part opts in with the exact class field
+//   static authoring = "matter.authoring.portable.v1";
+// Sources without a `static authoring` field stay Legacy; any other value is
+// Unknown and fails explicitly rather than falling back.
+enum class AuthoringRoute { Legacy, PortableV1, Unknown };
+AuthoringRoute classify_authoring_route(const std::string& source);
+
+// Re-authors every PortableV1 node of a restored bake plan through `baker`
+// from its pinned source and params, so a warm resolve cache retains the same
+// immutable products a cold resolve would. The portable hash folds the
+// pipeline implementation, route version and recipe digest, so getting each
+// cached hash back proves the product is the one its cached .part was baked
+// from. False (with `err` naming the part) on the first node that re-authors
+// to anything else; legacy nodes are untouched.
+bool reauthor_portable(Baker& baker, const std::unordered_map<uint64_t, BakeInputs>& plan,
+                       std::string& err);
+
+// The portable route a HostBaker hands PortableV1 sources to. Implemented by
+// the authoring component adapter (component_adapters/authoring), which owns
+// the authoring -> host -> Coordinator -> geometry wiring; the kernel only
+// sees this interface. resolve returns 0 on failure; both log their reason.
+struct PortableBakeRoute {
+    virtual ~PortableBakeRoute() = default;
+    virtual uint64_t resolve(const std::string& source, const std::string& params_json,
+                             std::string* merged_params_out) = 0;
+    virtual bool bake(const std::string& source, const std::string& params_json,
+                      uint64_t resolved_hash, const std::string& parts_dir) = 0;
 };
 
 // Checks parts/<hash>.part existence (SP-1 cache_path_resolved) and delegates hashing/baking to
 // SP-2 ScriptHost (resolve_hash + bake_source). SP-2 is the hash authority (master C-2).
+// PortableV1 sources go to the installed PortableBakeRoute instead.
 class HostBaker : public Baker {
 public:
-    HostBaker(script_host::ScriptHost& host, std::string parts_dir);
+    HostBaker(script_host::ScriptHost& host, std::string parts_dir,
+              std::shared_ptr<matter::CacheByteStorage> storage = {});
     uint64_t resolve_hash(const std::string& source, const Params& params,
-                          const std::vector<uint64_t>& child_hashes) override;
+                          const std::vector<uint64_t>& child_hashes,
+                          std::string* merged_params_out) override;
+    // resolve_hash for callers that already hold canonical params JSON (the
+    // streaming asset installer), so they dispatch exactly like the graph.
+    uint64_t resolve_hash_json(const std::string& source, const std::string& params_json,
+                               const std::vector<uint64_t>& child_hashes,
+                               std::string* merged_params_out);
     bool cached(uint64_t resolved_hash) override;
     bool bake(const std::string& source, const Params& params,
               const std::vector<uint64_t>& child_hashes,
@@ -314,9 +406,20 @@ public:
     // skipped — production installs never call this setter.
     void set_bake_observer(BakeObserver* observer) { observer_ = observer; }
 
+    // The host this baker evaluates through; tests read its work counters.
+    const script_host::ScriptHost& host() const { return host_; }
+
+    // Installs the route PortableV1 sources resolve and bake through. Without
+    // one, a PortableV1 source fails explicitly.
+    void set_portable_route(std::shared_ptr<PortableBakeRoute> route) {
+        portable_route_ = std::move(route);
+    }
+
 private:
     script_host::ScriptHost& host_;
+    std::shared_ptr<PortableBakeRoute> portable_route_;
     std::string              parts_dir_;
+    std::shared_ptr<matter::CacheByteStorage> storage_;
 
     // Task 2: transient-module state
     const std::set<std::string>* transient_modules_ = nullptr;
@@ -340,6 +443,7 @@ private:
     // only trusts these when last_baked_hash_ == the part it's asked about.
     std::vector<std::string> last_child_modules_placed_;
     uint64_t last_baked_hash_ = 0;
+    uint64_t last_leaf_metadata_hash_ = 0;
 };
 
 } // namespace part_graph

@@ -17,6 +17,17 @@ namespace matter::scene {
 // The bridge does NOT mutate the ECS world directly — it reports errors
 // through these callbacks so the caller can apply them safely (e.g. by
 // setting a PartInstanceError component).
+//
+// Either callback may be left EMPTY: every call site in the bridge tests the
+// std::function before invoking it, so a caller that only cares about one half
+// can supply one half. Both are invoked synchronously, inline in
+// DynamicSceneBridge::reconcile, on whichever thread runs the reconcile.
+//
+// Delivery cadence is not symmetric. on_error fires on every reconcile for as
+// long as the condition persists (a capacity failure re-reports each frame),
+// while on_error_clear fires once, on the transition back to healthy — the
+// bridge remembers per entity whether it last reported an error and only calls
+// the clear on the edge.
 struct BridgeErrorSink {
     std::function<void(SceneEntityId id, PartInstanceError error)> on_error;
     std::function<void(SceneEntityId id)> on_error_clear;

@@ -1,4 +1,37 @@
+#include "matter/project_layout.h"
+// MatterEditor/src/ui.cpp
+//
+// The editor's ImGui shell. See ui.h for the contract, the frame order and the
+// panel-ownership protocol; this file is the implementation plus the panel
+// bodies that were never split into their own file.
+//
+// Roughly in file order: world discovery (scan_worlds), ImGui context and
+// Vulkan-backend lifecycle (setup / shutdown / prepare_vulkan_backend /
+// begin_frame / end_frame), the dockspace, the offscreen viewport target,
+// then the panels — Performance, Profiler, Viewer Debug, Camera, the
+// streaming-LOD section with its hand-drawn transition bars — and finally the
+// streaming-anchor glue and the camera-input predicate.
+//
+// Two conventions run through the panels and are worth knowing before editing
+// one:
+//   - RAW WIDGETS vs draw_group. Most tunables are drawn generically from
+//     their property schema (draw_group / draw_group_fields, property_editor.h)
+//     against a DRAFT that an Apply bar commits. A handful of ViewerStats
+//     fields are instead drawn as plain ImGui widgets writing the struct
+//     member directly, because main.cpp copies that member into the render
+//     structs every frame — there is nothing to apply and nowhere to persist.
+//     Both kinds sit side by side in Viewer Debug; the comments there say
+//     which is which.
+//   - note_panel_home claims. A panel declares which groups it is the home for
+//     so Tunables can hide the duplicates. Those calls must run every frame,
+//     unconditionally, BEFORE the panel's own ImGui::Begin gate — a docked
+//     window that is not the selected tab returns false from Begin. See the
+//     long comment at the top of draw_performance_panel.
+//
+// Everything in this file is main-thread, immediate-mode, and only valid
+// inside an ImGui frame.
 #include "ui.h"
+#include "matter/gpu_timing_sample.h"
 
 #include <array>
 #include <cmath>
@@ -6,6 +39,7 @@
 #include <cstdio>
 #include <cstring>
 #include <functional>
+#include <mutex>
 #include <set>          // scene-vs-flat layout dedup in scan_worlds
 #include <vector>
 #include <filesystem>
@@ -35,6 +69,11 @@ namespace {
 
 } // namespace
 
+// Filesystem scan, one directory level deep: `examples_root` itself plus each
+// of its immediate subdirectories is tested as a project. Every error_code is
+// swallowed deliberately — an unreadable directory yields fewer worlds, never
+// a failure — so an empty result means "nothing found", not "something broke".
+// Called at startup (and on demand); does blocking I/O, so not per frame.
 std::vector<WorldEntry> scan_worlds(const std::string& examples_root) {
     namespace fs = std::filesystem;
     std::vector<WorldEntry> out;
@@ -43,11 +82,13 @@ std::vector<WorldEntry> scan_worlds(const std::string& examples_root) {
     // A project is anything holding scenes/ or worlds/. objects/ is NOT
     // required: under the scene layout a project's shared object tier can be
     // legitimately absent when every scene carries its own.
-    auto add_entry = [&](const fs::path& project, const std::string& name) {
+    auto add_entry = [&](const fs::path& project, const std::string& name,
+                         const std::string& group = std::string()) {
         WorldEntry e;
         e.label = name;
         e.project_dir = project.string();
         e.world_name = name;
+        e.scene_group = group;
         out.push_back(std::move(e));
     };
 
@@ -60,24 +101,20 @@ std::vector<WorldEntry> scan_worlds(const std::string& examples_root) {
         const bool has_worlds = fs::is_directory(worlds, project_ec);
         if (!has_scenes && !has_worlds) return;
 
-        // Scene layout: scenes/<Name>/<Name>.js. A directory without its
+        // Scene layout: scenes/[group/]<Name>/<Name>.js. A directory without its
         // matching script is skipped silently rather than offered as a world
         // that cannot open -- that is the shape a half-finished rename leaves
         // behind, and listing it only produces a load error on click.
         std::set<std::string> seen;
         if (has_scenes) {
-            project_ec.clear();
-            for (auto sit = fs::directory_iterator(scenes, project_ec);
-                 !project_ec && sit != fs::directory_iterator();
-                 sit.increment(project_ec)) {
-                if (!fs::is_directory(sit->path(), project_ec)) continue;
-                const std::string name = sit->path().filename().string();
-                std::error_code file_ec;
-                if (!fs::is_regular_file(sit->path() / (name + ".js"), file_ec))
-                    continue;
+            matter::project_layout::Diagnostics diag;
+            for (const auto& script : matter::project_layout::scene_scripts(scenes, &diag)) {
+                const std::string name = script.stem().string();
+                const auto group = script.parent_path().parent_path().lexically_relative(scenes);
                 seen.insert(name);
-                add_entry(project, name);
+                add_entry(project, name, group == "." ? "" : group.generic_string());
             }
+            for (const auto& d : diag.duplicates) MATTER_LOGW("ui", "%s", d.c_str());
         }
 
         // Flat layout: worlds/<Name>.js. Still scanned so a project can be
@@ -110,6 +147,11 @@ std::vector<WorldEntry> scan_worlds(const std::string& examples_root) {
     return out;
 }
 
+// Creates the descriptor pool, the (process-global) ImGui context, and both
+// backends, and enables keyboard nav + docking. On any failure past the pool
+// it calls shutdown() itself before returning false, so the caller must not
+// call shutdown again. `window` must outlive this object: the GLFW backend
+// installs callbacks on it (install_callbacks = true).
 bool Ui::setup(GLFWwindow* window, matter::VulkanDevice& vulkan,
                std::string& error) {
     vulkan_ = &vulkan;
@@ -194,6 +236,11 @@ bool Ui::initialize_vulkan_backend(VkFormat color_format,
     return true;
 }
 
+// Idempotent: early-outs once vulkan_ is null, which is also what makes it
+// safe to call from setup()'s failure paths. Blocks on a device wait_idle
+// before touching anything the GPU could still be reading, and the ORDER is
+// load-bearing — the viewport target (which holds an ImGui texture descriptor)
+// must go before the ImGui Vulkan backend, and the descriptor pool last.
 void Ui::shutdown() {
     if (!vulkan_) return;
     destroy_viewport_target();
@@ -241,6 +288,8 @@ bool Ui::prepare_vulkan_backend(const matter::VulkanFrame& frame,
     }
     if (frame.swapchain_recreated || frame.image_count != image_count_) {
         image_count_ = frame.image_count;
+        // May vkDeviceWaitIdle, which needs every queue the device serializes.
+        std::lock_guard<std::mutex> lock(vulkan_->queue_mutex());
         ImGui_ImplVulkan_SetMinImageCount(image_count_);
     }
     return true;
@@ -293,18 +342,31 @@ bool Ui::end_frame(const matter::VulkanFrame& frame, std::string& error) {
     rendering.colorAttachmentCount = 1;
     rendering.pColorAttachments = &attachment;
     vkCmdBeginRendering(frame.command_buffer, &rendering);
-    ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), frame.command_buffer);
+    {
+        // Texture uploads inside submit to and wait on the shared graphics queue.
+        std::lock_guard<std::mutex> lock(vulkan_->queue_mutex());
+        ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), frame.command_buffer);
+    }
     vkCmdEndRendering(frame.command_buffer);
     return true;
 }
 
 namespace {
+// Dockspace geometry. The toolbar height is in pixels; the three others are
+// fractions of the display, used only when the layout is built from scratch.
 constexpr float kToolbarHeight = 40.0f;
 constexpr float kSceneWidthFrac = 0.22f;
 constexpr float kPropertiesWidthFrac = 0.26f;
 constexpr float kConsoleHeightFrac = 0.20f;
 } // namespace
 
+// Builds the default layout ONCE — only when the dockspace node does not
+// already exist, i.e. when there is no imgui.ini to restore from. After that
+// the user's saved layout wins and none of the DockBuilder calls below run.
+//
+// The docking keys are the window TITLES. Renaming a window therefore silently
+// orphans every saved layout for it (it opens floating instead), which is
+// exactly what the "Performance"/"LOD Settings" note below records.
 void Ui::build_dockspace() {
     const ImVec2 display = ImGui::GetIO().DisplaySize;
 
@@ -407,6 +469,16 @@ void Ui::draw_viewport_window() {
     ImGui::End();
 }
 
+// Allocates (or reallocates) the offscreen colour target at exactly
+// width x height. Three outcomes, all reported as `true`:
+//   - the existing target already matches — nothing happens;
+//   - the size changed but has not been stable for a few frames yet — the OLD
+//     target is kept and the new size is only remembered. This debounce exists
+//     because every reallocation costs a full device wait_idle and a window
+//     drag would otherwise do one per frame;
+//   - width or height is 0 — the target is destroyed and none is created.
+// `false` means allocation genuinely failed and `error` is set; the target is
+// torn down in that case, so the caller falls back to the swapchain.
 bool Ui::ensure_viewport_target(uint32_t width, uint32_t height,
                                 VkFormat format, std::string& error) {
     if (rt_image_ && rt_width_ == width && rt_height_ == height) {
@@ -509,6 +581,10 @@ bool Ui::ensure_viewport_target(uint32_t width, uint32_t height,
     return true;
 }
 
+// BLOCKS on a device wait_idle — the image may still be in flight, both as the
+// 3D pass's colour attachment and as ImGui's sampled texture. The sampler is
+// intentionally not freed here; it is size-independent and survives every
+// resize, so only shutdown() destroys it.
 void Ui::destroy_viewport_target() {
     if (!vulkan_) return;
     const VkDevice device = vulkan_->device();
@@ -774,6 +850,7 @@ void Ui::draw_performance_panel(matter::WorldSession* session,
     // ALWAYS drawn.
     if (matter::props::Binding* b = props.gpu())
         draw_group(*b, nullptr, true, nullptr, &props.gpu_field_veto());
+    if (matter::props::Binding* b = props.gi()) draw_group(*b, nullptr, true);
     if (matter::props::Binding* b = props.pom()) draw_group(*b, nullptr, false);
     // Directly under Ground POM: the near band used to BE the POM band, and
     // the first question anyone reading one has about the other is how far
@@ -810,6 +887,19 @@ void Ui::draw_performance_panel(matter::WorldSession* session,
     ImGui::End();
 }
 
+// The Profiler window: a Memory tab (GPU/system byte counters and a breakdown
+// table, all from ViewerStats) and a Timing tab reading libs/ProfileLib
+// directly — this panel needs no session and no props.
+//
+// The Timing tab copies the whole frame ring out of the profiler every frame
+// (function-local static vectors, so the allocation is amortized) and averages
+// each zone over that window, because a single frame's zones are meaningless:
+// bake zones are only nonzero on the frames a bake landed.
+//
+// The frame/background split is the important part to read correctly. Render-
+// lane roots sum toward the frame and get a "% of frame"; worker-lane roots are
+// SUMMED ACROSS EVERY BAKE THREAD, so a percentage there would be nonsense and
+// is deliberately not shown. Baking is off-thread work, not frame cost.
 void Ui::draw_profiler_panel(const ViewerStats& s) {
     namespace prof = matter::profile;
     if (!ImGui::Begin("Profiler")) {
@@ -849,8 +939,10 @@ void Ui::draw_profiler_panel(const ViewerStats& s) {
         ImGui::Separator();
         ImGui::TextDisabled("GPU Breakdown");
         const double total_gpu = mib(s.gpu_device_local_bytes);
+        // vt_mesh_bytes is deliberately absent from this GPU breakdown: it is
+        // the CPU-side mesh copies the filler holds, and it gets its own line
+        // in the VT Detail block below.
         const double vt_pool = mib(s.vt_pool_bytes);
-        const double vt_mesh = mib(s.vt_mesh_bytes);
         const double vt_indir = mib(s.vt_indirection_bytes);
         const double vol = mib(s.froxel_bytes);
         const double cloud = mib(s.cloud_shadow_bytes);
@@ -891,9 +983,17 @@ void Ui::draw_profiler_panel(const ViewerStats& s) {
 
         ImGui::Separator();
         ImGui::TextDisabled("VT Detail");
+        // vt_pool_bytes is the ALLOCATED pool — its capacity, fixed when the VT
+        // runtime starts. There is no separate "bytes in use" stat, so derive
+        // it from the page census: the pool is carved into pool_capacity
+        // equal-sized pages, so used bytes are exactly that fraction.
+        const double vt_pool_used_mib =
+            s.vt_pool_capacity > 0
+                ? vt_pool * static_cast<double>(s.vt_pool_used) /
+                      static_cast<double>(s.vt_pool_capacity)
+                : 0.0;
         ImGui::Text("Pool:         %.0f / %.0f MiB  (%u/%u pages, %u pinned)",
-                    mib(s.vt_pool_bytes),
-                    mib(s.vt_pool_bytes),
+                    vt_pool_used_mib, vt_pool,
                     s.vt_pool_used, s.vt_pool_capacity, s.vt_pool_pinned);
         ImGui::Text("Mesh (CPU):   %.0f / %.0f MiB",
                     mib(s.vt_mesh_bytes), mib(s.vt_mesh_budget_bytes));
@@ -1117,18 +1217,39 @@ void Ui::draw_profiler_panel(const ViewerStats& s) {
                                 ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::Text("FPS: %.1f  (%.2f ms)", s.fps, s.frame_ms);
         if (s.gpu_timers_supported) {
+            // Resolve public sample names instead of duplicating renderer indices.
+            const auto measured = [&s](const char* name) {
+                for (size_t i = 0; i < matter::kGpuTimingNames.size(); ++i)
+                    if (std::strcmp(matter::kGpuTimingNames[i], name) == 0)
+                        return (s.gpu_timing_valid_mask & (1u << i)) != 0;
+                return false;
+            };
+            const auto detail_timing = [&measured](const char* name,
+                                                   const char* label, float ms) {
+                if (measured(name)) ImGui::Text("  %s %.1f", label, ms);
+                else ImGui::TextDisabled("  %s: not measured", label);
+            };
             const float gpu_sum = s.gpu_cull_ms + s.gpu_gbuffer_ms +
                                   s.gpu_blas_ms + s.gpu_tlas_ms + s.gpu_rt_ms +
-                                  s.gpu_rt_gi_ms + s.gpu_denoise_ms +
+                                  s.gpu_rt_local_direct_ms + s.gpu_rt_gi_ms + s.gpu_denoise_ms +
                                   s.gpu_dlss_ms + s.gpu_composite_ms +
-                                  s.gpu_vol_ms;
+                                  s.gpu_vol_ms + (measured("hdr_lighting")
+                                      ? s.gpu_hdr_lighting_ms : 0.0f) +
+                                  (measured("primary_light_cull")
+                                      ? s.gpu_primary_light_cull_ms : 0.0f);
             ImGui::Text("GPU %.1f ms total", s.gpu_total_ms);
             ImGui::Text("  Cull %.1f  GBuf %.1f  BLAS %.1f  TLAS %.1f",
                         s.gpu_cull_ms, s.gpu_gbuffer_ms, s.gpu_blas_ms,
                         s.gpu_tlas_ms);
-            ImGui::Text("  RT-prim %.1f  RT-GI %.1f  Den %.1f",
-                        s.gpu_rt_ms, s.gpu_rt_gi_ms, s.gpu_denoise_ms);
-            ImGui::Text("  DLSS %.1f  Comp %.1f  Vol %.1f  (other %.1f)",
+            ImGui::Text("  RT-sun %.1f  RT-local %.1f  RT-GI %.1f  Den %.1f",
+                        s.gpu_rt_ms, s.gpu_rt_local_direct_ms,
+                        s.gpu_rt_gi_ms, s.gpu_denoise_ms);
+            detail_timing("rt_gi_diffuse", "GI diffuse dispatch", s.gpu_rt_gi_diffuse_ms);
+            detail_timing("rt_gi_reflection_transmission", "GI reflection/transmission dispatch",
+                          s.gpu_rt_gi_reflection_transmission_ms);
+            detail_timing("hdr_lighting", "HDR lighting", s.gpu_hdr_lighting_ms);
+            detail_timing("primary_light_cull", "Primary light culling", s.gpu_primary_light_cull_ms);
+            ImGui::Text("  DLSS %.1f  Display %.1f  Vol %.1f  (other %.1f)",
                         s.gpu_dlss_ms, s.gpu_composite_ms,
                         s.gpu_vol_ms, s.gpu_total_ms - gpu_sum);
             ImGui::Text("  Atmos %.1f  Cloud shadows %.1f", s.gpu_atmosphere_ms,
@@ -1144,13 +1265,14 @@ void Ui::draw_profiler_panel(const ViewerStats& s) {
         // Main-loop attribution: partitions the same window frame_ms covers, so
         // `other` is genuinely unmeasured code, not clock skew. `render` already
         // contains the resolve/build/draw line -- don't double-count.
-        const float loop_sum = s.loop_poll_ms + s.loop_acquire_ms +
+        const float loop_sum = s.loop_pacing_ms + s.loop_poll_ms + s.loop_acquire_ms +
                                s.loop_ui_ms + s.loop_tick_ms + s.loop_pump_ms +
                                s.loop_lab_ms + s.loop_render_ms +
                                s.loop_present_ms;
         ImGui::Text("Loop: poll %.2f  acq %.2f  ui %.2f  tick %.2f",
                     s.loop_poll_ms, s.loop_acquire_ms, s.loop_ui_ms,
                     s.loop_tick_ms);
+        ImGui::Text("      frame pacing %.2f ms", s.loop_pacing_ms);
         ImGui::Text("      pump %.2f  lab %.2f  render %.2f  present %.2f",
                     s.loop_pump_ms, s.loop_lab_ms, s.loop_render_ms,
                     s.loop_present_ms);
@@ -1568,7 +1690,9 @@ void Ui::draw_debug_panel(ViewerStats& s, const ViewerCommands& commands,
         ImGui::Text("GPU cull: emitted %d  frustum %d  hiz %d",
                     s.gpu_emitted, s.gpu_culled, s.gpu_occlusion_culled);
         ImGui::TextDisabled("HiZ occlusion: not available in Vulkan milestone");
-        ImGui::TextDisabled("Render path: Vulkan raster only");
+        ImGui::TextDisabled("Render path: %s",
+                            viewer_render_path_status_label(
+                                s.session_status.render_path));
     }
     ImGui::Separator();
 
@@ -1611,8 +1735,9 @@ void Ui::draw_debug_panel(ViewerStats& s, const ViewerCommands& commands,
     // meaning what the captures on disk say it means.
     const char* debug_views[] = { "None", "Normals", "Depth",
                                   "Sun visibility", "Raw albedo",
-                                  "LOD levels", "Wireframe" };
-    ImGui::Combo("View", &s.debug_view_mode, debug_views, 7);
+                                  "LOD levels", "Wireframe",
+                                  "Local-light candidates" };
+    ImGui::Combo("View", &s.debug_view_mode, debug_views, 8);
     // The wireframe checkbox is the composable form: tick it with "LOD levels"
     // selected and the edges carry the rung colour, which is the pair that
     // actually shows LOD changing GEOMETRY rather than only changing a colour.
@@ -1706,7 +1831,11 @@ void Ui::draw_debug_panel(ViewerStats& s, const ViewerCommands& commands,
     // as "it does not work".
     ImGui::Checkbox("Occlusion culling", &s.occlusion_draw_cull);
     if (ImGui::IsItemHovered())
+        // "%s" wrapper, not a bare literal: SetTooltip is printf-style and this
+        // text contains literal per-cent signs ("-58% of ..."), which would
+        // otherwise be read as conversions and consume garbage varargs.
         ImGui::SetTooltip(
+            "%s",
             "Do not rasterise sectors that owned no pixel this frame.\n\n"
             "Underground most of what is in front of the camera is behind "
             "rock: on StreamCaverns this is -58% of draw batches and -49% of "
@@ -2097,6 +2226,11 @@ void Ui::update_sector_streaming(matter::WorldSession& session,
 // (MatterEditor/src/specialized_editors.h). update_sector_streaming above (the
 // per-frame anchor/follow logic, not UI) is unaffected.
 
+// The viewport IS an ImGui window, so io.WantCaptureMouse/Keyboard are set
+// whenever the pointer is over the 3D view — which is precisely when the
+// camera should move. Hence `&& !viewport_hovered_`: the capture flags only
+// veto camera input when something OTHER than the viewport wants it. The
+// gizmo, by contrast, vetoes unconditionally.
 bool Ui::camera_input_allowed() const {
     if (ImGui::GetCurrentContext() == nullptr) return true;
     const ImGuiIO& io = ImGui::GetIO();

@@ -43,6 +43,8 @@ public:
     // Duplicate `src`: a new scene entity with the same name, the same parent,
     // and copies of every SceneRecord component present on the source.
     // EntityNotFound when `src` does not resolve.
+    // The source's CHILDREN are not duplicated — the copy is a sibling, not a
+    // subtree clone.
     SceneEditResult duplicate(SceneEntityId src);
 
     // Delete `target` and (via Flecs' ChildOf ownership) its whole subtree.
@@ -68,13 +70,22 @@ public:
 
     // Resolve a SceneEntityId to its live Flecs entity (invalid if absent).
     // Public so E5c command handlers / tests can locate entities.
+    // Linear: it scans every live scene entity with no early exit, and every
+    // method above performs at least one such scan. Cheap per edit, not
+    // something to call in a per-frame loop over many ids.
     flecs::entity find_entity(SceneEntityId id) const;
 
 private:
+    // Mints a fresh SceneEntityId::value in the runtime half of the id space
+    // (matter/scene.h kRuntimeIdBit set). See scene_service.cpp.
     uint64_t allocate_id();
 
     flecs::world& world_;
-    uint64_t next_id_ = 1;  // monotonic; allocate_id() verifies uniqueness
+    // Monotonic counter over the LOW 63 bits only; allocate_id() sets
+    // kRuntimeIdBit on the way out and additionally verifies uniqueness
+    // against live ids. Never use next_id_ as an id directly — a value with
+    // the bit clear lands in the world-authored namespace.
+    uint64_t next_id_ = 1;
 };
 
 } // namespace matter::scene

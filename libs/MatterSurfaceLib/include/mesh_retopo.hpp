@@ -1,6 +1,35 @@
 #ifndef MSL_MESH_RETOPO_HPP
 #define MSL_MESH_RETOPO_HPP
 
+// libs/MatterSurfaceLib/include/mesh_retopo.hpp
+//
+// MatterSurfaceLib's wrapper over `third_party/autoremesher_core`'s remesher.
+// Takes a `MeshIndexed`, returns a retopologized `MeshIndexed` whose
+// per-triangle `TriEx` has been carried across from the input via
+// `mesh_transform.hpp`'s `reproject_triex`.
+//
+// Where it sits: one stage of MSL's mesh-transformation pipeline, alongside
+// `mesh_simplifier.hpp` (decimation) and `mesh_smooth.hpp` (Taubin). The
+// autoremesher dependency is only linked when the consuming build enables
+// retopo (`RETOPO=1`, the MatterEditor default — see the repo CLAUDE.md);
+// with `RETOPO=0` the schemas that ask for retopo take the warn-and-continue
+// path in `MatterEngine3/src/modifier_apply.cpp` instead.
+//
+// Usage: fill a `RetopoOptions`, call `retopo`, and check `ok` *before* using
+// `mesh`. The documented failure response is to keep the input mesh unchanged
+// — the wrapper never mutates the caller's input.
+//
+// Gotchas:
+//   - This is a bake-time operation. It is bounded only by
+//     `timeout_seconds`, and nothing here belongs on a per-frame path.
+//   - Input topology matters more than input size: the cross-field
+//     parameterization collapses on flat/degenerate geometry. See the input
+//     contract on `retopo` below before feeding it primitives.
+//   - The `threads` pin is process-sticky — the first `retopo()` call in the
+//     process fixes it for every later call. See `RetopoOptions`.
+//   - `iterations` and `seed` are accepted and ignored in v1; they exist for
+//     cache-key invalidation. Again, see `RetopoOptions`.
+
 #include "mesh_indexed.hpp"
 
 #include <cstdint>
@@ -26,6 +55,9 @@ struct RetopoOptions {
     int      threads         = 1;      // pinned for determinism
 };
 
+// Outcome of one `retopo` call. `ok` is the gate: check it before using
+// `mesh`, since on failure `err` carries the reason and the caller is
+// expected to fall back to its own input mesh.
 struct RetopoResult {
     MeshIndexed mesh;              // retopo'd; TriEx repopulated via reproject_triex
     bool        ok = false;

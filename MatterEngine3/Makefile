@@ -45,6 +45,13 @@
 # Shared build config (TMP/TEMP, GLSLC, parallelism, ccache detection).
 include ../platform.mk
 
+# Canonical, repository-relative inventories shared with the CMake migration.
+# Keep this conversion intentionally narrow: Make still sees the exact paths it
+# historically compiled, while the manifests remain independent of cwd.
+MANIFEST_DIR = ../cmake/manifests
+manifest_sources = $(shell awk -F'|' '!/^[[:space:]]*#/ && NF == 2 && ($$2 == "all" || $$2 == "$(2)") { print $$1 }' "$(1)")
+manifest_engine_paths = $(foreach manifest_path,$(1),$(if $(filter MatterEngine3/%,$(manifest_path)),$(patsubst MatterEngine3/%,%,$(manifest_path)),../$(manifest_path)))
+
 UNAME_S := $(shell uname -s)
 UNAME_M := $(shell uname -m)
 
@@ -86,6 +93,7 @@ FLECS_DIR   = ../third_party/flecs
 # Shared source-of-truth libraries (compiled from source, not copied).
 SQL_DIR     = ../libs/SpatialQueryLib
 MEMLIB_DIR  = ../libs/MemoryLib
+ASSET_DIR   = ../libs/AssetStoreLib
 MATHLIB_DIR = ../libs/MathLib
 MCL_DIR     = ../libs/MeshChartingLib
 PROFILE_DIR = ../libs/ProfileLib
@@ -97,6 +105,14 @@ OZZ_ANIMATION_LIB = $(OZZ_BUILD_DIR)/src/animation/runtime/libozz_animation.a
 OZZ_OFFLINE_LIB = $(OZZ_BUILD_DIR)/src/animation/offline/libozz_animation_offline.a
 OZZ_RUNTIME_LIBS = $(OZZ_ANIMATION_LIB) $(OZZ_BASE_LIB)
 OZZ_OFFLINE_LIBS = $(OZZ_OFFLINE_LIB) $(OZZ_RUNTIME_LIBS)
+
+# The portable authoring pipeline behind engine-core's legacy part route
+# (component_adapters/authoring/engine/legacy_part_route.cpp). The components
+# keep their own CMake builds; consumers link the archives that build makes.
+AUTHORING_INCLUDE = -I../libs/MatterContracts/include -I../libs/ProceduralGeometry/include \
+                    -I../libs/ProceduralBuild/include -Isrc/script/portable_host/include \
+                    -Isrc/component_adapters/authoring/include
+include authoring_adapter.mk
 
 # Include directories: NEW MatterEngine3 headers, consumed MatterSurfaceLib
 # headers, vendored QuickJS-ng, then raylib (for the BLAS/Tri/TriEx types).
@@ -112,22 +128,29 @@ INCLUDE_PATHS = -I. -Iinclude -Isrc -Isrc/render -Isrc/provider \
                 -I$(SQL_DIR)/include -I$(MEMLIB_DIR)/include \
                 -I$(MATHLIB_DIR)/include \
                 -I$(PROFILE_DIR)/include \
+                -I$(ASSET_DIR)/include -I$(ASSET_DIR)/src \
                 -I$(QJS_DIR) -I$(RAYLIB_PATH) -I$(BOX3D_DIR)/include \
                 -I$(BC7ENC_DIR) \
                 -I$(PFL_DIR)/include \
                 -I$(FLECS_DIR) \
                 -I$(OZZ_INCLUDE) \
-                -I../third_party/Vulkan-Headers/include $(EXTRA_INCLUDE)
+                -I../third_party/Vulkan-Headers/include $(EXTRA_INCLUDE) \
+                $(AUTHORING_INCLUDE)
 
 # Vendored QuickJS-ng engine. v0.10.0 needs xsum.c (xsum_small_* symbols) beyond
 # the core four. Compiled via gcc (C) so the embedding symbols stay unmangled.
-QJS_C   = $(QJS_DIR)/quickjs.c $(QJS_DIR)/libregexp.c \
-          $(QJS_DIR)/libunicode.c $(QJS_DIR)/cutils.c $(QJS_DIR)/xsum.c
+VENDOR_MANIFEST_ALL = $(call manifest_sources,$(MANIFEST_DIR)/vendor.sources,all)
+QJS_C   = $(call manifest_engine_paths,$(filter third_party/quickjs-ng/%.c,$(VENDOR_MANIFEST_ALL)))
+BC7ENC_CPP = $(call manifest_engine_paths,$(filter third_party/bc7enc/%.cpp,$(VENDOR_MANIFEST_ALL)))
+PROFILE_CPP = $(call manifest_engine_paths,$(filter libs/ProfileLib/src/profile.cpp,$(VENDOR_MANIFEST_ALL)))
 QJS_OBJ = $(addprefix $(OBJDIR)/,quickjs.o libregexp.o libunicode.o cutils.o xsum.o)
 
 # Flecs is C17 and must never be compiled by the C++ rule below.
-FLECS_C   = $(FLECS_DIR)/flecs.c
+FLECS_C   = $(call manifest_engine_paths,$(filter third_party/flecs/flecs.c,$(VENDOR_MANIFEST_ALL)))
 FLECS_OBJ = $(addprefix $(OBJDIR)/,flecs.o)
+ifeq ($(UNAME_S),Linux)
+FLECS_PLATFORM_FLAGS = -D_POSIX_C_SOURCE=200809L
+endif
 
 # MatterEngine3 C++ sources: full pipeline — bake/script/DSL/CSG, part-graph,
 # LOD flatten/select, tileset pipeline, render, provider, and facade.
@@ -141,86 +164,21 @@ FLECS_OBJ = $(addprefix $(OBJDIR)/,flecs.o)
 # NOT self-evident; check that the editor really does supply the symbol before
 # concluding one is intentional. pf_bindings, warp_field and the ParticleFlowLib
 # sources were each absent for that reason and left the archive unlinkable.
-ME3_CPP = src/script_host.cpp src/dsl_state.cpp src/dsl_bindings.cpp src/dsl_animation.cpp \
-          $(PFL_DIR)/src/pf_math.cpp $(PFL_DIR)/src/pf_sim.cpp \
-          $(PFL_DIR)/src/pf_fields.cpp $(PFL_DIR)/src/pf_path_recorder.cpp \
-          src/pf_bindings.cpp \
-          src/dsl_triangle.cpp src/triangle_emit.cpp src/polygon_triangulate.cpp \
-          src/csg_lowering.cpp src/module_resolver.cpp src/script/world_definition_loader.cpp src/script_rng_binding.cpp \
-          src/part_asset_v2.cpp src/part_graph.cpp src/part_graph_snapshot.cpp \
-          src/live_edit.cpp src/live_edit_prod.cpp src/inotify_watcher.cpp \
-          src/lod_bake.cpp src/world_flatten.cpp src/part_flatten.cpp \
-          src/warp_field.cpp \
-          src/impostor_bake.cpp \
-          src/retopo_blacklist.cpp \
-          src/modifier_apply.cpp \
-          src/sector_grid.cpp src/lod_select.cpp \
-          src/world_lights.cpp \
-          src/world_tracer.cpp \
-          src/part_cluster.cpp \
-          src/tileset_layout.cpp src/tileset_collider.cpp src/tileset_settle.cpp \
-          src/tileset_placement.cpp src/tileset_part_collider.cpp src/tileset_bake.cpp \
-          src/tileset_phase.cpp \
-          src/tileset_metrics.cpp \
-          src/tileset_gtex.cpp src/tileset_torus_bvh.cpp \
-          src/shader_source.cpp \
-          src/render/raster_mesh.cpp src/render/indexed_part_geometry.cpp \
-          src/render/matrix_math.cpp src/render/frame_matrices.cpp src/render/vk_temporal.cpp src/render/vk_gi_math.cpp src/render/vk_lighting_controls.cpp src/render/vk_atmosphere.cpp src/render/vk_cloud_shadows.cpp \
-          src/render/part_store.cpp src/render/world_state.cpp \
-          src/render/lod_trace.cpp \
-          src/render/tileset_slicer.cpp src/render/bc_encode.cpp \
-          src/provider/local_provider.cpp src/provider/resolvers.cpp \
-          src/ecs/ecs_runtime.cpp src/ecs/simulation_control.cpp src/ecs/physics_context.cpp src/ecs/physics_shapes.cpp src/ecs/physics_systems.cpp src/ecs/streaming_systems.cpp src/ecs/transform_system.cpp \
-          src/scene/scene_service.cpp src/scene/scene_change_tracker.cpp \
-          src/matter_engine.cpp \
-          src/refine_controller.cpp \
-          src/async_bake.cpp \
-          src/bake_trace.cpp \
-          src/resolve_cache.cpp \
-          src/terrain_field.cpp \
-          src/terrain_mesher.cpp \
-          src/seam_weld.cpp \
-          src/sector_streamer.cpp \
-          src/animation/ozz_adapter.cpp \
-          src/animation/ozz_bake.cpp \
-          src/animation/animation_ir.cpp src/animation/animation_validate.cpp src/animation/animation_binding_bake.cpp src/animation/animation_budget.cpp \
-          src/animation/anim_asset.cpp src/animation/anim_bundle.cpp src/animation/animation_asset_store.cpp src/animation/animation_runtime_asset.cpp src/animation/animation_store.cpp src/animation/animation_evaluator.cpp src/animation/animation_systems.cpp src/animation/animation_world_queries.cpp src/animation/animation_controllers.cpp src/animation/animation_targets.cpp \
-          src/render/animation_rigid_bridge.cpp src/render/animation_skin_bridge.cpp src/render/vk_animation_skinning.cpp src/render/vk_animation_bounds.cpp \
-          src/streaming/sector_streaming_coordinator.cpp \
-          src/event/dispatch_context.cpp src/event/subscription.cpp src/event/event_hub.cpp src/event/command.cpp \
-          src/event/property.cpp \
-          src/util/json_doc.cpp \
-          src/props/props.cpp src/props/props_file.cpp \
-          src/props/draw_overrides.cpp
+ME3_CPP = $(call manifest_engine_paths,$(call manifest_sources,$(MANIFEST_DIR)/engine-core.sources,all))
 
 # MatterSurfaceLib C++ backend sources compiled into the archive so MatterEditor
 # need not compile them directly (no libmsl.a). Same set as the old viewer's MSL_CPP
 # minus mesh_retopo.cpp (handled separately via EXTRA_RETOPO_CPP when AR is present).
-MSL_CPP = $(MSL_DIR)/src/cluster.cpp $(MSL_DIR)/src/cell.cpp \
-          $(MSL_DIR)/src/mesh_simplifier.cpp $(MSL_DIR)/src/mesh_indexed.cpp \
-          $(MSL_DIR)/src/mesh_smooth.cpp \
-          $(MSL_DIR)/src/mesh_transform.cpp \
-          $(MSL_DIR)/src/blas_manager.cpp $(SQL_DIR)/src/bvh.cpp \
-          $(SQL_DIR)/src/bvh_analyzer.cpp \
-          $(MSL_DIR)/src/mesh_worker_pool.cpp $(MSL_DIR)/src/mesh_build_utils.cpp \
-          $(MSL_DIR)/src/meshing_algorithm.cpp \
-          $(MSL_DIR)/src/marching_cubes_algorithm.cpp \
-          $(MSL_DIR)/src/oriented_cube_algorithm.cpp \
-          $(MSL_DIR)/src/vertex_ao.cpp \
-          $(MSL_DIR)/src/occupancy.cpp $(MSL_DIR)/src/tlas_manager.cpp \
-          $(MSL_DIR)/src/part_asset.cpp \
-          $(MSL_DIR)/src/lattice.cpp $(MSL_DIR)/src/particle_culling.cpp \
-          $(MCL_DIR)/src/mesh_charting.cpp \
-          $(EXTRA_RETOPO_CPP)
+SURFACE_MANIFEST_ALL = $(call manifest_sources,$(MANIFEST_DIR)/matter-surface.sources,all)
+MSL_CPP = $(filter %.cpp,$(call manifest_engine_paths,$(SURFACE_MANIFEST_ALL))) $(EXTRA_RETOPO_CPP)
 
 # MSL C sources: compiled via gcc to keep extern "C" symbols unmangled.
 # spatial_hash.c and mem_pool.c are compiled from their source-of-truth libs
 # (SpatialQueryLib / MemoryLib) rather than from copies under MatterSurfaceLib.
-MSL_C   = $(MSL_DIR)/src/surface.c \
-          $(SQL_DIR)/src/spatial_hash.c $(MEMLIB_DIR)/src/mem_pool.c \
-          $(MSL_DIR)/src/material_registry.c $(MSL_DIR)/src/fat_primitive.c
+MSL_C   = $(filter $(MSL_DIR)/src/surface.c $(SQL_DIR)/src/spatial_hash.c $(MEMLIB_DIR)/src/mem_pool.c $(MSL_DIR)/src/material_registry.c $(MSL_DIR)/src/fat_primitive.c,$(call manifest_engine_paths,$(SURFACE_MANIFEST_ALL)))
+MSL_C += $(MEMLIB_DIR)/src/mem_arena.c $(MEMLIB_DIR)/src/mem_bank.c
 MSL_C_OBJ = $(addprefix $(OBJDIR)/,surface.o spatial_hash.o \
-            mem_pool.o material_registry.o fat_primitive.o)
+            mem_pool.o mem_arena.o mem_bank.o material_registry.o fat_primitive.o)
 
 # ME3_OBJ is DERIVED from ME3_CPP -- never hand-maintained.
 #
@@ -288,10 +246,10 @@ SHADER_LOGICAL := shaders/raster.vs shaders/raster.fs shaders/tileset_sampling.g
 # under MatterSurfaceLib, for make's dependency tracking.
 SHADER_FILES := $(patsubst shaders/%,$(MSL_SHADER_DIR)/%,$(SHADER_LOGICAL))
 
-.PHONY: all clean test vulkan-spirv viewer-lib check-me3-source-basenames check-animation-production-sources check-animation-runtime-boundary
+.PHONY: all clean test vulkan-spirv viewer-lib authoring-adapter check-me3-source-basenames check-animation-production-sources check-animation-runtime-boundary
 
 # all MUST be the first target so it is the default goal.
-all: $(LIB)
+all: $(LIB) authoring-adapter
 
 $(OBJDIR) build:
 	@mkdir -p $@
@@ -312,8 +270,7 @@ $(OBJDIR) build:
 # dir, so a collision can now be introduced by a source that this list never
 # mentions. Checking only the archive's half would leave exactly the silent drop
 # this guard exists to prevent.
-ME3_GUARD_EXTRA  = $(BC7ENC_DIR)/bc7enc.cpp $(BC7ENC_DIR)/rgbcx.cpp \
-                   $(PROFILE_DIR)/src/profile.cpp
+ME3_GUARD_EXTRA  = $(BC7ENC_CPP) $(PROFILE_CPP)
 ME3_ALL_STEMS    = $(basename $(notdir $(ME3_CPP) $(MSL_CPP) $(MSL_C) \
                      $(QJS_C) $(FLECS_C) $(ME3_GUARD_EXTRA)))
 VIEWER_ALL_STEMS = $(basename $(notdir $(VIEWER_CPP) $(MSL_CPP) $(MSL_C) \
@@ -368,6 +325,25 @@ GLSLC ?= glslc
 # shaders_gen/embedded_shaders.h) instead of keeping its own copy, so there
 # is only ever one list to update when a shader is added.
 VK_SPV = build/shaders_vk/transform_probe.comp.spv \
+         build/shaders_vk/smoke_triangle.vert.spv \
+         build/shaders_vk/smoke_triangle.frag.spv \
+         build/shaders_vk/vt_material_domain_probe.comp.spv \
+         build/shaders_vk/gpu_mesh_scan_blocks.comp.spv \
+         build/shaders_vk/gpu_mesh_scan_add.comp.spv \
+         build/shaders_vk/gpu_mesh_bin_count.comp.spv \
+         build/shaders_vk/gpu_mesh_bin_scatter.comp.spv \
+         build/shaders_vk/gpu_mesh_bin_sort.comp.spv \
+         build/shaders_vk/gpu_mesh_field.comp.spv \
+         build/shaders_vk/gpu_mesh_classify.comp.spv \
+         build/shaders_vk/gpu_mesh_compact.comp.spv \
+         build/shaders_vk/gpu_mesh_emit.comp.spv \
+         build/shaders_vk/solid_field.comp.spv \
+         build/shaders_vk/solid_face_project.comp.spv \
+         build/shaders_vk/face_material.comp.spv \
+         build/shaders_vk/finite_stamp_probe.comp.spv \
+         build/shaders_vk/solid_classify.comp.spv \
+         build/shaders_vk/solid_scan.comp.spv \
+         build/shaders_vk/solid_emit.comp.spv \
          build/shaders_vk/atmosphere_transmittance.comp.spv \
          build/shaders_vk/atmosphere_multiscatter.comp.spv \
          build/shaders_vk/atmosphere_sky_view.comp.spv \
@@ -375,12 +351,26 @@ VK_SPV = build/shaders_vk/transform_probe.comp.spv \
          build/shaders_vk/environment_sampling_test.comp.spv \
          build/shaders_vk/animation_skin.comp.spv \
          build/shaders_vk/cull.comp.spv \
+         build/shaders_vk/geometry_cut_probe.comp.spv \
+         build/shaders_vk/geometry_select.comp.spv \
+         build/shaders_vk/primary_light_cull.comp.spv \
          build/shaders_vk/visible_ids.comp.spv \
          build/shaders_vk/visibility_id.vert.spv \
          build/shaders_vk/visibility_id.frag.spv \
          build/shaders_vk/raster.vert.spv \
          build/shaders_vk/raster_skin.vert.spv \
+         build/shaders_vk/raster_water.vert.spv \
          build/shaders_vk/gbuffer.frag.spv \
+         build/shaders_vk/sparse_voxel.vert.spv \
+         build/shaders_vk/sparse_voxel.frag.spv \
+         build/shaders_vk/sparse_voxel_shadow.comp.spv \
+         build/shaders_vk/surface_proxy.vert.spv \
+         build/shaders_vk/surface_query.vert.spv \
+         build/shaders_vk/surface_query.frag.spv \
+         build/shaders_vk/surface_proxy.frag.spv \
+         build/shaders_vk/sparse_voxel_select.comp.spv \
+         build/shaders_vk/sparse_hierarchy.comp.spv \
+         build/shaders_vk/water_forward.frag.spv \
          build/shaders_vk/composite.vert.spv \
          build/shaders_vk/composite.frag.spv \
          build/shaders_vk/display_transform.frag.spv \
@@ -391,7 +381,10 @@ VK_SPV = build/shaders_vk/transform_probe.comp.spv \
          build/shaders_vk/rt_visibility.rchit.spv \
          build/shaders_vk/rt_visibility.rahit.spv \
          build/shaders_vk/rt_radiance.rmiss.spv \
-         build/shaders_vk/rt_lighting.rgen.spv \
+         build/shaders_vk/rt_primary_adaptive.rgen.spv build/shaders_vk/rt_lighting.rgen.spv \
+         build/shaders_vk/rt_lighting_culled.rgen.spv build/shaders_vk/rt_lighting_culled_audit.rgen.spv \
+         build/shaders_vk/rt_primary_adaptive_culled.rgen.spv build/shaders_vk/rt_primary_adaptive_culled_audit.rgen.spv \
+         build/shaders_vk/rt_primary_fixed.rgen.spv \
          build/shaders_vk/gi_temporal.comp.spv \
          build/shaders_vk/gi_atrous.comp.spv \
          build/shaders_vk/rt_surface.rchit.spv \
@@ -406,14 +399,52 @@ VK_SPV = build/shaders_vk/transform_probe.comp.spv \
          build/shaders_vk/tileset_bake_primary.comp.spv \
          build/shaders_vk/tileset_bake_ao.comp.spv \
          build/shaders_vk/vt_composite.comp.spv \
+         build/shaders_vk/vt_height_normal.comp.spv \
+         build/shaders_vk/vt_feedback.comp.spv \
          build/shaders_vk/vt_bc_encode.comp.spv \
          build/shaders_vk/vt_enrich_ao.comp.spv \
          build/shaders_vk/selection_line.vert.spv \
          build/shaders_vk/selection_line.frag.spv
 
+# Physical ownership moved; embedded names and shader options remain unchanged.
+build/shaders_vk/raster.vert.spv: ../libs/MatterGraphics/shaders/raster.vert
+	@mkdir -p $(dir $@)
+	$(GLSLC) --target-env=vulkan1.3 -O -Ishaders_vk $< -o $@
+
+build/shaders_vk/gbuffer.frag.spv: ../libs/MatterGraphics/shaders/gbuffer.frag
+	@mkdir -p $(dir $@)
+	$(GLSLC) --target-env=vulkan1.3 -O -Ishaders_vk $< -o $@
+
+include ../libs/MatterGraphics/native-ray-shaders.mk
+
 build/shaders_vk/%.spv: shaders_vk/%
 	@mkdir -p $(dir $@)
 	$(GLSLC) --target-env=vulkan1.3 -O -Ishaders_vk $< -o $@
+
+build/shaders_vk/gpu_mesh_scan_blocks.comp.spv \
+    build/shaders_vk/gpu_mesh_scan_add.comp.spv \
+    build/shaders_vk/gpu_mesh_bin_count.comp.spv \
+    build/shaders_vk/gpu_mesh_bin_scatter.comp.spv \
+    build/shaders_vk/gpu_mesh_bin_sort.comp.spv \
+    build/shaders_vk/gpu_mesh_field.comp.spv \
+    build/shaders_vk/gpu_mesh_classify.comp.spv \
+    build/shaders_vk/gpu_mesh_compact.comp.spv \
+    build/shaders_vk/gpu_mesh_emit.comp.spv: shaders_vk/gpu_mesh_common.glsl
+
+build/shaders_vk/gpu_mesh_classify.comp.spv \
+    build/shaders_vk/gpu_mesh_emit.comp.spv: shaders_vk/gpu_mesh_mc_tables.glsl
+
+build/shaders_vk/solid_field.comp.spv \
+    build/shaders_vk/solid_face_project.comp.spv \
+    build/shaders_vk/solid_classify.comp.spv \
+    build/shaders_vk/solid_scan.comp.spv \
+    build/shaders_vk/solid_emit.comp.spv: shaders_vk/solid_field.glsl
+build/shaders_vk/solid_classify.comp.spv \
+build/shaders_vk/solid_emit.comp.spv: shaders_vk/gpu_mesh_mc_tables.glsl
+
+build/shaders_vk/face_material.comp.spv: shaders_vk/vt_chart_types.glsl shaders_vk/vt_surface_tape.glsl shaders_vk/vt_noise.glsl shaders_vk/vt_normal_frame.glsl
+build/shaders_vk/finite_stamp_probe.comp.spv: shaders_vk/finite_surface_stamp.glsl
+build/shaders_vk/vt_composite.comp.spv: shaders_vk/finite_surface_stamp.glsl
 
 build/shaders_vk/raster.vert.spv build/shaders_vk/gbuffer.frag.spv: \
     shaders_vk/material_common.glsl
@@ -429,26 +460,68 @@ build/shaders_vk/environment_sampling_test.comp.spv: \
 
 # C2 uses the same source and descriptor ABI as raster.vert, but a compile
 # time specialization adds location 5 for the previous skinned position.
-build/shaders_vk/raster_skin.vert.spv: shaders_vk/raster.vert shaders_vk/material_common.glsl
+build/shaders_vk/raster_skin.vert.spv: ../libs/MatterGraphics/shaders/raster.vert shaders_vk/material_common.glsl
 	@mkdir -p $(dir $@)
 	$(GLSLC) --target-env=vulkan1.3 -O -Ishaders_vk -DMATTER_SKINNED_VERTEX_INPUT $< -o $@
 
+build/shaders_vk/raster_water.vert.spv: ../libs/MatterGraphics/shaders/raster.vert shaders_vk/material_common.glsl
+	@mkdir -p $(dir $@)
+	$(GLSLC) --target-env=vulkan1.3 -O -Ishaders_vk -DMATTER_WATER_ANIMATION_VERTEX_INPUT $< -o $@
+
+# The rollback Make graph does not use glslc depfiles. Track moved helpers
+# even through compatibility includes, after entrypoints to preserve $<.
+$(VK_SPV): ../libs/MatterGraphics/shaders/material_common.glsl \
+           ../libs/MatterGraphics/shaders/impostor_common.glsl \
+           $(wildcard ../libs/MatterGraphics/shaders/vt_*) \
+           ../libs/MatterGraphics/shaders/water_forward.glsl \
+           ../libs/MatterGraphics/shaders/water_surface.glsl \
+           ../libs/MatterGraphics/shaders/water_screen_space.glsl
+
 build/shaders_vk/gbuffer.frag.spv: shaders_vk/tileset_common.glsl
+
+build/shaders_vk/water_forward.frag.spv: \
+    shaders_vk/material_common.glsl shaders_vk/water_surface.glsl \
+    shaders_vk/water_screen_space.glsl shaders_vk/environment_common.glsl \
+    shaders_vk/cloud_shadow_common.glsl
+
+# water_surface.glsl (the water field sampling) is also included by the
+# G-buffer pass and by rt_lighting_impl.glsl, not only the forward water pass.
+build/shaders_vk/gbuffer.frag.spv build/shaders_vk/rt_primary_adaptive.rgen.spv build/shaders_vk/rt_lighting.rgen.spv: \
+    shaders_vk/water_surface.glsl
 
 build/shaders_vk/rt_surface.rchit.spv build/shaders_vk/rt_surface.rahit.spv \
     build/shaders_vk/rt_visibility.rahit.spv \
     build/shaders_vk/rt_radiance.rmiss.spv \
-    build/shaders_vk/rt_lighting.rgen.spv \
+    build/shaders_vk/rt_primary_adaptive.rgen.spv build/shaders_vk/rt_lighting.rgen.spv \
     build/shaders_vk/rt_surface_test.rgen.spv: \
     shaders_vk/rt_surface_common.glsl shaders_vk/tileset_common.glsl
+
+# Shared local-space VT normal frame: all direct and transitive consumers.
+build/shaders_vk/raster.vert.spv build/shaders_vk/raster_skin.vert.spv \
+    build/shaders_vk/raster_water.vert.spv \
+    build/shaders_vk/gbuffer.frag.spv build/shaders_vk/vt_composite.comp.spv \
+    build/shaders_vk/vt_height_normal.comp.spv \
+    build/shaders_vk/vt_material_domain_probe.comp.spv \
+    build/shaders_vk/rt_surface.rchit.spv build/shaders_vk/rt_surface.rahit.spv \
+    build/shaders_vk/rt_visibility.rahit.spv build/shaders_vk/rt_radiance.rmiss.spv \
+    build/shaders_vk/rt_primary_adaptive.rgen.spv build/shaders_vk/rt_lighting.rgen.spv build/shaders_vk/rt_surface_test.rgen.spv: \
+    shaders_vk/vt_normal_frame.glsl
 
 # Phase 2 (horizon-map lighting): rt_shadow.rgen now includes
 # tileset_common.glsl directly (not via rt_surface_common.glsl -- it does
 # not otherwise use that file) to reach bindings 15/16 for the horizon test.
 build/shaders_vk/rt_shadow.rgen.spv: shaders_vk/tileset_common.glsl
 
-build/shaders_vk/composite.frag.spv build/shaders_vk/rt_lighting.rgen.spv: \
+build/shaders_vk/composite.frag.spv build/shaders_vk/rt_primary_adaptive.rgen.spv build/shaders_vk/rt_lighting.rgen.spv: \
     shaders_vk/environment_common.glsl shaders_vk/cloud_shadow_common.glsl
+
+build/shaders_vk/composite.frag.spv build/shaders_vk/rt_primary_adaptive.rgen.spv build/shaders_vk/rt_lighting.rgen.spv: \
+    shaders_vk/local_lighting.glsl shaders_vk/local_light_types.glsl
+
+build/shaders_vk/primary_light_cull.comp.spv: shaders_vk/local_light_types.glsl
+build/shaders_vk/geometry_cut_probe.comp.spv: shaders_vk/geometry_cut.glsl
+build/shaders_vk/cull.comp.spv: shaders_vk/scene_instance.glsl
+build/shaders_vk/geometry_select.comp.spv: shaders_vk/geometry_cut.glsl shaders_vk/scene_instance.glsl
 
 build/shaders_vk/gi_temporal.comp.spv build/shaders_vk/gi_atrous.comp.spv: \
     shaders_vk/gi_common.glsl
@@ -473,7 +546,7 @@ build/shaders_vk/gbuffer.frag.spv build/shaders_vk/rt_shadow.rgen.spv \
     build/shaders_vk/rt_surface.rahit.spv \
     build/shaders_vk/rt_visibility.rahit.spv \
     build/shaders_vk/rt_radiance.rmiss.spv \
-    build/shaders_vk/rt_lighting.rgen.spv \
+    build/shaders_vk/rt_primary_adaptive.rgen.spv build/shaders_vk/rt_lighting.rgen.spv \
     build/shaders_vk/rt_surface_test.rgen.spv \
     build/shaders_vk/vt_composite.comp.spv: shaders_vk/wang_common.glsl
 
@@ -484,11 +557,15 @@ build/shaders_vk/gbuffer.frag.spv build/shaders_vk/rt_shadow.rgen.spv \
 # so the two must resolve every texel identically or the occlusion lands on the
 # wrong surface.
 build/shaders_vk/vt_composite.comp.spv \
+    build/shaders_vk/vt_height_normal.comp.spv \
     build/shaders_vk/vt_enrich_ao.comp.spv: \
     shaders_vk/vt_chart_types.glsl shaders_vk/vt_chart_resolve.glsl
 
+build/shaders_vk/vt_composite.comp.spv \
+    build/shaders_vk/vt_height_normal.comp.spv: shaders_vk/vt_fill_request.glsl
+
 # P2 (texel-rate tape): the GLSL noise twin + tape interpreter include.
-build/shaders_vk/vt_composite.comp.spv: shaders_vk/vt_surface_tape.glsl
+build/shaders_vk/vt_composite.comp.spv: shaders_vk/vt_surface_tape.glsl shaders_vk/vt_noise.glsl
 
 # WP-E (chart VT): vt_common.glsl is the shared VT sampling helper. It is an
 # include, not a stage, so it has no .spv of its own -- but every consumer must
@@ -498,8 +575,26 @@ build/shaders_vk/gbuffer.frag.spv build/shaders_vk/rt_surface.rchit.spv \
     build/shaders_vk/rt_surface.rahit.spv \
     build/shaders_vk/rt_visibility.rahit.spv \
     build/shaders_vk/rt_radiance.rmiss.spv \
-    build/shaders_vk/rt_lighting.rgen.spv \
+    build/shaders_vk/rt_primary_adaptive.rgen.spv build/shaders_vk/rt_lighting.rgen.spv \
     build/shaders_vk/rt_surface_test.rgen.spv: shaders_vk/vt_common.glsl
+
+build/shaders_vk/vt_material_domain_probe.comp.spv: shaders_vk/vt_material_domain.glsl shaders_vk/vt_common.glsl shaders_vk/vt_visible_input.glsl
+
+# Connected-surface POM: vt_parallax.glsl includes vt_surface_walk.glsl, which
+# includes vt_seed_walk.glsl and vt_chart_types.glsl. gbuffer.frag and the
+# material-domain probe include vt_parallax.glsl directly, and so does
+# rt_surface_common.glsl -- every RT stage that includes IT is a consumer too
+# (the culled/audit/fixed rgen wrappers already depend on every
+# shaders_vk/*.glsl through their wildcard rule further down).
+# With no rule here, an edit to the march or either walk left all nine .spv
+# files stale in the rollback build.
+build/shaders_vk/gbuffer.frag.spv build/shaders_vk/vt_material_domain_probe.comp.spv \
+    build/shaders_vk/rt_surface.rchit.spv build/shaders_vk/rt_surface.rahit.spv \
+    build/shaders_vk/rt_visibility.rahit.spv build/shaders_vk/rt_radiance.rmiss.spv \
+    build/shaders_vk/rt_primary_adaptive.rgen.spv build/shaders_vk/rt_lighting.rgen.spv \
+    build/shaders_vk/rt_surface_test.rgen.spv: \
+    shaders_vk/vt_parallax.glsl shaders_vk/vt_surface_walk.glsl shaders_vk/vt_seed_walk.glsl \
+    shaders_vk/vt_chart_types.glsl
 
 # M2.5 impostors: impostor_common.glsl is the ONE place the view grid is
 # written down, and BOTH stages that touch a billboard read it -- raster.vert
@@ -518,24 +613,33 @@ build/shaders_vk/gbuffer.frag.spv build/shaders_vk/rt_surface.rchit.spv \
 # above -- an unmasked reader just fails its bounds test and drops a material
 # feature, with nothing on screen that says "stale build".
 build/shaders_vk/raster.vert.spv build/shaders_vk/raster_skin.vert.spv \
+    build/shaders_vk/raster_water.vert.spv \
     build/shaders_vk/gbuffer.frag.spv \
     build/shaders_vk/rt_shadow.rgen.spv \
-    build/shaders_vk/rt_lighting.rgen.spv \
+    build/shaders_vk/rt_primary_adaptive.rgen.spv build/shaders_vk/rt_lighting.rgen.spv \
     build/shaders_vk/composite.frag.spv: shaders_vk/impostor_common.glsl
 
 shaders_gen/embedded_spirv.h: $(VK_SPV) tools/embed_spirv.py
 	python3 tools/embed_spirv.py $@ $(VK_SPV)
 
+# MatterGraphics' VulkanRaster embeds its own subset of the same .spv files,
+# in the component's symbol layout (libs/MatterGraphics/CMakeLists.txt).
+GRAPHICS_RASTER_SPV = $(addprefix build/shaders_vk/,raster.vert.spv raster_skin.vert.spv \
+                      raster_water.vert.spv gbuffer.frag.spv visibility_id.vert.spv \
+                      visibility_id.frag.spv)
+shaders_gen/raster_spirv.h: $(GRAPHICS_RASTER_SPV) ../libs/MatterGraphics/tools/embed_shaders.py
+	python3 ../libs/MatterGraphics/tools/embed_shaders.py $@ $(GRAPHICS_RASTER_SPV)
+
 vulkan-spirv: shaders_gen/embedded_spirv.h
 
 # Per-file pattern rules enable safe parallel compilation with `make -j`.
 # vpath directs Make to search source directories by basename.
-vpath %.cpp src src/animation src/render src/provider src/script src/ecs src/scene src/streaming src/event src/util src/props $(MSL_DIR)/src $(SQL_DIR)/src $(PFL_DIR)/src $(MCL_DIR)/src
+vpath %.cpp src src/component_adapters/authoring/engine src/component_adapters/graphics src/component_adapters/terrain_coordinator/engine src/component_adapters/terrain_coordinator/src src/terrain_collision src/geometry src/export src/animation src/render src/render/gpu_meshing src/hydrology src/provider src/script src/ecs src/scene src/streaming src/event src/util src/props $(MSL_DIR)/src $(SQL_DIR)/src $(PFL_DIR)/src $(MCL_DIR)/src $(ASSET_DIR)/src ../libs/ProceduralGeometry/src ../libs/MatterGraphics/src ../libs/MatterGraphics/src/native ../libs/MatterGraphics/src/native/vt ../libs/TerrainGeneration/src ../libs/AssetPipeline/physics/src
 vpath %.c $(QJS_DIR) $(MSL_DIR)/src $(FLECS_DIR)
 
 # Flecs C source (gcc C17, never g++).
 $(FLECS_OBJ): $(FLECS_C) | $(OBJDIR)
-	$(CCACHE) gcc -c $< -o $@ -std=c17 -O2 -I$(FLECS_DIR) -MMD -MP
+	$(CCACHE) gcc -c $< -o $@ -std=c17 -O2 $(FLECS_PLATFORM_FLAGS) -I$(FLECS_DIR) -MMD -MP
 
 # QuickJS C sources (gcc, extern "C" safe).
 $(OBJDIR)/%.o: $(QJS_DIR)/%.c | $(OBJDIR)
@@ -555,17 +659,23 @@ $(OBJDIR)/spatial_hash.o: $(SQL_DIR)/src/spatial_hash.c | $(OBJDIR)
 $(OBJDIR)/mem_pool.o: $(MEMLIB_DIR)/src/mem_pool.c | $(OBJDIR)
 	$(CCACHE) gcc -c $< -o $@ -O2 -DPLATFORM_DESKTOP $(INCLUDE_PATHS) -MMD -MP
 
-$(OBJDIR)/profile.o: $(PROFILE_DIR)/src/profile.cpp | $(OBJDIR)
+$(OBJDIR)/mem_arena.o: $(MEMLIB_DIR)/src/mem_arena.c | $(OBJDIR)
+	$(CCACHE) gcc -c $< -o $@ -O2 -DPLATFORM_DESKTOP $(INCLUDE_PATHS) -MMD -MP
+
+$(OBJDIR)/mem_bank.o: $(MEMLIB_DIR)/src/mem_bank.c | $(OBJDIR)
+	$(CCACHE) gcc -c $< -o $@ -O2 -DPLATFORM_DESKTOP $(INCLUDE_PATHS) -MMD -MP
+
+$(OBJDIR)/profile.o: $(PROFILE_CPP) | $(OBJDIR)
 	$(CC) -c $< -o $@ $(CFLAGS) $(INCLUDE_PATHS) -MMD -MP
 
 # Vendored BC encoders. Always -O2 (an -O0 bc7enc is ~30x slower, which would
 # show up directly as world-connect stall time) and -w: these are unmodified
 # upstream sources, so their warnings are not this project's to fix or to read
 # past. Explicit rules, and $(BC7ENC_DIR) is deliberately off vpath.
-$(OBJDIR)/bc7enc.o: $(BC7ENC_DIR)/bc7enc.cpp | $(OBJDIR)
+$(OBJDIR)/bc7enc.o: $(filter %/bc7enc.cpp,$(BC7ENC_CPP)) | $(OBJDIR)
 	$(CC) -c $< -o $@ -std=c++17 -O2 -w -I$(BC7ENC_DIR) -MMD -MP
 
-$(OBJDIR)/rgbcx.o: $(BC7ENC_DIR)/rgbcx.cpp | $(OBJDIR)
+$(OBJDIR)/rgbcx.o: $(filter %/rgbcx.cpp,$(BC7ENC_CPP)) | $(OBJDIR)
 	$(CC) -c $< -o $@ -std=c++17 -O2 -w -I$(BC7ENC_DIR) -MMD -MP
 
 # EXTRA_CFLAGS changes are invisible to make's dependency graph (objects look
@@ -668,7 +778,7 @@ VIEWER_AR  ?= ar
 VULKAN_INCLUDE ?= /ucrt64/include
 
 # MATTER_HAVE_STREAMLINE is a compile-time gate read by
-# src/render/streamline_bridge.cpp. MatterEditor owns the switch (its `dist`
+# libs/MatterGraphics/src/native/streamline_bridge.cpp. MatterEditor owns the switch (its `dist`
 # target flips it) and passes it down; the flag stamp below tracks changes.
 HAVE_STREAMLINE ?= 0
 STREAMLINE_PATH ?=
@@ -692,6 +802,9 @@ VIEWER_LIB_FLAGS_STAMP = build/.viewer_lib_flags$(VIEWER_TAG)
 VIEWER_GLFW_INCLUDE = $(RAYLIB_PATH)/external/glfw/include
 
 VIEWER_INCLUDE_PATHS = -I$(VULKAN_INCLUDE) $(INCLUDE_PATHS) -I$(VIEWER_GLFW_INCLUDE) \
+                       -I../libs/MatterGraphics/include \
+                       -Isrc/component_adapters/terrain_coordinator/include \
+                       -I../libs/TerrainGeneration/include \
                        $(if $(filter 1,$(HAVE_STREAMLINE)),-I"$(STREAMLINE_PATH)/include")
 
 # Mirrors MatterEditor's CXX_FLAGS_BUILD_WIN_COMMON exactly, minus the include
@@ -708,17 +821,7 @@ VIEWER_CFLAGS = -std=c++17 -O2 -Wall -Wno-missing-braces -Wno-unused-variable \
 # MATTER_VULKAN_VIEWER, which $(LIB) deliberately omits. $(VIEWER_CPP) is
 # otherwise $(ME3_CPP) verbatim -- so adding an engine source to ME3_CPP is
 # still the single action that puts it in both.
-VIEWER_ONLY_CPP = src/render/vk_context.cpp src/render/vk_resources.cpp \
-                  src/render/vk_pipeline.cpp src/render/vk_scene_renderer.cpp \
-                  src/render/vk_volumetrics.cpp src/render/vk_emitter_gather.cpp \
-                  src/render/vk_instance_cache.cpp \
-                  src/render/vulkan_only_compat.cpp \
-                  src/render/streamline_bridge.cpp \
-                  src/render/tileset_bake_vk.cpp \
-                  src/render/dynamic_instance_slots.cpp \
-                  src/render/vt_compositor.cpp src/render/vt_enrich.cpp \
-                  src/render/vt_residency.cpp src/render/vt_stub_filler.cpp \
-                  src/ecs/scene_registry.cpp src/ecs/dynamic_scene_bridge.cpp
+VIEWER_ONLY_CPP = $(call manifest_engine_paths,$(call manifest_sources,$(MANIFEST_DIR)/engine-viewer.sources,all))
 
 VIEWER_CPP = $(ME3_CPP) $(VIEWER_ONLY_CPP)
 
@@ -760,16 +863,24 @@ $(VIEWER_ME3_OBJ) $(VIEWER_MSL_OBJ) $(VIEWER_BC7ENC_OBJ) $(VIEWER_PROFILE_OBJ): 
 $(VIEWER_OBJDIR)/%.o: %.cpp | $(VIEWER_OBJDIR)
 	$(VIEWER_CXX) -c $< -o $@ $(VIEWER_CFLAGS) $(VIEWER_INCLUDE_PATHS) -MMD -MP
 
+# Compiled MatterGraphics raster authorities live outside the engine vpath.
+$(VIEWER_OBJDIR)/mesh_raster.o: ../libs/MatterGraphics/src/native/mesh_raster.cpp | $(VIEWER_OBJDIR)
+	$(VIEWER_CXX) -c $< -o $@ $(VIEWER_CFLAGS) $(VIEWER_INCLUDE_PATHS) -MMD -MP
+$(VIEWER_OBJDIR)/mesh_pipelines.o: ../libs/MatterGraphics/src/native/mesh_pipelines.cpp | $(VIEWER_OBJDIR)
+	$(VIEWER_CXX) -c $< -o $@ $(VIEWER_CFLAGS) $(VIEWER_INCLUDE_PATHS) -MMD -MP
+$(VIEWER_OBJDIR)/vulkan_raster.o: ../libs/MatterGraphics/src/vulkan_raster.cpp | $(VIEWER_OBJDIR) shaders_gen/raster_spirv.h
+	$(VIEWER_CXX) -c $< -o $@ $(VIEWER_CFLAGS) $(VIEWER_INCLUDE_PATHS) -Ishaders_gen -MMD -MP
+
 # Sources deliberately kept off vpath (see the $(OBJDIR) twins above for why)
 # need explicit rules. bc7enc/rgbcx get a trailing -w for the same reason the
 # $(OBJDIR) rules do -- unmodified upstream sources whose warnings are not this
 # project's to read past. -w only silences diagnostics, so the object is
 # identical to the one MatterEditor used to produce under its -Wall flags.
-$(VIEWER_OBJDIR)/bc7enc.o: $(BC7ENC_DIR)/bc7enc.cpp | $(VIEWER_OBJDIR)
+$(VIEWER_OBJDIR)/bc7enc.o: $(filter %/bc7enc.cpp,$(BC7ENC_CPP)) | $(VIEWER_OBJDIR)
 	$(VIEWER_CXX) -c $< -o $@ $(VIEWER_CFLAGS) -I$(BC7ENC_DIR) -w -MMD -MP
-$(VIEWER_OBJDIR)/rgbcx.o: $(BC7ENC_DIR)/rgbcx.cpp | $(VIEWER_OBJDIR)
+$(VIEWER_OBJDIR)/rgbcx.o: $(filter %/rgbcx.cpp,$(BC7ENC_CPP)) | $(VIEWER_OBJDIR)
 	$(VIEWER_CXX) -c $< -o $@ $(VIEWER_CFLAGS) -I$(BC7ENC_DIR) -w -MMD -MP
-$(VIEWER_OBJDIR)/profile.o: $(PROFILE_DIR)/src/profile.cpp | $(VIEWER_OBJDIR)
+$(VIEWER_OBJDIR)/profile.o: $(PROFILE_CPP) | $(VIEWER_OBJDIR)
 	$(VIEWER_CXX) -c $< -o $@ $(VIEWER_CFLAGS) $(VIEWER_INCLUDE_PATHS) -MMD -MP
 
 # C sources. -DNDEBUG and the section flags match what MatterEditor passed these
@@ -780,17 +891,22 @@ $(VIEWER_QJS_OBJ): $(VIEWER_OBJDIR)/%.o: $(QJS_DIR)/%.c | $(VIEWER_OBJDIR)
 	$(VIEWER_CC) -c $< -o $@ -DCONFIG_VERSION='"0.10.0"' -I$(QJS_DIR) $(VIEWER_C_COMMON)
 
 $(VIEWER_FLECS_OBJ): $(VIEWER_OBJDIR)/%.o: $(FLECS_DIR)/%.c | $(VIEWER_OBJDIR)
-	$(VIEWER_CC) -c $< -o $@ -std=c17 -I$(FLECS_DIR) $(VIEWER_C_COMMON)
+	$(VIEWER_CC) -c $< -o $@ -std=c17 $(FLECS_PLATFORM_FLAGS) -I$(FLECS_DIR) $(VIEWER_C_COMMON)
 
 # spatial_hash and mem_pool come from their source-of-truth libraries, so they
 # cannot share the MSL static pattern rule -- same split as the $(OBJDIR) rules.
 VIEWER_PIPC_COMPILE = $(VIEWER_CC) -c $< -o $@ -DPLATFORM_DESKTOP $(VIEWER_INCLUDE_PATHS) $(VIEWER_C_COMMON)
-VIEWER_MSL_C_ONLY_OBJ = $(filter-out $(VIEWER_OBJDIR)/spatial_hash.o $(VIEWER_OBJDIR)/mem_pool.o,$(VIEWER_MSL_C_OBJ))
+VIEWER_MSL_C_ONLY_OBJ = $(filter-out $(VIEWER_OBJDIR)/spatial_hash.o $(VIEWER_OBJDIR)/mem_pool.o $(VIEWER_OBJDIR)/mem_arena.o $(VIEWER_OBJDIR)/mem_bank.o,$(VIEWER_MSL_C_OBJ))
 $(VIEWER_MSL_C_ONLY_OBJ): $(VIEWER_OBJDIR)/%.o: $(MSL_DIR)/src/%.c | $(VIEWER_OBJDIR)
 	$(VIEWER_PIPC_COMPILE)
 $(VIEWER_OBJDIR)/spatial_hash.o: $(SQL_DIR)/src/spatial_hash.c | $(VIEWER_OBJDIR)
 	$(VIEWER_PIPC_COMPILE)
 $(VIEWER_OBJDIR)/mem_pool.o: $(MEMLIB_DIR)/src/mem_pool.c | $(VIEWER_OBJDIR)
+	$(VIEWER_PIPC_COMPILE)
+$(VIEWER_OBJDIR)/mem_arena.o: $(MEMLIB_DIR)/src/mem_arena.c | $(VIEWER_OBJDIR)
+	$(VIEWER_PIPC_COMPILE)
+
+$(VIEWER_OBJDIR)/mem_bank.o: $(MEMLIB_DIR)/src/mem_bank.c | $(VIEWER_OBJDIR)
 	$(VIEWER_PIPC_COMPILE)
 
 # Header dependency tracking for the viewer objects, same flat-dir wildcard as
@@ -804,7 +920,33 @@ $(VIEWER_LIB): $(VIEWER_ALL_OBJ) | check-me3-source-basenames
 	rm -f $@
 	$(VIEWER_AR) rcs $@ $(VIEWER_ALL_OBJ)
 
-viewer-lib: $(VIEWER_LIB)
+viewer-lib: $(VIEWER_LIB) authoring-adapter
+
+# Both archives carry the legacy part route, so whoever links one links these
+# too. MATTER_AUTHORING_HOST_KERNELS=ON, as in the root graph: matter_geometry
+# drops the CPU kernels (triangle_emit, mesh_simplifier, ...) this archive
+# already compiles and resolves them from it at final link. VIEWER_TAG keeps one
+# tree per toolchain; a ccache launcher in the compiler variable is stripped.
+AUTHORING_ADAPTER_BUILD = build/authoring_adapter$(VIEWER_TAG)
+AUTHORING_ADAPTER_LIBS = $(addprefix $(AUTHORING_ADAPTER_BUILD)/,$(AUTHORING_ADAPTER_ARCHIVES))
+authoring-adapter:
+	@test -f $(AUTHORING_ADAPTER_BUILD)/CMakeCache.txt || \
+	  cmake -S src/component_adapters/authoring -B $(AUTHORING_ADAPTER_BUILD) \
+	        -DBUILD_TESTING=OFF -DMATTER_AUTHORING_HOST_KERNELS=ON -DCMAKE_BUILD_TYPE=Release \
+	        -DCMAKE_C_COMPILER=$(lastword $(VIEWER_CC)) -DCMAKE_CXX_COMPILER=$(lastword $(VIEWER_CXX))
+	cmake --build $(AUTHORING_ADAPTER_BUILD) --target matter_authoring_adapter
+
+# `matter` command-line tool (matter bake gi / export obj), rollback/Unix
+# build: links the headless kernel archive plus the vendored physics/animation
+# archives the script host needs (ozz .a files are prebuilt per checkout -- see
+# CLAUDE.md "Worktree setup"). The canonical build is CMake's `matter_cli`.
+CLI_BIN = build/matter
+cli: $(CLI_BIN)
+$(CLI_BIN): tools/matter_cli.cpp cli/matter_cli.cpp $(LIB) $(BOX3D_LIB) authoring-adapter | build
+	$(CC) tools/matter_cli.cpp cli/matter_cli.cpp -o $@ $(CFLAGS) \
+	    -DMATTER_ENABLE_GI_CLI $(INCLUDE_PATHS) \
+	    -Wl,--start-group $(LIB) $(AUTHORING_ADAPTER_LIBS) -Wl,--end-group \
+	    $(BOX3D_LIB) $(OZZ_OFFLINE_LIBS) $(RAYLIB_PATH)/libraylib.a -lpthread -lm -ldl
 
 # Delegate to the test suite (headless, GL-free host + raylib-linked BLAS path).
 test:
@@ -816,3 +958,40 @@ test:
 clean:
 	rm -rf build
 	$(MAKE) -C tests clean
+
+# Finished local surface detail shared by raster and RT hits.
+build/shaders_vk/gbuffer.frag.spv build/shaders_vk/rt_surface.rchit.spv \
+    build/shaders_vk/rt_surface.rahit.spv build/shaders_vk/rt_visibility.rahit.spv \
+    build/shaders_vk/rt_radiance.rmiss.spv build/shaders_vk/rt_primary_adaptive.rgen.spv build/shaders_vk/rt_lighting.rgen.spv \
+    build/shaders_vk/rt_surface_test.rgen.spv: shaders_vk/surface_detail.glsl
+
+# Shared implementation; all transitive dependency groups above cover both wrappers.
+build/shaders_vk/rt_primary_adaptive.rgen.spv build/shaders_vk/rt_lighting.rgen.spv: shaders_vk/rt_lighting_impl.glsl
+
+# Culling/audit wrappers share every transitive lighting include. The shader
+# inventory is small; conservative include dependencies keep the rollback Make
+# build correct alongside CMake's compiler-generated dependency files.
+build/shaders_vk/rt_lighting_culled.rgen.spv build/shaders_vk/rt_lighting_culled_audit.rgen.spv \
+    build/shaders_vk/rt_primary_adaptive_culled.rgen.spv build/shaders_vk/rt_primary_adaptive_culled_audit.rgen.spv \
+    build/shaders_vk/rt_primary_fixed.rgen.spv: \
+    $(wildcard shaders_vk/*.glsl)
+
+# Sparse-brick GPU ABI and shared projected-coverage model.
+build/shaders_vk/sparse_voxel.vert.spv build/shaders_vk/sparse_voxel.frag.spv: shaders_vk/sparse_voxel_common.glsl
+build/shaders_vk/sparse_voxel.vert.spv build/shaders_vk/sparse_voxel.frag.spv build/shaders_vk/sparse_voxel_shadow.comp.spv build/shaders_vk/surface_proxy.vert.spv build/shaders_vk/surface_proxy.frag.spv: shaders_vk/sparse_voxel_optics.glsl
+
+build/shaders_vk/surface_proxy.vert.spv build/shaders_vk/surface_proxy.frag.spv: shaders_vk/sparse_voxel_common.glsl shaders_vk/surface_proxy_common.glsl
+build/shaders_vk/surface_query.frag.spv: shaders_vk/sparse_voxel_common.glsl shaders_vk/surface_proxy_common.glsl shaders_vk/sparse_voxel_optics.glsl shaders_vk/surface_filter.glsl
+build/shaders_vk/surface_proxy.frag.spv: shaders_vk/surface_filter.glsl
+
+# Primary RT consumes visible VT input tags; compact feedback strips them.
+build/shaders_vk/gbuffer.frag.spv build/shaders_vk/vt_feedback.comp.spv \
+    build/shaders_vk/rt_shadow.rgen.spv build/shaders_vk/rt_lighting.rgen.spv \
+    build/shaders_vk/rt_primary_adaptive.rgen.spv: shaders_vk/vt_visible_input.glsl
+build/shaders_vk/rt_shadow.rgen.spv build/shaders_vk/rt_lighting.rgen.spv \
+    build/shaders_vk/rt_primary_adaptive.rgen.spv: shaders_vk/rt_primary_inputs.glsl
+build/shaders_vk/gbuffer.frag.spv build/shaders_vk/rt_shadow.rgen.spv \
+    build/shaders_vk/rt_lighting.rgen.spv build/shaders_vk/rt_primary_adaptive.rgen.spv \
+    build/shaders_vk/rt_surface.rchit.spv build/shaders_vk/rt_surface.rahit.spv \
+    build/shaders_vk/rt_visibility.rahit.spv build/shaders_vk/rt_radiance.rmiss.spv \
+    build/shaders_vk/rt_surface_test.rgen.spv: shaders_vk/vt_draw_inputs.glsl

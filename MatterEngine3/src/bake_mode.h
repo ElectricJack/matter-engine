@@ -71,6 +71,10 @@ inline int& forced_contour_seams() {
     return v;
 }
 
+#ifdef _MSC_VER
+#pragma warning(push)
+#pragma warning(disable: 4996)  // getenv is read-only and cached process-wide.
+#endif
 inline bool contour_seams() {
     if (forced_contour_seams() >= 0) return forced_contour_seams() != 0;
     static const bool on = [] {
@@ -79,6 +83,9 @@ inline bool contour_seams() {
     }();
     return on;
 }
+#ifdef _MSC_VER
+#pragma warning(pop)
+#endif
 
 // Fold into a cache key beside the version vector. Zero means "every mode is at
 // its default", and a zero salt must NOT be folded -- see the note above.

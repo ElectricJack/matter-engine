@@ -1,6 +1,32 @@
 #ifndef MESHING_ALGORITHM_H
 #define MESHING_ALGORITHM_H
 
+// libs/MatterSurfaceLib/include/meshing_algorithm.h
+//
+// The strategy interface that turns one merge group's particles into
+// triangles, plus the context struct carrying everything a mesher might need.
+//
+// Where it sits: MatterSurfaceLib. `Cell::build_group_mesh` resolves a merge
+// group's particle subset and meshing parameters, fills a `MeshContext`, looks
+// the implementation up with `GetMeshingAlgorithm` and calls `generate`. The
+// two implementations live in `src/marching_cubes_algorithm.cpp` (the smooth
+// isosurface path) and `src/oriented_cube_algorithm.cpp` (the blocky voxel
+// path); which one runs is authored per material via
+// `MaterialDef.meshingAlgorithm`.
+//
+// Threading and lifetime: `generate` runs on `MeshWorkerPool` worker threads,
+// so implementations must be GL-free, must hold no mutable state of their own
+// (they are shared `const` singletons), and must confine scratch memory to
+// the `SurfaceScratch*` handed to them in the context. Every pointer and
+// reference in `MeshContext` borrows storage owned by the caller and is valid
+// only for the duration of the `generate` call — nothing may be captured past
+// return.
+//
+// Adding an algorithm: implement `MeshingAlgorithm`, add a `MeshAlgorithm`
+// value, and wire it into `GetMeshingAlgorithm`'s switch. `MeshContext` is
+// deliberately a superset of what any single algorithm needs; ignore the
+// fields that do not apply, as the existing two do.
+
 #include "surface.h"            // Particle, Bounds, SurfaceScratch
 #include "tri.h"                // float4 (via precomp.h)
 #include "mesh_simplifier.hpp"  // CellBounds
@@ -58,6 +84,11 @@ public:
 
 // Returns the process-wide singleton for an algorithm. Defined in
 // meshing_algorithm.cpp (Task 4).
+//
+// The referent is a `const` function-local static, so the reference stays
+// valid for the process lifetime and is safe to hold and to call from worker
+// threads. An unrecognized `algo` falls back to marching cubes rather than
+// failing.
 const MeshingAlgorithm& GetMeshingAlgorithm(MeshAlgorithm algo);
 
 #endif // MESHING_ALGORITHM_H

@@ -1,3 +1,19 @@
+// MatterEditor/src/properties_registry.cpp
+//
+// The registry is built ONCE, in the constructor, by walking the global ECS
+// component schema (matter::scene::component_count / component_at from
+// ecs/scene_registry.h) and flattening it into `entries_`. It is a snapshot,
+// not a live view: a component registered with the schema after a
+// PropertiesRegistry exists will not appear in it. In practice the editor
+// constructs exactly one, in main(), after the schema is fully populated.
+//
+// Because `entries_` is filled only in the constructor and never mutated
+// afterwards, the `const ComponentEntry*` pointers returned by find() and
+// addable_components() stay valid for the registry's whole lifetime. The
+// `name`/`enum_labels`/`doc` members are borrowed pointers into the schema's
+// own static descriptors, so the schema must outlive the registry — trivially
+// true for a statically registered schema.
+//
 // Phase 4 Task 10 — PropertiesRegistry: maps ComponentDescriptor field types
 // to widget kinds, determines which components are user-editable (vs
 // internal), and provides add/remove component logic through callbacks.
@@ -14,6 +30,11 @@ using matter::scene::ComponentDescriptor;
 using matter::scene::FieldDescriptor;
 using matter::scene::FieldType;
 
+// Field type + "does the schema declare a range" -> widget. The range is what
+// decides slider vs drag for Float and Int; every other type has exactly one
+// widget and ignores it. The trailing `return WidgetKind::FloatDrag` is
+// unreachable for a well-formed FieldType and exists only to satisfy
+// compilers that do not see the switch as exhaustive.
 WidgetKind PropertiesRegistry::widget_for_field(FieldType type, bool has_range) {
     switch (type) {
         case FieldType::Float:
@@ -74,6 +95,8 @@ PropertiesRegistry::PropertiesRegistry() {
     }
 }
 
+// Linear strcmp scan over the (small, fixed) component list. Returns nullptr
+// for a null or unknown name — a normal outcome, not an error.
 const ComponentEntry* PropertiesRegistry::find(const char* name) const {
     if (!name) return nullptr;
     for (const auto& entry : entries_) {
@@ -84,6 +107,11 @@ const ComponentEntry* PropertiesRegistry::find(const char* name) const {
     return nullptr;
 }
 
+// Every user-addable component NOT already present on `record`, in registry
+// order. Allocates a fresh vector on each call (the Properties panel calls it
+// only while the Add Component popup is open, so that is not a hot path), and
+// the pointers it returns are borrowed from `entries_` — see the ownership
+// note in the file header.
 std::vector<const ComponentEntry*> PropertiesRegistry::addable_components(
     const matter::scene::SceneRecord& record) const {
     std::vector<const ComponentEntry*> result;

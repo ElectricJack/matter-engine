@@ -5,7 +5,7 @@
 - **Target:** `tileset_settle.{h,cpp}` + `tileset_bake.{h,cpp}` + new `MatterEngine3/tests/settle_bench.cpp` + new MatterEditor "Settle Lab" panel
 - **Baseline:** `a36ded91` (local main)
 - **Status:** Spec — ready to implement
-- **Context:** one instrument of the Bake Lab workbench — see [bake-lab.md](bake-lab.md) for the umbrella architecture. Per its roadmap, BakeTrace (bake-lab.md §II.1) lands first; this spec's engine work is unchanged by that, and its Settle Lab UI mounts as a Bake Lab panel with the stepper adopting the shared `SteppablePhase` transport contract (bake-lab.md §I.4). Settle spans/`TickStats` aggregates additionally feed BakeTrace once both exist.
+- **Context:** one instrument of the Bake Lab workbench — see the historical [bake-lab.md](../../docs/deprecated/MatterEngine3/bake-lab.md) for the umbrella architecture. Per its roadmap, BakeTrace (bake-lab.md §II.1) lands first; this spec's engine work is unchanged by that, and its Settle Lab UI mounts as a Bake Lab panel with the stepper adopting the shared `SteppablePhase` transport contract (bake-lab.md §I.4). Settle spans/`TickStats` aggregates additionally feed BakeTrace once both exist.
 
 ---
 

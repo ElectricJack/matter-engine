@@ -1,6 +1,7 @@
+// MatterEngine3/src/resolve_cache.cpp
 // resolve_cache.cpp — resolve/manifest binary cache.
 // Saves and restores the full output of LocalProvider::install_graph() +
-// compose_world() so warm launches skip QuickJS script evaluation.
+// compose_world(); supported static worlds also cache their authored definition.
 //
 // Binary layout (little-endian, all multi-byte scalars LE):
 //
@@ -24,14 +25,13 @@
 //     f32[3] sun_dir
 //     f32[3] sun_color
 //     f32[3] sky_color
-//     u32    spot_count
-//     for each spot:
-//       f32[3] pos
-//       f32[3] dir
-//       f32[3] color
-//       f32    range
-//       f32    cos_inner
-//       f32    cos_outer
+//     u32    local_light_count
+//     for each local light (same 64-byte field order as LocalLight):
+//       f32[3] position; f32 range
+//       f32[3] direction; f32 cos_outer
+//       f32[3] color; f32 source_radius
+//       f32 cos_inner; u32 kind; u32 flags; u32 reserved
+//     The spatial index and revision are derived and rebuilt after load.
 //
 //     === part_graph_snapshot::Snapshot ===
 //     u32  node_count
@@ -39,6 +39,7 @@
 //       str  module
 //       str  source_path
 //       str  params_json
+//       str  effective_params_json   (v6: `static params` defaults + params_json)
 //       u32  children_count
 //       str[children_count] children
 //       u32  shared_imports_count
@@ -82,6 +83,34 @@
 //
 // "str" in the above means: u32 len, u8[len] bytes (UTF-8, no NUL).
 
+// ---------------------------------------------------------------------------
+// How it fits, and how to change it
+// ---------------------------------------------------------------------------
+// One file per world: <cache_root>/cache/<world_name>.resolve, written by the
+// resolve path (local_provider.cpp / matter_engine.cpp) once a world has been
+// composed and read on the next launch of the same world.  It holds INPUTS to
+// the bake — instances, lights, the part graph snapshot, the bake plan — never
+// baked geometry; the .part artifacts under <cache_root>/parts/ are a separate,
+// independently keyed cache.
+//
+// There is no forward or backward compatibility, by design.  load() rejects
+// anything whose magic, format version, cache key or version digest does not
+// match exactly, and a rejection is a normal outcome (the caller re-resolves).
+// So ANY change to the layout above must bump kResolveCacheVersion: an
+// unversioned layout change leaves old files passing the header check and then
+// decoding as garbage.
+//
+// The legacy manifest/graph sections carry no checksum. Their integrity rests
+// on the header match, per-field sanity caps, the strict EOF check and atomic
+// publication. The authored-world section additionally has its own schema and
+// content checksum, validated before the provider replays any material state.
+//
+// Nothing here verifies that the artifacts named by root_hashes / bake_plan
+// still exist on disk.  A hit restores part IDENTITIES verbatim and skips
+// graph evaluation, which is why every input that can move a part
+// hash has to reach compute_key() — see the bake-mode fold in step 4 there for
+// what going wrong looks like.
+#include "bake_trace.h"
 #include "resolve_cache.h"
 #include "part_asset.h"    // fnv1a64
 #include "part_asset_v2.h" // replace_file_atomic (Windows-safe publish)
@@ -93,16 +122,19 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <dirent.h>
+#include <filesystem>
+#include <sstream>
 #include <fstream>
+#include <limits>
 #include <map>
-#include <sys/stat.h>
+#include <system_error>
 #include <vector>
 
 #ifdef _WIN32
 #include <direct.h>
 #define fs_mkdir_rc(p) _mkdir(p)
 #else
+#include <sys/stat.h>   // ::mkdir -- absent, this TU only ever built on Windows
 #define fs_mkdir_rc(p) ::mkdir(p, 0755)
 #endif
 
@@ -117,7 +149,14 @@ namespace resolve_cache {
 // ea579ba). Version 4 adds each node's selected shared_source_paths. Older
 // versions are treated as misses because fmt_ver != kResolveCacheVersion.
 static constexpr uint32_t kResolveCacheMagic   = 0x00314352u;
-static constexpr uint32_t kResolveCacheVersion = 5u;  // M4: u32 ebv -> u64 version digest
+// Version 6 adds each node's effective_params_json. It MUST be a version bump
+// rather than a tolerated absence: a v5 file restores nodes whose effective
+// params are empty, and every parameter surface would then fall back to the
+// placement params -- i.e. a cache hit would silently reproduce the empty
+// `procedural.parameters` set this field exists to fix.
+// Version 7 replaces the ambiguous SpotLight record with the fixed 64-byte
+// LocalLight record and reconstructs its spatial publication on load.
+static constexpr uint32_t kResolveCacheVersion = 8u;  // authored definition + material snapshot
 
 // ---------------------------------------------------------------------------
 // Low-level binary read/write helpers (little-endian)
@@ -125,8 +164,15 @@ static constexpr uint32_t kResolveCacheVersion = 5u;  // M4: u32 ebv -> u64 vers
 
 namespace {
 
+// Write/read one scalar as sizeof(T) little-endian bytes.  The value goes
+// through a uint64_t by object representation (memcpy), so float and double
+// round-trip as their raw IEEE-754 bit patterns rather than as text — exact,
+// but it does mean the format assumes both ends share that representation.
+// T must be trivially copyable and at most 8 bytes wide (static_assert).
+// Both helpers return false as soon as the stream goes bad, which is how a
+// truncated file is detected: every call site propagates the false out.
 template <typename T>
-static bool write_le(std::ofstream& f, T val) {
+static bool write_le(std::ostream& f, T val) {
     static_assert(sizeof(T) <= 8, "write_le: type too wide");
     uint8_t buf[sizeof(T)];
     uint64_t v = 0;
@@ -138,7 +184,7 @@ static bool write_le(std::ofstream& f, T val) {
 }
 
 template <typename T>
-static bool read_le(std::ifstream& f, T& out) {
+static bool read_le(std::istream& f, T& out) {
     uint8_t buf[sizeof(T)];
     f.read(reinterpret_cast<char*>(buf), (std::streamsize)sizeof(T));
     if (!f.good()) return false;
@@ -149,7 +195,7 @@ static bool read_le(std::ifstream& f, T& out) {
     return true;
 }
 
-static bool write_str(std::ofstream& f, const std::string& s) {
+static bool write_str(std::ostream& f, const std::string& s) {
     uint32_t len = (uint32_t)s.size();
     if (!write_le(f, len)) return false;
     if (len > 0) {
@@ -159,10 +205,14 @@ static bool write_str(std::ofstream& f, const std::string& s) {
     return true;
 }
 
-static bool read_str(std::ifstream& f, std::string& out) {
+// Read a length-prefixed string, rejecting its size before allocation. Legacy
+// sections retain their 256 MiB ceiling; the authored-world caller supplies its
+// stricter 64 MiB payload limit.
+static bool read_str(std::istream& f, std::string& out,
+                     uint32_t max_length = 256u * 1024u * 1024u) {
     uint32_t len = 0;
     if (!read_le(f, len)) return false;
-    if (len > 256u * 1024u * 1024u) return false;  // sanity cap 256 MiB
+    if (len > max_length) return false;  // reject before allocation
     out.resize(len);
     if (len > 0) {
         f.read(&out[0], (std::streamsize)len);
@@ -176,7 +226,13 @@ static bool read_str(std::ifstream& f, std::string& out) {
 // ---------------------------------------------------------------------------
 
 // Read entire file into a buffer; returns empty on error.
-static std::vector<uint8_t> read_file_bytes(const std::string& path) {
+static std::vector<uint8_t> read_file_bytes(const std::string& path,
+                                             const matter::SourceSnapshot* sources = nullptr) {
+    if (sources) {
+        std::string text;
+        if (!sources->read(path, text)) return {};
+        return std::vector<uint8_t>(text.begin(), text.end());
+    }
     std::ifstream f(path, std::ios::binary | std::ios::ate);
     if (!f) return {};
     auto sz = f.tellg();
@@ -189,35 +245,49 @@ static std::vector<uint8_t> read_file_bytes(const std::string& path) {
 }
 
 // Collect all regular files under `dir` recursively, returning sorted relative
-// paths (relative to `dir`, with '/' separators). On any opendir failure,
+// paths (relative to `dir`, with '/' separators). On any directory-open failure,
 // the entry is skipped (best-effort; key computation remains deterministic
 // for files that ARE readable).
+// The name overpromises: only the recursion order is sorted here (subdirectory
+// names), while the regular files of each directory are appended in readdir
+// order — compute_key() sorts the accumulated list itself, and that is where
+// the determinism actually comes from.
+//
+// Entries whose name starts with '.' are skipped at every level, so dotfiles
+// and dot-directories NEVER contribute to the cache key.  stat() follows
+// symlinks, so a symlinked file is hashed as a regular file.
 static void collect_files_sorted(const std::string& dir,
                                  const std::string& rel_prefix,
                                  std::vector<std::string>& out) {
-    DIR* d = opendir(dir.c_str());
-    if (!d) return;
-    struct dirent* ent;
     std::vector<std::string> subdirs;
-    while ((ent = readdir(d)) != nullptr) {
-        if (ent->d_name[0] == '.') continue;
-        std::string name = ent->d_name;
-        std::string full = dir + "/" + name;
+    std::error_code ec;
+    std::filesystem::directory_iterator entries(dir, ec);
+    if (ec) return;
+    const std::filesystem::directory_iterator end;
+    for (; entries != end; entries.increment(ec)) {
+        if (ec) break;
+        const auto& entry = *entries;
+        const std::string name = entry.path().filename().string();
+        if (name.empty() || name[0] == '.') continue;
         std::string rel  = rel_prefix.empty() ? name : rel_prefix + "/" + name;
-        struct stat st{};
-        if (::stat(full.c_str(), &st) != 0) continue;
-        if (S_ISREG(st.st_mode)) {
+        const auto status = entry.status(ec);
+        if (ec) {
+            ec.clear();
+            continue;
+        }
+        if (std::filesystem::is_regular_file(status)) {
             out.push_back(rel);
-        } else if (S_ISDIR(st.st_mode)) {
+        } else if (std::filesystem::is_directory(status)) {
             subdirs.push_back(name);
         }
     }
-    closedir(d);
     std::sort(subdirs.begin(), subdirs.end());
     for (const auto& sub : subdirs)
         collect_files_sorted(dir + "/" + sub, rel_prefix.empty() ? sub : rel_prefix + "/" + sub, out);
 }
 
+// Fold a string into a running FNV-1a state: length first, then bytes, so that
+// concatenation cannot alias ("ab" + "c" folds differently from "a" + "bc").
 static uint64_t fold_str(uint64_t h, const std::string& s) {
     // Feed length then bytes into FNV fold (incremental).
     uint32_t len = (uint32_t)s.size();
@@ -236,43 +306,49 @@ static uint64_t fold_str(uint64_t h, const std::string& s) {
     return h;
 }
 
-static uint64_t fold_u32(uint64_t h, uint32_t v) {
-    uint8_t buf[4];
-    for (int i = 0; i < 4; ++i) buf[i] = (uint8_t)(v >> (i * 8));
-    for (int i = 0; i < 4; ++i) {
-        h ^= (uint64_t)buf[i];
-        h *= 0x00000100000001B3ull;
-    }
-    return h;
-}
-
 } // anonymous namespace
 
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
+// Flat-layout overload: forwards with an empty scene tier, which the real
+// implementation then omits entirely rather than folding an empty tag — that
+// omission is what keeps a project with no scene objects producing exactly the
+// key it produced before the scene layout existed.
 uint64_t compute_key(const std::string& world_path,
                      const std::string& root_params_json,
                      const std::string& objects_dir,
                      const std::string& project_shared_lib_dir,
-                     const std::string& engine_shared_lib_dir) {
+                     const std::string& engine_shared_lib_dir,
+                     const matter::SourceSnapshot* sources) {
     return compute_key(world_path, root_params_json, std::string(), objects_dir,
-                       project_shared_lib_dir, engine_shared_lib_dir);
+                       project_shared_lib_dir, engine_shared_lib_dir, sources);
 }
 
+// Fold every input that can change the resolved graph into one u64 key.
+//
+// Cost: this READS every file under all four tiers, in full, on every call. It
+// hashes content, not mtimes — so a touched-but-unchanged file is still a hit,
+// and an edited file is always a miss.
+//
+// Returns 0 when the world source itself cannot be read; callers treat 0 as a
+// miss.  The numbered steps below are ordered, and the order is part of the
+// key: reordering them invalidates every existing cache file.
 uint64_t compute_key(const std::string& world_path,
                      const std::string& root_params_json,
                      const std::string& scene_objects_dir,
                      const std::string& objects_dir,
                      const std::string& project_shared_lib_dir,
-                     const std::string& engine_shared_lib_dir) {
+                     const std::string& engine_shared_lib_dir,
+                     const matter::SourceSnapshot* sources) {
+    BAKE_SPAN("resolve-cache.key");
     // Start with FNV-1a offset basis.
     uint64_t h = 14695981039346656037ull;
 
     // 1. World JavaScript source bytes.
     {
-        auto bytes = read_file_bytes(world_path);
+        auto bytes = read_file_bytes(world_path, sources);
         if (bytes.empty()) return 0;  // can't compute key without world source
         uint64_t mh = part_asset::fnv1a64(bytes.data(), bytes.size());
         h ^= mh;
@@ -299,15 +375,26 @@ uint64_t compute_key(const std::string& world_path,
     tiers.push_back({"project-shared", &project_shared_lib_dir});
     tiers.push_back({"engine-shared", &engine_shared_lib_dir});
     for (const auto& tier : tiers) {
+        BAKE_SPAN(tier.first);
         h = fold_str(h, tier.first);
         const std::string* dir_ptr = tier.second;
         if (dir_ptr->empty()) continue;
         std::vector<std::string> rel_files;
-        collect_files_sorted(*dir_ptr, "", rel_files);
+        {
+            BAKE_SPAN("enumerate");
+            if (sources) {
+                for (const auto& path : sources->files_under(*dir_ptr))
+                    rel_files.push_back(std::filesystem::path(path).lexically_relative(
+                        std::filesystem::path(matter::SourceSnapshot::key(*dir_ptr))).generic_string());
+            } else collect_files_sorted(*dir_ptr, "", rel_files);
+        }
+        BAKE_COUNT("files", rel_files.size());
+        BAKE_SPAN("read-hash");
         std::sort(rel_files.begin(), rel_files.end());
         for (const auto& rel : rel_files) {
             std::string full = *dir_ptr + "/" + rel;
-            auto bytes = read_file_bytes(full);
+            auto bytes = read_file_bytes(full, sources);
+            BAKE_COUNT("source-bytes", bytes.size());
             uint64_t fh = bytes.empty() ? 0 : part_asset::fnv1a64(bytes.data(), bytes.size());
             h = fold_str(h, rel);
             h ^= fh;
@@ -346,17 +433,40 @@ static std::string resolve_cache_path(const std::string& cache_root,
     return cache_root + "/cache/" + world_name + ".resolve";
 }
 
+// Serialise `p` to <cache_root>/cache/<world_name>.resolve.
+//
+// Creates the cache/ directory if it is missing; an mkdir failure is ignored
+// here and surfaces as the ofstream failing to open instead.  Writes to
+// "<path>.tmp" and publishes it atomically, so a concurrent reader never sees a
+// half-written file, and any failure removes the temp rather than leaving one
+// behind.
+//
+// NOT byte-reproducible: bake_plan is an unordered_map, so entry order — and
+// with it the order of the source dedup table — varies between runs of the same
+// world.  Only the decoded content is stable; never diff two .resolve files
+// byte-wise.
+//
+// Returns false on any write error.  That is non-fatal: the only consequence is
+// a cold next launch.
 bool save(const std::string& cache_root,
           const std::string& world_name,
           uint64_t           cache_key,
-          const ResolveCachePayload& p) {
+          const ResolveCachePayload& p,
+          matter::CacheByteStorage* storage) {
+    if (p.lights.local.records.size() >
+        static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max()))
+        return false;
+
     const std::string cache_dir = cache_root + "/cache";
-    fs_mkdir_rc(cache_dir.c_str());
+    if (!storage) fs_mkdir_rc(cache_dir.c_str());
 
     const std::string path = resolve_cache_path(cache_root, world_name);
     const std::string tmp  = path + ".tmp";
 
-    std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
+    std::ofstream disk;
+    std::ostringstream generated(std::ios::binary | std::ios::out);
+    if (!storage) disk.open(tmp, std::ios::binary | std::ios::trunc);
+    std::ostream& f = storage ? static_cast<std::ostream&>(generated) : disk;
     if (!f) return false;
 
     // Header.
@@ -390,15 +500,23 @@ bool save(const std::string& cache_root,
         for (int i = 0; i < 3; ++i) if (!write_le(f, l.sun_dir[i]))   return false;
         for (int i = 0; i < 3; ++i) if (!write_le(f, l.sun_color[i])) return false;
         for (int i = 0; i < 3; ++i) if (!write_le(f, l.sky_color[i])) return false;
-        uint32_t sc = (uint32_t)l.spots.size();
-        if (!write_le(f, sc)) return false;
-        for (const auto& s : l.spots) {
-            for (int i = 0; i < 3; ++i) if (!write_le(f, s.pos[i]))   return false;
-            for (int i = 0; i < 3; ++i) if (!write_le(f, s.dir[i]))   return false;
-            for (int i = 0; i < 3; ++i) if (!write_le(f, s.color[i])) return false;
-            if (!write_le(f, s.range))     return false;
-            if (!write_le(f, s.cos_inner)) return false;
-            if (!write_le(f, s.cos_outer)) return false;
+        const uint32_t count =
+            static_cast<uint32_t>(l.local.records.size());
+        if (!write_le(f, count)) return false;
+        for (const auto& light : l.local.records) {
+            for (int i = 0; i < 3; ++i)
+                if (!write_le(f, light.position[i])) return false;
+            if (!write_le(f, light.range)) return false;
+            for (int i = 0; i < 3; ++i)
+                if (!write_le(f, light.direction[i])) return false;
+            if (!write_le(f, light.cos_outer)) return false;
+            for (int i = 0; i < 3; ++i)
+                if (!write_le(f, light.color[i])) return false;
+            if (!write_le(f, light.source_radius)) return false;
+            if (!write_le(f, light.cos_inner)) return false;
+            if (!write_le(f, light.kind)) return false;
+            if (!write_le(f, light.flags)) return false;
+            if (!write_le(f, light.reserved)) return false;
         }
     }
 
@@ -412,6 +530,7 @@ bool save(const std::string& cache_root,
             if (!write_str(f, n.module))      return false;
             if (!write_str(f, n.source_path)) return false;
             if (!write_str(f, n.params_json)) return false;
+            if (!write_str(f, n.effective_params_json)) return false;
             uint32_t cc = (uint32_t)n.children.size();
             if (!write_le(f, cc)) return false;
             for (const auto& c : n.children)
@@ -519,10 +638,18 @@ bool save(const std::string& cache_root,
             if (!write_le(f, rh)) return false;
     }
 
-    f.close();
+    if (!write_str(f, p.authored_world)) return false;
+
+    if (!storage) disk.close();
+    else f.flush();
     if (!f.good() && !f.eof()) {
-        std::remove(tmp.c_str());
+        if (!storage) std::remove(tmp.c_str());
         return false;
+    }
+
+    if (storage) {
+        const auto encoded = generated.str();
+        return storage->publish(path, matter::CacheByteStorage::Bytes(encoded.begin(), encoded.end()));
     }
 
     // Atomic publish. NOT std::rename: on Windows rename FAILS when the target
@@ -539,12 +666,34 @@ bool save(const std::string& cache_root,
     return true;
 }
 
+// Restore a payload previously written by save().  Fail-closed: false means
+// "no usable cache" for every reason there is — missing file, wrong magic,
+// wrong format version, key mismatch, version-digest mismatch, an unknown param
+// kind, a sanity cap exceeded, truncation, or trailing bytes — and is a normal,
+// expected outcome rather than an error to report.
+//
+// `out` is NOT left untouched on failure: the parse fills it incrementally and
+// returns at the first anomaly, so a false return leaves it partially
+// populated.  Callers must discard it, not inspect it.
+//
+// snapshot.by_file and snapshot.by_import are not stored in the file; they are
+// rebuilt here from each node's source_path / shared_source_paths /
+// shared_imports as the nodes are read.
 bool load(const std::string& cache_root,
           const std::string& world_name,
           uint64_t           expected_key,
-          ResolveCachePayload& out) {
+          ResolveCachePayload& out,
+          matter::CacheByteStorage* storage) {
+    BAKE_SPAN("resolve-cache.load");
     const std::string path = resolve_cache_path(cache_root, world_name);
-    std::ifstream f(path, std::ios::binary);
+    std::ifstream disk;
+    std::istringstream generated(std::ios::binary | std::ios::in);
+    if (storage) {
+        const auto bytes = storage->open(path);
+        if (!bytes) return false;
+        generated.str(std::string(bytes->begin(), bytes->end()));
+    } else disk.open(path, std::ios::binary);
+    std::istream& f = storage ? static_cast<std::istream&>(generated) : disk;
     if (!f) return false;
 
     // Header validation.
@@ -561,6 +710,7 @@ bool load(const std::string& cache_root,
 
     // === instances ===
     {
+        BAKE_SPAN("resolve-cache.instances");
         uint32_t cnt = 0;
         if (!read_le(f, cnt)) return false;
         out.instances.resize(cnt);
@@ -576,26 +726,40 @@ bool load(const std::string& cache_root,
 
     // === lights ===
     {
+        BAKE_SPAN("resolve-cache.lights");
         auto& l = out.lights;
         for (int i = 0; i < 3; ++i) if (!read_le(f, l.sun_dir[i]))   return false;
         for (int i = 0; i < 3; ++i) if (!read_le(f, l.sun_color[i])) return false;
         for (int i = 0; i < 3; ++i) if (!read_le(f, l.sky_color[i])) return false;
-        uint32_t sc = 0;
-        if (!read_le(f, sc)) return false;
-        l.spots.resize(sc);
-        for (uint32_t i = 0; i < sc; ++i) {
-            auto& s = l.spots[i];
-            for (int j = 0; j < 3; ++j) if (!read_le(f, s.pos[j]))   return false;
-            for (int j = 0; j < 3; ++j) if (!read_le(f, s.dir[j]))   return false;
-            for (int j = 0; j < 3; ++j) if (!read_le(f, s.color[j])) return false;
-            if (!read_le(f, s.range))     return false;
-            if (!read_le(f, s.cos_inner)) return false;
-            if (!read_le(f, s.cos_outer)) return false;
+        uint32_t count = 0;
+        if (!read_le(f, count)) return false;
+        if (count > 1024u * 1024u) return false;  // 64 MiB record sanity cap
+        l.local.records.resize(count);
+        for (uint32_t i = 0; i < count; ++i) {
+            auto& light = l.local.records[i];
+            for (int j = 0; j < 3; ++j)
+                if (!read_le(f, light.position[j])) return false;
+            if (!read_le(f, light.range)) return false;
+            for (int j = 0; j < 3; ++j)
+                if (!read_le(f, light.direction[j])) return false;
+            if (!read_le(f, light.cos_outer)) return false;
+            for (int j = 0; j < 3; ++j)
+                if (!read_le(f, light.color[j])) return false;
+            if (!read_le(f, light.source_radius)) return false;
+            if (!read_le(f, light.cos_inner)) return false;
+            if (!read_le(f, light.kind)) return false;
+            if (!read_le(f, light.flags)) return false;
+            if (!read_le(f, light.reserved)) return false;
         }
+        std::string light_error;
+        if (!world_lights::rebuild_local_light_publication(l.local,
+                                                            light_error))
+            return false;
     }
 
     // === snapshot ===
     {
+        BAKE_SPAN("resolve-cache.snapshot");
         auto& snap = out.snapshot;
         snap.nodes.clear();
         snap.by_file.clear();
@@ -607,6 +771,7 @@ bool load(const std::string& cache_root,
             if (!read_str(f, n.module))      return false;
             if (!read_str(f, n.source_path)) return false;
             if (!read_str(f, n.params_json)) return false;
+            if (!read_str(f, n.effective_params_json)) return false;
             uint32_t cc = 0;
             if (!read_le(f, cc)) return false;
             n.children.resize(cc);
@@ -641,6 +806,7 @@ bool load(const std::string& cache_root,
 
     // === bake_plan ===
     {
+        BAKE_SPAN("resolve-cache.bake-plan");
         out.bake_plan.clear();
         // Read source dedup table.
         uint32_t src_count = 0;
@@ -739,6 +905,8 @@ bool load(const std::string& cache_root,
         for (uint32_t i = 0; i < rhc; ++i)
             if (!read_le(f, out.root_hashes[i])) return false;
     }
+
+    if (!read_str(f, out.authored_world, 64u * 1024u * 1024u)) return false;
 
     // Confirm we're at EOF (detect truncation of a valid header + too-short payload).
     {

@@ -1,3 +1,34 @@
+// MatterEditor/src/event_inspector.cpp
+//
+// The Event Inspector panel (event-system.md S I.8): a diagnostic view of one
+// event Hub, in three tabs — the subscriber Registry, the live emit Trace, and
+// a Timeline flamegraph built from the same trace. The panel's persistent
+// state (selected hub, filters, pause, pinned record) lives on EventInspector
+// in event_inspector.h; each view below is one method.
+//
+// Which hubs. draw() rebuilds the hub list EVERY frame from live pointers —
+// the app hub plus the current WorldSession's hub — and nothing is cached on
+// the inspector between frames. That is the safety property the E4c brief asks
+// for: a world switch that destroys the session hub simply drops it from the
+// next frame's list rather than leaving a dangling pointer behind.
+//
+// Read-mostly, with exactly ONE mutation: the Trace tab's "Tracing enabled"
+// checkbox calls Hub::set_trace_enabled. The inspector never emits, subscribes
+// or unsubscribes, so observing a hub cannot change what it delivers.
+//
+// Cost. Both trace-backed views call Hub::trace_snapshot(), which copies the
+// whole ring buffer, once per frame while their tab is open — the Trace tab's
+// Pause freezes its copy and stops re-snapshotting, the Timeline tab has no
+// pause and re-snapshots unconditionally. The Registry tab sorts its snapshot
+// by event name every frame. None of it runs while the panel is closed.
+//
+// Times are milliseconds relative to the EARLIEST emit in the current
+// snapshot, recomputed per frame, so the zero point moves as the ring rolls.
+// They are offsets for comparing emits within one snapshot, never absolute
+// timestamps and not comparable across frames.
+//
+// ImGui/main thread only, like every panel here.
+
 #include "event_inspector.h"
 
 #include <algorithm>
@@ -49,6 +80,9 @@ std::string lane_label(uint32_t id) {
     }
 }
 
+// Whatever the standard library prints for a thread id — a small opaque
+// integer, not an OS thread id and not a name. Useful only for telling two
+// threads apart within one session.
 std::string thread_label(std::thread::id id) {
     std::ostringstream oss;
     oss << id;
@@ -363,6 +397,14 @@ void EventInspector::draw_timeline_view(Hub& hub) {
     }
 
     // One drawable bar. depth 0 = emit row, depth 1 = subscriber handler row.
+    //
+    // Bar POSITIONS along x are synthesized, not measured: a trace record
+    // carries each handler's duration but not its start, so handlers are laid
+    // end to end from the record's delivery time. The widths are real; the
+    // absence of gaps between handlers is an assumption, not an observation.
+    // `depth` is the emit's nesting_depth (+1 for handler rows), so a row is a
+    // nesting level and NOT a thread — emits from different threads share rows
+    // and their bars can overlap.
     struct Bar {
         double begin_ms;
         double end_ms;

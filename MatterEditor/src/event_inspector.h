@@ -42,6 +42,20 @@ namespace evt { class Hub; }
 
 namespace viewer {
 
+// Per-panel state for the Events inspector: which hub is selected, the two
+// name filters, the Trace tab's pause/freeze buffer and its pinned record.
+//
+// Lifetime and ownership: one instance lives for as long as the panel that
+// hosts it (the Bake Lab window's Events tab) — the editor owns it, nothing
+// else refers to it. It holds NO Hub pointer and no WorldSession pointer
+// between frames: draw() is handed both every frame and the hub list is
+// rebuilt from them, which is what makes a world switch safe (S I.13).
+//
+// The only data it keeps across frames are COPIES — frozen_trace_ and
+// trace_pin_ are copied-out TraceRecords, so they stay readable after the ring
+// buffer has rolled or the hub that produced them has been destroyed.
+//
+// ImGui/main thread only. Everything it draws is described in the block above.
 class EventInspector {
 public:
     // Draws the hub selector + the active sub-view. `app_hub` is the stable
@@ -68,6 +82,10 @@ private:
     void draw_timeline_view(matter::evt::Hub& hub);
 
     // --- selection -------------------------------------------------------
+    // Index into the hub list draw() rebuilds each frame, NOT a stable hub id.
+    // The list is [App hub, Session hub], so it is clamped back into range
+    // whenever the session hub comes or goes — closing a world silently moves
+    // the selection back to the app hub rather than leaving a dead entry.
     int active_hub_ = 0;
 
     // --- Registry view state ---------------------------------------------

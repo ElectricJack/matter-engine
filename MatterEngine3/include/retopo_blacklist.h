@@ -12,8 +12,12 @@
 // an out-of-scope follow-up: process death IS the isolation boundary, and
 // the on-disk journal captures which inputs to avoid on rerun.
 //
-// Thread-safety: single-threaded assumption. Parts bake sequentially via
-// HostBaker, and modifier_apply is only called from bake_source's serial path.
+// Thread-safety: g_blacklist is written only by init() and reset_for_tests(),
+// so once init() has returned it is immutable and is_blacklisted() is a plain
+// read. That is what lets modifier_apply.cpp test it BEFORE taking the static
+// mutex it serialises retopo under. begin_attempt/end_attempt are NOT
+// synchronised here; they are safe only because they are called from inside
+// that mutex. Nothing in this module makes concurrent init() safe.
 #ifndef MATTER_ENGINE3_RETOPO_BLACKLIST_H
 #define MATTER_ENGINE3_RETOPO_BLACKLIST_H
 
@@ -24,8 +28,9 @@ namespace matter_engine3 { namespace retopo_blacklist {
 
 // Load journal files from <cache_root>/parts/, compute the blacklist as
 // (pending - success), and hold it in memory. Idempotent; safe to call
-// multiple times per process. Also opens the two journal files for append
-// so subsequent begin/end_attempt writes are cheap.
+// multiple times per process (the set is rebuilt from disk each time). Only
+// the journal PATHS are retained: no file handle is kept open, and each
+// begin/end_attempt reopens, appends, flushes and closes.
 void init(const std::string& cache_root);
 
 // True iff `hash` was in pending but not success at last init() — i.e.,
@@ -43,8 +48,6 @@ void begin_attempt(uint64_t hash);
 // input, timeout) will not be blacklisted.
 void end_attempt(uint64_t hash);
 
-// Number of blacklisted hashes (for stats / test hooks).
-uint64_t blacklist_size();
 
 // Reset in-memory state (for tests). Does NOT touch the on-disk files.
 void reset_for_tests();

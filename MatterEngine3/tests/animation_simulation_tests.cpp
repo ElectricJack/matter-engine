@@ -976,6 +976,22 @@ void test_world_target_is_resolved_at_evaluation_boundary() {
     singular.m[0] = singular.m[4] = singular.m[8] = 0.0f;
     CHECK(!resolve_world_target(singular, scaled_world, local),
           "singular scaled roots fail closed at the IK conversion boundary");
+
+    // A root whose basis is invertible (pivot above 1e-8) but too small for
+    // rotation extraction (column norm below 1e-7) fails after the translation
+    // has already been computed. run_fixed_post ignores the return value, so
+    // the out-param must carry the previous tick's value, not a half-written
+    // transform.
+    Mat4f degenerate_basis{};
+    degenerate_basis.m[0] = 5e-8f;
+    degenerate_basis.m[5] = degenerate_basis.m[10] = degenerate_basis.m[15] = 1.0f;
+    AnimationTransform preserved{};
+    preserved.translation = {7.0f, 8.0f, 9.0f};
+    CHECK(!resolve_world_target(degenerate_basis, scaled_world, preserved) &&
+              same_float(preserved.translation.x, 7.0f) &&
+              same_float(preserved.translation.y, 8.0f) &&
+              same_float(preserved.translation.z, 9.0f),
+          "a root that inverts but has no extractable rotation leaves the out-param untouched");
 }
 
 void test_queries_apply_cap_and_explicit_misses() {

@@ -1,3 +1,50 @@
+// libs/MatterSurfaceLib/src/blas_manager.cpp
+//
+// BLASManager: the CPU-side registry of Bottom-Level Acceleration Structures.
+// One entry owns a `BvhMesh` (the triangle array the BVH indexes), the built
+// `BVH`, and a private copy of the caller's `Tri`/`TriEx` arrays. Callers hold
+// only an opaque `BLASHandle` (`uint32_t`, 0 == `INVALID_BLAS_HANDLE`).
+//
+// Where it sits
+// - MatterSurfaceLib. `Tri`, `TriEx`, `BVH`, `BVHNode` and `MALLOC64` all come
+//   from libs/SpatialQueryLib (`precomp.h` / `bvh.h`) -- that library is
+//   misnamed and actually owns the engine's core geometry types.
+// - Consumers: `Cell::commit_group_mesh` (cell.cpp) registers each merge
+//   group's mesh; `TLASManager` (tlas_manager.cpp) resolves handles back to
+//   BVHs when it builds instance draw records; MatterEngine3's part loading
+//   path uses `register_prebuilt` for BLASes baked to disk.
+//
+// Deduplication
+// - `register_triangles` hashes the geometry (`calculate_hash`) and confirms a
+//   bucket hit with an exact compare (`triangles_equal`). An identical mesh is
+//   shared and its `ref_count` bumped instead of rebuilt, so one rock model
+//   used by many cells costs a single BVH.
+// - Identity covers vertex positions, per-triangle `materialId` and per-
+//   triangle `tint`. It does NOT cover the per-vertex shading normals in
+//   `TriEx::N0/N1/N2`: two meshes differing only in normals dedup together.
+// - Both sides must agree on the null-`triEx` case; the sentinels used are
+//   documented at each call site below. Change one without the other and
+//   meshes silently adopt each other's geometry.
+//
+// Lifetime and threading
+// - `ref_count` starts at 1 per registration and is decremented by
+//   `release_blas`; the last release erases the entry. Handles are stable for
+//   as long as an entry lives, but are NOT recycled-safe across `clear()` /
+//   `reset_stats()`, which reset `next_handle_` back to 1.
+// - There is no locking here. The engine uses a staged/committed pattern
+//   instead: a bake worker registers into its own throwaway BLASManager and
+//   the owning thread folds it in with `adopt_from()`, which preserves
+//   reference multiplicity (see the long note in that function).
+// - `entries_` ORDER is not stable: `release_blas` swap-and-pops. Only handles
+//   survive. `get_offsets`, `generate_triangle_data` and `generate_node_data`
+//   all derive their results from that order, so anything computed or uploaded
+//   from them must be regenerated whenever the entry set changes --
+//   `mark_dirty()` is called on every mutation for exactly that reason.
+//
+// Costs worth knowing: registration builds a full BVH (SAH) synchronously;
+// `get_offsets` is O(entry index); the two `generate_*_data` calls are
+// O(total triangles / nodes) and allocate.
+
 #include "../include/blas_manager.hpp"
 #include <algorithm>
 #include <cstring>
@@ -11,30 +58,11 @@ BLASManager::BLASManager()
 BLASManager::~BLASManager() {
 }
 
-// Conversion utilities
-Tri BLASManager::convert_triangle(const LegacyTriangle& old_tri) {
-    Tri new_tri;
-    new_tri.vertex0 = old_tri.v0;
-    new_tri.vertex1 = old_tri.v1;
-    new_tri.vertex2 = old_tri.v2;
-    new_tri.centroid = old_tri.centroid;
-    return new_tri;
-}
-
-LegacyTriangle BLASManager::convert_triangle_back(const Tri& new_tri) {
-    LegacyTriangle old_tri;
-    old_tri.v0 = new_tri.vertex0;
-    old_tri.v1 = new_tri.vertex1;
-    old_tri.v2 = new_tri.vertex2;
-    old_tri.centroid = new_tri.centroid;
-    // Calculate normal
-    float3 edge1 = new_tri.vertex1 - new_tri.vertex0;
-    float3 edge2 = new_tri.vertex2 - new_tri.vertex0;
-    old_tri.normal = normalize(cross(edge1, edge2));
-    old_tri.material_id = 0; // Default material
-    return old_tri;
-}
-
+// Geometry identity used to bucket entries in `hash_to_entry_`. Folds vertex
+// positions, per-triangle materialId and per-triangle tint; a hash hit is only
+// a candidate -- `triangles_equal` decides. The two MUST agree on how a null
+// `triex` is represented, or dedup goes wrong in a way nothing else catches.
+// The comments inside record two real bugs this code is shaped around.
 uint32_t BLASManager::calculate_hash(const Tri* triangles, int count, const TriEx* triex) const {
     uint32_t hash = 2166136261u; // FNV-1a offset basis
 
@@ -84,6 +112,10 @@ uint32_t BLASManager::calculate_hash(const Tri* triangles, int count, const TriE
     return hash;
 }
 
+// Exact confirmation of a hash-bucket candidate: same triangle count, same
+// vertex positions, same per-triangle materialId and tint, in the same order.
+// Order matters -- two meshes with identical triangle SETS in different orders
+// are different entries. Per-vertex normals are deliberately not compared.
 bool BLASManager::triangles_equal(const BLASEntry& entry, const Tri* b, int count, const TriEx* triex) const {
     const std::vector<Tri>& a = entry.triangles;
     if (a.size() != static_cast<size_t>(count)) return false;
@@ -118,6 +150,10 @@ bool BLASManager::triangles_equal(const BLASEntry& entry, const Tri* b, int coun
     return true;
 }
 
+// Returns the handle of an already-resident BLAS with identical geometry, or
+// INVALID_BLAS_HANDLE when there is none (a normal outcome, not an error).
+// Does NOT touch the reference count -- the caller decides whether a hit means
+// "share and bump" (register_triangles) or "share and add N" (adopt_from).
 BLASHandle BLASManager::find_existing_blas(const Tri* triangles, int count, uint32_t hash, const TriEx* triex) const {
     auto range = hash_to_entry_.equal_range(hash);
     for (auto it = range.first; it != range.second; ++it) {
@@ -144,6 +180,14 @@ BLASHandle BLASManager::register_triangles(const std::vector<Tri>& triangles, co
 }
 
 
+// The one real registration path; the two vector overloads above forward here.
+// Copies `triangles` (and `triex`, when supplied) into the entry -- the caller
+// keeps ownership of its own buffers and may free them immediately. `triangles`
+// is non-const only for historical reasons; it is not written.
+//
+// Returns INVALID_BLAS_HANDLE for a null/empty input. On a dedup hit no BVH is
+// built at all and the shared entry's ref_count is bumped; otherwise this
+// builds a full SAH BVH synchronously, which dominates the call's cost.
 BLASHandle BLASManager::register_triangles(Tri* triangles, int triangle_count, const TriEx* triex,
                                            bool force_subdiv_one_prim) {
     PROFILE_SECTION("BLAS Registration");
@@ -193,16 +237,14 @@ BLASHandle BLASManager::register_triangles(Tri* triangles, int triangle_count, c
             }
         }
 
-        // Create BVH using the proper constructor
-        auto bvh = std::make_unique<BVH>(mesh.get());
+        // Create BVH using the proper constructor.
         // force_subdiv_one_prim: explicit flag requested by the caller.
         // Previously this was triggered heuristically by triangle_count==3, which
         // changed production behaviour for real 3-tri meshes (code-review smell fix).
-        if (force_subdiv_one_prim) {
-            bvh->subdivToOnePrim = true;
-            bvh->Build();
-        }
-        
+        // Passed to the constructor rather than set afterwards: setting the
+        // member and calling Build() again built the same tree twice.
+        auto bvh = std::make_unique<BVH>(mesh.get(), force_subdiv_one_prim);
+
         BLASHandle handle = next_handle_++;
 
         // Build tri_extra parallel array (empty when no triex provided).
@@ -283,6 +325,17 @@ BLASHandle BLASManager::register_prebuilt(const Tri* tris, const TriEx* triex, i
 }
 
 
+// Fold a worker-built staged manager into this (committed) one, filling
+// `remap` with staged handle -> committed handle for every entry that could be
+// adopted. This is the hand-off point of the off-thread bake: the worker owns
+// its own BLASManager while it meshes, and the owning thread merges the result
+// here without rebuilding a single BVH (prebuilt nodes are installed as-is).
+//
+// The caller MUST rewrite every handle it kept from `staged` through `remap`.
+// Entries with no usable BVH are skipped, so a staged handle can be absent
+// from `remap` -- treat a miss as "not adopted", not as an error.
+// `staged` is left untouched; the caller discards it wholesale rather than
+// releasing it entry by entry (see the reference-multiplicity note below).
 void BLASManager::adopt_from(const BLASManager& staged,
                              std::unordered_map<BLASHandle, BLASHandle>& remap) {
     remap.clear();
@@ -338,6 +391,51 @@ void BLASManager::adopt_from(const BLASManager& staged,
     }
 }
 
+// Transfer the allocations prepared by a worker instead of allocating/copying
+// them again on the publishing thread. BVH owns pointers into BvhMesh; moving
+// their unique_ptrs together preserves the pointee addresses and those links.
+void BLASManager::consume_from(BLASManager& staged,
+                              std::unordered_map<BLASHandle, BLASHandle>& remap) {
+    remap.clear();
+    if (&staged == this) return;
+    remap.reserve(staged.entries_.size());
+    for (auto& src : staged.entries_) {
+        if (!src || src->triangles.empty()) continue;
+        const auto previous = src->handle;
+        const TriEx* extra = src->tri_extra.size() == src->triangles.size()
+            ? src->tri_extra.data() : nullptr;
+        const auto existing = find_existing_blas(src->triangles.data(),
+            static_cast<int>(src->triangles.size()), src->hash, extra);
+        if (existing != INVALID_BLAS_HANDLE) {
+            entries_[handle_to_index_.at(existing)]->ref_count += src->ref_count;
+            remap[previous] = existing;
+            continue;
+        }
+        if (!src->bvh || !src->bvh->bvhNode || !src->bvh->nodesUsed || !src->bvh->triIdx)
+            continue;
+        const auto handle = next_handle_++;
+        const auto index = entries_.size();
+        hash_to_entry_.emplace(src->hash, index);
+        handle_to_index_.emplace(handle, index);
+        src->handle = handle;
+        entries_.push_back(std::move(src));
+        remap[previous] = handle;
+        mark_dirty();
+    }
+    staged.entries_.clear();
+    staged.hash_to_entry_.clear();
+    staged.handle_to_index_.clear();
+    staged.next_handle_ = 1;
+    staged.mark_dirty();
+}
+
+// Drop ONE reference. The entry survives while other owners remain; the last
+// release erases it, freeing its mesh, BVH and triangle copies. An unknown or
+// invalid handle is silently ignored (double-release is not detected).
+//
+// Erasing invalidates `entries_` positions (swap-and-pop, see below), so any
+// cached index -- or any GPU buffer derived from entry order -- is stale after
+// this returns.
 void BLASManager::release_blas(BLASHandle handle) {
     if (handle == INVALID_BLAS_HANDLE) return;
 
@@ -425,6 +523,9 @@ const BLASManager::BLASEntry* BLASManager::get_entry(BLASHandle handle) const {
     return entries_[it->second].get();
 }
 
+// Recompute the cached triangle/node totals if `mark_dirty()` invalidated
+// them. const, but writes the mutable caches -- O(entries) on the first call
+// after any registration or release, free afterwards.
 void BLASManager::update_totals() const {
     if (!totals_dirty_) return;
     
@@ -453,6 +554,13 @@ int BLASManager::get_total_node_count() const {
     return cached_total_nodes_;
 }
 
+// Where this BLAS's triangles and BVH nodes start inside the concatenated
+// arrays produced by generate_triangle_data / generate_node_data.
+//
+// Two sharp edges: it is O(entry index), not O(1) -- it sums every preceding
+// entry on each call; and the offsets are only meaningful against arrays
+// generated from the CURRENT entry order, which `release_blas` permutes.
+// An unknown handle returns {0, 0}, indistinguishable from the first entry.
 BLASOffsets BLASManager::get_offsets(BLASHandle handle) const {
     BLASOffsets offsets{0, 0};
     if (handle == INVALID_BLAS_HANDLE) return offsets;
@@ -478,6 +586,11 @@ BLASOffsets BLASManager::get_offsets(BLASHandle handle) const {
     return offsets;
 }
 
+// Flatten every entry's triangles into one array for GPU upload, permuted into
+// BVH leaf order via each entry's `triIdx` so a leaf's [leftFirst, triCount)
+// range is contiguous. Clears and refills `output_triangles`; O(total
+// triangles) and allocating. Entry order (and therefore the layout) is only
+// valid until the next registration or release.
 void BLASManager::generate_triangle_data(std::vector<Tri>& output_triangles) const {
     PROFILE_SECTION("BLAS Triangle Data Generation");
     
@@ -497,6 +610,11 @@ void BLASManager::generate_triangle_data(std::vector<Tri>& output_triangles) con
     }
 }
 
+// Flatten every entry's BVH nodes into one array, rebasing `leftFirst` so it
+// indexes the concatenated arrays: leaves (triCount > 0) are offset by the
+// running triangle count, interior nodes by the running node count. Must be
+// paired with the triangle array from generate_triangle_data above -- the two
+// share the same entry order and offsets. O(total nodes) and allocating.
 void BLASManager::generate_node_data(std::vector<LegacyBVHNode>& output_nodes) const {
     PROFILE_SECTION("BLAS Node Data Generation");
     
@@ -536,6 +654,8 @@ void BLASManager::generate_node_data(std::vector<LegacyBVHNode>& output_nodes) c
     }
 }
 
+// No-op today: the whole body is commented out. Kept as the shape of the
+// entry/hash-bucket dump if the diagnostics are ever wanted again.
 void BLASManager::print_stats() const {
     // update_totals();
     
@@ -560,15 +680,23 @@ void BLASManager::print_stats() const {
     //        bucket_sizes.size(), max_bucket_size);
 }
 
+// Despite the name, this destroys every entry -- it is `clear()` without the
+// logging. Resets `next_handle_` to 1, so handles issued before the call can
+// alias entries registered after it; every outstanding handle must be treated
+// as dead.
 void BLASManager::reset_stats() {
     // This would clear all data - be careful!
     entries_.clear();
     hash_to_entry_.clear();
     handle_to_index_.clear();
     next_handle_ = 1;
-    totals_dirty_ = true;
+    mark_dirty();
 }
 
+// Drop every entry regardless of reference count, freeing all meshes, BVHs and
+// triangle copies. Every previously issued handle becomes dangling, and
+// `next_handle_` restarts at 1 so new registrations reuse the old numbers --
+// callers must forget their handles before calling this, not after.
 void BLASManager::clear() {
     printf("BLASManager: Clearing all BLAS entries (%zu entries)\n", entries_.size());
 
@@ -578,149 +706,26 @@ void BLASManager::clear() {
     handle_to_index_.clear();
     next_handle_ = 1;
 
-    // Mark everything as dirty to force regeneration
-    totals_dirty_ = true;
+    // Mark everything as dirty to force regeneration. This goes through
+    // mark_dirty() so content_revision() moves too -- a wipe is the largest
+    // content change there is, and a consumer gating its GPU re-upload on
+    // content_revision() must observe it.
+    mark_dirty();
 
     printf("BLASManager: Cleared, ready for new BLAS registrations\n");
 }
 
+// ---------------------------------------------------------------------------
+// BLASFactory -- procedural test/debug primitives
+// ---------------------------------------------------------------------------
+// Cube / sphere / plane triangle soups plus the register_* convenience wrappers
+// that push them straight into a manager. Origin-centred, no indices, no
+// normals and no per-triangle material (`TriEx` is never supplied), so meshes
+// registered from here carry the null-triEx sentinels. Used by tests and
+// scratch scenes, not by the meshing pipeline.
+//
 // Factory functions implementation
 namespace BLASFactory {
-
-// Helper function to create triangle from positions
-LegacyTriangle create_triangle_from_positions(const float3& v0, const float3& v1, const float3& v2, int material_id = 0) {
-    LegacyTriangle tri;
-    tri.v0 = v0;
-    tri.v1 = v1;
-    tri.v2 = v2;
-    
-    // Calculate centroid
-    tri.centroid.x = (tri.v0.x + tri.v1.x + tri.v2.x) / 3.0f;
-    tri.centroid.y = (tri.v0.y + tri.v1.y + tri.v2.y) / 3.0f;
-    tri.centroid.z = (tri.v0.z + tri.v1.z + tri.v2.z) / 3.0f;
-    
-    // Calculate normal using cross product
-    float3 edge1 = {tri.v1.x - tri.v0.x, tri.v1.y - tri.v0.y, tri.v1.z - tri.v0.z};
-    float3 edge2 = {tri.v2.x - tri.v0.x, tri.v2.y - tri.v0.y, tri.v2.z - tri.v0.z};
-    
-    tri.normal.x = edge1.y * edge2.z - edge1.z * edge2.y;
-    tri.normal.y = edge1.z * edge2.x - edge1.x * edge2.z;
-    tri.normal.z = edge1.x * edge2.y - edge1.y * edge2.x;
-    
-    // Normalize
-    float len = std::sqrt(tri.normal.x * tri.normal.x + tri.normal.y * tri.normal.y + tri.normal.z * tri.normal.z);
-    if (len > 0.0f) {
-        tri.normal.x /= len;
-        tri.normal.y /= len;
-        tri.normal.z /= len;
-    }
-    
-    tri.material_id = material_id;
-    return tri;
-}
-
-// std::vector<LegacyTriangle> create_cube_triangles_legacy(float size) {
-//     PROFILE_SECTION("Create Cube Triangles");
-    
-//     std::vector<LegacyTriangle> triangles;
-//     triangles.reserve(12);
-    
-//     float half = size * 0.5f;
-    
-//     // Front face (Z+)
-//     triangles.push_back(create_triangle_from_positions({-half, -half, half}, {half, -half, half}, {half, half, half}));
-//     triangles.push_back(create_triangle_from_positions({-half, -half, half}, {half, half, half}, {-half, half, half}));
-    
-//     // Back face (Z-)
-//     triangles.push_back(create_triangle_from_positions({-half, -half, -half}, {half, half, -half}, {half, -half, -half}));
-//     triangles.push_back(create_triangle_from_positions({-half, -half, -half}, {-half, half, -half}, {half, half, -half}));
-    
-//     // Right face (X+)
-//     triangles.push_back(create_triangle_from_positions({half, -half, -half}, {half, half, -half}, {half, half, half}));
-//     triangles.push_back(create_triangle_from_positions({half, -half, -half}, {half, half, half}, {half, -half, half}));
-    
-//     // Left face (X-)
-//     triangles.push_back(create_triangle_from_positions({-half, -half, -half}, {-half, half, half}, {-half, half, -half}));
-//     triangles.push_back(create_triangle_from_positions({-half, -half, -half}, {-half, -half, half}, {-half, half, half}));
-    
-//     // Top face (Y+)
-//     triangles.push_back(create_triangle_from_positions({-half, half, -half}, {-half, half, half}, {half, half, half}));
-//     triangles.push_back(create_triangle_from_positions({-half, half, -half}, {half, half, half}, {half, half, -half}));
-    
-//     // Bottom face (Y-)
-//     triangles.push_back(create_triangle_from_positions({-half, -half, -half}, {half, -half, half}, {-half, -half, half}));
-//     triangles.push_back(create_triangle_from_positions({-half, -half, -half}, {half, -half, -half}, {half, -half, half}));
-    
-//     return triangles;
-// }
-
-// std::vector<LegacyTriangle> create_sphere_triangles_legacy(float radius, int segments, int rings) {
-//     PROFILE_SECTION("Create Sphere Triangles");
-    
-//     std::vector<LegacyTriangle> triangles;
-//     triangles.reserve(2 * segments * rings);
-    
-//     for (int ring = 0; ring < rings; ring++) {
-//         for (int segment = 0; segment < segments; segment++) {
-//             // Calculate angles
-//             float ring_angle_1 = static_cast<float>(ring) / static_cast<float>(rings) * static_cast<float>(M_PI);
-//             float ring_angle_2 = static_cast<float>(ring + 1) / static_cast<float>(rings) * static_cast<float>(M_PI);
-//             float seg_angle_1 = static_cast<float>(segment) / static_cast<float>(segments) * 2.0f * static_cast<float>(M_PI);
-//             float seg_angle_2 = static_cast<float>(segment + 1) / static_cast<float>(segments) * 2.0f * static_cast<float>(M_PI);
-            
-//             // Calculate vertices
-//             float3 v1 = {
-//                 radius * std::sin(ring_angle_1) * std::cos(seg_angle_1),
-//                 radius * std::cos(ring_angle_1),
-//                 radius * std::sin(ring_angle_1) * std::sin(seg_angle_1)
-//             };
-//             float3 v2 = {
-//                 radius * std::sin(ring_angle_1) * std::cos(seg_angle_2),
-//                 radius * std::cos(ring_angle_1),
-//                 radius * std::sin(ring_angle_1) * std::sin(seg_angle_2)
-//             };
-//             float3 v3 = {
-//                 radius * std::sin(ring_angle_2) * std::cos(seg_angle_1),
-//                 radius * std::cos(ring_angle_2),
-//                 radius * std::sin(ring_angle_2) * std::sin(seg_angle_1)
-//             };
-//             float3 v4 = {
-//                 radius * std::sin(ring_angle_2) * std::cos(seg_angle_2),
-//                 radius * std::cos(ring_angle_2),
-//                 radius * std::sin(ring_angle_2) * std::sin(seg_angle_2)
-//             };
-            
-//             // Create two triangles for this quad (skip degenerate triangles)
-//             if (ring < rings - 1) {
-//                 triangles.push_back(create_triangle_from_positions(v1, v2, v3, 1));
-//                 triangles.push_back(create_triangle_from_positions(v2, v4, v3, 1));
-//             }
-//         }
-//     }
-    
-//     return triangles;
-// }
-
-// std::vector<LegacyTriangle> create_plane_triangles_legacy(float width, float height) {
-//     PROFILE_SECTION("Create Plane Triangles");
-    
-//     std::vector<LegacyTriangle> triangles;
-//     triangles.reserve(2);
-    
-//     float half_w = width * 0.5f;
-//     float half_h = height * 0.5f;
-    
-//     triangles.push_back(create_triangle_from_positions(
-//         {-half_w, 0.0f, -half_h}, 
-//         {half_w, 0.0f, -half_h}, 
-//         {half_w, 0.0f, half_h}, 2));
-//     triangles.push_back(create_triangle_from_positions(
-//         {-half_w, 0.0f, -half_h}, 
-//         {half_w, 0.0f, half_h}, 
-//         {-half_w, 0.0f, half_h}, 2));
-    
-//     return triangles;
-// }
 
 BLASHandle register_cube(BLASManager& manager, float size) {
     auto triangles = create_cube_triangles(size);

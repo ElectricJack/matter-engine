@@ -35,6 +35,9 @@ namespace tileset {
 // The torus is kTorusN * cfg.size meters on a side; the base field is one tile
 // sampled kSamplesPerTile^2 times, repeated toroidally across the 4x4 grid.
 // We tessellate the full torus into (kTorusN*n) x (kTorusN*n) quads.
+// That is 2*(kTorusN*n)^2 triangles: at BaseField::kSamplesPerTile = 64 the
+// base alone is 256x256 quads = 131,072 triangles, all built and BVH'd on
+// every bake, which makes it the dominant time and memory term in this file.
 // -----------------------------------------------------------------------------
 static bool build_base_blas(const SettledTorus& st, BLASManager& blas,
                              BLASHandle& out_handle, std::string& err)
@@ -326,6 +329,13 @@ static bool load_part_placements(const std::string& cache_dir, uint64_t child_ha
 
 // -----------------------------------------------------------------------------
 // Public entry point.
+//
+// `blas` and `tlas` must arrive EMPTY. The base heightfield is drawn first so
+// consumers can rely on it being TLAS instance 0, and the final consistency
+// check compares tlas.get_draw_record_count() against the instance total this
+// call computed -- any pre-existing draw record fails that check. On every
+// error path both managers are left partially populated, so discard them
+// rather than retrying in place.
 // -----------------------------------------------------------------------------
 bool assemble_torus_bvh(const SettledTorus& settled, const BakeInputs& inputs,
                          BLASManager& blas, TLASManager& tlas, std::string& err)

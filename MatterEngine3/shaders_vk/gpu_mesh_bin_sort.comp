@@ -1,0 +1,33 @@
+#version 450
+
+#include "gpu_mesh_common.glsl"
+
+layout(local_size_x = 64) in;
+layout(std430, binding = 0) readonly buffer ParamsBuffer {
+    GpuMeshBinParams params;
+};
+layout(std430, binding = 1) readonly buffer CountBuffer {
+    uint counts[];
+};
+layout(std430, binding = 2) readonly buffer OffsetBuffer {
+    uint offsets[];
+};
+layout(std430, binding = 3) buffer IdBuffer {
+    uint particleIds[];
+};
+
+void main() {
+    const uint bin = gl_GlobalInvocationID.x;
+    if (bin >= params.binDimsAndCount.w) return;
+    const uint begin = offsets[bin];
+    const uint end = begin + counts[bin];
+    for (uint current = begin + 1u; current < end; ++current) {
+        const uint value = particleIds[current];
+        uint destination = current;
+        while (destination > begin && particleIds[destination - 1u] > value) {
+            particleIds[destination] = particleIds[destination - 1u];
+            --destination;
+        }
+        particleIds[destination] = value;
+    }
+}

@@ -1,3 +1,70 @@
+// MatterEngine3/src/part_flatten.cpp
+//
+// Implementation of the bake-time subtree flattener declared in
+// part_flatten.h. One `flatten_part()` call turns a root part plus its whole
+// resolved child hierarchy into ONE artifact: a v3 FLAT section at
+// `cache_path_flat(root_hash)` holding spatial clusters, a per-cluster LOD
+// ladder of BLAS entries, and instance refs for the children that were not
+// inlined.
+//
+// FOUR LADDER BUILDERS, selected in `flatten_part_impl` in this order:
+//
+//   1. flatten_budget_ladder      a part with a `.lods` variant sidecar
+//                                 (procedural budget variants — Grass and
+//                                 friends). Single cluster; level i is variant
+//                                 i's own full mesh, thresholds spaced ratio-2
+//                                 from the sidecar's anchor feature size.
+//   2. flatten_static_lod_ladder  a part whose `static lods` block names `at`
+//                                 distances or `gen` generators (M3 authored
+//                                 ladder). Single cluster; `decimate` and
+//                                 `impostor` are the only generators.
+//   3. flatten_segmented          a part with flatten HINTS — a child marked
+//                                 `inlineBelowPx`. Emits a FINE segment (trunk
+//                                 only, child kept as an instance ref) and a
+//                                 COARSE segment (trunk + the child's own
+//                                 coarse LOD geometry inlined).
+//   4. the default streaming ladder, inline at the tail of flatten_part_impl:
+//                                 everything else. QEM decimation down the
+//                                 divisor schedule, admission by
+//                                 `min_level_benefit`, optional terminal
+//                                 impostor rung.
+//
+// MEMORY SHAPE (the "bake-hardening #3" comments throughout). The default path
+// never materializes the merged mesh. Pass 1 (`Gatherer::skeleton_gather`)
+// keeps ~28 bytes/triangle of tickets + centroids and accumulates the merged
+// AABB inline; `part_cluster::split_centroids` fixes the permutation; Pass 2
+// materializes ONE cluster at a time (`Gatherer::materialize_range`). Peak is
+// one cluster's Tri+TriEx plus the growing BLAS instead of the subtree's
+// ~160 bytes/triangle. Clusters materialized in the boundary-normal pass are
+// RETAINED for Pass 2 when `MATTER_FLATTEN_RETAIN_MB` allows (512 MB default,
+// "0" disables) so they are not built twice.
+//
+// REPRODUCIBILITY IS A REQUIREMENT, not a nicety: flats are content-addressed
+// and served from a warm cache. The DFS walk order, the deterministic
+// tie-break in part_cluster, and the fixed BLAS registration order are what
+// make a streamed bake byte-identical to the old materialize-everything path.
+// Touching any of them re-bakes the world.
+//
+// GL-free and off-GPU despite appearances: `BLASManager` / `TLASManager` show
+// up here only as the containers `load_v2` and `save_flat_v3` speak.
+//
+// ENV KNOBS read here, all read fresh per call rather than cached in a static
+// so a test can flip one between two bakes in one process:
+//   MATTER_FLATTEN_PEAK=1       log entry / pre-save / exit RSS. Linux and
+//                               macOS only — the mingw build has no getrusage
+//                               and reports 0.
+//   MATTER_FLATTEN_LADDER=1|2   per-cluster ladder log; 2 additionally sweeps
+//                               every divisor (calibration mode: one extra
+//                               decimation per divisor per cluster).
+//   MATTER_FLATTEN_RETAIN_MB    Pass-1 cluster retention budget, in MB.
+// MATTER_IMPOSTOR, MATTER_IMPOSTOR_DISTANCE and MATTER_LOD_MAX_MESH_RUNGS live
+// in part_flatten.h instead, because the artifact's cache identity is derived
+// from them (`ladder_shape_digest`) and the reader has to reach the same
+// values as the writer.
+//
+// THREADING: none of its own. One `flatten_part` call runs start to finish on
+// its caller's thread, and `load_child_flat` may recurse into `flatten_part`
+// for a child's flat.
 #include "part_flatten.h"
 #include "matter/lod_contract.h"
 #include "matter/log.h"
@@ -37,6 +104,26 @@ namespace part_flatten {
 
 namespace {
 
+// ---------------------------------------------------------------------------
+// Cross-cluster boundary normals
+// ---------------------------------------------------------------------------
+//
+// Clusters are decimated independently, and QEM locks each cluster's OPEN-edge
+// vertices — which are exactly the vertices the cluster split cut. Those
+// positions therefore survive into every rung, but each cluster carries its own
+// copy of the vertex normal there, so two neighbours can shade the shared seam
+// differently.
+//
+// The three helpers below establish one canonical normal per shared position:
+// `collect_source_boundary_normals` samples open-edge normals per cluster,
+// `canonical_boundary_normals` keeps only positions seen in TWO OR MORE
+// clusters whose samples all agree within `kSourceSmoothDot` (so a genuine hard
+// edge stays split), and `apply_canonical_boundary_normals` writes the
+// normalized average back — over the raw cluster AND over every decimated rung.
+//
+// Matching is by exact float BIT PATTERN (`PositionKey`), never by an epsilon:
+// only positions that came out of the transform math bit-identically are
+// welded, and a tolerance compare would need a spatial index to be correct.
 struct PositionKey {
     uint32_t x = 0, y = 0, z = 0;
     bool operator==(const PositionKey& other) const {
@@ -68,6 +155,14 @@ static float3 normalized_or_up(const float3& normal) {
     return normal * (1.0f / length);
 }
 
+// Per-position accumulator for the pass above. `first` is the first normal seen
+// at this position and the reference every later sample is compared against;
+// `source_smooth` drops to false the moment one disagrees by more than
+// `kSourceSmoothDot`, which permanently disqualifies the position. `sum` is the
+// unnormalized running total (normalized only at the end). `last_cluster` is
+// the last cluster index that touched this position — its sentinel means "none
+// yet" — and exists only so `cluster_count` counts DISTINCT clusters rather
+// than samples.
 struct BoundaryNormalSample {
     float3 first = make_float3(0, 1, 0);
     float3 sum = make_float3(0, 0, 0);
@@ -238,6 +333,9 @@ static int ladder_log_level() {
 
 // mul16 and NormalMat (core) are provided by mat_math.h above.
 
+// Transform a POINT by a row-major 4x4: translation is applied and the last row
+// is assumed to be (0,0,0,1), so there is no perspective divide. Normals go
+// through NormalMatF3 below instead — they need the inverse transpose.
 float3 xform_point(const float* m, const float3& p) {
     return make_float3(m[0]*p.x + m[1]*p.y + m[2]*p.z  + m[3],
                        m[4]*p.x + m[5]*p.y + m[6]*p.z  + m[7],
@@ -315,6 +413,36 @@ struct Context {
     }
 };
 
+// Loads parts out of the cache and walks a root's child hierarchy applying each
+// node's world transform, so the flattener sees ONE stream of world-space
+// triangles instead of a tree of instances.
+//
+// TWO WALKS, and a given instance is used with one or the other, never both:
+//
+//   gather()           materializes the merged mesh straight into
+//                      `tris_`/`triex_` (~160 bytes/triangle). Used by the
+//                      paths that genuinely need the whole root mesh in memory:
+//                      the budget-variant ladder and the authored ladder.
+//   skeleton_gather()  records one `Ticket` + one centroid per triangle
+//                      (28 bytes/triangle) and accumulates the merged vertex
+//                      AABB, leaving `tris_`/`triex_` EMPTY. The caller then
+//                      permutes the tickets with part_cluster::split_centroids
+//                      and calls materialize_range() once per cluster.
+//
+// Both visit the same nodes in the same DFS order, which is what lets the
+// streaming path reproduce the ordering the materializing path would have
+// produced — and therefore the same bytes on disk.
+//
+// OWNERSHIP AND LIFETIME. `cache_` owns every `PartGeo`; `geos_` holds bare
+// pointers into it, so the Gatherer must outlive every materialize_range() call
+// and no cache entry may be dropped mid-bake. The PartGeo cache is also the
+// reason one instance is shared between the budget-decision pass
+// (`decide_bottomup`, via load_public) and the subsequent walk: each part is
+// read from disk exactly once.
+//
+// Not thread-safe and not synchronized — one Gatherer belongs to one flatten
+// call. `set_decisions()` must be called before the walk if the budget pass
+// produced any BOUNDARY parts; without it every child is inlined.
 class Gatherer {
 public:
     Gatherer(const std::string& cache_root, const FlattenTargets& t)
@@ -348,6 +476,14 @@ public:
         }
         const PartGeo* geo = load(hash, err);
         if (!geo) return false;
+
+        // The authored/budget full-gather paths currently serialize no child
+        // references. Reject this new explicit contract before materializing
+        // it, instead of losing a child's geometry or local material silently.
+        for(const auto& hint:geo->hints.child_px) if(hint.second==0) {
+            err="flatten: permanent child instances require the default parent LOD ladder";
+            return false;
+        }
 
         NormalMatF3 nm(world);
         for (size_t i = 0; i < geo->tris.size(); ++i) {
@@ -471,6 +607,16 @@ public:
             mul16(world, c.transform, child_world);
             auto hit = geo->hints.child_px.find((uint32_t)ci);
             if (hit != geo->hints.child_px.end()) {
+                if(hit->second==0) {
+                    // A material-bearing child must keep its own local frame
+                    // and VT owner at every distance. Do not include it in the
+                    // shared cutover of other, distance-limited child hints.
+                    part_asset::FlatInstanceRef ref{};
+                    ref.child_resolved_hash=c.child_resolved_hash;
+                    std::memcpy(ref.transform,child_world,16*sizeof(float));
+                    instance_refs_.push_back(ref);
+                    continue;
+                }
                 HintedRef hr;
                 hr.ref.child_resolved_hash = c.child_resolved_hash;
                 std::memcpy(hr.ref.transform, child_world, 16 * sizeof(float));
@@ -595,6 +741,14 @@ private:
         return idx;
     }
 
+    // Load one part's geometry in its LOCAL frame, memoized by resolved hash.
+    // Returns nullptr and sets `err` when the .part cannot be read — and CACHES
+    // that failure (an entry with ok=false), so a broken hash is not retried
+    // once per placement. The returned pointer is owned by `cache_` and stays
+    // valid for the Gatherer's lifetime.
+    //
+    // The BLASManager/TLASManager built here are throwaway load sinks that
+    // `load_v2`'s signature requires; nothing GPU-side happens on the bake path.
     const PartGeo* load(uint64_t hash, std::string& err) {
         auto it = cache_.find(hash);
         if (it != cache_.end()) return it->second->ok ? it->second.get() : nullptr;
@@ -848,6 +1002,23 @@ static FlattenResult flatten_static_lod_ladder(
                               matter::kMaxSerializedLodLevels);
     if (n == 0) { res.error = "flatten: empty static-lod plan"; return res; }
 
+    // A sole impostor at zero makes build() a bake source, not a runtime
+    // mesh. Initially this contract is for leaves: retaining or inlining a
+    // child hierarchy needs a separate, bounded hierarchy bake.
+    const bool source_only = n == 1 && !plan.level_gen.empty() &&
+        plan.level_gen[0] == "impostor {}";
+    if (source_only) {
+        const PartGeo* source = g0.load_public(root_hash, res.error);
+        if (!source || !source->children.empty() || !g0.instance_refs().empty()) {
+            res.error = "flatten: an impostor-only bake source must be a leaf";
+            return res;
+        }
+        if (plan.no_impostor || !env_impostors_enabled()) {
+            res.error = "flatten: impostor-only representation is disabled";
+            return res;
+        }
+    }
+
     // The clamp above would TRUNCATE an over-long plan, and §3.4's terminal is
     // by definition the last entry — so a plan longer than the cap would drop
     // the impostor and bake a mesh-only ladder that looks entirely intentional.
@@ -881,6 +1052,7 @@ static FlattenResult flatten_static_lod_ladder(
             }
         }
     };
+    if (source_only) acc(g0.tris());
 
     const bool ladder_log = ladder_log_level() > 0;
     std::string ladder_line;
@@ -933,7 +1105,7 @@ static FlattenResult flatten_static_lod_ladder(
                     res.error = "flatten: impostor rep is not the terminal rep";
                     return res;
                 }
-                if (levels.empty()) {
+                if (levels.empty() && !source_only) {
                     res.error = "flatten: impostor rep with no mesh rung to depict";
                     return res;
                 }
@@ -954,10 +1126,10 @@ static FlattenResult flatten_static_lod_ladder(
                 // Rep 0, not the coarsest rung -- see the default ladder's
                 // note above for why. `levels.front()` is this ladder's own
                 // rep 0 (the authored `at: 0` entry).
-                const uint32_t src_idx = levels.front().blas_idx;
+                const uint32_t src_idx = source_only ? UINT32_MAX : levels.front().blas_idx;
                 const BLASManager::BLASEntry* src =
                     src_idx < blas_entries.size() ? blas_entries[src_idx].get() : nullptr;
-                if (!src) {
+                if (!src && !source_only) {
                     res.error = "flatten: impostor source rung missing";
                     return res;
                 }
@@ -966,12 +1138,18 @@ static FlattenResult flatten_static_lod_ladder(
                 // 4-triangle rung is worth replacing with a 2-triangle card —
                 // so a declared impostor under the floor drops the rung rather
                 // than baking an atlas that buys nothing.
-                if (!impostor::cluster_earns_impostor(src->triangles.size())) {
+                const auto& source_tris = source_only ? g0.tris() : src->triangles;
+                const auto& source_ex = source_only ? g0.triex() : src->tri_extra;
+                if (!source_only && !impostor::cluster_earns_impostor(source_tris.size())) {
                     if (ladder_log) ladder_line += " [impostor:under-floor]";
                     break;
                 }
                 impostor::ClusterImpostor imp;
-                if (!impostor::bake_cluster(0u, src->triangles, src->tri_extra, imp)) {
+                if (!impostor::bake_cluster(0u, source_tris, source_ex, imp)) {
+                    if (source_only) {
+                        res.error = "flatten: impostor-only source failed to bake";
+                        return res;
+                    }
                     if (ladder_log) ladder_line += " [impostor:bake-failed]";
                     break;
                 }
@@ -983,8 +1161,7 @@ static FlattenResult flatten_static_lod_ladder(
                     e.tint = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
                 impostor::depicts_hash_add_cluster(impostor_depicts,
                                                    imp.cluster_index,
-                                                   src->triangles,
-                                                   src->tri_extra);
+                                                   source_tris, source_ex);
                 part_impostor.clusters.push_back(std::move(imp));
                 tp = &own_tris; ep = &own_ex;
             } else if (name != "decimate") {
@@ -1428,12 +1605,23 @@ static FlattenResult flatten_segmented(const std::string& cache_root,
         int src = std::min(C, E);
         if (nlev == 0) src = 0;
         else src = std::max(0, std::min(src, (int)nlev - 1));
-        eps_child_used = std::max(eps_child_used,
-                                  eps_child_local(src) * ref_scale);
+        // FLT_MAX is eps_child_local's sentinel for "this level is excluded"
+        // (no threshold recorded for it, or a non-positive one). Test it BEFORE
+        // the multiply: ref_scale destroys the sentinel -- the product is inf
+        // above 1 and a merely huge finite number below it -- so a check on the
+        // scaled value can essentially never fire, which is what the `==
+        // FLT_MAX` guard that used to sit after this loop was doing. An
+        // excluded source level contributes nothing to the coarse segment's
+        // error bound instead of pinning it at the sentinel.
+        const float eps_child = eps_child_local(src);
+        if (eps_child < FLT_MAX)
+            eps_child_used = std::max(eps_child_used, eps_child * ref_scale);
         RefPlan p; p.ref = &hr.ref; p.src = src; p.hash = hr.ref.child_resolved_hash;
         plans.push_back(p);
     }
-    if (eps_child_used == FLT_MAX) eps_child_used = 0.0f;   // safety (all-excluded)
+    // eps_child_used therefore starts at 0 and only ever takes finite values;
+    // "every ref excluded" simply leaves it at 0, which is what the old
+    // all-excluded fallback was reaching for.
 
     // 5. Trunk: materialize the full gathered trunk in identity order (the
     //    trunk is small by construction when hints exist).
@@ -1673,6 +1861,21 @@ static FlattenResult flatten_segmented(const std::string& cache_root,
     return res;
 }
 
+// The dispatcher — and, from the `skeleton_gather` call onward, the default
+// streaming ladder itself.
+//
+// Order of business: run the bottom-up INLINE/BOUNDARY budget pass, collect the
+// root's volume emitters (metadata that rides through the flatten unchanged),
+// hand the decisions to the Gatherer, then pick a builder. The budget-variant
+// sidecar and the authored `static lods` plan are probed FIRST because both
+// need the fully materialized root mesh and therefore the classic `gather()`;
+// everything else takes the streaming `skeleton_gather()`, and branches once
+// more to `flatten_segmented` if any child was excluded from the trunk by a
+// flatten hint.
+//
+// May throw `std::bad_alloc` on scatter-heavy roots (the merge routinely
+// inflates content 100-1000x); `flatten_part` is the boundary that converts
+// that into a FlattenResult::error.
 static FlattenResult flatten_part_impl(const std::string& cache_root,
                                        uint64_t root_hash,
                                        const FlattenTargets& targets) {
@@ -1739,6 +1942,17 @@ static FlattenResult flatten_part_impl(const std::string& cache_root,
         !has_variants && have_static_plan && slod_plan.drives_ladder();
 
     if (has_variants || has_authored_ladder) {
+        // Reject unsupported hierarchy sources before materializing them. A
+        // tree can reference millions of needles; discovering this contract
+        // violation after gather() would first expand that entire source.
+        if (has_authored_ladder && slod_plan.level_hashes.size() == 1 &&
+            slod_plan.level_gen.size() == 1 && slod_plan.level_gen[0] == "impostor {}") {
+            const PartGeo* source = g.load_public(root_hash, res.error);
+            if (!source || !source->children.empty()) {
+                res.error = "flatten: an impostor-only bake source must be a leaf";
+                return res;
+            }
+        }
         if (!g.gather(root_hash, kIdentity, 0, res.error)) return res;
         std::vector<Tri>&   full_full   = g.tris();
         std::vector<TriEx>& full_fullex = g.triex();
@@ -2274,6 +2488,25 @@ static FlattenResult flatten_part_impl(const std::string& cache_root,
 
     res.ok = true;
     return res;
+}
+
+bool impostor_only_source_digest(const std::string& cache_root, uint64_t root_hash,
+                                uint64_t& digest, std::string& error) {
+    Gatherer source(cache_root, FlattenTargets{});
+    const PartGeo* geo = source.load_public(root_hash, error);
+    if (!geo || !geo->children.empty()) {
+        if (error.empty()) error = "impostor-only bake source is not a leaf";
+        return false;
+    }
+    // Identical source extraction/normal transforms to the bake. The temporary
+    // source is discarded after this load-time integrity check; it is never
+    // registered as runtime geometry or handed to the GPU.
+    if (!source.gather(root_hash, kIdentity, 0, error) || source.tris().empty())
+        return false;
+    uint64_t h = impostor::depicts_hash_begin();
+    impostor::depicts_hash_add_cluster(h, 0u, source.tris(), source.triex());
+    digest = impostor::depicts_hash_finish(h);
+    return true;
 }
 
 // Public entry point: outer boundary that converts a std::bad_alloc thrown by

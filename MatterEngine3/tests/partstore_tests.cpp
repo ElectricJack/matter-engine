@@ -1,7 +1,11 @@
 // Lightweight PartStore tests — split out from viewer_logic_tests.cpp to avoid
 // the 30GB Meadow-flatten test in the same binary.
+#include "memory_fixture_io.h"
 #include "part_bundle.h"   // M4: the part body is the REP0 section
+#include "part_render_policy.h"
 #include <algorithm>
+#include <array>
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -10,27 +14,314 @@
 #include <fstream>
 #include <limits>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "render/lod_distance.h"
 #include "render/part_store.h"
+#include "geometry/geometry_options.h"
+#include "render/prepared_sector_cache.h"
 #include "render/raster_cull.h"
 #include "part_asset_v2.h"
 #include "lod_select.h"
+#include "lod_bake.h"
+#include "script_host.h"
 #include "blas_manager.hpp"
 #include "tlas_manager.hpp"
 #include "animation/anim_asset.h"
 #include "animation/anim_bundle.h"
 #include "animation/animation_binding_bake.h"
 
+static std::shared_ptr<matter::test::MemoryCacheByteStorage> fixture_storage;
+static std::filesystem::path fixture_temp_root() {
+    return fixture_storage ? std::filesystem::path("/partstore-fixture")
+                           : std::filesystem::temp_directory_path();
+}
+static void prepare_fixture_dir(const std::filesystem::path& path, std::error_code& error) {
+    error.clear();
+    if (!fixture_storage) std::filesystem::create_directories(path, error);
+}
+static void prepare_fixture_dir(const std::filesystem::path& path) {
+    if (!fixture_storage) std::filesystem::create_directories(path);
+}
+static void clear_fixture(const std::filesystem::path& root, std::error_code& error) {
+    error.clear();
+    if (!fixture_storage) { std::filesystem::remove_all(root, error); return; }
+    for (const auto& entry : fixture_storage->entries()) {
+        const auto relative = std::filesystem::path(entry.first).lexically_relative(root);
+        if (!relative.empty() && relative.begin()->string() != "..")
+            fixture_storage->erase(entry.first);
+    }
+}
+static void clear_fixture(const std::filesystem::path& root) {
+    std::error_code error;
+    clear_fixture(root, error);
+}
+
 static int g_failures = 0;
 #define CHECK(cond, msg) do { \
     if (!(cond)) { printf("  FAIL: %s\n", msg); ++g_failures; } \
 } while(0)
 
+static void setenv_compat(const char* name, const char* value) {
+#ifdef _WIN32
+    _putenv_s(name, value);
+#else
+    setenv(name, value, 1);
+#endif
+}
+
+static void unsetenv_compat(const char* name) {
+#ifdef _WIN32
+    _putenv_s(name, "");
+#else
+    unsetenv(name);
+#endif
+}
+
+struct ScopedEnvironmentOverride {
+    const char* name;
+    bool had_value;
+    std::string saved;
+    ScopedEnvironmentOverride(const char* key, const char* value)
+        : name(key), had_value(std::getenv(key) != nullptr),
+          saved(had_value ? std::getenv(key) : "") {
+        if (value) setenv_compat(name, value);
+        else unsetenv_compat(name);
+    }
+    ~ScopedEnvironmentOverride() {
+        if (had_value) setenv_compat(name, saved.c_str());
+        else unsetenv_compat(name);
+    }
+};
+
+static void test_partstore_construction_commits_no_banks(const std::filesystem::path& root) {
+    std::printf("[test_partstore_construction_commits_no_banks]\n");
+    const ScopedEnvironmentOverride unset("MATTER_PREPARED_SECTOR_CACHE", nullptr);
+    viewer::PartStore store((root / "lazy").string(), fixture_storage);
+    CHECK(!store.geometry_pages_enabled(), "PartStore defaults to static geometry");
+    CHECK(store.geometry_root_stats().bank.backing_allocations == 0,
+          "PartStore construction allocates no geometry root bank");
+    CHECK(!store.prepared_sector_cache_active(),
+          "PartStore does not commit a 128 MiB prepared-sector bank at construction");
+    store.set_geometry_pages_enabled(false);
+    CHECK(store.geometry_root_stats().bank.capacity == 0,
+          "disabled geometry reserves no root payload bytes");
+    CHECK(!store.prepared_sector_cache_active(), "disabled geometry leaves prepared cache inactive");
+    store.set_geometry_pages_enabled(true);
+    CHECK(store.geometry_root_stats().bank.capacity == 0,
+          "geometry opt-in defers root bank allocation until demand");
+    CHECK(store.prepared_sector_cache_active(), "geometry opt-in activates the prepared cache");
+
+    const ScopedEnvironmentOverride disabled("MATTER_PREPARED_SECTOR_CACHE", "0");
+    viewer::PartStore opted_out((root / "lazy-opt-out").string(), fixture_storage);
+    CHECK(!opted_out.prepared_sector_cache_active(), "environment opt-out leaves the prepared cache inactive");
+
+    const ScopedEnvironmentOverride enabled("MATTER_PREPARED_SECTOR_CACHE", "1");
+    viewer::PartStore opted_in((root / "lazy-opt-in").string(), fixture_storage);
+    CHECK(opted_in.prepared_sector_cache_active(), "environment opt-in activates the prepared cache");
+}
+
+static void test_geometry_startup_requires_exact_opt_in() {
+    const ScopedEnvironmentOverride terrain("MATTER_GEOMETRY_TERRAIN", "1");
+    const ScopedEnvironmentOverride profile("MATTER_GEOMETRY_PAGES_PROFILE", "1");
+    for (const char* value : std::array<const char*, 8>{nullptr, "0", "", "true", "01", "1 ", "2", "1"}) {
+        const ScopedEnvironmentOverride pages("MATTER_GEOMETRY_PAGES", value);
+        CHECK(geometry::pages_requested() == (value && std::strcmp(value, "1") == 0),
+              "only exact master opt-in enables geometry; terrain/profile cannot enable it");
+    }
+}
+
+static void test_prepared_sector_bank_failure_is_deferred() {
+    std::printf("[test_prepared_sector_bank_failure_is_deferred]\n");
+    try {
+        // A zero-sized bank is deterministically rejected by PageBank, without
+        // asking the allocator for an enormous block or depending on free RAM.
+        viewer::prepared_sector::Cache cache("unused-prepared-sector-bank", 2, 0);
+        std::string error;
+        CHECK(!cache.read("missing", error) && error.find("bank allocation") != std::string::npos,
+              "read reports bank allocation failure without throwing at construction");
+        error.clear();
+        CHECK(!cache.write("missing", {1, 2, 3}, error) && error.find("bank allocation") != std::string::npos,
+              "write retries initialization and reports bank allocation failure");
+    } catch (const std::exception&) {
+        CHECK(false, "prepared cache construction does not allocate banks or throw on bank failure");
+    }
+}
+
+#ifdef MATTER_PARTSTORE_SOURCE_QUALIFICATION
+static void test_prepared_sector_concurrent_first_use() {
+    namespace fs = std::filesystem;
+    std::printf("[test_prepared_sector_concurrent_first_use]\n");
+    const auto root = fixture_temp_root() / "me3_prepared_sector_lazy";
+    struct Cleanup {
+        fs::path path;
+        ~Cleanup() { std::error_code ec; clear_fixture(path, ec); }
+    } cleanup{root};
+    clear_fixture(root);
+    const ScopedEnvironmentOverride disabled("MATTER_PREPARED_SECTOR_CACHE", "0");
+    viewer::PartStore store(root.string(), fixture_storage);
+    viewer::prepared_sector::Cache reader((root / "cache").string(), 4, 512u << 10);
+    {
+        viewer::prepared_sector::Cache writer((root / "cache").string(), 1, 512u << 10);
+        std::string error;
+        for (unsigned i = 0; i < 8; ++i)
+            CHECK(writer.write(std::to_string(i), std::vector<uint8_t>(4096, uint8_t(i)), error),
+                  "first write initializes banks and persists a prepared payload");
+    }
+    std::atomic<unsigned> ready{0}, failures{0};
+    std::atomic<bool> start{false};
+    std::vector<std::thread> workers;
+    for (unsigned i = 0; i < 8; ++i) workers.emplace_back([&, i] {
+        ++ready;
+        while (!start.load()) std::this_thread::yield();
+        std::string error;
+        if (store.load_prepared_sector(i + 1, "lazy", error).ok || error != "missing") ++failures;
+        const auto page = reader.read(std::to_string(i), error);
+        const auto* row = page ? page->view.find(1) : nullptr;
+        if (!row || row->size != 4096 ||
+            !std::all_of(row->data, row->data + row->size, [i](uint8_t b) { return b == i; })) ++failures;
+    });
+    while (ready.load() != 8) std::this_thread::yield();
+    start = true;
+    for (auto& worker : workers) worker.join();
+    CHECK(failures.load() == 0, "concurrent first reads initialize owners and banks safely");
+    CHECK(store.prepared_sector_cache_active(), "explicit prepared load activates the cache on demand");
+}
+
+// An empty cache plus cache-only mode refuses terrain page compilation. The
+// retained static fallback must have a hard cap even for a dense source.
+static void test_terrain_page_failure_bounds_static_fallback() {
+    namespace fs = std::filesystem;
+    std::printf("[test_terrain_page_failure_bounds_static_fallback]\n");
+    const auto root = fixture_temp_root() / "me3_partstore_terrain_fallback";
+    struct Cleanup {
+        fs::path path;
+        ~Cleanup() { std::error_code ec; clear_fixture(path, ec); }
+    } cleanup{root};
+    clear_fixture(root);
+    const ScopedEnvironmentOverride terrain("MATTER_GEOMETRY_TERRAIN", "1");
+    const ScopedEnvironmentOverride cache_only("MATTER_GEOMETRY_CACHE_ONLY", "1");
+    script_host::ScriptHost host;
+    script_host::BakeOptions options;
+    options.parts_dir = root.string();
+    options.retain_geometry = true;
+    prepare_fixture_dir(root / "parts");
+    // 8,192 triangles over a 64 m tile exceed the 4,096-triangle fallback cap.
+    const std::string source =
+        "class Sector extends Part{static lodBudgets=[1];static noImpostor=true;"
+        "build(){this.fill(8);this.beginShape(0);"
+        "for(let z=0;z<64;++z)for(let x=0;x<64;++x){"
+        "const a=[x-32,0,z-32],b=[x-31,0,z-32],"
+        "c=[x-31,0,z-31],d=[x-32,0,z-31];"
+        "this.vertex(...a);this.vertex(...b);this.vertex(...c);"
+        "this.vertex(...a);this.vertex(...c);this.vertex(...d);}"
+        "this.endShape();}}";
+    const auto baked = host.bake_source(source, "{}", options);
+    CHECK(baked.error.ok && baked.geometry, "terrain fallback fixture bakes");
+    if (!baked.geometry) return;
+    viewer::PartStore store(options.parts_dir, fixture_storage);
+    store.set_geometry_pages_enabled(true);
+    auto staged = store.stage_from_bake(baked.resolved_hash, *baked.geometry,
+                                       /*first_rung=*/0, /*terrain_sector=*/true);
+    CHECK(staged.ok, "terrain fallback fixture stages");
+    CHECK(!staged.lp.geometry_pages, "cache-only compile refuses pages");
+    CHECK(staged.lp.thresholds.size() == 1,
+          "sector retains only one static fallback rung when pages fail");
+    CHECK(!staged.lp.lod_mesh_data.empty() &&
+          staged.lp.lod_mesh_data.front().indices.size() <= 4096 * 3,
+          "terrain static fallback is bounded to 4,096 triangles");
+    if (!staged.lp.lod_charts.empty() && !staged.lp.lod_charts.front().charts.empty())
+        CHECK(staged.lp.lod_charts.front().tri_order.size() ==
+              staged.lp.lod_mesh_data.front().indices.size() / 3,
+              "bounded fallback chart order matches its triangles");
+    CHECK(store.commit_staged(std::move(staged)), "terrain fallback fixture commits");
+    store.release(baked.resolved_hash);
+    CHECK(store.blas().live_count() == 0,
+          "releasing a terrain fallback drops every BLAS reference");
+}
+
+static void test_terrain_page_success_keeps_static_fallback() {
+    namespace fs = std::filesystem;
+    std::printf("[test_terrain_page_success_keeps_static_fallback]\n");
+    const auto root = fixture_temp_root() / "me3_partstore_terrain_paged";
+    struct Cleanup {
+        fs::path path;
+        ~Cleanup() { std::error_code ec; clear_fixture(path, ec); }
+    } cleanup{root};
+    clear_fixture(root);
+    const ScopedEnvironmentOverride terrain("MATTER_GEOMETRY_TERRAIN", "1");
+    script_host::ScriptHost host;
+    script_host::BakeOptions options;
+    options.parts_dir = root.string();
+    options.retain_geometry = true;
+    prepare_fixture_dir(root / "parts");
+    const std::string source =
+        "class Sector extends Part{static lodBudgets=[1];static noImpostor=true;"
+        "build(){this.fill(8);this.beginShape(0);"
+        "for(let z=0;z<8;++z)for(let x=0;x<8;++x){"
+        "const a=[x*8-32,0,z*8-32],b=[x*8-24,0,z*8-32],"
+        "c=[x*8-24,0,z*8-24],d=[x*8-32,0,z*8-24];"
+        "this.vertex(...a);this.vertex(...b);this.vertex(...c);"
+        "this.vertex(...a);this.vertex(...c);this.vertex(...d);}"
+        "this.endShape();}}";
+    const auto baked = host.bake_source(source, "{}", options);
+    CHECK(baked.error.ok && baked.geometry, "paged terrain fixture bakes");
+    if (!baked.geometry) return;
+    {
+        viewer::PartStore ordinary(options.parts_dir, fixture_storage);
+        auto static_part = ordinary.stage_from_bake(baked.resolved_hash, *baked.geometry,
+                                                   0, true);
+        CHECK(static_part.ok && !static_part.lp.geometry_pages && !static_part.lp.geometry_source_vt,
+              "terrain option alone keeps ordinary static source geometry");
+        CHECK(!static_part.lp.lod_mesh_data.empty() &&
+              static_part.lp.lod_mesh_data.front().indices.size() == 128 * 3,
+              "default terrain retains its full source mesh");
+        CHECK(ordinary.geometry_root_stats().bank.capacity == 0 &&
+              !fs::exists(root / "geometry-pages") && !ordinary.prepared_sector_cache_active(),
+              "static terrain stages without paging banks, disk cache or prepared owner");
+    }
+    viewer::PartStore store(options.parts_dir, fixture_storage);
+    store.set_geometry_pages_enabled(true);
+    auto staged = store.stage_from_bake(baked.resolved_hash, *baked.geometry,
+                                       /*first_rung=*/0, /*terrain_sector=*/true);
+    CHECK(staged.ok && staged.lp.geometry_pages, "terrain pages compile and load");
+    CHECK(staged.lp.geometry_pages && !staged.lp.geometry_pages->root_refs.empty() &&
+          staged.lp.geometry_pages->roots.empty(),
+          "paged terrain retains root descriptors without pinning CPU payloads");
+    CHECK(staged.lp.geometry_source_vt, "paged terrain retains source VT mapping");
+    CHECK(staged.lp.thresholds.size() == 1 && staged.lp.lod_mesh_data.size() == 1,
+          "paged terrain retains one static fallback rung");
+    if (!staged.lp.lod_charts.empty() && !staged.lp.lod_charts.front().charts.empty())
+        CHECK(staged.lp.lod_charts.front().tri_order.size() ==
+              staged.lp.lod_mesh_data.front().indices.size() / 3,
+              "paged fallback chart order matches its triangles");
+    std::string prepared_error;
+    CHECK(store.save_prepared_sector(staged, "opt-in-test", prepared_error),
+          "paged terrain fixture saves a prepared archive");
+    {
+        viewer::PartStore disabled(options.parts_dir, fixture_storage);
+        const auto rejected = disabled.load_prepared_sector(baked.resolved_hash, "opt-in-test", prepared_error);
+        CHECK(!rejected.ok && prepared_error.find("requires virtual geometry opt-in") != std::string::npos,
+              "disabled store refuses a warm prepared paged archive");
+        CHECK(disabled.geometry_root_stats().bank.capacity == 0 &&
+              disabled.geometry_root_stats().requests == 0,
+              "rejected prepared geometry performs no geometry root I/O or allocation");
+        auto static_part = disabled.stage_from_bake(baked.resolved_hash, *baked.geometry, 0, true);
+        CHECK(static_part.ok && !static_part.lp.geometry_pages,
+              "warm geometry cache cannot enable paging on the source path");
+    }
+    CHECK(store.commit_staged(std::move(staged)), "paged terrain fixture commits");
+    store.release(baked.resolved_hash);
+    CHECK(store.blas().live_count() == 0,
+          "releasing paged terrain drops every BLAS reference");
+}
+
 // M4: the part body is the bundle's REP0 section (see anim_bundle's
 // checksum_part). Reading the raw file would fold the bundle directory and
 // every sibling section into what is supposed to be the part's own body.
+#endif // MATTER_PARTSTORE_SOURCE_QUALIFICATION
+
 static uint64_t part_checksum(const std::filesystem::path& path, uint64_t part_hash) {
     std::vector<uint8_t> bytes;
     if (!part_bundle::read_section(path.string(), part_hash,
@@ -41,6 +332,7 @@ static uint64_t part_checksum(const std::filesystem::path& path, uint64_t part_h
     return hash;
 }
 
+#ifdef MATTER_PARTSTORE_SOURCE_QUALIFICATION
 static matter::animation::AnimAsset rigid_asset(uint64_t hash, matter::animation::BuildNonce nonce) {
     using namespace matter::animation;
     AnimAsset asset;
@@ -68,7 +360,7 @@ static bool publish_rigid_bundle(const std::filesystem::path& root, uint64_t has
                                  matter::animation::BuildNonce nonce) {
     namespace fs = std::filesystem;
     namespace anim = matter::animation;
-    std::error_code ec; fs::create_directories(root / "parts", ec);
+    std::error_code ec; prepare_fixture_dir(root / "parts", ec);
     if (ec) return false;
     BLASManager source; TLASManager tlas(4);
     Tri triangle{};
@@ -97,13 +389,16 @@ static bool publish_rigid_bundle(const std::filesystem::path& root, uint64_t has
 // A static canonical Part plus its independent flattened raster artifact.  This
 // is deliberately separate from publish_rigid_bundle: the regression below
 // proves that a nearby static flat can never downgrade a selected linked Part.
-static bool publish_flat(const std::filesystem::path& root, uint64_t hash) {
+#endif // MATTER_PARTSTORE_SOURCE_QUALIFICATION
+
+static bool publish_flat(const std::filesystem::path& root, uint64_t hash,
+                         float x_offset = 0.0f) {
     namespace fs = std::filesystem;
-    std::error_code ec; fs::create_directories(root / "parts", ec);
+    std::error_code ec; prepare_fixture_dir(root / "parts", ec);
     if (ec) return false;
     Tri triangle{};
-    triangle.vertex0=make_float3(0,0,0); triangle.vertex1=make_float3(1,0,0);
-    triangle.vertex2=make_float3(0,1,0); triangle.centroid=make_float3(1.f/3,1.f/3,0);
+    triangle.vertex0=make_float3(x_offset,0,0); triangle.vertex1=make_float3(x_offset+1,0,0);
+    triangle.vertex2=make_float3(x_offset,1,0); triangle.centroid=make_float3(x_offset+1.f/3,1.f/3,0);
     TriEx extra{};
     BLASManager flat_blas; TLASManager flat_tlas(4);
     const uint32_t flat_index=static_cast<uint32_t>(flat_blas.get_entries().size());
@@ -119,7 +414,7 @@ static bool publish_flat(const std::filesystem::path& root, uint64_t hash) {
 
 static bool publish_static_part(const std::filesystem::path& root, uint64_t hash) {
     namespace fs = std::filesystem;
-    std::error_code ec; fs::create_directories(root / "parts", ec);
+    std::error_code ec; prepare_fixture_dir(root / "parts", ec);
     if (ec) return false;
     BLASManager source; TLASManager tlas(4);
     Tri triangle{};
@@ -135,6 +430,122 @@ static bool publish_static_part(const std::filesystem::path& root, uint64_t hash
 
 static bool publish_static_part_and_flat(const std::filesystem::path& root, uint64_t hash) {
     return publish_static_part(root, hash) && publish_flat(root, hash);
+}
+
+static bool publish_static_composite(
+        const std::filesystem::path& root, uint64_t hash,
+        const std::vector<part_asset::ChildInstance>& children,
+        const matter::PartRenderPolicy& policy) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    prepare_fixture_dir(root / "parts", ec);
+    if (ec) return false;
+    BLASManager source;
+    TLASManager tlas(4);
+    Tri triangle{};
+    triangle.vertex0=make_float3(0,0,0); triangle.vertex1=make_float3(1,0,0);
+    triangle.vertex2=make_float3(0,1,0); triangle.centroid=make_float3(1.f/3,1.f/3,0);
+    TriEx extra{};
+    const BLASHandle handle=source.register_triangles(&triangle,1,&extra);
+    TLASManager::DrawInstance instance{};
+    instance.blas_handle=handle;
+    tlas.draw_batch({instance});
+    tlas.build(source);
+    const std::string path =
+        (root / part_asset::cache_path_resolved(hash)).string();
+    return part_asset::save_v2(path, source, tlas, children.data(),
+                               children.size(), {}, hash) &&
+           matter::save_part_render_policy(path, hash, policy);
+}
+
+static uint64_t total_blas_refs(viewer::PartStore& store) {
+    uint64_t refs = 0;
+    for (const auto& entry : store.blas().get_entries()) refs += entry->ref_count;
+    return refs;
+}
+
+static part_asset::ChildInstance child_instance(uint64_t hash) {
+    part_asset::ChildInstance child{};
+    child.child_resolved_hash = hash;
+    child.transform[0] = child.transform[5] = child.transform[10] =
+        child.transform[15] = 1.0f;
+    return child;
+}
+
+static void test_render_policy_legacy_malformed_and_expansion_resolution() {
+    namespace fs = std::filesystem;
+    using matter::RayTracingOverride;
+
+    const fs::path root = fs::path("partstore_render_policy_fixture");
+    struct Cleanup {
+        fs::path root;
+        ~Cleanup() { std::error_code ignored; clear_fixture(root, ignored); }
+    } cleanup{root};
+    std::error_code ignored;
+    clear_fixture(root, ignored);
+
+    constexpr uint64_t legacy_hash = 0x726e64726c656761ull;
+    CHECK(publish_static_part(root, legacy_hash),
+          "render policy: writes legacy fixture without RNDR");
+    matter::PartRenderPolicy legacy_policy;
+    CHECK(matter::load_part_render_policy(
+              (root / part_asset::cache_path_resolved(legacy_hash)).string(),
+              legacy_hash, 3, legacy_policy),
+          "render policy: missing RNDR loads through compatibility defaults");
+    CHECK(legacy_policy.ray_traced,
+          "render policy: legacy part default is ray traced");
+    CHECK(legacy_policy.child_overrides ==
+              std::vector<RayTracingOverride>(3, RayTracingOverride::Inherit),
+          "render policy: legacy child placements all inherit");
+
+    viewer::PartStore legacy_store(root.string(), fixture_storage);
+    const viewer::LoadedPart* legacy_loaded = legacy_store.get_or_load(legacy_hash);
+    CHECK(legacy_loaded && legacy_loaded->render_policy.ray_traced,
+          "render policy: PartStore retains legacy true default");
+
+    constexpr uint64_t malformed_hash = 0x726e647262616421ull;
+    CHECK(publish_static_part(root, malformed_hash),
+          "render policy: writes malformed-policy geometry fixture");
+    const uint8_t malformed_payload = 0xffu;
+    CHECK(part_bundle::write_section(
+              (root / part_asset::cache_path_resolved(malformed_hash)).string(),
+              malformed_hash, part_bundle::kSectionRenderPolicy,
+              &malformed_payload, sizeof(malformed_payload)),
+          "render policy: writes a present malformed RNDR section");
+    viewer::PartStore malformed_store(root.string(), fixture_storage);
+    CHECK(malformed_store.get_or_load(malformed_hash) == nullptr,
+          "render policy: coherent PartStore snapshot rejects malformed RNDR");
+
+    constexpr uint64_t root_hash = 1, child_hash = 2, grandchild_hash = 3;
+    viewer::LoadedPart root_part, child_part, grandchild_part;
+    root_part.lod_mesh_data.emplace_back();
+    child_part.lod_mesh_data.emplace_back();
+    grandchild_part.lod_mesh_data.emplace_back();
+    root_part.render_policy.ray_traced = false;
+    root_part.children.push_back(child_instance(child_hash));
+    root_part.render_policy.child_overrides = {RayTracingOverride::Enabled};
+    child_part.render_policy.ray_traced = true;
+    child_part.children.push_back(child_instance(grandchild_hash));
+    child_part.render_policy.child_overrides = {RayTracingOverride::Disabled};
+    grandchild_part.render_policy.ray_traced = true;
+    const auto getter = [&](uint64_t hash) -> const viewer::LoadedPart* {
+        if (hash == root_hash) return &root_part;
+        if (hash == child_hash) return &child_part;
+        if (hash == grandchild_hash) return &grandchild_part;
+        return nullptr;
+    };
+    std::vector<viewer::ExpandedNode> expansion;
+    viewer::build_expansion(root_hash, getter, expansion);
+    CHECK(expansion.size() == 3,
+          "render policy: expansion retains all raster-visible nodes");
+    if (expansion.size() == 3) {
+        CHECK(!expansion[0].ray_traced,
+              "render policy: root resolves its authored false default");
+        CHECK(expansion[1].ray_traced,
+              "render policy: child edge enables only that placement");
+        CHECK(!expansion[2].ray_traced,
+              "render policy: grandchild uses its own disabled edge override");
+    }
 }
 
 // viewer::cluster_lod_select was deleted with the GL path in M0. The assertion
@@ -170,12 +581,13 @@ static int select_cluster_lod_for_test(const viewer::LoadedCluster& cluster,
                            lod::reach(cluster.radius, scale, 1.0f));
 }
 
+#ifdef MATTER_PARTSTORE_SOURCE_QUALIFICATION
 static void test_partstore_owns_committed_animation_and_keeps_live_last_good() {
     namespace fs = std::filesystem;
     namespace anim = matter::animation;
-    const fs::path root = fs::temp_directory_path() / "me3_a8_partstore_animation";
-    std::error_code ec; fs::remove_all(root, ec); fs::create_directories(root / "parts", ec);
-    struct Cleanup { fs::path root; ~Cleanup() { std::error_code ignored; fs::remove_all(root, ignored); } } cleanup{root};
+    const fs::path root = fixture_temp_root() / "me3_a8_partstore_animation";
+    std::error_code ec; clear_fixture(root, ec); prepare_fixture_dir(root / "parts", ec);
+    struct Cleanup { fs::path root; ~Cleanup() { std::error_code ignored; clear_fixture(root, ignored); } } cleanup{root};
     constexpr uint64_t hash = 0xa81a8a1a8a1a8a1aull;
     const anim::BuildNonce nonce{0x123456789abcdef0ull, 0x0fedcba987654321ull};
     BLASManager source; TLASManager tlas(4);
@@ -193,7 +605,7 @@ static void test_partstore_owns_committed_animation_and_keeps_live_last_good() {
     identity.part_body_checksum=part_checksum(candidate_part,hash); identity.anim_body_checksum=anim::anim_body_checksum(asset);
     identity.target_abi_tag=asset.target_abi_tag; identity.ozz_tag_hash=asset.ozz_tag_hash;
     CHECK(anim::publish_animation_bundle({candidate_part,candidate_anim,root},identity,diagnostics), "A8 PartStore fixture publishes committed siblings");
-    viewer::PartStore store(root.string());
+    viewer::PartStore store(root.string(), fixture_storage);
     const viewer::LoadedPart* initial=store.get_or_load(hash);
     CHECK(initial && initial->animation_asset && *initial->animation_asset==asset && store.animation_assets().size()==1,
           "A8 PartStore owns the validated AnimAsset beside its loaded Part");
@@ -211,17 +623,17 @@ static void test_partstore_owns_committed_animation_and_keeps_live_last_good() {
 
 static void test_partstore_uses_one_scratch_first_bundle_root() {
     namespace fs = std::filesystem;
-    const fs::path root = fs::temp_directory_path() / "me3_a8_partstore_root_choice";
+    const fs::path root = fixture_temp_root() / "me3_a8_partstore_root_choice";
     const fs::path scratch = root / "scratch";
     const fs::path cache = root / "cache";
-    std::error_code ec; fs::remove_all(root, ec);
-    struct Cleanup { fs::path root; ~Cleanup() { std::error_code ignored; fs::remove_all(root, ignored); } } cleanup{root};
+    std::error_code ec; clear_fixture(root, ec);
+    struct Cleanup { fs::path root; ~Cleanup() { std::error_code ignored; clear_fixture(root, ignored); } } cleanup{root};
     constexpr uint64_t hash = 0xa812b812b812b812ull;
     const matter::animation::BuildNonce cache_nonce{0x1111111111111111ull, 0x2222222222222222ull};
     const matter::animation::BuildNonce scratch_nonce{0x3333333333333333ull, 0x4444444444444444ull};
     CHECK(publish_rigid_bundle(cache, hash, cache_nonce), "A8 cache generation is published");
     CHECK(publish_rigid_bundle(scratch, hash, scratch_nonce), "A8 scratch generation is published");
-    viewer::PartStore store(cache.string());
+    viewer::PartStore store(cache.string(), fixture_storage);
     store.set_scratch_dir(scratch.string());
     const viewer::LoadedPart* loaded=store.get_or_load(hash);
     CHECK(loaded && loaded->animation_asset && loaded->animation_asset->nonce==scratch_nonce,
@@ -231,14 +643,14 @@ static void test_partstore_uses_one_scratch_first_bundle_root() {
 static void test_partstore_retries_after_torn_generation_and_recovers_same_store() {
     namespace fs = std::filesystem;
     namespace anim = matter::animation;
-    const fs::path root = fs::temp_directory_path() / "me3_a8_partstore_generation_retry";
-    std::error_code ec; fs::remove_all(root, ec);
-    struct Cleanup { fs::path root; ~Cleanup() { std::error_code ignored; fs::remove_all(root, ignored); } } cleanup{root};
+    const fs::path root = fixture_temp_root() / "me3_a8_partstore_generation_retry";
+    std::error_code ec; clear_fixture(root, ec);
+    struct Cleanup { fs::path root; ~Cleanup() { std::error_code ignored; clear_fixture(root, ignored); } } cleanup{root};
     constexpr uint64_t hash = 0xa813b813b813b813ull;
     const anim::BuildNonce first{0xaaaaaaaaaaaaaaaaull, 0xbbbbbbbbbbbbbbbbull};
     const anim::BuildNonce second{0xccccccccccccccccull, 0xddddddddddddddddull};
     CHECK(publish_rigid_bundle(root, hash, first), "A8 first generation is published");
-    viewer::PartStore store(root.string());
+    viewer::PartStore store(root.string(), fixture_storage);
     // Simulate the interval after a publisher replaces PART but before it
     // commits a matching MANM/MACM manifest: the old manifest cannot validate
     // the new ANLK.  The failed probe must not permanently poison this store.
@@ -269,11 +681,11 @@ static void test_partstore_retries_after_torn_generation_and_recovers_same_store
 static void test_partstore_flat_never_downgrades_selected_linked_part() {
     namespace fs = std::filesystem;
     namespace anim = matter::animation;
-    const fs::path root = fs::temp_directory_path() / "me3_a8_partstore_flat_linked";
+    const fs::path root = fixture_temp_root() / "me3_a8_partstore_flat_linked";
     const fs::path scratch = root / "scratch";
     const fs::path cache = root / "cache";
-    std::error_code ec; fs::remove_all(root, ec);
-    struct Cleanup { fs::path root; ~Cleanup() { std::error_code ignored; fs::remove_all(root, ignored); } } cleanup{root};
+    std::error_code ec; clear_fixture(root, ec);
+    struct Cleanup { fs::path root; ~Cleanup() { std::error_code ignored; clear_fixture(root, ignored); } } cleanup{root};
     constexpr uint64_t hash = 0xa814b814b814b814ull;
     const anim::BuildNonce nonce{0x1122334455667788ull, 0x8877665544332211ull};
     CHECK(publish_static_part_and_flat(cache, hash),
@@ -283,7 +695,7 @@ static void test_partstore_flat_never_downgrades_selected_linked_part() {
 
     // No scratch flat exists. The old independent flat lookup selected the
     // cache flat here even though scratch owns the canonical linked Part.
-    viewer::PartStore store(cache.string());
+    viewer::PartStore store(cache.string(), fixture_storage);
     store.set_scratch_dir(scratch.string());
     const viewer::LoadedPart* loaded=store.get_or_load(hash);
     CHECK(loaded && loaded->animation_asset && loaded->animation_asset->nonce==nonce,
@@ -293,7 +705,7 @@ static void test_partstore_flat_never_downgrades_selected_linked_part() {
     // a stale flat sibling: ANLK wins and the runtime uses its coherent bundle.
     CHECK(publish_flat(scratch, hash),
           "A8 stale flat is co-located with the linked scratch root");
-    viewer::PartStore colocated(cache.string());
+    viewer::PartStore colocated(cache.string(), fixture_storage);
     colocated.set_scratch_dir(scratch.string());
     const viewer::LoadedPart* co_loaded=colocated.get_or_load(hash);
     CHECK(co_loaded && co_loaded->animation_asset && co_loaded->animation_asset->nonce==nonce,
@@ -309,17 +721,17 @@ static void test_partstore_flat_never_downgrades_selected_linked_part() {
 static void test_partstore_rejected_flat_candidate_releases_shared_blas() {
     namespace fs = std::filesystem;
     namespace anim = matter::animation;
-    const fs::path root = fs::temp_directory_path() / "me3_a8_partstore_flat_rollback";
+    const fs::path root = fixture_temp_root() / "me3_a8_partstore_flat_rollback";
     const fs::path baseline_root = root / "baseline";
     const fs::path raced_root = root / "raced";
-    std::error_code ec; fs::remove_all(root, ec);
-    struct Cleanup { fs::path root; ~Cleanup() { std::error_code ignored; fs::remove_all(root, ignored); } } cleanup{root};
+    std::error_code ec; clear_fixture(root, ec);
+    struct Cleanup { fs::path root; ~Cleanup() { std::error_code ignored; clear_fixture(root, ignored); } } cleanup{root};
     constexpr uint64_t hash = 0xa815b815b815b815ull;
     const anim::BuildNonce nonce{0x0102030405060708ull, 0x1112131415161718ull};
 
     CHECK(publish_rigid_bundle(baseline_root, hash, nonce),
           "A8 flat rollback baseline linked bundle is published");
-    viewer::PartStore baseline(baseline_root.string());
+    viewer::PartStore baseline(baseline_root.string(), fixture_storage);
     const viewer::LoadedPart* baseline_part = baseline.get_or_load(hash);
     CHECK(baseline_part && baseline_part->animation_asset &&
               baseline_part->animation_asset->nonce == nonce,
@@ -338,7 +750,7 @@ static void test_partstore_rejected_flat_candidate_releases_shared_blas() {
 
     CHECK(publish_static_part_and_flat(raced_root, hash),
           "A8 flat rollback static Part and flat candidate are published");
-    viewer::PartStore raced(raced_root.string());
+    viewer::PartStore raced(raced_root.string(), fixture_storage);
     bool replaced = false;
     raced.set_flat_admission_hook_for_tests([&] {
         replaced = publish_rigid_bundle(raced_root, hash, nonce);
@@ -364,6 +776,106 @@ static void test_partstore_rejected_flat_candidate_releases_shared_blas() {
           "A8 rejected flat candidate leaves no BLAS after linked part release");
 }
 
+#endif // MATTER_PARTSTORE_SOURCE_QUALIFICATION
+
+// Flat v6 intentionally erases the canonical child table after merging the
+// subtree. RNDR cardinality and eligibility therefore have to be proved from
+// the canonical REP0 before the flat registers anything in the shared BLAS.
+static void test_partstore_policy_safe_flat_admission() {
+    namespace fs = std::filesystem;
+    using matter::RayTracingOverride;
+    const fs::path root =
+        fixture_temp_root() / "me3_partstore_policy_safe_flat";
+    std::error_code ec;
+    clear_fixture(root, ec);
+    struct Cleanup {
+        fs::path root;
+        ~Cleanup() { std::error_code ignored; clear_fixture(root, ignored); }
+    } cleanup{root};
+
+    constexpr uint64_t uniform_child = 0xf1a7000000000001ull;
+    constexpr uint64_t uniform_parent = 0xf1a7000000000002ull;
+    CHECK(publish_static_part(root / "uniform", uniform_child),
+          "flat policy: writes uniform child canonical Part");
+    matter::PartRenderPolicy uniform_policy;
+    uniform_policy.child_overrides = {RayTracingOverride::Inherit};
+    CHECK(publish_static_composite(
+              root / "uniform", uniform_parent,
+              {child_instance(uniform_child)}, uniform_policy) &&
+              publish_flat(root / "uniform", uniform_parent, 4.0f),
+          "flat policy: writes default-true composite RNDR and FLAT");
+    viewer::PartStore uniform((root / "uniform").string(), fixture_storage);
+    const viewer::LoadedPart* uniform_loaded =
+        uniform.get_or_load(uniform_parent);
+    CHECK(uniform_loaded && uniform_loaded->children.empty() &&
+              !uniform_loaded->clusters.empty(),
+          "flat policy: uniform default-true composite selects flattened path");
+    CHECK(uniform_loaded && uniform_loaded->render_policy.ray_traced,
+          "flat policy: admitted composite retains one proven true eligibility");
+
+    constexpr uint64_t mixed_child = 0xf1a7000000000011ull;
+    constexpr uint64_t mixed_parent = 0xf1a7000000000012ull;
+    const fs::path baseline_root = root / "mixed-baseline";
+    const fs::path candidate_root = root / "mixed-candidate";
+    matter::PartRenderPolicy raster_child_policy;
+    raster_child_policy.ray_traced = false;
+    matter::PartRenderPolicy mixed_parent_policy;
+    mixed_parent_policy.child_overrides = {RayTracingOverride::Inherit};
+    const auto publish_mixed = [&](const fs::path& at, bool with_flat) {
+        const std::string child_path =
+            (at / part_asset::cache_path_resolved(mixed_child)).string();
+        return publish_static_part(at, mixed_child) &&
+               matter::save_part_render_policy(
+                   child_path, mixed_child, raster_child_policy) &&
+               publish_static_composite(
+                   at, mixed_parent, {child_instance(mixed_child)},
+                   mixed_parent_policy) &&
+               (!with_flat || publish_flat(at, mixed_parent, 4.0f));
+    };
+    CHECK(publish_mixed(baseline_root, false),
+          "flat policy: writes mixed canonical baseline without FLAT");
+    viewer::PartStore baseline(baseline_root.string(), fixture_storage);
+    const viewer::LoadedPart* baseline_loaded =
+        baseline.get_or_load(mixed_parent);
+    CHECK(baseline_loaded && baseline_loaded->children.size() == 1,
+          "flat policy: mixed baseline selects compositional path");
+    const size_t baseline_live = baseline.blas().live_count();
+    const uint64_t baseline_refs = total_blas_refs(baseline);
+
+    CHECK(publish_mixed(candidate_root, true),
+          "flat policy: writes mixed canonical candidate with FLAT");
+    viewer::PartStore candidate(candidate_root.string(), fixture_storage);
+    const viewer::LoadedPart* candidate_loaded =
+        candidate.get_or_load(mixed_parent);
+    CHECK(candidate_loaded && candidate_loaded->children.size() == 1,
+          "flat policy: mixed subtree rejects FLAT and selects compositional path");
+    CHECK(candidate.blas().live_count() == baseline_live,
+          "flat policy: mixed FLAT rejection adds no shared BLAS entries");
+    CHECK(total_blas_refs(candidate) == baseline_refs,
+          "flat policy: mixed FLAT rejection adds no shared BLAS references");
+
+    constexpr uint64_t malformed_hash = 0xf1a7000000000021ull;
+    const fs::path malformed_root = root / "malformed";
+    CHECK(publish_static_part_and_flat(malformed_root, malformed_hash),
+          "flat policy: writes malformed-policy canonical Part and FLAT");
+    const uint8_t malformed_payload = 0xffu;
+    CHECK(part_bundle::write_section(
+              (malformed_root /
+               part_asset::cache_path_resolved(malformed_hash)).string(),
+              malformed_hash, part_bundle::kSectionRenderPolicy,
+              &malformed_payload, sizeof(malformed_payload)),
+          "flat policy: writes malformed present RNDR beside FLAT");
+    viewer::PartStore malformed(malformed_root.string(), fixture_storage);
+    const size_t malformed_live_before = malformed.blas().live_count();
+    const uint64_t malformed_refs_before = total_blas_refs(malformed);
+    CHECK(malformed.get_or_load(malformed_hash) == nullptr,
+          "flat policy: malformed RNDR plus FLAT fails closed");
+    CHECK(malformed.blas().live_count() == malformed_live_before,
+          "flat policy: malformed RNDR rejection adds no shared BLAS entries");
+    CHECK(total_blas_refs(malformed) == malformed_refs_before,
+          "flat policy: malformed RNDR rejection adds no shared BLAS references");
+}
+
 static viewer::RasterMeshData two_triangle_rigid_mesh() {
     viewer::RasterMeshData mesh;
     mesh.vertices = {
@@ -386,7 +898,7 @@ static viewer::RasterMeshData two_triangle_rigid_mesh() {
 
 static void test_partstore_builds_cached_rigid_segment_subparts() {
     constexpr uint64_t root_hash = 0xa816b816b816b816ull;
-    viewer::PartStore store({});
+    viewer::PartStore store({}, fixture_storage);
     viewer::LoadedPart root;
     root.lod_mesh_data.push_back(two_triangle_rigid_mesh());
     store.inject_for_test(root_hash, std::move(root));
@@ -450,14 +962,14 @@ static void test_partstore_segmented_loading() {
     printf("=== test_partstore_segmented_loading ===\n");
 
     namespace fs = std::filesystem;
-    const fs::path root_path = fs::temp_directory_path() / "me3_segmented_load_test";
+    const fs::path root_path = fixture_temp_root() / "me3_segmented_load_test";
     const std::string root = root_path.string();
     struct Cleanup {
         fs::path path;
-        ~Cleanup() { std::error_code ignored; fs::remove_all(path, ignored); }
+        ~Cleanup() { std::error_code ignored; clear_fixture(path, ignored); }
     } cleanup{root_path};
-    fs::remove_all(root_path);
-    fs::create_directories(root_path / "parts");
+    clear_fixture(root_path);
+    prepare_fixture_dir(root_path / "parts");
 
     auto make_tris = [](float ox, float oy, float oz) -> std::vector<Tri> {
         std::vector<Tri> t(2);
@@ -549,7 +1061,7 @@ static void test_partstore_segmented_loading() {
     }
 
     {
-        viewer::PartStore ps(root);
+        viewer::PartStore ps(root, fixture_storage);
         bool loaded = (ps.get_or_load(parent_hash) != nullptr);
         CHECK(loaded, "segmented test: parent flat loads");
         if (!loaded) return;
@@ -611,15 +1123,15 @@ static void test_partstore_segmented_loading() {
 static void test_compositional_sector_bounds_survive_to_frustum_culling() {
     namespace fs = std::filesystem;
     const fs::path root =
-        fs::temp_directory_path() / "me3_partstore_sector_cull_bounds";
+        fixture_temp_root() / "me3_partstore_sector_cull_bounds";
     std::error_code ec;
-    fs::remove_all(root, ec);
-    fs::create_directories(root / "parts", ec);
+    clear_fixture(root, ec);
+    prepare_fixture_dir(root / "parts", ec);
     struct Cleanup {
         fs::path root;
         ~Cleanup() {
             std::error_code ignored;
-            fs::remove_all(root, ignored);
+            clear_fixture(root, ignored);
         }
     } cleanup{root};
 
@@ -650,7 +1162,7 @@ static void test_compositional_sector_bounds_survive_to_frustum_culling() {
             source, tlas, nullptr, 0, {}, hash),
         "sector bounds: serialized compositional 64 m sector fixture");
 
-    viewer::PartStore store(root.string());
+    viewer::PartStore store(root.string(), fixture_storage);
     const viewer::LoadedPart* loaded = store.get_or_load(hash);
     CHECK(loaded != nullptr,
           "sector bounds: serialized sector loads through PartStore");
@@ -788,16 +1300,339 @@ static void test_compositional_sector_bounds_survive_to_frustum_culling() {
           "sector bounds: all-corners-outside contract keeps the intersecting sector");
 }
 
+// A singleton with several source ranges (including reordered/repeated ranges)
+// must reuse the exact legacy rung, while a shorter rung preserves its subset.
+// Release/reload checks registrations rather than merely view-array equality.
+static void test_singleton_flat_reuses_exact_rungs() {
+    namespace fs = std::filesystem;
+    const fs::path root = fixture_temp_root() / "me3_singleton_flat_reuse";
+    std::error_code ec;
+    clear_fixture(root, ec);
+    struct Cleanup {
+        fs::path root;
+        ~Cleanup() { std::error_code ignored; clear_fixture(root, ignored); }
+    } cleanup{root};
+    constexpr uint64_t hash = 0x5136f1a700001ull;
+    CHECK(publish_static_part(root, hash), "singleton canonical Part saved");
+    BLASManager source;
+    TLASManager tlas(4);
+    for (int i = 0; i < 2; ++i) {
+        const float x = 4.0f * i;
+        Tri triangle{};
+        triangle.vertex0 = make_float3(x, 0, 0);
+        triangle.vertex1 = make_float3(x + 1, 0, 0);
+        triangle.vertex2 = make_float3(x, 1, 0);
+        triangle.centroid = make_float3(x + 1.0f / 3, 1.0f / 3, 0);
+        TriEx extra{};
+        source.register_triangles(&triangle, 1, &extra);
+    }
+    part_asset::FlatCluster cluster{};
+    cluster.aabb_max[0] = 5;
+    cluster.aabb_max[1] = 1;
+    cluster.lods = {{0.75f, {1, 0, 1}}, {0.25f, {0}}};
+    CHECK(part_asset::save_flat_v3(
+              (root / part_asset::cache_path_flat(hash)).string(), source,
+              tlas, {cluster}, hash), "singleton ordered two-rung FLAT saved");
+    viewer::PartStore store(root.string(), fixture_storage);
+    for (int pass = 0; pass < 2; ++pass) {
+        const auto* loaded = store.get_or_load(hash);
+        CHECK(loaded && loaded->clusters.size() == 1,
+              "singleton flat loads before and after release");
+        if (!loaded || loaded->clusters.size() != 1) break;
+        const auto& view = loaded->clusters.front();
+        CHECK(loaded->lod_mesh_data.size() == 2 && loaded->lod_charts.size() == 2 &&
+                  loaded->owned_blas.size() == 2,
+              "singleton prepares charts/meshes/registrations once per rung");
+        CHECK(view.lod_mesh == std::vector<int>({0, 1}) &&
+                  view.lod_blas == loaded->lod_blas &&
+                  view.thresholds == std::vector<float>({0.75f, 0.25f}),
+              "singleton cluster aliases exact legacy charts and retains thresholds");
+        if (loaded->lod_blas.size() == 2) {
+            const auto* full = store.blas().get_entry(loaded->lod_blas[0]);
+            const auto* subset = store.blas().get_entry(loaded->lod_blas[1]);
+            CHECK(full && full->triangles.size() == 3 &&
+                      full->triangles[0].vertex0.x == 4 &&
+                      full->triangles[1].vertex0.x == 0 &&
+                      full->triangles[2].vertex0.x == 4,
+                  "singleton full rung retains exact repeated source order");
+            CHECK(subset && subset->triangles.size() == 1 &&
+                      subset->triangles[0].vertex0.x == 0,
+                  "singleton subset rung never aliases full geometry");
+        }
+        store.release(hash);
+        CHECK(store.blas().live_count() == 0,
+              "singleton release drops each owned registration exactly once");
+    }
+}
+
+// Disk BVH topology and triangle indices are already valid for a one-source
+// rung. Charting must retain all authored shading attributes while changing UVs;
+// adoption must preserve content dedup and own exactly one reference per Part.
+static void test_singleton_flat_adopts_persisted_bvh() {
+    namespace fs = std::filesystem;
+    const fs::path root = fixture_temp_root() / "me3_singleton_prebuilt_bvh";
+    std::error_code ec; clear_fixture(root, ec);
+    struct Cleanup { fs::path root; ~Cleanup() { std::error_code e; clear_fixture(root, e); } } cleanup{root};
+    constexpr uint64_t hash = 0x5136f1a700021ull, twin = hash + 1;
+    CHECK(publish_static_part(root, hash) && publish_static_part(root, twin), "singleton canonical twins saved");
+    std::vector<Tri> tris;
+    std::vector<TriEx> extras;
+    for (int i = 0; i != 16; ++i) {
+        const float x = static_cast<float>(i) * 0.15f;
+        Tri t{}; t.vertex0=make_float3(x,0,0); t.vertex1=make_float3(x+1,0,0);
+        t.vertex2=make_float3(x,1,0); t.centroid=make_float3(x+1.f/3,1.f/3,0);
+        tris.push_back(t);
+        TriEx e{}; e.N0=make_float3(0,0,1); e.N1=make_float3(0,.6f,.8f); e.N2=make_float3(.6f,0,.8f);
+        e.materialId=i%3; e.tint=make_float4(.3f,.4f,.5f,.25f);
+        e.uv0=make_float2(11,12); e.uv1=make_float2(13,14); e.uv2=make_float2(15,16);
+        e.ao0=.2f; e.ao1=.5f; e.ao2=.8f; extras.push_back(e);
+    }
+    BLASManager source; TLASManager tlas(4);
+    const auto source_handle=source.register_triangles(tris,extras,true);
+    source.register_triangles(tris,extras,true); // Writer owns two references; each reader owns one.
+    const auto* saved=source.get_entry(source_handle);
+    part_asset::FlatCluster cluster{}; cluster.aabb_max[0]=4; cluster.aabb_max[1]=1;
+    cluster.lods={{.75f,{0}}};
+    for(const auto h:{hash,twin}) CHECK(part_asset::save_flat_v3(
+        (root/part_asset::cache_path_flat(h)).string(),source,tlas,{cluster},h), "singleton persisted BVH saved");
+    auto expected=extras;
+    chart_atlas::ChartAtlasRung expected_charts;
+    CHECK(lod_bake::build_chart_rung(tris,expected,16.f,chart_atlas::kChartNormalConeDeg,expected_charts), "expected singleton chart prepared");
+    viewer::PartStore store(root.string(), fixture_storage);
+    // Offset the destination handle space: adoption must use its remap rather
+    // than accidentally succeeding because source/destination handles match.
+    Tri decoy=tris.front();
+    decoy.vertex0.z=decoy.vertex1.z=decoy.vertex2.z=decoy.centroid.z=5.f;
+    const auto decoy_handle=store.blas().register_triangles(&decoy,1,&extras.front());
+    const auto* loaded=store.get_or_load(hash);
+    CHECK(loaded && loaded->owned_blas.size()==1, "singleton reader owns one registration");
+    if(!loaded || loaded->owned_blas.size()!=1) return;
+    const auto handle=loaded->owned_blas[0];
+    CHECK(handle!=source_handle && handle!=decoy_handle, "source handle is remapped into occupied destination manager");
+    const auto* entry=store.blas().get_entry(handle);
+    CHECK(entry && entry->ref_count==1, "disk writer reference count is not adopted as reader ownership");
+    if(!entry) return;
+    CHECK(entry->triangles.size()==tris.size() &&
+        std::memcmp(entry->triangles.data(),tris.data(),tris.size()*sizeof(Tri))==0,
+        "persisted primitive order and positions retained exactly");
+    CHECK(entry->bvh->nodesUsed==saved->bvh->nodesUsed &&
+        std::memcmp(entry->bvh->bvhNode,saved->bvh->bvhNode,saved->bvh->nodesUsed*sizeof(BVHNode))==0 &&
+        std::memcmp(entry->bvh->triIdx,saved->bvh->triIdx,tris.size()*sizeof(uint))==0,
+        "persisted BVH arrays reused exactly without rebuilding");
+    CHECK(entry->tri_extra.size()==expected.size(), "all corner attributes retained");
+    if(entry->tri_extra.size()==expected.size()) for(size_t i=0;i<expected.size();++i){
+        const auto& got=entry->tri_extra[i];const auto& want=expected[i];
+        CHECK(std::memcmp(&got.N0,&want.N0,sizeof(float3))==0 &&
+            std::memcmp(&got.N1,&want.N1,sizeof(float3))==0 &&
+            std::memcmp(&got.N2,&want.N2,sizeof(float3))==0 && got.materialId==want.materialId &&
+            std::memcmp(&got.tint,&want.tint,sizeof(float4))==0 && got.ao0==want.ao0 && got.ao1==want.ao1 && got.ao2==want.ao2,
+            "adoption preserves authored normals, material, tint and AO");
+        CHECK(std::memcmp(&got.uv0,&want.uv0,sizeof(float2))==0 &&
+            std::memcmp(&got.uv1,&want.uv1,sizeof(float2))==0 &&
+            std::memcmp(&got.uv2,&want.uv2,sizeof(float2))==0,
+            "adoption carries freshly generated chart UVs");
+    }
+    const auto* shared=store.get_or_load(twin);
+    CHECK(shared && shared->owned_blas.size()==1 && shared->owned_blas[0]==handle && store.blas().live_count()==2,
+        "adoption retains cross-Part content dedup");
+    CHECK(store.blas().get_entry(handle)->ref_count==2, "two resident Parts own two references");
+    store.release(hash);
+    CHECK(store.blas().get_entry(handle) && store.blas().get_entry(handle)->ref_count==1,
+        "releasing first Part preserves second owner");
+    store.release(twin);
+    CHECK(store.blas().live_count()==1 && store.blas().get_entry(decoy_handle), "final owner releases adopted BVH without disturbing another entry");
+    store.blas().release_blas(decoy_handle);
+    CHECK(store.blas().live_count()==0, "all registrations released");
+}
+
+// A bounded bundle snapshot must verify every payload before serving cheap
+// section reads, then disappear before the store's final live-file check.
+static void test_scoped_verified_bundle_reads() {
+    namespace fs = std::filesystem;
+    const fs::path root=fixture_temp_root()/"me3_scoped_bundle_reads";
+    std::error_code ec; clear_fixture(root,ec);
+    struct Cleanup { fs::path root; ~Cleanup(){std::error_code e;clear_fixture(root,e);} } cleanup{root};
+    prepare_fixture_dir(root / "parts", ec);
+    CHECK(!ec, "verified-read fixture directory created");
+    if (ec) return;
+    constexpr uint64_t hash=0x5136f1a700041ull;
+    const std::string path=(root/part_bundle::cache_path_bundle(hash)).string();
+    const std::vector<uint8_t> old_policy={1,2,3},new_policy={4,5,6,7},geometry={8,9,10,11};
+    const part_bundle::SectionUpdate updates[]={{part_bundle::kSectionRenderPolicy,old_policy.data(),old_policy.size()},
+        {part_bundle::kSectionFlat,geometry.data(),geometry.size()}};
+    CHECK(part_bundle::write_sections(path,hash,updates,2), "verified-read fixture saved");
+    std::vector<uint8_t> bytes;uint64_t full_length=0;
+    part_bundle::ScopedReadSnapshot snapshot(path,hash);
+    CHECK(part_bundle::read_section(path,hash,part_bundle::kSectionRenderPolicy,bytes)&&bytes==old_policy,
+        "verified snapshot serves complete policy bytes");
+    CHECK(part_bundle::read_section_prefix(path,hash,part_bundle::kSectionFlat,2,bytes,full_length)&&
+        bytes==std::vector<uint8_t>({8,9})&&full_length==geometry.size(), "verified prefix keeps exact full length");
+    CHECK(part_bundle::has_section(path,hash,part_bundle::kSectionFlat)&&part_bundle::section_tags(path).size()==2,
+        "verified tags and presence reuse the same bundle");
+    CHECK(!part_bundle::read_section(path,hash+1,part_bundle::kSectionRenderPolicy,bytes),
+        "verified snapshot does not bypass resolved hash validation");
+    CHECK(part_bundle::write_section(path,hash,part_bundle::kSectionRenderPolicy,new_policy.data(),new_policy.size()),
+        "writer can atomically replace bundle while snapshot is active");
+    CHECK(part_bundle::read_section(path,hash,part_bundle::kSectionRenderPolicy,bytes)&&bytes==old_policy,
+        "one scoped read transaction cannot mix writer generations");
+    CHECK(snapshot.file_bytes>0&&snapshot.reused_reads>=6, "verified snapshot exposes bounded reuse census");
+    snapshot.close();
+    CHECK(part_bundle::read_section(path,hash,part_bundle::kSectionRenderPolicy,bytes)&&bytes==new_policy,
+        "closed snapshot forces the live-file read used by final revalidation");
+    {
+        auto bytes = *fixture_storage->open(path);
+        bytes.back() ^= 0x40;
+        CHECK(fixture_storage->publish(path, bytes), "corrupt bundle bytes published");
+    }
+    {
+        part_bundle::ScopedReadSnapshot corrupt(path,hash);
+        CHECK(!part_bundle::read_section(path,hash,part_bundle::kSectionRenderPolicy,bytes)&&
+            !part_bundle::read_section_prefix(path,hash,part_bundle::kSectionRenderPolicy,1,bytes,full_length)&&
+            part_bundle::section_tags(path).empty(),
+            "corruption in another payload rejects the entire verified snapshot");
+    }
+    CHECK(!part_bundle::read_section(path,hash,part_bundle::kSectionRenderPolicy,bytes),
+        "corrupt snapshot never weakens ordinary full checksum validation");
+}
+
+static void test_authored_vt_density() {
+    namespace fs=std::filesystem;
+    const auto root=fixture_temp_root()/"me3_partstore_vt_density";
+    struct Cleanup {fs::path path;~Cleanup(){std::error_code ec;clear_fixture(path,ec);}} cleanup{root};
+    prepare_fixture_dir(root/"parts");
+    constexpr uint64_t hash=0x0102030405060708ull;
+    const auto path=(root/part_asset::cache_path_resolved(hash)).string();
+    matter::PartRenderPolicy policy;
+    std::vector<uint8_t> bytes;
+    CHECK(matter::encode_part_render_policy(hash,policy,bytes),"density: legacy policy encodes");
+    const std::vector<uint8_t> expected={0x4d,0x52,0x54,0x50,2,0,0,0,8,7,6,5,4,3,2,1,1,0,0,0,0};
+    CHECK(bytes==expected,"density: default policy retains exact v2 bytes");
+    CHECK(publish_static_part_and_flat(root,hash),"density: canonical and clustered flat fixture");
+    const auto write_bytes=[&](const auto& value){return part_bundle::write_section(path,hash,
+        part_bundle::kSectionRenderPolicy,value.data(),value.size());};
+    for(uint8_t version:{uint8_t(1),uint8_t(2)}) {
+        auto legacy=expected;legacy[4]=version;
+        matter::PartRenderPolicy loaded;loaded.vt_texels_per_meter=256;
+        CHECK(write_bytes(legacy) && matter::load_part_render_policy(path,hash,0,loaded) &&
+              loaded.vt_texels_per_meter==0,"density: legacy versions reset to inherited density");
+    }
+    policy.vt_texels_per_meter=128;
+    CHECK(matter::encode_part_render_policy(hash,policy,bytes) && bytes.size()==25 && bytes[4]==3,
+          "density: authored value uses bounded v3 record");
+    matter::PartRenderPolicy decoded;
+    CHECK(write_bytes(bytes) && matter::load_part_render_policy(path,hash,0,decoded) &&
+          decoded.vt_texels_per_meter==128,"density: v3 round trip");
+    for(float value:{-1.f,0.f,.5f,2049.f,std::numeric_limits<float>::infinity(),
+                     std::numeric_limits<float>::quiet_NaN()}) {
+        auto malformed=bytes;uint32_t bits;std::memcpy(&bits,&value,4);
+        for(unsigned i=0;i<4;++i)malformed[21+i]=uint8_t(bits>>(8*i));
+        CHECK(write_bytes(malformed) && !matter::load_part_render_policy(path,hash,0,decoded) &&
+              decoded.vt_texels_per_meter==0,"density: malformed v3 value fails closed");
+        if(value!=0) {
+            auto invalid=policy;invalid.vt_texels_per_meter=value;std::vector<uint8_t> rejected;
+            CHECK(!matter::encode_part_render_policy(hash,invalid,rejected),"density: invalid writer input rejected");
+        }
+    }
+    auto truncated=bytes;truncated.pop_back();
+    CHECK(write_bytes(truncated) && !matter::load_part_render_policy(path,hash,0,decoded),
+          "density: truncated float rejected");
+    auto trailing=bytes;trailing.push_back(0);
+    CHECK(write_bytes(trailing) && !matter::load_part_render_policy(path,hash,0,decoded),
+          "density: trailing bytes rejected");
+    CHECK(write_bytes(bytes),"density: restore valid owner policy");
+    const char* inherited=std::getenv("MATTER_VT_PROP_TEXELS_PER_METER");
+    const bool had_environment=inherited!=nullptr;
+    const std::string saved_environment=inherited?inherited:"";
+    const auto set_density=[](const char* value){
+#ifdef _WIN32
+        _putenv_s("MATTER_VT_PROP_TEXELS_PER_METER",value?value:"");
+#else
+        if(value)setenv("MATTER_VT_PROP_TEXELS_PER_METER",value,1);
+        else unsetenv("MATTER_VT_PROP_TEXELS_PER_METER");
+#endif
+    };
+    const auto charts_have_density=[](const viewer::LoadedPart* part,float density){
+        if(!part)return false;
+        size_t count=0;
+        for(const auto& rung:part->lod_charts)for(const auto& chart:rung.charts){
+            ++count;if(chart.texels_per_meter!=density)return false;
+        }
+        return count>0;
+    };
+    set_density(nullptr);
+    {
+        viewer::PartStore flat(root.string(), fixture_storage);const auto* part=flat.get_or_load(hash);
+        CHECK(part && !part->clusters.empty() && charts_have_density(part,128),
+              "density: clustered flat charts use authored root policy");
+        viewer::PartStore staged(root.string(), fixture_storage);auto part_stage=staged.stage_load(hash);
+        CHECK(part_stage.ok && charts_have_density(&part_stage.lp,128),
+              "density: staged compositional charts use same authored policy");
+    }
+    for(const char* value:{"32","NaN","2049","garbage"}) {
+        set_density(value);viewer::PartStore store(root.string(), fixture_storage);
+        const auto* part=store.get_or_load(hash);
+        CHECK(charts_have_density(part,std::strcmp(value,"32")==0?32.f:128.f) &&
+              part->render_policy.vt_texels_per_meter==128,
+              "density: diagnostic override is validated and never mutates asset policy");
+    }
+    set_density(nullptr);
+    // Legacy v2 flat loader also regenerates charts from the canonical policy.
+    {
+        BLASManager source;TLASManager tlas(4);std::vector<part_asset::ChildInstance> kids;
+        part_asset::LodLevels lods;
+        CHECK(part_asset::load_v2(path,hash,source,tlas,kids,lods),"density: read canonical geometry");
+        if(lods.empty()){part_asset::LodLevel rung;rung.blas_indices={0};rung.screen_size_threshold=INFINITY;lods.push_back(rung);}
+        CHECK(part_asset::save_v2((root/part_asset::cache_path_flat(hash)).string(),source,tlas,nullptr,0,lods,hash),
+              "density: publish legacy flat fixture");
+        viewer::PartStore store(root.string(), fixture_storage);
+        CHECK(charts_have_density(store.get_or_load(hash),128),"density: legacy flat uses authored root policy");
+    }
+    // Composite ownership is explicit: merged triangles use the parent's
+    // local density; separately loaded child instances retain their own.
+    const uint64_t child_hash=hash+1;
+    CHECK(publish_static_part(root,child_hash),"density: child fixture");
+    auto child_policy=policy;child_policy.vt_texels_per_meter=256;
+    CHECK(matter::save_part_render_policy((root/part_asset::cache_path_resolved(child_hash)).string(),
+          child_hash,child_policy),"density: child policy");
+    policy.child_overrides={matter::RayTracingOverride::Inherit};
+    CHECK(publish_static_composite(root,hash,{child_instance(child_hash)},policy) && publish_flat(root,hash),
+          "density: parent fixture");
+    {
+        viewer::PartStore store(root.string(), fixture_storage);
+        CHECK(charts_have_density(store.get_or_load(hash),128) &&
+              charts_have_density(store.get_or_load(child_hash),256),"density: parent and child retain owner-local densities");
+    }
+    set_density(had_environment?saved_environment.c_str():nullptr);
+    std::printf("PARTSTORE_VT_DENSITY legacy=compatible clustered_legacy_staged=checked override=checked\n");
+}
+
 int main() {
-    test_compositional_sector_bounds_survive_to_frustum_culling();
-    test_partstore_segmented_loading();
-    test_partstore_builds_cached_rigid_segment_subparts();
+#ifdef MATTER_PARTSTORE_SOURCE_QUALIFICATION
+    test_prepared_sector_concurrent_first_use();
+    test_terrain_page_failure_bounds_static_fallback();
+    test_terrain_page_success_keeps_static_fallback();
     test_partstore_owns_committed_animation_and_keeps_live_last_good();
     test_partstore_uses_one_scratch_first_bundle_root();
     test_partstore_retries_after_torn_generation_and_recovers_same_store();
     test_partstore_flat_never_downgrades_selected_linked_part();
     test_partstore_rejected_flat_candidate_releases_shared_blas();
+#else
+    fixture_storage = std::make_shared<matter::test::MemoryCacheByteStorage>();
+    part_bundle::ScopedStorage fixture_scope(fixture_storage);
+    test_geometry_startup_requires_exact_opt_in();
+    test_partstore_construction_commits_no_banks(fixture_temp_root());
+    test_prepared_sector_bank_failure_is_deferred();
+    test_authored_vt_density();
+    test_scoped_verified_bundle_reads();
+    test_singleton_flat_adopts_persisted_bvh();
+    test_singleton_flat_reuses_exact_rungs();
+    test_render_policy_legacy_malformed_and_expansion_resolution();
+    test_compositional_sector_bounds_survive_to_frustum_culling();
+    test_partstore_segmented_loading();
+    test_partstore_builds_cached_rigid_segment_subparts();
+    test_partstore_policy_safe_flat_admission();
 
+#endif
     if (g_failures) {
         printf("partstore_tests: %d FAILURE(S)\n", g_failures);
         return 1;

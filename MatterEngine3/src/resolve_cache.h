@@ -1,7 +1,9 @@
 #pragma once
+// MatterEngine3/src/resolve_cache.h
 // resolve_cache.h — internal header for the resolve/manifest cache.
 // Saves and loads the full output of LocalProvider::install_graph() +
-// compose_world() so warm launches skip QuickJS script evaluation entirely.
+// compose_world(). Supported static worlds also retain a validated authored
+// definition and material snapshot; unsupported worlds re-evaluate world JS.
 //
 // File: <cache_root>/cache/<world_name>.resolve
 // Format: little-endian binary (magic, format-version, cache-key u64,
@@ -11,6 +13,20 @@
 // NOT part of the public API (include/matter/).  Consumed only by
 // local_provider.cpp and matter_engine.cpp.
 
+// Typical use:
+//   uint64_t key = compute_key(...);              // 0 = filesystem error = miss
+//   if (key && load(root, world, key, payload)) {
+//       // warm: populate WorldManifest + LocalProvider from `payload`
+//   } else {
+//       // cold: full resolve, then save(root, world, key, payload)
+//   }
+//
+// What this cache is NOT: it does not hold baked geometry (that is the .part
+// store under <cache_root>/parts/), and it does not check that the parts named
+// by the payload still exist.  It restores part IDENTITIES, so any input that
+// can change a part hash must also change the key — resolve_cache.cpp folds the
+// world source bytes, every object and shared-lib file, the runtime bake modes
+// and the version vector for exactly that reason.
 #include "world_source.h"         // WorldManifest, WorldManifestEntry
 #include "world_lights.h"         // WorldLights
 #include "part_graph.h"           // BakeInputs, InstallResult
@@ -24,9 +40,16 @@ namespace resolve_cache {
 
 // Opaque payload restored from a cache hit.
 // Caller populates LocalProvider internals and WorldManifest from these fields.
+// Plain aggregate: no ownership, no OS or GPU resources, freely copied and
+// moved.  save() only reads it.  load() overwrites all six members on success
+// and, on a false return, leaves it PARTIALLY populated — discard it rather
+// than reusing it.
 struct ResolveCachePayload {
+    std::string authored_world; // versioned, checksummed declarative snapshot; empty = JS fallback
     // WorldManifest fields.
     std::vector<viewer::WorldManifestEntry> instances;
+    // Local-light records are serialized; load reconstructs their index and
+    // content revision before returning a usable payload.
     world_lights::WorldLights               lights;
 
     // LocalProvider graph_snapshot_ (needed by RefineController build path).
@@ -53,7 +76,8 @@ uint64_t compute_key(const std::string& world_path,
                      const std::string& root_params_json,
                      const std::string& objects_dir,
                      const std::string& project_shared_lib_dir,
-                     const std::string& engine_shared_lib_dir);
+                     const std::string& engine_shared_lib_dir,
+                     const matter::SourceSnapshot* sources = nullptr);
 
 // Scene-layout overload. scene_objects_dir may be "" (treated exactly as the
 // overload above). Passing the scene tier is NOT optional for a scene that has
@@ -65,23 +89,32 @@ uint64_t compute_key(const std::string& world_path,
                      const std::string& scene_objects_dir,
                      const std::string& objects_dir,
                      const std::string& project_shared_lib_dir,
-                     const std::string& engine_shared_lib_dir);
+                     const std::string& engine_shared_lib_dir,
+                     const matter::SourceSnapshot* sources = nullptr);
 
 // Save a resolved payload to <cache_root>/cache/<world_name>.resolve.
-// Writes to a .tmp then renames (atomic on POSIX).
+// Writes the whole payload to "<path>.tmp" and then publishes it in one step,
+// so a concurrent reader sees either the old file or the new one and never a
+// half-written one. The publish is part_asset::replace_file_atomic and NOT
+// std::rename: plain rename FAILS on Windows when the target already exists,
+// which once made every save after the first a silent no-op. See the note at
+// the publish site in resolve_cache.cpp.
 // Returns false on any write error (non-fatal — the runtime just won't have a
 // warm cache next launch).
 bool save(const std::string& cache_root,
           const std::string& world_name,
           uint64_t           cache_key,
-          const ResolveCachePayload& p);
+          const ResolveCachePayload& p,
+          matter::CacheByteStorage* storage = nullptr);
 
 // Load and validate a previously saved cache file.
 // Returns false on: missing file, bad magic, version/key mismatch, truncation.
 // Any false return → caller runs the full resolve path (fail-closed).
+// On false, `out` may already be partially filled — treat it as garbage.
 bool load(const std::string& cache_root,
           const std::string& world_name,
           uint64_t           expected_key,
-          ResolveCachePayload& out);
+          ResolveCachePayload& out,
+          matter::CacheByteStorage* storage = nullptr);
 
 } // namespace resolve_cache

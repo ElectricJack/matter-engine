@@ -1,3 +1,37 @@
+// libs/MatterSurfaceLib/src/shader_preprocessor.cpp
+//
+// Build-time tool, not part of any library: this file has its own `main` and is
+// linked into a standalone executable. GLSL has no `#include`, so shaders that
+// want to share code (`bvh_tlas_common.glsl`, `materials.glsl`) use a quoted
+// `#include` that this tool expands ahead of compilation.
+//
+//   shader_preprocessor <input.fs> <output.fs>
+//
+// It is invoked from `libs/MatterSurfaceLib/Makefile` (which builds it to
+// `build/shader_preprocessor` and uses it for the `_processed.fs` shader) and
+// from `MatterEditor/Makefile`'s `regen-processed-shader` target, which
+// compiles this file on the fly. The `_processed.fs` output is a GENERATED,
+// committed file — edit the `.fs`/`.glsl` sources and regenerate, never the
+// processed file.
+//
+// Semantics and limits, all of which matter when a shader misbehaves:
+//  - Only `#include "quoted"` on a line of its own is recognised (see the
+//    regex). Angle-bracket includes and includes with trailing tokens are
+//    passed through untouched.
+//  - Paths resolve relative to the INCLUDING file's directory.
+//  - Include-once, globally per run: a file already expanded anywhere in the
+//    run is replaced by a `// File already included:` marker, so a header
+//    pulled in by two different files is emitted only the first time.
+//  - A missing include is NOT an error. It is replaced by a
+//    `// ERROR: Include file not found:` comment and the tool still exits 0 —
+//    the failure surfaces later as a GLSL compile error. Grep the output for
+//    `// ERROR:` if a shader suddenly stops compiling.
+//  - Expanded regions are bracketed by `// === BEGIN/END INCLUDE:` markers.
+//  - Output is opened in BINARY mode on purpose (see the comment in
+//    `process_file`) so the committed processed shader stays LF-only.
+//  - Line numbers shift relative to the source; there is no `#line` emission,
+//    so driver error line numbers refer to the PROCESSED file.
+
 #include <iostream>
 #include <fstream>
 #include <string>
@@ -12,10 +46,18 @@
     #include <climits>
 #endif
 
+// Recursive quoted-`#include` flattener. Reusable across files: `process_file`
+// resets the visited set each call, so the include-once rule is scoped to one
+// input file, not to the object's lifetime. `verbose_` only controls progress
+// chatter on stdout; errors always go to stderr.
 class ShaderPreprocessor {
 public:
     explicit ShaderPreprocessor(bool verbose = false) : verbose_(verbose) {}
     
+    // Expand `input_file` and write the result to `output_file`, truncating it.
+    // Returns false only on an EMPTY expansion (which in practice means the
+    // input file itself was empty — a missing file still expands to an error
+    // comment) or on failure to open the output.
     bool process_file(const std::string& input_file, const std::string& output_file) {
         processed_files_.clear();
         
@@ -77,6 +119,12 @@ private:
         return "."; // current directory
     }
     
+    // Returns the fully expanded text of `file_path`. Never throws and never
+    // signals failure through the return value: a cycle or a repeat inclusion
+    // yields a `// File already included:` marker and an unreadable file yields
+    // a `// ERROR: Include file not found:` marker, both as valid GLSL
+    // comments. Recursion depth is bounded only by the include graph, which the
+    // visited set keeps acyclic.
     std::string process_includes(const std::string& file_path) {
         // Prevent infinite recursion
         std::string abs_path = get_absolute_path(file_path);

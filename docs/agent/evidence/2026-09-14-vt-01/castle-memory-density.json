@@ -1,0 +1,27 @@
+{
+  "trace": "/mnt/d/tmp/matter-vt/20260914-01/castle-trace-fixed-camera/vt.jsonl",
+  "marker": "return_end",
+  "serial": 2803,
+  "pool_capacity_pages": 33024,
+  "occupied_pages": 1717,
+  "pinned_pages": 79,
+  "pool_format_bytes": 4275683328,
+  "occupied_slot_bytes": 222303424,
+  "unused_slot_bytes": 4053379904,
+  "occupied_fraction": 0.05199249031007752,
+  "payload_edge": 128,
+  "stored_edge": 136,
+  "border_fraction_of_slot": 0.11418685121107264,
+  "channel_bytes": {
+    "albedo_bc7": 610811904,
+    "normal_bc5": 610811904,
+    "orm_bc7": 610811904,
+    "material_aux_rgba8": 2443247616
+  },
+  "triangle_covered_texels": null,
+  "limits": [
+    "Pool bytes are derived from image format/extent, excluding allocator alignment and other VT resources.",
+    "Occupied slots can include chart holes, gutters, unused coarse-tail texels, and cached offscreen content.",
+    "This camera sample does not establish the working set for terrain traversal."
+  ]
+}

@@ -2,7 +2,20 @@
  *
  * Both are byte-order-sensitive by nature; both implementations here read input
  * a byte at a time into little-endian words, so the same bytes hash to the same
- * value on any machine. Content addresses in a pack file are portable. */
+ * value on any machine. Content addresses in a pack file are portable.
+ *
+ * Path: libs/AssetStoreLib/src/store_hash.cpp.
+ *
+ * Both functions are part of the ON-DISK FORMAT, not implementation details.
+ * hash_bytes() is the content address recorded in index.bin and in every
+ * record header; crc32() is the integrity check those files carry. Changing
+ * either -- the seeds below included -- makes every existing store fail to
+ * match: old blobs would hash to new addresses and old payloads would read as
+ * Corrupt. Treat them as frozen, and bump kFormatVersion if one ever must
+ * change.
+ *
+ * status_name() also lives here, with nothing to do with hashing; it is here
+ * because it is the only other free function the library exports. */
 
 #include "store_hash.h"
 #include "../include/asset_store.h"
@@ -34,6 +47,11 @@ static inline uint64_t fmix64(uint64_t k) {
     return k;
 }
 
+/* MurmurHash3 x64 128, with one deliberate deviation: the two 64-bit lanes are
+ * seeded independently from an ASCII tag instead of the reference version's
+ * single 32-bit seed broadcast into both. Values will therefore NOT match a
+ * stock MurmurHash3 -- do not cross-check against one. It is a
+ * non-cryptographic hash: it addresses content, it does not authenticate it. */
 BlobHash hash_bytes(const void* data, size_t len) {
     const uint8_t* p = (const uint8_t*)data;
     const size_t nblocks = len / 16;
@@ -93,6 +111,9 @@ BlobHash hash_bytes(const void* data, size_t len) {
     return out;
 }
 
+/* Prints `hi` first, then `lo`, each big-endian, so the text reads like a
+ * conventional 128-bit digest rather than like the two words in memory. `out`
+ * must have room for 33 bytes; it is always NUL-terminated. */
 void hash_to_hex(const BlobHash& h, char out[33]) {
     static const char* kHex = "0123456789abcdef";
     for (int i = 0; i < 16; ++i) {
@@ -156,6 +177,11 @@ static const CrcTables& crc_tables() {
     return tables;
 }
 
+/* Standard CRC-32 -- the zlib/PNG one -- so with the default seed this returns
+ * exactly what any other implementation of that polynomial returns. The seed
+ * is a continuation handle: feeding a previous result back in checksums the
+ * concatenation. Nothing in the library does that today; every call covers one
+ * contiguous span. */
 uint32_t crc32(const void* data, size_t len, uint32_t seed) {
     const CrcTables& T = crc_tables();
     const uint8_t* p = (const uint8_t*)data;

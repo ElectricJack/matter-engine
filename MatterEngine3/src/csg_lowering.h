@@ -1,4 +1,27 @@
 #pragma once
+// MatterEngine3/src/csg_lowering.h
+//
+// Lowering from the authoring DSL to the mesher. A part script produces a flat
+// list of CSG ops (dsl::BuildBuffer, dsl_state.h); this converts it into the
+// shapes MatterSurfaceLib's field evaluator actually consumes -- hashed sphere
+// particles, carve particles, typed fat primitives (fat_primitive.h) and the
+// ordered stage list (csg_stages.h).
+//
+// Also declares the analytic oracles over the same op list: field_is_solid()
+// answers "is this world point inside?" and field_distance() returns the signed
+// distance, both with no mesher and no GPU. Tests use them to assert what the
+// field should be; DslState::raycast uses field_distance() to sphere-trace the
+// authored field.
+//
+// Conventions: world metres, distances negative inside, `smoothing` is the
+// smooth-min fillet k (k <= 1e-5 behaves as hard boolean ops). Sphere and box
+// brushes are center-relative while capsule and cylinder carry their own segment
+// endpoints -- csg_lowering.cpp's header has the full note, and getting it wrong
+// misplaces only the segment brushes.
+//
+// All three entry points are pure functions of their arguments: they allocate,
+// but touch no globals, no GPU state and no files, so they are safe to call from
+// any bake worker thread.
 #include "dsl_state.h"
 #include "cluster.h"        // StaticParticle
 #include "particle.h"       // Particle
@@ -8,6 +31,19 @@
 
 namespace dsl {
 
+// One part's authored CSG expression, split into the streams the field
+// evaluator knows how to walk. Everything is in WORLD space: lowering has
+// already applied each brush's transform-stack top, so nothing downstream needs
+// the DSL's matrix stack.
+//
+// Some brushes deliberately appear in two streams, because two evaluation paths
+// read this struct. The legacy hot path reads `additive` plus the trailing
+// `carve` scan; the ordered/staged path reads `staged_spheres` and `fat` with
+// their stage indices. Which one runs is decided by `stages` (see below), so
+// both sets must be filled on every lowering.
+//
+// Plain value type: owns its vectors, cheap to move, holds no GPU or file
+// resources.
 struct LoweredField {
     std::vector<StaticParticle> additive;  // union/intersection brushes (sphere hot path)
     std::vector<int>            additive_stage;  // CSG stage index per `additive` entry

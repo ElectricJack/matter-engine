@@ -112,6 +112,22 @@ struct Sandbox {
     std::string schemas;
     std::string shared_lib;
     std::string parts;
+
+    // The snapshot key for an object module, composed the way the engine
+    // composes it. `FileModuleResolver::source_path_for` builds
+    // `fs::path(root) / (module + ".js")`, which on Windows yields a NATIVE
+    // separator; hand-writing `schemas + "/Mid.js"` produced a mixed-separator
+    // string that matched nothing in `snap.by_file`. The switch to fs::path
+    // composition is deliberate and is called out in ebd226d6 ("object paths
+    // compose through fs::path. They were `<dir>` + "/" + name, which on
+    // Windows produced mixed separators in recorded snapshot" paths).
+    //
+    // SHARED-LIB paths are NOT composed this way and must keep using "/":
+    // module_resolver::resolve_specifier still builds `root + "/" + name +
+    // ".js"`, and the snapshot records whatever it returned.
+    std::string schema_path(const char* module) const {
+        return (fs::path(schemas) / (std::string(module) + ".js")).string();
+    }
 };
 
 static Sandbox make_sandbox(const char* name) {
@@ -239,9 +255,9 @@ static void test_snapshot_structure() {
     CHECK(!snap.nodes.at("Leaf").source_path.empty(), "Leaf source_path set");
 
     // by_file: abs path to module list
-    std::string mid_path  = s.schemas + "/Mid.js";
-    std::string leaf_path = s.schemas + "/Leaf.js";
-    std::string root_path = s.schemas + "/Root.js";
+    std::string mid_path  = s.schema_path("Mid");
+    std::string leaf_path = s.schema_path("Leaf");
+    std::string root_path = s.schema_path("Root");
     CHECK(snap.by_file.count(mid_path)  && snap.by_file.at(mid_path)  == std::vector<std::string>{"Mid"},
           "by_file[Mid.js] == [Mid]");
     CHECK(snap.by_file.count(leaf_path) && snap.by_file.at(leaf_path) == std::vector<std::string>{"Leaf"},
@@ -279,7 +295,7 @@ static void test_resolver_parts_for_file() {
     live_edit_prod::ProdGraphResolver gr(snap, host, s.schemas, s.shared_lib);
 
     // parts_for_file for a normal schema file
-    std::string mid_path = s.schemas + "/Mid.js";
+    std::string mid_path = s.schema_path("Mid");
     auto pf = gr.parts_for_file(mid_path);
     CHECK(pf.size() == 1 && pf[0] == "Mid",
           "parts_for_file(Mid.js) == [Mid]");

@@ -1,8 +1,25 @@
 #pragma once
 
+// MatterEditor/src/camera_focus.h
+//
 // Task 13 — "Focus" camera routine: frames the camera on the merged
 // world-space AABB of the current selection. Instant snap (no animation) for
 // this first pass; see camera_focus.cpp for the AABB/FOV math.
+//
+// Session-free by design: nothing here includes WorldSession, GLFW or ImGui.
+// The one thing that genuinely needs the engine -- the real bounds of a baked
+// root -- arrives as a BakedRootBoundsFn callback, which is what lets this TU
+// be exercised headlessly and what lets a caller with no session (or one that
+// wants approximate framing) simply omit it.
+//
+// Units and spaces: everything is world space in the engine's world units. The
+// returned radius is the bounding SPHERE radius of the merged AABB, floored at
+// the default half-extent so a single point-like selection still gets a sane
+// framing distance.
+//
+// Both functions are pure apart from their out-parameters; neither allocates
+// persistent state and neither is thread-affine on its own, though in practice
+// they are called from the render thread alongside the rest of the editor UI.
 
 #include <functional>
 

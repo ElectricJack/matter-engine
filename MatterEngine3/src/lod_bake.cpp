@@ -1,3 +1,32 @@
+// MatterEngine3/src/lod_bake.cpp
+//
+// Implementation of the LOD ladder bake declared in lod_bake.h -- read that
+// header first for the two ladders' contracts and their optional outputs.
+//
+// Per rung, both ladders run the same four steps in this order:
+//   1. DECIMATE. QEM edge collapse through MatterSurfaceLib's MeshIndexed
+//      pipeline, always with lock_boundary=true so an open mesh's rim polyline
+//      is bitwise identical at every rung (this is what keeps neighbouring
+//      terrain sectors watertight at any LOD pairing).
+//   2. REPROJECT TriEx. Always from the FULL-RES source, never from a coarser
+//      rung, so material/tint/UV/normal error cannot compound down the ladder.
+//      The ReprojectSource index is built once per call and reused, because
+//      building it per rung is what once made a sector's ladder cost seconds.
+//   3. CHART (optional). chart_rung_unified is the single funnel through which
+//      every ladder charts a rung -- build the first rung's parameterisation,
+//      adopt it for the coarser ones when MATTER_VT_UNIFY is on.
+//   4. REGISTER the geometry as a BLAS and record the level.
+//
+// Threading. Both entry points are called concurrently from streaming workers.
+// They own no shared mutable state except the ladder_census counters, which
+// are relaxed atomics; the cascade kill-switch is a function-local static
+// (initialized once, thread-safely) rather than a per-rung getenv precisely
+// because getenv races a concurrent setenv.
+//
+// Determinism. Chart segmentation, the counting sorts and the
+// nearest-base-triangle search all break ties on the lower index, so two cold
+// bakes of the same mesh produce the same tables and UVs.
+//
 #include <memory>
 #include <cstdlib>
 #include <cstdio>
@@ -19,16 +48,7 @@
 
 namespace lod_bake {
 
-// Task 11 (Phase 5 autoremesher integration): decimate_tris/decimate_to_error
-// route through MSL's MeshIndexed pipeline directly. The previous
-// Tri → raylib::Mesh → simplify_mesh → raylib::Mesh → Tri double round-trip
-// (via the local tris_to_mesh/mesh_to_tris helpers) has been removed — the
-// weld now happens once in from_tri and the intermediate raylib::Mesh is gone.
-// simplify(MeshIndexed) internally shims to simplify_mesh for the QEM step;
-// when that shim is removed in a later task, this file will already be on the
-// final MeshIndexed API. Public API of decimate_tris/decimate_to_error is
-// unchanged: input/output still std::vector<Tri>, callers see no difference.
-
+// Keep-ratio decimation uses the native MatterSurfaceLib indexed pipeline.
 std::vector<Tri> decimate_tris(const std::vector<Tri>& tris, float keep_ratio) {
     if (tris.empty()) return {};
 
@@ -56,50 +76,7 @@ std::vector<Tri> decimate_tris(const std::vector<Tri>& tris, float keep_ratio) {
 
 std::vector<Tri> decimate_to_error(const std::vector<Tri>& tris, float epsilon,
                                    bool use_aabb_bounds) {
-    if (tris.empty()) return {};
-
-    MeshIndexed in = from_tri(tris, nullptr);
-    SimplifyOptions opts;
-    // target_ratio 0 -> targetTri clamps to 1, so the collapse loop runs until
-    // the min heap cost exceeds max_error (the error bound is the ONLY stop).
-    opts.target_ratio  = 0.0f;
-    opts.max_error     = epsilon * epsilon;  // QEM cost is squared distance
-    // lock_boundary=true activates the topological boundary lock (Task 8):
-    // open-edge vertices are never collapsed, regardless of CellBounds.
-    opts.lock_boundary = true;
-
-    CellBounds cb{};
-    const CellBounds* bounds_ptr = nullptr;
-    if (use_aabb_bounds) {
-        // Pass the mesh's own AABB so vertices on its face planes
-        // (tile borders, sheet rims) are frozen — correct for terrain tiles and
-        // whole-mesh flattens where the boundary IS the world border.
-        // (When use_aabb_bounds=false, bounds_ptr stays nullptr and ONLY the
-        // topological boundary lock (open-edge vertices) is active — correct
-        // for cluster interiors whose AABB does NOT represent a world border.)
-        float minx=1e30f, maxx=-1e30f;
-        float miny=1e30f, maxy=-1e30f;
-        float minz=1e30f, maxz=-1e30f;
-        for (const Tri& t : tris) {
-            const float3* vs[3] = { &t.vertex0, &t.vertex1, &t.vertex2 };
-            for (const float3* v : vs) {
-                if (v->x < minx) minx = v->x; if (v->x > maxx) maxx = v->x;
-                if (v->y < miny) miny = v->y; if (v->y > maxy) maxy = v->y;
-                if (v->z < minz) minz = v->z; if (v->z > maxz) maxz = v->z;
-            }
-        }
-        cb.min_bound = { minx, miny, minz };
-        cb.max_bound = { maxx, maxy, maxz };
-        bounds_ptr = &cb;
-    }
-
-    MeshIndexed out = simplify(in, opts, bounds_ptr);
-
-    std::vector<Tri>   out_tris;
-    std::vector<TriEx> out_triex_unused;
-    to_tri(out, out_tris, out_triex_unused);
-    // Same fallback semantics as decimate_tris: empty output -> identity.
-    return out_tris.empty() ? tris : out_tris;
+    return ::decimate_to_error(tris, epsilon, use_aabb_bounds);
 }
 
 // NOTE (Task 8, Phase 5 autoremesher integration): `reproject_triex` moved to
@@ -112,14 +89,12 @@ std::vector<Tri> decimate_to_error(const std::vector<Tri>& tris, float epsilon,
 
 // ---- Chart-space virtual texturing (WP-A) ----------------------------------
 //
-// Charts a single rung mesh: normal-cone segmentation (MeshChartingLib),
-// per-chart planar projection at `texels_per_meter`, page-aligned shelf pack
-// (kVtPagePayload grid, kChartGutterTexels gutters, clamped to kVtMaxAtlasDim
-// by halving the density), then atlas UVs written into triex.uv0/1/2
-// normalized [0,1] over the atlas. Purely a TriEx.uv rewrite — positions,
-// normals, materials, tint, AO are untouched, and downstream vertex welding
-// (indexed_part_geometry keys on the UV) performs the vertex split between
-// charts automatically.
+// Three functions in source order: the MATTER_VT_UNIFY switch, the
+// chart_rung_unified funnel every ladder charts through, and the two things it
+// picks between — apply_chart_rung (adopt a base rung's parameterisation) and
+// build_chart_rung (segment and pack a fresh one). Each carries its own
+// contract; read build_chart_rung's for what a chart table actually is.
+
 bool unify_parameterisation_enabled() {
     // Read per call, NOT cached in a static — the same choice impostors_
     // enabled() makes in part_flatten, and for the same reason: a static
@@ -135,7 +110,8 @@ bool chart_rung_unified(const std::vector<Tri>& tris, std::vector<TriEx>& triex,
                         float texels_per_meter, float cone_deg, bool unify,
                         chart_atlas::ChartAtlasRung& base,
                         std::vector<Tri>& base_tris,
-                        chart_atlas::ChartAtlasRung& out) {
+                        chart_atlas::ChartAtlasRung& out,
+                        bool align_material_grid) {
     // MATTER_VT_CHART_LOG=1: one line per rung charted, through every one of
     // the five callers (this function is the only funnel). A rung that ends
     // here with charts=0 is a rung that will never enter vt_rung_mask
@@ -166,7 +142,7 @@ bool chart_rung_unified(const std::vector<Tri>& tris, std::vector<TriEx>& triex,
         return true;
     }
     const bool built = build_chart_rung(tris, triex, texels_per_meter,
-                                        cone_deg, out);
+                                        cone_deg, out, align_material_grid);
     if (!built) {
         if (chart_log)
             MATTER_LOGW("vt-chart",
@@ -192,8 +168,30 @@ bool chart_rung_unified(const std::vector<Tri>& tris, std::vector<TriEx>& triex,
     return true;
 }
 
-// M6: adopt rep 0's chart table for a coarser rung. See the header for why
-// this needs no texel transfer — the parameterisation is analytic.
+// M6: adopt rep 0's chart table for a coarser rung, so every rung of a ladder
+// shares one parameterisation (same charts, same atlas, same plane bases) and
+// the VT resolve can sample any rung through the same UV space. No texels are
+// transferred — the parameterisation is analytic (see the header): a chart's
+// UV is a plane projection through ChartEntry's tangent/bitangent/origin, so
+// adopting is a matter of deciding WHICH chart each coarse triangle belongs
+// to, then evaluating the same projection.
+//
+// Four stages, in source order:
+//   1. Recover rep 0's per-triangle chart id by inverting the counting sort
+//      build_chart_rung wrote into first_tri/tri_count/tri_order (the table
+//      stays the single authority; no parallel array is plumbed through).
+//   2. Hash rep 0's triangle centroids into a uniform grid (~1 tri/cell).
+//   3. Classify each coarse triangle by its nearest base centroid (ring
+//      search over the grid, ties to the lower index so two cold bakes
+//      agree) and inherit that triangle's chart id.
+//   4. Copy the base's charts/atlas verbatim, rebuild this rung's own
+//      tri_order + per-chart ranges by counting sort, and write chart UVs
+//      into triex — arithmetically identical to build_chart_rung's write.
+//
+// Returns false with `out` empty when the base table is inconsistent with
+// base_tris (ranges out of bounds, unassigned triangles) or any lookup finds
+// no base triangle within the 64-ring search; the caller then falls back to
+// charting the rung from scratch. Only triex's UVs are written.
 bool apply_chart_rung(const std::vector<Tri>& tris, std::vector<TriEx>& triex,
                       const std::vector<Tri>& base_tris,
                       const chart_atlas::ChartAtlasRung& base,
@@ -359,13 +357,25 @@ bool apply_chart_rung(const std::vector<Tri>& tris, std::vector<TriEx>& triex,
     return true;
 }
 
+// Builds a rung's chart atlas from scratch: normal-cone segmentation
+// (MeshChartingLib) -> per-chart plane basis and planar extents -> page-
+// aligned shelf pack, halving the density until it fits kVtMaxAtlasDim (floor
+// 1/64 texel per metre) -> chart-grouped tri_order -> chart UVs written into
+// triex.uv0/1/2, normalized [0,1] over the atlas.
+//
+// Only the UVs of `triex` are written; positions, normals, materials, tint and
+// AO are untouched, and the downstream indexed weld (which keys on the UV)
+// performs the vertex split between charts on its own. Returns false with
+// `out` empty and `triex` unmodified for a mesh it cannot chart.
 bool build_chart_rung(const std::vector<Tri>& tris, std::vector<TriEx>& triex,
                       float texels_per_meter, float cone_deg,
-                      chart_atlas::ChartAtlasRung& out) {
+                      chart_atlas::ChartAtlasRung& out,
+                      bool align_material_grid) {
     namespace mc = mesh_charting;
     out = {};
     const int n = (int)tris.size();
     if (n <= 0 || triex.size() != tris.size() || !(texels_per_meter > 0.0f) ||
+        !std::isfinite(texels_per_meter) || !std::isfinite(cone_deg) ||
         !(cone_deg > 0.0f) || cone_deg >= 90.0f)
         return false;
 
@@ -400,6 +410,7 @@ bool build_chart_rung(const std::vector<Tri>& tris, std::vector<TriEx>& triex,
     const float inf = std::numeric_limits<float>::infinity();
     std::vector<float> minU((size_t)n_charts,  inf), minV((size_t)n_charts,  inf);
     std::vector<float> maxU((size_t)n_charts, -inf), maxV((size_t)n_charts, -inf);
+    std::vector<uint32_t> chart_tri_counts((size_t)n_charts,0);
     auto project = [&](int c, const float3& p, float& u, float& v) {
         const float* tc = &T[(size_t)c * 3];
         const float* bc = &B[(size_t)c * 3];
@@ -408,6 +419,7 @@ bool build_chart_rung(const std::vector<Tri>& tris, std::vector<TriEx>& triex,
     };
     for (int t = 0; t < n; ++t) {
         const int c = cid[t];
+        ++chart_tri_counts[c];
         const float3* v[3] = { &tris[t].vertex0, &tris[t].vertex1, &tris[t].vertex2 };
         for (int k = 0; k < 3; ++k) {
             float u, w;
@@ -419,8 +431,9 @@ bool build_chart_rung(const std::vector<Tri>& tris, std::vector<TriEx>& triex,
         }
     }
 
-    // Pack at the requested density; halve until the page-aligned atlas fits
-    // within kVtMaxAtlasDim (the clamp policy). Floor: 1/64 texel per meter.
+    // Keep the requested density when it fits. Otherwise find a fitting
+    // bracket by halving, then refine it: a slightly oversized atlas should
+    // not lose half its linear resolution. Floor: 1/64 texel per meter.
     const int page   = (int)chart_atlas::kVtPagePayload;
     const int gutter = (int)chart_atlas::kChartGutterTexels;
     const int maxdim = (int)chart_atlas::kVtMaxAtlasDim;
@@ -428,22 +441,59 @@ bool build_chart_rung(const std::vector<Tri>& tris, std::vector<TriEx>& triex,
     int atlas_w = 0, atlas_h = 0;
     std::vector<mc::PagedChartSize> sizes((size_t)n_charts);
     std::vector<mc::PagedChartPlacement> placements;
-    bool packed = false;
-    while (tpm >= 1.0f / 64.0f) {
+    std::vector<float> gridU=minU, gridV=minV;
+    auto pack_at = [&](float density) {
         for (int c = 0; c < n_charts; ++c) {
             const float eu = maxU[c] - minU[c];
             const float ev = maxV[c] - minV[c];
-            sizes[c].content_w = std::max(1, (int)std::ceil((double)eu * tpm));
-            sizes[c].content_h = std::max(1, (int)std::ceil((double)ev * tpm));
+            gridU[c]=minU[c];gridV[c]=minV[c];
+            // Large quads have reusable interiors. At most one page of leading
+            // padding per axis anchors them to the same physical grid. Do not
+            // inflate tiny caps, curve strips or complex terrain charts that
+            // cannot use the current planar material-page sharing path.
+            if(align_material_grid && chart_tri_counts[c]==2 &&
+               double(eu)*density>=2*page && double(ev)*density>=2*page) {
+                gridU[c]=float(std::floor(double(minU[c])*density/page)*page/density);
+                gridV[c]=float(std::floor(double(minV[c])*density/page)*page/density);
+            }
+            const double width = std::ceil(double(maxU[c]-gridU[c]) * density);
+            const double height = std::ceil(double(maxV[c]-gridV[c]) * density);
+            // Reject an impossible extent before converting it to an integer.
+            if (!std::isfinite(width) || !std::isfinite(height) ||
+                width > maxdim - 2*gutter || height > maxdim - 2*gutter)
+                return false;
+            sizes[c].content_w = std::max(1, (int)width);
+            sizes[c].content_h = std::max(1, (int)height);
         }
-        if (mc::pack_charts_paged(sizes, page, gutter, maxdim,
-                                  atlas_w, atlas_h, placements)) {
+        return mc::pack_charts_paged(sizes, page, gutter, maxdim,
+                                    atlas_w, atlas_h, placements);
+    };
+    bool packed = false;
+    float failed_density = 0;
+    while (tpm >= 1.0f / 64.0f) {
+        if (pack_at(tpm)) {
             packed = true;
             break;
         }
+        failed_density = tpm;
         tpm *= 0.5f;
     }
     if (!packed) return false;
+    if (failed_density > 0) {
+        float fitting = tpm, failing = failed_density;
+        // Bounded work only on clamped meshes. Page rounding and shelf order
+        // need not be globally monotonic; retain a verified fit, not a claim
+        // that the search finds the mathematically optimal packing.
+        for (unsigned attempt = 0; attempt < 6; ++attempt) {
+            const float candidate = fitting + (failing-fitting)*0.5f;
+            if (pack_at(candidate)) fitting = candidate;
+            else failing = candidate;
+        }
+        tpm = fitting;
+        // The last probe may have failed; restore every placement and origin
+        // from the same accepted density used to generate the final UVs.
+        if (!pack_at(tpm)) return false;
+    }
 
     // Chart-grouped triangle order (counting sort — deterministic).
     std::vector<uint32_t> first((size_t)n_charts, 0), count((size_t)n_charts, 0);
@@ -464,7 +514,7 @@ bool build_chart_rung(const std::vector<Tri>& tris, std::vector<TriEx>& triex,
         const float* tc = &T[(size_t)c * 3];
         const float* bc = &B[(size_t)c * 3];
         for (int i = 0; i < 3; ++i) {
-            e.origin[i]    = minU[c] * tc[i] + minV[c] * bc[i];
+            e.origin[i]    = gridU[c] * tc[i] + gridV[c] * bc[i];
             e.tangent[i]   = tc[i];
             e.bitangent[i] = bc[i];
         }
@@ -487,8 +537,8 @@ bool build_chart_rung(const std::vector<Tri>& tris, std::vector<TriEx>& triex,
         for (int k = 0; k < 3; ++k) {
             float u, w;
             project(c, *v[k], u, w);
-            const float tx = (float)placements[c].x + (float)gutter + (u - minU[c]) * tpm;
-            const float ty = (float)placements[c].y + (float)gutter + (w - minV[c]) * tpm;
+            const float tx = (float)placements[c].x + (float)gutter + (u - gridU[c]) * tpm;
+            const float ty = (float)placements[c].y + (float)gutter + (w - gridV[c]) * tpm;
             uv[k]->x = tx * inv_w;
             uv[k]->y = ty * inv_h;
         }
@@ -496,6 +546,28 @@ bool build_chart_rung(const std::vector<Tri>& tris, std::vector<TriEx>& triex,
     return true;
 }
 
+// The selection threshold for rung `lvl`. BakeTargets/TerrainBakeTargets both
+// document `threshold` as being the same length as the ratio vector that drives
+// the ladder loop, and every caller in the tree uses the defaults, which are.
+// A caller that gets it wrong used to read past the end of the vector; reuse
+// the coarsest declared threshold instead. (An entirely empty threshold vector
+// yields 0.0f, which lod_select reads as "eligible at any projected size" —
+// the finest-rung clamp already makes that the practical outcome.)
+static float rung_threshold(const std::vector<float>& threshold, size_t lvl) {
+    if (threshold.empty()) return 0.0f;
+    return threshold[lvl < threshold.size() ? lvl : threshold.size() - 1];
+}
+
+// The prop/authored-part ladder. One iteration per entry in
+// targets.keep_ratio, pushing exactly one LodLevel (and one handle, and one
+// chart table when asked) per rung, so the outputs stay parallel and
+// equal-length. Rung 0 with keep_ratio >= 0.999 registers the caller's own
+// triangles with no copy and no decimation.
+//
+// The linear scan that turns the returned BLASHandle back into an absolute
+// index is O(entries) per rung and exists only because register_triangles may
+// DEDUPLICATE and hand back an existing handle -- pre-recording entries.size()
+// would be off by N in that case.
 LodLevels bake_lods(const std::vector<Tri>& tris, const BakeTargets& targets,
                     BLASManager& blas, const std::vector<TriEx>* triex,
                     BakeObserver* observer,
@@ -624,7 +696,8 @@ LodLevels bake_lods(const std::vector<Tri>& tris, const BakeTargets& targets,
             // is the one copy of that rule; see its header note).
             if (chart_rung_unified(geo, charted_ex, tpm, chart_opts->cone_deg,
                                    chart_opts->unify_parameterisation,
-                                   unified_base, unified_base_tris, rung_charts))
+                                   unified_base, unified_base_tris, rung_charts,
+                                   chart_opts->align_material_grid))
                 ex = charted_ex.data();
         }
         // register_triangles may deduplicate (returning an existing handle), so we
@@ -653,7 +726,7 @@ LodLevels bake_lods(const std::vector<Tri>& tris, const BakeTargets& targets,
                 t_decimate, t_reproject, t_register, t_indexscan);
         }
         LodLevel L;
-        L.screen_size_threshold = targets.threshold[lvl];
+        L.screen_size_threshold = rung_threshold(targets.threshold, lvl);
         if (idx != UINT32_MAX) L.blas_indices.push_back(idx);
         out.push_back(std::move(L));
         if (out_charts) out_charts->push_back(std::move(rung_charts));
@@ -710,6 +783,10 @@ uint64_t split_us(std::chrono::steady_clock::time_point& mark) {
 }
 }  // namespace
 
+// A snapshot of the process-wide counters. The fields are loaded independently
+// with relaxed ordering, so the result is an aggregate rather than a coherent
+// instant; it is monotonic, so a reader that wants "cost since last frame"
+// takes the difference of two calls.
 LadderCensus ladder_census() {
     LadderCensus c;
     for (size_t i = 0; i < kMaxCensusRungs; ++i) {
@@ -896,7 +973,7 @@ LodLevels bake_terrain_lods(const std::vector<Tri>& tris,
                        eps > cascade_prev_eps;
             const std::vector<Tri>& dec_src = cascaded ? cascade_prev : surface;
             dec_in = dec_src.size();
-            decimated = decimate_to_error(dec_src, eps,
+            decimated = ::decimate_to_error(dec_src, eps,
                                           /*use_aabb_bounds=*/false);
             if (decimated.empty()) decimated = dec_src;
             // Hand this rung's output to the next coarser one. A copy, not a
@@ -957,7 +1034,8 @@ LodLevels bake_terrain_lods(const std::vector<Tri>& tris,
             // can be > 0.
             if (chart_rung_unified(geo, charted_ex, tpm, chart_opts->cone_deg,
                                    chart_opts->unify_parameterisation,
-                                   unified_base, unified_base_tris, rung_charts))
+                                   unified_base, unified_base_tris, rung_charts,
+                                   chart_opts->align_material_grid))
                 ex = charted_ex.data();
         }
         g_ladder_chart_us[census_slot(lvl)].fetch_add(
@@ -989,7 +1067,7 @@ LodLevels bake_terrain_lods(const std::vector<Tri>& tris,
                 cascaded ? " cascaded" : "");
         }
         LodLevel L;
-        L.screen_size_threshold = targets.threshold[lvl];
+        L.screen_size_threshold = rung_threshold(targets.threshold, lvl);
         if (idx != UINT32_MAX) L.blas_indices.push_back(idx);
         out.push_back(std::move(L));
         if (out_charts) out_charts->push_back(std::move(rung_charts));

@@ -1,6 +1,12 @@
 // ImGui rendering for the Console panel. The ConsoleLog ring-buffer logic
 // lives in console_log.cpp (no ImGui dependency) so it can be unit tested
 // headlessly; this file only implements draw_console_contents.
+//
+// Everything here runs on the ImGui (main) thread, inside the caller's
+// Begin/End pair. Ui::draw_console_panel (ui.cpp) is the only caller; it also
+// claims `console.filters` as this panel's Tunables home so the group is not
+// duplicated in the Tunables window. Severity row colours are hard-coded here
+// rather than taken from the ImGui style.
 #include "console_panel.h"
 
 #include <string>
@@ -30,6 +36,7 @@ ImVec4 severity_color(LogSeverity severity) {
 
 // The single formatter shared by the on-screen rows and the clipboard export,
 // so copied text is byte-for-byte what the panel displays.
+// Timestamps are elapsed seconds, not wall time; hh:mm:ss wraps after 24 hours.
 std::string format_line(const LogEntry& entry) {
     const int total_seconds = static_cast<int>(entry.timestamp);
     const int hh = (total_seconds / 3600) % 24;
@@ -65,6 +72,14 @@ std::string join_all(const ConsoleLog::Snapshot& snapshot) {
 
 } // namespace
 
+// One frame of the Console panel's contents.
+//
+// Takes a fresh filtered snapshot of `log` on every call (ConsoleLog::filtered
+// — O(retained entries), allocating, and it holds the log's mutex) and builds
+// one std::string per clipped on-screen row. Snapshot filtering still scales
+// with retained entries. Mutates `state` (the widgets write it
+// directly; was_at_bottom is recomputed at the end from the scroll position)
+// and can mutate `log` — the Clear button calls log.clear().
 void draw_console_contents(ConsolePanelState& state, ConsoleLog& log) {
     // Filter / control row.
     ImGui::Checkbox("Info", &state.show_info);

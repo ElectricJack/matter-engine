@@ -46,7 +46,7 @@ endif
 SQL = ../../SpatialQueryLib
 MEMLIB = ../../MemoryLib
 MATHLIB = ../../MathLib
-INCLUDE_PATHS = -I../include -I$(SQL)/include -I$(MEMLIB)/include -I$(MATHLIB)/include -I$(RAYLIB_PATH) -I../../../third_party/raylib/src
+INCLUDE_PATHS = -I../include -I$(SQL)/include -I$(MEMLIB)/include -I$(MATHLIB)/include -I../../../MatterEngine3/include -I$(RAYLIB_PATH) -I../../../third_party/raylib/src
 
 # Library paths. The src/ archive is the Windows (MinGW COFF) cross-compile
 # output; Linux/macOS test builds must link the native ELF/Mach-O archive under
@@ -320,3 +320,24 @@ $(SMOOTH_TARGET): $(SMOOTH_SOURCES) | build
 
 run-smooth: $(SMOOTH_TARGET)
 	./$(SMOOTH_TARGET)
+
+# Ordered-field extraction and post-simplification normal regressions.
+# Use a private object directory so parallel builds cannot share transient
+# C objects with the other surface test targets.
+STAGED_TARGET = build/staged_normals_tests
+STAGED_C = ../src/surface.c ../src/fat_primitive.c \
+           $(SQL)/src/spatial_hash.c $(MEMLIB)/src/mem_pool.c
+STAGED_OBJDIR = build/staged_normals_obj
+STAGED_OBJECTS = $(addprefix $(STAGED_OBJDIR)/,surface.o fat_primitive.o spatial_hash.o mem_pool.o)
+
+$(STAGED_OBJDIR):
+	@mkdir -p $@
+
+$(STAGED_TARGET): staged_normals_tests.cpp $(STAGED_C) | build $(STAGED_OBJDIR)
+	for f in $(STAGED_C); do gcc -c $$f -O2 -DPLATFORM_DESKTOP $(INCLUDE_PATHS) -o $(STAGED_OBJDIR)/$$(basename $$f .c).o; done
+	$(CC) staged_normals_tests.cpp $(STAGED_OBJECTS) -o $@ $(CFLAGS) $(INCLUDE_PATHS) $(LDFLAGS) $(LDLIBS)
+	rm -f $(STAGED_OBJECTS)
+
+.PHONY: run-staged-normals
+run-staged-normals: $(STAGED_TARGET)
+	./$(STAGED_TARGET)

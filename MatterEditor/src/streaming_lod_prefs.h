@@ -21,6 +21,24 @@
 // This header is deliberately ImGui-free AND engine-free (props.h only) so the
 // ring parse/format round-trip is unit-testable in the headless suite.
 
+// Where it is wired (all three ends, in one place):
+//   - `MatterEditor/src/editor_props.cpp` binds streaming_lod_group() to
+//     EditorProps::streaming_prefs_ at Scope::World, which is what makes it
+//     persist per world, appear in Tunables, and be reachable from the FIFO
+//     control surface (`set stream.lod.scatter_rings 128:2,384:1,900:0` —
+//     docs/agent/control-surface.md).
+//   - `MatterEditor/src/ui.cpp` owns the hand-written ring widgets and does the
+//     parse/format round-trip through the two helpers below, plus the
+//     sanitizing (drop non-positive radii, sort ascending) that this header
+//     deliberately does not do.
+//   - The engine end is WorldSession::set_streaming_lod_overrides, called once
+//     at connect. Nothing re-reads these fields afterwards.
+//
+// Tests: `MatterEngine3/tests/property_editor_tests.cpp`
+// (`make -C MatterEngine3/tests run-property-editor`) covers the round-trip,
+// the lenient separators, the truncate-on-malformed rule and the
+// requires-reload flag on the group.
+
 #include "matter/props.h"
 
 #include <cstdio>
@@ -32,7 +50,12 @@ namespace viewer {
 
 // Mirrors WorldSession::StreamingLodRing without depending on world_session.h.
 struct LodRing {
+    // Ring boundary as a distance from the streaming anchor, in metres.
     float radius = 0.0f;
+    // What the ring selects — and it is NOT the same quantity in both lists.
+    // In `scatter_rings` it is a scatter density TIER (2 = densest); in
+    // `terrain_bands` it is a terrain LOD rung (5 = native voxel). Only the
+    // string a ring was parsed from says which, so never mix the two lists.
     int   value = 0;
 };
 
@@ -78,6 +101,10 @@ inline std::string format_lod_rings(const std::vector<LodRing>& rings) {
     return out;
 }
 
+// The override itself, in its persisted form. Every field is read exactly once
+// per world connect (see the RequiresReload note at the top of this file), so
+// treat a live edit here as a draft until the world is reconnected. A
+// default-constructed instance is a no-op override.
 struct StreamingLodPrefs {
     // Matches make_streaming_profile's default (on since 2026-07-30).
     bool        terrain_lod_enabled = true;

@@ -41,6 +41,21 @@
  *            u32 key length, key bytes padded to 4,
  *            u64 hash lo, u64 hash hi, u64 size, u64 last access, u32 kind, u32 reserved
  *     end  u32  crc32 over everything preceding
+ *
+ * Path: libs/AssetStoreLib/src/store_format.h. Internal: blob_store.cpp and
+ * ref_table.cpp are its only readers, and none of it is visible through
+ * ../include/asset_store.h.
+ *
+ * Versioning is deliberately blunt. A kFormatVersion mismatch fails the open
+ * outright (BlobStore::Impl::load_index, RefTable::Impl::load) -- there is no
+ * migration path, because the store is a cache and re-baking is always
+ * available. Bump the constant and every store on disk stops being readable,
+ * which is the intended effect.
+ *
+ * The record header is written on every append and is what would let a pack be
+ * rebuilt by scanning, but no code reads it back: reads seek straight to the
+ * payload offset the index names and verify the payload CRC only. It is
+ * belt-and-braces for a repair tool that does not exist yet.
  */
 #ifndef ASSET_STORE_FORMAT_H
 #define ASSET_STORE_FORMAT_H
@@ -49,6 +64,7 @@
 #include <stddef.h>
 #include <string.h>
 #include <vector>
+#include "asset_binary.h"
 
 namespace asset_store {
 
@@ -65,33 +81,11 @@ static const size_t kIndexEntryBytes = 40;
  * parser cheerfully read the tick as an entry's key length.) */
 static const size_t kRefsHeaderBytes = 24;
 
+/* Every record is padded up to an 8-byte boundary, which means every payload
+ * offset in a pack is 8-aligned. ReadBatch leans on that: it allocates a
+ * coalesced chunk beginning at a payload offset, so each payload inside the
+ * chunk inherits the arena's alignment. */
 static inline uint64_t align_up8(uint64_t v) { return (v + 7ull) & ~7ull; }
-
-/* --- little-endian scalar put/get, byte at a time --- */
-
-static inline void put_u32(uint8_t* p, uint32_t v) {
-    p[0] = (uint8_t)(v);        p[1] = (uint8_t)(v >> 8);
-    p[2] = (uint8_t)(v >> 16);  p[3] = (uint8_t)(v >> 24);
-}
-static inline void put_u64(uint8_t* p, uint64_t v) {
-    for (int i = 0; i < 8; ++i) p[i] = (uint8_t)(v >> (8 * i));
-}
-static inline uint32_t get_u32(const uint8_t* p) {
-    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
-           ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
-}
-static inline uint64_t get_u64(const uint8_t* p) {
-    uint64_t v = 0;
-    for (int i = 0; i < 8; ++i) v |= (uint64_t)p[i] << (8 * i);
-    return v;
-}
-
-static inline void push_u32(std::vector<uint8_t>& b, uint32_t v) {
-    size_t n = b.size(); b.resize(n + 4); put_u32(b.data() + n, v);
-}
-static inline void push_u64(std::vector<uint8_t>& b, uint64_t v) {
-    size_t n = b.size(); b.resize(n + 8); put_u64(b.data() + n, v);
-}
 
 }  // namespace asset_store
 

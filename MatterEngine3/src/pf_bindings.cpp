@@ -1,3 +1,34 @@
+// MatterEngine3/src/pf_bindings.cpp
+//
+// Implementation of the `__pf_*` bake-DSL bindings over libs/ParticleFlowLib.
+//
+// HANDLES AND OWNERSHIP. A sim or recorder is created by a JS call and returned
+// as an integer HANDLE, which is just its index in the `PfRegistry` that hangs
+// off the DslState (as a `shared_ptr<void>` with a typed deleter, so this
+// translation unit stays the only one that knows the type). The registry is
+// created lazily on first use and dies with the bake context; nothing is ever
+// freed mid-bake, so a handle stays valid for the whole bake and indices are
+// never recycled. JS holds no pointer to any of it.
+//
+// ERROR CONVENTION. These are C functions called from JS, and with one
+// exception they never raise: a bad handle or malformed argument calls
+// `DslState::set_error` and returns a neutral value (-1, null, false, or
+// undefined) so the failure surfaces as a bake error rather than a JS
+// exception. The exception is `__pf_run`, which forwards a JS_EXCEPTION thrown
+// by the caller's own per-tick callback.
+//
+// CONFIG OBJECTS. `get_num` / `get_bool` / `get_v3` / `get_str` read one key
+// and fall back to a default when it is missing, undefined or null — so every
+// config object is optional in whole and in part, and a typo'd key reads as the
+// default rather than as an error. Vectors arrive as `[x,y,z]` arrays.
+//
+// QUICKJS MEMORY DISCIPLINE. Every `JS_GetPropertyStr` / `JS_GetPropertyUint32`
+// result is freed on every path, including the early-error paths. The per-tick
+// view (`build_tick_view`) is the sharp edge: it exposes the sim's live arrays
+// to JS with NO copy, and `__pf_run` DETACHES every one of those buffers as
+// soon as the callback returns, so a script that squirrels a typed array away
+// gets a detached view instead of a dangling pointer into sim storage that the
+// next tick may have reallocated.
 #include "pf_bindings.h"
 #include "dsl_state.h"
 #include "particle_flow.h"
@@ -28,6 +59,8 @@ struct PfRegistry {
     std::vector<std::unique_ptr<pf::PathRecorder>> recorders;
 };
 
+// Lazily creates the registry on first use and returns it; never null. The
+// DslState owns it type-erased, which is why the deleter is supplied here.
 PfRegistry* pf_registry_of(DslState* st) {
     if (!st->pf_registry()) {
         st->set_pf_registry(std::shared_ptr<void>(
@@ -39,6 +72,10 @@ PfRegistry* pf_registry_of(DslState* st) {
 
 namespace {
 
+// Resolve a JS handle to a live sim / recorder. Returns nullptr AND sets the
+// bake error for an out-of-range or non-numeric handle — every caller must
+// check the result and return its own neutral value, or the error is recorded
+// and then ignored.
 pf::Sim* sim_of(JSContext* c, DslState* st, JSValueConst idv) {
     int32_t id = -1; JS_ToInt32(c, &id, idv);
     PfRegistry* reg = pf_registry_of(st);
@@ -102,6 +139,12 @@ std::string get_str(JSContext* c, JSValueConst obj, const char* key,
     return out;
 }
 
+// Read one field descriptor out of a JS object into pf::FieldConfig. Every
+// numeric key is optional and defaults here (weight 1, radius 0.5, mode
+// "steer", ...), but two things are hard errors that fail the bake: an
+// unrecognized `type`, and a `weightState` naming a channel the sim's `state`
+// list does not declare — both set the DslState error and return false.
+// `fade.axis` accepts either the "x"/"y"/"z" shorthand or an [x,y,z] array.
 bool parse_field(JSContext* c, DslState* st, JSValueConst f,
                  const std::vector<std::string>& state_names,
                  pf::FieldConfig* out) {
@@ -624,6 +667,10 @@ JSValue j_pf_stampPaths(JSContext* c, JSValueConst, int n, JSValueConst* a) {
 
 } // namespace
 
+// Define every `__pf_*` global on `ctx`. Called once per context from
+// dsl_bindings.cpp. The argument counts passed to JS_NewCFunction only set each
+// function's `length` property — QuickJS does not enforce them, which is why
+// every binding re-checks `n` itself.
 void install_pf_bindings(JSContext* ctx) {
     JSValue g = JS_GetGlobalObject(ctx);
     auto bind = [&](const char* n, JSCFunction* f, int argc) {

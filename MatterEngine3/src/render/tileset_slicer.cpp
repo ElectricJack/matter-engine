@@ -1,5 +1,11 @@
 // tileset_slicer.cpp — CPU atlas->layers slicer + per-layer mip builder.
 // See tileset_slicer.h for the contract. Pure CPU: no GL/VK/raylib includes.
+//
+// Everything here is deterministic integer arithmetic. The mip filter averages
+// with truncating integer division (sum of four samples / 4), which is what
+// makes two tiles with identical edge strips produce identical mip edges —
+// there is no rounding mode or floating-point ordering to differ on. Nothing in
+// this file allocates beyond the output SlicedChannel, logs, or reads a file.
 
 #include "tileset_slicer.h"
 
@@ -74,6 +80,10 @@ void box_filter_mip(const std::vector<uint8_t>& src, int src_w, int /*src_h*/,
 
 }  // namespace
 
+// Note `out` is cleared FIRST: every failure below therefore leaves the caller
+// with a default-constructed SlicedChannel rather than a half-built one, and a
+// caller reusing an output value cannot accidentally observe the previous
+// call's layers. All validation happens before a single byte is copied.
 bool slice_channel(const uint8_t* atlas, int atlas_w, int atlas_h,
                    int bytes_per_pixel, bool expand_rgb_to_rgba,
                    bool filter_as_u16,
@@ -173,6 +183,11 @@ bool slice_channel(const uint8_t* atlas, int atlas_w, int atlas_h,
     return true;
 }
 
+// Accumulates in double over every texel of the atlas, so a 4k atlas cannot
+// lose precision to float accumulation. The first three bytes of each pixel are
+// read as R, G, B and any further bytes (alpha) are ignored; the result is the
+// raw byte mean scaled to 0..1, with no sRGB decode — "linear-ish", as the
+// header says, not colour-managed.
 void mean_rgb(const uint8_t* atlas, int atlas_w, int atlas_h,
               int bytes_per_pixel, float out_rgb[3]) {
     out_rgb[0] = out_rgb[1] = out_rgb[2] = 0.0f;

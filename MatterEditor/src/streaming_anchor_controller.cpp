@@ -1,3 +1,11 @@
+// MatterEditor/src/streaming_anchor_controller.cpp
+//
+// Implementation of the streaming-anchor free functions and the per-frame
+// input-order latch. See streaming_anchor_controller.h for the contract; this
+// file only adds notes where the mechanism is not obvious from the signature.
+//
+// Everything here runs on the main/UI thread and touches Flecs synchronously.
+// Matrices are row-major (matter::Mat4f) with column-vector algebra.
 #include "streaming_anchor_controller.h"
 
 #include "matter/ecs.h"
@@ -14,6 +22,14 @@ struct WorldIdentity {
     std::uint64_t value = 0;
 };
 
+// Stable per-world token, so StreamingAnchorState can tell "same world" from
+// "a world was reloaded into the same address" without ever storing a world
+// pointer (which is the whole reason this indirection exists).
+//
+// NOT a pure query: on first call for a world it MUTATES that world, stamping
+// a WorldIdentity singleton component into it. The counter is a function-local
+// static atomic, so identities are unique within one process run and are not
+// persisted or comparable across runs.
 std::uint64_t identity_for(flecs::world& world) {
     if (const WorldIdentity* identity = world.try_get<WorldIdentity>()) {
         return identity->value;
@@ -31,6 +47,10 @@ flecs::entity selected_anchor(flecs::world& world, flecs::entity_t selected) {
 
 } // namespace
 
+// Each of the six transitions below advances the stage ONLY from the exactly
+// preceding stage, and returns silently otherwise. That is the whole
+// enforcement mechanism: a frame that skips or reorders a phase never reaches
+// FrameEnded, so camera_update_allowed() stays false for that frame.
 void CurrentFrameInputOrder::begin_ui() noexcept {
     if (stage_ == Stage::AwaitingUi) stage_ = Stage::UiBegun;
 }
@@ -192,6 +212,11 @@ bool gizmo_translation_allowed(StreamingAnchorState& state,
         .has<matter::ecs::LocalTransform>();
 }
 
+// Quaternion -> rotation matrix in double precision, then scale into the
+// columns and translation into m[3]/m[7]/m[11] (row-major). The finiteness and
+// zero-length guard matters: LocalTransform is user- and script-writable, and
+// an un-normalizable quaternion here would otherwise poison the gizmo matrix
+// and, through it, the anchor position.
 matter::Mat4f local_transform_matrix(
     const matter::ecs::LocalTransform& transform) {
     double x = transform.rotation.x;

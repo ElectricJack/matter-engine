@@ -1,3 +1,28 @@
+// MatterEngine3/src/module_resolver.cpp
+//
+// Implements module_resolver.h. Three stages, each independently testable:
+//
+//   1. strip_comments_and_strings  blank out everything an `import` token could
+//      hide in — line and block comments, string and template-literal bodies —
+//      while PRESERVING the one kind of string that matters, the specifier of an
+//      `import`/`from`. Whitespace-preserving, so offsets stay meaningful.
+//   2. parse_import_specifiers     pull the quoted specifiers out of the cleaned
+//      text, matching the `import` keyword at a word boundary so `export ... from`
+//      is not mistaken for one, and handling the bare side-effect form.
+//   3. fold_sources                resolve each specifier against the shared-lib
+//      search path, read it, recurse into its own imports, and emit the canonical
+//      NUL-separated buffer: part source first, then every module sorted by
+//      resolved specifier.
+//
+// The SORT is what makes the buffer canonical — the order files happen to be
+// discovered in must not reach the part hash — and the `seen` set makes import
+// cycles terminate rather than fail. Everything is fail-closed: a missing or
+// illegal module aborts the fold instead of silently omitting a dependency,
+// because an omitted module would hash as a different (but valid-looking) part.
+//
+// Deliberately a hand-written scanner rather than a JS parser: it must run
+// without a QuickJS runtime, on the bake worker, once per part resolve.
+
 #include "module_resolver.h"
 #include <cctype>
 #include <fstream>
@@ -109,6 +134,10 @@ bool resolve_specifier(const std::string& specifier, const std::string& shared_l
                              out_path, err);
 }
 
+// Roots are tried IN ORDER and the first readable file wins, which is how a
+// project's shared-lib shadows the engine's copy of the same module name. On
+// failure `err` lists every path attempted — with a search path there is no
+// single path that "should" have existed, so naming one would misdirect.
 bool resolve_specifier(const std::string& specifier,
                        const std::vector<std::string>& shared_lib_roots,
                        std::string& out_path, std::string& err) {
@@ -153,6 +182,20 @@ bool fold_sources(const std::string& part_source, const std::string& shared_lib_
 bool fold_sources(const std::string& part_source,
                   const std::vector<std::string>& shared_lib_roots,
                   FoldResult& out, std::string& err) {
+    return fold_sources_with_loader(part_source,
+        [&](const std::string& spec, ResolvedModule& module, std::string& error) {
+            module.specifier = spec;
+            if (!resolve_specifier(spec, shared_lib_roots, module.source_path, error)) return false;
+            if (!read_file(module.source_path, module.source)) {
+                error = "read failed: " + module.source_path;
+                return false;
+            }
+            return true;
+        }, out, err);
+}
+
+bool fold_sources_with_loader(const std::string& part_source, const SourceLoader& loader,
+                              FoldResult& out, std::string& err) {
     // BFS/DFS over imports, keyed by RESOLVED SPECIFIER (e.g. "shared-lib/leaf"),
     // normalizing any trailing ".js" so "shared-lib/x" and "shared-lib/x.js" dedup.
     std::set<std::string> seen;                 // canonical specifiers visited
@@ -173,13 +216,20 @@ bool fold_sources(const std::string& part_source,
         std::string spec = canon(worklist[i]);
         if (seen.count(spec)) continue;
         seen.insert(spec);
-        std::string path;
-        if (!resolve_specifier(spec, shared_lib_roots, path, err)) return false;
-        std::string src;
-        if (!read_file(path, src)) { err = "read failed: " + path; return false; }
-        modules.push_back({spec, src, path});
+        if (spec.rfind("shared-lib/", 0) != 0) {
+            err = "specifier not under shared-lib/: " + spec;
+            return false;
+        }
+        const std::string name = spec.substr(11);
+        if (name.empty() || name.find('/') != std::string::npos || name.find("..") != std::string::npos) {
+            err = "illegal module name: " + name;
+            return false;
+        }
+        ResolvedModule module;
+        if (!loader || !loader(spec, module, err)) return false;
+        modules.push_back({spec, module.source, module.source_path});
         // enqueue this module's own imports (transitive)
-        for (auto& dep : module_resolver::parse_import_specifiers(src))
+        for (auto& dep : module_resolver::parse_import_specifiers(module.source))
             worklist.push_back(dep);
     }
 

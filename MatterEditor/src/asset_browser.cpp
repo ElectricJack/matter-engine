@@ -1,4 +1,42 @@
+// MatterEditor/src/asset_browser.cpp
+//
+// Implementation of the editor's Assets pane (asset_browser.h): scan the world
+// projects, hash every authored object exactly the way the bake pipeline would,
+// look each hash up in the per-world caches, and render the result as a
+// filterable tree.
+//
+// Read-only, deliberately -- see the class comment in asset_browser.h for the
+// audit of which ScriptHost entry points are used and why none of them bakes.
+// Nothing here writes to the project tree or to the cache.
+//
+// The cycle, all driven from draw():
+//
+//   rescan()           group worlds by project, derive the shared-lib and cache
+//                      roots, enumerate and read every objects/*.js.
+//   annotate_project() per object: fold the requires DAG into a resolved hash,
+//                      then probe each per-world cache for the matching
+//                      artifact and peek its LOD count.
+//   draw_project()     worlds, objects grouped by owning scene, shared-lib.
+//   draw_object_row()  one object plus its required-child sub-rows.
+//
+// Freshness: a full rescan happens on the first draw, on "Refresh", and when
+// the engine shared-lib root changes. Otherwise every frame stats each object
+// source and re-annotates only the projects whose files actually changed. The
+// stat sweep is O(objects) per frame; the QuickJS evaluation is not.
+//
+// Two invariants keep the annotations honest, and either is easy to break:
+//   - the shared-lib root ORDER must match LocalProviderConfig (project-local
+//     first, engine root second) -- see rescan().
+//   - child hashes must be folded recursively, leaves first -- see
+//     resolve_object_hash().
+// Skip either and every composite part reads as unbaked.
+//
+// Render thread only: ImGui, QuickJS and std::filesystem are all touched here.
+
 #include "asset_browser.h"
+#include <cstdlib>
+#include "matter/project_layout.h"
+#include "matter/log.h"
 #include "asset_browser_ids.h"
 
 #include "ui.h"          // WorldEntry, ViewerStats (kept out of the header to
@@ -15,11 +53,43 @@
 #include <filesystem>
 #include <fstream>
 #include <regex>
+#include <map>
+#include <functional>
 #include <sstream>
 #include <system_error>
 
 namespace viewer {
 namespace {
+
+struct AssetFolder {
+    std::map<std::string, AssetFolder> children;
+    std::vector<size_t> rows;
+    bool reveal = false;
+
+    void add(const std::string& folder, size_t row, bool open) {
+        AssetFolder* node = this;
+        node->reveal |= open;
+        std::istringstream path(folder);
+        std::string name;
+        while (std::getline(path, name, '/')) {
+            if (name.empty()) continue;
+            node = &node->children[name];
+            node->reveal |= open;
+        }
+        node->rows.push_back(row);
+    }
+
+    void draw(const std::function<void(size_t)>& draw_row) const {
+        for (const auto& [name, child] : children) {
+            if (child.reveal) ImGui::SetNextItemOpen(true);
+            if (ImGui::TreeNode(name.c_str())) {
+                child.draw(draw_row);
+                ImGui::TreePop();
+            }
+        }
+        for (size_t row : rows) draw_row(row);
+    }
+};
 
 std::string to_lower(const std::string& s) {
     std::string out = s;
@@ -28,6 +98,8 @@ std::string to_lower(const std::string& s) {
     return out;
 }
 
+// Whole-file read. Returns an empty string for a missing or unreadable file,
+// which classify_kind then classifies as Support rather than failing the scan.
 std::string read_file(const std::string& path) {
     std::ifstream in(path, std::ios::binary);
     if (!in) return {};
@@ -36,6 +108,9 @@ std::string read_file(const std::string& path) {
     return ss.str();
 }
 
+// Row decoration for a Kind: a one-character glyph, a tint, and a word. The
+// duplicated `return` after each switch exists to satisfy compilers that do not
+// treat the switch as exhaustive; it is not a reachable default.
 const char* kind_glyph(AssetBrowser::Kind kind) {
     switch (kind) {
         case AssetBrowser::Kind::Part:    return "P";
@@ -65,6 +140,10 @@ const char* kind_label(AssetBrowser::Kind kind) {
 
 } // namespace
 
+// The ScriptHost is built here and destroyed by the defaulted destructor, which
+// has to live in this TU because the header only forward-declares the type. One
+// host serves every project; annotate_project() re-points its shared-lib roots
+// before touching a given project's objects.
 AssetBrowser::AssetBrowser() : host_(std::make_unique<script_host::ScriptHost>()) {}
 AssetBrowser::~AssetBrowser() = default;
 
@@ -94,6 +173,9 @@ long long AssetBrowser::read_mtime(const std::string& path) {
     return static_cast<long long>(t.time_since_epoch().count());
 }
 
+// Case-insensitive substring match; an empty filter passes everything. Applied
+// to world names and module names independently, so a filter can leave a
+// project showing worlds but no objects, or the reverse.
 bool AssetBrowser::passes_filter(const std::string& name) const {
     if (filter_buf_[0] == '\0') return true;
     return to_lower(name).find(to_lower(filter_buf_)) != std::string::npos;
@@ -126,6 +208,7 @@ void AssetBrowser::rescan(const std::vector<WorldEntry>& worlds,
         }
         WorldRef ref;
         ref.world_name = w.world_name;
+        ref.folder = w.scene_group;
         ref.world_index = static_cast<int>(wi);
         projects_[pidx].worlds.push_back(std::move(ref));
     }
@@ -160,26 +243,16 @@ void AssetBrowser::rescan(const std::vector<WorldEntry>& worlds,
         // Objects, shared tier first then each scene's own. `scene` is carried
         // per object so the browser can show where a module lives, which is
         // the whole point of the split layout.
-        auto collect_js = [&](const fs::path& dir) {
-            std::vector<fs::path> files;
-            std::error_code dir_ec;
-            for (auto dit = fs::directory_iterator(dir, dir_ec);
-                 !dir_ec && dit != fs::directory_iterator(); dit.increment(dir_ec)) {
-                if (fs::is_regular_file(dit->path(), dir_ec) &&
-                    dit->path().extension() == ".js")
-                    files.push_back(dit->path());
-            }
-            std::sort(files.begin(), files.end());
-            return files;
-        };
-
         auto add_objects = [&](const std::vector<fs::path>& files,
-                               const std::string& scene) {
+                               const std::string& scene, const fs::path& root,
+                               const std::string& folder) {
             for (const fs::path& path : files) {
                 AssetObject obj;
                 obj.module = path.stem().string();
                 obj.source_path = path.string();
                 obj.scene = scene;
+                const auto relative = path.parent_path().lexically_relative(root);
+                obj.folder = folder + (relative == "." ? "" : "/" + relative.generic_string());
                 obj.source_text = read_file(obj.source_path);
                 obj.kind = classify_kind(obj.source_text);
                 obj.mtime_ns = read_mtime(obj.source_path);
@@ -195,22 +268,18 @@ void AssetBrowser::rescan(const std::vector<WorldEntry>& worlds,
             }
         };
 
-        add_objects(collect_js(fs::path(project.path) / "objects"), std::string());
+        matter::project_layout::Diagnostics diag;
+        const fs::path shared_objects = fs::path(project.path) / "objects";
+        add_objects(matter::project_layout::object_files(shared_objects, &diag), "", shared_objects, "Shared");
 
         const fs::path scenes_dir = fs::path(project.path) / "scenes";
-        std::error_code scenes_ec;
-        if (fs::is_directory(scenes_dir, scenes_ec)) {
-            std::vector<fs::path> scene_dirs;
-            for (auto sit = fs::directory_iterator(scenes_dir, scenes_ec);
-                 !scenes_ec && sit != fs::directory_iterator(); sit.increment(scenes_ec)) {
-                if (fs::is_directory(sit->path(), scenes_ec))
-                    scene_dirs.push_back(sit->path());
-            }
-            std::sort(scene_dirs.begin(), scene_dirs.end());
-            for (const fs::path& scene_path : scene_dirs)
-                add_objects(collect_js(scene_path / "objects"),
-                            scene_path.filename().string());
+        for (const auto& script : matter::project_layout::scene_scripts(scenes_dir, &diag)) {
+            const auto scene = script.parent_path();
+            add_objects(matter::project_layout::object_files(scene / "objects", &diag),
+                        script.stem().string(), scene / "objects",
+                        "Scenes/" + scene.lexically_relative(scenes_dir).generic_string());
         }
+        for (const auto& d : diag.duplicates) MATTER_LOGW("asset_browser", "%s", d.c_str());
 
         // shared-lib listing: names only, not interactive (part-workbench.md
         // I.3: "shared-lib: noise, curves, ... (listed, not openable)").
@@ -350,6 +419,8 @@ void AssetBrowser::annotate_project(Project& project) {
 void AssetBrowser::draw(const std::vector<WorldEntry>& worlds, ViewerStats& stats,
                         const std::string& shared_lib_root,
                         const ViewerCommands& commands) {
+    // A changed shared-lib root invalidates every hash the browser holds, so it
+    // forces the same full rescan that the first draw and the Refresh button do.
     bool need_full_scan = !scanned_ || shared_lib_root != scanned_shared_lib_root_;
 
     if (ImGui::Button("Refresh")) need_full_scan = true;
@@ -358,10 +429,11 @@ void AssetBrowser::draw(const std::vector<WorldEntry>& worlds, ViewerStats& stat
     ImGui::InputTextWithHint("##asset_browser_filter", "Search worlds/objects...",
                              filter_buf_, sizeof(filter_buf_));
 
+    const bool skip_cache_status = std::getenv("MATTER_ASSET_BROWSER_SKIP_CACHE_STATUS") != nullptr;
     if (need_full_scan) {
         rescan(worlds, shared_lib_root);
-        for (Project& p : projects_) annotate_project(p);
-    } else {
+        if (!skip_cache_status) for (Project& p : projects_) annotate_project(p);
+    } else if (!skip_cache_status) {
         // Cheap per-frame mtime probe (stat only — see AssetObject::mtime_ns
         // doc); a full re-annotate (which runs resolve_hash/eval_requires,
         // the expensive QuickJS-eval part) only fires for a project when one
@@ -393,8 +465,14 @@ void AssetBrowser::draw_project(Project& project, ViewerStats& stats,
         ImGui::Indent();
 
         if (ImGui::TreeNodeEx("Worlds", ImGuiTreeNodeFlags_DefaultOpen)) {
-            for (const WorldRef& w : project.worlds) {
-                if (!passes_filter(w.world_name)) continue;
+            AssetFolder folders;
+            for (size_t i = 0; i < project.worlds.size(); ++i) {
+                const auto& w = project.worlds[i];
+                if (passes_filter(w.folder + "/" + w.world_name))
+                    folders.add(w.folder, i, filter_buf_[0] != '\0');
+            }
+            folders.draw([&](size_t i) {
+                const auto& w = project.worlds[i];
                 ImGui::PushID(w.world_index);
                 ImGui::Bullet();
                 ImGui::TextUnformatted(w.world_name.c_str());
@@ -405,16 +483,19 @@ void AssetBrowser::draw_project(Project& project, ViewerStats& stats,
                     commands.switch_world(w.world_index);
                 if (is_current) ImGui::EndDisabled();
                 ImGui::PopID();
-            }
+            });
             if (project.worlds.empty()) ImGui::TextDisabled("(none)");
             ImGui::TreePop();
         }
 
         if (ImGui::TreeNodeEx("Objects", ImGuiTreeNodeFlags_DefaultOpen)) {
-            for (AssetObject& obj : project.objects) {
-                if (!passes_filter(obj.module)) continue;
-                draw_object_row(project, obj, commands);
+            AssetFolder folders;
+            for (size_t i = 0; i < project.objects.size(); ++i) {
+                const auto& obj = project.objects[i];
+                if (passes_filter(obj.folder + "/" + obj.module))
+                    folders.add(obj.folder, i, filter_buf_[0] != '\0' || obj.module == scroll_to_module_);
             }
+            folders.draw([&](size_t i) { draw_object_row(project, project.objects[i], commands); });
             if (project.objects.empty()) ImGui::TextDisabled("(none)");
             ImGui::TreePop();
         }
@@ -431,9 +512,13 @@ void AssetBrowser::draw_project(Project& project, ViewerStats& stats,
     ImGui::PopID();
 }
 
+// One object row: kind glyph, name, bake badge, action buttons, and an
+// expandable list of its declared required children.
+//
+// Source paths keep row IDs unique across shared and scene-local copies.
 void AssetBrowser::draw_object_row(Project& project, AssetObject& obj,
                                    const ViewerCommands& commands) {
-    ImGui::PushID(obj.module.c_str());
+    ImGui::PushID(obj.source_path.c_str());
 
     if (obj.module == scroll_to_module_) {
         ImGui::SetScrollHereY(0.2f);
@@ -445,6 +530,9 @@ void AssetBrowser::draw_object_row(Project& project, AssetObject& obj,
     ImGui::TextColored(kind_color(obj.kind), "[%s]", kind_glyph(obj.kind));
     ImGui::SameLine();
 
+    // An object with no children is drawn as a leaf that must not push the tree
+    // stack. The TreePop at the bottom of this function is gated on the same
+    // flag; an unconditional TreePop here would unbalance ImGui's ID stack.
     ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_SpanAvailWidth;
     if (obj.requires_children.empty())
         flags |= ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen;
@@ -452,7 +540,9 @@ void AssetBrowser::draw_object_row(Project& project, AssetObject& obj,
                                         obj.module.c_str(), kind_label(obj.kind));
 
     ImGui::SameLine();
-    if (obj.baked) {
+    if (!obj.annotated) {
+        ImGui::TextDisabled("bake status not checked");
+    } else if (obj.baked) {
         ImGui::TextColored(ImVec4(0.35f, 1.0f, 0.35f, 1.0f), "OK  %.1f KB  %d LOD%s",
                            obj.baked_bytes / 1024.0, obj.lod_count,
                            obj.lod_count == 1 ? "" : "s");
@@ -478,6 +568,10 @@ void AssetBrowser::draw_object_row(Project& project, AssetObject& obj,
         for (std::size_t occurrence = 0; occurrence < obj.requires_children.size();
              ++occurrence) {
             const RequiredChildUi& child = obj.requires_children[occurrence];
+            // Every child control is literally labelled "Go", so the enclosing
+            // row identity is the only thing keeping them distinct on ImGui's
+            // ID stack. asset_browser_ids.h explains the length-prefixed
+            // encoding and what it protects against.
             const std::string row_identity = required_child_row_identity(
                 child.module, child.params_json, occurrence);
             ImGui::PushID(row_identity.c_str());

@@ -1,0 +1,16 @@
+[
+  {
+    "kind": "build",
+    "name": "solid_face_projection_gpu_tests",
+    "command": [
+      "./tools/build-windows-from-wsl.sh",
+      "RelWithDebInfo",
+      "solid_face_projection_gpu_tests"
+    ],
+    "exit": 1,
+    "seconds": 10.444905709999148,
+    "log": "docs/agent/evidence/2026-09-15-wall-surface/modular-v1-build-solid_face_projection_gpu_tests.log",
+    "source_changes": [],
+    "validation_errors": []
+  }
+]

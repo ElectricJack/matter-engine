@@ -1,3 +1,33 @@
+// MatterEditor/src/bake_lab_timeline.cpp
+//
+// Implementation of the Bake Lab Timeline tab declared in
+// bake_lab_timeline.h. The flamegraph is drawn with raw ImGui draw-list
+// primitives inside a child window, not with ImGui widgets: one filled rect per
+// visible span, a border, and a label clipped by AddText's fine clip rect.
+//
+// Layout: x is time, mapped linearly from the visible window
+// [view_begin_ms_, view_end_ms_] onto the canvas width; y is tree depth, one
+// fixed-height row per level. There is no vertical scrolling -- the child
+// window disables it -- so a tree deeper than the canvas simply has its deepest
+// rows clipped away.
+//
+// Interaction, all on one InvisibleButton covering the canvas:
+//   wheel        zoom about the cursor's time position, clamped between
+//                kMinSpanMs and 4x the full trace extent.
+//   middle/left  drag to pan. `panned` latches for the whole gesture, so
+//                releasing after a drag does not also count as a click.
+//   left click   pin the hovered span (a copy, so it survives a refresh).
+//
+// Hit-testing is done during the same loop that draws, against the rect just
+// emitted; there is no separate spatial structure.
+//
+// All times are trace-relative milliseconds. A span with end_ms ==
+// bake_trace::kOpenEndMs was still open when the snapshot was taken: it is
+// drawn to the end of the trace, dimmed and hatched, and its duration is
+// reported "so far".
+//
+// Render thread only.
+
 #include "bake_lab_timeline.h"
 
 #include <algorithm>
@@ -11,14 +41,14 @@ namespace viewer {
 
 namespace {
 
-constexpr float kRowHeight = 20.0f;
-constexpr float kRowGap = 1.0f;
+constexpr float kRowHeight = 20.0f;  // px per tree level, before the gap
+constexpr float kRowGap = 1.0f;      // px of vertical separation between rows
 constexpr double kMinSpanMs = 0.001;  // smallest allowed zoomed-in view width
 
-// FNV-1a over the (stable, interned) span name pointer's bytes... spans share
-// interned name pointers from bake_trace_names.h, but hashing the string
-// contents (not the pointer) keeps the same name always mapping to the same
-// color even across sources/collectors.
+// FNV-1a over the span name's CHARACTERS, not over the pointer. Spans do share
+// interned name pointers from bake_trace_names.h, but hashing the contents is
+// what keeps the same name mapping to the same colour across sources and
+// collectors, where the pointers need not agree.
 uint32_t hash_name(const char* name) {
     if (!name) return 0;
     uint32_t h = 2166136261u;
@@ -29,6 +59,11 @@ uint32_t hash_name(const char* name) {
     return h;
 }
 
+// Deterministic colour per span name: hue from the name hash, so the same phase
+// keeps its colour across refreshes and across sources, and neighbouring spans
+// with different names are reliably different colours. `open` desaturates and
+// darkens, which is what marks a still-running span before the hatching is
+// drawn over it.
 ImU32 color_for_name(const char* name, bool open, float alpha) {
     uint32_t h = hash_name(name);
     float hue = (h % 360) / 360.0f;
@@ -38,6 +73,10 @@ ImU32 color_for_name(const char* name, bool open, float alpha) {
     return ImGui::ColorConvertFloat4ToU32(c);
 }
 
+// Formats a duration given in milliseconds, switching to seconds past 1000 ms
+// so a multi-second bake does not read as a five-digit millisecond count.
+// Truncates silently if `buf_size` is too small (snprintf semantics); callers
+// pass 32-byte buffers, which is ample.
 void format_ms(char* buf, size_t buf_size, double ms) {
     if (ms < 1000.0)
         std::snprintf(buf, buf_size, "%.2f ms", ms);
@@ -47,6 +86,13 @@ void format_ms(char* buf, size_t buf_size, double ms) {
 
 }  // namespace
 
+// Pulls a fresh deep copy of the engine's last bake trace into the active
+// source, then rebuilds everything derived from it. Silently does nothing when
+// no world is open. Seeds the single production-session entry on first use.
+//
+// Destructive by necessity: last_bake_trace() overwrites src.root, so every
+// Span pointer in flat_ and any pin referencing them are dangling the moment it
+// returns -- both are dropped here, before anything can read them.
 void BakeLabTimeline::refresh_active_source(matter::WorldSession* session) {
     if (!session) return;
     if (sources_.empty()) {
@@ -63,6 +109,13 @@ void BakeLabTimeline::refresh_active_source(matter::WorldSession* session) {
     fit_view();
 }
 
+// Flattens the active source's span tree into flat_ in pre-order, recording
+// each node's depth and its parent's index in flat_ (the parent link is what
+// the tooltip and the pin walk to build a root -> ... -> span path).
+//
+// Leaves flat_ empty when nothing has been captured or the root has no
+// children; draw() treats that as "nothing to draw". full_end_ms_ is floored so
+// the view span can never be zero and the time-to-pixel division stays safe.
 void BakeLabTimeline::rebuild_flat() {
     flat_.clear();
     if (sources_.empty()) {
@@ -98,12 +151,18 @@ void BakeLabTimeline::rebuild_flat() {
     full_end_ms_ = std::max(full_begin_ms_ + kMinSpanMs, src.root.end_ms);
 }
 
+// Resets the visible window to the trace's full extent and marks the view
+// initialized. Called after every rebuild and by the "Fit" button.
 void BakeLabTimeline::fit_view() {
     view_begin_ms_ = full_begin_ms_;
     view_end_ms_ = full_end_ms_;
     view_initialized_ = true;
 }
 
+// Pins one span by COPYING everything the detail panel needs -- the ancestor
+// name path, the times, the open flag and the counters -- rather than holding a
+// pointer into the tree. That is what lets the pin outlive the flat_ rebuild
+// that a refresh or a source switch performs. Out-of-range indices are ignored.
 void BakeLabTimeline::pin_flat_index(int flat_index) {
     if (flat_index < 0 || flat_index >= static_cast<int>(flat_.size())) return;
 
@@ -126,6 +185,10 @@ void BakeLabTimeline::pin_flat_index(int flat_index) {
     pinned_.counters = s->counters;
 }
 
+// Source combo, Refresh, Fit, and the one-line status underneath. Refresh is
+// disabled without a session because there is nothing to pull from. Switching
+// source drops the pin and refits for the same reason a refresh does: the flat
+// list is rebuilt against a different tree.
 void BakeLabTimeline::draw_source_selector(matter::WorldSession* session) {
     if (sources_.empty())
         sources_.push_back(BakeLabTraceSource{"Production session (last bake)", {}, false});
@@ -163,6 +226,17 @@ void BakeLabTimeline::draw_source_selector(matter::WorldSession* session) {
     }
 }
 
+// The flamegraph proper: input handling, then one pass over flat_ that both
+// draws and hit-tests each span.
+//
+// Cost is O(spans) per frame, but the two `continue`s at the top of the loop
+// reject anything narrower than half a pixel or fully outside the visible time
+// window before any drawing happens, so a zoomed-in view of a large trace stays
+// cheap. Spans deeper than the canvas is tall are skipped as well -- the child
+// window has scrolling disabled, so they are simply not reachable.
+//
+// The canvas height is 65% of the remaining content region, leaving room for
+// the pinned-detail panel that draw() puts underneath it.
 void BakeLabTimeline::draw_flamegraph_canvas() {
     if (flat_.empty()) return;
 
@@ -407,6 +481,10 @@ void BakeLabTimeline::draw_pinned_panel() {
     }
 }
 
+// Entry point for the tab. Order is load-bearing: draw_source_selector runs
+// first because it lazily seeds sources_ and is where Refresh (and therefore
+// the flat_ rebuild) happens, so the flat_.empty() check below sees this
+// frame's state rather than the previous frame's.
 void BakeLabTimeline::draw(matter::WorldSession* session) {
     draw_source_selector(session);
     ImGui::Separator();

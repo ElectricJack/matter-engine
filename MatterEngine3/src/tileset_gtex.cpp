@@ -1,4 +1,35 @@
 // tileset_gtex.cpp — .gtex binary I/O (see tileset_gtex.h).
+//
+// The header carries the on-disk layout, the v1/v2 difference and the linking
+// rule for the bundled stb copies; read it first. This file is the four things
+// that layout implies, in order:
+//   1. `splitmix64` and the two public folds -- `gtex_content_hash` (the value
+//      stamped into the header and compared by `gtex_cache_hit`) and
+//      `gtex_script_identity_hash` (root source folded with its sorted child
+//      hashes).
+//   2. Channel encoding: PNG via stb for the 8-bit channels, a raw
+//      little-endian uint16 blob for height.
+//   3. `save_gtex` / `load_gtex`.
+//   4. `gtex_cache_hit`, the 48-byte header-only probe.
+//
+// MEMORY MODEL. Both directions are whole-file-in-RAM: `save_gtex` encodes
+// every channel into its own buffer, assembles the complete image in one
+// `std::vector<uint8_t>` and writes it in a single `fwrite`; `load_gtex` reads
+// the entire file before decoding anything. A 4x4 atlas at 512 texels/m is tens
+// of megabytes, so neither is something to call speculatively -- that is what
+// `gtex_cache_hit` exists for, and it reads 48 bytes.
+//
+// FILE SIZE CEILING. `GTexChannelEntry::offset` and `::size` are uint32, so the
+// format cannot address past 4 GB. The bounds checks in `load_gtex` widen to
+// uint64 before adding precisely because the naive uint32 sum can wrap and pass
+// on an oversized file.
+//
+// THREADING AND FAILURE. Free functions, no shared or static mutable state.
+// `save_gtex` is atomic against readers (write `<path>.tmp`, remove the target,
+// rename); a torn write leaves the `.tmp` behind, never a half-written `.gtex`.
+// Every failure path sets `err` and returns false without touching the caller's
+// output vectors beyond what it had already filled -- except `gtex_cache_hit`,
+// which reports a miss and never produces an error string at all.
 
 #include "tileset_gtex.h"
 
@@ -82,8 +113,15 @@ static bool encode_png_rgb(std::vector<uint8_t>& out,
 }
 
 // stb_image_write does not support 16-bit PNG. We store height as a raw R16
-// blob (LE uint16) tagged as PNG-off in the format; readers detect it by the
-// channel id + PNG magic check.
+// blob (LE uint16).
+//
+// THE CHANNEL ID ALONE IS THE TAG -- there is no magic probe anywhere.
+// `load_gtex` hard-codes the treatment per channel id: `CHAN_HEIGHT_R16` is
+// always read as a raw uint16 blob and only its `size == width*height*2` is
+// validated, while every other channel id always goes through stb.
+//
+// Always succeeds (it is a memcpy); the bool return exists only to match the
+// shape of `encode_png_rgb` at the call sites.
 static bool encode_r16_raw(std::vector<uint8_t>& out, int w, int h,
                            const uint16_t* pixels) {
     out.assign(reinterpret_cast<const uint8_t*>(pixels),
@@ -107,6 +145,20 @@ static bool rd(const uint8_t*& p, const uint8_t* end, void* out, size_t n) {
 // -----------------------------------------------------------------------------
 // save_gtex
 // -----------------------------------------------------------------------------
+// `header_in` is a template, not the final header: magic, version,
+// horizon_w_px/h_px and zero-valued atlas_tiles_x/y are all overwritten here
+// from the arguments actually supplied. The caller's `content_hash`,
+// `tile_size_m`, `texels_per_meter`, `height_min`/`height_max` and version
+// stamps pass through untouched -- `content_hash` in particular, since that is
+// what `gtex_cache_hit` will compare on the next bake.
+//
+// The channel table is written TWICE: once as a placeholder (blob offsets are
+// not known until the blobs have been appended), then overwritten in place at
+// `table_start` with the finalized offsets and sizes. Anything inserted between
+// those two writes must not resize `buf` in a way that moves `table_start`.
+//
+// Supplying horizon data selects v2 (6 channels); omitting it selects v1 and
+// reproduces the pre-horizon writer byte for byte.
 bool save_gtex(const std::string& path,
                const GTexHeader& header_in,
                int atlas_w_px, int atlas_h_px,
@@ -243,6 +295,21 @@ bool save_gtex(const std::string& path,
 // -----------------------------------------------------------------------------
 // load_gtex
 // -----------------------------------------------------------------------------
+//
+// Reads and decodes EVERYTHING: the whole file into memory, then every channel
+// out to its own vector. There is no partial or lazy load and no way to ask for
+// one channel. To answer "is my cached atlas still valid" use `gtex_cache_hit`,
+// which touches 48 bytes instead of the entire file.
+//
+// Validation is layered and every failure is a hard false + `err`, never a
+// silently degraded load: truncated header, wrong magic, unknown version,
+// truncated channel table, out-of-range or duplicate channel id, missing
+// required channel, blob extending past end of file, height blob whose size
+// disagrees with its declared dimensions, and stb decode failure.
+//
+// Corrupt-file safety rests on the uint64 widening in the offset+size bounds
+// checks -- both fields are uint32 and their sum can wrap on a >2 GB file,
+// which would let a check pass and a read run off the buffer (B12).
 static bool read_all(const std::string& path, std::vector<uint8_t>& out, std::string& err) {
     FILE* f = std::fopen(path.c_str(), "rb");
     if (!f) { err = "load_gtex: cannot open " + path; return false; }

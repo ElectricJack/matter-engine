@@ -151,6 +151,34 @@ void test_resolver_gpu_entries_sorted_and_incremental() {
     CHECK(r.hidden(0x41), "resolver: a later variant of a hidden module hides");
 }
 
+// A part hash can be RE-registered under a different module (a rebake that moves
+// a part between modules, or a catalog refilled by a different provider). When
+// the new module carries no cap/bias, the old module's GPU row has to go — a
+// stale row keeps culling/biasing a part that is no longer overridden at all.
+void test_resolver_remap_retires_the_gpu_row() {
+    DrawOverrideResolver r;
+    r.add_module(0x10, "Tree");
+    r.add_module(0x20, "Rock");
+    DrawOverrideTable t;
+    t.set("Tree", make_override(false, 300.0f, 1.0f));
+    r.set_table(t);
+    CHECK(r.gpu_entries().size() == 1 && r.gpu_entries()[0].part_hash == 0x10,
+          "remap: the overridden module has a row");
+    (void)r.consume_gpu_dirty();
+
+    // 0x10 now belongs to Rock, which has no override.
+    CHECK(r.add_module(0x10, "Rock"), "remap: moving a hash reports a change");
+    CHECK(r.gpu_entries().empty(),
+          "remap: the old module's GPU row is retired, not left applying");
+    CHECK(r.consume_gpu_dirty(), "remap: retiring the row dirties the lane");
+
+    // And the other direction still works incrementally.
+    CHECK(r.add_module(0x10, "Tree"), "remap: moving it back reports a change");
+    CHECK(r.gpu_entries().size() == 1 &&
+              r.gpu_entries()[0].value.max_draw_distance == 300.0f,
+          "remap: the row comes back with the module's values");
+}
+
 // ---------------------------------------------------------------------------
 // 3. The property-system bridge
 // ---------------------------------------------------------------------------
@@ -398,6 +426,7 @@ int main() {
     test_resolver_default_state_is_inert();
     test_resolver_module_to_hash();
     test_resolver_gpu_entries_sorted_and_incremental();
+    test_resolver_remap_retires_the_gpu_row();
     test_field_naming();
     test_group_defaults_and_readback();
     test_sparse_persistence();

@@ -1,0 +1,5 @@
+if(NOT DEFINED RepositoryRoot OR NOT DEFINED ProjectName)
+    message(FATAL_ERROR "RepositoryRoot and ProjectName are required")
+endif()
+include("${RepositoryRoot}/cmake/MatterPackageValidation.cmake")
+matter_validate_dist_project_name("${ProjectName}")

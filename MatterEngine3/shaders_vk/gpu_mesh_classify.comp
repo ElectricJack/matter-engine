@@ -1,0 +1,57 @@
+#version 450
+
+#include "gpu_mesh_common.glsl"
+#include "gpu_mesh_mc_tables.glsl"
+
+layout(local_size_x = 256) in;
+layout(std430, binding = 0) readonly buffer ParamsBuffer {
+    GpuMeshFieldParams params;
+};
+layout(std430, binding = 1) readonly buffer FieldBuffer {
+    float field[];
+};
+layout(std430, binding = 2) writeonly buffer CaseBuffer {
+    uint cubeCases[];
+};
+layout(std430, binding = 3) writeonly buffer ActiveBuffer {
+    uint activeFlags[];
+};
+layout(std430, binding = 4) writeonly buffer TriangleCountBuffer {
+    uint triangleCounts[];
+};
+layout(std430, binding = 5) readonly buffer TriangleTableBuffer {
+    int triangleTable[];
+};
+
+uint gpuMeshSampleIndex(uvec3 coordinate) {
+    return coordinate.x + params.sampleDimsAndCount.x *
+        (coordinate.y + params.sampleDimsAndCount.y * coordinate.z);
+}
+
+void main() {
+    const uint cell = gl_GlobalInvocationID.x;
+    const uvec3 cellDimensions = params.sampleDimsAndCount.xyz - uvec3(1u);
+    const uint cellCount = cellDimensions.x * cellDimensions.y *
+        cellDimensions.z;
+    if (cell >= cellCount) return;
+    const uint x = cell % cellDimensions.x;
+    const uint yz = cell / cellDimensions.x;
+    const uint y = yz % cellDimensions.y;
+    const uint z = yz / cellDimensions.y;
+    const uvec3 base = uvec3(x, y, z);
+
+    uint cubeCase = 0u;
+    for (uint corner = 0u; corner < 8u; ++corner) {
+        if (field[gpuMeshSampleIndex(base + gpuMeshCornerOffset(corner))] <
+            params.originAndIso.w)
+            cubeCase |= 1u << corner;
+    }
+    uint entries = 0u;
+    for (; entries < 15u; ++entries) {
+        if (triangleTable[cubeCase * 16u + entries] < 0) break;
+    }
+    const uint triangles = entries / 3u;
+    cubeCases[cell] = cubeCase;
+    activeFlags[cell] = triangles != 0u ? 1u : 0u;
+    triangleCounts[cell] = triangles;
+}

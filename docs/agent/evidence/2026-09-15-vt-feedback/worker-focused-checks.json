@@ -1,0 +1,13 @@
+[
+  {
+    "name": "worker-focused-compositor-build",
+    "command": [
+      "./tools/build-windows-from-wsl.sh",
+      "RelWithDebInfo",
+      "vt_compositor_tests"
+    ],
+    "exit": 1,
+    "elapsed_seconds": 16.97699168499821,
+    "log": "docs/agent/evidence/2026-09-15-vt-feedback/worker-focused-compositor-build.log"
+  }
+]

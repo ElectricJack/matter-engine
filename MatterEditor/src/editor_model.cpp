@@ -1,3 +1,26 @@
+// MatterEditor/src/editor_model.cpp
+//
+// EditorModel implementation. editor_model.h carries the layering story (the
+// Windows viewer is delta-driven through scene_model_adapter.*; the legacy
+// poll path via SceneCommands survives only for
+// MatterEngine3/tests/editor_model_tests.cpp) and documents every public
+// method; this file is the mechanics.
+//
+// Two invariants worth holding before editing anything here:
+//
+//  - `records_` is authoritative. `all_rows_` and `filtered_rows_` are pure
+//    derivations, rebuilt in full by rebuild_hierarchy_from_store() — never
+//    patched in place. Every mutation therefore either rebuilds immediately
+//    (apply_snapshot) or marks dirty and lets the coalesced observable
+//    revision rebuild once at the next scheduler flush (mark_rows_changed).
+//  - A rebuild is O(records): two hash maps, a sort of each sibling list, and
+//    a recursive lambda whose stack depth is the hierarchy depth. That cost is
+//    exactly why the delta paths coalesce instead of rebuilding per delta.
+//
+// Nothing in this file locks or is thread-aware; it is driven from the
+// editor's main loop, and the scheduler flush that runs the rebuild observer
+// runs on that same thread.
+
 #include "editor_model.h"
 
 #include <algorithm>
@@ -69,10 +92,12 @@ void EditorModel::apply_remove(const std::vector<SceneEntityId>& ids) {
     mark_rows_changed();
 }
 
+// Legacy poll path: re-query the entire record set and apply it as a snapshot,
+// i.e. a FULL re-flatten on every call. `query_records` is optional — a null
+// one yields an empty snapshot, which clears the model rather than leaving it
+// alone. `commands.generation` is NOT consulted: the counter it fed
+// (Selection::world_generation) was never read back and has been removed.
 void EditorModel::refresh(const SceneCommands& commands) {
-    if (commands.generation) {
-        last_generation_ = commands.generation();
-    }
     std::vector<SceneRecord> records;
     if (commands.query_records) {
         records = commands.query_records();
@@ -85,15 +110,25 @@ void EditorModel::set_filter(const std::string& filter) {
     apply_filter();
 }
 
+// Records the selection unconditionally: `id` is NOT validated against the
+// store here (a selection that stops resolving is dropped by the next
+// rebuild_hierarchy_from_store).
 void EditorModel::select(SceneEntityId id) {
     selection_.id = id;
-    selection_.world_generation = last_generation_;
 }
 
 void EditorModel::clear_selection() {
     selection_ = Selection{};
 }
 
+// Full re-flatten: records_ -> all_rows_ (preorder DFS) -> filtered_rows_,
+// then a selection revalidation.
+//
+// Sibling order is by SceneEntityId VALUE, not authored order — the store is
+// an unordered_map, and sorting the ids is what makes successive rebuilds
+// produce the same rows in the same order. Orphans (a parent id no longer in
+// the store) are promoted to roots rather than dropped, so a row can never
+// vanish just because its parent arrived in a later delta.
 void EditorModel::rebuild_hierarchy_from_store() {
     all_rows_.clear();
 
@@ -124,10 +159,9 @@ void EditorModel::rebuild_hierarchy_from_store() {
         std::sort(kids.begin(), kids.end());
     }
 
-    // Preorder DFS from roots, filling depth. child_count is filled in a
-    // second pass since a node's row is written before its children are
-    // known in full for nested structures — but since children_of already
-    // has full counts up front, we can fill it in the same pass.
+    // Preorder DFS from roots, filling depth. child_count needs no second
+    // pass: children_of was built with complete counts above, so a node's
+    // child count is already known when its own row is written.
     std::function<void(uint64_t, uint32_t)> visit = [&](uint64_t id, uint32_t depth) {
         const SceneRecord* record = by_id[id];
         HierarchyRow row;
@@ -161,6 +195,11 @@ void EditorModel::rebuild_hierarchy_from_store() {
     }
 }
 
+// Case-insensitive substring match against the row NAME only (the id is not
+// searched). An empty filter copies all_rows_ wholesale, so both vectors then
+// hold the same rows twice. A row is kept independently of its parent, so a
+// filtered row's parent may be absent from the result and `depth` can jump by
+// more than one between consecutive rows.
 void EditorModel::apply_filter() {
     if (filter_.empty()) {
         filtered_rows_ = all_rows_;
@@ -176,6 +215,9 @@ void EditorModel::apply_filter() {
     }
 }
 
+// Linear scan of the flattened rows, O(rows). Deliberately over all_rows_ and
+// not filtered_rows_, so typing in the filter box cannot invalidate the
+// selection. Id value 0 is the "nothing selected" sentinel and is never valid.
 bool EditorModel::is_selection_valid() const {
     if (selection_.id.value == 0) {
         return false;
@@ -188,6 +230,10 @@ bool EditorModel::is_selection_valid() const {
     return false;
 }
 
+// Creates with the fixed name "New Entity" and selects the result on success.
+// A null closure in `commands` reports InvalidTarget instead of dereferencing
+// it — the same defensive shape every command below uses. The row set is not
+// updated here; it changes when the resulting delta (or the next poll) lands.
 SceneEditResult EditorModel::create_empty(const SceneCommands& commands) {
     if (!commands.create_empty) {
         return SceneEditResult{SceneEditError::InvalidTarget, {}};
@@ -227,6 +273,10 @@ SceneEditResult EditorModel::delete_selected(const SceneCommands& commands) {
     return result;
 }
 
+// Only the trivial self-parent cycle is rejected here (CycleDetected);
+// reparenting under one's own descendant is left for the engine-side command
+// to detect. Unlike the other three commands this leaves the selection alone —
+// the entity keeps its id across a reparent.
 SceneEditResult EditorModel::reparent_selected(const SceneCommands& commands,
                                                 SceneEntityId new_parent) {
     if (!has_selection()) {

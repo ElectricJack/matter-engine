@@ -1,6 +1,24 @@
 #ifndef VIEWER_SECTOR_RESOLVER_H
 #define VIEWER_SECTOR_RESOLVER_H
 
+// MatterEngine3/src/provider/sector_resolver.h
+//
+// Declares ResolvedInstance and SectorLodResolver: the per-frame LOD and
+// activation pass that sits between the authoritative WorldState
+// (world_source.h) and the composer that turns instances into draw records.
+// The implementation is in resolvers.cpp.
+//
+// Depends on lod_select (per-sector rung choice), sector_grid (spatial binning)
+// and, through the .cpp, render/lod_distance.h — the one LOD rule. Nothing here
+// touches the GPU or the filesystem.
+//
+// Use: construct once with the sector pitch and an activation radius, keep the
+// instance alive across frames (the cached sector binning is the whole point of
+// keeping it), then call resolve(state, lods, cam_pos) each frame and hand the
+// result to the composer. The setters below may be called between frames; none
+// of them invalidates the binning cache, which keys on WorldState::version()
+// alone.
+
 #include "world_source.h"
 #include "lod_select.h"        // lod_select::PartLodTable; also brings in float3/make_float3
 #include "sector_grid.h"       // sector_grid::SectorGrid, bin_instances (transitively precomp.h)
@@ -36,7 +54,12 @@ class SectorLodResolver {
 public:
     SectorLodResolver(float pitch, float active_radius)
         : pitch_(pitch), active_radius_(active_radius) {}
-    std::vector<ResolvedInstance>
+    // The per-frame pass: re-bin (only if the world version changed), select a
+    // rung per sector, emit the instances inside the activation radius plus any
+    // inline-cutover children. The returned reference is valid until the next
+    // resolve() or destruction. Camera-dependent selection stays live, while
+    // unchanged sector/part decisions reuse the existing output array.
+    const std::vector<ResolvedInstance>&
         resolve(const WorldState&, const lod_select::PartLodTable&, const float3&);
     const char* name() const { return "SectorLod"; }
     // The world's outermost terrain LOD band -- see RenderOptions in
@@ -48,6 +71,7 @@ public:
     // Times the sector table was (re)built — bumps only when WorldState::version()
     // changes, never on camera motion.
     int rebin_count() const { return rebin_count_; }
+    uint64_t output_rebuild_count() const { return output_rebuild_count_; }
 
 private:
     float pitch_;
@@ -57,8 +81,15 @@ private:
     // Binning cache (Stage 1): re-binning ~44k instances into a std::map every
     // frame dominated the CPU floor. Sectors only change when the world does.
     sector_grid::Sectors sectors_;
+    lod_select::SectorParts distinct_parts_;
+    const WorldState* cached_state_ = nullptr;
     uint64_t cached_version_ = UINT64_MAX;
     int      rebin_count_    = 0;
+    using Selection = std::map<sector_grid::SectorCoord, std::map<uint64_t, int>>;
+    Selection output_selection_;
+    std::vector<ResolvedInstance> output_;
+    bool output_reusable_ = false;
+    uint64_t output_rebuild_count_ = 0;
 };
 
 } // namespace viewer

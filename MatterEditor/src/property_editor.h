@@ -1,5 +1,7 @@
 #pragma once
 
+// MatterEditor/src/property_editor.h
+//
 // Generic ImGui renderer over matter::props bindings (property-system design
 // S6.1). One switch on Desc::type produces the widget; no panel ever hand-wires
 // a slider to a settings-struct member again.
@@ -7,6 +9,30 @@
 // This header is deliberately ImGui-free: the widget-kind / format / path
 // decisions are pure functions of the Desc and are unit-testable without an
 // ImGui context. Only the draw_* entry points need a live context.
+//
+// How it fits. `matter::props` (MatterEngine3, matter/props.h) owns the schema
+// (Group / Desc), the Binding that pairs a schema with a live settings
+// instance, and the baseline / draft / dirty machinery. This file is only the
+// presentation layer over that. `editor_props.h` (EditorProps) owns the
+// registry of bindings the editor exposes plus the reload closure; the panels
+// in ui.cpp call the draw_* entry points below. Implementation lives in
+// property_editor.cpp, and the pure helpers here are covered by
+// MatterEngine3/tests/property_editor_tests.cpp.
+//
+// This is NOT the ECS component schema — that is properties_registry.h, an
+// unrelated registry describing components on scene entities. The groups here
+// are engine settings ("render.fog", "draw.overrides", "viewer.budget"), the
+// same ones the FIFO `set <group.path.field> <value>` command addresses
+// (docs/agent/control-surface.md), so a headless QA timeline and a mouse drag
+// write the same state through different doors.
+//
+// Threading. Every `draw_*` entry point is UI-thread only and must be called
+// inside an ImGui frame. The inline helpers below read nothing but the
+// Desc/Group they are handed and are safe to call from anywhere.
+//
+// Formatting convention. A field's decimal count comes from its RANGE, not
+// from its value (prop_float_precision), and `Desc::units` is folded into the
+// printf format string rather than drawn as a separate label.
 
 #include "matter/draw_overrides.h"
 #include "matter/props.h"
@@ -22,6 +48,11 @@ namespace viewer {
 
 class EditorProps;
 
+// Which ImGui control `draw_field` emits for a field. Chosen purely from the
+// Desc by `prop_widget_for` below — the schema never names a widget. The
+// slider variants exist only where the Desc carries a range; ReadOnlyText is
+// both the ReadOnly-flag rendering and the fallback for types with no editor
+// (UInt64, and any type the switch does not recognize).
 enum class PropWidget : uint8_t {
     ReadOnlyText,
     FloatSlider,
@@ -381,8 +412,10 @@ bool draw_draw_overrides_section(matter::props::Binding& binding,
 bool draw_cloud_layers_section(matter::props::Binding& binding,
                                const char* filter = nullptr);
 
+// Per-window state for the Tunables panel. Owned by the ViewerUI (ui.h) and
+// persisting across frames, but not across launches — neither member is saved.
 struct TunablesPanelState {
-    char filter[128] = {};
+    char filter[128] = {};  // ImGui InputText buffer; empty means "no filter"
     // The de-duplication checkbox's own preference, on by default: most of
     // the registry duplicates a dedicated panel (Performance, Lighting,
     // Console, Viewer Debug), and hiding those is what the checkbox is for.

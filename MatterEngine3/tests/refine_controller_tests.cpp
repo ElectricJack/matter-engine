@@ -18,7 +18,9 @@
 //
 //   (g) no_coarse_instance: Terrain full-res nodes without a matching coarse instance
 //       (hash not in instances list) produce a TileRecord with manifest_idx=0,
-//       pos={0,0,0} — pairing still works via tx/tz.
+//       pos={0,0,0} and placed=false — pairing still works via tx/tz, but next()
+//       refuses to hand back a tile whose position and manifest index are
+//       defaults rather than measurements.
 //
 //   (h) next_all_full: next() returns false when all tiles are Full or Queued.
 //
@@ -349,8 +351,20 @@ static void test_no_coarse_instance() {
     rc.build({nodes.data(), nodes.size()}, {instances.data(), instances.size()});
 
     CHECK(rc.tile_count() == 2, "still pairs 2 tiles even with no instances");
-    // The tiles should have coarse_hash set (matched by tx/tz from coarse node)
-    // but pos={0,0,0} and manifest_idx=0 since no instance provides them.
+    // The tiles have coarse_hash set (matched by tx/tz from the coarse node) but
+    // pos={0,0,0} and manifest_idx=0, because no instance provides them. Those
+    // are DEFAULTS, not measurements, so the tile is flagged unplaced.
+    for (uint32_t i = 0; i < (uint32_t)rc.tile_count(); ++i) {
+        CHECK(!rc.tile_at(i).placed,
+              "a tile with no matching coarse instance is not placed");
+    }
+    // And next() must not hand one back: pos={0,0,0} would rank it first from a
+    // camera near the origin, and refining it would rewrite manifest entry 0,
+    // which belongs to a different instance entirely.
+    float focus[3] = {0.0f, 0.0f, 0.0f};
+    TileRecord* out = nullptr;
+    CHECK(!rc.next(focus, &out), "next() skips unplaced tiles");
+    CHECK(out == nullptr, "next() leaves *out null when only unplaced tiles remain");
     printf("ok no_coarse_instance\n");
 }
 

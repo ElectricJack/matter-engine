@@ -37,7 +37,7 @@ struct ResidentPart {
 // Source resident geometry instead of decoding .part files.
 //
 // Without this, build() reads every unique part hash off disk into a private
-// BLASManager plus a TLASManager(65536) -- a second full copy of geometry the
+// BLASManager -- a second full copy of geometry the
 // caller usually already has in RAM, re-read on every rebuild, and rebuilds are
 // triggered by every sector publish. On a streaming world that is O(world) disk
 // I/O on the app thread. Returning true here skips all of it and points the
@@ -53,27 +53,77 @@ struct ResidentPart {
 // Set before build(). A null source (the default) keeps the pure-disk behaviour.
 using ResidentSource = std::function<bool(uint64_t hash, ResidentPart& out)>;
 
+// Result of a successful trace(). Only meaningful when trace() returned true;
+// on a miss the caller's Hit is left exactly as it was passed in.
+//
+// `t` is the ray PARAMETER, not a length: the hit point is origin + t * dir with
+// `dir` exactly as handed to trace(), which the tracer never normalizes. Pass a
+// unit direction and t is metres; pass an unnormalized one and t (and the
+// `max_t` bound) are in multiples of its length.
 struct Hit {
     float t = -1.0f;
     float normal[3] = {0,0,0};   // world-space geometric normal, faces the ray origin
     int   material_id = -1;      // registry index (TriEx materialId % 1000000), -1 if no TriEx
     float emission = 0.0f;       // MaterialRegistryGet(material_id)->emission (0 if id<0)
     float albedo[3] = {0.5f,0.5f,0.5f};
+    // TriEx tint of the hit triangle: rgb + blend strength against the material
+    // albedo, exactly as material_common.glsl's resolveBaseColor consumes it
+    // (`mix(albedo, tint.rgb, clamp(tint.a, 0, 1))`). (1,1,1,0) = no tint,
+    // which is also what an entry without TriEx reports.
+    float tint[4] = {1.0f,1.0f,1.0f,0.0f};
+    // MaterialRegistryGet(material_id)->emissionColor (0 if id<0), the colour
+    // that `emission` scales.
+    float emission_color[3] = {0.0f,0.0f,0.0f};
     uint32_t instance = 0xffffffffu;  // index into expanded instance table; 0xffffffff = miss
 };
 
+// CPU ray queries against a placed world.
+//
+// Lifecycle: default-construct, optionally set_scratch_dir() and
+// set_resident_source(), then build() with the instance list; after that
+// trace()/occluded() answer queries. build() may be called again and rebuilds
+// everything from scratch — it does not update incrementally, and it discards
+// the previous build's decoded parts, so re-building per sector publish on a
+// streaming world is the expensive pattern the resident source exists to avoid.
+//
+// Threading: build() is the sole mutator and is not safe against anything else.
+// Once it has returned, trace() and occluded() mutate no tracer state (all
+// traversal state is on the stack), so any number of threads may query one built
+// tracer concurrently.
+//
+// Lifetime: non-copyable in practice (it holds a unique_ptr Impl). The hard rule
+// is the resident-source one above — if a source manager can move or free an
+// entry, destroy the tracer BEFORE mutating it.
 class WorldTracer {
 public:
     WorldTracer();
     ~WorldTracer();
 
     // cache_root contains parts/<hash>.part and optionally parts/<hash>.flat.part.
+    // Loads every referenced part (resident source first, then disk), expands
+    // compositional children, and builds the instance BVH.
+    //
+    // Returns true even when individual parts failed: per-instance errors are
+    // printed to stderr, `err` is cleared, and the world is traced without them.
+    // A true return therefore does NOT mean everything loaded — check
+    // expanded_instance_count() and the resident_hits()/disk_loads() counters if
+    // that matters. An empty world is a successful build whose trace() always
+    // misses.
+    //
+    // Expensive: potentially one artifact decode per unique hash, on the calling
+    // thread. Not safe to call while another thread is querying.
     bool build(const std::string& cache_root,
                const std::vector<TraceInstance>& instances, std::string& err);
+    // Closest-hit query. `dir` need not be normalized; `max_t` and the returned
+    // Hit::t are both in units of |dir| (see Hit). Returns false — leaving `hit`
+    // untouched — before build(), on an empty world, and on a miss, so a false
+    // return is a normal outcome and never an error signal.
     bool trace(const float origin[3], const float dir[3], float max_t, Hit& hit) const;
+    // Any-hit shadow query. Implemented on top of trace(), so it costs the same
+    // as a closest-hit query rather than early-outing. Applies a self-hit guard:
+    // a hit closer than 1e-4 does NOT count as occlusion, which is what lets a
+    // shadow ray start on the surface it was spawned from.
     bool occluded(const float origin[3], const float dir[3], float max_t) const;
-    void world_bounds(float mn[3], float mx[3]) const;   // valid after build
-    size_t instance_count() const;
 
     // Optional secondary artifact dir (streamed transient parts). Checked
     // FIRST, exactly like PartStore's scratch dir (same path construction:
@@ -90,9 +140,10 @@ public:
 
     // Post-expansion instance table (children expanded by the compositional
     // fallback get their own entries). Valid after build().
+    // NOT the number of TraceInstances handed to build(): compositional children
+    // add entries, and parts that fail to load or carry no triangles drop out.
     size_t expanded_instance_count() const;
     bool expanded_instance(size_t idx, uint64_t& part_hash, float transform[16]) const;
-    bool expanded_instance_by_hash(uint64_t hash, uint64_t& part_hash, float transform[16]) const;
 
 private:
     struct Impl;

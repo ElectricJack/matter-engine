@@ -9,10 +9,12 @@
 #include "../../libs/MatterSurfaceLib/include/tlas_manager.hpp"
 #include <cstdio>
 #include <cstdint>
+#include <string>
 #include <vector>
 #include <algorithm>
 
 #include "check.h"
+#include "test_sandbox.h"
 
 // Build a flat NxN quad grid (2 tris per cell) as a Tri vector in [0,1]^2.
 static std::vector<Tri> grid_tris(int n) {
@@ -272,7 +274,12 @@ static void test_lod_roundtrip_v2() {
     std::vector<Tri> tris = grid_tris(32);
     BLASManager blas; TLASManager tlas(64);
     lod_bake::LodLevels lods = lod_bake::bake_lods(tris, lod_bake::BakeTargets{}, blas);
-    const char* path = "/tmp/sp4_lod_roundtrip.part";
+    // A hardcoded "/tmp/..." is a POSIX assumption: on Windows it resolves to
+    // <current drive>:	mp, which exists only by accident. Scratch files go in
+    // a sandbox under the test working directory instead (test_sandbox.h).
+    const std::string root = make_sandbox("sandbox/sp4_lod_roundtrip", {});
+    const std::string path_str = root + "/lod_roundtrip.part";
+    const char* path = path_str.c_str();
     uint64_t rh = 0xABCDEF1234567890ull;
     bool saved = part_asset::save_v2(path, blas, tlas, nullptr, 0, lods, rh);
     CHECK(saved, "save_v2 ok");
@@ -291,7 +298,9 @@ static void test_lod_roundtrip_v2() {
 
 static void test_lod_roundtrip_degenerate() {
     BLASManager blas; TLASManager tlas(8);
-    const char* path = "/tmp/sp4_lod_empty.part";
+    const std::string root = make_sandbox("sandbox/sp4_lod_empty", {});
+    const std::string path_str = root + "/lod_empty.part";
+    const char* path = path_str.c_str();
     part_asset::LodLevels empty;
     CHECK(part_asset::save_v2(path, blas, tlas, nullptr, 0, empty, 7), "save empty lods");
     BLASManager b2; TLASManager t2(8);
@@ -351,6 +360,7 @@ static void test_depth_guard() {
     CHECK(!flatten(g, 1, lim, flat, err), "depth guard fires");
     CHECK(err.find("max_depth") != std::string::npos, "depth error message");
     CHECK(err.find("part") != std::string::npos, "depth error names offending part");
+    CHECK(flat.empty(), "depth-guard failure leaves no partial output");
 }
 
 static void test_budget_guard() {
@@ -362,6 +372,7 @@ static void test_budget_guard() {
     std::vector<FlatInstance> flat; std::string err;
     CHECK(!flatten(g, 1, lim, flat, err), "budget guard fires");
     CHECK(err.find("max_instances") != std::string::npos, "budget error message");
+    CHECK(flat.empty(), "budget-guard failure leaves no partial output");
 }
 
 static void test_sector_binning() {

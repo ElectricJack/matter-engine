@@ -1,3 +1,22 @@
+// tileset_collider.cpp — PCA-OBB collision-proxy fitting.
+//
+// Implements `fit_collider` from tileset_collider.h; see that header for what
+// the resulting `ColliderFit` means and for the `hull_points` caveat. Pure CPU
+// arithmetic over a caller-supplied array: no allocation beyond the fit's own
+// `hull_points`, no I/O, no globals, safe to call concurrently.
+//
+// The pipeline is: centroid -> covariance -> Jacobi eigenvectors -> half-extent
+// along each eigenvector by max |projection| -> sort axes by descending extent
+// -> pick a primitive type -> fill that primitive's parameters and its analytic
+// volume.
+//
+// THE OUTPUT IS A SIMULATION PROXY, NOT GEOMETRY. It exists so a settle pass
+// can drop thousands of props through box3d cheaply; it is never rendered and
+// never used for exact contact. Two consequences worth knowing before trusting
+// a number out of here: a `Hull` fit's points are a strided SUBSAMPLE of the
+// input cloud rather than a computed convex hull, and its `volume` is a fudge
+// (~half the OBB) that box3d overrides with a true mass computation.
+
 #include "tileset_collider.h"
 #include <cmath>
 #include <cstring>
@@ -7,6 +26,13 @@ namespace tileset {
 
 // Cyclic Jacobi eigen-decomposition of a symmetric 3x3 matrix.
 // On return, a[] is (near-)diagonal and v[] holds column eigenvectors.
+// DESTROYS `a`: the input covariance is rotated in place until (near-)diagonal.
+// Bounded at 24 sweeps with an early out once the off-diagonal sum drops below
+// 1e-12, so it always terminates and never reports whether it converged --
+// acceptable here because a symmetric 3x3 converges in a handful of sweeps and
+// a sloppy frame only costs a slightly loose fit. The eigenvalues are left on
+// `a`'s diagonal but the only caller ignores them and re-measures extents by
+// projecting the actual points, which is why they are not returned.
 static void jacobi3(float a[3][3], float v[3][3]) {
     for (int r = 0; r < 3; ++r)
         for (int c = 0; c < 3; ++c) v[r][c] = (r == c) ? 1.0f : 0.0f;
@@ -38,6 +64,27 @@ static void jacobi3(float a[3][3], float v[3][3]) {
     }
 }
 
+// `n` is the VERTEX count (the header calls it `vertex_count`); `xyz` must hold
+// 3*n floats. An empty cloud returns a default-constructed fit -- a zero-extent
+// Hull with no points -- rather than failing.
+//
+// The covariance is left unnormalised (never divided by n): only its
+// eigenvectors are used, and scaling a matrix does not move them.
+//
+// TYPE CHOICE. An explicit `override_kind` wins outright, with any unrecognised
+// string -- including "hull" -- landing on Hull. Otherwise the aspect ratio of
+// the sorted half-extents e0 >= e1 >= e2 decides:
+//   e0 <= 1.3*e2   roughly isotropic       -> Sphere
+//   e0 >= 2.2*e1   one long axis           -> Capsule
+//   e2 <= 0.35*e1  one short axis (a slab) -> Box
+//   otherwise                              -> Hull
+// The thresholds are tuned so props settle plausibly, not derived; changing one
+// changes the simulated shape of existing content and therefore its settled
+// poses, which the settle cache keys on through the version vector.
+//
+// `volume` is exact for Sphere/Capsule/Box and deliberately approximate for
+// Hull. `hull_points` is a stride-decimated sample of the input capped at 64
+// points -- NOT a convex hull, so it can miss an extreme vertex.
 ColliderFit fit_collider(const float* xyz, size_t n, const char* override_kind) {
     ColliderFit f;
     if (n == 0) return f;

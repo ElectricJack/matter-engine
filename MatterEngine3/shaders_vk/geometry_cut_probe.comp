@@ -1,0 +1,39 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+layout(local_size_x = 1) in;
+// One immutable admitted-asset snapshot per dispatch in the semantic probe.
+layout(set=0,binding=0,std430) readonly buffer Params {
+    mat4 transform;
+    vec4 eye_reach;
+    vec4 scale_pad;
+    uvec4 limits; // nodes, roots, visited limit, selected capacity
+    uvec4 capacities; // request capacity
+    vec4 frustum_planes[6];
+} params;
+layout(set=0,binding=1,std430) readonly buffer Nodes { vec4 node_words[]; };
+layout(set=0,binding=2,std430) readonly buffer Roots { uint root_indices[]; };
+layout(set=0,binding=3,std430) buffer Output { uvec4 counts; uvec4 status; uint indices[]; } result;
+vec4 geometry_plane(uint i) { return params.frustum_planes[i]; }
+float geometry_scale() { return params.scale_pad.x; }
+uint geometry_root(uint i) { return root_indices[i]; }
+bool geometry_ready(uint i) { return i < params.limits.x && floatBitsToUint(node_words[i*3u+2u].z) != 0u; }
+void geometry_invalid() { result.status.x = 1u; }
+void geometry_visit() { ++result.counts.z; }
+void geometry_fallback() { ++result.counts.w; }
+void geometry_emit(uint i) { result.indices[result.counts.x++] = i; }
+void geometry_request(uint i) {
+    uint offset = params.limits.w;
+    for (uint k = 0u; k < result.counts.y; ++k) if (result.indices[offset+k] == i) return;
+    if (result.counts.y < params.capacities.x) result.indices[offset+result.counts.y++] = i;
+}
+// Function declarations allow the shared traversal to call the typed loader.
+#include "geometry_cut.glsl"
+GeometryCutNode geometry_node(uint i) {
+    return GeometryCutNode(node_words[i*3u], node_words[i*3u+1u],
+                           floatBitsToUint(node_words[i*3u+2u]));
+}
+void main() {
+    result.counts = uvec4(0); result.status = uvec4(0);
+    geometry_select(params.limits.y, params.limits.z, params.limits.w,
+                    params.transform, params.eye_reach.xyz, params.eye_reach.w);
+}

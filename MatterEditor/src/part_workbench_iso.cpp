@@ -1,3 +1,13 @@
+// MatterEditor/src/part_workbench_iso.cpp
+//
+// The generated text is CONTRACT, not formatting: the bake pipeline parses it
+// verbatim through the QuickJS script host, so a change here changes what the
+// workbench actually bakes. See the rationale for the `expand: false` field —
+// and the defect that pinned it — in part_workbench_iso.h.
+//
+// Written to disk by PartWorkbench::write_iso_world_file() on every open, on
+// every params edit, and on every bake, into
+// `<scratch_project>/worlds/__iso_<module>.js`.
 #include "part_workbench_iso.h"
 
 #include <cctype>
@@ -5,6 +15,13 @@
 
 namespace viewer {
 
+// Two rules, both required by JavaScript identifier syntax: every character
+// that is not [A-Za-z0-9_] becomes '_', and a name that is empty or starts
+// with a digit is prefixed with '_'. The mapping is deliberately NOT
+// injective — "My-Part" and "My_Part" collapse to the same identifier — which
+// is acceptable only because the result also names the isolation world and
+// its scratch cache, so a collision means two similarly-named modules share a
+// scratch directory rather than producing invalid JS.
 std::string workbench_iso_identifier(const std::string& module) {
     std::string out;
     out.reserve(module.size());

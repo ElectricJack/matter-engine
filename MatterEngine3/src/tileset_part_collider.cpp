@@ -1,3 +1,30 @@
+// tileset_part_collider.cpp — baked part -> collision proxy, and proxy algebra.
+//
+// The bridge between two layers that otherwise do not know about each other:
+// `part_asset_v2` (how a baked part is stored) and `tileset_collider.h` (how a
+// vertex cloud becomes a primitive). Everything the tileset settle pass needs
+// from a child part's geometry comes through here.
+//
+// Three functions, and only the first touches the disk:
+//   `collider_for_part`  load `<cache_dir>/parts/<hash>.bundle` and fit it.
+//   `scale_fit`          uniform scale of an existing fit, no I/O.
+//   `fit_half_height`    how far the fit extends vertically from its centre --
+//                        the offset the non-physics snap path uses to sit a
+//                        prop on the ground (see tileset_bake.cpp).
+//
+// COST AND CACHING. `collider_for_part` loads and parses an entire part bundle
+// (BLAS, TLAS, child instances, LOD levels) to look at triangles, and every
+// vertex of every BLAS entry is copied into one flat array before fitting. That
+// is far too expensive to repeat per instance, which is why `build_settle_plan`
+// memoizes the result per (child_hash, collider_override) and derives per-scale
+// variants with `scale_fit` rather than reloading. Do not call it in a loop
+// over placements.
+//
+// SPACES. Everything stays in the part's own local space, in metres. Nothing
+// here applies a world or instance transform.
+//
+// No shared state; safe to call concurrently for different parts.
+
 #include "tileset_part_collider.h"
 #include "part_asset_v2.h"
 #include "blas_manager.hpp"
@@ -12,6 +39,32 @@
 
 namespace tileset {
 
+// The vertex cloud is the union of the triangles of EVERY BLAS entry in the
+// part, not just the first -- a part is routinely many entries, and fitting
+// only one would proxy a fraction of the object. The TLAS and child-instance
+// tables are loaded because `load_v2` requires somewhere to put them, but they
+// are not consulted: the triangles go into the fit exactly as stored, with no
+// placement transform applied.
+//
+// THAT IS SOUND, AND HERE IS THE INVARIANT IT RESTS ON. A part bundle's
+// internal draw records are all IDENTITY. `script_host.cpp` is the only caller
+// of `part_asset::save_v2` in the tree, and every one of its `tlas.draw()` sites
+// is preceded by `tlas.load_identity()`, so the transform column serialized in
+// the instance table is always the identity and re-applying it would be a no-op.
+// The one thing that IS placed -- `placeChild()` output -- is not in this BLAS
+// at all; it lives in the separate child-instance table and belongs to a
+// different part. If a second save_v2 producer ever records a non-identity draw,
+// this fit becomes wrong and must start walking `tlas.get_draw_records()` and
+// transforming each entry's triangles by `r.transform` (mm::transform_point).
+//
+// Vertices are NOT deduplicated, so a shared vertex is weighted once per
+// triangle that uses it. That biases the PCA frame toward densely tessellated
+// regions; it is accepted because the output is a settle-time proxy, not a
+// measurement.
+//
+// Fails (false + `err` naming the hash) when the bundle cannot be loaded or the
+// part has no triangles at all. Both are hard errors for the settle pass --
+// there is no empty-collider fallback.
 bool collider_for_part(const std::string& cache_dir, uint64_t resolved_hash,
                        const char* override_kind,
                        ColliderFit& out, std::string& err)
@@ -56,6 +109,14 @@ bool collider_for_part(const std::string& cache_dir, uint64_t resolved_hash,
     return true;
 }
 
+// `axis` is deliberately NOT scaled: those are unit basis vectors and a uniform
+// scale leaves the frame's orientation alone. `type` is preserved too -- scaling
+// cannot turn a capsule into a sphere -- so the scaled fit is the same primitive
+// at a different size, which is what makes memoizing one base fit per child and
+// deriving every scale from it correct.
+//
+// `s` is applied without validation: a negative or zero factor produces a
+// degenerate fit rather than an error.
 ColliderFit scale_fit(const ColliderFit& f, float s)
 {
     ColliderFit r = f;
@@ -79,6 +140,16 @@ ColliderFit scale_fit(const ColliderFit& f, float s)
     return r;
 }
 
+// Half-height about the fit's own centre, in metres, at identity orientation --
+// NOT a distance to the ground. The non-physics snap in tileset_bake.cpp uses it
+// as `y = base_height + fh - embed * 2 * fh`, so a value of 0 sits the prop's
+// centre exactly on the base. A `Hull` fit with no points therefore returns 0
+// and half-sinks the prop; that is the degenerate case to look for if a
+// non-physics layer renders buried.
+//
+// The `Hull` loop walks indices 1, 4, 7, ... -- the y component of each xyz
+// triple -- and inherits `hull_points`' subsampling, so it can under-report a
+// spike that the decimation dropped (see tileset_collider.h).
 float fit_half_height(const ColliderFit& f)
 {
     switch (f.type) {

@@ -1,3 +1,42 @@
+// MatterEngine3/src/animation/animation_store.cpp
+//
+// Implementation of `matter::AnimationService` (public API in
+// `matter/animation.h`). Everything here lives behind `AnimationServiceImpl`,
+// the pimpl the thin forwarders at the bottom of this file delegate to.
+//
+// What it owns:
+// - `AnimationAssetStore assets_` - the immutable decoded ANIM assets.
+// - `schemas_` / `replacement_schemas_` - interned, immutable
+//   `AnimationRuntimeDefinition`s, one per asset (plus one per live
+//   `replace_asset` that changed the graph).
+// - `slots_` - the animator slot table. Every animator is a `Slot`, and the
+//   public `AnimatorInstanceHandle` is a (slot index, generation) pair, so a
+//   handle to a removed or replaced animator fails validation instead of
+//   aliasing its successor.
+// - Budget accounting: `mutable_bytes_` and `active_count_` against
+//   `AnimationStoreConfig`, clamped by `bounded_config` to the central
+//   `AnimationBudgetConfig` defaults and hard caps.
+//
+// How control flow works. Gameplay writes inputs and targets at any time;
+// those writes land in *pending* buffers and are invisible to evaluation
+// until the matching cadence boundary samples them
+// (`sample_fixed_controls` / `sample_frame_controls`, driven by
+// `AnimationSystems`). Sampling rotates pending into current (and current
+// into previous, for the fixed lane) and republishes an
+// `AnimationRuntimeBindingLease` - a value copy of the animator's controls
+// and target state - into the attached `AnimationSystems`. The systems layer
+// therefore never holds a pointer into a `Slot`, so a remove or replace
+// cannot leave the ECS phase with a dangling reference.
+//
+// Transactional by construction: `create`, `replace`, `sample_controls` and
+// `restore_runtime_checkpoints` each do every failure-prone step first and
+// roll the slot (and the systems-side lease) back to its previous value if
+// any later step fails. A failed call leaves no half-applied state.
+//
+// Threading: nothing here is synchronized. The service is single-threaded and
+// is expected to be touched only from the thread that runs the ECS pipeline
+// it is attached to.
+
 #include "animation/animation_store.h"
 
 #include "animation/animation_asset_store.h"
@@ -12,6 +51,13 @@
 #include <utility>
 
 namespace matter::animation {
+// The service's internal, fixed-size representation of one control value.
+// Unlike the public `AnimationValue` it is a flat POD with a slot per type
+// (only the slot matching `type` is meaningful), so a control buffer is a
+// plain vector that can be copied, rotated and checkpointed without
+// allocating. Note that `number` is float here while the public value is
+// double, and `symbol` is a hash rather than the symbol text - see
+// `symbol_id` below.
 struct StoredValue {
     AnimationValueType type = AnimationValueType::Number;
     bool boolean = false;
@@ -26,6 +72,11 @@ namespace {
 
 constexpr uint32_t kInvalid = UINT32_MAX;
 
+// Resolve a caller-supplied config against the central budget policy. Zero in
+// any field means "use the runtime default" (documented on
+// `AnimationStoreConfig`); a non-zero field is clamped down to the matching
+// `AnimationBudgetConfig::kHardMax*` and never up, so a caller can only ask
+// for less than the hard cap, never more.
 AnimationStoreConfig bounded_config(AnimationStoreConfig requested) {
     const AnimationBudgetConfig central{};
     const auto bounded = [](auto requested_value, auto default_value, auto hard_value) {
@@ -94,6 +145,16 @@ AnimationCadence public_cadence(EvaluationCadence cadence) {
     return cadence == EvaluationCadence::Fixed ? AnimationCadence::Fixed : AnimationCadence::Frame;
 }
 
+// FNV-1a over the symbol text. Symbols are interned to this 32-bit hash and
+// the original string is NOT retained anywhere, so every readback path
+// (`checkpoint_value` here, and the lease/debug conversions in
+// animation_systems.cpp) spells the hash in decimal rather than returning the
+// authored name; `checkpoint_stored_value` parses that decimal back, so a
+// checkpoint still round-trips exactly. Two consequences to know about:
+// the authored text is unrecoverable, and equality is hash equality, so two
+// distinct symbols that collide in 32 bits would compare equal. Recovering
+// the text (and making equality exact) means adding an intern table to the
+// service, the lease and the checkpoint format -- a deliberate non-goal here.
 uint32_t symbol_id(const std::string& value) {
     uint32_t hash = 2166136261u;
     for (unsigned char c : value) { hash ^= c; hash *= 16777619u; }
@@ -121,11 +182,35 @@ struct TargetState {
     bool snap_requested = false;
 };
 
+// All mutable per-animator state. Slots are never destroyed, only recycled:
+// `remove` marks `alive = false`, bumps `generation` and pushes the index onto
+// the free list, which is what makes a stale `AnimatorInstanceHandle`
+// detectable rather than dangerous.
+//
+// The five input vectors are all parallel to `definition->inputs`:
+// - `fixed_pending` / `frame_pending` receive API writes immediately.
+// - `fixed_current` / `frame_controls` are what evaluation reads; a cadence
+//   boundary copies pending into them.
+// - `fixed_previous` is the prior fixed sample, kept so frame presentation
+//   can interpolate between two fixed states.
+// `targets` is parallel to `definition->targets`, and the four byte vectors
+// are the opaque scratch reserved by the definition's `*_bytes` fields.
+//
+// `asset` and `definition` are non-owning: the asset lives in `assets_`, and
+// the definition in `schemas_`/`replacement_schemas_`. Both outlive the slot,
+// which is why `release_asset` refuses while any live slot references it.
 struct Slot {
     bool alive = false;
     uint32_t generation = 0;
     const AnimAsset* asset = nullptr;
     const AnimationRuntimeDefinition* definition = nullptr;
+    // What `mutable_bytes_` was actually charged for this slot, recorded at
+    // create/replace time. `AnimationRuntimeDefinition::mutable_bytes()` is an
+    // expensive uncached walk that instantiates every declared native
+    // controller, so it is called once per admission and the answer stored
+    // here; the refund on rollback and on `remove` is then exactly the amount
+    // charged, and cannot drift from a recomputation.
+    size_t charged_bytes = 0;
     std::vector<StoredValue> fixed_previous;
     std::vector<StoredValue> fixed_current;
     std::vector<StoredValue> fixed_pending;
@@ -302,6 +387,11 @@ bool checkpoint_stored_value(const AnimationValue& value, AnimationValueType exp
     return false;
 }
 
+// Build a fresh slot for `definition`, sized from the schema and seeded so
+// that all five control lanes start at the declared default value - a brand
+// new animator therefore has no "previous" discontinuity on its first fixed
+// step. Allocates every scratch buffer up front, which is exactly the cost
+// `AnimationRuntimeDefinition::mutable_bytes()` reserved.
 Slot make_slot(const AnimAsset* asset, const AnimationRuntimeDefinition* definition, uint32_t generation) {
     Slot slot;
     slot.alive = true;
@@ -332,6 +422,15 @@ Slot make_slot(const AnimAsset* asset, const AnimationRuntimeDefinition* definit
 
 } // namespace
 
+// Sum every per-instance CPU allocation this schema will cause, across the
+// service slot, both evaluators, all four pose snapshot stores, the systems
+// layer's lease and target runtime, and the bounded Ozz graph scratch.
+// Returns `SIZE_MAX` on any overflow or on a controller the native registry
+// will not instantiate; callers treat that as "reject this definition".
+//
+// Expensive and uncached - it instantiates each declared native controller to
+// read its layout, so callers must invoke it once and keep the result
+// (`Slot::charged_bytes`). See the declaration in `animation_store.h`.
 size_t AnimationRuntimeDefinition::mutable_bytes() const {
     constexpr size_t kMax = std::numeric_limits<size_t>::max();
     size_t total = 0;
@@ -415,6 +514,26 @@ size_t AnimationRuntimeDefinition::mutable_bytes() const {
     return total;
 }
 
+// The service. One instance per `matter::AnimationService`; constructed and
+// destroyed with it, not copyable, and not internally synchronized.
+//
+// Call order that matters:
+// - `insert_asset` before `create`. `create` rejects an asset the store does
+//   not own, and `release_asset` refuses while a live slot still points at it.
+// - `attach_runtime_systems` may be called before or after animators exist:
+//   attaching republishes a lease for every live slot, detaching withdraws
+//   every one. The destructor detaches, so a longer-lived `AnimationSystems`
+//   is never left holding leases for a dead service.
+// - Input and target writes are staged; only `sample_fixed_controls` /
+//   `sample_frame_controls` make them observable to evaluation. Target writes
+//   (`set_enabled`/`set_weight`/`set_transform`/`snap`) are the exception -
+//   they republish the lease immediately, because they are not clocked.
+//
+// Failure modes are deliberate and distinct: `InvalidHandle` for a stale or
+// malformed handle, `LoadFailed` for an unowned asset or a definition that
+// fails validation, and `BudgetExceeded` (with `bind_pose_fallback` set) when
+// the instance or byte budget is full - the last is recoverable and the caller
+// is expected to keep showing the static part and retry later.
 class AnimationServiceImpl {
 public:
     explicit AnimationServiceImpl(AnimationStoreConfig config) : config_(bounded_config(config)), budget_(runtime_budget(config_)) {
@@ -439,11 +558,25 @@ public:
         return assets_.erase(asset);
     }
 
+    // Admit `definition` for `asset` (interning it if this asset has none yet),
+    // charge its `mutable_bytes()` against the budget, and allocate a slot.
+    // Transactional: if publishing the lease to the attached systems fails,
+    // the slot is released, the bytes are refunded and `LoadFailed` is
+    // returned, so a rejected create leaves nothing behind but a recorded
+    // fallback.
+    //
+    // Note this reuses an already-interned definition when one exists for the
+    // asset and compares equal; a *different* definition for an asset that
+    // already has one is rejected here (only `replace` may introduce one).
     Animator create(const AnimAsset* asset, const AnimationRuntimeDefinition& definition) {
         if (!owns(asset)) return {{}, AnimationStatus::LoadFailed};
         const AnimationRuntimeDefinition* schema = schema_for(asset, definition);
         if (!schema) return {{}, AnimationStatus::LoadFailed};
-        if (!can_fit(schema->mutable_bytes()) || active_count_ == config_.instance_capacity) {
+        // One walk per admission: `mutable_bytes()` is uncached and
+        // instantiates every declared native controller, so the answer is
+        // taken once here and carried on the slot for the refund paths.
+        const size_t charge = schema->mutable_bytes();
+        if (!can_fit(charge) || active_count_ == config_.instance_capacity) {
             service_budget_stats_.record_fallback(active_count_ == config_.instance_capacity
                 ? AnimationFallbackReason::RuntimeInstanceLimit : AnimationFallbackReason::EvaluationBudget);
             return {{}, AnimationStatus::BudgetExceeded, true};
@@ -459,13 +592,15 @@ public:
         Slot& old = slots_[index];
         const uint32_t generation = old.generation + 1u;
         old = make_slot(asset, schema, generation);
-        mutable_bytes_ += schema->mutable_bytes();
+        old.charged_bytes = charge;
+        mutable_bytes_ += charge;
         ++active_count_;
         const Animator result{instance_handle(index, old), AnimationStatus::Ok};
         if (!refresh_runtime_binding(result.instance, old)) {
             old.alive = false;
             old.asset = nullptr;
-            mutable_bytes_ -= schema->mutable_bytes();
+            mutable_bytes_ -= charge;
+            old.charged_bytes = 0;
             --active_count_;
             free_indices_.push_back(index);
             service_budget_stats_.record_fallback(AnimationFallbackReason::EvaluationFailure);
@@ -483,13 +618,14 @@ public:
         // then publish a generation-qualified replacement transactionally.
         const AnimationRuntimeDefinition* schema = schema_for(asset, definition, true);
         if (!schema) return {{}, AnimationStatus::LoadFailed};
-        const size_t old_bytes = old->definition->mutable_bytes();
+        const size_t old_bytes = old->charged_bytes;
         const size_t new_bytes = schema->mutable_bytes();
         if (mutable_bytes_ < old_bytes || new_bytes > config_.mutable_budget_bytes - (mutable_bytes_ - old_bytes)) {
             service_budget_stats_.record_fallback(AnimationFallbackReason::EvaluationBudget);
             return {{}, AnimationStatus::BudgetExceeded, true};
         }
         Slot replacement = make_slot(asset, schema, old->generation + 1u);
+        replacement.charged_bytes = new_bytes;
         for (size_t next = 0; next < schema->inputs.size(); ++next) {
             for (size_t prior = 0; prior < old->definition->inputs.size(); ++prior) {
                 if (same_input(schema->inputs[next], old->definition->inputs[prior])) {
@@ -532,7 +668,8 @@ public:
         Slot* value = slot(handle);
         if (!value) return false;
         if (systems_) systems_->detach_service_binding(handle);
-        mutable_bytes_ -= value->definition->mutable_bytes();
+        mutable_bytes_ -= value->charged_bytes;
+        value->charged_bytes = 0;
         value->alive = false;
         value->asset = nullptr;
         ++value->generation;
@@ -573,38 +710,38 @@ public:
     }
 
     bool set_enabled(AnimationTargetHandle handle, bool enabled) {
-        TargetState* state = writable_target(handle);
+        Slot* owner = nullptr;
+        TargetState* state = writable_target(handle, &owner);
         if (!state) return false;
         state->enabled = enabled;
         // Disable is a fade request, not a write lock.  Re-enabling starts
         // from a full desired influence while retaining any transform/weight
         // supplied during the fade-out interval.
         if (enabled) state->weight = 1.0f;
-        Slot* owner = slot(handle.slot_index, handle.generation);
         refresh_runtime_binding(instance_handle(handle.slot_index, *owner), *owner);
         return true;
     }
     bool set_weight(AnimationTargetHandle handle, float weight) {
-        TargetState* state = writable_target(handle);
+        Slot* owner = nullptr;
+        TargetState* state = writable_target(handle, &owner);
         if (!state || !std::isfinite(weight) || weight < 0.0f || weight > 1.0f) return false;
         state->weight = weight;
-        Slot* owner = slot(handle.slot_index, handle.generation);
         refresh_runtime_binding(instance_handle(handle.slot_index, *owner), *owner);
         return true;
     }
     bool set_transform(AnimationTargetHandle handle, const AnimationTransform& transform) {
-        TargetState* state = writable_target(handle);
+        Slot* owner = nullptr;
+        TargetState* state = writable_target(handle, &owner);
         if (!state || !finite_transform(transform)) return false;
         state->transform = transform;
-        Slot* owner = slot(handle.slot_index, handle.generation);
         refresh_runtime_binding(instance_handle(handle.slot_index, *owner), *owner);
         return true;
     }
     bool snap(AnimationTargetHandle handle) {
-        TargetState* state = writable_target(handle);
+        Slot* owner = nullptr;
+        TargetState* state = writable_target(handle, &owner);
         if (!state) return false;
         state->snap_requested = true;
-        Slot* owner = slot(handle.slot_index, handle.generation);
         refresh_runtime_binding(instance_handle(handle.slot_index, *owner), *owner);
         return true;
     }
@@ -629,6 +766,15 @@ public:
     bool sample_fixed_controls() { return sample_controls(EvaluationCadence::Fixed); }
     bool sample_frame_controls() { return sample_controls(EvaluationCadence::Frame); }
 
+    // Editor play/stop support: snapshot every descriptor-bound animator's
+    // control lanes, target state and opaque scratch, plus whatever the
+    // attached systems layer contributes. Unbound (legacy) animators are
+    // skipped entirely, so the checkpoint count is not the animator count.
+    //
+    // Fails - writing nothing to `out` - if the total serialized size would
+    // exceed 64 KiB, which is a hard ceiling on how much animation state a
+    // single capture may carry. `out` is only assigned once every animator
+    // has been captured successfully.
     bool capture_runtime_checkpoints(std::vector<AnimatorCheckpoint>& out) const {
         std::vector<AnimatorCheckpoint> captured;
         size_t bytes=0;
@@ -747,6 +893,14 @@ public:
         return out.valid();
     }
 
+    // Bind or unbind the ECS runtime. Detaching withdraws the lease for every
+    // live animator from the old systems object and clears its back-pointer;
+    // attaching pushes the budget config down and republishes a lease for
+    // every live animator, so ordering between `create` and attach does not
+    // matter. Passing the currently attached pointer is a no-op.
+    //
+    // `owner` is the public `AnimationService` this impl belongs to; the
+    // systems layer calls back into it to sample controls at phase boundaries.
     void attach_runtime_systems(AnimationSystems* systems, AnimationService* owner) {
         if (systems_ == systems) return;
         if (systems_) {
@@ -771,6 +925,14 @@ private:
         }
         return true;
     }
+    // The cadence boundary. For Fixed it rotates current into previous and
+    // pending into current; for Frame it just moves pending into current.
+    // Then it republishes each live animator's lease.
+    //
+    // All-or-nothing per call: the first animator whose lease refresh fails
+    // rolls that animator's three lanes back and returns false, leaving
+    // animators earlier in the table already rotated. O(slots_), including
+    // dead slots.
     bool sample_controls(EvaluationCadence cadence) {
         for (uint32_t index = 0; index < slots_.size(); ++index) {
             Slot& value = slots_[index];
@@ -793,6 +955,15 @@ private:
         }
         return true;
     }
+    // Intern `definition` for `asset` and return the owned, stable pointer
+    // slots will hold. An asset's first definition is stored in `schemas_`; a
+    // later definition that compares equal reuses it. A later definition that
+    // differs is only accepted when `allow_replacement` is set (the `replace`
+    // path) and is then owned by `replacement_schemas_` instead, because
+    // sibling animators still point at the original.
+    //
+    // Returns nullptr when the definition is different and not allowed, or
+    // when it fails budget/consistency validation.
     const AnimationRuntimeDefinition* schema_for(const AnimAsset* asset, const AnimationRuntimeDefinition& definition,
                                                   bool allow_replacement = false) {
         const auto existing = schemas_.find(asset);
@@ -816,6 +987,10 @@ private:
     bool can_fit(size_t bytes) const {
         return mutable_bytes_ <= config_.mutable_budget_bytes && bytes <= config_.mutable_budget_bytes - mutable_bytes_;
     }
+    // Instance handles share a struct layout with input/target handles, and
+    // `AnimatorInstanceHandle::valid()` requires exactly these three sentinels
+    // in the unused fields. They are not filler - dropping them makes the
+    // handle fail validation everywhere it is used.
     AnimatorInstanceHandle instance_handle(uint32_t index, const Slot& value) const { return {index, value.generation, kInvalid, static_cast<AnimationValueType>(0xff), AnimationCadence::Invalid}; }
     Slot* slot(AnimatorInstanceHandle handle) { return handle.valid() ? slot(handle.slot_index, handle.generation) : nullptr; }
     const Slot* slot(AnimatorInstanceHandle handle) const { return handle.valid() ? slot(handle.slot_index, handle.generation) : nullptr; }
@@ -829,14 +1004,26 @@ private:
         const Slot& value = slots_[index];
         return value.alive && value.generation == generation ? &value : nullptr;
     }
-    TargetState* writable_target(AnimationTargetHandle handle) {
+    // Resolve a target handle to the mutable state it names, and (optionally)
+    // hand back the owning slot. Every setter needs the slot afterwards to
+    // republish the runtime binding; taking it from here rather than looking
+    // it up a second time is both cheaper and the reason none of them has to
+    // dereference an unchecked `slot()` result. `*out_owner` is written only
+    // on success, and is non-null exactly when the return value is.
+    TargetState* writable_target(AnimationTargetHandle handle, Slot** out_owner = nullptr) {
         if (!handle.valid()) return nullptr;
         Slot* owner = slot(handle.slot_index, handle.generation);
         if (!owner || handle.schema_index >= owner->definition->targets.size() || handle.value_type != AnimationValueType::Transform) return nullptr;
         const RuntimeTargetDefinition& schema = owner->definition->targets[handle.schema_index];
         if (schema.driver != TargetDriverKind::External || handle.cadence != public_cadence(schema.cadence)) return nullptr;
+        if (out_owner) *out_owner = owner;
         return &owner->targets[handle.schema_index];
     }
+    // Reads the PENDING value - the last thing written through the API - not
+    // the sampled value evaluation is currently using. This is what backs the
+    // public `number_value` / `bool_value` readbacks, so they echo the
+    // caller's own write immediately rather than waiting for a cadence
+    // boundary. Returns nullptr for a stale handle or a type/cadence mismatch.
     const StoredValue* read_pending_input(AnimationInputHandle handle, AnimationValueType type) const {
         if (!handle.valid()) return nullptr;
         const Slot* owner = slot(handle.slot_index, handle.generation);
@@ -845,13 +1032,21 @@ private:
         if (schema.type != type || handle.cadence != public_cadence(schema.cadence)) return nullptr;
         return schema.cadence == EvaluationCadence::Fixed ? &owner->fixed_pending[handle.schema_index] : &owner->frame_pending[handle.schema_index];
     }
+    // `config_` is the caller's request already clamped by `bounded_config`;
+    // `budget_` is the same limits in the internal form the systems layer and
+    // the definition validator consume. They are set once at construction.
     AnimationStoreConfig config_;
     AnimationBudgetConfig budget_;
     AnimationAssetStore assets_;
     std::map<const AnimAsset*, std::unique_ptr<const AnimationRuntimeDefinition>> schemas_;
     // Asset-keyed schema interning cannot discard an active sibling's
     // descriptor. Replacements therefore own their immutable descriptors here
-    // until the service itself is destroyed.
+    // until the service itself is destroyed. This vector only ever grows:
+    // nothing refcounts a definition, so a session that calls `replace` with a
+    // genuinely different definition many times (repeated hot-reload of one
+    // asset) accumulates one entry per call. Reclaiming them needs a refcount
+    // or an ownership rework, not a scan, because a slot keeps its definition
+    // pointer after `remove`.
     std::vector<std::unique_ptr<const AnimationRuntimeDefinition>> replacement_schemas_;
     std::vector<Slot> slots_;
     std::vector<uint32_t> free_indices_;
@@ -863,6 +1058,14 @@ private:
 
 } // namespace matter::animation
 
+// ---------------------------------------------------------------------------
+// Public facade
+//
+// Every method below is a direct forward to `AnimationServiceImpl`. The point
+// of the indirection is that `matter/animation.h` stays free of the internal
+// budget, asset and evaluator types - it forward-declares them only. Keep
+// these bodies one-liners; behaviour belongs in the impl above.
+// ---------------------------------------------------------------------------
 namespace matter {
 
 AnimationService::AnimationService(AnimationStoreConfig config) : impl_(std::make_unique<animation::AnimationServiceImpl>(config)) {}
@@ -888,7 +1091,6 @@ bool AnimationService::set(AnimationInputHandle h, float v) { animation::StoredV
 bool AnimationService::set(AnimationInputHandle h, const Float3& v) { animation::StoredValue value; value.type = AnimationValueType::Float3; value.float3 = v; return impl_->set(h, value, value.type); }
 bool AnimationService::set(AnimationInputHandle h, const Quaternion& v) { animation::StoredValue value; value.type = AnimationValueType::Quaternion; value.quaternion = v; return impl_->set(h, value, value.type); }
 bool AnimationService::set(AnimationInputHandle h, const AnimationTransform& v) { animation::StoredValue value; value.type = AnimationValueType::Transform; value.transform = v; return impl_->set(h, value, value.type); }
-bool AnimationService::set_symbol(AnimationInputHandle h, uint32_t v) { animation::StoredValue value; value.type = AnimationValueType::Symbol; value.symbol = v; return impl_->set(h, value, value.type); }
 bool AnimationService::set_enabled(AnimationTargetHandle h, bool v) { return impl_->set_enabled(h, v); }
 bool AnimationService::set_weight(AnimationTargetHandle h, float v) { return impl_->set_weight(h, v); }
 bool AnimationService::set_transform(AnimationTargetHandle h, const AnimationTransform& v) { return impl_->set_transform(h, v); }

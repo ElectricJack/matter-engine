@@ -3,8 +3,42 @@
 // the trace itself. The BC re-encode reuses vt_bc_encode.comp verbatim (the
 // same fast mode-6 BC7 tier tier-1 pages go through), so this module adds one
 // shader, not two.
+//
+// WHAT ONE enrich() DOES, end to end:
+//   1. On the very first call, record_init() parks every ring's intermediate
+//      image in GENERAL.
+//   2. Stamp last_frame_index (monotonically — see the comment there) and
+//      retire() anything in the graveyard old enough to destroy, then read one
+//      snapshot of the live settings for the whole batch.
+//   3. Per request: find or build the VariantEntry for (variant, rung) —
+//      chart/triangle SSBOs from vt_chart_gpu.h plus this module's own
+//      single-BLAS TLAS — collect the page's candidate charts, and write one
+//      GpuEnrichRequest into the ring's request buffer.
+//   4. Record any acceleration-structure builds not yet recorded (deduped, so
+//      two pages of one variant in a batch schedule one build).
+//   5. Dispatch vt_enrich_ao.comp per page: it SAMPLES the current ORM texel
+//      out of the pool, traces the cosine hemisphere, and writes the modified
+//      texel into the ring's intermediate layer.
+//   6. Dispatch vt_bc_encode.comp per page, then flip the pool ORM image to
+//      TRANSFER_DST, copy the ORM blocks back over the same slots, and restore
+//      SHADER_READ_ONLY_OPTIMAL before returning.
+//
+// TWO CACHES, TWO CLOCKS. `variants` is the live per-(variant, rung) cache,
+// LRU-evicted down to as_cache_cap and keyed on the caller's frame_index;
+// `graveyard` holds entries that left it (by eviction or invalidate_part) and
+// destroys them kRetireFrames later. Nothing here waits on a fence — the frame
+// index is the only proof of retirement, which is exactly why enrich() refuses
+// to let it regress and why invalidate_part() stamps last_frame_index rather
+// than destroying in place. Both of those rules exist because they were once
+// broken; the comments at those two sites record what happened.
+//
+// SPACES. The chart table, the rung mesh and therefore the acceleration
+// structure are all PART-LOCAL (the TLAS instance transform is identity), so
+// nothing in this module needs a world transform and nothing it bakes can
+// depend on where an instance was placed.
 
 #include "vt_enrich.h"
+#include "vt_resolve_bvh.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -29,11 +63,15 @@ namespace {
 struct GpuEnrichRequest {
     uint32_t a[4];   // page_x, page_y, mip, out_layer
     uint32_t b[4];   // cand_offset, cand_count, sample_count, seed
-    uint32_t c[4];   // slot_origin_x, slot_origin_y, pool_layer, unused
+    uint32_t c[4];   // slot_origin_x, slot_origin_y, pool_layer, tile_begin
     float    d[4];   // strength, cap_texels, cap_meters, min_ao
+    uint32_t e[4];   // optional packed R16 factor BDA, reserved
 };
-static_assert(sizeof(GpuEnrichRequest) == 64, "GpuEnrichRequest layout");
+static_assert(sizeof(GpuEnrichRequest) == 80, "GpuEnrichRequest layout");
 
+// Total candidate-chart entries one enrich() batch may write into a ring's
+// cand buffer, across all its pages. A page whose list would overrun it is
+// skipped and counted, never truncated.
 constexpr uint32_t kMaxCandEntriesPerBatch = 8192;
 // Strength reaches 0 when a page texel is this multiple of the absolute cap
 // wide. MUST match VT_ENRICH_FADE_SPAN in vt_enrich_ao.comp; the residency
@@ -73,6 +111,8 @@ matter::VtEnrichSettings live_enrich_settings() {
 // matter::create_image only supports a single mip level and array layer, so the
 // multi-layer intermediate is built directly (same reasoning as the tileset
 // images in vk_scene_renderer.h).
+// Device-local, single mip, one view over all array layers. The layout is not
+// tracked here — record_init() puts it in GENERAL and it stays there.
 struct RawImage {
     VkImage image = VK_NULL_HANDLE;
     VkImageView view = VK_NULL_HANDLE;
@@ -159,6 +199,10 @@ void cmd_memory_barrier(VkCommandBuffer cmd, VkPipelineStageFlags2 src_stage,
     vkCmdPipelineBarrier2(cmd, &dep);
 }
 
+// Barriers the COLOR aspect of mip 0, array layers [0, layers). Used both for
+// this module's own single-mip intermediates and for the residency layer's
+// pool ORM image during the write-back, where `layers` must cover the whole
+// pool because the copies target an arbitrary layer within it.
 void cmd_image_barrier(VkCommandBuffer cmd, VkImage image,
                        VkImageLayout old_layout, VkImageLayout new_layout,
                        VkPipelineStageFlags2 src_stage,
@@ -192,6 +236,16 @@ VkDeviceSize align_up(VkDeviceSize value, VkDeviceSize alignment) {
 // ---------------------------------------------------------------------------
 // Impl
 // ---------------------------------------------------------------------------
+// Everything the enricher owns. One instance per VtEnricher, built by create()
+// and torn down by ~Impl -> destroy(); `vulkan` and `device` are BORROWED.
+// destroy() nulls `device` when it finishes so a second call is a no-op, and
+// it frees the live cache AND the graveyard without waiting — see the
+// destructor note in vt_enrich.h. No member is guarded by a lock.
+//
+// Unlike vt_compositor's Impl, this one goes through matter::VulkanDevice: it
+// needs ray_tracing_properties() for the scratch alignment, the
+// acceleration-structure helpers in vk_resources.h, and their RAII buffer
+// types — which is why VariantEntry needs no explicit buffer teardown.
 struct VtEnricher::Impl {
     matter::VulkanDevice* vulkan = nullptr;
     VkDevice device = VK_NULL_HANDLE;
@@ -228,7 +282,18 @@ struct VtEnricher::Impl {
     // frame of its own, and stamping a retirement with anything older than the
     // last recorded batch would retire it before that batch can complete.
     uint64_t last_frame_index = 0;
+    // One-shot latch for get_or_build_variant's failure diagnostic. A failing
+    // variant is retried on every batch that wants it, so an unlatched message
+    // would be a per-frame flood; the FIRST reason is the diagnostic one.
+    bool build_failure_reported = false;
 
+    // One batch's transient resources. kMaxBatchesInFlight of these rotate
+    // through ring_cursor; overwriting a ring's host-visible request/cand
+    // buffers and reusing its intermediate and block buffers is safe only
+    // because reaching the ring again means the batch that last used it has
+    // retired — which is the caller's "submit in record order, at most
+    // kMaxBatchesInFlight unretired" promise. The intermediate image carries
+    // one layer per request, hence kMaxRequestsPerBatch layers.
     struct Ring {
         matter::VkBufferResource requests;
         matter::VkBufferResource cands;
@@ -240,9 +305,25 @@ struct VtEnricher::Impl {
     Ring rings[kMaxBatchesInFlight];
     uint32_t ring_cursor = 0;
 
+    // Everything the trace needs for one (variant_hash, rung): the chart and
+    // triangle SSBOs built by vt_chart_gpu.h, a private copy of the rung mesh
+    // as acceleration-structure input, the BLAS and the single-instance TLAS
+    // over it, both build scratch buffers, and the set-0 descriptor set that
+    // binds charts/tris/TLAS.
+    //
+    // Move-only: every resource member is an RAII matter::Vk*Resource, so an
+    // entry releases its GPU memory when it is destroyed and free_variant_set()
+    // only has to hand the descriptor set back. That is what makes the
+    // graveyard a simple std::vector<Retired>.
+    //
+    // The scratch buffers deliberately live as long as the entry rather than
+    // being freed after the build: nothing here tracks build completion, and
+    // the build is recorded into a command buffer the caller submits later.
+    // They are counted in `bytes`, which is a stats figure only.
     struct VariantEntry {
         matter::VkBufferResource charts;
         matter::VkBufferResource tris;
+        matter::VkBufferResource resolve_bvh;
         matter::VkBufferResource as_vertices;
         matter::VkBufferResource as_indices;
         matter::VkBufferResource as_instances;
@@ -257,8 +338,12 @@ struct VtEnricher::Impl {
         uint64_t last_used = 0;
         bool built = false;      // false => the AS build still has to be recorded
     };
-    std::map<std::pair<uint64_t, uint32_t>, VariantEntry> variants;
+    std::map<VtPreparationKey, VariantEntry> variants;
 
+    // A VariantEntry that has left the live cache (evicted, or dropped by
+    // invalidate_part) together with the frame index it left on. retire()
+    // destroys it once the caller's frame index has advanced kRetireFrames
+    // past that, which is the module's stand-in for a fence.
     struct Retired {
         VariantEntry entry;
         uint64_t frame = 0;
@@ -298,6 +383,9 @@ struct VtEnricher::Impl {
         device = VK_NULL_HANDLE;
     }
 
+    // The descriptor set is the only thing that needs an explicit release —
+    // every buffer and acceleration structure in the entry frees itself when
+    // the entry is destroyed. Safe on an entry that never got a set.
     void free_variant_set(VariantEntry& e) {
         if (e.set && descriptor_pool)
             vkFreeDescriptorSets(device, descriptor_pool, 1, &e.set);
@@ -309,7 +397,7 @@ struct VtEnricher::Impl {
                          VkPipeline& out, std::string& err);
     void write_ring_descriptors(Ring& r);
     void bind_pool_orm(VkImageView view);
-    VariantEntry* get_or_build_variant(uint64_t variant_hash, uint32_t rung,
+    VariantEntry* get_or_build_variant(const VtPreparationKey& key,
                                        const chart_atlas::ChartAtlasRung* atlas,
                                        const VtPartContext* ctx,
                                        uint64_t frame_index, Stats& stats);
@@ -355,6 +443,28 @@ bool VtEnricher::Impl::create_pipeline(const char* spirv_name,
     return true;
 }
 
+// One-time CPU-side setup: the acceleration-structure entry points and scratch
+// alignment, the three descriptor set layouts, two pipeline layouts, both
+// compute pipelines from embedded SPIR-V, the point sampler, the descriptor
+// pool, and every ring's buffers, intermediate image and descriptor sets.
+// Fails closed — any failure returns false with `err` set and the half-built
+// Impl is destroyed by its own destructor, which create() reports to the
+// caller as "tier-2 is off". GPU-side init is separate; see record_init().
+//
+// The binding numbers below are a contract with the shaders; keep them in step
+// with shaders_vk/vt_enrich_ao.comp and shaders_vk/vt_bc_encode.comp:
+//   set 0  variant_layout (per VariantEntry): 0 charts SSBO, 1 tris SSBO,
+//                                             2 the variant's TLAS
+//   set 1  batch_layout   (per Ring):         0 requests, 1 candidate charts,
+//                                             2 the pool ORM sampled view +
+//                                               point sampler (written lazily
+//                                               by bind_pool_orm),
+//                                             3 the intermediate storage image
+//   set 0  encode_layout  (per Ring):         vt_bc_encode.comp's own set,
+//                                             unchanged: 0-2 source images,
+//                                             3-5 block output buffers
+// Push constants: enrich takes 4 bytes (the request index), encode 8 (the
+// request index, written twice).
 bool VtEnricher::Impl::init(std::string& err) {
     // Layer 5 for standalone engine runs (headless tests, tools) that never
     // bind a registry; the editor binds the SAME struct and runs its own
@@ -616,15 +726,35 @@ void VtEnricher::Impl::bind_pool_orm(VkImageView view) {
     bound_pool_orm = view;
 }
 
+// CREATE the variant's acceleration structures; do NOT build them. This copies
+// the rung mesh's positions and indices into host-visible AS-input buffers (a
+// full duplicate of the mesh — the largest single allocation an entry makes),
+// queries the BLAS and TLAS sizes, creates both structures and their scratch
+// buffers, and writes the one identity-transform instance. The GPU build is
+// recorded later by record_as_build(), gated on VariantEntry::built.
+//
+// Returns false with `err` set on an empty/absent mesh or any allocation
+// failure; the caller discards the whole entry, whose RAII members release
+// whatever was already created. `e.bytes` is filled in for the stats gauge.
 bool VtEnricher::Impl::build_acceleration_structures(VariantEntry& e,
                                                      const VtPartContext* ctx,
                                                      std::string& err) {
-    const uint32_t vertices = ctx->vertex_count;
-    const uint32_t triangles = ctx->triangle_count;
-    if (vertices == 0 || triangles == 0 || !ctx->positions || !ctx->indices) {
-        err = "vt_enrich: rung mesh has no geometry";
+    if (!ctx) {
+        err = "vt_enrich: rung mesh has missing or empty geometry";
         return false;
     }
+    switch (vt_enrich_mesh_validation(*ctx)) {
+        case VtEnrichMeshValidation::MissingGeometry:
+            err = "vt_enrich: rung mesh has missing or empty geometry";
+            return false;
+        case VtEnrichMeshValidation::OutOfRangeIndex:
+            err = "vt_enrich: rung mesh has out-of-range triangle indices";
+            return false;
+        case VtEnrichMeshValidation::Valid:
+            break;
+    }
+    const uint32_t vertices = ctx->vertex_count;
+    const uint32_t triangles = ctx->triangle_count;
     e.vertex_count = vertices;
     e.primitive_count = triangles;
 
@@ -749,6 +879,14 @@ bool VtEnricher::Impl::build_acceleration_structures(VariantEntry& e,
     return true;
 }
 
+// Record the entry's BLAS build, a barrier, its TLAS build, and a final
+// barrier that makes the TLAS readable by the compute trace; then latch
+// e.built. Must be recorded exactly once per entry, and before any dispatch
+// that binds the entry's descriptor set — enrich() guarantees both with the
+// `built` flag plus the pending_builds dedup. The entry's scratch buffers must
+// survive until this command buffer has EXECUTED, which is why they are owned
+// by the entry and why entries are retired through the graveyard rather than
+// destroyed in place.
 void VtEnricher::Impl::record_as_build(VkCommandBuffer cmd, VariantEntry& e) {
     VkAccelerationStructureGeometryKHR geom{
         VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR};
@@ -814,18 +952,52 @@ void VtEnricher::Impl::record_as_build(VkCommandBuffer cmd, VariantEntry& e) {
     e.built = true;
 }
 
+// Find — or build — the cached entry for one (variant_hash, rung).
+//
+// Returns null on ANY failure (unusable chart streams, allocation failure,
+// acceleration-structure creation failure, descriptor exhaustion): the caller
+// just counts the request as skipped, because a skipped enrichment leaves a
+// page tier-1 correct rather than broken. The FIRST such failure is reported
+// on stderr with its reason -- silently discarding the populated `err` made an
+// AS-build failure look identical to a world that simply never requested
+// enrichment. Later failures are latched off (build_failure_reported), since a
+// failing variant is retried by every batch that wants it. On success the
+// pointer is into the `variants` map and is valid only for the batch being
+// recorded — evict_lru() may move a later-unused entry into the graveyard.
+//
+// A hit is a map lookup that stamps last_used. A miss is expensive: the
+// O(triangles) chart/triangle repack, host-visible buffers for the streams and
+// for a full copy of the mesh, BLAS/TLAS creation, and a descriptor set — plus
+// the GPU-side build that record_as_build() will record for it later. It also
+// runs evict_lru() first, so a miss can retire another variant's structures.
 VtEnricher::Impl::VariantEntry* VtEnricher::Impl::get_or_build_variant(
-    uint64_t variant_hash, uint32_t rung,
+    const VtPreparationKey& key,
     const chart_atlas::ChartAtlasRung* atlas, const VtPartContext* ctx,
     uint64_t frame_index, Stats& stats) {
-    const auto key = std::make_pair(variant_hash, rung);
     auto it = variants.find(key);
     if (it != variants.end()) {
         it->second.last_used = frame_index;
         return &it->second;
     }
-    if (!vt_build_chart_gpu_streams(*atlas, *ctx, scratch_charts, scratch_tris))
+    // Reports the first failure and swallows the rest. Always returns null so
+    // call sites read `return fail(...)`.
+    const auto fail = [&](const char* stage,
+                          const std::string& reason) -> VariantEntry* {
+        if (!build_failure_reported) {
+            build_failure_reported = true;
+            std::fprintf(stderr,
+                         "[vt.enrich] variant 0x%016llx rung %u cannot be "
+                         "enriched (%s): %s -- this and every later build "
+                         "failure leaves the page at tier 1\n",
+                         static_cast<unsigned long long>(key.variant_hash), key.rung,
+                         stage, reason.empty() ? "no reason reported"
+                                               : reason.c_str());
+        }
         return nullptr;
+    };
+    if (!vt_build_chart_gpu_streams(*atlas, *ctx, scratch_charts, scratch_tris))
+        return fail("chart streams", "vt_build_chart_gpu_streams rejected the "
+                                     "atlas rung or part context");
 
     evict_lru(frame_index, stats);
 
@@ -845,13 +1017,26 @@ VtEnricher::Impl::VariantEntry* VtEnricher::Impl::get_or_build_variant(
                                VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
                                entry.tris, err) ||
         !matter::map_buffer(entry.tris, err))
-        return nullptr;
+        return fail("stream buffers", err);
     std::memcpy(entry.charts.mapped, scratch_charts.data(),
                 static_cast<size_t>(charts_bytes));
     std::memcpy(entry.tris.mapped, scratch_tris.data(),
                 static_cast<size_t>(tris_bytes));
-    if (!build_acceleration_structures(entry, ctx, err)) return nullptr;
-    entry.bytes += charts_bytes + tris_bytes;
+    std::vector<VtResolveChart> resolve_charts;
+    std::vector<VtResolveNode> resolve_nodes;
+    if (!vt_build_resolve_bvh(scratch_charts,scratch_tris,resolve_charts,resolve_nodes))
+        return fail("resolve bounds", "invalid chart triangle range");
+    const size_t table_bytes = resolve_charts.size()*sizeof(VtResolveChart);
+    const size_t node_bytes = resolve_nodes.size()*sizeof(VtResolveNode);
+    if (!matter::create_buffer(*vulkan,table_bytes+node_bytes,
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,0,entry.resolve_bvh,err) ||
+        !matter::map_buffer(entry.resolve_bvh,err)) return fail("resolve bounds buffer",err);
+    std::memcpy(entry.resolve_bvh.mapped,resolve_charts.data(),table_bytes);
+    if (node_bytes) std::memcpy(static_cast<uint8_t*>(entry.resolve_bvh.mapped)+table_bytes,resolve_nodes.data(),node_bytes);
+    if (!build_acceleration_structures(entry, ctx, err))
+        return fail("acceleration structures", err);
+    entry.bytes += charts_bytes + tris_bytes + entry.resolve_bvh.size;
     entry.last_used = frame_index;
 
     VkDescriptorSetAllocateInfo alloc{
@@ -860,7 +1045,9 @@ VtEnricher::Impl::VariantEntry* VtEnricher::Impl::get_or_build_variant(
     alloc.descriptorSetCount = 1;
     alloc.pSetLayouts = &variant_layout;
     if (vkAllocateDescriptorSets(device, &alloc, &entry.set) != VK_SUCCESS)
-        return nullptr;
+        return fail("descriptor set",
+                    "vkAllocateDescriptorSets failed -- the pool is sized "
+                    "as_cache_cap + 32, so this means the cache overran it");
     VkDescriptorBufferInfo charts_info{entry.charts.buffer, 0, VK_WHOLE_SIZE};
     VkDescriptorBufferInfo tris_info{entry.tris.buffer, 0, VK_WHOLE_SIZE};
     VkWriteDescriptorSetAccelerationStructureKHR as_write{
@@ -888,6 +1075,11 @@ VtEnricher::Impl::VariantEntry* VtEnricher::Impl::get_or_build_variant(
     return &inserted.first->second;
 }
 
+// Make room for one new entry: retire least-recently-used entries into the
+// graveyard until the cache is below as_cache_cap. Entries already used during
+// `frame_index` are never candidates, so the cache CAN exceed the cap for a
+// frame whose batch touches more variants than it holds — that is deliberate,
+// since the recording loop holds raw pointers into these map nodes.
 void VtEnricher::Impl::evict_lru(uint64_t frame_index, Stats& stats) {
     while (variants.size() >= as_cache_cap) {
         // NEVER evict an entry this frame's batch already references: the
@@ -909,6 +1101,10 @@ void VtEnricher::Impl::evict_lru(uint64_t frame_index, Stats& stats) {
     stats.as_cached = static_cast<uint32_t>(variants.size());
 }
 
+// Destroy graveyard entries stamped at least kRetireFrames ago. Called once
+// per enrich() batch, so a session that stops enriching keeps whatever is in
+// the graveyard alive until the next batch — or until teardown, which frees it
+// regardless.
 void VtEnricher::Impl::retire(uint64_t frame_index) {
     for (size_t i = graveyard.size(); i-- > 0;) {
         if (frame_index < graveyard[i].frame + kRetireFrames) continue;
@@ -917,6 +1113,12 @@ void VtEnricher::Impl::retire(uint64_t frame_index) {
     }
 }
 
+// One-time GPU-side initialization: park every ring's intermediate image in
+// GENERAL, where it stays for the rest of the enricher's life. Recorded into
+// the FIRST enrich()'s command buffer rather than at create() time — this
+// module is handed no queue and submits nothing itself, so the caller's
+// promise to submit in record order is what makes deferring it safe.
+// init_recorded is the latch.
 void VtEnricher::Impl::record_init(VkCommandBuffer cmd) {
     for (Ring& r : rings) {
         cmd_image_barrier(cmd, r.inter.image, VK_IMAGE_LAYOUT_UNDEFINED,
@@ -929,10 +1131,6 @@ void VtEnricher::Impl::record_init(VkCommandBuffer cmd) {
     }
     init_recorded = true;
 }
-
-// ---------------------------------------------------------------------------
-// M6.5 directional tier
-// ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -979,17 +1177,9 @@ void VtEnricher::invalidate_part(uint64_t variant_hash) {
     // that had lived 27 ms and been freed 12 ms earlier, a lifetime no
     // graveyard-routed entry can have (kRetireFrames guarantees more).
     for (auto it = impl_->variants.begin(); it != impl_->variants.end();) {
-        if (it->first.first == variant_hash) {
-            // Deferred, exactly as evict_lru does it. Destroying here instead
-            // was a GPU use-after-free: the caller's retirement horizon is
-            // measured from when the PART was released, but a variant can be
-            // (re)built after that -- a queued page request serviced in the
-            // intervening frames -- and such an entry is one frame old with an
-            // acceleration-structure build still writing its scratch. Device
-            // fault reports caught exactly that: an invalid WRITE to a buffer
-            // that had lived 27 ms and been freed 12 ms earlier, which no
-            // graveyard-routed entry could ever be (kRetireFrames guarantees
-            // several more frames of life).
+        if (it->first.variant_hash == variant_hash) {
+            // Deferred, exactly as evict_lru does it -- see the rationale on
+            // this function.
             impl_->graveyard.push_back(
                 Impl::Retired{std::move(it->second), impl_->last_frame_index});
             it = impl_->variants.erase(it);
@@ -997,6 +1187,15 @@ void VtEnricher::invalidate_part(uint64_t variant_hash) {
             ++it;
         }
     }
+    stats_.as_cached = static_cast<uint32_t>(impl_->variants.size());
+}
+
+void VtEnricher::release_preparation(const VtPreparationKey& key) {
+    const auto it = impl_->variants.find(key);
+    if (it == impl_->variants.end()) return;
+    impl_->graveyard.push_back(
+        Impl::Retired{std::move(it->second), impl_->last_frame_index});
+    impl_->variants.erase(it);
     stats_.as_cached = static_cast<uint32_t>(impl_->variants.size());
 }
 
@@ -1035,6 +1234,7 @@ void VtEnricher::enrich(VkCommandBuffer cmd, const VtEnrichRequest* batch,
         uint32_t req_index;
         uint32_t dst_layer;
         int32_t dst_x, dst_y;
+        const VtEnrichRequest* request;
     };
     std::vector<Rec> recs;
     recs.reserve(std::min<size_t>(count, kMaxRequestsPerBatch));
@@ -1043,16 +1243,40 @@ void VtEnricher::enrich(VkCommandBuffer cmd, const VtEnrichRequest* batch,
     auto* gpu_reqs = static_cast<GpuEnrichRequest*>(ring.requests.mapped);
     auto* gpu_cands = static_cast<uint32_t*>(ring.cands.mapped);
     uint32_t cand_cursor = 0;
+    // The pool ORM image the write-back barriers at the end will cover. Every
+    // accepted request overwrites these, so the barriers use the LAST accepted
+    // request's image and layer count, while the per-page copies use their own
+    // rec.orm_image. That is equivalent only while every request in the batch
+    // names the SAME ORM image — which holds because the residency layer owns
+    // exactly one page pool. The loop below no longer RELIES on that: a
+    // request naming a different image is skipped, because copying into an
+    // image the end-of-batch barriers never transitioned is a silent
+    // synchronisation bug rather than a missing page.
     VkImage orm_image = VK_NULL_HANDLE;
     uint32_t orm_layers = 0;
 
     for (size_t i = 0; i < count; ++i) {
         const VtEnrichRequest& req = batch[i];
+        if(req.out_enriched)*req.out_enriched=false;
         const VtPoolBinding* pool = req.pool;
         if (!req.atlas || !req.part_context || !pool ||
             !pool->image[kVtChannelOrm] ||
             !pool->sampled_view[kVtChannelOrm] ||
             recs.size() >= kMaxRequestsPerBatch) {
+            ++stats_.requests_skipped;
+            continue;
+        }
+        if(req.occlusion_address && (!req.occlusion_buffer || (req.occlusion_address&15u) || (req.occlusion_offset&3u))) {
+            ++stats_.requests_skipped;continue;
+        }
+        if (req.tile_begin >= kVtPageTiles || !req.tile_count || req.tile_count > kVtPageTiles - req.tile_begin) {
+            ++stats_.requests_skipped; continue;
+        }
+        // Enforce the single-ORM-image invariant the write-back barriers
+        // above depend on. Checked here, before anything in the batch state
+        // is mutated, so a skip costs nothing.
+        if (orm_image != VK_NULL_HANDLE &&
+            pool->image[kVtChannelOrm] != orm_image) {
             ++stats_.requests_skipped;
             continue;
         }
@@ -1063,8 +1287,11 @@ void VtEnricher::enrich(VkCommandBuffer cmd, const VtEnrichRequest* batch,
             continue;
         }
         const auto* ctx = static_cast<const VtPartContext*>(req.part_context);
+        // Reusable material space has no scene occluders. Receiver-dependent
+        // enrichment belongs to an instance override, not shared module pixels.
+        if (ctx && ctx->periodic.version) { ++stats_.requests_skipped; continue; }
         Impl::VariantEntry* entry = im.get_or_build_variant(
-            req.variant_hash, req.rung, req.atlas, ctx, frame_index, stats_);
+            req.preparation_key(), req.atlas, ctx, frame_index, stats_);
         if (!entry) {
             ++stats_.requests_skipped;
             continue;
@@ -1104,22 +1331,37 @@ void VtEnricher::enrich(VkCommandBuffer cmd, const VtEnrichRequest* batch,
         g.c[0] = sx;
         g.c[1] = sy;
         g.c[2] = layer;
-        g.c[3] = 0;
+        g.c[3] = req.tile_begin;
         g.d[0] = settings.strength;
         g.d[1] = settings.cap_texels;
         g.d[2] = settings.cap_meters;
         g.d[3] = settings.min_ao;
+        g.e[0]=uint32_t(req.occlusion_address);g.e[1]=uint32_t(req.occlusion_address>>32);
+        g.e[2]=uint32_t(entry->resolve_bvh.address);g.e[3]=uint32_t(entry->resolve_bvh.address>>32);
         orm_image = pool->image[kVtChannelOrm];
         orm_layers = pool->layer_count ? pool->layer_count : 1u;
         im.bind_pool_orm(pool->sampled_view[kVtChannelOrm]);
         recs.push_back(Rec{entry, orm_image, orm_layers, rec_index, layer,
-                           static_cast<int32_t>(sx), static_cast<int32_t>(sy)});
+                           static_cast<int32_t>(sx), static_cast<int32_t>(sy),&req});
     }
     if (recs.empty()) return;
 
     // 1. Acceleration structures whose builds have not been recorded yet.
     for (Impl::VariantEntry* entry : pending_builds)
         im.record_as_build(cmd, *entry);
+    // Build and trace occupy separate frames on the incremental path. The
+    // caller retains the private factor and retries tile zero, still invisible.
+    if (count == 1 && batch[0].occlusion_address && batch[0].tile_count < kVtPageTiles && !pending_builds.empty())
+        return;
+
+    // Clear only when tile zero will actually trace. A build-only frame must
+    // not clear the same factor again on its retry without a transfer dependency.
+    // Each invocation ORs disjoint R16 halves into the zeroed packed words.
+    for (const Rec& rec : recs) {
+        const auto& req = *rec.request;
+        if (req.occlusion_address && req.tile_begin == 0)
+            vkCmdFillBuffer(cmd, req.occlusion_buffer, req.occlusion_offset, kPageStore*kPageStore*2, 0);
+    }
 
     // 2. This batch's compute writes must wait for the previous batch in this
     //    ring slot (its encode reads / block-buffer copies).
@@ -1127,8 +1369,8 @@ void VtEnricher::enrich(VkCommandBuffer cmd, const VtEnrichRequest* batch,
                        VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
                            VK_PIPELINE_STAGE_2_TRANSFER_BIT,
                        VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT |
-                           VK_ACCESS_2_SHADER_STORAGE_READ_BIT |
-                           VK_ACCESS_2_TRANSFER_READ_BIT,
+                       VK_ACCESS_2_SHADER_STORAGE_READ_BIT |
+                           VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT,
                        VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                        VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT |
                            VK_ACCESS_2_SHADER_STORAGE_READ_BIT |
@@ -1143,7 +1385,7 @@ void VtEnricher::enrich(VkCommandBuffer cmd, const VtEnrichRequest* batch,
                                 im.enrich_pl, 0, 2, sets, 0, nullptr);
         vkCmdPushConstants(cmd, im.enrich_pl, VK_SHADER_STAGE_COMPUTE_BIT, 0, 4,
                            &rec.req_index);
-        vkCmdDispatch(cmd, (kPageStore + 7) / 8, (kPageStore + 7) / 8, 1);
+        vkCmdDispatch(cmd, rec.request->tile_count, 1, 1);
     }
 
     cmd_memory_barrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
@@ -1158,6 +1400,7 @@ void VtEnricher::enrich(VkCommandBuffer cmd, const VtEnrichRequest* batch,
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, im.encode_pl, 0,
                             1, &ring.encode_set, 0, nullptr);
     for (const Rec& rec : recs) {
+        if(rec.request->occlusion_address)continue;
         const uint32_t push[2] = {rec.req_index, rec.req_index};
         vkCmdPushConstants(cmd, im.encode_pl, VK_SHADER_STAGE_COMPUTE_BIT, 0, 8,
                            push);
@@ -1174,13 +1417,15 @@ void VtEnricher::enrich(VkCommandBuffer cmd, const VtEnrichRequest* batch,
     //    ORM image flips to TRANSFER_DST here and is restored to
     //    SHADER_READ_ONLY before returning (vt_enrich.h contract), so the
     //    residency layer's layout tracking stays true.
-    cmd_image_barrier(cmd, orm_image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+    const bool writes_orm=std::any_of(recs.begin(),recs.end(),[](const Rec& rec){return !rec.request->occlusion_address;});
+    if(writes_orm) cmd_image_barrier(cmd, orm_image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                       VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                       VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
                       VK_PIPELINE_STAGE_2_TRANSFER_BIT,
                       VK_ACCESS_2_TRANSFER_WRITE_BIT, orm_layers);
     for (const Rec& rec : recs) {
+        if(rec.request->occlusion_address)continue;
         VkBufferImageCopy region{};
         region.bufferOffset =
             VkDeviceSize(rec.req_index) * kBlocksPerPage * 16;
@@ -1192,13 +1437,22 @@ void VtEnricher::enrich(VkCommandBuffer cmd, const VtEnrichRequest* batch,
                                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
                                &region);
         ++stats_.pages_enriched;
+        rec.request->mark_enriched();
     }
-    cmd_image_barrier(cmd, orm_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+    if(writes_orm) cmd_image_barrier(cmd, orm_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                       VK_PIPELINE_STAGE_2_TRANSFER_BIT,
                       VK_ACCESS_2_TRANSFER_WRITE_BIT,
                       VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                       VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, orm_layers);
+
+    cmd_memory_barrier(cmd,VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+        VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
+    for(const Rec& rec:recs)if(rec.request->occlusion_address) {
+        if (rec.request->tile_begin + rec.request->tile_count == kVtPageTiles)
+            ++stats_.pages_enriched;
+        rec.request->mark_enriched();
+    }
 
     stats_.as_cached = static_cast<uint32_t>(im.variants.size());
     uint64_t bytes = 0;

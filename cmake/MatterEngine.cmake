@@ -1,0 +1,989 @@
+include_guard(GLOBAL)
+
+# The viewer configuration of this TU exceeds MSVC's ordinary COFF section
+# limit (C1128). Keep the larger object format local to its core/viewer builds.
+if(MSVC)
+    set_property(SOURCE MatterEngine3/src/matter_engine.cpp APPEND PROPERTY
+        COMPILE_OPTIONS /bigobj)
+endif()
+
+function(matter_engine_include_directories target visibility)
+    add_dependencies("${target}"
+        matter_embedded_shader_text
+        matter_embedded_spirv)
+    target_include_directories("${target}" BEFORE ${visibility}
+        "${CMAKE_BINARY_DIR}/MatterEngine3")
+    target_include_directories("${target}" ${visibility}
+        "${CMAKE_SOURCE_DIR}/MatterEngine3"
+        "${CMAKE_SOURCE_DIR}/MatterEngine3/include"
+        "${CMAKE_SOURCE_DIR}/MatterEngine3/src"
+        "${CMAKE_SOURCE_DIR}/MatterEngine3/src/render"
+        "${CMAKE_SOURCE_DIR}/MatterEngine3/src/provider"
+        "${CMAKE_SOURCE_DIR}/libs/MatterSurfaceLib/include"
+        "${CMAKE_SOURCE_DIR}/libs/MatterSurfaceLib/src"
+        "${CMAKE_SOURCE_DIR}/libs/SpatialQueryLib/include"
+        "${CMAKE_SOURCE_DIR}/libs/MemoryLib/include"
+        "${CMAKE_SOURCE_DIR}/libs/MathLib/include"
+        "${CMAKE_SOURCE_DIR}/libs/ProfileLib/include"
+        "${CMAKE_SOURCE_DIR}/libs/ParticleFlowLib/include"
+        "${CMAKE_SOURCE_DIR}/libs/MeshChartingLib/include"
+        "${CMAKE_SOURCE_DIR}/third_party/quickjs-ng"
+        "${CMAKE_SOURCE_DIR}/third_party/raylib/src"
+        "${CMAKE_SOURCE_DIR}/third_party/box3d/include"
+        "${CMAKE_SOURCE_DIR}/third_party/bc7enc"
+        "${CMAKE_SOURCE_DIR}/third_party/flecs"
+        "${CMAKE_SOURCE_DIR}/third_party/ozz-animation/include"
+        "${CMAKE_SOURCE_DIR}/third_party/Vulkan-Headers/include"
+    )
+endfunction()
+
+function(matter_require_headless_assertion_policy target)
+    get_target_property(target_options "${target}" COMPILE_OPTIONS)
+    set(required_force_include
+        "/FI${CMAKE_SOURCE_DIR}/cmake/MatterHeadlessConfig.h")
+    list(FIND target_options "${required_force_include}" force_include_index)
+    if(force_include_index EQUAL -1)
+        message(FATAL_ERROR
+            "${target} does not preserve headless no-NDEBUG semantics: '${target_options}'")
+    endif()
+    list(FIND target_options "/UNDEBUG" undefine_option_index)
+    if(NOT undefine_option_index EQUAL -1)
+        message(FATAL_ERROR
+            "${target} uses conflicting /UNDEBUG policy: '${target_options}'")
+    endif()
+endfunction()
+
+function(matter_apply_headless_config target)
+    target_compile_options("${target}" PRIVATE
+        "/FI${CMAKE_SOURCE_DIR}/cmake/MatterHeadlessConfig.h"
+    )
+endfunction()
+
+matter_read_manifest(
+    "${CMAKE_SOURCE_DIR}/cmake/manifests/engine-core.sources"
+    matter_engine_core_manifest
+    PLATFORM windows
+)
+set(matter_engine_core_sources ${matter_engine_core_manifest})
+# The triangle emitter, polygon triangulator and matrix math are owned by
+# ProceduralGeometry/MatterGraphics, the terrain field, mesher and seam welder
+# by TerrainGeneration, and the Box3d settle core by AssetPipeline physics; each
+# is compiled from where it lives.
+list(FILTER matter_engine_core_sources INCLUDE REGEX
+    "^(MatterEngine3/src|libs/ProceduralGeometry/src|libs/MatterGraphics/src|libs/TerrainGeneration/src|libs/AssetPipeline/physics/src)/.*\\.cpp$")
+if(WIN32)
+    # The inotify implementation is Linux-only. Its source retains the existing
+    # Linux guards and remains in the canonical manifest/Make build.
+    list(REMOVE_ITEM matter_engine_core_sources MatterEngine3/src/inotify_watcher.cpp)
+endif()
+if(NOT matter_engine_core_sources)
+    message(FATAL_ERROR "engine-core.sources contains no MatterEngine3 core sources")
+endif()
+
+matter_read_manifest(
+    "${CMAKE_SOURCE_DIR}/cmake/manifests/matter-surface.sources"
+    matter_surface_manifest
+    PLATFORM windows
+)
+set(matter_engine_surface_sources ${matter_surface_manifest})
+list(FILTER matter_engine_surface_sources INCLUDE REGEX "^libs/MatterSurfaceLib/src/.*\\.(c|cpp)$")
+if(NOT matter_engine_surface_sources)
+    message(FATAL_ERROR "matter-surface.sources contains no MatterSurfaceLib sources")
+endif()
+
+add_library(matter_engine_core OBJECT ${matter_engine_core_sources})
+matter_engine_include_directories(matter_engine_core PUBLIC)
+target_compile_definitions(matter_engine_core PRIVATE
+    PLATFORM_DESKTOP
+    GRAPHICS_API_OPENGL_43
+    MATTER_HAVE_SCRIPT_HOST
+    MATTER_VULKAN_ONLY
+)
+if(BUILD_TESTING)
+    target_compile_definitions(matter_engine_core PRIVATE
+        MATTER_TEST_CACHE_VALIDATION_HOOK)
+endif()
+if(MATTER_ENABLE_PHYSX)
+    target_compile_definitions(matter_engine_core PRIVATE MATTER_ENABLE_PHYSX)
+endif()
+target_link_libraries(matter_engine_core PUBLIC
+    matter_memory
+    matter_math
+    matter_spatial
+    matter_profile
+    matter_particle_flow
+    matter_mesh_charting
+    matter_asset_store
+    matter_quickjs
+    matter_flecs
+    matter_box3d
+    matter_ozz_offline
+    matter_bc7enc
+    matter_authoring_adapter
+)
+matter_apply_project_defaults(matter_engine_core)
+matter_apply_headless_config(matter_engine_core)
+matter_require_headless_assertion_policy(matter_engine_core)
+
+# MatterSurfaceLib contains C-linkage translation units as well as C++ mesh
+# implementations. Keeping it as objects lets final consumers retain the full
+# engine registration/algorithm surface without linker archive extraction.
+add_library(matter_engine_surface_objects OBJECT ${matter_engine_surface_sources})
+matter_engine_include_directories(matter_engine_surface_objects PRIVATE)
+target_compile_definitions(matter_engine_surface_objects PRIVATE
+    PLATFORM_DESKTOP
+    GRAPHICS_API_OPENGL_43
+    MATTER_VULKAN_ONLY
+)
+target_link_libraries(matter_engine_surface_objects PRIVATE
+    matter_memory
+    matter_math
+    matter_spatial
+    matter_mesh_charting
+)
+matter_apply_project_defaults(matter_engine_surface_objects)
+matter_apply_headless_config(matter_engine_surface_objects)
+matter_require_headless_assertion_policy(matter_engine_surface_objects)
+
+add_library(matter_engine_headless STATIC
+    $<TARGET_OBJECTS:matter_engine_core>
+    $<TARGET_OBJECTS:matter_engine_surface_objects>
+)
+matter_engine_include_directories(matter_engine_headless PUBLIC)
+target_compile_definitions(matter_engine_headless INTERFACE
+    MATTER_HAVE_SCRIPT_HOST
+)
+if(BUILD_TESTING)
+    target_compile_definitions(matter_engine_headless INTERFACE
+        MATTER_TEST_CACHE_VALIDATION_HOOK)
+endif()
+target_link_libraries(matter_engine_headless PUBLIC
+    matter_memory
+    matter_math
+    matter_spatial
+    matter_profile
+    matter_particle_flow
+    matter_mesh_charting
+    matter_asset_store
+    matter_quickjs
+    matter_flecs
+    matter_box3d
+    matter_ozz_offline
+    matter_bc7enc
+    matter_authoring_adapter
+)
+if(MATTER_ENABLE_PHYSX)
+    target_link_libraries(matter_engine_headless PUBLIC matter_physx_adapter)
+endif()
+matter_apply_project_defaults(matter_engine_headless)
+
+# The portable authoring pipeline (contracts, geometry, build, QuickJS host)
+# behind the legacy part route in engine-core.sources. Its components keep their
+# own build files; this graph already compiles the CPU kernels matter_geometry
+# shares, so the adapter takes them from here instead of compiling them twice.
+# The components' tests stay their own gates, and they use the root's static
+# runtime so the archives link into the engine's executables.
+set(matter_authoring_saved_testing ${BUILD_TESTING})
+set(matter_authoring_saved_runtime ${CMAKE_MSVC_RUNTIME_LIBRARY})
+set(BUILD_TESTING OFF)
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+set(MATTER_AUTHORING_HOST_KERNELS ON)
+add_subdirectory(MatterEngine3/src/component_adapters/authoring)
+set(BUILD_TESTING ${matter_authoring_saved_testing})
+set(CMAKE_MSVC_RUNTIME_LIBRARY ${matter_authoring_saved_runtime})
+
+# The terrain coordinator: the one native sector flow live terrain demand goes
+# through. It reuses the contracts target loaded above; its own tests stay its
+# gate, so only the library joins this graph.
+set(BUILD_TESTING OFF)
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+add_subdirectory(MatterEngine3/src/component_adapters/terrain_coordinator)
+set(BUILD_TESTING ${matter_authoring_saved_testing})
+set(CMAKE_MSVC_RUNTIME_LIBRARY ${matter_authoring_saved_runtime})
+
+# ---------------------------------------------------------------------------
+# `matter` — the headless command (MatterEngine3/tools/matter_cli.cpp).
+#
+# Today it carries one command, `export obj` (docs/export-obj.md). It is a
+# PRODUCT tool, not a test, so it is built unconditionally; everything it needs
+# is already in matter_engine_headless, because src/export rides in
+# engine-core.sources.
+#
+# OUTPUT_NAME is `matter` so the documented `matter export obj ...` spelling is
+# literally what the binary is called; the CMake target keeps the _cli suffix so
+# it cannot collide with a future library of the same name.
+# ---------------------------------------------------------------------------
+add_executable(matter_cli
+    MatterEngine3/tools/matter_cli.cpp
+    MatterEngine3/cli/matter_cli.cpp)
+set_target_properties(matter_cli PROPERTIES
+    OUTPUT_NAME matter
+    # Beside the engine it belongs to, mirroring how matter_editor lands in
+    # MatterEditor/build/windows-msvc rather than in the preset's binary dir.
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/MatterEngine3/build/windows-msvc"
+    PDB_OUTPUT_DIRECTORY "${CMAKE_SOURCE_DIR}/MatterEngine3/build/windows-msvc"
+)
+matter_engine_include_directories(matter_cli PRIVATE)
+target_compile_definitions(matter_cli PRIVATE
+    PLATFORM_DESKTOP
+    GRAPHICS_API_OPENGL_43
+    MATTER_VULKAN_ONLY
+    MATTER_HAVE_SCRIPT_HOST
+    MATTER_ENABLE_GI_CLI
+)
+target_link_libraries(matter_cli PRIVATE matter_engine_headless)
+matter_apply_project_defaults(matter_cli)
+
+if(BUILD_TESTING)
+    # Shared normal math is header-only; keep its correctness gate independent
+    # of the engine archive, graphics/device setup and generated asset caches.
+    add_executable(mat_math_tests MatterEngine3/tests/mat_math_tests.cpp)
+    target_include_directories(mat_math_tests PRIVATE
+        "${CMAKE_SOURCE_DIR}/MatterEngine3/src"
+        "${CMAKE_SOURCE_DIR}/MatterEngine3/tests"
+    )
+    target_link_libraries(mat_math_tests PRIVATE matter_math)
+    matter_apply_project_defaults(mat_math_tests)
+    matter_apply_test_assertion_policy(mat_math_tests)
+    add_test(NAME mat_math_tests COMMAND mat_math_tests)
+    set_tests_properties(mat_math_tests PROPERTIES LABELS cpu)
+    set_property(GLOBAL APPEND PROPERTY MATTER_ENGINE_CPU_TARGETS mat_math_tests)
+
+    # VT layout, page addressing, retirement, and admission policies are
+    # header-only. Exercise them natively without linking a renderer/device.
+    add_executable(vt_residency_tests MatterEngine3/tests/vt_residency_tests.cpp)
+    target_include_directories(vt_residency_tests PRIVATE
+        "${CMAKE_SOURCE_DIR}/MatterEngine3/include"
+        "${CMAKE_SOURCE_DIR}/MatterEngine3/src"
+        "${CMAKE_SOURCE_DIR}/MatterEngine3/tests"
+        "${CMAKE_SOURCE_DIR}/third_party/Vulkan-Headers/include"
+    )
+    matter_apply_project_defaults(vt_residency_tests)
+    matter_apply_test_assertion_policy(vt_residency_tests)
+    add_test(NAME vt_residency_tests COMMAND vt_residency_tests)
+    set_tests_properties(vt_residency_tests PROPERTIES LABELS cpu)
+    set_property(GLOBAL APPEND PROPERTY MATTER_ENGINE_CPU_TARGETS vt_residency_tests)
+
+    # These header-only environment suites also run in standalone graphics and
+    # direct Make. All entry points share the production source qualifier.
+    include("${CMAKE_SOURCE_DIR}/libs/MatterGraphics/cmake/EnvironmentQualification.cmake")
+    foreach(suite cloud_layer volumetric_quality)
+        add_executable(${suite}_tests MatterEngine3/tests/${suite}_tests.cpp)
+        target_include_directories(${suite}_tests PRIVATE "${CMAKE_SOURCE_DIR}/MatterEngine3/include")
+        matter_apply_project_defaults(${suite}_tests)
+        matter_apply_test_assertion_policy(${suite}_tests)
+        matter_qualify_environment_test(${suite}_tests
+            "${MATTER_PYTHON_EXECUTABLE}" ${matter_python_arguments})
+        add_test(NAME ${suite}_tests COMMAND ${suite}_tests)
+        set_tests_properties(${suite}_tests PROPERTIES LABELS cpu TIMEOUT 10)
+        set_property(GLOBAL APPEND PROPERTY MATTER_ENGINE_CPU_TARGETS ${suite}_tests)
+    endforeach()
+
+    function(matter_qualify_cpu_filesystem target source)
+        set(qualifier "${target}_filesystem_qualifier")
+        add_executable("${qualifier}" MatterEngine3/tools/qualify_cpu_sources.cpp)
+        matter_engine_include_directories("${qualifier}" PRIVATE)
+        target_include_directories("${qualifier}" PRIVATE
+            "${CMAKE_SOURCE_DIR}/MatterEngine3/tests")
+        target_compile_definitions("${qualifier}" PRIVATE
+            PLATFORM_DESKTOP GRAPHICS_API_OPENGL_43 MATTER_VULKAN_ONLY
+            "MATTER_QUALIFICATION_SOURCE=\"${CMAKE_SOURCE_DIR}/${source}\"")
+        target_link_libraries("${qualifier}" PRIVATE matter_engine_headless)
+        matter_apply_project_defaults("${qualifier}")
+        matter_apply_test_assertion_policy("${qualifier}")
+        add_custom_target("${target}_filesystem_qualification" ALL
+            COMMAND "$<TARGET_FILE:${qualifier}>"
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/MatterEngine3/tests"
+            DEPENDS "${qualifier}" VERBATIM)
+        add_dependencies("${target}" "${target}_filesystem_qualification")
+    endfunction()
+
+    function(matter_add_engine_cpu_test target)
+        add_executable("${target}" ${ARGN})
+        matter_engine_include_directories("${target}" PRIVATE)
+        target_include_directories("${target}" PRIVATE
+            "${CMAKE_SOURCE_DIR}/MatterEngine3/tests"
+        )
+        target_compile_definitions("${target}" PRIVATE
+            PLATFORM_DESKTOP
+            GRAPHICS_API_OPENGL_43
+            MATTER_VULKAN_ONLY
+        )
+        target_link_libraries("${target}" PRIVATE matter_engine_headless)
+        matter_apply_project_defaults("${target}")
+        matter_apply_test_assertion_policy("${target}")
+        add_test(NAME "${target}" COMMAND "${target}")
+        set_tests_properties("${target}" PROPERTIES
+            LABELS cpu
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/MatterEngine3/tests"
+        )
+        set_property(GLOBAL APPEND PROPERTY MATTER_ENGINE_CPU_TARGETS "${target}")
+    endfunction()
+
+    add_executable(compiler_portability_tests
+        MatterEngine3/tests/compiler_portability_tests.cpp
+    )
+    matter_engine_include_directories(compiler_portability_tests PRIVATE)
+    target_include_directories(compiler_portability_tests PRIVATE
+        "${CMAKE_SOURCE_DIR}/MatterEngine3/tests"
+    )
+    target_link_libraries(compiler_portability_tests PRIVATE matter_engine_headless)
+    matter_apply_project_defaults(compiler_portability_tests)
+    matter_apply_test_assertion_policy(compiler_portability_tests)
+    get_target_property(compiler_portability_links
+        compiler_portability_tests LINK_LIBRARIES)
+    list(FIND compiler_portability_links matter_engine_headless
+        compiler_portability_headless_index)
+    if(compiler_portability_headless_index EQUAL -1)
+        message(FATAL_ERROR
+            "compiler_portability_tests must exercise matter_engine_headless: "
+            "'${compiler_portability_links}'")
+    endif()
+    add_test(NAME compiler_portability_tests COMMAND compiler_portability_tests)
+    set_tests_properties(compiler_portability_tests PROPERTIES
+        LABELS cpu
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/MatterEngine3/tests"
+    )
+    add_executable(matter_engine_headless_consumer_tests
+        MatterEngine3/tests/headless_consumer_interface_tests.cpp
+    )
+    target_link_libraries(matter_engine_headless_consumer_tests
+        PRIVATE matter_engine_headless)
+    matter_apply_project_defaults(matter_engine_headless_consumer_tests)
+    matter_apply_test_assertion_policy(matter_engine_headless_consumer_tests)
+    add_test(NAME matter_engine_headless_consumer_tests
+        COMMAND matter_engine_headless_consumer_tests)
+    set_tests_properties(matter_engine_headless_consumer_tests PROPERTIES
+        LABELS compiler-policy
+    )
+    add_test(NAME compiler_format_negative_tests
+        COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
+            -File "${CMAKE_SOURCE_DIR}/cmake/tests/compiler_format_negative_tests.ps1"
+    )
+    set_tests_properties(compiler_format_negative_tests PROPERTIES
+        LABELS compiler-policy
+    )
+    add_test(NAME compiler_return_address_gnu_tests
+        COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
+            -File "${CMAKE_SOURCE_DIR}/cmake/tests/compiler_return_address_gnu_tests.ps1"
+    )
+    set_tests_properties(compiler_return_address_gnu_tests PROPERTIES
+        LABELS compiler-policy
+    )
+    add_custom_target(physx_dependency_contract_tests
+        COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
+            -File "${CMAKE_SOURCE_DIR}/tools/tests/physx_dependency_contract_tests.ps1"
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        VERBATIM
+    )
+    add_test(NAME physx_dependency_contract_tests
+        COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
+            -File "${CMAKE_SOURCE_DIR}/tools/tests/physx_dependency_contract_tests.ps1"
+    )
+    set_tests_properties(physx_dependency_contract_tests PROPERTIES
+        LABELS compiler-policy
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+    )
+    add_executable(matter_mesh_allocator_policy_tests
+        libs/MatterSurfaceLib/tests/mesh_allocator_policy_tests.cpp
+        libs/MatterSurfaceLib/tests/mesh_allocator_graphical_probe.cpp
+        libs/MatterSurfaceLib/tests/mesh_allocator_headless_probe.cpp
+    )
+    matter_engine_include_directories(matter_mesh_allocator_policy_tests PRIVATE)
+    target_include_directories(matter_mesh_allocator_policy_tests PRIVATE
+        "${CMAKE_SOURCE_DIR}/MatterEngine3/tests"
+    )
+    matter_apply_project_defaults(matter_mesh_allocator_policy_tests)
+    matter_apply_test_assertion_policy(matter_mesh_allocator_policy_tests)
+    add_test(NAME matter_mesh_allocator_policy_tests
+        COMMAND matter_mesh_allocator_policy_tests)
+    set_tests_properties(matter_mesh_allocator_policy_tests PROPERTIES
+        LABELS compiler-policy
+    )
+
+    matter_add_engine_cpu_test(solid_source_evaluation_tests
+        MatterEngine3/tests/solid_source_evaluation_tests.cpp)
+    set_tests_properties(solid_source_evaluation_tests PROPERTIES
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+    matter_add_engine_cpu_test(finite_surface_recipe_tests
+        MatterEngine3/tests/finite_surface_recipe_tests.cpp)
+    matter_add_engine_cpu_test(vt_encoded_pages_tests
+        MatterEngine3/tests/vt_encoded_pages_tests.cpp)
+    matter_qualify_cpu_filesystem(vt_encoded_pages_tests MatterEngine3/tests/vt_encoded_pages_tests.cpp)
+    matter_add_engine_cpu_test(asset_export_tests
+        MatterEngine3/tests/asset_export_tests.cpp)
+    matter_qualify_cpu_filesystem(asset_export_tests MatterEngine3/tests/asset_export_tests.cpp)
+    set_tests_properties(finite_surface_recipe_tests PROPERTIES
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+    matter_add_engine_cpu_test(part_surface_provider_tests
+        MatterEngine3/tests/part_surface_provider_tests.cpp)
+    matter_add_engine_cpu_test(brick_bond_detail_tests
+        MatterEngine3/tests/brick_bond_detail_tests.cpp)
+    set_tests_properties(brick_bond_detail_tests PROPERTIES
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+    matter_add_engine_cpu_test(brick_bond_atlas_tests
+        MatterEngine3/tests/brick_bond_atlas_tests.cpp)
+    matter_qualify_cpu_filesystem(brick_bond_atlas_tests MatterEngine3/tests/brick_bond_atlas_tests.cpp)
+    matter_add_engine_cpu_test(solid_face_projection_tests
+        MatterEngine3/tests/solid_face_projection_tests.cpp)
+    matter_add_engine_cpu_test(projected_face_cache_tests
+        MatterEngine3/tests/projected_face_cache_tests.cpp)
+    matter_qualify_cpu_filesystem(projected_face_cache_tests MatterEngine3/tests/projected_face_cache_tests.cpp)
+    matter_add_engine_cpu_test(face_material_bake_tests
+        MatterEngine3/tests/face_material_bake_tests.cpp)
+    matter_add_engine_cpu_test(finite_surface_stamp_tests
+        MatterEngine3/tests/finite_surface_stamp_tests.cpp)
+    matter_add_engine_cpu_test(sparse_voxel_hierarchy_tests
+        MatterEngine3/tests/sparse_voxel_hierarchy_tests.cpp)
+    matter_add_engine_cpu_test(sparse_voxel_bake_tests
+        MatterEngine3/tests/sparse_voxel_bake_tests.cpp)
+    matter_qualify_cpu_filesystem(sparse_voxel_bake_tests MatterEngine3/tests/sparse_voxel_bake_tests.cpp)
+    matter_add_engine_cpu_test(surface_proxy_tests
+        MatterEngine3/tests/surface_proxy_tests.cpp)
+    matter_add_engine_cpu_test(mesh_simplifier_tests
+        libs/MatterSurfaceLib/tests/mesh_simplifier_tests.cpp
+        MatterEngine3/src/render/vulkan_only_compat.cpp)
+    matter_add_engine_cpu_test(indirect_draw_runs_tests
+        MatterEngine3/tests/indirect_draw_runs_tests.cpp)
+    matter_add_engine_cpu_test(blas_refcount_tests
+        libs/MatterSurfaceLib/tests/blas_refcount_tests.cpp)
+    matter_add_engine_cpu_test(blas_disk_cache_tests
+        MatterEngine3/tests/blas_disk_cache_tests.cpp)
+    matter_qualify_cpu_filesystem(blas_disk_cache_tests MatterEngine3/tests/blas_disk_cache_tests.cpp)
+    matter_add_engine_cpu_test(blas_cache_queue_tests
+        MatterEngine3/tests/blas_cache_queue_tests.cpp)
+    matter_qualify_cpu_filesystem(blas_cache_queue_tests MatterEngine3/tests/blas_cache_queue_tests.cpp)
+    matter_add_engine_cpu_test(async_queue_tests
+        MatterEngine3/tests/async_queue_tests.cpp)
+    matter_add_engine_cpu_test(async_stage_pipeline_tests
+        MatterEngine3/tests/async_stage_pipeline_tests.cpp)
+    matter_add_engine_cpu_test(geometry_hierarchy_tests
+        MatterEngine3/tests/geometry_hierarchy_tests.cpp)
+    matter_qualify_cpu_filesystem(geometry_hierarchy_tests MatterEngine3/tests/geometry_hierarchy_tests.cpp)
+    matter_add_engine_cpu_test(geometry_cut_tests
+        MatterEngine3/tests/geometry_cut_tests.cpp)
+    add_executable(dense_terrain_diagnostic EXCLUDE_FROM_ALL MatterEngine3/tests/dense_terrain_diagnostic.cpp)
+    target_link_libraries(dense_terrain_diagnostic PRIVATE matter_engine_headless)
+    matter_engine_include_directories(dense_terrain_diagnostic PRIVATE)
+    matter_apply_project_defaults(dense_terrain_diagnostic)
+    matter_apply_headless_config(dense_terrain_diagnostic)
+    matter_add_engine_cpu_test(mesh_error_tests
+        MatterEngine3/tests/mesh_error_tests.cpp)
+    matter_add_engine_cpu_test(bake_trace_tests
+        MatterEngine3/tests/bake_trace_tests.cpp)
+    matter_add_engine_cpu_test(world_definition_tests
+        MatterEngine3/tests/world_definition_tests.cpp)
+    add_executable(matter_world_source_qualifier
+        MatterEngine3/tools/qualify_world_sources.cpp)
+    matter_engine_include_directories(matter_world_source_qualifier PRIVATE)
+    target_compile_definitions(matter_world_source_qualifier PRIVATE
+        PLATFORM_DESKTOP GRAPHICS_API_OPENGL_43 MATTER_VULKAN_ONLY)
+    target_link_libraries(matter_world_source_qualifier PRIVATE matter_engine_headless)
+    matter_apply_project_defaults(matter_world_source_qualifier)
+    matter_apply_test_assertion_policy(matter_world_source_qualifier)
+    add_custom_target(matter_world_source_qualification ALL
+        COMMAND "$<TARGET_FILE:matter_world_source_qualifier>"
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/MatterEngine3/tests"
+        DEPENDS matter_world_source_qualifier
+        VERBATIM)
+    add_dependencies(world_definition_tests matter_world_source_qualification)
+
+    matter_add_engine_cpu_test(surface_field_tests
+        MatterEngine3/tests/surface_field_tests.cpp)
+    matter_add_engine_cpu_test(world_state_delta_tests
+        MatterEngine3/tests/world_state_delta_tests.cpp)
+    matter_add_engine_cpu_test(sector_lod_tests
+        MatterEngine3/tests/sector_lod_tests.cpp)
+    matter_add_engine_cpu_test(terrain_verb_tests
+        MatterEngine3/tests/terrain_verb_tests.cpp)
+    matter_add_engine_cpu_test(demand_bake_tests
+        MatterEngine3/tests/demand_bake_tests.cpp)
+    matter_add_engine_cpu_test(sector_bake_tests
+        MatterEngine3/tests/sector_bake_tests.cpp)
+    file(GLOB terrain_test_module_inputs CONFIGURE_DEPENDS
+        "${CMAKE_SOURCE_DIR}/projects/world_demo/shared-lib/*.js"
+        "${CMAKE_SOURCE_DIR}/MatterEngine3/shared-lib/*.js")
+    list(APPEND terrain_test_module_inputs
+        "${CMAKE_SOURCE_DIR}/projects/world_demo/objects/templates/WorldSector.js"
+        "${CMAKE_SOURCE_DIR}/projects/world_demo/scenes/streaming/StreamMountain/StreamMountain.js"
+        "${CMAKE_SOURCE_DIR}/projects/world_demo/scenes/streaming/StreamMountain/objects/WorldSector.js")
+    set(terrain_test_module_header "${CMAKE_CURRENT_BINARY_DIR}/test-fixtures/terrain_test_modules.h")
+    add_custom_command(OUTPUT "${terrain_test_module_header}"
+        COMMAND "${MATTER_PYTHON_EXECUTABLE}" ${matter_python_arguments}
+            "${CMAKE_SOURCE_DIR}/MatterEngine3/tests/embed_terrain_modules.py"
+            --repo-root "${CMAKE_SOURCE_DIR}" --output "${terrain_test_module_header}"
+        DEPENDS ${terrain_test_module_inputs}
+            MatterEngine3/tests/embed_terrain_modules.py VERBATIM)
+    target_sources(sector_bake_tests PRIVATE "${terrain_test_module_header}")
+    target_include_directories(sector_bake_tests PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/test-fixtures")
+    # GI lightmap bake (docs/bake-gi.md): synthetic two-room / vault fixtures on
+    # the CPU world tracer -- irradiance ratios, seam continuity, determinism.
+    matter_add_engine_cpu_test(gi_bake_tests
+        MatterEngine3/tests/gi_bake_tests.cpp)
+    matter_add_engine_cpu_test(local_light_index_tests
+        libs/MatterGraphics/tests/native/local_light_index_tests.cpp)
+    matter_add_engine_cpu_test(primary_light_culling_tests
+        libs/MatterGraphics/tests/native/primary_light_culling_tests.cpp)
+    matter_add_engine_cpu_test(resolve_cache_tests
+        MatterEngine3/tests/resolve_cache_tests.cpp)
+    matter_add_engine_cpu_test(authored_world_cache_tests
+        MatterEngine3/tests/authored_world_cache_tests.cpp)
+    matter_add_engine_cpu_test(authored_world_provider_cache_tests
+        MatterEngine3/tests/authored_world_provider_cache_tests.cpp)
+    matter_add_engine_cpu_test(material_registry_tests
+        libs/MatterSurfaceLib/tests/material_registry_tests.cpp)
+    matter_add_engine_cpu_test(polygon_triangulate_tests
+        MatterEngine3/tests/polygon_triangulate_tests.cpp)
+    matter_add_engine_cpu_test(mesh_indexed_tests
+        libs/MatterSurfaceLib/tests/mesh_indexed_tests.cpp)
+    matter_add_engine_cpu_test(mesh_transform_tests
+        libs/MatterSurfaceLib/tests/mesh_transform_tests.cpp)
+    matter_add_engine_cpu_test(mesh_smooth_tests
+        libs/MatterSurfaceLib/tests/mesh_smooth_tests.cpp)
+    matter_add_engine_cpu_test(oriented_cube_tests
+        libs/MatterSurfaceLib/tests/oriented_cube_tests.cpp)
+    include("${CMAKE_SOURCE_DIR}/cmake/MatterGeometrySupplement.cmake")
+    matter_add_geometry_compute_test(matter_geometry_compute_off OFF cpu
+        "${CMAKE_SOURCE_DIR}" "${matter_vulkan_glslc}")
+    matter_add_geometry_compute_test(matter_geometry_compute_on ON gpu
+        "${CMAKE_SOURCE_DIR}" "${matter_vulkan_glslc}")
+    matter_add_engine_cpu_test(terrain_collision_definition_tests
+        MatterEngine3/tests/terrain_collision_definition_tests.cpp)
+    matter_add_engine_cpu_test(terrain_collision_artifact_tests
+        MatterEngine3/tests/terrain_collision_artifact_tests.cpp)
+    matter_add_engine_cpu_test(shared_lib_tests
+        MatterEngine3/tests/shared_lib_tests.cpp)
+    target_compile_definitions(shared_lib_tests PRIVATE SP2_SCRIPT_HOST)
+    file(GLOB shared_test_source_inputs CONFIGURE_DEPENDS
+        "${CMAKE_SOURCE_DIR}/MatterEngine3/shared-lib/*.js"
+        "${CMAKE_SOURCE_DIR}/MatterEngine3/tests/shared-lib-fixtures/*.js")
+    set(shared_test_source_header "${CMAKE_CURRENT_BINARY_DIR}/test-fixtures/embedded_shared_modules.h")
+    add_custom_command(OUTPUT "${shared_test_source_header}"
+        COMMAND "${MATTER_PYTHON_EXECUTABLE}" ${matter_python_arguments}
+            "${CMAKE_SOURCE_DIR}/MatterEngine3/tools/embed_shared_test_sources.py"
+            --repository "${CMAKE_SOURCE_DIR}" --output "${shared_test_source_header}"
+        DEPENDS ${shared_test_source_inputs}
+            MatterEngine3/tools/embed_shared_test_sources.py VERBATIM)
+    target_sources(shared_lib_tests PRIVATE "${shared_test_source_header}")
+    target_include_directories(shared_lib_tests PRIVATE
+        "${CMAKE_CURRENT_BINARY_DIR}/test-fixtures")
+    target_sources(world_definition_tests PRIVATE "${shared_test_source_header}")
+    target_include_directories(world_definition_tests PRIVATE
+        "${CMAKE_CURRENT_BINARY_DIR}/test-fixtures")
+    file(GLOB world_test_source_inputs CONFIGURE_DEPENDS
+        "${CMAKE_SOURCE_DIR}/projects/world_demo/shared-lib/*.js"
+        "${CMAKE_SOURCE_DIR}/MatterEngine3/shared-lib/*.js"
+        "${CMAKE_SOURCE_DIR}/projects/world_demo/objects/texturing/bricks/*.js"
+        "${CMAKE_SOURCE_DIR}/projects/world_demo/objects/castle/materials/*.js"
+        "${CMAKE_SOURCE_DIR}/projects/world_demo/objects/templates/WorldSector.js")
+    set(world_test_source_header "${CMAKE_CURRENT_BINARY_DIR}/test-fixtures/embedded_world_modules.h")
+    add_custom_command(OUTPUT "${world_test_source_header}"
+        COMMAND "${MATTER_PYTHON_EXECUTABLE}" ${matter_python_arguments}
+            "${CMAKE_SOURCE_DIR}/MatterEngine3/tools/embed_shared_test_sources.py"
+            --repository "${CMAKE_SOURCE_DIR}" --output "${world_test_source_header}" --world
+        DEPENDS ${world_test_source_inputs}
+            MatterEngine3/tools/embed_shared_test_sources.py VERBATIM)
+    foreach(receiver_test finite_surface_recipe_tests solid_source_evaluation_tests brick_bond_detail_tests)
+        target_sources(${receiver_test} PRIVATE "${world_test_source_header}")
+        target_include_directories(${receiver_test} PRIVATE
+            "${CMAKE_CURRENT_BINARY_DIR}/test-fixtures")
+    endforeach()
+    matter_add_engine_cpu_test(river_network_tests
+        MatterEngine3/tests/river_network_tests.cpp)
+    matter_add_engine_cpu_test(river_geometry_tests
+        MatterEngine3/tests/river_geometry_tests.cpp)
+    matter_add_engine_cpu_test(authored_fluid_colliders_tests
+        MatterEngine3/tests/authored_fluid_colliders_tests.cpp)
+    matter_add_engine_cpu_test(river_section_graph_tests
+        MatterEngine3/tests/river_section_graph_tests.cpp)
+    matter_add_engine_cpu_test(spillway_handoff_tests
+        MatterEngine3/tests/spillway_handoff_tests.cpp)
+    matter_add_engine_cpu_test(dsl_determinism_tests
+        MatterEngine3/tests/dsl_determinism_tests.cpp
+        MatterEngine3/tests/field_probe.cpp)
+    matter_add_engine_cpu_test(script_host_tests
+        MatterEngine3/tests/script_host_tests.cpp)
+    set(script_test_module_header "${CMAKE_CURRENT_BINARY_DIR}/test-fixtures/script_test_modules.h")
+    add_custom_command(OUTPUT "${script_test_module_header}"
+        COMMAND "${CMAKE_COMMAND}"
+            "-DMATTER_SCRIPT_ROOT=${CMAKE_SOURCE_DIR}"
+            "-DMATTER_SCRIPT_HEADER=${script_test_module_header}"
+            -P "${CMAKE_SOURCE_DIR}/MatterEngine3/tests/EmbedScriptModules.cmake"
+        DEPENDS MatterEngine3/tests/EmbedScriptModules.cmake
+            MatterEngine3/shared-lib/particleflow.js
+            MatterEngine3/shared-lib/strands.js
+            MatterEngine3/shared-lib/rng.js VERBATIM)
+    target_sources(script_host_tests PRIVATE "${script_test_module_header}")
+    target_compile_definitions(script_host_tests PRIVATE
+        "MATTER_SCRIPT_TEST_MODULES_HEADER=\"${script_test_module_header}\"")
+    matter_add_engine_cpu_test(tileset_bake_tests
+        MatterEngine3/tests/tileset_bake_tests.cpp)
+    matter_add_engine_cpu_test(authoring_route_tests
+        MatterEngine3/tests/authoring_route_tests.cpp)
+    matter_add_engine_cpu_test(tileset_physics_tests
+        MatterEngine3/tests/tileset_physics_tests.cpp)
+    matter_add_engine_cpu_test(part_flatten_tests
+        MatterEngine3/tests/part_flatten_tests.cpp)
+    matter_qualify_cpu_filesystem(part_flatten_tests MatterEngine3/tests/part_flatten_tests.cpp)
+    # Explicit performance harness: fresh cache-miss jobs are not a regular
+    # correctness test and must not run as part of the default CTest suite.
+    add_executable(castle_part_bench MatterEngine3/tests/castle_part_bench.cpp)
+    matter_engine_include_directories(castle_part_bench PRIVATE)
+    target_include_directories(castle_part_bench PRIVATE
+        "${CMAKE_SOURCE_DIR}/MatterEngine3/tests")
+    target_compile_definitions(castle_part_bench PRIVATE
+        PLATFORM_DESKTOP GRAPHICS_API_OPENGL_43 MATTER_VULKAN_ONLY)
+    target_link_libraries(castle_part_bench PRIVATE matter_engine_headless)
+    matter_apply_project_defaults(castle_part_bench)
+    matter_apply_test_assertion_policy(castle_part_bench)
+    add_executable(castle_dependency_bench MatterEngine3/tests/castle_dependency_bench.cpp)
+    matter_engine_include_directories(castle_dependency_bench PRIVATE)
+    target_include_directories(castle_dependency_bench PRIVATE
+        "${CMAKE_SOURCE_DIR}/MatterEngine3/tests")
+    target_compile_definitions(castle_dependency_bench PRIVATE
+        PLATFORM_DESKTOP GRAPHICS_API_OPENGL_43 MATTER_VULKAN_ONLY)
+    target_link_libraries(castle_dependency_bench PRIVATE matter_engine_headless)
+    matter_apply_project_defaults(castle_dependency_bench)
+    matter_apply_test_assertion_policy(castle_dependency_bench)
+    add_executable(castle_surface_shell_tests MatterEngine3/tests/castle_surface_shell_tests.cpp)
+    matter_engine_include_directories(castle_surface_shell_tests PRIVATE)
+    target_compile_definitions(castle_surface_shell_tests PRIVATE
+        PLATFORM_DESKTOP GRAPHICS_API_OPENGL_43 MATTER_VULKAN_ONLY)
+    target_link_libraries(castle_surface_shell_tests PRIVATE matter_engine_headless)
+    matter_apply_project_defaults(castle_surface_shell_tests)
+    matter_apply_test_assertion_policy(castle_surface_shell_tests)
+    matter_add_engine_cpu_test(modifier_apply_tests
+        MatterEngine3/tests/modifier_apply_tests.cpp)
+    matter_add_engine_cpu_test(staged_normals_tests
+        libs/MatterSurfaceLib/tests/staged_normals_tests.cpp)
+    matter_add_engine_cpu_test(sdf_candidate_bounds_tests
+        MatterEngine3/tests/sdf_candidate_bounds_tests.cpp)
+    matter_add_engine_cpu_test(surface_vertex_tests
+        MatterEngine3/tests/surface_vertex_tests.cpp)
+    matter_add_engine_cpu_test(castle_singleton_tests
+        MatterEngine3/tests/castle_singleton_tests.cpp)
+    add_custom_target(castle_fast_bake_cpu_tools DEPENDS
+        castle_part_bench castle_dependency_bench modifier_apply_tests
+        staged_normals_tests sdf_candidate_bounds_tests part_asset_v2_tests
+        castle_surface_shell_tests surface_vertex_tests castle_singleton_tests
+        script_host_tests partstore_tests)
+    # The part-graph logic suite is host-free (its Baker/ModuleResolver are
+    # fakes), so unlike part_graph_integration_tests.cpp -- which needs POSIX
+    # unistd.h and stays a Make/MinGW target -- it builds under MSVC and can
+    # gate the snapshot contract on the canonical build.
+    matter_add_engine_cpu_test(part_graph_tests
+        MatterEngine3/tests/part_graph_tests.cpp)
+    matter_add_engine_cpu_test(partstore_tests
+        MatterEngine3/tests/partstore_tests.cpp)
+    add_executable(matter_partstore_source_qualifier
+        MatterEngine3/tools/qualify_partstore_sources.cpp)
+    matter_engine_include_directories(matter_partstore_source_qualifier PRIVATE)
+    target_compile_definitions(matter_partstore_source_qualifier PRIVATE
+        PLATFORM_DESKTOP GRAPHICS_API_OPENGL_43 MATTER_VULKAN_ONLY
+        MATTER_TEST_CACHE_VALIDATION_HOOK)
+    target_link_libraries(matter_partstore_source_qualifier PRIVATE
+        matter_engine_headless)
+    matter_apply_project_defaults(matter_partstore_source_qualifier)
+    matter_apply_test_assertion_policy(matter_partstore_source_qualifier)
+    add_custom_target(matter_partstore_source_qualification ALL
+        COMMAND "$<TARGET_FILE:matter_partstore_source_qualifier>"
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/MatterEngine3/tests"
+        DEPENDS matter_partstore_source_qualifier
+        VERBATIM)
+    add_dependencies(partstore_tests matter_partstore_source_qualification)
+
+    matter_add_engine_cpu_test(chart_atlas_tests
+        MatterEngine3/tests/chart_atlas_tests.cpp)
+    # Also the only suite that exercises replace_file_atomic's Windows
+    # transient-sharing retry, which POSIX rename never reaches.
+    matter_add_engine_cpu_test(part_asset_v2_tests
+        MatterEngine3/tests/part_asset_v2_tests.cpp)
+    add_executable(matter_part_io_qualifier MatterEngine3/tools/qualify_part_io.cpp)
+    matter_engine_include_directories(matter_part_io_qualifier PRIVATE)
+    target_compile_definitions(matter_part_io_qualifier PRIVATE
+        PLATFORM_DESKTOP GRAPHICS_API_OPENGL_43 MATTER_VULKAN_ONLY)
+    target_link_libraries(matter_part_io_qualifier PRIVATE matter_engine_headless)
+    matter_apply_project_defaults(matter_part_io_qualifier)
+    matter_apply_test_assertion_policy(matter_part_io_qualifier)
+    add_custom_target(matter_part_io_qualification ALL
+        COMMAND "$<TARGET_FILE:matter_part_io_qualifier>"
+        WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+        DEPENDS matter_part_io_qualifier
+        VERBATIM)
+    add_dependencies(part_asset_v2_tests matter_part_io_qualification)
+
+    matter_add_engine_cpu_test(fixture_io_tests
+        MatterEngine3/tests/fixture_io_tests.cpp)
+    matter_add_engine_cpu_test(world_tracer_tests
+        MatterEngine3/tests/world_tracer_tests.cpp)
+    matter_add_engine_cpu_test(part_asset_flat_refs_tests
+        MatterEngine3/tests/part_asset_flat_refs_tests.cpp)
+    # OBJ export: the structural gate (no bake) and the golden-fixture gate
+    # (bakes three world_demo parts). Both run from MatterEngine3/tests, which
+    # is where tests/fixtures/export/ is rooted.
+    matter_add_engine_cpu_test(obj_export_tests
+        MatterEngine3/tests/obj_export_tests.cpp)
+    matter_qualify_cpu_filesystem(obj_export_tests MatterEngine3/tests/obj_export_tests.cpp)
+    matter_add_engine_cpu_test(obj_export_golden_tests
+        MatterEngine3/tests/obj_export_golden_tests.cpp)
+    matter_qualify_cpu_filesystem(obj_export_golden_tests MatterEngine3/tests/obj_export_golden_tests.cpp)
+    file(GLOB export_test_fixture_inputs CONFIGURE_DEPENDS
+        "${CMAKE_SOURCE_DIR}/MatterEngine3/tests/fixtures/export/*.obj"
+        "${CMAKE_SOURCE_DIR}/MatterEngine3/tests/fixtures/export/*.mtl"
+        "${CMAKE_SOURCE_DIR}/MatterEngine3/tests/fixtures/export/*.golden")
+    set(export_test_fixture_header "${CMAKE_CURRENT_BINARY_DIR}/test-fixtures/embedded_export_fixtures.h")
+    add_custom_command(OUTPUT "${export_test_fixture_header}"
+        COMMAND "${MATTER_PYTHON_EXECUTABLE}" ${matter_python_arguments}
+            "${CMAKE_SOURCE_DIR}/MatterEngine3/tools/embed_shared_test_sources.py"
+            --repository "${CMAKE_SOURCE_DIR}" --output "${export_test_fixture_header}" --export
+        DEPENDS ${export_test_fixture_inputs}
+            MatterEngine3/tools/embed_shared_test_sources.py VERBATIM)
+    target_sources(obj_export_golden_tests PRIVATE "${export_test_fixture_header}")
+    target_include_directories(obj_export_golden_tests PRIVATE
+        "${CMAKE_CURRENT_BINARY_DIR}/test-fixtures")
+    matter_add_engine_cpu_test(eval_world_tests
+        MatterEngine3/tests/eval_world_tests.cpp)
+    matter_qualify_cpu_filesystem(eval_world_tests MatterEngine3/tests/eval_world_tests.cpp)
+    matter_add_engine_cpu_test(vertex_cache_order_tests
+        MatterEngine3/tests/vertex_cache_order_tests.cpp)
+    matter_add_engine_cpu_test(lod_distance_tests
+        MatterEngine3/tests/lod_distance_tests.cpp)
+    matter_add_engine_cpu_test(event_channel_tests
+        MatterEngine3/tests/event_channel_tests.cpp)
+    matter_add_engine_cpu_test(event_hub_tests
+        MatterEngine3/tests/event_hub_tests.cpp)
+    matter_add_engine_cpu_test(error_events_tests
+        MatterEngine3/tests/error_events_tests.cpp)
+    matter_add_engine_cpu_test(event_command_tests
+        MatterEngine3/tests/event_command_tests.cpp)
+    matter_add_engine_cpu_test(event_property_tests
+        MatterEngine3/tests/event_property_tests.cpp)
+    matter_add_engine_cpu_test(sector_streamer_tests
+        MatterEngine3/tests/sector_streamer_tests.cpp)
+    matter_qualify_cpu_filesystem(sector_streamer_tests MatterEngine3/tests/sector_streamer_tests.cpp)
+    matter_add_engine_cpu_test(sector_streaming_coordinator_tests
+        MatterEngine3/tests/sector_streaming_coordinator_tests.cpp)
+    matter_add_engine_cpu_test(terrain_field_tests
+        MatterEngine3/tests/terrain_field_tests.cpp)
+    matter_add_engine_cpu_test(terrain_mesher_tests
+        MatterEngine3/tests/terrain_mesher_tests.cpp)
+    matter_add_engine_cpu_test(seam_weld_tests
+        MatterEngine3/tests/seam_weld_tests.cpp)
+    matter_add_engine_cpu_test(contour_seam_tests
+        MatterEngine3/tests/contour_seam_tests.cpp)
+    matter_add_engine_cpu_test(contour_mesh_tests
+        MatterEngine3/tests/contour_mesh_tests.cpp)
+    matter_add_engine_cpu_test(contour_engine_tests
+        MatterEngine3/tests/contour_engine_tests.cpp)
+    matter_add_engine_cpu_test(viewer_logic_tests
+        MatterEngine3/tests/viewer_logic_tests.cpp
+        MatterEditor/src/camera_controller.cpp
+        MatterEditor/src/streaming_anchor_controller.cpp)
+    target_link_libraries(viewer_logic_tests PRIVATE matter_glfw)
+    add_executable(matter_viewer_source_qualifier
+        MatterEngine3/tools/qualify_viewer_sources.cpp
+        MatterEditor/src/camera_controller.cpp
+        MatterEditor/src/streaming_anchor_controller.cpp)
+    matter_engine_include_directories(matter_viewer_source_qualifier PRIVATE)
+    target_compile_definitions(matter_viewer_source_qualifier PRIVATE
+        PLATFORM_DESKTOP GRAPHICS_API_OPENGL_43 MATTER_VULKAN_ONLY)
+    target_link_libraries(matter_viewer_source_qualifier PRIVATE matter_engine_headless matter_glfw)
+    matter_apply_project_defaults(matter_viewer_source_qualifier)
+    matter_apply_test_assertion_policy(matter_viewer_source_qualifier)
+    add_custom_target(matter_viewer_source_qualification ALL
+        COMMAND "$<TARGET_FILE:matter_viewer_source_qualifier>"
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/MatterEngine3/tests"
+        DEPENDS matter_viewer_source_qualifier VERBATIM)
+    add_dependencies(viewer_logic_tests matter_viewer_source_qualification)
+
+    matter_add_engine_cpu_test(props_tests
+        MatterEngine3/tests/props_tests.cpp)
+    matter_add_engine_cpu_test(physics_tests
+        MatterEngine3/tests/physics_tests.cpp)
+    matter_add_engine_cpu_test(ecs_tests
+        MatterEngine3/tests/ecs_tests.cpp)
+    matter_add_engine_cpu_test(character_controller_tests
+        MatterEngine3/tests/character_controller_tests.cpp)
+    matter_add_engine_cpu_test(character_walk_controller_tests
+        MatterEngine3/tests/character_walk_controller_tests.cpp
+        MatterEditor/src/character_walk_controller.cpp)
+    matter_add_engine_cpu_test(terrain_collision_physics_tests
+        MatterEngine3/tests/terrain_collision_physics_tests.cpp)
+    matter_add_engine_cpu_test(terrain_collision_session_tests
+        MatterEngine3/tests/terrain_collision_session_tests.cpp)
+    # Live terrain end to end: coordinator -> cache, collision, scene backend.
+    # Headless already compiles the terrain field, mesher and matrix math; only
+    # the component sources it lacks are added here.
+    matter_add_engine_cpu_test(live_terrain_tests
+        MatterEngine3/tests/live_terrain_tests.cpp
+        MatterEngine3/src/component_adapters/terrain_coordinator/engine/live_terrain.cpp
+        MatterEngine3/src/component_adapters/terrain_coordinator/engine/live_terrain_session.cpp
+        libs/TerrainGeneration/src/field.cpp
+        libs/TerrainGeneration/src/meshing.cpp
+        libs/MatterGraphics/src/graphics.cpp
+        libs/MatterGraphics/src/scene_backend.cpp)
+    target_include_directories(live_terrain_tests PRIVATE
+        "${CMAKE_SOURCE_DIR}/libs/TerrainGeneration/include"
+        "${CMAKE_SOURCE_DIR}/libs/TerrainGeneration/tests"
+        "${CMAKE_SOURCE_DIR}/libs/MatterGraphics/include")
+    target_link_libraries(live_terrain_tests PRIVATE matter_terrain_coordinator)
+    set_tests_properties(live_terrain_tests PROPERTIES ENVIRONMENT MATTER_CONTOUR_SEAMS=1)
+    matter_add_engine_cpu_test(river_float_system_tests
+        MatterEngine3/tests/river_float_system_tests.cpp)
+    matter_qualify_cpu_filesystem(river_float_system_tests MatterEngine3/tests/river_float_system_tests.cpp)
+    matter_add_engine_cpu_test(scene_registry_tests
+        MatterEngine3/tests/scene_registry_tests.cpp)
+    matter_add_engine_cpu_test(simulation_control_tests
+        MatterEngine3/tests/simulation_control_tests.cpp)
+    matter_add_engine_cpu_test(scene_tracker_tests
+        MatterEngine3/tests/scene_tracker_tests.cpp)
+    matter_add_engine_cpu_test(entity_recipe_tests
+        MatterEngine3/tests/entity_recipe_tests.cpp)
+    matter_add_engine_cpu_test(dynamic_instance_slots_tests
+        MatterEngine3/tests/dynamic_instance_slots_tests.cpp
+        MatterEngine3/src/render/dynamic_instance_slots.cpp)
+    matter_add_engine_cpu_test(dynamic_scene_bridge_tests
+        MatterEngine3/tests/dynamic_scene_bridge_tests.cpp
+        MatterEngine3/src/ecs/dynamic_scene_bridge.cpp
+        MatterEngine3/src/render/dynamic_instance_slots.cpp)
+    matter_add_engine_cpu_test(animation_rigid_bridge_tests
+        MatterEngine3/tests/animation_rigid_bridge_tests.cpp)
+    matter_add_engine_cpu_test(gpu_visual_mesher_cpu_tests
+        MatterEngine3/tests/gpu_visual_mesher_cpu_tests.cpp)
+    matter_add_engine_cpu_test(water_mesh_animation_capture_tests
+        MatterEngine3/tests/water_mesh_animation_capture_tests.cpp)
+    matter_add_engine_cpu_test(water_mesh_animation_tests
+        MatterEngine3/tests/water_mesh_animation_tests.cpp)
+    matter_add_engine_cpu_test(water_mesh_animation_artifact_tests
+        MatterEngine3/tests/water_mesh_animation_artifact_tests.cpp)
+    matter_qualify_cpu_filesystem(water_mesh_animation_artifact_tests
+        MatterEngine3/tests/water_mesh_animation_artifact_tests.cpp)
+    matter_add_engine_cpu_test(water_boundary_animation_source_tests
+        MatterEngine3/tests/water_boundary_animation_source_tests.cpp)
+    matter_qualify_cpu_filesystem(water_boundary_animation_source_tests
+        MatterEngine3/tests/water_boundary_animation_source_tests.cpp)
+    matter_add_engine_cpu_test(water_mesh_animation_playback_tests
+        MatterEngine3/tests/water_mesh_animation_playback_tests.cpp)
+    matter_qualify_cpu_filesystem(water_mesh_animation_playback_tests MatterEngine3/tests/water_mesh_animation_playback_tests.cpp)
+    matter_add_engine_cpu_test(river_presentation_field_tests
+        MatterEngine3/tests/river_presentation_field_tests.cpp)
+    matter_add_engine_cpu_test(river_runtime_tests
+        MatterEngine3/tests/river_runtime_tests.cpp)
+    matter_add_engine_cpu_test(hydrology_artifact_tests
+        MatterEngine3/tests/hydrology_artifact_tests.cpp)
+    matter_qualify_cpu_filesystem(hydrology_artifact_tests
+        MatterEngine3/tests/hydrology_artifact_tests.cpp)
+    matter_add_engine_cpu_test(hydrology_network_artifact_tests
+        MatterEngine3/tests/hydrology_network_artifact_tests.cpp)
+    matter_qualify_cpu_filesystem(hydrology_network_artifact_tests
+        MatterEngine3/tests/hydrology_network_artifact_tests.cpp)
+    matter_add_engine_cpu_test(river_section_coordinator_tests
+        MatterEngine3/tests/river_section_coordinator_tests.cpp)
+    matter_add_engine_cpu_test(hydrology_handoff_products_tests
+        MatterEngine3/tests/hydrology_handoff_products_tests.cpp)
+    matter_add_engine_cpu_test(physx_adapter_contract_tests
+        MatterEngine3/tests/physx_adapter_contract_tests.cpp)
+    target_compile_definitions(physx_adapter_contract_tests PRIVATE
+        MATTER_LOCAL_PROVIDER_FLUID_PATH_TEST)
+    matter_qualify_cpu_filesystem(physx_adapter_contract_tests MatterEngine3/tests/physx_adapter_contract_tests.cpp)
+    target_compile_definitions(physx_adapter_contract_tests_filesystem_qualifier PRIVATE
+        MATTER_LOCAL_PROVIDER_FLUID_PATH_TEST)
+    matter_add_engine_cpu_test(async_bake_tests
+        MatterEngine3/tests/async_bake_tests.cpp)
+    add_executable(matter_async_source_qualifier
+        MatterEngine3/tools/qualify_async_sources.cpp)
+    matter_engine_include_directories(matter_async_source_qualifier PRIVATE)
+    target_link_libraries(matter_async_source_qualifier PRIVATE
+        matter_engine_headless)
+    target_compile_definitions(matter_async_source_qualifier PRIVATE
+        PLATFORM_DESKTOP GRAPHICS_API_OPENGL_43 MATTER_VULKAN_ONLY)
+    matter_apply_project_defaults(matter_async_source_qualifier)
+    matter_apply_test_assertion_policy(matter_async_source_qualifier)
+    add_custom_target(qualify_async_sources ALL
+        COMMAND $<TARGET_FILE:matter_async_source_qualifier>
+        DEPENDS matter_async_source_qualifier
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/MatterEngine3/tests"
+        VERBATIM)
+    add_dependencies(async_bake_tests qualify_async_sources)
+    matter_add_engine_cpu_test(conifer_lod_provider_tests
+        MatterEngine3/tests/conifer_lod_provider_tests.cpp)
+    if(MATTER_ENABLE_PHYSX)
+        add_executable(physx_fluid_integration_tests
+            MatterEngine3/tests/physx_fluid_integration_tests.cpp)
+        matter_engine_include_directories(
+            physx_fluid_integration_tests PRIVATE)
+        target_include_directories(physx_fluid_integration_tests PRIVATE
+            "${CMAKE_SOURCE_DIR}/MatterEngine3/tests")
+        target_link_libraries(physx_fluid_integration_tests PRIVATE
+            matter_engine_viewer_objects
+            matter_physx_adapter
+            matter_glfw
+            matter_vulkan_sdk
+            gdi32 winmm user32 shell32 ws2_32 dbghelp)
+        target_compile_definitions(physx_fluid_integration_tests PRIVATE
+            MATTER_HAVE_SCRIPT_HOST MATTER_VULKAN_VIEWER MATTER_VULKAN_ONLY)
+        matter_apply_project_defaults(physx_fluid_integration_tests)
+        matter_apply_test_assertion_policy(physx_fluid_integration_tests)
+        add_test(NAME physx_fluid_integration_tests
+            COMMAND physx_fluid_integration_tests)
+        set_tests_properties(physx_fluid_integration_tests PROPERTIES
+            LABELS "gpu;physx"
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/MatterEngine3/tests")
+        matter_stage_physx_runtime(physx_fluid_integration_tests)
+    endif()
+    matter_add_engine_cpu_test(gpu_water_render_tests
+        MatterEngine3/tests/gpu_water_render_tests.cpp
+        MatterEngine3/src/render/gpu_meshing/water_scene_part.cpp)
+    matter_add_engine_cpu_test(gpu_water_animation_render_tests
+        MatterEngine3/tests/gpu_water_animation_render_tests.cpp
+        libs/MatterGraphics/src/native/water_animation_gpu.cpp)
+    matter_add_engine_cpu_test(water_field_vk_tests
+        MatterEngine3/tests/water_field_vk_tests.cpp)
+    matter_add_engine_cpu_test(water_surface_reference_tests
+        MatterEngine3/tests/water_surface_reference_tests.cpp)
+    matter_add_engine_cpu_test(water_forward_reference_tests
+        MatterEngine3/tests/water_forward_reference_tests.cpp)
+    matter_add_engine_cpu_test(shader_source_tests
+        MatterEngine3/tests/shader_source_tests.cpp)
+
+    # Real source-text contracts belong to build qualification, not runtime
+    # CTest. Run on every relevant build so newly edited/added include files
+    # cannot leave a stale qualification stamp behind.
+    add_executable(matter_shader_source_qualifier
+        MatterEngine3/tools/qualify_shader_sources.cpp)
+    matter_apply_project_defaults(matter_shader_source_qualifier)
+    matter_apply_test_assertion_policy(matter_shader_source_qualifier)
+    add_custom_target(matter_shader_source_qualification ALL
+        COMMAND "$<TARGET_FILE:matter_shader_source_qualifier>"
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/MatterEngine3/tests"
+        DEPENDS matter_shader_source_qualifier
+        VERBATIM)
+    add_dependencies(shader_source_tests matter_shader_source_qualification)
+
+    add_custom_target(matter_character_integration_tests)
+    add_dependencies(matter_character_integration_tests
+        character_controller_tests
+        character_walk_controller_tests
+        ecs_tests
+        physics_tests
+        terrain_collision_definition_tests
+        terrain_collision_artifact_tests
+        terrain_collision_physics_tests
+        terrain_collision_session_tests
+        river_float_system_tests
+        scene_registry_tests
+        simulation_control_tests
+        scene_tracker_tests
+        entity_recipe_tests
+        viewer_logic_tests)
+
+    get_property(matter_engine_cpu_targets GLOBAL PROPERTY MATTER_ENGINE_CPU_TARGETS)
+    add_custom_target(matter_engine_cpu_tests)
+    add_dependencies(matter_engine_cpu_tests
+        compiler_portability_tests
+        matter_engine_headless_consumer_tests
+        matter_mesh_allocator_policy_tests
+        physx_dependency_contract_tests
+        ${matter_engine_cpu_targets}
+    )
+endif()

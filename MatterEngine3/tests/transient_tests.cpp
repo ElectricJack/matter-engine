@@ -24,6 +24,7 @@
 #include "../src/provider/local_provider.h"
 #include "../src/part_graph.h"
 #include "../src/part_asset_v2.h"
+#include "../src/part_bundle.h"
 #include "../src/render/part_store.h"
 
 namespace fs = std::filesystem;
@@ -33,12 +34,21 @@ static std::vector<uint8_t> read_bytes(const std::string& path) {
     return std::vector<uint8_t>(std::istreambuf_iterator<char>(in), {});
 }
 
-static void write_bytes(const std::string& path,
-                        const std::vector<uint8_t>& bytes) {
-    std::ofstream out(path, std::ios::binary | std::ios::trunc);
-    out.write(reinterpret_cast<const char*>(bytes.data()), bytes.size());
-}
-
+// Downgrade the material-registry schema stamp in ONE ARTIFACT PAYLOAD -- the
+// 40-byte artifact header plus body that used to be a standalone `.flat.part`
+// and is now the FLAT section of the part's bundle (part_bundle.h). The offsets
+// (40 = material schema, 32 = body hash) are the payload's own, and M4 kept the
+// payload byte-for-byte what the old file held, so they are still right.
+//
+// APPLYING THIS TO THE WHOLE FILE IS WHAT BROKE THIS SUITE. Since M4 every
+// cache_path_* helper returns the same "parts/<hash>.bundle", so the "flat
+// path" and the "part path" are one file; patching offset 40 of the FILE
+// corrupts the bundle DIRECTORY instead of a section, and the part's REP0 body
+// disappears with it. LocalProvider::artifact_root() then stops selecting
+// scratch (it probes REP0 there) and the regeneration is attempted against the
+// cache root, where no part was ever written -- which is exactly the
+// "flatten: load_v2 failed for .../.cache/Demo/parts/<hash>.bundle" the suite
+// reported.
 static void make_prior_schema(std::vector<uint8_t>& bytes) {
     const uint32_t prior = MaterialRegistrySchemaVersion() - 1u;
     std::memcpy(bytes.data() + 40, &prior, sizeof(prior));
@@ -182,12 +192,26 @@ int main() {
     {
         bool ok = prov->ensure_part_flattened(terrain_hash);
         CHECK(ok, "initial transient flatten succeeds");
-        std::vector<uint8_t> stale = read_bytes(scratch_flat);
+        std::vector<uint8_t> stale;
+        CHECK(part_bundle::read_section(scratch_flat, terrain_hash,
+                                        part_bundle::kSectionFlat, stale),
+              "transient bundle has a FLAT section to stale out");
         CHECK(stale.size() >= 44, "transient flat fixture has material prefix");
         if (stale.size() >= 44) {
             make_prior_schema(stale);
-            write_bytes(scratch_flat, stale);
-            write_bytes(cache_flat, stale);
+            // Republish the doctored payload AS A SECTION, so the bundle around
+            // it -- header, directory, and above all the REP0 body the
+            // regeneration has to re-read -- stays intact. The cache copy is a
+            // bundle carrying only this stale FLAT: a persistent artifact that
+            // exists and must still lose to scratch.
+            CHECK(part_bundle::write_section(scratch_flat, terrain_hash,
+                                             part_bundle::kSectionFlat,
+                                             stale.data(), stale.size()),
+                  "stale scratch flat section written");
+            CHECK(part_bundle::write_section(cache_flat, terrain_hash,
+                                             part_bundle::kSectionFlat,
+                                             stale.data(), stale.size()),
+                  "stale cache flat section written");
         }
         CHECK(!part_asset::is_cache_artifact_header_compatible(
                   scratch_flat, terrain_hash, part_asset::kFormatVersionFlat),

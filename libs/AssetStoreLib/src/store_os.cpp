@@ -1,4 +1,22 @@
-/* store_os.cpp -- Win32 and POSIX backings for the shim in store_os.h. */
+/* store_os.cpp -- Win32 and POSIX backings for the shim in store_os.h.
+ *
+ * Path: libs/AssetStoreLib/src/store_os.cpp. The file is one big
+ * `#ifdef _WIN32` / `#else` split: two complete implementations of the same
+ * dozen functions, in the same order, followed by the handful written once
+ * (make_dirs). Keep the order aligned so the two halves stay easy to diff.
+ *
+ * Conventions both halves share:
+ *   - Failure is false / null / 0, with a description left in the
+ *     thread-local g_err that last_error() returns.
+ *   - File and Lock are heap-allocated here and released by close() / unlock();
+ *     passing null to either is a no-op.
+ *   - read_at() and write_at() loop until the whole span has moved. A short or
+ *     zero-length transfer is a failure, never a partial success, so a caller
+ *     that gets true has all of its bytes.
+ *   - Nothing throws, and nothing retries an IO error. The single retry loop in
+ *     the file is in the Win32 rename_over, and it exists for a liveness
+ *     problem, not a correctness one.
+ */
 
 #include "store_os.h"
 
@@ -35,7 +53,9 @@ struct Lock {
     HANDLE h = INVALID_HANDLE_VALUE;
 };
 
-static std::string g_err;
+/* Each reader worker retains its own failure detail; concurrent failures
+ * must not race on a shared std::string. */
+static thread_local std::string g_err;
 
 std::string last_error() { return g_err; }
 
@@ -77,6 +97,11 @@ void close(File* f) {
     delete f;
 }
 
+/* Positional read that fills `buf` completely or fails. The OVERLAPPED struct
+ * is used only to carry the 64-bit offset -- there is no asynchronous IO here.
+ * Each ReadFile is clamped to 256 MB because the count is a DWORD, and a
+ * zero-byte read (end of file reached early) is treated as failure rather than
+ * as a short success. */
 bool read_at(File* f, uint64_t offset, void* buf, size_t len) {
     if (!f) return false;
     uint8_t* p = (uint8_t*)buf;
@@ -215,6 +240,12 @@ bool stamp_of(const std::string& path, uint64_t* out_stamp) {
     return true;
 }
 
+/* The lock IS an open handle that grants no sharing at all, so the kernel
+ * releases it when the process dies: a crashed writer never leaves a store
+ * jammed, and there is no stale-lock cleanup to write. The lock file itself is
+ * created once and never deleted, and its contents are irrelevant. `block`
+ * polls every 10 ms rather than waiting on a kernel object, which is adequate
+ * for a lock held for a whole session. */
 Lock* lock_exclusive(const std::string& path, bool block) {
     for (;;) {
         /* No sharing at all: a second opener fails outright. That is the lock. */
@@ -228,6 +259,13 @@ Lock* lock_exclusive(const std::string& path, bool block) {
         if (!block) { set_err("lock_exclusive"); return nullptr; }
         Sleep(10);
     }
+}
+
+Lock* lock_shared(const std::string& path) {
+    HANDLE h = CreateFileA(path.c_str(), GENERIC_READ, FILE_SHARE_READ,
+                           nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) { set_err("lock_shared"); return nullptr; }
+    auto* lease = new Lock(); lease->h = h; return lease;
 }
 
 void unlock(Lock* l) {
@@ -249,7 +287,7 @@ struct Lock {
     std::string path;
 };
 
-static std::string g_err;
+static thread_local std::string g_err;
 
 std::string last_error() { return g_err; }
 
@@ -360,6 +398,10 @@ bool make_dir(const std::string& path) {
     return false;
 }
 
+/* rename(2) within one filesystem is atomic and replaces `to` silently, so no
+ * retry loop is needed here -- contrast the Win32 version above, which has to
+ * wait out other processes' open handles. Across filesystems it fails with
+ * EXDEV; the store only ever renames within its own directory. */
 bool rename_over(const std::string& from, const std::string& to) {
     if (::rename(from.c_str(), to.c_str()) == 0) return true;
     set_err("rename_over");
@@ -385,12 +427,43 @@ std::vector<std::string> list_dir(const std::string& dir) {
 bool stamp_of(const std::string& path, uint64_t* out_stamp) {
     struct stat st;
     if (stat(path.c_str(), &st) != 0) return false;
-    uint64_t t = (uint64_t)st.st_mtime;
-    *out_stamp = t ^ ((uint64_t)st.st_size * 0x9E3779B97F4A7C15ull);
+    /* Three terms, because no single one of them is sufficient:
+     *
+     *  - st_ino. index.bin and refs.bin are only ever replaced by rename(2),
+     *    so every commit installs a DIFFERENT inode at the same path. This is
+     *    the term that makes two commits inside one second distinguishable
+     *    even when they produce an index of identical length -- the case the
+     *    old (mtime XOR size) stamp missed entirely, silently skipping the
+     *    reload in BlobStore::reload_index().
+     *  - the mtime at the finest resolution the platform offers. POSIX 2008
+     *    st_mtim.tv_nsec is used where available (the Win32 half gets 100 ns
+     *    ticks from the file time directly); otherwise this degrades to whole
+     *    seconds and the inode term carries the discrimination.
+     *  - st_size, which catches an in-place rewrite that somehow kept both the
+     *    inode and the timestamp.
+     *
+     * BlobStore::reload_index() reads an unchanged stamp as "nothing to do",
+     * so a stamp that fails to move is a stale read, not merely a slow one. */
+#if defined(__APPLE__)
+    uint64_t nsec = (uint64_t)st.st_mtimespec.tv_nsec;
+#elif defined(__linux__) || defined(__GLIBC__) || \
+      (defined(_POSIX_C_SOURCE) && _POSIX_C_SOURCE >= 200809L)
+    uint64_t nsec = (uint64_t)st.st_mtim.tv_nsec;
+#else
+    /* No sub-second mtime here; the inode term below carries the work. */
+    uint64_t nsec = 0;
+#endif
+    uint64_t t = (uint64_t)st.st_mtime * 1000000000ull + nsec;
+    *out_stamp = t ^ ((uint64_t)st.st_size * 0x9E3779B97F4A7C15ull)
+                   ^ ((uint64_t)st.st_ino * 0xC2B2AE3D27D4EB4Full);
     return true;
 }
 
 Lock* lock_exclusive(const std::string& path, bool block) {
+    /* flock(2) is advisory and tied to the open file description, so it is
+     * dropped automatically when the fd closes or the process exits -- the same
+     * crash behaviour as the Win32 half. `block` turns into a blocking LOCK_EX
+     * instead of that half's poll loop. */
     int fd = ::open(path.c_str(), O_RDWR | O_CREAT, 0644);
     if (fd < 0) { set_err("lock_exclusive open"); return nullptr; }
     int op = LOCK_EX | (block ? 0 : LOCK_NB);
@@ -405,6 +478,13 @@ Lock* lock_exclusive(const std::string& path, bool block) {
     return l;
 }
 
+Lock* lock_shared(const std::string& path) {
+    const int fd = ::open(path.c_str(), O_RDONLY | O_CREAT, 0666);
+    if (fd < 0) { set_err("lock_shared open"); return nullptr; }
+    if (flock(fd, LOCK_SH | LOCK_NB) != 0) { set_err("lock_shared"); ::close(fd); return nullptr; }
+    auto* lease = new Lock(); lease->fd = fd; return lease;
+}
+
 void unlock(Lock* l) {
     if (!l) return;
     if (l->fd >= 0) { flock(l->fd, LOCK_UN); ::close(l->fd); }
@@ -415,6 +495,12 @@ void unlock(Lock* l) {
 
 /* ------------------------------------------------------------- portable -- */
 
+/* mkdir -p, shared by both platforms. Walks the path creating each level and
+ * accepting "already exists", keeping a leading "/" or a "C:" drive prefix
+ * intact and normalising the separators it emits to '/'. Failures on
+ * intermediate levels are ignored -- only the leaf's creation decides the
+ * return value -- so false means the final directory did not exist and could
+ * not be created. */
 bool make_dirs(const std::string& path) {
     if (path.empty()) return true;
     std::string acc;

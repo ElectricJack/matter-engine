@@ -4,10 +4,12 @@
 //
 // Implements the vt::VtPageEnricher seam (vt_types.h): given a page the tier-1
 // compositor has already filled, trace per-texel cosine-hemisphere occlusion
-// rays against the VARIANT'S OWN acceleration structure and multiply the result
-// into the page's ORM occlusion channel IN PLACE. The indirection is never
-// touched — a page is tier-1 correct the moment it is filled and simply darkens
-// into its own crevices later.
+// rays against the VARIANT'S OWN acceleration structure. Direct-surface pages
+// write an immutable R16 occlusion factor into caller-owned storage; residency
+// publishes its address after generation checks. Shading multiplies only ORM.R,
+// so shared base material pixels remain unchanged. Legacy pages instead update
+// the pool's ORM channel in place. Both paths keep tier-1 pages visible while
+// waiting for enrichment.
 //
 // WHAT IS BAKED, AND WHY THAT IS THE LINE: part-local self-occlusion only.
 // Pages are keyed per part variant (resolved_hash), not per instance, so every
@@ -23,11 +25,11 @@
 // those are keyed per (cluster, LOD) over the renderer's own index stream and
 // are built asynchronously, whereas the chart table's tri_order indexes THIS
 // mesh — matching the two is a correctness requirement, not an optimisation.
-// The structures are cached per (variant, rung) and LRU-evicted under
+// The structures are cached per canonical owner lifetime and LRU-evicted under
 // MATTER_VT_ENRICH_AS_CACHE (default 8 entries) with a deferred-destroy
 // graveyard, so streaming a world does not accumulate acceleration structures.
 //
-// THE READ-MODIFY-WRITE. The physical pool's ORM channel is BC7 and carries no
+// THE LEGACY READ-MODIFY-WRITE. The physical pool's ORM channel is BC7 and carries no
 // STORAGE usage, so it cannot be written by a compute shader and cannot be
 // copied out of (no TRANSFER_SRC). The pass therefore:
 //   1. SAMPLES the current page texel out of the pool (hardware BC7 decode,
@@ -52,7 +54,8 @@
 // determinism gate timing-dependent. What reaches the screen is already
 // gradual: MATTER_VT_ENRICH_PER_FRAME (default 2) bounds enrichment to a couple
 // of pages a frame, so a screenful darkens over many frames rather than in one.
-// The strength is a push constant, so a future fade has its seam here.
+// The separate factor path avoids repeated multiplication and could support a
+// future sampling-time fade; this change does not implement that policy.
 //
 // STANDALONE-ish: unlike vt_compositor this module takes a matter::VulkanDevice
 // (it needs ray_tracing_available(), ray_tracing_properties() and the
@@ -61,6 +64,10 @@
 //
 //   * enrich() records into the provided command buffer only — no submits, no
 //     waits; the caller owns submission and the pool images' lifetimes.
+//   * A nonzero request.occlusion_address selects factor output. The caller
+//     retains that buffer range until all recorded writes/readers retire, even
+//     if publication is subsequently declined. out_enriched reports a recorded
+//     successful write, not GPU completion; submission order supplies the latter.
 //   * ON ENTRY the pool's ORM image must be in VK_IMAGE_LAYOUT_
 //     SHADER_READ_ONLY_OPTIMAL; enrich() transitions it to TRANSFER_DST for the
 //     write-back and RESTORES SHADER_READ_ONLY_OPTIMAL before returning, so the
@@ -71,8 +78,30 @@
 //     destruction through the same graveyard evict_lru uses, so an entry built
 //     only a frame ago -- whose acceleration-structure build may still be
 //     writing its scratch -- outlives the batch that referenced it.
+//   * the DESTRUCTOR is the one thing that is not deferred: it frees the live
+//     cache and the graveyard unconditionally, so the device must be idle
+//     with respect to this enricher's recorded work before it runs.
+//
+// THREADING. Nothing in the implementation takes a lock. An instance belongs
+// to the single thread that records enrich() into command buffers, and every
+// other entry point (invalidate_part, sample_count, max_footprint_meters,
+// stats) should be called from there too.
+//
+// TIME IS THE CALLER'S. There is no internal clock or frame counter: the
+// enricher's cache LRU and its deferred-destroy graveyard are both driven by
+// VtEnrichRequest::frame_index, taken from the FIRST request of each batch.
+// The value must not regress between batches (enrich() clamps it monotonically
+// and the comment there records what happened the one time it did).
+//
+// TUNABLES. The five per-page parameters (samples, strength, cap_texels,
+// cap_meters, min_ao) live in matter::VtEnrichSettings (matter/vt_budgets.h),
+// are re-read and clamped once per enrich() batch, and travel to the shader as
+// push constants — so an editor edit lands on the next enriched page with no
+// reload. Only the acceleration-structure cache cap is latched at create()
+// time, because it sizes the descriptor pool.
 
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <string>
 
@@ -84,6 +113,51 @@ namespace matter { class VulkanDevice; }
 
 namespace vt {
 
+// Vulkan acceleration-structure builds require every indexed corner to name a
+// vertex in the supplied position stream. Streamed meshes can retain sentinel
+// corners for triangles that tier-1 chart construction skips; those corners
+// must never cross the tier-2 driver boundary. Enrichment is optional, so a
+// malformed rung fails closed while its already-correct tier-1 page remains.
+enum class VtEnrichMeshValidation {
+    Valid,
+    MissingGeometry,
+    OutOfRangeIndex,
+};
+
+inline VtEnrichMeshValidation vt_enrich_mesh_validation(
+    const VtPartContext& ctx) noexcept {
+    if (ctx.vertex_count == 0 || ctx.triangle_count == 0 || !ctx.positions ||
+        !ctx.indices) {
+        return VtEnrichMeshValidation::MissingGeometry;
+    }
+    if (ctx.triangle_count > std::numeric_limits<size_t>::max() / 3u) {
+        return VtEnrichMeshValidation::MissingGeometry;
+    }
+    const size_t index_count = static_cast<size_t>(ctx.triangle_count) * 3u;
+    for (size_t i = 0; i < index_count; ++i) {
+        if (ctx.indices[i] >= ctx.vertex_count) {
+            return VtEnrichMeshValidation::OutOfRangeIndex;
+        }
+    }
+    return VtEnrichMeshValidation::Valid;
+}
+
+// The tier-2 enricher. Behind its pimpl it owns both compute pipelines, the
+// descriptor pool, the point sampler used to read the pool back, a ring of
+// per-batch transient resources, and an owner-preparation cache whose entries
+// each own a chart SSBO, a triangle SSBO, the acceleration-structure input and
+// scratch buffers, a BLAS, a TLAS and a descriptor set.
+//
+// Lifetime: instances come only from create() — the constructor is private and
+// the type is neither copyable nor assignable. A null return is normal and
+// means "tier-2 is off" (see create()); the caller keeps rendering tier-1
+// pages, which are already correct. The matter::VulkanDevice handed to
+// create() is BORROWED and must outlive the enricher.
+//
+// Factor output is independent of base material and can be regenerated into
+// fresh storage. Legacy in-place enrichment must run once per fill, because a
+// second application would multiply occlusion twice. Residency owns publication
+// and once-per-fill bookkeeping.
 class VtEnricher final : public VtPageEnricher {
   public:
     // 128 payload + 4 border on each side (chart_atlas.h).
@@ -104,6 +178,10 @@ class VtEnricher final : public VtPageEnricher {
     static std::unique_ptr<VtEnricher> create(matter::VulkanDevice& vulkan,
                                               VkPipelineCache pipeline_cache,
                                               std::string& err);
+    // Destroys everything, including cached acceleration structures and any
+    // entries still waiting in the deferred-destroy graveyard — unlike
+    // invalidate_part(), this waits for nothing, so the device must already be
+    // idle with respect to work this enricher recorded.
     ~VtEnricher() override;
     VtEnricher(const VtEnricher&) = delete;
     VtEnricher& operator=(const VtEnricher&) = delete;
@@ -112,20 +190,49 @@ class VtEnricher final : public VtPageEnricher {
     // without a sampled ORM view, an out-of-range slot, or a mesh the
     // acceleration structure cannot be built from are skipped (fail-closed,
     // counted in stats). Requests past kMaxRequestsPerBatch are skipped too.
+    //
+    // Records only — no submit, no wait. One call consumes one slot of the
+    // kMaxBatchesInFlight ring and may record acceleration-structure builds
+    // for variants seen for the first time, so its cost is not uniform per
+    // page. batch[0].frame_index drives cache LRU and graveyard retirement for
+    // the whole call; every request in the batch is enriched with a single
+    // snapshot of the live settings. All requests in one batch must target the
+    // same pool ORM image (see the note in vt_enrich.cpp's enrich()).
+    //
+    // A skipped request simply leaves that page tier-1 correct — unlike the
+    // compositor, a skip here is not a visible failure and is not logged.
     void enrich(VkCommandBuffer cmd, const VtEnrichRequest* batch,
                 size_t count) override;
+    bool supports_separate_occlusion() const override {return true;}
+    bool supports_incremental_enrichment() const override {return true;}
+    void release_preparation(const VtPreparationKey& key) override;
 
     // Drop the cached chart/triangle streams AND acceleration structures for a
     // variant (all rungs). Call on part unload / content-key change. The GPU
     // resources are retired through the deferred-destroy graveyard, so this
     // does NOT require the device to be idle.
+    // Surface weights, material tables, field lanes and tape edits do not
+    // invalidate this geometry cache: AO uses only chart geometry and normals
+    // from the streams. It reads the replacement page's current base ORM from
+    // the pool. Changes to geometry, chart mapping or normals still require
+    // invalidation, even when a caller reuses the same variant hash.
     void invalidate_part(uint64_t variant_hash) override;
 
     // Rays per texel (MATTER_VT_ENRICH_SAMPLES, default 32, clamped 8..64).
     uint32_t sample_count() const override;
     // kEnrichFadeSpan x MATTER_VT_ENRICH_CAP_METERS (default 4 x 0.5 = 2.0 m).
+    // The page texel footprint, in METRES, past which enrichment contributes
+    // nothing; the residency layer uses it to skip coarse pages entirely.
     float max_footprint_meters() const override;
+    // Both re-read the live settings on every call rather than returning an
+    // init-time copy, so neither is constant across frames — do not cache the
+    // result past the frame that asked for it.
 
+    // Mixed semantics, on purpose: pages_enriched / requests_skipped /
+    // as_builds / as_evictions are monotonic lifetime counters incremented
+    // while enrich() RECORDS, whereas as_cached (live cache entries) and
+    // as_bytes (their accounted GPU allocation total, in bytes) are GAUGES
+    // recomputed at the end of each batch. Nothing resets any of them.
     struct Stats {
         uint64_t pages_enriched = 0;
         uint64_t requests_skipped = 0;

@@ -1,3 +1,19 @@
+// MatterEngine3/src/render/animation_skin_bridge.cpp
+//
+// Implementation of the skinned articulation adapter declared in
+// animation_skin_bridge.h. See that header for subsystem context, the
+// stale-serial rule, and lifetime rules.
+//
+// Two things happen here that are worth knowing before reading the code:
+//
+//  1. Every palette matrix is inverted in double precision and packed into the
+//     GPU's column-major layout, so a joint matrix that is non-finite or
+//     singular fails the whole submission instead of producing NaN normals.
+//  2. Validation is exhaustive and uncached. valid_animation_skinned_asset()
+//     re-walks every LOD's influence window on every call, and expand() calls
+//     it once per entity per frame — the cost scales with the asset's total
+//     skinned vertex count, not with the number of LODs actually drawn.
+
 #include "render/animation_skin_bridge.h"
 
 #include <cmath>
@@ -12,6 +28,10 @@ bool finite_matrix(const Mat4f& value) noexcept {
     return true;
 }
 
+// Gauss-Jordan inversion with partial pivoting, carried in double precision.
+// Returns false (leaving `out` partially written) for a non-finite input, a
+// pivot magnitude <= 1e-12 (treated as singular), or a non-finite result — all
+// of which the callers turn into a rejected submission, never a NaN upload.
 bool inverse(const Mat4f& source, Mat4f& out) noexcept {
     double values[4][8]{};
     for (uint32_t row = 0; row != 4; ++row) {
@@ -48,6 +68,9 @@ bool inverse(const Mat4f& source, Mat4f& out) noexcept {
     return true;
 }
 
+// Converts one skin-palette matrix into the GPU's VkSkinJoint pair: the skin
+// position matrix and its inverse-transpose for normals. False means the input
+// was non-finite or not invertible, which rejects the whole submission.
 bool pack_joint(const Mat4f& position, viewer::VkSkinJoint& out) noexcept {
     Mat4f inverse_position{};
     if (!finite_matrix(position) || !inverse(position, inverse_position)) return false;
@@ -61,6 +84,14 @@ bool pack_joint(const Mat4f& position, viewer::VkSkinJoint& out) noexcept {
     return true;
 }
 
+// Pose-independent checks for one LOD range: a non-zero part hash, a non-empty
+// vertex range, an index count that is a whole number of triangles, no overflow
+// of source_vertex + vertex_count, and an influence window that lies entirely
+// inside the packed influence arena.
+//
+// It then walks every vertex in that window and rejects any with all-zero
+// weights — an unweighted vertex would skin to the origin and drag a visible
+// spike out of the mesh. That walk is what makes this O(vertex_count), not O(1).
 bool valid_lod(const AnimationSkinnedLod& lod,
                const std::vector<viewer::VkSkinInfluence>& influences) noexcept {
     if (lod.part_hash == 0 || lod.vertex_count == 0 || lod.index_count == 0 ||
@@ -78,6 +109,14 @@ bool valid_lod(const AnimationSkinnedLod& lod,
 
 }  // namespace
 
+// Whole-asset validation: identity/generation present, influence arena and LOD
+// list non-empty, a bounds payload attached whose asset_key matches this exact
+// identity (culling is fail-open without it), and every LOD internally
+// consistent.
+//
+// Costs O(sum of all LOD vertex counts) because of the per-vertex weight scan
+// in valid_lod(), and expand() calls it on every entity every frame. It is not
+// the cheap predicate its name suggests.
 bool valid_animation_skinned_asset(const AnimationSkinnedAsset& asset) noexcept {
     if (asset.identity == 0 || asset.generation == 0 || asset.influences == nullptr ||
         asset.influences->empty() || asset.lods.empty() || asset.bounds == nullptr ||
@@ -88,6 +127,17 @@ bool valid_animation_skinned_asset(const AnimationSkinnedAsset& asset) noexcept 
     return true;
 }
 
+// Appends one VkSkinSubmission per matching LOD range to `out` (appended to,
+// never cleared), each carrying its own copy of the converted palette pair.
+//
+// The three return states are distinct:
+//  - true, nothing appended: the binding is not visible this frame. Normal.
+//  - true, records appended: at least one LOD's part_hash matched input.part_hash.
+//  - false: rejected. Either a validation failure (unresolved transform slot,
+//    stale asset generation, out-of-range presentation LOD, no pose published
+//    for exactly input.frame_serial, a palette longer than
+//    kVkSkinPaletteCountMax, a non-invertible joint) or — note — a fully valid
+//    asset in which NO LOD carried the requested part_hash.
 bool AnimationSkinBridge::expand(
     const AnimationSkinExpansion& input,
     std::vector<viewer::VkSkinSubmission>& out) const {

@@ -1,0 +1,6 @@
+wait_event bake.finished 3600
+wait_frames 1
+cam 140 70 -1 151 43 0
+wait_idle 2 900
+shot {{OUTPUT_DIR}}/section-handoff.png
+quit

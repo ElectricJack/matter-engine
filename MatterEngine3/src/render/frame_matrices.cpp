@@ -1,3 +1,19 @@
+// MatterEngine3/src/render/frame_matrices.cpp
+//
+// The one place the renderer turns a matter::CameraDesc into matrices. See
+// frame_matrices.h for the type and the conventions; the two things worth
+// knowing before editing here are both about REVERSED-Z, and both are spelled
+// out at their site below:
+//   - the depth_scale guard replaces the old "-1.0f cancellation" check and
+//     catches a near/far range that has collapsed out of float32 range;
+//   - the debug-only assert block checks the identities downstream code uses to
+//     recover near and far from the projection, so the projection and its
+//     consumers cannot drift apart on the depth convention unnoticed.
+//
+// The math helpers (look_at_rh, perspective_rh_zo_reversed, mat4_mul,
+// mat4_inverse, extract_frustum_planes_zo) all live in matrix_math.h; this file
+// only sequences and validates them.
+
 #include "frame_matrices.h"
 
 #include <cassert>
@@ -29,6 +45,12 @@ bool non_degenerate(matter::Float3 value) {
 
 } // namespace
 
+// Validation is strictly ordered: extent, then depth range, then the camera
+// basis, then the derived matrices. Everything is built into a local
+// `candidate` and copied out only on the last line, so a caller that ignores
+// the return value still sees its previous FrameMatrices intact rather than a
+// half-built one. `error` is cleared on entry and set on exactly the failing
+// check.
 bool build_frame_matrices(const matter::CameraDesc& camera, std::uint32_t width,
                           std::uint32_t height, FrameMatrices& frame,
                           std::string& error) {

@@ -1,3 +1,51 @@
+// MatterEngine3/src/ecs/transform_system.cpp
+//
+// Hierarchy mutation and transform propagation for the ECS core module. The
+// public contract for the four hierarchy functions is documented at the bottom
+// of matter/ecs.h; this file is the implementation and the propagation systems
+// behind `TransformDirty`.
+//
+// TWO LAYERS OF HIERARCHY EDITING, and it matters which one you use:
+//
+//   reparent / clear_parent      Immediate. Validate now (alive, same world, no
+//                                cycle), record the intent in the
+//                                `HierarchyValidationState` singleton, then
+//                                defer the actual ChildOf edit through
+//                                `flecs::world::defer` so the hierarchy does not
+//                                change under an iterating system. Only ONE
+//                                such mutation may be outstanding per child:
+//                                reparent returns false and clear_parent does
+//                                nothing while an earlier one is still pending.
+//
+//   enqueue_reparent /           Queued, last-write-wins per child, and always
+//   enqueue_clear_parent         accepted — including while that child already
+//                                has an immediate mutation pending. The queue is
+//                                applied by `drain_hierarchy_commands`, which
+//                                the runtime calls at a tick boundary; commands
+//                                whose child is still blocked are retained for
+//                                the next drain.
+//
+// The pending state is what makes cycle detection correct in the window between
+// "reparent accepted" and "flecs actually applied the ChildOf edit":
+// `effective_parent` consults `pending_parents` first, so a chain of reparents
+// issued in one frame still cannot close a loop. A pending entry with value 0
+// means "a clear is in flight"; the `PendingParentRemovalCleanup` tag exists
+// only to get a deferred callback that erases such an entry once flecs has
+// actually removed the edge.
+//
+// PROPAGATION. Two identical systems are registered from one template, matching
+// entities tagged `TransformDirty`:
+//   PropagateTransformsFixed  phase PostPhysicsHierarchy, FixedPipelineSystem
+//   PropagateTransformsFrame  phase FrameUpdate,          FramePipelineSystem
+// so world matrices are current both for the fixed-step tail (after physics
+// pulls) and once per rendered frame. Each dirty entity walks its full ancestor
+// chain root-first; a per-run `WorldMatrixCache` keeps a shared ancestor from
+// being recomputed for every dirty descendant. Matrices are row-major and
+// multiplied parent * local, matching `trs_matrix` in transform_math.h.
+//
+// THREADING. All app-thread / ECS-tick. Nothing here takes a lock; the
+// singletons are plain flecs components mutated in place.
+
 #include "matter/ecs.h"
 
 #include "transform_math.h"
@@ -9,22 +57,40 @@
 namespace matter::ecs {
 namespace {
 
+// Singleton recording hierarchy edits that have been accepted but whose ChildOf
+// change flecs has not applied yet. Key is the child; value is the intended
+// parent, or 0 for a pending clear_parent. Entries are erased by the
+// "CommitPendingTransformParent" / "FinishPendingTransformParentRemoval"
+// observers once the edit lands. Presence of a key is what blocks a second
+// immediate mutation on the same child.
 struct HierarchyValidationState {
     std::unordered_map<flecs::entity_t, flecs::entity_t> pending_parents;
 };
 
+// One deferred hierarchy request. `parent_world` is captured at enqueue time and
+// re-checked at drain time so a command that names an entity from a different
+// flecs world is dropped instead of resolving to an unrelated id.
 struct QueuedHierarchyCommand {
     flecs::entity_t parent = 0;
     const flecs::world_t* parent_world = nullptr;
     bool clear_parent = false;
 };
 
+// Singleton holding the queued (enqueue_*) requests, keyed by child so the map
+// gives last-write-wins per child for free. Drained by
+// `drain_hierarchy_commands`.
 struct HierarchyCommandQueue {
     std::unordered_map<flecs::entity_t, QueuedHierarchyCommand> commands;
 };
 
+// Internal marker tag. Added inside a deferred scope purely so that its OnAdd
+// observer fires after flecs has finished applying a ChildOf removal, giving a
+// safe point to erase the matching pending entry; removed again immediately.
 struct PendingParentRemovalCleanup {};
 
+// The underlying world behind a possibly-staged (`flecs::iter`) world handle.
+// Two entities belong to the same world iff their real_world pointers match —
+// comparing the handles directly would give false negatives inside a system.
 const flecs::world_t* real_world(flecs::entity entity) {
     flecs::world_t* entity_world = entity.world().c_ptr();
     return entity_world != nullptr ? ecs_get_world(entity_world) : nullptr;
@@ -59,6 +125,10 @@ void retain_if_not_replaced(
     }
 }
 
+// The parent `entity` will have once every accepted edit has landed: the
+// pending intent if one is recorded, otherwise its current ChildOf target.
+// Cycle detection must use this rather than the live target, or a chain of
+// reparents issued within a single frame could close a loop.
 flecs::entity effective_parent(
     flecs::entity entity,
     const HierarchyValidationState& state,
@@ -120,6 +190,7 @@ void finish_pending_removal(flecs::entity entity) {
     });
 }
 
+// Row-major 4x4 product, `left` then `right` (used as parent * local).
 Mat4f multiply(const Mat4f& left, const Mat4f& right) {
     Mat4f result{};
     for (int row = 0; row < 4; ++row) {
@@ -135,6 +206,8 @@ Mat4f multiply(const Mat4f& left, const Mat4f& right) {
     return result;
 }
 
+// Appends `root` and every descendant to `entities`, depth-first. Recursion
+// depth follows hierarchy depth. A dead root contributes nothing.
 void collect_subtree(flecs::entity root, std::vector<flecs::entity>& entities) {
     if (!root.is_alive()) {
         return;
@@ -145,6 +218,10 @@ void collect_subtree(flecs::entity root, std::vector<flecs::entity>& entities) {
     });
 }
 
+// Tags `root` and all descendants `TransformDirty` so the next propagation pass
+// recomputes them. The tagging happens inside `world.defer`, so this is safe to
+// call from an observer or a running system; the subtree is collected BEFORE
+// deferring, so entities added during the deferred scope are not included.
 void mark_subtree_dirty(flecs::entity root) {
     std::vector<flecs::entity> entities;
     collect_subtree(root, entities);
@@ -162,6 +239,11 @@ void mark_subtree_dirty(flecs::entity root) {
     });
 }
 
+// Fills `chain` with entity's ancestors ordered ROOT FIRST, ending with the
+// entity itself. Returns false — leaving `chain` partially built — if any link
+// is dead, already seen (a cycle), or lacks a `LocalTransform`, which is how
+// propagation refuses to produce a world matrix for a broken hierarchy rather
+// than looping or reading garbage.
 bool build_ancestor_chain(
     flecs::entity entity,
     std::vector<flecs::entity>& chain) {
@@ -186,6 +268,15 @@ bool build_ancestor_chain(
 
 using WorldMatrixCache = std::unordered_map<flecs::entity_t, Mat4f>;
 
+// Recomputes `entity`'s world matrix by walking its ancestor chain root-first,
+// writing `WorldTransform` and clearing `TransformDirty` on every link it had
+// to recompute — so propagating a deep child also fixes its ancestors.
+//
+// `computed` is a per-run memo keyed by entity id; a clean ancestor that
+// already has a WorldTransform is reused as-is instead of being rebuilt from
+// its LocalTransform. Returns false when the chain is unusable
+// (`build_ancestor_chain` failed, or a link lost its LocalTransform mid-walk);
+// the caller ignores that and moves on to the next dirty entity.
 bool propagate_entity(
     flecs::iter& iterator,
     flecs::entity entity,
@@ -234,6 +325,13 @@ bool propagate_entity(
     return true;
 }
 
+// Registers one propagation system. The optional cascaded `LocalTransform*`
+// term (`.cascade(flecs::ChildOf)`) is not read — it exists to make flecs order
+// the matched tables parents-before-children, which is what lets the per-run
+// matrix cache hit. The query is `.cached()` because it re-runs every tick.
+//
+// Instantiated twice: once on the fixed pipeline (PostPhysicsHierarchy) and
+// once on the frame pipeline (FrameUpdate).
 template <typename Phase, typename PipelineTag>
 void register_propagation_system(flecs::world& world, const char* name) {
     flecs::system system =
@@ -258,6 +356,10 @@ void register_propagation_system(flecs::world& world, const char* name) {
 
 } // namespace
 
+// See matter/ecs.h for the full contract. Implementation notes: the cycle walk
+// climbs from `parent` through `effective_parent`, so pending edits count; and
+// the "already the effective parent" case returns TRUE without queueing
+// anything, which callers must not read as "a change was made".
 bool reparent(flecs::entity child, flecs::entity parent) {
     const flecs::world_t* child_real_world = real_world(child);
     const flecs::world_t* parent_real_world = real_world(parent);
@@ -343,6 +445,16 @@ void enqueue_clear_parent(flecs::entity child) {
     queue->commands[child.id()] = {0, nullptr, true};
 }
 
+// Applies the queued enqueue_reparent/enqueue_clear_parent requests. Called at
+// a tick boundary by the runtime, not from inside a system.
+//
+// The whole queue is swapped out first, so commands re-queued during the drain
+// (a child whose immediate mutation is still pending) wait for the NEXT drain
+// rather than spinning. Child ids are sorted before applying so the resulting
+// hierarchy is deterministic despite the unordered_map. Commands naming a dead
+// child or parent, or a parent from a different world, are dropped silently;
+// the reparent itself may still refuse (cycle, etc.) and that refusal is not
+// reported anywhere.
 void drain_hierarchy_commands(flecs::world& world) {
     HierarchyCommandQueue* queue =
         world.try_get_mut<HierarchyCommandQueue>();
@@ -389,6 +501,10 @@ void drain_hierarchy_commands(flecs::world& world) {
     }
 }
 
+// Installs the hierarchy singletons, the four bookkeeping observers and both
+// propagation systems. Called by `ecs::CoreModule`; must run before any code
+// calls reparent/clear_parent, since those return false when the
+// HierarchyValidationState singleton is missing.
 void register_transform_systems(flecs::world& world) {
     world.component<HierarchyValidationState>("HierarchyValidationState");
     world.component<HierarchyCommandQueue>("HierarchyCommandQueue");

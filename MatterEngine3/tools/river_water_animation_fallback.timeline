@@ -1,0 +1,6 @@
+wait_event bake.finished 3600
+wait_idle 5 3600
+cam 86 72 -1 107 52 7
+wait_frames 5
+shot build/qa/water-animation-2026-08-26/fallback/static-artifact-load-fallback.png
+quit

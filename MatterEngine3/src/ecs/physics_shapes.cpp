@@ -1,3 +1,45 @@
+// MatterEngine3/src/ecs/physics_shapes.cpp
+//
+// Validation and shape construction for the rigid-body physics module. This is
+// the only place that decides whether an entity is eligible to have a Box3d
+// body, and the only place that translates MatterEngine collider components
+// into `b3` shape definitions.
+//
+// How it fits:
+//   * `matter/physics.h` declares the authoring components
+//     (RigidBody / SphereCollider / CapsuleCollider / BoxCollider /
+//     ConvexHullCollider / PhysicsVelocity) and the PhysicsErrorCode values
+//     returned here.
+//   * `physics_context.cpp` (the Box3d world) calls `validate_desired_body`
+//     during its Reconcile stage, compares the result against the body it
+//     already built with `same_configuration`, and calls `create_shape` when it
+//     has to (re)build one.
+//   * `physics_systems.cpp` registers the observers that mark entities dirty so
+//     Reconcile revisits them.
+//
+// Eligibility rules enforced by `validate_desired_body`, in the order checked:
+//   1. an `ecs::LocalTransform` must be present   -> MissingTransform
+//   2. the entity must be a ROOT (no flecs::ChildOf target) -> HasParent
+//   3. the transform scale must be 1,1,1 within 1e-5        -> NonUnitScale
+//   4. exactly one collider component  -> MissingCollider / MultipleColliders
+//   5. a `RigidBody`, with finite non-negative damping/sleep fields, a finite
+//      translation and a normalizable rotation      -> InvalidBody
+//   6. finite, positive collider dimensions; a hull needs 4..32 points that are
+//      not all coplanar                             -> InvalidCollider
+//   7. for a hull, Box3d must actually be able to build it -> HullBuildFailed
+// Scale is not baked into the shape anywhere, which is why a non-unit scale is
+// rejected outright rather than approximated.
+//
+// Units and conventions: lengths are metres; collider offsets (`center`,
+// `point_a`/`point_b`, hull `points`) are in the entity's own frame; rotations
+// are (x, y, z, w) quaternions. `validate_desired_body` normalizes the
+// quaternions it copies into the result, so the caller never has to.
+//
+// Threading: ECS-tick affine, like the rest of the physics module — these are
+// plain functions but they read live flecs components. The only shared state is
+// the `g_hull_build_attempts` counter, which is a relaxed atomic purely so the
+// tests can observe hull-build churn (see `hull_build_attempt_count`).
+
 #include "physics_shapes.h"
 
 #include <atomic>
@@ -12,6 +54,9 @@ constexpr uint64_t kFnvOffset = UINT64_C(14695981039346656037);
 constexpr uint64_t kFnvPrime = UINT64_C(1099511628211);
 std::atomic<uint64_t> g_hull_build_attempts{0};
 
+// Single funnel for every b3CreateHull call in this file so the attempt count
+// stays honest. Returns an owning pointer (b3DestroyHull) or null when Box3d
+// rejects the point cloud.
 b3HullData* create_hull(
     const b3Vec3* points,
     int point_count,
@@ -28,6 +73,10 @@ bool finite(Float3 value) {
     return finite(value.x) && finite(value.y) && finite(value.z);
 }
 
+// Normalizes `value` IN PLACE. Returns false — leaving `value` partially
+// written — when any component is non-finite or the length is zero, which the
+// callers treat as InvalidBody / InvalidCollider rather than substituting
+// identity.
 bool normalize(Quaternion& value) {
     if (!finite(value.x) || !finite(value.y) || !finite(value.z) ||
         !finite(value.w)) {
@@ -90,6 +139,10 @@ float dot(Float3 first, Float3 second) {
     return first.x * second.x + first.y * second.y + first.z * second.z;
 }
 
+// True when some four of the hull's points span a non-zero volume, i.e. the
+// cloud is genuinely 3D. Rejecting the coplanar case here keeps a degenerate
+// hull from reaching Box3d. Brute force over all 4-subsets — O(n^4) — which is
+// affordable only because `point_count` is capped at 32 by the component.
 bool has_non_coplanar_tetrahedron(const ConvexHullCollider& hull) {
     for (uint32_t a = 0; a + 3 < hull.point_count; ++a) {
         for (uint32_t b = a + 1; b + 2 < hull.point_count; ++b) {
@@ -177,6 +230,14 @@ bool same_properties(
            first.hit_events == second.hit_events;
 }
 
+// FNV-1a over the raw bytes of everything that decides the SHAPE of the solver
+// body: the RigidBody tunables, the shape kind, and the active shape's own
+// fields. Deliberately excludes the transform and the velocity — those are
+// pushed to the solver every step and must not force a body rebuild.
+//
+// Because it hashes float bit patterns, +0.0f and -0.0f hash differently even
+// though `same_configuration` (which uses ==) calls them equal. The hash is a
+// cheap pre-filter; `same_configuration` is the authority.
 uint64_t configuration_hash(const DesiredBody& desired) {
     uint64_t hash = kFnvOffset;
     hash_value(hash, desired.body.type);
@@ -216,6 +277,8 @@ uint64_t configuration_hash(const DesiredBody& desired) {
     return hash;
 }
 
+// The material/filter block of whichever collider `shape_kind` selects. The
+// trailing return exists only to satisfy the compiler; the switch is total.
 const ColliderProperties& properties(const DesiredBody& desired) {
     switch (desired.shape_kind) {
         case DesiredShapeKind::Sphere: return desired.sphere.properties;
@@ -236,6 +299,16 @@ b3Quat box_quaternion(Quaternion value) {
 
 } // namespace
 
+// Reads the entity's physics components and decides whether a solver body may
+// exist for it, per the rule list in the file header. Never throws and never
+// mutates the entity: on rejection it returns a result whose `error` names the
+// reason (the caller writes the `PhysicsError` component), and on success
+// `result.desired` is a fully self-contained copy — rotations already
+// normalized and `configuration_hash` filled in — that the reconcile stage can
+// hold without touching the ECS again.
+//
+// Hull validation performs a throwaway b3CreateHull to prove Box3d can build
+// the cloud; that hull is destroyed immediately and rebuilt in `create_shape`.
 ValidationResult validate_desired_body(flecs::entity entity) {
     ValidationResult result{};
 
@@ -364,10 +437,18 @@ ValidationResult validate_desired_body(flecs::entity entity) {
     return result;
 }
 
+// Process-wide count of b3CreateHull calls made through this file, including
+// the throwaway validation builds. Test observability only — nothing in the
+// engine branches on it.
 uint64_t hull_build_attempt_count() noexcept {
     return g_hull_build_attempts.load(std::memory_order_relaxed);
 }
 
+// Exact (bitwise-`==`) comparison of the body/shape configuration, matching
+// what `configuration_hash` covers: transform, velocity and configuration_hash
+// itself are NOT compared. Used by reconcile to decide "same body, leave it
+// alone" versus "destroy and rebuild". Floats are compared with ==
+// deliberately — any authored change at all should re-spec the body.
 bool same_configuration(
     const DesiredBody& first,
     const DesiredBody& second) noexcept {
@@ -420,6 +501,17 @@ bool same_configuration(
     return false;
 }
 
+// Attaches the shape described by `desired` to an already-created `body`.
+//
+// OWNERSHIP: `temporary_hull` is an OUT parameter, always assigned (null for
+// the sphere/capsule/box cases). For the Hull case it receives an owning
+// b3HullData* that Box3d copies out of during b3CreateHullShape — the CALLER
+// must b3DestroyHull it once the shape exists, including on the failure path
+// where this returns `b3_nullShapeId`. Failure only happens when Box3d refuses
+// to build the hull.
+//
+// Sensor events are enabled unconditionally; contact and hit events follow the
+// collider's `contact_events` / `hit_events` opt-ins.
 b3ShapeId create_shape(
     b3BodyId body,
     const DesiredBody& desired,

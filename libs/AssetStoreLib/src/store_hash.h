@@ -1,4 +1,11 @@
-/* store_hash.h -- content hashing and integrity checksums, no dependencies. */
+/* store_hash.h -- content hashing and integrity checksums, no dependencies.
+ *
+ * Path: libs/AssetStoreLib/src/store_hash.h. Internal to the library.
+ *
+ * Only crc32() is declared here. The content-hash entry points implemented in
+ * the same .cpp -- hash_bytes(), hash_to_hex(), hash_to_string() -- are part
+ * of the public API and are declared in ../include/asset_store.h instead, so
+ * every translation unit that needs them already includes both headers. */
 #ifndef ASSET_STORE_HASH_H
 #define ASSET_STORE_HASH_H
 

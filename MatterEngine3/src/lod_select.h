@@ -1,4 +1,20 @@
 #pragma once
+// MatterEngine3/src/lod_select.h
+//
+// Sector-granularity LOD selection on the CPU: given the streamed sector grid,
+// a per-part LOD table and the camera position, choose each part's ladder rung
+// per sector (or floor-cull it). The engine's resolvers use the result to
+// decide which rung's geometry to emit for a sector.
+//
+// The selection rule itself is NOT here -- it is render/lod_distance.h, the
+// one distance-valued rule the Vulkan cull shader also uses. This header is
+// the CPU entry point onto it; lod_select.cpp holds the mapping between the
+// two forms and the deliberate divergences.
+//
+// Units and conventions: distances and radii are world-space metres; a
+// "projected size" is the dimensionless bound_radius / distance (a tan-approx
+// angular radius), scaled by pixel_budget before comparison. Thresholds are on
+// that same scale and are ordered fine -> coarse, index 0 finest.
 #include "tri.h"
 #include "sector_grid.h"
 #include <cstdint>
@@ -38,8 +54,15 @@ struct PartLod {
     std::vector<PartLodRef> refs;    // instanced-children refs (cutover>0 only)
 };
 using PartLodTable = std::map<uint64_t, PartLod>;     // resolved_hash -> PartLod
+// Optional reusable list of distinct hashes per sector, including hashes not
+// yet in PartLodTable. Rebuild with the sector binning, not on camera movement.
+using SectorParts = std::map<sector_grid::SectorCoord, std::vector<uint64_t>>;
 
 struct LodChoice {
+    // Index into the part's LodLevels, 0 = finest. -1 means floor-culled:
+    // the part is too small to be worth drawing here and resolvers emit
+    // nothing for it. Parts at or above the never-cull radius (terrain-tile
+    // sized) are clamped to their coarsest rung instead of ever reaching -1.
     int   level;
     // Distance from the camera to the sector's CLOSEST instance — the same `d`
     // selection used, handed to the caller so downstream decisions (the inline
@@ -64,7 +87,8 @@ std::map<sector_grid::SectorCoord, std::map<uint64_t, LodChoice>>
 select_sector_lods_ex(const sector_grid::Sectors& sectors,
                       const PartLodTable& parts, const float3& cam_pos,
                       float min_projected_size = 0.0f,
-                      float pixel_budget = 1.0f);
+                      float pixel_budget = 1.0f,
+                      const SectorParts* distinct_parts = nullptr);
 
 // Thin wrapper: returns sector -> (part hash -> chosen level index, or -1).
 std::map<sector_grid::SectorCoord, std::map<uint64_t,int>>

@@ -1,0 +1,23 @@
+#version 450
+
+#include "gpu_mesh_common.glsl"
+
+layout(local_size_x = 256) in;
+layout(std430, binding = 0) readonly buffer ParamsBuffer {
+    uvec4 params;
+};
+layout(std430, binding = 1) readonly buffer ActiveBuffer {
+    uint activeFlags[];
+};
+layout(std430, binding = 2) readonly buffer ActiveOffsetBuffer {
+    uint activeOffsets[];
+};
+layout(std430, binding = 3) writeonly buffer ActiveCellBuffer {
+    uint activeCells[];
+};
+
+void main() {
+    const uint cell = gl_GlobalInvocationID.x;
+    if (cell >= params.x || activeFlags[cell] == 0u) return;
+    activeCells[activeOffsets[cell]] = cell;
+}

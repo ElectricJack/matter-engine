@@ -1,12 +1,43 @@
+// libs/ParticleFlowLib/src/pf_path_recorder.cpp
+//
+// `PathRecorder`: the standard `ITickObserver`, and the thing world scripts
+// actually consume — `MatterEngine3/src/pf_bindings.cpp` hands its `PathSet`
+// back to JS, where `Tree.js` / `TreeBranch.js` turn the polylines into
+// geometry.
+//
+// Invoked from `Sim::step` after every particle has integrated, so it always
+// sees end-of-tick positions. Per tick it does three things, in this order:
+// open a path for each id it has not seen before (recording the spawn vertex),
+// append a vertex for each moving particle that has travelled at least
+// `min_segment` since its last recorded vertex, then close the paths of
+// everything in `died_this_tick()` after recording a final vertex.
+//
+// Append-only, structurally: paths are only pushed, vertices are only pushed,
+// nothing already written is ever revised. That is what makes a partially-run
+// sim's output usable.
+//
+// Memory: the id->track table is indexed directly by particle id, which only
+// increases, so the table grows with the number of particles EVER emitted, not
+// with the live population. A long run that churns short-lived particles pays
+// for all of them.
 #include "particle_flow.h"
 
 namespace pf {
 
+// `min_segment` is the decimation distance in the caller's units; a negative
+// value is clamped to 0, and 0 disables intermediate vertices entirely (paths
+// then hold only the spawn vertex and, if the particle moved, a death vertex).
+// `names` is stored verbatim as `PathSet::channel_names` and is never checked
+// against the Sim's actual channel count — see the note on that field.
 PathRecorder::PathRecorder(float min_segment, const std::vector<std::string>& names)
     : min_seg_(min_segment > 0 ? min_segment : 0.0f) {
     set_.channel_names = names;
 }
 
+// Append the slot's current position plus one sample of every ATTRIBUTE channel
+// (state channels are deliberately not recorded). Assumes the path's `channels`
+// vector was already sized to `s.channel_count()` when the path was opened, so
+// this must not be called for a path opened against a differently-shaped Sim.
 void PathRecorder::append_vertex(const Sim& s, uint32_t slot, uint32_t path_index) {
     const float* pd = s.pos_data();
     PathSet::Path& path = set_.paths[path_index];
@@ -17,6 +48,14 @@ void PathRecorder::append_vertex(const Sim& s, uint32_t slot, uint32_t path_inde
         path.channels[c].push_back(s.attr_data(c)[slot]);
 }
 
+// Ascending slot order keeps path creation order reproducible for a given seed.
+// The tick number is unused — decimation is by distance travelled, not by time.
+//
+// Deaths are handled after the movement pass and read the dead slots' positions
+// directly: `Sim::kill_slot` leaves position and velocity intact, and a slot
+// freed this tick cannot have been reused yet (emitters run before integration),
+// so the value read is genuinely the death position. The `path.closed` guard
+// makes a repeated death report harmless.
 void PathRecorder::on_tick(const Sim& s, uint32_t) {
     const float* pd = s.pos_data();
     const uint8_t* alive = s.alive_data();

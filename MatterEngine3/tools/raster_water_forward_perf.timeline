@@ -1,0 +1,5 @@
+wait_event bake.finished 3600
+play
+wait_frames 10
+cam 45 72 2 78 60 -3
+wait_idle 5 3600

@@ -1,5 +1,27 @@
 #include "animation/animation_controllers.h"
 
+// MatterEngine3/src/animation/animation_controllers.cpp
+//
+// Registry plumbing plus `GaitController`, the only controller registered by
+// `NativeControllerRegistry::with_v1_controllers()`.
+//
+// The gait model, in one paragraph: a single scalar phase in [0,1) advances
+// with graph time scaled by the optional `speed` input. Each foot reads that
+// phase half a cycle apart; the first half of a foot's cycle is stance and the
+// second is swing. During stance the foot is snapped to whatever the downward
+// probe ray hits (if that hit is walkable); during swing it follows its
+// predicted rig-relative position lifted by a smoothstep arc. Both feet are
+// solved into a scratch `State`, and neither the committed state nor the
+// caller's write list is touched unless both succeed -- a mid-step failure
+// therefore leaves the previous tick's result standing.
+//
+// Coordinates: controller parameters (`*_predicted`) are rig-relative;
+// `NativeControllerContext::entity_world` promotes them to world space for the
+// raycast, and the resulting translation is written back in that same world
+// frame. `Mat4f` is row-major with translation in `m[3]`, `m[7]`, `m[11]`.
+//
+// Threading: none. One instance is driven by one fixed tick.
+
 #include <cmath>
 #include <cstring>
 
@@ -9,6 +31,11 @@ bool finite(float v){return std::isfinite(v);}
 
 bool finite3(Float3 v){return finite(v.x)&&finite(v.y)&&finite(v.z);}
 
+// Parameter admission check, run once at factory time so `fixed_update` never
+// has to defend against NaN or a degenerate stride. Requires two distinct,
+// set target indices, finite predicted positions, a strictly positive stride
+// and ray length, non-negative swing/step heights, and a normal threshold in
+// [-1,1].
 bool valid(const GaitControllerParameters&p){
     return p.left_target != UINT16_MAX
         && p.right_target != UINT16_MAX
@@ -24,6 +51,10 @@ bool valid(const GaitControllerParameters&p){
         && p.min_ground_normal_y <= 1;
 }
 
+// Rig-relative point -> world. Row-major affine transform by
+// `context.entity_world`; when the runtime supplied no entity pose
+// (`has_entity_world == false`) the point is returned unchanged, i.e. the rig
+// frame is treated as world.
 Float3 transform_point(const NativeControllerContext& c,Float3 v){
     if (!c.has_entity_world) return v;
     const Mat4f& m = c.entity_world;
@@ -31,7 +62,17 @@ Float3 transform_point(const NativeControllerContext& c,Float3 v){
             m.m[4]*v.x + m.m[5]*v.y + m.m[6]*v.z  + m.m[7],
             m.m[8]*v.x + m.m[9]*v.y + m.m[10]*v.z + m.m[11]};
 }
+// Per-foot contact state. `position` is the world-space plant point and is
+// only meaningful while `planted`; `ground` is the entity id reported by the
+// probe hit, recorded for the owning entity's use and not read here.
 struct Foot { bool planted=false; Float3 position{}; uint64_t ground=0; };
+// Procedural two-foot gait. Fixed cadence only.
+//
+// `inputs[0]`, when present, is a non-negative Number that scales graph time
+// (walk/run speed); anything else fails the tick. State is a phase clock plus
+// the two `Foot` records, and is memcpy-serialized wholesale by
+// `checkpoint`/`restore` -- so `State` must stay trivially copyable and its
+// layout is part of the checkpoint format.
 class GaitController final: public NativeController {
 public: explicit GaitController(GaitControllerParameters p):p_(p){}
  NativeControllerTypeId type()const noexcept override{return kGaitControllerTypeId;} NativeControllerLayout layout()const noexcept override{return {sizeof(State),0};}
@@ -59,6 +100,12 @@ public: explicit GaitController(GaitControllerParameters p):p_(p){}
  }
  bool checkpoint(std::vector<uint8_t>&out)const override{out.resize(sizeof(state_));std::memcpy(out.data(),&state_,sizeof(state_));return true;} bool restore(const std::vector<uint8_t>&in)override{if(in.size()!=sizeof(state_))return false;State s{};std::memcpy(&s,in.data(),sizeof(s));if(!std::isfinite(s.time))return false;state_=s;return true;}
 private: struct State{double time=0;Foot feet[2]{};};
+ // Solves one foot into `next`/`writes` without touching committed state.
+ // `index` 0 is the left foot and 1 the right, which is also the half-cycle
+ // phase offset. `predicted` is the foot's rig-relative rest position.
+ // Returns false only when the produced translation is non-finite; a probe
+ // that finds no walkable ground is a normal outcome (the foot simply is not
+ // planted this tick).
  bool foot(NativeControllerContext&c,
            State& next,
            std::vector<ControllerTargetWrite>& writes,
@@ -102,7 +149,13 @@ private: struct State{double time=0;Foot feet[2]{};};
 };
 }
 bool NativeControllerRegistry::register_factory(NativeControllerTypeId id,Factory f){return id!=0&&f&&factories_.emplace(id,f).second;}
+// Returns null (not a default controller) for an unsupported cadence or an
+// unregistered type id; the factory itself returns null for a malformed
+// parameter blob. `layout` is only written on success.
 std::unique_ptr<NativeController> NativeControllerRegistry::create(const NativeControllerDescriptor&d,NativeControllerLayout&layout)const{if(d.cadence!=EvaluationCadence::Fixed&&d.cadence!=EvaluationCadence::Frame)return {};auto it=factories_.find(d.type);return it==factories_.end()?nullptr:it->second(d.parameters.data(),d.parameters.size(),layout);}
+// The shipped controller set: gait only. This is what the runtime-asset
+// decoder probes against, so adding a controller here is what makes an
+// authored `controller` declaration loadable.
 NativeControllerRegistry NativeControllerRegistry::with_v1_controllers(){NativeControllerRegistry r;r.register_factory(kGaitControllerTypeId,&create_gait_controller);return r;}
 std::unique_ptr<NativeController> create_gait_controller(const uint8_t*b,size_t n,NativeControllerLayout&layout){if(!b||n!=sizeof(GaitControllerParameters))return {};GaitControllerParameters p{};std::memcpy(&p,b,sizeof(p));if(!valid(p))return {};auto result=std::make_unique<GaitController>(p);layout=result->layout();return result;}
 } // namespace matter::animation

@@ -1,11 +1,34 @@
 #pragma once
 
+// MatterEngine3/src/part_asset_v2.h
+//
 // Part Artifact v2 — content-addressed extension of the v1 .part format.
 // Consumes the MatterSurfaceLib prototype's v1 part_asset (read-only) for
 // fnv1a64 / cache_path / kMagic and the BLAS/TLAS/material types, and adds the
 // v2 surface (resolved hash, child-instance table, ordered LOD levels) in the
 // SAME part_asset namespace.
 // See docs/superpowers/specs/2026-06-24-part-artifact-v2-design.md
+//
+// HOW TO USE IT
+//   * Every `path` argument here is a CACHE-ROOT-RELATIVE path from one of the
+//     cache_path_* helpers (callers prepend their cache root). Since M4 they all
+//     name the same file, `parts/<16-hex>.bundle`; which SECTION is touched is
+//     decided by the save/load function, not by the caller.
+//   * Writes are atomic: the bundle is republished through a temp file plus
+//     replace_file_atomic, so a crash leaves the previous artifact intact.
+//   * Loads are FAIL-CLOSED and never throw. `false` means "regenerate this
+//     artifact" — a missing section, a header or version mismatch, a material
+//     schema change, a bad checksum and a truncated body all report it the same
+//     way, with the optional `failure`/`reason` out-params saying which.
+//
+// THREADING. Free functions with no shared mutable state (the one exception is
+// the deliberate one-shot test seam below). Concurrent writers to the SAME
+// bundle are serialized by part_bundle's process-wide lock, so several bake
+// threads may save different parts freely.
+//
+// IDENTITY. compute_resolved_hash folds the version vector, so a format or rule
+// bump changes every part's hash and therefore re-BAKES rather than merely
+// re-resolving. Do not add a second version gate here.
 #include "part_asset.h"   // v1 (MatterSurfaceLib via -I../../libs/MatterSurfaceLib/include):
                           // fnv1a64, cache_path, kMagic, BLASManager/TLASManager,
                           // MaterialDef, Tri/TriEx/BVHNode
@@ -18,6 +41,8 @@
 #include <optional>
 #include <string>
 #include <vector>
+
+namespace matter { struct PartRenderPolicy; }
 
 namespace part_asset {
 
@@ -53,6 +78,12 @@ constexpr uint32_t kFormatVersionFlat = matter_version::components::kFlatFormat;
 uint64_t compute_resolved_hash(const void* source_bytes, size_t source_len,
                                const void* params_bytes, size_t params_len,
                                const uint64_t* child_hashes, size_t child_count);
+
+// Reuse a source prefix across many parameter sets without changing identity.
+// finish_resolved_hash appends params/children and CURRENT mode/version salts.
+uint64_t compute_source_hash(const void* source_bytes, size_t source_len);
+uint64_t finish_resolved_hash(uint64_t source_hash, const void* params_bytes, size_t params_len,
+                              const uint64_t* child_hashes, size_t child_count);
 
 // Child-instance record: a reference to ANOTHER part by resolved hash + placement.
 // transform is row-major, world placement under the parent's frame. Kept padding-free
@@ -107,6 +138,10 @@ struct LodVariants {
 // False if the section is missing or unparseable (callers fall back to QEM).
 bool load_lod_sidecar(const std::string& path, uint64_t resolved_hash,
                       LodVariants& out);
+// Strict proof for the static source-singleton fallback, distinct from the
+// compatibility reader above. Rejects malformed/trailing tokens and foreign refs.
+bool load_single_full_lod_policy(const std::string& path, uint64_t resolved_hash);
+
 bool save_lod_sidecar(const std::string& path, uint64_t resolved_hash,
                       const LodVariants& variants);
 
@@ -230,6 +265,22 @@ bool save_v2(const std::string& path, const BLASManager& blas,
              const std::vector<VolumeEmitter>& emitters,
              uint64_t resolved_hash);
 
+// Proof supplied only after a static leaf's own class declared exactly [1].
+// Existing VARS/PLAN formats encode these values; this is not a new disk format.
+struct StaticLeafMetadata {
+    double anchor_size = 0.0;
+    bool no_impostor = false;
+};
+
+// Static-only atomic RNDR + REP0 publish. The animation/candidate APIs below
+// retain their existing ordering and never use this convenience entry point.
+bool save_v2_with_render_policy(const std::string& path, const BLASManager& blas,
+             const TLASManager& tlas,
+             const ChildInstance* children, size_t child_count,
+             const LodLevels& lods, const std::vector<VolumeEmitter>& emitters,
+             uint64_t resolved_hash, const matter::PartRenderPolicy& policy,
+             const StaticLeafMetadata* leaf_metadata = nullptr);
+
 // Animated parts — appends a tagged "ANLK" trailer (after any EMIT block)
 // carrying the PartAnimationLink that binds this Part to its animation bundle.
 // Static writers never call this overload, so their bytes stay unchanged.
@@ -259,24 +310,68 @@ bool save_v2(const std::string& path, const BLASManager& blas,
              uint64_t resolved_hash);
 
 // Atomically publish source_path at target_path, replacing an existing target
-// without deleting it first. Failure leaves the previous target intact.
+// without deleting it first. Failure leaves the previous target intact and the
+// source in place; the caller decides whether to delete the source.
+//
+// TRANSIENT FAILURES (Windows). MoveFileEx refuses to replace a target that
+// some other handle holds open without FILE_SHARE_DELETE: an antivirus or
+// indexer scanning a freshly closed file, or an in-process part_bundle reader
+// (bundle reads take no lock). None of that is a corruption hazard, only a
+// liveness one, so ERROR_SHARING_VIOLATION / ERROR_ACCESS_DENIED /
+// ERROR_LOCK_VIOLATION are retried with exponential backoff (1, 2, 4 ... ms)
+// for up to kReplaceFileMaxAttempts renames, about 0.5 s of waiting, before
+// the call gives up with NotReplaced. Any other error fails on the first
+// attempt. POSIX rename has no such failure mode and is attempted once.
+inline constexpr uint32_t kReplaceFileMaxAttempts = 10;
 enum class FileReplaceOutcome {
-    NotReplaced,
-    ReplacedDurable,
-    ReplacedNotDurabilityConfirmed,
+    NotReplaced,        // the rename failed; the previous target is still intact
+    ReplacedDurable,    // renamed AND the directory entry was flushed to disk
+    ReplacedNotDurabilityConfirmed,  // renamed, but durability could not be
+                                     // confirmed (parent-dir fsync failed, or
+                                     // the test seam fired): the file is correct
+                                     // now but may not survive power loss
 };
-FileReplaceOutcome replace_file_atomic_detailed(const std::string& source_path,
-                                                const std::string& target_path);
+// Why a replace failed, for callers that log it. os_error is the last failed
+// rename's GetLastError() (Windows) or errno (POSIX), and 0 once the rename
+// succeeded; attempts counts rename calls, so anything above 1 means transient
+// retries happened.
+struct FileReplaceDiagnostics {
+    uint32_t os_error = 0;
+    uint32_t attempts = 0;
+};
+FileReplaceOutcome replace_file_atomic_detailed(
+    const std::string& source_path, const std::string& target_path,
+    FileReplaceDiagnostics* diagnostics = nullptr);
 bool replace_file_atomic(const std::string& source_path,
                          const std::string& target_path);
 // Deterministic test seam: makes the next completed rename report that parent
 // directory durability could not be confirmed.
 void set_replace_file_atomic_test_post_rename_failure_once();
+// Deterministic test seam for the Windows transient-retry loop: called after
+// every failed rename that WILL be retried, with its 0-based attempt index and
+// OS error, before the backoff sleep. A test holding the target open releases
+// it here. Pass nullptr to clear; production never sets it.
+using ReplaceFileRetryHook = void (*)(uint32_t attempt, uint32_t os_error,
+                                      void* user);
+void set_replace_file_atomic_test_retry_hook(ReplaceFileRetryHook hook,
+                                             void* user);
 
 // Reconstruct managers from a v2 file; returns the child table and LOD levels to the
 // caller (passive — no backend action). Returns false (caller regenerates) on any
 // header/layout/material/corruption mismatch, format_version != 2, or I/O failure.
 // expected_resolved_hash must equal the resolved hash the file was written with.
+// Why a load failed, for callers that report or count the distinction. All four
+// mean "regenerate"; they differ in what to blame.
+//   None           no failure (or the caller never asked).
+//   Header         missing section, wrong magic/format version, a changed
+//                  Tri/TriEx/BVHNode/ChildInstance size, or an identity mismatch
+//                  — which for a flat is the routine "baked under a different
+//                  ladder shape" case.
+//   MaterialSchema the material registry's schema or frozen table moved since
+//                  the bake; the geometry may be fine but its material ids are
+//                  no longer meaningful.
+//   CorruptBody    body checksum mismatch, or the body/trailer grammar did not
+//                  parse to exactly EOF.
 enum class PartAssetLoadFailure { None, Header, MaterialSchema, CorruptBody };
 
 bool load_v2(const std::string& path, uint64_t expected_resolved_hash,
@@ -291,9 +386,21 @@ bool load_v2(const std::string& path, uint64_t expected_resolved_hash,
 bool load_animation_link(const std::string& path, uint64_t expected_resolved_hash,
                          std::optional<PartAnimationLink>& animation_link_out);
 
-// Read one exact, fully validated canonical v2 Part snapshot and report a
-// fingerprint of the bytes that were parsed. Returns false for an animated
-// (ANLK-bearing), malformed, or unreadable Part. Callers that use an adjacent
+struct StaticPartSnapshot {
+    uint64_t fingerprint = 0;
+    bool has_geometry = false;
+    std::vector<ChildInstance> children;
+};
+
+// Read one exact, fully validated canonical v2 Part snapshot without
+// reconstructing renderer managers. Returns false for an animated
+// (ANLK-bearing), malformed, or unreadable Part. The child table is the
+// canonical REP0 table; adjacent flattened artifacts deliberately serialize an
+// empty table and therefore cannot supply policy cardinality themselves.
+bool load_static_part_snapshot(const std::string& path, uint64_t expected_resolved_hash,
+                               StaticPartSnapshot& snapshot_out);
+
+// Fingerprint-only compatibility overload. Callers that use an adjacent
 // static acceleration can compare two snapshots to reject a replacement that
 // raced their acceleration load.
 bool load_static_part_snapshot(const std::string& path, uint64_t expected_resolved_hash,
@@ -377,6 +484,12 @@ bool load_flat_v3(const std::string& path, uint64_t expected_resolved_hash,
                   BLASManager& blas, TLASManager& tlas,
                   std::vector<FlatCluster>& clusters_out,
                   std::vector<FlatInstanceRef>& instance_refs_out);
+// Validated refs-only scan: same header, full checksum and common/FLAT grammar
+// as the non-emitter loader, without BLAS/TLAS construction or geometry copies.
+// Optional trailing EMIT data is ignored, as in that overload. Failure leaves
+// output unchanged; success replaces it (including the zero-ref case).
+bool load_flat_instance_refs(const std::string& path, uint64_t expected_resolved_hash,
+                             std::vector<FlatInstanceRef>& instance_refs_out);
 // Back-compat overload: discards the instance_refs trailer (still validates it).
 bool load_flat_v3(const std::string& path, uint64_t expected_resolved_hash,
                   BLASManager& blas, TLASManager& tlas,
@@ -401,10 +514,13 @@ bool load_flat_v3(const std::string& path, uint64_t expected_resolved_hash,
 // load_flat_v3) which already validate fnv1a64(body) on every load.
 // False means regenerate; the existing file remains in place until the normal
 // atomic save replaces it.
+// Accounting for the bounded probe below, in bytes. It exists so the tests can
+// assert the probe stays bounded — it runs once per part per bake, and slurping
+// a multi-megabyte bundle to answer a header question would be a real cost.
 struct CacheArtifactProbeStats {
-    size_t max_read_chunk = 0;
-    size_t retained_material_bytes = 0;
-    uint64_t body_bytes = 0;
+    size_t max_read_chunk = 0;          // largest single read the probe made
+    size_t retained_material_bytes = 0; // material-table prefix it compared
+    uint64_t body_bytes = 0;            // prefix bytes past the 40-byte header
 };
 bool is_cache_artifact_header_compatible(
     const std::string& path, uint64_t expected_resolved_hash,

@@ -29,6 +29,32 @@
 //              subscriber therefore runs inline on the producer's thread,
 //              matching the old synchronous callbacks. Consumers that must
 //              hop to the app thread subscribe a lane instead.
+// ---------------------------------------------------------------------------
+// Using these events
+// ---------------------------------------------------------------------------
+// Payload structs only — no behavior. MT_EVENT_NAME
+// (matter/event/event_name.h) supplies the dotted registry/trace name and a
+// stable per-type id. Emit and subscribe through the session's evt::Hub
+// (matter/event/event_hub.h):
+//
+//   hub.emit(matter::events::ErrorPartInstanceClear{id});
+//   auto sub = hub.must_subscribe<matter::events::ErrorPartInstance>(
+//       "ecs-error-apply", evt::immediate, [](const auto& e) { ... });
+//
+// must_subscribe is [[nodiscard]] and returns a Subscription that owns the
+// registration (matter/event/subscription.h) — keep it alive for as long as
+// you want the callback.
+//
+// Consequence of the immediate contract above: the handler runs INLINE on the
+// producer's thread, so anything slow or blocking inside it stalls the
+// live-edit rebuild pass or the per-frame bridge reconcile that emitted the
+// event. A consumer that cannot be that cheap should subscribe a lane and
+// accept the deferred timing instead of doing work here.
+//
+// Cost: Hub::emit takes the event by value and each queued lane stores its own
+// copied envelope, so ErrorLiveEdit's four strings are copied once per emit
+// plus once per distinct subscribed lane; immediate dispatch passes the event
+// by const reference and adds no further copy.
 #pragma once
 #include <cstdint>
 #include <string>
@@ -62,6 +88,9 @@ struct ErrorPartInstance {
     MT_EVENT_NAME("error.part_instance");
     scene::SceneEntityId          id{};
     scene::PartInstanceErrorCode  code = scene::PartInstanceErrorCode::None;
+    // Content-addressed hash of the part the entity asked for, copied from
+    // scene::PartInstanceError::part_hash (matter/scene.h); 0 when the entity
+    // had no resolved part hash to report.
     uint64_t                      part_hash = 0;
 };
 

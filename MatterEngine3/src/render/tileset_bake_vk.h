@@ -26,10 +26,24 @@
 // that were transliterated byte-for-byte. Those files were DELETED in V5
 // (docs/vulkan-rt-gtex-bake.md §I.8); the citations are historical and resolve
 // only in git history (last present at commit c9a41297).
+//
+// CONSUMERS AND THREADING. bake_tileset_vk is called on the render thread (it
+// asserts the Vulkan device thread) and BLOCKS: it builds acceleration
+// structures, submits the dispatches immediately and reads the results back
+// before returning, so a bake is a visible stall, not background work. The
+// inline helpers below are pure CPU and callable from anywhere — the headless
+// tests exercise them directly, which is the point of keeping them in the
+// header.
+//
+// PRECONDITIONS ARE NOT CHECKED. The repack helpers trust the sizes their
+// documentation states (gtex_pack_orm_ao in particular writes into `orm_rgb8`
+// for every texel of `ao_r8` without consulting its size), so a caller that
+// gets a length wrong corrupts memory rather than getting an error.
 
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -40,6 +54,15 @@ namespace tileset {
 struct SettledTorus;
 struct BakeInputs;
 
+// Round after converting metres to pixels: truncating metres first makes
+// sub-metre tiles empty and crops every non-integral metre tile.
+inline int gtex_atlas_extent(float tile_size_m, int texels_per_meter, int tiles_per_side) {
+    const double pixels = std::round(double(tile_size_m) * texels_per_meter);
+    if (!std::isfinite(pixels) || pixels < 1 || texels_per_meter <= 0 || tiles_per_side <= 0 ||
+        pixels > double(std::numeric_limits<int>::max() / tiles_per_side)) return 0;
+    return int(pixels) * tiles_per_side;
+}
+
 // ---------------------------------------------------------------------------
 // Readback repack helpers (pure, CPU-testable).
 //
@@ -48,6 +71,10 @@ struct BakeInputs;
 // vkCmdCopyImageToBuffer copies the full RGBA8 texel, so albedo and ORM come
 // back as 4 bytes/texel and must be narrowed to the 3-byte RGB shape save_gtex
 // expects. Normal (RG8) and height (R16) are straight copies.
+//
+// All four helpers are deterministic and independent of the GPU: they are the
+// analytically-testable half of the bake, and the .gtex on disk is exactly what
+// they produce from the readback buffers.
 // ---------------------------------------------------------------------------
 
 // Drop the alpha byte of a tightly-packed RGBA8 buffer into RGB8.

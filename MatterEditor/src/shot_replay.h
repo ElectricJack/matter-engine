@@ -87,10 +87,24 @@
 
 namespace viewer {
 
+// One recorded shot, parsed. A plain value type: no ownership, no resources,
+// copyable, and every field defaulted, so a descriptor written by an older
+// build simply leaves the missing fields at the defaults below rather than
+// failing to load.
+//
+// The two failure states are distinct and callers must tell them apart:
+//   valid == false, error empty     -> "this is not a replay run" (normal)
+//   valid == false, error non-empty -> the descriptor was bad (fatal)
+// `main.cpp` exits 1 only for the second.
+//
+// Consumed once, during startup, before the window exists — the recorded
+// framebuffer size has to be the size the window is created at.
 struct ShotReplay {
     bool valid = false;
     std::string error;
 
+    // Camera as recorded, in WORLD space, metres. `world` is the scene name
+    // the editor was told to open (MATTER_WORLD), not a file path.
     std::string world;
     float eye[3] = {0, 0, 0};
     float target[3] = {0, 0, 0};
@@ -99,6 +113,10 @@ struct ShotReplay {
     float near_plane = 0.0f;
     float far_plane = 0.0f;
 
+    // Window/framebuffer size the shot was taken at, in pixels. 0 = the
+    // descriptor recorded none, so the replay keeps whatever size it gets.
+    // A request larger than the display is clamped by the window manager, and
+    // the resulting mismatch is reported (fatal under MATTER_REPLAY_STRICT).
     uint32_t frame_width = 0, frame_height = 0;
     ShotRect rect{};      // crop to apply before writing the PNG
     ShotRect viewport{};  // where the 3D view was, in framebuffer pixels
@@ -116,9 +134,18 @@ struct ShotReplay {
     // says so. Restoring this is what makes the viewport land where it did.
     std::string layout_ini;
 
+    // Transport state at capture time ("Edit" / "Play" / "Pause") and the
+    // toolbar's time scale. This is a phase-free description: it records the
+    // mode, not a tick count, which is why an animated subject cannot be
+    // reproduced (see the note at the top of this file).
     std::string sim_mode = "Edit";
     float time_scale = 1.0f;
 
+    // Render toggles that change pixels. `dlss_mode` is recorded but NOT
+    // honoured — replay forces Native, because DLSS is temporal and
+    // resolution-dependent — it is kept so the replay can say the shot used
+    // something else. `pixel_budget` is a normalized 0-1 render-scale factor;
+    // `debug_view_mode` is the debug-view enum index, 0 = normal shading.
     std::string dlss_mode = "native";
     float pixel_budget = 1.0f;
     int debug_view_mode = 0;

@@ -28,6 +28,20 @@ int main() {
     oversized = defaults;
     oversized.max_world_queries_per_fixed_tick = AnimationBudgetConfig::kHardMaxWorldQueriesPerFixedTick + 1;
     CHECK(!oversized.valid(), "world query budget above hard cap is rejected");
+    oversized = defaults;
+    oversized.max_controller_nodes = AnimationBudgetConfig::kHardMaxControllerNodes + 1;
+    CHECK(!oversized.valid(), "controller node budget above hard cap is rejected");
+
+    // `max_controller_nodes` is the one limit with no lower bound: zero is a
+    // legal budget meaning "no native controllers admitted", which
+    // `within_budget` enforces by rejecting any graph that declares one.
+    // Every other limit rejects zero, so pin both halves of the asymmetry.
+    AnimationBudgetConfig no_controllers = defaults;
+    no_controllers.max_controller_nodes = 0;
+    CHECK(no_controllers.valid(), "zero controller nodes is a legal budget, not an invalid one");
+    AnimationBudgetConfig zero_graph = defaults;
+    zero_graph.max_graph_nodes = 0;
+    CHECK(!zero_graph.valid(), "zero graph nodes is rejected, unlike zero controller nodes");
 
     AnimationBudgetRuntimeStats stats;
     stats.record_fallback(AnimationFallbackReason::SkinVertexBudget);

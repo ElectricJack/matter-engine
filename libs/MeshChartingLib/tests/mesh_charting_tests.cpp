@@ -1,6 +1,9 @@
 #include "../include/mesh_charting.h"
+#include "../src/chart_packing_order.h"
+#include <numeric>
 #include <cstdio>
 #include <cmath>
+#include <limits>
 using namespace mesh_charting;
 static int failures = 0;
 #define CHECK(cond, msg) do { if (!(cond)) { printf("FAIL: %s\n", msg); ++failures; } } while (0)
@@ -40,9 +43,188 @@ static void test_pack_fits() {
     CHECK(pl.size()==2, "placement per chart");
 }
 
+// Non-manifold input must still produce a SYMMETRIC graph. Three triangles
+// share the edge (0,2); the first two to claim it pair up and the third gets
+// no neighbour across it. The old code re-linked the third against the stale
+// first claimant, leaving tri 0 pointing at tri 2 while tri 1 still pointed at
+// tri 0 — a one-way edge that segment_charts flood-fills through in one
+// direction only.
+static void test_adjacency_non_manifold_stays_symmetric() {
+    // Four vertices around the shared edge (v0,v2), three fans off it.
+    float pos[] = {0,0,0,  1,0,0,  1,1,0,  0,1,0,  1,0,1};
+    unsigned int idx[] = {0,1,2,  0,2,3,  0,2,4};
+    auto adj = build_adjacency(pos, idx, 3);
+
+    int oneway = 0, links = 0;
+    for (int t = 0; t < 3; ++t) {
+        for (int e = 0; e < 3; ++e) {
+            const int nb = adj[t].nbr[e];
+            if (nb < 0) continue;
+            ++links;
+            bool back = false;
+            for (int f = 0; f < 3; ++f) if (adj[nb].nbr[f] == t) back = true;
+            if (!back) ++oneway;
+        }
+    }
+    CHECK(oneway == 0, "non-manifold adjacency has no one-way links");
+    CHECK(links == 2, "exactly one pair claims the shared edge (2 half-links)");
+}
+
+static void test_surface_adjacency() {
+    // A bent receiver with duplicated vertices at the UV seam. Atlas-space
+    // proximity is immaterial: these triangles share an actual geometric edge.
+    float pos[] = {0,0,0, 1,0,0, 0,1,0, 1,0,0, 1,1,0.5f, 0,1,0,
+                   0,0,1, 0,0,-1};
+    unsigned int idx[] = {0,1,2, 3,4,5, 1,2,6, 2,1,7};
+    auto adj = build_surface_adjacency(pos, idx, 2);
+    CHECK(adj[0].nbr[1] == 1 && adj[1].nbr[2] == 0,
+          "surface adjacency crosses a bent, UV-split shared edge");
+    CHECK(adj[0].nbr[0] == -1 && adj[0].nbr[2] == -1 &&
+          adj[1].nbr[0] == -1 && adj[1].nbr[1] == -1,
+          "surface adjacency keeps actual outer edges closed");
+    for (int count : {3,4}) {
+        adj = build_surface_adjacency(pos, idx, count);
+        int links = 0;
+        for (const auto& tri : adj) for (int n : tri.nbr) links += n >= 0;
+        CHECK(links == 0, "every claimant of an ambiguous surface edge stays closed");
+    }
+    // The legacy chart segmenter still gets its documented first-pair graph.
+    const auto legacy = build_adjacency(pos, idx, 3);
+    CHECK(legacy[0].nbr[1] == 1 && legacy[1].nbr[2] == 0,
+          "surface policy does not change legacy segmentation adjacency");
+    unsigned int flipped[] = {0,1,2, 3,5,4};
+    adj = build_surface_adjacency(pos, flipped, 2);
+    CHECK(adj[0].nbr[1] == -1 && adj[1].nbr[0] == -1,
+          "same-direction edge claimants do not provide oriented traversal");
+    unsigned int duplicate[] = {0,1,2, 2,1,0};
+    adj = build_surface_adjacency(pos, duplicate, 2);
+    int links = 0;
+    for (const auto& tri : adj) for (int n : tri.nbr) links += n >= 0;
+    CHECK(links == 0, "oppositely wound duplicate triangles are not a receiver connection");
+    pos[3*3] = std::nextafter(1.0f, 2.0f);
+    adj = build_surface_adjacency(pos, idx, 2);
+    CHECK(adj[0].nbr[1] == -1 && adj[1].nbr[2] == -1,
+          "nearby distinct surface edges are not welded by a tolerance");
+    pos[3*3] = 1.0f;
+    pos[4*3+2] = std::numeric_limits<float>::quiet_NaN();
+    adj = build_surface_adjacency(pos, idx, 2);
+    CHECK(adj[0].nbr[1] == -1 && adj[1].nbr[2] == -1,
+          "non-finite triangles cannot create traversal links");
+    unsigned int degenerate[] = {0,1,2, 1,2,1};
+    adj = build_surface_adjacency(pos, degenerate, 2);
+    CHECK(adj[0].nbr[1] == -1 && adj[1].nbr[0] == -1 && adj[1].nbr[1] == -1,
+          "degenerate triangles cannot consume a real surface edge");
+    CHECK(build_surface_adjacency(nullptr, nullptr, 0).empty(),
+          "empty surface adjacency accepts no borrowed arrays");
+
+    std::vector<float> large(65539u*3u, 0.0f);
+    const float quad[] = {0,0,0, 1,0,0, 1,1,0, 0,1,0};
+    for (int i=0; i<12; ++i) large[65535u*3u+i] = quad[i];
+    const unsigned int wide[] = {65535,65536,65537, 65535,65537,65538};
+    adj = build_surface_adjacency(large.data(), wide, 2);
+    CHECK(adj[0].nbr[2] == 1 && adj[1].nbr[0] == 0,
+          "surface adjacency retains vertex indices above 65535");
+}
+
+// Every failure path must leave the outputs empty rather than handing back the
+// last rejected attempt's coordinates.
+static void test_pack_failure_clears_outputs() {
+    // Prime both outputs with junk so a failure that forgets to clear shows up.
+    float scale = 7.5f;
+    std::vector<ChartPlacement> pl = {{11,22},{33,44}};
+
+    std::vector<ChartRect> empty;
+    CHECK(!pack_charts(empty, 64, 64, 2, scale, pl), "an empty chart list fails");
+    CHECK(pl.empty() && scale == 0.0f, "empty-input failure clears both outputs");
+
+    scale = 7.5f; pl = {{11,22}};
+    std::vector<ChartRect> one = {{0,0,1,1}};
+    CHECK(!pack_charts(one, 0, 64, 2, scale, pl), "a zero atlas dimension fails");
+    CHECK(pl.empty() && scale == 0.0f, "bad-dimension failure clears both outputs");
+
+    // Unpackable: a 4-texel atlas with an 8-texel gutter on every side.
+    scale = 7.5f; pl = {{11,22}};
+    CHECK(!pack_charts(one, 4, 4, 8, scale, pl), "a chart larger than the atlas fails");
+    CHECK(pl.empty() && scale == 0.0f, "exhausted-attempts failure clears both outputs");
+}
+
+// The paged packer's success and failure contracts.
+static void test_pack_paged() {
+    std::vector<PagedChartSize> charts = {{100,100},{60,200},{10,10}};
+    int aw = -1, ah = -1;
+    std::vector<PagedChartPlacement> pl;
+    CHECK(pack_charts_paged(charts, 64, 4, 4096, aw, ah, pl), "three charts pack");
+    CHECK(pl.size() == 3, "a placement per chart");
+    bool aligned = aw % 64 == 0 && ah % 64 == 0;
+    for (const auto& p : pl)
+        aligned = aligned && p.x % 64 == 0 && p.y % 64 == 0 &&
+                             p.w % 64 == 0 && p.h % 64 == 0;
+    CHECK(aligned, "atlas and every block are page multiples");
+
+    // A single block wider than the atlas: rejected, outputs cleared.
+    std::vector<PagedChartSize> huge = {{5000,10}};
+    aw = -1; ah = -1; pl = {{1,2,3,4}};
+    CHECK(!pack_charts_paged(huge, 64, 4, 256, aw, ah, pl), "an oversized chart fails");
+    CHECK(pl.empty() && aw == 0 && ah == 0, "paged failure clears its outputs");
+
+    // Empty input is a failure, not a zero-size success.
+    std::vector<PagedChartSize> none;
+    aw = -1; ah = -1; pl = {{1,2,3,4}};
+    CHECK(!pack_charts_paged(none, 64, 4, 256, aw, ah, pl), "an empty chart list fails");
+    CHECK(pl.empty() && aw == 0 && ah == 0, "empty-input paged failure clears outputs");
+}
+
+static void test_portable_packing_order() {
+    int cases=0, forced_heap_cases=0;
+    for (int count : {0,1,2,31,32,33,40,41,42,127,223,1024,4096}) {
+        for (int pattern=0;pattern<6;++pattern) {
+            std::vector<mesh_charting::ChartRect> charts(static_cast<size_t>(count));
+            for (int i=0;i<count;++i) {
+                float height;
+                if (pattern==0) height=static_cast<float>(i+1);
+                else if (pattern==1) height=static_cast<float>(count-i);
+                else if (pattern==2) height=1.0f;
+                else if (pattern==3) height=static_cast<float>(i%7+1);
+                else if (pattern==4) height=static_cast<float>((i*37)%101+1);
+                else height=static_cast<float>((i<count/2?i:count-i)+1);
+                charts[static_cast<size_t>(i)]={0,0,1,height};
+            }
+            for (bool force_heap : {false,true}) {
+                std::vector<int> order(static_cast<size_t>(count));
+                std::iota(order.begin(),order.end(),0);
+                mesh_charting::detail::ChartPackingOrder{charts,order}.sort(0,count,force_heap?0:count);
+                std::vector<bool> seen(static_cast<size_t>(count),false);
+                for (int i=0;i<count;++i) {
+                    const int id=order[static_cast<size_t>(i)];
+                    if (id<0 || id>=count || seen[static_cast<size_t>(id)]) { CHECK(false, "packing order preserves every chart exactly once"); return; }
+                    seen[static_cast<size_t>(id)]=true;
+                    if (i>0 && charts[order[static_cast<size_t>(i-1)]].h<charts[id].h) { CHECK(false, "packing order preserves descending geometric height"); return; }
+                }
+                auto repeat=std::vector<int>(static_cast<size_t>(count));
+                std::iota(repeat.begin(),repeat.end(),0);
+                mesh_charting::detail::ChartPackingOrder{charts,repeat}.sort(0,count,force_heap?0:count);
+                if (order!=repeat) { CHECK(false, "packing order is repeatable"); return; }
+                // The insertion-size path retains equal-key construction order.
+                if (pattern==2 && count<=32) {
+                    for (int i=0;i<count;++i) if(order[static_cast<size_t>(i)]!=i) { CHECK(false, "small equal charts preserve construction order"); return; }
+                }
+                ++cases;
+                if (force_heap && count>32) ++forced_heap_cases;
+            }
+        }
+    }
+    std::printf("PASS: %d generic order/permutation/repeat guards; %d forced worst-case heap cases\n",cases,forced_heap_cases);
+    CHECK(cases==156 && forced_heap_cases==48, "packing-order threshold/fallback coverage stays complete");
+}
+
 int main(){
+    test_portable_packing_order();
     test_adjacency_quad(); test_segment_one_chart();
+    test_adjacency_non_manifold_stays_symmetric();
+    test_surface_adjacency();
     test_plane_basis_orthonormal(); test_pack_fits();
+    test_pack_failure_clears_outputs();
+    test_pack_paged();
     if(!failures) printf("All mesh_charting tests passed\n");
     return failures?1:0;
 }

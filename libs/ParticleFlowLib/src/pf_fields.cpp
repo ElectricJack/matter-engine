@@ -1,3 +1,26 @@
+// libs/ParticleFlowLib/src/pf_fields.cpp
+//
+// Where every `FieldType` is actually evaluated. Two entry points,
+// `field_steer_dir` and `field_force`, are called once per field per live
+// particle per tick from `Sim::integrate_slot` in `pf_sim.cpp`. They are
+// deliberately NOT declared in `particle_flow.h` — `pf_sim.cpp` forward-declares
+// them, so this pair is a private cross-TU contract between the two files.
+//
+// Return convention: both return a direction/force in world space, and BOTH
+// return {0,0,0} to mean "this field has nothing to say right now" — no
+// neighbors in range, wrong mode for this type, nothing to attract to. A zero
+// contribution is a normal outcome, never an error; the caller sums the
+// weighted results and normalizes, so a zero simply drops out.
+//
+// Type/mode coverage (a type absent from a switch silently contributes zero):
+//   field_steer_dir: Bias, Curl, Adhere, Align, Separate.
+//   field_force:     Bias, Curl, Drag.
+//   Attract is neither — it lives in `Sim::attract_dir` below because it
+//   mutates sim state (consumes attractors, can kill the particle).
+//
+// The neighborhood fields read `Sim::deposited_hash()` / `Sim::live_hash()`
+// only; they never touch particle arrays other than through the accessors, and
+// none of them allocate.
 #include "particle_flow.h"
 #include <cmath>
 
@@ -7,6 +30,11 @@ namespace pf {
 // Seeded value noise + curl. Divergence-free steering from the curl of a
 // 3-component value-noise vector potential (finite differences).
 // ---------------------------------------------------------------------------
+// Integer lattice hash -> [0,1) from the top 24 bits of a scrambled word. Not a
+// quality hash and not cryptographic; it only has to decorrelate neighboring
+// lattice cells. The exact multipliers ARE part of the library's determinism
+// contract — changing any of them re-rolls every curl field and invalidates
+// every cached bake that used one.
 static float hash01(uint32_t seed, int x, int y, int z) {
     uint32_t h = seed;
     h ^= (uint32_t)x * 0x8DA6B343u;
@@ -16,6 +44,9 @@ static float hash01(uint32_t seed, int x, int y, int z) {
     return (float)(h & 0xFFFFFFu) * (1.0f / 16777216.0f);
 }
 
+// Trilinear value noise on the integer lattice with a smoothstep fade, output
+// in [0,1). One unit of `p` is one lattice cell — callers scale `p` themselves
+// (see `curl_noise`). No octaves: this is a single frequency.
 static float vnoise(uint32_t seed, V3 p) {
     int x0 = (int)std::floor(p.x), y0 = (int)std::floor(p.y), z0 = (int)std::floor(p.z);
     float fx = p.x - x0, fy = p.y - y0, fz = p.z - z0;
@@ -35,12 +66,25 @@ static float vnoise(uint32_t seed, V3 p) {
     return y0v + (y1v - y0v) * fz;
 }
 
+// Three decorrelated value-noise fields as the components of a vector
+// potential. The three seed constants are what keep the components independent;
+// reusing one seed for all three would make the curl collapse.
 static V3 potential(uint32_t seed, V3 p) {
     return { vnoise(seed ^ 0x9E3779B9u, p),
              vnoise(seed ^ 0x85EBCA6Bu, p),
              vnoise(seed ^ 0xC2B2AE35u, p) };
 }
 
+// Curl of the vector potential by central differences, then normalized —
+// callers get a DIRECTION only, so `FieldConfig::weight` is the sole intensity
+// control. Taking a curl is what makes the flow divergence-free, i.e. particles
+// swirl instead of piling into sources and sinks.
+//
+// `scale` divides the sample position, so larger `scale` = larger, slower
+// features. The finite-difference epsilon is fixed at 0.05 in SCALED units, so
+// it stays proportional to the feature size as `scale` changes. Six `potential`
+// evaluations (= 18 `vnoise`, = 144 `hash01`) per call: this is by a wide
+// margin the most expensive field per particle.
 static V3 curl_noise(uint32_t seed, V3 p, float scale) {
     const float inv = scale > 1e-6f ? 1.0f / scale : 1.0f;
     p = p * inv;
@@ -64,6 +108,15 @@ static V3 slot_p(const Sim& s, uint32_t i) {
     return {p[3*i], p[3*i+1], p[3*i+2]};
 }
 
+// Steer toward a target hovering `surface_offset` outside the deposited cloud:
+// take the centroid of deposits within `radius`, treat (p - centroid) as the
+// outward surface normal, and aim at centroid + normal * surface_offset. A
+// positive `surface_offset` therefore rides just outside existing structure
+// rather than burrowing into it.
+//
+// Two ways this yields no steering, both normal: no deposits in range, and a
+// particle sitting exactly at the centroid of a symmetric neighborhood (the
+// normal degenerates and `normalize` returns zero).
 static V3 adhere_dir(const Sim& s, const FieldConfig& f, V3 p) {
     V3 sum{0,0,0}; uint32_t n = 0;
     s.deposited_hash().query(p, f.radius, [&](uint32_t, V3 q, float) {
@@ -89,6 +142,14 @@ static V3 align_dir(const Sim& s, const FieldConfig& f, V3 p) {
     return normalize(sum);
 }
 
+// Inverse-square-weighted push away from LIVE neighbors (not deposits) within
+// `radius`, skipping the particle itself by slot. The accumulated push is
+// normalized before returning, so crowding changes the direction but never the
+// strength — density is not a magnitude here.
+//
+// The live hash holds start-of-tick positions (see `Sim::step`), so neighbors
+// integrated earlier this tick are seen where they were, not where they now
+// are. That is deliberate: it makes separation order-independent.
 static V3 separate_dir(const Sim& s, const FieldConfig& f, uint32_t slot, V3 p) {
     V3 push{0,0,0}; uint32_t n = 0;
     s.live_hash().query(p, f.radius, [&](uint32_t idx, V3 q, float d2) {
@@ -101,6 +162,9 @@ static V3 separate_dir(const Sim& s, const FieldConfig& f, uint32_t slot, V3 p) 
     return normalize(push);
 }
 
+// Steer-mode dispatch. Returns a (usually unit) direction, or zero for "no
+// contribution". `Bias` normalizes `f.dir` on every call rather than requiring
+// the caller to pre-normalize, so an unnormalized `dir` is fine.
 V3 field_steer_dir(const Sim& s, const FieldConfig& f, uint32_t slot) {
     switch (f.type) {
         case FieldType::Bias:     return normalize(f.dir);
@@ -112,6 +176,13 @@ V3 field_steer_dir(const Sim& s, const FieldConfig& f, uint32_t slot) {
     }
 }
 
+// Force-mode dispatch. Only Bias, Curl and Drag exist here — configuring
+// Adhere, Align, Separate or Attract with `FieldMode::Force` falls through to
+// zero and silently disables that field, with no diagnostic.
+//
+// Drag returns -k * velocity, so `k` is a per-tick damping coefficient in
+// inverse-time units; the caller multiplies by `dt` when integrating, and a
+// `k * dt` at or above 1 overshoots into oscillation.
 V3 field_force(const Sim& s, const FieldConfig& f, uint32_t slot) {
     switch (f.type) {
         case FieldType::Bias: return normalize(f.dir);
@@ -127,11 +198,33 @@ V3 field_force(const Sim& s, const FieldConfig& f, uint32_t slot) {
 // ---------------------------------------------------------------------------
 // Sim members that need attractor mutation / deposited queries
 // ---------------------------------------------------------------------------
-V3 Sim::attract_dir(uint32_t slot, V3 p) {
-    const FieldConfig* fc = nullptr;
-    for (const auto& f : cfg_.fields)
-        if (f.type == FieldType::Attract) { fc = &f; break; }
-    if (!fc || attr_remaining_ == 0) return {0,0,0};
+// Attract steering. Lives here rather than in `field_steer_dir` because it
+// MUTATES the sim: reaching an attractor marks it consumed, decrements
+// `attr_remaining_`, and — with `kill_on_consume` — kills the calling slot.
+// `Sim::integrate_slot` re-tests `alive_[i]` immediately after the field loop
+// for exactly that reason.
+//
+// Two paths. A slot with a live claim (see `claim_attractor`) beelines to its
+// claimed target regardless of `influence`; everything else takes the nearest
+// unconsumed, unclaimed attractor inside `influence`, by linear scan with
+// ascending index as the deterministic tie-break.
+//
+// `f` is the Attract field CURRENTLY being evaluated, passed down from
+// `Sim::integrate_slot`, so `influence`, `kill_radius` and `kill_on_consume`
+// are the ones that field was configured with. (It used to search `cfg_.fields`
+// for the first Attract entry and use that one's parameters no matter which
+// field index was being evaluated, which made every Attract field past the
+// first behave like the first.)
+//
+// Note that the attractor ARRAY is still shared by every Attract field — there
+// is one set of attractors per Sim, not one per field — so two Attract fields
+// compete for the same targets and whichever evaluates first consumes them.
+//
+// Returns zero on: nothing left to attract to, nothing in range, or the tick
+// the attractor is consumed.
+V3 Sim::attract_dir(const FieldConfig& f, uint32_t slot, V3 p) {
+    const FieldConfig* fc = &f;
+    if (attr_remaining_ == 0) return {0,0,0};
     int best = -1; float best_d2;
     if (claim_of_[slot] != UINT32_MAX && !attr_consumed_[claim_of_[slot]]) {
         // Claimed target: beeline regardless of influence radius.
@@ -161,6 +254,11 @@ V3 Sim::attract_dir(uint32_t slot, V3 p) {
     return normalize(attractors_[best] - p);
 }
 
+// The same centroid-based normal estimate `adhere_dir` uses, exposed for
+// scripts: outward from the deposited neighborhood's centroid toward `p`.
+// `*ok` is set false (and zero returned) when no deposits lie within `radius`;
+// `ok` may be null. Note the estimate also degenerates to zero when `p` sits at
+// the centroid, and that case still reports ok = true.
 V3 Sim::surface_normal(V3 p, float radius, bool* ok) const {
     V3 sum{0,0,0}; uint32_t n = 0;
     dep_hash_.query(p, radius, [&](uint32_t, V3 q, float) { sum = sum + q; ++n; });

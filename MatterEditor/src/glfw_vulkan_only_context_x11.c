@@ -1,3 +1,9 @@
+// MatterEditor/src/glfw_vulkan_only_context_x11.c
+//
+// Compiled into the Linux editor target only (MatterEditor/Makefile appends it
+// to GLFW_LINUX_OBJ). Windows uses glfw_vulkan_only_context.c instead — the
+// two are never linked together.
+
 #include "internal.h"
 
 // Linux/X11 counterpart to glfw_vulkan_only_context.c (see that file for the

@@ -1,3 +1,23 @@
+// MatterEditor/src/lod_inspector.cpp
+//
+// LodInspector's drawing half. lod_inspector.h carries the design context
+// (part-workbench.md SS-I.5 / W4) and the contract for all three methods; this
+// file is the ImGui.
+//
+// Everything on screen is queried FRESH from matter::WorldSession every frame —
+// part_lod_level_count/part_lod_level_info per row, then
+// part_child_summary_count/part_child_summary per child row. Nothing is cached
+// between frames, so a bake that publishes new LOD data shows up on the next
+// draw with no invalidation step, at the cost of a query per row per frame.
+// A query that returns false renders "--" rather than a stale or invented
+// number.
+//
+// The inspector writes only its own two toggles; PartWorkbench copies them onto
+// matter::RenderOptions (apply()) before the isolation session's next render.
+// Nothing here can affect a bake.
+//
+// ImGui/main thread only.
+
 #include "lod_inspector.h"
 
 #include "imgui.h"
@@ -16,6 +36,11 @@ void LodInspector::apply(matter::RenderOptions& opts) const {
     opts.hide_child_instances = hide_child_instances_;
 }
 
+// Draws the section and, as a side effect, keeps the debug overrides honest:
+// the part-hash change check runs BEFORE the null/zero early-outs, so closing
+// a part (hash 0) resets the toggles just as switching to a different part
+// does. Every early-out below still leaves a visible explanation on screen
+// rather than an empty section.
 void LodInspector::draw(matter::WorldSession* session, uint64_t part_hash) {
     ImGui::SeparatorText("LOD Inspector");
 

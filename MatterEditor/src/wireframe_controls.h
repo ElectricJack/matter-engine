@@ -1,14 +1,38 @@
 #ifndef VIEWER_WIREFRAME_CONTROLS_H
 #define VIEWER_WIREFRAME_CONTROLS_H
 
+// MatterEditor/src/wireframe_controls.h
+//
+// The wireframe debug view's decision logic, kept apart from the UI that
+// triggers it. Three inputs reach one output:
+//   - the Debug View panel's "Wireframe overlay" checkbox,
+//   - the debug-view combo's own "Wireframe" entry (the persistable single-int
+//     form that shot descriptors and issue state.json store),
+//   - the console / MATTER_CMD_FIFO `wireframe [on|off|toggle]` verbs,
+// all resolving to RenderOptions::wireframe via resolve_wireframe_request.
+//
+// The invariant both functions exist to enforce: a device without
+// VK_POLYGON_MODE_LINE (fillModeNonSolid) can never be left claiming a
+// wireframe view. Availability is a device fact passed in by the caller, not a
+// preference, and it FAILS CLOSED at both entry points.
+//
+// Header-only, dependency-free (`<string_view>` and nothing else), pure and
+// noexcept — no ImGui, no Vulkan, no engine types — so the truth table is
+// unit-testable. It is: MatterEngine3/tests/vk_scene_renderer_tests.cpp.
+// The live caller is MatterEditor/src/main.cpp, which reads the editor state
+// each frame and writes the result into RenderOptions.
+
 #include <string_view>
 
 namespace viewer {
 
+// Outcome of a console/FIFO `wireframe ...` line. The caller prints a
+// different message for each, which is why "the device cannot do this" is a
+// separate value from "applied" rather than a silently ignored request.
 enum class WireframeConsoleCommandResult {
-    Unrecognized,
-    Unavailable,
-    Applied,
+    Unrecognized,  // not a wireframe verb at all; try the next parser
+    Unavailable,   // recognized, but the device cannot; the flag was CLEARED
+    Applied,       // the flag now holds what the line asked for
 };
 
 // Applies the legacy FIFO verbs to the same session-local flag the Debug View

@@ -5,6 +5,26 @@
 // Two surfaces live here: the full-screen selection overlay you drag a box on
 // after F9 (drawn over the frozen frame, so an animating scene cannot slide out
 // from under the selection), and the report window that accumulates the shots.
+//
+// Nothing here does file IO, reads back pixels or touches a texture — main.cpp
+// owns all of that. This file only draws, and communicates by setting fields on
+// IssueReporterState, which main.cpp acts on later in the same frame. The phase
+// machine it drives:
+//
+//   Idle             nothing on screen
+//   AwaitingCapture  set by begin_*_capture; the window has hidden itself and
+//                    `capture_settle` frames are counted down so the dialog is
+//                    out of its own evidence. draw_issue_reporter draws NOTHING
+//                    in this phase — main.cpp does the readback.
+//   SelectingRegion  main.cpp has the frozen frame; the overlay below runs
+//                    until a drag, Enter or Escape resolves it. Committing sets
+//                    `selection_committed`, which is main.cpp's cue to crop the
+//                    frozen buffer and write the PNG.
+//   Editing          the report window is up and shots accumulate.
+//
+// Two coordinate spaces are in play: ImGui display coordinates (what the mouse
+// and the draw lists use) and framebuffer pixels (what a crop must be
+// expressed in). Every rect stored on the state goes through to_framebuffer().
 #include "issue_reporter.h"
 
 #include <algorithm>
@@ -16,6 +36,11 @@ namespace viewer {
 
 namespace {
 
+// ImGui display coordinates -> framebuffer pixels. The two differ whenever the
+// swapchain is not the same size as the display size ImGui was handed, so a
+// crop derived from mouse positions must be converted before it is stored or
+// the shot is cropped in the wrong place. Falls back to 1:1 on a zero-sized
+// display rather than dividing by zero.
 ImVec2 to_framebuffer(const ImVec2& point, uint32_t frame_width,
                       uint32_t frame_height) {
     const ImVec2 display = ImGui::GetIO().DisplaySize;
@@ -200,6 +225,9 @@ void begin_region_capture(IssueReporterState& state) {
     state.pending_rect = ShotRect{};
 }
 
+// F10. Same two-frame settle as the region path, but with no drag step: the
+// phase goes straight from AwaitingCapture to a recorded shot, and the empty
+// pending_rect means main.cpp crops to the live viewport rect at readback time.
 void begin_viewport_capture(IssueReporterState& state) {
     state.window_open = false;
     state.phase = ReporterPhase::AwaitingCapture;
@@ -213,6 +241,14 @@ bool issue_reporter_wants_mouse(const IssueReporterState& state) {
     return state.phase == ReporterPhase::SelectingRegion;
 }
 
+// Draws whichever surface the current phase calls for, and returns true on the
+// single frame "File report" was pressed — the caller does the actual writing.
+// "Discard" cannot clean up here either (main.cpp owns the preview textures),
+// so it just drops back to Idle and closes the window, which is the signal.
+//
+// Removing a shot only drops the list entry: the PNG stays on disk and its
+// preview texture stays alive, because freeing a descriptor set from inside the
+// UI pass would pull it out from under this frame's unsubmitted draw list.
 bool draw_issue_reporter(IssueReporterState& state, uint32_t frame_width,
                          uint32_t frame_height) {
     if (state.phase == ReporterPhase::AwaitingCapture) return false;

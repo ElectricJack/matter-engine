@@ -22,6 +22,7 @@
 #include <unistd.h>
 
 #include "portable_realpath.h"
+#include "test_sandbox.h"
 
 using namespace part_graph;
 
@@ -41,8 +42,9 @@ int main() {
     const std::string schemas    = abspath("../../projects/world_demo/objects");
     const std::string shared_lib = abspath("../shared-lib");
 
-    const std::string sandbox = "/tmp/me3_tree_bake";
-    system(("mkdir -p " + sandbox + "/parts").c_str());
+    // Deliberately NOT wiped (see the header comment): a second run must find
+    // the warm cache this one leaves behind.
+    const std::string sandbox = ensure_sandbox("sandbox/me3_tree_bake");
     if (chdir(sandbox.c_str()) != 0) { printf("FAIL: chdir sandbox\n"); return 1; }
 
     script_host::ScriptHost host;
@@ -62,12 +64,25 @@ int main() {
         printf("[baked] %016llx tris=%zu children=%zu\n",
                (unsigned long long)h, tris == SIZE_MAX ? 0 : tris, kids);
     }
-    if (!ir.root_hashes.empty()) {
-        size_t kids = 0;
-        size_t tris = load_tri_count(ir.root_hashes[0], kids);
-        printf("[root Tree] %016llx tris=%zu children=%zu (expect tris=0, an assembler)\n",
-               (unsigned long long)ir.root_hashes[0],
-               tris == SIZE_MAX ? 0 : tris, kids);
+    if (ir.root_hashes.empty() || ir.root_hashes[0] == 0) {
+        printf("FAIL: install produced no root hash for Tree\n");
+        return 1;
+    }
+    size_t kids = 0;
+    size_t tris = load_tri_count(ir.root_hashes[0], kids);
+    if (tris == SIZE_MAX) {
+        printf("FAIL: root Tree artifact did not load back\n");
+        return 1;
+    }
+    // Tree grows its own trunk geometry (particle-flow) AND places Leaf /
+    // TreeBranch children, so both counts are non-zero. It was a geometry-less
+    // assembler when this harness was written; the assertion is on the pair
+    // being non-empty rather than on either count staying at a fixed value.
+    printf("[root Tree] %016llx tris=%zu children=%zu\n",
+           (unsigned long long)ir.root_hashes[0], tris, kids);
+    if (tris == 0 && kids == 0) {
+        printf("FAIL: root Tree baked neither geometry nor children\n");
+        return 1;
     }
     return 0;
 }

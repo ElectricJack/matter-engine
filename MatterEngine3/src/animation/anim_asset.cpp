@@ -1,3 +1,54 @@
+// MatterEngine3/src/animation/anim_asset.cpp
+//
+// Reader/writer for the `MANM` animation asset file (`<hash>.anim` in the
+// cache's `parts/` directory). This is the *container* layer only: it knows
+// the file layout and the integrity rules, and treats every section payload
+// as opaque bytes. The payload formats live elsewhere —
+// `animation_binding_bake.cpp` owns the GBND/IBND/CBND/RBND/ABND sections,
+// and the Ozz skeleton/clip sections are produced by the animation compiler.
+//
+// File layout (all integers little-endian):
+//
+//   offset  size  field
+//   0       4     magic 'M','A','N','M'
+//   4       4     kAnimFormatVersion
+//   8       4     kAnimationSchemaVersion
+//   12      4     kAnimationBakeEpoch
+//   16      8     resolved_hash
+//   24      8     nonce.high
+//   32      8     nonce.low
+//   40      4     target_abi_tag
+//   44      4     ozz_tag_hash
+//   48      4     section count
+//   52      8     section-table offset (always 68 == kHeaderBytes)
+//   60      8     whole-file FNV-1a checksum
+//   68      n*20  section table: u32 kind, u64 offset, u64 length
+//   ...           section payloads, in table order
+//
+// The checksum at offset 60 covers the entire file with those 8 bytes
+// treated as zero, so it can be written in place after the rest is laid out
+// and recomputed identically on load.
+//
+// Integrity rules enforced on both save and load:
+//  - All ten `AnimSectionKind` values must be present exactly once
+//    (`required_sections`); a partial asset is rejected rather than repaired.
+//  - format/schema/epoch must equal the constants this build was compiled
+//    with — an older binary refuses a newer asset instead of silently
+//    dropping sections it does not understand.
+//  - Section ranges must lie after the table, must not overflow, and must
+//    not overlap. Entries are sorted by offset before the overlap check, so
+//    the loaded `sections` vector comes back in file order (which equals the
+//    order they were written in).
+//  - On any failure `load_anim` leaves `a` cleared and adds an `anim.*`
+//    diagnostic code; a `false` return is always accompanied by a diagnostic.
+//
+// Writes go through `save_anim_candidate`, which writes a *candidate* file
+// (not the published path) and fsyncs it. Promotion to the live path, and
+// the sibling part/manifest transaction around it, are `anim_bundle.cpp`'s
+// job — nothing here publishes anything.
+//
+// No threading rules are enforced here: the functions are free functions
+// over caller-owned buffers and file paths, and hold no shared state.
 #include "animation/anim_asset.h"
 
 #include <algorithm>
@@ -13,6 +64,9 @@
 
 namespace matter::animation {
 namespace {
+// Fixed header size, and the per-entry size of the section table
+// (u32 kind + u64 offset + u64 length). Both are part of the on-disk format:
+// changing either requires a kAnimFormatVersion bump.
 constexpr size_t kHeaderBytes = 68;
 constexpr size_t kSectionBytes = 20;
 uint64_t fnv(const uint8_t* p, size_t n) { uint64_t h = 1469598103934665603ull; for (size_t i=0;i<n;++i) { h ^= p[i]; h *= 1099511628211ull; } return h; }
@@ -30,6 +84,10 @@ bool durable_flush(FILE* file) {
     return fsync(fileno(file)) == 0;
 #endif
 }
+// True only when every one of the ten `AnimSectionKind` values appears
+// exactly once. Duplicates, unknown kinds (0 or >10) and omissions all fail:
+// the schema treats a partially populated asset as corrupt, not as a
+// degraded-but-usable one.
 bool required_sections(const std::vector<AnimSection>& sections) {
     uint32_t seen = 0;
     for (const auto& section : sections) {
@@ -43,6 +101,12 @@ bool required_sections(const std::vector<AnimSection>& sections) {
 }
 }
 
+// Fresh 128-bit nonce identifying one bake run, drawn from
+// `std::random_device`. Guaranteed non-zero, because all-zero is the
+// "unset" sentinel that `publish_animation_bundle` /
+// `load_committed_animation_bundle` reject. The nonce is what ties a part
+// file, its `.anim` sibling and the commit manifest to the same bake, so a
+// half-updated triple cannot be mistaken for a coherent one.
 BuildNonce generate_build_nonce() {
     std::random_device entropy;
     BuildNonce nonce{(uint64_t(entropy()) << 32) ^ entropy(),
@@ -54,8 +118,24 @@ BuildNonce generate_build_nonce() {
 std::filesystem::path cache_path_anim(const std::filesystem::path& root, uint64_t h) { char x[32]; std::snprintf(x,sizeof x,"%016llx.anim",static_cast<unsigned long long>(h)); return root / "parts" / x; }
 std::filesystem::path cache_path_anim_commit(const std::filesystem::path& root, uint64_t h) { auto p=cache_path_anim(root,h); return p.string()+".commit"; }
 
+// FNV-1a over the section list only (kind, length and bytes of each section,
+// in vector order) — deliberately NOT over the file, so it is independent of
+// the header, of the nonce, and of the section-table offsets. This is the
+// value stored in `BundleIdentity::anim_body_checksum` and re-derived by the
+// publish/load validators from the in-memory asset.
+// Note it is order-sensitive: it hashes `a.sections` as given.
 uint64_t anim_body_checksum(const AnimAsset& a) { std::vector<uint8_t> b; for (const auto& s:a.sections) { u32(b,uint32_t(s.kind)); u64(b,s.bytes.size()); b.insert(b.end(),s.bytes.begin(),s.bytes.end()); } return fnv(b.data(),b.size()); }
 
+// Serialize `a` to `path` and fsync it (`durable_flush`), creating parent
+// directories as needed. `path` is expected to be a *candidate* path that
+// some later step renames into place — this function never touches the
+// published `<hash>.anim`.
+//
+// Fails (and adds one of `anim.sections` / `anim.offset_overflow` /
+// `anim.header_layout` / `anim.write`) if the section set is incomplete, if
+// the payload offsets would overflow 64 bits, or if any file operation
+// fails. A failed write may leave a partial file behind; the caller is
+// responsible for not promoting it.
 bool save_anim_candidate(const AnimAsset& a, const std::filesystem::path& path, Diagnostics& d) {
     if (a.sections.size() > UINT32_MAX || !required_sections(a.sections)) { fail(d,"anim.sections"); return false; }
     std::vector<uint8_t> table, payload;
@@ -78,6 +158,17 @@ bool save_anim_candidate(const AnimAsset& a, const std::filesystem::path& path, 
     std::error_code ec; std::filesystem::create_directories(path.parent_path(),ec); FILE* f=std::fopen(path.string().c_str(),"wb"); if(!f){fail(d,"anim.write");return false;} const bool ok=std::fwrite(out.data(),1,out.size(),f)==out.size() && durable_flush(f); const bool closed=std::fclose(f)==0; if(!ok || !closed) fail(d,"anim.write"); return ok && closed;
 }
 
+// Read and fully validate a `MANM` file into `a`. Reads the whole file into
+// memory in one shot (sized by ftell), so cost is O(file size) in both time
+// and peak RAM.
+//
+// `a` is cleared on entry and left cleared on failure, so a `false` return
+// never yields a half-populated asset. Failure reasons are reported as
+// diagnostic codes: `anim.open`/`anim.read`/`anim.truncated` (I/O or short
+// file), `anim.magic`, `anim.version` (built by a different
+// format/schema/epoch — the normal "needs rebake" outcome, not corruption),
+// `anim.section_table`/`anim.section_range`/`anim.section_overlap`, and
+// `anim.checksum`.
 bool load_anim(const std::filesystem::path& path, AnimAsset& a, Diagnostics& d) {
     a={}; FILE* f=std::fopen(path.string().c_str(),"rb"); if(!f){fail(d,"anim.open");return false;} std::fseek(f,0,SEEK_END); long size=std::ftell(f); std::fseek(f,0,SEEK_SET); if(size < long(kHeaderBytes)){std::fclose(f);fail(d,"anim.truncated");return false;} std::vector<uint8_t> b(static_cast<size_t>(size)); bool read=std::fread(b.data(),1,b.size(),f)==b.size();std::fclose(f);if(!read){fail(d,"anim.read");return false;}
     if(std::memcmp(b.data(),"MANM",4)!=0){fail(d,"anim.magic");return false;} size_t p=4; uint32_t format=0,schema=0,epoch=0,abi=0,ozz=0,count=0; uint64_t table=0,checksum=0;

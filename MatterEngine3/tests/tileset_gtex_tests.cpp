@@ -43,6 +43,7 @@ static float horizon_sin_reference(const std::function<float(float, float)>& hei
 }
 
 #include "check.h"
+#include "test_sandbox.h"
 #include "version_vector.h"   // M4: the version vector under test
 static int g_pass = 0;
 #undef CHECK
@@ -50,9 +51,14 @@ static int g_pass = 0;
     if (!(cond)) { std::fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); ++g_failures; } \
     else { ++g_pass; } } while (0)
 
+// Scratch files for the round-trip cases. A hardcoded "/tmp/..." is a POSIX
+// assumption -- on Windows it resolves to <current drive>:	mp, which exists
+// only by accident -- so this roots them under the test working directory
+// (test_sandbox.h). The directory is wiped once per run, which is what the pid
+// in the old name was for.
 static std::string tmp_path(const char* leaf) {
-    char buf[256]; std::snprintf(buf, sizeof(buf), "/tmp/gtex_test_%d_%s", (int)getpid(), leaf);
-    return buf;
+    static const std::string root = make_sandbox("sandbox/gtex_tests", {});
+    return root + "/" + leaf;
 }
 
 int main() {

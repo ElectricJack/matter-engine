@@ -1,3 +1,36 @@
+// tileset_bake.cpp — the tileset settle stage.
+//
+// Implements everything declared in tileset_bake.h. Read that header first: it
+// carries the instance-ordering contract, the torus conventions and the
+// lifetime rule for `SettlePlan::colliders`, all of which this file depends on
+// and none of which are repeated here.
+//
+// The file is four sections, in order:
+//   1. Local helpers -- `mat_to_pose` (a dropChild's 4x4 row-major transform
+//      into a `Pose`, rejecting non-uniform scale) and `base_height` (sampling
+//      the authored per-tile base heightfield).
+//   2. `build_settle_plan` -- spec to plan. Torus heightfield, collider
+//      memoization (a base fit per (hash, override), then a scaled fit per
+//      (hash, override, scale)), shared drops, then each script layer:
+//      physics layers become `BodySpawn`s, non-physics layers are snapped to
+//      the base analytically here and never see the simulator.
+//   3. `settle_tileset` -- register sync groups, settle drops as one batch,
+//      settle each physics layer in declaration order, finalize, then read the
+//      poses back in exactly the contracted instance order. Instrumented with
+//      Bake Lab spans/counters (`BAKE_SPAN` / `BAKE_COUNT`), which are no-ops
+//      without a collector.
+//   4. The settle cache -- plain little-endian binary, written to a `.tmp` and
+//      renamed. Load is fail-closed: every count is validated against the
+//      remaining file bytes before a resize, and any inconsistency is reported
+//      as a miss (false), never as an error and never as a throw.
+//
+// A NOTE ON POSE READBACK. `settle_tileset` walks `world.poses()` with a single
+// running index and assumes it is laid out drops-then-layers in spawn order --
+// i.e. that the plan's `drop_provs` and each `LayerPlan::provs` are exactly
+// parallel to the spawns handed to `settle_layer`. That parallelism is the
+// invariant that keeps `child_hash`/`scale`/`layer` attached to the right pose;
+// anything that reorders spawns must reorder the provenance vectors with them.
+
 #include "tileset_bake.h"
 #include "tileset_layout.h"
 #include "tileset_part_collider.h"
@@ -11,7 +44,9 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <optional>
 #include <fstream>
+#include <sstream>
 #include <map>
 #include <sstream>
 #include <string>
@@ -109,6 +144,11 @@ static bool mat_to_pose(const float m[16], Pose& out, std::string& err)
 // ---------------------------------------------------------------------------
 // Sample the tiled base heightfield at world (x, z).
 // ---------------------------------------------------------------------------
+// `tile_size` is ONE tile's edge in metres (cfg.size), not the torus edge: the
+// base grid is per-tile and repeats, so world coordinates are folded modulo one
+// tile before lookup. Nearest-neighbour, not interpolated. Returns 0 for a
+// tileset that never called `base()`, which is the flat-ground case rather than
+// an error.
 static float base_height(const BaseField& base, float x, float z, float tile_size)
 {
     if (!base.set) return 0.0f;
@@ -225,7 +265,7 @@ bool build_settle_plan(const TilesetSpec& spec, const BakeInputs& in,
 
     // Pre-load colliders for drops.
     for (const auto& dr : spec.drops) {
-        if (!get_base_collider(dr.child_hash, "", "drop")) return false;
+        if (dr.physics && !get_base_collider(dr.child_hash, "", "drop")) return false;
     }
     // Pre-load colliders for all layers.
     for (const auto& ls : spec.layers) {
@@ -251,11 +291,25 @@ bool build_settle_plan(const TilesetSpec& spec, const BakeInputs& in,
 
     std::vector<BodySpawn>& drop_spawns = out.drop_spawns;
     std::vector<SpawnProv>& drop_provs  = out.drop_provs;
+    SettlePlan::LayerPlan fixed_drops;
+    fixed_drops.module = "fixed surface stamps";
+    fixed_drops.physics = false;
 
     for (const auto& dr : spec.drops) {
         // Parse the transform matrix into a spawn pose.
         Pose spawn_pose;
         if (!mat_to_pose(dr.transform, spawn_pose, err)) return false;
+
+        if (!dr.physics) {
+            for (int row = 0; row < kTorusN; ++row) for (int col = 0; col < kTorusN; ++col) {
+                NonPhysInst ni;
+                ni.child_hash = dr.child_hash;
+                ni.pose = spawn_pose;
+                ni.pose.px += col * T; ni.pose.pz += row * T;
+                fixed_drops.nonphys.push_back(ni);
+            }
+            continue;
+        }
 
         // 16 occurrence frames: one per tile (row r, col c).
         std::vector<Pose> frames;
@@ -287,6 +341,8 @@ bool build_settle_plan(const TilesetSpec& spec, const BakeInputs& in,
             drop_provs.push_back(pv);
         }
     }
+
+    if (!fixed_drops.nonphys.empty()) out.layers.push_back(std::move(fixed_drops));
 
     // ---- Step 4: per script layer -----------------------------------------------
     int layer_idx = 0;
@@ -493,7 +549,16 @@ bool settle_tileset(const TilesetSpec& spec, const BakeInputs& in,
     // (Named so the trace `ticks` counter below can derive tick counts from
     // sim_time / dt; previously an unnamed SettleParams{} temporary.)
     const SettleParams settle_params{};
-    SettleWorld world(plan.torus_size, plan.hf, settle_params);
+    // Analytic placement already produced final transforms in the plan.
+    // Instantiate physics only when at least one body actually needs it;
+    // an empty layer with physics enabled still needs no simulation world.
+    const bool needs_physics = !plan.drop_spawns.empty() ||
+        std::any_of(plan.layers.begin(), plan.layers.end(),
+                    [](const SettlePlan::LayerPlan& layer) {
+                        return !layer.spawns.empty();
+                    });
+    std::optional<SettleWorld> world;
+    if (needs_physics) world.emplace(plan.torus_size, plan.hf, settle_params);
 
     // Bake Lab task 1.5 (docs/bake-lab.md §II.1): one kSpanSettleLayer per
     // batch that actually settles (the shared-drops batch, then each physics
@@ -514,13 +579,15 @@ bool settle_tileset(const TilesetSpec& spec, const BakeInputs& in,
     // not spawned yet are inert (sync_groups_step skips groups with fewer
     // members than occurrence frames), so registering them all upfront is
     // behavior-identical to the previous interleaved registration.
-    for (const auto& frames : plan.sync_group_frames)
-        world.add_sync_group(frames);
+    if (world) {
+        for (const auto& frames : plan.sync_group_frames)
+            world->add_sync_group(frames);
+    }
 
     // Settle all drops in one batch.
     if (!plan.drop_spawns.empty()) {
         BAKE_SPAN(bake_trace::kSpanSettleLayer);
-        LayerResult drop_result = world.settle_layer(plan.drop_spawns);
+        LayerResult drop_result = world->settle_layer(plan.drop_spawns);
         count_layer(plan.drop_spawns.size(), drop_result);
         if (!drop_result.converged) out.report.converged_all = false;
     }
@@ -529,7 +596,7 @@ bool settle_tileset(const TilesetSpec& spec, const BakeInputs& in,
     for (const auto& lp : plan.layers) {
         if (!lp.spawns.empty()) {
             BAKE_SPAN(bake_trace::kSpanSettleLayer);
-            LayerResult lr = world.settle_layer(lp.spawns);
+            LayerResult lr = world->settle_layer(lp.spawns);
             count_layer(lp.spawns.size(), lr);
             out.report.layers.push_back(lr);
             if (!lr.converged) out.report.converged_all = false;
@@ -542,9 +609,12 @@ bool settle_tileset(const TilesetSpec& spec, const BakeInputs& in,
     }
 
     // ---- Finalize and read back poses -------------------------------------------
-    world.finalize();
-    const std::vector<Pose>& phys_poses = world.poses();
-    out.report.pose_hash = world.pose_hash();
+    if (world) world->finalize();
+    const std::vector<Pose> empty_phys_poses;
+    const std::vector<Pose>& phys_poses = world ? world->poses() : empty_phys_poses;
+    // Preserve SettleWorld::pose_hash()'s FNV-1a result for an empty pose set,
+    // so skipping an empty world changes no cached output or determinism key.
+    out.report.pose_hash = world ? world->pose_hash() : 1469598103934665603ull;
 
     // ---- Assemble output instances in the correct order -------------------------
     // Order (test-guarded, see tileset_bake.h:4-10): drops first, then per
@@ -597,10 +667,13 @@ bool settle_tileset(const TilesetSpec& spec, const BakeInputs& in,
 // Settle-result cache — plain little-endian binary serialization.
 //
 // File header (fixed):
-//   uint32_t magic    = 0x544C5343  ('CSTL' = Cache SeTtLe)
-//   uint32_t version  = 1
+//   uint32_t magic    = kSettleCacheMagic   = 0x434C5453 ('STLC' little-endian)
+//   uint32_t version  = kSettleCacheVersion = 2
 //   uint64_t key                 (lookup key written at save time)
 //   uint64_t version_digest      (matter_version::digest(); M4)
+//
+// Both constants are defined immediately below this block; save writes them and
+// load compares against them, so this sketch has exactly one source of truth.
 //
 // Body (all little-endian):
 //   TileConfig cfg               (5 floats + 1 uint64 + 2 floats = fixed layout)
@@ -621,12 +694,12 @@ static constexpr uint32_t kSettleCacheVersion = 2u;  // M4: two u32 versions -> 
 // Helpers: write/read primitive types to/from a file stream in little-endian.
 namespace {
 template<typename T>
-static bool write_le(std::ofstream& f, const T& v) {
+static bool write_le(std::ostream& f, const T& v) {
     f.write(reinterpret_cast<const char*>(&v), sizeof(T));
     return f.good();
 }
 template<typename T>
-static bool read_le(std::ifstream& f, T& v) {
+static bool read_le(std::istream& f, T& v) {
     f.read(reinterpret_cast<char*>(&v), sizeof(T));
     return f.good();
 }
@@ -672,14 +745,19 @@ static std::string settle_cache_path(const std::string& cache_root, uint64_t key
     return cache_root + "/tileset/" + buf;
 }
 
-bool settle_cache_save(const std::string& cache_root, uint64_t key, const SettledTorus& s) {
+bool settle_cache_save(const std::string& cache_root, uint64_t key, const SettledTorus& s,
+                       matter::CacheByteStorage* storage) {
     // Ensure tileset subdir exists.
     const std::string tileset_dir = cache_root + "/tileset";
-    fs_mkdir_settle(tileset_dir.c_str());
+    if (!storage) fs_mkdir_settle(tileset_dir.c_str());
 
     const std::string path = settle_cache_path(cache_root, key);
     const std::string tmp  = path + ".tmp";
-    std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
+    std::ofstream disk;
+    std::ostringstream memory(std::ios::binary | std::ios::out);
+    if (!storage) disk.open(tmp, std::ios::binary | std::ios::trunc);
+    std::ostream& f = storage ? static_cast<std::ostream&>(memory)
+                              : static_cast<std::ostream&>(disk);
     if (!f) return false;
 
     // Header.
@@ -751,8 +829,14 @@ bool settle_cache_save(const std::string& cache_root, uint64_t key, const Settle
         if (!write_le(f, lr.sim_time))       return false;
     }
 
-    f.close();
-    if (!f.good() && !f.eof()) return false;
+    if (storage) {
+        f.flush();
+        if (!f.good()) return false;
+        const auto encoded = memory.str();
+        return storage->publish(path, matter::CacheByteStorage::Bytes(encoded.begin(), encoded.end()));
+    }
+    disk.close();
+    if (!disk.good() && !disk.eof()) return false;
     // Atomic rename.
     if (std::rename(tmp.c_str(), path.c_str()) != 0) {
         std::remove(tmp.c_str());
@@ -761,9 +845,20 @@ bool settle_cache_save(const std::string& cache_root, uint64_t key, const Settle
     return true;
 }
 
-bool settle_cache_load(const std::string& cache_root, uint64_t key, SettledTorus& out) {
+bool settle_cache_load(const std::string& cache_root, uint64_t key, SettledTorus& out,
+                       matter::CacheByteStorage* storage) {
     const std::string path = settle_cache_path(cache_root, key);
-    std::ifstream f(path, std::ios::binary);
+    std::ifstream disk;
+    std::istringstream memory(std::ios::binary | std::ios::in);
+    if (storage) {
+        const auto bytes = storage->open(path);
+        if (!bytes) return false;
+        memory.str(std::string(bytes->begin(), bytes->end()));
+    } else {
+        disk.open(path, std::ios::binary);
+    }
+    std::istream& f = storage ? static_cast<std::istream&>(memory)
+                              : static_cast<std::istream&>(disk);
     if (!f) return false;
 
     // Measure file size upfront so counts can be validated before resize.

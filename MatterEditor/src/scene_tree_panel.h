@@ -1,4 +1,20 @@
 #pragma once
+
+// MatterEditor/src/scene_tree_panel.h
+//
+// The Scene panel's tree widget. One ImGui list built from two unrelated
+// sources: baked roots out of the session's cached part-graph snapshot, and
+// ECS entities out of the EditorModel. Implementation and the layout/selection
+// gotchas are in scene_tree_panel.cpp; the persistent state (filter widgets +
+// the graph-snapshot cache and its staleness rules) is `SceneTreeState` in
+// scene_tree_model.h, which is deliberately ImGui-free so those rules can be
+// tested headlessly.
+//
+// This header only declares the draw entry point — everything it mutates
+// arrives as a parameter (EditorModel, SceneCommands, FieldCommands,
+// SelectionSet, ConsoleLog), all of which main.cpp binds to the live session.
+// UI thread only, inside an ImGui frame.
+
 #include <cstdint>
 #include <string>
 #include <unordered_set>

@@ -1,3 +1,44 @@
+// MatterEngine3/src/animation/animation_validate.cpp
+//
+// Validation and canonicalization of the authored animation IR produced by
+// the ANIM DSL (`MatterEngine3/src/dsl_animation.cpp`,
+// `MatterEngine3/src/script_host.cpp`).  Every rule that decides whether a
+// rig / clip / graph / binding declaration is legal in v1 lives here; the
+// bake and runtime stages downstream assume a build that passed it.
+//
+// How it fits
+//   - Input is `AnimationBuild` (`animation/animation_ir.h`): the authored
+//     rig, clips, inputs, targets, controllers, motion graph, skin/rigid
+//     bindings and attachments, each carrying a `SourceSpan` back to the
+//     script that declared it.
+//   - Output is a `Diagnostics` list and, optionally, a
+//     `CanonicalAnimationBuild` -- the same rig re-indexed into the canonical
+//     joint order that `ozz_bake.cpp` and the runtime asset use.
+//   - Failures are data, not exceptions: every problem is appended to
+//     `Diagnostics` with a stable code string and the script host surfaces
+//     it against the authored source span.
+//
+// Conventions and gotchas
+//   - `diagnostics.items` is CLEARED on entry to each entry point, so one
+//     Diagnostics object cannot accumulate results across two calls.
+//   - Validation does not stop at the first error; it collects as many as it
+//     can so a single script edit can fix several.  The final
+//     `diagnostics.sort()` makes the list independent of declaration
+//     traversal order (asserted by
+//     `MatterEngine3/tests/animation_ir_tests.cpp`).
+//   - Canonicalization runs ONLY when zero diagnostics were produced; a
+//     `false` return leaves the caller's `canonical` untouched.
+//   - Canonical joint indices come from a depth-first walk from the single
+//     root, so they generally differ from authored declaration indices.  The
+//     `find_*` helpers in this file all work on AUTHORED indices.
+//   - v1 limits enforced here: exactly one rig root, exactly one graph
+//     output, three-joint IK chains, at most one primary binding per joint
+//     segment, and the `kMax*` budgets from `animation/animation_budget.h`.
+//   - Units: clip key times are seconds in [0, duration]; marker times are
+//     normalized [0,1); half-lives are seconds; `soften` is normalized [0,1].
+//   - This is an authoring-time path, not a per-frame one -- several helpers
+//     are deliberately O(n^2) linear scans over small rigs.
+
 #include "animation/animation_validate.h"
 #include "animation/animation_math.h"
 #include "animation/animation_binding_bake.h"
@@ -96,6 +137,11 @@ void duplicate_names(const std::vector<Def>& values, const char* code, Diagnosti
             if (values[i].name == values[j].name) diagnostics.add(code, values[i].source, "duplicate authored name");
 }
 
+// Authored-index lookups by name.  All three are linear scans and all three
+// return -1 for "not declared", which callers treat as the diagnostic
+// condition rather than as an error to propagate.  They are called from
+// inside loops (so the containing checks are quadratic); rigs and graphs are
+// small and this runs offline.
 int find_joint(const AnimationBuild& build, const std::string& name) {
     for (size_t i = 0; i < build.rig.joints.size(); ++i)
         if (build.rig.joints[i].name == name) return static_cast<int>(i);
@@ -130,6 +176,13 @@ void append_transform(std::ostringstream& output, const AnimationTransform& valu
            << value.scale.x << ',' << value.scale.y << ',' << value.scale.z << '|';
 }
 
+// Flattens every authored field that survives into the asset into one string,
+// stored as `CanonicalAnimationBuild::authored_state`.  It exists so a rebuild
+// can tell whether the authored declarations actually changed; it is a
+// comparison key, not a parseable format.  Strings are length-prefixed so no
+// pair of distinct inputs can encode identically, and floats are written at
+// `setprecision(9)` -- enough to round-trip a float exactly.  Any new authored
+// field must be appended here or an edit to it will look like a no-op.
 std::string encode_authored_state(const AnimationBuild& build) {
     std::ostringstream output;
     output << std::setprecision(9);
@@ -161,6 +214,14 @@ std::string encode_authored_state(const AnimationBuild& build) {
     return output.str();
 }
 
+// The single implementation behind both public validate entry points.
+// `canonical` is null for a pure check and non-null when the caller also wants
+// the canonical form; it is only written after the build proves clean, so a
+// failing call never leaves a half-built canonical behind.
+//
+// Order matters: budgets and duplicate names first, then the joint hierarchy
+// (which fills `parents`, used by everything after it), then clips, inputs,
+// controllers, bindings, targets and finally the motion graph.
 bool validate_impl(const AnimationBuild& build, Diagnostics& diagnostics, CanonicalAnimationBuild* canonical) {
     diagnostics.items.clear();
     if (build.rig.joints.size() > kMaxJoints) diagnostics.add("joint-limit", build.rig.source, "joint count exceeds v1 limit");
@@ -189,6 +250,10 @@ bool validate_impl(const AnimationBuild& build, Diagnostics& diagnostics, Canoni
         else if (parents[i] >= static_cast<int>(i)) diagnostics.add("parent-forward-reference", joint.source, "joint parent must be declared first");
     }
     if (roots != 1) diagnostics.add("multiple-roots", build.rig.source, "rig must declare exactly one root");
+    // Floyd tortoise-and-hare over the parent chain.  A well-formed rig walks
+    // to -1 (the root) from every joint, so the two pointers can only meet
+    // inside a cycle.  One diagnostic is enough -- the loop breaks on the
+    // first cycle found rather than reporting every joint on it.
     for (size_t i = 0; i < parents.size(); ++i) {
         int slow = static_cast<int>(i), fast = static_cast<int>(i);
         do {
@@ -230,6 +295,12 @@ bool validate_impl(const AnimationBuild& build, Diagnostics& diagnostics, Canoni
         if (controller.type.empty()) diagnostics.add("invalid-controller-type", controller.source, "controller type must identify a native controller");
         if (!valid_cadence(controller.cadence)) diagnostics.add("invalid-cadence", controller.source, "controller cadence is unsupported");
     }
+    // Binding ownership rules.  A "segment" is a joint together with its
+    // parent, named by the CHILD joint, which is why a root joint can never be
+    // bound.  At most one PRIMARY binding may claim a segment -- skin bindings
+    // and non-decorative rigid bindings both count, and `decorative` is the
+    // documented opt-out for props that ride a segment someone else deforms.
+    // Binding, rigid-binding and attachment names share one namespace.
     std::set<std::string> named_bindings;
     std::set<std::string> rigid_binding_names;
     std::set<std::string> rigid_segments;
@@ -286,6 +357,11 @@ bool validate_impl(const AnimationBuild& build, Diagnostics& diagnostics, Canoni
         validate_transform(attachment.local, attachment.source, diagnostics);
     }
 
+    // IK targets.  Each target's chain is recovered by walking parents up from
+    // `end_joint` until `start_joint` is reached, then reversed into
+    // start-to-end order; v1 accepts exactly three joints (start, mid, end).
+    // `chains` accumulates the already-accepted chains so two writable targets
+    // that share any joint can be rejected -- a joint may have only one driver.
     std::vector<std::vector<JointIndex>> chains;
     for (const TargetSchema& target : build.targets) {
         if (!valid_cadence(target.cadence)) diagnostics.add("invalid-cadence", target.source, "target cadence is unsupported");
@@ -404,6 +480,11 @@ bool validate_impl(const AnimationBuild& build, Diagnostics& diagnostics, Canoni
     }
     if (outputs == 0) diagnostics.add("missing-graph-output", build.graph.source, "graph must declare one output");
     if (outputs > 1) diagnostics.add("multiple-graph-output", build.graph.source, "graph must declare exactly one output");
+    // Topological sort of the motion graph.  Each pass takes the LOWEST-index
+    // node whose in-degree has reached zero, so ties resolve in declaration
+    // order and the resulting `graph_order` is stable for a given script (the
+    // IR tests assert this).  `UINT16_MAX` marks a node already emitted.  A
+    // short `order` means some node never reached in-degree zero, i.e. a cycle.
     std::vector<uint16_t> order;
     std::vector<uint16_t> pending = indegree;
     for (size_t pass = 0; pass < build.graph.nodes.size(); ++pass) {
@@ -471,6 +552,10 @@ bool validate_impl(const AnimationBuild& build, Diagnostics& diagnostics, Canoni
             }
         }
     }
+    // Reachability sweep: mark backwards from the output node(s) along
+    // dependencies, then report anything never marked.  An unreachable node is
+    // an authoring mistake (a node wired to nothing), not a fatal structural
+    // error, but it is still a diagnostic because v1 bakes the whole graph.
     if (!build.graph.nodes.empty()) {
         std::vector<bool> used(build.graph.nodes.size(), false); std::vector<uint16_t> todo;
         for(size_t i=0;i<build.graph.nodes.size();++i) if(build.graph.nodes[i].is_output) todo.push_back((uint16_t)i);
@@ -478,9 +563,20 @@ bool validate_impl(const AnimationBuild& build, Diagnostics& diagnostics, Canoni
         for(size_t i=0;i<used.size();++i) if(!used[i]) diagnostics.add("unused-graph-node", build.graph.nodes[i].source, "graph node is not reachable from output");
     }
 
+    // Sorting is what makes the diagnostic list independent of the order the
+    // checks above happened to run in.  Everything past this point is the
+    // canonicalization pass, which is only reached by a build with zero
+    // diagnostics -- so it may index freely on lookups that were validated
+    // above (e.g. `find_joint` on a target's end joint cannot return -1 here).
     diagnostics.sort();
     if (!diagnostics.items.empty()) return false;
     if (!canonical) return true;
+    // Canonical form: joints re-emitted in a depth-first walk from the root so
+    // a parent always precedes its children and every joint's descendants
+    // occupy one contiguous half-open `subtree` range.  These indices -- NOT
+    // the authored declaration indices -- are what `JointIndex` means
+    // everywhere downstream, so sockets and target chains are re-resolved by
+    // name against the new order below.
     canonical->rig.joints.clear(); canonical->rig.sockets.clear(); canonical->targets.clear(); canonical->graph_order = order; canonical->authored_state = encode_authored_state(build);
     std::vector<std::vector<size_t>> children(build.rig.joints.size());
     size_t root = 0;

@@ -1,0 +1,10 @@
+{
+  "command": [
+    "./tools/build-windows-from-wsl.sh",
+    "RelWithDebInfo",
+    "world_tracer_tests"
+  ],
+  "exit": 0,
+  "elapsed_seconds": 53.850041744997725,
+  "changed_inputs": []
+}

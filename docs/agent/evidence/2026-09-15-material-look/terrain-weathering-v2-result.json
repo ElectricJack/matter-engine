@@ -1,0 +1,22 @@
+{
+  "exit": 0,
+  "seconds_including_startup_and_view_waits": 20.79797219199827,
+  "source_changes": [],
+  "binary_changed": false,
+  "errors": [],
+  "vt_stats": [
+    "STATSVT,terrain-weathering-v2-middle,active=1,variants=11/32768,rejected=0,mesh=0.1/3512.0 MiB,pool=162/33024,pinned=11,queue=0,fills=162,evictions=0,ind=0.12/64 MiB",
+    "STATSVT,terrain-weathering-v2-close,active=1,variants=12/32768,rejected=0,mesh=0.1/3512.0 MiB,pool=201/33024,pinned=12,queue=0,fills=202,evictions=0,ind=0.12/64 MiB",
+    "STATSVT,terrain-weathering-v2-far,active=1,variants=9/32768,rejected=0,mesh=0.1/3512.0 MiB,pool=292/33024,pinned=9,queue=0,fills=302,evictions=0,ind=0.11/64 MiB",
+    "STATSVT,terrain-weathering-v2-grazing,active=1,variants=8/32768,rejected=0,mesh=0.1/3512.0 MiB,pool=337/33024,pinned=8,queue=0,fills=350,evictions=0,ind=0.08/64 MiB",
+    "STATSVT,terrain-weathering-v2-rt,active=1,variants=11/32768,rejected=0,mesh=0.1/3512.0 MiB,pool=343/33024,pinned=11,queue=0,fills=356,evictions=0,ind=0.12/64 MiB"
+  ],
+  "images": {
+    "terrain-weathering-v2-middle.png": "b0027066c610a31f0896364013c712caa30083796e5f11f7e9f3870a4d81384f",
+    "terrain-weathering-v2-close.png": "702519a1b924ab476fa3694e862ad1b82b6b15e9ccde0f5dfca5000c9593ef07",
+    "terrain-weathering-v2-far.png": "80215fde3842a683acb090e67c014e05dfe30f1de15d5d3b4a567e6d1feed920",
+    "terrain-weathering-v2-grazing.png": "7f3409b82ab65bf5bbbc37c4f705d265cfd4a0c6d4d8c9c4b4f26bc7c9f9de74",
+    "terrain-weathering-v2-rt.png": "810dcc735fda32aa78e44fca2255fc34f8206f39b6b9b469f2d7a60b70b3303f"
+  },
+  "passed": true
+}

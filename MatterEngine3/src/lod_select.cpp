@@ -1,3 +1,21 @@
+// MatterEngine3/src/lod_select.cpp
+//
+// CPU-side sector LOD selection (declared in lod_select.h). It answers one
+// question per (sector, part): which ladder rung does this part get in this
+// sector, or is it small enough to skip entirely.
+//
+// It is a MIRROR, not a second rule. Every comparison here goes through
+// render/lod_distance.h -- lod::normalized_switch_distance / lod::reach /
+// lod::select_rep -- the same header the Vulkan cull shader uses, so the CPU
+// path and the GPU path cannot drift apart. The equivalence proof for the
+// projected-size form this replaced is written out above
+// select_sector_lods_ex; the two known deliberate divergences from cull.comp
+// (instance scale fixed at 1.0, and the never-cull radius below) are called
+// out where they occur.
+//
+// projected_size() and select_level() are the older projected-size formulation.
+// They have no production caller left and are kept as the reference the tests
+// compare the distance form against -- do not add a new caller.
 #include "lod_select.h"
 #include "render/lod_distance.h"   // lod::normalized_switch_distance / reach / select_rep
 #include <cmath>
@@ -50,10 +68,17 @@ int select_level(float size, const std::vector<float>& thr) {
 // mirrors never looked at the instance transform's scale either — that is a
 // pre-existing divergence from cull.comp, and preserving it is what keeps this
 // conversion inert.
+// One decision per (sector, part hash), made from the sector's CLOSEST
+// instance -- so every instance of a part within one sector shares a rung, and
+// a sector's LOD changes as a unit. Parts absent from `parts` are silently
+// skipped (nothing is emitted for them). Cost is O(instances) per sector plus
+// one map node per distinct part per sector; the result is built fresh on
+// every call.
 std::map<sector_grid::SectorCoord, std::map<uint64_t, LodChoice>>
 select_sector_lods_ex(const sector_grid::Sectors& sectors,
                       const PartLodTable& parts, const float3& cam,
-                      float min_projected_size, float pixel_budget) {
+                      float min_projected_size, float pixel_budget,
+                      const SectorParts* distinct_parts) {
     std::map<sector_grid::SectorCoord, std::map<uint64_t, LodChoice>> out;
     // Normalized switch distances for the part under consideration. Hoisted so
     // the per-instance loop below allocates at most once for the whole call.
@@ -68,9 +93,11 @@ select_sector_lods_ex(const sector_grid::Sectors& sectors,
             if (d < closest) closest = d;
         }
         if (closest < 1e-4f) closest = 1e-4f;
-        for (const auto& f : insts) {
-            auto pit = parts.find(f.resolved_hash);
-            if (pit == parts.end()) continue;
+        std::map<uint64_t, LodChoice> choices;
+        const auto choose_part = [&](uint64_t hash) {
+            if (choices.find(hash) != choices.end()) return;
+            auto pit = parts.find(hash);
+            if (pit == parts.end()) return;
             const PartLod& part = pit->second;
             const float reach = lod::reach(part.bound_radius, 1.0f, pixel_budget);
             int level;
@@ -89,8 +116,22 @@ select_sector_lods_ex(const sector_grid::Sectors& sectors,
                                         (int)switch_distances.size(),
                                         closest, reach);
             }
-            out[coord][f.resolved_hash] = {level, closest};
+            choices.emplace(hash, LodChoice{level, closest});
+        };
+        // The resolver caches distinct hashes with the world binning. This
+        // avoids a second pass of map lookups over millions of repeated leaves.
+        const std::vector<uint64_t>* hashes = nullptr;
+        if (distinct_parts) {
+            auto found = distinct_parts->find(coord);
+            if (found != distinct_parts->end()) hashes = &found->second;
         }
+        if (hashes) {
+            for (uint64_t hash : *hashes) choose_part(hash);
+        } else {
+            for (const auto& f : insts) choose_part(f.resolved_hash);
+        }
+        // Preserve the absent-sector result when no part has a known ladder.
+        if (!choices.empty()) out.emplace(coord, std::move(choices));
     }
     return out;
 }

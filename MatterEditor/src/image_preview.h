@@ -26,10 +26,30 @@ namespace matter { class VulkanDevice; }
 
 namespace viewer {
 
+// Owns every preview texture in the editor: the Vulkan images, their memory
+// and views, and the ImGui descriptor sets that make them drawable.
+//
+// Lifecycle, in order: configure() with the device, then create() per image,
+// collect() once per frame before drawing, destroy()/destroy_all() as previews
+// go away, and shutdown() while the VulkanDevice and the ImGui Vulkan backend
+// are BOTH still alive. main() keeps one as a stack local, which is exactly why
+// shutdown() is not optional — the destructor deliberately leaks rather than
+// touching a device that has already been destroyed.
+//
+// Handles are void* only so imgui.h stays out of this header; under the Vulkan
+// backend an ImTextureID is a VkDescriptorSet, which is what create() returns.
+// The cache retains ownership of every handle it hands out.
+//
+// Main/render thread only, and it holds raw Vulkan handles — not meant to be
+// copied.
 class ImagePreviewCache {
 public:
     ~ImagePreviewCache();
 
+    // Point the cache at the device. Call once, before the first create();
+    // create() fails with "no device" until it has been called. This only
+    // stores the pointer — it releases nothing, so it is not a way to swap
+    // devices mid-run (shutdown() first if you ever need that).
     void configure(matter::VulkanDevice* vulkan) { vulkan_ = vulkan; }
 
     // Uploads RGBA8 (tightly packed, width*height*4 bytes) and returns a handle
@@ -79,10 +99,20 @@ private:
     bool ensure_pool_and_sampler(std::string& error);
     void destroy_entry(Entry& entry);
 
+    // Non-owning; set by configure(), cleared by shutdown(). Null means every
+    // Vulkan-touching method here is a no-op or an immediate failure.
     matter::VulkanDevice* vulkan_ = nullptr;
+    // Created lazily on the first create() and kept for the life of the cache:
+    // the sampler is baked into descriptor sets that may still be queued in
+    // pending_, so destroy_all() deliberately leaves both alone. shutdown()
+    // is what releases them.
     VkCommandPool pool_ = VK_NULL_HANDLE;
     VkSampler sampler_ = VK_NULL_HANDLE;
+    // Live textures, one per outstanding handle. Looked up linearly by
+    // descriptor set in destroy(), which is fine at the handful of previews a
+    // report holds.
     std::vector<Entry> entries_;
+    // Retired textures still counting down to a safe free; drained by collect().
     std::vector<Pending> pending_;
 };
 

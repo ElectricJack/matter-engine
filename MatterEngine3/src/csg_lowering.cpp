@@ -1,3 +1,38 @@
+// MatterEngine3/src/csg_lowering.cpp
+//
+// The boundary between what a part script authored and what the mesher can
+// evaluate. Two things live here, over the same op list:
+//
+//   * lower_build_buffer() turns dsl::BuildBuffer (dsl_state.h) into a
+//     LoweredField -- hashed sphere particles, carve particles, typed fat
+//     primitives (fat_primitive.h) and the ordered CSG stage list
+//     (csg_stages.h) -- which script_host.cpp's part bake hands to
+//     MatterSurfaceLib's field evaluator.
+//   * field_is_solid() / field_distance() evaluate the SAME ops directly and
+//     analytically, with no mesher and no GPU. They are the oracle the mesher is
+//     checked against and are written to mirror surface.c's staged smooth-min
+//     evaluation, so a change to one side is a change to both.
+//
+// SPACES. A BuildOp carries a world transform (the transform-stack top captured
+// at emit) plus brush-local geometry, and the two brush families do NOT agree on
+// what "local" means:
+//   sphere, box        -- center-relative: evaluate at inv(transform)*p - center
+//   capsule, cylinder  -- NOT center-relative: they carry their own segment
+//                         endpoints in (center = a, segB = b) and evaluate at
+//                         the raw brush-local point
+// Each FatPrim's invTransform is built to match its kind's convention, and both
+// oracles repeat the same split. Getting it backwards misplaces only the segment
+// brushes, which is easy to miss.
+//
+// DETERMINISM. The contract for this file is byte-identical bake output across
+// the MathLib/raylib migration, so it keeps a local cofactor 4x4 inverse instead
+// of calling mm::inverse (see mat_invert below) and local copies of the
+// primitive SDFs instead of linking the mesher's. Two mathematically equivalent
+// formulas are not bit-equivalent in float; do not "simplify" either one.
+//
+// UNITS. World metres throughout, distances negative inside; `smoothing` is the
+// smooth-min fillet k in the same units, and k <= 1e-5 degenerates to hard
+// boolean ops.
 #include "csg_lowering.h"
 #include <cmath>
 #include <cstring>
@@ -69,6 +104,15 @@ static mm::Mat4 mat_invert(const mm::Mat4& m) {
     return r;
 }
 
+// ---------------------------------------------------------------------------
+// Analytic primitive SDFs (oracle-local copies)
+// ---------------------------------------------------------------------------
+// Signed distance in brush-local space, negative inside. These duplicate
+// MatterSurfaceLib's primitive_sdf on purpose so the oracle can be evaluated in
+// test binaries that never link the mesher (see the per-function notes below).
+// They are exact only for rigid brush transforms: under a non-uniform scale a
+// local-space distance is not the world distance, which is why field_distance's
+// callers have to trace conservatively.
 static float v3len(const mm::Vec3& p){ return std::sqrt(p.x*p.x+p.y*p.y+p.z*p.z); }
 static float sdSphere(const mm::Vec3& p, float r){ return v3len(p) - r; }
 // NOTE: sdBox now lives in MatterSurfaceLib's primitive_sdf (fat_primitive.c). The
@@ -228,6 +272,20 @@ static CsgStageOp stage_op(CsgOp op) {
     return CSG_STAGE_UNION;
 }
 
+// One pass over the authored ops, in order. Per op it:
+//   (a) raises out.smoothing to the largest k any brush asked for -- smoothing
+//       is a whole-expression fillet, not per-brush;
+//   (b) opens a new stage whenever this op differs from the previous one, so
+//       consecutive same-op brushes merge into one stage; and
+//   (c) emits the brush into exactly one output family:
+//         sphere, uniform scale     -> additive (or carve, if Difference), and
+//                                      always staged_spheres
+//         sphere, non-uniform scale -> fat (it is an ellipsoid; the hashed
+//                                      |p-c|-r form cannot express one)
+//         box / capsule / cylinder  -> fat
+// The parallel arrays must stay parallel: additive[i]/additive_stage[i] and
+// staged_spheres[i]/staged_stage[i] are always pushed together. Nothing is
+// deduplicated or reordered -- authored order is the semantics.
 LoweredField lower_build_buffer(const BuildBuffer& buf) {
     LoweredField out;
     // Predictable sizes now that a box is ONE fat primitive (no stamp_box): at

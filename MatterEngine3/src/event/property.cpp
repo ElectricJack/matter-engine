@@ -19,6 +19,10 @@ PropertyScheduler::~PropertyScheduler() {
     live_.clear();
 }
 
+// Binds the scheduler to an owner thread. Claiming is sticky: a second claim
+// naming a DIFFERENT thread is fail_fast, a repeat claim of the same thread is
+// fine. Until something claims it, the affinity checks are inert — an unclaimed
+// scheduler accepts calls from anywhere.
 void PropertyScheduler::claim() { claim(std::this_thread::get_id()); }
 
 void PropertyScheduler::claim(std::thread::id owner) {
@@ -40,6 +44,9 @@ void PropertyScheduler::assert_owner(const char* op) const {
     }
 }
 
+// Records a raw, NON-OWNING pointer to a property. Called from Property's
+// constructor; the matching unregister_property in its destructor is what keeps
+// the pointer from outliving the object. Owner-thread only.
 void PropertyScheduler::register_property(detail::PropertyBase* p) {
     assert_owner("register_property");
     live_.push_back(p);
@@ -66,6 +73,9 @@ void PropertyScheduler::mark_dirty(detail::PropertyBase* p) {
     dirty_.push_back(p);
 }
 
+// Removes `p` from the pending batch and clears its flag. Linear scan of the
+// dirty list, which is fine because the list holds only the properties changed
+// since the last flush, not every live property.
 void PropertyScheduler::clear_dirty(detail::PropertyBase* p) {
     if (!p->dirty) return;
     p->dirty = false;
@@ -77,6 +87,14 @@ void PropertyScheduler::clear_dirty(detail::PropertyBase* p) {
     }
 }
 
+// Delivers one batch of property changes on the owner thread. Everything dirtied
+// since the previous flush is delivered exactly once, in the order it was first
+// marked; a set() performed from inside an observer re-dirties for the NEXT
+// flush rather than extending this one.
+//
+// Re-entrancy (a flush observer calling flush_dirty) is illegal and fail_fast.
+// The in_flush_ guard is restored on every exit path including a throwing
+// observer.
 void PropertyScheduler::flush_dirty() {
     assert_owner("flush_dirty");
     if (in_flush_) {

@@ -1,3 +1,20 @@
+// MatterEngine3/src/render/animation_rigid_bridge.cpp
+//
+// Implementation of the rigid articulation adapter declared in
+// animation_rigid_bridge.h. See that header for the subsystem context, the
+// binding_index allocation contract, and the lifetime rules.
+//
+// The file-local helpers are plain row-major 4x4 math over matter::Mat4f
+// (row-major storage, column-vector algebra — matter/math_types.h), so
+// `multiply(a, b)` is the ordinary row-major product and a transform's
+// translation lands in m[3]/m[7]/m[11], the last column.
+//
+// expand() is deliberately two-pass: pass one validates every segment and
+// attachment against the pose it just fetched, pass two appends. Nothing is
+// written to the caller's vector until the whole declaration has passed, which
+// is what keeps a rejected frame from leaving half an articulated body in the
+// slot table.
+
 #include "render/animation_rigid_bridge.h"
 
 #include <algorithm>
@@ -21,6 +38,11 @@ Mat4f multiply(const Mat4f& a, const Mat4f& b) {
     return out;
 }
 
+// Builds a TRS matrix from an authored transform. The rotation quaternion is
+// renormalized first; a zero-length or non-finite quaternion degrades to
+// identity rather than propagating NaNs into the render records. Scale is
+// applied per basis COLUMN (scale.x scales m[0]/m[4]/m[8]) and translation
+// goes in the last column, matching Mat4f's row-major-storage convention.
 Mat4f local_matrix(const AnimationTransform& transform) {
     Quaternion q = transform.rotation;
     const float length = std::sqrt(q.x*q.x + q.y*q.y + q.z*q.z + q.w*q.w);
@@ -52,6 +74,10 @@ bool valid_matrix(const Mat4f& value) {
     return true;
 }
 
+// Socket lookup by authored name. Linear in the rig's socket count and run once
+// per attachment during validation and again during emission; rigs are small,
+// but this is not a hash lookup. Returns null when the name is unknown, which
+// the caller treats as a rejected declaration.
 const animation::CanonicalSocket* socket(const animation::CanonicalRig& rig, const std::string& name) {
     const auto found = std::find_if(rig.sockets.begin(), rig.sockets.end(), [&name](const animation::CanonicalSocket& value) {
         return value.name == name;
@@ -61,6 +87,23 @@ const animation::CanonicalSocket* socket(const animation::CanonicalRig& rig, con
 
 } // namespace
 
+// Appends one DynamicInstanceInput per rigid segment and per attachment, in
+// serialized order, to `out` (which is appended to, never cleared).
+//
+// Returns false without touching `out` when anything is wrong: no snapshot
+// store, a non-root entity key, an invalid animator, a missing or
+// generation-stale asset, a non-finite entity transform, no pose published for
+// exactly input.frame_serial, a rigid_part_hashes/rigid_segments size
+// disagreement, a zero part hash, or a joint/socket index that the published
+// palette does not cover.
+//
+// Returning true with nothing appended is a normal outcome: an asset with no
+// rigid segments and no attachments has nothing rigid to draw.
+//
+// World composition is entity_world * model_pose[joint] * bind_offset for a
+// segment and entity_world * model_pose[joint] * socket_local * attachment
+// local for an attachment; the previous-frame matrix repeats that with
+// previous_entity_world and previous_model_pose.
 bool AnimationRigidBridge::expand(const AnimationRigidExpansion& input,
                                   std::vector<DynamicInstanceInput>& out) const {
     const AnimationRigidBinding& binding = input.binding;
@@ -105,10 +148,18 @@ bool AnimationRigidBridge::expand(const AnimationRigidExpansion& input,
         const Mat4f offset = local_matrix(segment.bind_offset);
         const Mat4f current = multiply(multiply(input.entity_world, pose.model_pose[segment.joint]), offset);
         const Mat4f previous = multiply(multiply(input.previous_entity_world, pose.previous_model_pose[segment.joint]), offset);
-        out.push_back({{input.entity.entity_id, input.entity.entity_generation,
-                        static_cast<uint32_t>(index + 1)}, asset->rigid_part_hashes[index], current, previous,
-                       binding.casts_shadow});
+        DynamicInstanceInput record{
+            {input.entity.entity_id, input.entity.entity_generation,
+             static_cast<uint32_t>(index + 1)},
+            asset->rigid_part_hashes[index], current, previous,
+            binding.casts_shadow};
+        record.policy_part_hash = input.policy_part_hash;
+        record.ray_tracing_override = input.ray_tracing_override;
+        out.push_back(record);
     }
+    // Attachments continue the binding_index space straight after the rigid
+    // segments (root = 0, segments = 1..N), so every piece of one entity gets a
+    // distinct DynamicInstanceKey and its own stable renderer slot.
     const uint32_t attachment_base = static_cast<uint32_t>(bindings.rigid_segments.size() + 1);
     for (size_t index = 0; index < bindings.attachments.size(); ++index) {
         const auto& attachment = bindings.attachments[index];
@@ -125,9 +176,13 @@ bool AnimationRigidBridge::expand(const AnimationRigidExpansion& input,
         const Mat4f local = local_matrix(attachment.local);
         const Mat4f current = multiply(multiply(multiply(input.entity_world, pose.model_pose[joint]), socket_local), local);
         const Mat4f previous = multiply(multiply(multiply(input.previous_entity_world, pose.previous_model_pose[joint]), socket_local), local);
-        out.push_back({{input.entity.entity_id, input.entity.entity_generation,
-                        static_cast<uint32_t>(attachment_base + index)}, attachment.child_hash,
-                       current, previous, binding.casts_shadow});
+        DynamicInstanceInput record{
+            {input.entity.entity_id, input.entity.entity_generation,
+             static_cast<uint32_t>(attachment_base + index)},
+            attachment.child_hash, current, previous, binding.casts_shadow};
+        record.policy_part_hash = input.policy_part_hash;
+        record.ray_tracing_override = input.ray_tracing_override;
+        out.push_back(record);
     }
     return true;
 }

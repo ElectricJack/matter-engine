@@ -4,8 +4,8 @@
 //
 // The four cases together validate the async event protocol Tasks 8+ and the
 // viewer rely on:
-//   (a) request_bake_returns_immediately — wall-clock request_bake() < 50 ms
-//       on a cache-cold world, and events arrive later during pump.
+//   (a) request_bake_returns_immediately — request returns independently of
+//       worker bake execution; events arrive later during pump.
 //   (b) bake_completes_with_finished — full sequence: BakeStarted, one or more
 //       BakePartDone with phase=="parts", ending in BakeFinished; the tracer
 //       query API reports instance_count() > 0 after.
@@ -20,6 +20,9 @@
 #include "matter/engine_context.h"
 #include "matter/scene.h"
 #include "matter/world_session.h"
+#include "matter/river_runtime.h"
+#include "hydrology/hydrology_network_artifact.h"
+#include "hydrology/physx_fluid_bake.h"
 #include "render/animation_skin_bridge.h"
 
 // Editor-side scene tree cache policy (ImGui-free by design so this suite can
@@ -35,7 +38,11 @@
 #include "matter/events/bake_events.h"
 #include "matter/events/stream_events.h"
 
+#include <algorithm>
 #include <chrono>
+#include <array>
+#include <atomic>
+#include <condition_variable>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -52,12 +59,14 @@
 #include <vector>
 
 #include "check.h"
+#include "memory_fixture_io.h"
 
 using clk = std::chrono::steady_clock;
 namespace fs = std::filesystem;
 
 // --- Sandbox helpers ------------------------------------------------------
 
+#ifdef MATTER_ASYNC_SOURCE_QUALIFICATION
 static bool write_file(const fs::path& path, const std::string& body) {
     std::error_code ec;
     fs::create_directories(path.parent_path(), ec);
@@ -115,6 +124,49 @@ static bool project_fixture_contract(const fs::path& root,
     return has_world_source && has_no_legacy_world_data;
 }
 
+#else
+static matter::SourceSnapshot::Files fixture_sources;
+static auto fixture_cache = std::make_shared<matter::test::MemoryCacheByteStorage>();
+static bool write_file(const fs::path& path, const std::string& body) {
+    fixture_sources[matter::SourceSnapshot::key(path.string())] = body;
+    return true;
+}
+static bool read_file(const fs::path& path, std::string& body) {
+    const auto found = fixture_sources.find(matter::SourceSnapshot::key(path.string()));
+    if (found == fixture_sources.end()) return false;
+    body = found->second;
+    return true;
+}
+static void remove_tree(const fs::path& root) {
+    const auto under_root = [&](const std::string& path) {
+        const auto relative = fs::path(path).lexically_relative(root);
+        return !relative.empty() && relative.begin()->string() != "..";
+    };
+    for (auto it = fixture_sources.begin(); it != fixture_sources.end();) {
+        if (under_root(it->first)) it = fixture_sources.erase(it);
+        else ++it;
+    }
+    for (const auto& entry : fixture_cache->entries())
+        if (under_root(entry.first)) fixture_cache->erase(entry.first);
+}
+static bool reset_project(const fs::path& root, const std::string&) {
+    remove_tree(root);
+    return true;
+}
+static bool reset_cache(const fs::path& root, const std::string&) {
+    remove_tree(root / ".cache");
+    return true;
+}
+static bool project_fixture_contract(const fs::path& root, const std::string& name) {
+    const matter::SourceSnapshot sources(fixture_sources);
+    const bool has_world = sources.exists((root / "worlds" / (name + ".js")).string());
+    const bool no_legacy = !sources.is_directory((root / "world_data").string());
+    CHECK(has_world, "project fixture provides worlds/<Name>.js");
+    CHECK(no_legacy, "project fixture has no legacy manifest tree");
+    return has_world && no_legacy;
+}
+#endif
+
 static std::string project_world_root(const std::string& module,
                                       bool expand = false) {
     std::ostringstream root;
@@ -142,11 +194,16 @@ static bool write_project_world(const fs::path& root,
 
 static matter::WorldDesc project_world_desc(const std::string& project_dir,
                                             const char* world_name) {
-    return matter::WorldDesc{
-        project_dir.c_str(),
-        world_name,
-        "../shared-lib",
-    };
+    matter::WorldDesc result{project_dir.c_str(), world_name, "../shared-lib"};
+#ifndef MATTER_ASYNC_SOURCE_QUALIFICATION
+    auto io = std::make_shared<matter::WorldFixtureIO>();
+    io->sources = std::make_shared<const matter::SourceSnapshot>(fixture_sources,
+        std::vector<std::string>{project_dir + "/objects", project_dir + "/worlds",
+                                 project_dir + "/shared-lib"});
+    io->cache = fixture_cache;
+    result.fixture_io = std::move(io);
+#endif
+    return result;
 }
 
 // Build a minimal Box project under `root`. Object Box.js is a trivial
@@ -180,6 +237,95 @@ static bool build_sandbox(const std::string& root) {
     });
 }
 
+static bool build_authored_fluid_sandbox(const fs::path& root) {
+    if (!reset_project(root, "FluidAsync")) return false;
+    if (!write_file(root / "objects" / "FluidPart.js",
+        "class FluidPart extends Part {\n"
+        "  build(p) {\n"
+        "    this.fill(MAT.stone); this.beginShape(SHAPE.triangles);\n"
+        "    this.vertex(0,0,0); this.vertex(1,0,0); this.vertex(0,1,0);\n"
+        "    this.endShape();\n"
+        "  }\n"
+        "}\n")) return false;
+    return write_file(root / "worlds" / "FluidAsync.js",
+        "class FluidAsync extends World {\n"
+        "  static roots=[{module:'FluidPart',transform:[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]}];\n"
+        "  hydrology() {\n"
+        "    const n=riverNetwork({cellSize:1,seed:7});\n"
+        "    const r=n.river('main').inlet([0,8,0],{flow:1})\n"
+        "      .curve([[0,8,0],[10,1,0]])\n"
+        "      .channelProfile([{at:0,width:4,depth:3,asymmetry:0},"
+        "{at:10,width:4,depth:3,asymmetry:0}]);\n"
+        "    n.backend('physx');\n"
+        "    n.pbd({particleSpacing:.2,restDensity:1000,fixedStep:.01,iterations:4,maxNeighbors:96});\n"
+        "    n.limits({batchSteps:8,maxSteps:120,maxParticles:1000});\n"
+        "    n.emitter({id:'main-inlet',position:[1,4,1],direction:[1,0,0],initialVelocity:[1,0,0],flow:1,radius:.5,startTime:0,stopTime:1.2});\n"
+        "    n.virtualDam({height:4,thickness:.5});\n"
+        "    n.fillSensor({upstreamOffset:1,length:1,height:3,resolution:[2,2,2],crestWetFraction:.5,stableWetSteps:1,minimumParticlesPerCell:1});\n"
+        // The removed legacy cap remains an ignored extra property so older
+        // scene scripts continue to load. A value below the fake bake's three
+        // particles proves it no longer controls visual product generation.
+        "    n.quality({particleRadius:.13,visualVoxel:.5,visualBlendWidth:.05,coarseVoxel:.1,gameplayCell:1,maxVisualParticles:1,maxGridVertices:100000,maxMeshVertices:100000,maxMeshIndices:300000});\n"
+        "    r.section('upper',{from:0,to:8,dryMargin:1}).emitters(['main-inlet']).pool({from:7,to:8,fillLevel:3}).spillway({id:'pool-one',at:8,width:4,effectiveDepth:1,overlap:1,damOffset:.5});\n"
+        "    n.bakeSequential(); n.build();\n"
+        "  }\n"
+        "}\n") && project_fixture_contract(root, "FluidAsync");
+}
+
+struct AsyncFluidBackendState {
+    std::atomic<int> factory_calls{0};
+    std::atomic<int> run_calls{0};
+    std::thread::id worker_thread{};
+};
+
+class AsyncFluidBackend final : public hydrology::IFluidBakeBackend {
+public:
+    explicit AsyncFluidBackend(std::shared_ptr<AsyncFluidBackendState> state)
+        : state_(std::move(state)) {}
+
+    hydrology::FluidBackendProbe probe() override {
+        hydrology::FluidBackendProbe result{};
+        result.available = true;
+        result.backend_name = "async-fake";
+        result.sdk_version = "5.6.1";
+        result.device_name = "Async Fake GPU";
+        result.code = hydrology::FluidBakeCode::Ready;
+        result.sdk_version_hex = 0x05060100u;
+        result.cuda_driver_version = 1;
+        result.device_luid = {1u, 0u, 0u, 0u, 0u, 0u, 0u, 0u};
+        result.device_luid_valid = true;
+        return result;
+    }
+
+    bool run(const hydrology::FluidBakeInput& input,
+             const hydrology::FluidBakeCallbacks& callbacks,
+             hydrology::FluidBakeOutput& output,
+             hydrology::FluidBakeError& error) override {
+        ++state_->run_calls;
+        state_->worker_thread = std::this_thread::get_id();
+        if (callbacks.progress) {
+            callbacks.progress({1u, input.settings.max_steps, 2u, 0.25f});
+            callbacks.progress({2u, input.settings.max_steps, 3u, 0.75f});
+        }
+        output.particles = {
+            {{1.0f, 1.0f, 1.0f}, {0.0f, 0.0f, 2.0f}, 2u},
+            {{2.0f, 2.0f, 2.0f}, {0.0f, 0.0f, 1.0f}, 5u},
+            {{3.0f, 3.0f, 3.0f}, {0.0f, 0.0f, 3.0f}, 9u},
+        };
+        output.sensor = {0.75f, 4u, 5u, true, 0.8f, 0.75f, 0.75f, 2u};
+        output.stats = {5u, 3u, 3u, 0u, 0u, 0.01};
+        output.stats.escape_policy = input.settings.escape_policy;
+        output.stats.emitted_particles = 3u;
+        output.stats.escape_budget = hydrology::fluid_escape_budget(
+            3u, input.settings.escape_policy);
+        error = {};
+        return true;
+    }
+
+private:
+    std::shared_ptr<AsyncFluidBackendState> state_;
+};
+
 // Snapshot format for determinism comparison.
 struct EvRec {
     int type = 0;     // matter::EventType cast to int
@@ -198,6 +344,13 @@ struct SkinBindingObservation {
     uint32_t first_index = 0;
     uint32_t index_count = 0;
     size_t influence_count = 0;
+    size_t lod_count = 0;
+    // AnimationSkinnedAsset::influences is ONE arena shared by every LOD, each
+    // LOD owning the window [influence_vertex, influence_vertex + vertex_count)
+    // (animation_skin_bridge.h; valid_lod() range-checks exactly that window).
+    // True when those windows tile the arena exactly: start at 0, no gap, no
+    // overlap, ending at influences->size().
+    bool influence_windows_tile_arena = false;
     bool visible = false;
 };
 
@@ -222,8 +375,46 @@ static SkinBindingObservation observe_skin_binding(
             observed.index_count = lod.index_count;
             observed.influence_count = binding.asset->influences
                 ? binding.asset->influences->size() : 0;
+            observed.lod_count = binding.asset->lods.size();
+            std::vector<std::pair<uint32_t, uint32_t>> windows;
+            windows.reserve(binding.asset->lods.size());
+            for (const auto& entry : binding.asset->lods)
+                windows.emplace_back(entry.influence_vertex, entry.vertex_count);
+            std::sort(windows.begin(), windows.end());
+            size_t cursor = 0;
+            bool tiled = !windows.empty();
+            for (const auto& window : windows) {
+                if (window.first != cursor) { tiled = false; break; }
+                cursor += window.second;
+            }
+            observed.influence_windows_tile_arena =
+                tiled && cursor == observed.influence_count;
         });
     return observed;
+}
+
+// The skin-reconciliation checks below are a ten-term conjunction; a bare FAIL
+// line says nothing about which term moved. Print the observation so the next
+// reader gets the numbers instead of having to re-instrument the suite.
+static void report_skin_binding(const char* label,
+                                const SkinBindingObservation& observed,
+                                uint32_t range_calls, uint64_t range_part,
+                                uint64_t expected_asset_identity) {
+    std::printf("  %s skin: count=%u part_hash=%016llx range_calls=%u "
+                "range_part=%016llx asset_identity=%016llx (expected %016llx) "
+                "source_vertex=%u influence_vertex=%u vertex_count=%u "
+                "influence_count=%zu lods=%zu tiled=%d first_index=%u "
+                "index_count=%u\n",
+                label, observed.count,
+                (unsigned long long)observed.part_hash, range_calls,
+                (unsigned long long)range_part,
+                (unsigned long long)observed.asset_identity,
+                (unsigned long long)expected_asset_identity,
+                observed.source_vertex, observed.influence_vertex,
+                observed.vertex_count, observed.influence_count,
+                observed.lod_count,
+                observed.influence_windows_tile_arena ? 1 : 0,
+                observed.first_index, observed.index_count);
 }
 
 static std::string ev_type_name(matter::EventType t) {
@@ -234,6 +425,8 @@ static std::string ev_type_name(matter::EventType t) {
         case matter::EventType::BakeError:      return "BakeError";
         // Phase C Task 6: camera-driven refine loop event (append-only).
         case matter::EventType::RefineTileDone: return "RefineTileDone";
+        // smart-dune.7: terminal event for a bake that gave up (append-only).
+        case matter::EventType::BakeAborted:    return "BakeAborted";
     }
     return "?";
 }
@@ -292,13 +485,45 @@ static bool test_returns_immediately(const std::string& sandbox) {
     auto s = engine->open_world(wd, err);
     CHECK(s != nullptr, "session opened");
     if (!s) { printf("  err: %s\n", err.c_str()); return false; }
-
-    // Cache-cold measurement: request_bake() must NOT block the caller.
-    auto t0 = clk::now();
-    s->request_bake();
-    auto elapsed_ms = std::chrono::duration<double, std::milli>(clk::now() - t0).count();
-    printf("  request_bake elapsed: %.2f ms\n", elapsed_ms);
-    CHECK(elapsed_ms < 50.0, "request_bake returns < 50 ms");
+    struct RequestProbe {
+        std::mutex mutex;
+        std::condition_variable condition;
+        std::thread::id caller;
+        bool returned = false, entered = false, released = false, exited = false;
+        bool on_caller = false;
+    };
+    auto probe = std::make_shared<RequestProbe>();
+    // BakeStarted is emitted by the actual command worker before installation.
+    // Immediate delivery holds that worker until request_bake has returned.
+    auto worker_barrier = s->events().must_subscribe<matter::events::BakeStarted>(
+        "test.async.return_barrier", matter::evt::immediate,
+        [probe](const matter::events::BakeStarted&) {
+            std::unique_lock<std::mutex> lock(probe->mutex);
+            probe->entered = true;
+            probe->on_caller = std::this_thread::get_id() == probe->caller;
+            probe->condition.notify_all();
+            probe->condition.wait(lock, [&] { return probe->released; });
+            probe->exited = true;
+        });
+    // A separate caller lets us release even a broken synchronous request.
+    // The worker cannot finish event delivery before the main thread observes return.
+    std::thread caller([&] {
+        {
+            std::lock_guard<std::mutex> lock(probe->mutex);
+            probe->caller = std::this_thread::get_id();
+        }
+        s->request_bake();
+        {
+            std::lock_guard<std::mutex> lock(probe->mutex);
+            probe->returned = true;
+        }
+        probe->condition.notify_all();
+    });
+    {
+        std::unique_lock<std::mutex> lock(probe->mutex);
+        probe->condition.wait_for(lock, std::chrono::seconds(1),
+                                  [&] { return probe->returned; });
+    }
 
     // Async contract: only BakeStarted (or nothing yet) can have arrived before
     // any pump — the finalizer BakeFinished must NOT have been emitted from
@@ -320,12 +545,34 @@ static bool test_returns_immediately(const std::string& sandbox) {
     CHECK(!pre_pump_finished,
           "no BakeFinished/BakeError before pump (bake still in flight)");
 
+    // The command first drains the app cleanup barrier, even for a new session.
+    // Pump that barrier so the worker can reach the immediate BakeStarted probe.
+    bool returned_while_worker_blocked = false;
+    const auto barrier_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+    while (std::chrono::steady_clock::now() < barrier_deadline) {
+        s->pump_gpu_jobs(1.0);
+        std::unique_lock<std::mutex> lock(probe->mutex);
+        returned_while_worker_blocked = probe->condition.wait_for(
+            lock, std::chrono::milliseconds(2), [&] {
+                return probe->entered && probe->returned && !probe->exited;
+            });
+        if (returned_while_worker_blocked) break;
+    }
+    {
+        std::lock_guard<std::mutex> lock(probe->mutex);
+        probe->released = true;
+    }
+    probe->condition.notify_all();
+    caller.join();
+    CHECK(returned_while_worker_blocked && !probe->on_caller,
+          "request_bake returns while its actual worker remains blocked");
+
     // Events must arrive later while we pump.
     std::vector<EvRec> log;
     bool ok = drive_bake(*s, log);
     CHECK(ok, "bake completed under async pump");
     CHECK(!log.empty(), "at least one event arrived during pump");
-    return ok && !log.empty() && !pre_pump_finished;
+    return ok && !log.empty() && !pre_pump_finished && returned_while_worker_blocked;
 }
 
 // --- (b) bake_completes_with_finished ---------------------------------------
@@ -377,8 +624,9 @@ static bool test_completes_finished(const std::string& sandbox) {
 
     // Bake Lab (task 1.2): after BakeFinished, last_bake_trace returns the
     // stage-span tree. reset_cache above nuked .cache (resolve cache included),
-    // so this was a full bake: the root's children are exactly the execute_bake
-    // stages install, compose, publish, in order, and all spans are closed.
+    // so this was a full bake: after the resolve-cache preflight spans, the
+    // execute_bake stages are install, compose, publish, in order. All root
+    // spans must be closed.
     {
         bake_trace::Span trace;
         s->last_bake_trace(trace);
@@ -388,19 +636,29 @@ static bool test_completes_finished(const std::string& sandbox) {
         for (const auto& c : trace.children)
             printf("    span %s: %.1f..%.1f ms\n",
                    c.name ? c.name : "(null)", c.begin_ms, c.end_ms);
-        CHECK(trace.children.size() == 3,
-              "trace root has exactly 3 stage spans (install/compose/publish)");
-        if (trace.children.size() == 3) {
-            CHECK(std::strcmp(trace.children[0].name, bake_trace::kSpanInstall) == 0,
+        std::vector<const bake_trace::Span*> stages;
+        for (const auto& c : trace.children) {
+            if (c.name && std::strncmp(c.name, "resolve-cache.",
+                                       sizeof("resolve-cache.") - 1) == 0)
+                continue;
+            stages.push_back(&c);
+        }
+        CHECK(stages.size() == 3,
+              "trace root has exactly 3 bake stages (install/compose/publish)");
+        if (stages.size() == 3) {
+            CHECK(stages[0]->name &&
+                      std::strcmp(stages[0]->name, bake_trace::kSpanInstall) == 0,
                   "stage span 0 is \"install\"");
-            CHECK(std::strcmp(trace.children[1].name, bake_trace::kSpanCompose) == 0,
+            CHECK(stages[1]->name &&
+                      std::strcmp(stages[1]->name, bake_trace::kSpanCompose) == 0,
                   "stage span 1 is \"compose\"");
-            CHECK(std::strcmp(trace.children[2].name, bake_trace::kSpanPublish) == 0,
+            CHECK(stages[2]->name &&
+                      std::strcmp(stages[2]->name, bake_trace::kSpanPublish) == 0,
                   "stage span 2 is \"publish\"");
         }
         for (const auto& c : trace.children) {
-            CHECK(c.begin_ms >= 0.0, "stage span begin_ms >= 0");
-            CHECK(c.end_ms >= c.begin_ms, "stage span is closed (end >= begin)");
+            CHECK(c.begin_ms >= 0.0, "root span begin_ms >= 0");
+            CHECK(c.end_ms >= c.begin_ms, "root span is closed (end >= begin)");
         }
     }
 
@@ -726,12 +984,14 @@ static bool test_supersede_cancels_inflight(const std::string& sandbox) {
         s->pump_gpu_jobs(4.0f);
         matter::Event ev;
         while (s->poll_event(ev)) {
-            printf("  ev: %s code=%d phase=%s module=%s\n",
-                   ev.type == matter::EventType::BakeStarted  ? "BakeStarted"  :
-                   ev.type == matter::EventType::BakePartDone ? "BakePartDone" :
-                   ev.type == matter::EventType::BakeFinished ? "BakeFinished" :
-                   "BakeError",
-                   (int)ev.code, ev.phase.c_str(), ev.module.c_str());
+            // ev_type_name, not a hand-rolled ternary chain that labelled
+            // everything it did not recognize "BakeError" — a superseded bake
+            // now also emits BakeAborted, and reading that as a BakeError in
+            // this log would be actively misleading.
+            printf("  ev: %s code=%d phase=%s module=%s gen=%llu\n",
+                   ev_type_name(ev.type).c_str(),
+                   (int)ev.code, ev.phase.c_str(), ev.module.c_str(),
+                   (unsigned long long)ev.bake_generation);
 
             if (ev.type == matter::EventType::BakePartDone && !second_bake_issued) {
                 ++part_done_count;
@@ -1199,7 +1459,7 @@ static bool test_focus_orders_publish(const std::string& sandbox) {
 
 // --- Task 10 tests -----------------------------------------------------------
 
-#ifdef __linux__
+#if defined(__linux__) && defined(MATTER_ASYNC_SOURCE_QUALIFICATION)
 
 // (j) live_edit_inotify_e2e
 // enable_live_edit=true on the Box sandbox. Full bake. Record instance_count +
@@ -1506,6 +1766,7 @@ static bool test_regenerate_seed_reroll(const std::string& sandbox) {
     return ok1 && ok2 && ok3 && pb1 >= 1 && pb2 >= 1 && pb3 == 0 && ch3 >= 1;
 }
 
+#ifdef MATTER_ASYNC_SOURCE_QUALIFICATION
 static bool test_production_animated_gallery_binding() {
     printf("-- production AnimatedRigGallery runtime binding\n");
     const auto stamp = std::chrono::high_resolution_clock::now()
@@ -1518,17 +1779,17 @@ static bool test_production_animated_gallery_binding() {
     const fs::path example_root = fs::absolute("../../projects/world_demo");
     std::error_code ec;
     fs::copy_file(
-        example_root / "scenes" / "AnimatedRigGallery" / "objects" / "AnimatedRigGallery.js",
+        example_root / "scenes" / "examples" / "AnimatedRigGallery" / "objects" / "AnimatedRigGallery.js",
         project_root / "objects" / "AnimatedRigGallery.js",
         fs::copy_options::overwrite_existing, ec);
     if (!ec)
         fs::copy_file(
-            example_root / "objects" / "Crate.js",
+            example_root / "objects" / "props" / "Crate.js",
             project_root / "objects" / "Crate.js",
             fs::copy_options::overwrite_existing, ec);
     if (!ec)
         fs::copy_file(
-            example_root / "scenes" / "AnimatedRigGallery" / "AnimatedRigGallery.js",
+            example_root / "scenes" / "examples" / "AnimatedRigGallery" / "AnimatedRigGallery.js",
             project_root / "worlds" / "AnimatedRigGallery.js",
             fs::copy_options::overwrite_existing, ec);
     std::string gallery_part_source;
@@ -1631,13 +1892,28 @@ static bool test_production_animated_gallery_binding() {
         cold_snapshots.empty() ? 0 : cold_snapshots.front().asset.resolved_hash;
     const SkinBindingObservation cold_skin =
         observe_skin_binding(*cold);
+    report_skin_binding("cold", cold_skin, cold_range_calls, cold_range_part,
+                        cold_asset_hash);
     CHECK(cold_range_calls > 0 && cold_skin.count == 1 &&
               cold_range_part == cold_skin.part_hash &&
               cold_skin.asset_identity == cold_asset_hash &&
               cold_skin.source_vertex == 1200 &&
               cold_skin.influence_vertex == 0 &&
               cold_skin.vertex_count > 0 &&
-              cold_skin.influence_count == cold_skin.vertex_count &&
+              cold_skin.influence_count >=
+                  cold_skin.influence_vertex + cold_skin.vertex_count &&
+              // NOT `influence_count == vertex_count`. The asset's `influences`
+              // is one arena shared by ALL of its LOD ranges, each owning the
+              // window [influence_vertex, influence_vertex + vertex_count)
+              // (animation_skin_bridge.h). Equality with the presentation LOD's
+              // vertex_count only held while the gallery shipped a single LOD;
+              // it now ships three rungs whose windows sum to 4683 against a
+              // 4190-vertex LOD0, so equality would be asserting "there is
+              // exactly one LOD", not coherence.
+              // The window tiling below is the coherence property, and it holds
+              // for any rung count.
+              cold_skin.lod_count >= 1 &&
+              cold_skin.influence_windows_tile_arena &&
               cold_skin.first_index == 3400 &&
               cold_skin.index_count > 0,
           "cold gallery uses production skin reconciliation with injected global raster ranges");
@@ -1677,13 +1953,21 @@ static bool test_production_animated_gallery_binding() {
           "warm restore republishes the entity-only shipped animation asset");
     const SkinBindingObservation warm_skin =
         observe_skin_binding(*warm);
+    report_skin_binding("warm", warm_skin, warm_range_calls, warm_range_part,
+                        cold_asset_hash);
     CHECK(warm_range_calls > 0 && warm_skin.count == 1 &&
               warm_range_part == warm_skin.part_hash &&
               warm_skin.asset_identity == cold_asset_hash &&
               warm_skin.source_vertex == 5600 &&
               warm_skin.influence_vertex == 0 &&
               warm_skin.vertex_count > 0 &&
-              warm_skin.influence_count == warm_skin.vertex_count &&
+              warm_skin.influence_count >=
+                  warm_skin.influence_vertex + warm_skin.vertex_count &&
+              // Same arena-vs-LOD-window reasoning as the cold case above.
+              warm_skin.lod_count == cold_skin.lod_count &&
+              warm_skin.influence_windows_tile_arena &&
+              warm_skin.influence_count == cold_skin.influence_count &&
+              warm_skin.vertex_count == cold_skin.vertex_count &&
               warm_skin.first_index == 7800 &&
               warm_skin.index_count > 0,
           "warm gallery executes the same production skin reconciliation contract");
@@ -1801,6 +2085,8 @@ static bool test_production_animated_gallery_binding() {
 //   3. It works with NO frame-loop app-lane pump: the drive loop below calls
 //      ONLY pump_gpu_jobs (GL work) and poll_event — never hub.pump(lane::app),
 //      which E4 adds. poll_event owns and pump_one()s lane::legacy_poll itself.
+#endif // MATTER_ASYNC_SOURCE_QUALIFICATION
+
 static bool test_e3_poll_event_typed_parity(const std::string& sandbox) {
     printf("-- (m) e3_poll_event_typed_parity\n");
     reset_cache(sandbox, "Box");
@@ -1933,13 +2219,589 @@ static bool test_e3_poll_event_typed_parity(const std::string& sandbox) {
     return finished;
 }
 
+// --- (n) bake_aborted_terminal_event (smart-dune.7) -------------------------
+// The terminal-event contract: every BakeStarted is followed by exactly one of
+// BakeFinished or BakeAborted, and every event carries the bake_generation of
+// the run that emitted it.
+//
+// Before this landed, a FATAL bake (one that gives up rather than skipping a
+// part) emitted a BakeError and then went silent: the stream was
+// indistinguishable from a bake still in progress, and an aborting BakeError
+// was indistinguishable from the per-part skip-and-continue BakeErrors that DO
+// go on to a BakeFinished (see (g)/(h)/(i) above, which assert exactly that
+// skip-and-continue shape). So a consumer could only report an aborted bake by
+// timing out.
+//
+// Abort trigger: a world source with a JS syntax error. open_world only checks
+// that worlds/<Name>.js EXISTS, so the session opens; install_graph's
+// load_authored_world then fails, which is a fatal (not per-part) failure and
+// the shortest real path to the `emit_error(...); return;` branch this test is
+// about.
+static bool test_bake_aborted_terminal_event(const std::string& sandbox) {
+    printf("-- (n) bake_aborted_terminal_event\n");
+
+    // Drain until a TERMINAL event (BakeFinished or BakeAborted), keeping the
+    // whole sequence. Unlike drive_bake/drive_bake_tolerant this does not treat
+    // a BakeError as the end of the story — the point is what comes after it.
+    auto drive_to_terminal = [](matter::WorldSession& s,
+                                std::vector<matter::Event>& out,
+                                int timeout_sec = 60) -> bool {
+        auto deadline = clk::now() + std::chrono::seconds(timeout_sec);
+        while (clk::now() < deadline) {
+            s.pump_gpu_jobs(4.0f);
+            matter::Event ev;
+            bool any = false;
+            while (s.poll_event(ev)) {
+                any = true;
+                out.push_back(ev);
+                if (ev.type == matter::EventType::BakeFinished ||
+                    ev.type == matter::EventType::BakeAborted)
+                    return true;
+            }
+            if (!any) std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+        printf("  drive_to_terminal TIMEOUT after %ds\n", timeout_sec);
+        return false;
+    };
+
+    bool all_ok = true;
+
+    // --- part 1: the happy path still finishes, and carries a generation -----
+    {
+        reset_cache(sandbox, "Box");
+        std::string err;
+        std::unique_ptr<matter::EngineContext> engine;
+        auto s = open_session(sandbox, err, engine, "Box");
+        CHECK(s != nullptr, "aborted: happy-path session opened");
+        if (!s) return false;
+
+        s->request_bake();
+        std::vector<matter::Event> evs;
+        const bool terminal = drive_to_terminal(*s, evs);
+        CHECK(terminal, "aborted: happy path reached a terminal event");
+
+        const matter::Event* started = nullptr;
+        const matter::Event* finished = nullptr;
+        bool saw_aborted = false;
+        bool all_stamped = !evs.empty();
+        for (const auto& ev : evs) {
+            if (ev.type == matter::EventType::BakeStarted && !started) started = &ev;
+            if (ev.type == matter::EventType::BakeFinished) finished = &ev;
+            if (ev.type == matter::EventType::BakeAborted) saw_aborted = true;
+            if (ev.bake_generation == 0) all_stamped = false;
+        }
+        CHECK(finished != nullptr, "aborted: happy path ends in BakeFinished");
+        CHECK(!saw_aborted, "aborted: happy path emits NO BakeAborted");
+        CHECK(all_stamped, "aborted: every event carries a non-zero bake_generation");
+        if (started && finished) {
+            printf("  happy path: started gen=%llu finished gen=%llu\n",
+                   (unsigned long long)started->bake_generation,
+                   (unsigned long long)finished->bake_generation);
+            CHECK(started->bake_generation == 1,
+                  "aborted: first bake of a session is generation 1");
+            CHECK(started->bake_generation == finished->bake_generation,
+                  "aborted: BakeStarted and BakeFinished share one generation");
+            all_ok = all_ok && started->bake_generation == 1 &&
+                     started->bake_generation == finished->bake_generation;
+        }
+        all_ok = all_ok && terminal && finished != nullptr && !saw_aborted &&
+                 all_stamped;
+    }
+
+    // --- part 2: a fatal bake terminates with BakeAborted -------------------
+    const std::string aroot = sandbox + "_abort";
+    if (!reset_project(aroot, "AbortWorld")) {
+        printf("  FAIL: reset_project\n");
+        ++g_failures;
+        return false;
+    }
+    // A valid part, so the only thing wrong with this project is the world.
+    if (!write_file(fs::path(aroot) / "objects" / "Box.js",
+        "class Box extends Part {\n"
+        "  build(p) {\n"
+        "    this.fill(MAT.stone);\n"
+        "    this.beginShape(SHAPE.triangles);\n"
+        "    this.vertex(-0.5, 0, -0.5); this.vertex(-0.5, 0, 0.5);\n"
+        "    this.vertex(0.5, 0, -0.5);\n"
+        "    this.endShape();\n"
+        "  }\n"
+        "}\n")) { remove_tree(aroot); return false; }
+    // Unterminated array literal: the world source cannot be evaluated at all,
+    // so there is no per-part failure to skip — the whole run has to give up.
+    if (!write_file(fs::path(aroot) / "worlds" / "AbortWorld.js",
+        "class AbortWorld extends World {\n"
+        "  static roots = [ { module: 'Box',\n")) {
+        remove_tree(aroot);
+        return false;
+    }
+
+    std::string err;
+    std::unique_ptr<matter::EngineContext> engine;
+    auto s = open_session(aroot, err, engine, "AbortWorld");
+    CHECK(s != nullptr, "aborted: broken-world session opened");
+    if (!s) { remove_tree(aroot); return false; }
+
+    s->request_bake();
+    std::vector<matter::Event> evs;
+    const bool terminal = drive_to_terminal(*s, evs);
+    CHECK(terminal,
+          "aborted: fatal bake reaches a terminal event (no timeout)");
+
+    int errors = 0;
+    bool saw_started = false, saw_finished = false;
+    const matter::Event* aborted = nullptr;
+    for (const auto& ev : evs) {
+        if (ev.type == matter::EventType::BakeStarted)  saw_started = true;
+        if (ev.type == matter::EventType::BakeFinished) saw_finished = true;
+        if (ev.type == matter::EventType::BakeError)    ++errors;
+        if (ev.type == matter::EventType::BakeAborted)  aborted = &ev;
+    }
+    printf("  fatal run: %zu events, %d BakeError(s), aborted=%d finished=%d\n",
+           evs.size(), errors, aborted != nullptr ? 1 : 0, (int)saw_finished);
+    CHECK(saw_started, "aborted: fatal run announced BakeStarted");
+    CHECK(!saw_finished, "aborted: fatal run emits NO BakeFinished");
+    CHECK(errors >= 1, "aborted: fatal run emitted at least one BakeError");
+    CHECK(aborted != nullptr, "aborted: fatal run emits BakeAborted");
+    bool shape_ok = saw_started && !saw_finished && errors >= 1 && aborted;
+    if (aborted) {
+        printf("  BakeAborted: gen=%llu phase=%s code=%d errors=%d msg=%s\n",
+               (unsigned long long)aborted->bake_generation,
+               aborted->phase.c_str(), (int)aborted->code, aborted->errors,
+               aborted->message.c_str());
+        CHECK(&evs.back() == aborted,
+              "aborted: BakeAborted is the LAST event of the run");
+        CHECK(aborted->bake_generation == 1,
+              "aborted: BakeAborted carries the run's generation (1)");
+        CHECK(aborted->phase == "install",
+              "aborted: BakeAborted names the phase that died (install)");
+        CHECK(aborted->code != matter::BakeErrorCode::None,
+              "aborted: BakeAborted carries a classified error code");
+        CHECK(!aborted->message.empty(),
+              "aborted: BakeAborted carries the failure detail");
+        CHECK(aborted->errors == errors,
+              "aborted: BakeAborted.errors counts the run's BakeErrors");
+        shape_ok = shape_ok && &evs.back() == aborted &&
+                   aborted->bake_generation == 1 &&
+                   aborted->phase == "install" &&
+                   aborted->code != matter::BakeErrorCode::None &&
+                   !aborted->message.empty() && aborted->errors == errors;
+    }
+
+    // --- part 3: the generation advances with the next bake command ---------
+    // This is what makes an event attributable: a second run on the SAME
+    // session stamps 2, so a consumer holding a stale event can tell it belongs
+    // to the previous run rather than to the one it is watching.
+    // Drain anything the first run left queued behind its terminal event, so
+    // the generation check below can be exact rather than "mostly 2".
+    {
+        matter::Event drained;
+        while (s->poll_event(drained)) {}
+    }
+    std::vector<matter::Event> evs2;
+    s->request_bake();
+    const bool terminal2 = drive_to_terminal(*s, evs2);
+    CHECK(terminal2, "aborted: second fatal bake also terminates");
+    bool gen2_ok = terminal2;
+    for (const auto& ev : evs2) {
+        if (ev.bake_generation != 2) {
+            printf("  second run event type=%s carried gen=%llu (expected 2)\n",
+                   ev_type_name(ev.type).c_str(),
+                   (unsigned long long)ev.bake_generation);
+            gen2_ok = false;
+        }
+    }
+    CHECK(gen2_ok, "aborted: every event of the second run carries generation 2");
+
+    all_ok = all_ok && terminal && shape_ok && gen2_ok;
+    remove_tree(aroot);
+    return all_ok;
+}
+
+// Task 7 fluid lifecycle proof in the general async suite. The focused PhysX
+// contract suite exercises cache, failure, LUID mismatch, and supersession;
+// this case keeps the core worker/event promise visible beside the editor's
+// other request_bake() guarantees.
+#ifdef MATTER_ASYNC_SOURCE_QUALIFICATION
+static bool test_authored_fluid_uses_worker_and_gpu_job_seam(
+    const std::string& sandbox) {
+    printf("-- authored_fluid_uses_worker_and_gpu_job_seam\n");
+    const fs::path root = fs::path(sandbox).string() + "_fluid";
+    if (!build_authored_fluid_sandbox(root)) {
+        CHECK(false, "async fluid fixture created");
+        return false;
+    }
+    const std::string cache_root = (root / ".cache").string();
+    matter::EngineDesc engine_desc{};
+    engine_desc.cache_root = cache_root.c_str();
+    engine_desc.allow_gl_lt_46 = true;
+    std::string error;
+    auto engine = matter::EngineContext::create(engine_desc, error);
+    CHECK(engine != nullptr, "async fluid engine created");
+    if (!engine) { remove_tree(root); return false; }
+    const std::string project_dir = root.string();
+    matter::WorldDesc world_desc = project_world_desc(project_dir, "FluidAsync");
+    auto session = engine->open_world(world_desc, error);
+    CHECK(session != nullptr, "async authored-fluid session opened");
+    if (!session) { remove_tree(root); return false; }
+
+    auto backend_state = std::make_shared<AsyncFluidBackendState>();
+    const std::thread::id caller_thread = std::this_thread::get_id();
+    std::thread::id visual_thread{};
+    int visual_calls = 0;
+    session->set_test_fluid_bake_dependencies(
+        [backend_state] {
+            ++backend_state->factory_calls;
+            return std::make_shared<AsyncFluidBackend>(backend_state);
+        },
+        [&](const gpu_meshing::ParticleJob& job,
+            gpu_meshing::MeshResult& mesh, gpu_meshing::Stats&,
+            gpu_meshing::Error&, const gpu_meshing::BuildControl&) {
+            ++visual_calls;
+            visual_thread = std::this_thread::get_id();
+            mesh.positions = {0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f,
+                              0.0f, 1.0f, 0.0f};
+            mesh.normals = {0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f,
+                            0.0f, 0.0f, 1.0f};
+            mesh.indices = {0u, 1u, 2u};
+            mesh.material = job.material;
+            mesh.content_digest = gpu_meshing::mesh_content_digest(mesh);
+            return true;
+        });
+    session->set_test_fluid_renderer_luid(
+        {1u, 0u, 0u, 0u, 0u, 0u, 0u, 0u});
+    CHECK(backend_state->factory_calls.load() == 0,
+          "async authored fluid backend remains lazy before request_bake");
+    session->request_bake();
+    std::vector<EvRec> events;
+    const bool finished = drive_bake(*session, events, 60);
+    int hydrology_progress = 0;
+    for (const EvRec& event : events)
+        if (event.type == static_cast<int>(matter::EventType::BakePartDone) &&
+            event.phase == "hydrology")
+            ++hydrology_progress;
+    const matter::HydrologyStatus status = session->hydrology_status();
+    CHECK(finished && session->instance_count() > 0,
+          "async authored fluid bake preserves and publishes dry world content");
+    CHECK(backend_state->factory_calls.load() == 1 &&
+              backend_state->run_calls.load() == 1 &&
+              backend_state->worker_thread != caller_thread,
+          "requested PhysX work runs once on the existing bake worker");
+    CHECK(visual_calls == 1 && visual_thread == caller_thread,
+          "particle visual work runs once through the app-thread GPU job seam");
+    CHECK(hydrology_progress >= 3 &&
+              status.state == matter::HydrologyState::Ready &&
+              status.progress == 1.0f &&
+              session->has_accepted_fluid_artifact_for_test(),
+          "thread-safe hydrology progress reaches Ready only with an accepted artifact");
+    remove_tree(root);
+    return finished;
+}
+
+static bool test_cancelled_fluid_generation_publishes_neither_half(
+    const std::string& sandbox) {
+    printf("-- cancelled_fluid_generation_publishes_neither_half\n");
+    const fs::path root = fs::path(sandbox).string() + "_fluid_publication";
+    if (!build_authored_fluid_sandbox(root)) {
+        CHECK(false, "fluid publication fixture created");
+        return false;
+    }
+    const std::string cache_root = (root / ".cache").string();
+    matter::EngineDesc engine_desc{};
+    engine_desc.cache_root = cache_root.c_str();
+    engine_desc.allow_gl_lt_46 = true;
+    std::string error;
+    auto engine = matter::EngineContext::create(engine_desc, error);
+    CHECK(engine != nullptr, "fluid publication engine created");
+    if (!engine) { remove_tree(root); return false; }
+    const std::string project_dir = root.string();
+    auto session = engine->open_world(
+        project_world_desc(project_dir, "FluidAsync"), error);
+    CHECK(session != nullptr, "fluid publication session opened");
+    if (!session) { remove_tree(root); return false; }
+
+    auto backend_state = std::make_shared<AsyncFluidBackendState>();
+    session->set_test_fluid_bake_dependencies(
+        [backend_state] {
+            ++backend_state->factory_calls;
+            return std::make_shared<AsyncFluidBackend>(backend_state);
+        },
+        [](const gpu_meshing::ParticleJob& job,
+           gpu_meshing::MeshResult& mesh, gpu_meshing::Stats&,
+           gpu_meshing::Error&, const gpu_meshing::BuildControl&) {
+            mesh.positions = {0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f,
+                              0.0f, 1.0f, 0.0f};
+            mesh.normals = {0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f,
+                            0.0f, 0.0f, 1.0f};
+            mesh.indices = {0u, 1u, 2u};
+            mesh.material = job.material;
+            mesh.content_digest = gpu_meshing::mesh_content_digest(mesh);
+            return true;
+        });
+    session->set_test_fluid_renderer_luid(
+        {1u, 0u, 0u, 0u, 0u, 0u, 0u, 0u});
+
+    std::mutex barrier_mutex;
+    std::condition_variable barrier_cv;
+    int before_calls = 0;
+    int after_calls = 0;
+    bool release_before_a = false;
+    bool release_after_a = false;
+    session->set_test_fluid_before_publication_hook([&] {
+        std::unique_lock<std::mutex> lock(barrier_mutex);
+        ++before_calls;
+        barrier_cv.notify_all();
+        if (before_calls == 1)
+            barrier_cv.wait(lock, [&] { return release_before_a; });
+    });
+    session->set_test_fluid_after_publication_hook([&] {
+        std::unique_lock<std::mutex> lock(barrier_mutex);
+        ++after_calls;
+        barrier_cv.notify_all();
+        if (after_calls == 1)
+            barrier_cv.wait(lock, [&] { return release_after_a; });
+    });
+
+    session->request_bake();
+    const auto wait_for_barrier = [&](const auto& predicate) {
+        const auto deadline = clk::now() + std::chrono::seconds(60);
+        while (clk::now() < deadline) {
+            {
+                std::lock_guard<std::mutex> lock(barrier_mutex);
+                if (predicate()) return true;
+            }
+            session->pump_gpu_jobs(4.0f);
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+        return false;
+    };
+    CHECK(wait_for_barrier([&] { return before_calls == 1; }),
+          "generation A parks before the publication boundary");
+    std::string world_source;
+    const fs::path world_path = root / "worlds" / "FluidAsync.js";
+    CHECK(read_file(world_path, world_source),
+          "generation B source was readable");
+    const std::size_t seed = world_source.find("seed:7");
+    CHECK(seed != std::string::npos, "generation A seed was found");
+    if (seed != std::string::npos) world_source.replace(seed, 6u, "seed:8");
+    CHECK(write_file(world_path, world_source),
+          "generation B changes accepted network identity");
+    session->reload();
+    CHECK(!session->river_runtime_binding() &&
+              !session->has_accepted_fluid_artifact_for_test(),
+          "requesting B exposes neither A CPU binding nor A render gate");
+    {
+        std::lock_guard<std::mutex> lock(barrier_mutex);
+        release_before_a = true;
+    }
+    barrier_cv.notify_all();
+    CHECK(wait_for_barrier([&] { return after_calls == 1; }),
+          "cancelled A reaches the commit-or-skip observation point");
+    CHECK(!session->river_runtime_binding() &&
+              !session->has_accepted_fluid_artifact_for_test(),
+          "cancelled A publishes neither CPU nor render state");
+    {
+        std::lock_guard<std::mutex> lock(barrier_mutex);
+        release_after_a = true;
+    }
+    barrier_cv.notify_all();
+
+    FullBakeLog events;
+    const bool finished = drive_bake_tolerant(*session, events, 60);
+    const auto binding = session->river_runtime_binding();
+    CHECK(finished && binding &&
+              session->has_accepted_fluid_artifact_for_test(),
+          "generation B atomically publishes CPU and render visibility");
+
+    hydrology::HydrologyNetworkArtifact accepted_manifest{};
+    bool found_manifest = false;
+    std::error_code iterator_error;
+    for (fs::recursive_directory_iterator it(root / ".cache", iterator_error),
+         end; !iterator_error && it != end; it.increment(iterator_error)) {
+        if (!it->is_regular_file() || it->path().extension() != ".mhyn")
+            continue;
+        std::ifstream stream(it->path(), std::ios::binary);
+        std::vector<std::uint8_t> bytes(
+            (std::istreambuf_iterator<char>(stream)),
+            std::istreambuf_iterator<char>());
+        hydrology::HydrologyNetworkArtifact candidate{};
+        gpu_meshing::Error manifest_error{};
+        if (hydrology::deserialize_network_artifact(
+                bytes, candidate, manifest_error) && binding &&
+            candidate.payload_digest == binding->generation()) {
+            accepted_manifest = std::move(candidate);
+            found_manifest = true;
+            break;
+        }
+    }
+    CHECK(found_manifest && binding &&
+              binding->generation() == accepted_manifest.payload_digest &&
+              binding->runtime_digest() ==
+                  accepted_manifest.runtime_field_digest &&
+              binding->presentation_digest() ==
+                  accepted_manifest.presentation_field_digest,
+          "B binding generation and field digests match its accepted manifest");
+
+    bool sampled = false;
+    matter::Float3 wet_position{};
+    if (binding) {
+        for (float z = -10.0f; z <= 20.0f && !sampled; z += 0.5f) {
+            for (float x = -10.0f; x <= 20.0f && !sampled; x += 0.5f) {
+                matter::RiverFieldSample field{};
+                if (binding->sample({x, 0.0f, z}, field)) {
+                    wet_position = {x, 0.0f, z};
+                    sampled = field.wet_valid &&
+                              std::isfinite(field.surface_position_m.y) &&
+                              std::isfinite(field.surface_normal.y) &&
+                              field.surface_normal.y > 0.0f &&
+                              std::isfinite(field.velocity_mps.x) &&
+                              std::isfinite(field.velocity_mps.y) &&
+                              std::isfinite(field.velocity_mps.z) &&
+                              field.turbulence >= 0.0f &&
+                              field.turbulence <= 1.0f &&
+                              field.aeration >= 0.0f &&
+                              field.aeration <= 1.0f &&
+                              field.foam_potential >= 0.0f &&
+                              field.foam_potential <= 1.0f;
+                }
+            }
+        }
+    }
+    CHECK(sampled,
+          "published runtime binding combines finite gameplay and presentation channels");
+
+    int replacement_before_calls = 0;
+    int replacement_after_calls = 0;
+    bool release_replacement_before = false;
+    bool release_replacement_after = false;
+    bool prior_valid_at_publication_point = false;
+    bool prior_visible_at_publication_point = false;
+    session->set_test_fluid_before_publication_hook([&] {
+        std::unique_lock<std::mutex> lock(barrier_mutex);
+        ++replacement_before_calls;
+        barrier_cv.notify_all();
+        if (replacement_before_calls == 1)
+            barrier_cv.wait(lock, [&] { return release_replacement_before; });
+    });
+    session->set_test_fluid_after_publication_hook([&] {
+        std::unique_lock<std::mutex> lock(barrier_mutex);
+        ++replacement_after_calls;
+        barrier_cv.notify_all();
+        if (replacement_after_calls == 1)
+            barrier_cv.wait(lock, [&] { return release_replacement_after; });
+    });
+    session->set_test_fluid_during_publication_hook([&] {
+        matter::RiverFieldSample during_sample{};
+        prior_visible_at_publication_point =
+            session->river_runtime_binding() == binding;
+        prior_valid_at_publication_point =
+            binding && binding->sample(wet_position, during_sample);
+    });
+    const std::size_t seed_b = world_source.find("seed:8");
+    CHECK(seed_b != std::string::npos, "accepted B seed was found");
+    if (seed_b != std::string::npos)
+        world_source.replace(seed_b, 6u, "seed:9");
+    CHECK(write_file(world_path, world_source),
+          "generation C changes accepted network identity");
+    session->reload();
+    CHECK(wait_for_barrier([&] { return replacement_before_calls == 1; }),
+          "generation C parks before replacing accepted B");
+    matter::RiverFieldSample retained_sample{};
+    CHECK(binding && binding->sample(wet_position, retained_sample),
+          "accepted B remains sampleable while C is only a candidate");
+
+    const std::size_t seed_c = world_source.find("seed:9");
+    CHECK(seed_c != std::string::npos, "candidate C seed was found");
+    if (seed_c != std::string::npos)
+        world_source.replace(seed_c, 6u, "seed:10");
+    CHECK(write_file(world_path, world_source),
+          "generation D supersedes candidate C");
+    session->reload();
+    {
+        std::lock_guard<std::mutex> lock(barrier_mutex);
+        release_replacement_before = true;
+    }
+    barrier_cv.notify_all();
+    CHECK(wait_for_barrier([&] { return replacement_after_calls == 1; }),
+          "cancelled C reaches its commit-or-skip observation point");
+    retained_sample = {};
+    CHECK(session->river_runtime_binding() == binding && binding &&
+              binding->sample(wet_position, retained_sample),
+          "cancelled C leaves retained accepted B's lease valid");
+    {
+        std::lock_guard<std::mutex> lock(barrier_mutex);
+        release_replacement_after = true;
+    }
+    barrier_cv.notify_all();
+    FullBakeLog replacement_events;
+    const bool replacement_finished =
+        drive_bake_tolerant(*session, replacement_events, 60);
+    const auto replacement_binding = session->river_runtime_binding();
+    retained_sample.wet_valid = true;
+    CHECK(replacement_finished && replacement_binding &&
+              replacement_binding != binding &&
+              replacement_binding->generation() != binding->generation() &&
+              !binding->sample(wet_position, retained_sample) &&
+              !retained_sample.wet_valid,
+          "successful D atomically invalidates a caller-retained B binding");
+    CHECK(prior_visible_at_publication_point &&
+              prior_valid_at_publication_point,
+          "the prior binding stays visible and valid until the single publication store");
+
+    session->set_test_fluid_before_publication_hook({});
+    session->set_test_fluid_after_publication_hook({});
+    session->set_test_fluid_during_publication_hook({});
+    session->set_test_fluid_bake_dependencies(
+        [backend_state] {
+            ++backend_state->factory_calls;
+            return std::make_shared<AsyncFluidBackend>(backend_state);
+        },
+        [](const gpu_meshing::ParticleJob&, gpu_meshing::MeshResult&,
+           gpu_meshing::Stats&, gpu_meshing::Error& visual_error,
+           const gpu_meshing::BuildControl&) {
+            visual_error = {gpu_meshing::ErrorCode::VulkanFailure,
+                            "injected replacement visual failure"};
+            return false;
+        });
+    const std::size_t seed_d = world_source.find("seed:10");
+    CHECK(seed_d != std::string::npos, "accepted D seed was found");
+    if (seed_d != std::string::npos)
+        world_source.replace(seed_d, 7u, "seed:11");
+    const std::size_t spacing = world_source.find("particleSpacing:.2");
+    CHECK(spacing != std::string::npos,
+          "accepted D simulation contract was found");
+    if (spacing != std::string::npos)
+        world_source.replace(spacing, 18u, "particleSpacing:.21");
+    CHECK(write_file(world_path, world_source),
+          "generation E changes the section simulation contract");
+    session->reload();
+    FullBakeLog failed_events;
+    drive_bake_tolerant(*session, failed_events, 60);
+    matter::RiverFieldSample replacement_sample{};
+    CHECK(replacement_binding &&
+              session->river_runtime_binding() == replacement_binding &&
+              replacement_binding->sample(wet_position, replacement_sample),
+          "failed E leaves retained accepted D's lease valid");
+
+    session.reset();
+    engine.reset();
+    remove_tree(root);
+    return finished && found_manifest && sampled && replacement_finished;
+}
+
+#endif // MATTER_ASYNC_SOURCE_QUALIFICATION
+
 int main() {
     // Unique writable sandbox so parallel test runs do not collide.
     const auto stamp = std::chrono::high_resolution_clock::now()
                            .time_since_epoch().count();
+#ifdef MATTER_ASYNC_SOURCE_QUALIFICATION
     std::string sandbox =
         (fs::temp_directory_path() /
          ("me3_asyncbake_" + std::to_string(stamp))).string();
+#else
+    (void)stamp;
+    const std::string sandbox = "/async-bake-fixture";
+#endif
     if (!build_sandbox(sandbox)) {
         printf("FAIL: build_sandbox\n");
         return 1;
@@ -1948,6 +2810,14 @@ int main() {
         return 1;
     }
 
+#ifdef MATTER_ASYNC_SOURCE_QUALIFICATION
+#ifdef __linux__
+    test_live_edit_inotify_e2e(sandbox);
+#endif
+    test_production_animated_gallery_binding();
+    test_authored_fluid_uses_worker_and_gpu_job_seam(sandbox);
+    test_cancelled_fluid_generation_publishes_neither_half(sandbox);
+#else
     test_returns_immediately(sandbox);
     test_completes_finished(sandbox);
     test_determinism(sandbox);
@@ -1970,20 +2840,21 @@ int main() {
     // Task 3 (Phase C): set_bake_focus + distance-ordered publish.
     test_focus_orders_publish(sandbox);
 
-#ifdef __linux__
-    // Task 10: inotify live-edit end-to-end.
-    test_live_edit_inotify_e2e(sandbox);
-#endif
 
     // Task 7 (Phase C): regenerate(seed) — root param override reload.
     test_regenerate_seed_reroll(sandbox);
-    test_production_animated_gallery_binding();
+
+    // Task 7 PhysX fluid bake integration on the same worker/GPU-job lifecycle.
+
+    // smart-dune.7: terminal-event contract + bake_generation attribution.
+    test_bake_aborted_terminal_event(sandbox);
 
     // E3 milestone (event-system.md): typed bake events + legacy poll_event
     // shim over lane::legacy_poll. Runs LAST so it cannot perturb any prior
     // test's cache/state assumptions.
     test_e3_poll_event_typed_parity(sandbox);
 
+#endif
     printf(g_failures ? "\n%d FAILURE(S)\n" : "\nALL PASS\n", g_failures);
     // Best-effort cleanup of the writable temporary project.
     remove_tree(sandbox);

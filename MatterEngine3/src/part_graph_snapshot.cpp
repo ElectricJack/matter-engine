@@ -1,3 +1,5 @@
+// MatterEngine3/src/part_graph_snapshot.cpp
+//
 // Implementation of non-trivial Snapshot methods (Task 9).
 #include "part_graph_snapshot.h"
 

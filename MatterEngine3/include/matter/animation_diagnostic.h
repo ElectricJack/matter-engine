@@ -1,5 +1,10 @@
 #pragma once
 
+// MatterEngine3/include/matter/animation_diagnostic.h
+//
+// See the block above `AnimationDiagnostic` below for what this type is and
+// why it is separate from the private `animation::Diagnostic`.
+
 #include <cstdint>
 #include <string>
 

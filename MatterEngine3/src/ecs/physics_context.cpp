@@ -1,23 +1,65 @@
+// MatterEngine3/src/ecs/physics_context.cpp
+//
+// The ECS <-> Box3D bridge. The engine's authored physics state is declarative
+// ECS components (RigidBody, colliders, LocalTransform); Box3D wants imperative
+// native handles. A BridgeRecord is one entity's reconciled pairing of the two,
+// and everything in this file exists to keep that pairing honest.
+//
+// One fixed step, in phase order (see ecs_runtime.cpp's phase graph):
+//   reconcile() — create/destroy/rebuild native bodies for entities whose
+//                 declaration changed. The ONLY point at which a bridge is
+//                 retired, which is what lets the later stages trust the
+//                 userData pointers Box3D hands back.
+//   push()      — drain the command queues and drive NON-dynamic bodies from
+//                 their ECS transform (static: set; kinematic: target). Dynamic
+//                 bodies are Box3D-authoritative and are not pushed.
+//   step()      — b3World_Step plus capture_events() into `events_`.
+//   pull()      — write dynamic poses/velocities back into the ECS, emit the
+//                 captured pairs as flecs entity events, and mirror an
+//                 aggregate onto the session hub.
+//
+// Validation is paranoid by design, and the redundancy is not accidental: every
+// path that consumes a Box3D userData pointer re-checks owning world, entity id,
+// liveness, map identity (the map still maps that entity to THIS record) and
+// that the body/shape ids round-trip. Anything that fails counts a stale event
+// and is dropped rather than trusted.
+//
+// Determinism: iteration order is made deterministic wherever it can affect the
+// simulation — reconcile candidates are sorted and uniqued, push walks bridges
+// in entity-id order, teleports/velocities/wakes are sorted by entity, and the
+// captured event lists are sorted before publication.
+//
+// Threading: the enqueue_* methods are the only members callable off the tick
+// thread; they validate, then take command_mutex, and are noexcept (an
+// allocation failure returns false rather than propagating). Everything else —
+// reconcile/push/step/pull/queries — is tick-thread only.
 #include "physics_context.h"
 #include "physics_shapes.h"
 
 #include <algorithm>
+#include <cfloat>
 #include <cmath>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
+#include <thread>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include <vector>
 
 #include <box3d/box3d.h>
+#include <box3d/collision.h>  // b3CreateMesh/b3CreateHeightField + destroyers
 
 #include "matter/event/event_hub.h"
 #include "matter/events/physics_events.h"
+#include "terrain_collision/terrain_collision_artifact.h"
 
 namespace matter::physics::detail {
 namespace {
+
+constexpr std::size_t kForceCommandCapacity = 4096;
 
 // E6: deliver one flecs entity event per endpoint of every captured pair, so
 // each participant independently hears "I touched `other`". Emitted for the
@@ -49,6 +91,16 @@ void emit_pair_events(
     }
 }
 
+// One entity's native physics presence. Heap-allocated and held by unique_ptr in
+// Impl::bridges so its ADDRESS is stable: that address is stored as the Box3D
+// body and shape userData, and every event path re-derives the entity from it.
+//
+// `configuration_hash` + `desired` are the reconciler's change detector — a
+// mismatch against the freshly validated declaration means destroy and rebuild
+// rather than mutate in place. `query_proxy` is this shape's proxy in the
+// context's own broadphase tree (-1 = none) and must be moved whenever the shape
+// moves. `live` false means the native handles are already gone and the record
+// is only awaiting erasure.
 struct BridgeRecord {
     const flecs::world_t* owning_world = nullptr;
     flecs::entity_t entity = 0;
@@ -69,8 +121,18 @@ struct QueuedCommand {
     Float3 primary{};
     Float3 secondary{};
     Quaternion rotation{};
+    std::shared_ptr<const void> guard_owner;
+    PhysicsCommandGuardBegin guard_begin = nullptr;
+    PhysicsCommandGuardEnd guard_end = nullptr;
+    std::uint64_t guarded_batch_id = 0;
+    std::size_t guarded_batch_count = 0;
+    std::size_t guarded_batch_index = 0;
 };
 
+// Identity of a queued command is (originating world, entity, kind) — the
+// PAYLOAD is deliberately excluded from both the hash and the equality. That is
+// what makes a wake command idempotent: re-queuing one before the next push
+// collapses into the existing entry instead of accumulating.
 struct QueuedCommandHash {
     size_t operator()(const QueuedCommand& command) const noexcept {
         const size_t world_hash =
@@ -251,6 +313,124 @@ bool normalize(Quaternion& value) {
            std::isfinite(value.z) && std::isfinite(value.w);
 }
 
+bool valid_character_input(const CharacterMoveInput& input) noexcept {
+    return finite(input.position) && finite(input.velocity) &&
+           finite(input.desired_horizontal_velocity) && finite(input.gravity) &&
+           std::isfinite(input.radius) && input.radius > 0.0f &&
+           std::isfinite(input.half_segment) && input.half_segment >= 0.0f &&
+           std::isfinite(input.dt) && input.dt > 0.0f &&
+           std::isfinite(input.max_slope_cos) && input.max_slope_cos >= 0.0f &&
+           input.max_slope_cos <= 1.0f && std::isfinite(input.step_height) &&
+           input.step_height >= 0.0f;
+}
+
+bool character_float_range(double value) noexcept {
+    return std::isfinite(value) && value >= -FLT_MAX && value <= FLT_MAX;
+}
+
+bool character_position_range(b3Pos value) noexcept {
+    return character_float_range(value.x) && character_float_range(value.y) &&
+           character_float_range(value.z);
+}
+
+bool character_query_vector(b3Vec3 value) noexcept {
+    // Box3D normalizes ray/capsule vectors and uses squared distances. Merely
+    // finite components do not make those float operations representable.
+    const double squared = static_cast<double>(value.x) * value.x +
+        static_cast<double>(value.y) * value.y +
+        static_cast<double>(value.z) * value.z;
+    return character_float_range(squared) &&
+           std::isfinite(b3LengthSquared(value));
+}
+
+bool character_query_bounds(b3Pos position, const b3Capsule& capsule,
+                            b3Vec3 translation) noexcept {
+    const float reach = capsule.center2.y + capsule.radius;
+    const b3Vec3 extent{capsule.radius, reach, capsule.radius};
+    const b3Pos lower{position.x - extent.x, position.y - extent.y,
+                      position.z - extent.z};
+    const b3Pos upper{position.x + extent.x, position.y + extent.y,
+                      position.z + extent.z};
+    if (!character_position_range(lower) || !character_position_range(upper))
+        return false;
+    const b3AABB box = b3OffsetAABB(
+        {{-extent.x, -extent.y, -extent.z}, extent}, position);
+    // BoxCast computes (lower + upper) / 2, (upper - lower) / 2, and
+    // translated bounds in float, even though the query origin is double.
+    return finite(engine_vector(b3Add(box.lowerBound, box.upperBound))) &&
+           finite(engine_vector(b3Sub(box.upperBound, box.lowerBound))) &&
+           finite(engine_vector(b3Add(box.lowerBound, translation))) &&
+           finite(engine_vector(b3Add(box.upperBound, translation)));
+}
+
+bool mover_accepts_static_shape(b3ShapeId shape) {
+    const b3BodyId body = b3Shape_GetBody(shape);
+    return b3Body_IsValid(body) && b3Body_GetType(body) == b3_staticBody &&
+           !b3Shape_IsSensor(shape);
+}
+
+struct StaticMoverPlaneGather {
+    b3CollisionPlane* planes = nullptr;
+    int* count = nullptr;
+    int capacity = 0;
+    bool valid = true;
+};
+
+bool static_mover_plane_callback(
+    b3ShapeId shape, const b3PlaneResult* results, int count, void* context) {
+    if (!mover_accepts_static_shape(shape)) return true;
+    auto* gather = static_cast<StaticMoverPlaneGather*>(context);
+    for (int index = 0; index < count && *gather->count < gather->capacity;
+         ++index) {
+        if (!character_query_vector(results[index].plane.normal) ||
+            !std::isfinite(results[index].plane.offset)) {
+            gather->valid = false;
+            return false;
+        }
+        gather->planes[*gather->count] =
+            {results[index].plane, FLT_MAX, 0.0f, true};
+        ++*gather->count;
+    }
+    return true;
+}
+
+bool static_mover_filter(b3ShapeId shape, void*) {
+    return mover_accepts_static_shape(shape);
+}
+
+struct StaticRayResult {
+    bool hit = false;
+    b3Pos point{};
+    b3Vec3 normal{};
+    float fraction = 1.0f;
+    bool valid = true;
+};
+
+float static_ray_callback(
+    b3ShapeId shape,
+    b3Pos point,
+    b3Vec3 normal,
+    float fraction,
+    uint64_t,
+    int,
+    int,
+    void* context) {
+    if (!mover_accepts_static_shape(shape)) return -1.0f;
+    auto* result = static_cast<StaticRayResult*>(context);
+    if (!character_position_range(point) || !character_query_vector(normal) ||
+        !std::isfinite(fraction) || fraction < 0.0f || fraction > 1.0f) {
+        result->valid = false;
+        return 0.0f;
+    }
+    if (!result->hit || fraction < result->fraction) {
+        result->hit = true;
+        result->point = point;
+        result->normal = normal;
+        result->fraction = fraction;
+    }
+    return fraction;
+}
+
 struct HullDeleter {
     void operator()(b3HullData* hull) const {
         if (hull != nullptr) {
@@ -259,8 +439,172 @@ struct HullDeleter {
     }
 };
 
+struct TerrainCollisionTileRuntime {
+    terrain_collision::SectorCoordinate coordinate{};
+    Float3 origin_m{};
+    std::uint64_t tile_key = 0;
+    std::vector<b3Vec3> vertices;
+    std::vector<std::int32_t> indices;
+    b3MeshData* mesh_data = nullptr;
+    b3BodyId body = b3_nullBodyId;
+    b3ShapeId shape = b3_nullShapeId;
+
+    TerrainCollisionTileRuntime() = default;
+    TerrainCollisionTileRuntime(const TerrainCollisionTileRuntime&) = delete;
+    TerrainCollisionTileRuntime& operator=(
+        const TerrainCollisionTileRuntime&) = delete;
+
+    TerrainCollisionTileRuntime(
+        TerrainCollisionTileRuntime&& other) noexcept
+        : coordinate(other.coordinate),
+          origin_m(other.origin_m),
+          tile_key(other.tile_key),
+          vertices(std::move(other.vertices)),
+          indices(std::move(other.indices)),
+          mesh_data(std::exchange(other.mesh_data, nullptr)),
+          body(std::exchange(other.body, b3_nullBodyId)),
+          shape(std::exchange(other.shape, b3_nullShapeId)) {}
+
+    TerrainCollisionTileRuntime& operator=(
+        TerrainCollisionTileRuntime&& other) noexcept {
+        if (this == &other) {
+            return *this;
+        }
+        reset();
+        coordinate = other.coordinate;
+        origin_m = other.origin_m;
+        tile_key = other.tile_key;
+        vertices = std::move(other.vertices);
+        indices = std::move(other.indices);
+        mesh_data = std::exchange(other.mesh_data, nullptr);
+        body = std::exchange(other.body, b3_nullBodyId);
+        shape = std::exchange(other.shape, b3_nullShapeId);
+        return *this;
+    }
+
+    ~TerrainCollisionTileRuntime() {
+        reset();
+    }
+
+    void reset() noexcept {
+        // A body owns its attached shape. Destroying it first both destroys
+        // the shape and ends every reference to mesh_data.
+        if (b3Body_IsValid(body)) {
+            b3DestroyBody(body);
+        }
+        shape = b3_nullShapeId;
+        body = b3_nullBodyId;
+        if (mesh_data != nullptr) {
+            b3DestroyMesh(mesh_data);
+            mesh_data = nullptr;
+        }
+    }
+};
+
+struct TerrainCollisionRuntime {
+    TerrainCollisionPhysicsStats stats{};
+    std::vector<TerrainCollisionTileRuntime> tiles;
+};
+
 } // namespace
 
+TerrainCollisionMeshLayoutError checked_terrain_collision_mesh_layout(
+    std::uint64_t vertex_count,
+    std::uint64_t index_count,
+    TerrainCollisionMeshLayout& layout) noexcept {
+    layout = {};
+    constexpr std::uint64_t signed_limit =
+        static_cast<std::uint64_t>(std::numeric_limits<int>::max());
+    if (vertex_count < 3 || vertex_count > signed_limit) {
+        return TerrainCollisionMeshLayoutError::VertexCount;
+    }
+    if (index_count == 0 || index_count % 3 != 0) {
+        return TerrainCollisionMeshLayoutError::IndexCount;
+    }
+
+    const std::uint64_t triangle_count = index_count / 3;
+    const std::uint64_t max_node_safe_triangles = (signed_limit + 1) / 2;
+    if (triangle_count == 0 ||
+        triangle_count > max_node_safe_triangles) {
+        return TerrainCollisionMeshLayoutError::TriangleNodeCount;
+    }
+    const std::uint64_t node_count = 2 * triangle_count - 1;
+    if (index_count > signed_limit) {
+        return TerrainCollisionMeshLayoutError::IndexCount;
+    }
+
+    auto checked_multiply = [](
+        std::uint64_t first,
+        std::uint64_t second,
+        std::uint64_t& product) noexcept {
+        if (first != 0 && second >
+                std::numeric_limits<std::uint64_t>::max() / first) {
+            return false;
+        }
+        product = first * second;
+        return true;
+    };
+    auto checked_align_eight = [](
+        std::uint64_t value,
+        std::uint64_t& aligned) noexcept {
+        if (value > std::numeric_limits<std::uint64_t>::max() - 7) {
+            return false;
+        }
+        aligned = (value + 7) & ~std::uint64_t{7};
+        return true;
+    };
+
+    std::uint64_t byte_count = 0;
+    if (!checked_align_eight(sizeof(b3MeshData), byte_count) ||
+        byte_count > signed_limit) {
+        return TerrainCollisionMeshLayoutError::RetainedLayout;
+    }
+    auto append_aligned = [&](
+        std::uint64_t count,
+        std::uint64_t element_size) noexcept {
+        std::uint64_t bytes = 0;
+        std::uint64_t aligned = 0;
+        if (!checked_multiply(count, element_size, bytes) ||
+            !checked_align_eight(bytes, aligned) ||
+            aligned > signed_limit || byte_count > signed_limit - aligned) {
+            return false;
+        }
+        byte_count += aligned;
+        return true;
+    };
+    if (!append_aligned(node_count, sizeof(b3MeshNode)) ||
+        !append_aligned(vertex_count, sizeof(b3Vec3)) ||
+        !append_aligned(triangle_count, sizeof(b3MeshTriangle)) ||
+        !append_aligned(triangle_count, sizeof(std::uint8_t)) ||
+        !append_aligned(triangle_count, sizeof(std::uint8_t))) {
+        return TerrainCollisionMeshLayoutError::RetainedLayout;
+    }
+
+    layout.vertex_count = static_cast<std::int32_t>(vertex_count);
+    layout.index_count = static_cast<std::int32_t>(index_count);
+    layout.triangle_count = static_cast<std::int32_t>(triangle_count);
+    layout.node_count = static_cast<std::int32_t>(node_count);
+    layout.worst_case_retained_bytes =
+        static_cast<std::int32_t>(byte_count);
+    return TerrainCollisionMeshLayoutError::None;
+}
+
+// All mutable state of a context. Split out of the header so nothing outside
+// this file needs the Box3D headers.
+//
+// Command queues, and their differing semantics matter to gameplay code:
+//   teleports/velocities — maps keyed by entity, so LAST WRITE WINS within a
+//                          step; applied in entity-id order;
+//   forces/impulses      — vectors, so every enqueued one is applied and they
+//                          ACCUMULATE; applied in enqueue order;
+//   wakes                — a set, so duplicates collapse.
+// All five are guarded by command_mutex and swapped out wholesale by push().
+//
+// `query_tree` is the context's OWN broadphase for ray/overlap queries, separate
+// from the solver's; proxies are created in reconcile() and moved on body
+// movement, teleport and set_body_state. `stepping` guards against re-entrant
+// queries while the solver is running. The *_for_test members are fault-
+// injection hooks consumed once and cleared by the path they affect.
 struct PhysicsContext::Impl {
     b3WorldId world_id = b3_nullWorldId;
     b3DynamicTree query_tree{};
@@ -271,6 +615,7 @@ struct PhysicsContext::Impl {
     std::unordered_map<flecs::entity_t, QueuedCommand> teleports;
     std::unordered_map<flecs::entity_t, QueuedCommand> velocities;
     std::vector<QueuedCommand> forces;
+    std::vector<QueuedCommand> force_drain_buffer;
     std::vector<QueuedCommand> impulses;
     std::unordered_set<
         QueuedCommand, QueuedCommandHash, QueuedCommandEqual> wakes;
@@ -282,14 +627,201 @@ struct PhysicsContext::Impl {
     flecs::entity_t tombstoned_query_participant_for_test = 0;
     flecs::entity_t duplicate_overlap_participant_for_test = 0;
     bool fail_next_reconcile_mark_for_test = false;
+    std::uint64_t next_guarded_batch_id = 1;
+    void* guarded_batch_hook_context = nullptr;
+    GuardedBatchPostFirstRowHook guarded_batch_post_first_row_hook = nullptr;
     bool full_reconcile_required = false;
-    uint64_t physics_transform_marker_allocations_for_test = 0;
     uint64_t ray_query_candidate_attempts_for_test = 0;
     uint64_t overlap_query_candidate_attempts_for_test = 0;
     bool stepping = false;
+    std::thread::id owner_thread{};
+    std::size_t fail_terrain_mesh_create_tile_for_test = 0;
+    std::unique_ptr<TerrainCollisionRuntime> terrain_collision;
 };
 
+void fail_terrain_collision_mesh_create_on_tile_for_test(
+    PhysicsContext& context,
+    std::size_t one_based_non_empty_tile) noexcept {
+    if (context.impl_ != nullptr &&
+        std::this_thread::get_id() == context.impl_->owner_thread &&
+        !context.impl_->stepping) {
+        context.impl_->fail_terrain_mesh_create_tile_for_test =
+            one_based_non_empty_tile;
+    }
+}
+
 namespace {
+
+bool validate_and_build_terrain_tile(
+    b3WorldId world_id,
+    const terrain_collision::TileCandidate& candidate,
+    float friction,
+    float restitution,
+    bool inject_mesh_create_failure,
+    TerrainCollisionTileRuntime& tile,
+    std::string& error) {
+    const std::size_t vertex_count = candidate.vertices.size();
+    const std::size_t index_count = candidate.indices.size();
+    if (vertex_count == 0 || index_count == 0) {
+        error = "terrain collision tile has mismatched empty geometry";
+        return false;
+    }
+    TerrainCollisionMeshLayout layout{};
+    const TerrainCollisionMeshLayoutError layout_error =
+        checked_terrain_collision_mesh_layout(
+            static_cast<std::uint64_t>(vertex_count),
+            static_cast<std::uint64_t>(index_count), layout);
+    if (layout_error != TerrainCollisionMeshLayoutError::None) {
+        switch (layout_error) {
+        case TerrainCollisionMeshLayoutError::VertexCount:
+            error = "terrain collision tile vertex count exceeds Box3D limits";
+            break;
+        case TerrainCollisionMeshLayoutError::IndexCount:
+            error = "terrain collision tile index count is invalid for Box3D";
+            break;
+        case TerrainCollisionMeshLayoutError::TriangleNodeCount:
+            error = "terrain collision tile triangle tree exceeds Box3D limits";
+            break;
+        case TerrainCollisionMeshLayoutError::RetainedLayout:
+            error = "terrain collision tile retained layout exceeds Box3D limits";
+            break;
+        case TerrainCollisionMeshLayoutError::None:
+            break;
+        }
+        return false;
+    }
+    if (!finite(candidate.origin_m)) {
+        error = "terrain collision tile origin is not finite";
+        return false;
+    }
+    for (const Float3 vertex : candidate.vertices) {
+        if (!finite(vertex)) {
+            error = "terrain collision tile vertex is not finite";
+            return false;
+        }
+    }
+    for (const std::uint32_t index : candidate.indices) {
+        if (static_cast<std::size_t>(index) >= vertex_count) {
+            error = "terrain collision tile index is out of range";
+            return false;
+        }
+    }
+
+    bool has_non_degenerate_triangle = false;
+    b3AABB accepted_triangle_bounds{};
+    const float minimum_area =
+        0.01f * B3_LINEAR_SLOP * B3_LINEAR_SLOP;
+    for (std::int32_t triangle = 0;
+         triangle < layout.triangle_count;
+         ++triangle) {
+        const std::size_t offset =
+            static_cast<std::size_t>(triangle) * 3;
+        const std::uint32_t index1 = candidate.indices[offset];
+        const std::uint32_t index2 = candidate.indices[offset + 1];
+        const std::uint32_t index3 = candidate.indices[offset + 2];
+        if (index1 == index2 || index1 == index3 || index2 == index3) {
+            error = "terrain collision triangle repeats a vertex index";
+            return false;
+        }
+        const b3Vec3 vertex1 = box_vector(candidate.vertices[index1]);
+        const b3Vec3 vertex2 = box_vector(candidate.vertices[index2]);
+        const b3Vec3 vertex3 = box_vector(candidate.vertices[index3]);
+        const b3Vec3 normal = b3Cross(
+            b3Sub(vertex2, vertex1), b3Sub(vertex3, vertex1));
+        const float area = 0.5f * b3Length(normal);
+        if (!std::isfinite(area)) {
+            error = "terrain collision triangle area is not finite";
+            return false;
+        }
+        if (area >= minimum_area) {
+            const b3AABB triangle_bounds = {
+                b3Min(vertex1, b3Min(vertex2, vertex3)),
+                b3Max(vertex1, b3Max(vertex2, vertex3)),
+            };
+            accepted_triangle_bounds = has_non_degenerate_triangle
+                ? b3AABB_Union(
+                      accepted_triangle_bounds, triangle_bounds)
+                : triangle_bounds;
+            has_non_degenerate_triangle = true;
+        }
+    }
+    if (!has_non_degenerate_triangle) {
+        error = "terrain collision mesh has no triangle above Box3D's minimum area";
+        return false;
+    }
+    if (!b3IsSaneAABB(accepted_triangle_bounds)) {
+        error = "terrain collision mesh bounds exceed Box3D sanity limits";
+        return false;
+    }
+
+    tile.coordinate = candidate.coordinate;
+    tile.origin_m = candidate.origin_m;
+    tile.tile_key = candidate.tile_key;
+    tile.vertices.reserve(vertex_count);
+    for (const Float3 vertex : candidate.vertices) {
+        tile.vertices.push_back(box_vector(vertex));
+    }
+    tile.indices.reserve(index_count);
+    for (const std::uint32_t index : candidate.indices) {
+        tile.indices.push_back(static_cast<std::int32_t>(index));
+    }
+
+    b3BodyDef body_definition = b3DefaultBodyDef();
+    body_definition.type = b3_staticBody;
+    body_definition.position = box_position(candidate.origin_m);
+    tile.body = b3CreateBody(world_id, &body_definition);
+    if (!b3Body_IsValid(tile.body)) {
+        error = "Box3D failed to create a terrain collision body";
+        return false;
+    }
+
+    b3MeshDef mesh_definition{};
+    mesh_definition.vertices = tile.vertices.data();
+    mesh_definition.indices = tile.indices.data();
+    mesh_definition.vertexCount = layout.vertex_count;
+    mesh_definition.triangleCount = layout.triangle_count;
+    mesh_definition.weldVertices = false;
+    mesh_definition.identifyEdges = true;
+    mesh_definition.useMedianSplit = true;
+    std::vector<int> degenerate_indices(
+        static_cast<std::size_t>(layout.triangle_count) + 1, -1);
+    tile.mesh_data = inject_mesh_create_failure
+        ? nullptr
+        : b3CreateMesh(
+              &mesh_definition,
+              degenerate_indices.data(),
+              layout.triangle_count + 1);
+    if (tile.mesh_data == nullptr) {
+        error = "Box3D rejected a terrain collision mesh";
+        return false;
+    }
+    if (std::any_of(
+            degenerate_indices.begin(), degenerate_indices.end(),
+            [](int index) { return index != -1; })) {
+        error = "Box3D reported a degenerate terrain collision triangle";
+        return false;
+    }
+    if (tile.mesh_data->byteCount <= 0 ||
+        tile.mesh_data->byteCount > layout.worst_case_retained_bytes) {
+        error = "Box3D returned invalid terrain collision retained bytes";
+        return false;
+    }
+
+    b3ShapeDef shape_definition = b3DefaultShapeDef();
+    shape_definition.baseMaterial.friction = friction;
+    shape_definition.baseMaterial.restitution = restitution;
+    const ColliderProperties engine_default_filter{};
+    shape_definition.filter.categoryBits =
+        engine_default_filter.category_bits;
+    shape_definition.filter.maskBits = engine_default_filter.mask_bits;
+    tile.shape = b3CreateMeshShape(
+        tile.body, &shape_definition, tile.mesh_data, b3Vec3_one);
+    if (!b3Shape_IsValid(tile.shape)) {
+        error = "Box3D failed to create a terrain collision shape";
+        return false;
+    }
+    return true;
+}
 
 bool is_live_dynamic_bridge(const BridgeRecord& bridge) {
     return bridge.live && bridge.type == RigidBodyType::Dynamic &&
@@ -300,6 +832,11 @@ bool is_live_dynamic_bridge(const BridgeRecord& bridge) {
            b3Shape_GetUserData(bridge.shape) == &bridge;
 }
 
+// The gate every enqueue_* passes through, called BEFORE taking the lock. A
+// command is accepted only for a live, dynamic, error-free entity of THIS
+// context's world whose bridge is fully live on both the Box3D and ECS sides.
+// Rejection is normal and silent (the caller returns false); it is not an error
+// condition, just "that entity is not simulable right now".
 bool can_enqueue_command(
     const std::unordered_map<
         flecs::entity_t, std::unique_ptr<BridgeRecord>>& bridges,
@@ -357,6 +894,11 @@ BridgeRecord* validate_queued_command(
     return found->second.get();
 }
 
+// Commands in entity-id order. Purely for determinism: the queues are hash
+// containers, so applying them in iteration order would make the simulation
+// depend on hash layout. Note that forces and impulses are NOT run through this
+// — they are vectors applied in enqueue order, which is already deterministic
+// and, unlike teleport/velocity, order-sensitive because they accumulate.
 std::vector<QueuedCommand> sorted_map_commands(
     const std::unordered_map<flecs::entity_t, QueuedCommand>& commands) {
     std::vector<QueuedCommand> sorted;
@@ -429,6 +971,12 @@ struct IndexedRayQuery {
     bool found = false;
 };
 
+// b3DynamicTree ray callback. The RETURN VALUE is the tree's continue-clipping
+// parameter, not a hit report: returning input->maxFraction means "ignore this
+// proxy, keep the current search range", while returning the accepted hit's
+// fraction shrinks the search to everything nearer. Ties are broken by the lower
+// entity id so a ray hitting two coincident shapes resolves the same way every
+// run.
 float indexed_ray_callback(
     const b3RayCastInput* input,
     int proxy_id,
@@ -509,6 +1057,9 @@ PhysicsCommandTraceEntry trace_entry(const QueuedCommand& command) {
 
 PhysicsContext::PhysicsContext(const PhysicsSettings& settings)
     : impl_(std::make_unique<Impl>()) {
+    impl_->owner_thread = std::this_thread::get_id();
+    impl_->forces.reserve(kForceCommandCapacity);
+    impl_->force_drain_buffer.reserve(kForceCommandCapacity);
     b3WorldDef world_def = b3DefaultWorldDef();
     world_def.workerCount = 1;
     world_def.gravity = {settings.gravity.x, settings.gravity.y,
@@ -522,10 +1073,16 @@ PhysicsContext::PhysicsContext(const PhysicsSettings& settings)
     impl_->query_tree_valid = true;
 }
 
+// Teardown order is defensive: every bridge is first de-fanged (proxy destroyed,
+// userData nulled, marked not-live) so nothing that runs during world
+// destruction can follow a pointer into a half-destroyed record, and only then
+// is the Box3D world destroyed. Individual bodies are not destroyed one by one —
+// b3DestroyWorld takes them.
 PhysicsContext::~PhysicsContext() {
     if (impl_ == nullptr) {
         return;
     }
+    clear_terrain_collision();
     for (auto& entry : impl_->bridges) {
         BridgeRecord& bridge = *entry.second;
         if (impl_->query_tree_valid && bridge.query_proxy >= 0) {
@@ -545,6 +1102,10 @@ PhysicsContext::~PhysicsContext() {
         b3DestroyWorld(impl_->world_id);
         impl_->world_id = b3_nullWorldId;
     }
+    // If clear was defensively rejected (foreign-thread destruction or an
+    // in-progress-step marker), the world has now invalidated every attached
+    // body and shape. Releasing mesh data here cannot leave a dangling shape.
+    impl_->terrain_collision.reset();
     impl_->bridges.clear();
     if (impl_->query_tree_valid) {
         b3DynamicTree_Destroy(&impl_->query_tree);
@@ -562,6 +1123,126 @@ PhysicsStats PhysicsContext::stats() const noexcept {
 
 bool PhysicsContext::world_is_valid() const noexcept {
     return impl_ != nullptr && b3World_IsValid(impl_->world_id);
+}
+
+bool PhysicsContext::replace_terrain_collision(
+    const terrain_collision::TerrainCollisionCandidate& candidate,
+    std::string& error) {
+    error.clear();
+    if (impl_ == nullptr || !b3World_IsValid(impl_->world_id)) {
+        error = "terrain collision replacement requires a live physics world";
+        return false;
+    }
+    if (std::this_thread::get_id() != impl_->owner_thread) {
+        error = "terrain collision replacement requires the physics owner thread";
+        return false;
+    }
+    if (impl_->stepping) {
+        error = "terrain collision replacement is forbidden while stepping";
+        return false;
+    }
+    if (impl_->terrain_collision != nullptr &&
+        impl_->terrain_collision->stats.installation_key ==
+            candidate.installation_key) {
+        return true;
+    }
+    if (!std::isfinite(candidate.friction) || candidate.friction < 0.0f ||
+        candidate.friction > 1.0f ||
+        !std::isfinite(candidate.restitution) ||
+        candidate.restitution < 0.0f || candidate.restitution > 1.0f) {
+        error = "terrain collision material must be finite and in [0, 1]";
+        return false;
+    }
+
+    try {
+        std::size_t non_empty_count = 0;
+        for (const terrain_collision::TileCandidate& tile : candidate.tiles) {
+            if (!tile.vertices.empty() || !tile.indices.empty()) {
+                ++non_empty_count;
+            }
+        }
+        if (non_empty_count > static_cast<std::size_t>(
+                std::numeric_limits<std::uint32_t>::max())) {
+            error = "terrain collision shape count exceeds runtime limits";
+            return false;
+        }
+
+        auto replacement = std::make_unique<TerrainCollisionRuntime>();
+        replacement->tiles.reserve(non_empty_count);
+        replacement->stats.installation_key = candidate.installation_key;
+        replacement->stats.replacements = impl_->terrain_collision != nullptr
+            ? (impl_->terrain_collision->stats.replacements ==
+                       std::numeric_limits<std::uint64_t>::max()
+                   ? std::numeric_limits<std::uint64_t>::max()
+                   : impl_->terrain_collision->stats.replacements + 1)
+            : 0;
+
+        std::size_t one_based_non_empty_tile = 0;
+        for (const terrain_collision::TileCandidate& source : candidate.tiles) {
+            if (source.vertices.empty() && source.indices.empty()) {
+                if (!finite(source.origin_m)) {
+                    error = "empty terrain collision tile origin is not finite";
+                    return false;
+                }
+                continue;
+            }
+            ++one_based_non_empty_tile;
+            const bool inject_mesh_create_failure =
+                impl_->fail_terrain_mesh_create_tile_for_test ==
+                one_based_non_empty_tile;
+            if (inject_mesh_create_failure) {
+                impl_->fail_terrain_mesh_create_tile_for_test = 0;
+            }
+            TerrainCollisionTileRuntime tile;
+            if (!validate_and_build_terrain_tile(
+                    impl_->world_id, source, candidate.friction,
+                    candidate.restitution, inject_mesh_create_failure,
+                    tile, error)) {
+                return false;
+            }
+            const std::uint64_t tile_bytes =
+                static_cast<std::uint64_t>(tile.mesh_data->byteCount);
+            if (replacement->stats.retained_bytes >
+                std::numeric_limits<std::uint64_t>::max() - tile_bytes) {
+                error = "terrain collision retained byte count overflow";
+                return false;
+            }
+            replacement->stats.retained_bytes += tile_bytes;
+            replacement->tiles.push_back(std::move(tile));
+        }
+        replacement->stats.shape_count =
+            static_cast<std::uint32_t>(replacement->tiles.size());
+
+        std::unique_ptr<TerrainCollisionRuntime> retired =
+            std::move(impl_->terrain_collision);
+        impl_->terrain_collision = std::move(replacement);
+        // Publish first, then retire. TerrainCollisionTileRuntime destroys the
+        // body (and its attached shape) before releasing retained mesh data.
+        retired.reset();
+        return true;
+    } catch (const std::bad_alloc&) {
+        error = "terrain collision replacement allocation failed";
+        return false;
+    } catch (...) {
+        error = "terrain collision replacement failed";
+        return false;
+    }
+}
+
+void PhysicsContext::clear_terrain_collision() noexcept {
+    if (impl_ == nullptr ||
+        std::this_thread::get_id() != impl_->owner_thread ||
+        impl_->stepping) {
+        return;
+    }
+    impl_->terrain_collision.reset();
+}
+
+TerrainCollisionPhysicsStats
+PhysicsContext::terrain_collision_stats() const noexcept {
+    return impl_ != nullptr && impl_->terrain_collision != nullptr
+        ? impl_->terrain_collision->stats
+        : TerrainCollisionPhysicsStats{};
 }
 
 void PhysicsContext::mark_for_reconcile(flecs::entity_t entity) noexcept {
@@ -582,6 +1263,13 @@ void PhysicsContext::mark_for_reconcile(flecs::entity_t entity) noexcept {
     }
 }
 
+// Transform-change hook, and the feedback-loop breaker. pull() writes a body's
+// pose back into LocalTransform, which trips the transform observer, which would
+// otherwise mark the entity dirty and make the reconciler re-examine a body that
+// nothing authored. The pending bit set by pull() is consumed here: if the
+// entity's transform still matches the native pose exactly (and scale is unit),
+// the write was ours and no reconcile is scheduled. Any real divergence — an
+// authored move, a scaled transform — falls through to mark_for_reconcile.
 void PhysicsContext::mark_transform_for_reconcile(
     flecs::entity entity) noexcept {
     if (impl_ == nullptr || !entity || entity.id() == 0) {
@@ -669,9 +1357,91 @@ bool PhysicsContext::enqueue_force(
     }
     try {
         std::lock_guard<std::mutex> lock(impl_->command_mutex);
+        if (impl_->forces.size() >= kForceCommandCapacity) {
+            ++stats_.failed_commands;
+            return false;
+        }
         impl_->forces.push_back({
             originating_world, entity, PhysicsCommandKind::Force,
             force, {}, {}});
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+bool PhysicsContext::enqueue_force_at_world_point(
+    const flecs::world_t* originating_world,
+    flecs::entity_t entity,
+    Float3 force,
+    Float3 world_point) noexcept {
+    if (impl_ == nullptr || !finite(force) || !finite(world_point) ||
+        !can_enqueue_command(
+            impl_->bridges, this, originating_world, entity)) {
+        return false;
+    }
+    try {
+        std::lock_guard<std::mutex> lock(impl_->command_mutex);
+        if (impl_->forces.size() >= kForceCommandCapacity) {
+            ++stats_.failed_commands;
+            return false;
+        }
+        impl_->forces.push_back({
+            originating_world, entity, PhysicsCommandKind::ForceAtPoint,
+            force, world_point, {}});
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+bool PhysicsContext::enqueue_guarded_force_at_world_points(
+    const flecs::world_t* originating_world,
+    flecs::entity_t entity,
+    const GuardedForceAtWorldPoint* rows,
+    std::size_t count,
+    const std::shared_ptr<const void>& guard_owner,
+    PhysicsCommandGuardBegin guard_begin,
+    PhysicsCommandGuardEnd guard_end) noexcept {
+    if (impl_ == nullptr || rows == nullptr || count == 0 ||
+        !guard_owner || guard_begin == nullptr || guard_end == nullptr ||
+        !can_enqueue_command(
+            impl_->bridges, this, originating_world, entity)) {
+        return false;
+    }
+    for (std::size_t index = 0; index < count; ++index) {
+        if (!finite(rows[index].force) || !finite(rows[index].world_point))
+            return false;
+    }
+    try {
+        std::lock_guard<std::mutex> lock(impl_->command_mutex);
+        if (count > kForceCommandCapacity - impl_->forces.size()) {
+            ++stats_.failed_commands;
+            return false;
+        }
+        const std::size_t initial_size = impl_->forces.size();
+        std::uint64_t batch_id = impl_->next_guarded_batch_id++;
+        if (batch_id == 0) batch_id = impl_->next_guarded_batch_id++;
+        try {
+            for (std::size_t index = 0; index < count; ++index) {
+                QueuedCommand command{
+                    originating_world, entity,
+                    PhysicsCommandKind::ForceAtPoint,
+                    rows[index].force, rows[index].world_point, {}};
+                command.guarded_batch_id = batch_id;
+                command.guarded_batch_count = count;
+                command.guarded_batch_index = index;
+                if (index == 0) {
+                    command.guard_owner = guard_owner;
+                    command.guard_begin = guard_begin;
+                    command.guard_end = guard_end;
+                }
+                impl_->forces.push_back(std::move(command));
+            }
+        } catch (...) {
+            impl_->forces.resize(initial_size);
+            return false;
+        }
         return true;
     } catch (...) {
         return false;
@@ -717,6 +1487,21 @@ bool PhysicsContext::enqueue_wake(
     }
 }
 
+// Bring native bodies in line with the declarative components. Candidate-driven:
+// normally only entities marked dirty since the last pass are examined, but a
+// lost mark (mark_for_reconcile failing to allocate) sets full_reconcile_required
+// and this pass then audits every declarative body AND every published bridge —
+// failing closed rather than leaking a native body.
+//
+// Per candidate: dead, un-bodied, or invalid-configuration entities have their
+// bridge destroyed; a bridge whose configuration still matches is left alone; any
+// other change is a DESTROY AND REBUILD, never an in-place edit. A dynamic body
+// being rebuilt has its pose and velocities read out first and written back
+// after, so retuning a collider does not teleport a falling object.
+//
+// It does write to the ECS — PhysicsError is set on rejection and removed on
+// success — and it resets fixed_step_trace, so it must be the first physics
+// stage of a step.
 void PhysicsContext::reconcile(flecs::world& world) {
     impl_->fixed_step_trace.clear();
     impl_->fixed_step_trace.push_back(PhysicsSystemStage::Reconcile);
@@ -883,6 +1668,16 @@ void PhysicsContext::reconcile(flecs::world& world) {
     }
 }
 
+// ECS -> Box3D. Two jobs: refresh world settings and drive non-dynamic bodies
+// from their authored transform (static bodies are set outright, kinematic ones
+// get a target transform so the solver derives a velocity over fixed_delta), then
+// apply the drained command queues.
+//
+// Dynamic bodies are skipped here by design — they are Box3D-authoritative
+// between reconciles, and gameplay moves them through the command queues instead.
+// A command that fails revalidation at this point is counted in
+// stats_.failed_commands and dropped silently; only commands that actually
+// applied appear in last_command_trace.
 void PhysicsContext::push(flecs::world& world, float fixed_delta) {
     if (!world_is_valid()) {
         return;
@@ -891,7 +1686,6 @@ void PhysicsContext::push(flecs::world& world, float fixed_delta) {
 
     std::unordered_map<flecs::entity_t, QueuedCommand> teleports;
     std::unordered_map<flecs::entity_t, QueuedCommand> velocities;
-    std::vector<QueuedCommand> forces;
     std::vector<QueuedCommand> impulses;
     std::unordered_set<
         QueuedCommand, QueuedCommandHash, QueuedCommandEqual> wakes;
@@ -899,13 +1693,15 @@ void PhysicsContext::push(flecs::world& world, float fixed_delta) {
         std::lock_guard<std::mutex> lock(impl_->command_mutex);
         teleports.swap(impl_->teleports);
         velocities.swap(impl_->velocities);
-        forces.swap(impl_->forces);
+        impl_->force_drain_buffer.clear();
+        impl_->force_drain_buffer.swap(impl_->forces);
         impulses.swap(impl_->impulses);
         wakes.swap(impl_->wakes);
     }
     impl_->last_command_trace.clear();
     impl_->last_command_trace.reserve(
-        teleports.size() + velocities.size() + forces.size() +
+        teleports.size() + velocities.size() +
+        impl_->force_drain_buffer.size() +
         impulses.size() + wakes.size());
 
     const PhysicsSettings settings = world.get<PhysicsSettings>();
@@ -951,53 +1747,131 @@ void PhysicsContext::push(flecs::world& world, float fixed_delta) {
     }
 
     const flecs::world_t* runtime_world = ecs_get_world(world.c_ptr());
-    auto apply_command = [&](const QueuedCommand& command, auto apply) {
+    auto apply_command = [&](const QueuedCommand& command) {
         BridgeRecord* bridge = validate_queued_command(
             command, runtime_world, world, impl_->bridges);
         if (bridge == nullptr) {
             ++stats_.failed_commands;
             return;
         }
-        apply(*bridge);
+        switch (command.kind) {
+            case PhysicsCommandKind::Teleport:
+                b3Body_SetTransform(
+                    bridge->body, box_position(command.primary),
+                    box_quaternion(command.rotation));
+                b3Body_SetAwake(bridge->body, true);
+                update_query_proxy(impl_->query_tree, *bridge);
+                break;
+            case PhysicsCommandKind::Velocity:
+                b3Body_SetLinearVelocity(
+                    bridge->body, box_vector(command.primary));
+                b3Body_SetAngularVelocity(
+                    bridge->body, box_vector(command.secondary));
+                break;
+            case PhysicsCommandKind::Force:
+                b3Body_ApplyForceToCenter(
+                    bridge->body, box_vector(command.primary), true);
+                break;
+            case PhysicsCommandKind::ForceAtPoint:
+                b3Body_ApplyForce(
+                    bridge->body, box_vector(command.primary),
+                    box_position(command.secondary), true);
+                break;
+            case PhysicsCommandKind::Impulse:
+                b3Body_ApplyLinearImpulseToCenter(
+                    bridge->body, box_vector(command.primary), true);
+                break;
+            case PhysicsCommandKind::Wake:
+                b3Body_SetAwake(bridge->body, true);
+                break;
+        }
         impl_->last_command_trace.push_back(trace_entry(command));
     };
 
     for (const QueuedCommand& command : sorted_map_commands(teleports)) {
-        apply_command(command, [&](const BridgeRecord& bridge) {
-            b3Body_SetTransform(
-                bridge.body, box_position(command.primary),
-                box_quaternion(command.rotation));
-            b3Body_SetAwake(bridge.body, true);
-            update_query_proxy(impl_->query_tree, bridge);
-        });
+        apply_command(command);
     }
     for (const QueuedCommand& command : sorted_map_commands(velocities)) {
-        apply_command(command, [&](const BridgeRecord& bridge) {
-            b3Body_SetLinearVelocity(
-                bridge.body, box_vector(command.primary));
-            b3Body_SetAngularVelocity(
-                bridge.body, box_vector(command.secondary));
-        });
+        apply_command(command);
     }
-    for (const QueuedCommand& command : forces) {
-        apply_command(command, [&](const BridgeRecord& bridge) {
-            b3Body_ApplyForceToCenter(
-                bridge.body, box_vector(command.primary), true);
-        });
+    for (const QueuedCommand& command : impl_->force_drain_buffer) {
+        if (command.kind == PhysicsCommandKind::Force) {
+            apply_command(command);
+        }
+    }
+    for (std::size_t index = 0;
+         index < impl_->force_drain_buffer.size();) {
+        const QueuedCommand& command = impl_->force_drain_buffer[index];
+        if (command.kind != PhysicsCommandKind::ForceAtPoint) {
+            ++index;
+            continue;
+        }
+        if (command.guarded_batch_id == 0) {
+            apply_command(command);
+            ++index;
+            continue;
+        }
+
+        const std::size_t count = command.guarded_batch_count;
+        bool structurally_valid = command.guarded_batch_index == 0 &&
+            count != 0 && count <= impl_->force_drain_buffer.size() - index &&
+            command.guard_owner && command.guard_begin != nullptr &&
+            command.guard_end != nullptr;
+        for (std::size_t offset = 0; structurally_valid && offset < count;
+             ++offset) {
+            const QueuedCommand& row =
+                impl_->force_drain_buffer[index + offset];
+            structurally_valid =
+                row.kind == PhysicsCommandKind::ForceAtPoint &&
+                row.originating_world == command.originating_world &&
+                row.entity == command.entity &&
+                row.guarded_batch_id == command.guarded_batch_id &&
+                row.guarded_batch_count == count &&
+                row.guarded_batch_index == offset;
+        }
+        BridgeRecord* bridge = structurally_valid
+            ? validate_queued_command(
+                  command, runtime_world, world, impl_->bridges)
+            : nullptr;
+        if (bridge == nullptr ||
+            !command.guard_begin(command.guard_owner)) {
+            ++stats_.failed_commands;
+            index += structurally_valid ? count : 1;
+            continue;
+        }
+        struct GuardScope {
+            const QueuedCommand& command;
+            ~GuardScope() noexcept {
+                command.guard_end(command.guard_owner);
+            }
+        } guard{command};
+        for (std::size_t offset = 0; offset < count; ++offset) {
+            const QueuedCommand& row =
+                impl_->force_drain_buffer[index + offset];
+            b3Body_ApplyForce(
+                bridge->body, box_vector(row.primary),
+                box_position(row.secondary), true);
+            impl_->last_command_trace.push_back(trace_entry(row));
+            if (offset == 0 &&
+                impl_->guarded_batch_post_first_row_hook != nullptr) {
+                impl_->guarded_batch_post_first_row_hook(
+                    impl_->guarded_batch_hook_context);
+            }
+        }
+        index += count;
     }
     for (const QueuedCommand& command : impulses) {
-        apply_command(command, [&](const BridgeRecord& bridge) {
-            b3Body_ApplyLinearImpulseToCenter(
-                bridge.body, box_vector(command.primary), true);
-        });
+        apply_command(command);
     }
     for (const QueuedCommand& command : sorted_wake_commands(wakes)) {
-        apply_command(command, [](const BridgeRecord& bridge) {
-            b3Body_SetAwake(bridge.body, true);
-        });
+        apply_command(command);
     }
 }
 
+// Advance the solver by one fixed step and snapshot its event streams. Raises
+// the `stepping` flag for the duration, which makes ray_cast/overlap_sphere
+// refuse to run — Box3D's structures are not queryable mid-step. A non-finite or
+// non-positive delta is a no-op that does not even record a trace entry.
 void PhysicsContext::step(flecs::world& world, float fixed_delta) {
     if (!world_is_valid() || !std::isfinite(fixed_delta) ||
         fixed_delta <= 0.0f) {
@@ -1014,6 +1888,17 @@ void PhysicsContext::step(flecs::world& world, float fixed_delta) {
     ++stats_.steps;
 }
 
+// Ray query against the context's OWN broadphase tree, not the solver's. That
+// tree is refreshed from move events, teleports and set_body_state, so results
+// reflect proxy bounds as of the last such update. `category_mask` is tested
+// against the category bits captured when the proxy was created, i.e. the
+// collider's filter at its last reconcile.
+//
+// `translation` is the full ray vector (origin + t*translation for t in [0,1]),
+// not a direction — a zero translation is rejected. Returns false while a step
+// is in progress, for a world this context does not own, for non-finite inputs,
+// and on a plain miss; `hit` is zeroed on entry either way. Ties on fraction go
+// to the lower entity id.
 bool PhysicsContext::ray_cast(
     flecs::world& world,
     Float3 origin,
@@ -1102,6 +1987,148 @@ std::vector<flecs::entity_t> PhysicsContext::overlap_sphere(
         std::unique(query.entities.begin(), query.entities.end()),
         query.entities.end());
     return query.entities;
+}
+
+bool PhysicsContext::move_character(
+    const CharacterMoveInput& input, CharacterMoveOutput& output) {
+    if (impl_ == nullptr ||
+        std::this_thread::get_id() != impl_->owner_thread ||
+        impl_->stepping || !world_is_valid() || !valid_character_input(input)) {
+        return false;
+    }
+
+    const b3WorldId world = impl_->world_id;
+    b3QueryFilter filter = b3DefaultQueryFilter();
+    filter.maskBits = input.category_mask;
+    const b3Capsule capsule{{0.0f, -input.half_segment, 0.0f},
+                            {0.0f, input.half_segment, 0.0f}, input.radius};
+    b3Pos position = box_position(input.position);
+    b3Vec3 velocity = box_vector(input.velocity);
+    const b3Vec3 gravity = box_vector(input.gravity);
+
+    const float snap_reach = input.radius + input.step_height + 0.05f;
+    const float support_reach = input.radius + snap_reach;
+    const b3Vec3 down{0.0f, -support_reach, 0.0f};
+    if (!character_query_vector(down) ||
+        !character_query_vector({0.0f, 2.0f * input.half_segment, 0.0f}) ||
+        !character_query_vector({input.radius, input.half_segment + input.radius,
+                                 input.radius})) {
+        return false;
+    }
+    auto probe_ground = [&](b3Pos at, StaticRayResult& result) {
+        at.y -= input.half_segment;
+        if (!character_position_range(at) ||
+            !finite(engine_vector(b3Add(box_vector(engine_position(at)), down))))
+            return false;
+        b3World_CastRay(
+            world, at, down, filter, static_ray_callback, &result);
+        return result.valid;
+    };
+
+    const bool rising = velocity.y > 0.001f;
+    StaticRayResult initial_ground{};
+    if (!character_query_bounds(position, capsule, {}) ||
+        !probe_ground(position, initial_ground)) return false;
+    const bool standable = initial_ground.hit && !rising &&
+        initial_ground.normal.y >= input.max_slope_cos;
+    CharacterMoveOutput next{};
+    next.ground_normal = {0.0f, 1.0f, 0.0f};
+    if (standable) {
+        next.ground_normal = engine_vector(initial_ground.normal);
+        velocity.x = input.desired_horizontal_velocity.x;
+        velocity.z = input.desired_horizontal_velocity.z;
+        if (velocity.y < 0.0f) velocity.y = 0.0f;
+    }
+
+    velocity.x += gravity.x * input.dt;
+    velocity.y += gravity.y * input.dt;
+    velocity.z += gravity.z * input.dt;
+    if (!finite(engine_vector(velocity))) return false;
+    b3Vec3 move_velocity = velocity;
+    if (standable) move_velocity.y = 0.0f;
+    const b3Vec3 displacement{move_velocity.x * input.dt,
+                              move_velocity.y * input.dt,
+                              move_velocity.z * input.dt};
+    if (!character_query_vector(displacement)) return false;
+    b3Pos target = position;
+    target.x += displacement.x;
+    target.y += displacement.y;
+    target.z += displacement.z;
+    if (!character_position_range(target)) return false;
+
+    constexpr int kPlaneCapacity = 32;
+    b3CollisionPlane planes[kPlaneCapacity]{};
+    int plane_count = 0;
+    for (int iteration = 0; iteration < 5; ++iteration) {
+        if (!character_query_bounds(position, capsule, {})) return false;
+        plane_count = 0;
+        StaticMoverPlaneGather gather{planes, &plane_count, kPlaneCapacity};
+        b3World_CollideMover(
+            world, position, &capsule, filter, static_mover_plane_callback,
+            &gather);
+        if (!gather.valid) return false;
+        const b3Pos target_difference{target.x - position.x,
+                                      target.y - position.y,
+                                      target.z - position.z};
+        if (!character_position_range(target_difference)) return false;
+        const b3Vec3 target_delta{
+            static_cast<float>(target_difference.x),
+            static_cast<float>(target_difference.y),
+            static_cast<float>(target_difference.z)};
+        if (!character_query_vector(target_delta)) return false;
+        b3Vec3 delta = b3SolvePlanes(target_delta, planes, plane_count).delta;
+        if (!character_query_vector(delta) ||
+            !character_query_bounds(position, capsule, delta)) return false;
+        for (int index = 0; index < plane_count; ++index)
+            if (!std::isfinite(planes[index].push)) return false;
+        const float fraction = b3World_CastMover(
+            world, position, &capsule, delta, filter, static_mover_filter,
+            nullptr);
+        if (!std::isfinite(fraction) || fraction < 0.0f || fraction > 1.0f)
+            return false;
+        delta.x *= fraction;
+        delta.y *= fraction;
+        delta.z *= fraction;
+        position.x += delta.x;
+        position.y += delta.y;
+        position.z += delta.z;
+        if (!character_position_range(position)) return false;
+        if (delta.x * delta.x + delta.y * delta.y + delta.z * delta.z <
+            1.0e-4f) {
+            break;
+        }
+    }
+    if (plane_count > 0) {
+        if (!character_query_vector(velocity)) return false;
+        velocity = b3ClipVector(velocity, planes, plane_count);
+        if (!finite(engine_vector(velocity))) return false;
+    }
+
+    if (!rising) {
+        StaticRayResult ground{};
+        if (!probe_ground(position, ground)) return false;
+        if (ground.hit && ground.normal.y >= input.max_slope_cos) {
+            constexpr float kSkin = 0.02f;
+            const float normal_y = std::max(ground.normal.y, 0.5f);
+            const float rest_y = static_cast<float>(ground.point.y) +
+                input.radius / normal_y + input.half_segment + kSkin;
+            const float delta_y = rest_y - static_cast<float>(position.y);
+            if (!std::isfinite(rest_y) || !std::isfinite(delta_y)) return false;
+            if (delta_y <= input.step_height &&
+                delta_y >= -support_reach) {
+                position.y = rest_y;
+                if (velocity.y < 0.0f) velocity.y = 0.0f;
+                next.grounded = true;
+                next.ground_normal = engine_vector(ground.normal);
+            }
+        }
+    }
+    if (!character_position_range(position) || !finite(engine_vector(velocity)) ||
+        !finite(next.ground_normal)) return false;
+    next.position = engine_position(position);
+    next.velocity = engine_vector(velocity);
+    output = next;
+    return true;
 }
 
 void PhysicsContext::capture_events(flecs::world& world) {
@@ -1248,12 +2275,30 @@ void PhysicsContext::capture_events(flecs::world& world) {
     events_ = std::move(next);
 }
 
+// Box3D -> ECS, and the gameplay event delivery point.
+//
+// For each moved DYNAMIC body it writes LocalTransform (scale forced to unit —
+// physics owns pose only) and PhysicsVelocity, and adds TransformDirty so the
+// hierarchy propagates. Each such write sets the bridge's pending bit first; see
+// mark_transform_for_reconcile for why that matters.
+//
+// It then re-publishes the snapshot captured during step(): one flecs entity
+// event per endpoint of every contact/sensor pair, so each participant hears
+// about the other, followed by a single aggregate PhysStep on the session hub
+// when one is attached. Observers run synchronously; structural changes they
+// make are deferred by the enclosing system as usual.
 void PhysicsContext::pull(flecs::world& world) {
     if (!world_is_valid()) {
         return;
     }
     impl_->fixed_step_trace.push_back(PhysicsSystemStage::Pull);
 
+    // The SECOND read of this step's move stream — capture_events() already
+    // walked it during step() to refresh the query proxies. That is safe and
+    // deliberate: b3World_GetBodyEvents is a non-consuming view onto the world's
+    // own bodyMoveEvents array, which is only refilled by the next b3World_Step,
+    // and no step runs between capture_events() and here. Splitting the two
+    // walks keeps proxy maintenance inside step() and ECS writes inside pull().
     const b3BodyEvents events = b3World_GetBodyEvents(impl_->world_id);
     for (int event_index = 0; event_index < events.moveCount; ++event_index) {
         const b3BodyMoveEvent event = events.moveEvents[event_index];
@@ -1315,8 +2360,16 @@ void PhysicsContext::pull(flecs::world& world) {
             events_.contact_begin.size() + events_.contact_end.size());
         const uint32_t sensors = static_cast<uint32_t>(
             events_.sensor_begin.size() + events_.sensor_end.size());
+        // An idle step is deliberately silent so it costs the inspector
+        // nothing; see matter/events/physics_events.h.
         if (contacts + sensors > 0) {
-            event_hub_->emit(matter::events::PhysStep{contacts, sensors});
+            // Field-by-field rather than PhysStep{contacts, sensors}: positional
+            // aggregate init would silently mis-assign if a field were ever
+            // inserted or reordered in the (two-uint32_t) payload.
+            matter::events::PhysStep step{};
+            step.contacts = contacts;
+            step.sensors = sensors;
+            event_hub_->emit(step);
         }
     }
 }
@@ -1466,12 +2519,6 @@ void PhysicsContext::fail_next_reconcile_mark_for_test() noexcept {
     }
 }
 
-uint64_t PhysicsContext::physics_transform_marker_allocations_for_test()
-    const noexcept {
-    return impl_ != nullptr
-        ? impl_->physics_transform_marker_allocations_for_test : 0;
-}
-
 uint64_t PhysicsContext::ray_query_candidate_attempts_for_test()
     const noexcept {
     return impl_ != nullptr ? impl_->ray_query_candidate_attempts_for_test : 0;
@@ -1489,6 +2536,74 @@ void PhysicsContext::set_stepping_for_test(bool stepping) noexcept {
     }
 }
 
+void PhysicsContext::set_guarded_batch_post_first_row_hook_for_test(
+    void* context, GuardedBatchPostFirstRowHook hook) noexcept {
+    if (impl_ == nullptr) return;
+    impl_->guarded_batch_hook_context = context;
+    impl_->guarded_batch_post_first_row_hook = hook;
+}
+
+bool PhysicsContext::terrain_collision_tile_state_for_test(
+    std::size_t index,
+    TerrainCollisionPhysicsTileState& state) const noexcept {
+    state = {};
+    if (impl_ == nullptr || impl_->terrain_collision == nullptr ||
+        index >= impl_->terrain_collision->tiles.size()) {
+        return false;
+    }
+    const TerrainCollisionTileRuntime& tile =
+        impl_->terrain_collision->tiles[index];
+    if (!b3Body_IsValid(tile.body) || !b3Shape_IsValid(tile.shape) ||
+        tile.mesh_data == nullptr || tile.mesh_data->byteCount <= 0) {
+        return false;
+    }
+    const b3Filter filter = b3Shape_GetFilter(tile.shape);
+    state.coordinate_x = tile.coordinate.x;
+    state.coordinate_y = tile.coordinate.y;
+    state.coordinate_z = tile.coordinate.z;
+    state.tile_key = tile.tile_key;
+    state.body_handle = b3StoreBodyId(tile.body);
+    state.shape_handle = b3StoreShapeId(tile.shape);
+    state.retained_bytes =
+        static_cast<std::uint64_t>(tile.mesh_data->byteCount);
+    state.origin_m = tile.origin_m;
+    state.friction = b3Shape_GetFriction(tile.shape);
+    state.restitution = b3Shape_GetRestitution(tile.shape);
+    state.category_bits = filter.categoryBits;
+    state.mask_bits = filter.maskBits;
+    state.group_index = filter.groupIndex;
+    state.body_is_static = b3Body_GetType(tile.body) == b3_staticBody;
+    state.body_user_data_is_null = b3Body_GetUserData(tile.body) == nullptr;
+    state.shape_user_data_is_null = b3Shape_GetUserData(tile.shape) == nullptr;
+    return true;
+}
+
+bool PhysicsContext::terrain_collision_handles_are_valid_for_test(
+    std::uint64_t body_handle,
+    std::uint64_t shape_handle) const noexcept {
+    return body_handle != 0 && shape_handle != 0 &&
+           b3Body_IsValid(b3LoadBodyId(body_handle)) &&
+           b3Shape_IsValid(b3LoadShapeId(shape_handle));
+}
+
+TerrainCollisionPhysicsWorldState
+PhysicsContext::terrain_collision_world_state_for_test() const noexcept {
+    TerrainCollisionPhysicsWorldState state{};
+    if (impl_ == nullptr || !b3World_IsValid(impl_->world_id)) {
+        return state;
+    }
+    const b3Counters counters = b3World_GetCounters(impl_->world_id);
+    state.body_count = counters.bodyCount > 0
+        ? static_cast<std::uint32_t>(counters.bodyCount) : 0;
+    state.shape_count = counters.shapeCount > 0
+        ? static_cast<std::uint32_t>(counters.shapeCount) : 0;
+    return state;
+}
+
+// Look up the context published on a world by Runtime. THROWS
+// std::runtime_error when the world has none (or has had it nulled during
+// teardown) — use context_world_is_valid(), or the try_get on
+// PhysicsContextRef directly, on any path that must not throw.
 PhysicsContext& context(flecs::world& world) {
     const PhysicsContext* value = try_context(world);
     if (value == nullptr) {
@@ -1598,6 +2713,34 @@ bool physics_apply_force(flecs::entity entity, Float3 force) {
                target.originating_world, target.entity, force);
 }
 
+bool physics_apply_force_at_world_point(
+    flecs::entity entity,
+    Float3 force,
+    Float3 world_point) {
+    CommandTarget target;
+    return resolve_command_target(entity, target) &&
+           target.context->enqueue_force_at_world_point(
+               target.originating_world, target.entity, force, world_point);
+}
+
+namespace detail {
+
+bool physics_apply_guarded_force_at_world_points(
+    flecs::entity entity,
+    const GuardedForceAtWorldPoint* rows,
+    std::size_t count,
+    const std::shared_ptr<const void>& guard_owner,
+    PhysicsCommandGuardBegin guard_begin,
+    PhysicsCommandGuardEnd guard_end) noexcept {
+    CommandTarget target;
+    return resolve_command_target(entity, target) &&
+           target.context->enqueue_guarded_force_at_world_points(
+               target.originating_world, target.entity, rows, count,
+               guard_owner, guard_begin, guard_end);
+}
+
+} // namespace detail
+
 bool physics_apply_impulse(flecs::entity entity, Float3 impulse) {
     CommandTarget target;
     return resolve_command_target(entity, target) &&
@@ -1651,6 +2794,21 @@ std::vector<flecs::entity_t> physics_overlap_sphere(
     }
     return ref->value->overlap_sphere(
         normalized_world, center, radius, category_mask);
+}
+
+bool physics_move_character(
+    flecs::world& world,
+    const CharacterMoveInput& input,
+    CharacterMoveOutput& output) {
+    const flecs::world_t* real_world = ecs_get_world(world.c_ptr());
+    if (real_world == nullptr) {
+        return false;
+    }
+    flecs::world normalized_world(const_cast<flecs::world_t*>(real_world));
+    const detail::PhysicsContextRef* ref =
+        normalized_world.try_get<detail::PhysicsContextRef>();
+    return ref != nullptr && ref->value != nullptr &&
+           ref->value->move_character(input, output);
 }
 
 } // namespace matter::physics

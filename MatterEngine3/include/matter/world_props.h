@@ -1,5 +1,7 @@
 #pragma once
 
+// MatterEngine3/include/matter/world_props.h
+//
 // The bridge between a world script's `static props` block and the property
 // system: WorldPropSpec (plain loader data) -> props::DynamicGroup (a live,
 // registry-bindable group with its own value buffer).
@@ -27,6 +29,12 @@ inline constexpr const char* kWorldPropsPath = "world.props";
 // Null when `specs` is empty or every entry was rejected. Rejections are
 // impossible for specs that came out of the loader — it validates the same
 // rules first — so this is a belt-and-braces path for programmatic callers.
+//
+// The returned group owns its own value buffer, initialized to the declared
+// defaults. In the engine the caller is WorldSession, which keeps the group
+// alive for the connected world and hands it out through
+// WorldSession::world_props(); anything that binds it into a props::Registry
+// must unbind before a reconnect replaces it.
 inline std::unique_ptr<props::DynamicGroup> build_world_props_group(
     const std::vector<WorldPropSpec>& specs,
     const std::string& label = "World Props") {

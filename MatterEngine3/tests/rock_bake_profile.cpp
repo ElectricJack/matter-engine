@@ -1,5 +1,5 @@
 // One-off profiling harness: bake individual Rock variants cold and report
-// wall time + triangle counts per (seed, size). Fresh /tmp sandbox each run
+// wall time + triangle counts per (seed, size). Fresh scratch sandbox each run
 // so every install is a cache-miss bake.
 #include "part_graph.h"
 #include "part_asset_v2.h"
@@ -16,6 +16,7 @@
 #include <unistd.h>
 
 #include "portable_realpath.h"
+#include "test_sandbox.h"
 
 using namespace part_graph;
 
@@ -34,9 +35,7 @@ int main(int argc, char** argv) {
     const std::string schemas    = abspath("../../projects/world_demo/objects");
     const std::string shared_lib = abspath("../shared-lib");
 
-    const std::string sandbox = "/tmp/me3_rock_profile";
-    system(("rm -rf " + sandbox).c_str());
-    system(("mkdir -p " + sandbox + "/parts").c_str());
+    const std::string sandbox = make_sandbox("sandbox/me3_rock_profile");
     if (chdir(sandbox.c_str()) != 0) { printf("FAIL: chdir sandbox\n"); return 1; }
 
     script_host::ScriptHost host;

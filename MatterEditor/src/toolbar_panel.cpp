@@ -1,3 +1,16 @@
+// MatterEditor/src/toolbar_panel.cpp
+//
+// ImGui implementation of the transport bar. See toolbar_panel.h for the
+// contract and the call site.
+//
+// The layout is a single SameLine chain — transport buttons, time-scale
+// slider, "1x" reset, then the mode label positioned by measuring the
+// remaining content region — so the widget ORDER here is the layout. Inserting
+// a widget mid-chain shifts everything to its right.
+//
+// Button enablement is derived purely from `mode`, via BeginDisabled/
+// EndDisabled: Play from Edit or Pause, Pause from Play, Step from Pause only,
+// Stop from Play or Pause.
 #include "toolbar_panel.h"
 
 #include "imgui.h"

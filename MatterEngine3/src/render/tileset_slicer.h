@@ -3,12 +3,32 @@
 // per-layer mip chains on the CPU. Pure functions: no GL/VK, fully unit-testable.
 // Rationale (spec §Phase 1): per-layer mips make cross-tile mip bleed impossible;
 // CPU generation keeps the edge invariant testable byte-for-byte.
+//
+// Consumers: the Vulkan tileset upload path, which turns one SlicedChannel into
+// a 16-layer 2D texture array with its mips already populated, and
+// MatterEngine3/tests/tileset_slicer_tests.cpp, which asserts the edge
+// invariant directly. Nothing here touches a device or a file — the caller
+// supplies a decoded atlas buffer (tileset_gtex.h's load_gtex) and owns it.
+//
+// Cost: slicing allocates the full mip pyramid for all 16 layers up front,
+// roughly 4/3 of the source atlas in bytes (more when expand_rgb_to_rgba
+// widens 3-byte pixels to 4), all held in nested std::vectors. Deterministic —
+// the same atlas always produces byte-identical output, which is what makes the
+// invariant testable.
 #include <cstdint>
 #include <string>
 #include <vector>
 
 namespace tileset {
 
+// One .gtex channel, sliced into per-tile layers. Value type: it owns all its
+// pixel data and copying it copies every mip of every layer.
+//
+// `layers` is indexed [layer][mip][byte], with layer = row*4 + col over the
+// atlas's fixed 4x4 tile grid, so a layer index is directly the texture-array
+// layer to upload into. All 16 layers have the same mip count. A
+// default-constructed value (tile_px == 0, empty layers) is what slice_channel
+// leaves behind on failure.
 struct SlicedChannel {
     // layers[layer][mip] = tightly-packed pixel bytes; layer = row*4 + col.
     // mip 0 is tile_px × tile_px; each level halves (floor), down to 1×1.

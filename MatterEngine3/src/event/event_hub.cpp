@@ -14,6 +14,14 @@
 
 namespace matter::evt {
 
+// Inserts one subscriber into an event type's ordered list. `name` must be
+// unique per event type in every build; a collision returns
+// `duplicate=true` with an empty Subscription and inserts NOTHING.
+//
+// The list is kept sorted by (phase, priority, name) — the S I.7 total order —
+// so dispatch order is deterministic and independent of registration order.
+// `file`/`line` are captured for the inspector only. The returned Subscription
+// owns the binding's liveness: destroying it deactivates the callback.
 Hub::SubscribeResult Hub::subscribe_generic(detail::TypeState& ts, const char* name,
                                              bool is_immediate, lane ln, phase ph, int priority,
                                              const char* file, int line,
@@ -67,12 +75,17 @@ Channel<detail::QueuedEnvelope>* Hub::get_or_create_lane_channel(lane ln) {
     return p;
 }
 
+// Declares the calling thread as the owner of `ln`, and creates the lane's
+// channel if this is its first mention. Required before pump()/pump_one(), which
+// assert against it in debug builds. Re-claiming overwrites the owner.
 void Hub::claim_lane(lane ln) {
     get_or_create_lane_channel(ln);
     std::lock_guard<std::mutex> lk(lanes_mu_);
     lane_owners_[ln.id] = std::this_thread::get_id();
 }
 
+// Debug-only affinity check; compiles to nothing under NDEBUG, so lane ownership
+// is not enforced at all in a release build.
 void Hub::check_lane_owner(lane ln) {
 #ifndef NDEBUG
     std::lock_guard<std::mutex> lk(lanes_mu_);
@@ -87,6 +100,15 @@ void Hub::check_lane_owner(lane ln) {
 #endif
 }
 
+// Delivers one already-dequeued envelope to the queued (non-immediate)
+// subscribers registered on `ln` for that event type, in the sorted order
+// described above. Runs entirely on the pumping thread.
+//
+// The subscriber list is snapshotted HERE, at pump time, not at emit time —
+// that is what lets an unsubscribe issued after the emit but before the pump
+// suppress delivery. An event type with no subscribers at all returns
+// immediately. Exceeding kMaxEmitDepth handler-emitted-event nesting is
+// fail_fast, not a silent drop.
 void Hub::dispatch_envelope(detail::QueuedEnvelope& env, lane ln) {
     detail::TypeState* ts = nullptr;
     {
@@ -173,6 +195,10 @@ void Hub::dispatch_envelope(detail::QueuedEnvelope& env, lane ln) {
     }
 }
 
+// Drains a lane on the calling thread (which must own it) and returns the number
+// of envelopes dispatched. `ms_budget` is milliseconds and is a soft bound: the
+// first envelope is always delivered regardless of it. A budget that expires
+// leaves the rest queued for the next pump — nothing is dropped here.
 int Hub::pump(lane ln, double ms_budget) {
     check_lane_owner(ln);
     Channel<detail::QueuedEnvelope>* ch = get_or_create_lane_channel(ln);
@@ -195,6 +221,9 @@ int Hub::pump(lane ln, double ms_budget) {
     return total;
 }
 
+// Dispatches at most one envelope. Returns 1 if one ran, 0 if the lane was
+// empty. Used by tests and by callers that want to interleave delivery with
+// their own work.
 int Hub::pump_one(lane ln) {
     check_lane_owner(ln);
     Channel<detail::QueuedEnvelope>* ch = get_or_create_lane_channel(ln);
@@ -205,6 +234,14 @@ int Hub::pump_one(lane ln) {
     return 1;
 }
 
+// Permanently quiesces the hub: no new dispatch begins, queued envelopes are
+// discarded, and this returns only once every callback that was already running
+// on another thread has finished. Idempotent, and there is no reopen.
+//
+// MUST NOT be called from inside a subscriber callback or from a lane pump —
+// phase 2 busy-waits for in_flight to reach zero and would wait on its own stack
+// frame forever. (`SubscriptionSet::unsubscribe_all_and_wait` guards that case
+// explicitly; this one does not.)
 void Hub::close() {
     if (closed_.exchange(true, std::memory_order_acq_rel)) return;  // idempotent
 
@@ -242,6 +279,10 @@ void Hub::close() {
     }
 }
 
+// Diagnostic view of every event type and its subscribers, as a deep COPY —
+// safe to hold and inspect after the fact. Takes the type lock plus every
+// per-type lock in turn and allocates proportionally to the whole registry, so
+// it is an inspector/test call, not something to run per frame.
 std::vector<RegistrySnapshotEntry> Hub::registry_snapshot() const {
     std::vector<RegistrySnapshotEntry> out;
     std::lock_guard<std::mutex> lk(types_mu_);
@@ -270,6 +311,9 @@ std::vector<RegistrySnapshotEntry> Hub::registry_snapshot() const {
     return out;
 }
 
+// Per-lane dropped/rejected counts. This is the ONLY way an overflowing lane
+// reports itself — drops are counted out of band and are never re-emitted as
+// events onto the lane that is already overflowing.
 std::vector<LaneCounters> Hub::lane_counters() const {
     std::vector<LaneCounters> out;
     std::lock_guard<std::mutex> lk(lanes_mu_);
@@ -280,6 +324,8 @@ std::vector<LaneCounters> Hub::lane_counters() const {
     return out;
 }
 
+// Appends to the bounded trace ring, evicting oldest-first. Caller must hold
+// trace_mu_ (the `_locked` suffix).
 void Hub::push_trace_record_locked(TraceRecord rec) {
     trace_ring_.push_back(std::move(rec));
     while (trace_ring_.size() > trace_capacity_) trace_ring_.pop_front();

@@ -1,5 +1,52 @@
+// ---------------------------------------------------------------------------
+// MatterEngine3/src/dsl_bindings.cpp
+//
+// The QuickJS-ng <-> `dsl::DslState` bridge. Every native global a bake script
+// can reach is defined and registered here: the `__dsl_*` authoring verbs
+// (transform stack, CSG brushes, shapes/contours, modifiers, child placement,
+// rig/clip/motion, tileset), the world-field verbs (`__heightAt`, `__slopeAt`,
+// `__moistureAt`, `__biomeAt`, `__habitatAt`, `__candidatesInRect`,
+// `__planCandidates`), the terrain mesher verb (`__terrainVolumeTiled`) and the
+// profiling verbs (`__profSlot`/`__profBegin`/`__profEnd`).
+//
+// Layout: argument-coercion helpers, then one `static JSValue j_*` per verb
+// grouped by subsystem, then `install_bindings`, then the process-wide
+// `TerrainVerbCensus` and `script_profile` implementations whose contract lives
+// in `dsl_bindings.h`.
+//
+// Conventions that hold throughout:
+//   - `state_of(ctx)` is the context opaque cast to `DslState*`. The host must
+//     install it before evaluating a part; verbs dereference it unchecked.
+//   - Errors are reported through `DslState::set_error` / `set_rig_error`,
+//     which are STICKY and first-error-wins, and the verb returns
+//     `JS_UNDEFINED`. Bindings almost never raise a JS exception, so a failed
+//     verb does not stop the script — the bake checks `has_error()` afterwards.
+//     A JS try/catch therefore cannot see a DSL error.
+//   - Rig / clip / motion verbs receive an EXTRA trailing argument: the Part
+//     base wrapper appends `Error.stack`, which `rig_source` parses into a
+//     `SourceSpan` for diagnostics. `rig_user_argc` / `anim_user_argc` strip it
+//     before any arity check, so `argc` and the authored argument count differ.
+//   - Numbers cross as doubles (`argd`, which yields 0 rather than failing on a
+//     non-numeric argument); DSL state stores float unless noted.
+//   - QuickJS ownership: every `JS_GetPropertyStr` / `JS_Call` /
+//     `JS_JSONStringify` result must be freed on every path, including the
+//     error paths, and `JS_ToCString` results need `JS_FreeCString`.
+//
+// Threading: one JSContext and one DslState per bake worker, so the verbs
+// themselves need no synchronization. The only shared state in this file is the
+// diagnostic counter set — `TerrainVerbCensus`, `script_profile`, the
+// `__planCandidates` timers — all relaxed atomics, plus `script_profile`'s
+// name table behind a mutex.
+//
+// Determinism: `Math.random` is replaced with the seeded `Rng` draw
+// (`j_random`) so a bake's output bytes depend only on the part's params. Any
+// change to the draw ORDER inside a verb moves every placement downstream of
+// it; see the notes on `place_one_instance` and `__candidatesInRect`.
+// ---------------------------------------------------------------------------
 #include "dsl_state.h"
 #include "dsl_bindings.h"
+#include "solid_source_js.h"
+#include <limits>
 #include "pf_bindings.h"
 #include "tileset_spec.h"
 #include "tileset_placement.h"
@@ -29,6 +76,10 @@ extern "C" {
 // see: MatterEngine3/src/script_host.cpp :: eval_lod_budgets
 // This file only owns the runtime-verb bindings the Part class methods forward
 // to (translate, box, sphere, placeChild, tileset verbs, etc.).
+// The imperative riverNetwork() builder is intentionally a World-authoring
+// binding in script/world_definition_loader.cpp. Registering it here would
+// expose a second, unconnected Part-DSL request path with no WorldDefinition
+// sink, so authored fluid remains single-path through the world loader.
 
 namespace dsl {
 
@@ -44,6 +95,13 @@ static std::string normalize_params_json(const char* s, size_t len) {
     return part_graph::params_to_json(p);
 }
 
+// The one route from a JS call back to the bake state: the host installs the
+// `DslState*` as the context opaque before evaluating any part module. Every
+// verb assumes it is non-null.
+//
+// `argd` coerces with `JS_ToFloat64` and yields 0 for anything non-numeric
+// instead of failing, so a verb that must reject a bad argument has to
+// type-check it itself (`JS_IsNumber`, `rig_finite_number`, ...).
 static DslState* state_of(JSContext* ctx) {
     return static_cast<DslState*>(JS_GetContextOpaque(ctx));
 }
@@ -102,6 +160,17 @@ static bool array_floats(JSContext* c, JSValueConst value, int count, float* out
     for (int i=0; i<count; ++i) { JSValue item=JS_GetPropertyUint32(c,value,i); double number=0; const bool numeric=JS_IsNumber(item); const int ok=numeric ? JS_ToFloat64(c,&number,item) : -1; JS_FreeValue(c,item); if (ok < 0 || !std::isfinite(number)) return false; out[i]=static_cast<float>(number); }
     return true;
 }
+// Two authored spellings, one `AnimationTransform`.
+//
+// `rig_transform` takes position and rotation as SEPARATE array arguments (the
+// `root(name, pos, rot)` / `bone(name, end, rot)` shape) and leaves scale at
+// its default. `socket_transform` takes a single object
+// `{ position | translation, rotation, scale }` (the socket / key / offset
+// shape) and accepts any subset of those keys.
+//
+// Rotation arrays are xyzw. Both set `*ok = false` on a wrong-length or
+// non-finite array, and the partially filled result must not be used in that
+// case — callers turn `!ok` straight into a rig error.
 static matter::AnimationTransform rig_transform(JSContext* c, JSValueConst position, JSValueConst rotation, bool required_position, bool* ok) {
     matter::AnimationTransform result{}; *ok = !required_position && (JS_IsUndefined(position) || JS_IsNull(position));
     if (!*ok) *ok = array_floats(c,position,3,&result.translation.x);
@@ -119,6 +188,15 @@ static matter::AnimationTransform socket_transform(JSContext* c, JSValueConst va
     if (*ok && !JS_IsUndefined(s) && !JS_IsNull(s)) *ok=array_floats(c,s,3,&result.scale.x);
     JS_FreeValue(c,p); JS_FreeValue(c,r); JS_FreeValue(c,s); return result;
 }
+// Recover the authoring site for diagnostics and stash it on the DslState as
+// the current rig source span. The Part base wrapper appends `Error.stack` as
+// the LAST argument of every rig/clip/motion verb; this parses the first
+// authored frame out of it so a later `set_rig_error` can point at a
+// module:line:column instead of at the engine.
+//
+// Every rig/clip/motion binding calls this first, before its own argument
+// checks. Falls back to the `<part>` pseudo-module when the stack argument is
+// missing or unparseable, so diagnostics degrade rather than fail.
 static void rig_source(JSContext* c, int n, JSValueConst* a, const char* object) {
     matter::animation::SourceSpan source{"<part>", 0, 0, object};
     if (n > 0 && JS_IsString(a[n-1])) {
@@ -181,6 +259,31 @@ static bool anim_type(JSContext* c, JSValueConst value, matter::AnimationValueTy
     if (name == "symbol" || name == "enum") { out = matter::AnimationValueType::Symbol; return true; }
     return false;
 }
+
+// ---------------------------------------------------------------------------
+// Clip and motion verbs.
+//
+// MOST of these call `rig_source` first (the trailing `Error.stack` argument)
+// and size their arity with `anim_user_argc`, which drops it. The exceptions
+// are the five clip SETTERS -- duration, sampleRate, loop, mode, at -- whose
+// wrappers in part_base.js.h deliberately do not append a stack, so they take
+// the raw argc. That pairing is load-bearing in both directions: adding a
+// stack to one of those wrappers without switching it to anim_user_argc would
+// make a no-argument `loop()` read the stack STRING as its boolean, and using
+// anim_user_argc on a wrapper that sends no stack would silently drop the
+// author's only argument. Argument validation is done here; session-state
+// validation is done in dsl_animation.cpp, which is why a verb can look like
+// it accepts anything.
+//
+// `j_generate` is the odd one out: it drives the whole sampling loop natively.
+// It asks `clip_sample_segments()` how many segments the clip's duration and
+// sample rate imply, then for each phase calls `begin_clip_sample()`, invokes
+// the JS callback with the normalized phase, and calls
+// `capture_clip_sample(phase)` to turn the posed skeleton into one key per
+// joint. A looping clip walks `segments` phases, a non-looping one
+// `segments + 1`. The loop stops at the first callback exception or state
+// failure, with the rig error set.
+// ---------------------------------------------------------------------------
 static JSValue j_beginClip(JSContext* c, JSValueConst, int n, JSValueConst* a) {
     rig_source(c,n,a,"beginClip"); int argc=anim_user_argc(n); int off=(argc>1&&JS_IsNumber(a[0]))?1:0; std::string name; if(argc<=off||!anim_string(c,a[off],name)){state_of(c)->set_rig_error("beginClip requires a name");return JS_UNDEFINED;} float duration=1,rate=30; bool loop=false,add=false; if(argc>off+1&&JS_IsObject(a[off+1])){JSValue v=JS_GetPropertyStr(c,a[off+1],"duration");if(JS_IsNumber(v))duration=(float)argd(c,v);JS_FreeValue(c,v);v=JS_GetPropertyStr(c,a[off+1],"sampleRate");if(JS_IsNumber(v))rate=(float)argd(c,v);JS_FreeValue(c,v);v=JS_GetPropertyStr(c,a[off+1],"loop");if(!JS_IsUndefined(v))loop=JS_ToBool(c,v)>0;JS_FreeValue(c,v);v=JS_GetPropertyStr(c,a[off+1],"mode");if(JS_IsString(v))add=arg_string(c,v)=="additive";JS_FreeValue(c,v);} state_of(c)->begin_clip(name,duration,rate,loop,add); return JS_UNDEFINED;
 }
@@ -474,20 +577,47 @@ static JSValue j_endModifier(JSContext* c, JSValueConst, int n, JSValueConst* a)
     return JS_UNDEFINED;
 }
 
+// placeChild(module, params?, { instanced, inlineBelowPx }?) — record a
+// placement of a declared child at the current transform.
+//
+// The params handling below is the load-bearing part: a stringify failure, or
+// params that normalize to empty / "{}", deliberately degrade to the
+// bare-module lookup, while any other params object must match a declared
+// variant exactly. `instanced` with no `inlineBelowPx` takes the engine's
+// 64 px default. Explicit zero keeps the child as an instance at every LOD.
 static JSValue j_placeChild(JSContext* c, JSValueConst, int n, JSValueConst* a){
     const char* m = JS_ToCString(c, a[0]);
     if (!m) return JS_UNDEFINED;
     // Parse optional third-argument options object { instanced, inlineBelowPx }.
     bool instanced = false;
-    double inline_px = 0.0;
+    double inline_px = 64.0;
+    matter::RayTracingOverride ray_traced = matter::RayTracingOverride::Inherit;
     if (n > 2 && JS_IsObject(a[2])) {
         JSValue vi = JS_GetPropertyStr(c, a[2], "instanced");
         instanced = JS_ToBool(c, vi) > 0;
         JS_FreeValue(c, vi);
         JSValue vp = JS_GetPropertyStr(c, a[2], "inlineBelowPx");
-        if (!JS_IsUndefined(vp) && !JS_IsNull(vp)) JS_ToFloat64(c, &inline_px, vp);
+        if (!JS_IsUndefined(vp) && !JS_IsNull(vp) &&
+            (!JS_IsNumber(vp) || JS_ToFloat64(c,&inline_px,vp)<0 ||
+             !std::isfinite(inline_px) || inline_px<0 || inline_px>std::numeric_limits<float>::max())) {
+            JS_FreeValue(c,vp);JS_FreeCString(c,m);
+            state_of(c)->set_error("placeChild inlineBelowPx must be a finite nonnegative number");
+            return JS_UNDEFINED;
+        }
         JS_FreeValue(c, vp);
-        if (instanced && inline_px <= 0.0) inline_px = 64.0;   // engine default
+        JSValue vr = JS_GetPropertyStr(c, a[2], "rayTraced");
+        if (!JS_IsUndefined(vr)) {
+            if (!JS_IsBool(vr)) {
+                JS_FreeValue(c, vr);
+                JS_FreeCString(c, m);
+                state_of(c)->set_error("placeChild rayTraced must be boolean");
+                return JS_UNDEFINED;
+            }
+            ray_traced = JS_ToBool(c, vr) > 0
+                ? matter::RayTracingOverride::Enabled
+                : matter::RayTracingOverride::Disabled;
+        }
+        JS_FreeValue(c, vr);
     }
     // G6: optional params (a plain JS object/array) -> canonical JSON bytes folded
     // into the child's resolved hash so parametric children dedup. Normalize via
@@ -506,27 +636,48 @@ static JSValue j_placeChild(JSContext* c, JSValueConst, int n, JSValueConst* a){
                 std::string normalized = normalize_params_json(s, len);
                 JS_FreeCString(c, s);
                 if (!normalized.empty() && normalized != "{}") {
-                    state_of(c)->placeChild(m, normalized.c_str(), normalized.size(), instanced, (float)inline_px);
+                    state_of(c)->placeChild(m, normalized.c_str(), normalized.size(), instanced, (float)inline_px, ray_traced);
                 } else {
-                    state_of(c)->placeChild(m, nullptr, 0, instanced, (float)inline_px);
+                    state_of(c)->placeChild(m, nullptr, 0, instanced, (float)inline_px, ray_traced);
                 }
             } else {
-                state_of(c)->placeChild(m, nullptr, 0, instanced, (float)inline_px);
+                state_of(c)->placeChild(m, nullptr, 0, instanced, (float)inline_px, ray_traced);
             }
         } else {
-            state_of(c)->placeChild(m, nullptr, 0, instanced, (float)inline_px);
+            state_of(c)->placeChild(m, nullptr, 0, instanced, (float)inline_px, ray_traced);
         }
         JS_FreeValue(c, js);
     } else {
-        state_of(c)->placeChild(m, nullptr, 0, instanced, (float)inline_px);
+        state_of(c)->placeChild(m, nullptr, 0, instanced, (float)inline_px, ray_traced);
     }
     JS_FreeCString(c, m);
     return JS_UNDEFINED; }
+
+static JSValue j_rayTraced(JSContext* c, JSValueConst, int n, JSValueConst* a) {
+    if (n < 1 || !JS_IsBool(a[0])) {
+        state_of(c)->set_error("rayTraced value must be boolean");
+        return JS_UNDEFINED;
+    }
+    state_of(c)->set_ray_traced(JS_ToBool(c, a[0]) > 0);
+    return JS_UNDEFINED;
+}
 
 static JSValue j_beginShape(JSContext* c, JSValueConst, int, JSValueConst* a){
     int32_t mode=0; JS_ToInt32(c,&mode,a[0]); state_of(c)->beginShape(mode); return JS_UNDEFINED; }
 static JSValue j_vertex(JSContext* c, JSValueConst, int, JSValueConst* a){
     state_of(c)->vertex((float)argd(c,a[0]),(float)argd(c,a[1]),(float)argd(c,a[2])); return JS_UNDEFINED; }
+static JSValue j_surfaceVertex(JSContext* c, JSValueConst, int argc, JSValueConst* a) {
+    if (argc != 8) { state_of(c)->set_error("surfaceVertex requires eight numbers"); return JS_UNDEFINED; }
+    double values[8];
+    for (int i=0; i<8; ++i) {
+        if (!JS_IsNumber(a[i]) || JS_ToFloat64(c,&values[i],a[i]) < 0) {
+            state_of(c)->set_error("surfaceVertex requires eight numbers"); return JS_UNDEFINED;
+        }
+    }
+    state_of(c)->surfaceVertex(float(values[0]),float(values[1]),float(values[2]),
+        float(values[3]),float(values[4]),float(values[5]),float(values[6]),float(values[7]));
+    return JS_UNDEFINED;
+}
 static JSValue j_endShape(JSContext* c, JSValueConst, int, JSValueConst*){ state_of(c)->endShape(); return JS_UNDEFINED; }
 static JSValue j_beginContour(JSContext* c, JSValueConst, int, JSValueConst*){ state_of(c)->beginContour(); return JS_UNDEFINED; }
 static JSValue j_endContour(JSContext* c, JSValueConst, int, JSValueConst*){ state_of(c)->endContour(); return JS_UNDEFINED; }
@@ -790,6 +941,26 @@ static bool place_one_instance(
     return true;
 }
 
+// layer(module, opts) — bake one scatter layer of a tileset at AUTHORING time.
+//
+// It does not scatter a tile on demand; it generates all 20 placement domains
+// up front: 4 edge strips (2 orientations x 2 edge colors) plus 16 interior
+// tiles, each with its own seed derived from
+// `placement_seed(master_seed, layer_index, domain_id)`. That is what lets any
+// tile of the set be assembled later while two tiles sharing an edge color
+// agree along their shared edge.
+//
+// `tile()` must have been called first (the layer reads its size, strip width
+// and corner clear radius). `density` is required and is passed straight to
+// `tileset::scatter`; `placement` selects uniform / poisson / cluster and is
+// fail-closed on an unknown or non-string value.
+//
+// DETERMINISM: per placement, attributes are drawn from `attr_rng` in a fixed
+// order (scale, y, quaternion, params — see `place_one_instance`). Adding,
+// removing or reordering a draw shifts every later placement in that domain.
+//
+// Errors leave no partial layer: the `LayerSpec` is only pushed after all 20
+// domains have been generated successfully.
 static JSValue j_ts_layer(JSContext* c, JSValueConst, int n, JSValueConst* a) {
     tileset::TilesetState* ts = ts_of(c);
     if (!ts) { state_of(c)->set_error("tileset verb outside Tileset root"); return JS_UNDEFINED; }
@@ -1092,6 +1263,18 @@ static JSValue j_ts_dropChild(JSContext* c, JSValueConst, int n, JSValueConst* a
 
     tileset::DropChildRec rec{};
     rec.child_hash = hash;
+    if (n > 2 && !JS_IsUndefined(a[2])) {
+        if (!JS_IsObject(a[2]) || JS_IsNull(a[2])) {
+            ts->set_error("dropChild: options must be an object"); return JS_UNDEFINED;
+        }
+        JSValue physics = JS_GetPropertyStr(c, a[2], "physics");
+        if (!JS_IsUndefined(physics) && !JS_IsBool(physics)) {
+            JS_FreeValue(c, physics);
+            ts->set_error("dropChild: physics must be boolean"); return JS_UNDEFINED;
+        }
+        if (!JS_IsUndefined(physics)) rec.physics = JS_ToBool(c, physics) != 0;
+        JS_FreeValue(c, physics);
+    }
     // Capture current transform stack top as row-major float[16]. top() already
     // returns mm::Mat4, whose m[] is row-major (matter_math.h) -- a straight copy.
     mm::Mat4 top_m = state->top();
@@ -1173,17 +1356,6 @@ static JSValue j_slopeAt(JSContext* c, JSValueConst, int, JSValueConst* a) {
     if (!w.field) { st->set_error("slopeAt: no world field bound"); return JS_UNDEFINED; }
     return JS_NewFloat64(c, w.field->slope_at((float)argd(c, a[0]), (float)argd(c, a[1])));
 }
-// __habitatAt(x, z, out) — evaluate the world's habitat tape at a world (x, z)
-// and fill `out[i]` with channel i, returning the channel count.
-//
-// Fills a CALLER-OWNED array rather than returning a fresh object: this is the
-// scatter hot path (one call per candidate, thousands per 64 m cell), and
-// allocating an object per call would hand back a good part of what moving the
-// ecology native buys. The caller keeps one array and reuses it.
-//
-// One crossing replaces what was ~14 interpreted fbm calls (~105 us measured);
-// the native evaluation behind it is close to free -- __heightAt evaluating a
-// 4-octave field costs the same as __moistureAt reading a constant.
 // __hasHabitat() — is a habitat tape bound? A PREDICATE, not a failed read.
 //
 // habitatAt reports a missing tape by setting the DSL error, which is sticky
@@ -1195,6 +1367,17 @@ static JSValue j_hasHabitat(JSContext* c, JSValueConst, int, JSValueConst*) {
     DslState* st = state_of(c);
     return JS_NewBool(c, st->world().habitat != nullptr);
 }
+// __habitatAt(x, z, out) — evaluate the world's habitat tape at a world (x, z)
+// and fill `out[i]` with channel i, returning the channel count.
+//
+// Fills a CALLER-OWNED array rather than returning a fresh object: this is the
+// scatter hot path (one call per candidate, thousands per 64 m cell), and
+// allocating an object per call would hand back a good part of what moving the
+// ecology native buys. The caller keeps one array and reuses it.
+//
+// One crossing replaces what was ~14 interpreted fbm calls (~105 us measured);
+// the native evaluation behind it is close to free -- __heightAt evaluating a
+// 4-octave field costs the same as __moistureAt reading a constant.
 static JSValue j_habitatAt(JSContext* c, JSValueConst, int argc,
                            JSValueConst* a) {
     VerbTimer _vt(g_height_us, g_height_calls);
@@ -1836,6 +2019,216 @@ static JSValue j_emitVolume(JSContext* c, JSValueConst, int n, JSValueConst* a) 
     return JS_UNDEFINED;
 }
 
+namespace {
+struct SolidJsValue {
+    JSContext *context;
+    JSValue value;
+    SolidJsValue(JSContext *c, JSValue v) : context(c), value(v) {}
+    ~SolidJsValue() {
+        JS_FreeValue(context, value);
+    }
+    SolidJsValue(const SolidJsValue &) = delete;
+};
+bool solid_keys(JSContext *c, JSValueConst object,
+                const std::vector<std::string> &allowed) {
+    if (!JS_IsObject(object) || JS_IsArray(object))
+        return false;
+    JSPropertyEnum *props = nullptr;
+    uint32_t count = 0;
+    if (JS_GetOwnPropertyNames(c, &props, &count, object,
+                               JS_GPN_STRING_MASK | JS_GPN_SYMBOL_MASK) < 0)
+        return false;
+    bool valid = true;
+    for (uint32_t i = 0; i < count; ++i) {
+        const char *key = JS_AtomToCString(c, props[i].atom);
+        if (!key || std::find(allowed.begin(), allowed.end(), key) == allowed.end())
+            valid = false;
+        if (key)
+            JS_FreeCString(c, key);
+        JS_FreeAtom(c, props[i].atom);
+    }
+    js_free(c, props);
+    return valid;
+}
+bool solid_number(JSContext *c, JSValueConst object, const char *key, float &out,
+                  bool required = true) {
+    SolidJsValue value(c, JS_GetPropertyStr(c, object, key));
+    if (JS_IsUndefined(value.value))
+        return !required;
+    double d = 0;
+    if (!JS_IsNumber(value.value) || JS_ToFloat64(c, &d, value.value) < 0 ||
+        !std::isfinite(d) || std::abs(d) > std::numeric_limits<float>::max())
+        return false;
+    out = static_cast<float>(d);
+    return true;
+}
+bool solid_integer(JSContext *c, JSValueConst object, const char *key, uint32_t &out,
+                   uint32_t maximum, bool required = true) {
+    SolidJsValue value(c, JS_GetPropertyStr(c, object, key));
+    if (JS_IsUndefined(value.value))
+        return !required;
+    double d = 0;
+    if (!JS_IsNumber(value.value) || JS_ToFloat64(c, &d, value.value) < 0 ||
+        !std::isfinite(d) || d < 0 || d > maximum || std::floor(d) != d)
+        return false;
+    out = static_cast<uint32_t>(d);
+    return true;
+}
+bool solid_array(JSContext *c, JSValueConst object, const char *key, float *out,
+                 uint32_t size, bool required = true) {
+    SolidJsValue value(c, JS_GetPropertyStr(c, object, key));
+    if (JS_IsUndefined(value.value))
+        return !required;
+    if (!JS_IsArray(value.value))
+        return false;
+    SolidJsValue length(c, JS_GetPropertyStr(c, value.value, "length"));
+    double n = 0;
+    if (JS_ToFloat64(c, &n, length.value) < 0 || n != size)
+        return false;
+    for (uint32_t i = 0; i < size; ++i) {
+        SolidJsValue item(c, JS_GetPropertyUint32(c, value.value, i));
+        double d = 0;
+        if (!JS_IsNumber(item.value) || JS_ToFloat64(c, &d, item.value) < 0 ||
+            !std::isfinite(d) || std::abs(d) > std::numeric_limits<float>::max())
+            return false;
+        out[i] = static_cast<float>(d);
+    }
+    return true;
+}
+bool solid_string(JSContext *c, JSValueConst object, const char *key, std::string &out,
+                  bool required = true) {
+    SolidJsValue value(c, JS_GetPropertyStr(c, object, key));
+    if (JS_IsUndefined(value.value))
+        return !required;
+    if (!JS_IsString(value.value))
+        return false;
+    const char *text = JS_ToCString(c, value.value);
+    if (!text)
+        return false;
+    out = text;
+    JS_FreeCString(c, text);
+    return true;
+}
+bool solid_op(JSContext *c, JSValueConst value, gpu_meshing::SolidOp &out) {
+    std::string shape, combine = "union";
+    if (!solid_string(c, value, "shape", shape) ||
+        !solid_string(c, value, "combine", combine, false))
+        return false;
+    std::vector<std::string> keys{"shape", "combine", "centerM", "rotation", "blendM"};
+    bool valid = false;
+    if (shape == "box" || shape == "roundedBox") {
+        out.kind[0] = shape == "box" ? 0u : 1u;
+        keys.push_back("halfExtentsM");
+        valid = solid_array(c, value, "halfExtentsM", out.shape.data(), 3);
+        if (shape == "roundedBox") {
+            keys.push_back("roundingM");
+            valid = valid && solid_number(c, value, "roundingM", out.shape[3]);
+        }
+    } else if (shape == "sphere") {
+        out.kind[0] = 2;
+        keys.push_back("radiusM");
+        valid = solid_number(c, value, "radiusM", out.shape[0]);
+    } else if (shape == "ellipsoid") {
+        out.kind[0] = 3;
+        keys.push_back("radiiM");
+        valid = solid_array(c, value, "radiiM", out.shape.data(), 3);
+    } else if (shape == "capsule") {
+        out.kind[0] = 4;
+        keys.push_back("radiusM");
+        keys.push_back("halfLengthM");
+        valid = solid_number(c, value, "radiusM", out.shape[0]) &&
+                solid_number(c, value, "halfLengthM", out.shape[1]);
+    }
+    if (!valid || !solid_keys(c, value, keys))
+        return false;
+    if (combine == "union")
+        out.kind[1] = 0;
+    else if (combine == "difference")
+        out.kind[1] = 1;
+    else if (combine == "intersection")
+        out.kind[1] = 2;
+    else
+        return false;
+    float center[3] = {0, 0, 0}, q[4] = {0, 0, 0, 1};
+    if (!solid_array(c, value, "centerM", center, 3, false) ||
+        !solid_array(c, value, "rotation", q, 4, false) ||
+        !solid_number(c, value, "blendM", out.blend[0], false))
+        return false;
+    double norm = 0;
+    for (float f : q)
+        norm += double(f) * f;
+    if (std::abs(norm - 1) > 1e-5)
+        return false;
+    const float x = q[0], y = q[1], z = q[2], w = q[3];
+    // Inverse of the authored local-to-source unit quaternion rotation.
+    out.row0 = {1 - 2 * (y * y + z * z), 2 * (x * y + z * w), 2 * (x * z - y * w), 0};
+    out.row1 = {2 * (x * y - z * w), 1 - 2 * (x * x + z * z), 2 * (y * z + x * w), 0};
+    out.row2 = {2 * (x * z + y * w), 2 * (y * z - x * w), 1 - 2 * (x * x + y * y), 0};
+    for (auto *row : {&out.row0, &out.row1, &out.row2})
+        for (int k = 0; k < 3; ++k)
+            (*row)[3] -= (*row)[k] * center[k];
+    return true;
+}
+} // namespace
+
+bool read_solid_source_recipe(JSContext *c, JSValueConst value,
+                              DslState::SolidSourceRequest &out) {
+    if (!solid_keys(c, value, {"version", "voxelM", "maxVertices", "ops"}))
+        return false;
+    float voxel = 0;
+    uint32_t version = 0, capacity = 500000;
+    if (!solid_integer(c, value, "version", version, 1) || version != 1 ||
+        !solid_number(c, value, "voxelM", voxel) ||
+        !solid_integer(c, value, "maxVertices", capacity, 2 * 1024 * 1024, false) ||
+        capacity < 3)
+        return false;
+    SolidJsValue array(c, JS_GetPropertyStr(c, value, "ops"));
+    if (!JS_IsArray(array.value))
+        return false;
+    SolidJsValue length(c, JS_GetPropertyStr(c, array.value, "length"));
+    double n = 0;
+    if (JS_ToFloat64(c, &n, length.value) < 0 || n < 1 || n > 256 || std::floor(n) != n)
+        return false;
+    std::vector<gpu_meshing::SolidOp> ops(static_cast<size_t>(n));
+    for (uint32_t i = 0; i < ops.size(); ++i) {
+        SolidJsValue op(c, JS_GetPropertyUint32(c, array.value, i));
+        if (!solid_op(c, op.value, ops[i]))
+            return false;
+    }
+    DslState::SolidSourceRequest candidate;
+    candidate.ops = std::move(ops);
+    candidate.voxel_m = voxel;
+    candidate.max_vertices = capacity;
+    out = std::move(candidate);
+    return true;
+}
+static JSValue j_solidSource(JSContext *c, JSValueConst, int argc, JSValueConst *argv) {
+    auto *state = state_of(c);
+    DslState::SolidSourceRequest recipe;
+    if (argc != 1 || !read_solid_source_recipe(c, argv[0], recipe)) {
+        state->set_error("solidSource requires a strict version-1 bounded physical op "
+                         "tape; unsupported fields/semantics are rejected");
+        return JS_UNDEFINED;
+    }
+    state->solid_source(std::move(recipe.ops), recipe.voxel_m, recipe.max_vertices);
+    return JS_UNDEFINED;
+}
+// Register every native verb as a global on `ctx`. Called once per context,
+// after the host has installed the `DslState*` opaque and before any part
+// module is evaluated; the JS prelude wraps these `__`-prefixed globals into
+// the authored `Part` API, so a verb bound here with no prelude wrapper is
+// reachable only as `globalThis.__name(...)`.
+//
+// The third `bind` argument is the declared arity. It is not just metadata:
+// QuickJS pads the argv it hands a C function up to that length with
+// `undefined`, and several verbs here read `a[i]` past the caller's own
+// argument count (`j_lookAt` reads `a[4]`/`a[5]` when four arguments were
+// passed). Lowering a declared arity can therefore turn a working verb into an
+// out-of-bounds read.
+//
+// Also replaces `Math.random` with the seeded draw (`j_random`) so authored
+// parts are reproducible, and chains to `install_pf_bindings` for the
+// particle-flow verbs.
 void install_bindings(JSContext* ctx) {
     JSValue g = JS_GetGlobalObject(ctx);
     auto bind=[&](const char* n, JSCFunction* f, int argc){ JS_SetPropertyStr(ctx,g,n,JS_NewCFunction(ctx,f,n,argc)); };
@@ -1851,12 +2244,15 @@ void install_bindings(JSContext* ctx) {
     bind("__dsl_radius",j_radius,1); bind("__dsl_socket",j_socket,2); bind("__dsl_mirrorBranch",j_mirrorBranch,3); bind("__dsl_endRig",j_endRig,0); bind("__dsl_skin",j_skin,2); bind("__dsl_segments",j_segments,2); bind("__dsl_attach",j_attach,4); bind("__dsl_bind",j_bind_geometry,2);
     bind("__dsl_beginClip",j_beginClip,3); bind("__dsl_clipDuration",j_clipDuration,1); bind("__dsl_clipRate",j_clipRate,1); bind("__dsl_clipLoop",j_clipLoop,1); bind("__dsl_clipMode",j_clipMode,1); bind("__dsl_clipAt",j_clipAt,1); bind("__dsl_clipMarker",j_clipMarker,2); bind("__dsl_clipKey",j_clipKey,3); bind("__dsl_generate",j_generate,1); bind("__dsl_endClip",j_endClip,0);
     bind("__dsl_beginMotion",j_beginMotion,1); bind("__dsl_input",j_motionInput,2); bind("__dsl_target",j_motionTarget,2); bind("__dsl_controller",j_motionController,3); bind("__dsl_clipNode",j_clipNode,2); bind("__dsl_blend1D",j_blendNode,3); bind("__dsl_additive",j_additiveNode,3); bind("__dsl_nativeController",j_nativeNode,2); bind("__dsl_output",j_outputNode,2); bind("__dsl_endMotion",j_endMotion,0);
+    bind("__dsl_solidSource",j_solidSource,1);
     bind("__dsl_sphere",j_sphere,4); bind("__dsl_box",j_box,6);
     bind("__dsl_op",j_op,1); bind("__dsl_smoothing",j_smoothing,1);
     bind("__dsl_raycast",j_raycast,6);
     bind("__dsl_beginModifier",j_beginModifier,0); bind("__dsl_endModifier",j_endModifier,1);
-    bind("__dsl_placeChild",j_placeChild,2);
+    bind("__dsl_rayTraced",j_rayTraced,1);
+    bind("__dsl_placeChild",j_placeChild,3);
     bind("__dsl_beginShape",j_beginShape,1); bind("__dsl_vertex",j_vertex,3);
+    bind("__dsl_surfaceVertex",j_surfaceVertex,8);
     bind("__dsl_endShape",j_endShape,0); bind("__dsl_line",j_line,8);
     bind("__dsl_capsule",j_capsule,7); bind("__dsl_cylinder",j_cylinder,7);
     bind("__dsl_cone",j_cone,8);
@@ -1888,7 +2284,7 @@ void install_bindings(JSContext* ctx) {
     bind("__profEnd",  j_profEnd,  1);
     // Tileset verb bindings.
     bind("__dsl_ts_tile",j_ts_tile,5); bind("__dsl_ts_base",j_ts_base,2);
-    bind("__dsl_ts_layer",j_ts_layer,2); bind("__dsl_ts_dropChild",j_ts_dropChild,2);
+    bind("__dsl_ts_layer",j_ts_layer,2); bind("__dsl_ts_dropChild",j_ts_dropChild,3);
     bind("__dsl_ts_variant",j_ts_variant,1);
     // Params-fn `r` helper natives (draw from ts->param_rng during layer()).
     bind("__dsl_ts_rng_int",j_ts_rng_int,1); bind("__dsl_ts_rng_float",j_ts_rng_float,2);

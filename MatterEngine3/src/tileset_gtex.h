@@ -27,6 +27,33 @@
 // so that a version-1 file — whose on-disk header is 8 bytes shorter — loads
 // correctly: load_gtex() reads the trailing horizon_w_px/horizon_h_px fields
 // only when header.version >= 2.
+//
+// WHAT A .gtex IS, and where it sits. One ground tileset's baked texture set:
+// a 4x4 Wang-tile atlas (tileset_layout.h) with albedo, a two-channel tangent
+// normal, ORM, a 16-bit height/relief channel, and — since v2 — a pair of
+// packed horizon maps at quarter resolution. It is produced at bake time from a
+// settled torus (tileset_bake.h -> the Vulkan atlas bake) and consumed by the
+// renderer, which holds up to `kMaxTilesetSlots` of them resident at once.
+//
+// LIFECYCLE. Compute the content hash from the settle's `pose_hash` and the
+// script identity (`gtex_script_identity_hash` folding the sorted child
+// hashes), probe with `gtex_cache_hit`, and only re-bake and `save_gtex` on a
+// miss. `load_gtex` is the warm path. The hash is stamped into the header, so a
+// `.gtex` is self-describing: the file that is there either matches the key or
+// is rejected.
+//
+// UNITS AND CONVENTIONS. Metres for `tile_size_m` and the height extremes;
+// `texels_per_meter` sets the atlas resolution; all multi-byte scalars on disk
+// are little-endian and neither reader nor writer byte-swaps, so this format is
+// LE-host-only. Atlas pixel dimensions are NOT stored in the header -- they
+// live per channel in the channel table.
+//
+// COST AND THREADING. These are free functions with no shared state, safe to
+// call concurrently on different paths. Both `save_gtex` and `load_gtex`
+// materialise the whole file in memory and PNG-encode or decode every channel,
+// which is tens of megabytes and hundreds of milliseconds for a full-resolution
+// atlas -- bake-thread work. `gtex_cache_hit` reads 48 bytes and is the only
+// cheap call here.
 
 #include <cstdint>
 #include <string>
@@ -73,6 +100,14 @@ inline constexpr uint32_t kBox3dVersion      = matter_version::record::box3d();
 // by ~3.4x.
 inline constexpr int kMaxTilesetSlots = 8;
 
+// Channel ids, which double as indices into the on-disk channel table and into
+// the fixed-size arrays in tileset_gtex.cpp. The first four are always present;
+// 4 and 5 exist only in a v2 file.
+//
+// The last two entries are NOT channels: `CHAN_COUNT` is the array size /
+// v2 channel count, and `kChanCountV1` is how many of them a v1 file carries.
+// Anything iterating channels must stop at one of those two, never at
+// `CHAN_HORIZON_B + 1` by hand.
 enum ChannelId : uint32_t {
     CHAN_ALBEDO_RGB8   = 0,
     CHAN_NORMAL_RG8    = 1,
@@ -84,6 +119,22 @@ enum ChannelId : uint32_t {
     kChanCountV1       = 4,  // channel count in a version-1 file (no horizon)
 };
 
+// The file header, in on-disk field order. NOT written or read as a struct
+// blit: the v1 on-disk header stops after `engine_bake_version` (48 bytes) and
+// the two horizon fields are only present in a v2 file, so both directions go
+// field by field and `sizeof(GTexHeader)` is not the on-disk size. The
+// `HeaderPrefix` static_assert in tileset_gtex.cpp pins the 48-byte common
+// prefix that both versions share.
+//
+// `content_hash` is the cache key: `gtex_cache_hit` compares exactly this
+// field, so writing a file with a stale hash makes a stale atlas look valid
+// forever. `box3d_version` / `engine_bake_version` are recorded for provenance
+// only -- since M4 they are aliases of the version vector and are not
+// independently checked on load.
+//
+// Defaults matter on the write path: `save_gtex` substitutes 4 for a zero
+// `atlas_tiles_x`/`atlas_tiles_y` and overwrites `magic`, `version` and the
+// horizon dimensions itself, so a caller only has to fill the content fields.
 struct GTexHeader {
     uint32_t magic              = kGTexMagic;
     uint32_t version            = kGTexVersion;
@@ -101,6 +152,16 @@ struct GTexHeader {
     int32_t  horizon_h_px       = 0;   // quarter-res atlas height (0 if absent)
 };
 
+// One row of the channel table that follows the header: where a channel's blob
+// lives and how big its image is. Written as a packed array of five uint32s
+// (there is no padding to worry about), once as a placeholder and once with the
+// real offsets -- see `save_gtex`.
+//
+// `width`/`height` are per channel, not per file: the horizon channels are
+// quarter resolution, so the atlas dimensions must be read from the channel you
+// actually care about rather than assumed uniform. `offset` is absolute from
+// the start of the file, and both it and `size` being uint32 is what caps a
+// `.gtex` at 4 GB.
 struct GTexChannelEntry {
     uint32_t id;      // ChannelId
     uint32_t offset;  // file offset (bytes) to the channel blob

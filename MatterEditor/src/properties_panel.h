@@ -1,5 +1,19 @@
 #pragma once
 
+// MatterEditor/src/properties_panel.h
+//
+// The Properties panel is a pure VIEW: it holds no world state of its own and
+// never includes flecs or WorldSession. Everything it can read or write goes
+// through the std::function bundles declared here (FieldCommands,
+// ComponentCommands from specialized_editors.h), which main.cpp fills in with
+// closures over the live session. That is what lets the panel be compiled and
+// reasoned about without the engine, and what lets a world switch change
+// nothing here.
+//
+// Main/UI thread only — every entry point calls ImGui directly. All persistent
+// state lives in PropertiesPanelState, owned by the Ui class, so the panel's
+// value cache survives across frames but nothing survives across a run.
+
 // Phase 5 Task 7 — Properties inspector panel: auto-generates ImGui widgets
 // for the components/fields on the current selection, driven entirely by
 // PropertiesRegistry (see properties_registry.h).
@@ -48,11 +62,34 @@ struct FieldCommands {
     std::function<bool(matter::scene::SceneEntityId, const char*, const char*, matter::Float3)> set_float3;
     std::function<bool(matter::scene::SceneEntityId, const char*, const char*, matter::Quaternion&)> get_quat;
     std::function<bool(matter::scene::SceneEntityId, const char*, const char*, matter::Quaternion)> set_quat;
+    // Not a field accessor: the local->world matrix of the entity's PARENT,
+    // which is what turns a LocalTransform into a world placement. Written as
+    // matter::ecs::WorldTransform stores it — ROW-major with COLUMN-vector
+    // algebra, translation in m[3], m[7] and m[11].
+    //
+    // Writes IDENTITY and returns true for a root entity, or for one whose
+    // parent has no propagated WorldTransform yet; returns false only when the
+    // entity itself does not resolve. Callers must therefore treat "true" as
+    // "the matrix below is authoritative" and a false as "fall back to treating
+    // LocalTransform as a world transform".
+    //
+    // NULLABLE, unlike the accessors above: gizmo.cpp is the only consumer and
+    // degrades to the parentless interpretation when it is unset (which is what
+    // any harness constructing a partial FieldCommands gets).
+    std::function<bool(matter::scene::SceneEntityId, matter::Mat4f&)> get_parent_world_matrix;
 };
 
 // A single field's last-known value(s), used both as the live display value
 // and as the frozen snapshot shown (disabled) while SimulationMode::Play is
 // active, so the panel does not re-query the ECS every frame during Play.
+// Exactly ONE of the value members below is meaningful for any given entry:
+// which one is decided by the field's WidgetKind (properties_registry.h), and
+// the renderer that wrote the entry is the same one that reads it back. The
+// others keep their zero-initialized values and must not be consulted.
+//
+// `mixed` is display-only and is cleared the moment an edit fans out, because
+// an edit writes the same value to every selected entity and so ends the
+// disagreement by construction.
 struct CachedFieldValue {
     bool valid = false;  // false => field could not be resolved (skip drawing)
     bool mixed = false;  // true => selected entities disagree on this value
@@ -66,6 +103,12 @@ struct CachedFieldValue {
 
 // Per-frame UI state for the Properties panel, owned by the Ui class
 // (analogous to SceneTreeState / ConsolePanelState).
+// The cache is keyed by "component.field@primary_entity_id" (see
+// make_cache_key in properties_panel.cpp): namespacing by the FIRST selected
+// entity's id is what stops a selection change from briefly showing the
+// previous entity's value. Entries are never evicted, so the map grows with
+// the number of distinct (component, field, primary entity) triples inspected
+// over the session — bounded in practice by how much a human clicks on.
 struct PropertiesPanelState {
     std::unordered_map<std::string, CachedFieldValue> cache;
     // Set the first time a property edit occurs while SimulationMode::Pause

@@ -65,6 +65,15 @@ inline constexpr float kSunAngularDiameterDefaultDeg = 0.53f;
 // Only used here to document the default angles; nothing reads it as state.
 inline constexpr float kSunDirectionDefault[3] = {-0.45f, -0.80f, -0.35f};
 
+// kSunDirectionDefault expressed through sun_angles_from_direction(), to the
+// precision sun_angles_tests.cpp pins. These exist so the lighting layers that
+// need the default sun AS ANGLES (matter/atmosphere_lighting.h's
+// VulkanLightingOverrides and AtmosphereLightingSources) name one value
+// instead of each re-spelling the literals — two copies that drift make an
+// untouched session and an edited one resolve from different sun positions.
+inline constexpr float kSunAzimuthDefaultDeg = 127.874985f;
+inline constexpr float kSunElevationDefaultDeg = 54.525963f;
+
 inline constexpr double kPi = 3.14159265358979323846;
 inline constexpr double kDegToRad = kPi / 180.0;
 inline constexpr double kRadToDeg = 180.0 / kPi;

@@ -28,6 +28,19 @@
 
 namespace viewer {
 
+// The panel's persistent state: two view-only debug overrides plus the part
+// hash they belong to. PartWorkbench owns one instance for as long as the
+// Workbench tab exists.
+//
+// Deliberately holds NOTHING but values — no WorldSession pointer, no part
+// pointer, not even a cached row. Everything drawn is re-queried each frame
+// from the session handed to draw(), and the only identity it remembers is
+// `last_part_hash_`, which exists purely to detect that the overrides belong to
+// a part that is no longer open.
+//
+// Call order per frame: draw() then apply() — PartWorkbench calls apply()
+// before the isolation session's render(), so the toggles set in the most
+// recent draw() are the ones that take effect.
 class LodInspector {
 public:
     // Draws the grid + toggles for `part_hash` (the isolation session's

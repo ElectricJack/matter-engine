@@ -1,11 +1,3 @@
+// Compatibility boundary; implementation is owned by MatterGraphics.
 #pragma once
-#include "matter/atmosphere_lighting.h"
-
-namespace viewer {
-matter::VulkanLightingOverrides sanitize_vulkan_lighting_overrides(
-    const matter::VulkanLightingOverrides& value) noexcept;
-float vulkan_exposure_scale(float exposure_ev) noexcept;
-bool vulkan_source_lighting_changed(
-    const matter::VulkanLightingOverrides& a,
-    const matter::VulkanLightingOverrides& b) noexcept;
-}
+#include "../../../libs/MatterGraphics/src/native/vk_lighting_controls.h"

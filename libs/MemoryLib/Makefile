@@ -32,9 +32,20 @@ $(OBJ_DIR)/$(SRC_DIR)/%.o: $(SRC_DIR)/%.c $(HEADERS)
 clean:
 	rm -rf build
 
-# Tests: ASan + UBSan (repo convention)
-TEST_FLAGS = -Wall -Wextra -g -I./include -fsanitize=address,undefined
-TEST_CC_OBJS = $(OBJ_DIR)/t_mem_pool.o $(OBJ_DIR)/t_mem_arena.o $(OBJ_DIR)/t_mem_array.o
+# Tests: ASan + UBSan (repo convention).
+#
+# The sanitizers are Linux-only here: MSYS2's mingw-w64 GCC ships no libasan /
+# libubsan, so passing -fsanitize=address,undefined makes the LINK fail with
+# "cannot find -lasan". platform.mk already detects Windows, so gate on that
+# rather than leaving the whole target unbuildable on the repo's main platform.
+ifeq ($(IS_WINDOWS),Windows_NT)
+SANITIZE_FLAGS =
+else
+SANITIZE_FLAGS = -fsanitize=address,undefined
+endif
+
+TEST_FLAGS = -Wall -Wextra -g -I./include $(SANITIZE_FLAGS)
+TEST_CC_OBJS = $(OBJ_DIR)/t_mem_bank.o $(OBJ_DIR)/t_mem_pool.o $(OBJ_DIR)/t_mem_arena.o $(OBJ_DIR)/t_mem_array.o
 
 $(OBJ_DIR)/t_%.o: $(SRC_DIR)/%.c $(HEADERS)
 	$(CC) $(TEST_FLAGS) -c $< -o $@
@@ -42,9 +53,18 @@ $(OBJ_DIR)/t_%.o: $(SRC_DIR)/%.c $(HEADERS)
 test: $(TEST_CC_OBJS) tests/memory_tests.c tests/memory_hpp_tests.cpp
 	$(CC) $(TEST_FLAGS) -o build/memory_tests tests/memory_tests.c $(TEST_CC_OBJS)
 	./build/memory_tests
-	g++ -Wall -Wextra -g -std=c++14 -I./include -fsanitize=address,undefined -o build/memory_hpp_tests tests/memory_hpp_tests.cpp $(TEST_CC_OBJS)
+	g++ -Wall -Wextra -g -std=c++14 -I./include $(SANITIZE_FLAGS) -o build/memory_hpp_tests tests/memory_hpp_tests.cpp $(TEST_CC_OBJS)
 	./build/memory_hpp_tests
 
 -include $(OBJS:.o=.d)
 
 .PHONY: all clean test
+
+# GNU ld interposition is a Linux-only allocation regression check.
+ifneq ($(IS_WINDOWS),Windows_NT)
+test: bank-noalloc-test
+.PHONY: bank-noalloc-test
+bank-noalloc-test:
+	$(CC) -std=c11 -Wall -Wextra -g -Iinclude tests/bank_noalloc_tests.c src/mem_bank.c -Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=free -o build/bank_noalloc_tests
+	./build/bank_noalloc_tests
+endif

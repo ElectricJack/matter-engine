@@ -1,3 +1,26 @@
+// MatterEditor/src/bake_lab.cpp
+//
+// The Bake Lab window's tab bar and command handlers; see bake_lab.h for what
+// the window is and who owns it.
+//
+// This file is the shell only. Every tab body is one call into a panel that
+// lives in its own translation unit, so the ordering and the per-tab refresh
+// policy are the only decisions made here:
+//
+//   - Tab bodies run only while their tab is open, which is what makes the
+//     Animation tab's snapshot copy free when nobody is looking at it.
+//   - The Events tab re-fetches the session hub inside EventInspector::draw
+//     every frame, so it is never left holding a hub from a world that has
+//     since been switched away.
+//
+// The command handlers (open_workbench_part / focus_workbench_tab) do not draw
+// anything: they set pending flags that the next draw_contents() and the next
+// Ui::draw_bake_lab_panel consume. That indirection exists because a command
+// can be dispatched from the FIFO or a button at any point in the frame,
+// including after this window has already been drawn.
+//
+// Render thread only.
+
 #include "bake_lab.h"
 
 #include "ui.h"  // WorldEntry, ViewerStats — see bake_lab.h's include-cycle note.
@@ -35,6 +58,9 @@ void BakeLab::draw_contents(matter::evt::Hub* app_hub, matter::WorldSession* ses
             workbench_.draw(worlds);
             ImGui::EndTabItem();
         }
+        // Cleared unconditionally, whether or not the tab item opened: a focus
+        // request is good for exactly one draw, so a stale flag can never
+        // re-steal the tab on a later frame.
         tab_focus_pending_ = false;
         if (ImGui::BeginTabItem("Timeline")) {
             timeline_.draw(session);
@@ -52,6 +78,10 @@ void BakeLab::draw_contents(matter::evt::Hub* app_hub, matter::WorldSession* ses
         // so a closed tab costs nothing.
         if (ImGui::BeginTabItem("Animation")) {
             std::vector<matter::AnimationDebugInstanceSnapshot> snapshots;
+            // No session counts as a SUCCESSFUL query that returned nothing.
+            // The panel then shows the quiet "no live animation bindings"
+            // state rather than the louder "the engine refused to produce a
+            // consistent snapshot" failure, which is reserved for real bugs.
             const bool query_ok =
                 session ? session->animation_debug_snapshots(snapshots) : true;
             animation_model_.update(snapshots, query_ok);

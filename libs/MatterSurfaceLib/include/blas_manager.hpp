@@ -1,5 +1,51 @@
 #pragma once
 
+// ---------------------------------------------------------------------------
+// libs/MatterSurfaceLib/include/blas_manager.hpp
+// ---------------------------------------------------------------------------
+// Registry of bottom-level acceleration structures (BLAS): one built BVH plus
+// the triangle arrays it indexes, per unique piece of geometry, addressed by
+// an opaque `BLASHandle`. This is the CPU-side store -- it holds no GPU
+// objects and needs no graphics context. Consumers flatten it into
+// GPU-uploadable arrays with generate_triangle_data() / generate_node_data().
+//
+// How it fits
+//   - Below it: SpatialQueryLib supplies `Tri`/`TriEx`/`float3` (precomp.h,
+//     tri.h) and the `BVH`/`BvhMesh`/`BVHNode` builder (bvh.h). Despite its
+//     name, SpatialQueryLib owns the engine's core geometry types, not just
+//     queries.
+//   - Above it: `Cell` (cell.h) registers one BLAS per merge-group mesh and
+//     keeps the handles in `Cell::material_blas`; `TLASManager` draws
+//     instances that reference those handles; MatterEngine3's baked `.part`
+//     loader installs already-built BVHs through register_prebuilt().
+//
+// Identity and lifetime
+//   Registration is content-addressed. Identical triangles -- and identical
+//   per-triangle materialId, when a TriEx array is supplied -- collapse onto
+//   one entry and bump its ref_count instead of building a second BVH. Every
+//   successful register_* hands the caller one reference, which must be
+//   returned to release_blas() exactly once. Handle 0 (INVALID_BLAS_HANDLE) is
+//   never issued.
+//
+// Threading
+//   There is no internal locking; a manager belongs to one thread at a time.
+//   The supported cross-thread pattern is adopt_from(): do the expensive
+//   building on a worker thread against a PRIVATE manager, then adopt its
+//   entries into the owning manager in one bounded O(entries) step (see the
+//   comment on adopt_from below).
+//
+// Gotchas
+//   - Entry order is not stable. release_blas() swap-and-pops, so the
+//     flattened arrays -- and every BLASOffsets derived from them -- permute
+//     whenever an entry dies. Anything holding cached offsets or uploaded
+//     content must re-check content_revision() and redo the work.
+//   - Pointers from get_bvh()/get_mesh()/get_entry() are borrowed and are
+//     invalidated by the next release_blas() / clear().
+//   - generate_node_data() emits the historical LegacyBVHNode layout.
+//   - clear() restarts handle issuance at 1, so handles minted afterwards
+//     collide numerically with ones handed out before it.
+// ---------------------------------------------------------------------------
+
 #include "precomp.h"
 #include "bvh.h"
 
@@ -11,19 +57,6 @@
 
 // BVH types are now in global namespace
 using uint = unsigned int;
-// float3 types come from precomp.h (global namespace)
-// using ::float3;  // Already available globally
-// using ::make_float3;  // Already available globally
-// using ::normalize;  // Already available globally
-// using ::cross;  // Already available globally
-
-// Legacy Triangle struct for backward compatibility (where needed for different layouts)
-struct LegacyTriangle {
-    float3 v0, v1, v2;
-    float3 centroid;
-    float3 normal;
-    int material_id;
-};
 
 // Legacy BVHNode struct for backward compatibility (where needed for different layouts)
 struct LegacyBVHNode {
@@ -33,27 +66,52 @@ struct LegacyBVHNode {
     uint32_t triCount;
 };
 
-// Type aliases for backward compatibility (using different names to avoid conflicts)
-using Triangle = LegacyTriangle;
-
+// Opaque, manager-issued id for one registered BLAS. Handles are dense small
+// integers starting at 1 and are meaningful only to the manager that issued
+// them; 0 is the never-issued "no BLAS" sentinel that release_blas() and
+// has_blas() treat as a no-op / false.
 using BLASHandle = uint32_t;
 constexpr BLASHandle INVALID_BLAS_HANDLE = 0;
 
+// Where one BLAS starts inside the flattened arrays produced by
+// generate_triangle_data() / generate_node_data(). Both are element indices
+// (triangles, nodes) into those combined arrays, not byte offsets. They are
+// only valid for the content_revision() they were read at.
 struct BLASOffsets {
     int triangle_offset;
     int node_offset;
 };
 
+// Owns every registered BLAS and the two lookup tables that find them by
+// handle and by content hash.
+//
+// Lifetime / ownership: entries are held by unique_ptr in `entries_`, so an
+// entry's address is stable for its life but its INDEX is not -- release_blas()
+// swap-and-pops. Non-copyable, movable. Destroying the manager drops every
+// entry regardless of outstanding references.
+//
+// Threading: no locks. One owning thread at a time; use adopt_from() to move
+// work done on a private worker-thread manager into the owner.
+//
+// Call order: register_* -> (use the handle) -> release_blas(). Uploaders
+// should read content_revision() first, flatten with generate_*_data(), and
+// remember the revision they uploaded.
 class BLASManager {
 public:
     // Forward declaration for visibility
+    //
+    // One unique piece of geometry plus its built acceleration structure. Held
+    // by unique_ptr in `entries_`; `handle` is the public id, `hash` the
+    // content hash used for dedup, and `ref_count` the number of live owners.
+    // adopt_from() copies the arrays out of a staged entry rather than moving
+    // the entry itself, so a staged manager stays usable after adoption.
     struct BLASEntry {
         BLASHandle handle;
         std::unique_ptr<BvhMesh> mesh;
         std::unique_ptr<BVH> bvh;
         std::vector<Tri> triangles;
         std::vector<TriEx> tri_extra;   // parallel to triangles; empty if none supplied
-        uint32_t hash;
+        uint32_t hash;      // calculate_hash() over vertex positions + per-tri materialId
         uint32_t ref_count; // number of live owners (cells) referencing this BLAS
 
         BLASEntry(BLASHandle h, std::unique_ptr<BvhMesh> m, std::unique_ptr<BVH> b,
@@ -95,6 +153,17 @@ public:
     BLASManager(BLASManager&&) = default;
     BLASManager& operator=(BLASManager&&) = default;
     
+    // -----------------------------------------------------------------------
+    // Registration
+    // -----------------------------------------------------------------------
+    // Every register_* entry point is content-deduped: a match against an
+    // existing entry returns THAT entry's handle and bumps its ref_count
+    // instead of building a second BVH, and leaves the flattened content (and
+    // therefore content_revision()) untouched. A miss builds -- or, for
+    // register_prebuilt, installs -- a new entry and bumps content_revision().
+    // Either way the caller owns exactly one reference and must hand it back
+    // to release_blas().
+    //
     // Register mesh data and get BLAS handle.
     // force_subdiv_one_prim: when true, build the BVH with subdivToOnePrim=true so
     // every triangle gets its own leaf — needed for unit tests with sparse geometry.
@@ -121,10 +190,6 @@ public:
                                  const BVHNode* nodes, uint nodes_used, const uint* tri_idx,
                                  uint32_t hash, uint32_t ref_count);
 
-    // Legacy interface for old Triangle format
-    //BLASHandle register_triangles_legacy(const std::vector<LegacyTriangle>& triangles);
-    //BLASHandle register_triangles_legacy(LegacyTriangle* triangles, int triangle_count);
-    
     // Adopt every entry of `staged` into this manager, deduping against content
     // already here. `remap` receives staged-handle -> this-manager-handle for
     // every adopted entry; callers patch their own handle references through it.
@@ -132,8 +197,9 @@ public:
     // Purpose: let expensive work happen on a worker thread against a PRIVATE
     // manager, then hand the result over in one bounded step. No BVH is rebuilt
     // here -- a content match bumps ref_count, and a newcomer installs the
-    // staged BVH arrays via the register_prebuilt path. Cost is O(entries), not
-    // O(triangles), which is what makes it safe to run inside a frame.
+    // staged BVH arrays via the register_prebuilt path. Cost is
+    // O(triangles) for new entries because their arrays are copied. Use
+    // consume_from for a disposable worker manager to avoid these copies.
     //
     // Dedup is the same hash + exact-compare that register_triangles uses, so an
     // adopted sector sharing a rock BLAS with one already resident collapses onto
@@ -145,6 +211,13 @@ public:
     void adopt_from(const BLASManager& staged,
                     std::unordered_map<BLASHandle, BLASHandle>& remap);
 
+    // Destructive hand-off for a worker manager that will be discarded.
+    // Transfers whole entries without copying mesh/BVH arrays, deduplicates
+    // against resident geometry, and empties staged. Pointers/handles into
+    // staged must not be used afterward. Both managers require exclusive access.
+    void consume_from(BLASManager& staged,
+                      std::unordered_map<BLASHandle, BLASHandle>& remap);
+
     // Release one reference to a BLAS. When the last owner releases it, the
     // entry is removed and its GPU footprint reclaimed. No-op for invalid/0.
     void release_blas(BLASHandle handle);
@@ -152,6 +225,9 @@ public:
     // Check if a BLAS exists
     bool has_blas(BLASHandle handle) const;
 
+    // Borrowed pointers into the entry. Null when `handle` is unknown -- a
+    // normal outcome, not an error. Invalidated by the next release_blas() or
+    // clear(); do not hold them across either.
     // Get BVH from handle
     BVH* get_bvh(BLASHandle handle) const;
 
@@ -161,6 +237,10 @@ public:
     // Get entry from handle (for visualization)
     const BLASEntry* get_entry(BLASHandle handle) const;
 
+    // Sizes the caller needs to allocate the flattened arrays below. Both are
+    // const but lazily recomputed by update_totals() when the cached totals
+    // have been marked stale, so the first call after a registration walks
+    // every entry.
     // Get total counts for GPU texture generation
     int get_total_triangle_count() const;
     int get_total_node_count() const;
@@ -186,31 +266,41 @@ public:
     // Access to internal entries for visualization
     const std::vector<std::unique_ptr<BLASEntry>>& get_entries() const { return entries_; }
     
+    // Where this BLAS lands in the arrays generate_triangle_data() /
+    // generate_node_data() produce. Valid only for the content_revision()
+    // current at the time of the call: releasing any entry permutes entry
+    // order (swap-and-pop) and therefore every offset in the manager.
     // Get offsets for a specific BLAS in the combined arrays
     BLASOffsets get_offsets(BLASHandle handle) const;
     
+    // Flatten every entry, in `entries_` order, into one contiguous array.
+    // O(total triangles) / O(total nodes) and allocating -- drive them off a
+    // content_revision() change, not off every frame. generate_node_data()
+    // converts to the LegacyBVHNode layout on the way out.
     // Generate combined data for GPU upload
     void generate_triangle_data(std::vector<Tri>& output_triangles) const;
     void generate_node_data(std::vector<LegacyBVHNode>& output_nodes) const;
-    
-    // Legacy interface for old Triangle format
-    //void generate_triangle_data_legacy(std::vector<LegacyTriangle>& output_triangles) const;
-
-    // Legacy interface for old Triangle format
-    //void generate_triangle_texture_data_legacy(LegacyTriangle* output_triangles) const;
 
     // Statistics and debugging
     void print_stats() const;
     void reset_stats();
     
+    // Drops every entry regardless of ref_count -- owners are not notified, so
+    // any handle still held elsewhere dangles -- and restarts handle issuance
+    // at 1, so later handles reuse numbers already handed out.
+    //
+    // Like the register_* and release_blas paths, clear() goes through
+    // mark_dirty(), so content_revision() moves and a consumer gating its
+    // re-upload on content_revision() observes the wipe.
     // Clear all BLAS entries (use with caution - invalidates all existing handles)
     void clear();
 
 private:
     // Mark data as dirty when BLAS changes
     // Invariant: every mark_dirty() call site is a change to the flattened
-    // content (an entry pushed in register_triangles/register_prebuilt, or an
-    // entry erased in release_blas). Ref-count-only paths deliberately do NOT
+    // content (an entry pushed in register_triangles/register_prebuilt, an
+    // entry erased in release_blas, or every entry dropped by
+    // clear()/reset_stats()). Ref-count-only paths deliberately do NOT
     // call it. content_revision_ is bumped here to stay 1:1 with that fact — if
     // a future call site invalidates caches WITHOUT changing content, split the
     // bump back out rather than letting the counter over-report.
@@ -218,10 +308,6 @@ private:
         ++content_revision_;
         totals_dirty_ = true;
     }
-    
-    // Conversion utilities
-    static Tri convert_triangle(const LegacyTriangle& old_tri);
-    static LegacyTriangle convert_triangle_back(const Tri& new_tri);
     
     // Hash calculation. Per-triangle materialId participates in identity so that
     // two byte-identical geometries carrying DIFFERENT materials are NOT deduped
@@ -233,10 +319,6 @@ private:
 
     // Find existing BLAS by hash and triangle data
     BLASHandle find_existing_blas(const Tri* triangles, int count, uint32_t hash, const TriEx* triex) const;
-    
-    // Legacy hash calculation for old Triangle format
-    //uint32_t calculate_hash_legacy(const LegacyTriangle* triangles, int count) const;
-    //BLASHandle find_existing_blas_legacy(const LegacyTriangle* triangles, int count, uint32_t hash) const;
     
     // Update cached totals
     void update_totals() const;
@@ -260,11 +342,6 @@ namespace BLASFactory {
     std::vector<Tri> create_cube_triangles(float size = 1.0f);
     std::vector<Tri> create_sphere_triangles(float radius, int segments, int rings);
     std::vector<Tri> create_plane_triangles(float width, float height);
-    
-    // Legacy functions for backward compatibility
-    // std::vector<LegacyTriangle> create_cube_triangles_legacy(float size = 1.0f);
-    // std::vector<LegacyTriangle> create_sphere_triangles_legacy(float radius, int segments, int rings);
-    // std::vector<LegacyTriangle> create_plane_triangles_legacy(float width, float height);
     
     BLASHandle register_cube(BLASManager& manager, float size = 1.0f);
     BLASHandle register_sphere(BLASManager& manager, float radius, int segments = 32, int rings = 16);

@@ -1,3 +1,45 @@
+// libs/MatterSurfaceLib/src/mesh_transform.cpp
+//
+// TriEx reprojection: after a transformation that replaces the triangle set
+// (simplify, retopo, an LOD rung bake), the new triangles have geometry but no
+// attributes. This file re-derives them from the pre-transform source mesh.
+//
+// Two independent lookups run per target triangle, deliberately using different
+// metrics:
+//
+//   1. ATTRIBUTE match — nearest source triangle by CENTROID distance, via the
+//      `grid` hash. Its result supplies materialId, tint, uv and AO wholesale.
+//      Unfiltered by any crease test: a crease does not change which triangle a
+//      material should come from, and keeping the original metric keeps this
+//      match byte-stable against older bakes.
+//   2. NORMAL donor (SampleSource mode only) — nearest crease-compatible source
+//      triangle to each individual CORNER, by true point-to-TRIANGLE distance,
+//      via the `overlap_grid` (each source triangle registered in every cell
+//      its AABB touches). Centroid distance is a bad proxy here: a 32-unit
+//      ground slab's centroid sits ~10 units from its own corners.
+//
+// `ReprojectNormals` selects how N0/N1/N2 are produced — see the enum's own
+// documentation in `mesh_transform.hpp`. `SmoothTarget` recomputes smooth
+// area-weighted normals over the target (right for retopo); `SampleSource`
+// inherits the source's shading character, including the faceted-field special
+// case (see `src_geo_facet` below).
+//
+// Performance / call pattern. `ReprojectSource` exists because an LOD ladder
+// reprojects the SAME source onto every rung, and the convenience overload
+// `reproject_triex(source, target, normals)` rebuilds both grids per call.
+// Hoist one `ReprojectSource` outside the rung loop and each rung pays only
+// target-side work. The ring-walk cost is bounded by `ov_span`, not a fixed
+// constant — see the long note in `nearest_donor` for the 5483 ms pathology
+// that motivated it.
+//
+// Threading and lifetime. `ReprojectSource` holds a REFERENCE to the source
+// mesh: the source must outlive the index and must not be mutated while it is
+// in use. All the query methods are const and touch no shared mutable state,
+// so one index may be read concurrently; `reproject_triex` writes only to its
+// own `target`.
+//
+// Units are world/model units throughout; no coordinate-space conversion
+// happens here — source and target must already be in the same space.
 #include "mesh_transform.hpp"
 
 #include <cmath>
@@ -29,6 +71,9 @@ inline float3 centroid_of(const MeshIndexed& m, size_t tri_i) {
                        (a.z + b.z + c.z) / 3.0f);
 }
 
+// Unit geometric face normal from the triangle's winding. Degenerate triangles
+// (cross-product length <= 1e-12) return +Y rather than a NaN — an arbitrary
+// but finite value, which the crease gate below will simply fail to match.
 inline float3 face_normal_of(const MeshIndexed& m, size_t tri_i) {
     const float3& a = m.positions[m.indices[tri_i * 3 + 0]];
     const float3& b = m.positions[m.indices[tri_i * 3 + 1]];
@@ -115,6 +160,9 @@ inline float3 sample_source_normal(const MeshIndexed& src, size_t tri_i,
     return fallback;
 }
 
+// Squared distance from `p` to the closest point ON source triangle `tri_i`
+// (via the clamped barycentrics above) — a true point-to-surface distance, not
+// a point-to-centroid one. This is the ranking metric for normal donors.
 inline float point_tri_dist2(const MeshIndexed& src, size_t tri_i, const float3& p) {
     const float3& a = src.positions[src.indices[tri_i * 3 + 0]];
     const float3& b = src.positions[src.indices[tri_i * 3 + 1]];
@@ -130,6 +178,15 @@ inline float point_tri_dist2(const MeshIndexed& src, size_t tri_i, const float3&
 
 } // namespace
 
+// Builds every source-side structure up front. Cost is O(source triangles) for
+// the centroid grid, and in SampleSource mode additionally O(sum of AABB cell
+// coverage) for the overlap grid — build one of these per SOURCE, not per
+// target.
+//
+// An unusable source (no triangles, or a `triex` array that is not parallel to
+// them) leaves `valid_` false and skips all the work; reprojecting through such
+// an index clears the target's triex rather than failing loudly, which matches
+// the free function's early-out.
 ReprojectSource::ReprojectSource(const MeshIndexed& source_in,
                                  ReprojectNormals normals_in)
     : source(source_in), normals(normals_in) {
@@ -182,6 +239,11 @@ ReprojectSource::ReprojectSource(const MeshIndexed& source_in,
     build_donor_machinery();
 }
 
+// Nearest source triangle to `c` by CENTROID distance — the attribute match.
+// Returns a source triangle index; there is no not-found signal, so on a
+// pathological source where the 64-ring walk finds nothing occupied it returns
+// 0. Callers index `source.triex` with the result directly, which is safe
+// because `valid()` already guarantees a non-empty parallel triex.
 uint32_t ReprojectSource::nearest_src(const float3& c) const {
     {
         float best_d2 = 1e30f;
@@ -380,6 +442,13 @@ int ReprojectSource::nearest_donor(const float3& p, const float3& align) const {
     }
 }
 
+// Rewrites `target.triex` from scratch: it is cleared and refilled with exactly
+// one TriEx per target triangle, so any attributes already on the target are
+// discarded. `target.positions`/`indices` are never touched.
+//
+// Cost is O(target triangles) lookups, each a spatial-hash ring walk — three
+// corner donor walks per triangle in SampleSource mode plus one centroid walk.
+// This is the dominant cost of an LOD rung bake, not a cheap fixup.
 void reproject_triex(const ReprojectSource& index, MeshIndexed& target) {
     const MeshIndexed& source = index.source;
     const ReprojectNormals normals = index.normals;

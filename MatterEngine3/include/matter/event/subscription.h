@@ -63,6 +63,16 @@ struct lane {
     friend constexpr bool operator==(lane a, lane b) { return a.id == b.id; }
     friend constexpr bool operator!=(lane a, lane b) { return a.id != b.id; }
 
+    // The predefined engine-wide lanes (ids 1, 2, 3, defined in
+    // src/event/subscription.cpp):
+    //   app          - the general application/frame-loop lane.
+    //   legacy_poll  - private to the matter_engine.cpp poll_event()
+    //                  compat shim, which claims it and pump_one()s it
+    //                  itself so the legacy one-event-per-call FIFO
+    //                  semantics survive independently of the app pump.
+    //                  Do not subscribe engine or editor code to it.
+    //   diagnostics  - reserved for inspector/diagnostic consumers; no
+    //                  code in this repo subscribes to it today.
     static const lane app;
     static const lane legacy_poll;
     static const lane diagnostics;
@@ -126,6 +136,9 @@ public:
     }
 
     bool valid() const { return block_ != nullptr; }
+    // Successful deliveries so far. Returns 0 for a default-constructed or
+    // reset() handle, which is indistinguishable from "subscribed but
+    // never delivered" -- check valid() first if the difference matters.
     uint64_t delivery_count() const {
         return block_ ? block_->delivery_count.load(std::memory_order_relaxed) : 0;
     }

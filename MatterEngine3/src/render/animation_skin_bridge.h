@@ -1,6 +1,40 @@
+// MatterEngine3/src/render/animation_skin_bridge.h
+//
 // Immutable animation-to-Vulkan skin work adapter.  This boundary owns no
 // evaluator, Flecs world, or renderer state: callers provide an exact
 // presentation snapshot plus an already-resolved scene/dynamic-slot mapping.
+//
+// Where it sits
+// -------------
+// The skinned counterpart of animation_rigid_bridge.h. The only production
+// caller is matter::scene::DynamicSceneBridge::collect_animation_skinning()
+// (MatterEngine3/src/ecs/dynamic_scene_bridge.cpp), which runs AFTER
+// reconcile() so that every animated root already owns a dynamic transform
+// slot. Output records go to viewer::VkAnimationSkinning (vk_animation_skinning.h)
+// as the frame's compute-skinning queue; the renderer then compacts that queue
+// against this frame's animated bounds, frustum and cluster LOD.
+//
+// Lifecycle
+// ---------
+// Same as the rigid bridge: constructed with a non-owning pointer to the
+// AnimationPoseSnapshotStore owned by AnimationSystems, swappable via
+// set_snapshots(), null until animation is attached.
+//
+// Conventions and gotchas
+// -----------------------
+//  - The pose comes from snapshot(animator, frame_serial). A stale serial
+//    reads as empty and the submission is rejected; the bridge deliberately
+//    never falls back to latest(), so a lagging animator keeps the static /
+//    bind-pose path instead of rendering an old pose as current.
+//  - Palette matrices are converted to the GPU's column-major layout here, and
+//    the normal matrix is uploaded as transpose(inverse(position)) rather than
+//    derived in the shader (non-uniform authored scale would otherwise produce
+//    malformed normals). A non-invertible joint matrix rejects the submission.
+//  - Validation is per call, not cached: valid_animation_skinned_asset() walks
+//    every LOD's influence window, so cost is O(total skinned vertices in the
+//    asset) on every entity every frame.
+//  - No internal synchronization; call from the thread that owns the pose
+//    snapshot store for the frame being collected.
 #pragma once
 
 #include "animation/animation_systems.h"
@@ -38,6 +72,12 @@ struct AnimationSkinnedLod {
     uint32_t lod = 0;
 };
 
+// One immutable revision of a skinned asset. Like AnimationRigidAsset this is a
+// view: `influences` and `bounds` point at storage owned by the loader and are
+// never copied. `identity` is the asset key the renderer's skinning queue is
+// registered under (must be non-zero), and `generation` must be bumped on every
+// republish so a component still holding the old pointer is rejected by the
+// compare in expand() rather than dereferenced.
 struct AnimationSkinnedAsset {
     uint64_t identity = 0;
     uint32_t generation = 0;
@@ -49,6 +89,14 @@ struct AnimationSkinnedAsset {
     const viewer::VkAnimationBoundsAsset* bounds = nullptr;
 };
 
+// The value the ECS stores next to a skinned entity, copied wholesale into an
+// AnimationSkinExpansion by the scene bridge.
+//
+// `lod` is the PRESENTATION LOD: it is range-checked against asset->lods (an
+// out-of-range value rejects the whole submission) but it does NOT select the
+// geometry that gets published — expand() emits every LOD range whose part_hash
+// matches, and the renderer picks. `visible = false` short-circuits to success
+// with no work emitted, which is not the same as a rejection.
 struct AnimationSkinnedBinding {
     AnimatorInstanceHandle animator{};
     const AnimationSkinnedAsset* asset = nullptr;
@@ -61,6 +109,18 @@ struct AnimationSkinnedBinding {
     int32_t presentation_priority = 0;
 };
 
+// One frame's input for one skinned entity. All values; the bridge reads
+// nothing else.
+//
+//  - entity must be the ROOT key (binding_index == 0).
+//  - part_hash selects which of the asset's LOD ranges are published: every
+//    AnimationSkinnedLod with this part_hash is emitted.
+//  - transform_slot / transform_generation are the entity's live
+//    DynamicInstanceSlots index and generation, resolved by the caller before
+//    expansion. UINT32_MAX means "unresolved" and is rejected; the generation
+//    travels with the slot so a recycled slot cannot inherit a previous
+//    occupant's skinning output.
+//  - frame_serial must be non-zero and must exactly match a published pose.
 struct AnimationSkinExpansion {
     DynamicInstanceKey entity{};
     uint64_t part_hash = 0;
@@ -75,6 +135,9 @@ struct AnimationSkinExpansion {
 // with the queue publication.
 bool valid_animation_skinned_asset(const AnimationSkinnedAsset& asset) noexcept;
 
+// Pure adapter whose only state is a non-owning pose-store pointer, so it is
+// trivially copyable and held by value inside DynamicSceneBridge. A null store
+// makes every expand() call fail, which is the legal pre-animation state.
 class AnimationSkinBridge {
 public:
     explicit AnimationSkinBridge(const animation::AnimationPoseSnapshotStore* snapshots)

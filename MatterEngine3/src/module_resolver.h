@@ -1,13 +1,28 @@
 #pragma once
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
 
+// MatterEngine3/src/module_resolver.h
+//
 // QuickJS-free module-resolution + canonical source-fold for the shared script
 // library (SP-7). Parses static `import ... from '<specifier>'` statements,
 // resolves `shared-lib/<name>` specifiers to files under a fixed root, gathers
 // transitively-imported sources, and folds them into one canonical byte buffer
 // for compute_resolved_hash. Requires no running QuickJS.
+//
+// TWO CONSUMERS, ONE RESULT. `FoldResult::folded` is the source_bytes input to
+// part_asset::compute_resolved_hash — so the fold ORDER is part of a part's
+// cache identity and must never change casually — and `FoldResult::modules` is
+// the set the script host's module loader serves at eval time, without touching
+// the filesystem again. That is what keeps "what was hashed" and "what was run"
+// the same bytes.
+//
+// Pure and stateless: no globals, no caching, no I/O beyond reading the module
+// files, so it is safe to call concurrently from bake threads. Every failure is
+// fail-closed (returns false with `err` set) rather than resolving to something
+// approximate.
 namespace module_resolver {
 
 // Bare specifiers (e.g. "shared-lib/lsystem") found in static import statements,
@@ -46,6 +61,13 @@ struct FoldResult {
     // no-file-access contract intact. Same ordering as resolved_specifiers.
     std::vector<ResolvedModule> modules;
 };
+
+// Loader owns its captured state and returns the actual bytes to hash and run.
+// It receives a validated canonical specifier (without the optional .js suffix).
+// Failure never falls back to the filesystem. FoldResult owns the returned bytes.
+using SourceLoader = std::function<bool(const std::string&, ResolvedModule&, std::string&)>;
+bool fold_sources_with_loader(const std::string& part_source, const SourceLoader& loader,
+                              FoldResult& out, std::string& err);
 
 // Parse the part's imports, transitively resolve + read every shared-lib module,
 // and produce the canonical fold buffer. Returns false (err set) on any missing

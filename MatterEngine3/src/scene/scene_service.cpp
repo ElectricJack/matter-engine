@@ -3,6 +3,7 @@
 
 #include "matter/ecs.h"
 #include "matter/physics.h"
+#include "matter/character.h"
 #include "matter/streaming.h"
 
 namespace matter::scene {
@@ -21,6 +22,13 @@ bool add_kind(flecs::entity e, ComponentKind kind) {
         case ComponentKind::ConvexHullCollider: e.set<physics::ConvexHullCollider>({}); return true;
         case ComponentKind::PartInstance:       e.set<PartInstance>({}); return true;
         case ComponentKind::SectorStreaming:    e.add<streaming::SectorStreaming>(); return true;
+        case ComponentKind::CharacterController: {
+            character::CharacterController controller;
+            std::string error;
+            if (!validate_character_component(e, controller, error)) return false;
+            e.set<character::CharacterController>(controller);
+            return true;
+        }
     }
     return false;
 }
@@ -37,6 +45,7 @@ bool remove_kind(flecs::entity e, ComponentKind kind) {
         case ComponentKind::ConvexHullCollider: e.remove<physics::ConvexHullCollider>(); return true;
         case ComponentKind::PartInstance:       e.remove<PartInstance>(); return true;
         case ComponentKind::SectorStreaming:    e.remove<streaming::SectorStreaming>(); return true;
+        case ComponentKind::CharacterController: e.remove<character::CharacterController>(); return true;
     }
     return false;
 }
@@ -56,6 +65,8 @@ void copy_components(flecs::entity src, flecs::entity dst) {
     copy_one<physics::BoxCollider>(src, dst);
     copy_one<physics::ConvexHullCollider>(src, dst);
     copy_one<PartInstance>(src, dst);
+    copy_one<character::CharacterController>(src, dst);
+    if (src.has<character::CharacterController>()) dst.set<character::MoveIntent>({});
     if (src.has<streaming::SectorStreaming>()) dst.add<streaming::SectorStreaming>();
 }
 
@@ -63,6 +74,12 @@ void copy_components(flecs::entity src, flecs::entity dst) {
 
 SceneService::SceneService(flecs::world& world) : world_(world) {}
 
+// Resolve a SceneEntityId by scanning every SceneEntityId-bearing entity.
+// flecs::world::each has no early exit, so the full set is visited even after a
+// match (and with duplicate ids the LAST match wins). Every entry point below
+// calls this at least once and allocate_id() calls it once per candidate, so a
+// single scene edit is O(live scene entities). id 0 is the "no id" sentinel and
+// resolves to an invalid entity without scanning.
 flecs::entity SceneService::find_entity(SceneEntityId id) const {
     if (id.value == 0) return flecs::entity();
     flecs::entity found;
@@ -73,11 +90,24 @@ flecs::entity SceneService::find_entity(SceneEntityId id) const {
 }
 
 uint64_t SceneService::allocate_id() {
-    // Monotonic candidate, verified unique against live scene ids so a
-    // service-created id can never collide with a hash-authored id.
+    // Runtime ids live in the HIGH half of the SceneEntityId::value space:
+    // kRuntimeIdBit set, the monotonic counter in the low 63 bits. Authored
+    // ids are hash_authored_id() FNV-1a hashes with that bit cleared
+    // (matter/scene.h defines the split), so the two allocators are disjoint
+    // by construction.
+    // That is what actually upholds the no-collision claim — the liveness scan
+    // below only sees CURRENTLY loaded entities, so on its own it could not
+    // stop a later world reload from bringing in an authored id this service
+    // had already handed out. The scan remains as a guard against a collision
+    // inside the runtime half itself (a duplicated id, or a counter that wraps
+    // in a session that outlives 2^63 allocations).
+    //
+    // Masking the counter rather than trusting it to stay in range also keeps
+    // the invariant true at wraparound: the candidate always has the bit set
+    // and is therefore never the 0 "no id" sentinel.
     while (true) {
-        uint64_t candidate = next_id_++;
-        if (candidate != 0 && !find_entity(SceneEntityId{candidate}).is_valid())
+        const uint64_t candidate = kRuntimeIdBit | (next_id_++ & ~kRuntimeIdBit);
+        if (!find_entity(SceneEntityId{candidate}).is_valid())
             return candidate;
     }
 }
@@ -93,6 +123,12 @@ SceneEditResult SceneService::create_empty(const std::string& name) {
     return result;
 }
 
+// Duplicates the entity ITSELF only — children are NOT copied. The result is a
+// sibling of the source: same display name, same parent link, and a value copy
+// of every SceneRecord component present on the source (copy_components above;
+// the SectorStreaming tag is re-added rather than copied, since it holds no
+// data). A source that is a root, or whose parent is an internal non-scene
+// entity, yields a root. The new id comes from allocate_id().
 SceneEditResult SceneService::duplicate(SceneEntityId src) {
     SceneEditResult result;
     flecs::entity source = find_entity(src);

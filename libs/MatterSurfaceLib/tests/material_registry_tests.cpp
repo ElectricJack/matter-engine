@@ -8,6 +8,9 @@
 #include <cmath>
 #include <cstring>
 #include <initializer_list>
+#include <array>
+#include <thread>
+#include <atomic>
 
 static int failures = 0;
 #define CHECK(cond, msg) do { if (!(cond)) { printf("FAIL: %s\n", msg); ++failures; } } while (0)
@@ -18,7 +21,7 @@ static bool nearf(float a, float b, float eps = 1e-6f) {
 
 static uint64_t fnv1a64(const void* data, size_t size) {
     const auto* bytes = static_cast<const unsigned char*>(data);
-    uint64_t hash = 1469598103934665603ull;
+    uint64_t hash = 14695981039346656037ull;
     for (size_t i = 0; i < size; ++i) {
         hash ^= bytes[i];
         hash *= 1099511628211ull;
@@ -47,13 +50,13 @@ int main() {
     CHECK(n >= 10, "expected at least 10 materials");
     float buf[64 * MATERIAL_FLOATS_PER_DEF];
     assert(n <= 64);
-    MaterialRegistryPackForGPU(buf);
+    MaterialRegistryPackForGPU(buf, 64);
     // translucency is the 8th float (index 7) in each packed record (see MaterialRegistryPackForGPU).
     CHECK(fabsf(buf[4 * MATERIAL_FLOATS_PER_DEF + 7] - MaterialRegistryGet(4)->translucency) < 1e-6f,
           "packed translucency for material 4 must match the table");
 
     MaterialGpuRecord records[64]{};
-    MaterialRegistryPackRtForGPU(records);
+    MaterialRegistryPackRtForGPU(records, 64);
     CHECK(sizeof(MaterialGpuRecord) == 144, "RTX material record is 9x vec4");
     CHECK(offsetof(MaterialGpuRecord, base_roughness) == 0,
           "RTX base/roughness vec4 begins at byte 0");
@@ -74,9 +77,14 @@ int main() {
     CHECK(offsetof(MaterialGpuRecord, flags_misc) == 128,
           "RTX flags uvec4 begins at byte 128");
     CHECK(MaterialRegistryCount() == 30, "garden registry has stable count 30");
-    CHECK(MaterialRegistrySchemaVersion() == 3u, "material schema version is 3");
-    CHECK(fnv1a64(buf, 18u * MATERIAL_FLOATS_PER_DEF * sizeof(float)) ==
-              0x69c22a3502ba9490ull,
+    CHECK(MaterialRegistrySchemaVersion() == 6u,
+          "finished surface-detail identity advances material schema to version 6");
+    const uint64_t legacy_prefix_hash =
+        fnv1a64(buf, 18u * MATERIAL_FLOATS_PER_DEF * sizeof(float));
+    if (legacy_prefix_hash != 0x028ace098b99e124ull)
+        std::printf("legacy material prefix hash: 0x%016llx\n",
+                    static_cast<unsigned long long>(legacy_prefix_hash));
+    CHECK(legacy_prefix_hash == 0x028ace098b99e124ull,
           "legacy IDs 0-17 keep byte-identical 12-float packing");
 
     struct ExpectedBase { int id; float r,g,b,rough,metal; };
@@ -158,6 +166,42 @@ int main() {
           "glass is a closed volume");
     CHECK(records[7].transmission[1] > 1.32f &&
           records[7].transmission[1] < 1.34f, "water IOR is preserved");
+    CHECK(MATERIAL_WATER_SURFACE == (1u << 4),
+          "water uses a generic surface-domain flag, not a material id");
+    CHECK((records[7].flags_misc[0] & MATERIAL_WATER_SURFACE) != 0u,
+          "the builtin compatibility water is explicitly water-domain flagged");
+
+    MaterialDef authored_water{};
+    MaterialRegistryDefaultDynamicDef(&authored_water);
+    authored_water.surfaceFlags |= MATERIAL_WATER_SURFACE;
+    const int authored_water_id =
+        MaterialRegistryDefineDynamic(&authored_water, "RegistryTestWater");
+    CHECK(authored_water_id >= MaterialRegistryStaticCount(),
+          "dynamic authored water registers through the ordinary material table");
+    MaterialGpuRecord dynamic_records[MATERIAL_MAX_TOTAL]{};
+    MaterialRegistryPackRtForGPU(dynamic_records, MATERIAL_MAX_TOTAL);
+    if (authored_water_id >= 0) {
+        CHECK((dynamic_records[authored_water_id].flags_misc[0] &
+               MATERIAL_WATER_SURFACE) != 0u,
+              "dynamic water-domain identity reaches the Vulkan material record");
+    }
+    MaterialDef authored_surface{};
+    MaterialRegistryDefaultDynamicDef(&authored_surface);
+    CHECK((authored_surface.surfaceFlags & MATERIAL_SURFACE_DETAIL) == 0u,
+          "default materials retain ground detail behavior");
+    CHECK(MATERIAL_SURFACE_DETAIL == 32u, "surface detail GPU bit contract");
+    authored_surface.surfaceFlags |= MATERIAL_SURFACE_DETAIL;
+    const int surface_id = MaterialRegistryDefineDynamic(&authored_surface, "RegistryTestSurface");
+    CHECK(surface_id >= MaterialRegistryStaticCount(), "finished surface registers normally");
+    MaterialRegistryPackRtForGPU(dynamic_records, MATERIAL_MAX_TOTAL);
+    if (surface_id >= 0) {
+        CHECK((dynamic_records[surface_id].flags_misc[0] & MATERIAL_SURFACE_DETAIL) != 0u,
+              "finished surface bit reaches GPU without new record fields");
+    }
+    authored_surface.surfaceFlags &= ~MATERIAL_SURFACE_DETAIL;
+    CHECK(MaterialRegistryDefineDynamic(&authored_surface, "RegistryTestSurface") ==
+              MATERIAL_DEFINE_ERR_CONFLICT,
+          "changing detail domain changes material definition identity");
     CHECK(records[15].scattering[3] > 0.0f &&
           (records[15].flags_misc[0] & MATERIAL_THIN_WALLED) != 0,
           "leaf opts into thin scattering");
@@ -172,6 +216,48 @@ int main() {
     // Sand (new material id 13) selects the oriented-cube algorithm (1).
     CHECK(MaterialMeshingAlgorithm(13) == 1, "sand(13) should select oriented cubes (1)");
     CHECK(MaterialRegistryCount() >= 14, "expected at least 14 materials after adding sand");
+
+    // Reproduce the count/pack interleaving that used to overwrite the heap.
+    const int old_count = MaterialRegistryCount();
+    MaterialDef extra{}; MaterialRegistryDefaultDynamicDef(&extra);
+    CHECK(MaterialRegistryDefineDynamic(&extra, "BetweenCountAndPack") >= old_count,
+          "registry grows after caller sizes its snapshot");
+    std::array<MaterialGpuRecord, MATERIAL_MAX_TOTAL> guarded;
+    std::memset(guarded.data(), 0xa5, sizeof(guarded));
+    MaterialGpuRecord sentinel; std::memset(&sentinel, 0xa5, sizeof(sentinel));
+    CHECK(MaterialRegistryPackRtForGPU(guarded.data(), old_count) == old_count &&
+          std::memcmp(&guarded[old_count], &sentinel, sizeof(sentinel)) == 0,
+          "RT packing never writes beyond stale caller capacity");
+    std::array<float, MATERIAL_MAX_TOTAL * MATERIAL_FLOATS_PER_DEF> legacy;
+    legacy.fill(-12345.0f);
+    CHECK(MaterialRegistryPackForGPU(legacy.data(), old_count) == old_count &&
+          legacy[old_count * MATERIAL_FLOATS_PER_DEF] == -12345.0f,
+          "legacy packing never writes beyond stale caller capacity");
+    CHECK(MaterialRegistryPackRtForGPU(nullptr, MATERIAL_MAX_TOTAL) == 0 &&
+          MaterialRegistryPackForGPU(nullptr, 0) == 0, "empty snapshots are safe");
+    MaterialRegistryResetDynamic();
+    extra.albedo[0] = .123f; extra.roughness = .456f;
+    std::atomic<bool> start{false};
+    std::thread writer([&] {
+        while (!start.load()) std::this_thread::yield();
+        for (int pass=0; pass<2000; ++pass) {
+            MaterialRegistryResetDynamic();
+            MaterialRegistryDefineDynamic(&extra, "ConcurrentSnapshot");
+        }
+    });
+    start.store(true);
+    for (int pass=0; pass<2000; ++pass) {
+        const int count = MaterialRegistryPackRtForGPU(guarded.data(), MATERIAL_MAX_TOTAL);
+        CHECK(count >= MaterialRegistryStaticCount() && count <= MATERIAL_MAX_TOTAL,
+              "concurrent snapshot count remains bounded");
+        if (count > MaterialRegistryStaticCount()) {
+            const auto& row = guarded[MaterialRegistryStaticCount()];
+            CHECK(row.base_roughness[0] == .123f && row.base_roughness[3] == .456f,
+                  "concurrent snapshot sees a fully published material");
+        }
+    }
+    writer.join();
+    MaterialRegistryResetDynamic();
 
     if (failures == 0) printf("All material_registry tests passed\n");
     return failures == 0 ? 0 : 1;
