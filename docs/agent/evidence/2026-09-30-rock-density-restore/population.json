@@ -1,0 +1,342 @@
+{
+  "task": "quick-meadow-68.3",
+  "before_rev": "563945f01de2ae237a0c328abd5245566e960a0b",
+  "after_rev": "worktree",
+  "changed_scene_and_shared_lib_files": [
+    "projects/world_demo/scenes/streaming/StreamMountain/StreamMountain.js",
+    "projects/world_demo/scenes/streaming/StreamMountain/objects/WorldSector.js",
+    "projects/world_demo/shared-lib/mountain_geometry_site.js"
+  ],
+  "fixture": {
+    "terrain": "70 + 0.05x - 0.025z + 3 sin(x/37) cos(z/53) (synthetic)",
+    "biome": "foothills",
+    "area": {
+      "min": [
+        256,
+        1280
+      ],
+      "max_exclusive": [
+        576,
+        1600
+      ],
+      "each_level": "every tile overlapping area"
+    },
+    "rung": 2,
+    "terrainLod": 5,
+    "volumetric": 1,
+    "note": "natural counts compare the two trees on a synthetic field; they are not a real-terrain census"
+  },
+  "before": {
+    "world_params": {
+      "worldSeed": 20260722,
+      "terrainOnly": false
+    },
+    "volumetric_sectors": true,
+    "terrain_texels_per_meter": 128,
+    "biomes": "{\"__terrain\":{\"material\":\"dirt\"},\"__terrainOnly\":false,\"__geometryRocks\":{\"material\":1005},\"__vegetation\":{\"profile\":\"shared-evergreen-forest\",\"materials\":{\"barkMaterial\":1006,\"branchMaterial\":1007,\"needleMaterial\":1008,\"coneMaterial\":1009,\"redwoodMaterial\":1010}},\"foothills\":{\"rocks\":16},\"meadow\":{\"rocks\":16},\"mountains\":{\"rocks\":4},\"ocean\":{}}",
+    "requires": {
+      "total": 71,
+      "detail_rocks": 19,
+      "other_sha256": "cb73926c8822b5a60081d880ce9d48bd9c285df6c58c05d629a06468eeeb492d"
+    },
+    "site": {
+      "placements": 1283,
+      "unique_assets": 19,
+      "focal": [
+        [
+          416,
+          1456,
+          0,
+          0,
+          6,
+          128
+        ],
+        [
+          425,
+          1458,
+          1,
+          2,
+          4,
+          128
+        ],
+        [
+          422,
+          1448,
+          2,
+          1,
+          7,
+          128
+        ]
+      ],
+      "resolutions": [
+        128
+      ],
+      "placed_source_triangles": 252248064,
+      "unique_source_triangles": 3735552,
+      "sha256": "8cd752fba61ac63fc694d405bde1cd1f14ef38e15731a453f01b4a57faec5188"
+    },
+    "levels": {
+      "64": {
+        "tiles_xz": {
+          "min": [
+            256,
+            1280
+          ],
+          "max_exclusive": [
+            576,
+            1600
+          ]
+        },
+        "placements": 1749,
+        "modules": {
+          "MountainDetailRock": 1283,
+          "MountainRock": 183,
+          "MountainEvergreen": 283
+        },
+        "site": {
+          "placements": 1283,
+          "sha256": "857f68f83cbc511a89307595fa5cf7fcc4b57925aaa8ca8dface459e35fefb6e"
+        },
+        "natural": {
+          "placements": 466,
+          "sha256": "8a9791a1cda679f5cd4d42704821fa261d4618946ea434e9e74f52af0549fc04"
+        }
+      },
+      "128": {
+        "tiles_xz": {
+          "min": [
+            256,
+            1280
+          ],
+          "max_exclusive": [
+            640,
+            1664
+          ]
+        },
+        "placements": 1934,
+        "modules": {
+          "MountainDetailRock": 1283,
+          "MountainRock": 241,
+          "MountainEvergreen": 410
+        },
+        "site": {
+          "placements": 1283,
+          "sha256": "857f68f83cbc511a89307595fa5cf7fcc4b57925aaa8ca8dface459e35fefb6e"
+        },
+        "natural": {
+          "placements": 651,
+          "sha256": "532f66911e8c555e78572a43e3be2ebe66650cbd9793ef7bd7baaac1cd520106"
+        }
+      },
+      "256": {
+        "tiles_xz": {
+          "min": [
+            256,
+            1280
+          ],
+          "max_exclusive": [
+            768,
+            1792
+          ]
+        },
+        "placements": 2327,
+        "modules": {
+          "MountainDetailRock": 1283,
+          "MountainRock": 382,
+          "MountainEvergreen": 662
+        },
+        "site": {
+          "placements": 1283,
+          "sha256": "857f68f83cbc511a89307595fa5cf7fcc4b57925aaa8ca8dface459e35fefb6e"
+        },
+        "natural": {
+          "placements": 1044,
+          "sha256": "7a735999f57f75356b30f8ff4b4a9ebb79b6fbdafda5409d7e439a26478c7fc8"
+        }
+      },
+      "512": {
+        "tiles_xz": {
+          "min": [
+            0,
+            1024
+          ],
+          "max_exclusive": [
+            1024,
+            2048
+          ]
+        },
+        "placements": 5465,
+        "modules": {
+          "MountainDetailRock": 1283,
+          "MountainRock": 1489,
+          "MountainEvergreen": 2693
+        },
+        "site": {
+          "placements": 1283,
+          "sha256": "857f68f83cbc511a89307595fa5cf7fcc4b57925aaa8ca8dface459e35fefb6e"
+        },
+        "natural": {
+          "placements": 4182,
+          "sha256": "f0c33de096b0577bf37231f3e9cf906cd012e75e7339e54deb3a46596c66c5eb"
+        }
+      }
+    }
+  },
+  "after": {
+    "world_params": {
+      "worldSeed": 20260722,
+      "terrainOnly": false,
+      "geometryRockStress": false
+    },
+    "volumetric_sectors": true,
+    "terrain_texels_per_meter": 128,
+    "biomes": "{\"__terrain\":{\"material\":\"dirt\"},\"__terrainOnly\":false,\"__geometryRocks\":{\"material\":1005},\"__geometryRockStress\":false,\"__vegetation\":{\"profile\":\"shared-evergreen-forest\",\"materials\":{\"barkMaterial\":1006,\"branchMaterial\":1007,\"needleMaterial\":1008,\"coneMaterial\":1009,\"redwoodMaterial\":1010}},\"foothills\":{\"rocks\":16},\"meadow\":{\"rocks\":16},\"mountains\":{\"rocks\":4},\"ocean\":{}}",
+    "requires": {
+      "total": 55,
+      "detail_rocks": 3,
+      "other_sha256": "cb73926c8822b5a60081d880ce9d48bd9c285df6c58c05d629a06468eeeb492d"
+    },
+    "site": {
+      "placements": 3,
+      "unique_assets": 3,
+      "focal": [
+        [
+          416,
+          1456,
+          0,
+          0,
+          6,
+          128
+        ],
+        [
+          425,
+          1458,
+          1,
+          2,
+          4,
+          128
+        ],
+        [
+          422,
+          1448,
+          2,
+          1,
+          7,
+          128
+        ]
+      ],
+      "resolutions": [
+        128
+      ],
+      "placed_source_triangles": 589824,
+      "unique_source_triangles": 589824,
+      "sha256": "7858ed5f99167b05889fa7477a93b796e134a48fc2fc4d87118cacfe4b191194"
+    },
+    "levels": {
+      "64": {
+        "tiles_xz": {
+          "min": [
+            256,
+            1280
+          ],
+          "max_exclusive": [
+            576,
+            1600
+          ]
+        },
+        "placements": 469,
+        "modules": {
+          "MountainRock": 183,
+          "MountainEvergreen": 283,
+          "MountainDetailRock": 3
+        },
+        "site": {
+          "placements": 3,
+          "sha256": "eb4b6d29b5fc724f70cb19ad62d7a2de588baf01c7eb974f0eaa9c0464eb0aca"
+        },
+        "natural": {
+          "placements": 466,
+          "sha256": "8a9791a1cda679f5cd4d42704821fa261d4618946ea434e9e74f52af0549fc04"
+        }
+      },
+      "128": {
+        "tiles_xz": {
+          "min": [
+            256,
+            1280
+          ],
+          "max_exclusive": [
+            640,
+            1664
+          ]
+        },
+        "placements": 654,
+        "modules": {
+          "MountainRock": 241,
+          "MountainEvergreen": 410,
+          "MountainDetailRock": 3
+        },
+        "site": {
+          "placements": 3,
+          "sha256": "eb4b6d29b5fc724f70cb19ad62d7a2de588baf01c7eb974f0eaa9c0464eb0aca"
+        },
+        "natural": {
+          "placements": 651,
+          "sha256": "532f66911e8c555e78572a43e3be2ebe66650cbd9793ef7bd7baaac1cd520106"
+        }
+      },
+      "256": {
+        "tiles_xz": {
+          "min": [
+            256,
+            1280
+          ],
+          "max_exclusive": [
+            768,
+            1792
+          ]
+        },
+        "placements": 1047,
+        "modules": {
+          "MountainDetailRock": 3,
+          "MountainRock": 382,
+          "MountainEvergreen": 662
+        },
+        "site": {
+          "placements": 3,
+          "sha256": "eb4b6d29b5fc724f70cb19ad62d7a2de588baf01c7eb974f0eaa9c0464eb0aca"
+        },
+        "natural": {
+          "placements": 1044,
+          "sha256": "7a735999f57f75356b30f8ff4b4a9ebb79b6fbdafda5409d7e439a26478c7fc8"
+        }
+      },
+      "512": {
+        "tiles_xz": {
+          "min": [
+            0,
+            1024
+          ],
+          "max_exclusive": [
+            1024,
+            2048
+          ]
+        },
+        "placements": 4185,
+        "modules": {
+          "MountainDetailRock": 3,
+          "MountainRock": 1489,
+          "MountainEvergreen": 2693
+        },
+        "site": {
+          "placements": 3,
+          "sha256": "eb4b6d29b5fc724f70cb19ad62d7a2de588baf01c7eb974f0eaa9c0464eb0aca"
+        },
+        "natural": {
+          "placements": 4182,
+          "sha256": "f0c33de096b0577bf37231f3e9cf906cd012e75e7339e54deb3a46596c66c5eb"
+        }
+      }
+    }
+  }
+}

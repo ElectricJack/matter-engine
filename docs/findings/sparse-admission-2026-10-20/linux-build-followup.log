@@ -1,0 +1,7 @@
+make: Entering directory '/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/MatterEditor'
+make -C ../MatterEngine3 vulkan-spirv
+make[1]: Entering directory '/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/MatterEngine3'
+/tmp/sharp-zenith-52-shaderc/root/usr/bin/glslc --target-env=vulkan1.3 -O -Ishaders_vk ../libs/MatterGraphics/shaders/rt_lighting.rgen -o build/shaders_vk/rt_lighting.rgen.spv
+/tmp/sharp-zenith-52-shaderc/root/usr/bin/glslc --target-env=vulkan1.3 -O -Ishaders_vk ../libs/MatterGraphics/shaders/rt_lighting_culled.rgen -o build/shaders_vk/rt_lighting_culled.rgen.spv
+make[1]: *** [../libs/MatterGraphics/native-ray-shaders.mk:26: build/shaders_vk/rt_lighting_culled.rgen.spv] Terminated
+make: *** [Makefile:533: ../MatterEngine3/shaders_gen/embedded_spirv.h] Terminated

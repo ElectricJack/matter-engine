@@ -1,0 +1,13 @@
+Internal ctest changing into directory: D:/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-2/MatterEditor/build/cmake/windows-msvc/relwithdebinfo
+Test project D:/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-2/MatterEditor/build/cmake/windows-msvc/relwithdebinfo
+    Start  98: viewer_logic_tests
+1/2 Test  #98: viewer_logic_tests ...............   Passed  215.00 sec
+    Start 134: shader_source_tests
+2/2 Test #134: shader_source_tests ..............   Passed    0.42 sec
+
+100% tests passed, 0 tests failed out of 2
+
+Label Time Summary:
+cpu    = 215.42 sec*proc (2 tests)
+
+Total Test time (real) = 215.46 sec

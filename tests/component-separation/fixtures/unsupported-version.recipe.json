@@ -1,0 +1,100 @@
+{
+  "asset_dependencies": [],
+  "canonical_profile": "matter-exact-json-v1",
+  "document_type": "recipe",
+  "extensions": [],
+  "materials": [
+    {
+      "base_color": {
+        "factor": [
+          0.75,
+          0.25,
+          0.125,
+          1
+        ],
+        "texture": null,
+        "uv_set": 0
+      },
+      "emissive": [
+        0,
+        0,
+        0
+      ],
+      "emissive_texture": null,
+      "id": "clay",
+      "metallic": 0,
+      "metallic_roughness_texture": null,
+      "normal_scale": 1,
+      "normal_texture": null,
+      "roughness": 0.800000011920929
+    }
+  ],
+  "metadata": {},
+  "nodes": [
+    {
+      "id": "body",
+      "inputs": [],
+      "materials": [
+        "clay"
+      ],
+      "operation": "primitive.box",
+      "operation_version": 1,
+      "output_type": "mesh",
+      "parameters": {
+        "size": [
+          2,
+          2,
+          2
+        ]
+      },
+      "transform": [
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        1
+      ]
+    }
+  ],
+  "outputs": [
+    "body"
+  ],
+  "parameters": {},
+  "required_capabilities": [
+    {
+      "name": "matter.recipe.core",
+      "version": 1
+    },
+    {
+      "name": "matter.material.pbr",
+      "version": 1
+    }
+  ],
+  "resources": [],
+  "rng_algorithm": "matter.splitmix64.v1",
+  "schema_version": {
+    "major": 99,
+    "minor": 0
+  },
+  "seed": "0123456789abcdef",
+  "source": {
+    "content": null,
+    "id": "corpus.primitive",
+    "legacy_hashes": [],
+    "revision": "1",
+    "uri": "fixture://component-separation/primitive"
+  },
+  "source_map": {},
+  "textures": []
+}

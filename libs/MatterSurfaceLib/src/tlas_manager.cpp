@@ -19,9 +19,7 @@
 // Ownership and lifetime. `instance_storage_` is the manager-owned backing
 // array the `TLAS` holds a RAW pointer into, so the built `TLAS` must be
 // dropped before that vector is cleared or reallocated — `build()` does exactly
-// that, and any future edit must preserve the order. `instances_` (the
-// unique_ptr vector) is a deprecated parallel copy that `build()` still fills;
-// the `TLAS` does not point at it.
+// that, and any future edit must preserve the order.
 //
 // This file is CPU-only — no Vulkan, no GL, no descriptor or buffer handling.
 // The GPU upload path consumes `get_draw_records()` / `get_tlas()` elsewhere and
@@ -47,7 +45,7 @@ TLASManager::TLASManager(int max_instances)
     draw_records_.reserve(max_instances);
 }
 
-// `instance_storage_`, `instances_` and `tlas_` clean themselves up, so there
+// `instance_storage_` and `tlas_` clean themselves up, so there
 // is nothing to do here. Kept out-of-line (rather than `= default` in the
 // header) so `unique_ptr<TLAS>` only needs the complete type in this TU.
 TLASManager::~TLASManager() = default;
@@ -217,14 +215,13 @@ void TLASManager::clear() {
     
     // Clean up existing TLAS and instances
     tlas_.reset(nullptr);
-    instances_.clear();
     
     mark_dirty();
 }
 
 // Flatten the recorded instances into a freshly built TLAS. A FULL rebuild
 // every call — there is no incremental update path — so cost is O(draw records)
-// plus the TLAS build itself, and it allocates a `BVHInstance` per record.
+// plus the TLAS build itself. Instances live in one contiguous backing array.
 //
 // Preconditions and sharp edges:
 //  - Records whose BLAS handle is missing from `blas_manager` are SKIPPED with
@@ -245,12 +242,10 @@ void TLASManager::build(const BLASManager& blas_manager) {
     
     // Clean up existing TLAS and instances
     tlas_.reset(nullptr);
-    instances_.clear();
     
-    // Create BVH instances from draw records (using unique_ptr approach for now)
-    instances_.reserve(draw_records_.size());
-    std::vector<BVHInstance*> instance_ptrs;
-    instance_ptrs.reserve(draw_records_.size());
+    // Create BVH instances directly in the backing array.
+    instance_storage_.clear();
+    instance_storage_.reserve(draw_records_.size());
 
     for (const auto& record : draw_records_) {
         // Get BVH from manager
@@ -261,7 +256,7 @@ void TLASManager::build(const BLASManager& blas_manager) {
         }
 
         // Create BVH instance
-        auto instance = std::make_unique<BVHInstance>(bvh, record.instance_id);
+        instance_storage_.emplace_back(bvh, record.instance_id);
 
         // Convert and set transform - this will also calculate world bounds.
         // mm::Mat4 and mat4 (SpatialQueryLib/tri.h) are both row-major
@@ -272,21 +267,11 @@ void TLASManager::build(const BLASManager& blas_manager) {
         for (int i = 0; i < 16; i++) {
             new_transform.cell[i] = record.transform.m[i];
         }
-        instance->SetTransform(new_transform);
-
-        // Add to our vectors — record and instance are added in lock-step
-        instance_ptrs.push_back(instance.get());
-        instances_.push_back(std::move(instance));
+        instance_storage_.back().SetTransform(new_transform);
     }
     
     // Create and build TLAS
-    if (!instance_ptrs.empty()) {
-        tlas_.reset(); // old TLAS points into instance_storage_; drop it before mutating
-        instance_storage_.clear();
-        instance_storage_.reserve(instance_ptrs.size());
-        for (BVHInstance* p : instance_ptrs) {
-            instance_storage_.push_back(*p);
-        }
+    if (!instance_storage_.empty()) {
         // TLAS's constructor already calls Build(); a second explicit Build()
         // here just rebuilt the whole top level a second time, every rebuild.
         tlas_ = std::make_unique<TLAS>(instance_storage_.data(), static_cast<int>(instance_storage_.size()));
