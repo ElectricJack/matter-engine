@@ -50,7 +50,6 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
-#include <cstdlib>
 #include <map>
 #include <string>
 #include <unordered_map>
@@ -205,32 +204,6 @@ struct Region {
         return true;
     }
 };
-
-// Every edge with BOTH endpoints strictly inside the region must be incident to
-// exactly two triangles. Inside the region every tile a surface could need is
-// present, so there is no legitimate boundary there -- an edge with one
-// triangle is a hole and an edge with three or more is a fold.
-int non_manifold_in(const Soup& s, const Region& r, int& holes, int& folds,
-                    std::vector<std::array<double, 3>>* where) {
-    std::map<std::pair<int, int>, int> count;
-    for (size_t t = 0; t * 3 + 2 < s.tri.size(); ++t)
-        for (int e = 0; e < 3; ++e) {
-            int a = s.tri[t * 3 + e], b = s.tri[t * 3 + (e + 1) % 3];
-            if (a > b) std::swap(a, b);
-            ++count[{a, b}];
-        }
-    holes = folds = 0;
-    for (const auto& kv : count) {
-        if (kv.second == 2) continue;
-        if (!r.holds(s, kv.first.first) || !r.holds(s, kv.first.second)) continue;
-        if (kv.second < 2) ++holes; else ++folds;
-        if (where && where->size() < 12)
-            where->push_back({0.5 * (s.px[kv.first.first] + s.px[kv.first.second]),
-                              0.5 * (s.py[kv.first.first] + s.py[kv.first.second]),
-                              0.5 * (s.pz[kv.first.first] + s.pz[kv.first.second])});
-    }
-    return holes + folds;
-}
 
 // Two triangles both lying IN a plane whose projections share area. This is the
 // exact failure mode of the overlap band and of any zipper between two curves,

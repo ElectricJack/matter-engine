@@ -7,8 +7,6 @@
 
 #include "raster_mesh.h"
 
-#include <cstring>
-
 namespace viewer {
 
 RasterMeshData build_raster_mesh_data(const Tri* tris, const TriEx* triex, int tri_count,

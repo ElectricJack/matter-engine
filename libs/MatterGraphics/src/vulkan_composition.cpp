@@ -425,8 +425,13 @@ struct VulkanComposition::Impl {
               E::resource_limit, "Composition readback staging budget exceeded");
       std::vector<uint8_t> bytes; checked(resources.readback(readbacks[i], bytes));
       destinations[i]->resize(size_t(w) * h); std::memcpy(destinations[i]->data(), bytes.data(), output_bytes);
-      for (auto pixel : *destinations[i]) for (float value : pixel)
-        require(std::isfinite(value), E::backend_failure, "Nonfinite composition output");
+      for (size_t pixel = 0; pixel < destinations[i]->size(); ++pixel) for (size_t channel = 0; channel < 4; ++channel) {
+        if (std::isfinite((*destinations[i])[pixel][channel])) continue;
+        const std::string message = "Nonfinite composition output: attachment=" + std::to_string(i) +
+            " x=" + std::to_string(pixel % w) + " y=" + std::to_string(pixel / w) +
+            " channel=" + std::to_string(channel);
+        require(false, E::backend_failure, message.c_str());
+      }
     }
     out = std::move(result);
   }
