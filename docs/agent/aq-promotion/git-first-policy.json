@@ -1,0 +1,73 @@
+{
+ "branchless_parent": "verifier",
+ "cleanup": {
+  "failed_work_retention_seconds": 604800,
+  "max_attempts": 5,
+  "retry_base_seconds": 30.0,
+  "retry_max_seconds": 3600.0,
+  "successful_source_refs": "delete"
+ },
+ "on_failed_child": "block",
+ "on_main_moved": "rebuild",
+ "parent": {
+  "admission": "reviewed",
+  "authorized_task_ids": [],
+  "primary_intelligence_class": "standard-high",
+  "primary_profile_id": null,
+  "repair": {
+   "conflict_scope": "member",
+   "debug_attempts": 3,
+   "debug_intelligence_class": "standard-high",
+   "debug_profile_id": null,
+   "debug_seconds": 3600,
+   "on_exhausted": "continue",
+   "primary_attempts": 3,
+   "primary_seconds": 1800,
+   "source_ci": false,
+   "source_ci_infra_attempts": 3,
+   "source_ci_infra_backoff_max_seconds": 3600.0,
+   "source_ci_infra_backoff_seconds": 300.0
+  },
+  "required_checks": {
+   "names": [
+    "Native Windows build and tests",
+    "Linux foundation build and tests"
+   ],
+   "producer_id": "15368",
+   "version": "matter-engine-ci-v1"
+  },
+  "verifier_intelligence_class": "standard-high",
+  "verifier_profile_id": null
+ },
+ "root": {
+  "admission": "authorized",
+  "authorized_task_ids": [],
+  "primary_intelligence_class": "standard-high",
+  "primary_profile_id": null,
+  "repair": {
+   "conflict_scope": "batch",
+   "debug_attempts": 3,
+   "debug_intelligence_class": "standard-high",
+   "debug_profile_id": null,
+   "debug_seconds": 3600,
+   "on_exhausted": "continue",
+   "primary_attempts": 3,
+   "primary_seconds": 1800,
+   "source_ci": true,
+   "source_ci_infra_attempts": 3,
+   "source_ci_infra_backoff_max_seconds": 3600.0,
+   "source_ci_infra_backoff_seconds": 300.0
+  },
+  "required_checks": {
+   "names": [
+    "Native Windows build and tests",
+    "Linux foundation build and tests"
+   ],
+   "producer_id": "15368",
+   "version": "matter-engine-ci-v1"
+  },
+  "verifier_intelligence_class": "standard-high",
+  "verifier_profile_id": null
+ },
+ "version": 1
+}
