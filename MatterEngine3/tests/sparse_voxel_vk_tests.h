@@ -1,6 +1,8 @@
 #pragma once
 // Included after the smoke suite's mesh fixtures. Exercises the production
 // GBuffer hook; readbacks restore image layouts and never own renderer images.
+#include "render/scene_admission.h"
+#include "render/vk_scene_publication.h"
 #include "sparse_voxel_fixture_io.h"
 #include "sparse_hierarchy_fixture_io.h"
 #include "triangle_reference_fixture_io.h"
@@ -1300,6 +1302,7 @@ inline void visible_normal_distribution(matter::VulkanDevice& vk,viewer::VkScene
 #include "sparse_voxel_temporal_tests.h"
 #include "sparse_voxel_shadow_tests.h"
 #include "sparse_surface_query_tests.h"
+#include "sparse_admission_tests.h"
 
 inline void run(matter::VulkanDevice& vk) {
     using namespace viewer;
@@ -1337,6 +1340,13 @@ inline void run(matter::VulkanDevice& vk) {
     }
     sparse_voxel::Asset asset;
     if (!builder.finish(asset,error)) { CHECK(false,error.c_str()); return; }
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+    if (const char* mode = std::getenv("MATTER_VK_SMOKE_MODE");
+        mode && std::string(mode) == "sparse-admission") {
+        admission_rollback(vk,renderer,asset);
+        return;
+    }
+#endif
     SparseVoxelBatch batch{&asset,{{mat4_identity(),3,123,0.8f},
         {mat4_translation({20,0,0}),3,124,0.8f},{mat4_translation({0,0,10}),3,125,0.8f}}};
     if (!renderer.set_sparse_voxels({batch},error)) { CHECK(false,error.c_str()); return; }
@@ -1495,6 +1505,9 @@ inline void run(matter::VulkanDevice& vk) {
     far_traversal(vk,renderer);
     visible_normal_distribution(vk,renderer);
     shared_surface_queries(vk,renderer);
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+    admission_rollback(vk,renderer,asset);
+#endif
     temporal_motion(vk);
     shadow_coverage(vk);
     lod_selection(vk,renderer,asset);

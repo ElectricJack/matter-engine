@@ -1,4 +1,5 @@
 // Included by vulkan_tests.cpp to reuse its validation-enabled native device.
+#include "../examples/image_capture.h"
 #include <algorithm>
 #include <cmath>
 #include <functional>

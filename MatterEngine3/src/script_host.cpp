@@ -682,12 +682,49 @@ static uint64_t derive_seed(const std::string& merged_json) {
 // inside a comment or a string literal matches just as well as a real
 // declaration, and only the FIRST match in the file is ever used — so a source
 // with two part classes silently bakes the first one.
-static std::string find_part_class_name(const std::string& source) {
+std::string find_part_class_name(const std::string& source) {
     // Perf fix: compile the regex once (static const) instead of once per call.
     static const std::regex re("class\\s+([A-Za-z_$][A-Za-z0-9_$]*)\\s+extends\\s+Part\\b");
     std::smatch m;
     if (std::regex_search(source, m, re)) return m[1].str();
     return std::string();
+}
+
+// Registers a literal triangle stream as one BLAS entry with an identity TLAS
+// instance (group 0). Each Tri/TriEx is re-packed through a memset-zeroed copy
+// so union/alignment padding the emitter never writes cannot make re-bakes
+// byte-differ. Triangles past the end of `extra` get the untinted default.
+void register_direct_triangles(BLASManager& blas, TLASManager& tlas,
+                               const std::vector<Tri>& base_t,
+                               const std::vector<TriEx>& base_e) {
+    if (base_t.empty()) return;
+    std::vector<Tri>   norm(base_t.size());
+    std::vector<TriEx> normEx(base_t.size());
+    for (size_t i = 0; i < base_t.size(); ++i) {
+        Tri t; std::memset(&t, 0, sizeof(Tri));
+        t.vertex0 = base_t[i].vertex0; t.vertex1 = base_t[i].vertex1;
+        t.vertex2 = base_t[i].vertex2; t.centroid = base_t[i].centroid;
+        norm[i] = t;
+    }
+    for (size_t i = 0; i < base_t.size(); ++i) {
+        TriEx e; std::memset(&e, 0, sizeof(TriEx));
+        if (i < base_e.size()) {
+            const TriEx& s = base_e[i];
+            e.uv0=s.uv0; e.uv1=s.uv1; e.uv2=s.uv2;
+            e.N0=s.N0; e.N1=s.N1; e.N2=s.N2;
+            e.materialId=s.materialId;
+            e.tint=s.tint;
+        } else {
+            e.tint = make_float4(1.0f, 1.0f, 1.0f, 0.0f);
+        }
+        e.ao0 = e.ao1 = e.ao2 = 1.0f;
+        normEx[i]=e;
+    }
+    BLASHandle h = blas.register_triangles(norm, normEx);
+    if (h != INVALID_BLAS_HANDLE) {
+        tlas.load_identity();
+        tlas.draw(h, 0);
+    }
 }
 
 // Extract the authored class name from `class <Name> extends Tileset`.
@@ -3246,35 +3283,7 @@ BakeResult ScriptHost::execute_source(const std::string& source,
                 }
             }
             // Base direct-triangle path: register each triangle as-is.
-            if (!base_t.empty()) {
-                std::vector<Tri>   norm(base_t.size());
-                std::vector<TriEx> normEx(base_t.size());
-                for (size_t i = 0; i < base_t.size(); ++i) {
-                    Tri t; std::memset(&t, 0, sizeof(Tri));
-                    t.vertex0 = base_t[i].vertex0; t.vertex1 = base_t[i].vertex1;
-                    t.vertex2 = base_t[i].vertex2; t.centroid = base_t[i].centroid;
-                    norm[i] = t;
-                }
-                for (size_t i = 0; i < base_t.size(); ++i) {
-                    TriEx e; std::memset(&e, 0, sizeof(TriEx));
-                    if (i < base_e.size()) {
-                        const TriEx& s = base_e[i];
-                        e.uv0=s.uv0; e.uv1=s.uv1; e.uv2=s.uv2;
-                        e.N0=s.N0; e.N1=s.N1; e.N2=s.N2;
-                        e.materialId=s.materialId;
-                        e.tint=s.tint;
-                    } else {
-                        e.tint = make_float4(1.0f, 1.0f, 1.0f, 0.0f);
-                    }
-                    e.ao0 = e.ao1 = e.ao2 = 1.0f;
-                    normEx[i]=e;
-                }
-                BLASHandle h = blas.register_triangles(norm, normEx);
-                if (h != INVALID_BLAS_HANDLE) {
-                    tlas.load_identity();
-                    tlas.draw(h, 0);
-                }
-            }
+            register_direct_triangles(blas, tlas, base_t, base_e);
 
             // Each non-empty region chunk: weld -> apply_stack -> ensure_triex ->
             // unweld -> memset-zero repack -> register as one BLAS entry (group 0).

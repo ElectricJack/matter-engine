@@ -22,6 +22,7 @@
 #include <thread>
 #include <vector>
 
+#include "matter/log.h"
 #include "matter/vulkan_device.h"
 #include "profile.h"
 #include "matter/display_dither.h"
@@ -67,6 +68,14 @@
 namespace {
 
 #include "vulkan_smoke_cpu_cases.inc"
+
+int set_smoke_environment(const char* name, const char* value) {
+#ifdef _WIN32
+    return _putenv_s(name, value);
+#else
+    return value[0] ? setenv(name, value, 1) : unsetenv(name);
+#endif
+}
 
 constexpr std::uint32_t kWaterForwardArtifactMaterial = 4u;
 constexpr std::uint32_t kWaterForwardAuthoredMaterial = 19u;
@@ -1727,10 +1736,10 @@ void run_streamline_presentation_funnel_tests(matter::VulkanDevice& vulkan) {
     vulkan.test_clear_presentation_events();
     CHECK(vulkan.begin_frame(record_failure, error),
           error.empty() ? "begin record-failure presentation frame" : error.c_str());
-    _putenv_s("MATTER_VK_TEST_END_FRAME_FAULT", "record");
+    set_smoke_environment("MATTER_VK_TEST_END_FRAME_FAULT", "record");
     CHECK(!vulkan.end_frame(record_failure, error),
           "record failure aborts presentation before the common plugin handoff");
-    _putenv_s("MATTER_VK_TEST_END_FRAME_FAULT", "");
+    set_smoke_environment("MATTER_VK_TEST_END_FRAME_FAULT", "");
     CHECK(!has_common_present(),
           "record failure has no common-present handoff");
 
@@ -1738,10 +1747,10 @@ void run_streamline_presentation_funnel_tests(matter::VulkanDevice& vulkan) {
     vulkan.test_clear_presentation_events();
     CHECK(vulkan.begin_frame(submit_failure, error),
           error.empty() ? "begin submit-failure presentation frame" : error.c_str());
-    _putenv_s("MATTER_VK_TEST_END_FRAME_FAULT", "submit");
+    set_smoke_environment("MATTER_VK_TEST_END_FRAME_FAULT", "submit");
     CHECK(!vulkan.end_frame(submit_failure, error),
           "submit failure aborts presentation before the common plugin handoff");
-    _putenv_s("MATTER_VK_TEST_END_FRAME_FAULT", "");
+    set_smoke_environment("MATTER_VK_TEST_END_FRAME_FAULT", "");
     CHECK(!has_common_present(),
           "submit failure has no common-present handoff");
 
@@ -1781,8 +1790,14 @@ void run_vulkan_only_handle_diagnostic(matter::VulkanDevice& vulkan) {
         // matter::win32_process_handle_count() no longer exists in the engine;
         // query the Win32 process handle count directly (windows.h reaches
         // this TU via VK_USE_PLATFORM_WIN32_KHR -> vulkan_win32.h).
+#ifdef _WIN32
         DWORD handle_count = 0;
         GetProcessHandleCount(GetCurrentProcess(), &handle_count);
+#else
+        const auto handle_count = std::distance(
+            std::filesystem::directory_iterator("/proc/self/fd"),
+            std::filesystem::directory_iterator{});
+#endif
         std::printf("HANDLE_DIAG %-38s count=%u result=0 sync=n/a\n", label,
                     static_cast<unsigned>(handle_count));
     };
@@ -3690,8 +3705,8 @@ void run_vt_path(matter::VulkanDevice& vulkan) {
     // Keep the physical pool to a single array layer; the production default
     // (8192 pages, ~0.9 GB) is pointless for a 2-chart fixture.
 #ifdef _WIN32
-    _putenv_s("MATTER_VT_POOL_MB", "0");
-    _putenv_s("MATTER_VT_POOL_PAGES", "256");
+    set_smoke_environment("MATTER_VT_POOL_MB", "0");
+    set_smoke_environment("MATTER_VT_POOL_PAGES", "256");
 #else
     setenv("MATTER_VT_POOL_MB", "0", 1);
     setenv("MATTER_VT_POOL_PAGES", "256", 1);
@@ -4416,8 +4431,8 @@ void run_vt_demand_cache_path(matter::VulkanDevice& vulkan) {
 void run_vt_feedback_visibility_path(matter::VulkanDevice& vulkan) {
     constexpr uint32_t width = 160, height = 160, atlas_edge = 512;
 #ifdef _WIN32
-    _putenv_s("MATTER_VT_POOL_MB", "0");
-    _putenv_s("MATTER_VT_POOL_PAGES", "256");
+    set_smoke_environment("MATTER_VT_POOL_MB", "0");
+    set_smoke_environment("MATTER_VT_POOL_PAGES", "256");
 #else
     setenv("MATTER_VT_POOL_MB", "0", 1);
     setenv("MATTER_VT_POOL_PAGES", "256", 1);
@@ -4599,8 +4614,8 @@ void run_vt_surfaces_path(matter::VulkanDevice& vulkan) {
     constexpr uint32_t width = 160;
     constexpr uint32_t height = 160;
 #ifdef _WIN32
-    _putenv_s("MATTER_VT_POOL_MB", "0");
-    _putenv_s("MATTER_VT_POOL_PAGES", "256");
+    set_smoke_environment("MATTER_VT_POOL_MB", "0");
+    set_smoke_environment("MATTER_VT_POOL_PAGES", "256");
 #else
     setenv("MATTER_VT_POOL_MB", "0", 1);
     setenv("MATTER_VT_POOL_PAGES", "256", 1);
@@ -5109,11 +5124,11 @@ void run_vt_surfaces_path(matter::VulkanDevice& vulkan) {
 // probe reads unoccluded tier-1 content — today's behaviour, unchanged.
 void test_vt_variant_context_storage_lifetime(matter::VulkanDevice& vulkan) {
 #ifdef _WIN32
-    _putenv_s("MATTER_VT_POOL_MB", "0");
-    _putenv_s("MATTER_VT_POOL_PAGES", "256");
-    _putenv_s("MATTER_VT_MAX_VARIANTS", "16");
-    _putenv_s("MATTER_VT_INDIRECTION_MB", "1");
-    _putenv_s("MATTER_VT_MESH_BUDGET_MB", "4");
+    set_smoke_environment("MATTER_VT_POOL_MB", "0");
+    set_smoke_environment("MATTER_VT_POOL_PAGES", "256");
+    set_smoke_environment("MATTER_VT_MAX_VARIANTS", "16");
+    set_smoke_environment("MATTER_VT_INDIRECTION_MB", "1");
+    set_smoke_environment("MATTER_VT_MESH_BUDGET_MB", "4");
 #else
     setenv("MATTER_VT_POOL_MB", "0", 1);
     setenv("MATTER_VT_POOL_PAGES", "256", 1);
@@ -5225,9 +5240,9 @@ void run_vt_enrich_path(matter::VulkanDevice& vulkan) {
     constexpr uint32_t width = 160;
     constexpr uint32_t height = 160;
 #ifdef _WIN32
-    _putenv_s("MATTER_VT_POOL_MB", "0");
-    _putenv_s("MATTER_VT_POOL_PAGES", "256");
-    _putenv_s("MATTER_VT_ENRICH_PER_FRAME", "2");
+    set_smoke_environment("MATTER_VT_POOL_MB", "0");
+    set_smoke_environment("MATTER_VT_POOL_PAGES", "256");
+    set_smoke_environment("MATTER_VT_ENRICH_PER_FRAME", "2");
 #else
     setenv("MATTER_VT_POOL_MB", "0", 1);
     setenv("MATTER_VT_POOL_PAGES", "256", 1);
@@ -5782,8 +5797,8 @@ void run_vt_rt_path(matter::VulkanDevice& vulkan, bool normal_frame_fixture = fa
     constexpr uint32_t width = 320;
     constexpr uint32_t height = 200;
 #ifdef _WIN32
-    _putenv_s("MATTER_VT_POOL_MB", "0");
-    _putenv_s("MATTER_VT_POOL_PAGES", "256");
+    set_smoke_environment("MATTER_VT_POOL_MB", "0");
+    set_smoke_environment("MATTER_VT_POOL_PAGES", "256");
 #else
     setenv("MATTER_VT_POOL_MB", "0", 1);
     setenv("MATTER_VT_POOL_PAGES", "256", 1);
@@ -7415,10 +7430,12 @@ void run_tileset_slot_load(matter::VulkanDevice& vulkan) {
     std::remove(gtex_path.c_str());
 }
 
-void run_native_multilod_rt_mapping(matter::VulkanDevice& vulkan) {
+void run_native_multilod_rt_mapping(matter::VulkanDevice& vulkan,
+                                   bool enable_gi) {
     if (!vulkan.ray_tracing_available()) return;
     std::string error;
     viewer::VkSceneRenderer renderer(vulkan);
+    renderer.test_use_rt_geometry_pipelines_only(!enable_gi);
     std::vector<MaterialGpuRecord> materials(2);
     for (auto& material : materials) {
         material.metal_opacity_spec_coat[1] = 1.0f;
@@ -7464,6 +7481,14 @@ void run_native_multilod_rt_mapping(matter::VulkanDevice& vulkan) {
     matter::VulkanRayTracingSettings rt{};
     rt.enabled = true;
     renderer.set_ray_tracing_settings(rt);
+    if (!enable_gi) {
+        // These assertions inspect BLAS/TLAS mapping, reuse and opacity, not
+        // indirect lighting. Keep real shadow tracing on software Vulkan
+        // without JIT-compiling the much larger GI continuation shaders.
+        matter::VulkanGiSettings gi{};
+        gi.enabled = false;
+        renderer.set_gi_settings(gi);
+    }
     matter::CameraDesc camera{};
     camera.position = {0.0f, 0.0f, 10.0f};
     camera.target = {0.0f, 0.0f, -2.0f};
@@ -7478,6 +7503,13 @@ void run_native_multilod_rt_mapping(matter::VulkanDevice& vulkan) {
                       std::vector<viewer::RtGeometryDebugRecord>&
                           records,
                       uint32_t& builds) {
+        const auto mark = [&](const char* phase) {
+            const auto now = std::chrono::steady_clock::now().time_since_epoch();
+            std::printf("RT multi-LOD: attempt=%llu phase=%s monotonic_ms=%.3f\n",
+                        static_cast<unsigned long long>(attempt), phase,
+                        std::chrono::duration<double, std::milli>(now).count());
+            std::fflush(stdout);
+        };
         viewer::TemporalFrame temporal{};
         temporal.current_unjittered = matrices;
         temporal.previous_unjittered = matrices;
@@ -7488,18 +7520,34 @@ void run_native_multilod_rt_mapping(matter::VulkanDevice& vulkan) {
         temporal.attempt_token = attempt;
         renderer.set_temporal_frame(temporal);
         matter::VulkanFrame frame{};
+        mark("begin.enter");
         const bool began = vulkan.begin_frame(frame, error);
-        const bool recorded = began &&
+        mark("begin.exit/prepare.enter");
+        const bool prepared = began &&
             renderer.prepare_frame(frame, matrices, camera.position, 1.0f,
-                                   error) &&
+                                   error);
+        mark("prepare.exit/record.enter");
+        const bool rendered = prepared &&
             renderer.record_cull_and_render(frame, matrices, camera.position,
-                                            1.0f, error) &&
+                                            1.0f, error);
+        mark("record.exit/composite.enter");
+        const bool recorded = rendered &&
             renderer.record_composite_to_swapchain(frame, error);
+        mark("composite.exit");
         records = renderer.test_last_rt_geometry_records();
         builds = renderer.test_last_rt_blas_build_count();
+        if (!enable_gi) {
+            CHECK(renderer.rt_effective_observed() &&
+                      renderer.rt_trace_dispatches_observed() == 1,
+                  "software multi-LOD mapping records real shadow RT without GI dispatches");
+        }
+        mark("end_frame.enter");
         const bool submitted = recorded && vulkan.end_frame(frame, error);
+        mark("end_frame.exit/finish.enter");
         renderer.finish_ray_tracing_frame(frame.serial, submitted);
+        mark("finish.exit/wait_idle.enter");
         vulkan.wait_idle();
+        mark("wait_idle.exit");
         return submitted;
     };
     std::vector<viewer::RtGeometryDebugRecord> first;
@@ -7549,10 +7597,12 @@ void run_native_multilod_rt_mapping(matter::VulkanDevice& vulkan) {
 // the original part-local value (not corrupted by the compaction rebase of
 // part.index_start).
 // ---------------------------------------------------------------------------
-void run_rt_lod_compaction_invariant(matter::VulkanDevice& vulkan) {
+void run_rt_lod_compaction_invariant(matter::VulkanDevice& vulkan,
+                                    bool geometry_only) {
     if (!vulkan.ray_tracing_available()) return;
     std::string error;
     viewer::VkSceneRenderer renderer(vulkan);
+    renderer.test_use_rt_geometry_pipelines_only(geometry_only);
     CHECK(renderer.init(error), error.empty() ? "init" : error.c_str());
 
     const matter::Float3 norm{0.0f, 0.0f, 1.0f};
@@ -7652,7 +7702,7 @@ static void rt_scenario_secondary_local_ris(
     if (!exhaustive) return;
     const auto set_mode = [](const char* value) {
 #ifdef _WIN32
-        _putenv_s("MATTER_RT_SECONDARY_LIGHT_SAMPLING", value ? value : "");
+        set_smoke_environment("MATTER_RT_SECONDARY_LIGHT_SAMPLING", value ? value : "");
 #else
         if (value) setenv("MATTER_RT_SECONDARY_LIGHT_SAMPLING", value, 1);
         else unsetenv("MATTER_RT_SECONDARY_LIGHT_SAMPLING");
@@ -8503,8 +8553,9 @@ struct RtPathContext {
 static void rt_scenario_surface_query(
         matter::VulkanDevice& vulkan,
         const matter::VulkanRayTracingProperties& properties,
-        std::string& error) {
+        std::string& error, bool geometry_only) {
     viewer::VkSceneRenderer surface_query(vulkan);
+    surface_query.test_use_rt_geometry_pipelines_only(geometry_only);
         viewer::VkScenePart first = known_raster_triangle(912);
         viewer::VkScenePart second = fixed_part(
             913, {-1.0f, 0.0f, -1.0f}, {1.0f, 1.0f, 1.0f}, 0);
@@ -8658,13 +8709,461 @@ static void rt_scenario_surface_query(
 }
 
 // ---------------------------------------------------------------------------
+// Scenario: RT rejected-surface-lookup counters consume each retired sample
+// exactly once
+// ---------------------------------------------------------------------------
+// The production reporter runs inside record_cull_and_render after the slot
+// fence retired its previous frame. It may read the counter only when a
+// recorded dispatch wrote it AND that frame was submitted; neither the buffer
+// handle nor the RT-enabled flag is provenance. Each phase here drives real
+// frames through prepare/record/end_frame and asserts the renderer-lifetime
+// total, the consumed-sample count and the warning count; a direct readback is
+// the negative control proving the unconsumed bytes were really there.
+struct RtCounterLogCount {
+    uint32_t lines = 0;
+    uint32_t readback_failures = 0;
+};
+
+static void count_rt_counter_log(matter::log::Level, const char* tag,
+                                 const char* message, void* user) {
+    if (std::string(tag) != "vk") return;
+    auto& count = *static_cast<RtCounterLogCount*>(user);
+    const std::string text(message);
+    if (text.find("surface lookup") != std::string::npos) ++count.lines;
+    if (text.find("RT counter readback failed") != std::string::npos)
+        ++count.readback_failures;
+}
+
+static void run_rt_rejected_surface_lookup_counters(
+        matter::VulkanDevice& vulkan) {
+    std::string error;
+    VkPhysicalDeviceProperties device_properties{};
+    vkGetPhysicalDeviceProperties(vulkan.physical_device(), &device_properties);
+    const bool rt_available = vulkan.ray_tracing_available();
+    std::printf("Vulkan RT available=%s device=%s reason=%s\n",
+                rt_available ? "true" : "false", device_properties.deviceName,
+                rt_available ? "none"
+                             : vulkan.ray_tracing_unavailable_reason().c_str());
+    RtCounterLogCount logs{};
+    matter::log::add_sink(count_rt_counter_log, &logs);
+
+    viewer::VkSceneRenderer renderer(vulkan);
+    viewer::VkScenePart first = known_raster_triangle(912);
+    viewer::VkScenePart second = fixed_part(
+        913, {-1.0f, 0.0f, -1.0f}, {1.0f, 1.0f, 1.0f}, 0);
+    const matter::Float3 local_normal{0.70710678f, 0.0f, 0.70710678f};
+    second.vertices = {
+        {{-1.0f, 0.0f, 1.0f}, local_normal, {0.2f, 0.4f, 0.6f, 1.0f},
+         {0.0f, 0.0f, 0.2f, 1.0f}, 7},
+        {{1.0f, 0.0f, -1.0f}, local_normal, {0.4f, 0.6f, 0.8f, 1.0f},
+         {1.0f, 0.0f, 0.5f, 1.0f}, 7},
+        {{0.0f, 1.0f, 0.0f}, local_normal, {0.6f, 0.8f, 1.0f, 1.0f},
+         {0.5f, 1.0f, 0.8f, 1.0f}, 7}};
+    second.indices = {0, 1, 2};
+    matter::Mat4f second_transform = identity_matrix();
+    second_transform.m[0] = 2.0f;
+    second_transform.m[10] = 0.5f;
+    second_transform.m[3] = 2.0f;
+    second_transform.m[11] = -3.0f;
+    const std::vector<viewer::VkSceneInstance> instances{
+        {912, viewer::mat4_translation({-2.0f, 0.0f, -3.0f})},
+        {913, second_transform}};
+    int slot1 = -1;
+    const auto load_scene = [&]() {
+        const int slot0 = renderer.ensure_part(first, error);
+        slot1 = renderer.ensure_part(second, error);
+        return slot0 >= 0 && slot1 >= 0 &&
+               renderer.update_instances(instances, error);
+    };
+    CHECK(renderer.init(error) && load_scene(),
+          error.empty() ? "RT counters: prepare two-part fixture"
+                        : error.c_str());
+    matter::CameraDesc camera{};
+    camera.position = {0.0f, 0.5f, 1.0f};
+    camera.target = {0.0f, 0.5f, -3.0f};
+    camera.up = {0.0f, 1.0f, 0.0f};
+    camera.vertical_fov_radians = 1.0f;
+    camera.near_plane = 0.1f;
+    camera.far_plane = 20.0f;
+    viewer::FrameMatrices matrices{};
+    CHECK(viewer::build_frame_matrices(camera, 64, 64, matrices, error),
+          error.empty() ? "RT counters: build matrices" : error.c_str());
+    matter::VulkanGiSettings disabled_gi{};
+    disabled_gi.enabled = 0;
+    renderer.set_gi_settings(disabled_gi);
+    const auto set_rt = [&](bool enabled) {
+        matter::VulkanRayTracingSettings rt{};
+        rt.enabled = enabled;
+        rt.max_distance = 100.0f;
+        renderer.set_ray_tracing_settings(rt);
+    };
+    set_rt(false);
+
+    const auto direct_counter = [&](uint32_t slot) -> uint32_t {
+        viewer::RtTraceCounters counters{};
+        std::string readback_error;
+        vulkan.wait_idle();
+        if (!renderer.readback_rt_trace_counters(slot, counters,
+                                                 readback_error))
+            return UINT32_MAX;
+        return counters.invalid_part_records;
+    };
+    const auto no_pending_serials = [&]() {
+        for (uint32_t s = 0; s < renderer.test_frame_slot_count(); ++s)
+            if (renderer.test_rt_counter_candidate_serial(s) != 0 ||
+                renderer.test_rt_counter_sample_serial(s) != 0)
+                return false;
+        return true;
+    };
+
+    // Phase 1: partial frame-resource replacement rolls back, and a committed
+    // replacement leaves every slot's full counter allocation zeroed, flushed
+    // and sample-free.
+    CHECK(renderer.dispatch_culling(matrices, camera.position, 1.0f, error) &&
+              renderer.test_frame_slot_count() == 1 &&
+              renderer.test_poison_rt_counters(0xDEADBEEFu, error),
+          error.empty() ? "RT counters: one-slot resources before growth"
+                        : error.c_str());
+    {
+        matter::VulkanFrame frame{};
+        CHECK(vulkan.begin_frame(frame, error),
+              error.empty() ? "RT counters: begin growth frame" : error.c_str());
+        if (frame.command_buffer == VK_NULL_HANDLE) {
+            matter::log::remove_sink(count_rt_counter_log, &logs);
+            return;
+        }
+        // ~30 tracked buffers per slot: fail inside the LAST slot, after the
+        // earlier candidate slots initialized their counters.
+        const uint32_t fail_at = frame.frame_slot_count >= 2
+            ? 30u * (frame.frame_slot_count - 1u) + 1u : 15u;
+        renderer.set_test_frame_resource_failure(fail_at);
+        const bool failed = !renderer.prepare_frame(
+            frame, matrices, camera.position, 1.0f, error);
+        CHECK(failed &&
+                  error.find("forced frame resource allocation failure") !=
+                      std::string::npos &&
+                  renderer.test_frame_slot_count() == 1 &&
+                  no_pending_serials() && direct_counter(0) == 0xDEADBEEFu,
+              "RT counters: failed slot growth commits no candidate resources");
+        renderer.set_test_frame_resource_failure(
+            std::numeric_limits<uint32_t>::max());
+        error.clear();
+        const bool recorded =
+            renderer.prepare_frame(frame, matrices, camera.position, 1.0f,
+                                   error) &&
+            renderer.record_cull_and_render(frame, matrices, camera.position,
+                                            1.0f, error) &&
+            renderer.record_composite_to_swapchain(frame, error);
+        const bool submitted = recorded && vulkan.end_frame(frame, error);
+        renderer.finish_ray_tracing_frame(frame.serial, submitted);
+        CHECK(submitted && renderer.test_frame_slot_count() ==
+                               frame.frame_slot_count,
+              error.empty() ? "RT counters: slot growth retry succeeds"
+                            : error.c_str());
+    }
+    const uint32_t slots =
+        static_cast<uint32_t>(renderer.test_frame_slot_count());
+    bool zeroed = slots >= 1;
+    for (uint32_t s = 0; s < slots; ++s) zeroed = zeroed && direct_counter(s) == 0;
+    CHECK(zeroed && no_pending_serials(),
+          "RT counters: replaced slots start zeroed with no sample");
+    std::printf("RT counters: frame slots=%u\n", slots);
+
+    enum class Fault { None, Dispatch, Record, Submit };
+    struct Outcome {
+        bool ok = false;
+        uint32_t slot = 0;
+        uint64_t serial = 0;
+        bool candidate = false;
+        std::string error;
+    };
+    const auto run_frame = [&](Fault fault) {
+        Outcome out{};
+        matter::VulkanFrame frame{};
+        error.clear();
+        std::printf("RT counter frame: acquire fault=%u\n", static_cast<unsigned>(fault));
+        if (!vulkan.begin_frame(frame, error)) {
+            out.error = error;
+            return out;
+        }
+        if (frame.command_buffer == VK_NULL_HANDLE) {
+            out.error = "no frame command buffer";
+            return out;
+        }
+        out.slot = frame.frame_slot;
+        out.serial = frame.serial;
+        std::printf("RT counter frame: begin slot=%u serial=%llu retired_sample=%llu fault=%u\n",
+                    out.slot, static_cast<unsigned long long>(out.serial),
+                    static_cast<unsigned long long>(
+                        renderer.test_rt_counter_sample_serial(out.slot)),
+                    static_cast<unsigned>(fault));
+        if (fault == Fault::Dispatch) renderer.test_fail_next_rt_dispatch_record();
+        const bool prepared = renderer.prepare_frame(
+            frame, matrices, camera.position, 1.0f, error);
+        std::printf("RT counter frame: prepared serial=%llu ok=%d\n",
+                    static_cast<unsigned long long>(out.serial), prepared);
+        const bool rendered = prepared && renderer.record_cull_and_render(
+            frame, matrices, camera.position, 1.0f, error);
+        std::printf("RT counter frame: rendered serial=%llu ok=%d\n",
+                    static_cast<unsigned long long>(out.serial), rendered);
+        const bool recorded = rendered &&
+            renderer.record_composite_to_swapchain(frame, error);
+        std::printf("RT counter frame: recorded serial=%llu ok=%d\n",
+                    static_cast<unsigned long long>(out.serial), recorded);
+        out.error = error;
+        out.candidate =
+            renderer.test_rt_counter_candidate_serial(frame.frame_slot) ==
+            frame.serial;
+        bool submitted = false;
+        if (!recorded || fault == Fault::Record || fault == Fault::Submit) {
+            set_smoke_environment("MATTER_VK_TEST_END_FRAME_FAULT",
+                                  fault == Fault::Submit && recorded
+                                      ? "submit" : "record");
+            std::string abort_error;
+            submitted = vulkan.end_frame(frame, abort_error);
+            set_smoke_environment("MATTER_VK_TEST_END_FRAME_FAULT", "");
+            renderer.finish_ray_tracing_frame(frame.serial, submitted);
+            vulkan.wait_idle();
+            // A dispatch fault must fail the recording itself; the end-frame
+            // faults must fail after a complete recording.
+            out.ok = !submitted && (fault == Fault::Dispatch ? !recorded
+                                    : recorded && fault != Fault::None);
+        } else {
+            std::printf("RT counter frame: end_frame.enter serial=%llu\n",
+                        static_cast<unsigned long long>(out.serial));
+            std::fflush(stdout);
+            submitted = vulkan.end_frame(frame, error);
+            std::printf("RT counter frame: end_frame.exit serial=%llu submitted=%d\n",
+                        static_cast<unsigned long long>(out.serial), submitted);
+            std::fflush(stdout);
+            renderer.finish_ray_tracing_frame(frame.serial, submitted);
+            std::printf("RT counter frame: finalized serial=%llu\n",
+                        static_cast<unsigned long long>(out.serial));
+            std::fflush(stdout);
+            out.ok = submitted;
+            if (!submitted) out.error = error;
+        }
+        std::printf("RT counter frame: end slot=%u serial=%llu recorded=%d submitted=%d "
+                    "candidate=%d sample=%llu consumed=%llu total=%llu warnings=%u\n",
+                    out.slot, static_cast<unsigned long long>(out.serial),
+                    recorded, submitted, out.candidate,
+                    static_cast<unsigned long long>(
+                        renderer.test_rt_counter_sample_serial(out.slot)),
+                    static_cast<unsigned long long>(renderer.test_rt_counter_samples_consumed()),
+                    static_cast<unsigned long long>(renderer.test_rt_rejected_surface_lookups_total()),
+                    logs.lines);
+        return out;
+    };
+    // Visits every slot at least twice, so any pending sample retires.
+    const auto drain = [&]() {
+        set_rt(false);
+        bool ok = true;
+        for (uint32_t i = 0; i < 2 * slots; ++i)
+            ok = run_frame(Fault::None).ok && ok;
+        return ok;
+    };
+    const auto totals_are = [&](uint64_t total, uint64_t samples,
+                                uint32_t lines) {
+        return renderer.test_rt_rejected_surface_lookups_total() == total &&
+               renderer.test_rt_counter_samples_consumed() == samples &&
+               logs.lines == lines;
+    };
+
+    // Phase 2: no writer means no read, no log and no total -- with poisoned
+    // bytes in every slot, over complete slot cycles.
+    CHECK(renderer.test_poison_rt_counters(0xDEADBEEFu, error),
+          error.empty() ? "RT counters: poison every slot" : error.c_str());
+    const auto poisoned_cycles = [&](const char* label) {
+        bool ok = true;
+        for (uint32_t i = 0; i < 2 * slots; ++i) {
+            const Outcome frame = run_frame(Fault::None);
+            ok = ok && frame.ok && !frame.candidate;
+        }
+        bool poison_intact = true;
+        for (uint32_t s = 0; s < slots; ++s)
+            poison_intact = poison_intact && direct_counter(s) == 0xDEADBEEFu;
+        CHECK(ok && poison_intact && totals_are(0, 0, 0) && no_pending_serials(),
+              label);
+    };
+    set_rt(false);
+    poisoned_cycles("RT counters: RT disabled never reads poisoned counters");
+    set_rt(true);
+    renderer.test_force_rt_unavailable(true);
+    poisoned_cycles("RT counters: RT unavailable never reads poisoned counters");
+    renderer.test_force_rt_unavailable(false);
+    if (rt_available) {
+        renderer.set_part_draw_overrides(
+            {{912, {0.25f, 1.0f}}, {913, {0.25f, 1.0f}}});
+        poisoned_cycles("RT counters: culled-to-empty selection never reads poisoned counters");
+        CHECK(!renderer.rt_effective_observed() &&
+                  renderer.rt_trace_dispatches_observed() == 0,
+              "RT counters: culled-to-empty selection really traced nothing");
+        renderer.set_part_draw_overrides({});
+        CHECK(renderer.update_instances({}, error),
+              error.empty() ? "RT counters: empty selection" : error.c_str());
+        poisoned_cycles("RT counters: empty selection never reads poisoned counters");
+        CHECK(renderer.update_instances(instances, error),
+              error.empty() ? "RT counters: restore instances" : error.c_str());
+    }
+    if (!rt_available) {
+        std::printf("RT counters: writer phases NOT RUN (RT unavailable)\n");
+        matter::log::remove_sink(count_rt_counter_log, &logs);
+        return;
+    }
+
+    // Phase 3: two equal count-7 samples total 14; the unchanged count is
+    // accumulated but logged once.
+    set_rt(true);
+    renderer.test_seed_rt_counter(7);
+    const Outcome seven_a = run_frame(Fault::None);
+    const Outcome seven_b = run_frame(Fault::None);
+    CHECK(seven_a.ok && seven_b.ok && seven_a.candidate && seven_b.candidate &&
+              renderer.rt_effective_observed(),
+          seven_a.error.empty() && seven_b.error.empty()
+              ? "RT counters: two seeded production dispatches submit"
+              : (seven_a.error + seven_b.error).c_str());
+    // The reporter runs before this frame's dispatch, so a submitted sample is
+    // consumed only when its own slot comes around again.
+    CHECK(renderer.test_rt_counter_sample_serial(seven_b.slot) ==
+                  seven_b.serial &&
+              (slots == 1 ? totals_are(7, 1, 1)
+                          : renderer.test_rt_counter_sample_serial(
+                                seven_a.slot) == seven_a.serial &&
+                                totals_are(0, 0, 0)),
+          "RT counters: submitted samples stay pending until their slot retires");
+    renderer.test_seed_rt_counter(0);
+    CHECK(drain() && totals_are(14, 2, 1) && no_pending_serials(),
+          "RT counters: two count-7 samples total 14 with one warning");
+
+    // Phase 4: distinct 2 then 3, then RT off -- the final submitted sample is
+    // still consumed after the toggle, and nothing else is.
+    set_rt(true);
+    renderer.test_seed_rt_counter(2);
+    const Outcome two = run_frame(Fault::None);
+    renderer.test_seed_rt_counter(3);
+    const Outcome three = run_frame(Fault::None);
+    renderer.test_seed_rt_counter(0);
+    CHECK(two.ok && three.ok && two.candidate && three.candidate,
+          "RT counters: distinct seeded samples submit");
+    CHECK(drain() && totals_are(19, 4, 3) && no_pending_serials(),
+          "RT counters: 2 then 3 then disable adds exactly 5");
+    CHECK(drain() && totals_are(19, 4, 3),
+          "RT counters: disabled cycles after the toggle add nothing");
+    // The same final-sample rule through the capability gate.
+    set_rt(true);
+    renderer.test_seed_rt_counter(4);
+    const Outcome four = run_frame(Fault::None);
+    renderer.test_seed_rt_counter(0);
+    renderer.test_force_rt_unavailable(true);
+    bool unavailable_ok = true;
+    for (uint32_t i = 0; i < 2 * slots; ++i)
+        unavailable_ok = run_frame(Fault::None).ok && unavailable_ok;
+    renderer.test_force_rt_unavailable(false);
+    CHECK(four.ok && four.candidate && unavailable_ok &&
+              totals_are(23, 5, 4) && no_pending_serials(),
+          "RT counters: final sample consumed after RT becomes unavailable");
+
+    // Phase 5: failures cannot create samples. The seeded bytes are really in
+    // the counter (negative control), yet never consumed.
+    set_rt(true);
+    renderer.test_seed_rt_counter(7);
+    const Outcome dispatch_failure = run_frame(Fault::Dispatch);
+    CHECK(dispatch_failure.ok && !dispatch_failure.candidate &&
+              dispatch_failure.error.find("injected RT dispatch record failure") !=
+                  std::string::npos &&
+              direct_counter(dispatch_failure.slot) == 7 && no_pending_serials(),
+          "RT counters: failed dispatch record leaves seeded bytes without a candidate");
+    const Outcome record_failure = run_frame(Fault::Record);
+    CHECK(record_failure.ok && record_failure.candidate &&
+              direct_counter(record_failure.slot) == 7 && no_pending_serials(),
+          "RT counters: aborted recording drops its candidate");
+    const Outcome submit_failure = run_frame(Fault::Submit);
+    CHECK(submit_failure.ok && submit_failure.candidate &&
+              direct_counter(submit_failure.slot) == 7 && no_pending_serials(),
+          "RT counters: failed submit drops its candidate");
+    renderer.test_seed_rt_counter(0);
+    CHECK(drain() && totals_are(23, 5, 4),
+          "RT counters: failed frames add no total, sample or warning");
+
+    // Phase 6: a duplicate reporter call cannot reuse a consumed sample.
+    set_rt(true);
+    renderer.test_seed_rt_counter(6);
+    const Outcome six = run_frame(Fault::None);
+    renderer.test_seed_rt_counter(0);
+    vulkan.wait_idle();
+    renderer.test_report_rt_trace_counters(six.slot);
+    renderer.test_report_rt_trace_counters(six.slot);
+    CHECK(six.ok && six.candidate && totals_are(29, 6, 5) &&
+              direct_counter(six.slot) == 6,
+          "RT counters: duplicate reporter calls consume the sample once");
+    CHECK(drain() && totals_are(29, 6, 5),
+          "RT counters: the consumed slot is not re-read on later frames");
+
+    // Phase 7: one real GPU rejection from the shipped hit shader -- the
+    // production pass plus a surface ray against an invalid part record.
+    set_rt(true);
+    {
+        matter::VulkanFrame frame{};
+        error.clear();
+        const bool recorded =
+            vulkan.begin_frame(frame, error) &&
+            renderer.prepare_frame(frame, matrices, camera.position, 1.0f,
+                                   error) &&
+            renderer.record_cull_and_render(frame, matrices, camera.position,
+                                            1.0f, error) &&
+            renderer.record_composite_to_swapchain(frame, error) &&
+            renderer.record_test_surface_ray(
+                frame,
+                {2.0f + 0.24253563f * 3.0f, 1.0f / 3.0f,
+                 -3.0f + 0.97014250f * 3.0f},
+                {-0.24253563f, 0.0f, -0.97014250f},
+                static_cast<uint32_t>(slot1), error);
+        const bool submitted = recorded && vulkan.end_frame(frame, error);
+        renderer.finish_ray_tracing_frame(frame.serial, submitted);
+        CHECK(submitted && direct_counter(frame.frame_slot) == 1,
+              error.empty() ? "RT counters: GPU rejects one invalid surface lookup"
+                            : error.c_str());
+    }
+    CHECK(drain() && totals_are(30, 7, 6),
+          "RT counters: the real GPU rejection is consumed exactly once");
+
+    // Phase 8: reset retires a pending sample without consuming it, and keeps
+    // the renderer-lifetime totals.
+    set_rt(true);
+    renderer.test_seed_rt_counter(9);
+    const Outcome nine = run_frame(Fault::None);
+    renderer.test_seed_rt_counter(0);
+    CHECK(nine.ok && nine.candidate &&
+              renderer.test_rt_counter_sample_serial(nine.slot) == nine.serial,
+          "RT counters: seeded sample pending before reset");
+    renderer.reset();
+    CHECK(no_pending_serials() && totals_are(30, 7, 6),
+          "RT counters: reset retires pending samples and keeps totals");
+    CHECK(load_scene(),
+          error.empty() ? "RT counters: reload fixture after reset"
+                        : error.c_str());
+    CHECK(drain() && totals_are(30, 7, 6),
+          "RT counters: a reset sample is never consumed");
+
+    CHECK(logs.readback_failures == 0, "RT counters: no counter readback failed");
+    std::printf("RT counters: rejected surface lookups total=%llu samples=%llu warnings=%u\n",
+                static_cast<unsigned long long>(
+                    renderer.test_rt_rejected_surface_lookups_total()),
+                static_cast<unsigned long long>(
+                    renderer.test_rt_counter_samples_consumed()),
+                logs.lines);
+    matter::log::remove_sink(count_rt_counter_log, &logs);
+}
+
+// ---------------------------------------------------------------------------
 // Scenario: BLAS input geometry stays pinned while the vertex buffer grows
 // ---------------------------------------------------------------------------
 static void rt_scenario_blas_pinning(
         matter::VulkanDevice& vulkan,
-        std::string& error) {
+        std::string& error, bool geometry_only) {
     {
         viewer::VkSceneRenderer pinning(vulkan);
+        pinning.test_use_rt_geometry_pipelines_only(geometry_only);
         CHECK(pinning.init(error),
               error.empty() ? "init shared raster/RT geometry buffers"
                             : error.c_str());
@@ -10280,11 +10779,11 @@ static void run_rt_froxel_resize_smoke(matter::VulkanDevice& vulkan) {
               flush_failure_error.find("EnvironmentBlock flush failure") !=
                   std::string::npos,
           "failed acquired-slot EnvironmentBlock flush keeps the previous published ping transactionally");
-    _putenv_s("MATTER_VK_TEST_END_FRAME_FAULT", "record");
+    set_smoke_environment("MATTER_VK_TEST_END_FRAME_FAULT", "record");
     std::string abort_error;
     CHECK(!vulkan.end_frame(flush_failure_frame, abort_error),
           "abort the intentionally incomplete flush-failure frame");
-    _putenv_s("MATTER_VK_TEST_END_FRAME_FAULT", "");
+    set_smoke_environment("MATTER_VK_TEST_END_FRAME_FAULT", "");
     renderer.finish_ray_tracing_frame(flush_failure_frame.serial, false);
     vulkan.wait_idle();
     error.clear();
@@ -12694,7 +13193,7 @@ void run_rt_transmission_path(matter::VulkanDevice& vulkan) {
 
     // Legacy walk (spec constant off): the same card silhouettes refraction
     // and its red albedo dominates the transmitted color.
-    _putenv_s("MATTER_RT_WALK_ALPHA_TEST", "0");
+    set_smoke_environment("MATTER_RT_WALK_ALPHA_TEST", "0");
     {
         viewer::VkSceneRenderer legacy(vulkan);
         CHECK(legacy.init(error),
@@ -12733,18 +13232,37 @@ void run_rt_transmission_path(matter::VulkanDevice& vulkan) {
                   2.0f * legacy_center.raw_transmission.y,
               "rt-transmission: legacy walk silhouettes the red card (control)");
     }
-    _putenv_s("MATTER_RT_WALK_ALPHA_TEST", "");
+    set_smoke_environment("MATTER_RT_WALK_ALPHA_TEST", "");
 }
 
 void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
-    run_native_multilod_rt_mapping(vulkan);
-    run_rt_lod_compaction_invariant(vulkan);
+    std::printf("Vulkan RT available=%s (standalone rt entry)\n",
+                vulkan.ray_tracing_available() ? "true" : "false");
+    std::fflush(stdout);
+    VkPhysicalDeviceProperties device_properties{};
+    vkGetPhysicalDeviceProperties(vulkan.physical_device(), &device_properties);
+    const bool software_vulkan =
+        device_properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_CPU;
+    if (software_vulkan) {
+        std::printf(
+            "RT software Vulkan (%s): multi-LOD GI disabled; "
+            "GI/froxel/visibility/local-direct lighting scenarios SKIPPED. "
+            "Unused RT lighting pipeline creation is also skipped. "
+            "Deferred LLVM JIT on llvmpipe stalls the first GI frame beyond "
+            "the standalone 1500 s budget. BLAS mapping, compaction, pinning "
+            "and real surface-query/invalid-record checks remain enabled. "
+            "Full lighting qualification requires hardware Vulkan.\n",
+            device_properties.deviceName);
+        std::fflush(stdout);
+    }
+    run_native_multilod_rt_mapping(vulkan, !software_vulkan);
+    run_rt_lod_compaction_invariant(vulkan, software_vulkan);
     CHECK(vulkan.ray_tracing_available(),
           vulkan.ray_tracing_unavailable_reason().empty()
               ? "native ray tracing available"
               : vulkan.ray_tracing_unavailable_reason().c_str());
     if (!vulkan.ray_tracing_available()) return;
-    run_rt_froxel_resize_smoke(vulkan);
+    if (!software_vulkan) run_rt_froxel_resize_smoke(vulkan);
     const auto& properties = vulkan.ray_tracing_properties();
     CHECK(properties.shader_group_handle_alignment != 0 &&
               properties.shader_group_base_alignment != 0 &&
@@ -12756,12 +13274,13 @@ void run_native_ray_tracing_path(matter::VulkanDevice& vulkan) {
           "queried SBT handle and base alignments are retained");
 
     std::string error;
-    rt_scenario_surface_query(vulkan, properties, error);
+    rt_scenario_surface_query(vulkan, properties, error, software_vulkan);
     CHECK(vulkan.validation_error_count() == 0,
           "surface-query scenario has no Vulkan validation errors");
-    rt_scenario_blas_pinning(vulkan, error);
+    rt_scenario_blas_pinning(vulkan, error, software_vulkan);
     CHECK(vulkan.validation_error_count() == 0,
           "BLAS-pinning scenario has no Vulkan validation errors");
+    if (software_vulkan) return;
     rt_scenario_visibility_classification(vulkan, error);
     CHECK(vulkan.validation_error_count() == 0,
           "visibility-classification scenario has no Vulkan validation errors");
@@ -13507,11 +14026,11 @@ void run_raster_submission_fault(matter::VulkanDevice& vulkan) {
     CHECK(renderer.raster_attachments().hdr.image != VK_NULL_HANDLE,
           "completed raster submission exposes attachments");
 
-    _putenv_s("MATTER_VK_TEST_FORCE_IMMEDIATE_COMPLETED_FAILURE",
+    set_smoke_environment("MATTER_VK_TEST_FORCE_IMMEDIATE_COMPLETED_FAILURE",
               "raster-submission");
     const bool rendered =
         renderer.render_gbuffer_and_composite(width, height, error);
-    _putenv_s("MATTER_VK_TEST_FORCE_IMMEDIATE_COMPLETED_FAILURE", "");
+    set_smoke_environment("MATTER_VK_TEST_FORCE_IMMEDIATE_COMPLETED_FAILURE", "");
     CHECK(!rendered &&
               error.find("poisoned after partial GPU mutation") !=
                   std::string::npos &&
@@ -13931,7 +14450,7 @@ void run_static_growth_copy_tests(matter::VulkanDevice& vulkan) {
             had_value[i] = true;
         }
 #ifdef _WIN32
-        _putenv_s(names[i], "0");
+        set_smoke_environment(names[i], "0");
 #else
         setenv(names[i], "0", 1);
 #endif
@@ -13941,7 +14460,7 @@ void run_static_growth_copy_tests(matter::VulkanDevice& vulkan) {
     const bool initialized = renderer.init(error);
     for (size_t i = 0; i < 3; ++i) {
 #ifdef _WIN32
-        _putenv_s(names[i], had_value[i] ? previous[i].c_str() : "");
+        set_smoke_environment(names[i], had_value[i] ? previous[i].c_str() : "");
 #else
         if (had_value[i]) setenv(names[i], previous[i].c_str(), 1);
         else unsetenv(names[i]);
@@ -15729,7 +16248,7 @@ void run_animation_skin_record_fault_matrix(matter::VulkanDevice& vulkan) {
 
 bool run_retention_fault(matter::VulkanDevice& vulkan,
                          const std::string& phase, std::string& error) {
-    _putenv_s("MATTER_VK_TEST_FORCE_IMMEDIATE_WAIT_AMBIGUOUS", phase.c_str());
+    set_smoke_environment("MATTER_VK_TEST_FORCE_IMMEDIATE_WAIT_AMBIGUOUS", phase.c_str());
     bool result = false;
     if (phase == "staging-upload") {
         matter::VkBufferResource buffer;
@@ -15791,16 +16310,16 @@ bool run_retention_fault(matter::VulkanDevice& vulkan,
             relocated.reserve(relocated.capacity() + 1);
             CHECK(&relocated.front() != original_address,
                   "bound buffer owner relocates after descriptor write");
-            _putenv_s("MATTER_VK_TEST_FORCE_IMMEDIATE_WAIT_AMBIGUOUS",
+            set_smoke_environment("MATTER_VK_TEST_FORCE_IMMEDIATE_WAIT_AMBIGUOUS",
                       "staging-upload");
             CHECK(matter::dispatch_compute(vulkan, pipeline, 1, 1, 1, error),
                   "fault injection ignores a nonmatching submit phase");
-            _putenv_s("MATTER_VK_TEST_FORCE_IMMEDIATE_WAIT_AMBIGUOUS",
+            set_smoke_environment("MATTER_VK_TEST_FORCE_IMMEDIATE_WAIT_AMBIGUOUS",
                       phase.c_str());
             result = matter::dispatch_compute(vulkan, pipeline, 1, 1, 1, error);
         }
     }
-    _putenv_s("MATTER_VK_TEST_FORCE_IMMEDIATE_WAIT_AMBIGUOUS", "");
+    set_smoke_environment("MATTER_VK_TEST_FORCE_IMMEDIATE_WAIT_AMBIGUOUS", "");
     return result;
 }
 
@@ -15880,10 +16399,10 @@ void run_outlive_resources(std::unique_ptr<matter::VulkanDevice>& vulkan,
           "no validation errors before outlive device teardown");
     if (force_unproven_cleanup) {
         matter::detail::DeviceLifetimeAccess::reset_test_destroy_call_count();
-        _putenv_s("MATTER_VK_TEST_FORCE_CLEANUP_UNPROVEN", "1");
+        set_smoke_environment("MATTER_VK_TEST_FORCE_CLEANUP_UNPROVEN", "1");
     }
     vulkan.reset();
-    _putenv_s("MATTER_VK_TEST_FORCE_CLEANUP_UNPROVEN", "");
+    set_smoke_environment("MATTER_VK_TEST_FORCE_CLEANUP_UNPROVEN", "");
     moved_buffer.reset();
     image_owner.reset();
     CHECK(observed_image.expired(), "detached image ownership releases after device teardown");
@@ -16259,32 +16778,52 @@ static void run_gi_firefly_path(matter::VulkanDevice& vulkan) {
 }
 
 #include "sparse_voxel_vk_tests.h"
+#include "vulkan_quick_smoke.h"
+
+void configure_quick_smoke_resources() {
+    // Apply before device/driver initialization, including direct launches.
+    // Explicit integration modes retain their original resource policies.
+    set_smoke_environment("LP_NUM_THREADS", "1");
+    set_smoke_environment("MESA_GLTHREAD", "false");
+    set_smoke_environment("MATTER_VK_STATIC_RESERVE_CLUSTER_MB", "1");
+    set_smoke_environment("MATTER_VK_STATIC_RESERVE_VERTEX_MB", "1");
+    set_smoke_environment("MATTER_VK_STATIC_RESERVE_INDEX_MB", "1");
+    set_smoke_environment("MATTER_VK_CPU_RESERVE_VERTEX_MB", "0");
+    set_smoke_environment("MATTER_VK_CPU_RESERVE_INDEX_MB", "0");
+    set_smoke_environment("MATTER_IMPOSTOR_CELL_PX", "16");
+}
 
 int main() {
+    const auto smoke_start = std::chrono::steady_clock::now();
     const char* startup_smoke_mode = std::getenv("MATTER_VK_SMOKE_MODE");
     if (startup_smoke_mode && std::string(startup_smoke_mode) == "cpu") {
         run_vulkan_cpu_contract_tests();
         return check_summary();
     }
-    test_atmosphere_timing_contract();
-    test_water_forward_perf_evidence_contract();
-    test_atmosphere_acceptance_fifo_parser_and_present_sequencer();
-    test_screenshot_completion_marker_is_nonempty();
-    const bool animation_skin_only = startup_smoke_mode &&
-        (std::string(startup_smoke_mode) == "animation-skin" ||
-         std::string(startup_smoke_mode) == "animation-skin-faults");
-    if (!animation_skin_only) {
-        test_vulkan_lighting_override_contract();
-        test_viewer_lighting_controls();
-        run_vulkan_gi_math_tests();
-        run_raster_mesh_material_contract_tests();
-        run_rt_lod_payload_contract_tests();
-        run_ray_tracing_capability_contract_tests();
-        run_vulkan_instance_cache_tests();
-        run_vulkan_temporal_tests();
-        run_vulkan_gi_temporal_sequence_tests();
-        run_streamline_bridge_fallback_tests();
-        run_dlss_bridge_contract_tests();
+    const bool quick = !startup_smoke_mode || !startup_smoke_mode[0] ||
+                       std::string(startup_smoke_mode) == "default";
+    if (quick) configure_quick_smoke_resources();
+    if (!quick) {
+        test_atmosphere_timing_contract();
+        test_water_forward_perf_evidence_contract();
+        test_atmosphere_acceptance_fifo_parser_and_present_sequencer();
+        test_screenshot_completion_marker_is_nonempty();
+        const bool animation_skin_only = startup_smoke_mode &&
+            (std::string(startup_smoke_mode) == "animation-skin" ||
+             std::string(startup_smoke_mode) == "animation-skin-faults");
+        if (!animation_skin_only) {
+            test_vulkan_lighting_override_contract();
+            test_viewer_lighting_controls();
+            run_vulkan_gi_math_tests();
+            run_raster_mesh_material_contract_tests();
+            run_rt_lod_payload_contract_tests();
+            run_ray_tracing_capability_contract_tests();
+            run_vulkan_instance_cache_tests();
+            run_vulkan_temporal_tests();
+            run_vulkan_gi_temporal_sequence_tests();
+            run_streamline_bridge_fallback_tests();
+            run_dlss_bridge_contract_tests();
+        }
     }
 #ifdef MATTER_VK_TEST_LAYER_PATH
     // MSYS2 installs validation-layer manifests outside the Windows registry.
@@ -16299,10 +16838,11 @@ int main() {
     }
 
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-    glfwWindowHint(GLFW_VISIBLE, GLFW_TRUE);
+    glfwWindowHint(GLFW_VISIBLE, quick ? GLFW_FALSE : GLFW_TRUE);
     GLFWwindow* window =
-        glfwCreateWindow(320, 200, "vk-smoke", nullptr, nullptr);
-    CHECK(window != nullptr, "create visible GLFW window");
+        glfwCreateWindow(quick ? 256 : 320, quick ? 256 : 200,
+                         "vk-smoke", nullptr, nullptr);
+    CHECK(window != nullptr, "create GLFW smoke window");
 
     const char* requested_smoke_mode = std::getenv("MATTER_VK_SMOKE_MODE");
     if (requested_smoke_mode &&
@@ -16312,7 +16852,7 @@ int main() {
          // "no enricher" path is to bring the device up without it.
          std::string(requested_smoke_mode) == "vt-enrich-nort" ||
          std::string(requested_smoke_mode) == "water-field-nort")) {
-        _putenv_s("MATTER_VK_TEST_FORCE_RT_UNAVAILABLE", "1");
+        set_smoke_environment("MATTER_VK_TEST_FORCE_RT_UNAVAILABLE", "1");
     }
 
     std::string error;
@@ -16321,14 +16861,32 @@ int main() {
     CHECK(vulkan != nullptr, error.empty() ? "create Vulkan device" : error.c_str());
 
     if (vulkan) {
+        if (quick) {
+            quick_smoke::run(*vulkan);
+            std::printf("validation errors: %u\n", vulkan->validation_error_count());
+            vulkan->wait_idle();
+            finish_vulkan_test(vulkan);
+            glfwDestroyWindow(window);
+            glfwTerminate();
+            const auto memory = matter::process_memory_stats();
+            const double seconds = std::chrono::duration<double>(
+                std::chrono::steady_clock::now() - smoke_start).count();
+            std::printf("quick smoke budget: peak_rss_bytes=%llu elapsed_seconds=%.3f\n",
+                        static_cast<unsigned long long>(memory.peak_working_set_bytes),
+                        seconds);
+            CHECK(memory.peak_working_set_bytes > 0 &&
+                      memory.peak_working_set_bytes < 256ull * 1024ull * 1024ull,
+                  "quick smoke peak resident memory is below 256 MiB");
+            CHECK(seconds < 10.0, "quick smoke completes in under 10 seconds");
+            return check_summary();
+        }
         {
             viewer::VkSceneRenderer device_bridge_renderer(*vulkan);
             CHECK(device_bridge_renderer.test_uses_device_streamline_bridge(),
                   "scene renderer uses the Vulkan device-owned Streamline bridge");
         }
         run_streamline_presentation_funnel_tests(*vulkan);
-        if (!requested_smoke_mode ||
-            std::string(requested_smoke_mode) == "default")
+        if (std::string(requested_smoke_mode) == "full")
             run_display_transform_tests(*vulkan);
         CHECK(!vulkan->dlss_available(),
               "Vulkan device reports DLSS unavailable without Streamline");
@@ -16365,7 +16923,8 @@ int main() {
             glfwTerminate();
             return check_summary();
         }
-        if (smoke_mode && std::string(smoke_mode) == "sparse-voxel") {
+        if (smoke_mode && (std::string(smoke_mode) == "sparse-voxel" ||
+                           std::string(smoke_mode) == "sparse-admission")) {
             sparse_voxel_gpu_test::run(*vulkan);
             CHECK(vulkan->validation_error_count() == 0, "sparse voxel Vulkan validation");
             std::printf("validation errors: %u\n", vulkan->validation_error_count());
@@ -16768,6 +17327,18 @@ int main() {
         }
         if (smoke_mode && std::string(smoke_mode) == "rt") {
             run_native_ray_tracing_path(*vulkan);
+            std::printf("validation errors: %u\n",
+                        vulkan->validation_error_count());
+            vulkan->wait_idle();
+            finish_vulkan_test(vulkan);
+            if (window) glfwDestroyWindow(window);
+            glfwTerminate();
+            return check_summary();
+        }
+        if (smoke_mode && std::string(smoke_mode) == "rt-counters") {
+            run_rt_rejected_surface_lookup_counters(*vulkan);
+            CHECK(vulkan->validation_error_count() == 0,
+                  "RT counter lifecycle has no Vulkan validation errors");
             std::printf("validation errors: %u\n",
                         vulkan->validation_error_count());
             vulkan->wait_idle();
