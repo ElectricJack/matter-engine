@@ -321,8 +321,33 @@ export function castleCollisionEntities(
         if (!wallById.has(id)) fail(wall.id, `missing source edge ${id}`);
         return wallById.get(id).openings || [];
       });
-    if (["door", "arch", "window"].includes(wall.kind) && !apertures.length)
-      fail(wall.id, "opening wall has no aperture extents");
+    if (["door", "arch", "window"].includes(wall.kind) && !apertures.length) {
+      // A narrow opening in a wider override can leave a complete solid jamb
+      // module. Prove its ownership against sibling edges' global apertures;
+      // missing aperture data in an actual opening must still fail loudly.
+      const sources = wall.sourceEdgeIds?.length
+        ? wall.sourceEdgeIds.map((id) => wallById.get(id))
+        : wallById.has(wall.id) ? [wallById.get(wall.id)] : [];
+      const solidJamb = !wall.ownsAperture && !(wall.apertureIds || []).length &&
+        sources.length > 0 && sources.every((source) => {
+          if (!source?.overrideId || !Array.isArray(source.openings) || source.openings.length)
+            return false;
+          const siblings = [...wallById.values()].filter((edge) =>
+            edge.levelId === source.levelId && edge.overrideId === source.overrideId);
+          const globalApertures = siblings.flatMap((edge) => edge.openings || []);
+          return globalApertures.length > 0 && globalApertures.every((opening) => {
+            if (!Array.isArray(opening.segmentFrom) ||
+                !Number.isFinite(opening.segmentFrom[axis]) ||
+                !same(opening.segmentFrom[1-axis], from[1-axis]) ||
+                !Number.isFinite(opening.globalStart) || !Number.isFinite(opening.globalEnd) ||
+                opening.globalEnd <= opening.globalStart) return false;
+            const start = opening.segmentFrom[axis] + opening.globalStart;
+            const end = opening.segmentFrom[axis] + opening.globalEnd;
+            return end <= lo + EPS || start >= hi - EPS;
+          });
+        });
+      if (!solidJamb) fail(wall.id, "opening wall has no aperture extents");
+    }
     const holes = [];
     for (const a of apertures) {
       let start, end;

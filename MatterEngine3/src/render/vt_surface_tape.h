@@ -23,6 +23,7 @@
 // dependency is terrain_field.cpp (SurfaceProgram + the surface_op_fbm*
 // accessors used to pre-resolve world ops for non-anchored parts).
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -236,14 +237,14 @@ inline void vt_compute_surface_lanes(const VtSurfaceLaneScan& scan,
 // warp seed token `wseed` — P1's parser landed the tail as [wseed wfreq wamp]
 // with its own seed rather than deriving it from `seed`, so the packed op
 // carries it verbatim. Warp PRESENCE rides bit 31 of kind_oct
-// (kind | oct << 16 | warp << 31); oct is masked to 15 bits.
+// (kind | destination << 8 | oct << 16 | warp << 31); oct is masked to 15 bits.
 //
 // Round-trip invariant: every SurfaceProgram op maps 1:1 onto one GpuSurfOp
 // (after the lane rewrite / world pre-resolve below) with no information
 // loss — asserted by the mode-3 CPU/GPU cross-check tests.
 // ---------------------------------------------------------------------------
 struct VtGpuSurfOp {
-    uint32_t kind_oct = 0;         // kind | (oct << 16) | (warp ? 1u<<31 : 0)
+    uint32_t kind_oct = 0;         // kind | (destination << 8) | (oct << 16) | (warp ? 1u<<31 : 0)
     int32_t a = -1, b = -1, c = -1;  // register operands; LaneRead: a = lane
     float f0 = 0, f1 = 0, f2 = 0, f3 = 0;  // value/freq/gain/lac/edges
     float wf0 = 0, wf1 = 0;        // warp freq / warp amp
@@ -280,10 +281,14 @@ enum VtSurfOpKind : uint32_t {
     kVtSopPow = 20,
     kVtSopFract = 21,
     kVtSopLaneRead = 22,    // a = lane index (CPU-rewritten Input/FieldCurv)
+    kVtSopFootprint = 23,   // requested physical texel edge, metres
+    kVtSopCellNoise2 = 24,  // seeded floor(a), floor(b) hash, [0,1)
+    kVtSopCellular3 = 25,   // jittered sites at (a,b,c), oct=distance/gap/value
+    kVtSopCellular3Reuse = 26, // same SSA inputs/seed as the last cellular query
 };
 
 // Absent-directive sentinel for the packed P3 appearance registers. Registers
-// are 0..kMaxSurfaceOps-1 (< 0xFF), so 0xFF can never be a real index; the GPU
+// are 0..kMaxSurfaceGpuRegisters-1 (< 0xFF), so 0xFF can never be a real index; the GPU
 // request carries the same byte and the shader tests against the same value
 // (VT_APP_NO_REG in vt_surface_tape.glsl).
 constexpr uint8_t kVtNoAppearanceReg = 0xFFu;
@@ -294,19 +299,53 @@ struct VtSurfaceTapePack {
     uint8_t weight_reg[terrain_field::kMaxSurfaceMaterials]{};  // per column
     uint32_t weight_reg_count = 0;
     VtSurfaceLaneScan scan;   // lane table (count == the part's lane budget)
-    // P3 appearance lanes: the tape register each directive reads, or
-    // kVtNoAppearanceReg. Registers survive the pack unchanged — every op maps
-    // 1:1 onto one GpuSurfOp (including the world pre-resolve, which rewrites
-    // an op's KIND but never its index), so a SurfaceProgram register index is
-    // also a GPU register index.
+    // P3 outputs refer to allocated physical GPU registers, or the absent
+    // sentinel. The compiler remaps all source/weight/appearance outputs.
     uint8_t tint_reg[3] = {kVtNoAppearanceReg, kVtNoAppearanceReg,
                            kVtNoAppearanceReg};
     uint8_t rough_bias_reg = kVtNoAppearanceReg;
     uint8_t wetness_reg = kVtNoAppearanceReg;
     uint8_t metallic_reg = kVtNoAppearanceReg;
+    uint8_t coat_reg[5] = {255,255,255,255,255};
+    terrain_field::SurfaceSource source;
     bool ok = false;
     bool lane_overflow = false;
     std::string err;
+};
+
+// A bounded arena of 96-op blocks. Longer source programs reserve adjacent
+// blocks rather than increasing every legacy slot's capacity. The caller must
+// release only after the last GPU reader retires; allocation never moves data.
+class VtTapeBlockAllocator {
+public:
+    static constexpr uint32_t kOpsPerBlock = terrain_field::kMaxSurfaceOps;
+    void reset(uint32_t blocks) { spans_.assign(blocks, 0); used_ = 0; }
+    int32_t acquire(uint32_t op_count) {
+        if (!op_count || op_count > uint32_t(terrain_field::kMaxSurfaceSourceOps)) return -1;
+        const uint32_t needed = (op_count + kOpsPerBlock - 1) / kOpsPerBlock;
+        uint32_t run = 0;
+        for (uint32_t i = 0; i < spans_.size(); ++i) {
+            run = spans_[i] == 0 ? run + 1 : 0;
+            if (run < needed) continue;
+            const uint32_t first = i + 1 - needed;
+            std::fill(spans_.begin() + first, spans_.begin() + first + needed, uint8_t(255));
+            spans_[first] = uint8_t(needed);
+            used_ += needed;
+            return int32_t(first);
+        }
+        return -1;
+    }
+    void release(int32_t& first) {
+        if (first < 0) return;
+        const uint32_t count = spans_[size_t(first)];
+        std::fill(spans_.begin() + first, spans_.begin() + first + count, uint8_t(0));
+        used_ -= count;
+        first = -1;
+    }
+    uint32_t used_blocks() const { return used_; }
+private:
+    std::vector<uint8_t> spans_; // 0 = free, 255 = continuation, otherwise span length
+    uint32_t used_ = 0;
 };
 
 // Packs a parsed SurfaceProgram into the flat GPU instruction stream.
@@ -320,10 +359,12 @@ struct VtSurfaceTapePack {
 //     therefore never executes a world op for such parts — one source of
 //     truth for the fallback convention (SurfaceRuntime::weights_at), zero
 //     shader complexity.
-//   * Everything else maps 1:1.
+//   * Each instruction gets a physical destination register; all operands
+//     and outputs are remapped using last-use allocation.
 //
 // Fails (ok = false) on lane overflow (lane_overflow = true; the part stays
-// mode 2) or an internal inconsistency; never throws.
+// mode 2 for legacy classifiers) or an internal inconsistency. Allocations may
+// throw; the bounded CPU preparation worker handles those failures.
 inline bool vt_pack_surface_tape(const terrain_field::SurfaceProgram& prog,
                                  bool world_anchored,
                                  VtSurfaceTapePack& out) {
@@ -334,8 +375,9 @@ inline bool vt_pack_surface_tape(const terrain_field::SurfaceProgram& prog,
         return false;
     }
     if (prog.ops.size() >
-        static_cast<size_t>(terrain_field::kMaxSurfaceOps)) {  // parse enforces
-        out.err = "tape exceeds 64 ops";
+        static_cast<size_t>(prog.source.version ? terrain_field::kMaxSurfaceSourceOps
+                                               : terrain_field::kMaxSurfaceOps)) {
+        out.err = "tape exceeds its operation budget";
         return false;
     }
     if (world_anchored) {
@@ -367,7 +409,37 @@ inline bool vt_pack_surface_tape(const terrain_field::SurfaceProgram& prog,
         g.f0 = value;
     };
 
+    // SSA source ordinals and physical GPU registers are different spaces.
+    // Keep every output live to the end; all other values die at their last
+    // consuming instruction. Operands are read before writing the destination,
+    // so a destination may reuse an operand that dies in this instruction.
+    const int count = static_cast<int>(prog.ops.size());
+    std::vector<int> last_use(size_t(count), -1), registers(size_t(count), -1);
+    for (int i = 0; i < count; ++i) {
+        const auto& op = prog.ops[size_t(i)];
+        for (int reg : {op.a, op.b, op.c}) if (reg >= 0) {
+            if (reg >= i) { out.err = "tape operand is not a backward reference"; return false; }
+            last_use[size_t(reg)] = i;
+        }
+    }
+    const auto keep_output = [&](int reg, bool optional = false) {
+        if (optional && reg < 0) return true;
+        if (reg < 0 || reg >= count) { out.err = "output register out of range"; return false; }
+        last_use[size_t(reg)] = count;
+        return true;
+    };
+    for (const auto& material : prog.materials) if (!keep_output(material.reg)) return false;
+    for (int reg : prog.tint_reg) if (!keep_output(reg, true)) return false;
+    for (int reg : prog.coat_reg) if (!keep_output(reg, true)) return false;
+    for (int reg : {prog.rough_bias_reg, prog.wetness_reg, prog.metallic_reg})
+        if (!keep_output(reg, true)) return false;
+    if (prog.source.version) for (int reg : prog.source.regs)
+        if (!keep_output(reg)) return false;
+    int owners[terrain_field::kMaxSurfaceGpuRegisters];
+    std::fill(std::begin(owners), std::end(owners), -1);
+
     out.ops.reserve(prog.ops.size());
+    const Op* last_cellular = nullptr;
     for (const Op& op : prog.ops) {
         VtGpuSurfOp g{};
         g.a = op.a;
@@ -390,6 +462,9 @@ inline bool vt_pack_surface_tape(const terrain_field::SurfaceProgram& prog,
             case Op::Const:
                 g.kind_oct = kVtSopConst;
                 break;
+            case Op::Footprint:
+                g.kind_oct = kVtSopFootprint;
+                break;
             case Op::Input: {
                 const int code = op.oct;
                 if (vt_surface_input_is_field(code)) {
@@ -409,6 +484,7 @@ inline bool vt_pack_surface_tape(const terrain_field::SurfaceProgram& prog,
                         emit_const(g, value);
                     }
                 } else if (code >= terrain_field::kSurfaceInputWorldFirst &&
+                           code <= terrain_field::kSurfInFieldSlope &&
                            !world_anchored) {
                     emit_const(g, 0.0f);   // wx/wy/wz fallback
                 } else {
@@ -463,6 +539,17 @@ inline bool vt_pack_surface_tape(const terrain_field::SurfaceProgram& prog,
                 }
                 break;
             }
+            case Op::CellNoise2: g.kind_oct = kVtSopCellNoise2; break;
+            case Op::Cellular3: {
+                // Source registers are immutable SSA values. Prove reuse here
+                // before physical-register allocation; no coordinate/seed key
+                // needs to remain live in every GPU invocation.
+                const bool reuse = last_cellular && last_cellular->seed == op.seed &&
+                    last_cellular->a == op.a && last_cellular->b == op.b && last_cellular->c == op.c;
+                g.kind_oct = (reuse ? kVtSopCellular3Reuse : kVtSopCellular3) | oct_bits;
+                last_cellular = &op;
+                break;
+            }
             case Op::Fract:      g.kind_oct = kVtSopFract; break;
             case Op::Add:        g.kind_oct = kVtSopAdd; break;
             case Op::Sub:        g.kind_oct = kVtSopSub; break;
@@ -480,6 +567,24 @@ inline bool vt_pack_surface_tape(const terrain_field::SurfaceProgram& prog,
                 out.err = "warp2 in surface tape";
                 return false;
         }
+        // LaneRead's a is a lane number, not an SSA operand. Use the
+        // original op's operand flags to leave rewritten immediates alone.
+        if (op.a >= 0) g.a = registers[size_t(op.a)];
+        if (op.b >= 0) g.b = registers[size_t(op.b)];
+        if (op.c >= 0) g.c = registers[size_t(op.c)];
+        const int ordinal = static_cast<int>(out.ops.size());
+        int destination = -1;
+        for (int reg = 0; reg < terrain_field::kMaxSurfaceGpuRegisters; ++reg) {
+            if (owners[reg] >= 0 && last_use[size_t(owners[reg])] <= ordinal) owners[reg] = -1;
+            if (destination < 0 && owners[reg] < 0) destination = reg;
+        }
+        if (destination < 0) {
+            out.err = "tape exceeds 96 simultaneously live GPU registers";
+            return false;
+        }
+        registers[size_t(ordinal)] = destination;
+        owners[destination] = ordinal;
+        g.kind_oct |= static_cast<uint32_t>(destination) << 8;
         out.ops.push_back(g);
     }
 
@@ -495,7 +600,7 @@ inline bool vt_pack_surface_tape(const terrain_field::SurfaceProgram& prog,
             out.err = "material weight register out of range";
             return false;
         }
-        out.weight_reg[k] = static_cast<uint8_t>(reg);
+        out.weight_reg[k] = static_cast<uint8_t>(registers[size_t(reg)]);
     }
 
     // P3 appearance directive registers (absent -> sentinel).
@@ -505,7 +610,7 @@ inline bool vt_pack_surface_tape(const terrain_field::SurfaceProgram& prog,
             out.err = "appearance directive register out of range";
             return false;
         }
-        dst = static_cast<uint8_t>(reg);
+        dst = static_cast<uint8_t>(registers[size_t(reg)]);
         return true;
     };
     for (int c = 0; c < 3; ++c)
@@ -513,6 +618,17 @@ inline bool vt_pack_surface_tape(const terrain_field::SurfaceProgram& prog,
     if (!pack_app_reg(prog.rough_bias_reg, out.rough_bias_reg)) return false;
     if (!pack_app_reg(prog.wetness_reg, out.wetness_reg)) return false;
     if (!pack_app_reg(prog.metallic_reg, out.metallic_reg)) return false;
+    for(unsigned c=0;c<5;++c) if(!pack_app_reg(prog.coat_reg[c],out.coat_reg[c])) return false;
+    out.source = prog.source;
+    if (out.source.version != 0) {
+        if (out.source.version != 1 && out.source.version != 2) { out.err = "unsupported direct source version"; return false; }
+        for (int& reg : out.source.regs) {
+            if (reg < 0 || reg >= static_cast<int>(out.ops.size())) {
+                out.err = "direct source register out of range"; return false;
+            }
+            reg = registers[size_t(reg)];
+        }
+    }
 
     out.ok = true;
     return true;

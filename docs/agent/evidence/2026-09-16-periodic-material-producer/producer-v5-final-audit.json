@@ -1,0 +1,13 @@
+{
+  "source_count": 920,
+  "build_count": 5,
+  "all_builds_pass": true,
+  "source_changes": [],
+  "binary_changes": [],
+  "check_count": 10,
+  "all_checks_pass": true,
+  "check_build_mismatches": [],
+  "clay_pass": true,
+  "preview_sha256": "490478d0e939b0495c16540a047ff5792a88a6c3e472b597eac1fbb7eb5b325b",
+  "passed": true
+}

@@ -18,9 +18,9 @@ export function castleFurnishingRecord(f, offset=[0,0,0]) {
  }
  if(kind==='chandelier'){
   const tall=f.position[1]>4;
-  p.y=offset[1]+(tall?7.8:3.8);p.drop=tall?2.5:.8;
-  p.radius=tall?1.05:.65;p.candles=tall?12:8;p.tiers=tall?2:1;
-  p.lightIntensity=tall?3:2.5;p.lightRange=tall?12:8;
+  p.y=offset[1]+(f.hookY ?? (tall?7.8:3.8));p.drop=f.drop ?? (tall?2.5:.8);
+  p.radius=f.radius ?? (tall?1.05:.65);p.candles=f.candles ?? (tall?12:8);p.tiers=f.tiers ?? (tall?2:1);
+  p.lightIntensity=f.lightIntensity ?? (tall?3:2.5);p.lightRange=f.lightRange ?? (tall?12:8);
  }
  return p;
 }

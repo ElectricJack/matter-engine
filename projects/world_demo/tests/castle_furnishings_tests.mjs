@@ -1,3 +1,4 @@
+import { objectFile } from './helpers/project_layout.mjs';
 // Tests for shared-lib/castle_furnishings.js: the furnished-interiors kit
 // (tables, seating, storage, altar, candle fixtures with paired analytic
 // lights, and leaded window glazing). Loaded as data: URLs the same way
@@ -12,6 +13,7 @@
 
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
+await import('./castle_shared_lib_hooks.mjs');
 
 globalThis.World = class {};
 
@@ -54,6 +56,14 @@ const furnishingsUrl = dataUrl(furnishingsSource);
 
 const F = await import(furnishingsUrl);
 const CM = await import(materialsUrl);
+
+// Placement identifiers must not multiply baked furniture. Real dimensions
+// remain part of a design; arbitrary world seeds select one of two wear forms.
+for (const kind of F.FURNISHING_KINDS) {
+  const variants=new Set();
+  for(let seed=-100;seed<100;seed++)variants.add(JSON.stringify(F.furnishingParams(kind,{seed})));
+  assert.equal(variants.size,2,kind+' has only two seeded wear variants');
+}
 
 const {
   FURNISHING_KINDS, FURNISHING_MODULES, FURNISHING_DEFAULTS, FIXTURE_GLOW_DEFAULTS,
@@ -663,7 +673,7 @@ const WRAPPER_KINDS = [
 
 let wrapperImportCounter = 0;
 async function loadWrapperClass(className) {
-  const source = await requiredText(new URL(`../objects/${className}.js`, import.meta.url), className);
+  const source = await requiredText(objectFile(className), className);
   const rewritten = source.replace("'shared-lib/castle_furnishings'", JSON.stringify(furnishingsUrl));
   assert.notEqual(rewritten, source, `${className} imports shared-lib/castle_furnishings`);
   const withExport = `${rewritten}\nexport default ${className};\n// ${wrapperImportCounter++}\n`;
@@ -703,6 +713,116 @@ await area('wrapper Parts: params superset, requires() matches furnishingChildre
   } finally {
     delete globalThis.Part;
   }
+});
+
+// ===========================================================================
+// 8. Envelope containment: every additive primitive, and the structural core
+//    box of every placed CastleBeam/CastlePlank/CastleStone child, lies inside
+//    furnishingEnvelope(kind).body, so clearance built on the envelope cannot
+//    cut through the furniture. Surface relief of the primitives (<= 25/45 mm,
+//    documented in castle_primitives.js) is outside this structural check.
+
+function growBounds(bounds, matrix, lo, hi) {
+  for (const x of [lo[0], hi[0]]) for (const y of [lo[1], hi[1]]) for (const z of [lo[2], hi[2]]) {
+    const w = transformPoint(matrix, [x, y, z]);
+    for (let i = 0; i < 3; ++i) {
+      bounds.lo[i] = Math.min(bounds.lo[i], w[i]);
+      bounds.hi[i] = Math.max(bounds.hi[i], w[i]);
+    }
+  }
+}
+
+// Capsules have hemispherical caps (pad radius on every axis). Cylinders and
+// cones have flat circular caps: a cap of radius r perpendicular to unit axis
+// u extends r * sqrt(1 - u_i^2) along world axis i (exact AABB).
+function segmentBounds(a, b, radius, flatCaps) {
+  const d = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+  const n = Math.hypot(d[0], d[1], d[2]) || 1;
+  const pad = [0, 1, 2].map((i) =>
+    flatCaps ? radius * Math.sqrt(Math.max(0, 1 - (d[i] / n) ** 2)) : radius);
+  return [[0, 1, 2].map((i) => Math.min(a[i], b[i]) - pad[i]),
+    [0, 1, 2].map((i) => Math.max(a[i], b[i]) + pad[i])];
+}
+
+function childCoreBox(module, p) {
+  if (module === 'CastleStone')
+    return [[-p.length / 2, 0, -p.depth / 2], [p.length / 2, p.height, p.depth / 2]];
+  const t = module === 'CastleBeam' ? p.height : p.thickness;
+  return [[-p.length / 2, -t / 2, -p.width / 2], [p.length / 2, t / 2, p.width / 2]];
+}
+
+function emittedBounds(part) {
+  const bounds = { lo: [Infinity, Infinity, Infinity], hi: [-Infinity, -Infinity, -Infinity] };
+  for (const op of part.ops) {
+    if (op.csg === 'difference') continue;
+    const a = op.args;
+    if (op.kind === 'box')
+      growBounds(bounds, op.matrix, a[0].map((v, i) => v - a[1][i]), a[0].map((v, i) => v + a[1][i]));
+    else if (op.kind === 'sphere')
+      growBounds(bounds, op.matrix, a[0].map((v) => v - a[1]), a[0].map((v) => v + a[1]));
+    else if (op.kind === 'capsule')
+      growBounds(bounds, op.matrix, ...segmentBounds(a[0], a[1], a[2], false));
+    else if (op.kind === 'cylinder')
+      growBounds(bounds, op.matrix, ...segmentBounds(a[0], a[1], a[2], true));
+    else if (op.kind === 'cone')
+      growBounds(bounds, op.matrix, ...segmentBounds(a[0], a[1], Math.max(a[2], a[3]), true));
+  }
+  for (const placed of part.placements)
+    growBounds(bounds, placed.matrix, ...childCoreBox(placed.module, placed.params));
+  return bounds;
+}
+
+await area('envelope containment, bed quarter-turn mapping, headroom tolerance', () => {
+  const cases = [
+    ['table', {}], ['table', { length: 1.2, width: 0.6, boards: 6 }], ['bench', {}],
+    ['chair', {}], ['throne', {}], ['chair', { throne: 1, backHeight: 0.8, seatHeight: 0.62 }],
+    ['bed', {}], ['bed', { canopy: 0, gold: 1 }], ['chest', {}], ['cupboard', {}],
+    ['altar', {}], ['barrel', {}], ['sconce', {}], ['sconce', { arms: 2 }],
+    ['sconce', { style: 1, arms: 2, spot: 1 }], ['chandelier', {}],
+    ['chandelier', { tiers: 2, candles: 12 }], ['window', {}],
+    ['window', { arch: 0, mullions: 0 }], ['window', { mullions: 2, width: 2 }],
+  ];
+  const tolerance = 0.002;
+  const escapes = [];
+  for (const [kind, input] of cases) {
+    const part = new RecordingPart();
+    emitFurnishing(part, kind, input);
+    part.balanced();
+    const bounds = emittedBounds(part);
+    const body = F.furnishingEnvelope(kind, input).body;
+    const label = `${kind} ${JSON.stringify(input)}`;
+    const lo = [body.minX, body.minY, body.minZ], hi = [body.maxX, body.maxY, body.maxZ];
+    for (let i = 0; i < 3; ++i) {
+      if (bounds.lo[i] < lo[i] - tolerance)
+        escapes.push(`${label}: min[${i}] ${bounds.lo[i].toFixed(4)} < envelope ${lo[i].toFixed(4)}`);
+      if (bounds.hi[i] > hi[i] + tolerance)
+        escapes.push(`${label}: max[${i}] ${bounds.hi[i].toFixed(4)} > envelope ${hi[i].toFixed(4)}`);
+    }
+  }
+  assert.deepEqual(escapes, [], 'geometry escapes its envelope');
+
+  // A manifest bed footprint longer in X than Z turns a quarter so the bed's
+  // length (local Z) follows the footprint's long side.
+  const bed = recordFromManifest({ id: 'b', kind: 'bed', position: [4, 0, 2], yaw: 0,
+    width: 2.2, depth: 1.5, height: 2.0, seed: 3 });
+  assert.equal(bed.length, 2.2);
+  assert.equal(bed.width, 1.5);
+  assert.ok(Math.abs(bed.yaw - Math.PI / 2) < 1e-12);
+  const bedBox = furnishingPlacement(bed).footprint.aabb;
+  const bedLocal = F.furnishingEnvelope('bed', bed).body;
+  assert.ok(bedLocal.maxZ - bedLocal.minZ > bedLocal.maxX - bedLocal.minX, 'bed length is local Z');
+  assert.ok(Math.abs((bedBox.maxX - bedBox.minX) - (bedLocal.maxZ - bedLocal.minZ)) < 1e-9,
+    'bed long side along world X');
+  assert.ok(Math.abs((bedBox.maxZ - bedBox.minZ) - (bedLocal.maxX - bedLocal.minX)) < 1e-9,
+    'bed short side along world Z');
+  const squareBed = recordFromManifest({ id: 's', kind: 'bed', position: [0, 0, 0], yaw: 90,
+    width: 1.4, depth: 2.1 });
+  assert.equal(squareBed.width, 1.4);
+  assert.ok(Math.abs(squareBed.yaw - Math.PI / 2) < 1e-12, 'Z-long bed keeps its yaw');
+
+  // A sconce whose lowest point sits exactly 2.1 m above the floor is clear.
+  const sconce = furnishingPlacement({ id: 'h', kind: 'sconce', x: 0, y: 2.3, z: 0, floorY: 0 });
+  assert.equal(sconce.headroom.clear, true, 'bottom at 2.1 m counts as clear');
 });
 
 // ===========================================================================

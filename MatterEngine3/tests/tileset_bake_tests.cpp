@@ -13,6 +13,8 @@
 // ../src/tileset_phase.cpp.
 
 #include "part_graph.h"          // -DMATTER_HAVE_SCRIPT_HOST: FileModuleResolver + HostBaker
+#include "memory_fixture_io.h"
+#include "part_bundle.h"
 #include "part_asset_v2.h"       // cache_path_resolved
 #include "tileset_part_collider.h"
 #include "tileset_bake.h"
@@ -26,7 +28,6 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
-#include <fstream>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -35,24 +36,20 @@
 
 namespace fs = std::filesystem;
 
+static matter::SourceSnapshot::Files source_files;
+static std::shared_ptr<matter::test::MemoryCacheByteStorage> storage;
+static std::shared_ptr<const matter::WorldFixtureIO> fixture_io() {
+    auto io = std::make_shared<matter::WorldFixtureIO>();
+    io->sources = std::make_shared<const matter::SourceSnapshot>(source_files);
+    io->cache = storage;
+    return io;
+}
 static bool write_file(const fs::path& path, const std::string& body) {
-    std::error_code ec;
-    fs::create_directories(path.parent_path(), ec);
-    if (ec) return false;
-    std::ofstream f(path, std::ios::binary | std::ios::trunc);
-    if (!f) return false;
-    f << body;
-    return f.good();
+    source_files[matter::SourceSnapshot::key(path.string())] = body;
+    return true;
 }
-
-static void remove_tree(const fs::path& path) {
-    std::error_code ignored;
-    fs::remove_all(path, ignored);
-}
-
-static bool file_exists(const fs::path& p) {
-    std::error_code ec;
-    return fs::exists(p, ec);
+static bool file_exists(const fs::path& path) {
+    return static_cast<bool>(storage->open(path.generic_string()));
 }
 
 // ---------------------------------------------------------------------------
@@ -305,6 +302,62 @@ static const bake_trace::Counter* find_counter(const bake_trace::Span& s,
     return nullptr;
 }
 
+static void test_analytic_settle_without_physics(const std::string& cache_dir,
+                                                uint64_t pebble_hash,
+                                                uint64_t twig_hash) {
+    auto spec = make_spec(pebble_hash, twig_hash);
+    spec.drops.clear();
+    spec.layers.resize(1); // analytically snapped pebbles
+    tileset::BakeInputs inputs{cache_dir};
+    tileset::SettlePlan expected;
+    std::string error;
+    CHECK(tileset::build_settle_plan(spec, inputs, expected, error),
+          "analytic generation: reference placement plan builds");
+    bake_trace::Collector collector;
+    auto* previous = bake_trace::current();
+    bake_trace::set_current(&collector);
+    tileset::SettledTorus result;
+    const bool ok = tileset::settle_tileset(spec, inputs, result, error);
+    bake_trace::set_current(previous);
+    CHECK(ok, "analytic generation: bake succeeds");
+    if (!ok || expected.layers.empty()) return;
+    const auto trace = collector.snapshot();
+    CHECK(find_counter(trace, "physics_worlds_created") == nullptr,
+          "analytic generation: no physics world is created");
+    CHECK(trace.children.empty(), "analytic generation: no simulation layer executes");
+    CHECK(result.instances.size() == 48 &&
+              result.instances.size() == expected.layers[0].nonphys.size(),
+          "analytic generation: all placed instances are retained");
+    bool same = result.instances.size() == expected.layers[0].nonphys.size();
+    for (size_t i = 0; same && i < result.instances.size(); ++i) {
+        const auto& a = result.instances[i];
+        const auto& b = expected.layers[0].nonphys[i];
+        same = a.child_hash == b.child_hash && a.scale == b.scale &&
+               a.layer == b.layer && std::memcmp(&a.pose, &b.pose, sizeof(a.pose)) == 0;
+    }
+    CHECK(same, "analytic generation: transforms and instance order match the placement plan");
+    CHECK(result.report.converged_all && result.report.layers.size() == 1 &&
+              result.report.layers[0].converged && result.report.layers[0].sim_time == 0,
+          "analytic generation: report preserves zero-time successful layers");
+    CHECK(result.report.pose_hash == 1469598103934665603ull,
+          "analytic generation: empty physics pose hash remains compatible");
+
+    // An authored physics layer with zero generated instances also needs no
+    // world. Presence of a physics flag alone must not trigger simulation.
+    spec.layers.clear();
+    spec.layers.emplace_back();
+    spec.layers[0].physics = true;
+    collector.reset();
+    bake_trace::set_current(&collector);
+    tileset::SettledTorus empty;
+    const bool empty_ok = tileset::settle_tileset(spec, inputs, empty, error);
+    bake_trace::set_current(previous);
+    CHECK(empty_ok && empty.instances.empty() && empty.report.converged_all,
+          "analytic generation: empty recipe retains a valid base");
+    CHECK(find_counter(collector.snapshot(), "physics_worlds_created") == nullptr,
+          "analytic generation: empty physics layer creates no world");
+}
+
 static void test_settle_trace_spans(const std::string& cache_dir,
                                     uint64_t pebble_hash, uint64_t twig_hash) {
     tileset::TilesetSpec spec = make_spec(pebble_hash, twig_hash);
@@ -320,6 +373,9 @@ static void test_settle_trace_spans(const std::string& cache_dir,
     if (!ok) return;
 
     bake_trace::Span snap = col.snapshot();
+    const auto* worlds = find_counter(snap, "physics_worlds_created");
+    CHECK(worlds && worlds->value == 1.0,
+          "trace: physical recipe creates one observable world");
     CHECK(snap.children.size() == 2,
           "trace: two settle-layer spans (drops batch + physics layer)");
     if (snap.children.size() != 2) return;
@@ -594,7 +650,7 @@ class ForestFloor extends Tileset {
     std::string err;
     CHECK(tileset::run_tileset_phase_from_objects(
               objects_dir.string(), "ForestFloor",
-              cache_dir.string(), torus, err),
+              cache_dir.string(), torus, err, "", fixture_io()),
           "e2e: tileset phase runs");
     if (!err.empty()) printf("  e2e phase err: %s\n", err.c_str());
     CHECK(torus.report.converged_all, "e2e: all layers converged");
@@ -605,7 +661,7 @@ class ForestFloor extends Tileset {
     tileset::SettledTorus torus2;
     CHECK(tileset::run_tileset_phase_from_objects(
               objects_dir.string(), "ForestFloor",
-              cache_dir.string(), torus2, err),
+              cache_dir.string(), torus2, err, "", fixture_io()),
           "e2e: second phase run");
     if (!err.empty()) printf("  e2e phase2 err: %s\n", err.c_str());
     CHECK(torus.report.pose_hash == torus2.report.pose_hash,
@@ -621,14 +677,14 @@ class ForestFloor extends Tileset {
     tileset::SettledTorus t3;
     bool bad_ok = !tileset::run_tileset_phase_from_objects(
                       objects_dir.string(), "BadFloor",
-                      cache_dir.string(), t3, err)
+                      cache_dir.string(), t3, err, "", fixture_io())
                   && !err.empty();
     CHECK(bad_ok, "e2e: missing child module fails closed");
     if (!bad_ok) printf("  bad floor err was: '%s'\n", err.c_str());
 }
 
 // ---------------------------------------------------------------------------
-// main: set up temp cache, bake fixtures, call test.
+// main: own source and cache generations, bake fixtures, call test.
 // ---------------------------------------------------------------------------
 int main()
 {
@@ -637,28 +693,16 @@ int main()
 
     namespace pg = part_graph;
 
-    // Store original working directory.
-    const fs::path prevcwd = fs::current_path();
-
-    // Fresh temp sandbox.
-    const fs::path root    = fs::temp_directory_path() / "me3_tilesetbake_tests";
+    storage = std::make_shared<matter::test::MemoryCacheByteStorage>();
+    part_bundle::ScopedStorage scope(storage);
+    const fs::path root = "runtime/tileset-bake";
     const fs::path objects = root / "objects";
-    const fs::path parts   = root / "parts";
-    remove_tree(root);
-    fs::create_directories(objects);
-    fs::create_directories(parts);
-
     write_file(objects / "Pebble.js", kPebbleJs);
-    write_file(objects / "Twig.js",   kTwigJs);
-
-    // chdir so HostBaker's relative "parts/<hash>.part" lands under <root>/parts.
-    std::error_code ec;
-    fs::current_path(root, ec);
-    CHECK(ec.value() == 0, "setup: chdir into sandbox");
-
+    write_file(objects / "Twig.js", kTwigJs);
     script_host::ScriptHost host;
-    pg::FileModuleResolver resolver(host, "objects");
-    pg::HostBaker baker(host, ".");
+    host.set_module_sources(std::vector<module_resolver::ResolvedModule>{});
+    pg::FileModuleResolver resolver(host, objects.string(), fixture_io()->sources);
+    pg::HostBaker baker(host, root.string(), storage);
     pg::PartGraph graph(resolver, baker);
 
     pg::InstallResult pebble_ir = graph.install(
@@ -686,8 +730,8 @@ int main()
         fs::path pebble_path = root / part_asset::cache_path_resolved(pebble_hash);
         fs::path twig_path   = root / part_asset::cache_path_resolved(twig_hash);
 
-        CHECK(file_exists(pebble_path), "bake: Pebble .part exists on disk");
-        CHECK(file_exists(twig_path),   "bake: Twig .part exists on disk");
+        CHECK(file_exists(pebble_path), "bake: Pebble .part published in RAM");
+        CHECK(file_exists(twig_path),   "bake: Twig .part published in RAM");
 
         // cache_dir for collider_for_part: the directory that CONTAINS parts/.
         test_collider_bridge(root.string(), pebble_hash, twig_hash);
@@ -699,6 +743,7 @@ int main()
         uint64_t pebble_hash = pebble_ir.root_hashes[0];
         uint64_t twig_hash   = twig_ir.root_hashes[0];
         test_settle_tileset(root.string(), pebble_hash, twig_hash);
+        test_analytic_settle_without_physics(root.string(), pebble_hash, twig_hash);
         test_settle_trace_spans(root.string(), pebble_hash, twig_hash);
         test_build_settle_plan(root.string(), pebble_hash, twig_hash);
     }
@@ -717,8 +762,6 @@ int main()
         test_e2e_to_settled_torus(objects, root);
     }
 
-    fs::current_path(prevcwd, ec);
-    remove_tree(root);
 
     if (g_failures == 0)
         printf("\nAll tileset_bake_tests passed.\n");

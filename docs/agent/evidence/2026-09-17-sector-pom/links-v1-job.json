@@ -1,0 +1,24 @@
+{
+  "pid": 903932,
+  "result": "docs/agent/evidence/2026-09-17-sector-pom/links-v1-result.json",
+  "log": "docs/agent/evidence/2026-09-17-sector-pom/links-v1-supervisor.log",
+  "steps": [
+    [
+      "docs/agent/evidence/2026-09-16-shared-vt-pixels/build_checks.py",
+      "sector-links-v1",
+      "vulkan_smoke_tests",
+      "vt_compositor_tests",
+      "matter_editor"
+    ],
+    [
+      "docs/agent/evidence/2026-09-16-shared-vt-pixels/run_checks.py",
+      "sector-links-v1",
+      "vt-sector-seam",
+      "vt-material-domain",
+      "vt-pom-work",
+      "vt-composed-seam",
+      "vt-input-snapshot",
+      "compositor"
+    ]
+  ]
+}

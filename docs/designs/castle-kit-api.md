@@ -21,6 +21,7 @@ planToJSON(manifest, space = 2)
 planToSVG(manifest, { levelId, scale = 32, padding = 24 })
 emitManifest(manifest, emitters)
 manifestPartRecipes(manifest, moduleNames = {})
+routeManifestRoomSegment(manifest, roomId, from, to, width = 1.2)
 ```
 
 `canonicalEdge` accepts one axis-aligned, one-metre integer-grid edge and
@@ -34,6 +35,14 @@ are sorted from level IDs, room IDs, coordinates, endpoints, or explicit
 record IDs, so reordering levels, rooms, overrides, beams, and other unordered
 record families does not change `planToJSON(compilePlan(plan))`. Flight order
 and the order of intermediate landings are semantic stair sequence.
+
+`routeManifestRoomSegment` reuses the compiler's exact flat-room clearance
+solver on an already compiled manifest. It returns an owned
+`{roomId,from,to,width,waypoints,segments,sweptBounds}` record without mutating
+the manifest. Floor holes, lower-room stair flights/carried landings, beams and
+fixture clearances receive the same routing and post-route validation as the
+compiler's own walk routes. Site composition uses this API when stitching a
+wing's world-space connectors instead of drawing unsafe straight chords.
 
 ## Authored plan
 
@@ -527,7 +536,13 @@ width. Every intermediate landing is blocked the same way at any elevation:
 the structure carries it from the lower floor on corner posts or a solid base,
 so a flat route may never pass beneath it. An upper landing hangs from the
 upper floor and is blocked only when its elevation leaves less than 2.1m above
-the lower floor. The declared lower landing remains the only flat-route
+the lower floor. Before that expansion each stair obstacle is widened by the
+exported `STAIR_SIDE_ALLOWANCE` (0.2m) — across a flight's run, and on every
+edge of a blocked landing — because the structure stands open-side parapets
+and balustrades, stringers, tread overhangs and landing guard rails in that
+band outside the published footprints. Floor holes remain the exact footprint
+union; open-side guards stop below the destination floor's structure rather
+than rising through the deck beside the hole. The declared lower landing remains the only flat-route
 handoff into `stair.route`; upper landings with sufficient under-clearance do
 not seal a return stair's approach. Each room-segment ID is also in
 `sweptVolumeIds`. The top-level `waypoints` form one ordered polyline by

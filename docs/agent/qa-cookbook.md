@@ -120,6 +120,48 @@ MinGW build for this acceptance.
 ./tools/build-windows-from-wsl.sh RelWithDebInfo matter_editor
 ```
 
+For calibrated object evaluation, set the complete camera and capture a fresh
+path with synchronized numeric planes:
+
+```bash
+printf 'render_path native_rt\n' >> /mnt/c/tmp/matter-agent-physics/commands.txt
+python3 tools/matter_agent.py view.set_camera \
+  --cmd-file /mnt/c/tmp/matter-agent-physics/commands.txt \
+  --result-file /mnt/c/tmp/matter-agent-physics/results.jsonl \
+  --args '{"position":[20,16,34],"target":[0,9,0],"up":[0,1,0],"vertical_fov_radians":0.8,"near_plane":0.1,"far_plane":5000}'
+python3 tools/matter_agent.py render.reset_temporal \
+  --cmd-file /mnt/c/tmp/matter-agent-physics/commands.txt \
+  --result-file /mnt/c/tmp/matter-agent-physics/results.jsonl
+python3 tools/matter_agent.py viewport.capture \
+  --cmd-file /mnt/c/tmp/matter-agent-physics/commands.txt \
+  --result-file /mnt/c/tmp/matter-agent-physics/results.jsonl \
+  --args '{"path":"C:/tmp/matter-agent-physics/eval-001.png","export_channels":true,"desired_max_lod":0,"require_rt":true}' \
+  --timeout 30
+```
+
+Read `result.readiness.ready` and `blockers` before scoring the image. Decode
+`result.channels.path` using the plane offsets and formats in the receipt;
+verify the file starts with `MECAP001` and its width/height match the receipt.
+For temporal characterization, repeat five captures at unique paths with the
+same pose, then restart the editor and repeat a cold capture. Record pixel
+differences and readiness for each, including RT/raster mode. A stable camera
+can still have varying RT pixels, so a repeated PNG hash alone is not a useful
+quality threshold. Set `render_path native_rt` again after restart when RT is
+required; the saved render preference can be raster. Test failure behavior
+with an invalid camera, stale capture
+path, a capture timeout, and `require_rt:true` while raster is selected.
+
+The 2026-09-28 `PhysicsPlayground` native MSVC probe at 1280×720 PNG and
+663×523 internal raster extent saw ten visible instance tokens. Five warm RT
+repeats and a fresh-process RT capture all reported `ready:true` at LOD 0.
+Identity, depth, normal, albedo and ORM planes were byte identical across the
+captures. HDR color varied; relative to the first PNG, warm mean absolute RGB
+differences were 0.0037–0.0042 on the 0–255 scale, and the fresh-process RT
+difference was 0.0089. These are measured noise, not a universal tolerance.
+Raster with `require_rt:false` was ready; raster with `require_rt:true` named
+`native_rt_unavailable` and `visible_blas_missing`. A degenerate camera gave
+`invalid_input`, and reusing a channel bundle path gave `execution_failure`.
+
 Then use the `PhysicsPlayground` sequence in
 [`control-surface.md`](control-surface.md#native-windows-selection-acceptance).
 It is the reproducible native fixture with both dynamic authored entities and
@@ -405,6 +447,36 @@ per-shot gates).
 
 ## 6. Run the Vulkan smoke gate
 
+With `MATTER_VK_SMOKE_MODE` unset, empty, or `default`, the executable creates
+a hidden 256×256 window, renders three triangle frames, and checks their
+readback plus validation and teardown. It caps llvmpipe to one worker and
+checks peak resident memory below 256 MiB and runtime below 10 seconds.
+The `vulkan_smoke_gpu_tests` CTest entry has a 10-second timeout and shares
+the GPU resource lock. The existing `vulkan_smoke_tests` entry runs the shared
+CPU contracts with `MATTER_VK_SMOKE_MODE=cpu` and exits before GLFW or device
+initialization. A cold shader-cache Linux llvmpipe run measured **138.34 MiB / 0.24 s**;
+the former default reached **2,054.23 MiB** and timed out after 60 seconds.
+The final default CTest run passed in **0.18 s / 137.77 MiB** with zero
+validation errors.
+[Budget evidence and every named-mode measurement](evidence/2026-10-14-vulkan-smoke-budget.json)
+record the environment, experimental fixture caps, and verification limits.
+
+The former default sequence is available as `MATTER_VK_SMOKE_MODE=full`.
+All named CTest smoke integrations exceeded the memory budget even with
+reduced fixture reserves, so registration requires
+`MATTER_ENABLE_HEAVY_VULKAN_SMOKE_TESTS=ON`. They retain their original
+resource policies, carry the `heavy` label, and have a 180-second timeout.
+Normal test presets exclude that label even when the option is enabled:
+
+```powershell
+ctest --preset windows-msvc-relwithdebinfo -R '^vulkan_smoke(_gpu)?_tests$'
+# Opt in to integration coverage; run outside the preset's heavy exclusion.
+cmake --preset windows-msvc-relwithdebinfo -DMATTER_ENABLE_HEAVY_VULKAN_SMOKE_TESTS=ON
+ctest --test-dir MatterEditor/build/cmake/windows-msvc/relwithdebinfo -L heavy --output-on-failure
+```
+
+The explicit fault-mode harness remains available:
+
 ```powershell
 tools/build-windows.ps1 -Config RelWithDebInfo -Target vulkan_smoke_tests
 MatterEditor/tools/smoke_vulkan_faults.ps1 `
@@ -414,12 +486,82 @@ MatterEditor/tools/smoke_vulkan_faults.ps1 `
 
 The fault harness runs the smoke exe **12 times**, once per
 `MATTER_VK_SMOKE_MODE` value, each
-under a per-mode timeout (30 s from the Makefile's override, except `rt`
-90 s and `rt-transmission` 45 s, which raise their own floor): the two
+under a per-mode timeout (30 s from the caller's override, except `rt`
+180 s, `rt-transmission` 45 s, `animation-skin` 120 s, and `vt-rt` 120 s,
+which raise their own floors): the two
 Streamline-proxy-missing fault modes, `rt`, `rt-transmission`, `rt-disabled`,
 `rt-unavailable`, `animation-skin`, and the five chart-VT modes (`vt`,
 `vt-surfaces`, `vt-rt`, `vt-enrich`, `vt-enrich-nort`). Each mode must print
 `validation errors: 0` and `ALL PASS`, and exit 0, or the whole gate fails.
+
+The harness prints each mode's elapsed time and timeout after a pass. The
+longer RT, animation, and VT-in-RT limits reflect passing RTX 4090 runs
+measured at 78 s, 65 s, and 66 s respectively; the gate still kills a mode
+that exceeds its limit.
+
+`vt-enrich` also adds, changes and removes surface classification through the
+renderer edit API. It checks the rendered material/contact AO and asserts that
+these edits reuse compositor chart geometry and AO preparation. A geometry
+replacement removes the occluding fin and must rebuild both preparations and
+remove its occlusion. The standalone `vt_compositor_tests` additionally checks
+four delayed weight/field-lane versions against separately submitted references,
+with shared geometry surviving every material version and their retirement.
+
+Additional focused regression modes are `rt-empty-tlas` (enabled volumes with
+scene instances but no selected traceable geometry), `water-field` and
+`water-field-nort` (real field uploads with and without RT capability).
+`rt-empty-tlas` covers startup, return to traceable geometry, and a volume
+bundle resize. Run these modes directly with validation enabled by the smoke
+executable; each must print `validation errors: 0`, `ALL PASS`, and exit 0.
+
+`vt-feedback` exercises production G-buffer visibility and asynchronous VT
+requests with overlapping charted/uncharted surfaces in both orders. It checks
+that hidden owners receive no detail requests, visible owners refine, retained
+pages survive reveal/return, and odd-size target resizes remain valid. CMake
+registers the same mode as `vt_feedback_visibility_tests`.
+
+This visibility contract uses the supported whole-page fill mode
+(`fill_budget_ms = 0`) within the fixture. Feedback transport, production
+G-buffer depth testing, and the compositor remain active. The short frame
+windows measure which owners refine and whether their completed pages survive
+reveal/return; they do not specify the production fill scheduler's completion
+latency. At the production limit of one or two row slices per frame, a page's
+680 slices cannot finish within the first 48-frame observation window. The
+fixture saves the entire live budget struct before changing only the fill
+target, then restores it with an RAII guard on normal completion and every
+renderer-init or frame-submission error return. Production defaults are unchanged.
+
+Bounded work and multi-frame completion have separate registered coverage:
+
+- `vt_residency_tests` checks the initial two-slice ceiling, immediate reduction
+  to one slice after expensive GPU samples, bounded recovery, and zero-target
+  whole-page mode.
+- `smoke_vt_queue` runs `vt_queue_tests::run_slice_publication`: unfinished
+  pages remain unpublished, continuations keep their owner, and pending work
+  preserves queue/success accounting. It also checks fill/AO budget alternation,
+  cancellation, and eventual completion of sliced AO factors.
+- `vt_compositor_tests` submits real bounded page slices across ring wraps,
+  supersedes a partial mip/revision, and compares all five completed channels
+  byte for byte with a whole-page reference. Partial writes must retain the
+  previous resident bytes; native sliced AO also matches its full-page reference.
+- `smoke_vt_normal_frame` retains production fill pacing. It waits for nonzero
+  completed fills and an empty, clean queue for five stable frames within
+  `4 * vt::kVtPageTiles` frames before asserting raster/RT directional-normal
+  correctness. This derives the completion allowance from the page's work size.
+
+`vt-feedback-pair` checks the independent receiver/material transport: GPU
+address packing, extraction from the wider visible image, cached readback,
+deduplication and real generation for both owners. It includes tagged background,
+partial screen blocks, repeated demand and resize. Run it together with
+`vt-feedback` for the production raster depth-visibility gate; the paired fixture
+supplies its visible image explicitly and does not render module-mapped walls.
+
+`vt-receiver-material` exercises published planar chart mappings using the real
+compressed module and receiver pages. It checks three sizes/orientations against
+independent physical-coordinate sampling, normal conversion, signed height datum,
+chart POM, paired demand, pending/invalid bindings, removal and reader retirement.
+It is a compute sampling integration fixture; rendered mapped-wall and connected
+corner acceptance remain separate gates.
 
 To run a single mode directly (faster iteration while chasing one failure):
 
@@ -439,7 +581,7 @@ for the full current set.
 MatterEngine3/tools/seam_suite.sh /tmp/seam-out
 ```
 
-Runs the editor twice against the `SeamLab` world (`projects/world_demo/scenes/SeamLab`
+Runs the editor twice against the `SeamLab` world (`projects/world_demo/scenes/texturing/virtual_texture/SeamLab`
 — a cave-free heightfield built so "anything visible below the surface" is
 unambiguously a defect): once with welds drawn, once with
 `MATTER_NO_SEAM_WELD_DRAW=1`. Reports six checks, each the only detector of one
@@ -539,14 +681,19 @@ lives there, not in this Makefile.
 ## 11. JS world-script tests
 
 ```bash
-node --experimental-default-type=module projects/world_demo/tests/alpine_ecology_tests.mjs
+node projects/world_demo/tests/alpine_ecology_tests.mjs
 ```
 
 There is no `package.json` anywhere in the repo (deliberately — see
 `CLAUDE.md`: the same `.js` modules are loaded by the engine's QuickJS host,
-which has its own module resolution and wouldn't see one), so a plain
-`node file.mjs` dies with "is a CommonJS module" — the `--experimental-default-type=module`
-flag (or `--experimental-detect-module` on Node ≥ 20.10) is required every time.
+which has its own module resolution and wouldn't see one), so the imported
+`.js` files have no declared module type. Node ≥ 22.7 detects their ES module
+syntax by default, so plain `node` works; on Node 20.10–22.6 add
+`--experimental-detect-module`, or the import dies with "is a CommonJS module".
+Do not use `--experimental-default-type=module` — Node 24 rejects it with
+`bad option` (exit 9), and a loop such as
+`node … ; echo "$(basename f) exit=$?"` then prints `exit=0` because the
+command substitution resets `$?`. Capture the exit code right after `node`.
 
 ## 12. RiverFloatLab visual playtest
 
@@ -620,6 +767,86 @@ PNG at native size and record the visual verdict in
 `docs/findings/animated-water-section-continuity-acceptance-2026-08-29.md`.
 Task 10 remains blocked unless that finding says `handoffVisualGate: pass`.
 
+## 15. Promotion CI and attestation audit
+
+`.github/workflows/tests.yml` runs on AQ source/candidate/promotion
+branches and pull requests to `dev`, `staging`, or `main`. It also supports
+`workflow_call`. Its canonical checks are:
+
+| Check | Gate |
+| --- | --- |
+| `Native Windows build and tests` | MSVC build, CPU CTest, distribution and package validation through `tools/ci-windows.ps1` |
+| `Linux foundation build and tests` | Attestation verifier, MemoryLib sanitizer tests, MeshChartingLib tests, AssetStoreLib build/tests |
+
+Run the Linux gate from the repository root:
+
+```bash
+python3 -m unittest discover -s tools/tests -p test_aq_attestation.py -v
+make -C libs/MemoryLib -j2 test
+make -C libs/MeshChartingLib/tests -j2 run
+make -C libs/AssetStoreLib -j2 test
+```
+
+The Linux gate covers portable foundations; editor acceptance still uses MSVC.
+`.github/workflows/main-attestation.yml` audits delivery pushes to `dev`,
+`staging`, and `main`. It checks the trusted App's integration proof on `dev`,
+staging promotion proof on `staging`, and release promotion proof on `main`.
+Successful proof verification skips redundant CI. Missing configuration,
+missing/invalid proof, or a failed audit job invokes both checks through
+`unattested-ci`. The reusable checks then have full names
+`unattested-ci / Native Windows build and tests` and
+`unattested-ci / Linux foundation build and tests`; the committed trust
+manifest must list these in `check_sets.promotion-source-audit` for source
+admission. The daemon publishes the named attestations; this read-only workflow
+verifies them and cannot issue them.
+
+The repository administrator sets `AQ_INTEGRATION_ATTESTATION_APP_ID` to
+`5075923` and `AQ_INTEGRATION_REQUIRED_CHECK_VERSION` to `matter-engine-ci-v1`,
+matching the authoritative manifest. Supervisor message
+`msg-2cb6f0692e0a41af9181581475259d3b` supplied the supported generator output.
+The real Windows/Linux workflow was renamed from `native-windows.yml` to
+`tests.yml` because the deployed cutover preview reads that literal path.
+Its job names, runner, commands and triggers are unchanged, and the attestation
+fallback calls the renamed workflow. The local operator must rerun the preview
+against the exact delivered `dev` head; this rename does not prove readiness.
+The [promotion trust proposal](aq-promotion/README.md) records the reviewed
+minimal hosted-check input, retained historical drafts, authoritative production
+manifest, and remaining operator gates.
+The [git-first train migration](aq-promotion/train-migration.md) adds a complete
+source-pinned policy proposal, guarded operator cutover and proof of automatic
+task-to-epic-to-`dev` delivery. Its valid full policy can also supply the existing
+`trust-manifest --policy` generator before minimal-input deployment. Activating
+the train still requires reviewed available routes, authoritative trust and
+passing CI; a project mode change alone does not prove a refactor landed.
+The [Windows runner handoff](aq-promotion/train-migration.md#windows-ci-runner-blocker-and-operator-setup)
+records the observed empty runner inventory, exact pinned native toolchain,
+all required labels and supported repository-owner registration procedure.
+Runner provisioning/availability remains an operator blocker; queued Windows
+CI does not satisfy either delivery or promotion admission.
+After the manifest and workflows reach `dev`, the local operator validates and
+activates the prepared flow:
+
+```bash
+aq promote validate --project matter-engine-cpp \
+  --file "$HOME/.agent-queue/vault/projects/matter-engine-cpp/policy/promotion/flow.json"
+aq project set matter-engine-cpp promotion-flow \
+  "$HOME/.agent-queue/vault/projects/matter-engine-cpp/policy/promotion/flow.json" \
+  --expected-integration-generation <current-generation>
+aq policy apply "$HOME/.agent-queue/policy-profiles/agent-queue-2026-10-11" \
+  --project matter-engine-cpp \
+  --only playbook:project:promotion-continuous \
+  --only playbook:project:promotion-request \
+  --set default_branch=dev --set branch_4=staging --set branch_5=main
+```
+
+Use the current generation from AQ's integration status, and activate the
+imported project playbooks with their reviewed artifact hashes through
+`aq playbook activate`. Flow activation creates a missing `staging` from
+`dev` with a create-only push. It preserves release `approval: operator`.
+Repository changes alone do not activate this flow. Report the first automatic
+promotion only after `aq promote status --project matter-engine-cpp --step
+staging` records delivery of the exact source SHA.
+
 ---
 
 ## Traps
@@ -662,3 +889,14 @@ Task 10 remains blocked unless that finding says `handoffVisualGate: pass`.
   `MATTER_WORLD=FloorDemo MATTER_TILESET_DUMP_PNG=<dir>`, bake twice into two
   different dump directories, and `img_diff.py` the pairs — a double-bake
   bitwise (or near-bitwise) compare is the real gate, not the smoke suite.
+
+### Optional native VT feedback CPU benchmark
+
+Build `vt_residency_tests` with the canonical MSVC wrapper, then run its executable
+with `MATTER_VT_FEEDBACK_BENCH=1`. This runs the normal correctness suite and adds
+three synthetic 32,400-texel workloads (empty, repeated requests, interleaved
+requests), each with 50 warmups and 1,000 measured iterations.
+`VT_FEEDBACK_BENCH` CSV rows contain pattern, sample count, scan p50/p95 µs,
+whole-collector p50/p95 µs and an output checksum. Timings are evidence, not
+pass/fail limits; run independently of builds or GPU captures. A CPU-memory
+benchmark does not establish GPU-readback or whole-scene performance.

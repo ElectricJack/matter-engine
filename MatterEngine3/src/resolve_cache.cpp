@@ -1,7 +1,7 @@
 // MatterEngine3/src/resolve_cache.cpp
 // resolve_cache.cpp — resolve/manifest binary cache.
 // Saves and restores the full output of LocalProvider::install_graph() +
-// compose_world() so warm launches skip QuickJS script evaluation.
+// compose_world(); supported static worlds also cache their authored definition.
 //
 // Binary layout (little-endian, all multi-byte scalars LE):
 //
@@ -100,16 +100,17 @@
 // unversioned layout change leaves old files passing the header check and then
 // decoding as garbage.
 //
-// The payload carries no checksum.  Integrity rests on the header match, the
-// per-field sanity caps, the strict "must be exactly at EOF" check at the end
-// of load(), and the fact that the file is published atomically so a reader
-// never sees a partial write.
+// The legacy manifest/graph sections carry no checksum. Their integrity rests
+// on the header match, per-field sanity caps, the strict EOF check and atomic
+// publication. The authored-world section additionally has its own schema and
+// content checksum, validated before the provider replays any material state.
 //
 // Nothing here verifies that the artifacts named by root_hashes / bake_plan
 // still exist on disk.  A hit restores part IDENTITIES verbatim and skips
-// script evaluation entirely, which is why every input that can move a part
+// graph evaluation, which is why every input that can move a part
 // hash has to reach compute_key() — see the bake-mode fold in step 4 there for
 // what going wrong looks like.
+#include "bake_trace.h"
 #include "resolve_cache.h"
 #include "part_asset.h"    // fnv1a64
 #include "part_asset_v2.h" // replace_file_atomic (Windows-safe publish)
@@ -122,6 +123,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <sstream>
 #include <fstream>
 #include <limits>
 #include <map>
@@ -154,7 +156,7 @@ static constexpr uint32_t kResolveCacheMagic   = 0x00314352u;
 // `procedural.parameters` set this field exists to fix.
 // Version 7 replaces the ambiguous SpotLight record with the fixed 64-byte
 // LocalLight record and reconstructs its spatial publication on load.
-static constexpr uint32_t kResolveCacheVersion = 7u;  // LocalLight ABI + rebuild
+static constexpr uint32_t kResolveCacheVersion = 8u;  // authored definition + material snapshot
 
 // ---------------------------------------------------------------------------
 // Low-level binary read/write helpers (little-endian)
@@ -170,7 +172,7 @@ namespace {
 // Both helpers return false as soon as the stream goes bad, which is how a
 // truncated file is detected: every call site propagates the false out.
 template <typename T>
-static bool write_le(std::ofstream& f, T val) {
+static bool write_le(std::ostream& f, T val) {
     static_assert(sizeof(T) <= 8, "write_le: type too wide");
     uint8_t buf[sizeof(T)];
     uint64_t v = 0;
@@ -182,7 +184,7 @@ static bool write_le(std::ofstream& f, T val) {
 }
 
 template <typename T>
-static bool read_le(std::ifstream& f, T& out) {
+static bool read_le(std::istream& f, T& out) {
     uint8_t buf[sizeof(T)];
     f.read(reinterpret_cast<char*>(buf), (std::streamsize)sizeof(T));
     if (!f.good()) return false;
@@ -193,7 +195,7 @@ static bool read_le(std::ifstream& f, T& out) {
     return true;
 }
 
-static bool write_str(std::ofstream& f, const std::string& s) {
+static bool write_str(std::ostream& f, const std::string& s) {
     uint32_t len = (uint32_t)s.size();
     if (!write_le(f, len)) return false;
     if (len > 0) {
@@ -203,13 +205,14 @@ static bool write_str(std::ofstream& f, const std::string& s) {
     return true;
 }
 
-// Read a length-prefixed string.  A length above 256 MiB is rejected outright
-// as corruption; anything under that cap is resize()d before the read, so a
-// corrupt length can still make this allocate up to 256 MiB before it fails.
-static bool read_str(std::ifstream& f, std::string& out) {
+// Read a length-prefixed string, rejecting its size before allocation. Legacy
+// sections retain their 256 MiB ceiling; the authored-world caller supplies its
+// stricter 64 MiB payload limit.
+static bool read_str(std::istream& f, std::string& out,
+                     uint32_t max_length = 256u * 1024u * 1024u) {
     uint32_t len = 0;
     if (!read_le(f, len)) return false;
-    if (len > 256u * 1024u * 1024u) return false;  // sanity cap 256 MiB
+    if (len > max_length) return false;  // reject before allocation
     out.resize(len);
     if (len > 0) {
         f.read(&out[0], (std::streamsize)len);
@@ -223,7 +226,13 @@ static bool read_str(std::ifstream& f, std::string& out) {
 // ---------------------------------------------------------------------------
 
 // Read entire file into a buffer; returns empty on error.
-static std::vector<uint8_t> read_file_bytes(const std::string& path) {
+static std::vector<uint8_t> read_file_bytes(const std::string& path,
+                                             const matter::SourceSnapshot* sources = nullptr) {
+    if (sources) {
+        std::string text;
+        if (!sources->read(path, text)) return {};
+        return std::vector<uint8_t>(text.begin(), text.end());
+    }
     std::ifstream f(path, std::ios::binary | std::ios::ate);
     if (!f) return {};
     auto sz = f.tellg();
@@ -311,9 +320,10 @@ uint64_t compute_key(const std::string& world_path,
                      const std::string& root_params_json,
                      const std::string& objects_dir,
                      const std::string& project_shared_lib_dir,
-                     const std::string& engine_shared_lib_dir) {
+                     const std::string& engine_shared_lib_dir,
+                     const matter::SourceSnapshot* sources) {
     return compute_key(world_path, root_params_json, std::string(), objects_dir,
-                       project_shared_lib_dir, engine_shared_lib_dir);
+                       project_shared_lib_dir, engine_shared_lib_dir, sources);
 }
 
 // Fold every input that can change the resolved graph into one u64 key.
@@ -330,13 +340,15 @@ uint64_t compute_key(const std::string& world_path,
                      const std::string& scene_objects_dir,
                      const std::string& objects_dir,
                      const std::string& project_shared_lib_dir,
-                     const std::string& engine_shared_lib_dir) {
+                     const std::string& engine_shared_lib_dir,
+                     const matter::SourceSnapshot* sources) {
+    BAKE_SPAN("resolve-cache.key");
     // Start with FNV-1a offset basis.
     uint64_t h = 14695981039346656037ull;
 
     // 1. World JavaScript source bytes.
     {
-        auto bytes = read_file_bytes(world_path);
+        auto bytes = read_file_bytes(world_path, sources);
         if (bytes.empty()) return 0;  // can't compute key without world source
         uint64_t mh = part_asset::fnv1a64(bytes.data(), bytes.size());
         h ^= mh;
@@ -363,15 +375,26 @@ uint64_t compute_key(const std::string& world_path,
     tiers.push_back({"project-shared", &project_shared_lib_dir});
     tiers.push_back({"engine-shared", &engine_shared_lib_dir});
     for (const auto& tier : tiers) {
+        BAKE_SPAN(tier.first);
         h = fold_str(h, tier.first);
         const std::string* dir_ptr = tier.second;
         if (dir_ptr->empty()) continue;
         std::vector<std::string> rel_files;
-        collect_files_sorted(*dir_ptr, "", rel_files);
+        {
+            BAKE_SPAN("enumerate");
+            if (sources) {
+                for (const auto& path : sources->files_under(*dir_ptr))
+                    rel_files.push_back(std::filesystem::path(path).lexically_relative(
+                        std::filesystem::path(matter::SourceSnapshot::key(*dir_ptr))).generic_string());
+            } else collect_files_sorted(*dir_ptr, "", rel_files);
+        }
+        BAKE_COUNT("files", rel_files.size());
+        BAKE_SPAN("read-hash");
         std::sort(rel_files.begin(), rel_files.end());
         for (const auto& rel : rel_files) {
             std::string full = *dir_ptr + "/" + rel;
-            auto bytes = read_file_bytes(full);
+            auto bytes = read_file_bytes(full, sources);
+            BAKE_COUNT("source-bytes", bytes.size());
             uint64_t fh = bytes.empty() ? 0 : part_asset::fnv1a64(bytes.data(), bytes.size());
             h = fold_str(h, rel);
             h ^= fh;
@@ -428,18 +451,22 @@ static std::string resolve_cache_path(const std::string& cache_root,
 bool save(const std::string& cache_root,
           const std::string& world_name,
           uint64_t           cache_key,
-          const ResolveCachePayload& p) {
+          const ResolveCachePayload& p,
+          matter::CacheByteStorage* storage) {
     if (p.lights.local.records.size() >
         static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max()))
         return false;
 
     const std::string cache_dir = cache_root + "/cache";
-    fs_mkdir_rc(cache_dir.c_str());
+    if (!storage) fs_mkdir_rc(cache_dir.c_str());
 
     const std::string path = resolve_cache_path(cache_root, world_name);
     const std::string tmp  = path + ".tmp";
 
-    std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
+    std::ofstream disk;
+    std::ostringstream generated(std::ios::binary | std::ios::out);
+    if (!storage) disk.open(tmp, std::ios::binary | std::ios::trunc);
+    std::ostream& f = storage ? static_cast<std::ostream&>(generated) : disk;
     if (!f) return false;
 
     // Header.
@@ -611,10 +638,18 @@ bool save(const std::string& cache_root,
             if (!write_le(f, rh)) return false;
     }
 
-    f.close();
+    if (!write_str(f, p.authored_world)) return false;
+
+    if (!storage) disk.close();
+    else f.flush();
     if (!f.good() && !f.eof()) {
-        std::remove(tmp.c_str());
+        if (!storage) std::remove(tmp.c_str());
         return false;
+    }
+
+    if (storage) {
+        const auto encoded = generated.str();
+        return storage->publish(path, matter::CacheByteStorage::Bytes(encoded.begin(), encoded.end()));
     }
 
     // Atomic publish. NOT std::rename: on Windows rename FAILS when the target
@@ -647,9 +682,18 @@ bool save(const std::string& cache_root,
 bool load(const std::string& cache_root,
           const std::string& world_name,
           uint64_t           expected_key,
-          ResolveCachePayload& out) {
+          ResolveCachePayload& out,
+          matter::CacheByteStorage* storage) {
+    BAKE_SPAN("resolve-cache.load");
     const std::string path = resolve_cache_path(cache_root, world_name);
-    std::ifstream f(path, std::ios::binary);
+    std::ifstream disk;
+    std::istringstream generated(std::ios::binary | std::ios::in);
+    if (storage) {
+        const auto bytes = storage->open(path);
+        if (!bytes) return false;
+        generated.str(std::string(bytes->begin(), bytes->end()));
+    } else disk.open(path, std::ios::binary);
+    std::istream& f = storage ? static_cast<std::istream&>(generated) : disk;
     if (!f) return false;
 
     // Header validation.
@@ -666,6 +710,7 @@ bool load(const std::string& cache_root,
 
     // === instances ===
     {
+        BAKE_SPAN("resolve-cache.instances");
         uint32_t cnt = 0;
         if (!read_le(f, cnt)) return false;
         out.instances.resize(cnt);
@@ -681,6 +726,7 @@ bool load(const std::string& cache_root,
 
     // === lights ===
     {
+        BAKE_SPAN("resolve-cache.lights");
         auto& l = out.lights;
         for (int i = 0; i < 3; ++i) if (!read_le(f, l.sun_dir[i]))   return false;
         for (int i = 0; i < 3; ++i) if (!read_le(f, l.sun_color[i])) return false;
@@ -713,6 +759,7 @@ bool load(const std::string& cache_root,
 
     // === snapshot ===
     {
+        BAKE_SPAN("resolve-cache.snapshot");
         auto& snap = out.snapshot;
         snap.nodes.clear();
         snap.by_file.clear();
@@ -759,6 +806,7 @@ bool load(const std::string& cache_root,
 
     // === bake_plan ===
     {
+        BAKE_SPAN("resolve-cache.bake-plan");
         out.bake_plan.clear();
         // Read source dedup table.
         uint32_t src_count = 0;
@@ -857,6 +905,8 @@ bool load(const std::string& cache_root,
         for (uint32_t i = 0; i < rhc; ++i)
             if (!read_le(f, out.root_hashes[i])) return false;
     }
+
+    if (!read_str(f, out.authored_world, 64u * 1024u * 1024u)) return false;
 
     // Confirm we're at EOF (detect truncation of a valid header + too-short payload).
     {

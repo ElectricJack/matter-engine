@@ -4,7 +4,7 @@
 export const CASTLE_WING_DEFAULTS = Object.freeze({
   keep: Object.freeze({ width:12, depth:12, storeys:3 }),
   hall: Object.freeze({ width:14, depth:8, storeys:2 }),
-  chapel: Object.freeze({ width:6, depth:12, storeys:2 }),
+  chapel: Object.freeze({ width:6, depth:13, storeys:2 }),
   service: Object.freeze({ width:10, depth:6, storeys:1 }),
 });
 const rect = (x,z,width,depth) => ({x,z,width,depth});
@@ -91,16 +91,16 @@ function hall(plan) {
 function chapel(plan) {
   const g=plan.levels[0],u=plan.levels[1];
   g.rooms.push(room(0,'nave','Chapel nave','chapel',rect(2,0,4,9)),room(0,'stair','Choir stair','stair',rect(0,0,2,9)),
-    room(0,'chancel','Chancel','chapel',rect(0,9,6,3)));
+    room(0,'chancel','Chancel','chapel',rect(0,9,6,4)));
   connect(g,'nave-stair',[2,0],[2,3],'nave','stair'); connect(g,'nave-chancel',[2,9],[6,9],'nave','chancel');
-  u.rooms.push(room(1,'stair','Choir landing','stair',rect(0,0,2,9)),room(1,'choir','Organ and choir loft','gallery',rect(0,9,6,3)));
+  u.rooms.push(room(1,'stair','Choir landing','stair',rect(0,0,2,9)),room(1,'choir','Organ and choir loft','gallery',rect(0,9,6,4)));
   voidRoom(plan,1,'nave-air',rect(2,0,4,9),'nave');
   connect(u,'choir-stair',[0,9],[2,9],'stair','choir',true);
   edge(u,'choir-rail',[2,9],[6,9],null,{open:true,rail:true});
-  socket(plan,0,'south',[2,0],[6,0],'nave'); socket(plan,0,'north',[2,12],[6,12],'chancel');
+  socket(plan,0,'south',[2,0],[6,0],'nave'); socket(plan,0,'north',[2,13],[6,13],'chancel');
   socket(plan,0,'east',[6,3],[6,7],'nave'); socket(plan,0,'west',[0,9],[0,12],'chancel');
-  socket(plan,1,'north',[2,12],[6,12],'choir'); socket(plan,1,'east',[6,9],[6,12],'choir');
-  socket(plan,1,'west',[0,9],[0,12],'choir');
+  socket(plan,1,'north',[2,13],[6,13],'choir'); socket(plan,1,'east',[6,9],[6,13],'choir');
+  socket(plan,1,'west',[0,9],[0,13],'choir');
   plan.stairs.push({id:'choir-stair',lowerLevelId:'ground',upperLevelId:'upper',lowerRoomId:'ground-stair',upperRoomId:'upper-stair',
     width:1.2,tread:.25,maxRiser:.2,headroom:2.2,entryDirection:'N',exitDirection:'N',
     flights:[{id:'ascent',footprint:rect(.4,2.5,1.2,5),direction:'N',stepCount:20}],

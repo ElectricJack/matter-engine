@@ -37,7 +37,7 @@ struct ResidentPart {
 // Source resident geometry instead of decoding .part files.
 //
 // Without this, build() reads every unique part hash off disk into a private
-// BLASManager plus a TLASManager(65536) -- a second full copy of geometry the
+// BLASManager -- a second full copy of geometry the
 // caller usually already has in RAM, re-read on every rebuild, and rebuilds are
 // triggered by every sector publish. On a streaming world that is O(world) disk
 // I/O on the app thread. Returning true here skips all of it and points the
@@ -66,6 +66,14 @@ struct Hit {
     int   material_id = -1;      // registry index (TriEx materialId % 1000000), -1 if no TriEx
     float emission = 0.0f;       // MaterialRegistryGet(material_id)->emission (0 if id<0)
     float albedo[3] = {0.5f,0.5f,0.5f};
+    // TriEx tint of the hit triangle: rgb + blend strength against the material
+    // albedo, exactly as material_common.glsl's resolveBaseColor consumes it
+    // (`mix(albedo, tint.rgb, clamp(tint.a, 0, 1))`). (1,1,1,0) = no tint,
+    // which is also what an entry without TriEx reports.
+    float tint[4] = {1.0f,1.0f,1.0f,0.0f};
+    // MaterialRegistryGet(material_id)->emissionColor (0 if id<0), the colour
+    // that `emission` scales.
+    float emission_color[3] = {0.0f,0.0f,0.0f};
     uint32_t instance = 0xffffffffu;  // index into expanded instance table; 0xffffffff = miss
 };
 

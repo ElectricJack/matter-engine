@@ -1,0 +1,8 @@
+aq test: no interpreter found for /tmp/eager-nexus-71 (no .venv, no resources.test_interpreters entry); using /usr/bin/python3.12
+aq test: slot 2 of 6, -n 6
+$ /usr/bin/python3.12 -m pytest -n 6 --dist loadfile -m 'not perf and not migration and not slow and not tmux and not integration' /tmp/eager-nexus-71/test_characterization.py -q -s -k actual_surface_admission
+bringing up nodes...
+bringing up nodes...
+
+.
+1 passed in 2.04s

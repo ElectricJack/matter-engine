@@ -1,0 +1,52 @@
+{
+  "recorded_utc": "2026-09-15T19:13:45.240840+00:00",
+  "monitored_source_count": 77,
+  "source_mismatches": [],
+  "binary_mismatches": [],
+  "red_to_green_changes": [
+    "MatterEngine3/shaders_vk/vt_common.glsl"
+  ],
+  "green_to_integration_changes": [],
+  "validation_error_counts": {
+    "docs/agent/evidence/2026-09-15-material-identity/categorical-green-test-vt-surfaces.log": [
+      "0"
+    ],
+    "docs/agent/evidence/2026-09-15-material-identity/categorical-integration-test-compositor.log": [
+      "0"
+    ],
+    "docs/agent/evidence/2026-09-15-material-identity/categorical-integration-test-vt-input-snapshot.log": [
+      "0"
+    ],
+    "docs/agent/evidence/2026-09-15-material-identity/categorical-integration-test-surface-parallax.log": [
+      "0"
+    ],
+    "docs/agent/evidence/2026-09-15-material-identity/categorical-integration-test-vt-feedback.log": [
+      "0"
+    ],
+    "docs/agent/evidence/2026-09-15-material-identity/categorical-integration-test-vt-rt.log": [
+      "0"
+    ]
+  },
+  "binaries": {
+    "MatterEditor/build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe": "51147fe7289d24c2b249f279c4372417459dd93744af937f5bcda3e0c9830b12",
+    "MatterEditor/build/cmake/windows-msvc/relwithdebinfo/vt_compositor_tests.exe": "4078b4787bafb402c4da03979ea6a5b094b19dedc5c2c83b0b9379904af6740e",
+    "MatterEditor/build/windows-msvc/editor.exe": "5867a9bf04dd858027dc3bfa8c94256d8197af9f93f6e1400030924395f679f6"
+  },
+  "git_diff_check": {
+    "exit": 0,
+    "output": ""
+  },
+  "documents": {
+    "docs/superpowers/plans/2026-09-14-layered-surface-texturing.md": "acc1d3c476a30ee527662ac19cc217eadbb124d7506dd088780e5604e1040a52",
+    "docs/agent/evidence/2026-09-15-material-identity/README.md": "c45c1a67386f51f3e5272108e608a8acda9c2e397b8a62f55c8a4a0354af26a1"
+  },
+  "document_errors": [],
+  "isolated_patch": "/mnt/d/tmp/matter-vt/20260915-material-identity/material-identity.patch",
+  "isolated_patch_sha256": "6dba895e2a51b8906357e93a00699e23e62e221bd967b4e74262e82848ff20e1",
+  "archive_compared_files": [
+    "MatterEngine3/shaders_vk/vt_common.glsl",
+    "MatterEngine3/tests/vulkan_smoke_tests.cpp",
+    "cmake/MatterViewer.cmake",
+    "docs/superpowers/plans/2026-09-14-layered-surface-texturing.md"
+  ]
+}
