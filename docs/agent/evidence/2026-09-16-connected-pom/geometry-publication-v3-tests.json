@@ -1,0 +1,43 @@
+{
+  "binary_sha256": "c004c994705d85d49d9823346182d3fb73d6841094c2f2942db3ed8d2504a084",
+  "runs": [
+    {
+      "mode": "vt-queue",
+      "command": "$env:MATTER_VK_VALIDATION=\"1\"; $env:TMP=\"$env:LOCALAPPDATA\\Temp\"; $env:TEMP=$env:TMP; $env:MATTER_VK_SMOKE_MODE=\"vt-queue\"; Set-Location \"D:\\Shared With Desktop\\AI\\matter-engine-cpp\\MatterEditor\"; & \".\\build\\cmake\\windows-msvc\\relwithdebinfo\\vulkan_smoke_tests.exe\"; exit $LASTEXITCODE",
+      "exit": 0,
+      "expected_exit": 0,
+      "seconds": 1.8438942460052203,
+      "zero_validation_errors": true,
+      "log_sha256": "3829ec2e196a7eb55d280fe0c307bd7ab1decffe3a3b55628cdf3f1dcab56957"
+    },
+    {
+      "mode": "vt-input-snapshot",
+      "command": "$env:MATTER_VK_VALIDATION=\"1\"; $env:TMP=\"$env:LOCALAPPDATA\\Temp\"; $env:TEMP=$env:TMP; $env:MATTER_VK_SMOKE_MODE=\"vt-input-snapshot\"; Set-Location \"D:\\Shared With Desktop\\AI\\matter-engine-cpp\\MatterEditor\"; & \".\\build\\cmake\\windows-msvc\\relwithdebinfo\\vulkan_smoke_tests.exe\"; exit $LASTEXITCODE",
+      "exit": 0,
+      "expected_exit": 0,
+      "seconds": 65.1845481049968,
+      "zero_validation_errors": true,
+      "log_sha256": "dbba9a60eb135de56149b1b7801cffa4196b48c27d7b2bef53e3b4465a83fdfe"
+    },
+    {
+      "mode": "vt-composed-parallax",
+      "command": "$env:MATTER_VK_VALIDATION=\"1\"; $env:TMP=\"$env:LOCALAPPDATA\\Temp\"; $env:TEMP=$env:TMP; $env:MATTER_VK_SMOKE_MODE=\"vt-composed-parallax\"; Set-Location \"D:\\Shared With Desktop\\AI\\matter-engine-cpp\\MatterEditor\"; & \".\\build\\cmake\\windows-msvc\\relwithdebinfo\\vulkan_smoke_tests.exe\"; exit $LASTEXITCODE",
+      "exit": 0,
+      "expected_exit": 0,
+      "seconds": 17.973582462989725,
+      "zero_validation_errors": true,
+      "log_sha256": "a9a32e4c38058ee1fb5d0334ec8450b90385b8cc666e673dda5a768d0d8d18a6"
+    },
+    {
+      "mode": "vt-composed-seam",
+      "command": "$env:MATTER_VK_VALIDATION=\"1\"; $env:TMP=\"$env:LOCALAPPDATA\\Temp\"; $env:TEMP=$env:TMP; $env:MATTER_VK_SMOKE_MODE=\"vt-composed-seam\"; Set-Location \"D:\\Shared With Desktop\\AI\\matter-engine-cpp\\MatterEditor\"; & \".\\build\\cmake\\windows-msvc\\relwithdebinfo\\vulkan_smoke_tests.exe\"; exit $LASTEXITCODE",
+      "exit": 1,
+      "expected_exit": 1,
+      "seconds": 17.695412467001006,
+      "zero_validation_errors": true,
+      "log_sha256": "599e097d94b6b0c9f77ce995d9af446fcc0653adb2a11eaed2ddcf6839b49f1d"
+    }
+  ],
+  "source_changes": [],
+  "binary_unchanged": true
+}
