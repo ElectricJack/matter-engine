@@ -1,4 +1,6 @@
 #include "../include/mesh_charting.h"
+#include "../src/chart_packing_order.h"
+#include <numeric>
 #include <cstdio>
 #include <cmath>
 #include <limits>
@@ -172,7 +174,51 @@ static void test_pack_paged() {
     CHECK(pl.empty() && aw == 0 && ah == 0, "empty-input paged failure clears outputs");
 }
 
+static void test_portable_packing_order() {
+    int cases=0, forced_heap_cases=0;
+    for (int count : {0,1,2,31,32,33,40,41,42,127,223,1024,4096}) {
+        for (int pattern=0;pattern<6;++pattern) {
+            std::vector<mesh_charting::ChartRect> charts(static_cast<size_t>(count));
+            for (int i=0;i<count;++i) {
+                float height;
+                if (pattern==0) height=static_cast<float>(i+1);
+                else if (pattern==1) height=static_cast<float>(count-i);
+                else if (pattern==2) height=1.0f;
+                else if (pattern==3) height=static_cast<float>(i%7+1);
+                else if (pattern==4) height=static_cast<float>((i*37)%101+1);
+                else height=static_cast<float>((i<count/2?i:count-i)+1);
+                charts[static_cast<size_t>(i)]={0,0,1,height};
+            }
+            for (bool force_heap : {false,true}) {
+                std::vector<int> order(static_cast<size_t>(count));
+                std::iota(order.begin(),order.end(),0);
+                mesh_charting::detail::ChartPackingOrder{charts,order}.sort(0,count,force_heap?0:count);
+                std::vector<bool> seen(static_cast<size_t>(count),false);
+                for (int i=0;i<count;++i) {
+                    const int id=order[static_cast<size_t>(i)];
+                    if (id<0 || id>=count || seen[static_cast<size_t>(id)]) { CHECK(false, "packing order preserves every chart exactly once"); return; }
+                    seen[static_cast<size_t>(id)]=true;
+                    if (i>0 && charts[order[static_cast<size_t>(i-1)]].h<charts[id].h) { CHECK(false, "packing order preserves descending geometric height"); return; }
+                }
+                auto repeat=std::vector<int>(static_cast<size_t>(count));
+                std::iota(repeat.begin(),repeat.end(),0);
+                mesh_charting::detail::ChartPackingOrder{charts,repeat}.sort(0,count,force_heap?0:count);
+                if (order!=repeat) { CHECK(false, "packing order is repeatable"); return; }
+                // The insertion-size path retains equal-key construction order.
+                if (pattern==2 && count<=32) {
+                    for (int i=0;i<count;++i) if(order[static_cast<size_t>(i)]!=i) { CHECK(false, "small equal charts preserve construction order"); return; }
+                }
+                ++cases;
+                if (force_heap && count>32) ++forced_heap_cases;
+            }
+        }
+    }
+    std::printf("PASS: %d generic order/permutation/repeat guards; %d forced worst-case heap cases\n",cases,forced_heap_cases);
+    CHECK(cases==156 && forced_heap_cases==48, "packing-order threshold/fallback coverage stays complete");
+}
+
 int main(){
+    test_portable_packing_order();
     test_adjacency_quad(); test_segment_one_chart();
     test_adjacency_non_manifold_stays_symmetric();
     test_surface_adjacency();

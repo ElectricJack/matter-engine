@@ -1,0 +1,4 @@
+# Preserve downloaded artifact bytes for SHA-256 verification.
+ctest.xml -text -diff
+native-windows.log -text -diff
+toolchain.json -text -diff

@@ -28,9 +28,9 @@ if(CMAKE_SOURCE_DIR STREQUAL MATTER_REPOSITORY_ROOT)
         list(REMOVE_DUPLICATES editor_sources_unique)
         list(LENGTH editor_sources editor_count)
         list(LENGTH editor_sources_unique editor_unique_count)
-        if(NOT editor_count EQUAL 47 OR NOT editor_unique_count EQUAL 47)
+        if(NOT editor_count EQUAL 48 OR NOT editor_unique_count EQUAL 48)
             message(FATAL_ERROR
-                "editor source census is wrong: count=${editor_count}, unique=${editor_unique_count}, expected=47")
+                "editor source census is wrong: count=${editor_count}, unique=${editor_unique_count}, expected=48")
         endif()
         assert_list_contains("${editor_sources}" MatterEditor/src/agent_protocol.cpp
             "editor agent protocol source is missing")
@@ -48,7 +48,7 @@ if(CMAKE_SOURCE_DIR STREQUAL MATTER_REPOSITORY_ROOT)
         get_target_property(headless_surface_sources matter_engine_surface_objects SOURCES)
         list(LENGTH headless_core_sources headless_core_count)
         list(LENGTH headless_surface_sources headless_surface_count)
-        if(NOT headless_core_count EQUAL 159 OR NOT headless_surface_count EQUAL 21)
+        if(NOT headless_core_count EQUAL 170 OR NOT headless_surface_count EQUAL 21)
             message(FATAL_ERROR
                 "accepted headless graph changed: core=${headless_core_count}, surface=${headless_surface_count}")
         endif()
@@ -79,9 +79,9 @@ if(CMAKE_SOURCE_DIR STREQUAL MATTER_REPOSITORY_ROOT)
         list(LENGTH viewer_sources viewer_count)
         list(LENGTH viewer_sources_unique viewer_unique_count)
         if(MATTER_EXPECT_RETOPO)
-            set(expected_viewer_count 208)
+            set(expected_viewer_count 234)
         else()
-            set(expected_viewer_count 207)
+            set(expected_viewer_count 233)
         endif()
         foreach(required_source IN ITEMS
                 MatterEngine3/src/projected_face_cache.cpp
@@ -89,8 +89,10 @@ if(CMAKE_SOURCE_DIR STREQUAL MATTER_REPOSITORY_ROOT)
                 MatterEngine3/src/finite_surface_stamp.cpp
                 MatterEngine3/src/part_surface.cpp
                 MatterEngine3/src/render/gpu_meshing/gpu_face_material_vk.cpp
+                libs/MatterGraphics/src/native/mesh_raster.cpp
+                libs/MatterGraphics/src/native/mesh_pipelines.cpp
                 MatterEngine3/src/render/vt_compositor.cpp
-                MatterEngine3/src/render/vt_residency.cpp)
+                libs/MatterGraphics/src/native/vt/vt_residency.cpp)
             assert_list_contains("${viewer_sources}" "${required_source}"
                 "viewer surface preparation/composition source is missing")
         endforeach()
@@ -184,4 +186,4 @@ foreach(retopo IN ITEMS ON OFF)
     endif()
 endforeach()
 
-message(STATUS "viewer graph preserves 47-source editor, isolated 159+21 headless, and coherent 207/208-source viewer boundaries")
+message(STATUS "viewer graph preserves 48-source editor, isolated 170+21 headless, and coherent 232/233-source viewer boundaries")

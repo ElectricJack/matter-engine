@@ -60,7 +60,7 @@ inline constexpr float kLightingSunsetDirectRatioDefault = 0.25f;
 // The live lighting layer the user edits — one per session, sitting on top of
 // whatever the world authored. Plain data, no Vulkan handles.
 //
-// MEMBER ORDER IS LOAD-BEARING. src/render/vk_lighting_controls.cpp
+// MEMBER ORDER IS LOAD-BEARING. libs/MatterGraphics/src/native/vk_lighting_controls.cpp
 // aggregate-initializes this POSITIONALLY as
 // `sanitize_vulkan_lighting_overrides({1, 1, 1, exposure_ev})`, which relies
 // on exposure_ev being the FOURTH declared member. Inserting or reordering a
