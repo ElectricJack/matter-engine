@@ -175,6 +175,8 @@ struct Snapshot {
     flecs::entity_t owner = 0;
     SectorStreamingStatus status{};
     SectorStreamingError error{};
+    // Internal full-disc readiness, independent of view culling/dispatchability.
+    size_t pending_sectors = 0;
 };
 
 // Fixed, non-allocating admission claims shared by WorldSession and focused

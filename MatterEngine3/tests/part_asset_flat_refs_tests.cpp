@@ -1,5 +1,6 @@
 #include "part_asset_v2.h"
 #include "part_bundle.h"
+#include "memory_fixture_io.h"
 #include "../../libs/MatterSurfaceLib/include/blas_manager.hpp"
 #include "../../libs/MatterSurfaceLib/include/tlas_manager.hpp"
 #include "../../libs/MatterSurfaceLib/include/material_registry.h"
@@ -50,9 +51,11 @@ void expect_rejected(const std::vector<uint8_t>& bytes, bool rehash = true) {
 }
 
 int main() {
+    auto storage = std::make_shared<matter::test::MemoryCacheByteStorage>();
+    part_bundle::ScopedStorage scope(storage);
     using namespace part_asset;
     std::puts("Validated FLAT reference scan: parity, corruption, emitter compatibility");
-    std::remove(kPath);
+    storage->erase(kPath);
     MaterialDef sentinel{};
     MaterialRegistryDefaultDynamicDef(&sentinel);
     const char* sentinel_name = "flat-refs-registry-sentinel";
@@ -151,7 +154,7 @@ int main() {
     std::vector<FlatCluster> loaded_clusters;
     std::vector<VolumeEmitter> emitters;
     CHECK(!load_flat_v3(kPath, kHash, loaded, loaded_instances, loaded_clusters, unchanged, emitters), "emitter overload rejects missing emitter count");
-    std::remove(kPath);
+    storage->erase(kPath);
     std::printf("FLAT reference scan: %s\n", g_failures ? "FAIL" : "PASS");
     return g_failures ? 1 : 0;
 }

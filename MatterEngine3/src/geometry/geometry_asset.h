@@ -22,7 +22,8 @@ struct CachedAsset {
     std::vector<NodeView> roots;
 };
 // One retained index and aggregate root-payload budget per PartStore, shared by
-// concurrent staging jobs. Pinned roots remain charged across cache eviction.
+// concurrent staging jobs. The payload bank is lazy; constructing an inactive
+// PartStore reserves no root bytes. Pinned roots remain charged across eviction.
 class RootCache {
 public:
     explicit RootCache(std::string directory, uint64_t bytes = 16ull << 20);
