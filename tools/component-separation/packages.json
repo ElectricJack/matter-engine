@@ -1,0 +1,579 @@
+{
+  "schema": "matter.component-packages.v1",
+  "description": "Local redistributable packages for the audited components. package_components.py builds each native package standalone from its source directory, stages only its own archives and public headers, and rejects a package whose third-party inputs, cross-package links or notices disagree with this file or rules.json. Nothing here is published to a registry.",
+  "notices": {
+    "raylib": {
+      "path": "third_party/raylib/LICENSE",
+      "mode": "full",
+      "covers": [
+        "third_party/raylib/src/raylib.h"
+      ],
+      "note": "header only: POD Vector/Mesh declarations read by in-place MatterSurfaceLib sources; no raylib code is linked"
+    },
+    "stb_image": {
+      "path": "third_party/raylib/src/external/stb_image.h",
+      "mode": "stb_mit",
+      "covers": [
+        "third_party/raylib/src/external/stb_image.h"
+      ]
+    },
+    "stb_image_write": {
+      "path": "third_party/raylib/src/external/stb_image_write.h",
+      "mode": "stb_mit",
+      "covers": [
+        "third_party/raylib/src/external/stb_image_write.h"
+      ]
+    },
+    "quickjs_ng": {
+      "stager": "quickjs_ng",
+      "covers": [
+        "third_party/quickjs-ng/"
+      ]
+    },
+    "vulkan_headers": {
+      "stager": "vulkan_headers",
+      "covers": [
+        "third_party/Vulkan-Headers/"
+      ]
+    },
+    "three": {
+      "path": "integrations/web-procedural/viewer/vendor/three/LICENSE",
+      "mode": "full",
+      "covers": [
+        "vendor/three/"
+      ]
+    },
+    "emscripten": {
+      "sdk": "upstream/emscripten/LICENSE",
+      "mode": "full",
+      "covers": [
+        "emscripten runtime"
+      ]
+    },
+    "musl": {
+      "sdk": "upstream/emscripten/system/lib/libc/musl/COPYRIGHT",
+      "mode": "full",
+      "covers": [
+        "libc"
+      ]
+    },
+    "libcxx": {
+      "sdk": "upstream/emscripten/system/lib/libcxx/LICENSE.TXT",
+      "mode": "full",
+      "covers": [
+        "libc++"
+      ]
+    },
+    "libcxxabi": {
+      "sdk": "upstream/emscripten/system/lib/libcxxabi/LICENSE.TXT",
+      "mode": "full",
+      "covers": [
+        "libc++abi"
+      ]
+    },
+    "compiler_rt": {
+      "sdk": "upstream/emscripten/system/lib/compiler-rt/LICENSE.TXT",
+      "mode": "full",
+      "covers": [
+        "compiler-rt"
+      ]
+    }
+  },
+  "native": [
+    {
+      "name": "matter-contracts",
+      "component": "contracts",
+      "source": "libs/MatterContracts",
+      "targets": [
+        "matter_contracts"
+      ],
+      "public_targets": [
+        "matter_contracts"
+      ],
+      "include_dirs": [
+        "libs/MatterContracts/include",
+        "libs/MathLib/include"
+      ],
+      "docs": [
+        "libs/MatterContracts/README.md",
+        "libs/MatterContracts/SERVICES.md"
+      ],
+      "examples": [
+        "libs/MatterContracts/examples/ordered-csg.recipe.json",
+        "libs/MatterContracts/examples/repeated-assembly.asset.json",
+        "libs/MatterContracts/examples/contracts.mjs"
+      ],
+      "notices": [],
+      "consumer": {
+        "programs": [
+          {
+            "name": "contracts_consumer",
+            "sources": [
+              "libs/MatterContracts/tests/contracts_tests.cpp"
+            ],
+            "links": [
+              "matter::contracts"
+            ],
+            "headers": [
+              "libs/MatterContracts/tests/fixtures.h"
+            ]
+          }
+        ],
+        "runs": [
+          [
+            "contracts_consumer"
+          ]
+        ]
+      }
+    },
+    {
+      "name": "matter-geometry",
+      "component": "geometry",
+      "source": "libs/ProceduralGeometry",
+      "targets": [
+        "matter_geometry",
+        "matter_geometry_field"
+      ],
+      "public_targets": [
+        "matter_geometry",
+        "matter_geometry_field"
+      ],
+      "include_dirs": [
+        "libs/ProceduralGeometry/include"
+      ],
+      "docs": [
+        "libs/ProceduralGeometry/README.md"
+      ],
+      "examples": [
+        "libs/ProceduralGeometry/examples/direct_recipe.cpp"
+      ],
+      "notices": [
+        "raylib"
+      ],
+      "consumer": {
+        "programs": [
+          {
+            "name": "geometry_consumer",
+            "sources": [
+              "libs/ProceduralGeometry/examples/direct_recipe.cpp"
+            ],
+            "links": [
+              "matter::geometry"
+            ]
+          }
+        ],
+        "runs": [
+          [
+            "geometry_consumer"
+          ]
+        ]
+      }
+    },
+    {
+      "name": "matter-geometry-c",
+      "component": "geometry_c",
+      "source": "bindings/geometry-c",
+      "targets": [
+        "matter_geometry_c"
+      ],
+      "public_targets": [
+        "matter_geometry_c"
+      ],
+      "include_dirs": [
+        "bindings/geometry-c/include"
+      ],
+      "docs": [
+        "bindings/geometry-c/README.md"
+      ],
+      "examples": [
+        "bindings/geometry-c/tests/consumer.c",
+        "bindings/geometry-c/tests/requests.json",
+        "bindings/geometry-c/tests/Fixtures.cmake"
+      ],
+      "notices": [],
+      "consumer": {
+        "programs": [
+          {
+            "name": "geometry_c_consumer",
+            "sources": [
+              "bindings/geometry-c/tests/consumer.c"
+            ],
+            "links": [
+              "matter::geometry_c"
+            ],
+            "copy": [
+              "bindings/geometry-c/tests/requests.json"
+            ],
+            "c_standard": 11
+          }
+        ],
+        "runs": [
+          [
+            "geometry_c_consumer"
+          ]
+        ],
+        "cmake_include": "bindings/geometry-c/tests/Fixtures.cmake"
+      }
+    },
+    {
+      "name": "matter-terrain",
+      "component": "terrain",
+      "source": "libs/TerrainGeneration",
+      "version": "0.1.0",
+      "cmake": {
+        "MATTER_TERRAIN_BUILD_EXAMPLES": "OFF"
+      },
+      "targets": [
+        "matter_terrain"
+      ],
+      "public_targets": [
+        "matter_terrain"
+      ],
+      "include_dirs": [
+        "libs/TerrainGeneration/include"
+      ],
+      "docs": [
+        "libs/TerrainGeneration/README.md"
+      ],
+      "examples": [
+        "libs/TerrainGeneration/tests/examples/terrain_headless_tool.cpp",
+        "libs/TerrainGeneration/tests/examples/terrain_product_consumer.cpp",
+        "libs/TerrainGeneration/tests/examples/terrain_example_tiles.h"
+      ],
+      "notices": [],
+      "consumer": {
+        "programs": [
+          {
+            "name": "terrain_tool",
+            "sources": [
+              "libs/TerrainGeneration/tests/examples/terrain_headless_tool.cpp"
+            ],
+            "headers": [
+              "libs/TerrainGeneration/tests/examples/terrain_example_tiles.h"
+            ],
+            "links": [
+              "matter::terrain"
+            ]
+          },
+          {
+            "name": "terrain_consumer",
+            "sources": [
+              "libs/TerrainGeneration/tests/examples/terrain_product_consumer.cpp"
+            ],
+            "links": [
+              "matter::contracts"
+            ]
+          }
+        ],
+        "runs": [
+          [
+            "terrain_tool",
+            "{work}/terrain-package"
+          ],
+          [
+            "terrain_consumer",
+            "{work}/terrain-package"
+          ]
+        ]
+      }
+    },
+    {
+      "name": "matter-build",
+      "component": "build",
+      "source": "libs/ProceduralBuild",
+      "version": "0.1.0",
+      "targets": [
+        "matter_build"
+      ],
+      "public_targets": [
+        "matter_build"
+      ],
+      "include_dirs": [
+        "libs/ProceduralBuild/include"
+      ],
+      "docs": [
+        "libs/ProceduralBuild/README.md"
+      ],
+      "examples": [],
+      "notices": [],
+      "consumer": {
+        "programs": [
+          {
+            "name": "build_consumer",
+            "sources": [
+              "libs/ProceduralBuild/tests/coordinator_tests.cpp"
+            ],
+            "links": [
+              "matter::build",
+              "Threads::Threads"
+            ]
+          }
+        ],
+        "runs": [
+          [
+            "build_consumer",
+            "graph"
+          ],
+          [
+            "build_consumer",
+            "source_graph"
+          ],
+          [
+            "build_consumer",
+            "cache_keys"
+          ],
+          [
+            "build_consumer",
+            "cache"
+          ],
+          [
+            "build_consumer",
+            "controls"
+          ],
+          [
+            "build_consumer",
+            "budgets"
+          ]
+        ]
+      }
+    },
+    {
+      "name": "matter-asset-pipeline",
+      "component": "asset_pipeline",
+      "source": "libs/AssetPipeline",
+      "targets": [
+        "matter_asset_archive",
+        "matter_asset_surface",
+        "matter_asset_surface_native",
+        "matter_asset_prepared",
+        "matter_asset_storage",
+        "matter_asset_gltf",
+        "matter_asset_legacy",
+        "matter_asset_lod_kernels",
+        "matter_asset_lod"
+      ],
+      "public_targets": [
+        "matter_asset_archive",
+        "matter_asset_surface",
+        "matter_asset_surface_native",
+        "matter_asset_prepared",
+        "matter_asset_storage",
+        "matter_asset_gltf",
+        "matter_asset_legacy",
+        "matter_asset_lod"
+      ],
+      "aggregate": "matter_asset_pipeline",
+      "include_dirs": [
+        "libs/AssetPipeline/include"
+      ],
+      "docs": [
+        "libs/AssetPipeline/README.md"
+      ],
+      "examples": [],
+      "notices": [
+        "raylib",
+        "stb_image",
+        "stb_image_write"
+      ],
+      "consumer": {
+        "programs": [
+          {
+            "name": "asset_pipeline_consumer",
+            "sources": [
+              "libs/AssetPipeline/tests/asset_tests.cpp"
+            ],
+            "links": [
+              "matter::asset_pipeline"
+            ],
+            "definitions": [
+              "MATTER_ASSET_STORAGE=1",
+              "MATTER_ASSET_GLTF=1",
+              "MATTER_ASSET_LEGACY=1",
+              "MATTER_ASSET_LOD=1"
+            ]
+          }
+        ],
+        "runs": [
+          [
+            "asset_pipeline_consumer",
+            "archive"
+          ],
+          [
+            "asset_pipeline_consumer",
+            "prepared"
+          ],
+          [
+            "asset_pipeline_consumer",
+            "cache_settings"
+          ],
+          [
+            "asset_pipeline_consumer",
+            "lod"
+          ],
+          [
+            "asset_pipeline_consumer",
+            "lod_failures"
+          ],
+          [
+            "asset_pipeline_consumer",
+            "storage"
+          ],
+          [
+            "asset_pipeline_consumer",
+            "gltf"
+          ],
+          [
+            "asset_pipeline_consumer",
+            "external"
+          ],
+          [
+            "asset_pipeline_consumer",
+            "malformed"
+          ],
+          [
+            "asset_pipeline_consumer",
+            "materials"
+          ],
+          [
+            "asset_pipeline_consumer",
+            "legacy"
+          ]
+        ]
+      }
+    },
+    {
+      "name": "matter-graphics",
+      "component": "graphics",
+      "source": "libs/MatterGraphics",
+      "variant": "headless",
+      "targets": [
+        "matter_graphics"
+      ],
+      "public_targets": [
+        "matter_graphics"
+      ],
+      "include_dirs": [
+        "libs/MatterGraphics/include"
+      ],
+      "exclude_headers": [
+        "matter/graphics/vulkan_composition.h",
+        "matter/graphics/vulkan_raster.h",
+        "matter/graphics/vulkan_resources.h",
+        "matter/graphics/dlss_mode.h"
+      ],
+      "docs": [
+        "libs/MatterGraphics/README.md",
+        "libs/MatterGraphics/INTEGRATION.md",
+        "libs/MatterGraphics/RENDERING.md",
+        "libs/MatterGraphics/examples/README.md"
+      ],
+      "examples": [],
+      "notices": [],
+      "consumer": {
+        "programs": [
+          {
+            "name": "graphics_consumer",
+            "sources": [
+              "libs/MatterGraphics/tests/graphics_tests.cpp"
+            ],
+            "links": [
+              "matter::graphics"
+            ],
+            "headers": [
+              "libs/MatterGraphics/tests/imported_asset_fixture.h"
+            ]
+          }
+        ],
+        "runs": [
+          [
+            "graphics_consumer"
+          ]
+        ]
+      }
+    },
+    {
+      "name": "matter-host-quickjs",
+      "component": "host_quickjs",
+      "source": "MatterEngine3/src/script/portable_host",
+      "version": "0.1.0",
+      "targets": [
+        "matter_host_quickjs",
+        "matter_quickjs"
+      ],
+      "public_targets": [
+        "matter_host_quickjs"
+      ],
+      "include_dirs": [
+        "MatterEngine3/src/script/portable_host/include"
+      ],
+      "docs": [
+        "MatterEngine3/src/script/portable_host/README.md"
+      ],
+      "examples": [],
+      "notices": [
+        "quickjs_ng"
+      ],
+      "system_links": [
+        "m",
+        "Threads::Threads",
+        "${CMAKE_DL_LIBS}"
+      ],
+      "consumer": {
+        "programs": [
+          {
+            "name": "host_quickjs_consumer",
+            "sources": [
+              "MatterEngine3/src/script/portable_host/tests/host_tests.cpp"
+            ],
+            "links": [
+              "matter::host_quickjs",
+              "Threads::Threads"
+            ]
+          }
+        ],
+        "runs": [
+          [
+            "host_quickjs_consumer"
+          ]
+        ]
+      }
+    }
+  ],
+  "javascript": [
+    {
+      "name": "@matter/authoring",
+      "component": "authoring",
+      "source": "packages/matter-authoring",
+      "notices": []
+    },
+    {
+      "name": "@matter/procedural-wasm",
+      "component": "geometry_c",
+      "source": "web/matter-procedural-wasm",
+      "built_by": "web/matter-procedural-wasm/build.py",
+      "notices": [
+        "raylib",
+        "emscripten",
+        "musl",
+        "libcxx",
+        "libcxxabi",
+        "compiler_rt"
+      ]
+    },
+    {
+      "name": "matter-web-demo",
+      "component": "web_procedural",
+      "source": "integrations/web-procedural/viewer",
+      "built_by": "matter_web_demo",
+      "notices": [
+        "raylib",
+        "emscripten",
+        "musl",
+        "libcxx",
+        "libcxxabi",
+        "compiler_rt",
+        "three"
+      ]
+    }
+  ]
+}

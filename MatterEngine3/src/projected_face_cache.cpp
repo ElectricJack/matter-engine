@@ -118,7 +118,7 @@ bool validate_projected_face(const FaceJob &j, const FacePatch &p, Error &e,
 }
 
 bool load_projected_face(const std::string &path, const FaceJob &j, FacePatch &out, Error &e,
-                         const BuildControl &control) {
+                         const BuildControl &control, matter::CacheByteStorage *storage) {
     e = {};
     if (!current(j, control, e)) return false;
     try {
@@ -126,19 +126,32 @@ bool load_projected_face(const std::string &path, const FaceJob &j, FacePatch &o
         if (!expected(j, candidate, e)) return false;
         const auto h = header(candidate);
         const auto size = kHeaderBytes + std::size_t(candidate.layout.width) * candidate.layout.height * kRecordBytes;
-        std::ifstream file(path, std::ios::binary | std::ios::ate);
-        if (!file) return fail(e, ErrorCode::ArtifactFailure, "finite face cache unavailable");
-        if (file.tellg() != std::streamoff(size))
-            return fail(e, ErrorCode::ArtifactFailure, "finite face cache size mismatch");
         // Admit size and the complete physical recipe before allocating payload.
         Bytes bytes(kHeaderBytes);
-        file.seekg(0); file.read(reinterpret_cast<char *>(bytes.data()), kHeaderBytes);
-        if (!file || !std::equal(h.begin(), h.begin() + kChecksumOffset, bytes.begin()))
-            return fail(e, ErrorCode::ArtifactFailure, "finite face cache recipe/header mismatch");
-        bytes.resize(size);
-        file.read(reinterpret_cast<char *>(bytes.data() + kHeaderBytes), std::streamsize(size - kHeaderBytes));
-        file.close();
-        if (!file || checksum(bytes) != read64(bytes.data() + kChecksumOffset))
+        if (storage) {
+            const auto source = storage->open(path);
+            if (!source) return fail(e, ErrorCode::ArtifactFailure, "finite face cache unavailable");
+            if (source->size() != size)
+                return fail(e, ErrorCode::ArtifactFailure, "finite face cache size mismatch");
+            std::copy_n(source->begin(), kHeaderBytes, bytes.begin());
+            if (!std::equal(h.begin(), h.begin() + kChecksumOffset, bytes.begin()))
+                return fail(e, ErrorCode::ArtifactFailure, "finite face cache recipe/header mismatch");
+            bytes.resize(size);
+            std::copy(source->begin() + kHeaderBytes, source->end(), bytes.begin() + kHeaderBytes);
+        } else {
+            std::ifstream file(path, std::ios::binary | std::ios::ate);
+            if (!file) return fail(e, ErrorCode::ArtifactFailure, "finite face cache unavailable");
+            if (file.tellg() != std::streamoff(size))
+                return fail(e, ErrorCode::ArtifactFailure, "finite face cache size mismatch");
+            file.seekg(0); file.read(reinterpret_cast<char *>(bytes.data()), kHeaderBytes);
+            if (!file || !std::equal(h.begin(), h.begin() + kChecksumOffset, bytes.begin()))
+                return fail(e, ErrorCode::ArtifactFailure, "finite face cache recipe/header mismatch");
+            bytes.resize(size);
+            file.read(reinterpret_cast<char *>(bytes.data() + kHeaderBytes), std::streamsize(size - kHeaderBytes));
+            file.close();
+            if (!file) return fail(e, ErrorCode::ArtifactFailure, "finite face cache checksum/read failure");
+        }
+        if (checksum(bytes) != read64(bytes.data() + kChecksumOffset))
             return fail(e, ErrorCode::ArtifactFailure, "finite face cache checksum/read failure");
         candidate.texels.resize(std::size_t(candidate.layout.width) * candidate.layout.height);
         for (std::size_t i = 0; i < candidate.texels.size(); ++i) {
@@ -158,7 +171,7 @@ bool load_projected_face(const std::string &path, const FaceJob &j, FacePatch &o
     }
 }
 bool save_projected_face(const std::string &path, const FaceJob &j, const FacePatch &p, Error &e,
-                         const BuildControl &control) {
+                         const BuildControl &control, matter::CacheByteStorage *storage) {
     e = {};
     if (!current(j, control, e)) return false;
     try {
@@ -178,6 +191,11 @@ bool save_projected_face(const std::string &path, const FaceJob &j, const FacePa
         const auto sum = checksum(bytes);
         for (unsigned b = 0; b < 8; ++b) bytes[kChecksumOffset + b] = std::uint8_t(sum >> (8 * b));
         if (!current(j, control, e)) return false;
+        if (storage) {
+            if (!storage->publish(path, bytes))
+                return fail(e, ErrorCode::ArtifactFailure, "face cache atomic replacement failed");
+            return current(j, control, e);
+        }
         Staging staging;
         if (!staging.create(path)) return fail(e, ErrorCode::ArtifactFailure, "face cache staging unavailable");
         std::ofstream file(staging.file, std::ios::binary | std::ios::trunc);
@@ -193,11 +211,12 @@ bool save_projected_face(const std::string &path, const FaceJob &j, const FacePa
     }
 }
 bool load_or_project_face(const std::string &path, const FaceJob &j, const SolidFaceProjector &project,
-                          FacePatch &out, FaceCacheStats &stats, Error &e, const BuildControl &control) {
+                          FacePatch &out, FaceCacheStats &stats, Error &e, const BuildControl &control,
+                          matter::CacheByteStorage *storage) {
     stats = {};
     FacePatch candidate;
     auto start = Clock::now();
-    stats.hit = load_projected_face(path, j, candidate, e, control);
+    stats.hit = load_projected_face(path, j, candidate, e, control, storage);
     stats.read_ms = elapsed(start);
     if (!stats.hit && e.code != ErrorCode::ArtifactFailure) return false;
     if (!current(j, control, e)) return false;
@@ -207,7 +226,7 @@ bool load_or_project_face(const std::string &path, const FaceJob &j, const Solid
         if (!project(j, candidate, stats.projection, e, control)) return false;
         if (!current(j, control, e)) return false;
         start = Clock::now();
-        if (!save_projected_face(path, j, candidate, e, control)) return false;
+        if (!save_projected_face(path, j, candidate, e, control, storage)) return false;
         stats.write_ms = elapsed(start);
     }
     if (!current(j, control, e)) return false;

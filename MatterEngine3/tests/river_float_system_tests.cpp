@@ -900,7 +900,7 @@ void add_phase_probe(flecs::world& world,
         .each([&, value](PhaseProbe) {
             if (count < trace.size()) trace[count++] = value;
         });
-    system.add<ecs::FixedPipelineSystem>();
+    system.template add<ecs::FixedPipelineSystem>();
 }
 
 void test_exact_fixed_phase_order() {
@@ -1107,8 +1107,12 @@ void test_steady_state_has_zero_observed_allocations() {
             "matter::physics::MatterRiverFloatMeasurementEnd");
         const flecs::entity real_system = runtime.world().lookup(
             "matter::physics::MatterRiverFloatForces");
-        CHECK(!old_begin.is_alive() && !old_end.is_alive() &&
-                  real_system.is_alive(),
+        // lookup returns entity 0 for an absent name; ecs_is_alive requires a
+        // nonzero entity. Retain the absence and real-system guards without
+        // asking Flecs to validate that sentinel.
+        CHECK((!old_begin || !old_begin.is_alive()) &&
+                  (!old_end || !old_end.is_alive()) &&
+                  real_system && real_system.is_alive(),
               "allocation hook brackets inside the single real float-system callback");
         for (int i = 0; i < 1000; ++i) {
             const auto result = runtime.tick({1.0f / 60.0f, 1.0f / 60.0f, 1});
@@ -1176,7 +1180,9 @@ int main() {
     test_dry_waterfall_reentry_and_caps();
     test_nonfinite_inputs_fail_closed();
     test_quaternion_normalization_matches_physics_context();
+#ifdef MATTER_CODEC_SOURCE_QUALIFICATION
     test_legacy_makefile_river_float_source_closures();
+#endif
     test_invalid_disable_generation_and_dry_ruling();
     test_post_kernel_publication_swap_guards_queued_forces();
     test_publication_waits_for_entire_guarded_force_batch();
