@@ -521,9 +521,9 @@ if(BUILD_TESTING)
     matter_add_engine_cpu_test(gi_bake_tests
         MatterEngine3/tests/gi_bake_tests.cpp)
     matter_add_engine_cpu_test(local_light_index_tests
-        MatterEngine3/tests/local_light_index_tests.cpp)
+        libs/MatterGraphics/tests/native/local_light_index_tests.cpp)
     matter_add_engine_cpu_test(primary_light_culling_tests
-        MatterEngine3/tests/primary_light_culling_tests.cpp)
+        libs/MatterGraphics/tests/native/primary_light_culling_tests.cpp)
     matter_add_engine_cpu_test(resolve_cache_tests
         MatterEngine3/tests/resolve_cache_tests.cpp)
     matter_add_engine_cpu_test(authored_world_cache_tests
@@ -936,7 +936,7 @@ if(BUILD_TESTING)
         MatterEngine3/src/render/gpu_meshing/water_scene_part.cpp)
     matter_add_engine_cpu_test(gpu_water_animation_render_tests
         MatterEngine3/tests/gpu_water_animation_render_tests.cpp
-        MatterEngine3/src/render/water_animation_gpu.cpp)
+        libs/MatterGraphics/src/native/water_animation_gpu.cpp)
     matter_add_engine_cpu_test(water_field_vk_tests
         MatterEngine3/tests/water_field_vk_tests.cpp)
     matter_add_engine_cpu_test(water_surface_reference_tests

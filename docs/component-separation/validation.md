@@ -16,11 +16,41 @@ node projects/world_demo/tests/castle_plan_tests.mjs
 node projects/world_demo/tests/mountain_geometry_site_tests.mjs
 node projects/world_demo/tests/mountain_terrain_only_tests.mjs
 node tests/vt_normal_frame_reference_tests.mjs
+python3 tools/ci-component-matrix.py --jobs 2 --emsdk ~/emsdk --require wasm
 ```
 
-The source-manifest unit tests pass, but the repository manifest gate fails at
-the pinned commit: tracked `libs/MemoryLib/src/mem_bank.c` is unclassified.
-Keep that pre-existing failure visible until its owning build task repairs it.
+`tools/ci-component-matrix.py` (task `.9.5`) is the component build matrix.
+Each extracted configuration configures, builds and tests from its own
+directory: neutral contracts, headless geometry, graphics-only, terrain-only,
+build, asset pipeline, the geometry C binding, the portable QuickJS host and
+the two engine adapters. It then runs the source-manifest, dependency/ownership
+and fixture gates and the WASM geometry smoke, which uses the native C consumer
+as its oracle. The command and its NOT RUN rules are documented in
+`tools/component-separation/README.md` ("CI"). The hosted `component-matrix`
+job in `.github/workflows/tests.yml` runs it without an Emscripten or Vulkan
+SDK, so the WASM gate and the `graphics/vulkan` probe are NOT RUN there.
+
+Two checker results were red at `.9.5` until their moves landed; neither was
+waived:
+
+- `repository/-/compiled-twice`: `terrain_field.cpp` was compiled by both
+  `asset_pipeline` (`matter_asset_surface_runtime`) and `terrain`. Task `.9.11`
+  moved the field kernel into geometry's `matter_geometry_field`, which both
+  link, so the asset pipeline no longer lists the terrain source or headers.
+- `graphics/vulkan/build`, seen only where the Vulkan SDK is available (lavapipe
+  with `--host-cache`): `matter_graphics_environment` referenced resource
+  helpers that only the host defined. Task `.9.12` moved `vk_resources.cpp` and
+  the device-lifetime registry into `libs/MatterGraphics/src/native`, so the
+  whole-archive probe links without the engine. The engine headers the moved
+  sources still read are audited one by one in `rules.json`, with the symbol
+  evidence for each. Graphics' own sources include their sibling headers, not
+  the engine's compatibility forwarders.
+
+The source-manifest unit tests pass. At the baseline's pinned commit, the
+repository manifest gate failed because tracked `libs/MemoryLib/src/mem_bank.c`
+was unclassified. Task `.9.5` classifies it, together with the other MemoryLib
+sources that only a Make build compiles, so `tools/check-source-manifests.py`
+now passes.
 The known historical shader-source failure is also retained; neither issue is
 fixed or suppressed by this documentation task.
 

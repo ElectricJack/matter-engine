@@ -12,7 +12,11 @@ std::shared_ptr<VkSparseVoxelScene> VkSparseVoxelScene::create_shadow_casters(
 std::shared_ptr<VkSparseVoxelScene> VkSparseVoxelScene::create_shared_shadow_casters(
     matter::VulkanDevice& vk,const std::vector<SparseShadowObject>& objects,std::string& error) {
     error.clear();
+    if(!vk.ray_tracing_available()) {error=vk.ray_tracing_unavailable_reason();return {};}
     if(objects.empty() || objects.size()>0x1000000u) {error="invalid shared shadow object count";return {};}
+    // Direct callers receive the same full outer-placement/catalog admission
+    // as paired forest publication, before local geometry can be uploaded.
+    if(!preflight_shared_forest(vk,{},objects,error)) return {};
     std::vector<SparseVoxelBatch> parts;
     uint64_t count=0;
     for(const auto& object:objects) {

@@ -461,6 +461,8 @@ public:
     // Count the complete desired map, including held and unissued work.
     // Read-only O(tracked sectors), like resident_count().
     size_t desired_count() const;
+    // Includes held/cooling-down requests and resident coarse replacements.
+    size_t pending_count() const;
     size_t resident_count() const;
     size_t inflight_count() const;
 
