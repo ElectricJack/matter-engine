@@ -248,3 +248,54 @@ maps to 0x9e3779b97f4a7c15; arithmetic wraps modulo 2^64; unit draws use the top
 53 bits divided by 2^53. This is distinct from shared-lib/rng.js's xoshiro128**.
 The numeric corpus additionally checks 267 binary64 patterns, including signed
 zeros, extrema, subnormals, exponent transitions and fractional values.
+
+## Property tests and fuzzing
+
+The default CTest build includes `matter_contracts_property_json`,
+`matter_contracts_property_recipe` and `matter_contracts_property_asset`. Each
+has a five-second timeout. They generate small, seeded, in-memory inputs without
+reading fixtures from disk. Failures print the area and seed, including in Release
+builds; replay a document case with `matter_contracts_properties recipe <seed>`
+or `matter_contracts_properties asset <seed>`. The oracles check exact canonical
+round trips, binary64 preservation,
+unchanged outputs on failure, independent copies of nested data, ordered CSG
+identity, metadata exclusion, and rejection of malformed graphs, buffers and
+budgets. Run them with `ctest --test-dir <build> -L property --output-on-failure`.
+
+The longer harness is opt-in and is not registered with CTest. A Linux sanitizer
+build instruments both the contract implementation and the driver:
+
+```bash
+cmake -S libs/MatterContracts -B /tmp/contracts-fuzz -G Ninja \
+  -DBUILD_TESTING=ON -DMATTER_CONTRACTS_BUILD_FUZZER=ON \
+  -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_COMPILER=clang++ \
+  -DCMAKE_CXX_FLAGS='-fsanitize=address,undefined -fno-omit-frame-pointer' \
+  -DCMAKE_EXE_LINKER_FLAGS='-fsanitize=address,undefined'
+cmake --build /tmp/contracts-fuzz --parallel 2
+ctest --test-dir /tmp/contracts-fuzz --output-on-failure -j 1
+/tmp/contracts-fuzz/matter_contracts_fuzz 10000 1718975098
+```
+
+The standalone arguments are iteration count and unsigned decimal seed. It mixes
+valid JSON trees, recipes/assets, truncated documents and arbitrary bytes. Every
+input also selects a generated document with structural mutations. Replaying the
+same driver seed/count reproduces the sequence; an oracle failure prints the
+individual document seed.
+
+For coverage-guided fuzzing on Unix with Clang, enable
+`MATTER_CONTRACTS_LIBFUZZER` (this mode adds ASan/UBSan itself):
+
+```bash
+cmake -S libs/MatterContracts -B /tmp/contracts-libfuzzer -G Ninja \
+  -DBUILD_TESTING=OFF -DMATTER_CONTRACTS_BUILD_FUZZER=ON \
+  -DMATTER_CONTRACTS_LIBFUZZER=ON -DCMAKE_CXX_COMPILER=clang++ \
+  -DCMAKE_BUILD_TYPE=RelWithDebInfo
+cmake --build /tmp/contracts-libfuzzer --parallel 2
+/tmp/contracts-libfuzzer/matter_contracts_fuzz -max_total_time=60 \
+  -max_len=8192 -seed=1718975098
+```
+
+The driver exports `LLVMFuzzerTestOneInput`; byte inputs over 8192 bytes are
+ignored, and decoder budgets bound depth, counts, strings and diagnostics.
+Production budgets are unchanged. Optional corpus paths and libFuzzer crash
+artifacts belong to the caller's fuzz run, outside the deterministic CTest suite.
