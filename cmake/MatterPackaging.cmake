@@ -122,6 +122,24 @@ if(BUILD_TESTING)
     )
     set_tests_properties(windows_package_stage_tests PROPERTIES LABELS "editor;package;safety")
 
+    add_test(NAME vt_density_tests
+        COMMAND "${MATTER_PYTHON_EXECUTABLE}" ${matter_python_arguments}
+            "${CMAKE_SOURCE_DIR}/tools/tests/test_vt_density.py"
+    )
+    set_tests_properties(vt_density_tests PROPERTIES LABELS "editor;python")
+
+    add_test(NAME vt_acceptance_tests
+        COMMAND "${MATTER_PYTHON_EXECUTABLE}" ${matter_python_arguments}
+            "${CMAKE_SOURCE_DIR}/tools/tests/test_vt_acceptance.py"
+    )
+    set_tests_properties(vt_acceptance_tests PROPERTIES LABELS "editor;python")
+
+    add_test(NAME geometry_paging_report_tests
+        COMMAND "${MATTER_PYTHON_EXECUTABLE}" ${matter_python_arguments}
+            "${CMAKE_SOURCE_DIR}/tools/tests/test_geometry_paging_report.py"
+    )
+    set_tests_properties(geometry_paging_report_tests PROPERTIES LABELS "editor;python")
+
     add_test(NAME frame_attribution_tests
         COMMAND "${MATTER_PYTHON_EXECUTABLE}" ${matter_python_arguments}
             "${CMAKE_SOURCE_DIR}/tools/tests/test_frame_attribution.py"

@@ -1,0 +1,5 @@
+0af308b5fffa98510ed6e788753dd0789066a1ae0bb9bb6b4abf361de6c23c28  docs/agent/evidence/2026-10-20-rt-counter-native/epoch7/executed-trace_llvm.c
+f39f3c18ddd1102d0651fec5f7c4fe8b07c1e18e678758a24be5fc37fe263994  docs/agent/evidence/2026-10-20-rt-counter-native/epoch7/test_compiler_trace.py
+f6d96be5f54031a82e12c176104c34c6fe6f189077d2990e51bdf4614ee542c0  /tmp/noble-zenith-31-epoch7/trace_llvm.so
+c9abfba6e4aa51ca394ea0e781feb1d8afd33acb7bea91a67ad8d912b592ed4b  /tmp/noble-zenith-31-epoch6/build/vulkan_smoke_tests
+Remaining members of native process group 947534: []

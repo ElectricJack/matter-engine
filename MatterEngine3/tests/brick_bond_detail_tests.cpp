@@ -1,13 +1,17 @@
 #include "brick_bond_detail.h"
 #include "provider/detail_cache_validation.h"
 #include "check.h"
-#include <fstream>
-#include <iterator>
+#include "memory_fixture_io.h"
+#include "part_bundle.h"
+#include "source_snapshot_modules.h"
+#include "embedded_world_modules.h"
 #include <string>
 namespace {
+const auto sources = std::make_shared<const matter::SourceSnapshot>(embedded_world_test_sources());
 std::string read(const char *path) {
-    std::ifstream file(path, std::ios::binary);
-    return {std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
+    std::string source;
+    sources->read(path, source);
+    return source;
 }
 void cache_validation_test() {
     const auto check_case = [](bool cached, int failed_loads, bool can_recover,
@@ -32,8 +36,12 @@ void cache_validation_test() {
 }
 void tests() {
     cache_validation_test();
+    auto storage = std::make_shared<matter::test::MemoryCacheByteStorage>();
+    part_bundle::ScopedStorage scope(storage);
     script_host::ScriptHost host;
     host.set_shared_lib_roots({"projects/world_demo/shared-lib", "MatterEngine3/shared-lib"});
+    host.set_module_sources(matter::source_snapshot_modules(*sources,
+        {"projects/world_demo/shared-lib", "MatterEngine3/shared-lib"}));
     const auto descriptor_source = read("projects/world_demo/objects/castle/materials/CastleBrickBondDetail.js");
     const auto source = read("projects/world_demo/objects/castle/materials/CastleStoneSource.js");
     CHECK(!descriptor_source.empty() && !source.empty(),

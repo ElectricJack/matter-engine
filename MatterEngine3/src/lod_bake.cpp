@@ -48,16 +48,7 @@
 
 namespace lod_bake {
 
-// Task 11 (Phase 5 autoremesher integration): decimate_tris/decimate_to_error
-// route through MSL's MeshIndexed pipeline directly. The previous
-// Tri → raylib::Mesh → simplify_mesh → raylib::Mesh → Tri double round-trip
-// (via the local tris_to_mesh/mesh_to_tris helpers) has been removed — the
-// weld now happens once in from_tri and the intermediate raylib::Mesh is gone.
-// simplify(MeshIndexed) internally shims to simplify_mesh for the QEM step;
-// when that shim is removed in a later task, this file will already be on the
-// final MeshIndexed API. Public API of decimate_tris/decimate_to_error is
-// unchanged: input/output still std::vector<Tri>, callers see no difference.
-
+// Keep-ratio decimation uses the native MatterSurfaceLib indexed pipeline.
 std::vector<Tri> decimate_tris(const std::vector<Tri>& tris, float keep_ratio) {
     if (tris.empty()) return {};
 
@@ -85,50 +76,7 @@ std::vector<Tri> decimate_tris(const std::vector<Tri>& tris, float keep_ratio) {
 
 std::vector<Tri> decimate_to_error(const std::vector<Tri>& tris, float epsilon,
                                    bool use_aabb_bounds) {
-    if (tris.empty()) return {};
-
-    MeshIndexed in = from_tri(tris, nullptr);
-    SimplifyOptions opts;
-    // target_ratio 0 -> targetTri clamps to 1, so the collapse loop runs until
-    // the min heap cost exceeds max_error (the error bound is the ONLY stop).
-    opts.target_ratio  = 0.0f;
-    opts.max_error     = epsilon * epsilon;  // QEM cost is squared distance
-    // lock_boundary=true activates the topological boundary lock (Task 8):
-    // open-edge vertices are never collapsed, regardless of CellBounds.
-    opts.lock_boundary = true;
-
-    CellBounds cb{};
-    const CellBounds* bounds_ptr = nullptr;
-    if (use_aabb_bounds) {
-        // Pass the mesh's own AABB so vertices on its face planes
-        // (tile borders, sheet rims) are frozen — correct for terrain tiles and
-        // whole-mesh flattens where the boundary IS the world border.
-        // (When use_aabb_bounds=false, bounds_ptr stays nullptr and ONLY the
-        // topological boundary lock (open-edge vertices) is active — correct
-        // for cluster interiors whose AABB does NOT represent a world border.)
-        float minx=1e30f, maxx=-1e30f;
-        float miny=1e30f, maxy=-1e30f;
-        float minz=1e30f, maxz=-1e30f;
-        for (const Tri& t : tris) {
-            const float3* vs[3] = { &t.vertex0, &t.vertex1, &t.vertex2 };
-            for (const float3* v : vs) {
-                if (v->x < minx) minx = v->x; if (v->x > maxx) maxx = v->x;
-                if (v->y < miny) miny = v->y; if (v->y > maxy) maxy = v->y;
-                if (v->z < minz) minz = v->z; if (v->z > maxz) maxz = v->z;
-            }
-        }
-        cb.min_bound = { minx, miny, minz };
-        cb.max_bound = { maxx, maxy, maxz };
-        bounds_ptr = &cb;
-    }
-
-    MeshIndexed out = simplify(in, opts, bounds_ptr);
-
-    std::vector<Tri>   out_tris;
-    std::vector<TriEx> out_triex_unused;
-    to_tri(out, out_tris, out_triex_unused);
-    // Same fallback semantics as decimate_tris: empty output -> identity.
-    return out_tris.empty() ? tris : out_tris;
+    return ::decimate_to_error(tris, epsilon, use_aabb_bounds);
 }
 
 // NOTE (Task 8, Phase 5 autoremesher integration): `reproject_triex` moved to
@@ -1025,7 +973,7 @@ LodLevels bake_terrain_lods(const std::vector<Tri>& tris,
                        eps > cascade_prev_eps;
             const std::vector<Tri>& dec_src = cascaded ? cascade_prev : surface;
             dec_in = dec_src.size();
-            decimated = decimate_to_error(dec_src, eps,
+            decimated = ::decimate_to_error(dec_src, eps,
                                           /*use_aabb_bounds=*/false);
             if (decimated.empty()) decimated = dec_src;
             // Hand this rung's output to the next coarser one. A copy, not a

@@ -1,6 +1,7 @@
 // The conifer hierarchy requires authored ladders on deferred leaves. Verify
 // the production provider, including cached bodies whose plan is absent.
 #include "provider/local_provider.h"
+#include "memory_fixture_io.h"
 #include "part_asset_v2.h"
 #include "part_graph.h"
 #include "script_host.h"
@@ -19,12 +20,14 @@
 #include <cstdio>
 
 namespace fs = std::filesystem;
+static matter::SourceSnapshot::Files source_files;
 static void write(const fs::path& p, const char* text) {
-    fs::create_directories(p.parent_path());
-    std::ofstream(p) << text;
+    source_files[matter::SourceSnapshot::key(p.generic_string())] = text;
 }
 
 int main() {
+    auto storage = std::make_shared<matter::test::MemoryCacheByteStorage>();
+    part_bundle::ScopedStorage scope(storage);
     {
         // A sparse comb in view zero and a solid differently coloured view
         // beside it. Mips must retain leaf colour and never blend the views.
@@ -62,6 +65,7 @@ int main() {
     }
     {
         script_host::ScriptHost host;
+        host.set_module_sources(std::vector<module_resolver::ResolvedModule>{});
         const uint64_t hashes[] = {0x1234};
         const std::string modules[] = {"Relief"}, params[] = {"{}"};
         auto result = host.eval_tileset(R"JS(
@@ -85,8 +89,7 @@ class Bark extends Tileset {
     CHECK(tileset::gtex_atlas_extent(0, 512, 4) == 0 &&
           tileset::gtex_atlas_extent(INFINITY, 512, 4) == 0 &&
           tileset::gtex_atlas_extent(1e20f, 512, 4) == 0, "invalid or overflowing extents fail closed");
-    const fs::path project = fs::temp_directory_path() / "matter_conifer_lod_provider_tests";
-    fs::remove_all(project);
+    const fs::path project = "runtime/conifer-lod-provider";
     write(project / "worlds/Lab.js", R"JS(
 class Lab extends World { static roots = [{module:'Root'}]; }
 )JS");
@@ -113,11 +116,14 @@ class Needles extends Part {
  build() { for(let i=0;i<5;++i) this.box([i*0.04,0.5,0],[0.003,0.025,0.003]); }
 }
 )JS");
-    const auto cfg = viewer::LocalProviderConfig::for_project(project.string(), "Lab", "../shared-lib");
+    auto io = std::make_shared<matter::WorldFixtureIO>();
+    io->sources = std::make_shared<const matter::SourceSnapshot>(source_files);
+    io->cache = storage;
+    const auto cfg = viewer::LocalProviderConfig::for_project(project.string(), "Lab", "../shared-lib", io);
     const std::string cache = (project / ".cache/Lab").string();
     {
-        fs::create_directories(fs::path(cache) / "parts");
         script_host::ScriptHost host;
+        host.set_module_sources(std::vector<module_resolver::ResolvedModule>{});
         script_host::BakeOptions options;
         options.parts_dir = cache;
         const auto result = host.bake_source(R"JS(
@@ -146,7 +152,8 @@ class MillimetreTwig extends Part {
         CHECK(wrong_material == 0, "isosurface retains bark material identity");
     }
     for (auto policy : {part_graph::BakePolicy::All, part_graph::BakePolicy::RootsOnly}) {
-        fs::remove_all(project / ".cache");
+        for (const auto& entry : storage->entries())
+            storage->erase(entry.first);
         viewer::LocalProvider provider(cfg);
         std::string err;
         CHECK(provider.install_graph(err, policy), "provider graph installation succeeds");
@@ -162,6 +169,18 @@ class MillimetreTwig extends Part {
               && root_plan.no_impostor, "RecordingBaker forwards root opt-out");
         CHECK(provider.ensure_part_baked(root, err), "demand subtree including metadata succeeds");
         if (!err.empty()) std::printf("%s\n", err.c_str());
+        {
+            // The publish loop revisits cached nodes; their authored plans
+            // were installed on the first visit and are not re-derived.
+            const auto& host = provider.host_baker().host();
+            const auto evals_before = host.stats().lod_evaluations;
+            CHECK(provider.ensure_part_baked(root, err), "revisiting the cached subtree succeeds");
+            CHECK(host.stats().lod_evaluations == evals_before,
+                  "a cached node does not re-evaluate its LOD plan on every visit");
+            if (host.stats().lod_evaluations != evals_before)
+                std::printf("  lod evaluations on revisit: %llu\n",
+                            (unsigned long long)(host.stats().lod_evaluations - evals_before));
+        }
         part_asset::StaticLodPlan w, n;
         CHECK(part_asset::load_static_lod_plan(cache + "/" + part_asset::cache_path_static_lods(wood), wood, w), "wood plan is published");
         CHECK(w.no_impostor && w.level_at == std::vector<double>({0, 6, 22}), "wood has exact authored switch distances and no impostor");
@@ -169,7 +188,7 @@ class MillimetreTwig extends Part {
         if (w.level_hashes.size() == 3) {
             CHECK(w.level_hashes[0] != w.level_hashes[1] && w.level_hashes[1] != w.level_hashes[2], "coarse wood uses independently generated geometry");
             for (auto h : w.level_hashes)
-                CHECK(fs::exists(cache + "/" + part_asset::cache_path_resolved(h)), "generated rung body exists");
+                CHECK(bool(storage->open(cache + "/" + part_asset::cache_path_resolved(h))), "generated rung body exists");
         }
         CHECK(part_asset::load_static_lod_plan(cache + "/" + part_asset::cache_path_static_lods(needles), needles, n), "needle plan is published");
         CHECK(n.level_gen == std::vector<std::string>({"impostor {}"}), "needle source is bake-only at every runtime distance");
@@ -182,7 +201,7 @@ class MillimetreTwig extends Part {
             auto shared=original;shared.shared_surfaces=true;
             CHECK(matter::save_part_render_policy(path,root,shared),"publish shared root policy");
             CHECK(provider.ensure_part_flattened(root),"shared root remains canonical during provider preparation");
-            viewer::PartStore store(cache);const auto* loaded=store.get_or_load(root);
+            viewer::PartStore store(cache, storage);const auto* loaded=store.get_or_load(root);
             CHECK(loaded && loaded->shared_surface && loaded->children.empty() && loaded->lod_mesh_data.empty(),
                 "production store retains one shared assembly instead of expanding leaves");
             if(loaded && loaded->shared_surface) {
@@ -235,7 +254,7 @@ class MillimetreTwig extends Part {
                   "the atlas depicts detailed needles, not its two-triangle runtime quad");
             impostor::PartImpostor rejected;
             CHECK(!impostor::load(path, needles, digest ^ 1, rejected), "a stale source digest is rejected");
-            viewer::PartStore store(cache);
+            viewer::PartStore store(cache, storage);
             const auto* loaded = store.get_or_load(needles);
             CHECK(loaded && loaded->impostors.size() == 1 && loaded->clusters.size() == 1,
                   "production PartStore adopts the sole textured rung");
@@ -265,13 +284,16 @@ class MillimetreTwig extends Part {
         }
 
         // Simulate a pre-fix cached body: replace its plan with an empty plan.
+        // Such a body is written by an older binary, so the session that
+        // meets it is a new one; plans install once per hash per session.
         part_asset::StaticLodPlan missing;
         CHECK(part_asset::save_static_lod_plan(cache + "/" + part_asset::cache_path_static_lods(wood), wood, missing), "prepare cached body without authored metadata");
-        CHECK(provider.ensure_part_baked(wood, err), "cached demand body restores missing authored ladder");
+        viewer::LocalProvider next_session(cfg);
+        CHECK(next_session.install_graph(err, part_graph::BakePolicy::RootsOnly), "next session installs over the warm cache");
+        CHECK(next_session.ensure_part_baked(wood, err), "cached demand body restores missing authored ladder");
         CHECK(part_asset::load_static_lod_plan(cache + "/" + part_asset::cache_path_static_lods(wood), wood, w)
               && w.level_hashes.size() == 3 && w.no_impostor, "cache-hit repair retains all rungs");
     }
-    fs::remove_all(project);
     std::printf("conifer_lod_provider_tests: %d failures\n", g_failures);
     return g_failures ? 1 : 0;
 }
