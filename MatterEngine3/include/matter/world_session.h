@@ -1,5 +1,8 @@
 #pragma once
 
+#include "../../../libs/MatterGraphics/include/matter/graphics/dlss_mode.h"
+#include "fixture_io.h"
+
 // MatterEngine3/include/matter/world_session.h
 //
 // The engine's primary public API. A WorldSession is ONE loaded world: it owns
@@ -56,6 +59,7 @@
 #include <vector>
 
 #include "matter/camera.h"
+#include "matter/evaluation_channels.h"
 #include "matter/gpu_timing_sample.h"
 #include "matter/animation_debug.h"
 #include "matter/render_debug.h"
@@ -135,6 +139,7 @@ struct WorldDesc {
     const char* engine_shared_lib_dir = nullptr;
 
     bool enable_live_edit = false;  // watch schemas/shared-lib dirs, cone-rebake on save (Linux inotify; no-op elsewhere)
+    std::shared_ptr<const WorldFixtureIO> fixture_io;
 };
 
 // Which renderer to run for a frame (RenderOptions::path). GpuDriven is the
@@ -152,14 +157,6 @@ enum class RenderPath { GpuDriven, Raytrace };
 // anyone was tuning. SectorLod is a superset -- it emits the same instances,
 // then adds per-sector rung selection and inline-cutover child expansion -- so
 // there is nothing PassThrough could express that survives its removal.)
-// Requested DLSS preset (RenderOptions::dlss_mode). Native renders at output
-// resolution with no upscaling; the other three are Streamline presets at
-// successively smaller internal render resolutions. This is a REQUEST: the mode
-// that actually ran, the internal/output extents and the reason for any
-// downgrade come back in FrameStats::dlss_*. dlss_mode_name() below gives the
-// display string.
-enum class DlssMode : uint8_t { Native, Quality, Balanced, Performance };
-
 // Public, renderer-type-free copy-out of the atmosphere snapshot that actually
 // committed. The Vulkan renderer's richer viewer::ResolvedAtmosphereStatus
 // remains private to the render implementation; editor automation must read
@@ -176,8 +173,6 @@ struct ResolvedAtmospherePresentationStatus {
     Float3 sky_display_modifier_rgb{};
     Float3 sky_irradiance_modifier_rgb{};
 };
-
-const char* dlss_mode_name(DlssMode mode) noexcept;
 
 // Everything WorldSession::render needs beyond the camera and the frame: which
 // path to run, the debug/diagnostic switches, the LOD and culling budgets, and
@@ -237,6 +232,11 @@ struct RenderOptions {
     // the same eye. That is wanted here (the frozen view's detail is what you
     // came to inspect) and is the reason this is not called "freeze frustum".
     bool  freeze_cull_camera = false;
+    // MATTER_LIVE_TERRAIN=1 sessions only: keep the live terrain tiles resident
+    // on the GPU. False releases every terrain graphics residency while the
+    // coordinator's cache and the installed collision stay; true re-uploads
+    // from the cached products. `set viewer.debug.live_terrain_graphics false`.
+    bool  live_terrain_graphics = true;
     float pixel_budget    = 0.0f;     // 0 = default (1.0); clamped to [0.05, 4.0]
     // (No active_radius. It is DERIVED from the world's outermost terrain LOD
     // band -- the distance past which the streamer keeps nothing resident
@@ -383,6 +383,10 @@ struct FrameStats {
     uint32_t occlusion_culled  = 0;   // clusters the occlusion ID mask rejected
     uint32_t triangles         = 0;   // rasterized triangle count
     uint32_t draw_batches      = 0;   // indirect draw buckets with >=1 instance
+    // Descriptors the scene renderer wrote this frame (sum of descriptorCount
+    // over its vkUpdateDescriptorSets calls). A steady scene stays small; a
+    // frame that rewrites the 432-sampler tileset bank shows it here.
+    uint32_t descriptors_written = 0;
     // M2.5: terminal impostors holding an atlas slot right now. On the stats
     // overlay because "are any drawing?" is the question the abandoned
     // impostor tier could not answer -- it was absent for a whole generation
@@ -647,6 +651,14 @@ public:
     bool readback_swapchain_rgba8(const VulkanFrame& frame,
                                   std::vector<uint8_t>& rgba,
                                   std::string& err);
+    bool queue_evaluation_channels(const VulkanFrame& frame, std::string& err);
+    bool finish_evaluation_channels(uint64_t frame_serial, bool frame_completed,
+                                    EvaluationChannels& channels,
+                                    std::string& err);
+    bool evaluation_detail_report(const EvaluationChannels& channels,
+                                  uint32_t desired_max_lod, bool require_rt,
+                                  VisibleDetailReport& report,
+                                  std::string& err);
 
     // Phase B: run queued render-thread bake work for up to ms_budget
     // milliseconds. Call once per frame on the thread that owns the render
@@ -858,6 +870,9 @@ public:
     // Copied coordinator state; no streamer or render-resource state crosses
     // the worker/app boundary.
     streaming::SectorStreamingStatus streaming_status() const;
+    // Snapshot of coarse part hashes whose closed-world refinement is not
+    // published yet. A captured visible part matching one is not detail-ready.
+    std::vector<uint64_t> pending_refinement_parts() const;
 
     // ---- Seam welding (volumetric-sectors M0-WP3b) --------------------------
     //
@@ -1023,6 +1038,13 @@ public:
     // request_bake()/reload() succeeds (the old world is torn down before rebaking).
     void reload();
 
+    // Queue a Reload owning the next source generation. The nonnull
+    // snapshot replaces sources on the bake worker after the existing
+    // cancellation/quiescence barrier. Cache storage and configured
+    // paths stay unchanged; old providers retain their prior snapshot.
+    // A null snapshot throws std::invalid_argument without queuing work.
+    void reload_fixture_sources(std::shared_ptr<const SourceSnapshot> sources);
+
     // Phase C Task 9: world-kind sessions: the sea level from the world definition.
     // Returns true and sets `out` for world-kind sessions; returns false for
     // closed-world (expand/tileset) sessions (no water plane in those worlds).
@@ -1039,8 +1061,9 @@ public:
     // Bake Lab: snapshot of the hierarchical span trace recorded by the most
     // recent (or in-flight) bake. Valid after BakeFinished; calling during a
     // bake is safe and yields a consistent partial tree (open spans keep
-    // end_ms == bake_trace::kOpenEndMs). Root children are the execute_bake
-    // stages (install/compose/publish; a resolve-cache hit skips the first two).
+    // end_ms == bake_trace::kOpenEndMs). Root children include resolve-cache
+    // preflight spans followed by the execute_bake stages (install/compose/
+    // publish; a resolve-cache hit skips the first two stages).
     void last_bake_trace(bake_trace::Span& out) const;
 
     // Phase C Task 7: enqueue a seed-driven world reroll. Stores

@@ -1,0 +1,16 @@
+{
+  "baseline": "58289c187ef2565c7d0532fe28a8cfb903023e44",
+  "move": "90a19c6698a03623da9a3e3c5235ad272531d462",
+  "sha256": {
+    "MatterEngine3/src/render/vt_work_budget.h": "4be8c0104baeaeee346d7c7732f6cb853eccdbeb78bb450f0f9c86def693a8fe",
+    "MatterEngine3/src/render/vt_types.h": "e84d5f58d6a29143e7b4960c194b2f56c8e676ea954036d1b3630439e0138772",
+    "MatterEngine3/src/render/vt_residency.cpp": "8f4fc774b1ee3f701d8504310f078c68d7da34dd2b50dfe7cf90b1751cc3cf87",
+    "MatterEngine3/src/render/vt_compositor.cpp": "c951a482e951e0fdeefc8e8d203cda2f4e19f2aa378bdb483fc46a5cf85700f6",
+    "MatterEngine3/src/render/vt_compositor.h": "6001346f6ebcfd0eda6a68f48bec45408de6f3e221ffe26d5002b8dad3b03f0b",
+    "MatterEngine3/include/matter/vt_budgets.h": "5f9e130ec6b15f37ad49d9935a7ba47335242ac82fbbd608b4e675e65d132849",
+    "MatterEngine3/tests/vulkan_smoke_tests.cpp": "7b700913e04b7c28cd50f66be69bbd80d32aee754e93a1c5ef71690653c88260",
+    "MatterEngine3/src/render/chart_atlas.h": "cd6ecadd04000c282858d905041d7e1115695d2b39ed7000098ffad0bf1cd609",
+    "MatterEngine3/src/render/vk_scene_renderer.h": "85028ce354e7d7d3af5fe4adcb7c04bdfaf4e7b71d8b22b918156eae7cea89c6"
+  },
+  "expanded_renderer_equal": true
+}

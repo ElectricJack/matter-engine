@@ -19,7 +19,8 @@
 // engine's one selection rule lives in
 // MatterEngine3/src/render/lod_distance.h.
 //
-// Threading. PartStore holds no lock of its own; the split is by method.
+// Threading. Prepared-cache initialization and I/O synchronize internally;
+// resident part state is confined by method.
 //   - stage_load(), stage_from_bake(), and the private read_coherent_snapshot()
 //     / snapshot_from_baked() / stage_from_snapshot() touch NO shared state and
 //     are meant to run on a streaming worker while the app thread renders. This
@@ -53,6 +54,7 @@
 #include "raster_mesh.h"        // RasterMeshData
 #include "seam_boundary.h"      // seam::SectorBoundary (stdlib-only by contract)
 #include "animation/animation_asset_store.h"
+#include "matter/fixture_io.h"
 #include "matter/bake_observer.h"  // optional per-rung observer (W3, Lab-only)
 #include "part_render_policy.h"
 #include "shared_surface_asset.h"
@@ -360,7 +362,9 @@ struct WarpAnchor {
 // calling anything from a worker thread — the safe set is small and explicit.
 class PartStore {
 public:
-    explicit PartStore(std::string cache_root);
+    explicit PartStore(std::string cache_root,
+                       std::shared_ptr<matter::CacheByteStorage> storage = {});
+    ~PartStore();
 
     // True if the part is loaded in memory OR a .part exists on disk. Drives reconcile.
     // A miss in the resident map falls through to a ::stat of the scratch dir
@@ -396,6 +400,8 @@ public:
     bool prepared_identity_remember(uint64_t request, uint64_t resolved, std::string& error);
     StagedPart load_prepared_sector(uint64_t hash, const std::string& policy, std::string& error);
     bool save_prepared_sector(StagedPart& staged, const std::string& policy, std::string& error);
+    // Reports the cache owner, whose payload banks remain lazy until first I/O.
+    bool prepared_sector_cache_active() const;
 
     // Decode `part_hash` and bake its ladder WITHOUT touching any shared state.
     // Safe to call from a streaming worker while the app thread renders.
@@ -500,7 +506,9 @@ public:
     BLASManager& blas() { return blas_; }
     const std::string& cache_root() const { return cache_root_; }
     // Configure before staging begins. Opt-in while native acceptance expands.
-    void set_geometry_pages_enabled(bool enabled) { geometry_pages_enabled_ = enabled; }
+    void set_geometry_pages_enabled(bool enabled);
+    bool geometry_pages_enabled() const { return geometry_pages_enabled_; }
+    asset_store::PageCacheStats geometry_root_stats() const { return geometry_roots_.stats(); }
     void set_geometry_page_filter(std::set<uint64_t> hashes) {
         geometry_filter_active_ = true; geometry_filter_ = std::move(hashes);
     }
@@ -622,6 +630,7 @@ private:
     // purpose: every LoadedPart* this class hands out must survive later
     // insertions, and only erasing that key invalidates one.
     StagedPart stage_geometry_cached(uint64_t part_hash);
+    bool flush_geometry_writer();
     bool geometry_pages_enabled_ = false;
     bool geometry_filter_active_ = false;
     std::set<uint64_t> geometry_filter_;
@@ -629,7 +638,10 @@ private:
         return geometry_pages_enabled_ && (!geometry_filter_active_ || geometry_filter_.count(hash));
     }
     std::string                       cache_root_;
+    std::shared_ptr<matter::CacheByteStorage> cache_storage_;
     geometry::RootCache               geometry_roots_;
+    prepared_sector::Cache& prepared_sectors();
+    mutable std::mutex               prepared_sectors_mutex_;
     std::shared_ptr<prepared_sector::Cache> prepared_sectors_;
     std::shared_ptr<prepared_identity::Cache> prepared_identities_;
     std::string                       scratch_dir_;     // Task 2: transient scratch dir
