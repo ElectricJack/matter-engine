@@ -17,6 +17,8 @@ option(MATTER_ASSET_SURFACE_NATIVE "Build the optional CPU surface tape producer
 if(MATTER_ASSET_SURFACE_NATIVE AND NOT MATTER_ASSET_SURFACE)
     message(FATAL_ERROR "MATTER_ASSET_SURFACE_NATIVE requires MATTER_ASSET_SURFACE")
 endif()
+# Generation kernels are optional; prepared loading never needs them.
+option(MATTER_ASSET_LOD "Build error-bounded LOD generation from the canonical engine stages" ON)
 add_library(matter_asset_pipeline INTERFACE)
 target_link_libraries(matter_asset_pipeline INTERFACE matter_contracts)
 add_library(matter_asset_archive STATIC src/archive.cpp)
@@ -32,23 +34,21 @@ if(MATTER_ASSET_SURFACE)
     list(APPEND _asset_targets matter_asset_surface)
 endif()
 if(MATTER_ASSET_SURFACE_NATIVE)
-    # Compile the CPU source authority directly until ordered integration owns
-    # relocation. No monolithic engine/terrain/graphics archive is linked.
-    set(_surface_legacy "${CMAKE_CURRENT_LIST_DIR}/../../MatterEngine3/src")
-    add_library(matter_asset_surface_runtime STATIC "${_surface_legacy}/terrain_field.cpp")
-    target_include_directories(matter_asset_surface_runtime PRIVATE "${_surface_legacy}/../include")
-    target_compile_features(matter_asset_surface_runtime PRIVATE cxx_std_17)
-    if(MSVC)
-        target_compile_options(matter_asset_surface_runtime PRIVATE /W4 /permissive- /utf-8)
-    else()
-        target_compile_options(matter_asset_surface_runtime PRIVATE -Wall -Wextra -Wpedantic)
-    endif()
+    # The CPU source authority (the field/surface tape kernel) is owned by
+    # ProceduralGeometry and registered alone as matter_geometry_field, which
+    # TerrainGeneration links too, so it is compiled once. Neither the rest of
+    # geometry nor any engine/terrain/graphics archive is configured or linked.
+    include("${CMAKE_CURRENT_LIST_DIR}/../ProceduralGeometry/cmake/FieldKernel.cmake")
     add_library(matter_asset_surface_native STATIC src/surface_tape.cpp)
-    target_include_directories(matter_asset_surface_native PRIVATE "${_surface_legacy}")
-    target_link_libraries(matter_asset_surface_native PUBLIC matter_asset_surface PRIVATE matter_asset_surface_runtime)
+    target_link_libraries(matter_asset_surface_native PUBLIC matter_asset_surface PRIVATE matter_geometry_field)
     target_link_libraries(matter_asset_pipeline INTERFACE matter_asset_surface_native)
     list(APPEND _asset_targets matter_asset_surface_native)
 endif()
+# Settings, cache keys, chain records and the prepared loader. Kernel-free.
+add_library(matter_asset_prepared STATIC src/prepared.cpp)
+target_link_libraries(matter_asset_prepared PUBLIC matter_asset_archive)
+target_link_libraries(matter_asset_pipeline INTERFACE matter_asset_prepared)
+list(APPEND _asset_targets matter_asset_prepared)
 if(MATTER_ASSET_STORAGE)
     add_library(matter_asset_storage STATIC src/storage.cpp)
     target_link_libraries(matter_asset_storage PUBLIC matter_asset_archive)
@@ -73,6 +73,66 @@ if(MATTER_ASSET_LEGACY)
     target_link_libraries(matter_asset_pipeline INTERFACE matter_asset_legacy)
     list(APPEND _asset_targets matter_asset_legacy)
 endif()
+if(MATTER_ASSET_LOD)
+    # One owner per algorithm source: ProceduralGeometry already compiles the
+    # MatterSurfaceLib QEM/weld/reprojection stages for its modifier backend,
+    # so they are linked from matter_geometry rather than compiled twice. The
+    # mesh-error verifier and the BVH it walks have no other component owner
+    # and are compiled here, from their source directories.
+    if(NOT TARGET matter_geometry)
+        set(_asset_testing ${BUILD_TESTING})
+        set(BUILD_TESTING OFF)
+        set(MATTER_GEOMETRY_TESTS OFF)
+        add_subdirectory("${CMAKE_CURRENT_LIST_DIR}/../ProceduralGeometry" "${CMAKE_CURRENT_BINARY_DIR}/geometry")
+        set(BUILD_TESTING ${_asset_testing})
+    endif()
+    if(NOT MATTER_GEOMETRY_MODIFIERS)
+        message(FATAL_ERROR "MATTER_ASSET_LOD needs MATTER_GEOMETRY_MODIFIERS: matter_geometry owns the "
+            "MatterSurfaceLib simplify/reprojection stages. Turn MATTER_ASSET_LOD off instead.")
+    endif()
+    get_filename_component(_asset_root "${CMAKE_CURRENT_LIST_DIR}/../.." ABSOLUTE)
+    set(_lod_includes
+        "${_asset_root}/MatterEngine3/src"
+        "${_asset_root}/MatterEngine3/include"
+        "${_asset_root}/libs/SpatialQueryLib/include"
+        "${_asset_root}/libs/MatterSurfaceLib/include"
+        "${_asset_root}/libs/MatterSurfaceLib/src"
+        "${_asset_root}/third_party/raylib/src")
+    # The engine sources predate the strict flags below, so they build apart.
+    add_library(matter_asset_lod_kernels STATIC
+        "${_asset_root}/MatterEngine3/src/mesh_error.cpp"
+        "${_asset_root}/libs/SpatialQueryLib/src/bvh.cpp")
+    target_compile_features(matter_asset_lod_kernels PUBLIC cxx_std_17)
+    target_include_directories(matter_asset_lod_kernels PRIVATE ${_lod_includes})
+    target_link_libraries(matter_asset_lod_kernels PRIVATE matter_contracts)
+    if(MSVC)
+        target_compile_options(matter_asset_lod_kernels PRIVATE /W4 /permissive- /utf-8)
+    else()
+        target_compile_options(matter_asset_lod_kernels PRIVATE -Wall -Wextra)
+    endif()
+    add_library(matter_asset_lod STATIC src/lod.cpp)
+    # Kernel headers are consumed, not owned, so they sit outside -Werror.
+    target_include_directories(matter_asset_lod SYSTEM PRIVATE ${_lod_includes})
+    target_link_libraries(matter_asset_lod PUBLIC matter_asset_prepared
+        PRIVATE matter_asset_lod_kernels matter_geometry)
+else()
+    # Same API, no kernels: lod_capabilities() is empty and every request fails
+    # as unsupported_capability, so a host can route around the omission.
+    add_library(matter_asset_lod STATIC src/lod_disabled.cpp)
+    target_link_libraries(matter_asset_lod PUBLIC matter_asset_prepared)
+endif()
+target_link_libraries(matter_asset_pipeline INTERFACE matter_asset_lod)
+list(APPEND _asset_targets matter_asset_lod)
+# Optional products keep their own build files and options; neither is linked
+# into matter_asset_pipeline, so a basic configuration never carries them.
+option(MATTER_ASSET_ANIMATION "Build the optional animation product module" OFF)
+option(MATTER_ASSET_PHYSICS "Build the optional collision/settling module" OFF)
+if(MATTER_ASSET_ANIMATION AND NOT TARGET matter_animation_asset)
+    add_subdirectory(animation)
+endif()
+if(MATTER_ASSET_PHYSICS AND NOT TARGET matter_collision)
+    add_subdirectory(physics)
+endif()
 foreach(target IN LISTS _asset_targets)
     target_compile_features(${target} PUBLIC cxx_std_17)
     if(MSVC)
@@ -90,10 +150,11 @@ if(BUILD_TESTING)
         add_test(NAME matter_asset_surface COMMAND matter_asset_surface_tests)
         if(MATTER_ASSET_SURFACE_NATIVE)
             target_link_libraries(matter_asset_surface_tests PRIVATE matter_asset_surface_native)
-            add_executable(matter_asset_surface_legacy_tests "${_surface_legacy}/../tests/surface_field_tests.cpp")
+            set(_surface_legacy "${CMAKE_CURRENT_LIST_DIR}/../../MatterEngine3")
+            add_executable(matter_asset_surface_legacy_tests "${_surface_legacy}/tests/surface_field_tests.cpp")
             target_compile_features(matter_asset_surface_legacy_tests PRIVATE cxx_std_17)
-            target_include_directories(matter_asset_surface_legacy_tests PRIVATE "${_surface_legacy}")
-            target_link_libraries(matter_asset_surface_legacy_tests PRIVATE matter_asset_surface_runtime)
+            target_include_directories(matter_asset_surface_legacy_tests PRIVATE "${_surface_legacy}/src")
+            target_link_libraries(matter_asset_surface_legacy_tests PRIVATE matter_geometry_field)
             add_test(NAME matter_asset_surface_legacy COMMAND matter_asset_surface_legacy_tests)
         endif()
     endif()
@@ -102,8 +163,19 @@ if(BUILD_TESTING)
     target_compile_definitions(matter_asset_tests PRIVATE
         MATTER_ASSET_STORAGE=$<BOOL:${MATTER_ASSET_STORAGE}>
         MATTER_ASSET_GLTF=$<BOOL:${MATTER_ASSET_GLTF}>
-        MATTER_ASSET_LEGACY=$<BOOL:${MATTER_ASSET_LEGACY}>)
+        MATTER_ASSET_LEGACY=$<BOOL:${MATTER_ASSET_LEGACY}>
+        MATTER_ASSET_LOD=$<BOOL:${MATTER_ASSET_LOD}>)
     add_test(NAME matter_asset_archive COMMAND matter_asset_tests archive)
+    foreach(fixture prepared cache_settings)
+        add_test(NAME matter_asset_${fixture} COMMAND matter_asset_tests ${fixture})
+    endforeach()
+    if(MATTER_ASSET_LOD)
+        foreach(fixture lod lod_failures)
+            add_test(NAME matter_asset_${fixture} COMMAND matter_asset_tests ${fixture})
+        endforeach()
+    else()
+        add_test(NAME matter_asset_lod_disabled COMMAND matter_asset_tests lod_disabled)
+    endif()
     if(MATTER_ASSET_STORAGE)
         add_test(NAME matter_asset_storage COMMAND matter_asset_tests storage)
     endif()

@@ -208,7 +208,7 @@ struct Cell {
     mm::Vec3 get_size() const { return mm::Vec3{actual_size, actual_size, actual_size}; }
     
 private:
-    void calculate_bounds(float smallest_cell_size);
+    void calculate_bounds();
     // CPU-only build of one merge group's mesh + tagged triangles (no GL/BLAS).
     GroupMeshResult build_group_mesh(uint32_t group_id, const std::vector<StaticParticle>& cluster_particles,
                                      SurfaceScratch* scratch,
