@@ -69,6 +69,12 @@ struct EntityRow {
     std::uint32_t depth = 0;
     std::uint32_t child_count = 0;
     std::vector<std::string> component_names;
+    // A PartInstance can point at a generated part.  It is deliberately an
+    // availability rather than a zero/non-zero convention: zero is not a
+    // usable content address, but the caller still needs to know whether the
+    // live ECS row was inspected at all.
+    Availability part_instance;
+    std::uint64_t part_hash = 0;
 };
 
 // One baked root, as part_graph_snapshot::Node knows it. `source_path` and
@@ -81,12 +87,64 @@ struct RootRow {
     std::string params_json;
 };
 
+// A copied, app-thread-safe view of one part-graph node.  The production
+// adapter fills this from WorldSession::graph_snapshot(); keeping it as plain
+// data makes the traversal below testable without a session or script host.
+struct ProvenanceNode {
+    std::string module;
+    std::string source_path;
+    std::string params_json;
+    std::vector<std::string> children;
+    std::vector<std::string> shared_imports;
+    std::vector<std::string> shared_source_paths;
+    std::uint64_t resolved_hash = 0;
+    bool is_root = false;
+};
+
 // The app-wide selection, flattened. `primary_index` is -1 when nothing is
 // selected, matching SelectionSet's own invariant.
 struct SelectionInput {
     std::vector<agent::ObjectIdentity> items;
     int primary_index = -1;
 };
+
+// --- primitives shared with scene_diff.h ------------------------------------
+// Exported rather than kept file-private because MatterEditor/src/scene_diff.h
+// answers about the SAME objects. A diff that classified an id's namespace,
+// digested a parameter object, or read a worldSeed differently from the
+// listing that produced the id would be worse than no diff at all, so there is
+// one spelling of each rule and both files call it.
+
+// FNV-1a over the exact bytes. Used for the canonical-parameter digest that
+// `scene.trace_provenance` reports as `params_hash`, so the same parameters
+// digest equal in a trace and in a diff.
+std::uint64_t fnv1a64(const std::string& text);
+
+// A digest as 16 lowercase hex digits: a JSON string, never a number, for the
+// same reason ids are.
+matter::jsondoc::Value hash_json(std::uint64_t hash);
+
+// `namespace` / `source` / `stability` / `classified_by` / `notes` for one
+// typed id -- the identity contract emitted beside every object row.
+matter::jsondoc::Value identity_contract_json(const agent::ObjectIdentity& object);
+
+// The integral `worldSeed` recorded in a canonical parameter object, or an
+// unavailability that says which of "not JSON", "no worldSeed" and "not a
+// non-negative integer" was true. Never guesses a seed.
+Availability seed_from_params(const std::string& params_json, std::uint64_t& seed);
+
+// Duplicate-key aware argument lookup. A request off the wire cannot carry a
+// duplicate key -- the strict parser rejects one -- but a jsondoc Value is a
+// VECTOR of pairs, so anything that builds arguments programmatically can, and
+// Value::find would return the copy the protocol's type check SKIPPED.
+// `duplicated` separates "absent" from "ambiguous".
+const matter::jsondoc::Value* unique_argument(const matter::jsondoc::Value& object,
+                                              const char* key, bool& duplicated);
+
+// A non-negative integral JSON number (or lossless UInt64) no greater than
+// `max`. False leaves `out` alone.
+bool decimal_u64_in_range(const matter::jsondoc::Value& value, std::uint64_t max,
+                          std::uint64_t& out);
 
 // --- listed facts -----------------------------------------------------------
 
@@ -119,6 +177,12 @@ struct Entry {
     std::string source_path_value;
     Availability params;  // guards `params_json`
     std::string params_json;
+
+    // Present only for an entity whose live ECS row has a PartInstance.  This
+    // is the honest bridge from an authored/runtime entity to a generated
+    // part; it does not claim that the entity itself came from that module.
+    Availability part_instance;
+    std::uint64_t part_hash = 0;
 
     bool selected = false;
     bool primary = false;
@@ -175,6 +239,35 @@ ListPage list_objects(const Snapshot& snapshot, const ListQuery& query);
 // numerically valid id that only exists in the OTHER kind's namespace.
 const Entry* find_object(const Snapshot& snapshot,
                          const agent::ObjectIdentity& object);
+
+// --- provenance tracing ----------------------------------------------------
+
+// scene.trace_provenance takes the same typed identity as scene.get_object,
+// then walks only the recorded part-graph edges.  The graph is a module DAG,
+// not an instance graph: a node records the first representative parameter
+// set seen for a module, which is stated in the response rather than hidden.
+constexpr std::uint32_t kDefaultTraceDepth = 3;
+constexpr std::uint32_t kMaxTraceDepth = 8;
+constexpr std::uint32_t kDefaultTraceNodes = 64;
+constexpr std::uint32_t kMaxTraceNodes = 100;
+
+struct TraceQuery {
+    agent::ObjectIdentity object;
+    std::uint32_t max_depth = kDefaultTraceDepth;
+    std::uint32_t max_nodes = kDefaultTraceNodes;
+};
+
+// Validates object plus the bounded traversal arguments.  `object` is parsed
+// here as well as at the command boundary so a direct caller cannot bypass the
+// typed-id contract.
+bool parse_trace_query(const matter::jsondoc::Value& arguments, TraceQuery& out,
+                       std::string& error);
+
+// Serializes a source/procedural trace.  Missing graph, source, params and
+// seed data remain explicit availability records; no file or seed is guessed.
+matter::jsondoc::Value trace_result_json(const Snapshot& snapshot,
+                                         const std::vector<ProvenanceNode>& graph,
+                                         const TraceQuery& query);
 
 // --- inspection -------------------------------------------------------------
 

@@ -1,0 +1,46 @@
+{
+  "runs": [
+    {
+      "mode": "writer",
+      "command": "$env:MATTER_VK_VALIDATION=\"1\"; $env:TMP=\"$env:LOCALAPPDATA\\Temp\"; $env:TEMP=$env:TMP; $env:MATTER_VK_SMOKE_MODE=\"writer\"; & \"./build/cmake/windows-msvc/relwithdebinfo/asset_export_tests.exe\"; exit $LASTEXITCODE",
+      "exit": 0,
+      "seconds": 0.7766445050001494,
+      "binary_sha256": "03ecfd3ad4e9f15ea1932f899a19e26668e71651ae65f6fc1e1b9c91cbdc447a",
+      "binary_unchanged": true,
+      "source_changes": [],
+      "all_pass": true,
+      "zero_validation_errors": true,
+      "skipped_rt": false,
+      "log_sha256": "147005b9c3a7c49251d0841a28cf5386d6f4f8e291b0ea35532f2428ce5bbdfe",
+      "passed": true
+    },
+    {
+      "mode": "vt-export",
+      "command": "$env:MATTER_VK_VALIDATION=\"1\"; $env:TMP=\"$env:LOCALAPPDATA\\Temp\"; $env:TEMP=$env:TMP; $env:MATTER_VK_SMOKE_MODE=\"vt-export\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe\"; exit $LASTEXITCODE",
+      "exit": 0,
+      "seconds": 1.6607744219982123,
+      "binary_sha256": "bfef825d1f0303f74d04cf7d06fcbeacfa5521e69593a9c16c9ae90037294579",
+      "binary_unchanged": true,
+      "source_changes": [],
+      "all_pass": true,
+      "zero_validation_errors": true,
+      "skipped_rt": false,
+      "log_sha256": "2f90eb219ec75d9922084761cc9d7feaa6ae976e3f9d7218684b18459a8891fc",
+      "passed": true
+    },
+    {
+      "mode": "compositor",
+      "command": "$env:MATTER_VK_VALIDATION=\"1\"; $env:TMP=\"$env:LOCALAPPDATA\\Temp\"; $env:TEMP=$env:TMP; $env:MATTER_VK_SMOKE_MODE=\"compositor\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vt_compositor_tests.exe\"; exit $LASTEXITCODE",
+      "exit": 0,
+      "seconds": 5.699632923999161,
+      "binary_sha256": "ecf2f30ed813b0dede2d793b2f3b3d628d55170e6ec1786b9d9abeafc7993880",
+      "binary_unchanged": true,
+      "source_changes": [],
+      "all_pass": true,
+      "zero_validation_errors": true,
+      "skipped_rt": false,
+      "log_sha256": "58b98c8840b3fc4151b6518078a2148762d59fe1026e7ddf1854bfa0d923582e",
+      "passed": true
+    }
+  ]
+}

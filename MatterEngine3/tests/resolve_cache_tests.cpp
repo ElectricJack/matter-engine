@@ -20,6 +20,7 @@
 #include "part_graph_snapshot.h"
 #include "world_source.h"
 #include "world_lights.h"
+#include "memory_fixture_io.h"
 
 #include <cassert>
 #include <cstdio>
@@ -60,26 +61,38 @@ static int g_tests_passed = 0;
 // ---------------------------------------------------------------------------
 // Sandbox helpers
 // ---------------------------------------------------------------------------
-static std::string sandbox_root(const char* name) {
-    return (fs::temp_directory_path() / name).string();
-}
-
-static void reset_dir(const std::string& root) {
-    std::error_code ignored;
-    fs::remove_all(root, ignored);
-    fs::create_directories(root);
-}
-
+static matter::test::MemoryCacheByteStorage fixture_storage;
+static matter::SourceSnapshot::Files fixture_files;
+static std::vector<std::string> fixture_directories;
+static std::string sandbox_root(const char* name) { return std::string("/resolve-cache-fixture/") + name; }
 static void remove_dir(const std::string& root) {
-    std::error_code ignored;
-    fs::remove_all(root, ignored);
+    for (const auto& entry : fixture_storage.entries())
+        if (entry.first.compare(0, root.size()+1, root+"/") == 0) fixture_storage.erase(entry.first);
+    for (auto it=fixture_files.begin();it!=fixture_files.end();)
+        if (it->first.compare(0,root.size()+1,root+"/")==0) it=fixture_files.erase(it); else ++it;
+    fixture_directories.erase(std::remove_if(fixture_directories.begin(),fixture_directories.end(),
+        [&](const std::string& path){ return path==root || path.compare(0,root.size()+1,root+"/")==0; }), fixture_directories.end());
 }
-
-static bool write_file(const std::string& path, const std::string& body) {
-    std::ofstream f(path, std::ios::trunc);
-    if (!f) return false;
-    f << body;
-    return true;
+static void reset_dir(const std::string& root) { remove_dir(root); fixture_directories.push_back(root); }
+static void create_fixture_directory(const std::string& path) { fixture_directories.push_back(path); }
+static bool write_file(const std::string& path,const std::string& body) { fixture_files[path]=body; return true; }
+template<class... Paths> static uint64_t fixture_key(const Paths&... paths) {
+    const matter::SourceSnapshot sources(fixture_files, fixture_directories);
+    return resolve_cache::compute_key(paths..., &sources);
+}
+static bool save_fixture(const std::string& root,const std::string& world,uint64_t key,
+                         const resolve_cache::ResolveCachePayload& payload) {
+    return resolve_cache::save(root,world,key,payload,&fixture_storage);
+}
+static bool load_fixture(const std::string& root,const std::string& world,uint64_t key,
+                         resolve_cache::ResolveCachePayload& payload) {
+    return resolve_cache::load(root,world,key,payload,&fixture_storage);
+}
+static bool overwrite_bytes(const std::string& path,size_t offset,const void* data,size_t length) {
+    const auto old=fixture_storage.open(path);
+    if (!old || offset>old->size() || length>old->size()-offset) return false;
+    auto bytes=*old; std::memcpy(bytes.data()+offset,data,length);
+    return fixture_storage.publish(path,bytes);
 }
 
 // Build a minimal directory tree under root for key-computation tests.
@@ -88,11 +101,11 @@ static bool write_file(const std::string& path, const std::string& body) {
 // engine-shared/: engine.js
 static bool build_key_sandbox(const std::string& root) {
     reset_dir(root);
-    fs::create_directories(root + "/objects/nested");
-    fs::create_directories(root + "/worlds");
-    fs::create_directories(root + "/shared-lib");
-    fs::create_directories(root + "/engine-shared");
-    fs::create_directories(root + "/.cache/TestWorld/cache");
+    create_fixture_directory(root + "/objects/nested");
+    create_fixture_directory(root + "/worlds");
+    create_fixture_directory(root + "/shared-lib");
+    create_fixture_directory(root + "/engine-shared");
+    create_fixture_directory(root + "/.cache/TestWorld/cache");
 
     if (!write_file(root + "/objects/Box.js", "class Box extends Part { static build() {} }")) return false;
     if (!write_file(root + "/objects/nested/Tree.js", "class Tree extends Part { static build() {} }")) return false;
@@ -132,14 +145,30 @@ static resolve_cache::ResolveCachePayload make_payload() {
         p.lights.sun_color[0] =  2.2f;  p.lights.sun_color[1] =  2.05f; p.lights.sun_color[2] =  1.8f;
         p.lights.sky_color[0] =  0.38f; p.lights.sky_color[1] =  0.43f; p.lights.sky_color[2] =  0.52f;
 
-        world_lights::SpotLight s;
-        s.pos[0] = 1.f; s.pos[1] = 10.f; s.pos[2] = 2.f;
-        s.dir[0] = 0.f; s.dir[1] = -1.f; s.dir[2] = 0.f;
-        s.color[0] = 5.f; s.color[1] = 4.5f; s.color[2] = 4.f;
-        s.range = 20.f;
-        s.cos_inner = 0.9f;
-        s.cos_outer = 0.7f;
-        p.lights.spots.push_back(s);
+        world_lights::LocalLight spot{};
+        spot.position[0] = 1.f; spot.position[1] = 10.f; spot.position[2] = 2.f;
+        spot.range = 20.f;
+        spot.direction[0] = 0.f; spot.direction[1] = -1.f; spot.direction[2] = 0.f;
+        spot.cos_outer = 0.7f;
+        spot.color[0] = 5.f; spot.color[1] = 4.5f; spot.color[2] = 4.f;
+        spot.source_radius = 0.2f;
+        spot.cos_inner = 0.9f;
+        spot.kind = static_cast<uint32_t>(world_lights::LocalLightKind::Spot);
+        spot.flags = world_lights::kLocalLightCastsShadow;
+        p.lights.local.records.push_back(spot);
+
+        world_lights::LocalLight point{};
+        point.position[0] = -12.f; point.position[1] = 2.f;
+        point.position[2] = 4.f; point.range = 8.f;
+        point.cos_outer = point.cos_inner = -1.f;
+        point.color[0] = 2.f; point.color[1] = 1.f; point.color[2] = 0.5f;
+        point.source_radius = 0.05f;
+        point.kind = static_cast<uint32_t>(world_lights::LocalLightKind::Point);
+        p.lights.local.records.push_back(point);
+        std::string light_error;
+        const bool indexed = world_lights::rebuild_local_light_publication(
+            p.lights.local, light_error);
+        assert(indexed && light_error.empty());
     }
 
     // Snapshot.
@@ -148,6 +177,10 @@ static resolve_cache::ResolveCachePayload make_payload() {
         n.module      = "Box";
         n.source_path = "/abs/schemas/Box.js";
         n.params_json = "{}";
+        // A root placed with no explicit params still carries the module's
+        // declared defaults; the cache must round-trip them, or a cache hit
+        // would restore the empty parameter set they exist to replace.
+        n.effective_params_json = "{\"worldSeed\":20260721}";
         n.children    = {"Leg"};
         n.shared_imports = {"base"};
         n.shared_source_paths = {"/project/shared-lib/base.js",
@@ -220,15 +253,15 @@ static void test_round_trip_basic() {
     printf("[resolve_cache] round_trip_basic\n");
     const std::string root = sandbox_root("rc_test_roundtrip");
     reset_dir(root);
-    fs::create_directories(root + "/cache");
+    create_fixture_directory(root + "/cache");
 
     const uint64_t KEY = 0x0102030405060708ull;
     auto p = make_payload();
 
-    REQUIRE(resolve_cache::save(root, "TestWorld", KEY, p));
+    REQUIRE(save_fixture(root, "TestWorld", KEY, p));
 
     resolve_cache::ResolveCachePayload out;
-    REQUIRE(resolve_cache::load(root, "TestWorld", KEY, out));
+    REQUIRE(load_fixture(root, "TestWorld", KEY, out));
 
     // instances
     REQUIRE(out.instances.size() == p.instances.size());
@@ -246,19 +279,30 @@ static void test_round_trip_basic() {
         CHECK(out.lights.sun_color[i] == p.lights.sun_color[i]);
         CHECK(out.lights.sky_color[i] == p.lights.sky_color[i]);
     }
-    REQUIRE(out.lights.spots.size() == p.lights.spots.size());
-    for (size_t i = 0; i < p.lights.spots.size(); ++i) {
-        const auto& sp  = p.lights.spots[i];
-        const auto& so  = out.lights.spots[i];
+    REQUIRE(out.lights.local.records.size() ==
+            p.lights.local.records.size());
+    for (size_t i = 0; i < p.lights.local.records.size(); ++i) {
+        const auto& source = p.lights.local.records[i];
+        const auto& loaded = out.lights.local.records[i];
         for (int j = 0; j < 3; ++j) {
-            CHECK(so.pos[j]   == sp.pos[j]);
-            CHECK(so.dir[j]   == sp.dir[j]);
-            CHECK(so.color[j] == sp.color[j]);
+            CHECK(loaded.position[j] == source.position[j]);
+            CHECK(loaded.direction[j] == source.direction[j]);
+            CHECK(loaded.color[j] == source.color[j]);
         }
-        CHECK(so.range     == sp.range);
-        CHECK(so.cos_inner == sp.cos_inner);
-        CHECK(so.cos_outer == sp.cos_outer);
+        CHECK(loaded.range == source.range);
+        CHECK(loaded.cos_outer == source.cos_outer);
+        CHECK(loaded.source_radius == source.source_radius);
+        CHECK(loaded.cos_inner == source.cos_inner);
+        CHECK(loaded.kind == source.kind);
+        CHECK(loaded.flags == source.flags);
+        CHECK(loaded.reserved == source.reserved);
     }
+    CHECK(out.lights.local.revision == p.lights.local.revision);
+    CHECK(!out.lights.local.index.cells.empty());
+    CHECK(out.lights.local.index.light_indices ==
+          p.lights.local.index.light_indices);
+    CHECK(out.lights.local.index.oversized_light_indices ==
+          p.lights.local.index.oversized_light_indices);
 
     // snapshot nodes
     CHECK(out.snapshot.nodes.size() == p.snapshot.nodes.size());
@@ -269,6 +313,7 @@ static void test_round_trip_basic() {
         CHECK(it->second.module      == kv.second.module);
         CHECK(it->second.source_path == kv.second.source_path);
         CHECK(it->second.params_json == kv.second.params_json);
+        CHECK(it->second.effective_params_json == kv.second.effective_params_json);
         CHECK(it->second.children    == kv.second.children);
         CHECK(it->second.shared_imports == kv.second.shared_imports);
         CHECK(it->second.shared_source_paths == kv.second.shared_source_paths);
@@ -317,14 +362,14 @@ static void test_snapshot_indices() {
     printf("[resolve_cache] snapshot_indices\n");
     const std::string root = sandbox_root("rc_test_indices");
     reset_dir(root);
-    fs::create_directories(root + "/cache");
+    create_fixture_directory(root + "/cache");
 
     const uint64_t KEY = 0xABCDABCDABCDABCDull;
     auto p = make_payload();
 
-    REQUIRE(resolve_cache::save(root, "TestWorld", KEY, p));
+    REQUIRE(save_fixture(root, "TestWorld", KEY, p));
     resolve_cache::ResolveCachePayload out;
-    REQUIRE(resolve_cache::load(root, "TestWorld", KEY, out));
+    REQUIRE(load_fixture(root, "TestWorld", KEY, out));
 
     // by_file: /abs/schemas/Box.js -> ["Box"], /abs/schemas/Leg.js -> ["Leg"]
     {
@@ -355,33 +400,33 @@ static void test_project_sources_define_key_and_stale_manifest_is_ignored() {
     REQUIRE(build_key_sandbox(root));
 
     const std::string world = root + "/worlds/TestWorld.js";
-    uint64_t k1 = resolve_cache::compute_key(
+    uint64_t k1 = fixture_key(
         world, "{}", root + "/objects", root + "/shared-lib",
         root + "/engine-shared");
     CHECK(k1 != 0);
 
     REQUIRE(write_file(root + "/objects/Box.js",
                        "class Box extends Part { static build() { box(2,2,2); } }"));
-    uint64_t k2 = resolve_cache::compute_key(
+    uint64_t k2 = fixture_key(
         world, "{}", root + "/objects", root + "/shared-lib",
         root + "/engine-shared");
     CHECK(k1 != k2);
 
     REQUIRE(write_file(root + "/shared-lib/base.js", "export const BASE = 2;"));
-    uint64_t k3 = resolve_cache::compute_key(
+    uint64_t k3 = fixture_key(
         world, "{}", root + "/objects", root + "/shared-lib",
         root + "/engine-shared");
     CHECK(k2 != k3);
 
     REQUIRE(write_file(root + "/engine-shared/engine.js", "export const ENGINE = 2;"));
-    uint64_t k4 = resolve_cache::compute_key(
+    uint64_t k4 = fixture_key(
         world, "{}", root + "/objects", root + "/shared-lib",
         root + "/engine-shared");
     CHECK(k3 != k4);
 
     REQUIRE(write_file(world,
         "class TestWorld extends World { static roots = [{module: 'Tree'}]; }"));
-    uint64_t k5 = resolve_cache::compute_key(
+    uint64_t k5 = fixture_key(
         world, "{}", root + "/objects", root + "/shared-lib",
         root + "/engine-shared");
     CHECK(k4 != k5);
@@ -390,7 +435,7 @@ static void test_project_sources_define_key_and_stale_manifest_is_ignored() {
     // the cache directory must never perturb the key.
     REQUIRE(write_file(root + "/.cache/TestWorld/world.manifest",
                        "This stale manifest must never enter the key\n"));
-    uint64_t k6 = resolve_cache::compute_key(
+    uint64_t k6 = fixture_key(
         world, "{}", root + "/objects", root + "/shared-lib",
         root + "/engine-shared");
     CHECK(k5 == k6);
@@ -415,9 +460,9 @@ static void test_scene_object_tier_enters_the_key() {
 
     // No scene tier: the 6-arg form with "" must equal the 5-arg form bit for
     // bit. This is the compatibility guarantee, asserted rather than assumed.
-    const uint64_t flat5 = resolve_cache::compute_key(
+    const uint64_t flat5 = fixture_key(
         world, "{}", root + "/objects", root + "/shared-lib", root + "/engine-shared");
-    const uint64_t flat6 = resolve_cache::compute_key(
+    const uint64_t flat6 = fixture_key(
         world, "{}", "", root + "/objects", root + "/shared-lib",
         root + "/engine-shared");
     CHECK(flat5 != 0);
@@ -426,22 +471,22 @@ static void test_scene_object_tier_enters_the_key() {
     // An EMPTY scene objects/ directory is still a tier, and folding its tag
     // must change the key -- otherwise "this scene has its own objects" and
     // "this scene has none" are indistinguishable to the cache.
-    fs::create_directories(scene_objects);
-    const uint64_t with_tier = resolve_cache::compute_key(
+    create_fixture_directory(scene_objects);
+    const uint64_t with_tier = fixture_key(
         world, "{}", scene_objects, root + "/objects", root + "/shared-lib",
         root + "/engine-shared");
     CHECK(with_tier != flat5);
 
     // A scene-local module changes the key.
     REQUIRE(write_file(scene_objects + "/WorldSector.js", "// scene v1\n"));
-    const uint64_t v1 = resolve_cache::compute_key(
+    const uint64_t v1 = fixture_key(
         world, "{}", scene_objects, root + "/objects", root + "/shared-lib",
         root + "/engine-shared");
     CHECK(v1 != with_tier);
 
     // Editing it changes the key again -- the regression this test exists for.
     REQUIRE(write_file(scene_objects + "/WorldSector.js", "// scene v2\n"));
-    const uint64_t v2 = resolve_cache::compute_key(
+    const uint64_t v2 = fixture_key(
         world, "{}", scene_objects, root + "/objects", root + "/shared-lib",
         root + "/engine-shared");
     CHECK(v1 != v2);
@@ -449,7 +494,7 @@ static void test_scene_object_tier_enters_the_key() {
     // Same relative name in two tiers must not alias: the shared copy having
     // the bytes the scene copy just had is a different world state.
     REQUIRE(write_file(root + "/objects/WorldSector.js", "// scene v2\n"));
-    const uint64_t v3 = resolve_cache::compute_key(
+    const uint64_t v3 = fixture_key(
         world, "{}", scene_objects, root + "/objects", root + "/shared-lib",
         root + "/engine-shared");
     CHECK(v3 != v2);
@@ -477,6 +522,8 @@ static void test_world_definition_adapter_preserves_runtime_semantics() {
     light.color = {0.5f, 0.6f, 0.7f};
     light.intensity = 2.5f;
     light.range = 42.0f;
+    light.source_radius = 0.2f;
+    light.casts_shadow = true;
     definition.lights.push_back(light);
     definition.settings.sector_size = 32.0f;
 
@@ -492,12 +539,43 @@ static void test_world_definition_adapter_preserves_runtime_semantics() {
           adapted.root_transforms[0].m[11] == 6.0f);
     CHECK(adapted.expand_flags == std::vector<bool>({true, false}) &&
           adapted.tileset_flags == std::vector<bool>({false, true}));
-    CHECK(adapted.lights.spots.size() == 1 &&
-          adapted.lights.spots[0].color[0] == 1.25f &&
-          adapted.lights.spots[0].color[1] == 1.5f &&
-          adapted.lights.spots[0].color[2] == 1.75f &&
-          adapted.lights.spots[0].range == 42.0f);
+    CHECK(adapted.lights.local.records.size() == 1 &&
+          adapted.lights.local.records[0].color[0] == 1.25f &&
+          adapted.lights.local.records[0].color[1] == 1.5f &&
+          adapted.lights.local.records[0].color[2] == 1.75f &&
+          adapted.lights.local.records[0].range == 42.0f &&
+          adapted.lights.local.records[0].source_radius == 0.2f &&
+          adapted.lights.local.records[0].flags ==
+              world_lights::kLocalLightCastsShadow &&
+          adapted.lights.local.revision != 0u);
+    matter::WorldDefinition light_only_edit = definition;
+    light_only_edit.lights[0].intensity = 3.5f;
+    const viewer::ProviderWorldDefinition reloaded =
+        viewer::adapt_world_definition(light_only_edit);
+    CHECK(reloaded.roots.size() == adapted.roots.size() &&
+          part_graph::params_to_json(reloaded.roots[0].params) ==
+              part_graph::params_to_json(adapted.roots[0].params));
+    CHECK(reloaded.lights.local.revision != adapted.lights.local.revision);
     CHECK(adapted.settings.sector_size == 32.0f);
+}
+
+static void test_old_light_record_cache_version_is_rejected() {
+    printf("[resolve_cache] old_light_record_version_rejected\n");
+    const std::string root = sandbox_root("rc_test_old_light_version");
+    reset_dir(root);
+    create_fixture_directory(root + "/cache");
+    const uint64_t KEY = 0x7A7A7A7A7A7A7A7Aull;
+    auto payload = make_payload();
+    REQUIRE(save_fixture(root, "TestWorld", KEY, payload));
+
+    const std::string path = root + "/cache/TestWorld.resolve";
+    {
+        const uint32_t old_version = 6u;
+        REQUIRE(overwrite_bytes(path,4,&old_version,4));
+    }
+    resolve_cache::ResolveCachePayload out;
+    CHECK(!load_fixture(root, "TestWorld", KEY, out));
+    remove_dir(root);
 }
 
 static void test_project_procedural_settings_drive_profile_and_binding() {
@@ -542,11 +620,11 @@ static void test_key_changes_on_seed() {
     REQUIRE(build_key_sandbox(root));
 
     const std::string world = root + "/worlds/TestWorld.js";
-    uint64_t k1 = resolve_cache::compute_key(
+    uint64_t k1 = fixture_key(
         world, "{}", root + "/objects", root + "/shared-lib", root + "/engine-shared");
-    uint64_t k2 = resolve_cache::compute_key(
+    uint64_t k2 = fixture_key(
         world, "{\"worldSeed\":42}", root + "/objects", root + "/shared-lib", root + "/engine-shared");
-    uint64_t k3 = resolve_cache::compute_key(
+    uint64_t k3 = fixture_key(
         world, "{\"worldSeed\":99}", root + "/objects", root + "/shared-lib", root + "/engine-shared");
 
     CHECK(k1 != k2);
@@ -554,10 +632,31 @@ static void test_key_changes_on_seed() {
     CHECK(k2 != k3);
 
     // Same seed -> same key.
-    uint64_t k2b = resolve_cache::compute_key(
+    uint64_t k2b = fixture_key(
         world, "{\"worldSeed\":42}", root + "/objects", root + "/shared-lib", root + "/engine-shared");
     CHECK(k2 == k2b);
 
+    remove_dir(root);
+}
+
+static void test_authored_world_size_rejected_before_allocation() {
+    printf("[resolve_cache] authored_world_size_limit\n");
+    const std::string root = sandbox_root("rc_test_authored_limit");
+    reset_dir(root);
+    auto payload = make_payload();
+    payload.authored_world.clear();
+    constexpr uint64_t key = 0x92835ull;
+    REQUIRE(save_fixture(root, "TestWorld", key, payload));
+    {
+        const std::string path=root+"/cache/TestWorld.resolve";
+        const auto bytes=fixture_storage.open(path);
+        REQUIRE(bytes && bytes->size() >= 4);
+        const char oversized[4] = {1,0,0,4};
+        REQUIRE(overwrite_bytes(path,bytes->size()-4,oversized,4));
+    }
+    resolve_cache::ResolveCachePayload out;
+    CHECK(!load_fixture(root, "TestWorld", key, out));
+    CHECK(out.authored_world.empty()); // rejected before string::resize
     remove_dir(root);
 }
 
@@ -565,23 +664,23 @@ static void test_truncated_load() {
     printf("[resolve_cache] truncated_load\n");
     const std::string root = sandbox_root("rc_test_trunc");
     reset_dir(root);
-    fs::create_directories(root + "/cache");
+    create_fixture_directory(root + "/cache");
 
     const uint64_t KEY = 0x1111222233334444ull;
     auto p = make_payload();
-    REQUIRE(resolve_cache::save(root, "TestWorld", KEY, p));
+    REQUIRE(save_fixture(root, "TestWorld", KEY, p));
 
     // Truncate the file to just 4 bytes (magic only).
     const std::string path = root + "/cache/TestWorld.resolve";
     {
-        std::ofstream f(path, std::ios::binary | std::ios::trunc);
-        REQUIRE(f.good());
-        uint32_t magic_only = 0x00314352u;
-        f.write(reinterpret_cast<const char*>(&magic_only), 4);
+        const uint32_t magic_only=0x00314352u;
+        matter::CacheByteStorage::Bytes bytes(4);
+        std::memcpy(bytes.data(),&magic_only,4);
+        REQUIRE(fixture_storage.publish(path,bytes));
     }
 
     resolve_cache::ResolveCachePayload out;
-    CHECK(!resolve_cache::load(root, "TestWorld", KEY, out));
+    CHECK(!load_fixture(root, "TestWorld", KEY, out));
 
     remove_dir(root);
 }
@@ -590,24 +689,21 @@ static void test_bad_magic_rejected() {
     printf("[resolve_cache] bad_magic_rejected\n");
     const std::string root = sandbox_root("rc_test_magic");
     reset_dir(root);
-    fs::create_directories(root + "/cache");
+    create_fixture_directory(root + "/cache");
 
     const uint64_t KEY = 0xAAAABBBBCCCCDDDDull;
     auto p = make_payload();
-    REQUIRE(resolve_cache::save(root, "TestWorld", KEY, p));
+    REQUIRE(save_fixture(root, "TestWorld", KEY, p));
 
     // Corrupt the magic bytes.
     const std::string path = root + "/cache/TestWorld.resolve";
     {
-        std::fstream f(path, std::ios::in | std::ios::out | std::ios::binary);
-        REQUIRE(f.good());
-        uint32_t bad = 0xDEADDEADu;
-        f.seekp(0);
-        f.write(reinterpret_cast<const char*>(&bad), 4);
+        const uint32_t bad=0xDEADDEADu;
+        REQUIRE(overwrite_bytes(path,0,&bad,4));
     }
 
     resolve_cache::ResolveCachePayload out;
-    CHECK(!resolve_cache::load(root, "TestWorld", KEY, out));
+    CHECK(!load_fixture(root, "TestWorld", KEY, out));
 
     remove_dir(root);
 }
@@ -616,15 +712,15 @@ static void test_bad_key_rejected() {
     printf("[resolve_cache] bad_key_rejected\n");
     const std::string root = sandbox_root("rc_test_badkey");
     reset_dir(root);
-    fs::create_directories(root + "/cache");
+    create_fixture_directory(root + "/cache");
 
     const uint64_t KEY_SAVE = 0x1234567890ABCDEFull;
     const uint64_t KEY_LOAD = 0xFEDCBA9876543210ull;
     auto p = make_payload();
-    REQUIRE(resolve_cache::save(root, "TestWorld", KEY_SAVE, p));
+    REQUIRE(save_fixture(root, "TestWorld", KEY_SAVE, p));
 
     resolve_cache::ResolveCachePayload out;
-    CHECK(!resolve_cache::load(root, "TestWorld", KEY_LOAD, out));
+    CHECK(!load_fixture(root, "TestWorld", KEY_LOAD, out));
 
     remove_dir(root);
 }
@@ -633,7 +729,7 @@ static void test_multi_source_dedup() {
     printf("[resolve_cache] multi_source_dedup\n");
     const std::string root = sandbox_root("rc_test_dedup");
     reset_dir(root);
-    fs::create_directories(root + "/cache");
+    create_fixture_directory(root + "/cache");
 
     const uint64_t KEY = 0xDEDEDEDEDEDEDEDEull;
     auto p = make_payload();
@@ -641,11 +737,11 @@ static void test_multi_source_dedup() {
     // The payload from make_payload() already has two bake_plan entries sharing
     // the same source string (the Box source). Verify that the file size is
     // smaller than it would be without dedup.
-    REQUIRE(resolve_cache::save(root, "TestWorld", KEY, p));
+    REQUIRE(save_fixture(root, "TestWorld", KEY, p));
 
     // Load and verify equality.
     resolve_cache::ResolveCachePayload out;
-    REQUIRE(resolve_cache::load(root, "TestWorld", KEY, out));
+    REQUIRE(load_fixture(root, "TestWorld", KEY, out));
     CHECK(out.bake_plan.size() == p.bake_plan.size());
 
     // Both Box entries share the same source.
@@ -674,7 +770,9 @@ int main() {
     test_project_procedural_settings_drive_profile_and_binding();
     test_key_changes_on_seed();
     test_truncated_load();
+    test_authored_world_size_rejected_before_allocation();
     test_bad_magic_rejected();
+    test_old_light_record_cache_version_is_rejected();
     test_bad_key_rejected();
     test_multi_source_dedup();
 

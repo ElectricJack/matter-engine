@@ -1,0 +1,107 @@
+{
+  "status": "geometry publication verified; connected POM traversal and full goal incomplete",
+  "build_configuration": "native MSVC RelWithDebInfo",
+  "sources": "geometry-publication-v4-sources.json",
+  "changes_after_smoke_validation": [
+    "cmake/tests/viewer_graph_tests.cmake"
+  ],
+  "steps": [
+    {
+      "name": "build-compositor",
+      "log": "geometry-publication-v1-build-compositor.log",
+      "exit": 0,
+      "log_sha256": "bd0deabe849b83d150fcda4ddcb13155941146b8734233d61261c07567f0d654"
+    },
+    {
+      "name": "test-compositor",
+      "log": "geometry-publication-v1-test-compositor.log",
+      "exit": 0,
+      "log_sha256": "f057e82bde221a98c41704572718dbfd5895f36b38da7ce77fe602c5d5a59443"
+    },
+    {
+      "name": "build-smoke-initial",
+      "log": "geometry-publication-v1-build-smoke.log",
+      "exit": 1,
+      "log_sha256": "05a450fe8120187cefb2f4d648729246f6035d60c22e332e31f121a911922fcc"
+    },
+    {
+      "name": "build-smoke-asset-dependencies",
+      "log": "geometry-publication-v2-build-smoke.log",
+      "exit": 1,
+      "log_sha256": "269c9b48fed4237497c4183b0ce6deaa6731484f00f6c0e36628b9fc1d1a0d3f"
+    },
+    {
+      "name": "build-smoke",
+      "log": "geometry-publication-v3-build-smoke.log",
+      "exit": 0,
+      "log_sha256": "24494a2d1f3dc2f0229a768c5e00f862907646e3b7a484af8bfe03f7d3259974"
+    },
+    {
+      "name": "build-editor",
+      "log": "geometry-publication-v3-build-editor.log",
+      "exit": 0,
+      "log_sha256": "fd9d56cda8469fbc0c994844fb7d0f09dab121d6ee7218c02204e1211c67ac90"
+    },
+    {
+      "name": "graph-initial",
+      "log": "geometry-publication-v3-build-graph-tests.log",
+      "exit": 8,
+      "log_sha256": "161841e47b409ad4cf5912adc6119cfcb76f292cf75f093e75143b3bbb119bc7"
+    },
+    {
+      "name": "graph",
+      "log": "geometry-publication-v4-build-graph-tests.log",
+      "exit": 0,
+      "log_sha256": "c6d4bb637732e41915a63d6aa62eeaea197df069e679165f1364a769ad206d13"
+    }
+  ],
+  "smoke_runs": {
+    "binary_sha256": "c004c994705d85d49d9823346182d3fb73d6841094c2f2942db3ed8d2504a084",
+    "runs": [
+      {
+        "mode": "vt-queue",
+        "command": "$env:MATTER_VK_VALIDATION=\"1\"; $env:TMP=\"$env:LOCALAPPDATA\\Temp\"; $env:TEMP=$env:TMP; $env:MATTER_VK_SMOKE_MODE=\"vt-queue\"; Set-Location \"D:\\Shared With Desktop\\AI\\matter-engine-cpp\\MatterEditor\"; & \".\\build\\cmake\\windows-msvc\\relwithdebinfo\\vulkan_smoke_tests.exe\"; exit $LASTEXITCODE",
+        "exit": 0,
+        "expected_exit": 0,
+        "seconds": 1.8438942460052203,
+        "zero_validation_errors": true,
+        "log_sha256": "3829ec2e196a7eb55d280fe0c307bd7ab1decffe3a3b55628cdf3f1dcab56957"
+      },
+      {
+        "mode": "vt-input-snapshot",
+        "command": "$env:MATTER_VK_VALIDATION=\"1\"; $env:TMP=\"$env:LOCALAPPDATA\\Temp\"; $env:TEMP=$env:TMP; $env:MATTER_VK_SMOKE_MODE=\"vt-input-snapshot\"; Set-Location \"D:\\Shared With Desktop\\AI\\matter-engine-cpp\\MatterEditor\"; & \".\\build\\cmake\\windows-msvc\\relwithdebinfo\\vulkan_smoke_tests.exe\"; exit $LASTEXITCODE",
+        "exit": 0,
+        "expected_exit": 0,
+        "seconds": 65.1845481049968,
+        "zero_validation_errors": true,
+        "log_sha256": "dbba9a60eb135de56149b1b7801cffa4196b48c27d7b2bef53e3b4465a83fdfe"
+      },
+      {
+        "mode": "vt-composed-parallax",
+        "command": "$env:MATTER_VK_VALIDATION=\"1\"; $env:TMP=\"$env:LOCALAPPDATA\\Temp\"; $env:TEMP=$env:TMP; $env:MATTER_VK_SMOKE_MODE=\"vt-composed-parallax\"; Set-Location \"D:\\Shared With Desktop\\AI\\matter-engine-cpp\\MatterEditor\"; & \".\\build\\cmake\\windows-msvc\\relwithdebinfo\\vulkan_smoke_tests.exe\"; exit $LASTEXITCODE",
+        "exit": 0,
+        "expected_exit": 0,
+        "seconds": 17.973582462989725,
+        "zero_validation_errors": true,
+        "log_sha256": "a9a32e4c38058ee1fb5d0334ec8450b90385b8cc666e673dda5a768d0d8d18a6"
+      },
+      {
+        "mode": "vt-composed-seam",
+        "command": "$env:MATTER_VK_VALIDATION=\"1\"; $env:TMP=\"$env:LOCALAPPDATA\\Temp\"; $env:TEMP=$env:TMP; $env:MATTER_VK_SMOKE_MODE=\"vt-composed-seam\"; Set-Location \"D:\\Shared With Desktop\\AI\\matter-engine-cpp\\MatterEditor\"; & \".\\build\\cmake\\windows-msvc\\relwithdebinfo\\vulkan_smoke_tests.exe\"; exit $LASTEXITCODE",
+        "exit": 1,
+        "expected_exit": 1,
+        "seconds": 17.695412467001006,
+        "zero_validation_errors": true,
+        "log_sha256": "599e097d94b6b0c9f77ce995d9af446fcc0653adb2a11eaed2ddcf6839b49f1d"
+      }
+    ],
+    "source_changes": [],
+    "binary_unchanged": true
+  },
+  "binaries": {
+    "editor": "789276821fea7d75100ccfc160c5cead4e136774a4a97552f8710052745c3af3",
+    "vulkan_smoke_tests": "c004c994705d85d49d9823346182d3fb73d6841094c2f2942db3ed8d2504a084",
+    "vt_compositor_tests": "28567a147cc86e7ff9b93b5efe85b8e4321212f28368004576597b7b6cdd4e70"
+  },
+  "known_seam_failures": 2
+}

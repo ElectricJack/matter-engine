@@ -1,0 +1,196 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+
+#include "local_light_types.glsl"
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+layout(set = 0, binding = 0) uniform sampler2D primary_depth;
+layout(set = 0, binding = 1, std430) readonly buffer PrimaryLightRecords {
+    LocalLightGpu lights[];
+};
+layout(set = 0, binding = 2, std430) buffer PrimaryLightMetadata {
+    uvec4 light_counts;
+    vec2 light_grid;
+    uvec2 light_debug;
+    uvec4 primary_tiles;
+    uint primary_masks[];
+};
+layout(set = 0, binding = 3, std430) readonly buffer PrimaryOversizedLightIndices {
+    uint oversized_indices[];
+};
+layout(push_constant) uniform PrimaryLightCullConstants {
+    mat4 clip_to_world;
+    uvec4 extent_light_words; // source width/height, light count, words per tile
+} constants;
+
+shared vec3 receiver_min[256];
+shared vec3 receiver_max[256];
+// 0: no receiver, 1: finite receiver, 2: malformed receiver (keep all lights).
+shared uint receiver_state[256];
+shared uint light_kept[256];
+
+bool finite_vec3(vec3 value) {
+    return !any(isnan(value)) && !any(isinf(value));
+}
+
+bool light_intersects_receivers(LocalLightGpu light, vec3 minimum,
+                                vec3 maximum) {
+    float range = light.position_range.w;
+    if (!(range > 0.0) || isnan(range) || isinf(range) ||
+        !finite_vec3(light.position_range.xyz))
+        return true;
+    vec3 nearest_delta = (clamp(light.position_range.xyz, minimum, maximum) -
+                          light.position_range.xyz) / range;
+    float normalized_distance2 = dot(nearest_delta, nearest_delta);
+    // Range-normalized form matches attenuation without overflowing range².
+    // Nonfinite arithmetic is an exact-path fallback, never a rejection.
+    if (isnan(normalized_distance2) || isinf(normalized_distance2))
+        return true;
+    if (normalized_distance2 > 1.00004)
+        return false;
+    if (light.kind != 1u)
+        return true;
+
+    vec3 center = minimum * 0.5 + maximum * 0.5;
+    vec3 half_extent = maximum * 0.5 - minimum * 0.5;
+    vec3 delta = center - light.position_range.xyz;
+    float radius = length(half_extent);
+    vec3 axis = light.direction_cos_outer.xyz;
+    float axis_length = length(axis);
+    if (!finite_vec3(delta) || !finite_vec3(axis) ||
+        isnan(radius) || isinf(radius) || !(axis_length > 0.0) ||
+        isnan(axis_length) || isinf(axis_length))
+        return true;
+    // The hard-edge attenuation branch uses cos_inner. Taking the smaller
+    // threshold conservatively covers both it and the smooth outer cutoff.
+    if (isnan(light.direction_cos_outer.w) || isinf(light.direction_cos_outer.w) ||
+        isnan(light.cos_inner) || isinf(light.cos_inner))
+        return true;
+    float cosine = min(light.direction_cos_outer.w, light.cos_inner) / axis_length;
+    if (isnan(cosine) || isinf(cosine) || cosine <= -1.0)
+        return true;
+    cosine = min(cosine, 1.0);
+    axis /= axis_length;
+    float axial = dot(axis, delta);
+    float radial = length(delta - axis * axial);
+    float sine = sqrt(max(1.0 - cosine * cosine, 0.0));
+    // f(v)=cos(theta)*length(v_perp)-sin(theta)*v_axial is 1-Lipschitz.
+    // If f(center)>radius, the enclosing sphere misses the whole cone.
+    // This also works for obtuse cones; there is no near-plane assumption.
+    float separation = cosine * radial - sine * axial;
+    float padding = max(1e-4, 2e-5 * max(radius,
+        max(abs(delta.x), max(abs(delta.y), abs(delta.z)))));
+    return isnan(separation) || isinf(separation) ||
+           separation <= radius + padding;
+}
+
+void main() {
+    uint lane = gl_LocalInvocationIndex;
+    uvec2 pixel = gl_GlobalInvocationID.xy;
+    receiver_min[lane] = vec3(3.402823466e+38);
+    receiver_max[lane] = vec3(-3.402823466e+38);
+    receiver_state[lane] = 0u;
+    if (all(lessThan(pixel, constants.extent_light_words.xy))) {
+        float depth = texelFetch(primary_depth, ivec2(pixel), 0).x;
+        if (isnan(depth) || isinf(depth)) {
+            receiver_state[lane] = 2u;
+        } else if (depth > 0.0) { // reversed-Z background is zero
+            vec2 uv = (vec2(pixel) + vec2(0.5)) /
+                      vec2(constants.extent_light_words.xy);
+            vec4 world_h = constants.clip_to_world *
+                vec4(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, depth, 1.0);
+            vec3 world = world_h.xyz / world_h.w;
+            if (!finite_vec3(world) || isnan(world_h.w) ||
+                isinf(world_h.w) || world_h.w == 0.0) {
+                receiver_state[lane] = 2u;
+            } else {
+                receiver_min[lane] = world;
+                receiver_max[lane] = world;
+                receiver_state[lane] = 1u;
+            }
+        }
+    }
+    // Partial edge tiles participate in every barrier too.
+    barrier();
+    for (uint stride = 128u; stride != 0u; stride >>= 1u) {
+        if (lane < stride) {
+            receiver_min[lane] = min(receiver_min[lane], receiver_min[lane + stride]);
+            receiver_max[lane] = max(receiver_max[lane], receiver_max[lane + stride]);
+            receiver_state[lane] = max(receiver_state[lane], receiver_state[lane + stride]);
+        }
+        barrier();
+    }
+    if (lane == 0u && receiver_state[0] == 1u) {
+        // Covers float error and raster's independent ray/depth
+        // reconstruction. Bounds are final shading depth, not the
+        // POM roof-escape/proxy position used only for ray origins.
+        vec3 magnitude = max(abs(receiver_min[0]), abs(receiver_max[0]));
+        float padding = max(1e-4, 2e-5 * max(magnitude.x,
+                                           max(magnitude.y, magnitude.z)));
+        receiver_min[0] -= vec3(padding);
+        receiver_max[0] += vec3(padding);
+        if (!finite_vec3(receiver_min[0]) || !finite_vec3(receiver_max[0]))
+            receiver_state[0] = 2u;
+    }
+    barrier();
+    uint words = constants.extent_light_words.w;
+    uint tile = gl_WorkGroupID.y * primary_tiles.x + gl_WorkGroupID.x;
+    // Test one light per lane, then pack eight words. This keeps the entire
+    // workgroup busy even in scenes containing only a few mask words.
+    // There are no atomics, list truncation, or fixed light-count caps.
+    for (uint first_word = 0u; first_word < words; first_word += 8u) {
+        uint index = first_word * 32u + lane;
+        bool kept = receiver_state[0] == 2u;
+        if (receiver_state[0] == 1u && index < constants.extent_light_words.z)
+            kept = light_intersects_receivers(lights[index], receiver_min[0], receiver_max[0]);
+        light_kept[lane] = kept ? 1u : 0u;
+        barrier();
+        if (lane < 8u && first_word + lane < words) {
+            uint mask = 0u;
+            for (uint bit = 0u; bit < 32u; ++bit)
+                mask |= light_kept[lane * 32u + bit] << bit;
+            primary_masks[tile * words + first_word + lane] = mask;
+        }
+        barrier();
+    }
+    // All mask words must be visible before lane zero expands their set bits.
+    memoryBarrierBuffer();
+    barrier();
+    if (lane == 0u) {
+        uint light_count = constants.extent_light_words.z;
+        uint mask_words = primary_tiles.x * primary_tiles.y * words;
+        uint list_base = mask_words + tile * (light_count + 1u);
+        uint count = 0u;
+        uint oversized_cursor = 0u;
+        uint next_oversized = light_counts.z != 0u
+            ? oversized_indices[0] : 0xffffffffu;
+        // Preserve the reference's two ascending phases. A monotonic merge
+        // avoids changing light records or adding another classification ABI.
+        for (uint word = 0u; word < words; ++word) {
+            uint mask = primary_masks[tile * words + word];
+            uint remaining = light_count - word * 32u;
+            if (remaining < 32u)
+                mask &= (1u << remaining) - 1u;
+            while (mask != 0u) {
+                uint index = word * 32u + uint(findLSB(mask));
+                mask &= mask - 1u;
+                while (next_oversized < index) {
+                    ++oversized_cursor;
+                    next_oversized = oversized_cursor < light_counts.z
+                        ? oversized_indices[oversized_cursor] : 0xffffffffu;
+                }
+                if (next_oversized != index)
+                    primary_masks[list_base + 1u + count++] = index;
+            }
+        }
+        for (uint candidate = 0u; candidate < light_counts.z; ++candidate) {
+            uint index = oversized_indices[candidate];
+            uint mask = primary_masks[tile * words + (index >> 5u)];
+            if ((mask & (1u << (index & 31u))) != 0u)
+                primary_masks[list_base + 1u + count++] = index;
+        }
+        // Fixed capacity is exactly light_count; no list truncation or
+        // overflow sentinel. Empty lists publish count zero normally.
+        primary_masks[list_base] = count;
+    }
+}

@@ -25,10 +25,11 @@
  *   index.bin          the sole authority; rewritten whole and renamed in
  *   index.<pid>.tmp    the staging file for that rename, pid-qualified
  *   store.lock         the cross-process writer lock, held open for a session
+ *   readers.lock       shared reader / exclusive maintenance lease
  *
  * Threading: none. Nothing here locks, and nothing here is atomic. One
  * BlobStore per thread is the contract; the only concurrency this file handles
- * is between PROCESSES, and it handles it with the lock file plus the fact
+ * is between store instances, and it handles it with file leases plus the fact
  * that a rename is all-or-nothing.
  */
 
@@ -99,8 +100,8 @@ std::string join(const std::string& dir, const std::string& name) {
  * <unordered_map> nor any OS type appears in the public header.
  *
  * No synchronisation anywhere in here -- a BlobStore is single-threaded by
- * contract. Cross-process safety is the `lock` member on a writer handle plus
- * the atomic index rename, nothing more.
+ * contract. Cross-instance safety uses the writer lock, shared reader leases,
+ * exclusive maintenance leases, and atomic index publication.
  *
  * `index` holds committed entries and this writer's uncommitted ones together;
  * `pending` distinguishes them and `dirty` says whether any exist. */
@@ -110,8 +111,10 @@ struct BlobStore::Impl {
     bool read_only = true;
 
     os::Lock* lock = nullptr;
+    os::Lock* reader_lease = nullptr;
 
     uint32_t generation = 0;
+    uint64_t snapshot_revision = 0;
     std::vector<PackFile> packs;
     std::unordered_map<BlobHash, IndexEntry, HashKeyHash> index;
 
@@ -121,6 +124,7 @@ struct BlobStore::Impl {
 
     ~Impl() {
         for (PackFile& p : packs) if (p.f) os::close(p.f);
+        if (reader_lease) os::unlock(reader_lease);
         if (lock) os::unlock(lock);
     }
 
@@ -195,18 +199,24 @@ bool BlobStore::Impl::load_index(std::string* err) {
         return true;
     }
 
+    // Capture BEFORE opening/reading. A concurrent rename may make us read a
+    // newer index (which only causes a redundant refresh), but must never mark
+    // an older buffer with the stamp of a commit it has not actually read.
+    uint64_t read_stamp = 0;
+    os::stamp_of(path, &read_stamp);
     os::File* f = os::open_read(path);
     if (!f) { if (err) *err = "cannot open index: " + os::last_error(); return false; }
     uint64_t sz = os::file_size(f);
-    if (sz < kIndexHeaderBytes + 4) {
+    if (sz < kIndexHeaderBytes + 4 || sz > cfg.max_index_bytes || sz > SIZE_MAX) {
         os::close(f);
-        if (err) *err = "index truncated";
+        if (err) *err = "index truncated or exceeds byte limit";
         return false;
     }
     std::vector<uint8_t> buf((size_t)sz);
     bool ok = os::read_at(f, 0, buf.data(), buf.size());
     os::close(f);
     if (!ok) { if (err) *err = "index read failed: " + os::last_error(); return false; }
+    if (cfg.debug_after_index_read) cfg.debug_after_index_read(cfg.debug_after_index_read_context);
 
     uint32_t stored_crc = get_u32(buf.data() + buf.size() - 4);
     uint32_t actual_crc = crc32(buf.data(), buf.size() - 4);
@@ -233,7 +243,9 @@ bool BlobStore::Impl::load_index(std::string* err) {
     }
 
     std::unordered_map<BlobHash, IndexEntry, HashKeyHash> new_index;
-    new_index.reserve(nentries * 2 + 8);
+    new_index.reserve(size_t(nentries) * 2 + 8);
+    uint32_t previous_pack = 0;
+    uint64_t previous_end = 0;
     const uint8_t* e = buf.data() + kIndexHeaderBytes + (size_t)npacks * 8;
     for (uint32_t i = 0; i < nentries; ++i, e += kIndexEntryBytes) {
         IndexEntry ie;
@@ -244,14 +256,25 @@ bool BlobStore::Impl::load_index(std::string* err) {
         ie.length  = get_u32(e + 28);
         ie.crc     = get_u32(e + 32);
         if (ie.pack >= npacks) { if (err) *err = "index names a pack that is not listed"; return false; }
-        new_index[ie.hash] = ie;
+        const uint64_t committed = new_packs[ie.pack].committed_size;
+        if (!ie.hash.valid() || !ie.length || ie.offset < kRecordHeaderBytes || ie.offset % 8 ||
+            ie.offset > committed || align_up8(ie.length) > committed - ie.offset ||
+            (i && (ie.pack < previous_pack ||
+                   (ie.pack == previous_pack && ie.offset - kRecordHeaderBytes < previous_end))) ||
+            !new_index.emplace(ie.hash, ie).second) {
+            if (err) *err = "invalid, overlapping or duplicate index record";
+            return false;
+        }
+        previous_pack = ie.pack;
+        previous_end = ie.offset + align_up8(ie.length);
     }
 
     for (PackFile& p : packs) if (p.f) os::close(p.f);
     packs.swap(new_packs);
     index.swap(new_index);
+    ++snapshot_revision;
     generation = gen;
-    os::stamp_of(path, &index_stamp);
+    index_stamp = read_stamp;
     return true;
 }
 
@@ -272,6 +295,12 @@ bool BlobStore::Impl::write_index(const std::string& path, uint32_t gen,
                   return a.offset < b.offset;
               });
 
+    const uint64_t bytes = kIndexHeaderBytes + uint64_t(pack_sizes.size()) * 8 +
+                           uint64_t(entries.size()) * kIndexEntryBytes + 4;
+    if (bytes > cfg.max_index_bytes || bytes > SIZE_MAX || pack_sizes.size() > UINT32_MAX || entries.size() > UINT32_MAX) {
+        if (err) *err = "index exceeds configured byte/count limit";
+        return false;
+    }
     std::vector<uint8_t> buf;
     buf.reserve(kIndexHeaderBytes + pack_sizes.size() * 8 +
                 entries.size() * kIndexEntryBytes + 4);
@@ -346,9 +375,9 @@ BlobStore::~BlobStore() = default;
  * from other generations. A writer therefore finishes all of its crash
  * recovery before any caller can read a single byte.
  *
- * A read-only open skips every one of those steps -- no lock, no truncation,
- * no sweep -- so it can never disturb a live writer, and it fails outright if
- * the directory does not already exist. */
+ * A read-only open holds a shared maintenance lease before loading its index.
+ * It never truncates or sweeps packs and fails if maintenance is in progress
+ * or the directory does not already exist. */
 std::unique_ptr<BlobStore> BlobStore::open(const StoreConfig& cfg, std::string* err) {
     std::unique_ptr<BlobStore> s(new BlobStore());
     Impl& d = *s->d_;
@@ -371,6 +400,13 @@ std::unique_ptr<BlobStore> BlobStore::open(const StoreConfig& cfg, std::string* 
         return nullptr;
     }
 
+    if (cfg.read_only) {
+        d.reader_lease = os::lock_shared(join(cfg.dir, "readers.lock"));
+        if (!d.reader_lease) {
+            if (err) *err = "store maintenance is active: " + os::last_error();
+            return nullptr;
+        }
+    }
     if (!d.load_index(err)) return nullptr;
 
     if (!cfg.read_only) {
@@ -378,7 +414,12 @@ std::unique_ptr<BlobStore> BlobStore::open(const StoreConfig& cfg, std::string* 
             if (err) *err = "recovery truncate failed: " + os::last_error();
             return nullptr;
         }
-        d.sweep_stale_packs();
+        // A reader may still lazily open any pack in its snapshot. Skip
+        // sweeping unless every read-only handle has retired.
+        if (auto* lease = os::lock_exclusive(join(cfg.dir, "readers.lock"), false)) {
+            d.sweep_stale_packs();
+            os::unlock(lease);
+        }
         if (d.packs.empty()) {
             d.packs.resize(1);
             /* Touch pack 0 so a store that is opened and closed without a put
@@ -485,6 +526,94 @@ Status BlobStore::put(const void* data, size_t len, BlobHash* out_hash) {
     return Status::Ok;
 }
 
+Status BlobStore::repair_blob(const BlobHash& expected, const void* data, size_t len) {
+    auto& d = *d_;
+    if (d.read_only) return Status::ReadOnly;
+    if (!data || !len || len > UINT32_MAX || !expected.valid() || hash_bytes(data, len) != expected) {
+        d.last_err = "repair_blob: replacement does not match requested content";
+        return Status::IoError;
+    }
+    const auto found = d.index.find(expected);
+    const bool existed = found != d.index.end();
+    IndexEntry previous;
+    if (existed) { previous = found->second; d.index.erase(found); }
+    const auto result = put(data, len, nullptr);
+    if (result != Status::Ok && existed) d.index[expected] = previous;
+    return result;
+}
+
+Status BlobStore::put_batch(const std::vector<BlobInput>& inputs, size_t max_bytes,
+                            std::vector<BlobHash>& hashes, WriteBatchStats* stats) {
+    auto& d = *d_;
+    if (stats) *stats = {};
+    if (d.read_only) return Status::ReadOnly;
+    struct Pending { BlobInput input; BlobHash hash; };
+    std::vector<Pending> pending;
+    std::vector<BlobHash> result;
+    std::unordered_map<BlobHash, bool, HashKeyHash> seen;
+    size_t total = 0;
+    // Reject the entire oversized/invalid request before touching a pack.
+    for (const auto& input : inputs) {
+        if (!input.data || !input.size || input.size > UINT32_MAX) {
+            d.last_err = "put_batch: invalid payload"; return Status::IoError;
+        }
+        const auto hash = hash_bytes(input.data, input.size);
+        result.push_back(hash);
+        if (d.index.count(hash) || !seen.emplace(hash, true).second) continue;
+        const uint64_t bytes = align_up8(kRecordHeaderBytes + uint64_t(input.size));
+        if (bytes > max_bytes - total) {
+            d.last_err = "put_batch: staging limit exceeded"; return Status::IoError;
+        }
+        total += static_cast<size_t>(bytes);
+        pending.push_back({input, hash});
+    }
+    WriteBatchStats st;
+    for (size_t i = 0; i < pending.size();) {
+        if (d.packs.empty()) d.packs.resize(1);
+        uint32_t pid = static_cast<uint32_t>(d.packs.size() - 1);
+        const uint64_t first_bytes = align_up8(kRecordHeaderBytes + uint64_t(pending[i].input.size));
+        if (d.packs[pid].write_size &&
+            (d.packs[pid].write_size >= d.cfg.max_pack_bytes ||
+             first_bytes > d.cfg.max_pack_bytes - d.packs[pid].write_size)) {
+            d.packs.push_back(PackFile()); ++pid;
+        }
+        const uint64_t base = d.packs[pid].write_size;
+        std::vector<uint8_t> bytes;
+        bytes.reserve(total); // keep staging growth within the admitted byte bound
+        std::vector<IndexEntry> entries;
+        do {
+            const auto& p = pending[i];
+            const size_t record_bytes = static_cast<size_t>(align_up8(kRecordHeaderBytes + uint64_t(p.input.size)));
+            if (!bytes.empty() && (base + bytes.size() >= d.cfg.max_pack_bytes ||
+                record_bytes > d.cfg.max_pack_bytes - base - bytes.size())) break;
+            const size_t offset = bytes.size(); bytes.resize(offset + record_bytes, 0);
+            auto* hdr = bytes.data() + offset;
+            const uint32_t crc = crc32(p.input.data, p.input.size);
+            put_u32(hdr, kBlobMagic); put_u32(hdr + 4, static_cast<uint32_t>(p.input.size));
+            put_u64(hdr + 8, p.hash.lo); put_u64(hdr + 16, p.hash.hi);
+            put_u32(hdr + 24, crc); put_u32(hdr + 28, crc32(hdr, 28));
+            memcpy(hdr + kRecordHeaderBytes, p.input.data, p.input.size);
+            IndexEntry e; e.hash = p.hash; e.offset = base + offset + kRecordHeaderBytes;
+            e.pack = pid; e.length = static_cast<uint32_t>(p.input.size); e.crc = crc; e.pending = true;
+            entries.push_back(e); ++i;
+        } while (i < pending.size());
+        auto* file = d.pack_handle(pid);
+        if (!file || !os::write_at(file, base, bytes.data(), bytes.size())) {
+            d.last_err = "put_batch: pack append failed: " + os::last_error();
+            if (stats) *stats = st;
+            return Status::IoError;
+        }
+        d.packs[pid].write_size += bytes.size();
+        for (const auto& e : entries) d.index[e.hash] = e;
+        d.dirty = true;
+        st.bytes_written += bytes.size(); ++st.write_calls;
+        st.blobs_written += static_cast<uint32_t>(entries.size());
+    }
+    if (stats) *stats = st;
+    hashes = std::move(result);
+    return Status::Ok;
+}
+
 /* The commit point. fsync every open pack first -- committing an index that
  * named bytes still sitting in the page cache would be the one way to break
  * the invariant -- then write index.<pid>.tmp, fsync that, and rename it over
@@ -497,8 +626,14 @@ bool BlobStore::flush_index() {
     Impl& d = *d_;
     if (d.read_only) return false;
     if (!d.dirty) return true;
+    if (d.cfg.debug_fail_pack_flush) { d.last_err = "injected pack flush failure"; return false; }
 
-    for (PackFile& p : d.packs) if (p.f) os::sync(p.f);
+    for (PackFile& p : d.packs) {
+        if (p.f && !os::sync(p.f)) {
+            d.last_err = "pack flush failed: " + os::last_error();
+            return false;
+        }
+    }
 
     std::vector<uint64_t> sizes;
     sizes.reserve(d.packs.size());
@@ -585,6 +720,7 @@ uint64_t BlobStore::pack_bytes() const {
 }
 
 uint32_t BlobStore::generation() const { return d_->generation; }
+uint64_t BlobStore::snapshot_revision() const { return d_->snapshot_revision; }
 
 std::string BlobStore::pack_path(uint32_t pack_id) const {
     return d_->pack_path(d_->generation, pack_id);
@@ -625,10 +761,17 @@ std::vector<BlobHash> BlobStore::all_hashes() const {
  * the half-written new packs are unreachable and get swept at a later open.
  * After the rename the old packs are deleted best-effort. Every BlobLocation
  * and pack id handed out before this call is stale afterwards, and a reader
- * that has not reloaded starts seeing IoError rather than wrong bytes. */
-bool BlobStore::compact(const BlobHash* keep, size_t keep_count, CompactStats* out) {
+ * cannot exist during compaction: the maintenance lease requires all read-only
+ * handles to retire first. require_all refuses missing/corrupt survivors. */
+bool BlobStore::compact(const BlobHash* keep, size_t keep_count, CompactStats* out, bool require_all) {
     Impl& d = *d_;
-    if (d.read_only) return false;
+    std::unique_ptr<os::Lock, void(*)(os::Lock*)> maintenance(
+        d.read_only ? nullptr : os::lock_exclusive(join(d.dir, "readers.lock"), false), os::unlock);
+    if (!maintenance) { d.last_err = "compaction requires quiescent readers"; return false; }
+    if (keep_count && !keep) { d.last_err = "missing survivor array"; return false; }
+    if (d.generation == UINT32_MAX) { d.last_err = "pack generation exhausted"; return false; }
+    if (require_all) for (size_t i = 0; i < keep_count; ++i)
+        if (!d.index.count(keep[i])) { d.last_err = "required compaction survivor is missing"; return false; }
     if (!flush_index()) return false;
 
     CompactStats st;
@@ -664,7 +807,7 @@ bool BlobStore::compact(const BlobHash* keep, size_t keep_count, CompactStats* o
         os::remove_file(p);
         dst = os::open_rw(p, true);
         if (!dst) return false;
-        os::truncate(dst, 0);
+        if (!os::truncate(dst, 0)) { os::close(dst); dst = nullptr; return false; }
         new_paths.push_back(p);
         dst_size = 0;
         return true;
@@ -676,7 +819,8 @@ bool BlobStore::compact(const BlobHash* keep, size_t keep_count, CompactStats* o
     for (const IndexEntry& src : survivors) {
         uint64_t record_bytes = align_up8(kRecordHeaderBytes + (uint64_t)src.length);
         if (dst_size != 0 && dst_size + record_bytes > d.cfg.max_pack_bytes) {
-            os::sync(dst); os::close(dst); dst = nullptr;
+            if (!os::sync(dst)) { os::close(dst); return false; }
+            os::close(dst); dst = nullptr;
             new_sizes.push_back(dst_size);
             ++dst_id;
             if (!open_dst(dst_id)) return false;
@@ -688,7 +832,10 @@ bool BlobStore::compact(const BlobHash* keep, size_t keep_count, CompactStats* o
         if (!os::read_at(sf, src.offset, buf.data(), buf.size())) { os::close(dst); return false; }
         /* Never carry a corrupt blob forward: it drops out here and reads as
          * a miss afterwards, which is exactly what a cache should do. */
-        if (crc32(buf.data(), buf.size()) != src.crc) continue;
+        if (crc32(buf.data(), buf.size()) != src.crc) {
+            if (require_all) { os::close(dst); d.last_err = "required compaction survivor is corrupt"; return false; }
+            continue;
+        }
 
         uint8_t hdr[kRecordHeaderBytes];
         put_u32(hdr + 0, kBlobMagic);
@@ -704,8 +851,8 @@ bool BlobStore::compact(const BlobHash* keep, size_t keep_count, CompactStats* o
         uint64_t padded = align_up8(src.length);
         if (padded > src.length) {
             uint8_t zeros[8] = {0, 0, 0, 0, 0, 0, 0, 0};
-            os::write_at(dst, dst_size + kRecordHeaderBytes + src.length, zeros,
-                         (size_t)(padded - src.length));
+            if (!os::write_at(dst, dst_size + kRecordHeaderBytes + src.length, zeros,
+                              (size_t)(padded - src.length))) { os::close(dst); return false; }
         }
 
         IndexEntry ne = src;
@@ -718,7 +865,7 @@ bool BlobStore::compact(const BlobHash* keep, size_t keep_count, CompactStats* o
         st.bytes_kept += src.length;
     }
 
-    os::sync(dst);
+    if (!os::sync(dst)) { os::close(dst); return false; }
     os::close(dst);
     new_sizes.push_back(dst_size);
 
@@ -762,6 +909,46 @@ struct ReadBatch::Impl {
     std::vector<BlobHash> requests;
     std::vector<ReadResult> results;
     BatchStats stats;
+    struct Item { size_t slot; IndexEntry e; };
+    struct Chunk { size_t first, last; uint64_t begin, end; uint32_t pack; };
+    struct Plan { std::vector<Item> items; std::vector<Chunk> chunks; };
+
+    Plan plan() const {
+        Plan p;
+        const auto& d = *store->d_;
+        p.items.reserve(requests.size());
+        for (size_t i = 0; i < requests.size(); ++i) {
+            auto it = d.index.find(requests[i]);
+            if (it != d.index.end()) p.items.push_back({i, it->second});
+        }
+        std::sort(p.items.begin(), p.items.end(), [](const Item& a, const Item& b) {
+            if (a.e.pack != b.e.pack) return a.e.pack < b.e.pack;
+            if (a.e.offset != b.e.offset) return a.e.offset < b.e.offset;
+            if (a.e.hash != b.e.hash) return a.e.hash < b.e.hash;
+            return a.slot < b.slot;
+        });
+        for (size_t i = 0; i < p.items.size();) {
+            const auto& first = p.items[i].e;
+            Chunk c{i, i + 1, first.offset, first.offset + first.length, first.pack};
+            uint64_t holes = 0;
+            while (c.last < p.items.size()) {
+                const auto& e = p.items[c.last].e;
+                if (e.pack != c.pack) break;
+                // Duplicate requests never grow the allocation or the holes.
+                if (e.hash == p.items[c.last - 1].e.hash) { ++c.last; continue; }
+                const uint64_t hole = e.offset > c.end ? e.offset - c.end : 0;
+                const uint64_t end = std::max(c.end, e.offset + e.length);
+                if (hole > d.cfg.batch_gap_bytes || end - c.begin > d.cfg.batch_max_bytes ||
+                    hole > d.cfg.batch_max_overread_bytes - holes) break;
+                holes += hole;
+                c.end = end;
+                ++c.last;
+            }
+            p.chunks.push_back(c);
+            i = c.last;
+        }
+        return p;
+    }
 };
 
 ReadBatch::ReadBatch(BlobStore& store) : d_(new Impl()) { d_->store = &store; }
@@ -792,94 +979,82 @@ const BatchStats& ReadBatch::stats() const { return d_->stats; }
  * IoError on every affected result, not as a false return. Results are rebuilt
  * from scratch on each call, so re-submitting the same batch reads everything
  * again and allocates from the arena again. */
-bool ReadBatch::submit(MemArena* arena) {
+size_t ReadBatch::allocation_bytes() const {
+    size_t total = 0;
+    for (const auto& c : d_->plan().chunks) {
+        const uint64_t span = c.end - c.begin;
+        if (span > SIZE_MAX - 7) return SIZE_MAX;
+        const size_t padded = (static_cast<size_t>(span) + 7) & ~size_t(7);
+        if (padded > SIZE_MAX - total) return SIZE_MAX;
+        total += padded;
+    }
+    return total;
+}
+
+bool ReadBatch::submit(MemArena* arena) { return submit_impl(arena, nullptr, 0); }
+bool ReadBatch::submit(void* buffer, size_t capacity) {
+    const size_t needed = allocation_bytes();
+    if (needed == SIZE_MAX || needed > capacity || (needed && !buffer) ||
+        reinterpret_cast<uintptr_t>(buffer) % 8) {
+        d_->results.assign(d_->requests.size(), ReadResult());
+        d_->stats = BatchStats();
+        for (size_t i=0; i<d_->requests.size(); ++i) {
+            d_->results[i].hash = d_->requests[i]; d_->results[i].status = Status::IoError;
+        }
+        return false;
+    }
+    return submit_impl(nullptr, buffer, capacity);
+}
+bool ReadBatch::submit_impl(MemArena* arena, void* buffer, size_t capacity) {
+    size_t used = 0;
     Impl& b = *d_;
     BlobStore::Impl& d = *b.store->d_;
-
     b.results.assign(b.requests.size(), ReadResult());
     b.stats = BatchStats();
-    b.stats.requests = (uint32_t)b.requests.size();
+    b.stats.requests = static_cast<uint32_t>(b.requests.size());
     for (size_t i = 0; i < b.requests.size(); ++i) b.results[i].hash = b.requests[i];
-    if (b.requests.empty()) return true;
-
-    /* Resolve, then sort into physical order. Everything the batch buys comes
-     * from this: the disk is visited once, forwards. */
-    struct Item {
-        size_t slot;
-        IndexEntry e;
-    };
-    std::vector<Item> items;
-    items.reserve(b.requests.size());
-    for (size_t i = 0; i < b.requests.size(); ++i) {
-        auto it = d.index.find(b.requests[i]);
-        if (it == d.index.end()) {
-            b.results[i].status = Status::Missing;
-            ++b.stats.misses;
-            continue;
-        }
-        items.push_back(Item{i, it->second});
-    }
-    std::sort(items.begin(), items.end(), [](const Item& a, const Item& c) {
-        if (a.e.pack != c.e.pack) return a.e.pack < c.e.pack;
-        return a.e.offset < c.e.offset;
-    });
-
-    const uint64_t gap = d.cfg.batch_gap_bytes;
-
-    size_t i = 0;
-    while (i < items.size()) {
-        /* Grow a chunk over neighbours in the same pack while the hole between
-         * them stays under the coalescing window. Reading a small hole is
-         * cheaper than paying for a second seek. */
-        uint32_t pack = items[i].e.pack;
-        uint64_t begin = items[i].e.offset;
-        uint64_t end = begin + items[i].e.length;
-        size_t j = i + 1;
-        while (j < items.size() && items[j].e.pack == pack) {
-            uint64_t s = items[j].e.offset;
-            if (s > end + gap) break;
-            uint64_t e2 = s + items[j].e.length;
-            if (e2 > end) end = e2;
-            ++j;
-        }
-
-        /* The chunk is read STRAIGHT INTO the arena and the results point into
-         * it. There is no staging buffer and no second copy: the bytes land
-         * once, get checksummed where they lie, and are handed out in place.
-         *
-         * Payload offsets inside a pack are 8-byte aligned by construction and
-         * `begin` is itself a payload offset, so every payload keeps the arena's
-         * 8-byte alignment.
-         *
-         * The cost is that the arena also holds whatever fell between the
-         * requested blobs -- bounded by batch_gap_bytes per join, and reported
-         * as bytes_read against bytes_delivered so a caller who cares can see
-         * it. Measured on the benchmark corpus that overhead is under 0.2%,
-         * against a copy of every delivered byte. */
-        os::File* f = d.pack_handle(pack);
-        size_t span = (size_t)(end - begin);
-        uint8_t* chunk = arena ? (uint8_t*)mem_arena_alloc(arena, span) : nullptr;
-        bool ok = false;
-        if (f && chunk) ok = os::read_at(f, begin, chunk, span);
-        ++b.stats.chunk_reads;
-        b.stats.bytes_read += span;
-
-        for (size_t k = i; k < j; ++k) {
-            ReadResult& r = b.results[items[k].slot];
-            const IndexEntry& e = items[k].e;
-            if (!ok) { r.status = Status::IoError; continue; }
-            const uint8_t* payload = chunk + (size_t)(e.offset - begin);
-            if (crc32(payload, e.length) != e.crc) {
-                r.status = Status::Corrupt;
-                ++b.stats.corrupt;
-                continue;
+    const auto plan = b.plan();
+    b.stats.misses = static_cast<uint32_t>(b.requests.size() - plan.items.size());
+    for (const auto& c : plan.chunks) {
+        const uint64_t extent = c.end - c.begin;
+        os::File* f = d.pack_handle(c.pack);
+        const size_t span = extent <= SIZE_MAX ? static_cast<size_t>(extent) : 0;
+        uint8_t* chunk = arena && span ? static_cast<uint8_t*>(mem_arena_alloc(arena, span)) : nullptr;
+        if (!arena && buffer && span && span <= SIZE_MAX-7) {
+            const size_t padded = (span+7) & ~size_t(7);
+            if (padded <= capacity-used) {
+                chunk = static_cast<uint8_t*>(buffer)+used; used += padded;
             }
-            r.data = payload;
-            r.size = e.length;
-            r.status = Status::Ok;
-            b.stats.bytes_delivered += e.length;
         }
-        i = j;
+        bool ok = false;
+        if (f && chunk) {
+            ++b.stats.chunk_reads;
+            b.stats.bytes_read += span;
+            ok = os::read_at(f, c.begin, chunk, span);
+        }
+        for (size_t k = c.first; k < c.last; ++k) {
+            const auto& item = plan.items[k];
+            ReadResult& r = b.results[item.slot];
+            if (k > c.first && item.e.hash == plan.items[k - 1].e.hash) {
+                r = b.results[plan.items[k - 1].slot];
+                ++b.stats.duplicate_requests;
+            } else if (!ok) {
+                r.status = Status::IoError;
+            } else {
+                const uint8_t* payload = chunk + static_cast<size_t>(item.e.offset - c.begin);
+                ++b.stats.checksum_count;
+                if (crc32(payload, item.e.length) != item.e.crc) {
+                    r.status = Status::Corrupt;
+                } else {
+                    r.data = payload;
+                    r.size = item.e.length;
+                    r.status = Status::Ok;
+                    b.stats.unique_bytes_delivered += r.size;
+                }
+            }
+            if (r.status == Status::Corrupt) ++b.stats.corrupt;
+            if (r.status == Status::Ok) b.stats.bytes_delivered += r.size;
+        }
     }
     return true;
 }

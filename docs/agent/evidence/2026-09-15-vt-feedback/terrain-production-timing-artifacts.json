@@ -1,0 +1,238 @@
+{
+  "driver_exit": 0,
+  "elapsed_seconds": 361.34771969800204,
+  "command": [
+    "/mnt/c/Users/webde/AppData/Local/Programs/Python/Launcher/py.exe",
+    "-3",
+    "D:/tmp/matter-vt/20260915-feedback/run_without_validation.py",
+    "D:/tmp/matter-vt/20260915-feedback/terrain-production-timing/native-environment.json",
+    "D:/Shared With Desktop/AI/matter-engine-cpp/MatterEngine3/tools/drive.py",
+    "--world",
+    "StreamMountain",
+    "--timeline",
+    "D:/tmp/matter-vt/20260915-feedback/terrain-production-timing/timeline.txt",
+    "--out-dir",
+    "D:/tmp/matter-vt/20260915-feedback/terrain-production-timing/run",
+    "--editor",
+    "D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor/build/windows-msvc/editor.exe",
+    "--timeout",
+    "600",
+    "--hide-ui",
+    "--env",
+    "MATTER_HIDE_WINDOW=0",
+    "--env",
+    "MATTER_WINDOW_WIDTH=1920",
+    "--env",
+    "MATTER_WINDOW_HEIGHT=1080",
+    "--env",
+    "MATTER_VSYNC=0",
+    "--env",
+    "MATTER_PRESENT_MODE=mailbox",
+    "--env",
+    "MATTER_FRAME_LIMIT=60",
+    "--env",
+    "MATTER_CAM=380,90,1600,420,55,1420",
+    "--env",
+    "MATTER_VT_TRACE=D:/tmp/matter-vt/20260915-feedback/terrain-production-timing/vt.jsonl",
+    "--env",
+    "MATTER_VT_EVENT_LOG=0",
+    "--env",
+    "MATTER_VT_DENSITY_FRAME=0",
+    "--env",
+    "TMP=C:/Users/webde/AppData/Local/Temp",
+    "--env",
+    "TEMP=C:/Users/webde/AppData/Local/Temp",
+    "--env",
+    "MATTER_CAM_PATH=D:/tmp/matter-vt/20260915-feedback/terrain-production-timing/camera.path",
+    "--env",
+    "MATTER_CAM_PATH_WARMUP=0",
+    "--env",
+    "MATTER_CAM_PATH_SETTLE=5",
+    "--env",
+    "MATTER_CAM_PATH_EXIT=0",
+    "--env",
+    "MATTER_PROFILE_TRACE=D:/tmp/matter-vt/20260915-feedback/terrain-production-timing/profile.json"
+  ],
+  "changed_inputs_during_run": [],
+  "validation_enabled": false,
+  "page_event_logging": false,
+  "full_vt_acceptance": false,
+  "analysis_exit": 0,
+  "analysis_command": [
+    "python3",
+    "tools/vt_acceptance.py",
+    "--trace",
+    "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-production-timing/vt.jsonl",
+    "--output",
+    "docs/agent/evidence/2026-09-15-vt-feedback/terrain-production-timing-summary.json",
+    "--begin-marker",
+    "settle_begin",
+    "--end-marker",
+    "settle_end",
+    "--required-frames",
+    "600",
+    "--require-settled"
+  ],
+  "settled_counter_gate": true,
+  "source_manifest": "tracer-green-source.json",
+  "final_fingerprint_changes": [],
+  "native_environment": {
+    "MATTER_VK_VALIDATION": null,
+    "VK_INSTANCE_LAYERS": null,
+    "VK_LOADER_LAYERS_ENABLE": null
+  },
+  "native_process_census_after_both_captures": [],
+  "end_counters": {
+    "active": 1,
+    "variants": 789,
+    "pool_used": 1452,
+    "pool_capacity": 33024,
+    "replacement_reserve_pages": 64,
+    "dirty_pages": 0,
+    "fills_stale_total": 0,
+    "pinned": 789,
+    "queue": 0,
+    "mandatory_queue": 0,
+    "detail_queue": 0,
+    "oldest_mandatory_age_frames": 0,
+    "oldest_detail_age_frames": 0,
+    "fills_total": 1452,
+    "evictions_total": 0,
+    "invalidations_total": 0,
+    "pages_dropped_total": 0,
+    "fills_failed_total": 0,
+    "requests_dropped_total": 0,
+    "enrich_total": 0,
+    "enrich_queue": 0,
+    "shared_refs_total": 0,
+    "finer_rebuilds_total": 0,
+    "mesh_bytes": 236923747,
+    "pool_bytes": 4275683328,
+    "resident_sectors": 2586,
+    "vertex_uploads": 615,
+    "cluster_uploads": 615,
+    "dlss_resets": 0,
+    "output_width": 1920,
+    "output_height": 1080,
+    "internal_width": 1920,
+    "internal_height": 1080,
+    "cpu_begin_ms": 0.1492,
+    "cpu_pre_pass_ms": 0.0362,
+    "cpu_post_pass_ms": 0.0052,
+    "cpu_registration_ms": 0,
+    "gpu_readback_sequence": 4120,
+    "gpu_total_ms": 83.35855865478516,
+    "gpu_vt_page_ms": 0,
+    "gpu_vt_feedback_ms": 0.04089599847793579,
+    "gpu_vt_ms": 0.04089599847793579,
+    "fills_per_frame": 8,
+    "tail_fills_per_frame": 8,
+    "enrich_per_frame": 0,
+    "queue_cap": 256,
+    "request_budget_ms": 5.090000152587891,
+    "linger_frames": 4,
+    "evict_protect_frames": 16
+  },
+  "occupied_page_storage_mib": 179.284423828125,
+  "pool_occupied_percent": 4.396802325581396,
+  "vulkan_error_lines": [],
+  "skip_or_oversize_lines": [],
+  "missing_part_warning_count": 1758,
+  "distinct_missing_part_hashes": 1758,
+  "settled_cpu_target_ms": 0.25,
+  "settled_cpu_target_pass": true,
+  "gpu_total_ms": {
+    "samples": 601,
+    "p50_ms": 65.51888275146484,
+    "p95_ms": 74.43097686767578,
+    "p99_ms": 77.05427551269531,
+    "max_ms": 79.29312133789062,
+    "basis": "Latest retired whole renderer GPU timestamps paired with selected trace rows; nearest-rank quantiles. Not VT-only time or presentation latency."
+  },
+  "visual_review": "Inspected final 1920x1080 image. Reference forest/valley framing retained; strongly granular ground, noisy trees and patterned mountains remain.",
+  "limits": [
+    "One production-mode run per scene, not repeated performance acceptance.",
+    "Final screenshots and stable counters do not establish intermediate continuity.",
+    "Different startup-retained page sets prevent controlled speedup or packing comparisons.",
+    "VT GPU timestamps exclude G-buffer attachment and sampling cost; whole renderer GPU time is reported separately.",
+    "Source loading, active/edit latency, camera return, source/page/POM compatibility and ordinary input waits remain open.",
+    "Code-graph queries/index activity ran concurrently; no native build or competing GPU capture."
+  ],
+  "artifacts": [
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-production-timing/camera.path",
+      "bytes": 336051,
+      "sha256": "221bab96a8d6eae04c361d209b4b9cc60afcb4470b8ad30aea128d6db0cccfa5"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-production-timing/command.json",
+      "bytes": 1585,
+      "sha256": "ca708f278679158ea5c440fe9d571b63f6fca3ba816def3c6ef3381259ec6cee"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-production-timing/driver.log",
+      "bytes": 513902,
+      "sha256": "a071f46771a6a522ef65576e13d7550146a6b938e328380a13aeecf96b4b9957"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-production-timing/launch-source.json",
+      "bytes": 55352,
+      "sha256": "4b465b1ac7cbba282a4a66fd9002ee0efe7260d4e22cf3b69678c7296aa66d1a"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-production-timing/native-environment.json",
+      "bytes": 105,
+      "sha256": "61d38810249d558ffae390a009059aa2ba7a190d3d474e2a4ffdc131b13284ea"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-production-timing/profile.json",
+      "bytes": 3655276,
+      "sha256": "2af08bff5ef80f3031ea0c23cfb083bebec52afb2b0550fef14ec05a73a89a09"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-production-timing/result.json",
+      "bytes": 1893,
+      "sha256": "49f40352a2562be5a1976bdc1cef631f43a4a84dc249a7df91e60bb23a5e2401"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-production-timing/run/cmd.txt",
+      "bytes": 216,
+      "sha256": "28705a2e5450a236e0a61a8ef6fb706d9043325bf3e03a07019723b73571b6b9"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-production-timing/run/log.txt",
+      "bytes": 513425,
+      "sha256": "7699cdb79fb2926e6152421a17526f1525695a27281cb9c52baa6ee6de1497f3"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-production-timing/settled.png",
+      "bytes": 5909822,
+      "sha256": "c21b78ea06c64332769cb38c2d9a69b027c7086064ae571658f5bf6fc4806193"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-production-timing/settled.png.done",
+      "bytes": 10,
+      "sha256": "4c339121e4860b04ebd48181621c9dd3f84901846feda08d4e77aafaf9a6c896"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-production-timing/timeline.txt",
+      "bytes": 216,
+      "sha256": "28705a2e5450a236e0a61a8ef6fb706d9043325bf3e03a07019723b73571b6b9"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-production-timing/vt.jsonl",
+      "bytes": 1767803,
+      "sha256": "1d26b7e0baee058b8ca56c5e25c827d091dd4e15c95b1344938e8f9c6178d7a4"
+    }
+  ],
+  "capture_helpers": [
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/run_production_timing.py",
+      "sha256": "0956be3053d7fab50061ae217de430f299bd124ffc6dc3bd1d00a0d20a4e300a"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/run_without_validation.py",
+      "sha256": "f4dfbf924a1637fc2c3d0293e39cc1f723dee34338d1f0610bd74fe2c8a390b3"
+    }
+  ]
+}

@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 272 104" role="img" aria-label="two-room-two-level ground plan">
+  <style>.exterior{stroke:#24211d;stroke-width:7}.partition{stroke:#62594d;stroke-width:5}.door,.arch,.open{stroke:#39a96b;stroke-width:5}.window{stroke:#448bd1;stroke-width:5}.curve{fill:none;stroke:#9a6235;stroke-width:7}text{font:12px sans-serif;text-anchor:middle;fill:#181512}line{stroke-linecap:square}</style>
+  <rect width="272" height="104" fill="#f4efe4"/>
+  <line id="wall:ground:0,0|0,1" class="door" data-override="front-door" x1="24" y1="80" x2="24" y2="52"/>
+  <line id="wall:ground:0,0|1,0" class="exterior" x1="24" y1="80" x2="52" y2="80"/>
+  <line id="wall:ground:0,1|0,2" class="door" data-override="front-door" x1="24" y1="52" x2="24" y2="24"/>
+  <line id="wall:ground:0,2|1,2" class="exterior" x1="24" y1="24" x2="52" y2="24"/>
+  <line id="wall:ground:1,0|2,0" class="exterior" x1="52" y1="80" x2="80" y2="80"/>
+  <line id="wall:ground:1,2|2,2" class="exterior" x1="52" y1="24" x2="80" y2="24"/>
+  <line id="wall:ground:2,0|3,0" class="exterior" x1="80" y1="80" x2="108" y2="80"/>
+  <line id="wall:ground:2,2|3,2" class="exterior" x1="80" y1="24" x2="108" y2="24"/>
+  <line id="wall:ground:3,0|4,0" class="exterior" x1="108" y1="80" x2="136" y2="80"/>
+  <line id="wall:ground:3,2|4,2" class="exterior" x1="108" y1="24" x2="136" y2="24"/>
+  <line id="wall:ground:4,0|5,0" class="exterior" x1="136" y1="80" x2="164" y2="80"/>
+  <line id="wall:ground:4,2|5,2" class="exterior" x1="136" y1="24" x2="164" y2="24"/>
+  <line id="wall:ground:5,0|6,0" class="exterior" x1="164" y1="80" x2="192" y2="80"/>
+  <line id="wall:ground:5,2|6,2" class="exterior" x1="164" y1="24" x2="192" y2="24"/>
+  <line id="wall:ground:6,0|7,0" class="exterior" x1="192" y1="80" x2="220" y2="80"/>
+  <line id="wall:ground:6,2|7,2" class="exterior" x1="192" y1="24" x2="220" y2="24"/>
+  <line id="wall:ground:7,0|8,0" class="exterior" x1="220" y1="80" x2="248" y2="80"/>
+  <line id="wall:ground:7,2|8,2" class="exterior" x1="220" y1="24" x2="248" y2="24"/>
+  <line id="wall:ground:8,0|8,1" class="exterior" x1="248" y1="80" x2="248" y2="52"/>
+  <line id="wall:ground:8,1|8,2" class="exterior" x1="248" y1="52" x2="248" y2="24"/>
+  <text x="136" y="52">hall</text>
+</svg>

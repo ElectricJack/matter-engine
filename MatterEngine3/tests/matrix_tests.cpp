@@ -74,6 +74,24 @@ void test_glsl_pack_is_explicit() {
           "explicit GLSL pack");
 }
 
+// cull.comp routes det<0 instances to the clockwise-front mirror commands;
+// a wrong sign here draws a mirrored placement's back faces.
+void test_reverses_winding_follows_determinant_sign() {
+    const auto rotated = viewer::mat4_mul(viewer::mat4_translation({3.0f, 4.0f, 5.0f}),
+                                          viewer::mat4_rotation_y(0.7f));
+    CHECK(!viewer::gpu_mat4_reverses_winding(viewer::pack_glsl_mat4(rotated)),
+          "rotation + translation keeps winding");
+    auto mirrored = rotated;
+    mirrored.m[0] = -mirrored.m[0]; mirrored.m[4] = -mirrored.m[4];
+    mirrored.m[8] = -mirrored.m[8];  // negate the x column: one reflection
+    CHECK(viewer::gpu_mat4_reverses_winding(viewer::pack_glsl_mat4(mirrored)),
+          "single-axis reflection reverses winding");
+    auto twice = mirrored;
+    twice.m[1] = -twice.m[1]; twice.m[5] = -twice.m[5]; twice.m[9] = -twice.m[9];
+    CHECK(!viewer::gpu_mat4_reverses_winding(viewer::pack_glsl_mat4(twice)),
+          "two reflections are a rotation and keep winding");
+}
+
 void test_inverse_and_unproject_round_trip() {
     const auto matrix = viewer::mat4_mul(
         viewer::mat4_translation({3.0f, 4.0f, 5.0f}),
@@ -297,6 +315,7 @@ int main() {
     test_vulkan_projection_maps_near_far_to_zero_one();
     test_composition_is_projection_times_view();
     test_glsl_pack_is_explicit();
+    test_reverses_winding_follows_determinant_sign();
     test_inverse_and_unproject_round_trip();
     test_frustum_planes_use_vulkan_zero_to_one_rows();
     test_frame_matrix_errors_are_specific();

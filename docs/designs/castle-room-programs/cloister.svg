@@ -1,0 +1,686 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="850" viewBox="0 0 1600 850">
+<rect width="1600" height="850" fill="#f5f1e8"/>
+<text x="42" y="38" font-family="sans-serif" font-size="25" fill="#302d27">Cloister stronghold — room program / 1 metre grid</text>
+<text x="42" y="77" font-family="sans-serif" font-size="18">Ground / Y=0</text>
+<rect x="106" y="105" width="128" height="128" fill="#d9ba73" stroke="#49433a" stroke-width="2"/>
+<path d="M122,105v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M138,105v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M154,105v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M170,105v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M186,105v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M202,105v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M218,105v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M106,121h128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M106,137h128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M106,153h128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M106,169h128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M106,185h128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M106,201h128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M106,217h128" stroke="#5c5547" stroke-opacity=".12"/>
+<text x="170.0" y="169.0" text-anchor="middle" dominant-baseline="middle" font-family="sans-serif" font-size="12" fill="#252b2f">West stair</text>
+<rect x="234" y="105" width="352" height="128" fill="#d7ab85" stroke="#49433a" stroke-width="2"/>
+<path d="M250,105v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M266,105v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M282,105v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M298,105v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M314,105v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M330,105v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M346,105v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M362,105v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M378,105v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M394,105v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M410,105v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M426,105v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M442,105v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M458,105v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M474,105v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M490,105v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M506,105v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M522,105v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M538,105v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M554,105v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M570,105v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M234,121h352" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M234,137h352" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M234,153h352" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M234,169h352" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M234,185h352" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M234,201h352" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M234,217h352" stroke="#5c5547" stroke-opacity=".12"/>
+<text x="410.0" y="169.0" text-anchor="middle" dominant-baseline="middle" font-family="sans-serif" font-size="12" fill="#252b2f">Refectory</text>
+<rect x="586" y="105" width="128" height="128" fill="#c7b38c" stroke="#49433a" stroke-width="2"/>
+<path d="M602,105v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M618,105v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M634,105v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M650,105v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M666,105v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M682,105v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M698,105v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M586,121h128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M586,137h128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M586,153h128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M586,169h128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M586,185h128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M586,201h128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M586,217h128" stroke="#5c5547" stroke-opacity=".12"/>
+<text x="650.0" y="169.0" text-anchor="middle" dominant-baseline="middle" font-family="sans-serif" font-size="12" fill="#252b2f">Kitchen</text>
+<rect x="714" y="105" width="96" height="128" fill="#c7b38c" stroke="#49433a" stroke-width="2"/>
+<path d="M730,105v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M746,105v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M762,105v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M778,105v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M794,105v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M714,121h96" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M714,137h96" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M714,153h96" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M714,169h96" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M714,185h96" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M714,201h96" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M714,217h96" stroke="#5c5547" stroke-opacity=".12"/>
+<text x="762.0" y="169.0" text-anchor="middle" dominant-baseline="middle" font-family="sans-serif" font-size="12" fill="#252b2f">Pantry</text>
+<rect x="106" y="233" width="128" height="192" fill="#b7c6cd" stroke="#49433a" stroke-width="2"/>
+<path d="M122,233v192" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M138,233v192" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M154,233v192" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M170,233v192" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M186,233v192" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M202,233v192" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M218,233v192" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M106,249h128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M106,265h128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M106,281h128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M106,297h128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M106,313h128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M106,329h128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M106,345h128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M106,361h128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M106,377h128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M106,393h128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M106,409h128" stroke="#5c5547" stroke-opacity=".12"/>
+<text x="170.0" y="329.0" text-anchor="middle" dominant-baseline="middle" font-family="sans-serif" font-size="12" fill="#252b2f">Chapter house</text>
+<rect x="234" y="233" width="416" height="32" fill="#e6d9bd" stroke="#49433a" stroke-width="2"/>
+<path d="M250,233v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M266,233v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M282,233v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M298,233v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M314,233v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M330,233v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M346,233v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M362,233v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M378,233v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M394,233v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M410,233v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M426,233v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M442,233v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M458,233v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M474,233v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M490,233v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M506,233v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M522,233v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M538,233v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M554,233v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M570,233v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M586,233v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M602,233v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M618,233v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M634,233v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M234,249h416" stroke="#5c5547" stroke-opacity=".12"/>
+<text x="442.0" y="249.0" text-anchor="middle" dominant-baseline="middle" font-family="sans-serif" font-size="12" fill="#252b2f">Cloister</text>
+<rect x="234" y="265" width="32" height="128" fill="#e6d9bd" stroke="#49433a" stroke-width="2"/>
+<path d="M250,265v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M234,281h32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M234,297h32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M234,313h32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M234,329h32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M234,345h32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M234,361h32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M234,377h32" stroke="#5c5547" stroke-opacity=".12"/>
+<text x="250.0" y="329.0" text-anchor="middle" dominant-baseline="middle" font-family="sans-serif" font-size="12" fill="#252b2f" transform="rotate(-90 250.0 329.0)">Cloister</text>
+<rect x="618" y="265" width="32" height="128" fill="#e6d9bd" stroke="#49433a" stroke-width="2"/>
+<path d="M634,265v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M618,281h32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M618,297h32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M618,313h32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M618,329h32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M618,345h32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M618,361h32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M618,377h32" stroke="#5c5547" stroke-opacity=".12"/>
+<text x="634.0" y="329.0" text-anchor="middle" dominant-baseline="middle" font-family="sans-serif" font-size="12" fill="#252b2f" transform="rotate(-90 634.0 329.0)">Cloister</text>
+<rect x="266" y="265" width="352" height="128" fill="#bfcdad" stroke="#49433a" stroke-width="2"/>
+<path d="M282,265v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M298,265v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M314,265v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M330,265v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M346,265v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M362,265v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M378,265v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M394,265v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M410,265v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M426,265v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M442,265v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M458,265v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M474,265v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M490,265v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M506,265v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M522,265v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M538,265v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M554,265v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M570,265v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M586,265v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M602,265v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M266,281h352" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M266,297h352" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M266,313h352" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M266,329h352" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M266,345h352" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M266,361h352" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M266,377h352" stroke="#5c5547" stroke-opacity=".12"/>
+<text x="442.0" y="329.0" text-anchor="middle" dominant-baseline="middle" font-family="sans-serif" font-size="12" fill="#252b2f">Open court</text>
+<rect x="234" y="393" width="416" height="32" fill="#e6d9bd" stroke="#49433a" stroke-width="2"/>
+<path d="M250,393v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M266,393v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M282,393v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M298,393v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M314,393v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M330,393v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M346,393v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M362,393v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M378,393v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M394,393v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M410,393v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M426,393v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M442,393v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M458,393v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M474,393v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M490,393v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M506,393v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M522,393v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M538,393v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M554,393v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M570,393v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M586,393v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M602,393v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M618,393v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M634,393v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M234,409h416" stroke="#5c5547" stroke-opacity=".12"/>
+<text x="442.0" y="409.0" text-anchor="middle" dominant-baseline="middle" font-family="sans-serif" font-size="12" fill="#252b2f">Cloister</text>
+<rect x="650" y="233" width="160" height="192" fill="#d1bcd6" stroke="#49433a" stroke-width="2"/>
+<path d="M666,233v192" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M682,233v192" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M698,233v192" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M714,233v192" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M730,233v192" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M746,233v192" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M762,233v192" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M778,233v192" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M794,233v192" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M650,249h160" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M650,265h160" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M650,281h160" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M650,297h160" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M650,313h160" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M650,329h160" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M650,345h160" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M650,361h160" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M650,377h160" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M650,393h160" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M650,409h160" stroke="#5c5547" stroke-opacity=".12"/>
+<text x="730.0" y="329.0" text-anchor="middle" dominant-baseline="middle" font-family="sans-serif" font-size="12" fill="#252b2f">Chapel</text>
+<rect x="106" y="425" width="192" height="128" fill="#b6afa2" stroke="#49433a" stroke-width="2"/>
+<path d="M122,425v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M138,425v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M154,425v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M170,425v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M186,425v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M202,425v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M218,425v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M234,425v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M250,425v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M266,425v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M282,425v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M106,441h192" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M106,457h192" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M106,473h192" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M106,489h192" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M106,505h192" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M106,521h192" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M106,537h192" stroke="#5c5547" stroke-opacity=".12"/>
+<text x="202.0" y="489.0" text-anchor="middle" dominant-baseline="middle" font-family="sans-serif" font-size="12" fill="#252b2f">Gate guard</text>
+<rect x="298" y="425" width="128" height="128" fill="#e6d9bd" stroke="#49433a" stroke-width="2"/>
+<path d="M314,425v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M330,425v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M346,425v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M362,425v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M378,425v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M394,425v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M410,425v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M298,441h128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M298,457h128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M298,473h128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M298,489h128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M298,505h128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M298,521h128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M298,537h128" stroke="#5c5547" stroke-opacity=".12"/>
+<text x="362.0" y="489.0" text-anchor="middle" dominant-baseline="middle" font-family="sans-serif" font-size="12" fill="#252b2f">Gate passage</text>
+<rect x="426" y="425" width="256" height="128" fill="#c7b38c" stroke="#49433a" stroke-width="2"/>
+<path d="M442,425v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M458,425v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M474,425v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M490,425v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M506,425v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M522,425v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M538,425v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M554,425v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M570,425v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M586,425v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M602,425v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M618,425v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M634,425v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M650,425v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M666,425v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M426,441h256" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M426,457h256" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M426,473h256" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M426,489h256" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M426,505h256" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M426,521h256" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M426,537h256" stroke="#5c5547" stroke-opacity=".12"/>
+<text x="554.0" y="489.0" text-anchor="middle" dominant-baseline="middle" font-family="sans-serif" font-size="12" fill="#252b2f">Stores</text>
+<rect x="682" y="425" width="128" height="128" fill="#d9ba73" stroke="#49433a" stroke-width="2"/>
+<path d="M698,425v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M714,425v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M730,425v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M746,425v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M762,425v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M778,425v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M794,425v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M682,441h128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M682,457h128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M682,473h128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M682,489h128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M682,505h128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M682,521h128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M682,537h128" stroke="#5c5547" stroke-opacity=".12"/>
+<text x="746.0" y="489.0" text-anchor="middle" dominant-baseline="middle" font-family="sans-serif" font-size="12" fill="#252b2f">East stair</text>
+<path d="M330,553L394,553" stroke="#fcfaf5" stroke-width="6"/>
+<path d="M330,425L394,425" stroke="#fcfaf5" stroke-width="6"/>
+<path d="M234,329L234,361" stroke="#fcfaf5" stroke-width="6"/>
+<path d="M234,153L234,185" stroke="#fcfaf5" stroke-width="6"/>
+<path d="M362,233L426,233" stroke="#fcfaf5" stroke-width="6"/>
+<path d="M586,153L586,185" stroke="#fcfaf5" stroke-width="6"/>
+<path d="M714,153L714,185" stroke="#fcfaf5" stroke-width="6"/>
+<path d="M650,313L650,345" stroke="#fcfaf5" stroke-width="6"/>
+<path d="M714,425L746,425" stroke="#fcfaf5" stroke-width="6"/>
+<path d="M682,473L682,505" stroke="#fcfaf5" stroke-width="6"/>
+<path d="M426,473L426,505" stroke="#fcfaf5" stroke-width="6"/>
+<path d="M298,473L298,505" stroke="#fcfaf5" stroke-width="6"/>
+<path d="M234,265L266,265" stroke="#fcfaf5" stroke-width="6"/>
+<path d="M618,265L650,265" stroke="#fcfaf5" stroke-width="6"/>
+<path d="M234,393L266,393" stroke="#fcfaf5" stroke-width="6"/>
+<path d="M618,393L650,393" stroke="#fcfaf5" stroke-width="6"/>
+<rect x="138" y="137" width="64" height="80" fill="#fff9df" fill-opacity=".8" stroke="#817047"/>
+<path d="M138,141.0h64" stroke="#817047" stroke-width=".6"/>
+<path d="M138,145.0h64" stroke="#817047" stroke-width=".6"/>
+<path d="M138,149.0h64" stroke="#817047" stroke-width=".6"/>
+<path d="M138,153.0h64" stroke="#817047" stroke-width=".6"/>
+<path d="M138,157.0h64" stroke="#817047" stroke-width=".6"/>
+<path d="M138,161.0h64" stroke="#817047" stroke-width=".6"/>
+<path d="M138,165.0h64" stroke="#817047" stroke-width=".6"/>
+<path d="M138,169.0h64" stroke="#817047" stroke-width=".6"/>
+<path d="M138,173.0h64" stroke="#817047" stroke-width=".6"/>
+<path d="M138,177.0h64" stroke="#817047" stroke-width=".6"/>
+<path d="M138,181.0h64" stroke="#817047" stroke-width=".6"/>
+<path d="M138,185.0h64" stroke="#817047" stroke-width=".6"/>
+<path d="M138,189.0h64" stroke="#817047" stroke-width=".6"/>
+<path d="M138,193.0h64" stroke="#817047" stroke-width=".6"/>
+<path d="M138,197.0h64" stroke="#817047" stroke-width=".6"/>
+<path d="M138,201.0h64" stroke="#817047" stroke-width=".6"/>
+<path d="M138,205.0h64" stroke="#817047" stroke-width=".6"/>
+<path d="M138,209.0h64" stroke="#817047" stroke-width=".6"/>
+<path d="M138,213.0h64" stroke="#817047" stroke-width=".6"/>
+<rect x="714" y="457" width="64" height="80" fill="#fff9df" fill-opacity=".8" stroke="#817047"/>
+<path d="M714,461.0h64" stroke="#817047" stroke-width=".6"/>
+<path d="M714,465.0h64" stroke="#817047" stroke-width=".6"/>
+<path d="M714,469.0h64" stroke="#817047" stroke-width=".6"/>
+<path d="M714,473.0h64" stroke="#817047" stroke-width=".6"/>
+<path d="M714,477.0h64" stroke="#817047" stroke-width=".6"/>
+<path d="M714,481.0h64" stroke="#817047" stroke-width=".6"/>
+<path d="M714,485.0h64" stroke="#817047" stroke-width=".6"/>
+<path d="M714,489.0h64" stroke="#817047" stroke-width=".6"/>
+<path d="M714,493.0h64" stroke="#817047" stroke-width=".6"/>
+<path d="M714,497.0h64" stroke="#817047" stroke-width=".6"/>
+<path d="M714,501.0h64" stroke="#817047" stroke-width=".6"/>
+<path d="M714,505.0h64" stroke="#817047" stroke-width=".6"/>
+<path d="M714,509.0h64" stroke="#817047" stroke-width=".6"/>
+<path d="M714,513.0h64" stroke="#817047" stroke-width=".6"/>
+<path d="M714,517.0h64" stroke="#817047" stroke-width=".6"/>
+<path d="M714,521.0h64" stroke="#817047" stroke-width=".6"/>
+<path d="M714,525.0h64" stroke="#817047" stroke-width=".6"/>
+<path d="M714,529.0h64" stroke="#817047" stroke-width=".6"/>
+<path d="M714,533.0h64" stroke="#817047" stroke-width=".6"/>
+<polyline points="362,585 362,489 362,409 250,409 250,249 394,249 394,185 202,185 202,121 154,121" fill="none" stroke="#aa3d35" stroke-width="2.5" stroke-dasharray="7 4"/>
+<path d="M106,601h80" stroke="#302d27" stroke-width="3"/><text x="106" y="617" font-family="sans-serif" font-size="12">5 metres</text>
+<text x="842" y="77" font-family="sans-serif" font-size="18">Upper / Y=4</text>
+<rect x="906" y="105" width="128" height="128" fill="#d9ba73" stroke="#49433a" stroke-width="2"/>
+<path d="M922,105v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M938,105v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M954,105v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M970,105v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M986,105v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1002,105v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1018,105v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M906,121h128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M906,137h128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M906,153h128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M906,169h128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M906,185h128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M906,201h128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M906,217h128" stroke="#5c5547" stroke-opacity=".12"/>
+<text x="970.0" y="169.0" text-anchor="middle" dominant-baseline="middle" font-family="sans-serif" font-size="12" fill="#252b2f">Landing</text>
+<rect x="1034" y="105" width="352" height="128" fill="#b7c6cd" stroke="#49433a" stroke-width="2"/>
+<path d="M1050,105v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1066,105v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1082,105v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1098,105v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1114,105v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1130,105v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1146,105v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1162,105v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1178,105v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1194,105v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1210,105v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1226,105v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1242,105v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1258,105v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1274,105v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1290,105v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1306,105v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1322,105v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1338,105v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1354,105v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1370,105v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1034,121h352" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1034,137h352" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1034,153h352" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1034,169h352" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1034,185h352" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1034,201h352" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1034,217h352" stroke="#5c5547" stroke-opacity=".12"/>
+<text x="1210.0" y="169.0" text-anchor="middle" dominant-baseline="middle" font-family="sans-serif" font-size="12" fill="#252b2f">Dormitory</text>
+<rect x="1386" y="105" width="224" height="128" fill="#b7c6cd" stroke="#49433a" stroke-width="2"/>
+<path d="M1402,105v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1418,105v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1434,105v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1450,105v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1466,105v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1482,105v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1498,105v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1514,105v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1530,105v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1546,105v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1562,105v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1578,105v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1594,105v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1386,121h224" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1386,137h224" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1386,153h224" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1386,169h224" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1386,185h224" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1386,201h224" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1386,217h224" stroke="#5c5547" stroke-opacity=".12"/>
+<text x="1498.0" y="169.0" text-anchor="middle" dominant-baseline="middle" font-family="sans-serif" font-size="12" fill="#252b2f">Library</text>
+<rect x="906" y="233" width="128" height="192" fill="#b7c6cd" stroke="#49433a" stroke-width="2"/>
+<path d="M922,233v192" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M938,233v192" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M954,233v192" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M970,233v192" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M986,233v192" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1002,233v192" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1018,233v192" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M906,249h128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M906,265h128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M906,281h128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M906,297h128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M906,313h128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M906,329h128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M906,345h128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M906,361h128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M906,377h128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M906,393h128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M906,409h128" stroke="#5c5547" stroke-opacity=".12"/>
+<text x="970.0" y="329.0" text-anchor="middle" dominant-baseline="middle" font-family="sans-serif" font-size="12" fill="#252b2f">Guest chamber</text>
+<rect x="1034" y="233" width="416" height="32" fill="#e6d9bd" stroke="#49433a" stroke-width="2"/>
+<path d="M1050,233v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1066,233v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1082,233v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1098,233v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1114,233v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1130,233v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1146,233v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1162,233v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1178,233v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1194,233v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1210,233v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1226,233v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1242,233v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1258,233v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1274,233v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1290,233v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1306,233v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1322,233v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1338,233v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1354,233v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1370,233v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1386,233v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1402,233v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1418,233v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1434,233v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1034,249h416" stroke="#5c5547" stroke-opacity=".12"/>
+<text x="1242.0" y="249.0" text-anchor="middle" dominant-baseline="middle" font-family="sans-serif" font-size="12" fill="#252b2f">Upper gallery</text>
+<rect x="1034" y="265" width="32" height="128" fill="#e6d9bd" stroke="#49433a" stroke-width="2"/>
+<path d="M1050,265v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1034,281h32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1034,297h32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1034,313h32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1034,329h32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1034,345h32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1034,361h32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1034,377h32" stroke="#5c5547" stroke-opacity=".12"/>
+<text x="1050.0" y="329.0" text-anchor="middle" dominant-baseline="middle" font-family="sans-serif" font-size="12" fill="#252b2f" transform="rotate(-90 1050.0 329.0)">Upper gallery</text>
+<rect x="1418" y="265" width="32" height="128" fill="#e6d9bd" stroke="#49433a" stroke-width="2"/>
+<path d="M1434,265v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1418,281h32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1418,297h32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1418,313h32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1418,329h32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1418,345h32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1418,361h32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1418,377h32" stroke="#5c5547" stroke-opacity=".12"/>
+<text x="1434.0" y="329.0" text-anchor="middle" dominant-baseline="middle" font-family="sans-serif" font-size="12" fill="#252b2f" transform="rotate(-90 1434.0 329.0)">Upper gallery</text>
+<rect x="1034" y="393" width="416" height="32" fill="#e6d9bd" stroke="#49433a" stroke-width="2"/>
+<path d="M1050,393v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1066,393v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1082,393v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1098,393v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1114,393v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1130,393v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1146,393v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1162,393v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1178,393v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1194,393v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1210,393v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1226,393v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1242,393v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1258,393v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1274,393v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1290,393v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1306,393v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1322,393v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1338,393v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1354,393v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1370,393v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1386,393v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1402,393v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1418,393v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1434,393v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1034,409h416" stroke="#5c5547" stroke-opacity=".12"/>
+<text x="1242.0" y="409.0" text-anchor="middle" dominant-baseline="middle" font-family="sans-serif" font-size="12" fill="#252b2f">Upper gallery</text>
+<rect x="1450" y="233" width="32" height="192" fill="#e6d9bd" stroke="#49433a" stroke-width="2"/>
+<path d="M1466,233v192" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1450,249h32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1450,265h32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1450,281h32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1450,297h32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1450,313h32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1450,329h32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1450,345h32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1450,361h32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1450,377h32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1450,393h32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1450,409h32" stroke="#5c5547" stroke-opacity=".12"/>
+<text x="1466.0" y="329.0" text-anchor="middle" dominant-baseline="middle" font-family="sans-serif" font-size="12" fill="#252b2f" transform="rotate(-90 1466.0 329.0)">Chapel gallery</text>
+<rect x="906" y="425" width="192" height="128" fill="#b7c6cd" stroke="#49433a" stroke-width="2"/>
+<path d="M922,425v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M938,425v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M954,425v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M970,425v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M986,425v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1002,425v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1018,425v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1034,425v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1050,425v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1066,425v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1082,425v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M906,441h192" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M906,457h192" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M906,473h192" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M906,489h192" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M906,505h192" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M906,521h192" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M906,537h192" stroke="#5c5547" stroke-opacity=".12"/>
+<text x="1002.0" y="489.0" text-anchor="middle" dominant-baseline="middle" font-family="sans-serif" font-size="12" fill="#252b2f">Solar</text>
+<rect x="1098" y="425" width="128" height="128" fill="#e6d9bd" stroke="#49433a" stroke-width="2"/>
+<path d="M1114,425v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1130,425v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1146,425v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1162,425v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1178,425v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1194,425v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1210,425v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1098,441h128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1098,457h128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1098,473h128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1098,489h128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1098,505h128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1098,521h128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1098,537h128" stroke="#5c5547" stroke-opacity=".12"/>
+<text x="1162.0" y="489.0" text-anchor="middle" dominant-baseline="middle" font-family="sans-serif" font-size="12" fill="#252b2f">Gate loft</text>
+<rect x="1226" y="425" width="256" height="128" fill="#b7c6cd" stroke="#49433a" stroke-width="2"/>
+<path d="M1242,425v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1258,425v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1274,425v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1290,425v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1306,425v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1322,425v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1338,425v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1354,425v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1370,425v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1386,425v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1402,425v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1418,425v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1434,425v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1450,425v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1466,425v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1226,441h256" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1226,457h256" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1226,473h256" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1226,489h256" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1226,505h256" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1226,521h256" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1226,537h256" stroke="#5c5547" stroke-opacity=".12"/>
+<text x="1354.0" y="489.0" text-anchor="middle" dominant-baseline="middle" font-family="sans-serif" font-size="12" fill="#252b2f">Scriptorium</text>
+<rect x="1482" y="425" width="128" height="128" fill="#d9ba73" stroke="#49433a" stroke-width="2"/>
+<path d="M1498,425v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1514,425v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1530,425v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1546,425v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1562,425v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1578,425v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1594,425v128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1482,441h128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1482,457h128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1482,473h128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1482,489h128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1482,505h128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1482,521h128" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1482,537h128" stroke="#5c5547" stroke-opacity=".12"/>
+<text x="1546.0" y="489.0" text-anchor="middle" dominant-baseline="middle" font-family="sans-serif" font-size="12" fill="#252b2f">Landing</text>
+<rect x="1482" y="393" width="128" height="32" fill="#e6d9bd" stroke="#49433a" stroke-width="2"/>
+<path d="M1498,393v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1514,393v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1530,393v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1546,393v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1562,393v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1578,393v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1594,393v32" stroke="#5c5547" stroke-opacity=".12"/>
+<path d="M1482,409h128" stroke="#5c5547" stroke-opacity=".12"/>
+<text x="1546.0" y="409.0" text-anchor="middle" dominant-baseline="middle" font-family="sans-serif" font-size="12" fill="#252b2f">Choir loft</text>
+<path d="M1034,153L1034,185" stroke="#fcfaf5" stroke-width="6"/>
+<path d="M1386,153L1386,185" stroke="#fcfaf5" stroke-width="6"/>
+<path d="M1162,233L1226,233" stroke="#fcfaf5" stroke-width="6"/>
+<path d="M1450,313L1450,345" stroke="#fcfaf5" stroke-width="6"/>
+<path d="M1514,425L1546,425" stroke="#fcfaf5" stroke-width="6"/>
+<path d="M1482,473L1482,505" stroke="#fcfaf5" stroke-width="6"/>
+<path d="M1226,473L1226,505" stroke="#fcfaf5" stroke-width="6"/>
+<path d="M1098,473L1098,505" stroke="#fcfaf5" stroke-width="6"/>
+<path d="M1130,425L1194,425" stroke="#fcfaf5" stroke-width="6"/>
+<path d="M1034,329L1034,361" stroke="#fcfaf5" stroke-width="6"/>
+<path d="M1034,265L1066,265" stroke="#fcfaf5" stroke-width="6"/>
+<path d="M1418,265L1450,265" stroke="#fcfaf5" stroke-width="6"/>
+<path d="M1034,393L1066,393" stroke="#fcfaf5" stroke-width="6"/>
+<path d="M1418,393L1450,393" stroke="#fcfaf5" stroke-width="6"/>
+<path d="M1482,393L1482,425" stroke="#fcfaf5" stroke-width="6"/>
+<rect x="938" y="137" width="64" height="80" fill="#fff9df" fill-opacity=".8" stroke="#817047"/>
+<path d="M938,141.0h64" stroke="#817047" stroke-width=".6"/>
+<path d="M938,145.0h64" stroke="#817047" stroke-width=".6"/>
+<path d="M938,149.0h64" stroke="#817047" stroke-width=".6"/>
+<path d="M938,153.0h64" stroke="#817047" stroke-width=".6"/>
+<path d="M938,157.0h64" stroke="#817047" stroke-width=".6"/>
+<path d="M938,161.0h64" stroke="#817047" stroke-width=".6"/>
+<path d="M938,165.0h64" stroke="#817047" stroke-width=".6"/>
+<path d="M938,169.0h64" stroke="#817047" stroke-width=".6"/>
+<path d="M938,173.0h64" stroke="#817047" stroke-width=".6"/>
+<path d="M938,177.0h64" stroke="#817047" stroke-width=".6"/>
+<path d="M938,181.0h64" stroke="#817047" stroke-width=".6"/>
+<path d="M938,185.0h64" stroke="#817047" stroke-width=".6"/>
+<path d="M938,189.0h64" stroke="#817047" stroke-width=".6"/>
+<path d="M938,193.0h64" stroke="#817047" stroke-width=".6"/>
+<path d="M938,197.0h64" stroke="#817047" stroke-width=".6"/>
+<path d="M938,201.0h64" stroke="#817047" stroke-width=".6"/>
+<path d="M938,205.0h64" stroke="#817047" stroke-width=".6"/>
+<path d="M938,209.0h64" stroke="#817047" stroke-width=".6"/>
+<path d="M938,213.0h64" stroke="#817047" stroke-width=".6"/>
+<rect x="1514" y="457" width="64" height="80" fill="#fff9df" fill-opacity=".8" stroke="#817047"/>
+<path d="M1514,461.0h64" stroke="#817047" stroke-width=".6"/>
+<path d="M1514,465.0h64" stroke="#817047" stroke-width=".6"/>
+<path d="M1514,469.0h64" stroke="#817047" stroke-width=".6"/>
+<path d="M1514,473.0h64" stroke="#817047" stroke-width=".6"/>
+<path d="M1514,477.0h64" stroke="#817047" stroke-width=".6"/>
+<path d="M1514,481.0h64" stroke="#817047" stroke-width=".6"/>
+<path d="M1514,485.0h64" stroke="#817047" stroke-width=".6"/>
+<path d="M1514,489.0h64" stroke="#817047" stroke-width=".6"/>
+<path d="M1514,493.0h64" stroke="#817047" stroke-width=".6"/>
+<path d="M1514,497.0h64" stroke="#817047" stroke-width=".6"/>
+<path d="M1514,501.0h64" stroke="#817047" stroke-width=".6"/>
+<path d="M1514,505.0h64" stroke="#817047" stroke-width=".6"/>
+<path d="M1514,509.0h64" stroke="#817047" stroke-width=".6"/>
+<path d="M1514,513.0h64" stroke="#817047" stroke-width=".6"/>
+<path d="M1514,517.0h64" stroke="#817047" stroke-width=".6"/>
+<path d="M1514,521.0h64" stroke="#817047" stroke-width=".6"/>
+<path d="M1514,525.0h64" stroke="#817047" stroke-width=".6"/>
+<path d="M1514,529.0h64" stroke="#817047" stroke-width=".6"/>
+<path d="M1514,533.0h64" stroke="#817047" stroke-width=".6"/>
+<polyline points="986,121 1002,121 1002,169 1194,169 1194,249 1434,249 1434,409 1162,409 1162,489 1306,489 1498,489 1498,441 1562,441" fill="none" stroke="#aa3d35" stroke-width="2.5" stroke-dasharray="7 4"/>
+<path d="M906,601h80" stroke="#302d27" stroke-width="3"/><text x="906" y="617" font-family="sans-serif" font-size="12">5 metres</text>
+<text x="42" y="826" font-family="sans-serif" font-size="13" fill="#555047">Concept layout — colored room uses; white portals; red dashed inspection route. Exact wall sockets, railings, voids and curved clipping resolved by compiler.</text>
+</svg>

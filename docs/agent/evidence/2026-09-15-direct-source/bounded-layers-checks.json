@@ -1,0 +1,152 @@
+[
+  {
+    "kind": "build",
+    "name": "surface_field_tests",
+    "command": [
+      "./tools/build-windows-from-wsl.sh",
+      "RelWithDebInfo",
+      "surface_field_tests"
+    ],
+    "exit": 0,
+    "seconds": 28.27278665700578,
+    "log": "docs/agent/evidence/2026-09-15-direct-source/bounded-layers-build-surface_field_tests.log",
+    "source_changes": [],
+    "validation_errors": []
+  },
+  {
+    "kind": "cpu",
+    "name": "surface_field_tests",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      "Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEngine3/tests\"; & \"../../MatterEditor/build/cmake/windows-msvc/relwithdebinfo/surface_field_tests.exe\"; exit $LASTEXITCODE"
+    ],
+    "exit": 1,
+    "seconds": 0.39517096999043133,
+    "log": "docs/agent/evidence/2026-09-15-direct-source/bounded-layers-cpu-surface_field_tests.log",
+    "source_changes": [],
+    "validation_errors": []
+  },
+  {
+    "kind": "build",
+    "name": "eval_world_tests",
+    "command": [
+      "./tools/build-windows-from-wsl.sh",
+      "RelWithDebInfo",
+      "eval_world_tests"
+    ],
+    "exit": 0,
+    "seconds": 12.349184184000478,
+    "log": "docs/agent/evidence/2026-09-15-direct-source/bounded-layers-build-eval_world_tests.log",
+    "source_changes": [],
+    "validation_errors": []
+  },
+  {
+    "kind": "cpu",
+    "name": "eval_world_tests",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      "Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEngine3/tests\"; & \"../../MatterEditor/build/cmake/windows-msvc/relwithdebinfo/eval_world_tests.exe\"; exit $LASTEXITCODE"
+    ],
+    "exit": 0,
+    "seconds": 1.0262140790000558,
+    "log": "docs/agent/evidence/2026-09-15-direct-source/bounded-layers-cpu-eval_world_tests.log",
+    "source_changes": [],
+    "validation_errors": []
+  },
+  {
+    "kind": "build",
+    "name": "vt_compositor_tests",
+    "command": [
+      "./tools/build-windows-from-wsl.sh",
+      "RelWithDebInfo",
+      "vt_compositor_tests"
+    ],
+    "exit": 0,
+    "seconds": 26.710203097987687,
+    "log": "docs/agent/evidence/2026-09-15-direct-source/bounded-layers-build-vt_compositor_tests.log",
+    "source_changes": [],
+    "validation_errors": []
+  },
+  {
+    "kind": "test",
+    "name": "compositor",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      "$env:MATTER_VK_SMOKE_MODE=\"compositor\"; $env:MATTER_VK_VALIDATION=\"1\"; Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vt_compositor_tests.exe\"; exit $LASTEXITCODE"
+    ],
+    "exit": 1,
+    "seconds": 4.365390670005581,
+    "log": "docs/agent/evidence/2026-09-15-direct-source/bounded-layers-test-compositor.log",
+    "source_changes": [],
+    "validation_errors": []
+  },
+  {
+    "kind": "build",
+    "name": "vulkan_smoke_tests",
+    "command": [
+      "./tools/build-windows-from-wsl.sh",
+      "RelWithDebInfo",
+      "vulkan_smoke_tests"
+    ],
+    "exit": 0,
+    "seconds": 48.1378999150038,
+    "log": "docs/agent/evidence/2026-09-15-direct-source/bounded-layers-build-vulkan_smoke_tests.log",
+    "source_changes": [],
+    "validation_errors": []
+  },
+  {
+    "kind": "test",
+    "name": "vt-direct-source",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      "$env:MATTER_VK_SMOKE_MODE=\"vt-direct-source\"; $env:MATTER_VK_VALIDATION=\"1\"; Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe\"; exit $LASTEXITCODE"
+    ],
+    "exit": 0,
+    "seconds": 17.709594729996752,
+    "log": "docs/agent/evidence/2026-09-15-direct-source/bounded-layers-test-vt-direct-source.log",
+    "source_changes": [],
+    "validation_errors": []
+  },
+  {
+    "kind": "test",
+    "name": "surface-parallax",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      "$env:MATTER_VK_SMOKE_MODE=\"surface-parallax\"; $env:MATTER_VK_VALIDATION=\"1\"; Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe\"; exit $LASTEXITCODE"
+    ],
+    "exit": 0,
+    "seconds": 16.757990930011147,
+    "log": "docs/agent/evidence/2026-09-15-direct-source/bounded-layers-test-surface-parallax.log",
+    "source_changes": [],
+    "validation_errors": []
+  },
+  {
+    "kind": "build",
+    "name": "matter_editor",
+    "command": [
+      "./tools/build-windows-from-wsl.sh",
+      "RelWithDebInfo",
+      "matter_editor"
+    ],
+    "exit": 0,
+    "seconds": 32.15453276099288,
+    "log": "docs/agent/evidence/2026-09-15-direct-source/bounded-layers-build-matter_editor.log",
+    "source_changes": [],
+    "validation_errors": []
+  }
+]

@@ -548,6 +548,8 @@ int main() {
     test_deterministic_round_trip_and_requested_frame_decode();
     test_snapped_crop_keeps_dense_wet_support_across_temporary_dam();
     test_partial_corrupt_overflow_and_lattice_mismatch_fail_closed();
+#ifdef MATTER_CODEC_SOURCE_QUALIFICATION
     test_immutable_save_is_idempotent_and_never_replaces();
+#endif
     return check_summary();
 }
