@@ -29,16 +29,14 @@
 // hand (`half_to_float`) rather than relying on a conversion library.
 #include "vk_atmosphere.h"
 
-#include <algorithm>
 #include <array>
 #include <cmath>
-#include <cstring>
-#include <limits>
+#include <utility>
 #include <vector>
 
 #include "matter/vulkan_device.h"
 #include "environment_spirv.h"
-#include "../../../../MatterEngine3/src/render/vk_resources.h"
+#include "vk_resources.h"
 
 namespace viewer {
 namespace {
@@ -106,7 +104,8 @@ bool create_shader_module(VkDevice device, const char* name,
         error = std::string("embedded SPIR-V not found: ") + name;
         return false;
     }
-    VkShaderModuleCreateInfo info{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+    VkShaderModuleCreateInfo info{};
+    info.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
     info.codeSize = spirv.word_count * sizeof(uint32_t);
     info.pCode = spirv.words;
     return vk_ok(vkCreateShaderModule(device, &info, nullptr, &output),
@@ -136,7 +135,8 @@ bool VkAtmosphere::init(matter::VulkanDevice& vulkan, std::string& error) {
     vkGetPhysicalDeviceProperties(vulkan.physical_device(), &properties);
     if (properties.limits.timestampComputeAndGraphics &&
         properties.limits.timestampPeriod > 0.0f) {
-        VkQueryPoolCreateInfo info{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+        VkQueryPoolCreateInfo info{};
+        info.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
         info.queryType = VK_QUERY_TYPE_TIMESTAMP;
         info.queryCount = 2;
         if (vkCreateQueryPool(vulkan.device(), &info, nullptr,
@@ -244,7 +244,8 @@ bool VkAtmosphere::initialize_emergency(matter::VulkanDevice& vulkan,
 }
 
 bool VkAtmosphere::create_pipelines(matter::VulkanDevice& vulkan, std::string& error) {
-    VkSamplerCreateInfo sampler_info{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+    VkSamplerCreateInfo sampler_info{};
+    sampler_info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
     sampler_info.magFilter = VK_FILTER_LINEAR;
     sampler_info.minFilter = VK_FILTER_LINEAR;
     sampler_info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
@@ -256,14 +257,16 @@ bool VkAtmosphere::create_pipelines(matter::VulkanDevice& vulkan, std::string& e
 
     const auto create = [&](ComputePass& pass, const char* shader_name,
                             std::vector<VkDescriptorSetLayoutBinding> bindings) {
-        VkDescriptorSetLayoutCreateInfo layout{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+        VkDescriptorSetLayoutCreateInfo layout{};
+        layout.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
         layout.bindingCount = static_cast<uint32_t>(bindings.size());
         layout.pBindings = bindings.data();
         if (!vk_ok(vkCreateDescriptorSetLayout(vulkan.device(), &layout, nullptr,
                                                &pass.descriptor_layout),
                    "vkCreateDescriptorSetLayout(atmosphere)", error)) return false;
         VkPushConstantRange push{VK_SHADER_STAGE_COMPUTE_BIT, 0, 48};
-        VkPipelineLayoutCreateInfo pipeline_layout{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+        VkPipelineLayoutCreateInfo pipeline_layout{};
+        pipeline_layout.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
         pipeline_layout.setLayoutCount = 1;
         pipeline_layout.pSetLayouts = &pass.descriptor_layout;
         pipeline_layout.pushConstantRangeCount = 1;
@@ -273,11 +276,13 @@ bool VkAtmosphere::create_pipelines(matter::VulkanDevice& vulkan, std::string& e
                    "vkCreatePipelineLayout(atmosphere)", error)) return false;
         VkShaderModule shader = VK_NULL_HANDLE;
         if (!create_shader_module(vulkan.device(), shader_name, shader, error)) return false;
-        VkPipelineShaderStageCreateInfo stage{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+        VkPipelineShaderStageCreateInfo stage{};
+        stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
         stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
         stage.module = shader;
         stage.pName = "main";
-        VkComputePipelineCreateInfo pipeline{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+        VkComputePipelineCreateInfo pipeline{};
+        pipeline.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
         pipeline.stage = stage;
         pipeline.layout = pass.pipeline_layout;
         const VkResult pipeline_result = vkCreateComputePipelines(
@@ -287,13 +292,15 @@ bool VkAtmosphere::create_pipelines(matter::VulkanDevice& vulkan, std::string& e
         std::array<VkDescriptorPoolSize, 2> sizes{{
             {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 4},
             {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 4}}};
-        VkDescriptorPoolCreateInfo pool{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+        VkDescriptorPoolCreateInfo pool{};
+        pool.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
         pool.maxSets = 1;
         pool.poolSizeCount = static_cast<uint32_t>(sizes.size());
         pool.pPoolSizes = sizes.data();
         if (!vk_ok(vkCreateDescriptorPool(vulkan.device(), &pool, nullptr, &pass.descriptor_pool),
                    "vkCreateDescriptorPool(atmosphere)", error)) return false;
-        VkDescriptorSetAllocateInfo allocate{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+        VkDescriptorSetAllocateInfo allocate{};
+        allocate.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
         allocate.descriptorPool = pass.descriptor_pool;
         allocate.descriptorSetCount = 1;
         allocate.pSetLayouts = &pass.descriptor_layout;
@@ -331,7 +338,7 @@ bool VkAtmosphere::create_pipelines(matter::VulkanDevice& vulkan, std::string& e
     std::array<VkWriteDescriptorSet, 8> writes{};
     const auto write = [&](uint32_t index, ComputePass& pass, uint32_t slot,
                            VkDescriptorType type, const VkDescriptorImageInfo* info) {
-        writes[index] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+        writes[index] = {}; writes[index].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[index].dstSet = pass.descriptor_set; writes[index].dstBinding = slot;
         writes[index].descriptorCount = 1; writes[index].descriptorType = type;
         writes[index].pImageInfo = info;
@@ -372,7 +379,7 @@ void VkAtmosphere::update_compute_descriptors(
     const auto write = [&](uint32_t index, ComputePass& pass, uint32_t slot,
                            VkDescriptorType type,
                            const VkDescriptorImageInfo* info) {
-        writes[index] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+        writes[index] = {}; writes[index].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[index].dstSet = pass.descriptor_set;
         writes[index].dstBinding = slot;
         writes[index].descriptorCount = 1;

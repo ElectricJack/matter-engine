@@ -161,6 +161,12 @@ native handle. [geometry.d.ts](wasm/geometry.d.ts) describes the adapter API.
 
 ## Builds and verification
 
+The default test build also includes five-second seeded C ABI properties (on
+native and WASM) and a WASM adapter/transport property gate. Configure
+`MATTER_BUILD_FUZZERS=ON` for longer native drivers. See the shared
+[fuzz workflow](../../tests/fuzz/README.md) for ASan/UBSan, seeds, coverage and
+the opt-in Clang libFuzzer configuration.
+
 The local Windows wrapper uses the repository's supported MSVC resolver:
 
 ```powershell

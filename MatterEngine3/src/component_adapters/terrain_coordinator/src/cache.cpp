@@ -1,7 +1,6 @@
 #include <matter/terrain_coordinator/coordinator.h>
 #include <algorithm>
 #include <deque>
-#include <limits>
 
 namespace matter::terrain_coordinator {
 namespace {
