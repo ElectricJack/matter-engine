@@ -81,7 +81,7 @@ production pipeline and recorder produce G-buffers. Prepared texture, VT, skin,
 water and impostor products are not yet accepted by this facade adapter; they
 remain supported by the host's unchanged extensions. Unsupported materials
 fail before recording. There is no world/source/generator dependency and no
-alternate raster shader. `tests/raster_native.h` is the minimal GFX-IMPORTED
+alternate raster shader. `examples/imported_acceptance.h` is the minimal GFX-IMPORTED
 caller and checks actual repeated/mirrored fixture pixels, identities, normals,
 materials, depth, clear state and atomic resource/appearance failures.
 

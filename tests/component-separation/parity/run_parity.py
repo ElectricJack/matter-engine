@@ -542,7 +542,10 @@ def native_author(host, corpus, request):
         out = done.stdout[:-1] if done.stdout.endswith("\n") else done.stdout
         return {"status": "ok", "canonical": out}
     lines = [line for line in done.stderr.splitlines() if line.strip()]
-    match = re.fullmatch(r"([a-z_]+): (.*)", lines[-1]) if done.returncode == 1 and lines else None
+    # host_tests.cpp prints "FAIL <diagnostics>"; with one diagnostic the
+    # prefix lands on the line that carries its code.
+    last = lines[-1].removeprefix("FAIL ") if lines else ""
+    match = re.fullmatch(r"([a-z_]+): (.*)", last) if done.returncode == 1 and lines else None
     if match:
         return {"status": "error", "code": match.group(1), "message": LOCATION.sub("", match.group(2))}
     return {"status": "host_failure", "exit": done.returncode, "stderr": done.stderr[-2000:]}

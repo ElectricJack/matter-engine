@@ -1,0 +1,2162 @@
+{
+  "validated_parent_head": "ab85986a1542ade8ff9a5c1ce68e9ca851b77d7c",
+  "validated_production_source_sha256": "845d42fa5184053516ef2ab33598bc9d93b3a02908638c878eed2b7919a941c6",
+  "claim": {
+    "task_id": "steady-harbor-62",
+    "claim_epoch": 9,
+    "session_id": "ef2c0288-16ea-4ced-9d61-898d6046b52d",
+    "claimed_at": 1791983984.1754882
+  },
+  "build": {
+    "parent_head": "ab85986a1542ade8ff9a5c1ce68e9ca851b77d7c",
+    "claim": {
+      "task_id": "steady-harbor-62",
+      "claim_epoch": 9,
+      "session_id": "ef2c0288-16ea-4ced-9d61-898d6046b52d",
+      "claimed_at": 1791983984.1754882
+    },
+    "source_patch": "diff --git a/libs/MatterSurfaceLib/src/surface.c b/libs/MatterSurfaceLib/src/surface.c\nindex 01abb85c..a874e2d7 100644\n--- a/libs/MatterSurfaceLib/src/surface.c\n+++ b/libs/MatterSurfaceLib/src/surface.c\n@@ -1544,7 +1544,9 @@ static float smin_set(const float* vals, int n, float fmin, float k) {\n     if (k <= 1e-5f || n == 1) return fmin;\n     float sum = 0.0f;\n     for (int i = 0; i < n; ++i) sum += expf(-(vals[i] - fmin) / k);\n-    return fmin - k * logf(sum);\n+    // Float libm error is amplified by finite-difference normals. Evaluate\n+    // the logarithm in double precision, then explicitly round back to float.\n+    return fmin - k * (float)log((double)sum);\n }\n \n // Ordered-CSG staged field evaluation (Phase 1). Folds the authored stages in\n",
+    "production_surface_sha256": "845d42fa5184053516ef2ab33598bc9d93b3a02908638c878eed2b7919a941c6",
+    "operations": [
+      {
+        "argv": [
+          "cmake",
+          "-S",
+          "/tmp/steady-harbor-epoch9-linux",
+          "-B",
+          "/tmp/steady-harbor-epoch9-linux/build",
+          "-G",
+          "Ninja",
+          "-DCMAKE_BUILD_TYPE=Release"
+        ],
+        "cwd": "/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-5",
+        "returncode": 0,
+        "seconds": 1.2571030990002328,
+        "log_path": "/tmp/steady-harbor-epoch9-accepted-linux/configure.log",
+        "log_sha256": "5bc9073f464921ca75e23d7d3be60df38c81cdf9b700409e69434b5255fd4adc",
+        "completed_utc": "2026-10-14T18:42:13.044312+00:00"
+      },
+      {
+        "argv": [
+          "cmake",
+          "--build",
+          "/tmp/steady-harbor-epoch9-linux/build",
+          "--parallel",
+          "1",
+          "--",
+          "-k",
+          "0",
+          "-v"
+        ],
+        "cwd": "/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-5",
+        "returncode": 0,
+        "seconds": 571.0869506320014,
+        "log_path": "/tmp/steady-harbor-epoch9-accepted-linux/default.log",
+        "log_sha256": "a13290408cb7b843df3e8a85c370071446a23788c7e370d3627ebfedef3b68e8",
+        "completed_utc": "2026-10-14T18:52:14.256274+00:00"
+      }
+    ],
+    "private_object_override": false,
+    "native_cache_substitution": false,
+    "windows_waived": true
+  },
+  "mandatory_core_gates": [
+    {
+      "gate": "asset_export_tests_filesystem_qualification",
+      "command": "cd /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-5/MatterEngine3/tests && /tmp/steady-harbor-epoch9-linux/build/asset_export_tests_filesystem_qualifier",
+      "executed": true,
+      "seconds": 0.014,
+      "outcome": "pass"
+    },
+    {
+      "gate": "async_bake_tests_source_qualification",
+      "command": "cd /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-5/MatterEngine3/tests && /tmp/steady-harbor-epoch9-linux/build/async_bake_tests_source_qualifier",
+      "executed": true,
+      "seconds": 2.649,
+      "outcome": "pass"
+    },
+    {
+      "gate": "blas_cache_queue_tests_filesystem_qualification",
+      "command": "cd /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-5/MatterEngine3/tests && /tmp/steady-harbor-epoch9-linux/build/blas_cache_queue_tests_filesystem_qualifier",
+      "executed": true,
+      "seconds": 0.005,
+      "outcome": "pass"
+    },
+    {
+      "gate": "blas_disk_cache_tests_filesystem_qualification",
+      "command": "cd /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-5/MatterEngine3/tests && /tmp/steady-harbor-epoch9-linux/build/blas_disk_cache_tests_filesystem_qualifier",
+      "executed": true,
+      "seconds": 0.072,
+      "outcome": "pass"
+    },
+    {
+      "gate": "brick_bond_atlas_tests_filesystem_qualification",
+      "command": "cd /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-5/MatterEngine3/tests && /tmp/steady-harbor-epoch9-linux/build/brick_bond_atlas_tests_filesystem_qualifier",
+      "executed": true,
+      "seconds": 0.677,
+      "outcome": "pass"
+    },
+    {
+      "gate": "eval_world_tests_filesystem_qualification",
+      "command": "cd /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-5/MatterEngine3/tests && /tmp/steady-harbor-epoch9-linux/build/eval_world_tests_filesystem_qualifier",
+      "executed": true,
+      "seconds": 0.201,
+      "outcome": "pass"
+    },
+    {
+      "gate": "geometry_hierarchy_tests_filesystem_qualification",
+      "command": "cd /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-5/MatterEngine3/tests && /tmp/steady-harbor-epoch9-linux/build/geometry_hierarchy_tests_filesystem_qualifier",
+      "executed": true,
+      "seconds": 2.413,
+      "outcome": "pass"
+    },
+    {
+      "gate": "hydrology_artifact_tests_filesystem_qualification",
+      "command": "cd /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-5/MatterEngine3/tests && /tmp/steady-harbor-epoch9-linux/build/hydrology_artifact_tests_filesystem_qualifier",
+      "executed": true,
+      "seconds": 0.103,
+      "outcome": "pass"
+    },
+    {
+      "gate": "hydrology_network_artifact_tests_filesystem_qualification",
+      "command": "cd /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-5/MatterEngine3/tests && /tmp/steady-harbor-epoch9-linux/build/hydrology_network_artifact_tests_filesystem_qualifier",
+      "executed": true,
+      "seconds": 0.2,
+      "outcome": "pass"
+    },
+    {
+      "gate": "obj_export_golden_tests_filesystem_qualification",
+      "command": "cd /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-5/MatterEngine3/tests && /tmp/steady-harbor-epoch9-linux/build/obj_export_golden_tests_filesystem_qualifier",
+      "executed": true,
+      "seconds": 25.7,
+      "outcome": "pass"
+    },
+    {
+      "gate": "obj_export_tests_filesystem_qualification",
+      "command": "cd /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-5/MatterEngine3/tests && /tmp/steady-harbor-epoch9-linux/build/obj_export_tests_filesystem_qualifier",
+      "executed": true,
+      "seconds": 0.075,
+      "outcome": "pass"
+    },
+    {
+      "gate": "part_asset_v2_tests_source_qualification",
+      "command": "cd /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-5/MatterEngine3/tests && /tmp/steady-harbor-epoch9-linux/build/part_asset_v2_tests_source_qualifier",
+      "executed": true,
+      "seconds": 0.027,
+      "outcome": "pass"
+    },
+    {
+      "gate": "part_flatten_tests_filesystem_qualification",
+      "command": "cd /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-5/MatterEngine3/tests && /tmp/steady-harbor-epoch9-linux/build/part_flatten_tests_filesystem_qualifier",
+      "executed": true,
+      "seconds": 190.553,
+      "outcome": "pass"
+    },
+    {
+      "gate": "partstore_tests_source_qualification",
+      "command": "cd /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-5/MatterEngine3/tests && /tmp/steady-harbor-epoch9-linux/build/partstore_tests_source_qualifier",
+      "executed": true,
+      "seconds": 1.096,
+      "outcome": "pass"
+    },
+    {
+      "gate": "physx_adapter_contract_tests_filesystem_qualification",
+      "command": "cd /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-5/MatterEngine3/tests && /tmp/steady-harbor-epoch9-linux/build/physx_adapter_contract_tests_filesystem_qualifier",
+      "executed": true,
+      "seconds": 2.92,
+      "outcome": "pass"
+    },
+    {
+      "gate": "projected_face_cache_tests_filesystem_qualification",
+      "command": "cd /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-5/MatterEngine3/tests && /tmp/steady-harbor-epoch9-linux/build/projected_face_cache_tests_filesystem_qualifier",
+      "executed": true,
+      "seconds": 0.043,
+      "outcome": "pass"
+    },
+    {
+      "gate": "river_float_system_tests_filesystem_qualification",
+      "command": "cd /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-5/MatterEngine3/tests && /tmp/steady-harbor-epoch9-linux/build/river_float_system_tests_filesystem_qualifier",
+      "executed": true,
+      "seconds": 0.439,
+      "outcome": "pass"
+    },
+    {
+      "gate": "sector_streamer_tests_filesystem_qualification",
+      "command": "cd /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-5/MatterEngine3/tests && /tmp/steady-harbor-epoch9-linux/build/sector_streamer_tests_filesystem_qualifier",
+      "executed": true,
+      "seconds": 50.044,
+      "outcome": "pass"
+    },
+    {
+      "gate": "shader_source_tests_source_qualification",
+      "command": "cd /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-5/MatterEngine3/tests && /tmp/steady-harbor-epoch9-linux/build/shader_source_tests_source_qualifier",
+      "executed": true,
+      "seconds": 0.156,
+      "outcome": "pass"
+    },
+    {
+      "gate": "sparse_voxel_bake_tests_filesystem_qualification",
+      "command": "cd /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-5/MatterEngine3/tests && /tmp/steady-harbor-epoch9-linux/build/sparse_voxel_bake_tests_filesystem_qualifier",
+      "executed": true,
+      "seconds": 0.003,
+      "outcome": "pass"
+    },
+    {
+      "gate": "viewer_logic_tests_source_qualification",
+      "command": "cd /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-5/MatterEngine3/tests && /tmp/steady-harbor-epoch9-linux/build/viewer_logic_tests_source_qualifier",
+      "executed": true,
+      "seconds": 179.345,
+      "outcome": "pass"
+    },
+    {
+      "gate": "vt_encoded_pages_tests_filesystem_qualification",
+      "command": "cd /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-5/MatterEngine3/tests && /tmp/steady-harbor-epoch9-linux/build/vt_encoded_pages_tests_filesystem_qualifier",
+      "executed": true,
+      "seconds": 0.309,
+      "outcome": "pass"
+    },
+    {
+      "gate": "water_boundary_animation_source_tests_filesystem_qualification",
+      "command": "cd /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-5/MatterEngine3/tests && /tmp/steady-harbor-epoch9-linux/build/water_boundary_animation_source_tests_filesystem_qualifier",
+      "executed": true,
+      "seconds": 0.005,
+      "outcome": "pass"
+    },
+    {
+      "gate": "water_mesh_animation_artifact_tests_filesystem_qualification",
+      "command": "cd /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-5/MatterEngine3/tests && /tmp/steady-harbor-epoch9-linux/build/water_mesh_animation_artifact_tests_filesystem_qualifier",
+      "executed": true,
+      "seconds": 0.012,
+      "outcome": "pass"
+    },
+    {
+      "gate": "water_mesh_animation_playback_tests_filesystem_qualification",
+      "command": "cd /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-5/MatterEngine3/tests && /tmp/steady-harbor-epoch9-linux/build/water_mesh_animation_playback_tests_filesystem_qualifier",
+      "executed": true,
+      "seconds": 0.011,
+      "outcome": "pass"
+    },
+    {
+      "gate": "world_definition_tests_source_qualification",
+      "command": "cd /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-5/MatterEngine3/tests && /tmp/steady-harbor-epoch9-linux/build/world_definition_tests_source_qualifier",
+      "executed": true,
+      "seconds": 122.279,
+      "outcome": "pass"
+    }
+  ],
+  "compute_qualification": [
+    {
+      "graph": "matter_geometry_compute_off",
+      "qualification_command": "cd /tmp/steady-harbor-epoch9-linux/build/geometry-compute/matter_geometry_compute_off && /usr/bin/cmake -DBUILD=/tmp/steady-harbor-epoch9-linux/build/geometry-compute/matter_geometry_compute_off -DSOURCE=/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-5/libs/GeometryCompute -DLINKS=/tmp/steady-harbor-epoch9-linux/build/geometry-compute/matter_geometry_compute_off/compute-dependencies-Release.txt -DCONFIG=Release -P /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-5/libs/GeometryCompute/tests/dependencies.cmake",
+      "executed_current_default": true,
+      "graph_sha256": "ffd640fdd67e6c25fab71107c5344865605916792677c6d4d4ccc2ef3a5486cb",
+      "link_dependencies_sha256": "1fc872b5b9e373622783b613fb1e7a10f7fe775baf888c9d6bd9905a49345f35"
+    },
+    {
+      "graph": "matter_geometry_compute_on",
+      "qualification_command": "cd /tmp/steady-harbor-epoch9-linux/build/geometry-compute/matter_geometry_compute_on && /usr/bin/cmake -DBUILD=/tmp/steady-harbor-epoch9-linux/build/geometry-compute/matter_geometry_compute_on -DSOURCE=/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-5/libs/GeometryCompute -DLINKS=/tmp/steady-harbor-epoch9-linux/build/geometry-compute/matter_geometry_compute_on/compute-dependencies-Release.txt -DCONFIG=Release -P /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-5/libs/GeometryCompute/tests/dependencies.cmake",
+      "executed_current_default": true,
+      "graph_sha256": "c687f2a5e916f09b5969736698a8350bf5c8e1784df76ea6186cfd7c54bd8eeb",
+      "link_dependencies_sha256": "1fc872b5b9e373622783b613fb1e7a10f7fe775baf888c9d6bd9905a49345f35"
+    }
+  ],
+  "environment_qualification": {
+    "argv": [
+      "python3",
+      "libs/MatterGraphics/tools/qualify_environment.py",
+      "/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-5"
+    ],
+    "returncode": 0,
+    "seconds": 0.04846834099953412,
+    "log_sha256": "968119d07a300e173c7d550670676c5c6cca903e898faaa4aa51b8871b58b05b"
+  },
+  "inventory_sha256": "616ef533530174ac0bfab13e500cf419c06d911ea28dcfcec187fec447e393e3",
+  "bindings_sha256": "5b51bfb1a57ff9eb504c397ee4fd736b7ea34b856e8d3be547e759e170ff517f",
+  "runtime": {
+    "runtime": {
+      "operation": {
+        "name": "runtime",
+        "argv": [
+          "ctest",
+          "--test-dir",
+          "/tmp/steady-harbor-epoch9-linux/build",
+          "-L",
+          "cpu",
+          "-j",
+          "2",
+          "--output-on-failure",
+          "--output-junit",
+          "/tmp/steady-harbor-epoch9-accepted-linux/runtime.xml"
+        ],
+        "returncode": 0,
+        "external_seconds": 34.97866249999788,
+        "log_sha256": "ff6a1ebcd9d898aafbb53eed75bded683860de7dd7dbafa73888d18c272ac2b0"
+      },
+      "ctest_seconds": 34.96,
+      "rows": [
+        {
+          "test": "animation_rigid_bridge_tests",
+          "seconds": 0.00241118,
+          "outcome": "pass"
+        },
+        {
+          "test": "asset_export_tests",
+          "seconds": 0.00238437,
+          "outcome": "pass"
+        },
+        {
+          "test": "async_bake_tests",
+          "seconds": 0.612153,
+          "outcome": "pass"
+        },
+        {
+          "test": "async_queue_tests",
+          "seconds": 0.115605,
+          "outcome": "pass"
+        },
+        {
+          "test": "async_stage_pipeline_tests",
+          "seconds": 0.0165565,
+          "outcome": "pass"
+        },
+        {
+          "test": "authored_fluid_colliders_tests",
+          "seconds": 0.00255204,
+          "outcome": "pass"
+        },
+        {
+          "test": "authored_world_cache_tests",
+          "seconds": 0.00230754,
+          "outcome": "pass"
+        },
+        {
+          "test": "authored_world_provider_cache_tests",
+          "seconds": 0.00338806,
+          "outcome": "pass"
+        },
+        {
+          "test": "bake_trace_tests",
+          "seconds": 0.017747,
+          "outcome": "pass"
+        },
+        {
+          "test": "blas_cache_queue_tests",
+          "seconds": 0.00241459,
+          "outcome": "pass"
+        },
+        {
+          "test": "blas_disk_cache_tests",
+          "seconds": 0.0030584,
+          "outcome": "pass"
+        },
+        {
+          "test": "blas_refcount_tests",
+          "seconds": 0.00201369,
+          "outcome": "pass"
+        },
+        {
+          "test": "brick_bond_atlas_tests",
+          "seconds": 0.524833,
+          "outcome": "pass"
+        },
+        {
+          "test": "brick_bond_detail_tests",
+          "seconds": 0.057241,
+          "outcome": "pass"
+        },
+        {
+          "test": "castle_singleton_tests",
+          "seconds": 0.0486642,
+          "outcome": "pass"
+        },
+        {
+          "test": "character_controller_tests",
+          "seconds": 0.422346,
+          "outcome": "pass"
+        },
+        {
+          "test": "character_walk_controller_tests",
+          "seconds": 0.0502067,
+          "outcome": "pass"
+        },
+        {
+          "test": "chart_atlas_tests",
+          "seconds": 2.60954,
+          "outcome": "pass"
+        },
+        {
+          "test": "cloud_layer_tests",
+          "seconds": 0.00173918,
+          "outcome": "pass"
+        },
+        {
+          "test": "compiler_portability_tests",
+          "seconds": 0.00275877,
+          "outcome": "pass"
+        },
+        {
+          "test": "conifer_lod_provider_tests",
+          "seconds": 2.54609,
+          "outcome": "pass"
+        },
+        {
+          "test": "contour_engine_tests",
+          "seconds": 0.141382,
+          "outcome": "pass"
+        },
+        {
+          "test": "contour_mesh_tests",
+          "seconds": 0.00700868,
+          "outcome": "pass"
+        },
+        {
+          "test": "contour_seam_tests",
+          "seconds": 0.00603307,
+          "outcome": "pass"
+        },
+        {
+          "test": "demand_bake_tests",
+          "seconds": 0.27954,
+          "outcome": "pass"
+        },
+        {
+          "test": "dsl_determinism_tests",
+          "seconds": 0.012269,
+          "outcome": "pass"
+        },
+        {
+          "test": "dynamic_instance_slots_tests",
+          "seconds": 0.0020108,
+          "outcome": "pass"
+        },
+        {
+          "test": "dynamic_scene_bridge_tests",
+          "seconds": 0.0544645,
+          "outcome": "pass"
+        },
+        {
+          "test": "ecs_tests",
+          "seconds": 0.357253,
+          "outcome": "pass"
+        },
+        {
+          "test": "entity_recipe_tests",
+          "seconds": 0.0417599,
+          "outcome": "pass"
+        },
+        {
+          "test": "error_events_tests",
+          "seconds": 0.00209621,
+          "outcome": "pass"
+        },
+        {
+          "test": "eval_world_tests",
+          "seconds": 0.213501,
+          "outcome": "pass"
+        },
+        {
+          "test": "event_channel_tests",
+          "seconds": 0.150172,
+          "outcome": "pass"
+        },
+        {
+          "test": "event_command_tests",
+          "seconds": 0.0556004,
+          "outcome": "pass"
+        },
+        {
+          "test": "event_hub_tests",
+          "seconds": 34.9553,
+          "outcome": "pass"
+        },
+        {
+          "test": "event_property_tests",
+          "seconds": 0.00211152,
+          "outcome": "pass"
+        },
+        {
+          "test": "face_material_bake_tests",
+          "seconds": 0.00346456,
+          "outcome": "pass"
+        },
+        {
+          "test": "finite_surface_recipe_tests",
+          "seconds": 0.889561,
+          "outcome": "pass"
+        },
+        {
+          "test": "finite_surface_stamp_tests",
+          "seconds": 0.00214851,
+          "outcome": "pass"
+        },
+        {
+          "test": "fixture_io_tests",
+          "seconds": 0.00320485,
+          "outcome": "pass"
+        },
+        {
+          "test": "geometry_cut_tests",
+          "seconds": 0.00877479,
+          "outcome": "pass"
+        },
+        {
+          "test": "geometry_hierarchy_tests",
+          "seconds": 0.1954,
+          "outcome": "pass"
+        },
+        {
+          "test": "geometry_runtime_tests",
+          "seconds": 0.00200595,
+          "outcome": "pass"
+        },
+        {
+          "test": "gi_bake_tests",
+          "seconds": 0.959618,
+          "outcome": "pass"
+        },
+        {
+          "test": "gpu_visual_mesher_cpu_tests",
+          "seconds": 0.00210045,
+          "outcome": "pass"
+        },
+        {
+          "test": "gpu_water_animation_render_tests",
+          "seconds": 0.00184431,
+          "outcome": "pass"
+        },
+        {
+          "test": "gpu_water_render_tests",
+          "seconds": 0.00201565,
+          "outcome": "pass"
+        },
+        {
+          "test": "hydrology_artifact_tests",
+          "seconds": 0.0860528,
+          "outcome": "pass"
+        },
+        {
+          "test": "hydrology_handoff_products_tests",
+          "seconds": 0.292759,
+          "outcome": "pass"
+        },
+        {
+          "test": "hydrology_network_artifact_tests",
+          "seconds": 0.00206272,
+          "outcome": "pass"
+        },
+        {
+          "test": "indirect_draw_runs_tests",
+          "seconds": 0.00381688,
+          "outcome": "pass"
+        },
+        {
+          "test": "local_light_index_tests",
+          "seconds": 0.00580861,
+          "outcome": "pass"
+        },
+        {
+          "test": "lod_distance_tests",
+          "seconds": 0.0335944,
+          "outcome": "pass"
+        },
+        {
+          "test": "mat_math_tests",
+          "seconds": 0.0017504,
+          "outcome": "pass"
+        },
+        {
+          "test": "material_registry_tests",
+          "seconds": 0.00282792,
+          "outcome": "pass"
+        },
+        {
+          "test": "mesh_error_tests",
+          "seconds": 0.0021409,
+          "outcome": "pass"
+        },
+        {
+          "test": "mesh_indexed_tests",
+          "seconds": 0.00178068,
+          "outcome": "pass"
+        },
+        {
+          "test": "mesh_simplifier_tests",
+          "seconds": 0.0227128,
+          "outcome": "pass"
+        },
+        {
+          "test": "mesh_smooth_tests",
+          "seconds": 0.00306814,
+          "outcome": "pass"
+        },
+        {
+          "test": "mesh_transform_tests",
+          "seconds": 0.00195121,
+          "outcome": "pass"
+        },
+        {
+          "test": "modifier_apply_tests",
+          "seconds": 0.00491439,
+          "outcome": "pass"
+        },
+        {
+          "test": "obj_export_golden_tests",
+          "seconds": 0.0045364,
+          "outcome": "pass"
+        },
+        {
+          "test": "obj_export_tests",
+          "seconds": 0.0175709,
+          "outcome": "pass"
+        },
+        {
+          "test": "oriented_cube_tests",
+          "seconds": 0.00193792,
+          "outcome": "pass"
+        },
+        {
+          "test": "part_asset_flat_refs_tests",
+          "seconds": 0.00283735,
+          "outcome": "pass"
+        },
+        {
+          "test": "part_asset_v2_tests",
+          "seconds": 0.00591348,
+          "outcome": "pass"
+        },
+        {
+          "test": "part_flatten_tests",
+          "seconds": 5.55297,
+          "outcome": "pass"
+        },
+        {
+          "test": "part_graph_tests",
+          "seconds": 0.00237069,
+          "outcome": "pass"
+        },
+        {
+          "test": "part_surface_provider_tests",
+          "seconds": 0.207163,
+          "outcome": "pass"
+        },
+        {
+          "test": "partstore_tests",
+          "seconds": 0.00665912,
+          "outcome": "pass"
+        },
+        {
+          "test": "physics_tests",
+          "seconds": 0.395413,
+          "outcome": "pass"
+        },
+        {
+          "test": "physx_adapter_contract_tests",
+          "seconds": 0.0309497,
+          "outcome": "pass"
+        },
+        {
+          "test": "polygon_triangulate_tests",
+          "seconds": 0.00191566,
+          "outcome": "pass"
+        },
+        {
+          "test": "primary_light_culling_tests",
+          "seconds": 0.00676801,
+          "outcome": "pass"
+        },
+        {
+          "test": "projected_face_cache_tests",
+          "seconds": 0.0162497,
+          "outcome": "pass"
+        },
+        {
+          "test": "props_tests",
+          "seconds": 0.00251005,
+          "outcome": "pass"
+        },
+        {
+          "test": "resolve_cache_tests",
+          "seconds": 0.00381679,
+          "outcome": "pass"
+        },
+        {
+          "test": "river_float_system_tests",
+          "seconds": 0.482491,
+          "outcome": "pass"
+        },
+        {
+          "test": "river_geometry_tests",
+          "seconds": 0.0022545,
+          "outcome": "pass"
+        },
+        {
+          "test": "river_network_tests",
+          "seconds": 0.00207262,
+          "outcome": "pass"
+        },
+        {
+          "test": "river_presentation_field_tests",
+          "seconds": 0.0021528,
+          "outcome": "pass"
+        },
+        {
+          "test": "river_runtime_tests",
+          "seconds": 0.0021697,
+          "outcome": "pass"
+        },
+        {
+          "test": "river_section_coordinator_tests",
+          "seconds": 0.00171153,
+          "outcome": "pass"
+        },
+        {
+          "test": "river_section_graph_tests",
+          "seconds": 0.00172278,
+          "outcome": "pass"
+        },
+        {
+          "test": "scene_registry_tests",
+          "seconds": 0.238429,
+          "outcome": "pass"
+        },
+        {
+          "test": "scene_tracker_tests",
+          "seconds": 0.0346391,
+          "outcome": "pass"
+        },
+        {
+          "test": "script_host_tests",
+          "seconds": 2.51982,
+          "outcome": "pass"
+        },
+        {
+          "test": "sdf_candidate_bounds_tests",
+          "seconds": 0.4208,
+          "outcome": "pass"
+        },
+        {
+          "test": "seam_weld_tests",
+          "seconds": 0.00543388,
+          "outcome": "pass"
+        },
+        {
+          "test": "sector_bake_tests",
+          "seconds": 0.598832,
+          "outcome": "pass"
+        },
+        {
+          "test": "sector_lod_tests",
+          "seconds": 0.0319447,
+          "outcome": "pass"
+        },
+        {
+          "test": "sector_streamer_tests",
+          "seconds": 7.47556,
+          "outcome": "pass"
+        },
+        {
+          "test": "sector_streaming_coordinator_tests",
+          "seconds": 0.00234086,
+          "outcome": "pass"
+        },
+        {
+          "test": "shader_source_tests",
+          "seconds": 0.00191163,
+          "outcome": "pass"
+        },
+        {
+          "test": "shared_lib_tests",
+          "seconds": 0.211988,
+          "outcome": "pass"
+        },
+        {
+          "test": "simulation_control_tests",
+          "seconds": 0.0522115,
+          "outcome": "pass"
+        },
+        {
+          "test": "solid_face_projection_tests",
+          "seconds": 0.00252724,
+          "outcome": "pass"
+        },
+        {
+          "test": "solid_source_evaluation_tests",
+          "seconds": 0.0408127,
+          "outcome": "pass"
+        },
+        {
+          "test": "sparse_voxel_bake_tests",
+          "seconds": 0.00254986,
+          "outcome": "pass"
+        },
+        {
+          "test": "sparse_voxel_hierarchy_tests",
+          "seconds": 0.102691,
+          "outcome": "pass"
+        },
+        {
+          "test": "spillway_handoff_tests",
+          "seconds": 0.00234968,
+          "outcome": "pass"
+        },
+        {
+          "test": "staged_normals_tests",
+          "seconds": 0.0167675,
+          "outcome": "pass"
+        },
+        {
+          "test": "surface_field_tests",
+          "seconds": 0.0302555,
+          "outcome": "pass"
+        },
+        {
+          "test": "surface_proxy_tests",
+          "seconds": 1.53754,
+          "outcome": "pass"
+        },
+        {
+          "test": "surface_vertex_tests",
+          "seconds": 0.0157843,
+          "outcome": "pass"
+        },
+        {
+          "test": "terrain_collision_artifact_tests",
+          "seconds": 0.00810668,
+          "outcome": "pass"
+        },
+        {
+          "test": "terrain_collision_definition_tests",
+          "seconds": 0.00191653,
+          "outcome": "pass"
+        },
+        {
+          "test": "terrain_collision_physics_tests",
+          "seconds": 0.130302,
+          "outcome": "pass"
+        },
+        {
+          "test": "terrain_collision_session_tests",
+          "seconds": 0.57231,
+          "outcome": "pass"
+        },
+        {
+          "test": "terrain_field_tests",
+          "seconds": 0.00319707,
+          "outcome": "pass"
+        },
+        {
+          "test": "terrain_mesher_tests",
+          "seconds": 0.721648,
+          "outcome": "pass"
+        },
+        {
+          "test": "terrain_verb_tests",
+          "seconds": 0.00667794,
+          "outcome": "pass"
+        },
+        {
+          "test": "tileset_bake_tests",
+          "seconds": 0.549954,
+          "outcome": "pass"
+        },
+        {
+          "test": "tileset_physics_tests",
+          "seconds": 0.0653376,
+          "outcome": "pass"
+        },
+        {
+          "test": "vertex_cache_order_tests",
+          "seconds": 0.0236622,
+          "outcome": "pass"
+        },
+        {
+          "test": "viewer_logic_tests",
+          "seconds": 0.111624,
+          "outcome": "pass"
+        },
+        {
+          "test": "volumetric_quality_tests",
+          "seconds": 0.00197048,
+          "outcome": "pass"
+        },
+        {
+          "test": "vt_encoded_pages_tests",
+          "seconds": 0.115753,
+          "outcome": "pass"
+        },
+        {
+          "test": "vt_residency_tests",
+          "seconds": 0.0178401,
+          "outcome": "pass"
+        },
+        {
+          "test": "vulkan_smoke_tests",
+          "seconds": 0.00471997,
+          "outcome": "pass"
+        },
+        {
+          "test": "water_boundary_animation_source_tests",
+          "seconds": 0.00242881,
+          "outcome": "pass"
+        },
+        {
+          "test": "water_field_vk_tests",
+          "seconds": 0.00164175,
+          "outcome": "pass"
+        },
+        {
+          "test": "water_forward_reference_tests",
+          "seconds": 0.00195123,
+          "outcome": "pass"
+        },
+        {
+          "test": "water_mesh_animation_artifact_tests",
+          "seconds": 0.00221905,
+          "outcome": "pass"
+        },
+        {
+          "test": "water_mesh_animation_capture_tests",
+          "seconds": 0.00170205,
+          "outcome": "pass"
+        },
+        {
+          "test": "water_mesh_animation_playback_tests",
+          "seconds": 0.00248986,
+          "outcome": "pass"
+        },
+        {
+          "test": "water_mesh_animation_tests",
+          "seconds": 0.00188223,
+          "outcome": "pass"
+        },
+        {
+          "test": "water_surface_reference_tests",
+          "seconds": 0.0040599,
+          "outcome": "pass"
+        },
+        {
+          "test": "world_definition_tests",
+          "seconds": 0.0580344,
+          "outcome": "pass"
+        },
+        {
+          "test": "world_state_delta_tests",
+          "seconds": 0.193984,
+          "outcome": "pass"
+        },
+        {
+          "test": "world_tracer_tests",
+          "seconds": 0.00273297,
+          "outcome": "pass"
+        },
+        {
+          "test": "agent_protocol_tests",
+          "seconds": 0.00780929,
+          "outcome": "pass"
+        },
+        {
+          "test": "asset_root_tests",
+          "seconds": 0.00192246,
+          "outcome": "pass"
+        },
+        {
+          "test": "frame_pacer_tests",
+          "seconds": 0.0278324,
+          "outcome": "pass"
+        },
+        {
+          "test": "perf_gpu_stats_tests",
+          "seconds": 0.00202877,
+          "outcome": "pass"
+        },
+        {
+          "test": "procedural_parameter_tests",
+          "seconds": 0.00275316,
+          "outcome": "pass"
+        },
+        {
+          "test": "regen_job_tests",
+          "seconds": 0.00294813,
+          "outcome": "pass"
+        },
+        {
+          "test": "scene_diff_tests",
+          "seconds": 0.0325591,
+          "outcome": "pass"
+        },
+        {
+          "test": "scene_inventory_tests",
+          "seconds": 0.00210911,
+          "outcome": "pass"
+        },
+        {
+          "test": "selection_command_tests",
+          "seconds": 0.00198226,
+          "outcome": "pass"
+        },
+        {
+          "test": "viewport_capture_tests",
+          "seconds": 0.00236647,
+          "outcome": "pass"
+        },
+        {
+          "test": "matter_geometry_compute_off",
+          "seconds": 0.00210034,
+          "outcome": "pass"
+        }
+      ],
+      "slowest20": [
+        {
+          "test": "event_hub_tests",
+          "seconds": 34.9553,
+          "outcome": "pass"
+        },
+        {
+          "test": "sector_streamer_tests",
+          "seconds": 7.47556,
+          "outcome": "pass"
+        },
+        {
+          "test": "part_flatten_tests",
+          "seconds": 5.55297,
+          "outcome": "pass"
+        },
+        {
+          "test": "chart_atlas_tests",
+          "seconds": 2.60954,
+          "outcome": "pass"
+        },
+        {
+          "test": "conifer_lod_provider_tests",
+          "seconds": 2.54609,
+          "outcome": "pass"
+        },
+        {
+          "test": "script_host_tests",
+          "seconds": 2.51982,
+          "outcome": "pass"
+        },
+        {
+          "test": "surface_proxy_tests",
+          "seconds": 1.53754,
+          "outcome": "pass"
+        },
+        {
+          "test": "gi_bake_tests",
+          "seconds": 0.959618,
+          "outcome": "pass"
+        },
+        {
+          "test": "finite_surface_recipe_tests",
+          "seconds": 0.889561,
+          "outcome": "pass"
+        },
+        {
+          "test": "terrain_mesher_tests",
+          "seconds": 0.721648,
+          "outcome": "pass"
+        },
+        {
+          "test": "async_bake_tests",
+          "seconds": 0.612153,
+          "outcome": "pass"
+        },
+        {
+          "test": "sector_bake_tests",
+          "seconds": 0.598832,
+          "outcome": "pass"
+        },
+        {
+          "test": "terrain_collision_session_tests",
+          "seconds": 0.57231,
+          "outcome": "pass"
+        },
+        {
+          "test": "tileset_bake_tests",
+          "seconds": 0.549954,
+          "outcome": "pass"
+        },
+        {
+          "test": "brick_bond_atlas_tests",
+          "seconds": 0.524833,
+          "outcome": "pass"
+        },
+        {
+          "test": "river_float_system_tests",
+          "seconds": 0.482491,
+          "outcome": "pass"
+        },
+        {
+          "test": "character_controller_tests",
+          "seconds": 0.422346,
+          "outcome": "pass"
+        },
+        {
+          "test": "sdf_candidate_bounds_tests",
+          "seconds": 0.4208,
+          "outcome": "pass"
+        },
+        {
+          "test": "physics_tests",
+          "seconds": 0.395413,
+          "outcome": "pass"
+        },
+        {
+          "test": "ecs_tests",
+          "seconds": 0.357253,
+          "outcome": "pass"
+        }
+      ],
+      "inventory_matches": true,
+      "all_pass": true,
+      "junit_sha256": "0b921283480ac07281ded2bdea9d8511a56609322b95031c620f2e32c3caabcb"
+    },
+    "runtime-traced": {
+      "operation": {
+        "name": "runtime-traced",
+        "argv": [
+          "strace",
+          "--seccomp-bpf",
+          "-f",
+          "-Y",
+          "-s",
+          "4096",
+          "-e",
+          "trace=%file,%process",
+          "-o",
+          "/tmp/steady-harbor-epoch9-accepted-linux/runtime.strace",
+          "ctest",
+          "--test-dir",
+          "/tmp/steady-harbor-epoch9-linux/build",
+          "-L",
+          "cpu",
+          "-j",
+          "2",
+          "--output-on-failure",
+          "--output-junit",
+          "/tmp/steady-harbor-epoch9-accepted-linux/runtime-traced.xml"
+        ],
+        "returncode": 0,
+        "external_seconds": 36.89393837700118,
+        "log_sha256": "e22fda580c4f5e0033d00a62a977b984508ecbf409a79349b637cba7a38eda55"
+      },
+      "ctest_seconds": 36.86,
+      "rows": [
+        {
+          "test": "animation_rigid_bridge_tests",
+          "seconds": 0.00652883,
+          "outcome": "pass"
+        },
+        {
+          "test": "asset_export_tests",
+          "seconds": 0.00864894,
+          "outcome": "pass"
+        },
+        {
+          "test": "async_bake_tests",
+          "seconds": 0.607522,
+          "outcome": "pass"
+        },
+        {
+          "test": "async_queue_tests",
+          "seconds": 0.125559,
+          "outcome": "pass"
+        },
+        {
+          "test": "async_stage_pipeline_tests",
+          "seconds": 0.0384119,
+          "outcome": "pass"
+        },
+        {
+          "test": "authored_fluid_colliders_tests",
+          "seconds": 0.00722825,
+          "outcome": "pass"
+        },
+        {
+          "test": "authored_world_cache_tests",
+          "seconds": 0.00764992,
+          "outcome": "pass"
+        },
+        {
+          "test": "authored_world_provider_cache_tests",
+          "seconds": 0.00861929,
+          "outcome": "pass"
+        },
+        {
+          "test": "bake_trace_tests",
+          "seconds": 0.0416504,
+          "outcome": "pass"
+        },
+        {
+          "test": "blas_cache_queue_tests",
+          "seconds": 0.00993935,
+          "outcome": "pass"
+        },
+        {
+          "test": "blas_disk_cache_tests",
+          "seconds": 0.00935571,
+          "outcome": "pass"
+        },
+        {
+          "test": "blas_refcount_tests",
+          "seconds": 0.00693434,
+          "outcome": "pass"
+        },
+        {
+          "test": "brick_bond_atlas_tests",
+          "seconds": 0.542151,
+          "outcome": "pass"
+        },
+        {
+          "test": "brick_bond_detail_tests",
+          "seconds": 0.0637209,
+          "outcome": "pass"
+        },
+        {
+          "test": "castle_singleton_tests",
+          "seconds": 0.0526823,
+          "outcome": "pass"
+        },
+        {
+          "test": "character_controller_tests",
+          "seconds": 0.307486,
+          "outcome": "pass"
+        },
+        {
+          "test": "character_walk_controller_tests",
+          "seconds": 0.0546709,
+          "outcome": "pass"
+        },
+        {
+          "test": "chart_atlas_tests",
+          "seconds": 2.15161,
+          "outcome": "pass"
+        },
+        {
+          "test": "cloud_layer_tests",
+          "seconds": 0.00770363,
+          "outcome": "pass"
+        },
+        {
+          "test": "compiler_portability_tests",
+          "seconds": 0.00692945,
+          "outcome": "pass"
+        },
+        {
+          "test": "conifer_lod_provider_tests",
+          "seconds": 1.71305,
+          "outcome": "pass"
+        },
+        {
+          "test": "contour_engine_tests",
+          "seconds": 0.128972,
+          "outcome": "pass"
+        },
+        {
+          "test": "contour_mesh_tests",
+          "seconds": 0.0117474,
+          "outcome": "pass"
+        },
+        {
+          "test": "contour_seam_tests",
+          "seconds": 0.0112929,
+          "outcome": "pass"
+        },
+        {
+          "test": "demand_bake_tests",
+          "seconds": 0.241536,
+          "outcome": "pass"
+        },
+        {
+          "test": "dsl_determinism_tests",
+          "seconds": 0.0238791,
+          "outcome": "pass"
+        },
+        {
+          "test": "dynamic_instance_slots_tests",
+          "seconds": 0.00805641,
+          "outcome": "pass"
+        },
+        {
+          "test": "dynamic_scene_bridge_tests",
+          "seconds": 0.0605572,
+          "outcome": "pass"
+        },
+        {
+          "test": "ecs_tests",
+          "seconds": 0.310657,
+          "outcome": "pass"
+        },
+        {
+          "test": "entity_recipe_tests",
+          "seconds": 0.045869,
+          "outcome": "pass"
+        },
+        {
+          "test": "error_events_tests",
+          "seconds": 0.00663494,
+          "outcome": "pass"
+        },
+        {
+          "test": "eval_world_tests",
+          "seconds": 0.202547,
+          "outcome": "pass"
+        },
+        {
+          "test": "event_channel_tests",
+          "seconds": 0.159876,
+          "outcome": "pass"
+        },
+        {
+          "test": "event_command_tests",
+          "seconds": 0.0689186,
+          "outcome": "pass"
+        },
+        {
+          "test": "event_hub_tests",
+          "seconds": 36.8339,
+          "outcome": "pass"
+        },
+        {
+          "test": "event_property_tests",
+          "seconds": 0.00937934,
+          "outcome": "pass"
+        },
+        {
+          "test": "face_material_bake_tests",
+          "seconds": 0.00741089,
+          "outcome": "pass"
+        },
+        {
+          "test": "finite_surface_recipe_tests",
+          "seconds": 0.800266,
+          "outcome": "pass"
+        },
+        {
+          "test": "finite_surface_stamp_tests",
+          "seconds": 0.00783682,
+          "outcome": "pass"
+        },
+        {
+          "test": "fixture_io_tests",
+          "seconds": 0.0132698,
+          "outcome": "pass"
+        },
+        {
+          "test": "geometry_cut_tests",
+          "seconds": 0.0134203,
+          "outcome": "pass"
+        },
+        {
+          "test": "geometry_hierarchy_tests",
+          "seconds": 0.192246,
+          "outcome": "pass"
+        },
+        {
+          "test": "geometry_runtime_tests",
+          "seconds": 0.00797139,
+          "outcome": "pass"
+        },
+        {
+          "test": "gi_bake_tests",
+          "seconds": 1.18421,
+          "outcome": "pass"
+        },
+        {
+          "test": "gpu_visual_mesher_cpu_tests",
+          "seconds": 0.00640925,
+          "outcome": "pass"
+        },
+        {
+          "test": "gpu_water_animation_render_tests",
+          "seconds": 0.00684158,
+          "outcome": "pass"
+        },
+        {
+          "test": "gpu_water_render_tests",
+          "seconds": 0.00629661,
+          "outcome": "pass"
+        },
+        {
+          "test": "hydrology_artifact_tests",
+          "seconds": 0.0867011,
+          "outcome": "pass"
+        },
+        {
+          "test": "hydrology_handoff_products_tests",
+          "seconds": 0.274031,
+          "outcome": "pass"
+        },
+        {
+          "test": "hydrology_network_artifact_tests",
+          "seconds": 0.0070135,
+          "outcome": "pass"
+        },
+        {
+          "test": "indirect_draw_runs_tests",
+          "seconds": 0.00857441,
+          "outcome": "pass"
+        },
+        {
+          "test": "local_light_index_tests",
+          "seconds": 0.0111775,
+          "outcome": "pass"
+        },
+        {
+          "test": "lod_distance_tests",
+          "seconds": 0.0410238,
+          "outcome": "pass"
+        },
+        {
+          "test": "mat_math_tests",
+          "seconds": 0.00637945,
+          "outcome": "pass"
+        },
+        {
+          "test": "material_registry_tests",
+          "seconds": 0.0104724,
+          "outcome": "pass"
+        },
+        {
+          "test": "mesh_error_tests",
+          "seconds": 0.00801205,
+          "outcome": "pass"
+        },
+        {
+          "test": "mesh_indexed_tests",
+          "seconds": 0.00729048,
+          "outcome": "pass"
+        },
+        {
+          "test": "mesh_simplifier_tests",
+          "seconds": 0.0267032,
+          "outcome": "pass"
+        },
+        {
+          "test": "mesh_smooth_tests",
+          "seconds": 0.00767628,
+          "outcome": "pass"
+        },
+        {
+          "test": "mesh_transform_tests",
+          "seconds": 0.00750007,
+          "outcome": "pass"
+        },
+        {
+          "test": "modifier_apply_tests",
+          "seconds": 0.00947759,
+          "outcome": "pass"
+        },
+        {
+          "test": "obj_export_golden_tests",
+          "seconds": 0.0100135,
+          "outcome": "pass"
+        },
+        {
+          "test": "obj_export_tests",
+          "seconds": 0.0232211,
+          "outcome": "pass"
+        },
+        {
+          "test": "oriented_cube_tests",
+          "seconds": 0.00681422,
+          "outcome": "pass"
+        },
+        {
+          "test": "part_asset_flat_refs_tests",
+          "seconds": 0.00746249,
+          "outcome": "pass"
+        },
+        {
+          "test": "part_asset_v2_tests",
+          "seconds": 0.0128164,
+          "outcome": "pass"
+        },
+        {
+          "test": "part_flatten_tests",
+          "seconds": 5.19995,
+          "outcome": "pass"
+        },
+        {
+          "test": "part_graph_tests",
+          "seconds": 0.00683627,
+          "outcome": "pass"
+        },
+        {
+          "test": "part_surface_provider_tests",
+          "seconds": 0.165486,
+          "outcome": "pass"
+        },
+        {
+          "test": "partstore_tests",
+          "seconds": 0.0127127,
+          "outcome": "pass"
+        },
+        {
+          "test": "physics_tests",
+          "seconds": 0.391978,
+          "outcome": "pass"
+        },
+        {
+          "test": "physx_adapter_contract_tests",
+          "seconds": 0.0354383,
+          "outcome": "pass"
+        },
+        {
+          "test": "polygon_triangulate_tests",
+          "seconds": 0.00703874,
+          "outcome": "pass"
+        },
+        {
+          "test": "primary_light_culling_tests",
+          "seconds": 0.0126478,
+          "outcome": "pass"
+        },
+        {
+          "test": "projected_face_cache_tests",
+          "seconds": 0.0164941,
+          "outcome": "pass"
+        },
+        {
+          "test": "props_tests",
+          "seconds": 0.00988268,
+          "outcome": "pass"
+        },
+        {
+          "test": "resolve_cache_tests",
+          "seconds": 0.00867244,
+          "outcome": "pass"
+        },
+        {
+          "test": "river_float_system_tests",
+          "seconds": 0.491516,
+          "outcome": "pass"
+        },
+        {
+          "test": "river_geometry_tests",
+          "seconds": 0.00701244,
+          "outcome": "pass"
+        },
+        {
+          "test": "river_network_tests",
+          "seconds": 0.00749587,
+          "outcome": "pass"
+        },
+        {
+          "test": "river_presentation_field_tests",
+          "seconds": 0.00658026,
+          "outcome": "pass"
+        },
+        {
+          "test": "river_runtime_tests",
+          "seconds": 0.00786708,
+          "outcome": "pass"
+        },
+        {
+          "test": "river_section_coordinator_tests",
+          "seconds": 0.00728765,
+          "outcome": "pass"
+        },
+        {
+          "test": "river_section_graph_tests",
+          "seconds": 0.0071472,
+          "outcome": "pass"
+        },
+        {
+          "test": "scene_registry_tests",
+          "seconds": 0.169131,
+          "outcome": "pass"
+        },
+        {
+          "test": "scene_tracker_tests",
+          "seconds": 0.0463754,
+          "outcome": "pass"
+        },
+        {
+          "test": "script_host_tests",
+          "seconds": 1.90983,
+          "outcome": "pass"
+        },
+        {
+          "test": "sdf_candidate_bounds_tests",
+          "seconds": 0.328476,
+          "outcome": "pass"
+        },
+        {
+          "test": "seam_weld_tests",
+          "seconds": 0.0102275,
+          "outcome": "pass"
+        },
+        {
+          "test": "sector_bake_tests",
+          "seconds": 0.592811,
+          "outcome": "pass"
+        },
+        {
+          "test": "sector_lod_tests",
+          "seconds": 0.0391804,
+          "outcome": "pass"
+        },
+        {
+          "test": "sector_streamer_tests",
+          "seconds": 7.35327,
+          "outcome": "pass"
+        },
+        {
+          "test": "sector_streaming_coordinator_tests",
+          "seconds": 0.00791307,
+          "outcome": "pass"
+        },
+        {
+          "test": "shader_source_tests",
+          "seconds": 0.0104439,
+          "outcome": "pass"
+        },
+        {
+          "test": "shared_lib_tests",
+          "seconds": 0.160108,
+          "outcome": "pass"
+        },
+        {
+          "test": "simulation_control_tests",
+          "seconds": 0.0539259,
+          "outcome": "pass"
+        },
+        {
+          "test": "solid_face_projection_tests",
+          "seconds": 0.00743057,
+          "outcome": "pass"
+        },
+        {
+          "test": "solid_source_evaluation_tests",
+          "seconds": 0.0474302,
+          "outcome": "pass"
+        },
+        {
+          "test": "sparse_voxel_bake_tests",
+          "seconds": 0.00740496,
+          "outcome": "pass"
+        },
+        {
+          "test": "sparse_voxel_hierarchy_tests",
+          "seconds": 0.103383,
+          "outcome": "pass"
+        },
+        {
+          "test": "spillway_handoff_tests",
+          "seconds": 0.00706995,
+          "outcome": "pass"
+        },
+        {
+          "test": "staged_normals_tests",
+          "seconds": 0.0203741,
+          "outcome": "pass"
+        },
+        {
+          "test": "surface_field_tests",
+          "seconds": 0.034075,
+          "outcome": "pass"
+        },
+        {
+          "test": "surface_proxy_tests",
+          "seconds": 1.32971,
+          "outcome": "pass"
+        },
+        {
+          "test": "surface_vertex_tests",
+          "seconds": 0.0155469,
+          "outcome": "pass"
+        },
+        {
+          "test": "terrain_collision_artifact_tests",
+          "seconds": 0.0203795,
+          "outcome": "pass"
+        },
+        {
+          "test": "terrain_collision_definition_tests",
+          "seconds": 0.00704466,
+          "outcome": "pass"
+        },
+        {
+          "test": "terrain_collision_physics_tests",
+          "seconds": 0.0946798,
+          "outcome": "pass"
+        },
+        {
+          "test": "terrain_collision_session_tests",
+          "seconds": 0.595948,
+          "outcome": "pass"
+        },
+        {
+          "test": "terrain_field_tests",
+          "seconds": 0.00849785,
+          "outcome": "pass"
+        },
+        {
+          "test": "terrain_mesher_tests",
+          "seconds": 0.665138,
+          "outcome": "pass"
+        },
+        {
+          "test": "terrain_verb_tests",
+          "seconds": 0.0127659,
+          "outcome": "pass"
+        },
+        {
+          "test": "tileset_bake_tests",
+          "seconds": 0.472498,
+          "outcome": "pass"
+        },
+        {
+          "test": "tileset_physics_tests",
+          "seconds": 0.0718795,
+          "outcome": "pass"
+        },
+        {
+          "test": "vertex_cache_order_tests",
+          "seconds": 0.0308621,
+          "outcome": "pass"
+        },
+        {
+          "test": "viewer_logic_tests",
+          "seconds": 0.107167,
+          "outcome": "pass"
+        },
+        {
+          "test": "volumetric_quality_tests",
+          "seconds": 0.00639061,
+          "outcome": "pass"
+        },
+        {
+          "test": "vt_encoded_pages_tests",
+          "seconds": 0.0973124,
+          "outcome": "pass"
+        },
+        {
+          "test": "vt_residency_tests",
+          "seconds": 0.022925,
+          "outcome": "pass"
+        },
+        {
+          "test": "vulkan_smoke_tests",
+          "seconds": 0.00915764,
+          "outcome": "pass"
+        },
+        {
+          "test": "water_boundary_animation_source_tests",
+          "seconds": 0.00683866,
+          "outcome": "pass"
+        },
+        {
+          "test": "water_field_vk_tests",
+          "seconds": 0.00695406,
+          "outcome": "pass"
+        },
+        {
+          "test": "water_forward_reference_tests",
+          "seconds": 0.00709936,
+          "outcome": "pass"
+        },
+        {
+          "test": "water_mesh_animation_artifact_tests",
+          "seconds": 0.00911212,
+          "outcome": "pass"
+        },
+        {
+          "test": "water_mesh_animation_capture_tests",
+          "seconds": 0.00705577,
+          "outcome": "pass"
+        },
+        {
+          "test": "water_mesh_animation_playback_tests",
+          "seconds": 0.00818464,
+          "outcome": "pass"
+        },
+        {
+          "test": "water_mesh_animation_tests",
+          "seconds": 0.0100354,
+          "outcome": "pass"
+        },
+        {
+          "test": "water_surface_reference_tests",
+          "seconds": 0.00937831,
+          "outcome": "pass"
+        },
+        {
+          "test": "world_definition_tests",
+          "seconds": 0.0554277,
+          "outcome": "pass"
+        },
+        {
+          "test": "world_state_delta_tests",
+          "seconds": 0.149175,
+          "outcome": "pass"
+        },
+        {
+          "test": "world_tracer_tests",
+          "seconds": 0.00787467,
+          "outcome": "pass"
+        },
+        {
+          "test": "agent_protocol_tests",
+          "seconds": 0.0129882,
+          "outcome": "pass"
+        },
+        {
+          "test": "asset_root_tests",
+          "seconds": 0.00727158,
+          "outcome": "pass"
+        },
+        {
+          "test": "frame_pacer_tests",
+          "seconds": 0.0326075,
+          "outcome": "pass"
+        },
+        {
+          "test": "perf_gpu_stats_tests",
+          "seconds": 0.00735527,
+          "outcome": "pass"
+        },
+        {
+          "test": "procedural_parameter_tests",
+          "seconds": 0.00674931,
+          "outcome": "pass"
+        },
+        {
+          "test": "regen_job_tests",
+          "seconds": 0.00664104,
+          "outcome": "pass"
+        },
+        {
+          "test": "scene_diff_tests",
+          "seconds": 0.0368506,
+          "outcome": "pass"
+        },
+        {
+          "test": "scene_inventory_tests",
+          "seconds": 0.00725586,
+          "outcome": "pass"
+        },
+        {
+          "test": "selection_command_tests",
+          "seconds": 0.00691588,
+          "outcome": "pass"
+        },
+        {
+          "test": "viewport_capture_tests",
+          "seconds": 0.00654927,
+          "outcome": "pass"
+        },
+        {
+          "test": "matter_geometry_compute_off",
+          "seconds": 0.00693113,
+          "outcome": "pass"
+        }
+      ],
+      "slowest20": [
+        {
+          "test": "event_hub_tests",
+          "seconds": 36.8339,
+          "outcome": "pass"
+        },
+        {
+          "test": "sector_streamer_tests",
+          "seconds": 7.35327,
+          "outcome": "pass"
+        },
+        {
+          "test": "part_flatten_tests",
+          "seconds": 5.19995,
+          "outcome": "pass"
+        },
+        {
+          "test": "chart_atlas_tests",
+          "seconds": 2.15161,
+          "outcome": "pass"
+        },
+        {
+          "test": "script_host_tests",
+          "seconds": 1.90983,
+          "outcome": "pass"
+        },
+        {
+          "test": "conifer_lod_provider_tests",
+          "seconds": 1.71305,
+          "outcome": "pass"
+        },
+        {
+          "test": "surface_proxy_tests",
+          "seconds": 1.32971,
+          "outcome": "pass"
+        },
+        {
+          "test": "gi_bake_tests",
+          "seconds": 1.18421,
+          "outcome": "pass"
+        },
+        {
+          "test": "finite_surface_recipe_tests",
+          "seconds": 0.800266,
+          "outcome": "pass"
+        },
+        {
+          "test": "terrain_mesher_tests",
+          "seconds": 0.665138,
+          "outcome": "pass"
+        },
+        {
+          "test": "async_bake_tests",
+          "seconds": 0.607522,
+          "outcome": "pass"
+        },
+        {
+          "test": "terrain_collision_session_tests",
+          "seconds": 0.595948,
+          "outcome": "pass"
+        },
+        {
+          "test": "sector_bake_tests",
+          "seconds": 0.592811,
+          "outcome": "pass"
+        },
+        {
+          "test": "brick_bond_atlas_tests",
+          "seconds": 0.542151,
+          "outcome": "pass"
+        },
+        {
+          "test": "river_float_system_tests",
+          "seconds": 0.491516,
+          "outcome": "pass"
+        },
+        {
+          "test": "tileset_bake_tests",
+          "seconds": 0.472498,
+          "outcome": "pass"
+        },
+        {
+          "test": "physics_tests",
+          "seconds": 0.391978,
+          "outcome": "pass"
+        },
+        {
+          "test": "sdf_candidate_bounds_tests",
+          "seconds": 0.328476,
+          "outcome": "pass"
+        },
+        {
+          "test": "ecs_tests",
+          "seconds": 0.310657,
+          "outcome": "pass"
+        },
+        {
+          "test": "character_controller_tests",
+          "seconds": 0.307486,
+          "outcome": "pass"
+        }
+      ],
+      "inventory_matches": true,
+      "all_pass": true,
+      "junit_sha256": "a8d3a9267bc5861b75c1335a39426d802ffecce5fa89beac153c01a0860d8bf6"
+    }
+  },
+  "fixture_audit": {
+    "trace_sha256": "1185e975703eb912e830d0faaf3bbe59455fd27e0f44768f2125608a6bbaf553",
+    "review_sha256": "10d1410a3353fad177344db694a3cb8364a0667be43cc454dec799782b03cff6",
+    "path_syscall_scope": "strace --seccomp-bpf -f -Y -e trace=%file,%process; all selected executables and descendants, including failed path probes; loader, system and shell metadata explicitly classified; complete CTest harness file calls retained in raw trace",
+    "selected_executable_count": 142,
+    "missing_executables": [],
+    "repeated_cold_children": [
+      {
+        "path": "/tmp/steady-harbor-epoch9-linux/build/part_flatten_tests",
+        "count": 2
+      }
+    ],
+    "process_lineage_count": 776,
+    "unclassified_file_call_count": 0,
+    "loader_count": 859,
+    "system_metadata_count": 5,
+    "shell_metadata_count": 6,
+    "allowed_io_review_sha256": "4f6fe991aca5eba6a31e8cf1009ce372d996b66ebd17bad14710188a309d3da9",
+    "unclassified_harness_paths": []
+  },
+  "historical_before_diagnostic": {
+    "junit_sha256": "0295eac971464a20cea551b91e0097fbecba83eaa28a1015639e72d8d77fffb7",
+    "source_receipt_sha256": "48dc06ff08fce44475f0a449d370537a1c01a6f6b5a0f203383ebcff84ea1230",
+    "ctest_seconds": 336.7,
+    "external_seconds": 345.24,
+    "passing": false,
+    "qualification": "138 pass, 3 fail, 1 not run; substituted original sector setup binary, otherwise actual then-current CMake binaries",
+    "slowest20": [
+      {
+        "test": "part_flatten_tests",
+        "seconds": 326.251,
+        "outcome": "pass"
+      },
+      {
+        "test": "event_hub_tests",
+        "seconds": 41.3765,
+        "outcome": "pass"
+      },
+      {
+        "test": "sector_streamer_tests",
+        "seconds": 24.849,
+        "outcome": "pass"
+      },
+      {
+        "test": "chart_atlas_tests",
+        "seconds": 4.64214,
+        "outcome": "pass"
+      },
+      {
+        "test": "script_host_tests",
+        "seconds": 2.92686,
+        "outcome": "pass"
+      },
+      {
+        "test": "conifer_lod_provider_tests",
+        "seconds": 2.84962,
+        "outcome": "pass"
+      },
+      {
+        "test": "surface_proxy_tests",
+        "seconds": 2.36828,
+        "outcome": "pass"
+      },
+      {
+        "test": "async_bake_tests",
+        "seconds": 1.78464,
+        "outcome": "fail"
+      },
+      {
+        "test": "finite_surface_recipe_tests",
+        "seconds": 1.64331,
+        "outcome": "pass"
+      },
+      {
+        "test": "gi_bake_tests",
+        "seconds": 1.36418,
+        "outcome": "pass"
+      },
+      {
+        "test": "terrain_mesher_tests",
+        "seconds": 1.09951,
+        "outcome": "pass"
+      },
+      {
+        "test": "terrain_collision_session_tests",
+        "seconds": 0.906549,
+        "outcome": "pass"
+      },
+      {
+        "test": "sector_bake_tests",
+        "seconds": 0.8769,
+        "outcome": "pass"
+      },
+      {
+        "test": "physics_tests",
+        "seconds": 0.755561,
+        "outcome": "pass"
+      },
+      {
+        "test": "brick_bond_atlas_tests",
+        "seconds": 0.74727,
+        "outcome": "pass"
+      },
+      {
+        "test": "river_float_system_tests",
+        "seconds": 0.656411,
+        "outcome": "pass"
+      },
+      {
+        "test": "tileset_bake_tests",
+        "seconds": 0.630801,
+        "outcome": "pass"
+      },
+      {
+        "test": "character_controller_tests",
+        "seconds": 0.580874,
+        "outcome": "pass"
+      },
+      {
+        "test": "sdf_candidate_bounds_tests",
+        "seconds": 0.487115,
+        "outcome": "pass"
+      },
+      {
+        "test": "ecs_tests",
+        "seconds": 0.413389,
+        "outcome": "pass"
+      }
+    ]
+  },
+  "limitations": [
+    "Windows native/CI acceptance explicitly waived; no new Windows producer launched.",
+    "706 later producer-to-REP0/FLAT/model transition remains unlocalized; no claim that the promoted bundle equals the entire native bundle.",
+    "Global 44-corner attribution remains limited to the selected paired arithmetic observations."
+  ],
+  "private_object_override": false,
+  "native_cache_substitution": false,
+  "interrupted_audit": {
+    "reason": "Incomplete trace intentionally stopped: ptrace stopped on 50 million unselected sched_yield calls; use seccomp-bpf with identical file/process coverage. No test or production code change; successful untraced timing not repeated.",
+    "owned_test_pid": 3321947,
+    "signal": "SIGTERM",
+    "partial_operations": [
+      {
+        "name": "runtime",
+        "argv": [
+          "ctest",
+          "--test-dir",
+          "/tmp/steady-harbor-epoch9-linux/build",
+          "-L",
+          "cpu",
+          "-j",
+          "2",
+          "--output-on-failure",
+          "--output-junit",
+          "/tmp/steady-harbor-epoch9-accepted-linux/runtime.xml"
+        ],
+        "returncode": 0,
+        "external_seconds": 34.97866249999788,
+        "log_sha256": "ff6a1ebcd9d898aafbb53eed75bded683860de7dd7dbafa73888d18c272ac2b0"
+      },
+      {
+        "name": "runtime-traced",
+        "argv": [
+          "strace",
+          "-f",
+          "-Y",
+          "-s",
+          "4096",
+          "-e",
+          "trace=%file,%process",
+          "-o",
+          "/tmp/steady-harbor-epoch9-accepted-linux/runtime.strace",
+          "ctest",
+          "--test-dir",
+          "/tmp/steady-harbor-epoch9-linux/build",
+          "-L",
+          "cpu",
+          "-j",
+          "2",
+          "--output-on-failure",
+          "--output-junit",
+          "/tmp/steady-harbor-epoch9-accepted-linux/runtime-traced.xml"
+        ],
+        "returncode": 8,
+        "external_seconds": 395.29760324699964,
+        "log_sha256": "582b0e34ac3383d8b55dc1abf6dd5ab606c2c7cc63132e8b48aad51c8183bd93"
+      }
+    ]
+  },
+  "full_linux_acceptance": true,
+  "committed_code_head": "e1251bdc2fdc43a978065306c1fafbefeb680233",
+  "code_head_relation": "Validated uncommitted surface change over ab85986a, then committed byte-for-byte after all final acceptance checks passed; evidence-only commit follows.",
+  "evidence_directory": "/tmp/steady-harbor-epoch9-accepted-linux",
+  "artifact_manifest": {
+    "path": "/tmp/steady-harbor-epoch9-accepted-linux/artifact-manifest.json",
+    "count": 39,
+    "sha256": "5f621022f7827a8c0bbd59954645d66690d577981fad50d9009802ca69cc9354"
+  },
+  "coverage_changes_document": "docs/findings/test-runtime-fixtures-2026-10-13.md#coverage-changes-to-disclose-in-the-pr"
+}

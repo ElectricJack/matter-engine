@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
-import {readFileSync} from 'node:fs';
 import {pathToFileURL} from 'node:url';
 import {spawnSync} from 'node:child_process';
 import {Worker, isMainThread, workerData, parentPort} from 'node:worker_threads';
 import {createGeometry, GeometryError} from '../wasm/geometry.mjs';
+import {makeRequests} from './requests.mjs';
 
 if (isMainThread) {
   const [modulePath, native] = process.argv.slice(2);
@@ -25,11 +25,10 @@ if (isMainThread) {
   });
 } else {
   try {
-    const requests = JSON.parse(readFileSync(new URL('requests.json', import.meta.url)));
+    const requests = makeRequests();
     const factory = (await import(pathToFileURL(workerData.modulePath))).default;
-    const wasmBinary = readFileSync(workerData.modulePath.replace(/\.mjs$/, '.wasm'));
     let module;
-    const create = () => createGeometry(async options => { module = await factory(options); return module; }, {moduleOptions: {wasmBinary}});
+    const create = () => createGeometry(async options => { module = await factory(options); return module; });
     const geometry = await create(); const primaryModule = module;
     assert(primaryModule.HEAPU8.buffer instanceof ArrayBuffer);
     const job = {request_id: 'fixture.request', source_revision: 'revision.1', generation_epoch: 0xffffffffffffffffn};
