@@ -12,18 +12,72 @@ if(NOT TARGET matter_contracts)
     set(BUILD_TESTING ${_graphics_testing})
 endif()
 get_filename_component(_graphics_repo "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
-add_library(matter_graphics STATIC src/graphics.cpp src/scene_backend.cpp
-    "${_graphics_repo}/MatterEngine3/src/render/matrix_math.cpp")
+add_library(matter_graphics STATIC src/graphics.cpp src/scene_backend.cpp src/composition.cpp
+    src/matrix_math.cpp)
 target_compile_features(matter_graphics PUBLIC cxx_std_17)
 target_include_directories(matter_graphics PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
-target_include_directories(matter_graphics PRIVATE
-    "${_graphics_repo}/MatterEngine3/src/render" "${_graphics_repo}/MatterEngine3/include")
+target_include_directories(matter_graphics PRIVATE "${_graphics_repo}/MatterEngine3/include")
 target_link_libraries(matter_graphics PUBLIC matter_contracts)
 option(MATTER_GRAPHICS_VULKAN "Build the injected Vulkan resource device and native tests" OFF)
 if(MATTER_GRAPHICS_VULKAN)
     find_package(Vulkan REQUIRED)
-    add_library(matter_graphics_vulkan STATIC src/vulkan_resources.cpp)
+    find_package(Python3 3.9 COMPONENTS Interpreter REQUIRED)
+    find_program(MATTER_GRAPHICS_GLSLC NAMES glslc HINTS "$ENV{VULKAN_SDK}/Bin" REQUIRED)
+    set(_shader_dir "${_graphics_repo}/MatterEngine3/shaders_vk")
+    set(_composition_spirv)
+    foreach(shader composite.vert composite.frag display_transform.frag)
+        set(output "${CMAKE_CURRENT_BINARY_DIR}/${shader}.spv")
+        add_custom_command(OUTPUT "${output}"
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/compile_shader.py"
+                "${MATTER_GRAPHICS_GLSLC}" "${_shader_dir}/${shader}" "${output}"
+            DEPENDS "${_shader_dir}/${shader}" tools/compile_shader.py DEPFILE "${output}.d" VERBATIM)
+        list(APPEND _composition_spirv "${output}")
+    endforeach()
+    set(_composition_header "${CMAKE_CURRENT_BINARY_DIR}/composition_spirv.h")
+    add_custom_command(OUTPUT "${_composition_header}"
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/embed_shaders.py"
+            "${_composition_header}" ${_composition_spirv}
+        DEPENDS ${_composition_spirv} tools/embed_shaders.py VERBATIM)
+    set(_raster_spirv)
+    foreach(shader raster.vert raster_skin.vert raster_water.vert gbuffer.frag visibility_id.vert visibility_id.frag)
+        set(source "${CMAKE_CURRENT_SOURCE_DIR}/shaders/${shader}")
+        set(defines)
+        if(shader STREQUAL "raster_skin.vert")
+            set(source "${CMAKE_CURRENT_SOURCE_DIR}/shaders/raster.vert")
+            set(defines -DMATTER_SKINNED_VERTEX_INPUT=1)
+        elseif(shader STREQUAL "raster_water.vert")
+            set(source "${CMAKE_CURRENT_SOURCE_DIR}/shaders/raster.vert")
+            set(defines -DMATTER_WATER_ANIMATION_VERTEX_INPUT=1)
+        elseif(shader MATCHES "^visibility_id")
+            set(source "${_shader_dir}/${shader}")
+        endif()
+        set(output "${CMAKE_CURRENT_BINARY_DIR}/${shader}.spv")
+        add_custom_command(OUTPUT "${output}"
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/compile_shader.py"
+                "${MATTER_GRAPHICS_GLSLC}" "${source}" "${output}" vulkan1.3 -O "-I${_shader_dir}" ${defines}
+            DEPENDS "${source}" tools/compile_shader.py DEPFILE "${output}.d" VERBATIM)
+        list(APPEND _raster_spirv "${output}")
+    endforeach()
+    set(_raster_header "${CMAKE_CURRENT_BINARY_DIR}/raster_spirv.h")
+    add_custom_command(OUTPUT "${_raster_header}"
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/embed_shaders.py"
+            "${_raster_header}" ${_raster_spirv}
+        DEPENDS ${_raster_spirv} tools/embed_shaders.py VERBATIM)
+    add_library(matter_graphics_vulkan STATIC src/vulkan_resources.cpp src/vulkan_composition.cpp src/vulkan_raster.cpp "${_raster_header}" src/native/mesh_raster.cpp src/native/mesh_pipelines.cpp "${_composition_header}")
+    target_include_directories(matter_graphics_vulkan PRIVATE "${CMAKE_CURRENT_BINARY_DIR}"
+        "${_graphics_repo}/libs/ProfileLib/include" "${_graphics_repo}/MatterEngine3/include")
+    target_compile_definitions(matter_graphics_vulkan PRIVATE MATTER_PROFILE_ENABLED=0
+        $<$<CXX_COMPILER_ID:MSVC>:_CRT_SECURE_NO_WARNINGS>)
+    if(NOT MSVC)
+        set_source_files_properties(src/native/mesh_raster.cpp src/native/mesh_pipelines.cpp
+            PROPERTIES COMPILE_OPTIONS -Wno-missing-field-initializers)
+    endif()
     target_link_libraries(matter_graphics_vulkan PUBLIC matter_graphics Vulkan::Vulkan)
+    add_executable(matter_graphics_sample examples/graphics_sample.cpp)
+    target_link_libraries(matter_graphics_sample PRIVATE matter_graphics_vulkan)
+    target_compile_definitions(matter_graphics_sample PRIVATE
+        MATTER_GRAPHICS_IMPORTED_ASSET="${CMAKE_CURRENT_SOURCE_DIR}/../MatterContracts/examples/repeated-assembly.asset.json")
+    include(native_environment.cmake)
     if(MSVC)
         target_compile_options(matter_graphics_vulkan PRIVATE /W4 /WX /permissive- /utf-8)
     else()
@@ -41,7 +95,7 @@ if(BUILD_TESTING)
         message(FATAL_ERROR "Graphics dependency tests require CMake 3.27+ (the supported MSVC wrapper supplies it)")
     endif()
     cmake_file_api(QUERY API_VERSION 1 CODEMODEL 2)
-    foreach(header backend graphics scene_backend)
+    foreach(header backend graphics scene_backend composition)
         set(check "${CMAKE_CURRENT_BINARY_DIR}/header-${header}.cpp")
         file(WRITE "${check}" "#include <matter/graphics/${header}.h>\n")
         add_library(matter_graphics_header_${header} OBJECT "${check}")
@@ -49,23 +103,67 @@ if(BUILD_TESTING)
     endforeach()
     add_executable(matter_graphics_tests tests/graphics_tests.cpp)
     target_link_libraries(matter_graphics_tests PRIVATE matter_graphics)
-    target_compile_definitions(matter_graphics_tests PRIVATE
-        MATTER_GRAPHICS_IMPORTED_ASSET="${CMAKE_CURRENT_SOURCE_DIR}/../MatterContracts/examples/repeated-assembly.asset.json")
     add_test(NAME matter_graphics_lifetime COMMAND matter_graphics_tests)
     add_executable(matter_graphics_scene_tests tests/scene_tests.cpp)
     target_link_libraries(matter_graphics_scene_tests PRIVATE matter_graphics)
     add_test(NAME matter_graphics_scene COMMAND matter_graphics_scene_tests)
+    add_executable(matter_graphics_composition_tests tests/composition_tests.cpp)
+    target_link_libraries(matter_graphics_composition_tests PRIVATE matter_graphics)
+    add_test(NAME matter_graphics_composition COMMAND matter_graphics_composition_tests)
+    set_tests_properties(matter_graphics_lifetime matter_graphics_scene matter_graphics_composition
+        PROPERTIES LABELS "cpu;graphics" TIMEOUT 10)
     if(MATTER_GRAPHICS_VULKAN)
         file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/header-vulkan_resources.cpp" "#include <matter/graphics/vulkan_resources.h>\n")
         add_library(matter_graphics_header_vulkan_resources OBJECT "${CMAKE_CURRENT_BINARY_DIR}/header-vulkan_resources.cpp")
         target_link_libraries(matter_graphics_header_vulkan_resources PRIVATE matter_graphics_vulkan)
+        file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/header-vulkan_composition.cpp" "#include <matter/graphics/vulkan_composition.h>\n")
+        add_library(matter_graphics_header_vulkan_composition OBJECT "${CMAKE_CURRENT_BINARY_DIR}/header-vulkan_composition.cpp")
+        target_link_libraries(matter_graphics_header_vulkan_composition PRIVATE matter_graphics_vulkan)
+        file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/header-vulkan_raster.cpp" "#include <matter/graphics/vulkan_raster.h>\n")
+        add_library(matter_graphics_header_vulkan_raster OBJECT "${CMAKE_CURRENT_BINARY_DIR}/header-vulkan_raster.cpp")
+        target_link_libraries(matter_graphics_header_vulkan_raster PRIVATE matter_graphics_vulkan)
         add_executable(matter_graphics_vulkan_tests tests/vulkan_tests.cpp)
         target_link_libraries(matter_graphics_vulkan_tests PRIVATE matter_graphics_vulkan)
+        add_executable(matter_graphics_raster_tests examples/graphics_sample.cpp)
+        target_link_libraries(matter_graphics_raster_tests PRIVATE matter_graphics_vulkan)
+        target_compile_definitions(matter_graphics_raster_tests PRIVATE MATTER_GRAPHICS_ACCEPTANCE_ONLY=1)
+        add_test(NAME matter_graphics_raster COMMAND matter_graphics_raster_tests)
+        set_tests_properties(matter_graphics_raster PROPERTIES LABELS "gpu;vulkan;graphics" TIMEOUT 180)
+        # The standalone sample deliberately exercises real asset IO and capture.
+        # Keep this qualification separate from the owned-memory runtime fixtures.
+        add_test(NAME matter_graphics_sample COMMAND matter_graphics_sample "${CMAKE_CURRENT_BINARY_DIR}/sample-evidence")
+        set_tests_properties(matter_graphics_sample PROPERTIES LABELS "qualification;graphics" TIMEOUT 180)
         add_test(NAME matter_graphics_vulkan COMMAND matter_graphics_vulkan_tests)
-        set_tests_properties(matter_graphics_vulkan PROPERTIES TIMEOUT 60)
+        set_tests_properties(matter_graphics_vulkan PROPERTIES LABELS "gpu;vulkan;graphics" TIMEOUT 60)
+    endif()
+    if(MSVC)
+        foreach(header backend graphics scene_backend composition)
+            set_target_properties(matter_graphics_header_${header} PROPERTIES
+                COMPILE_PDB_NAME matter_graphics_header_${header})
+        endforeach()
+        if(MATTER_GRAPHICS_VULKAN)
+            foreach(header vulkan_resources vulkan_composition vulkan_raster)
+                set_target_properties(matter_graphics_header_${header} PROPERTIES
+                    COMPILE_PDB_NAME matter_graphics_header_${header})
+            endforeach()
+        endif()
     endif()
     if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
-        add_test(NAME matter_graphics_independence COMMAND ${Python3_EXECUTABLE}
-            ${CMAKE_CURRENT_SOURCE_DIR}/tests/independence.py ${CMAKE_BINARY_DIR})
+        # This qualification reads the real compiled graph, Ninja dependencies
+        # and shader depfiles. Keep it as a mandatory build gate, so runtime
+        # tests need no source tree, assets, metadata or shared evidence files.
+        get_property(_graphics_built_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
+        set(_graphics_qualification_dependencies)
+        foreach(target IN LISTS _graphics_built_targets)
+            get_target_property(type ${target} TYPE)
+            if(NOT type STREQUAL "UTILITY")
+                list(APPEND _graphics_qualification_dependencies ${target})
+            endif()
+        endforeach()
+        add_custom_target(matter_graphics_qualification ALL
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/qualify_build.py"
+                "${CMAKE_BINARY_DIR}"
+            DEPENDS ${_graphics_qualification_dependencies}
+            VERBATIM)
     endif()
 endif()

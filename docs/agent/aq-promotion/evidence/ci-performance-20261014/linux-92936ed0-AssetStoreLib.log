@@ -1,0 +1,35 @@
+make: Entering directory '/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/libs/AssetStoreLib'
+make: Nothing to be done for 'all'.
+make: Leaving directory '/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/libs/AssetStoreLib'
+make: Entering directory '/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/libs/AssetStoreLib/tests'
+make: 'build/asset_store_tests' is up to date.
+make: Leaving directory '/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/libs/AssetStoreLib/tests'
+AssetStoreLib tests (scratch: ./asset_store_tests_355020)
+
+- crc32: slice-by-eight agrees with the reference, bit for bit
+- roundtrip, dedup, miss
+- crash mid-write: torn append is invisible after reopen
+- corruption: a flipped payload byte reads Corrupt, never garbage
+- eviction: LRU against a disk budget, survivors intact
+    evicted 16 refs, freed 524288 bytes, live now 262144 (budget 262144)
+    compaction kept 8 blobs / 262144 bytes, dropped 16, reclaimed 524800 bytes
+- concurrent soak: 6 reader threads + 1 reader process vs a live writer
+    193696 verified blob reads across 6 threads
+- determinism: identical writes produce identical pack and index bytes
+- batching: N sequential blobs become a handful of reads
+    200 requests -> 1 chunk reads, 4006368 bytes read for 4000000 delivered
+- arena landing: payloads come out of the caller's MemoryLib arena
+- bounded reads: span, total holes, deduplicated checksums and exact reservation
+- manifest directory: reuse unchanged data and observe replacement/removal
+- binary pages: validation, warm reuse, pins, cancellation and manifest ordering
+- bulk append: bounded staging, dedup, rollover and visibility
+- page commits: failed flush/ref publication retains the accepted revision
+- page maintenance: transitive children survive, orphans are reclaimed
+- index validation: bounded allocation, overflowing/overlapping extents and duplicate IDs
+- corruption repair: append a regenerated page, atomically refresh same-size index
+- refresh race: newer commit during index read remains discoverable
+- maintenance: lazy readers prevent compaction until they retire
+- read-only: neither the store nor its ref table can write
+
+628 checks, 0 failures
+All AssetStoreLib tests passed

@@ -1,0 +1,65 @@
+Task: noble-zenith-31 (claim epoch 2)
+Base: eeae129c (evidence-only; contains no production fix)
+Branch: aq/epic/make-rt-diagnostic-counters-consume-each-valid-retired
+
+Status: IMPLEMENTED, COMPILED on Linux; every test execution NOT RUN
+(box test admission refused). Deliverable unmet: reproduce-before-fix and
+the native regression run.
+
+Fix (counter lifecycle/accounting only):
+- vk_scene_renderer.cpp ensure_frame_resources: zero + flush the WHOLE
+  rt_error_counter allocation; destroy_candidate_pools on map/flush failure.
+- rt_dispatch.inl record_ray_traced_shadows: candidate serial set only after
+  a successful record_ray_trace_dispatch with frame.serial != 0.
+- rt_frame_commit.inl finish_ray_tracing_frame: candidate -> sample on a
+  matching successful submit; dropped on failure.
+- rt_dispatch.inl emit_ray_instances: overwriting the counter retires the
+  slot's sample and candidate.
+- rt_dispatch.inl report_rt_trace_counters: takes and clears the sample
+  serial before reading (consume once); no sample -> no read/log/total;
+  buffer handle and RT-enabled flag are not provenance; every consumed sample
+  accumulates (equal counts included); log suppression only affects the
+  warning. Renamed to "rejected RT surface lookups".
+- vk_scene_renderer.cpp reset(): retires both serials, keeps totals.
+- vk_scene_renderer.h: renderer-lifetime totals/sample count/last-logged
+  documented; per-slot candidate/sample serials; MATTER_VK_TEST_FAULT_INJECTION
+  probes.
+- vulkan_smoke_tests.cpp: new mode rt-counters
+  (run_rt_rejected_surface_lookup_counters): banner, slot growth with
+  allocation failure, poisoned complete slot cycles with RT disabled / forced
+  unavailable / culled-to-empty / empty instances, 7+7=14, 2,3 then RT off
+  keeps the final retired sample, dispatch-record / end-frame record / submit
+  faults, duplicate reporter calls, real invalid surface ray, reset.
+  rt_scenario_surface_query is unchanged (still run by mode rt).
+- cmake: rt-counters ctest registered; listed in heavy_modes beside
+  rt-empty-tlas (drives the full renderer; its runtime is unmeasured).
+
+Reproduce-before-fix (one foreground attempt, per supervisor msg-d86fda4a):
+  The preserved ../2026-10-20-rt-counter-characterization probe, with ONLY its
+  ROOT line pointed at a git-show export of eeae129c rt_dispatch.inl
+  (sha256 10130ffa4fa7de64...) and rt_contract.inl (sha256 fa743b4e5a634...):
+  aq test --aq-timeout 75 <scratchpad>/repro/test_counter_characterization.py -q -s
+  Exit 75: "no test slot free after 75s (6 slot(s) in
+  /home/jkern/.agent-queue/locks/test-slots; box admission)".
+  aq test --aq-status 2026-10-20T19:30:02Z: 0/6 free, all held by
+  agile-stone-80 (live, 2650s); waiting agile-rapids-43, stark-willow-95.19,
+  stark-willow-95.21. Reported in reply msg-51230ca3. No resubmit.
+
+Linux compile (no test execution):
+  python3 -I gen_linux_smoke_cmake.py <repo> <out>   (97 sources from the
+  canonical cmake/MatterViewer.cmake lists; adjacent file)
+  cmake -G Ninja -DCMAKE_BUILD_TYPE=Release; ninja -j1
+  g++ 13.3.0. Full build 7:46 wall, 1.98 GB peak RSS; all owned TUs compiled.
+  The only error was non-owned gpu_visual_mesher_vk_tests.cpp calling the
+  Windows-only _putenv_s; the generator force-includes a setenv shim for
+  that TU. Relink exit 0. vulkan_smoke_tests sha256 9e2f24e77193a5e2...
+  Owned-file warning: vk_scene_renderer.cpp:2535 -Wextra enum conditional,
+  outside this change.
+
+NOT RUN: test_rt_counter_native.py (adjacent; modes rt-counters and rt on
+the lavapipe ICD with validation layers), the characterization probe, any
+GPU/RT writer, synchronization, Windows or performance check. Device seen by
+vulkaninfo: llvmpipe (LLVM 20.1.2, Mesa 25.2.8), exposing
+VK_KHR_ray_query / ray_tracing_pipeline / acceleration_structure. No
+capability banner was produced because the binary never ran. Hardware RT and
+real-device acceptance remain open for real hardware.

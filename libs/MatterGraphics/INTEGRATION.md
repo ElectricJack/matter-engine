@@ -26,6 +26,12 @@ it from the graphics module's task.
 
 ## Verification boundary
 
+The subsequent [native water/temporal move](src/native/WATER_TEMPORAL.md)
+removes the Streamline bridge's world-header include through a graphics-owned
+`DlssMode` value header. Water and temporal implementations now have one physical
+owner with legacy forwarders. The compatibility archive still uses native host
+headers/resources and is separate from the independent target audited below.
+
 The synthetic device tests execute the concrete scene backend, not a fake
 `Backend`. They exercise real buffer packing, prototype sharing, bounded assembly
 expansion, transforms, visibility, rollback, pending/failing allocation and
@@ -34,8 +40,10 @@ retirement. Only the device allocator/fence completion is simulated.
 The independent CMake build links the facade, scene backend, contract runtime and
 pure renderer matrix implementation. Its audit examines every compiled target,
 source and include directory, actual linker library fragments, and Ninja's
-compiler-discovered dependencies. The only legacy inputs admitted are exactly
-`matrix_math.cpp`, `matrix_math.h`, and `matter/math_types.h`. Procedural, terrain,
+compiler-discovered dependencies. The only legacy C++ inputs admitted are exactly
+`matrix_math.cpp`, `matrix_math.h`, and `matter/math_types.h`. The subsequent R3
+composition extraction also admits exactly nine production shader files; see
+[RENDERING.md](RENDERING.md) for their boundary and matched appearance evidence. Procedural, terrain,
 QuickJS, ECS, PartStore, VulkanDevice and the monolithic engine targets are absent.
 
 The optional `matter_graphics_vulkan` target compiles the extracted native buffer
@@ -56,3 +64,12 @@ structures stay graphics-owned and are never added to the portable contracts.
 No rendered-image or performance parity is claimed by these resource tests.
 After downstream wiring, run the existing native Vulkan resource/device lifetime,
 GPU culling and rendered-scene oracles against the live entrypoint as well.
+
+## Subsequent material/light/effect work
+
+Task `clear-crest-48.4.3` delivers production composition/display shading, typed
+inputs and fence-retained images/pipelines/descriptors. Its full capability and
+feature inventory is in [RENDERING.md](RENDERING.md). The unextracted producers
+listed there require their named module tasks before central wiring can claim
+complete rendering. Existing legacy paths stay available until ordered migration;
+no shared contract or central manifest is changed by this leaf.

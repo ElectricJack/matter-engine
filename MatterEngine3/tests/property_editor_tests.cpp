@@ -843,7 +843,7 @@ void test_physical_atmosphere_editor_source_contract() {
     const std::string session_source = read("../include/matter/world_session.h");
     const std::string renderer_source = read("../src/render/vk_scene_renderer.h");
     const std::string renderer_impl_source = read("../src/render/vk_scene_renderer.cpp");
-    const std::string atmosphere_source = read("../src/render/vk_atmosphere.cpp");
+    const std::string atmosphere_source = read("../../libs/MatterGraphics/src/native/vk_atmosphere.cpp");
     const std::string volumetrics_source = read("../src/render/vk_volumetrics.h");
     const std::string volumetrics_impl_source = read("../src/render/vk_volumetrics.cpp");
     CHECK(!props_source.empty() && !editor_source.empty() && !reset_source.empty() &&

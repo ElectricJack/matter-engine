@@ -1,5 +1,7 @@
 #include "check.h"
 #include "provider/local_provider.h"
+#include "memory_fixture_io.h"
+#include "part_bundle.h"
 #include "part_surface.h"
 #include "render/vt_snapshot.h"
 #include "render/part_store.h"
@@ -11,12 +13,23 @@
 #include <fstream>
 namespace fs=std::filesystem;
 namespace {
-void write(const fs::path& p,const std::string& s) {fs::create_directories(p.parent_path());std::ofstream(p)<<s;}
+matter::SourceSnapshot::Files source_files;
+std::shared_ptr<matter::test::MemoryCacheByteStorage> storage;
+void write(const fs::path& p,const std::string& s) {source_files[matter::SourceSnapshot::key(p.generic_string())]=s;}
+std::shared_ptr<const matter::WorldFixtureIO> fixture_io() {
+    auto io=std::make_shared<matter::WorldFixtureIO>();
+    io->sources=std::make_shared<const matter::SourceSnapshot>(source_files);io->cache=storage;
+    return io;
+}
+bool published_below(const std::string& path) {
+    const auto prefix=matter::SourceSnapshot::key(path)+"/";
+    for(const auto& entry:storage->entries())if(entry.first.compare(0,prefix.size(),prefix)==0)return true;
+    return false;
+}
 void test_authored_density(const fs::path& root) {
-    script_host::ScriptHost host;
+    script_host::ScriptHost host;host.set_module_sources(std::vector<module_resolver::ResolvedModule>{});
     script_host::BakeOptions options;
     options.parts_dir=(root/"density").string();options.retain_geometry=true;
-    fs::create_directories(fs::path(options.parts_dir)/"parts");
     const auto source=[](const std::string& declaration){
         return "class Density extends Part {static lodBudgets=[1];static noImpostor=true;"
             "static params={density:128};"+declaration+R"(
@@ -29,7 +42,7 @@ void test_authored_density(const fs::path& root) {
     CHECK(baked.error.ok && baked.geometry,"authored density bakes with retained geometry");
     if(!baked.geometry)return;
     CHECK(baked.geometry->render_policy.vt_texels_per_meter==256,"density method sees merged params");
-    viewer::PartStore store(options.parts_dir);
+    viewer::PartStore store(options.parts_dir,storage);
     auto disk=store.stage_load(baked.resolved_hash);
     auto memory=store.stage_from_bake(baked.resolved_hash,*baked.geometry);
     const auto chart_density=[](const auto& staged){
@@ -54,7 +67,7 @@ void test_authored_density(const fs::path& root) {
     options.output_mode=script_host::BakeOptions::OutputMode::RuntimeLeafMemory;
     options.parts_dir=(root/"density-memory-only").string();
     const auto prepared=host.bake_source(authored,"{\"density\":256}",options);
-    CHECK(prepared.error.ok && prepared.geometry && !fs::exists(options.parts_dir),
+    CHECK(prepared.error.ok && prepared.geometry && !published_below(options.parts_dir),
           "memory-only preparation carries density without publishing files");
     if(prepared.geometry) {
         const auto staged=store.stage_from_bake(prepared.resolved_hash,*prepared.geometry);
@@ -71,10 +84,9 @@ void test_authored_density(const fs::path& root) {
         "static vtTexelsPerMeter(){while(true){}}"}) {
         const auto invalid=host.bake_source(source(declaration),"{}",options);
         CHECK(!invalid.error.ok && !invalid.geometry && invalid.written_path.empty() &&
-              !fs::exists(options.parts_dir),"invalid or unbounded density rejected before artifact publication");
+              !published_below(options.parts_dir),"invalid or unbounded density rejected before artifact publication");
     }
     options.time_budget_ms=0;
-    fs::create_directories(fs::path(options.parts_dir)/"parts");
     const auto numeric=host.bake_source(source("static vtTexelsPerMeter=64;"),"{}",options);
     CHECK(numeric.error.ok && numeric.geometry && numeric.geometry->render_policy.vt_texels_per_meter==64,
           "plain numeric density declaration is supported");
@@ -90,22 +102,22 @@ void test_placement_source_out_of_range(const fs::path& root,const viewer::Local
     part_surface::SourceCache cache;part_surface::Stats stats;gpu_meshing::Error e;
     std::shared_ptr<const part_surface::Prepared> out;
     auto bad=composite;bad.placements[0].source=7; // no such source
-    CHECK(!part_surface::prepare(bad,root.string(),cfg.vk_solid_face_project,cfg.vk_face_material_bake,out,stats,e,{},&cache) && !out,
+    CHECK(!part_surface::prepare(bad,root.string(),cfg.vk_solid_face_project,cfg.vk_face_material_bake,out,stats,e,{},&cache,storage.get()) && !out,
           "placement with an out-of-range source is refused");
     CHECK(e.code==gpu_meshing::ErrorCode::InvalidInput && e.message.find("source 7 of 2")!=std::string::npos,
           "refusal names the source index");
     auto bad_module=composite;bad_module.modules[0].placements[0].source=2; // one past the bank
     e={};
-    CHECK(!part_surface::prepare(bad_module,root.string(),cfg.vk_solid_face_project,cfg.vk_face_material_bake,out,stats,e,{},&cache) && !out,
+    CHECK(!part_surface::prepare(bad_module,root.string(),cfg.vk_solid_face_project,cfg.vk_face_material_bake,out,stats,e,{},&cache,storage.get()) && !out,
           "periodic module placement with an out-of-range source is refused");
     CHECK(e.code==gpu_meshing::ErrorCode::InvalidInput && e.message.find("periodic placement")!=std::string::npos &&
           e.message.find("source 2 of 2")!=std::string::npos,"module refusal names the source index");
     std::printf("PART_SURFACE_SOURCE_RANGE receiver=refused module=refused\n");
 }
 void run() {
-    const auto root=fs::temp_directory_path()/("matter-part-surface-"+
-        std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
-    struct Cleanup {fs::path p;~Cleanup(){std::error_code e;fs::remove_all(p,e);}} cleanup{root};
+    const fs::path root="runtime/part-surface";
+    storage=std::make_shared<matter::test::MemoryCacheByteStorage>();
+    part_bundle::ScopedStorage scope(storage);
     test_authored_density(root);
     write(root/"objects/Brick.js",R"(
 class Brick extends Part {
@@ -121,7 +133,7 @@ class Brick extends Part {
   this.surfaceVertex(-.04,.04,.04,0,0,1,0,.08);this.endShape();}
 })");
     write(root/"worlds/Surface.js","class Surface extends World {static roots=[{module:'Brick',params:{}}];}");
-    auto cfg=viewer::LocalProviderConfig::for_project(root.string(),"Surface","");
+    auto cfg=viewer::LocalProviderConfig::for_project(root.string(),"Surface","",fixture_io());
     unsigned projected=0,shaded=0,published=0,queued=0;
     unsigned fail_shade=0; bool discard=false;
     std::function<bool(std::string&)> abandoned;
@@ -188,7 +200,7 @@ class Brick extends Part {
     CHECK(!part_surface::bind(*active,ctx,scratch,error),"off-plane receiver rejected");
     CHECK(scratch.ids==std::vector<uint32_t>({1,1,1}),"failed binding leaves prior owned scratch intact");
     // Two separated physical cubes share one source and one receiver face.
-    script_host::ScriptHost host;script_host::BakeError eval_error;
+    script_host::ScriptHost host;host.set_module_sources(std::vector<module_resolver::ResolvedModule>{});script_host::BakeError eval_error;
     script_host::EvaluatedFiniteSurface composite;
     CHECK(host.evaluate_finite_surface(R"(
 class Composite extends Part {static finiteSurface(){
@@ -204,7 +216,7 @@ class Composite extends Part {static finiteSurface(){
     std::shared_ptr<const part_surface::Prepared> combined;
     projected=shaded=0;
     CHECK(part_surface::prepare(composite,root.string(),cfg.vk_solid_face_project,cfg.vk_face_material_bake,
-          combined,stats,preparation_error,{},&cache),preparation_error.message.c_str());
+          combined,stats,preparation_error,{},&cache,storage.get()),preparation_error.message.c_str());
     CHECK(combined && combined->sources->receivers.size()==6 && combined->sources->bindings.size()==10,
           "two sources produce ten exposed placements across six receiver faces");
     CHECK(shaded==6 && stats.material_hits==6,"duplicate source material is prepared once");
@@ -216,7 +228,7 @@ class Composite extends Part {static finiteSurface(){
         const auto old_hash=combined->sources->content_hash;
         std::shared_ptr<const part_surface::Prepared> warm;
         CHECK(part_surface::prepare(composite,root.string(),cfg.vk_solid_face_project,cfg.vk_face_material_bake,
-              warm,stats,preparation_error,{},&cache),preparation_error.message.c_str());
+              warm,stats,preparation_error,{},&cache,storage.get()),preparation_error.message.c_str());
         CHECK(warm && warm->sources->content_hash==old_hash && shaded==6 && stats.material_hits==12,
               "complete receiver reuse preserves catalog and avoids all source shading");
     }
@@ -232,7 +244,7 @@ class Composite extends Part {static finiteSurface(){
     composite.modules={module};composite.material_mappings={mapping};
     std::shared_ptr<const part_surface::Prepared> periodic;
     CHECK(part_surface::prepare(composite,root.string(),cfg.vk_solid_face_project,cfg.vk_face_material_bake,
-          periodic,stats,preparation_error,{},&cache),preparation_error.message.c_str());
+          periodic,stats,preparation_error,{},&cache,storage.get()),preparation_error.message.c_str());
     CHECK(periodic && periodic->modules.size()==1 && periodic->material_mappings.size()==1 &&
           periodic->periodic_hash && shaded==6,"periodic preparation reuses all shaded source faces");
     if(periodic && !periodic->modules.empty()) {
@@ -246,14 +258,14 @@ class Composite extends Part {static finiteSurface(){
         resized.material_mappings[0].phase={.5f,.25f};resized.material_mappings[0].u_range_m[1]=.29f;
         std::shared_ptr<const part_surface::Prepared> larger;
         CHECK(part_surface::prepare(resized,root.string(),cfg.vk_solid_face_project,cfg.vk_face_material_bake,
-              larger,stats,preparation_error,{},&cache),preparation_error.message.c_str());
+              larger,stats,preparation_error,{},&cache,storage.get()),preparation_error.message.c_str());
         CHECK(larger && larger->modules[0]->context.variant_hash==pixels->context.variant_hash &&
               larger->periodic_hash!=periodic->periodic_hash && shaded==6,
               "receiver resize and phase change mapping identity without regenerating the shared material");
         auto invalid=composite;invalid.modules[0].frame.origin_m[2]+=.01f;
         const auto previous=periodic;
         CHECK(!part_surface::prepare(invalid,root.string(),cfg.vk_solid_face_project,cfg.vk_face_material_bake,
-              periodic,stats,preparation_error,{},&cache) && periodic==previous,
+              periodic,stats,preparation_error,{},&cache,storage.get()) && periodic==previous,
               "a module with no matching source plane fails atomically and retains prior material");
     }
     test_placement_source_out_of_range(root,cfg,composite);
@@ -271,7 +283,7 @@ class Stone extends Part {
   this.surfaceVertex(-.04,.04,.06,0,0,1,0,.08);this.endShape();}
 })");
     write(root/"worlds/Direct.js","class Direct extends World {static roots=[{module:'Stone',params:{}}];}");
-    auto direct_cfg=viewer::LocalProviderConfig::for_project(root.string(),"Direct","");
+    auto direct_cfg=viewer::LocalProviderConfig::for_project(root.string(),"Direct","",fixture_io());
     unsigned direct_publications=0;
     std::shared_ptr<const part_surface::Prepared> direct_active;
     direct_cfg.publish_part_surface=[&](auto value,std::string&){++direct_publications;direct_active=value;return true;};
@@ -285,7 +297,7 @@ class Stone extends Part {
         if (!direct_active) continue;
         CHECK(provider.ensure_part_baked(direct_active->part_hash,error),error.c_str());
         CHECK(direct_publications==pass+1,"one immutable recipe per shared prototype");
-        viewer::PartStore store(direct_cfg.cache_root);
+        viewer::PartStore store(direct_cfg.cache_root,storage);
         const auto* part=store.get_or_load(direct_active->part_hash);
         CHECK(part && part->render_policy.vt_texels_per_meter==256 &&
               !part->lod_charts.empty() && !part->lod_charts[0].charts.empty() &&
@@ -315,15 +327,14 @@ class Stone extends Part {
     write(root/"worlds/StreamingAssets.js",R"(
 class StreamingAssets extends World {static roots=[];field(){}}
 )");
-    auto stream_cfg=viewer::LocalProviderConfig::for_project(root.string(),"StreamingAssets","");
+    auto stream_cfg=viewer::LocalProviderConfig::for_project(root.string(),"StreamingAssets","",fixture_io());
     stream_cfg.cache_root=(root/"streaming-cache").string();
     unsigned stream_publications=0,stream_jobs=0;
     std::shared_ptr<const part_surface::Prepared> stream_material;
     stream_cfg.gpu_run=[&](const auto&,auto fn,std::string& text){++stream_jobs;return fn(text);};
     stream_cfg.publish_part_surface=[&](auto value,std::string&){++stream_publications;stream_material=value;return true;};
-    std::ifstream stone_file(root/"objects/Stone.js");
-    const std::string stone_source{std::istreambuf_iterator<char>(stone_file),{}};
-    script_host::ScriptHost asset_host;
+    const auto& stone_source=source_files.at((root/"objects/Stone.js").generic_string());
+    script_host::ScriptHost asset_host;asset_host.set_module_sources(std::vector<module_resolver::ResolvedModule>{});
     part_graph::BakeInputs inputs;inputs.module="Stone";inputs.source=stone_source;
     inputs.params=part_graph::params_from_json("{\"tone\":0.4}");
     const auto asset_hash=asset_host.resolve_hash(stone_source,"{\"tone\":0.4}",nullptr,0);
@@ -366,7 +377,7 @@ class Plain extends Part {static noImpostor=true;build(){this.fill(8);this.begin
  this.vertex(-.04,0,0);this.vertex(.04,0,0);this.vertex(0,.04,0);this.endShape();}}
 )");
     write(root/"worlds/AssemblyWorld.js","class AssemblyWorld extends World {static roots=[{module:'Assembly',params:{}}];}");
-    auto assembly_cfg=viewer::LocalProviderConfig::for_project(root.string(),"AssemblyWorld","");
+    auto assembly_cfg=viewer::LocalProviderConfig::for_project(root.string(),"AssemblyWorld","",fixture_io());
     assembly_cfg.publish_part_surface=[&](auto value,std::string&){direct_active=value;return true;};
     {
         viewer::LocalProvider provider(assembly_cfg);
