@@ -1,0 +1,410 @@
+{
+  "base": "1f4ff089a9a81f8f54528df6a131a70757648853",
+  "task": "crisp-ember-20",
+  "claim_epoch": 3,
+  "source_files": [
+    "MatterEngine3/src/script/portable_host/quickjs_host.cpp",
+    "MatterEngine3/src/script/portable_host/tests/host_tests.cpp",
+    "bindings/geometry-c/src/geometry_c.cpp",
+    "bindings/geometry-c/tests/consumer.c",
+    "integrations/web-procedural/runtime/src/worker.mts"
+  ],
+  "source_added": 10,
+  "source_removed_or_replaced": 7,
+  "source_net": 3,
+  "recovery": {
+    "disposition": "Independent cleanup from verified assigned baseline. Earlier staged draft remains unavailable/unverified; no recovery or publication of that original draft asserted.",
+    "supervisor_message": "msg-73ec56c33a0f42739ea10445998ca414",
+    "reconciliation_comment": "comment-b2fe4769da67403b86d735b80d75e90b",
+    "candidate": {
+      "context_id": "f60b12bb-2d7",
+      "file": "unverified-salvage-candidate.json",
+      "sha256": "0990da370837be439f713312f91dfa5e583bb5cca64e72e5898a59a338e220c6",
+      "bytes": 4223,
+      "status": "Preserved separately, authenticity as original staged draft not verified; not applied.",
+      "encoding": "base64; decoded bytes retain original identity"
+    },
+    "historical_snapshots": [
+      "manifest.json",
+      "object-recovery-status.json"
+    ],
+    "original_scratchpad": "/home/jkern/.agent-queue/vault/projects/matter-engine-cpp/scratchpad/slot6-staged-preserve-ojmqtkck",
+    "original_scratchpad_mutated": false
+  },
+  "date": "2026-10-12",
+  "scope": "Cleanup only: include hygiene, warning-free C initializers, redundant worker branch; no public API, source manifest, importer or fixture transport change.",
+  "source_before_after": {
+    "MatterEngine3/src/script/portable_host/quickjs_host.cpp": {
+      "before": {
+        "sha256": "6050e67c48d49ee6941043d4eda82de42c84902a6c377c61ac75d1609aa6c1cd",
+        "lines": 573
+      },
+      "after": {
+        "sha256": "8cbff9ebf6f647d16724b34818492193f71bf7a4a4d8227480f44a9efbb852ec",
+        "lines": 574
+      }
+    },
+    "MatterEngine3/src/script/portable_host/tests/host_tests.cpp": {
+      "before": {
+        "sha256": "e99d0c0f88104b58d968f9ea0ae4d55a993ab8ba530b0a822441d8dd14fa5755",
+        "lines": 220
+      },
+      "after": {
+        "sha256": "88f0e0950a95a46f245da34d8d3a8056f99fb299ab01c8172f5904a892f0d0e6",
+        "lines": 221
+      }
+    },
+    "bindings/geometry-c/src/geometry_c.cpp": {
+      "before": {
+        "sha256": "6cc42e54345047ff4d01c4fcfac3b6f6d6a14e5f07586b886597613278c31e98",
+        "lines": 311
+      },
+      "after": {
+        "sha256": "31ac573604692c069d568a265a04895cc8c2d217734624913ad104d712c4828e",
+        "lines": 312
+      }
+    },
+    "bindings/geometry-c/tests/consumer.c": {
+      "before": {
+        "sha256": "e259aa1c038d7611fa0121d42d142691aae5e1e754c875534653ed9c041b4bd0",
+        "lines": 123
+      },
+      "after": {
+        "sha256": "04a13494e229e40febfa83f7d473cb71bccccfa1dca42750543f8a4cb5dc7785",
+        "lines": 123
+      }
+    },
+    "integrations/web-procedural/runtime/src/worker.mts": {
+      "before": {
+        "sha256": "2a9bd11dd92c04d585c68eba9d7e3b901bbabd6c907adbd40b373a3c9f903ab6",
+        "lines": 102
+      },
+      "after": {
+        "sha256": "e978056e549ef92c8640325631d89c054d23279723d251b090dbe62112fb0b39",
+        "lines": 102
+      }
+    }
+  },
+  "warnings": {
+    "gnu_c_consumer": {
+      "flags": [
+        "-std=c11",
+        "-Wall",
+        "-Wextra",
+        "-Wpedantic"
+      ],
+      "before": 4,
+      "after": 0,
+      "after_werror": true
+    },
+    "msvc_c_consumer": {
+      "flags": [
+        "/std:c11",
+        "/W4",
+        "/Zs"
+      ],
+      "before": 0,
+      "after": 0
+    },
+    "host_and_binding_libraries": {
+      "gnu_flags": [
+        "-Wall",
+        "-Wextra",
+        "-Wpedantic",
+        "-Werror"
+      ],
+      "msvc_flags": [
+        "/W4",
+        "/WX",
+        "/permissive-"
+      ],
+      "owned_source_warnings_before": 0,
+      "owned_source_warnings_after": 0
+    },
+    "additional_gnu_test_sources": {
+      "flags": [
+        "-Wall",
+        "-Wextra",
+        "-Wpedantic"
+      ],
+      "sources": [
+        "host_tests.cpp",
+        "allocation.cpp",
+        "contract_check.cpp"
+      ],
+      "after": 0
+    },
+    "external_dependencies": {
+      "gnu_full_baseline": 33,
+      "gnu_locations": [
+        "libs/MatterSurfaceLib/src/mesh_simplifier.cpp",
+        "generated shared_triangle_emit.cpp"
+      ],
+      "msvc_full_baseline": 14,
+      "msvc_incremental_after": 6,
+      "msvc_locations": [
+        "MatterEngine3/src/triangle_emit.hpp"
+      ],
+      "note": "External geometry/surface sources unchanged. Full baseline and incremental after build counts are not equivalent cohorts; no dependency-warning reduction is claimed.",
+      "wasm_full_after": 2,
+      "wasm_locations": [
+        "libs/MatterSurfaceLib/src/mesh_simplifier.cpp"
+      ]
+    }
+  },
+  "geometry_vectors": {
+    "bytes_before": 246788,
+    "bytes_after": 246788,
+    "byte_identical": true,
+    "sha256_before": "d8aa9753b6e5fae12ea6cc7a71f4b20e2485121ff57c680d42540ef7e32d4fbd",
+    "sha256_after": "d8aa9753b6e5fae12ea6cc7a71f4b20e2485121ff57c680d42540ef7e32d4fbd"
+  },
+  "setup_refusals": [
+    {
+      "command": "build-smoke.py with --native-consumer before Linux consumer was available",
+      "exit_code": 2,
+      "resolution": "Compare directly with wrapper test after native executable exists."
+    },
+    {
+      "command": "build-smoke.py reusing nonempty wasm setup directory",
+      "exit_code": 2,
+      "resolution": "Preserved existing cache, selected fresh wasm-final directory; no deletion."
+    }
+  ],
+  "schema_version": 1,
+  "validation_directory": "/tmp/crisp-ember-20-validation",
+  "source_line_count_before": 1329,
+  "source_line_count_after": 1332,
+  "tests": [
+    {
+      "suite": "authoring Linux (unchanged SDK inputs)",
+      "passed": 3,
+      "failed": 0,
+      "exit_code": 0,
+      "command": [
+        "ctest",
+        "--test-dir",
+        "/tmp/crisp-ember-20-validation/authoring",
+        "--output-on-failure",
+        "--parallel",
+        "1"
+      ],
+      "log": "authoring-tests.txt"
+    },
+    {
+      "suite": "portable host Linux",
+      "passed": 4,
+      "failed": 0,
+      "exit_code": 0,
+      "command": [
+        "ctest",
+        "--test-dir",
+        "/tmp/crisp-ember-20-validation/host",
+        "--output-on-failure",
+        "--parallel",
+        "1"
+      ],
+      "log": "host-after-tests.txt"
+    },
+    {
+      "suite": "C binding Linux",
+      "passed": 2,
+      "failed": 0,
+      "exit_code": 0,
+      "command": [
+        "ctest",
+        "--test-dir",
+        "/tmp/crisp-ember-20-validation/binding",
+        "--output-on-failure",
+        "--parallel",
+        "1"
+      ],
+      "log": "binding-after-tests.txt"
+    },
+    {
+      "suite": "portable host MSVC",
+      "passed": 4,
+      "failed": 0,
+      "exit_code": 0,
+      "command": [
+        "powershell.exe",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "MatterEngine3/src/script/portable_host/build-windows.ps1",
+        "-Config",
+        "RelWithDebInfo",
+        "-Test"
+      ],
+      "log": "host-after-windows.txt"
+    },
+    {
+      "suite": "C binding MSVC",
+      "passed": 2,
+      "failed": 0,
+      "exit_code": 0,
+      "command": [
+        "powershell.exe",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "bindings/geometry-c/build-windows.ps1",
+        "-Config",
+        "RelWithDebInfo",
+        "-Test"
+      ],
+      "log": "binding-after-windows.txt"
+    },
+    {
+      "suite": "pinned WASM",
+      "passed": 6,
+      "failed": 0,
+      "exit_code": 0,
+      "command": [
+        "/usr/bin/python3.12",
+        "bindings/geometry-c/wasm/build-smoke.py",
+        "--emsdk",
+        "/home/jkern/emsdk",
+        "--build-dir",
+        "/tmp/crisp-ember-20-validation/wasm-final"
+      ],
+      "log": "wasm-final-build-tests.txt"
+    },
+    {
+      "suite": "browser worker runtime",
+      "passed": 1,
+      "failed": 0,
+      "exit_code": 0,
+      "command": [
+        "ctest",
+        "--test-dir",
+        "/tmp/crisp-ember-20-validation/runtime",
+        "--output-on-failure",
+        "--parallel",
+        "1"
+      ],
+      "log": "runtime-browser-tests.txt"
+    }
+  ],
+  "native_wasm_equivalence": {
+    "passed": true,
+    "command": [
+      "/home/jkern/emsdk/node/22.16.0_64bit/bin/node",
+      "bindings/geometry-c/tests/wasm.mjs",
+      "/tmp/crisp-ember-20-validation/wasm-final/matter_geometry_wasm.mjs",
+      "/tmp/crisp-ember-20-validation/binding/matter_geometry_c_tests"
+    ],
+    "exit_code": 0,
+    "log": "wasm-native-equivalence.txt",
+    "tolerances": "Existing fixture tolerances unchanged: geometry 1e-6 + 1e-6 * abs(expected); CSG normals 2e-3 + 1e-6 * abs(expected)."
+  },
+  "browser_fixtures": [
+    "WEB-PROP",
+    "WEB-ASSEMBLY",
+    "WEB-STAGED",
+    "WEB-REPEAT-OWNERSHIP",
+    "WEB-CANCEL-RESTART",
+    "WEB-RESTART",
+    "WEB-DEADLINE",
+    "WEB-BOUNDS-QUEUED-CANCEL",
+    "WEB-REVISION-EPOCH",
+    "WEB-ERROR-RELEASE-CAPS",
+    "WEB-RESPONSIVENESS",
+    "WEB-DISPOSE",
+    "WEB-REALM-RECYCLE",
+    "WEB-LATE-MESSAGE-ADMISSION",
+    "WEB-INPUT-SNAPSHOT-LIMITS"
+  ],
+  "warning_logs": [
+    "consumer-before-warnings.txt",
+    "consumer-after-warnings.txt",
+    "consumer-before-windows-warnings.txt",
+    "consumer-after-windows-warnings.txt"
+  ],
+  "input_integrity": {
+    "sdk_unchanged": true,
+    "root_and_component_cmake_or_manifests_changed": false,
+    "geometry_vector_bytes_unchanged": true
+  },
+  "evidence_files": {
+    "additional-warning-checks.json": {
+      "bytes": 2301,
+      "sha256": "8981f1bf7b723e00fa16e1b6c22dd678d8c0e442e0e70659dc812895536e32fc"
+    },
+    "authoring-tests.txt": {
+      "bytes": 531,
+      "sha256": "84fcb08dc7959f1b752d2dbd180f5606dcf52b638d887f29d2e8c6a0ecf44513"
+    },
+    "binding-after-tests.txt": {
+      "bytes": 432,
+      "sha256": "e9efd2313cd240aa426128ec09846cea294e4300fbfa8a6b04ae19a13129044b"
+    },
+    "binding-after-windows.txt": {
+      "bytes": 3542,
+      "sha256": "a8a19c346bff084b4b774f16155acf3ae75daa9e3d765e75e3bfc2dc4c45fe28"
+    },
+    "binding-checks.json": {
+      "bytes": 1033,
+      "sha256": "cb2bc15abf18a0bcf5d9f035caaadefe8af9196c3b8c4c5e92c89f9eb352d1bf"
+    },
+    "browser-evidence.json": {
+      "bytes": 4820,
+      "sha256": "ded9be6bcd735037fab65a798d7e3b2be1d796eedc390288e39db772f7216ce2"
+    },
+    "consumer-after-warnings.txt": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "consumer-after-windows-warnings.txt": {
+      "bytes": 253,
+      "sha256": "81eef6692d5f7c672f91f3914e86e6d396683a000c3ffcce37afc4b819ae6172"
+    },
+    "consumer-before-warnings.txt": {
+      "bytes": 1904,
+      "sha256": "dd724665db9fe557a4044e8c6e4e6710194df1b2854c154f599f690e0b50c323"
+    },
+    "consumer-before-windows-warnings.txt": {
+      "bytes": 253,
+      "sha256": "81eef6692d5f7c672f91f3914e86e6d396683a000c3ffcce37afc4b819ae6172"
+    },
+    "host-after-tests.txt": {
+      "bytes": 662,
+      "sha256": "91f6394d11a5e788e170843a18ed4135d14356d9e539c7d3c54fd9225fa31443"
+    },
+    "host-after-windows.txt": {
+      "bytes": 1871,
+      "sha256": "c6d7c9e5499de54e2141007ca974bd7fc30da9e61b6c50402cb068e34b08ac33"
+    },
+    "manifest.json": {
+      "bytes": 2263,
+      "sha256": "17a6c1a86eade45a562b9348ff682cda393cd33ce1ce8e91339dc755a17db21b"
+    },
+    "object-recovery-status.json": {
+      "bytes": 85,
+      "sha256": "3de6aae0da2fff87fae682628d347331e0c7f00ace2c0b07942186c607cd6d4d"
+    },
+    "runtime-browser-tests.txt": {
+      "bytes": 313,
+      "sha256": "b273f9384158110dbe713796a558625c4496d29e5fe59b1f45b82f843817040f"
+    },
+    "unverified-salvage-candidate.json": {
+      "bytes": 5770,
+      "sha256": "321227a3437296805c5f4f2f792944acdf79be321c12aa3f8c592e1bf0894fb6"
+    },
+    "wasm-final-build-tests.txt": {
+      "bytes": 8286,
+      "sha256": "b3e5eb126b9b9edf01ba77f606c5fb24b845e329f59bc0c598bd7ec876568f18"
+    },
+    "wasm-native-equivalence.txt": {
+      "bytes": 153,
+      "sha256": "aa1654bbde88838ccf960d3664ec4765ebb118e3ae364312ccaaa4a1ee9a8d90"
+    },
+    "wasm-smoke-evidence.json": {
+      "bytes": 3256,
+      "sha256": "3b8fa1846442337965ccaf240bad3b7ab6cfba373742e33f110e2756fb4e0218"
+    }
+  },
+  "log_normalization": "Published text logs normalize CRLF to LF. Original tool output files are retained in /tmp/crisp-ember-20-validation; candidate bytes are preserved exactly in base64."
+}

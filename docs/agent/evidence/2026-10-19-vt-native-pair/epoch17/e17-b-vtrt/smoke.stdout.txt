@@ -1,0 +1,22 @@
+Vulkan adapter: NVIDIA GeForce RTX 4090 | driver: NVIDIA (610.88, 0x98960000) | API 1.4.341
+DLSS fallback: Streamline disabled for Vulkan test device
+[vk] static reserve: clusters 32 MiB, vertices 512 MiB, indices 256 MiB (host-visible)
+vt-rt raster: A=(0.8980 0.0980 0.1490) B=(0.0980 0.2510 0.8510)
+vt-rt traced: A slot=0 applied=0 albedo=(0.0000 0.0000 0.0000) mip=0.00/0.00 cone=0.00030 density=0.0000
+vt-rt traced: B slot=0 applied=0 albedo=(0.0000 0.0000 0.0000) mip=0.00/0.00 cone=0.00030 density=0.0000
+FAIL: vt-rt: the hit BLAS carries the part rung's transported VT slot
+FAIL: vt-rt: the traced hits resolved a VT page
+FAIL: vt-rt: the hit triangle yields a positive atlas-UV density
+FAIL: vt-rt: chart 0 traced shading agrees with its G-buffer shading
+FAIL: vt-rt: chart 1 traced shading agrees with its G-buffer shading
+FAIL: vt-rt: the two charts trace to their own distinct pages
+FAIL: vt-rt: chartless page proxy resolves its source sector atlas
+FAIL: vt-rt: the cone sweep ray hit a VT page
+FAIL: vt-rt: the cone sweep ray hit a VT page
+FAIL: vt-rt: the cone sweep ray hit a VT page
+FAIL: vt-rt: the cone sweep ray hit a VT page
+vt-rt cone sweep: t=3.0..31.0 mips=0 0 0 0 cones=0.00150 0.00350 0.00750 0.01550
+FAIL: vt-rt: a 16x farther hit selects a strictly coarser mip
+vt-rt gpu zones (ms): total=0.832 gbuffer=0.076 rt=0.034 vt=0.118
+validation errors: 0
+12 FAILURE(S)

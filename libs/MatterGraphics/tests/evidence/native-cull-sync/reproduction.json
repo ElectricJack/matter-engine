@@ -1,0 +1,99 @@
+{
+  "task": "clear-crest-48.4.11",
+  "source_base": "e14346860fceacf36d2d5f8fd4d84c823bbcf777",
+  "required_predecessor": "27ec01182dfdee87d34e3615b82ad8c291725e7c",
+  "tested_source_sha256": {
+    "MatterEngine3/src/render/vk_scene_renderer.cpp": "6efeaebdb118edad71063b4cdb67b8e8e39e22b3a5775c6d8d436eed8dbc6939",
+    "MatterEngine3/tests/vulkan_smoke_tests.cpp": "5096e6634365a71c07b08539bd11c230fc045a8bb6961d29bde4725470ce4d26"
+  },
+  "executable_sha256": "b84459ea9f4d0f64807ba536e60ca61b622dde94ff57851becca016d2d9996de",
+  "toolchain": {
+    "VisualStudioRoot": "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community",
+    "VisualStudioProductId": "Microsoft.VisualStudio.Product.Community",
+    "VsDevCmd": "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\Common7\\Tools\\VsDevCmd.bat",
+    "MsvcToolsVersion": "14.44.35207",
+    "WindowsSdkVersion": "10.0.26100.0",
+    "CMake": "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\Common7\\IDE\\CommonExtensions\\Microsoft\\CMake\\CMake\\bin\\cmake.exe",
+    "Ninja": "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\Common7\\IDE\\CommonExtensions\\Microsoft\\CMake\\Ninja\\ninja.exe",
+    "Python": "C:\\Users\\webde\\AppData\\Local\\Programs\\Python\\Launcher\\py.exe",
+    "PythonVersion": "Python 3.13.14",
+    "VulkanSdk": "C:\\VulkanSDK\\1.4.357.0",
+    "Glslc": "C:\\VulkanSDK\\1.4.357.0\\Bin\\glslc.exe"
+  },
+  "compiler": "MSVC 19.44.35211.0 (CMakeCXXCompiler.cmake)",
+  "gpu": "NVIDIA GeForce RTX 4090, 610.74",
+  "build_command": "tools/build-windows.ps1 -Config RelWithDebInfo -Target vulkan_smoke_tests",
+  "resource_gated_command": "aq test .tmp/test_cull_sync_native.py -n 0 -q",
+  "build_parallel_level": 2,
+  "result": "6 passed in 433.21s; build and all five modes exit 0",
+  "modes": [
+    "cull",
+    "water-field",
+    "water-field-nort",
+    "water-animation",
+    "water-forward"
+  ],
+  "scope": {
+    "production": "Publish GPU upload/growth copies to later transfer writes as well as existing readers; prepare-only frame-slot reuse does not rely on an intervening cull dispatch.",
+    "fixture": "Fake DLSS evaluator converts the incoming compute-storage access contract to CLEAR/TRANSFER_WRITE before its clear; reports the same clear output contract as before.",
+    "unchanged": "Production DLSS contract/record_dlss.inl, rendering algorithms, shader sources, fixture values, all assertions and validation settings.",
+    "temporal": "All modes run run_vulkan_temporal_tests, run_vulkan_gi_temporal_sequence_tests, run_streamline_bridge_fallback_tests and run_dlss_bridge_contract_tests in the existing preamble.",
+    "limits": "Default MATTER_ENABLE_STREAMLINE=OFF build; fake SDK evaluation, not proprietary SDK qualification. Existing external loader warnings remain captured in full."
+  },
+  "reference_evidence": "../native-water-temporal/reproduction.json",
+  "baseline": "Checked-in candidate/reference raw log hashes match metadata: four WAW hazards and two teardown assertions. Baseline not rerun or changed.",
+  "replay": "Restore the two runner texts below under .tmp/, create .tmp/cull-sync-evidence/, and execute resource_gated_command at repo root in WSL. The PowerShell runner drives the supported native MSVC build and uses the predecessor layer environment.",
+  "runner_powershell": "param([string]$Mode = 'cull', [switch]$Build)\n$ErrorActionPreference = 'Stop'\n$repo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path\nif ($Build) {\n    $env:CMAKE_BUILD_PARALLEL_LEVEL = '2'\n    & (Join-Path $repo 'tools/build-windows.ps1') -Config RelWithDebInfo -Target vulkan_smoke_tests\n    exit $LASTEXITCODE\n}\nImport-Module (Join-Path $repo 'tools/windows/MatterWindowsToolchain.psm1') -Force\n$tc = Resolve-MatterWindowsToolchain -RepositoryRoot $repo\n$env:VULKAN_SDK = $tc.VulkanSdk\n$env:VK_LAYER_PATH = Join-Path $tc.VulkanSdk 'Bin'\n$env:VK_LOADER_LAYERS_DISABLE = 'VK_LAYER_OBS_HOOK,VK_LAYER_EOS_Overlay,VK_LAYER_VALVE_steam_overlay,VK_LAYER_VALVE_steam_fossilize,VK_LAYER_RENDERDOC_Capture'\n$env:VK_LAYER_ENABLES = 'VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT'\n$env:MATTER_VK_SMOKE_MODE = $Mode\n$evidence = Join-Path $repo '.tmp/cull-sync-evidence'\nNew-Item -ItemType Directory -Force $evidence | Out-Null\n$log = Join-Path $evidence \"$Mode.log\"\nPush-Location (Join-Path $repo 'MatterEditor/build/cmake/windows-msvc/relwithdebinfo')\ntry {\n    & $env:ComSpec /d /s /c ('vulkan_smoke_tests.exe > \"{0}\" 2>&1' -f $log)\n    $result = $LASTEXITCODE\n    Write-Output \"$Mode : exit=$result log=$log\"\n    exit $result\n} finally { Pop-Location }\n",
+  "harness_python": "import subprocess\nfrom pathlib import Path\n\nimport pytest\n\n\nROOT = Path(__file__).resolve().parents[1]\nEVIDENCE = ROOT / '.tmp/cull-sync-evidence'\n\n\ndef run_native(name, *args):\n    script = subprocess.check_output(\n        ['wslpath', '-w', str(ROOT / '.tmp/check-cull-sync.ps1')], text=True\n    ).strip()\n    result = subprocess.run(\n        ['/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe',\n         '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script, *args],\n        cwd=ROOT, capture_output=True, text=True, timeout=1200,\n    )\n    output = result.stdout + result.stderr\n    (EVIDENCE / f'{name}-runner.log').write_text(output)\n    assert result.returncode == 0, output\n\n\ndef test_01_supported_native_build():\n    run_native('build', '-Build')\n\n\n@pytest.mark.parametrize('mode', [\n    'cull', 'water-field', 'water-field-nort', 'water-animation', 'water-forward',\n])\ndef test_02_synchronization_validation(mode):\n    run_native(mode, '-Mode', mode)\n    output = (EVIDENCE / f'{mode}.log').read_text()\n    assert 'validation errors: 0' in output, output\n    assert 'ALL PASS' in output, output\n    assert 'Vulkan validation ERROR' not in output, output\n    assert 'hazard detected' not in output, output\n    assert 'FAIL:' not in output, output\n    assert 'VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT' in output\n",
+  "synchronization_reference": "https://docs.vulkan.org/spec/latest/chapters/synchronization.html",
+  "raw_logs": {
+    "build-runner.log": {
+      "sha256": "61df306f9019ea7f2cf5dfa1ac288aaabbb3bacea1367d723c11830cd64cd43a",
+      "bytes": 192582
+    },
+    "aq-test.log": {
+      "sha256": "d265936a59fd3f60ad8d5c06e839c2c69b18e086b89b760dd791b76a28b3b422",
+      "bytes": 480
+    },
+    "cull.log": {
+      "sha256": "dce68d5e1c2ec69e5ae64861e0beda614598a9d87450b10c261d5ec274106f62",
+      "bytes": 17476,
+      "exit_code": 0,
+      "validation_errors": 0,
+      "synchronization_hazards": 0,
+      "assertions": "ALL PASS"
+    },
+    "water-field.log": {
+      "sha256": "57c969416e90dda4baa1f19e8b128b3c624f727e29a05f2ec10734c324224359",
+      "bytes": 5467,
+      "exit_code": 0,
+      "validation_errors": 0,
+      "synchronization_hazards": 0,
+      "assertions": "ALL PASS"
+    },
+    "water-field-nort.log": {
+      "sha256": "9e1930a784583df5701c50909c2f578025e8a9e5a1be7e6b7698eac1f2744683",
+      "bytes": 5135,
+      "exit_code": 0,
+      "validation_errors": 0,
+      "synchronization_hazards": 0,
+      "assertions": "ALL PASS"
+    },
+    "water-animation.log": {
+      "sha256": "e5070a67f55d16ce6d319f27a8380c9c520d3ec4a83309aa04529da54a475067",
+      "bytes": 6898,
+      "exit_code": 0,
+      "validation_errors": 0,
+      "synchronization_hazards": 0,
+      "assertions": "ALL PASS"
+    },
+    "water-forward.log": {
+      "sha256": "471b19e2da383a454f527bc2e83afe7fc87aa92e8a671f85ee336714d17a9cae",
+      "bytes": 7192,
+      "exit_code": 0,
+      "validation_errors": 0,
+      "synchronization_hazards": 0,
+      "assertions": "ALL PASS"
+    }
+  }
+}

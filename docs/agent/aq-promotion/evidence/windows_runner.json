@@ -1,0 +1,307 @@
+{
+  "task_id": "sound-impact-80.2",
+  "source_sha": "35289874a52630a6439353666ed26179dd334ab2",
+  "source_tree": "0af92e1426511d01bec9e15c1851502f6c728115",
+  "checked_at_utc": "2026-10-11T02:50:40.119237+00:00",
+  "actor": {
+    "github_api_login": "ElectricJack",
+    "host": "DESKTOP-EB8UOME",
+    "runner_account": "DESKTOP-EB8UOME\\webde",
+    "note": "All Windows probes ran as the runner account through WSL interop on the runner host itself; whoami=desktop-eb8uome\\webde."
+  },
+  "runner": {
+    "id": 22,
+    "name": "DESKTOP-EB8UOME-matter-msvc",
+    "os": "Windows",
+    "status": "online",
+    "busy": true,
+    "version": "2.338.0",
+    "labels": [
+      "self-hosted",
+      "Windows",
+      "X64",
+      "matter-engine-msvc"
+    ],
+    "scope": "repository ElectricJack/matter-engine",
+    "install_dir": "C:\\actions-runner-matter",
+    "work_folder": "C:\\actions-runner-matter\\_work",
+    "listener_mode": "scheduled-task run.cmd (interactive logon session), not a Windows service"
+  },
+  "files": {
+    "tools/build-windows.ps1": {
+      "sha256": "2d1c0db494fb8fd474966f096879eba39c0a1b064090e1fcc05b17c714096505",
+      "git_blob": "afa727dd76d15f145c4cadf5fd331edbccebaca3",
+      "bytes": 4230
+    },
+    "tools/windows/MatterWindowsToolchain.psm1": {
+      "sha256": "d5e919ca1a3d521dd7cc246967767114b058cd588eef41427461b0409df5a769",
+      "git_blob": "fd0d5e5276be40fd51d9636708f9907d8438221f",
+      "bytes": 6800
+    },
+    "tools/ci-windows.ps1": {
+      "sha256": "e911d2d677954a2bd6f278f9c3336eee40073668854ca63ecd492f6d4185f98d",
+      "git_blob": "590859dfa469227974d715269994e2412c8f795a",
+      "bytes": 1703
+    },
+    ".github/workflows/tests.yml": {
+      "sha256": "0152245bc69dfad488d1b2398f5179e74f2a3997a73d35bf28f10c8523b42833",
+      "git_blob": "f49807729e7b17f0e5370d4e5b7d59100b805de0",
+      "bytes": 1579
+    },
+    "CMakeLists.txt": {
+      "sha256": "7972c3ae62e423499590505b2873ebdc95ec1bc62d99a0351853b9c865b64845",
+      "git_blob": "f5e40b298ab1aeafe2120a4cff92868fdfa4cdfe",
+      "bytes": 6361
+    },
+    "CMakePresets.json": {
+      "sha256": "5424e0fd77e5a6415fed98fbf1cb9c878da16b60d0f1f7c2a749bcfc37eb7900",
+      "git_blob": "28bb9885ad02b4d86ba0130f41594849b5ec9f5a",
+      "bytes": 1830
+    }
+  },
+  "toolchain_preflight": {
+    "command": "& ./tools/build-windows.ps1 -Config RelWithDebInfo -PreflightOnly",
+    "cwd": "C:\\Users\\webde\\AppData\\Local\\Temp\\aq-sound-impact-80.2\\preflight-35289874a",
+    "checkout": "git.exe clone --filter=blob:none --no-checkout --depth 1 https://github.com/ElectricJack/matter-engine.git; fetch --depth 1 origin 35289874a52630a6439353666ed26179dd334ab2; sparse-checkout /tools/ /cmake/ /CMakeLists.txt /CMakePresets.json; checkout 35289874a52630a6439353666ed26179dd334ab2",
+    "started_utc": "2026-10-11T02:26:46.8558836Z",
+    "finished_utc": "2026-10-11T02:26:52.3640711Z",
+    "exit_code": 0,
+    "resolved": {
+      "VisualStudioRoot": "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community",
+      "VisualStudioProductId": "Microsoft.VisualStudio.Product.Community",
+      "VsDevCmd": "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\Common7\\Tools\\VsDevCmd.bat",
+      "MsvcToolsVersion": "14.44.35207",
+      "WindowsSdkVersion": "10.0.26100.0",
+      "CMake": "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\Common7\\IDE\\CommonExtensions\\Microsoft\\CMake\\CMake\\bin\\cmake.exe",
+      "Ninja": "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\Common7\\IDE\\CommonExtensions\\Microsoft\\CMake\\Ninja\\ninja.exe",
+      "Python": "C:\\Users\\webde\\AppData\\Local\\Programs\\Python\\Launcher\\py.exe",
+      "PythonVersion": "Python 3.13.14",
+      "VulkanSdk": "C:\\VulkanSDK\\1.4.357.0",
+      "Glslc": "C:\\VulkanSDK\\1.4.357.0\\Bin\\glslc.exe"
+    }
+  },
+  "hosted_toolchain_json": {
+    "source": "artifact 11688918206 native-windows-25a6601606bb1ed2fc730b9a710b5bf975bc306a-1 (run 38100939715, job 114356556960)",
+    "matches_preflight": true,
+    "resolved": {
+      "VisualStudioRoot": "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community",
+      "VisualStudioProductId": "Microsoft.VisualStudio.Product.Community",
+      "VsDevCmd": "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\Common7\\Tools\\VsDevCmd.bat",
+      "MsvcToolsVersion": "14.44.35207",
+      "WindowsSdkVersion": "10.0.26100.0",
+      "CMake": "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\Common7\\IDE\\CommonExtensions\\Microsoft\\CMake\\CMake\\bin\\cmake.exe",
+      "Ninja": "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\Common7\\IDE\\CommonExtensions\\Microsoft\\CMake\\Ninja\\ninja.exe",
+      "Python": "C:\\Users\\webde\\AppData\\Local\\Programs\\Python\\Launcher\\py.exe",
+      "PythonVersion": "Python 3.13.14",
+      "VulkanSdk": "C:\\VulkanSDK\\1.4.357.0",
+      "Glslc": "C:\\VulkanSDK\\1.4.357.0\\Bin\\glslc.exe"
+    }
+  },
+  "hosted_jobs": [
+    {
+      "job_id": 114356556960,
+      "run_id": 38100939715,
+      "name": "Native Windows build and tests",
+      "head_branch": "aq/clear-crest-48.4.1",
+      "head_sha": "25a6601606bb1ed2fc730b9a710b5bf975bc306a",
+      "workflow_name": "Native Windows",
+      "status": "completed",
+      "conclusion": "failure",
+      "started_at": "2026-10-11T01:40:41Z",
+      "completed_at": "2026-10-11T02:11:47Z",
+      "runner_id": 22,
+      "runner_name": "DESKTOP-EB8UOME-matter-msvc",
+      "labels": [
+        "self-hosted",
+        "Windows",
+        "X64",
+        "matter-engine-msvc"
+      ],
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "name": "Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "name": "Build, test and validate package",
+          "status": "completed",
+          "conclusion": "failure"
+        },
+        {
+          "name": "Upload test evidence",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "name": "Post Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success"
+        }
+      ],
+      "html_url": "https://github.com/ElectricJack/matter-engine/actions/runs/38100939715/job/114356556960"
+    },
+    {
+      "job_id": 114343132642,
+      "run_id": 38096419172,
+      "name": "Native Windows build and tests",
+      "head_branch": "aq/fleet-ridge-94",
+      "head_sha": "35289874a52630a6439353666ed26179dd334ab2",
+      "workflow_name": "Native Windows",
+      "status": "completed",
+      "conclusion": "failure",
+      "started_at": "2026-10-11T02:11:49Z",
+      "completed_at": "2026-10-11T02:42:16Z",
+      "runner_id": 22,
+      "runner_name": "DESKTOP-EB8UOME-matter-msvc",
+      "labels": [
+        "self-hosted",
+        "Windows",
+        "X64",
+        "matter-engine-msvc"
+      ],
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "name": "Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "name": "Build, test and validate package",
+          "status": "completed",
+          "conclusion": "failure"
+        },
+        {
+          "name": "Upload test evidence",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "name": "Post Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
+          "status": "completed",
+          "conclusion": "success"
+        },
+        {
+          "name": "Complete job",
+          "status": "completed",
+          "conclusion": "success"
+        }
+      ],
+      "html_url": "https://github.com/ElectricJack/matter-engine/actions/runs/38096419172/job/114343132642"
+    }
+  ],
+  "hosted_job_notes": {
+    "114356556960": "aq/clear-crest-48.4.1 @25a66016 via native-windows.yml. Toolchain resolved and editor.exe built under the runner account; CTest 182/189 passed and 7 failed (obj_export_golden_tests, viewer_logic_tests, shader_source_tests, vt_feedback_visibility_tests, asset_root_tests, windows_build_wrapper_contract, editor_registration_census). These are source/test assertions (goldens, shader text, world-registration census, path lookup); windows_build_wrapper_contract fails on its WSL-from-runner leg (exit -1) and is not classified further here. Not a runner-readiness failure, and not this task's source.",
+    "114343132642": "aq/fleet-ridge-94 @35289874a via tests.yml (check run 114343132642, app 15368), the required 'Native Windows build and tests' check for the promotion source. Completed failure at 2026-10-11T02:42:16Z. Artifact 11689841790 native-windows-35289874a52630a6439353666ed26179dd334ab2-1: toolchain.json identical to the preflight; editor.exe built (MATTER_WINDOWS_ARTIFACT marker); CTest 182/189 passed, the same 7 suites failing as job 114356556960. Six are source/test assertions (obj_export_golden_tests golden counts, viewer_logic_tests, shader_source_tests cull.comp text assertion at shader_source_tests.cpp:88, vt_feedback_visibility_tests, asset_root_tests test_asset_root.cpp:125, editor_registration_census manifest mismatch) and are not root-caused here. windows_build_wrapper_contract failed because wsl.exe returned 'A connection attempt failed ... Error code: Wsl/Service/0x8007274c' (WSAETIMEDOUT): a runner-host WSL service timeout, not a toolchain defect."
+  },
+  "conclusion": {
+    "runner_readiness": "pass",
+    "statement": "Authorized existing runner identity, all four labels, online state and the exact toolchain preflight under the runner account are proven. Preflight is not hosted CI success; the hosted check status is recorded in hosted_jobs and must be evaluated separately.",
+    "hosted_ci": "failure: required check 'Native Windows build and tests' (job 114343132642) for 35289874a concluded failure on 7/189 CTest suites after a successful build. Hosted CI success is not established; the failures need source/test work (six suites) and a WSL-dependent contract test that timed out on the host.",
+    "residual_risk": "The listener is a logon-triggered scheduled task, so the runner goes offline when webde logs off or the machine sleeps. The workstation is shared with interactive GPU/WSL work; windows_build_wrapper_contract shells into WSL from the job and failed with Wsl/Service/0x8007274c (WSL interop on this host also timed out once during this task's probes)."
+  },
+  "checks": [
+    {
+      "name": "runner_identity",
+      "result": "pass",
+      "detail": "GET repos/ElectricJack/matter-engine/actions/runners returned total_count=1; runner id=22 name=DESKTOP-EB8UOME-matter-msvc os=Windows version=2.338.0. Host .runner agentId=22 agentName=DESKTOP-EB8UOME-matter-msvc gitHubUrl=https://github.com/ElectricJack/matter-engine. This is the existing runner named by the task; no host was provisioned, registered or relabelled."
+    },
+    {
+      "name": "runner_labels",
+      "result": "pass",
+      "detail": "labels=['self-hosted', 'Windows', 'X64', 'matter-engine-msvc']; tests.yml native job runs-on [self-hosted, Windows, X64, matter-engine-msvc]."
+    },
+    {
+      "name": "runner_online_state",
+      "result": "pass",
+      "detail": "status=online busy=True at 2026-10-11T02:50:40.119237+00:00. busy means it is executing an assigned hosted job; an online busy runner is usable and further jobs queue behind it."
+    },
+    {
+      "name": "repository_access",
+      "result": "pass",
+      "detail": "Runner is registered at repository scope on ElectricJack/matter-engine (visibility=public, default_branch=main). Hosted jobs 114356556960 and 114343132642 were assigned to runner_id 22, checked out the repository and (114356556960) uploaded artifact 11688918206."
+    },
+    {
+      "name": "runner_account_and_listener",
+      "result": "pass",
+      "detail": "Listener mode: interactive run.cmd launched by Scheduled Task '\\GitHub Runner matter-engine-msvc' (state Running, principal webde, LogonType Interactive, RunLevel Limited, MSFT_TaskLogonTrigger for DESKTOP-EB8UOME\\webde, ExecutionTimeLimit PT0S, RestartCount 999 / PT1M). No actions.runner.* Windows service exists. Runner.Listener.exe pid 75308 (created 2026-10-11T00:32:28Z) and Runner.Worker.exe are owned by DESKTOP-EB8UOME\\webde from C:\\actions-runner-matter\\bin, runner 2.338.0. The plan permits run.cmd under the runner account while it remains available; the runner is only online while webde is logged on."
+    },
+    {
+      "name": "powershell_and_git_for_windows",
+      "result": "pass",
+      "detail": "Windows PowerShell 5.1.26100.9444 Desktop; git version 2.33.0.windows.2 at C:\\Program Files\\Git\\cmd\\git.exe."
+    },
+    {
+      "name": "local_writable_drive",
+      "result": "pass",
+      "detail": "Runner work folder C:\\actions-runner-matter\\_work (local C:, not UNC). Preflight checkout written to C:\\Users\\webde\\AppData\\Local\\Temp\\aq-sound-impact-80.2\\preflight-35289874a; C: 538.2 GiB free."
+    },
+    {
+      "name": "visual_studio_2022_community",
+      "result": "pass",
+      "detail": "vswhere -version [17.0,18.0) -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -> Microsoft.VisualStudio.Product.Community 17.14.36221.1 C:\\Program Files\\Microsoft Visual Studio\\2022\\Community"
+    },
+    {
+      "name": "msvc_v143_14_44_35207",
+      "result": "pass",
+      "detail": "MsvcToolsVersion=14.44.35207; present: VC\\Tools\\MSVC\\14.44.35207\\bin\\Hostx64\\x64\\cl.exe and Common7\\Tools\\VsDevCmd.bat."
+    },
+    {
+      "name": "windows_sdk_10_0_26100_0",
+      "result": "pass",
+      "detail": "WindowsSdkVersion=10.0.26100.0; present: Include\\10.0.26100.0\\um\\Windows.h, shared\\winerror.h, ucrt\\stdio.h, Lib\\10.0.26100.0\\um\\x64\\kernel32.lib, ucrt\\x64\\ucrt.lib."
+    },
+    {
+      "name": "bundled_cmake_ninja",
+      "result": "pass",
+      "detail": "VS-bundled cmake version 3.31.6-msvc6 (>=3.25) and ninja 1.12.1."
+    },
+    {
+      "name": "python_3_13_14",
+      "result": "pass",
+      "detail": "Resolver selected C:\\Users\\webde\\AppData\\Local\\Programs\\Python\\Launcher\\py.exe (Python 3.13.14); py.exe -3.13 --version -> Python 3.13.14. CMakeLists.txt requires ^Python 3\\.13\\.14$."
+    },
+    {
+      "name": "vulkan_sdk_1_4_357_0",
+      "result": "pass",
+      "detail": "C:\\VulkanSDK\\1.4.357.0 present with Include\\vulkan\\vulkan.h, Lib\\vulkan-1.lib, Bin\\VkLayer_khronos_validation.json, Bin\\glslc.exe (shaderc v2026.3 v2026.3); VULKAN_SDK=C:\\VulkanSDK\\1.4.357.0."
+    },
+    {
+      "name": "exact_toolchain_preflight",
+      "result": "pass",
+      "detail": "As DESKTOP-EB8UOME\\webde in a native Git-for-Windows HTTPS checkout of 35289874a52630a6439353666ed26179dd334ab2 (tree 0af92e1426511d01bec9e15c1851502f6c728115): `& ./tools/build-windows.ps1 -Config RelWithDebInfo -PreflightOnly` exit 0 at 2026-10-11T02:26:46.8558836Z. build-windows.ps1 and MatterWindowsToolchain.psm1 working-tree SHA-256 equal the git blob hashes in files{}."
+    },
+    {
+      "name": "https_connectivity",
+      "result": "pass",
+      "detail": "From the runner account: TCP 443 succeeded to github.com, api.github.com, codeload.github.com, objects.githubusercontent.com, pipelines.actions.githubusercontent.com, results-receiver.actions.githubusercontent.com; HTTPS HEAD 200 for https://github.com/, https://api.github.com/zen, https://codeload.github.com/. HTTPS git clone/fetch of the repository succeeded; hosted job 114356556960 uploaded an artifact."
+    },
+    {
+      "name": "workflow_limits",
+      "result": "pass",
+      "detail": "tests.yml @35289874a native job: timeout-minutes 90, CMAKE_BUILD_PARALLEL_LEVEL 4, CTEST_PARALLEL_LEVEL 2, shell powershell, checkout persist-credentials false; tools/ci-windows.ps1 sets the same parallelism."
+    }
+  ],
+  "evidence_pointers": {
+    "runners_api": "gh api repos/ElectricJack/matter-engine/actions/runners",
+    "jobs_api": "gh api repos/ElectricJack/matter-engine/actions/jobs/<job_id>",
+    "artifact": "gh run download 38100939715 -R ElectricJack/matter-engine -n native-windows-25a6601606bb1ed2fc730b9a710b5bf975bc306a-1",
+    "artifact_promotion_source": "gh run download 38096419172 -R ElectricJack/matter-engine -n native-windows-35289874a52630a6439353666ed26179dd334ab2-1",
+    "redactions": "No tokens, .credentials or .credentials_rsaparams were read. The .runner serverUrl tenant path is omitted."
+  }
+}

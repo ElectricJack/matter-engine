@@ -1,0 +1,276 @@
+{
+  "field": {
+    "id": "flat5-v1",
+    "program": "const 5\nconst 0.5\nconst 0.5\nheight r0\nmoisture r1\nrelief r2\nseaLevel 0\nbiome 0.65 0.35\n",
+    "height_metres": 5
+  },
+  "legacy": {
+    "sector_size_metres": 16,
+    "slab_metres": [
+      -64,
+      192
+    ],
+    "rung0_upward_triangles": 128,
+    "rung1_upward_triangles": 512,
+    "skirt_triangles": 0,
+    "invalid_rungs": [
+      4
+    ],
+    "boundary": "legacy overlap bands; not exact shared-plane meshes"
+  },
+  "portable_oracle": {
+    "status": "analytical specification; not production terrain capture",
+    "policy": {
+      "name": "corpus.shared-plane.v1",
+      "version": 1
+    },
+    "origin_metres": [
+      1000000000,
+      0,
+      -1000000000
+    ],
+    "chunks": [
+      {
+        "id": "chunk.0",
+        "region_key": [
+          0,
+          0,
+          0
+        ],
+        "local_origin": [
+          0,
+          0,
+          0
+        ],
+        "size_metres": 16,
+        "spacing_metres": 2,
+        "field_id": "flat5-v1",
+        "source_revision": "field-v1",
+        "detail_level": 0,
+        "neighbor_keys": [
+          [
+            1,
+            0,
+            0
+          ]
+        ],
+        "policy": {
+          "name": "corpus.shared-plane.v1",
+          "version": 1
+        },
+        "job": {
+          "request_id": "chunk-0-r0",
+          "source_revision": "field-v1",
+          "generation_epoch": 7
+        }
+      },
+      {
+        "id": "chunk.1",
+        "region_key": [
+          1,
+          0,
+          0
+        ],
+        "local_origin": [
+          16,
+          0,
+          0
+        ],
+        "size_metres": 16,
+        "spacing_metres": 2,
+        "field_id": "flat5-v1",
+        "source_revision": "field-v1",
+        "detail_level": 0,
+        "neighbor_keys": [
+          [
+            0,
+            0,
+            0
+          ]
+        ],
+        "policy": {
+          "name": "corpus.shared-plane.v1",
+          "version": 1
+        },
+        "job": {
+          "request_id": "chunk-1-r0",
+          "source_revision": "field-v1",
+          "generation_epoch": 7
+        }
+      }
+    ],
+    "coarse_boundary": [
+      [
+        16,
+        5,
+        0
+      ],
+      [
+        16,
+        5,
+        2
+      ],
+      [
+        16,
+        5,
+        4
+      ],
+      [
+        16,
+        5,
+        6
+      ],
+      [
+        16,
+        5,
+        8
+      ],
+      [
+        16,
+        5,
+        10
+      ],
+      [
+        16,
+        5,
+        12
+      ],
+      [
+        16,
+        5,
+        14
+      ],
+      [
+        16,
+        5,
+        16
+      ]
+    ],
+    "fine_boundary": [
+      [
+        16,
+        5,
+        0
+      ],
+      [
+        16,
+        5,
+        1
+      ],
+      [
+        16,
+        5,
+        2
+      ],
+      [
+        16,
+        5,
+        3
+      ],
+      [
+        16,
+        5,
+        4
+      ],
+      [
+        16,
+        5,
+        5
+      ],
+      [
+        16,
+        5,
+        6
+      ],
+      [
+        16,
+        5,
+        7
+      ],
+      [
+        16,
+        5,
+        8
+      ],
+      [
+        16,
+        5,
+        9
+      ],
+      [
+        16,
+        5,
+        10
+      ],
+      [
+        16,
+        5,
+        11
+      ],
+      [
+        16,
+        5,
+        12
+      ],
+      [
+        16,
+        5,
+        13
+      ],
+      [
+        16,
+        5,
+        14
+      ],
+      [
+        16,
+        5,
+        15
+      ],
+      [
+        16,
+        5,
+        16
+      ]
+    ],
+    "transition": "fine odd samples are linear interpolation of neighboring coarse samples; both sides cover the same plane, no added skirt",
+    "exact_fields": [
+      "field identity",
+      "region keys",
+      "job envelope",
+      "neighbor keys",
+      "policy version",
+      "detail level"
+    ],
+    "unqualified": "Production noise/tunnel transitions and cross-target watertight topology require terrain implementation qualification.",
+    "refinement_request": {
+      "chunk_id": "chunk.0",
+      "region_key": [
+        0,
+        0,
+        0
+      ],
+      "detail_level": 1,
+      "spacing_metres": 1,
+      "field_id": "flat5-v1",
+      "policy": {
+        "name": "corpus.shared-plane.v1",
+        "version": 1
+      },
+      "job": {
+        "request_id": "chunk-0-r1",
+        "source_revision": "field-v1",
+        "generation_epoch": 8
+      }
+    }
+  },
+  "noise": {
+    "program": "noise2 1234 0.02 4 0.5 2.0\nconst 20\nmul r0 r1\nconst 0.5\nconst 0.5\nheight r2\nmoisture r3\nrelief r4\nseaLevel -100\nbiome 0.65 0.35\n",
+    "tile": [
+      3,
+      -2
+    ],
+    "rung": 2,
+    "same_build_expectation": "byte-identical positions on repeat; no cross-target byte identity promise"
+  }
+}
