@@ -107,6 +107,11 @@
 #endif
 #include "indirect_draw_runs.h"
 #include "vk_scene_renderer.h"
+#include "vk_sparse_admission.h"
+#include "vk_scene_publication.h"
+#include "../../../libs/MatterGraphics/src/native/mesh_raster.h"
+#include "../../../libs/MatterGraphics/src/native/image_transitions.h"
+#include "../../../libs/MatterGraphics/src/native/mesh_pipelines.h"
 #include "vk_blas_cache.h"
 #include "vt_export.h"
 #include "vt_encoded_filler.h"
@@ -149,8 +154,7 @@
 #include "matter/log.h"
 #include "matter/vulkan_device.h"
 #include "matter/vt_budgets.h"
-#include "matter/world_definition.h"
-#include "matter/world_session.h"
+#include "../../../libs/MatterGraphics/src/native/fog_settings.h"
 #include "shaders_gen/embedded_spirv.h"
 #include "bc_encode.h"
 #include "streamline_bridge.h"
@@ -495,18 +499,7 @@ void clear_color_image_for_use(VkCommandBuffer command_buffer,
                                     next_access, VK_IMAGE_ASPECT_COLOR_BIT);
 }
 
-VkPipelineStageFlags2 gbuffer_sampled_stages(
-    uint32_t attachment_index, bool native_ray_tracing_available) {
-    VkPipelineStageFlags2 stages = 0;
-    if (attachment_index < 4)
-        stages |= VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
-    if (attachment_index == 1 || attachment_index == 3 ||
-        attachment_index == 4 || attachment_index == 5)
-        stages |= VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-    if (native_ray_tracing_available && attachment_index < 3)
-        stages |= VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR;
-    return stages;
-}
+using raster_detail::gbuffer_sampled_stages;
 
 // One compute-cull dispatch, described by value so the same description can be
 // recorded inline into the frame command buffer (record_cull_dispatch_commands)
@@ -746,6 +739,10 @@ struct RasterRecord {
     SparseVoxelTemporal sparse_temporal{};
     const VkSparseVoxelScene* sparse_shadows=nullptr;
     float sparse_shadow_bias=.002f,sparse_shadow_distance=10000;
+    // Mirrored (det<0) instances' commands live at mirror_command_base +
+    // primary index and draw with the clockwise-front pipeline.
+    VkPipeline mirrored_raster_pipeline = VK_NULL_HANDLE;
+    uint32_t mirror_command_base = 0;
 };
 
 struct NeutralVolumeClearRecord {
@@ -791,7 +788,81 @@ void record_raster(VkCommandBuffer command_buffer, void* user_data) {
         if (record.ray_trace_ok) *record.ray_trace_ok = false;
         return;
     }
-#include "../../../libs/MatterGraphics/src/native/record_gbuffer.inl"
+    MeshRasterRecord mesh_record{};
+    RasterImage mesh_albedo{record.albedo->image, record.albedo->view, &record.albedo->layout, record.albedo->mip_levels, record.albedo->array_layers};
+    mesh_record.albedo = &mesh_albedo;
+    RasterImage mesh_normal{record.normal->image, record.normal->view, &record.normal->layout, record.normal->mip_levels, record.normal->array_layers};
+    mesh_record.normal = &mesh_normal;
+    RasterImage mesh_orm{record.orm->image, record.orm->view, &record.orm->layout, record.orm->mip_levels, record.orm->array_layers};
+    mesh_record.orm = &mesh_orm;
+    RasterImage mesh_velocity{record.velocity->image, record.velocity->view, &record.velocity->layout, record.velocity->mip_levels, record.velocity->array_layers};
+    mesh_record.velocity = &mesh_velocity;
+    RasterImage mesh_material_instance{record.material_instance->image, record.material_instance->view, &record.material_instance->layout, record.material_instance->mip_levels, record.material_instance->array_layers};
+    mesh_record.material_instance = &mesh_material_instance;
+    RasterImage mesh_reactivity{record.reactivity->image, record.reactivity->view, &record.reactivity->layout, record.reactivity->mip_levels, record.reactivity->array_layers};
+    mesh_record.reactivity = &mesh_reactivity;
+    RasterImage mesh_vt_feedback{record.vt_feedback->image, record.vt_feedback->view, &record.vt_feedback->layout, record.vt_feedback->mip_levels, record.vt_feedback->array_layers};
+    mesh_record.vt_feedback = &mesh_vt_feedback;
+    RasterImage mesh_depth{record.depth->image, record.depth->view, &record.depth->layout, record.depth->mip_levels, record.depth->array_layers};
+    mesh_record.depth = &mesh_depth;
+    RasterImage mesh_hdr{record.hdr->image, record.hdr->view, &record.hdr->layout, record.hdr->mip_levels, record.hdr->array_layers};
+    mesh_record.hdr = &mesh_hdr;
+    mesh_record.extent = record.extent;
+    mesh_record.raster_pipeline = record.raster_pipeline;
+    mesh_record.skinned_raster_pipeline = record.skinned_raster_pipeline;
+    mesh_record.mirrored_raster_pipeline = record.mirrored_raster_pipeline;
+    mesh_record.mirror_command_base = record.mirror_command_base;
+    mesh_record.raster_layout = record.raster_layout;
+    mesh_record.raster_debug_push = record.raster_debug_push;
+    mesh_record.vertex_buffer = record.vertex_buffer;
+    mesh_record.index_buffer = record.index_buffer;
+    mesh_record.indirect_buffer = record.indirect_buffer;
+    mesh_record.static_command_count = record.static_command_count;
+    mesh_record.index_count = record.index_count;
+    mesh_record.skin_vertex_buffers = record.skin_vertex_buffers;
+    mesh_record.skin_previous_vertex_buffers = record.skin_previous_vertex_buffers;
+    mesh_record.skin_vertex_counts = record.skin_vertex_counts;
+    mesh_record.skin_buffer_count = record.skin_buffer_count;
+    mesh_record.skin_draws = record.skin_draws;
+    mesh_record.skin_draw_count = record.skin_draw_count;
+    mesh_record.draw_transform_slots = record.draw_transform_slots;
+    mesh_record.skin_transform_base = record.skin_transform_base;
+    mesh_record.draw_ranges = record.draw_ranges;
+    mesh_record.draw_range_count = record.draw_range_count;
+    mesh_record.max_draw_indirect_count = record.max_draw_indirect_count;
+    mesh_record.recorded_draw_ranges = record.recorded_draw_ranges;
+    mesh_record.native_ray_tracing_available = record.native_ray_tracing_available;
+    mesh_record.ts_pool = record.ts_pool;
+    mesh_record.ts_written = record.ts_written;
+    mesh_record.gbuffer_zone = record.gbuffer_zone;
+    mesh_record.vt_zone = record.vt_zone;
+    mesh_record.vt_feedback_zone = record.vt_feedback_zone;
+    mesh_record.frame_slot = record.frame_slot;
+    mesh_record.water_vertices = record.water_vertices;
+    mesh_record.water_indices = record.water_indices;
+    mesh_record.water_vertex_bytes = record.water_vertex_bytes;
+    mesh_record.water_index_bytes = record.water_index_bytes;
+    mesh_record.water_upload_required = record.water_upload_required;
+    mesh_record.raster_stats_pool = record.raster_stats_pool;
+    mesh_record.raster_sets[0] = record.raster_sets[0];
+    mesh_record.raster_sets[1] = record.raster_sets[1];
+    if (record.vt_hooks) {
+        mesh_record.vt_pre = {record.vt_hooks, [](VkCommandBuffer cmd, void* owner) {
+            static_cast<VkSceneRenderer*>(owner)->vt_record_pre_pass(cmd);
+        }};
+        mesh_record.vt_post = {record.vt_hooks, [](VkCommandBuffer cmd, void* owner) {
+            static_cast<VkSceneRenderer*>(owner)->vt_record_post_pass(cmd);
+        }};
+    }
+    if (record.sparse_voxels && record.sparse_voxel_matrices)
+        mesh_record.sparse_draw = {&record, [](VkCommandBuffer cmd, void* owner) {
+            const auto& pass = *static_cast<RasterRecord*>(owner);
+            pass.sparse_voxels->record(cmd, *pass.sparse_voxel_matrices, pass.frame_slot);
+        }};
+    record_mesh_gbuffer(command_buffer, mesh_record);
+    const VkRect2D scissor{{0, 0}, record.extent};
+    const VkClearValue clear_color{{{0.0f, 0.0f, 0.0f, 0.0f}}};
+
 
     if (record.renderer) {
         PROFILE_SCOPE("raster.rt");
@@ -1130,13 +1201,8 @@ size_t frame_constants_size_for_test() noexcept {
     return sizeof(FrameConstants);
 }
 
-VkPipelineStageFlags2 ray_depth_destination_stages(
-    bool native_ray_tracing_available) noexcept {
-    VkPipelineStageFlags2 stages = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
-                                   VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
-    if (native_ray_tracing_available)
-        stages |= VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR;
-    return stages;
+VkPipelineStageFlags2 ray_depth_destination_stages(bool available) noexcept {
+    return raster_detail::ray_depth_destination_stages(available);
 }
 
 VkPipelineStageFlags2 gbuffer_sampled_stages_for_test(
@@ -1309,15 +1375,29 @@ bool VkSceneRenderer::set_shared_surface_forest(const std::vector<SparseSharedOb
         } else unchanged=false;
     }
     if(unchanged) return true;
+    if(!preflight_shared_forest(*vulkan_,surfaces,shadows,error)) return false;
+    // Copy owning catalog metadata before committing GPU snapshots. A failed
+    // allocation must not publish geometry with a stale catalog.
+    auto next_surfaces=surfaces;auto next_shadows=shadows;
     std::shared_ptr<VkSparseVoxelScene> primary,shadow;
     if(!surfaces.empty()) {
         primary=reuse?sparse_voxels_->with_shared_placements(*vulkan_,placements,error):VkSparseVoxelScene::create_shared_surfaces(*vulkan_,surfaces,error);
         if(!primary) return false;
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+        if(admission::test_failure==admission::Preparation::primary) {
+            error="injected failure after sparse primary preparation";return false;
+        }
+#endif
         shadow=reuse?sparse_shadows_->with_shared_placements(*vulkan_,placements,error):VkSparseVoxelScene::create_shared_shadow_casters(*vulkan_,shadows,error);
         if(!shadow) return false;
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+        if(admission::test_failure==admission::Preparation::shadow) {
+            error="injected failure after sparse shadow preparation";return false;
+        }
+#endif
     }
     sparse_voxels_=std::move(primary);sparse_shadows_=std::move(shadow);
-    shared_forest_catalog_=surfaces;shared_forest_shadow_catalog_=shadows;
+    shared_forest_catalog_.swap(next_surfaces);shared_forest_shadow_catalog_.swap(next_shadows);
     note_sparse_snapshot_changed();
     return true;
 }
@@ -1344,14 +1424,27 @@ bool VkSceneRenderer::set_shared_surface_forest_placements(
         }
     }
     if(!changed) return true;
+    auto next_surfaces=shared_forest_catalog_;auto next_shadows=shared_forest_shadow_catalog_;
+    for(size_t i=0;i<placements.size();++i) {
+        next_surfaces[i].instances=placements[i];next_shadows[i].instances=placements[i];
+    }
+    if(!preflight_shared_forest(*vulkan_,next_surfaces,next_shadows,error)) return false;
     auto primary=sparse_voxels_->with_shared_placements(*vulkan_,placements,error);
     if(!primary) return false;
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+    if(admission::test_failure==admission::Preparation::primary) {
+        error="injected failure after sparse primary preparation";return false;
+    }
+#endif
     auto shadows=sparse_shadows_->with_shared_placements(*vulkan_,placements,error);
     if(!shadows) return false;
-    sparse_voxels_=std::move(primary);sparse_shadows_=std::move(shadows);
-    for(size_t i=0;i<placements.size();++i) {
-        shared_forest_catalog_[i].instances=placements[i];shared_forest_shadow_catalog_[i].instances=placements[i];
+#ifdef MATTER_VK_TEST_FAULT_INJECTION
+    if(admission::test_failure==admission::Preparation::shadow) {
+        error="injected failure after sparse shadow preparation";return false;
     }
+#endif
+    sparse_voxels_=std::move(primary);sparse_shadows_=std::move(shadows);
+    shared_forest_catalog_.swap(next_surfaces);shared_forest_shadow_catalog_.swap(next_shadows);
     note_sparse_snapshot_changed();
     return true;
 }
@@ -1762,6 +1855,7 @@ VkSceneRenderer::~VkSceneRenderer() {
 // poisoned branch of reset()) wait_idle first. Calling it while a frame is in
 // flight would destroy objects a submitted command buffer still references.
 void VkSceneRenderer::destroy_pipeline() {
+    frame_image_layouts_.clear();
     if (!vulkan_) return;
     gpu_visual_mesher_.reset();
     gpu_solid_face_projector_.reset();
@@ -1797,7 +1891,14 @@ void VkSceneRenderer::destroy_pipeline() {
         destroy_water_animation_generation(retired.resources);
     retired_water_animation_resources_.clear();
     water_animation_schedule_ = WaterAnimationGpuSchedule{};
-    rt_sbt_.reset();
+    for (auto* trace : {&rt_shadow_pipeline_, &rt_surface_test_pipeline_,
+                        &rt_lighting_pipeline_, &rt_primary_pipeline_,
+                        &rt_diffuse_pipeline_, &rt_reflection_pipeline_}) {
+        trace->sbt.reset();
+        if (trace->pipeline != VK_NULL_HANDLE)
+            vkDestroyPipeline(device, trace->pipeline, nullptr);
+        *trace = RtTracePipeline{};
+    }
     // Identity-buffer visibility (M4): the per-slot pipelines name the identity
     // attachment and this slot's buffer, both of which are going away.
     for (FrameResources& frame : frames_) frame.visibility_id_reduce.reset();
@@ -1852,8 +1953,6 @@ void VkSceneRenderer::destroy_pipeline() {
         vkDestroyPipelineLayout(device, gi_atrous_pipeline_layout_, nullptr);
     if (gi_atrous_set_layout_ != VK_NULL_HANDLE)
         vkDestroyDescriptorSetLayout(device, gi_atrous_set_layout_, nullptr);
-    if (rt_pipeline_ != VK_NULL_HANDLE)
-        vkDestroyPipeline(device, rt_pipeline_, nullptr);
     if (rt_pipeline_layout_ != VK_NULL_HANDLE)
         vkDestroyPipelineLayout(device, rt_pipeline_layout_, nullptr);
     if (rt_descriptor_pool_ != VK_NULL_HANDLE)
@@ -1952,6 +2051,8 @@ void VkSceneRenderer::destroy_pipeline() {
         vkDestroyDescriptorSetLayout(device, environment_set_layout_, nullptr);
     if (raster_pipeline_ != VK_NULL_HANDLE)
         vkDestroyPipeline(device, raster_pipeline_, nullptr);
+    if (mirrored_raster_pipeline_ != VK_NULL_HANDLE)
+        vkDestroyPipeline(device, mirrored_raster_pipeline_, nullptr);
     if (skinned_raster_pipeline_ != VK_NULL_HANDLE)
         vkDestroyPipeline(device, skinned_raster_pipeline_, nullptr);
     if (water_animation_raster_pipeline_ != VK_NULL_HANDLE)
@@ -1987,6 +2088,7 @@ void VkSceneRenderer::destroy_pipeline() {
     geometry_pipeline_ = geometry_vis_pipeline_ = VK_NULL_HANDLE;
     geometry_select_pipeline_ = VK_NULL_HANDLE;
     raster_pipeline_ = VK_NULL_HANDLE;
+    mirrored_raster_pipeline_ = VK_NULL_HANDLE;
     skinned_raster_pipeline_ = VK_NULL_HANDLE;
     water_animation_raster_pipeline_ = VK_NULL_HANDLE;
     water_forward_static_pipeline_ = VK_NULL_HANDLE;
@@ -2018,29 +2120,17 @@ void VkSceneRenderer::destroy_pipeline() {
     gi_atrous_pipeline_ = VK_NULL_HANDLE;
     gi_atrous_pipeline_layout_ = VK_NULL_HANDLE;
     gi_atrous_set_layout_ = VK_NULL_HANDLE;
-    rt_pipeline_ = VK_NULL_HANDLE;
     rt_pipeline_layout_ = VK_NULL_HANDLE;
     rt_descriptor_pool_ = VK_NULL_HANDLE;
     rt_set_layout_ = VK_NULL_HANDLE;
     rt_adaptive_set_layout_ = VK_NULL_HANDLE;
     rt_descriptor_sets_.clear();
     rt_adaptive_descriptor_sets_.clear();
-    rt_sbt_address_ = 0;
-    rt_sbt_test_raygen_address_ = 0;
-    rt_sbt_lighting_raygen_address_ = 0;
-    rt_sbt_primary_raygen_address_ = 0;
-    rt_sbt_diffuse_raygen_address_ = 0;
-    rt_sbt_reflection_raygen_address_ = 0;
     rt_specialize_gi_ = true;
     rt_primary_adaptive_ = false;
     rt_separate_primary_ = false;
     rt_adaptive_diagnostics_ = false;
     rt_adaptive_diagnostic_frames_ = 0;
-    rt_sbt_miss_address_ = 0;
-    rt_sbt_hit_address_ = 0;
-    rt_sbt_stride_ = 0;
-    rt_sbt_miss_size_ = 0;
-    rt_sbt_hit_size_ = 0;
     pipeline_layout_ = VK_NULL_HANDLE;
     descriptor_pool_ = VK_NULL_HANDLE;
     for (auto& f : frames_) {
@@ -2408,7 +2498,34 @@ bool VkSceneRenderer::create_pipeline(std::string& error) {
 // CULL_MODE_NONE rasterization struct because it draws a fullscreen triangle.
 bool VkSceneRenderer::create_raster_pipelines(std::string& error) {
     const VkDevice device = vulkan_->device();
-#include "../../../libs/MatterGraphics/src/native/create_raster_pipelines.inl"
+    MeshRasterPipelines mesh_pipelines{};
+    const bool mesh_ok = create_mesh_raster_pipelines(device, pipeline_layout_, vulkan_->wireframe_available(),
+        create_shader_module,
+        [&](const VkGraphicsPipelineCreateInfo& info, VkPipeline* pipeline) {
+            return profile_pipeline_call("graphics", __func__, __LINE__, 1, &info, [&] {
+                return vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &info, nullptr, pipeline);
+            });
+        }, mesh_pipelines, error);
+    raster_pipeline_ = mesh_pipelines.raster;
+    mirrored_raster_pipeline_ = mesh_pipelines.raster_mirrored;
+    skinned_raster_pipeline_ = mesh_pipelines.skin;
+    water_animation_raster_pipeline_ = mesh_pipelines.water;
+    visibility_id_pipeline_ = mesh_pipelines.visibility;
+    wireframe_raster_pipeline_ = mesh_pipelines.wireframe;
+    wireframe_skinned_raster_pipeline_ = mesh_pipelines.wireframe_skin;
+    if (!mesh_ok) return false;
+    VkResult result = VK_SUCCESS;
+    VkPipelineInputAssemblyStateCreateInfo input_assembly{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
+    input_assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    VkPipelineViewportStateCreateInfo viewport_state{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
+    viewport_state.viewportCount = viewport_state.scissorCount = 1;
+    VkPipelineMultisampleStateCreateInfo multisample{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
+    multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+    const VkDynamicState dynamic_values[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
+    VkPipelineDynamicStateCreateInfo dynamic{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
+    dynamic.dynamicStateCount = 2;
+    dynamic.pDynamicStates = dynamic_values;
+
 
     std::array<VkDescriptorSetLayoutBinding, 12> sampled_bindings{};
     for (uint32_t i = 0; i < 7; ++i) {
@@ -3159,11 +3276,21 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
         return fail_vk("vkCreateDescriptorPool(water forward)", result,
                        error);
     }
+    std::vector<FrameResources> next_frames(frame_slot_count);
     const auto destroy_candidate_pools = [&] {
+        // A later slot can fail after earlier candidates allocated query
+        // pools. These raw handles are not owned by the buffer RAII members.
+        for (auto& candidate : next_frames) {
+            if (candidate.ts_pool != VK_NULL_HANDLE)
+                vkDestroyQueryPool(vulkan_->device(), candidate.ts_pool, nullptr);
+            if (candidate.raster_stats_pool != VK_NULL_HANDLE)
+                vkDestroyQueryPool(vulkan_->device(), candidate.raster_stats_pool, nullptr);
+            candidate.ts_pool = VK_NULL_HANDLE;
+            candidate.raster_stats_pool = VK_NULL_HANDLE;
+        }
         vkDestroyDescriptorPool(vulkan_->device(), next_water_pool, nullptr);
         vkDestroyDescriptorPool(vulkan_->device(), next_pool, nullptr);
     };
-    std::vector<FrameResources> next_frames(frame_slot_count);
     std::vector<VkDescriptorSetLayout> layouts;
     layouts.reserve(frame_slot_count * 21);
     for (size_t index = 0; index < frame_slot_count; ++index) {
@@ -3370,6 +3497,23 @@ bool VkSceneRenderer::ensure_frame_resources(uint32_t frame_slot_count,
         // before the initial neutral write; VkBufferResource lifetime owns the
         // matching unmap/reset if a later frame-slot allocation fails.
         if (!matter::map_buffer(frame.environment_constants, error)) {
+            destroy_candidate_pools();
+            return false;
+        }
+        // The RT counter is otherwise first written by emit_ray_instances,
+        // which a slot that never traces never reaches. Zero the WHOLE
+        // allocation (ensure_buffer may round it up) and flush it so the
+        // device-visible bytes are defined even on noncoherent memory. The
+        // fresh slot carries no sample, so the reporter would not read it
+        // anyway; this keeps the test-only direct readbacks defined too.
+        if (!matter::map_buffer(frame.rt_error_counter, error)) {
+            destroy_candidate_pools();
+            return false;
+        }
+        std::memset(frame.rt_error_counter.mapped, 0,
+                    static_cast<size_t>(frame.rt_error_counter.size));
+        if (!matter::flush_buffer(frame.rt_error_counter, 0,
+                                  frame.rt_error_counter.size, error)) {
             destroy_candidate_pools();
             return false;
         }
@@ -9419,6 +9563,8 @@ bool VkSceneRenderer::update_instances(
         instance.water_binding_slot = part.water_binding_slot;
         instance.water_generation = part.water_generation;
         instance.water_pad0 = source.rt_proxy_only ? 1u : 0u;
+        instance.mirrored =
+            gpu_mat4_reverses_winding(instance.object_to_world) ? 1u : 0u;
         const TemporalInstanceFrame* temporal =
             temporal_lookup(stable_id, source_index);
         if (!temporal_frame_.reset && temporal != nullptr &&
@@ -9475,7 +9621,17 @@ bool VkSceneRenderer::update_instances(
         return true;
     }
 
-    const bool layout_changed = !slots_equal;
+    // A mirror flip moves the instance between its bucket's primary and
+    // mirrored regions, so it re-derives the layout like a slot change.
+    bool mirrors_changed = false;
+    if (slots_equal) {
+        const size_t common =
+            std::min(candidate_instances.size(), instance_staging_.size());
+        for (size_t i = 0; i < common && !mirrors_changed; ++i)
+            mirrors_changed =
+                candidate_instances[i].mirrored != instance_staging_[i].mirrored;
+    }
+    const bool layout_changed = !slots_equal || mirrors_changed;
     if (!layout_changed) {
         // Swap, not move: the retired staging keeps its capacity inside the
         // scratch vectors for the next rebuild.
@@ -9496,6 +9652,8 @@ bool VkSceneRenderer::update_instances(
     auto old_commands = std::move(command_template_);
     auto old_raster_enabled = std::move(raster_command_enabled_);
     auto old_part_counts = std::move(part_instance_counts_);
+    auto old_part_mirrored = std::move(part_mirrored_counts_);
+    auto old_mirror_commands = std::move(mirror_command_template_);
     auto old_part_ranges = std::move(part_command_ranges_);
     const uint32_t old_raster_count = raster_draw_command_count_;
     const uint32_t old_max_clusters = max_clusters_per_instance_;
@@ -9512,6 +9670,8 @@ bool VkSceneRenderer::update_instances(
         command_template_ = std::move(old_commands);
         raster_command_enabled_ = std::move(old_raster_enabled);
         part_instance_counts_ = std::move(old_part_counts);
+        part_mirrored_counts_ = std::move(old_part_mirrored);
+        mirror_command_template_ = std::move(old_mirror_commands);
         part_command_ranges_ = std::move(old_part_ranges);
         raster_draw_command_count_ = old_raster_count;
         max_clusters_per_instance_ = old_max_clusters;
@@ -9706,6 +9866,17 @@ bool VkSceneRenderer::rebuild_command_template(std::string& error) {
                 water_animation_proxy_instance_indices_.size()),
             draw_transform_slots_, "water animation transform tail", error))
         return false;
+    // instance_staging_ may carry last frame's dynamic tail; its static
+    // prefix is index-aligned with instance_part_slots_.
+    std::vector<uint32_t> mirrored(parts_.size(), 0);
+    const size_t static_count =
+        std::min(instance_part_slots_.size(), instance_staging_.size());
+    for (size_t i = 0; i < static_count; ++i) {
+        if (instance_staging_[i].mirrored != 0u)
+            ++mirrored[instance_part_slots_[i]];
+    }
+    rebuild_mirror_command_template(per_part, mirrored);
+    part_mirrored_counts_ = std::move(mirrored);
     part_instance_counts_ = std::move(per_part);
     part_command_ranges_ = std::move(next_part_ranges);
     // Any successful rebuild covers every deferred registration.
@@ -9719,6 +9890,41 @@ bool VkSceneRenderer::flush_command_template(std::string& error) {
     if (!rebuild_command_template(error)) return false;
     note_command_layout_rebuild();
     return true;
+}
+
+// Splits each bucket's transform region for front-face winding. The legacy
+// raster pipeline culls back faces with counter-clockwise front, and an
+// instance whose transform has a negative determinant arrives clockwise, so
+// cull.comp routes it to bucket b's mirrored command (index
+// command_template_.size() + b in the `commands` buffer), which owns the LAST
+// mirrored[part] slots of b's region and is drawn with the clockwise-front
+// pipeline. The primary region shrinks by the same amount, so the transform
+// buffer and every other bucket keep their offsets. `totals` and `mirrored`
+// are the per-part counts the regions were sized from (mirrored <= totals).
+void VkSceneRenderer::rebuild_mirror_command_template(
+    const std::vector<uint32_t>& totals, const std::vector<uint32_t>& mirrored) {
+    mirror_command_template_.clear();
+    if (std::all_of(mirrored.begin(), mirrored.end(),
+                    [](uint32_t count) { return count == 0u; }))
+        return;
+    mirror_command_template_.resize(command_template_.size());
+    const size_t clusters =
+        std::min(cluster_staging_.size(), command_template_.size() / kVkMaxLod);
+    for (size_t cluster_index = 0; cluster_index < clusters; ++cluster_index) {
+        const GpuCluster& cluster = cluster_staging_[cluster_index];
+        const uint32_t slot = cluster.part_slot;
+        const uint32_t primary = slot < totals.size() && slot < mirrored.size()
+                                     ? totals[slot] - mirrored[slot]
+                                     : 0u;
+        for (uint32_t lod = 0; lod < kVkMaxLod; ++lod) {
+            const size_t bucket = cluster_index * kVkMaxLod + lod;
+            DrawCommand mirror = command_template_[bucket];
+            mirror.instance_count = 0;
+            // A padding rung owns an empty region; its mirror stays empty.
+            if (lod < cluster.lod_count) mirror.first_instance += primary;
+            mirror_command_template_[bucket] = mirror;
+        }
+    }
 }
 
 // Task 7 (dynamic lane): rebuild_command_template() sizes the per-bucket
@@ -9747,7 +9953,11 @@ bool VkSceneRenderer::apply_dynamic_command_layout(std::string& error) {
         return false;
     }
     std::vector<uint32_t> merged_counts = part_instance_counts_;
-    for (uint32_t part_slot : dynamic_instance_part_slots_) {
+    std::vector<uint32_t> merged_mirrored = part_mirrored_counts_;
+    merged_mirrored.resize(merged_counts.size(), 0u);
+    for (size_t dynamic_slot = 0;
+         dynamic_slot < dynamic_instance_part_slots_.size(); ++dynamic_slot) {
+        const uint32_t part_slot = dynamic_instance_part_slots_[dynamic_slot];
         if (part_slot == UINT32_MAX) continue;
         if (part_slot >= merged_counts.size()) {
             error = "dynamic instance part bucket is outside the active part table";
@@ -9758,6 +9968,9 @@ bool VkSceneRenderer::apply_dynamic_command_layout(std::string& error) {
                              "dynamic instance part bucket", error)) {
             return false;
         }
+        if (dynamic_slot < dynamic_instance_staging_.size() &&
+            dynamic_instance_staging_[dynamic_slot].mirrored != 0u)
+            ++merged_mirrored[part_slot];
     }
     uint32_t first_instance = 0;
     for (size_t cluster_index = 0; cluster_index < cluster_staging_.size();
@@ -9826,6 +10039,7 @@ bool VkSceneRenderer::apply_dynamic_command_layout(std::string& error) {
              part.raster_water_surface});
     }
     part_command_ranges_ = std::move(next_part_ranges);
+    rebuild_mirror_command_template(merged_counts, merged_mirrored);
     ++command_generation_;
     return true;
 }
@@ -9889,6 +10103,8 @@ bool VkSceneRenderer::upload_scene_buffers(
     VkDeviceSize cluster_bytes = 0;
     VkDeviceSize instance_bytes = 0;
     VkDeviceSize command_bytes = 0;
+    // command_bytes plus the mirrored table, which only `commands` carries.
+    VkDeviceSize command_table_bytes = 0;
     VkDeviceSize transform_bytes = 0;
     VkDeviceSize vertex_bytes = 0;
     VkDeviceSize index_bytes = 0;
@@ -9902,6 +10118,10 @@ bool VkSceneRenderer::upload_scene_buffers(
         !vk_scene_detail::checked_mul_to_device_size(
             command_template_.size(), sizeof(DrawCommand), command_bytes,
             "draw-command buffer", error) ||
+        !vk_scene_detail::checked_mul_to_device_size(
+            command_template_.size() + mirror_command_template_.size(),
+            sizeof(DrawCommand), command_table_bytes, "draw-command buffer",
+            error) ||
         !vk_scene_detail::checked_mul_to_device_size(
             draw_transform_slots_, sizeof(GpuDrawTransform), transform_bytes,
             "draw-transform buffer", error) ||
@@ -9931,7 +10151,7 @@ bool VkSceneRenderer::upload_scene_buffers(
     };
     if (!storage_size_ok(cluster_bytes, "cluster buffer") ||
         !storage_size_ok(instance_bytes, "instance buffer") ||
-        !storage_size_ok(command_bytes, "draw-command buffer") ||
+        !storage_size_ok(command_table_bytes, "draw-command buffer") ||
         !storage_size_ok(transform_bytes, "draw-transform buffer") ||
         !storage_size_ok(material_bytes, "material buffer")) {
         return false;
@@ -10573,7 +10793,7 @@ bool VkSceneRenderer::upload_scene_buffers(
                        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, error, &replaced, true))
         return poison(error);
     descriptors_changed |= replaced;
-    if (!ensure_buffer(frame.commands, command_bytes,
+    if (!ensure_buffer(frame.commands, command_table_bytes,
                        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                            VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
                        error, &replaced, true))
@@ -10834,15 +11054,27 @@ bool VkSceneRenderer::upload_scene_buffers(
         frame.command_generation = command_generation_;
     // Unconditional by design: cull.comp writes instance_count into these
     // records on the GPU, so the CPU template has to be restored every frame.
-    if (!upload_gpu(frame.commands, frame.command_upload,
-                    command_template_.data(), command_bytes))
+    // The mirrored table rides in the same copy: upload_gpu stages from
+    // offset 0, so the primary bytes the vis_commands copy below reuses stay
+    // at the front of the staging buffer.
+    const DrawCommand* command_source = command_template_.data();
+    if (!mirror_command_template_.empty()) {
+        command_upload_scratch_.assign(command_template_.begin(),
+                                       command_template_.end());
+        command_upload_scratch_.insert(command_upload_scratch_.end(),
+                                       mirror_command_template_.begin(),
+                                       mirror_command_template_.end());
+        command_source = command_upload_scratch_.data();
+    }
+    if (!upload_gpu(frame.commands, frame.command_upload, command_source,
+                    command_table_bytes))
         return false;
     // The ID pass's list gets the same restore for the same reason: cull.comp
     // writes instance_count into it too.
     // Both destinations copy identical bytes from this frame's same staging.
     // Reuse the first CPU fill; the frame fence retains it for both GPU reads.
     if (!upload_gpu(frame.vis_commands, frame.command_upload,
-                    command_template_.data(), command_bytes, 0, false))
+                    command_source, command_bytes, 0, false))
         return false;
     if (command_bytes != 0) ++upload_counters_.command_uploads;
     if (reset_stats) {
@@ -10851,6 +11083,7 @@ bool VkSceneRenderer::upload_scene_buffers(
         frame.stats_valid = false;
     }
     uploaded_command_count_ = static_cast<uint32_t>(command_template_.size());
+    uploaded_mirror_commands_ = !mirror_command_template_.empty();
     uploaded_transform_slots_ = draw_transform_slots_;
     // Copy-assign reallocates exactly; pre-grow so a fill does not rebuild this
     // mirror's block every frame.
@@ -10968,7 +11201,9 @@ bool VkSceneRenderer::upload_frame_constants(FrameResources& frame,
     constants.vis_params[0] =
         (visibility_draw_cull_ && visibility_reduce_) ? 1u : 0u;
     constants.vis_params[1] = visibility_reduce_ ? 1u : 0u;
-    constants.vis_params[2] = 0;
+    // Set by upload_scene_buffers, which runs first on every path that
+    // uploads these constants.
+    constants.vis_params[2] = uploaded_mirror_commands_ ? 1u : 0u;
     constants.vis_params[3] = 0;
     // Process-level reference switch for matched DLSS quality measurements.
     // No bias is applied to geometry LOD, culling, or the displacement range.
@@ -11427,6 +11662,18 @@ bool VkSceneRenderer::validate_draw_command_regions(std::string& error) const {
         }
         previous_first = first;
     }
+    // Each mirrored region must sit inside its bucket's region.
+    for (size_t i = 0; i < mirror_command_template_.size(); ++i) {
+        const uint32_t first = mirror_command_template_[i].first_instance;
+        const uint32_t end = i + 1 < command_template_.size()
+                                 ? command_template_[i + 1].first_instance
+                                 : skin_transform_base_;
+        if (i >= command_template_.size() ||
+            first < command_template_[i].first_instance || first > end) {
+            error = "mirrored draw command regions must lie inside their buckets";
+            return false;
+        }
+    }
     return true;
 }
 
@@ -11551,6 +11798,27 @@ bool VkSceneRenderer::record_cull_and_render(
     if (!upload_water_forward_constants(selected, matrices, raster_extent_,
                                         error))
         return false;
+    // Targets have now been allocated (including any synchronous initial
+    // transitions). Snapshot before frame commands change their layouts.
+    // finish_ray_tracing_frame rolls back only an unsubmitted recording.
+    if (frame_image_layouts_.begin(frame.serial)) {
+        for (auto* image : {&albedo_, &normal_, &orm_, &velocity_,
+                &material_instance_, &reactivity_, &vt_feedback_, &depth_,
+                &hdr_, &opaque_hdr_, &opaque_depth_, &visibility_,
+                &raw_diffuse_, &raw_specular_, &raw_specular_aux_,
+                &raw_transmission_, &raw_transmission_aux_, &raw_local_direct_,
+                &local_direct_filtered_, &visibility_id_color_, &visibility_id_depth_})
+            frame_image_layouts_.capture(*image);
+        for (auto* histories : {&gi_history_, &gi_spec_history_,
+                                &gi_trans_history_, &local_direct_history_})
+            for (auto& history : *histories)
+                for (auto* image : {&history.radiance, &history.moments,
+                        &history.history_length, &history.depth, &history.normal,
+                        &history.identity, &history.rejection, &history.aux})
+                    frame_image_layouts_.capture(*image);
+        for (auto* images : {&gi_atrous_, &gi_spec_atrous_, &gi_trans_atrous_})
+            for (auto& image : *images) frame_image_layouts_.capture(image);
+    }
     // Resize froxels while this frame slot is known complete and before the
     // composite descriptor below is written. The same frame then binds the
     // candidate integrated view rather than one frame of the retired bundle.
@@ -11928,6 +12196,11 @@ bool VkSceneRenderer::record_cull_and_render(
                         kGpuZoneVt,         // WP-E: vt_zone
                         kGpuZoneVtFeedbackReadback};
     record.raster_stats_pool = selected.raster_stats_pool;
+    if (uploaded_mirror_commands_ &&
+        raster_pipelines.static_mesh == raster_pipeline_) {
+        record.mirrored_raster_pipeline = mirrored_raster_pipeline_;
+        record.mirror_command_base = uploaded_command_count_;
+    }
     selected.raster_stats_written = selected.raster_stats_pool != VK_NULL_HANDLE;
     record.sparse_voxels = sparse_voxels_.get();
     record.sparse_voxel_matrices = &matrices;
@@ -12627,6 +12900,11 @@ bool VkSceneRenderer::render_gbuffer_and_composite(uint32_t width,
         {wireframe_raster_pipeline_, wireframe_skinned_raster_pipeline_});
     record.raster_pipeline = raster_pipelines.static_mesh;
     record.skinned_raster_pipeline = raster_pipelines.skinned_mesh;
+    if (uploaded_mirror_commands_ &&
+        raster_pipelines.static_mesh == raster_pipeline_) {
+        record.mirrored_raster_pipeline = mirrored_raster_pipeline_;
+        record.mirror_command_base = uploaded_command_count_;
+    }
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
     test_last_raster_pipeline_draw_ = {
         raster_pipelines.wireframe_enabled,
@@ -13971,6 +14249,7 @@ int VkSceneRenderer::fill_rt_instances(
 // reading. Does NOT destroy the tileset slots, the impostor atlas or the VT
 // runtime -- those are torn down by destroy_pipeline().
 void VkSceneRenderer::reset() {
+    frame_image_layouts_.abandon();
     const bool full_reset = poisoned();
     // ALWAYS idle, not just on the poisoned path.
     //
@@ -14068,7 +14347,9 @@ void VkSceneRenderer::reset() {
     part_cluster_snapshot_.clear();
     static_instance_count_ = 0;
     part_instance_counts_.clear();
+    part_mirrored_counts_.clear();
     command_template_.clear();
+    mirror_command_template_.clear();
     part_command_ranges_.clear();
     recorded_draw_ranges_.clear();
 #ifdef MATTER_VK_TEST_FAULT_INJECTION
@@ -14090,6 +14371,7 @@ void VkSceneRenderer::reset() {
     max_clusters_per_instance_ = 0;
     draw_transform_slots_ = 0;
     uploaded_command_count_ = 0;
+    uploaded_mirror_commands_ = false;
     uploaded_transform_slots_ = 0;
     uploaded_cluster_count_ = 0;
     uploaded_vertex_count_ = 0;
@@ -14108,6 +14390,10 @@ void VkSceneRenderer::reset() {
         frame.rt_tlas_instances.clear();
         frame.rt_tlas_valid = false;
         frame.rt_tlas_pending_serial = 0;
+        // Retire, without consuming, any counter sample traced against the
+        // world being discarded. The renderer-lifetime totals are kept.
+        frame.rt_counter_candidate_serial = 0;
+        frame.rt_counter_sample_serial = 0;
     }
     for (FrameResources& frame : frames_) {
         frame.stats_valid = false;
@@ -14185,6 +14471,8 @@ bool VkSceneRenderer::update_dynamic_instances(
                 instance.animation_instance_generation = change.slot_generation;
                 instance.water_binding_slot = part.water_binding_slot;
                 instance.water_generation = part.water_generation;
+                instance.mirrored =
+                    gpu_mat4_reverses_winding(instance.object_to_world) ? 1u : 0u;
                 dynamic_instance_staging_[change.slot_index] = instance;
                 dynamic_instance_part_slots_[change.slot_index] = instance.part_slot;
                 dynamic_instance_ray_traced_[change.slot_index] =
@@ -14205,6 +14493,8 @@ bool VkSceneRenderer::update_dynamic_instances(
                 }
                 instance.previous_object_to_world = pack_glsl_mat4(change.previous_object_to_world);
                 instance.object_to_world = pack_glsl_mat4(change.object_to_world);
+                instance.mirrored =
+                    gpu_mat4_reverses_winding(instance.object_to_world) ? 1u : 0u;
                 instance.history_valid = 1;
                 dynamic_instance_ray_traced_[change.slot_index] =
                     change.ray_traced ? 1u : 0u;
@@ -14234,5 +14524,7 @@ void VkSceneRenderer::finish_dynamic_frame(uint64_t completed_serial) {
     dynamic_completed_serial_ =
         std::max(dynamic_completed_serial_, completed_serial);
 }
+
+#include "vk_scene_publication.inl"
 
 }  // namespace viewer
