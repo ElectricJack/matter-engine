@@ -44,8 +44,9 @@
 //    byte-identical to the path without it. That is deliberate -- it is what
 //    lets new features ship without invalidating existing bakes -- so preserve
 //    it when extending these signatures.
-//  - Shading normals from `ComputeSurfaceNormals` are the analytic field
-//    gradient, which depends only on world position and is therefore
+//  - Shading normals are the analytic legacy sphere gradient, or the exact
+//    staged evaluator's finite-difference gradient for ordered/fat fields.
+//    They depend on field position and derivative spacing and are therefore
 //    continuous across independently meshed cells. Any pass that moves
 //    vertices or recomputes normals from face geometry (e.g. mesh
 //    simplification) must be followed by re-running it, or shading seams
@@ -126,6 +127,18 @@ SpatialHash* SurfaceScratchHash(SurfaceScratch* scratch);
 // sample. The caller must keep `fat`/`stages` arrays alive for the call.
 Mesh GenerateMeshStaged(SurfaceScratch* scratch, Particle* particles, float particleRadius,
                         int particleCount, Bounds volume, float blendWidth,
+                        const FieldStages* stages, const FatPrim* fat, int fatCount,
+                        Particle* clipParticles, int clipCount,
+                        Particle* carveParticles, int carveCount, float carveBlend);
+
+// Recompute normals after moving/simplifying an ordered-field mesh, including
+// pure fat primitives with no spheres. sampleSpacing is the extraction lattice
+// spacing in world units; derivatives use 0.001 of it (minimum 1e-6). Samples
+// use the exact staged evaluator, with full trailing carve/clip scans. At an
+// undefined/zero gradient, normalize the incoming geometric normal, then +Z.
+// The legacy sphere-only case delegates unchanged to the analytic normal API.
+void ComputeSurfaceNormalsStaged(SurfaceScratch* scratch, Mesh* mesh, Particle* particles,
+                        float particleRadius, int particleCount, float blendWidth, float sampleSpacing,
                         const FieldStages* stages, const FatPrim* fat, int fatCount,
                         Particle* clipParticles, int clipCount,
                         Particle* carveParticles, int carveCount, float carveBlend);

@@ -1,6 +1,6 @@
 # StreamMountain refactoring plan — 2026-08-09
 
-Scope: the StreamMountain scene tier (`projects/world_demo/scenes/StreamMountain/*`,
+Scope: the StreamMountain scene tier (`projects/world_demo/scenes/streaming/StreamMountain/*`,
 `projects/world_demo/shared-lib/alpine_ecology.js`, and the JS↔native boundary it
 crosses). Goals, in priority order: (1) less code, (2) push compute native without
 game-specific logic entering the engine, (3) readability. Output does not need to be
@@ -83,7 +83,7 @@ Call-level detail that shapes the plan:
 Duplication multiplier: `WorldSector.js` exists as **seven byte-identical
 scene copies** (StreamMountain, StreamMeadow, ChartVtProof, MetalProof, PomProof,
 PomProofBrick, TilesetGallery — md5 `d6d891ff…` for all seven) plus the 430-line
-template at `projects/world_demo/objects/WorldSector.js` that nothing resolves
+template at `projects/world_demo/objects/templates/WorldSector.js` that nothing resolves
 to. That is ~3,360 lines carrying 419 lines of information. Only the
 StreamMountain copy is in scope here, but see finding F3.
 
@@ -285,7 +285,7 @@ rebake — batch the WPs into few commits to pay that cost few times.
 - **Speedup:** negligible. **Drift:** none for the mandatory part.
 
 ### WP5 — (optional, decide with the user) template and sibling-copy cleanup
-- Delete `projects/world_demo/objects/WorldSector.js` (−430; nothing resolves
+- Delete `projects/world_demo/objects/templates/WorldSector.js` (−430; nothing resolves
   to it — new scenes can copy from a real scene) **or** re-point the five
   non-diverged proof scenes at the project tier and keep exactly one shared
   copy plus StreamMountain's and StreamMeadow's diverged ones. Either direction

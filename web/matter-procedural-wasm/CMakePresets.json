@@ -1,0 +1,12 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {"major": 3, "minor": 25, "patch": 0},
+  "configurePresets": [{
+    "name": "linux-wasm-release",
+    "generator": "Ninja",
+    "binaryDir": "${sourceDir}/build",
+    "toolchainFile": "$env{EMSDK}/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake",
+    "cacheVariables": {"CMAKE_BUILD_TYPE": "Release"}
+  }],
+  "buildPresets": [{"name": "linux-wasm-release", "configurePreset": "linux-wasm-release", "targets": ["matter_geometry_wasm"], "jobs": 2}]
+}

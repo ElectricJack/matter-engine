@@ -1,0 +1,9 @@
+wait_event bake.finished 60
+render_path raster
+set render.gi.enabled false
+set render.pom.enabled false
+set render.cloud_shadows.enabled false
+wait_idle 3 10
+shot_now C:/tmp/matter-blas-mountain/terrain-controller-v7/terrain.png
+shot_now C:/tmp/matter-blas-mountain/terrain-controller-v7/terrain-final.png
+quit

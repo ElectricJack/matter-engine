@@ -21,7 +21,7 @@
 // (dsl_bindings.h) counters that WorldSector.js and alpine_ecology.js open
 // around their own phases.
 //
-// It drives the REAL sources -- ../../projects/world_demo/objects/WorldSector.js
+// It drives the REAL sources -- ../../projects/world_demo/objects/templates/WorldSector.js
 // and the real StreamMountain habitat tape, compiled from the real world
 // definition through the same eval_world -> SurfaceProgram::parse path
 // install_world uses. A harness that stubs the ecology would just be a third
@@ -134,9 +134,9 @@ int main(int argc, char** argv) {
 #endif
 
     const std::string world_src =
-        slurp("../../projects/world_demo/scenes/StreamMountain/StreamMountain.js");
+        slurp("../../projects/world_demo/scenes/streaming/StreamMountain/StreamMountain.js");
     const std::string sector_src =
-        slurp("../../projects/world_demo/scenes/StreamMountain/objects/WorldSector.js");
+        slurp("../../projects/world_demo/scenes/streaming/StreamMountain/objects/WorldSector.js");
     if (world_src.empty() || sector_src.empty()) {
         std::fprintf(stderr,
                      "cannot read StreamMountain.js / WorldSector.js "
@@ -161,7 +161,7 @@ int main(int argc, char** argv) {
     // interpreted JS fallback while claiming to measure the tape.
     {
         matter::WorldLoadDesc desc;
-        desc.world_path = "../../projects/world_demo/scenes/StreamMountain/StreamMountain.js";
+        desc.world_path = "../../projects/world_demo/scenes/streaming/StreamMountain/StreamMountain.js";
         desc.objects_dir = "../../projects/world_demo/objects";
         desc.project_shared_lib_dir = "../../projects/world_demo/shared-lib";
         desc.engine_shared_lib_dir = "../shared-lib";

@@ -1,0 +1,136 @@
+[
+  {
+    "kind": "build",
+    "name": "projected_face_cache_tests",
+    "command": [
+      "./tools/build-windows-from-wsl.sh",
+      "RelWithDebInfo",
+      "projected_face_cache_tests"
+    ],
+    "exit": 0,
+    "seconds": 21.3891001130105,
+    "log": "docs/agent/evidence/2026-09-15-face-preparation/finite-cache-v2-build-projected_face_cache_tests.log",
+    "source_changes": [],
+    "validation_errors": []
+  },
+  {
+    "kind": "cpu",
+    "name": "projected_face_cache_tests",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      "Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEngine3/tests\"; & \"../../MatterEditor/build/cmake/windows-msvc/relwithdebinfo/projected_face_cache_tests.exe\"; exit $LASTEXITCODE"
+    ],
+    "exit": 0,
+    "seconds": 0.430769792990759,
+    "log": "docs/agent/evidence/2026-09-15-face-preparation/finite-cache-v2-cpu-projected_face_cache_tests.log",
+    "source_changes": [],
+    "validation_errors": []
+  },
+  {
+    "kind": "build",
+    "name": "brick_bond_detail_tests",
+    "command": [
+      "./tools/build-windows-from-wsl.sh",
+      "RelWithDebInfo",
+      "brick_bond_detail_tests"
+    ],
+    "exit": 0,
+    "seconds": 10.548456173986779,
+    "log": "docs/agent/evidence/2026-09-15-face-preparation/finite-cache-v2-build-brick_bond_detail_tests.log",
+    "source_changes": [],
+    "validation_errors": []
+  },
+  {
+    "kind": "rootcpu",
+    "name": "brick_bond_detail_tests",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      "Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp\"; & \"./MatterEditor/build/cmake/windows-msvc/relwithdebinfo/brick_bond_detail_tests.exe\"; exit $LASTEXITCODE"
+    ],
+    "exit": 0,
+    "seconds": 0.401158591004787,
+    "log": "docs/agent/evidence/2026-09-15-face-preparation/finite-cache-v2-rootcpu-brick_bond_detail_tests.log",
+    "source_changes": [],
+    "validation_errors": []
+  },
+  {
+    "kind": "build",
+    "name": "solid_face_projection_tests",
+    "command": [
+      "./tools/build-windows-from-wsl.sh",
+      "RelWithDebInfo",
+      "solid_face_projection_tests"
+    ],
+    "exit": 0,
+    "seconds": 7.099482375997468,
+    "log": "docs/agent/evidence/2026-09-15-face-preparation/finite-cache-v2-build-solid_face_projection_tests.log",
+    "source_changes": [],
+    "validation_errors": []
+  },
+  {
+    "kind": "cpu",
+    "name": "solid_face_projection_tests",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      "Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEngine3/tests\"; & \"../../MatterEditor/build/cmake/windows-msvc/relwithdebinfo/solid_face_projection_tests.exe\"; exit $LASTEXITCODE"
+    ],
+    "exit": 0,
+    "seconds": 0.38094895299582276,
+    "log": "docs/agent/evidence/2026-09-15-face-preparation/finite-cache-v2-cpu-solid_face_projection_tests.log",
+    "source_changes": [],
+    "validation_errors": []
+  },
+  {
+    "kind": "build",
+    "name": "solid_face_projection_gpu_tests",
+    "command": [
+      "./tools/build-windows-from-wsl.sh",
+      "RelWithDebInfo",
+      "solid_face_projection_gpu_tests"
+    ],
+    "exit": 0,
+    "seconds": 24.71835979599564,
+    "log": "docs/agent/evidence/2026-09-15-face-preparation/finite-cache-v2-build-solid_face_projection_gpu_tests.log",
+    "source_changes": [],
+    "validation_errors": []
+  },
+  {
+    "kind": "projection",
+    "name": "clay",
+    "command": [
+      "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      "$env:MATTER_VK_VALIDATION='1'; $env:MATTER_CLAY_FACE_DUMP='D:/tmp/matter-vt/20260915-face-preparation/faces'; Set-Location -LiteralPath 'D:/Shared With Desktop/AI/matter-engine-cpp'; & './MatterEditor/build/cmake/windows-msvc/relwithdebinfo/solid_face_projection_gpu_tests.exe'; exit $LASTEXITCODE"
+    ],
+    "exit": 0,
+    "seconds": 5.667685872991569,
+    "log": "docs/agent/evidence/2026-09-15-face-preparation/finite-cache-v2-projection-clay.log",
+    "source_changes": [],
+    "validation_errors": []
+  },
+  {
+    "kind": "build",
+    "name": "matter_editor",
+    "command": [
+      "./tools/build-windows-from-wsl.sh",
+      "RelWithDebInfo",
+      "matter_editor"
+    ],
+    "exit": 0,
+    "seconds": 10.86477361600555,
+    "log": "docs/agent/evidence/2026-09-15-face-preparation/finite-cache-v2-build-matter_editor.log",
+    "source_changes": [],
+    "validation_errors": []
+  }
+]

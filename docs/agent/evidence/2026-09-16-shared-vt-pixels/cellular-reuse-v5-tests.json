@@ -1,0 +1,18 @@
+{
+  "runs": [
+    {
+      "mode": "compositor",
+      "command": "$env:MATTER_VK_VALIDATION=\"1\"; $env:TMP=\"$env:LOCALAPPDATA\\Temp\"; $env:TEMP=$env:TMP; $env:MATTER_VK_SMOKE_MODE=\"compositor\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vt_compositor_tests.exe\"; exit $LASTEXITCODE",
+      "exit": 0,
+      "seconds": 5.421410587994615,
+      "binary_sha256": "d3a608784292ab857b11f6ad2f686e271cab347407e8dfcf8df1708e11166ee7",
+      "binary_unchanged": true,
+      "source_changes": [],
+      "all_pass": true,
+      "zero_validation_errors": true,
+      "skipped_rt": false,
+      "log_sha256": "fb764ed267fbe143722711f303905945fde71cf952c15d4b0ddfa900ea8c910d",
+      "passed": true
+    }
+  ]
+}

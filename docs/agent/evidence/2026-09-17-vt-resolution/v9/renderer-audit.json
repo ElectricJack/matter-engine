@@ -1,0 +1,230 @@
+{
+  "log_sha256": "658e386f2d9bfea4a77774fb8d1309f8d1d419257150470c4b8b35b4249c28e3",
+  "shots": [
+    {
+      "name": "overview-lit.png",
+      "expected": "raster",
+      "actual": "raster",
+      "passed": true
+    },
+    {
+      "name": "overview-albedo.png",
+      "expected": "raster",
+      "actual": "raster",
+      "passed": true
+    },
+    {
+      "name": "overview-normal.png",
+      "expected": "raster",
+      "actual": "raster",
+      "passed": true
+    },
+    {
+      "name": "overview-mip.png",
+      "expected": "raster",
+      "actual": "raster",
+      "passed": true
+    },
+    {
+      "name": "overview-density.png",
+      "expected": "raster",
+      "actual": "raster",
+      "passed": true
+    },
+    {
+      "name": "grazing-lit.png",
+      "expected": "raster",
+      "actual": "raster",
+      "passed": true
+    },
+    {
+      "name": "grazing-albedo.png",
+      "expected": "raster",
+      "actual": "raster",
+      "passed": true
+    },
+    {
+      "name": "grazing-normal.png",
+      "expected": "raster",
+      "actual": "raster",
+      "passed": true
+    },
+    {
+      "name": "grazing-mip.png",
+      "expected": "raster",
+      "actual": "raster",
+      "passed": true
+    },
+    {
+      "name": "grazing-density.png",
+      "expected": "raster",
+      "actual": "raster",
+      "passed": true
+    },
+    {
+      "name": "grazing-flat.png",
+      "expected": "raster",
+      "actual": "raster",
+      "passed": true
+    },
+    {
+      "name": "cliff-lit.png",
+      "expected": "raster",
+      "actual": "raster",
+      "passed": true
+    },
+    {
+      "name": "cliff-albedo.png",
+      "expected": "raster",
+      "actual": "raster",
+      "passed": true
+    },
+    {
+      "name": "cliff-normal.png",
+      "expected": "raster",
+      "actual": "raster",
+      "passed": true
+    },
+    {
+      "name": "cliff-mip.png",
+      "expected": "raster",
+      "actual": "raster",
+      "passed": true
+    },
+    {
+      "name": "cliff-density.png",
+      "expected": "raster",
+      "actual": "raster",
+      "passed": true
+    },
+    {
+      "name": "cliff-flat.png",
+      "expected": "raster",
+      "actual": "raster",
+      "passed": true
+    },
+    {
+      "name": "cliff-grazing-lit.png",
+      "expected": "raster",
+      "actual": "raster",
+      "passed": true
+    },
+    {
+      "name": "cliff-grazing-albedo.png",
+      "expected": "raster",
+      "actual": "raster",
+      "passed": true
+    },
+    {
+      "name": "cliff-grazing-normal.png",
+      "expected": "raster",
+      "actual": "raster",
+      "passed": true
+    },
+    {
+      "name": "cliff-grazing-mip.png",
+      "expected": "raster",
+      "actual": "raster",
+      "passed": true
+    },
+    {
+      "name": "cliff-grazing-density.png",
+      "expected": "raster",
+      "actual": "raster",
+      "passed": true
+    },
+    {
+      "name": "cliff-grazing-flat.png",
+      "expected": "raster",
+      "actual": "raster",
+      "passed": true
+    },
+    {
+      "name": "close-lit.png",
+      "expected": "raster",
+      "actual": "raster",
+      "passed": true
+    },
+    {
+      "name": "close-albedo.png",
+      "expected": "raster",
+      "actual": "raster",
+      "passed": true
+    },
+    {
+      "name": "close-normal.png",
+      "expected": "raster",
+      "actual": "raster",
+      "passed": true
+    },
+    {
+      "name": "close-mip.png",
+      "expected": "raster",
+      "actual": "raster",
+      "passed": true
+    },
+    {
+      "name": "close-density.png",
+      "expected": "raster",
+      "actual": "raster",
+      "passed": true
+    },
+    {
+      "name": "close-flat.png",
+      "expected": "raster",
+      "actual": "raster",
+      "passed": true
+    },
+    {
+      "name": "cliff-clear-lit.png",
+      "expected": "raster",
+      "actual": "raster",
+      "passed": true
+    },
+    {
+      "name": "cliff-clear-flat.png",
+      "expected": "raster",
+      "actual": "raster",
+      "passed": true
+    },
+    {
+      "name": "cliff-clear-rt-lit.png",
+      "expected": "native_rt",
+      "actual": "native_rt",
+      "passed": true
+    },
+    {
+      "name": "cliff-clear-rt-flat.png",
+      "expected": "native_rt",
+      "actual": "native_rt",
+      "passed": true
+    },
+    {
+      "name": "close-clear-lit.png",
+      "expected": "raster",
+      "actual": "raster",
+      "passed": true
+    },
+    {
+      "name": "close-clear-flat.png",
+      "expected": "raster",
+      "actual": "raster",
+      "passed": true
+    },
+    {
+      "name": "close-clear-rt-lit.png",
+      "expected": "native_rt",
+      "actual": "native_rt",
+      "passed": true
+    },
+    {
+      "name": "close-clear-rt-flat.png",
+      "expected": "native_rt",
+      "actual": "native_rt",
+      "passed": true
+    }
+  ],
+  "missing_receipts": [],
+  "command_errors": [],
+  "passed": true
+}

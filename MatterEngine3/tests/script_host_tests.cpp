@@ -1,4 +1,5 @@
 #include <cassert>
+#include <chrono>
 #include <cstdio>
 #include <cstdint>
 #include <cstring>
@@ -14,15 +15,24 @@ extern "C" {
 #include "part_render_policy.h"
 #include "../../libs/MatterSurfaceLib/include/blas_manager.hpp"
 #include "../../libs/MatterSurfaceLib/include/tlas_manager.hpp"
-#include <sys/stat.h>
+#include "../../libs/MatterSurfaceLib/include/cell.h"
+#include <cmath>
+#include <limits>
 #include <vector>
+#include "memory_fixture_io.h"
+#include "part_bundle.h"
+#ifndef MATTER_SCRIPT_TEST_MODULES_HEADER
+#define MATTER_SCRIPT_TEST_MODULES_HEADER "build/script_test_modules.h"
+#endif
+#include MATTER_SCRIPT_TEST_MODULES_HEADER
 
-static bool file_exists(const std::string& p){ struct stat st; return stat(p.c_str(),&st)==0; }
+static bool file_exists(const std::string& p) {
+    return part_bundle::ScopedStorage::current()->exists(p);
+}
 
-static std::vector<uint8_t> read_all(const std::string& p){
-    std::vector<uint8_t> b; FILE* f=fopen(p.c_str(),"rb"); if(!f) return b;
-    fseek(f,0,SEEK_END); long n=ftell(f); fseek(f,0,SEEK_SET);
-    b.resize(n); if (fread(b.data(),1,n,f)!=(size_t)n) b.clear(); fclose(f); return b;
+static std::vector<uint8_t> read_all(const std::string& p) {
+    const auto bytes = part_bundle::ScopedStorage::current()->open(p);
+    return bytes ? *bytes : std::vector<uint8_t>{};
 }
 
 #include "check.h"
@@ -40,6 +50,25 @@ static void test_embed_eval_1_plus_1() {
     JS_FreeValue(ctx, v);
     JS_FreeContext(ctx);
     JS_FreeRuntime(rt);
+}
+
+static void test_owned_module_source_snapshot() {
+    script_host::ScriptHost host;
+    std::vector<module_resolver::ResolvedModule> modules{
+        {"shared-lib/width", "export const width = 2;", "memory://width"}};
+    host.set_module_sources(modules);
+    modules[0].source = "export const width = 99;";
+    const char* src = "import {width} from 'shared-lib/width.js'; "
+        "class Snapshot extends Part {static params = {width}; build(p) {}}";
+    const uint64_t first = host.resolve_hash(src, "{}");
+    CHECK(first != 0 && host.last_merged_params() == "{\"width\":2}",
+          "snapshot: QuickJS evaluates owned bytes, not mutated caller sources");
+    CHECK(host.resolve_hash(src, "{}") == first, "snapshot: repeat hash stable");
+    host.set_module_sources(modules);
+    CHECK(host.resolve_hash(src, "{}") != first && host.last_merged_params() == "{\"width\":99}",
+          "snapshot: replacement changes actual evaluated bytes and hash");
+    host.set_module_sources(std::vector<module_resolver::ResolvedModule>{});
+    CHECK(host.resolve_hash(src, "{}") == 0, "snapshot: missing import fails without disk fallback");
 }
 
 static void test_fresh_context_runs_empty_class() {
@@ -147,6 +176,16 @@ static void test_resolve_hash_matches_and_skips_build() {
         " build(p){ globalThis.__built2 = true; } }", "{}", nullptr, 0);
     CHECK(hp.last_merged_params().find("__built2") == std::string::npos,
           "resolve_hash did not run build()");
+    // Compiled base reuse must never reuse a Part class or mutable realm.
+    const char* isolated = "class Isolated extends Part { static params = { n: (Part.__probe = (Part.__probe || 0) + 1) }; build(p) {} }";
+    const auto expected = hb.bake_source(isolated, "{}", {});
+    CHECK(expected.error.ok, "isolated base reference bake succeeds");
+    for (int i = 0; i < 8; ++i) {
+        script_host::ScriptHost fresh;
+        CHECK(fresh.resolve_hash(isolated, "{}", nullptr, 0) == expected.resolved_hash &&
+              fresh.last_merged_params() == "{\"n\":1}",
+              "compiled Part base preserves hashes and fresh mutable globals");
+    }
 }
 
 static void test_bindings_record_ops_and_misuse() {
@@ -252,6 +291,102 @@ static void test_bake_writes_part() {
     CHECK(r.error.ok, "sphere bake succeeds");
     CHECK(!r.written_path.empty(), "written path reported");
     CHECK(file_exists(r.written_path), "the .part file exists on disk");
+}
+
+static void test_absolute_voxel_sampling() {
+    CHECK(choose_absolute_division_pow(1, 0.08f, 4, 6) == 4,
+          "absolute sampling preserves the coarse script lattice");
+    CHECK(choose_absolute_division_pow(1, 0.04f, 4, 6) == 5,
+          "absolute sampling selects an intermediate lattice");
+    CHECK(choose_absolute_division_pow(1, 0.026f, 4, 6) == 6,
+          "26 mm brushes select the 15.9 mm lattice");
+    CHECK(choose_absolute_division_pow(1, std::numeric_limits<float>::denorm_min(), 4, 6) == 6,
+          "arbitrarily fine requests saturate at the resource ceiling");
+    CHECK(choose_absolute_division_pow(1, std::numeric_limits<float>::quiet_NaN(), 4, 6) == 4 &&
+          choose_absolute_division_pow(1, 0, 4, 6) == 4,
+          "invalid absolute sampling inputs retain the baseline");
+    CHECK(choose_division_pow(0.026f, 0.026f, 4, 6) == 4,
+          "existing live particle resolution semantics are unchanged");
+
+    // All brushes here lower to fat primitives except the explicitly selected
+    // subtractive sphere. No additive sphere can accidentally supply detail.
+    // Keep the small fixture inside one cell for a cheap end-to-end test.
+    const char* source = R"JS(
+class SamplingProbe extends Part {
+  static params = { spacing: 0.08, detailSpacing: 0.08, height: 0.10, carve: 0 };
+  build(p) {
+    this.beginVoxels(p.spacing); this.fill(MAT.bark); this.smoothing(0);
+    this.box([0.5,0.25,0.5],[0.22,p.height/2,0.09]); this.endVoxels();
+    if (p.carve) {
+      this.beginVoxels(p.detailSpacing); this.smoothing(0);
+      if (p.carve === 1) this.capsule([0.32,0.3,0.5],[0.68,0.3,0.5],0.024);
+      else this.sphere([0.5,0.3,0.5],0.024);
+      this.difference(); this.endVoxels();
+    }
+  }
+}
+)JS";
+    auto bake = [&](const char* params) {
+        script_host::ScriptHost host;
+        auto result = host.bake_source(source, params, {});
+        CHECK(result.error.ok, "thin timber sampling fixture bakes");
+        BLASManager blas; TLASManager tlas(64);
+        std::vector<part_asset::ChildInstance> children;
+        part_asset::LodLevels lods;
+        const bool loaded = result.error.ok && part_asset::load_v2(
+            result.written_path, result.resolved_hash, blas, tlas, children, lods);
+        CHECK(loaded, "thin timber sampling fixture reloads");
+        std::vector<Tri> triangles;
+        if (loaded) blas.generate_triangle_data(triangles);
+        CHECK(!triangles.empty(), "thin timber retains a closed core");
+        for (const Tri& t : triangles) for (const auto& v : {t.vertex0, t.vertex1, t.vertex2}) {
+            CHECK(std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z),
+                  "sampled timber has finite vertices");
+            CHECK(v.x >= 0.26f && v.x <= 0.74f && v.y >= 0.17f && v.y <= 0.33f &&
+                  v.z >= 0.39f && v.z <= 0.61f,
+                  "sampled timber stays within its physical envelope");
+        }
+        return triangles;
+    };
+    const auto coarse = bake("{}");
+    const auto plank = bake("{\"spacing\":0.026}");
+    const auto beam = bake("{\"spacing\":0.026,\"height\":0.12}");
+    CHECK(plank.size() > coarse.size() * 4 && beam.size() > coarse.size() * 4,
+          "single-session 100 mm plank and 120 mm beam get finer real geometry");
+
+    const auto mixed = bake("{\"carve\":1,\"detailSpacing\":0.016}");
+    const auto all_fine = bake("{\"spacing\":0.016,\"carve\":1,\"detailSpacing\":0.016}");
+    const auto sphere_cut = bake("{\"carve\":2,\"detailSpacing\":0.016}");
+    CHECK(mixed.size() == all_fine.size() && mixed.size() > coarse.size() * 4,
+          "a fine subtractive-only session refines the entire coarse-core expression");
+    CHECK(sphere_cut.size() > coarse.size() * 4,
+          "subtractive sphere spacing contributes despite no additive particles");
+    bool same_positions = mixed.size() == all_fine.size();
+    for (size_t i = 0; same_positions && i < mixed.size(); ++i) {
+        const float3 a[] = {mixed[i].vertex0, mixed[i].vertex1, mixed[i].vertex2};
+        const float3 b[] = {all_fine[i].vertex0, all_fine[i].vertex1, all_fine[i].vertex2};
+        for (int j = 0; j < 3; ++j)
+            same_positions = same_positions && a[j].x == b[j].x &&
+                             a[j].y == b[j].y && a[j].z == b[j].z;
+    }
+    CHECK(same_positions, "first-brush spacing does not change geometry at the same global minimum");
+
+    // Vertical ray at the centre of the carved check. This tests the emitted
+    // mesh, not just analytic CSG occupancy or a triangle-count increase.
+    float top = -1;
+    for (const Tri& t : mixed) {
+        const auto a = t.vertex0, b = t.vertex1, c = t.vertex2;
+        const float det = (b.z-c.z)*(a.x-c.x) + (c.x-b.x)*(a.z-c.z);
+        if (std::fabs(det) < 1e-10f) continue;
+        const float u = ((b.z-c.z)*(0.5f-c.x) + (c.x-b.x)*(0.5f-c.z)) / det;
+        const float v = ((c.z-a.z)*(0.5f-c.x) + (a.x-c.x)*(0.5f-c.z)) / det;
+        if (u >= -1e-5f && v >= -1e-5f && u+v <= 1.00001f)
+            top = std::max(top, u*a.y + v*b.y + (1-u-v)*c.y);
+    }
+    CHECK(top > 0.26f && top < 0.289f,
+          "the baked tabletop contains the shallow 24 mm carved groove");
+    printf("absolute voxel sampling: coarse=%zu plank=%zu beam=%zu carved=%zu groove_y=%.5f\n",
+           coarse.size(), plank.size(), beam.size(), mixed.size(), top);
 }
 
 static void test_sharp_vs_smooth_seam() {
@@ -596,6 +731,17 @@ static void test_ray_tracing_policy_authoring_roundtrip() {
         CHECK(policy.child_overrides[2] == RayTracingOverride::Enabled,
               "true child rayTraced enables the placement");
     }
+
+    const BakeResult shared = host.bake_source(
+        "class Shared extends Part { static sharedSurfaces=true; build() { this.placeChild('Leaf'); } }",
+        "{}", {}, child_hashes, 1, child_names);
+    CHECK(shared.error.ok, "shared assembly metadata bakes");
+    CHECK(matter::load_part_render_policy(part_asset::cache_path_resolved(shared.resolved_hash),
+        shared.resolved_hash,1,policy) && policy.shared_surfaces && policy.ray_traced,
+        "shared assembly flag round trips without changing ray eligibility");
+    const BakeResult bad_shared = host.bake_source(
+        "class Bad extends Part { static sharedSurfaces=1; build() {} }", "{}", {});
+    CHECK(!bad_shared.error.ok, "sharedSurfaces requires an explicit boolean");
 
     const BakeResult bad_default = host.bake_source(
         "class Bad extends Part { build(p) { this.rayTraced(1); } }",
@@ -1299,8 +1445,8 @@ static void test_eval_lods_authored_ladder() {
         {"class A extends Part { static lods = [{at:0},LOD.impostor({at:50}),"
          "LOD.impostor({at:90})]; build(p){} }",
          "two impostors -> empty"},
-        {"class A extends Part { static lods = [LOD.impostor({at:0})]; build(p){} }",
-         "impostor with no mesh rung to depict -> empty"},
+        {"class A extends Part { static lods = [LOD.impostor({at:1})]; build(p){} }",
+         "a sole impostor must start at the camera -> empty"},
         {"class A extends Part { static lods = [{at:0},"
          "{at:50,impostor:true,gen:'decimate',error:1}]; build(p){} }",
          "impostor with a generator -> empty"},
@@ -1320,6 +1466,10 @@ static void test_eval_lods_authored_ladder() {
          "impostor not a boolean -> empty"},
     };
     for (const auto& c : bad_imp) CHECK(host.eval_lods(c.src).empty(), c.why);
+    const auto baked_only = host.eval_lods(
+        "class A extends Part { static lods = [LOD.impostor({at:0})]; build(p){} }");
+    CHECK(baked_only.size() == 1 && baked_only[0].impostor && baked_only[0].at == 0,
+          "a sole impostor treats build() as bake input, with no runtime source mesh");
 
     // Fail-closed, one violation per source. Each discards the WHOLE block.
     struct Case { const char* src; const char* why; };
@@ -1605,7 +1755,9 @@ static void test_pf_bindings_smoke() {
 }
 
 // Task 7: __pf_stampPaths positive test — imports shared-lib/particleflow,
-// runs a sim, stamps paths into a voxel session, and asserts a non-empty part.
+// runs a bounded sim, stamps paths into a voxel session, and asserts a non-empty part.
+// Twelve ticks/four live particles still cross the eight-tick death/reuse boundary;
+// long dense trajectories belong to simulation stress rather than this binding guard.
 static void test_pf_stamp_paths_positive() {
     const char* src =
         "import { ParticleSim, PathRecorder } from 'shared-lib/particleflow';\n"
@@ -1615,13 +1767,13 @@ static void test_pf_stamp_paths_positive() {
         "    const rec = new PathRecorder(0.03, ['thickness']);\n"
         "    const sim = new ParticleSim({\n"
         "      seed: 11, dt: 1.0, maxTurnRate: 0.4, depositEvery: 0.05,\n"
-        "      maxParticles: 16, hashCell: 0.25, maxAge: 60,\n"
+        "      maxParticles: 4, hashCell: 0.25, maxAge: 8,\n"
         "      attributes: ['thickness'],\n"
         "      emitters: [{ shape: 'point', center: [0,0,0], rate: 1, vel0: 0.06,\n"
         "                   jitter: 0.1, attrInit: [0.08] }],\n"
         "      fields: [{ type: 'bias', dir: [0,1,0], weight: 0.4 }],\n"
         "    }).attach(rec);\n"
-        "    sim.run(80);\n"
+        "    sim.run(12);\n"
         "    if (rec.count < 1) throw new Error('no paths');\n"
         "    this.fill(MAT.bark);\n"
         "    this.beginVoxels(0.05);\n"
@@ -1630,7 +1782,7 @@ static void test_pf_stamp_paths_positive() {
         "  }\n"
         "}\n";
     script_host::ScriptHost host;
-    host.set_shared_lib_root("../shared-lib");
+    host.set_module_sources(script_test_modules());
     script_host::BakeResult r = host.bake_source(src, "{}", {});
     CHECK(r.error.ok, "pf stamp paths bake succeeds");
     CHECK(!r.written_path.empty(), "pf stamp paths: part written");
@@ -1652,19 +1804,19 @@ static void test_pf_stamp_paths_outside_session() {
         "    const rec = new PathRecorder(0.03, ['thickness']);\n"
         "    const sim = new ParticleSim({\n"
         "      seed: 11, dt: 1.0, maxTurnRate: 0.4, depositEvery: 0.05,\n"
-        "      maxParticles: 16, hashCell: 0.25, maxAge: 60,\n"
+        "      maxParticles: 4, hashCell: 0.25, maxAge: 8,\n"
         "      attributes: ['thickness'],\n"
         "      emitters: [{ shape: 'point', center: [0,0,0], rate: 1, vel0: 0.06,\n"
         "                   jitter: 0.1, attrInit: [0.08] }],\n"
         "      fields: [{ type: 'bias', dir: [0,1,0], weight: 0.4 }],\n"
         "    }).attach(rec);\n"
-        "    sim.run(80);\n"
+        "    sim.run(12);\n"
         "    this.fill(MAT.bark);\n"
         "    this.paths(rec);\n"  // NO beginVoxels — must fail
         "  }\n"
         "}\n";
     script_host::ScriptHost host;
-    host.set_shared_lib_root("../shared-lib");
+    host.set_module_sources(script_test_modules());
     script_host::BakeResult r = host.bake_source(src, "{}", {});
     CHECK(!r.error.ok, "pf stamp outside session: bake must fail");
     CHECK(r.written_path.empty(), "pf stamp outside session: no file written");
@@ -1752,13 +1904,14 @@ static void test_strands_ellipsoid_and_anchors() {
         "  }\n"
         "}\n";
     script_host::ScriptHost host;
-    host.set_shared_lib_root("../shared-lib");
+    host.set_module_sources(script_test_modules());
     script_host::BakeResult r = host.bake_source(src, "{}", {});
     CHECK(r.error.ok, "strands ellipsoid and anchors bake succeeds");
 }
 
 // Task 10: Determinism end-to-end — pf-driven stamp baked twice, byte-identical
 // output .part files. Verifies that same seed + config + ticks => identical geometry.
+// Use the same bounded lifetime/reuse fixture as the positive stamping guard.
 static void test_pf_determinism_double_bake() {
     const char* src =
         "import { ParticleSim, PathRecorder } from 'shared-lib/particleflow';\n"
@@ -1768,22 +1921,22 @@ static void test_pf_determinism_double_bake() {
         "    const rec = new PathRecorder(0.04, ['thickness']);\n"
         "    const sim = new ParticleSim({\n"
         "      seed: 42, dt: 1.0, maxTurnRate: 0.5, depositEvery: 0.05,\n"
-        "      maxParticles: 32, hashCell: 0.25, maxAge: 60,\n"
+        "      maxParticles: 4, hashCell: 0.25, maxAge: 8,\n"
         "      attributes: ['thickness'],\n"
         "      emitters: [{ shape: 'point', center: [0,0,0], rate: 2, vel0: 0.06,\n"
         "                   jitter: 0.15, attrInit: [0.08] }],\n"
         "      fields: [{ type: 'bias', dir: [0,1,0], weight: 0.6 }],\n"
         "    }).attach(rec);\n"
-        "    sim.run(120);\n"
+        "    sim.run(12);\n"
         "    this.fill(MAT.bark);\n"
         "    this.beginVoxels(0.05);\n"
         "    this.paths(rec, { radiusChannel: 'thickness', minRadius: 0.02 });\n"
         "    this.endVoxels();\n"
         "  }\n"
         "}\n";
-    script_host::ScriptHost h1; h1.set_shared_lib_root("../shared-lib");
+    script_host::ScriptHost h1; h1.set_module_sources(script_test_modules());
     script_host::BakeResult r1 = h1.bake_source(src, "{}", {});
-    script_host::ScriptHost h2; h2.set_shared_lib_root("../shared-lib");
+    script_host::ScriptHost h2; h2.set_module_sources(script_test_modules());
     script_host::BakeResult r2 = h2.bake_source(src, "{}", {});
     CHECK(r1.error.ok && r2.error.ok, "pf determinism: both bakes succeed");
     std::vector<uint8_t> b1 = read_all(r1.written_path);
@@ -2138,16 +2291,21 @@ static void test_emit_volume_hash_divergence() {
 #include <algorithm>  // std::remove (parity-test \r\n normalization)
 #ifdef _WIN32
 #include <io.h>
+#include <fcntl.h>
 #define SH_DUP    _dup
 #define SH_DUP2   _dup2
 #define SH_CLOSE  _close
 #define SH_FILENO _fileno
+#define SH_PIPE(fds) _pipe(fds, 4096, _O_BINARY)
+#define SH_READ _read
 #else
 #include <unistd.h>
 #define SH_DUP    dup
 #define SH_DUP2   dup2
 #define SH_CLOSE  close
 #define SH_FILENO fileno
+#define SH_PIPE(fds) pipe(fds)
+#define SH_READ read
 #endif
 
 static void sh_set_profile_env(bool on) {
@@ -2255,7 +2413,6 @@ static void test_part_bake_no_collector() {
 // data, so re-rendering the same format string from the collector snapshot
 // must reproduce the captured line byte-for-byte.
 static void test_bake_profile_parity() {
-    const char* kCap = "bake_profile_capture.tmp";
     sh_set_profile_env(true);
 
     bake_trace::Collector col;
@@ -2269,27 +2426,31 @@ static void test_bake_profile_parity() {
 
     fflush(stderr);
     int old_fd = SH_DUP(2);
-    FILE* cap = fopen(kCap, "w");
-    CHECK(old_fd >= 0 && cap != nullptr, "parity: stderr capture set up");
-    if (old_fd < 0 || cap == nullptr) {
-        if (cap) fclose(cap);
+    int capture[2] = {-1, -1};
+    bool pipe_ok = SH_PIPE(capture) == 0;
+    CHECK(old_fd >= 0 && pipe_ok, "parity: stderr capture set up");
+    if (old_fd < 0 || !pipe_ok) {
+        if (old_fd >= 0) SH_CLOSE(old_fd);
+        if (pipe_ok) { SH_CLOSE(capture[0]); SH_CLOSE(capture[1]); }
         bake_trace::set_current(nullptr);
         sh_set_profile_env(false);
         return;
     }
-    SH_DUP2(SH_FILENO(cap), 2);
+    SH_DUP2(capture[1], 2);
+    SH_CLOSE(capture[1]);
     script_host::BakeResult r = host.bake_source(src, "{}", {});
     fflush(stderr);
     SH_DUP2(old_fd, 2);
     SH_CLOSE(old_fd);
-    fclose(cap);
     bake_trace::set_current(nullptr);
     sh_set_profile_env(false);
 
     CHECK(r.error.ok, "parity: bake succeeded");
-    std::vector<uint8_t> bytes = read_all(kCap);
-    std::remove(kCap);
-    std::string captured(bytes.begin(), bytes.end());
+    std::string captured;
+    char buffer[1024];
+    for (int n; (n = static_cast<int>(SH_READ(capture[0], buffer, sizeof(buffer)))) > 0;)
+        captured.append(buffer, static_cast<size_t>(n));
+    SH_CLOSE(capture[0]);
     size_t at = captured.find("[bake_profile] ");
     CHECK(at != std::string::npos, "parity: [bake_profile] line emitted");
     if (at == std::string::npos) return;
@@ -2333,73 +2494,25 @@ static void test_bake_profile_parity() {
         printf("  captured: %s  expected: %s", line.c_str(), expect_line);
 }
 
-int main() {
-    test_embed_eval_1_plus_1();
-    test_p5_round_mesh_dispatch();
-    test_g1_voxel_line_and_round_dispatch();
-    test_fresh_context_runs_empty_class();
-    test_build_called_on_authored_class();
-    test_dsl_state_rules();
-    test_params_merge_and_hash();
-    test_resolve_hash_matches_and_skips_build();
-    test_bindings_record_ops_and_misuse();
-    test_csg_lowering();
-    test_voxel_primitive_occupancy();
-    test_bake_writes_part();
-    test_sharp_vs_smooth_seam();
-    test_sub_min_box_feature_survives();
-    test_determinism_identical_bytes();
-    test_fresh_context_no_residue();
-    test_seeded_rng_and_no_ambient();
-    test_fail_closed();
-    test_eval_requires_lists_children();
-    test_eval_requires_honors_overrides();
-    test_eval_requires_none_is_empty();
-    test_eval_requires_deterministic();
-    test_eval_requires_does_not_build();
-    test_place_child_roundtrip();
-    test_ray_tracing_policy_authoring_roundtrip();
-    test_g3_session_scoped_op_verbs();
-    test_g4_tint_cursor();
-    test_g5_lookat();
-    test_g6_place_child_params();
-    test_g7_stack_balance();
-    test_g8_sphere_box_polymorphic();
-    test_extrude_dispatch_and_polygon();
-    test_eval_lod_budgets();
-    test_eval_no_impostor();
-    test_eval_lods_schema_parsing();
-    test_eval_lods_authored_ladder();
-    test_bake_seed_invariance_per_lod_params();
-    test_bake_result_child_modules_placed();
-    test_modifier_region_state_rules();
-    test_modifier_region_bake_rules();
-    test_pf_bindings_smoke();
-    test_pf_ontick_views();
-    test_pf_stamp_paths_positive();
-    test_pf_stamp_paths_outside_session();
-    test_strands_ellipsoid_and_anchors();
-    // Task 10 correctness-refinement checklist
-    test_pf_determinism_double_bake();
-    test_pf_incremental_equivalence();
-    test_pf_budget_fail_closed();
-    test_pf_stale_handle();
-    test_raycast_sphere_point_and_normal();
-    test_raycast_miss_returns_null();
-    test_raycast_outside_session_fails_closed();
-    test_raycast_no_brushes_fails_closed();
-    test_raycast_sees_difference_cut();
-    test_placechild_instanced_flags();
-    test_bake_writes_flatten_hints();
-    test_emit_volume_roundtrip();
-    test_emit_volume_missing_pos();
-    test_emit_volume_invalid_radius();
-    test_emit_volume_hash_divergence();
-    // Bake Lab task 1.4 — part-bake phase spans + profile parity.
-    test_part_bake_span_shape();
-    test_part_bake_span_shape_on_error();
-    test_part_bake_no_collector();
-    test_bake_profile_parity();
+int main(int argc, char** argv) {
+    const char* selected = nullptr;
+    if (argc == 3 && std::strcmp(argv[1], "--case") == 0) selected = argv[2];
+    else if (argc != 1) return 2;
+    bool matched = false;
+#define SCRIPT_HOST_CASE(fn) \
+    if (!selected || std::strcmp(selected, #fn) == 0) { \
+        matched = true; \
+        const auto started = std::chrono::steady_clock::now(); \
+        std::printf("RUN %s\n", #fn); std::fflush(stdout); \
+        auto cache = std::make_shared<matter::test::MemoryCacheByteStorage>(); \
+        part_bundle::ScopedStorage storage(cache); \
+        fn(); \
+        const double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count(); \
+        std::printf("TIME %s %.6f\n", #fn, elapsed); std::fflush(stdout); \
+    }
+#include "script_host_cases.inc"
+#undef SCRIPT_HOST_CASE
+    if (!matched) return 2;
     if (g_failures == 0) printf("ALL PASS\n");
     return g_failures ? 1 : 0;
 }

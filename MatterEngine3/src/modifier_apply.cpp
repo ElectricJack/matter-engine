@@ -27,6 +27,7 @@
 
 #include "mesh_simplifier.hpp"
 #include "mesh_smooth.hpp"
+#include "mesh_transform.hpp"
 #include "retopo_blacklist.h"
 #include "matter/log.h"
 
@@ -82,6 +83,13 @@ MeshIndexed apply_stack(MeshIndexed mesh,
                 MATTER_LOGW("modifier", "%s: simplify(%g) produced an empty mesh, skipped\n",
                              chunk_label.c_str(), m.ratio);
             } else {
+                // QEM emits topology only. Preserve the source's corner
+                // attributes here, before the host's missing-TriEx fallback
+                // turns every curved surface into flat-shaded triangles.
+                // SampleSource retains authored creases and material ownership;
+                // a later Smooth/Retopo modifier still controls its own normals.
+                if (mesh.triex.size() == mesh.indices.size() / 3)
+                    reproject_triex(mesh, out, ReprojectNormals::SampleSource);
                 mesh = std::move(out);
             }
             break;
