@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#10151b" />
+    <title>Matter · Procedural workshop</title>
+  </head>
+  <body>
+    <main id="app">
+      <header class="masthead">
+        <a class="brand" href="./"><span class="brand-mark">m</span> MATTER <span class="brand-sub">PROCEDURAL WORKSHOP</span></a>
+        <span class="engine-badge">Geometry in your browser <span class="status-dot"></span></span>
+      </header>
+      <aside class="gallery-panel" aria-label="Object gallery">
+        <div class="section-heading"><span>01 / OBJECT LIBRARY</span><span id="gallery-count"></span></div>
+        <h1>Start with a shape.</h1>
+        <p class="muted">Explore how simple operations become something more.</p>
+        <nav id="gallery" aria-label="Procedural objects"></nav>
+        <p class="gallery-foot">Built from recipes.<br />Every dimension is yours to change.</p>
+      </aside>
+      <section class="workspace" aria-label="Object preview">
+        <div class="preview-header"><div><span class="eyebrow">LIVE PREVIEW</span><h2 id="object-name"></h2></div>
+          <button id="frame" type="button" title="Fit object in view">Fit view ↗</button></div>
+        <div id="viewport"><canvas id="canvas" aria-label="Interactive 3D object; drag to orbit, scroll to zoom"></canvas>
+          <div id="status" role="status" aria-live="polite">Loading geometry engine…</div>
+          <div class="viewport-hint">Drag to orbit <span>·</span> Scroll to zoom <span>·</span> Right-drag to pan</div>
+          <div class="view-tools"><label><input id="wireframe" type="checkbox" /> Wireframe</label><label><input id="normals" type="checkbox" /> Normals</label></div>
+        </div>
+        <div class="timeline-panel">
+          <div class="section-heading"><span>02 / CONSTRUCTION</span><output id="step-count"></output></div>
+          <div class="step-heading"><h3 id="step-name"></h3><div class="step-buttons"><button id="previous" type="button" aria-label="Previous construction step">←</button><button id="next" type="button" aria-label="Next construction step">→</button><button id="final" type="button">Final object</button></div></div>
+          <label class="sr-only" for="timeline">Construction step</label><input id="timeline" type="range" min="0" max="0" value="0" step="1" />
+          <p id="step-description" class="muted"></p>
+        </div>
+      </section>
+      <aside class="parameter-panel" aria-label="Parameters">
+        <div class="section-heading"><span>03 / MAKE IT YOURS</span><button id="reset" type="button">Reset</button></div>
+        <h2>Parameters</h2><p id="description" class="muted"></p>
+        <div id="parameters"></div>
+        <label class="seed-label" for="seed">Variation seed <span>16 hex digits</span></label><input id="seed" type="text" value="0000000000000001" maxlength="16" pattern="[0-9a-fA-F]{16}" spellcheck="false" />
+        <div class="metrics"><span class="eyebrow">EVALUATION</span><dl><div><dt>Geometry</dt><dd id="eval-time">—</dd></div><div><dt>Upload</dt><dd id="upload-time">—</dd></div><div><dt>Triangles</dt><dd id="triangles">—</dd></div><div><dt>Instances</dt><dd id="instances">—</dd></div><div><dt>WASM heap</dt><dd id="heap">—</dd></div></dl></div>
+        <details id="diagnostics-panel"><summary>Evaluation details</summary><pre id="diagnostics">No diagnostics.</pre></details>
+        <p class="parameter-foot">Metres · Y up · PBR materials<br />Evaluated in a dedicated worker</p>
+      </aside>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
