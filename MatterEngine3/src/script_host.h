@@ -68,7 +68,23 @@
 #include "matter/bake_observer.h"  // optional per-rung observer (W3, Lab-only)
 #include "matter/animation_diagnostic.h"  // full animation diagnostic list (D1)
 
+class BLASManager;
+class TLASManager;
+struct Tri;
+struct TriEx;
+
 namespace script_host {
+
+// The first `class <Name> extends Part` in the source (a text scan, not a
+// parse), or "" when there is none. The bake and the portable route both name
+// the authored class this way.
+std::string find_part_class_name(const std::string& source);
+
+// Registers a literal triangle stream as one BLAS entry drawn by an identity
+// TLAS instance, exactly as the bake's direct-triangle path does.
+void register_direct_triangles(BLASManager& blas, TLASManager& tlas,
+                               const std::vector<Tri>& tris,
+                               const std::vector<TriEx>& extra);
 
 // The in-memory geometry a bake hands to save_v2, retained when
 // BakeOptions::retain_geometry asks for it (see BakeResult::geometry).
@@ -537,6 +553,15 @@ public:
         return shared_lib_roots_;
     }
 
+    // Installs an owned source snapshot, including the empty snapshot. Imports
+    // are folded and evaluated from these exact bytes, without disk fallback.
+    // Configure on the host's owner thread before evaluating; replacing the
+    // snapshot invalidates folds. nullopt restores the shared-lib search path.
+    void set_module_sources(std::optional<std::vector<module_resolver::ResolvedModule>> sources) {
+        module_sources_ = std::move(sources);
+        clear_fold_cache();
+    }
+
     // Cached fold_sources: looks up (source, shared_lib_root) by FNV1a64 hash key.
     // Returns true on success (fold succeeded); false on fold failure (err set).
     // Increments fold_cache_hits on cache hit, fold_cache_misses on miss.
@@ -546,6 +571,14 @@ public:
 
     uint64_t fold_cache_hits() const { return fold_hits_; }
     uint64_t fold_cache_misses() const { return fold_misses_; }
+
+    // Work counters for this host's lifetime. lod_evaluations counts calls to
+    // eval_lods / eval_no_impostor / eval_lod_budgets, each of which builds a
+    // fresh QuickJS runtime to read one class static. Owner-thread only, like
+    // the last_* scratch below.
+    struct Stats { uint64_t lod_evaluations = 0; };
+    const Stats& stats() const { return stats_; }
+
     // Clears the fold cache. Called by set_shared_lib_root() to invalidate cached
     // folded sources when the shared-lib root changes. Engine reload does not call
     // this because install_graph() recreates the ScriptHost (fresh cache by design).
@@ -586,6 +619,7 @@ private:
     uint64_t solid_source_generation_ = 0;
 
     std::vector<std::string> shared_lib_roots_;
+    std::optional<std::vector<module_resolver::ResolvedModule>> module_sources_;
     // Scratch describing the MOST RECENT call, overwritten by the next one and
     // meaningless before the first. Surfaced through the `last_*` accessors
     // above; unguarded, unlike the fold cache below.
@@ -604,6 +638,7 @@ private:
     std::unordered_map<std::string, uint64_t> request_source_prefixes_;
     uint64_t fold_hits_ = 0;
     uint64_t fold_misses_ = 0;
+    Stats stats_;
 };
 
 } // namespace script_host

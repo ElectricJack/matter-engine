@@ -1,0 +1,118 @@
+{
+  "profile": "matter-wasm32-worker-v1",
+  "emscripten_revision": "dc80f645ee70178c11666de0c3860d9e064d50e4",
+  "toolchain_lock_sha256": "6c6c21a68246031a357b3679005ec18e99c57f86fc540e121e2dee5215e0a362",
+  "tools": {
+    "emscripten": {
+      "version": "5.0.2",
+      "path": "/home/jkern/emsdk/upstream/emscripten/emcc"
+    },
+    "node": {
+      "version": "22.16.0",
+      "path": "/home/jkern/emsdk/node/22.16.0_64bit/bin/node"
+    },
+    "cmake": {
+      "version": "3.28.3",
+      "path": "/usr/bin/cmake"
+    },
+    "ninja": {
+      "version": "1.11.1",
+      "path": "/usr/bin/ninja"
+    }
+  },
+  "python": "3.12.3",
+  "platform": "Linux-6.18.33.2-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+  "commands": [
+    [
+      "cmake",
+      "-S",
+      "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-1/bindings/geometry-c",
+      "-B",
+      "/tmp/calm-ember-53-wasm",
+      "-G",
+      "Ninja",
+      "-DCMAKE_TOOLCHAIN_FILE=/home/jkern/emsdk/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake",
+      "-DCMAKE_BUILD_TYPE=Release",
+      "-DMATTER_GEOMETRY_C_WASM_SMOKE=ON"
+    ],
+    [
+      "cmake",
+      "--build",
+      "/tmp/calm-ember-53-wasm",
+      "--parallel",
+      "1"
+    ],
+    [
+      "ctest",
+      "--test-dir",
+      "/tmp/calm-ember-53-wasm",
+      "--output-on-failure",
+      "--parallel",
+      "1"
+    ]
+  ],
+  "checks": [
+    {
+      "command": [
+        "cmake",
+        "-S",
+        "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-1/bindings/geometry-c",
+        "-B",
+        "/tmp/calm-ember-53-wasm",
+        "-G",
+        "Ninja",
+        "-DCMAKE_TOOLCHAIN_FILE=/home/jkern/emsdk/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake",
+        "-DCMAKE_BUILD_TYPE=Release",
+        "-DMATTER_GEOMETRY_C_WASM_SMOKE=ON"
+      ],
+      "exit_code": 0
+    },
+    {
+      "command": [
+        "cmake",
+        "--build",
+        "/tmp/calm-ember-53-wasm",
+        "--parallel",
+        "1"
+      ],
+      "exit_code": 0
+    },
+    {
+      "command": [
+        "ctest",
+        "--test-dir",
+        "/tmp/calm-ember-53-wasm",
+        "--output-on-failure",
+        "--parallel",
+        "1"
+      ],
+      "exit_code": 0
+    }
+  ],
+  "artifacts": {
+    "matter_geometry_c_tests.wasm": {
+      "bytes": 945238,
+      "sha256": "c372c00fbd48b1819f4ececec85ce0ed73d971557f5dcfec23ac2551f25770d0"
+    },
+    "matter_geometry_wasm.wasm": {
+      "bytes": 914223,
+      "sha256": "4a0ebd8e7817e30ea716f862b8aed7b61debb1fadad7496e51c63fea121cd6aa"
+    },
+    "wasm_contract_c_ownership.wasm": {
+      "bytes": 99463,
+      "sha256": "4cd9835d423f1acc1a6d5b8f1260a7c205098f1b970db72b2f6d35ec3a55ed2f"
+    },
+    "wasm_contract_services.wasm": {
+      "bytes": 768039,
+      "sha256": "8b025d6b7758ec60c5e225c5a67e89c668eb12dcf7b855714f8d0c1c3e966c03"
+    },
+    "wasm_contract_values.wasm": {
+      "bytes": 836833,
+      "sha256": "d7806bbd977c191fab845cda50e7e670a4033ca4c794d251f339d6fd19489c9d"
+    },
+    "wasm_contract_vectors.wasm": {
+      "bytes": 562856,
+      "sha256": "0089405b58f5bc1124f8c1d9dcad78cd866edf9cc870f8cef2fd4e1b1ea3cfb6"
+    }
+  }
+}

@@ -30,6 +30,7 @@
 
 #include "sector_resolver.h"
 #include "matrix_math.h"
+#include "profile.h"
 #include "render/lod_distance.h"   // lod::normalized_switch_distance / reach / select_rep
 
 #include "world_flatten.h"     // world_flatten::FlatInstance
@@ -88,8 +89,18 @@ SectorLodResolver::resolve(const WorldState& state,
         ++rebin_count_;
     }
     const sector_grid::Sectors& sectors = sectors_;
+    // Timed here rather than inside lod_select.cpp: this is its only per-frame
+    // caller, and lod_select.cpp stays free of a ProfileLib link dependency for
+    // the hand-picked test link lines that compile it.
+    PROFILE_SCOPE_NAMED(sector_lod_scope, "resolve.sector_lod");
     auto chosen = lod_select::select_sector_lods_ex(sectors, lods, cam_pos,
         min_projected_size_, pixel_budget_, &distinct_parts_);
+    sector_lod_scope.stop();
+    // select_sector_lods_ex reads every binned instance once (its closest-
+    // instance distance pass), so what it scanned is the binned total.
+    size_t sector_lod_scanned = 0;
+    for (const auto& sector : sectors) sector_lod_scanned += sector.second.size();
+    PROFILE_COUNT("instances.sector_lod_scanned", sector_lod_scanned);
 
     // 3. Emit instances only for sectors within the activation sphere.
     //
@@ -110,6 +121,7 @@ SectorLodResolver::resolve(const WorldState& state,
     //
     // The child is the one site with a real instance scale; the parent's own
     // selection keeps scale 1.0f, exactly as before.
+    PROFILE_SCOPE("resolve.emit");
     const auto sector_active = [&](const sector_grid::SectorCoord& c) {
         const float dx = (c.x + 0.5f) * pitch_ - cam_pos.x;
         const float dy = (c.y + 0.5f) * pitch_ - cam_pos.y;
