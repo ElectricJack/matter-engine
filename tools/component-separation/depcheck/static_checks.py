@@ -230,6 +230,7 @@ def check_js_imports(rules: Rules, corpus: Corpus, component: Component) -> Resu
     if not files:
         result.fail("js-import.escapes-package", f"no JavaScript sources matched {component.js_include}")
         return result
+    allowed: dict[str, set[str]] = {}
     for rel in sorted(files):
         for line, spec in js_specifiers(read_text(rules.repo.abs(rel))):
             where = f"{rel}:{line} imports '{spec}'"
@@ -238,13 +239,21 @@ def check_js_imports(rules: Rules, corpus: Corpus, component: Component) -> Resu
                 result.fail("js-import.forbidden", f"{where} (matches {forbidden[0]!r})")
             elif spec.startswith(("./", "../")) or spec in (".", ".."):
                 target = posixpath.normpath(posixpath.join(posixpath.dirname(rel), spec))
-                if not under(target, component.directory):
-                    result.fail("js-import.escapes-package", f"{where} -> {target} is outside {component.directory}")
+                if under(target, component.directory):
+                    continue
+                owner = rules.owner_of(target)
+                if owner is not None and owner.name in component.allowed_components:
+                    allowed.setdefault(owner.name, set()).add(target)
+                else:
+                    result.fail("js-import.escapes-package", f"{where} -> {target} is outside {component.directory}"
+                                + (f" (component {owner.name} is not in allowed_components)" if owner else ""))
             elif spec.startswith("/") or ":" in spec:
                 result.fail("js-import.forbidden", f"{where} is an absolute or scheme specifier")
             elif spec not in component.js_allowed_bare_specifiers:
                 result.fail("js-import.undeclared",
                             f"{where} is a bare module that is neither standard language nor an injected host interface")
+    for name, targets in sorted(allowed.items()):
+        result.notes.append(f"imports allowed component {name}: {', '.join(sorted(targets))}")
     result.notes.append(f"scanned {len(files)} JavaScript file(s)")
     return result
 

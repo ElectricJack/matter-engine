@@ -2,8 +2,8 @@
 
 Measured on 2026-10-12 from base `1f4ff089a9a81f8f54528df6a131a70757648853`.
 This is the portable geometry/surface slice, not the aggregate project suite.
-The independent component work is qualified below. Delivery of the shared
-engine graph and the serialized full native build remains pending.
+The independent component work is qualified below. The reopened viewer census
+qualification and subsequent Linux-only completion are recorded at the end.
 
 ## Changes and coverage
 
@@ -238,9 +238,255 @@ OID is `9b689a8c03609948e454a890d52ec900a8a00328`. Core retains CastleStone
 8-seed/23-operation identity, dependency-change, cancellation/runaway and
 prior-result guards using its actual shared fixture implementation.
 
-Core must deliver its qualified graph/OID and the next serialized full native
-build slot. That final-source full build is required by this task's component
-CMake change; the native component/slice receipts above do not substitute for it.
-CI files belong to keen-current-19. Coordination is on
-`clear-stone-99-native-qualification`. This checkpoint does not close the task
-or claim the aggregate project suite meets its one-minute goal.
+Core must still deliver its qualified graph/OID. Supervisor message
+`msg-b8ebd1b2d89849bca89304bc7a4adafe` superseded the earlier core-first native
+order and allocated one canonical full native attempt to this ready component.
+That final-source full build is required by this task's component CMake change;
+the native component/slice receipts above do not substitute for it. CI files
+belong to keen-current-19. Current coordination and graph delivery are on
+`clear-stone-99-memory-fixtures`. This checkpoint does not close the task or
+claim the aggregate project suite meets its one-minute goal.
+
+### Canonical full native attempt: failed qualification
+
+The allocated attempt froze clean source at
+`4e90883eb88dc7b45e67a136cf31d8efcf437377`, unchanged before/after the run.
+It invoked the project canonical `./tools/build-windows-from-wsl.sh
+RelWithDebInfo` default target graph with `CMAKE_BUILD_PARALLEL_LEVEL=1`;
+the running Windows Ninja PID 94432 independently confirmed `-j 1`.
+A fresh native `Win32_Process` check immediately before launch found no
+competing build/compiler/wrapper processes in the checked process inventory.
+No process was killed and no implementation or build policy changed.
+
+Configure succeeded (exit 0). Build/wrapper failed (exit 1) after 1,541.79s
+(25m42s), from 2026-10-13 06:04:48 to 06:30:29 UTC. The graph contained 1,309
+steps; 560 completed before step 561 failed while compiling the unchanged
+`MatterEngine3/src/animation/animation_runtime_asset.cpp`. MSVC's fatal
+diagnostic at line 1095 was:
+
+```text
+fatal error C1090: PDB API call failed, error code '23': (0x000006BA)
+```
+
+No source compile error preceded this PDB API failure. No editor/product
+artifact was produced, so **full native qualification has not passed**.
+The complete log is `/tmp/clear-stone-99-full-native.log`, SHA-256
+`b4dc5bee7df43a157ff75e1997f842989b28981ec94a247e613a3627020fdca5`.
+`/tmp/clear-stone-99-full-native-receipt.json` records the frozen source,
+claim epoch, start/end/wall/exit status, process and parallelism checks, and
+hashes/timestamps of 17 partial library/compiler-probe artifacts. These partial
+artifacts are not product qualification. The native build tree remains intact.
+A post-exit native query found no checked build/compiler or `mspdbsrv` process.
+
+Actual completion/failure receipts were sent once to the supervisor on the
+current delivery thread (`msg-26c5acf057b3409784f475a9dc0ae3e2`) and to the
+core owner on `steady-harbor-62-coordination`
+(`msg-b1fad5bb010846ecaa35bb57a726b03b`). A further native attempt awaits the
+supervisor's next serialized allocation. Shared graph delivery remains a
+separate pending item; the passing component results and disclosed coverage
+boundaries above are unchanged.
+
+### Linux coverage reconciliation and supplemental cases
+
+The core owner's configured 136-case inventory at checkpoint
+`46702bcf5b26fa44edf88efd6d8f852fcf0abd00` includes 20 of this slice's
+25 CPU cases. Its inventory SHA-256 is
+`0ba5d420fed1322ffacdede83c43183ea9809106076ef796957c1b95a1d2de91`.
+It remains a configured/building checkpoint, not a qualified aggregate.
+The five cases outside that inventory are `polygon_triangulate_tests`,
+`mesh_indexed_tests`, `mesh_transform_tests`, `mesh_smooth_tests` and
+`oriented_cube_tests`. The inventory has no composed peer graphs; the
+standalone enabled/disabled GeometryCompute cases also need composition.
+
+Prepared `/tmp/clear-stone-99-geometry-supplement` registers those seven
+actual binaries, with their paths and SHA-256 values in `registration.json`.
+The four SurfaceLib binaries are the actual Make outputs documented above.
+The polygon binary was additionally built from its canonical Make target
+using private objects, without a mock or copied algorithm:
+
+```sh
+make -C MatterEngine3/tests -j1 OBJDIR=build/geometry-supplement \
+  CFLAGS='-O3 -std=c++17 -Wall -Wno-missing-braces -Wno-unused-variable -DPLATFORM_DESKTOP -DMATTER_VULKAN_ONLY -UNDEBUG' \
+  build/polygon_triangulate_tests
+```
+
+That build passed in 13.09s. The supplemental CMake project's default ALL
+target rebuilds the actual disabled and enabled compute test targets before
+runtime CTest, preserving their mandatory generated-graph/source
+qualification prerequisites. Its GPU environment uses the same actual
+Lavapipe loader and validation layer described above; shader/synchronization
+oracles and the persistent-cache disabling settings are unchanged.
+
+```sh
+cmake -S /tmp/clear-stone-99-geometry-supplement \
+  -B /tmp/clear-stone-99-geometry-supplement/build
+cmake --build /tmp/clear-stone-99-geometry-supplement/build --parallel 1
+ctest --test-dir /tmp/clear-stone-99-geometry-supplement/build -j4 \
+  --output-on-failure \
+  --output-junit /tmp/clear-stone-99-geometry-supplement/results.xml
+```
+
+Configure and exact seven-command registration verification passed. The
+mandatory build qualifications passed in 8.81s; all seven runtime cases
+passed together in 14.98s under `strace` (15.11s wrapper wall time). The
+runtime audit covers 58 actual test/descendant process/thread IDs and 68
+platform paths, with zero unexpected paths. Loader libraries, Vulkan
+ICD/layer inputs and proc/sys information are counted separately from
+CTest registration/log reads; actual tests read no fixture, source, asset,
+build/evidence data or persistent shader cache. Receipts are
+`qualification.json`, `results.xml`, `runtime.json`, `runtime.trace` and
+`runtime-file-read-audit.json` inside the supplemental directory.
+
+This local supplement does not qualify the core graph, replace the matched
+before/after table, or establish aggregate runtime. Composition must be
+reconciled against the core owner's final qualified graph/OID. CORE has
+acknowledged the failed native completion receipt and owns the next allocated
+native turn; this component still awaits its own retry allocation and a
+passing full native qualification.
+
+
+### Final reconciliation and git-first train disposition (2026-10-13)
+
+The core owner reconciled the missing five CPU cases and two compute cases
+in its own source graph at private checkpoint
+`ad635e0b8482c92842faafe127a0e66d4a83495f`. The five CPU test sources and
+GeometryCompute test/build policy sources byte-match this slice's delivered
+implementation. Its common CPU cases link the real engine/surface libraries
+and GNU raylib support; the two actual isolated compute graphs preserve
+backend macros, shaders, embedding, mandatory default ALL qualifications and
+runtime-target prerequisites. Common names are `matter_geometry_compute_off`
+and `matter_geometry_compute_on`; ON has GPU labeling and the `matter_gpu`
+resource lock. No peer binaries or private core source were imported here.
+
+The core's scoped seven-case parallel CTest/file trace passed in 12.607s;
+its clean-checkpoint target build passed in 8.946s and reran both compute
+qualifiers. Final source/macro/closure/name/tier receipts are in
+`/tmp/steady-harbor-geometry-supplement-check/receipt.json`; this worker's
+read-only reconciliation is
+`/tmp/clear-stone-99-core-supplement-reconciliation-ad635.json`.
+The supervisor independently verified the receipts in
+`msg-7848536a665742cbb919915dce998c12`. The 143-case inventory (142 CPU,
+one GPU) is registration evidence, not a passing aggregate suite. Full core
+GNU acceptance still has three mandatory OBJ golden failures, also reproduced
+with the original production archive; no goldens or predicates were changed.
+The private atlas tie-order experiment is not integrated or claimed as a fix.
+
+A later allocated exact-TU diagnostic was stopped before either compiler
+launch when the final Win32 census found concurrent CI work. Copied-original
+PDB and fresh-isolated PDB outcomes are both **NOT_RUN**. The original
+29,724,672-byte PDB still hashes to
+`a92c7586a8fce4752ebaf62f9c420b9aaac920981b1236d6bbe68763fd8dbf88`,
+and all 17 retained partial artifact hashes remain unchanged. Finalized
+prelaunch evidence is
+`/tmp/clear-stone-99-pdb-probe-prelaunch-blocker.json` (SHA-256
+`d353ebe2418aadf27151c8b138f8ab419589f1a72cdfb50a7a9eeaff2a479bc9`).
+The original preparation is preserved; the corrected isolated-output wrapper
+and exact command template remain under
+`C:/Users/webde/AppData/Local/Temp/clear-stone-99-native/`.
+No compiler/server was killed and no debug or assertion option was weakened.
+Neither this deferral nor any other branch's CI success is native acceptance
+of this slice.
+
+Supervisor message `msg-63181284a5c6466a8b26e2051352121d` applies Jack's
+2026-10-13 git-first train policy: complete the pushed branch using passing
+Linux-side verification, cancel the durable CI wait, and let the train run
+full Windows validation once per batch, with a repair task if it fails.
+That explicit completion instruction supersedes the earlier requirement to
+wait for this slice's passing full native build/shared aggregate delivery.
+The durable wait was cancelled; no new native compile was launched.
+Completion records the existing passing Linux source/build/runtime checks,
+the measured slice timings and every coverage weakening above. Full native
+acceptance and the aggregate under-one-minute goal remain unproven here and
+belong to subsequent batch/common-suite validation.
+
+### Reopened viewer census qualification (2026-10-14)
+
+Claim epoch 17 restored the published slice with a guarded pull, then merged
+current `dev` at `75b5c583f1fe388d47902f711a2bbba84396f4a6`. The requested
+viewer census repair was already present: `f3912ec8` sets the ON/OFF counts
+to 219/218, and `2b1fede4` additionally requires the canonical
+`mesh_raster.cpp` and `mesh_pipelines.cpp` members. This continuation
+preserves those changes and the previously shipped geometry/surface work.
+The only additional script change corrects the success banner from 47
+editor sources to the 48 already required by its assertion. No assertion,
+fixture, runtime test, or coverage predicate is weakened.
+
+The actual canonical `cmake/tests/viewer_graph_tests.ps1` passed in 22.127s
+on the isolated Windows-drive checkout
+`D:/aq-clear-stone-99-e17-z3pl19_q`. Both native MSVC configurations passed:
+retopology ON has 219 unique viewer sources, OFF has 218, the editor has 48,
+and the headless graph retains 168 core plus 21 surface sources. The C-source,
+definition, direct-link, isolation, and required-source assertions also pass.
+The tested graph script SHA-256 is
+`045b63b9a1e376d9c0571658db3fbd4482f6c8bb2f6d06476c7cc65475dac938`.
+The source receipt, native graph log and timed receipt are
+`/tmp/clear-stone-99-e17-source.json`,
+`/tmp/clear-stone-99-e17-viewer-graph.log` and
+`/tmp/clear-stone-99-e17-viewer-graph.json`.
+
+The full canonical Windows build result is recorded below separately from
+the passing graph configuration. Previous runtime measurements above were
+not rerun or relabeled as measurements of this merged source.
+
+The initial `RelWithDebInfo all` wrapper run began at Unix time
+`1791984915.215` with parallelism four, before the queued supervisor resource
+correction was read. Supervisor message
+`msg-d3aca17c703b4051acd564ae48bbe8d2` identified an active CI producer and
+required serialized native turns with parallelism two. After reading that
+message, this worker stopped only its exact owned PowerShell producer
+(PID 10156) and its build descendants, preserving shared PDB servers and
+unrelated processes. This attempt was **ABORTED**, not a compiler failure or
+a passing build: wrapper exit 255 after 1124.509s, last completed Ninja step
+828/1309. The isolated source checkout and partial artifacts are retained.
+Receipts are
+`/tmp/clear-stone-99-e17-native-build.log`,
+`/tmp/clear-stone-99-e17-native-build.json` and
+`/tmp/clear-stone-99-e17-native-cancel.log`.
+
+Supervisor message `msg-484bea7703d7472e86ecde3ace1d07a2` verifies Jack's
+operative directive `msg-cd61d32c8a4145639a78966a94924d2d`: Windows CI is
+not required for Matter; applicable Linux build/tests must pass. This
+supersedes the native qualification/resource wait. The existing wait had
+already expired and was consumed; no replacement wait or native producer was
+started. The aborted build remains an aborted result, rather than acceptance
+evidence.
+
+Fresh Linux qualification compiled the actual merged repository sources at
+`75b5c583f1fe388d47902f711a2bbba84396f4a6`, with only the graph-banner and
+this report modified. GCC 13.3.0 and CMake 3.28.3 were used. The actual
+SurfaceLib Makefile built the eight targets listed in the command above with
+the same flags and compatibility implementation. The engine's actual test
+Makefile built `build/terrain_mesher_tests` and `build/seam_weld_tests`, using
+the same C++ flags, `LDFLAGS='-lm -lpthread -ldl -lrt'`, and empty `LDLIBS`.
+Assertions were enabled with `-UNDEBUG`; no fixture or predicate changed.
+All builds used parallelism one.
+
+The actual standalone GeometryCompute graph was configured with Ninja,
+`CMAKE_BUILD_TYPE=Release`, `BUILD_TESTING=ON`,
+`MATTER_GEOMETRY_COMPUTE=OFF`, and
+`CMAKE_CXX_FLAGS_RELEASE='-O3 -UNDEBUG'`. Its mandatory direct-link,
+neutral-source and generated-graph qualification passed during the build.
+
+| Fresh Linux step | Wall seconds | Result |
+| --- | ---: | --- |
+| Eight SurfaceLib Make targets | 30.445 | pass |
+| Terrain mesher and seam-weld Make targets | 20.016 | pass |
+| GeometryCompute configure / build with qualification | 0.472 / 24.697 | pass |
+| Ten actual surface/engine binaries, traced CTest `-j2` | 1.434 | 10/10 pass |
+| Disabled GeometryCompute, traced CTest `-j2` | 0.151 | 1/1 pass |
+
+The ten binaries were registered by absolute path in an external temporary
+CTest graph; the compute run used its actual standalone CTest registration.
+The two runtime commands traced `execve,openat,clone,clone3,fork,vfork`.
+All 12 test/descendant process or thread IDs opened only `/etc/ld.so.cache`
+and system libc/libgcc/libm/libstdc++ libraries. No fixture, source, asset,
+build-data or cache file was opened by the tests. CTest's own registration
+and result-file reads are excluded from that runtime audit.
+
+Commands, timings, compiler versions and binary hashes are retained in
+`/tmp/clear-stone-99-e17-linux-es4la4c3/receipt.json`; that directory also
+contains build logs, both JUnit results, raw syscall traces and
+`file-read-audit.json`. The graph-script hash still matches the native graph
+receipt above. These are fresh results for this bounded 11-test scope;
+the earlier 25-test and enabled GPU runs were not rerun or relabeled.
+No aggregate under-one-minute result or full native acceptance is claimed.

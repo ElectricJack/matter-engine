@@ -5,10 +5,11 @@
 #include <cstddef>
 #include <cstdlib>
 #include <cstring>
-#include <limits>
+#include <exception>
+#include <functional>
 #include <map>
+#include <new>
 #include <set>
-#include <stdexcept>
 
 namespace matter::portable_host {
 namespace {

@@ -7,11 +7,20 @@ on:
     types: [opened, synchronize, reopened, ready_for_review]
   workflow_dispatch:
   workflow_call:
+# AQ's cutover preview requires explicit PR targets. Same-repository aq/**
+# PRs use their push checks; other PRs run real checks below. This avoids
+# duplicate builds, and a newer aq/** push supersedes an older build.
+# Duplicate PR jobs have distinct names so their skipped results cannot
+# replace the required push checks in ordinary completion or merge gates.
+concurrency:
+  group: tests-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ startsWith(github.ref, 'refs/heads/aq/') }}
 permissions:
   contents: read
 jobs:
   linux-foundations:
-    name: Linux foundation build and tests
+    name: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && startsWith(github.head_ref, 'aq/') && 'Duplicate PR Linux (push checks apply)' || 'Linux foundation build and tests' }}
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository || !startsWith(github.head_ref, 'aq/')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -21,12 +30,73 @@ jobs:
       - name: Test the attestation verifier
         run: python3 -m unittest discover -s tools/tests -p test_aq_attestation.py -v
       - name: Build and test the portable foundations
+        run: python3 tools/ci-linux.py
+      - name: Upload Linux evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: linux-${{ github.sha }}-${{ github.run_attempt }}
+          path: artifacts/ci-linux/
+          if-no-files-found: error
+  # Every component configures, builds and tests alone, then the source
+  # manifest, dependency/ownership and fixture gates run. The hosted runner has
+  # no Emscripten SDK or Vulkan SDK, so the WASM smoke and the graphics/vulkan
+  # probe report NOT RUN / UNTESTED in summary.json rather than passing.
+  component-matrix:
+    name: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && startsWith(github.head_ref, 'aq/') && 'Duplicate PR component matrix (push checks apply)' || 'Component build matrix and dependency rules' }}
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository || !startsWith(github.head_ref, 'aq/')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Build and test each component alone and check the dependency rules
+        run: python3 tools/ci-component-matrix.py --jobs 4
+      - name: Upload component evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: components-${{ github.sha }}-${{ github.run_attempt }}
+          path: |
+            artifacts/ci-components/*.log
+            artifacts/ci-components/*.json
+          if-no-files-found: error
+  # Agents build and test on Linux as they work; the single Windows runner is
+  # the scarce resource. A branch whose changes cannot reach the native build
+  # (web/, docs/, Markdown only) skips it -- a skipped required job reports
+  # success. Train/promotion candidates, dev/staging/main and called runs
+  # always build in full.
+  native-scope:
+    name: Native build scope
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository || !startsWith(github.head_ref, 'aq/')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      needed: ${{ steps.scope.outputs.needed }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - id: scope
+        shell: bash
         run: |
-          make -C libs/MemoryLib -j2 test
-          make -C libs/MeshChartingLib/tests -j2 run
-          make -C libs/AssetStoreLib -j2 test
+          needed=true
+          if [[ "$GITHUB_EVENT_NAME" == push && "$GITHUB_REF" == refs/heads/aq/* \
+              && ! "$GITHUB_REF" =~ ^refs/heads/aq/(parent|integration|batches|promote|backmerge)/ ]] \
+              && git fetch -q origin dev && base=$(git merge-base HEAD origin/dev); then
+            changed=$(git diff --name-only "$base" HEAD)
+            if [[ -n "$changed" ]] && ! grep -qvE '^(web/|docs/)|\.md$' <<<"$changed"; then
+              needed=false
+            fi
+          fi
+          echo "needed=$needed" >> "$GITHUB_OUTPUT"
+          echo "Native Windows build needed: $needed"
   native:
-    name: Native Windows build and tests
+    name: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && startsWith(github.head_ref, 'aq/') && 'Duplicate PR Windows (push checks apply)' || 'Native Windows build and tests' }}
+    needs: native-scope
+    if: needs.native-scope.outputs.needed == 'true'
     runs-on: [self-hosted, Windows, X64, matter-engine-msvc]
     timeout-minutes: 90
     env:

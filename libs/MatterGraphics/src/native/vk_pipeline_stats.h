@@ -26,7 +26,8 @@ inline void log_vk_pipeline_stats(VkDevice device, VkPipeline pipeline,
         MATTER_LOGW("pipeline-stats", "%s: executable statistics unavailable", label);
         return;
     }
-    VkPipelineInfoKHR pipeline_info{VK_STRUCTURE_TYPE_PIPELINE_INFO_KHR};
+    VkPipelineInfoKHR pipeline_info{};
+    pipeline_info.sType = VK_STRUCTURE_TYPE_PIPELINE_INFO_KHR;
     pipeline_info.pipeline = pipeline;
     uint32_t executable_count = 0;
     const VkResult property_result = properties(
@@ -36,8 +37,8 @@ inline void log_vk_pipeline_stats(VkDevice device, VkPipeline pipeline,
                     label, property_result, executable_count);
         return;
     }
-    std::vector<VkPipelineExecutablePropertiesKHR> executables(
-        executable_count, {VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_PROPERTIES_KHR});
+    std::vector<VkPipelineExecutablePropertiesKHR> executables(executable_count);
+    for (auto& value : executables) value.sType = VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_PROPERTIES_KHR;
     if (properties(device, &pipeline_info, &executable_count,
                    executables.data()) != VK_SUCCESS)
         return;
@@ -45,14 +46,14 @@ inline void log_vk_pipeline_stats(VkDevice device, VkPipeline pipeline,
         MATTER_LOGI("pipeline-stats", "%s executable=%s stages=0x%x subgroup=%u",
                     label, executables[i].name, executables[i].stages,
                     executables[i].subgroupSize);
-        VkPipelineExecutableInfoKHR info{
-            VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_INFO_KHR};
+        VkPipelineExecutableInfoKHR info{};
+        info.sType = VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_INFO_KHR;
         info.pipeline = pipeline;
         info.executableIndex = i;
         uint32_t count = 0;
         if (statistics(device, &info, &count, nullptr) != VK_SUCCESS) continue;
-        std::vector<VkPipelineExecutableStatisticKHR> values(
-            count, {VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_STATISTIC_KHR});
+        std::vector<VkPipelineExecutableStatisticKHR> values(count);
+        for (auto& value : values) value.sType = VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_STATISTIC_KHR;
         if (statistics(device, &info, &count, values.data()) != VK_SUCCESS)
             continue;
         for (const auto& value : values) {
@@ -85,9 +86,8 @@ inline void log_vk_pipeline_stats(VkDevice device, VkPipeline pipeline,
             MATTER_LOGI("pipeline-stats", "%s IR query result=%d count=%u",
                         label, ir_result, ir_count);
             if (ir_result == VK_SUCCESS) {
-                std::vector<VkPipelineExecutableInternalRepresentationKHR> irs(
-                    ir_count,
-                    {VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_INTERNAL_REPRESENTATION_KHR});
+                std::vector<VkPipelineExecutableInternalRepresentationKHR> irs(ir_count);
+                for (auto& value : irs) value.sType = VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_INTERNAL_REPRESENTATION_KHR;
                 if (representations(device, &info, &ir_count, irs.data()) == VK_SUCCESS)
                     for (const auto& ir : irs)
                         MATTER_LOGI("pipeline-stats", "%s IR=%s text=%u bytes=%zu",
