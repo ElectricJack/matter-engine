@@ -1,3 +1,5 @@
+#include "part_bundle.h"
+#include "source_snapshot_modules.h"
 // MatterEngine3/src/provider/local_provider.cpp
 //
 // Implementation of the in-process WorldProvider. See local_provider.h for the
@@ -35,6 +37,7 @@
 #include "script/world_definition_loader.h"
 
 #include "part_graph.h"        // -DMATTER_HAVE_SCRIPT_HOST pulls in script_host.h
+#include "component_adapters/authoring/engine/legacy_part_route.h"
 #include "part_asset_v2.h"     // cache_path_resolved, cache_path_flat, FlatInstanceRef
 #include "part_flatten.h"      // bake-time subtree flattening
 #include "world_lights.h"
@@ -1497,14 +1500,34 @@ bool load_water_animation_cache(
 LocalProviderConfig make_engine_local_provider_config(
     const std::string& project_dir, const std::string& world_name,
     const std::string& engine_shared_lib_dir,
-    FluidBakeBackendFactory backend_factory) {
+    FluidBakeBackendFactory backend_factory,
+    std::shared_ptr<const matter::WorldFixtureIO> fixture_io) {
     LocalProviderConfig config = LocalProviderConfig::for_project(
-        project_dir, world_name, engine_shared_lib_dir);
+        project_dir, world_name, engine_shared_lib_dir, std::move(fixture_io));
     config.fluid_bake_backend_factory = std::move(backend_factory);
     return config;
 }
 
+bool LocalProviderConfig::read_source(const std::string& path, std::string& out) const {
+    if (fixture_io && fixture_io->sources) return fixture_io->sources->read(path, out);
+    std::ifstream stream(path, std::ios::binary);
+    if (!stream) return false;
+    std::ostringstream bytes;
+    bytes << stream.rdbuf();
+    out = bytes.str();
+    return true;
+}
+
 LocalProvider::LocalProvider(LocalProviderConfig cfg) : cfg_(std::move(cfg)) {}
+
+// Out-of-line so the implicit inline destructor is not emitted in every
+// including TU. LocalProvider owns unique_ptrs to part_surface::SourceCache
+// (unguarded) and, under MATTER_HAVE_SCRIPT_HOST, script_host::ScriptHost /
+// part_graph::FileModuleResolver / part_graph::HostBaker. All are complete in
+// this TU (part_surface.h, script_host.h, part_graph.h are included above), so a
+// defaulted destructor is well-formed here; a headless consumer TU that builds
+// and destroys a LocalProvider need not see those definitions.
+LocalProvider::~LocalProvider() = default;
 
 #if defined(MATTER_HAVE_SCRIPT_HOST)
 void LocalProvider::bind_solid_source_baker(script_host::ScriptHost& host) const {
@@ -1629,7 +1652,8 @@ bool LocalProvider::ensure_part_surface(uint64_t hash, const part_graph::BakeInp
     part_surface::Stats stats;gpu_meshing::Error error;
     if (!part_surface_cache_) part_surface_cache_=std::make_unique<part_surface::SourceCache>();
     if (!part_surface::prepare(recipe,abs_cache_root_,queued_project,queued_shade,
-                               prepared,stats,error,cfg_.surface_control,part_surface_cache_.get())) {message=error.message;return false;}
+                               prepared,stats,error,cfg_.surface_control,part_surface_cache_.get(),
+                               cfg_.fixture_io ? cfg_.fixture_io->cache.get() : nullptr)) {message=error.message;return false;}
     const auto publish=cfg_.publish_part_surface;
     auto invoke=[prepared,publish](std::string& text){return publish(prepared,text);};
     if (!(run?run("finite_publish",invoke,message):invoke(message))) return false;
@@ -3409,7 +3433,9 @@ std::string LocalProvider::resolve_object_path(const std::string& module) const 
     for (const std::string& root : abs_object_roots_) {
         const std::string path = (fs::path(root) / (module + ".js")).string();
         ec.clear();
-        if (fs::is_regular_file(path, ec)) return path;
+        if (cfg_.fixture_io && cfg_.fixture_io->sources) {
+            if (cfg_.fixture_io->sources->exists(path)) return path;
+        } else if (fs::is_regular_file(path, ec)) return path;
     }
     return {};
 }
@@ -3425,28 +3451,34 @@ std::string LocalProvider::resolve_object_path(const std::string& module) const 
 bool LocalProvider::prepare_paths(std::string& err) {
     namespace fs = std::filesystem;
     std::error_code ec;
-    fs::create_directories(fs::path(cfg_.cache_root) / "parts", ec);
+    if (!(cfg_.fixture_io && cfg_.fixture_io->cache))
+        fs::create_directories(fs::path(cfg_.cache_root) / "parts", ec);
     if (ec) {
         err = "LocalProvider: cannot create cache root " + cfg_.cache_root +
               ": " + ec.message();
         return false;
     }
 
-    abs_cache_root_ = abspath(cfg_.cache_root);
-    abs_schemas_ = abspath(cfg_.object_sources_dir());
+    const auto resolve_path = [&](const std::string& path) {
+        return cfg_.fixture_io && cfg_.fixture_io->sources
+            ? matter::SourceSnapshot::key(path) : abspath(path);
+    };
+    abs_cache_root_ = cfg_.fixture_io && cfg_.fixture_io->cache
+        ? matter::SourceSnapshot::key(cfg_.cache_root) : abspath(cfg_.cache_root);
+    abs_schemas_ = resolve_path(cfg_.object_sources_dir());
     abs_object_roots_.clear();
     for (const std::string& root : cfg_.object_roots())
-        abs_object_roots_.push_back(abspath(root));
+        abs_object_roots_.push_back(resolve_path(root));
     abs_shared_lib_roots_.clear();
     abs_project_shared_lib_.clear();
     abs_engine_shared_lib_.clear();
-    abs_world_path_ = abspath(cfg_.world_path);
+    abs_world_path_ = resolve_path(cfg_.world_path);
     if (!cfg_.project_shared_lib_dir.empty())
-        abs_project_shared_lib_ = abspath(cfg_.project_shared_lib_dir);
+        abs_project_shared_lib_ = resolve_path(cfg_.project_shared_lib_dir);
     if (!cfg_.engine_shared_lib_dir.empty())
-        abs_engine_shared_lib_ = abspath(cfg_.engine_shared_lib_dir);
+        abs_engine_shared_lib_ = resolve_path(cfg_.engine_shared_lib_dir);
     for (const std::string& root : cfg_.shared_lib_roots())
-        abs_shared_lib_roots_.push_back(abspath(root));
+        abs_shared_lib_roots_.push_back(resolve_path(root));
     return true;
 }
 
@@ -3480,10 +3512,12 @@ bool LocalProvider::load_authored_world(std::string& err) {
     hydrology_settings_.reset();
     river_network_.reset();
     terrain_collision_.reset();
+    gi_bake_.reset();
     authored_entities_.clear();
 
 #if defined(MATTER_HAVE_SCRIPT_HOST)
     matter::WorldLoadDesc load_desc;
+    load_desc.source_snapshot = cfg_.fixture_io ? cfg_.fixture_io->sources : nullptr;
     load_desc.world_path = abs_world_path_;
     load_desc.objects_dir = abs_schemas_;
     load_desc.project_shared_lib_dir = abs_project_shared_lib_;
@@ -3545,6 +3579,7 @@ bool LocalProvider::load_authored_world(std::string& err) {
     hydrology_settings_ = std::move(adapted.hydrology);
     river_network_ = std::move(adapted.river_network);
     terrain_collision_ = std::move(adapted.terrain_collision);
+    gi_bake_ = adapted.gi_bake;
     authored_entities_ = definition.entities;
     // defineMaterial() already installed these in the global registry while the
     // world script evaluated (chart-VT contract C3); what we keep here is the
@@ -3559,11 +3594,17 @@ bool LocalProvider::load_authored_world(std::string& err) {
     // Field worlds retain the existing eval_world/streaming path. The statics
     // loader intentionally does not execute field(), so identify the authored
     // method lexically and let install_world perform the established evaluation.
-    std::ifstream source_file(abs_world_path_, std::ios::binary);
-    std::ostringstream source_stream;
-    source_stream << source_file.rdbuf();
+    std::string world_source;
+    if (load_desc.source_snapshot) {
+        load_desc.source_snapshot->read(abs_world_path_, world_source);
+    } else {
+        std::ifstream source_file(abs_world_path_, std::ios::binary);
+        std::ostringstream source_stream;
+        source_stream << source_file.rdbuf();
+        world_source = source_stream.str();
+    }
     static const std::regex field_method("\\bfield\\s*\\(");
-    if (std::regex_search(source_stream.str(), field_method))
+    if (std::regex_search(world_source, field_method))
         world_module_ = cfg_.world_name;
     else if (authored_world_cache_.empty()) {
         BAKE_SPAN("provider.world-cache-capture");
@@ -3629,6 +3670,7 @@ void LocalProvider::append_entity_part_roots() {
 }
 
 bool LocalProvider::install_graph(std::string& err, part_graph::BakePolicy policy) {
+    part_bundle::ScopedStorage cache_scope(cfg_.fixture_io ? cfg_.fixture_io->cache : nullptr);
     pending_authored_world_cache_.clear();
     // Reset all mutable state at entry so repeated install_graph() calls are
     // idempotent. Unload any previously-loaded tileset slots so a re-connect
@@ -3643,6 +3685,7 @@ bool LocalProvider::install_graph(std::string& err, part_graph::BakePolicy polic
     hit_count_   = 0;
     install_bake_count_ = 0;
     baked_hashes_.clear();
+    lod_plans_installed_.clear();
     part_surfaces_.clear(); part_surface_cache_.reset(); sources_without_surface_.clear();
 
     // Clear cross-phase state
@@ -3684,11 +3727,17 @@ bool LocalProvider::install_graph(std::string& err, part_graph::BakePolicy polic
     // paths (Task 3 Phase B: no chdir required).
     host_ = std::make_unique<script_host::ScriptHost>();
     host_->set_shared_lib_roots(abs_shared_lib_roots_);
+    if (cfg_.fixture_io && cfg_.fixture_io->sources)
+        host_->set_module_sources(matter::source_snapshot_modules(
+            *cfg_.fixture_io->sources, abs_shared_lib_roots_));
     bind_solid_source_baker(*host_);
-    resolver_ = std::make_unique<part_graph::FileModuleResolver>(*host_, abs_object_roots_);
+    resolver_ = std::make_unique<part_graph::FileModuleResolver>(*host_, abs_object_roots_,
+        cfg_.fixture_io ? cfg_.fixture_io->sources : nullptr);
     // Task 13 (Phase C): create a shared HostBaker that persists beyond install_graph()
     // so ensure_part_baked() can reuse it without reconstructing a ScriptHost.
-    host_baker_ = std::make_unique<part_graph::HostBaker>(*host_, abs_cache_root_);
+    host_baker_ = std::make_unique<part_graph::HostBaker>(*host_, abs_cache_root_,
+        cfg_.fixture_io ? cfg_.fixture_io->cache : nullptr);
+    host_baker_->set_portable_route(matter::authoring_adapter::make_legacy_part_route());
     // W3: thread the optional per-rung bake observer (null in production).
     host_baker_->set_bake_observer(cfg_.bake_observer);
 
@@ -3841,6 +3890,7 @@ bool LocalProvider::install_graph(std::string& err, part_graph::BakePolicy polic
 }
 
 bool LocalProvider::ensure_part_baked(uint64_t part_hash, std::string& err) {
+    part_bundle::ScopedStorage cache_scope(cfg_.fixture_io ? cfg_.fixture_io->cache : nullptr);
 #if defined(MATTER_HAVE_SCRIPT_HOST)
     if (!host_baker_) {
         err = "ensure_part_baked: install_graph() has not been called";
@@ -3913,6 +3963,11 @@ bool LocalProvider::ensure_part_baked(uint64_t part_hash, std::string& err) {
             }
         }
 
+        // Authored LOD plans reach the flattener once per hash per session.
+        // A cached node revisited by the publish loop must not rebuild three
+        // QuickJS runtimes to re-derive a plan it already installed.
+        if (cached && lod_plans_installed_.count(hash)) return true;
+
         // Match graph install: authored parameter rungs and noImpostor must
         // reach the flattener before a body can become drawable.
         if (!host_baker_->bake_static_lods(bi.source, bi.params, bi.child_hashes,
@@ -3935,6 +3990,9 @@ bool LocalProvider::ensure_part_baked(uint64_t part_hash, std::string& err) {
             ++baked_count_;
             baked_hashes_.insert(hash);
         }
+        // Recorded only once the whole node succeeded: the early-out above
+        // also skips ensure_part_surface, so a failure there still retries.
+        lod_plans_installed_.insert(hash);
 
         return true;
     };
@@ -3949,6 +4007,7 @@ bool LocalProvider::ensure_part_baked(uint64_t part_hash, std::string& err) {
 }
 
 bool LocalProvider::ensure_part_flattened(uint64_t part_hash) {
+    part_bundle::ScopedStorage cache_scope(cfg_.fixture_io ? cfg_.fixture_io->cache : nullptr);
     // Identical logic to compose_world's flatten_one lambda (moved here verbatim
     // as a member; compose_world delegates to this function).
     // Transient parts live in scratch; their flats belong there too (never the cache).
@@ -4007,6 +4066,7 @@ bool LocalProvider::ensure_part_flattened(uint64_t part_hash) {
 }
 
 std::string LocalProvider::artifact_root(uint64_t part_hash) const {
+    part_bundle::ScopedStorage cache_scope(cfg_.fixture_io ? cfg_.fixture_io->cache : nullptr);
     if (!transient_dir_.empty()) {
         const std::string scratch_part =
             transient_dir_ + "/" + part_asset::cache_path_resolved(part_hash);
@@ -4018,6 +4078,7 @@ std::string LocalProvider::artifact_root(uint64_t part_hash) const {
 }
 
 bool LocalProvider::compose_world(WorldManifest& out, std::string& err) {
+    part_bundle::ScopedStorage cache_scope(cfg_.fixture_io ? cfg_.fixture_io->cache : nullptr);
     // Requires install_graph() to have succeeded.
     // All absolute paths (abs_*_) are set by install_graph().
 
@@ -4168,6 +4229,7 @@ bool LocalProvider::run_tileset_deferred(
     std::function<bool()> is_cancelled,
     std::string& err)
 {
+    part_bundle::ScopedStorage cache_scope(cfg_.fixture_io ? cfg_.fixture_io->cache : nullptr);
 #if defined(MATTER_HAVE_SCRIPT_HOST)
     // Chart-VT spec Phase 3: the loop is no longer "every `tileset: true` root,
     // hardwired to material 16". It is "every declared detail bake" — the
@@ -4193,8 +4255,13 @@ bool LocalProvider::run_tileset_deferred(
     // carries the Vulkan bake + slot upload, spec §I.7 "Render-thread half".)
     auto run_gpu = [&](const char* name, std::function<bool(std::string&)> fn,
                        std::string& e) -> bool {
-        if (cfg_.gpu_run) return cfg_.gpu_run(name, std::move(fn), e);
-        return fn(e);
+        const auto fixture_io = cfg_.fixture_io;
+        auto operation = [fixture_io, fn = std::move(fn)](std::string& error) {
+            part_bundle::ScopedStorage cache_scope(fixture_io ? fixture_io->cache : nullptr);
+            return fn(error);
+        };
+        if (cfg_.gpu_run) return cfg_.gpu_run(name, std::move(operation), e);
+        return operation(e);
     };
 
     // sorted_child_hashes is an OUT param: the phase already sorts the root's
@@ -4208,7 +4275,7 @@ bool LocalProvider::run_tileset_deferred(
         sorted_child_hashes.clear();
         return tileset::run_tileset_phase_from_object_roots(
             abs_object_roots_, root_module, root_params_json, abs_cache_root_,
-            settled, settle_err, abs_shared_lib_roots_, &sorted_child_hashes);
+            settled, settle_err, abs_shared_lib_roots_, &sorted_child_hashes, cfg_.fixture_io);
     };
 
     // Slot load, shared by the post-bake and cache-hit paths (spec §I.7 "Slot
@@ -4287,12 +4354,13 @@ bool LocalProvider::run_tileset_deferred(
         // the publication path for the final .gtex.
         {
             const std::string descriptor_path = resolve_object_path(root_module);
-            std::ifstream descriptor_file(descriptor_path, std::ios::binary);
-            if (descriptor_file) {
-                const std::string descriptor_source{std::istreambuf_iterator<char>(descriptor_file),
-                                                     std::istreambuf_iterator<char>()};
+            std::string descriptor_source;
+            if (cfg_.read_source(descriptor_path, descriptor_source)) {
                 script_host::ScriptHost detail_host;
                 detail_host.set_shared_lib_roots(abs_shared_lib_roots_);
+                if (cfg_.fixture_io && cfg_.fixture_io->sources)
+                    detail_host.set_module_sources(matter::source_snapshot_modules(
+                        *cfg_.fixture_io->sources, abs_shared_lib_roots_));
                 const std::string merged = detail_host.merged_params_json(
                     descriptor_source, root_params_json);
                 detail_bake::BrickBondDescriptor descriptor;
@@ -4315,10 +4383,11 @@ bool LocalProvider::run_tileset_deferred(
                         descriptor_source, root_params_json);
                     if (!descriptor_hash) { err = "brick bond descriptor identity failed"; return false; }
                     const std::string source_path = resolve_object_path(descriptor.source_module);
-                    std::ifstream source_file(source_path, std::ios::binary);
-                    if (!source_file) { err = "brick bond source module unavailable: " + descriptor.source_module; return false; }
-                    const std::string source_code{std::istreambuf_iterator<char>(source_file),
-                                                  std::istreambuf_iterator<char>()};
+                    std::string source_code;
+                    if (!cfg_.read_source(source_path, source_code)) {
+                        err = "brick bond source module unavailable: " + descriptor.source_module;
+                        return false;
+                    }
                     script_host::SolidSourceEvaluationOptions evaluation_options;
                     evaluation_options.control.cancelled = is_cancelled;
                     evaluation_options.generation = descriptor_hash;
@@ -4524,10 +4593,8 @@ bool LocalProvider::run_tileset_deferred(
         const std::string root_js_path = resolve_object_path(root_module);
         uint64_t script_source_hash = 0;
         {
-            std::ifstream jf(root_js_path, std::ios::binary);
-            if (jf) {
-                std::ostringstream ss; ss << jf.rdbuf();
-                const std::string src = ss.str();
+            std::string src;
+            if (cfg_.read_source(root_js_path, src)) {
                 script_source_hash = part_asset::fnv1a64(src.data(), src.size());
             }
             // Unreadable script -> hash 0 -> the load-only probe fails closed;
@@ -4642,6 +4709,7 @@ bool LocalProvider::run_tileset_deferred(
 }
 
 bool LocalProvider::connect(WorldManifest& out, std::string& err) {
+    part_bundle::ScopedStorage cache_scope(cfg_.fixture_io ? cfg_.fixture_io->cache : nullptr);
     // Sync API: keep eager behavior — BakePolicy::All bakes every node at install.
     // After compose_world (which now skips flatten/refs in the async path),
     // eagerly flatten all placed roots and expand FlatInstanceRefs here.
@@ -4753,6 +4821,7 @@ LocalProvider::reconcile(const WorldManifest& manifest, const PartStore& store) 
 
 bool LocalProvider::fetch_parts(const std::vector<uint64_t>& want,
                                 PartStore& store, std::string& err) {
+    part_bundle::ScopedStorage cache_scope(cfg_.fixture_io ? cfg_.fixture_io->cache : nullptr);
     // LocalProvider already wrote the .part blobs to the shared cache during
     // connect()'s install; "fetching" is just loading them into the store.
     //
@@ -4857,6 +4926,7 @@ bool LocalProvider::restore_from_cache(
     const std::vector<uint64_t>&                      root_hashes,
     std::string& err, const std::string& authored_world)
 {
+    part_bundle::ScopedStorage cache_scope(cfg_.fixture_io ? cfg_.fixture_io->cache : nullptr);
 #if defined(MATTER_HAVE_SCRIPT_HOST)
     BAKE_SPAN("provider.restore-cache");
     pending_authored_world_cache_ = authored_world;
@@ -4867,6 +4937,7 @@ bool LocalProvider::restore_from_cache(
     hit_count_    = 0;
     install_bake_count_ = 0;
     baked_hashes_.clear();
+    lod_plans_installed_.clear();
     part_surfaces_.clear(); part_surface_cache_.reset(); sources_without_surface_.clear();
     roots_.clear();
     root_transforms_.clear();
@@ -4887,9 +4958,15 @@ bool LocalProvider::restore_from_cache(
     // individual cache-miss parts without running a global resolve.
     host_ = std::make_unique<script_host::ScriptHost>();
     host_->set_shared_lib_roots(abs_shared_lib_roots_);
+    if (cfg_.fixture_io && cfg_.fixture_io->sources)
+        host_->set_module_sources(matter::source_snapshot_modules(
+            *cfg_.fixture_io->sources, abs_shared_lib_roots_));
     bind_solid_source_baker(*host_);
-    resolver_ = std::make_unique<part_graph::FileModuleResolver>(*host_, abs_object_roots_);
-    host_baker_ = std::make_unique<part_graph::HostBaker>(*host_, abs_cache_root_);
+    resolver_ = std::make_unique<part_graph::FileModuleResolver>(*host_, abs_object_roots_,
+        cfg_.fixture_io ? cfg_.fixture_io->sources : nullptr);
+    host_baker_ = std::make_unique<part_graph::HostBaker>(*host_, abs_cache_root_,
+        cfg_.fixture_io ? cfg_.fixture_io->cache : nullptr);
+    host_baker_->set_portable_route(matter::authoring_adapter::make_legacy_part_route());
     // W3: thread the optional per-rung bake observer (null in production).
     host_baker_->set_bake_observer(cfg_.bake_observer);
 
@@ -4938,6 +5015,18 @@ bool LocalProvider::restore_from_cache(
         return false;
     }
 
+    // The cache restores portable part IDENTITIES but not the immutable
+    // AssetProduct each was authored to, which the graphics adapter publishes.
+    // Anything but the cached hash back refuses the cache, and the cold
+    // resolve re-establishes identity.
+    {
+        BAKE_SPAN("provider.restore-portable");
+        if (!part_graph::reauthor_portable(*host_baker_, ir_.bake_plan, err)) {
+            MATTER_LOGE("resolve", "%s", err.c_str());
+            return false;
+        }
+    }
+
     // Restore graph snapshot.
     graph_snapshot_ = snapshot;
 
@@ -4966,6 +5055,10 @@ bool LocalProvider::restore_from_cache(
 // Task 2: transient artifact routing
 void LocalProvider::set_transient_modules(std::set<std::string> modules) {
     transient_modules_ = std::move(modules);
+    if (cfg_.fixture_io && cfg_.fixture_io->cache) {
+        transient_dir_ = cfg_.cache_root + "/transient";
+        return;
+    }
 
 #ifdef _WIN32
     const char* tmp = std::getenv("TEMP");
@@ -4993,8 +5086,13 @@ void LocalProvider::release_transient(uint64_t hash) {
     const std::string part_path = transient_dir_ + "/" + part_asset::cache_path_resolved(hash);
     const std::string flat_path = transient_dir_ + "/" + part_asset::cache_path_flat(hash);
 
-    std::remove(part_path.c_str());
-    std::remove(flat_path.c_str());
+    if (cfg_.fixture_io && cfg_.fixture_io->cache) {
+        cfg_.fixture_io->cache->erase(part_path);
+        cfg_.fixture_io->cache->erase(flat_path);
+    } else {
+        std::remove(part_path.c_str());
+        std::remove(flat_path.c_str());
+    }
 }
 
 } // namespace viewer

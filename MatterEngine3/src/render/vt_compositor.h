@@ -222,7 +222,10 @@ class VtCompositor final : public VtPageFiller {
     // unretired" contract above into a correctness requirement rather than a
     // suggestion.
     //
-    // At most 256 requests are recorded per call; requests past that, and
+    // A single request with work_tiles>0 advances private scratch and reports
+    // pending until normal resolve/encode/copy complete on a later call. Keep
+    // that request first in the queue; changing its identity discards old rows.
+    // At most 256 synchronous requests are recorded per call; requests past that, and
     // pages whose candidate list would overrun the internal candidate buffer,
     // are skipped and counted in Stats::requests_skipped like every other
     // fail-closed path. A recorded request gets VtFillRequest::mark_filled()
@@ -232,6 +235,7 @@ class VtCompositor final : public VtPageFiller {
     // never-written pool memory, which decodes to black.
     void fill(VkCommandBuffer cmd, const VtFillRequest* batch,
               size_t count) override;
+    bool supports_incremental_fill() const override { return true; }
     // Owned-snapshot requests must reach readiness here before fill(). This
     // queues/polls CPU work and advances bounded GPU buffer preparation without
     // waiting. fill() publishes completed preparation. Borrowed contexts retain the
@@ -258,6 +262,10 @@ class VtCompositor final : public VtPageFiller {
     struct GpuPreparationStats {
         uint64_t allocations = 0, uploaded_bytes = 0, completed = 0;
         uint64_t cancelled = 0, allocation_failures = 0;
+        // Streams with no rows (no finite pixels/levels/bindings, no ids) bind
+        // one shared zero buffer instead of a 0-byte VkBuffer. Counted on the
+        // bounded and the standalone fill() path alike; never an allocation.
+        uint64_t empty_streams = 0;
         uint32_t allocations_this_frame = 0, peak_allocations_per_frame = 0;
         size_t uploaded_bytes_this_frame = 0, peak_uploaded_bytes_per_frame = 0;
         size_t pending_jobs = 0;

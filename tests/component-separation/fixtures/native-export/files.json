@@ -1,0 +1,68 @@
+[
+  {
+    "module": "CastlePavingSlab",
+    "files": [
+      {
+        "path": "CastlePavingSlab.obj",
+        "sha256": "227f72e872dfb879116854c25afa0a5889447ef75168b8e2e64f2e9475244cc6"
+      },
+      {
+        "path": "CastlePavingSlab.mtl",
+        "sha256": "fdeef93ffb2dabbaf4710abd141531ff9782ea393aa8cc1a7333a0a7d75c715b"
+      },
+      {
+        "path": "CastlePavingSlab_albedo.png",
+        "sha256": "ba529df37569f2279146fbaf2e71dcede041438da77925284c9766550a1bd82e"
+      },
+      {
+        "path": "CastlePavingSlab_normal.png",
+        "sha256": "122d3ab2318c8c6d9bb394a19a91fb0a94766cf2f6c603ee805a27f39a245f46"
+      },
+      {
+        "path": "CastlePavingSlab_roughness.png",
+        "sha256": "81a0d9753851020d03b4e719c23cfe285bdbad71bd3237d75eab03410d4fda8f"
+      },
+      {
+        "path": "CastlePavingSlab_metallic.png",
+        "sha256": "96345cfd9f8052e2a1a976ac1e558ba8f60ce02b69d1decc945bf61a25246b4d"
+      },
+      {
+        "path": "CastlePavingSlab_ao.png",
+        "sha256": "59970949a5e53862093722160aa67146585da5e020fe7716121f8061df47cb7d"
+      }
+    ]
+  },
+  {
+    "module": "AlpineFlower",
+    "files": [
+      {
+        "path": "AlpineFlower.obj",
+        "sha256": "17eeaaa1bcdef615b5af3a0b958c7aa6a529ee275add767f8daead2b86146116"
+      },
+      {
+        "path": "AlpineFlower.mtl",
+        "sha256": "ca1c27315dcc9e3b37ceeef176c3a3ef2ff27e66a56286f1733772e7c8f076be"
+      },
+      {
+        "path": "AlpineFlower_albedo.png",
+        "sha256": "479370a5d8adb430a7e649a1a7250354533146fb0dae46c608c18b45bf1567a5"
+      },
+      {
+        "path": "AlpineFlower_normal.png",
+        "sha256": "437dd4fcb4f01798c6ad0f48c86cb474ceee6181a9769724ab560c1fdfbe23eb"
+      },
+      {
+        "path": "AlpineFlower_roughness.png",
+        "sha256": "b86eada0e723ab255db85a42bfd00beb48aac165e5be908fa94386134ff6629d"
+      },
+      {
+        "path": "AlpineFlower_metallic.png",
+        "sha256": "96345cfd9f8052e2a1a976ac1e558ba8f60ce02b69d1decc945bf61a25246b4d"
+      },
+      {
+        "path": "AlpineFlower_ao.png",
+        "sha256": "59970949a5e53862093722160aa67146585da5e020fe7716121f8061df47cb7d"
+      }
+    ]
+  }
+]

@@ -426,6 +426,84 @@ static void test_event_struct_shape() {
     printf("ok event_struct_shape\n");
 }
 
+// An expired budget stops cancelled-command cleanup without losing the live
+// command at the tail; a later call with time available delivers it.
+static void test_pop_wait_cancelled_burst_honours_budget() {
+    std::printf("[test_pop_wait_cancelled_burst_honours_budget]\n");
+    CommandQueue cq;
+    for (int i = 0; i < 64; ++i) cq.push({CommandKind::BakeAll, {}, nullptr}); // each supersedes the last
+    Command out; bool idle = false;
+    const auto start = std::chrono::steady_clock::now();
+    const bool got = cq.pop_wait(out, /*ms=*/0, idle);
+    const auto took = std::chrono::steady_clock::now() - start;
+    CHECK(!got && idle, "expired budget returns idle before draining the cancelled burst");
+    CHECK(took < std::chrono::milliseconds(200), "cancelled burst yields promptly");
+    CHECK(cq.pop_wait(out, /*ms=*/1000, idle) && !idle && out.kind == CommandKind::BakeAll,
+          "the surviving BakeAll remains available to a later call");
+    cq.shut_down();
+    printf("ok pop_wait_cancelled_burst_honours_budget\n");
+}
+
+// Explicit cancellation has no surviving command to stop an unbudgeted scan.
+// Observe the queued tail's lifetime as well as elapsed time, so draining a
+// short burst on a fast machine cannot hide the missing deadline check.
+static void test_pop_wait_cancelled_cones_allow_shutdown() {
+    std::printf("[test_pop_wait_cancelled_cones_allow_shutdown]\n");
+    CommandQueue cq;
+    std::weak_ptr<CancelToken> queued_tail;
+    for (int i = 0; i < 4096; ++i) {
+        auto token = cq.push({CommandKind::RebakeCone, {}, nullptr});
+        token->cancel();
+        queued_tail = token;
+    }
+    Command out;
+    bool idle = false;
+    const auto start = std::chrono::steady_clock::now();
+    const bool got = cq.pop_wait(out, /*ms=*/0, idle);
+    const auto took = std::chrono::steady_clock::now() - start;
+    CHECK(!got && idle, "cancelled-only burst returns idle at the deadline");
+    CHECK(took < std::chrono::milliseconds(200), "zero-budget cancelled-only pop yields promptly");
+    CHECK(!queued_tail.expired(), "zero-budget pop leaves cancelled backlog for later cleanup");
+
+    // Race another nonblocking consumer call against shutdown. The consumer
+    // stays on this thread to respect Channel's single-consumer contract.
+    std::promise<void> shutdown_started, shutdown_finished;
+    auto started = shutdown_started.get_future();
+    auto finished = shutdown_finished.get_future();
+    std::thread shutdown([&] {
+        shutdown_started.set_value();
+        cq.shut_down();
+        shutdown_finished.set_value();
+    });
+    started.wait();
+    CHECK(!cq.pop_wait(out, /*ms=*/0, idle), "concurrent shutdown never delivers cancelled work");
+    CHECK(finished.wait_for(std::chrono::seconds(2)) == std::future_status::ready,
+          "cancelled backlog does not block concurrent shutdown");
+    shutdown.join();
+    CHECK(!cq.pop_wait(out, /*ms=*/0, idle) && !idle, "shutdown reports termination, not idle");
+    CHECK(queued_tail.expired(), "shutdown releases the remaining cancelled backlog");
+    printf("ok pop_wait_cancelled_cones_allow_shutdown\n");
+}
+
+// An idle return caused by an expired cancellation budget consumes a pending
+// wake just like an idle return on an empty queue; it must not be replayed.
+static void test_cancelled_pop_consumes_idle_wake() {
+    std::printf("[test_cancelled_pop_consumes_idle_wake]\n");
+    CommandQueue cq;
+    auto token = cq.push({CommandKind::RebakeCone, {}, nullptr});
+    token->cancel();
+    cq.wake_idle();
+    Command out;
+    bool idle = false;
+    CHECK(!cq.pop_wait(out, /*ms=*/0, idle) && idle, "cancelled command returns idle at the deadline");
+    const auto start = std::chrono::steady_clock::now();
+    CHECK(!cq.pop_wait(out, /*ms=*/20, idle) && idle, "next empty pop times out normally");
+    CHECK(std::chrono::steady_clock::now() - start >= std::chrono::milliseconds(10),
+          "cancelled idle return consumes the wake instead of returning idle twice immediately");
+    cq.shut_down();
+    printf("ok cancelled_pop_consumes_idle_wake\n");
+}
+
 // ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
@@ -448,6 +526,9 @@ int main() {
     test_pop_wait_wakes_on_shutdown();
     test_idle_wake_priority_and_coalescing();
     test_idle_wake_releases_parked_consumer();
+    test_pop_wait_cancelled_burst_honours_budget();
+    test_pop_wait_cancelled_cones_allow_shutdown();
+    test_cancelled_pop_consumes_idle_wake();
     test_event_struct_shape();
     if (g_failures) {
         std::printf("\n%d FAILURES\n", g_failures);

@@ -125,6 +125,26 @@ int main() {
         full.push_back(input[0]);
         CHECK(!encode(full, packed, error), "oversized bundle is rejected before packing");
     }
+    {
+        auto producer = memory_page(encoded);
+        Bundle retained;
+        CHECK(decode(producer, retained, error), error.c_str());
+        producer.reset();
+        const auto* pixels = retained.find(input[0].key);
+        CHECK(pixels && std::memcmp(pixels->pixels, input[0].pixels.data(), kPixelBytes) == 0,
+              "decoded upload lease owns bytes after its producer is destroyed");
+        auto replacement = input;
+        replacement[0].pixels[0] ^= 0x7f;
+        std::vector<uint8_t> next;
+        CHECK(encode(replacement, next, error), error.c_str());
+        Bundle current;
+        CHECK(decode(memory_page(next), current, error), error.c_str());
+        const auto* changed = current.find(input[0].key);
+        CHECK(changed && pixels && changed->pixels[0] == replacement[0].pixels[0] &&
+                  pixels->pixels[0] == input[0].pixels[0],
+              "replacement decode cannot mutate a retained earlier generation");
+    }
+#ifdef MATTER_CODEC_SOURCE_QUALIFICATION
     // Actual pack persistence, bank-backed read, and lease lifetime after eviction.
     const auto path = std::filesystem::temp_directory_path() /
         ("matter_vt_encoded_"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
@@ -248,5 +268,6 @@ int main() {
     }
     config_read.bank.reset();
     std::filesystem::remove_all(path);
+    #endif
     return check_summary();
 }

@@ -1,0 +1,9 @@
+[
+{"mode": "raster", "returncode": 0, "pass": true, "seconds": 19.41, "deferred": false, "failure_count": 0, "zero_validation_errors": true},
+{"mode": "raster-fault", "returncode": 0, "pass": true, "seconds": 31.22, "deferred": false, "failure_count": 0, "zero_validation_errors": true},
+{"mode": "rt-disabled", "returncode": 0, "pass": true, "seconds": 16.96, "deferred": false, "failure_count": 0, "zero_validation_errors": true},
+{"mode": "animation-skin", "returncode": 0, "pass": true, "seconds": 120.93, "deferred": false, "failure_count": 0, "zero_validation_errors": true},
+{"mode": "vt", "returncode": 1, "pass": false, "seconds": 10.2, "deferred": true, "same_failure_lines_as_prior_evidence": true, "failure_count": 7, "zero_validation_errors": true},
+{"mode": "vt-surfaces", "returncode": 0, "pass": true, "seconds": 23.83, "deferred": true, "same_failure_lines_as_prior_evidence": true, "failure_count": 0, "zero_validation_errors": true},
+{"mode": "vt-rt", "returncode": 1, "pass": false, "seconds": 15.66, "deferred": true, "same_failure_lines_as_prior_evidence": true, "failure_count": 12, "zero_validation_errors": true}
+]

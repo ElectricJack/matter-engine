@@ -81,6 +81,7 @@
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 // Vulkan .gtex bake payload types, passed by reference through the
@@ -124,6 +125,8 @@ struct FluidDeviceIdentity {
 // for_project() absolutizes it eagerly because downstream writers compose
 // output paths straight from it (see the comment in for_project's body).
 struct LocalProviderConfig {
+    // Owned optional source/cache fixtures, explicitly retained by workers.
+    std::shared_ptr<const matter::WorldFixtureIO> fixture_io;
     std::string project_dir;
     // The PROJECT-WIDE object tier: objects shared by every scene. Changing a
     // file here can affect any scene in the project, and that is exactly what
@@ -150,7 +153,8 @@ struct LocalProviderConfig {
     static LocalProviderConfig for_project(
         const std::string& project_dir,
         const std::string& world_name,
-        const std::string& engine_shared_lib_dir);
+        const std::string& engine_shared_lib_dir,
+        std::shared_ptr<const matter::WorldFixtureIO> fixture_io = {});
 
     // The object search path, most-specific first. Callers resolving a module
     // name must walk this in order and take the FIRST hit; callers that need
@@ -158,8 +162,12 @@ struct LocalProviderConfig {
     // every entry. Deliberately shaped like shared_lib_roots() below, which
     // has stacked project-over-engine the same way since it was written.
     std::vector<std::string> object_roots() const {
+        if (fixture_io && fixture_io->sources)
+            return fixture_io->sources->object_roots({scene_objects_dir, objects_dir});
         return matter::project_layout::object_roots({scene_objects_dir, objects_dir});
     }
+    bool read_source(const std::string& path, std::string& out) const;
+
     // The project tier alone. For callers that mean "where this project keeps
     // its shared objects" rather than "where do I find module X" -- resolving
     // a module through this and not object_roots() silently ignores the
@@ -172,6 +180,13 @@ struct LocalProviderConfig {
     // needs a module's path on disk must come through here rather than
     // concatenating against a single root.
     std::string resolve_object_path(const std::string& module) const {
+        if (fixture_io && fixture_io->sources) {
+            for (const auto& root : object_roots()) {
+                const auto path = (std::filesystem::path(root) / (module + ".js")).generic_string();
+                if (fixture_io->sources->exists(path)) return path;
+            }
+            return {};
+        }
         return matter::project_layout::object_source(
             {scene_objects_dir, objects_dir}, module).string();
     }
@@ -318,12 +333,14 @@ LocalProviderConfig make_engine_local_provider_config(
     const std::string& project_dir,
     const std::string& world_name,
     const std::string& engine_shared_lib_dir,
-    FluidBakeBackendFactory backend_factory = {});
+    FluidBakeBackendFactory backend_factory = {},
+    std::shared_ptr<const matter::WorldFixtureIO> fixture_io = {});
 
 // External cache identity is independent of cwd after project resolution. Relative
 // overrides are project-relative; normalization does not change source paths.
 inline std::string project_bake_cache_root(const std::filesystem::path& project,
-                                           const std::string& world) {
+                                           const std::string& world,
+                                           bool lexical_only = false) {
     namespace fs = std::filesystem;
     const char* value = std::getenv("MATTER_CACHE_ROOT");
     if (!value || std::string(value).find_first_not_of(" \t\r\n") == std::string::npos)
@@ -331,11 +348,21 @@ inline std::string project_bake_cache_root(const std::filesystem::path& project,
     if (world.empty() || world == "." || world == ".." ||
         world.find_first_of("/\\:") != std::string::npos)
         throw std::invalid_argument("external bake cache requires one safe world-name component");
-    auto normalized_absolute = [](fs::path path) {
+    auto normalized_absolute = [lexical_only](fs::path path) {
         path = fs::absolute(path);
-        std::error_code error;
-        fs::path canonical = fs::weakly_canonical(path, error);
-        return error ? path.lexically_normal() : canonical;
+        if (lexical_only) {
+            path = path.lexically_normal();
+        } else {
+            std::error_code error;
+            fs::path canonical = fs::weakly_canonical(path, error);
+            path = error ? path.lexically_normal() : canonical;
+        }
+        // A nonexistent suffix ending in ".." can canonicalize to a trailing
+        // separator. Directory spelling must not create another cache identity.
+        // Strip only after canonicalization so symlink traversal is preserved.
+        if (path.filename().empty() && path != path.root_path())
+            path = path.parent_path();
+        return path;
     };
     const fs::path identity_path = normalized_absolute(project);
     std::string identity = identity_path.generic_u8string();
@@ -357,9 +384,12 @@ inline std::string project_bake_cache_root(const std::filesystem::path& project,
 inline LocalProviderConfig LocalProviderConfig::for_project(
     const std::string& project_dir_value,
     const std::string& world_name_value,
-    const std::string& engine_shared_lib_dir_value) {
+    const std::string& engine_shared_lib_dir_value,
+    std::shared_ptr<const matter::WorldFixtureIO> fixture_io_value) {
     namespace fs = std::filesystem;
     LocalProviderConfig cfg;
+    cfg.fixture_io = std::move(fixture_io_value);
+    const auto sources = cfg.fixture_io ? cfg.fixture_io->sources : nullptr;
     // Phase 1 cache-leak fix: absolutize project_dir_value up front. cache_root
     // below (and every other field this function derives from `project`) is
     // composed as `project / <suffix>`; if project_dir_value were left
@@ -372,7 +402,8 @@ inline LocalProviderConfig LocalProviderConfig::for_project(
     // purely lexical (prepends current_path() when relative) so it is safe to
     // call before prepare_paths() creates any of these directories.
     std::error_code ec;
-    fs::path project = fs::absolute(fs::path(project_dir_value), ec);
+    fs::path project = sources ? fs::path(project_dir_value).lexically_normal()
+                              : fs::absolute(fs::path(project_dir_value), ec);
     if (ec) project = fs::path(project_dir_value);  // fall back to the given value
     cfg.project_dir = project.string();
     cfg.objects_dir = (project / "objects").string();
@@ -385,24 +416,28 @@ inline LocalProviderConfig LocalProviderConfig::for_project(
     // project object tier alone. The scene script existing is what selects the
     // layout -- not the scenes/ directory existing -- so a project part-way
     // through migration resolves each scene by where its script actually is.
-    const fs::path scene_script = matter::project_layout::scene_script(project, world_name_value);
+    const fs::path scene_script = sources
+        ? fs::path(sources->scene_script(project.generic_string(), world_name_value))
+        : matter::project_layout::scene_script(project, world_name_value);
     if (!scene_script.empty()) {
         const fs::path scene_dir = scene_script.parent_path();
         cfg.scene_dir = scene_dir.string();
         cfg.world_path = scene_script.string();
         const fs::path scene_objects = scene_dir / "objects";
         ec.clear();
-        if (fs::is_directory(scene_objects, ec))
+        if (sources ? sources->is_directory(scene_objects.generic_string())
+                    : fs::is_directory(scene_objects, ec))
             cfg.scene_objects_dir = scene_objects.string();
     } else {
         cfg.world_path = (project / "worlds" / (world_name_value + ".js")).string();
     }
     const fs::path project_shared = project / "shared-lib";
     ec.clear();
-    if (fs::is_directory(project_shared, ec))
+    if (sources ? sources->is_directory(project_shared.generic_string())
+                : fs::is_directory(project_shared, ec))
         cfg.project_shared_lib_dir = project_shared.string();
     cfg.engine_shared_lib_dir = engine_shared_lib_dir_value;
-    cfg.cache_root = project_bake_cache_root(project, world_name_value);
+    cfg.cache_root = project_bake_cache_root(project, world_name_value, bool(sources));
     return cfg;
 }
 
@@ -423,6 +458,7 @@ struct ProviderWorldDefinition {
     std::optional<matter::HydrologyWorldSettings> hydrology;
     std::optional<matter::RiverNetworkDefinition> river_network;
     std::optional<matter::TerrainCollisionDefinition> terrain_collision;
+    std::optional<matter::GiBakeSettings> gi_bake;
 };
 
 inline std::optional<matter::HydrologyWorldSettings>
@@ -521,6 +557,7 @@ inline bool adapt_world_definition(const matter::WorldDefinition& definition,
     out.hydrology = adapt_hydrology_definition(definition);
     out.river_network = adapt_river_network_definition(definition);
     out.terrain_collision = adapt_terrain_collision_definition(definition);
+    out.gi_bake = definition.gi_bake;
     out.lights.sun_dir[0] = definition.settings.sun_direction.x;
     out.lights.sun_dir[1] = definition.settings.sun_direction.y;
     out.lights.sun_dir[2] = definition.settings.sun_direction.z;
@@ -607,6 +644,11 @@ inline ProviderWorldDefinition adapt_world_definition(
 class LocalProvider : public WorldProvider {
 public:
     explicit LocalProvider(LocalProviderConfig cfg);
+    // Defined out-of-line in local_provider.cpp: the implicit inline destructor
+    // would need part_surface::SourceCache (forward-declared above, held as a
+    // unique_ptr member) complete in every TU that destroys a LocalProvider,
+    // which the headless consumer TUs do not include.
+    ~LocalProvider();
 
     // Product assembly seam for a completed PhysX bake.  The existing
     // renderer callback is marshalled via cfg_.gpu_run here; worker lifecycle
@@ -664,7 +706,9 @@ public:
     // Task 13 (Phase C): on-demand bake primitives.
     // Bake one part (and, post-order, any unbaked children in its subtree) using
     // the retained bake_plan from the last install_graph(). cached() short-circuits
-    // per node; also runs bake_lod_variants for freshly-baked nodes. Safe to call
+    // the body bake per node; each node's authored LOD plans (static lods,
+    // lodBudgets, noImpostor) are installed on its first visit this session,
+    // cached or not, and a cached revisit skips them. Safe to call
     // from the worker thread after install_graph (host_ is idle post-install).
     // Returns false (with err set) on bake failure; true on success or already cached.
     bool ensure_part_baked(uint64_t part_hash, std::string& err);
@@ -802,6 +846,10 @@ public:
     const std::optional<matter::TerrainCollisionDefinition>& terrain_collision() const {
         return terrain_collision_;
     }
+    // The world script's giBake({...}) declaration, if any (docs/bake-gi.md).
+    const std::optional<matter::GiBakeSettings>& gi_bake() const {
+        return gi_bake_;
+    }
     // Build the canonical first-section geometry and its immutable terrain
     // overlay together. The provider owns the authored network; callers own
     // the resulting shared overlay and must pass that exact instance to the
@@ -874,6 +922,9 @@ private:
     int                  baked_tileset_count_ = 0;
     int                  install_bake_count_ = 0; // counter for install-phase on_part callbacks
     std::set<uint64_t>   baked_hashes_;  // hashes freshly baked by last install_graph()
+    // Hashes whose authored LOD plans ensure_part_baked() installed this
+    // session; a cached revisit of one skips re-deriving its plan.
+    std::unordered_set<uint64_t> lod_plans_installed_;
     std::map<uint64_t,std::shared_ptr<const part_surface::Prepared>> part_surfaces_;
     std::unique_ptr<part_surface::SourceCache> part_surface_cache_;
     std::set<std::string> sources_without_surface_;
@@ -882,6 +933,7 @@ private:
     std::optional<matter::HydrologyWorldSettings> hydrology_settings_;
     std::optional<matter::RiverNetworkDefinition> river_network_;
     std::optional<matter::TerrainCollisionDefinition> terrain_collision_;
+    std::optional<matter::GiBakeSettings> gi_bake_;
     std::vector<hydrology::AuthoredFluidCollider> authored_fluid_colliders_;
     std::optional<hydrology::HydrologyNetworkBakeResult>
         accepted_fluid_network_;
