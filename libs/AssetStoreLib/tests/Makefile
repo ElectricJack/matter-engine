@@ -47,14 +47,17 @@ $(OBJ_DIR):
 $(OBJ_DIR)/mem_arena.o: $(MEMLIB_DIR)/src/mem_arena.c | $(OBJ_DIR)
 	gcc -std=c99 -Wall -Wextra -O2 -g -I$(MEMLIB_DIR)/include -c $< -o $@
 
+$(OBJ_DIR)/mem_bank.o: $(MEMLIB_DIR)/src/mem_bank.c | $(OBJ_DIR)
+	gcc -std=c99 -Wall -Wextra -O2 -g -I$(MEMLIB_DIR)/include -c $< -o $@
+
 $(LIB_DIR)/build/libasset_store.a:
 	$(MAKE) -C $(LIB_DIR)
 
-$(TESTS): asset_store_tests.cpp $(OBJ_DIR)/mem_arena.o $(LIB_DIR)/build/libasset_store.a | $(OBJ_DIR)
-	$(CXX) $(CXXFLAGS) -o $@ asset_store_tests.cpp $(OBJ_DIR)/mem_arena.o $(LDLIBS)
+$(TESTS): asset_store_tests.cpp $(OBJ_DIR)/mem_arena.o $(OBJ_DIR)/mem_bank.o $(LIB_DIR)/build/libasset_store.a | $(OBJ_DIR)
+	$(CXX) $(CXXFLAGS) -o $@ asset_store_tests.cpp $(OBJ_DIR)/mem_arena.o $(OBJ_DIR)/mem_bank.o $(LDLIBS)
 
-$(BENCH): store_bench.cpp $(OBJ_DIR)/mem_arena.o $(LIB_DIR)/build/libasset_store.a | $(OBJ_DIR)
-	$(CXX) $(CXXFLAGS) -o $@ store_bench.cpp $(OBJ_DIR)/mem_arena.o $(LDLIBS)
+$(BENCH): store_bench.cpp $(OBJ_DIR)/mem_arena.o $(OBJ_DIR)/mem_bank.o $(LIB_DIR)/build/libasset_store.a | $(OBJ_DIR)
+	$(CXX) $(CXXFLAGS) -o $@ store_bench.cpp $(OBJ_DIR)/mem_arena.o $(OBJ_DIR)/mem_bank.o $(LDLIBS)
 
 test: $(TESTS)
 	./$(TESTS)

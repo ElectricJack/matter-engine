@@ -1,23 +1,24 @@
 import assert from 'node:assert/strict';
-import {
+await import('./castle_shared_lib_hooks.mjs');
+const {
   CASTLE_SITE_CAPSULE_RADIUS,
   CASTLE_SITE_CLEARANCE,
   CASTLE_SITE_MANIFEST_SCHEMA,
   compileSite,
   siteToJSON,
   siteToSVG,
-} from '../shared-lib/castle_site.js';
+} = await import('../shared-lib/castle_site.js');
 import {
   transformPoint,
   transformVector,
   yawDegToQuaternion,
 } from '../shared-lib/castle_frames.js';
-import {
+const {
   ANGLED_STUDY_CORE_PLAN,
   ANGLED_STUDY_HALL_PLAN,
   CASTLE_SITE_ANGLED_STUDY,
   angledStudySite,
-} from './fixtures/castle_site_angled_study.js';
+} = await import('./fixtures/castle_site_angled_study.js');
 
 const EPSILON = 1e-8;
 const clone = value => structuredClone(value);
@@ -381,6 +382,18 @@ raisedCourtWallOverlap.courtyards = [{
 }];
 expectInvalid(raisedCourtWallOverlap,
   /courtyards\.raised-court.*floor overlaps wall solid.*connector vestibule/);
+
+// A connector wall standing on a same-level court meets its slab only at
+// baseY, yet still occupies the clear polygon. A flush shared edge is valid.
+const wallCourtOverlap = clone(connectorCourtOverlap);
+wallCourtOverlap.courtyards[0].id = 'wall-court';
+wallCourtOverlap.courtyards[0].clearPolygon = [[11.7, 7.5], [18, 7.5], [18, 11.1], [11.7, 11.1]];
+expectInvalid(wallCourtOverlap,
+  /courtyards\.wall-court.*floor overlaps wall solid connector:vestibule:wall:1 from connector vestibule/);
+const flushWallCourt = clone(wallCourtOverlap);
+flushWallCourt.courtyards[0].clearPolygon = [[11.7, 7.8], [18, 7.8], [18, 11.1], [11.7, 11.1]];
+assert.ok(compileSite(flushWallCourt).courtyards.some(court => court.id === 'wall-court'),
+  'a court flush against a connector wall face compiles');
 
 // Tuple components are escaped before global namespacing, so authored colons
 // cannot alias the reserved courtyard node namespace.

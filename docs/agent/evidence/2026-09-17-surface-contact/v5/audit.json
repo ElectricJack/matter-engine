@@ -1,0 +1,35 @@
+{
+  "editor_exit": 1,
+  "seconds": 7.181348332000198,
+  "editor_sha256": "eef6be3017bcad818f549c794921111c6c898dcb358ef5fa23bd3c830e71dc9e",
+  "binary_unchanged": true,
+  "source_changes": [],
+  "eager": true,
+  "expected_shots": [],
+  "completed_views": 0,
+  "missing_shots": [],
+  "validation_errors": [
+    "[vk] Vulkan validation ERROR: vkUpdateDescriptorSets(): pDescriptorWrites[0].pImageInfo[48].imageView is VK_NULL_HANDLE, and descriptorType is VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER.",
+    "[vk] Vulkan validation ERROR: vkUpdateDescriptorSets(): pDescriptorWrites[0].pImageInfo[49].imageView is VK_NULL_HANDLE, and descriptorType is VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER.",
+    "[vk] Vulkan validation ERROR: vkUpdateDescriptorSets(): pDescriptorWrites[0].pImageInfo[50].imageView is VK_NULL_HANDLE, and descriptorType is VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER.",
+    "[vk] Vulkan validation ERROR: vkUpdateDescriptorSets(): pDescriptorWrites[0].pImageInfo[51].imageView is VK_NULL_HANDLE, and descriptorType is VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER.",
+    "[vk] Vulkan validation ERROR: vkUpdateDescriptorSets(): pDescriptorWrites[0].pImageInfo[52].imageView is VK_NULL_HANDLE, and descriptorType is VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER.",
+    "[vk] Vulkan validation ERROR: vkUpdateDescriptorSets(): pDescriptorWrites[0].pImageInfo[53].imageView is VK_NULL_HANDLE, and descriptorType is VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER.",
+    "[vk] Vulkan validation ERROR: vkUpdateDescriptorSets(): pDescriptorWrites[0].pImageInfo[54].imageView is VK_NULL_HANDLE, and descriptorType is VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER.",
+    "[vk] Vulkan validation ERROR: vkUpdateDescriptorSets(): pDescriptorWrites[0].pImageInfo[55].imageView is VK_NULL_HANDLE, and descriptorType is VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER.",
+    "[vk] Vulkan validation ERROR: vkUpdateDescriptorSets(): pDescriptorWrites[0].pImageInfo[56].imageView is VK_NULL_HANDLE, and descriptorType is VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER.",
+    "[vk] Vulkan validation ERROR: (Warning - This VUID has now been reported 10 times, which is the duplicate_message_limit value, this will be the last time reporting it)."
+  ],
+  "command_failures": [],
+  "stats": [
+    "STATS,ready-1,0.51,0.00,0.00,0.00,0,0,0,0,0,0,0,0,0.0,0.0,0,0,0,0.00,0,0.000,0.000,0.000,0.000,0.000,0.00,0.000,0.000,0.000",
+    "STATSVT,ready-1,active=0,variants=0/0,rejected=0,mesh=0.0/0.0 MiB,pool=0/0,pinned=0,queue=0,fills=0,evictions=0,ind=0.00/0 MiB,material_pages=0,shared_material_refs=0,coverage_only_pages=0,occlusion_pages=0,occlusion_retained_pages=0,occlusion_allocated_bytes=0,enrich_deferred=0"
+  ],
+  "files": {
+    "bake-trace.json": "548329c4fb8737040a38aeb3e3980bf7688af185a14fe3acd6e72aa3076423cb",
+    "cmd.txt": "f67a4f573958c635116b201905e84a51a7664bd45927edfa48494ef5c1fb167a",
+    "log.txt": "4624feb3d43e304d7596faf17b857acfce6bf7cb3cb19d7032551137b488258c"
+  },
+  "isolation": "Frozen r2 asset editor separately open. Development evidence, not isolated performance acceptance.",
+  "audit_correction": "Count both Vulkan validation ERROR and Validation Error log formats; failed launch remains rejected."
+}

@@ -1,0 +1,40 @@
+{
+  "exit": 0,
+  "seconds_including_startup_and_view_waits": 61.6117343549995,
+  "source_changes": [],
+  "binary_changed": false,
+  "errors": [],
+  "vt_stats": [
+    "STATSVT,composite-walls-v1-group-off,active=1,variants=3/32768,rejected=0,mesh=139.2/3512.0 MiB,pool=30/25600,pinned=3,queue=0,fills=30,evictions=0,ind=0.00/64 MiB",
+    "STATSVT,composite-walls-v1-group,active=1,variants=3/32768,rejected=0,mesh=139.2/3512.0 MiB,pool=30/25600,pinned=3,queue=0,fills=30,evictions=0,ind=0.00/64 MiB",
+    "STATSVT,composite-walls-v1-close-off,active=1,variants=3/32768,rejected=0,mesh=139.2/3512.0 MiB,pool=87/25600,pinned=3,queue=0,fills=87,evictions=0,ind=0.00/64 MiB",
+    "STATSVT,composite-walls-v1-close,active=1,variants=3/32768,rejected=0,mesh=139.2/3512.0 MiB,pool=87/25600,pinned=3,queue=0,fills=87,evictions=0,ind=0.00/64 MiB",
+    "STATSVT,composite-walls-v1-grazing-off,active=1,variants=3/32768,rejected=0,mesh=139.2/3512.0 MiB,pool=113/25600,pinned=3,queue=0,fills=113,evictions=0,ind=0.00/64 MiB",
+    "STATSVT,composite-walls-v1-grazing,active=1,variants=3/32768,rejected=0,mesh=139.2/3512.0 MiB,pool=113/25600,pinned=3,queue=0,fills=113,evictions=0,ind=0.00/64 MiB",
+    "STATSVT,composite-walls-v1-rt-off,active=1,variants=3/32768,rejected=0,mesh=139.2/3512.0 MiB,pool=113/25600,pinned=3,queue=0,fills=113,evictions=0,ind=0.00/64 MiB",
+    "STATSVT,composite-walls-v1-rt,active=1,variants=3/32768,rejected=0,mesh=139.2/3512.0 MiB,pool=113/25600,pinned=3,queue=0,fills=113,evictions=0,ind=0.00/64 MiB",
+    "STATSVT,composite-walls-v1-albedo-off,active=1,variants=3/32768,rejected=0,mesh=139.2/3512.0 MiB,pool=113/25600,pinned=3,queue=0,fills=113,evictions=0,ind=0.00/64 MiB",
+    "STATSVT,composite-walls-v1-albedo,active=1,variants=3/32768,rejected=0,mesh=139.2/3512.0 MiB,pool=113/25600,pinned=3,queue=0,fills=113,evictions=0,ind=0.00/64 MiB",
+    "STATSVT,composite-walls-v1-normals-off,active=1,variants=3/32768,rejected=0,mesh=139.2/3512.0 MiB,pool=113/25600,pinned=3,queue=0,fills=113,evictions=0,ind=0.00/64 MiB",
+    "STATSVT,composite-walls-v1-normals,active=1,variants=3/32768,rejected=0,mesh=139.2/3512.0 MiB,pool=113/25600,pinned=3,queue=0,fills=113,evictions=0,ind=0.00/64 MiB",
+    "STATSVT,composite-walls-v1-wireframe-off,active=1,variants=3/32768,rejected=0,mesh=139.2/3512.0 MiB,pool=184/25600,pinned=3,queue=0,fills=184,evictions=0,ind=0.00/64 MiB",
+    "STATSVT,composite-walls-v1-wireframe,active=1,variants=3/32768,rejected=0,mesh=139.2/3512.0 MiB,pool=185/25600,pinned=3,queue=0,fills=185,evictions=0,ind=0.00/64 MiB"
+  ],
+  "images": {
+    "composite-walls-v1-group-off.png": "3fee5e46d18b0900a9dd9a445f8176c39c1434ee70aa96df6fc3d63e5944c243",
+    "composite-walls-v1-group.png": "9d2358283b3e2ce827a01b42020a5dab7ffa51a2ba1ee097a3103b17bcf1654a",
+    "composite-walls-v1-close-off.png": "f2884c59fb8ca224c48755ed451d8e35718a9faf0c166e97038b4998de20b5eb",
+    "composite-walls-v1-close.png": "a131a08f40527f980b6631e7b72a0ad587c73424e7a4b4dc72310e210d59c097",
+    "composite-walls-v1-grazing-off.png": "267e5f2993096da018ba7e69b96f96377ba02c5e50c837f1d45ad9c0b8fd3be5",
+    "composite-walls-v1-grazing.png": "ca8a6c6181b102654444351d4ef70a148ce06f15c066fccd2c11abe4840f4740",
+    "composite-walls-v1-rt-off.png": "847e5383d1a674111077fa589c6d38f0ca5b4e88525059fbb9c3d9aef655340d",
+    "composite-walls-v1-rt.png": "8b8103e7fda8c36e663c5409f4be8dfbd1327cef870a89c5441fecfdf5055d56",
+    "composite-walls-v1-albedo-off.png": "985b422dcc4813171a8c7d1dbf639aff1b39199cdf7a5ab183eeb8d9bb04a28a",
+    "composite-walls-v1-albedo.png": "fb248b6adcd4bef28cb54c0c93843d489504f065d1dd9eb1a0b07cbacf60a8fb",
+    "composite-walls-v1-normals-off.png": "a82d3b46930143c7b4ecafe4056abc24a9d9df0fad4f3139010aea0b4c5dd7f8",
+    "composite-walls-v1-normals.png": "496008b70bcf92354a580245e3e8fc32a3dae097d7615a164754a816b12901c9",
+    "composite-walls-v1-wireframe-off.png": "ac55b1cf0b83ddb97e5ad37f9ad65ee2c7b710344b7c19d8a8779787eb5d6de9",
+    "composite-walls-v1-wireframe.png": "3237666f553677ddf16f66b976535dee7b6fdbe317f2b1263a065979fb78093e"
+  },
+  "passed": true
+}

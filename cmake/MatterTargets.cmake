@@ -18,6 +18,7 @@ function(matter_configure_library target include_directory)
 endfunction()
 
 add_library(matter_memory STATIC
+    libs/MemoryLib/src/mem_bank.c
     libs/MemoryLib/src/mem_arena.c
     libs/MemoryLib/src/mem_array.c
     libs/MemoryLib/src/mem_pool.c
@@ -51,6 +52,7 @@ add_library(matter_asset_store STATIC
     libs/AssetStoreLib/src/store_os.cpp
     libs/AssetStoreLib/src/blob_store.cpp
     libs/AssetStoreLib/src/ref_table.cpp
+    libs/AssetStoreLib/src/asset_pages.cpp
 )
 matter_configure_library(matter_asset_store libs/AssetStoreLib/include)
 target_include_directories(matter_asset_store PRIVATE "${CMAKE_SOURCE_DIR}/libs/AssetStoreLib/src")

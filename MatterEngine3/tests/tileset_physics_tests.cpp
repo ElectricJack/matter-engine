@@ -17,13 +17,13 @@
 // ---------------------------------------------------------------------------
 static void test_smoke_drop() {
     b3WorldDef wdef = b3DefaultWorldDef();
-    wdef.gravity = (b3Vec3){ 0.0f, -10.0f, 0.0f };
+    wdef.gravity = b3Vec3{ 0.0f, -10.0f, 0.0f };
     b3WorldId world = b3CreateWorld(&wdef);
 
     // Static ground slab: top surface at y = 0.
     b3BodyDef gdef = b3DefaultBodyDef();
     gdef.type = b3_staticBody;
-    gdef.position = (b3Pos){ 0.0f, -1.0f, 0.0f };
+    gdef.position = b3Pos{ 0.0f, -1.0f, 0.0f };
     b3BodyId ground = b3CreateBody(world, &gdef);
     b3ShapeDef gsdef = b3DefaultShapeDef();
     b3BoxHull gbox = b3MakeBoxHull(50.0f, 1.0f, 50.0f);
@@ -32,7 +32,7 @@ static void test_smoke_drop() {
     // Dynamic unit cube dropped from y = 3.
     b3BodyDef bdef = b3DefaultBodyDef();
     bdef.type = b3_dynamicBody;
-    bdef.position = (b3Pos){ 0.0f, 3.0f, 0.0f };
+    bdef.position = b3Pos{ 0.0f, 3.0f, 0.0f };
     b3BodyId cube = b3CreateBody(world, &bdef);
     b3ShapeDef sdef = b3DefaultShapeDef();
     sdef.density = 1.0f;

@@ -1,0 +1,36 @@
+{
+  "exit": 0,
+  "seconds_including_startup_and_view_waits": 23.386896658994374,
+  "source_changes": [],
+  "binary_changed": false,
+  "errors": [],
+  "vt_stats": [
+    "STATSVT,alignment-no-runoff-overview-off,active=1,variants=21/32768,rejected=0,mesh=1665.7/3512.0 MiB,pool=173/25600,pinned=21,queue=0,fills=173,evictions=0,ind=0.16/64 MiB",
+    "STATSVT,alignment-no-runoff-overview,active=1,variants=21/32768,rejected=0,mesh=1665.7/3512.0 MiB,pool=173/25600,pinned=21,queue=0,fills=173,evictions=0,ind=0.16/64 MiB",
+    "STATSVT,alignment-no-runoff-corner-off,active=1,variants=21/32768,rejected=0,mesh=1665.7/3512.0 MiB,pool=236/25600,pinned=21,queue=0,fills=236,evictions=0,ind=0.16/64 MiB",
+    "STATSVT,alignment-no-runoff-corner,active=1,variants=21/32768,rejected=0,mesh=1665.7/3512.0 MiB,pool=236/25600,pinned=21,queue=0,fills=236,evictions=0,ind=0.16/64 MiB",
+    "STATSVT,alignment-no-runoff-curve-off,active=1,variants=21/32768,rejected=0,mesh=1665.7/3512.0 MiB,pool=366/25600,pinned=21,queue=0,fills=366,evictions=0,ind=0.16/64 MiB",
+    "STATSVT,alignment-no-runoff-curve,active=1,variants=21/32768,rejected=0,mesh=1665.7/3512.0 MiB,pool=366/25600,pinned=21,queue=0,fills=366,evictions=0,ind=0.16/64 MiB",
+    "STATSVT,alignment-no-runoff-tight-curve-off,active=1,variants=21/32768,rejected=0,mesh=1665.7/3512.0 MiB,pool=533/25600,pinned=21,queue=0,fills=533,evictions=0,ind=0.16/64 MiB",
+    "STATSVT,alignment-no-runoff-tight-curve,active=1,variants=21/32768,rejected=0,mesh=1665.7/3512.0 MiB,pool=533/25600,pinned=21,queue=0,fills=533,evictions=0,ind=0.16/64 MiB",
+    "STATSVT,alignment-no-runoff-walkthrough-off,active=1,variants=21/32768,rejected=0,mesh=1665.7/3512.0 MiB,pool=641/25600,pinned=21,queue=0,fills=641,evictions=0,ind=0.16/64 MiB",
+    "STATSVT,alignment-no-runoff-walkthrough,active=1,variants=21/32768,rejected=0,mesh=1665.7/3512.0 MiB,pool=641/25600,pinned=21,queue=0,fills=641,evictions=0,ind=0.16/64 MiB",
+    "STATSVT,alignment-no-runoff-close-off,active=1,variants=21/32768,rejected=0,mesh=1665.7/3512.0 MiB,pool=641/25600,pinned=21,queue=0,fills=641,evictions=0,ind=0.16/64 MiB",
+    "STATSVT,alignment-no-runoff-close,active=1,variants=21/32768,rejected=0,mesh=1665.7/3512.0 MiB,pool=641/25600,pinned=21,queue=0,fills=641,evictions=0,ind=0.16/64 MiB"
+  ],
+  "images": {
+    "alignment-no-runoff-overview-off.png": "05eb07fc4aebba6848313b08a2d4468a0b178b7aa333cf8f2627db1344b0a7a7",
+    "alignment-no-runoff-overview.png": "d82da7161f321a02ad26a9fc633cd5f98b57068425c40aeead74756691cf897f",
+    "alignment-no-runoff-corner-off.png": "e466c0be667d584da7dc6dca4aa95de20f526ed7dacbf99c09e94545b220c832",
+    "alignment-no-runoff-corner.png": "4cc35f8b3134dd3dd2b391941a808aaa8be718c3cb32d2af72970f7328490598",
+    "alignment-no-runoff-curve-off.png": "b713332b0cad6cd3fd2382409c6fbafeae037cb330b15b8d6218e481dcb85cdf",
+    "alignment-no-runoff-curve.png": "32316c69ab4212643ffb53344ac812becbfa776101ebf970413bb12d280d1157",
+    "alignment-no-runoff-tight-curve-off.png": "83c3ea92181b010365bed04a8b0068a2f9c92529ace3d6040085906693fc42cc",
+    "alignment-no-runoff-tight-curve.png": "da426064359858d3259d30a8607ced5e0c7df87a25f76c78d3d7664b0f94f81a",
+    "alignment-no-runoff-walkthrough-off.png": "b25e26281abcc305fa2ace1d41988c943146877317b7764b36b970d683ffbea5",
+    "alignment-no-runoff-walkthrough.png": "89880d28342576ad426ad24ef3db09b1dfb0d1bb5812464b3fcd136f6872dc4a",
+    "alignment-no-runoff-close-off.png": "de8bc457e2507349ce8ea9a5bb60e928fa128f23d5b8367b657fe72ec2a69f54",
+    "alignment-no-runoff-close.png": "efd57d26c2e55f20b16f3c8a2d2f6f115a507a89fb85658fa2581013d68057cf"
+  },
+  "passed": true
+}

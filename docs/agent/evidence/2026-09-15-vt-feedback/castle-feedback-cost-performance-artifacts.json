@@ -1,0 +1,470 @@
+{
+  "driver_exit": 0,
+  "elapsed_seconds": 144.04673765700136,
+  "command": [
+    "/mnt/c/Users/webde/AppData/Local/Programs/Python/Launcher/py.exe",
+    "-3",
+    "D:/tmp/matter-vt/20260915-feedback/run_without_validation.py",
+    "D:/tmp/matter-vt/20260915-feedback/castle-feedback-cost-performance/native-environment.json",
+    "D:/Shared With Desktop/AI/matter-engine-cpp/MatterEngine3/tools/drive.py",
+    "--world",
+    "CastleUpgraded",
+    "--timeline",
+    "D:/tmp/matter-vt/20260915-feedback/castle-feedback-cost-performance/timeline.txt",
+    "--out-dir",
+    "D:/tmp/matter-vt/20260915-feedback/castle-feedback-cost-performance/run",
+    "--editor",
+    "D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor/build/windows-msvc/editor.exe",
+    "--timeout",
+    "1200",
+    "--hide-ui",
+    "--env",
+    "MATTER_HIDE_WINDOW=0",
+    "--env",
+    "MATTER_WINDOW_WIDTH=1920",
+    "--env",
+    "MATTER_WINDOW_HEIGHT=1080",
+    "--env",
+    "MATTER_VSYNC=0",
+    "--env",
+    "MATTER_PRESENT_MODE=mailbox",
+    "--env",
+    "MATTER_FRAME_LIMIT=60",
+    "--env",
+    "MATTER_CAM=-15,24,43,16.062178,7,7.674546",
+    "--env",
+    "MATTER_VT_TRACE=D:/tmp/matter-vt/20260915-feedback/castle-feedback-cost-performance/vt.jsonl",
+    "--env",
+    "MATTER_VT_EVENT_LOG=0",
+    "--env",
+    "MATTER_VT_DENSITY_FRAME=0",
+    "--env",
+    "TMP=C:/Users/webde/AppData/Local/Temp",
+    "--env",
+    "TEMP=C:/Users/webde/AppData/Local/Temp",
+    "--env",
+    "MATTER_CAM_PATH=D:/tmp/matter-vt/20260915-feedback/castle-feedback-cost-performance/camera.path",
+    "--env",
+    "MATTER_CAM_PATH_WARMUP=0",
+    "--env",
+    "MATTER_CAM_PATH_SETTLE=5",
+    "--env",
+    "MATTER_CAM_PATH_EXIT=0",
+    "--env",
+    "MATTER_PROFILE_TRACE=D:/tmp/matter-vt/20260915-feedback/castle-feedback-cost-performance/profile.json",
+    "--env",
+    "MATTER_PIPELINE_PROFILE=1"
+  ],
+  "changed_inputs_during_run": [],
+  "validation_enabled": false,
+  "page_event_logging": false,
+  "pipeline_creation_logging": true,
+  "full_vt_acceptance": false,
+  "analysis_command": [
+    "python3",
+    "tools/vt_acceptance.py",
+    "--trace",
+    "/mnt/d/tmp/matter-vt/20260915-feedback/castle-feedback-cost-performance/vt.jsonl",
+    "--output",
+    "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-15-vt-feedback/castle-feedback-cost-performance-summary.json",
+    "--begin-marker",
+    "settle_begin",
+    "--end-marker",
+    "settle_end",
+    "--required-frames",
+    "600",
+    "--require-settled"
+  ],
+  "analysis_exit": 0,
+  "analysis_file": "castle-feedback-cost-performance-summary.json",
+  "gpu_total_ms": {
+    "samples": 601,
+    "p50_ms": 40.230369567871094,
+    "p95_ms": 49.8361930847168,
+    "p99_ms": 53.6943359375,
+    "max_ms": 66.40921783447266
+  },
+  "gpu_distinct_sequences": 601,
+  "end_counters": {
+    "active": 1,
+    "variants": 79,
+    "pool_used": 1919,
+    "pool_capacity": 33024,
+    "replacement_reserve_pages": 64,
+    "dirty_pages": 0,
+    "fills_stale_total": 0,
+    "pinned": 79,
+    "queue": 0,
+    "mandatory_queue": 0,
+    "detail_queue": 0,
+    "oldest_mandatory_age_frames": 0,
+    "oldest_detail_age_frames": 0,
+    "fills_total": 3103,
+    "evictions_total": 0,
+    "invalidations_total": 2,
+    "pages_dropped_total": 0,
+    "fills_failed_total": 0,
+    "requests_dropped_total": 41405,
+    "enrich_total": 0,
+    "enrich_queue": 0,
+    "shared_refs_total": 0,
+    "finer_rebuilds_total": 0,
+    "mesh_bytes": 61081088,
+    "pool_bytes": 4275683328,
+    "resident_sectors": 0,
+    "vertex_uploads": 75,
+    "cluster_uploads": 75,
+    "dlss_resets": 0,
+    "output_width": 1920,
+    "output_height": 1080,
+    "internal_width": 1920,
+    "internal_height": 1080,
+    "cpu_demand_ms": 0.0535,
+    "cpu_begin_ms": 0.1238,
+    "cpu_pre_pass_ms": 0.0125,
+    "cpu_post_pass_ms": 0.0099,
+    "cpu_registration_ms": 0,
+    "gpu_readback_sequence": 3483,
+    "gpu_total_ms": 37.26144027709961,
+    "gpu_vt_page_ms": 0,
+    "gpu_vt_feedback_ms": 0.0197759997099638,
+    "gpu_vt_ms": 0.0197759997099638,
+    "fills_per_frame": 8,
+    "tail_fills_per_frame": 8,
+    "enrich_per_frame": 0,
+    "queue_cap": 256,
+    "request_budget_ms": 5.090000152587891,
+    "linger_frames": 4,
+    "evict_protect_frames": 16
+  },
+  "stats_lines": [
+    "STATS,settle_begin,42.75,0.13,0.25,1.05,267,22,360306,0,216,79,0,32768,58.3,3512.0,160,90,128,59.77,2,0.000,0.082,0.072,0.587,0.025,14.25,43.034,0.035,6.974",
+    "STATS,settle_end,38.63,0.13,0.20,0.99,267,22,360306,0,216,79,0,32768,58.3,3512.0,160,90,128,59.77,2,0.000,0.079,0.049,0.626,0.025,14.25,38.410,0.034,6.047"
+  ],
+  "profile_registry": {
+    "zones": 87,
+    "zone_capacity": 128,
+    "counters": 36,
+    "counter_capacity": 64,
+    "rejected_zone_registrations": 0,
+    "rejected_counter_registrations": 0
+  },
+  "vt_cpu_scopes": {
+    "cull.vt_demand": {
+      "samples": 512,
+      "p50_ms": 0.0584,
+      "p95_ms": 0.08842499999999999,
+      "p99_ms": 0.10973599999999997,
+      "max_ms": 0.1257
+    },
+    "vt.demand_stamp": {
+      "samples": 512,
+      "p50_ms": 0.0421,
+      "p95_ms": 0.06719,
+      "p99_ms": 0.08467799999999999,
+      "max_ms": 0.09540000000000001
+    },
+    "vt.demand_sort": {
+      "samples": 508,
+      "p50_ms": 0.0005,
+      "p95_ms": 0.001,
+      "p99_ms": 0.0012930000000000005,
+      "max_ms": 0.0016
+    },
+    "cull.vt_begin": {
+      "samples": 512,
+      "p50_ms": 0.1454,
+      "p95_ms": 0.24251499999999998,
+      "p99_ms": 0.36414299999999994,
+      "max_ms": 0.5594
+    },
+    "vt.demand_linger": {
+      "samples": 512,
+      "p50_ms": 0.0141,
+      "p95_ms": 0.019899999999999998,
+      "p99_ms": 0.0235,
+      "max_ms": 0.033100000000000004
+    },
+    "vt.push_inputs": {
+      "samples": 512,
+      "p50_ms": 0.0013,
+      "p95_ms": 0.0019,
+      "p99_ms": 0.0022889999999999985,
+      "max_ms": 0.0029
+    },
+    "vt.residency_begin": {
+      "samples": 512,
+      "p50_ms": 0.12419999999999999,
+      "p95_ms": 0.20918999999999993,
+      "p99_ms": 0.32913099999999973,
+      "max_ms": 0.43360000000000004
+    },
+    "vt.collect": {
+      "samples": 512,
+      "p50_ms": 0.0028,
+      "p95_ms": 0.0045,
+      "p99_ms": 0.0054,
+      "max_ms": 0.0083
+    },
+    "vt.drain_feedback": {
+      "samples": 512,
+      "p50_ms": 0.1192,
+      "p95_ms": 0.20318499999999995,
+      "p99_ms": 0.32115299999999974,
+      "max_ms": 0.4248
+    },
+    "vt.fb_dedup": {
+      "samples": 512,
+      "p50_ms": 0.0156,
+      "p95_ms": 0.019344999999999998,
+      "p99_ms": 0.023177999999999997,
+      "max_ms": 0.1016
+    },
+    "vt.fb_queue": {
+      "samples": 512,
+      "p50_ms": 0.038200000000000005,
+      "p95_ms": 0.06,
+      "p99_ms": 0.08706999999999997,
+      "max_ms": 0.1424
+    },
+    "vt.feedback_target": {
+      "samples": 512,
+      "p50_ms": 0.0009,
+      "p95_ms": 0.0015,
+      "p99_ms": 0.002088999999999999,
+      "max_ms": 0.0125
+    },
+    "vt.descriptors": {
+      "samples": 512,
+      "p50_ms": 0.011850000000000001,
+      "p95_ms": 0.018879999999999994,
+      "p99_ms": 0.032501999999999975,
+      "max_ms": 0.0668
+    },
+    "vt.enrich": {
+      "samples": 509,
+      "p50_ms": 0.0006,
+      "p95_ms": 0.0011599999999999965,
+      "p99_ms": 0.0014920000000000016,
+      "max_ms": 0.0032
+    },
+    "vt.table_upload": {
+      "samples": 512,
+      "p50_ms": 0.00345,
+      "p95_ms": 0.006944999999999999,
+      "p99_ms": 0.010977999999999996,
+      "max_ms": 0.027100000000000003
+    },
+    "vt.fb_scan": {
+      "samples": 512,
+      "p50_ms": 0.055200000000000006,
+      "p95_ms": 0.11788499999999999,
+      "p99_ms": 0.18553499999999995,
+      "max_ms": 0.2973
+    }
+  },
+  "pipeline_creation": [
+    {
+      "kind": "compute",
+      "ms": 0.1608,
+      "result": 0,
+      "line": "[pipeline-profile] end kind=compute caller=create_pipeline:3417 ms=0.160800 result=0"
+    },
+    {
+      "kind": "compute",
+      "ms": 0.2689,
+      "result": 0,
+      "line": "[pipeline-profile] end kind=compute caller=create_pipeline:3467 ms=0.268900 result=0"
+    },
+    {
+      "kind": "compute",
+      "ms": 0.2133,
+      "result": 0,
+      "line": "[pipeline-profile] end kind=compute caller=create_pipeline:3467 ms=0.213300 result=0"
+    },
+    {
+      "kind": "graphics",
+      "ms": 1.2397,
+      "result": 0,
+      "line": "[pipeline-profile] end kind=graphics caller=create_raster_pipelines:4279 ms=1.239700 result=0"
+    },
+    {
+      "kind": "graphics",
+      "ms": 0.0895,
+      "result": 0,
+      "line": "[pipeline-profile] end kind=graphics caller=create_raster_pipelines:4357 ms=0.089500 result=0"
+    },
+    {
+      "kind": "graphics",
+      "ms": 0.1106,
+      "result": 0,
+      "line": "[pipeline-profile] end kind=graphics caller=create_raster_pipelines:4398 ms=0.110600 result=0"
+    },
+    {
+      "kind": "graphics",
+      "ms": 0.0997,
+      "result": 0,
+      "line": "[pipeline-profile] end kind=graphics caller=create_raster_pipelines:4431 ms=0.099700 result=0"
+    },
+    {
+      "kind": "graphics",
+      "ms": 0.0115,
+      "result": 0,
+      "line": "[pipeline-profile] end kind=graphics caller=create_raster_pipelines:4473 ms=0.011500 result=0"
+    },
+    {
+      "kind": "graphics",
+      "ms": 0.0051,
+      "result": 0,
+      "line": "[pipeline-profile] end kind=graphics caller=create_raster_pipelines:4491 ms=0.005100 result=0"
+    },
+    {
+      "kind": "graphics",
+      "ms": 0.6114,
+      "result": 0,
+      "line": "[pipeline-profile] end kind=graphics caller=create_raster_pipelines:4644 ms=0.611400 result=0"
+    },
+    {
+      "kind": "graphics",
+      "ms": 0.757,
+      "result": 0,
+      "line": "[pipeline-profile] end kind=graphics caller=create_water_forward_pipelines:4895 ms=0.757000 result=0"
+    },
+    {
+      "kind": "graphics",
+      "ms": 0.0966,
+      "result": 0,
+      "line": "[pipeline-profile] end kind=graphics caller=create_water_forward_pipelines:4910 ms=0.096600 result=0"
+    },
+    {
+      "kind": "graphics",
+      "ms": 0.1125,
+      "result": 0,
+      "line": "[pipeline-profile] end kind=graphics caller=create_display_pipeline:5023 ms=0.112500 result=0"
+    },
+    {
+      "kind": "graphics",
+      "ms": 0.0855,
+      "result": 0,
+      "line": "[pipeline-profile] end kind=graphics caller=create_overlay_line_pipeline:5141 ms=0.085500 result=0"
+    },
+    {
+      "kind": "compute",
+      "ms": 1.7613,
+      "result": 0,
+      "line": "[pipeline-profile] end kind=compute caller=create_gi_temporal_pipeline:3554 ms=1.761300 result=0"
+    },
+    {
+      "kind": "compute",
+      "ms": 0.1533,
+      "result": 0,
+      "line": "[pipeline-profile] end kind=compute caller=create_gi_atrous_pipeline:3614 ms=0.153300 result=0"
+    },
+    {
+      "kind": "ray_tracing",
+      "ms": 37.9123,
+      "result": 0,
+      "line": "[pipeline-profile] end kind=ray_tracing caller=create_ray_tracing_pipeline:4035 ms=37.912300 result=0"
+    }
+  ],
+  "validation_error_lines": [],
+  "source_manifest": "feedback-cost-integration-source.json",
+  "comparison_limits": [
+    "One current-revision sample; compare repetitions separately.",
+    "Dedicated VT GPU time excludes draw sampling.",
+    "Compare geometry/page/input identities before attributing timing differences.",
+    "Known broad RT/primary-light-cull assertions reproduce on the archived evaluation build."
+  ],
+  "settled_cpu_target_pass": false,
+  "cpu_vt_render_thread": {
+    "samples": 601,
+    "p50_ms": 0.21970000004749746,
+    "p95_ms": 0.33760000004749746,
+    "p99_ms": 0.4894000000949949,
+    "max_ms": 0.6513000000949949
+  },
+  "cpu_vt_demand": {
+    "samples": 601,
+    "p50_ms": 0.0578,
+    "p95_ms": 0.0859,
+    "p99_ms": 0.1074,
+    "max_ms": 0.1255
+  },
+  "artifacts": [
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/castle-feedback-cost-performance/analysis.log",
+      "bytes": 2380,
+      "sha256": "72b87da0cefe2cda151796a49f6d1fafec073a23aeeb78cc23a7d51210f94332"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/castle-feedback-cost-performance/camera.path",
+      "bytes": 372076,
+      "sha256": "5caac095539bfdb731cf9728e88b348190e8b1ff065352bb022ccc9715e10662"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/castle-feedback-cost-performance/command.json",
+      "bytes": 1677,
+      "sha256": "317e62428be41eda498fdac869d4bcc1eed5561480a7a5401856809e80f9b55b"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/castle-feedback-cost-performance/driver.log",
+      "bytes": 31141,
+      "sha256": "8116b49cb838ed2c0fd979fe5b3f9a4a498616250e61cba88418cd071d6748ec"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/castle-feedback-cost-performance/launch-source.json",
+      "bytes": 58142,
+      "sha256": "9fc5bc8c1d7512ceb4add718b8277a27c48ae3a042e6e43f999a403936d579a3"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/castle-feedback-cost-performance/native-environment.json",
+      "bytes": 105,
+      "sha256": "61d38810249d558ffae390a009059aa2ba7a190d3d474e2a4ffdc131b13284ea"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/castle-feedback-cost-performance/profile.json",
+      "bytes": 3909889,
+      "sha256": "01246e5267b94fb9cea127636164c18260574c790d9e27fb5d288fc8f64265c6"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/castle-feedback-cost-performance/result.json",
+      "bytes": 2026,
+      "sha256": "a77f020b0145e246b86d4832a81a9bfd74c7cd9c05b16c348cf2af34adbfd883"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/castle-feedback-cost-performance/run/cmd.txt",
+      "bytes": 223,
+      "sha256": "e8c9cab4ddadadeb7d3816c497d24860d63409f194451dffed2804531955b2f9"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/castle-feedback-cost-performance/run/log.txt",
+      "bytes": 30645,
+      "sha256": "fa605679bb95d65b8478ca1806a2d769cb60b81e1a5068cf237c293186b0e51d"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/castle-feedback-cost-performance/settled.png",
+      "bytes": 2114914,
+      "sha256": "01315d5e558d65d74305f2668865b0669bf2d677a2a1993f5d538e4753147d21"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/castle-feedback-cost-performance/settled.png.done",
+      "bytes": 10,
+      "sha256": "4c339121e4860b04ebd48181621c9dd3f84901846feda08d4e77aafaf9a6c896"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/castle-feedback-cost-performance/timeline.txt",
+      "bytes": 223,
+      "sha256": "e8c9cab4ddadadeb7d3816c497d24860d63409f194451dffed2804531955b2f9"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/castle-feedback-cost-performance/vt.jsonl",
+      "bytes": 1374530,
+      "sha256": "ff7ce4abfdc995fba1536cf4a49d84af43de578e2cdc9fe1ffcca2dcd8aefdb9"
+    }
+  ],
+  "analysis_script": {
+    "path": "/mnt/d/tmp/matter-vt/20260915-feedback/feedback-cost-work/summarize_performance.py",
+    "sha256": "fb175e722f234148edb8507cdb443811a22199be615a84c17ac41a70a5794797"
+  },
+  "visual_review": "Blue-building framing retained; roof/wall stipple remains. Final screenshot inspected; no material-authoring improvement or intermediate continuity proof claimed."
+}

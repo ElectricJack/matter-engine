@@ -1,0 +1,153 @@
+{
+  "source_publications": [
+    "064e89f1df33019f",
+    "0cccd37dfd3e10f8",
+    "2203df279137003f",
+    "338d208e313dba68",
+    "4dd029bf0949e9e2",
+    "68d3c4de287bccbd",
+    "9c16b073d778d3f7",
+    "bb71ef5f02bb134c",
+    "c65ca147832167b2",
+    "e7d1091a2f30317c",
+    "e95c52bfff7fd77f",
+    "f3c7a5da8def589d"
+  ],
+  "gallery_prototypes": [
+    "064e89f1df33019f",
+    "0cccd37dfd3e10f8",
+    "2203df279137003f",
+    "338d208e313dba68",
+    "4dd029bf0949e9e2",
+    "68d3c4de287bccbd",
+    "9c16b073d778d3f7",
+    "bb71ef5f02bb134c",
+    "c65ca147832167b2",
+    "e7d1091a2f30317c",
+    "e95c52bfff7fd77f",
+    "f3c7a5da8def589d"
+  ],
+  "same_twelve_sources": true,
+  "regions": {
+    "landmark": {
+      "rectangle_xyxy": [
+        48,
+        525,
+        112,
+        550
+      ],
+      "old_mean_rgb": [
+        139.0,
+        135.0,
+        127.0
+      ],
+      "new_mean_rgb": [
+        33.81375,
+        32.119375,
+        29.64875
+      ],
+      "old_std_rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "new_std_rgb": [
+        2.2858939033778434,
+        1.6748506230034323,
+        1.248148003042916
+      ],
+      "fraction_changed": 1.0
+    },
+    "boulder": {
+      "rectangle_xyxy": [
+        549,
+        465,
+        562,
+        474
+      ],
+      "old_mean_rgb": [
+        139.0,
+        135.0,
+        127.0
+      ],
+      "new_mean_rgb": [
+        34.64102564102564,
+        33.15384615384615,
+        30.60683760683761
+      ],
+      "old_std_rgb": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "new_std_rgb": [
+        1.56599297277974,
+        1.1518501253957028,
+        0.8668369157954259
+      ],
+      "fraction_changed": 1.0
+    },
+    "slab": {
+      "rectangle_xyxy": [
+        147,
+        372,
+        184,
+        383
+      ],
+      "old_mean_rgb": [
+        138.57248157248156,
+        134.4938574938575,
+        126.45945945945945
+      ],
+      "new_mean_rgb": [
+        39.26781326781327,
+        35.75184275184275,
+        31.454545454545453
+      ],
+      "old_std_rgb": [
+        6.227783471042581,
+        7.25149050911401,
+        7.7178565535727515
+      ],
+      "new_std_rgb": [
+        2.5669456002254565,
+        1.5658644557242296,
+        1.4778537885783745
+      ],
+      "fraction_changed": 0.995085995085995
+    },
+    "terrain_control": {
+      "rectangle_xyxy": [
+        600,
+        630,
+        680,
+        680
+      ],
+      "old_mean_rgb": [
+        20.60825,
+        22.00625,
+        13.79775
+      ],
+      "new_mean_rgb": [
+        20.60825,
+        22.00625,
+        13.79775
+      ],
+      "old_std_rgb": [
+        2.319112316706608,
+        0.742435813724004,
+        1.5239241902076122
+      ],
+      "new_std_rgb": [
+        2.319112316706608,
+        0.742435813724004,
+        1.5239241902076122
+      ],
+      "fraction_changed": 0.0
+    }
+  },
+  "terrain_control_unchanged": true,
+  "material_integration_pass": true,
+  "visual_approval": false,
+  "limits": "Proves the streamed-source integration through publication receipts and reviewed raster albedo samples. This does not approve final rock art, scale-aware microdetail, contact blending, terrain seams, or motion. Native RT shots in this run focus on the terrain; the separate gallery supplies rock-focused RT views."
+}
