@@ -182,6 +182,20 @@ bool fold_sources(const std::string& part_source, const std::string& shared_lib_
 bool fold_sources(const std::string& part_source,
                   const std::vector<std::string>& shared_lib_roots,
                   FoldResult& out, std::string& err) {
+    return fold_sources_with_loader(part_source,
+        [&](const std::string& spec, ResolvedModule& module, std::string& error) {
+            module.specifier = spec;
+            if (!resolve_specifier(spec, shared_lib_roots, module.source_path, error)) return false;
+            if (!read_file(module.source_path, module.source)) {
+                error = "read failed: " + module.source_path;
+                return false;
+            }
+            return true;
+        }, out, err);
+}
+
+bool fold_sources_with_loader(const std::string& part_source, const SourceLoader& loader,
+                              FoldResult& out, std::string& err) {
     // BFS/DFS over imports, keyed by RESOLVED SPECIFIER (e.g. "shared-lib/leaf"),
     // normalizing any trailing ".js" so "shared-lib/x" and "shared-lib/x.js" dedup.
     std::set<std::string> seen;                 // canonical specifiers visited
@@ -202,13 +216,20 @@ bool fold_sources(const std::string& part_source,
         std::string spec = canon(worklist[i]);
         if (seen.count(spec)) continue;
         seen.insert(spec);
-        std::string path;
-        if (!resolve_specifier(spec, shared_lib_roots, path, err)) return false;
-        std::string src;
-        if (!read_file(path, src)) { err = "read failed: " + path; return false; }
-        modules.push_back({spec, src, path});
+        if (spec.rfind("shared-lib/", 0) != 0) {
+            err = "specifier not under shared-lib/: " + spec;
+            return false;
+        }
+        const std::string name = spec.substr(11);
+        if (name.empty() || name.find('/') != std::string::npos || name.find("..") != std::string::npos) {
+            err = "illegal module name: " + name;
+            return false;
+        }
+        ResolvedModule module;
+        if (!loader || !loader(spec, module, err)) return false;
+        modules.push_back({spec, module.source, module.source_path});
         // enqueue this module's own imports (transitive)
-        for (auto& dep : module_resolver::parse_import_specifiers(src))
+        for (auto& dep : module_resolver::parse_import_specifiers(module.source))
             worklist.push_back(dep);
     }
 

@@ -1,0 +1,26 @@
+{
+  "source_sha": "b387c15d81ff4d5b26a195b14f1afd6793b6ad6b",
+  "editor_sha256": "22bb85901df3a2313bf4966545686a8c47580937a64853f4d385bbe07b28671c",
+  "archives": [
+    {
+      "file": "static-w45.tar.gz",
+      "sha256": "3a77da720e77f35fc11530f2b8207e94e07c9ac243b0ff2f5d713c3b6b6e1b83",
+      "bytes": 2062237
+    },
+    {
+      "file": "vg-w45.tar.gz",
+      "sha256": "bb015436a862c002582de3f9ba88519d88d2a4ed10346dd965e53cbe0771881e",
+      "bytes": 2009501
+    },
+    {
+      "file": "static-w300.tar.gz",
+      "sha256": "6944356185016ec9d5733b0eaeaf7b0dba9ea73ddecb14dc635b80a0cff0c8b3",
+      "bytes": 3654247
+    },
+    {
+      "file": "vg-w300.tar.gz",
+      "sha256": "8d042aafeee7307c005eeb0f5302c91f9ee444ed4626b9a40806e3f041c85f5f",
+      "bytes": 3771986
+    }
+  ]
+}
