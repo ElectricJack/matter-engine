@@ -1,11 +1,11 @@
 // Node's worker is a test host for a single ordinary worker with private memory.
 // This does not claim acceptance in a browser or a production geometry binding.
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { Worker, isMainThread, workerData, parentPort } from 'node:worker_threads';
 import { createHash } from 'node:crypto';
 import { canonicalJson, exactNumber, contentDigest, Rng, hex64 } from '../../../libs/MatterContracts/examples/contracts.mjs';
+import {rngVectors} from '../../../packages/matter-authoring/tests/expected.mjs';
 
 if (isMainThread) {
   const url = pathToFileURL(process.argv[2]).href;
@@ -23,11 +23,9 @@ if (isMainThread) {
 } else {
   try {
     const create = (await import(workerData.url)).default;
-    // Supplying bytes avoids network/file APIs inside the compiled contract code.
-    const wasmBinary = readFileSync(new URL(workerData.url.replace(/\.mjs$/, '.wasm')));
     const lines = [];
     let exitCode;
-    const module = await create({ wasmBinary, noInitialRun: true,
+    const module = await create({ noInitialRun: true,
       print: line => lines.push(line), printErr: line => process.stderr.write(`${line}\n`),
       onExit: code => { exitCode = code; } });
     assert(module.HEAPU8.buffer instanceof ArrayBuffer, 'memory must be private');
@@ -36,8 +34,7 @@ if (isMainThread) {
     assert.equal(exitCode, 0, 'fixture exited successfully');
     if (workerData.url.endsWith('wasm_contract_vectors.mjs')) {
       const vectors = JSON.parse(lines.join('\n'));
-      const pinned = JSON.parse(readFileSync(new URL('../../../libs/MatterContracts/tests/rng-vectors.json', import.meta.url)));
-      assert.deepEqual(vectors.rng, pinned.vectors, 'frozen SplitMix64 vectors');
+      assert.deepEqual(vectors.rng, rngVectors.vectors, 'frozen SplitMix64 vectors');
       for (const c of vectors.numbers) {
         const bits = new DataView(new ArrayBuffer(8));
         bits.setBigUint64(0, BigInt(`0x${c.bits}`), false);

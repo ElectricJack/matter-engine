@@ -1,8 +1,10 @@
-# Explicit asset persistence and format adapters
+# Asset processing, persistence and format adapters
 
-These adapters consume immutable `matter::services::AssetProduct` values and
-link only `matter_contracts`. They neither generate geometry nor call a renderer,
-script host, live world, or implicit resolver. Native integration registers them
+The persistence and format adapters consume immutable
+`matter::services::AssetProduct` values and link only `matter_contracts`.
+Optional surface producers generate material products from explicit inputs.
+They neither generate geometry nor call a renderer, script host, live world,
+or implicit resolver. Native integration registers them
 through the injected cache/loader interfaces; central manifests and existing
 Matter export entrypoints remain integration-owned.
 
@@ -12,12 +14,154 @@ Matter export entrypoints remain integration-owned.
 | `matter_asset_storage` | `CacheService` persistence and explicit atomic file export | `MATTER_ASSET_STORAGE` |
 | `matter_asset_gltf` | Static glTF 2.0 and GLB import/export; PNG/JPEG input, PNG output | `MATTER_ASSET_GLTF` |
 | `matter_asset_legacy` | Injected existing Matter artifact reader and legacy hash checks | `MATTER_ASSET_LEGACY` |
-| `matter_asset_pipeline` | Convenience interface target for enabled adapters | No geometry/graphics dependency |
+| `matter_asset_surface` | Portable sampled surface to PBR textures or native float products | `MATTER_ASSET_SURFACE` |
+| `matter_asset_surface_native` | Existing CPU local surface tape evaluation and baking | `MATTER_ASSET_SURFACE_NATIVE` |
+| `matter_asset_prepared` | LOD settings, processing-cache keys, chain records, prepared loader | Always available; kernel-free |
+| `matter_asset_lod` | `lod_simplify@1` LOD generation (`lod_disabled.cpp` stub when OFF) | `MATTER_ASSET_LOD` |
+| `matter_asset_pipeline` | Convenience interface target for enabled adapters | No graphics dependency |
 
 All switches default ON. Turning them OFF removes their implementations from
 the link graph. Geometry and graphics build independently without registering
-any AssetPipeline target. The archive-only build has no filesystem/image/backend
-dependency. No package publishing or installed service is involved.
+any AssetPipeline target. The archive-only build (`MATTER_ASSET_LOD=OFF` too) has
+no filesystem/image/backend/geometry dependency. No package publishing or
+installed service is involved.
+
+## Prepared representations and LOD generation
+
+Preparation is split so that consumers of baked assets never link a generation
+kernel. `matter/asset/prepared.h` is kernel-free; `matter/asset/lod.h` declares
+the optional generator. Renderer LOD *selection*
+(`MatterEngine3/src/render/lod_distance.h`) belongs to neither: a prepared asset
+publishes representations and their measured error, and choosing a rung for a
+view stays with the renderer.
+
+`prepare_lods` runs behind a `ProcessingRequest` that must declare
+`matter.process.lod.simplify@1`. Its settings object takes `prototypes`
+(nonempty, unique, order-insensitive), `max_error_metres` (1-16 finite, positive,
+strictly increasing targets) and an optional `verification_tolerance_metres`
+(default 1 mm); unknown keys fail. Each level is simplified from the source,
+not from the previous level, with the engine's `decimate_to_error` policy.
+Normals and submesh ownership are reprojected from the source, and the two-sided
+surface distance to the source is measured with MatterEngine3's `mesh_error`.
+The kernels are not copied. `matter_geometry` already owns the MatterSurfaceLib
+QEM/weld/reprojection sources and is linked; `mesh_error.cpp` and SpatialQueryLib's
+`bvh.cpp` have no other component owner and compile in `matter_asset_lod_kernels`
+from their source directories.
+
+Output keeps every input id. The source prototype and every assembly child,
+placement, root, material and provenance entry are unchanged. Levels are
+appended as meshes `<source>.lod<N>`. `lods` lists the source at zero error and
+each level at its measured upper bound. `matter.asset.lod@1` joins
+`required_capabilities`. The optional `matter.asset.lod.chain@1` extension
+records the source → level grouping, the requested and measured error interval,
+triangle and query counts, the algorithm version and the normalized settings
+digest. Asset bounds grow to cover each level at every placement of its source.
+
+The following are explicit failures, never silent drops:
+
+- Tangents, UV sets, skinning and terrain sources are `unsupported_capability`.
+- An already-prepared input, a derived-id collision or a coordinate above 1e8 m
+  is `invalid_input`.
+- A source over 2^20 triangles is `resource_limit`.
+- A newer algorithm, any unknown request or host capability, and any required
+  document extension are `unsupported_capability`.
+
+Cancellation and progress (`validate`, one `lod` per level, `complete`) are
+honoured, and every `ResourceBudget` field is enforced. Mesh-error point queries
+count against `queries`. With `MATTER_ASSET_LOD=OFF`, `lod_capabilities()` is
+empty and every request fails as `unsupported_capability`.
+
+`processing_cache_key` hashes the canonical profile, the cache namespace, the
+algorithm and version, the source content digest, the sorted request
+capabilities and the *normalized* settings. Equivalent spellings share a key.
+Any change to source, settings, tolerance or algorithm version changes it.
+`load_prepared` decodes with `prepared_capabilities()` added, then checks the
+consumer's `PreparedRequirements`. It never generates: an unbaked source or a
+chain built with different settings is `missing_dependency`, and an inconsistent
+record is `invalid_input`. A `FileCache` that persists LOD products must be
+constructed with `EvaluationOptions` that include `prepared_capabilities()`. A
+plain cache refuses them as `unsupported_capability`, as it does any other typed
+product.
+
+The surface target links only contracts. Its optional native producer links the
+field/surface tape kernel from ProceduralGeometry's lean `matter_geometry_field`
+target (`libs/ProceduralGeometry/cmake/FieldKernel.cmake`), which compiles
+`libs/ProceduralGeometry/src/terrain_field.cpp` alone, without the rest of
+geometry; TerrainGeneration links the same target, so a combined graph compiles
+that source once. Noise, tape parsing,
+source evaluation and appearance evaluation retain that single implementation,
+and `MatterEngine3/src/terrain_field.h` forwards to its public header. The
+height-overlay interface is declared there as a neutral virtual; no concrete
+hydrology implementation, terrain library, renderer, QuickJS or GPU dependency is linked. Disable both
+surface switches for archive-only builds; the native switch requires the surface
+switch and defaults to its value in a fresh configuration.
+
+## Surface and material producers
+
+`bake_surface(job, SurfaceImage, options, control)` converts an explicitly supplied
+sample raster. `bake_surface_tape` additionally evaluates an authored local direct
+source on supplied position/normal/tangent/footprint hits, using the existing CPU
+`SurfaceRuntime`. Neither rasterizes geometry, resolves a material registry,
+reads a world field, schedules work, writes a cache, compiles shaders nor manages
+virtual textures. The coordinator supplies hits in the mesh's UV raster order.
+VT residency, filtering policy, shader material implementation and scene upload
+remain consumer responsibilities.
+
+Inputs/outputs are owned values with the common job envelope. Inputs live through
+the synchronous call; result bytes remain valid after the input is released.
+Cancellation, malformed input, callback exceptions, budgets and unsupported
+capabilities publish no product. The coordinator uses `services::admit` to reject
+stale envelopes. Required processing capabilities and `options.algorithms` accept
+only version 1 of `matter.processing.surface.bake` and, for the native producer,
+`matter.processing.surface.local-tape`.
+
+`SurfaceTexel` colors are linear; ORM means occlusion, perceptual roughness,
+metallic. Normals are unit tangent-space vectors with +Y bitangent; height is in
+metres. Coverage is binary. Rows are stored in supplied order, starting at v=0;
+there is no vertical flip. The native producer validates orthonormal hit frames
+and explicit tangent handedness. A normal perturbation uses the same local finite
+differences as native face baking (`max(footprint/2, 0.0001m)`), then transforms
+into the supplied tangent frame. Appearance order is tint, roughness bias,
+wetness, metallic override, thin coating; coating blends squared roughness.
+
+| Output | Material meaning and conversion policy |
+| --- | --- |
+| `pbr_rgba8` | Four owned RGBA8 textures: sRGB base color and emissive, linear metallic/roughness (G=roughness, B=metallic), linear tangent normal (`n*0.5+0.5`). Factors are neutral multipliers; alpha is 1. Sampler settings are explicit. Channels use nearest 8-bit quantization after sRGB encoding where appropriate. |
+| `native_float32` | `SurfaceProduct::native` is a typed `NativeSurfaceDescription`; the same description is serialized as a **required** `matter.material.surface.samples` v1 extension. Raw linear color/ORM/normal/emissive are f32x3; relief is f32 metres; coverage is u8. No clamping or quantization of these resources occurs. |
+
+Conventional conversion refuses any AO below 1, nonzero height, coverage holes,
+or color/emissive above 1. A declared nonzero source height range is refused even
+if sampled hits happen to have zero height. There is no silent flattening,
+occlusion-to-color multiplication, alpha reinterpretation or HDR clipping.
+The caller can request native output instead, explicitly adding
+`{"matter.material.surface.samples", 1}` to
+`options.validation.supported_capabilities`. This permission means the caller
+can retain/consume those semantics; it does not add runtime support to a renderer.
+Default contract consumers and the glTF adapter reject these native products.
+
+The native extension fields exactly mirror the typed descriptor: version,
+width/height, material ID, the six resource IDs, height min/max in metres, optional
+source-tape resource ID, source version, and wrap/filter settings. Float resource
+scalars are little-endian. The tape producer retains the exact source bytes and
+declared relief range; the general sample converter uses source version 0 and
+no tape. Every resource has an explicit shape and SHA-256. PBR fields on a native
+product identify the material only; the required extension supplies its appearance.
+A consumer may use the typed header without linking or calling a producer.
+Prepared archives preserve the extension and bytes exactly when the consumer
+opts in. Archive preservation is not execution of an advanced material.
+
+The native producer supports receiver-independent local **direct-source v1**
+tapes, including seeded noise/cellular operations, appearance modifiers and
+relief. World/field inputs, receiver-material inputs, v2 receiver-dependent height
+derivatives, and legacy material-classifier blending return explicit unsupported
+diagnostics. Their original native paths remain available for integration to
+preserve; this producer does not reinterpret them as a direct source. Strict
+boundary parsing rejects extra tokens, nonfinite/prefix literals and unknown
+operations. Limits include 64 KiB tape text, 1–16 noise octaves, safe int32 noise
+lattices, local positions within +/-1,000,000m, relief within +/-1,000m, and positive
+footprints up to 1m. Relief probes reject float coordinates too coarse for their
+spacing. Sample count, byte storage and conservative tape work are checked against
+job budgets before evaluation. Cancellation checkpoints bound raster loops.
 
 ## Prepared cache
 
@@ -134,13 +278,30 @@ python3 libs/AssetPipeline/tests/independence.py \
   --build-root /tmp/matter-asset-independence
 ```
 
-Seven CTests execute `AP-ARCHIVE/HASH/VERSION/CANCEL/BUDGET/CAPS`,
+Thirteen CTests (eleven with surface producers disabled) execute `AP-ARCHIVE/HASH/VERSION/CANCEL/BUDGET/CAPS`,
+`AP-PREPARED-LOAD/MISSING/RECORD`, `AP-CACHE-SETTINGS`, `AP-LOD-SETTINGS`,
+`AP-LOD-IDENTITY/ERROR/DETERMINISM`, `AP-LOD-CANCEL/PROGRESS/BUDGET/CAPS`,
 `AP-CACHE-REOPEN/NO-PARTIAL/STALE/ATOMIC/EXPORT`,
 `AP-GLTF-ROUNDTRIP/GLB-ROUNDTRIP/SHARED/AFFINE/SCENE-MISMATCH`,
 `AP-EXTERNAL/STRIDE/U16/NONINDEXED/TRS/PNG/SAMPLER/PBR`, malformed glTF/GLB, unsupported materials/color
-spaces, and legacy version/namespace/hash fixtures. Assertions remain active in
-Release. The matrix builds geometry, graphics and archive-only configurations,
-then audits actual CMake File API target graphs for absent storage implementations.
+spaces, and legacy version/namespace/hash fixtures. A `MATTER_ASSET_LOD=OFF`
+build replaces the two generation tests with `AP-LOD-DISABLED` and
+`AP-PREPARED-NO-KERNEL`, which load a baked product with no kernel linked.
+Assertions remain active in Release. The matrix builds geometry, graphics,
+archive-only (no LOD kernel), LOD-only, portable-surface and native-surface configurations. Surface cases also inspect Ninja's compiler dependency closure for forbidden graphics/host headers. It then audits the
+actual CMake File API target graphs: storage implementations must be absent,
+and the archive-only graph must not contain `matter_asset_lod_kernels` or
+`matter_geometry`.
+
+Surface fixtures (`tests/surface_tests.cpp`) are
+`AP-SURFACE-PBR/COLORSPACE/OWNER/NATIVE/NO-LOSS/CAPS/ARCHIVE`,
+`AP-SURFACE-INVALID/BUDGET/CANCEL/STALE`, and
+`AP-SURFACE-TAPE/APPEARANCE/RELIEF/NOISE/TAPE-INVALID/TAPE-UNSUPPORTED/TAPE-BUDGET`.
+RGBA8 goldens and serialized payloads compare exactly. Float appearance and
+analytic relief-normal checks use absolute `1e-6` (metres for height,
+dimensionless otherwise). The native target also runs the existing
+`MatterEngine3/tests/surface_field_tests.cpp` suite against the reused evaluator.
+These establish CPU product semantics, not GPU rendered parity or live wiring.
 
 To emit the textured repeated-assembly GLB for an independent glTF validator:
 
