@@ -1,0 +1,21 @@
+{
+  "scene": "ClayBrickMaze",
+  "pid": 8736,
+  "ui_hidden": false,
+  "mode": "raster",
+  "pom": true,
+  "source_manifest": "../2026-09-15-wall-surface/maze-v3-source.json",
+  "commands": "D:/tmp/matter-vt/20260915-wall-surface/user-preview-maze-commands.txt",
+  "stdout": "D:/tmp/matter-vt/20260915-wall-surface/user-preview-maze-stdout.log",
+  "stderr": "D:/tmp/matter-vt/20260915-wall-surface/user-preview-maze-stderr.log",
+  "ready": true,
+  "instances": 21,
+  "triangles": 610,
+  "vt_queue": 0,
+  "vt_rejected": 0,
+  "vt_evictions": 0,
+  "panes_visually_verified": true,
+  "frame_ms": 251.61,
+  "gpu_ms": 0.951,
+  "frame_pacing_cause": "unresolved"
+}

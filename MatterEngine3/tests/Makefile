@@ -61,6 +61,7 @@ endif
 INCLUDE_PATHS = -I../include -I.. -I../src -I../src/render -I../src/provider -I../../libs/MatterSurfaceLib/include -I../../libs/SpatialQueryLib/include -I../../libs/MemoryLib/include -I../../libs/MathLib/include -I$(RAYLIB_PATH) -I../../third_party/raylib/src -I../../libs/ParticleFlowLib/include -I../../third_party/Vulkan-Headers/include -I$(BOX3D_DIR)/include
 INCLUDE_PATHS += -I$(FLECS_DIR)
 INCLUDE_PATHS += -I../../libs/ProfileLib/include
+INCLUDE_PATHS += -I../../libs/AssetStoreLib/include
 OZZ_DIR = ../../third_party/ozz-animation
 OZZ_BUILD_DIR = $(OZZ_DIR)/build/matter
 OZZ_INCLUDE = $(OZZ_DIR)/include
@@ -70,6 +71,22 @@ OZZ_OFFLINE_LIB = $(OZZ_BUILD_DIR)/src/animation/offline/libozz_animation_offlin
 OZZ_RUNTIME_LIBS = $(OZZ_ANIMATION_LIB) $(OZZ_BASE_LIB)
 OZZ_OFFLINE_LIBS = $(OZZ_OFFLINE_LIB) $(OZZ_RUNTIME_LIBS)
 INCLUDE_PATHS += -I$(OZZ_INCLUDE)
+
+# Portable authoring route (component_adapters/authoring). The components keep
+# their own CMake builds — the adapter's pulls in contracts, geometry, build and
+# the QuickJS host with their configure-time generated headers — so this
+# Makefile builds that one project and links its archives instead of listing
+# the component sources a second time. libmatter_quickjs.a is left off: the
+# tests' own qjsc objects already supply QuickJS. Overlapping TUs the tests
+# compile themselves (triangle_emit, mesh_simplifier, ...) satisfy their
+# symbols first, so the archive copies are never pulled.
+AUTHORING_ADAPTER_BUILD := build/authoring_adapter
+include ../authoring_adapter.mk
+AUTHORING_ADAPTER_LIBS := $(addprefix $(AUTHORING_ADAPTER_BUILD)/,$(AUTHORING_ADAPTER_ARCHIVES))
+AUTHORING_ROUTE_CPP := ../src/component_adapters/authoring/engine/legacy_part_route.cpp
+INCLUDE_PATHS += -I../../libs/MatterContracts/include -I../../libs/ProceduralGeometry/include \
+                 -I../../libs/ProceduralBuild/include -I../src/script/portable_host/include \
+                 -I../src/component_adapters/authoring/include
 
 # Library paths (match MatterSurfaceLib/tests; same depth).
 ifeq ($(UNAME_S),Linux)
@@ -98,6 +115,16 @@ DEPFLAGS := -MMD -MP
 build:
 	@mkdir -p $@
 
+# Delegated every time: the component build leaves up-to-date archives
+# untouched, so links depending on them only redo when a component changed.
+$(AUTHORING_ADAPTER_LIBS) &: FORCE_AUTHORING_ADAPTER
+	@test -f $(AUTHORING_ADAPTER_BUILD)/CMakeCache.txt || \
+	  cmake -S ../src/component_adapters/authoring -B $(AUTHORING_ADAPTER_BUILD) \
+	        -DBUILD_TESTING=OFF -DCMAKE_BUILD_TYPE=Release
+	cmake --build $(AUTHORING_ADAPTER_BUILD) --target matter_authoring_adapter
+.PHONY: FORCE_AUTHORING_ADAPTER
+FORCE_AUTHORING_ADAPTER:
+
 LOD_DISTANCE_TARGET = build/lod_distance_tests
 LOD_DISTANCE_CPP = lod_distance_tests.cpp
 # Header-only subject: depend on it explicitly, or an edit to the conversion
@@ -107,11 +134,11 @@ LOD_DISTANCE_CPP = lod_distance_tests.cpp
 LOD_DISTANCE_HEADERS = ../src/render/lod_distance.h
 
 LOCAL_LIGHT_INDEX_TARGET = build/local_light_index_tests
-LOCAL_LIGHT_INDEX_CPP = local_light_index_tests.cpp ../src/world_lights.cpp
-LOCAL_LIGHT_INDEX_HEADERS = check.h ../src/world_lights.h
+LOCAL_LIGHT_INDEX_CPP = ../../libs/MatterGraphics/tests/native/local_light_index_tests.cpp ../../libs/MatterGraphics/src/native/world_lights.cpp
+LOCAL_LIGHT_INDEX_HEADERS = check.h ../../libs/MatterGraphics/src/native/world_lights.h
 
 MATRIX_TARGET = build/matrix_tests
-MATRIX_CPP = matrix_tests.cpp ../src/render/matrix_math.cpp ../src/render/frame_matrices.cpp
+MATRIX_CPP = matrix_tests.cpp ../../libs/MatterGraphics/src/matrix_math.cpp ../src/render/frame_matrices.cpp
 MATRIX_HEADERS = check.h ../include/matter/math_types.h ../include/matter/camera.h \
                  ../src/render/matrix_math.h ../src/render/frame_matrices.h \
                  ../src/render/gpu_matrix_pack.h
@@ -129,10 +156,10 @@ ANIMATION_IR_TARGET = build/animation_ir_tests
 ANIMATION_IR_CPP = animation_ir_tests.cpp ../src/animation/animation_ir.cpp ../src/animation/animation_validate.cpp
 
 ANIMATION_ASSET_TARGET = build/animation_asset_tests
-ANIMATION_ASSET_CPP = animation_asset_tests.cpp ../src/animation/anim_asset.cpp ../src/animation/anim_bundle.cpp ../src/animation/animation_asset_store.cpp ../src/animation/animation_binding_bake.cpp ../src/animation/animation_ir.cpp ../src/render/raster_mesh.cpp ../src/render/indexed_part_geometry.cpp ../src/part_asset_v2.cpp $(COMMON_MSL_BLAS_SRC) $(MSL)/material_registry.c
+ANIMATION_ASSET_CPP = animation_asset_tests.cpp ../src/animation/anim_asset.cpp ../src/animation/anim_bundle.cpp ../src/animation/animation_asset_store.cpp ../src/animation/animation_binding_bake.cpp ../src/animation/animation_ir.cpp ../../libs/MatterGraphics/src/native/raster_mesh.cpp ../src/render/indexed_part_geometry.cpp ../src/part_asset_v2.cpp $(COMMON_MSL_BLAS_SRC) $(MSL)/material_registry.c
 
 ANIMATION_RUNTIME_ASSET_TARGET = build/animation_runtime_asset_tests
-ANIMATION_RUNTIME_ASSET_CPP = animation_runtime_asset_tests.cpp ../src/animation/animation_runtime_asset.cpp ../src/animation/animation_binding_bake.cpp ../src/animation/animation_evaluator.cpp ../src/animation/animation_controllers.cpp ../src/animation/animation_targets.cpp ../src/animation/animation_budget.cpp ../src/animation/animation_validate.cpp ../src/animation/ozz_adapter.cpp ../src/animation/ozz_bake.cpp ../src/animation/animation_ir.cpp ../src/render/raster_mesh.cpp ../src/render/indexed_part_geometry.cpp
+ANIMATION_RUNTIME_ASSET_CPP = animation_runtime_asset_tests.cpp ../src/animation/animation_runtime_asset.cpp ../src/animation/animation_binding_bake.cpp ../src/animation/animation_evaluator.cpp ../src/animation/animation_controllers.cpp ../src/animation/animation_targets.cpp ../src/animation/animation_budget.cpp ../src/animation/animation_validate.cpp ../src/animation/ozz_adapter.cpp ../src/animation/ozz_bake.cpp ../src/animation/animation_ir.cpp ../../libs/MatterGraphics/src/native/raster_mesh.cpp ../src/render/indexed_part_geometry.cpp
 
 ANIMATION_DSL_RIG_TARGET = build/animation_dsl_rig_tests
 # SCRIPT_CPP already owns indexed_part_geometry.cpp for ScriptHost's runtime
@@ -153,7 +180,7 @@ check-animation-dsl-rig-sources:
 	fi
 
 ANIMATION_BINDING_TARGET = build/animation_binding_tests
-ANIMATION_BINDING_CPP = animation_binding_tests.cpp ../src/render/raster_mesh.cpp ../src/render/indexed_part_geometry.cpp ../src/animation/animation_binding_bake.cpp ../src/animation/animation_ir.cpp
+ANIMATION_BINDING_CPP = animation_binding_tests.cpp ../../libs/MatterGraphics/src/native/raster_mesh.cpp ../src/render/indexed_part_geometry.cpp ../src/animation/animation_binding_bake.cpp ../src/animation/animation_ir.cpp
 
 # Phase D1: the bake boundary must report every animation diagnostic. Drives a
 # real ScriptHost bake, so it needs the script-host closure (sh flavor) exactly
@@ -243,7 +270,8 @@ BCENCODE_CFLAGS = -O2 -I$(BC7ENC_DIR)
 VTRESIDENCY_TARGET = build/vt_residency_tests
 VTRESIDENCY_CPP = vt_residency_tests.cpp
 VTRESIDENCY_HEADERS = check.h ../src/render/vt_residency.h \
-                      ../src/render/vt_types.h ../src/render/chart_atlas.h
+                      ../src/render/vt_types.h ../src/render/chart_atlas.h \
+                      $(wildcard ../../libs/MatterGraphics/src/native/vt/*.h)
 
 FLECS_DIR = ../../third_party/flecs
 FLECS_C = $(FLECS_DIR)/flecs.c
@@ -290,6 +318,14 @@ CHARACTER_C = $(FLECS_C)
 PHYSICS_TARGET = build/physics-tests
 PHYSICS_CPP = physics_tests.cpp $(ANIMATION_ECS_RUNTIME_REQUIRED) ../src/ecs/scene_registry.cpp ../src/ecs/ecs_runtime.cpp ../src/ecs/physics_context.cpp ../src/ecs/physics_shapes.cpp ../src/ecs/physics_systems.cpp $(RIVER_FLOAT_SYSTEM_CPP) ../src/ecs/streaming_systems.cpp ../src/ecs/transform_system.cpp ../src/streaming/sector_streaming_coordinator.cpp ../src/sector_streamer.cpp
 PHYSICS_C = $(FLECS_C)
+# Runtime installs the character module and river floating samples the river
+# runtime binding, so the Physics link closure carries both on Linux. The
+# RIVER_RUNTIME_CPP sources get their object rules from that suite's eval.
+PHYSICS_CPP += ../src/ecs/character_systems.cpp ../src/hydrology/river_runtime.cpp \
+    ../src/hydrology/water_mesh_continuity.cpp ../src/hydrology/water_mesh_animation.cpp \
+    ../src/hydrology/water_boundary_animation_source.cpp ../src/hydrology/water_mesh_animation_artifact.cpp \
+    $(filter-out hydrology_handoff_products_tests.cpp,$(HYDROLOGY_HANDOFF_PRODUCTS_CPP))
+PHYSICS_MSL_C = $(HYDROLOGY_HANDOFF_PRODUCTS_C)
 
 # Terrain collision Box3D lifetime/behavior suite. Rollback-only source
 # closure; acceptance executes the MSVC/CMake target, never this recipe.
@@ -297,6 +333,28 @@ TERRAIN_COLLISION_PHYSICS_TARGET = build/terrain_collision_physics_tests
 TERRAIN_COLLISION_PHYSICS_CPP = terrain_collision_physics_tests.cpp \
     $(filter-out physics_tests.cpp,$(PHYSICS_CPP))
 TERRAIN_COLLISION_PHYSICS_C = $(PHYSICS_C)
+
+# Live terrain end to end: the engine's LiveTerrain driver over the terrain
+# coordinator, the portable CPU terrain service, Box3D terrain collision and
+# the MatterGraphics scene backend. Rollback-only closure on Windows; the
+# MSVC/CMake target is authoritative there.
+LIVE_TERRAIN_TARGET = build/live_terrain_tests
+LIVE_TERRAIN_COMPONENT_CPP = live_terrain_tests.cpp \
+    ../src/component_adapters/terrain_coordinator/engine/live_terrain.cpp \
+    ../src/component_adapters/terrain_coordinator/engine/live_terrain_session.cpp \
+    ../src/component_adapters/terrain_coordinator/src/coordinator.cpp \
+    ../src/component_adapters/terrain_coordinator/src/cache.cpp \
+    ../../libs/TerrainGeneration/src/field.cpp ../../libs/TerrainGeneration/src/meshing.cpp \
+    ../../libs/MatterGraphics/src/graphics.cpp ../../libs/MatterGraphics/src/scene_backend.cpp
+LIVE_TERRAIN_CPP = $(LIVE_TERRAIN_COMPONENT_CPP) \
+    ../../libs/ProceduralGeometry/src/terrain_field.cpp ../../libs/TerrainGeneration/src/terrain_mesher.cpp \
+    ../src/terrain_river_overlay.cpp ../src/hydrology/river_geometry.cpp \
+    ../../libs/MatterGraphics/src/matrix_math.cpp \
+    $(filter-out physics_tests.cpp,$(PHYSICS_CPP))
+LIVE_TERRAIN_C = $(PHYSICS_C)
+LIVE_TERRAIN_INCLUDES = -I../src/component_adapters/terrain_coordinator/include \
+    -I../../libs/TerrainGeneration/include -I../../libs/TerrainGeneration/tests \
+    -I../../libs/MatterGraphics/include
 
 # River floating is registered here only for rollback source-census parity.
 # Acceptance executes the MSVC/CMake target, never this legacy Make target.
@@ -384,6 +442,11 @@ QJS_C    = $(QJS_DIR)/quickjs.c $(QJS_DIR)/libregexp.c \
 
 BOX3D_DIR = ../../third_party/box3d
 BOX3D_LIB = $(BOX3D_DIR)/libbox3d.a
+ifeq ($(UNAME_S),Linux)
+# Keep Linux objects separate from the checkout's possible MinGW archive.
+BOX3D_LINUX_BUILD = build/box3d-linux
+BOX3D_LIB = $(BOX3D_LINUX_BUILD)/src/libbox3d.a
+endif
 
 # Autoremesher_core detection (shared by the retopo integration test AND the GPU tests).
 # The archive is self-contained on every platform -- its TBB replacement is
@@ -435,8 +498,8 @@ GPU_AR_CORE_LDFLAGS += $(OZZ_OFFLINE_LIBS)
 GPU_GRAPHICS := GRAPHICS_API_OPENGL_43
 
 FLAVOR_def_FLAGS      := $(CFLAGS) $(INCLUDE_PATHS)
-FLAVOR_qjs_FLAGS      := $(CFLAGS) $(INCLUDE_PATHS) $(QJS_INC)
-FLAVOR_sh_FLAGS       := $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST $(INCLUDE_PATHS) -I$(BOX3D_DIR)/include $(QJS_INC)
+FLAVOR_qjs_FLAGS      := $(CFLAGS) $(INCLUDE_PATHS) $(QJS_INC) -Ibuild/test-fixtures
+FLAVOR_sh_FLAGS       := $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST $(INCLUDE_PATHS) -I$(BOX3D_DIR)/include $(QJS_INC) -Ibuild/test-fixtures
 # Only the graph integration target carries the deterministic cache-race seam.
 # Production and ordinary script-host test objects have no hook API or storage.
 FLAVOR_sh_test_FLAGS  := $(FLAVOR_sh_FLAGS) -DMATTER_TEST_CACHE_VALIDATION_HOOK
@@ -446,7 +509,7 @@ FLAVOR_partstore_test_FLAGS := $(FLAVOR_def_FLAGS) -DMATTER_TEST_CACHE_VALIDATIO
 # sensitive) + winpthreads for std::thread. MATTER_MALLOC64_HOOK routes
 # MALLOC64/FREE64 through the harness's page-guard allocator (see precomp.h).
 FLAVOR_race_FLAGS := $(FLAVOR_def_FLAGS) -O2 -pthread -DMATTER_MALLOC64_HOOK
-FLAVOR_sp2_FLAGS      := $(CFLAGS) -DSP2_SCRIPT_HOST $(INCLUDE_PATHS) $(QJS_INC)
+FLAVOR_sp2_FLAGS      := $(CFLAGS) -DSP2_SCRIPT_HOST $(INCLUDE_PATHS) $(QJS_INC) -Ibuild/test-fixtures
 FLAVOR_vl_FLAGS       := $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST -DTILESET_GTEX_USE_RAYLIB_STB -pthread $(INCLUDE_PATHS) -I$(BOX3D_DIR)/include $(QJS_INC)
 FLAVOR_retopo_FLAGS   := $(CFLAGS) -DMATTER_HAVE_AUTOREMESHER $(INCLUDE_PATHS) -I$(AR_CORE_PATH)/include $(QJS_INC)
 # MATTER_VULKAN_ONLY (Phase 5a): the GL renderer/raster-composer/GpuCuller
@@ -475,8 +538,12 @@ FLAVOR_qjsc_CC        := gcc
 FLAVOR_qjsc_FLAGS     := -O2 -DCONFIG_VERSION='"0.10.0"' $(QJS_INC)
 FLAVOR_flecsc_CC      := gcc
 FLAVOR_flecsc_FLAGS   := -std=c17 -O2 -I$(FLECS_DIR)
+ifeq ($(UNAME_S),Linux)
+# Flecs uses POSIX networking and clocks; strict C17 hides their declarations.
+FLAVOR_flecsc_FLAGS   += -D_POSIX_C_SOURCE=200809L
+endif
 FLAVOR_physicsc_CC    := gcc
-FLAVOR_physicsc_FLAGS := -std=c17 -O2 -I$(FLECS_DIR)
+FLAVOR_physicsc_FLAGS := $(FLAVOR_flecsc_FLAGS)
 
 # C++ flavor list (compiled with $(CC) = g++). Order matters only for pattern-rule
 # generation; the alt-compile-cmd rules are all distinct.
@@ -539,7 +606,7 @@ GRAPH_SOURCES = part_graph_tests.cpp ../src/part_graph.cpp ../src/part_asset_v2.
 GRAPH_C   = $(MSL)/material_registry.c
 
 TRIVAR_TARGET = build/triangle_variation_tests
-TRIVAR_CPP = triangle_variation_tests.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp ../src/part_asset_v2.cpp \
+TRIVAR_CPP = triangle_variation_tests.cpp ../../libs/ProceduralGeometry/src/triangle_emit.cpp ../src/triangle_variation_recorder.cpp ../../libs/ProceduralGeometry/src/polygon_triangulate.cpp ../src/part_asset_v2.cpp \
              $(COMMON_MSL_BLAS_SRC)
 TRIVAR_C   = $(MSL)/material_registry.c
 
@@ -560,8 +627,8 @@ COMP_C   = $(MSL)/material_registry.c
 CHARTATLAS_TARGET = build/chart_atlas_tests
 CHARTATLAS_CPP = chart_atlas_tests.cpp ../src/lod_bake.cpp ../src/bake_trace.cpp \
                  ../src/part_asset_v2.cpp \
-                 ../src/render/raster_mesh.cpp ../src/render/indexed_part_geometry.cpp \
-                 ../src/render/part_store.cpp ../../libs/ProfileLib/src/profile.cpp ../src/impostor_bake.cpp ../src/warp_field.cpp ../src/render/matrix_math.cpp \
+                 ../../libs/MatterGraphics/src/native/raster_mesh.cpp ../src/render/indexed_part_geometry.cpp \
+                 ../src/render/part_store.cpp ../../libs/ProfileLib/src/profile.cpp ../src/impostor_bake.cpp ../src/warp_field.cpp ../../libs/MatterGraphics/src/matrix_math.cpp \
                  ../src/lod_select.cpp ../src/sector_grid.cpp \
                  ../src/animation/animation_asset_store.cpp ../src/animation/anim_asset.cpp \
                  ../src/animation/anim_bundle.cpp ../src/animation/animation_binding_bake.cpp \
@@ -583,6 +650,19 @@ GIBAKE_CPP = gi_bake_tests.cpp ../src/gi_bake.cpp ../src/gi_bake_image.cpp \
              $(MSL)/mesh_transform.cpp \
              $(COMMON_MSL_BLAS_SRC)
 GIBAKE_C   = $(MSL)/material_registry.c
+
+# OBJ+MTL+PBR-texture export (src/export). Small on purpose: the export layer
+# takes artifacts, not scripts, so this gate links no script host. The golden
+# fixtures that DO need a bake live in OBJEXPORTGOLD below.
+OBJEXPORT_TARGET = build/obj_export_tests
+OBJEXPORT_CPP = obj_export_tests.cpp \
+                ../src/export/mesh_export.cpp ../src/export/texture_bake.cpp \
+                ../src/export/export_image.cpp ../src/export/obj_writer.cpp \
+                ../src/export/part_export.cpp \
+                ../src/part_asset_v2.cpp \
+                ../src/render/indexed_part_geometry.cpp \
+                $(COMMON_MSL_BLAS_SRC)
+OBJEXPORT_C   = $(MSL)/material_registry.c
 
 FLATTEN_TARGET = build/part_flatten_tests
 FLATTEN_CPP = part_flatten_tests.cpp ../src/part_flatten.cpp ../src/lod_bake.cpp \
@@ -641,7 +721,7 @@ ISO_TARGET = build/iso_primitive_tests
 # animation clip is open, so every target that compiles it needs dsl_animation.cpp
 # and its closure (same set DSLDET_CPP below carries) plus the Ozz archives.
 ISO_CPP = iso_primitive_tests.cpp field_probe.cpp \
-          ../src/csg_lowering.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp \
+          ../src/csg_lowering.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../../libs/ProceduralGeometry/src/triangle_emit.cpp ../src/triangle_variation_recorder.cpp ../../libs/ProceduralGeometry/src/polygon_triangulate.cpp \
           ../src/dsl_animation.cpp ../src/animation/animation_ir.cpp \
           ../src/animation/ozz_adapter.cpp ../src/animation/ozz_bake.cpp \
           ../src/animation/animation_validate.cpp \
@@ -658,7 +738,7 @@ DSLDET_TARGET = build/dsl_determinism_tests
 # dsl_state.cpp routes translate/rotate to clip_translate/clip_rotate while an
 # animation clip is open, so the determinism harness now links dsl_animation.cpp.
 DSLDET_CPP = dsl_determinism_tests.cpp field_probe.cpp \
-             ../src/csg_lowering.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp \
+             ../src/csg_lowering.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../../libs/ProceduralGeometry/src/triangle_emit.cpp ../src/triangle_variation_recorder.cpp ../../libs/ProceduralGeometry/src/polygon_triangulate.cpp \
              ../src/dsl_animation.cpp ../src/animation/animation_ir.cpp \
              ../src/animation/ozz_adapter.cpp ../src/animation/ozz_bake.cpp \
              ../src/animation/animation_validate.cpp \
@@ -672,10 +752,11 @@ DEV_TARGET = build/dev_live_edit_tests
 DEV_SOURCES = dev_live_edit_tests.cpp ../src/live_edit.cpp ../src/inotify_watcher.cpp
 
 POLYTRI_TARGET = build/polygon_triangulate_tests
-POLYTRI_CPP = polygon_triangulate_tests.cpp ../src/polygon_triangulate.cpp
+POLYTRI_CPP = polygon_triangulate_tests.cpp ../../libs/ProceduralGeometry/src/polygon_triangulate.cpp
 
 SHADER_SOURCE_TARGET = build/shader_source_tests
 SHADER_SOURCE_CPP = shader_source_tests.cpp ../src/shader_source.cpp
+SHADER_SOURCE_QUALIFIER = build/qualify_shader_sources
 
 ASYNCQ_TARGET = build/async_queue_tests
 ASYNCQ_CPP = async_queue_tests.cpp ../src/async_bake.cpp
@@ -701,6 +782,19 @@ SUNANGLES_HEADERS = check.h ../include/matter/sun_angles.h
 CLOUDLAYER_TARGET = build/cloud_layer_tests
 CLOUDLAYER_CPP    = cloud_layer_tests.cpp
 CLOUDLAYER_HEADERS = check.h ../include/matter/cloud_layers.h                      ../include/matter/world_definition.h
+
+# Source wiring/layout is qualified before either shared environment suite can
+# run. Keep the complete input list shared with the CMake registrations.
+ENVIRONMENT_PYTHON ?= python3
+ENVIRONMENT_QUALIFIER = ../../libs/MatterGraphics/tools/qualify_environment.py
+ENVIRONMENT_INPUT_MANIFEST = ../../libs/MatterGraphics/tools/environment_qualification.inputs
+ENVIRONMENT_SOURCES := $(addprefix ../../,$(shell cat $(ENVIRONMENT_INPUT_MANIFEST)))
+ENVIRONMENT_QUALIFICATION = $(OBJDIR)/environment-qualified.stamp
+
+$(ENVIRONMENT_QUALIFICATION): $(ENVIRONMENT_QUALIFIER) $(ENVIRONMENT_INPUT_MANIFEST) $(ENVIRONMENT_SOURCES) | build
+	$(ENVIRONMENT_PYTHON) $(ENVIRONMENT_QUALIFIER) ../..
+	@mkdir -p $(dir $@)
+	@touch $@
 
 PROPS_TARGET = build/props_tests
 PROPS_CPP    = props_tests.cpp ../src/props/props.cpp ../src/util/json_doc.cpp
@@ -906,7 +1000,7 @@ SECTORCOORD_C      = $(FLECS_C)
 RESOLVECACHE_TARGET = build/resolve_cache_tests
 RESOLVECACHE_CPP    = resolve_cache_tests.cpp \
                       ../src/resolve_cache.cpp \
-                      ../src/world_lights.cpp \
+                      ../../libs/MatterGraphics/src/native/world_lights.cpp \
                       ../src/part_graph.cpp \
                       ../src/part_graph_snapshot.cpp \
                       ../src/part_asset_v2.cpp \
@@ -921,19 +1015,19 @@ MODAPPLY_CPP = modifier_apply_tests.cpp ../src/modifier_apply.cpp \
 
 # Phase C Task 3 — terrain field program interpreter (pure CPU, no JS, no GL).
 TERRAINFIELD_TARGET = build/terrain_field_tests
-TERRAINFIELD_CPP    = terrain_field_tests.cpp ../src/terrain_field.cpp \
+TERRAINFIELD_CPP    = terrain_field_tests.cpp ../../libs/ProceduralGeometry/src/terrain_field.cpp \
                       ../src/terrain_river_overlay.cpp ../src/hydrology/river_geometry.cpp
 
 # Phase C Task 5 — terrain mesher (pure CPU: terrain_field + terrain_mesher, no JS, no GL).
 TERRAINMESH_TARGET = build/terrain_mesher_tests
-TERRAINMESH_CPP    = terrain_mesher_tests.cpp ../src/terrain_field.cpp ../src/terrain_mesher.cpp \
+TERRAINMESH_CPP    = terrain_mesher_tests.cpp ../../libs/ProceduralGeometry/src/terrain_field.cpp ../../libs/TerrainGeneration/src/terrain_mesher.cpp \
                      ../src/terrain_river_overlay.cpp ../src/hydrology/river_geometry.cpp
 
 # M0-WP3 — cross-level seam welder (pure geometry: seam_boundary.h + seam_weld,
 # no terrain_field, no raylib, no GL, no JS). The suite builds its FaceRecords
 # from an analytic density function, so it links against nothing else.
 SEAMWELD_TARGET = build/seam_weld_tests
-SEAMWELD_CPP    = seam_weld_tests.cpp ../src/seam_weld.cpp
+SEAMWELD_CPP    = seam_weld_tests.cpp ../../libs/TerrainGeneration/src/seam_weld.cpp
 SEAMWELD_HEADERS = check.h ../src/seam_boundary.h ../src/seam_weld.h
 
 # M0-WP6 — the seam INTEGRATION gate: mesh_sector and seam_weld run together,
@@ -942,8 +1036,8 @@ SEAMWELD_HEADERS = check.h ../src/seam_boundary.h ../src/seam_weld.h
 # as SEAMWELD above, plus the mesher and the field interpreter it needs to
 # produce real tiles (cf. TERRAINMESH_CPP).
 SEAMINTEGRATION_TARGET = build/seam_integration_tests
-SEAMINTEGRATION_CPP    = seam_integration_tests.cpp ../src/seam_weld.cpp \
-                         ../src/terrain_mesher.cpp ../src/terrain_field.cpp
+SEAMINTEGRATION_CPP    = seam_integration_tests.cpp ../../libs/TerrainGeneration/src/seam_weld.cpp \
+                         ../../libs/TerrainGeneration/src/terrain_mesher.cpp ../../libs/ProceduralGeometry/src/terrain_field.cpp
 SEAMINTEGRATION_HEADERS = check.h ../src/seam_boundary.h ../src/seam_weld.h \
                           ../src/terrain_mesher.h ../src/terrain_field.h
 
@@ -975,18 +1069,23 @@ CONTOURMESH_HEADERS = check.h
 # terrain_mesher_tests pins the WELDER path's bytes bitwise and a process cannot
 # be in both modes.
 CONTOURENGINE_TARGET = build/contour_engine_tests
-CONTOURENGINE_CPP    = contour_engine_tests.cpp ../src/terrain_field.cpp \
-                       ../src/terrain_mesher.cpp
+CONTOURENGINE_CPP    = contour_engine_tests.cpp ../../libs/ProceduralGeometry/src/terrain_field.cpp \
+                       ../../libs/TerrainGeneration/src/terrain_mesher.cpp
 CONTOURENGINE_HEADERS = check.h ../src/terrain_mesher.h ../src/bake_mode.h
+
+# CPU helpers required by the ScriptHost/DSL solid and finite-surface APIs.
+SCRIPT_SOLID_COMMON_CPP = ../src/render/gpu_meshing/gpu_solid_mesher_common.cpp \
+                          ../src/render/gpu_meshing/solid_face_projection_common.cpp
 
 # Phase C Task 5 — terrain verb (sh flavor: bake_source + WorldBinding + terrainVolume).
 TERRAINVERB_TARGET = build/terrain_verb_tests
 TERRAINVERB_CPP = terrain_verb_tests.cpp ../src/part_graph.cpp ../src/bake_trace.cpp \
-                  ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp \
+                  $(SCRIPT_SOLID_COMMON_CPP) \
+                  ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../../libs/ProceduralGeometry/src/triangle_emit.cpp ../src/triangle_variation_recorder.cpp ../../libs/ProceduralGeometry/src/polygon_triangulate.cpp \
                   ../src/dsl_bindings.cpp ../src/csg_lowering.cpp ../src/module_resolver.cpp ../src/part_asset_v2.cpp ../src/lod_bake.cpp \
                   ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
                   ../src/modifier_apply.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp \
-                  ../src/terrain_field.cpp ../src/terrain_mesher.cpp \
+                  ../../libs/ProceduralGeometry/src/terrain_field.cpp ../../libs/TerrainGeneration/src/terrain_mesher.cpp \
                   ../src/pf_bindings.cpp \
                   ../../libs/ParticleFlowLib/src/pf_math.cpp ../../libs/ParticleFlowLib/src/pf_sim.cpp \
                   ../../libs/ParticleFlowLib/src/pf_fields.cpp ../../libs/ParticleFlowLib/src/pf_path_recorder.cpp \
@@ -996,7 +1095,8 @@ TERRAINVERB_C = $(COMMON_MSL_C)
 # Phase C Task 7 — WorldSector.js + native world query verbs (sh flavor).
 SECTORBAKE_TARGET = build/sector_bake_tests
 SECTORBAKE_CPP = sector_bake_tests.cpp ../src/part_graph.cpp ../src/bake_trace.cpp \
-                 ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp \
+                 $(SCRIPT_SOLID_COMMON_CPP) \
+                 ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../../libs/ProceduralGeometry/src/triangle_emit.cpp ../src/triangle_variation_recorder.cpp ../../libs/ProceduralGeometry/src/polygon_triangulate.cpp \
                  ../src/dsl_bindings.cpp ../src/csg_lowering.cpp ../src/module_resolver.cpp ../src/part_asset_v2.cpp ../src/lod_bake.cpp \
                  ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
                  ../src/modifier_apply.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp \
@@ -1028,8 +1128,8 @@ SCATTERPROF_C = $(COMMON_MSL_C)
 
 PARTSTORE_TARGET = build/partstore_tests
 PARTSTORE_CPP = partstore_tests.cpp ../src/render/part_store.cpp ../../libs/ProfileLib/src/profile.cpp ../src/impostor_bake.cpp ../src/warp_field.cpp \
-                ../src/render/matrix_math.cpp \
-                ../src/render/raster_mesh.cpp ../src/lod_select.cpp \
+                ../../libs/MatterGraphics/src/matrix_math.cpp \
+                ../../libs/MatterGraphics/src/native/raster_mesh.cpp ../src/lod_select.cpp \
                 ../src/sector_grid.cpp ../src/lod_bake.cpp ../src/bake_trace.cpp \
                 ../src/part_asset_v2.cpp \
                 ../src/animation/animation_asset_store.cpp ../src/animation/anim_asset.cpp \
@@ -1056,7 +1156,8 @@ PARTSTORE_RACE_C   = $(PARTSTORE_C)
 # the graph_integration/example/gallery/treebake/grasslod
 # family all use -DMATTER_HAVE_SCRIPT_HOST + QJS_INC.
 SCRIPT_TARGET = build/script_host_tests
-SCRIPT_CPP = script_host_tests.cpp ../src/part_graph.cpp ../src/bake_trace.cpp ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_animation.cpp ../src/animation/animation_ir.cpp ../src/animation/animation_validate.cpp ../src/animation/animation_binding_bake.cpp ../src/animation/animation_runtime_asset.cpp ../src/animation/animation_evaluator.cpp ../src/animation/animation_controllers.cpp ../src/animation/animation_targets.cpp ../src/animation/animation_budget.cpp ../src/animation/anim_asset.cpp ../src/animation/anim_bundle.cpp ../src/render/indexed_part_geometry.cpp ../src/animation/ozz_adapter.cpp ../src/animation/ozz_bake.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp \
+SCRIPT_CPP = script_host_tests.cpp ../src/part_graph.cpp ../src/bake_trace.cpp ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_animation.cpp ../src/animation/animation_ir.cpp ../src/animation/animation_validate.cpp ../src/animation/animation_binding_bake.cpp ../src/animation/animation_runtime_asset.cpp ../src/animation/animation_evaluator.cpp ../src/animation/animation_controllers.cpp ../src/animation/animation_targets.cpp ../src/animation/animation_budget.cpp ../src/animation/anim_asset.cpp ../src/animation/anim_bundle.cpp ../src/render/indexed_part_geometry.cpp ../src/animation/ozz_adapter.cpp ../src/animation/ozz_bake.cpp ../src/dsl_triangle.cpp ../../libs/ProceduralGeometry/src/triangle_emit.cpp ../src/triangle_variation_recorder.cpp ../../libs/ProceduralGeometry/src/polygon_triangulate.cpp \
+             $(SCRIPT_SOLID_COMMON_CPP) \
              ../src/dsl_bindings.cpp ../src/csg_lowering.cpp ../src/module_resolver.cpp ../src/part_asset_v2.cpp ../src/lod_bake.cpp \
              ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
              ../src/modifier_apply.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp \
@@ -1083,7 +1184,7 @@ PF_CPP = ../src/pf_bindings.cpp \
 
 # any target that links dsl_bindings.cpp must also link the terrain sources
 # (dsl_bindings.cpp now registers the terrainVolume verb which calls mesh_sector)
-TERRAIN_SRC = ../src/terrain_field.cpp ../src/terrain_mesher.cpp
+TERRAIN_SRC = ../../libs/ProceduralGeometry/src/terrain_field.cpp ../../libs/TerrainGeneration/src/terrain_mesher.cpp
 
 GRAPH_INT_TARGET = build/part_graph_integration_tests
 # SCRIPT_CPP is a superset of the explicit part_graph/bake_trace/script_host/
@@ -1091,9 +1192,10 @@ GRAPH_INT_TARGET = build/part_graph_integration_tests
 # carries the animation-authoring closure this suite now needs. The extra
 # render/LOD sources below are the A8 additions (part_store.h consumers).
 GRAPH_INT_CPP = part_graph_integration_tests.cpp $(filter-out script_host_tests.cpp,$(SCRIPT_CPP)) \
-                ../src/render/part_store.cpp ../../libs/ProfileLib/src/profile.cpp ../src/impostor_bake.cpp ../src/warp_field.cpp ../src/render/matrix_math.cpp \
-                ../src/render/raster_mesh.cpp ../src/lod_select.cpp \
-                ../src/sector_grid.cpp ../src/animation/animation_asset_store.cpp
+                ../src/render/part_store.cpp ../../libs/ProfileLib/src/profile.cpp ../src/impostor_bake.cpp ../src/warp_field.cpp ../../libs/MatterGraphics/src/matrix_math.cpp \
+                ../../libs/MatterGraphics/src/native/raster_mesh.cpp ../src/lod_select.cpp \
+                ../src/sector_grid.cpp ../src/animation/animation_asset_store.cpp \
+                $(AUTHORING_ROUTE_CPP)
 GRAPH_INT_C   = $(COMMON_MSL_C)
 
 EXAMPLE_TARGET = build/example_world
@@ -1102,10 +1204,10 @@ EXAMPLE_TARGET = build/example_world
 # call matter::load_world_definition directly, and script_host.h's inline
 # ScriptHost::eval_world_definition() calls it too; script/world_definition_loader.cpp
 # supplies it (same missing-source pattern as TILESETMEADOWMANIFEST_CPP above).
-EXAMPLE_CPP = example_world.cpp ../src/part_graph.cpp ../src/bake_trace.cpp \
-              ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp ../src/dsl_bindings.cpp \
+EXAMPLE_CPP = example_world.cpp ../src/part_graph.cpp ../src/bake_trace.cpp $(SCRIPT_SOLID_COMMON_CPP) \
+              ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../../libs/ProceduralGeometry/src/triangle_emit.cpp ../src/triangle_variation_recorder.cpp ../../libs/ProceduralGeometry/src/polygon_triangulate.cpp ../src/dsl_bindings.cpp \
               ../src/csg_lowering.cpp ../src/module_resolver.cpp ../src/script_rng_binding.cpp \
-              ../src/script/world_definition_loader.cpp ../src/world_lights.cpp ../src/hydrology/river_network_builder.cpp ../src/hydrology/hydrology_settings.cpp \
+              ../src/script/world_definition_loader.cpp ../../libs/MatterGraphics/src/native/world_lights.cpp ../src/hydrology/river_network_builder.cpp ../src/hydrology/hydrology_settings.cpp \
               ../src/part_asset_v2.cpp ../src/lod_bake.cpp ../src/world_flatten.cpp ../src/part_flatten.cpp \
               ../src/impostor_bake.cpp \
               ../src/retopo_blacklist.cpp \
@@ -1127,11 +1229,46 @@ TREEBAKE_CPP = tree_bake_check.cpp $(filter-out example_world.cpp, $(EXAMPLE_CPP
 LODNORMCONS_TARGET = build/lod_normal_consistency_tests
 LODNORMCONS_CPP = lod_normal_consistency_tests.cpp $(filter-out example_world.cpp, $(EXAMPLE_CPP))
 
+# The `matter` headless CLI and the golden-fixture export gate. Both drive
+# MatterEngine3/src/export/export_cli.cpp, which is the only part of the export
+# layer that needs the script host — hence the `sh` flavor and the EXAMPLE_CPP
+# bake closure rather than OBJEXPORT's small one.
+#
+# WHY THE CLI IS BUILT HERE and not by MatterEngine3/Makefile: that Makefile's
+# archive target has the generated SPIR-V header as an order-only prerequisite,
+# and there is no glslc on Linux/WSL, so the archive cannot be built here at
+# all. The canonical build of this binary is the MSVC CMake graph's `matter_cli`
+# target (cmake/MatterEngine.cmake); this is the Unix/rollback one, alongside
+# the other headless binaries (impostor_ab_probe, rock_bake_profile, ...) that
+# already live in this Makefile for the same reason.
+EXPORT_LAYER_CPP = ../src/export/mesh_export.cpp ../src/export/texture_bake.cpp \
+                   ../src/export/export_image.cpp ../src/export/obj_writer.cpp \
+                   ../src/export/part_export.cpp ../src/export/export_cli.cpp \
+                   $(AUTHORING_ROUTE_CPP) \
+                   ../src/render/indexed_part_geometry.cpp
+
+# world_definition_loader.cpp calls terrain_collision::canonicalize; EXAMPLE_CPP
+# does not carry that TU (the bake-only targets never reach the call), so these
+# two binaries add it the same way LIVEPROD does.
+EXPORT_BAKE_CPP = $(EXPORT_LAYER_CPP) \
+                  ../src/terrain_collision/terrain_collision_definition.cpp \
+                  $(filter-out example_world.cpp, $(EXAMPLE_CPP))
+
+MATTERCLI_TARGET = build/matter
+MATTERCLI_CPP = ../tools/matter_cli.cpp $(EXPORT_BAKE_CPP)
+
+OBJEXPORTGOLD_TARGET = build/obj_export_golden_tests
+OBJEXPORTGOLD_CPP = obj_export_golden_tests.cpp $(EXPORT_BAKE_CPP)
+
 ROCKPROF_TARGET = build/rock_bake_profile
 ROCKPROF_CPP = rock_bake_profile.cpp $(filter-out example_world.cpp, $(EXAMPLE_CPP))
 
 SLABPROBE_TARGET = build/slab_bake_probe
 SLABPROBE_CPP = slab_bake_probe.cpp $(filter-out example_world.cpp, $(EXAMPLE_CPP))
+# Live portable-authoring route through the real HostBaker (clear-crest-48.9.1).
+AUTHROUTE_TARGET = build/authoring_route_tests
+AUTHROUTE_CPP = authoring_route_tests.cpp $(filter-out example_world.cpp, $(EXAMPLE_CPP)) $(AUTHORING_ROUTE_CPP) \
+                ../src/terrain_collision/terrain_collision_definition.cpp
 
 AONORMPROBE_TARGET = build/tileset_ao_normal_probe
 AONORMPROBE_CPP = tileset_ao_normal_probe.cpp $(filter-out example_world.cpp, $(EXAMPLE_CPP))
@@ -1153,12 +1290,12 @@ LIVEPROD_CPP = live_edit_prod_tests.cpp \
 LIVEPROD_C   = $(COMMON_MSL_C)
 
 TILESETBAKE_TARGET = build/tileset_bake_tests
-TILESETBAKE_CPP = tileset_bake_tests.cpp ../src/part_graph.cpp ../src/bake_trace.cpp \
-                  ../src/tileset_bake.cpp ../src/tileset_settle.cpp \
+TILESETBAKE_CPP = tileset_bake_tests.cpp ../src/part_graph.cpp ../src/bake_trace.cpp $(SCRIPT_SOLID_COMMON_CPP) \
+                  ../src/tileset_bake.cpp ../../libs/AssetPipeline/physics/src/tileset_settle.cpp \
                   ../src/tileset_collider.cpp ../src/tileset_part_collider.cpp \
-                  ../src/tileset_phase.cpp \
+                  ../src/tileset_phase.cpp $(AUTHORING_ROUTE_CPP) \
                   ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp \
-                  ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp \
+                  ../../libs/ProceduralGeometry/src/triangle_emit.cpp ../src/triangle_variation_recorder.cpp ../../libs/ProceduralGeometry/src/polygon_triangulate.cpp \
                   ../src/dsl_bindings.cpp ../src/csg_lowering.cpp \
                   ../src/module_resolver.cpp ../src/part_asset_v2.cpp ../src/lod_bake.cpp \
                   ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
@@ -1195,13 +1332,26 @@ TERRAINNOISE_CPP = terrain_noise_tests.cpp ../src/module_resolver.cpp
 WORLD_DEFINITION_TARGET = build/world_definition_tests
 WORLD_DEFINITION_CPP = world_definition_tests.cpp \
                        ../src/script/world_definition_loader.cpp \
-                       ../src/world_lights.cpp \
+                       ../../libs/MatterGraphics/src/native/world_lights.cpp \
                        ../src/terrain_collision/terrain_collision_definition.cpp \
                        ../src/hydrology/river_network_builder.cpp \
                        ../src/module_resolver.cpp \
-                       ../src/hydrology/hydrology_settings.cpp
+                       ../src/hydrology/hydrology_settings.cpp \
+                       ../src/hydrology/river_geometry.cpp \
+                       ../src/hydrology/authored_fluid_colliders.cpp \
+                       ../src/terrain_river_overlay.cpp \
+                       ../src/part_graph.cpp \
+                       ../src/part_asset_v2.cpp \
+                       $(COMMON_MSL_BLAS_SRC)
 # defineMaterial (chart-VT Phase 3) makes the loader call into the material
 # registry, so the registry TU joins this otherwise QuickJS-only link.
+#
+# The last four TUs above close a link that had been broken on this
+# Unix/rollback path: the suite's own river-hydrology case needs
+# river_geometry + terrain_river_overlay, and local_provider.h's inline
+# adapt_world_definition pulls in part_graph::params_from_json and
+# hydrology::authored_fluid_collider_revision. The MSVC CMake target links
+# matter_engine_headless and therefore never noticed.
 WORLD_DEFINITION_C   = $(MSL)/material_registry.c
 
 # Terrain collision definition canonicalization is provider-neutral and has no
@@ -1220,7 +1370,7 @@ TERRAIN_COLLISION_ARTIFACT_TARGET = build/terrain_collision_artifact_tests
 TERRAIN_COLLISION_ARTIFACT_CPP = terrain_collision_artifact_tests.cpp \
     ../src/terrain_collision/terrain_collision_artifact.cpp \
     ../src/terrain_collision/terrain_collision_definition.cpp \
-    ../src/terrain_field.cpp ../src/terrain_mesher.cpp \
+    ../../libs/ProceduralGeometry/src/terrain_field.cpp ../../libs/TerrainGeneration/src/terrain_mesher.cpp \
     ../src/terrain_river_overlay.cpp ../src/hydrology/river_geometry.cpp
 TERRAIN_COLLISION_ARTIFACT_OBJS = \
     $(call obj_list,def,$(TERRAIN_COLLISION_ARTIFACT_CPP))
@@ -1346,7 +1496,7 @@ PHYSICS_PLAYGROUND_C      = $(MSL)/material_registry.c
 # Phase C Task 4 — eval_world: World builder DSL + ScriptHost::eval_world (sh flavor).
 EVALWORLD_TARGET = build/eval_world_tests
 EVALWORLD_CPP = eval_world_tests.cpp ../src/part_graph.cpp ../src/bake_trace.cpp \
-                ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp \
+                ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../../libs/ProceduralGeometry/src/triangle_emit.cpp ../src/triangle_variation_recorder.cpp ../../libs/ProceduralGeometry/src/polygon_triangulate.cpp \
                 ../src/dsl_bindings.cpp ../src/csg_lowering.cpp ../src/module_resolver.cpp ../src/part_asset_v2.cpp ../src/lod_bake.cpp \
                 ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
                 ../src/modifier_apply.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp \
@@ -1370,7 +1520,7 @@ CAVERNPROBE_C = $(COMMON_MSL_C)
 # Phase C Task 1: fold cache in ScriptHost (sh flavor).
 FOLDCACHE_TARGET = build/fold_cache_tests
 FOLDCACHE_CPP = fold_cache_tests.cpp ../src/part_graph.cpp ../src/bake_trace.cpp \
-                ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp \
+                ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../../libs/ProceduralGeometry/src/triangle_emit.cpp ../src/triangle_variation_recorder.cpp ../../libs/ProceduralGeometry/src/polygon_triangulate.cpp \
                 ../src/dsl_bindings.cpp ../src/csg_lowering.cpp ../src/module_resolver.cpp ../src/part_asset_v2.cpp ../src/lod_bake.cpp \
                 ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
                 ../src/modifier_apply.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp \
@@ -1386,7 +1536,7 @@ SHLIB_TARGET = build/shared_lib_tests
 SHLIB_CPP = shared_lib_tests.cpp ../src/module_resolver.cpp ../src/script_rng_binding.cpp \
             ../src/bake_trace.cpp \
             ../src/part_graph.cpp \
-            ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp ../src/dsl_bindings.cpp ../src/csg_lowering.cpp \
+            ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../../libs/ProceduralGeometry/src/triangle_emit.cpp ../src/triangle_variation_recorder.cpp ../../libs/ProceduralGeometry/src/polygon_triangulate.cpp ../src/dsl_bindings.cpp ../src/csg_lowering.cpp \
             ../src/part_asset_v2.cpp ../src/lod_bake.cpp ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
             ../src/modifier_apply.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp \
             $(TERRAIN_SRC) \
@@ -1442,14 +1592,14 @@ VIEWER_LOGIC_CPP = viewer_logic_tests.cpp \
               ../../MatterEditor/src/camera_controller.cpp \
               ../../MatterEditor/src/streaming_anchor_controller.cpp \
               ../src/async_bake.cpp \
-              ../src/render/matrix_math.cpp ../src/render/frame_matrices.cpp \
+              ../../libs/MatterGraphics/src/matrix_math.cpp ../src/render/frame_matrices.cpp \
               ../src/render/world_state.cpp \
               ../src/provider/resolvers.cpp \
               ../src/render/part_store.cpp ../../libs/ProfileLib/src/profile.cpp ../src/warp_field.cpp \
               ../src/provider/local_provider.cpp ../src/authored_world_cache.cpp \
-              ../src/render/raster_mesh.cpp \
-              ../src/tileset_phase.cpp \
-              ../src/tileset_settle.cpp ../src/tileset_gtex.cpp \
+              ../../libs/MatterGraphics/src/native/raster_mesh.cpp \
+              ../src/tileset_phase.cpp $(AUTHORING_ROUTE_CPP) \
+              ../../libs/AssetPipeline/physics/src/tileset_settle.cpp ../src/tileset_gtex.cpp \
               ../src/tileset_bake.cpp ../src/tileset_collider.cpp \
               ../src/tileset_part_collider.cpp ../src/tileset_torus_bvh.cpp \
               ../src/world_tracer.cpp \
@@ -1465,7 +1615,7 @@ RETOPO_INT_TARGET = build/retopo_integration_tests
 RETOPO_INT_CPP = retopo_integration_tests.cpp ../src/bake_trace.cpp \
                  ../src/part_graph.cpp \
                  ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp \
-                 ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp \
+                 ../../libs/ProceduralGeometry/src/triangle_emit.cpp ../src/triangle_variation_recorder.cpp ../../libs/ProceduralGeometry/src/polygon_triangulate.cpp \
                  ../src/dsl_bindings.cpp ../src/csg_lowering.cpp ../src/module_resolver.cpp \
                  ../src/part_asset_v2.cpp ../src/lod_bake.cpp \
                  ../src/part_flatten.cpp ../src/impostor_bake.cpp ../src/part_cluster.cpp \
@@ -1497,8 +1647,8 @@ GPU_RENDER_CPP = \
     ../src/animation/animation_budget.cpp \
     ../src/render/vk_animation_skinning.cpp \
     ../src/bake_trace.cpp \
-    ../src/render/matrix_math.cpp ../src/render/frame_matrices.cpp \
-    ../src/render/raster_mesh.cpp ../src/render/part_store.cpp ../../libs/ProfileLib/src/profile.cpp ../src/warp_field.cpp \
+    ../../libs/MatterGraphics/src/matrix_math.cpp ../src/render/frame_matrices.cpp \
+    ../../libs/MatterGraphics/src/native/raster_mesh.cpp ../src/render/part_store.cpp ../../libs/ProfileLib/src/profile.cpp ../src/warp_field.cpp \
     ../src/render/world_state.cpp \
     ../src/provider/local_provider.cpp ../src/authored_world_cache.cpp ../src/provider/resolvers.cpp \
     ../src/matter_engine.cpp \
@@ -1532,23 +1682,23 @@ GPU_PIPELINE_CPP = \
     ../src/terrain_collision/terrain_collision_artifact.cpp \
     ../src/dsl_bindings.cpp ../src/csg_lowering.cpp ../src/module_resolver.cpp \
     ../src/script_rng_binding.cpp \
-    ../src/polygon_triangulate.cpp \
+    ../../libs/ProceduralGeometry/src/polygon_triangulate.cpp \
     ../src/part_asset_v2.cpp ../src/lod_bake.cpp \
-    ../src/world_flatten.cpp ../src/part_flatten.cpp ../src/impostor_bake.cpp ../src/triangle_emit.cpp \
+    ../src/world_flatten.cpp ../src/part_flatten.cpp ../src/impostor_bake.cpp ../../libs/ProceduralGeometry/src/triangle_emit.cpp ../src/triangle_variation_recorder.cpp \
     ../src/part_cluster.cpp \
     ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
     ../src/tileset_torus_bvh.cpp \
     ../src/tileset_gtex.cpp \
     ../src/sector_grid.cpp ../src/lod_select.cpp \
-    ../src/world_lights.cpp \
+    ../../libs/MatterGraphics/src/native/world_lights.cpp \
     ../src/world_tracer.cpp \
     ../src/shader_source.cpp \
-    ../src/tileset_phase.cpp \
-    ../src/tileset_bake.cpp ../src/tileset_settle.cpp \
+    ../src/tileset_phase.cpp $(AUTHORING_ROUTE_CPP) \
+    ../src/tileset_bake.cpp ../../libs/AssetPipeline/physics/src/tileset_settle.cpp \
     ../src/tileset_collider.cpp ../src/tileset_part_collider.cpp \
     ../src/modifier_apply.cpp ../src/retopo_blacklist.cpp $(MSL)/mesh_smooth.cpp \
     $(TERRAIN_SRC) \
-    ../src/seam_weld.cpp \
+    ../../libs/TerrainGeneration/src/seam_weld.cpp \
     $(PF_CPP)
 
 GPU_MSL_CPP = \
@@ -1573,7 +1723,38 @@ GPU_ANIMATION_RUNTIME_CPP = \
     ../src/animation/anim_asset.cpp \
     ../src/animation/anim_bundle.cpp \
     ../src/render/indexed_part_geometry.cpp
+# Actual CPU definitions referenced by LocalProvider and PartStore. These stay
+# in their owning projects and are compiled with the existing gpu flavor.
+GPU_PROVIDER_CPU_CPP = $(SCRIPT_SOLID_COMMON_CPP) \
+    ../src/projected_face_cache.cpp ../src/part_surface.cpp \
+    ../src/finite_surface_stamp.cpp ../src/face_material_bake.cpp ../src/mesh_error.cpp \
+    ../src/brick_bond_detail.cpp ../src/brick_bond_atlas.cpp \
+    ../src/geometry/geometry_asset.cpp ../src/geometry/geometry_pages.cpp \
+    ../src/geometry/geometry_compiler.cpp ../src/geometry/geometry_cut.cpp \
+    ../src/sparse_voxel_bake.cpp ../src/sparse_voxel_hierarchy.cpp \
+    ../src/surface_proxy.cpp \
+    ../src/ecs/character_systems.cpp \
+    ../src/hydrology/authored_fluid_colliders.cpp \
+    ../src/hydrology/river_section_graph.cpp \
+    ../src/hydrology/river_section_coordinator.cpp \
+    ../src/hydrology/spillway_handoff.cpp ../src/hydrology/river_runtime.cpp \
+    ../src/hydrology/hydrology_network_artifact.cpp \
+    ../src/hydrology/hydrology_handoff_products.cpp \
+    ../src/hydrology/water_mesh_continuity.cpp \
+    ../src/hydrology/river_presentation_field.cpp \
+    ../src/hydrology/water_mesh_animation_capture.cpp \
+    ../src/hydrology/water_mesh_animation.cpp \
+    ../src/hydrology/water_mesh_animation_artifact.cpp \
+    ../src/hydrology/water_boundary_animation_source.cpp \
+    ../../libs/AssetStoreLib/src/store_hash.cpp \
+    ../../libs/AssetStoreLib/src/store_os.cpp \
+    ../../libs/AssetStoreLib/src/blob_store.cpp \
+    ../../libs/AssetStoreLib/src/ref_table.cpp \
+    ../../libs/AssetStoreLib/src/asset_pages.cpp
+GPU_MSL_C += $(MEMLIB)/src/mem_arena.c $(MEMLIB)/src/mem_bank.c
+
 GPU_ALL_CPP = $(GPU_PIPELINE_CPP) $(GPU_RENDER_CPP) $(GPU_MSL_CPP) \
+              $(GPU_PROVIDER_CPU_CPP) \
               $(GPU_ANIMATION_RUNTIME_CPP) \
               ../../libs/ProfileLib/src/profile.cpp \
               ../src/render/vk_animation_bounds.cpp \
@@ -1625,8 +1806,7 @@ def_CPP_SRCS := $(sort \
     $(CHARACTER_CPP) \
     $(ANIMATION_STORE_CPP) \
     $(ANIMATION_BUDGET_CPP) \
-    $(PHYSICS_CPP) \
-    $(TERRAIN_COLLISION_PHYSICS_CPP) \
+    $(filter-out $(RIVER_RUNTIME_CPP),$(PHYSICS_CPP) $(TERRAIN_COLLISION_PHYSICS_CPP) $(LIVE_TERRAIN_CPP)) \
     $(RIVER_FLOAT_SYSTEM_TEST_CPP) \
     $(ANIMATION_SYSTEMS_CPP) \
     $(ANIMATION_SIMULATION_CPP) \
@@ -1647,6 +1827,7 @@ def_CPP_SRCS := $(sort \
     $(COMP_CPP) \
     $(CHARTATLAS_CPP) \
     $(GIBAKE_CPP) \
+    $(OBJEXPORT_CPP) \
     $(FLATTEN_CPP) \
     $(AB_PROBE_CPP) \
     $(TILESETTORUSBVH_CPP) \
@@ -1705,6 +1886,8 @@ qjs_CPP_SRCS := $(sort \
     $(TILESETMEADOWMANIFEST_CPP))
 
 sh_CPP_SRCS := $(sort \
+    $(MATTERCLI_CPP) \
+    $(OBJEXPORTGOLD_CPP) \
     $(EVALWORLD_CPP) \
     $(CAVERNPROBE_CPP) \
     $(TERRAINVERB_CPP) \
@@ -1719,6 +1902,7 @@ sh_CPP_SRCS := $(sort \
     $(LODNORMCONS_CPP) \
     $(ROCKPROF_CPP) \
     $(SLABPROBE_CPP) \
+    $(AUTHROUTE_CPP) \
     $(SECTORPROF_CPP) \
     $(SCATTERPROF_CPP) \
     $(AONORMPROBE_CPP) \
@@ -1733,6 +1917,16 @@ partstore_test_CPP_SRCS := $(sort $(PARTSTORE_CPP))
 race_CPP_SRCS := $(sort $(PARTSTORE_RACE_CPP))
 
 sp2_CPP_SRCS := $(sort $(SHLIB_CPP))
+build/test-fixtures/embedded_shared_modules.h: $(wildcard ../shared-lib/*.js shared-lib-fixtures/*.js) ../tools/embed_shared_test_sources.py
+	python3 ../tools/embed_shared_test_sources.py --repository ../.. --output $@
+$(call obj_of,sp2,shared_lib_tests.cpp): build/test-fixtures/embedded_shared_modules.h
+$(call obj_of,qjs,world_definition_tests.cpp): build/test-fixtures/embedded_shared_modules.h
+WORLD_FIXTURE_INPUTS := $(wildcard ../shared-lib/*.js ../../projects/world_demo/shared-lib/*.js ../../projects/world_demo/objects/texturing/bricks/*.js ../../projects/world_demo/objects/castle/materials/*.js) ../../projects/world_demo/objects/templates/WorldSector.js
+build/test-fixtures/embedded_world_modules.h: $(WORLD_FIXTURE_INPUTS) ../tools/embed_shared_test_sources.py
+	python3 ../tools/embed_shared_test_sources.py --repository ../.. --world --output $@
+build/test-fixtures/embedded_export_fixtures.h: $(wildcard fixtures/export/*.obj fixtures/export/*.mtl fixtures/export/*.golden) ../tools/embed_shared_test_sources.py
+	python3 ../tools/embed_shared_test_sources.py --repository ../.. --export --output $@
+$(call obj_of,sh,obj_export_golden_tests.cpp): build/test-fixtures/embedded_export_fixtures.h
 vl_CPP_SRCS  := $(sort $(VIEWER_LOGIC_CPP))
 retopo_CPP_SRCS := $(sort $(RETOPO_INT_CPP))
 gpu_CPP_SRCS := $(sort \
@@ -1750,7 +1944,7 @@ gpu_CPP_SRCS := $(sort \
     $(GPU_ALL_CPP))
 
 # C-source flavors. Union across binaries that use them.
-mslc_C_SRCS := $(sort $(COMMON_MSL_C))
+mslc_C_SRCS := $(sort $(COMMON_MSL_C) $(GPU_MSL_C))
 qjsc_C_SRCS := $(sort $(QJS_C))
 flecsc_C_SRCS := $(sort $(ECS_C) $(ANIMATION_RIGID_C))
 physicsc_C_SRCS := $(sort $(PHYSICS_C))
@@ -1815,8 +2009,11 @@ EVENT_IMPL_DEF_OBJS = $(call obj_list,def,\
 
 ECS_OBJS = $(call obj_list,def,$(ECS_CPP)) $(call obj_list,flecsc,$(ECS_C)) $(EVENT_IMPL_DEF_OBJS)
 CHARACTER_OBJS = $(call obj_list,def,$(CHARACTER_CPP)) $(call obj_list,flecsc,$(CHARACTER_C)) $(EVENT_IMPL_DEF_OBJS)
-PHYSICS_OBJS = $(call obj_list,def,$(PHYSICS_CPP)) $(call obj_list,physicsc,$(PHYSICS_C)) $(EVENT_IMPL_DEF_OBJS)
-TERRAIN_COLLISION_PHYSICS_OBJS = $(call obj_list,def,$(TERRAIN_COLLISION_PHYSICS_CPP)) $(call obj_list,physicsc,$(TERRAIN_COLLISION_PHYSICS_C)) $(EVENT_IMPL_DEF_OBJS)
+PHYSICS_OBJS = $(call obj_list,def,$(PHYSICS_CPP)) $(call obj_list,physicsc,$(PHYSICS_C)) $(call obj_list,mslc,$(PHYSICS_MSL_C)) $(EVENT_IMPL_DEF_OBJS)
+TERRAIN_COLLISION_PHYSICS_OBJS = $(call obj_list,def,$(TERRAIN_COLLISION_PHYSICS_CPP)) $(call obj_list,physicsc,$(TERRAIN_COLLISION_PHYSICS_C)) $(call obj_list,mslc,$(PHYSICS_MSL_C)) $(EVENT_IMPL_DEF_OBJS)
+LIVE_TERRAIN_OBJS = $(call obj_list,def,$(LIVE_TERRAIN_CPP)) $(call obj_list,physicsc,$(LIVE_TERRAIN_C)) $(call obj_list,mslc,$(PHYSICS_MSL_C)) $(EVENT_IMPL_DEF_OBJS)
+# Only the component TUs see the component include roots.
+$(call obj_list,def,$(LIVE_TERRAIN_COMPONENT_CPP)): FLAVOR_def_FLAGS += $(LIVE_TERRAIN_INCLUDES)
 RIVER_FLOAT_SYSTEM_OBJS = $(call obj_list,def,$(RIVER_FLOAT_SYSTEM_TEST_CPP)) $(call obj_list,physicsc,$(RIVER_FLOAT_SYSTEM_C)) $(EVENT_IMPL_DEF_OBJS)
 # The animation suites below reach physics_context.cpp through the same ECS
 # runtime closure (ANIMATION_ECS_RUNTIME_REQUIRED / ANIMATION_STORE_CPP), so
@@ -1844,6 +2041,7 @@ TRIVAR_OBJS = $(call obj_list,def,$(TRIVAR_CPP)) $(call obj_list,mslc,$(TRIVAR_C
 COMP_OBJS   = $(call obj_list,def,$(COMP_CPP)) $(call obj_list,mslc,$(COMP_C))
 CHARTATLAS_OBJS = $(call obj_list,def,$(CHARTATLAS_CPP)) $(call obj_list,mslc,$(CHARTATLAS_C))
 GIBAKE_OBJS = $(call obj_list,def,$(GIBAKE_CPP)) $(call obj_list,mslc,$(GIBAKE_C))
+OBJEXPORT_OBJS = $(call obj_list,def,$(OBJEXPORT_CPP)) $(call obj_list,mslc,$(OBJEXPORT_C))
 FLATTEN_OBJS = $(call obj_list,def,$(FLATTEN_CPP)) $(call obj_list,mslc,$(FLATTEN_C))
 AB_PROBE_OBJS = $(call obj_list,def,$(AB_PROBE_CPP)) $(call obj_list,mslc,$(AB_PROBE_C))
 TILESETTORUSBVH_OBJS = $(call obj_list,def,$(TILESETTORUSBVH_CPP)) $(call obj_list,mslc,$(TILESETTORUSBVH_C))
@@ -1909,34 +2107,38 @@ EVALWORLD_OBJS = $(call obj_list,sh,$(EVALWORLD_CPP)) $(call obj_list,mslc,$(EVA
 CAVERNPROBE_OBJS = $(call obj_list,sh,$(CAVERNPROBE_CPP)) $(call obj_list,mslc,$(CAVERNPROBE_C)) $(qjsc_C_OBJS)
 FOLDCACHE_OBJS = $(call obj_list,sh,$(FOLDCACHE_CPP)) $(call obj_list,mslc,$(FOLDCACHE_C)) $(qjsc_C_OBJS)
 
-GRAPH_INT_OBJS = $(call obj_list,sh_test,$(GRAPH_INT_CPP)) $(call obj_list,mslc,$(GRAPH_INT_C)) $(qjsc_C_OBJS)
+GRAPH_INT_OBJS = $(call obj_list,sh_test,$(GRAPH_INT_CPP)) $(call obj_list,mslc,$(GRAPH_INT_C)) $(qjsc_C_OBJS) $(AUTHORING_ADAPTER_LIBS)
 EXAMPLE_OBJS = $(call obj_list,sh,$(EXAMPLE_CPP)) $(call obj_list,mslc,$(EXAMPLE_C)) $(qjsc_C_OBJS)
 GALLERY_OBJS = $(call obj_list,sh,$(GALLERY_CPP)) $(call obj_list,mslc,$(EXAMPLE_C)) $(qjsc_C_OBJS)
 TREEBAKE_OBJS = $(call obj_list,sh,$(TREEBAKE_CPP)) $(call obj_list,mslc,$(EXAMPLE_C)) $(qjsc_C_OBJS)
 LODNORMCONS_OBJS = $(call obj_list,sh,$(LODNORMCONS_CPP)) $(call obj_list,mslc,$(EXAMPLE_C)) $(qjsc_C_OBJS)
 ROCKPROF_OBJS = $(call obj_list,sh,$(ROCKPROF_CPP)) $(call obj_list,mslc,$(EXAMPLE_C)) $(qjsc_C_OBJS)
+MATTERCLI_OBJS = $(sort $(call obj_list,sh,$(MATTERCLI_CPP))) $(call obj_list,mslc,$(EXAMPLE_C)) $(qjsc_C_OBJS) $(AUTHORING_ADAPTER_LIBS)
+OBJEXPORTGOLD_OBJS = $(sort $(call obj_list,sh,$(OBJEXPORTGOLD_CPP))) $(call obj_list,mslc,$(EXAMPLE_C)) $(qjsc_C_OBJS) $(AUTHORING_ADAPTER_LIBS)
 SLABPROBE_OBJS = $(call obj_list,sh,$(SLABPROBE_CPP)) $(call obj_list,mslc,$(EXAMPLE_C)) $(qjsc_C_OBJS)
+AUTHROUTE_OBJS = $(call obj_list,sh,$(AUTHROUTE_CPP)) $(call obj_list,mslc,$(EXAMPLE_C)) $(qjsc_C_OBJS) $(AUTHORING_ADAPTER_LIBS)
 AONORMPROBE_OBJS = $(call obj_list,sh,$(AONORMPROBE_CPP)) $(call obj_list,mslc,$(EXAMPLE_C)) $(qjsc_C_OBJS)
 GRASSLOD_OBJS = $(call obj_list,sh,$(GRASSLOD_CPP)) $(call obj_list,mslc,$(EXAMPLE_C)) $(qjsc_C_OBJS)
 LIGHTING_GARDEN_OBJS = $(call obj_list,sh,$(LIGHTING_GARDEN_CPP)) \
                        $(call obj_list,mslc,$(LIGHTING_GARDEN_C)) $(qjsc_C_OBJS)
-TILESETBAKE_OBJS = $(call obj_list,sh,$(TILESETBAKE_CPP)) $(call obj_list,mslc,$(TILESETBAKE_C)) $(qjsc_C_OBJS)
-TILESETPARAMS_OBJS = $(call obj_list,sh,$(TILESETPARAMS_CPP)) $(call obj_list,mslc,$(TILESETPARAMS_C)) $(qjsc_C_OBJS)
-SETTLEBENCH_OBJS = $(call obj_list,sh,$(SETTLEBENCH_CPP)) $(call obj_list,mslc,$(SETTLEBENCH_C)) $(qjsc_C_OBJS)
+TILESETBAKE_OBJS = $(call obj_list,sh,$(TILESETBAKE_CPP)) $(call obj_list,mslc,$(TILESETBAKE_C)) $(qjsc_C_OBJS) $(AUTHORING_ADAPTER_LIBS)
+TILESETPARAMS_OBJS = $(call obj_list,sh,$(TILESETPARAMS_CPP)) $(call obj_list,mslc,$(TILESETPARAMS_C)) $(qjsc_C_OBJS) $(AUTHORING_ADAPTER_LIBS)
+SETTLEBENCH_OBJS = $(call obj_list,sh,$(SETTLEBENCH_CPP)) $(call obj_list,mslc,$(SETTLEBENCH_C)) $(qjsc_C_OBJS) $(AUTHORING_ADAPTER_LIBS)
 LIVEPROD_OBJS    = $(call obj_list,sh,$(LIVEPROD_CPP)) $(call obj_list,mslc,$(LIVEPROD_C)) $(qjsc_C_OBJS)
 
 SHLIB_OBJS = $(call obj_list,sp2,$(SHLIB_CPP)) $(call obj_list,mslc,$(SHLIB_C)) $(qjsc_C_OBJS)
-VIEWER_LOGIC_OBJS = $(call obj_list,vl,$(VIEWER_LOGIC_CPP)) $(call obj_list,mslc,$(EXAMPLE_C)) $(qjsc_C_OBJS) $(flecsc_C_OBJS)
+VIEWER_LOGIC_OBJS = $(call obj_list,vl,$(VIEWER_LOGIC_CPP)) $(call obj_list,mslc,$(EXAMPLE_C)) $(qjsc_C_OBJS) $(flecsc_C_OBJS) $(AUTHORING_ADAPTER_LIBS)
 RETOPO_INT_OBJS = $(call obj_list,retopo,$(RETOPO_INT_CPP)) $(call obj_list,mslc,$(RETOPO_INT_C)) $(qjsc_C_OBJS)
 
 # GPU binaries reuse the same gpu-flavor object set. Each binary is:
 # <driver>.o + $(GPU_ALL_CPP) objects + mslc + qjsc.
-GPU_SHARED_OBJS := $(call obj_list,gpu,$(sort $(GPU_ALL_CPP))) $(call obj_list,mslc,$(GPU_MSL_C)) $(qjsc_C_OBJS) $(flecsc_C_OBJS)
+GPU_SHARED_OBJS := $(call obj_list,gpu,$(sort $(GPU_ALL_CPP))) $(call obj_list,mslc,$(GPU_MSL_C)) $(qjsc_C_OBJS) $(flecsc_C_OBJS) $(AUTHORING_ADAPTER_LIBS)
 
 # ---------------------------------------------------------------------------
 # .PHONY targets: preserve every name build-all.sh and other scripts rely on.
 # ---------------------------------------------------------------------------
-.PHONY: clean run-gi-bake run-warp-field run-lod-distance run-local-light-index run-animation-diagnostics run-matrix run-animation-ozz run-animation-ozz-adapter run-animation-asset run-animation-dsl-rig run-animation-dsl-motion run-animation-binding run-animation-bake run-animation-evaluator run-animation-budget run-animation-systems run-animation-simulation run-animation-phase-b-acceptance run-animation-phase-c-acceptance run-animation-controller run-animation-ik run-animation-rigid run-tilesetslicer run-bc-encode run-vt-residency run-chart-atlas run-ecs run-physics run-scene-registry run-entity-recipes run-dynamic-slots run-partv2 run-partstore run-partstore-race run-script run-foldcache run-evalworld run-world-definition run-physics-playground run-terrainmesh run-seamweld run-contourseam run-contourmesh run-contourengine run-terrainverb run-sectorbake run-sector-profile run-scatterprof run-sectorstream run-sectorcoord run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic check-viewer-logic-animation-sources run-iso run-polytri run-treebake run-lighting-garden run-flatten run-impostor-ab run-retopo-integration run-grasslod run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetparams run-tilesetgtex run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-load-tests api-tests run-asyncbake async-bake-tests run-terrain-collision-session terrain-collision-session-tests run-liveprod run-terrainnoise release-part-tests vk-scene-renderer-tests run-vk-scene-renderer vk-animation-skinning-tests run-vk-animation-skinning vk-animation-bounds-tests run-vk-animation-bounds demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream run-dynamic-bridge run-editor-model run-properties-registry run-simulation-control run-specialized-editors run-ecs-entity-bridge run-emittergather run-baketrace run-props run-property-editor run-draw-overrides run-sun-angles run-cloud-layers run-dsldet run-tilesetvkrepack run-tilesetvkao run-tilesettorusbvh run-tilesetmeadowmanifest run-api-tests run-refineloop resolve-cache-tests run-settlebench run-river-network run-authored-fluid-colliders run-character
+.PHONY: clean run-authoring-route run-gi-bake run-warp-field run-lod-distance run-local-light-index run-animation-diagnostics run-matrix run-animation-ozz run-animation-ozz-adapter run-animation-asset run-animation-dsl-rig run-animation-dsl-motion run-animation-binding run-animation-bake run-animation-evaluator run-animation-budget run-animation-systems run-animation-simulation run-animation-phase-b-acceptance run-animation-phase-c-acceptance run-animation-controller run-animation-ik run-animation-rigid run-tilesetslicer run-bc-encode run-vt-residency run-chart-atlas run-ecs run-physics run-scene-registry run-entity-recipes run-dynamic-slots run-partv2 run-partstore run-partstore-race run-script run-foldcache run-evalworld run-world-definition run-physics-playground run-terrainmesh run-seamweld run-contourseam run-contourmesh run-contourengine run-terrainverb run-sectorbake run-sector-profile run-scatterprof run-sectorstream run-sectorcoord run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic check-viewer-logic-animation-sources run-iso run-polytri run-treebake run-lighting-garden run-flatten run-impostor-ab run-retopo-integration run-grasslod run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetparams run-tilesetgtex run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-load-tests api-tests run-asyncbake async-bake-tests run-terrain-collision-session terrain-collision-session-tests run-liveprod run-terrainnoise release-part-tests vk-scene-renderer-tests run-vk-scene-renderer vk-animation-skinning-tests run-vk-animation-skinning vk-animation-bounds-tests run-vk-animation-bounds demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream run-dynamic-bridge run-editor-model run-properties-registry run-simulation-control run-specialized-editors run-ecs-entity-bridge run-emittergather run-baketrace run-props run-property-editor run-draw-overrides run-sun-angles run-cloud-layers run-dsldet run-tilesetvkrepack run-tilesetvkao run-tilesettorusbvh run-tilesetmeadowmanifest run-api-tests run-refineloop resolve-cache-tests run-settlebench run-river-network run-authored-fluid-colliders run-character
+.PHONY: clean run-warp-field run-lod-distance run-local-light-index run-animation-diagnostics run-matrix run-animation-ozz run-animation-ozz-adapter run-animation-asset run-animation-dsl-rig run-animation-dsl-motion run-animation-binding run-animation-bake run-animation-evaluator run-animation-budget run-animation-systems run-animation-simulation run-animation-phase-b-acceptance run-animation-phase-c-acceptance run-animation-controller run-animation-ik run-animation-rigid run-tilesetslicer run-bc-encode run-vt-residency run-chart-atlas run-obj-export matter-cli run-obj-export-golden run-ecs run-physics run-scene-registry run-entity-recipes run-dynamic-slots run-partv2 run-partstore run-partstore-race run-script run-foldcache run-evalworld run-world-definition run-physics-playground run-terrainmesh run-seamweld run-contourseam run-contourmesh run-contourengine run-terrainverb run-sectorbake run-sector-profile run-scatterprof run-sectorstream run-sectorcoord run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-live run-example run-gallery run-viewer-logic check-viewer-logic-animation-sources run-iso run-polytri run-treebake run-lighting-garden run-flatten run-impostor-ab run-retopo-integration run-grasslod run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetparams run-tilesetgtex run-shader-source run-asyncq gpu-tests tileset-gpu-tests tileset-load-tests api-tests run-asyncbake async-bake-tests run-terrain-collision-session terrain-collision-session-tests run-liveprod run-terrainnoise release-part-tests vk-scene-renderer-tests run-vk-scene-renderer vk-animation-skinning-tests run-vk-animation-skinning vk-animation-bounds-tests run-vk-animation-bounds demand-bake-tests run-demandbake run-refinectl refine-loop-tests run-resolvecache run-modapply run-modbake run-terrainfield world-stream-tests run-worldstream run-dynamic-bridge run-editor-model run-properties-registry run-simulation-control run-specialized-editors run-ecs-entity-bridge run-emittergather run-baketrace run-props run-property-editor run-draw-overrides run-sun-angles run-cloud-layers run-dsldet run-tilesetvkrepack run-tilesetvkao run-tilesettorusbvh run-tilesetmeadowmanifest run-api-tests run-refineloop resolve-cache-tests run-settlebench run-river-network run-authored-fluid-colliders run-character
 
 # ---------------------------------------------------------------------------
 # Binary link rules (link-only; every .o was built above).
@@ -1949,7 +2151,7 @@ run-lod-distance: $(LOD_DISTANCE_TARGET)
 	./$(LOD_DISTANCE_TARGET)
 
 $(LOCAL_LIGHT_INDEX_TARGET): $(LOCAL_LIGHT_INDEX_CPP) $(LOCAL_LIGHT_INDEX_HEADERS) | build
-	$(CC) $(LOCAL_LIGHT_INDEX_CPP) -o $@ $(CFLAGS) $(INCLUDE_PATHS)
+	$(CC) $(LOCAL_LIGHT_INDEX_CPP) -o $@ $(CFLAGS) -I. $(INCLUDE_PATHS)
 
 run-local-light-index: $(LOCAL_LIGHT_INDEX_TARGET)
 	./$(LOCAL_LIGHT_INDEX_TARGET)
@@ -2136,6 +2338,16 @@ run-terrain-collision-physics: $(TERRAIN_COLLISION_PHYSICS_TARGET)
 
 .PHONY: run-terrain-collision-physics
 
+$(LIVE_TERRAIN_TARGET): $(LIVE_TERRAIN_OBJS) $(BOX3D_LIB) $(OZZ_OFFLINE_LIBS) $(AUTHORING_ADAPTER_LIBS)
+	$(CC) $(LIVE_TERRAIN_OBJS) -o $@ $(FLAVOR_def_FLAGS) $(LDFLAGS) $(BOX3D_LIB) $(OZZ_OFFLINE_LIBS) \
+	    $(AUTHORING_ADAPTER_BUILD)/contracts/libmatter_contracts.a $(FLECS_PLATFORM_LIBS)
+
+# Seam assertions need the contour seam policy the coordinator requests.
+run-live-terrain: $(LIVE_TERRAIN_TARGET)
+	MATTER_CONTOUR_SEAMS=1 ./$(LIVE_TERRAIN_TARGET)
+
+.PHONY: run-live-terrain
+
 $(RIVER_FLOAT_SYSTEM_TARGET): $(RIVER_FLOAT_SYSTEM_OBJS) $(BOX3D_LIB) $(OZZ_OFFLINE_LIBS)
 	$(CC) $(RIVER_FLOAT_SYSTEM_OBJS) -o $@ $(FLAVOR_def_FLAGS) $(LDFLAGS) $(BOX3D_LIB) $(OZZ_OFFLINE_LIBS) $(FLECS_PLATFORM_LIBS)
 
@@ -2243,6 +2455,11 @@ run-lighting-garden: $(LIGHTING_GARDEN_TARGET)
 	./$(LIGHTING_GARDEN_TARGET)
 
 # Script host (QuickJS-ng) + DSL/CSG bake tests.
+build/script_test_modules.h: EmbedScriptModules.cmake ../shared-lib/particleflow.js ../shared-lib/strands.js ../shared-lib/rng.js | build
+	cmake -DMATTER_SCRIPT_ROOT="$(abspath ../..)" -DMATTER_SCRIPT_HEADER="$(abspath $@)" -P EmbedScriptModules.cmake
+
+$(call obj_list,qjs,script_host_tests.cpp): build/script_test_modules.h
+
 $(SCRIPT_TARGET): $(SCRIPT_OBJS)
 	$(CC) $(SCRIPT_OBJS) -o $@ \
 	      $(CFLAGS) $(INCLUDE_PATHS) $(QJS_INC) $(LDFLAGS) $(LDLIBS) $(OZZ_OFFLINE_LIBS)
@@ -2412,6 +2629,18 @@ run-terrainverb: $(TERRAINVERB_TARGET)
 	./$(TERRAINVERB_TARGET)
 
 # Phase C Task 7 — WorldSector.js + world query verbs.
+TERRAIN_TEST_MODULE_INPUTS = \
+    ../../projects/world_demo/objects/templates/WorldSector.js \
+    ../../projects/world_demo/scenes/streaming/StreamMountain/StreamMountain.js \
+    ../../projects/world_demo/scenes/streaming/StreamMountain/objects/WorldSector.js \
+    $(wildcard ../../projects/world_demo/shared-lib/*.js ../shared-lib/*.js)
+
+build/terrain_test_modules.h: embed_terrain_modules.py $(TERRAIN_TEST_MODULE_INPUTS) | build
+	python3 embed_terrain_modules.py --repo-root ../.. --output $@
+
+$(call obj_of,sh,sector_bake_tests.cpp): build/terrain_test_modules.h
+$(call obj_of,sh,sector_bake_tests.cpp): FLAVOR_sh_FLAGS += -Ibuild
+
 $(SECTORBAKE_TARGET): $(SECTORBAKE_OBJS)
 	$(CC) $(SECTORBAKE_OBJS) -o $@ \
 	      $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST $(INCLUDE_PATHS) $(QJS_INC) $(LDFLAGS) $(LDLIBS) $(OZZ_OFFLINE_LIBS)
@@ -2519,6 +2748,14 @@ $(GIBAKE_TARGET): $(GIBAKE_OBJS)
 run-gi-bake: $(GIBAKE_TARGET)
 	./$(GIBAKE_TARGET)
 
+# OBJ export: round trip through tests/obj_parser.h, deterministic bytes,
+# texture content, artifact/subtree/LOD handling. See docs/export-obj.md.
+$(OBJEXPORT_TARGET): $(OBJEXPORT_OBJS)
+	$(CC) $(OBJEXPORT_OBJS) -o $@ $(CFLAGS) $(INCLUDE_PATHS) $(LDFLAGS) $(LDLIBS)
+
+run-obj-export: $(OBJEXPORT_TARGET)
+	./$(OBJEXPORT_TARGET)
+
 # Bake-time subtree flattening + error-bounded LOD ladder.
 $(FLATTEN_TARGET): $(FLATTEN_OBJS)
 	$(CC) $(FLATTEN_OBJS) -o $@ $(CFLAGS) $(INCLUDE_PATHS) $(LDFLAGS) $(LDLIBS)
@@ -2584,6 +2821,22 @@ $(LODNORMCONS_TARGET): $(LODNORMCONS_OBJS)
 run-lod-normal-consistency: $(LODNORMCONS_TARGET)
 	./$(LODNORMCONS_TARGET)
 
+# `matter export obj ...` (Unix/rollback build; see EXPORT_LAYER_CPP above).
+$(MATTERCLI_TARGET): $(MATTERCLI_OBJS)
+	$(CC) $(MATTERCLI_OBJS) -o $@ \
+	      $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST $(INCLUDE_PATHS) $(QJS_INC) $(LDFLAGS) $(LDLIBS) $(OZZ_OFFLINE_LIBS)
+
+matter-cli: $(MATTERCLI_TARGET)
+
+# Golden OBJ exports of two castle parts and one organic part, compared against
+# tests/fixtures/export/. Bakes, so it is slower than run-obj-export.
+$(OBJEXPORTGOLD_TARGET): $(OBJEXPORTGOLD_OBJS)
+	$(CC) $(OBJEXPORTGOLD_OBJS) -o $@ \
+	      $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST $(INCLUDE_PATHS) $(QJS_INC) $(LDFLAGS) $(LDLIBS) $(OZZ_OFFLINE_LIBS)
+
+run-obj-export-golden: $(OBJEXPORTGOLD_TARGET)
+	./$(OBJEXPORTGOLD_TARGET)
+
 # Rock bake profiling harness (cold bake per variant, wall time).
 $(ROCKPROF_TARGET): $(ROCKPROF_OBJS)
 	$(CC) $(ROCKPROF_OBJS) -o $@ \
@@ -2599,6 +2852,13 @@ $(SLABPROBE_TARGET): $(SLABPROBE_OBJS)
 
 run-slab-probe: $(SLABPROBE_TARGET)
 	./$(SLABPROBE_TARGET)
+
+$(AUTHROUTE_TARGET): $(AUTHROUTE_OBJS)
+	$(CC) $(AUTHROUTE_OBJS) -o $@ \
+	      $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST $(INCLUDE_PATHS) $(QJS_INC) $(LDFLAGS) $(LDLIBS) $(OZZ_OFFLINE_LIBS)
+
+run-authoring-route: $(AUTHROUTE_TARGET)
+	./$(AUTHROUTE_TARGET)
 
 # AO trace-normal measurement probe (prints numbers; not a regression gate).
 $(AONORMPROBE_TARGET): $(AONORMPROBE_OBJS)
@@ -2621,7 +2881,7 @@ check-viewer-logic-animation-sources:
 $(VIEWER_LOGIC_TARGET): check-viewer-logic-animation-sources $(VIEWER_LOGIC_OBJS) $(OZZ_OFFLINE_LIBS) | ../shaders_gen/embedded_shaders.h
 	$(CC) $(VIEWER_LOGIC_OBJS) -o $@ \
 	      $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST -DTILESET_GTEX_USE_RAYLIB_STB -pthread $(INCLUDE_PATHS) \
-	      -I$(BOX3D_DIR)/include $(QJS_INC) $(LDFLAGS) $(LDLIBS) $(BOX3D_DIR)/libbox3d.a $(OZZ_OFFLINE_LIBS)
+	      -I$(BOX3D_DIR)/include $(QJS_INC) $(LDFLAGS) $(LDLIBS) $(BOX3D_LIB) $(OZZ_OFFLINE_LIBS)
 
 run-viewer-logic: $(VIEWER_LOGIC_TARGET)
 	./$(VIEWER_LOGIC_TARGET)
@@ -2646,13 +2906,23 @@ run-live: $(DEV_TARGET)
 	./$(DEV_TARGET)
 
 # Box3d physics smoke test.
-build/tileset_physics_tests: tileset_physics_tests.cpp ../src/tileset_settle.cpp ../src/tileset_collider.cpp $(BOX3D_DIR)/libbox3d.a | build
+build/tileset_physics_tests: tileset_physics_tests.cpp ../../libs/AssetPipeline/physics/src/tileset_settle.cpp ../src/tileset_collider.cpp ../src/bake_trace.cpp $(BOX3D_LIB) | build
 	g++ -std=c++17 -Wall -Wno-missing-braces -O2 -I../include -I../src -I$(BOX3D_DIR)/include \
-	    -o $@ tileset_physics_tests.cpp ../src/tileset_settle.cpp ../src/tileset_collider.cpp \
-	    $(BOX3D_DIR)/libbox3d.a -lm
+	    -o $@ tileset_physics_tests.cpp ../../libs/AssetPipeline/physics/src/tileset_settle.cpp ../src/tileset_collider.cpp ../src/bake_trace.cpp \
+	    $(BOX3D_LIB) -lm
 
 $(BOX3D_LIB):
+ifeq ($(UNAME_S),Linux)
+	cmake -S $(BOX3D_DIR) -B $(BOX3D_LINUX_BUILD) -DCMAKE_BUILD_TYPE=Release \
+	      -DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++ -DBUILD_SHARED_LIBS=OFF \
+	      -DBOX3D_SAMPLES=OFF -DBOX3D_UNIT_TESTS=OFF -DBOX3D_BENCHMARKS=OFF \
+	      -DBOX3D_DOCS=OFF -DBOX3D_PROFILE=OFF
+	cmake --build $(BOX3D_LINUX_BUILD) --target box3d --parallel 2
+else
 	$(MAKE) -C $(BOX3D_DIR)
+endif
+
+terrain-collision-session-tests demand-bake-tests: $(BOX3D_LIB)
 
 run-tilesetphysics: build/tileset_physics_tests
 	./build/tileset_physics_tests
@@ -2691,22 +2961,22 @@ run-terrainnoise: $(TERRAINNOISE_TARGET)
 	./$(TERRAINNOISE_TARGET)
 
 # Tileset bake bridge.
-$(TILESETBAKE_TARGET): $(TILESETBAKE_OBJS) $(BOX3D_DIR)/libbox3d.a
+$(TILESETBAKE_TARGET): $(TILESETBAKE_OBJS) $(BOX3D_LIB)
 	$(CC) $(TILESETBAKE_OBJS) \
 	      -o $@ \
 	      $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST \
 	      $(INCLUDE_PATHS) -I$(BOX3D_DIR)/include \
-	      $(QJS_INC) $(LDFLAGS) $(LDLIBS) $(BOX3D_DIR)/libbox3d.a -lm $(OZZ_OFFLINE_LIBS)
+	      $(QJS_INC) $(LDFLAGS) $(LDLIBS) $(BOX3D_LIB) -lm $(OZZ_OFFLINE_LIBS)
 
 run-tilesetbake: $(TILESETBAKE_TARGET)
 	./$(TILESETBAKE_TARGET)
 
 # Same source closure as $(TILESETBAKE_TARGET) (TILESETBAKE_CPP minus its main),
 # so it needs the same Ozz archives.
-$(TILESETPARAMS_TARGET): $(TILESETPARAMS_OBJS) $(BOX3D_DIR)/libbox3d.a $(OZZ_OFFLINE_LIBS)
+$(TILESETPARAMS_TARGET): $(TILESETPARAMS_OBJS) $(BOX3D_LIB) $(OZZ_OFFLINE_LIBS)
 	$(CC) $(TILESETPARAMS_OBJS) -o $@ \
 	      $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST $(INCLUDE_PATHS) $(QJS_INC) $(LDFLAGS) $(LDLIBS) \
-	      $(BOX3D_DIR)/libbox3d.a $(OZZ_OFFLINE_LIBS)
+	      $(BOX3D_LIB) $(OZZ_OFFLINE_LIBS)
 
 run-tilesetparams: $(TILESETPARAMS_TARGET)
 	./$(TILESETPARAMS_TARGET)
@@ -2714,10 +2984,10 @@ run-tilesetparams: $(TILESETPARAMS_TARGET)
 # Bake Lab task 5.4 — settle_bench headless benchmark CLI.
 # Same source closure as $(TILESETBAKE_TARGET) plus tileset_metrics.cpp, so it
 # needs the same Ozz archives.
-$(SETTLEBENCH_TARGET): $(SETTLEBENCH_OBJS) $(BOX3D_DIR)/libbox3d.a $(OZZ_OFFLINE_LIBS)
+$(SETTLEBENCH_TARGET): $(SETTLEBENCH_OBJS) $(BOX3D_LIB) $(OZZ_OFFLINE_LIBS)
 	$(CC) $(SETTLEBENCH_OBJS) -o $@ \
 	      $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST $(INCLUDE_PATHS) $(QJS_INC) $(LDFLAGS) $(LDLIBS) \
-	      $(BOX3D_DIR)/libbox3d.a $(OZZ_OFFLINE_LIBS)
+	      $(BOX3D_LIB) $(OZZ_OFFLINE_LIBS)
 
 run-settlebench: $(SETTLEBENCH_TARGET)
 	./$(SETTLEBENCH_TARGET) --spec synthetic
@@ -2772,7 +3042,17 @@ run-tilesetmeadowmanifest: $(TILESETMEADOWMANIFEST_TARGET)
 	./$(TILESETMEADOWMANIFEST_TARGET)
 
 # Stage 1a — embedded shader lookup.
-$(SHADER_SOURCE_TARGET): $(SHADER_SOURCE_OBJS) ../shaders_gen/embedded_shaders.h
+$(SHADER_SOURCE_QUALIFIER): ../tools/qualify_shader_sources.cpp | build
+	$(CC) -std=c++17 -Wall -UNDEBUG $< -o $@
+
+# Source contracts execute at build/lint time, never in the runtime suite.
+# The phony qualification reads current inputs on every supported invocation;
+# no partial source dependency list can accidentally reuse a stale result.
+.PHONY: qualify-shader-sources
+qualify-shader-sources: $(SHADER_SOURCE_QUALIFIER)
+	./$(SHADER_SOURCE_QUALIFIER)
+
+$(SHADER_SOURCE_TARGET): $(SHADER_SOURCE_OBJS) ../shaders_gen/embedded_shaders.h | qualify-shader-sources
 	$(CC) $(SHADER_SOURCE_OBJS) -o $@ \
 	      $(CFLAGS) -I../include -I..
 
@@ -2800,7 +3080,7 @@ run-sun-angles: $(SUNANGLES_TARGET)
 	./$(SUNANGLES_TARGET)
 
 # Cloud layers. Same empty link closure as sun-angles.
-$(CLOUDLAYER_TARGET): $(CLOUDLAYER_OBJS)
+$(CLOUDLAYER_TARGET): $(CLOUDLAYER_OBJS) | $(ENVIRONMENT_QUALIFICATION)
 	$(CC) $(CLOUDLAYER_OBJS) -o $@ $(CFLAGS) $(INCLUDE_PATHS)
 
 run-cloud-layers: $(CLOUDLAYER_TARGET)
@@ -2922,7 +3202,7 @@ run-modbake: $(MODBAKE_TARGET)
 api-tests: $(call obj_of,gpu,api_tests.cpp) $(GPU_SHARED_OBJS) | ../shaders_gen/embedded_shaders.h build
 	$(CC) $(call obj_of,gpu,api_tests.cpp) $(GPU_SHARED_OBJS) \
 	      -o build/api_tests $(FLAVOR_gpu_FLAGS) $(LDFLAGS) $(LDLIBS) \
-	      $(BOX3D_DIR)/libbox3d.a $(GPU_AR_CORE_LDFLAGS)
+	      $(BOX3D_LIB) $(GPU_AR_CORE_LDFLAGS)
 
 run-api-tests: api-tests
 	cd ../../MatterEditor && GALLIUM_DRIVER=d3d12 ../MatterEngine3/tests/build/api_tests
@@ -2931,7 +3211,7 @@ run-api-tests: api-tests
 world-stream-tests: $(call obj_of,gpu,world_stream_tests.cpp) $(GPU_SHARED_OBJS) | ../shaders_gen/embedded_shaders.h build
 	$(CC) $(call obj_of,gpu,world_stream_tests.cpp) $(GPU_SHARED_OBJS) \
 	      -o build/world_stream_tests $(FLAVOR_gpu_FLAGS) $(LDFLAGS) $(LDLIBS) \
-	      $(BOX3D_DIR)/libbox3d.a $(GPU_AR_CORE_LDFLAGS)
+	      $(BOX3D_LIB) $(GPU_AR_CORE_LDFLAGS)
 
 run-worldstream: world-stream-tests
 	cd ../../MatterEditor && GALLIUM_DRIVER=d3d12 MATTER_STREAM_RINGS="32:3,80:2" ../MatterEngine3/tests/build/world_stream_tests
@@ -2940,7 +3220,7 @@ run-worldstream: world-stream-tests
 async-bake-tests: $(call obj_of,gpu,async_bake_tests.cpp) $(GPU_SHARED_OBJS) | ../shaders_gen/embedded_shaders.h build
 	$(CC) $(call obj_of,gpu,async_bake_tests.cpp) $(GPU_SHARED_OBJS) \
 	      -o build/async_bake_tests $(FLAVOR_gpu_FLAGS) $(LDFLAGS) $(LDLIBS) \
-	      $(BOX3D_DIR)/libbox3d.a $(GPU_AR_CORE_LDFLAGS)
+	      $(BOX3D_LIB) $(GPU_AR_CORE_LDFLAGS)
 
 run-asyncbake: async-bake-tests
 	./build/async_bake_tests
@@ -2950,7 +3230,7 @@ run-asyncbake: async-bake-tests
 terrain-collision-session-tests: $(call obj_of,gpu,terrain_collision_session_tests.cpp) $(GPU_SHARED_OBJS) | ../shaders_gen/embedded_shaders.h build
 	$(CC) $(call obj_of,gpu,terrain_collision_session_tests.cpp) $(GPU_SHARED_OBJS) \
 	      -o build/terrain_collision_session_tests $(FLAVOR_gpu_FLAGS) $(LDFLAGS) $(LDLIBS) \
-	      $(BOX3D_DIR)/libbox3d.a $(GPU_AR_CORE_LDFLAGS)
+	      $(BOX3D_LIB) $(GPU_AR_CORE_LDFLAGS)
 
 run-terrain-collision-session: terrain-collision-session-tests
 	./build/terrain_collision_session_tests
@@ -2959,7 +3239,7 @@ run-terrain-collision-session: terrain-collision-session-tests
 demand-bake-tests: $(call obj_of,gpu,demand_bake_tests.cpp) $(GPU_SHARED_OBJS) | ../shaders_gen/embedded_shaders.h build
 	$(CC) $(call obj_of,gpu,demand_bake_tests.cpp) $(GPU_SHARED_OBJS) \
 	      -o build/demand_bake_tests $(FLAVOR_gpu_FLAGS) $(LDFLAGS) $(LDLIBS) \
-	      $(BOX3D_DIR)/libbox3d.a $(GPU_AR_CORE_LDFLAGS)
+	      $(BOX3D_LIB) $(GPU_AR_CORE_LDFLAGS)
 
 run-demandbake: demand-bake-tests
 	./build/demand_bake_tests
@@ -2970,7 +3250,7 @@ run-demandbake: demand-bake-tests
 transient-tests: $(call obj_of,gpu,transient_tests.cpp) $(GPU_SHARED_OBJS) | ../shaders_gen/embedded_shaders.h build
 	$(CC) $(call obj_of,gpu,transient_tests.cpp) $(GPU_SHARED_OBJS) \
 	      -o build/transient_tests $(FLAVOR_gpu_FLAGS) $(LDFLAGS) $(LDLIBS) \
-	      $(BOX3D_DIR)/libbox3d.a $(GPU_AR_CORE_LDFLAGS)
+	      $(BOX3D_LIB) $(GPU_AR_CORE_LDFLAGS)
 
 run-transient: transient-tests
 	./build/transient_tests
@@ -3023,7 +3303,7 @@ run-vk-scene-renderer: vk-scene-renderer-tests
 refine-loop-tests: $(call obj_of,gpu,refine_loop_tests.cpp) $(GPU_SHARED_OBJS) | ../shaders_gen/embedded_shaders.h build
 	$(CC) $(call obj_of,gpu,refine_loop_tests.cpp) $(GPU_SHARED_OBJS) \
 	      -o build/refine_loop_tests $(FLAVOR_gpu_FLAGS) $(LDFLAGS) $(LDLIBS) \
-	      $(BOX3D_DIR)/libbox3d.a $(GPU_AR_CORE_LDFLAGS)
+	      $(BOX3D_LIB) $(GPU_AR_CORE_LDFLAGS)
 
 run-refineloop: refine-loop-tests
 	GALLIUM_DRIVER=d3d12 ./build/refine_loop_tests
@@ -3329,7 +3609,7 @@ clean-physicsevents:
 # links terrain_field.cpp directly.
 # ---------------------------------------------------------------------------
 SURFACEFIELD_TARGET = build/surface_field_tests
-SURFACEFIELD_CPP    = surface_field_tests.cpp ../src/terrain_field.cpp
+SURFACEFIELD_CPP    = surface_field_tests.cpp ../../libs/ProceduralGeometry/src/terrain_field.cpp
 SURFACEFIELD_OBJS   = $(call obj_list,def,$(SURFACEFIELD_CPP))
 
 $(eval $(call objrule_cpp,def,surface_field_tests.cpp))
@@ -3454,7 +3734,7 @@ clean-atmosphere:
 VOLUMETRICQUALITY_TARGET = build/volumetric_quality_tests
 VOLUMETRICQUALITY_CPP = volumetric_quality_tests.cpp
 
-$(VOLUMETRICQUALITY_TARGET): $(VOLUMETRICQUALITY_CPP) ../include/matter/volumetric_quality.h ../include/matter/cloud_shadow_settings.h ../include/matter/math_types.h check.h | build
+$(VOLUMETRICQUALITY_TARGET): $(VOLUMETRICQUALITY_CPP) ../include/matter/volumetric_quality.h ../include/matter/cloud_shadow_settings.h ../include/matter/math_types.h check.h | build $(ENVIRONMENT_QUALIFICATION)
 	$(CC) -std=c++17 -Wall -Wextra -Wno-missing-braces -O2 -I../include -o $@ $(VOLUMETRICQUALITY_CPP)
 
 run-volumetric-quality: $(VOLUMETRICQUALITY_TARGET)
@@ -3537,3 +3817,85 @@ run-rt-transmission:
 	$(MAKE) -C ../../MatterEditor build/windows/vulkan_smoke_tests.exe
 	cd ../../MatterEditor/build/windows && \
 	    MATTER_VK_SMOKE_MODE=rt-transmission ./vulkan_smoke_tests.exe
+
+# Isolated byte/source fixtures run the production bundle codec, hash and
+# atomic-file implementation. GC removes unrelated geometry entry points.
+build/fixture_io_tests: fixture_io_tests.cpp memory_fixture_io.h ../src/terrain_collision/fixture_artifact_storage.h ../src/terrain_collision/terrain_collision_artifact.h ../src/module_resolver.cpp ../src/source_snapshot_modules.h ../include/matter/fixture_io.h ../src/part_bundle.h ../src/part_asset_v2.cpp $(MSL)/part_asset.cpp
+	@mkdir -p build
+	$(CC) fixture_io_tests.cpp ../src/module_resolver.cpp ../src/part_asset_v2.cpp $(MSL)/part_asset.cpp -o $@ $(CFLAGS) $(INCLUDE_PATHS) -ffunction-sections -fdata-sections -pthread -Wl,--gc-sections
+
+.PHONY: run-fixture-io
+run-fixture-io: build/fixture_io_tests
+	./build/fixture_io_tests
+
+# Source/layout predicates and shipped-world bakes remain real build gates.
+WORLD_SOURCE_QUALIFIER_TARGET = build/matter_world_source_qualifier
+WORLD_SOURCE_QUALIFIER_CPP = ../tools/qualify_world_sources.cpp
+$(eval $(call objrule_cpp,qjs,$(WORLD_SOURCE_QUALIFIER_CPP)))
+$(call obj_of,qjs,$(WORLD_SOURCE_QUALIFIER_CPP)): world_definition_tests.cpp
+WORLD_SOURCE_QUALIFIER_OBJS = $(call obj_list,qjs,$(WORLD_SOURCE_QUALIFIER_CPP)) $(filter-out $(call obj_of,qjs,world_definition_tests.cpp),$(WORLD_DEFINITION_OBJS))
+$(WORLD_SOURCE_QUALIFIER_TARGET): $(WORLD_SOURCE_QUALIFIER_OBJS)
+	$(CC) $(WORLD_SOURCE_QUALIFIER_OBJS) -o $@ $(FLAVOR_qjs_FLAGS) -lm
+.PHONY: qualify-world-sources
+qualify-world-sources: $(WORLD_SOURCE_QUALIFIER_TARGET)
+	./$(WORLD_SOURCE_QUALIFIER_TARGET)
+$(WORLD_DEFINITION_TARGET): | qualify-world-sources
+
+PART_IO_QUALIFIER_TARGET = build/matter_part_io_qualifier
+PART_IO_QUALIFIER_CPP = ../tools/qualify_part_io.cpp
+$(eval $(call objrule_cpp,def,$(PART_IO_QUALIFIER_CPP)))
+$(call obj_of,def,$(PART_IO_QUALIFIER_CPP)): part_asset_v2_tests.cpp
+PART_IO_QUALIFIER_OBJS = $(call obj_list,def,$(PART_IO_QUALIFIER_CPP)) $(filter-out $(call obj_of,def,part_asset_v2_tests.cpp),$(PARTV2_OBJS))
+$(PART_IO_QUALIFIER_TARGET): $(PART_IO_QUALIFIER_OBJS)
+	$(CC) $(PART_IO_QUALIFIER_OBJS) -o $@ $(CFLAGS) $(INCLUDE_PATHS) $(LDFLAGS) $(LDLIBS)
+.PHONY: qualify-part-io
+qualify-part-io: $(PART_IO_QUALIFIER_TARGET)
+	./$(PART_IO_QUALIFIER_TARGET)
+$(PARTV2_TARGET): | qualify-part-io
+
+PARTSTORE_SOURCE_QUALIFIER_TARGET = build/matter_partstore_source_qualifier
+PARTSTORE_SOURCE_QUALIFIER_CPP = ../tools/qualify_partstore_sources.cpp
+$(eval $(call objrule_cpp,partstore_test,$(PARTSTORE_SOURCE_QUALIFIER_CPP)))
+$(call obj_of,partstore_test,$(PARTSTORE_SOURCE_QUALIFIER_CPP)): partstore_tests.cpp
+PARTSTORE_SOURCE_QUALIFIER_OBJS = $(call obj_list,partstore_test,$(PARTSTORE_SOURCE_QUALIFIER_CPP)) $(filter-out $(call obj_of,partstore_test,partstore_tests.cpp),$(PARTSTORE_OBJS))
+$(PARTSTORE_SOURCE_QUALIFIER_TARGET): $(PARTSTORE_SOURCE_QUALIFIER_OBJS)
+	$(CC) $(PARTSTORE_SOURCE_QUALIFIER_OBJS) -o $@ $(FLAVOR_partstore_test_FLAGS) $(LDFLAGS) $(LDLIBS)
+.PHONY: qualify-partstore-sources
+qualify-partstore-sources: $(PARTSTORE_SOURCE_QUALIFIER_TARGET)
+	./$(PARTSTORE_SOURCE_QUALIFIER_TARGET)
+$(PARTSTORE_TARGET): | qualify-partstore-sources
+
+ASYNC_SOURCE_QUALIFIER_TARGET = build/matter_async_source_qualifier
+ASYNC_SOURCE_QUALIFIER_CPP = ../tools/qualify_async_sources.cpp
+$(eval $(call objrule_cpp,gpu,$(ASYNC_SOURCE_QUALIFIER_CPP)))
+$(call obj_of,gpu,$(ASYNC_SOURCE_QUALIFIER_CPP)): async_bake_tests.cpp
+$(ASYNC_SOURCE_QUALIFIER_TARGET): $(call obj_of,gpu,$(ASYNC_SOURCE_QUALIFIER_CPP)) $(GPU_SHARED_OBJS) | ../shaders_gen/embedded_shaders.h build
+	$(CC) $(call obj_of,gpu,$(ASYNC_SOURCE_QUALIFIER_CPP)) $(GPU_SHARED_OBJS) -o $@ $(FLAVOR_gpu_FLAGS) $(LDFLAGS) $(LDLIBS) $(BOX3D_LIB) $(GPU_AR_CORE_LDFLAGS)
+.PHONY: qualify-async-sources
+qualify-async-sources: $(ASYNC_SOURCE_QUALIFIER_TARGET)
+	./$(ASYNC_SOURCE_QUALIFIER_TARGET)
+async-bake-tests: | qualify-async-sources
+
+VIEWER_SOURCE_QUALIFIER_TARGET = build/matter_viewer_source_qualifier
+VIEWER_SOURCE_QUALIFIER_CPP = ../tools/qualify_viewer_sources.cpp
+$(eval $(call objrule_cpp,vl,$(VIEWER_SOURCE_QUALIFIER_CPP)))
+$(call obj_of,vl,$(VIEWER_SOURCE_QUALIFIER_CPP)): viewer_logic_tests.cpp
+VIEWER_SOURCE_QUALIFIER_OBJS = $(call obj_list,vl,$(VIEWER_SOURCE_QUALIFIER_CPP)) $(filter-out $(call obj_of,vl,viewer_logic_tests.cpp),$(VIEWER_LOGIC_OBJS))
+$(VIEWER_SOURCE_QUALIFIER_TARGET): check-viewer-logic-animation-sources $(VIEWER_SOURCE_QUALIFIER_OBJS) $(OZZ_OFFLINE_LIBS) | ../shaders_gen/embedded_shaders.h
+	$(CC) $(VIEWER_SOURCE_QUALIFIER_OBJS) -o $@ $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST -DTILESET_GTEX_USE_RAYLIB_STB -pthread $(INCLUDE_PATHS) -I$(BOX3D_DIR)/include $(QJS_INC) $(LDFLAGS) $(LDLIBS) $(BOX3D_LIB) $(OZZ_OFFLINE_LIBS)
+.PHONY: qualify-viewer-sources
+qualify-viewer-sources: $(VIEWER_SOURCE_QUALIFIER_TARGET)
+	./$(VIEWER_SOURCE_QUALIFIER_TARGET)
+$(VIEWER_LOGIC_TARGET): | qualify-viewer-sources
+
+FLATTEN_QUALIFIER_TARGET = build/matter_part_flatten_qualifier
+FLATTEN_QUALIFIER_CPP = ../tools/qualify_part_flatten.cpp
+$(eval $(call objrule_cpp,def,$(FLATTEN_QUALIFIER_CPP)))
+$(call obj_of,def,$(FLATTEN_QUALIFIER_CPP)): part_flatten_tests.cpp
+FLATTEN_QUALIFIER_OBJS = $(call obj_list,def,$(FLATTEN_QUALIFIER_CPP)) $(filter-out $(call obj_of,def,part_flatten_tests.cpp),$(FLATTEN_OBJS))
+$(FLATTEN_QUALIFIER_TARGET): $(FLATTEN_QUALIFIER_OBJS)
+	$(CC) $(FLATTEN_QUALIFIER_OBJS) -o $@ $(CFLAGS) $(INCLUDE_PATHS) $(LDFLAGS) $(LDLIBS)
+.PHONY: qualify-part-flatten
+qualify-part-flatten: $(FLATTEN_QUALIFIER_TARGET)
+	./$(FLATTEN_QUALIFIER_TARGET)
+$(FLATTEN_TARGET): | qualify-part-flatten

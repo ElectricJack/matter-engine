@@ -1,3 +1,4 @@
+import { objectFile } from './helpers/project_layout.mjs';
 // Tests for shared-lib/castle_furnishings.js: the furnished-interiors kit
 // (tables, seating, storage, altar, candle fixtures with paired analytic
 // lights, and leaded window glazing). Loaded as data: URLs the same way
@@ -672,7 +673,7 @@ const WRAPPER_KINDS = [
 
 let wrapperImportCounter = 0;
 async function loadWrapperClass(className) {
-  const source = await requiredText(new URL(`../objects/${className}.js`, import.meta.url), className);
+  const source = await requiredText(objectFile(className), className);
   const rewritten = source.replace("'shared-lib/castle_furnishings'", JSON.stringify(furnishingsUrl));
   assert.notEqual(rewritten, source, `${className} imports shared-lib/castle_furnishings`);
   const withExport = `${rewritten}\nexport default ${className};\n// ${wrapperImportCounter++}\n`;

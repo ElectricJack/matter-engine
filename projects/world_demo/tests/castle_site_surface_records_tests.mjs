@@ -1,3 +1,4 @@
+import { objectFile } from './helpers/project_layout.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 await import('./castle_shared_lib_hooks.mjs');
@@ -38,7 +39,7 @@ for(const [kind,{params}] of Object.entries(examples)){
  assert.throws(()=>R.decodeSiteSurfaceRecord(kind,edit(p=>p.recordId='other')),/identity mismatch/);
  assert.throws(()=>R.decodeSiteSurfaceRecord(kind,edit(p=>p.record.clearPolygon=[[0,0],[1,null],[2,0]])),/Invalid/);
  const module=kind==='connector'?'CastleSiteSurfaceConnector':'CastleSiteSurfacePaving';
- const source=fs.readFileSync(new URL('../objects/'+module+'.js',import.meta.url),'utf8');
+ const source=fs.readFileSync(objectFile(module),'utf8');
  const url=text=>'data:text/javascript;base64,'+Buffer.from(text).toString('base64');
  const isolated=source.replace("'shared-lib/castle_site_world'",JSON.stringify(url("export function castleSceneSite(){throw new Error('unexpected site compile');}")))+'\nexport default '+module+';';
  globalThis.Part=class {constructor(){return new Proxy(this,{get:(object,key)=>key in object?object[key]:()=>{}});}};

@@ -45,6 +45,7 @@
 // ---------------------------------------------------------------------------
 #include "dsl_state.h"
 #include "dsl_bindings.h"
+#include "solid_source_js.h"
 #include <limits>
 #include "pf_bindings.h"
 #include "tileset_spec.h"
@@ -583,20 +584,26 @@ static JSValue j_endModifier(JSContext* c, JSValueConst, int n, JSValueConst* a)
 // params that normalize to empty / "{}", deliberately degrade to the
 // bare-module lookup, while any other params object must match a declared
 // variant exactly. `instanced` with no `inlineBelowPx` takes the engine's
-// 64 px default.
+// 64 px default. Explicit zero keeps the child as an instance at every LOD.
 static JSValue j_placeChild(JSContext* c, JSValueConst, int n, JSValueConst* a){
     const char* m = JS_ToCString(c, a[0]);
     if (!m) return JS_UNDEFINED;
     // Parse optional third-argument options object { instanced, inlineBelowPx }.
     bool instanced = false;
-    double inline_px = 0.0;
+    double inline_px = 64.0;
     matter::RayTracingOverride ray_traced = matter::RayTracingOverride::Inherit;
     if (n > 2 && JS_IsObject(a[2])) {
         JSValue vi = JS_GetPropertyStr(c, a[2], "instanced");
         instanced = JS_ToBool(c, vi) > 0;
         JS_FreeValue(c, vi);
         JSValue vp = JS_GetPropertyStr(c, a[2], "inlineBelowPx");
-        if (!JS_IsUndefined(vp) && !JS_IsNull(vp)) JS_ToFloat64(c, &inline_px, vp);
+        if (!JS_IsUndefined(vp) && !JS_IsNull(vp) &&
+            (!JS_IsNumber(vp) || JS_ToFloat64(c,&inline_px,vp)<0 ||
+             !std::isfinite(inline_px) || inline_px<0 || inline_px>std::numeric_limits<float>::max())) {
+            JS_FreeValue(c,vp);JS_FreeCString(c,m);
+            state_of(c)->set_error("placeChild inlineBelowPx must be a finite nonnegative number");
+            return JS_UNDEFINED;
+        }
         JS_FreeValue(c, vp);
         JSValue vr = JS_GetPropertyStr(c, a[2], "rayTraced");
         if (!JS_IsUndefined(vr)) {
@@ -611,7 +618,6 @@ static JSValue j_placeChild(JSContext* c, JSValueConst, int n, JSValueConst* a){
                 : matter::RayTracingOverride::Disabled;
         }
         JS_FreeValue(c, vr);
-        if (instanced && inline_px <= 0.0) inline_px = 64.0;   // engine default
     }
     // G6: optional params (a plain JS object/array) -> canonical JSON bytes folded
     // into the child's resolved hash so parametric children dedup. Normalize via
@@ -1257,6 +1263,18 @@ static JSValue j_ts_dropChild(JSContext* c, JSValueConst, int n, JSValueConst* a
 
     tileset::DropChildRec rec{};
     rec.child_hash = hash;
+    if (n > 2 && !JS_IsUndefined(a[2])) {
+        if (!JS_IsObject(a[2]) || JS_IsNull(a[2])) {
+            ts->set_error("dropChild: options must be an object"); return JS_UNDEFINED;
+        }
+        JSValue physics = JS_GetPropertyStr(c, a[2], "physics");
+        if (!JS_IsUndefined(physics) && !JS_IsBool(physics)) {
+            JS_FreeValue(c, physics);
+            ts->set_error("dropChild: physics must be boolean"); return JS_UNDEFINED;
+        }
+        if (!JS_IsUndefined(physics)) rec.physics = JS_ToBool(c, physics) != 0;
+        JS_FreeValue(c, physics);
+    }
     // Capture current transform stack top as row-major float[16]. top() already
     // returns mm::Mat4, whose m[] is row-major (matter_math.h) -- a straight copy.
     mm::Mat4 top_m = state->top();
@@ -2153,37 +2171,46 @@ bool solid_op(JSContext *c, JSValueConst value, gpu_meshing::SolidOp &out) {
 }
 } // namespace
 
-static JSValue j_solidSource(JSContext *c, JSValueConst, int argc, JSValueConst *argv) {
-    auto *state = state_of(c);
-    const auto invalid = [&]() {
-        state->set_error("solidSource requires a strict version-1 bounded physical op "
-                         "tape; unsupported fields/semantics are rejected");
-        return JS_UNDEFINED;
-    };
-    if (argc != 1 ||
-        !solid_keys(c, argv[0], {"version", "voxelM", "maxVertices", "ops"}))
-        return invalid();
+bool read_solid_source_recipe(JSContext *c, JSValueConst value,
+                              DslState::SolidSourceRequest &out) {
+    if (!solid_keys(c, value, {"version", "voxelM", "maxVertices", "ops"}))
+        return false;
     float voxel = 0;
     uint32_t version = 0, capacity = 500000;
-    if (!solid_integer(c, argv[0], "version", version, 1) || version != 1 ||
-        !solid_number(c, argv[0], "voxelM", voxel) ||
-        !solid_integer(c, argv[0], "maxVertices", capacity, 2 * 1024 * 1024, false) ||
+    if (!solid_integer(c, value, "version", version, 1) || version != 1 ||
+        !solid_number(c, value, "voxelM", voxel) ||
+        !solid_integer(c, value, "maxVertices", capacity, 2 * 1024 * 1024, false) ||
         capacity < 3)
-        return invalid();
-    SolidJsValue array(c, JS_GetPropertyStr(c, argv[0], "ops"));
+        return false;
+    SolidJsValue array(c, JS_GetPropertyStr(c, value, "ops"));
     if (!JS_IsArray(array.value))
-        return invalid();
+        return false;
     SolidJsValue length(c, JS_GetPropertyStr(c, array.value, "length"));
     double n = 0;
     if (JS_ToFloat64(c, &n, length.value) < 0 || n < 1 || n > 256 || std::floor(n) != n)
-        return invalid();
+        return false;
     std::vector<gpu_meshing::SolidOp> ops(static_cast<size_t>(n));
     for (uint32_t i = 0; i < ops.size(); ++i) {
         SolidJsValue op(c, JS_GetPropertyUint32(c, array.value, i));
         if (!solid_op(c, op.value, ops[i]))
-            return invalid();
+            return false;
     }
-    state->solid_source(std::move(ops), voxel, static_cast<uint32_t>(capacity));
+    DslState::SolidSourceRequest candidate;
+    candidate.ops = std::move(ops);
+    candidate.voxel_m = voxel;
+    candidate.max_vertices = capacity;
+    out = std::move(candidate);
+    return true;
+}
+static JSValue j_solidSource(JSContext *c, JSValueConst, int argc, JSValueConst *argv) {
+    auto *state = state_of(c);
+    DslState::SolidSourceRequest recipe;
+    if (argc != 1 || !read_solid_source_recipe(c, argv[0], recipe)) {
+        state->set_error("solidSource requires a strict version-1 bounded physical op "
+                         "tape; unsupported fields/semantics are rejected");
+        return JS_UNDEFINED;
+    }
+    state->solid_source(std::move(recipe.ops), recipe.voxel_m, recipe.max_vertices);
     return JS_UNDEFINED;
 }
 // Register every native verb as a global on `ctx`. Called once per context,
@@ -2257,7 +2284,7 @@ void install_bindings(JSContext* ctx) {
     bind("__profEnd",  j_profEnd,  1);
     // Tileset verb bindings.
     bind("__dsl_ts_tile",j_ts_tile,5); bind("__dsl_ts_base",j_ts_base,2);
-    bind("__dsl_ts_layer",j_ts_layer,2); bind("__dsl_ts_dropChild",j_ts_dropChild,2);
+    bind("__dsl_ts_layer",j_ts_layer,2); bind("__dsl_ts_dropChild",j_ts_dropChild,3);
     bind("__dsl_ts_variant",j_ts_variant,1);
     // Params-fn `r` helper natives (draw from ts->param_rng during layer()).
     bind("__dsl_ts_rng_int",j_ts_rng_int,1); bind("__dsl_ts_rng_float",j_ts_rng_float,2);

@@ -1,0 +1,23 @@
+{
+  "exit": 0,
+  "seconds_including_startup_and_view_waits": 227.32968069099297,
+  "source_changes": [],
+  "binary_changed": false,
+  "errors": [],
+  "vt_stats": [
+    "STATSVT,maze-review-v2-overview-off,active=1,variants=10/32768,rejected=0,mesh=749.1/3512.0 MiB,pool=101/25600,pinned=10,queue=0,fills=101,evictions=0,ind=0.08/64 MiB",
+    "STATSVT,maze-review-v2-overview,active=1,variants=10/32768,rejected=0,mesh=749.1/3512.0 MiB,pool=101/25600,pinned=10,queue=0,fills=101,evictions=0,ind=0.08/64 MiB",
+    "STATSVT,maze-review-v2-corner-off,active=1,variants=10/32768,rejected=0,mesh=749.1/3512.0 MiB,pool=164/25600,pinned=10,queue=0,fills=164,evictions=0,ind=0.08/64 MiB",
+    "STATSVT,maze-review-v2-corner,active=1,variants=10/32768,rejected=0,mesh=749.1/3512.0 MiB,pool=164/25600,pinned=10,queue=0,fills=164,evictions=0,ind=0.08/64 MiB"
+  ],
+  "images": {
+    "maze-review-v2-overview-off.png": "d3ef68c394c2a23be452b483da5c8054405f85581b03e58b94273b1b097a2bac",
+    "maze-review-v2-overview.png": "52dfb4d8daedf52bbd01754af76162f1eb6ba3821c048ad679a249b5b001affc",
+    "maze-review-v2-corner-off.png": "3cc01af9e4f8469cf2491e007bcbc10547f4bbd246e192219b2b04e462fd6347",
+    "maze-review-v2-corner.png": "8ade2285f56e31c3059bf413ed4e621469bc4aecd2d0ddd5e70f040ebb9022f9"
+  },
+  "passed": false,
+  "notes": [
+    "Closed after four captures to override a persisted four-FPS frame cap in a new run. No bake/VT failure; incomplete image set is not acceptance."
+  ]
+}

@@ -144,6 +144,69 @@ int main() {
             float height = std::sqrt(std::max(0.f, .05f * .05f - u * u - v * v));
             CHECK(std::abs(t.height_m - height) < .0001f, "analytic sphere height tolerance");
         }
+    // Region cuts must not re-round physical extents or shift sample centres.
+    // Use a rotated source frame and a pitch that does not divide either span.
+    j.pixel_m = .0073f;
+    const float a = .37f;
+    j.frame.u = {std::cos(a), 0, -std::sin(a)};
+    j.frame.n = {std::sin(a), 0, std::cos(a)};
+    j.frame.origin_m = {.004f, -.003f, .002f};
+    FacePatch whole;
+    CHECK(project_solid_face_reference(j, whole, s, e), e.message.c_str());
+    const auto same = [](const FacePatch &x, const FacePatch &y) {
+        if (x.recipe_digest != y.recipe_digest || x.layout.width != y.layout.width ||
+            x.layout.height != y.layout.height || x.texels.size() != y.texels.size()) return false;
+        for (size_t i = 0; i < x.texels.size(); ++i) {
+            const auto &a = x.texels[i], &b = y.texels[i];
+            if (a.coverage != b.coverage || a.height_m != b.height_m ||
+                a.normal_uvn.x != b.normal_uvn.x || a.normal_uvn.y != b.normal_uvn.y ||
+                a.normal_uvn.z != b.normal_uvn.z) return false;
+        }
+        return true;
+    };
+    for (uint32_t cap : {7u, 35u, 200u}) {
+        FacePatch tiled;
+        CHECK(prepare_solid_face(j, project_solid_face_region_reference, tiled, s, e, {},
+                                {cap, 4096}), e.message.c_str());
+        CHECK(same(whole, tiled), "all partition shapes preserve exact pixels and identity");
+    }
+    std::vector<FaceRegion> regions{{11, 12, 13, 14}};
+    CHECK(!plan_face_regions(j, {1, 1}, l, regions, e) && e.code == ErrorCode::LimitExceeded,
+          "region count fails before callback/allocation");
+    CHECK(regions.size() == 1 && regions[0].x == 11, "failed plan preserves previous plan");
+    CHECK(!validate_face_region(j, {~0u, 0, 2, 2}, l, e), "overflowing region origin rejected");
+    CHECK(!validate_face_region(j, {0, 0, ~0u, 2}, l, e), "overflowing region width rejected");
+    CHECK(!validate_face_region(j, {}, l, e), "empty region rejected");
+    bad = j;
+    bad.u_min_m = bad.v_min_m = -.05f;
+    bad.u_max_m = bad.v_max_m = .05f;
+    bad.pixel_m = .0001f;
+    CHECK(!validate_face_job(bad, l, e), "preparation does not relax single-dispatch admission");
+    CHECK(plan_face_regions(bad, {}, l, regions, e), "work-limited full face can be split");
+    for (const auto &region : regions)
+        CHECK(validate_face_region(bad, region, l, e), "every planned dispatch fits work limit");
+    for (int mode = 0; mode < 4; ++mode) {
+        unsigned calls = 0;
+        bool cancelled = false, stale = false;
+        BuildControl control{[&] { return cancelled; }, [&](uint64_t) { return !stale; }};
+        p = whole;
+        const auto interrupted = [&](const FaceJob &job, const FaceRegion &region,
+            std::vector<FaceTexel> &pixels, FaceStats &stats, Error &error, const BuildControl &c) {
+            if (!project_solid_face_region_reference(job, region, pixels, stats, error, c)) return false;
+            if (++calls == 2) {
+                if (mode == 0) { error = {ErrorCode::ArtifactFailure, "injected region failure"}; return false; }
+                if (mode == 1) cancelled = true;
+                if (mode == 2) stale = true;
+                if (mode == 3) pixels.pop_back();
+            }
+            return true;
+        };
+        CHECK(!prepare_solid_face(j, interrupted, p, s, e, control, {35, 4096}),
+              "interrupted or malformed region rejects whole face");
+        CHECK(calls == 2 && same(whole, p), "no later work or partial publication after failure");
+        CHECK(e.code == (mode == 1 ? ErrorCode::Cancelled : mode == 2 ? ErrorCode::StaleGeneration :
+                        ErrorCode::ArtifactFailure), "failure reason retained");
+    }
     std::printf("solid_face_projection_tests: %s\n", failures ? "FAIL" : "PASS");
     return failures ? 1 : 0;
 }

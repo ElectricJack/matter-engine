@@ -121,7 +121,9 @@ std::string canonical_specifier(std::string specifier) {
     return specifier;
 }
 
-bool read_text_file(const std::string& path, std::string& contents) {
+bool read_text_file(const std::string& path, std::string& contents,
+                    const std::shared_ptr<const SourceSnapshot>& sources = {}) {
+    if (sources) return sources->read(path, contents);
     std::ifstream input(path, std::ios::binary);
     if (!input) return false;
     std::ostringstream stream;
@@ -177,8 +179,8 @@ bool gather_modules(const std::string& world_source,
             join_path(desc.project_shared_lib_dir, filename);
         const std::string engine_path =
             join_path(desc.engine_shared_lib_dir, filename);
-        if ((project_path.empty() || !read_text_file(project_path, module_source)) &&
-            (engine_path.empty() || !read_text_file(engine_path, module_source))) {
+        if ((project_path.empty() || !read_text_file(project_path, module_source, desc.source_snapshot)) &&
+            (engine_path.empty() || !read_text_file(engine_path, module_source, desc.source_snapshot))) {
             message = "module not found in project or engine shared-lib: " + specifier;
             return false;
         }
@@ -2782,6 +2784,41 @@ bool extract_streaming(JSContext* context,
     // while the outermost ring bounded residency (no rings, nothing streamed
     // anyway); under nested sector LOD the outermost BAND bounds residency, so
     // such a world is meaningful and must keep its bands.
+    JSValue density = JS_GetPropertyStr(context, streaming, "terrainTexelsPerMeter");
+    if (!JS_IsUndefined(density)) {
+        float value = 0;
+        if (!JS_IsNumber(density) || !number_value(context, density, value) ||
+            !std::isfinite(value) || value < 1 || value > 2048) {
+            JS_FreeValue(context, density);
+            JS_FreeValue(context, streaming);
+            return fail(desc, error, "streaming.terrainTexelsPerMeter",
+                        "terrainTexelsPerMeter must be a finite number in [1,2048]");
+        }
+        definition.settings.terrain_texels_per_meter = value;
+    }
+    JS_FreeValue(context, density);
+
+    JSValue receivers = JS_GetPropertyStr(context, streaming, "surfaceReceivers");
+    if (!JS_IsUndefined(receivers)) {
+        std::uint32_t count = 0;
+        bool valid = array_length(context, receivers, count) && count <= 64;
+        std::set<std::string> unique;
+        for (std::uint32_t i = 0; valid && i < count; ++i) {
+            JSValue entry = JS_GetPropertyUint32(context, receivers, i);
+            std::string module;
+            valid = JS_IsString(entry) && string_value(context, entry, module) &&
+                    !module.empty() && module.size() <= 256 && unique.insert(module).second;
+            JS_FreeValue(context, entry);
+            if (valid) definition.settings.surface_receiver_modules.push_back(std::move(module));
+        }
+        if (!valid) {
+            JS_FreeValue(context, receivers);JS_FreeValue(context, streaming);
+            return fail(desc,error,"streaming.surfaceReceivers",
+                        "surfaceReceivers must be an array of at most 64 unique nonempty module names");
+        }
+    }
+    JS_FreeValue(context, receivers);
+
     JSValue rings = JS_GetPropertyStr(context, streaming, "rings");
     if (JS_IsUndefined(rings)) {
         JS_FreeValue(context, rings);
@@ -3430,6 +3467,189 @@ bool extract_prop_spec(JSContext* context,
     return true;
 }
 
+// World.exports -> WorldDefinition::exports. See matter/world_definition.h's
+// WorldExportRequest for what this metadata is FOR (the offline exporter's
+// defaults) and, just as importantly, what it is not: nothing in a world load
+// or a frame acts on it.
+//
+// Strict on purpose, in the same way the material and prop specs are: an
+// unknown key, an unknown format, or an out-of-range number fails the load with
+// the authored path. A silently clamped textureSize would hand someone an
+// export at a resolution they did not ask for and could not account for.
+const char* const kExportSpecKeys[] = {
+    "format", "out", "lod", "textureSize", "textureFormat", "chartCone",
+    "normalSpace", "modules",
+};
+
+bool extract_export_entry(JSContext* context,
+                          JSValueConst entry,
+                          const std::string& path,
+                          const WorldLoadDesc& desc,
+                          WorldExportRequest& request,
+                          WorldLoadError& error) {
+    std::string unknown;
+    if (!reject_unknown_keys(context, entry, kExportSpecKeys,
+                             sizeof(kExportSpecKeys) / sizeof(kExportSpecKeys[0]),
+                             unknown)) {
+        return fail(desc, error, path,
+                    unknown.empty() ? "export entry keys could not be read"
+                                    : "unknown export key '" + unknown + "'");
+    }
+
+    std::string format;
+    JSValue format_value = JS_GetPropertyStr(context, entry, "format");
+    const bool has_format = !JS_IsUndefined(format_value);
+    const bool format_ok = !has_format || string_value(context, format_value, format);
+    JS_FreeValue(context, format_value);
+    if (!format_ok) return fail(desc, error, path + ".format", "format must be a string");
+    if (has_format) request.format = format;
+    if (request.format != "obj")
+        return fail(desc, error, path + ".format",
+                    "only 'obj' is implemented; see docs/export-obj.md");
+
+    JSValue out_value = JS_GetPropertyStr(context, entry, "out");
+    const bool out_ok = string_value(context, out_value, request.out_dir);
+    JS_FreeValue(context, out_value);
+    if (!out_ok || request.out_dir.empty())
+        return fail(desc, error, path + ".out",
+                    "out must be a non-empty directory path");
+
+    bool present = false;
+    int lod = 0;
+    if (!spec_int(context, entry, "lod", lod, present))
+        return fail(desc, error, path + ".lod", "lod must be a number");
+    if (present) {
+        if (lod < 0 || lod > 31)
+            return fail(desc, error, path + ".lod", "lod must be between 0 and 31");
+        request.lod = static_cast<std::uint32_t>(lod);
+    }
+
+    int texture_size = 0;
+    if (!spec_int(context, entry, "textureSize", texture_size, present))
+        return fail(desc, error, path + ".textureSize", "textureSize must be a number");
+    if (present) {
+        if (texture_size < 16 || texture_size > 8192)
+            return fail(desc, error, path + ".textureSize",
+                        "textureSize must be between 16 and 8192 texels");
+        request.texture_size = static_cast<std::uint32_t>(texture_size);
+    }
+
+    std::string texture_format;
+    JSValue texture_format_value = JS_GetPropertyStr(context, entry, "textureFormat");
+    const bool has_texture_format = !JS_IsUndefined(texture_format_value);
+    const bool texture_format_ok =
+        !has_texture_format || string_value(context, texture_format_value, texture_format);
+    JS_FreeValue(context, texture_format_value);
+    if (!texture_format_ok)
+        return fail(desc, error, path + ".textureFormat", "textureFormat must be a string");
+    if (has_texture_format) {
+        if (texture_format != "png" && texture_format != "ktx2" && texture_format != "none")
+            return fail(desc, error, path + ".textureFormat",
+                        "textureFormat must be 'png', 'ktx2' or 'none'");
+        request.texture_format = texture_format;
+    }
+
+    float cone = 0.0f;
+    if (!spec_number(context, entry, "chartCone", cone, present))
+        return fail(desc, error, path + ".chartCone", "chartCone must be a number");
+    if (present) {
+        if (!(std::isfinite(cone) && cone > 0.0f && cone < 90.0f))
+            return fail(desc, error, path + ".chartCone",
+                        "chartCone must be greater than 0 and less than 90 degrees");
+        request.chart_cone_deg = cone;
+    }
+
+    std::string normal_space;
+    JSValue normal_space_value = JS_GetPropertyStr(context, entry, "normalSpace");
+    const bool has_normal_space = !JS_IsUndefined(normal_space_value);
+    const bool normal_space_ok =
+        !has_normal_space || string_value(context, normal_space_value, normal_space);
+    JS_FreeValue(context, normal_space_value);
+    if (!normal_space_ok)
+        return fail(desc, error, path + ".normalSpace", "normalSpace must be a string");
+    if (has_normal_space) {
+        if (normal_space != "smooth" && normal_space != "flat")
+            return fail(desc, error, path + ".normalSpace",
+                        "normalSpace must be 'smooth' or 'flat'");
+        request.normal_space = normal_space;
+    }
+
+    JSValue modules = JS_GetPropertyStr(context, entry, "modules");
+    if (!JS_IsUndefined(modules)) {
+        std::uint32_t length = 0;
+        if (!JS_IsArray(modules) || !array_length(context, modules, length)) {
+            JS_FreeValue(context, modules);
+            return fail(desc, error, path + ".modules",
+                        "modules must be an array of module names");
+        }
+        for (std::uint32_t index = 0; index < length; ++index) {
+            JSValue item = JS_GetPropertyUint32(context, modules, index);
+            std::string name;
+            const bool ok = string_value(context, item, name) && !name.empty();
+            JS_FreeValue(context, item);
+            if (!ok) {
+                JS_FreeValue(context, modules);
+                return fail(desc, error,
+                            path + ".modules[" + std::to_string(index) + "]",
+                            "module name must be a non-empty string");
+            }
+            request.modules.push_back(std::move(name));
+        }
+    }
+    JS_FreeValue(context, modules);
+    return true;
+}
+
+bool extract_exports(JSContext* context,
+                     JSValueConst world_class,
+                     const WorldLoadDesc& desc,
+                     WorldDefinition& definition,
+                     WorldLoadError& error) {
+    JSValue exports = JS_GetPropertyStr(context, world_class, "exports");
+    if (JS_IsUndefined(exports)) {
+        JS_FreeValue(context, exports);
+        return true;
+    }
+    // A single entry is the common case, so accept the object form as well as
+    // the array — the same shape-tolerance World.lights already has.
+    if (JS_IsObject(exports) && !JS_IsArray(exports)) {
+        WorldExportRequest request;
+        const bool ok =
+            extract_export_entry(context, exports, "exports", desc, request, error);
+        JS_FreeValue(context, exports);
+        if (ok) definition.exports.push_back(std::move(request));
+        return ok;
+    }
+    if (!JS_IsArray(exports)) {
+        JS_FreeValue(context, exports);
+        return fail(desc, error, "exports",
+                    "World.exports must be an export entry or an array of them");
+    }
+
+    std::uint32_t length = 0;
+    if (!array_length(context, exports, length)) {
+        JS_FreeValue(context, exports);
+        return fail(desc, error, "exports", "World.exports length could not be read");
+    }
+    bool ok = true;
+    for (std::uint32_t index = 0; index < length && ok; ++index) {
+        JSValue entry = JS_GetPropertyUint32(context, exports, index);
+        const std::string path = "exports[" + std::to_string(index) + "]";
+        if (!JS_IsObject(entry) || JS_IsArray(entry)) {
+            JS_FreeValue(context, entry);
+            ok = fail(desc, error, path, "an export entry must be an object");
+            break;
+        }
+        WorldExportRequest request;
+        ok = extract_export_entry(context, entry, path, desc, request, error);
+        JS_FreeValue(context, entry);
+        if (ok) definition.exports.push_back(std::move(request));
+    }
+    JS_FreeValue(context, exports);
+    if (!ok) definition.exports.clear();
+    return ok;
+}
+
 bool extract_props(JSContext* context,
                    JSValueConst world_class,
                    const WorldLoadDesc& desc,
@@ -3969,7 +4189,7 @@ bool load_world_definition(const WorldLoadDesc& desc,
     MaterialRegistryResetDynamic();
 
     std::string source;
-    if (!read_text_file(desc.world_path, source)) {
+    if (!read_text_file(desc.world_path, source, desc.source_snapshot)) {
         return fail(desc, error, "source", "unable to read world source");
     }
     const std::string class_name =
@@ -4141,6 +4361,7 @@ class World {}
               extract_cloud_shadows(context, world_class, desc, definition,
                                     error) &&
               extract_props(context, world_class, desc, definition, error) &&
+              extract_exports(context, world_class, desc, definition, error) &&
               append_static_entities(context, world_class, desc, error);
     // The legacy bounded layer becomes clouds[0] here, not inside
     // extract_fog: it has to run after extract_volumetrics' multiplier fold

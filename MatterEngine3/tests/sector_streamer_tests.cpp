@@ -22,6 +22,22 @@ static void service_all(SectorStreamer& s, F cb) {
 }
 static void service_all(SectorStreamer& s) { service_all(s, [](const SectorRequest&){}); }
 
+// Staged refinement can pause for one update between waves. Require eight
+// consecutive updates without requests or evictions before ending a stationary
+// setup; never stop at the first silent update. Keep the original long idle
+// soak in filesystem/build qualification.
+template <typename Pump>
+static void settle_stationary(Pump pump) {
+    int quiet = 0;
+    for (int i = 0; i < 4000; ++i) {
+        quiet = pump() ? 0 : quiet + 1;
+#ifndef MATTER_CODEC_SOURCE_QUALIFICATION
+        if (quiet >= 8) break;
+#endif
+    }
+    CHECK(quiet >= 8, "stationary setup reaches eight consecutive quiet updates");
+}
+
 // Settle: update+service until quiescent; RETURNS all evictions drained on
 // the way (callers assert on them — do not discard silently).
 static std::vector<Eviction> settle(SectorStreamer& s, float x, float z) {
@@ -40,6 +56,42 @@ static std::vector<Eviction> settle(SectorStreamer& s, float x, float z) {
 
 int main() {
     Config cfg;   // defaults: rings 48/120/300/800, hysteresis 16, inflight 8
+    {
+        Config view_config;
+        view_config.sector_size=16;
+        view_config.nested_sectors=true;
+        view_config.volumetric_sectors=true;
+        view_config.terrain_bands={{160,5}};
+        view_config.y_min=-16;view_config.y_max=16;
+        SectorStreamer streamer(view_config);
+        streamer.update(0,0,0);
+        StreamingView view; view.valid=true;
+        // A distant positive-X halfspace must outrank nearby offscreen holes.
+        view.planes[0][0]=1;view.planes[0][3]=-64;
+        streamer.set_view(view);
+        const auto initial = streamer.visible_status();
+        CHECK(initial.valid && initial.desired>0 && initial.pending==initial.desired,
+              "unqueued visible holes count as pending");
+        SectorRequest first;
+        CHECK(streamer.next_request(first), "visible-first request exists");
+        CHECK(first.tx>=3, "visible distant sector precedes nearby offscreen sector");
+        streamer.on_published(first.tx,first.ty,first.tz,first.rung);
+        CHECK(streamer.visible_status().pending+1==initial.pending,
+              "published visible target reduces pending count");
+        // Camera rotation changes priority without moving the anchor or reset.
+        view.planes[0][0]=-1;
+        streamer.set_view(view);
+        SectorRequest second;
+        CHECK(streamer.next_request(second), "rotated view request exists");
+        CHECK(second.tx<=-4, "camera rotation reprioritizes pending sectors");
+        streamer.on_published(second.tx,second.ty,second.tz,second.rung);
+        view.valid=false;streamer.set_view(view);
+        CHECK(!streamer.visible_status().valid, "missing view never reports visible readiness");
+        SectorRequest third;
+        CHECK(streamer.next_request(third), "background request remains available");
+        CHECK(third.tx>=-1 && third.tx<=0, "no-view mode restores nearest-first selection");
+    }
+
 
     // --- the nested key round trip (volumetric-sectors M1) -------------------
     //
@@ -475,6 +527,9 @@ int main() {
         // reaches as far as the bands do -- otherwise this compares two
         // different worlds rather than two ways of tiling one.
         SectorStreamer uni(u);
+        const size_t nested_n = live.size();
+#ifdef MATTER_CODEC_SOURCE_QUALIFICATION
+        // Retain the historical complete publication census during builds.
         for (int i = 0; i < 20000; ++i) {
             uni.update(3.2f, 0.0f, 3.2f);
             SectorRequest q; bool any = false;
@@ -482,8 +537,26 @@ int main() {
             uni.take_evictions();
             if (!any && i > 2) break;
         }
-        const size_t nested_n = live.size();
         const size_t uniform_n = uni.resident_count();
+        CHECK(uni.desired_count() == uniform_n, "settled desired and resident census agree");
+#else
+        // Full authored reach and pitch are unchanged. Avoid draining the
+        // quadratic request selector merely to count this geometry fixture.
+        uni.update(3.2f, 0.0f, 3.2f);
+        const size_t uniform_n = uni.desired_count();
+        CHECK(uni.resident_count() == 0 && uni.inflight_count() == 0,
+              "desired census includes unissued, nonresident sectors");
+        const double pitch = u.sector_size, radius = u.rings.back().radius;
+        const int extent = int(std::ceil(radius / pitch)) + 2;
+        size_t expected = 0;
+        for (int z = -extent; z <= extent; ++z)
+            for (int x = -extent; x <= extent; ++x)
+                if (std::hypot((x + 0.5) * pitch - 3.2,
+                               (z + 0.5) * pitch - 3.2) <= radius) ++expected;
+        CHECK(uniform_n == expected, "uniform desired census matches independent full-disc grid");
+        uni.clear();
+        CHECK(uni.desired_count() == 0, "clear removes desired census");
+#endif
         printf("  nested: %zu tiles vs uniform %zu sectors (%.1fx fewer)\n",
                nested_n, uniform_n,
                nested_n ? double(uniform_n) / double(nested_n) : 0.0);
@@ -695,11 +768,16 @@ int main() {
         auto settle_at = [&](float x, float z, int budget) {
             s.update(x, 0.0f, z);
             SectorRequest q;
-            for (int i = 0; i < budget && s.next_request(q); ++i)
+            bool activity = false;
+            for (int i = 0; i < budget && s.next_request(q); ++i) {
+                activity = true;
                 if (s.on_published(q.tx, q.ty, q.tz, q.rung))
                     resident[{variant_level(q.rung), (long long)q.tx,
                               (long long)q.tz}] = q.rung;
-            for (const auto& e : s.take_evictions()) {
+            }
+            const auto evictions = s.take_evictions();
+            activity = activity || !evictions.empty();
+            for (const auto& e : evictions) {
                 // Erase ONLY if the evicted variant is the one still recorded.
                 // A 1:1 swap (an edge-mask rebake) publishes the new variant of
                 // the SAME tile and then evicts the old one, so a blind erase
@@ -712,9 +790,10 @@ int main() {
                 if (it != resident.end() && it->second == e.rung)
                     resident.erase(it);
             }
+            return activity;
         };
         // Fill completely at the start position.
-        for (int i = 0; i < 4000; ++i) settle_at(0.0f, 0.0f, 64);
+        settle_stationary([&] { return settle_at(0.0f, 0.0f, 64); });
 
         auto covered = [&](float wx, float wz) {
             for (int L = 0; L <= 5; ++L) {
@@ -786,11 +865,16 @@ int main() {
         auto settle_at = [&](float x, float z, int budget) {
             s.update(x, 0.0f, z);
             SectorRequest q;
-            for (int i = 0; i < budget && s.next_request(q); ++i)
+            bool activity = false;
+            for (int i = 0; i < budget && s.next_request(q); ++i) {
+                activity = true;
                 if (s.on_published(q.tx, q.ty, q.tz, q.rung))
                     resident[{variant_level(q.rung), (long long)q.tx,
                               (long long)q.tz}] = q.rung;
-            for (const auto& e : s.take_evictions()) {
+            }
+            const auto evictions = s.take_evictions();
+            activity = activity || !evictions.empty();
+            for (const auto& e : evictions) {
                 const auto key = std::make_tuple(variant_level(e.rung),
                                                  (long long)e.tx,
                                                  (long long)e.tz);
@@ -799,8 +883,9 @@ int main() {
                 else if (it->second != e.rung) ++ev_mismatched;
                 else                           resident.erase(it);
             }
+            return activity;
         };
-        for (int i = 0; i < 4000; ++i) settle_at(0.0f, 0.0f, 64);
+        settle_stationary([&] { return settle_at(0.0f, 0.0f, 64); });
 
         // How MANY resident tiles cover this column, across every level.
         auto coverage = [&](float wx, float wz) {
@@ -906,12 +991,16 @@ int main() {
         SectorStreamer s(nested_cfg());
         // Settle far out, so the tiles around the anchor are coarse and a move
         // inward forces splits.
-        for (int i = 0; i < 4000; ++i) {
+        settle_stationary([&] {
             s.update(300.0f, 0.0f, 0.0f);
             SectorRequest q;
-            while (s.next_request(q)) s.on_published(q.tx, q.ty, q.tz, q.rung);
-            s.take_evictions();
-        }
+            bool activity = false;
+            while (s.next_request(q)) {
+                activity = true;
+                s.on_published(q.tx, q.ty, q.tz, q.rung);
+            }
+            return !s.take_evictions().empty() || activity;
+        });
         // Move in and refuse exactly one request forever.
         bool have_victim = false;
         int64_t vtx = 0, vtz = 0; int vrung = 0;
@@ -954,23 +1043,31 @@ int main() {
     // A transition the camera walks away from must not strand its held tile.
     {
         SectorStreamer s(nested_cfg());
-        for (int i = 0; i < 4000; ++i) {
+        settle_stationary([&] {
             s.update(0.0f, 0.0f, 0.0f);
             SectorRequest q;
-            while (s.next_request(q)) s.on_published(q.tx, q.ty, q.tz, q.rung);
-            s.take_evictions();
-        }
+            bool activity = false;
+            while (s.next_request(q)) {
+                activity = true;
+                s.on_published(q.tx, q.ty, q.tz, q.rung);
+            }
+            return !s.take_evictions().empty() || activity;
+        });
         const size_t settled = s.resident_count();
         // Start a wave of splits by moving, then leave entirely without ever
         // servicing them.
         s.update(200.0f, 0.0f, 0.0f);
         s.update(5000.0f, 0.0f, 5000.0f);
-        for (int i = 0; i < 4000; ++i) {
+        settle_stationary([&] {
             s.update(5000.0f, 0.0f, 5000.0f);
             SectorRequest q;
-            while (s.next_request(q)) s.on_published(q.tx, q.ty, q.tz, q.rung);
-            s.take_evictions();
-        }
+            bool activity = false;
+            while (s.next_request(q)) {
+                activity = true;
+                s.on_published(q.tx, q.ty, q.tz, q.rung);
+            }
+            return !s.take_evictions().empty() || activity;
+        });
         printf("  nested groups: %zu resident at origin, %zu after leaving\n",
                settled, s.resident_count());
         CHECK(s.resident_count() < settled * 2,

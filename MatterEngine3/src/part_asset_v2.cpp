@@ -60,6 +60,7 @@
 #include <sstream>   // load_static_lod_plan's per-line tokenizer
 #include <filesystem>
 #include <vector>
+#include <limits>
 #include <unordered_map>
 #include <algorithm>
 #include <sys/stat.h>
@@ -214,16 +215,26 @@ bool is_transient_replace_error(DWORD error) {
 uint64_t compute_resolved_hash(const void* source_bytes, size_t source_len,
                                const void* params_bytes, size_t params_len,
                                const uint64_t* child_hashes, size_t child_count) {
-    // Fold source, then params, then sorted child hashes into one rolling FNV-1a.
-    // The stream order (source -> params -> sorted children) is fixed.
-    uint64_t h = 1469598103934665603ull; // FNV offset basis
+    return finish_resolved_hash(compute_source_hash(source_bytes, source_len),
+                                params_bytes, params_len, child_hashes, child_count);
+}
+
+uint64_t compute_source_hash(const void* source_bytes, size_t source_len) {
+    uint64_t h = 1469598103934665603ull;
+    const auto* bytes = static_cast<const uint8_t*>(source_bytes);
+    for (size_t i=0; i<source_len; ++i) { h ^= bytes[i]; h *= 1099511628211ull; }
+    return h;
+}
+
+uint64_t finish_resolved_hash(uint64_t h, const void* params_bytes, size_t params_len,
+                              const uint64_t* child_hashes, size_t child_count) {
     auto fold = [&h](const void* data, size_t len) {
         const uint8_t* p = static_cast<const uint8_t*>(data);
         for (size_t i = 0; i < len; ++i) { h ^= p[i]; h *= 1099511628211ull; }
     };
-    fold(source_bytes, source_len);
     fold(params_bytes, params_len);
-    std::vector<uint64_t> sorted(child_hashes, child_hashes + child_count);
+    std::vector<uint64_t> sorted;
+    if (child_count) sorted.assign(child_hashes, child_hashes + child_count);
     std::sort(sorted.begin(), sorted.end()); // order-independent over children
     for (uint64_t c : sorted) fold(&c, sizeof(c));
     // Runtime BAKE MODES (bake_mode.h). Not a version -- both rules stay valid
@@ -964,6 +975,16 @@ static bool publish_common_body(const ParsedCommonBody& parsed,
                                 BLASManager& blas, TLASManager& tlas,
                                 std::vector<ChildInstance>& children_out,
                                 LodLevels& lods_out) {
+    // The serialized count is authoritative. Requiring every caller to guess
+    // a capacity either drops valid draws or reserves huge mostly-empty arrays.
+    // Include existing records because this loader appends to the managers.
+    const size_t existing = tlas.get_draw_records().size();
+    const size_t max_instances = static_cast<size_t>((std::numeric_limits<int>::max)());
+    if (existing > max_instances || parsed.instances.size() > max_instances - existing)
+        return false;
+    if (!parsed.instances.empty())
+        tlas.ensure_instance_capacity(static_cast<int>(existing + parsed.instances.size()));
+
     std::vector<BLASHandle> handles;
     handles.reserve(parsed.blas_entries.size());
     for (const ParsedBlasEntry& entry : parsed.blas_entries) {

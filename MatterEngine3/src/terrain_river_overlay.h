@@ -1,6 +1,7 @@
 #pragma once
 
 #include "hydrology/river_geometry.h"
+#include "terrain_field.h"
 
 #include <cstdint>
 #include <memory>
@@ -8,13 +9,6 @@
 #include <vector>
 
 namespace terrain_field {
-
-class HeightOverlay {
-public:
-    virtual ~HeightOverlay() = default;
-    virtual float height_at(float x, float z, float base_height) const = 0;
-    virtual std::uint64_t hash() const = 0;
-};
 
 class RiverHeightOverlay final : public HeightOverlay {
 public:

@@ -50,7 +50,7 @@ assert.equal(recolored.params.recordPayload,p.recordPayload,'geometry payload in
 assert.equal(recolored.params.matOak,71);
 // Replay the actual wrapper with a catalogue that throws on any lookup. This
 // proves the build path avoids cold manifest/layout work, not just cache hits.
-const wrapper=fs.readFileSync(new URL('../objects/CastleWingSurfaceStructure.js',import.meta.url),'utf8');
+const wrapper=fs.readFileSync(new URL('../objects/castle/structure/CastleWingSurfaceStructure.js',import.meta.url),'utf8');
 const moduleUrl=text=>'data:text/javascript;base64,'+Buffer.from(text).toString('base64');
 const isolated=wrapper.replace("'shared-lib/castle_site_catalog'",JSON.stringify(moduleUrl("export function castleSiteWingManifest(){throw new Error('unexpected cold manifest lookup');}")))+'\nexport default CastleWingSurfaceStructure;';
 globalThis.Part=class {fill(){}beginShape(){}surfaceVertex(){}endShape(){}};

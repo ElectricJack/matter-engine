@@ -52,6 +52,10 @@ struct GpuPrefs {
     int dlss_mode = 0;
     // CPU pacing before input sampling. Zero leaves throughput uncapped.
     int frame_limit = 0;
+    // Reset the DLSS/temporal history whenever the sparse-voxel forest
+    // snapshot is replaced by streaming. Off keeps tree detail stable across
+    // terrain updates. See RenderOptions::vulkan_forest_history_reset.
+    bool forest_history_reset = true;
 };
 
 // Live session controls for separating direct lighting, diffuse bounce strength

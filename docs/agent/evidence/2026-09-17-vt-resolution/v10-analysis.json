@@ -1,0 +1,599 @@
+{
+  "label": "v10",
+  "encoding": "mips / 8; log2(world texels/metre) / 12; blue valid",
+  "limits": "Proxy coordinate, ordinary chart pages; conservative longest world texel edge. Quantized PNG, about 3.3% density steps. Reported density clamps to 1..4096 t/m; encoded zero means <=1 t/m, not exactly 1. No inference about final displaced addresses.",
+  "views": {
+    "overview": {
+      "diagnostic_pixels": 803853,
+      "fraction_of_frame": 0.7850126953125,
+      "regions": {
+        "whole": {
+          "pixels": 803853,
+          "mip_pairs": {
+            "0->0": 423,
+            "1->1": 7214,
+            "1->3": 1,
+            "2->2": 3938,
+            "2->3": 223,
+            "3->3": 126136,
+            "3->4": 241,
+            "3->5": 140,
+            "3->8": 32,
+            "4->4": 98715,
+            "4->5": 230,
+            "4->6": 2,
+            "4->8": 86,
+            "5->5": 283291,
+            "5->6": 181,
+            "5->7": 67,
+            "5->8": 252,
+            "6->6": 175057,
+            "6->7": 332,
+            "6->8": 139,
+            "7->7": 98498,
+            "7->8": 151,
+            "8->8": 8504
+          },
+          "finest_texels_per_m": {
+            "p05": 7.313633008160114,
+            "p25": 31.740111565946734,
+            "p50": 129.04806561532405,
+            "p75": 129.04806561532405,
+            "p95": 129.04806561532405
+          },
+          "resident_texels_per_m": {
+            "p05": 1.0,
+            "p25": 1.0,
+            "p50": 1.9837569728716709,
+            "p75": 3.935291727416975,
+            "p95": 8.065504100957753
+          },
+          "resident_coarser_than_requested_fraction": 0.0025838057455778605,
+          "finest_density_clipped_low_fraction": 0.0,
+          "resident_density_clipped_low_fraction": 0.42763415699139024
+        },
+        "center": {
+          "pixels": 167800,
+          "mip_pairs": {
+            "2->2": 184,
+            "2->3": 9,
+            "3->3": 6149,
+            "3->4": 44,
+            "3->5": 99,
+            "3->8": 13,
+            "4->4": 4735,
+            "4->5": 90,
+            "4->6": 1,
+            "4->8": 2,
+            "5->5": 25008,
+            "5->6": 38,
+            "5->7": 32,
+            "5->8": 10,
+            "6->6": 77989,
+            "6->7": 63,
+            "6->8": 12,
+            "7->7": 49751,
+            "7->8": 7,
+            "8->8": 3564
+          },
+          "finest_texels_per_m": {
+            "p05": 8.065504100957753,
+            "p25": 62.9646676386716,
+            "p50": 129.04806561532405,
+            "p75": 129.04806561532405,
+            "p95": 129.04806561532405
+          },
+          "resident_texels_per_m": {
+            "p05": 1.0,
+            "p25": 1.0,
+            "p50": 1.0,
+            "p75": 1.9837569728716709,
+            "p95": 3.935291727416975
+          },
+          "resident_coarser_than_requested_fraction": 0.002502979737783075,
+          "finest_density_clipped_low_fraction": 0.0,
+          "resident_density_clipped_low_fraction": 0.525238379022646
+        },
+        "bottom": {
+          "pixels": 128000,
+          "mip_pairs": {
+            "4->4": 37456,
+            "4->8": 15,
+            "5->5": 90447,
+            "5->6": 50,
+            "5->8": 32
+          },
+          "finest_texels_per_m": {
+            "p05": 129.04806561532405,
+            "p25": 129.04806561532405,
+            "p50": 129.04806561532405,
+            "p75": 129.04806561532405,
+            "p95": 129.04806561532405
+          },
+          "resident_texels_per_m": {
+            "p05": 3.935291727416975,
+            "p25": 3.935291727416975,
+            "p50": 3.935291727416975,
+            "p75": 8.065504100957753,
+            "p95": 8.065504100957753
+          },
+          "resident_coarser_than_requested_fraction": 0.0007578125,
+          "finest_density_clipped_low_fraction": 0.0,
+          "resident_density_clipped_low_fraction": 0.0003671875
+        }
+      },
+      "lit_vs_previous_binary": {
+        "mean_absolute_byte_error": 0.6639889322916667,
+        "fraction_pixels_over_3_bytes": 0.0130009765625
+      },
+      "raw_channel_comparison": {
+        "albedo": {
+          "mean_absolute_byte_error": 1.0802473958333334,
+          "fraction_pixels_over_3_bytes": 0.0095546875,
+          "max_byte_error": 127
+        },
+        "normal": {
+          "mean_absolute_byte_error": 0.129544921875,
+          "fraction_pixels_over_3_bytes": 0.0079228515625,
+          "max_byte_error": 217
+        }
+      },
+      "timing": {
+        "samples": 30,
+        "gbuffer_median_ms": 32.876
+      }
+    },
+    "grazing": {
+      "diagnostic_pixels": 777786,
+      "fraction_of_frame": 0.759556640625,
+      "regions": {
+        "whole": {
+          "pixels": 777786,
+          "mip_pairs": {
+            "0->0": 130187,
+            "0->4": 72,
+            "0->7": 36,
+            "1->1": 149665,
+            "2->2": 99469,
+            "2->3": 361,
+            "3->3": 135301,
+            "3->4": 136,
+            "3->5": 25,
+            "4->4": 77593,
+            "4->5": 93,
+            "4->6": 9,
+            "4->7": 63,
+            "5->5": 64273,
+            "5->6": 83,
+            "5->7": 67,
+            "6->6": 46158,
+            "6->7": 62,
+            "6->8": 2,
+            "7->7": 34104,
+            "7->8": 53,
+            "8->8": 39974
+          },
+          "finest_texels_per_m": {
+            "p05": 6.213017499011903,
+            "p25": 7.806662404547627,
+            "p50": 129.04806561532405,
+            "p75": 129.04806561532405,
+            "p95": 129.04806561532405
+          },
+          "resident_texels_per_m": {
+            "p05": 1.0,
+            "p25": 1.7988299671485137,
+            "p50": 7.313633008160114,
+            "p75": 31.740111565946734,
+            "p95": 62.9646676386716
+          },
+          "resident_coarser_than_requested_fraction": 0.0013654141370505512,
+          "finest_density_clipped_low_fraction": 0.0,
+          "resident_density_clipped_low_fraction": 0.24784837988855546
+        },
+        "center": {
+          "pixels": 175832,
+          "mip_pairs": {
+            "2->2": 32,
+            "2->3": 15,
+            "3->3": 40946,
+            "3->4": 21,
+            "4->4": 35008,
+            "4->5": 29,
+            "4->7": 63,
+            "5->5": 29003,
+            "5->6": 11,
+            "5->7": 16,
+            "6->6": 23843,
+            "6->7": 13,
+            "7->7": 21570,
+            "7->8": 2,
+            "8->8": 25260
+          },
+          "finest_texels_per_m": {
+            "p05": 7.806662404547627,
+            "p25": 129.04806561532405,
+            "p50": 129.04806561532405,
+            "p75": 129.04806561532405,
+            "p95": 129.04806561532405
+          },
+          "resident_texels_per_m": {
+            "p05": 1.0,
+            "p25": 1.0,
+            "p50": 1.9837569728716709,
+            "p75": 8.065504100957753,
+            "p95": 16.0
+          },
+          "resident_coarser_than_requested_fraction": 0.000966831975977069,
+          "finest_density_clipped_low_fraction": 0.0,
+          "resident_density_clipped_low_fraction": 0.4537342463260385
+        },
+        "bottom": {
+          "pixels": 128000,
+          "mip_pairs": {
+            "0->0": 8386,
+            "1->1": 66805,
+            "2->2": 47411,
+            "3->3": 5398
+          },
+          "finest_texels_per_m": {
+            "p05": 124.90659847276203,
+            "p25": 129.04806561532405,
+            "p50": 129.04806561532405,
+            "p75": 129.04806561532405,
+            "p95": 129.04806561532405
+          },
+          "resident_texels_per_m": {
+            "p05": 31.740111565946734,
+            "p25": 31.740111565946734,
+            "p50": 62.9646676386716,
+            "p75": 62.9646676386716,
+            "p95": 124.90659847276203
+          },
+          "resident_coarser_than_requested_fraction": 0.0,
+          "finest_density_clipped_low_fraction": 0.0,
+          "resident_density_clipped_low_fraction": 0.0
+        }
+      },
+      "lit_vs_previous_binary": {
+        "mean_absolute_byte_error": 1.6600628255208334,
+        "fraction_pixels_over_3_bytes": 0.1134990234375
+      },
+      "raw_channel_comparison": {
+        "albedo": {
+          "mean_absolute_byte_error": 1.7909749348958333,
+          "fraction_pixels_over_3_bytes": 0.016888671875,
+          "max_byte_error": 127
+        },
+        "normal": {
+          "mean_absolute_byte_error": 3.6088919270833335,
+          "fraction_pixels_over_3_bytes": 0.1165791015625,
+          "max_byte_error": 230
+        }
+      },
+      "timing": {
+        "samples": 30,
+        "gbuffer_median_ms": 18.591
+      }
+    },
+    "cliff": {
+      "diagnostic_pixels": 1024000,
+      "fraction_of_frame": 1.0,
+      "regions": {
+        "whole": {
+          "pixels": 1024000,
+          "mip_pairs": {
+            "0->0": 1023990,
+            "0->8": 10
+          },
+          "finest_texels_per_m": {
+            "p05": 117.01812813056178,
+            "p25": 117.01812813056178,
+            "p50": 120.8980411108398,
+            "p75": 120.8980411108398,
+            "p95": 124.90659847276203
+          },
+          "resident_texels_per_m": {
+            "p05": 117.01812813056178,
+            "p25": 117.01812813056178,
+            "p50": 120.8980411108398,
+            "p75": 120.8980411108398,
+            "p95": 124.90659847276203
+          },
+          "resident_coarser_than_requested_fraction": 9.765625e-06,
+          "finest_density_clipped_low_fraction": 0.0,
+          "resident_density_clipped_low_fraction": 9.765625e-06
+        },
+        "center": {
+          "pixels": 256000,
+          "mip_pairs": {
+            "0->0": 255990,
+            "0->8": 10
+          },
+          "finest_texels_per_m": {
+            "p05": 117.01812813056178,
+            "p25": 117.01812813056178,
+            "p50": 120.8980411108398,
+            "p75": 120.8980411108398,
+            "p95": 124.90659847276203
+          },
+          "resident_texels_per_m": {
+            "p05": 117.01812813056178,
+            "p25": 117.01812813056178,
+            "p50": 120.8980411108398,
+            "p75": 120.8980411108398,
+            "p95": 124.90659847276203
+          },
+          "resident_coarser_than_requested_fraction": 3.90625e-05,
+          "finest_density_clipped_low_fraction": 0.0,
+          "resident_density_clipped_low_fraction": 3.90625e-05
+        },
+        "bottom": {
+          "pixels": 128000,
+          "mip_pairs": {
+            "0->0": 128000
+          },
+          "finest_texels_per_m": {
+            "p05": 117.01812813056178,
+            "p25": 117.01812813056178,
+            "p50": 117.01812813056178,
+            "p75": 120.8980411108398,
+            "p95": 120.8980411108398
+          },
+          "resident_texels_per_m": {
+            "p05": 117.01812813056178,
+            "p25": 117.01812813056178,
+            "p50": 117.01812813056178,
+            "p75": 120.8980411108398,
+            "p95": 120.8980411108398
+          },
+          "resident_coarser_than_requested_fraction": 0.0,
+          "finest_density_clipped_low_fraction": 0.0,
+          "resident_density_clipped_low_fraction": 0.0
+        }
+      },
+      "lit_vs_previous_binary": {
+        "mean_absolute_byte_error": 0.07014453125,
+        "fraction_pixels_over_3_bytes": 0.0
+      },
+      "raw_channel_comparison": {
+        "albedo": {
+          "mean_absolute_byte_error": 1.07421875e-05,
+          "fraction_pixels_over_3_bytes": 0.0,
+          "max_byte_error": 1
+        },
+        "normal": {
+          "mean_absolute_byte_error": 0.00018098958333333332,
+          "fraction_pixels_over_3_bytes": 0.0,
+          "max_byte_error": 1
+        }
+      },
+      "timing": {
+        "samples": 30,
+        "gbuffer_median_ms": 24.443
+      }
+    },
+    "cliff-grazing": {
+      "diagnostic_pixels": 865727,
+      "fraction_of_frame": 0.8454365234375,
+      "regions": {
+        "whole": {
+          "pixels": 865727,
+          "mip_pairs": {
+            "0->0": 599882,
+            "0->8": 6,
+            "1->1": 159480,
+            "2->2": 54143,
+            "2->4": 61,
+            "3->3": 24338,
+            "3->4": 49,
+            "4->4": 10187,
+            "5->5": 3005,
+            "5->6": 3,
+            "6->6": 3384,
+            "6->7": 2,
+            "7->7": 9007,
+            "7->8": 208,
+            "8->8": 1972
+          },
+          "finest_texels_per_m": {
+            "p05": 117.01812813056178,
+            "p25": 117.01812813056178,
+            "p50": 120.8980411108398,
+            "p75": 120.8980411108398,
+            "p95": 129.04806561532405
+          },
+          "resident_texels_per_m": {
+            "p05": 16.0,
+            "p25": 60.94397789857734,
+            "p50": 117.01812813056178,
+            "p75": 120.8980411108398,
+            "p95": 124.90659847276203
+          },
+          "resident_coarser_than_requested_fraction": 0.0003800274220395113,
+          "finest_density_clipped_low_fraction": 0.0,
+          "resident_density_clipped_low_fraction": 0.01521380296560001
+        },
+        "center": {
+          "pixels": 255537,
+          "mip_pairs": {
+            "0->0": 176146,
+            "0->8": 6,
+            "1->1": 65344,
+            "2->2": 11206,
+            "3->3": 2444,
+            "4->4": 385,
+            "5->5": 6
+          },
+          "finest_texels_per_m": {
+            "p05": 117.01812813056178,
+            "p25": 117.01812813056178,
+            "p50": 120.8980411108398,
+            "p75": 120.8980411108398,
+            "p95": 124.90659847276203
+          },
+          "resident_texels_per_m": {
+            "p05": 30.721493979353387,
+            "p25": 60.94397789857734,
+            "p50": 117.01812813056178,
+            "p75": 120.8980411108398,
+            "p95": 124.90659847276203
+          },
+          "resident_coarser_than_requested_fraction": 2.347996571925005e-05,
+          "finest_density_clipped_low_fraction": 0.0,
+          "resident_density_clipped_low_fraction": 2.347996571925005e-05
+        },
+        "bottom": {
+          "pixels": 128000,
+          "mip_pairs": {
+            "0->0": 118779,
+            "1->1": 9221
+          },
+          "finest_texels_per_m": {
+            "p05": 117.01812813056178,
+            "p25": 117.01812813056178,
+            "p50": 120.8980411108398,
+            "p75": 120.8980411108398,
+            "p95": 124.90659847276203
+          },
+          "resident_texels_per_m": {
+            "p05": 58.988137020215405,
+            "p25": 117.01812813056178,
+            "p50": 120.8980411108398,
+            "p75": 120.8980411108398,
+            "p95": 124.90659847276203
+          },
+          "resident_coarser_than_requested_fraction": 0.0,
+          "finest_density_clipped_low_fraction": 0.0,
+          "resident_density_clipped_low_fraction": 0.0
+        }
+      },
+      "lit_vs_previous_binary": {
+        "mean_absolute_byte_error": 0.39002864583333335,
+        "fraction_pixels_over_3_bytes": 0.0015009765625
+      },
+      "raw_channel_comparison": {
+        "albedo": {
+          "mean_absolute_byte_error": 0.0287177734375,
+          "fraction_pixels_over_3_bytes": 0.0002646484375,
+          "max_byte_error": 139
+        },
+        "normal": {
+          "mean_absolute_byte_error": 0.043435546875,
+          "fraction_pixels_over_3_bytes": 0.00153515625,
+          "max_byte_error": 250
+        }
+      },
+      "timing": {
+        "samples": 30,
+        "gbuffer_median_ms": 38.403
+      }
+    },
+    "close": {
+      "diagnostic_pixels": 1024000,
+      "fraction_of_frame": 1.0,
+      "regions": {
+        "whole": {
+          "pixels": 1024000,
+          "mip_pairs": {
+            "0->0": 574536,
+            "1->1": 158737,
+            "2->2": 111011,
+            "2->3": 188,
+            "3->3": 73975,
+            "3->4": 230,
+            "4->4": 58703,
+            "4->5": 154,
+            "5->5": 43647,
+            "6->6": 2819
+          },
+          "finest_texels_per_m": {
+            "p05": 124.90659847276203,
+            "p25": 124.90659847276203,
+            "p50": 129.04806561532405,
+            "p75": 129.04806561532405,
+            "p95": 129.04806561532405
+          },
+          "resident_texels_per_m": {
+            "p05": 8.065504100957753,
+            "p25": 31.740111565946734,
+            "p50": 124.90659847276203,
+            "p75": 129.04806561532405,
+            "p95": 129.04806561532405
+          },
+          "resident_coarser_than_requested_fraction": 0.00055859375,
+          "finest_density_clipped_low_fraction": 0.0,
+          "resident_density_clipped_low_fraction": 0.0
+        },
+        "center": {
+          "pixels": 256000,
+          "mip_pairs": {
+            "0->0": 164690,
+            "1->1": 75262,
+            "2->2": 16048
+          },
+          "finest_texels_per_m": {
+            "p05": 124.90659847276203,
+            "p25": 124.90659847276203,
+            "p50": 129.04806561532405,
+            "p75": 129.04806561532405,
+            "p95": 129.04806561532405
+          },
+          "resident_texels_per_m": {
+            "p05": 31.740111565946734,
+            "p25": 62.9646676386716,
+            "p50": 124.90659847276203,
+            "p75": 129.04806561532405,
+            "p95": 129.04806561532405
+          },
+          "resident_coarser_than_requested_fraction": 0.0,
+          "finest_density_clipped_low_fraction": 0.0,
+          "resident_density_clipped_low_fraction": 0.0
+        },
+        "bottom": {
+          "pixels": 128000,
+          "mip_pairs": {
+            "0->0": 128000
+          },
+          "finest_texels_per_m": {
+            "p05": 120.8980411108398,
+            "p25": 124.90659847276203,
+            "p50": 124.90659847276203,
+            "p75": 129.04806561532405,
+            "p95": 129.04806561532405
+          },
+          "resident_texels_per_m": {
+            "p05": 120.8980411108398,
+            "p25": 124.90659847276203,
+            "p50": 124.90659847276203,
+            "p75": 129.04806561532405,
+            "p95": 129.04806561532405
+          },
+          "resident_coarser_than_requested_fraction": 0.0,
+          "finest_density_clipped_low_fraction": 0.0,
+          "resident_density_clipped_low_fraction": 0.0
+        }
+      },
+      "lit_vs_previous_binary": {
+        "mean_absolute_byte_error": 0.06739811197916666,
+        "fraction_pixels_over_3_bytes": 2.1484375e-05
+      },
+      "raw_channel_comparison": {
+        "albedo": {
+          "mean_absolute_byte_error": 3.4505208333333335e-05,
+          "fraction_pixels_over_3_bytes": 0.0,
+          "max_byte_error": 1
+        },
+        "normal": {
+          "mean_absolute_byte_error": 7.942708333333333e-05,
+          "fraction_pixels_over_3_bytes": 0.0,
+          "max_byte_error": 1
+        }
+      },
+      "timing": {
+        "samples": 30,
+        "gbuffer_median_ms": 8.3735
+      }
+    }
+  }
+}

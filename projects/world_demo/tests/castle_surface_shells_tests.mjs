@@ -1,3 +1,4 @@
+import { objectFile } from './helpers/project_layout.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
@@ -84,7 +85,7 @@ assert.throws(()=>buildSurfaceShell('beam-3.713'),/unknown/);
 for(const scale of [1,[1,1,1],[2,1,1]])assert.throws(()=>placeSurfaceShell(buildSurfaceShell(),{scale}),/rigid/);
 assert.throws(()=>placeSurfaceShell(buildSurfaceShell(),{origin:[0,NaN,0]}),/finite/);
 for(const name of ['CastleBeamSurface','CastleFloorSurface']){
-  const file=new URL(`../objects/${name}.js`,import.meta.url);
+  const file=objectFile(name);
   const text=fs.readFileSync(file,'utf8').replace(/^import .*;\n/m,'');
   const context=vm.createContext({Part:Recorder,MAT:{bark:11,stone:12,metal:13},CASTLE_TIMBER_SURFACE_IDS,buildSurfaceShell,emitSurfaceShell});
   vm.runInContext(`${text}\nglobalThis.Result=${name};`,context);
