@@ -1,0 +1,599 @@
+{
+  "schema_version": 1,
+  "baseline_commit": "98af23851dd3424ddbfc62624cd2afb850e9d09d",
+  "status": "existing behavioral oracles; neutral/native-WASM gates not implemented",
+  "working_directory": "repository root; CTest sets native per-test working directories",
+  "comparison_policy": {
+    "metadata": "Existing golden digests/counts/material identities exact. Preserve version/source changes explicitly.",
+    "geometry": "Existing OBJ parsed numeric tolerance and suite-specific seam/normal oracles. Neutral native/WASM tolerances must be stated and qualified by contract gate.",
+    "legacy_hash": "Legacy FNV resolved_hash remains namespaced; never relabel it as the portable digest."
+  },
+  "fixtures": [
+    {
+      "id": "PROP-SLAB",
+      "sources": [
+        "projects/world_demo/objects/castle/materials/CastlePavingSlab.js",
+        "projects/world_demo/shared-lib/castle_paving.js",
+        "MatterEngine3/tests/fixtures/export/CastlePavingSlab.golden",
+        "MatterEngine3/tests/fixtures/export/CastlePavingSlab.mtl",
+        "MatterEngine3/tests/obj_export_golden_tests.cpp",
+        "projects/world_demo/shared-lib/castle_primitives.js",
+        "projects/world_demo/shared-lib/castle_stock.js"
+      ],
+      "parameters": {
+        "part": "CastlePavingSlab",
+        "lod": 0,
+        "texture_size": 256,
+        "golden_update": false,
+        "part_parameters": "{} (generator defaults)"
+      },
+      "expected": "LOD0: 24 vertices, 12 triangles, 6 charts, 1 LOD; material 9 owns 12 triangles; 256 texture/atlas. Exact digest in golden; parsed OBJ/MTL use existing numeric tolerance.",
+      "native_targets": [
+        "obj_export_golden_tests"
+      ],
+      "ctest_names": [
+        "obj_export_golden_tests"
+      ],
+      "node_commands": [],
+      "baseline_execution": "not_run_native; see baseline.json for Node/historical evidence",
+      "new_contract_gate_gap": "Port this existing behavior to neutral recipes/public assets and add native/WASM conformance with stated tolerances.",
+      "build_commands": [
+        "./tools/build-windows-from-wsl.sh RelWithDebInfo obj_export_golden_tests"
+      ],
+      "ctest_command": "& $componentCTest --test-dir MatterEditor/build/cmake/windows-msvc/relwithdebinfo --output-on-failure -j 1 -R '^(obj_export_golden_tests)$'",
+      "ctest_setup": "Native PowerShell toolchain/ctest resolution in validation.md; CTest sets working directories and mode environments."
+    },
+    {
+      "id": "PROP-FLOWER",
+      "sources": [
+        "projects/world_demo/objects/vegetation/alpine/AlpineFlower.js",
+        "projects/world_demo/shared-lib/vegetation.js",
+        "MatterEngine3/tests/fixtures/export/AlpineFlower.golden",
+        "MatterEngine3/tests/fixtures/export/AlpineFlower.mtl",
+        "MatterEngine3/tests/obj_export_golden_tests.cpp",
+        "MatterEngine3/shared-lib/rng.js"
+      ],
+      "parameters": {
+        "part": "AlpineFlower",
+        "lod": 0,
+        "texture_size": 256,
+        "golden_update": false,
+        "part_parameters": "{} (generator defaults)"
+      },
+      "expected": "LOD0: 228 vertices, 76 triangles, 42 charts, 2 LODs; material17 owns48 triangles and material29 owns28. Exact metadata/texture digest; thin geometry and materials survive export.",
+      "native_targets": [
+        "obj_export_golden_tests"
+      ],
+      "ctest_names": [
+        "obj_export_golden_tests"
+      ],
+      "node_commands": [],
+      "baseline_execution": "not_run_native; see baseline.json for Node/historical evidence",
+      "new_contract_gate_gap": "Port this existing behavior to neutral recipes/public assets and add native/WASM conformance with stated tolerances.",
+      "build_commands": [
+        "./tools/build-windows-from-wsl.sh RelWithDebInfo obj_export_golden_tests"
+      ],
+      "ctest_command": "& $componentCTest --test-dir MatterEditor/build/cmake/windows-msvc/relwithdebinfo --output-on-failure -j 1 -R '^(obj_export_golden_tests)$'",
+      "ctest_setup": "Native PowerShell toolchain/ctest resolution in validation.md; CTest sets working directories and mode environments."
+    },
+    {
+      "id": "PROP-STONE",
+      "sources": [
+        "projects/world_demo/objects/castle/materials/CastleStone.js",
+        "projects/world_demo/shared-lib/castle_primitives.js",
+        "MatterEngine3/tests/fixtures/export/CastleStone.golden",
+        "MatterEngine3/tests/fixtures/export/CastleStone.mtl",
+        "MatterEngine3/tests/obj_export_golden_tests.cpp"
+      ],
+      "parameters": {
+        "part": "CastleStone",
+        "lod": 0,
+        "texture_size": 256,
+        "golden_update": false,
+        "part_parameters": "{} (generator defaults)"
+      },
+      "expected": "LOD0: 45506 vertices, 54054 triangles, 223 charts, 1 LOD, material8 owns54054 triangles; 0.006m authored detail retained. Digest and MTL pinned; stone OBJ is intentionally not pinned. Old 3382-triangle golden is superseded.",
+      "native_targets": [
+        "obj_export_golden_tests"
+      ],
+      "ctest_names": [
+        "obj_export_golden_tests"
+      ],
+      "node_commands": [],
+      "baseline_execution": "not_run_native; see baseline.json for Node/historical evidence",
+      "new_contract_gate_gap": "Port this existing behavior to neutral recipes/public assets and add native/WASM conformance with stated tolerances.",
+      "build_commands": [
+        "./tools/build-windows-from-wsl.sh RelWithDebInfo obj_export_golden_tests"
+      ],
+      "ctest_command": "& $componentCTest --test-dir MatterEditor/build/cmake/windows-msvc/relwithdebinfo --output-on-failure -j 1 -R '^(obj_export_golden_tests)$'",
+      "ctest_setup": "Native PowerShell toolchain/ctest resolution in validation.md; CTest sets working directories and mode environments."
+    },
+    {
+      "id": "GEOM-EXTRUDE",
+      "sources": [
+        "MatterEngine3/tests/script_host_tests.cpp",
+        "MatterEngine3/src/triangle_emit.cpp"
+      ],
+      "parameters": {
+        "profile": [
+          [
+            -0.5,
+            -0.5,
+            0
+          ],
+          [
+            0.5,
+            -0.5,
+            0
+          ],
+          [
+            0.5,
+            0.5,
+            0
+          ],
+          [
+            -0.5,
+            0.5,
+            0
+          ]
+        ],
+        "path": [
+          [
+            0,
+            0,
+            0
+          ],
+          [
+            0,
+            0,
+            2
+          ]
+        ]
+      },
+      "expected": "Square profile +/-0.5 swept from(0,0,0) to(0,0,2) gives12 triangles and no extra flat face; unclaimed square flat-fill gives2; MITER versus BEVEL changes corner counts. Invalid voxel/open/missing profile produces errors.",
+      "native_targets": [
+        "script_host_tests"
+      ],
+      "ctest_names": [
+        "script_host_tests"
+      ],
+      "node_commands": [],
+      "baseline_execution": "not_run_native; see baseline.json for Node/historical evidence",
+      "new_contract_gate_gap": "Port this existing behavior to neutral recipes/public assets and add native/WASM conformance with stated tolerances.",
+      "source_anchors": {
+        "MatterEngine3/tests/script_host_tests.cpp": [
+          "test_extrude_dispatch_and_polygon",
+          "claimed POLYGON sweeps (12 tris)"
+        ]
+      },
+      "build_commands": [
+        "./tools/build-windows-from-wsl.sh RelWithDebInfo script_host_tests"
+      ],
+      "ctest_command": "& $componentCTest --test-dir MatterEditor/build/cmake/windows-msvc/relwithdebinfo --output-on-failure -j 1 -R '^(script_host_tests)$'",
+      "ctest_setup": "Native PowerShell toolchain/ctest resolution in validation.md; CTest sets working directories and mode environments."
+    },
+    {
+      "id": "GEOM-CSG",
+      "sources": [
+        "MatterEngine3/tests/script_host_tests.cpp",
+        "MatterEngine3/src/csg_lowering.cpp"
+      ],
+      "parameters": {
+        "voxel_m": 0.25,
+        "material": 3,
+        "sphere_radius": 1,
+        "box_center": [
+          1,
+          0,
+          0
+        ],
+        "box_half_extents": [
+          0.05,
+          0.05,
+          0.05
+        ]
+      },
+      "expected": "Sphere union then difference box lowers to additive sphere/material3 and one oriented box in an ordered Difference stage; two-sphere occupancy discriminates union/difference/intersection. ScriptHost raycast regression subtracts a box from a sphere: cut face x0.4 within0.02m, normal+x>0.95.",
+      "native_targets": [
+        "script_host_tests"
+      ],
+      "ctest_names": [
+        "script_host_tests"
+      ],
+      "node_commands": [],
+      "baseline_execution": "not_run_native; see baseline.json for Node/historical evidence",
+      "new_contract_gate_gap": "Port this existing behavior to neutral recipes/public assets and add native/WASM conformance with stated tolerances.",
+      "source_anchors": {
+        "MatterEngine3/tests/script_host_tests.cpp": [
+          "test_csg_lowering",
+          "test_voxel_primitive_occupancy",
+          "test_raycast_sees_difference_cut"
+        ]
+      },
+      "build_commands": [
+        "./tools/build-windows-from-wsl.sh RelWithDebInfo script_host_tests"
+      ],
+      "ctest_command": "& $componentCTest --test-dir MatterEditor/build/cmake/windows-msvc/relwithdebinfo --output-on-failure -j 1 -R '^(script_host_tests)$'",
+      "ctest_setup": "Native PowerShell toolchain/ctest resolution in validation.md; CTest sets working directories and mode environments."
+    },
+    {
+      "id": "GEOM-TRANSFORM",
+      "sources": [
+        "MatterEngine3/tests/dsl_determinism_tests.cpp",
+        "tests/vt_normal_frame_reference_tests.mjs"
+      ],
+      "parameters": "Inline parameters/defaults in the pinned source; do not substitute a simplified fixture.",
+      "expected": "Five-level mixed rotations/nonuniform scales and ordered CSG determinism; singular scale(1,0,1) exercises zero-determinant guard. Independent JS algebra tests inverse-transpose directions for unit, nonuniform(2,.7,1.3), and mirrored(-1,1,1) scales:480 probes, distance<1e-12, back-face reversal.",
+      "native_targets": [
+        "dsl_determinism_tests"
+      ],
+      "ctest_names": [
+        "dsl_determinism_tests"
+      ],
+      "node_commands": [
+        "node tests/vt_normal_frame_reference_tests.mjs"
+      ],
+      "baseline_execution": "not_run_native; see baseline.json for Node/historical evidence",
+      "new_contract_gate_gap": "Existing mirror fixture is normal-frame algebra, not portable mesh winding/tangent coverage. Contract gate must add a neutral mirrored/nonuniform mesh fixture with winding, normals, tangent handedness and bounds assertions.",
+      "source_anchors": {
+        "MatterEngine3/tests/dsl_determinism_tests.cpp": [
+          "scene_deep_stack",
+          "scene_degenerate_flatten"
+        ]
+      },
+      "build_commands": [
+        "./tools/build-windows-from-wsl.sh RelWithDebInfo dsl_determinism_tests"
+      ],
+      "ctest_command": "& $componentCTest --test-dir MatterEditor/build/cmake/windows-msvc/relwithdebinfo --output-on-failure -j 1 -R '^(dsl_determinism_tests)$'",
+      "ctest_setup": "Native PowerShell toolchain/ctest resolution in validation.md; CTest sets working directories and mode environments."
+    },
+    {
+      "id": "GEOM-SEED",
+      "sources": [
+        "MatterEngine3/tests/script_host_tests.cpp",
+        "MatterEngine3/shared-lib/rng.js"
+      ],
+      "parameters": "Inline parameters/defaults in the pinned source; do not substitute a simplified fixture.",
+      "expected": "Seed1 evaluated in two hosts yields same resolved hash and artifact bytes; seed2 differs. Ambient Date/require/fetch/os are undefined. Preserve explicit portable seeding; do not expose native host ambient randomness.",
+      "native_targets": [
+        "script_host_tests"
+      ],
+      "ctest_names": [
+        "script_host_tests"
+      ],
+      "node_commands": [],
+      "baseline_execution": "not_run_native; see baseline.json for Node/historical evidence",
+      "new_contract_gate_gap": "Port this existing behavior to neutral recipes/public assets and add native/WASM conformance with stated tolerances.",
+      "source_anchors": {
+        "MatterEngine3/tests/script_host_tests.cpp": [
+          "test_seeded_rng_and_no_ambient"
+        ]
+      },
+      "build_commands": [
+        "./tools/build-windows-from-wsl.sh RelWithDebInfo script_host_tests"
+      ],
+      "ctest_command": "& $componentCTest --test-dir MatterEditor/build/cmake/windows-msvc/relwithdebinfo --output-on-failure -j 1 -R '^(script_host_tests)$'",
+      "ctest_setup": "Native PowerShell toolchain/ctest resolution in validation.md; CTest sets working directories and mode environments."
+    },
+    {
+      "id": "BUILD-SHARED",
+      "sources": [
+        "MatterEngine3/tests/part_graph_tests.cpp",
+        "MatterEngine3/src/part_graph.cpp"
+      ],
+      "parameters": "Inline parameters/defaults in the pinned source; do not substitute a simplified fixture.",
+      "expected": "Root->P1/P2->Bolt(len2) bakes4 unique artifacts children-first; len2/len3 splits into2 Bolt artifacts plusRoot; a->b->a fails naming cycle and bakes nothing. Fake resolver and baker isolate graph semantics.",
+      "native_targets": [
+        "part_graph_tests"
+      ],
+      "ctest_names": [
+        "part_graph_tests"
+      ],
+      "node_commands": [],
+      "baseline_execution": "not_run_native; see baseline.json for Node/historical evidence",
+      "new_contract_gate_gap": "Adapt the same fake-service corpus to new public contracts, portable collision-resistant digest and immutable ownership; legacy tests alone do not prove interface isolation.",
+      "source_anchors": {
+        "MatterEngine3/tests/part_graph_tests.cpp": [
+          "identical-params child collapses",
+          "children baked before their parents",
+          "nothing baked when a cycle"
+        ]
+      },
+      "build_commands": [
+        "./tools/build-windows-from-wsl.sh RelWithDebInfo part_graph_tests"
+      ],
+      "ctest_command": "& $componentCTest --test-dir MatterEditor/build/cmake/windows-msvc/relwithdebinfo --output-on-failure -j 1 -R '^(part_graph_tests)$'",
+      "ctest_setup": "Native PowerShell toolchain/ctest resolution in validation.md; CTest sets working directories and mode environments."
+    },
+    {
+      "id": "BUILD-CASTLE",
+      "sources": [
+        "projects/world_demo/tests/fixtures/castle_plan_two_room_two_level.js",
+        "projects/world_demo/shared-lib/castle_plan.js",
+        "projects/world_demo/shared-lib/castle_structure.js",
+        "projects/world_demo/shared-lib/castle_structure_fixture.js",
+        "projects/world_demo/tests/castle_plan_tests.mjs",
+        "projects/world_demo/shared-lib/castle_primitives.js",
+        "projects/world_demo/shared-lib/castle_stock.js",
+        "MatterEngine3/tests/part_flatten_tests.cpp"
+      ],
+      "parameters": {
+        "fixture_id": "two-room-two-level",
+        "seed": 240911
+      },
+      "expected": "Two-room/two-level deterministic plan fixture exercises stairs, floors and repeated structure pieces; castle_plan_tests reports40 walls/9 modules and structural assertions. Use small plan/recording DSL before full castle rendering.",
+      "native_targets": [
+        "part_flatten_tests"
+      ],
+      "ctest_names": [
+        "part_flatten_tests"
+      ],
+      "node_commands": [
+        "node projects/world_demo/tests/castle_plan_tests.mjs"
+      ],
+      "baseline_execution": "not_run_native; see baseline.json for Node/historical evidence",
+      "new_contract_gate_gap": "part_flatten_tests is a related native assembly oracle; it does not execute this JS plan. Add the selected plan to new SDK assembly/build tests, retain repeated-child/material/source identity.",
+      "build_commands": [
+        "./tools/build-windows-from-wsl.sh RelWithDebInfo part_flatten_tests"
+      ],
+      "ctest_command": "& $componentCTest --test-dir MatterEditor/build/cmake/windows-msvc/relwithdebinfo --output-on-failure -j 1 -R '^(part_flatten_tests)$'",
+      "ctest_setup": "Native PowerShell toolchain/ctest resolution in validation.md; CTest sets working directories and mode environments."
+    },
+    {
+      "id": "EVAL-BOUNDED",
+      "sources": [
+        "MatterEngine3/tests/solid_source_evaluation_tests.cpp",
+        "projects/world_demo/objects/castle/materials/CastleStoneSource.js",
+        "projects/world_demo/shared-lib/castle_solid_source.js"
+      ],
+      "parameters": "Inline parameters/defaults in the pinned source; do not substitute a simplified fixture.",
+      "expected": "Owned source evaluation captures material at declaration, calls no GPU mesher and writes no artifacts; malformed/mixed/child-dependent/missing source fails preserving prior result. Precancellation and runaway-loop cancellation report solid-source-cancelled; stale generation reports solid-source-stale; budget0 rejected; infinite loop bounded at5ms. Seeds0..7 of real CastleStoneSource each yield23 physical operations and8 distinct recipe/field identities; imported-source edits invalidate identity.",
+      "native_targets": [
+        "solid_source_evaluation_tests"
+      ],
+      "ctest_names": [
+        "solid_source_evaluation_tests"
+      ],
+      "node_commands": [],
+      "baseline_execution": "not_run_native; see baseline.json for Node/historical evidence",
+      "new_contract_gate_gap": "Legacy owned GPU-ABI source is not neutral recipe validation. Add finite/nonfinite values, bad indices/ranges, unknown required capability/version, DAG/resource limits, memory/output exhaustion, cancellation/release and prior-result ownership tests at the public boundary.",
+      "source_anchors": {
+        "MatterEngine3/tests/solid_source_evaluation_tests.cpp": [
+          "time_budget_ms = 5",
+          "solid-source-stale",
+          "actual source recipe has23"
+        ]
+      },
+      "build_commands": [
+        "./tools/build-windows-from-wsl.sh RelWithDebInfo solid_source_evaluation_tests"
+      ],
+      "ctest_command": "& $componentCTest --test-dir MatterEditor/build/cmake/windows-msvc/relwithdebinfo --output-on-failure -j 1 -R '^(solid_source_evaluation_tests)$'",
+      "ctest_setup": "Native PowerShell toolchain/ctest resolution in validation.md; CTest sets working directories and mode environments."
+    },
+    {
+      "id": "BUILD-CANCEL",
+      "sources": [
+        "MatterEngine3/tests/async_bake_tests.cpp"
+      ],
+      "parameters": "Inline parameters/defaults in the pinned source; do not substitute a simplified fixture.",
+      "expected": "Existing asynchronous baking tests exercise superseded/seed-reroll jobs and cancellation; allow a job that legitimately finished before cancellation. New coordinator must admit only matching requestId/sourceRevision/epoch products.",
+      "native_targets": [
+        "async_bake_tests"
+      ],
+      "ctest_names": [
+        "async_bake_tests"
+      ],
+      "node_commands": [],
+      "baseline_execution": "not_run_native; see baseline.json for Node/historical evidence",
+      "new_contract_gate_gap": "Add deterministic late completion/source revision/world epoch rejection and result disposal with fake services; do not use timing luck as the stale-result oracle.",
+      "build_commands": [
+        "./tools/build-windows-from-wsl.sh RelWithDebInfo async_bake_tests"
+      ],
+      "ctest_command": "& $componentCTest --test-dir MatterEditor/build/cmake/windows-msvc/relwithdebinfo --output-on-failure -j 1 -R '^(async_bake_tests)$'",
+      "ctest_setup": "Native PowerShell toolchain/ctest resolution in validation.md; CTest sets working directories and mode environments."
+    },
+    {
+      "id": "TERRAIN-FLAT",
+      "sources": [
+        "MatterEngine3/tests/terrain_mesher_tests.cpp",
+        "MatterEngine3/tests/terrain_field_tests.cpp",
+        "MatterEngine3/src/terrain_mesher.cpp",
+        "MatterEngine3/src/terrain_field.cpp"
+      ],
+      "parameters": {
+        "height": 5,
+        "sector_size_m": 16,
+        "slab_m": [
+          -64,
+          192
+        ],
+        "rungs": [
+          0,
+          1,
+          4
+        ]
+      },
+      "expected": "kFlat5 height5/moisture.5/relief.5/sea0/biome(.65,.35); sector16m/slab[-64,192], rung0 gives128 upward surface triangles at y5 and0 skirt curtains; rung1 gives4x; rung4 and reversed slab rejected. Field tests retain deterministic tape/noise semantics.",
+      "native_targets": [
+        "terrain_mesher_tests",
+        "terrain_field_tests"
+      ],
+      "ctest_names": [
+        "terrain_mesher_tests",
+        "terrain_field_tests"
+      ],
+      "node_commands": [],
+      "baseline_execution": "not_run_native; see baseline.json for Node/historical evidence",
+      "new_contract_gate_gap": "Port this existing behavior to neutral recipes/public assets and add native/WASM conformance with stated tolerances.",
+      "source_anchors": {
+        "MatterEngine3/tests/terrain_mesher_tests.cpp": [
+          "kFlat5",
+          "flat rung0: 8x8 cells -> 128",
+          "rung 4 rejected"
+        ]
+      },
+      "build_commands": [
+        "./tools/build-windows-from-wsl.sh RelWithDebInfo terrain_mesher_tests",
+        "./tools/build-windows-from-wsl.sh RelWithDebInfo terrain_field_tests"
+      ],
+      "ctest_command": "& $componentCTest --test-dir MatterEditor/build/cmake/windows-msvc/relwithdebinfo --output-on-failure -j 1 -R '^(terrain_mesher_tests|terrain_field_tests)$'",
+      "ctest_setup": "Native PowerShell toolchain/ctest resolution in validation.md; CTest sets working directories and mode environments."
+    },
+    {
+      "id": "TERRAIN-ADJACENT",
+      "sources": [
+        "MatterEngine3/tests/terrain_mesher_tests.cpp",
+        "MatterEngine3/src/seam_weld.cpp",
+        "MatterEngine3/tests/seam_weld_tests.cpp"
+      ],
+      "parameters": "Inline parameters/defaults in the pinned source; do not substitute a simplified fixture.",
+      "expected": "kNoise seed1234/frequency.02/octaves4/gain.5/lacunarity2/amplitude20/sea-100; repeat at(3,-2),rung2 has byte-identical positions within the same build. Adjacent16m rung1 surfaces overlap without skirts; nested/cross-rung/negative-face and cross-size seam-weld tests retain their current gap/error bounds. Do not relabel overlap as canonical bit-identical chunk boundaries.",
+      "native_targets": [
+        "terrain_mesher_tests",
+        "seam_weld_tests"
+      ],
+      "ctest_names": [
+        "terrain_mesher_tests",
+        "seam_weld_tests"
+      ],
+      "node_commands": [],
+      "baseline_execution": "not_run_native; see baseline.json for Node/historical evidence",
+      "new_contract_gate_gap": "New TerrainBoundary contract needs explicit origins, sample lattice, chunk/detail/source identity and transition compatibility tests at public boundary; preserve existing tolerances until a qualified gate records new ones.",
+      "build_commands": [
+        "./tools/build-windows-from-wsl.sh RelWithDebInfo terrain_mesher_tests",
+        "./tools/build-windows-from-wsl.sh RelWithDebInfo seam_weld_tests"
+      ],
+      "ctest_command": "& $componentCTest --test-dir MatterEditor/build/cmake/windows-msvc/relwithdebinfo --output-on-failure -j 1 -R '^(terrain_mesher_tests|seam_weld_tests)$'",
+      "ctest_setup": "Native PowerShell toolchain/ctest resolution in validation.md; CTest sets working directories and mode environments."
+    },
+    {
+      "id": "TERRAIN-CONTOUR",
+      "sources": [
+        "MatterEngine3/tests/contour_seam_tests.cpp"
+      ],
+      "parameters": "Inline parameters/defaults in the pinned source; do not substitute a simplified fixture.",
+      "expected": "Independent analytic multi-octave/tunnel field harness checks bitwise coarse/fine contour agreement on a world-anchored lattice, negative tile-anchor control, tracing versus sampling equivalence and contour cost. Same-libm analytic foundation evidence; not a production terrain mesher or full topology acceptance.",
+      "native_targets": [
+        "contour_seam_tests"
+      ],
+      "ctest_names": [
+        "contour_seam_tests"
+      ],
+      "node_commands": [],
+      "baseline_execution": "not_run_native; see baseline.json for Node/historical evidence",
+      "new_contract_gate_gap": "Portability and actual generated chunk transitions/watertightness remain terrain gate work; this harness alone cannot prove them.",
+      "build_commands": [
+        "./tools/build-windows-from-wsl.sh RelWithDebInfo contour_seam_tests"
+      ],
+      "ctest_command": "& $componentCTest --test-dir MatterEditor/build/cmake/windows-msvc/relwithdebinfo --output-on-failure -j 1 -R '^(contour_seam_tests)$'",
+      "ctest_setup": "Native PowerShell toolchain/ctest resolution in validation.md; CTest sets working directories and mode environments."
+    },
+    {
+      "id": "TERRAIN-LATE",
+      "sources": [
+        "MatterEngine3/tests/sector_streaming_coordinator_tests.cpp",
+        "MatterEngine3/src/streaming/sector_streaming_coordinator.cpp"
+      ],
+      "parameters": "Inline parameters/defaults in the pinned source; do not substitute a simplified fixture.",
+      "expected": "Tagged owner/generation/issuance coordinator tests exercise superseded generations, retained completion capacity, retryable evictions/acknowledgements and independent cleanup. No renderer device needed for the coordinator fixture.",
+      "native_targets": [
+        "sector_streaming_coordinator_tests"
+      ],
+      "ctest_names": [
+        "sector_streaming_coordinator_tests"
+      ],
+      "node_commands": [],
+      "baseline_execution": "not_run_native; see baseline.json for Node/historical evidence",
+      "new_contract_gate_gap": "Test new request/revision/epoch stamps across terrain generation, cache, collision and graphics consumers with deliberate late completions and eviction/release; reuse current failure injection semantics.",
+      "build_commands": [
+        "./tools/build-windows-from-wsl.sh RelWithDebInfo sector_streaming_coordinator_tests"
+      ],
+      "ctest_command": "& $componentCTest --test-dir MatterEditor/build/cmake/windows-msvc/relwithdebinfo --output-on-failure -j 1 -R '^(sector_streaming_coordinator_tests)$'",
+      "ctest_setup": "Native PowerShell toolchain/ctest resolution in validation.md; CTest sets working directories and mode environments."
+    },
+    {
+      "id": "RENDER-NORMAL",
+      "sources": [
+        "MatterEngine3/tests/vulkan_smoke_tests.cpp",
+        "tests/vt_normal_frame_reference_tests.mjs",
+        "cmake/MatterViewer.cmake"
+      ],
+      "parameters": "Inline parameters/defaults in the pinned source; do not substitute a simplified fixture.",
+      "expected": "Hand-built VT normal-frame fixture waits for5 stable page-generation frames; raster and RT directional cosines>.995 and parity>.998, raster material ownership and traced page validity checked. Existing120s CTest timeout. JS480-probe algebra covers mirrored/nonuniform transforms independently of GPU.",
+      "native_targets": [
+        "vulkan_smoke_tests"
+      ],
+      "ctest_names": [
+        "smoke_vt_normal_frame"
+      ],
+      "node_commands": [
+        "node tests/vt_normal_frame_reference_tests.mjs"
+      ],
+      "baseline_execution": "not_run_native; see baseline.json for Node/historical evidence",
+      "new_contract_gate_gap": "Graphics-only consumer must upload portable or hand-built assets with generation/terrain disabled; current smoke links legacy engine slices and is only a behavioral oracle.",
+      "ctest_mode": "vt-normal-frame",
+      "build_commands": [
+        "./tools/build-windows-from-wsl.sh RelWithDebInfo vulkan_smoke_tests"
+      ],
+      "ctest_command": "& $componentCTest --test-dir MatterEditor/build/cmake/windows-msvc/relwithdebinfo --output-on-failure -j 1 -R '^(smoke_vt_normal_frame)$'",
+      "ctest_setup": "Native PowerShell toolchain/ctest resolution in validation.md; CTest sets working directories and mode environments."
+    },
+    {
+      "id": "RENDER-MOUNTAIN",
+      "sources": [
+        "projects/world_demo/scenes/streaming/StreamMountain/StreamMountain.js",
+        "projects/world_demo/scenes/streaming/StreamMountain/objects/WorldSector.js",
+        "projects/world_demo/scenes/streaming/StreamMountain/props.json",
+        "projects/world_demo/shared-lib/mountain_geometry_site.js",
+        "projects/world_demo/objects/terrain/MountainDetailRock.js",
+        "projects/world_demo/tests/mountain_geometry_site_tests.mjs",
+        "projects/world_demo/tests/mountain_terrain_only_tests.mjs",
+        "docs/agent/evidence/2026-09-30-static-default-candidate/README.md",
+        "projects/world_demo/shared-lib/mountain_surface.js",
+        "projects/world_demo/shared-lib/alpine_ecology.js",
+        "projects/world_demo/shared-lib/mountain_forest.js",
+        "MatterEngine3/shared-lib/scatter_grid.js",
+        "projects/world_demo/shared-lib/mountain_rocks.js",
+        "projects/world_demo/shared-lib/mountain_rock_scatter.js",
+        "projects/world_demo/shared-lib/mountain_detail_rocks.js",
+        "MatterEngine3/shared-lib/rng.js",
+        "projects/world_demo/shared-lib/castle_surface_shells.js",
+        "projects/world_demo/shared-lib/mountain_rock_sizes.js"
+      ],
+      "parameters": {
+        "scene_seed": 20260722,
+        "resolution": [
+          1920,
+          1080
+        ],
+        "camera_position": [
+          380,
+          90,
+          1600
+        ],
+        "camera_target": [
+          420,
+          55,
+          1420
+        ],
+        "geometryRockStress": false,
+        "geometry_pages_default": false,
+        "pom_default": false,
+        "authored_site_triangles": 589824,
+        "terrain_texels_per_m": 128,
+        "finest_terrain_spacing_m": 0.25
+      },
+      "expected": "Default:3 focal placements/3 dense128-resolution assets, at(416,1456),(425,1458),(422,1448), seeds0,1,2, sizes6,4,7, shapes0,2,1. Stress only explicit:1283 placements/19 assets, pinned source-record SHA cb4e9f79e99013ea81bab0bbba4ec5c7b0e5e2c7c74170975b0457512e5d48ee. Half-open tile ownership at64/128/256/512m; terrain-only retains terrain each tested rung and site only when __geometryRocks present. Preserve natural mountain rocks/forest. Historical actual GPU capture is not a current extraction pass.",
+      "native_targets": [],
+      "ctest_names": [],
+      "node_commands": [
+        "node projects/world_demo/tests/mountain_geometry_site_tests.mjs",
+        "node projects/world_demo/tests/mountain_terrain_only_tests.mjs"
+      ],
+      "baseline_execution": "not_run_native; see baseline.json for Node/historical evidence",
+      "new_contract_gate_gap": "Matched native/browser supported profile and renderer-only display of headless terrain remain unverified. Visual parity, residency/coverage parity and16.7ms acceptance are open.",
+      "build_commands": [],
+      "native_capture_recipe": "docs/agent/evidence/2026-09-30-static-default-candidate/README.md (serial captures with admission; historical recipe, not an executed task check)"
+    }
+  ]
+}

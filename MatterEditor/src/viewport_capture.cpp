@@ -9,6 +9,7 @@
 #include <cmath>
 #include <cstdio>
 #include <fstream>
+#include <sstream>
 #include <utility>
 
 namespace viewer::capture {
@@ -571,7 +572,8 @@ bool parse_arguments(const matter::jsondoc::Value& arguments, Arguments& out,
 
 bool write_channel_bundle(const std::string& path,
                           const matter::EvaluationChannels& channels,
-                          std::string& error) {
+                          std::string& error,
+                          matter::CacheByteStorage* storage) {
     const std::uint64_t pixels =
         std::uint64_t(channels.width) * channels.height;
     if (pixels == 0 || pixels > 2048u * 2048u) {
@@ -585,14 +587,19 @@ bool write_channel_bundle(const std::string& path,
             return false;
         }
     }
-    { std::ifstream existing(path, std::ios::binary);
-      if (existing.good()) {
+    { std::ifstream existing;
+      if (!storage) existing.open(path, std::ios::binary);
+      if (storage ? storage->exists(path) : existing.good()) {
           error = "channel bundle path already exists; use a unique capture path";
           return false;
       }
     }
     const std::string temporary = path + ".tmp";
-    std::ofstream stream(temporary, std::ios::binary | std::ios::trunc);
+    std::ofstream disk;
+    std::ostringstream memory(std::ios::binary | std::ios::out);
+    if (!storage) disk.open(temporary, std::ios::binary | std::ios::trunc);
+    std::ostream& stream = storage ? static_cast<std::ostream&>(memory)
+                                  : static_cast<std::ostream&>(disk);
     if (!stream) {
         error = "cannot open temporary channel bundle";
         return false;
@@ -608,8 +615,17 @@ bool write_channel_bundle(const std::string& path,
     for (const auto& plane : channels.planes)
         stream.write(reinterpret_cast<const char*>(plane.data()),
                      static_cast<std::streamsize>(plane.size()));
-    stream.close();
-    if (!stream || std::rename(temporary.c_str(), path.c_str()) != 0) {
+    if (storage) {
+        stream.flush();
+        const auto encoded = memory.str();
+        if (!stream || !storage->publish(path, matter::CacheByteStorage::Bytes(encoded.begin(), encoded.end()))) {
+            error = "channel bundle write or atomic rename failed";
+            return false;
+        }
+        return true;
+    }
+    disk.close();
+    if (!disk || std::rename(temporary.c_str(), path.c_str()) != 0) {
         std::remove(temporary.c_str());
         error = "channel bundle write or atomic rename failed";
         return false;
