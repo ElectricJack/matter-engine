@@ -1,0 +1,2 @@
+set render.pom.enabled false
+wait_event bake.finished 300

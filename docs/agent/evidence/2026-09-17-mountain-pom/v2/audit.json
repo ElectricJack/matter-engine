@@ -1,0 +1,42 @@
+{
+  "editor_exit": 0,
+  "seconds": 213.20687745500618,
+  "editor_sha256": "5bdcb1eef8f4fdec49e1762a33b5f9128176cbe37855c85290bc7fbcd2e3b8cd",
+  "binary_unchanged": true,
+  "source_changes": [],
+  "validation_errors": [],
+  "stats": [
+    "STATS,mountain-pom-close,0.79,0.00,0.00,0.00,0,0,0,0,0,0,0,0,0.0,0.0,0,0,0,0.00,0,0.000,0.000,0.000,0.000,0.000,0.00,0.000,0.000,0.000",
+    "STATSVT,mountain-pom-close,active=0,variants=0/0,rejected=0,mesh=0.0/0.0 MiB,pool=0/0,pinned=0,queue=0,fills=0,evictions=0,ind=0.00/0 MiB,material_pages=0,shared_material_refs=0,coverage_only_pages=0,occlusion_pages=0,occlusion_retained_pages=0,occlusion_allocated_bytes=0,enrich_deferred=0",
+    "STATS,mountain-pom-grazing,35.26,2.27,1.65,3.34,238,47,107005,179,9,236,0,32768,21.7,3512.0,320,180,256,478.12,2,0.000,0.265,0.000,0.000,0.000,84.00,28.124,0.029,25.858",
+    "STATSVT,mountain-pom-grazing,active=1,variants=236/32768,rejected=0,mesh=21.7/3512.0 MiB,pool=306/25600,pinned=236,queue=86,fills=220,evictions=0,ind=2.45/64 MiB,material_pages=220,shared_material_refs=0,coverage_only_pages=0,occlusion_pages=0,occlusion_retained_pages=0,occlusion_allocated_bytes=0,enrich_deferred=0",
+    "STATS,mountain-pom-overview,83.58,3.15,0.86,4.13,553,61,147345,462,30,553,0,32768,122.1,3512.0,320,180,256,478.12,2,0.000,0.266,0.000,0.000,0.000,84.00,82.579,0.058,74.711",
+    "STATSVT,mountain-pom-overview,active=1,variants=553/32768,rejected=0,mesh=122.1/3512.0 MiB,pool=981/25600,pinned=553,queue=290,fills=702,evictions=0,ind=6.99/64 MiB,material_pages=696,shared_material_refs=0,coverage_only_pages=0,occlusion_pages=0,occlusion_retained_pages=0,occlusion_allocated_bytes=0,enrich_deferred=0"
+  ],
+  "isolation": "Frozen r2 editor PID 9056 was independently open; this is functional/visual evidence, not a performance acceptance run.",
+  "files": {
+    "albedo-flat.png": "f69b4f0ba7713851c65dbb646a008a88254294c66bb69831a269a8e739049593",
+    "albedo-flat.png.done": "4c339121e4860b04ebd48181621c9dd3f84901846feda08d4e77aafaf9a6c896",
+    "albedo-pom.png": "14d2b7af7f697611196b0774673b5178399e3d0934f2d3c5b8c687693301a7c7",
+    "albedo-pom.png.done": "4c339121e4860b04ebd48181621c9dd3f84901846feda08d4e77aafaf9a6c896",
+    "bake-trace.json": "96e802fd183aa85ca67e3a5698b227852bbc8fe3b9016a41199b495fecfc99e7",
+    "close-flat.png": "930519c331b943bf1c6f204f430f83e0d97f3440adbab020ad9f5daefab5ad23",
+    "close-flat.png.done": "4c339121e4860b04ebd48181621c9dd3f84901846feda08d4e77aafaf9a6c896",
+    "close-pom.png": "6e26cef1ac6fbef1f2bb4d90231ad52b31514b4efe90525cfb112c963e0bb17f",
+    "close-pom.png.done": "4c339121e4860b04ebd48181621c9dd3f84901846feda08d4e77aafaf9a6c896",
+    "cmd.txt": "b6dc64771af3eca0d26bf500a0c8ce743f7ea5320f1d38f77325ededbcdffa9a",
+    "grazing-flat.png": "f2a52b0d9d8f29d40b2a2bc12e2cf8cfb4e4c5a8836d9e32e691541e33278ceb",
+    "grazing-flat.png.done": "4c339121e4860b04ebd48181621c9dd3f84901846feda08d4e77aafaf9a6c896",
+    "grazing-native-rt.png": "d1c9b523426978450df5a22c3fe89068adaacfd08f57d809b1e48c02bb29130d",
+    "grazing-native-rt.png.done": "4c339121e4860b04ebd48181621c9dd3f84901846feda08d4e77aafaf9a6c896",
+    "grazing-pom.png": "6aad09b5aa72a22e0bbba2f49ff79b62675a4c4860669a0784c6e224ed31eba6",
+    "grazing-pom.png.done": "4c339121e4860b04ebd48181621c9dd3f84901846feda08d4e77aafaf9a6c896",
+    "log.txt": "cb435ee29215e458d02a5639b4a3031c0728b89fc313417a794dbc904070409a",
+    "mountain_surface.js": "75eb8d36d4051db82e7dc7582c3801dcbfb239aa732ce7db0215e0b4f69f60c8",
+    "overview.png": "22297664d59f160f5b9cf7cacb39526e9ea1f993f16fa02087c425f18ce0a518",
+    "overview.png.done": "4c339121e4860b04ebd48181621c9dd3f84901846feda08d4e77aafaf9a6c896",
+    "pom-status.png": "d9c2f69181373cfa8baa358bd0a60778be54773cd101c5cf894b129bfdac9d24",
+    "pom-status.png.done": "4c339121e4860b04ebd48181621c9dd3f84901846feda08d4e77aafaf9a6c896",
+    "StreamMountain.js": "2f78cad20a2a38cc6069f8b868ee2a34798b576c4f470fea8aa070e7808b5dc5"
+  }
+}

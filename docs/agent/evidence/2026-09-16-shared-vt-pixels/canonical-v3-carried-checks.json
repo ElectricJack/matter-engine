@@ -1,0 +1,24 @@
+{
+  "source_changes_since_v2": [
+    "MatterEngine3/tests/vt_queue_tests.h"
+  ],
+  "identical_binaries": [
+    "MatterEditor/build/cmake/windows-msvc/relwithdebinfo/vt_residency_tests.exe",
+    "MatterEditor/build/cmake/windows-msvc/relwithdebinfo/vt_compositor_tests.exe",
+    "MatterEditor/build/windows-msvc/editor.exe"
+  ],
+  "carried_checks": [
+    {
+      "mode": "cpu",
+      "binary_sha256": "364dc583d498d03f7d59ea1358d9249a06ade7a000974b084351c1a555a8f67c",
+      "result": "pass",
+      "from": "canonical-v2-tests.json"
+    },
+    {
+      "mode": "compositor",
+      "binary_sha256": "eee01350e6d2c9fd39fdad36cc23f5fd72bb00413cf28e312e7295ef4c39326b",
+      "result": "pass",
+      "from": "canonical-v2-tests.json"
+    }
+  ]
+}

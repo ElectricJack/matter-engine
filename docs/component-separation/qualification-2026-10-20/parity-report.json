@@ -1,0 +1,3089 @@
+{
+ "schema": "matter-parity-report-v1",
+ "result": "PASS",
+ "failed": [],
+ "unsupported": [
+  "U-ASSET-INPUT",
+  "U-TERRAIN-ADJACENT-CHUNKS",
+  "U-TERRAIN-RESOLUTION-CHANGES"
+ ],
+ "divergent": [
+  "G-CANCELLATION",
+  "G-EXTRUDE",
+  "G-ORDERED-CSG"
+ ],
+ "mandatory_cases": [
+  {
+   "mandatory_case": "primitive",
+   "case": "G-PRIMITIVE",
+   "verdict": "PASS"
+  },
+  {
+   "mandatory_case": "extruded_prop",
+   "case": "G-EXTRUDE",
+   "verdict": "DIVERGENT"
+  },
+  {
+   "mandatory_case": "ordered_csg",
+   "case": "G-ORDERED-CSG",
+   "verdict": "DIVERGENT"
+  },
+  {
+   "mandatory_case": "repeated_child_assembly",
+   "case": "G-SHARED-INSTANCES",
+   "verdict": "PASS"
+  },
+  {
+   "mandatory_case": "material_assignment",
+   "case": "G-MATERIAL",
+   "verdict": "PASS"
+  },
+  {
+   "mandatory_case": "mirrored_nonuniform_placement",
+   "case": "G-MIRRORED-PLACEMENT",
+   "verdict": "PASS"
+  },
+  {
+   "mandatory_case": "deterministic_seeded_variation",
+   "case": "G-SEEDED-VARIATION",
+   "verdict": "PASS"
+  },
+  {
+   "mandatory_case": "malformed_recipe",
+   "case": "G-MALFORMED",
+   "verdict": "PASS"
+  },
+  {
+   "mandatory_case": "resource_exhaustion",
+   "case": "G-RESOURCE-EXHAUSTION",
+   "verdict": "PASS"
+  },
+  {
+   "mandatory_case": "cancellation",
+   "case": "G-CANCELLATION",
+   "verdict": "DIVERGENT"
+  },
+  {
+   "mandatory_case": "terrain_adjacent_chunks",
+   "case": "U-TERRAIN-ADJACENT-CHUNKS",
+   "verdict": "UNSUPPORTED"
+  },
+  {
+   "mandatory_case": "terrain_resolution_changes",
+   "case": "U-TERRAIN-RESOLUTION-CHANGES",
+   "verdict": "UNSUPPORTED"
+  },
+  {
+   "mandatory_case": "terrain_late_invalidation",
+   "case": "G-LATE-INVALIDATION",
+   "verdict": "PASS"
+  }
+ ],
+ "out_of_scope_samples": [
+  "BUILD-CASTLE",
+  "CORPUS-CANONICAL-PARAMS",
+  "RENDER-NORMAL",
+  "SCHEMA-BUDGET-INDICES",
+  "SCHEMA-BUDGET-JSON",
+  "SCHEMA-BUDGET-NODES",
+  "SCHEMA-BUDGET-VERTICES"
+ ],
+ "baseline": {
+  "path": "tests/component-separation/parity/baseline.json",
+  "pinned_sha256": "fda18136f359bf150c48a52deadb2ffeaab503a403f1b8291d8ecbee58060ac2",
+  "problems": [],
+  "max_deviation": {
+   "G-CANCELLATION": {},
+   "G-EXTRUDE": {},
+   "G-LATE-INVALIDATION": {},
+   "G-MALFORMED": {},
+   "G-MATERIAL": {},
+   "G-MIRRORED-PLACEMENT": {},
+   "G-ORDERED-CSG": {},
+   "G-PRIMITIVE": {},
+   "G-REPEAT-ALLOCATION": {},
+   "G-RESOURCE-EXHAUSTION": {},
+   "G-RESULT-LIFETIME": {},
+   "G-SEEDED-VARIATION": {},
+   "G-SHARED-INSTANCES": {},
+   "G-STAGED-QUERY": {},
+   "PREFLIGHT": {},
+   "RUNTIME-REFERENCE": {},
+   "U-ASSET-INPUT": {},
+   "U-TERRAIN-ADJACENT-CHUNKS": {},
+   "U-TERRAIN-RESOLUTION-CHANGES": {},
+   "runtime": {}
+  },
+  "sha256": "fda18136f359bf150c48a52deadb2ffeaab503a403f1b8291d8ecbee58060ac2"
+ },
+ "environment": {
+  "browser": "150.0.7871.46",
+  "python": "3.12.3",
+  "platform": "Linux-6.18.33.2-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+  "repo_head": "39ac31942fae0df433387b6a800df8d6c51aa94a",
+  "node": "v24.15.0",
+  "chromium_user_agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/150.0.0.0 Safari/537.36",
+  "tools": {
+   "native_runner": {
+    "path": "$OUT/parity-rel/matter_parity_native",
+    "sha256": "4dc95414454466e19e30d63d66f2688bcdb5f3c3a2dbbaca9247ae164a28448a"
+   },
+   "native_host": {
+    "path": "$OUT/portable-host/matter_host_quickjs_tests",
+    "sha256": "eee69cbb559eabad28bafccc3e2ea5b8a58cd01b248fbef63a24d7ee21e8b173"
+   },
+   "wasm_module": {
+    "path": "$OUT/wasm-lib/matter_geometry_wasm.mjs",
+    "sha256": "9d1cb11966047c2ce0c62ff97a2d19af4a360d33f55678ddbc4fb2c1790f664f"
+   },
+   "wasm_binary": {
+    "path": "$OUT/wasm-lib/matter_geometry_wasm.wasm",
+    "sha256": "792f7298421b96f03b974c88630a5541dcb59045084c97be4a9eadabb9c20780"
+   },
+   "runtime_index": {
+    "path": "$OUT/runtime-dist/index.mjs",
+    "sha256": "ff2bbd00ebe76eb0c38fd4cace13760ab59c6e9d12622716e959cf9eee594a32"
+   },
+   "runtime_worker": {
+    "path": "$OUT/runtime-dist/worker.mjs",
+    "sha256": "5ec769c383fcbbef4d4fc478e7f7585c4af97eed18040620a1653f51befa24b9"
+   }
+  }
+ },
+ "comparison_policy": "comparison-policy.json",
+ "cases": {
+  "PREFLIGHT": {
+   "kind": "preflight",
+   "verdict": "PASS",
+   "problems": [],
+   "fixture_ids": [],
+   "mandatory_case": null,
+   "profile": null,
+   "tolerances": null,
+   "max_deviation": {
+    "native_vs_wasm": {}
+   },
+   "geometry_reports": [],
+   "divergences": [],
+   "steps": [
+    {
+     "step": "#0 create a",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 0,
+      "wasm": 0
+     }
+    },
+    {
+     "step": "#1 capabilities a",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 0,
+      "wasm": 0
+     }
+    }
+   ],
+   "wires_compared": {
+    "identical_bytes": 1,
+    "within_tolerance": 0
+   },
+   "capabilities": [
+    {
+     "name": "matter.recipe.core",
+     "version": 1
+    },
+    {
+     "name": "matter.asset.core",
+     "version": 1
+    },
+    {
+     "name": "matter.material.pbr",
+     "version": 1
+    },
+    {
+     "name": "matter.geometry.primitive.v1",
+     "version": 1
+    },
+    {
+     "name": "matter.geometry.csg.cpu.v1",
+     "version": 1
+    },
+    {
+     "name": "matter.geometry.query.cpu.v1",
+     "version": 1
+    },
+    {
+     "name": "matter.operation.primitive.line",
+     "version": 1
+    },
+    {
+     "name": "matter.operation.primitive.cylinder",
+     "version": 1
+    },
+    {
+     "name": "matter.operation.primitive.cone",
+     "version": 1
+    },
+    {
+     "name": "matter.operation.primitive.capsule",
+     "version": 1
+    },
+    {
+     "name": "matter.operation.mesh.triangles",
+     "version": 1
+    },
+    {
+     "name": "matter.operation.profile.contours",
+     "version": 1
+    },
+    {
+     "name": "matter.operation.profile.sweep",
+     "version": 1
+    },
+    {
+     "name": "matter.operation.profile.fill",
+     "version": 1
+    },
+    {
+     "name": "matter.operation.solid.ordered",
+     "version": 1
+    },
+    {
+     "name": "matter.operation.mesh.simplify",
+     "version": 1
+    },
+    {
+     "name": "matter.operation.mesh.smooth",
+     "version": 1
+    },
+    {
+     "name": "matter.binding.json",
+     "version": 1
+    }
+   ]
+  },
+  "G-PRIMITIVE": {
+   "kind": "geometry",
+   "verdict": "PASS",
+   "problems": [],
+   "fixture_ids": [
+    "CORPUS-PRIMITIVE",
+    "PROP-STONE"
+   ],
+   "mandatory_case": "primitive",
+   "profile": "analytic-mesh-v1",
+   "tolerances": {
+    "position_metres": {
+     "absolute": 1e-06,
+     "relative": 0
+    },
+    "normal_components": {
+     "absolute": 1e-06,
+     "relative": 0
+    },
+    "volume_metres3": {
+     "absolute": 1e-06,
+     "relative": 0
+    },
+    "uv": {
+     "absolute": 1e-06,
+     "relative": 0
+    }
+   },
+   "max_deviation": {
+    "native_vs_wasm": {}
+   },
+   "geometry_reports": [
+    {
+     "backend": "native",
+     "step": "#1 evaluate frozen",
+     "oracle": "primitive",
+     "triangles": 12,
+     "volume_metres3": 8.0,
+     "shell_components": 1
+    },
+    {
+     "backend": "wasm",
+     "step": "#1 evaluate frozen",
+     "oracle": "primitive",
+     "triangles": 12,
+     "volume_metres3": 8.0,
+     "shell_components": 1
+    }
+   ],
+   "divergences": [],
+   "steps": [
+    {
+     "step": "#0 create a",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 0,
+      "wasm": 0
+     }
+    },
+    {
+     "step": "#1 evaluate frozen",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 0,
+      "wasm": 0
+     }
+    },
+    {
+     "step": "#2 evaluate authored",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 0,
+      "wasm": 0
+     }
+    }
+   ],
+   "wires_compared": {
+    "identical_bytes": 2,
+    "within_tolerance": 0
+   }
+  },
+  "G-EXTRUDE": {
+   "kind": "geometry",
+   "verdict": "DIVERGENT",
+   "problems": [],
+   "fixture_ids": [
+    "CORPUS-EXTRUDE",
+    "GEOM-EXTRUDE"
+   ],
+   "mandatory_case": "extruded_prop",
+   "profile": "analytic-mesh-v1",
+   "tolerances": {
+    "position_metres": {
+     "absolute": 1e-06,
+     "relative": 0
+    },
+    "normal_components": {
+     "absolute": 1e-06,
+     "relative": 0
+    },
+    "volume_metres3": {
+     "absolute": 1e-06,
+     "relative": 0
+    },
+    "uv": {
+     "absolute": 1e-06,
+     "relative": 0
+    }
+   },
+   "max_deviation": {
+    "native_vs_wasm": {}
+   },
+   "geometry_reports": [],
+   "divergences": [
+    {
+     "backend": "native",
+     "step": "#1 evaluate frozen",
+     "oracle": "extrude",
+     "problem": "geometry bounds: -1 != 0",
+     "reason": "production profile.extrude sweeps along +Z with a frame that maps profile (u, v) to (-u, -v) (libs/ProceduralGeometry/src/geometry.cpp buffer.extrude), so the unit-square profile spans [-1,-1,0]..[0,0,2]; the frozen oracle uses the synthetic XY/+Z convention [0,0,0]..[1,1,2]"
+    },
+    {
+     "backend": "wasm",
+     "step": "#1 evaluate frozen",
+     "oracle": "extrude",
+     "problem": "geometry bounds: -1 != 0",
+     "reason": "production profile.extrude sweeps along +Z with a frame that maps profile (u, v) to (-u, -v) (libs/ProceduralGeometry/src/geometry.cpp buffer.extrude), so the unit-square profile spans [-1,-1,0]..[0,0,2]; the frozen oracle uses the synthetic XY/+Z convention [0,0,0]..[1,1,2]"
+    }
+   ],
+   "steps": [
+    {
+     "step": "#0 create a",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 0,
+      "wasm": 0
+     }
+    },
+    {
+     "step": "#1 evaluate frozen",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 0,
+      "wasm": 0
+     }
+    },
+    {
+     "step": "#2 evaluate authored",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 0,
+      "wasm": 0
+     }
+    }
+   ],
+   "wires_compared": {
+    "identical_bytes": 2,
+    "within_tolerance": 0
+   }
+  },
+  "G-ORDERED-CSG": {
+   "kind": "geometry",
+   "verdict": "DIVERGENT",
+   "problems": [],
+   "fixture_ids": [
+    "CORPUS-ORDERED_CSG",
+    "CORPUS-CSG-REVERSED",
+    "GEOM-CSG"
+   ],
+   "mandatory_case": "ordered_csg",
+   "profile": "analytic-mesh-v1",
+   "tolerances": {
+    "position_metres": {
+     "absolute": 1e-06,
+     "relative": 0
+    },
+    "normal_components": {
+     "absolute": 1e-06,
+     "relative": 0
+    },
+    "volume_metres3": {
+     "absolute": 1e-06,
+     "relative": 0
+    },
+    "uv": {
+     "absolute": 1e-06,
+     "relative": 0
+    }
+   },
+   "max_deviation": {
+    "native_vs_wasm": {}
+   },
+   "geometry_reports": [],
+   "divergences": [
+    {
+     "backend": "native",
+     "step": "#1 evaluate ordered",
+     "oracle": "ordered_csg",
+     "problem": "signed volume/winding: 6.885333413441874 != 7",
+     "reason": "production solid.csg meshes a sampled field at the default 0.1 m spacing (libs/ProceduralGeometry/src/csg.cpp:37), not an exact boolean, so the 2 m cube minus the unit cube encloses 6.8853 m3 rather than the analytic 7 m3; the bounds and closed-manifold checks that precede volume still pass"
+    },
+    {
+     "backend": "wasm",
+     "step": "#1 evaluate ordered",
+     "oracle": "ordered_csg",
+     "problem": "signed volume/winding: 6.885333413441874 != 7",
+     "reason": "production solid.csg meshes a sampled field at the default 0.1 m spacing (libs/ProceduralGeometry/src/csg.cpp:37), not an exact boolean, so the 2 m cube minus the unit cube encloses 6.8853 m3 rather than the analytic 7 m3; the bounds and closed-manifold checks that precede volume still pass"
+    }
+   ],
+   "steps": [
+    {
+     "step": "#0 create a",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 0,
+      "wasm": 0
+     }
+    },
+    {
+     "step": "#1 evaluate ordered",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 0,
+      "wasm": 0
+     }
+    },
+    {
+     "step": "#2 evaluate authored",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 0,
+      "wasm": 0
+     }
+    },
+    {
+     "step": "#3 evaluate reversed",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 0,
+      "wasm": 0
+     }
+    },
+    {
+     "step": "#4 evaluate reversed_authored",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 0,
+      "wasm": 0
+     }
+    }
+   ],
+   "wires_compared": {
+    "identical_bytes": 4,
+    "within_tolerance": 0
+   }
+  },
+  "G-MATERIAL": {
+   "kind": "geometry",
+   "verdict": "PASS",
+   "problems": [],
+   "fixture_ids": [
+    "CORPUS-MATERIAL-VIEWS",
+    "PROP-SLAB"
+   ],
+   "mandatory_case": "material_assignment",
+   "profile": "analytic-mesh-v1",
+   "tolerances": {
+    "position_metres": {
+     "absolute": 1e-06,
+     "relative": 0
+    },
+    "normal_components": {
+     "absolute": 1e-06,
+     "relative": 0
+    },
+    "volume_metres3": {
+     "absolute": 1e-06,
+     "relative": 0
+    },
+    "uv": {
+     "absolute": 1e-06,
+     "relative": 0
+    }
+   },
+   "max_deviation": {
+    "native_vs_wasm": {}
+   },
+   "geometry_reports": [
+    {
+     "backend": "native",
+     "step": "#1 evaluate r",
+     "oracle": "clay_part",
+     "triangles": 12,
+     "volume_metres3": 1.0,
+     "shell_components": 1
+    },
+    {
+     "backend": "native",
+     "step": "#1 evaluate r",
+     "oracle": "metal_part",
+     "triangles": 12,
+     "volume_metres3": 1.0,
+     "shell_components": 1
+    },
+    {
+     "backend": "wasm",
+     "step": "#1 evaluate r",
+     "oracle": "clay_part",
+     "triangles": 12,
+     "volume_metres3": 1.0,
+     "shell_components": 1
+    },
+    {
+     "backend": "wasm",
+     "step": "#1 evaluate r",
+     "oracle": "metal_part",
+     "triangles": 12,
+     "volume_metres3": 1.0,
+     "shell_components": 1
+    }
+   ],
+   "divergences": [],
+   "steps": [
+    {
+     "step": "#0 create a",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 0,
+      "wasm": 0
+     }
+    },
+    {
+     "step": "#1 evaluate r",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 0,
+      "wasm": 0
+     }
+    }
+   ],
+   "wires_compared": {
+    "identical_bytes": 1,
+    "within_tolerance": 0
+   }
+  },
+  "G-MIRRORED-PLACEMENT": {
+   "kind": "geometry",
+   "verdict": "PASS",
+   "problems": [],
+   "fixture_ids": [
+    "CORPUS-AFFINE",
+    "GEOM-TRANSFORM"
+   ],
+   "mandatory_case": "mirrored_nonuniform_placement",
+   "profile": "analytic-mesh-v1",
+   "tolerances": {
+    "position_metres": {
+     "absolute": 1e-06,
+     "relative": 0
+    },
+    "normal_components": {
+     "absolute": 1e-06,
+     "relative": 0
+    },
+    "volume_metres3": {
+     "absolute": 1e-06,
+     "relative": 0
+    },
+    "uv": {
+     "absolute": 1e-06,
+     "relative": 0
+    }
+   },
+   "max_deviation": {
+    "native_vs_wasm": {}
+   },
+   "geometry_reports": [
+    {
+     "backend": "native",
+     "step": "#1 evaluate r",
+     "check": "affine",
+     "triangles": 12,
+     "volume_metres3": 24.0,
+     "shell_components": 1
+    },
+    {
+     "backend": "native",
+     "step": "#1 evaluate r",
+     "oracle": "unit",
+     "triangles": 12,
+     "volume_metres3": 1.0,
+     "shell_components": 1
+    },
+    {
+     "backend": "wasm",
+     "step": "#1 evaluate r",
+     "check": "affine",
+     "triangles": 12,
+     "volume_metres3": 24.0,
+     "shell_components": 1
+    },
+    {
+     "backend": "wasm",
+     "step": "#1 evaluate r",
+     "oracle": "unit",
+     "triangles": 12,
+     "volume_metres3": 1.0,
+     "shell_components": 1
+    }
+   ],
+   "divergences": [],
+   "steps": [
+    {
+     "step": "#0 create a",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 0,
+      "wasm": 0
+     }
+    },
+    {
+     "step": "#1 evaluate r",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 0,
+      "wasm": 0
+     }
+    }
+   ],
+   "wires_compared": {
+    "identical_bytes": 1,
+    "within_tolerance": 0
+   }
+  },
+  "G-SHARED-INSTANCES": {
+   "kind": "geometry",
+   "verdict": "PASS",
+   "problems": [],
+   "fixture_ids": [
+    "BUILD-SHARED",
+    "CORPUS-REPEATED-ASSEMBLY"
+   ],
+   "mandatory_case": "repeated_child_assembly",
+   "profile": "analytic-mesh-v1",
+   "tolerances": {
+    "position_metres": {
+     "absolute": 1e-06,
+     "relative": 0
+    },
+    "normal_components": {
+     "absolute": 1e-06,
+     "relative": 0
+    },
+    "volume_metres3": {
+     "absolute": 1e-06,
+     "relative": 0
+    },
+    "uv": {
+     "absolute": 1e-06,
+     "relative": 0
+    }
+   },
+   "max_deviation": {
+    "native_vs_wasm": {}
+   },
+   "geometry_reports": [
+    {
+     "backend": "native",
+     "step": "#1 evaluate row",
+     "oracle": "post",
+     "triangles": 12,
+     "volume_metres3": 0.0625,
+     "shell_components": 1
+    },
+    {
+     "backend": "wasm",
+     "step": "#1 evaluate row",
+     "oracle": "post",
+     "triangles": 12,
+     "volume_metres3": 0.0625,
+     "shell_components": 1
+    }
+   ],
+   "divergences": [],
+   "steps": [
+    {
+     "step": "#0 create a",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 0,
+      "wasm": 0
+     }
+    },
+    {
+     "step": "#1 evaluate row",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 0,
+      "wasm": 0
+     }
+    },
+    {
+     "step": "#2 evaluate assembly",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 4,
+      "wasm": 4
+     }
+    },
+    {
+     "step": "#3 evaluate after",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 0,
+      "wasm": 0
+     }
+    }
+   ],
+   "wires_compared": {
+    "identical_bytes": 2,
+    "within_tolerance": 0
+   }
+  },
+  "G-SEEDED-VARIATION": {
+   "kind": "geometry",
+   "verdict": "PASS",
+   "problems": [],
+   "fixture_ids": [
+    "CORPUS-SEEDED-VARIATION",
+    "GEOM-SEED",
+    "PROP-FLOWER"
+   ],
+   "mandatory_case": "deterministic_seeded_variation",
+   "profile": "analytic-mesh-v1",
+   "tolerances": {
+    "position_metres": {
+     "absolute": 1e-06,
+     "relative": 0
+    },
+    "normal_components": {
+     "absolute": 1e-06,
+     "relative": 0
+    },
+    "volume_metres3": {
+     "absolute": 1e-06,
+     "relative": 0
+    },
+    "uv": {
+     "absolute": 1e-06,
+     "relative": 0
+    }
+   },
+   "max_deviation": {
+    "native_vs_wasm": {}
+   },
+   "geometry_reports": [
+    {
+     "backend": "native",
+     "step": "#1 evaluate s0",
+     "check": "seeded_volume",
+     "seed": "0000000000000000",
+     "triangles": 12,
+     "volume_metres3": 1.4315279722213747,
+     "shell_components": 1
+    },
+    {
+     "backend": "native",
+     "step": "#2 evaluate s1",
+     "check": "seeded_volume",
+     "seed": "0000000000000001",
+     "triangles": 12,
+     "volume_metres3": 1.5665615797042844,
+     "shell_components": 1
+    },
+    {
+     "backend": "wasm",
+     "step": "#1 evaluate s0",
+     "check": "seeded_volume",
+     "seed": "0000000000000000",
+     "triangles": 12,
+     "volume_metres3": 1.4315279722213747,
+     "shell_components": 1
+    },
+    {
+     "backend": "wasm",
+     "step": "#2 evaluate s1",
+     "check": "seeded_volume",
+     "seed": "0000000000000001",
+     "triangles": 12,
+     "volume_metres3": 1.5665615797042844,
+     "shell_components": 1
+    }
+   ],
+   "divergences": [],
+   "steps": [
+    {
+     "step": "#0 create a",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 0,
+      "wasm": 0
+     }
+    },
+    {
+     "step": "#1 evaluate s0",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 0,
+      "wasm": 0
+     }
+    },
+    {
+     "step": "#2 evaluate s1",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 0,
+      "wasm": 0
+     }
+    },
+    {
+     "step": "#3 evaluate s0_again",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 0,
+      "wasm": 0
+     }
+    }
+   ],
+   "wires_compared": {
+    "identical_bytes": 3,
+    "within_tolerance": 0
+   }
+  },
+  "G-MALFORMED": {
+   "kind": "geometry",
+   "verdict": "PASS",
+   "problems": [],
+   "fixture_ids": [
+    "ERROR-MISSING-REFERENCE",
+    "ERROR-CYCLE",
+    "ERROR-UNKNOWN-REQUIRED",
+    "ERROR-UNSUPPORTED-VERSION",
+    "ERROR-NEGATIVE-SIZE",
+    "ERROR-CSG-NONUNIFORM",
+    "ERROR-DUPLICATE-KEY",
+    "ERROR-NONFINITE"
+   ],
+   "mandatory_case": "malformed_recipe",
+   "profile": null,
+   "tolerances": null,
+   "max_deviation": {
+    "native_vs_wasm": {}
+   },
+   "geometry_reports": [],
+   "divergences": [],
+   "steps": [
+    {
+     "step": "#0 create a",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 0,
+      "wasm": 0
+     }
+    },
+    {
+     "step": "#1 evaluate x",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 4,
+      "wasm": 4
+     }
+    },
+    {
+     "step": "#2 evaluate x",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 5,
+      "wasm": 5
+     }
+    },
+    {
+     "step": "#3 evaluate x",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 2,
+      "wasm": 2
+     }
+    },
+    {
+     "step": "#4 evaluate x",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 3,
+      "wasm": 3
+     }
+    },
+    {
+     "step": "#5 evaluate x",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 1,
+      "wasm": 1
+     }
+    },
+    {
+     "step": "#6 evaluate x",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 2,
+      "wasm": 2
+     }
+    },
+    {
+     "step": "#7 evaluate x",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 1,
+      "wasm": 1
+     }
+    },
+    {
+     "step": "#8 evaluate x",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 1,
+      "wasm": 1
+     }
+    },
+    {
+     "step": "#9 evaluate x (duplicate key inside a full request)",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 1,
+      "wasm": 1
+     }
+    },
+    {
+     "step": "#10 evaluate x (overflowing number inside a full request)",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 1,
+      "wasm": 1
+     }
+    },
+    {
+     "step": "#11 evaluate x (truncated request)",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 1,
+      "wasm": 1
+     }
+    },
+    {
+     "step": "#12 evaluate x (empty request)",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 1,
+      "wasm": 1
+     }
+    },
+    {
+     "step": "#13 evaluate x (binding version 2)",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 3,
+      "wasm": 3
+     }
+    },
+    {
+     "step": "#14 evaluate x (unknown binding field)",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 1,
+      "wasm": 1
+     }
+    },
+    {
+     "step": "#15 evaluate ok (instance still evaluates after every rejection)",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 0,
+      "wasm": 0
+     }
+    },
+    {
+     "step": "#16 query x (unknown query kind)",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 1,
+      "wasm": 1
+     }
+    }
+   ],
+   "wires_compared": {
+    "identical_bytes": 0,
+    "within_tolerance": 0
+   }
+  },
+  "G-RESOURCE-EXHAUSTION": {
+   "kind": "geometry",
+   "verdict": "PASS",
+   "problems": [],
+   "fixture_ids": [
+    "JOB-BUDGET-OPERATIONS",
+    "JOB-BUDGET-VERTICES",
+    "JOB-BUDGET-INDICES",
+    "JOB-BUDGET-OUTPUT_BYTES",
+    "JOB-BUDGET-WORKING_BYTES",
+    "JOB-BUDGET-QUERIES",
+    "JOB-BUDGET-DEPENDENCY_DEPTH",
+    "JOB-BUDGET-ZERO-QUERIES",
+    "EVAL-BOUNDED"
+   ],
+   "mandatory_case": "resource_exhaustion",
+   "profile": null,
+   "tolerances": null,
+   "max_deviation": {
+    "native_vs_wasm": {}
+   },
+   "geometry_reports": [],
+   "divergences": [],
+   "steps": [
+    {
+     "step": "#0 create a",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 0,
+      "wasm": 0
+     }
+    },
+    {
+     "step": "#1 evaluate control (unbudgeted control must succeed so the budget rejections are attributable)",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 0,
+      "wasm": 0
+     }
+    },
+    {
+     "step": "#2 evaluate x",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 6,
+      "wasm": 6
+     }
+    },
+    {
+     "step": "#3 evaluate x",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 6,
+      "wasm": 6
+     }
+    },
+    {
+     "step": "#4 evaluate x",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 6,
+      "wasm": 6
+     }
+    },
+    {
+     "step": "#5 evaluate x",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 6,
+      "wasm": 6
+     }
+    },
+    {
+     "step": "#6 evaluate x",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 6,
+      "wasm": 6
+     }
+    },
+    {
+     "step": "#7 evaluate x",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 6,
+      "wasm": 6
+     }
+    },
+    {
+     "step": "#8 evaluate x",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 1,
+      "wasm": 1
+     }
+    },
+    {
+     "step": "#9 evaluate prim",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 0,
+      "wasm": 0
+     }
+    },
+    {
+     "step": "#10 query x",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 6,
+      "wasm": 6
+     }
+    },
+    {
+     "step": "#11 query x",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 1,
+      "wasm": 1
+     }
+    },
+    {
+     "step": "#12 query q (ceiling equal to the two samples is admitted)",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 0,
+      "wasm": 0
+     }
+    },
+    {
+     "step": "#13 create few",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 0,
+      "wasm": 0
+     }
+    },
+    {
+     "step": "#14 evaluate f1",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 0,
+      "wasm": 0
+     }
+    },
+    {
+     "step": "#15 evaluate f2",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 0,
+      "wasm": 0
+     }
+    },
+    {
+     "step": "#16 evaluate x (third live result exceeds max_results)",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 6,
+      "wasm": 6
+     }
+    },
+    {
+     "step": "#17 release f1",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 0,
+      "wasm": 0
+     }
+    },
+    {
+     "step": "#18 evaluate f3 (release recovers the result count)",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 0,
+      "wasm": 0
+     }
+    },
+    {
+     "step": "#19 create small",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 0,
+      "wasm": 0
+     }
+    },
+    {
+     "step": "#20 evaluate s1",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 0,
+      "wasm": 0
+     }
+    },
+    {
+     "step": "#21 evaluate x (second result exceeds max_retained_bytes)",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 6,
+      "wasm": 6
+     }
+    },
+    {
+     "step": "#22 release s1",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 0,
+      "wasm": 0
+     }
+    },
+    {
+     "step": "#23 evaluate s2 (release recovers retained bytes)",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 0,
+      "wasm": 0
+     }
+    },
+    {
+     "step": "#24 create tiny",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 0,
+      "wasm": 0
+     }
+    },
+    {
+     "step": "#25 evaluate x (request larger than max_request_bytes)",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 6,
+      "wasm": 6
+     }
+    },
+    {
+     "step": "#26 capabilities tiny",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 0,
+      "wasm": 0
+     }
+    }
+   ],
+   "wires_compared": {
+    "identical_bytes": 1,
+    "within_tolerance": 0
+   }
+  },
+  "G-CANCELLATION": {
+   "kind": "geometry",
+   "verdict": "DIVERGENT",
+   "problems": [],
+   "fixture_ids": [
+    "JOB-CANCEL-PRE",
+    "JOB-CANCEL-PROGRESS",
+    "BUILD-CANCEL",
+    "EVAL-BOUNDED"
+   ],
+   "mandatory_case": "cancellation",
+   "profile": "analytic-mesh-v1",
+   "tolerances": {
+    "position_metres": {
+     "absolute": 1e-06,
+     "relative": 0
+    },
+    "normal_components": {
+     "absolute": 1e-06,
+     "relative": 0
+    },
+    "volume_metres3": {
+     "absolute": 1e-06,
+     "relative": 0
+    },
+    "uv": {
+     "absolute": 1e-06,
+     "relative": 0
+    }
+   },
+   "max_deviation": {
+    "native_vs_wasm": {}
+   },
+   "geometry_reports": [],
+   "divergences": [
+    {
+     "backend": "native",
+     "step": "#6 evaluate after (a full CSG evaluation after cancellation)",
+     "oracle": "ordered_csg",
+     "problem": "signed volume/winding: 6.885333413441874 != 7",
+     "reason": "production solid.csg meshes a sampled field at the default 0.1 m spacing (libs/ProceduralGeometry/src/csg.cpp:37), not an exact boolean, so the 2 m cube minus the unit cube encloses 6.8853 m3 rather than the analytic 7 m3; the bounds and closed-manifold checks that precede volume still pass"
+    },
+    {
+     "backend": "wasm",
+     "step": "#6 evaluate after (a full CSG evaluation after cancellation)",
+     "oracle": "ordered_csg",
+     "problem": "signed volume/winding: 6.885333413441874 != 7",
+     "reason": "production solid.csg meshes a sampled field at the default 0.1 m spacing (libs/ProceduralGeometry/src/csg.cpp:37), not an exact boolean, so the 2 m cube minus the unit cube encloses 6.8853 m3 rather than the analytic 7 m3; the bounds and closed-manifold checks that precede volume still pass"
+    }
+   ],
+   "steps": [
+    {
+     "step": "#0 create a",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 0,
+      "wasm": 0
+     }
+    },
+    {
+     "step": "#1 evaluate x",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 7,
+      "wasm": 7
+     }
+    },
+    {
+     "step": "#2 evaluate x (the WASM adapter has no progress callback; progress cancellation is native-only)",
+     "only": [
+      "native"
+     ],
+     "expect": {
+      "native": 7
+     }
+    },
+    {
+     "step": "#3 evaluate prim (cancellation leaves the instance usable)",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 0,
+      "wasm": 0
+     }
+    },
+    {
+     "step": "#4 query x",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 7,
+      "wasm": 7
+     }
+    },
+    {
+     "step": "#5 query q (the source result survives a cancelled query)",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 0,
+      "wasm": 0
+     }
+    },
+    {
+     "step": "#6 evaluate after (a full CSG evaluation after cancellation)",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 0,
+      "wasm": 0
+     }
+    }
+   ],
+   "wires_compared": {
+    "identical_bytes": 3,
+    "within_tolerance": 0
+   }
+  },
+  "G-STAGED-QUERY": {
+   "kind": "geometry",
+   "verdict": "PASS",
+   "problems": [],
+   "fixture_ids": [
+    "CORPUS-PRIMITIVE"
+   ],
+   "mandatory_case": null,
+   "profile": "analytic-mesh-v1",
+   "tolerances": {
+    "position_metres": {
+     "absolute": 1e-06,
+     "relative": 0
+    },
+    "normal_components": {
+     "absolute": 1e-06,
+     "relative": 0
+    },
+    "volume_metres3": {
+     "absolute": 1e-06,
+     "relative": 0
+    },
+    "uv": {
+     "absolute": 1e-06,
+     "relative": 0
+    }
+   },
+   "max_deviation": {
+    "native_vs_wasm": {}
+   },
+   "geometry_reports": [],
+   "divergences": [],
+   "steps": [
+    {
+     "step": "#0 create a",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 0,
+      "wasm": 0
+     }
+    },
+    {
+     "step": "#1 evaluate body",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 0,
+      "wasm": 0
+     }
+    },
+    {
+     "step": "#2 query q",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 0,
+      "wasm": 0
+     }
+    },
+    {
+     "step": "#3 query x (a query result is not a query source)",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 1,
+      "wasm": 1
+     }
+    },
+    {
+     "step": "#4 release q",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 0,
+      "wasm": 0
+     }
+    },
+    {
+     "step": "#5 query q2 (releasing the query result keeps its source)",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 0,
+      "wasm": 0
+     }
+    }
+   ],
+   "wires_compared": {
+    "identical_bytes": 2,
+    "within_tolerance": 0
+   }
+  },
+  "G-RESULT-LIFETIME": {
+   "kind": "geometry",
+   "verdict": "PASS",
+   "problems": [],
+   "fixture_ids": [
+    "CORPUS-PRIMITIVE"
+   ],
+   "mandatory_case": null,
+   "profile": null,
+   "tolerances": null,
+   "max_deviation": {
+    "native_vs_wasm": {}
+   },
+   "geometry_reports": [],
+   "divergences": [],
+   "steps": [
+    {
+     "step": "#0 create a",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 0,
+      "wasm": 0
+     }
+    },
+    {
+     "step": "#1 create b",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 0,
+      "wasm": 0
+     }
+    },
+    {
+     "step": "#2 evaluate r1",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 0,
+      "wasm": 0
+     }
+    },
+    {
+     "step": "#3 snapshot snap1",
+     "only": [
+      "wasm"
+     ],
+     "expect": {
+      "wasm": 0
+     }
+    },
+    {
+     "step": "#4 release r1 (release through another instance)",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 10,
+      "wasm": 10
+     }
+    },
+    {
+     "step": "#5 release r1",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 0,
+      "wasm": 0
+     }
+    },
+    {
+     "step": "#6 release r1 (double release)",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 10,
+      "wasm": 10
+     }
+    },
+    {
+     "step": "#7 query x (query on a released result)",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 10,
+      "wasm": 10
+     }
+    },
+    {
+     "step": "#8 read r1 (read of a released handle yields no view)",
+     "only": [
+      "native"
+     ],
+     "expect": {
+      "native": 10
+     }
+    },
+    {
+     "step": "#9 verify_snapshot  (JS-owned result bytes outlive release)",
+     "only": [
+      "wasm"
+     ],
+     "expect": {
+      "wasm": 0
+     }
+    },
+    {
+     "step": "#10 evaluate r2",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 0,
+      "wasm": 0
+     }
+    },
+    {
+     "step": "#11 snapshot snap2",
+     "only": [
+      "wasm"
+     ],
+     "expect": {
+      "wasm": 0
+     }
+    },
+    {
+     "step": "#12 copy_table stale",
+     "only": [
+      "native"
+     ],
+     "expect": {
+      "native": 0
+     }
+    },
+    {
+     "step": "#13 dispose a",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 0,
+      "wasm": 0
+     }
+    },
+    {
+     "step": "#14 verify_snapshot  (JS-owned result bytes outlive disposal)",
+     "only": [
+      "wasm"
+     ],
+     "expect": {
+      "wasm": 0
+     }
+    },
+    {
+     "step": "#15 dispose a (double dispose: the C table reports the stale instance, the JS wrapper is idempotent)",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 10,
+      "wasm": 0
+     }
+    },
+    {
+     "step": "#16 evaluate x (evaluate after dispose)",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 10,
+      "wasm": 10
+     }
+    },
+    {
+     "step": "#17 evaluate x (a copied function table cannot reach the disposed instance)",
+     "only": [
+      "native"
+     ],
+     "expect": {
+      "native": 10
+     }
+    },
+    {
+     "step": "#18 read r2 (results died with their instance)",
+     "only": [
+      "native"
+     ],
+     "expect": {
+      "native": 10
+     }
+    },
+    {
+     "step": "#19 evaluate rb (an independent instance is unaffected)",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 0,
+      "wasm": 0
+     }
+    }
+   ],
+   "wires_compared": {
+    "identical_bytes": 3,
+    "within_tolerance": 0
+   }
+  },
+  "G-REPEAT-ALLOCATION": {
+   "kind": "geometry",
+   "verdict": "PASS",
+   "problems": [],
+   "fixture_ids": [
+    "CORPUS-PRIMITIVE"
+   ],
+   "mandatory_case": null,
+   "profile": null,
+   "tolerances": null,
+   "max_deviation": {
+    "native_vs_wasm": {}
+   },
+   "geometry_reports": [],
+   "divergences": [],
+   "steps": [
+    {
+     "step": "#0 create a",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 0,
+      "wasm": 0
+     }
+    },
+    {
+     "step": "#1 evaluate first",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 0,
+      "wasm": 0
+     }
+    },
+    {
+     "step": "#2 heap heap_before",
+     "only": [
+      "wasm"
+     ],
+     "expect": {
+      "wasm": 0
+     }
+    },
+    {
+     "step": "#3 repeat  (evaluate/release cycles)",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 0,
+      "wasm": 0
+     }
+    },
+    {
+     "step": "#4 repeat  (create/evaluate/dispose cycles)",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 0,
+      "wasm": 0
+     }
+    },
+    {
+     "step": "#5 create c",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 0,
+      "wasm": 0
+     }
+    },
+    {
+     "step": "#6 repeat  (a two-result instance never leaks a slot)",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 0,
+      "wasm": 0
+     }
+    },
+    {
+     "step": "#7 heap heap_after (the WASM heap did not grow)",
+     "only": [
+      "wasm"
+     ],
+     "expect": {
+      "wasm": 0
+     }
+    },
+    {
+     "step": "#8 evaluate last",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 0,
+      "wasm": 0
+     }
+    }
+   ],
+   "wires_compared": {
+    "identical_bytes": 2,
+    "within_tolerance": 0
+   }
+  },
+  "G-LATE-INVALIDATION": {
+   "kind": "geometry",
+   "verdict": "PASS",
+   "problems": [],
+   "fixture_ids": [
+    "JOB-LATE-REQUEST",
+    "JOB-LATE-REVISION",
+    "JOB-LATE-EPOCH",
+    "TERRAIN-LATE"
+   ],
+   "mandatory_case": "terrain_late_invalidation",
+   "profile": null,
+   "tolerances": null,
+   "max_deviation": {
+    "native_vs_wasm": {}
+   },
+   "geometry_reports": [],
+   "divergences": [],
+   "steps": [
+    {
+     "step": "#0 create a",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 0,
+      "wasm": 0
+     }
+    },
+    {
+     "step": "#1 evaluate current",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 0,
+      "wasm": 0
+     }
+    },
+    {
+     "step": "#2 admit current",
+     "only": [
+      "native"
+     ],
+     "expect": {
+      "native": 0
+     }
+    },
+    {
+     "step": "#3 evaluate late (a late completion of the superseded job)",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 0,
+      "wasm": 0
+     }
+    },
+    {
+     "step": "#4 admit late",
+     "only": [
+      "native"
+     ],
+     "expect": {
+      "native": "stale_result"
+     }
+    },
+    {
+     "step": "#5 admit late",
+     "only": [
+      "native"
+     ],
+     "expect": {
+      "native": "stale_result"
+     }
+    },
+    {
+     "step": "#6 admit late",
+     "only": [
+      "native"
+     ],
+     "expect": {
+      "native": "stale_result"
+     }
+    },
+    {
+     "step": "#7 evaluate superseding (the superseding job's own result)",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 0,
+      "wasm": 0
+     }
+    },
+    {
+     "step": "#8 admit superseding",
+     "only": [
+      "native"
+     ],
+     "expect": {
+      "native": 0
+     }
+    }
+   ],
+   "wires_compared": {
+    "identical_bytes": 1,
+    "within_tolerance": 0
+   }
+  },
+  "U-TERRAIN-ADJACENT-CHUNKS": {
+   "kind": "unsupported",
+   "verdict": "UNSUPPORTED",
+   "problems": [],
+   "fixture_ids": [
+    "TERRAIN-ADJACENT",
+    "CORPUS-TERRAIN-BOUNDARY",
+    "RENDER-MOUNTAIN"
+   ],
+   "mandatory_case": "terrain_adjacent_chunks",
+   "profile": null,
+   "tolerances": null,
+   "max_deviation": {
+    "native_vs_wasm": {}
+   },
+   "geometry_reports": [],
+   "divergences": [],
+   "steps": [
+    {
+     "step": "#0 create u",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 0,
+      "wasm": 0
+     }
+    },
+    {
+     "step": "#1 capabilities u",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 0,
+      "wasm": 0
+     }
+    },
+    {
+     "step": "#2 evaluate r",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 2,
+      "wasm": 2
+     }
+    }
+   ],
+   "wires_compared": {
+    "identical_bytes": 1,
+    "within_tolerance": 0
+   },
+   "reason": "No terrain producer is exposed by the geometry backends on either side; chunk-seam parity cannot be compared until one is.",
+   "observed": {
+    "native": 2,
+    "wasm": 2
+   }
+  },
+  "U-TERRAIN-RESOLUTION-CHANGES": {
+   "kind": "unsupported",
+   "verdict": "UNSUPPORTED",
+   "problems": [],
+   "fixture_ids": [
+    "TERRAIN-FLAT",
+    "TERRAIN-CONTOUR",
+    "CORPUS-TERRAIN-BOUNDARY"
+   ],
+   "mandatory_case": "terrain_resolution_changes",
+   "profile": null,
+   "tolerances": null,
+   "max_deviation": {
+    "native_vs_wasm": {}
+   },
+   "geometry_reports": [],
+   "divergences": [],
+   "steps": [
+    {
+     "step": "#0 create u",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 0,
+      "wasm": 0
+     }
+    },
+    {
+     "step": "#1 capabilities u",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 0,
+      "wasm": 0
+     }
+    },
+    {
+     "step": "#2 evaluate r",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 2,
+      "wasm": 2
+     }
+    }
+   ],
+   "wires_compared": {
+    "identical_bytes": 1,
+    "within_tolerance": 0
+   },
+   "reason": "No terrain producer is exposed by the geometry backends on either side; rung transitions cannot be compared until one is.",
+   "observed": {
+    "native": 2,
+    "wasm": 2
+   }
+  },
+  "U-ASSET-INPUT": {
+   "kind": "unsupported",
+   "verdict": "UNSUPPORTED",
+   "problems": [],
+   "fixture_ids": [
+    "ERROR-INVALID-INDEX",
+    "ERROR-SINGULAR-TRANSFORM",
+    "CORPUS-REPEATED-ASSEMBLY"
+   ],
+   "mandatory_case": null,
+   "profile": null,
+   "tolerances": null,
+   "max_deviation": {
+    "native_vs_wasm": {}
+   },
+   "geometry_reports": [],
+   "divergences": [],
+   "steps": [
+    {
+     "step": "#0 create u",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 0,
+      "wasm": 0
+     }
+    },
+    {
+     "step": "#1 capabilities u",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 0,
+      "wasm": 0
+     }
+    },
+    {
+     "step": "#2 evaluate r",
+     "only": [
+      "native",
+      "wasm"
+     ],
+     "expect": {
+      "native": 1,
+      "wasm": 1
+     }
+    }
+   ],
+   "wires_compared": {
+    "identical_bytes": 1,
+    "within_tolerance": 0
+   },
+   "reason": "The binding evaluates recipes only; a valid portable asset is refused as an unknown binding field, so the asset-kind validation fixtures and the assembly flattening oracle cannot be exercised through it.",
+   "observed": {
+    "native": 1,
+    "wasm": 1
+   }
+  },
+  "RUNTIME-REFERENCE": {
+   "kind": "reference",
+   "verdict": "PASS",
+   "problems": [],
+   "fixture_ids": [],
+   "mandatory_case": null,
+   "profile": "analytic-mesh-v1",
+   "tolerances": {
+    "position_metres": {
+     "absolute": 1e-06,
+     "relative": 0
+    },
+    "normal_components": {
+     "absolute": 1e-06,
+     "relative": 0
+    },
+    "volume_metres3": {
+     "absolute": 1e-06,
+     "relative": 0
+    },
+    "uv": {
+     "absolute": 1e-06,
+     "relative": 0
+    }
+   },
+   "max_deviation": {},
+   "geometry_reports": [],
+   "divergences": [],
+   "steps": [
+    {
+     "step": "#0 create a",
+     "only": [
+      "native"
+     ],
+     "expect": {
+      "native": 0
+     }
+    },
+    {
+     "step": "#1 evaluate primitive",
+     "only": [
+      "native"
+     ],
+     "expect": {
+      "native": 0
+     }
+    },
+    {
+     "step": "#2 evaluate extrude",
+     "only": [
+      "native"
+     ],
+     "expect": {
+      "native": 0
+     }
+    },
+    {
+     "step": "#3 evaluate orderedCsg",
+     "only": [
+      "native"
+     ],
+     "expect": {
+      "native": 0
+     }
+    },
+    {
+     "step": "#4 evaluate materialAssignment",
+     "only": [
+      "native"
+     ],
+     "expect": {
+      "native": 0
+     }
+    },
+    {
+     "step": "#5 evaluate mirroredPlacement",
+     "only": [
+      "native"
+     ],
+     "expect": {
+      "native": 0
+     }
+    },
+    {
+     "step": "#6 evaluate sharedInstances",
+     "only": [
+      "native"
+     ],
+     "expect": {
+      "native": 0
+     }
+    }
+   ]
+  },
+  "A-PRIMITIVE": {
+   "kind": "authoring",
+   "verdict": "PASS",
+   "problems": [],
+   "fixture_ids": [
+    "CORPUS-PRIMITIVE"
+   ],
+   "mandatory_case": null,
+   "profile": null,
+   "tolerances": null,
+   "max_deviation": {},
+   "geometry_reports": [],
+   "divergences": [],
+   "steps": [],
+   "outcome": {
+    "status": "ok",
+    "canonical": "{\"asset_dependencies\":[],\"canonical_profile\":\"matter-exact-json-v1\",\"document_type\":\"recipe\",\"extensions\":[],\"materials\":[{\"base_color\":{\"factor\":[0.75,0.25,0.125,1],\"texture\":null,\"uv_set\":0},\"emissive\":[0,0,0],\"emissive_texture\":null,\"id\":\"clay\",\"metallic\":0,\"metallic_roughness_texture\":null,\"normal_scale\":1,\"normal_texture\":null,\"roughness\":0.800000011920928955078125}],\"metadata\":{},\"nodes\":[{\"id\":\"body\",\"inputs\":[],\"materials\":[\"clay\"],\"operation\":\"primitive.box\",\"operation_version\":1,\"output_type\":\"mesh\",\"parameters\":{\"size\":[2,2,2]},\"transform\":[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]}],\"outputs\":[\"body\"],\"parameters\":{},\"required_capabilities\":[{\"name\":\"matter.recipe.core\",\"version\":1},{\"name\":\"matter.material.pbr\",\"version\":1}],\"resources\":[],\"rng_algorithm\":\"matter.splitmix64.v1\",\"schema_version\":{\"major\":1,\"minor\":0},\"seed\":\"0123456789abcdef\",\"source\":{\"content\":null,\"id\":\"corpus.primitive\",\"legacy_hashes\":[],\"revision\":\"1\",\"uri\":\"fixture://component-separation/primitive\"},\"source_map\":{},\"textures\":[]}"
+   },
+   "canonical_sha256": "c5ab160936a6f45db8810bcd33964af5aea91933a0086b986609e867d09fce28"
+  },
+  "A-EXTRUDE": {
+   "kind": "authoring",
+   "verdict": "PASS",
+   "problems": [],
+   "fixture_ids": [
+    "CORPUS-EXTRUDE"
+   ],
+   "mandatory_case": null,
+   "profile": null,
+   "tolerances": null,
+   "max_deviation": {},
+   "geometry_reports": [],
+   "divergences": [],
+   "steps": [],
+   "outcome": {
+    "status": "ok",
+    "canonical": "{\"asset_dependencies\":[],\"canonical_profile\":\"matter-exact-json-v1\",\"document_type\":\"recipe\",\"extensions\":[],\"materials\":[{\"base_color\":{\"factor\":[0.75,0.25,0.125,1],\"texture\":null,\"uv_set\":0},\"emissive\":[0,0,0],\"emissive_texture\":null,\"id\":\"clay\",\"metallic\":0,\"metallic_roughness_texture\":null,\"normal_scale\":1,\"normal_texture\":null,\"roughness\":0.800000011920928955078125}],\"metadata\":{},\"nodes\":[{\"id\":\"profile\",\"inputs\":[],\"materials\":[\"clay\"],\"operation\":\"profile.polygon\",\"operation_version\":1,\"output_type\":\"profile\",\"parameters\":{\"points\":[[0,0],[1,0],[1,1],[0,1]]},\"transform\":[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]},{\"id\":\"body\",\"inputs\":[{\"kind\":\"node\",\"port\":\"profile\",\"reference\":\"profile\",\"type\":\"profile\"}],\"materials\":[\"clay\"],\"operation\":\"profile.extrude\",\"operation_version\":1,\"output_type\":\"mesh\",\"parameters\":{\"depth\":2},\"transform\":[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]}],\"outputs\":[\"body\"],\"parameters\":{},\"required_capabilities\":[{\"name\":\"matter.recipe.core\",\"version\":1},{\"name\":\"matter.material.pbr\",\"version\":1}],\"resources\":[],\"rng_algorithm\":\"matter.splitmix64.v1\",\"schema_version\":{\"major\":1,\"minor\":0},\"seed\":\"0123456789abcdef\",\"source\":{\"content\":null,\"id\":\"corpus.extrude\",\"legacy_hashes\":[],\"revision\":\"1\",\"uri\":\"fixture://component-separation/extrude\"},\"source_map\":{},\"textures\":[]}"
+   },
+   "canonical_sha256": "1cb16ea2160f225c0002ef5356a956791c65428e047235ef0f5bb0a9110cb164"
+  },
+  "A-ORDERED-CSG": {
+   "kind": "authoring",
+   "verdict": "PASS",
+   "problems": [],
+   "fixture_ids": [
+    "CORPUS-ORDERED_CSG"
+   ],
+   "mandatory_case": null,
+   "profile": null,
+   "tolerances": null,
+   "max_deviation": {},
+   "geometry_reports": [],
+   "divergences": [],
+   "steps": [],
+   "outcome": {
+    "status": "ok",
+    "canonical": "{\"asset_dependencies\":[],\"canonical_profile\":\"matter-exact-json-v1\",\"document_type\":\"recipe\",\"extensions\":[],\"materials\":[{\"base_color\":{\"factor\":[0.75,0.25,0.125,1],\"texture\":null,\"uv_set\":0},\"emissive\":[0,0,0],\"emissive_texture\":null,\"id\":\"clay\",\"metallic\":0,\"metallic_roughness_texture\":null,\"normal_scale\":1,\"normal_texture\":null,\"roughness\":0.800000011920928955078125}],\"metadata\":{},\"nodes\":[{\"id\":\"cut\",\"inputs\":[{\"kind\":\"node\",\"port\":\"operand\",\"reference\":\"outer\",\"type\":\"mesh\"},{\"kind\":\"node\",\"port\":\"operand\",\"reference\":\"cutter\",\"type\":\"mesh\"}],\"materials\":[\"clay\"],\"operation\":\"solid.csg\",\"operation_version\":1,\"output_type\":\"mesh\",\"parameters\":{\"operator\":\"subtract\"},\"transform\":[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]},{\"id\":\"outer\",\"inputs\":[],\"materials\":[\"clay\"],\"operation\":\"primitive.box\",\"operation_version\":1,\"output_type\":\"mesh\",\"parameters\":{\"size\":[2,2,2]},\"transform\":[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]},{\"id\":\"cutter\",\"inputs\":[],\"materials\":[\"clay\"],\"operation\":\"primitive.box\",\"operation_version\":1,\"output_type\":\"mesh\",\"parameters\":{\"size\":[1,1,1]},\"transform\":[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]}],\"outputs\":[\"cut\"],\"parameters\":{},\"required_capabilities\":[{\"name\":\"matter.recipe.core\",\"version\":1},{\"name\":\"matter.material.pbr\",\"version\":1}],\"resources\":[],\"rng_algorithm\":\"matter.splitmix64.v1\",\"schema_version\":{\"major\":1,\"minor\":0},\"seed\":\"0123456789abcdef\",\"source\":{\"content\":null,\"id\":\"corpus.ordered-csg\",\"legacy_hashes\":[],\"revision\":\"1\",\"uri\":\"fixture://component-separation/ordered-csg\"},\"source_map\":{},\"textures\":[]}"
+   },
+   "canonical_sha256": "2d8c013ecdb3810a11d9b84c7b9e4df6f33fa9715abece2673f8039e9b50b7ce"
+  },
+  "A-REVERSED-CSG": {
+   "kind": "authoring",
+   "verdict": "PASS",
+   "problems": [],
+   "fixture_ids": [
+    "CORPUS-CSG-REVERSED"
+   ],
+   "mandatory_case": null,
+   "profile": null,
+   "tolerances": null,
+   "max_deviation": {},
+   "geometry_reports": [],
+   "divergences": [],
+   "steps": [],
+   "outcome": {
+    "status": "ok",
+    "canonical": "{\"asset_dependencies\":[],\"canonical_profile\":\"matter-exact-json-v1\",\"document_type\":\"recipe\",\"extensions\":[],\"materials\":[{\"base_color\":{\"factor\":[0.75,0.25,0.125,1],\"texture\":null,\"uv_set\":0},\"emissive\":[0,0,0],\"emissive_texture\":null,\"id\":\"clay\",\"metallic\":0,\"metallic_roughness_texture\":null,\"normal_scale\":1,\"normal_texture\":null,\"roughness\":0.800000011920928955078125}],\"metadata\":{},\"nodes\":[{\"id\":\"cut\",\"inputs\":[{\"kind\":\"node\",\"port\":\"operand\",\"reference\":\"cutter\",\"type\":\"mesh\"},{\"kind\":\"node\",\"port\":\"operand\",\"reference\":\"outer\",\"type\":\"mesh\"}],\"materials\":[\"clay\"],\"operation\":\"solid.csg\",\"operation_version\":1,\"output_type\":\"mesh\",\"parameters\":{\"operator\":\"subtract\"},\"transform\":[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]},{\"id\":\"outer\",\"inputs\":[],\"materials\":[\"clay\"],\"operation\":\"primitive.box\",\"operation_version\":1,\"output_type\":\"mesh\",\"parameters\":{\"size\":[2,2,2]},\"transform\":[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]},{\"id\":\"cutter\",\"inputs\":[],\"materials\":[\"clay\"],\"operation\":\"primitive.box\",\"operation_version\":1,\"output_type\":\"mesh\",\"parameters\":{\"size\":[1,1,1]},\"transform\":[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]}],\"outputs\":[\"cut\"],\"parameters\":{},\"required_capabilities\":[{\"name\":\"matter.recipe.core\",\"version\":1},{\"name\":\"matter.material.pbr\",\"version\":1}],\"resources\":[],\"rng_algorithm\":\"matter.splitmix64.v1\",\"schema_version\":{\"major\":1,\"minor\":0},\"seed\":\"0123456789abcdef\",\"source\":{\"content\":null,\"id\":\"corpus.ordered-csg\",\"legacy_hashes\":[],\"revision\":\"1\",\"uri\":\"fixture://component-separation/ordered-csg\"},\"source_map\":{},\"textures\":[]}"
+   },
+   "canonical_sha256": "93177a09f6ef339e0beefbe9053fb06f8af132e05d08531109221454bd18607a"
+  },
+  "A-MATERIAL": {
+   "kind": "authoring",
+   "verdict": "PASS",
+   "problems": [],
+   "fixture_ids": [
+    "CORPUS-MATERIAL-VIEWS"
+   ],
+   "mandatory_case": null,
+   "profile": null,
+   "tolerances": null,
+   "max_deviation": {},
+   "geometry_reports": [],
+   "divergences": [],
+   "steps": [],
+   "outcome": {
+    "status": "ok",
+    "canonical": "{\"asset_dependencies\":[],\"canonical_profile\":\"matter-exact-json-v1\",\"document_type\":\"recipe\",\"extensions\":[],\"materials\":[{\"base_color\":{\"factor\":[0.75,0.25,0.125,1],\"texture\":null,\"uv_set\":0},\"emissive\":[0,0,0],\"emissive_texture\":null,\"id\":\"clay\",\"metallic\":0,\"metallic_roughness_texture\":null,\"normal_scale\":1,\"normal_texture\":null,\"roughness\":0.800000011920928955078125},{\"base_color\":{\"factor\":[0.5,0.5,0.5,1],\"texture\":null,\"uv_set\":0},\"emissive\":[0,0,0],\"emissive_texture\":null,\"id\":\"metal\",\"metallic\":1,\"metallic_roughness_texture\":null,\"normal_scale\":1,\"normal_texture\":null,\"roughness\":0.25}],\"metadata\":{},\"nodes\":[{\"id\":\"clay_part\",\"inputs\":[],\"materials\":[\"clay\"],\"operation\":\"primitive.box\",\"operation_version\":1,\"output_type\":\"mesh\",\"parameters\":{\"size\":[1,1,1]},\"transform\":[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]},{\"id\":\"metal_part\",\"inputs\":[],\"materials\":[\"metal\"],\"operation\":\"primitive.box\",\"operation_version\":1,\"output_type\":\"mesh\",\"parameters\":{\"size\":[1,1,1]},\"transform\":[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]},{\"id\":\"metal_placed\",\"inputs\":[{\"kind\":\"node\",\"port\":\"input\",\"reference\":\"metal_part\",\"type\":\"mesh\"}],\"materials\":[],\"operation\":\"placement.affine\",\"operation_version\":1,\"output_type\":\"mesh\",\"parameters\":{},\"transform\":[1,0,0,2,0,1,0,0,0,0,1,0,0,0,0,1]}],\"outputs\":[\"clay_part\",\"metal_placed\"],\"parameters\":{},\"required_capabilities\":[{\"name\":\"matter.recipe.core\",\"version\":1},{\"name\":\"matter.material.pbr\",\"version\":1}],\"resources\":[],\"rng_algorithm\":\"matter.splitmix64.v1\",\"schema_version\":{\"major\":1,\"minor\":0},\"seed\":\"0123456789abcdef\",\"source\":{\"content\":null,\"id\":\"corpus.material-assignment\",\"legacy_hashes\":[],\"revision\":\"1\",\"uri\":\"fixture://component-separation/material-assignment\"},\"source_map\":{},\"textures\":[]}"
+   },
+   "canonical_sha256": "3d213ca588f0750973a7ee663aa6fa461fce69a5977aed701e9205a389b8c656"
+  },
+  "A-MIRROR": {
+   "kind": "authoring",
+   "verdict": "PASS",
+   "problems": [],
+   "fixture_ids": [
+    "CORPUS-AFFINE",
+    "GEOM-TRANSFORM"
+   ],
+   "mandatory_case": null,
+   "profile": null,
+   "tolerances": null,
+   "max_deviation": {},
+   "geometry_reports": [],
+   "divergences": [],
+   "steps": [],
+   "outcome": {
+    "status": "ok",
+    "canonical": "{\"asset_dependencies\":[],\"canonical_profile\":\"matter-exact-json-v1\",\"document_type\":\"recipe\",\"extensions\":[],\"materials\":[{\"base_color\":{\"factor\":[0.75,0.25,0.125,1],\"texture\":null,\"uv_set\":0},\"emissive\":[0,0,0],\"emissive_texture\":null,\"id\":\"clay\",\"metallic\":0,\"metallic_roughness_texture\":null,\"normal_scale\":1,\"normal_texture\":null,\"roughness\":0.800000011920928955078125}],\"metadata\":{},\"nodes\":[{\"id\":\"unit\",\"inputs\":[],\"materials\":[\"clay\"],\"operation\":\"primitive.box\",\"operation_version\":1,\"output_type\":\"mesh\",\"parameters\":{\"size\":[1,1,1]},\"transform\":[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]},{\"id\":\"mirrored\",\"inputs\":[{\"kind\":\"node\",\"port\":\"input\",\"reference\":\"unit\",\"type\":\"mesh\"}],\"materials\":[],\"operation\":\"placement.affine\",\"operation_version\":1,\"output_type\":\"mesh\",\"parameters\":{},\"transform\":[-2,0,0,10,0,3,0,20,0,0,4,30,0,0,0,1]}],\"outputs\":[\"mirrored\"],\"parameters\":{},\"required_capabilities\":[{\"name\":\"matter.recipe.core\",\"version\":1},{\"name\":\"matter.material.pbr\",\"version\":1}],\"resources\":[],\"rng_algorithm\":\"matter.splitmix64.v1\",\"schema_version\":{\"major\":1,\"minor\":0},\"seed\":\"0123456789abcdef\",\"source\":{\"content\":null,\"id\":\"corpus.mirrored-placement\",\"legacy_hashes\":[],\"revision\":\"1\",\"uri\":\"fixture://component-separation/mirrored-placement\"},\"source_map\":{},\"textures\":[]}"
+   },
+   "canonical_sha256": "784a60bd7168889ab75d594776f24fcd70276b5105bd519f1db094fa89a08636"
+  },
+  "A-SHARED": {
+   "kind": "authoring",
+   "verdict": "PASS",
+   "problems": [],
+   "fixture_ids": [
+    "BUILD-SHARED"
+   ],
+   "mandatory_case": null,
+   "profile": null,
+   "tolerances": null,
+   "max_deviation": {},
+   "geometry_reports": [],
+   "divergences": [],
+   "steps": [],
+   "outcome": {
+    "status": "ok",
+    "canonical": "{\"asset_dependencies\":[],\"canonical_profile\":\"matter-exact-json-v1\",\"document_type\":\"recipe\",\"extensions\":[],\"materials\":[{\"base_color\":{\"factor\":[0.75,0.25,0.125,1],\"texture\":null,\"uv_set\":0},\"emissive\":[0,0,0],\"emissive_texture\":null,\"id\":\"clay\",\"metallic\":0,\"metallic_roughness_texture\":null,\"normal_scale\":1,\"normal_texture\":null,\"roughness\":0.800000011920928955078125}],\"metadata\":{},\"nodes\":[{\"id\":\"post\",\"inputs\":[],\"materials\":[\"clay\"],\"operation\":\"primitive.box\",\"operation_version\":1,\"output_type\":\"mesh\",\"parameters\":{\"size\":[0.25,1,0.25]},\"transform\":[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]},{\"id\":\"row.0\",\"inputs\":[{\"kind\":\"node\",\"port\":\"input\",\"reference\":\"post\",\"type\":\"mesh\"}],\"materials\":[],\"operation\":\"placement.affine\",\"operation_version\":1,\"output_type\":\"mesh\",\"parameters\":{},\"transform\":[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]},{\"id\":\"row.1\",\"inputs\":[{\"kind\":\"node\",\"port\":\"input\",\"reference\":\"post\",\"type\":\"mesh\"}],\"materials\":[],\"operation\":\"placement.affine\",\"operation_version\":1,\"output_type\":\"mesh\",\"parameters\":{},\"transform\":[1,0,0,2,0,1,0,0,0,0,1,0,0,0,0,1]},{\"id\":\"row.2\",\"inputs\":[{\"kind\":\"node\",\"port\":\"input\",\"reference\":\"post\",\"type\":\"mesh\"}],\"materials\":[],\"operation\":\"placement.affine\",\"operation_version\":1,\"output_type\":\"mesh\",\"parameters\":{},\"transform\":[1,0,0,4,0,1,0,0,0,0,1,0,0,0,0,1]},{\"id\":\"row.3\",\"inputs\":[{\"kind\":\"node\",\"port\":\"input\",\"reference\":\"post\",\"type\":\"mesh\"}],\"materials\":[],\"operation\":\"placement.affine\",\"operation_version\":1,\"output_type\":\"mesh\",\"parameters\":{},\"transform\":[1,0,0,6,0,1,0,0,0,0,1,0,0,0,0,1]}],\"outputs\":[\"row.0\",\"row.1\",\"row.2\",\"row.3\"],\"parameters\":{},\"required_capabilities\":[{\"name\":\"matter.recipe.core\",\"version\":1},{\"name\":\"matter.material.pbr\",\"version\":1}],\"resources\":[],\"rng_algorithm\":\"matter.splitmix64.v1\",\"schema_version\":{\"major\":1,\"minor\":0},\"seed\":\"0123456789abcdef\",\"source\":{\"content\":null,\"id\":\"corpus.shared-instances\",\"legacy_hashes\":[],\"revision\":\"1\",\"uri\":\"fixture://component-separation/shared-instances\"},\"source_map\":{},\"textures\":[]}"
+   },
+   "canonical_sha256": "ab441c74fbe3b23a34f47ba2e1917e19bf5e2307dc3c98f58db6345dbfeb94ac"
+  },
+  "A-ASSEMBLY": {
+   "kind": "authoring",
+   "verdict": "PASS",
+   "problems": [],
+   "fixture_ids": [
+    "CORPUS-REPEATED-ASSEMBLY",
+    "BUILD-SHARED"
+   ],
+   "mandatory_case": null,
+   "profile": null,
+   "tolerances": null,
+   "max_deviation": {},
+   "geometry_reports": [],
+   "divergences": [],
+   "steps": [],
+   "outcome": {
+    "status": "ok",
+    "canonical": "{\"asset_dependencies\":[{\"content\":{\"algorithm\":\"sha256\",\"hex\":\"abababababababababababababababababababababababababababababababab\"},\"id\":\"shared.pair\",\"schema_version\":{\"major\":1,\"minor\":0}}],\"canonical_profile\":\"matter-exact-json-v1\",\"document_type\":\"recipe\",\"extensions\":[],\"materials\":[{\"base_color\":{\"factor\":[0.75,0.25,0.125,1],\"texture\":null,\"uv_set\":0},\"emissive\":[0,0,0],\"emissive_texture\":null,\"id\":\"clay\",\"metallic\":0,\"metallic_roughness_texture\":null,\"normal_scale\":1,\"normal_texture\":null,\"roughness\":0.800000011920928955078125}],\"metadata\":{},\"nodes\":[{\"id\":\"pair\",\"inputs\":[{\"kind\":\"asset\",\"port\":\"assembly\",\"reference\":\"shared.pair\",\"type\":\"assembly\"}],\"materials\":[],\"operation\":\"assembly.reference\",\"operation_version\":1,\"output_type\":\"assembly\",\"parameters\":{},\"transform\":[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]},{\"id\":\"placed.0\",\"inputs\":[{\"kind\":\"node\",\"port\":\"input\",\"reference\":\"pair\",\"type\":\"assembly\"}],\"materials\":[],\"operation\":\"placement.affine\",\"operation_version\":1,\"output_type\":\"assembly\",\"parameters\":{},\"transform\":[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]},{\"id\":\"placed.1\",\"inputs\":[{\"kind\":\"node\",\"port\":\"input\",\"reference\":\"pair\",\"type\":\"assembly\"}],\"materials\":[],\"operation\":\"placement.affine\",\"operation_version\":1,\"output_type\":\"assembly\",\"parameters\":{},\"transform\":[-2,0,0,3,0,3,0,2,0,0,4,1,0,0,0,1]}],\"outputs\":[\"placed.0\",\"placed.1\"],\"parameters\":{},\"required_capabilities\":[{\"name\":\"matter.recipe.core\",\"version\":1},{\"name\":\"matter.material.pbr\",\"version\":1}],\"resources\":[],\"rng_algorithm\":\"matter.splitmix64.v1\",\"schema_version\":{\"major\":1,\"minor\":0},\"seed\":\"0123456789abcdef\",\"source\":{\"content\":null,\"id\":\"corpus.repeated-assembly\",\"legacy_hashes\":[],\"revision\":\"1\",\"uri\":\"fixture://component-separation/repeated-assembly\"},\"source_map\":{},\"textures\":[]}"
+   },
+   "canonical_sha256": "959c3ff48a5036d695c9b10f796ea9e8b0cf936654f28b8f9f4e2a56022e8c37"
+  },
+  "A-SEED-0000000000000000": {
+   "kind": "authoring",
+   "verdict": "PASS",
+   "problems": [],
+   "fixture_ids": [
+    "CORPUS-SEEDED-VARIATION",
+    "GEOM-SEED"
+   ],
+   "mandatory_case": null,
+   "profile": null,
+   "tolerances": null,
+   "max_deviation": {},
+   "geometry_reports": [],
+   "divergences": [],
+   "steps": [],
+   "outcome": {
+    "status": "ok",
+    "canonical": "{\"asset_dependencies\":[],\"canonical_profile\":\"matter-exact-json-v1\",\"document_type\":\"recipe\",\"extensions\":[],\"materials\":[{\"base_color\":{\"factor\":[0.75,0.25,0.125,1],\"texture\":null,\"uv_set\":0},\"emissive\":[0,0,0],\"emissive_texture\":null,\"id\":\"clay\",\"metallic\":0,\"metallic_roughness_texture\":null,\"normal_scale\":1,\"normal_texture\":null,\"roughness\":0.800000011920928955078125}],\"metadata\":{\"units\":[0.431527997048509970312579753226600587368011474609375,0.02643377159259774344945981283672153949737548828125,0.9708819781538284843236397136934101581573486328125,0.1063466915672124368796858107089065015316009521484375,0.327325764218125758731048335903324186801910400390625,0.1738678659596828435240922772209160029888153076171875,0.77154655633156699057195737623260356485843658447265625,0.24568894884013137147604766141739673912525177001953125],\"words\":[\"6e789e6aa1b965f4\",\"06c45d188009454f\",\"f88bb8a8724c81ec\",\"1b39896a51a8749b\",\"53cb9f0c747ea2ea\",\"2c829abe1f4532e1\",\"c584133ac916ab3c\",\"3ee5789041c98ac3\"]},\"nodes\":[{\"id\":\"body\",\"inputs\":[],\"materials\":[\"clay\"],\"operation\":\"primitive.box\",\"operation_version\":1,\"output_type\":\"mesh\",\"parameters\":{\"size\":[1,1.431527997048509970312579753226600587368011474609375,1]},\"transform\":[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]}],\"outputs\":[\"body\"],\"parameters\":{},\"required_capabilities\":[{\"name\":\"matter.recipe.core\",\"version\":1},{\"name\":\"matter.material.pbr\",\"version\":1}],\"resources\":[],\"rng_algorithm\":\"matter.splitmix64.v1\",\"schema_version\":{\"major\":1,\"minor\":0},\"seed\":\"0000000000000000\",\"source\":{\"content\":null,\"id\":\"corpus.seeded-variation\",\"legacy_hashes\":[],\"revision\":\"1\",\"uri\":\"fixture://component-separation/seeded-variation\"},\"source_map\":{},\"textures\":[]}"
+   },
+   "canonical_sha256": "51ac4572f1f59d66c5db2dd1357e07bd5ef482df331393786cb6e4f4c60bb846"
+  },
+  "A-SEED-0000000000000001": {
+   "kind": "authoring",
+   "verdict": "PASS",
+   "problems": [],
+   "fixture_ids": [
+    "CORPUS-SEEDED-VARIATION",
+    "GEOM-SEED"
+   ],
+   "mandatory_case": null,
+   "profile": null,
+   "tolerances": null,
+   "max_deviation": {},
+   "geometry_reports": [],
+   "divergences": [],
+   "steps": [],
+   "outcome": {
+    "status": "ok",
+    "canonical": "{\"asset_dependencies\":[],\"canonical_profile\":\"matter-exact-json-v1\",\"document_type\":\"recipe\",\"extensions\":[],\"materials\":[{\"base_color\":{\"factor\":[0.75,0.25,0.125,1],\"texture\":null,\"uv_set\":0},\"emissive\":[0,0,0],\"emissive_texture\":null,\"id\":\"clay\",\"metallic\":0,\"metallic_roughness_texture\":null,\"normal_scale\":1,\"normal_texture\":null,\"roughness\":0.800000011920928955078125}],\"metadata\":{\"units\":[0.56656157517228089570693327914341352880001068115234375,0.74578175726270112821936209002160467207431793212890625,0.9710027535867962189541913176071830093860626220703125,0.44435921705577208218329587907646782696247100830078125,0.4442647008263580499232148213195614516735076904296875,0.762894391911761005076186847873032093048095703125,0.87734868676417299138137195768649689853191375732421875,0.5230671798509813896771447616629302501678466796875],\"words\":[\"910a2dec89025cc1\",\"beeb8da1658eec67\",\"f893a2eefb32555e\",\"71c18690ee42c90b\",\"71bb54d8d101b5b9\",\"c34d0bff90150280\",\"e099ec6cd7363ca5\",\"85e7bb0f12278575\"]},\"nodes\":[{\"id\":\"body\",\"inputs\":[],\"materials\":[\"clay\"],\"operation\":\"primitive.box\",\"operation_version\":1,\"output_type\":\"mesh\",\"parameters\":{\"size\":[1,1.566561575172281006729235741659067571163177490234375,1]},\"transform\":[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]}],\"outputs\":[\"body\"],\"parameters\":{},\"required_capabilities\":[{\"name\":\"matter.recipe.core\",\"version\":1},{\"name\":\"matter.material.pbr\",\"version\":1}],\"resources\":[],\"rng_algorithm\":\"matter.splitmix64.v1\",\"schema_version\":{\"major\":1,\"minor\":0},\"seed\":\"0000000000000001\",\"source\":{\"content\":null,\"id\":\"corpus.seeded-variation\",\"legacy_hashes\":[],\"revision\":\"1\",\"uri\":\"fixture://component-separation/seeded-variation\"},\"source_map\":{},\"textures\":[]}"
+   },
+   "canonical_sha256": "b1347dda32410fe357eeae4b9f2fd122c431d8220f51a095f970803b226b8a14"
+  },
+  "A-SEED-0123456789abcdef": {
+   "kind": "authoring",
+   "verdict": "PASS",
+   "problems": [],
+   "fixture_ids": [
+    "CORPUS-SEEDED-VARIATION"
+   ],
+   "mandatory_case": null,
+   "profile": null,
+   "tolerances": null,
+   "max_deviation": {},
+   "geometry_reports": [],
+   "divergences": [],
+   "steps": [],
+   "outcome": {
+    "status": "ok",
+    "canonical": "{\"asset_dependencies\":[],\"canonical_profile\":\"matter-exact-json-v1\",\"document_type\":\"recipe\",\"extensions\":[],\"materials\":[{\"base_color\":{\"factor\":[0.75,0.25,0.125,1],\"texture\":null,\"uv_set\":0},\"emissive\":[0,0,0],\"emissive_texture\":null,\"id\":\"clay\",\"metallic\":0,\"metallic_roughness_texture\":null,\"normal_scale\":1,\"normal_texture\":null,\"roughness\":0.800000011920928955078125}],\"metadata\":{\"units\":[0.08389616190521442806726781782344914972782135009765625,0.8337909344596774463553856548969633877277374267578125,0.18580193412474621528218676758115179836750030517578125,0.636048865341103830672864205553196370601654052734375,0.0048873967212568203422051738016307353973388671875,0.08099885568132692004184036704828031361103057861328125,0.72260064267942614169015769221005029976367950439453125,0.535908959645548410577475806348957121372222900390625],\"words\":[\"157a3807a48faa9d\",\"d573529b34a1d093\",\"2f90b72e996dccbe\",\"a2d419334c4667ec\",\"01404ce914938008\",\"14bc574c2a2b4c72\",\"b8fc5b1060708c05\",\"8931545f4f9ea651\"]},\"nodes\":[{\"id\":\"body\",\"inputs\":[],\"materials\":[\"clay\"],\"operation\":\"primitive.box\",\"operation_version\":1,\"output_type\":\"mesh\",\"parameters\":{\"size\":[1,1.083896161905214317044965355307795107364654541015625,1]},\"transform\":[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]}],\"outputs\":[\"body\"],\"parameters\":{},\"required_capabilities\":[{\"name\":\"matter.recipe.core\",\"version\":1},{\"name\":\"matter.material.pbr\",\"version\":1}],\"resources\":[],\"rng_algorithm\":\"matter.splitmix64.v1\",\"schema_version\":{\"major\":1,\"minor\":0},\"seed\":\"0123456789abcdef\",\"source\":{\"content\":null,\"id\":\"corpus.seeded-variation\",\"legacy_hashes\":[],\"revision\":\"1\",\"uri\":\"fixture://component-separation/seeded-variation\"},\"source_map\":{},\"textures\":[]}"
+   },
+   "canonical_sha256": "d137294c1bcf527d78370d21dbe07c59af9328ef17dce388b1386292442b7f02"
+  },
+  "A-SEED-ffffffffffffffff": {
+   "kind": "authoring",
+   "verdict": "PASS",
+   "problems": [],
+   "fixture_ids": [
+    "CORPUS-SEEDED-VARIATION"
+   ],
+   "mandatory_case": null,
+   "profile": null,
+   "tolerances": null,
+   "max_deviation": {},
+   "geometry_reports": [],
+   "divergences": [],
+   "steps": [],
+   "outcome": {
+    "status": "ok",
+    "canonical": "{\"asset_dependencies\":[],\"canonical_profile\":\"matter-exact-json-v1\",\"document_type\":\"recipe\",\"extensions\":[],\"materials\":[{\"base_color\":{\"factor\":[0.75,0.25,0.125,1],\"texture\":null,\"uv_set\":0},\"emissive\":[0,0,0],\"emissive_texture\":null,\"id\":\"clay\",\"metallic\":0,\"metallic_roughness_texture\":null,\"normal_scale\":1,\"normal_texture\":null,\"roughness\":0.800000011920928955078125}],\"metadata\":{\"units\":[0.89394292028318445009205106543959118425846099853515625,0.9125972035944531768336673849262297153472900390625,0.2194819628952675572008956805802881717681884765625,0.4262344494451664189682560390792787075042724609375,0.70557064896957089050744116320856846868991851806640625,0.82467161064070892972921456021140329539775848388671875,0.94261437468415543161626146684284321963787078857421875,0.2514288557318824501862764009274542331695556640625],\"words\":[\"e4d971771b652c20\",\"e99ff867dbf682c9\",\"382ff84cb27281e9\",\"6d1db36ccba982d2\",\"b4a0472e578069ae\",\"d31dadbda438bb33\",\"f14f2cf802083fa5\",\"405da438a39e8064\"]},\"nodes\":[{\"id\":\"body\",\"inputs\":[],\"materials\":[\"clay\"],\"operation\":\"primitive.box\",\"operation_version\":1,\"output_type\":\"mesh\",\"parameters\":{\"size\":[1,1.893942920283184339069748602923937141895294189453125,1]},\"transform\":[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]}],\"outputs\":[\"body\"],\"parameters\":{},\"required_capabilities\":[{\"name\":\"matter.recipe.core\",\"version\":1},{\"name\":\"matter.material.pbr\",\"version\":1}],\"resources\":[],\"rng_algorithm\":\"matter.splitmix64.v1\",\"schema_version\":{\"major\":1,\"minor\":0},\"seed\":\"ffffffffffffffff\",\"source\":{\"content\":null,\"id\":\"corpus.seeded-variation\",\"legacy_hashes\":[],\"revision\":\"1\",\"uri\":\"fixture://component-separation/seeded-variation\"},\"source_map\":{},\"textures\":[]}"
+   },
+   "canonical_sha256": "804d0d4fcaa77b5b45d9603b8a7c96043a15dd49299998bb653dc71d014b3f90"
+  },
+  "A-UNKNOWN-CAPABILITY": {
+   "kind": "authoring",
+   "verdict": "PASS",
+   "problems": [],
+   "fixture_ids": [
+    "ERROR-UNKNOWN-REQUIRED"
+   ],
+   "mandatory_case": null,
+   "profile": null,
+   "tolerances": null,
+   "max_deviation": {},
+   "geometry_reports": [],
+   "divergences": [],
+   "steps": [],
+   "outcome": {
+    "status": "error",
+    "code": "unsupported_capability",
+    "message": "required matter.operation.parity.unknown@1 is unavailable; supply a host/evaluator with this capability"
+   }
+  },
+  "R-CORPUS": {
+   "kind": "runtime",
+   "verdict": "PASS",
+   "problems": [],
+   "fixture_ids": [
+    "CORPUS-PRIMITIVE",
+    "CORPUS-EXTRUDE",
+    "CORPUS-ORDERED_CSG"
+   ],
+   "mandatory_case": null,
+   "profile": "analytic-mesh-v1",
+   "tolerances": {
+    "position_metres": {
+     "absolute": 1e-06,
+     "relative": 0
+    },
+    "normal_components": {
+     "absolute": 1e-06,
+     "relative": 0
+    },
+    "volume_metres3": {
+     "absolute": 1e-06,
+     "relative": 0
+    },
+    "uv": {
+     "absolute": 1e-06,
+     "relative": 0
+    }
+   },
+   "max_deviation": {
+    "runtime_vs_native": {}
+   },
+   "geometry_reports": [],
+   "divergences": [],
+   "steps": []
+  },
+  "R-STAGED": {
+   "kind": "runtime",
+   "verdict": "PASS",
+   "problems": [],
+   "fixture_ids": [
+    "CORPUS-PRIMITIVE"
+   ],
+   "mandatory_case": null,
+   "profile": "analytic-mesh-v1",
+   "tolerances": {
+    "position_metres": {
+     "absolute": 1e-06,
+     "relative": 0
+    },
+    "normal_components": {
+     "absolute": 1e-06,
+     "relative": 0
+    },
+    "volume_metres3": {
+     "absolute": 1e-06,
+     "relative": 0
+    },
+    "uv": {
+     "absolute": 1e-06,
+     "relative": 0
+    }
+   },
+   "max_deviation": {},
+   "geometry_reports": [
+    {
+     "backend": "chromium-runtime",
+     "oracle": "detail",
+     "triangles": 12,
+     "volume_metres3": 0.015625,
+     "shell_components": 1
+    }
+   ],
+   "divergences": [],
+   "steps": []
+  },
+  "R-CANCEL-BEFORE": {
+   "kind": "runtime",
+   "verdict": "PASS",
+   "problems": [],
+   "fixture_ids": [
+    "JOB-CANCEL-PRE"
+   ],
+   "mandatory_case": null,
+   "profile": "analytic-mesh-v1",
+   "tolerances": {
+    "position_metres": {
+     "absolute": 1e-06,
+     "relative": 0
+    },
+    "normal_components": {
+     "absolute": 1e-06,
+     "relative": 0
+    },
+    "volume_metres3": {
+     "absolute": 1e-06,
+     "relative": 0
+    },
+    "uv": {
+     "absolute": 1e-06,
+     "relative": 0
+    }
+   },
+   "max_deviation": {},
+   "geometry_reports": [],
+   "divergences": [],
+   "steps": []
+  },
+  "R-CANCEL-RUNNING": {
+   "kind": "runtime",
+   "verdict": "PASS",
+   "problems": [],
+   "fixture_ids": [
+    "JOB-CANCEL-PROGRESS",
+    "BUILD-CANCEL"
+   ],
+   "mandatory_case": null,
+   "profile": "analytic-mesh-v1",
+   "tolerances": {
+    "position_metres": {
+     "absolute": 1e-06,
+     "relative": 0
+    },
+    "normal_components": {
+     "absolute": 1e-06,
+     "relative": 0
+    },
+    "volume_metres3": {
+     "absolute": 1e-06,
+     "relative": 0
+    },
+    "uv": {
+     "absolute": 1e-06,
+     "relative": 0
+    }
+   },
+   "max_deviation": {},
+   "geometry_reports": [],
+   "divergences": [],
+   "steps": []
+  },
+  "R-DEADLINE": {
+   "kind": "runtime",
+   "verdict": "PASS",
+   "problems": [],
+   "fixture_ids": [
+    "EVAL-BOUNDED"
+   ],
+   "mandatory_case": null,
+   "profile": "analytic-mesh-v1",
+   "tolerances": {
+    "position_metres": {
+     "absolute": 1e-06,
+     "relative": 0
+    },
+    "normal_components": {
+     "absolute": 1e-06,
+     "relative": 0
+    },
+    "volume_metres3": {
+     "absolute": 1e-06,
+     "relative": 0
+    },
+    "uv": {
+     "absolute": 1e-06,
+     "relative": 0
+    }
+   },
+   "max_deviation": {},
+   "geometry_reports": [],
+   "divergences": [],
+   "steps": []
+  },
+  "R-RESTART": {
+   "kind": "runtime",
+   "verdict": "PASS",
+   "problems": [],
+   "fixture_ids": [
+    "BUILD-CANCEL"
+   ],
+   "mandatory_case": null,
+   "profile": "analytic-mesh-v1",
+   "tolerances": {
+    "position_metres": {
+     "absolute": 1e-06,
+     "relative": 0
+    },
+    "normal_components": {
+     "absolute": 1e-06,
+     "relative": 0
+    },
+    "volume_metres3": {
+     "absolute": 1e-06,
+     "relative": 0
+    },
+    "uv": {
+     "absolute": 1e-06,
+     "relative": 0
+    }
+   },
+   "max_deviation": {},
+   "geometry_reports": [],
+   "divergences": [],
+   "steps": []
+  },
+  "R-STALE": {
+   "kind": "runtime",
+   "verdict": "PASS",
+   "problems": [],
+   "fixture_ids": [
+    "JOB-LATE-REVISION",
+    "JOB-LATE-EPOCH",
+    "TERRAIN-LATE"
+   ],
+   "mandatory_case": null,
+   "profile": "analytic-mesh-v1",
+   "tolerances": {
+    "position_metres": {
+     "absolute": 1e-06,
+     "relative": 0
+    },
+    "normal_components": {
+     "absolute": 1e-06,
+     "relative": 0
+    },
+    "volume_metres3": {
+     "absolute": 1e-06,
+     "relative": 0
+    },
+    "uv": {
+     "absolute": 1e-06,
+     "relative": 0
+    }
+   },
+   "max_deviation": {},
+   "geometry_reports": [],
+   "divergences": [],
+   "steps": []
+  },
+  "R-OWNERSHIP": {
+   "kind": "runtime",
+   "verdict": "PASS",
+   "problems": [],
+   "fixture_ids": [
+    "CORPUS-PRIMITIVE"
+   ],
+   "mandatory_case": null,
+   "profile": "analytic-mesh-v1",
+   "tolerances": {
+    "position_metres": {
+     "absolute": 1e-06,
+     "relative": 0
+    },
+    "normal_components": {
+     "absolute": 1e-06,
+     "relative": 0
+    },
+    "volume_metres3": {
+     "absolute": 1e-06,
+     "relative": 0
+    },
+    "uv": {
+     "absolute": 1e-06,
+     "relative": 0
+    }
+   },
+   "max_deviation": {},
+   "geometry_reports": [],
+   "divergences": [],
+   "steps": []
+  },
+  "R-DISPOSE": {
+   "kind": "runtime",
+   "verdict": "PASS",
+   "problems": [],
+   "fixture_ids": [],
+   "mandatory_case": null,
+   "profile": "analytic-mesh-v1",
+   "tolerances": {
+    "position_metres": {
+     "absolute": 1e-06,
+     "relative": 0
+    },
+    "normal_components": {
+     "absolute": 1e-06,
+     "relative": 0
+    },
+    "volume_metres3": {
+     "absolute": 1e-06,
+     "relative": 0
+    },
+    "uv": {
+     "absolute": 1e-06,
+     "relative": 0
+    }
+   },
+   "max_deviation": {},
+   "geometry_reports": [],
+   "divergences": [],
+   "steps": []
+  },
+  "R-AUTHOR-ERRORS": {
+   "kind": "runtime",
+   "verdict": "PASS",
+   "problems": [],
+   "fixture_ids": [
+    "ERROR-UNKNOWN-REQUIRED",
+    "CORPUS-REPEATED-ASSEMBLY"
+   ],
+   "mandatory_case": null,
+   "profile": "analytic-mesh-v1",
+   "tolerances": {
+    "position_metres": {
+     "absolute": 1e-06,
+     "relative": 0
+    },
+    "normal_components": {
+     "absolute": 1e-06,
+     "relative": 0
+    },
+    "volume_metres3": {
+     "absolute": 1e-06,
+     "relative": 0
+    },
+    "uv": {
+     "absolute": 1e-06,
+     "relative": 0
+    }
+   },
+   "max_deviation": {},
+   "geometry_reports": [],
+   "divergences": [],
+   "steps": []
+  }
+ }
+}

@@ -1,0 +1,47 @@
+from pathlib import Path
+import hashlib
+import json
+import subprocess
+
+ROOT = Path('/mnt/d/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-2')
+BASE = '58289c187'
+NATIVE = ROOT / 'libs/MatterGraphics/src/native'
+
+def original(path):
+    return subprocess.check_output(['git', '-C', str(ROOT), 'show', BASE + ':' + path])
+
+def test_exact_source_move():
+    name = 'MatterEngine3/src/render/vk_scene_renderer.cpp'
+    source = (ROOT / name).read_bytes()
+    for fragment in NATIVE.glob('*.inl'):
+        include = ('#include "../../../libs/MatterGraphics/src/native/' + fragment.name + '"\n').encode()
+        assert source.count(include) == 1
+        source = source.replace(include, fragment.read_bytes())
+    assert source == original(name)
+    for name in ['raster.vert', 'gbuffer.frag', 'material_common.glsl', 'impostor_common.glsl']:
+        assert (ROOT / 'libs/MatterGraphics/shaders' / name).read_bytes() == original('MatterEngine3/shaders_vk/' + name)
+    for name in ['impostor_mips.h', 'raster_mesh.cpp', 'raster_mesh.h']:
+        source = (NATIVE / name).read_bytes().replace(b'../../../../MatterEngine3/src/render/indexed_part_geometry.h', b'indexed_part_geometry.h')
+        assert source == original('MatterEngine3/src/render/' + name)
+
+def test_native_spirv_parity():
+    baseline = ROOT / 'MatterEditor/build/bright-torrent-validation/original-shaders'
+    baseline.mkdir(parents=True, exist_ok=True)
+    for name in ['raster.vert', 'gbuffer.frag', 'material_common.glsl', 'impostor_common.glsl']:
+        (baseline / name).write_bytes(original('MatterEngine3/shaders_vk/' + name))
+    def win(path):
+        return subprocess.check_output(['wslpath', '-w', str(path)], text=True).strip()
+    compiler = '/mnt/c/VulkanSDK/1.4.357.0/Bin/glslc.exe'
+    results = {}
+    for source, output, define in [('raster.vert', 'raster.vert', None), ('gbuffer.frag', 'gbuffer.frag', None),
+                                    ('raster.vert', 'raster_skin.vert', 'MATTER_SKINNED_VERTEX_INPUT'),
+                                    ('raster.vert', 'raster_water.vert', 'MATTER_WATER_ANIMATION_VERTEX_INPUT')]:
+        dest = baseline / (output + '.spv')
+        args = [compiler, '--target-env=vulkan1.3', '-O', '-I', win(ROOT / 'MatterEngine3/shaders_vk')]
+        if define: args.append('-D' + define)
+        result = subprocess.run(args + [win(baseline / source), '-o', win(dest)], capture_output=True, text=True, timeout=300)
+        assert result.returncode == 0, result.stdout + result.stderr
+        current = ROOT / 'MatterEditor/build/cmake/windows-msvc/relwithdebinfo/MatterEngine3/shaders_vk' / (output + '.spv')
+        assert dest.read_bytes() == current.read_bytes(), output
+        results[output] = {'bytes': dest.stat().st_size, 'sha256': hashlib.sha256(dest.read_bytes()).hexdigest()}
+    Path('/tmp/bright-torrent-validation/spirv-parity.json').write_text(json.dumps(results, indent=2) + '\n')
