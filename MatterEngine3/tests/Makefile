@@ -134,8 +134,8 @@ LOD_DISTANCE_CPP = lod_distance_tests.cpp
 LOD_DISTANCE_HEADERS = ../src/render/lod_distance.h
 
 LOCAL_LIGHT_INDEX_TARGET = build/local_light_index_tests
-LOCAL_LIGHT_INDEX_CPP = local_light_index_tests.cpp ../src/world_lights.cpp
-LOCAL_LIGHT_INDEX_HEADERS = check.h ../src/world_lights.h
+LOCAL_LIGHT_INDEX_CPP = ../../libs/MatterGraphics/tests/native/local_light_index_tests.cpp ../../libs/MatterGraphics/src/native/world_lights.cpp
+LOCAL_LIGHT_INDEX_HEADERS = check.h ../../libs/MatterGraphics/src/native/world_lights.h
 
 MATRIX_TARGET = build/matrix_tests
 MATRIX_CPP = matrix_tests.cpp ../../libs/MatterGraphics/src/matrix_math.cpp ../src/render/frame_matrices.cpp
@@ -156,10 +156,10 @@ ANIMATION_IR_TARGET = build/animation_ir_tests
 ANIMATION_IR_CPP = animation_ir_tests.cpp ../src/animation/animation_ir.cpp ../src/animation/animation_validate.cpp
 
 ANIMATION_ASSET_TARGET = build/animation_asset_tests
-ANIMATION_ASSET_CPP = animation_asset_tests.cpp ../src/animation/anim_asset.cpp ../src/animation/anim_bundle.cpp ../src/animation/animation_asset_store.cpp ../src/animation/animation_binding_bake.cpp ../src/animation/animation_ir.cpp ../src/render/raster_mesh.cpp ../src/render/indexed_part_geometry.cpp ../src/part_asset_v2.cpp $(COMMON_MSL_BLAS_SRC) $(MSL)/material_registry.c
+ANIMATION_ASSET_CPP = animation_asset_tests.cpp ../src/animation/anim_asset.cpp ../src/animation/anim_bundle.cpp ../src/animation/animation_asset_store.cpp ../src/animation/animation_binding_bake.cpp ../src/animation/animation_ir.cpp ../../libs/MatterGraphics/src/native/raster_mesh.cpp ../src/render/indexed_part_geometry.cpp ../src/part_asset_v2.cpp $(COMMON_MSL_BLAS_SRC) $(MSL)/material_registry.c
 
 ANIMATION_RUNTIME_ASSET_TARGET = build/animation_runtime_asset_tests
-ANIMATION_RUNTIME_ASSET_CPP = animation_runtime_asset_tests.cpp ../src/animation/animation_runtime_asset.cpp ../src/animation/animation_binding_bake.cpp ../src/animation/animation_evaluator.cpp ../src/animation/animation_controllers.cpp ../src/animation/animation_targets.cpp ../src/animation/animation_budget.cpp ../src/animation/animation_validate.cpp ../src/animation/ozz_adapter.cpp ../src/animation/ozz_bake.cpp ../src/animation/animation_ir.cpp ../src/render/raster_mesh.cpp ../src/render/indexed_part_geometry.cpp
+ANIMATION_RUNTIME_ASSET_CPP = animation_runtime_asset_tests.cpp ../src/animation/animation_runtime_asset.cpp ../src/animation/animation_binding_bake.cpp ../src/animation/animation_evaluator.cpp ../src/animation/animation_controllers.cpp ../src/animation/animation_targets.cpp ../src/animation/animation_budget.cpp ../src/animation/animation_validate.cpp ../src/animation/ozz_adapter.cpp ../src/animation/ozz_bake.cpp ../src/animation/animation_ir.cpp ../../libs/MatterGraphics/src/native/raster_mesh.cpp ../src/render/indexed_part_geometry.cpp
 
 ANIMATION_DSL_RIG_TARGET = build/animation_dsl_rig_tests
 # SCRIPT_CPP already owns indexed_part_geometry.cpp for ScriptHost's runtime
@@ -180,7 +180,7 @@ check-animation-dsl-rig-sources:
 	fi
 
 ANIMATION_BINDING_TARGET = build/animation_binding_tests
-ANIMATION_BINDING_CPP = animation_binding_tests.cpp ../src/render/raster_mesh.cpp ../src/render/indexed_part_geometry.cpp ../src/animation/animation_binding_bake.cpp ../src/animation/animation_ir.cpp
+ANIMATION_BINDING_CPP = animation_binding_tests.cpp ../../libs/MatterGraphics/src/native/raster_mesh.cpp ../src/render/indexed_part_geometry.cpp ../src/animation/animation_binding_bake.cpp ../src/animation/animation_ir.cpp
 
 # Phase D1: the bake boundary must report every animation diagnostic. Drives a
 # real ScriptHost bake, so it needs the script-host closure (sh flavor) exactly
@@ -627,7 +627,7 @@ COMP_C   = $(MSL)/material_registry.c
 CHARTATLAS_TARGET = build/chart_atlas_tests
 CHARTATLAS_CPP = chart_atlas_tests.cpp ../src/lod_bake.cpp ../src/bake_trace.cpp \
                  ../src/part_asset_v2.cpp \
-                 ../src/render/raster_mesh.cpp ../src/render/indexed_part_geometry.cpp \
+                 ../../libs/MatterGraphics/src/native/raster_mesh.cpp ../src/render/indexed_part_geometry.cpp \
                  ../src/render/part_store.cpp ../../libs/ProfileLib/src/profile.cpp ../src/impostor_bake.cpp ../src/warp_field.cpp ../../libs/MatterGraphics/src/matrix_math.cpp \
                  ../src/lod_select.cpp ../src/sector_grid.cpp \
                  ../src/animation/animation_asset_store.cpp ../src/animation/anim_asset.cpp \
@@ -1000,7 +1000,7 @@ SECTORCOORD_C      = $(FLECS_C)
 RESOLVECACHE_TARGET = build/resolve_cache_tests
 RESOLVECACHE_CPP    = resolve_cache_tests.cpp \
                       ../src/resolve_cache.cpp \
-                      ../src/world_lights.cpp \
+                      ../../libs/MatterGraphics/src/native/world_lights.cpp \
                       ../src/part_graph.cpp \
                       ../src/part_graph_snapshot.cpp \
                       ../src/part_asset_v2.cpp \
@@ -1129,7 +1129,7 @@ SCATTERPROF_C = $(COMMON_MSL_C)
 PARTSTORE_TARGET = build/partstore_tests
 PARTSTORE_CPP = partstore_tests.cpp ../src/render/part_store.cpp ../../libs/ProfileLib/src/profile.cpp ../src/impostor_bake.cpp ../src/warp_field.cpp \
                 ../../libs/MatterGraphics/src/matrix_math.cpp \
-                ../src/render/raster_mesh.cpp ../src/lod_select.cpp \
+                ../../libs/MatterGraphics/src/native/raster_mesh.cpp ../src/lod_select.cpp \
                 ../src/sector_grid.cpp ../src/lod_bake.cpp ../src/bake_trace.cpp \
                 ../src/part_asset_v2.cpp \
                 ../src/animation/animation_asset_store.cpp ../src/animation/anim_asset.cpp \
@@ -1193,7 +1193,7 @@ GRAPH_INT_TARGET = build/part_graph_integration_tests
 # render/LOD sources below are the A8 additions (part_store.h consumers).
 GRAPH_INT_CPP = part_graph_integration_tests.cpp $(filter-out script_host_tests.cpp,$(SCRIPT_CPP)) \
                 ../src/render/part_store.cpp ../../libs/ProfileLib/src/profile.cpp ../src/impostor_bake.cpp ../src/warp_field.cpp ../../libs/MatterGraphics/src/matrix_math.cpp \
-                ../src/render/raster_mesh.cpp ../src/lod_select.cpp \
+                ../../libs/MatterGraphics/src/native/raster_mesh.cpp ../src/lod_select.cpp \
                 ../src/sector_grid.cpp ../src/animation/animation_asset_store.cpp \
                 $(AUTHORING_ROUTE_CPP)
 GRAPH_INT_C   = $(COMMON_MSL_C)
@@ -1207,7 +1207,7 @@ EXAMPLE_TARGET = build/example_world
 EXAMPLE_CPP = example_world.cpp ../src/part_graph.cpp ../src/bake_trace.cpp $(SCRIPT_SOLID_COMMON_CPP) \
               ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../../libs/ProceduralGeometry/src/triangle_emit.cpp ../src/triangle_variation_recorder.cpp ../../libs/ProceduralGeometry/src/polygon_triangulate.cpp ../src/dsl_bindings.cpp \
               ../src/csg_lowering.cpp ../src/module_resolver.cpp ../src/script_rng_binding.cpp \
-              ../src/script/world_definition_loader.cpp ../src/world_lights.cpp ../src/hydrology/river_network_builder.cpp ../src/hydrology/hydrology_settings.cpp \
+              ../src/script/world_definition_loader.cpp ../../libs/MatterGraphics/src/native/world_lights.cpp ../src/hydrology/river_network_builder.cpp ../src/hydrology/hydrology_settings.cpp \
               ../src/part_asset_v2.cpp ../src/lod_bake.cpp ../src/world_flatten.cpp ../src/part_flatten.cpp \
               ../src/impostor_bake.cpp \
               ../src/retopo_blacklist.cpp \
@@ -1332,7 +1332,7 @@ TERRAINNOISE_CPP = terrain_noise_tests.cpp ../src/module_resolver.cpp
 WORLD_DEFINITION_TARGET = build/world_definition_tests
 WORLD_DEFINITION_CPP = world_definition_tests.cpp \
                        ../src/script/world_definition_loader.cpp \
-                       ../src/world_lights.cpp \
+                       ../../libs/MatterGraphics/src/native/world_lights.cpp \
                        ../src/terrain_collision/terrain_collision_definition.cpp \
                        ../src/hydrology/river_network_builder.cpp \
                        ../src/module_resolver.cpp \
@@ -1597,7 +1597,7 @@ VIEWER_LOGIC_CPP = viewer_logic_tests.cpp \
               ../src/provider/resolvers.cpp \
               ../src/render/part_store.cpp ../../libs/ProfileLib/src/profile.cpp ../src/warp_field.cpp \
               ../src/provider/local_provider.cpp ../src/authored_world_cache.cpp \
-              ../src/render/raster_mesh.cpp \
+              ../../libs/MatterGraphics/src/native/raster_mesh.cpp \
               ../src/tileset_phase.cpp $(AUTHORING_ROUTE_CPP) \
               ../../libs/AssetPipeline/physics/src/tileset_settle.cpp ../src/tileset_gtex.cpp \
               ../src/tileset_bake.cpp ../src/tileset_collider.cpp \
@@ -1648,7 +1648,7 @@ GPU_RENDER_CPP = \
     ../src/render/vk_animation_skinning.cpp \
     ../src/bake_trace.cpp \
     ../../libs/MatterGraphics/src/matrix_math.cpp ../src/render/frame_matrices.cpp \
-    ../src/render/raster_mesh.cpp ../src/render/part_store.cpp ../../libs/ProfileLib/src/profile.cpp ../src/warp_field.cpp \
+    ../../libs/MatterGraphics/src/native/raster_mesh.cpp ../src/render/part_store.cpp ../../libs/ProfileLib/src/profile.cpp ../src/warp_field.cpp \
     ../src/render/world_state.cpp \
     ../src/provider/local_provider.cpp ../src/authored_world_cache.cpp ../src/provider/resolvers.cpp \
     ../src/matter_engine.cpp \
@@ -1690,7 +1690,7 @@ GPU_PIPELINE_CPP = \
     ../src/tileset_torus_bvh.cpp \
     ../src/tileset_gtex.cpp \
     ../src/sector_grid.cpp ../src/lod_select.cpp \
-    ../src/world_lights.cpp \
+    ../../libs/MatterGraphics/src/native/world_lights.cpp \
     ../src/world_tracer.cpp \
     ../src/shader_source.cpp \
     ../src/tileset_phase.cpp $(AUTHORING_ROUTE_CPP) \
@@ -2151,7 +2151,7 @@ run-lod-distance: $(LOD_DISTANCE_TARGET)
 	./$(LOD_DISTANCE_TARGET)
 
 $(LOCAL_LIGHT_INDEX_TARGET): $(LOCAL_LIGHT_INDEX_CPP) $(LOCAL_LIGHT_INDEX_HEADERS) | build
-	$(CC) $(LOCAL_LIGHT_INDEX_CPP) -o $@ $(CFLAGS) $(INCLUDE_PATHS)
+	$(CC) $(LOCAL_LIGHT_INDEX_CPP) -o $@ $(CFLAGS) -I. $(INCLUDE_PATHS)
 
 run-local-light-index: $(LOCAL_LIGHT_INDEX_TARGET)
 	./$(LOCAL_LIGHT_INDEX_TARGET)
