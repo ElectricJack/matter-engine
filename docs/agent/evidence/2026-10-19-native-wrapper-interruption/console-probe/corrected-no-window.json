@@ -1,0 +1,13 @@
+{
+    "pid":  51204,
+    "parent_pid":  3512,
+    "console_window":  0,
+    "console_window_visible":  false,
+    "console_window_class":  "",
+    "console_process_ids":  [
+                                51204
+                            ],
+    "console_processes":  [
+                              "51204:powershell.exe"
+                          ]
+}

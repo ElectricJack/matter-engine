@@ -59,7 +59,7 @@
 #include "cloud_layers.h"
 #include "matter/math_types.h"
 #include "volumetric_quality.h"
-#include "../../../../MatterEngine3/src/render/vk_resources.h"
+#include "vk_resources.h"
 
 namespace matter {
 class VulkanDevice;
