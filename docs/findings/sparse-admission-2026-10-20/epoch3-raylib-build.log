@@ -1,0 +1,125 @@
+-- The C compiler identification is GNU 13.3.0
+-- The CXX compiler identification is GNU 13.3.0
+-- Detecting C compiler ABI info
+-- Detecting C compiler ABI info - done
+-- Check for working C compiler: /usr/bin/cc - skipped
+-- Detecting C compile features
+-- Detecting C compile features - done
+-- Detecting CXX compiler ABI info
+-- Detecting CXX compiler ABI info - done
+-- Check for working CXX compiler: /usr/bin/c++ - skipped
+-- Detecting CXX compile features
+-- Detecting CXX compile features - done
+-- Performing Test COMPILER_HAS_THOSE_TOGGLES
+-- Performing Test COMPILER_HAS_THOSE_TOGGLES - Success
+-- Testing if -Werror=pointer-arith can be used -- compiles
+-- Testing if -Werror=implicit-function-declaration can be used -- compiles
+-- Testing if -fno-strict-aliasing can be used -- compiles
+-- Using raylib's GLFW
+-- Performing Test CMAKE_HAVE_LIBC_PTHREAD
+-- Performing Test CMAKE_HAVE_LIBC_PTHREAD - Success
+-- Found Threads: TRUE  
+-- Including X11 support
+-- Found X11: /usr/include   
+-- Looking for XOpenDisplay in /usr/lib/x86_64-linux-gnu/libX11.so;/usr/lib/x86_64-linux-gnu/libXext.so
+-- Looking for XOpenDisplay in /usr/lib/x86_64-linux-gnu/libX11.so;/usr/lib/x86_64-linux-gnu/libXext.so - found
+-- Looking for gethostbyname
+-- Looking for gethostbyname - found
+-- Looking for connect
+-- Looking for connect - found
+-- Looking for remove
+-- Looking for remove - found
+-- Looking for shmat
+-- Looking for shmat - found
+-- Looking for IceConnectionNumber in ICE
+-- Looking for IceConnectionNumber in ICE - found
+-- Audio Backend: miniaudio
+-- Building raylib static library
+-- Generated build type: Release
+-- Compiling with the flags:
+--   PLATFORM=PLATFORM_DESKTOP
+--   GRAPHICS=GRAPHICS_API_OPENGL_33
+-- Configuring done (1.3s)
+-- Generating done (0.0s)
+-- Build files have been written to: /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/third_party/raylib/build/linux
+[  3%] Building C object raylib/external/glfw/src/CMakeFiles/glfw.dir/context.c.o
+[  6%] Building C object raylib/external/glfw/src/CMakeFiles/glfw.dir/init.c.o
+[  9%] Building C object raylib/external/glfw/src/CMakeFiles/glfw.dir/input.c.o
+[ 12%] Building C object raylib/external/glfw/src/CMakeFiles/glfw.dir/monitor.c.o
+[ 16%] Building C object raylib/external/glfw/src/CMakeFiles/glfw.dir/platform.c.o
+[ 19%] Building C object raylib/external/glfw/src/CMakeFiles/glfw.dir/vulkan.c.o
+[ 22%] Building C object raylib/external/glfw/src/CMakeFiles/glfw.dir/window.c.o
+[ 25%] Building C object raylib/external/glfw/src/CMakeFiles/glfw.dir/egl_context.c.o
+[ 29%] Building C object raylib/external/glfw/src/CMakeFiles/glfw.dir/osmesa_context.c.o
+[ 32%] Building C object raylib/external/glfw/src/CMakeFiles/glfw.dir/null_init.c.o
+[ 35%] Building C object raylib/external/glfw/src/CMakeFiles/glfw.dir/null_monitor.c.o
+[ 38%] Building C object raylib/external/glfw/src/CMakeFiles/glfw.dir/null_window.c.o
+[ 41%] Building C object raylib/external/glfw/src/CMakeFiles/glfw.dir/null_joystick.c.o
+[ 45%] Building C object raylib/external/glfw/src/CMakeFiles/glfw.dir/posix_module.c.o
+[ 48%] Building C object raylib/external/glfw/src/CMakeFiles/glfw.dir/posix_time.c.o
+[ 51%] Building C object raylib/external/glfw/src/CMakeFiles/glfw.dir/posix_thread.c.o
+[ 54%] Building C object raylib/external/glfw/src/CMakeFiles/glfw.dir/x11_init.c.o
+[ 58%] Building C object raylib/external/glfw/src/CMakeFiles/glfw.dir/x11_monitor.c.o
+[ 61%] Building C object raylib/external/glfw/src/CMakeFiles/glfw.dir/x11_window.c.o
+[ 64%] Building C object raylib/external/glfw/src/CMakeFiles/glfw.dir/xkb_unicode.c.o
+[ 67%] Building C object raylib/external/glfw/src/CMakeFiles/glfw.dir/glx_context.c.o
+[ 70%] Building C object raylib/external/glfw/src/CMakeFiles/glfw.dir/linux_joystick.c.o
+[ 74%] Building C object raylib/external/glfw/src/CMakeFiles/glfw.dir/posix_poll.c.o
+[ 74%] Built target glfw
+[ 77%] Building C object raylib/CMakeFiles/raylib.dir/raudio.c.o
+In file included from /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/third_party/raylib/src/raudio.c:282:
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/third_party/raylib/src/external/jar_mod.h: In function ‘jar_mod_load_file’:
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/third_party/raylib/src/external/jar_mod.h:1541:13: warning: ignoring return value of ‘fread’ declared with attribute ‘warn_unused_result’ [-Wunused-result]
+ 1541 |             fread(modctx->modfile, fsize, 1, f);
+      |             ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+In function ‘memcopy’,
+    inlined from ‘jar_mod_load’ at /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/third_party/raylib/src/external/jar_mod.h:1133:13:
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/third_party/raylib/src/external/jar_mod.h:370:13: warning: writing 1 byte into a region of size 0 [-Wstringop-overflow=]
+  370 |         d[i]=s[i];
+      |         ~~~~^~~~~
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/third_party/raylib/src/external/jar_mod.h: In function ‘jar_mod_load’:
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/third_party/raylib/src/external/jar_mod.h:125:13: note: at offset 1080 into destination object ‘title’ of size 20
+  125 |     muchar  title[20];
+      |             ^~~~~
+In function ‘memcopy’,
+    inlined from ‘jar_mod_load’ at /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/third_party/raylib/src/external/jar_mod.h:1133:13:
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/third_party/raylib/src/external/jar_mod.h:370:13: warning: writing 1 byte into a region of size 0 [-Wstringop-overflow=]
+  370 |         d[i]=s[i];
+      |         ~~~~^~~~~
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/third_party/raylib/src/external/jar_mod.h: In function ‘jar_mod_load’:
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/third_party/raylib/src/external/jar_mod.h:125:13: note: at offset 1081 into destination object ‘title’ of size 20
+  125 |     muchar  title[20];
+      |             ^~~~~
+In function ‘memcopy’,
+    inlined from ‘jar_mod_load’ at /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/third_party/raylib/src/external/jar_mod.h:1133:13:
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/third_party/raylib/src/external/jar_mod.h:370:13: warning: writing 1 byte into a region of size 0 [-Wstringop-overflow=]
+  370 |         d[i]=s[i];
+      |         ~~~~^~~~~
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/third_party/raylib/src/external/jar_mod.h: In function ‘jar_mod_load’:
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/third_party/raylib/src/external/jar_mod.h:125:13: note: at offset 1082 into destination object ‘title’ of size 20
+  125 |     muchar  title[20];
+      |             ^~~~~
+In function ‘memcopy’,
+    inlined from ‘jar_mod_load’ at /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/third_party/raylib/src/external/jar_mod.h:1133:13:
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/third_party/raylib/src/external/jar_mod.h:370:13: warning: writing 1 byte into a region of size 0 [-Wstringop-overflow=]
+  370 |         d[i]=s[i];
+      |         ~~~~^~~~~
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/third_party/raylib/src/external/jar_mod.h: In function ‘jar_mod_load’:
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/third_party/raylib/src/external/jar_mod.h:125:13: note: at offset 1083 into destination object ‘title’ of size 20
+  125 |     muchar  title[20];
+      |             ^~~~~
+[ 80%] Building C object raylib/CMakeFiles/raylib.dir/rcore.c.o
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/third_party/raylib/src/rcore.c: In function ‘LoadAutomationEventList’:
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/third_party/raylib/src/rcore.c:2964:13: warning: ignoring return value of ‘fgets’ declared with attribute ‘warn_unused_result’ [-Wunused-result]
+ 2964 |             fgets(buffer, 256, raeFile);
+      |             ^~~~~~~~~~~~~~~~~~~~~~~~~~~
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/third_party/raylib/src/rcore.c:2981:17: warning: ignoring return value of ‘fgets’ declared with attribute ‘warn_unused_result’ [-Wunused-result]
+ 2981 |                 fgets(buffer, 256, raeFile);
+      |                 ^~~~~~~~~~~~~~~~~~~~~~~~~~~
+[ 83%] Building C object raylib/CMakeFiles/raylib.dir/rmodels.c.o
+[ 87%] Building C object raylib/CMakeFiles/raylib.dir/rshapes.c.o
+[ 90%] Building C object raylib/CMakeFiles/raylib.dir/rtext.c.o
+[ 93%] Building C object raylib/CMakeFiles/raylib.dir/rtextures.c.o
+[ 96%] Building C object raylib/CMakeFiles/raylib.dir/utils.c.o
+[100%] Linking C static library libraylib.a
+[100%] Built target raylib

@@ -1,0 +1,14 @@
+{
+  "native-windows.log": {
+    "sha256": "1fdc81d76e9d2061337cdfe2d306165529762e5bf7172d48808e706e7d53871f",
+    "bytes": 954
+  },
+  "ctest.xml": {
+    "sha256": "84a4e75e6c4885187aaff8eb0f8d0fe700935bac67ef6c9c7a5ddaa7af8720f9",
+    "bytes": 121663
+  },
+  "toolchain.json": {
+    "sha256": "3f8f8d5abe1ca3ca7f92c9bac146dac956fcd89e7b5b3e6ef042bda4ba3745d3",
+    "bytes": 896
+  }
+}

@@ -1,0 +1,184 @@
+{
+  "schema": "matter.linux-ci-run.v1",
+  "source_sha": "92936ed0c6fbe22f25a0d5d6edb079972d8e7223",
+  "source_dirty": false,
+  "ci_script_sha256": "1c64e08db2f1519b0eff8cadf1b65b91aed54a4d28c2da357922faf4de87966e",
+  "hosted": false,
+  "parallelism": 2,
+  "scope": "portable-foundations",
+  "suites": [
+    {
+      "name": "MemoryLib",
+      "phases": [
+        {
+          "phase": "build_and_test",
+          "command": [
+            "make",
+            "-C",
+            "libs/MemoryLib",
+            "-j1",
+            "test"
+          ],
+          "seconds": 1.5928286090002075,
+          "exit_code": 0
+        }
+      ],
+      "passed": true,
+      "seconds": 1.5928286090002075
+    },
+    {
+      "name": "MeshChartingLib",
+      "phases": [
+        {
+          "phase": "build",
+          "command": [
+            "make",
+            "-C",
+            "libs/MeshChartingLib/tests",
+            "-j1",
+            "build/mesh_charting_tests"
+          ],
+          "seconds": 0.015852035000079923,
+          "exit_code": 0
+        },
+        {
+          "phase": "test",
+          "command": [
+            "./libs/MeshChartingLib/tests/build/mesh_charting_tests"
+          ],
+          "seconds": 0.009957526000107464,
+          "exit_code": 0
+        }
+      ],
+      "passed": true,
+      "seconds": 0.025809561000187387
+    },
+    {
+      "name": "AssetStoreLib",
+      "phases": [
+        {
+          "phase": "build",
+          "command": [
+            "make",
+            "-C",
+            "libs/AssetStoreLib",
+            "-j1"
+          ],
+          "seconds": 0.019989437999811344,
+          "exit_code": 0
+        },
+        {
+          "phase": "build",
+          "command": [
+            "make",
+            "-C",
+            "libs/AssetStoreLib/tests",
+            "-j1",
+            "build/asset_store_tests"
+          ],
+          "seconds": 0.017839289999756147,
+          "exit_code": 0
+        },
+        {
+          "phase": "test",
+          "command": [
+            "./libs/AssetStoreLib/tests/build/asset_store_tests"
+          ],
+          "seconds": 4.392692128000363,
+          "exit_code": 0
+        }
+      ],
+      "passed": true,
+      "seconds": 4.43052085599993
+    }
+  ],
+  "slowest_20": [
+    {
+      "name": "AssetStoreLib",
+      "phases": [
+        {
+          "phase": "build",
+          "command": [
+            "make",
+            "-C",
+            "libs/AssetStoreLib",
+            "-j1"
+          ],
+          "seconds": 0.019989437999811344,
+          "exit_code": 0
+        },
+        {
+          "phase": "build",
+          "command": [
+            "make",
+            "-C",
+            "libs/AssetStoreLib/tests",
+            "-j1",
+            "build/asset_store_tests"
+          ],
+          "seconds": 0.017839289999756147,
+          "exit_code": 0
+        },
+        {
+          "phase": "test",
+          "command": [
+            "./libs/AssetStoreLib/tests/build/asset_store_tests"
+          ],
+          "seconds": 4.392692128000363,
+          "exit_code": 0
+        }
+      ],
+      "passed": true,
+      "seconds": 4.43052085599993
+    },
+    {
+      "name": "MemoryLib",
+      "phases": [
+        {
+          "phase": "build_and_test",
+          "command": [
+            "make",
+            "-C",
+            "libs/MemoryLib",
+            "-j1",
+            "test"
+          ],
+          "seconds": 1.5928286090002075,
+          "exit_code": 0
+        }
+      ],
+      "passed": true,
+      "seconds": 1.5928286090002075
+    },
+    {
+      "name": "MeshChartingLib",
+      "phases": [
+        {
+          "phase": "build",
+          "command": [
+            "make",
+            "-C",
+            "libs/MeshChartingLib/tests",
+            "-j1",
+            "build/mesh_charting_tests"
+          ],
+          "seconds": 0.015852035000079923,
+          "exit_code": 0
+        },
+        {
+          "phase": "test",
+          "command": [
+            "./libs/MeshChartingLib/tests/build/mesh_charting_tests"
+          ],
+          "seconds": 0.009957526000107464,
+          "exit_code": 0
+        }
+      ],
+      "passed": true,
+      "seconds": 0.025809561000187387
+    }
+  ],
+  "total_seconds": 4.467666433999966,
+  "build_and_test_under_60_seconds": true,
+  "status": "passed"
+}

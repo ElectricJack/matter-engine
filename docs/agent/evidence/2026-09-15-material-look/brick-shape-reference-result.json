@@ -1,0 +1,28 @@
+{
+  "exit": 0,
+  "seconds_including_startup_and_view_waits": 32.302602626004955,
+  "source_changes": [],
+  "binary_changed": false,
+  "errors": [],
+  "vt_stats": [
+    "STATSVT,brick-shape-reference-middle,active=1,variants=1/32768,rejected=0,mesh=0.0/3512.0 MiB,pool=114/25600,pinned=1,queue=0,fills=114,evictions=0,ind=0.00/64 MiB",
+    "STATSVT,brick-shape-reference-close,active=1,variants=1/32768,rejected=0,mesh=0.0/3512.0 MiB,pool=163/25600,pinned=1,queue=0,fills=163,evictions=0,ind=0.00/64 MiB",
+    "STATSVT,brick-shape-reference-far,active=1,variants=1/32768,rejected=0,mesh=0.0/3512.0 MiB,pool=183/25600,pinned=1,queue=0,fills=183,evictions=0,ind=0.00/64 MiB",
+    "STATSVT,brick-shape-reference-grazing,active=1,variants=1/32768,rejected=0,mesh=0.0/3512.0 MiB,pool=195/25600,pinned=1,queue=0,fills=195,evictions=0,ind=0.00/64 MiB",
+    "STATSVT,brick-shape-reference-rt,active=1,variants=1/32768,rejected=0,mesh=0.0/3512.0 MiB,pool=195/25600,pinned=1,queue=0,fills=195,evictions=0,ind=0.00/64 MiB",
+    "STATSVT,brick-shape-reference-albedo,active=1,variants=1/32768,rejected=0,mesh=0.0/3512.0 MiB,pool=195/25600,pinned=1,queue=0,fills=195,evictions=0,ind=0.00/64 MiB",
+    "STATSVT,brick-shape-reference-normals,active=1,variants=1/32768,rejected=0,mesh=0.0/3512.0 MiB,pool=195/25600,pinned=1,queue=0,fills=195,evictions=0,ind=0.00/64 MiB",
+    "STATSVT,brick-shape-reference-wireframe,active=1,variants=1/32768,rejected=0,mesh=0.0/3512.0 MiB,pool=204/25600,pinned=1,queue=0,fills=204,evictions=0,ind=0.00/64 MiB"
+  ],
+  "images": {
+    "brick-shape-reference-middle.png": "c0444c03f8db7dafafe131bf8ae765794be452c1be380cc352b4681e8fbb3de6",
+    "brick-shape-reference-close.png": "ad73a5ec406ed39c6242368b1e020bd718fff098ee4f9c7a1aa702da15680080",
+    "brick-shape-reference-far.png": "dcf47762b38f243562d581d38e4a1cbc4004eed6ef3b3c73de305cdec1a2edb9",
+    "brick-shape-reference-grazing.png": "f99879b974b14950a293ad6d8cd1fcfd807d27c026c816bd573644c8e739bfbc",
+    "brick-shape-reference-rt.png": "615d141f41487e5a2143003843b15ee1597dcd1233ae395e413d0df73f356081",
+    "brick-shape-reference-albedo.png": "713ee4f92607c68f8d4a2e56b9813789ee4f87df5c41c0ac4b1b889b58f68b86",
+    "brick-shape-reference-normals.png": "9cf614fee3d43b4118a8a075da507913a39fb0f17333bbc38bf7b7457dad3e7c",
+    "brick-shape-reference-wireframe.png": "e18d9060980505560e7313af14db19df39a931f8447ced0d70049d1670ad672b"
+  },
+  "passed": true
+}

@@ -1,0 +1,35 @@
+Microsoft (R) COFF/PE Dumper Version 14.44.35211.0
+Copyright (C) Microsoft Corporation.  All rights reserved.
+
+
+Dump of file D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-1\libs\MatterGraphics\build\sample-clean-epoch8\matter_graphics_sample.exe
+
+File Type: EXECUTABLE IMAGE
+
+  Image has the following dependencies:
+
+    vulkan-1.dll
+    MSVCP140.dll
+    VCRUNTIME140.dll
+    VCRUNTIME140_1.dll
+    api-ms-win-crt-runtime-l1-1-0.dll
+    api-ms-win-crt-math-l1-1-0.dll
+    api-ms-win-crt-heap-l1-1-0.dll
+    api-ms-win-crt-environment-l1-1-0.dll
+    api-ms-win-crt-stdio-l1-1-0.dll
+    api-ms-win-crt-filesystem-l1-1-0.dll
+    api-ms-win-crt-string-l1-1-0.dll
+    api-ms-win-crt-locale-l1-1-0.dll
+    KERNEL32.dll
+
+  Summary
+
+        1000 .00cfg
+        4000 .data
+        5000 .idata
+       14000 .pdata
+      235000 .rdata
+        2000 .reloc
+        1000 .rsrc
+      1A8000 .text
+        1000 .tls

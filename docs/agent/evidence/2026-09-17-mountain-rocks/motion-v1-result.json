@@ -1,0 +1,28 @@
+{
+  "steps": [
+    {
+      "args": [
+        "docs/agent/evidence/2026-09-17-mountain-rocks/capture_motion.py",
+        "motion-v1",
+        "rock-relief-v2"
+      ],
+      "exit": 0
+    },
+    {
+      "args": [
+        "docs/agent/evidence/2026-09-17-receiver-height/audit_paths.py",
+        "docs/agent/evidence/2026-09-17-mountain-rocks/motion-v1/raster"
+      ],
+      "exit": 0
+    },
+    {
+      "args": [
+        "docs/agent/evidence/2026-09-17-receiver-height/audit_paths.py",
+        "docs/agent/evidence/2026-09-17-mountain-rocks/motion-v1/native_rt"
+      ],
+      "exit": 0
+    }
+  ],
+  "exit": 0,
+  "finished": true
+}

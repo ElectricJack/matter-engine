@@ -1,0 +1,13 @@
+{
+  "source_count": 921,
+  "source_changes": [],
+  "binary_changes": [],
+  "all_builds_pass": true,
+  "check_count": 11,
+  "all_checks_pass": true,
+  "test_artifact_mismatches": [],
+  "focused_metrics": [
+    "MODULE_RESIDENCY shared_consumers=3 initial_fills=2 retired_readers=preserved recycled_generation=changed restart_epoch=isolated"
+  ],
+  "passed": true
+}

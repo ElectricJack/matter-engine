@@ -96,7 +96,21 @@ namespace components {
 //            This is what separates the new default from the old one, which no
 //            salt can do: the old artifacts were written when OFF was the
 //            default and therefore carry a zero salt too.
-inline constexpr uint32_t kEngineBake = 8u;
+//   8 -> 9 : script voxel meshing honors absolute brush spacing for every
+//            primitive and CSG operation, uniformly across each expression.
+//            Old fat-only parts ignored fine spacing and must be rebaked.
+//   9 -> 10: flattened instance normals use the row-major inverse transpose.
+//            Previous rotated/sheared children stored inverse-transformed
+//            normals, so serialized shading normals must be rebaked.
+//  10 -> 11: ordered solid CSG normals use the same field as extraction;
+//            simplify modifiers preserve corner normals/material attributes.
+//            Existing artifacts must not retain the old face-normal fallback.
+//            Explicit static singleton sources also retain one runtime rung
+//            through both disk and in-memory compositional fallback staging.
+// 12: source SDF cells subdivide below the former 1/63 m sampling floor;
+//     Vulkan tileset baking also preserves authored per-triangle tint.
+// 12 -> 13: fractional metre tiles preserve their full pixel extent.
+inline constexpr uint32_t kEngineBake = 13u;
 
 // The physics library. A settle that lands differently is different content.
 inline constexpr uint32_t kBox3d = 1u;
@@ -117,7 +131,13 @@ inline constexpr uint32_t kBox3d = 1u;
 //            "every eligible default ladder grows an impostor" rule — to rebake
 //            under the new rule so a flag added to a cached part actually drops
 //            the billboard rather than being served the stale one.
-inline constexpr uint32_t kRepresentation = 2u;
+//   2 -> 3 : LocalProvider forwards authored LOD plans for both installed and
+//            deferred parts, including cached bodies missing their plan. Flats
+//            previously built with the default ladder must be rebuilt.
+//   3 -> 4 : a sole authored impostor uses build() as bake-only source, with
+//            no raw mesh in the runtime flat. Older parsers discarded that
+//            declaration and may have cached a default mesh ladder instead.
+inline constexpr uint32_t kRepresentation = 4u;
 
 // On-disk layout versions. These are ALSO written into their file headers as a
 // self-describing guard (a truncated or mismatched file must fail to parse,

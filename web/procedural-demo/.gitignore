@@ -1,0 +1,4 @@
+node_modules/
+dist/
+public/matter-procedural-wasm/
+frontend-tests/artifacts/

@@ -1,0 +1,138 @@
+{
+  "command": [
+    "/mnt/c/Users/webde/AppData/Local/Programs/Python/Launcher/py.exe",
+    "-3",
+    "D:/Shared With Desktop/AI/matter-engine-cpp/MatterEngine3/tools/drive.py",
+    "--world",
+    "StreamMountain",
+    "--timeline",
+    "D:/tmp/matter-vt/20260915-feedback/terrain-worker-validation/timeline.txt",
+    "--out-dir",
+    "D:/tmp/matter-vt/20260915-feedback/terrain-worker-validation/run",
+    "--editor",
+    "D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor/build/windows-msvc/editor.exe",
+    "--timeout",
+    "600",
+    "--hide-ui",
+    "--env",
+    "MATTER_HIDE_WINDOW=0",
+    "--env",
+    "MATTER_WINDOW_WIDTH=1920",
+    "--env",
+    "MATTER_WINDOW_HEIGHT=1080",
+    "--env",
+    "MATTER_VSYNC=0",
+    "--env",
+    "MATTER_PRESENT_MODE=mailbox",
+    "--env",
+    "MATTER_FRAME_LIMIT=60",
+    "--env",
+    "MATTER_CAM=380,90,1600,420,55,1420",
+    "--env",
+    "MATTER_VT_TRACE=D:/tmp/matter-vt/20260915-feedback/terrain-worker-validation/vt.jsonl",
+    "--env",
+    "MATTER_VT_EVENT_LOG=0",
+    "--env",
+    "MATTER_VT_DENSITY_FRAME=0",
+    "--env",
+    "MATTER_VK_VALIDATION=1",
+    "--env",
+    "TMP=C:/Users/webde/AppData/Local/Temp",
+    "--env",
+    "TEMP=C:/Users/webde/AppData/Local/Temp",
+    "--env",
+    "MATTER_CAM_PATH=D:/tmp/matter-vt/20260915-feedback/terrain-worker-validation/camera.path",
+    "--env",
+    "MATTER_CAM_PATH_WARMUP=0",
+    "--env",
+    "MATTER_CAM_PATH_SETTLE=5",
+    "--env",
+    "MATTER_CAM_PATH_EXIT=0",
+    "--env",
+    "MATTER_PROFILE_TRACE=D:/tmp/matter-vt/20260915-feedback/terrain-worker-validation/profile.json"
+  ],
+  "driver_exit": 0,
+  "elapsed_seconds": 361.9991505729995,
+  "source_manifest": "worker-integration-source.json",
+  "changed_inputs_during_run": [],
+  "validation_effective": true,
+  "full_vt_acceptance": false,
+  "validation_error_lines": 0,
+  "worker_oversize_warning_lines": 0,
+  "markers": [
+    "STATSVT,settle_begin,active=1,variants=789/32768,rejected=0,mesh=225.9/3512.0 MiB,pool=1630/33024,pinned=789,queue=0,fills=1630,evictions=0,ind=2.40/64 MiB",
+    "STATSVT,settle_end,active=1,variants=789/32768,rejected=0,mesh=225.9/3512.0 MiB,pool=1630/33024,pinned=789,queue=0,fills=1630,evictions=0,ind=2.40/64 MiB"
+  ],
+  "visual_review": "1920x1080 final screenshot compared with geometry-validation reference; framing and visible surface appearance retained. Final frame only; not intermediate continuity acceptance.",
+  "artifacts": [
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-worker-validation/analysis.log",
+      "bytes": 1895,
+      "sha256": "8f4b5839361adc01cd0f16d4e3c3e15948defe2c225e8a5a7ce88308a7a4fb46"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-worker-validation/camera.path",
+      "bytes": 336051,
+      "sha256": "221bab96a8d6eae04c361d209b4b9cc60afcb4470b8ad30aea128d6db0cccfa5"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-worker-validation/command.json",
+      "bytes": 1468,
+      "sha256": "5895e7d142ea74f5bf6f5009ce5888dae9b8295c9e6d7b8eb4df9772eb9663ec"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-worker-validation/driver.log",
+      "bytes": 639330,
+      "sha256": "8f63d8889842671a9ffc364fc2df22239cbb7a4afde2208115faa7e048099e15"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-worker-validation/launch-source.json",
+      "bytes": 18784,
+      "sha256": "6a36a0ffc43e515ab58c97f1927cf06e73e6a91c899442bef58d35b1036773c1"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-worker-validation/profile.json",
+      "bytes": 3660565,
+      "sha256": "be75956d5f752f40e388e1a09cebad6704d1cdc7c36602720cacc890d1ec2d21"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-worker-validation/result.json",
+      "bytes": 1800,
+      "sha256": "d2de5f4eab529b8675cc68bab59bf6b5897610e2d6eb21ad4abc2b16b1a0e0c7"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-worker-validation/run/cmd.txt",
+      "bytes": 216,
+      "sha256": "f3396142122c72419784b7dc7f9ce05f0a8187fb9d65f0e7f964b42b516d1d4f"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-worker-validation/run/log.txt",
+      "bytes": 638853,
+      "sha256": "bb9b68ec3c9c98a11aa3a1b324b316dadeb5de5d4732be69d4130266f25e0f27"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-worker-validation/settled.png",
+      "bytes": 5909782,
+      "sha256": "805750ade6656025d71ff78edefa88b0fcccbee8e9ac7c65633c21181450b2f0",
+      "dimensions": [
+        1920,
+        1080
+      ]
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-worker-validation/settled.png.done",
+      "bytes": 10,
+      "sha256": "4c339121e4860b04ebd48181621c9dd3f84901846feda08d4e77aafaf9a6c896"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-worker-validation/timeline.txt",
+      "bytes": 216,
+      "sha256": "f3396142122c72419784b7dc7f9ce05f0a8187fb9d65f0e7f964b42b516d1d4f"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-worker-validation/vt.jsonl",
+      "bytes": 1768609,
+      "sha256": "0d1faff6c4f1db070541b32b08d13bcaa438fd964857f047b42937c8185e4f25"
+    }
+  ]
+}

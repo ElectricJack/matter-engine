@@ -1,0 +1,12 @@
+{
+  "comparison": "settled grazing POM on vs off, neutral diagnostic lighting",
+  "roi_xywh": [
+    128,
+    520,
+    1024,
+    280
+  ],
+  "mean_absolute_channel_difference_255": 7.866692066192627,
+  "fraction_pixels_max_channel_difference_over_3": 0.6240304129464286,
+  "interpretation": "Confirms a visible image change; not a standalone depth or realism oracle. Native geometric POM probes provide the depth checks."
+}

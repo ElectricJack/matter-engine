@@ -1,0 +1,8 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><title>Matter worker runtime tests</title>
+<body><pre id="output">Running</pre>
+<script type="module">
+import {runTests} from './browser_tests.mjs';
+try { window.runtimeReport = await runTests(); document.getElementById('output').textContent = JSON.stringify(window.runtimeReport); }
+catch (error) { window.runtimeFailure = String(error.stack ?? error); document.getElementById('output').textContent = window.runtimeFailure; }
+</script></body></html>
