@@ -1,0 +1,32 @@
+{
+    "captured_utc":  "2026-10-11T01:57:01.3607181Z",
+    "os":  "Microsoft Windows 11 Pro",
+    "os_version":  "10.0.26200",
+    "os_build":  "26200",
+    "system_model":  "X570 AORUS ULTRA",
+    "memory_bytes":  68635271168,
+    "cpu":  {
+                "Name":  "AMD Ryzen 9 5900X 12-Core Processor            ",
+                "NumberOfCores":  12,
+                "NumberOfLogicalProcessors":  24
+            },
+    "video":  {
+                  "Name":  "NVIDIA GeForce RTX 4090",
+                  "DriverVersion":  "32.0.16.1074",
+                  "DriverDate":  "\/Date(1782950400000)\/"
+              },
+    "toolchain":  {
+                      "VisualStudioRoot":  "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community",
+                      "VisualStudioProductId":  "Microsoft.VisualStudio.Product.Community",
+                      "VsDevCmd":  "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\Common7\\Tools\\VsDevCmd.bat",
+                      "MsvcToolsVersion":  "14.44.35207",
+                      "WindowsSdkVersion":  "10.0.26100.0",
+                      "CMake":  "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\Common7\\IDE\\CommonExtensions\\Microsoft\\CMake\\CMake\\bin\\cmake.exe",
+                      "Ninja":  "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\Common7\\IDE\\CommonExtensions\\Microsoft\\CMake\\Ninja\\ninja.exe",
+                      "Python":  "C:\\Users\\webde\\AppData\\Local\\Programs\\Python\\Launcher\\py.exe",
+                      "PythonVersion":  "Python 3.13.14",
+                      "VulkanSdk":  "C:\\VulkanSDK\\1.4.357.0",
+                      "Glslc":  "C:\\VulkanSDK\\1.4.357.0\\Bin\\glslc.exe"
+                  },
+    "note":  "Current CPU/native captures only. This machine snapshot does not identify the historical render campaign CPU."
+}

@@ -76,6 +76,7 @@
 #include "regen_jobs.h"
 #endif
 #include "matter/props.h"
+#include "matter/fixture_io.h"
 #ifndef VIEWER_FIFO_PROPERTY_HELPERS_ONLY
 #include "matter/scene.h"  // SceneEntityId / SceneEditResult receipts (E5c)
 #include "matter/world_session.h"
@@ -83,10 +84,16 @@
 
 namespace viewer {
 
-inline bool write_screenshot_completion_marker(const std::string& path) {
+inline bool write_screenshot_completion_marker(
+        const std::string& path, matter::CacheByteStorage* storage = nullptr) {
+    static constexpr char kMarker[] = "captured\n";
+    if (storage) {
+        const matter::CacheByteStorage::Bytes bytes(
+            kMarker, kMarker + sizeof(kMarker) - 1u);
+        return storage->publish(path, bytes);
+    }
     FILE* file = std::fopen(path.c_str(), "w");
     if (!file) return false;
-    static constexpr char kMarker[] = "captured\n";
     const bool wrote =
         std::fwrite(kMarker, 1u, sizeof(kMarker) - 1u, file) ==
         sizeof(kMarker) - 1u;

@@ -10,6 +10,11 @@ const root = path.resolve(
   "../../..",
 );
 const scene = path.join(root, "projects/world_demo/scenes/castles/layouts/Kreuzenstein");
+// Object lookup mirrors the engine's search path: a scene owns its own
+// objects/ over the shared project tier. KreuzensteinBrick lives in the
+// project tier because shared-lib/kreuzenstein.js places it by name, and a
+// shared-lib module is reachable from every scene (world_definition_tests
+// rejects shared-lib references to scene-local objects).
 const objectDirs = [
   path.join(scene, "objects"),
   path.join(root, "projects/world_demo/objects"),
