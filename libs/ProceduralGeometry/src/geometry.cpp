@@ -68,8 +68,9 @@ data::MeshPrototype convert(const tri_emit::TriangleBuildBuffer &buffer,const da
 
 std::vector<data::Capability> PrimitiveGeometry::capabilities() const {
     std::vector<data::Capability> caps={{"matter.recipe.core",1},{"matter.asset.core",1},{"matter.material.pbr",1},
-        {"matter.geometry.primitive.v1",1},{"matter.geometry.csg.cpu.v1",1}};
+        {"matter.geometry.primitive.v1",1},{"matter.geometry.csg.cpu.v1",1},{"matter.geometry.query.cpu.v1",1}};
     for(const auto &op:extra_ops) caps.push_back({"matter.operation."+op,1});
+    for(auto &op:modifier_capabilities(mesh_worker_.executable)) caps.push_back(std::move(op));
     return caps;
 }
 jobs::AssetResult PrimitiveGeometry::evaluate(const jobs::JobEnvelope &job,const data::RecipeDocument &recipe,
@@ -283,24 +284,8 @@ jobs::AssetResult PrimitiveGeometry::evaluate(const jobs::JobEnvelope &job,const
         checked(monitor.report({1,"complete"}));
         auto bounded=options; bounded.validation=validation;
         jobs::ResolvedInputs output_resources; output_resources.resources=inputs.resources;
-        auto result=jobs::finish_asset(admitted_job,std::move(asset),bounded,monitor,usage,std::move(output_resources));
-        // Frozen contracts-v1 JobResult::success discards diagnostics when its
-        // final envelope encoding runs out of memory. Entry admission already
-        // validated this immutable envelope. Its exact late fallback therefore
-        // means allocation failure, not a newly invalid caller envelope. Keep
-        // the workaround local until JobResult preserves that validation error.
-        if(!result.ok() && result.diagnostics().size()==1) {
-            const auto &d=result.diagnostics()[0];
-            if(d.code==data::ErrorCode::invalid_input &&
-                d.message=="invalid result envelope or failure without an error") {
-                // Also require a still-valid owned envelope. The success path
-                // supplies no diagnostics; with immutable valid fields its
-                // failed validation can only be the swallowed resource error.
-                checked(jobs::validate(admitted_job));
-                return jobs::AssetResult::failure(admitted_job,data::ErrorCode::resource_limit,"geometry publication allocation failed");
-            }
-        }
-        return result;
+        return published(jobs::finish_asset(admitted_job,std::move(asset),bounded,monitor,usage,std::move(output_resources)),
+            admitted_job,"geometry publication allocation failed");
     } catch(const Failure &f) {
         data::Diagnostic d{data::Severity::error,f.code,f.message,f.node.empty()?active:f.node,{},{}};
         auto source=recipe.source_map.find(d.node_id); if(source!=recipe.source_map.end()) d.source=source->second;
@@ -312,14 +297,6 @@ jobs::AssetResult PrimitiveGeometry::evaluate(const jobs::JobEnvelope &job,const
     } catch(...) {
         return jobs::AssetResult::failure(job,data::ErrorCode::backend_failure,"geometry backend exception");
     }
-}
-jobs::QueryResult PrimitiveGeometry::query(const jobs::JobEnvelope &job,const jobs::AssetProduct &,
-    const jobs::QueryBatch &,const jobs::EvaluationOptions &,const jobs::JobControl &) {
-    return jobs::QueryResult::failure(job,data::ErrorCode::unsupported_capability,"spatial queries belong to the subsequent geometry extraction");
-}
-jobs::AssetResult PrimitiveGeometry::process(const jobs::JobEnvelope &job,const jobs::AssetProduct &,
-    const jobs::ProcessingRequest &,const jobs::EvaluationOptions &,const jobs::JobControl &) {
-    return jobs::AssetResult::failure(job,data::ErrorCode::unsupported_capability,"processing is not implemented by primitive geometry");
 }
 data::ValidationResult bake_placement(const data::MeshPrototype &source,const data::Mat4 &transform,
     data::MeshPrototype &destination) {

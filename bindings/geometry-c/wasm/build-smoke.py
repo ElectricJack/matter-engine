@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Reproduce the pinned contract smoke in a new build directory, without installs."""
+"""Build the pinned real geometry binding and contract smoke, without installs."""
 import argparse
 import hashlib
 import json
@@ -18,6 +18,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--emsdk", type=Path, default=os.environ.get("EMSDK"))
     parser.add_argument("--build-dir", required=True, type=Path, help="must be absent or empty")
+    parser.add_argument("--native-consumer", type=Path, help="native matter_geometry_c_tests executable for equivalence")
     args = parser.parse_args()
     if args.emsdk is None:
         parser.error("pass --emsdk or activate EMSDK first")
@@ -56,6 +57,10 @@ def main():
         ["cmake", "--build", str(build), "--parallel", "1"],
         ["ctest", "--test-dir", str(build), "--output-on-failure", "--parallel", "1"],
     ]
+    if args.native_consumer:
+        if not args.native_consumer.is_file():
+            parser.error("--native-consumer must name a built C consumer executable")
+        commands[0].append(f"-DMATTER_GEOMETRY_C_NATIVE_CONSUMER={args.native_consumer.resolve()}")
     evidence = {"profile": lock["profile"], "emscripten_revision": lock["emscripten_revision"],
                 "toolchain_lock_sha256": hashlib.sha256((here / "toolchain.json").read_bytes()).hexdigest(),
                 "tools": observed,
@@ -69,7 +74,7 @@ def main():
             evidence["checks"].append({"command": command, "exit_code": result.returncode})
             if result.returncode:
                 return result.returncode
-        for artifact in sorted(build.glob("wasm_contract_*.wasm")):
+        for artifact in sorted(build.glob("*.wasm")):
             data = artifact.read_bytes()
             evidence["artifacts"][artifact.name] = {"bytes": len(data), "sha256": hashlib.sha256(data).hexdigest()}
         print(f"PASS: evidence {evidence_path}")
