@@ -1,0 +1,8 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><title>Matter native/browser parity</title>
+<body><pre id="output">Running</pre>
+<script type="module">
+import {runPlan} from './parity_page.mjs';
+try { window.parityReport = await runPlan(); document.getElementById('output').textContent = 'done'; }
+catch (error) { window.parityFailure = String(error.stack ?? error); document.getElementById('output').textContent = window.parityFailure; }
+</script></body></html>

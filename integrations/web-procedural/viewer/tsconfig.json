@@ -1,0 +1,8 @@
+{
+  "compilerOptions": {
+    "target": "ES2022", "module": "NodeNext", "moduleResolution": "NodeNext",
+    "strict": true, "declaration": true, "outDir": "dist", "rootDir": "src",
+    "lib": ["ES2022", "DOM"], "types": [], "noEmitOnError": true
+  },
+  "files": ["src/three.d.ts", "src/index.mts", "src/demo/app.mts"]
+}

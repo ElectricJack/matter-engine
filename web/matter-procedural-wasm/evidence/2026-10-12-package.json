@@ -1,0 +1,47 @@
+{
+  "date": "2026-10-12",
+  "task": "azure-beacon-24",
+  "profile": "matter-wasm32-worker-v1",
+  "tools": {
+    "emcc": "emcc (Emscripten gcc/clang-like replacement + linker emulating GNU ld) 5.0.2 (dc80f645ee70178c11666de0c3860d9e064d50e4)\nCopyright (C) 2026 the Emscripten authors (see AUTHORS.txt)\nThis is free and open source software under the MIT license.\nThere is NO warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.",
+    "node": "v22.16.0",
+    "cmake": "cmake version 3.28.3\n\nCMake suite maintained and supported by Kitware (kitware.com/cmake).",
+    "ninja": "1.11.1",
+    "tsc": "Version 5.9.3"
+  },
+  "clean_build_seconds": 236.38,
+  "rebuild_seconds": 133.431,
+  "wasm_bytes": 914223,
+  "wasm_sha256": "4a0ebd8e7817e30ea716f862b8aed7b61debb1fadad7496e51c63fea121cd6aa",
+  "rebuild_hash_matches": true,
+  "build_command": "python3 web/matter-procedural-wasm/build.py --emsdk /home/jkern/emsdk --build-dir /tmp/matter-wasm-azure-beacon-24",
+  "checks": [
+    {
+      "command": "aq test web/matter-procedural-wasm/tests/test_package.py --tb=short",
+      "result": "2 passed; Node24 API suite (3 subtests), real Chromium served only dist"
+    },
+    {
+      "command": "aq test web/matter-procedural-wasm/tests/test_binding.py --tb=short",
+      "result": "1 passed; unchanged native binding WASM ownership/growth/error/query/CSG/modifier suite"
+    },
+    {
+      "command": "PATH=/home/jkern/emsdk/node/22.16.0_64bit/bin:$PATH aq test web/matter-procedural-wasm/tests/test_package.py -k test_wasm_package --tb=short",
+      "result": "1 passed; SDK Node22 API suite (3 subtests)"
+    },
+    {
+      "command": "tsc -p web/matter-procedural-wasm/tests/tsconfig.json",
+      "result": "passed"
+    }
+  ],
+  "sample_vertices": [
+    36,
+    792,
+    36
+  ],
+  "sample_triangles": [
+    12,
+    264,
+    12
+  ],
+  "scope": "Clean project build; installed SDK. First link also compiled missing C++ sysroot libraries. Rebuild reused SDK cache. Timings include configure/compiler/link/TypeScript/package; binaries are generated, not checked in."
+}

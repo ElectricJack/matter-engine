@@ -1,0 +1,1084 @@
+{
+  "task_id": "sound-impact-80.1",
+  "source_sha": "35289874a52630a6439353666ed26179dd334ab2",
+  "source_tree": "0af92e1426511d01bec9e15c1851502f6c728115",
+  "checked_at_utc": "2026-10-11T01:54:51.055468+00:00",
+  "files": {
+    ".github/agent-queue-integration.json": {
+      "sha256": "4ba1582f5ef9dc0656d04739034f5891261a05017125fcbb4421adb2667b6f13",
+      "git_blob": "68eee601b503f7fcd1fc418ecde7d6d131bf2b71",
+      "bytes": 776
+    },
+    ".github/workflows/tests.yml": {
+      "sha256": "0152245bc69dfad488d1b2398f5179e74f2a3997a73d35bf28f10c8523b42833",
+      "git_blob": "f49807729e7b17f0e5370d4e5b7d59100b805de0",
+      "bytes": 1579
+    },
+    ".github/workflows/main-attestation.yml": {
+      "sha256": "af025abfe818d11fbe91e274992285bb93d76df01cba9299e5f0185abd0403d7",
+      "git_blob": "12b23908b1145eaf3f498ec5108214f724a6bf8d",
+      "bytes": 1930
+    },
+    "tools/aq_attestation.py": {
+      "sha256": "46a72ad761bb1f6f5748c634b760b34a5606cb2cadbbcc102a11bd8e9a7a1ff4",
+      "git_blob": "be5ecfbde3c9ee8e596b96058b08a6b34af3beff",
+      "bytes": 21907
+    },
+    "tools/aq_attestation.LICENSE": {
+      "sha256": "fc4033b37c661304517f650694715e37a4e14e965293215f56b796fc00cc6c5e",
+      "git_blob": "b8fd5625d61b6956493ca16a59e90cd204c1d8b3",
+      "bytes": 1066
+    },
+    "tools/tests/test_aq_attestation.py": {
+      "sha256": "bfe723dbe728e92190652ba4dae633a519d5b0c1ae0f18f8dbf084e0a4c0e260",
+      "git_blob": "23a2cf3c2fc15d8653241ea4e717d9c784e0bf13",
+      "bytes": 11618
+    },
+    "docs/agent/aq-promotion/train-policy.proposal.json": {
+      "sha256": "cbdf69cdfc043fd929a92e31dbfc192a26127fc4de8c5442d6a565e26a7b69d7",
+      "git_blob": "263265c2ba16db4e8b8513f1c7a1466893414111",
+      "bytes": 3175
+    },
+    "docs/agent/aq-promotion/trust-manifest.draft.json": {
+      "sha256": "03a1028b7819016cbc622ee589d095449d7ec903a7d4890af96ee7ef034635dd",
+      "git_blob": "77ae4d56c90a85ec74ce2177520a9d1b3844eca1",
+      "bytes": 773
+    },
+    "docs/agent/aq-promotion/hosted-check-policy.json": {
+      "sha256": "36b57b257b007aa46510c5f9f54981ab510b9a7e32401c8762567de637a65cea",
+      "git_blob": "8da757f3e0ab1b1ba9554ab7e57ce3e57ecfd4ff",
+      "bytes": 334
+    },
+    "docs/agent/qa-cookbook.md": {
+      "sha256": "e7ae496d75870654900831a8a977aeac8fafaf41bd64daa69133c7bb5c1b6853",
+      "git_blob": "ceb02b390a2baa4e68a543e3a8c1287c27297e43",
+      "bytes": 43026
+    }
+  },
+  "generated_base_canonical_sha256": "73bf03ce85880f5fb53800cf9ec64b8c494a462c26d9e2cf7b3e4cc0f6d7efe1",
+  "checks": [
+    {
+      "name": "authenticated_generated_identities",
+      "result": "pass",
+      "detail": {
+        "schema": "aq.integration-trust.v1",
+        "canonical_repository_id": "matter-engine-cpp",
+        "repository_id": 1266132968,
+        "full_name": "ElectricJack/matter-engine",
+        "ci_producer_app_id": 15368,
+        "attestation_app_id": 5075923,
+        "attestation_name": "Agent Queue Integration Attestation",
+        "required_checks": {
+          "names": [
+            "Native Windows build and tests",
+            "Linux foundation build and tests"
+          ],
+          "version": "matter-engine-ci-v1"
+        }
+      }
+    },
+    {
+      "name": "generated_base_canonical_digest",
+      "result": "pass",
+      "detail": "73bf03ce85880f5fb53800cf9ec64b8c494a462c26d9e2cf7b3e4cc0f6d7efe1"
+    },
+    {
+      "name": "production_file_digest",
+      "result": "pass",
+      "detail": "4ba1582f5ef9dc0656d04739034f5891261a05017125fcbb4421adb2667b6f13"
+    },
+    {
+      "name": "production_uses_supported_canonical_text",
+      "result": "pass",
+      "detail": "Sorted keys, two-space indent, one trailing newline"
+    },
+    {
+      "name": "reviewed_extensions_only",
+      "result": "pass",
+      "detail": [
+        "check_sets",
+        "promotion_attestation_names"
+      ]
+    },
+    {
+      "name": "promotion_names_match_reviewed_draft",
+      "result": "pass",
+      "detail": [
+        "Agent Queue Promotion Attestation (staging)",
+        "Agent Queue Promotion Attestation (release)"
+      ]
+    },
+    {
+      "name": "source_audit_aliases_match_reviewed_policy",
+      "result": "pass",
+      "detail": {
+        "promotion-source-audit": [
+          "unattested-ci / Native Windows build and tests",
+          "unattested-ci / Linux foundation build and tests"
+        ]
+      }
+    },
+    {
+      "name": "unresolved_draft_app_not_copied",
+      "result": "pass",
+      "detail": {
+        "draft_app": null,
+        "production_app": 5075923
+      }
+    },
+    {
+      "name": "current_supported_schema_validation",
+      "result": "pass",
+      "detail": [
+        "IntegrationTrustManifest",
+        "HostedCheckPolicy",
+        "HierarchicalIntegrationPolicy"
+      ]
+    },
+    {
+      "name": "reviewed_full_policy_digest",
+      "result": "pass",
+      "detail": "cbdf69cdfc043fd929a92e31dbfc192a26127fc4de8c5442d6a565e26a7b69d7"
+    },
+    {
+      "name": "parent_reviewed_boundary",
+      "result": "pass",
+      "detail": {
+        "required_checks": {
+          "version": "matter-engine-ci-v1",
+          "names": [
+            "Native Windows build and tests",
+            "Linux foundation build and tests"
+          ],
+          "producer_id": "15368"
+        },
+        "admission": "reviewed",
+        "authorized_task_ids": [],
+        "repair": {
+          "primary_seconds": 1800,
+          "primary_attempts": 3,
+          "debug_seconds": 3600,
+          "debug_attempts": 3,
+          "debug_intelligence_class": "standard-high",
+          "conflict_scope": "member",
+          "on_exhausted": "human",
+          "source_ci": false
+        },
+        "route": {
+          "playbook_id": "parent-integration",
+          "scope": "system",
+          "scope_identifier": "",
+          "activation_id": null,
+          "artifact": {
+            "playbook_id": "parent-integration",
+            "artifact_sha256": "sha256:a7455b7c3a2d2bdca62365e6d1d7f4ebe158a47aa0db5009812b8294349ddacd",
+            "schema_generation": 2,
+            "contract_fingerprint": "sha256:a4b6e09f12c8c3111b1987f4d09fd86c45b973a1cc83b9d689f566d4e937b4c0",
+            "source_digest": "sha256:7dcad46a111fc4f0c9eae94ca3b57ed44252212c236f934aafa2957e7d4de13c",
+            "compiler_build": "playbook-v2-compiler/1",
+            "compiled_at": "2026-10-05T03:32:07.874929Z",
+            "version": 1
+          }
+        },
+        "primary_intelligence_class": "standard-high",
+        "verifier_intelligence_class": "standard-high"
+      }
+    },
+    {
+      "name": "parent_reviewed_route_snapshot",
+      "result": "pass",
+      "detail": {
+        "playbook_id": "parent-integration",
+        "scope": "system",
+        "scope_identifier": "",
+        "activation_id": null,
+        "artifact": {
+          "playbook_id": "parent-integration",
+          "artifact_sha256": "sha256:a7455b7c3a2d2bdca62365e6d1d7f4ebe158a47aa0db5009812b8294349ddacd",
+          "schema_generation": 2,
+          "contract_fingerprint": "sha256:a4b6e09f12c8c3111b1987f4d09fd86c45b973a1cc83b9d689f566d4e937b4c0",
+          "source_digest": "sha256:7dcad46a111fc4f0c9eae94ca3b57ed44252212c236f934aafa2957e7d4de13c",
+          "compiler_build": "playbook-v2-compiler/1",
+          "compiled_at": "2026-10-05T03:32:07.874929Z",
+          "version": 1
+        }
+      }
+    },
+    {
+      "name": "root_reviewed_boundary",
+      "result": "pass",
+      "detail": {
+        "required_checks": {
+          "version": "matter-engine-ci-v1",
+          "names": [
+            "Native Windows build and tests",
+            "Linux foundation build and tests"
+          ],
+          "producer_id": "15368"
+        },
+        "admission": "reviewed",
+        "authorized_task_ids": [],
+        "repair": {
+          "primary_seconds": 1800,
+          "primary_attempts": 3,
+          "debug_seconds": 3600,
+          "debug_attempts": 3,
+          "debug_intelligence_class": "standard-high",
+          "conflict_scope": "batch",
+          "on_exhausted": "human",
+          "source_ci": true
+        },
+        "route": {
+          "playbook_id": "root-train",
+          "scope": "system",
+          "scope_identifier": "",
+          "activation_id": null,
+          "artifact": {
+            "playbook_id": "root-train",
+            "artifact_sha256": "sha256:6e28d8dbc4eb93c255813417c6b5d03fdda5bf099dd1be70cf039fb67aa2ed52",
+            "schema_generation": 2,
+            "contract_fingerprint": "sha256:33581303bf8556083f103154d1b94b810df3c398a49c2dbe90bcf68d37697e41",
+            "source_digest": "sha256:37a6a9659c6cbe46244f1e45a25987bbe47669399bdf33691f924a16933f41d6",
+            "compiler_build": "playbook-v2-compiler/1",
+            "compiled_at": "2026-10-05T03:32:07.804192Z",
+            "version": 1
+          }
+        },
+        "primary_intelligence_class": "standard-high",
+        "verifier_intelligence_class": "standard-high"
+      }
+    },
+    {
+      "name": "root_reviewed_route_snapshot",
+      "result": "pass",
+      "detail": {
+        "playbook_id": "root-train",
+        "scope": "system",
+        "scope_identifier": "",
+        "activation_id": null,
+        "artifact": {
+          "playbook_id": "root-train",
+          "artifact_sha256": "sha256:6e28d8dbc4eb93c255813417c6b5d03fdda5bf099dd1be70cf039fb67aa2ed52",
+          "schema_generation": 2,
+          "contract_fingerprint": "sha256:33581303bf8556083f103154d1b94b810df3c398a49c2dbe90bcf68d37697e41",
+          "source_digest": "sha256:37a6a9659c6cbe46244f1e45a25987bbe47669399bdf33691f924a16933f41d6",
+          "compiler_build": "playbook-v2-compiler/1",
+          "compiled_at": "2026-10-05T03:32:07.804192Z",
+          "version": 1
+        }
+      }
+    },
+    {
+      "name": "complete_hierarchical_policy_retained",
+      "result": "pass",
+      "detail": {
+        "version": 1,
+        "parent": {
+          "required_checks": {
+            "version": "matter-engine-ci-v1",
+            "names": [
+              "Native Windows build and tests",
+              "Linux foundation build and tests"
+            ],
+            "producer_id": "15368"
+          },
+          "admission": "reviewed",
+          "authorized_task_ids": [],
+          "repair": {
+            "primary_seconds": 1800,
+            "primary_attempts": 3,
+            "debug_seconds": 3600,
+            "debug_attempts": 3,
+            "debug_intelligence_class": "standard-high",
+            "conflict_scope": "member",
+            "on_exhausted": "human",
+            "source_ci": false
+          },
+          "route": {
+            "playbook_id": "parent-integration",
+            "scope": "system",
+            "scope_identifier": "",
+            "activation_id": null,
+            "artifact": {
+              "playbook_id": "parent-integration",
+              "artifact_sha256": "sha256:a7455b7c3a2d2bdca62365e6d1d7f4ebe158a47aa0db5009812b8294349ddacd",
+              "schema_generation": 2,
+              "contract_fingerprint": "sha256:a4b6e09f12c8c3111b1987f4d09fd86c45b973a1cc83b9d689f566d4e937b4c0",
+              "source_digest": "sha256:7dcad46a111fc4f0c9eae94ca3b57ed44252212c236f934aafa2957e7d4de13c",
+              "compiler_build": "playbook-v2-compiler/1",
+              "compiled_at": "2026-10-05T03:32:07.874929Z",
+              "version": 1
+            }
+          },
+          "primary_intelligence_class": "standard-high",
+          "verifier_intelligence_class": "standard-high"
+        },
+        "root": {
+          "required_checks": {
+            "version": "matter-engine-ci-v1",
+            "names": [
+              "Native Windows build and tests",
+              "Linux foundation build and tests"
+            ],
+            "producer_id": "15368"
+          },
+          "admission": "reviewed",
+          "authorized_task_ids": [],
+          "repair": {
+            "primary_seconds": 1800,
+            "primary_attempts": 3,
+            "debug_seconds": 3600,
+            "debug_attempts": 3,
+            "debug_intelligence_class": "standard-high",
+            "conflict_scope": "batch",
+            "on_exhausted": "human",
+            "source_ci": true
+          },
+          "route": {
+            "playbook_id": "root-train",
+            "scope": "system",
+            "scope_identifier": "",
+            "activation_id": null,
+            "artifact": {
+              "playbook_id": "root-train",
+              "artifact_sha256": "sha256:6e28d8dbc4eb93c255813417c6b5d03fdda5bf099dd1be70cf039fb67aa2ed52",
+              "schema_generation": 2,
+              "contract_fingerprint": "sha256:33581303bf8556083f103154d1b94b810df3c398a49c2dbe90bcf68d37697e41",
+              "source_digest": "sha256:37a6a9659c6cbe46244f1e45a25987bbe47669399bdf33691f924a16933f41d6",
+              "compiler_build": "playbook-v2-compiler/1",
+              "compiled_at": "2026-10-05T03:32:07.804192Z",
+              "version": 1
+            }
+          },
+          "primary_intelligence_class": "standard-high",
+          "verifier_intelligence_class": "standard-high"
+        },
+        "branchless_parent": "verifier",
+        "on_failed_child": "block",
+        "on_main_moved": "rebuild",
+        "cleanup": {
+          "max_attempts": 5,
+          "retry_base_seconds": 30.0,
+          "retry_max_seconds": 3600.0,
+          "successful_source_refs": "delete",
+          "failed_work_retention_seconds": 604800
+        },
+        "ci": {
+          "source": "hosted"
+        },
+        "train": {
+          "cadence_seconds": 300,
+          "settling_cap_seconds": 1800
+        },
+        "prerequisite_branches": "wait-for-parent"
+      }
+    },
+    {
+      "name": "real_workflow_byte_preserving_rename",
+      "result": "pass",
+      "detail": {
+        "original_ref": "a2186ec3f352426c0f79dcd2a24a6745b657ca96^",
+        "original_path": ".github/workflows/native-windows.yml",
+        "original_sha256": "0152245bc69dfad488d1b2398f5179e74f2a3997a73d35bf28f10c8523b42833",
+        "renamed_sha256": "0152245bc69dfad488d1b2398f5179e74f2a3997a73d35bf28f10c8523b42833"
+      }
+    },
+    {
+      "name": "old_workflow_absent",
+      "result": "pass",
+      "detail": "No duplicate or placeholder workflow"
+    },
+    {
+      "name": "caller_only_updates_reusable_workflow_path",
+      "result": "pass",
+      "detail": {
+        "previous_sha256": "a11dbd431ea2c752aedbfe181b992b58460ab2179cac82d50f16d0ecbf634546",
+        "current_sha256": "af025abfe818d11fbe91e274992285bb93d76df01cba9299e5f0185abd0403d7"
+      }
+    },
+    {
+      "name": "explicit_candidate_and_pr_triggers",
+      "result": "pass",
+      "detail": {
+        "push": {
+          "branches": [
+            "aq/**"
+          ]
+        },
+        "pull_request": {
+          "branches": [
+            "dev",
+            "staging",
+            "main"
+          ],
+          "types": [
+            "opened",
+            "synchronize",
+            "reopened",
+            "ready_for_review"
+          ]
+        },
+        "workflow_dispatch": "",
+        "workflow_call": ""
+      }
+    },
+    {
+      "name": "real_platform_jobs_and_runner_gates",
+      "result": "pass",
+      "detail": {
+        "permissions": {
+          "contents": "read"
+        },
+        "native": {
+          "name": "Native Windows build and tests",
+          "runs-on": [
+            "self-hosted",
+            "Windows",
+            "X64",
+            "matter-engine-msvc"
+          ],
+          "timeout-minutes": "90",
+          "env": {
+            "CMAKE_BUILD_PARALLEL_LEVEL": "4",
+            "CTEST_PARALLEL_LEVEL": "2"
+          },
+          "steps": [
+            {
+              "uses": "actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
+              "with": {
+                "persist-credentials": "false"
+              }
+            },
+            {
+              "name": "Build, test and validate package",
+              "shell": "powershell",
+              "run": "./tools/ci-windows.ps1"
+            },
+            {
+              "name": "Upload test evidence",
+              "if": "always()",
+              "uses": "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
+              "with": {
+                "name": "native-windows-${{ github.sha }}-${{ github.run_attempt }}",
+                "path": "artifacts/ci/",
+                "if-no-files-found": "error"
+              }
+            }
+          ]
+        },
+        "linux": {
+          "name": "Linux foundation build and tests",
+          "runs-on": "ubuntu-latest",
+          "timeout-minutes": "10",
+          "steps": [
+            {
+              "uses": "actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
+              "with": {
+                "persist-credentials": "false"
+              }
+            },
+            {
+              "name": "Test the attestation verifier",
+              "run": "python3 -m unittest discover -s tools/tests -p test_aq_attestation.py -v"
+            },
+            {
+              "name": "Build and test the portable foundations",
+              "run": "make -C libs/MemoryLib -j2 test\nmake -C libs/MeshChartingLib/tests -j2 run\nmake -C libs/AssetStoreLib -j2 test\n"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "attestation_read_only_and_fallback_preserved",
+      "result": "pass",
+      "detail": {
+        "name": "Main attestation",
+        "on": {
+          "push": {
+            "branches": [
+              "dev",
+              "staging",
+              "main"
+            ]
+          }
+        },
+        "permissions": {
+          "contents": "read",
+          "checks": "read"
+        },
+        "jobs": {
+          "attestation": {
+            "name": "Main attestation",
+            "runs-on": "ubuntu-latest",
+            "outputs": {
+              "attested": "${{ steps.verify.outputs.attested }}"
+            },
+            "steps": [
+              {
+                "uses": "actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
+                "with": {
+                  "ref": "${{ github.sha }}",
+                  "persist-credentials": "false",
+                  "sparse-checkout": "tools/aq_attestation.py",
+                  "sparse-checkout-cone-mode": "false"
+                }
+              },
+              {
+                "id": "verify",
+                "env": {
+                  "GH_TOKEN": "${{ github.token }}",
+                  "REPOSITORY": "${{ github.repository }}",
+                  "REPOSITORY_ID": "${{ github.repository_id }}",
+                  "SHA": "${{ github.sha }}",
+                  "APP_ID": "${{ vars.AQ_INTEGRATION_ATTESTATION_APP_ID }}",
+                  "CHECK_VERSION": "${{ vars.AQ_INTEGRATION_REQUIRED_CHECK_VERSION }}",
+                  "ATTESTATION_NAME": "${{ github.ref_name == 'staging' && 'Agent Queue Promotion Attestation (staging)' || github.ref_name == 'main' && 'Agent Queue Promotion Attestation (release)' || 'Agent Queue Integration Attestation' }}",
+                  "STEP": "${{ github.ref_name == 'staging' && 'staging' || github.ref_name == 'main' && 'release' || '' }}",
+                  "TARGET_REF": "${{ github.ref }}"
+                },
+                "run": "python3 tools/aq_attestation.py"
+              }
+            ]
+          },
+          "unattested-ci": {
+            "needs": "attestation",
+            "if": "${{ always() && (needs.attestation.result != 'success' || needs.attestation.outputs.attested != 'true') }}",
+            "uses": "./.github/workflows/tests.yml"
+          }
+        }
+      }
+    },
+    {
+      "name": "verifier_license_and_upstream_attribution",
+      "result": "pass",
+      "detail": {
+        "sha256": "fc4033b37c661304517f650694715e37a4e14e965293215f56b796fc00cc6c5e",
+        "git_blob": "b8fd5625d61b6956493ca16a59e90cd204c1d8b3",
+        "bytes": 1066
+      }
+    },
+    {
+      "name": "qa_recipe_15_present",
+      "result": "pass",
+      "detail": {
+        "sha256": "e7ae496d75870654900831a8a977aeac8fafaf41bd64daa69133c7bb5c1b6853",
+        "git_blob": "ceb02b390a2baa4e68a543e3a8c1287c27297e43",
+        "bytes": 43026
+      }
+    },
+    {
+      "name": "deployed_supported_full_policy_parser_acceptance",
+      "result": "pass",
+      "detail": {
+        "policy_source": "argument",
+        "outcome": "verified",
+        "policy_sha256": "cbdf69cdfc043fd929a92e31dbfc192a26127fc4de8c5442d6a565e26a7b69d7",
+        "receipt_sha256": "067fe52cad7aadeefb9ab213b934e0347099d1837d8ca0e898604789d3411991",
+        "ready": false,
+        "scope": "policy parsing only; readiness failures retained separately"
+      }
+    }
+  ],
+  "schema_models": [
+    {
+      "model": "IntegrationTrustManifest",
+      "module": "/home/jkern/dev/agent-queue2/src/integration/ci.py",
+      "module_sha256": "874039ec98d7e36353f46e9349c130f9e9179f5dc5ecb4b208f1e122d3d03c72",
+      "schema_sha256": "301532c27e2e67b4648f0e931b3833e7fca4207b7cf7cdae8b4d45ebddd501b8"
+    },
+    {
+      "model": "HostedCheckPolicy",
+      "module": "/home/jkern/dev/agent-queue2/src/integration/models.py",
+      "module_sha256": "9874d0b5ae09a6897feab930f4cb37be606c85613e8f958da2fc667608684e19",
+      "schema_sha256": "2896cb936b6981e4451684f54cc93fa11ead5f617dc3e781b7de8120bc0d6478"
+    },
+    {
+      "model": "HierarchicalIntegrationPolicy",
+      "module": "/home/jkern/dev/agent-queue2/src/integration/models.py",
+      "module_sha256": "9874d0b5ae09a6897feab930f4cb37be606c85613e8f958da2fc667608684e19",
+      "schema_sha256": "bbd90de740751245f139ac5d29eeada56107a0be92c9ba757859e921b53f8765"
+    }
+  ],
+  "result": "pass",
+  "schema": "matter-engine.repo-trust-qualification.v1",
+  "actor": {
+    "session_id": "ca765040-d1de-4559-85a8-78af3a9d61db",
+    "task_id": "sound-impact-80.1",
+    "claim_epoch": 1,
+    "branch": "aq/sound-impact-80.1"
+  },
+  "approved_plan": {
+    "revision": 5,
+    "path": "/home/jkern/.agent-queue/vault/projects/matter-engine-cpp/plans/2026-10-10-matter-engine-git-first-train-and-promotion-cutover.md",
+    "sha256": "cf799382b6c6e358b44bd58e44d57eb972b8e96279ff469a0159c922585751d0",
+    "review_id": "rev-azure-torrent",
+    "approved_revision": 5,
+    "reported_approval_actor": "human:local-operator",
+    "reported_approved_at": 1791679198.2425869,
+    "resolved_gate": "gate-c5c5c5496921",
+    "owner_review_receipt_path": "/tmp/fleet-ridge-94-approved-review-r5.json",
+    "owner_review_receipt_sha256": "240b7252fd8e3ee34556bc411ff1568923cf92fef40066b0512efa128cae5738",
+    "published_plan_content_sha256": "71c131657c244b46749f5435da63d00341250b6940578d103207e9cd96d4706a"
+  },
+  "qualification_scope": "Published owner source and reviewed repository trust/workflow/policy inputs; does not establish runner readiness, hosted CI success, dev delivery, route activation, protection or autonomous delivery.",
+  "source_publication": {
+    "owner_task": "fleet-ridge-94",
+    "ref": "refs/heads/aq/fleet-ridge-94",
+    "remote_url": "https://github.com/ElectricJack/matter-engine.git",
+    "observation_command": "git ls-remote https://github.com/ElectricJack/matter-engine.git refs/heads/aq/fleet-ridge-94",
+    "observed_sha": "35289874a52630a6439353666ed26179dd334ab2",
+    "confirmation_message_id": "msg-0f8c13e9aff647c19ba3375f9191537e",
+    "owner_confirmation": "Confirmed by owner msg-63d0c15fc80d4691b7b74f97291eb709: current head unchanged, no later reviewed asset changes, clean owner worktree.",
+    "owner_reply_message_id": "msg-63d0c15fc80d4691b7b74f97291eb709",
+    "owner_publication_receipt": {
+      "publication_receipt_observed_at": "2026-10-10T23:50:48.315Z",
+      "tool_call_id": "call_7e69db0e937e4b57a735d5842e71d6e6",
+      "command": "aq git push --json",
+      "exit_code": 0,
+      "receipt": {
+        "schema_version": 1,
+        "data": {
+          "project_id": "matter-engine-cpp",
+          "pushed": "aq/fleet-ridge-94",
+          "oid": "35289874a52630a6439353666ed26179dd334ab2"
+        }
+      },
+      "note": "Timestamp is the observed successful AQ push receipt, not an inferred server-side push timestamp. Remote ref independently reverified unchanged for peer request msg-0f8c13e9aff647c19ba3375f9191537e."
+    },
+    "immutable_tree_url": "https://github.com/ElectricJack/matter-engine/tree/35289874a52630a6439353666ed26179dd334ab2",
+    "actions_run_url": "https://github.com/ElectricJack/matter-engine/actions/runs/38096419172",
+    "final_remote_observation": {
+      "command": "git ls-remote https://github.com/ElectricJack/matter-engine.git refs/heads/aq/fleet-ridge-94",
+      "actor": "ca765040-d1de-4559-85a8-78af3a9d61db",
+      "observed_at_utc": "2026-10-11T01:58:43.223204+00:00",
+      "stdout": "35289874a52630a6439353666ed26179dd334ab2\trefs/heads/aq/fleet-ridge-94",
+      "exit_code": 0
+    }
+  },
+  "plan_digest_reconciliation": {
+    "generated_base": "Matches approved digest using src.integration.trust_manifest.canonical_text: sorted keys, two-space indent, trailing newline.",
+    "production_manifest": "Matches approved production file digest exactly; no later reviewed difference.",
+    "hierarchical_policy": "Matches approved policy file digest exactly; validated without rewriting or replacing snapshots."
+  },
+  "schema_source": {
+    "installed_runtime_checkout": "/home/jkern/dev/agent-queue2",
+    "observed_head": "4274a6c5ff65702d77f4c1ce3b03b6d31a04de64",
+    "deployed_identity_confirmation": "Deployed daemon source SHA remains unverified. Supported current deployed-policy parser acceptance is independently recorded in deployed_policy_validation; local source OID is not substituted for runtime identity.",
+    "confirmation_message_id": "msg-0827d15b9ad84ff69de8bfe764dc62b9",
+    "original_reviewed_source": "b2bb25872e769cbc5013e8b5a5ea62803fbc721c"
+  },
+  "verifier_tests": {
+    "command": "aq test /tmp/aq-sound-impact-80.1/source-35289874/tools/tests/test_aq_attestation.py -q --junitxml=/tmp/aq-sound-impact-80.1/verifier-junit.xml",
+    "exit_code": 0,
+    "tests_passed": 17,
+    "subtests_passed": 35,
+    "log": "aq test: no interpreter found for /tmp/aq-sound-impact-80.1/source-35289874/tools/tests (no .venv, no resources.test_interpreters entry); using /usr/bin/python3.12\naq test: slot 1 of 6, -n 6\n$ /usr/bin/python3.12 -m pytest -n 6 --dist loadfile -m 'not perf and not migration and not slow and not tmux and not integration' /tmp/aq-sound-impact-80.1/source-35289874/tools/tests/test_aq_attestation.py -q --junitxml=/tmp/aq-sound-impact-80.1/verifier-junit.xml\nbringing up nodes...\nbringing up nodes...\n\nuu...uuuu.uuuuuu...uuuu.uu.uu.uuuu...uuuuu.uuuu.uu..                     [100%]\n17 passed, 35 subtests passed in 2.72s\n",
+    "junit_xml": "<?xml version=\"1.0\" encoding=\"utf-8\"?><testsuites name=\"pytest tests\"><testsuite name=\"pytest\" errors=\"0\" failures=\"0\" skipped=\"0\" tests=\"52\" time=\"2.484\" timestamp=\"2026-10-10T18:54:19.583106-07:00\" hostname=\"DESKTOP-EB8UOME\"><testcase classname=\"test_aq_attestation.AttestationTests\" name=\"test_accepts_both_promotion_steps\" time=\"0.005\" /><testcase classname=\"test_aq_attestation.AttestationTests\" name=\"test_accepts_integration_and_rechecks_each_required_check\" time=\"0.001\" /><testcase classname=\"test_aq_attestation.AttestationTests\" name=\"test_api_failure_runs_fallback_instead_of_accepting\" time=\"0.001\" /><testcase classname=\"test_aq_attestation.AttestationTests\" name=\"test_check_and_workflow_suite_coverage_cannot_be_empty_or_duplicate\" time=\"0.004\" /><testcase classname=\"test_aq_attestation.AttestationTests\" name=\"test_check_run_readback_failure_invalidates_proof\" time=\"0.006\" /><testcase classname=\"test_aq_attestation.AttestationTests\" name=\"test_digest_must_match_canonical_payload\" time=\"0.001\" /><testcase classname=\"test_aq_attestation.AttestationTests\" name=\"test_integration_proof_cannot_satisfy_promotion\" time=\"0.001\" /><testcase classname=\"test_aq_attestation.AttestationTests\" name=\"test_invalid_configuration_is_rejected\" time=\"0.005\" /><testcase classname=\"test_aq_attestation.AttestationTests\" name=\"test_missing_configuration_does_not_make_api_calls\" time=\"0.002\" /><testcase classname=\"test_aq_attestation.AttestationTests\" name=\"test_newest_failed_or_pending_record_overrides_old_success\" time=\"0.002\" /><testcase classname=\"test_aq_attestation.AttestationTests\" name=\"test_noncanonical_or_duplicate_key_payload_is_rejected\" time=\"0.003\" /><testcase classname=\"test_aq_attestation.AttestationTests\" name=\"test_output_reason_cannot_inject_github_output_keys\" time=\"0.002\" /><testcase classname=\"test_aq_attestation.AttestationTests\" name=\"test_pagination_cannot_send_token_to_another_host\" time=\"0.001\" /><testcase classname=\"test_aq_attestation.AttestationTests\" name=\"test_payload_identity_is_bound_to_the_sha_repo_app_and_version\" time=\"0.004\" /><testcase classname=\"test_aq_attestation.AttestationTests\" name=\"test_promotion_cannot_satisfy_another_step_or_target\" time=\"0.004\" /><testcase classname=\"test_aq_attestation.AttestationTests\" name=\"test_untrusted_app_and_wrong_head_are_rejected\" time=\"0.001\" /><testcase classname=\"test_aq_attestation.AttestationTests\" name=\"test_wrong_repository_name_in_promotion_is_rejected\" time=\"0.001\" /></testsuite></testsuites>",
+    "junit_totals": {
+      "tests_including_subtests": 52,
+      "top_level_testcases": 17,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    }
+  },
+  "qualification_program": {
+    "command": "/usr/bin/python3.12 /tmp/aq-sound-impact-80.1/qualify.py 35289874a52630a6439353666ed26179dd334ab2 /tmp/aq-sound-impact-80.1/source-35289874",
+    "exit_code": 0,
+    "assertions_passed": 23,
+    "source_sha256": "f9641b076bbfcb41ec4fa391ac7e16a6b37e9c021becf7d3e420278dfa186ad1",
+    "source": "import datetime\nimport hashlib\nimport inspect\nimport json\nfrom pathlib import Path\nimport subprocess\nimport sys\n\nimport yaml\nfrom src.integration.ci import IntegrationTrustManifest\nfrom src.integration.models import HierarchicalIntegrationPolicy, HostedCheckPolicy\nfrom src.integration.trust_manifest import canonical_text\n\nsource = sys.argv[1]\nout = Path(sys.argv[2])\nout.mkdir(parents=True, exist_ok=True)\nchecks = []\n\ndef git(*args):\n    return subprocess.check_output(['git', *args])\n\ndef blob(path, revision=source):\n    return git('show', f'{revision}:{path}')\n\ndef sha(data):\n    return hashlib.sha256(data).hexdigest()\n\ndef check(name, passed, detail):\n    checks.append({'name': name, 'result': 'pass' if passed else 'fail', 'detail': detail})\n    if not passed:\n        raise AssertionError(name)\n\npaths = [\n    '.github/agent-queue-integration.json',\n    '.github/workflows/tests.yml',\n    '.github/workflows/main-attestation.yml',\n    'tools/aq_attestation.py',\n    'tools/aq_attestation.LICENSE',\n    'tools/tests/test_aq_attestation.py',\n    'docs/agent/aq-promotion/train-policy.proposal.json',\n    'docs/agent/aq-promotion/trust-manifest.draft.json',\n    'docs/agent/aq-promotion/hosted-check-policy.json',\n    'docs/agent/qa-cookbook.md',\n]\nfiles = {}\nfor path in paths:\n    data = blob(path)\n    target = out / path\n    target.parent.mkdir(parents=True, exist_ok=True)\n    target.write_bytes(data)\n    files[path] = {'sha256': sha(data), 'git_blob': git('rev-parse', f'{source}:{path}').decode().strip(), 'bytes': len(data)}\n\nmanifest = json.loads(blob(paths[0]))\ndraft = json.loads(blob(paths[7]))\nhosted = json.loads(blob(paths[8]))\npolicy = json.loads(blob(paths[6]))\nnames = ['Native Windows build and tests', 'Linux foundation build and tests']\nexpected = {\n    'schema': 'aq.integration-trust.v1',\n    'canonical_repository_id': 'matter-engine-cpp',\n    'repository_id': 1266132968,\n    'full_name': 'ElectricJack/matter-engine',\n    'ci_producer_app_id': 15368,\n    'attestation_app_id': 5075923,\n    'attestation_name': 'Agent Queue Integration Attestation',\n    'required_checks': {'version': 'matter-engine-ci-v1', 'names': names},\n}\nbase = {key: manifest[key] for key in expected}\nbase_digest = sha(canonical_text(base).encode('utf-8'))\ncheck('authenticated_generated_identities', base == expected, base)\ncheck('generated_base_canonical_digest', base_digest == '73bf03ce85880f5fb53800cf9ec64b8c494a462c26d9e2cf7b3e4cc0f6d7efe1', base_digest)\ncheck('production_file_digest', files[paths[0]]['sha256'] == '4ba1582f5ef9dc0656d04739034f5891261a05017125fcbb4421adb2667b6f13', files[paths[0]]['sha256'])\ncheck('production_uses_supported_canonical_text', blob(paths[0]) == canonical_text(manifest).encode('utf-8'), 'Sorted keys, two-space indent, one trailing newline')\ncheck('reviewed_extensions_only', set(manifest) == set(expected) | {'promotion_attestation_names', 'check_sets'}, sorted(set(manifest) - set(expected)))\ncheck('promotion_names_match_reviewed_draft', manifest['promotion_attestation_names'] == draft['promotion_attestation_names'] == ['Agent Queue Promotion Attestation (staging)', 'Agent Queue Promotion Attestation (release)'], manifest['promotion_attestation_names'])\ncheck('source_audit_aliases_match_reviewed_policy', manifest['check_sets'] == draft['check_sets'] == hosted['check_sets'] == {'promotion-source-audit': ['unattested-ci / ' + name for name in names]}, manifest['check_sets'])\ncheck('unresolved_draft_app_not_copied', draft['attestation_app_id'] is None and manifest['attestation_app_id'] == 5075923, {'draft_app': draft['attestation_app_id'], 'production_app': manifest['attestation_app_id']})\nIntegrationTrustManifest.model_validate_json(blob(paths[0]))\nHostedCheckPolicy.model_validate_json(blob(paths[8]))\nHierarchicalIntegrationPolicy.model_validate_json(blob(paths[6]))\ncheck('current_supported_schema_validation', True, ['IntegrationTrustManifest', 'HostedCheckPolicy', 'HierarchicalIntegrationPolicy'])\ncheck('reviewed_full_policy_digest', files[paths[6]]['sha256'] == 'cbdf69cdfc043fd929a92e31dbfc192a26127fc4de8c5442d6a565e26a7b69d7', files[paths[6]]['sha256'])\nfor boundary, artifact, contract, normalized in (\n    ('parent', 'a7455b7c3a2d2bdca62365e6d1d7f4ebe158a47aa0db5009812b8294349ddacd', 'a4b6e09f12c8c3111b1987f4d09fd86c45b973a1cc83b9d689f566d4e937b4c0', '7dcad46a111fc4f0c9eae94ca3b57ed44252212c236f934aafa2957e7d4de13c'),\n    ('root', '6e28d8dbc4eb93c255813417c6b5d03fdda5bf099dd1be70cf039fb67aa2ed52', '33581303bf8556083f103154d1b94b810df3c398a49c2dbe90bcf68d37697e41', '37a6a9659c6cbe46244f1e45a25987bbe47669399bdf33691f924a16933f41d6'),\n):\n    value = policy[boundary]\n    route = value['route']\n    snapshot = route['artifact']\n    check(f'{boundary}_reviewed_boundary', value['required_checks'] == {'version': 'matter-engine-ci-v1', 'names': names, 'producer_id': '15368'} and value['admission'] == 'reviewed' and value['authorized_task_ids'] == [] and value['repair']['on_exhausted'] == 'human' and value['repair']['primary_attempts'] == value['repair']['debug_attempts'] == 3, value)\n    check(f'{boundary}_reviewed_route_snapshot', route['scope'] == 'system' and route['scope_identifier'] == '' and route['activation_id'] is None and route['playbook_id'] == ('parent-integration' if boundary == 'parent' else 'root-train') and snapshot['artifact_sha256'] == 'sha256:' + artifact and snapshot['contract_fingerprint'] == 'sha256:' + contract and snapshot['source_digest'] == 'sha256:' + normalized and snapshot['schema_generation'] == 2 and snapshot['compiler_build'] == 'playbook-v2-compiler/1' and snapshot['version'] == 1, route)\ncheck('complete_hierarchical_policy_retained', policy['version'] == 1 and policy['branchless_parent'] == 'verifier' and policy['on_failed_child'] == 'block' and policy['on_main_moved'] == 'rebuild' and policy['ci'] == {'source': 'hosted'} and policy['train'] == {'cadence_seconds': 300, 'settling_cap_seconds': 1800} and policy['prerequisite_branches'] == 'wait-for-parent' and policy['cleanup'] == {'max_attempts': 5, 'retry_base_seconds': 30.0, 'retry_max_seconds': 3600.0, 'successful_source_refs': 'delete', 'failed_work_retention_seconds': 604800}, policy)\n\nbefore = 'a2186ec3f352426c0f79dcd2a24a6745b657ca96^'\nworkflow = blob(paths[1])\noriginal = blob('.github/workflows/native-windows.yml', before)\ncheck('real_workflow_byte_preserving_rename', workflow == original, {'original_ref': before, 'original_path': '.github/workflows/native-windows.yml', 'original_sha256': sha(original), 'renamed_sha256': sha(workflow)})\ncheck('old_workflow_absent', subprocess.run(['git', 'cat-file', '-e', f'{source}:.github/workflows/native-windows.yml'], stderr=subprocess.DEVNULL).returncode != 0, 'No duplicate or placeholder workflow')\ncaller = blob(paths[2])\ncaller_before = blob(paths[2], before)\ncheck('caller_only_updates_reusable_workflow_path', caller == caller_before.replace(b'uses: ./.github/workflows/native-windows.yml', b'uses: ./.github/workflows/tests.yml'), {'previous_sha256': sha(caller_before), 'current_sha256': sha(caller)})\nw = yaml.load(workflow, Loader=yaml.BaseLoader)\nc = yaml.load(caller, Loader=yaml.BaseLoader)\ncheck('explicit_candidate_and_pr_triggers', w['on']['push']['branches'] == ['aq/**'] and w['on']['pull_request']['branches'] == ['dev', 'staging', 'main'] and w['on']['pull_request']['types'] == ['opened', 'synchronize', 'reopened', 'ready_for_review'] and {'workflow_call', 'workflow_dispatch'} <= set(w['on']), w['on'])\ncheck('real_platform_jobs_and_runner_gates', w['name'] == 'Native Windows' and set(w['jobs']) == {'native', 'linux-foundations'} and w['permissions'] == {'contents': 'read'} and w['jobs']['native']['name'] == names[0] and w['jobs']['native']['runs-on'] == ['self-hosted', 'Windows', 'X64', 'matter-engine-msvc'] and w['jobs']['native']['timeout-minutes'] == '90' and w['jobs']['native']['env'] == {'CMAKE_BUILD_PARALLEL_LEVEL': '4', 'CTEST_PARALLEL_LEVEL': '2'} and w['jobs']['linux-foundations']['name'] == names[1] and w['jobs']['linux-foundations']['runs-on'] == 'ubuntu-latest', {'permissions': w['permissions'], 'native': w['jobs']['native'], 'linux': w['jobs']['linux-foundations']})\ncheck('attestation_read_only_and_fallback_preserved', c['on']['push']['branches'] == ['dev', 'staging', 'main'] and c['permissions'] == {'contents': 'read', 'checks': 'read'} and c['jobs']['unattested-ci']['uses'] == './.github/workflows/tests.yml' and c['jobs']['unattested-ci']['if'] == \"${{ always() && (needs.attestation.result != 'success' || needs.attestation.outputs.attested != 'true') }}\", c)\nlicense_text = blob(paths[4]).decode()\ncheck('verifier_license_and_upstream_attribution', 'MIT License' in license_text and 'Copyright (c) 2026 Jack Kern' in license_text and 'b2bb25872e769cbc5013e8b5a5ea62803fbc721c' in blob(paths[3]).decode() and 'aq_attestation.LICENSE' in blob(paths[3]).decode(), files[paths[4]])\ncheck('qa_recipe_15_present', '## 15.' in blob(paths[9]).decode() and 'promotion' in blob(paths[9]).decode().lower(), files[paths[9]])\n\nschemas = []\nfor model in (IntegrationTrustManifest, HostedCheckPolicy, HierarchicalIntegrationPolicy):\n    module = Path(inspect.getfile(model))\n    schemas.append({'model': model.__name__, 'module': str(module), 'module_sha256': sha(module.read_bytes()), 'schema_sha256': sha(json.dumps(model.model_json_schema(), sort_keys=True, separators=(',', ':')).encode())})\nresult = {'task_id': 'sound-impact-80.1', 'source_sha': source, 'source_tree': git('rev-parse', source + '^{tree}').decode().strip(), 'checked_at_utc': datetime.datetime.now(datetime.timezone.utc).isoformat(), 'files': files, 'generated_base_canonical_sha256': base_digest, 'checks': checks, 'schema_models': schemas, 'result': 'pass'}\n(out / 'qualification.json').write_text(json.dumps(result, indent=2) + '\\n')\nprint(json.dumps({'source_sha': source, 'result': 'pass', 'checks': len(checks), 'output': str(out / 'qualification.json')}))\n",
+    "reproduction": "From a checkout containing source_sha, write this source string to a temporary qualify.py, run the captured command using the captured AQ schema modules, then run verifier_tests.command against the extracted unchanged Git blobs. No owner branch checkout or mutation is required."
+  },
+  "pending_evidence": [
+    "Source qualification has no remaining required evidence gap; broader parent/owner gates follow.",
+    "Exact-source hosted Windows success, dev delivery, repository/default correction, Actions variables, strict protection and route activation remain required before train readiness.",
+    "Deployed daemon source SHA is unverified; policy-parser acceptance does not identify it."
+  ],
+  "evidence_written_at_utc": "2026-10-11T01:55:28.308942+00:00",
+  "existing_authenticated_generation": {
+    "receipt_message_id": "msg-2cb6f0692e0a41af9181581475259d3b",
+    "confirmed_by": "msg-17c69bd8241349b78400c52e14788cf2",
+    "full_policy_accepted": true,
+    "new_generation_performed": false,
+    "binding_changed": false,
+    "reviewed_input_changed": false
+  },
+  "external_observations": {
+    "reported_by": "system:supervisor",
+    "message_id": "msg-17c69bd8241349b78400c52e14788cf2",
+    "reported_at_utc": "2026-10-11T01:53:29.235322+00:00",
+    "runner": {
+      "id": 22,
+      "name": "DESKTOP-EB8UOME-matter-msvc",
+      "status": "online",
+      "busy": true,
+      "labels": [
+        "self-hosted",
+        "Windows",
+        "X64",
+        "matter-engine-msvc"
+      ],
+      "preflight": {
+        "receipt_message_id": "msg-617ec6f43ab44bea8cb6854caec27bab",
+        "account": "webde",
+        "runner_directory": "C:\\actions-runner-matter",
+        "native_checkout": "C:\\me-preflight",
+        "reported_result": "pass",
+        "vs": "Visual Studio 2022 Community",
+        "msvc": "14.44.35207",
+        "windows_sdk": "10.0.26100.0",
+        "python": "3.13.14",
+        "vulkan": "1.4.357.0",
+        "receipt_independently_read": false,
+        "limitations": "Operator preflight checkout was not SHA-attested; preflight is not hosted CI or build proof. Owner reports a logon task, not an independently inspected Windows service configuration."
+      },
+      "owner_github_inventory": {
+        "path": "/tmp/fleet-ridge-94-operator-runner-inventory.json",
+        "sha256": "f414e310ef7dc08f5ee988e532eeeeb1aee24aad50be3c6209515e3a800e0d8e",
+        "runners": [
+          {
+            "id": 22,
+            "name": "DESKTOP-EB8UOME-matter-msvc",
+            "status": "online",
+            "busy": true,
+            "labels": [
+              "self-hosted",
+              "Windows",
+              "X64",
+              "matter-engine-msvc"
+            ]
+          }
+        ]
+      }
+    },
+    "hosted_checks": [
+      {
+        "head_sha": "35289874a52630a6439353666ed26179dd334ab2",
+        "name": "Linux foundation build and tests",
+        "check_run_id": 114343132539,
+        "ci_producer_app_id": 15368,
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "head_sha": "35289874a52630a6439353666ed26179dd334ab2",
+        "name": "Native Windows build and tests",
+        "check_run_id": 114343132642,
+        "ci_producer_app_id": 15368,
+        "status": "queued",
+        "conclusion": null
+      }
+    ],
+    "dev_delivery_verified": false,
+    "runner_readiness_qualified_by_this_task": false
+  },
+  "owner_prior_validation": {
+    "production": {
+      "path": "/tmp/fleet-ridge-94-production-validation.log",
+      "sha256": "59e86e64aae5f2d750bd2e872aff3dab778076e75d34e97d1dd896a130125c3d",
+      "log": "Authoritative base hash and only reviewed extensions: PASS\nPublished trust schema, both policy boundaries and check-set consistency: PASS\nActual workflow byte-preserving rename, fallback caller and published PR parser: PASS\nPrepared promotion flow + production manifest, offline schema validation: PASS\nProduction manifest file SHA256: 4ba1582f5ef9dc0656d04739034f5891261a05017125fcbb4421adb2667b6f13\n",
+      "schema_source_sha": "b2bb25872e769cbc5013e8b5a5ea62803fbc721c",
+      "deployed_identity_proof": false
+    },
+    "hierarchical_policy": {
+      "path": "/tmp/fleet-ridge-94-train-validation.log",
+      "sha256": "9d14a63b502a7a5d8086ddf90d0c3adb9b14a9ce7c4a90ffa1cb0bd466b37001",
+      "log": "parent parent-integration sha256:a7455b7c3a2d2bdca62365e6d1d7f4ebe158a47aa0db5009812b8294349ddacd PASS\nroot root-train sha256:6e28d8dbc4eb93c255813417c6b5d03fdda5bf099dd1be70cf039fb67aa2ed52 PASS\nPublished policy schema, all source-pinned artifact fields, reviewed CI inputs: PASS\nPolicy file SHA256: cbdf69cdfc043fd929a92e31dbfc192a26127fc4de8c5442d6a565e26a7b69d7\n",
+      "schema_source_sha": "b2bb25872e769cbc5013e8b5a5ea62803fbc721c",
+      "deployed_identity_proof": false
+    }
+  },
+  "coordination_wait": {
+    "id": "a89be885-9f40-43db-9545-2d1230fc1a22",
+    "thread": "sound-impact-80.1:repo-trust",
+    "after_seq": 8754,
+    "idempotency_key": "sound-impact-80.1-repo-trust-deployed-parser-v1",
+    "result_state": "satisfied",
+    "result_ref": "message:msg-63d0c15fc80d4691b7b74f97291eb709",
+    "consumed": true,
+    "outcome_inspected": true,
+    "meaning": "Owner current-source/publication reply; not proof of deployed schema or CI success."
+  },
+  "license_upstream_comparison": {
+    "source": "ElectricJack/agent-queue",
+    "upstream_source_sha": "b2bb25872e769cbc5013e8b5a5ea62803fbc721c",
+    "path": "LICENSE",
+    "sha256": "fc4033b37c661304517f650694715e37a4e14e965293215f56b796fc00cc6c5e",
+    "owner_license_is_byte_identical": true,
+    "commands": [
+      "git -C /home/jkern/dev/agent-queue2 show b2bb25872e769cbc5013e8b5a5ea62803fbc721c:LICENSE",
+      "git show 35289874a52630a6439353666ed26179dd334ab2:tools/aq_attestation.LICENSE"
+    ],
+    "result": "pass"
+  },
+  "deployed_policy_validation": {
+    "command": "aq integration app-verify matter-engine-cpp --policy docs/agent/aq-promotion/train-policy.proposal.json --repository-id matter-engine-cpp --json --save-output /tmp/matter-app-verify-8754.json",
+    "actor": "supervisor session 582a4ae5-4eca-48d2-b491-1956c5981058",
+    "working_directory": "owner slot-1",
+    "message_id": "msg-de3f093815124f7ab0b166af821855c0",
+    "observed_at_utc": "2026-10-11T01:56:38.467680+00:00",
+    "observation_timestamp_basis": "receipt file mtime; not command start time",
+    "handoff_at_utc": "2026-10-11T01:56:58.237906+00:00",
+    "policy_sha256": "cbdf69cdfc043fd929a92e31dbfc192a26127fc4de8c5442d6a565e26a7b69d7",
+    "policy_hash_verified_by": "supervisor sha256sum",
+    "receipt_path": "/tmp/matter-app-verify-8754.json",
+    "receipt_bytes": 7398,
+    "receipt_sha256": "067fe52cad7aadeefb9ab213b934e0347099d1837d8ca0e898604789d3411991",
+    "exit_code": 1,
+    "policy_parser_accepted": true,
+    "ready": false,
+    "receipt": {
+      "schema_version": 1,
+      "data": {
+        "success": true,
+        "outcome": "verified",
+        "project_id": "matter-engine-cpp",
+        "repository_id": "matter-engine-cpp",
+        "policy_source": "argument",
+        "github_repository_id": 1266132968,
+        "full_name": "ElectricJack/matter-engine",
+        "attestation_app_id": 5075923,
+        "default_branch": "dev",
+        "ready": false,
+        "blockers": [
+          "repository_mismatch",
+          "trust_manifest_unavailable",
+          "hosted_workflow_variables_unavailable"
+        ],
+        "warnings": [
+          "audit_workflow_missing"
+        ],
+        "items": [
+          {
+            "id": "credential",
+            "status": "ok",
+            "code": null,
+            "codes": [],
+            "expected": {
+              "mode": "app"
+            },
+            "observed": {
+              "token": true,
+              "mode": "app",
+              "app_id": 5075923,
+              "installation_id": 164874645
+            },
+            "fix": null
+          },
+          {
+            "id": "repository",
+            "status": "fail",
+            "code": "repository_mismatch",
+            "codes": [
+              "repository_mismatch"
+            ],
+            "expected": {
+              "id": 1266132968,
+              "full_name": "ElectricJack/matter-engine",
+              "default_branch": "dev"
+            },
+            "observed": {
+              "id": 1266132968,
+              "full_name": "ElectricJack/matter-engine",
+              "default_branch": "main"
+            },
+            "fix": "make repository matter-engine-cpp's origin and default branch name the GitHub repository the App reads, or designate the right one (runbook \u00a79.3 step 5)"
+          },
+          {
+            "id": "producer",
+            "status": "ok",
+            "code": null,
+            "codes": [],
+            "expected": "15368",
+            "observed": {
+              "parent": "15368",
+              "root": "15368"
+            },
+            "fix": null
+          },
+          {
+            "id": "manifest",
+            "status": "fail",
+            "code": "trust_manifest_unavailable",
+            "codes": [
+              "trust_manifest_unavailable"
+            ],
+            "expected": {
+              "schema": "aq.integration-trust.v1",
+              "canonical_repository_id": "matter-engine-cpp",
+              "repository_id": 1266132968,
+              "full_name": "ElectricJack/matter-engine",
+              "ci_producer_app_id": 15368,
+              "attestation_app_id": 5075923,
+              "attestation_name": "Agent Queue Integration Attestation",
+              "required_checks": {
+                "version": "matter-engine-ci-v1",
+                "names": [
+                  "Native Windows build and tests",
+                  "Linux foundation build and tests"
+                ]
+              }
+            },
+            "observed": {
+              "path": ".github/agent-queue-integration.json",
+              "ref": "dev",
+              "sha": "406b72509dbcf4dd644b73a7f095792ce2512ba5",
+              "present": false,
+              "valid": false,
+              "identity_equal": false,
+              "check_set_equal": false,
+              "canonical": false,
+              "diff": [],
+              "error": null
+            },
+            "fix": "aq integration trust-manifest matter-engine-cpp --policy docs/agent/aq-promotion/train-policy.proposal.json --repository-id matter-engine-cpp --write .github/agent-queue-integration.json, then commit .github/agent-queue-integration.json to dev (runbook \u00a79.2 step 3)"
+          },
+          {
+            "id": "variables",
+            "status": "fail",
+            "code": "hosted_workflow_variables_unavailable",
+            "codes": [
+              "hosted_workflow_variables_unavailable"
+            ],
+            "expected": {
+              "AQ_INTEGRATION_ATTESTATION_APP_ID": "5075923",
+              "AQ_INTEGRATION_REQUIRED_CHECK_VERSION": "matter-engine-ci-v1"
+            },
+            "observed": {
+              "values": {
+                "AQ_INTEGRATION_ATTESTATION_APP_ID": null,
+                "AQ_INTEGRATION_REQUIRED_CHECK_VERSION": null
+              },
+              "unavailable": {
+                "AQ_INTEGRATION_ATTESTATION_APP_ID": "absent",
+                "AQ_INTEGRATION_REQUIRED_CHECK_VERSION": "absent"
+              }
+            },
+            "fix": "aq integration app-setup matter-engine-cpp --policy docs/agent/aq-promotion/train-policy.proposal.json --repository-id matter-engine-cpp --apply (runbook \u00a79.3 step 3)"
+          },
+          {
+            "id": "protection",
+            "status": "ok",
+            "code": null,
+            "codes": [],
+            "expected": {
+              "classification": "app_bypass"
+            },
+            "observed": {
+              "classification": "unprotected",
+              "rules": [],
+              "development_publisher_blocked": false,
+              "ruleset_id": null
+            },
+            "fix": null
+          },
+          {
+            "id": "audit_workflow",
+            "status": "warn",
+            "code": "audit_workflow_missing",
+            "codes": [
+              "audit_workflow_missing"
+            ],
+            "expected": {
+              "reads": "vars.AQ_INTEGRATION_ATTESTATION_APP_ID",
+              "path": ".github/workflows/main-attestation.yml"
+            },
+            "observed": {
+              "ref": "dev",
+              "sha": "406b72509dbcf4dd644b73a7f095792ce2512ba5",
+              "searched": [
+                ".github/workflows/native-windows.yml"
+              ]
+            },
+            "fix": "commit .github/workflows/main-attestation.yml to dev (runbook \u00a79.2 step 4)"
+          }
+        ],
+        "expected": {
+          "manifest_path": ".github/agent-queue-integration.json",
+          "manifest": {
+            "schema": "aq.integration-trust.v1",
+            "canonical_repository_id": "matter-engine-cpp",
+            "repository_id": 1266132968,
+            "full_name": "ElectricJack/matter-engine",
+            "ci_producer_app_id": 15368,
+            "attestation_app_id": 5075923,
+            "attestation_name": "Agent Queue Integration Attestation",
+            "required_checks": {
+              "version": "matter-engine-ci-v1",
+              "names": [
+                "Native Windows build and tests",
+                "Linux foundation build and tests"
+              ]
+            }
+          },
+          "manifest_text": "{\n  \"attestation_app_id\": 5075923,\n  \"attestation_name\": \"Agent Queue Integration Attestation\",\n  \"canonical_repository_id\": \"matter-engine-cpp\",\n  \"ci_producer_app_id\": 15368,\n  \"full_name\": \"ElectricJack/matter-engine\",\n  \"repository_id\": 1266132968,\n  \"required_checks\": {\n    \"names\": [\n      \"Native Windows build and tests\",\n      \"Linux foundation build and tests\"\n    ],\n    \"version\": \"matter-engine-ci-v1\"\n  },\n  \"schema\": \"aq.integration-trust.v1\"\n}\n",
+          "manifest_sha256": "73bf03ce85880f5fb53800cf9ec64b8c494a462c26d9e2cf7b3e4cc0f6d7efe1",
+          "variables": {
+            "AQ_INTEGRATION_ATTESTATION_APP_ID": "5075923",
+            "AQ_INTEGRATION_REQUIRED_CHECK_VERSION": "matter-engine-ci-v1"
+          },
+          "ruleset": {
+            "name": "Train-only dev",
+            "target": "branch",
+            "enforcement": "active",
+            "conditions": {
+              "ref_name": {
+                "include": [
+                  "refs/heads/dev"
+                ],
+                "exclude": []
+              }
+            },
+            "rules": [
+              {
+                "type": "required_status_checks",
+                "parameters": {
+                  "strict_required_status_checks_policy": false,
+                  "do_not_enforce_on_create": false,
+                  "required_status_checks": [
+                    {
+                      "context": "Agent Queue Integration Attestation",
+                      "integration_id": 5075923
+                    }
+                  ]
+                }
+              }
+            ],
+            "bypass_actors": []
+          }
+        }
+      }
+    },
+    "interpretation": "The current deployed supported parser accepts the complete reviewed policy. App readiness fails; all blockers/warnings retained. This receipt does not identify deployed daemon source SHA or prove strict train protection."
+  },
+  "conclusion": "The unchanged published owner source satisfies repository trust, manifest, real-workflow, verifier/license and complete policy qualification. The current deployed supported policy parser accepts the exact reviewed input. Broader readiness, delivery and activation gates remain unsatisfied and are not claimed by this passing source qualification.",
+  "retained_readiness_gates": {
+    "result": "fail",
+    "app_verify_exit_code": 1,
+    "app_verify_ready": false,
+    "blockers": [
+      "repository_mismatch",
+      "trust_manifest_unavailable",
+      "hosted_workflow_variables_unavailable"
+    ],
+    "warnings": [
+      "audit_workflow_missing"
+    ],
+    "dev_observed_sha": "406b72509dbcf4dd644b73a7f095792ce2512ba5",
+    "operator_correction_authority": "Repository administration and activation remain with authorized operator/supervisor; owner delivers existing reviewed assets.",
+    "manifest_generator_generic_fix": "The receipt includes a generic regeneration suggestion; no regeneration is needed because the authoritative owner manifest and reviewed binding/inputs are unchanged. Reuse the existing published assets."
+  },
+  "evidence_finalized_at_utc": "2026-10-11T01:58:43.223234+00:00",
+  "evidence_integrity": {
+    "result": "pass",
+    "git_file_hashes_checked": 10,
+    "passing_assertions": 24,
+    "verifier_top_level_tests": 17,
+    "verifier_subtests": 35,
+    "junit_includes_subtests_in_total": true,
+    "deployed_policy_parsing_accepted": true,
+    "readiness_failures_retained": true
+  }
+}

@@ -5,6 +5,12 @@ std::shared_ptr<VkSparseVoxelScene> VkSparseVoxelScene::with_shared_placements(
     if(!allocation_ || !allocation_->shared_shadows || objects.size()!=allocation_->shadow_bounds.size()) {
         error="shared placement update requires the same assembly catalog";return {};
     }
+    SparseLimits capacity(vk,true);auto candidate_admission=capacity.planner(true,false);
+    for(size_t i=0;i<objects.size();++i)
+        if(!candidate_admission.plan.add(admission::Buffer::placements,objects[i].size(),allocation_->shadow_only?sizeof(VkAccelerationStructureInstanceKHR):sizeof(GpuInstance),i,
+                std::min(uint64_t(0x1000000u),capacity.acceleration.maxInstanceCount),!allocation_->shadow_only)) {
+            error=candidate_admission.plan.failure.message();return {};
+        }
     const auto& old=*allocation_;auto a=std::make_shared<Allocation>(vk);
     a->shared_geometry=old.shared_geometry?old.shared_geometry:allocation_;
     const auto& base=*a->shared_geometry;
@@ -56,7 +62,7 @@ std::shared_ptr<VkSparseVoxelScene> VkSparseVoxelScene::with_shared_placements(
     VkPhysicalDeviceAccelerationStructurePropertiesKHR limits{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_PROPERTIES_KHR};
     VkPhysicalDeviceProperties2 properties{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};properties.pNext=&limits;
     vkGetPhysicalDeviceProperties2(vk.physical_device(),&properties);
-    if(count>limits.maxInstanceCount || placements.size()*sizeof(GpuInstance)>properties.properties.limits.maxStorageBufferRange) {
+    if(count>limits.maxInstanceCount || (!a->shadow_only && placements.size()*sizeof(GpuInstance)>properties.properties.limits.maxStorageBufferRange)) {
         error="shared placement update exceeds device addressing limits";return {};
     }
     matter::VkBufferResource input;

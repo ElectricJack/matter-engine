@@ -19,6 +19,9 @@ These are the concise, current engine references:
   contract.
 - **[Chart VT glossary](chart-vt-glossary.md)** — virtual-texture terms used by
   the renderer and authoring docs.
+- **[OBJ export](../../docs/export-obj.md)** — `matter export obj`, the
+  coordinate and material-key conventions, the `World.exports` binding, and the
+  limits of taking a baked Part out of the engine.
 
 Active but unfinished designs:
 

@@ -165,6 +165,7 @@
 //   passed persist=false and ImGui's IniFilename is cleared, so a headless
 //   capture can neither inherit nor overwrite an interactive session's files.
 #include "matter/engine_context.h"
+#include "asset_root.h"
 #include "perf_gpu_stats.h"
 #include "matter/vulkan_device.h"
 #include "matter/world_session.h"
@@ -220,11 +221,13 @@
 #include "matter/events/bake_events.h"
 #include "matter/events/stream_events.h"
 #include "viewport_capture.h"
+#include "camera_calibration.h"
 #include "viewport_pick.h"
 #include "viewport_pick_command.h"
 #include "dsl_bindings.h"
 
 #include "imgui.h"
+#include "render/scene_admission.h"
 #include "quickjs.h"
 
 #define GLFW_INCLUDE_NONE
@@ -806,58 +809,16 @@ bool write_png(const std::string& path, const std::vector<uint8_t>& rgba,
                           static_cast<int>(width * 4)) != 0;
 }
 
-// Directory holding this executable, or empty if it cannot be determined.
-static std::filesystem::path executable_dir() {
-#ifdef _WIN32
-    wchar_t buf[MAX_PATH];
-    const DWORD n = GetModuleFileNameW(nullptr, buf, MAX_PATH);
-    if (n == 0 || n >= MAX_PATH) return {};
-    return std::filesystem::path(buf, buf + n).parent_path();
-#else
-    std::error_code ec;
-    auto p = std::filesystem::read_symlink("/proc/self/exe", ec);
-    if (ec) return {};
-    return p.parent_path();
-#endif
-}
-
 // Locate an asset directory by NAME rather than by a fixed number of "../".
 //
-// Three layouts have to work and they sit at different depths:
-//   dev, launched from MatterEditor/      -> ../projects
-//   dev, launched beside the binary       -> ../../../projects  (build/windows/)
-//   a packaged build (`make dist`)        -> ./projects         (next to the exe)
-//
-// Hard-coding "../" for one breaks the others -- which is exactly what happened
-// when the binary moved from MatterEditor/ into MatterEditor/build/windows/.
-// Search next to the executable first (so a package always wins), then upward
-// from the executable, then upward from the working directory.
-static std::string resolve_asset_root(const char* name) {
-    namespace fs = std::filesystem;
-    std::error_code ec;
+// The search order -- exe-adjacent first (so `make dist` keeps winning), then
+// the working directory's checkout, then the exe dir's tree, then the bare
+// name -- lives in asset_root.cpp, along with the reasoning that put the
+// working directory ahead of the exe walk-up. examples_root(),
+// issues_root() and shared_lib_root() below are its three callers and share
+// that order verbatim; tests/test_asset_root.cpp pins it.
 
-    auto walk_up = [&](fs::path dir) -> std::string {
-        for (int depth = 0; depth < 8 && !dir.empty(); ++depth) {
-            const fs::path candidate = dir / name;
-            if (fs::is_directory(candidate, ec))
-                return candidate.string();
-            const fs::path parent = dir.parent_path();
-            if (parent == dir) break;   // reached the filesystem root
-            dir = parent;
-        }
-        return {};
-    };
-
-    if (const fs::path exe = executable_dir(); !exe.empty())
-        if (std::string hit = walk_up(exe); !hit.empty()) return hit;
-
-    if (fs::path cwd = fs::current_path(ec); !ec)
-        if (std::string hit = walk_up(cwd); !hit.empty()) return hit;
-
-    return name;   // preserve the old string so the failure message stays familiar
-}
-
-std::string examples_root() { return resolve_asset_root("projects"); }
+std::string examples_root() { return viewer::assets::resolve_asset_root("projects"); }
 
 // Repo-root issues/ directory, resolved the same way as the asset roots above.
 // issues/ has been gitignored since 0cbb5e92 (untracked, not committed), so
@@ -865,15 +826,17 @@ std::string examples_root() { return resolve_asset_root("projects"); }
 // developers who have generated reports into it; the MatterEditor/ fallback
 // covers a tree where it is absent.
 std::string issues_root() {
-    if (std::string hit = resolve_asset_root("issues"); hit != "issues")
+    if (std::string hit = viewer::assets::resolve_asset_root("issues"); hit != "issues")
         return hit;
-    if (std::string editor = resolve_asset_root("MatterEditor");
+    if (std::string editor = viewer::assets::resolve_asset_root("MatterEditor");
         editor != "MatterEditor")
         return (std::filesystem::path(editor).parent_path() / "issues").string();
     return "issues";
 }
 
-std::string shared_lib_root() { return resolve_asset_root("MatterEngine3/shared-lib"); }
+std::string shared_lib_root() {
+    return viewer::assets::resolve_asset_root("MatterEngine3/shared-lib");
+}
 
 // A timed performance run, configured entirely by MATTER_PERF_OUTPUT /
 // MATTER_PERF_WARMUP_SECONDS / MATTER_PERF_SAMPLE_SECONDS — all three or none
@@ -1323,6 +1286,10 @@ bool write_perf_result(const PerfRunConfig& config, const std::string& world,
            << ",\"gpu_timers_supported\":" << (frame_stats.gpu_timers_supported ? "true" : "false")
            << ",\"raster_width\":" << frame_stats.raster_width
            << ",\"raster_height\":" << frame_stats.raster_height
+           << ",\"gbuffer_profile_mode\":\""
+           << json_string(std::getenv("MATTER_GBUFFER_PROFILE_MODE")
+                              ? std::getenv("MATTER_GBUFFER_PROFILE_MODE")
+                              : "full") << "\""
            << ",\"pom_enabled\":" << (loop_stats.tileset_pom.enabled ? "true" : "false")
            << ",\"pom_steps\":" << loop_stats.tileset_pom.steps
            << ",\"pom_max_distance_m\":" << loop_stats.tileset_pom.max_distance_m
@@ -2657,6 +2624,9 @@ int main() {
     // buffer with tomorrow's pose.
     matter::CameraDesc presented_camera = camera;
     bool presented_camera_available = false;
+    matter::CameraDesc previous_evaluation_camera = camera;
+    bool previous_evaluation_camera_available = false;
+    uint32_t stable_camera_frames = 0;
     bool presented_production_view = false;
     uint64_t presented_session_generation = 0;
     // viewport.capture's one in-flight request. A screenshot is the only agent
@@ -2779,6 +2749,8 @@ int main() {
         vulkan->ray_tracing_available();
     bool quit_requested = false;
     bool fatal_error = false;
+    bool scene_automation_failed = false;
+    std::string scene_admission_diagnostic;
     // Captured only at the Vulkan/device-surfacing fatal sites (render(),
     // end_frame(), the ImGui Vulkan backend prepare/end_frame calls, and
     // exhausted screenshot-readback retries) -- see mark_device_fatal below.
@@ -3054,7 +3026,13 @@ int main() {
         {{"path", "string", true,
           "Absolute .png path; the same safety rules the shot_now FIFO verb applies"},
          {"annotate_selection", "boolean", false,
-          "Also return each selected object's typed id and projected image rectangle"}},
+          "Also return each selected object's typed id and projected image rectangle"},
+         {"export_channels", "boolean", false,
+          "Write synchronized raw identity, depth, normal, linear color and material planes"},
+         {"desired_max_lod", "number", false,
+          "Highest accepted visible VG LOD index; 0 requires finest"},
+         {"require_rt", "boolean", false,
+          "Require native RT and ready visible BLAS resources"}},
         "object", false, {}});
     agent_protocol.add_command({
         "view.focus",
@@ -3063,6 +3041,20 @@ int main() {
         {{"object", "object_id", false,
           "{kind,id} pair to frame; omitted frames the current selection"}},
         "object", false, {}});
+    agent_protocol.add_command({
+        "view.set_camera",
+        "Set a complete calibrated pinhole camera for the next presented frame",
+        {{"position", "array", true, "Eye in world meters, [x,y,z]"},
+         {"target", "array", true, "Look target in world meters, [x,y,z]"},
+         {"up", "array", true, "Nonparallel up direction, [x,y,z]"},
+         {"vertical_fov_radians", "number", true, "Vertical field of view [0.05,3.0]"},
+         {"near_plane", "number", true, "Near clip in meters, at least 0.001"},
+         {"far_plane", "number", true, "Far clip in meters, above near and at most 1e7"}},
+        "object", false, {}});
+    agent_protocol.add_command({
+        "render.reset_temporal",
+        "Reset presentation histories before a controlled capture sequence",
+        {}, "object", false, {}});
     // Regeneration job control (regen_jobs.h). `seed` and `job_id` are decimal
     // STRINGS for the same reason every other id here is: a 64-bit seed does
     // not survive an IEEE-754 double. Ranges and the per-operation seed rules
@@ -4141,6 +4133,64 @@ int main() {
             payload.value = std::move(result);
             return viewer::ViewFocus::Result::succeeded(std::move(payload));
         });
+
+    auto reg_view_set_camera =
+        registry.must_register_handler<viewer::ViewSetCamera>(
+            matter::evt::CommandScope::App, app_lane,
+            [&](const viewer::ViewSetCamera& command) {
+                viewer::AgentPayload payload;
+                std::string error;
+                if (!viewer::camera_calibration::valid(command.camera, error)) {
+                    payload.status = viewer::agent::Status::InvalidInput;
+                    payload.message = error;
+                    return viewer::ViewSetCamera::Result::succeeded(std::move(payload));
+                }
+                if (!session) {
+                    payload.status = viewer::agent::Status::NotReady;
+                    payload.message = "no world session is loaded";
+                    return viewer::ViewSetCamera::Result::succeeded(std::move(payload));
+                }
+                camera = command.camera;
+                // camera.prefs pushes this field into CameraDesc every frame.
+                camera_prefs.far_plane = camera.far_plane;
+                auto value = viewer::agent::json::object();
+                value.set("applies_at", viewer::agent::json::string(
+                    "next_presented_frame"));
+                value.set("position", viewer::agent::json::vec3(
+                    camera.position.x, camera.position.y, camera.position.z));
+                value.set("target", viewer::agent::json::vec3(
+                    camera.target.x, camera.target.y, camera.target.z));
+                value.set("up", viewer::agent::json::vec3(
+                    camera.up.x, camera.up.y, camera.up.z));
+                value.set("vertical_fov_radians", viewer::agent::json::number(
+                    camera.vertical_fov_radians));
+                value.set("near_plane", viewer::agent::json::number(camera.near_plane));
+                value.set("far_plane", viewer::agent::json::number(camera.far_plane));
+                payload.value = std::move(value);
+                return viewer::ViewSetCamera::Result::succeeded(std::move(payload));
+            });
+    auto reg_render_reset_temporal =
+        registry.must_register_handler<viewer::RenderResetTemporal>(
+            matter::evt::CommandScope::App, app_lane,
+            [&](const viewer::RenderResetTemporal&) {
+                viewer::AgentPayload payload;
+                if (!session) {
+                    payload.status = viewer::agent::Status::NotReady;
+                    payload.message = "no world session is loaded";
+                    return viewer::RenderResetTemporal::Result::succeeded(
+                        std::move(payload));
+                }
+                session->request_atmosphere_history_reset();
+                stable_camera_frames = 0;
+                previous_evaluation_camera_available = false;
+                auto value = viewer::agent::json::object();
+                value.set("applies_at", viewer::agent::json::string(
+                    "next_presented_frame"));
+                value.set("minimum_stable_frames", viewer::agent::json::number(3));
+                payload.value = std::move(value);
+                return viewer::RenderResetTemporal::Result::succeeded(
+                    std::move(payload));
+            });
 
     // --- regeneration job control (regen_jobs.h) ---------------------------
     // job.start ACCEPTS: it records a ledger entry and returns. The heavy
@@ -5481,6 +5531,9 @@ int main() {
                                 viewer::capture::Clock::now() +
                                 std::chrono::milliseconds(begun.request.timeout_ms);
                             const bool annotate = arguments.annotate;
+                            const bool export_channels = arguments.export_channels;
+                            const uint32_t desired_max_lod = arguments.desired_max_lod;
+                            const bool require_rt = arguments.require_rt;
                             const std::string path = arguments.path;
                             auto ticket = registry.dispatch(std::move(command));
                             const uint64_t ticket_id = ticket.id();
@@ -5493,6 +5546,7 @@ int main() {
                                 ticket.then(
                                     app_lane,
                                     [&, request_id, ticket_id, path, annotate,
+                                     export_channels, desired_max_lod, require_rt,
                                      deadline](const auto& result) {
                                         // Unlike every other agent command, a
                                         // Success here is NOT a terminal answer:
@@ -5525,6 +5579,9 @@ int main() {
                                         pending.ticket_id = ticket_id;
                                         pending.path = path;
                                         pending.annotate = annotate;
+                                        pending.export_channels = export_channels;
+                                        pending.desired_max_lod = desired_max_lod;
+                                        pending.require_rt = require_rt;
                                         pending.deadline = deadline;
                                         if (!agent_capture.arm(std::move(pending))) {
                                             agent_protocol.complete(
@@ -5546,6 +5603,23 @@ int main() {
                                             std::chrono::steady_clock::now();
                                     });
                             }
+                        }
+                    } else if (begun.request.command == "render.reset_temporal") {
+                        attach_agent_ticket(
+                            registry.dispatch(viewer::RenderResetTemporal{}),
+                            payload_terminal);
+                    } else if (begun.request.command == "view.set_camera") {
+                        viewer::ViewSetCamera command;
+                        std::string camera_error;
+                        if (!viewer::camera_calibration::parse(
+                                begun.request.arguments, command.camera,
+                                camera_error)) {
+                            agent_protocol.reject_accepted(
+                                request_id, viewer::agent::Status::InvalidInput,
+                                camera_error);
+                        } else {
+                            attach_agent_ticket(registry.dispatch(std::move(command)),
+                                                payload_terminal);
                         }
                     } else if (begun.request.command == "view.focus") {
                         // `object` is OPTIONAL here, so unlike scene.get_object
@@ -6734,12 +6808,12 @@ int main() {
         // carries matter::streaming::SectorStreaming — that component is what
         // makes the coordinator claim an owner and build a SectorStreamer.
         // Nothing else in the viewer creates one since the sector panel was
-        // retired, so auto-create + attach the anchor as soon as the session is
-        // Ready. Runs every frame on purpose: it is idempotent against live ECS
-        // state, so a reload or world switch (which resets bake_ready and
+        // retired, so attach during loading: initial fill is a prerequisite
+        // of scene admission, not a consequence of BakeFinished. Runs every
+        // frame: it is idempotent against live ECS state, so a reload or world switch (which resets bake_ready and
         // installs a fresh Flecs world) transparently re-creates the anchor. A
         // no-op for closed-world sessions.
-        if (bake_ready) ui.ensure_streaming_anchor(*session);
+        ui.ensure_streaming_anchor(*session);
         ui.update_sector_streaming(*session, frame_camera,
                                    !stats.freeze_stream_anchor);
         viewer::CharacterWalkInput walk_input{};
@@ -6818,9 +6892,10 @@ int main() {
             // world switch's own bake, the deferred tileset phase that follows
             // a BakeFinished) is dropped rather than attributed to whichever
             // job happens to be newest.
-            if (event.type == matter::EventType::BakeStarted)
+            if (event.type == matter::EventType::BakeStarted) {
+                bake_ready = false;
                 regen_jobs.on_bake_started(viewer::jobs::Clock::now());
-            else if (event.type == matter::EventType::BakePartDone)
+            } else if (event.type == matter::EventType::BakePartDone)
                 regen_jobs.on_part_done(event.module, event.phase, event.done,
                                         event.total);
             else if (event.type == matter::EventType::BakeError)
@@ -7011,6 +7086,7 @@ int main() {
             stats.frozen_cull_camera_valid = false;
         }
         options.freeze_cull_camera = stats.freeze_cull_camera;
+        options.live_terrain_graphics = stats.live_terrain_graphics;
         options.pixel_budget = stats.pixel_budget;
         options.min_projected_size = stats.min_projected_size;
         options.dlss_mode = selected_dlss_mode();
@@ -7114,10 +7190,30 @@ int main() {
             viewer::submit_selection_overlay_lines(selection_set, *session);
         else
             render_session->submit_overlay_lines(nullptr, 0);
-        if (!render_session->render(render_camera, render_frame, options, error)) {
+        const bool scene_rendered=render_session->render(render_camera, render_frame, options, error);
+        const bool scene_admission_rejected=!scene_rendered && viewer::admission::rejected(error);
+        if(scene_admission_rejected) {
+            if(scene_admission_diagnostic!=error) {
+                scene_admission_diagnostic=error;
+                MATTER_LOGW("editor","Scene admission rejected: %s\n",error.c_str());
+            }
+            // A shell or retained accepted revision cannot qualify the requested
+            // scene. Fail automation without filing a device-fault issue.
+            if(!screenshot_path.empty() || perf.enabled) {
+                scene_automation_failed=true;quit_requested=true;
+            }
+            if(agent_capture.armed())
+                resolve_agent_capture(viewer::capture::Resolution::Abandoned,nullptr,nullptr,nullptr);
+            if(shot_settle>0 || !fifo_present.pending_screenshot_path().empty())
+                std::printf("shot: rejected requested scene (%s)\n",error.c_str());
+            shot_settle=0;fifo_present.cancel_pending_screenshot();
+            if(fifo_block==FifoBlockKind::Shot) fifo_block=FifoBlockKind::None;
+            stable_camera_frames=0;presented_camera_available=false;
+        } else if(!scene_rendered) {
             MATTER_LOGE("editor", "FATAL: render: %s\n", error.c_str());
             mark_device_fatal(error);
         } else if (!show_isolation) {
+            scene_admission_diagnostic.clear();
             camera_input_order.render_scene();
             matter::ResolvedAtmospherePresentationStatus committed{};
             if (session->resolved_atmosphere_status(committed)) {
@@ -7525,6 +7621,14 @@ int main() {
             stats.process_peak_working_set_bytes = proc.peak_working_set_bytes;
         }
 
+        if(ui_frame_ready && scene_admission_rejected) {
+            ImGui::SetNextWindowSize(ImVec2(520,0),ImGuiCond_FirstUseEver);
+            if(ImGui::Begin("Scene capacity")) {
+                ImGui::TextWrapped("%s",scene_admission_diagnostic.c_str());
+                ImGui::TextWrapped("The requested scene is not rendering. Select a smaller world or correct its assets to retry.");
+            }
+            ImGui::End();
+        }
         bool ui_frame_completed = false;
         if (ui_frame_ready) {
             ui_frame_completed = ui.end_frame(frame, error);
@@ -7552,13 +7656,13 @@ int main() {
         bool issue_capture = false;
         bool fifo_immediate_capture = false;
         std::string capture_path;
-        if (!screenshot_path.empty() && bake_ready && frame_stats.instances_drawn > 0 &&
+        if (!scene_admission_rejected && !screenshot_path.empty() && bake_ready && frame_stats.instances_drawn > 0 &&
             ++screenshot_settle >= settle_frames) {
             capture = true; capture_path = screenshot_path;
-        } else if (shot_settle > 0 && frame_stats.instances_drawn > 0 &&
+        } else if (!scene_admission_rejected && shot_settle > 0 && frame_stats.instances_drawn > 0 &&
                    --shot_settle == 0) {
             capture = true; capture_path = shot_path;
-        } else if (!fifo_present.pending_screenshot_path().empty()) {
+        } else if (!scene_admission_rejected && !fifo_present.pending_screenshot_path().empty()) {
             capture = true;
             fifo_immediate_capture = true;
             capture_path = fifo_present.pending_screenshot_path();
@@ -7587,21 +7691,51 @@ int main() {
                 mark_device_fatal(error);
             }
         }
+        const bool numeric_requested = capture &&
+            agent_capture.owns(capture_path) &&
+            agent_capture.request().export_channels;
+        bool numeric_queued = false;
+        std::string numeric_error;
+        matter::EvaluationChannels numeric_channels;
+        if (numeric_requested) {
+            numeric_queued = session->queue_evaluation_channels(frame, numeric_error);
+        }
         bool frame_presented = false;
         const bool frame_completed =
             vulkan->end_frame(frame, frame_presented, error);
+        if (numeric_queued &&
+            !session->finish_evaluation_channels(
+                frame.serial, frame_completed, numeric_channels, numeric_error)) {
+            numeric_queued = false;
+        }
         session->finish_vulkan_frame(
-            frame.serial, frame_presented && !fatal_error);
+            frame.serial, frame_presented && !fatal_error && !scene_admission_rejected);
         const viewer::FifoPresentUpdate fifo_present_update =
             fifo_present.advance(frame_completed && frame_presented &&
-                                     !fatal_error,
+                                     !fatal_error && !scene_admission_rejected,
                                  !fifo_immediate_capture || capture);
-        if (frame_completed && frame_presented && !fatal_error) {
+        if (frame_completed && frame_presented && !fatal_error && !scene_admission_rejected) {
             // frame_camera is the production pose the interactive picker uses.
             presented_camera = frame_camera;
             presented_camera_available = true;
             presented_production_view = !show_isolation;
             presented_session_generation = binding.current_generation();
+            const auto same_vec = [](const matter::Float3& a,
+                                     const matter::Float3& b) {
+                return a.x == b.x && a.y == b.y && a.z == b.z;
+            };
+            const bool same_camera = previous_evaluation_camera_available &&
+                same_vec(render_camera.position, previous_evaluation_camera.position) &&
+                same_vec(render_camera.target, previous_evaluation_camera.target) &&
+                same_vec(render_camera.up, previous_evaluation_camera.up) &&
+                render_camera.vertical_fov_radians ==
+                    previous_evaluation_camera.vertical_fov_radians &&
+                render_camera.near_plane == previous_evaluation_camera.near_plane &&
+                render_camera.far_plane == previous_evaluation_camera.far_plane;
+            stable_camera_frames = same_camera
+                ? std::min(stable_camera_frames + 1u, 1000000u) : 1u;
+            previous_evaluation_camera = render_camera;
+            previous_evaluation_camera_available = true;
         }
         stats.session_status.presented_frame_serial =
             fifo_present.presented_frame_serial();
@@ -7949,8 +8083,24 @@ int main() {
                             nullptr, nullptr);
                     fatal_error = true;
                 } else {
-                    bool completion_written = true;
-                    if (capture_path == shot_path || fifo_immediate_capture) {
+                    bool numeric_failed = false;
+                    const std::string numeric_path =
+                        capture_path + ".channels.bin";
+                    if (numeric_requested) {
+                        if (!numeric_queued || !numeric_error.empty()) {
+                            numeric_failed = true;
+                        } else if (!viewer::capture::write_channel_bundle(
+                                       numeric_path, numeric_channels,
+                                       numeric_error)) {
+                            numeric_failed = true;
+                        }
+                        if (numeric_failed)
+                            MATTER_LOGE("capture", "numeric channels failed: %s\n",
+                                        numeric_error.c_str());
+                    }
+                    bool completion_written = !numeric_failed;
+                    if (completion_written &&
+                        (capture_path == shot_path || fifo_immediate_capture)) {
                         const std::string done = capture_path + ".done";
                         completion_written =
                             viewer::write_screenshot_completion_marker(done);
@@ -7964,7 +8114,7 @@ int main() {
                             resolve_agent_capture(
                                 viewer::capture::Resolution::WriteFailed, nullptr,
                                 nullptr, nullptr);
-                        fatal_error = true;
+                        if (!numeric_failed) fatal_error = true;
                     } else {
                         screenshot_failures = 0;
                         std::printf("screenshot written to %s\n",
@@ -7994,6 +8144,54 @@ int main() {
                             geometry.image_origin_x = out_origin_x;
                             geometry.image_origin_y = out_origin_y;
                             geometry.production_view = !show_isolation;
+                            if (numeric_requested) {
+                                geometry.channels_path = numeric_path;
+                                geometry.channels_width = numeric_channels.width;
+                                geometry.channels_height = numeric_channels.height;
+                                auto& readiness = geometry.readiness_input;
+                                readiness.production_view = geometry.production_view;
+                                readiness.scene_ready = bake_ready;
+                                readiness.gpu_jobs_idle = session->gpu_jobs_idle();
+                                readiness.require_rt = agent_capture.request().require_rt;
+                                readiness.rt_available = frame_stats.vk_rt_available;
+                                readiness.rt_effective = frame_stats.vk_rt_effective;
+                                readiness.stable_camera_frames = stable_camera_frames;
+                                readiness.vt_queue_depth = frame_stats.vt_queue_depth +
+                                    frame_stats.vt_enrich_queue_depth;
+                                readiness.vt_dirty_pages = frame_stats.vt_dirty_pages;
+                                readiness.vt_rejected_variants =
+                                    frame_stats.vt_rejected_variants;
+                                const auto streaming = session->streaming_status();
+                                if (streaming.state ==
+                                    matter::streaming::SectorStreamingState::Active) {
+                                    readiness.visible_streaming_known =
+                                        streaming.visible_sectors_valid;
+                                    readiness.visible_sectors_pending =
+                                        streaming.visible_sectors_pending;
+                                } else if (streaming.state !=
+                                           matter::streaming::SectorStreamingState::Detached) {
+                                    readiness.visible_streaming_known = false;
+                                }
+                                if (!session->evaluation_detail_report(
+                                        numeric_channels,
+                                        agent_capture.request().desired_max_lod,
+                                        readiness.require_rt, readiness.detail,
+                                        readiness.detail_error)) {
+                                    MATTER_LOGW("capture", "visible detail census: %s",
+                                                readiness.detail_error.c_str());
+                                }
+                                const auto pending_refinement =
+                                    session->pending_refinement_parts();
+                                for (const auto& part : readiness.detail.parts) {
+                                    if (std::find(pending_refinement.begin(),
+                                                  pending_refinement.end(),
+                                                  part.part_hash) !=
+                                        pending_refinement.end())
+                                        ++readiness.visible_refinement_pending;
+                                }
+                                geometry.readiness =
+                                    viewer::capture::evaluate_readiness(readiness);
+                            }
                             // The same batched bounds the selection overlay
                             // draws from, so an annotation rectangle and the
                             // box on screen describe one box.
@@ -8072,7 +8270,7 @@ int main() {
             fifo_issue_capture_active = false;
         }
 
-        if (perf.enabled && perf_phase != PerfPhase::Complete && !fatal_error) {
+        if (perf.enabled && perf_phase != PerfPhase::Complete && !fatal_error && !scene_admission_rejected) {
             const auto perf_now = std::chrono::steady_clock::now();
             if (perf_phase == PerfPhase::WaitingForBake) {
                 if (bake_ready && frame_stats.instances_drawn > 0) {
@@ -8619,5 +8817,5 @@ int main() {
                      validation_errors);
         return 1;
     }
-    return fatal_error ? 1 : 0;
+    return (fatal_error || scene_automation_failed) ? 1 : 0;
 }
