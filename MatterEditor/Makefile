@@ -562,9 +562,10 @@ build/windows/vulkan_smoke_tests.exe: \
         $(ME3_DIR)/src/render/vk_instance_cache.cpp \
         $(ME3_DIR)/src/render/vk_lighting_controls.h \
         $(ME3_DIR)/src/render/streamline_bridge.h \
-        $(ME3_DIR)/src/render/streamline_bridge.cpp \
+        ../libs/MatterGraphics/src/native/streamline_bridge.cpp \
         $(ME3_DIR)/src/render/vk_context.cpp \
-        $(ME3_DIR)/src/render/vk_resources.cpp \
+        ../libs/MatterGraphics/src/native/vk_resources.cpp \
+        ../libs/MatterGraphics/src/native/vk_device_internal.cpp \
         $(ME3_DIR)/src/render/vk_pipeline.cpp \
         $(ME3_DIR)/src/render/vk_scene_renderer.cpp \
         ../libs/MatterGraphics/src/native/mesh_raster.cpp \
@@ -577,26 +578,26 @@ build/windows/vulkan_smoke_tests.exe: \
         $(ME3_DIR)/src/animation/animation_budget.cpp \
         $(ME3_DIR)/src/render/tileset_slicer.cpp \
         $(ME3_DIR)/src/render/bc_encode.cpp \
-        $(ME3_DIR)/src/render/vt_residency.cpp \
+        ../libs/MatterGraphics/src/native/vt/vt_residency.cpp \
         $(ME3_DIR)/include/matter/vt_budgets.h \
         $(ME3_DIR)/src/props/props.cpp \
         $(ME3_DIR)/src/util/json_doc.cpp \
-        $(ME3_DIR)/src/render/vt_stub_filler.cpp \
+        ../libs/MatterGraphics/src/native/vt/vt_stub_filler.cpp \
         $(ME3_DIR)/src/render/vt_compositor.cpp \
         $(ME3_DIR)/src/render/vt_enrich.cpp \
         $(ME3_DIR)/src/render/vt_surface_tape.h \
-        $(ME3_DIR)/src/terrain_field.cpp \
+        ../libs/ProceduralGeometry/src/terrain_field.cpp \
         $(ME3_DIR)/tests/vulkan_smoke_tileset_bake_stub.cpp \
         $(ME3_DIR)/src/tileset_gtex.cpp \
         $(ME3_DIR)/src/render/vk_volumetrics.cpp \
-        $(ME3_DIR)/src/render/vk_atmosphere.cpp \
-        $(ME3_DIR)/src/render/vk_cloud_shadows.cpp \
+        ../libs/MatterGraphics/src/native/vk_atmosphere.cpp \
+        ../libs/MatterGraphics/src/native/vk_cloud_shadows.cpp \
         $(ME3_DIR)/src/render/vk_emitter_gather.cpp \
-        $(ME3_DIR)/src/render/raster_mesh.cpp $(ME3_DIR)/src/render/indexed_part_geometry.cpp \
+        ../libs/MatterGraphics/src/native/raster_mesh.cpp $(ME3_DIR)/src/render/indexed_part_geometry.cpp \
         $(ME3_DIR)/src/render/frame_matrices.cpp \
-        $(ME3_DIR)/src/render/vk_temporal.cpp \
-        $(ME3_DIR)/src/render/vk_gi_math.cpp \
-        $(ME3_DIR)/src/render/vk_lighting_controls.cpp \
+        ../libs/MatterGraphics/src/native/vk_temporal.cpp \
+        ../libs/MatterGraphics/src/native/vk_gi_math.cpp \
+        ../libs/MatterGraphics/src/native/vk_lighting_controls.cpp \
         $(ME3_DIR)/../libs/MatterGraphics/src/matrix_math.cpp \
         $(ME3_DIR)/src/render/lod_trace.cpp \
         $(VK_EMBEDDED_HEADER) $(GLFW_WIN_LIB) $(W_FLECS_OBJ) $(W_BC7ENC_OBJ)
@@ -604,9 +605,10 @@ build/windows/vulkan_smoke_tests.exe: \
 	$(WIN_CXX) $(ME3_DIR)/tests/vulkan_smoke_tests.cpp src/ui_lighting_controls.cpp \
 	    ../libs/AssetStoreLib/src/store_hash.cpp -I../libs/AssetStoreLib/include \
 	    ../libs/MeshChartingLib/src/mesh_charting.cpp \
-	    $(ME3_DIR)/src/render/streamline_bridge.cpp \
+	    ../libs/MatterGraphics/src/native/streamline_bridge.cpp \
 	    $(ME3_DIR)/src/render/vk_context.cpp \
-	    $(ME3_DIR)/src/render/vk_resources.cpp \
+	    ../libs/MatterGraphics/src/native/vk_resources.cpp \
+	    ../libs/MatterGraphics/src/native/vk_device_internal.cpp \
 	    $(ME3_DIR)/src/render/vk_pipeline.cpp \
 	    $(ME3_DIR)/src/render/vk_scene_renderer.cpp \
 	    ../libs/MatterGraphics/src/native/mesh_raster.cpp \
@@ -619,25 +621,25 @@ build/windows/vulkan_smoke_tests.exe: \
 	    $(ME3_DIR)/src/animation/animation_budget.cpp \
 	    $(ME3_DIR)/src/render/tileset_slicer.cpp \
 	    $(ME3_DIR)/src/render/bc_encode.cpp \
-	    $(ME3_DIR)/src/render/vt_residency.cpp \
+	    ../libs/MatterGraphics/src/native/vt/vt_residency.cpp \
 	    $(ME3_DIR)/src/props/props.cpp \
 	    $(ME3_DIR)/src/util/json_doc.cpp \
-	    $(ME3_DIR)/src/render/vt_stub_filler.cpp \
+	    ../libs/MatterGraphics/src/native/vt/vt_stub_filler.cpp \
 	    $(ME3_DIR)/src/render/vt_compositor.cpp \
 	    $(ME3_DIR)/src/render/vt_enrich.cpp \
-	    $(ME3_DIR)/src/terrain_field.cpp \
+	    ../libs/ProceduralGeometry/src/terrain_field.cpp \
 	    $(ME3_DIR)/tests/vulkan_smoke_tileset_bake_stub.cpp \
 	    $(ME3_DIR)/src/tileset_gtex.cpp \
 	    $(ME3_DIR)/src/render/vk_volumetrics.cpp \
-	    $(ME3_DIR)/src/render/vk_atmosphere.cpp \
-	    $(ME3_DIR)/src/render/vk_cloud_shadows.cpp \
+	    ../libs/MatterGraphics/src/native/vk_atmosphere.cpp \
+	    ../libs/MatterGraphics/src/native/vk_cloud_shadows.cpp \
 	    $(ME3_DIR)/src/render/vk_emitter_gather.cpp \
-	    $(ME3_DIR)/src/render/raster_mesh.cpp $(ME3_DIR)/src/render/indexed_part_geometry.cpp \
+	    ../libs/MatterGraphics/src/native/raster_mesh.cpp $(ME3_DIR)/src/render/indexed_part_geometry.cpp \
 	    $(ME3_DIR)/src/render/vk_instance_cache.cpp \
 	    $(ME3_DIR)/src/render/frame_matrices.cpp \
-	    $(ME3_DIR)/src/render/vk_temporal.cpp \
-	    $(ME3_DIR)/src/render/vk_gi_math.cpp \
-	    $(ME3_DIR)/src/render/vk_lighting_controls.cpp \
+	    ../libs/MatterGraphics/src/native/vk_temporal.cpp \
+	    ../libs/MatterGraphics/src/native/vk_gi_math.cpp \
+	    ../libs/MatterGraphics/src/native/vk_lighting_controls.cpp \
 	    $(ME3_DIR)/../libs/MatterGraphics/src/matrix_math.cpp \
 	    $(ME3_DIR)/src/render/lod_trace.cpp \
 	    $(PROFILE_DIR)/src/profile.cpp \
@@ -721,11 +723,12 @@ build/windows/vt_compositor_tests.exe: \
         $(ME3_DIR)/src/render/vt_types.h \
         $(ME3_DIR)/src/render/vt_surface_tape.h \
         $(ME3_DIR)/src/render/chart_atlas.h \
-        $(ME3_DIR)/src/terrain_field.cpp \
+        ../libs/ProceduralGeometry/src/terrain_field.cpp \
         $(ME3_DIR)/src/terrain_field.h \
         $(ME3_DIR)/src/render/vk_context.cpp \
-        $(ME3_DIR)/src/render/vk_resources.cpp \
-        $(ME3_DIR)/src/render/streamline_bridge.cpp \
+        ../libs/MatterGraphics/src/native/vk_resources.cpp \
+        ../libs/MatterGraphics/src/native/vk_device_internal.cpp \
+        ../libs/MatterGraphics/src/native/streamline_bridge.cpp \
         $(PROFILE_DIR)/src/profile.cpp \
         $(VK_EMBEDDED_HEADER) $(GLFW_WIN_LIB) $(W_FLECS_OBJ)
 	@mkdir -p $(dir $@)
@@ -736,10 +739,11 @@ build/windows/vt_compositor_tests.exe: \
 	    $(ME3_DIR)/src/render/vt_enrich.cpp \
 	    $(ME3_DIR)/src/props/props.cpp \
 	    $(ME3_DIR)/src/util/json_doc.cpp \
-	    $(ME3_DIR)/src/terrain_field.cpp \
+	    ../libs/ProceduralGeometry/src/terrain_field.cpp \
 	    $(ME3_DIR)/src/render/vk_context.cpp \
-	    $(ME3_DIR)/src/render/vk_resources.cpp \
-	    $(ME3_DIR)/src/render/streamline_bridge.cpp \
+	    ../libs/MatterGraphics/src/native/vk_resources.cpp \
+	    ../libs/MatterGraphics/src/native/vk_device_internal.cpp \
+	    ../libs/MatterGraphics/src/native/streamline_bridge.cpp \
 	    $(PROFILE_DIR)/src/profile.cpp \
 	    $(GLFW_WIN_LIB) $(W_FLECS_OBJ) -o $@ \
 	    -std=c++17 -Wall -Wextra -Werror -Wno-missing-field-initializers \
@@ -1083,6 +1087,22 @@ $(LINUX_GRAPHICS_BINDING_TEST): $(ME3_DIR)/tests/graphics_binding_tests.cpp \
 .PHONY: run-test-graphics-binding
 run-test-graphics-binding: $(LINUX_GRAPHICS_BINDING_TEST)
 	./$(LINUX_GRAPHICS_BINDING_TEST)
+
+# PortableScene on a live device: shared instances, dynamic-material refusal,
+# a late product under unchanged instances (baked by a child process, restored
+# here) and removal, read back from the adapter's own VulkanRaster capture.
+LINUX_PORTABLE_SCENE_TEST = $(L_DIR)/portable_scene_tests
+$(LINUX_PORTABLE_SCENE_TEST): $(ME3_DIR)/tests/portable_scene_tests.cpp \
+                              $(GLFW_LINUX_LIB) $(LINUX_VIEWER_LIB)
+	$(LINUX_CXX) -std=c++17 -O2 $< ../libs/MatterGraphics/src/vulkan_resources.cpp -o $@ \
+	    $(CXX_FLAGS_BUILD_LINUX_COMMON) -I$(ME3_DIR)/tests -I../libs/MatterGraphics/include -I../libs/MatterContracts/include \
+	    -Wl,--whole-archive $(LINUX_VIEWER_LIB) -Wl,--no-whole-archive \
+	    $(LINUX_VIEWER_AUTHORING_LIBS) $(GLFW_LINUX_LIB) $(BOX3D_LIB) $(AR_CORE_LDFLAGS) $(OZZ_OFFLINE_LIBS) \
+	    $(LINUX_SYSTEM_LIBS) -L$(VULKAN_LIB_DIR) -lvulkan
+
+.PHONY: run-test-portable-scene
+run-test-portable-scene: $(LINUX_PORTABLE_SCENE_TEST)
+	./$(LINUX_PORTABLE_SCENE_TEST)
 
 # Linux .d files use plain Unix paths, not the D:/-style paths that make the
 # Windows .d include conditional on MSYSTEM above -- safe to include

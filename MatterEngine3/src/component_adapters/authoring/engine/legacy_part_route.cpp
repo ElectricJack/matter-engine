@@ -10,6 +10,7 @@
 #include "script_host.h"
 #include "matter/log.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -73,8 +74,11 @@ const LegacyVocabulary& legacy_vocabulary() {
 
 // One module per source: the legacy class body runs verbatim against a Part
 // shim whose verbs forward to sdk.legacyPart; numeric MAT ids become declared
-// placeholder materials (builtin palette factors; {} for dynamic ids) the bake
-// maps back to the engine palette.
+// placeholder materials the bake maps back to the engine palette. Builtin ids
+// carry their frozen palette factors. A dynamic id (a per-world registry slot)
+// has no factors the recipe could freeze, so its declaration is factor-less:
+// the .part keeps the numeric id for the legacy renderer, and
+// legacy_material_refusal() keeps the graphics adapter from drawing it.
 std::string entry_text(const std::string& source, const std::string& class_name) {
     const auto& vocabulary = legacy_vocabulary();
     return "import * as sdk from 'matter:authoring';\n"
@@ -111,9 +115,13 @@ float3 to_float3(const d::Vec3& v) { return make_float3(v.x, v.y, v.z); }
 
 // Built products by part hash, shared by every route instance: the hash is
 // content-addressed, so one product serves all of them and is never replaced.
+// A hash whose recipe resolved but whose product could not be built keeps the
+// coordinator's diagnostic instead, until a later build succeeds.
 struct RetainedProducts {
     std::mutex mutex;
     std::unordered_map<uint64_t, std::shared_ptr<const s::AssetProduct>> by_hash;
+    std::unordered_map<uint64_t, std::string> refused;
+    uint64_t generation = 0; // Bumped whenever either map gains an entry.
 };
 RetainedProducts& retained_products() {
     static RetainedProducts products;
@@ -173,18 +181,21 @@ private:
     std::shared_ptr<const s::AssetProduct> build_retained(uint64_t hash, const s::BuildRequest& request,
                                                           bool report) {
         if (auto kept = retained_asset(hash)) return kept;
-        const s::JobEnvelope job{"matter.engine.part", "1", ++epoch_};
-        if (!pipeline_.coordinator.activate(job).ok()) {
-            if (report) MATTER_LOGE("portable", "bake: coordinator refused activation");
-            return nullptr;
-        }
-        const auto built = pipeline_.coordinator.build(job, request, {});
-        if (!built.ok()) {
-            if (report) MATTER_LOGE("portable", "bake: %s", join_diagnostics(built.diagnostics()).c_str());
-            return nullptr;
-        }
         auto& products = retained_products();
+        const auto refuse = [&](const std::string& why) -> std::shared_ptr<const s::AssetProduct> {
+            if (report) MATTER_LOGE("portable", "bake: %s", why.c_str());
+            std::lock_guard<std::mutex> lock(products.mutex);
+            products.refused[hash] = why;
+            ++products.generation;
+            return nullptr;
+        };
+        const s::JobEnvelope job{"matter.engine.part", "1", ++epoch_};
+        if (!pipeline_.coordinator.activate(job).ok()) return refuse("coordinator refused activation");
+        const auto built = pipeline_.coordinator.build(job, request, {});
+        if (!built.ok()) return refuse(join_diagnostics(built.diagnostics()));
         std::lock_guard<std::mutex> lock(products.mutex);
+        products.refused.erase(hash);
+        ++products.generation;
         return products.by_hash.emplace(hash, built.value()).first->second;
     }
 
@@ -264,12 +275,11 @@ private:
             const bool uvs = !placed.uv_sets.empty() && placed.uv_sets[0].size() == placed.positions.size();
             for (const auto& submesh : placed.submeshes) {
                 const std::string& material = submesh.material.value;
-                if (material.compare(0, std::strlen(kMaterialPrefix), kMaterialPrefix) != 0 ||
-                    material.size() == std::strlen(kMaterialPrefix)) {
+                int material_id = -1;
+                if (classify_legacy_material(material, &material_id) == LegacyMaterialKind::unknown) {
                     MATTER_LOGE("portable", "bake: material '%s' has no engine palette id", material.c_str());
                     return false;
                 }
-                const int material_id = std::stoi(material.substr(std::strlen(kMaterialPrefix)));
                 for (uint32_t i = submesh.first_index; i + 2 < submesh.first_index + submesh.index_count; i += 3) {
                     const uint32_t ix[3] = {placed.indices[i], placed.indices[i + 1], placed.indices[i + 2]};
                     Tri t{};
@@ -317,6 +327,46 @@ std::shared_ptr<const s::AssetProduct> retained_asset(uint64_t part_hash) {
     std::lock_guard<std::mutex> lock(products.mutex);
     const auto found = products.by_hash.find(part_hash);
     return found == products.by_hash.end() ? nullptr : found->second;
+}
+
+uint64_t retained_generation() {
+    auto& products = retained_products();
+    std::lock_guard<std::mutex> lock(products.mutex);
+    return products.generation;
+}
+
+std::string retained_refusal(uint64_t part_hash) {
+    auto& products = retained_products();
+    std::lock_guard<std::mutex> lock(products.mutex);
+    const auto found = products.refused.find(part_hash);
+    return found == products.refused.end() ? std::string() : found->second;
+}
+
+LegacyMaterialKind classify_legacy_material(const std::string& material_id, int* id_out) {
+    const size_t prefix = std::strlen(kMaterialPrefix);
+    const size_t digits = material_id.size() - std::min(material_id.size(), prefix);
+    if (material_id.compare(0, prefix, kMaterialPrefix) != 0 || digits == 0 || digits > 9 ||
+        material_id.find_first_not_of("0123456789", prefix) != std::string::npos)
+        return LegacyMaterialKind::unknown;
+    const int id = std::stoi(material_id.substr(prefix));
+    if (id_out) *id_out = id;
+    return id < MaterialRegistryStaticCount() ? LegacyMaterialKind::builtin : LegacyMaterialKind::dynamic;
+}
+
+std::string legacy_material_refusal(const d::AssetDocument& asset) {
+    for (const auto& mesh : asset.meshes)
+        for (const auto& submesh : mesh.submeshes) {
+            int id = -1;
+            switch (classify_legacy_material(submesh.material.value, &id)) {
+            case LegacyMaterialKind::builtin: break;
+            case LegacyMaterialKind::dynamic:
+                return "material '" + submesh.material.value + "' is per-world dynamic id " +
+                       std::to_string(id) + " with no immutable factors";
+            case LegacyMaterialKind::unknown:
+                return "material '" + submesh.material.value + "' has no engine palette id";
+            }
+        }
+    return {};
 }
 
 bool compose_instance_transform(const d::AssetDocument& asset, const d::Instance& instance,
