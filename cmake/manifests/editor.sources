@@ -46,5 +46,6 @@ MatterEditor/src/property_editor.cpp|all
 MatterEditor/src/editor_props.cpp|all
 MatterEditor/src/gizmo.cpp|all
 MatterEditor/src/os_open.cpp|all
+MatterEditor/src/asset_root.cpp|all
 MatterEditor/src/glfw_vulkan_only_context.c|windows
 MatterEditor/src/glfw_vulkan_only_context_x11.c|linux

@@ -92,4 +92,20 @@ MeshIndexed simplify(const MeshIndexed& in,
                      const SimplifyOptions& opts,
                      const CellBounds* bounds = nullptr);
 
+// Error-bounded QEM policy shared by LOD producers: no triangle-count target,
+// max collapse cost epsilon^2, and topological boundary vertices always locked.
+// This QEM threshold is not a measured surface-distance guarantee.
+// When use_aabb_bounds is true, vertices on the input's AABB face planes are
+// also locked (terrain borders). Pass false for cluster/prop interiors whose
+// AABB does not represent a world border. Empty input returns empty output;
+// an empty simplifier result falls back to a copy of the input.
+MeshIndexed decimate_to_error(const MeshIndexed& in, float epsilon,
+                              bool use_aabb_bounds = true);
+
+// Tri adapter: weld once, apply the same policy, then unweld. AABB bounds are
+// taken from the original Tri positions, before welding, to preserve terrain
+// border locking. Attributes must be reprojected separately after decimation.
+std::vector<Tri> decimate_to_error(const std::vector<Tri>& tris, float epsilon,
+                                  bool use_aabb_bounds = true);
+
 #endif // MESH_SIMPLIFIER_HPP

@@ -46,7 +46,11 @@
 #include <cstring>
 #include <cstdio>
 #include <cstdlib>
+#ifdef _WIN32
+#include <direct.h>
+#else
 #include <sys/stat.h>
+#endif
 // tlas_manager.hpp and blas_manager.hpp are already pulled in via voxel_imposter.h
 
 // File-local helpers: raw byte append/read for the `.vxi` serializer (mirroring
@@ -63,7 +67,7 @@ void put_bytes(std::vector<uint8_t>& b, const void* d, size_t n){
 void ensure_parent_dir(const std::string& path){
     auto pos=path.find_last_of('/'); if(pos==std::string::npos) return;
 #ifdef _WIN32
-    mkdir(path.substr(0,pos).c_str());
+    _mkdir(path.substr(0,pos).c_str());
 #else
     mkdir(path.substr(0,pos).c_str(), 0755);
 #endif

@@ -75,8 +75,8 @@ static void test_atmosphere_transaction_public_abi() {
 
 static void test_local_light_renderer_public_abi() {
     printf("\n[test_local_light_renderer_public_abi]\n");
-    static_assert(sizeof(viewer::LocalLightGpuMeta) == 32,
-                  "local-light metadata is two std430 lanes");
+    static_assert(sizeof(viewer::LocalLightGpuMeta) == 48,
+                  "local-light metadata is three std430 lanes");
     CHECK(offsetof(viewer::LocalLightGpuMeta, cell_size) == 16,
           "local-light floating index config begins at byte 16");
     viewer::LocalDirectLightingContract contract{};
@@ -465,7 +465,7 @@ static void test_wireframe_view_index_composes_with_the_lod_tint() {
 // view-off path is untouched.
 static void test_wireframe_gbuffer_shader_contract() {
     printf("\n[test_wireframe_gbuffer_shader_contract]\n");
-    std::ifstream frag("../shaders_vk/gbuffer.frag");
+    std::ifstream frag("../../libs/MatterGraphics/shaders/gbuffer.frag");
     const std::string text((std::istreambuf_iterator<char>(frag)),
                            std::istreambuf_iterator<char>());
     CHECK(!text.empty(), "read the gbuffer wireframe contract");
@@ -511,10 +511,10 @@ static void test_selected_lod_draw_transform_contract() {
     // Locations 9 and 10 are the warp field on this base. The branch this was
     // ported from had no warp field and emitted the rung at 9; copying that
     // number aliases in_warp_uv_scales and corrupts ground shading, silently.
-    std::ifstream vert("../shaders_vk/raster.vert");
+    std::ifstream vert("../../libs/MatterGraphics/shaders/raster.vert");
     const std::string vert_text((std::istreambuf_iterator<char>(vert)),
                                 std::istreambuf_iterator<char>());
-    std::ifstream frag("../shaders_vk/gbuffer.frag");
+    std::ifstream frag("../../libs/MatterGraphics/shaders/gbuffer.frag");
     const std::string frag_text((std::istreambuf_iterator<char>(frag)),
                                 std::istreambuf_iterator<char>());
     CHECK(!vert_text.empty() && !frag_text.empty(),
@@ -539,10 +539,10 @@ static void test_water_field_transport_contract() {
     std::ifstream cull("../shaders_vk/cull.comp");
     const std::string cull_text((std::istreambuf_iterator<char>(cull)),
                                 std::istreambuf_iterator<char>());
-    std::ifstream vert("../shaders_vk/raster.vert");
+    std::ifstream vert("../../libs/MatterGraphics/shaders/raster.vert");
     const std::string vert_text((std::istreambuf_iterator<char>(vert)),
                                 std::istreambuf_iterator<char>());
-    std::ifstream rt("../shaders_vk/rt_surface_common.glsl");
+    std::ifstream rt("../../libs/MatterGraphics/shaders/rt_surface_common.glsl");
     const std::string rt_text((std::istreambuf_iterator<char>(rt)),
                               std::istreambuf_iterator<char>());
     CHECK(header_text.find("static_assert(sizeof(GpuInstance) == 176)") !=
