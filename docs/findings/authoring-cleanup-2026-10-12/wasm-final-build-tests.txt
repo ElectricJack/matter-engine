@@ -1,0 +1,85 @@
+RUN: ["cmake", "-S", "/mnt/d/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-10/bindings/geometry-c", "-B", "/tmp/crisp-ember-20-validation/wasm-final", "-G", "Ninja", "-DCMAKE_TOOLCHAIN_FILE=/home/jkern/emsdk/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake", "-DCMAKE_BUILD_TYPE=Release", "-DMATTER_GEOMETRY_C_WASM_SMOKE=ON"]
+-- Configuring done (90.7s)
+-- Generating done (0.2s)
+-- Build files have been written to: /tmp/crisp-ember-20-validation/wasm-final
+RUN: ["cmake", "--build", "/tmp/crisp-ember-20-validation/wasm-final", "--parallel", "1"]
+[1/47] Building CXX object CMakeFiles/matter_geometry_c.dir/src/geometry_c.cpp.o
+[2/47] Building CXX object CMakeFiles/matter_geometry_c.dir/src/wire.cpp.o
+[3/47] Building CXX object CMakeFiles/matter_geometry_wasm.dir/module.cpp.o
+[4/47] Building C object CMakeFiles/matter_geometry_c_tests.dir/tests/consumer.c.o
+[5/47] Building CXX object CMakeFiles/wasm_contract_values.dir/mnt/d/Shared_With_Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-10/libs/MatterContracts/tests/contracts_tests.cpp.o
+[6/47] Building CXX object CMakeFiles/wasm_contract_services.dir/mnt/d/Shared_With_Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-10/libs/MatterContracts/tests/service_producers.cpp.o
+[7/47] Building CXX object CMakeFiles/wasm_contract_services.dir/mnt/d/Shared_With_Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-10/libs/MatterContracts/tests/service_consumers.cpp.o
+[8/47] Building C object CMakeFiles/wasm_contract_c_ownership.dir/mnt/d/Shared_With_Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-10/libs/MatterContracts/tests/abi_producer.c.o
+[9/47] Building C object CMakeFiles/wasm_contract_c_ownership.dir/mnt/d/Shared_With_Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-10/libs/MatterContracts/tests/abi_consumer.c.o
+[10/47] Building CXX object CMakeFiles/wasm_contract_vectors.dir/mnt/d/Shared_With_Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-10/libs/MatterContracts/tests/vectors.cpp.o
+[11/47] Building CXX object CMakeFiles/wasm_header_contracts.dir/header-contracts.cpp.o
+[12/47] Building CXX object CMakeFiles/wasm_header_jobs.dir/header-jobs.cpp.o
+[13/47] Building CXX object CMakeFiles/wasm_header_generation.dir/header-generation.cpp.o
+[14/47] Building CXX object CMakeFiles/wasm_header_hosts.dir/header-hosts.cpp.o
+[15/47] Building CXX object CMakeFiles/wasm_header_graphics.dir/header-graphics.cpp.o
+[16/47] Building CXX object CMakeFiles/wasm_header_terrain.dir/header-terrain.cpp.o
+[17/47] Building CXX object CMakeFiles/wasm_header_abi.dir/header-abi.cpp.o
+[18/47] Building CXX object matter-components/matter_geometry/CMakeFiles/matter_geometry.dir/src/geometry.cpp.o
+[19/47] Building CXX object matter-components/matter_geometry/CMakeFiles/matter_geometry.dir/src/profile.cpp.o
+[20/47] Building CXX object matter-components/matter_geometry/CMakeFiles/matter_geometry.dir/src/session.cpp.o
+[21/47] Building CXX object matter-components/matter_geometry/CMakeFiles/matter_geometry.dir/src/csg.cpp.o
+[22/47] Building CXX object matter-components/matter_geometry/CMakeFiles/matter_geometry.dir/src/csg_mesh.cpp.o
+[23/47] Building CXX object matter-components/matter_geometry/CMakeFiles/matter_geometry.dir/src/query.cpp.o
+[24/47] Building CXX object matter-components/matter_geometry/CMakeFiles/matter_geometry.dir/src/modifiers.cpp.o
+[25/47] Building CXX object matter-components/matter_geometry/CMakeFiles/matter_geometry.dir/shared_triangle_emit.cpp.o
+[26/47] Building CXX object matter-components/matter_geometry/CMakeFiles/matter_geometry.dir/mnt/d/Shared_With_Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-10/MatterEngine3/src/polygon_triangulate.cpp.o
+[27/47] Building C object matter-components/matter_geometry/CMakeFiles/matter_geometry.dir/mnt/d/Shared_With_Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-10/libs/MatterSurfaceLib/src/fat_primitive.c.o
+[28/47] Building CXX object matter-components/matter_geometry/CMakeFiles/matter_geometry.dir/mnt/d/Shared_With_Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-10/libs/MatterSurfaceLib/src/mesh_indexed.cpp.o
+[29/47] Building CXX object matter-components/matter_geometry/CMakeFiles/matter_geometry.dir/mnt/d/Shared_With_Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-10/libs/MatterSurfaceLib/src/mesh_simplifier.cpp.o
+/mnt/d/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-10/libs/MatterSurfaceLib/src/mesh_simplifier.cpp:284:18: warning: missing field 'triangleCount' initializer [-Wmissing-field-initializers]
+  284 |     Mesh out = {0};
+      |                  ^
+/mnt/d/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-10/libs/MatterSurfaceLib/src/mesh_simplifier.cpp:576:24: warning: missing field 'triangleCount' initializer [-Wmissing-field-initializers]
+  576 |         Mesh empty = {0};
+      |                        ^
+2 warnings generated.
+[30/47] Building CXX object matter-components/matter_geometry/CMakeFiles/matter_geometry.dir/mnt/d/Shared_With_Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-10/libs/MatterSurfaceLib/src/mesh_smooth.cpp.o
+[31/47] Building CXX object matter-components/matter_geometry/CMakeFiles/matter_geometry.dir/mnt/d/Shared_With_Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-10/libs/MatterSurfaceLib/src/mesh_transform.cpp.o
+[32/47] Building CXX object matter-components/matter_geometry/CMakeFiles/matter_geometry_recipe.dir/examples/direct_recipe.cpp.o
+[33/47] Building CXX object matter-components/matter_contracts/CMakeFiles/matter_contracts.dir/src/value.cpp.o
+[34/47] Building CXX object matter-components/matter_contracts/CMakeFiles/matter_contracts.dir/src/codec.cpp.o
+[35/47] Building CXX object matter-components/matter_contracts/CMakeFiles/matter_contracts.dir/src/validation.cpp.o
+[36/47] Building CXX object matter-components/matter_contracts/CMakeFiles/matter_contracts.dir/src/digest.cpp.o
+[37/47] Building CXX object matter-components/matter_contracts/CMakeFiles/matter_contracts.dir/src/services.cpp.o
+[38/47] Linking CXX static library matter-components/matter_contracts/libmatter_contracts.a
+[39/47] Linking CXX static library matter-components/matter_geometry/libmatter_geometry.a
+[40/47] Linking CXX static library libmatter_geometry_c.a
+[41/47] Linking CXX executable matter_geometry_wasm.mjs
+cache:INFO: generating system library: sysroot/lib/wasm32-emscripten/libc++-debug.a... (this will be cached in "/tmp/crisp-ember-20-validation/wasm-final/emscripten-cache/sysroot/lib/wasm32-emscripten/libc++-debug.a" for subsequent builds)
+system_libs:INFO: compiled 57 inputs in 20.98s
+cache:INFO:  - ok
+cache:INFO: generating system library: sysroot/lib/wasm32-emscripten/libc++abi-debug.a... (this will be cached in "/tmp/crisp-ember-20-validation/wasm-final/emscripten-cache/sysroot/lib/wasm32-emscripten/libc++abi-debug.a" for subsequent builds)
+system_libs:INFO: compiled 17 inputs in 11.67s
+cache:INFO:  - ok
+[42/47] Linking CXX executable matter_geometry_c_tests.mjs
+[43/47] Linking CXX executable wasm_contract_values.mjs
+[44/47] Linking CXX executable wasm_contract_services.mjs
+[45/47] Linking CXX executable wasm_contract_c_ownership.mjs
+[46/47] Linking CXX executable wasm_contract_vectors.mjs
+[47/47] Linking CXX executable matter-components/matter_geometry/matter_geometry_recipe.js
+RUN: ["ctest", "--test-dir", "/tmp/crisp-ember-20-validation/wasm-final", "--output-on-failure", "--parallel", "1"]
+Internal ctest changing into directory: /tmp/crisp-ember-20-validation/wasm-final
+Test project /tmp/crisp-ember-20-validation/wasm-final
+    Start 1: matter_geometry_wasm_wrapper
+1/6 Test #1: matter_geometry_wasm_wrapper .....   Passed    2.89 sec
+    Start 2: matter_geometry_c_consumer
+2/6 Test #2: matter_geometry_c_consumer .......   Passed    2.12 sec
+    Start 3: wasm_contract_values
+3/6 Test #3: wasm_contract_values .............   Passed    0.88 sec
+    Start 4: wasm_contract_services
+4/6 Test #4: wasm_contract_services ...........   Passed    0.68 sec
+    Start 5: wasm_contract_c_ownership
+5/6 Test #5: wasm_contract_c_ownership ........   Passed    0.52 sec
+    Start 6: wasm_contract_vectors
+6/6 Test #6: wasm_contract_vectors ............   Passed    0.84 sec
+
+100% tests passed, 0 tests failed out of 6
+
+Total Test time (real) =   7.95 sec
+PASS: evidence /tmp/crisp-ember-20-validation/wasm-final/smoke-evidence.json

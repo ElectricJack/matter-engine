@@ -1,4 +1,5 @@
 #include "vk_sparse_voxel.h"
+#include "vk_sparse_admission.h"
 
 #include <cmath>
 #include <array>
@@ -137,48 +138,14 @@ struct VkSparseVoxelScene::Allocation final : matter::detail::DeviceLifetimeCont
     }
 };
 
+#include "vk_sparse_admission.inl"
 #include "vk_sparse_placement_update.inl"
 
 std::shared_ptr<VkSparseVoxelScene> VkSparseVoxelScene::create(
     matter::VulkanDevice& vk,const std::vector<SparseVoxelBatch>& batches,std::string& error) {
     return create_impl(vk,batches,error);
 }
-std::shared_ptr<VkSparseVoxelScene> VkSparseVoxelScene::create_shadow_casters(
-    matter::VulkanDevice& vk,const std::vector<SparseVoxelBatch>& batches,std::string& error) {
-    if(!vk.ray_tracing_available()) {error=vk.ray_tracing_unavailable_reason();return {};}
-    if(batches.empty()) {error="empty sparse shadow caster snapshot";return {};}
-    for(const auto& batch:batches) if(!batch.asset || batch.asset->bricks.empty() || batch.instances.empty() ||
-        batch.surface || !batch.coarser.empty() || !batch.coarser_surfaces.empty()) {
-        error="shadow casters require one nonempty fixed voxel asset and placements per batch";return {};
-    }
-    return create_impl(vk,batches,error,nullptr,nullptr,nullptr,true);
-}
-
-std::shared_ptr<VkSparseVoxelScene> VkSparseVoxelScene::create_shared_shadow_casters(
-    matter::VulkanDevice& vk,const std::vector<SparseShadowObject>& objects,std::string& error) {
-    error.clear();
-    if(objects.empty() || objects.size()>0x1000000u) {error="invalid shared shadow object count";return {};}
-    std::vector<SparseVoxelBatch> parts;
-    uint64_t count=0;
-    for(const auto& object:objects) {
-        if(object.parts.empty()) {error="shared shadow objects require parts";return {};}
-        count+=object.instances.size();
-        if(count>0x1000000u) {error="shared shadow placement count exceeds addressing limit";return {};}
-        for(const auto& instance:object.instances) {
-            const auto& pose=instance.object_to_world;matter::Mat4f inverse;
-            if(pose.m[12]!=0 || pose.m[13]!=0 || pose.m[14]!=0 || pose.m[15]!=1 || !mat4_inverse(pose,inverse)) {
-                error="shared shadow placement requires an invertible affine transform";return {};
-            }
-            for(float v:pose.m) if(!std::isfinite(v)) {error="shared shadow placement transform is nonfinite";return {};}
-            for(float v:inverse.m) if(!std::isfinite(v)) {error="shared shadow placement inverse is nonfinite";return {};}
-        }
-        parts.insert(parts.end(),object.parts.begin(),object.parts.end());
-    }
-    if(!count) {error="shared shadows need at least one world placement";return {};}
-    auto result=create_shadow_casters(vk,parts,error);
-    if(!result || !result->allocation_->build_shared_roots(vk,objects,error)) return {};
-    return result;
-}
+#include "../../../libs/MatterGraphics/src/native/sparse_shadow_create.inl"
 
 std::shared_ptr<VkSparseVoxelScene> VkSparseVoxelScene::create_shared_surfaces(
     matter::VulkanDevice& vk,const std::vector<SparseSharedObject>& objects,std::string& error) {
@@ -211,312 +178,7 @@ std::shared_ptr<VkSparseVoxelScene> VkSparseVoxelScene::create_shared_surfaces(
     return create_impl(vk,parts,error,nullptr,nullptr,nullptr,false,&objects);
 }
 
-bool VkSparseVoxelScene::Allocation::build_shared_roots(matter::VulkanDevice& vk,
-    const std::vector<SparseShadowObject>& objects,std::string& error) {
-    VkPhysicalDeviceAccelerationStructurePropertiesKHR limits{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_PROPERTIES_KHR};
-    VkPhysicalDeviceProperties2 properties{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};properties.pNext=&limits;
-    vkGetPhysicalDeviceProperties2(vk.physical_device(),&properties);
-    uint64_t total_roots=0;for(const auto& object:objects) total_roots+=object.instances.size();
-    if(total_roots>limits.maxInstanceCount) {error="shared shadow root count exceeds device limit";return false;}
-    const auto input_buffer=[&](const auto& data,matter::VkBufferResource& buffer,VkBufferUsageFlags usage) {
-        const auto size=data.size()*sizeof(data[0]);
-        return matter::create_buffer(vk,size,usage,VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,buffer,error) &&
-            matter::upload_buffer(vk,buffer,data.data(),size,0,error);
-    };
-    constexpr VkBufferUsageFlags input_usage=VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR|VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
-    std::vector<VkAccelerationStructureInstanceKHR> forest;forest.reserve(size_t(total_roots));
-    std::vector<std::array<uint32_t,4>> addresses;
-    uint32_t level=0,part_offset=0;
-    shadow_bounds.resize(objects.size());shadow_objects.resize(objects.size());
-    shared_part_materials.clear();for(const auto& object:objects) shared_part_materials.push_back(object.use_part_materials);
-    for(size_t index=0;index<objects.size();++index) {
-        const auto& object=objects[index];
-        std::vector<VkAccelerationStructureInstanceKHR> branches;
-        double minimum[3]={1e30,1e30,1e30},maximum[3]={-1e30,-1e30,-1e30};
-        std::vector<std::shared_ptr<void>> retained;
-        for(const auto& part:object.parts) {
-            double lo[3]={1e30,1e30,1e30},hi[3]={-1e30,-1e30,-1e30};
-            auto grid=mat4_identity();
-            if(part.surface) {
-                for(const auto& triangle:part.surface->triangles) for(const auto& vertex:triangle.vertices) {
-                    const float p[]={vertex.position.x,vertex.position.y,vertex.position.z};
-                    for(int k=0;k<3;++k) {lo[k]=std::min(lo[k],double(p[k]));hi[k]=std::max(hi[k],double(p[k]));}
-                }
-            } else {
-            const auto& asset=*part.asset;
-            const double origin[]={asset.origin.x,asset.origin.y,asset.origin.z};
-            for(const auto& brick:asset.bricks) for(uint32_t bit=0;bit<64;++bit) if(brick.mask&(uint64_t(1)<<bit)) {
-                const int local[]={int(bit%4),int(bit/4%4),int(bit/16)};
-                for(int k=0;k<3;++k) {
-                    const double value=origin[k]+(int64_t(brick.coord[k])*4+local[k])*double(asset.cell_size);
-                    lo[k]=std::min(lo[k],value);hi[k]=std::max(hi[k],value+asset.cell_size);
-                }
-            }
-            grid.m[0]=grid.m[5]=grid.m[10]=asset.cell_size;
-            grid.m[3]=asset.origin.x;grid.m[7]=asset.origin.y;grid.m[11]=asset.origin.z;
-            }
-            for(const auto& placement:part.instances) {
-                const auto transform=mat4_mul(placement.object_to_world,grid);
-                VkAccelerationStructureInstanceKHR branch{};
-                std::memcpy(branch.transform.matrix,transform.m,12*sizeof(float));
-                branch.instanceCustomIndex=level;branch.mask=0xff;branch.accelerationStructureReference=shadow_blas[level].address;
-                branches.push_back(branch);
-                for(int corner=0;corner<8;++corner) for(int k=0;k<3;++k) {
-                    double value=placement.object_to_world.m[k*4+3];
-                    for(int a=0;a<3;++a) value+=placement.object_to_world.m[k*4+a]*((corner&(1<<a))?hi[a]:lo[a]);
-                    minimum[k]=std::min(minimum[k],value);maximum[k]=std::max(maximum[k],value);
-                }
-            }
-            retained.push_back(shadow_blas[level].lifetime);++level;
-        }
-        if(branches.size()>limits.maxInstanceCount) {error="shared shadow assembly exceeds device instance limit";return false;}
-        if(objects.size()==1) shadow_objects[index]=std::move(shadow_tlas); // Reuse the already built local assembly.
-        else {
-            matter::VkBufferResource input;if(!input_buffer(branches,input,input_usage)) return false;
-            VkAccelerationStructureGeometryKHR geometry{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR};
-            geometry.geometryType=VK_GEOMETRY_TYPE_INSTANCES_KHR;
-            geometry.geometry.instances={VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR};
-            geometry.geometry.instances.data.deviceAddress=input.address;retained.push_back(input.lifetime);
-            if(!build_acceleration(vk,geometry,uint32_t(branches.size()),VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR,
-                shadow_objects[index],std::move(retained),error)) return false;
-        }
-        const uint64_t address=shadow_objects[index].address;
-        addresses.push_back({uint32_t(address),uint32_t(address>>32),part_offset,0});
-        part_offset+=uint32_t(branches.size());
-        // Expand rounding conservatively so the outer acceleration structure
-        // cannot hide a valid inner hit at a transformed asset boundary.
-        float low[3]{},high[3]{};
-        for(int k=0;k<3;++k) {
-            const double pad=16*std::numeric_limits<float>::epsilon()*std::max({1.0,std::abs(minimum[k]),std::abs(maximum[k])});
-            low[k]=float(minimum[k]-pad);high[k]=float(maximum[k]+pad);
-            if(!std::isfinite(low[k]) || !std::isfinite(high[k]) || !(high[k]>low[k])) {error="shared shadow object bounds overflow";return false;}
-        }
-        const VkAabbPositionsKHR box{low[0],low[1],low[2],high[0],high[1],high[2]};
-        matter::VkBufferResource bounds;if(!input_buffer(std::vector<VkAabbPositionsKHR>{box},bounds,input_usage)) return false;
-        VkAccelerationStructureGeometryKHR geometry{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR};
-        geometry.geometryType=VK_GEOMETRY_TYPE_AABBS_KHR;
-        geometry.geometry.aabbs={VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_AABBS_DATA_KHR};
-        geometry.geometry.aabbs.data.deviceAddress=bounds.address;geometry.geometry.aabbs.stride=sizeof(box);
-        if(!build_acceleration(vk,geometry,1,VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR,shadow_bounds[index],{bounds.lifetime},error)) return false;
-        for(const auto& placement:object.instances) {
-            VkAccelerationStructureInstanceKHR root{};
-            std::memcpy(root.transform.matrix,placement.object_to_world.m,12*sizeof(float));
-            root.instanceCustomIndex=uint32_t(index);root.mask=0xff;root.accelerationStructureReference=shadow_bounds[index].address;
-            forest.push_back(root);
-        }
-    }
-    matter::VkBufferResource input;if(!input_buffer(forest,input,input_usage)) return false;
-    VkAccelerationStructureGeometryKHR geometry{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR};
-    geometry.geometryType=VK_GEOMETRY_TYPE_INSTANCES_KHR;
-    geometry.geometry.instances={VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR};
-    geometry.geometry.instances.data.deviceAddress=input.address;
-    std::vector<std::shared_ptr<void>> retained{input.lifetime};for(const auto& bound:shadow_bounds) retained.push_back(bound.lifetime);
-    matter::VkAccelerationStructureResource outer;
-    if(!build_acceleration(vk,geometry,uint32_t(forest.size()),VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR,outer,std::move(retained),error)) return false;
-    if(objects.size()>1) bytes-=shadow_tlas.size; // Combined setup TLAS is no longer needed.
-    shadow_tlas=std::move(outer);
-    bytes-=shadow_object_addresses.size;
-    if(!input_buffer(addresses,shadow_object_addresses,VK_BUFFER_USAGE_STORAGE_BUFFER_BIT)) return false;
-    bytes+=shadow_object_addresses.size;shared_shadows=true;root_count=uint32_t(forest.size());
-    return true;
-}
-
-bool VkSparseVoxelScene::Allocation::build_acceleration(matter::VulkanDevice& vk,
-    VkAccelerationStructureGeometryKHR& geometry,uint32_t count,VkAccelerationStructureTypeKHR type,
-    matter::VkAccelerationStructureResource& target,std::vector<std::shared_ptr<void>> retained,std::string& error) {
-    const VkDevice device=vk.device();
-    auto get_sizes=reinterpret_cast<PFN_vkGetAccelerationStructureBuildSizesKHR>(vkGetDeviceProcAddr(device,"vkGetAccelerationStructureBuildSizesKHR"));
-    auto cmd_build=reinterpret_cast<PFN_vkCmdBuildAccelerationStructuresKHR>(vkGetDeviceProcAddr(device,"vkCmdBuildAccelerationStructuresKHR"));
-    if(!get_sizes || !cmd_build) {error="sparse shadows require acceleration structure build entry points";return false;}
-    VkPhysicalDeviceAccelerationStructurePropertiesKHR limits{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_PROPERTIES_KHR};
-    VkPhysicalDeviceProperties2 properties{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};properties.pNext=&limits;
-    vkGetPhysicalDeviceProperties2(vk.physical_device(),&properties);
-    const VkDeviceSize align=std::max(1u,limits.minAccelerationStructureScratchOffsetAlignment);
-    struct Record {
-        PFN_vkCmdBuildAccelerationStructuresKHR command;
-        VkAccelerationStructureBuildGeometryInfoKHR info{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR};
-        VkAccelerationStructureBuildRangeInfoKHR range{};
-    } record{cmd_build};
-    record.info.type=type;record.info.flags=VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
-    record.info.mode=VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
-    record.info.geometryCount=1;record.info.pGeometries=&geometry;record.range.primitiveCount=count;
-    VkAccelerationStructureBuildSizesInfoKHR sizes{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR};
-    get_sizes(device,VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR,&record.info,&count,&sizes);
-    matter::VkBufferResource scratch;
-    if(!matter::create_acceleration_structure(vk,type,sizes.accelerationStructureSize,target,error) ||
-       !matter::create_buffer(vk,sizes.buildScratchSize+align-1,VK_BUFFER_USAGE_STORAGE_BUFFER_BIT|
-         VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,0,scratch,error)) return false;
-    record.info.dstAccelerationStructure=target.handle;
-    record.info.scratchData.deviceAddress=(scratch.address+align-1)/align*align;
-    retained.push_back(target.lifetime);retained.push_back(scratch.lifetime);
-    if(!matter::submit_immediate(vk,[](VkCommandBuffer cmd,void* opaque) {
-        auto& r=*static_cast<Record*>(opaque);
-        VkMemoryBarrier2 before{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
-        before.srcStageMask=VK_PIPELINE_STAGE_2_HOST_BIT|VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
-        before.srcAccessMask=VK_ACCESS_2_HOST_WRITE_BIT|VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
-        before.dstStageMask=VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
-        before.dstAccessMask=VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR;
-        VkDependencyInfo dependency{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};dependency.memoryBarrierCount=1;dependency.pMemoryBarriers=&before;
-        vkCmdPipelineBarrier2(cmd,&dependency);
-        const auto* range=&r.range;r.command(cmd,1,&r.info,&range);
-        before.srcStageMask=VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
-        before.srcAccessMask=VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
-        before.dstStageMask=VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT|VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT|VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
-        vkCmdPipelineBarrier2(cmd,&dependency);
-    },&record,error,matter::ImmediateSubmitPhase::compute_dispatch,std::move(retained))) return false;
-    bytes+=target.size;return true;
-}
-
-bool VkSparseVoxelScene::Allocation::build_surface_queries(matter::VulkanDevice& vk,
-    const std::vector<GpuSurfaceTriangle>& triangle_data,const std::vector<GpuInstance>& instance_data,
-    const std::vector<GpuLevel>& level_data,std::string& error) {
-    VkPhysicalDeviceAccelerationStructurePropertiesKHR limits{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_PROPERTIES_KHR};
-    VkPhysicalDeviceProperties2 properties{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};properties.pNext=&limits;
-    vkGetPhysicalDeviceProperties2(vk.physical_device(),&properties);
-    if(level_data.size()>0x1000000u || instance_data.size()>limits.maxInstanceCount) {
-        error="shared surface assembly exceeds ray-query addressing limits";return false;
-    }
-    std::vector<std::array<float,3>> positions;positions.reserve(triangle_data.size()*3);
-    for(const auto& triangle:triangle_data) for(const auto& v:triangle.vertices)
-        positions.push_back({v.position_uvx[0],v.position_uvx[1],v.position_uvx[2]});
-    const auto input_buffer=[&](const auto& data,matter::VkBufferResource& target) {
-        const auto size=data.size()*sizeof(data[0]);
-        return matter::create_buffer(vk,size,VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR|
-            VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,
-            VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,target,error) && matter::upload_buffer(vk,target,data.data(),size,0,error);
-    };
-    matter::VkBufferResource vertices,placed;if(!input_buffer(positions,vertices)) return false;
-    shadow_blas.resize(level_data.size());
-    for(size_t i=0;i<level_data.size();++i) {
-        const auto& level=level_data[i];
-        if(level.flags[0]!=1 || !level.brick_count || level.brick_count>limits.maxPrimitiveCount) {
-            error="unsupported shared surface primitive range";return false;
-        }
-        VkAccelerationStructureGeometryKHR geometry{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR};
-        geometry.geometryType=VK_GEOMETRY_TYPE_TRIANGLES_KHR;
-        bool opaque=true;for(uint32_t p=0;p<level.brick_count;++p)
-            opaque&=triangle_data[level.first_brick+p].vertices[0].color_texture[3]<0;
-        geometry.flags=opaque?VK_GEOMETRY_OPAQUE_BIT_KHR:0;
-        auto& tri=geometry.geometry.triangles;tri={VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR};
-        tri.vertexFormat=VK_FORMAT_R32G32B32_SFLOAT;tri.vertexStride=sizeof(positions[0]);
-        tri.vertexData.deviceAddress=vertices.address+VkDeviceSize(level.first_brick)*3*sizeof(positions[0]);
-        tri.maxVertex=level.brick_count*3-1;tri.indexType=VK_INDEX_TYPE_NONE_KHR;
-        if(!build_acceleration(vk,geometry,level.brick_count,VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR,
-            shadow_blas[i],{vertices.lifetime},error)) return false;
-    }
-    std::vector<VkAccelerationStructureInstanceKHR> roots;roots.reserve(instance_data.size());
-    for(const auto& source:instance_data) {
-        VkAccelerationStructureInstanceKHR root{};
-        for(int row=0;row<3;++row) for(int col=0;col<4;++col)
-            root.transform.matrix[row][col]=source.grid_to_world.elements[col*4+row];
-        root.instanceCustomIndex=source.identity[0];root.mask=0xff;
-        root.flags=VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
-        root.accelerationStructureReference=shadow_blas[source.identity[0]].address;roots.push_back(root);
-    }
-    if(!input_buffer(roots,placed)) return false;
-    VkAccelerationStructureGeometryKHR geometry{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR};
-    geometry.geometryType=VK_GEOMETRY_TYPE_INSTANCES_KHR;
-    geometry.geometry.instances={VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR};
-    geometry.geometry.instances.data.deviceAddress=placed.address;
-    std::vector<std::shared_ptr<void>> retained{placed.lifetime};for(const auto& blas:shadow_blas) retained.push_back(blas.lifetime);
-    return build_acceleration(vk,geometry,uint32_t(roots.size()),VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR,
-        shadow_tlas,std::move(retained),error);
-}
-
-bool VkSparseVoxelScene::Allocation::build_shadows(matter::VulkanDevice& vk,
-    const std::vector<GpuBrick>& brick_data,const std::vector<GpuInstance>& instance_data,
-    const std::vector<GpuLevel>& level_data,std::string& error) {
-    const VkDevice device=vk.device();
-    VkPhysicalDeviceAccelerationStructurePropertiesKHR limits{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_PROPERTIES_KHR};
-    VkPhysicalDeviceProperties2 properties{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};properties.pNext=&limits;
-    vkGetPhysicalDeviceProperties2(vk.physical_device(),&properties);
-    if(level_data.size()>0x1000000u || instance_data.size()>limits.maxInstanceCount) {
-        error="sparse shadow instance/prototype count exceeds ray-query limits";return false;
-    }
-    std::vector<VkAabbPositionsKHR> boxes;boxes.reserve(brick_data.size());
-    for(const auto& brick:brick_data) {
-        const uint32_t b=uint32_t(brick.coord[3]);
-        boxes.push_back({float(brick.coord[0]*4+int(b&3)),float(brick.coord[1]*4+int((b>>2)&3)),float(brick.coord[2]*4+int((b>>4)&3)),
-            float(brick.coord[0]*4+int((b>>6)&3)+1),float(brick.coord[1]*4+int((b>>8)&3)+1),float(brick.coord[2]*4+int((b>>10)&3)+1)});
-    }
-    const auto input_buffer=[&](const auto& data,matter::VkBufferResource& buffer) {
-        const auto size=data.size()*sizeof(data[0]);
-        return matter::create_buffer(vk,size,VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR|
-            VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,buffer,error) &&
-            matter::upload_buffer(vk,buffer,data.data(),size,0,error);
-    };
-    matter::VkBufferResource aabbs,placed;
-    if(!input_buffer(boxes,aabbs)) return false;
-    shadow_blas.resize(level_data.size());
-    for(size_t i=0;i<level_data.size();++i) {
-        const auto& level=level_data[i];
-        if(!level.brick_count || level.brick_count>limits.maxPrimitiveCount || level.flags[0]!=0) {
-            error="invalid sparse shadow brick geometry count/type";return false;
-        }
-        VkAccelerationStructureGeometryKHR geometry{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR};
-        geometry.geometryType=VK_GEOMETRY_TYPE_AABBS_KHR;
-        geometry.geometry.aabbs={VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_AABBS_DATA_KHR};
-        geometry.geometry.aabbs.data.deviceAddress=aabbs.address+VkDeviceSize(level.first_brick)*sizeof(VkAabbPositionsKHR);
-        geometry.geometry.aabbs.stride=sizeof(VkAabbPositionsKHR);
-        if(!build_acceleration(vk,geometry,level.brick_count,VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR,shadow_blas[i],{aabbs.lifetime},error)) return false;
-    }
-    std::vector<VkAccelerationStructureInstanceKHR> roots;roots.reserve(instance_data.size());
-    for(const auto& source:instance_data) {
-        const uint32_t level=source.identity[0];VkAccelerationStructureInstanceKHR root{};
-        for(int row=0;row<3;++row) for(int col=0;col<4;++col)
-            root.transform.matrix[row][col]=source.grid_to_world.elements[col*4+row];
-        root.instanceCustomIndex=level;root.mask=0xff;
-        root.accelerationStructureReference=shadow_blas[level].address;roots.push_back(root);
-    }
-    if(!input_buffer(roots,placed)) return false;
-    VkAccelerationStructureGeometryKHR geometry{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR};
-    geometry.geometryType=VK_GEOMETRY_TYPE_INSTANCES_KHR;
-    geometry.geometry.instances={VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR};
-    geometry.geometry.instances.data.deviceAddress=placed.address;
-    std::vector<std::shared_ptr<void>> retained{placed.lifetime};
-    for(const auto& blas:shadow_blas) retained.push_back(blas.lifetime);
-    if(!build_acceleration(vk,geometry,uint32_t(roots.size()),VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR,shadow_tlas,std::move(retained),error)) return false;
-
-    const VkDescriptorType types[]={VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-        VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER};
-    VkDescriptorSetLayoutBinding bindings[7]{};
-    for(uint32_t i=0;i<7;++i) bindings[i]={i,types[i],1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr};
-    VkDescriptorSetLayoutCreateInfo set_info{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};set_info.bindingCount=7;set_info.pBindings=bindings;
-    if(!checked(vkCreateDescriptorSetLayout(device,&set_info,nullptr,&set_layout),"sparse shadow set layout",error)) return false;
-    VkPushConstantRange push{VK_SHADER_STAGE_COMPUTE_BIT,0,sizeof(ShadowPush)};
-    VkPipelineLayoutCreateInfo layout_info{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
-    layout_info.setLayoutCount=1;layout_info.pSetLayouts=&set_layout;layout_info.pushConstantRangeCount=1;layout_info.pPushConstantRanges=&push;
-    if(!checked(vkCreatePipelineLayout(device,&layout_info,nullptr,&layout),"sparse shadow pipeline layout",error)) return false;
-    const auto spirv=matter::find_spirv("sparse_voxel_shadow.comp.spv");
-    if(!spirv.words || !spirv.word_count) {error="missing sparse voxel shadow shader";return false;}
-    VkShaderModuleCreateInfo shader{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};shader.codeSize=spirv.word_count*4;shader.pCode=spirv.words;
-    if(!checked(vkCreateShaderModule(device,&shader,nullptr,&select_shader),"sparse shadow shader",error)) return false;
-    VkComputePipelineCreateInfo pipeline_info{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};pipeline_info.layout=layout;
-    pipeline_info.stage={VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};pipeline_info.stage.stage=VK_SHADER_STAGE_COMPUTE_BIT;
-    pipeline_info.stage.module=select_shader;pipeline_info.stage.pName="main";
-    if(!checked(vkCreateComputePipelines(device,VK_NULL_HANDLE,1,&pipeline_info,nullptr,&select_pipeline),"sparse shadow pipeline",error)) return false;
-    vkDestroyShaderModule(device,select_shader,nullptr);select_shader=VK_NULL_HANDLE;
-    std::vector<std::array<uint32_t,4>> no_objects(1);
-    if(!matter::create_buffer(vk,16,VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT,VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,shadow_object_addresses,error) ||
-       !matter::upload_buffer(vk,shadow_object_addresses,no_objects.data(),16,0,error)) return false;
-    bytes+=16;
-    VkDescriptorPoolSize sizes[]={{types[0],3},{types[1],3},{types[2],3},{types[3],12}};
-    VkDescriptorPoolCreateInfo pool_info{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};pool_info.maxSets=3;pool_info.poolSizeCount=4;pool_info.pPoolSizes=sizes;
-    if(!checked(vkCreateDescriptorPool(device,&pool_info,nullptr,&pool),"sparse shadow descriptor pool",error)) return false;
-    VkSamplerCreateInfo sampler{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};sampler.magFilter=sampler.minFilter=VK_FILTER_NEAREST;
-    sampler.addressModeU=sampler.addressModeV=sampler.addressModeW=VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    if(!checked(vkCreateSampler(device,&sampler,nullptr,&shadow_sampler),"sparse shadow depth sampler",error)) return false;
-    for(auto& frame:frames) {
-        VkDescriptorSetAllocateInfo allocate{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
-        allocate.descriptorPool=pool;allocate.descriptorSetCount=1;allocate.pSetLayouts=&set_layout;
-        if(!checked(vkAllocateDescriptorSets(device,&allocate,&frame.set),"sparse shadow descriptor set",error)) return false;
-        if(timestamp_bits) {
-            VkQueryPoolCreateInfo query{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};query.queryType=VK_QUERY_TYPE_TIMESTAMP;query.queryCount=2;
-            if(!checked(vkCreateQueryPool(device,&query,nullptr,&frame.timestamps),"sparse shadow timestamps",error)) return false;
-        }
-    }
-    return true;
-}
+#include "../../../libs/MatterGraphics/src/native/sparse_acceleration.inl"
 std::shared_ptr<VkSparseVoxelScene> VkSparseVoxelScene::create_hierarchy(
     matter::VulkanDevice& vk,const std::vector<SparseHierarchyPrototype>& prototypes,
     const std::vector<SparseHierarchyPlacement>& placements,const SparseHierarchyConfig& config,std::string& error) {
@@ -550,6 +212,34 @@ std::shared_ptr<VkSparseVoxelScene> VkSparseVoxelScene::create_impl(
     const std::vector<SparseHierarchyPlacement>* placements,const SparseHierarchyConfig* config,bool shadow_only,
     const std::vector<SparseSharedObject>* shared_surfaces) {
     error.clear();
+    // Reject the complete upload before allocating any flattened geometry.
+    SparseLimits admission_limits(vk,shadow_only || shared_surfaces);
+    auto admission_plan=admission_limits.planner(shadow_only || shared_surfaces,shadow_only);
+    for(size_t i=0;i<batches.size();++i) if(!admission_plan.batch(batches[i],i)) {
+        error=admission_plan.plan.failure.message();return {};
+    }
+    if(shared_surfaces) {
+        auto roots_plan=admission_limits.planner(true,false);
+        if(!roots_plan.objects(*shared_surfaces)) {error=roots_plan.plan.failure.message();return {};}
+    }
+    if(hierarchy) {
+        using admission::Buffer;
+        auto& plan=admission_plan.plan;
+        const uint64_t nodes=config->max_nodes,primitives=config->max_primitives;
+        bool fits=plan.add(Buffer::placements,placements->size(),sizeof(GpuInstance),0) &&
+            plan.bound(Buffer::instances,nodes,UINT32_MAX/65u,sizeof(GpuInstance),0) &&
+            plan.bound(Buffer::roots,(nodes+63)/64,admission_limits.properties.limits.maxComputeWorkGroupCount[0],64*sizeof(GpuInstance),0);
+        // Independent frame buffers, not additions to the immutable arrays.
+        admission::Plan frames(admission::storage_limit(admission_limits.properties.limits.maxStorageBufferRange));
+        fits=fits && frames.add(Buffer::instances,nodes,sizeof(GpuInstance),0) &&
+            frames.add(Buffer::work,4+nodes+std::max(primitives,9+nodes*2),16,0);
+        for(size_t i=0;fits && i<hierarchy->size();++i)
+            fits=plan.add(Buffer::children,(*hierarchy)[i].children.size(),sizeof(GpuHierarchyChild),i);
+        if(!fits) {error=(plan.failure?plan.failure:frames.failure).message();return {};}
+        if(!admission_plan.hierarchy_graph(*hierarchy,*placements,*config)) {
+            error=plan.failure.message();return {};
+        }
+    }
     auto out=std::make_shared<VkSparseVoxelScene>();
     auto a=std::make_shared<Allocation>(vk);
     a->shadow_only=shadow_only;
@@ -571,7 +261,7 @@ std::shared_ptr<VkSparseVoxelScene> VkSparseVoxelScene::create_impl(
     std::vector<VkDrawIndirectCommand> commands;
     VkPhysicalDeviceProperties properties{};
     vkGetPhysicalDeviceProperties(vk.physical_device(),&properties);
-    const uint64_t buffer_limit=properties.limits.maxStorageBufferRange;
+    const uint64_t buffer_limit=admission::storage_limit(properties.limits.maxStorageBufferRange);
     if(hierarchy) {
         VkPhysicalDeviceSubgroupProperties subgroup{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES};
         VkPhysicalDeviceProperties2 properties2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2}; properties2.pNext=&subgroup;
@@ -1298,61 +988,7 @@ void VkSparseVoxelScene::record(VkCommandBuffer cmd,const FrameMatrices& frame,u
     if(selected.timestamps) vkCmdWriteTimestamp2(cmd,VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,selected.timestamps,3);
 }
 
-bool VkSparseVoxelScene::record_shadows(VkCommandBuffer cmd,const FrameMatrices& matrices,uint32_t slot,
-    VkExtent2D extent,matter::Float3 to_sun,float bias,float max_distance,
-    const matter::VkImageResource& depth,const matter::VkImageResource& visibility,
-    const SparseVoxelTemporal& temporal,std::string& error) const {
-    error.clear();
-    if(!allocation_ || !allocation_->shadow_only || slot>=kSparseVoxelFrameSlots || !cmd ||
-       !extent.width || !extent.height || !depth.view || !visibility.view ||
-       visibility.format!=VK_FORMAT_R16G16B16A16_SFLOAT || depth.extent.width!=extent.width ||
-       depth.extent.height!=extent.height || visibility.extent.width!=extent.width || visibility.extent.height!=extent.height ||
-       !std::isfinite(bias) || bias<0 || !std::isfinite(max_distance) || max_distance<=0) {
-        error="invalid sparse shadow targets, slot or ray interval";return false;
-    }
-    const double norm=std::sqrt(double(to_sun.x)*to_sun.x+double(to_sun.y)*to_sun.y+double(to_sun.z)*to_sun.z);
-    if(!std::isfinite(norm) || norm<1e-12) {error="invalid sparse shadow sun direction";return false;}
-    for(float value:matrices.clip_to_world.m) if(!std::isfinite(value)) {error="invalid sparse shadow camera";return false;}
-    auto& a=*allocation_;const VkDevice device=a.device();
-    if(!device) {error="sparse shadow device was destroyed";return false;}
-    const auto& frame=a.frames[slot];
-    VkWriteDescriptorSetAccelerationStructureKHR acceleration{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR};
-    acceleration.accelerationStructureCount=1;acceleration.pAccelerationStructures=&a.shadow_tlas.handle;
-    VkDescriptorImageInfo images[]={{a.shadow_sampler,depth.view,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
-        {VK_NULL_HANDLE,visibility.view,VK_IMAGE_LAYOUT_GENERAL}};
-    VkDescriptorBufferInfo buffers[]={{a.bricks.buffer,0,VK_WHOLE_SIZE},{a.cells.buffer,0,VK_WHOLE_SIZE},{a.levels.buffer,0,VK_WHOLE_SIZE},{a.shadow_object_addresses.buffer,0,VK_WHOLE_SIZE}};
-    VkWriteDescriptorSet writes[7]{};
-    for(uint32_t i=0;i<7;++i) {
-        writes[i]={VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};writes[i].dstSet=frame.set;writes[i].dstBinding=i;writes[i].descriptorCount=1;
-        if(i==0) {writes[i].descriptorType=VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;writes[i].pNext=&acceleration;}
-        else if(i<3) {writes[i].descriptorType=i==1?VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER:VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;writes[i].pImageInfo=&images[i-1];}
-        else {writes[i].descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;writes[i].pBufferInfo=&buffers[i-3];}
-    }
-    vkUpdateDescriptorSets(device,7,writes,0,nullptr);
-    ShadowPush push;push.clip_to_world=pack_glsl_mat4(matrices.clip_to_world);
-    push.sun_distance[0]=float(to_sun.x/norm);push.sun_distance[1]=float(to_sun.y/norm);push.sun_distance[2]=float(to_sun.z/norm);
-    push.sun_distance[3]=max_distance;push.bias_extent[0]=bias;push.bias_extent[2]=a.shared_shadows?1.0f:0.0f;
-    const uint32_t sequence=temporal.accumulate_samples?uint32_t(temporal.presented_frame_index)^uint32_t(temporal.presented_frame_index>>32):0;
-    std::memcpy(&push.bias_extent[1],&sequence,sizeof(sequence));
-    if(frame.timestamps) {vkCmdResetQueryPool(cmd,frame.timestamps,0,2);vkCmdWriteTimestamp2(cmd,VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,frame.timestamps,0);}
-    vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_COMPUTE,a.select_pipeline);
-    vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_COMPUTE,a.layout,0,1,&frame.set,0,nullptr);
-    vkCmdPushConstants(cmd,a.layout,VK_SHADER_STAGE_COMPUTE_BIT,0,sizeof(push),&push);
-    vkCmdDispatch(cmd,(extent.width+7)/8,(extent.height+7)/8,1);
-    if(frame.timestamps) vkCmdWriteTimestamp2(cmd,VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,frame.timestamps,1);
-    return true;
-}
-
-bool VkSparseVoxelScene::readback_shadow_ms(matter::VulkanDevice& vk,uint32_t slot,double& ms,std::string& error) const {
-    ms=0;error.clear();
-    if(!allocation_ || !allocation_->shadow_only || slot>=kSparseVoxelFrameSlots) {error="invalid sparse shadow timestamp snapshot/slot";return false;}
-    const auto& a=*allocation_;if(!a.frames[slot].timestamps) return true;
-    uint64_t times[2]{};
-    if(!checked(vkGetQueryPoolResults(vk.device(),a.frames[slot].timestamps,0,2,sizeof(times),times,sizeof(uint64_t),
-        VK_QUERY_RESULT_64_BIT|VK_QUERY_RESULT_WAIT_BIT),"sparse shadow timestamps",error)) return false;
-    const uint64_t mask=a.timestamp_bits>=64?UINT64_MAX:((uint64_t(1)<<a.timestamp_bits)-1);
-    ms=double((times[1]-times[0])&mask)*a.timestamp_period*1e-6;return true;
-}
+#include "../../../libs/MatterGraphics/src/native/sparse_shadow_dispatch.inl"
 
 bool VkSparseVoxelScene::readback_timings(matter::VulkanDevice& vk,uint32_t slot,
     SparseVoxelTimings& out,std::string& error) const {

@@ -46,6 +46,7 @@
 #include <cstring>
 #include <optional>
 #include <fstream>
+#include <sstream>
 #include <map>
 #include <sstream>
 #include <string>
@@ -693,12 +694,12 @@ static constexpr uint32_t kSettleCacheVersion = 2u;  // M4: two u32 versions -> 
 // Helpers: write/read primitive types to/from a file stream in little-endian.
 namespace {
 template<typename T>
-static bool write_le(std::ofstream& f, const T& v) {
+static bool write_le(std::ostream& f, const T& v) {
     f.write(reinterpret_cast<const char*>(&v), sizeof(T));
     return f.good();
 }
 template<typename T>
-static bool read_le(std::ifstream& f, T& v) {
+static bool read_le(std::istream& f, T& v) {
     f.read(reinterpret_cast<char*>(&v), sizeof(T));
     return f.good();
 }
@@ -744,14 +745,19 @@ static std::string settle_cache_path(const std::string& cache_root, uint64_t key
     return cache_root + "/tileset/" + buf;
 }
 
-bool settle_cache_save(const std::string& cache_root, uint64_t key, const SettledTorus& s) {
+bool settle_cache_save(const std::string& cache_root, uint64_t key, const SettledTorus& s,
+                       matter::CacheByteStorage* storage) {
     // Ensure tileset subdir exists.
     const std::string tileset_dir = cache_root + "/tileset";
-    fs_mkdir_settle(tileset_dir.c_str());
+    if (!storage) fs_mkdir_settle(tileset_dir.c_str());
 
     const std::string path = settle_cache_path(cache_root, key);
     const std::string tmp  = path + ".tmp";
-    std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
+    std::ofstream disk;
+    std::ostringstream memory(std::ios::binary | std::ios::out);
+    if (!storage) disk.open(tmp, std::ios::binary | std::ios::trunc);
+    std::ostream& f = storage ? static_cast<std::ostream&>(memory)
+                              : static_cast<std::ostream&>(disk);
     if (!f) return false;
 
     // Header.
@@ -823,8 +829,14 @@ bool settle_cache_save(const std::string& cache_root, uint64_t key, const Settle
         if (!write_le(f, lr.sim_time))       return false;
     }
 
-    f.close();
-    if (!f.good() && !f.eof()) return false;
+    if (storage) {
+        f.flush();
+        if (!f.good()) return false;
+        const auto encoded = memory.str();
+        return storage->publish(path, matter::CacheByteStorage::Bytes(encoded.begin(), encoded.end()));
+    }
+    disk.close();
+    if (!disk.good() && !disk.eof()) return false;
     // Atomic rename.
     if (std::rename(tmp.c_str(), path.c_str()) != 0) {
         std::remove(tmp.c_str());
@@ -833,9 +845,20 @@ bool settle_cache_save(const std::string& cache_root, uint64_t key, const Settle
     return true;
 }
 
-bool settle_cache_load(const std::string& cache_root, uint64_t key, SettledTorus& out) {
+bool settle_cache_load(const std::string& cache_root, uint64_t key, SettledTorus& out,
+                       matter::CacheByteStorage* storage) {
     const std::string path = settle_cache_path(cache_root, key);
-    std::ifstream f(path, std::ios::binary);
+    std::ifstream disk;
+    std::istringstream memory(std::ios::binary | std::ios::in);
+    if (storage) {
+        const auto bytes = storage->open(path);
+        if (!bytes) return false;
+        memory.str(std::string(bytes->begin(), bytes->end()));
+    } else {
+        disk.open(path, std::ios::binary);
+    }
+    std::istream& f = storage ? static_cast<std::istream&>(memory)
+                              : static_cast<std::istream&>(disk);
     if (!f) return false;
 
     // Measure file size upfront so counts can be validated before resize.
