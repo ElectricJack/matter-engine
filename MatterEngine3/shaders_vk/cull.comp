@@ -99,9 +99,16 @@ layout(set = 0, binding = 0, std140) uniform FrameConstants {
     // ---- occlusion ID pass (M4) -------------------------------------------
     // x = cull DRAWS against the visibility mask (0 = the mask is written and
     //     read by nobody, which is the default and the pre-M4 behaviour).
-    // yzw unused. y was "emit the ID list at all" back when one dispatch wrote
-    // both lists; which list a dispatch writes is now kCullPass, and the
-    // renderer simply does not dispatch pass 0 when the cull is off.
+    // y = the visibility reduce is running (read CPU-side; unused here). It
+    // was "emit the ID list at all" back when one dispatch wrote both lists;
+    // which list a dispatch writes is now kCullPass, and the renderer simply
+    // does not dispatch pass 0 when the cull is off.
+    // z = `commands` carries a second, mirrored table at [capacities.z,
+    //     2 * capacities.z): command capacities.z + b is the tail of bucket
+    //     b's transform region, reserved for instances with mirrored != 0
+    //     and drawn front-face clockwise. 0 = no mirrored instances exist and
+    //     the buffer holds only the primary table.
+    // w unused.
     uvec4 vis_params;
 } frame;
 
@@ -295,7 +302,11 @@ bool reserve_vis_slot(uint bucket, out uint slot) {
 bool reserve_transform_slot(uint bucket, out uint slot) {
     const uint first = commands[bucket].first_instance;
     if (first > frame.capacities.w) return false;
-    const uint end = bucket + 1u < frame.capacities.z
+    // With a mirrored table the bucket's own region ends where its mirrored
+    // tail begins (see vis_params.z).
+    const uint end = frame.vis_params.z != 0u
+                         ? commands[frame.capacities.z + bucket].first_instance
+                         : bucket + 1u < frame.capacities.z
                          ? commands[bucket + 1u].first_instance
                          : frame.capacities.w;
     if (end < first || end > frame.capacities.w) return false;
@@ -323,6 +334,27 @@ bool reserve_transform_slot(uint bucket, out uint slot) {
         // Wrapping add of -1: uint atomics are modular, so this is an exact
         // undo of this invocation's reservation.
         atomicAdd(commands[bucket].instance_count, 0xffffffffu);
+        return false;
+    }
+    slot = reserved;
+    return true;
+}
+
+// The mirrored twin of reserve_transform_slot: same single-atomic scheme on
+// the mirrored command, whose region runs from its own first_instance to the
+// next bucket's primary region.
+bool reserve_mirror_slot(uint bucket, out uint slot) {
+    const uint mirror = frame.capacities.z + bucket;
+    const uint first = commands[mirror].first_instance;
+    if (first > frame.capacities.w) return false;
+    const uint end = bucket + 1u < frame.capacities.z
+                         ? commands[bucket + 1u].first_instance
+                         : frame.capacities.w;
+    if (end < first || end > frame.capacities.w) return false;
+    const uint available = end - first;
+    const uint reserved = atomicAdd(commands[mirror].instance_count, 1u);
+    if (reserved >= available) {
+        atomicAdd(commands[mirror].instance_count, 0xffffffffu);
         return false;
     }
     slot = reserved;
@@ -429,8 +461,12 @@ void cull_cluster(GpuInstance instance, uint cluster_index, uint override_slot, 
     // the real draw is see-through. Such clusters are excluded from the ID
     // list AND exempted from the mask test below: they can never register
     // their token, so testing them would cull them unconditionally.
+    //
+    // Mirrored instances are excluded the same way: the ID pass draws with
+    // the counter-clockwise-front state, which culls a mirrored instance's
+    // front faces, so it could never register its token either.
     const bool occlusion_eligible =
-        cluster.vis_mesh_lods > 0u &&
+        instance.mirrored == 0u && cluster.vis_mesh_lods > 0u &&
         (cluster.part_slot < part_occluder.length()
              ? part_occluder[cluster.part_slot] != 0u
              : true);
@@ -518,12 +554,16 @@ void cull_cluster(GpuInstance instance, uint cluster_index, uint override_slot, 
     if (cluster_index > (0xffffffffu - lod) / MAX_LOD) return;
     const uint bucket = cluster_index * MAX_LOD + lod;
     if (bucket >= frame.capacities.z) return;
+    const uint command = frame.vis_params.z != 0u && instance.mirrored != 0u
+                             ? frame.capacities.z + bucket
+                             : bucket;
     uint slot = 0u;
-    if (!reserve_transform_slot(bucket, slot)) {
+    if (command != bucket ? !reserve_mirror_slot(bucket, slot)
+                          : !reserve_transform_slot(bucket, slot)) {
         atomicAdd(group_stats[3], 1u);
         return;
     }
-    const uint first = commands[bucket].first_instance;
+    const uint first = commands[command].first_instance;
     if (first >= frame.capacities.w || slot >= frame.capacities.w - first)
         return;
     draw_transforms[first + slot].current = instance.transform;
@@ -543,7 +583,7 @@ void cull_cluster(GpuInstance instance, uint cluster_index, uint override_slot, 
     draw_transforms[first + slot].water_generation =
         instance.water_generation;
     atomicAdd(group_stats[2], 1u);
-    atomicAdd(group_stats[4], commands[bucket].index_count / 3u);
+    atomicAdd(group_stats[4], commands[command].index_count / 3u);
     if (slot == 0u) atomicAdd(group_stats[5], 1u);
 }
 
@@ -558,7 +598,14 @@ void cull_instance() {
         uint p = 8u + tid*4u;
         uint instance_index = geometry_selected[p];
         if (instance_index >= frame.counts.x || instance_index >= frame.capacities.y) return;
-        cull_cluster(instances[instance_index], geometry_selected[p+1u], geometry_selected[p+2u], geometry_selected[p+3u]);
+        // Page draws stay in the primary table: the CPU sizes the mirrored
+        // tails from static instances alone, and a bucket's primary region
+        // (pages + statics - mirrored statics) always covers its pages. A
+        // mirrored page controller therefore still draws counter-clockwise;
+        // hierarchy mirroring is out of scope for the mirrored table.
+        GpuInstance page_instance = instances[instance_index];
+        page_instance.mirrored = 0u;
+        cull_cluster(page_instance, geometry_selected[p+1u], geometry_selected[p+2u], geometry_selected[p+3u]);
         return;
     }
     if (frame.counts.y == 0u) return;

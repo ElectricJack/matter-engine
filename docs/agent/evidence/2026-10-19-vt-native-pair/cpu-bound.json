@@ -1,0 +1,18 @@
+{
+  "scope": "CPU scheduling upper bound only; no native VT or VT-RT execution",
+  "shared_dependency": "current vendored Vulkan type declarations; no GPU calls",
+  "results": [
+    {
+      "ref": "58289c187ef2565c7d0532fe28a8cfb903023e44",
+      "compiler": "g++ -std=c++17 -Wall -Wextra -Werror",
+      "output": "page_tiles=680 max_tiles_in_7_frames=14 max_tiles_in_6_frames=12 min_slice_frames=340",
+      "exit": 0
+    },
+    {
+      "ref": "90a19c6698a03623da9a3e3c5235ad272531d462",
+      "compiler": "g++ -std=c++17 -Wall -Wextra -Werror",
+      "output": "page_tiles=680 max_tiles_in_7_frames=14 max_tiles_in_6_frames=12 min_slice_frames=340",
+      "exit": 0
+    }
+  ]
+}
