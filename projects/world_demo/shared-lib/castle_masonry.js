@@ -43,18 +43,21 @@
 // w = u x up (across the wall); the wall centre plane is w=0.
 
 import {
-  placeBeam, placeStone, stoneParams, beamParams,
+  placeBeam, placeStone, stoneParams,
 } from 'shared-lib/castle_primitives';
+import { primitiveStock } from 'shared-lib/castle_stock';
 
 export const CASTLE_MASONRY_VERSION = 1;
 
-// Canonical catalogue sizes. Stones are scaled by their placement transform to
-// the exact course/joint geometry, so requires stays a small fixed list.
+// Nominal layout categories, not separate bake shapes. Ordinary blocks from
+// every category use primitiveStock: two rough forms per material, with exact
+// dimensions fitted by their placement matrix. Cut planes remain separate.
 export const MASONRY_STONE_SHAPES = Object.freeze({
   wythe: Object.freeze({ length: 0.7, height: 0.3, depth: 0.3 }),
   through: Object.freeze({ length: 0.7, height: 0.3, depth: 0.6 }),
   lintel: Object.freeze({ length: 1.8, height: 0.34, depth: 0.6 }),
 });
+// Legacy color-selection period, not the number of baked stone variants.
 export const MASONRY_STONE_SEEDS = 12;
 export const MASONRY_RAIL_SEEDS = 4;
 
@@ -292,17 +295,22 @@ function splitInterval(interval, lineKey, course, options) {
 
 function stonePlacement(frame, options, palette, shapeName, seedKey, box, role, ownerId) {
   const shape = MASONRY_STONE_SHAPES[shapeName];
-  const seed = hash32(seedKey) % MASONRY_STONE_SEEDS;
-  const params = stoneParams({
-    ...shape, seed, material: palette[seed % palette.length], detail: options.detail,
-  });
+  const hash = hash32(seedKey), seed = hash % MASONRY_STONE_SEEDS;
+  // Preserve the authored color choice while separating its hash bits from
+  // roughness selection. Otherwise seed%2 would give each of four materials
+  // only one of the two stock forms because color also used seed%paletteSize.
+  const stock = primitiveStock('CastleStone', stoneParams({
+    ...shape, seed: Math.floor(hash / palette.length),
+    material: palette[seed % palette.length], detail: options.detail,
+  }));
+  const params = stock.params;
   const length = box.a1 - box.a0, height = box.v1 - box.v0, depth = box.c1 - box.c0;
   const origin = frame.point((box.a0 + box.a1) / 2, box.v0, (box.c0 + box.c1) / 2);
   const solid = boxCorners(frame, box);
   return {
     module: 'CastleStone', params, role, ownerId,
     matrix: frameMatrix(origin, frame.u, [0, 1, 0], frame.w,
-      [length / shape.length, height / shape.height, depth / shape.depth]),
+      [length / params.length, height / params.height, depth / params.depth]),
     solid, bounds: boundsOf(solid),
   };
 }
@@ -466,7 +474,10 @@ function lineAperturePlans(manifest, levelId, axis, line, grid, height, options)
 // Canonical CastleCutStone params: a convex prism = bounding box (length +X
 // centred, height +Y from the y=0 bed, depth +Z centred) minus up to three
 // half-planes n.(x,y) > d in the XY profile. Quantized so identical arch
-// geometries share bakes.
+// geometries share bakes. Idempotent: a quantized normal is unit only to
+// ~7.1e-5, and renormalizing it again can step it to a neighbouring 1e-4 grid
+// point (c2y -0.9794 -> -0.9795 -> -0.9794), so an on-grid normal already
+// within 1e-4 of unit length is kept as it is.
 export function cutStoneParams(p = {}) {
   const q = value => Math.round(value * 1e4) / 1e4;
   const seed = Math.floor(clampNumber(p.seed, 0, -1e9, 1e9)) % MASONRY_CUT_SEEDS;
@@ -481,8 +492,13 @@ export function cutStoneParams(p = {}) {
   for (let i = 0; i < 3; ++i) {
     const nx = clampNumber(p[`c${i}x`], 0, -1, 1), ny = clampNumber(p[`c${i}y`], 0, -1, 1);
     const len = Math.hypot(nx, ny);
-    out[`c${i}x`] = len > 1e-9 ? q(nx / len) : 0;
-    out[`c${i}y`] = len > 1e-9 ? q(ny / len) : 0;
+    let cx = 0, cy = 0;
+    if (len > 1e-9) {
+      cx = q(nx); cy = q(ny);
+      if (Math.abs(Math.hypot(cx, cy) - 1) > 1e-4) { cx = q(nx / len); cy = q(ny / len); }
+    }
+    out[`c${i}x`] = cx;
+    out[`c${i}y`] = cy;
     out[`c${i}d`] = len > 1e-9 ? q(clampNumber(p[`c${i}d`], 0, -10, 10)) : 0;
   }
   return out;
@@ -532,9 +548,13 @@ export function emitCutStone(part, input = {}) {
   part.smoothing(Math.min(0.009, minDim * 0.05));
   part.box([0, p.height / 2, 0], [p.length / 2, p.height / 2, hd]);
   for (const cut of cutList(p)) {
+    // Canonical normals are unit only to 1e-4: put the cutter face exactly on
+    // the profile's clip line n.(x,y) = d, at distance d/|n| along n/|n|.
+    const len = Math.hypot(cut.nx, cut.ny), ux = cut.nx / len, uy = cut.ny / len;
+    const offset = cut.d / len + big;
     part.pushMatrix();
-    part.translate(cut.nx * (cut.d + big), cut.ny * (cut.d + big), 0);
-    part.rotateZ(Math.atan2(cut.ny, cut.nx));
+    part.translate(ux * offset, uy * offset, 0);
+    part.rotateZ(Math.atan2(uy, ux));
     part.box([0, 0, 0], [big, big, hd + 0.1]);
     part.popMatrix();
     part.difference();
@@ -863,9 +883,10 @@ function railRequired(record) {
 }
 
 function beamPlacement(origin, ax, ay, az, params, role, ownerId) {
+  const stock = primitiveStock('CastleBeam', params);
   return {
-    module: 'CastleBeam', params: beamParams(params), role, ownerId,
-    matrix: frameMatrix(origin, ax, ay, az, [1, 1, 1]),
+    module: stock.module, params: stock.params, role, ownerId,
+    matrix: frameMatrix(origin, ax, ay, az, stock.scale),
   };
 }
 

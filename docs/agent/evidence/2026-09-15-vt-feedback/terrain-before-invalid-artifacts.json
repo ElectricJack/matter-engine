@@ -1,0 +1,113 @@
+{
+  "command": [
+    "/mnt/c/Users/webde/AppData/Local/Programs/Python/Launcher/py.exe",
+    "-3",
+    "D:/Shared With Desktop/AI/matter-engine-cpp/MatterEngine3/tools/drive.py",
+    "--world",
+    "StreamMountain",
+    "--timeline",
+    "D:/tmp/matter-vt/20260915-feedback/terrain-before/timeline.txt",
+    "--out-dir",
+    "D:/tmp/matter-vt/20260915-feedback/terrain-before/run",
+    "--editor",
+    "D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor/build/windows-msvc/editor-vt-feedback-baseline-20260915.exe",
+    "--timeout",
+    "600",
+    "--hide-ui",
+    "--env",
+    "MATTER_HIDE_WINDOW=0",
+    "--env",
+    "MATTER_WINDOW_WIDTH=1920",
+    "--env",
+    "MATTER_WINDOW_HEIGHT=1080",
+    "--env",
+    "MATTER_VSYNC=0",
+    "--env",
+    "MATTER_PRESENT_MODE=mailbox",
+    "--env",
+    "MATTER_FRAME_LIMIT=60",
+    "--env",
+    "MATTER_CAM=380,90,1600,420,55,1420",
+    "--env",
+    "MATTER_VT_TRACE=D:/tmp/matter-vt/20260915-feedback/terrain-before/vt.jsonl",
+    "--env",
+    "MATTER_VT_EVENT_LOG=0",
+    "--env",
+    "MATTER_VT_DENSITY_FRAME=0",
+    "--env",
+    "MATTER_VK_VALIDATION=0",
+    "--env",
+    "TMP=C:/Users/webde/AppData/Local/Temp",
+    "--env",
+    "TEMP=C:/Users/webde/AppData/Local/Temp",
+    "--env",
+    "MATTER_CAM_PATH=D:/tmp/matter-vt/20260915-feedback/terrain-before/camera.path",
+    "--env",
+    "MATTER_CAM_PATH_WARMUP=0",
+    "--env",
+    "MATTER_CAM_PATH_SETTLE=5",
+    "--env",
+    "MATTER_CAM_PATH_EXIT=0",
+    "--env",
+    "MATTER_PROFILE_TRACE=D:/tmp/matter-vt/20260915-feedback/terrain-before/profile.json"
+  ],
+  "driver_exit": 1,
+  "elapsed_seconds": 367.867472410202,
+  "accepted": false,
+  "reason": "Native editor exit 1, Vulkan sampled-image layout validation failures during startup.",
+  "source_manifest": "before-source.json",
+  "artifacts": [
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-before/command.json",
+      "bytes": 1443,
+      "sha256": "8bc7b6d6d6273c7c70e3af5bdf37cce2395b5ebc5f3b50e47358647af9f29d25"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-before/timeline.txt",
+      "bytes": 205,
+      "sha256": "beea33835e72dcdd73beeb206b3f81c2cc2583f33d49c6bef63d11faee678039"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-before/camera.path",
+      "bytes": 336051,
+      "sha256": "221bab96a8d6eae04c361d209b4b9cc60afcb4470b8ad30aea128d6db0cccfa5"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-before/result.json",
+      "bytes": 1621,
+      "sha256": "37bb36e463cee762d37f4ae36d2b2b2f0d9877038f4d8e6024a5fc24b809e49b"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-before/driver.log",
+      "bytes": 645675,
+      "sha256": "18ac197e5dbc4c5f17392e6501eb2be75a35dc0dffe249ec0b444ca055992252"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-before/run/log.txt",
+      "bytes": 645134,
+      "sha256": "d0eae444e7413370a14b6b22c4abd6e114448d857d4b5f27dbcc6d83b52a0424"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-before/vt.jsonl",
+      "bytes": 1777764,
+      "sha256": "3cff96a7ec902414076a96bdb6917e3fee39f2d07ff1a07dd0c64bd932aa1373"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-before/profile.json",
+      "bytes": 3741500,
+      "sha256": "09147ef34c0517732d48445771afbf50d30dd318fd0dbe0d37f11234f3f7f981"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-before/settled.png",
+      "bytes": 5909624,
+      "sha256": "a2e87c4bd7cfe018be5dd8554dfbfc9149ddad787ba97f09c0dff2a487b3af26"
+    },
+    {
+      "path": "/mnt/d/tmp/matter-vt/20260915-feedback/terrain-before/settled.png.done",
+      "bytes": 10,
+      "sha256": "4c339121e4860b04ebd48181621c9dd3f84901846feda08d4e77aafaf9a6c896"
+    }
+  ],
+  "validation_effective": true,
+  "validation_note": "Editor enables validation on environment variable presence, including value 0. Diagnostic timings only; final performance requires an unset variable."
+}

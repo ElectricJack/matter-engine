@@ -29,7 +29,7 @@
 |---|---|
 | `projects/world_demo/shared-lib/alpine_ecology.js` | Fixed catalog, habitat fields, species suitability, dryness state selection, and pure sector placement planning |
 | `projects/world_demo/tests/alpine_ecology_tests.mjs` | Node behavior tests against the real ecology module and real scatter grid |
-| `projects/world_demo/objects/WorldSector.js` | Profile dispatch, fixed requirements, and placement emission |
+| `projects/world_demo/objects/templates/WorldSector.js` | Profile dispatch, fixed requirements, and placement emission |
 | `projects/world_demo/worlds/StreamMountain.js` | Opt into the `alpine-lush` profile and remove generic vegetation counts |
 
 ### Task 1: Pure Alpine Ecology and Asset Catalog
@@ -261,7 +261,7 @@ git commit -m "feat(world): add deterministic alpine ecology model"
 **Files:**
 - Modify: `projects/world_demo/shared-lib/alpine_ecology.js`
 - Modify: `projects/world_demo/tests/alpine_ecology_tests.mjs`
-- Modify: `projects/world_demo/objects/WorldSector.js`
+- Modify: `projects/world_demo/objects/templates/WorldSector.js`
 - Modify: `projects/world_demo/worlds/StreamMountain.js`
 
 **Interfaces:**
@@ -432,7 +432,7 @@ Run:
 node --experimental-default-type=module projects/world_demo/tests/alpine_ecology_tests.mjs
 Get-Content -Raw projects/world_demo/shared-lib/alpine_ecology.js |
   node --input-type=module --check
-Get-Content -Raw projects/world_demo/objects/WorldSector.js |
+Get-Content -Raw projects/world_demo/objects/templates/WorldSector.js |
   node --input-type=module --check
 Get-Content -Raw projects/world_demo/worlds/StreamMountain.js |
   node --input-type=module --check
@@ -447,7 +447,7 @@ Expected: tests pass, all three JavaScript syntax checks exit 0, and
 ```powershell
 git add projects/world_demo/shared-lib/alpine_ecology.js `
         projects/world_demo/tests/alpine_ecology_tests.mjs `
-        projects/world_demo/objects/WorldSector.js `
+        projects/world_demo/objects/templates/WorldSector.js `
         projects/world_demo/worlds/StreamMountain.js
 git commit -m "feat(world): scatter alpine vegetation by habitat"
 ```
@@ -460,14 +460,14 @@ After both reviewed tasks, run once from the feature worktree:
 node --experimental-default-type=module projects/world_demo/tests/alpine_ecology_tests.mjs
 $files = @(
   'projects/world_demo/shared-lib/alpine_ecology.js',
-  'projects/world_demo/objects/WorldSector.js',
+  'projects/world_demo/objects/templates/WorldSector.js',
   'projects/world_demo/worlds/StreamMountain.js',
-  'projects/world_demo/objects/AlpineGrass.js',
-  'projects/world_demo/objects/AlpineFlower.js',
-  'projects/world_demo/objects/AlpineShrub.js',
-  'projects/world_demo/objects/AlpineGroundCover.js',
-  'projects/world_demo/objects/AlpineConifer.js',
-  'projects/world_demo/objects/AlpineDeciduous.js'
+  'projects/world_demo/objects/vegetation/alpine/AlpineGrass.js',
+  'projects/world_demo/objects/vegetation/alpine/AlpineFlower.js',
+  'projects/world_demo/objects/vegetation/alpine/AlpineShrub.js',
+  'projects/world_demo/objects/vegetation/alpine/AlpineGroundCover.js',
+  'projects/world_demo/objects/vegetation/alpine/AlpineConifer.js',
+  'projects/world_demo/objects/vegetation/alpine/AlpineDeciduous.js'
 )
 foreach ($file in $files) {
   Get-Content -Raw $file | node --input-type=module --check

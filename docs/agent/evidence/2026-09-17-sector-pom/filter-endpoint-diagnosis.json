@@ -1,0 +1,40 @@
+{
+  "basis": "Float32 arithmetic using the unequal fixture triangle and its 150 texels/metre bilinear sample grid; diagnostic geometry only, not a GPU pass.",
+  "triangle_local": [
+    [
+      -0.4,
+      -0.2,
+      0
+    ],
+    [
+      -0.2,
+      0,
+      0
+    ],
+    [
+      -0.4,
+      0,
+      0
+    ]
+  ],
+  "tap_local": [
+    -0.4033333361148834,
+    0.0033333334140479565,
+    0
+  ],
+  "barycentric": [
+    -0.016666650772094727,
+    -0.016666650772094727,
+    1.0333333015441895
+  ],
+  "original_selected_edge": 2,
+  "edge_parameter": -0.01666666753590107,
+  "external_interval": [
+    0,
+    1
+  ],
+  "other_violated_edge": 1,
+  "other_edge_kind": "internal neighbor leading to the next fine boundary segment",
+  "correction": "Choose the most violated connected edge, preserving interval limits, gap rejection, bounce rejection and hop bounds. Reject an outside point when no connected route exists.",
+  "acceptance": "Unchanged native vt-sector-seam plus connected-fold/gap regressions required."
+}

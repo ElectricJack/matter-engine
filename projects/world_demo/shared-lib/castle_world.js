@@ -3,6 +3,7 @@ import { castleManifest } from 'shared-lib/castle_variants';
 import { castleCollisionEntities } from 'shared-lib/castle_collision';
 import { defineFurnishingMaterials } from 'shared-lib/castle_furnishings';
 import { castleFurnishingLayout } from 'shared-lib/castle_furnishing_layout';
+import { structureRecipes } from 'shared-lib/castle_structure';
 
 export const CASTLE_NAMES = ['courtyard','roundkeep','cloister'];
 export const CASTLE_SEEDS = [9411,17029,28303];
@@ -40,8 +41,10 @@ export function castleWorldDefinition(name='courtyard') {
  for(const variant of selected){
   const offset=gallery?CASTLE_GALLERY_OFFSETS[variant]:[0,0,0];
   const manifest=castleSceneManifest(variant),params={variant,seed:CASTLE_SEEDS[variant],...materialParams};
-  for(const module of ['CastleMasonryAssembly','CastleStructureAssembly'])
-   roots.push({module,params,expand:true,transform:transform(offset)});
+  roots.push({module:'CastleMasonryAssembly',params,expand:true,transform:transform(offset)});
+  for(const recipe of structureRecipes(manifest,{
+   module:'CastleStructureAssembly',materials,offset,detail:1,
+  }))roots.push({...recipe,params:{...recipe.params,variant}});
   const [x,z,width,depth]=baseBounds[variant];
   roots.push({module:'CastlePlinth',params:{x,z,width,depth,material:materialParams.foundation},transform:transform(offset)});
   const entryX=[18,12,16][variant],entryZ=[40,28,28][variant];
@@ -74,9 +77,10 @@ export function castleWorldDefinition(name='courtyard') {
   }
  }
  const variant=selected[0],offset=gallery?CASTLE_GALLERY_OFFSETS[variant]:[0,0,0];
- const entry=castleSceneManifest(variant).roomGraph.entryPortalId;
- const portal=castleSceneManifest(variant).portals.find(p=>p.id===entry);
- const start=portal?.roomThresholds?.outside || [[18,0,40.7],[12,0,28.7],[16,0,28.7]][variant];
+ const start=castleSceneManifest(variant).walkRoute
+  .flatMap(route=>route.traversals)
+  .find(traversal=>traversal.fromRoomId==='outside')?.from;
+ if(!start)throw new Error('Castle has no exterior entry traversal');
  // Existing native character controls address this stable entity ID.
  entities.push({id:'river-player',components:{
   LocalTransform:{translation:translated([start[0],start[1]+.95,start[2]],offset),rotation:[0,0,0,1],scale:[1,1,1]},

@@ -1,0 +1,54 @@
+{
+  "steps": [
+    {
+      "args": [
+        "docs/agent/evidence/2026-09-17-mountain-rocks/capture_scale.py",
+        "scale-v2",
+        "rock-metric-v2"
+      ],
+      "exit": 0
+    },
+    {
+      "args": [
+        "docs/agent/evidence/2026-09-17-receiver-height/audit_paths.py",
+        "docs/agent/evidence/2026-09-17-mountain-rocks/scale-v2"
+      ],
+      "exit": 0
+    },
+    {
+      "args": [
+        "docs/agent/evidence/2026-09-17-mountain-rocks/analyze_scale.py",
+        "docs/agent/evidence/2026-09-17-mountain-rocks/scale-v2"
+      ],
+      "exit": 0
+    },
+    {
+      "args": [
+        "docs/agent/evidence/2026-09-17-vt-resolution/capture.py",
+        "v12",
+        "rock-metric-v2",
+        "rock-metric-v2",
+        "clear-controls",
+        "rt-controls"
+      ],
+      "exit": 0
+    },
+    {
+      "args": [
+        "docs/agent/evidence/2026-09-17-receiver-height/audit_paths.py",
+        "docs/agent/evidence/2026-09-17-vt-resolution/v12"
+      ],
+      "exit": 0
+    },
+    {
+      "args": [
+        "docs/agent/evidence/2026-09-17-vt-resolution/analyze.py",
+        "v12",
+        "docs/agent/evidence/2026-09-17-vt-resolution/v11"
+      ],
+      "exit": 0
+    }
+  ],
+  "exit": 0,
+  "finished": true
+}

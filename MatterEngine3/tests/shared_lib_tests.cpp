@@ -1,11 +1,14 @@
 #include "module_resolver.h"
 #include "part_asset_v2.h"
+#include "part_bundle.h"
+#include "memory_fixture_io.h"
+#include "source_snapshot_modules.h"
+#include "embedded_shared_modules.h"
 #include "script_rng_binding.h"
 #include <cassert>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
-#include <fstream>
 #include <filesystem>
 #include <sstream>
 #include <string>
@@ -17,27 +20,56 @@
 
 namespace fs = std::filesystem;
 
-// ---- scratch shared-lib helpers (used by Task 4 + Task 6/8) ----------------
-std::string make_scratch_shared_lib(const std::string& src_root) {
-    const fs::path dir = fs::temp_directory_path() /
-        (std::string("scratch_shlib_") +
-         std::to_string(static_cast<unsigned long>(rand())));
-    std::error_code ec;
-    fs::remove_all(dir, ec);
-    fs::create_directories(dir);
-    for (const auto& entry : fs::directory_iterator(src_root)) {
-        if (entry.is_regular_file() && entry.path().extension() == ".js")
-            fs::copy_file(entry.path(), dir / entry.path().filename(),
-                          fs::copy_options::overwrite_existing);
+// The build embeds exact repository fixture bytes. Each host owns its selected
+// generation; editing the fixture map cannot mutate an already bound host.
+static matter::SourceSnapshot::Files source_files;
+static std::shared_ptr<const matter::SourceSnapshot> snapshot() {
+    return std::make_shared<const matter::SourceSnapshot>(source_files);
+}
+static bool same_path(const fs::path& left, const fs::path& right) {
+    return matter::SourceSnapshot::key(left.string()) == matter::SourceSnapshot::key(right.string());
+}
+static bool fold_fixture_sources(const std::string& part, const std::vector<std::string>& roots,
+                         module_resolver::FoldResult& result, std::string& error) {
+    const auto modules = matter::source_snapshot_modules(*snapshot(), roots);
+    return module_resolver::fold_sources_with_loader(part,
+        [&](const std::string& specifier, module_resolver::ResolvedModule& module, std::string& err) {
+            for (const auto& candidate : modules) if (candidate.specifier == specifier) {
+                module = candidate; return true;
+            }
+            err = "missing module: " + specifier; return false;
+        }, result, error);
+}
+static bool fold_fixture_sources(const std::string& part, const std::string& root,
+                         module_resolver::FoldResult& result, std::string& error) {
+    return fold_fixture_sources(part, std::vector<std::string>{root}, result, error);
+}
+static bool resolve_specifier(const std::string& specifier, const std::string& root,
+                              std::string& path, std::string& error) {
+    module_resolver::FoldResult result;
+    if (!fold_fixture_sources("import '" + specifier + "';", root, result, error)) return false;
+    for (const auto& module : result.modules) {
+        if (module.specifier == specifier || module.specifier + ".js" == specifier) {
+            path = module.source_path; return true;
+        }
     }
-    return dir.string();
+    return false;
+}
+std::string make_scratch_shared_lib(const std::string& src_root) {
+    static unsigned generation = 0;
+    const std::string root = "runtime/scratch-shared/" + std::to_string(++generation);
+    const auto original = snapshot();
+    for (const auto& path : original->files_under(src_root)) {
+        std::string source; original->read(path, source);
+        source_files[root + "/" + fs::path(path).filename().string()] = source;
+    }
+    return root;
 }
 void append_to_file(const std::string& path, const std::string& text) {
-    std::ofstream f(path, std::ios::binary | std::ios::app); f << text;
+    source_files[matter::SourceSnapshot::key(path)] += text;
 }
-void remove_scratch_shared_lib(const std::string& dir) {
-    std::error_code ec;
-    fs::remove_all(dir, ec);
+void remove_scratch_shared_lib(const std::string& root) {
+    for (const auto& path : snapshot()->files_under(root)) source_files.erase(path);
 }
 
 // ---- Task 1: import-specifier parsing -------------------------------------
@@ -61,32 +93,32 @@ static void test_parse_imports() {
 static void test_resolve_specifier() {
     const std::string root = "shared-lib-fixtures";
     std::string path, err;
-    CHECK(module_resolver::resolve_specifier("shared-lib/aaa", root, path, err),
+    CHECK(resolve_specifier("shared-lib/aaa", root, path, err),
           "resolve shared-lib/aaa");
     CHECK(path == "shared-lib-fixtures/aaa.js", "aaa resolves to aaa.js under root");
-    CHECK(module_resolver::resolve_specifier("shared-lib/bbb.js", root, path, err),
+    CHECK(resolve_specifier("shared-lib/bbb.js", root, path, err),
           "trailing .js accepted");
     CHECK(path == "shared-lib-fixtures/bbb.js", "bbb.js resolves to bbb.js");
     // missing file -> fail closed
-    CHECK(!module_resolver::resolve_specifier("shared-lib/nope", root, path, err),
+    CHECK(!resolve_specifier("shared-lib/nope", root, path, err),
           "missing module fails closed");
     // non-shared-lib specifier rejected
-    CHECK(!module_resolver::resolve_specifier("./relative", root, path, err),
+    CHECK(!resolve_specifier("./relative", root, path, err),
           "relative specifier rejected");
-    CHECK(!module_resolver::resolve_specifier("shared-lib/../escape", root, path, err),
+    CHECK(!resolve_specifier("shared-lib/../escape", root, path, err),
           "path traversal rejected");
 }
 
 static void test_river_curve_module_is_engine_owned_and_foldable() {
     std::string path;
     std::string error;
-    CHECK(module_resolver::resolve_specifier(
+    CHECK(resolve_specifier(
               "shared-lib/river_curve", "../shared-lib", path, error),
           ("resolve engine river_curve module: " + error).c_str());
     const std::string importer =
         "import { riverCurve, sampleRiverCurve } from 'shared-lib/river_curve';\n";
     module_resolver::FoldResult folded;
-    CHECK(module_resolver::fold_sources(importer, "../shared-lib", folded, error),
+    CHECK(fold_fixture_sources(importer, "../shared-lib", folded, error),
           ("fold engine river_curve module: " + error).c_str());
     CHECK(folded.resolved_specifiers.size() == 1u &&
               folded.resolved_specifiers.front() == "shared-lib/river_curve",
@@ -103,7 +135,7 @@ static void test_fold_transitive_and_canonical() {
         "class P extends Part { build(p){} }\n";
     std::string err;
     module_resolver::FoldResult r1;
-    CHECK(module_resolver::fold_sources(part, root, r1, err), "fold succeeds");
+    CHECK(fold_fixture_sources(part, root, r1, err), "fold succeeds");
     // resolved modules = bbb, leaf, mid, top  (transitive, deduped)
     CHECK(r1.resolved_specifiers.size() == 4, "four transitive modules gathered");
     // canonical order: part source first, then modules by sorted resolved specifier.
@@ -117,7 +149,7 @@ static void test_fold_transitive_and_canonical() {
         "import { TOP } from 'shared-lib/top';\n"
         "class P extends Part { build(p){} }\n";
     module_resolver::FoldResult r2;
-    CHECK(module_resolver::fold_sources(part_reordered, root, r2, err), "fold (reordered) succeeds");
+    CHECK(fold_fixture_sources(part_reordered, root, r2, err), "fold (reordered) succeeds");
     // The MODULE portion of the fold (everything after the part source) is identical,
     // because modules are ordered by sorted resolved specifier, not import order.
     std::string mods1(r1.folded.begin() + part.size(), r1.folded.end());
@@ -127,21 +159,17 @@ static void test_fold_transitive_and_canonical() {
     // Cycle / missing -> fail closed.
     module_resolver::FoldResult rbad;
     const std::string bad = "import { X } from 'shared-lib/nope';\n";
-    CHECK(!module_resolver::fold_sources(bad, root, rbad, err), "missing module fails fold");
+    CHECK(!fold_fixture_sources(bad, root, rbad, err), "missing module fails fold");
 }
 
 static void test_ordered_roots_shadow_and_transitive_fallback() {
-    const fs::path root = fs::temp_directory_path() / "me3_ordered_shared_roots";
+    const fs::path root = "runtime/ordered-shared-roots";
     const fs::path project = root / "project";
     const fs::path engine = root / "engine";
-    std::error_code ec;
-    fs::remove_all(root, ec);
-    fs::create_directories(project);
-    fs::create_directories(engine);
+    remove_scratch_shared_lib(root.string());
     auto write = [](const fs::path& path, const std::string& source) {
-        std::ofstream out(path, std::ios::binary | std::ios::trunc);
-        out << source;
-        return out.good();
+        source_files[matter::SourceSnapshot::key(path.string())] = source;
+        return true;
     };
     CHECK(write(project / "shadow.js", "export const VALUE = 'project';\n"),
           "ordered roots: project shadow fixture written");
@@ -160,7 +188,7 @@ static void test_ordered_roots_shadow_and_transitive_fallback() {
     module_resolver::FoldResult folded;
     std::string err;
     const std::vector<std::string> roots{project.string(), engine.string()};
-    CHECK(module_resolver::fold_sources(part, roots, folded, err),
+    CHECK(fold_fixture_sources(part, roots, folded, err),
           ("ordered roots fold succeeds: " + err).c_str());
     CHECK(folded.modules.size() == 3,
           "ordered roots gather direct and transitive imports");
@@ -169,16 +197,16 @@ static void test_ordered_roots_shadow_and_transitive_fallback() {
             if (module.specifier == specifier) return module.source_path;
         return std::string{};
     };
-    CHECK(fs::equivalent(chosen_path("shared-lib/shadow"),
+    CHECK(same_path(chosen_path("shared-lib/shadow"),
                          project / "shadow.js"),
           "project module shadows engine module");
-    CHECK(fs::equivalent(chosen_path("shared-lib/top"), project / "top.js"),
+    CHECK(same_path(chosen_path("shared-lib/top"), project / "top.js"),
           "project direct import resolves from project tier");
-    CHECK(fs::equivalent(chosen_path("shared-lib/fallback"),
+    CHECK(same_path(chosen_path("shared-lib/fallback"),
                          engine / "fallback.js"),
           "transitive missing project import falls back to engine tier");
 
-    fs::remove_all(root, ec);
+    remove_scratch_shared_lib(root.string());
 }
 
 // ---- Task 4: folded source changes the resolved hash ----------------------
@@ -187,7 +215,7 @@ static uint64_t hash_part(const std::string& part, const std::string& root,
                           const std::string& params) {
     std::string err;
     module_resolver::FoldResult r;
-    bool ok = module_resolver::fold_sources(part, root, r, err);
+    bool ok = fold_fixture_sources(part, root, r, err);
     if (!ok) { printf("FAIL: fold for hash_part: %s\n", err.c_str()); return 0; }
     return part_asset::compute_resolved_hash(r.folded.data(), r.folded.size(),
                                              params.data(), params.size(),
@@ -239,8 +267,8 @@ static void test_ordering_stability() {
     // But the MODULE FOLD region must be byte-identical. Assert on the fold region:
     std::string err;
     module_resolver::FoldResult r0, r1;
-    module_resolver::fold_sources(perms[0], root, r0, err);
-    module_resolver::fold_sources(perms[1], root, r1, err);
+    fold_fixture_sources(perms[0], root, r0, err);
+    fold_fixture_sources(perms[1], root, r1, err);
     std::string m0(r0.folded.begin() + std::char_traits<char>::length(perms[0]), r0.folded.end());
     std::string m1(r1.folded.begin() + std::char_traits<char>::length(perms[1]), r1.folded.end());
     CHECK(m0 == m1, "module-fold region is stable across import permutations");
@@ -340,25 +368,88 @@ static void test_helper_pure_outputs() {
 
 #ifdef SP2_SCRIPT_HOST
 #include "script_host.h"   // SP-2
+static void bind_sources(script_host::ScriptHost& host, const std::vector<std::string>& roots) {
+    host.set_shared_lib_roots(roots);
+    host.set_module_sources(matter::source_snapshot_modules(*snapshot(), roots));
+}
+
+static void test_module_bytecode_isolation_and_dependency_change() {
+    const fs::path root = "runtime/bytecode-modules";
+    remove_scratch_shared_lib(root.string());
+    source_files[(root / "leaf.js").generic_string()] = "export const value=1;";
+    source_files[(root / "parent.js").generic_string()] =
+        "import {value} from 'shared-lib/leaf'; let calls=0; export function next(){return value+(calls++);}";
+    const std::string source = "import {next} from 'shared-lib/parent'; class Cached extends Part { static params={n:next()}; build(){} }";
+    script_host::ScriptHost identity; bind_sources(identity, {root.string()});
+    const auto request=identity.resolve_request_hash(source,"{}");
+    CHECK(request && request==identity.resolve_request_hash(source,"{}"), "prepared request identity is stable");
+    // Match the original unsplit v1 request byte stream exactly, including
+    // embedded nulls in length framing, rather than only checking stability.
+    module_resolver::FoldResult request_fold; std::string request_error;
+    CHECK(identity.fold_sources_cached(source, request_fold, request_error), request_error.c_str());
+    std::string framed = "prepared-resolve-request-v1";
+    const auto append_length = [&](size_t value) {
+        for (unsigned shift=0; shift<64; shift+=8)
+            framed.push_back(static_cast<char>((uint64_t(value) >> shift) & 255));
+    };
+    append_length(request_fold.folded.size());
+    framed.append(request_fold.folded.data(), request_fold.folded.size());
+    append_length(2); framed.append("{}");
+    CHECK(request == part_asset::compute_resolved_hash(framed.data(), framed.size(), "", 0, nullptr, 0),
+          "memoized request prefix preserves existing manifest keys");
+
+    CHECK(request!=identity.resolve_request_hash(source,"{\"n\":2}"), "raw parameter changes invalidate prepared request");
+    CHECK(request!=identity.resolve_request_hash(source+"\n// edited", "{}"), "authored source changes invalidate prepared request");
+    const uint64_t children[]={8,3}, reordered[]={3,8}, changed_children[]={3,9};
+    CHECK(identity.resolve_request_hash(source,"{}",children,2)==identity.resolve_request_hash(source,"{}",reordered,2),
+          "prepared request children are order independent");
+    CHECK(identity.resolve_request_hash(source,"{}",children,2)!=identity.resolve_request_hash(source,"{}",changed_children,2),
+          "prepared request child changes invalidate identity");
+    CHECK(identity.resolve_request_hash(source,"{}",nullptr,1)==0,"prepared request rejects invalid child range");
+    CHECK(identity.resolve_request_hash("throw new Error('must not execute'); class Probe extends Part {}", "{}")!=0,
+          "request fingerprint does not evaluate JavaScript");
+    uint64_t original=0;
+    for(int i=0;i<4;++i) {
+        script_host::ScriptHost host; bind_sources(host, {root.string()});
+        const auto hash=host.resolve_hash(source,"{}");
+        CHECK(hash && host.last_merged_params()=="{\"n\":1}", "module bytecode has fresh closure state in each context");
+        if(!i)original=hash; else CHECK(hash==original,"bytecode reuse preserves resolved hash");
+    }
+    source_files[(root / "leaf.js").generic_string()] = "export const value=2;";
+    CHECK(identity.resolve_request_hash(source,"{}")==request,
+          "an edited source map cannot mutate an already owned generation");
+    bind_sources(identity, {root.string()});
+    identity.clear_fold_cache();
+    CHECK(identity.resolve_request_hash(source,"{}")!=request,
+          "clearing folds also invalidates memoized request source prefix");
+    script_host::ScriptHost changed; bind_sources(changed, {root.string()});
+    CHECK(changed.resolve_request_hash(source,"{}")!=request,"transitive dependency changes invalidate prepared request");
+    const auto updated=changed.resolve_hash(source,"{}");
+    CHECK(updated && updated!=original && changed.last_merged_params()=="{\"n\":2}",
+        "unchanged parent bytecode links updated dependency in fresh context");
+    source_files.erase((root / "leaf.js").generic_string());
+    bind_sources(changed, {root.string()});
+    changed.clear_fold_cache();
+    CHECK(changed.resolve_hash(source,"{}")==0,"missing dependency cannot be served by bytecode cache");
+    CHECK(changed.resolve_request_hash(source,"{}")==0,"prepared request fails closed on missing dependency");
+    remove_scratch_shared_lib(root.string());
+}
 
 static void test_script_host_ordered_roots_affect_hash_identity() {
-    const fs::path root = fs::temp_directory_path() / "me3_script_host_roots";
+    const fs::path root = "runtime/script-host-roots";
     const fs::path project = root / "project";
     const fs::path engine = root / "engine";
-    std::error_code ec;
-    fs::remove_all(root, ec);
-    fs::create_directories(project);
-    fs::create_directories(engine);
-    std::ofstream(project / "value.js") << "export const VALUE = 1;\n";
-    std::ofstream(engine / "value.js") << "export const VALUE = 2;\n";
-    std::ofstream(engine / "fallback.js") << "export const FALLBACK = 3;\n";
+    remove_scratch_shared_lib(root.string());
+    source_files[(project / "value.js").generic_string()] = "export const VALUE = 1;\n";
+    source_files[(engine / "value.js").generic_string()] = "export const VALUE = 2;\n";
+    source_files[(engine / "fallback.js").generic_string()] = "export const FALLBACK = 3;\n";
     const std::string source =
         "import { VALUE } from 'shared-lib/value';\n"
         "import { FALLBACK } from 'shared-lib/fallback';\n"
         "class OrderedRootPart extends Part { build() {} }\n";
 
     script_host::ScriptHost project_first;
-    project_first.set_shared_lib_roots({project.string(), engine.string()});
+    bind_sources(project_first, {project.string(), engine.string()});
     const uint64_t project_hash = project_first.resolve_hash(source, "{}");
     module_resolver::FoldResult project_fold;
     std::string err;
@@ -366,13 +457,13 @@ static void test_script_host_ordered_roots_affect_hash_identity() {
           "ScriptHost folds ordered roots");
 
     script_host::ScriptHost engine_first;
-    engine_first.set_shared_lib_roots({engine.string(), project.string()});
+    bind_sources(engine_first, {engine.string(), project.string()});
     const uint64_t engine_hash = engine_first.resolve_hash(source, "{}");
     CHECK(project_hash != 0 && engine_hash != 0 && project_hash != engine_hash,
           "ordered root precedence participates in ScriptHost hash identity");
     CHECK(project_fold.modules.size() == 2,
           "ScriptHost ordered roots include direct fallback module");
-    fs::remove_all(root, ec);
+    remove_scratch_shared_lib(root.string());
 }
 
 // Task 6: scatter_grid.js — deterministic cross-sector spaced scatter.
@@ -381,7 +472,7 @@ static void test_script_host_ordered_roots_affect_hash_identity() {
 static void test_scatter_grid() {
     using namespace script_host;
     ScriptHost host;
-    host.set_shared_lib_root("../shared-lib");
+    bind_sources(host, {"../shared-lib"});
     // JS assertions mirroring the plan spec, run inside build() so a failure
     // throws and makes bake_source return error.ok == false.
     const std::string part = R"JS(
@@ -436,9 +527,7 @@ class ScatterCheck extends Part {
 }
 )JS";
     BakeOptions opts;
-    opts.parts_dir =
-        (fs::temp_directory_path() / "scatter_grid_test_parts").string();
-    fs::create_directories(fs::path(opts.parts_dir) / "parts");
+    opts.parts_dir = "runtime/scatter-grid";
     BakeResult r = host.bake_source(part, "{}", opts);
     CHECK(r.error.ok, ("scatter_grid assertions failed: " + r.error.message).c_str());
 }
@@ -449,7 +538,7 @@ static void test_import_resolves_end_to_end() {
     // resolved hash/bytes; (c) different seed -> different.
     using namespace script_host;
     ScriptHost host;
-    host.set_shared_lib_root("../shared-lib");
+    bind_sources(host, {"../shared-lib"});
     const std::string part =
         "import { ring } from 'shared-lib/geometry';\n"
         "import { rng } from 'shared-lib/rng';\n"
@@ -469,7 +558,7 @@ static void test_import_resolves_end_to_end() {
     // editing a shared module changes the importer's hash:
     std::string scratch = make_scratch_shared_lib("../shared-lib");
     append_to_file(scratch + "/geometry.js", "\nexport const X = 1;\n");
-    ScriptHost host2; host2.set_shared_lib_root(scratch);
+    ScriptHost host2; bind_sources(host2, {scratch});
     BakeResult c = host2.bake_source(part, "{\"seed\":1}", {});
     CHECK(c.error.ok && c.resolved_hash != a.resolved_hash, "shared-module edit invalidates importer bake");
     remove_scratch_shared_lib(scratch);
@@ -487,6 +576,9 @@ static void test_script_host_ordered_roots_affect_hash_identity() {
 #endif
 
 int main() {
+    source_files = embedded_shared_test_sources();
+    auto storage = std::make_shared<matter::test::MemoryCacheByteStorage>();
+    part_bundle::ScopedStorage scope(storage);
     test_parse_imports();
     test_resolve_specifier();
     test_river_curve_module_is_engine_owned_and_foldable();
@@ -500,6 +592,9 @@ int main() {
     test_scatter_grid();
     test_import_resolves_end_to_end();
     test_script_host_ordered_roots_affect_hash_identity();
+#ifdef SP2_SCRIPT_HOST
+    test_module_bytecode_isolation_and_dependency_change();
+#endif
     if (g_failures == 0) printf("All shared_lib tests passed\n");
     return g_failures == 0 ? 0 : 1;
 }

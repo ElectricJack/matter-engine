@@ -1,0 +1,271 @@
+{
+  "schema": "matter.linux-ci-run.v1",
+  "source_sha": "764ad8e9ea9558a0a8321a1975da2c4ddfa0b08c",
+  "source_dirty": false,
+  "ci_script_sha256": "76fc8cec654ec8423c384d06b1a7ae13d18d53532cd079d4fb8d6ddf2d92942a",
+  "hosted": false,
+  "parallelism": 2,
+  "scope": "portable-foundations",
+  "suites": [
+    {
+      "name": "MemoryLib",
+      "phases": [
+        {
+          "phase": "build_and_test",
+          "command": [
+            "make",
+            "-C",
+            "libs/MemoryLib",
+            "-j1",
+            "test"
+          ],
+          "seconds": 1.7954351099997439,
+          "exit_code": 0
+        }
+      ],
+      "passed": true,
+      "seconds": 1.7954351099997439
+    },
+    {
+      "name": "MeshChartingLib",
+      "phases": [
+        {
+          "phase": "build",
+          "command": [
+            "make",
+            "-C",
+            "libs/MeshChartingLib/tests",
+            "-j1",
+            "build/mesh_charting_tests"
+          ],
+          "seconds": 0.028773908999937703,
+          "exit_code": 0
+        },
+        {
+          "phase": "test",
+          "command": [
+            "./libs/MeshChartingLib/tests/build/mesh_charting_tests"
+          ],
+          "seconds": 0.013370951999604586,
+          "exit_code": 0
+        }
+      ],
+      "passed": true,
+      "seconds": 0.04214486099954229
+    },
+    {
+      "name": "AssetStoreLib",
+      "phases": [
+        {
+          "phase": "build",
+          "command": [
+            "make",
+            "-C",
+            "libs/AssetStoreLib",
+            "-j1"
+          ],
+          "seconds": 0.019225125000048138,
+          "exit_code": 0
+        },
+        {
+          "phase": "build",
+          "command": [
+            "make",
+            "-C",
+            "libs/AssetStoreLib/tests",
+            "-j1",
+            "build/asset_store_tests"
+          ],
+          "seconds": 0.028426284000488522,
+          "exit_code": 0
+        },
+        {
+          "phase": "test",
+          "command": [
+            "./libs/AssetStoreLib/tests/build/asset_store_tests"
+          ],
+          "seconds": 5.740700768999886,
+          "exit_code": 0
+        }
+      ],
+      "passed": true,
+      "seconds": 5.788352178000423
+    }
+  ],
+  "slowest_20": [
+    {
+      "name": "AssetStoreLib",
+      "phases": [
+        {
+          "phase": "build",
+          "command": [
+            "make",
+            "-C",
+            "libs/AssetStoreLib",
+            "-j1"
+          ],
+          "seconds": 0.019225125000048138,
+          "exit_code": 0
+        },
+        {
+          "phase": "build",
+          "command": [
+            "make",
+            "-C",
+            "libs/AssetStoreLib/tests",
+            "-j1",
+            "build/asset_store_tests"
+          ],
+          "seconds": 0.028426284000488522,
+          "exit_code": 0
+        },
+        {
+          "phase": "test",
+          "command": [
+            "./libs/AssetStoreLib/tests/build/asset_store_tests"
+          ],
+          "seconds": 5.740700768999886,
+          "exit_code": 0
+        }
+      ],
+      "passed": true,
+      "seconds": 5.788352178000423
+    },
+    {
+      "name": "MemoryLib",
+      "phases": [
+        {
+          "phase": "build_and_test",
+          "command": [
+            "make",
+            "-C",
+            "libs/MemoryLib",
+            "-j1",
+            "test"
+          ],
+          "seconds": 1.7954351099997439,
+          "exit_code": 0
+        }
+      ],
+      "passed": true,
+      "seconds": 1.7954351099997439
+    },
+    {
+      "name": "MeshChartingLib",
+      "phases": [
+        {
+          "phase": "build",
+          "command": [
+            "make",
+            "-C",
+            "libs/MeshChartingLib/tests",
+            "-j1",
+            "build/mesh_charting_tests"
+          ],
+          "seconds": 0.028773908999937703,
+          "exit_code": 0
+        },
+        {
+          "phase": "test",
+          "command": [
+            "./libs/MeshChartingLib/tests/build/mesh_charting_tests"
+          ],
+          "seconds": 0.013370951999604586,
+          "exit_code": 0
+        }
+      ],
+      "passed": true,
+      "seconds": 0.04214486099954229
+    }
+  ],
+  "lint": {
+    "schema": "matter.linux-source-lint.v1",
+    "checks": [
+      {
+        "name": "compiler_format_negative_tests",
+        "command": [
+          "g++",
+          "-std=c++17",
+          "-Werror=format",
+          "-IMatterEngine3/include",
+          "-c",
+          "MatterEngine3/tests/compiler_format_negative.cpp",
+          "-o",
+          "/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/artifacts/ci-linux/compiler-probes/format-negative.o"
+        ],
+        "process_exit_code": 1,
+        "passed": true,
+        "seconds": 0.03386443399995187
+      },
+      {
+        "name": "compiler_return_address_gnu_build",
+        "command": [
+          "g++",
+          "-std=c++17",
+          "-O0",
+          "-IMatterEngine3/include",
+          "MatterEngine3/tests/compiler_return_address_gnu_tests.cpp",
+          "-o",
+          "/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/artifacts/ci-linux/compiler-probes/return-address"
+        ],
+        "process_exit_code": 0,
+        "passed": true,
+        "seconds": 0.3270109120003326
+      },
+      {
+        "name": "compiler_return_address_gnu_tests",
+        "command": [
+          "/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/artifacts/ci-linux/compiler-probes/return-address"
+        ],
+        "process_exit_code": 0,
+        "passed": true,
+        "seconds": 0.00408853499993711
+      },
+      {
+        "name": "ci_test_report_tests",
+        "command": [
+          "python3",
+          "tools/tests/test_ci_test_report.py"
+        ],
+        "process_exit_code": 0,
+        "passed": true,
+        "seconds": 0.15716801899998245
+      },
+      {
+        "name": "ci_source_lint_tests",
+        "command": [
+          "python3",
+          "tools/tests/test_ci_source_lint.py"
+        ],
+        "process_exit_code": 0,
+        "passed": true,
+        "seconds": 0.31976118100010353
+      },
+      {
+        "name": "glslc_depfile_tests",
+        "command": [
+          "python3",
+          "tools/tests/test_glslc_depfile.py"
+        ],
+        "process_exit_code": 0,
+        "passed": true,
+        "seconds": 0.14811853700030042
+      },
+      {
+        "name": "shader_input_list_tests",
+        "command": [
+          "python3",
+          "MatterEngine3/tools/tests/test_embed_spirv.py"
+        ],
+        "process_exit_code": 0,
+        "passed": true,
+        "seconds": 1.0544592859996555
+      }
+    ],
+    "seconds": 2.0448439419997158,
+    "status": "passed"
+  },
+  "total_seconds": 7.975795495999591,
+  "build_and_test_under_60_seconds": true,
+  "status": "passed"
+}

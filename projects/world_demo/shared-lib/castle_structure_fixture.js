@@ -132,7 +132,7 @@ export const CASTLE_STRUCTURE_FIXTURE_PLAN = Object.freeze({
       section: [0.3, 0.3], jointFamily: 'mortise-tenon', role: 'floor-beam', material: 'oak',
     },
     {
-      levelId: 'ground', from: [7.5, 0, 1.5], to: [7.5, 3.36, 1.5],
+      levelId: 'ground', from: [7.5, 0, 2], to: [7.5, 3.36, 2],
       section: [0.25, 0.25], jointFamily: 'pegged', role: 'post', material: 'oak',
     },
     {
@@ -140,11 +140,11 @@ export const CASTLE_STRUCTURE_FIXTURE_PLAN = Object.freeze({
       section: [0.25, 0.25], jointFamily: 'pegged', role: 'post', material: 'oak',
     },
     {
-      levelId: 'ground', from: [7.5, 2.61, 1.5], to: [7.5, 3.36, 0.75],
+      levelId: 'ground', from: [7.5, 2.61, 2], to: [7.5, 3.36, 1.25],
       section: [0.14, 0.14], jointFamily: 'pegged', role: 'brace', material: 'oak',
     },
     {
-      levelId: 'ground', from: [7.5, 2.61, 1.5], to: [7.5, 3.36, 2.25],
+      levelId: 'ground', from: [7.5, 2.61, 2], to: [7.5, 3.36, 2.75],
       section: [0.14, 0.14], jointFamily: 'pegged', role: 'brace', material: 'oak',
     },
     {

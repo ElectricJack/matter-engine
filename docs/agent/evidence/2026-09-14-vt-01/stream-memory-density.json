@@ -1,0 +1,40 @@
+{
+  "trace": "/mnt/d/tmp/matter-vt/20260914-01/stream-trace-baseline/vt.jsonl",
+  "pool_capacity_pages": 33024,
+  "pool_format_bytes": 4275683328,
+  "payload_edge": 128,
+  "stored_edge": 136,
+  "border_fraction_of_slot": 0.11418685121107264,
+  "channel_bytes": {
+    "albedo_bc7": 610811904,
+    "normal_bc5": 610811904,
+    "orm_bc7": 610811904,
+    "material_aux_rgba8": 2443247616
+  },
+  "triangle_covered_texels": null,
+  "observations": [
+    {
+      "marker": "settle_end",
+      "occupied_pages": 1631,
+      "pinned_pages": 789,
+      "occupied_slot_bytes": 211168832,
+      "pinned_slot_bytes": 102153408,
+      "unused_slot_bytes": 4064514496,
+      "occupied_fraction": 0.04938832364341085
+    },
+    {
+      "marker": "return_end",
+      "occupied_pages": 2153,
+      "pinned_pages": 789,
+      "occupied_slot_bytes": 278753216,
+      "pinned_slot_bytes": 102153408,
+      "unused_slot_bytes": 3996930112,
+      "occupied_fraction": 0.06519500968992248
+    }
+  ],
+  "limits": [
+    "Pool bytes are derived from image format/extent, excluding allocator alignment and other VT resources.",
+    "Occupied slots can include chart holes, gutters, unused coarse-tail texels, and cached offscreen content.",
+    "This fixed-camera turn/return sample does not establish an exhaustive terrain traversal working set."
+  ]
+}

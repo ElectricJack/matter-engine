@@ -1,0 +1,4 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+// Compatibility include; implementation is owned by MatterGraphics.
+#include "../../libs/MatterGraphics/shaders/vt_feedback.comp"

@@ -1,0 +1,80 @@
+{
+  "checks": [
+    {
+      "name": "empty-tlas-vt-vt-queue",
+      "command": [
+        "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+        "-NoProfile",
+        "-Command",
+        "$env:MATTER_VK_SMOKE_MODE=\"vt-queue\"; $env:MATTER_VK_VALIDATION=\"1\"; $env:MATTER_HIDE_WINDOW=\"1\"; Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe\"; exit $LASTEXITCODE"
+      ],
+      "exit": 0,
+      "elapsed_seconds": 1.2304837703704834,
+      "log": "docs/agent/evidence/2026-09-15-vt-feedback/empty-tlas-vt-vt-queue.log",
+      "all_pass": true,
+      "zero_validation_errors": true
+    },
+    {
+      "name": "empty-tlas-vt-vt",
+      "command": [
+        "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+        "-NoProfile",
+        "-Command",
+        "$env:MATTER_VK_SMOKE_MODE=\"vt\"; $env:MATTER_VK_VALIDATION=\"1\"; $env:MATTER_HIDE_WINDOW=\"1\"; Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe\"; exit $LASTEXITCODE"
+      ],
+      "exit": 0,
+      "elapsed_seconds": 1.8239293098449707,
+      "log": "docs/agent/evidence/2026-09-15-vt-feedback/empty-tlas-vt-vt.log",
+      "all_pass": true,
+      "zero_validation_errors": true
+    },
+    {
+      "name": "empty-tlas-vt-vt-normal-frame",
+      "command": [
+        "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+        "-NoProfile",
+        "-Command",
+        "$env:MATTER_VK_SMOKE_MODE=\"vt-normal-frame\"; $env:MATTER_VK_VALIDATION=\"1\"; $env:MATTER_HIDE_WINDOW=\"1\"; Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe\"; exit $LASTEXITCODE"
+      ],
+      "exit": 0,
+      "elapsed_seconds": 4.869701862335205,
+      "log": "docs/agent/evidence/2026-09-15-vt-feedback/empty-tlas-vt-vt-normal-frame.log",
+      "all_pass": true,
+      "zero_validation_errors": true
+    },
+    {
+      "name": "empty-tlas-vt-surface-parallax",
+      "command": [
+        "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+        "-NoProfile",
+        "-Command",
+        "$env:MATTER_VK_SMOKE_MODE=\"surface-parallax\"; $env:MATTER_VK_VALIDATION=\"1\"; $env:MATTER_HIDE_WINDOW=\"1\"; Set-Location -LiteralPath \"D:/Shared With Desktop/AI/matter-engine-cpp/MatterEditor\"; & \"./build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe\"; exit $LASTEXITCODE"
+      ],
+      "exit": 0,
+      "elapsed_seconds": 5.307494163513184,
+      "log": "docs/agent/evidence/2026-09-15-vt-feedback/empty-tlas-vt-surface-parallax.log",
+      "all_pass": true,
+      "zero_validation_errors": true
+    },
+    {
+      "name": "empty-tlas-editor-build",
+      "command": [
+        "./tools/build-windows-from-wsl.sh",
+        "RelWithDebInfo",
+        "editor"
+      ],
+      "exit": 0,
+      "elapsed_seconds": 6.150810718536377,
+      "log": "docs/agent/evidence/2026-09-15-vt-feedback/empty-tlas-editor-build.log"
+    }
+  ],
+  "sha256": {
+    "MatterEditor/src/main.cpp": "a8d8cf164ed13fca39e1298a7444332d44fb5430f7d7dd5ae37829e58627c6b2",
+    "MatterEngine3/src/render/vk_scene_renderer.cpp": "651fa8a99cd5c59d2e35af2830e64eea183bab0a10b5cc9bdbfc409721719d9d",
+    "MatterEngine3/src/render/vt_residency.cpp": "0f48c8f87e49a78257a7b0ecda15c919771d96ae19737895dd0e9d24123d3864",
+    "MatterEngine3/src/render/vt_feedback.h": "d7b6424eeba168b46ea9f695849b2c98b187c378f328a51a73330be4770e1367",
+    "MatterEngine3/tests/vulkan_smoke_tests.cpp": "1e22acd4b4628df77f968d627ad34928d9e5864ff3b85447e46c9568118c055f",
+    "MatterEditor/build/cmake/windows-msvc/relwithdebinfo/vulkan_smoke_tests.exe": "959d004fca8d9095cb2e103290da93c4bd242cf23d2cb83143db67925ef2a181",
+    "MatterEditor/build/windows-msvc/editor.exe": "6b9bfe29313191d86777c827d2056796775924f1ad801909ff96535c3a2c30cc"
+  }
+}

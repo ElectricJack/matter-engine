@@ -1,0 +1,27 @@
+{
+  "cli_exit_code": 1,
+  "result": {
+    "schema": "matter.source-lint.v1",
+    "checks": [],
+    "expected_checks": [
+      "compiler_format_negative_tests",
+      "compiler_return_address_gnu_tests",
+      "physx_dependency_contract_tests",
+      "vt_link_inventory_tests",
+      "viewer_graph_tests",
+      "python_contract_tests",
+      "shader_rebuild_tests",
+      "shader_input_list_tests",
+      "windows_build_wrapper_contract",
+      "editor_registration_census",
+      "shader_source_tests"
+    ],
+    "validation_errors": [
+      "missing mandatory qualifier: compiler_format_negative_tests"
+    ],
+    "seconds": 0.0006142100000943174,
+    "status": "failed",
+    "manifest_sha256": "810e5697981c5ba9ec1adfd5c8be79f3cf781e526bbac8c5f34332c609148203"
+  },
+  "fixture": "synthetic metadata missing a mandatory negative probe; no qualifier command executed"
+}

@@ -1,0 +1,13 @@
+[
+  {
+    "name": "owner-alias-red-smoke-build",
+    "command": [
+      "./tools/build-windows-from-wsl.sh",
+      "RelWithDebInfo",
+      "vulkan_smoke_tests"
+    ],
+    "exit": 1,
+    "elapsed_seconds": 24.72763967514038,
+    "log": "docs/agent/evidence/2026-09-15-vt-feedback/owner-alias-red-smoke-build.log"
+  }
+]
