@@ -30,10 +30,11 @@ for(const shape of [0,1,2]) {
 const dense=buildMountainDetailRock();
 assert.equal(dense.triangles,110592);
 const {mountainGeometryCatalog}=await import('../shared-lib/mountain_geometry_site.js');
-for(const {params} of mountainGeometryCatalog(7)) {
+// The stress catalog is a superset of the default three-rock site.
+for(const {params} of mountainGeometryCatalog(7,{stress:true})) {
   const probe=buildMountainDetailRock({...params,resolution:8});
   assert.equal(probe.triangles,12*8*8);
-  assert.ok(probe.vertices.every(Number.isFinite),'every declared stress asset can generate');
+  assert.ok(probe.vertices.every(Number.isFinite),'every declared site/stress asset can generate');
 }
 assert.notDeepEqual(buildMountainDetailRock({seed:100,resolution:8}),
   buildMountainDetailRock({seed:104,resolution:8}),'full seed still varies displacement');

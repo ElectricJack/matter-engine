@@ -12,10 +12,10 @@ set(matter_editor_sources_unique ${matter_editor_sources})
 list(REMOVE_DUPLICATES matter_editor_sources_unique)
 list(LENGTH matter_editor_sources matter_editor_source_count)
 list(LENGTH matter_editor_sources_unique matter_editor_unique_source_count)
-if(NOT matter_editor_source_count EQUAL 47 OR
-        NOT matter_editor_unique_source_count EQUAL 47)
+if(NOT matter_editor_source_count EQUAL 48 OR
+        NOT matter_editor_unique_source_count EQUAL 48)
     message(FATAL_ERROR
-        "editor.sources must provide exactly 47 unique editor C++ sources; "
+        "editor.sources must provide exactly 48 unique editor C++ sources; "
         "count=${matter_editor_source_count}, unique=${matter_editor_unique_source_count}")
 endif()
 
@@ -240,6 +240,22 @@ if(BUILD_TESTING)
     add_test(NAME viewport_capture_tests COMMAND viewport_capture_tests)
     set_tests_properties(viewport_capture_tests PROPERTIES LABELS "editor;cpu")
 
+    # Asset-root search order. asset_root.cpp is <filesystem> plus the
+    # executable-path call and nothing else, so this needs no engine archive --
+    # the order matters for automation (one shared build, cwd set to the
+    # author's checkout), which is exactly what a pure-fs test can pin.
+    add_executable(asset_root_tests
+        MatterEditor/tests/test_asset_root.cpp
+        MatterEditor/src/asset_root.cpp
+    )
+    target_include_directories(asset_root_tests PRIVATE
+        "${CMAKE_SOURCE_DIR}/MatterEditor/src"
+    )
+    matter_apply_project_defaults(asset_root_tests)
+    matter_apply_test_assertion_policy(asset_root_tests)
+    add_test(NAME asset_root_tests COMMAND asset_root_tests)
+    set_tests_properties(asset_root_tests PROPERTIES LABELS "editor;cpu")
+
     add_test(NAME matter_agent_client_tests
         COMMAND "${MATTER_PYTHON_EXECUTABLE}" ${matter_python_arguments}
             "${CMAKE_SOURCE_DIR}/tools/tests/test_matter_agent.py"
@@ -247,6 +263,11 @@ if(BUILD_TESTING)
     set_tests_properties(matter_agent_client_tests PROPERTIES
         LABELS "editor;python")
 
+    # Compiler-wrapper fixtures and the live editor registration census need
+    # filesystem/product startup. They are ci-checks.json source_checks, so
+    # MatterCiTests.cmake labels them ci-source-lint and keeps their real
+    # negative controls out of the disk-free CPU runtime graph (ci-pr/ci-full);
+    # tools/ci-source-lint.py runs them from the CTest inventory.
     add_test(NAME windows_build_wrapper_contract
         COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
             -File "${CMAKE_SOURCE_DIR}/cmake/tests/build_wrapper_contract_tests.ps1"
@@ -258,6 +279,11 @@ if(BUILD_TESTING)
     add_test(NAME editor_registration_census
         COMMAND powershell.exe -NoProfile -ExecutionPolicy Bypass
             -File "${CMAKE_SOURCE_DIR}/cmake/tests/editor_registration_census.ps1"
+            -RepositoryRoot "${CMAKE_SOURCE_DIR}"
+            -MsvcEditor "$<TARGET_FILE:matter_editor>"
     )
     set_tests_properties(editor_registration_census PROPERTIES LABELS editor)
+    # The census qualifies the built editor: matter_ci_lint, which precedes
+    # source lint in every tier (fast included), must build it first.
+    set_property(GLOBAL APPEND PROPERTY MATTER_CI_SOURCE_LINT_TARGETS matter_editor)
 endif()

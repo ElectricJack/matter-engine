@@ -1,0 +1,115 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="Linux-c++"
+	tests="12"
+	failures="0"
+	disabled="0"
+	skipped="0"
+	hostname="DESKTOP-EB8UOME"
+	time="45"
+	timestamp="2026-10-14T08:37:57"
+	>
+	<testcase name="matter_graphics_atmosphere" classname="matter_graphics_atmosphere" time="0.00427978" status="run">
+		<properties/>
+		<system-out>ALL PASS
+</system-out>
+	</testcase>
+	<testcase name="matter_graphics_cloud_layer" classname="matter_graphics_cloud_layer" time="0.0117584" status="run">
+		<properties/>
+		<system-out>ALL PASS
+</system-out>
+	</testcase>
+	<testcase name="matter_graphics_cloud_shadow" classname="matter_graphics_cloud_shadow" time="0.00224413" status="run">
+		<properties/>
+		<system-out>ALL PASS
+</system-out>
+	</testcase>
+	<testcase name="matter_graphics_volumetric_quality" classname="matter_graphics_volumetric_quality" time="0.137485" status="run">
+		<properties/>
+		<system-out>ALL PASS
+</system-out>
+	</testcase>
+	<testcase name="matter_graphics_cloud_shadow_reference" classname="matter_graphics_cloud_shadow_reference" time="0.00161613" status="run">
+		<properties/>
+		<system-out>ALL PASS
+</system-out>
+	</testcase>
+	<testcase name="matter_graphics_lifetime" classname="matter_graphics_lifetime" time="0.0169023" status="run">
+		<properties/>
+		<system-out>PASS GFX-SUBMIT/PENDING/READY/IMPORTED/SHARING/CHANGE/AFFINE/SCENE/OWNER/INPUTS/RELEASE/RETIRE
+PASS GFX-ENVELOPE/HANDLE/VALIDATE/CAPS/PAYLOAD/FAIL/CANCEL/TICKET/CONTROL/CALLBACK
+PASS GFX-CAMERA/LIGHTS/DEMAND/BUDGET/DISPOSE
+</system-out>
+	</testcase>
+	<testcase name="matter_graphics_scene" classname="matter_graphics_scene" time="0.0303386" status="run">
+		<properties/>
+		<system-out>PASS SCENE transforms/visibility/sharing/lifecycle/budgets/failure/cancellation
+</system-out>
+	</testcase>
+	<testcase name="matter_graphics_composition" classname="matter_graphics_composition" time="0.00368487" status="run">
+		<properties/>
+		<system-out>ALL PASS COMP-VALID/CAPS/BUDGET/LENGTH/IDENTITY/IMPOSTOR/DEPTH/VISIBILITY/FINITE/CAMERA/CLOUD/WATER/SPOT/OWNER/MATERIAL
+</system-out>
+	</testcase>
+	<testcase name="matter_graphics_raster" classname="matter_graphics_raster" time="15.866" status="run">
+		<properties/>
+		<system-out>DEVICE llvmpipe (LLVM 20.1.2, 256 bits); validation=1
+GFX-IMPORTED raster upload
+GFX-IMPORTED raster draw
+GFX-RASTER token 0: 195 pixels
+GFX-RASTER token 1: 207 pixels
+GFX-RASTER token 2: 1179 pixels
+GFX-RASTER token 3: 857 pixels
+PASS GFX-IMPORTED-RASTER/REPEATED/MIRRORED/NORMAL-MATRIX/MATERIAL/DEPTH/CLEAR/FAILURE
+</system-out>
+	</testcase>
+	<testcase name="matter_graphics_sample" classname="matter_graphics_sample" time="27.961" status="run">
+		<properties/>
+		<system-out>DEVICE llvmpipe (LLVM 20.1.2, 256 bits); validation=1
+GFX-IMPORTED raster upload
+GFX-IMPORTED raster draw
+GFX-RASTER token 0: 195 pixels
+GFX-RASTER token 1: 207 pixels
+GFX-RASTER token 2: 1179 pixels
+GFX-RASTER token 3: 857 pixels
+PASS GFX-IMPORTED-RASTER/REPEATED/MIRRORED/NORMAL-MATRIX/MATERIAL/DEPTH/CLEAR/FAILURE
+SAMPLE imported-synthetic placed.a: 120 pixels
+SAMPLE imported-synthetic placed.a: 120 pixels
+SAMPLE imported-synthetic placed.b: 1027 pixels
+SAMPLE imported-synthetic placed.b: 972 pixels
+SAMPLE imported-synthetic synthetic.a: 435 pixels
+SAMPLE imported-synthetic synthetic.b: 450 pixels
+MATCH imported-synthetic exact repeated native view; 6 draws
+SAMPLE one-shared-instance-removed placed.a: 120 pixels
+SAMPLE one-shared-instance-removed placed.a: 120 pixels
+SAMPLE one-shared-instance-removed placed.b: 1027 pixels
+SAMPLE one-shared-instance-removed placed.b: 972 pixels
+SAMPLE one-shared-instance-removed synthetic.b: 450 pixels
+MATCH one-shared-instance-removed exact repeated native view; 5 draws
+SAM...
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="matter_graphics_vulkan" classname="matter_graphics_vulkan" time="0.581903" status="run">
+		<properties/>
+		<system-out>DEVICE llvmpipe (LLVM 20.1.2, 256 bits); validation=1
+MATCH dielectric-colored-shadow pixels=2145 hdr_max=1.30193e-07 display_max=2.38419e-07
+MATCH metallic-ggx-shadow pixels=2145 hdr_max=2.23469e-06 display_max=1.43051e-06
+MATCH point-light-brdf pixels=2145 hdr_max=3.36349e-07 display_max=4.17233e-07
+MATCH spot-light-cone pixels=2145 hdr_max=3.36349e-07 display_max=5.66244e-07
+MATCH translated-camera-light pixels=2145 hdr_max=3.36349e-07 display_max=7.45058e-07
+MATCH rt-products-emission-single-owner pixels=2145 hdr_max=9.68575e-08 display_max=1.19209e-07
+MATCH integrated-volume pixels=2145 hdr_max=3.3062e-08 display_max=1.19209e-07
+MATCH environment-irradiance pixels=2145 hdr_max=2.67173e-08 display_max=1.19209e-07
+MATCH reduced-diffuse-odd-extent pixels=2145 hdr_max=5.96046e-08 display_max=1.78814e-07
+MATCH physical-sky-product pixels=2145 hdr_max=0 display_max=5.96046e-08
+MATCH subsurface-impostor-mask pixels=2145 hdr_max=2.23517e-09 display_max=1.19209e-07
+MATCH cloud-optical-depth pixels=2145 hdr_max=1....
+[This part of the test output was removed since it exceeds the threshold of 1024 bytes.]
+</system-out>
+	</testcase>
+	<testcase name="matter_graphics_independence" classname="matter_graphics_independence" time="0.613667" status="run">
+		<properties/>
+		<system-out>PASS GFX-INDEPENDENT-GRAPH: scene/facade/contracts/shared pure math plus isolated Vulkan adapter/loader and exact production shader closure; source, link and compiler dependency audit
+</system-out>
+	</testcase>
+</testsuite>

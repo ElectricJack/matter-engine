@@ -1,0 +1,44 @@
+# Native/browser matched view, 2026-10-20 (task clear-crest-48.9.8)
+# native: DISPLAY=:0 MATTER_AUTHORING_E2E_DUMP=<bm> matter_authoring_e2e_tests graphics  (llvmpipe, subPixelPrecisionBits 8)
+# browser: browser_matched.py --wasm-module <matter_geometry_wasm.mjs> --native <bm> --scale {17,1} --dump <bb>
+
+## --scale 17 (gate)
+browser: Chromium 150.0.7871.46, WebGL 2.0 (OpenGL ES 3.0 Chromium), SUBPIXEL_BITS 4, scale 17, three r186
+primitive: PASS coverage {'both': 1591, 'native_only': 0, 'browser_only': 0, 'instance_mismatch': 0} mismatch 0.0%
+  body: px=1591 albedo max 0.000980 (0.0% > 2/255) normal max 0.000000 (0.0%) depth max 2.37e-10 (0.0%)
+materialAssignment: PASS coverage {'both': 756, 'native_only': 0, 'browser_only': 0, 'instance_mismatch': 0} mismatch 0.0%
+  clay_part: px=378 albedo max 0.000980 (0.0% > 2/255) normal max 0.000000 (0.0%) depth max 1.58e-10 (0.0%)
+  metal_placed: px=378 albedo max 0.001961 (0.0% > 2/255) normal max 0.000000 (0.0%) depth max 1.58e-10 (0.0%)
+orderedCsg: PASS coverage {'both': 1580, 'native_only': 0, 'browser_only': 0, 'instance_mismatch': 0} mismatch 0.0%
+  cut: px=1580 albedo max 0.000980 (0.0% > 2/255) normal max 0.000677 (0.0%) depth max 9.42e-06 (0.0%)
+sharedInstances: PASS coverage {'both': 234, 'native_only': 0, 'browser_only': 0, 'instance_mismatch': 0} mismatch 0.0%
+  row.0: px=90 albedo max 0.000980 (0.0% > 2/255) normal max 0.000000 (0.0%) depth max 0.00e+00 (0.0%)
+  row.1: px=90 albedo max 0.000980 (0.0% > 2/255) normal max 0.000000 (0.0%) depth max 0.00e+00 (0.0%)
+  row.2: px=54 albedo max 0.000980 (0.0% > 2/255) normal max 0.000000 (0.0%) depth max 0.00e+00 (0.0%)
+PASS
+
+## --scale 1 (plain 128x128 SwiftShader render, for attribution)
+browser: Chromium 150.0.7871.46, WebGL 2.0 (OpenGL ES 3.0 Chromium), SUBPIXEL_BITS 4, scale 1, three r186
+primitive: PASS coverage {'both': 1591, 'native_only': 0, 'browser_only': 0, 'instance_mismatch': 0} mismatch 0.0%
+  body: px=1591 albedo max 0.000980 (0.0% > 2/255) normal max 0.000000 (0.0%) depth max 2.37e-10 (0.0%)
+materialAssignment: PASS coverage {'both': 756, 'native_only': 0, 'browser_only': 0, 'instance_mismatch': 0} mismatch 0.0%
+  clay_part: px=378 albedo max 0.000980 (0.0% > 2/255) normal max 0.000000 (0.0%) depth max 1.58e-10 (0.0%)
+  metal_placed: px=378 albedo max 0.001961 (0.0% > 2/255) normal max 0.000000 (0.0%) depth max 1.58e-10 (0.0%)
+orderedCsg: FAIL coverage {'both': 1580, 'native_only': 0, 'browser_only': 0, 'instance_mismatch': 0} mismatch 0.0%
+  cut: px=1580 albedo max 0.000980 (0.0% > 2/255) normal max 0.015280 (2.215%) depth max 1.92e-04 (4.367%)
+  native instances ['cut'] browser instances ['cut']
+sharedInstances: PASS coverage {'both': 234, 'native_only': 0, 'browser_only': 0, 'instance_mismatch': 0} mismatch 0.0%
+  row.0: px=90 albedo max 0.000980 (0.0% > 2/255) normal max 0.000000 (0.0%) depth max 0.00e+00 (0.0%)
+  row.1: px=90 albedo max 0.000980 (0.0% > 2/255) normal max 0.000000 (0.0%) depth max 0.00e+00 (0.0%)
+  row.2: px=54 albedo max 0.000980 (0.0% > 2/255) normal max 0.000000 (0.0%) depth max 0.00e+00 (0.0%)
+FAIL
+
+## subpixel_snap_check.py orderedCsg (scale 1 browser dump)
+         exact: native depth err max 8.32e-08 (0 px > 1e-5), browser max 1.92e-04 (221 px > 1e-5) of 1580 px
+ 1/256 px snap: native depth err max 9.45e-06 (0 px > 1e-5), browser max 1.83e-04 (221 px > 1e-5) of 1580 px
+  1/16 px snap: native depth err max 1.92e-04 (221 px > 1e-5), browser max 4.19e-08 (0 px > 1e-5) of 1580 px
+
+## subpixel_snap_check.py orderedCsg (scale 17 browser dump)
+         exact: native depth err max 8.32e-08 (0 px > 1e-5), browser max 9.38e-06 (0 px > 1e-5) of 1580 px
+ 1/256 px snap: native depth err max 9.45e-06 (0 px > 1e-5), browser max 1.17e-05 (67 px > 1e-5) of 1580 px
+  1/16 px snap: native depth err max 1.92e-04 (221 px > 1e-5), browser max 1.89e-04 (221 px > 1e-5) of 1580 px

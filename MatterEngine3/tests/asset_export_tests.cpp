@@ -7,6 +7,7 @@
 namespace fs = std::filesystem;
 int main(int argc, char **argv) {
   std::setvbuf(stdout, nullptr, _IONBF, 0);
+#ifdef MATTER_CODEC_SOURCE_QUALIFICATION
   const auto root = argc > 1
                         ? fs::u8path(argv[1])
                         : fs::temp_directory_path() /
@@ -14,6 +15,10 @@ int main(int argc, char **argv) {
                                std::to_string(std::chrono::steady_clock::now()
                                                   .time_since_epoch()
                                                   .count()));
+#else
+  const fs::path root = "runtime/asset-export";
+  if (argc != 1) return 2;
+#endif
   try {
     asset_export::Asset asset;
     asset.source_hash = 0x123456789abcdef0ull;
@@ -48,6 +53,7 @@ int main(int argc, char **argv) {
     asset.meshes.push_back(mesh);
     asset_export::Receipt receipt;
     std::string error;
+#ifdef MATTER_CODEC_SOURCE_QUALIFICATION
     CHECK(asset_export::write(asset, root.string(), receipt, error),
           error.c_str());
     CHECK(receipt.triangles == 2 && receipt.vertices == 6 &&
@@ -77,11 +83,20 @@ int main(int argc, char **argv) {
               fs::file_size(root / "asset.obj") == obj_size,
           "existing package is never overwritten and failure preserves caller "
           "receipt");
+#else
+    CHECK(!asset_export::write(asset, "", receipt, error) &&
+              error == "export directory is empty or contains NUL",
+          "complete valid input reaches destination admission before any IO");
+    receipt.triangles = 17; receipt.files = {"prior-owned-receipt"};
+    const auto old = receipt;
+#endif
     const auto absent = root.string() + "-invalid";
     asset.meshes[0].indices[0] = 3;
-    CHECK(!asset_export::write(asset, absent, receipt, error) &&
-              !fs::exists(absent),
+    CHECK(!asset_export::write(asset, absent, receipt, error),
           "out of range index fails without partial directory");
+#ifdef MATTER_CODEC_SOURCE_QUALIFICATION
+    CHECK(!fs::exists(absent), "invalid index creates no partial directory");
+#endif
     asset.meshes[0].indices[0] = 0;
     asset.materials[0].displacement.pop_back();
     CHECK(!asset_export::write(asset, absent, receipt, error),
@@ -95,9 +110,13 @@ int main(int argc, char **argv) {
     asset.meshes[0].vertices[0].tangent[3] = 0;
     CHECK(!asset_export::write(asset, absent, receipt, error),
           "invalid tangent handedness fails before writing");
+    CHECK(receipt.triangles == old.triangles && receipt.files == old.files,
+          "invalid input preserves the previous owned receipt");
     std::printf("ASSET_EXPORT fixture=%s\n", root.string().c_str());
+#ifdef MATTER_CODEC_SOURCE_QUALIFICATION
     if (argc == 1)
       fs::remove_all(root);
+#endif
   } catch (const std::exception &e) {
     std::printf("FAIL: %s\n", e.what());
     return 1;
