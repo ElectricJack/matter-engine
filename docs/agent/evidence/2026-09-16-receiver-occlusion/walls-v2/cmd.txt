@@ -1,0 +1,29 @@
+wait_event bake.finished 600
+wait_idle 3 30
+render_path raster
+cam 11 6 17 5.1 .75 .1225
+wait_frames 180
+stats raster-overview
+shot D:/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-16-receiver-occlusion/walls-v2/raster-overview.png
+cam 7.2 1.1 2.5 7.2 .6 .1225
+wait_frames 180
+stats raster-close
+shot D:/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-16-receiver-occlusion/walls-v2/raster-close.png
+cam 5.25 .95 1.0 10 .65 .1225
+wait_frames 180
+stats raster-grazing
+shot D:/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-16-receiver-occlusion/walls-v2/raster-grazing.png
+render_path native_rt
+cam 11 6 17 5.1 .75 .1225
+wait_frames 180
+stats native_rt-overview
+shot D:/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-16-receiver-occlusion/walls-v2/native_rt-overview.png
+cam 7.2 1.1 2.5 7.2 .6 .1225
+wait_frames 180
+stats native_rt-close
+shot D:/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-16-receiver-occlusion/walls-v2/native_rt-close.png
+cam 5.25 .95 1.0 10 .65 .1225
+wait_frames 180
+stats native_rt-grazing
+shot D:/Shared With Desktop/AI/matter-engine-cpp/docs/agent/evidence/2026-09-16-receiver-occlusion/walls-v2/native_rt-grazing.png
+quit

@@ -224,7 +224,6 @@ private:
     std::vector<DrawRecord>  draw_records_;
     std::unique_ptr<TLAS>    tlas_;
     std::vector<BVHInstance> instance_storage_; // backing array owned by the manager; TLAS holds a raw pointer into it
-    std::vector<std::unique_ptr<BVHInstance>> instances_; // Deprecated - kept for compatibility
     uint32_t      next_instance_id_;
     int           max_instances_;
 

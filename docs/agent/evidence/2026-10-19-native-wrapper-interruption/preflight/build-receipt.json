@@ -1,0 +1,14 @@
+{
+    "source_root":  "D:\\azl65\\b",
+    "command":  "powershell.exe -NoProfile -ExecutionPolicy Bypass -File D:\\azl65\\b\\tools\\build-windows.ps1 -PreflightOnly",
+    "working_directory":  "D:\\azl65\\b",
+    "console":  "CreateNoWindow",
+    "started_at":  "2026-10-19T21:51:52.9761047Z",
+    "timeout_seconds":  300,
+    "build_parallel_level":  "6",
+    "status":  "completed",
+    "exit_code":  0,
+    "process_id":  24308,
+    "elapsed_seconds":  1.3069978,
+    "finished_at":  "2026-10-19T21:51:54.2897189Z"
+}

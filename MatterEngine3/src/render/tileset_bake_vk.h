@@ -43,6 +43,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -52,6 +53,15 @@ namespace tileset {
 
 struct SettledTorus;
 struct BakeInputs;
+
+// Round after converting metres to pixels: truncating metres first makes
+// sub-metre tiles empty and crops every non-integral metre tile.
+inline int gtex_atlas_extent(float tile_size_m, int texels_per_meter, int tiles_per_side) {
+    const double pixels = std::round(double(tile_size_m) * texels_per_meter);
+    if (!std::isfinite(pixels) || pixels < 1 || texels_per_meter <= 0 || tiles_per_side <= 0 ||
+        pixels > double(std::numeric_limits<int>::max() / tiles_per_side)) return 0;
+    return int(pixels) * tiles_per_side;
+}
 
 // ---------------------------------------------------------------------------
 // Readback repack helpers (pure, CPU-testable).

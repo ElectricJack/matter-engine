@@ -6,6 +6,9 @@ These are the concise, current engine references:
   artifacts, PartGraph composition, and known constraints.
 - **[Rendering](rendering.md)** — per-frame Vulkan composition, raster and
   native ray-tracing lanes, GPU data layout, and performance characteristics.
+- **[Local lighting](local-lighting.md)** — World JavaScript API, resolved
+  CPU/GPU record packing, world-space light index, attenuation, and renderer
+  publication/reload contract.
 - **[Authoring](authoring.md)** — part schemas, worlds, shared libraries, and
   test coverage.
 - **[Event system](event-system.md)** — typed notifications, commands, and
@@ -16,6 +19,9 @@ These are the concise, current engine references:
   contract.
 - **[Chart VT glossary](chart-vt-glossary.md)** — virtual-texture terms used by
   the renderer and authoring docs.
+- **[OBJ export](../../docs/export-obj.md)** — `matter export obj`, the
+  coordinate and material-key conventions, the `World.exports` binding, and the
+  limits of taking a baked Part out of the engine.
 
 Active but unfinished designs:
 

@@ -34,11 +34,15 @@ layout(set = 0, binding = 7, std430) readonly buffer RtMaterialTable {
     RtMaterialGpu rt_materials[];
 };
 
+#define MATTER_PRIMARY_LIGHT_CULLING 1
+#include "local_lighting.glsl"
+
 const uint MATERIAL_THIN_WALLED = 1u << 0u;
 
 layout(set = 0, binding = 8) uniform sampler2D transmission_texture;
 layout(set = 0, binding = 9) uniform sampler3D vol_integrated_texture;
 layout(set = 0, binding = 10) uniform sampler2D depth_texture;
+layout(set = 0, binding = 11) uniform sampler2D local_direct_texture;
 
 layout(push_constant) uniform SceneLighting {
     vec3 sun_direction;
@@ -87,6 +91,39 @@ vec3 compute_view_ray(vec2 uv) {
         up    * ndc.y * lighting.tan_half_fov);
 }
 
+LocalLightBrdf evaluate_raster_local_direct(vec3 world_position, vec3 normal,
+                                            vec3 view_direction, vec3 albedo,
+                                            float roughness, float metallic) {
+    LocalLightBrdf total;
+    total.diffuse = vec3(0.0);
+    total.specular = vec3(0.0);
+    if (local_light_counts.w != LOCAL_DIRECT_RASTER)
+        return total;
+
+    uint tile_base = primary_light_tile_base(ivec2(gl_FragCoord.xy));
+    uint offset = 0u;
+    uint count = 0u;
+    local_light_cell_span(world_position, offset, count);
+    uint list_count;
+    uint list_base = primary_light_tile_list_base(tile_base, list_count);
+    if (list_count >= count + local_light_counts.z)
+        list_base = 0xffffffffu;
+    uint candidate_count = list_base != 0xffffffffu
+        ? list_count : count + local_light_counts.z;
+    for (uint candidate = 0u; candidate < candidate_count; ++candidate) {
+        uint index = list_base != 0xffffffffu
+            ? local_primary_masks[list_base + candidate]
+            : (candidate < count ? local_light_indices[offset + candidate]
+                : local_light_oversized_indices[candidate - count]);
+        LocalLightBrdf contribution = evaluate_local_light_brdf(
+            index, world_position, normal,
+            view_direction, albedo, roughness, metallic);
+        total.diffuse += contribution.diffuse;
+        total.specular += contribution.specular;
+    }
+    return total;
+}
+
 // ---- debug_view 3.0: linear depth ------------------------------------------
 //
 // Reversed-ZO inverse, same expression as the two inline copies below (the
@@ -96,6 +133,111 @@ float composite_linear_depth(float hw_depth) {
     return lighting.camera_near * lighting.camera_far /
         max(hw_depth * (lighting.camera_far - lighting.camera_near) +
             lighting.camera_near, 1e-6);
+}
+
+// Reduced diffuse buffers contain incident lighting, not surface-colored
+// radiance. Reconstruct only that smooth signal; the destination pixel's
+// albedo/metalness/AO is applied afterwards. Full-rate buffers retain their
+// existing radiance contract and exact sampler path.
+void gather_diffuse_light(ivec2 q, ivec2 low_extent, ivec2 full_extent,
+                          float spatial_weight, uvec2 receiver_identity,
+                          vec3 receiver_position, vec3 receiver_normal,
+                          vec3 receiver_plane_normal, float plane_tolerance,
+                          inout vec3 sum, inout float weight_sum) {
+    if (spatial_weight <= 0.0 || any(lessThan(q, ivec2(0))) ||
+        any(greaterThanEqual(q, low_extent))) return;
+    // Match rt_lighting.rgen/gi_temporal's integer source-pixel selection,
+    // including non-power-of-two scales and odd target dimensions.
+    ivec2 source = clamp(ivec2((vec2(q) + 0.5) * vec2(full_extent) /
+                             vec2(low_extent)), ivec2(0), full_extent - 1);
+    uvec2 identity = texelFetch(identity_texture, source, 0).rg;
+    if (any(notEqual(identity, receiver_identity))) return;
+    float depth = texelFetch(depth_texture, source, 0).r;
+    vec3 normal = texelFetch(normal_texture, source, 0).xyz;
+    if (depth <= 0.0 || dot(normal, normal) < 0.5) return;
+    normal = normalize(normal);
+    float normal_weight = max(dot(receiver_normal, normal), 0.0);
+    normal_weight *= normal_weight;
+    if (normal_weight < 1e-4) return;
+    vec2 source_uv = (vec2(source) + 0.5) / vec2(full_extent);
+    vec3 ray = compute_view_ray(source_uv);
+    vec3 forward = normalize(vec3(lighting.camera_fwd_x,
+                                  lighting.camera_fwd_y,
+                                  lighting.camera_fwd_z));
+    vec3 position = vec3(lighting.camera_pos_x, lighting.camera_y,
+                         lighting.camera_pos_z) + ray *
+        (composite_linear_depth(depth) / max(dot(ray, forward), 1e-4));
+    // Metric distance from the receiving plane allows sloped floors/walls
+    // to interpolate without accepting a different depth layer.
+    float plane_distance = abs(dot(position - receiver_position,
+                                    receiver_plane_normal));
+    float weight = spatial_weight * normal_weight *
+                   exp2(-plane_distance / plane_tolerance);
+    if (weight < 1e-6) return;
+    vec3 incident = texelFetch(raw_diffuse_texture, q, 0).rgb;
+    if (any(isnan(incident)) || any(isinf(incident))) return;
+    sum += incident * weight;
+    weight_sum += weight;
+}
+
+vec3 reconstruct_diffuse_light(vec3 position, vec3 normal,
+                                float linear_depth, vec3 diffuse, float ao) {
+    ivec2 low_extent = textureSize(raw_diffuse_texture, 0);
+    ivec2 full_extent = textureSize(depth_texture, 0);
+    if (all(equal(low_extent, full_extent)))
+        return texture(raw_diffuse_texture, in_uv).rgb;
+
+    uvec2 identity = texelFetch(identity_texture,
+        clamp(ivec2(gl_FragCoord.xy), ivec2(0), full_extent - 1), 0).rg;
+    // Only trust derivatives when the entire pixel quad belongs to this
+    // surface. At silhouettes a neighboring pixel may be sky or another
+    // object, and its depth cannot define the receiver's plane.
+    ivec2 quad = ivec2(gl_FragCoord.xy) & ~ivec2(1);
+    bool same_quad = true;
+    for (int y = 0; y < 2; ++y)
+        for (int x = 0; x < 2; ++x)
+            same_quad = same_quad && all(equal(identity, texelFetch(
+                identity_texture, min(quad + ivec2(x, y), full_extent - 1), 0).rg));
+    vec3 plane_normal = cross(dFdxFine(position), dFdyFine(position));
+    float plane_length = dot(plane_normal, plane_normal);
+    plane_normal = same_quad && plane_length > 1e-16 &&
+                   !any(isnan(plane_normal)) && !any(isinf(plane_normal))
+        ? plane_normal * inversesqrt(plane_length) : normal;
+    if (abs(dot(plane_normal, normal)) < 0.25) plane_normal = normal;
+    float footprint = 2.0 * lighting.tan_half_fov * linear_depth /
+                      float(low_extent.y);
+    float plane_tolerance = max(0.02, footprint * 0.5);
+    vec2 coordinate = in_uv * vec2(low_extent) - 0.5;
+    ivec2 base = ivec2(floor(coordinate));
+    vec2 fraction = fract(coordinate);
+    vec3 sum = vec3(0.0);
+    float weight_sum = 0.0;
+    for (int y = 0; y < 2; ++y) {
+        for (int x = 0; x < 2; ++x) {
+            vec2 weight = mix(1.0 - fraction, fraction, vec2(x, y));
+            gather_diffuse_light(base + ivec2(x, y), low_extent, full_extent,
+                weight.x * weight.y, identity, position, normal, plane_normal,
+                plane_tolerance, sum, weight_sum);
+        }
+    }
+    // Thin receivers may miss all four taps. Search one bounded ring for
+    // their own surface; never borrow illumination from a window/background.
+    if (weight_sum < 1e-4) {
+        sum = vec3(0.0);
+        weight_sum = 0.0;
+        ivec2 center = ivec2(floor(coordinate + 0.5));
+        for (int y = -1; y <= 1; ++y) {
+            for (int x = -1; x <= 1; ++x) {
+                ivec2 q = center + ivec2(x, y);
+                vec2 distance = vec2(q) - coordinate;
+                gather_diffuse_light(q, low_extent, full_extent,
+                    exp2(-dot(distance, distance)), identity, position, normal,
+                    plane_normal, plane_tolerance, sum, weight_sum);
+            }
+        }
+    }
+    vec3 incident = weight_sum > 1e-6 ? sum / weight_sum : vec3(0.0);
+    return incident * diffuse * ao;
 }
 
 // Encode eye-space linear depth so it survives an 8-bit PNG with enough
@@ -198,6 +340,37 @@ void main() {
     // Ahead of the depth view for the same reason that one is ahead of the sky
     // early-out: these are ordered highest-mode-first, and `> 2.5` would
     // otherwise swallow mode 4.
+    // debug_view 5.0: indexed candidates at the reconstructed world position.
+    // Black means no candidate; blue->cyan->yellow approaches the world's
+    // worst occupied-cell count. This diagnoses sparse lookup independently of
+    // light intensity and never scans the complete light list.
+    if (lighting.debug_view > 4.5) {
+        float hw_depth = texture(depth_texture, in_uv).r;
+        if (hw_depth <= 0.0) {
+            out_hdr = vec4(0.0, 0.0, 0.0, 1.0);
+            return;
+        }
+        float linear_depth = composite_linear_depth(hw_depth);
+        vec3 view_ray = compute_view_ray(in_uv);
+        vec3 camera_forward = normalize(vec3(
+            lighting.camera_fwd_x, lighting.camera_fwd_y,
+            lighting.camera_fwd_z));
+        float ray_distance = linear_depth /
+            max(dot(view_ray, camera_forward), 1.0e-4);
+        vec3 world_position =
+            vec3(lighting.camera_pos_x, lighting.camera_y,
+                 lighting.camera_pos_z) + view_ray * ray_distance;
+        uint candidates = local_light_candidate_count(world_position);
+        float scale = log2(float(max(local_light_debug.x, 1u)) + 1.0);
+        float heat = candidates == 0u ? 0.0
+            : clamp(log2(float(candidates) + 1.0) / scale, 0.0, 1.0);
+        vec3 color = heat < 0.5
+            ? mix(vec3(0.0), vec3(0.0, 0.8, 1.0), heat * 2.0)
+            : mix(vec3(0.0, 0.8, 1.0), vec3(1.0, 0.85, 0.0),
+                  (heat - 0.5) * 2.0);
+        out_hdr = vec4(color, 1.0);
+        return;
+    }
     if (lighting.debug_view > 3.5) {
         out_hdr = vec4(texture(albedo_texture, in_uv).rgb, 1.0);
         return;
@@ -282,6 +455,9 @@ void main() {
     vec3 receiver_world_pos =
         vec3(lighting.camera_pos_x, lighting.camera_y, lighting.camera_pos_z) +
         receiver_view_ray * receiver_ray_t;
+    LocalLightBrdf local_direct = evaluate_raster_local_direct(
+        receiver_world_pos, normal, normalize(-receiver_view_ray), albedo.rgb,
+        roughness, metallic);
     float cloud_visibility = sample_cloud_transmittance(
         receiver_world_pos,
         cloud_receiver_distance_to_top(receiver_world_pos, to_sun));
@@ -359,7 +535,7 @@ void main() {
         vec3 sun_half = normalize(view + to_sun);
         float n_dot_v = max(dot(normal, view), 1e-4);
         float n_dot_h = max(dot(normal, sun_half), 0.0);
-        float v_dot_h = max(dot(view, sun_half), 1e-4);
+        float v_dot_h = clamp(dot(view, sun_half), 1e-4, 1.0);
         float alpha = max(roughness * roughness, 0.0004);
         float a2 = alpha * alpha;
         float d_denom = n_dot_h * n_dot_h * (a2 - 1.0) + 1.0;
@@ -385,7 +561,8 @@ void main() {
         : albedo.rgb;
     vec3 emission = emission_color * emission_strength *
                     lighting.emission_multiplier;
-    vec3 raw_diffuse = texture(raw_diffuse_texture, in_uv).rgb *
+    vec3 raw_diffuse = reconstruct_diffuse_light(receiver_world_pos, normal,
+                       receiver_linear_depth, diffuse, ao) *
                        lighting.diffuse_rt_multiplier;
     vec3 specular = texture(specular_texture, in_uv).rgb;
     vec4 transmission = texture(transmission_texture, in_uv);
@@ -429,10 +606,19 @@ void main() {
         }
     }
     vec3 linear_hdr = (ambient + sun * mix(1.0, 0.65, roughness) +
-                       raw_diffuse) * (1.0 - transmission_coverage) +
+                       raw_diffuse) *
+                          (1.0 - transmission_coverage) +
                       emission + specular +
                       transmission.rgb * transmission_coverage +
                       glass_reflection;
+    // The RT lane is already diffuse/specular/transmission weighted. Raster
+    // keeps its two BRDF terms separate until coverage is known here. Select
+    // exactly one owner; never add unshadowed raster direct to traced direct.
+    if (local_light_counts.w == LOCAL_DIRECT_RAY_TRACED)
+        linear_hdr += texture(local_direct_texture, in_uv).rgb;
+    else
+        linear_hdr += local_direct.diffuse * (1.0 - transmission_coverage) +
+                      local_direct.specular;
 
     if (lighting.vol_enabled > 0.5) {
         float depth_sample = texture(depth_texture, in_uv).r;

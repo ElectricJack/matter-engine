@@ -1,0 +1,21 @@
+{
+  "status": "progress",
+  "receiver_input_native_checks": "passed",
+  "explicit_world_receiver_binding": "passed_limited_static_unique_rigid_receivers",
+  "contact_scene_functional_capture": "passed_default_v4_and_eager_v6",
+  "contact_scene_final_visual_acceptance": "open_chart_facets_lighting_and_material_art",
+  "rejected_captures": {
+    "v1": "missing_objects",
+    "v2": "incomplete_diagnostic",
+    "v3": "missing_prop_world_recipe_binding",
+    "v5": "eager_null_source_descriptors_fixed_and_rechecked_in_v6"
+  },
+  "retained_scene": "SurfaceContactProof",
+  "production_mountain_recipe_changed": false,
+  "terrain_world_y_binding_changed": true,
+  "contact_capture_editors_closed": true,
+  "mountain_capture": "v3_passed_audit_final_visual_acceptance_open",
+  "frozen_asset_editor_left_open": 9056,
+  "next": "Inspect mountain Y-frame correction; improve terrain material/seam quality, then sparse per-instance world overlays over shared finite bases.",
+  "all_capture_editors_closed": true
+}

@@ -1,0 +1,16 @@
+[
+  {
+    "kind": "build",
+    "name": "finite_surface_recipe_tests",
+    "command": [
+      "./tools/build-windows-from-wsl.sh",
+      "RelWithDebInfo",
+      "finite_surface_recipe_tests"
+    ],
+    "exit": 1,
+    "seconds": 6.005129010998644,
+    "log": "docs/agent/evidence/2026-09-15-wall-surface/composite-v1-build-finite_surface_recipe_tests.log",
+    "source_changes": [],
+    "validation_errors": []
+  }
+]

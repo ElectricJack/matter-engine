@@ -42,14 +42,10 @@
 #include "bvh_analyzer.h"
 #include "../include/cell_visitor.h"
 #include "material_registry.h"
-#include "mesh_simplifier.hpp"
 #include "../include/mesh_worker_pool.h"
 #include "mesh_build_utils.h"
 #include "meshing_algorithm.h"
 #include <utility>   // std::move
-extern "C" {
-#include "spatial_hash.h"  // sh_query_radius_nearest for per-triangle material/tint
-}
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -79,6 +75,18 @@ int choose_division_pow(float detail_size_min, float base_detail, int base_pow, 
     return pow;
 }
 
+int choose_absolute_division_pow(float cell_size, float spacing, int base_pow, int max_pow) {
+    if (!(cell_size > 0.0f) || !std::isfinite(cell_size) ||
+        !(spacing > 0.0f) || !std::isfinite(spacing)) return base_pow;
+    // The caller owns its resource ceiling. Compare intervals directly rather
+    // than taking log(cell_size/spacing): tiny positive spacings must saturate
+    // without overflowing the ratio or an integer conversion.
+    int pow = base_pow;
+    while (pow < max_pow &&
+           double(cell_size) / (std::ldexp(1.0, pow) - 1.0) > double(spacing)) ++pow;
+    return pow;
+}
+
 Cell::Cell(const mm::Vec3& coords, int size_pow, float smallest_cell_size)
     : coordinates(coords),
       size_power(size_pow),
@@ -87,14 +95,14 @@ Cell::Cell(const mm::Vec3& coords, int size_pow, float smallest_cell_size)
       is_dirty(true),
       mesh_version(0) {
     
-    calculate_bounds(smallest_cell_size);
+    calculate_bounds();
 }
 
 Cell::~Cell() {
     clear_meshes();
 }
 
-void Cell::calculate_bounds(float smallest_cell_size) {
+void Cell::calculate_bounds() {
     // Cell coordinates use the cluster's CORNER convention: a point at local
     // position p belongs to cell floor(p / size), so cell C spans
     // [C*size, (C+1)*size] and is centered at (C+0.5)*size. This must match
@@ -274,7 +282,7 @@ GroupMeshResult Cell::build_group_mesh(uint32_t group_id, const std::vector<Stat
                                        float simplification_ratio, float base_detail, int max_pow, float uniform_detail,
                                        const Particle* carveParticles, int carveCount,
                                        const FieldStages* stages, const FatPrim* fat, int fatCount,
-                                       const int* clusterStage) const {
+                                       const int* clusterStage, float absolute_spacing) const {
     GroupMeshResult result;
     result.group_id = group_id;
 
@@ -311,7 +319,9 @@ GroupMeshResult Cell::build_group_mesh(uint32_t group_id, const std::vector<Stat
             if (ds > 0.0f && ds < detail_min) detail_min = ds;
         }
     }
-    bounds.divisionPow = choose_division_pow(detail_min, base_detail, 4, max_pow);
+    bounds.divisionPow = absolute_spacing > 0.0f
+        ? choose_absolute_division_pow(actual_size, absolute_spacing, 4, max_pow)
+        : choose_division_pow(detail_min, base_detail, 4, max_pow);
     int gridSize = 1 << bounds.divisionPow;
     float voxel = actual_size / (float)(gridSize - 1);
     float blend_voxels = kBlendVoxels;
@@ -498,13 +508,13 @@ CellMeshResult Cell::build_cell_meshes(const std::vector<StaticParticle>& cluste
                                        float simplification_ratio, float base_detail, int max_pow, float uniform_detail,
                                        const Particle* carveParticles, int carveCount,
                                        const FieldStages* stages, const FatPrim* fat, int fatCount,
-                                       const int* clusterStage) const {
+                                       const int* clusterStage, float absolute_spacing) const {
     CellMeshResult cell_result;
     for (const auto& group_entry : material_particle_indices) {
         uint32_t group_id = group_entry.first;
         GroupMeshResult gr = build_group_mesh(group_id, cluster_particles, scratch, simplification_ratio,
                                               base_detail, max_pow, uniform_detail, carveParticles, carveCount,
-                                              stages, fat, fatCount, clusterStage);
+                                              stages, fat, fatCount, clusterStage, absolute_spacing);
         if (gr.mesh.vertexCount > 0) {
             cell_result.groups.push_back(std::move(gr));
         }

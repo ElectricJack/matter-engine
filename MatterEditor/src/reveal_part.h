@@ -36,4 +36,25 @@ uint64_t reveal_part_in_world(const part_graph_snapshot::Snapshot& snapshot,
                               const std::string& module,
                               SelectionSet& selection);
 
+// Is `resolved_hash` a baked root that this world can still name?  The one
+// liveness rule behind a BakedRoot selection entry, kept beside the rule that
+// CREATES those entries so the two cannot disagree.
+//
+// The population is exactly the root nodes of the current graph snapshot --
+// the same set `scene_tree_panel.cpp`'s "[Baked]" rows, `reveal_part_in_world`
+// above and `inventory::find_object` (scene.list_objects / scene.get_object)
+// enumerate.  PLACEMENT is deliberately not part of it: a root that is in the
+// part graph but placed nowhere in this world is a real, selectable object
+// that `scene.get_object` answers `found:true` for with
+// `placement.available:false` (docs/agent/agent-protocol.md, "Availability is
+// never faked").  Testing placement here instead is what made the editor
+// silently drop such a root one frame after an agent's `selection.replace` --
+// and after a user's click on its Scene-tree row -- while still reporting the
+// mutation as `changed:true`.
+//
+// Staleness is still caught: a rebake republishes the graph with new resolved
+// hashes and a world switch resets the snapshot, so an old hash stops matching.
+bool baked_root_selectable(const part_graph_snapshot::Snapshot& snapshot,
+                           uint64_t resolved_hash);
+
 }  // namespace viewer
