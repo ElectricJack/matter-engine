@@ -22,6 +22,7 @@ import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .monolith import monolith_entries
 from .report import Result
 from .rules import Component, Rules, Variant, HEADER_SUFFIXES, SOURCE_SUFFIXES, glob_match, under
 
@@ -46,10 +47,12 @@ class Toolchain:
     jobs: int
     fresh: bool
     version: str = ""
+    host_cache: dict[str, str] = field(default_factory=dict)
 
     def describe(self) -> dict:
         return {"cmake": self.cmake, "cmake_version": self.version, "generator": self.generator or "(cmake default)",
-                "make_program": self.make_program, "build_type": self.build_type, "jobs": self.jobs}
+                "make_program": self.make_program, "build_type": self.build_type, "jobs": self.jobs,
+                "host_cache": dict(self.host_cache)}
 
 
 @dataclass
@@ -251,7 +254,7 @@ class Probe:
             command += ["-G", tc.generator]
         if tc.make_program:
             command.append(f"-DCMAKE_MAKE_PROGRAM={tc.make_program}")
-        for key, value in {**self.rules.probe_cache, **self.variant.cache}.items():
+        for key, value in {**tc.host_cache, **self.rules.probe_cache, **self.variant.cache}.items():
             command.append(f"-D{key}={value}")
         configure.notes.append("command: " + shlex.join(command))
         code, output = _run(command)
@@ -512,10 +515,20 @@ class Probe:
         variant_only = {f"{self.component.directory}/{s}" if not under(s, self.component.directory) else s
                         for v in self.component.variants if v is not self.variant for s in v.sources}
         hits: dict[str, set[str]] = {}
+        monolith_hits: dict[str, set[str]] = {}
         for rel in self.files:
             if not under(rel, self.component.directory) or not rel.lower().endswith(SOURCE_SUFFIXES):
                 continue
             if rel in compiled or rel in variant_only or glob_match(rel, self.component.ownership_exclude):
+                continue
+            reason = audited(rel, self.component.monolith_sources)
+            if reason:
+                if rel in monolith_entries(self.rules.repo.root):
+                    monolith_hits.setdefault(reason, set()).add(rel)
+                else:
+                    result.fail("source.monolith-unlisted",
+                                f"{rel} is audited as compiled by the monolith, but no cmake/manifests/*.sources entry "
+                                f"lists it or a forwarding entrypoint that #includes it; the manifest is stale")
                 continue
             reason = audited(rel, self.component.unbuilt_sources)
             if reason:
@@ -524,6 +537,7 @@ class Probe:
             result.fail("source.unbuilt", f"{rel} belongs to {self.component.name} but no target of the "
                                           f"{self.variant.name} configuration compiles it")
         note_audits(result, "unbuilt source", hits)
+        note_audits(result, "monolith source", monolith_hits)
         return result
 
     # ------------------------------------------------------------------ build checks

@@ -9,7 +9,7 @@ import {WasmSteps} from './wasm_steps.mjs';
 const modulePath = process.argv[2];
 if (!modulePath) { console.error('usage: node node_wasm.mjs <matter_geometry_wasm.mjs>'); process.exit(2); }
 const create = (await import(pathToFileURL(modulePath).href)).default;
-const module = await create({wasmBinary: readFileSync(modulePath.replace(/\.mjs$/, '.wasm'))});
+const module = await create({});
 const runner = new WasmSteps(module);
 const input = readFileSync(0, 'utf8').split('\n').filter(line => line.length);
 try {

@@ -222,9 +222,9 @@ display channel `3e-4`; alpha is exactly 1. Largest observed HDR error was
 - `subsurface-impostor-mask`, `cloud-optical-depth`, `native-glass-fallback`
 - `debug-display-passthrough`
 
-Matched actual/reference PPMs are generated in the build directory's
-`composition-evidence/`; per-fixture errors appear in
-`Testing/Temporary/LastTest.log`. A visual contact sheet is committed at
+Matched actual/reference pixels are compared in memory; per-fixture errors
+appear in `Testing/Temporary/LastTest.log`. Tests write no shared image files.
+A visual contact sheet from the earlier evidence capture is committed at
 [tests/evidence/composition-matched.png](tests/evidence/composition-matched.png).
 The CPU boundary tests cover malformed payloads/dimensions, capabilities,
 material/identity, finite camera/light inputs and budget rejection. Native tests
