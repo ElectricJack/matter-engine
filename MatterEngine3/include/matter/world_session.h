@@ -232,6 +232,11 @@ struct RenderOptions {
     // the same eye. That is wanted here (the frozen view's detail is what you
     // came to inspect) and is the reason this is not called "freeze frustum".
     bool  freeze_cull_camera = false;
+    // MATTER_LIVE_TERRAIN=1 sessions only: keep the live terrain tiles resident
+    // on the GPU. False releases every terrain graphics residency while the
+    // coordinator's cache and the installed collision stay; true re-uploads
+    // from the cached products. `set viewer.debug.live_terrain_graphics false`.
+    bool  live_terrain_graphics = true;
     float pixel_budget    = 0.0f;     // 0 = default (1.0); clamped to [0.05, 4.0]
     // (No active_radius. It is DERIVED from the world's outermost terrain LOD
     // band -- the distance past which the streamer keeps nothing resident

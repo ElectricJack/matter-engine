@@ -7,6 +7,13 @@ Its only linked library is `matter_contracts`. The public
 [geometry.h](include/matter/geometry/geometry.h) exposes owned neutral recipe,
 asset, material and diagnostic values, without legacy graphics types.
 
+The CPU field/surface tape kernel (`src/terrain_field.cpp`, public header
+`matter/geometry/terrain_field.h`) is a separate dependency-free target,
+`matter_geometry_field`, registered by `cmake/FieldKernel.cmake`.
+TerrainGeneration and AssetPipeline's native surface producer include that
+module alone and link the target, so they configure no surface-math extraction
+or modifier backend, and every graph compiles the kernel once.
+
 ## Native use
 
 `PrimitiveGeometry::evaluate` accepts a direct `RecipeDocument`, resolved inputs,
@@ -319,13 +326,12 @@ oracle backend. The archive audit checks this independently, including
 
 ## Canonical implementation and dependencies
 
-The target compiles the existing canonical polygon triangulator. At configure
-time it also generates the geometry prefix of the canonical `triangle_emit.cpp`
-into the build directory, stopping at `VariationRecorder::instance`. That final
-function depends on the world/cache backend and MSVC resolves its unused
-reference even with function-section elimination. The seam is guarded and the
-canonical source is a configure dependency. There is no checked-in algorithm
-copy or symlink. Central manifests, DSL state and legacy sources stay under their
+The target owns the canonical polygon triangulator and triangle emitter
+(`src/polygon_triangulate.*`, `src/triangle_emit.*`, moved here from
+`MatterEngine3/src/` with history). The legacy paths are forwarders, and the
+cache-coupled `VariationRecorder` stays in `MatterEngine3/src/triangle_emit.*`
+because it folds into the part_asset_v2 resolved hash. There is no checked-in
+algorithm copy or symlink. Central manifests, DSL state and legacy sources stay under their
 integration owners.
 
 CSG additionally compiles canonical `fat_primitive.c` directly and includes the

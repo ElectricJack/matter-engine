@@ -36,7 +36,7 @@
 
 #include "matter/vulkan_device.h"
 #include "environment_spirv.h"
-#include "../../../../MatterEngine3/src/render/vk_resources.h"
+#include "vk_resources.h"
 
 namespace viewer {
 namespace {

@@ -260,7 +260,9 @@ void main() {
     float emission = max(material.emission_strength.w, 0.0);
     float encoded_emission = min(log2(1.0 + emission), 15.875);
     float ao = in_surface.w > 0.5 ? clamp(in_surface.z, 0.0, 1.0) : 1.0;
-    vec3 geometric_normal_ws = vt_slot != 0u
+    // Normal space follows the raw draw slot exported by raster.vert. Uniform
+    // PBR disables texture inputs through vt_slot, not the instance transform.
+    vec3 geometric_normal_ws = in_vt_slot != 0u
         ? normalize(in_vt_normal_matrix * normalize(in_normal))
         : normalize(in_normal);
     vec3 shading_normal = geometric_normal_ws;
