@@ -1,0 +1,26 @@
+{
+  "exit": 0,
+  "seconds_including_startup_and_view_waits": 35.925814336005715,
+  "source_changes": [],
+  "binary_changed": false,
+  "errors": [],
+  "vt_stats": [
+    "STATSVT,clay-shape-v2-group,active=1,variants=8/32768,rejected=0,mesh=28.3/3512.0 MiB,pool=80/25600,pinned=8,queue=0,fills=80,evictions=0,ind=0.02/64 MiB",
+    "STATSVT,clay-shape-v2-close,active=1,variants=8/32768,rejected=0,mesh=28.3/3512.0 MiB,pool=117/25600,pinned=8,queue=0,fills=117,evictions=0,ind=0.02/64 MiB",
+    "STATSVT,clay-shape-v2-grazing,active=1,variants=8/32768,rejected=0,mesh=28.3/3512.0 MiB,pool=142/25600,pinned=8,queue=0,fills=142,evictions=0,ind=0.02/64 MiB",
+    "STATSVT,clay-shape-v2-rt,active=1,variants=8/32768,rejected=0,mesh=28.3/3512.0 MiB,pool=142/25600,pinned=8,queue=0,fills=142,evictions=0,ind=0.02/64 MiB",
+    "STATSVT,clay-shape-v2-albedo,active=1,variants=8/32768,rejected=0,mesh=28.3/3512.0 MiB,pool=142/25600,pinned=8,queue=0,fills=142,evictions=0,ind=0.02/64 MiB",
+    "STATSVT,clay-shape-v2-normals,active=1,variants=8/32768,rejected=0,mesh=28.3/3512.0 MiB,pool=142/25600,pinned=8,queue=0,fills=142,evictions=0,ind=0.02/64 MiB",
+    "STATSVT,clay-shape-v2-wireframe,active=1,variants=8/32768,rejected=0,mesh=28.3/3512.0 MiB,pool=168/25600,pinned=8,queue=0,fills=168,evictions=0,ind=0.02/64 MiB"
+  ],
+  "images": {
+    "clay-shape-v2-group.png": "5eb40bdf0784e11e67957e3ea471fb3ba65f96be456f5b06e3e49581fe097193",
+    "clay-shape-v2-close.png": "8af93e4dc205b54185ede8f9c7cfdb1e327da539906287b7182bc719895fad20",
+    "clay-shape-v2-grazing.png": "1fc046a74f5c93b1dfbde5060cee65f4bf5eb65bb8a0b6dc73d979a1d3a0a949",
+    "clay-shape-v2-rt.png": "3944ecddc697b605914a949bfe86ffe0c7fee0336e249186fe088a31462be7ee",
+    "clay-shape-v2-albedo.png": "7b9228f80b8324a440dccf0cc6aec545261571e644665f966d97cd60ae1e665d",
+    "clay-shape-v2-normals.png": "1db4f7b6234caa7de6ef042e339d7cc644f735359412c87763206c747c68ae3d",
+    "clay-shape-v2-wireframe.png": "fef1c26b74417e3fd7139f67ab1277d4ce0d0db89a67ba9017d2db98b5fd2085"
+  },
+  "passed": true
+}

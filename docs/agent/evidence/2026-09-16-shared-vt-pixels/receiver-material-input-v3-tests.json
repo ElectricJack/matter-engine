@@ -1,0 +1,18 @@
+{
+  "runs": [
+    {
+      "mode": "contact",
+      "command": "$env:MATTER_VK_VALIDATION=\"1\"; $env:TMP=\"$env:LOCALAPPDATA\\Temp\"; $env:TEMP=$env:TMP; $env:MATTER_VK_SMOKE_MODE=\"contact\"; & \"./../../MatterEditor/build/cmake/windows-msvc/relwithdebinfo/world_definition_tests.exe\" --surface-contact; exit $LASTEXITCODE",
+      "exit": 0,
+      "seconds": 0.25927392399898963,
+      "binary_sha256": "5900a69e7c5e2c44a064f23c2c0b2bcf60eab4d121e11346a254e5b6169ef7b4",
+      "binary_unchanged": true,
+      "source_changes": [],
+      "all_pass": true,
+      "zero_validation_errors": true,
+      "skipped_rt": false,
+      "log_sha256": "fcf06851482db70915db15dbb26dea5a6f8b184f1c65beb00dbb63f2f1308c6c",
+      "passed": true
+    }
+  ]
+}

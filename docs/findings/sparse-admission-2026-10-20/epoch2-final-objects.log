@@ -1,0 +1,60 @@
+make: Entering directory '/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/MatterEngine3'
+g++ -c src/matter_engine.cpp -o build/obj_viewer_linux/matter_engine.o -std=c++17 -O2 -Wall -Wno-missing-braces -Wno-unused-variable -DPLATFORM_DESKTOP -DNDEBUG -DMATTER_HAVE_SCRIPT_HOST -DMATTER_VULKAN_VIEWER -DMATTER_VULKAN_ONLY -DMATTER_HAVE_STREAMLINE=0 -ffunction-sections -fdata-sections  -I/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/third_party/Vulkan-Headers/include -I. -Iinclude -Isrc -Isrc/render -Isrc/provider -I../libs/MatterSurfaceLib/include -I../libs/MatterSurfaceLib/src -I../libs/SpatialQueryLib/include -I../libs/MemoryLib/include -I../libs/MathLib/include -I../libs/ProfileLib/include -I../libs/AssetStoreLib/include -I../libs/AssetStoreLib/src -I../third_party/quickjs-ng -I../third_party/raylib/src -I../third_party/box3d/include -I../third_party/bc7enc -I../libs/ParticleFlowLib/include -I../third_party/flecs -I../third_party/ozz-animation/include -I../third_party/Vulkan-Headers/include  -I../third_party/raylib/src/external/glfw/include  -MMD -MP
+In file included from src/render/../../../libs/MatterGraphics/src/native/vt/vt_snapshot.h:7,
+                 from src/render/../../../libs/MatterGraphics/src/native/vt/vt_residency.h:92,
+                 from src/render/vt_residency.h:3,
+                 from src/render/vk_scene_renderer.h:126,
+                 from src/render/gpu_meshing/water_scene_part.h:4,
+                 from src/matter_engine.cpp:146:
+src/render/../../../libs/MatterGraphics/src/native/vt/../../../../../MatterEngine3/src/render/vt_finite_sources.h: In function ‘bool vt::vt_make_finite_sources(const std::vector<VtFiniteSourceBinding>&, std::shared_ptr<const VtFiniteSources>&, std::string&, const std::vector<VtFiniteReceiver>&, const std::vector<std::shared_ptr<const surface_stamp::Stamp> >&)’:
+src/render/../../../libs/MatterGraphics/src/native/vt/../../../../../MatterEngine3/src/render/vt_finite_sources.h:157:17: warning: this ‘if’ clause does not guard... [-Wmisleading-indentation]
+  157 |                 if(used[id]) return fail("duplicate composite candidate");used[id]=true;
+      |                 ^~
+src/render/../../../libs/MatterGraphics/src/native/vt/../../../../../MatterEngine3/src/render/vt_finite_sources.h:157:75: note: ...this statement, but the latter is misleadingly indented as if it were guarded by the ‘if’
+  157 |                 if(used[id]) return fail("duplicate composite candidate");used[id]=true;
+      |                                                                           ^~~~
+src/matter_engine.cpp: In member function ‘void matter::WorldSession::Impl::bake_and_stage_sector(const matter::streaming::detail::TaggedRequest&, size_t, const std::shared_ptr<viewer::LocalProvider>&)’:
+src/matter_engine.cpp:9615:17: warning: this ‘if’ clause does not guard... [-Wmisleading-indentation]
+ 9615 |                 if (value) prepared_policy += value; prepared_policy += ';';
+      |                 ^~
+src/matter_engine.cpp:9615:54: note: ...this statement, but the latter is misleadingly indented as if it were guarded by the ‘if’
+ 9615 |                 if (value) prepared_policy += value; prepared_policy += ';';
+      |                                                      ^~~~~~~~~~~~~~~
+src/matter_engine.cpp: In lambda function:
+src/matter_engine.cpp:15391:70: warning: comparison of integer expressions of different signedness: ‘const int’ and ‘const uint32_t’ {aka ‘const unsigned int’} [-Wsign-compare]
+15391 |                 for(const auto& imp:part->impostors)if(imp.mesh_index==level)fail("billboard impostors are not mesh export LODs");
+      |                                                        ~~~~~~~~~~~~~~^~~~~~~
+g++ -c src/render/vk_sparse_voxel.cpp -o build/obj_viewer_linux/vk_sparse_voxel.o -std=c++17 -O2 -Wall -Wno-missing-braces -Wno-unused-variable -DPLATFORM_DESKTOP -DNDEBUG -DMATTER_HAVE_SCRIPT_HOST -DMATTER_VULKAN_VIEWER -DMATTER_VULKAN_ONLY -DMATTER_HAVE_STREAMLINE=0 -ffunction-sections -fdata-sections  -I/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/third_party/Vulkan-Headers/include -I. -Iinclude -Isrc -Isrc/render -Isrc/provider -I../libs/MatterSurfaceLib/include -I../libs/MatterSurfaceLib/src -I../libs/SpatialQueryLib/include -I../libs/MemoryLib/include -I../libs/MathLib/include -I../libs/ProfileLib/include -I../libs/AssetStoreLib/include -I../libs/AssetStoreLib/src -I../third_party/quickjs-ng -I../third_party/raylib/src -I../third_party/box3d/include -I../third_party/bc7enc -I../libs/ParticleFlowLib/include -I../third_party/flecs -I../third_party/ozz-animation/include -I../third_party/Vulkan-Headers/include  -I../third_party/raylib/src/external/glfw/include  -MMD -MP
+src/render/vk_sparse_voxel.cpp: In static member function ‘static std::shared_ptr<viewer::VkSparseVoxelScene> viewer::VkSparseVoxelScene::create_impl(matter::VulkanDevice&, const std::vector<viewer::SparseVoxelBatch>&, std::string&, const std::vector<viewer::SparseHierarchyPrototype>*, const std::vector<viewer::SparseHierarchyPlacement>*, const viewer::SparseHierarchyConfig*, bool, const std::vector<viewer::SparseSharedObject>*)’:
+src/render/vk_sparse_voxel.cpp:698:5: warning: this ‘if’ clause does not guard... [-Wmisleading-indentation]
+  698 |     if(bricks.empty()) bricks.emplace_back(); if(cells.empty()) cells.emplace_back();
+      |     ^~
+src/render/vk_sparse_voxel.cpp:698:47: note: ...this statement, but the latter is misleadingly indented as if it were guarded by the ‘if’
+  698 |     if(bricks.empty()) bricks.emplace_back(); if(cells.empty()) cells.emplace_back();
+      |                                               ^~
+src/render/vk_sparse_voxel.cpp:699:5: warning: this ‘if’ clause does not guard... [-Wmisleading-indentation]
+  699 |     if(surfaces.empty()) surfaces.emplace_back(); if(texture_mips.empty()) texture_mips.emplace_back();
+      |     ^~
+src/render/vk_sparse_voxel.cpp:699:51: note: ...this statement, but the latter is misleadingly indented as if it were guarded by the ‘if’
+  699 |     if(surfaces.empty()) surfaces.emplace_back(); if(texture_mips.empty()) texture_mips.emplace_back();
+      |                                                   ^~
+src/render/vk_sparse_voxel.cpp:706:5: warning: this ‘if’ clause does not guard... [-Wmisleading-indentation]
+  706 |     if(children.empty()) children.emplace_back(); if(root_placements.empty()) root_placements.emplace_back();
+      |     ^~
+src/render/vk_sparse_voxel.cpp:706:51: note: ...this statement, but the latter is misleadingly indented as if it were guarded by the ‘if’
+  706 |     if(children.empty()) children.emplace_back(); if(root_placements.empty()) root_placements.emplace_back();
+      |                                                   ^~
+g++ -c src/render/vk_scene_renderer.cpp -o build/obj_viewer_linux/vk_scene_renderer.o -std=c++17 -O2 -Wall -Wno-missing-braces -Wno-unused-variable -DPLATFORM_DESKTOP -DNDEBUG -DMATTER_HAVE_SCRIPT_HOST -DMATTER_VULKAN_VIEWER -DMATTER_VULKAN_ONLY -DMATTER_HAVE_STREAMLINE=0 -ffunction-sections -fdata-sections  -I/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/third_party/Vulkan-Headers/include -I. -Iinclude -Isrc -Isrc/render -Isrc/provider -I../libs/MatterSurfaceLib/include -I../libs/MatterSurfaceLib/src -I../libs/SpatialQueryLib/include -I../libs/MemoryLib/include -I../libs/MathLib/include -I../libs/ProfileLib/include -I../libs/AssetStoreLib/include -I../libs/AssetStoreLib/src -I../third_party/quickjs-ng -I../third_party/raylib/src -I../third_party/box3d/include -I../third_party/bc7enc -I../libs/ParticleFlowLib/include -I../third_party/flecs -I../third_party/ozz-animation/include -I../third_party/Vulkan-Headers/include  -I../third_party/raylib/src/external/glfw/include  -MMD -MP
+In file included from src/render/../../../libs/MatterGraphics/src/native/vt/vt_snapshot.h:7,
+                 from src/render/../../../libs/MatterGraphics/src/native/vt/vt_residency.h:92,
+                 from src/render/vt_residency.h:3,
+                 from src/render/vk_scene_renderer.h:126,
+                 from src/render/vk_scene_renderer.cpp:109:
+src/render/../../../libs/MatterGraphics/src/native/vt/../../../../../MatterEngine3/src/render/vt_finite_sources.h: In function ‘bool vt::vt_make_finite_sources(const std::vector<VtFiniteSourceBinding>&, std::shared_ptr<const VtFiniteSources>&, std::string&, const std::vector<VtFiniteReceiver>&, const std::vector<std::shared_ptr<const surface_stamp::Stamp> >&)’:
+src/render/../../../libs/MatterGraphics/src/native/vt/../../../../../MatterEngine3/src/render/vt_finite_sources.h:157:17: warning: this ‘if’ clause does not guard... [-Wmisleading-indentation]
+  157 |                 if(used[id]) return fail("duplicate composite candidate");used[id]=true;
+      |                 ^~
+src/render/../../../libs/MatterGraphics/src/native/vt/../../../../../MatterEngine3/src/render/vt_finite_sources.h:157:75: note: ...this statement, but the latter is misleadingly indented as if it were guarded by the ‘if’
+  157 |                 if(used[id]) return fail("duplicate composite candidate");used[id]=true;
+      |                                                                           ^~~~
+make: Leaving directory '/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/MatterEngine3'

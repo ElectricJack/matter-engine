@@ -1,0 +1,14 @@
+{
+  "name": "@matter/procedural-wasm",
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    ".": {"types": "./dist/index.d.ts", "import": "./dist/index.mjs"},
+    "./authoring": {"types": "./dist/authoring/index.d.mts", "import": "./dist/authoring/index.mjs"}
+  },
+  "files": ["dist", "API.md", "README.md"],
+  "scripts": {"build": "python3 build.py", "test": "node --test tests/package.test.mjs"},
+  "engines": {"node": ">=22"},
+  "license": "UNLICENSED",
+  "private": true
+}

@@ -1,0 +1,20 @@
+{
+  "task": "nimble-rapids-30",
+  "claim_epoch": 15,
+  "reason": "Stopped owned exporter after native baseline wrapper exited 0xC000013A; no retry",
+  "exporter_exit_code": 143,
+  "move_commit": "90a19c6698a03623da9a3e3c5235ad272531d462",
+  "move_source_root": "/mnt/d/mv15-78a4/m",
+  "move_archive_sha256": "8533667cdee243f18cfad4d5d180d9cd7b3fe6110a72ea885b0928233a8bd744",
+  "move_export_complete": false,
+  "move_used_as_build_input": false,
+  "partial_inventory": "move-stopped-inventory.json.gz",
+  "counts": {
+    "matches": 4740,
+    "mismatches": 0,
+    "absent": 5703
+  },
+  "all_four_smokes_unexecuted": true,
+  "baseline_archive_and_verified_source_preserved": true,
+  "historical_source_or_graph_changed": false
+}

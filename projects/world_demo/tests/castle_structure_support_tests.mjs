@@ -199,8 +199,7 @@ for (const storeys of [3, 4]) {
 // and hall hips), a short hip ridge is carried by trusses at both ends, and
 // roof ties over the cloister's open garth side stand on arcade posts. With
 // the assembly's finite gallery portals (a masonry head 0.5 m deep under the
-// wall top) every seeded castle validates; main's full-storey gallery portals
-// leave only the walk roofs' gable-borne ridge and rafters without a path.
+// wall top) every seeded castle validates without unsupported-member exceptions.
 const { castlePlan } = await import('../shared-lib/castle_variants.js');
 const seeded = (name, seed, finitePortals) => {
   const plan = castlePlan(name, seed);
@@ -213,8 +212,7 @@ for (const [name, seed] of [['courtyard', 9411], ['roundkeep', 17029], ['cloiste
   const tag = `${name}${finite ? ' (finite gallery portals)' : ''}`;
   const manifest = seeded(name, seed, finite);
   const v = S.validateStructure(manifest);
-  const bad = v.errors.filter((e) => !(name === 'cloister' && !finite && e.kind === 'unsupported-member' &&
-    /^roof:(east|west)-cloister$/.test(e.recordId) && ['ridge-beam', 'purlin', 'rafter', 'strut'].includes(e.role)));
+  const bad = v.errors;
   if (bad.length) console.error(tag, JSON.stringify(bad.slice(0, 5), null, 1));
   assert.equal(bad.length, 0, `${tag}: validateStructure errors`);
   const layout = S.structureLayout(manifest);

@@ -1,0 +1,68 @@
+{
+  "task": "clear-crest-48.8.5",
+  "inherited_head": "0f81a443e",
+  "contracts_gate_ancestor": "0056e1576",
+  "platform": "Windows x64 via WSL, MSVC 19.44.35211.0, CMake/Ninja through repository resolver",
+  "checks": [
+    {
+      "command": "libs/AssetPipeline/physics/build-windows.ps1 -Matrix",
+      "result": "pass",
+      "ctest_on": {
+        "passed": 4,
+        "failed": 0
+      },
+      "ctest_off": {
+        "passed": 3,
+        "failed": 0
+      },
+      "cross_build_archive": "PHYS-BAKED generation_available=0",
+      "dependency_graph": "PHYS-INDEPENDENCE pass"
+    },
+    {
+      "command": "libs/ProceduralGeometry/build-windows.ps1 -Test",
+      "result": "build_pass_test_failure",
+      "tests_passed": 8,
+      "tests_failed": 1,
+      "failure": "matter_geometry_dependencies: tests/dependency_audit.cmake:53-54 regex matches MSVC string symbols for mesh.retopology and its unsupported-operation diagnostic",
+      "follow_up": "wise-quest-71"
+    },
+    {
+      "command": "libs/MatterGraphics/build-windows.ps1 -Test",
+      "result": "pass",
+      "tests_passed": 5,
+      "tests_failed": 0,
+      "includes": "Vulkan rendering and dependency independence"
+    }
+  ],
+  "fixtures": [
+    "PHYS-PRODUCT",
+    "PHYS-UNSUPPORTED",
+    "PHYS-PARITY",
+    "PHYS-PORTAL",
+    "PHYS-SHAPES",
+    "PHYS-WRAP",
+    "PHYS-FAILURE",
+    "PHYS-TERRAIN",
+    "PHYS-BAKED",
+    "PHYS-INDEPENDENCE"
+  ],
+  "tolerances": {
+    "same_build_legacy_pose_components": "exact",
+    "terrain_round_trip": "exact including 64-bit identities",
+    "box_ground_height_metres": [
+      0.03,
+      0.2
+    ],
+    "primitive_rest_height_metres": {
+      "expected": 0.05,
+      "absolute_error": 0.02
+    },
+    "portal_x_metres": 1e-05
+  },
+  "limits": [
+    "No cross-platform or cross-solver determinism claim",
+    "No live engine or central manifest changes; integration retains ownership",
+    "No browser physics generation claim",
+    "Terrain adapter retains semantic data; derived cache/timing stats are recomputed or reset"
+  ]
+}

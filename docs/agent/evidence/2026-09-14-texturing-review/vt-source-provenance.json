@@ -1,0 +1,15 @@
+{
+  "date": "2026-09-14",
+  "head": "d753087d88417ab5b77cf77369c1e38e22cee6b9",
+  "scope": "VT source audit in the dirty working tree; no new native GPU capture or renderer changes. Queue overflow example is derived from production control flow, not a runtime reproduction.",
+  "sha256": {
+    "MatterEngine3/include/matter/vt_budgets.h": "e01911ef83cc88d6a94c689ff40aa7eab67b6dd204ae1fcc1e09c34dcf407c3f",
+    "MatterEngine3/src/render/vt_residency.cpp": "e3d23c9d203dd6b411ce5f9c67d49aab96f4c159b889fb66e180526a5caa7847",
+    "MatterEngine3/src/render/vt_residency.h": "4e4fda8ad1e68d598275f90628ac0937e2b8fd18c2a9b84b4c225dfcbc4ad360",
+    "MatterEngine3/src/render/vt_compositor.cpp": "9c222595364432105a164d5ad97cba69ac8242a51e53105aaa94fb0c85565050",
+    "MatterEngine3/src/render/vk_scene_renderer.cpp": "b7ceacffe1dfb26fdc57861c78ebaaf459b5d45decbd1147f3469a20c0eea6aa",
+    "MatterEngine3/src/matter_engine.cpp": "2c3afee69ee176a5b8293ecff03bb120d4b7e448c42e20fa5d3e6683b93f6b35",
+    "MatterEngine3/src/lod_bake.cpp": "f65a06ced7cbda4ccaf87cb08b8ffe9ebc75f44f687eea2b00f7601f442f92e5",
+    "MatterEngine3/tests/vt_residency_tests.cpp": "e211dcee38ce09c8b263f97b770f3d41d691419bf603a1b154290c2acbcc045d"
+  }
+}

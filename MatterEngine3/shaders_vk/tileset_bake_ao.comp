@@ -35,7 +35,7 @@ layout(r8, set = 0, binding = 0) uniform writeonly image2D aoImg;
 layout(set = 0, binding = 1) uniform accelerationStructureEXT tlas;
 
 // Per-triangle geometry, global (concatenated across all BLAS entries). Layout
-// is 18 floats per triangle: v0.xyz, v1.xyz, v2.xyz, n0.xyz, n1.xyz, n2.xyz.
+// is 22 floats: v0.xyz, v1.xyz, v2.xyz, n0.xyz, n1.xyz, n2.xyz, tint.rgba.
 layout(std430, set = 0, binding = 2) readonly buffer TriDataBuf { float triData[]; };
 // Per-BLAS first-triangle offset into the global arrays, indexed by the
 // instance custom index (= BLAS entry index).
@@ -65,7 +65,7 @@ layout(push_constant) uniform Push {
 } pc;
 
 vec3 tri_vec3(uint tri, int slot) {
-    uint b = tri * 18u + uint(slot) * 3u;
+    uint b = tri * 22u + uint(slot) * 3u;
     return vec3(triData[b + 0u], triData[b + 1u], triData[b + 2u]);
 }
 

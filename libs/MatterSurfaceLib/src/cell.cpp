@@ -42,14 +42,10 @@
 #include "bvh_analyzer.h"
 #include "../include/cell_visitor.h"
 #include "material_registry.h"
-#include "mesh_simplifier.hpp"
 #include "../include/mesh_worker_pool.h"
 #include "mesh_build_utils.h"
 #include "meshing_algorithm.h"
 #include <utility>   // std::move
-extern "C" {
-#include "spatial_hash.h"  // sh_query_radius_nearest for per-triangle material/tint
-}
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -99,14 +95,14 @@ Cell::Cell(const mm::Vec3& coords, int size_pow, float smallest_cell_size)
       is_dirty(true),
       mesh_version(0) {
     
-    calculate_bounds(smallest_cell_size);
+    calculate_bounds();
 }
 
 Cell::~Cell() {
     clear_meshes();
 }
 
-void Cell::calculate_bounds(float smallest_cell_size) {
+void Cell::calculate_bounds() {
     // Cell coordinates use the cluster's CORNER convention: a point at local
     // position p belongs to cell floor(p / size), so cell C spans
     // [C*size, (C+1)*size] and is centered at (C+0.5)*size. This must match
