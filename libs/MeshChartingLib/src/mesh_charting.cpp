@@ -23,13 +23,14 @@
 // Bake output depends on these results being reproducible, so the file is
 // written to avoid every common source of run-to-run variation: welded vertex
 // ids come from first-encounter order and the hash maps are only ever probed,
-// never iterated; both packers sort with an explicit tie-break because
-// std::sort is not stable; and no floating-point value is compared for
-// equality except against the documented degeneracy epsilons.
+// never iterated. The texel packer fixes its sorting algorithm, including
+// equal-height partitioning; the paged packer uses an explicit tie-break.
+// Neither depends on a standard library's unspecified equal-key order.
 //
 // No global or static mutable state anywhere, so independent calls on
 // independent data may run concurrently — bake workers rely on this.
 #include "../include/mesh_charting.h"
+#include "chart_packing_order.h"
 #include <type_traits>
 #include <map>
 #include <array>
@@ -348,8 +349,7 @@ static bool shelf_pack(const std::vector<ChartRect>& charts, int atlasW, int atl
     out.assign(n, ChartPlacement{0,0});
     // Pack tallest-first for tighter shelves; remember original indices.
     std::vector<int> order(n); for (int i=0;i<n;++i) order[i]=i;
-    std::sort(order.begin(), order.end(), [&](int a,int b){
-        return charts[a].h > charts[b].h; });
+    detail::ChartPackingOrder{charts,order}.sort(0,n,n);
     int cursorX=0, shelfY=0, shelfH=0;
     for (int oi=0; oi<n; ++oi) {
         int i = order[oi];

@@ -1,0 +1,10 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><title>Matter native/browser matched view</title><link rel="icon" href="data:,">
+<script type="importmap">{"imports": {"three": "/integrations/web-procedural/viewer/vendor/three/three.module.js"}}</script>
+<body><pre id="output">Running</pre>
+<script type="module">
+import {run} from './browser_matched.mjs';
+const query = new URLSearchParams(location.search);
+try { window.matchedReport = await run(query.get('generators').split(','), Number(query.get('scale') ?? 17)); document.getElementById('output').textContent = 'done'; }
+catch (error) { window.matchedFailure = String(error.stack ?? error); document.getElementById('output').textContent = window.matchedFailure; }
+</script></body></html>

@@ -8,6 +8,7 @@
 #include "matter/world_definition.h"
 #include "part_flatten.h"
 #include "part_graph.h"
+#include "component_adapters/authoring/engine/legacy_part_route.h"
 #include "provider/local_provider.h"   // LocalProviderConfig::for_project
 #include "script/world_definition_loader.h"
 #include "script_host.h"
@@ -178,6 +179,7 @@ bool run_export_obj(const ExportObjRequest& request, ExportObjReport& report,
         host.set_shared_lib_roots(layout.shared_lib_roots());
         part_graph::FileModuleResolver resolver(host, layout.object_roots());
         part_graph::HostBaker baker(host, report.cache_root);
+        baker.set_portable_route(matter::authoring_adapter::make_legacy_part_route());
         part_graph::PartGraph graph(resolver, baker);
 
         std::vector<part_graph::ChildRequest> roots;

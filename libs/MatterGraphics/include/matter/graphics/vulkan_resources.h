@@ -56,7 +56,11 @@ public:
   // No externally submitted uses are tracked. Use this entrypoint for retirement.
   data::ValidationResult submit(const std::function<void(VkCommandBuffer)> &record,
       const std::vector<std::shared_ptr<DeviceBuffer>> &dependencies,
-      std::shared_ptr<VulkanSubmission> &);
+      std::shared_ptr<VulkanSubmission> &,
+      const std::vector<std::shared_ptr<void>> &retained_resources = {});
+  // retained_resources keeps other graphics allocations (images, pipelines,
+  // descriptors) alive through proven completion, including failure paths.
+  // They must belong to this binding and list all non-buffer command uses.
   data::ValidationResult readback(const std::shared_ptr<DeviceBuffer> &, std::vector<uint8_t> &);
   void drain() noexcept override;
 private:
