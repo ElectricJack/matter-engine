@@ -1,0 +1,56 @@
+ninja: Entering directory `/tmp/noble-zenith-31-epoch5/build'
+[1/2] Building CXX object CMakeFiles/vulkan_smoke_tests.dir/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/tests/vulkan_smoke_tests.cpp.o
+In file included from /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/../../../libs/MatterGraphics/src/native/vt/vt_snapshot.h:7,
+                 from /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/../../../libs/MatterGraphics/src/native/vt/vt_residency.h:92,
+                 from /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/vt_residency.h:3,
+                 from /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/vk_scene_renderer.h:126,
+                 from /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/vk_instance_cache.h:25,
+                 from /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/tests/vulkan_smoke_tests.cpp:37:
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/../../../libs/MatterGraphics/src/native/vt/../../../../../MatterEngine3/src/render/vt_finite_sources.h: In function ‘bool vt::vt_make_finite_sources(const std::vector<VtFiniteSourceBinding>&, std::shared_ptr<const VtFiniteSources>&, std::string&, const std::vector<VtFiniteReceiver>&, const std::vector<std::shared_ptr<const surface_stamp::Stamp> >&)’:
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/../../../libs/MatterGraphics/src/native/vt/../../../../../MatterEngine3/src/render/vt_finite_sources.h:157:17: warning: this ‘if’ clause does not guard... [-Wmisleading-indentation]
+  157 |                 if(used[id]) return fail("duplicate composite candidate");used[id]=true;
+      |                 ^~
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/src/render/../../../libs/MatterGraphics/src/native/vt/../../../../../MatterEngine3/src/render/vt_finite_sources.h:157:75: note: ...this statement, but the latter is misleadingly indented as if it were guarded by the ‘if’
+  157 |                 if(used[id]) return fail("duplicate composite candidate");used[id]=true;
+      |                                                                           ^~~~
+In file included from /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/tests/vulkan_smoke_tests.cpp:47:
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/tests/vt_material_domain_tests.h: In function ‘bool vt_material_domain_tests::run_impl(matter::VulkanDevice&, std::string&)’:
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/tests/vt_material_domain_tests.h:302:53: warning: unused variable ‘py’ [-Wunused-variable]
+  302 |             const uint32_t px=uint32_t(u*w)/payload,py=uint32_t(v*h)/payload;
+      |                                                     ^~
+In file included from /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/tests/vulkan_smoke_tests.cpp:50:
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/tests/vt_surface_connection_tests.h: In function ‘bool vt_surface_connection_tests::run_impl(matter::VulkanDevice&, std::string&)’:
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/tests/vt_surface_connection_tests.h:109:5: warning: this ‘if’ clause does not guard... [-Wmisleading-indentation]
+  109 |     if(!replacement)return false;slots[1]=replacement;
+      |     ^~
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/tests/vt_surface_connection_tests.h:109:34: note: ...this statement, but the latter is misleadingly indented as if it were guarded by the ‘if’
+  109 |     if(!replacement)return false;slots[1]=replacement;
+      |                                  ^~~~~
+In file included from /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/tests/sparse_voxel_vk_tests.h:1300,
+                 from /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/tests/vulkan_smoke_tests.cpp:16714:
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/tests/sparse_voxel_temporal_tests.h: In function ‘void sparse_voxel_gpu_test::temporal_motion(matter::VulkanDevice&)’:
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/tests/sparse_voxel_temporal_tests.h:78:9: warning: this ‘if’ clause does not guard... [-Wmisleading-indentation]
+   78 |         if(!draw(history,frame,false,pixel,&rejected))return;check_motion(frame,pixel,true);
+      |         ^~
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/tests/sparse_voxel_temporal_tests.h:78:62: note: ...this statement, but the latter is misleadingly indented as if it were guarded by the ‘if’
+   78 |         if(!draw(history,frame,false,pixel,&rejected))return;check_motion(frame,pixel,true);
+      |                                                              ^~~~~~~~~~~~
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/tests/sparse_voxel_temporal_tests.h:79:9: warning: this ‘if’ clause does not guard... [-Wmisleading-indentation]
+   79 |         if(!draw(history,frame,true,pixel,&retried))return;check_motion(frame,pixel,true);
+      |         ^~
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/tests/sparse_voxel_temporal_tests.h:79:60: note: ...this statement, but the latter is misleadingly indented as if it were guarded by the ‘if’
+   79 |         if(!draw(history,frame,true,pixel,&retried))return;check_motion(frame,pixel,true);
+      |                                                            ^~~~~~~~~~~~
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/tests/sparse_voxel_temporal_tests.h:83:9: warning: this ‘if’ clause does not guard... [-Wmisleading-indentation]
+   83 |         if(!draw(history,frame,true,pixel))return;check_motion(frame,pixel,false);
+      |         ^~
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/tests/sparse_voxel_temporal_tests.h:83:51: note: ...this statement, but the latter is misleadingly indented as if it were guarded by the ‘if’
+   83 |         if(!draw(history,frame,true,pixel))return;check_motion(frame,pixel,false);
+      |                                                   ^~~~~~~~~~~~
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/tests/sparse_voxel_temporal_tests.h:97:9: warning: this ‘if’ clause does not guard... [-Wmisleading-indentation]
+   97 |         if(!draw(history,frame,true,pixel))return;check_motion(frame,pixel,false);
+      |         ^~
+/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0/MatterEngine3/tests/sparse_voxel_temporal_tests.h:97:51: note: ...this statement, but the latter is misleadingly indented as if it were guarded by the ‘if’
+   97 |         if(!draw(history,frame,true,pixel))return;check_motion(frame,pixel,false);
+      |                                                   ^~~~~~~~~~~~
+[2/2] Linking CXX executable vulkan_smoke_tests

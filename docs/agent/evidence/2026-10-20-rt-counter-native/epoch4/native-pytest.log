@@ -1,0 +1,123 @@
+aq test: no interpreter found for /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2 (no .venv, no resources.test_interpreters entry); using /usr/bin/python3.12
+aq test: slot 1 of 6, -n 6
+$ /usr/bin/python3.12 -m pytest --dist loadfile -m 'not perf and not migration and not slow and not tmux and not integration' -n 0 docs/agent/evidence/2026-10-20-rt-counter-native/test_rt_counter_native.py -q -s
+FF
+=================================== FAILURES ===================================
+____________________________ test_mode[rt-counters] ____________________________
+
+mode = 'rt-counters'
+
+    @pytest.mark.parametrize('mode', ['rt-counters', 'rt'])
+    def test_mode(mode):
+>       code, text, validation = run_mode(mode)
+                                 ^^^^^^^^^^^^^^
+
+docs/agent/evidence/2026-10-20-rt-counter-native/test_rt_counter_native.py:47: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+docs/agent/evidence/2026-10-20-rt-counter-native/test_rt_counter_native.py:30: in run_mode
+    done = subprocess.run(['/usr/bin/time', '-v', str(EXE)], env=env, cwd=EXE.parent,
+/usr/lib/python3.12/subprocess.py:550: in run
+    stdout, stderr = process.communicate(input, timeout=timeout)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/usr/lib/python3.12/subprocess.py:1209: in communicate
+    stdout, stderr = self._communicate(input, endtime, timeout)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/usr/lib/python3.12/subprocess.py:2141: in _communicate
+    self.wait(timeout=self._remaining_time(endtime))
+/usr/lib/python3.12/subprocess.py:1264: in wait
+    return self._wait(timeout=timeout)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <Popen: returncode: -9 args: ['/usr/bin/time', '-v', '/tmp/claude-1000/-home...>
+timeout = 1499.9999432640034
+
+    def _wait(self, timeout):
+        """Internal implementation of wait() on POSIX."""
+        if self.returncode is not None:
+            return self.returncode
+    
+        if timeout is not None:
+            endtime = _time() + timeout
+            # Enter a busy loop if we have a timeout.  This busy loop was
+            # cribbed from Lib/threading.py in Thread.wait() at r71065.
+            delay = 0.0005 # 500 us -> initial delay of 1 ms
+            while True:
+                if self._waitpid_lock.acquire(False):
+                    try:
+                        if self.returncode is not None:
+                            break  # Another thread waited.
+                        (pid, sts) = self._try_wait(os.WNOHANG)
+                        assert pid == self.pid or pid == 0
+                        if pid == self.pid:
+                            self._handle_exitstatus(sts)
+                            break
+                    finally:
+                        self._waitpid_lock.release()
+                remaining = self._remaining_time(endtime)
+                if remaining <= 0:
+>                   raise TimeoutExpired(self.args, timeout)
+E                   subprocess.TimeoutExpired: Command '['/usr/bin/time', '-v', '/tmp/claude-1000/-home-jkern-dev-matter-engine-cpp--aq-worktrees-slot-1/0b036f9d-10e9-478d-820c-1b88fe42800a/scratchpad/cmakebuild/vulkan_smoke_tests']' timed out after 1499.9999432640034 seconds
+
+/usr/lib/python3.12/subprocess.py:2045: TimeoutExpired
+________________________________ test_mode[rt] _________________________________
+
+mode = 'rt'
+
+    @pytest.mark.parametrize('mode', ['rt-counters', 'rt'])
+    def test_mode(mode):
+>       code, text, validation = run_mode(mode)
+                                 ^^^^^^^^^^^^^^
+
+docs/agent/evidence/2026-10-20-rt-counter-native/test_rt_counter_native.py:47: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+docs/agent/evidence/2026-10-20-rt-counter-native/test_rt_counter_native.py:30: in run_mode
+    done = subprocess.run(['/usr/bin/time', '-v', str(EXE)], env=env, cwd=EXE.parent,
+/usr/lib/python3.12/subprocess.py:550: in run
+    stdout, stderr = process.communicate(input, timeout=timeout)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/usr/lib/python3.12/subprocess.py:1209: in communicate
+    stdout, stderr = self._communicate(input, endtime, timeout)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/usr/lib/python3.12/subprocess.py:2141: in _communicate
+    self.wait(timeout=self._remaining_time(endtime))
+/usr/lib/python3.12/subprocess.py:1264: in wait
+    return self._wait(timeout=timeout)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <Popen: returncode: -9 args: ['/usr/bin/time', '-v', '/tmp/claude-1000/-home...>
+timeout = 1499.9999698780011
+
+    def _wait(self, timeout):
+        """Internal implementation of wait() on POSIX."""
+        if self.returncode is not None:
+            return self.returncode
+    
+        if timeout is not None:
+            endtime = _time() + timeout
+            # Enter a busy loop if we have a timeout.  This busy loop was
+            # cribbed from Lib/threading.py in Thread.wait() at r71065.
+            delay = 0.0005 # 500 us -> initial delay of 1 ms
+            while True:
+                if self._waitpid_lock.acquire(False):
+                    try:
+                        if self.returncode is not None:
+                            break  # Another thread waited.
+                        (pid, sts) = self._try_wait(os.WNOHANG)
+                        assert pid == self.pid or pid == 0
+                        if pid == self.pid:
+                            self._handle_exitstatus(sts)
+                            break
+                    finally:
+                        self._waitpid_lock.release()
+                remaining = self._remaining_time(endtime)
+                if remaining <= 0:
+>                   raise TimeoutExpired(self.args, timeout)
+E                   subprocess.TimeoutExpired: Command '['/usr/bin/time', '-v', '/tmp/claude-1000/-home-jkern-dev-matter-engine-cpp--aq-worktrees-slot-1/0b036f9d-10e9-478d-820c-1b88fe42800a/scratchpad/cmakebuild/vulkan_smoke_tests']' timed out after 1499.9999698780011 seconds
+
+/usr/lib/python3.12/subprocess.py:2045: TimeoutExpired
+=========================== short test summary info ============================
+FAILED docs/agent/evidence/2026-10-20-rt-counter-native/test_rt_counter_native.py::test_mode[rt-counters]
+FAILED docs/agent/evidence/2026-10-20-rt-counter-native/test_rt_counter_native.py::test_mode[rt]
+2 failed in 3000.84s (0:50:00)

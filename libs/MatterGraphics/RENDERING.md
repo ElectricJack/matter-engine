@@ -90,11 +90,32 @@ failure or use an approved, tested compatibility adapter during migration.
 Central wiring alone cannot substitute for missing module extraction.
 
 `bright-torrent-52` relocates the production raster/material shaders and
-mesh/impostor helpers to MatterGraphics, plus the G-buffer recording, raster
-pipeline and atlas routines as private fragments included by the existing host.
-The inventory below names their original engine locations; see
-[the actual paths and retained host dependencies](src/native/README.md).
-Standalone producer APIs and broader facade integration remain pending.
+mesh/impostor helpers. `clear-crest-48.4.14` then compiles the mesh recorder and
+pipeline creation independently and exposes `VulkanRaster::render(SceneFrame)`
+for uniform opaque PBR imported/synthetic meshes. It returns G-buffers from the
+production shaders; textured/VT/water/skin/impostor facade products remain pending.
+The native host delegates to the same recorder with its existing extension hooks.
+See [the actual paths and boundaries](src/native/README.md). This API does not
+advertise the broader pending producer capabilities in the inventory below.
+
+On 2026-10-12, the independent RelWithDebInfo MSVC build passed all 11 CTests
+on an NVIDIA RTX 4090 with the pinned Vulkan SDK synchronization validation
+enabled. The imported repeated-assembly raster fixture covered all four mesh
+placements (195, 207, 1179 and 857 pixels), checked native material/depth outputs,
+mirrored winding, inverse-transpose normals, reversed-Z overlap, empty clears,
+and atomic unsupported-appearance/triangle/GPU-budget failures. The dependency
+audit passed with no world, generator or renderer implementation in the graph.
+Production raster SPIR-V matched the host byte-for-byte using its `-O` settings;
+the first optimized raster run took 123 seconds with a cold driver cache, while
+the completed fixture ran in 5.43 seconds with a warm cache. The dedicated CTest allows 180 seconds.
+
+The native host MSVC smoke target built, and its `raster`, `animation-skin`,
+`vt-feedback`, `water-animation` and `raster-fault` modes passed with zero
+validation errors. Source-manifest unit tests passed 6/6. The full repository
+manifest gate still reports ten unclassified sources, verified to be the same
+ten on the unchanged base commit; none are introduced by this extraction.
+This establishes the uniform-mesh facade boundary and retained host behavior,
+and does not qualify textured or animated facade producers.
 
 `clear-crest-48.4.6` similarly relocates the existing VT residency/feedback,
 encoded-page upload/lifetime helpers and POM shaders. Legacy files forward to
@@ -201,9 +222,9 @@ display channel `3e-4`; alpha is exactly 1. Largest observed HDR error was
 - `subsurface-impostor-mask`, `cloud-optical-depth`, `native-glass-fallback`
 - `debug-display-passthrough`
 
-Matched actual/reference PPMs are generated in the build directory's
-`composition-evidence/`; per-fixture errors appear in
-`Testing/Temporary/LastTest.log`. A visual contact sheet is committed at
+Matched actual/reference pixels are compared in memory; per-fixture errors
+appear in `Testing/Temporary/LastTest.log`. Tests write no shared image files.
+A visual contact sheet from the earlier evidence capture is committed at
 [tests/evidence/composition-matched.png](tests/evidence/composition-matched.png).
 The CPU boundary tests cover malformed payloads/dimensions, capabilities,
 material/identity, finite camera/light inputs and budget rejection. Native tests

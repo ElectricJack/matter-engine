@@ -1,4 +1,5 @@
 #include "vk_sparse_voxel.h"
+#include "vk_sparse_admission.h"
 
 #include <cmath>
 #include <array>
@@ -137,6 +138,7 @@ struct VkSparseVoxelScene::Allocation final : matter::detail::DeviceLifetimeCont
     }
 };
 
+#include "vk_sparse_admission.inl"
 #include "vk_sparse_placement_update.inl"
 
 std::shared_ptr<VkSparseVoxelScene> VkSparseVoxelScene::create(
@@ -210,6 +212,34 @@ std::shared_ptr<VkSparseVoxelScene> VkSparseVoxelScene::create_impl(
     const std::vector<SparseHierarchyPlacement>* placements,const SparseHierarchyConfig* config,bool shadow_only,
     const std::vector<SparseSharedObject>* shared_surfaces) {
     error.clear();
+    // Reject the complete upload before allocating any flattened geometry.
+    SparseLimits admission_limits(vk,shadow_only || shared_surfaces);
+    auto admission_plan=admission_limits.planner(shadow_only || shared_surfaces,shadow_only);
+    for(size_t i=0;i<batches.size();++i) if(!admission_plan.batch(batches[i],i)) {
+        error=admission_plan.plan.failure.message();return {};
+    }
+    if(shared_surfaces) {
+        auto roots_plan=admission_limits.planner(true,false);
+        if(!roots_plan.objects(*shared_surfaces)) {error=roots_plan.plan.failure.message();return {};}
+    }
+    if(hierarchy) {
+        using admission::Buffer;
+        auto& plan=admission_plan.plan;
+        const uint64_t nodes=config->max_nodes,primitives=config->max_primitives;
+        bool fits=plan.add(Buffer::placements,placements->size(),sizeof(GpuInstance),0) &&
+            plan.bound(Buffer::instances,nodes,UINT32_MAX/65u,sizeof(GpuInstance),0) &&
+            plan.bound(Buffer::roots,(nodes+63)/64,admission_limits.properties.limits.maxComputeWorkGroupCount[0],64*sizeof(GpuInstance),0);
+        // Independent frame buffers, not additions to the immutable arrays.
+        admission::Plan frames(admission::storage_limit(admission_limits.properties.limits.maxStorageBufferRange));
+        fits=fits && frames.add(Buffer::instances,nodes,sizeof(GpuInstance),0) &&
+            frames.add(Buffer::work,4+nodes+std::max(primitives,9+nodes*2),16,0);
+        for(size_t i=0;fits && i<hierarchy->size();++i)
+            fits=plan.add(Buffer::children,(*hierarchy)[i].children.size(),sizeof(GpuHierarchyChild),i);
+        if(!fits) {error=(plan.failure?plan.failure:frames.failure).message();return {};}
+        if(!admission_plan.hierarchy_graph(*hierarchy,*placements,*config)) {
+            error=plan.failure.message();return {};
+        }
+    }
     auto out=std::make_shared<VkSparseVoxelScene>();
     auto a=std::make_shared<Allocation>(vk);
     a->shadow_only=shadow_only;
@@ -231,7 +261,7 @@ std::shared_ptr<VkSparseVoxelScene> VkSparseVoxelScene::create_impl(
     std::vector<VkDrawIndirectCommand> commands;
     VkPhysicalDeviceProperties properties{};
     vkGetPhysicalDeviceProperties(vk.physical_device(),&properties);
-    const uint64_t buffer_limit=properties.limits.maxStorageBufferRange;
+    const uint64_t buffer_limit=admission::storage_limit(properties.limits.maxStorageBufferRange);
     if(hierarchy) {
         VkPhysicalDeviceSubgroupProperties subgroup{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES};
         VkPhysicalDeviceProperties2 properties2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2}; properties2.pNext=&subgroup;

@@ -1553,6 +1553,20 @@ VisibleSectorStatus SectorStreamer::visible_status() const {
     return result;
 }
 
+size_t SectorStreamer::desired_count() const {
+    size_t n = 0;
+    for (const auto& [k, st] : sectors_)
+        if (st.desired_rung >= 0) ++n;
+    return n;
+}
+
+size_t SectorStreamer::pending_count() const {
+    size_t n = 0;
+    for (const auto& [key, state] : sectors_)
+        if (state.desired_rung >= 0 && state.resident_rung != state.desired_rung) ++n;
+    return n;
+}
+
 size_t SectorStreamer::resident_count() const {
     size_t n = 0;
     for (const auto& [k, st] : sectors_)
