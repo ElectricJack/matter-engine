@@ -47,15 +47,23 @@ uint32_t geometry_inflight_limit() {
 geometry::ResidencyConfig geometry_config() {
     geometry::ResidencyConfig config; config.max_inflight = geometry_inflight_limit();
     const char* terrain = std::getenv("MATTER_GEOMETRY_TERRAIN");
-    if (terrain && std::string(terrain)=="1") {
+    const bool terrain_pages = terrain && std::string(terrain)=="1";
+    if (terrain_pages) {
         config.max_pages=262144; config.max_known_nodes=1048576;
     }
-    config.gpu_bytes = geometry_budget("MATTER_GEOMETRY_GPU_MB", config.gpu_bytes);
+    // The stress world's known, useful paged cut reached 2.31 GiB at a 4 GiB
+    // limit. A 1 GiB bank churned and fell back to static source geometry.
+    // Reserve at most 3 GiB by default for terrain pages, leaving room for the
+    // VT pool and static scene. The residency ledger still enforces this cap
+    // on every upload and reclaims cold pages under pressure.
+    config.gpu_bytes = geometry_budget("MATTER_GEOMETRY_GPU_MB",
+        terrain_pages ? 3072ull << 20 : config.gpu_bytes);
     config.scratch_bytes = geometry_budget("MATTER_GEOMETRY_SCRATCH_MB", config.scratch_bytes);
     return config;
 }
 }
 struct GeometryWorldRuntime::Impl {
+    Impl();
     struct Asset {
         geometry::AssetLease lease;
         std::shared_ptr<const geometry::CachedAsset> source;
@@ -65,6 +73,7 @@ struct GeometryWorldRuntime::Impl {
         bool snapshot_valid = false;
         bool hierarchy_pending = false;
         uint64_t hierarchy_revision = 0;
+        uint64_t snapshot_generation = 0;
         std::vector<asset_store::BlobHash> pending_pages;
         std::shared_ptr<geometry::ResidentHierarchy> snapshot;
         std::vector<asset_store::BlobHash> dependency_pages;
@@ -75,8 +84,12 @@ struct GeometryWorldRuntime::Impl {
         std::vector<std::shared_ptr<uint64_t>> page_touches;
         std::shared_ptr<std::vector<VkGeometryCutNode>> gpu_nodes = std::make_shared<std::vector<VkGeometryCutNode>>();
         std::vector<uint32_t> roots;
-        geometry::IndexedCutScratch cut;
-        std::vector<uint8_t> traced;
+    };
+    struct InstanceCut {
+        uint64_t lease = 0, generation = 0, seen = 0;
+        std::array<float,21> view{}; // transform, eye, scale, error reach
+        geometry::PersistentIndexedCut cut;
+        bool valid = false;
     };
     struct HierarchyBuild {
         uint64_t asset = 0, lease = 0, revision = 0;
@@ -94,7 +107,7 @@ struct GeometryWorldRuntime::Impl {
         cached.indexed_nodes.reserve(nodes.size());
         for (size_t i=0;i<nodes.size();++i) {
             const auto& node=nodes[i];
-            geometry::IndexedCutNode indexed; indexed.self=node.self; indexed.ready=bool(node.page);
+            geometry::IndexedCutNode indexed; indexed.self=node.self; indexed.ready=node.ready;
             indexed.child_count=static_cast<uint32_t>(node.children.size());
             auto& gpu=(*cached.gpu_nodes)[i];
             gpu.page_lo=node.self.page.lo; gpu.page_hi=node.self.page.hi;
@@ -114,6 +127,7 @@ struct GeometryWorldRuntime::Impl {
         asset.page_touches=std::move(work.data.page_touches);
         asset.gpu_nodes=std::move(work.data.gpu_nodes);
         asset.roots=std::move(work.data.roots);
+        ++asset.snapshot_generation;
         asset.snapshot_valid=asset.hierarchy_revision==work.revision;
         asset.hierarchy_pending=false;
         asset.pending_pages.clear();
@@ -183,6 +197,9 @@ struct GeometryWorldRuntime::Impl {
     // Preallocate once with the runtime, retain across cache directory switches.
     const std::shared_ptr<asset_store::PageBank> page_bank = asset_store::PageBank::create(static_cast<size_t>(cpu_budget), 256);
     std::map<uint64_t, Asset> assets;
+    // Stable world identity; legacy zero identities use the input ordinal,
+    // matching the renderer's fallback. Cuts contain indices, never page pins.
+    std::map<std::pair<uint64_t,size_t>, InstanceCut> instance_cuts;
     struct RejectedAdmission {
         asset_store::BlobHash manifest;
         uint64_t revision = 0, seen = 0;
@@ -192,6 +209,7 @@ struct GeometryWorldRuntime::Impl {
     uint64_t admission_revision = 0;
     uint32_t source_fallbacks = 0;
     std::map<asset_store::BlobHash, GpuPage> gpu_pages;
+    std::vector<GpuPage> retired_gpu_pages;
     bool collection_needed = false;
     std::map<asset_store::BlobHash, std::string> locations;
     std::map<asset_store::BlobHash, asset_store::PageHandle> root_bytes;
@@ -202,9 +220,9 @@ struct GeometryWorldRuntime::Impl {
     std::vector<Upload> uploads;
     // Reuse publication scratch; a batch invalidates each affected asset once.
     std::vector<asset_store::BlobHash> published_pages;
-    // Raster selection uses the live GPU camera. Repack its immutable scene
-    // description only when membership, residency, transforms or LOD policy
-    // changes, rather than copying every resident node on every frame.
+    // Raster selection uses the live GPU camera; RT also keeps its CPU cut.
+    // Repack only when membership, residency, transforms or LOD policy change,
+    // or when the RT eye moves. Raster-only camera movement needs no repack.
     const bool raster_only = [] { const char* v=std::getenv("MATTER_GEOMETRY_RASTER_ONLY"); return v && std::string(v)=="1"; }();
     const bool async_hierarchy = [] { const char* v=std::getenv("MATTER_GEOMETRY_HIERARCHY_ASYNC"); return !v || std::string(v)!="0"; }();
     bool scene_valid=false;
@@ -215,9 +233,11 @@ struct GeometryWorldRuntime::Impl {
     // workload moves off-thread; assembly alone currently adds handoff cost.
     const bool async_scene = [] { const char* v=std::getenv("MATTER_GEOMETRY_SCENE_ASYNC"); return v && std::string(v)=="1"; }();
     float scene_fov=0, scene_detail=0;
+    matter::Float3 scene_eye{};
     uint32_t scene_height=0;
     std::vector<VkSceneInstance> scene_sources, scene_draws;
     std::vector<float> scene_bias;
+    std::vector<float> scene_max_distance;
     std::vector<std::shared_ptr<void>> scene_resources;
     // Scratch stays on the publication lane until a complete replacement is
     // ready. Retain capacity across streaming updates instead of rebuilding
@@ -251,22 +271,30 @@ struct GeometryWorldRuntime::Impl {
     void invalidate_published_pages() {
         if (published_pages.empty()) return;
         PROFILE_SCOPE("geometry.invalidate_published");
-        invalidate_scene();
+        bool scene_changed=false;
         std::sort(published_pages.begin(), published_pages.end());
         for (auto& entry : assets) {
             auto& asset = entry.second;
-            if (!asset.snapshot_valid && !asset.hierarchy_pending) continue;
             // Include the displayed hierarchy and the pending replacement's
             // frontier, including missing children and shared-page owners.
-            const bool affected = geometry::page_sets_intersect(published_pages,asset.pending_pages) ||
-                geometry::page_sets_intersect(published_pages,asset.dependency_pages);
-            if (affected) invalidate(asset);
+            const bool affected = geometry::cut_publication_changed(published_pages,
+                asset.dependency_pages,asset.pending_pages,!asset.snapshot && residency.ready(asset.lease));
+            if (affected) {
+                scene_changed=true;
+                if(asset.snapshot_valid || asset.hierarchy_pending) invalidate(asset);
+            }
         }
+        if(scene_changed) invalidate_scene();
         published_pages.clear();
     }
     void collect(VkSceneRenderer& renderer) {
         if (!collection_needed) return;
         collection_needed = false;
+        for (auto it = retired_gpu_pages.begin(); it != retired_gpu_pages.end();) {
+            if (it->resident.expired()) {
+                invalidate_scene(); renderer.release_part(it->id); it = retired_gpu_pages.erase(it);
+            } else { collection_needed = true; ++it; }
+        }
         for (auto it = gpu_pages.begin(); it != gpu_pages.end();) {
             if (it->second.resident.expired()) {
                 invalidate_scene(); renderer.release_part(it->second.id); it = gpu_pages.erase(it);
@@ -279,8 +307,8 @@ struct GeometryWorldRuntime::Impl {
         }
     }
 };
-GeometryWorldRuntime::GeometryWorldRuntime() : d_(new Impl) {
-    auto* state=d_.get();
+GeometryWorldRuntime::Impl::Impl() {
+    auto* state=this;
     state->scene_pipeline=std::make_unique<streaming::AsyncStagePipeline<Impl::SceneBuild>>(
         1,1,[](auto&){},[state](auto& work){
             const auto start=PagingClock::now();Impl::assemble_scene(work);
@@ -299,16 +327,23 @@ GeometryWorldRuntime::GeometryWorldRuntime() : d_(new Impl) {
         [state](auto& result){state->prepare_page(result);},
         [](auto& result,const char* error){result.page.reset();result.status=asset_store::PageStatus::IoError;result.error=error;});
 }
+GeometryWorldRuntime::GeometryWorldRuntime() = default;
 GeometryWorldRuntime::~GeometryWorldRuntime() = default;
+GeometryWorldRuntime::GeometryWorldRuntime(GeometryWorldRuntime&&) noexcept = default;
+GeometryWorldRuntime& GeometryWorldRuntime::operator=(GeometryWorldRuntime&&) noexcept = default;
 void GeometryWorldRuntime::reset(VkSceneRenderer& renderer) {
+    if (!d_) return;
     auto& d = *d_;
     for (const auto& item : d.assets) d.residency.detach(item.second.lease);
     d.invalidate_scene(); d.scene_sources.clear(); d.scene_draws.clear(); d.scene_bias.clear();
     d.scene_resources.clear();d.scene_pending=false;d.scene_pipeline->cancel();
+    d.instance_cuts.clear(); d.scene_max_distance.clear();
     d.assets.clear(); d.rejected_admissions.clear(); ++d.admission_revision; d.root_bytes.clear(); d.locations.clear(); d.reading.clear(); d.source_by_instance.clear();
     for (const auto& upload : d.uploads) renderer.release_part(upload.gpu_id);
     d.uploads.clear(); d.prepared.clear();
     for (const auto& item : d.gpu_pages) renderer.release_part(item.second.id);
+    for (const auto& page : d.retired_gpu_pages) renderer.release_part(page.id);
+    d.retired_gpu_pages.clear();
     d.gpu_pages.clear(); d.collection_needed=false; d.last_membership.clear(); ++d.revision;
     d.pipeline->cancel();
     d.hierarchy_pipeline->cancel();
@@ -394,12 +429,18 @@ void GeometryWorldRuntime::Impl::prepare_page(ReadDone& result) {
 bool GeometryWorldRuntime::update(PartStore& store, VkSceneRenderer& renderer, matter::VulkanDevice& vulkan,
     const matter::VulkanFrame& frame, const matter::CameraDesc& camera, float detail_scale,
     const std::vector<VkSceneInstance>& admitted, std::vector<VkSceneInstance>& output, std::string& error) {
+    // A disabled store must retain ordinary source streaming without paging
+    // banks, worker lanes, instance scans or renderer publication.
+    if (!store.geometry_pages_enabled()) {
+        output = admitted; error.clear(); return true;
+    }
     // Preparation audit: cook/cache assets through PartStore, display source
     // receivers, and avoid registering every geometry page during the cook.
     const char* prepare_only = std::getenv("MATTER_GEOMETRY_PREPARE_ONLY");
     if (prepare_only && std::string(prepare_only) == "1") {
         output = admitted; error.clear(); return true;
     }
+    if (!d_) d_ = std::make_unique<Impl>();
     auto& d = *d_; ++d.epoch;
     bool detached = false;
     PROFILE_SCOPE_NAMED(adopt_scope, "geometry.adopt_hierarchies");
@@ -449,7 +490,11 @@ bool GeometryWorldRuntime::update(PartStore& store, VkSceneRenderer& renderer, m
     const bool valid_view=build_frame_matrices(camera,frame.extent.width,frame.extent.height,priority_view,view_error);
     std::vector<uint64_t> visible_leases;
     visible_leases.reserve(admitted.size());
-    for (const auto& instance : admitted) {
+    for (size_t ordinal = 0; ordinal < admitted.size(); ++ordinal) {
+        const auto& instance = admitted[ordinal];
+        const auto cut_key = std::make_pair(instance.instance_id, instance.instance_id ? size_t{0} : ordinal);
+        const auto cut = d.instance_cuts.find(cut_key);
+        if (cut != d.instance_cuts.end()) cut->second.seen = d.epoch;
         const auto* part = store.find(instance.part_hash);
         if (!part || !part->geometry_pages) continue;
         auto found = d.assets.find(instance.part_hash);
@@ -475,14 +520,16 @@ bool GeometryWorldRuntime::update(PartStore& store, VkSceneRenderer& renderer, m
             d.invalidate_scene();
             found = d.assets.emplace(instance.part_hash, Impl::Asset{lease, part->geometry_pages, d.epoch}).first;
             bool first_root=true;
-            for (const auto& root : part->geometry_pages->roots) {
+            for (const auto& root : part->geometry_pages->root_refs) {
                 auto& bounds=found->second.bounds;
                 for(int axis=0;axis<3;++axis) {
-                    bounds.lo[axis]=first_root?root.self.bounds.lo[axis]:std::min(bounds.lo[axis],root.self.bounds.lo[axis]);
-                    bounds.hi[axis]=first_root?root.self.bounds.hi[axis]:std::max(bounds.hi[axis],root.self.bounds.hi[axis]);
+                    bounds.lo[axis]=first_root?root.bounds.lo[axis]:std::min(bounds.lo[axis],root.bounds.lo[axis]);
+                    bounds.hi[axis]=first_root?root.bounds.hi[axis]:std::max(bounds.hi[axis],root.bounds.hi[axis]);
                 }
                 first_root=false;
-                d.locations[root.self.page] = part->geometry_pages->directory;
+                d.locations[root.page] = part->geometry_pages->directory;
+            }
+            for (const auto& root : part->geometry_pages->roots) {
                 d.root_bytes[root.self.page] = root.page;
             }
         }
@@ -493,6 +540,8 @@ bool GeometryWorldRuntime::update(PartStore& store, VkSceneRenderer& renderer, m
             visible_leases.push_back(found->second.lease.id);
     }
     if(d.profiling)d.profile.admission.add(elapsed_ms(admission_start));
+    for (auto it = d.instance_cuts.begin(); it != d.instance_cuts.end();)
+        if (it->second.seen != d.epoch) it = d.instance_cuts.erase(it); else ++it;
     for (auto it = d.assets.begin(); it != d.assets.end();) {
         if (it->second.seen != d.epoch) { d.residency.detach(it->second.lease); it = d.assets.erase(it); detached = true; }
         else ++it;
@@ -526,9 +575,11 @@ bool GeometryWorldRuntime::update(PartStore& store, VkSceneRenderer& renderer, m
     // unchanged roots do not require map allocation and reference churn.
     if(detached){
         d.root_bytes.clear();
-        for(const auto& asset:d.assets)for(const auto& root:asset.second.source->roots){
-            d.root_bytes[root.self.page]=root.page;
-            d.locations[root.self.page]=asset.second.source->directory;
+        for(const auto& asset:d.assets){
+            for(const auto& root:asset.second.source->root_refs)
+                d.locations[root.page]=asset.second.source->directory;
+            for(const auto& root:asset.second.source->roots)
+                d.root_bytes[root.self.page]=root.page;
         }
     }
     if (d.assets.empty()) d.locations.clear();
@@ -580,6 +631,18 @@ bool GeometryWorldRuntime::update(PartStore& store, VkSceneRenderer& renderer, m
         if(elapsed_ms(upload_budget_start)>=d.upload_cpu_budget_ms){upload_budget_exhausted=true;break;}
         geometry::NodeView node;
         if (!d.residency.staged_node(it->work.ticket, node)) { it = d.prepared.erase(it); continue; }
+        const auto capacity=d.residency.stats();
+        const bool offscreen_full=!d.residency.page_visible(it->work.ticket.page) &&
+            capacity.gpu_bytes>=capacity.gpu_budget-capacity.gpu_budget/4;
+        const bool detail_full=!d.residency.root_page(it->work.ticket) &&
+            capacity.gpu_bytes>=capacity.gpu_budget-capacity.gpu_budget/10;
+        if (offscreen_full || detail_full) {
+            // Keep headroom for visible roots. Decoded optional work releases
+            // its slot rather than churning fine pages at the cap.
+            d.residency.defer(it->work.ticket,d.epoch+120);
+            if(d.profiling)++d.profile.budget_deferred;
+            it=d.prepared.erase(it);continue;
+        }
         uint64_t bytes = 0, scratch = 0;
         if (!renderer.geometry_page_upload_cost(it->part, bytes, scratch, error)) {
             d.residency.fail(it->work.ticket, d.epoch + 30); it = d.prepared.erase(it); error.clear(); continue;
@@ -629,6 +692,13 @@ bool GeometryWorldRuntime::update(PartStore& store, VkSceneRenderer& renderer, m
         if (!d.residency.publish(it->ticket, renderer.geometry_page_resources(it->gpu_id))) { ++it; continue; }
         if(d.profiling){++d.profile.published;d.profile.ready_wait.add(elapsed_ms(it->submitted));d.profile.end_to_end.add(elapsed_ms(it->requested));}
         d.published_pages.push_back(it->ticket.page);
+        auto previous = d.gpu_pages.find(it->ticket.page);
+        if (previous != d.gpu_pages.end() && previous->second.id != it->gpu_id) {
+            // The old part may still be pinned by a submitted snapshot; hand it
+            // to collect(), which releases it once that lease retires.
+            d.retired_gpu_pages.push_back(previous->second);
+            d.collection_needed = true;
+        }
         d.gpu_pages[it->ticket.page] = {it->gpu_id, std::make_shared<uint64_t>(d.epoch), d.residency.resident(it->ticket.page)};
         it = d.uploads.erase(it);
     }
@@ -637,7 +707,10 @@ bool GeometryWorldRuntime::update(PartStore& store, VkSceneRenderer& renderer, m
     const auto dispatch_pending = [&]() -> bool {
     const auto queue_room=static_cast<uint32_t>(d.pipeline->available());
     const auto dispatch_start=PagingClock::now();
-    const auto tickets=d.residency.dispatch(queue_room, d.epoch);
+    const auto capacity=d.residency.stats();
+    const bool visible_only=capacity.gpu_bytes>=capacity.gpu_budget-capacity.gpu_budget/4;
+    const bool roots_only=capacity.gpu_bytes>=capacity.gpu_budget-capacity.gpu_budget/10;
+    const auto tickets=d.residency.dispatch(queue_room, d.epoch, visible_only, roots_only);
     if(d.profiling)d.profile.dispatch.add(elapsed_ms(dispatch_start));
     for (const auto ticket : tickets) {
         auto location = d.locations.find(ticket.page);
@@ -660,15 +733,19 @@ bool GeometryWorldRuntime::update(PartStore& store, VkSceneRenderer& renderer, m
     stage_clock = PagingClock::now();
     const auto matches_scene = [&](const std::vector<VkSceneInstance>& sources,
         const std::vector<float>& biases,uint32_t height,float fov,float detail) {
-        if(!d.raster_only || geometry_pressure || cpu_pressure || sources.size()!=admitted.size() ||
+        if(geometry_pressure || cpu_pressure || sources.size()!=admitted.size() ||
             biases.size()!=admitted.size() || height!=frame.extent.height ||
             fov!=camera.vertical_fov_radians || detail!=detail_scale) return false;
+        if (!d.raster_only && (d.scene_eye.x != camera.position.x ||
+            d.scene_eye.y != camera.position.y || d.scene_eye.z != camera.position.z ||
+            d.scene_max_distance.size() != admitted.size())) return false;
         for(size_t i=0;i<admitted.size();++i) {
             const auto& a=admitted[i];const auto& b=sources[i];
             if(a.part_hash!=b.part_hash || a.instance_id!=b.instance_id ||
                 a.animation_instance_slot!=b.animation_instance_slot || a.ray_traced!=b.ray_traced ||
                 a.rt_proxy_only!=b.rt_proxy_only || a.rt_vt_source_hash!=b.rt_vt_source_hash || std::memcmp(a.object_to_world.m,b.object_to_world.m,sizeof(a.object_to_world.m)) ||
-                renderer.part_draw_override(a.part_hash).lod_bias!=biases[i]) return false;
+                renderer.part_draw_override(a.part_hash).lod_bias!=biases[i] ||
+                (!d.raster_only && renderer.part_draw_override(a.part_hash).max_draw_distance!=d.scene_max_distance[i])) return false;
         }
         return true;
     };
@@ -703,14 +780,15 @@ bool GeometryWorldRuntime::update(PartStore& store, VkSceneRenderer& renderer, m
     const bool scene_matches=matches_scene(d.scene_sources,d.scene_bias,d.scene_height,d.scene_fov,d.scene_detail);
     if(d.profiling)d.profile.scene_check.add(elapsed_ms(stage_clock));
     if(scene_matches && (d.scene_valid || d.scene_pending)) {
-        if(d.profiling && d.scene_pending)++d.profile.scene_reused;
+        PROFILE_COUNT("geometry.scene_reused", 1);
+        if(d.profiling)++d.profile.scene_reused;
         if(!dispatch_pending() || !vulkan.retain_for_frame(frame,d.scene_resources,error)) return false;
         output=d.scene_draws;error.clear();return true;
     }
     if(d.scene_pending) { d.scene_pipeline->cancel();d.scene_pending=false;if(d.profiling)++d.profile.scene_discarded; }
     scene_scope.stop();
     PROFILE_SCOPE_NAMED(assembly_scope, "geometry.scene_assembly");
-    const bool assemble_async=d.async_scene && scene_matches && d.scene_pipeline->available();
+    const bool assemble_async=d.raster_only && d.async_scene && scene_matches && d.scene_pipeline->available();
     Impl::SceneBuild pending_scene;
     if(assemble_async) pending_scene.chunks.reserve(admitted.size());
     d.invalidate_scene();
@@ -722,7 +800,9 @@ bool GeometryWorldRuntime::update(PartStore& store, VkSceneRenderer& renderer, m
     auto& gpu_jobs = d.packing_jobs; gpu_jobs.clear();
     std::vector<std::shared_ptr<void>> retained;
     std::set<asset_store::BlobHash> used;
-    for (const auto& instance : admitted) {
+    uint64_t cut_reused = 0, cut_updated = 0, refined_groups = 0, coarsened_groups = 0;
+    for (size_t ordinal = 0; ordinal < admitted.size(); ++ordinal) {
+        const auto& instance = admitted[ordinal];
         const auto setup_start=d.profiling ? PagingClock::now() : PagingClock::time_point{};
         auto asset = d.assets.find(instance.part_hash);
         const auto ordinary = [&] {
@@ -779,7 +859,7 @@ bool GeometryWorldRuntime::update(PartStore& store, VkSceneRenderer& renderer, m
             cached.pending_pages.clear();cached.pending_pages.reserve(nodes.size());
             for (size_t i=0;i<nodes.size();++i) {
                 cached.pending_pages.push_back(nodes[i].self.page);
-                if (!nodes[i].page) continue;
+                if (!nodes[i].ready) continue;
                 auto found=d.gpu_pages.find(nodes[i].self.page);
                 if(found==d.gpu_pages.end()){error="resident geometry page has no renderer allocation";return false;}
                 work.data.page_touches[i]=found->second.touched;
@@ -800,16 +880,33 @@ bool GeometryWorldRuntime::update(PartStore& store, VkSceneRenderer& renderer, m
         }
         if(d.profiling)d.profile.snapshot.add(elapsed_ms(stage_start));
         if(d.profiling)stage_start=PagingClock::now();
-        const bool selected_cut=geometry::select_indexed_cut(cached.indexed_nodes,cached.roots,refine,{},cached.cut);
+        const auto cut_key = std::make_pair(instance.instance_id, instance.instance_id ? size_t{0} : ordinal);
+        auto& instance_cut = d.instance_cuts[cut_key];
+        instance_cut.seen = d.epoch;
+        std::array<float,21> cut_view;
+        std::copy(instance.object_to_world.m, instance.object_to_world.m+16, cut_view.begin());
+        cut_view[16]=camera.position.x; cut_view[17]=camera.position.y; cut_view[18]=camera.position.z;
+        cut_view[19]=scale; cut_view[20]=error_reach;
+        const bool same_hierarchy = instance_cut.lease == cached.lease.id &&
+                                    instance_cut.generation == cached.snapshot_generation;
+        if (!same_hierarchy) instance_cut.cut.reset(cached.indexed_nodes.size());
+        const bool reuse_cut = same_hierarchy && instance_cut.valid && instance_cut.view == cut_view;
+        const bool selected_cut = reuse_cut || instance_cut.cut.update(cached.indexed_nodes,cached.roots,refine);
+        instance_cut.lease=cached.lease.id; instance_cut.generation=cached.snapshot_generation;
+        instance_cut.view=cut_view; instance_cut.valid=selected_cut;
+        if (reuse_cut) ++cut_reused;
+        else {
+            ++cut_updated; refined_groups+=instance_cut.cut.refined_groups;
+            coarsened_groups+=instance_cut.cut.coarsened_groups;
+        }
+        const auto& cut = instance_cut.cut;
         if(d.profiling)d.profile.cpu_cut.add(elapsed_ms(stage_start));
         if(!selected_cut){ordinary();continue;}
         if(d.profiling)stage_start=PagingClock::now();
         const auto& hierarchy=*cached.snapshot;
-        cached.traced.assign(hierarchy.nodes.size(),0);
-        for(auto index:cached.cut.selected){
+        for(auto index:cut.selected){
             const auto& node=cached.indexed_nodes[index].self;
             if(draw_override.max_draw_distance>0&&centre_distance(node)>draw_override.max_draw_distance)continue;
-            cached.traced[index]=1;
             if(geometry_pressure||cpu_pressure)used.insert(node.page);
             if(const auto& touched=cached.page_touches[index]) *touched=d.epoch;
         }
@@ -833,7 +930,8 @@ bool GeometryWorldRuntime::update(PartStore& store, VkSceneRenderer& renderer, m
             if(gpu.ready_part_hash){
                 auto proxy=instance;proxy.part_hash=gpu.ready_part_hash;
                 proxy.rt_vt_source_hash = asset->second.source_vt ? instance.part_hash : 0;
-                proxy.rt_proxy_only=true;proxy.ray_traced=!d.raster_only&&instance.ray_traced&&cached.traced[i];
+                proxy.rt_proxy_only=true;proxy.ray_traced=instance.ray_traced&&cut.contains(static_cast<uint32_t>(i))&&
+                    (draw_override.max_draw_distance<=0 || centre_distance(cached.indexed_nodes[i].self)<=draw_override.max_draw_distance);
                 selected.push_back(proxy);
             }
         }
@@ -842,10 +940,18 @@ bool GeometryWorldRuntime::update(PartStore& store, VkSceneRenderer& renderer, m
         retained.push_back(cached.snapshot);
         if(d.profiling)d.profile.hierarchy_pack.add(elapsed_ms(stage_start));
     }
+    PROFILE_COUNT("geometry.cut_reused", cut_reused);
+    PROFILE_COUNT("geometry.cut_updated", cut_updated);
+    PROFILE_COUNT("geometry.refined_groups", refined_groups);
+    PROFILE_COUNT("geometry.coarsened_groups", coarsened_groups);
+    if(d.profiling) {
+        d.profile.cut_reused+=cut_reused;d.profile.cut_updated+=cut_updated;
+        d.profile.refined_groups+=refined_groups;d.profile.coarsened_groups+=coarsened_groups;
+    }
     assembly_scope.stop();
     PROFILE_SCOPE_NAMED(retain_scope, "geometry.retain_snapshots");
     if (!assemble_async) {
-        if(d.raster_only) d.scene_resources=retained;
+        d.scene_resources=retained;
         if(!retained.empty() && !vulkan.retain_for_frame(frame,std::move(retained),error)) return false;
     }
     retain_scope.stop();
@@ -873,7 +979,6 @@ bool GeometryWorldRuntime::update(PartStore& store, VkSceneRenderer& renderer, m
         uint32_t removed = 0;
         for (const auto& candidate : candidates) if (d.residency.evict(candidate.second)) {
             ++d.admission_revision;
-            d.locations.erase(candidate.second);
             if(++removed==8)break;
         }
         if(d.profiling)d.profile.evictions+=removed;
@@ -907,27 +1012,35 @@ bool GeometryWorldRuntime::update(PartStore& store, VkSceneRenderer& renderer, m
     const bool cut_ready=renderer.set_geometry_cut(gpu_nodes, gpu_roots, gpu_jobs, error, d.raster_only);
     if(d.profiling)d.profile.cut_upload.add(elapsed_ms(cut_start));
     if (!cut_ready) return false;
-    if (d.raster_only && !geometry_pressure && !cpu_pressure) {
+    if (!geometry_pressure && !cpu_pressure) {
         d.scene_sources=admitted; d.scene_draws=selected;d.scene_source_fallbacks=d.source_fallbacks;
         d.scene_bias.clear(); d.scene_bias.reserve(admitted.size());
         for (const auto& source:admitted) d.scene_bias.push_back(renderer.part_draw_override(source.part_hash).lod_bias);
         d.scene_height=frame.extent.height; d.scene_fov=camera.vertical_fov_radians; d.scene_detail=detail_scale;
+        d.scene_eye=camera.position;
+        d.scene_max_distance.clear();d.scene_max_distance.reserve(admitted.size());
+        for (const auto& source:admitted) d.scene_max_distance.push_back(renderer.part_draw_override(source.part_hash).max_draw_distance);
         d.scene_valid=true;
     }
     output = std::move(selected); error.clear(); return true;
 }
 uint64_t GeometryWorldRuntime::source_part(uint64_t instance_id, uint64_t fallback) const {
+    if (!d_) return fallback;
     auto it = d_->source_by_instance.find(instance_id);
     return it == d_->source_by_instance.end() ? fallback : it->second;
 }
-uint64_t GeometryWorldRuntime::revision() const { return d_->revision; }
-geometry::ResidencyStats GeometryWorldRuntime::stats() const { return d_->residency.stats(); }
+uint64_t GeometryWorldRuntime::revision() const { return d_ ? d_->revision : 0; }
+geometry::ResidencyStats GeometryWorldRuntime::stats() const {
+    return d_ ? d_->residency.stats() : geometry::ResidencyStats{};
+}
 GeometryPagingProfile GeometryWorldRuntime::take_profile() {
+    if (!d_) return {};
     auto& d=*d_;auto result=d.profile;d.profile={};
     result.scene_pending=d.scene_pending;
     result.rejected_assets=static_cast<uint32_t>(d.rejected_admissions.size());
     result.source_fallbacks=d.source_fallbacks;
     for(const auto& entry:d.assets)if(!d.residency.ready(entry.second.lease))++result.unready_assets;
+    result.visible=d.residency.visible_stats();
     std::lock_guard<std::mutex> lock(d.queue_mutex);
     auto& w=d.worker_profile;
     result.worker_queue=w.worker_queue;result.cache_open=w.cache_open;result.cache_refresh=w.cache_refresh;

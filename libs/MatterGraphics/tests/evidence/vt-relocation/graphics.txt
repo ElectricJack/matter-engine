@@ -1,0 +1,103 @@
+Start testing: Oct 11 16:03 Pacific Daylight Time
+----------------------------------------------------------
+1/5 Testing: matter_graphics_lifetime
+1/5 Test: matter_graphics_lifetime
+Command: "D:/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-2/libs/MatterGraphics/build/windows-msvc/relwithdebinfo/matter_graphics_tests.exe"
+Directory: D:/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-2/libs/MatterGraphics/build/windows-msvc/relwithdebinfo
+"matter_graphics_lifetime" start time: Oct 11 16:03 Pacific Daylight Time
+Output:
+----------------------------------------------------------
+PASS GFX-SUBMIT/PENDING/READY/IMPORTED/SHARING/CHANGE/AFFINE/SCENE/OWNER/INPUTS/RELEASE/RETIRE
+PASS GFX-ENVELOPE/HANDLE/VALIDATE/CAPS/PAYLOAD/FAIL/CANCEL/TICKET/CONTROL/CALLBACK
+PASS GFX-CAMERA/LIGHTS/DEMAND/BUDGET/DISPOSE
+<end of output>
+Test time =   0.28 sec
+----------------------------------------------------------
+Test Passed.
+"matter_graphics_lifetime" end time: Oct 11 16:03 Pacific Daylight Time
+"matter_graphics_lifetime" time elapsed: 00:00:00
+----------------------------------------------------------
+
+2/5 Testing: matter_graphics_scene
+2/5 Test: matter_graphics_scene
+Command: "D:/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-2/libs/MatterGraphics/build/windows-msvc/relwithdebinfo/matter_graphics_scene_tests.exe"
+Directory: D:/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-2/libs/MatterGraphics/build/windows-msvc/relwithdebinfo
+"matter_graphics_scene" start time: Oct 11 16:03 Pacific Daylight Time
+Output:
+----------------------------------------------------------
+PASS SCENE transforms/visibility/sharing/lifecycle/budgets/failure/cancellation
+<end of output>
+Test time =   0.25 sec
+----------------------------------------------------------
+Test Passed.
+"matter_graphics_scene" end time: Oct 11 16:03 Pacific Daylight Time
+"matter_graphics_scene" time elapsed: 00:00:00
+----------------------------------------------------------
+
+3/5 Testing: matter_graphics_composition
+3/5 Test: matter_graphics_composition
+Command: "D:/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-2/libs/MatterGraphics/build/windows-msvc/relwithdebinfo/matter_graphics_composition_tests.exe"
+Directory: D:/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-2/libs/MatterGraphics/build/windows-msvc/relwithdebinfo
+"matter_graphics_composition" start time: Oct 11 16:03 Pacific Daylight Time
+Output:
+----------------------------------------------------------
+ALL PASS COMP-VALID/CAPS/BUDGET/LENGTH/IDENTITY/IMPOSTOR/DEPTH/VISIBILITY/FINITE/CAMERA/CLOUD/WATER/SPOT/OWNER/MATERIAL
+<end of output>
+Test time =   0.18 sec
+----------------------------------------------------------
+Test Passed.
+"matter_graphics_composition" end time: Oct 11 16:03 Pacific Daylight Time
+"matter_graphics_composition" time elapsed: 00:00:00
+----------------------------------------------------------
+
+4/5 Testing: matter_graphics_vulkan
+4/5 Test: matter_graphics_vulkan
+Command: "D:/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-2/libs/MatterGraphics/build/windows-msvc/relwithdebinfo/matter_graphics_vulkan_tests.exe"
+Directory: D:/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-2/libs/MatterGraphics/build/windows-msvc/relwithdebinfo
+"matter_graphics_vulkan" start time: Oct 11 16:03 Pacific Daylight Time
+Output:
+----------------------------------------------------------
+VULKAN LOADER: loader_get_json: Failed to open JSON file D:\Epic Games\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win32.json
+VULKAN LOADER: loader_get_json: Failed to open JSON file D:\Epic Games\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win64.json
+DEVICE NVIDIA GeForce RTX 4090; validation=1
+MATCH dielectric-colored-shadow pixels=2145 hdr_max=1.30193e-07 display_max=1.78814e-07
+MATCH metallic-ggx-shadow pixels=2145 hdr_max=4.02282e-06 display_max=2.32458e-06
+MATCH point-light-brdf pixels=2145 hdr_max=3.56563e-07 display_max=3.8743e-07
+MATCH spot-light-cone pixels=2145 hdr_max=3.56563e-07 display_max=9.53674e-07
+MATCH translated-camera-light pixels=2145 hdr_max=4.45806e-07 display_max=1.14739e-06
+MATCH rt-products-emission-single-owner pixels=2145 hdr_max=9.68575e-08 display_max=5.96046e-08
+MATCH integrated-volume pixels=2145 hdr_max=3.3062e-08 display_max=1.19209e-07
+MATCH environment-irradiance pixels=2145 hdr_max=2.67173e-08 display_max=1.78814e-07
+MATCH reduced-diffuse-odd-extent pixels=2145 hdr_max=5.96046e-08 display_max=1.78814e-07
+MATCH physical-sky-product pixels=2145 hdr_max=0 display_max=1.19209e-07
+MATCH subsurface-impostor-mask pixels=2145 hdr_max=2.23517e-09 display_max=5.96046e-08
+MATCH cloud-optical-depth pixels=2145 hdr_max=1.78814e-08 display_max=1.19209e-07
+MATCH native-glass-fallback pixels=2145 hdr_max=6.31809e-08 display_max=1.19209e-07
+MATCH debug-display-passthrough pixels=2145 hdr_max=0 display_max=0
+PASS COMP-NATIVE shader source parity; selected appearance fixtures; unsupported capability
+PASS VK-UPLOAD/READBACK/SCENE/SHARING/CULL/FENCE/RETIRE/DISPOSE/OWNERSHIP
+<end of output>
+Test time =  15.02 sec
+----------------------------------------------------------
+Test Passed.
+"matter_graphics_vulkan" end time: Oct 11 16:04 Pacific Daylight Time
+"matter_graphics_vulkan" time elapsed: 00:00:15
+----------------------------------------------------------
+
+5/5 Testing: matter_graphics_independence
+5/5 Test: matter_graphics_independence
+Command: "C:/Users/webde/AppData/Local/Programs/Python/Launcher/py.exe" "D:/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-2/libs/MatterGraphics/tests/independence.py" "D:/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-2/libs/MatterGraphics/build/windows-msvc/relwithdebinfo"
+Directory: D:/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-2/libs/MatterGraphics/build/windows-msvc/relwithdebinfo
+"matter_graphics_independence" start time: Oct 11 16:04 Pacific Daylight Time
+Output:
+----------------------------------------------------------
+PASS GFX-INDEPENDENT-GRAPH: scene/facade/contracts/shared pure math plus isolated Vulkan adapter/loader and exact production shader closure; source, link and compiler dependency audit
+<end of output>
+Test time =   1.51 sec
+----------------------------------------------------------
+Test Passed.
+"matter_graphics_independence" end time: Oct 11 16:04 Pacific Daylight Time
+"matter_graphics_independence" time elapsed: 00:00:01
+----------------------------------------------------------
+
+End testing: Oct 11 16:04 Pacific Daylight Time

@@ -1,0 +1,162 @@
+**********************************************************************
+** Visual Studio 2022 Developer Command Prompt v17.14.7
+** Copyright (c) 2025 Microsoft Corporation
+**********************************************************************
+-- The C compiler identification is MSVC 19.44.35211.0
+-- The CXX compiler identification is MSVC 19.44.35211.0
+-- Detecting C compiler ABI info
+-- Detecting C compiler ABI info - done
+-- Check for working C compiler: C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.44.35207/bin/Hostx64/x64/cl.exe - skipped
+-- Detecting C compile features
+-- Detecting C compile features - done
+-- Detecting CXX compiler ABI info
+-- Detecting CXX compiler ABI info - done
+-- Check for working CXX compiler: C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Tools/MSVC/14.44.35207/bin/Hostx64/x64/cl.exe - skipped
+-- Detecting CXX compile features
+-- Detecting CXX compile features - done
+-- Found Vulkan: C:/VulkanSDK/1.4.357.0/Lib/vulkan-1.lib (found version "1.4.357") found components: glslc glslangValidator
+-- Found Python3: C:\Users\webde\AppData\Local\Programs\Python\Launcher\py.exe (found suitable version "3.13.14", minimum required is "3.9") found components: Interpreter
+-- Configuring done (11.6s)
+-- Generating done (5.9s)
+-- Build files have been written to: D:/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-1/libs/MatterGraphics/build/sample-clean-epoch8
+**********************************************************************
+** Visual Studio 2022 Developer Command Prompt v17.14.7
+** Copyright (c) 2025 Microsoft Corporation
+**********************************************************************
+[1/72] Building CXX object matter-components\matter_contracts\CMakeFiles\matter_contracts.dir\src\value.cpp.obj
+[2/72] Building CXX object matter-components\matter_contracts\CMakeFiles\matter_contracts.dir\src\codec.cpp.obj
+[3/72] Building CXX object matter-components\matter_contracts\CMakeFiles\matter_contracts.dir\src\digest.cpp.obj
+[4/72] Building CXX object matter-components\matter_contracts\CMakeFiles\matter_contracts.dir\src\validation.cpp.obj
+[5/72] Building CXX object matter-components\matter_contracts\CMakeFiles\matter_contracts.dir\src\services.cpp.obj
+[6/72] Building CXX object CMakeFiles\matter_graphics.dir\src\graphics.cpp.obj
+[7/72] Building CXX object CMakeFiles\matter_graphics.dir\src\scene_backend.cpp.obj
+[8/72] Building CXX object CMakeFiles\matter_graphics.dir\src\composition.cpp.obj
+[9/72] Building CXX object CMakeFiles\matter_graphics.dir\a4baa685c3a27366e2e4d585f755c518\.aq\worktrees\slot-1\MatterEngine3\src\render\matrix_math.cpp.obj
+[10/72] Linking CXX static library matter-components\matter_contracts\matter_contracts.lib
+[11/72] Linking CXX static library matter_graphics.lib
+[12/72] Generating atmosphere_irradiance.comp.spv
+[13/72] Generating raster.vert.spv
+[14/72] Generating raster_skin.vert.spv
+[15/72] Generating raster_water.vert.spv
+[16/72] Generating visibility_id.frag.spv
+[17/72] Generating visibility_id.vert.spv
+[18/72] Generating composite.frag.spv
+[19/72] Generating composite.vert.spv
+[20/72] Generating display_transform.frag.spv
+[21/72] Generating atmosphere_multiscatter.comp.spv
+[22/72] Generating atmosphere_sky_view.comp.spv
+[23/72] Generating atmosphere_transmittance.comp.spv
+[24/72] Generating cloud_shadow_density.comp.spv
+[25/72] Generating cloud_shadow_integrate.comp.spv
+[26/72] Generating cloud_shadow_reproject.comp.spv
+[27/72] Generating vol_density.comp.spv
+[28/72] Generating vol_integrate.comp.spv
+[29/72] Generating vol_scatter.comp.spv
+[30/72] Generating composition_spirv.h
+[31/72] Generating environment_embedded_spirv.h
+[32/72] Building CXX object CMakeFiles\matter_graphics_environment.dir\src\native\vk_atmosphere.cpp.obj
+[33/72] Building CXX object CMakeFiles\matter_graphics_environment.dir\src\native\vk_cloud_shadows.cpp.obj
+[34/72] Building CXX object CMakeFiles\matter_graphics_environment.dir\src\native\vk_volumetrics.cpp.obj
+[35/72] Linking CXX static library matter_graphics_environment.lib
+[36/72] Building CXX object CMakeFiles\matter_graphics_atmosphere_tests.dir\279a59d5f90facbd6dda732eb02b1405\slot-1\MatterEngine3\tests\atmosphere_tests.cpp.obj
+[37/72] Building CXX object CMakeFiles\matter_graphics_cloud_layer_tests.dir\279a59d5f90facbd6dda732eb02b1405\slot-1\MatterEngine3\tests\cloud_layer_tests.cpp.obj
+[38/72] Building CXX object CMakeFiles\matter_graphics_cloud_shadow_tests.dir\279a59d5f90facbd6dda732eb02b1405\slot-1\MatterEngine3\tests\cloud_shadow_tests.cpp.obj
+[39/72] Building CXX object CMakeFiles\matter_graphics_volumetric_quality_tests.dir\1a491a59a9973d441cf677343b431e5e\tests\volumetric_quality_tests.cpp.obj
+[40/72] Building CXX object CMakeFiles\matter_graphics_cloud_shadow_reference_tests.dir\tests\cloud_shadow_reference_tests.cpp.obj
+[41/72] Building CXX object CMakeFiles\matter_graphics_tests.dir\tests\graphics_tests.cpp.obj
+[42/72] Building CXX object CMakeFiles\matter_graphics_scene_tests.dir\tests\scene_tests.cpp.obj
+[43/72] Building CXX object CMakeFiles\matter_graphics_composition_tests.dir\tests\composition_tests.cpp.obj
+[44/72] Linking CXX executable matter_graphics_atmosphere_tests.exe
+[45/72] Linking CXX executable matter_graphics_cloud_layer_tests.exe
+[46/72] Linking CXX executable matter_graphics_cloud_shadow_tests.exe
+[47/72] Linking CXX executable matter_graphics_volumetric_quality_tests.exe
+[48/72] Linking CXX executable matter_graphics_cloud_shadow_reference_tests.exe
+[49/72] Building CXX object CMakeFiles\matter_graphics_header_backend.dir\header-backend.cpp.obj
+[50/72] Building CXX object CMakeFiles\matter_graphics_header_graphics.dir\header-graphics.cpp.obj
+[51/72] Building CXX object CMakeFiles\matter_graphics_header_scene_backend.dir\header-scene_backend.cpp.obj
+[52/72] Building CXX object CMakeFiles\matter_graphics_header_composition.dir\header-composition.cpp.obj
+[53/72] Linking CXX executable matter_graphics_tests.exe
+[54/72] Linking CXX executable matter_graphics_scene_tests.exe
+[55/72] Linking CXX executable matter_graphics_composition_tests.exe
+[56/72] Generating gbuffer.frag.spv
+[57/72] Generating raster_spirv.h
+[58/72] Building CXX object CMakeFiles\matter_graphics_vulkan.dir\src\vulkan_resources.cpp.obj
+[59/72] Building CXX object CMakeFiles\matter_graphics_vulkan.dir\src\vulkan_composition.cpp.obj
+[60/72] Building CXX object CMakeFiles\matter_graphics_vulkan.dir\src\native\mesh_raster.cpp.obj
+[61/72] Building CXX object CMakeFiles\matter_graphics_vulkan.dir\src\native\mesh_pipelines.cpp.obj
+[62/72] Building CXX object CMakeFiles\matter_graphics_vulkan.dir\src\vulkan_raster.cpp.obj
+[63/72] Linking CXX static library matter_graphics_vulkan.lib
+[64/72] Building CXX object CMakeFiles\matter_graphics_sample.dir\examples\graphics_sample.cpp.obj
+[65/72] Building CXX object CMakeFiles\matter_graphics_vulkan_tests.dir\tests\vulkan_tests.cpp.obj
+[66/72] Building CXX object CMakeFiles\matter_graphics_raster_tests.dir\examples\graphics_sample.cpp.obj
+[67/72] Linking CXX executable matter_graphics_sample.exe
+[68/72] Building CXX object CMakeFiles\matter_graphics_header_vulkan_resources.dir\header-vulkan_resources.cpp.obj
+[69/72] Building CXX object CMakeFiles\matter_graphics_header_vulkan_composition.dir\header-vulkan_composition.cpp.obj
+[70/72] Building CXX object CMakeFiles\matter_graphics_header_vulkan_raster.dir\header-vulkan_raster.cpp.obj
+[71/72] Linking CXX executable matter_graphics_vulkan_tests.exe
+[72/72] Linking CXX executable matter_graphics_raster_tests.exe
+Internal ctest changing into directory: D:/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-1/libs/MatterGraphics/build/sample-clean-epoch8
+Test project D:/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-1/libs/MatterGraphics/build/sample-clean-epoch8
+      Start  1: matter_graphics_atmosphere
+ 1/12 Test  #1: matter_graphics_atmosphere ...............   Passed    0.04 sec
+      Start  2: matter_graphics_cloud_layer
+ 2/12 Test  #2: matter_graphics_cloud_layer ..............   Passed    0.05 sec
+      Start  3: matter_graphics_cloud_shadow
+ 3/12 Test  #3: matter_graphics_cloud_shadow .............   Passed    0.04 sec
+      Start  4: matter_graphics_volumetric_quality
+ 4/12 Test  #4: matter_graphics_volumetric_quality .......   Passed    0.08 sec
+      Start  5: matter_graphics_cloud_shadow_reference
+ 5/12 Test  #5: matter_graphics_cloud_shadow_reference ...   Passed    0.04 sec
+      Start  6: matter_graphics_lifetime
+ 6/12 Test  #6: matter_graphics_lifetime .................   Passed    0.07 sec
+      Start  7: matter_graphics_scene
+ 7/12 Test  #7: matter_graphics_scene ....................   Passed    0.06 sec
+      Start  8: matter_graphics_composition
+ 8/12 Test  #8: matter_graphics_composition ..............   Passed    0.04 sec
+      Start  9: matter_graphics_raster
+ 9/12 Test  #9: matter_graphics_raster ...................   Passed    2.38 sec
+      Start 10: matter_graphics_sample
+10/12 Test #10: matter_graphics_sample ...................   Passed    6.02 sec
+      Start 11: matter_graphics_vulkan
+11/12 Test #11: matter_graphics_vulkan ...................   Passed    1.80 sec
+      Start 12: matter_graphics_independence
+12/12 Test #12: matter_graphics_independence .............   Passed    0.58 sec
+
+100% tests passed, 0 tests failed out of 12
+
+Total Test time (real) =  11.36 sec
+VULKAN LOADER: loader_get_json: Failed to open JSON file D:\Epic Games\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win32.json
+VULKAN LOADER: loader_get_json: Failed to open JSON file D:\Epic Games\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win64.json
+DEVICE NVIDIA GeForce RTX 4090; validation=1
+GFX-IMPORTED raster upload
+GFX-IMPORTED raster draw
+GFX-RASTER token 0: 195 pixels
+GFX-RASTER token 1: 207 pixels
+GFX-RASTER token 2: 1179 pixels
+GFX-RASTER token 3: 857 pixels
+PASS GFX-IMPORTED-RASTER/REPEATED/MIRRORED/NORMAL-MATRIX/MATERIAL/DEPTH/CLEAR/FAILURE
+SAMPLE imported-synthetic placed.a: 120 pixels
+SAMPLE imported-synthetic placed.a: 120 pixels
+SAMPLE imported-synthetic placed.b: 1027 pixels
+SAMPLE imported-synthetic placed.b: 972 pixels
+SAMPLE imported-synthetic synthetic.a: 435 pixels
+SAMPLE imported-synthetic synthetic.b: 450 pixels
+MATCH imported-synthetic exact repeated native view; 6 draws
+SAMPLE one-shared-instance-removed placed.a: 120 pixels
+SAMPLE one-shared-instance-removed placed.a: 120 pixels
+SAMPLE one-shared-instance-removed placed.b: 1027 pixels
+SAMPLE one-shared-instance-removed placed.b: 972 pixels
+SAMPLE one-shared-instance-removed synthetic.b: 450 pixels
+MATCH one-shared-instance-removed exact repeated native view; 5 draws
+SAMPLE placement-updated placed.a: 120 pixels
+SAMPLE placement-updated placed.a: 120 pixels
+SAMPLE placement-updated placed.b: 1027 pixels
+SAMPLE placement-updated placed.b: 972 pixels
+SAMPLE placement-updated synthetic.b: 435 pixels
+MATCH placement-updated exact repeated native view; 5 draws
+SAMPLE imported-only placed.a: 120 pixels
+SAMPLE imported-only placed.a: 120 pixels
+SAMPLE imported-only placed.b: 1027 pixels
+SAMPLE imported-only placed.b: 972 pixels
+MATCH imported-only exact repeated native view; 4 draws
+PASS GFX-SAMPLE imported/synthetic/shared/camera/light/update/release/matched-images
