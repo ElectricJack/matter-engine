@@ -1,0 +1,1 @@
+COMPILE MatterEngine3/tests/vulkan_smoke_tests.cpp

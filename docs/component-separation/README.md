@@ -24,6 +24,9 @@ Start with these documents:
 - [Component packages: consumers and migration](consumers.md): local
   redistributable packages, their notices, host seams, native-only features
   and migration from the engine (task `clear-crest-48.9.6`).
+- [Legacy forwarder retirement, 2026-10-20](retirement-2026-10-20.md): each
+  removed `.cpp` build-link forwarder, its canonical replacement, and the
+  compatibility adapters kept (task `clear-crest-48.9.7`).
 
 The live starting commit is `98af23851dd3424ddbfc62624cd2afb850e9d09d`, the
 observed `origin/dev` head. The design inspected
