@@ -634,7 +634,7 @@ vulkan-spirv: shaders_gen/embedded_spirv.h
 
 # Per-file pattern rules enable safe parallel compilation with `make -j`.
 # vpath directs Make to search source directories by basename.
-vpath %.cpp src src/component_adapters/authoring/engine src/component_adapters/graphics src/terrain_collision src/geometry src/export src/animation src/render src/render/gpu_meshing src/hydrology src/provider src/script src/ecs src/scene src/streaming src/event src/util src/props $(MSL_DIR)/src $(SQL_DIR)/src $(PFL_DIR)/src $(MCL_DIR)/src $(ASSET_DIR)/src ../libs/ProceduralGeometry/src ../libs/MatterGraphics/src ../libs/TerrainGeneration/src ../libs/AssetPipeline/physics/src
+vpath %.cpp src src/component_adapters/authoring/engine src/component_adapters/graphics src/component_adapters/terrain_coordinator/engine src/component_adapters/terrain_coordinator/src src/terrain_collision src/geometry src/export src/animation src/render src/render/gpu_meshing src/hydrology src/provider src/script src/ecs src/scene src/streaming src/event src/util src/props $(MSL_DIR)/src $(SQL_DIR)/src $(PFL_DIR)/src $(MCL_DIR)/src $(ASSET_DIR)/src ../libs/ProceduralGeometry/src ../libs/MatterGraphics/src ../libs/MatterGraphics/src/native ../libs/MatterGraphics/src/native/vt ../libs/TerrainGeneration/src ../libs/AssetPipeline/physics/src
 vpath %.c $(QJS_DIR) $(MSL_DIR)/src $(FLECS_DIR)
 
 # Flecs C source (gcc C17, never g++).
@@ -778,7 +778,7 @@ VIEWER_AR  ?= ar
 VULKAN_INCLUDE ?= /ucrt64/include
 
 # MATTER_HAVE_STREAMLINE is a compile-time gate read by
-# src/render/streamline_bridge.cpp. MatterEditor owns the switch (its `dist`
+# libs/MatterGraphics/src/native/streamline_bridge.cpp. MatterEditor owns the switch (its `dist`
 # target flips it) and passes it down; the flag stamp below tracks changes.
 HAVE_STREAMLINE ?= 0
 STREAMLINE_PATH ?=
@@ -803,6 +803,8 @@ VIEWER_GLFW_INCLUDE = $(RAYLIB_PATH)/external/glfw/include
 
 VIEWER_INCLUDE_PATHS = -I$(VULKAN_INCLUDE) $(INCLUDE_PATHS) -I$(VIEWER_GLFW_INCLUDE) \
                        -I../libs/MatterGraphics/include \
+                       -Isrc/component_adapters/terrain_coordinator/include \
+                       -I../libs/TerrainGeneration/include \
                        $(if $(filter 1,$(HAVE_STREAMLINE)),-I"$(STREAMLINE_PATH)/include")
 
 # Mirrors MatterEditor's CXX_FLAGS_BUILD_WIN_COMMON exactly, minus the include

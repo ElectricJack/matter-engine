@@ -212,6 +212,24 @@ bool create_mesh_raster_pipelines(VkDevice device, VkPipelineLayout layout, bool
         return fail_vk("vkCreateGraphicsPipelines(raster)", result, error);
     }
     log_vk_pipeline_stats(device, output.raster, "gbuffer.frag");
+    {
+        // Identical except for the front face: a mirrored object_to_world
+        // turns the outward counter-clockwise winding clockwise on screen,
+        // so the same cull mode must treat clockwise as front for it.
+        VkPipelineRasterizationStateCreateInfo mirrored_rasterization =
+            rasterization;
+        mirrored_rasterization.frontFace = VK_FRONT_FACE_CLOCKWISE;
+        VkGraphicsPipelineCreateInfo mirrored_create = raster_create;
+        mirrored_create.pRasterizationState = &mirrored_rasterization;
+        result = create_pipeline(mirrored_create, &output.raster_mirrored);
+        if (result != VK_SUCCESS) {
+            vkDestroyShaderModule(device, skinned_raster_vertex, nullptr);
+            vkDestroyShaderModule(device, raster_fragment, nullptr);
+            vkDestroyShaderModule(device, raster_vertex, nullptr);
+            return fail_vk("vkCreateGraphicsPipelines(mirrored raster)",
+                           result, error);
+        }
+    }
 
     // ---- the occlusion ID pipeline (M4) ----------------------------------
     //

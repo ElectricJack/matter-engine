@@ -13,15 +13,24 @@
 //   - explicit failure for everything the portable subset cannot represent
 //     (unknown route value, child placement, voxel CSG, beginShape, legacy
 //     statics, unpaletted materials) instead of a silent legacy fallback.
+//   - retained products (clear-crest-48.9.8): a warm resolve cache, in this
+//     process or a fresh one, rehydrates the SAME immutable product from the
+//     pinned source and refuses a stale one; shared instances share one
+//     product; and builtin, dynamic and unknown material ids are told apart
+//     so the graphics adapter never draws an invented colour.
 
 #include "part_graph.h"
 #include "part_asset_v2.h"
 #include "blas_manager.hpp"
 #include "tlas_manager.hpp"
 #include "component_adapters/authoring/engine/legacy_part_route.h"
+#include "material_registry.h"
 #include "matter/log.h"
+#include <matter/contracts/contracts.h>
+#include <matter/contracts/generation.h>
 #include "test_sandbox.h"
 #include <atomic>
+#include <cstdlib>
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
@@ -30,6 +39,7 @@
 #include <mutex>
 #include <sstream>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "check.h"
@@ -464,9 +474,206 @@ void test_explicit_failures() {
     }
 }
 
+// Builtin, dynamic and unknown palette ids through the live route. Only a
+// builtin id carries immutable factors; a dynamic id still bakes its .part
+// (the legacy renderer resolves it against the per-world registry) but the
+// graphics adapter must refuse its product rather than draw a default.
+void test_material_ids() {
+    using matter::authoring_adapter::LegacyMaterialKind;
+    using matter::authoring_adapter::classify_legacy_material;
+    int id = -1;
+    CHECK(classify_legacy_material("matter.legacy.material.18", &id) == LegacyMaterialKind::builtin && id == 18,
+          "MAT.plaster (18) is builtin");
+    const int dynamic_id = MaterialRegistryStaticCount() + 1;
+    CHECK(classify_legacy_material("matter.legacy.material." + std::to_string(dynamic_id), &id) ==
+              LegacyMaterialKind::dynamic && id == dynamic_id,
+          "an id past the frozen builtins is dynamic");
+    for (const char* bad : {"matter.legacy.material.", "matter.legacy.material.18x",
+                            "matter.legacy.material.-1", "glass", "matter.legacy.material.9999999999"})
+        CHECK(classify_legacy_material(bad) == LegacyMaterialKind::unknown, "malformed ids are unknown");
+
+    const auto part = [](const char* name, const std::string& fill) {
+        return with_marker(std::string("class ") + name + " extends Part {\n  build(p) {\n    this.fill(" +
+                           fill + ");\n    this.box([0, 0, 0], [1, 1, 1]);\n  }\n}\n");
+    };
+    MapResolver modules;
+    modules.sources["Builtin"] = part("Builtin", "MAT.plaster");
+    modules.sources["Dynamic"] = part("Dynamic", std::to_string(dynamic_id));
+    modules.sources["Unknown"] = part("Unknown", "'glass'");
+
+    const Run builtin = install("sandbox/authoring_route_mat_builtin", modules, "Builtin");
+    const auto builtin_product = matter::authoring_adapter::retained_asset(root_hash(builtin));
+    CHECK(builtin.result.failed.empty() && builtin_product &&
+              matter::authoring_adapter::legacy_material_refusal(builtin_product->document).empty(),
+          "builtin material: product retained and consumable by graphics");
+    if (builtin_product) {
+        const MaterialDef* def = MaterialRegistryGet(18);
+        bool matched = false;
+        for (const auto& m : builtin_product->document.materials)
+            if (m.id.value == "matter.legacy.material.18")
+                matched = std::fabs(m.base_color.factor.x - def->albedo[0]) < 1e-6f &&
+                          std::fabs(m.base_color.factor.y - def->albedo[1]) < 1e-6f &&
+                          std::fabs(m.base_color.factor.z - def->albedo[2]) < 1e-6f &&
+                          std::fabs(m.roughness - def->roughness) < 1e-6f;
+        CHECK(matched, "builtin material carries the frozen MAT18 palette factors");
+    }
+
+    const Run dynamic = install("sandbox/authoring_route_mat_dynamic", modules, "Dynamic");
+    const auto dynamic_product = matter::authoring_adapter::retained_asset(root_hash(dynamic));
+    CHECK(dynamic.result.failed.empty() && root_hash(dynamic) && dynamic.bakes == 1,
+          "dynamic material: the legacy .part consumer still bakes");
+    const Geometry gd = load_geometry(dynamic.root, root_hash(dynamic));
+    CHECK(gd.per_material.size() == 1 && gd.per_material.count(dynamic_id),
+          "dynamic material: the .part keeps the numeric registry id");
+    const std::string why = dynamic_product
+        ? matter::authoring_adapter::legacy_material_refusal(dynamic_product->document) : "";
+    if (!why.empty()) std::printf("  dynamic refusal: %s\n", why.c_str());
+    CHECK(dynamic_product && why.find("dynamic id " + std::to_string(dynamic_id)) != std::string::npos,
+          "dynamic material: graphics refuses the product instead of drawing a default colour");
+
+    const Run unknown = install("sandbox/authoring_route_mat_unknown", modules, "Unknown");
+    CHECK(!unknown.result.failed.empty() && root_hash(unknown) == 0,
+          "unknown material id: the part fails explicitly");
+    if (unknown.result.failed.empty()) std::printf("  unknown log: %s\n", unknown.log.c_str());
+}
+
+const char* const kWarmBody =
+    "class Warm extends Part {\n  static params = { size: 1 };\n  build(p) {\n"
+    "    this.fill(MAT.stone);\n    this.box([0, 0, 0], [p.size, 1, 1]);\n  }\n}\n";
+
+std::string digest_of(const std::shared_ptr<const matter::services::AssetProduct>& product) {
+    matter::contracts::ContentDigest digest;
+    if (!product || !matter::contracts::content_digest(product->document, digest).ok()) return {};
+    return digest.hex;
+}
+
+std::string file_digest(const std::string& path) {
+    return matter::contracts::sha256(read_file(path)).hex;
+}
+
+part_graph::BakeInputs warm_inputs(const std::string& source) {
+    part_graph::BakeInputs inputs;
+    inputs.module = "Warm";
+    inputs.source = source;
+    return inputs;
+}
+
+// The fresh-process half of test_warm_restore: this binary re-run with
+// --warm <parts root> <hash> <product digest>. Nothing is retained yet, as
+// in an editor launched against a warm resolve cache.
+int warm_child(const std::string& root, uint64_t hash, const std::string& digest) {
+    namespace aa = matter::authoring_adapter;
+    CHECK(!aa::retained_asset(hash), "fresh process: nothing retained before restore");
+    script_host::ScriptHost host;
+    part_graph::HostBaker baker(host, root);
+    auto route = std::make_shared<CountingRoute>();
+    baker.set_portable_route(route);
+    std::string err;
+
+    // A cache entry whose pinned source no longer authors its hash (an edited
+    // part, or a product of another route version) must not be reused.
+    std::unordered_map<uint64_t, part_graph::BakeInputs> stale{
+        {hash, warm_inputs(with_marker(std::string(kWarmBody).replace(
+                   std::string(kWarmBody).find("MAT.stone"), 9, "MAT.bark")))}};
+    CHECK(!part_graph::reauthor_portable(baker, stale, err) &&
+              err.find("resolve cache stale") != std::string::npos,
+          "fresh process: a stale pinned source refuses the cache");
+    CHECK(!aa::retained_asset(hash), "fresh process: no product is retained under a stale hash");
+
+    std::unordered_map<uint64_t, part_graph::BakeInputs> plan{{hash, warm_inputs(with_marker(kWarmBody))}};
+    const uint64_t generation = aa::retained_generation();
+    CHECK(part_graph::reauthor_portable(baker, plan, err), "fresh process: restore re-authors the plan");
+    const auto product = aa::retained_asset(hash);
+    CHECK(product && digest_of(product) == digest,
+          "fresh process: the rehydrated product is the cold product (same content digest)");
+    CHECK(aa::retained_generation() != generation, "fresh process: a newly retained product is signalled");
+
+    // Then the warm part cache: no bake, and the same product instance.
+    MapResolver modules;
+    modules.sources["Warm"] = with_marker(kWarmBody);
+    part_graph::PartGraph graph(modules, baker);
+    const auto again = graph.install({part_graph::ChildRequest{"Warm", {}}});
+    CHECK(again.ok && again.root_hashes.size() == 1 && again.root_hashes[0] == hash &&
+              again.baked.empty() && route->bakes == 0,
+          "fresh process: the warm part cache is a pure hit");
+    CHECK(aa::retained_asset(hash) == product, "fresh process: the retained product is never replaced");
+    const Geometry g = load_geometry(root, hash);
+    CHECK(g.loaded && std::fabs(g.volume - 8.0) < 8e-3, "fresh process: cached geometry loads unchanged");
+    std::printf("authoring_route_tests --warm: %s\n", g_failures ? "FAIL" : "PASS");
+    return g_failures ? 1 : 0;
+}
+
+// Cold resolve, in-process warm hit, shared instances, then the same cache
+// restored by a fresh process (warm_child).
+void test_warm_restore(const char* self) {
+    namespace aa = matter::authoring_adapter;
+    MapResolver modules;
+    modules.sources["Warm"] = with_marker(kWarmBody);
+    const uint64_t before = aa::retained_generation();
+    const Run cold = install("sandbox/authoring_route_warm", modules, "Warm");
+    const uint64_t hash = root_hash(cold);
+    const auto product = aa::retained_asset(hash);
+    CHECK(cold.result.failed.empty() && hash && product && cold.bakes == 1, "cold resolve retains the product");
+    CHECK(aa::retained_generation() != before, "a newly retained product advances the generation");
+    const std::string part_path = cold.root + "/" + part_asset::cache_path_resolved(hash);
+    const std::string part_bytes = file_digest(part_path);
+    const std::string digest = digest_of(product);
+    CHECK(cold.result.bake_plan.count(hash) &&
+              cold.result.bake_plan.at(hash).source == modules.sources["Warm"],
+          "the bake plan pins the portable source under its hash");
+
+    // In-process warm resolve cache: restore re-authors the plan to the same
+    // hash, keeps the retained product and signals nothing new.
+    {
+        script_host::ScriptHost host;
+        part_graph::HostBaker baker(host, cold.root);
+        baker.set_portable_route(std::make_shared<CountingRoute>());
+        std::string err;
+        const uint64_t generation = aa::retained_generation();
+        CHECK(part_graph::reauthor_portable(baker, cold.result.bake_plan, err),
+              "in-process restore re-authors to the cached hash");
+        CHECK(aa::retained_asset(hash) == product && aa::retained_generation() == generation,
+              "in-process restore reuses the retained product without a new signal");
+    }
+
+    // Repeated shared instances resolve once to one product and one .part.
+    {
+        const std::string root = make_sandbox("sandbox/authoring_route_shared");
+        script_host::ScriptHost host;
+        part_graph::HostBaker baker(host, root);
+        auto route = std::make_shared<CountingRoute>();
+        baker.set_portable_route(route);
+        part_graph::PartGraph graph(modules, baker);
+        const auto shared = graph.install({part_graph::ChildRequest{"Warm", {}},
+                                           part_graph::ChildRequest{"Warm", {}}});
+        CHECK(shared.ok && shared.root_hashes.size() == 2 && shared.root_hashes[0] == hash &&
+                  shared.root_hashes[1] == hash && route->bakes == 1 && aa::retained_asset(hash) == product,
+              "shared instances share one hash, one bake and one product");
+    }
+
+    // A different parameterization is a different product; the original is
+    // untouched (content-addressed products are never replaced or retired).
+    {
+        part_graph::Params two;
+        two["size"] = part_graph::ParamValue::number(2.0);
+        const Run other = install("sandbox/authoring_route_warm_other", modules, "Warm", true, two);
+        const auto other_product = aa::retained_asset(root_hash(other));
+        CHECK(root_hash(other) != hash && other_product && other_product != product &&
+                  aa::retained_asset(hash) == product && digest_of(product) == digest,
+              "another parameterization never aliases or replaces the retained product");
+    }
+
+    const std::string command = std::string(self) + " --warm " + cold.root + " " +
+                                std::to_string(hash) + " " + digest;
+    CHECK(std::system(command.c_str()) == 0, "fresh-process warm restore passes");
+    CHECK(file_digest(part_path) == part_bytes, "warm restores never rewrite the cached .part");
+}
+
 } // namespace
 
-int main() {
+int main(int argc, char** argv) {
+    if (argc == 5 && std::string(argv[1]) == "--warm")
+        return warm_child(argv[2], std::stoull(argv[3]), argv[4]);
     std::error_code cwd_error;
     const std::filesystem::path cwd = std::filesystem::current_path(cwd_error);
     if (cwd_error) return 2;
@@ -476,6 +683,8 @@ int main() {
     test_transforms_and_materials_matched();
     test_params_change_hash_and_geometry();
     test_explicit_failures();
+    test_material_ids();
+    test_warm_restore(argv[0]);
     matter::log::remove_sink(capture_sink);
     std::filesystem::current_path(cwd, cwd_error);
     if (cwd_error) return 2;

@@ -164,6 +164,7 @@ bool supports_native_ray_tracing(const VulkanRayTracingCapabilities& capabilitie
                                  std::string& reason);
 
 namespace detail {
+struct DeviceCore;
 class DeviceRetentionAccess;
 class DeviceLifetimeAccess;
 class DeviceSubmitAccess;
@@ -357,11 +358,10 @@ private:
     friend class detail::DeviceLifetimeAccess;
     friend class detail::DeviceSubmitAccess;
     friend class detail::DeviceGraphicsBindingAccess;
-    bool submit_and_wait_for_phase(VkCommandBuffer command_buffer,
-                                   VkFence fence, bool& completion_proven,
-                                   const char* fault_phase,
-                                   std::string& error);
     std::unique_ptr<Impl> impl_;
+    // impl_'s DeviceCore base, for the shims MatterGraphics compiles without
+    // the definition of Impl.
+    detail::DeviceCore* core_ = nullptr;
 };
 
 }  // namespace matter

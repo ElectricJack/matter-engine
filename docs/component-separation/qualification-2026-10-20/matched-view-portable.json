@@ -5,7 +5,7 @@
   "refused": [],
   "refused_placements": [],
   "assets": [
-    {"part_hash": "de3dac951365ed3c", "ready": true, "product": "0x748bac084e30", "meshes": 1}
+    {"part_hash": "de3dac951365ed3c", "ready": true, "product": "0x7ae95804a310", "meshes": 1}
   ],
   "draws": [
     {"instance": "39082e5e2f24ae48/part.1", "raster_identity": "39082e5e2f24ae48/part.1", "prototype": "part.0", "material": "matter.legacy.material.18", "mirrored": false, "winding": "ccw", "pixels": 1599, "resident_bytes": 1296},
