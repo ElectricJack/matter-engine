@@ -46,6 +46,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -163,9 +164,11 @@ bool supports_native_ray_tracing(const VulkanRayTracingCapabilities& capabilitie
                                  std::string& reason);
 
 namespace detail {
+struct DeviceCore;
 class DeviceRetentionAccess;
 class DeviceLifetimeAccess;
 class DeviceSubmitAccess;
+class DeviceGraphicsBindingAccess;
 }  // namespace detail
 
 // One acquired, recording swapchain frame. Produced by
@@ -315,6 +318,10 @@ public:
     VkPhysicalDevice physical_device() const;
     VkDevice device() const;
     VkQueue graphics_queue() const;
+    // Taken around every graphics_queue() submit/present and every
+    // vkDeviceWaitIdle, here and in MatterGraphics bindings; a caller that
+    // drives graphics_queue() itself (the ImGui backend) must hold it too.
+    std::mutex& queue_mutex() const;
     uint32_t graphics_queue_family() const;
     VkFormat swapchain_format() const;
     uint32_t swapchain_image_count() const;
@@ -350,11 +357,11 @@ private:
     friend class detail::DeviceRetentionAccess;
     friend class detail::DeviceLifetimeAccess;
     friend class detail::DeviceSubmitAccess;
-    bool submit_and_wait_for_phase(VkCommandBuffer command_buffer,
-                                   VkFence fence, bool& completion_proven,
-                                   const char* fault_phase,
-                                   std::string& error);
+    friend class detail::DeviceGraphicsBindingAccess;
     std::unique_ptr<Impl> impl_;
+    // impl_'s DeviceCore base, for the shims MatterGraphics compiles without
+    // the definition of Impl.
+    detail::DeviceCore* core_ = nullptr;
 };
 
 }  // namespace matter

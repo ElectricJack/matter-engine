@@ -1,0 +1,443 @@
+Cloud-shadow CPU reference investigation: clear-crest-48.4.10
+Recorded 2026-10-11 (America/Los_Angeles)
+
+Disposition
+===========
+Fixed the numerical CPU reference with a local scalar accumulator. Retain the
+pinned toolchain and all production optimization flags. This is an established
+MSVC 19.44.35211 x64 optimized-code defect in the out-of-line helper, not a
+rendering algorithm error or a relocation regression. The exact internal
+compiler optimization pass is not identified; no claim about other compiler
+versions is made.
+
+Published relocation: 1946dc645f1d904fb703281b1eea9336e635acf2
+Investigation merge base: f03598962 (contains relocation plus .4.6/.4.7)
+Original reference baseline: 6490dbab806876631465259cdf5b397f258c5837
+Historical before/after relocation evidence: environment-relocation.txt
+Compiler: MSVC 19.44.35211; toolset 14.44.35207; Windows SDK 10.0.26100.0
+Vulkan SDK: 1.4.357.0
+Module cloud tests: /DWIN32 /D_WINDOWS /EHsc /O2 /Ob1 /DNDEBUG -std:c++17 -MD -Zi
+Native GPU: NVIDIA GeForce RTX 4090, driver 610.74 (0x98928000), API 1.4.341
+
+Cause and bound of the fix
+==========================
+CloudSelfShadowReference initializes all fields. The helper sanitizes its
+inputs, bounds the step count, and performs ordinary float additions into
+result.tau_local_full while counting samples. With the finite reproducer
+inputs there are no dangling references, uninitialized values, pointer
+arithmetic, races, overflow, or invalid clamp bounds. std::clamp's temporary
+arguments survive until the assigned result has been copied in the same full
+expression. Replacing clamp with a plain sum still reproduces the defect.
+
+The original out-of-line assembly zeroes xmm6 at offset 0x9c. The four-iteration
+unrolled loop accumulates in xmm1 and stores that correct value into [rbx+4]
+(the returned tau_local_full member) at 0x11f. When the count is divisible by
+four, the branch at 0x129 skips the scalar tail, leaving xmm6 zero. The later
+addition at 0x1c6 uses xmm6 rather than the completed accumulator. The scalar
+tail updates xmm6, so counts with a remainder work. This incorrectly merges
+the accumulated value across the two paths. The emitted output contradicts the
+source: local=5, coarse=2, total=2. The frozen reproducer fails exactly counts
+4,8,12,16,20,24,28,32, with all other counts 0..32 passing.
+
+Accumulating into a separate float and assigning the member once after the
+loop makes the unrolled and tail paths carry the same accumulator. Per-step
+float arithmetic, sample count, distances, exit state, input sanitation,
+coarse-start omission, remaining-coarse clamp, total clamp and exp are retained.
+A closed-form sigma*distance replacement was only a diagnostic, not the fix.
+No renderer/shader code or optimization flags are changed by the fix.
+Repository callers of this helper are CPU reference tests only.
+
+Inlining is relevant: a direct step-grid caller can inline and pass while the
+compiler also emits the broken out-of-line copy. The committed regression and
+frozen reproducer use a volatile function pointer to exercise that copy with
+runtime step counts. This does not disable optimization of the helper.
+cloud_shadow_reference_tests.cpp fails 35 assertions against the original
+relocated header and passes against the fixed header. The existing full
+cloud_shadow_tests.cpp and its assertions/tolerances are byte-identical.
+
+Diagnostic matrix (isolated helper, one 8-step slab)
+==================================================
+=== minimal ===
+local=5 coarse=2 total=2 transmission=0.135335
+exit=1
+=== plain_sum ===
+local=5 coarse=2 total=2 transmission=0.135335
+exit=1
+=== named_sum ===
+local=5 coarse=2 total=2 transmission=0.135335
+exit=1
+=== local_accumulator ===
+local=5 coarse=2 total=7 transmission=0.000911882
+exit=0
+=== clamp_value ===
+local=5 coarse=2 total=2 transmission=0.135335
+exit=1
+=== no_loop ===
+local=5 coarse=2 total=7 transmission=0.000911882
+exit=0
+=== minimal-ob0 ===
+local=5 coarse=2 total=7 transmission=0.000911882
+exit=0
+=== minimal-od ===
+local=5 coarse=2 total=7 transmission=0.000911882
+exit=0
+=== reduced ===
+failures=0
+exit=0
+
+The smaller three-field `reduced` experiment does not reproduce the defect;
+that passing shape does not invalidate the emitted original-helper proof.
+The initial direct-call grid also passed due to inlining; the indirect grid
+below demonstrates the predicted missing-tail condition. Intermittent WSL
+UtilAcceptVsock launch failures were excluded from numerical results; the
+matrix above was rerun within one native PowerShell process. Native launch
+from this worker required WSL_INTEROP=/run/WSL/1_interop.
+
+Reproduction
+============
+From repository root in PowerShell, resolve the same environment through:
+  Import-Module .\tools\windows\MatterWindowsToolchain.psm1 -Force
+  $t = Resolve-MatterWindowsToolchain -RepositoryRoot (Get-Location).Path
+  $setup = 'call "{0}" -arch=x64 -host_arch=x64 -winsdk={1} -vcvars_ver={2}' -f $t.VsDevCmd, $t.WindowsSdkVersion, $t.MsvcToolsVersion
+
+Compile tests/evidence/cloud-shadow-msvc-repro.cpp (no project headers needed)
+under that setup with /DWIN32 /D_WINDOWS /EHsc /O2 /Ob1 /DNDEBUG /std:c++17
+/MD /Zi /FAcs. Run it: expected exit 1 and eight reported failures with this
+compiler. Add /DCLOUD_SHADOW_LOCAL_ACCUMULATOR and rebuild: expected exit 0.
+The actual complete compiler commands appear below. /O2 /Ob0 and /Od /Ob0 are
+only diagnostic controls, never production build overrides.
+
+Windows qualification (native PowerShell, root working directory):
+  libs/MatterGraphics/build-windows.ps1 -Config RelWithDebInfo -Test
+  tools/build-windows.ps1 -Config RelWithDebInfo -Target vulkan_smoke_tests
+  $env:VK_LAYER_PATH = Join-Path $t.VulkanSdk 'Bin'
+  $env:MATTER_VK_SMOKE_MODE = 'froxel-resize'
+  & .\MatterEditor\build\cmake\windows-msvc\relwithdebinfo\vulkan_smoke_tests.exe
+
+Actual resource-gated execution in this investigation used scratch pytest
+adapters (one test function, AQ's default slot/worker limits, no extra workers):
+  WSL_INTEROP=/run/WSL/1_interop aq test libs/MatterGraphics/build/cloud-shadow-investigation/test_verification.py -q
+  WSL_INTEROP=/run/WSL/1_interop CLOUD_SHADOW_PHASE=gpu aq test libs/MatterGraphics/build/cloud-shadow-investigation/test_verification.py -q
+  WSL_INTEROP=/run/WSL/1_interop CLOUD_SHADOW_PHASE=regression-original aq test libs/MatterGraphics/build/cloud-shadow-investigation/test_verification.py -q
+  WSL_INTEROP=/run/WSL/1_interop CLOUD_SHADOW_PHASE=evidence aq test libs/MatterGraphics/build/cloud-shadow-investigation/test_verification.py -q
+  CLOUD_SHADOW_PHASE=linux aq test libs/MatterGraphics/build/cloud-shadow-investigation/test_verification.py -q
+The module adapter runs CTest --output-on-failure -j 1 after the canonical
+build; GPU executes the above smoke mode. Expected historical failures are
+checked as exit 1, not counted as passing numerical tests. The scratch adapter
+and native verification commands are preserved at the end of this record.
+
+Linux builds, each followed by the linux resource-gated adapter above:
+  g++ -std=c++17 -O2 -g -fsanitize=address,undefined -fno-omit-frame-pointer -IMatterEngine3/include -Ithird_party/Vulkan-Headers/include MatterEngine3/tests/cloud_shadow_tests.cpp -o libs/MatterGraphics/build/cloud-shadow-investigation/full-gcc-sanitized
+  g++ -std=c++17 -O2 -g -fsanitize=address,undefined -fno-omit-frame-pointer -IMatterEngine3/include -Ithird_party/Vulkan-Headers/include libs/MatterGraphics/tests/cloud_shadow_reference_tests.cpp -o libs/MatterGraphics/build/cloud-shadow-investigation/reference-gcc-sanitized
+
+Source identities (SHA256)
+==========================
+ee21dc55b1050e935ca3ecb2191530503bcafcfcc9205ab4526ec6b3797219fb  MatterEngine3/tests/cloud_shadow_tests.cpp
+d03ca545cc899b8e36c8567fe1fadb92635a499a0db164c669ded89f64c0f4e9  libs/MatterGraphics/src/native/vk_volumetrics.h
+096758379a9e46925961951c937ac4b8019a64b3d85fd8e91bb033dae06307b5  libs/MatterGraphics/tests/cloud_shadow_reference_tests.cpp
+dc9f048ef3984264157901078aaccd91306860dede65fdb88fccb8dabd82f163  libs/MatterGraphics/tests/evidence/cloud-shadow-msvc-repro.cpp
+Original full test Git blob: 863acb52990ad92a33836543a8bc0d920819d072
+
+Complete compiler command (full-original-build.log):
+call "C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\Tools\VsDevCmd.bat" -arch=x64 -host_arch=x64 -winsdk=10.0.26100.0 -vcvars_ver=14.44.35207 && cl.exe /DWIN32 /D_WINDOWS /EHsc /O2 /Ob1 /DNDEBUG /std:c++17 /MD /Zi /FAs /I"D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-1\MatterEngine3\include" /I"C:\VulkanSDK\1.4.357.0\Include" "D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-1\MatterEngine3\tests\cloud_shadow_tests.cpp" /Fe:full-original.exe /Fo:full-original.obj /Fd:full-original.pdb /Fa:full-original.asm
+
+Complete compiler command (evidence-original-build.log):
+call "C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\Tools\VsDevCmd.bat" -arch=x64 -host_arch=x64 -winsdk=10.0.26100.0 -vcvars_ver=14.44.35207 && cl.exe /DWIN32 /D_WINDOWS /EHsc /O2 /Ob1 /DNDEBUG /std:c++17 /MD /Zi /FAs /I"D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-1\MatterEngine3\include" /I"D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-1\libs\MatterGraphics\src\native" /I"C:\VulkanSDK\1.4.357.0\Include" "D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-1\libs\MatterGraphics\build\cloud-shadow-investigation\..\..\tests\evidence\cloud-shadow-msvc-repro.cpp" /Fe:evidence-original.exe /Fo:evidence-original.obj /Fd:evidence-original.pdb /Fa"evidence-original.asm" /FAcs
+
+Complete compiler command (evidence-fixed-build.log):
+call "C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\Tools\VsDevCmd.bat" -arch=x64 -host_arch=x64 -winsdk=10.0.26100.0 -vcvars_ver=14.44.35207 && cl.exe /DWIN32 /D_WINDOWS /EHsc /O2 /Ob1 /DCLOUD_SHADOW_LOCAL_ACCUMULATOR /DNDEBUG /std:c++17 /MD /Zi /FAs /I"D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-1\MatterEngine3\include" /I"D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-1\libs\MatterGraphics\src\native" /I"C:\VulkanSDK\1.4.357.0\Include" "D:\Shared With Desktop\AI\matter-engine-cpp\.aq\worktrees\slot-1\libs\MatterGraphics\build\cloud-shadow-investigation\..\..\tests\evidence\cloud-shadow-msvc-repro.cpp" /Fe:evidence-fixed.exe /Fo:evidence-fixed.obj /Fd:evidence-fixed.pdb /Fa"evidence-fixed.asm" /FAcs
+
+Generated original-helper assembly excerpt (offsets retained, unrelated instructions omitted)
+===========================================================================================
+  0009c	0f 57 f6	 xorps	 xmm6, xmm6
+  000e1	0f 28 d3	 movaps	 xmm2, xmm3
+  000e4	c1 e8 02	 shr	 eax, 2
+  000e7	8b d7		 mov	 edx, edi
+  000e9	ff c0		 inc	 eax
+  000eb	f3 41 0f 59 d2	 mulss	 xmm2, xmm10
+  000f0	44 8b c0	 mov	 r8d, eax
+  000f3	0f 57 c9	 xorps	 xmm1, xmm1
+  000f6	8d 3c 85 00 00
+	00 00		 lea	 edi, DWORD PTR [rax*4]
+  000fd	0f 1f 00	 npad	 3
+  00100	0f 28 c2	 movaps	 xmm0, xmm2
+  00103	83 c2 04	 add	 edx, 4
+  00106	f3 0f 58 c1	 addss	 xmm0, xmm1
+  0010a	0f 28 c8	 movaps	 xmm1, xmm0
+  0010d	f3 0f 58 ca	 addss	 xmm1, xmm2
+  00111	f3 0f 58 ca	 addss	 xmm1, xmm2
+  00115	f3 0f 58 ca	 addss	 xmm1, xmm2
+  00119	49 83 e8 01	 sub	 r8, 1
+  0011d	75 e1		 jne	 SHORT $LL74@cloud_self
+  0011f	f3 0f 11 4b 04	 movss	 DWORD PTR [rbx+4], xmm1
+  00124	89 53 14	 mov	 DWORD PTR [rbx+20], edx
+  00127	3b f9		 cmp	 edi, ecx
+  00129	73 29		 jae	 SHORT $LN3@cloud_self
+  0012b	8b 53 14	 mov	 edx, DWORD PTR [rbx+20]
+  0012e	2b cf		 sub	 ecx, edi
+  00130	f3 0f 10 43 04	 movss	 xmm0, DWORD PTR [rbx+4]
+  00135	03 d1		 add	 edx, ecx
+  00137	f3 41 0f 59 da	 mulss	 xmm3, xmm10
+  0013c	0f 28 f3	 movaps	 xmm6, xmm3
+  0013f	f3 0f 58 f0	 addss	 xmm6, xmm0
+  00143	0f 28 c6	 movaps	 xmm0, xmm6
+  00146	48 83 e9 01	 sub	 rcx, 1
+  0014a	75 f0		 jne	 SHORT $LC4@cloud_self
+  0014c	f3 0f 11 73 04	 movss	 DWORD PTR [rbx+4], xmm6
+  00151	89 53 14	 mov	 DWORD PTR [rbx+20], edx
+  00154	45 0f 2f c8	 comiss	 xmm9, xmm8
+  00158	0f 97 c0	 seta	 al
+  0015b	88 43 18	 mov	 BYTE PTR [rbx+24], al
+  0015e	f3 44 0f 10 84
+	24 c0 00 00 00	 movss	 xmm8, DWORD PTR coarse_end_tau$[rsp]
+  001b9	f3 0f 11 43 08	 movss	 DWORD PTR [rbx+8], xmm0
+  001be	48 8d 84 24 a0
+	00 00 00	 lea	 rax, QWORD PTR $T3[rsp]
+  001c6	f3 0f 58 c6	 addss	 xmm0, xmm6
+
+=== Original unchanged full suite (exit 1) ===
+FAIL: constant full-density slab local march matches exp(-sigma times marched distance)
+FAIL: local full-density tau replaces the coarse start segment instead of double counting it
+FAIL: camera-frustum exit stops the detailed loop while the sun-space remainder stays active
+3 FAILURE(S)
+
+=== Original/fixed isolated indirect step grid ===
+steps=4 local=5 total=2 expected=7
+steps=8 local=5 total=2 expected=7
+steps=12 local=5 total=2 expected=7
+steps=16 local=5 total=2 expected=7
+steps=20 local=5 total=2 expected=7
+steps=24 local=5 total=2 expected=7
+steps=28 local=5 total=2 expected=7
+steps=32 local=5 total=2 expected=7
+failures=8
+original exit=1
+failures=0
+fixed exit=0
+
+=== New regression against original header (exit 1) ===
+steps=4 exit=75 local=1.5 total=2 expected=3.5
+FAIL: local plus remaining optical depth survives every step count
+steps=4 exit=250 local=5 total=2 expected=7
+FAIL: local plus remaining optical depth survives every step count
+steps=8 exit=75 local=1.5 total=2 expected=3.5
+FAIL: local plus remaining optical depth survives every step count
+steps=8 exit=250 local=5 total=2 expected=7
+FAIL: local plus remaining optical depth survives every step count
+steps=12 exit=75 local=1.5 total=2 expected=3.5
+FAIL: local plus remaining optical depth survives every step count
+steps=12 exit=250 local=5 total=2 expected=7
+FAIL: local plus remaining optical depth survives every step count
+steps=16 exit=75 local=1.5 total=2 expected=3.5
+FAIL: local plus remaining optical depth survives every step count
+steps=16 exit=250 local=5 total=2 expected=7
+FAIL: local plus remaining optical depth survives every step count
+steps=20 exit=75 local=1.5 total=2 expected=3.5
+FAIL: local plus remaining optical depth survives every step count
+steps=20 exit=250 local=5 total=2 expected=7
+FAIL: local plus remaining optical depth survives every step count
+steps=24 exit=75 local=1.5 total=2 expected=3.5
+FAIL: local plus remaining optical depth survives every step count
+steps=24 exit=250 local=5 total=2 expected=7
+FAIL: local plus remaining optical depth survives every step count
+steps=28 exit=75 local=1.5 total=2 expected=3.5
+FAIL: local plus remaining optical depth survives every step count
+steps=28 exit=250 local=5 total=2 expected=7
+FAIL: local plus remaining optical depth survives every step count
+steps=32 exit=75 local=1.5 total=2 expected=3.5
+FAIL: local plus remaining optical depth survives every step count
+steps=32 exit=250 local=5 total=2 expected=7
+FAIL: local plus remaining optical depth survives every step count
+steps=33 exit=75 local=1.5 total=2 expected=3.5
+FAIL: local plus remaining optical depth survives every step count
+steps=33 exit=250 local=5 total=2 expected=7
+FAIL: local plus remaining optical depth survives every step count
+steps=34 exit=75 local=1.5 total=2 expected=3.5
+FAIL: local plus remaining optical depth survives every step count
+steps=34 exit=250 local=5 total=2 expected=7
+FAIL: local plus remaining optical depth survives every step count
+steps=35 exit=75 local=1.5 total=2 expected=3.5
+FAIL: local plus remaining optical depth survives every step count
+steps=35 exit=250 local=5 total=2 expected=7
+FAIL: local plus remaining optical depth survives every step count
+steps=36 exit=75 local=1.5 total=2 expected=3.5
+FAIL: local plus remaining optical depth survives every step count
+steps=36 exit=250 local=5 total=2 expected=7
+FAIL: local plus remaining optical depth survives every step count
+steps=37 exit=75 local=1.5 total=2 expected=3.5
+FAIL: local plus remaining optical depth survives every step count
+steps=37 exit=250 local=5 total=2 expected=7
+FAIL: local plus remaining optical depth survives every step count
+steps=38 exit=75 local=1.5 total=2 expected=3.5
+FAIL: local plus remaining optical depth survives every step count
+steps=38 exit=250 local=5 total=2 expected=7
+FAIL: local plus remaining optical depth survives every step count
+steps=39 exit=75 local=1.5 total=2 expected=3.5
+FAIL: local plus remaining optical depth survives every step count
+steps=39 exit=250 local=5 total=2 expected=7
+FAIL: local plus remaining optical depth survives every step count
+steps=40 exit=75 local=1.5 total=2 expected=3.5
+FAIL: local plus remaining optical depth survives every step count
+steps=40 exit=250 local=5 total=2 expected=7
+FAIL: local plus remaining optical depth survives every step count
+FAIL: invalid coarse depth contributes zero and start depth is ignored
+FAIL: invalid coarse depth contributes zero and start depth is ignored
+FAIL: invalid coarse depth contributes zero and start depth is ignored
+35 FAILURE(S)
+baseline regression exit=1
+
+=== Final module CTest (exit 0) ===
+Internal ctest changing into directory: D:/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-1/libs/MatterGraphics/build/windows-msvc/relwithdebinfo
+Test project D:/Shared With Desktop/AI/matter-engine-cpp/.aq/worktrees/slot-1/libs/MatterGraphics/build/windows-msvc/relwithdebinfo
+      Start  1: matter_graphics_atmosphere
+ 1/10 Test  #1: matter_graphics_atmosphere ...............   Passed    0.01 sec
+      Start  2: matter_graphics_cloud_layer
+ 2/10 Test  #2: matter_graphics_cloud_layer ..............   Passed    0.02 sec
+      Start  3: matter_graphics_cloud_shadow
+ 3/10 Test  #3: matter_graphics_cloud_shadow .............   Passed    0.01 sec
+      Start  4: matter_graphics_volumetric_quality
+ 4/10 Test  #4: matter_graphics_volumetric_quality .......   Passed    0.07 sec
+      Start  5: matter_graphics_cloud_shadow_reference
+ 5/10 Test  #5: matter_graphics_cloud_shadow_reference ...   Passed    0.06 sec
+      Start  6: matter_graphics_lifetime
+ 6/10 Test  #6: matter_graphics_lifetime .................   Passed    0.02 sec
+      Start  7: matter_graphics_scene
+ 7/10 Test  #7: matter_graphics_scene ....................   Passed    0.03 sec
+      Start  8: matter_graphics_composition
+ 8/10 Test  #8: matter_graphics_composition ..............   Passed    0.02 sec
+      Start  9: matter_graphics_vulkan
+ 9/10 Test  #9: matter_graphics_vulkan ...................   Passed    1.01 sec
+      Start 10: matter_graphics_independence
+10/10 Test #10: matter_graphics_independence .............   Passed    0.51 sec
+
+100% tests passed, 0 tests failed out of 10
+
+Total Test time (real) =   1.78 sec
+
+=== Native froxel-resize smoke (exit 0; stdout then stderr) ===
+Vulkan adapter: NVIDIA GeForce RTX 4090 | driver: NVIDIA (610.74, 0x98928000) | API 1.4.341
+DLSS fallback: Streamline disabled for Vulkan test device
+[vk] static reserve: clusters 32 MiB, vertices 512 MiB, indices 256 MiB (host-visible)
+froxel RT trace: step=0 requested=160x90x128 active=160x90x128 gen=8 validation=0
+froxel RT trace: step=1 requested=80x45x64 active=80x45x64 gen=9 validation=0
+froxel RT trace: step=2 requested=320x180x256 active=320x180x256 gen=10 validation=0
+froxel RT trace: step=3 requested=240x135x192 active=240x135x192 gen=11 validation=0
+froxel RT trace: step=4 requested=160x90x128 active=160x90x128 gen=12 validation=0
+froxel GPU timing: combined=1.1660 density=0.2715 scatter=0.6856 integrate=0.2084 tolerance=0.2914
+validation errors: 0
+ALL PASS
+[vk] Vulkan loader/general ERROR: loader_get_json: Failed to open JSON file D:\Epic Games\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win32.json
+[vk] Vulkan loader/general ERROR: loader_get_json: Failed to open JSON file D:\Epic Games\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win64.json
+[vk] Vulkan loader/general warning: Removing layer VK_LAYER_EOS_Overlay (C:\Program Files (x86)\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win64.json) because it is a duplicate of VK_LAYER_EOS_Overlay (C:\Program Files (x86)\Epic Games\Launcher\Portal\Extras\Overlay\EOSOverlayVkLayer-Win32.json)
+[vk] present requested=auto effective=fifo(2) supported=[fifo(2),fifo_relaxed(3),mailbox(1),immediate(0),other(1000361000)] images=3 extent=320x200
+[vk] present requested=auto effective=fifo(2) supported=[fifo(2),fifo_relaxed(3),mailbox(1),immediate(0),other(1000361000)] images=3 extent=320x200
+[vk] present requested=auto effective=fifo(2) supported=[fifo(2),fifo_relaxed(3),mailbox(1),immediate(0),other(1000361000)] images=3 extent=320x200
+[vk] impostor atlas: 128 slots x 2 layers of 1024x1024 RGBA8 (cell 128 px, filtered mips) = 1365 MiB
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0] (SPIR-V Interface) [VK_SHADER_STAGE_VERTEX_BIT] has an Output value declared at Location 17 Component 0, but there is no corresponding Input declared in [VK_SHADER_STAGE_FRAGMENT_BIT].
+This is not invalid, but the write to the unused Output is discarded.
+The Output variable is:
+  pointer to Output -> uint32
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 1 not consumed by vertex shader.
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 2 not consumed by vertex shader.
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 3 not consumed by vertex shader.
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 4 not consumed by vertex shader.
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 6 not consumed by vertex shader.
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0].pVertexInputState Vertex attribute at location 7 not consumed by vertex shader.
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0] (SPIR-V Interface) [VK_SHADER_STAGE_VERTEX_BIT] has an Output value declared at Location 17 Component 0, but there is no corresponding Input declared in [VK_SHADER_STAGE_FRAGMENT_BIT].
+This is not invalid, but the write to the unused Output is discarded.
+The Output variable is:
+  pointer to Output -> uint32
+[vk] Vulkan loader/general warning: vkCreateGraphicsPipelines(): pCreateInfos[0] (SPIR-V Interface) [VK_SHADER_STAGE_VERTEX_BIT] has an Output value declared at Location 17 Component 0, but there is no corresponding Input declared in [VK_SHADER_STAGE_FRAGMENT_BIT].
+This is not invalid, but the write to the unused Output is discarded.
+The Output variable is:
+  pointer to Output -> uint32
+[vk] Vulkan loader/general warning: (Warning - This VUID has now been reported 10 times, which is the duplicate_message_limit value, this will be the last time reporting it).
+vkCreateGraphicsPipelines(): pCreateInfos[0] (SPIR-V Interface) [VK_SHADER_STAGE_VERTEX_BIT] has an Output value declared at Location 17 Component 0, but there is no corresponding Input declared in [VK_SHADER_STAGE_FRAGMENT_BIT].
+This is not invalid, but the write to the unused Output is discarded.
+The Output variable is:
+  pointer to Output -> uint32
+[rt] independent GI shader specialization=1
+[rt] local primary area samples=4 (0=adaptive); visibility diagnostic counters=1
+[rt] local-light selection code=0; packed budgets=0
+[rt] secondary local-light sampling=1 (0 exact, 1 importance reservoir)
+[rt] secondary surface detail mode=0 (0 reference, 1 adaptive, 2 normal-only)
+[vk] static upload frame bytes=276 pending_parts=0 publish=0.03 ms
+[vk] present requested=auto effective=fifo(2) supported=[fifo(2),fifo_relaxed(3),mailbox(1),immediate(0),other(1000361000)] images=3 extent=320x200
+task9 fog/cloud: base=(0.000673,0.001185,0.001859,0.003204) combined=(0.020462,0.020981,0.021652,0.023193) cloud=0.019989
+[vk] static upload frame bytes=376 pending_parts=0 publish=0.01 ms
+terrain cloud shadow: clear=0.0001473 occluded=0.0000000 alpha=0.0039978/0.0039978
+terrain fog-only shadow: clear=0.0003576 occluded=0.0003576 alpha=0.0039005/0.0039005
+task12 orders: 0.0212079 0.0566787 0.0814741 0.0952815 generation=6
+task12 seeded tau: center local=2.4999 total=4.5000 near=0.0863/2.0863 alpha=0.6250 edge=0.0213/4.0212 receiver=5
+
+=== GCC original full suite, ASan/UBSan (exit 0) ===
+ALL PASS
+
+=== GCC regression, ASan/UBSan (exit 0) ===
+ALL PASS
+
+=== Scratch adapter: test_verification.py ===
+import os
+from pathlib import Path
+import subprocess
+
+
+def test_verification():
+    directory = Path(__file__).resolve().parent
+    phase = os.environ.get('CLOUD_SHADOW_PHASE', 'module')
+    if phase == 'linux':
+        for name in ('full-gcc-sanitized', 'reference-gcc-sanitized'):
+            result = subprocess.run([str(directory / name)], capture_output=True, text=True, timeout=60)
+            (directory / (name + '-run.log')).write_text(result.stdout + result.stderr)
+            assert result.returncode == 0, result.stdout + result.stderr
+        return
+    script = subprocess.check_output(['wslpath', '-w', str(directory / 'verify.ps1')], text=True).strip()
+    result = subprocess.run(['/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script, '-Phase', phase], capture_output=True, text=True, timeout=300)
+    (directory / (phase + '-run.log')).write_text(result.stdout + result.stderr)
+    assert result.returncode == 0, result.stdout + result.stderr
+    if phase == 'gpu':
+        assert 'validation errors: 0' in result.stdout + result.stderr
+        assert 'ALL PASS' in result.stdout + result.stderr
+
+=== Scratch adapter: verify.ps1 ===
+param([string]$Phase = 'module')
+$ErrorActionPreference = 'Stop'
+$repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..\..\..')).Path
+Import-Module (Join-Path $repo 'tools\windows\MatterWindowsToolchain.psm1') -Force
+$t = Resolve-MatterWindowsToolchain -RepositoryRoot $repo
+$env:VK_LAYER_PATH = Join-Path $t.VulkanSdk 'Bin'
+$env:MATTER_GRAPHICS_REQUIRE_VALIDATION = '1'
+$ErrorActionPreference = 'Continue'
+if ($Phase -eq 'module') {
+    $ctest = Join-Path (Split-Path $t.CMake) 'ctest.exe'
+    & $ctest --test-dir (Join-Path $repo 'libs\MatterGraphics\build\windows-msvc\relwithdebinfo') --output-on-failure -j 1
+    exit $LASTEXITCODE
+}
+if ($Phase -eq 'gpu') {
+    $env:MATTER_VK_SMOKE_MODE = 'froxel-resize'
+    & (Join-Path $repo 'MatterEditor\build\cmake\windows-msvc\relwithdebinfo\vulkan_smoke_tests.exe')
+    exit $LASTEXITCODE
+}
+if ($Phase -eq 'evidence') {
+    & (Join-Path $PSScriptRoot 'evidence-original.exe')
+    Write-Output "original exit=$LASTEXITCODE"
+    if ($LASTEXITCODE -ne 1) { exit 2 }
+    & (Join-Path $PSScriptRoot 'evidence-fixed.exe')
+    Write-Output "fixed exit=$LASTEXITCODE"
+    exit $LASTEXITCODE
+}
+if ($Phase -eq 'grid') {
+    & (Join-Path $PSScriptRoot 'step_grid.exe')
+    Write-Output "original exit=$LASTEXITCODE"
+    if ($LASTEXITCODE -ne 1) { exit 2 }
+    & (Join-Path $PSScriptRoot 'step_grid_fixed.exe')
+    Write-Output "fixed exit=$LASTEXITCODE"
+    exit $LASTEXITCODE
+}
+if ($Phase -eq 'regression-original') {
+    & (Join-Path $PSScriptRoot 'regression-original.exe')
+    Write-Output "baseline regression exit=$LASTEXITCODE"
+    if ($LASTEXITCODE -ne 1) { exit 2 }
+    exit 0
+}
+exit 3

@@ -59,7 +59,7 @@
 #include "cloud_layers.h"
 #include "matter/math_types.h"
 #include "volumetric_quality.h"
-#include "../../../../MatterEngine3/src/render/vk_resources.h"
+#include "vk_resources.h"
 
 namespace matter {
 class VulkanDevice;
@@ -273,6 +273,10 @@ inline CloudSelfShadowReference cloud_self_shadow_constant_slab_reference(
         froxel_exit_distance_m < 0.0f)
         froxel_exit_distance_m = 0.0f;
     steps = std::min(steps, 32u);
+    // Accumulate outside the returned aggregate: MSVC 19.44.35211 /O2 /Ob1 can leave
+    // the post-loop read of its member stale when unrolling by four. Keep
+    // the same per-step float additions, then publish the completed value.
+    float tau_local_full = 0.0f;
     if (steps > 0 && requested_distance_m > 0.0f &&
         froxel_exit_distance_m > 0.0f) {
         result.marched_distance_m =
@@ -280,12 +284,13 @@ inline CloudSelfShadowReference cloud_self_shadow_constant_slab_reference(
         const float step_m = result.marched_distance_m /
                              static_cast<float>(steps);
         for (uint32_t i = 0; i < steps; ++i) {
-            result.tau_local_full += sigma * step_m;
+            tau_local_full += sigma * step_m;
             ++result.samples_taken;
         }
         result.stopped_at_froxel_exit =
             froxel_exit_distance_m < requested_distance_m;
     }
+    result.tau_local_full = tau_local_full;
     result.tau_remaining_coarse =
         std::isfinite(coarse_end_tau) ? std::clamp(coarse_end_tau, 0.0f, 80.0f)
                                       : 0.0f;
