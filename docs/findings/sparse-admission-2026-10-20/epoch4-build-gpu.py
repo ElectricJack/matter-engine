@@ -1,0 +1,19 @@
+from pathlib import Path
+import subprocess
+import sys
+# Run from the repository root. Use --fresh after changing included headers.
+fresh = "--fresh" in sys.argv
+root=Path.cwd()
+out=Path('/tmp/eager-nexus-71-epoch4/gpu-build');out.mkdir(exist_ok=True)
+
+sources=['MatterEngine3/tests/vulkan_smoke_tests.cpp', 'MatterEditor/src/ui_lighting_controls.cpp', 'libs/AssetStoreLib/src/store_hash.cpp', 'libs/MeshChartingLib/src/mesh_charting.cpp', 'MatterEngine3/src/render/streamline_bridge.cpp', 'MatterEngine3/src/render/vk_context.cpp', 'MatterEngine3/src/render/vk_resources.cpp', 'MatterEngine3/src/render/vk_pipeline.cpp', 'MatterEngine3/src/render/vk_scene_renderer.cpp', 'libs/MatterGraphics/src/native/mesh_raster.cpp', 'libs/MatterGraphics/src/native/mesh_pipelines.cpp', 'MatterEngine3/src/render/vk_sparse_voxel.cpp', 'MatterEngine3/src/sparse_voxel_bake.cpp', 'MatterEngine3/src/surface_proxy.cpp', 'MatterEngine3/src/render/vk_animation_skinning.cpp', 'MatterEngine3/src/render/vk_animation_bounds.cpp', 'MatterEngine3/src/animation/animation_budget.cpp', 'MatterEngine3/src/render/tileset_slicer.cpp', 'MatterEngine3/src/render/bc_encode.cpp', 'MatterEngine3/src/render/vt_residency.cpp', 'MatterEngine3/src/props/props.cpp', 'MatterEngine3/src/util/json_doc.cpp', 'MatterEngine3/src/render/vt_stub_filler.cpp', 'MatterEngine3/src/render/vt_compositor.cpp', 'MatterEngine3/src/render/vt_enrich.cpp', 'MatterEngine3/src/terrain_field.cpp', 'MatterEngine3/tests/vulkan_smoke_tileset_bake_stub.cpp', 'MatterEngine3/src/tileset_gtex.cpp', 'MatterEngine3/src/render/vk_volumetrics.cpp', 'MatterEngine3/src/render/vk_atmosphere.cpp', 'MatterEngine3/src/render/vk_cloud_shadows.cpp', 'MatterEngine3/src/render/vk_emitter_gather.cpp', 'MatterEngine3/src/render/raster_mesh.cpp', 'MatterEngine3/src/render/indexed_part_geometry.cpp', 'MatterEngine3/src/render/vk_instance_cache.cpp', 'MatterEngine3/src/render/frame_matrices.cpp', 'MatterEngine3/src/render/vk_temporal.cpp', 'MatterEngine3/src/render/vk_gi_math.cpp', 'MatterEngine3/src/render/vk_lighting_controls.cpp', 'MatterEngine3/src/render/matrix_math.cpp', 'MatterEngine3/src/render/lod_trace.cpp', 'libs/ProfileLib/src/profile.cpp']
+includes=['MatterEngine3', 'MatterEngine3/include', 'MatterEngine3/src', 'MatterEngine3/tests', 'MatterEngine3/src/render', 'MatterEngine3/src/provider', 'libs/ProfileLib/include', 'libs/AssetStoreLib/include', 'libs/AssetStoreLib/src', 'libs/MeshChartingLib/include', 'libs/MatterSurfaceLib/include', 'libs/SpatialQueryLib/include', 'libs/MemoryLib/include', 'libs/MathLib/include', 'third_party/bc7enc', 'third_party/raylib/src', 'third_party/raylib/src/external/glfw/include', 'third_party/ozz-animation/include', 'third_party/flecs', 'third_party/Vulkan-Headers/include']
+
+sources += ['MatterEngine3/tests/gpu_solid_mesher_tests.cpp','MatterEngine3/tests/gpu_visual_mesher_vk_tests.cpp']
+objects=[]
+for index,source in enumerate(sources):
+    obj=out/(str(index)+'_'+Path(source).stem+'.o');objects.append(str(obj))
+    if not fresh and obj.exists() and obj.stat().st_mtime>Path(source).stat().st_mtime: continue
+    print('COMPILE',source,flush=True)
+    subprocess.run(['g++','-std=c++17','-O0','-g0','-ffunction-sections','-fdata-sections','-DMATTER_VK_TEST_FAULT_INJECTION','-DMATTER_HAVE_STREAMLINE=0',*(['-include','/tmp/eager-nexus-71-epoch4/linux_env_compat.h'] if 'gpu_visual_mesher_vk_tests' in source else []),*['-I'+i for i in includes],'-c',source,'-o',str(obj)],check=True)
+subprocess.run(['g++',*objects,'MatterEngine3/build/obj_viewer_linux/flecs.o','MatterEngine3/build/obj_viewer_linux/bc7enc.o','MatterEngine3/build/libmatter_engine3_viewer_linux.a','MatterEditor/build/linux/libglfw3.a','-Wl,--gc-sections','-L/tmp/eager-nexus-71-vulkan-link','-lvulkan','-lX11','-ldl','-lpthread','-lm','-lrt','-o',str(out/'vulkan_smoke_tests')],check=True)
