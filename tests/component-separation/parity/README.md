@@ -95,10 +95,13 @@ cmake --build $OUT/parity-rel
 cmake -S MatterEngine3/src/script/portable_host -B $OUT/portable-host -G Ninja -DBUILD_TESTING=ON
 cmake --build $OUT/portable-host --target matter_host_quickjs_tests
 
-# WASM module (matter_geometry_wasm.mjs + .wasm), via the binding's own smoke build
-cmake -S bindings/geometry-c -B $OUT/geometry-c -G Ninja && cmake --build $OUT/geometry-c
-/usr/bin/python3.12 bindings/geometry-c/wasm/build-smoke.py --emsdk ~/emsdk \
-    --build-dir $OUT/wasm --native-consumer $OUT/geometry-c/matter_geometry_c_tests
+# WASM module (matter_geometry_wasm.mjs + .wasm). Testing builds, including
+# build-smoke.py, link it SINGLE_FILE with no .wasm beside it; this harness
+# needs the library-only build's separate asset (wasm/Module.cmake).
+cmake -S bindings/geometry-c -B $OUT/wasm-lib -G Ninja -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_TOOLCHAIN_FILE=$EMSDK/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake \
+    -DBUILD_TESTING=OFF -DMATTER_GEOMETRY_C_TESTS=OFF
+cmake --build $OUT/wasm-lib --target matter_geometry_wasm
 
 # Browser runtime
 tsc -p integrations/web-procedural/runtime/tsconfig.json --outDir $OUT/runtime-dist
@@ -113,7 +116,7 @@ You also need Node 22.7 or newer, Chromium at `/opt/google/chrome/chrome`
 /usr/bin/python3.12 tests/component-separation/parity/run_parity.py \
     --native-runner $OUT/parity-rel/matter_parity_native \
     --native-host $OUT/portable-host/matter_host_quickjs_tests \
-    --wasm-module $OUT/wasm/matter_geometry_wasm.mjs \
+    --wasm-module $OUT/wasm-lib/matter_geometry_wasm.mjs \
     --runtime-dir $OUT/runtime-dist \
     --out $OUT/parity-out
 ```

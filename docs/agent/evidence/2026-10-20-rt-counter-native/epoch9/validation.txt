@@ -1,0 +1,111 @@
+noble-zenith-31 epoch9: failed-frame resource rollback
+
+Authorization: owner comment-112a597760c242b79c5c4d084ffddf75 and supervisor
+comment at1792550033.0258496 authorize concrete source corrections followed
+by ONE unchanged original wrapper invocation: rt-counters then rt,1500s each,
+same environment/validation/320x200/resource caps and process-group cleanup.
+No LLVM preload, optimizer/workload/assertion change or extra native diagnostic.
+On failure/cap publish exact evidence and own-close UNMET, without resubmission.
+
+Baseline: own published a027dd5ee9e0f6eee30dde8785d5aee29b7f798d, recovered
+by fast-forward from clean assigned9d846e66. Epoch8 failures remain preserved.
+No unheld branch, project configuration or integration control was changed.
+
+Characterization and corrections:
+- Epoch8 gates-rt-counters.log:523-525 reports three InvalidImageLayout errors
+  on serial45 following dispatch42/record43/submit44 failures. Resource helpers
+  update VkImageResource.layout while recording; discarded command buffers do
+  not execute those barriers. There was no renderer layout rollback at finish.
+  Capture renderer-owned attachment/history layouts after target allocation,
+  before frame recording. Matching failed submission restores tracked layouts;
+  successful submission preserves them. Serial and allocation identity guard
+  duplicate completion and replacement; reset restores retained attachments.
+  This does not issue compensating GPU barriers or alter fence ordering.
+- Epoch8 teardown reported leaked timestamp query pool0x23e. Candidate slots
+  allocate ts_pool at the end of each slot. A later slot's injected allocation
+  failure called a lambda that destroyed only descriptor pools. FrameResources
+  owns raw query handles, so vector destruction could not free them. Candidate
+  cleanup now destroys every allocated timestamp/statistics pool before the
+  descriptor pools; buffer/image RAII ownership remains unchanged.
+- Standalone rt source diagnosis: run_native_ray_tracing_path first calls
+  run_native_multilod_rt_mapping. Its first320x200 frame retains default
+  VulkanGiSettings.enabled=1, unlike rt-counters which explicitly disables GI.
+  record_ray_trace_dispatch therefore records diffuse/reflection lighting
+  against the original combined rt_pipeline_, beyond the isolated shadow/test
+  pipelines introduced in epoch8. The saved log confirms pipeline creation
+  completed and static upload1104bytes, but contains no subsequent phase marker.
+  Deferred lighting compilation is a plausible cause, not established by this
+  log. The exact blocked call remains unproven. Added flushed multi-LOD phase
+  markers and an entry capability banner to the existing fixture to identify
+  the last reached phase if the authorized gate still times out. No fixture
+  assertions, workload, extent, shaders, compiler settings or timeout changed.
+
+Focused CPU checks:
+aq test --aq-timeout 75 -n 0 MatterEngine3/tests/test_rt_counter_cpu.py
+  MatterEngine3/tests/test_rt_pipeline_subset.py
+  MatterEngine3/tests/test_frame_recording_rollback.py -q
+Actual spaced command in cpu-pytest.log;12PASS in1.36s.
+After final reset correction: aq test --aq-timeout 75 -n 0
+  MatterEngine3/tests/test_frame_recording_rollback.py -q
+Actual command in rollback-final-pytest.log;2PASS in0.96s.
+Production rollback helper is compiled with stub image ownership, and the
+production candidate cleanup lambda is compiled with tracked query handles.
+These do not prove native synchronization or runtime acceptance.
+
+Fresh Linux build, using own slot-0 source and existing supported generator:
+python3 -I docs/agent/evidence/2026-10-20-rt-counter-native/gen_linux_smoke_cmake.py
+  /home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-0
+  /tmp/noble-zenith-31-epoch9/cmakeproj
+cmake -S /tmp/noble-zenith-31-epoch9/cmakeproj
+  -B /tmp/noble-zenith-31-epoch9/build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build /tmp/noble-zenith-31-epoch9/build --parallel 4
+Full 97-source build PASS; final incremental build PASS (6/6, build-final.log).
+
+Original native wrapper SHA256:
+8fb7505cea0c41e048525a33466d030764592b4fad66fccbef6122844a81246e
+Native acceptance: FAIL / UNMET. Windows waived under existing owner policy.
+No hardware-RT, performance or full native acceptance claim.
+
+Exactly one authorized invocation completed against published source
+934bc3d9901703af56c3e2cead07220256267f70. Command: bash
+  docs/agent/evidence/2026-10-20-rt-counter-native/epoch9/run-gates.sh
+Executable SHA256:
+0eaf93fcb6839f0241999221d359fc6532bf610391090a22913caffe9e915148
+Exact environment, resource caps and admission command are in run-gates.sh.
+The original wrapper was unchanged. Foreground exec60820 returned exit1.
+Full pytest result: 1 failed, 1 passed in1685.38s (0:28:05).
+
+rt-counters PASS:
+- Vulkan RT available=true, llvmpipe (LLVM20.1.2,256bits), reason=none.
+- Rejected surface lookups total30, samples7, warnings6. ALL PASS.
+- Validation errors0, including failed-dispatch/record/submit recovery and
+  teardown. The epoch8 InvalidImageLayout and query-pool leak are absent.
+- Exit0, wall3:12.42, maximum RSS2103032kB. See gates-rt-counters.log.
+
+rt FAIL / UNMET:
+- Entry reports Vulkan RT available=true.
+- First multi-LOD attempt completed prepare, recording and composition.
+- Last marker: attempt=1 phase=end_frame.enter monotonic_ms=272441542.776.
+  No end_frame.exit marker, assertions, ALL PASS or final validation summary.
+- Original wrapper raised TimeoutExpired at1500s; timeout cleanup sent SIGTERM
+  to the session process group and reaped the timed child (returncode-15).
+- This localizes the outstanding stall to end_frame on the first GI-enabled
+  multi-LOD frame. It does not prove which internal Vulkan/driver call stalls
+  or establish deferred lighting compilation as the cause.
+- Full logs: gates-rt.log and gates-pytest.log. The cap prevented standalone
+  RT acceptance and teardown verification; zero errors cannot be inferred
+  from the absence of a final validation summary.
+
+Containment and run accounting:
+- gate-start-process.txt records executable2076777 in group2076776.
+- gate-final-containment.json records a post-completion /proc scan with no
+  surviving executable-path matches or members of the initial process group.
+- The3100s durable timer outlasted the actual1685.38s producer. Supervisor
+  msg-9fb906fca1b64bbea0313bcdb16c0c20 prompted immediate collection before
+  the timer fired. The run was admitted and completed, not refused or missing.
+  Cancelled timer48b0408e-d57e-41fc-9461-99cd9ba13341; no replacement run.
+- Supervisor notified through msg-fec9ea0d0409456abcc531b758f88d54.
+- Per owner policy, publish this evidence and own-close FAIL/UNMET. No extra
+  native retries, assertion changes, environment changes or timeout extension.
+
+Archived pytest traceback has trailing whitespace stripped for git checks.

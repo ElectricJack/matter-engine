@@ -6,9 +6,10 @@ codec. It links only `matter_contracts`. `matter_physics_generation` supplies
 build returns `unsupported_capability` from generation while retaining baked
 product loading. No public header contains solver, ECS, renderer, or host types.
 
-The implementation compiles the existing `MatterEngine3/src/tileset_settle.cpp`
-and `bake_trace.cpp` directly. It neither copies the algorithm nor links the
-engine archive. The delivered contracts gate `0056e1576` is an ancestor of this
+The Box3d settle core (`src/tileset_settle.{h,cpp}`) lives in this module and
+is the single authority; the engine compiles it from here and
+`MatterEngine3/src/tileset_settle.h` only forwards. `bake_trace.cpp` is compiled
+in place from `MatterEngine3/src`. The module does not link the engine archive. The delivered contracts gate `0056e1576` is an ancestor of this
 work. Legacy source authority, central manifests, ScriptHost/DslState, live
 terrain installation, and the Settle Lab remain with the ordered integration
 owners described in `docs/component-separation/ownership.md`.

@@ -13,6 +13,8 @@ export class Viewport {
   private readonly environment;
   private readonly grid = new GridHelper(20, 40, 0x435160, 0x26313b);
   private view: MeshView | undefined;
+  private reducedView: MeshView | undefined;
+  private detailDistance = Infinity;
   private wireframe = false;
   private normals = false;
   private disposed = false;
@@ -44,7 +46,7 @@ export class Viewport {
     };
     this.observer = new ResizeObserver(resize); this.observer.observe(container); resize();
     this.renderer.setAnimationLoop(() => {
-      this.controls.update(); this.renderer.render(this.scene, this.camera);
+      this.controls.update(); this.updateDetail(); this.renderer.render(this.scene, this.camera);
     });
     canvas.addEventListener('webglcontextlost', this.contextLost);
     canvas.addEventListener('webglcontextrestored', this.contextRestored);
@@ -63,7 +65,17 @@ export class Viewport {
     const start = performance.now();
     const next = createMeshView(result);
     next.setDisplay(this.wireframe, this.normals);
-    this.view?.dispose(); this.view = next; this.scene.add(next.root);
+    const level = result.lods[0];
+    let reduced: MeshView | undefined;
+    try {
+      if (level) reduced = createMeshView({ ...result, ...level });
+      reduced?.setDisplay(this.wireframe, this.normals);
+    } catch (error) { next.dispose(); throw error; }
+    this.clear(); this.view = next; this.reducedView = reduced; this.scene.add(next.root);
+    if (reduced) { reduced.root.visible = false; this.scene.add(reduced.root); }
+    const bounds = new Box3().setFromObject(next.root);
+    const radius = bounds.getSize(new Vector3()).length() / 2;
+    this.detailDistance = radius / Math.sin(MathUtils.degToRad(this.camera.fov / 2)) * 2.5;
     if (frame) this.frame();
     // Include actual buffer upload rather than only BufferGeometry construction.
     this.renderer.render(this.scene, this.camera);
@@ -72,9 +84,23 @@ export class Viewport {
 
   setDisplay(wireframe: boolean, normals: boolean): void {
     this.wireframe = wireframe; this.normals = normals; this.view?.setDisplay(wireframe, normals);
+    this.reducedView?.setDisplay(wireframe, normals);
   }
 
-  clear(): void { this.view?.dispose(); this.view = undefined; }
+  private updateDetail(): void {
+    if (!this.view) return;
+    const reduced = !!this.reducedView && this.camera.position.distanceTo(this.controls.target) > this.detailDistance;
+    this.view.root.visible = !reduced;
+    if (this.reducedView) this.reducedView.root.visible = reduced;
+    this.renderer.domElement.dataset.detail = reduced ? 'reduced' : 'full';
+    this.renderer.domElement.dataset.renderedTriangles = String(reduced ? this.reducedView!.triangles : this.view.triangles);
+  }
+
+  clear(): void {
+    this.view?.dispose(); this.reducedView?.dispose();
+    this.view = undefined; this.reducedView = undefined;
+    this.renderer.domElement.dataset.renderedTriangles = '0';
+  }
 
   frame(): void {
     if (!this.view || this.view.root.children.length === 0) return;

@@ -167,11 +167,16 @@ cmake --build /tmp/matter-web-viewer --parallel 1
 ctest --test-dir /tmp/matter-web-viewer --output-on-failure --parallel 1
 ```
 
-Build the real module first with the pinned binding toolchain:
+Build the real module first with the pinned binding toolchain. The demo bundle
+stages a separate `.wasm`, so use the library-only build; testing builds
+(including `build-smoke.py`) link the module SINGLE_FILE and fail staging with
+`Demo bundle input missing: …/matter_geometry_wasm.wasm`:
 
 ```sh
-python3 bindings/geometry-c/wasm/build-smoke.py --emsdk /home/jkern/emsdk \
-  --build-dir /tmp/matter-web-wasm
+cmake -S bindings/geometry-c -B /tmp/matter-web-wasm -G Ninja -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_TOOLCHAIN_FILE=/home/jkern/emsdk/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake \
+  -DBUILD_TESTING=OFF -DMATTER_GEOMETRY_C_TESTS=OFF
+cmake --build /tmp/matter-web-wasm --target matter_geometry_wasm
 ```
 
 Alternatively configure this viewer CMake root with the pinned Emscripten

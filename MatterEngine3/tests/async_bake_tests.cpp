@@ -4,8 +4,8 @@
 //
 // The four cases together validate the async event protocol Tasks 8+ and the
 // viewer rely on:
-//   (a) request_bake_returns_immediately — wall-clock request_bake() < 50 ms
-//       on a cache-cold world, and events arrive later during pump.
+//   (a) request_bake_returns_immediately — request returns independently of
+//       worker bake execution; events arrive later during pump.
 //   (b) bake_completes_with_finished — full sequence: BakeStarted, one or more
 //       BakePartDone with phase=="parts", ending in BakeFinished; the tracer
 //       query API reports instance_count() > 0 after.
@@ -59,12 +59,14 @@
 #include <vector>
 
 #include "check.h"
+#include "memory_fixture_io.h"
 
 using clk = std::chrono::steady_clock;
 namespace fs = std::filesystem;
 
 // --- Sandbox helpers ------------------------------------------------------
 
+#ifdef MATTER_ASYNC_SOURCE_QUALIFICATION
 static bool write_file(const fs::path& path, const std::string& body) {
     std::error_code ec;
     fs::create_directories(path.parent_path(), ec);
@@ -122,6 +124,49 @@ static bool project_fixture_contract(const fs::path& root,
     return has_world_source && has_no_legacy_world_data;
 }
 
+#else
+static matter::SourceSnapshot::Files fixture_sources;
+static auto fixture_cache = std::make_shared<matter::test::MemoryCacheByteStorage>();
+static bool write_file(const fs::path& path, const std::string& body) {
+    fixture_sources[matter::SourceSnapshot::key(path.string())] = body;
+    return true;
+}
+static bool read_file(const fs::path& path, std::string& body) {
+    const auto found = fixture_sources.find(matter::SourceSnapshot::key(path.string()));
+    if (found == fixture_sources.end()) return false;
+    body = found->second;
+    return true;
+}
+static void remove_tree(const fs::path& root) {
+    const auto under_root = [&](const std::string& path) {
+        const auto relative = fs::path(path).lexically_relative(root);
+        return !relative.empty() && relative.begin()->string() != "..";
+    };
+    for (auto it = fixture_sources.begin(); it != fixture_sources.end();) {
+        if (under_root(it->first)) it = fixture_sources.erase(it);
+        else ++it;
+    }
+    for (const auto& entry : fixture_cache->entries())
+        if (under_root(entry.first)) fixture_cache->erase(entry.first);
+}
+static bool reset_project(const fs::path& root, const std::string&) {
+    remove_tree(root);
+    return true;
+}
+static bool reset_cache(const fs::path& root, const std::string&) {
+    remove_tree(root / ".cache");
+    return true;
+}
+static bool project_fixture_contract(const fs::path& root, const std::string& name) {
+    const matter::SourceSnapshot sources(fixture_sources);
+    const bool has_world = sources.exists((root / "worlds" / (name + ".js")).string());
+    const bool no_legacy = !sources.is_directory((root / "world_data").string());
+    CHECK(has_world, "project fixture provides worlds/<Name>.js");
+    CHECK(no_legacy, "project fixture has no legacy manifest tree");
+    return has_world && no_legacy;
+}
+#endif
+
 static std::string project_world_root(const std::string& module,
                                       bool expand = false) {
     std::ostringstream root;
@@ -149,11 +194,16 @@ static bool write_project_world(const fs::path& root,
 
 static matter::WorldDesc project_world_desc(const std::string& project_dir,
                                             const char* world_name) {
-    return matter::WorldDesc{
-        project_dir.c_str(),
-        world_name,
-        "../shared-lib",
-    };
+    matter::WorldDesc result{project_dir.c_str(), world_name, "../shared-lib"};
+#ifndef MATTER_ASYNC_SOURCE_QUALIFICATION
+    auto io = std::make_shared<matter::WorldFixtureIO>();
+    io->sources = std::make_shared<const matter::SourceSnapshot>(fixture_sources,
+        std::vector<std::string>{project_dir + "/objects", project_dir + "/worlds",
+                                 project_dir + "/shared-lib"});
+    io->cache = fixture_cache;
+    result.fixture_io = std::move(io);
+#endif
+    return result;
 }
 
 // Build a minimal Box project under `root`. Object Box.js is a trivial
@@ -435,13 +485,45 @@ static bool test_returns_immediately(const std::string& sandbox) {
     auto s = engine->open_world(wd, err);
     CHECK(s != nullptr, "session opened");
     if (!s) { printf("  err: %s\n", err.c_str()); return false; }
-
-    // Cache-cold measurement: request_bake() must NOT block the caller.
-    auto t0 = clk::now();
-    s->request_bake();
-    auto elapsed_ms = std::chrono::duration<double, std::milli>(clk::now() - t0).count();
-    printf("  request_bake elapsed: %.2f ms\n", elapsed_ms);
-    CHECK(elapsed_ms < 50.0, "request_bake returns < 50 ms");
+    struct RequestProbe {
+        std::mutex mutex;
+        std::condition_variable condition;
+        std::thread::id caller;
+        bool returned = false, entered = false, released = false, exited = false;
+        bool on_caller = false;
+    };
+    auto probe = std::make_shared<RequestProbe>();
+    // BakeStarted is emitted by the actual command worker before installation.
+    // Immediate delivery holds that worker until request_bake has returned.
+    auto worker_barrier = s->events().must_subscribe<matter::events::BakeStarted>(
+        "test.async.return_barrier", matter::evt::immediate,
+        [probe](const matter::events::BakeStarted&) {
+            std::unique_lock<std::mutex> lock(probe->mutex);
+            probe->entered = true;
+            probe->on_caller = std::this_thread::get_id() == probe->caller;
+            probe->condition.notify_all();
+            probe->condition.wait(lock, [&] { return probe->released; });
+            probe->exited = true;
+        });
+    // A separate caller lets us release even a broken synchronous request.
+    // The worker cannot finish event delivery before the main thread observes return.
+    std::thread caller([&] {
+        {
+            std::lock_guard<std::mutex> lock(probe->mutex);
+            probe->caller = std::this_thread::get_id();
+        }
+        s->request_bake();
+        {
+            std::lock_guard<std::mutex> lock(probe->mutex);
+            probe->returned = true;
+        }
+        probe->condition.notify_all();
+    });
+    {
+        std::unique_lock<std::mutex> lock(probe->mutex);
+        probe->condition.wait_for(lock, std::chrono::seconds(1),
+                                  [&] { return probe->returned; });
+    }
 
     // Async contract: only BakeStarted (or nothing yet) can have arrived before
     // any pump — the finalizer BakeFinished must NOT have been emitted from
@@ -463,12 +545,34 @@ static bool test_returns_immediately(const std::string& sandbox) {
     CHECK(!pre_pump_finished,
           "no BakeFinished/BakeError before pump (bake still in flight)");
 
+    // The command first drains the app cleanup barrier, even for a new session.
+    // Pump that barrier so the worker can reach the immediate BakeStarted probe.
+    bool returned_while_worker_blocked = false;
+    const auto barrier_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+    while (std::chrono::steady_clock::now() < barrier_deadline) {
+        s->pump_gpu_jobs(1.0);
+        std::unique_lock<std::mutex> lock(probe->mutex);
+        returned_while_worker_blocked = probe->condition.wait_for(
+            lock, std::chrono::milliseconds(2), [&] {
+                return probe->entered && probe->returned && !probe->exited;
+            });
+        if (returned_while_worker_blocked) break;
+    }
+    {
+        std::lock_guard<std::mutex> lock(probe->mutex);
+        probe->released = true;
+    }
+    probe->condition.notify_all();
+    caller.join();
+    CHECK(returned_while_worker_blocked && !probe->on_caller,
+          "request_bake returns while its actual worker remains blocked");
+
     // Events must arrive later while we pump.
     std::vector<EvRec> log;
     bool ok = drive_bake(*s, log);
     CHECK(ok, "bake completed under async pump");
     CHECK(!log.empty(), "at least one event arrived during pump");
-    return ok && !log.empty() && !pre_pump_finished;
+    return ok && !log.empty() && !pre_pump_finished && returned_while_worker_blocked;
 }
 
 // --- (b) bake_completes_with_finished ---------------------------------------
@@ -1355,7 +1459,7 @@ static bool test_focus_orders_publish(const std::string& sandbox) {
 
 // --- Task 10 tests -----------------------------------------------------------
 
-#ifdef __linux__
+#if defined(__linux__) && defined(MATTER_ASYNC_SOURCE_QUALIFICATION)
 
 // (j) live_edit_inotify_e2e
 // enable_live_edit=true on the Box sandbox. Full bake. Record instance_count +
@@ -1662,6 +1766,7 @@ static bool test_regenerate_seed_reroll(const std::string& sandbox) {
     return ok1 && ok2 && ok3 && pb1 >= 1 && pb2 >= 1 && pb3 == 0 && ch3 >= 1;
 }
 
+#ifdef MATTER_ASYNC_SOURCE_QUALIFICATION
 static bool test_production_animated_gallery_binding() {
     printf("-- production AnimatedRigGallery runtime binding\n");
     const auto stamp = std::chrono::high_resolution_clock::now()
@@ -1980,6 +2085,8 @@ static bool test_production_animated_gallery_binding() {
 //   3. It works with NO frame-loop app-lane pump: the drive loop below calls
 //      ONLY pump_gpu_jobs (GL work) and poll_event — never hub.pump(lane::app),
 //      which E4 adds. poll_event owns and pump_one()s lane::legacy_poll itself.
+#endif // MATTER_ASYNC_SOURCE_QUALIFICATION
+
 static bool test_e3_poll_event_typed_parity(const std::string& sandbox) {
     printf("-- (m) e3_poll_event_typed_parity\n");
     reset_cache(sandbox, "Box");
@@ -2314,6 +2421,7 @@ static bool test_bake_aborted_terminal_event(const std::string& sandbox) {
 // contract suite exercises cache, failure, LUID mismatch, and supersession;
 // this case keeps the core worker/event promise visible beside the editor's
 // other request_bake() guarantees.
+#ifdef MATTER_ASYNC_SOURCE_QUALIFICATION
 static bool test_authored_fluid_uses_worker_and_gpu_job_seam(
     const std::string& sandbox) {
     printf("-- authored_fluid_uses_worker_and_gpu_job_seam\n");
@@ -2680,13 +2788,20 @@ static bool test_cancelled_fluid_generation_publishes_neither_half(
     return finished && found_manifest && sampled && replacement_finished;
 }
 
+#endif // MATTER_ASYNC_SOURCE_QUALIFICATION
+
 int main() {
     // Unique writable sandbox so parallel test runs do not collide.
     const auto stamp = std::chrono::high_resolution_clock::now()
                            .time_since_epoch().count();
+#ifdef MATTER_ASYNC_SOURCE_QUALIFICATION
     std::string sandbox =
         (fs::temp_directory_path() /
          ("me3_asyncbake_" + std::to_string(stamp))).string();
+#else
+    (void)stamp;
+    const std::string sandbox = "/async-bake-fixture";
+#endif
     if (!build_sandbox(sandbox)) {
         printf("FAIL: build_sandbox\n");
         return 1;
@@ -2695,6 +2810,14 @@ int main() {
         return 1;
     }
 
+#ifdef MATTER_ASYNC_SOURCE_QUALIFICATION
+#ifdef __linux__
+    test_live_edit_inotify_e2e(sandbox);
+#endif
+    test_production_animated_gallery_binding();
+    test_authored_fluid_uses_worker_and_gpu_job_seam(sandbox);
+    test_cancelled_fluid_generation_publishes_neither_half(sandbox);
+#else
     test_returns_immediately(sandbox);
     test_completes_finished(sandbox);
     test_determinism(sandbox);
@@ -2717,18 +2840,11 @@ int main() {
     // Task 3 (Phase C): set_bake_focus + distance-ordered publish.
     test_focus_orders_publish(sandbox);
 
-#ifdef __linux__
-    // Task 10: inotify live-edit end-to-end.
-    test_live_edit_inotify_e2e(sandbox);
-#endif
 
     // Task 7 (Phase C): regenerate(seed) — root param override reload.
     test_regenerate_seed_reroll(sandbox);
-    test_production_animated_gallery_binding();
 
     // Task 7 PhysX fluid bake integration on the same worker/GPU-job lifecycle.
-    test_authored_fluid_uses_worker_and_gpu_job_seam(sandbox);
-    test_cancelled_fluid_generation_publishes_neither_half(sandbox);
 
     // smart-dune.7: terminal-event contract + bake_generation attribution.
     test_bake_aborted_terminal_event(sandbox);
@@ -2738,6 +2854,7 @@ int main() {
     // test's cache/state assumptions.
     test_e3_poll_event_typed_parity(sandbox);
 
+#endif
     printf(g_failures ? "\n%d FAILURE(S)\n" : "\nALL PASS\n", g_failures);
     // Best-effort cleanup of the writable temporary project.
     remove_tree(sandbox);

@@ -17,8 +17,17 @@ public:
         auto next = std::make_shared<const Bytes>(bytes);
         std::lock_guard<std::mutex> guard(lock_);
         if (fail_publication_) return false;
+        ++publication_count_;
         files_[SourceSnapshot::key(path)] = std::move(next);
         return true;
+    }
+    std::map<std::string, ReadHandle> entries() const {
+        std::lock_guard<std::mutex> guard(lock_);
+        return files_;
+    }
+    std::size_t publication_count() const {
+        std::lock_guard<std::mutex> guard(lock_);
+        return publication_count_;
     }
     void fail_publication(bool fail) {
         std::lock_guard<std::mutex> guard(lock_);
@@ -30,9 +39,25 @@ public:
         files_.erase(SourceSnapshot::key(path));
         return true;
     }
+    std::uint32_t move(const std::string& source, const std::string& destination,
+                       bool replace) override {
+        std::lock_guard<std::mutex> guard(lock_);
+        if (fail_publication_) return 5u;
+        const auto from_key = SourceSnapshot::key(source);
+        const auto to_key = SourceSnapshot::key(destination);
+        const auto from = files_.find(from_key);
+        if (from == files_.end()) return 2u;
+        if (from_key == to_key) return 0u;
+        if (!replace && files_.count(to_key)) return 183u;
+        files_[to_key] = from->second;
+        files_.erase(from);
+        ++publication_count_;
+        return 0u;
+    }
 private:
     mutable std::mutex lock_;
     std::map<std::string, ReadHandle> files_;
     bool fail_publication_ = false;
+    std::size_t publication_count_ = 0;
 };
 } // namespace matter::test

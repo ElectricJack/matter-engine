@@ -7,6 +7,13 @@ Its only linked library is `matter_contracts`. The public
 [geometry.h](include/matter/geometry/geometry.h) exposes owned neutral recipe,
 asset, material and diagnostic values, without legacy graphics types.
 
+The CPU field/surface tape kernel (`src/terrain_field.cpp`, public header
+`matter/geometry/terrain_field.h`) is a separate dependency-free target,
+`matter_geometry_field`, registered by `cmake/FieldKernel.cmake`.
+TerrainGeneration and AssetPipeline's native surface producer include that
+module alone and link the target, so they configure no surface-math extraction
+or modifier backend, and every graph compiles the kernel once.
+
 ## Native use
 
 `PrimitiveGeometry::evaluate` accepts a direct `RecipeDocument`, resolved inputs,
@@ -201,10 +208,9 @@ winding the MSL face normals assume.
 
 The legacy bake path warns and skips an unavailable or failing modifier. A
 service job instead fails explicitly and publishes nothing. `mesh.retopology`
-has no supported backend here and is never advertised: it fails with
+requires the optional isolated worker described below; otherwise it fails with
 `unsupported_capability`, as do unknown operations, unknown required
-capabilities and algorithms. The autoremesher backend needs subprocess
-isolation before it can run inside a service job. An out-of-range parameter,
+capabilities and algorithms. An out-of-range parameter,
 undeclared operation capability or simplify that removes every triangle fails
 with `invalid_input`; a newer `operation_version` fails with
 `unsupported_version`.
@@ -232,15 +238,100 @@ modifier capability is advertised and every modifier request fails with
 `unsupported_capability` ("mesh modifier backend omitted from this build").
 Queries do not depend on that option.
 
+## Optional isolated mesh worker
+
+Native Linux builds can opt in with `-DMATTER_GEOMETRY_MESH_WORKER=ON`
+(default OFF, requires modifiers ON). This adds the separate
+`matter_geometry_mesh_worker` executable. The host archive still links only
+contracts; autoremesher, geogram and the TBB shim exist only in the executable's
+backend. Linux 5.9+ is required for `close_range`. Windows and WASM do not
+implement this optional backend and reject enabling its build option. Their
+existing simplify/smooth backends remain available.
+
+Configure a trusted, absolute executable path in the host, not in recipe data:
+
+```cpp
+matter::geometry::PrimitiveGeometry geometry({}, {"/opt/matter/matter_geometry_mesh_worker"});
+```
+
+An empty path disables the worker. `capabilities()` advertises
+`matter.operation.mesh.retopology@1` only when compiled in and a fresh, bounded
+300 ms protocol probe succeeds. Missing executables, loader errors, incompatible
+workers and failed probes leave it unavailable. There is no cached availability
+or shell/PATH lookup. Deploy the executable alongside the host and supply its
+installed absolute path explicitly.
+
+A declared retopology request uses the same regions/stack schema as other
+modifiers. Resolved defaults and ranges are:
+
+```json
+{"operation":"mesh.retopology", "operation_version":1,
+ "target_ratio":1.0, "iterations":3, "seed":0, "timeout_seconds":60}
+```
+
+`target_ratio` is `(0,4]`, `iterations` is an integer `[1,1024]`, `seed` is a
+uint32, and `timeout_seconds` is an integer `[0,3600]`. Zero disables only the
+modifier-specific timeout; the finite job execution budget still applies.
+These map to the legacy `RetopoOptions` fields with `threads=1`. The legacy v1
+algorithm reserves but ignores iterations and seed; they are recorded in
+provenance without promising a new algorithm or determinism across platforms.
+Each stage uses a fresh process, so process-sticky thread/global state is isolated.
+
+The parent exchanges little-endian scalar records through a private temporary
+directory, removed on all exits. Each mesh transfer is capped at 256 MiB, with
+output additionally capped by job output bytes, vertices, indices and one
+quarter of remaining working memory. Counts are checked against the actual file
+size before allocating; every scalar, index, material and complete asset is
+validated before publication. The parent reserves the usual stage scratch;
+remaining working bytes cap the child's entire virtual address space via
+`RLIMIT_AS`. `RLIMIT_FSIZE` limits output, core dumps are disabled, and inherited
+host descriptors are closed. These are resource/crash isolation measures, not a
+sandbox for untrusted executables. Set a realistic job working-memory budget
+(the real closed-sphere fixture uses 1 GiB); the default 64 MiB is often too
+small for the legacy solver's runtime and scratch allocations.
+
+The parent checks cancellation and job deadlines every 2 ms while the child
+runs, and kills its process group and reaps it before returning on failure.
+Parent death also kills the direct worker. Serialization/deserialization are
+bounded by the transfer cap, with job checkpoints around them. Process exit,
+abort, invalid/truncated/oversized output, or a legacy remesher failure returns
+`backend_failure` with no asset. Pre-admission budget failures, worker-reported allocation/output exhaustion, and
+elapsed limits return `resource_limit`; cancellation returns `cancelled`. No preceding
+region or modifier is published on any failure. Capability probes have their
+own fixed bound and precede job execution monitoring. As with simplify/smooth,
+operation accounting charges stage input work, rather than instrumenting every
+internal solver iteration; the process memory/time limits bound that solver.
+
+Build and run the focused fixtures:
+
+```sh
+cmake -S libs/ProceduralGeometry -B /tmp/matter-geometry-worker -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release -DMATTER_GEOMETRY_MESH_WORKER=ON
+cmake --build /tmp/matter-geometry-worker -j 2
+ctest --test-dir /tmp/matter-geometry-worker --output-on-failure \
+  -R 'mesh_worker|processing|process_allocation|dependencies'
+```
+
+`matter_geometry_mesh_worker_tests` links only the host and tests a real child
+abort, malformed/oversized output, a nonzero exit after complete output,
+availability loss, post-dispatch cancellation/reaping and deadlines. The
+separate `matter_geometry_mesh_worker_parity` oracle deliberately links the
+legacy wrapper for comparison: a closed octasphere (two subdivisions, 128
+triangles), ratio 0.75, iterations 4, seed 17, timeout 30, threads 1. It compares
+oriented output corners and attributes with `1e-6 + 1e-6 * abs(expected)`
+tolerance, exact triangle count and material binding, and byte-identical
+repeated isolated results. The production/fault-test host never links that
+oracle backend. The archive audit checks this independently, including
+`GEO::` and `tbb::` symbols.
+
 ## Canonical implementation and dependencies
 
-The target compiles the existing canonical polygon triangulator. At configure
-time it also generates the geometry prefix of the canonical `triangle_emit.cpp`
-into the build directory, stopping at `VariationRecorder::instance`. That final
-function depends on the world/cache backend and MSVC resolves its unused
-reference even with function-section elimination. The seam is guarded and the
-canonical source is a configure dependency. There is no checked-in algorithm
-copy or symlink. Central manifests, DSL state and legacy sources stay under their
+The target owns the canonical polygon triangulator and triangle emitter
+(`src/polygon_triangulate.*`, `src/triangle_emit.*`, moved here from
+`MatterEngine3/src/` with history). The legacy paths are forwarders, and the
+cache-coupled `VariationRecorder` stays in `MatterEngine3/src/triangle_emit.*`
+because it folds into the part_asset_v2 resolved hash. There is no checked-in
+algorithm copy or symlink. Central manifests, DSL state and legacy sources stay under their
 integration owners.
 
 CSG additionally compiles canonical `fat_primitive.c` directly and includes the
@@ -290,7 +381,7 @@ Supported native Windows toolchain, resolved by the repository toolchain module:
 .\libs\ProceduralGeometry\build-windows.ps1 -Config RelWithDebInfo -Test
 ```
 
-Fourteen CTests (twelve with modifiers OFF) cover functional fixtures, native CSG comparison, a direct recipe,
+The default fourteen CTests (twelve with modifiers OFF) cover functional fixtures, native CSG comparison, a direct recipe,
 query/modifier processing, allocation failures and dependency independence. Topology, prototype identity and material bindings are
 exact. Position/normal/UV checks use this fixture suite's preselected absolute plus relative
 tolerance, `1e-6 + 1e-6 * abs(expected)`; coordinates and absolute position

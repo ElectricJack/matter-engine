@@ -451,8 +451,10 @@ With `MATTER_VK_SMOKE_MODE` unset, empty, or `default`, the executable creates
 a hidden 256×256 window, renders three triangle frames, and checks their
 readback plus validation and teardown. It caps llvmpipe to one worker and
 checks peak resident memory below 256 MiB and runtime below 10 seconds.
-The default CTest entry has a 10-second timeout and shares the GPU resource
-lock. A cold shader-cache Linux llvmpipe run measured **138.34 MiB / 0.24 s**;
+The `vulkan_smoke_gpu_tests` CTest entry has a 10-second timeout and shares
+the GPU resource lock. The existing `vulkan_smoke_tests` entry runs the shared
+CPU contracts with `MATTER_VK_SMOKE_MODE=cpu` and exits before GLFW or device
+initialization. A cold shader-cache Linux llvmpipe run measured **138.34 MiB / 0.24 s**;
 the former default reached **2,054.23 MiB** and timed out after 60 seconds.
 The final default CTest run passed in **0.18 s / 137.77 MiB** with zero
 validation errors.
@@ -467,7 +469,7 @@ resource policies, carry the `heavy` label, and have a 180-second timeout.
 Normal test presets exclude that label even when the option is enabled:
 
 ```powershell
-ctest --preset windows-msvc-relwithdebinfo -R '^vulkan_smoke_tests$'
+ctest --preset windows-msvc-relwithdebinfo -R '^vulkan_smoke(_gpu)?_tests$'
 # Opt in to integration coverage; run outside the preset's heavy exclusion.
 cmake --preset windows-msvc-relwithdebinfo -DMATTER_ENABLE_HEAVY_VULKAN_SMOKE_TESTS=ON
 ctest --test-dir MatterEditor/build/cmake/windows-msvc/relwithdebinfo -L heavy --output-on-failure
