@@ -4,7 +4,7 @@
 namespace matter::graphics {
 // The device adapter owns synchronization and native allocations. This boundary
 // has no scene, world, source resolver, generator or material implementation.
-enum class BufferUsage { vertex, index, texture_payload };
+enum class BufferUsage { vertex, index, texture_payload, uniform, indirect };
 class DeviceBuffer {
 public:
   virtual ~DeviceBuffer() = default; // Drain every submitted use before freeing.
