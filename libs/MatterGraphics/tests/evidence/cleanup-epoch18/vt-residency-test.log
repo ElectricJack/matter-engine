@@ -1,0 +1,47 @@
+make: Entering directory '/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/MatterEngine3/tests'
+Makefile:1382: warning: overriding recipe for target 'build/obj/def/up__src__hydrology__fluid_gameplay_field.cpp.o'
+Makefile:1371: warning: ignoring old recipe for target 'build/obj/def/up__src__hydrology__fluid_gameplay_field.cpp.o'
+Makefile:1382: warning: overriding recipe for target 'build/obj/def/up__src__hydrology__river_presentation_field.cpp.o'
+Makefile:1371: warning: ignoring old recipe for target 'build/obj/def/up__src__hydrology__river_presentation_field.cpp.o'
+Makefile:1382: warning: overriding recipe for target 'build/obj/def/up__src__hydrology__water_visual_products.cpp.o'
+Makefile:1371: warning: ignoring old recipe for target 'build/obj/def/up__src__hydrology__water_visual_products.cpp.o'
+Makefile:1910: warning: overriding recipe for target 'build/obj/def/up__src__hydrology__authored_fluid_colliders.cpp.o'
+Makefile:1354: warning: ignoring old recipe for target 'build/obj/def/up__src__hydrology__authored_fluid_colliders.cpp.o'
+Makefile:1910: warning: overriding recipe for target 'build/obj/def/up__src__hydrology__fluid_emission.cpp.o'
+Makefile:1353: warning: ignoring old recipe for target 'build/obj/def/up__src__hydrology__fluid_emission.cpp.o'
+Makefile:1910: warning: overriding recipe for target 'build/obj/def/up__src__hydrology__fluid_emitter_layout.cpp.o'
+Makefile:1353: warning: ignoring old recipe for target 'build/obj/def/up__src__hydrology__fluid_emitter_layout.cpp.o'
+Makefile:1910: warning: overriding recipe for target 'build/obj/def/up__src__hydrology__fluid_gameplay_field.cpp.o'
+Makefile:1382: warning: ignoring old recipe for target 'build/obj/def/up__src__hydrology__fluid_gameplay_field.cpp.o'
+Makefile:1910: warning: overriding recipe for target 'build/obj/def/up__src__hydrology__hydrology_handoff_products.cpp.o'
+Makefile:1382: warning: ignoring old recipe for target 'build/obj/def/up__src__hydrology__hydrology_handoff_products.cpp.o'
+Makefile:1910: warning: overriding recipe for target 'build/obj/def/up__src__hydrology__river_presentation_field.cpp.o'
+Makefile:1382: warning: ignoring old recipe for target 'build/obj/def/up__src__hydrology__river_presentation_field.cpp.o'
+Makefile:1910: warning: overriding recipe for target 'build/obj/def/up__src__hydrology__river_section_graph.cpp.o'
+Makefile:1352: warning: ignoring old recipe for target 'build/obj/def/up__src__hydrology__river_section_graph.cpp.o'
+Makefile:1910: warning: overriding recipe for target 'build/obj/def/up__src__hydrology__spillway_handoff.cpp.o'
+Makefile:1353: warning: ignoring old recipe for target 'build/obj/def/up__src__hydrology__spillway_handoff.cpp.o'
+Makefile:1910: warning: overriding recipe for target 'build/obj/def/up__src__hydrology__water_visual_products.cpp.o'
+Makefile:1382: warning: ignoring old recipe for target 'build/obj/def/up__src__hydrology__water_visual_products.cpp.o'
+Makefile:1910: warning: overriding recipe for target 'build/obj/def/authored_fluid_colliders_tests.cpp.o'
+Makefile:1354: warning: ignoring old recipe for target 'build/obj/def/authored_fluid_colliders_tests.cpp.o'
+Makefile:1910: warning: overriding recipe for target 'build/obj/def/river_section_graph_tests.cpp.o'
+Makefile:1352: warning: ignoring old recipe for target 'build/obj/def/river_section_graph_tests.cpp.o'
+Makefile:1910: warning: overriding recipe for target 'build/obj/def/spillway_handoff_tests.cpp.o'
+Makefile:1353: warning: ignoring old recipe for target 'build/obj/def/spillway_handoff_tests.cpp.o'
+g++ vt_residency_tests.cpp -o build/vt_residency_tests -std=c++17 -Wall -Wno-missing-braces -Wno-unused-variable -DPLATFORM_DESKTOP -DGRAPHICS_API_OPENGL_33 -I../include -I.. -I../src -I../src/render -I../src/provider -I../../libs/MatterSurfaceLib/include -I../../libs/SpatialQueryLib/include -I../../libs/MemoryLib/include -I../../libs/MathLib/include -I../../../third_party/raylib/src -I../../third_party/raylib/src -I../../libs/ParticleFlowLib/include -I../../third_party/Vulkan-Headers/include -I../../third_party/box3d/include -I../../third_party/flecs -I../../libs/ProfileLib/include -I../../libs/AssetStoreLib/include -I../../third_party/ozz-animation/include
+In file included from ../src/render/../../../libs/MatterGraphics/src/native/vt/vt_snapshot.h:7,
+                 from ../src/render/../../../libs/MatterGraphics/src/native/vt/vt_residency.h:92,
+                 from ../src/render/vt_residency.h:3,
+                 from vt_residency_tests.cpp:18:
+../src/render/../../../libs/MatterGraphics/src/native/vt/../../../../../MatterEngine3/src/render/vt_finite_sources.h: In function ‘bool vt::vt_make_finite_sources(const std::vector<VtFiniteSourceBinding>&, std::shared_ptr<const VtFiniteSources>&, std::string&, const std::vector<VtFiniteReceiver>&, const std::vector<std::shared_ptr<const surface_stamp::Stamp> >&)’:
+../src/render/../../../libs/MatterGraphics/src/native/vt/../../../../../MatterEngine3/src/render/vt_finite_sources.h:157:17: warning: this ‘if’ clause does not guard... [-Wmisleading-indentation]
+  157 |                 if(used[id]) return fail("duplicate composite candidate");used[id]=true;
+      |                 ^~
+../src/render/../../../libs/MatterGraphics/src/native/vt/../../../../../MatterEngine3/src/render/vt_finite_sources.h:157:75: note: ...this statement, but the latter is misleadingly indented as if it were guarded by the ‘if’
+  157 |                 if(used[id]) return fail("duplicate composite candidate");used[id]=true;
+      |                                                                           ^~~~
+./build/vt_residency_tests
+vt residency tests complete
+ALL PASS
+make: Leaving directory '/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/MatterEngine3/tests'

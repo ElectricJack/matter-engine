@@ -1,5 +1,12 @@
 include_guard(GLOBAL)
 
+# The viewer configuration of this TU exceeds MSVC's ordinary COFF section
+# limit (C1128). Keep the larger object format local to its core/viewer builds.
+if(MSVC)
+    set_property(SOURCE MatterEngine3/src/matter_engine.cpp APPEND PROPERTY
+        COMPILE_OPTIONS /bigobj)
+endif()
+
 function(matter_engine_include_directories target visibility)
     add_dependencies("${target}"
         matter_embedded_shader_text
@@ -58,7 +65,12 @@ matter_read_manifest(
     PLATFORM windows
 )
 set(matter_engine_core_sources ${matter_engine_core_manifest})
-list(FILTER matter_engine_core_sources INCLUDE REGEX "^MatterEngine3/src/.*\\.cpp$")
+# The triangle emitter, polygon triangulator and matrix math are owned by
+# ProceduralGeometry/MatterGraphics, the terrain field, mesher and seam welder
+# by TerrainGeneration, and the Box3d settle core by AssetPipeline physics; each
+# is compiled from where it lives.
+list(FILTER matter_engine_core_sources INCLUDE REGEX
+    "^(MatterEngine3/src|libs/ProceduralGeometry/src|libs/MatterGraphics/src|libs/TerrainGeneration/src|libs/AssetPipeline/physics/src)/.*\\.cpp$")
 if(WIN32)
     # The inotify implementation is Linux-only. Its source retains the existing
     # Linux guards and remains in the canonical manifest/Make build.
@@ -107,6 +119,7 @@ target_link_libraries(matter_engine_core PUBLIC
     matter_box3d
     matter_ozz_offline
     matter_bc7enc
+    matter_authoring_adapter
 )
 matter_apply_project_defaults(matter_engine_core)
 matter_apply_headless_config(matter_engine_core)
@@ -157,11 +170,36 @@ target_link_libraries(matter_engine_headless PUBLIC
     matter_box3d
     matter_ozz_offline
     matter_bc7enc
+    matter_authoring_adapter
 )
 if(MATTER_ENABLE_PHYSX)
     target_link_libraries(matter_engine_headless PUBLIC matter_physx_adapter)
 endif()
 matter_apply_project_defaults(matter_engine_headless)
+
+# The portable authoring pipeline (contracts, geometry, build, QuickJS host)
+# behind the legacy part route in engine-core.sources. Its components keep their
+# own build files; this graph already compiles the CPU kernels matter_geometry
+# shares, so the adapter takes them from here instead of compiling them twice.
+# The components' tests stay their own gates, and they use the root's static
+# runtime so the archives link into the engine's executables.
+set(matter_authoring_saved_testing ${BUILD_TESTING})
+set(matter_authoring_saved_runtime ${CMAKE_MSVC_RUNTIME_LIBRARY})
+set(BUILD_TESTING OFF)
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+set(MATTER_AUTHORING_HOST_KERNELS ON)
+add_subdirectory(MatterEngine3/src/component_adapters/authoring)
+set(BUILD_TESTING ${matter_authoring_saved_testing})
+set(CMAKE_MSVC_RUNTIME_LIBRARY ${matter_authoring_saved_runtime})
+
+# The terrain coordinator: the one native sector flow live terrain demand goes
+# through. It reuses the contracts target loaded above; its own tests stay its
+# gate, so only the library joins this graph.
+set(BUILD_TESTING OFF)
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+add_subdirectory(MatterEngine3/src/component_adapters/terrain_coordinator)
+set(BUILD_TESTING ${matter_authoring_saved_testing})
+set(CMAKE_MSVC_RUNTIME_LIBRARY ${matter_authoring_saved_runtime})
 
 # ---------------------------------------------------------------------------
 # `matter` — the headless command (MatterEngine3/tools/matter_cli.cpp).
@@ -414,6 +452,7 @@ if(BUILD_TESTING)
     matter_qualify_cpu_filesystem(blas_disk_cache_tests MatterEngine3/tests/blas_disk_cache_tests.cpp)
     matter_add_engine_cpu_test(blas_cache_queue_tests
         MatterEngine3/tests/blas_cache_queue_tests.cpp)
+    matter_qualify_cpu_filesystem(blas_cache_queue_tests MatterEngine3/tests/blas_cache_queue_tests.cpp)
     matter_add_engine_cpu_test(async_queue_tests
         MatterEngine3/tests/async_queue_tests.cpp)
     matter_add_engine_cpu_test(async_stage_pipeline_tests
@@ -482,9 +521,9 @@ if(BUILD_TESTING)
     matter_add_engine_cpu_test(gi_bake_tests
         MatterEngine3/tests/gi_bake_tests.cpp)
     matter_add_engine_cpu_test(local_light_index_tests
-        MatterEngine3/tests/local_light_index_tests.cpp)
+        libs/MatterGraphics/tests/native/local_light_index_tests.cpp)
     matter_add_engine_cpu_test(primary_light_culling_tests
-        MatterEngine3/tests/primary_light_culling_tests.cpp)
+        libs/MatterGraphics/tests/native/primary_light_culling_tests.cpp)
     matter_add_engine_cpu_test(resolve_cache_tests
         MatterEngine3/tests/resolve_cache_tests.cpp)
     matter_add_engine_cpu_test(authored_world_cache_tests
@@ -493,6 +532,21 @@ if(BUILD_TESTING)
         MatterEngine3/tests/authored_world_provider_cache_tests.cpp)
     matter_add_engine_cpu_test(material_registry_tests
         libs/MatterSurfaceLib/tests/material_registry_tests.cpp)
+    matter_add_engine_cpu_test(polygon_triangulate_tests
+        MatterEngine3/tests/polygon_triangulate_tests.cpp)
+    matter_add_engine_cpu_test(mesh_indexed_tests
+        libs/MatterSurfaceLib/tests/mesh_indexed_tests.cpp)
+    matter_add_engine_cpu_test(mesh_transform_tests
+        libs/MatterSurfaceLib/tests/mesh_transform_tests.cpp)
+    matter_add_engine_cpu_test(mesh_smooth_tests
+        libs/MatterSurfaceLib/tests/mesh_smooth_tests.cpp)
+    matter_add_engine_cpu_test(oriented_cube_tests
+        libs/MatterSurfaceLib/tests/oriented_cube_tests.cpp)
+    include("${CMAKE_SOURCE_DIR}/cmake/MatterGeometrySupplement.cmake")
+    matter_add_geometry_compute_test(matter_geometry_compute_off OFF cpu
+        "${CMAKE_SOURCE_DIR}" "${matter_vulkan_glslc}")
+    matter_add_geometry_compute_test(matter_geometry_compute_on ON gpu
+        "${CMAKE_SOURCE_DIR}" "${matter_vulkan_glslc}")
     matter_add_engine_cpu_test(terrain_collision_definition_tests
         MatterEngine3/tests/terrain_collision_definition_tests.cpp)
     matter_add_engine_cpu_test(terrain_collision_artifact_tests
@@ -512,6 +566,9 @@ if(BUILD_TESTING)
             MatterEngine3/tools/embed_shared_test_sources.py VERBATIM)
     target_sources(shared_lib_tests PRIVATE "${shared_test_source_header}")
     target_include_directories(shared_lib_tests PRIVATE
+        "${CMAKE_CURRENT_BINARY_DIR}/test-fixtures")
+    target_sources(world_definition_tests PRIVATE "${shared_test_source_header}")
+    target_include_directories(world_definition_tests PRIVATE
         "${CMAKE_CURRENT_BINARY_DIR}/test-fixtures")
     file(GLOB world_test_source_inputs CONFIGURE_DEPENDS
         "${CMAKE_SOURCE_DIR}/projects/world_demo/shared-lib/*.js"
@@ -561,10 +618,13 @@ if(BUILD_TESTING)
         "MATTER_SCRIPT_TEST_MODULES_HEADER=\"${script_test_module_header}\"")
     matter_add_engine_cpu_test(tileset_bake_tests
         MatterEngine3/tests/tileset_bake_tests.cpp)
+    matter_add_engine_cpu_test(authoring_route_tests
+        MatterEngine3/tests/authoring_route_tests.cpp)
     matter_add_engine_cpu_test(tileset_physics_tests
         MatterEngine3/tests/tileset_physics_tests.cpp)
     matter_add_engine_cpu_test(part_flatten_tests
         MatterEngine3/tests/part_flatten_tests.cpp)
+    matter_qualify_cpu_filesystem(part_flatten_tests MatterEngine3/tests/part_flatten_tests.cpp)
     # Explicit performance harness: fresh cache-miss jobs are not a regular
     # correctness test and must not run as part of the default CTest suite.
     add_executable(castle_part_bench MatterEngine3/tests/castle_part_bench.cpp)
@@ -751,6 +811,23 @@ if(BUILD_TESTING)
         MatterEngine3/tests/terrain_collision_physics_tests.cpp)
     matter_add_engine_cpu_test(terrain_collision_session_tests
         MatterEngine3/tests/terrain_collision_session_tests.cpp)
+    # Live terrain end to end: coordinator -> cache, collision, scene backend.
+    # Headless already compiles the terrain field, mesher and matrix math; only
+    # the component sources it lacks are added here.
+    matter_add_engine_cpu_test(live_terrain_tests
+        MatterEngine3/tests/live_terrain_tests.cpp
+        MatterEngine3/src/component_adapters/terrain_coordinator/engine/live_terrain.cpp
+        MatterEngine3/src/component_adapters/terrain_coordinator/engine/live_terrain_session.cpp
+        libs/TerrainGeneration/src/field.cpp
+        libs/TerrainGeneration/src/meshing.cpp
+        libs/MatterGraphics/src/graphics.cpp
+        libs/MatterGraphics/src/scene_backend.cpp)
+    target_include_directories(live_terrain_tests PRIVATE
+        "${CMAKE_SOURCE_DIR}/libs/TerrainGeneration/include"
+        "${CMAKE_SOURCE_DIR}/libs/TerrainGeneration/tests"
+        "${CMAKE_SOURCE_DIR}/libs/MatterGraphics/include")
+    target_link_libraries(live_terrain_tests PRIVATE matter_terrain_coordinator)
+    set_tests_properties(live_terrain_tests PROPERTIES ENVIRONMENT MATTER_CONTOUR_SEAMS=1)
     matter_add_engine_cpu_test(river_float_system_tests
         MatterEngine3/tests/river_float_system_tests.cpp)
     matter_qualify_cpu_filesystem(river_float_system_tests MatterEngine3/tests/river_float_system_tests.cpp)
@@ -859,7 +936,7 @@ if(BUILD_TESTING)
         MatterEngine3/src/render/gpu_meshing/water_scene_part.cpp)
     matter_add_engine_cpu_test(gpu_water_animation_render_tests
         MatterEngine3/tests/gpu_water_animation_render_tests.cpp
-        MatterEngine3/src/render/water_animation_gpu.cpp)
+        libs/MatterGraphics/src/native/water_animation_gpu.cpp)
     matter_add_engine_cpu_test(water_field_vk_tests
         MatterEngine3/tests/water_field_vk_tests.cpp)
     matter_add_engine_cpu_test(water_surface_reference_tests
