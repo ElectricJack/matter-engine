@@ -1,0 +1,14 @@
+{
+  "name": "@matter/authoring",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": { ".": { "types": "./index.d.mts", "import": "./index.mjs" } },
+  "types": "./index.d.mts",
+  "files": ["*.mjs", "*.d.mts", "examples", "README.md"],
+  "scripts": {
+    "test": "node --experimental-vm-modules tests/authoring_tests.mjs",
+    "test:types": "tsc -p tests/tsconfig.json",
+    "test:browser": "node tests/browser_tests.mjs"
+  }
+}
