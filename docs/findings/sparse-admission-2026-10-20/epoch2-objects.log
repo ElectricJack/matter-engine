@@ -1,0 +1,47 @@
+make: Entering directory '/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/MatterEngine3'
+mkdir -p shaders_gen
+python3 tools/embed_shaders.py shaders_gen/embedded_shaders.h ../libs/MatterSurfaceLib shaders/raster.vs shaders/raster.fs shaders/tileset_sampling.glsl shaders/raytrace_tlas_blas_processed.fs shaders/materials.glsl shaders/bvh_tlas_common.glsl shaders/lighting.glsl
+g++ -c src/matter_engine.cpp -o build/obj_viewer_linux/matter_engine.o -std=c++17 -O2 -Wall -Wno-missing-braces -Wno-unused-variable -DPLATFORM_DESKTOP -DNDEBUG -DMATTER_HAVE_SCRIPT_HOST -DMATTER_VULKAN_VIEWER -DMATTER_VULKAN_ONLY -DMATTER_HAVE_STREAMLINE=0 -ffunction-sections -fdata-sections  -I/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/third_party/Vulkan-Headers/include -I. -Iinclude -Isrc -Isrc/render -Isrc/provider -I../libs/MatterSurfaceLib/include -I../libs/MatterSurfaceLib/src -I../libs/SpatialQueryLib/include -I../libs/MemoryLib/include -I../libs/MathLib/include -I../libs/ProfileLib/include -I../libs/AssetStoreLib/include -I../libs/AssetStoreLib/src -I../third_party/quickjs-ng -I../third_party/raylib/src -I../third_party/box3d/include -I../third_party/bc7enc -I../libs/ParticleFlowLib/include -I../third_party/flecs -I../third_party/ozz-animation/include -I../third_party/Vulkan-Headers/include  -I../third_party/raylib/src/external/glfw/include  -MMD -MP
+In file included from src/render/../../../libs/MatterGraphics/src/native/vt/vt_snapshot.h:7,
+                 from src/render/../../../libs/MatterGraphics/src/native/vt/vt_residency.h:92,
+                 from src/render/vt_residency.h:3,
+                 from src/render/vk_scene_renderer.h:126,
+                 from src/render/gpu_meshing/water_scene_part.h:4,
+                 from src/matter_engine.cpp:146:
+src/render/../../../libs/MatterGraphics/src/native/vt/../../../../../MatterEngine3/src/render/vt_finite_sources.h: In function ‘bool vt::vt_make_finite_sources(const std::vector<VtFiniteSourceBinding>&, std::shared_ptr<const VtFiniteSources>&, std::string&, const std::vector<VtFiniteReceiver>&, const std::vector<std::shared_ptr<const surface_stamp::Stamp> >&)’:
+src/render/../../../libs/MatterGraphics/src/native/vt/../../../../../MatterEngine3/src/render/vt_finite_sources.h:157:17: warning: this ‘if’ clause does not guard... [-Wmisleading-indentation]
+  157 |                 if(used[id]) return fail("duplicate composite candidate");used[id]=true;
+      |                 ^~
+src/render/../../../libs/MatterGraphics/src/native/vt/../../../../../MatterEngine3/src/render/vt_finite_sources.h:157:75: note: ...this statement, but the latter is misleadingly indented as if it were guarded by the ‘if’
+  157 |                 if(used[id]) return fail("duplicate composite candidate");used[id]=true;
+      |                                                                           ^~~~
+src/matter_engine.cpp: In member function ‘void matter::WorldSession::Impl::bake_and_stage_sector(const matter::streaming::detail::TaggedRequest&, size_t, const std::shared_ptr<viewer::LocalProvider>&)’:
+src/matter_engine.cpp:9624:17: warning: this ‘if’ clause does not guard... [-Wmisleading-indentation]
+ 9624 |                 if (value) prepared_policy += value; prepared_policy += ';';
+      |                 ^~
+src/matter_engine.cpp:9624:54: note: ...this statement, but the latter is misleadingly indented as if it were guarded by the ‘if’
+ 9624 |                 if (value) prepared_policy += value; prepared_policy += ';';
+      |                                                      ^~~~~~~~~~~~~~~
+src/matter_engine.cpp: In lambda function:
+src/matter_engine.cpp:15395:70: warning: comparison of integer expressions of different signedness: ‘const int’ and ‘const uint32_t’ {aka ‘const unsigned int’} [-Wsign-compare]
+15395 |                 for(const auto& imp:part->impostors)if(imp.mesh_index==level)fail("billboard impostors are not mesh export LODs");
+      |                                                        ~~~~~~~~~~~~~~^~~~~~~
+g++ -c src/render/geometry_world_runtime.cpp -o build/obj_viewer_linux/geometry_world_runtime.o -std=c++17 -O2 -Wall -Wno-missing-braces -Wno-unused-variable -DPLATFORM_DESKTOP -DNDEBUG -DMATTER_HAVE_SCRIPT_HOST -DMATTER_VULKAN_VIEWER -DMATTER_VULKAN_ONLY -DMATTER_HAVE_STREAMLINE=0 -ffunction-sections -fdata-sections  -I/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/third_party/Vulkan-Headers/include -I. -Iinclude -Isrc -Isrc/render -Isrc/provider -I../libs/MatterSurfaceLib/include -I../libs/MatterSurfaceLib/src -I../libs/SpatialQueryLib/include -I../libs/MemoryLib/include -I../libs/MathLib/include -I../libs/ProfileLib/include -I../libs/AssetStoreLib/include -I../libs/AssetStoreLib/src -I../third_party/quickjs-ng -I../third_party/raylib/src -I../third_party/box3d/include -I../third_party/bc7enc -I../libs/ParticleFlowLib/include -I../third_party/flecs -I../third_party/ozz-animation/include -I../third_party/Vulkan-Headers/include  -I../third_party/raylib/src/external/glfw/include  -MMD -MP
+In file included from src/render/../../../libs/MatterGraphics/src/native/vt/vt_snapshot.h:7,
+                 from src/render/../../../libs/MatterGraphics/src/native/vt/vt_residency.h:92,
+                 from src/render/vt_residency.h:3,
+                 from src/render/vk_scene_renderer.h:126,
+                 from src/render/geometry_world_runtime.h:4,
+                 from src/render/geometry_world_runtime.cpp:1:
+src/render/../../../libs/MatterGraphics/src/native/vt/../../../../../MatterEngine3/src/render/vt_finite_sources.h: In function ‘bool vt::vt_make_finite_sources(const std::vector<VtFiniteSourceBinding>&, std::shared_ptr<const VtFiniteSources>&, std::string&, const std::vector<VtFiniteReceiver>&, const std::vector<std::shared_ptr<const surface_stamp::Stamp> >&)’:
+src/render/../../../libs/MatterGraphics/src/native/vt/../../../../../MatterEngine3/src/render/vt_finite_sources.h:157:17: warning: this ‘if’ clause does not guard... [-Wmisleading-indentation]
+  157 |                 if(used[id]) return fail("duplicate composite candidate");used[id]=true;
+      |                 ^~
+src/render/../../../libs/MatterGraphics/src/native/vt/../../../../../MatterEngine3/src/render/vt_finite_sources.h:157:75: note: ...this statement, but the latter is misleadingly indented as if it were guarded by the ‘if’
+  157 |                 if(used[id]) return fail("duplicate composite candidate");used[id]=true;
+      |                                                                           ^~~~
+src/render/geometry_world_runtime.cpp: In member function ‘bool viewer::GeometryWorldRuntime::update(viewer::PartStore&, viewer::VkSceneRenderer&, matter::VulkanDevice&, const matter::VulkanFrame&, const matter::CameraDesc&, float, const std::vector<viewer::VkSceneInstance>&, std::vector<viewer::VkSceneInstance>&, std::string&)’:
+src/render/geometry_world_runtime.cpp:989:7: warning: suggest explicit braces to avoid ambiguous ‘else’ [-Wdangling-else]
+  989 |     if(detached)for(auto it=d.locations.begin();it!=d.locations.end();)
+      |       ^
+make: Leaving directory '/home/jkern/dev/matter-engine-cpp/.aq/worktrees/slot-2/MatterEngine3'

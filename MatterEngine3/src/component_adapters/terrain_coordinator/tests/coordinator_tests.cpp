@@ -331,8 +331,8 @@ static void pressure() {
   CHECK(c.pump_graphics().ok() && graphics.tickets.size() == 1);
   CHECK(c.pump_graphics().ok() && graphics.tickets.empty());
   CHECK(c.gpu({"region.a"}) && c.gpu({"region.b"}));
-  CHECK(is_error(c.observe({{{"region.a"}}, {{"region.b"}}, {{"region.c"}}}), E::resource_limit));
-  CHECK(c.observe({{{"region.c"}}, {{"region.c"}}}).ok() && c.statistics().queued == 1);
+  CHECK(is_error(c.observe({{{"region.a"}, 0, 0, {}}, {{"region.b"}, 0, 0, {}}, {{"region.c"}, 0, 0, {}}}), E::resource_limit));
+  CHECK(c.observe({{{"region.c"}, 0, 0, {}}, {{"region.c"}, 0, 0, {}}}).ok() && c.statistics().queued == 1);
   CHECK(c.demand({"region.c"}, {}).ok());
   CHECK(is_error(c.observe({{{"region.c"}, 0, 0, d::Capability{"unknown", 1}}}), E::unsupported_capability));
   CHECK(c.statistics().queued == 0);

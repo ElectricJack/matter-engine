@@ -1,7 +1,6 @@
 #include "internal.h"
 #include <limits>
 #include <map>
-#include <memory>
 
 // Batched closest-surface and ray-surface queries over evaluated prototypes.
 // Each referenced prototype gets one bounded median-split BVH, built lazily and
