@@ -1,0 +1,26 @@
+﻿**********************
+Windows PowerShell transcript start
+Start time: 20261014060518
+Username: DESKTOP-EB8UOME\webde
+RunAs User: DESKTOP-EB8UOME\webde
+Configuration Name: 
+Machine: DESKTOP-EB8UOME (Microsoft Windows NT 10.0.26200.0)
+Host Application: C:\Windows\System32\WindowsPowerShell\v1.0\powershell.EXE -command . 'C:\actions-runner-matter\_work\_temp\22d9e131-8a9f-4d1c-a926-e55101c6abfa.ps1'
+Process ID: 19812
+PSVersion: 5.1.26100.9711
+PSEdition: Desktop
+PSCompatibleVersions: 1.0, 2.0, 3.0, 4.0, 5.0, 5.1.26100.9711
+BuildVersion: 10.0.26100.9711
+CLRVersion: 4.0.30319.42000
+WSManStackVersion: 3.0
+PSRemotingProtocolVersion: 2.3
+SerializationVersion: 1.1.0.1
+**********************
+
+
+MATTER_WINDOWS_ARTIFACT=C:\actions-runner-matter\_work\matter-engine\matter-engine\MatterEditor\build\windows-msvc\editor.exe
+
+**********************
+Windows PowerShell transcript end
+End time: 20261014065856
+**********************

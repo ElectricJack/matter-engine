@@ -30,6 +30,7 @@
     "BUILD_TESTING": "OFF",
     "MATTER_GEOMETRY_TESTS": "OFF",
     "MATTER_TERRAIN_BUILD_TESTS": "OFF",
+    "MATTER_GEOMETRY_C_TESTS": "OFF",
     "MATTER_GRAPHICS_VULKAN": "OFF",
     "MATTER_SCAFFOLD_GEOMETRY": "OFF",
     "MATTER_SCAFFOLD_BUILD": "OFF",
@@ -44,7 +45,15 @@
     "exclude": ["*/build/*", "*/node_modules/*", "*/shaders_gen/*", "tests/component-separation/*"],
     "window": 8,
     "min_chars": 12,
-    "allow": []
+    "allow": [
+      {"paths": ["libs/TerrainGeneration/src/terrain_mesher.cpp", "MatterEngine3/tests/contour_mesh_tests.cpp"], "reason": "the analytic contour test harness restates the production marching-squares case table to check it; the duplication predates the mesher's move into TerrainGeneration"},
+      {"paths": ["libs/MatterGraphics/src/native/create_water_forward_pipelines.inl", "MatterEngine3/src/render/vk_scene_renderer.cpp"], "reason": "Vulkan graphics-pipeline state structs (input assembly, viewport, rasterization, blend) that every pipeline in the renderer spells out; no shared algorithm"},
+      {"paths": ["libs/MatterGraphics/src/native/impostor_atlas.inl", "MatterEngine3/src/render/vk_scene_renderer.cpp"], "reason": "VkImageMemoryBarrier2 and copy-region struct setup repeated at every layout transition; no shared algorithm"},
+      {"paths": ["libs/MatterGraphics/src/native/gi_pipelines.inl", "MatterEngine3/src/render/vk_pipeline.cpp"], "reason": "compute-pipeline create-info boilerplate (shader stage plus layout) shared by every compute pass"},
+      {"paths": ["libs/MatterGraphics/src/native/water_mesh_animation_playback.cpp", "MatterEngine3/tests/physx_adapter_contract_tests.cpp"], "reason": "the adapter contract test restates the playback artifact's field-by-field identity comparison to check it"},
+      {"paths": ["libs/MatterContracts/tests/fixtures.h", "libs/MatterGraphics/tests/imported_asset_fixture.h"], "reason": "both test fixtures spell the same one-triangle MeshPrototype literal; test data, not shared code"},
+      {"paths": ["libs/ProceduralGeometry/tests/allocation_tests.cpp", "bindings/geometry-c/tests/allocation.cpp"], "reason": "each allocation test binary must define its own replacement global operator new/delete counters; C++ allows one per program"}
+    ]
   },
   "components": [
     {
@@ -74,12 +83,12 @@
       "directory": "libs/ProceduralGeometry",
       "description": "Procedural geometry kernel: no JavaScript host, no renderer, no terrain.",
       "targets": ["matter_geometry"],
-      "optional_targets": ["matter_geometry_recipe"],
+      "optional_targets": ["matter_geometry_recipe", "matter_geometry_field"],
       "public_include_dirs": ["libs/ProceduralGeometry/include"],
       "allowed_components": ["contracts"],
       "legacy_sources": [
-        {"path": "MatterEngine3/src/polygon_triangulate.cpp", "reason": "engine source of truth for ear-clipping triangulation, compiled in place until ordered integration relocates it (CLAUDE.md: compile siblings from where they live)"},
-        {"path": "libs/MatterSurfaceLib/src/fat_primitive.c", "reason": "MatterSurfaceLib source of truth for fat-primitive SDF evaluation, compiled in place rather than copied"}
+        {"path": "libs/MatterSurfaceLib/src/fat_primitive.c", "reason": "MatterSurfaceLib source of truth for fat-primitive SDF evaluation, compiled in place rather than copied"},
+        {"paths": ["libs/MatterSurfaceLib/src/mesh_indexed.cpp", "libs/MatterSurfaceLib/src/mesh_simplifier.cpp", "libs/MatterSurfaceLib/src/mesh_smooth.cpp", "libs/MatterSurfaceLib/src/mesh_transform.cpp"], "reason": "MatterSurfaceLib sources of truth for the MATTER_GEOMETRY_MODIFIERS simplify/smooth backend, compiled in place rather than copied"}
       ],
       "legacy_include_dirs": [
         {"paths": ["MatterEngine3/src", "MatterEngine3/include"], "reason": "PRIVATE include roots for the in-place engine sources (triangle_emit prefix, polygon_triangulate); not propagated to consumers"},
@@ -91,14 +100,16 @@
         {"paths": ["MatterEngine3/src/part_asset_v2.h", "MatterEngine3/src/version_vector.h", "MatterEngine3/src/render/chart_atlas.h"], "reason": "the part-asset v2 record the triangle emitter fills, with its chart-atlas and version-vector fields; declarations only (the symbols check proves no world-cache or renderer code is referenced)"},
         {"paths": ["libs/SpatialQueryLib/include/precomp.h", "libs/SpatialQueryLib/include/tri.h", "libs/SpatialQueryLib/include/bvh.h"], "reason": "SpatialQueryLib's Tri/float3 interchange types, reached through the in-place MatterSurfaceLib headers"},
         {"paths": ["libs/MatterSurfaceLib/include/part_asset.h", "libs/MatterSurfaceLib/include/blas_manager.hpp", "libs/MatterSurfaceLib/include/tlas_manager.hpp", "libs/MatterSurfaceLib/include/profiler.hpp", "libs/MatterSurfaceLib/include/material_registry.h"], "reason": "MatterSurfaceLib part_asset.h and the POD BLAS/TLAS declarations it pulls in; no raylib or GL header is reached and the symbols check proves no GPU manager code is referenced"},
-        {"paths": ["libs/MatterSurfaceLib/include/fat_primitive.h", "libs/MatterSurfaceLib/src/mc_tables.h"], "reason": "headers of the in-place fat_primitive.c and the marching-cubes tables of the configure-time surface.c extraction"}
+        {"paths": ["libs/MatterSurfaceLib/include/fat_primitive.h", "libs/MatterSurfaceLib/src/mc_tables.h"], "reason": "headers of the in-place fat_primitive.c and the marching-cubes tables of the configure-time surface.c extraction"},
+        {"paths": ["libs/MatterSurfaceLib/include/mesh_indexed.hpp", "libs/MatterSurfaceLib/include/mesh_simplifier.hpp", "libs/MatterSurfaceLib/include/mesh_smooth.hpp", "libs/MatterSurfaceLib/include/mesh_transform.hpp", "libs/MatterSurfaceLib/src/mesh_memory.h"], "reason": "headers of the in-place modifier backend sources"},
+        {"path": "third_party/raylib/src/raylib.h", "reason": "POD Mesh type named by mesh_simplifier.hpp; the symbols check proves no raylib function is referenced"}
       ],
       "configure_inputs": [
-        {"path": "MatterEngine3/src/triangle_emit.cpp", "reason": "configure-time extraction of the triangle emitter prefix (before VariationRecorder::instance) from the engine source of truth"},
         {"path": "libs/MatterSurfaceLib/src/surface.c", "reason": "configure-time extraction of smin_set/VertexInterpolation from the MatterSurfaceLib source of truth"}
       ],
       "unbuilt_sources": [
-        {"path": "libs/ProceduralGeometry/tests", "reason": "geometry fixtures build only under MATTER_GEOMETRY_TESTS, in the component's own focused test run"}
+        {"path": "libs/ProceduralGeometry/tests", "reason": "geometry fixtures build only under MATTER_GEOMETRY_TESTS, in the component's own focused test run"},
+        {"paths": ["libs/ProceduralGeometry/src/mesh_worker.cpp", "libs/ProceduralGeometry/src/mesh_worker_main.cpp"], "reason": "the subprocess retopology backend builds only under the opt-in MATTER_GEOMETRY_MESH_WORKER"}
       ],
       "forbidden_public_includes": [
         "^matter/(graphics|terrain|portable_host)/", "^(quickjs|quickjs-libc|cutils)\\.h$", "^vulkan/", "^GLFW/",
@@ -116,17 +127,30 @@
       "targets": ["matter_graphics"],
       "public_include_dirs": ["libs/MatterGraphics/include"],
       "allowed_components": ["contracts"],
-      "legacy_sources": [
-        {"path": "MatterEngine3/src/render/matrix_math.cpp", "reason": "engine source of truth for dependency-free matrix math, compiled in place until ordered integration relocates it"}
-      ],
       "legacy_include_dirs": [
-        {"paths": ["MatterEngine3/src/render", "MatterEngine3/include"], "reason": "PRIVATE include roots for the in-place matrix_math.cpp; not propagated to consumers"}
+        {"paths": ["MatterEngine3/src/render", "MatterEngine3/include"], "reason": "PRIVATE include roots for the in-place matrix_math.cpp and, in the vulkan variant, the moved raster/environment sources' engine headers; not propagated to consumers"},
+        {"path": "libs/ProfileLib/include", "reason": "PRIVATE include root for profile.h in the moved mesh_raster.cpp; matter_graphics_vulkan compiles it with MATTER_PROFILE_ENABLED=0, so no profiler symbol is referenced"}
       ],
       "legacy_headers": [
-        {"paths": ["MatterEngine3/src/render/matrix_math.h", "MatterEngine3/include/matter/math_types.h"], "reason": "declarations of the in-place matrix_math.cpp and the engine's POD math types it uses"}
+        {"paths": ["MatterEngine3/src/render/matrix_math.h", "MatterEngine3/include/matter/math_types.h"], "reason": "declarations of the in-place matrix_math.cpp and the engine's POD math types it uses"},
+        {"paths": ["MatterEngine3/src/render/frame_matrices.h", "MatterEngine3/src/render/gpu_matrix_pack.h", "MatterEngine3/include/matter/camera.h"], "reason": "vulkan variant: header-only POD camera and inline frame/GPU matrix packing the moved vk_volumetrics.cpp and vk_temporal.h read; the environment archive leaves no camera or matrix symbol undefined"},
+        {"path": "MatterEngine3/include/matter/vulkan_device.h", "reason": "vulkan variant: host-owned VulkanDevice declaration (creation, teardown and queue leasing stay in vk_context.cpp); graphics defines only its accessors and lifetime registry, in src/native/vk_device_internal.cpp, so the environment archive leaves no VulkanDevice symbol undefined"},
+        {"paths": ["MatterEngine3/include/matter/log.h", "MatterEngine3/include/matter/compiler.h"], "reason": "vulkan variant: header-only engine logging facility (with the compiler.h it includes) that the moved environment, BLAS-cache and pipeline-stats sources log through; it references only libc stdio"},
+        {"path": "libs/ProfileLib/include/profile.h", "reason": "vulkan variant: profiler macros in the moved mesh_raster.cpp, compiled with MATTER_PROFILE_ENABLED=0, so matter_graphics_vulkan references no profiler symbol"}
       ],
       "unbuilt_sources": [
         {"path": "libs/MatterGraphics/tests", "reason": "graphics fixtures build only under BUILD_TESTING, in the component's own focused test run"}
+      ],
+      "monolith_sources": [
+        {"paths": ["libs/MatterGraphics/src/native/water_field_vk.cpp", "libs/MatterGraphics/src/native/water_field_vk_resources.cpp",
+                   "libs/MatterGraphics/src/native/water_animation_gpu.cpp", "libs/MatterGraphics/src/native/water_mesh_animation_playback.cpp",
+                   "libs/MatterGraphics/src/native/water_forward_reference.cpp", "libs/MatterGraphics/src/native/water_surface_reference.cpp",
+                   "libs/MatterGraphics/src/native/vk_temporal.cpp", "libs/MatterGraphics/src/native/streamline_bridge.cpp"],
+         "reason": "moved water/temporal/streamline implementation whose device and resource definitions the native host supplies; the monolith compiles it through MatterEngine3/src/render forwarding entrypoints (src/native/CMakeLists.txt is its standalone compatibility build)"},
+        {"paths": ["libs/MatterGraphics/src/native/raster_mesh.cpp", "libs/MatterGraphics/src/native/vk_gi_math.cpp",
+                   "libs/MatterGraphics/src/native/vk_lighting_controls.cpp", "libs/MatterGraphics/src/native/world_lights.cpp",
+                   "libs/MatterGraphics/src/native/vt/vt_residency.cpp", "libs/MatterGraphics/src/native/vt/vt_stub_filler.cpp"],
+         "reason": "moved renderer implementation still bound to engine render state; only the monolith compiles it, through MatterEngine3 forwarding entrypoints, until the legacy retirement task gives it a component target"}
       ],
       "forbidden_public_includes": [
         "^matter/(geometry|terrain|portable_host)/", "^(quickjs|quickjs-libc|cutils)\\.h$", "^vulkan/", "^GLFW/",
@@ -140,15 +164,20 @@
           "name": "vulkan",
           "description": "MATTER_GRAPHICS_VULKAN=ON: the injected Vulkan resource device",
           "cache": {"MATTER_GRAPHICS_VULKAN": "ON"},
-          "targets": ["matter_graphics_vulkan"],
-          "public_headers": ["include/matter/graphics/vulkan_resources.h"],
-          "sources": ["src/vulkan_resources.cpp"],
+          "targets": ["matter_graphics_vulkan", "matter_graphics_environment", "matter_graphics_sample"],
+          "public_headers": ["include/matter/graphics/vulkan_resources.h", "include/matter/graphics/vulkan_composition.h",
+                             "include/matter/graphics/vulkan_raster.h"],
+          "sources": ["src/vulkan_resources.cpp", "src/vulkan_composition.cpp", "src/vulkan_raster.cpp",
+                      "src/native/mesh_raster.cpp", "src/native/mesh_pipelines.cpp", "src/native/vk_atmosphere.cpp",
+                      "src/native/vk_cloud_shadows.cpp", "src/native/vk_volumetrics.cpp", "src/native/vk_resources.cpp",
+                      "src/native/vk_device_internal.cpp", "examples/graphics_sample.cpp"],
           "requires_capability": "vulkan-sdk",
           "unavailable_patterns": ["Could NOT find Vulkan(?: \\(missing: [^)]*\\))?"],
           "allowed_external_headers": ["(^|/)vulkan/", "(^|/)vk_video/"],
           "allowed_external_include_dirs": ["(?i)vulkan"],
           "allowed_link_libraries": ["(?i)(^|[/\\\\])(lib)?vulkan(-1)?(\\.so[.0-9]*|\\.lib|\\.dylib)?$", "(?i)^-lvulkan$"],
-          "symbol_allowances": {"matter_graphics_vulkan": ["vulkan"]}
+          "symbol_allowances": {"matter_graphics_vulkan": ["vulkan"], "matter_graphics_environment": ["vulkan"],
+                                "matter_graphics_sample": ["vulkan"]}
         }
       ]
     },
@@ -161,18 +190,17 @@
       "targets": ["matter_terrain"],
       "public_include_dirs": ["libs/TerrainGeneration/include"],
       "allowed_components": ["contracts", "geometry"],
-      "legacy_sources": [
-        {"path": "MatterEngine3/src/terrain_field.cpp", "reason": "engine source of truth for the terrain noise field, compiled in place until ordered integration relocates it"}
-      ],
       "legacy_include_dirs": [
-        {"paths": ["MatterEngine3/src", "MatterEngine3/include"], "reason": "PRIVATE include roots for the in-place terrain_field.cpp; not propagated to consumers"}
+        {"paths": ["MatterEngine3/src", "MatterEngine3/include"], "reason": "PRIVATE include roots for the bake mode and log headers the moved field and mesher still read; not propagated to consumers"}
       ],
       "legacy_headers": [
-        {"paths": ["MatterEngine3/src/terrain_field.h", "MatterEngine3/src/terrain_river_overlay.h", "MatterEngine3/src/hydrology/river_geometry.h"], "reason": "declarations of the in-place terrain_field.cpp and its river-overlay inputs"},
-        {"paths": ["MatterEngine3/include/matter/bounds.h", "MatterEngine3/include/matter/math_types.h", "MatterEngine3/include/matter/river_network.h", "MatterEngine3/include/matter/hydrology.h"], "reason": "engine POD types (bounds, math, river network, hydrology) named by terrain_field.h"}
+        {"paths": ["MatterEngine3/src/bake_mode.h", "MatterEngine3/include/matter/log.h", "MatterEngine3/include/matter/compiler.h"], "reason": "engine bake-mode switch and logging facility (with the compiler.h it includes) the moved field and mesher still include"}
       ],
       "unbuilt_sources": [
         {"path": "libs/TerrainGeneration/tests", "reason": "terrain fixtures build only under MATTER_TERRAIN_BUILD_TESTS, in the component's own focused test run"}
+      ],
+      "monolith_sources": [
+        {"path": "libs/TerrainGeneration/src/seam_weld.cpp", "reason": "the moved sector seam welder is called only by the monolith facade (matter_engine.cpp); engine-core.sources compiles it in place and matter_terrain does not export it"}
       ],
       "forbidden_public_includes": [
         "^matter/(graphics|portable_host)/", "^(quickjs|quickjs-libc|cutils)\\.h$", "^vulkan/", "^GLFW/",
@@ -204,7 +232,8 @@
         {"path": "third_party/quickjs-ng/quickjs.c", "reason": "portable_host compiles the patched vendored source directly (MATTER_PATCHES.md)"},
         {"paths": ["packages/matter-authoring/index.mjs", "packages/matter-authoring/values.mjs", "packages/matter-authoring/parameters.mjs",
                    "packages/matter-authoring/rng.mjs", "packages/matter-authoring/recipe.mjs", "packages/matter-authoring/legacy.mjs"],
-         "reason": "the host embeds the portable authoring SDK modules byte-for-byte as module source data (no link or include dependency)"}
+         "reason": "the host embeds the portable authoring SDK modules byte-for-byte as module source data (no link or include dependency)"},
+        {"path": "cmake/MatterFuzz.cmake", "reason": "shared opt-in fuzz-driver helper (MATTER_BUILD_FUZZERS defaults OFF); defines a function only"}
       ],
       "unbuilt_sources": [
         {"path": "MatterEngine3/src/script/portable_host/tests", "reason": "host fixtures build only under BUILD_TESTING (they also need node), in the component's own focused test run"}
@@ -232,44 +261,169 @@
     },
     {
       "name": "build",
-      "status": "scaffold",
+      "status": "implemented",
       "kind": "native",
       "directory": "libs/ProceduralBuild",
-      "reason": "interface-only scaffold (CMakeLists.txt only); the build component has not been extracted yet",
+      "description": "Build coordinator over the neutral resolver, host and generator services; no JavaScript engine, geometry kernel or renderer.",
       "targets": ["matter_build"],
-      "allowed_components": ["contracts"]
+      "public_include_dirs": ["libs/ProceduralBuild/include"],
+      "allowed_components": ["contracts"],
+      "unbuilt_sources": [
+        {"path": "libs/ProceduralBuild/tests", "reason": "coordinator fixtures build only under BUILD_TESTING, in the component's own focused test run"}
+      ],
+      "forbidden_public_includes": [
+        "^matter/(geometry|graphics|terrain|portable_host)/", "^(quickjs|quickjs-libc|cutils)\\.h$", "^vulkan/", "^GLFW/",
+        "^(raylib|rlgl|raymath)\\.h$", "^flecs", "(^|/)(script_host|dsl_state|world_state)\\.h$"
+      ],
+      "forbidden_symbols": ["quickjs", "vulkan", "glfw", "raylib", "flecs", "dsl_state", "script_host", "world_cache",
+                            "terrain_ns", "geometry_ns", "graphics_ns"]
     },
     {
       "name": "asset_pipeline",
-      "status": "scaffold",
+      "status": "implemented",
       "kind": "native",
       "directory": "libs/AssetPipeline",
-      "reason": "interface-only scaffold (CMakeLists.txt only); the asset pipeline has not been extracted yet",
-      "targets": ["matter_asset_pipeline"],
-      "allowed_components": ["contracts", "geometry"]
+      "description": "Prepared-asset archive, storage, glTF, surface and LOD products over the neutral contracts; may use geometry, never the host, renderer or JavaScript engine.",
+      "targets": ["matter_asset_pipeline", "matter_asset_archive", "matter_asset_prepared", "matter_asset_lod"],
+      "public_include_dirs": ["libs/AssetPipeline/include", "libs/AssetPipeline/animation/include", "libs/AssetPipeline/physics/include"],
+      "allowed_components": ["contracts", "geometry"],
+      "legacy_sources": [
+        {"paths": ["MatterEngine3/src/mesh_error.cpp", "libs/SpatialQueryLib/src/bvh.cpp"], "reason": "engine mesh-error metric and SpatialQueryLib BVH sources of truth for matter_asset_lod_kernels, compiled in place rather than copied"}
+      ],
+      "legacy_include_dirs": [
+        {"paths": ["MatterEngine3/src", "MatterEngine3/include"], "reason": "PRIVATE include roots for the in-place mesh_error.cpp and the engine headers it reads; not propagated to consumers"},
+        {"paths": ["libs/SpatialQueryLib/include", "libs/MatterSurfaceLib/include", "libs/MatterSurfaceLib/src"], "reason": "PRIVATE include roots for the in-place BVH source and the MatterSurfaceLib simplify/transform headers lod.cpp calls through geometry"},
+        {"path": "third_party/raylib/src/external", "reason": "PRIVATE include root for the vendored stb_image/stb_image_write single-header codecs the glTF importer decodes textures with"},
+        {"path": "third_party/raylib/src", "reason": "PRIVATE include root for raylib's POD Mesh type named by mesh_simplifier.hpp; the symbols check proves no raylib function is referenced"}
+      ],
+      "legacy_headers": [
+        {"paths": ["MatterEngine3/src/mesh_error.h", "MatterEngine3/include/matter/compiler.h"], "reason": "declarations of the in-place mesh-error metric"},
+        {"paths": ["libs/SpatialQueryLib/include/precomp.h", "libs/SpatialQueryLib/include/tri.h", "libs/SpatialQueryLib/include/bvh.h"], "reason": "SpatialQueryLib's BVH and Tri/float3 interchange types"},
+        {"paths": ["libs/MatterSurfaceLib/include/mesh_indexed.hpp", "libs/MatterSurfaceLib/include/mesh_simplifier.hpp", "libs/MatterSurfaceLib/include/mesh_transform.hpp"], "reason": "declarations of the MatterSurfaceLib simplify/transform stages geometry compiles in place (MATTER_GEOMETRY_MODIFIERS)"},
+        {"path": "third_party/raylib/src/raylib.h", "reason": "POD Mesh type named by mesh_simplifier.hpp; the symbols check proves no raylib function is referenced"},
+        {"paths": ["third_party/raylib/src/external/stb_image.h", "third_party/raylib/src/external/stb_image_write.h"], "reason": "vendored single-header image codecs; images.cpp is their one implementation unit"}
+      ],
+      "configure_inputs": [
+        {"path": "libs/MatterSurfaceLib/src/surface.c", "reason": "geometry's configure-time smin_set/VertexInterpolation extraction, reached through the geometry subdirectory"}
+      ],
+      "unbuilt_sources": [
+        {"path": "libs/AssetPipeline/tests", "reason": "asset fixtures build only under BUILD_TESTING, in the component's own focused test run"},
+        {"path": "libs/AssetPipeline/animation/tests", "reason": "animation fixtures build only under BUILD_TESTING with MATTER_ASSET_ANIMATION=ON"},
+        {"path": "libs/AssetPipeline/physics/tests", "reason": "collision fixtures build only under BUILD_TESTING with MATTER_ASSET_PHYSICS=ON"},
+        {"path": "libs/AssetPipeline/physics/src/tileset_settle.cpp", "reason": "the Box3d settle core builds only with MATTER_PHYSICS_BOX3D=ON, a native-only opt-in that adds the vendored solver"}
+      ],
+      "forbidden_public_includes": [
+        "^matter/(graphics|terrain|portable_host)/",
+        "^(quickjs|quickjs-libc|cutils)\\.h$",
+        "^vulkan/",
+        "^GLFW/",
+        "^(raylib|rlgl|raymath)\\.h$",
+        "^flecs",
+        "(^|/)(script_host|dsl_state|world_state)\\.h$"
+      ],
+      "forbidden_symbols": ["quickjs", "vulkan", "glfw", "raylib", "flecs", "dsl_state", "script_host", "graphics_ns"],
+      "variants": [
+        {
+          "name": "default",
+          "description": "the default module set: archive, prepared, storage, glTF, legacy adapter, surface + CPU surface tape, LOD generation",
+          "targets": ["matter_asset_storage", "matter_asset_gltf", "matter_asset_legacy", "matter_asset_surface",
+                      "matter_asset_surface_native", "matter_asset_lod_kernels"],
+          "sources": ["src/storage.cpp", "src/gltf.cpp", "src/images.cpp", "src/legacy.cpp", "src/surface.cpp",
+                      "src/surface_tape.cpp", "src/lod.cpp"]
+        },
+        {
+          "name": "minimal",
+          "description": "every optional module OFF: the prepared-asset loader with the disabled LOD stub, as a WASM/runtime consumer links it",
+          "cache": {"MATTER_ASSET_STORAGE": "OFF", "MATTER_ASSET_GLTF": "OFF", "MATTER_ASSET_LEGACY": "OFF",
+                    "MATTER_ASSET_SURFACE": "OFF", "MATTER_ASSET_LOD": "OFF"},
+          "sources": ["src/lod_disabled.cpp"]
+        },
+        {
+          "name": "products",
+          "description": "MATTER_ASSET_ANIMATION and MATTER_ASSET_PHYSICS ON without their native engine adapters",
+          "cache": {"MATTER_ASSET_ANIMATION": "ON", "MATTER_ASSET_PHYSICS": "ON", "MATTER_PHYSICS_TERRAIN_ADAPTER": "OFF"},
+          "targets": ["matter_animation_asset", "matter_collision", "matter_physics_generation"],
+          "sources": ["animation/src/animation.cpp", "physics/src/collision.cpp", "physics/src/settling.cpp"],
+          "public_headers": ["animation/include/matter/animation_asset/animation.h", "physics/include/matter/asset/collision.h",
+                             "physics/include/matter/asset/settling.h"]
+        }
+      ]
     },
     {
       "name": "geometry_c",
-      "status": "scaffold",
+      "status": "implemented",
       "kind": "native",
       "directory": "bindings/geometry-c",
-      "reason": "C ABI binding scaffold with WebAssembly profile tooling only; no C/C++ implementation exists yet",
+      "description": "Versioned C ABI over procedural geometry (native and WebAssembly); C and the geometry component only.",
       "targets": ["matter_geometry_c"],
-      "allowed_components": ["contracts", "geometry"]
+      "public_include_dirs": ["bindings/geometry-c/include"],
+      "allowed_components": ["contracts", "geometry"],
+      "configure_inputs": [
+        {"path": "libs/MatterSurfaceLib/src/surface.c", "reason": "geometry's configure-time smin_set/VertexInterpolation extraction, reached through the geometry subdirectory"},
+        {"path": "cmake/MatterFuzz.cmake", "reason": "shared opt-in fuzz-driver helper (MATTER_BUILD_FUZZERS defaults OFF); defines a function only"}
+      ],
+      "unbuilt_sources": [
+        {"path": "bindings/geometry-c/tests", "reason": "ABI consumer, property and allocation fixtures build only under MATTER_GEOMETRY_C_TESTS, in the component's own focused test run"}
+      ],
+      "forbidden_public_includes": [
+        "^matter/(graphics|terrain|portable_host|asset)/",
+        "^(quickjs|quickjs-libc|cutils)\\.h$",
+        "^vulkan/",
+        "^GLFW/",
+        "^(raylib|rlgl|raymath)\\.h$",
+        "^flecs",
+        "(^|/)(script_host|dsl_state|world_state)\\.h$"
+      ],
+      "forbidden_symbols": ["quickjs", "vulkan", "glfw", "raylib", "flecs", "dsl_state", "script_host",
+                            "world_cache", "terrain_ns", "graphics_ns"]
     },
     {
       "name": "web_procedural",
-      "status": "absent",
+      "status": "implemented",
       "kind": "browser",
       "directory": "integrations/web-procedural",
-      "reason": "the browser integration has not been created yet"
+      "description": "Browser runtime and three.js viewer: the authoring SDK and the geometry C ABI's WebAssembly module are its only component dependencies; no Node, host or native modules.",
+      "allowed_components": ["authoring", "geometry_c"],
+      "js": {
+        "include": ["*.mts", "*.mjs", "*.js"],
+        "exclude": ["*/tests/*", "*/vendor/*", "*/evidence/*", "*/dist/*"],
+        "forbidden_specifiers": [
+          "^node:",
+          "^(fs|os|std|path|child_process|process|worker_threads|http|https|net|url|module)(/|$)",
+          "^qjs:",
+          "^https?:"
+        ],
+        "allowed_bare_specifiers": ["three"]
+      }
     },
     {
       "name": "component_adapters",
-      "status": "absent",
+      "status": "implemented",
       "kind": "adapter",
-      "directory": "MatterEngine3/src/component_adapters",
-      "reason": "the engine-side component adapters have not been created yet"
+      "directory": "MatterEngine3/src/component_adapters/authoring",
+      "description": "Engine-side authoring adapter: freezes sources and wires the portable host, build coordinator and geometry through their public interfaces; graphics only in its Vulkan e2e fixture.",
+      "targets": ["matter_authoring_adapter"],
+      "public_include_dirs": ["MatterEngine3/src/component_adapters/authoring/include"],
+      "allowed_components": ["contracts", "geometry", "build", "host_quickjs"],
+      "configure_inputs": [
+        {"path": "libs/MatterSurfaceLib/src/surface.c", "reason": "geometry's configure-time smin_set/VertexInterpolation extraction, reached through the geometry subdirectory"},
+        {"paths": ["packages/matter-authoring/index.mjs", "packages/matter-authoring/values.mjs", "packages/matter-authoring/parameters.mjs",
+                   "packages/matter-authoring/rng.mjs", "packages/matter-authoring/recipe.mjs", "packages/matter-authoring/legacy.mjs"],
+         "reason": "the authoring SDK modules host_quickjs embeds as module source data, reached through the host subdirectory"},
+        {"path": "cmake/MatterFuzz.cmake", "reason": "the shared opt-in fuzz-driver helper, reached through the host subdirectory"}
+      ],
+      "unbuilt_sources": [
+        {"path": "MatterEngine3/src/component_adapters/authoring/tests", "reason": "the end-to-end fixtures build only under BUILD_TESTING, in the adapter's own focused test run"}
+      ],
+      "monolith_sources": [
+        {"path": "MatterEngine3/src/component_adapters/authoring/engine/legacy_part_route.cpp", "reason": "the engine-side half of the adapter needs script_host, BLAS/TLAS managers and the material registry, so engine-core.sources compiles it into the monolith rather than the neutral adapter target"}
+      ],
+      "forbidden_public_includes": [
+        "^matter/(graphics|terrain)/", "^(quickjs|quickjs-libc|cutils)\\.h$", "^vulkan/", "^GLFW/",
+        "^(raylib|rlgl|raymath)\\.h$", "^flecs", "(^|/)(script_host|dsl_state|world_state)\\.h$"
+      ],
+      "forbidden_symbols": ["vulkan", "glfw", "raylib", "flecs", "dsl_state", "script_host", "world_cache",
+                            "terrain_ns", "graphics_ns"]
     }
   ]
 }

@@ -1,0 +1,14 @@
+revision 9 480x270 draws=11 refused=[] refused_placements=[]
+draw  0 terrain.live.-1.0.-1         raster=terrain.live.-1.0.-1         prototype=terrain.mesh             pixels=  6226 raster_ids=[0] depth=[0.0021172044798731804, 0.003029890824109316] resident_bytes=14876
+draw  1 terrain.live.-1.0.0          raster=terrain.live.-1.0.0          prototype=terrain.mesh             pixels= 24538 raster_ids=[1] depth=[0.003030255204066634, 0.005310995038598776] resident_bytes=29774
+draw  2 terrain.live.-1.0.1          raster=terrain.live.-1.0.1          prototype=terrain.mesh             pixels=  9600 raster_ids=[2] depth=[0.005314365960657597, 0.0060881683602929115] resident_bytes=29648
+draw  3 terrain.live.-2.0.-1         raster=terrain.live.-2.0.-1         prototype=terrain.mesh             pixels=  4737 raster_ids=[3] depth=[0.0021171770058572292, 0.003029440063983202] resident_bytes=12665
+draw  4 terrain.live.-2.0.0          raster=terrain.live.-2.0.0          prototype=terrain.mesh             pixels=  3240 raster_ids=[4] depth=[0.0030302873346954584, 0.004582840483635664] resident_bytes=14906
+draw  5 terrain.live.0.0.-1          raster=terrain.live.0.0.-1          prototype=terrain.mesh             pixels=  6220 raster_ids=[5] depth=[0.0021171863190829754, 0.0030300947837531567] resident_bytes=14827
+draw  6 terrain.live.0.0.0           raster=terrain.live.0.0.0           prototype=terrain.mesh             pixels= 24434 raster_ids=[6] depth=[0.0030303485691547394, 0.005318032577633858] resident_bytes=29797
+draw  7 terrain.live.0.0.1           raster=terrain.live.0.0.1           prototype=terrain.mesh             pixels=  9708 raster_ids=[7] depth=[0.005318306386470795, 0.006113517098128796] resident_bytes=29841
+draw  8 terrain.live.1.0.-1          raster=terrain.live.1.0.-1          prototype=terrain.mesh             pixels=  4751 raster_ids=[8] depth=[0.002117299474775791, 0.0030285378452390432] resident_bytes=14929
+draw  9 terrain.live.1.0.0           raster=terrain.live.1.0.0           prototype=terrain.mesh             pixels=  3205 raster_ids=[9] depth=[0.0030345816630870104, 0.004570365883409977] resident_bytes=29784
+draw 10 terrain.live.2.0.-1          raster=terrain.live.2.0.-1          prototype=terrain.mesh             pixels=    79 raster_ids=[10] depth=[0.0021171504631638527, 0.0022723590955138206] resident_bytes=12691
+background pixels=32862 depth=[0.0, 0.0]
+terrain draws with pixels: 11
