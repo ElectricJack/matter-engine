@@ -1,0 +1,18 @@
+{
+  "raster.vert": {
+    "bytes": 12360,
+    "sha256": "074dc025061a6a7be438e7ee35a0820063be66a588f87a4a71e4fc7c803ba614"
+  },
+  "gbuffer.frag": {
+    "bytes": 1594540,
+    "sha256": "dd2d3049991cd6a6ae535dfeccc56db80b76f03bb6d7e9c503dbbc2830365464"
+  },
+  "raster_skin.vert": {
+    "bytes": 11372,
+    "sha256": "178f6da7e91f819547689722db9409129fa943486b7b6682df4b964b9e7e3adb"
+  },
+  "raster_water.vert": {
+    "bytes": 8176,
+    "sha256": "75818c7c70aae2d44c3e71cf3e0b04085988a19dfea717b819c2d61e00f2beff"
+  }
+}
