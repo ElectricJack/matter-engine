@@ -15,32 +15,13 @@
 #include "../src/terrain_field.h"
 #include "../src/terrain_mesher.h"
 #include "../src/part_asset_v2.h"
+#include "../src/part_bundle.h"
+#include "memory_fixture_io.h"
 #include "blas_manager.hpp"
 #include "tlas_manager.hpp"
-#include <chrono>
 #include <cstdio>
 #include <cstdlib>
-#include <filesystem>
 #include <string>
-#include <system_error>
-
-// Sandbox under the platform temp dir rather than a hardcoded POSIX "/tmp".
-// The literal made this suite unrunnable on Windows -- every bake failed with
-// errno=2 and the failures read like artifact bugs -- so it was red on main for
-// a reason that had nothing to do with what it tests. Same fix async_bake_tests
-// already carries.
-static std::string sandbox_dir(const char* name) {
-    namespace fs = std::filesystem;
-    const auto stamp = std::chrono::high_resolution_clock::now()
-                           .time_since_epoch().count();
-    const fs::path dir =
-        fs::temp_directory_path() / (std::string(name) + "_" +
-                                     std::to_string(stamp));
-    std::error_code ec;
-    fs::remove_all(dir, ec);
-    fs::create_directories(dir, ec);
-    return dir.string();
-}
 
 using namespace script_host;
 
@@ -62,7 +43,11 @@ int main() {
         prog, err), err.c_str());
     terrain_field::FieldRuntime field(std::move(prog));
 
-    const std::string parts_dir = sandbox_dir("me3_terrain_verb");
+    // Exercise the real bundle serializer and loader in an isolated byte store.
+    // The logical path is an identity only; no directory is created or probed.
+    const std::string parts_dir = "/fixtures/terrain_verb";
+    auto storage = std::make_shared<matter::test::MemoryCacheByteStorage>();
+    part_bundle::ScopedStorage storage_scope(storage);
     ScriptHost host;
 
     // No world bound -> loud error

@@ -49,6 +49,8 @@ public:
     // sessions allocate no page bank and start no paging worker lanes.
     GeometryWorldRuntime();
     ~GeometryWorldRuntime();
+    GeometryWorldRuntime(GeometryWorldRuntime&&) noexcept;
+    GeometryWorldRuntime& operator=(GeometryWorldRuntime&&) noexcept;
     // App/renderer owner lane only.
     void reset(VkSceneRenderer&);
     bool update(PartStore&, VkSceneRenderer&, matter::VulkanDevice&,
