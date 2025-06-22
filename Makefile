@@ -27,7 +27,7 @@ $(shell mkdir -p $(OBJ_DIR))
 $(shell mkdir -p $(OBJ_DIR)/$(SRC_DIR))
 
 # Source files - Include both core files and linked library files
-SRCS = main.c $(SRC_DIR)/surface.c $(SRC_DIR)/object_allocator.c
+SRCS = main.c $(SRC_DIR)/open_particle_surface.c $(SRC_DIR)/surface.c $(SRC_DIR)/object_allocator.c
 OBJS = $(SRCS:%.c=$(OBJ_DIR)/%.o)
 
 # Target executable
