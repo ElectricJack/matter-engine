@@ -1,5 +1,5 @@
-#include "SurfaceLib/surface.h"
-#include "ObjectAllocatorLib/object_allocator.h"
+#include "surface.h"
+#include "object_allocator.h"
 #include "raylib.h"
 #include "raymath.h"
 #include "rlgl.h"
@@ -12,7 +12,7 @@
 
 // Demo configuration
 #define PARTICLE_COUNT         1000000  // Target 1 million particles
-#define PARTICLE_RADIUS        0.5f     // Particle radius
+#define PARTICLE_RADIUS        5.0f     // Particle radius
 #define VOLUME_SIZE            100.0f   // Overall volume size
 #define BOUNDS_SIZE            16.0f    // Size of each spatial hash bounds
 #define MAX_DIRTY_UPDATES      3        // Maximum dirty bound updates per frame
