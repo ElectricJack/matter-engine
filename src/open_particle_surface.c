@@ -638,6 +638,8 @@ static int UpdateDirtyCells(int maxUpdates) {
         spatialHashCells[cellIndex].mesh = GenerateMesh(cellParticleBuffer, particleRadius, 
                                           validCount, 
                                           spatialHashCells[cellIndex].bounds);
+
+        UploadMesh(&spatialHashCells[cellIndex].mesh, false);
         spatialHashCells[cellIndex].hasMesh = true;
         
         // Mark as clean
@@ -686,6 +688,8 @@ void DrawParticleMeshes(Material material, bool wireframe) {
 void DrawParticleSystemDebug(bool showBounds) {
     if (!showBounds) return;
     
+    printf("Drawing debug bounds for %d active cells\n", activeCells.count);
+    
     // Draw bounds for all active cells
     for (int i = 0; i < activeCells.count; i++) {
         int cellIndex = activeCells.indices[i];
@@ -694,6 +698,12 @@ void DrawParticleSystemDebug(bool showBounds) {
             
             Bounds bounds = spatialHashCells[cellIndex].bounds;
             Color boundsColor = spatialHashCells[cellIndex].dirty ? RED : GREEN;
+            
+            printf("Cell %d: center=(%.2f,%.2f,%.2f) size=(%.2f,%.2f,%.2f) particles=%d\n", 
+                   cellIndex, bounds.center.x, bounds.center.y, bounds.center.z,
+                   bounds.size.x, bounds.size.y, bounds.size.z,
+                   spatialHashCells[cellIndex].particleCount);
+                   
             DrawCubeWires(bounds.center, bounds.size.x, bounds.size.y, bounds.size.z, boundsColor);
         }
     }

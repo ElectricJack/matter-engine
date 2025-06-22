@@ -10,7 +10,7 @@
 
 // Demo configuration
 #define PARTICLE_COUNT         1000000  // Target 1 million particles
-#define PARTICLE_RADIUS        5.0f     // Particle radius
+#define PARTICLE_RADIUS        1.0f     // Particle radius
 #define VOLUME_SIZE            100.0f   // Overall volume size
 #define INITIAL_PARTICLE_COUNT 10000    // Start with fewer particles and grow
 #define MAX_DIRTY_UPDATES      3        // Maximum dirty bound updates per frame
@@ -52,16 +52,16 @@ void GenerateWeblikeParticles(int count) {
         }
         
         // Create a random cluster of particles along this strand
-        int clusterSize = 100 + rand() % 150; // 100-250 particles per cluster
+        int clusterSize = 500 + rand() % 250; 
         for (int j = 0; j < clusterSize && addedCount < count; j++) {
             // Position along the strand with some randomness
-            float t = ((float)rand() / RAND_MAX) * 15.0f; // Position along strand
+            float t = ((float)rand() / RAND_MAX) * 20.0f; // Position along strand
             
             // Calculate position with some noise
             Vector3 offset = {
-                ((float)rand() / RAND_MAX - 0.5f) * 3.0f,
-                ((float)rand() / RAND_MAX - 0.5f) * 3.0f,
-                ((float)rand() / RAND_MAX - 0.5f) * 3.0f
+                ((float)rand() / RAND_MAX - 0.5f) * 10.0f,
+                ((float)rand() / RAND_MAX - 0.5f) * 10.0f,
+                ((float)rand() / RAND_MAX - 0.5f) * 10.0f
             };
             
             // Final position
@@ -148,6 +148,8 @@ int main(void) {
     float timeSinceLastParticleAddition = 0.0f;
     
     SetTargetFPS(60);               // Set target to run at 60 frames-per-second
+
+    GenerateWeblikeParticles(500);
     
     // Main game loop
     // Skip to the next frame immediately for debugging
@@ -168,17 +170,17 @@ int main(void) {
         float deltaTime = GetFrameTime();
         
         // Add more particles gradually
-        timeSinceLastParticleAddition += deltaTime;
-        if (timeSinceLastParticleAddition > 5.0f && GetParticleCount() < PARTICLE_COUNT) {
-            // For debugging, only add one small batch
-            static bool addedExtraParticles = false;
-            if (!addedExtraParticles) {
-                printf("Adding additional test particles\n");
-                GenerateWeblikeParticles(5); // Add just a few more for testing
-                addedExtraParticles = true; // Only add once for debugging
-            }
-            timeSinceLastParticleAddition = 0.0f;
-        }
+        // timeSinceLastParticleAddition += deltaTime;
+        // if (timeSinceLastParticleAddition > 5.0f && GetParticleCount() < PARTICLE_COUNT) {
+        //     // For debugging, only add one small batch
+        //     static bool addedExtraParticles = false;
+        //     if (!addedExtraParticles) {
+        //         printf("Adding additional test particles\n");
+        //          // Add just a few more for testing
+        //         addedExtraParticles = true; // Only add once for debugging
+        //     }
+        //     timeSinceLastParticleAddition = 0.0f;
+        // }
         
         // Update particle system (regenerate meshes for dirty regions)
         int updatedCells = UpdateParticleSystem(MAX_DIRTY_UPDATES);
