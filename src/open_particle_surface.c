@@ -16,8 +16,6 @@
 
 // Configuration
 #define CELL_SIZE             16.0f    // Size of each spatial hash cell 
-#define HASH_TABLE_SIZE       1024     // Size of hash table (must be power of 2)
-#define HASH_MASK             (HASH_TABLE_SIZE - 1)  // Mask for fast modulo
 #define HASH_BOUNDS_DETAIL    5        // Detail level for each bounds (2^4 = 16 divisions per cell)
 
 // 3D grid coordinates for unbounded grid
@@ -50,14 +48,8 @@ typedef struct {
     GridCoord      coord;            // Grid coordinates of this cell
 } SpatialHashCell;
 
-// Cell map structure - maps grid coordinates to cell indices
-typedef struct {
-    GridCoord* keys;       // Array of grid coordinates
-    int* values;           // Array of cell indices
-    bool* occupied;        // Whether each slot is occupied
-    int size;              // Current number of entries
-    int capacity;          // Maximum number of entries
-} CellMap;
+// Cell counter for tracking total cells (replaces CellMap.size)
+static int totalCellCount = 0;
 
 // List to track active cells (only those with particles)
 typedef struct {
@@ -75,7 +67,6 @@ static int currentParticleCount = 0;
 static float particleRadius = 0.0f;
 static ObjectAllocator* particleAllocator = NULL;
 static ActiveCellList activeCells = {0};
-static CellMap cellMap = {0};
 static SpatialHash* spatialHash = NULL;
 
 // Static buffer for particle data to avoid repeated malloc/free
@@ -91,24 +82,12 @@ static int particleInstanceCount = 0;
 // Forward declarations
 static void AddActiveCellIfNeeded(int cellIndex);
 static void InitializeActiveCellTracking(void);
-static void InitializeCellMap(int initialCapacity);
 static int GetCellIndex(GridCoord coord);
 static GridCoord GetGridCoordFromPosition(Vector3 position);
 static Bounds GetSpatialHashBounds(GridCoord coord);
 static int UpdateDirtyCells(int maxUpdates);
 
-// Get a hash value for grid coordinates
-static unsigned int HashGridCoord(GridCoord coord) {
-    // Simple hash function for 3D coordinates
-    // Convert to unsigned to handle negative coordinates properly
-    unsigned int ux = (unsigned int)(coord.x * 73856093);
-    unsigned int uy = (unsigned int)(coord.y * 19349663);
-    unsigned int uz = (unsigned int)(coord.z * 83492791);
-    
-    // XOR the values together
-    unsigned int hash = ux ^ uy ^ uz;
-    return hash & HASH_MASK;
-}
+// HashGridCoord function removed - now using spatial hash for cell lookups
 
 // Convert position to grid coordinates
 static GridCoord GetGridCoordFromPosition(Vector3 position) {
@@ -139,99 +118,40 @@ static Bounds GetSpatialHashBounds(GridCoord coord) {
 }
 
 // Initialize the cell map
-static void InitializeCellMap(int initialCapacity) {
-    DEBUG_LOG("Initializing cell map with capacity %d", initialCapacity);
-    cellMap.capacity = initialCapacity;
-    cellMap.size = 0;
-    cellMap.keys = (GridCoord*)malloc(initialCapacity * sizeof(GridCoord));
-    cellMap.values = (int*)malloc(initialCapacity * sizeof(int));
-    cellMap.occupied = (bool*)malloc(initialCapacity * sizeof(bool));
-    
-    // Initialize all slots as unoccupied
-    for (int i = 0; i < initialCapacity; i++) {
-        cellMap.occupied[i] = false;
-    }
-}
+// InitializeCellMap function removed - cell management now handled by spatial hash
 
 // Find or create a cell for the given grid coordinates
+// Convert grid coordinates to world position (cell center)
+static Vector3 GridCoordToWorldPos(GridCoord coord) {
+    return (Vector3){
+        (coord.x + 0.5f) * CELL_SIZE,
+        (coord.y + 0.5f) * CELL_SIZE,
+        (coord.z + 0.5f) * CELL_SIZE
+    };
+}
+
 static int GetCellIndex(GridCoord coord) {
-    // If no cell map yet, initialize it
-    if (cellMap.keys == NULL) {
-        InitializeCellMap(HASH_TABLE_SIZE);
+    // Convert grid coordinates to world position for spatial hash lookup
+    Vector3 worldPos = GridCoordToWorldPos(coord);
+    
+    // Try to find existing cell using the spatial hash
+    SpatialHashCell* existingCell = (SpatialHashCell*)sh_query_first(spatialHash, worldPos.x, worldPos.y, worldPos.z, 0.1f);
+    
+    if (existingCell != NULL) {
+        // Found existing cell, return its index
+        return (int)(existingCell - spatialHashCells);
     }
     
-    // Compute initial hash position
-    unsigned int hash = HashGridCoord(coord);
-    unsigned int index = hash;
+    // Cell doesn't exist yet, create a new one
     
-    // Linear probing to find the key or an empty slot
-    while (cellMap.occupied[index]) {
-        // Check if this is the coord we're looking for
-        if (cellMap.keys[index].x == coord.x && 
-            cellMap.keys[index].y == coord.y && 
-            cellMap.keys[index].z == coord.z) {
-            return cellMap.values[index]; // Found it
-        }
-        
-        // Move to next slot (linear probing)
-        index = (index + 1) & HASH_MASK;
-        
-        // If we've gone all the way around, the table is full
-        if (index == hash) {
-            // Resize the hash table
-            int oldCapacity = cellMap.capacity;
-            GridCoord* oldKeys = cellMap.keys;
-            int* oldValues = cellMap.values;
-            bool* oldOccupied = cellMap.occupied;
-            
-            // Keep track of old size
-            int oldSize = cellMap.size;
-            
-            // Double capacity
-            InitializeCellMap(oldCapacity * 2);
-            cellMap.size = oldSize; // Restore the size count
-            
-            // Reinsert all existing entries
-            for (int i = 0; i < oldCapacity; i++) {
-                if (oldOccupied[i]) {
-                    unsigned int newHash = HashGridCoord(oldKeys[i]);
-                    unsigned int newIndex = newHash;
-                    
-                    while (cellMap.occupied[newIndex]) {
-                        newIndex = (newIndex + 1) & HASH_MASK;
-                    }
-                    
-                    cellMap.keys[newIndex] = oldKeys[i];
-                    cellMap.values[newIndex] = oldValues[i];
-                    cellMap.occupied[newIndex] = true;
-                }
-            }
-            
-            // Free old arrays
-            free(oldKeys);
-            free(oldValues);
-            free(oldOccupied);
-            
-            // Try again
-            return GetCellIndex(coord);
-        }
-    }
-    
-    // Not found, this is a new grid cell
-    cellMap.keys[index] = coord;
-    cellMap.values[index] = cellMap.size;
-    cellMap.occupied[index] = true;
-    cellMap.size++;
-    
-    // Make sure spatialHashCells has room for this index
-    if (cellMap.size > spatialHashCellsCapacity) {
-        int newCapacity = cellMap.size + 1000; // Add some buffer
+    // Make sure spatialHashCells has room for a new cell
+    if (totalCellCount >= spatialHashCellsCapacity) {
+        int newCapacity = spatialHashCellsCapacity + 1000; // Add some buffer
         spatialHashCells = (SpatialHashCell*)realloc(spatialHashCells, newCapacity * sizeof(SpatialHashCell));
         
         // Initialize new cells
         for (int i = spatialHashCellsCapacity; i < newCapacity; i++) {
             SpatialHashCell* cell = &spatialHashCells[i];
-
             cell->particleCount   = 0;
             cell->particleIndices = NULL; // Will allocate on demand
             cell->dirty           = false;
@@ -241,7 +161,23 @@ static int GetCellIndex(GridCoord coord) {
         spatialHashCellsCapacity = newCapacity;
     }
     
-    return cellMap.values[index];
+    // Get the index for the new cell
+    int newCellIndex = totalCellCount;
+    totalCellCount++;
+    
+    // Initialize the new cell
+    SpatialHashCell* newCell = &spatialHashCells[newCellIndex];
+    newCell->coord = coord;
+    newCell->bounds = GetSpatialHashBounds(coord);
+    newCell->particleCount = 0;
+    newCell->particleIndices = NULL;
+    newCell->dirty = false;
+    newCell->hasMesh = false;
+    
+    // Insert the cell into the spatial hash at its world position
+    sh_insert(spatialHash, worldPos.x, worldPos.y, worldPos.z, newCell);
+    
+    return newCellIndex;
 }
 
 // Check if a position with radius overlaps a cell
@@ -362,11 +298,10 @@ void InitializeParticleSystem(int maxParticles, float radius) {
         particles[i].active = false;
     }
     
-    // Initialize the new shared spatial hash
-    spatialHash = sh_create(CELL_SIZE, maxParticles);
-    
-    // Initialize cell map for hash table (still needed for mesh management)
-    InitializeCellMap(HASH_TABLE_SIZE);
+    // Initialize the new shared spatial hash for storing cells
+    // Estimate cell capacity based on particle distribution
+    int estimatedCellCount = maxParticles / 10; // Rough estimate: ~10 particles per cell
+    spatialHash = sh_create(CELL_SIZE, estimatedCellCount);
     
     // Allocate initial array for spatial hash cells
     // This will grow dynamically as needed
@@ -416,15 +351,7 @@ void ShutdownParticleSystem(void) {
         activeCells.indices = NULL;
     }
     
-    // Free cell map
-    if (cellMap.keys != NULL) {
-        free(cellMap.keys);
-        free(cellMap.values);
-        free(cellMap.occupied);
-        cellMap.keys = NULL;
-        cellMap.values = NULL;
-        cellMap.occupied = NULL;
-    }
+    // Cell map cleanup removed - now handled by spatial hash
     
     // Unload instanced rendering resources
     UnloadModel(particleModel);
@@ -452,6 +379,7 @@ void ShutdownParticleSystem(void) {
     maxParticleCount = 0;
     currentParticleCount = 0;
     particleRadius = 0.0f;
+    totalCellCount = 0;
 }
 
 ParticleHandle CreateParticle(Vector3 position, int materialId) {
@@ -531,10 +459,7 @@ ParticleHandle CreateParticle(Vector3 position, int materialId) {
         AddActiveCellIfNeeded(cellIndex);
     }
     
-    // Insert particle into the new spatial hash
-    if (spatialHash) {
-        sh_insert(spatialHash, position.x, position.y, position.z, &particles[particleIndex]);
-    }
+    // Note: particles are now tracked via their cells in the spatial hash
     
     // Increment counter
     currentParticleCount++;
@@ -560,11 +485,7 @@ bool UpdateParticlePosition(ParticleHandle handle, Vector3 newPosition) {
         return false;
     }
     
-    // Remove from spatial hash at old position
-    if (spatialHash) {
-        Vector3 oldPos = particles[handle].position;
-        sh_remove(spatialHash, oldPos.x, oldPos.y, oldPos.z, &particles[handle]);
-    }
+    // Note: particles are now tracked via their cells in the spatial hash
     
     // Update position
     particles[handle].position = newPosition;
@@ -655,10 +576,7 @@ bool UpdateParticlePosition(ParticleHandle handle, Vector3 newPosition) {
         AddActiveCellIfNeeded(cellIndex);
     }
     
-    // Insert into spatial hash at new position
-    if (spatialHash) {
-        sh_insert(spatialHash, newPosition.x, newPosition.y, newPosition.z, &particles[handle]);
-    }
+    // Note: particles are now tracked via their cells in the spatial hash
     
     return true;
 }
@@ -698,11 +616,7 @@ bool DeleteParticle(ParticleHandle handle) {
         spatialHashCells[cellIndex].dirty = true;
     }
     
-    // Remove from spatial hash
-    if (spatialHash) {
-        Vector3 pos = particles[handle].position;
-        sh_remove(spatialHash, pos.x, pos.y, pos.z, &particles[handle]);
-    }
+    // Note: particles are now tracked via their cells in the spatial hash
     
     // Mark particle as inactive
     particles[handle].active = false;
