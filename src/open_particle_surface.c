@@ -17,7 +17,7 @@
 #define CELL_SIZE             16.0f    // Size of each spatial hash cell 
 #define HASH_TABLE_SIZE       1024     // Size of hash table (must be power of 2)
 #define HASH_MASK             (HASH_TABLE_SIZE - 1)  // Mask for fast modulo
-#define HASH_BOUNDS_DETAIL    4        // Detail level for each bounds (2^4 = 16 divisions per cell)
+#define HASH_BOUNDS_DETAIL    5        // Detail level for each bounds (2^4 = 16 divisions per cell)
 
 // 3D grid coordinates for unbounded grid
 typedef struct {
