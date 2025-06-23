@@ -18,7 +18,7 @@ ifeq ($(OS),Windows_NT)
 endif
 
 # Source files
-SRC = main.c src/surface.c tests.c
+SRC = main.c src/surface.c src/spatial_hash.c src/object_allocator.c tests.c
 OBJ = $(SRC:.c=.o)
 BIN = surface_app
 

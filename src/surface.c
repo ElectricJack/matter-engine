@@ -1,4 +1,5 @@
 #include "../include/surface.h"
+#include "../include/spatial_hash.h"
 #include "mc_tables.h"
 #include <stdlib.h>
 #include <string.h>
@@ -36,8 +37,8 @@ typedef struct {
 } IsosurfaceVertex;
 
 // Local function declarations
-static float   CalculateScalarField(Vector3 position, Particle* particles, float particleRadius, int particleCount);
-static int     GetMaterialAtPosition(Vector3 position, Particle* particles, float particleRadius, int particleCount);
+static float   CalculateScalarField(Vector3 position, SpatialHash* spatialHash, float particleRadius);
+static int     GetMaterialAtPosition(Vector3 position, SpatialHash* spatialHash, float particleRadius);
 static int     CalculateCubeIndex(GridCell cell, float isovalue);
 static Vector3 VertexInterpolation(Vector3 v1, float val1, Vector3 v2, float val2, float isovalue);
 
@@ -81,7 +82,24 @@ Mesh GenerateMesh(Particle* particles, float particleRadius, int particleCount, 
         return mesh;
     }
     
-    // Fill scalar field with implicit function values
+    // Create spatial hash for efficient particle queries
+    // Use a cell size that's roughly 2-3x the particle radius for optimal performance
+    float spatialCellSize = particleRadius * 3.0f;
+    SpatialHash* spatialHash = sh_create(spatialCellSize, particleCount);
+    
+    if (!spatialHash) {
+        printf("Failed to create spatial hash\n");
+        free(data.scalarField);
+        free(data.materialField);
+        return mesh;
+    }
+    
+    // Insert all particles into the spatial hash
+    for (int i = 0; i < particleCount; i++) {
+        sh_insert(spatialHash, particles[i].position.x, particles[i].position.y, particles[i].position.z, &particles[i]);
+    }
+    
+    // Fill scalar field with implicit function values (now using spatial hash)
     for (int z = 0; z < gridSize; z++) {
         for (int y = 0; y < gridSize; y++) {
             for (int x = 0; x < gridSize; x++) {
@@ -92,8 +110,8 @@ Mesh GenerateMesh(Particle* particles, float particleRadius, int particleCount, 
                 };
                 
                 int index = GetScalarFieldIndex(x, y, z, gridSize);
-                data.scalarField[index] = CalculateScalarField(position, particles, particleRadius, particleCount);
-                data.materialField[index] = GetMaterialAtPosition(position, particles, particleRadius, particleCount);
+                data.scalarField[index] = CalculateScalarField(position, spatialHash, particleRadius);
+                data.materialField[index] = GetMaterialAtPosition(position, spatialHash, particleRadius);
             }
         }
     }
@@ -115,6 +133,7 @@ Mesh GenerateMesh(Particle* particles, float particleRadius, int particleCount, 
         printf("Failed to allocate memory for mesh buffers\n");
         free(data.scalarField);
         free(data.materialField);
+        sh_destroy(spatialHash);
         free(vertices);
         free(normals);
         free(materials);
@@ -427,6 +446,7 @@ Mesh GenerateMesh(Particle* particles, float particleRadius, int particleCount, 
     // Clean up temporary data
     free(data.scalarField);
     free(data.materialField);
+    sh_destroy(spatialHash);
     free(vertices);
     free(normals);
     free(materials);
@@ -437,16 +457,24 @@ Mesh GenerateMesh(Particle* particles, float particleRadius, int particleCount, 
     return mesh;
 }
 
-// Calculate scalar field value at a point (distance function)
-static float CalculateScalarField(Vector3 position, Particle* particles, float particleRadius, int particleCount) {
+// Calculate scalar field value at a point (distance function) - optimized with spatial hash
+static float CalculateScalarField(Vector3 position, SpatialHash* spatialHash, float particleRadius) {
     float minDistance = INFINITY;
     
-    // For each particle, calculate distance to the position
-    for (int i = 0; i < particleCount; i++) {
+    // Query nearby particles using spatial hash instead of checking all particles
+    // Search radius should be large enough to find all potentially influencing particles
+    float searchRadius = particleRadius * 4.0f; // Conservative search radius
+    
+    Particle* nearbyParticles[64]; // Buffer for nearby particles
+    int foundCount = sh_query_radius(spatialHash, position.x, position.y, position.z, searchRadius, 
+                                     (void**)nearbyParticles, 64);
+    
+    // Calculate distance to only the nearby particles
+    for (int i = 0; i < foundCount; i++) {
         Vector3 diff = {
-            position.x - particles[i].position.x,
-            position.y - particles[i].position.y,
-            position.z - particles[i].position.z
+            position.x - nearbyParticles[i]->position.x,
+            position.y - nearbyParticles[i]->position.y,
+            position.z - nearbyParticles[i]->position.z
         };
         
         float distSquared = 
@@ -464,19 +492,24 @@ static float CalculateScalarField(Vector3 position, Particle* particles, float p
     return minDistance;
 }
 
-// Get material ID at a position
-static int GetMaterialAtPosition(Vector3 position, Particle* particles, float particleRadius, int particleCount) {
-    // particleRadius is unused but kept for API consistency
-    (void)particleRadius; // Silence unused parameter warning
+// Get material ID at a position - optimized with spatial hash
+static int GetMaterialAtPosition(Vector3 position, SpatialHash* spatialHash, float particleRadius) {
     float minDistance = INFINITY;
     int materialId = 0;
     
-    // Find the closest particle and use its material
-    for (int i = 0; i < particleCount; i++) {
+    // Query nearby particles using spatial hash instead of checking all particles
+    float searchRadius = particleRadius * 4.0f; // Conservative search radius
+    
+    Particle* nearbyParticles[64]; // Buffer for nearby particles
+    int foundCount = sh_query_radius(spatialHash, position.x, position.y, position.z, searchRadius, 
+                                     (void**)nearbyParticles, 64);
+    
+    // Find the closest particle among the nearby ones and use its material
+    for (int i = 0; i < foundCount; i++) {
         Vector3 diff = {
-            position.x - particles[i].position.x,
-            position.y - particles[i].position.y,
-            position.z - particles[i].position.z
+            position.x - nearbyParticles[i]->position.x,
+            position.y - nearbyParticles[i]->position.y,
+            position.z - nearbyParticles[i]->position.z
         };
         
         float distSquared = 
@@ -488,7 +521,7 @@ static int GetMaterialAtPosition(Vector3 position, Particle* particles, float pa
         
         if (dist < minDistance) {
             minDistance = dist;
-            materialId = particles[i].materialId;
+            materialId = nearbyParticles[i]->materialId;
         }
     }
     
