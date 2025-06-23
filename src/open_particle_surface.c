@@ -1,6 +1,7 @@
 #include "../include/open_particle_surface.h"
 #include "../include/surface.h"
 #include "../include/object_allocator.h"
+#include "../include/spatial_hash.h"
 #include "raylib.h"
 #include "raymath.h"
 #include "rlgl.h"
@@ -75,6 +76,7 @@ static float particleRadius = 0.0f;
 static ObjectAllocator* particleAllocator = NULL;
 static ActiveCellList activeCells = {0};
 static CellMap cellMap = {0};
+static SpatialHash* spatialHash = NULL;
 
 // Static buffer for particle data to avoid repeated malloc/free
 static Particle* cellParticleBuffer = NULL;
@@ -358,7 +360,10 @@ void InitializeParticleSystem(int maxParticles, float radius) {
         particles[i].active = false;
     }
     
-    // Initialize cell map for hash table
+    // Initialize the new shared spatial hash
+    spatialHash = sh_create(CELL_SIZE, maxParticles);
+    
+    // Initialize cell map for hash table (still needed for mesh management)
     InitializeCellMap(HASH_TABLE_SIZE);
     
     // Allocate initial array for spatial hash cells
@@ -434,6 +439,12 @@ void ShutdownParticleSystem(void) {
     
     // Destroy allocator
     oa_destroy(particleAllocator);
+    
+    // Destroy spatial hash
+    if (spatialHash) {
+        sh_destroy(spatialHash);
+        spatialHash = NULL;
+    }
     
     // Reset state
     maxParticleCount = 0;
@@ -516,6 +527,11 @@ ParticleHandle CreateParticle(Vector3 position, int materialId) {
         AddActiveCellIfNeeded(cellIndex);
     }
     
+    // Insert particle into the new spatial hash
+    if (spatialHash) {
+        sh_insert(spatialHash, position.x, position.y, position.z, &particles[particleIndex]);
+    }
+    
     // Increment counter
     currentParticleCount++;
     
@@ -538,6 +554,12 @@ bool UpdateParticlePosition(ParticleHandle handle, Vector3 newPosition) {
     // Validate handle
     if (handle < 0 || handle >= maxParticleCount || !particles[handle].active) {
         return false;
+    }
+    
+    // Remove from spatial hash at old position
+    if (spatialHash) {
+        Vector3 oldPos = particles[handle].position;
+        sh_remove(spatialHash, oldPos.x, oldPos.y, oldPos.z, &particles[handle]);
     }
     
     // Update position
@@ -623,6 +645,11 @@ bool UpdateParticlePosition(ParticleHandle handle, Vector3 newPosition) {
         AddActiveCellIfNeeded(cellIndex);
     }
     
+    // Insert into spatial hash at new position
+    if (spatialHash) {
+        sh_insert(spatialHash, newPosition.x, newPosition.y, newPosition.z, &particles[handle]);
+    }
+    
     return true;
 }
 
@@ -659,6 +686,12 @@ bool DeleteParticle(ParticleHandle handle) {
         
         // Mark cell as dirty
         spatialHashCells[cellIndex].dirty = true;
+    }
+    
+    // Remove from spatial hash
+    if (spatialHash) {
+        Vector3 pos = particles[handle].position;
+        sh_remove(spatialHash, pos.x, pos.y, pos.z, &particles[handle]);
     }
     
     // Mark particle as inactive
