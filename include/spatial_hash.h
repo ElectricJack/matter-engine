@@ -36,6 +36,14 @@ int sh_query_radius(SpatialHash* hash, float x, float y, float z, float radius,
 int sh_query_box(SpatialHash* hash, float minX, float minY, float minZ,
                  float maxX, float maxY, float maxZ, void** results, int maxResults);
 
+// Query objects at an exact position (within small tolerance)
+// Returns the actual number of objects found
+int sh_query_point(SpatialHash* hash, float x, float y, float z, void** results, int maxResults);
+
+// Query for the first object within a radius (optimized for single-object lookups)
+// Returns the object pointer if found, NULL otherwise
+void* sh_query_first(SpatialHash* hash, float x, float y, float z, float radius);
+
 // Get statistics about the hash table
 void sh_get_stats(SpatialHash* hash, int* bucketCount, int* objectCount, 
                   int* maxBucketSize, float* loadFactor);

@@ -284,3 +284,73 @@ void sh_get_stats(SpatialHash* hash, int* bucketCount, int* objectCount,
         *loadFactor = (float)hash->totalObjects / (float)hash->bucketCount;
     }
 }
+
+// Query objects at an exact position (within small tolerance)
+int sh_query_point(SpatialHash* hash, float x, float y, float z, void** results, int maxResults) {
+    if (!hash || !results || maxResults <= 0) return 0;
+    
+    // Use a very small tolerance for "exact" position matching
+    const float POINT_TOLERANCE = 0.001f;
+    
+    int found = 0;
+    float toleranceSq = POINT_TOLERANCE * POINT_TOLERANCE;
+    
+    // Convert position to grid coordinates and check only the exact cell
+    GridCoord coord = world_to_grid(x, y, z, hash->cellSize);
+    unsigned int bucketIndex = hash_coord(coord);
+    
+    // Check all objects in this exact bucket
+    BucketEntry* entry = hash->buckets[bucketIndex].head;
+    while (entry && found < maxResults) {
+        float dx = entry->x - x;
+        float dy = entry->y - y;
+        float dz = entry->z - z;
+        float distSq = dx*dx + dy*dy + dz*dz;
+        
+        if (distSq <= toleranceSq) {
+            results[found++] = entry->object;
+        }
+        
+        entry = entry->next;
+    }
+    
+    return found;
+}
+
+// Query for the first object within a radius (optimized for single-object lookups)
+void* sh_query_first(SpatialHash* hash, float x, float y, float z, float radius) {
+    if (!hash) return NULL;
+    
+    float radiusSq = radius * radius;
+    
+    // Calculate the range of grid cells to check
+    int cellRange = (int)ceilf(radius / hash->cellSize);
+    GridCoord centerCoord = world_to_grid(x, y, z, hash->cellSize);
+    
+    // Check all cells in the range
+    for (int dx = -cellRange; dx <= cellRange; dx++) {
+        for (int dy = -cellRange; dy <= cellRange; dy++) {
+            for (int dz = -cellRange; dz <= cellRange; dz++) {
+                GridCoord coord = {centerCoord.x + dx, centerCoord.y + dy, centerCoord.z + dz};
+                unsigned int bucketIndex = hash_coord(coord);
+                
+                // Check all objects in this bucket
+                BucketEntry* entry = hash->buckets[bucketIndex].head;
+                while (entry) {
+                    float dx = entry->x - x;
+                    float dy = entry->y - y;
+                    float dz = entry->z - z;
+                    float distSq = dx*dx + dy*dy + dz*dz;
+                    
+                    if (distSq <= radiusSq) {
+                        return entry->object; // Return first match
+                    }
+                    
+                    entry = entry->next;
+                }
+            }
+        }
+    }
+    
+    return NULL; // No object found
+}
