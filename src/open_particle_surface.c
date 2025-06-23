@@ -26,12 +26,16 @@ typedef struct {
     int z;
 } GridCoord;
 
+// Maximum number of cells a particle can overlap
+#define MAX_OVERLAPPING_CELLS 27
+
 // Particle structure with internal metadata
 typedef struct {
     Vector3 position;
     int     materialId;
-    int     cellIndex;      // Index into the spatial hash cells
-    bool    active;         // Whether the particle is active
+    int     cellIndices[MAX_OVERLAPPING_CELLS]; // Indices of all cells containing this particle
+    int     cellCount;     // Number of cells this particle belongs to
+    bool    active;        // Whether the particle is active
 } InternalParticle;
 
 // Spatial hash cell structure
@@ -88,7 +92,6 @@ static void InitializeActiveCellTracking(void);
 static void InitializeCellMap(int initialCapacity);
 static int GetCellIndex(GridCoord coord);
 static GridCoord GetGridCoordFromPosition(Vector3 position);
-static int GetSpatialHashIndex(Vector3 position);
 static Bounds GetSpatialHashBounds(GridCoord coord);
 static int UpdateDirtyCells(int maxUpdates);
 
@@ -237,12 +240,72 @@ static int GetCellIndex(GridCoord coord) {
     return cellMap.values[index];
 }
 
-// Get spatial hash cell index from position
-static int GetSpatialHashIndex(Vector3 position) {
-    GridCoord coord = GetGridCoordFromPosition(position);
-    int index = GetCellIndex(coord);
-    return index;
+// Check if a position with radius overlaps a cell
+static bool PositionOverlapsCell(Vector3 position, float radius, GridCoord cellCoord) {
+    // Calculate cell bounds
+    float cellMinX = cellCoord.x * CELL_SIZE;
+    float cellMinY = cellCoord.y * CELL_SIZE;
+    float cellMinZ = cellCoord.z * CELL_SIZE;
+    float cellMaxX = (cellCoord.x + 1) * CELL_SIZE;
+    float cellMaxY = (cellCoord.y + 1) * CELL_SIZE;
+    float cellMaxZ = (cellCoord.z + 1) * CELL_SIZE;
+    
+    // Check if the sphere overlaps the cell
+    float closestX = fmaxf(cellMinX, fminf(position.x, cellMaxX));
+    float closestY = fmaxf(cellMinY, fminf(position.y, cellMaxY));
+    float closestZ = fmaxf(cellMinZ, fminf(position.z, cellMaxZ));
+    
+    // Calculate squared distance between the closest point and sphere center
+    float distanceX = position.x - closestX;
+    float distanceY = position.y - closestY;
+    float distanceZ = position.z - closestZ;
+    
+    float distanceSquared = distanceX * distanceX + 
+                            distanceY * distanceY + 
+                            distanceZ * distanceZ;
+    
+    // Check if the closest point is within the sphere's radius
+    return distanceSquared <= (radius * radius);
 }
+
+// Find all cells that a particle overlaps
+static void GetOverlappingCells(Vector3 position, float radius, GridCoord* cells, int* cellCount, int maxCells) {
+    // Get the base cell (containing the particle center)
+    GridCoord baseCoord = GetGridCoordFromPosition(position);
+    cells[0] = baseCoord;
+    *cellCount = 1;
+    
+    // Calculate the maximum cells the particle could overlap in each direction
+    int cellRadius = (int)ceilf(radius / CELL_SIZE) + 1;
+    
+    // Check all potentially overlapping cells in a cube around the base cell
+    for (int z = -cellRadius; z <= cellRadius && *cellCount < maxCells; z++) {
+        for (int y = -cellRadius; y <= cellRadius && *cellCount < maxCells; y++) {
+            for (int x = -cellRadius; x <= cellRadius && *cellCount < maxCells; x++) {
+                // Skip the base cell (already added)
+                if (x == 0 && y == 0 && z == 0) continue;
+                
+                GridCoord neighborCoord = {
+                    baseCoord.x + x,
+                    baseCoord.y + y,
+                    baseCoord.z + z
+                };
+                
+                // Check if the particle actually overlaps this cell
+                if (PositionOverlapsCell(position, radius, neighborCoord)) {
+                    cells[*cellCount] = neighborCoord;
+                    (*cellCount)++;
+                    
+                    if (*cellCount >= maxCells) {
+                        printf("Warning: Maximum overlapping cells reached (%d)\n", maxCells);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+}
+
 
 // Initialize active cell tracking
 static void InitializeActiveCellTracking(void) {
@@ -403,40 +466,55 @@ ParticleHandle CreateParticle(Vector3 position, int materialId) {
     particles[particleIndex].position = position;
     particles[particleIndex].materialId = materialId;
     particles[particleIndex].active = true;
+    particles[particleIndex].cellCount = 0;
     
-    // Calculate spatial hash index
-    int cellIndex = GetSpatialHashIndex(position);
-    particles[particleIndex].cellIndex = cellIndex;
+    // Find all cells that this particle overlaps
+    GridCoord overlappingCells[MAX_OVERLAPPING_CELLS];
+    int overlappingCellCount = 0;
+    GetOverlappingCells(position, particleRadius, overlappingCells, &overlappingCellCount, MAX_OVERLAPPING_CELLS);
     
-    // Set the cell's grid coordinates and bounds if it's a new cell
-    if (spatialHashCells[cellIndex].particleCount == 0) {
-        GridCoord coord = GetGridCoordFromPosition(position);
-        spatialHashCells[cellIndex].coord = coord;
-        spatialHashCells[cellIndex].bounds = GetSpatialHashBounds(coord);
+    // Add particle to each overlapping cell
+    for (int i = 0; i < overlappingCellCount; i++) {
+        // Get cell index (creates the cell if it doesn't exist yet)
+        int cellIndex = GetCellIndex(overlappingCells[i]);
         
-        // First particle - need to allocate the indices array
-        if (spatialHashCells[cellIndex].particleIndices == NULL) {
-            spatialHashCells[cellIndex].particleIndices = (int*)malloc(10000 * sizeof(int));
+        // Store cell index in particle
+        if (particles[particleIndex].cellCount < MAX_OVERLAPPING_CELLS) {
+            particles[particleIndex].cellIndices[particles[particleIndex].cellCount++] = cellIndex;
+        } else {
+            printf("Warning: Maximum overlapping cells reached for particle %d\n", particleIndex);
+            break;
+        }
+        
+        // Set the cell's grid coordinates and bounds if it's a new cell
+        if (spatialHashCells[cellIndex].particleCount == 0) {
+            spatialHashCells[cellIndex].coord = overlappingCells[i];
+            spatialHashCells[cellIndex].bounds = GetSpatialHashBounds(overlappingCells[i]);
+            
+            // First particle - need to allocate the indices array
             if (spatialHashCells[cellIndex].particleIndices == NULL) {
-                printf("Failed to allocate particle indices array for cell %d\n", cellIndex);
-                return -1;
+                spatialHashCells[cellIndex].particleIndices = (int*)malloc(10000 * sizeof(int));
+                if (spatialHashCells[cellIndex].particleIndices == NULL) {
+                    printf("Failed to allocate particle indices array for cell %d\n", cellIndex);
+                    continue; // Skip this cell but continue with others
+                }
             }
         }
+        
+        // Safety check before adding particle to cell
+        if (spatialHashCells[cellIndex].particleIndices == NULL) {
+            printf("Error: particleIndices is NULL for cell %d\n", cellIndex);
+            continue; // Skip this cell but continue with others
+        }
+        
+        // Add particle to cell
+        spatialHashCells[cellIndex].particleIndices[spatialHashCells[cellIndex].particleCount] = particleIndex;
+        spatialHashCells[cellIndex].particleCount++;
+        spatialHashCells[cellIndex].dirty = true; // Mark as dirty
+        
+        // Track cell as active
+        AddActiveCellIfNeeded(cellIndex);
     }
-    
-    // Safety check before adding particle to cell
-    if (spatialHashCells[cellIndex].particleIndices == NULL) {
-        printf("Error: particleIndices is NULL for cell %d\n", cellIndex);
-        return -1;
-    }
-    
-    // Add particle to cell
-    spatialHashCells[cellIndex].particleIndices[spatialHashCells[cellIndex].particleCount] = particleIndex;
-    spatialHashCells[cellIndex].particleCount++;
-    spatialHashCells[cellIndex].dirty = true; // Mark as dirty
-    
-    // Track cell as active
-    AddActiveCellIfNeeded(cellIndex);
     
     // Increment counter
     currentParticleCount++;
@@ -462,51 +540,87 @@ bool UpdateParticlePosition(ParticleHandle handle, Vector3 newPosition) {
         return false;
     }
     
-    // Get current cell index
-    int oldCellIndex = particles[handle].cellIndex;
-    
-    // Calculate new cell index
-    int newCellIndex = GetSpatialHashIndex(newPosition);
-    
     // Update position
     particles[handle].position = newPosition;
     
-    // If cell has changed, update
-    if (newCellIndex != oldCellIndex) {
-        // Remove from old cell
-        int oldCellCount = spatialHashCells[oldCellIndex].particleCount;
-        int* oldIndices = spatialHashCells[oldCellIndex].particleIndices;
+    // Find all cells that this particle now overlaps
+    GridCoord newOverlappingCells[MAX_OVERLAPPING_CELLS];
+    int newOverlappingCount = 0;
+    GetOverlappingCells(newPosition, particleRadius, newOverlappingCells, &newOverlappingCount, MAX_OVERLAPPING_CELLS);
+    
+    // Remove from all current cells
+    for (int i = 0; i < particles[handle].cellCount; i++) {
+        int cellIndex = particles[handle].cellIndices[i];
         
-        // Find and remove the particle from the old cell
-        for (int i = 0; i < oldCellCount; i++) {
-            if (oldIndices[i] == handle) {
-                // Replace with the last element and decrement count
-                oldIndices[i] = oldIndices[oldCellCount - 1];
-                spatialHashCells[oldCellIndex].particleCount--;
-                break;
+        // Skip invalid cells
+        if (cellIndex < 0 || cellIndex >= spatialHashCellsCapacity) {
+            continue;
+        }
+        
+        // Remove particle from this cell
+        int cellCount = spatialHashCells[cellIndex].particleCount;
+        int* indices = spatialHashCells[cellIndex].particleIndices;
+        
+        if (indices != NULL) {
+            // Find and remove the particle
+            for (int j = 0; j < cellCount; j++) {
+                if (indices[j] == handle) {
+                    // Replace with the last element and decrement count
+                    indices[j] = indices[cellCount - 1];
+                    spatialHashCells[cellIndex].particleCount--;
+                    break;
+                }
             }
         }
         
-        // Set the new cell's grid coordinates and bounds if it's a new cell
-        if (spatialHashCells[newCellIndex].particleCount == 0) {
-            GridCoord coord = GetGridCoordFromPosition(newPosition);
-            spatialHashCells[newCellIndex].coord = coord;
-            spatialHashCells[newCellIndex].bounds = GetSpatialHashBounds(coord);
+        // Mark cell as dirty
+        spatialHashCells[cellIndex].dirty = true;
+    }
+    
+    // Reset particle's cell count
+    particles[handle].cellCount = 0;
+    
+    // Add to all new overlapping cells
+    for (int i = 0; i < newOverlappingCount; i++) {
+        // Get cell index (creates the cell if it doesn't exist yet)
+        int cellIndex = GetCellIndex(newOverlappingCells[i]);
+        
+        // Store cell index in particle
+        if (particles[handle].cellCount < MAX_OVERLAPPING_CELLS) {
+            particles[handle].cellIndices[particles[handle].cellCount++] = cellIndex;
+        } else {
+            printf("Warning: Maximum overlapping cells reached for particle %d\n", handle);
+            break;
         }
         
-        // Add to new cell
-        spatialHashCells[newCellIndex].particleIndices[spatialHashCells[newCellIndex].particleCount] = handle;
-        spatialHashCells[newCellIndex].particleCount++;
+        // Set the cell's grid coordinates and bounds if it's a new cell
+        if (spatialHashCells[cellIndex].particleCount == 0) {
+            spatialHashCells[cellIndex].coord = newOverlappingCells[i];
+            spatialHashCells[cellIndex].bounds = GetSpatialHashBounds(newOverlappingCells[i]);
+            
+            // First particle - need to allocate the indices array
+            if (spatialHashCells[cellIndex].particleIndices == NULL) {
+                spatialHashCells[cellIndex].particleIndices = (int*)malloc(10000 * sizeof(int));
+                if (spatialHashCells[cellIndex].particleIndices == NULL) {
+                    printf("Failed to allocate particle indices array for cell %d\n", cellIndex);
+                    continue; // Skip this cell but continue with others
+                }
+            }
+        }
         
-        // Update particle's cell index
-        particles[handle].cellIndex = newCellIndex;
+        // Safety check before adding particle to cell
+        if (spatialHashCells[cellIndex].particleIndices == NULL) {
+            printf("Error: particleIndices is NULL for cell %d\n", cellIndex);
+            continue; // Skip this cell but continue with others
+        }
         
-        // Mark both cells as dirty
-        spatialHashCells[oldCellIndex].dirty = true;
-        spatialHashCells[newCellIndex].dirty = true;
+        // Add particle to cell
+        spatialHashCells[cellIndex].particleIndices[spatialHashCells[cellIndex].particleCount] = handle;
+        spatialHashCells[cellIndex].particleCount++;
+        spatialHashCells[cellIndex].dirty = true; // Mark as dirty
         
-        // Track new cell as active
-        AddActiveCellIfNeeded(newCellIndex);
+        // Track cell as active
+        AddActiveCellIfNeeded(cellIndex);
     }
     
     return true;
@@ -518,28 +632,40 @@ bool DeleteParticle(ParticleHandle handle) {
         return false;
     }
     
-    // Get cell index
-    int cellIndex = particles[handle].cellIndex;
-    
-    // Remove from cell
-    int cellCount = spatialHashCells[cellIndex].particleCount;
-    int* indices = spatialHashCells[cellIndex].particleIndices;
-    
-    // Find and remove the particle from the cell
-    for (int i = 0; i < cellCount; i++) {
-        if (indices[i] == handle) {
-            // Replace with the last element and decrement count
-            indices[i] = indices[cellCount - 1];
-            spatialHashCells[cellIndex].particleCount--;
-            break;
+    // Remove from all cells the particle belongs to
+    for (int i = 0; i < particles[handle].cellCount; i++) {
+        int cellIndex = particles[handle].cellIndices[i];
+        
+        // Skip invalid cells
+        if (cellIndex < 0 || cellIndex >= spatialHashCellsCapacity) {
+            continue;
         }
+        
+        // Remove particle from this cell
+        int cellParticleCount = spatialHashCells[cellIndex].particleCount;
+        int* indices = spatialHashCells[cellIndex].particleIndices;
+        
+        if (indices != NULL) {
+            // Find and remove the particle
+            for (int j = 0; j < cellParticleCount; j++) {
+                if (indices[j] == handle) {
+                    // Replace with the last element and decrement count
+                    indices[j] = indices[cellParticleCount - 1];
+                    spatialHashCells[cellIndex].particleCount--;
+                    break;
+                }
+            }
+        }
+        
+        // Mark cell as dirty
+        spatialHashCells[cellIndex].dirty = true;
     }
-    
-    // Mark cell as dirty
-    spatialHashCells[cellIndex].dirty = true;
     
     // Mark particle as inactive
     particles[handle].active = false;
+    
+    // Reset particle's cell count
+    particles[handle].cellCount = 0;
     
     // Decrement counter
     currentParticleCount--;
@@ -687,9 +813,7 @@ void DrawParticleMeshes(Material material, bool wireframe) {
 
 void DrawParticleSystemDebug(bool showBounds) {
     if (!showBounds) return;
-    
-    printf("Drawing debug bounds for %d active cells\n", activeCells.count);
-    
+        
     // Draw bounds for all active cells
     for (int i = 0; i < activeCells.count; i++) {
         int cellIndex = activeCells.indices[i];
@@ -699,10 +823,10 @@ void DrawParticleSystemDebug(bool showBounds) {
             Bounds bounds = spatialHashCells[cellIndex].bounds;
             Color boundsColor = spatialHashCells[cellIndex].dirty ? RED : GREEN;
             
-            printf("Cell %d: center=(%.2f,%.2f,%.2f) size=(%.2f,%.2f,%.2f) particles=%d\n", 
-                   cellIndex, bounds.center.x, bounds.center.y, bounds.center.z,
-                   bounds.size.x, bounds.size.y, bounds.size.z,
-                   spatialHashCells[cellIndex].particleCount);
+            // printf("Cell %d: center=(%.2f,%.2f,%.2f) size=(%.2f,%.2f,%.2f) particles=%d\n", 
+            //        cellIndex, bounds.center.x, bounds.center.y, bounds.center.z,
+            //        bounds.size.x, bounds.size.y, bounds.size.z,
+            //        spatialHashCells[cellIndex].particleCount);
                    
             DrawCubeWires(bounds.center, bounds.size.x, bounds.size.y, bounds.size.z, boundsColor);
         }
