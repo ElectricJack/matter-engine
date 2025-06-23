@@ -53,7 +53,7 @@ for (int z = 0; z < gridSize; z++) {
 ### Strategy 1: Spatial Acceleration Structures
 **Goal**: Reduce particle-to-grid-point complexity from O(P) to O(log P) or O(1)
 
-#### Option A: Spatial Hash Grid for Particles
+#### Spatial Hash Grid for Particles
 ```c
 // Pre-build spatial hash of particles
 typedef struct {
@@ -69,19 +69,7 @@ float CalculateScalarFieldFast(Vector3 position, ParticleSpatialHash* hash) {
 }
 ```
 
-#### Option B: Octree/KD-Tree
-```c
-// Build octree of particles once per mesh generation
-typedef struct OctreeNode {
-    Particle* particles;
-    int particleCount;
-    struct OctreeNode* children[8];
-    Vector3 center;
-    float halfSize;
-} OctreeNode;
 
-// Query reduces from O(P) to O(log P)
-```
 
 **Expected speedup**: 10-100x for scalar field computation
 

@@ -205,7 +205,7 @@ int main(void) {
         }
         
         // Add particles at mouse click location
-        if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+        if (IsMouseButtonDown(MOUSE_BUTTON_LEFT)) {
             Ray ray = GetMouseRay(GetMousePosition(), camera);
             
             // Calculate intersection with a plane at y=0
@@ -218,7 +218,7 @@ int main(void) {
                 };
                 
                 // Add particles at hit location
-                AddParticlesAtLocation(hitPoint, 500);
+                AddParticlesAtLocation(hitPoint, 100);
             }
         }
 
