@@ -687,9 +687,38 @@ static int UpdateDirtyCells(int maxUpdates) {
     int dirtyIndices[100]; // Max updates that can be processed
     int dirtyCounts[100];
     int dirtyFound = 0;
+    int totalDirty = 0;
     
     // Cap max updates to a reasonable value
     if (maxUpdates > 100) maxUpdates = 100;
+    
+    // Count total dirty cells for debug
+    for (int i = 0; i < activeCells.count; i++) {
+        int cellIndex = activeCells.indices[i];
+        if (cellIndex >= 0 && cellIndex < spatialHashCellsCapacity && 
+            spatialHashCells[cellIndex].dirty && 
+            spatialHashCells[cellIndex].particleCount > 0) {
+            totalDirty++;
+        }
+    }
+    
+    // Debug output if there are dirty cells but few being processed
+    if (totalDirty > 5 && maxUpdates < totalDirty) {
+        printf("[INFO] %d total dirty cells found, processing up to %d\n", totalDirty, maxUpdates);
+    }
+    
+    // Track newly created cells with a higher priority for the first few frames
+    // This helps ensure new cells get their initial meshes
+    static int* newCellIndices = NULL;
+    static int newCellCount = 0;
+    static int newCellCapacity = 0;
+    
+    // Initialize new cell tracking if needed
+    if (newCellIndices == NULL) {
+        newCellCapacity = 100;
+        newCellIndices = (int*)malloc(newCellCapacity * sizeof(int));
+        newCellCount = 0;
+    }
     
     // First pass: find cells with highest particle counts - ONLY from active cells
     for (int i = 0; i < activeCells.count && dirtyFound < maxUpdates; i++) {
@@ -699,11 +728,25 @@ static int UpdateDirtyCells(int maxUpdates) {
         }
         
         if (spatialHashCells[cellIndex].dirty && spatialHashCells[cellIndex].particleCount > 0) {
-            // Find position to insert based on particle count (highest first)
+            // Check if this is a newly created cell without a mesh
+            bool isNewCell = !spatialHashCells[cellIndex].hasMesh;
+            
+            // Find position to insert based on whether it's new and particle count
             int pos = 0;
-            while (pos < dirtyFound && 
-                   spatialHashCells[cellIndex].particleCount < dirtyCounts[pos]) {
-                pos++;
+            while (pos < dirtyFound) {
+                // New cells get higher priority
+                bool posIsNewCell = !spatialHashCells[dirtyIndices[pos]].hasMesh;
+                
+                if (isNewCell && !posIsNewCell) {
+                    // Put new cells before existing cells
+                    break;
+                } else if (isNewCell == posIsNewCell && 
+                          spatialHashCells[cellIndex].particleCount < dirtyCounts[pos]) {
+                    // Within same cell type (new or existing), order by particle count
+                    pos++;
+                } else {
+                    break;
+                }
             }
             
             // Shift elements to make room
@@ -717,6 +760,12 @@ static int UpdateDirtyCells(int maxUpdates) {
                 dirtyIndices[pos] = cellIndex;
                 dirtyCounts[pos] = spatialHashCells[cellIndex].particleCount;
                 dirtyFound++;
+                
+                // Track new cells for debugging
+                if (isNewCell) {
+                    printf("[INFO] Prioritizing new cell %d with %d particles\n", 
+                           cellIndex, spatialHashCells[cellIndex].particleCount);
+                }
             }
         }
     }
@@ -724,6 +773,12 @@ static int UpdateDirtyCells(int maxUpdates) {
     // Second pass: update the cells we found, in priority order
     for (int idx = 0; idx < dirtyFound; idx++) {
         int cellIndex = dirtyIndices[idx];
+        
+        // Log cell being processed
+        printf("[DEBUG] Processing cell %d (%s): %d particles\n", 
+               cellIndex, 
+               spatialHashCells[cellIndex].hasMesh ? "existing" : "new",
+               spatialHashCells[cellIndex].particleCount);
         
         // Ensure the buffer is large enough
         if (spatialHashCells[cellIndex].particleCount > cellParticleBufferSize) {
@@ -751,7 +806,9 @@ static int UpdateDirtyCells(int maxUpdates) {
         
         // Only generate mesh if we have enough valid particles
         if (validCount < 5) {
+            printf("[DEBUG] Cell %d skipped: insufficient valid particles (%d)\n", cellIndex, validCount);
             spatialHashCells[cellIndex].hasMesh = false;
+            spatialHashCells[cellIndex].dirty = false; // Mark as clean even though no mesh was generated
             continue;
         }
         
@@ -771,6 +828,16 @@ static int UpdateDirtyCells(int maxUpdates) {
         // Mark as clean
         spatialHashCells[cellIndex].dirty = false;
         updatedCount++;
+        
+        printf("[DEBUG] Cell %d mesh generated successfully: %d vertices\n", 
+               cellIndex, spatialHashCells[cellIndex].mesh.vertexCount);
+    }
+    
+    // Log summary
+    if (totalDirty > 0) {
+        printf("[INFO] Updated %d/%d dirty cells (%.1f%%)\n", 
+               updatedCount, totalDirty, 
+               (100.0f * updatedCount) / totalDirty);
     }
     
     return updatedCount;

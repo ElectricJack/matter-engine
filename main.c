@@ -13,7 +13,7 @@
 #define PARTICLE_RADIUS        1.0f     // Particle radius
 #define VOLUME_SIZE            100.0f   // Overall volume size
 #define INITIAL_PARTICLE_COUNT 10000    // Start with fewer particles and grow
-#define MAX_DIRTY_UPDATES      3        // Maximum dirty bound updates per frame
+#define MAX_DIRTY_UPDATES      10       // Maximum dirty bound updates per frame
 
 // Generate noise-based particles that form weblike structures
 void GenerateWeblikeParticles(int count) {
