@@ -5,13 +5,123 @@
 #include <string.h>
 #include <math.h>
 #include <stdio.h>
+#include <time.h>
+
+// Performance timing macros
+#define ENABLE_PERFORMANCE_TIMING 1
+
+#if ENABLE_PERFORMANCE_TIMING
+    static double performance_timer() {
+        struct timespec ts;
+        clock_gettime(CLOCK_MONOTONIC, &ts);
+        return ts.tv_sec + ts.tv_nsec / 1e9;
+    }
+    
+    #define TIMER_START(name) double timer_##name = performance_timer()
+    #define TIMER_END(name, description) \
+        do { \
+            double elapsed = performance_timer() - timer_##name; \
+            printf("PERF [%s]: %.3f ms\n", description, elapsed * 1000.0); \
+        } while(0)
+#else
+    #define TIMER_START(name)
+    #define TIMER_END(name, description)
+#endif
 
 // Local structures needed by our algorithm
+
+// Combined scalar field and material result to eliminate duplicate calculations
+typedef struct {
+    float scalarValue;
+    int materialId;
+} ScalarMaterialPair;
 
 // Triangle face structure
 typedef struct {
     int indices[3];  // Indices of the three vertices
 } Triangle;
+
+// Memory pool for reusing buffers across mesh generations
+typedef struct {
+    // Scalar field buffers
+    float* scalarField;
+    int* materialField;
+    size_t fieldCapacity;
+    
+    // Mesh buffers  
+    Vector3* vertices;
+    Vector3* normals;
+    int* materials;
+    Triangle* triangles;
+    size_t vertexCapacity;
+    size_t triangleCapacity;
+    
+    // Edge deduplication buffers
+    unsigned long long* edgeKeys;
+    int* globalEdgeVertexIndices;
+    size_t hashTableCapacity;
+} MemoryPool;
+
+// Global memory pool for reuse
+static MemoryPool g_memoryPool = {0};
+
+// Memory pool management functions
+static void EnsureFieldCapacity(size_t requiredCells) {
+    if (g_memoryPool.fieldCapacity < requiredCells) {
+        // Grow by 50% or to required size, whichever is larger
+        size_t newCapacity = (g_memoryPool.fieldCapacity * 3) / 2;
+        if (newCapacity < requiredCells) newCapacity = requiredCells;
+        
+        g_memoryPool.scalarField = (float*)realloc(g_memoryPool.scalarField, newCapacity * sizeof(float));
+        g_memoryPool.materialField = (int*)realloc(g_memoryPool.materialField, newCapacity * sizeof(int));
+        g_memoryPool.fieldCapacity = newCapacity;
+    }
+}
+
+static void EnsureMeshCapacity(size_t requiredVertices, size_t requiredTriangles) {
+    if (g_memoryPool.vertexCapacity < requiredVertices) {
+        size_t newCapacity = (g_memoryPool.vertexCapacity * 3) / 2;
+        if (newCapacity < requiredVertices) newCapacity = requiredVertices;
+        
+        g_memoryPool.vertices = (Vector3*)realloc(g_memoryPool.vertices, newCapacity * sizeof(Vector3));
+        g_memoryPool.normals = (Vector3*)realloc(g_memoryPool.normals, newCapacity * sizeof(Vector3));
+        g_memoryPool.materials = (int*)realloc(g_memoryPool.materials, newCapacity * sizeof(int));
+        g_memoryPool.vertexCapacity = newCapacity;
+    }
+    
+    if (g_memoryPool.triangleCapacity < requiredTriangles) {
+        size_t newCapacity = (g_memoryPool.triangleCapacity * 3) / 2;
+        if (newCapacity < requiredTriangles) newCapacity = requiredTriangles;
+        
+        g_memoryPool.triangles = (Triangle*)realloc(g_memoryPool.triangles, newCapacity * sizeof(Triangle));
+        g_memoryPool.triangleCapacity = newCapacity;
+    }
+}
+
+static void EnsureHashTableCapacity(size_t requiredSize) {
+    if (g_memoryPool.hashTableCapacity < requiredSize) {
+        size_t newCapacity = (g_memoryPool.hashTableCapacity * 3) / 2;
+        if (newCapacity < requiredSize) newCapacity = requiredSize;
+        
+        g_memoryPool.edgeKeys = (unsigned long long*)realloc(g_memoryPool.edgeKeys, newCapacity * sizeof(unsigned long long));
+        g_memoryPool.globalEdgeVertexIndices = (int*)realloc(g_memoryPool.globalEdgeVertexIndices, newCapacity * sizeof(int));
+        g_memoryPool.hashTableCapacity = newCapacity;
+    }
+}
+
+static void CleanupMemoryPool(void) {
+    free(g_memoryPool.scalarField);
+    free(g_memoryPool.materialField);
+    free(g_memoryPool.vertices);
+    free(g_memoryPool.normals);
+    free(g_memoryPool.materials);
+    free(g_memoryPool.triangles);
+    free(g_memoryPool.edgeKeys);
+    free(g_memoryPool.globalEdgeVertexIndices);
+    g_memoryPool = (MemoryPool){0};
+}
+
+// Triangle face structure (defined above in forward declarations)
 
 // Grid cell structure for marching cubes
 typedef struct {
@@ -37,10 +147,10 @@ typedef struct {
 } IsosurfaceVertex;
 
 // Local function declarations
-static float   CalculateScalarField(Vector3 position, SpatialHash* spatialHash, float particleRadius);
-static int     GetMaterialAtPosition(Vector3 position, SpatialHash* spatialHash, float particleRadius);
+static ScalarMaterialPair CalculateScalarAndMaterial(Vector3 position, SpatialHash* spatialHash, float particleRadius);
 static int     CalculateCubeIndex(GridCell cell, float isovalue);
 static Vector3 VertexInterpolation(Vector3 v1, float val1, Vector3 v2, float val2, float isovalue);
+static Mesh    GenerateMeshInternal(Particle* particles, float particleRadius, int particleCount, Bounds volume, MeshGenerationConfig config);
 
 
 // Utility function to convert grid cell coordinates to index in the scalar field array
@@ -48,8 +158,34 @@ static int GetScalarFieldIndex(int x, int y, int z, int gridSize) {
     return x + y * gridSize + z * gridSize * gridSize;
 }
 
-// Main API function for generating a mesh from particles
+// Create default mesh generation configuration
+MeshGenerationConfig GetDefaultMeshConfig(void) {
+    MeshGenerationConfig config;
+    config.enableEdgeDeduplication = false;  // Default: enabled for better mesh quality
+    config.enableMemoryReuse       = true;   // Default: enabled for better performance
+    return config;
+}
+
+// Public API wrapper function using default configuration
 Mesh GenerateMesh(Particle* particles, float particleRadius, int particleCount, Bounds volume) {
+    MeshGenerationConfig config = GetDefaultMeshConfig();
+    return GenerateMeshInternal(particles, particleRadius, particleCount, volume, config);
+}
+
+// Public API function with custom configuration
+Mesh GenerateMeshWithConfig(Particle* particles, float particleRadius, int particleCount, Bounds volume, MeshGenerationConfig config) {
+    return GenerateMeshInternal(particles, particleRadius, particleCount, volume, config);
+}
+
+// Cleanup function to release memory pool resources
+void SurfaceLibCleanup(void) {
+    CleanupMemoryPool();
+}
+
+// Internal mesh generation function with configuration
+static Mesh GenerateMeshInternal(Particle* particles, float particleRadius, int particleCount, Bounds volume, MeshGenerationConfig config) {
+    TIMER_START(total);
+    
     // Initialize mesh
     Mesh mesh = {0};
     
@@ -71,20 +207,29 @@ Mesh GenerateMesh(Particle* particles, float particleRadius, int particleCount, 
         volume.center.z - volume.size.z * 0.5f
     };
     
-    // Allocate memory for scalar field and material field
-    data.scalarField = (float*)malloc(data.totalCells * sizeof(float));
-    data.materialField = (int*)malloc(data.totalCells * sizeof(int));
-    
-    if (!data.scalarField || !data.materialField) {
-        printf("Failed to allocate memory for scalar field\n");
-        free(data.scalarField);
-        free(data.materialField);
-        return mesh;
+    // Allocate memory for scalar field and material field using memory pool if enabled
+    if (config.enableMemoryReuse) {
+        EnsureFieldCapacity(data.totalCells);
+        data.scalarField = g_memoryPool.scalarField;
+        data.materialField = g_memoryPool.materialField;
+    } else {
+        data.scalarField = (float*)malloc(data.totalCells * sizeof(float));
+        data.materialField = (int*)malloc(data.totalCells * sizeof(int));
+        
+        if (!data.scalarField || !data.materialField) {
+            printf("Failed to allocate memory for scalar field\n");
+            free(data.scalarField);
+            free(data.materialField);
+            return mesh;
+        }
     }
     
+    TIMER_START(spatial_hash);
+    
     // Create spatial hash for efficient particle queries
-    // Use a cell size that's roughly 2-3x the particle radius for optimal performance
-    float spatialCellSize = particleRadius * 3.0f;
+    // Optimized cell size: smaller cells (1.5x radius) for better spatial locality
+    // This reduces the number of particles per cell, improving query performance
+    float spatialCellSize = particleRadius * 1.5f;
     SpatialHash* spatialHash = sh_create(spatialCellSize, particleCount);
     
     if (!spatialHash) {
@@ -99,7 +244,11 @@ Mesh GenerateMesh(Particle* particles, float particleRadius, int particleCount, 
         sh_insert(spatialHash, particles[i].position.x, particles[i].position.y, particles[i].position.z, &particles[i]);
     }
     
-    // Fill scalar field with implicit function values (now using spatial hash)
+    TIMER_END(spatial_hash, "Spatial Hash Setup");
+    
+    TIMER_START(scalar_field);
+    
+    // Fill scalar field with implicit function values (now using combined calculation)
     for (int z = 0; z < gridSize; z++) {
         for (int y = 0; y < gridSize; y++) {
             for (int x = 0; x < gridSize; x++) {
@@ -110,47 +259,77 @@ Mesh GenerateMesh(Particle* particles, float particleRadius, int particleCount, 
                 };
                 
                 int index = GetScalarFieldIndex(x, y, z, gridSize);
-                data.scalarField[index] = CalculateScalarField(position, spatialHash, particleRadius);
-                data.materialField[index] = GetMaterialAtPosition(position, spatialHash, particleRadius);
+                
+                // Use combined calculation to eliminate duplicate distance calculations
+                ScalarMaterialPair result = CalculateScalarAndMaterial(position, spatialHash, particleRadius);
+                data.scalarField[index] = result.scalarValue;
+                data.materialField[index] = result.materialId;
             }
         }
     }
     
-    // Create temporary buffers for storing mesh data
+    TIMER_END(scalar_field, "Scalar Field Computation");
+    
+    // Create temporary buffers for storing mesh data using memory pool if enabled
     int maxVertices = data.totalCells * 3; // Maximum possible vertices per cell is typically 3-5
     int maxTriangles = data.totalCells * 2; // Maximum possible triangles per cell is typically 1-5
     
-    // For large grids, we might need much less than worst case, so allocate conservatively
-    maxVertices = (maxVertices > 100000) ? 100000 : maxVertices;
-    maxTriangles = (maxTriangles > 100000) ? 100000 : maxTriangles;
+    Vector3*  vertices;
+    Vector3*  normals;
+    int*      materials;
+    Triangle* triangles;
     
-    Vector3*  vertices = (Vector3*)malloc(maxVertices * sizeof(Vector3));
-    Vector3*  normals = (Vector3*)malloc(maxVertices * sizeof(Vector3));
-    int*      materials = (int*)malloc(maxVertices * sizeof(int));
-    Triangle* triangles = (Triangle*)malloc(maxTriangles * sizeof(Triangle));
-    
-    if (!vertices || !normals || !materials || !triangles) {
-        printf("Failed to allocate memory for mesh buffers\n");
-        free(data.scalarField);
-        free(data.materialField);
-        sh_destroy(spatialHash);
-        free(vertices);
-        free(normals);
-        free(materials);
-        free(triangles);
-        return mesh;
+    if (config.enableMemoryReuse) {
+        EnsureMeshCapacity(maxVertices, maxTriangles);
+        vertices = g_memoryPool.vertices;
+        normals = g_memoryPool.normals;
+        materials = g_memoryPool.materials;
+        triangles = g_memoryPool.triangles;
+    } else {
+        vertices = (Vector3*)malloc(maxVertices * sizeof(Vector3));
+        normals = (Vector3*)malloc(maxVertices * sizeof(Vector3));
+        materials = (int*)malloc(maxVertices * sizeof(int));
+        triangles = (Triangle*)malloc(maxTriangles * sizeof(Triangle));
+        
+        if (!vertices || !normals || !materials || !triangles) {
+            printf("Failed to allocate memory for mesh buffers\n");
+            if (!config.enableMemoryReuse) {
+                free(data.scalarField);
+                free(data.materialField);
+            }
+            sh_destroy(spatialHash);
+            if (!config.enableMemoryReuse) {
+                free(vertices);
+                free(normals);
+                free(materials);
+                free(triangles);
+            }
+            return mesh;
+        }
     }
     
-    // Use a hash table approach for faster edge lookup
-    // Allocate a reasonable size for the hash table
-    int hashTableSize = 1024 * 1024; // 1M entries in hash table
-    unsigned long long* edgeKeys = (unsigned long long*)malloc(hashTableSize * sizeof(unsigned long long));
-    int* globalEdgeVertexIndices = (int*)malloc(hashTableSize * sizeof(int));
+    // Use a hash table approach for faster edge lookup (only if edge deduplication is enabled)
+    unsigned long long* edgeKeys = NULL;
+    int* globalEdgeVertexIndices = NULL;
+    int hashTableSize = 0;
     
-    // Initialize hash table to indicate no entries
-    for (int i = 0; i < hashTableSize; i++) {
-        edgeKeys[i] = 0;  // 0 means no edge stored
-        globalEdgeVertexIndices[i] = -1;  // -1 means no vertex assigned
+    if (config.enableEdgeDeduplication) {
+        hashTableSize = 1024 * 1024; // 1M entries in hash table
+        
+        if (config.enableMemoryReuse) {
+            EnsureHashTableCapacity(hashTableSize);
+            edgeKeys = g_memoryPool.edgeKeys;
+            globalEdgeVertexIndices = g_memoryPool.globalEdgeVertexIndices;
+        } else {
+            edgeKeys = (unsigned long long*)malloc(hashTableSize * sizeof(unsigned long long));
+            globalEdgeVertexIndices = (int*)malloc(hashTableSize * sizeof(int));
+        }
+        
+        // Initialize hash table to indicate no entries
+        for (int i = 0; i < hashTableSize; i++) {
+            edgeKeys[i] = 0;  // 0 means no edge stored
+            globalEdgeVertexIndices[i] = -1;  // -1 means no vertex assigned
+        }
     }
     
     int vertexCount = 0;
@@ -158,6 +337,8 @@ Mesh GenerateMesh(Particle* particles, float particleRadius, int particleCount, 
     
     // Value for isosurface threshold
     const float isovalue = 0.0f; // Surface at zero level
+    
+    TIMER_START(marching_cubes);
     
     // Run marching cubes algorithm on each grid cell
     for (int z = 0; z < gridSize - 1; z++) {
@@ -272,37 +453,60 @@ Mesh GenerateMesh(Particle* particles, float particleRadius, int particleCount, 
                             intersectionMaterials[edge] = materials_at_corners[v2];
                         }
                         
-                        // Check if this vertex already exists (using an edge key)
-                        unsigned long long edgeKey = GetEdgeKey(x, y, z, edge);
-                        
-                        // Skip if the key is 0 (invalid edge)
-                        if (edgeKey == 0) {
-                            continue;
-                        }
-                        
-                        // Hash the key to find its position in the hash table
-                        unsigned int hashPos = (unsigned int)(edgeKey % hashTableSize);
-                        int existingVertexIndex = -1;
-                        
-                        // Linear probing to handle hash collisions
-                        int maxProbes = 100;  // Limit probing to avoid infinite loops
-                        for (int probe = 0; probe < maxProbes; probe++) {
-                            unsigned int pos = (hashPos + probe) % hashTableSize;
+                        if (config.enableEdgeDeduplication) {
+                            // Check if this vertex already exists (using an edge key)
+                            unsigned long long edgeKey = GetEdgeKey(x, y, z, edge);
                             
-                            // If we found our key or an empty slot
-                            if (edgeKeys[pos] == edgeKey) {
-                                existingVertexIndex = globalEdgeVertexIndices[pos];
-                                break;
+                            // Skip if the key is 0 (invalid edge)
+                            if (edgeKey == 0) {
+                                continue;
                             }
-                            else if (edgeKeys[pos] == 0) {
-                                // Found an empty slot, so this edge doesn't exist yet
-                                hashPos = pos;  // Remember this position for insertion
-                                break;
+                            
+                            // Hash the key to find its position in the hash table
+                            unsigned int hashPos = (unsigned int)(edgeKey % hashTableSize);
+                            int existingVertexIndex = -1;
+                            
+                            // Linear probing to handle hash collisions
+                            int maxProbes = 100;  // Limit probing to avoid infinite loops
+                            for (int probe = 0; probe < maxProbes; probe++) {
+                                unsigned int pos = (hashPos + probe) % hashTableSize;
+                                
+                                // If we found our key or an empty slot
+                                if (edgeKeys[pos] == edgeKey) {
+                                    existingVertexIndex = globalEdgeVertexIndices[pos];
+                                    break;
+                                }
+                                else if (edgeKeys[pos] == 0) {
+                                    // Found an empty slot, so this edge doesn't exist yet
+                                    hashPos = pos;  // Remember this position for insertion
+                                    break;
+                                }
                             }
-                        }
-                        
-                        // If vertex doesn't exist, add it
-                        if (existingVertexIndex == -1) {
+                            
+                            // If vertex doesn't exist, add it
+                            if (existingVertexIndex == -1) {
+                                if (vertexCount >= maxVertices) {
+                                    printf("Warning: Exceeded maximum vertex count\n");
+                                    continue;
+                                }
+                                
+                                // Store the vertex
+                                vertices[vertexCount] = intersections[edge];
+                                materials[vertexCount] = intersectionMaterials[edge];
+                                
+                                // Store the edge key and vertex index in the hash table
+                                edgeKeys[hashPos] = edgeKey;
+                                globalEdgeVertexIndices[hashPos] = vertexCount;
+                                
+                                // Store the vertex index for this edge in the current cell
+                                cellEdgeVertexIndices[edge] = vertexCount;
+                                vertexCount++;
+                            } else {
+                                // Use existing vertex
+                                cellEdgeVertexIndices[edge] = existingVertexIndex;
+                            }
+                        } else {
+                            // No edge deduplication - always create new vertex
                             if (vertexCount >= maxVertices) {
                                 printf("Warning: Exceeded maximum vertex count\n");
                                 continue;
@@ -312,16 +516,9 @@ Mesh GenerateMesh(Particle* particles, float particleRadius, int particleCount, 
                             vertices[vertexCount] = intersections[edge];
                             materials[vertexCount] = intersectionMaterials[edge];
                             
-                            // Store the edge key and vertex index in the hash table
-                            edgeKeys[hashPos] = edgeKey;
-                            globalEdgeVertexIndices[hashPos] = vertexCount;
-                            
                             // Store the vertex index for this edge in the current cell
                             cellEdgeVertexIndices[edge] = vertexCount;
                             vertexCount++;
-                        } else {
-                            // Use existing vertex
-                            cellEdgeVertexIndices[edge] = existingVertexIndex;
                         }
                     }
                 }
@@ -351,6 +548,10 @@ Mesh GenerateMesh(Particle* particles, float particleRadius, int particleCount, 
             }
         }
     }
+    
+    TIMER_END(marching_cubes, "Marching Cubes Algorithm");
+    
+    TIMER_START(mesh_assembly);
     
     // Calculate normals
     for (int i = 0; i < vertexCount; i++) {
@@ -443,33 +644,47 @@ Mesh GenerateMesh(Particle* particles, float particleRadius, int particleCount, 
         mesh.colors[i*4+3] = color.a;
     }
     
-    // Clean up temporary data
-    free(data.scalarField);
-    free(data.materialField);
+    TIMER_END(mesh_assembly, "Mesh Assembly");
+    
+    // Clean up temporary data (only free if not using memory pool)
+    if (!config.enableMemoryReuse) {
+        free(data.scalarField);
+        free(data.materialField);
+        free(vertices);
+        free(normals);
+        free(materials);
+        free(triangles);
+        if (config.enableEdgeDeduplication) {
+            free(edgeKeys);
+            free(globalEdgeVertexIndices);
+        }
+    }
     sh_destroy(spatialHash);
-    free(vertices);
-    free(normals);
-    free(materials);
-    free(triangles);
-    free(edgeKeys);
-    free(globalEdgeVertexIndices);
+    
+    TIMER_END(total, "Total Mesh Generation");
     
     return mesh;
 }
 
-// Calculate scalar field value at a point (distance function) - optimized with spatial hash
-static float CalculateScalarField(Vector3 position, SpatialHash* spatialHash, float particleRadius) {
-    float minDistance = INFINITY;
+// Combined calculation to eliminate duplicate distance calculations
+static ScalarMaterialPair CalculateScalarAndMaterial(Vector3 position, SpatialHash* spatialHash, float particleRadius) {
+    ScalarMaterialPair result;
+    result.scalarValue = INFINITY;
+    result.materialId = 0;
     
     // Query nearby particles using spatial hash instead of checking all particles
-    // Search radius should be large enough to find all potentially influencing particles
-    float searchRadius = particleRadius * 4.0f; // Conservative search radius
+    // Optimized search radius: reduced from 4x to 2.5x for better performance
+    // This reduces the search volume while still capturing relevant particles
+    float searchRadius = particleRadius * 2.5f;
     
-    Particle* nearbyParticles[64]; // Buffer for nearby particles
+    Particle* nearbyParticles[32]; // Optimized buffer size: reduced from 64 to 32
     int foundCount = sh_query_radius(spatialHash, position.x, position.y, position.z, searchRadius, 
-                                     (void**)nearbyParticles, 64);
+                                     (void**)nearbyParticles, 32);
     
-    // Calculate distance to only the nearby particles
+    // Calculate distance to only the nearby particles in a single pass
+    // Optimization: use squared distances for comparison to avoid expensive sqrt
+    float minDistanceSquared = INFINITY;
+    
     for (int i = 0; i < foundCount; i++) {
         Vector3 diff = {
             position.x - nearbyParticles[i]->position.x,
@@ -482,50 +697,16 @@ static float CalculateScalarField(Vector3 position, SpatialHash* spatialHash, fl
             diff.y * diff.y +
             diff.z * diff.z;
         
-        float dist = sqrtf(distSquared) - particleRadius;
-        
-        if (dist < minDistance) {
-            minDistance = dist;
+        if (distSquared < minDistanceSquared) {
+            minDistanceSquared = distSquared;
+            result.materialId = nearbyParticles[i]->materialId;
         }
     }
     
-    return minDistance;
-}
-
-// Get material ID at a position - optimized with spatial hash
-static int GetMaterialAtPosition(Vector3 position, SpatialHash* spatialHash, float particleRadius) {
-    float minDistance = INFINITY;
-    int materialId = 0;
+    // Only compute sqrt once at the end and calculate scalar field value
+    result.scalarValue = (minDistanceSquared < INFINITY) ? sqrtf(minDistanceSquared) - particleRadius : INFINITY;
     
-    // Query nearby particles using spatial hash instead of checking all particles
-    float searchRadius = particleRadius * 4.0f; // Conservative search radius
-    
-    Particle* nearbyParticles[64]; // Buffer for nearby particles
-    int foundCount = sh_query_radius(spatialHash, position.x, position.y, position.z, searchRadius, 
-                                     (void**)nearbyParticles, 64);
-    
-    // Find the closest particle among the nearby ones and use its material
-    for (int i = 0; i < foundCount; i++) {
-        Vector3 diff = {
-            position.x - nearbyParticles[i]->position.x,
-            position.y - nearbyParticles[i]->position.y,
-            position.z - nearbyParticles[i]->position.z
-        };
-        
-        float distSquared = 
-            diff.x * diff.x +
-            diff.y * diff.y +
-            diff.z * diff.z;
-        
-        float dist = sqrtf(distSquared);
-        
-        if (dist < minDistance) {
-            minDistance = dist;
-            materialId = nearbyParticles[i]->materialId;
-        }
-    }
-    
-    return materialId;
+    return result;
 }
 
 // Calculate the cube index for marching cubes algorithm

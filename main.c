@@ -109,6 +109,10 @@ int main(int argc, char** argv) {
     
     
     SetTargetFPS(60);               // Set our game to run at 60 frames-per-second
+    
+    // Performance analysis - limit to 30 seconds worth of frames
+    const double MAX_RUN_TIME = 30.0; // 30 seconds
+    double startTime = GetTime();
 
     
     // Check for command line arguments
@@ -141,8 +145,8 @@ int main(int argc, char** argv) {
     {
         Material defaultMat = LoadMaterialDefault();
 
-        // Main game loop
-        while (!WindowShouldClose()) {  // Detect window close button or ESC key
+        // Main game loop - limited to 30 seconds for performance analysis
+        while (!WindowShouldClose() && (GetTime() - startTime) < MAX_RUN_TIME) {  // Detect window close button or ESC key
             UpdateCamera(&camera, CAMERA_ORBITAL);      // Update camera
             
             // Calculate delta time
@@ -235,21 +239,31 @@ int main(int argc, char** argv) {
                 DrawText(TextFormat("Triangles: %d", mesh.triangleCount), 10, 90, 12, DARKGRAY);
                 DrawText(TextFormat("Vertices: %d", mesh.vertexCount), 10, 110, 12, DARKGRAY);
                 DrawText(TextFormat("Grid Resolution: %dx%dx%d", 1<<GRID_DIVISIONS_POW, 1<<GRID_DIVISIONS_POW, 1<<GRID_DIVISIONS_POW), 10, 130, 12, DARKGRAY);
-                DrawText("Press SPACE to toggle wireframe mode", 10, 150, 12, DARKGRAY);
-                DrawText("Press P to show/hide particles", 10, 170, 12, DARKGRAY);
-                DrawText("Press B to show/hide mesh bounds", 10, 190, 12, DARKGRAY);
-                DrawText("Press F to cycle through performance modes", 10, 210, 12, DARKGRAY);
-                DrawText("Use mouse to orbit camera", 10, 230, 12, DARKGRAY);
+                DrawText(TextFormat("Performance Test: %.1f/%.1f seconds", GetTime() - startTime, MAX_RUN_TIME), 10, 150, 12, DARKGRAY);
+                DrawText("Press SPACE to toggle wireframe mode", 10, 170, 12, DARKGRAY);
+                DrawText("Press P to show/hide particles", 10, 190, 12, DARKGRAY);
+                DrawText("Press B to show/hide mesh bounds", 10, 210, 12, DARKGRAY);
+                DrawText("Press F to cycle through performance modes", 10, 230, 12, DARKGRAY);
+                DrawText("Use mouse to orbit camera", 10, 250, 12, DARKGRAY);
                 
                 // Draw mesh bounds information
-                DrawText(TextFormat("Mesh Min: (%.1f, %.1f, %.1f)", meshMin.x, meshMin.y, meshMin.z), 10, 250, 12, DARKGRAY);
-                DrawText(TextFormat("Mesh Max: (%.1f, %.1f, %.1f)", meshMax.x, meshMax.y, meshMax.z), 10, 270, 12, DARKGRAY);
-                DrawText(TextFormat("Mesh Center: (%.1f, %.1f, %.1f)", meshCenter.x, meshCenter.y, meshCenter.z), 10, 290, 12, DARKGRAY);
+                DrawText(TextFormat("Mesh Min: (%.1f, %.1f, %.1f)", meshMin.x, meshMin.y, meshMin.z), 10, 270, 12, DARKGRAY);
+                DrawText(TextFormat("Mesh Max: (%.1f, %.1f, %.1f)", meshMax.x, meshMax.y, meshMax.z), 10, 290, 12, DARKGRAY);
+                DrawText(TextFormat("Mesh Center: (%.1f, %.1f, %.1f)", meshCenter.x, meshCenter.y, meshCenter.z), 10, 310, 12, DARKGRAY);
                 
             EndDrawing();
 
             // Update the model with the new mesh
             UnloadMesh(mesh);
+        }
+        
+        // Performance test completed
+        if ((GetTime() - startTime) >= MAX_RUN_TIME) {
+            printf("\n=== PERFORMANCE TEST COMPLETED ===\n");
+            printf("Test Duration: %.1f seconds\n", GetTime() - startTime);
+            printf("Configuration: %d particles, %dx%dx%d grid\n", 
+                   particleCount, 1<<GRID_DIVISIONS_POW, 1<<GRID_DIVISIONS_POW, 1<<GRID_DIVISIONS_POW);
+            printf("=====================================\n");
         }
     }
     
