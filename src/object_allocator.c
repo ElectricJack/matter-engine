@@ -1,0 +1,1 @@
+../../SpatialQueryLib/src/object_allocator.c

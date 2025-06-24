@@ -1,0 +1,1 @@
+../../SpatialQueryLib/include/object_allocator.h

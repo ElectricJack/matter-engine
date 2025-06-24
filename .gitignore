@@ -1,0 +1,9 @@
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+gpu_raytrace
+.DS_Store
+*.dSYM/
+*.exe
