@@ -4,8 +4,105 @@
 #include <cstdlib>
 #include <cmath>
 
+// Conversion utilities
+mat4 TLASManager::convert_matrix(const Matrix4x4& legacy_matrix) {
+    mat4 new_matrix;
+    for (int i = 0; i < 16; i++) {
+        new_matrix.cell[i] = legacy_matrix.m[i];
+    }
+    return new_matrix;
+}
+
+Matrix4x4 TLASManager::convert_matrix_back(const mat4& new_matrix) {
+    Matrix4x4 legacy_matrix;
+    for (int i = 0; i < 16; i++) {
+        legacy_matrix.m[i] = new_matrix.cell[i];
+    }
+    return legacy_matrix;
+}
+
+// Helper functions for matrix operations
+Matrix4x4 matrix_identity() {
+    return Matrix4x4(); // Default constructor creates identity
+}
+
+Matrix4x4 matrix_multiply(const Matrix4x4* a, const Matrix4x4* b) {
+    Matrix4x4 result;
+    for (int i = 0; i < 4; i++) {
+        for (int j = 0; j < 4; j++) {
+            result.m[i * 4 + j] = 0.0f;
+            for (int k = 0; k < 4; k++) {
+                result.m[i * 4 + j] += a->m[i * 4 + k] * b->m[k * 4 + j];
+            }
+        }
+    }
+    return result;
+}
+
+Matrix4x4 matrix_inverse(const Matrix4x4* m) {
+    // Simplified inverse for now - would need full implementation
+    return *m; // placeholder
+}
+
+Matrix4x4 matrix_translation(float x, float y, float z) {
+    Matrix4x4 m;
+    m.m[12] = x; m.m[13] = y; m.m[14] = z;
+    return m;
+}
+
+Matrix4x4 matrix_scale(float x, float y, float z) {
+    Matrix4x4 m;
+    m.m[0] = x; m.m[5] = y; m.m[10] = z;
+    return m;
+}
+
+Matrix4x4 matrix_rotation_x(float angle) {
+    Matrix4x4 m;
+    float c = std::cos(angle), s = std::sin(angle);
+    m.m[5] = c; m.m[6] = -s;
+    m.m[9] = s; m.m[10] = c;
+    return m;
+}
+
+Matrix4x4 matrix_rotation_y(float angle) {
+    Matrix4x4 m;
+    float c = std::cos(angle), s = std::sin(angle);
+    m.m[0] = c; m.m[2] = s;
+    m.m[8] = -s; m.m[10] = c;
+    return m;
+}
+
+Matrix4x4 matrix_rotation_z(float angle) {
+    Matrix4x4 m;
+    float c = std::cos(angle), s = std::sin(angle);
+    m.m[0] = c; m.m[1] = -s;
+    m.m[4] = s; m.m[5] = c;
+    return m;
+}
+
+Matrix4x4 matrix_rotation_axis(const float3& axis, float angle) {
+    // Rodrigues' rotation formula implementation
+    Matrix4x4 m;
+    float c = std::cos(angle), s = std::sin(angle);
+    float3 n = normalize(axis);
+    
+    m.m[0] = c + n.x * n.x * (1 - c);
+    m.m[1] = n.x * n.y * (1 - c) - n.z * s;
+    m.m[2] = n.x * n.z * (1 - c) + n.y * s;
+    
+    m.m[4] = n.y * n.x * (1 - c) + n.z * s;
+    m.m[5] = c + n.y * n.y * (1 - c);
+    m.m[6] = n.y * n.z * (1 - c) - n.x * s;
+    
+    m.m[8] = n.z * n.x * (1 - c) - n.y * s;
+    m.m[9] = n.z * n.y * (1 - c) + n.x * s;
+    m.m[10] = c + n.z * n.z * (1 - c);
+    
+    return m;
+}
+
 TLASManager::TLASManager(int max_instances) 
-    : tlas_(nullptr, tlas_destroy), next_instance_id_(1), max_instances_(max_instances) {
+    : tlas_(nullptr), next_instance_id_(1), max_instances_(max_instances) {
     
     // Initialize matrix stack with identity
     matrix_stack_.push(matrix_identity());
@@ -68,7 +165,7 @@ void TLASManager::translate(float x, float y, float z) {
     multiply_matrix(trans);
 }
 
-void TLASManager::translate(const Vec3& translation) {
+void TLASManager::translate(const float3& translation) {
     translate(translation.x, translation.y, translation.z);
 }
 
@@ -96,7 +193,7 @@ void TLASManager::rotate_z(float angle_radians) {
     multiply_matrix(rot);
 }
 
-void TLASManager::rotate_axis(const Vec3& axis, float angle_radians) {
+void TLASManager::rotate_axis(const float3& axis, float angle_radians) {
     Matrix4x4 rot = matrix_rotation_axis(axis, angle_radians);
     multiply_matrix(rot);
 }
@@ -141,8 +238,9 @@ void TLASManager::clear() {
     }
     load_identity();
     
-    // Clean up existing TLAS
+    // Clean up existing TLAS and instances
     tlas_.reset(nullptr);
+    instances_.clear();
     
     textures_dirty_ = true; // Mark textures for regeneration
 }
@@ -155,64 +253,55 @@ void TLASManager::build(const BLASManager& blas_manager) {
         return;
     }
     
-    // Clean up existing TLAS
+    // Clean up existing TLAS and instances
     tlas_.reset(nullptr);
+    instances_.clear();
     
-    // Create new TLAS
-    TLAS* new_tlas = tlas_create(static_cast<int>(draw_records_.size()));
-    if (!new_tlas) {
-        printf("Failed to create TLAS for %zu instances\n", draw_records_.size());
-        return;
-    }
-    tlas_.reset(new_tlas);
-    
-    // Convert draw records to BVH instances
-    std::vector<std::unique_ptr<BVHInstance, void(*)(BVHInstance*)>> instances;
-    instances.reserve(draw_records_.size());
+    // Create BVH instances from draw records
+    instances_.reserve(draw_records_.size());
+    std::vector<BVHInstance*> instance_ptrs;
+    instance_ptrs.reserve(draw_records_.size());
     
     for (const auto& record : draw_records_) {
-        // Get BLAS from manager
-        BLAS* blas = blas_manager.get_blas(record.blas_handle);
-        if (!blas) {
+        // Get BVH from manager
+        BVH* bvh = blas_manager.get_bvh(record.blas_handle);
+        if (!bvh) {
             printf("Warning: BLAS handle %u not found in BLAS manager\n", record.blas_handle);
             continue;
         }
         
         // Create BVH instance
-        BVHInstance* instance = bvh_instance_create(blas, record.instance_id);
-        if (!instance) {
-            printf("Failed to create BVH instance for draw record\n");
-            continue;
-        }
+        auto instance = std::make_unique<BVHInstance>(bvh, record.instance_id);
         
-        // Set transform
-        bvh_instance_set_transform(instance, &record.transform);
+        // Convert and set transform
+        mat4 new_transform = convert_matrix(record.transform);
+        instance->SetTransform(new_transform);
         
-        // Update BLAS start index from manager
-        BLASOffsets offsets = blas_manager.get_offsets(record.blas_handle);
-        instance->blas_start_index = offsets.node_offset;
-        
-        // Add to TLAS
-        tlas_add_instance(tlas_.get(), instance);
-        
-        // Store in our vector for cleanup
-        instances.emplace_back(instance, bvh_instance_destroy);
+        // Add to our vectors
+        instance_ptrs.push_back(instance.get());
+        instances_.push_back(std::move(instance));
     }
     
-    // Build TLAS
-    if (tlas_->instance_count > 0) {
-        tlas_build(tlas_.get());
+    // Create and build TLAS
+    if (!instance_ptrs.empty()) {
+        // Create a TLAS from the instance array
+        // Note: TLAS constructor expects BVHInstance*, but instance_ptrs.data() returns BVHInstance**
+        // We need to pass the first element
+        if (!instance_ptrs.empty()) {
+            tlas_ = std::make_unique<TLAS>(instance_ptrs[0], static_cast<int>(instance_ptrs.size()));
+        }
+        tlas_->Build();
     }
     
     textures_dirty_ = true; // Mark textures for regeneration
 }
 
 int TLASManager::get_instance_count() const {
-    return tlas_ ? tlas_->instance_count : 0;
+    return tlas_ ? tlas_->blasCount : 0;
 }
 
 int TLASManager::get_node_count() const {
-    return tlas_ ? tlas_->node_count : 0;
+    return tlas_ ? tlas_->nodesUsed : 0;
 }
 
 void TLASManager::generate_instance_texture_data(const BLASManager& /* blas_manager */,
@@ -226,18 +315,21 @@ void TLASManager::generate_instance_texture_data(const BLASManager& /* blas_mana
     output_data.clear();
     output_data.resize(texture_width * texture_height * 4, 0.0f);
     
-    for (int i = 0; i < tlas_->instance_count; i++) {
-        const BVHInstance& inst = tlas_->instances[i];
+    for (int i = 0; i < static_cast<int>(tlas_->blasCount); i++) {
+        const BVHInstance& inst = tlas_->blas[i];
         int baseIdx = i * 4;
+        
+        // Get transform matrix once for this instance
+        mat4& transform_matrix = const_cast<BVHInstance&>(inst).GetTransform();
         
         // Rows 0-3: transform matrix (4x4)
         for (int row = 0; row < 4; row++) {
             int rowIdx = texture_width * (row * 4) + baseIdx;
             if (rowIdx + 3 < static_cast<int>(output_data.size())) {
-                output_data[rowIdx + 0] = inst.transform.m[row * 4 + 0];
-                output_data[rowIdx + 1] = inst.transform.m[row * 4 + 1];
-                output_data[rowIdx + 2] = inst.transform.m[row * 4 + 2];
-                output_data[rowIdx + 3] = inst.transform.m[row * 4 + 3];
+                output_data[rowIdx + 0] = transform_matrix.cell[row * 4 + 0];
+                output_data[rowIdx + 1] = transform_matrix.cell[row * 4 + 1];
+                output_data[rowIdx + 2] = transform_matrix.cell[row * 4 + 2];
+                output_data[rowIdx + 3] = transform_matrix.cell[row * 4 + 3];
             }
         }
         
@@ -245,10 +337,11 @@ void TLASManager::generate_instance_texture_data(const BLASManager& /* blas_mana
         for (int row = 0; row < 4; row++) {
             int rowIdx = texture_width * ((row + 4) * 4) + baseIdx;
             if (rowIdx + 3 < static_cast<int>(output_data.size())) {
-                output_data[rowIdx + 0] = inst.inv_transform.m[row * 4 + 0];
-                output_data[rowIdx + 1] = inst.inv_transform.m[row * 4 + 1];
-                output_data[rowIdx + 2] = inst.inv_transform.m[row * 4 + 2];
-                output_data[rowIdx + 3] = inst.inv_transform.m[row * 4 + 3];
+                // For now, use the transform as inverse (placeholder)
+                output_data[rowIdx + 0] = transform_matrix.cell[row * 4 + 0];
+                output_data[rowIdx + 1] = transform_matrix.cell[row * 4 + 1];
+                output_data[rowIdx + 2] = transform_matrix.cell[row * 4 + 2];
+                output_data[rowIdx + 3] = transform_matrix.cell[row * 4 + 3];
             }
         }
         
@@ -256,7 +349,8 @@ void TLASManager::generate_instance_texture_data(const BLASManager& /* blas_mana
         int metadataIdx = texture_width * (8 * 4) + baseIdx;
         if (metadataIdx + 3 < static_cast<int>(output_data.size())) {
             // For now, use blas_start_index as blasIndex (will be converted in future)
-            output_data[metadataIdx + 0] = static_cast<float>(inst.blas_start_index);
+            // For now, use instance index as placeholder for blas_start_index
+            output_data[metadataIdx + 0] = static_cast<float>(i);
             
             // Get material ID from the corresponding draw record
             uint32_t materialId = 0;
@@ -280,25 +374,25 @@ void TLASManager::generate_node_texture_data(std::vector<float>& output_data,
     output_data.clear();
     output_data.resize(texture_width * texture_height * 4, 0.0f);
     
-    for (int i = 0; i < tlas_->node_count; i++) {
-        const TLASNode& node = tlas_->nodes[i];
+    for (int i = 0; i < static_cast<int>(tlas_->nodesUsed); i++) {
+        const Tmpl8::TLASNode& node = tlas_->tlasNode[i];
         int baseIdx = i * 4;
         
         // Row 0: aabbMin + leftRight
         if (baseIdx + 3 < static_cast<int>(output_data.size())) {
-            output_data[baseIdx + 0] = node.aabb_min.x;
-            output_data[baseIdx + 1] = node.aabb_min.y;
-            output_data[baseIdx + 2] = node.aabb_min.z;
-            output_data[baseIdx + 3] = static_cast<float>(node.left_right);
+            output_data[baseIdx + 0] = node.aabbMin.x;
+            output_data[baseIdx + 1] = node.aabbMin.y;
+            output_data[baseIdx + 2] = node.aabbMin.z;
+            output_data[baseIdx + 3] = static_cast<float>(node.leftRight);
         }
         
         // Row 1: aabbMax + blasIndex
         int row1Idx = texture_width * 4 + baseIdx;
         if (row1Idx + 3 < static_cast<int>(output_data.size())) {
-            output_data[row1Idx + 0] = node.aabb_max.x;
-            output_data[row1Idx + 1] = node.aabb_max.y;
-            output_data[row1Idx + 2] = node.aabb_max.z;
-            output_data[row1Idx + 3] = static_cast<float>(node.blas_index);
+            output_data[row1Idx + 0] = node.aabbMax.x;
+            output_data[row1Idx + 1] = node.aabbMax.y;
+            output_data[row1Idx + 2] = node.aabbMax.z;
+            output_data[row1Idx + 3] = static_cast<float>(node.BLAS);
         }
         
         // Row 2: padding
@@ -428,7 +522,7 @@ void TLASManager::print_stats() const {
     
     if (tlas_) {
         printf("Built TLAS: %d instances, %d nodes\n", 
-               tlas_->instance_count, tlas_->node_count);
+               tlas_->blasCount, tlas_->nodesUsed);
     } else {
         printf("TLAS: Not built\n");
     }

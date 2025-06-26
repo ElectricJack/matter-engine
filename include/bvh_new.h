@@ -165,7 +165,7 @@ class BVHInstance
 public:
 	BVHInstance() = default;
 	BVHInstance( BVH* blas, uint index ) : bvh( blas ), idx( index ) { SetTransform( mat4() ); }
-	void SetTransform( mat4& transform );
+	void SetTransform( const mat4& transform );
 	mat4& GetTransform() { return transform; }
 	void Intersect( Ray& ray );
 private:

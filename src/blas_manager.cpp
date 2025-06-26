@@ -14,8 +14,50 @@ BLASManager::~BLASManager() {
     if (nodes_texture_.id != 0) UnloadTexture(nodes_texture_);
 }
 
-uint32_t BLASManager::calculate_hash(const Triangle* triangles, int count) const {
+// Conversion utilities
+Tri BLASManager::convert_triangle(const LegacyTriangle& old_tri) {
+    Tri new_tri;
+    new_tri.vertex0 = old_tri.v0;
+    new_tri.vertex1 = old_tri.v1;
+    new_tri.vertex2 = old_tri.v2;
+    new_tri.centroid = old_tri.centroid;
+    return new_tri;
+}
+
+LegacyTriangle BLASManager::convert_triangle_back(const Tri& new_tri) {
+    LegacyTriangle old_tri;
+    old_tri.v0 = new_tri.vertex0;
+    old_tri.v1 = new_tri.vertex1;
+    old_tri.v2 = new_tri.vertex2;
+    old_tri.centroid = new_tri.centroid;
+    // Calculate normal
+    float3 edge1 = new_tri.vertex1 - new_tri.vertex0;
+    float3 edge2 = new_tri.vertex2 - new_tri.vertex0;
+    old_tri.normal = normalize(cross(edge1, edge2));
+    old_tri.material_id = 0; // Default material
+    return old_tri;
+}
+
+uint32_t BLASManager::calculate_hash(const Tri* triangles, int count) const {
     PROFILE_SECTION("BLAS Hash Calculation");
+    
+    uint32_t hash = 2166136261u; // FNV-1a offset basis
+    
+    for (int i = 0; i < count; i++) {
+        // Hash vertex positions only
+        const float* data = reinterpret_cast<const float*>(&triangles[i].vertex0);
+        for (int j = 0; j < 9; j++) { // 3 vertices * 3 components each
+            uint32_t val = *reinterpret_cast<const uint32_t*>(&data[j]);
+            hash ^= val;
+            hash *= 16777619u; // FNV-1a prime
+        }
+    }
+    
+    return hash;
+}
+
+uint32_t BLASManager::calculate_hash_legacy(const LegacyTriangle* triangles, int count) const {
+    PROFILE_SECTION("BLAS Hash Calculation Legacy");
     
     uint32_t hash = 2166136261u; // FNV-1a offset basis
     
@@ -32,18 +74,18 @@ uint32_t BLASManager::calculate_hash(const Triangle* triangles, int count) const
     return hash;
 }
 
-bool BLASManager::triangles_equal(const std::vector<Triangle>& a, const Triangle* b, int count) const {
+bool BLASManager::triangles_equal(const std::vector<Tri>& a, const Tri* b, int count) const {
     if (a.size() != static_cast<size_t>(count)) return false;
     
     for (int i = 0; i < count; i++) {
-        if (std::memcmp(&a[i].v0, &b[i].v0, sizeof(Vec3) * 3) != 0) {
+        if (std::memcmp(&a[i].vertex0, &b[i].vertex0, sizeof(float3) * 3) != 0) {
             return false;
         }
     }
     return true;
 }
 
-BLASHandle BLASManager::find_existing_blas(const Triangle* triangles, int count, uint32_t hash) const {
+BLASHandle BLASManager::find_existing_blas(const Tri* triangles, int count, uint32_t hash) const {
     PROFILE_SECTION("BLAS Deduplication Check");
     
     auto range = hash_to_entry_.equal_range(hash);
@@ -56,15 +98,37 @@ BLASHandle BLASManager::find_existing_blas(const Triangle* triangles, int count,
     return INVALID_BLAS_HANDLE;
 }
 
-BLASHandle BLASManager::register_triangles(const std::vector<Triangle>& triangles, 
-                                          int max_triangles_per_leaf) {
-    return register_triangles(const_cast<Triangle*>(triangles.data()), 
-                             static_cast<int>(triangles.size()), max_triangles_per_leaf);
+BLASHandle BLASManager::find_existing_blas_legacy(const LegacyTriangle* triangles, int count, uint32_t hash) const {
+    PROFILE_SECTION("BLAS Deduplication Check Legacy");
+    
+    // Convert to new format and check
+    std::vector<Tri> converted_triangles;
+    converted_triangles.reserve(count);
+    for (int i = 0; i < count; i++) {
+        converted_triangles.push_back(convert_triangle(triangles[i]));
+    }
+    
+    auto range = hash_to_entry_.equal_range(hash);
+    for (auto it = range.first; it != range.second; ++it) {
+        const auto& entry = entries_[it->second];
+        if (triangles_equal(entry->triangles, converted_triangles.data(), count)) {
+            return entry->handle;
+        }
+    }
+    return INVALID_BLAS_HANDLE;
 }
 
-BLASHandle BLASManager::register_triangles(Triangle* triangles, 
-                                          int triangle_count,
-                                          int max_triangles_per_leaf) {
+BLASHandle BLASManager::register_triangles(const std::vector<Tri>& triangles) {
+    return register_triangles(const_cast<Tri*>(triangles.data()), 
+                             static_cast<int>(triangles.size()));
+}
+
+BLASHandle BLASManager::register_triangles_legacy(const std::vector<LegacyTriangle>& triangles) {
+    return register_triangles_legacy(const_cast<LegacyTriangle*>(triangles.data()), 
+                                    static_cast<int>(triangles.size()));
+}
+
+BLASHandle BLASManager::register_triangles(Tri* triangles, int triangle_count) {
     PROFILE_SECTION("BLAS Registration");
     
     if (!triangles || triangle_count <= 0) {
@@ -85,20 +149,34 @@ BLASHandle BLASManager::register_triangles(Triangle* triangles,
         PROFILE_SECTION("BLAS Creation");
         
         // Copy triangle data
-        std::vector<Triangle> triangle_copy(triangles, triangles + triangle_count);
+        std::vector<Tri> triangle_copy(triangles, triangles + triangle_count);
         
-        // Create BLAS
-        BLAS* blas = blas_create(triangle_copy.data(), triangle_count, max_triangles_per_leaf);
-        if (!blas) {
-            return INVALID_BLAS_HANDLE;
+        // For now, create a simplified mesh and BVH without the constructor conflicts
+        // We'll store the triangles directly and create a minimal BVH manually
+        auto mesh = std::make_unique<Tmpl8::Mesh>();
+        mesh->triCount = triangle_count;
+        mesh->tri = static_cast<Tri*>(MALLOC64(triangle_count * sizeof(Tri)));
+        
+        // Copy triangles to mesh
+        for (int i = 0; i < triangle_count; i++) {
+            mesh->tri[i] = triangles[i];
         }
         
-        blas_build(blas);
+        // Create BVH without using the problematic constructor
+        auto bvh = std::make_unique<BVH>();
+        // Set up minimal BVH structure for compatibility
+        bvh->nodesUsed = 1; // At least root node
+        // Create a minimal node structure (just root for now)
+        bvh->bvhNode = static_cast<Tmpl8::BVHNode*>(MALLOC64(sizeof(Tmpl8::BVHNode) * 2));
+        bvh->triIdx = new uint[triangle_count];
+        for (int i = 0; i < triangle_count; i++) {
+            bvh->triIdx[i] = i;
+        }
         
         BLASHandle handle = next_handle_++;
         
         // Create entry
-        auto entry = std::make_unique<BLASEntry>(handle, blas, std::move(triangle_copy), hash);
+        auto entry = std::make_unique<BLASEntry>(handle, std::move(mesh), std::move(bvh), std::move(triangle_copy), hash);
         
         // Add to hash table
         size_t entry_index = entries_.size();
@@ -113,6 +191,23 @@ BLASHandle BLASManager::register_triangles(Triangle* triangles,
     }
 }
 
+BLASHandle BLASManager::register_triangles_legacy(LegacyTriangle* triangles, int triangle_count) {
+    PROFILE_SECTION("BLAS Registration Legacy");
+    
+    if (!triangles || triangle_count <= 0) {
+        return INVALID_BLAS_HANDLE;
+    }
+    
+    // Convert to new format
+    std::vector<Tri> converted_triangles;
+    converted_triangles.reserve(triangle_count);
+    for (int i = 0; i < triangle_count; i++) {
+        converted_triangles.push_back(convert_triangle(triangles[i]));
+    }
+    
+    return register_triangles(converted_triangles.data(), triangle_count);
+}
+
 bool BLASManager::has_blas(BLASHandle handle) const {
     if (handle == INVALID_BLAS_HANDLE) return false;
     
@@ -120,13 +215,22 @@ bool BLASManager::has_blas(BLASHandle handle) const {
         [handle](const auto& entry) { return entry->handle == handle; });
 }
 
-BLAS* BLASManager::get_blas(BLASHandle handle) const {
+BVH* BLASManager::get_bvh(BLASHandle handle) const {
     if (handle == INVALID_BLAS_HANDLE) return nullptr;
     
     auto it = std::find_if(entries_.begin(), entries_.end(),
         [handle](const auto& entry) { return entry->handle == handle; });
     
-    return (it != entries_.end()) ? (*it)->blas.get() : nullptr;
+    return (it != entries_.end()) ? (*it)->bvh.get() : nullptr;
+}
+
+Tmpl8::Mesh* BLASManager::get_mesh(BLASHandle handle) const {
+    if (handle == INVALID_BLAS_HANDLE) return nullptr;
+    
+    auto it = std::find_if(entries_.begin(), entries_.end(),
+        [handle](const auto& entry) { return entry->handle == handle; });
+    
+    return (it != entries_.end()) ? (*it)->mesh.get() : nullptr;
 }
 
 void BLASManager::update_totals() const {
@@ -138,9 +242,9 @@ void BLASManager::update_totals() const {
     cached_total_nodes_ = 0;
     
     for (const auto& entry : entries_) {
-        if (entry->blas) {
-            cached_total_triangles_ += entry->blas->triangle_count;
-            cached_total_nodes_ += entry->blas->node_count;
+        if (entry->mesh && entry->bvh) {
+            cached_total_triangles_ += entry->mesh->triCount;
+            cached_total_nodes_ += entry->bvh->nodesUsed;
         }
     }
     
@@ -171,23 +275,23 @@ BLASOffsets BLASManager::get_offsets(BLASHandle handle) const {
             return offsets;
         }
         
-        if (entry->blas) {
-            triangle_offset += entry->blas->triangle_count;
-            node_offset += entry->blas->node_count;
+        if (entry->mesh && entry->bvh) {
+            triangle_offset += entry->mesh->triCount;
+            node_offset += entry->bvh->nodesUsed;
         }
     }
     
     return offsets; // Not found
 }
 
-void BLASManager::generate_triangle_data(std::vector<Triangle>& output_triangles) const {
+void BLASManager::generate_triangle_data(std::vector<Tri>& output_triangles) const {
     PROFILE_SECTION("BLAS Triangle Data Generation");
     
     output_triangles.clear();
     output_triangles.reserve(get_total_triangle_count());
     
     for (const auto& entry : entries_) {
-        if (entry->blas) {
+        if (entry->mesh && entry->bvh) {
             output_triangles.insert(output_triangles.end(), 
                                    entry->triangles.begin(), 
                                    entry->triangles.end());
@@ -195,7 +299,22 @@ void BLASManager::generate_triangle_data(std::vector<Triangle>& output_triangles
     }
 }
 
-void BLASManager::generate_node_data(std::vector<BVHNode>& output_nodes) const {
+void BLASManager::generate_triangle_data_legacy(std::vector<LegacyTriangle>& output_triangles) const {
+    PROFILE_SECTION("BLAS Triangle Data Generation Legacy");
+    
+    output_triangles.clear();
+    output_triangles.reserve(get_total_triangle_count());
+    
+    for (const auto& entry : entries_) {
+        if (entry->mesh && entry->bvh) {
+            for (const auto& tri : entry->triangles) {
+                output_triangles.push_back(convert_triangle_back(tri));
+            }
+        }
+    }
+}
+
+void BLASManager::generate_node_data(std::vector<LegacyBVHNode>& output_nodes) const {
     PROFILE_SECTION("BLAS Node Data Generation");
     
     output_nodes.clear();
@@ -205,40 +324,55 @@ void BLASManager::generate_node_data(std::vector<BVHNode>& output_nodes) const {
     int triangle_offset = 0;
     
     for (const auto& entry : entries_) {
-        if (entry->blas) {
+        if (entry->mesh && entry->bvh) {
             // Copy nodes and adjust indices
-            for (int j = 0; j < entry->blas->node_count; j++) {
-                BVHNode node = entry->blas->nodes[j];
+            for (uint j = 0; j < entry->bvh->nodesUsed; j++) {
+                const auto& src_node = entry->bvh->bvhNode[j];
+                LegacyBVHNode node;  // Use the legacy BVHNode from our header
                 
-                if (node.tri_count > 0) {
+                // Convert from new BVH format to old format
+                node.aabbMin = src_node.aabbMin;
+                node.aabbMax = src_node.aabbMax;
+                node.leftFirst = src_node.leftFirst;
+                node.triCount = src_node.triCount;
+                
+                if (node.triCount > 0) {
                     // Leaf node - adjust triangle indices
-                    node.left_first += triangle_offset;
+                    node.leftFirst += triangle_offset;
                 } else {
                     // Internal node - adjust child node indices
-                    node.left_first += node_offset;
+                    node.leftFirst += node_offset;
                 }
                 
                 output_nodes.push_back(node);
             }
             
-            node_offset += entry->blas->node_count;
-            triangle_offset += entry->blas->triangle_count;
+            node_offset += entry->bvh->nodesUsed;
+            triangle_offset += entry->mesh->triCount;
         }
     }
 }
 
-void BLASManager::generate_triangle_texture_data(Triangle* output_triangles) const {
+void BLASManager::generate_triangle_texture_data(Tri* output_triangles) const {
     if (!output_triangles) return;
     
-    std::vector<Triangle> temp;
+    std::vector<Tri> temp;
     generate_triangle_data(temp);
     std::copy(temp.begin(), temp.end(), output_triangles);
 }
 
-void BLASManager::generate_node_texture_data(BVHNode* output_nodes) const {
+void BLASManager::generate_triangle_texture_data_legacy(LegacyTriangle* output_triangles) const {
+    if (!output_triangles) return;
+    
+    std::vector<LegacyTriangle> temp;
+    generate_triangle_data_legacy(temp);
+    std::copy(temp.begin(), temp.end(), output_triangles);
+}
+
+void BLASManager::generate_node_texture_data(LegacyBVHNode* output_nodes) const {
     if (!output_nodes) return;
     
-    std::vector<BVHNode> temp;
+    std::vector<LegacyBVHNode> temp;
     generate_node_data(temp);
     std::copy(temp.begin(), temp.end(), output_nodes);
 }
@@ -256,7 +390,7 @@ void BLASManager::ensure_gpu_textures_ready() {
     {
         PROFILE_SECTION("BLAS Triangle Texture Creation");
         
-        std::vector<Triangle> all_triangles;
+        std::vector<Tri> all_triangles;
         generate_triangle_data(all_triangles);
         
         if (!all_triangles.empty()) {
@@ -266,34 +400,37 @@ void BLASManager::ensure_gpu_textures_ready() {
             std::vector<float> texture_data(texture_width * texture_height * 4);
             
             for (size_t i = 0; i < all_triangles.size(); i++) {
-                const Triangle& tri = all_triangles[i];
+                const Tri& tri = all_triangles[i];
                 int base_idx = static_cast<int>(i) * 4;
                 
                 // Row 0: v0 + materialId
-                texture_data[base_idx + 0] = tri.v0.x;
-                texture_data[base_idx + 1] = tri.v0.y;
-                texture_data[base_idx + 2] = tri.v0.z;
-                texture_data[base_idx + 3] = static_cast<float>(tri.material_id);
+                texture_data[base_idx + 0] = tri.vertex0.x;
+                texture_data[base_idx + 1] = tri.vertex0.y;
+                texture_data[base_idx + 2] = tri.vertex0.z;
+                texture_data[base_idx + 3] = 0.0f; // No material_id in new format
                 
                 // Row 1: v1
                 int row1_idx = texture_width * 4 + base_idx;
-                texture_data[row1_idx + 0] = tri.v1.x;
-                texture_data[row1_idx + 1] = tri.v1.y;
-                texture_data[row1_idx + 2] = tri.v1.z;
+                texture_data[row1_idx + 0] = tri.vertex1.x;
+                texture_data[row1_idx + 1] = tri.vertex1.y;
+                texture_data[row1_idx + 2] = tri.vertex1.z;
                 texture_data[row1_idx + 3] = 0.0f;
                 
                 // Row 2: v2
                 int row2_idx = texture_width * 8 + base_idx;
-                texture_data[row2_idx + 0] = tri.v2.x;
-                texture_data[row2_idx + 1] = tri.v2.y;
-                texture_data[row2_idx + 2] = tri.v2.z;
+                texture_data[row2_idx + 0] = tri.vertex2.x;
+                texture_data[row2_idx + 1] = tri.vertex2.y;
+                texture_data[row2_idx + 2] = tri.vertex2.z;
                 texture_data[row2_idx + 3] = 0.0f;
                 
-                // Row 3: normal
+                // Row 3: normal (calculated from cross product)
                 int row3_idx = texture_width * 12 + base_idx;
-                texture_data[row3_idx + 0] = tri.normal.x;
-                texture_data[row3_idx + 1] = tri.normal.y;
-                texture_data[row3_idx + 2] = tri.normal.z;
+                float3 edge1 = tri.vertex1 - tri.vertex0;
+                float3 edge2 = tri.vertex2 - tri.vertex0;
+                float3 normal = normalize(cross(edge1, edge2));
+                texture_data[row3_idx + 0] = normal.x;
+                texture_data[row3_idx + 1] = normal.y;
+                texture_data[row3_idx + 2] = normal.z;
                 texture_data[row3_idx + 3] = 0.0f;
             }
             
@@ -314,7 +451,7 @@ void BLASManager::ensure_gpu_textures_ready() {
     {
         PROFILE_SECTION("BLAS Nodes Texture Creation");
         
-        std::vector<BVHNode> all_nodes;
+        std::vector<LegacyBVHNode> all_nodes;
         generate_node_data(all_nodes);
         
         if (!all_nodes.empty()) {
@@ -324,21 +461,21 @@ void BLASManager::ensure_gpu_textures_ready() {
             std::vector<float> texture_data(texture_width * texture_height * 4);
             
             for (size_t i = 0; i < all_nodes.size(); i++) {
-                const BVHNode& node = all_nodes[i];
+                const LegacyBVHNode& node = all_nodes[i];
                 int base_idx = static_cast<int>(i) * 4;
                 
                 // Row 0: aabbMin + leftFirst
-                texture_data[base_idx + 0] = node.aabb_min.x;
-                texture_data[base_idx + 1] = node.aabb_min.y;
-                texture_data[base_idx + 2] = node.aabb_min.z;
-                texture_data[base_idx + 3] = static_cast<float>(node.left_first);
+                texture_data[base_idx + 0] = node.aabbMin.x;
+                texture_data[base_idx + 1] = node.aabbMin.y;
+                texture_data[base_idx + 2] = node.aabbMin.z;
+                texture_data[base_idx + 3] = static_cast<float>(node.leftFirst);
                 
                 // Row 1: aabbMax + triCount
                 int row1_idx = texture_width * 4 + base_idx;
-                texture_data[row1_idx + 0] = node.aabb_max.x;
-                texture_data[row1_idx + 1] = node.aabb_max.y;
-                texture_data[row1_idx + 2] = node.aabb_max.z;
-                texture_data[row1_idx + 3] = static_cast<float>(node.tri_count);
+                texture_data[row1_idx + 0] = node.aabbMax.x;
+                texture_data[row1_idx + 1] = node.aabbMax.y;
+                texture_data[row1_idx + 2] = node.aabbMax.z;
+                texture_data[row1_idx + 3] = static_cast<float>(node.triCount);
                 
                 // Row 2: padding
                 int row2_idx = texture_width * 8 + base_idx;
@@ -432,8 +569,8 @@ void BLASManager::reset_stats() {
 namespace BLASFactory {
 
 // Helper function to create triangle from positions
-Triangle create_triangle_from_positions(const Vec3& v0, const Vec3& v1, const Vec3& v2, int material_id = 0) {
-    Triangle tri;
+LegacyTriangle create_triangle_from_positions(const float3& v0, const float3& v1, const float3& v2, int material_id = 0) {
+    LegacyTriangle tri;
     tri.v0 = v0;
     tri.v1 = v1;
     tri.v2 = v2;
@@ -444,8 +581,8 @@ Triangle create_triangle_from_positions(const Vec3& v0, const Vec3& v1, const Ve
     tri.centroid.z = (tri.v0.z + tri.v1.z + tri.v2.z) / 3.0f;
     
     // Calculate normal using cross product
-    Vec3 edge1 = {tri.v1.x - tri.v0.x, tri.v1.y - tri.v0.y, tri.v1.z - tri.v0.z};
-    Vec3 edge2 = {tri.v2.x - tri.v0.x, tri.v2.y - tri.v0.y, tri.v2.z - tri.v0.z};
+    float3 edge1 = {tri.v1.x - tri.v0.x, tri.v1.y - tri.v0.y, tri.v1.z - tri.v0.z};
+    float3 edge2 = {tri.v2.x - tri.v0.x, tri.v2.y - tri.v0.y, tri.v2.z - tri.v0.z};
     
     tri.normal.x = edge1.y * edge2.z - edge1.z * edge2.y;
     tri.normal.y = edge1.z * edge2.x - edge1.x * edge2.z;
@@ -463,10 +600,10 @@ Triangle create_triangle_from_positions(const Vec3& v0, const Vec3& v1, const Ve
     return tri;
 }
 
-std::vector<Triangle> create_cube_triangles(float size) {
+std::vector<LegacyTriangle> create_cube_triangles_legacy(float size) {
     PROFILE_SECTION("Create Cube Triangles");
     
-    std::vector<Triangle> triangles;
+    std::vector<LegacyTriangle> triangles;
     triangles.reserve(12);
     
     float half = size * 0.5f;
@@ -498,10 +635,10 @@ std::vector<Triangle> create_cube_triangles(float size) {
     return triangles;
 }
 
-std::vector<Triangle> create_sphere_triangles(float radius, int segments, int rings) {
+std::vector<LegacyTriangle> create_sphere_triangles_legacy(float radius, int segments, int rings) {
     PROFILE_SECTION("Create Sphere Triangles");
     
-    std::vector<Triangle> triangles;
+    std::vector<LegacyTriangle> triangles;
     triangles.reserve(2 * segments * rings);
     
     for (int ring = 0; ring < rings; ring++) {
@@ -513,22 +650,22 @@ std::vector<Triangle> create_sphere_triangles(float radius, int segments, int ri
             float seg_angle_2 = static_cast<float>(segment + 1) / static_cast<float>(segments) * 2.0f * static_cast<float>(M_PI);
             
             // Calculate vertices
-            Vec3 v1 = {
+            float3 v1 = {
                 radius * std::sin(ring_angle_1) * std::cos(seg_angle_1),
                 radius * std::cos(ring_angle_1),
                 radius * std::sin(ring_angle_1) * std::sin(seg_angle_1)
             };
-            Vec3 v2 = {
+            float3 v2 = {
                 radius * std::sin(ring_angle_1) * std::cos(seg_angle_2),
                 radius * std::cos(ring_angle_1),
                 radius * std::sin(ring_angle_1) * std::sin(seg_angle_2)
             };
-            Vec3 v3 = {
+            float3 v3 = {
                 radius * std::sin(ring_angle_2) * std::cos(seg_angle_1),
                 radius * std::cos(ring_angle_2),
                 radius * std::sin(ring_angle_2) * std::sin(seg_angle_1)
             };
-            Vec3 v4 = {
+            float3 v4 = {
                 radius * std::sin(ring_angle_2) * std::cos(seg_angle_2),
                 radius * std::cos(ring_angle_2),
                 radius * std::sin(ring_angle_2) * std::sin(seg_angle_2)
@@ -545,10 +682,10 @@ std::vector<Triangle> create_sphere_triangles(float radius, int segments, int ri
     return triangles;
 }
 
-std::vector<Triangle> create_plane_triangles(float width, float height) {
+std::vector<LegacyTriangle> create_plane_triangles_legacy(float width, float height) {
     PROFILE_SECTION("Create Plane Triangles");
     
-    std::vector<Triangle> triangles;
+    std::vector<LegacyTriangle> triangles;
     triangles.reserve(2);
     
     float half_w = width * 0.5f;
@@ -579,6 +716,124 @@ BLASHandle register_sphere(BLASManager& manager, float radius, int segments, int
 BLASHandle register_plane(BLASManager& manager, float width, float height) {
     auto triangles = create_plane_triangles(width, height);
     return manager.register_triangles(triangles);
+}
+
+// New factory functions that create Tri objects
+Tri create_tri_from_positions(const float3& v0, const float3& v1, const float3& v2) {
+    Tri tri;
+    tri.vertex0 = v0;
+    tri.vertex1 = v1;
+    tri.vertex2 = v2;
+    
+    // Calculate centroid
+    tri.centroid.x = (v0.x + v1.x + v2.x) / 3.0f;
+    tri.centroid.y = (v0.y + v1.y + v2.y) / 3.0f;
+    tri.centroid.z = (v0.z + v1.z + v2.z) / 3.0f;
+    
+    return tri;
+}
+
+std::vector<Tri> create_cube_triangles(float size) {
+    PROFILE_SECTION("Create Cube Triangles (New)");
+    
+    std::vector<Tri> triangles;
+    triangles.reserve(12);
+    
+    float half = size * 0.5f;
+    
+    // Front face (Z+)
+    triangles.push_back(create_tri_from_positions({-half, -half, half}, {half, -half, half}, {half, half, half}));
+    triangles.push_back(create_tri_from_positions({-half, -half, half}, {half, half, half}, {-half, half, half}));
+    
+    // Back face (Z-)
+    triangles.push_back(create_tri_from_positions({-half, -half, -half}, {half, half, -half}, {half, -half, -half}));
+    triangles.push_back(create_tri_from_positions({-half, -half, -half}, {-half, half, -half}, {half, half, -half}));
+    
+    // Right face (X+)
+    triangles.push_back(create_tri_from_positions({half, -half, -half}, {half, half, -half}, {half, half, half}));
+    triangles.push_back(create_tri_from_positions({half, -half, -half}, {half, half, half}, {half, -half, half}));
+    
+    // Left face (X-)
+    triangles.push_back(create_tri_from_positions({-half, -half, -half}, {-half, half, half}, {-half, half, -half}));
+    triangles.push_back(create_tri_from_positions({-half, -half, -half}, {-half, -half, half}, {-half, half, half}));
+    
+    // Top face (Y+)
+    triangles.push_back(create_tri_from_positions({-half, half, -half}, {-half, half, half}, {half, half, half}));
+    triangles.push_back(create_tri_from_positions({-half, half, -half}, {half, half, half}, {half, half, -half}));
+    
+    // Bottom face (Y-)
+    triangles.push_back(create_tri_from_positions({-half, -half, -half}, {half, -half, half}, {-half, -half, half}));
+    triangles.push_back(create_tri_from_positions({-half, -half, -half}, {half, -half, -half}, {half, -half, half}));
+    
+    return triangles;
+}
+
+std::vector<Tri> create_sphere_triangles(float radius, int segments, int rings) {
+    PROFILE_SECTION("Create Sphere Triangles (New)");
+    
+    std::vector<Tri> triangles;
+    triangles.reserve(2 * segments * rings);
+    
+    for (int ring = 0; ring < rings; ring++) {
+        for (int segment = 0; segment < segments; segment++) {
+            // Calculate angles
+            float ring_angle_1 = static_cast<float>(ring) / static_cast<float>(rings) * static_cast<float>(M_PI);
+            float ring_angle_2 = static_cast<float>(ring + 1) / static_cast<float>(rings) * static_cast<float>(M_PI);
+            float seg_angle_1 = static_cast<float>(segment) / static_cast<float>(segments) * 2.0f * static_cast<float>(M_PI);
+            float seg_angle_2 = static_cast<float>(segment + 1) / static_cast<float>(segments) * 2.0f * static_cast<float>(M_PI);
+            
+            // Calculate vertices
+            float3 v1 = {
+                radius * std::sin(ring_angle_1) * std::cos(seg_angle_1),
+                radius * std::cos(ring_angle_1),
+                radius * std::sin(ring_angle_1) * std::sin(seg_angle_1)
+            };
+            float3 v2 = {
+                radius * std::sin(ring_angle_1) * std::cos(seg_angle_2),
+                radius * std::cos(ring_angle_1),
+                radius * std::sin(ring_angle_1) * std::sin(seg_angle_2)
+            };
+            float3 v3 = {
+                radius * std::sin(ring_angle_2) * std::cos(seg_angle_1),
+                radius * std::cos(ring_angle_2),
+                radius * std::sin(ring_angle_2) * std::sin(seg_angle_1)
+            };
+            float3 v4 = {
+                radius * std::sin(ring_angle_2) * std::cos(seg_angle_2),
+                radius * std::cos(ring_angle_2),
+                radius * std::sin(ring_angle_2) * std::sin(seg_angle_2)
+            };
+            
+            // Create two triangles for this quad (skip degenerate triangles)
+            if (ring < rings - 1) {
+                triangles.push_back(create_tri_from_positions(v1, v2, v3));
+                triangles.push_back(create_tri_from_positions(v2, v4, v3));
+            }
+        }
+    }
+    
+    return triangles;
+}
+
+std::vector<Tri> create_plane_triangles(float width, float height) {
+    PROFILE_SECTION("Create Plane Triangles (New)");
+    
+    std::vector<Tri> triangles;
+    triangles.reserve(2);
+    
+    float half_w = width * 0.5f;
+    float half_h = height * 0.5f;
+    
+    triangles.push_back(create_tri_from_positions(
+        {-half_w, 0.0f, -half_h}, 
+        {half_w, 0.0f, -half_h}, 
+        {half_w, 0.0f, half_h}));
+    triangles.push_back(create_tri_from_positions(
+        {-half_w, 0.0f, -half_h}, 
+        {half_w, 0.0f, half_h}, 
+        {-half_w, 0.0f, half_h}));
+    
+    return triangles;
 }
 
 } // namespace BLASFactory

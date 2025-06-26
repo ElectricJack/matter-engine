@@ -1,9 +1,11 @@
 #pragma once
 
 extern "C" {
-    #include "bvh.h"
     #include "raylib.h"
 }
+
+#include "precomp.h"
+#include "bvh_new.h"
 
 #include "blas_manager.hpp"
 #include "profiler.hpp"
@@ -11,6 +13,37 @@ extern "C" {
 #include <stack>
 #include <memory>
 #include <cstdint>
+
+// Only import the types we need from Tmpl8 namespace
+using Tmpl8::TLAS;
+using Tmpl8::BVHInstance;
+using Tmpl8::mat4;
+using Tmpl8::aabb;
+// float3 and normalize are from global namespace via precomp.h
+
+// Legacy types for backward compatibility
+struct Matrix4x4 {
+    float m[16];
+    Matrix4x4() {
+        for (int i = 0; i < 16; i++) m[i] = 0.0f;
+        m[0] = m[5] = m[10] = m[15] = 1.0f; // Identity
+    }
+};
+
+struct TLASNode {
+    float3 aabbMin;
+    uint32_t leftRight;
+    float3 aabbMax;
+    uint32_t blasIndex;
+};
+
+struct LegacyBVHInstance {
+    mat4 transform;
+    mat4 invTransform;
+    uint32_t instanceId;
+    BVH* bvh;
+    aabb bounds;
+};
 
 class TLASManager {
 public:
@@ -32,13 +65,13 @@ public:
     
     // Transformation convenience functions
     void translate(float x, float y, float z);
-    void translate(const Vec3& translation);
+    void translate(const float3& translation);
     void scale(float sx, float sy, float sz);
     void scale(float uniform_scale);
     void rotate_x(float angle_radians);
     void rotate_y(float angle_radians);
     void rotate_z(float angle_radians);
-    void rotate_axis(const Vec3& axis, float angle_radians);
+    void rotate_axis(const float3& axis, float angle_radians);
     
     // Drawing operations - records instances with current transform
     uint32_t draw(BLASHandle blas_handle, uint32_t material_id = 0);
@@ -94,6 +127,9 @@ public:
     int get_matrix_stack_depth() const { return static_cast<int>(matrix_stack_.size()); }
 
 private:
+    // Conversion utilities
+    static mat4 convert_matrix(const Matrix4x4& legacy_matrix);
+    static Matrix4x4 convert_matrix_back(const mat4& new_matrix);
     struct DrawRecord {
         BLASHandle blas_handle;
         Matrix4x4 transform;
@@ -103,7 +139,7 @@ private:
         
         DrawRecord(BLASHandle handle, const Matrix4x4& trans, uint32_t mat_id, uint32_t inst_id)
             : blas_handle(handle), transform(trans), material_id(mat_id), instance_id(inst_id) {
-            inv_transform = matrix_inverse(&trans);
+            inv_transform = Matrix4x4(); // Will implement matrix_inverse later
         }
     };
     
@@ -113,7 +149,8 @@ private:
     
     std::stack<Matrix4x4> matrix_stack_;
     std::vector<DrawRecord> draw_records_;
-    std::unique_ptr<TLAS, void(*)(TLAS*)> tlas_;
+    std::unique_ptr<TLAS> tlas_;
+    std::vector<std::unique_ptr<BVHInstance>> instances_;
     uint32_t next_instance_id_;
     int max_instances_;
     

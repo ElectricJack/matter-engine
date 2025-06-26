@@ -259,7 +259,7 @@ float BVH::FindBestSplitPlane( BVHNode& node, int& axis, int& splitPos, float3& 
 
 // BVHInstance implementation
 
-void BVHInstance::SetTransform( mat4& transform_new )
+void BVHInstance::SetTransform( const mat4& transform_new )
 {
 	transform = transform_new;
 	invTransform = transform.Inverted();

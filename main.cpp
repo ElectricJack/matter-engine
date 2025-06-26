@@ -1,7 +1,6 @@
 extern "C" {
     #include "raylib.h"
     #include "rlgl.h"
-    #include "include/bvh.h"
 }
 
 #include <cmath>

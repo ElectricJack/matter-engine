@@ -1,3 +1,5 @@
+#pragma once
+
 // Template, IGAD version 2 - adapted for MatterEngine2
 // IGAD/NHTV/UU - Jacco Bikker - 2006-2021
 
