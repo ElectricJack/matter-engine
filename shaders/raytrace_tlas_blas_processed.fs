@@ -11,11 +11,19 @@ uniform vec3  cameraUp;
 uniform float cameraFovy;
 uniform vec2  screenSize;
 
+// Lighting uniforms (ported from raytracer.cl)
+vec3 lightPos = vec3(3.0, 10.0, 2.0);
+vec3 lightColor = vec3(150.0, 150.0, 120.0);
+vec3 ambient = vec3(0.2, 0.2, 0.4);
 
-// Include the shared BLAS/TLAS common code
-// === BEGIN INCLUDE: blas_tlas_common.glsl ===
-// BLAS/TLAS Common Shader Code
-// This file contains all the BVH traversal logic and data structures
+// Sky texture (placeholder - could be added as uniform)
+uniform sampler2D skyTexture;
+
+
+// Include the enhanced BVH common code (ported from bvh_article)
+// === BEGIN INCLUDE: bvh_tlas_common.glsl ===
+// Enhanced BVH traversal based on proven bvh_article implementation
+// Data structures and algorithms ported from OpenCL version
 
 // TLAS/BLAS data uniforms
 uniform int triangleCount;     // Total number of triangles
@@ -23,75 +31,172 @@ uniform int blasNodeCount;     // Total number of BLAS nodes
 uniform int tlasNodeCount;     // Number of TLAS nodes
 uniform int instanceCount;     // Number of instances
 
-uniform sampler2D trianglesTexture;    // All triangle data (14x4)
-uniform sampler2D blasNodesTexture;    // All BLAS nodes (10x3) 
-uniform sampler2D tlasNodesTexture;    // TLAS nodes (11x3)
-uniform sampler2D instancesTexture;    // Instance transforms (6x8)
+uniform sampler2D trianglesTexture;    // All triangle data
+uniform sampler2D blasNodesTexture;    // All BLAS nodes
+uniform sampler2D tlasNodesTexture;    // TLAS nodes
+uniform sampler2D instancesTexture;    // Instance transforms
 
 // Control uniforms
 uniform int intersectionMode;    // 0=brute force, 1=TLAS/BLAS traversal
 
-// Structures for TLAS/BLAS system
-
-struct Triangle {
-    vec3 v0, v1, v2;
-    vec3 normal;
-    int  materialId;
+// Ray tracing structures
+struct Intersection
+{
+    float t;         // intersection distance along ray
+    float u, v;      // barycentric coordinates of the intersection
+    uint instPrim;   // instance index (12 bit) and primitive index (20 bit)
 };
 
-struct BLASNode {
+struct Ray
+{
+    vec3 O, D, rD;   // origin, direction, reciprocal direction
+    Intersection hit;
+};
+
+struct Triangle
+{
+    vec3 v0, v1, v2; // triangle vertices
+    vec3 center;     // for BVH construction (renamed from centroid - reserved keyword)
+};
+
+struct BVHNode
+{
     vec3 aabbMin;
+    uint leftFirst;  // left child index or first triangle index
     vec3 aabbMax;
-    int  leftFirst;    // Left child index (internal) or first triangle (leaf)
-    int  triCount;     // Triangle count (>0 for leaf, 0 for internal)
+    uint triCount;   // triangle count (0 for interior nodes)
 };
 
-struct TLASNode {
+struct TLASNode  
+{
     vec3 aabbMin;
+    uint leftRight;  // packed left/right child indices (16 bits each)
     vec3 aabbMax;
-    int  leftRight;    // Packed left (16-bit) and right (16-bit) child indices, 0 for leaf
-    int  blasIndex;    // BLAS index for leaf nodes, 0 for internal nodes
+    uint BLAS;       // BLAS index for leaf nodes
 };
 
-struct Instance {
+struct BVHInstance
+{
     mat4 transform;
     mat4 invTransform;
-    int  blasStartIndex;  // Starting index in the combined BLAS nodes array
+    uint blasIndex;
+    uint materialId;
 };
 
-struct HitResult {
-    bool  hit;
+struct HitResult
+{
+    bool hit;
     float t;
-    vec3  position;
-    vec3  normal;
-    int   material;
-    int   instanceId;
+    vec3 position;
+    vec3 normal;
+    int material;
+    int instanceId;
 };
 
-// Decode triangle from texture
-Triangle decodeTriangle(int triangleIndex) {
+// Random number generation (ported from tools.cl)
+uint WangHash(uint s) 
+{
+    s = (s ^ 61u) ^ (s >> 16);
+    s *= 9u;
+    s = s ^ (s >> 4);
+    s *= 0x27d4eb2du;
+    s = s ^ (s >> 15);
+    return s;
+}
+
+uint RandomInt(inout uint s)
+{
+    s ^= s << 13;
+    s ^= s >> 17;
+    s ^= s << 5;
+    return s;
+}
+
+float RandomFloat(inout uint s)
+{
+    return float(RandomInt(s)) * 2.3283064365387e-10; // = 1 / (2^32-1)
+}
+
+// Triangle intersection using Moeller-Trumbore (from kernels.cl)
+void IntersectTri(inout Ray ray, Triangle tri, uint instPrim)
+{
+    vec3 edge1 = tri.v1 - tri.v0;
+    vec3 edge2 = tri.v2 - tri.v0;
+    vec3 h = cross(ray.D, edge2);
+    float a = dot(edge1, h);
+    
+    if (a > -0.00001 && a < 0.00001) return; // ray parallel to triangle
+    
+    float f = 1.0 / a;
+    vec3 s = ray.O - tri.v0;
+    float u = f * dot(s, h);
+    
+    if (u < 0.0 || u > 1.0) return;
+    
+    vec3 q = cross(s, edge1);
+    float v = f * dot(ray.D, q);
+    
+    if (v < 0.0 || u + v > 1.0) return;
+    
+    float t = f * dot(edge2, q);
+    
+    if (t > 0.0001 && t < ray.hit.t)
+    {
+        ray.hit.t = t;
+        ray.hit.u = u;
+        ray.hit.v = v;
+        ray.hit.instPrim = instPrim;
+    }
+}
+
+// AABB intersection (from kernels.cl)
+float IntersectAABB(Ray ray, vec3 aabbMin, vec3 aabbMax)
+{
+    float tx1 = (aabbMin.x - ray.O.x) * ray.rD.x;
+    float tx2 = (aabbMax.x - ray.O.x) * ray.rD.x;
+    float tmin = min(tx1, tx2);
+    float tmax = max(tx1, tx2);
+    
+    float ty1 = (aabbMin.y - ray.O.y) * ray.rD.y;
+    float ty2 = (aabbMax.y - ray.O.y) * ray.rD.y;
+    tmin = max(tmin, min(ty1, ty2));
+    tmax = min(tmax, max(ty1, ty2));
+    
+    float tz1 = (aabbMin.z - ray.O.z) * ray.rD.z;
+    float tz2 = (aabbMax.z - ray.O.z) * ray.rD.z;
+    tmin = max(tmin, min(tz1, tz2));
+    tmax = min(tmax, max(tz1, tz2));
+    
+    if (tmax >= tmin && tmin < ray.hit.t && tmax > 0.0) 
+        return tmin;
+    else 
+        return 1e30;
+}
+
+// Decode triangle from texture (optimized layout)
+Triangle decodeTriangle(int triangleIndex)
+{
     Triangle tri;
     
-    // Each triangle uses 4 texels (rows)
     float triTexCoord = (float(triangleIndex) + 0.5) / float(triangleCount);
     
     vec4 data0 = texture(trianglesTexture, vec2(triTexCoord, 0.125));  // v0 + materialId
     vec4 data1 = texture(trianglesTexture, vec2(triTexCoord, 0.375));  // v1
     vec4 data2 = texture(trianglesTexture, vec2(triTexCoord, 0.625));  // v2
-    vec4 data3 = texture(trianglesTexture, vec2(triTexCoord, 0.875));  // normal
+    vec4 data3 = texture(trianglesTexture, vec2(triTexCoord, 0.875));  // centroid + normal
     
     tri.v0 = data0.xyz;
-    tri.materialId = int(data0.w);
     tri.v1 = data1.xyz;
     tri.v2 = data2.xyz;
-    tri.normal = data3.xyz;
+    tri.center = data3.xyz;
     
     return tri;
 }
 
-// Decode BLAS node from texture
-BLASNode decodeBLASNode(int nodeIndex) {
-    BLASNode node;
+// Decode BVH node from texture (matches BVHNode struct)
+BVHNode decodeBVHNode(int nodeIndex)
+{
+    BVHNode node;
     
     float nodeTexCoord = (float(nodeIndex) + 0.5) / float(blasNodeCount);
     
@@ -99,102 +204,65 @@ BLASNode decodeBLASNode(int nodeIndex) {
     vec4 data1 = texture(blasNodesTexture, vec2(nodeTexCoord, 0.375));  // aabbMax + triCount
     
     node.aabbMin = data0.xyz;
-    node.leftFirst = int(data0.w);
+    node.leftFirst = uint(data0.w);
     node.aabbMax = data1.xyz;
-    node.triCount = int(data1.w);
+    node.triCount = uint(data1.w);
     
     return node;
 }
 
-// Decode TLAS node from texture
-TLASNode decodeTLASNode(int nodeIndex) {
+// Decode TLAS node from texture (matches TLASNode struct)
+TLASNode decodeTLASNode(int nodeIndex)
+{
     TLASNode node;
     
     float nodeTexCoord = (float(nodeIndex) + 0.5) / float(tlasNodeCount);
     
     vec4 data0 = texture(tlasNodesTexture, vec2(nodeTexCoord, 0.125));  // aabbMin + leftRight
-    vec4 data1 = texture(tlasNodesTexture, vec2(nodeTexCoord, 0.375));  // aabbMax + blasIndex
+    vec4 data1 = texture(tlasNodesTexture, vec2(nodeTexCoord, 0.375));  // aabbMax + BLAS
     
     node.aabbMin = data0.xyz;
-    node.leftRight = int(data0.w);
+    node.leftRight = uint(data0.w);
     node.aabbMax = data1.xyz;
-    node.blasIndex = int(data1.w);
+    node.BLAS = uint(data1.w);
     
     return node;
 }
 
-// Decode instance from texture
-Instance decodeInstance(int instanceIndex) {
-    Instance inst;
+// Decode instance from texture (matches BVHInstance struct)
+BVHInstance decodeInstance(int instanceIndex)
+{
+    BVHInstance inst;
     
     float instTexCoord = (float(instanceIndex) + 0.5) / float(instanceCount);
     
-    // Load transform matrix (4 rows) - 9 total rows, so each row is 1/9 = 0.1111
-    vec4 row0 = texture(instancesTexture, vec2(instTexCoord, 0.0556));  // Row 0 (0.5/9)
-    vec4 row1 = texture(instancesTexture, vec2(instTexCoord, 0.1667));  // Row 1 (1.5/9)
-    vec4 row2 = texture(instancesTexture, vec2(instTexCoord, 0.2778));  // Row 2 (2.5/9)
-    vec4 row3 = texture(instancesTexture, vec2(instTexCoord, 0.3889));  // Row 3 (3.5/9)
+    // Load transform matrix (4 rows)
+    vec4 row0 = texture(instancesTexture, vec2(instTexCoord, 0.0556));
+    vec4 row1 = texture(instancesTexture, vec2(instTexCoord, 0.1667));
+    vec4 row2 = texture(instancesTexture, vec2(instTexCoord, 0.2778));
+    vec4 row3 = texture(instancesTexture, vec2(instTexCoord, 0.3889));
     
     inst.transform = mat4(row0, row1, row2, row3);
     
     // Load inverse transform matrix (4 rows)
-    vec4 invRow0 = texture(instancesTexture, vec2(instTexCoord, 0.5000)); // Row 4 (4.5/9)
-    vec4 invRow1 = texture(instancesTexture, vec2(instTexCoord, 0.6111)); // Row 5 (5.5/9)
-    vec4 invRow2 = texture(instancesTexture, vec2(instTexCoord, 0.7222)); // Row 6 (6.5/9)
-    vec4 invRow3 = texture(instancesTexture, vec2(instTexCoord, 0.8333)); // Row 7 (7.5/9)
+    vec4 invRow0 = texture(instancesTexture, vec2(instTexCoord, 0.5000));
+    vec4 invRow1 = texture(instancesTexture, vec2(instTexCoord, 0.6111));
+    vec4 invRow2 = texture(instancesTexture, vec2(instTexCoord, 0.7222));
+    vec4 invRow3 = texture(instancesTexture, vec2(instTexCoord, 0.8333));
     
     inst.invTransform = mat4(invRow0, invRow1, invRow2, invRow3);
     
-    // Load metadata (BLAS start index + instance ID)
-    vec4 metadata = texture(instancesTexture, vec2(instTexCoord, 0.9444)); // Row 8 (8.5/9)
-    inst.blasStartIndex = int(metadata.x);  // Read BLAS start index from texture
+    // Load metadata (currently using blas_start_index as blasIndex for compatibility)
+    vec4 metadata = texture(instancesTexture, vec2(instTexCoord, 0.9444));
+    inst.blasIndex = uint(metadata.x); // Actually blas_start_index for now
+    inst.materialId = uint(metadata.y); // Will be 0 for now
     
     return inst;
 }
 
-// Ray-AABB intersection
-bool rayAABBIntersect(vec3 rayOrigin, vec3 rayDir, vec3 aabbMin, vec3 aabbMax, float maxT) {
-    vec3 invDir = 1.0 / (rayDir + vec3(1e-8)); // Avoid division by zero
-    vec3 t1 = (aabbMin - rayOrigin) * invDir;
-    vec3 t2 = (aabbMax - rayOrigin) * invDir;
-    
-    vec3 tmin = min(t1, t2);
-    vec3 tmax = max(t1, t2);
-    
-    float tminMax = max(max(tmin.x, tmin.y), tmin.z);
-    float tmaxMin = min(min(tmax.x, tmax.y), tmax.z);
-    
-    return tmaxMin >= 0.0 && tminMax <= tmaxMin && tminMax <= maxT;
-}
-
-// Ray-triangle intersection using Möller-Trumbore algorithm
-bool rayTriangleIntersect(vec3 rayOrigin, vec3 rayDir, vec3 v0, vec3 v1, vec3 v2, out float t) {
-    const float EPSILON = 0.000001;
-    
-    vec3 edge1 = v1 - v0;
-    vec3 edge2 = v2 - v0;
-    vec3 h = cross(rayDir, edge2);
-    float a = dot(edge1, h);
-    
-    if (a > -EPSILON && a < EPSILON) return false;
-    
-    float f = 1.0 / a;
-    vec3 s = rayOrigin - v0;
-    float u = f * dot(s, h);
-    
-    if (u < 0.0 || u > 1.0) return false;
-    
-    vec3 q = cross(s, edge1);
-    float v = f * dot(rayDir, q);
-    
-    if (v < 0.0 || u + v > 1.0) return false;
-    
-    t = f * dot(edge2, q);
-    return t > EPSILON;
-}
-
-// Transform ray to instance space
-void transformRay(vec3 rayOrigin, vec3 rayDir, mat4 invTransform, out vec3 localOrigin, out vec3 localDir) {
+// Transform ray to local space
+void transformRay(vec3 rayOrigin, vec3 rayDir, mat4 invTransform, out vec3 localOrigin, out vec3 localDir)
+{
     vec4 localOrigin4 = invTransform * vec4(rayOrigin, 1.0);
     vec4 localDir4 = invTransform * vec4(rayDir, 0.0);
     
@@ -202,161 +270,192 @@ void transformRay(vec3 rayOrigin, vec3 rayDir, mat4 invTransform, out vec3 local
     localDir = normalize(localDir4.xyz);
 }
 
-// Transform normal from instance space to world space
-vec3 transformNormal(vec3 normal, mat4 transform) {
-    // Use transpose of inverse for normal transformation (simplified for demo)
+// Transform normal from local to world space
+vec3 transformNormal(vec3 normal, mat4 transform)
+{
     vec4 worldNormal4 = transpose(transform) * vec4(normal, 0.0);
     return normalize(worldNormal4.xyz);
 }
 
-// BLAS traversal for a specific instance
-HitResult intersectBLAS(vec3 localRayOrigin, vec3 localRayDir, int instanceIndex, Instance inst, float maxT) {
-    HitResult result;
-    result.hit = false;
-    result.t = maxT;
-    result.instanceId = instanceIndex;
-    
-    // Stack for iterative BLAS traversal
+// BVH traversal (ported from BVH::Intersect in bvh.cpp)
+void BVHIntersect(inout Ray ray, uint instanceIdx, uint blasOffset)
+{
+    // Stack for iterative BVH traversal
     int stack[32];
     int stackPtr = 0;
     
-    // Start with BLAS root node (instance's BLAS start index)
-    stack[stackPtr++] = inst.blasStartIndex;
+    // Start with root node
+    int nodeIdx = int(blasOffset);
     
-    while (stackPtr > 0) {
-        int nodeIndex = stack[--stackPtr];
-        BLASNode node = decodeBLASNode(nodeIndex);
+    while (true)
+    {
+        BVHNode node = decodeBVHNode(nodeIdx);
         
-        // Test ray against BLAS node AABB
-        if (!rayAABBIntersect(localRayOrigin, localRayDir, node.aabbMin, node.aabbMax, result.t)) {
+        if (node.triCount > 0u) // Leaf node
+        {
+            // Test all triangles in this leaf
+            for (uint i = 0u; i < node.triCount; i++)
+            {
+                uint triIdx = node.leftFirst + i;
+                Triangle tri = decodeTriangle(int(triIdx));
+                uint instPrim = (instanceIdx << 20u) + triIdx;
+                IntersectTri(ray, tri, instPrim);
+            }
+            
+            if (stackPtr == 0) break;
+            nodeIdx = stack[--stackPtr];
             continue;
         }
         
-        if (node.triCount > 0) {
-            // Leaf node - test triangles
-            for (int i = 0; i < node.triCount; i++) {
-                int triIndex = node.leftFirst + i;
-                Triangle tri = decodeTriangle(triIndex);
-                
-                float t;
-                if (rayTriangleIntersect(localRayOrigin, localRayDir, tri.v0, tri.v1, tri.v2, t) && t < result.t) {
-                    result.hit = true;
-                    result.t = t;
-                    result.position = localRayOrigin + localRayDir * t;
-                    result.normal = tri.normal;
-                    result.material = tri.materialId;
-                }
-            }
-        } else {
-            // Internal node - add children to stack
-            if (stackPtr < 30) { // Leave room for both children
-                stack[stackPtr++] = node.leftFirst + 1; // Right child
-                stack[stackPtr++] = node.leftFirst;     // Left child
-            }
+        // Interior node - test both children
+        int leftChild = int(node.leftFirst);
+        int rightChild = leftChild + 1;
+        
+        BVHNode leftNode = decodeBVHNode(leftChild);
+        BVHNode rightNode = decodeBVHNode(rightChild);
+        
+        float dist1 = IntersectAABB(ray, leftNode.aabbMin, leftNode.aabbMax);
+        float dist2 = IntersectAABB(ray, rightNode.aabbMin, rightNode.aabbMax);
+        
+        // Sort by distance to process nearest first
+        if (dist1 > dist2)
+        {
+            float tmpDist = dist1; dist1 = dist2; dist2 = tmpDist;
+            int tmpIdx = leftChild; leftChild = rightChild; rightChild = tmpIdx;
+        }
+        
+        if (dist1 == 1e30)
+        {
+            if (stackPtr == 0) break;
+            nodeIdx = stack[--stackPtr];
+        }
+        else
+        {
+            nodeIdx = leftChild;
+            if (dist2 != 1e30 && stackPtr < 31)
+                stack[stackPtr++] = rightChild;
         }
     }
-    
-    return result;
 }
 
-// TLAS/BLAS traversal
-HitResult intersectTLAS(vec3 rayOrigin, vec3 rayDir) {
-    HitResult closest;
-    closest.hit = false;
-    closest.t = 1000000.0;
-    closest.material = -1;
-    closest.instanceId = -1;
-    
+// TLAS traversal (ported from TLAS::Intersect)
+void TLASIntersect(inout Ray ray)
+{
     // Stack for iterative TLAS traversal
     int stack[32];
     int stackPtr = 0;
     
     // Start with TLAS root node
-    stack[stackPtr++] = 0;
+    int nodeIdx = 0;
     
-    while (stackPtr > 0) {
-        int nodeIndex = stack[--stackPtr];
-        TLASNode node = decodeTLASNode(nodeIndex);
+    while (true)
+    {
+        TLASNode node = decodeTLASNode(nodeIdx);
         
         // Test ray against TLAS node AABB
-        if (!rayAABBIntersect(rayOrigin, rayDir, node.aabbMin, node.aabbMax, closest.t)) {
+        if (IntersectAABB(ray, node.aabbMin, node.aabbMax) == 1e30)
+        {
+            if (stackPtr == 0) break;
+            nodeIdx = stack[--stackPtr];
             continue;
         }
         
-        if (node.leftRight == 0) {
-            // Leaf node - intersect with instance
-            int instanceIndex = node.blasIndex;
-            Instance inst = decodeInstance(instanceIndex);
+        if (node.leftRight == 0u) // Leaf node
+        {
+            // Intersect with instance
+            uint instanceIndex = node.BLAS;
+            BVHInstance inst = decodeInstance(int(instanceIndex));
             
             // Transform ray to instance space
             vec3 localRayOrigin, localRayDir;
-            transformRay(rayOrigin, rayDir, inst.invTransform, localRayOrigin, localRayDir);
+            transformRay(ray.O, ray.D, inst.invTransform, localRayOrigin, localRayDir);
             
-            // Intersect with BLAS in instance space
-            HitResult blasHit = intersectBLAS(localRayOrigin, localRayDir, instanceIndex, inst, closest.t);
+            // Create local ray
+            Ray localRay;
+            localRay.O = localRayOrigin;
+            localRay.D = localRayDir;
+            localRay.rD = vec3(1.0) / localRayDir;
+            localRay.hit = ray.hit;
             
-            if (blasHit.hit && blasHit.t < closest.t) {
-                // Transform hit point and normal back to world space
-                vec4 worldPos4 = inst.transform * vec4(blasHit.position, 1.0);
-                vec3 worldNormal = transformNormal(blasHit.normal, inst.invTransform);
-                
-                closest.hit = true;
-                closest.t = blasHit.t;
-                closest.position = worldPos4.xyz;
-                closest.normal = worldNormal;
-                closest.material = blasHit.material;
-                closest.instanceId = instanceIndex;
+            // Intersect with BLAS
+            BVHIntersect(localRay, instanceIndex, inst.blasIndex);
+            
+            // Update global ray if we found a closer intersection
+            if (localRay.hit.t < ray.hit.t)
+            {
+                ray.hit = localRay.hit;
             }
-        } else {
-            // Internal node - extract and add children to stack
-            int leftChild = node.leftRight & 0xFFFF;           // Lower 16 bits
-            int rightChild = (node.leftRight >> 16) & 0xFFFF; // Upper 16 bits
             
-            if (stackPtr < 30) { // Leave room for both children
-                stack[stackPtr++] = rightChild; // Right child first
-                stack[stackPtr++] = leftChild;  // Left child second (processed first)
+            if (stackPtr == 0) break;
+            nodeIdx = stack[--stackPtr];
+        }
+        else // Interior node
+        {
+            // Extract left and right child indices
+            uint leftChild = node.leftRight & 0xFFFFu;
+            uint rightChild = (node.leftRight >> 16) & 0xFFFFu;
+            
+            // Add children to stack (right first, so left is processed first)
+            if (stackPtr < 30)
+            {
+                stack[stackPtr++] = int(rightChild);
+                stack[stackPtr++] = int(leftChild);
             }
+            
+            if (stackPtr == 0) break;
+            nodeIdx = stack[--stackPtr];
         }
     }
-    
-    return closest;
 }
 
-// Brute force triangle intersection (for comparison)
-HitResult intersectBruteForce(vec3 rayOrigin, vec3 rayDir) {
-    HitResult closest;
-    closest.hit = false;
-    closest.t = 1000000.0;
-    closest.material = -1;
-    closest.instanceId = -1;
+// Main intersection interface
+HitResult intersectScene(vec3 rayOrigin, vec3 rayDir)
+{
+    Ray ray;
+    ray.O = rayOrigin;
+    ray.D = rayDir;
+    ray.rD = vec3(1.0) / rayDir;
+    ray.hit.t = 1e30;
+    ray.hit.u = 0.0;
+    ray.hit.v = 0.0;
+    ray.hit.instPrim = 0u;
     
-    // Test against all triangles
-    for (int i = 0; i < triangleCount; i++) {
-        Triangle tri = decodeTriangle(i);
+    // Perform TLAS traversal
+    TLASIntersect(ray);
+    
+    HitResult result;
+    result.hit = (ray.hit.t < 1e30);
+    result.t = ray.hit.t;
+    
+    if (result.hit)
+    {
+        result.position = rayOrigin + rayDir * ray.hit.t;
         
-        float t;
-        if (rayTriangleIntersect(rayOrigin, rayDir, tri.v0, tri.v1, tri.v2, t) && t < closest.t) {
-            closest.hit = true;
-            closest.t = t;
-            closest.position = rayOrigin + rayDir * t;
-            closest.normal = tri.normal;
-            closest.material = tri.materialId;
-            closest.instanceId = 0; // Assume first instance for brute force
-        }
+        // Extract triangle and instance indices
+        uint triIdx = ray.hit.instPrim & 0xFFFFFu;
+        uint instIdx = ray.hit.instPrim >> 20;
+        
+        // Get triangle data for normal calculation
+        Triangle tri = decodeTriangle(int(triIdx));
+        vec3 normal = normalize(cross(tri.v1 - tri.v0, tri.v2 - tri.v0));
+        
+        // Transform normal to world space
+        BVHInstance inst = decodeInstance(int(instIdx));
+        result.normal = transformNormal(normal, inst.invTransform);
+        result.material = int(inst.materialId);
+        result.instanceId = int(instIdx);
+    }
+    else
+    {
+        result.position = vec3(0.0);
+        result.normal = vec3(0.0);
+        result.material = -1;
+        result.instanceId = -1;
     }
     
-    return closest;
+    return result;
 }
-
-// Unified intersection interface
-HitResult intersectScene(vec3 rayOrigin, vec3 rayDir) {
-    if (intersectionMode == 0) {
-        return intersectBruteForce(rayOrigin, rayDir);
-    } else {
-        return intersectTLAS(rayOrigin, rayDir);
-    }
-}
-// === END INCLUDE: blas_tlas_common.glsl ===
+// === END INCLUDE: bvh_tlas_common.glsl ===
 
 // Camera ray generation
 vec3 computeCameraRay(vec2 uv) {
@@ -381,49 +480,120 @@ vec3 computeCameraRay(vec2 uv) {
     return rayDir;
 }
 
-// Simple shading function
-vec3 shade(HitResult hit, vec3 rayDir) {
-    if (!hit.hit) {
-        // Sky color
-        float skyFactor = (rayDir.y + 1.0) * 0.5;
-        return mix(vec3(0.2, 0.4, 0.8), vec3(0.8, 0.9, 1.0), skyFactor);
+// Sky sampling (ported from raytracer.cl)
+vec3 sampleSky(vec3 direction) {
+    // Procedural sky for now (could use skyTexture in the future)
+    float phi = atan(direction.z, direction.x);
+    float theta = acos(direction.y);
+    
+    // Simple gradient sky
+    float skyFactor = (direction.y + 1.0) * 0.5;
+    vec3 skyColor = mix(vec3(0.2, 0.4, 0.8), vec3(0.8, 0.9, 1.0), skyFactor);
+    
+    // Add sun effect
+    vec3 sunDir = normalize(vec3(0.5, 0.7, 0.3));
+    float sunDot = max(0.0, dot(direction, sunDir));
+    float sun = pow(sunDot, 256.0);
+    skyColor += vec3(1.0, 0.9, 0.7) * sun;
+    
+    return skyColor * 0.65;
+}
+
+// Advanced raytracing with reflections (ported from raytracer.cl)
+vec3 trace(vec3 rayOrigin, vec3 rayDirection, uint seed) {
+    vec3 rayPos = rayOrigin;
+    vec3 rayDir = rayDirection;
+    vec3 color = vec3(0.0);
+    vec3 attenuation = vec3(1.0);
+    
+    for (int rayDepth = 0; rayDepth < 4; rayDepth++) {
+        HitResult hit = intersectScene(rayPos, rayDir);
+        
+        if (!hit.hit) {
+            // Hit sky
+            color += attenuation * sampleSky(rayDir);
+            break;
+        }
+        
+        // Get triangle for normal calculation and material properties
+        vec3 hitPos = rayPos + rayDir * hit.t;
+        vec3 normal = hit.normal;
+        
+        // Material properties based on instance ID (simulate material variation)
+        bool isMirror = (hit.instanceId * 17) % 2 == 1;
+        
+        if (isMirror) {
+            // Mirror reflection
+            if (rayDepth == 1) {
+                // Quick sky sample for depth 1 reflections
+                vec3 reflectedDir = rayDir - 2.0 * normal * dot(normal, rayDir);
+                color += attenuation * sampleSky(reflectedDir);
+                break;
+            }
+            
+            // Calculate reflection ray
+            rayDir = rayDir - 2.0 * normal * dot(normal, rayDir);
+            rayPos = hitPos + rayDir * 0.005; // Offset to avoid self-intersection
+            
+            // Slight attenuation for reflections
+            attenuation *= 0.9;
+        } else {
+            // Diffuse material - calculate lighting
+            vec3 lightVec = lightPos - hitPos;
+            float lightDist = length(lightVec);
+            vec3 lightDir = lightVec / lightDist;
+            
+            // Base material color
+            vec3 albedo;
+            if (hit.material == 0) albedo = vec3(0.8, 0.2, 0.2);      // Red
+            else if (hit.material == 1) albedo = vec3(0.2, 0.2, 0.8); // Blue
+            else if (hit.material == 2) albedo = vec3(0.2, 0.8, 0.2); // Green
+            else if (hit.material == 3) albedo = vec3(0.8, 0.8, 0.2); // Yellow
+            else if (hit.material == 4) albedo = vec3(0.8, 0.2, 0.8); // Magenta
+            else albedo = vec3(0.5);                                   // Gray
+            
+            // Lighting calculation
+            float lightFalloff = 1.0 / (lightDist * lightDist);
+            float diffuse = max(0.0, dot(normal, lightDir));
+            
+            color += attenuation * albedo * (ambient + diffuse * lightColor * lightFalloff);
+            break;
+        }
     }
     
-    // Simple lighting based on material ID
-    vec3 baseColor;
-    if (hit.material == 0) baseColor = vec3(0.8, 0.2, 0.2);      // Red
-    else if (hit.material == 1) baseColor = vec3(0.2, 0.2, 0.8); // Blue
-    else if (hit.material == 2) baseColor = vec3(0.2, 0.8, 0.2); // Green
-    else if (hit.material == 3) baseColor = vec3(0.8, 0.8, 0.2); // Yellow
-    else if (hit.material == 4) baseColor = vec3(0.8, 0.2, 0.8); // Magenta
-    else baseColor = vec3(0.5);                                   // Gray
-    
-    // Simple diffuse shading
-    vec3 lightDir = normalize(vec3(0.5, 1.0, 0.3));
-    float diffuse = max(0.0, dot(hit.normal, lightDir));
-    vec3 ambient = vec3(0.2);
-    
-    return baseColor * (ambient + diffuse * vec3(0.8));
+    return color;
 }
 
 void main() {
     // Use gl_FragCoord for reliable screen-space coordinates
     vec2 screenUV = gl_FragCoord.xy / screenSize;
-    vec2 uv = screenUV * 2.0 - 1.0;
-    uv.x *= screenSize.x / screenSize.y;
+    
+    // Initialize RNG seed (similar to raytracer.cl)
+    uint seed = WangHash(uint(gl_FragCoord.x + gl_FragCoord.y * screenSize.x) * 17u + 1u);
     
     // Compute camera basis
     vec3 forward = normalize(cameraTarget - cameraPos);
     vec3 right = normalize(cross(forward, cameraUp));
     vec3 up = cross(right, forward);
     
-    // Compute ray direction
-    float fovScale = tan(radians(cameraFovy) * 0.5);
-    vec3 rayDir = normalize(uv.x * right * fovScale + uv.y * up * fovScale + forward);
+    // Multiple samples for antialiasing (like raytracer.cl)
+    vec3 color = vec3(0.0);
+    for (int i = 0; i < 2; i++) {
+        // Add random offset for antialiasing
+        vec2 pixelOffset = vec2(RandomFloat(seed), RandomFloat(seed));
+        vec2 uv = ((gl_FragCoord.xy + pixelOffset) / screenSize) * 2.0 - 1.0;
+        uv.x *= screenSize.x / screenSize.y;
+        
+        // Compute ray direction
+        float fovScale = tan(radians(cameraFovy) * 0.5);
+        vec3 rayDir = normalize(uv.x * right * fovScale + uv.y * up * fovScale + forward);
+        
+        // Trace the ray
+        color += trace(cameraPos, rayDir, seed);
+    }
     
-    // Raytracing
-    HitResult hit = intersectScene(cameraPos, rayDir);
-    vec3 color = shade(hit, rayDir);
+    // Average the samples
+    color *= 0.5;
     
     // Gamma correction
     color = pow(color, vec3(1.0/2.2));

@@ -1,6 +1,20 @@
 // Enhanced BVH traversal based on proven bvh_article implementation
 // Data structures and algorithms ported from OpenCL version
 
+// TLAS/BLAS data uniforms
+uniform int triangleCount;     // Total number of triangles
+uniform int blasNodeCount;     // Total number of BLAS nodes
+uniform int tlasNodeCount;     // Number of TLAS nodes
+uniform int instanceCount;     // Number of instances
+
+uniform sampler2D trianglesTexture;    // All triangle data
+uniform sampler2D blasNodesTexture;    // All BLAS nodes
+uniform sampler2D tlasNodesTexture;    // TLAS nodes
+uniform sampler2D instancesTexture;    // Instance transforms
+
+// Control uniforms
+uniform int intersectionMode;    // 0=brute force, 1=TLAS/BLAS traversal
+
 // Ray tracing structures
 struct Intersection
 {
@@ -18,7 +32,7 @@ struct Ray
 struct Triangle
 {
     vec3 v0, v1, v2; // triangle vertices
-    vec3 centroid;   // for BVH construction
+    vec3 center;     // for BVH construction (renamed from centroid - reserved keyword)
 };
 
 struct BVHNode
@@ -150,7 +164,7 @@ Triangle decodeTriangle(int triangleIndex)
     tri.v0 = data0.xyz;
     tri.v1 = data1.xyz;
     tri.v2 = data2.xyz;
-    tri.centroid = data3.xyz;
+    tri.center = data3.xyz;
     
     return tri;
 }
@@ -253,14 +267,14 @@ void BVHIntersect(inout Ray ray, uint instanceIdx, uint blasOffset)
     {
         BVHNode node = decodeBVHNode(nodeIdx);
         
-        if (node.triCount > 0) // Leaf node
+        if (node.triCount > 0u) // Leaf node
         {
             // Test all triangles in this leaf
-            for (uint i = 0; i < node.triCount; i++)
+            for (uint i = 0u; i < node.triCount; i++)
             {
                 uint triIdx = node.leftFirst + i;
                 Triangle tri = decodeTriangle(int(triIdx));
-                uint instPrim = (instanceIdx << 20) + triIdx;
+                uint instPrim = (instanceIdx << 20u) + triIdx;
                 IntersectTri(ray, tri, instPrim);
             }
             

@@ -32,7 +32,7 @@ shaders: shaders/raytrace_tlas_blas_processed.fs
 $(PREPROCESSOR): src/shader_preprocessor.cpp
 	$(CXX) $(CXXFLAGS) -o $@ $<
 
-shaders/raytrace_tlas_blas_processed.fs: shaders/raytrace_tlas_blas.fs shaders/blas_tlas_common.glsl $(PREPROCESSOR)
+shaders/raytrace_tlas_blas_processed.fs: shaders/raytrace_tlas_blas.fs shaders/bvh_tlas_common.glsl $(PREPROCESSOR)
 	@echo "Processing shader with includes (C++)..."
 	./$(PREPROCESSOR) shaders/raytrace_tlas_blas.fs shaders/raytrace_tlas_blas_processed.fs
 

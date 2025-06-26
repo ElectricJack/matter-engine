@@ -83,96 +83,206 @@ private:
         printf("Registered BLAS handles: cube=%u, sphere=%u, ground=%u\n", 
                cube_blas_, sphere_blas_, ground_blas_);
         
-        setup_static_scene();
+        setup_test_scene(current_test_scene_);
         
         blas_manager_->print_stats();
         tlas_manager_->print_stats();
     }
     
-    void setup_static_scene() {
-        PROFILE_SECTION("Static Scene Setup");
+    void setup_test_scene(int test_number) {
+        PROFILE_SECTION("Test Scene Setup");
         
-        // Clear and setup full static scene (only called once during initialization)
+        printf("Setting up test scene %d...\n", test_number);
+        
+        // Clear previous scene
         tlas_manager_->clear();
         
-        // Ground plane
-        tlas_manager_->load_identity();
-        tlas_manager_->translate(0.0f, -1.0f, 0.0f);
-        tlas_manager_->draw(ground_blas_, 2);
-        
-        // Central objects
-        tlas_manager_->load_identity();
-        tlas_manager_->draw(cube_blas_, 0); // Red cube at origin
-        
-        tlas_manager_->load_identity();
-        tlas_manager_->translate(-3.0f, 0.0f, 0.0f);
-        tlas_manager_->rotate_y(static_cast<float>(M_PI) / 3.0f);
-        tlas_manager_->scale(0.8f, 1.2f, 0.8f);
-        tlas_manager_->draw(cube_blas_, 1); // Blue cube
-        
-        tlas_manager_->load_identity();
-        tlas_manager_->translate(3.0f, 2.0f, 0.0f);
-        tlas_manager_->rotate_x(static_cast<float>(M_PI) / 6.0f);
-        tlas_manager_->rotate_y(static_cast<float>(M_PI) / 4.0f);
-        tlas_manager_->scale(0.6f);
-        tlas_manager_->draw(cube_blas_, 3); // Yellow cube
-        
-        // Large sphere
-        tlas_manager_->load_identity();
-        tlas_manager_->translate(0.0f, 3.0f, -2.0f);
-        tlas_manager_->scale(1.5f);
-        tlas_manager_->draw(sphere_blas_, 1);
-        
-        // Multiple smaller spheres
-        for (int i = 0; i < 3; i++) {
-            tlas_manager_->push_matrix();
-            tlas_manager_->load_identity();
-            float x = -2.0f + i * 2.0f;
-            tlas_manager_->translate(x, 1.0f, 2.0f);
-            tlas_manager_->scale(0.8f);
-            tlas_manager_->draw(sphere_blas_, static_cast<uint32_t>(i));
-            tlas_manager_->pop_matrix();
+        switch (test_number) {
+            case 1: {
+                // Test 1: Single cube at origin
+                tlas_manager_->load_identity();
+                tlas_manager_->draw(cube_blas_, 0); // Red cube
+                break;
+            }
+            
+            case 2: {
+                // Test 2: Single cube + ground plane
+                tlas_manager_->load_identity();
+                tlas_manager_->draw(cube_blas_, 0); // Red cube
+                
+                //tlas_manager_->load_identity();
+                tlas_manager_->translate(0.0f, -5.0f, 0.0f);
+                tlas_manager_->draw(ground_blas_, 2); // Green ground
+                
+
+                break;
+            }
+            
+            case 3: {
+                tlas_manager_->load_identity();
+                tlas_manager_->translate(0.0f, -5.0f, 0.0f);
+                tlas_manager_->draw(ground_blas_, 2); // Green ground
+
+                tlas_manager_->load_identity();
+                tlas_manager_->draw(cube_blas_, 0); // Red cube
+                
+                // tlas_manager_->load_identity();
+                // tlas_manager_->translate(-2.0f, 0.0f, 0.0f);
+                // tlas_manager_->draw(cube_blas_, 1); // Blue cube
+                break;
+            }
+            
+            case 4: {
+                // Test 4: Four cubes in a square + ground
+                tlas_manager_->load_identity();
+                tlas_manager_->translate(0.0f, -5.0f, 0.0f);
+                tlas_manager_->draw(ground_blas_, 2);
+                
+                float positions[4][2] = {{-1.0f, -1.0f}, {1.0f, -1.0f}, {-1.0f, 1.0f}, {1.0f, 1.0f}};
+                for (int i = 0; i < 4; i++) {
+                    tlas_manager_->load_identity();
+                    tlas_manager_->translate(positions[i][0], 0.0f, positions[i][1]);
+                    tlas_manager_->draw(cube_blas_, i % 5);
+                }
+                break;
+            }
+            
+            case 5: {
+                // Test 5: Add a sphere to the mix
+                tlas_manager_->load_identity();
+                tlas_manager_->translate(0.0f, -5.0f, 0.0f);
+                tlas_manager_->draw(ground_blas_, 2);
+                
+                float positions[4][2] = {{-1.5f, -1.5f}, {1.5f, -1.5f}, {-1.5f, 1.5f}, {1.5f, 1.5f}};
+                for (int i = 0; i < 4; i++) {
+                    tlas_manager_->load_identity();
+                    tlas_manager_->translate(positions[i][0], 0.0f, positions[i][1]);
+                    tlas_manager_->draw(cube_blas_, i);
+                }
+                
+                // Central sphere
+                tlas_manager_->load_identity();
+                tlas_manager_->translate(0.0f, 3.0f, 0.0f);
+                tlas_manager_->draw(sphere_blas_, 4);
+                break;
+            }
+            
+            case 6: {
+                // Test 6: Circle of cubes around central sphere
+                tlas_manager_->load_identity();
+                tlas_manager_->translate(0.0f, -1.0f, 0.0f);
+                tlas_manager_->draw(ground_blas_, 2);
+                
+                // Central sphere
+                tlas_manager_->load_identity();
+                tlas_manager_->draw(sphere_blas_, 4);
+                
+                // Circle of cubes
+                SceneBuilder::create_circle(*tlas_manager_, cube_blas_, 6, 2.5f, 0);
+                break;
+            }
+            
+            case 7: {
+                // Test 7: 3x3 grid of alternating cubes and spheres
+                tlas_manager_->load_identity();
+                tlas_manager_->translate(0.0f, -1.0f, 0.0f);
+                tlas_manager_->draw(ground_blas_, 2);
+                
+                for (int x = -1; x <= 1; x++) {
+                    for (int z = -1; z <= 1; z++) {
+                        tlas_manager_->load_identity();
+                        tlas_manager_->translate(x * 2.0f, 0.0f, z * 2.0f);
+                        
+                        if ((x + z) % 2 == 0) {
+                            tlas_manager_->draw(cube_blas_, (x + 1) + (z + 1) * 3);
+                        } else {
+                            tlas_manager_->draw(sphere_blas_, (x + 1) + (z + 1) * 3);
+                        }
+                    }
+                }
+                break;
+            }
+            
+            case 8: {
+                // Test 8: Multi-level scene with floating objects
+                tlas_manager_->load_identity();
+                tlas_manager_->translate(0.0f, -1.0f, 0.0f);
+                tlas_manager_->draw(ground_blas_, 2);
+                
+                // Ground level objects
+                SceneBuilder::create_circle(*tlas_manager_, cube_blas_, 8, 3.0f, 0);
+                
+                // Mid level spheres
+                for (int i = 0; i < 4; i++) {
+                    float angle = i * M_PI / 2.0f;
+                    tlas_manager_->load_identity();
+                    tlas_manager_->translate(std::cos(angle) * 1.5f, 2.0f, std::sin(angle) * 1.5f);
+                    tlas_manager_->draw(sphere_blas_, i + 1);
+                }
+                
+                // Top level central cube
+                tlas_manager_->load_identity();
+                tlas_manager_->translate(0.0f, 4.0f, 0.0f);
+                tlas_manager_->rotate_y(M_PI / 4.0f);
+                tlas_manager_->draw(cube_blas_, 4);
+                break;
+            }
+            
+            case 9: {
+                // Test 9: Complex scene with everything
+                tlas_manager_->load_identity();
+                tlas_manager_->translate(0.0f, -1.0f, 0.0f);
+                tlas_manager_->draw(ground_blas_, 2);
+                
+                // Central cluster
+                tlas_manager_->load_identity();
+                tlas_manager_->draw(cube_blas_, 0);
+                
+                tlas_manager_->load_identity();
+                tlas_manager_->translate(0.0f, 2.0f, 0.0f);
+                tlas_manager_->draw(sphere_blas_, 1);
+                
+                // Multiple circles at different heights and radii
+                tlas_manager_->push_matrix();
+                tlas_manager_->translate(0.0f, 0.0f, 0.0f);
+                SceneBuilder::create_circle(*tlas_manager_, cube_blas_, 8, 2.0f, 0);
+                tlas_manager_->pop_matrix();
+                
+                tlas_manager_->push_matrix();
+                tlas_manager_->translate(0.0f, 1.5f, 0.0f);
+                SceneBuilder::create_circle(*tlas_manager_, sphere_blas_, 6, 3.5f, 2);
+                tlas_manager_->pop_matrix();
+                
+                // Grid of floating objects
+                tlas_manager_->push_matrix();
+                tlas_manager_->translate(-8.0f, 1.0f, -8.0f);
+                SceneBuilder::create_grid(*tlas_manager_, cube_blas_, 4, 4, 2.0f, 3);
+                tlas_manager_->pop_matrix();
+                
+                // Scattered spheres
+                for (int i = 0; i < 6; i++) {
+                    float angle = i * M_PI / 3.0f;
+                    tlas_manager_->load_identity();
+                    tlas_manager_->translate(std::cos(angle) * 6.0f, 3.0f + i * 0.5f, std::sin(angle) * 6.0f);
+                    tlas_manager_->scale(0.5f + i * 0.1f);
+                    tlas_manager_->draw(sphere_blas_, i % 5);
+                }
+                break;
+            }
+            
+            default:
+                // Fallback to test 1
+                setup_test_scene(1);
+                return;
         }
         
-        // Use scene builder utilities for complex arrangements
-        {
-            tlas_manager_->push_matrix();
-            tlas_manager_->translate(6.0f, 0.0f, 0.0f);
-            SceneBuilder::create_circle(*tlas_manager_, cube_blas_, 8, 2.0f, 4);
-            tlas_manager_->pop_matrix();
-        }
-        
-        {
-            tlas_manager_->push_matrix();
-            tlas_manager_->translate(-6.0f, 0.0f, 0.0f);
-            SceneBuilder::create_grid(*tlas_manager_, sphere_blas_, 3, 3, 1.0f, 2);
-            tlas_manager_->pop_matrix();
-        }
-        
-        // Add some static floating objects (no animation for performance)
-        add_static_floating_objects();
-        
-        // Build TLAS from recorded draw calls (only once for static setup)
+        // Build TLAS from recorded draw calls
         tlas_manager_->build(*blas_manager_);
         
-        printf("TLAS built: %d nodes for %d instances\n", 
-               tlas_manager_->get_node_count(), tlas_manager_->get_instance_count());
+        printf("Test scene %d built: %d nodes for %d instances\n", 
+               test_number, tlas_manager_->get_node_count(), tlas_manager_->get_instance_count());
     }
     
-    void add_static_floating_objects() {
-        // Add static floating objects (no animation for better performance)
-        tlas_manager_->load_identity();
-        tlas_manager_->translate(-4.0f, 4.0f, -3.0f);
-        tlas_manager_->rotate_axis({1.0f, 1.0f, 0.0f}, 0.5f);
-        tlas_manager_->scale(0.4f);
-        tlas_manager_->draw(cube_blas_, 4);
-        
-        tlas_manager_->load_identity();
-        tlas_manager_->translate(4.0f, 4.0f, -3.0f);
-        tlas_manager_->rotate_y(1.0f);
-        tlas_manager_->scale(0.6f);
-        tlas_manager_->draw(sphere_blas_, 3);
-    }
     
     
     void setup_rendering() {
@@ -233,6 +343,20 @@ private:
         if (IsKeyPressed(KEY_SPACE)) {
             use_raytracing_ = !use_raytracing_ && (raytracing_shader_.id != 0);
             printf("Switched to %s mode\n", use_raytracing_ ? "raytracing" : "rasterization");
+        }
+        
+        // Test scene selection (1-9)
+        for (int i = 1; i <= 9; i++) {
+            if (IsKeyPressed(KEY_ONE + i - 1)) {
+                if (current_test_scene_ != i) {
+                    current_test_scene_ = i;
+                    printf("Switching to test scene %d...\n", i);
+                    setup_test_scene(current_test_scene_);
+                    blas_manager_->print_stats();
+                    tlas_manager_->print_stats();
+                }
+                break;
+            }
         }
         
         // Performance controls
@@ -348,14 +472,17 @@ private:
             }
         }
         
+        // Test scene indicator
+        DrawText(TextFormat("Test Scene %d (Press 1-9 to change)", current_test_scene_), 10, 90, 16, LIGHTGRAY);
+        
         // Performance info
         double frame_time = Performance::Profiler::instance().get_frame_time_ms();
-        DrawText(TextFormat("Frame: %.2f ms (%.1f FPS)", frame_time, 1000.0 / frame_time), 10, 100, 16, LIME);
+        DrawText(TextFormat("Frame: %.2f ms (%.1f FPS)", frame_time, 1000.0 / frame_time), 10, 110, 16, LIME);
         
         // Scene stats
         int total_instances_ = tlas_manager_->get_instance_count();
         DrawText(TextFormat("Scene: %d instances, %d triangles", 
-                 total_instances_, total_triangles_), 10, 120, 14, LIGHTGRAY);
+                 total_instances_, total_triangles_), 10, 130, 14, LIGHTGRAY);
         
         // Performance controls
         DrawText("Press P for performance stats, R to reset", 10, screen_height_ - 50, 14, LIGHTGRAY);
@@ -391,6 +518,7 @@ private:
     Camera camera_;
     Shader raytracing_shader_{};
     bool use_raytracing_ = false;
+    int current_test_scene_ = 1;
     
     // GPU textures are now managed by the managers themselves
     
