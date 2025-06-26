@@ -182,9 +182,9 @@ private:
         raytracing_shader_ = LoadShader(nullptr, "shaders/raytrace_tlas_blas_processed.fs");
         use_raytracing_ = (raytracing_shader_.id != 0);
         
-        // Start in RAYTRACING mode with BVH traversal fix
+        // Start in raytracing mode
         if (use_raytracing_) {
-            printf("Starting in RAYTRACING mode with BVH traversal enabled\n");
+            printf("Starting in raytracing mode\n");
         }
         
         if (raytracing_shader_.id == 0) {
@@ -211,7 +211,6 @@ private:
         camera_up_loc_     = GetShaderLocation(raytracing_shader_, "cameraUp");
         camera_fovy_loc_   = GetShaderLocation(raytracing_shader_, "cameraFovy");
         screen_size_loc_   = GetShaderLocation(raytracing_shader_, "screenSize");
-        debug_mode_loc_    = GetShaderLocation(raytracing_shader_, "debugMode");
         
         // BLAS/TLAS uniforms are now handled by their respective managers
     }
@@ -234,16 +233,6 @@ private:
         if (IsKeyPressed(KEY_SPACE)) {
             use_raytracing_ = !use_raytracing_ && (raytracing_shader_.id != 0);
             printf("Switched to %s mode\n", use_raytracing_ ? "raytracing" : "rasterization");
-        }
-        
-        // Debug mode controls
-        if (use_raytracing_ && raytracing_shader_.id != 0) {
-            if (IsKeyPressed(KEY_ONE))   debug_mode_ = 0; // Ray directions
-            if (IsKeyPressed(KEY_TWO))   debug_mode_ = 1; // UV coordinates  
-            if (IsKeyPressed(KEY_THREE)) debug_mode_ = 2; // TLAS debug
-            if (IsKeyPressed(KEY_FOUR))  debug_mode_ = 3; // BLAS debug
-            if (IsKeyPressed(KEY_FIVE))  debug_mode_ = 4; // Instance debug
-            if (IsKeyPressed(KEY_SIX))   debug_mode_ = 5; // Full raytracing
         }
         
         // Performance controls
@@ -300,7 +289,6 @@ private:
             SetShaderValue(raytracing_shader_, camera_up_loc_, &camera_.up, SHADER_UNIFORM_VEC3);
             SetShaderValue(raytracing_shader_, camera_fovy_loc_, &camera_.fovy, SHADER_UNIFORM_FLOAT);
             SetShaderValue(raytracing_shader_, screen_size_loc_, &screen_size, SHADER_UNIFORM_VEC2);
-            SetShaderValue(raytracing_shader_, debug_mode_loc_, &debug_mode_, SHADER_UNIFORM_INT);
             
             // Let managers handle their own shader binding and texture management
             blas_manager_->bind_to_shader(raytracing_shader_);
@@ -351,7 +339,6 @@ private:
         if (use_raytracing_) {
             DrawText("C++ RAYTRACING MODE", 10, 40, 20, GREEN);
             DrawText("Press SPACE to toggle rasterization", 10, 70, 16, LIGHTGRAY);
-            DrawText(TextFormat("Debug Mode %d (Press 1-6)", debug_mode_), 10, 100, 16, YELLOW);
         } else {
             DrawText("C++ RASTERIZATION MODE", 10, 40, 20, YELLOW);
             if (raytracing_shader_.id != 0) {
@@ -363,12 +350,12 @@ private:
         
         // Performance info
         double frame_time = Performance::Profiler::instance().get_frame_time_ms();
-        DrawText(TextFormat("Frame: %.2f ms (%.1f FPS)", frame_time, 1000.0 / frame_time), 10, 130, 16, LIME);
+        DrawText(TextFormat("Frame: %.2f ms (%.1f FPS)", frame_time, 1000.0 / frame_time), 10, 100, 16, LIME);
         
         // Scene stats
         int total_instances_ = tlas_manager_->get_instance_count();
         DrawText(TextFormat("Scene: %d instances, %d triangles", 
-                 total_instances_, total_triangles_), 10, 150, 14, LIGHTGRAY);
+                 total_instances_, total_triangles_), 10, 120, 14, LIGHTGRAY);
         
         // Performance controls
         DrawText("Press P for performance stats, R to reset", 10, screen_height_ - 50, 14, LIGHTGRAY);
@@ -404,7 +391,6 @@ private:
     Camera camera_;
     Shader raytracing_shader_{};
     bool use_raytracing_ = false;
-    int debug_mode_ = 5;
     
     // GPU textures are now managed by the managers themselves
     
@@ -414,7 +400,6 @@ private:
     int camera_up_loc_;
     int camera_fovy_loc_;
     int screen_size_loc_;
-    int debug_mode_loc_;
     
 
 };
