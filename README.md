@@ -1,33 +1,38 @@
 # GPU Ray Trace Example
 
-A pixel-shader based raytracing implementation using Raylib, demonstrating real-time GPU raytracing with BVH acceleration structures.
+A modern C++ pixel-shader based raytracing implementation using Raylib, featuring modular BLAS/TLAS acceleration structures and comprehensive performance profiling.
 
 ## Features
 
-- **BVH Acceleration Structure**: Implements a CPU-built BVH tree with GPU-friendly flattening for fast ray-triangle intersection
-- **Test Scene**: Procedurally generated scene with boxes and spheres converted to triangular meshes
-- **Material System**: Multiple material IDs for different shading properties
-- **Real-time Raytracing**: Fragment shader implementation with primary ray shooting per pixel
-- **Path Tracing**: Simple reflections and multi-bounce lighting
-- **Interactive Camera**: Free-look camera controls with WASD movement
-- **Debug Visualization**: Multiple debug modes to verify shader operation, UV coordinates, ray generation, and hit testing
+- **🏗️ Modular BLAS/TLAS System**: Industry-standard Bottom-Level and Top-Level Acceleration Structures
+- **🚀 Modern C++17**: RAII memory management, smart pointers, and STL containers
+- **📊 Performance Profiling**: Built-in RAII-based timing with detailed frame breakdowns
+- **🔄 Automatic Deduplication**: Hash-based BLAS sharing for memory efficiency  
+- **🎨 Matrix Stack**: OpenGL-style hierarchical transformations with automatic cleanup
+- **🏭 Factory Patterns**: Clean geometry creation (`BLASFactory::create_cube()`, etc.)
+- **🎯 Real-time Raytracing**: Fragment shader implementation with GPU-accelerated BVH traversal
+- **🖱️ Interactive Camera**: Free-look camera controls with animated scene objects
+- **🔍 Debug Visualization**: Multiple debug modes for shader development and optimization
 
 ## Project Structure
 
 ```
 GPURayTraceExample/
-├── main.c                 # Main application and rendering loop
+├── main.cpp               # Modern C++ main application with performance profiling
 ├── include/
-│   ├── scene.h           # Scene generation and management
-│   ├── bvh.h            # BVH acceleration structure (symlinked)
+│   ├── profiler.hpp      # RAII-based performance profiler
+│   ├── blas_manager.hpp  # Modern C++ BLAS management system
+│   ├── tlas_manager.hpp  # Modern C++ TLAS with matrix stack
+│   ├── bvh.h            # Core C BVH implementation (symlinked)
 │   └── object_allocator.h # Memory allocator (symlinked)
 ├── src/
-│   ├── scene.c          # Scene generation implementation
-│   ├── bvh.c           # BVH implementation (symlinked)
+│   ├── blas_manager.cpp  # BLAS manager with hash-based deduplication
+│   ├── tlas_manager.cpp  # TLAS manager with hierarchical transforms
+│   ├── bvh.c            # Core BVH implementation (symlinked)
 │   └── object_allocator.c # Memory allocator (symlinked)
 └── shaders/
-    ├── fullscreen.vs    # Vertex shader for fullscreen quad
-    └── raytrace.fs     # Fragment shader with raytracing implementation
+    ├── fullscreen.vs     # Vertex shader for fullscreen quad
+    └── raytrace_tlas_blas.fs # Advanced fragment shader with TLAS/BLAS support
 ```
 
 ## Dependencies
@@ -37,31 +42,44 @@ GPURayTraceExample/
 
 ## Building
 
+Requires C++17 compiler (GCC 7+ or Clang 5+):
+
 ```bash
 make clean
-make
+make              # Builds C++ version (gpu_raytrace)
 ```
 
 ## Usage
 
 ```bash
-./gpu_raytrace
+./gpu_raytrace    # Run with performance profiling and BVH raytracing
 ```
 
 ### Controls
 
 - **WASD**: Move camera
-- **Mouse**: Look around
+- **Mouse**: Look around  
 - **SPACE**: Toggle between raytracing and rasterization modes
+- **P**: Print current performance statistics
+- **R**: Reset performance statistics
 
 #### Debug Controls (Raytracing Mode Only)
 - **1**: Ray direction visualization (RGB = XYZ ray direction)
 - **2**: UV coordinates visualization (Green = X axis, Red = Y axis)
-- **3**: Ray direction visualization (alternative view) 
-- **4**: **Triangle intersection testing** (Red/Blue boxes, Green ground, Sky gradient)
-- **5**: Distance visualization (White = close, Black = far, Black = no hit)
+- **3**: TLAS debug visualization
+- **4**: BLAS vs TLAS comparison
+- **5**: Instance ID visualization  
 - **6**: Full raytracing with reflections and shadows
-- **7**: **BVH traversal** (Uses GPU-accelerated BVH for ray-triangle intersection)
+
+### Performance Monitoring
+
+The application automatically displays performance metrics:
+```
+Frame: 16.67 ms (60.0 FPS)
+Scene Setup: 2.1 ms (12.6%)
+GPU Upload: 1.2 ms (7.2%)  
+Rendering: 13.2 ms (79.2%)
+```
 
 ## Technical Details
 
