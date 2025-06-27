@@ -386,16 +386,65 @@ private:
             }
         }
         
-        // Add the BLAS to TLAS with no transform
+        // Create a TLAS unit test with multiple well-separated instances
+        printf("=== Creating TLAS Unit Test ===\n");
+        
+        // Add the same triangle BLAS at 3 different positions to test TLAS subdivision
+        // Instance 1: At origin
         tlas_manager_->load_identity();
         tlas_manager_->draw(test_blas, 0);
+        
+        // Instance 2: Far to the right at X=10
+        tlas_manager_->load_identity();
+        tlas_manager_->translate(10.0f, 0.0f, 0.0f);
+        tlas_manager_->draw(test_blas, 1);
+        
+        // Instance 3: Far up at Y=10  
+        tlas_manager_->load_identity();
+        tlas_manager_->translate(0.0f, 10.0f, 0.0f);
+        tlas_manager_->draw(test_blas, 2);
+        
+        printf("Created 3 TLAS instances at well-separated positions:\n");
+        printf("  Instance 1: Transform at (0, 0, 0)\n");
+        printf("  Instance 2: Transform at (10, 0, 0)\n");
+        printf("  Instance 3: Transform at (0, 10, 0)\n");
         
         // Build TLAS
         printf("=== Building TLAS ===\n");
         tlas_manager_->build(*blas_manager_);
         printf("TLAS built with %d instances, %d nodes\n", 
                tlas_manager_->get_instance_count(), tlas_manager_->get_node_count());
-               
+        
+        // Analyze TLAS structure  
+        printf("=== TLAS Structure Analysis ===\n");
+        const Tmpl8::TLAS* tlas = tlas_manager_->get_tlas();
+        if (tlas) {
+            printf("TLAS nodes used: %u\n", tlas->nodesUsed);
+            printf("TLAS BLAS count: %u\n", tlas->blasCount);
+            
+            for (uint32_t i = 0; i < tlas->nodesUsed; i++) {
+                const auto& node = tlas->tlasNode[i];
+                printf("TLAS Node %u: %s\n", i, node.isLeaf() ? "LEAF" : "INTERIOR");
+                printf("  AABB: (%.2f, %.2f, %.2f) to (%.2f, %.2f, %.2f)\n",
+                       node.aabbMin.x, node.aabbMin.y, node.aabbMin.z,
+                       node.aabbMax.x, node.aabbMax.y, node.aabbMax.z);
+                
+                if (node.isLeaf()) {
+                    printf("  BLAS index: %u\n", node.BLAS);
+                    // Print transform information for this instance
+                    if (node.BLAS < tlas->blasCount) {
+                        const auto& instance = tlas->blas[node.BLAS];
+                        printf("  Instance bounds: (%.2f, %.2f, %.2f) to (%.2f, %.2f, %.2f)\n",
+                               instance.bounds.bmin.x, instance.bounds.bmin.y, instance.bounds.bmin.z,
+                               instance.bounds.bmax.x, instance.bounds.bmax.y, instance.bounds.bmax.z);
+                    }
+                } else {
+                    printf("  Left child: %u, Right child: %u\n", 
+                           node.leftRight & 0xFFFF, (node.leftRight >> 16) & 0xFFFF);
+                }
+            }
+        }
+        
         current_test_scene_ = 0; // Mark as unit test scene
     }
     

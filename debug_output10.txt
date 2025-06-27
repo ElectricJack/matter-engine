@@ -1,0 +1,173 @@
+=== C++ Modular BLAS/TLAS System with Performance Profiling ===
+DEBUG MODE ENABLED: Will auto-quit after 60 frames
+INFO: Initializing raylib 5.6-dev
+INFO: Platform backend: DESKTOP (GLFW)
+INFO: Supported raylib modules:
+INFO:     > rcore:..... loaded (mandatory)
+INFO:     > rlgl:...... loaded (mandatory)
+INFO:     > rshapes:... loaded (optional)
+INFO:     > rtextures:. loaded (optional)
+INFO:     > rtext:..... loaded (optional)
+INFO:     > rmodels:... loaded (optional)
+INFO:     > raudio:.... loaded (optional)
+INFO: DISPLAY: Device initialized successfully
+INFO:     > Display size: 1792 x 1120
+INFO:     > Screen size:  800 x 600
+INFO:     > Render size:  800 x 600
+INFO:     > Viewport offsets: 0, 0
+INFO: GLAD: OpenGL extensions loaded successfully
+INFO: GL: Supported extensions count: 46
+INFO: GL: OpenGL device information:
+INFO:     > Vendor:   ATI Technologies Inc.
+INFO:     > Renderer: AMD Radeon Pro 5300M OpenGL Engine
+INFO:     > Version:  4.1 ATI-7.0.3
+INFO:     > GLSL:     4.10
+INFO: GL: VAO extension detected, VAO functions loaded successfully
+INFO: GL: NPOT textures extension detected, full NPOT textures supported
+INFO: GL: DXT compressed textures supported
+INFO: PLATFORM: DESKTOP (GLFW - Cocoa): Initialized successfully
+INFO: TEXTURE: [ID 1] Texture loaded successfully (1x1 | R8G8B8A8 | 1 mipmaps)
+INFO: TEXTURE: [ID 1] Default texture loaded successfully
+INFO: SHADER: [ID 1] Vertex shader compiled successfully
+INFO: SHADER: [ID 2] Fragment shader compiled successfully
+INFO: SHADER: [ID 3] Program shader loaded successfully
+INFO: SHADER: [ID 3] Default shader loaded successfully
+INFO: RLGL: Render batch vertex buffers loaded successfully in RAM (CPU)
+INFO: RLGL: Render batch vertex buffers loaded successfully in VRAM (GPU)
+INFO: RLGL: Default OpenGL state initialized successfully
+INFO: TEXTURE: [ID 2] Texture loaded successfully (128x128 | GRAY_ALPHA | 1 mipmaps)
+INFO: FONT: Default font loaded successfully (224 glyphs)
+INFO: SYSTEM: Working Directory: /Users/jack.kern/SharedWithDesktop/AI/MatterEngine2/GPURayTraceExample
+INFO: TIMER: Target time per frame: 16.667 milliseconds
+=== BLAS Registration Phase ===
+  Cube BLAS registered: handle=1
+  Sphere BLAS registered: handle=2
+  Ground BLAS registered: handle=3
+=== BLAS Statistics After Registration ===
+=== BLAS Manager Statistics ===
+Unique BLAS count: 3
+Total triangles: 974
+Total nodes: 1934
+Next handle: 4
+Hash buckets: 3 used, max chain length: 1
+=== Setting Up Test Scene ===
+Setting up test scene 1...
+=== Building TLAS for scene 1 ===
+  Draw records before build: 1
+Instance 0 transform matrix:
+  [1.00 0.00 0.00 0.00]
+  [0.00 1.00 0.00 0.00]
+  [0.00 0.00 1.00 0.00]
+  [0.00 0.00 0.00 1.00]
+  Resulting world bounds: (-0.50, -0.50, -0.50) to (0.50, 0.50, 0.50)
+  TLAS built successfully!
+  Final counts: 1 nodes, 1 instances
+Test scene 1 setup complete!
+=== Final Manager Statistics ===
+=== BLAS Manager Statistics ===
+Unique BLAS count: 3
+Total triangles: 974
+Total nodes: 1934
+Next handle: 4
+Hash buckets: 3 used, max chain length: 1
+=== TLAS Manager Statistics ===
+Draw records: 1/50
+Matrix stack depth: 1
+Next instance ID: 2
+Built TLAS: 1 instances, 1 nodes
+INFO: FILEIO: [shaders/raytrace_tlas_blas_processed.fs] Text file loaded successfully
+INFO: SHADER: [ID 4] Fragment shader compiled successfully
+INFO: SHADER: [ID 5] Program shader loaded successfully
+Starting in raytracing mode
+Raytracing shader loaded successfully
+=== C++ Modular BLAS/TLAS System Initialized ===
+=== DEBUG MODE: Will auto-quit after 60 frames ===
+DEBUG MODE: Setting up unit test scene
+=== Setting Up Unit Test Scene ===
+Created 3 test triangles:
+  Triangle 1: Center at (0, 0, 0.33)
+  Triangle 2: Center at (5, 0, 0.33)
+  Triangle 3: Center at (0, 5, 0.33)
+Test BLAS registered: handle=4
+Test BVH built with subdivToOnePrim=true
+=== BVH Structure Analysis ===
+BVH nodes used: 6
+Node 0: INTERIOR
+  AABB: (-0.50, 0.00, 0.00) to (5.50, 5.00, 1.00)
+  Left child: 2, Right child: 3
+Node 1: INTERIOR
+  AABB: (0.00, 0.00, 0.00) to (0.00, 0.00, 0.00)
+  Left child: 0, Right child: 1
+Node 2: INTERIOR
+  AABB: (-0.50, 0.00, 0.00) to (5.50, 0.00, 1.00)
+  Left child: 4, Right child: 5
+Node 3: LEAF
+  AABB: (-0.50, 5.00, 0.00) to (0.50, 5.00, 1.00)
+  Triangle count: 1, First triangle: 2
+    Triangle 0: index 2
+Node 4: LEAF
+  AABB: (-0.50, 0.00, 0.00) to (0.50, 0.00, 1.00)
+  Triangle count: 1, First triangle: 0
+    Triangle 0: index 0
+Node 5: LEAF
+  AABB: (4.50, 0.00, 0.00) to (5.50, 0.00, 1.00)
+  Triangle count: 1, First triangle: 1
+    Triangle 0: index 1
+=== Creating TLAS Unit Test ===
+Created 3 TLAS instances at well-separated positions:
+  Instance 1: Transform at (0, 0, 0)
+  Instance 2: Transform at (10, 0, 0)
+  Instance 3: Transform at (0, 10, 0)
+=== Building TLAS ===
+Instance 0 transform matrix:
+  [1.00 0.00 0.00 0.00]
+  [0.00 1.00 0.00 0.00]
+  [0.00 0.00 1.00 0.00]
+  [0.00 0.00 0.00 1.00]
+  Resulting world bounds: (-0.50, 0.00, 0.00) to (5.50, 5.00, 1.00)
+Instance 1 transform matrix:
+  [1.00 0.00 0.00 0.00]
+  [0.00 1.00 0.00 0.00]
+  [0.00 0.00 1.00 0.00]
+  [10.00 0.00 0.00 1.00]
+  Resulting world bounds: (-0.50, 0.00, 0.00) to (5.50, 5.00, 1.00)
+Instance 2 transform matrix:
+  [1.00 0.00 0.00 0.00]
+  [0.00 1.00 0.00 0.00]
+  [0.00 0.00 1.00 0.00]
+  [0.00 10.00 0.00 1.00]
+  Resulting world bounds: (-0.50, 0.00, 0.00) to (5.50, 5.00, 1.00)
+TLAS built with 3 instances, 5 nodes
+=== TLAS Structure Analysis ===
+TLAS nodes used: 5
+TLAS BLAS count: 3
+TLAS Node 0: INTERIOR
+  AABB: (-0.50, 0.00, 0.00) to (5.50, 5.00, 1.00)
+  Left child: 1, Right child: 2
+TLAS Node 1: LEAF
+  AABB: (-0.50, 0.00, 0.00) to (5.50, 5.00, 1.00)
+  BLAS index: 0
+  Instance bounds: (-0.50, 0.00, 0.00) to (5.50, 5.00, 1.00)
+TLAS Node 2: INTERIOR
+  AABB: (-0.50, 0.00, 0.00) to (5.50, 5.00, 1.00)
+  Left child: 3, Right child: 4
+TLAS Node 3: LEAF
+  AABB: (-0.50, 0.00, 0.00) to (5.50, 5.00, 1.00)
+  BLAS index: 1
+  Instance bounds: (-0.50, 0.00, 0.00) to (5.50, 5.00, 1.00)
+TLAS Node 4: LEAF
+  AABB: (-0.50, 0.00, 0.00) to (5.50, 5.00, 1.00)
+  BLAS index: 2
+  Instance bounds: (-0.50, 0.00, 0.00) to (5.50, 5.00, 1.00)
+Frame 1...
+=== Raytraced Render Frame 1 ===
+  Camera pos: (3.00, 2.00, 5.00)
+  BLAS triangles: 977
+  TLAS instances: 3, nodes: 5
+  Setting camera uniforms...
+  Binding BLAS to shader...
+INFO: TEXTURE: [ID 3] Texture loaded successfully (977x4 | R32G32B32A32 | 1 mipmaps)
+INFO: TEXTURE: [ID 4] Texture loaded successfully (1940x3 | R32G32B32A32 | 1 mipmaps)
+  Binding TLAS to shader...
+INFO: TEXTURE: [ID 5] Texture loaded successfully (3x9 | R32G32B32A32 | 1 mipmaps)
+INFO: TEXTURE: [ID 6] Texture loaded successfully (5x3 | R32G32B32A32 | 1 mipmaps)

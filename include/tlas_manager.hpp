@@ -157,7 +157,9 @@ private:
     std::stack<Matrix4x4> matrix_stack_;
     std::vector<DrawRecord> draw_records_;
     std::unique_ptr<TLAS> tlas_;
-    std::vector<std::unique_ptr<BVHInstance>> instances_;
+    std::vector<std::unique_ptr<BVHInstance>> instances_; // Deprecated - kept for compatibility
+    BVHInstance* instance_array_ = nullptr; // Contiguous array for TLAS
+    size_t instance_array_size_ = 0;
     uint32_t next_instance_id_;
     int max_instances_;
     
