@@ -28,6 +28,9 @@ public:
         InitWindow(screen_width_, screen_height_, "C++ Modular BLAS/TLAS with Performance Profiling");
         SetTargetFPS(120);
         
+        // Disable cursor for first person camera control (hides cursor and captures mouse)
+        DisableCursor();
+        
         setup_scene();
         setup_rendering();
         
@@ -36,6 +39,7 @@ public:
     
     ~RayTracingDemo() {
         cleanup();
+        EnableCursor(); // Restore cursor functionality before closing
         CloseWindow();
     }
     
@@ -516,11 +520,23 @@ private:
         // Handle input
         handle_input();
         
-        // Update camera
+        // Update camera (DisableCursor handles mouse capture automatically)
         UpdateCamera(&camera_, CAMERA_FREE);
     }
     
     void handle_input() {
+        // Toggle cursor mode
+        if (IsKeyPressed(KEY_ESCAPE)) {
+            cursor_disabled_ = !cursor_disabled_;
+            if (cursor_disabled_) {
+                DisableCursor();
+                printf("Mouse captured for first person camera control\n");
+            } else {
+                EnableCursor();
+                printf("Mouse cursor released\n");
+            }
+        }
+        
         // Toggle rendering mode
         if (IsKeyPressed(KEY_SPACE)) {
             use_raytracing_ = !use_raytracing_ && (raytracing_shader_.id != 0);
@@ -826,7 +842,14 @@ private:
         }
         
         // Performance controls
-        DrawText("Press P for performance stats, R to reset", 10, screen_height_ - 50, 14, LIGHTGRAY);
+        DrawText("Press P for performance stats, R to reset", 10, screen_height_ - 70, 14, LIGHTGRAY);
+        
+        // Mouse control info
+        if (cursor_disabled_) {
+            DrawText("Mouse captured for first person camera control (ESC to release)", 10, screen_height_ - 50, 14, LIGHTGRAY);
+        } else {
+            DrawText("Mouse cursor free (ESC to capture for camera control)", 10, screen_height_ - 50, 14, YELLOW);
+        }
         
         // System info
         DrawText("C++ Modular BLAS/TLAS System", 10, screen_height_ - 30, 16, LIGHTGRAY);
@@ -864,6 +887,7 @@ private:
     bool use_raytracing_ = false;
     int current_test_scene_ = 1;
     bool show_bvh_visualization_ = false;
+    bool cursor_disabled_ = true;
     
     // GPU textures are now managed by the managers themselves
     
