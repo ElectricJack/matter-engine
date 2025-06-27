@@ -287,9 +287,13 @@ void BLASManager::generate_triangle_data(std::vector<Tri>& output_triangles) con
     
     for (const auto& entry : entries_) {
         if (entry->mesh && entry->bvh) {
-            output_triangles.insert(output_triangles.end(), 
-                                   entry->triangles.begin(), 
-                                   entry->triangles.end());
+            // Generate triangles in BVH order using triIdx mapping
+            for (int i = 0; i < entry->mesh->triCount; i++) {
+                uint original_idx = entry->bvh->triIdx[i];
+                if (original_idx < entry->triangles.size()) {
+                    output_triangles.push_back(entry->triangles[original_idx]);
+                }
+            }
         }
     }
 }

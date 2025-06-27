@@ -330,6 +330,7 @@ void BVHIntersect(inout Ray ray, uint instanceIdx, uint blasOffset)
             // Test all triangles in this leaf
             for (uint i = 0u; i < node.triCount; i++)
             {
+                // Since triangles are now stored in BVH order, direct indexing works
                 uint triIdx = node.leftFirst + i;
                 Triangle tri = decodeTriangle(int(triIdx));
                 uint instPrim = (instanceIdx << 20u) + triIdx;
