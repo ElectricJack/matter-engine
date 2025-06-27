@@ -429,7 +429,7 @@ vec3 trace(vec3 rayOrigin, vec3 rayDirection, inout uint seed) {
         
         // Handle different material types based on properties
         if (matProps.translucency > 0.0 && rayDepth < MAX_DEPTH-1) {
-            // Translucent material - handle refraction and transmission
+            // Translucent material - handle both reflection and transmission
             vec3 directLight = calculatePBR(hitPos, normal, rayDir, albedo, roughness, metallic, seed);
             
             // Determine if ray is entering or exiting the material
@@ -440,28 +440,63 @@ vec3 trace(vec3 rayOrigin, vec3 rayDirection, inout uint seed) {
             // Calculate Fresnel reflectance
             float fresnelReflectance = fresnel(rayDir, n, matProps.ior);
             
+            // Calculate reflection direction for glass surfaces
+            vec3 reflectedDir = roughnessReflect(rayDir, n, roughness, seed);
+            
             // Refract the ray
             vec3 refractedDir = refract(rayDir, n, eta);
             
             if (length(refractedDir) > 0.0) {
-                // Successful refraction
+                // Both reflection and refraction are possible
                 float transmittance = (1.0 - fresnelReflectance) * matProps.translucency;
+                float reflectance = fresnelReflectance;
                 
                 // Add surface lighting contribution
-                color += attenuation * directLight * (1.0 - transmittance);
+                color += attenuation * directLight * (1.0 - transmittance - reflectance * 0.1);
                 
-                // Continue with refracted ray
+                // Sample reflection contribution by casting a reflection ray
+                // We'll accumulate this immediately rather than recursing
+                if (reflectance > 0.01 && rayDepth < MAX_DEPTH-2) {
+                    vec3 reflectionPos = hitPos + n * 0.001;
+                    HitResult reflectionHit = intersectScene(reflectionPos, reflectedDir);
+                    
+                    if (reflectionHit.hit) {
+                        // Get material properties for reflected surface
+                        MaterialProperties reflMatProps = getMaterialProperties(reflectionHit.material);
+                        vec3 reflAlbedo = reflMatProps.albedo;
+                        vec3 reflNormal = reflectionHit.normal;
+                        
+                        // Calculate direct lighting on reflected surface
+                        vec3 reflectedLight = calculatePBR(reflectionHit.position, reflNormal, reflectedDir, 
+                                                         reflAlbedo, reflMatProps.roughness, reflMatProps.metallic, seed);
+                        
+                        // Add reflection contribution with proper energy conservation
+                        color += attenuation * reflectedLight * albedo * reflectance;
+                    } else {
+                        // Reflection hits sky
+                        vec3 skyReflection = sampleSky(reflectedDir);
+                        color += attenuation * skyReflection * reflectance;
+                    }
+                }
+                
+                // Continue with refracted ray for transmission
                 rayDir = refractedDir;
                 rayPos = hitPos - n * 0.001; // Offset in direction of refraction
                 attenuation *= albedo * transmittance; // Tint transmitted light
                 
-                // Beer's law absorption could be added here for colored glass
+                // Beer's law absorption for colored glass
+                if (!entering && matProps.translucency > 0.5) {
+                    // Inside glass - apply absorption based on distance traveled
+                    // This creates the colored glass effect
+                    float glassThickness = 0.1; // Approximate thickness
+                    vec3 absorption = exp(-glassThickness * (1.0 - albedo) * 2.0);
+                    attenuation *= absorption;
+                }
             } else {
-                // Total internal reflection - treat as mirror with roughness perturbation
-                vec3 reflectedDir = roughnessReflect(rayDir, n, roughness, seed);
+                // Total internal reflection - treat as perfect mirror
                 rayDir = reflectedDir;
                 rayPos = hitPos + n * 0.001;
-                attenuation *= albedo * 0.9;
+                attenuation *= albedo * 0.95; // Slight energy loss
             }
         } else if (isMirror && rayDepth < MAX_DEPTH-1) {
             // Reflective material
