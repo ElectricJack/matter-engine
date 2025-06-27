@@ -198,7 +198,7 @@ void BVH::Subdivide( uint nodeIdx, uint depth, uint& nodePtr, float3& centroidMi
 		}
 	}
 	// abort split if one of the sides is empty
-	int leftCount = i - node.leftFirst;
+	uint leftCount = i - node.leftFirst;
 	if (leftCount == 0 || leftCount == node.triCount) return;
 	// create child nodes
 	int leftChildIdx = nodePtr++;

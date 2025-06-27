@@ -162,6 +162,8 @@ void BVHVisualizer::render_tlas_node_recursive(const Tmpl8::TLASNode* nodes,
 }
 
 void BVHVisualizer::draw_aabb_wireframe(Vector3 min_pos, Vector3 max_pos, Color color, float thickness) {
+    (void)thickness; // Suppress unused parameter warning
+    
     // Draw 12 edges of the AABB as lines
     
     // Bottom face (4 edges)
@@ -184,6 +186,8 @@ void BVHVisualizer::draw_aabb_wireframe(Vector3 min_pos, Vector3 max_pos, Color 
 }
 
 void BVHVisualizer::draw_triangle_wireframe(const Tmpl8::Tri& triangle, Color color, float thickness) {
+    (void)thickness; // Suppress unused parameter warning
+    
     Vector3 v0 = float3_to_vector3(triangle.vertex0);
     Vector3 v1 = float3_to_vector3(triangle.vertex1);
     Vector3 v2 = float3_to_vector3(triangle.vertex2);

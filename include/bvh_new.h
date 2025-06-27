@@ -15,7 +15,7 @@ namespace Tmpl8
 class BvhMesh;
 
 // minimalist triangle struct
-ALIGN(64) struct Tri
+struct ALIGN(64) Tri
 {
 	// union each float3 with a 16-byte __m128 for faster BVH construction
 	union { float3 vertex0; __m128 v0; };
@@ -53,7 +53,7 @@ struct Intersection
 };
 
 // ray struct, prepared for SIMD AABB intersection
-ALIGN(64) struct Ray
+struct ALIGN(64) Ray
 {
 	Ray() { O4 = D4 = rD4 = _mm_set1_ps( 1 ); }
 	union { struct { float3 O; float dummy1; }; __m128 O4; };
@@ -76,7 +76,7 @@ struct BVHNode
 };
 
 // bounding volume hierarchy, to be used as BLAS
-ALIGN(64) class BVH
+class ALIGN(64) BVH
 {
 	struct BuildJob
 	{
@@ -264,7 +264,7 @@ struct TLASNode
 };
 
 // top-level BVH class (simplified without kdtree for now)
-ALIGN(64) class TLAS
+class ALIGN(64) TLAS
 {
 public:
 	TLAS() = default;

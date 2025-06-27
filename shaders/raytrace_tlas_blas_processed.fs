@@ -35,6 +35,7 @@ uniform sampler2D skyTexture;
 
 // Include comprehensive material properties system
 // === BEGIN INCLUDE: materials.glsl ===
+
 // Material Properties System
 // Comprehensive material definition with PBR, emission, translucency, and surface properties
 
@@ -118,10 +119,10 @@ MaterialProperties getMaterialProperties(int materialId)
     else if (materialId == 4) {
         // White translucent glass with smooth normals
         mat.albedo = vec3(0.9, 0.9, 0.9);
-        mat.roughness = 0.02;
-        mat.metallic = 0.0;
+        mat.roughness = 0.01;
+        mat.metallic = 0.15;
         mat.emission = 0.0;
-        mat.translucency = 0.8; // Highly translucent
+        mat.translucency = 0.5; // Highly translucent
         mat.ior = 1.5; // Glass IOR
     }
     else if (materialId == 5) {
@@ -136,19 +137,19 @@ MaterialProperties getMaterialProperties(int materialId)
     else if (materialId == 6) {
         // Colored glass - green tinted
         mat.albedo = vec3(0.2, 0.9, 0.3);
-        mat.roughness = 0.01;
-        mat.metallic = 0.0;
+        mat.roughness = 0.005;
+        mat.metallic = 0.15;
         mat.emission = 0.0;
-        mat.translucency = 0.9;
+        mat.translucency = 0.5;
         mat.ior = 1.52; // Crown glass IOR
     }
     else if (materialId == 7) {
         // Water-like material
         mat.albedo = vec3(0.2, 0.4, 0.8);
-        mat.roughness = 0.05;
-        mat.metallic = 0.0;
+        mat.roughness = 0.0;
+        mat.metallic = 0.1;
         mat.emission = 0.0;
-        mat.translucency = 0.7;
+        mat.translucency = 0.5;
         mat.ior = 1.33; // Water IOR
     }
     else {
