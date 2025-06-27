@@ -4,7 +4,9 @@
 #include <vector>
 #include <set>
 #include <regex>
-#include <filesystem>
+#include <cstdlib>
+#include <unistd.h>
+#include <climits>
 
 class ShaderPreprocessor {
 public:
@@ -41,9 +43,27 @@ public:
     }
 
 private:
+    std::string get_absolute_path(const std::string& path) {
+        char* real_path = realpath(path.c_str(), nullptr);
+        if (real_path) {
+            std::string result(real_path);
+            free(real_path);
+            return result;
+        }
+        return path; // fallback to original path if realpath fails
+    }
+    
+    std::string get_parent_dir(const std::string& file_path) {
+        size_t last_slash = file_path.find_last_of("/\\");
+        if (last_slash != std::string::npos) {
+            return file_path.substr(0, last_slash);
+        }
+        return "."; // current directory
+    }
+    
     std::string process_includes(const std::string& file_path) {
         // Prevent infinite recursion
-        std::filesystem::path abs_path = std::filesystem::absolute(file_path);
+        std::string abs_path = get_absolute_path(file_path);
         if (processed_files_.find(abs_path) != processed_files_.end()) {
             return "// File already included: " + file_path + "\n";
         }
@@ -65,14 +85,14 @@ private:
                 std::string include_file = match[1].str();
                 
                 // Resolve relative path
-                std::filesystem::path current_dir = std::filesystem::path(file_path).parent_path();
-                std::filesystem::path include_path = current_dir / include_file;
+                std::string current_dir = get_parent_dir(file_path);
+                std::string include_path = current_dir + "/" + include_file;
                 
                 // Add comment showing what's being included
                 result += "// === BEGIN INCLUDE: " + include_file + " ===\n";
                 
                 // Recursively process the included file
-                std::string included_content = process_includes(include_path.string());
+                std::string included_content = process_includes(include_path);
                 result += included_content;
                 
                 // Remove trailing newlines and add our own
@@ -88,7 +108,7 @@ private:
         return result;
     }
     
-    std::set<std::filesystem::path> processed_files_;
+    std::set<std::string> processed_files_;
     bool verbose_;
 };
 

@@ -488,8 +488,8 @@ void TLASManager::ensure_gpu_textures_ready(const BLASManager& blas_manager) {
             .data = texture_data.data(),
             .width = texture_width,
             .height = texture_height,
-            .format = PIXELFORMAT_UNCOMPRESSED_R32G32B32A32,
-            .mipmaps = 1
+            .mipmaps = 1,
+            .format = PIXELFORMAT_UNCOMPRESSED_R32G32B32A32
         };
         
         instances_texture_ = LoadTextureFromImage(instances_image);
@@ -510,8 +510,8 @@ void TLASManager::ensure_gpu_textures_ready(const BLASManager& blas_manager) {
             .data = texture_data.data(),
             .width = texture_width,
             .height = texture_height,
-            .format = PIXELFORMAT_UNCOMPRESSED_R32G32B32A32,
-            .mipmaps = 1
+            .mipmaps = 1,
+            .format = PIXELFORMAT_UNCOMPRESSED_R32G32B32A32
         };
         
         nodes_texture_ = LoadTextureFromImage(tlas_image);

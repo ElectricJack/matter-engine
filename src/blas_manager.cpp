@@ -439,8 +439,8 @@ void BLASManager::ensure_gpu_textures_ready() {
                 .data = texture_data.data(),
                 .width = texture_width,
                 .height = texture_height,
-                .format = PIXELFORMAT_UNCOMPRESSED_R32G32B32A32,
-                .mipmaps = 1
+                .mipmaps = 1,
+                .format = PIXELFORMAT_UNCOMPRESSED_R32G32B32A32
             };
             
             triangles_texture_ = LoadTextureFromImage(tri_image);
@@ -490,8 +490,8 @@ void BLASManager::ensure_gpu_textures_ready() {
                 .data = texture_data.data(),
                 .width = texture_width,
                 .height = texture_height,
-                .format = PIXELFORMAT_UNCOMPRESSED_R32G32B32A32,
-                .mipmaps = 1
+                .mipmaps = 1,
+                .format = PIXELFORMAT_UNCOMPRESSED_R32G32B32A32
             };
             
             nodes_texture_ = LoadTextureFromImage(blas_image);

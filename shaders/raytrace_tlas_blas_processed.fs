@@ -16,6 +16,19 @@ vec3 lightPos   = vec3(3.0, 8.0, 2.0);            // Lower sun position for bett
 vec3 lightColor = vec3(4.0, 3.8, 3.5);          // Brighter direct lighting
 vec3 ambient    = vec3(0.1, 0.15, 0.2);            // Darker ambient for contrast
 
+// Light cache for performance optimization
+struct LightCache {
+    vec3 indirectLight;
+    float ambientOcclusion;
+    bool valid;
+};
+
+// Simple spatial hashing for light cache (crude approximation)
+uint getGridHash(vec3 pos) {
+    ivec3 gridPos = ivec3(floor(pos * 2.0)); // 0.5 unit grid cells
+    return uint(gridPos.x * 73 + gridPos.y * 137 + gridPos.z * 281);
+}
+
 // Sky texture (placeholder - could be added as uniform)
 uniform sampler2D skyTexture;
 
@@ -819,8 +832,99 @@ float calculateShadow(vec3 hitPos, vec3 lightDir, float lightDist, vec3 normal) 
     return 1.0; // Fully lit
 }
 
-// PBR lighting calculation with proper energy conservation
-vec3 calculatePBR(vec3 hitPos, vec3 normal, vec3 viewDir, vec3 albedo, float roughness, float metallic) {
+// Efficient indirect lighting approximation with adaptive sampling
+vec3 calculateIndirectLighting(vec3 hitPos, vec3 normal, vec3 albedo, inout uint seed) {
+    vec3 indirectLight = vec3(0.0);
+    
+    // Use screen-space hash to reduce samples for similar positions
+    uint positionHash = getGridHash(hitPos);
+    int sampleCount = (positionHash % 3u == 0u) ? 2 : 1; // Variable sampling
+    
+    for (int i = 0; i < sampleCount; i++) {
+        // Sample hemisphere around normal with importance sampling toward sky
+        vec3 sampleDir;
+        if (i == 0) {
+            // First sample biased toward sky for efficient sky lighting
+            float skyBias = 0.7;
+            vec3 biasedNormal = normalize(normal + vec3(0.0, skyBias, 0.0));
+            sampleDir = sampleHemisphere(biasedNormal, seed);
+        } else {
+            // Standard hemisphere sampling
+            sampleDir = sampleHemisphere(normal, seed);
+        }
+        
+        // Cast indirect ray with limited distance
+        float maxDistance = 4.0; // Slightly reduced for performance
+        HitResult indirectHit = intersectScene(hitPos + normal * 0.001, sampleDir);
+        
+        if (indirectHit.hit && indirectHit.t < maxDistance) {
+            // Check if hit surface is emissive
+            MaterialProperties hitMat = getMaterialProperties(indirectHit.material);
+            if (hitMat.emission > 0.0) {
+                // Calculate contribution from emissive surface
+                vec3 emissionColor = hitMat.albedo * hitMat.emission;
+                float distance = indirectHit.t;
+                float falloff = 1.0 / (1.0 + distance * distance * 0.15);
+                float cosTheta = max(0.0, dot(normal, sampleDir));
+                
+                // Enhanced emissive contribution
+                indirectLight += emissionColor * falloff * cosTheta * 1.5;
+            } else {
+                // Non-emissive surface - add color bleeding
+                vec3 bouncedLight = hitMat.albedo * 0.15; // Increased bounce contribution
+                float distance = indirectHit.t;
+                float falloff = 1.0 / (1.0 + distance * distance * 0.25);
+                float cosTheta = max(0.0, dot(normal, sampleDir));
+                
+                indirectLight += bouncedLight * falloff * cosTheta * 0.4;
+            }
+        } else {
+            // Ray escaped - add sky contribution as indirect light
+            vec3 skyColor = sampleSky(sampleDir);
+            float cosTheta = max(0.0, dot(normal, sampleDir));
+            indirectLight += skyColor * cosTheta * 0.25;
+        }
+    }
+    
+    // Average the samples and apply albedo modulation
+    indirectLight /= float(sampleCount);
+    return indirectLight * albedo; // Removed extra scaling for more pronounced effect
+}
+
+// Fast ambient occlusion approximation with adaptive sampling
+float calculateAmbientOcclusion(vec3 hitPos, vec3 normal, inout uint seed) {
+    // Use spatial hashing to reduce AO samples in some areas
+    uint posHash = getGridHash(hitPos);
+    if (posHash % 4u != 0u) {
+        // Skip AO calculation for 75% of pixels, return reasonable default
+        return 0.8; // Slightly occluded default
+    }
+    
+    float occlusion = 0.0;
+    const int AO_SAMPLES = 3; // Reduced samples for performance
+    const float AO_RADIUS = 0.4; // Slightly smaller radius
+    
+    for (int i = 0; i < AO_SAMPLES; i++) {
+        // Sample hemisphere with shorter rays for AO
+        vec3 sampleDir = sampleHemisphere(normal, seed);
+        
+        // Cast short ray for occlusion test
+        HitResult aoHit = intersectScene(hitPos + normal * 0.002, sampleDir);
+        
+        if (aoHit.hit && aoHit.t < AO_RADIUS) {
+            // Surface is occluded
+            float occlusionFactor = 1.0 - (aoHit.t / AO_RADIUS);
+            occlusion += occlusionFactor * occlusionFactor; // Non-linear falloff
+        }
+    }
+    
+    // Convert occlusion to accessibility
+    occlusion /= float(AO_SAMPLES);
+    return 1.0 - clamp(occlusion * 0.6, 0.0, 0.4); // Limit AO strength
+}
+
+// Enhanced PBR lighting with indirect illumination
+vec3 calculatePBR(vec3 hitPos, vec3 normal, vec3 viewDir, vec3 albedo, float roughness, float metallic, inout uint seed) {
     vec3 totalLight = vec3(0.0);
     
     // Primary sun light
@@ -875,21 +979,27 @@ vec3 calculatePBR(vec3 hitPos, vec3 normal, vec3 viewDir, vec3 albedo, float rou
         totalLight += (diffuse + specular) * lightColor * NdotL * lightFalloff * shadow;
     }
     
-    // Image-based lighting approximation
-    // Ambient lighting based on sky color and surface orientation
+    // Calculate ambient occlusion
+    float ao = calculateAmbientOcclusion(hitPos, normal, seed);
+    
+    // Add indirect lighting from emissive surfaces
+    vec3 indirectContribution = calculateIndirectLighting(hitPos, normal, albedo, seed);
+    totalLight += indirectContribution * ao;
+    
+    // Enhanced ambient lighting with AO
     vec3 upVector = vec3(0.0, 1.0, 0.0);
     float skyFactor = max(0.0, dot(normal, upVector));
     
     // Sample sky for ambient
-    vec3 skyAmbient = sampleSky(normal) * 0.3;
+    vec3 skyAmbient = sampleSky(normal) * 0.2; // Reduced since we have indirect lighting
     
     // Ground bounce lighting
     vec3 downVector = vec3(0.0, -1.0, 0.0);
     float groundFactor = max(0.0, dot(normal, downVector));
-    vec3 groundAmbient = vec3(0.1, 0.08, 0.06) * groundFactor * 0.2;
+    vec3 groundAmbient = vec3(0.1, 0.08, 0.06) * groundFactor * 0.15;
     
     // Combine ambient terms
-    vec3 ambientColor = skyAmbient * skyFactor + groundAmbient + ambient * 0.5;
+    vec3 ambientColor = (skyAmbient * skyFactor + groundAmbient + ambient * 0.3) * ao;
     
     // Apply ambient with material properties
     vec3 F0 = mix(vec3(0.04), albedo, metallic);
@@ -903,7 +1013,7 @@ vec3 calculatePBR(vec3 hitPos, vec3 normal, vec3 viewDir, vec3 albedo, float rou
 }
 
 // Raytracing with shadows and reflections (performance balanced)
-vec3 trace(vec3 rayOrigin, vec3 rayDirection, uint seed) {
+vec3 trace(vec3 rayOrigin, vec3 rayDirection, inout uint seed) {
     vec3 rayPos = rayOrigin;
     vec3 rayDir = rayDirection;
     vec3 color = vec3(0.0);
@@ -961,7 +1071,7 @@ vec3 trace(vec3 rayOrigin, vec3 rayDirection, uint seed) {
         // Handle different material types based on properties
         if (matProps.translucency > 0.0 && rayDepth < MAX_DEPTH-1) {
             // Translucent material - handle refraction and transmission
-            vec3 directLight = calculatePBR(hitPos, normal, rayDir, albedo, roughness, metallic);
+            vec3 directLight = calculatePBR(hitPos, normal, rayDir, albedo, roughness, metallic, seed);
             
             // Determine if ray is entering or exiting the material
             bool entering = dot(rayDir, normal) < 0.0;
@@ -996,7 +1106,7 @@ vec3 trace(vec3 rayOrigin, vec3 rayDirection, uint seed) {
             }
         } else if (isMirror && rayDepth < MAX_DEPTH-1) {
             // Reflective material
-            vec3 directLight = calculatePBR(hitPos, normal, rayDir, albedo, roughness, metallic);
+            vec3 directLight = calculatePBR(hitPos, normal, rayDir, albedo, roughness, metallic, seed);
             
             // Calculate Fresnel for reflection
             float NdotV = max(0.0, dot(normal, -rayDir));
@@ -1017,7 +1127,7 @@ vec3 trace(vec3 rayOrigin, vec3 rayDirection, uint seed) {
             attenuation *= fresnelVec * (1.0 - roughness) * 0.6;
         } else {
             // Opaque material - calculate full PBR lighting and terminate
-            vec3 materialColor = calculatePBR(hitPos, normal, rayDir, albedo, roughness, metallic);
+            vec3 materialColor = calculatePBR(hitPos, normal, rayDir, albedo, roughness, metallic, seed);
             
             // Apply atmospheric fog
             materialColor = mix(materialColor, fogColor, fogFactor);

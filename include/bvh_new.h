@@ -30,7 +30,11 @@ struct TriEx { float2 uv0, uv1, uv2; float3 N0, N1, N2; };
 // minimalist AABB struct with grow functionality
 struct aabb
 {
-	float3 bmin = 1e30f, bmax = -1e30f;
+	float3 bmin, bmax;
+	aabb() { 
+		bmin = make_float3(1e30f); 
+		bmax = make_float3(-1e30f); 
+	}
 	void grow( float3 p ) { bmin = fminf( bmin, p ); bmax = fmaxf( bmax, p ); }
 	void grow( aabb& b ) { if (b.bmin.x != 1e30f) { grow( b.bmin ); grow( b.bmax ); } }
 	float area()

@@ -1,5 +1,6 @@
 #include "../include/precomp.h"
 #include "../include/bvh_new.h"
+#include <cstring>
 
 namespace Tmpl8
 {

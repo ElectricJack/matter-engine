@@ -68,25 +68,20 @@ struct ALIGN( 8 ) float2
 	float& operator [] ( const int n ) { return cell[n]; }
 };
 
-struct float3;
+struct float3
+{
+	union { struct { float x, y, z; }; float cell[3]; };
+	float& operator [] ( const int n ) { return cell[n]; }
+};
+
 struct ALIGN( 16 ) float4
 {
 	float4() = default;
 	float4( const float a, const float b, const float c, const float d ) : x( a ), y( b ), z( c ), w( d ) {}
 	float4( const float a ) : x( a ), y( a ), z( a ), w( a ) {}
-	float4( const float3 & a, const float d );
-	float4( const float3 & a );
+	float4( const float3 & a, const float d ) : x( a.x ), y( a.y ), z( a.z ), w( d ) {}
+	float4( const float3 & a ) : x( a.x ), y( a.y ), z( a.z ), w( 1.0f ) {}
 	union { struct { float x, y, z, w; }; float cell[4]; };
-	float& operator [] ( const int n ) { return cell[n]; }
-};
-
-struct float3
-{
-	float3() = default;
-	float3( const float a, const float b, const float c ) : x( a ), y( b ), z( c ) {}
-	float3( const float a ) : x( a ), y( a ), z( a ) {}
-	float3( const float4 a ) : x( a.x ), y( a.y ), z( a.z ) {}
-	union { struct { float x, y, z; }; float cell[3]; };
 	float& operator [] ( const int n ) { return cell[n]; }
 };
 
@@ -98,8 +93,9 @@ inline float sqrf( float x ) { return x * x; }
 
 inline float2 make_float2( const float a, float b ) { float2 f2; f2.x = a, f2.y = b; return f2; }
 inline float2 make_float2( const float s ) { return make_float2( s, s ); }
-inline float3 make_float3( const float& a, const float& b, const float& c ) { float3 f3; f3.x = a, f3.y = b, f3.z = c; return f3; }
+inline float3 make_float3( const float& a, const float& b, const float& c ) { float3 f3; f3.x = a; f3.y = b; f3.z = c; return f3; }
 inline float3 make_float3( const float& s ) { return make_float3( s, s, s ); }
+inline float3 make_float3( const float4& a ) { float3 f3; f3.x = a.x; f3.y = a.y; f3.z = a.z; return f3; }
 inline float4 make_float4( const float a, const float b, const float c, const float d ) { float4 f4; f4.x = a, f4.y = b, f4.z = c, f4.w = d; return f4; }
 
 inline float3 operator+( const float3& a, const float3& b ) { return make_float3( a.x + b.x, a.y + b.y, a.z + b.z ); }

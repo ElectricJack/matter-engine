@@ -197,7 +197,7 @@ Color BVHVisualizer::get_depth_color(int depth, int max_depth) {
     if (max_depth <= 0) return WHITE;
     
     float t = static_cast<float>(depth) / static_cast<float>(max_depth);
-    t = std::clamp(t, 0.0f, 1.0f);
+    t = (t < 0.0f) ? 0.0f : (t > 1.0f) ? 1.0f : t;
     
     // Create a rainbow effect from red (depth 0) to violet (max depth)
     float hue = t * 300.0f; // 0 to 300 degrees (red to violet)
@@ -231,7 +231,7 @@ Color BVHVisualizer::get_depth_color(int depth, int max_depth) {
 }
 
 Color BVHVisualizer::blend_colors(Color base, Color overlay, float alpha) {
-    alpha = std::clamp(alpha, 0.0f, 1.0f);
+    alpha = (alpha < 0.0f) ? 0.0f : (alpha > 1.0f) ? 1.0f : alpha;
     
     return Color{
         static_cast<unsigned char>(base.r * (1.0f - alpha) + overlay.r * alpha),
