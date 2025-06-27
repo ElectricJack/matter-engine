@@ -2,44 +2,71 @@ CC = gcc
 RAYLIB_PATH = ../Libraries/raylib
 CFLAGS = -Wall -Wextra -O2 -I$(RAYLIB_PATH)/src -Iinclude
 
-# Detect OS
+# Detect OS and set platform-specific variables
 UNAME_S := $(shell uname -s)
 ifeq ($(UNAME_S),Darwin)
-    LDFLAGS = -L$(RAYLIB_PATH)/src -framework OpenGL -framework Cocoa -framework IOKit -framework CoreVideo -lm
-    LDLIBS = $(RAYLIB_PATH)/src/libraylib.a
+    PLATFORM = macos
+    PLATFORM_DEFINE = PLATFORM_DESKTOP
+    LDFLAGS = -L$(RAYLIB_PATH)/build/$(PLATFORM) -framework OpenGL -framework Cocoa -framework IOKit -framework CoreVideo -lm
+    LDLIBS = $(RAYLIB_PATH)/build/$(PLATFORM)/libraylib.a
 endif
 ifeq ($(UNAME_S),Linux)
-    LDFLAGS = -L$(RAYLIB_PATH)/src -lGL -lm -lpthread -ldl -lrt -lX11
-    LDLIBS = $(RAYLIB_PATH)/src/libraylib.a
+    PLATFORM = linux
+    PLATFORM_DEFINE = PLATFORM_DESKTOP
+    LDFLAGS = -L$(RAYLIB_PATH)/build/$(PLATFORM) -lGL -lm -lpthread -ldl -lrt -lX11
+    LDLIBS = $(RAYLIB_PATH)/build/$(PLATFORM)/libraylib.a
 endif
 ifeq ($(OS),Windows_NT)
-    LDFLAGS = -L$(RAYLIB_PATH)/src -lopengl32 -lgdi32 -lwinmm
-    LDLIBS = $(RAYLIB_PATH)/src/libraylib.a
+    PLATFORM = windows
+    PLATFORM_DEFINE = PLATFORM_DESKTOP
+    LDFLAGS = -L$(RAYLIB_PATH)/build/$(PLATFORM) -lopengl32 -lgdi32 -lwinmm
+    LDLIBS = $(RAYLIB_PATH)/build/$(PLATFORM)/libraylib.a
 endif
 
-# Source files
+# Platform-specific directories
 SRC_DIR = src
 INCLUDE_DIR = include
-OBJ_DIR = obj
+OBJ_DIR = build/$(PLATFORM)/obj
+BUILD_DIR = build/$(PLATFORM)
 
-# Create object directory if it doesn't exist
+# Create platform-specific directories
 $(shell mkdir -p $(OBJ_DIR))
 $(shell mkdir -p $(OBJ_DIR)/$(SRC_DIR))
+$(shell mkdir -p $(BUILD_DIR))
+$(shell mkdir -p $(RAYLIB_PATH)/build/$(PLATFORM))
 
 # Source files - Include both core files and linked library files
 SRCS = main.c $(SRC_DIR)/open_particle_surface.c $(SRC_DIR)/surface.c $(SRC_DIR)/object_allocator.c $(SRC_DIR)/spatial_hash.c
 OBJS = $(SRCS:%.c=$(OBJ_DIR)/%.o)
 
-# Target executable
-BIN = open_particle_surface
+# Target executable (platform-specific)
+BIN = $(BUILD_DIR)/open_particle_surface
 
 all: $(BIN)
 
 $(BIN): $(OBJS) raylib
 	$(CC) -o $@ $(OBJS) $(LDFLAGS) $(LDLIBS)
+	@echo "Built executable for $(PLATFORM): $@"
 
-raylib:
-	$(MAKE) -C $(RAYLIB_PATH)/src PLATFORM=PLATFORM_DESKTOP
+# Platform-specific raylib build with force rebuild check
+RAYLIB_LIB = $(RAYLIB_PATH)/build/$(PLATFORM)/libraylib.a
+RAYLIB_FORCE_FILE = $(RAYLIB_PATH)/build/$(PLATFORM)/.raylib_$(PLATFORM)
+
+raylib: $(RAYLIB_LIB)
+
+$(RAYLIB_LIB): $(RAYLIB_FORCE_FILE)
+	@echo "Building raylib for $(PLATFORM)..."
+	@mkdir -p $(RAYLIB_PATH)/build/$(PLATFORM)
+	$(MAKE) -C $(RAYLIB_PATH)/src PLATFORM=$(PLATFORM_DEFINE) clean
+	$(MAKE) -C $(RAYLIB_PATH)/src PLATFORM=$(PLATFORM_DEFINE)
+	@cp $(RAYLIB_PATH)/src/libraylib.a $(RAYLIB_LIB)
+	@echo "Raylib built and copied to $(RAYLIB_LIB)"
+
+$(RAYLIB_FORCE_FILE):
+	@echo "Creating platform marker for $(PLATFORM)..."
+	@mkdir -p $(RAYLIB_PATH)/build/$(PLATFORM)
+	@rm -f $(RAYLIB_PATH)/build/*/.raylib_*
+	@touch $(RAYLIB_FORCE_FILE)
 
 # Rule for main.c (in root directory)
 $(OBJ_DIR)/main.o: main.c
@@ -49,10 +76,24 @@ $(OBJ_DIR)/main.o: main.c
 $(OBJ_DIR)/$(SRC_DIR)/%.o: $(SRC_DIR)/%.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
+# Platform-specific clean
 clean:
-	rm -rf $(OBJ_DIR) $(BIN)
+	rm -rf $(BUILD_DIR)
 
-clean-all: clean
-	$(MAKE) -C $(RAYLIB_PATH)/src clean
+# Clean all platforms
+clean-all:
+	rm -rf build/
+	rm -rf $(RAYLIB_PATH)/build/
 
-.PHONY: all clean clean-all raylib
+# Force rebuild raylib for current platform
+rebuild-raylib:
+	rm -f $(RAYLIB_FORCE_FILE)
+	$(MAKE) raylib
+
+# Show current platform
+platform:
+	@echo "Current platform: $(PLATFORM)"
+	@echo "Build directory: $(BUILD_DIR)"
+	@echo "Raylib library: $(RAYLIB_LIB)"
+
+.PHONY: all clean clean-all raylib rebuild-raylib platform
