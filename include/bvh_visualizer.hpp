@@ -51,13 +51,13 @@ public:
 
 private:
     // Helper functions for rendering BVH nodes
-    void render_bvh_node_recursive(const Tmpl8::BVHNode* nodes, 
+    void render_bvh_node_recursive(const BVHNode* nodes, 
                                   int node_index, 
                                   int depth,
                                   const VisualizationSettings& settings,
                                   Color base_color);
 
-    void render_tlas_node_recursive(const Tmpl8::TLASNode* nodes,
+    void render_tlas_node_recursive(const TLASNode* nodes,
                                    int node_index,
                                    int depth, 
                                    const VisualizationSettings& settings,
@@ -65,7 +65,7 @@ private:
 
     // Utility functions
     void draw_aabb_wireframe(Vector3 min_pos, Vector3 max_pos, Color color, float thickness = 1.0f);
-    void draw_triangle_wireframe(const Tmpl8::Tri& triangle, Color color, float thickness = 1.0f);
+    void draw_triangle_wireframe(const Tri& triangle, Color color, float thickness = 1.0f);
     Color get_depth_color(int depth, int max_depth);
     Color blend_colors(Color base, Color overlay, float alpha);
 

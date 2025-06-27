@@ -443,7 +443,7 @@ private:
         
         // Analyze TLAS structure  
         printf("=== TLAS Structure Analysis ===\n");
-        const Tmpl8::TLAS* tlas = tlas_manager_->get_tlas();
+        const TLAS* tlas = tlas_manager_->get_tlas();
         if (tlas) {
             printf("TLAS nodes used: %u\n", tlas->nodesUsed);
             printf("TLAS BLAS count: %u\n", tlas->blasCount);

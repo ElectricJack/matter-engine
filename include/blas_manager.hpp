@@ -13,11 +13,7 @@ extern "C" {
 #include <memory>
 #include <cstdint>
 
-// Import the types we need from Tmpl8 namespace and global namespace
-using Tmpl8::Tri;
-using Tmpl8::BVH;
-using Tmpl8::BvhMesh;
-using Tmpl8::aabb;
+// BVH types are now in global namespace
 using uint = unsigned int;
 // float3 types come from precomp.h (global namespace)
 // using ::float3;  // Already available globally
@@ -25,7 +21,7 @@ using uint = unsigned int;
 // using ::normalize;  // Already available globally
 // using ::cross;  // Already available globally
 
-// Legacy Triangle struct for backward compatibility
+// Legacy Triangle struct for backward compatibility (where needed for different layouts)
 struct LegacyTriangle {
     float3 v0, v1, v2;
     float3 centroid;
@@ -33,7 +29,7 @@ struct LegacyTriangle {
     int material_id;
 };
 
-// Legacy BVHNode struct for backward compatibility
+// Legacy BVHNode struct for backward compatibility (where needed for different layouts)
 struct LegacyBVHNode {
     float3 aabbMin;
     uint32_t leftFirst;
@@ -41,9 +37,8 @@ struct LegacyBVHNode {
     uint32_t triCount;
 };
 
-// Type aliases for backward compatibility
+// Type aliases for backward compatibility (using different names to avoid conflicts)
 using Triangle = LegacyTriangle;
-using BVHNode = LegacyBVHNode;
 
 using BLASHandle = uint32_t;
 constexpr BLASHandle INVALID_BLAS_HANDLE = 0;

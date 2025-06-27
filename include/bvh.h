@@ -8,9 +8,6 @@
 // bin count for binned BVH building
 #define BINS 8
 
-namespace Tmpl8
-{
-
 // Forward declarations
 class BvhMesh;
 
@@ -53,9 +50,9 @@ struct Intersection
 };
 
 // ray struct, prepared for SIMD AABB intersection
-struct ALIGN(64) Ray
+struct ALIGN(64) BVHRay
 {
-	Ray() { O4 = D4 = rD4 = _mm_set1_ps( 1 ); }
+	BVHRay() { O4 = D4 = rD4 = _mm_set1_ps( 1 ); }
 	union { struct { float3 O; float dummy1; }; __m128 O4; };
 	union { struct { float3 D; float dummy2; }; __m128 D4; };
 	union { struct { float3 rD; float dummy3; }; __m128 rD4; };
@@ -88,7 +85,7 @@ public:
 	BVH( BvhMesh* mesh );
 	void Build();
 	void Refit();
-	void Intersect( Ray& ray, uint instanceIdx );
+	void Intersect( BVHRay& ray, uint instanceIdx );
 private:
 	void Subdivide( uint nodeIdx, uint depth, uint& nodePtr, float3& centroidMin, float3& centroidMax );
 	void UpdateNodeBounds( uint nodeIdx, float3& centroidMin, float3& centroidMax );
@@ -237,7 +234,7 @@ public:
 	void SetTransform( const mat4& transform );
 	BVHInstance() = default;
 	BVHInstance( BVH* bvh_ptr, uint instance_idx ) : bvh(bvh_ptr), idx(instance_idx) {}
-	void Intersect( Ray& ray );
+	void Intersect( BVHRay& ray );
 	
 	// Accessor methods for compatibility
 	const mat4& GetTransform() const { return transform; }
@@ -271,7 +268,7 @@ public:
 	TLAS() = default;
 	TLAS( BVHInstance* blas, int N );
 	void Build();
-	void Intersect( Ray& ray );
+	void Intersect( BVHRay& ray );
 	
 	// Public accessors for external classes
 	uint GetBlasCount() const { return blasCount; }
@@ -289,6 +286,4 @@ public:
 	uint blasCount = 0, nodesUsed = 0;
 	TLASNode* tlasNode = 0;
 	uint* nodeIdx = 0;
-};
-
-} // namespace Tmpl8 
+}; 

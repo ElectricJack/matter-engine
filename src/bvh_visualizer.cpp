@@ -46,7 +46,7 @@ void BVHVisualizer::render_blas_bvh(const BLASManager& blas_manager,
     for (const auto& entry : entries) {
         if (!entry || !entry->bvh) continue;
         
-        const Tmpl8::BVH* bvh = entry->bvh.get();
+        const BVH* bvh = entry->bvh.get();
         if (!bvh->bvhNode || bvh->nodesUsed == 0) continue;
         
         // Render this BLAS BVH starting from root node
@@ -73,14 +73,14 @@ void BVHVisualizer::render_tlas_bvh(const TLASManager& tlas_manager,
     render_tlas_node_recursive(tlas->tlasNode, 0, 0, settings, settings.tlas_color);
 }
 
-void BVHVisualizer::render_bvh_node_recursive(const Tmpl8::BVHNode* nodes, 
+void BVHVisualizer::render_bvh_node_recursive(const BVHNode* nodes, 
                                              int node_index, 
                                              int depth,
                                              const VisualizationSettings& settings,
                                              Color base_color) {
     if (depth > settings.max_depth_to_show) return;
     
-    const Tmpl8::BVHNode& node = nodes[node_index];
+    const BVHNode& node = nodes[node_index];
     
     // Determine if we should show this node
     bool is_leaf = node.isLeaf();
@@ -117,14 +117,14 @@ void BVHVisualizer::render_bvh_node_recursive(const Tmpl8::BVHNode* nodes,
     }
 }
 
-void BVHVisualizer::render_tlas_node_recursive(const Tmpl8::TLASNode* nodes,
+void BVHVisualizer::render_tlas_node_recursive(const TLASNode* nodes,
                                               int node_index,
                                               int depth, 
                                               const VisualizationSettings& settings,
                                               Color base_color) {
     if (depth > settings.max_depth_to_show) return;
     
-    const Tmpl8::TLASNode& node = nodes[node_index];
+    const TLASNode& node = nodes[node_index];
     
     // Determine if we should show this node
     bool is_leaf = node.isLeaf();
@@ -185,7 +185,7 @@ void BVHVisualizer::draw_aabb_wireframe(Vector3 min_pos, Vector3 max_pos, Color 
     DrawLine3D({min_pos.x, min_pos.y, max_pos.z}, {min_pos.x, max_pos.y, max_pos.z}, color);
 }
 
-void BVHVisualizer::draw_triangle_wireframe(const Tmpl8::Tri& triangle, Color color, float thickness) {
+void BVHVisualizer::draw_triangle_wireframe(const Tri& triangle, Color color, float thickness) {
     (void)thickness; // Suppress unused parameter warning
     
     Vector3 v0 = float3_to_vector3(triangle.vertex0);

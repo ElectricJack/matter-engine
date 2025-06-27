@@ -14,11 +14,7 @@ extern "C" {
 #include <memory>
 #include <cstdint>
 
-// Only import the types we need from Tmpl8 namespace
-using Tmpl8::TLAS;
-using Tmpl8::BVHInstance;
-using Tmpl8::mat4;
-using Tmpl8::aabb;
+// BVH types are now in global namespace
 // float3 and normalize are from global namespace via precomp.h
 
 // Legacy types for backward compatibility
@@ -30,12 +26,7 @@ struct Matrix4x4 {
     }
 };
 
-struct TLASNode {
-    float3 aabbMin;
-    uint32_t leftRight;
-    float3 aabbMax;
-    uint32_t blasIndex;
-};
+// TLASNode is now available from bvh.h in global namespace
 
 struct LegacyBVHInstance {
     mat4 transform;
@@ -109,7 +100,7 @@ public:
     int get_node_count() const;
     
     // Access to internal TLAS for visualization
-    const Tmpl8::TLAS* get_tlas() const { return tlas_.get(); }
+    const TLAS* get_tlas() const { return tlas_.get(); }
     
     // Access to draw records for rasterization
     const std::vector<DrawRecord>& get_draw_records() const { return draw_records_; }

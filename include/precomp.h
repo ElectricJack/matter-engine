@@ -138,11 +138,3 @@ inline float3 cross( const float3& a, const float3& b ) { return make_float3( a.
 
 // header for SSE intrinsics
 #include <immintrin.h>
-
-namespace Tmpl8
-{
-
-};
-
-// namespaces
-using namespace Tmpl8;

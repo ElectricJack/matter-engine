@@ -381,7 +381,7 @@ vec3 trace(vec3 rayOrigin, vec3 rayDirection, inout uint seed) {
     // Atmospheric parameters - much more transparent haze
     float fogDensity = 0.00005;
     vec3  fogColor   = vec3(0.8, 0.8, 0.9);
-    int   MAX_DEPTH  = 5;
+    int   MAX_DEPTH  = 3;
     
     for (int rayDepth = 0; rayDepth < MAX_DEPTH; rayDepth++) { // Limited to 2 bounces for performance
         HitResult hit = intersectScene(rayPos, rayDir);

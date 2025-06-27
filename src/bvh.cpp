@@ -2,12 +2,9 @@
 #include "../include/bvh.h"
 #include <cstring>
 
-namespace Tmpl8
-{
-
 // functions
 
-void IntersectTri( Ray& ray, const Tri& tri, const uint instPrim )
+void IntersectTri( BVHRay& ray, const Tri& tri, const uint instPrim )
 {
 	// Moeller-Trumbore ray/triangle intersection algorithm
 	const float3 edge1 = tri.vertex1 - tri.vertex0;
@@ -28,7 +25,7 @@ void IntersectTri( Ray& ray, const Tri& tri, const uint instPrim )
 		ray.hit.v = v, ray.hit.instPrim = instPrim;
 }
 
-inline float IntersectAABB( const Ray& ray, const float3 bmin, const float3 bmax )
+inline float IntersectAABB( const BVHRay& ray, const float3 bmin, const float3 bmax )
 {
 	// "slab test" ray/AABB intersection
 	float tx1 = (bmin.x - ray.O.x) * ray.rD.x, tx2 = (bmax.x - ray.O.x) * ray.rD.x;
@@ -41,7 +38,7 @@ inline float IntersectAABB( const Ray& ray, const float3 bmin, const float3 bmax
 }
 
 #ifdef USE_SSE
-float IntersectAABB_SSE( const Ray& ray, const __m128& bmin4, const __m128& bmax4 )
+float IntersectAABB_SSE( const BVHRay& ray, const __m128& bmin4, const __m128& bmax4 )
 {
 	// "slab test" ray/AABB intersection, using SIMD instructions
 	static __m128 mask4 = _mm_cmpeq_ps( _mm_setzero_ps(), _mm_set_ps( 1, 0, 0, 0 ) );
@@ -82,7 +79,7 @@ BVH::BVH( BvhMesh* triMesh )
 	Build();
 }
 
-void BVH::Intersect( Ray& ray, uint instanceIdx )
+void BVH::Intersect( BVHRay& ray, uint instanceIdx )
 {
 	BVHNode* node = &bvhNode[0], * stack[64];
 	uint stackPtr = 0;
@@ -306,10 +303,10 @@ void BVHInstance::SetTransform( const mat4& transform_new )
 	}
 }
 
-void BVHInstance::Intersect( Ray& ray )
+void BVHInstance::Intersect( BVHRay& ray )
 {
 	// Transform ray to local space
-	Ray localRay;
+	BVHRay localRay;
 	localRay.O = invTransform.TransformPoint( ray.O );
 	localRay.D = invTransform.TransformVector( ray.D );
 	localRay.rD = make_float3( 1.0f / localRay.D.x, 1.0f / localRay.D.y, 1.0f / localRay.D.z );
@@ -408,7 +405,7 @@ void TLAS::BuildRecursive(uint nodeIndex, uint first, uint count)
 	BuildRecursive(rightChild, rightFirst, rightCount);
 }
 
-void TLAS::Intersect( Ray& ray )
+void TLAS::Intersect( BVHRay& ray )
 {
 	// Stack-based iterative traversal
 	TLASNode* stack[64];
@@ -477,6 +474,4 @@ void TLAS::Intersect( Ray& ray )
 			}
 		}
 	}
-}
-
-} // namespace Tmpl8 
+} 

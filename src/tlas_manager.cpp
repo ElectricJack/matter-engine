@@ -411,7 +411,7 @@ void TLASManager::generate_node_texture_data(std::vector<float>& output_data,
     output_data.resize(texture_width * texture_height * 4, 0.0f);
     
     for (int i = 0; i < static_cast<int>(tlas_->nodesUsed); i++) {
-        const Tmpl8::TLASNode& node = tlas_->tlasNode[i];
+        const TLASNode& node = tlas_->tlasNode[i];
         int baseIdx = i * 4;
         
         // Row 0: aabbMin + leftRight
