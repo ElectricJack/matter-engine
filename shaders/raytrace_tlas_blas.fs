@@ -11,10 +11,10 @@ uniform vec3  cameraUp;
 uniform float cameraFovy;
 uniform vec2  screenSize;
 
-// Lighting uniforms (ported from raytracer.cl)
-vec3 lightPos = vec3(3.0, 10.0, 2.0);
-vec3 lightColor = vec3(150.0, 150.0, 120.0);
-vec3 ambient = vec3(0.2, 0.2, 0.4);
+// Enhanced lighting for better shadow visibility
+vec3 lightPos = vec3(3.0, 8.0, 2.0);            // Lower sun position for better shadows
+vec3 lightColor = vec3(4.0, 3.8, 3.5);          // Brighter direct lighting
+vec3 ambient = vec3(0.1, 0.15, 0.2);            // Darker ambient for contrast
 
 // Sky texture (placeholder - could be added as uniform)
 uniform sampler2D skyTexture;
@@ -46,55 +46,57 @@ vec3 computeCameraRay(vec2 uv) {
     return rayDir;
 }
 
-// Enhanced sky sampling with atmospheric effects
+// Realistic sunny day sky with horizon
 vec3 sampleSky(vec3 direction) {
     float height = direction.y;
     
-    // Horizon and zenith colors
-    vec3 horizonColor = vec3(0.8, 0.7, 0.6);  // Warm horizon
-    vec3 zenithColor = vec3(0.2, 0.5, 0.9);   // Blue zenith
-    vec3 nadirColor = vec3(0.1, 0.2, 0.3);    // Dark below horizon
+    // Sunny day colors
+    vec3 zenithColor = vec3(0.25, 0.5, 1.0);      // Bright blue zenith
+    vec3 horizonColor = vec3(0.9, 0.7, 0.5);      // Warm yellow-orange horizon
+    vec3 groundColor = vec3(0.3, 0.25, 0.2);      // Brown earth
     
-    // Smooth gradient based on height
     vec3 skyColor;
-    if (height > 0.0) {
-        // Above horizon - interpolate from horizon to zenith
-        float t = pow(height, 0.7); // Non-linear for more natural gradient
-        skyColor = mix(horizonColor, zenithColor, t);
-    } else {
-        // Below horizon - dark ground color
-        float t = clamp(-height * 3.0, 0.0, 1.0);
-        skyColor = mix(horizonColor * 0.3, nadirColor, t);
-    }
     
-    // Add atmospheric haze near horizon
-    float hazeFactor = exp(-abs(height) * 3.0);
-    skyColor = mix(skyColor, vec3(0.9, 0.8, 0.7), hazeFactor * 0.3);
+    if (height > 0.0) {
+        // Above horizon - sky
+        float t = smoothstep(0.0, 0.6, height);
+        skyColor = mix(horizonColor, zenithColor, t);
+        
+        // Add atmospheric scattering near horizon - more subtle
+        float scattering = exp(-height * 3.0);
+        skyColor = mix(skyColor, vec3(1.0, 0.8, 0.6), scattering * 0.15);
+        
+        // Add subtle clouds - less prominent
+        float cloudNoise = sin(direction.x * 3.0) * sin(direction.z * 2.0) * 0.1;
+        float cloudFactor = smoothstep(0.2, 0.8, height) * max(0.0, cloudNoise);
+        skyColor = mix(skyColor, vec3(1.0, 1.0, 0.95), cloudFactor * 0.1);
+    } else {
+        // Below horizon - ground
+        float depth = clamp(-height * 2.0, 0.0, 1.0);
+        skyColor = mix(horizonColor * 0.4, groundColor, depth);
+    }
     
     return skyColor;
 }
 
-// Optimized shadow calculation
-float calculateShadow(vec3 hitPos, vec3 lightDir, float lightDist) {
-    // Only test shadows for reasonable distances to avoid performance issues
-    if (lightDist > 100.0) return 1.0;
-    
-    // Offset start position to avoid self-intersection
-    vec3 shadowRayOrigin = hitPos + lightDir * 0.01;
+// Simple shadow calculation
+float calculateShadow(vec3 hitPos, vec3 lightDir, float lightDist, vec3 normal) {
+    // Adaptive bias based on surface orientation relative to light
+    float bias = max(0.002, 0.01 * (1.0 - abs(dot(normal, lightDir))));
+    vec3 shadowRayOrigin = hitPos + normal * bias;
     
     // Test shadow ray
     HitResult shadowHit = intersectScene(shadowRayOrigin, lightDir);
     
-    if (shadowHit.hit && shadowHit.t < lightDist - 0.01) {
-        // In shadow - but add some ambient occlusion softening
-        return 0.2; // Soft shadows
+    if (shadowHit.hit && shadowHit.t < lightDist - bias) {
+        return 0.3; // In shadow
     }
     
     return 1.0; // Fully lit
 }
 
-// Enhanced lighting calculation with shadows and multiple light contributions
-vec3 calculateLighting(vec3 hitPos, vec3 normal, vec3 viewDir, vec3 albedo, float roughness, float metallic) {
+// PBR lighting calculation with proper energy conservation
+vec3 calculatePBR(vec3 hitPos, vec3 normal, vec3 viewDir, vec3 albedo, float roughness, float metallic) {
     vec3 totalLight = vec3(0.0);
     
     // Primary sun light
@@ -103,35 +105,75 @@ vec3 calculateLighting(vec3 hitPos, vec3 normal, vec3 viewDir, vec3 albedo, floa
     vec3 lightDir = lightVec / lightDist;
     
     // Shadow test
-    float shadow = calculateShadow(hitPos, lightDir, lightDist);
+    float shadow = calculateShadow(hitPos, lightDir, lightDist, normal);
     
     if (shadow > 0.0) {
-        // Diffuse lighting (Lambert)
         float NdotL = max(0.0, dot(normal, lightDir));
-        
-        // Specular lighting (Blinn-Phong approximation)
+        float NdotV = max(0.0, dot(normal, -viewDir));
         vec3 halfVec = normalize(lightDir - viewDir);
         float NdotH = max(0.0, dot(normal, halfVec));
-        float specPower = mix(32.0, 256.0, 1.0 - roughness);
-        float specular = pow(NdotH, specPower) * (1.0 - roughness);
+        float VdotH = max(0.0, dot(-viewDir, halfVec));
+        
+        // PBR calculations
+        // F0 (base reflectivity)
+        vec3 F0 = mix(vec3(0.04), albedo, metallic);
+        
+        // Fresnel (Schlick approximation)
+        vec3 F = F0 + (1.0 - F0) * pow(1.0 - VdotH, 5.0);
+        
+        // Distribution (GGX/Trowbridge-Reitz)
+        float alpha = roughness * roughness;
+        float alpha2 = alpha * alpha;
+        float denom = NdotH * NdotH * (alpha2 - 1.0) + 1.0;
+        float D = alpha2 / (3.14159 * denom * denom);
+        
+        // Geometry (Smith method)
+        float k = (roughness + 1.0) * (roughness + 1.0) / 8.0;
+        float G1L = NdotL / (NdotL * (1.0 - k) + k);
+        float G1V = NdotV / (NdotV * (1.0 - k) + k);
+        float G = G1L * G1V;
+        
+        // BRDF
+        vec3 numerator = D * G * F;
+        float denominator = 4.0 * NdotV * NdotL + 0.001; // Prevent division by zero
+        vec3 specular = numerator / denominator;
+        
+        // Energy conservation
+        vec3 kS = F; // Reflected light
+        vec3 kD = vec3(1.0) - kS; // Refracted light
+        kD *= 1.0 - metallic; // Metallics don't have diffuse
         
         // Light attenuation
-        float lightFalloff = 1.0 / (1.0 + lightDist * lightDist * 0.01);
+        float lightFalloff = 1.0 / (1.0 + lightDist * lightDist * 0.005);
         
         // Combine diffuse and specular
-        vec3 diffuseContrib = albedo * NdotL;
-        vec3 specularContrib = mix(vec3(0.04), albedo, metallic) * specular;
-        
-        totalLight += (diffuseContrib + specularContrib) * lightColor * lightFalloff * shadow;
+        vec3 diffuse = kD * albedo / 3.14159; // Lambert BRDF
+        totalLight += (diffuse + specular) * lightColor * NdotL * lightFalloff * shadow;
     }
     
-    // Ambient lighting with subtle directional bias
-    vec3 ambientContrib = albedo * ambient * (0.5 + 0.5 * dot(normal, vec3(0.0, 1.0, 0.0)));
-    totalLight += ambientContrib;
+    // Image-based lighting approximation
+    // Ambient lighting based on sky color and surface orientation
+    vec3 upVector = vec3(0.0, 1.0, 0.0);
+    float skyFactor = max(0.0, dot(normal, upVector));
     
-    // Sky lighting (simple approximation)
-    float skyContrib = max(0.0, dot(normal, vec3(0.0, 1.0, 0.0))) * 0.3;
-    totalLight += albedo * vec3(0.4, 0.6, 0.8) * skyContrib;
+    // Sample sky for ambient
+    vec3 skyAmbient = sampleSky(normal) * 0.3;
+    
+    // Ground bounce lighting
+    vec3 downVector = vec3(0.0, -1.0, 0.0);
+    float groundFactor = max(0.0, dot(normal, downVector));
+    vec3 groundAmbient = vec3(0.1, 0.08, 0.06) * groundFactor * 0.2;
+    
+    // Combine ambient terms
+    vec3 ambientColor = skyAmbient * skyFactor + groundAmbient + ambient * 0.5;
+    
+    // Apply ambient with material properties
+    vec3 F0 = mix(vec3(0.04), albedo, metallic);
+    vec3 ambientFresnel = F0 + (1.0 - F0) * pow(1.0 - max(0.0, dot(normal, -viewDir)), 5.0);
+    vec3 ambientKS = ambientFresnel;
+    vec3 ambientKD = (1.0 - ambientKS) * (1.0 - metallic);
+    
+    totalLight += ambientKD * albedo * ambientColor;
     
     return totalLight;
 }
@@ -143,9 +185,9 @@ vec3 trace(vec3 rayOrigin, vec3 rayDirection, uint seed) {
     vec3 color = vec3(0.0);
     vec3 attenuation = vec3(1.0);
     
-    // Atmospheric parameters
-    float fogDensity = 0.03;
-    vec3 fogColor = vec3(0.7, 0.8, 0.9);
+    // Atmospheric parameters - much more transparent haze
+    float fogDensity = 0.0001;
+    vec3 fogColor = vec3(0.8, 0.8, 0.9);
     
     for (int rayDepth = 0; rayDepth < 3; rayDepth++) { // Reduced from 4 to 3 bounces
         HitResult hit = intersectScene(rayPos, rayDir);
@@ -154,11 +196,17 @@ vec3 trace(vec3 rayOrigin, vec3 rayDirection, uint seed) {
             // Hit sky
             vec3 skyColor = sampleSky(rayDir);
             
-            // Enhanced sky with sun disk
+            // Enhanced sun disk with realistic intensity
             vec3 sunDir = normalize(lightPos);
             float sunDot = max(0.0, dot(rayDir, sunDir));
-            float sunIntensity = pow(sunDot, 256.0);
-            vec3 sunColor = vec3(1.0, 0.9, 0.7) * sunIntensity * 1.5;
+            
+            // Large soft sun disk
+            float sunIntensity = pow(sunDot, 128.0);
+            vec3 sunColor = vec3(1.2, 1.0, 0.8) * sunIntensity * 2.0;
+            
+            // Bright core
+            float sunCore = pow(sunDot, 512.0);
+            sunColor += vec3(1.5, 1.3, 1.0) * sunCore * 3.0;
             
             color += attenuation * (skyColor + sunColor);
             break;
@@ -172,64 +220,68 @@ vec3 trace(vec3 rayOrigin, vec3 rayDirection, uint seed) {
         float distance = hit.t;
         float fogFactor = 1.0 - exp(-fogDensity * distance * distance);
         
-        // Material properties
+        // Non-metallic materials for better shadow visibility
         vec3 albedo;
         float roughness, metallic;
         bool isMirror = false;
         
         int matId = hit.material;
-        if (matId == 0) { // Red metal
-            albedo = vec3(0.8, 0.1, 0.1);
-            roughness = 0.1;
-            metallic = 0.9;
-            isMirror = true;
-        } else if (matId == 1) { // Blue ceramic
-            albedo = vec3(0.1, 0.3, 0.8);
-            roughness = 0.8;
-            metallic = 0.0;
-        } else if (matId == 2) { // Green plastic
-            albedo = vec3(0.2, 0.7, 0.2);
-            roughness = 0.6;
+        if (matId == 0) { // Red diffuse
+            albedo = vec3(0.8, 0.2, 0.2);
+            roughness = 0.0;
             metallic = 0.1;
-        } else if (matId == 3) { // Gold
-            albedo = vec3(1.0, 0.8, 0.2);
-            roughness = 0.1;
-            metallic = 1.0;
-            isMirror = true;
-        } else { // Default gray
-            albedo = vec3(0.6);
-            roughness = 0.5;
+        } else if (matId == 1) { // Blue diffuse
+            albedo = vec3(0.2, 0.3, 0.8);
+            roughness = 0.7;
+            metallic = 0.1;
+        } else if (matId == 2) { // Green diffuse (ground)
+            albedo = vec3(0.3, 0.7, 0.3);
+            roughness = 0.9;
             metallic = 0.0;
+        } else if (matId == 3) { // Yellow/Gold diffuse
+            albedo = vec3(0.8, 0.7, 0.3);
+            roughness = 0.02;
+            metallic = 1.0;
+        } else if (matId == 4) { // White diffuse
+            albedo = vec3(0.9, 0.9, 0.9);
+            roughness = 0.0;
+            metallic = 1.0;
+        } else { // Default gray diffuse
+            albedo = vec3(0.6, 0.6, 0.6);
+            roughness = 0.0;
+            metallic = 1.0;
         }
         
         if (isMirror && rayDepth < 2) { // Limit reflection depth
-            // Calculate lighting for the surface
-            vec3 directLight = calculateLighting(hitPos, normal, rayDir, albedo, roughness, metallic);
+            // Calculate PBR lighting for the surface
+            vec3 directLight = calculatePBR(hitPos, normal, rayDir, albedo, roughness, metallic);
             
-            // Calculate reflection
-            float fresnel = pow(1.0 - max(0.0, -dot(normal, rayDir)), 2.0);
-            fresnel = mix(0.04, 1.0, fresnel);
+            // Calculate proper Fresnel for reflection
+            float NdotV = max(0.0, dot(normal, -rayDir));
+            vec3 F0 = mix(vec3(0.04), albedo, metallic);
+            vec3 fresnel = F0 + (1.0 - F0) * pow(1.0 - NdotV, 5.0);
+            float fresnelStrength = (fresnel.r + fresnel.g + fresnel.b) / 3.0;
             
             if (rayDepth == 0) {
-                // Primary reflection - mix direct lighting with reflection
+                // Primary reflection - energy conservation
                 vec3 reflectedDir = rayDir - 2.0 * normal * dot(normal, rayDir);
                 rayDir = reflectedDir;
                 rayPos = hitPos + normal * 0.001;
-                attenuation *= albedo * fresnel * 0.8;
+                attenuation *= fresnel * (1.0 - roughness);
                 
-                // Add some direct lighting to first bounce
-                color += attenuation * directLight * (1.0 - fresnel) * 0.3;
+                // Add direct lighting weighted by inverse fresnel
+                color += directLight * (1.0 - fresnelStrength) * 0.5;
             } else {
                 // Secondary reflection - simplified
                 rayDir = rayDir - 2.0 * normal * dot(normal, rayDir);
                 rayPos = hitPos + normal * 0.001;
-                attenuation *= albedo * 0.6;
+                attenuation *= fresnel * 0.7;
             }
         } else {
-            // Diffuse material - calculate full lighting
-            vec3 materialColor = calculateLighting(hitPos, normal, rayDir, albedo, roughness, metallic);
+            // Non-reflective material - calculate full PBR lighting
+            vec3 materialColor = calculatePBR(hitPos, normal, rayDir, albedo, roughness, metallic);
             
-            // Apply fog
+            // Apply atmospheric fog
             materialColor = mix(materialColor, fogColor, fogFactor);
             
             color += attenuation * materialColor;

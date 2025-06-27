@@ -1,1 +1,0 @@
-../../SpatialQueryLib/src/bvh.c
