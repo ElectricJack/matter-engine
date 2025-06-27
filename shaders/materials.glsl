@@ -31,7 +31,15 @@ MaterialProperties getMaterialProperties(int materialId)
     mat.emission = 0.0;
     mat.translucency = 0.0;
     mat.ior = 1.0;
-    mat.flatShading = false;
+
+    // If the materialId is greater than 1M, then that's a flag to enable
+    // smooth shading. Otherwise it's flat shading.
+    int smooth_normals_offset = 1000000;
+    mat.flatShading = true;
+    if (materialId >= smooth_normals_offset) {
+        materialId -= smooth_normals_offset;
+        mat.flatShading = false;
+    }
     
     // Material definitions based on scene setup
     if (materialId == 0) {
@@ -42,7 +50,6 @@ MaterialProperties getMaterialProperties(int materialId)
         mat.emission = 0.1;  // Slight red glow
         mat.translucency = 0.0;
         mat.ior = 1.0;
-        mat.flatShading = false;
     } 
     else if (materialId == 1) {
         // Blue diffuse sphere with smooth normals
@@ -52,7 +59,6 @@ MaterialProperties getMaterialProperties(int materialId)
         mat.emission = 0.0;
         mat.translucency = 0.0;
         mat.ior = 1.0;
-        mat.flatShading = false; // Smooth normals for spheres
     } 
     else if (materialId == 2) {
         // Green diffuse ground with flat shading
@@ -62,7 +68,6 @@ MaterialProperties getMaterialProperties(int materialId)
         mat.emission = 0.0;
         mat.translucency = 0.0;
         mat.ior = 1.0;
-        mat.flatShading = true; // Flat shading for ground
     } 
     else if (materialId == 3) {
         // Yellow/Gold metallic sphere with smooth normals
@@ -72,7 +77,6 @@ MaterialProperties getMaterialProperties(int materialId)
         mat.emission = 0.0;
         mat.translucency = 0.0;
         mat.ior = 1.0;
-        mat.flatShading = false; // Smooth normals for spheres
     } 
     else if (materialId == 4) {
         // White translucent glass with smooth normals
@@ -82,7 +86,6 @@ MaterialProperties getMaterialProperties(int materialId)
         mat.emission = 0.0;
         mat.translucency = 0.8; // Highly translucent
         mat.ior = 1.5; // Glass IOR
-        mat.flatShading = false; // Smooth normals for spheres
     }
     else if (materialId == 5) {
         // Bright emissive light source
@@ -92,7 +95,6 @@ MaterialProperties getMaterialProperties(int materialId)
         mat.emission = 5.0; // Strong emission
         mat.translucency = 0.0;
         mat.ior = 1.0;
-        mat.flatShading = false;
     }
     else if (materialId == 6) {
         // Colored glass - green tinted
@@ -102,7 +104,6 @@ MaterialProperties getMaterialProperties(int materialId)
         mat.emission = 0.0;
         mat.translucency = 0.9;
         mat.ior = 1.52; // Crown glass IOR
-        mat.flatShading = false;
     }
     else if (materialId == 7) {
         // Water-like material
@@ -112,7 +113,6 @@ MaterialProperties getMaterialProperties(int materialId)
         mat.emission = 0.0;
         mat.translucency = 0.7;
         mat.ior = 1.33; // Water IOR
-        mat.flatShading = false;
     }
     else {
         // Default gray metallic material
@@ -122,7 +122,6 @@ MaterialProperties getMaterialProperties(int materialId)
         mat.emission = 0.0;
         mat.translucency = 0.0;
         mat.ior = 1.0;
-        mat.flatShading = false;
     }
     
     return mat;

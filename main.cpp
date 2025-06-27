@@ -60,21 +60,21 @@ public:
                 break;
             }
             
-            // Print simple frame count to check if we're making progress
-            if (frame_count % 30 == 0 || debug_mode_) {
-                printf("Frame %d...\n", frame_count);
-            }
+            // // Print simple frame count to check if we're making progress
+            // if (frame_count % 30 == 0 || debug_mode_) {
+            //     printf("Frame %d...\n", frame_count);
+            // }
             
-            // Print performance stats every 60 frames (roughly every second at 60 FPS)
-            if (frame_count % 60 == 0) {
-                PROFILE_PRINT();
-            }
+            // // Print performance stats every 60 frames (roughly every second at 60 FPS)
+            // if (frame_count % 60 == 0) {
+            //     PROFILE_PRINT();
+            // }
             
-            // Reset stats every 5 seconds to show current performance
-            if (frame_count % 300 == 0) {
-                printf("\n--- Performance Reset ---\n");
-                PROFILE_RESET();
-            }
+            // // Reset stats every 5 seconds to show current performance
+            // if (frame_count % 300 == 0) {
+            //     printf("\n--- Performance Reset ---\n");
+            //     PROFILE_RESET();
+            // }
             
             update();
             render();
@@ -121,7 +121,7 @@ private:
         
         // Clear previous scene
         tlas_manager_->clear();
-        
+        int smooth_normals_offset = 1000000;
         switch (test_number) {
             case 1: {
                 tlas_manager_->load_identity();
@@ -143,7 +143,8 @@ private:
 
                 // Test 2: Single cube + ground plane
                 tlas_manager_->load_identity();
-                tlas_manager_->draw(sphere_blas_, 1); // Blue sphere
+                //tlas_manager_->scale(1.0f);
+                tlas_manager_->draw(sphere_blas_, smooth_normals_offset + 1); // Blue sphere
                 break;
             }
             
@@ -166,7 +167,8 @@ private:
                 // Central sphere higher up
                 tlas_manager_->load_identity();
                 tlas_manager_->translate(0.0f, 2.0f, 0.0f);
-                tlas_manager_->draw(sphere_blas_, 3); // Gold sphere
+                tlas_manager_->scale(2.0f);
+                tlas_manager_->draw(sphere_blas_, smooth_normals_offset + 3); // Gold sphere
                 break;
             }
             
@@ -203,7 +205,8 @@ private:
                 // Central sphere
                 tlas_manager_->load_identity();
                 tlas_manager_->translate(0.0f, 3.0f, 0.0f);
-                tlas_manager_->draw(sphere_blas_, 4);
+                tlas_manager_->scale(3.0f);
+                tlas_manager_->draw(sphere_blas_, smooth_normals_offset + 4);
                 break;
             }
             
@@ -216,7 +219,7 @@ private:
                 
                 // Central sphere
                 tlas_manager_->load_identity();
-                tlas_manager_->draw(sphere_blas_, 4);
+                tlas_manager_->draw(sphere_blas_, smooth_normals_offset + 4);
                 
                 // Circle of cubes
                 SceneBuilder::create_circle(*tlas_manager_, cube_blas_, 6, 2.5f, 0);
@@ -238,7 +241,7 @@ private:
                         if ((x + z) % 2 == 0) {
                             tlas_manager_->draw(cube_blas_, (x + 1) + (z + 1) * 3);
                         } else {
-                            tlas_manager_->draw(sphere_blas_, (x + 1) + (z + 1) * 3);
+                            tlas_manager_->draw(sphere_blas_, smooth_normals_offset + (x + 1) + (z + 1) * 3);
                         }
                     }
                 }
@@ -260,7 +263,7 @@ private:
                     float angle = i * M_PI / 2.0f;
                     tlas_manager_->load_identity();
                     tlas_manager_->translate(std::cos(angle) * 1.5f, 2.0f, std::sin(angle) * 1.5f);
-                    tlas_manager_->draw(sphere_blas_, i + 1);
+                    tlas_manager_->draw(sphere_blas_, smooth_normals_offset + i + 1);
                 }
                 
                 // Top level central cube
@@ -284,7 +287,7 @@ private:
                 
                 tlas_manager_->load_identity();
                 tlas_manager_->translate(0.0f, 2.0f, 0.0f);
-                tlas_manager_->draw(sphere_blas_, 1);
+                tlas_manager_->draw(sphere_blas_, smooth_normals_offset + 1);
                 
                 // Multiple circles at different heights and radii
                 tlas_manager_->push_matrix();
@@ -294,7 +297,7 @@ private:
                 
                 tlas_manager_->push_matrix();
                 tlas_manager_->translate(0.0f, 1.5f, 0.0f);
-                SceneBuilder::create_circle(*tlas_manager_, sphere_blas_, 6, 3.5f, 2);
+                SceneBuilder::create_circle(*tlas_manager_, sphere_blas_, 6, 3.5f, smooth_normals_offset + 2);
                 tlas_manager_->pop_matrix();
                 
                 // Grid of floating objects
@@ -309,7 +312,7 @@ private:
                     tlas_manager_->load_identity();
                     tlas_manager_->translate(std::cos(angle) * 6.0f, 3.0f + i * 0.5f, std::sin(angle) * 6.0f);
                     tlas_manager_->scale(0.5f + i * 0.1f);
-                    tlas_manager_->draw(sphere_blas_, i % 5);
+                    tlas_manager_->draw(sphere_blas_, smooth_normals_offset + i % 5);
                 }
                 break;
             }
@@ -888,7 +891,8 @@ int main(int argc, char* argv[]) {
     }
     
     try {
-        RayTracingDemo demo(1280, 800, debug_mode);
+        //RayTracingDemo demo(1280, 800, debug_mode);
+        RayTracingDemo demo(800, 600, debug_mode);
         demo.run();
     } catch (const std::exception& e) {
         printf("Error: %s\n", e.what());

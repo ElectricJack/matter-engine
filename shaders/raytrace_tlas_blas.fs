@@ -12,9 +12,9 @@ uniform float cameraFovy;
 uniform vec2  screenSize;
 
 // Enhanced lighting for better shadow visibility
-vec3 lightPos = vec3(3.0, 8.0, 2.0);            // Lower sun position for better shadows
+vec3 lightPos   = vec3(3.0, 8.0, 2.0);            // Lower sun position for better shadows
 vec3 lightColor = vec3(4.0, 3.8, 3.5);          // Brighter direct lighting
-vec3 ambient = vec3(0.1, 0.15, 0.2);            // Darker ambient for contrast
+vec3 ambient    = vec3(0.1, 0.15, 0.2);            // Darker ambient for contrast
 
 // Sky texture (placeholder - could be added as uniform)
 uniform sampler2D skyTexture;
@@ -100,6 +100,66 @@ float fresnel(vec3 incident, vec3 normal, float ior) {
     float r0 = (1.0 - ior) / (1.0 + ior);
     r0 = r0 * r0;
     return r0 + (1.0 - r0) * pow(1.0 - cosI, 5.0);
+}
+
+// Generate random direction in hemisphere (cosine-weighted sampling)
+vec3 sampleHemisphere(vec3 normal, inout uint seed) {
+    float u1 = RandomFloat(seed);
+    float u2 = RandomFloat(seed);
+    
+    // Cosine-weighted hemisphere sampling
+    float cosTheta = sqrt(u1);
+    float sinTheta = sqrt(1.0 - u1);
+    float phi = 2.0 * 3.14159 * u2;
+    
+    vec3 w = normal;
+    vec3 u = normalize(cross((abs(w.x) > 0.1 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0)), w));
+    vec3 v = cross(w, u);
+    
+    return normalize(u * cos(phi) * sinTheta + v * sin(phi) * sinTheta + w * cosTheta);
+}
+
+// Sample GGX/Trowbridge-Reitz microfacet distribution for realistic roughness
+vec3 sampleGGX(vec3 normal, float roughness, inout uint seed) {
+    float u1 = RandomFloat(seed);
+    float u2 = RandomFloat(seed);
+    
+    float alpha = roughness * roughness;
+    float alpha2 = alpha * alpha;
+    
+    // Importance sample GGX distribution
+    float cosTheta = sqrt((1.0 - u1) / (1.0 + (alpha2 - 1.0) * u1));
+    float sinTheta = sqrt(1.0 - cosTheta * cosTheta);
+    float phi = 2.0 * 3.14159 * u2;
+    
+    // Convert to world coordinates
+    vec3 w = normal;
+    vec3 u = normalize(cross((abs(w.x) > 0.1 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0)), w));
+    vec3 v = cross(w, u);
+    
+    return normalize(u * cos(phi) * sinTheta + v * sin(phi) * sinTheta + w * cosTheta);
+}
+
+// Generate roughness-perturbed reflection direction using microfacet model
+vec3 roughnessReflect(vec3 incident, vec3 normal, float roughness, inout uint seed) {
+    if (roughness < 0.001) {
+        // Perfect mirror - no perturbation
+        return incident - 2.0 * normal * dot(normal, incident);
+    }
+    
+    // Sample a microfacet normal using GGX distribution
+    vec3 halfVector = sampleGGX(normal, roughness, seed);
+    
+    // Reflect around the sampled microfacet normal
+    vec3 reflectedDir = incident - 2.0 * halfVector * dot(halfVector, incident);
+    
+    // Ensure the reflection is in the correct hemisphere
+    if (dot(reflectedDir, normal) < 0.0) {
+        // Fallback to perfect reflection if sampling resulted in invalid direction
+        reflectedDir = incident - 2.0 * normal * dot(normal, incident);
+    }
+    
+    return normalize(reflectedDir);
 }
 
 // Simple shadow calculation
@@ -211,8 +271,9 @@ vec3 trace(vec3 rayOrigin, vec3 rayDirection, uint seed) {
     // Atmospheric parameters - much more transparent haze
     float fogDensity = 0.0001;
     vec3 fogColor = vec3(0.8, 0.8, 0.9);
+    int MAX_DEPTH = 4;
     
-    for (int rayDepth = 0; rayDepth < 2; rayDepth++) { // Limited to 2 bounces for performance
+    for (int rayDepth = 0; rayDepth < MAX_DEPTH; rayDepth++) { // Limited to 2 bounces for performance
         HitResult hit = intersectScene(rayPos, rayDir);
         
         if (!hit.hit) {
@@ -257,7 +318,7 @@ vec3 trace(vec3 rayOrigin, vec3 rayDirection, uint seed) {
         }
         
         // Handle different material types based on properties
-        if (matProps.translucency > 0.0 && rayDepth < 1) {
+        if (matProps.translucency > 0.0 && rayDepth < MAX_DEPTH-1) {
             // Translucent material - handle refraction and transmission
             vec3 directLight = calculatePBR(hitPos, normal, rayDir, albedo, roughness, metallic);
             
@@ -286,13 +347,13 @@ vec3 trace(vec3 rayOrigin, vec3 rayDirection, uint seed) {
                 
                 // Beer's law absorption could be added here for colored glass
             } else {
-                // Total internal reflection - treat as mirror
-                vec3 reflectedDir = rayDir - 2.0 * n * dot(n, rayDir);
+                // Total internal reflection - treat as mirror with roughness perturbation
+                vec3 reflectedDir = roughnessReflect(rayDir, n, roughness, seed);
                 rayDir = reflectedDir;
                 rayPos = hitPos + n * 0.001;
                 attenuation *= albedo * 0.9;
             }
-        } else if (isMirror && rayDepth < 1) {
+        } else if (isMirror && rayDepth < MAX_DEPTH-1) {
             // Reflective material
             vec3 directLight = calculatePBR(hitPos, normal, rayDir, albedo, roughness, metallic);
             
@@ -308,8 +369,8 @@ vec3 trace(vec3 rayOrigin, vec3 rayDirection, uint seed) {
             // Add direct lighting with proper energy conservation
             color += attenuation * directLight * (1.0 - reflectionWeight * 0.7);
             
-            // Continue ray for reflection
-            vec3 reflectedDir = rayDir - 2.0 * normal * dot(normal, rayDir);
+            // Continue ray for reflection with roughness-based perturbation
+            vec3 reflectedDir = roughnessReflect(rayDir, normal, roughness, seed);
             rayDir = reflectedDir;
             rayPos = hitPos + normal * 0.001;
             attenuation *= fresnelVec * (1.0 - roughness) * 0.6;

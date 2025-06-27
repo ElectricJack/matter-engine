@@ -467,19 +467,10 @@ HitResult intersectScene(vec3 rayOrigin, vec3 rayDir)
             // Use face normal for flat shading
             normal = normalize(cross(tri.v1 - tri.v0, tri.v2 - tri.v0));
         } else {
-            // For smooth shading, check if this is a sphere geometry (materials 1, 3, 4 are spheres)
-            bool isSphere = (inst.materialId == 1u || inst.materialId == 3u || inst.materialId == 4u);
-            
-            if (isSphere) {
-                // For spheres, calculate smooth normal from hit position to sphere center
-                // Transform world hit position to local space
-                vec3 localHitPos = transformPosition(result.position, inst.invTransform);
-                // Smooth normal is the normalized position from sphere center (origin in local space)
-                normal = normalize(localHitPos);
-            } else {
-                // Use face normal even for smooth shading on non-sphere geometry
-                normal = normalize(cross(tri.v1 - tri.v0, tri.v2 - tri.v0));
-            }
+            // Transform world hit position to local space
+            vec3 localHitPos = transformPosition(result.position, inst.invTransform);
+            // Smooth normal is the normalized position from sphere center (origin in local space)
+            normal = normalize(localHitPos);
         }
         
         // Transform normal to world space
