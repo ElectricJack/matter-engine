@@ -209,10 +209,11 @@ public:
 	
 	float3 TransformPoint( const float3& v ) const
 	{
-		return make_float3(
+		return make_float3( 
 			cell[0] * v.x + cell[1] * v.y + cell[2] * v.z + cell[3],
 			cell[4] * v.x + cell[5] * v.y + cell[6] * v.z + cell[7],
-			cell[8] * v.x + cell[9] * v.y + cell[10] * v.z + cell[11] );
+			cell[8] * v.x + cell[9] * v.y + cell[10] * v.z + cell[11]
+		);
 	}
 	
 	float3 TransformVector( const float3& v ) const
@@ -220,31 +221,32 @@ public:
 		return make_float3( 
 			cell[0] * v.x + cell[1] * v.y + cell[2] * v.z,
 			cell[4] * v.x + cell[5] * v.y + cell[6] * v.z,
-			cell[8] * v.x + cell[9] * v.y + cell[10] * v.z );
+			cell[8] * v.x + cell[9] * v.y + cell[10] * v.z
+		);
 	}
 };
 
-// instance of a BVH, with transform and world bounds
+// BVH instance, for TLAS
 class BVHInstance
 {
 public:
-	BVHInstance() = default;
-	BVHInstance( BVH* blas, uint index ) : bvh( blas ), idx( index ) { SetTransform( mat4() ); }
-	void SetTransform( const mat4& transform );
-	mat4& GetTransform() { return transform; }
-	mat4& GetInvTransform() { return invTransform; }
-	void Intersect( Ray& ray );
-private:
-	mat4 transform;
-	mat4 invTransform; // inverse transform
-public:
-	aabb bounds; // in world space
-private:
 	BVH* bvh = 0;
+	mat4 transform, invTransform;
 	uint idx;
+	aabb bounds;
+	void SetTransform( const mat4& transform );
+	BVHInstance() = default;
+	BVHInstance( BVH* bvh_ptr, uint instance_idx ) : bvh(bvh_ptr), idx(instance_idx) {}
+	void Intersect( Ray& ray );
+	
+	// Accessor methods for compatibility
+	const mat4& GetTransform() const { return transform; }
+	mat4& GetTransform() { return transform; }
+	const mat4& GetInvTransform() const { return invTransform; }
+	mat4& GetInvTransform() { return invTransform; }
 };
 
-// top-level BVH node
+// Top Level Acceleration Structure
 struct TLASNode
 {
 	union 
@@ -263,22 +265,30 @@ struct TLASNode
 	bool isLeaf() const { return leftRight == 0; }
 };
 
-// top-level BVH class (simplified without kdtree for now)
 class ALIGN(64) TLAS
 {
 public:
 	TLAS() = default;
-	TLAS( BVHInstance* bvhList, int N );
+	TLAS( BVHInstance* blas, int N );
 	void Build();
 	void Intersect( Ray& ray );
+	
+	// Public accessors for external classes
+	uint GetBlasCount() const { return blasCount; }
+	uint GetNodesUsed() const { return nodesUsed; }
+	BVHInstance* GetBlas() const { return blas; }
+	TLASNode* GetTlasNode() const { return tlasNode; }
+	
 private:
 	void BuildRecursive( uint nodeIndex, uint first, uint count );
 	int FindBestMatch( int N, int A );
+	
 public:
-	TLASNode* tlasNode = 0;
+	// Made public for direct access by visualization and manager classes
 	BVHInstance* blas = 0;
-	uint nodesUsed, blasCount;
+	uint blasCount = 0, nodesUsed = 0;
+	TLASNode* tlasNode = 0;
 	uint* nodeIdx = 0;
 };
 
-} // namespace Tmpl8
+} // namespace Tmpl8 

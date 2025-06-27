@@ -149,7 +149,7 @@ MaterialProperties getMaterialProperties(int materialId)
         mat.roughness = 0.0;
         mat.metallic = 0.1;
         mat.emission = 0.0;
-        mat.translucency = 0.5;
+        mat.translucency = 1;
         mat.ior = 1.33; // Water IOR
     }
     else {

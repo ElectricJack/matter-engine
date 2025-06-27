@@ -5,7 +5,7 @@ extern "C" {
 }
 
 #include "precomp.h"
-#include "bvh_new.h"
+#include "bvh.h"
 
 #include "profiler.hpp"
 #include <unordered_map>

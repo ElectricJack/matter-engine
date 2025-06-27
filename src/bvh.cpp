@@ -1,5 +1,5 @@
 #include "../include/precomp.h"
-#include "../include/bvh_new.h"
+#include "../include/bvh.h"
 #include <cstring>
 
 namespace Tmpl8
@@ -479,4 +479,4 @@ void TLAS::Intersect( Ray& ray )
 	}
 }
 
-} // namespace Tmpl8
+} // namespace Tmpl8 

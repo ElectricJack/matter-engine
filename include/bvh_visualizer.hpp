@@ -4,7 +4,7 @@ extern "C" {
     #include "raylib.h"
 }
 
-#include "bvh_new.h"
+#include "bvh.h"
 #include "blas_manager.hpp"
 #include "tlas_manager.hpp"
 #include <vector>

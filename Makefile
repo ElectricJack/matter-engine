@@ -48,8 +48,8 @@ $(shell mkdir -p $(BUILD_DIR))
 $(shell mkdir -p $(RAYLIB_PATH)/build/$(PLATFORM))
 
 # C++ main application
-SRC = main.cpp src/bvh_new.cpp src/object_allocator.c src/blas_manager.cpp src/tlas_manager.cpp src/bvh_visualizer.cpp
-OBJ = $(OBJ_DIR)/main.o $(OBJ_DIR)/bvh_new.o $(OBJ_DIR)/object_allocator.o $(OBJ_DIR)/blas_manager.o $(OBJ_DIR)/tlas_manager.o $(OBJ_DIR)/bvh_visualizer.o
+SRC = main.cpp src/bvh.cpp src/object_allocator.c src/blas_manager.cpp src/tlas_manager.cpp src/bvh_visualizer.cpp
+OBJ = $(OBJ_DIR)/main.o $(OBJ_DIR)/bvh.o $(OBJ_DIR)/object_allocator.o $(OBJ_DIR)/blas_manager.o $(OBJ_DIR)/tlas_manager.o $(OBJ_DIR)/bvh_visualizer.o
 BIN = $(BUILD_DIR)/gpu_raytrace$(BIN_SUFFIX)
 PREPROCESSOR = $(BUILD_DIR)/shader_preprocessor
 
@@ -120,7 +120,7 @@ endif
 $(OBJ_DIR)/main.o: main.cpp
 	$(CXX) -c $< $(CXXFLAGS) -o $@
 
-$(OBJ_DIR)/bvh_new.o: src/bvh_new.cpp
+$(OBJ_DIR)/bvh.o: src/bvh.cpp
 	$(CXX) -c $< $(CXXFLAGS) -o $@
 
 $(OBJ_DIR)/object_allocator.o: src/object_allocator.c
