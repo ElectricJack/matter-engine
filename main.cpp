@@ -19,6 +19,7 @@ public:
     RayTracingDemo(int width, int height, bool debug_mode = false) 
         : screen_width_(width), screen_height_(height),
           debug_mode_(debug_mode), debug_frame_count_(0),
+          animation_time_(0.0f), animate_scenes_(true),
           blas_manager_(std::make_unique<BLASManager>()),
           tlas_manager_(std::make_unique<TLASManager>(50)),
           bvh_visualizer_(std::make_unique<BVHVisualizer>()) {
@@ -35,6 +36,7 @@ public:
         setup_rendering();
         
         printf("=== C++ Modular BLAS/TLAS System Initialized ===\n");
+        printf("Animation enabled - TLAS will rebuild every frame\n");
     }
     
     ~RayTracingDemo() {
@@ -110,7 +112,7 @@ private:
         printf("=== BLAS Statistics After Registration ===\n");
         blas_manager_->print_stats();
         
-        printf("=== Setting Up Test Scene ===\n");
+        printf("=== Setting Up Initial Test Scene ===\n");
         setup_test_scene(current_test_scene_);
         
         printf("=== Final Manager Statistics ===\n");
@@ -118,36 +120,41 @@ private:
         tlas_manager_->print_stats();
     }
     
-    void setup_test_scene(int test_number) {
+    void setup_test_scene(int test_number, float time = 0.0f) {
         PROFILE_SECTION("Test Scene Setup");
-        
-        printf("Setting up test scene %d...\n", test_number);
         
         // Clear previous scene
         tlas_manager_->clear();
         int smooth_normals_offset = 1000000;
+        
         switch (test_number) {
             case 1: {
+                // Ground plane
                 tlas_manager_->load_identity();
                 tlas_manager_->translate(0.0f, -2.0f, 0.0f);
                 tlas_manager_->scale(200.0f,0.1f,200.0f);
                 tlas_manager_->draw(cube_blas_, 2);
 
-                // Test 1: Single cube at origin
+                // Animated cube - rotating and bouncing
                 tlas_manager_->load_identity();
+                tlas_manager_->translate(0.0f, std::sin(time * 2.0f) * 0.5f, 0.0f);
+                tlas_manager_->rotate_y(time);
                 tlas_manager_->draw(cube_blas_, 0); // Red cube
                 break;
             }
             
             case 2: {
+                // Ground plane
                 tlas_manager_->load_identity();
                 tlas_manager_->translate(0.0f, -2.0f, 0.0f);
                 tlas_manager_->scale(200.0f,0.1f,200.0f);
                 tlas_manager_->draw(cube_blas_, 2);
 
-                // Test 2: Single cube + ground plane
+                // Animated sphere - figure-8 motion
+                float x = std::sin(time) * 2.0f;
+                float z = std::sin(time * 2.0f) * 1.0f;
                 tlas_manager_->load_identity();
-                //tlas_manager_->scale(1.0f);
+                tlas_manager_->translate(x, 0.0f, z);
                 tlas_manager_->draw(sphere_blas_, smooth_normals_offset + 1); // Blue sphere
                 break;
             }
@@ -159,92 +166,135 @@ private:
                 tlas_manager_->scale(200.0f,0.1f,200.0f);
                 tlas_manager_->draw(cube_blas_, 2);
 
-                // Floating cubes that should cast shadows
-                tlas_manager_->load_identity();
-                tlas_manager_->translate(+2.0f, 1.0f, 0.0f);
-                tlas_manager_->draw(cube_blas_, 0); // Red cube
+                // Orbiting cubes around center
+                float orbit_radius = 2.0f;
+                for (int i = 0; i < 2; i++) {
+                    float angle = time + i * M_PI;
+                    float x = std::cos(angle) * orbit_radius;
+                    float z = std::sin(angle) * orbit_radius;
+                    
+                    tlas_manager_->load_identity();
+                    tlas_manager_->translate(x, 1.0f, z);
+                    tlas_manager_->rotate_y(time * 2.0f);
+                    tlas_manager_->draw(cube_blas_, i); // Red and blue cubes
+                }
                 
-                tlas_manager_->load_identity();
-                tlas_manager_->translate(-2.0f, 1.0f, 0.0f);
-                tlas_manager_->draw(cube_blas_, 1); // Blue cube
-                
-                // Central sphere higher up
+                // Central sphere scaling up and down
                 tlas_manager_->load_identity();
                 tlas_manager_->translate(0.0f, 2.0f, 0.0f);
-                tlas_manager_->scale(2.0f);
+                float scale_factor = 1.0f + std::sin(time * 3.0f) * 0.5f;
+                tlas_manager_->scale(scale_factor);
                 tlas_manager_->draw(sphere_blas_, smooth_normals_offset + 3); // Gold sphere
                 break;
             }
             
             case 4: {
-                // Test 4: Four cubes in a square + ground
+                // Ground plane
                 tlas_manager_->load_identity();
                 tlas_manager_->translate(0.0f, -2.0f, 0.0f);
                 tlas_manager_->scale(200.0f,0.1f,200.0f);
                 tlas_manager_->draw(cube_blas_, 2);
                 
+                // Four cubes in a square formation - rotating around center
                 float positions[4][2] = {{-1.0f, -1.0f}, {1.0f, -1.0f}, {-1.0f, 1.0f}, {1.0f, 1.0f}};
                 for (int i = 0; i < 4; i++) {
+                    // Rotate the entire formation
+                    float angle = time * 0.5f;
+                    float x = positions[i][0] * std::cos(angle) - positions[i][1] * std::sin(angle);
+                    float z = positions[i][0] * std::sin(angle) + positions[i][1] * std::cos(angle);
+                    
                     tlas_manager_->load_identity();
-                    tlas_manager_->translate(positions[i][0], 0.0f, positions[i][1]);
+                    tlas_manager_->translate(x, std::sin(time + i) * 0.3f, z);
+                    tlas_manager_->rotate_y(time * 2.0f + i * M_PI / 2.0f);
                     tlas_manager_->draw(cube_blas_, i % 5);
                 }
                 break;
             }
             
             case 5: {
-                // Test 5: Add a sphere to the mix
+                // Ground plane
                 tlas_manager_->load_identity();
                 tlas_manager_->translate(0.0f, -2.0f, 0.0f);
                 tlas_manager_->scale(200.0f,0.1f,200.0f);
                 tlas_manager_->draw(cube_blas_, 2);
                 
+                // Four cubes with wave motion
                 float positions[4][2] = {{-1.5f, -1.5f}, {1.5f, -1.5f}, {-1.5f, 1.5f}, {1.5f, 1.5f}};
                 for (int i = 0; i < 4; i++) {
+                    float wave_offset = i * M_PI / 2.0f;
+                    float y = std::sin(time * 2.0f + wave_offset) * 1.0f;
+                    
                     tlas_manager_->load_identity();
-                    tlas_manager_->translate(positions[i][0], 0.0f, positions[i][1]);
+                    tlas_manager_->translate(positions[i][0], y, positions[i][1]);
                     tlas_manager_->draw(cube_blas_, i);
                 }
                 
-                // Central sphere
+                // Central sphere with complex motion
+                float sphere_x = std::cos(time * 0.7f) * 0.5f;
+                float sphere_y = 3.0f + std::sin(time * 1.5f) * 1.0f;
+                float sphere_z = std::sin(time * 0.7f) * 0.5f;
+                float sphere_scale = 2.0f + std::sin(time * 2.0f) * 0.5f;
+                
                 tlas_manager_->load_identity();
-                tlas_manager_->translate(0.0f, 3.0f, 0.0f);
-                tlas_manager_->scale(3.0f);
+                tlas_manager_->translate(sphere_x, sphere_y, sphere_z);
+                tlas_manager_->scale(sphere_scale);
                 tlas_manager_->draw(sphere_blas_, smooth_normals_offset + 4);
                 break;
             }
             
             case 6: {
-                // Test 6: Circle of cubes around central sphere
+                // Ground plane
                 tlas_manager_->load_identity();
                 tlas_manager_->translate(0.0f, -2.0f, 0.0f);
                 tlas_manager_->scale(200.0f,0.1f,200.0f);
                 tlas_manager_->draw(cube_blas_, 2);
                 
-                // Central sphere
+                // Central sphere pulsing
+                float scale = 1.0f + std::sin(time * 4.0f) * 0.3f;
                 tlas_manager_->load_identity();
+                tlas_manager_->scale(scale);
                 tlas_manager_->draw(sphere_blas_, smooth_normals_offset + 4);
                 
-                // Circle of cubes
-                SceneBuilder::create_circle(*tlas_manager_, cube_blas_, 6, 2.5f, 0);
+                // Animated circle of cubes - changing radius and rotation
+                float base_radius = 2.5f + std::sin(time) * 0.5f;
+                int cube_count = 6;
+                for (int i = 0; i < cube_count; i++) {
+                    float angle = (time * 0.8f) + (i * 2.0f * M_PI / cube_count);
+                    float x = std::cos(angle) * base_radius;
+                    float z = std::sin(angle) * base_radius;
+                    float y = std::sin(time * 2.0f + i * 0.5f) * 0.5f;
+                    
+                    tlas_manager_->load_identity();
+                    tlas_manager_->translate(x, y, z);
+                    tlas_manager_->rotate_y(time * 3.0f + i);
+                    tlas_manager_->draw(cube_blas_, i % 5);
+                }
                 break;
             }
             
             case 7: {
-                // Test 7: 3x3 grid of alternating cubes and spheres
+                // Ground plane
                 tlas_manager_->load_identity();
                 tlas_manager_->translate(0.0f, -2.0f, 0.0f);
                 tlas_manager_->scale(200.0f,0.1f,200.0f);
                 tlas_manager_->draw(cube_blas_, 2);
                 
+                // 3x3 grid with wave motion
                 for (int x = -1; x <= 1; x++) {
                     for (int z = -1; z <= 1; z++) {
+                        float wave_x = std::sin(time + x * 0.5f) * 0.3f;
+                        float wave_z = std::cos(time + z * 0.5f) * 0.3f;
+                        float wave_y = std::sin(time * 2.0f + x * 0.8f + z * 0.8f) * 0.8f;
+                        
                         tlas_manager_->load_identity();
-                        tlas_manager_->translate(x * 2.0f, 0.0f, z * 2.0f);
+                        tlas_manager_->translate(x * 2.0f + wave_x, wave_y, z * 2.0f + wave_z);
                         
                         if ((x + z) % 2 == 0) {
+                            tlas_manager_->rotate_y(time + x + z);
                             tlas_manager_->draw(cube_blas_, (x + 1) + (z + 1) * 3);
                         } else {
+                            float scale = 1.0f + std::sin(time * 3.0f + x + z) * 0.2f;
+                            tlas_manager_->scale(scale);
                             tlas_manager_->draw(sphere_blas_, smooth_normals_offset + (x + 1) + (z + 1) * 3);
                         }
                     }
@@ -253,69 +303,130 @@ private:
             }
             
             case 8: {
-                // Test 8: Multi-level scene with floating objects
+                // Ground plane
                 tlas_manager_->load_identity();
                 tlas_manager_->translate(0.0f, -2.0f, 0.0f);
                 tlas_manager_->scale(200.0f,0.1f,200.0f);
                 tlas_manager_->draw(cube_blas_, 2);
                 
-                // Ground level objects
-                SceneBuilder::create_circle(*tlas_manager_, cube_blas_, 8, 3.0f, 0);
-                
-                // Mid level spheres
-                for (int i = 0; i < 4; i++) {
-                    float angle = i * M_PI / 2.0f;
+                // Ground level objects - rotating ring
+                int ground_count = 8;
+                float ground_radius = 3.0f;
+                for (int i = 0; i < ground_count; i++) {
+                    float angle = (time * 0.6f) + (i * 2.0f * M_PI / ground_count);
+                    float x = std::cos(angle) * ground_radius;
+                    float z = std::sin(angle) * ground_radius;
+                    
                     tlas_manager_->load_identity();
-                    tlas_manager_->translate(std::cos(angle) * 1.5f, 2.0f, std::sin(angle) * 1.5f);
+                    tlas_manager_->translate(x, 0.0f, z);
+                    tlas_manager_->rotate_y(time * 2.0f + i);
+                    tlas_manager_->draw(cube_blas_, i % 5);
+                }
+                
+                // Mid level spheres - counter-rotating
+                for (int i = 0; i < 4; i++) {
+                    float angle = -time * 0.8f + i * M_PI / 2.0f;
+                    float x = std::cos(angle) * 1.5f;
+                    float z = std::sin(angle) * 1.5f;
+                    float y = 2.0f + std::sin(time * 2.0f + i) * 0.3f;
+                    
+                    tlas_manager_->load_identity();
+                    tlas_manager_->translate(x, y, z);
                     tlas_manager_->draw(sphere_blas_, smooth_normals_offset + i + 1);
                 }
                 
-                // Top level central cube
+                // Top level central cube - complex motion
+                float top_y = 4.0f + std::sin(time * 1.2f) * 0.5f;
                 tlas_manager_->load_identity();
-                tlas_manager_->translate(0.0f, 4.0f, 0.0f);
-                tlas_manager_->rotate_y(M_PI / 4.0f);
+                tlas_manager_->translate(0.0f, top_y, 0.0f);
+                tlas_manager_->rotate_y(time * 1.5f);
+                tlas_manager_->rotate_x(time * 0.7f);
                 tlas_manager_->draw(cube_blas_, 4);
                 break;
             }
             
             case 9: {
-                // Test 9: Complex scene with everything
+                // Ground plane
                 tlas_manager_->load_identity();
                 tlas_manager_->translate(0.0f, -2.0f, 0.0f);
                 tlas_manager_->scale(200.0f,0.1f,200.0f);
                 tlas_manager_->draw(cube_blas_, 2);
                 
-                // Central cluster
+                // Central cluster with orbital motion
+                float central_orbit = std::cos(time * 0.3f) * 0.5f;
                 tlas_manager_->load_identity();
+                tlas_manager_->translate(central_orbit, 0.0f, 0.0f);
+                tlas_manager_->rotate_y(time);
                 tlas_manager_->draw(cube_blas_, 0);
                 
                 tlas_manager_->load_identity();
-                tlas_manager_->translate(0.0f, 2.0f, 0.0f);
+                tlas_manager_->translate(-central_orbit, 2.0f + std::sin(time * 2.0f) * 0.3f, 0.0f);
                 tlas_manager_->draw(sphere_blas_, smooth_normals_offset + 1);
                 
-                // Multiple circles at different heights and radii
+                // First circle - rotating and expanding/contracting
                 tlas_manager_->push_matrix();
                 tlas_manager_->translate(0.0f, 0.0f, 0.0f);
-                SceneBuilder::create_circle(*tlas_manager_, cube_blas_, 8, 2.0f, 0);
+                float circle1_radius = 2.0f + std::sin(time * 0.8f) * 0.5f;
+                int circle1_count = 8;
+                for (int i = 0; i < circle1_count; i++) {
+                    float angle = (time * 0.7f) + (i * 2.0f * M_PI / circle1_count);
+                    float x = std::cos(angle) * circle1_radius;
+                    float z = std::sin(angle) * circle1_radius;
+                    
+                    tlas_manager_->push_matrix();
+                    tlas_manager_->translate(x, 0.0f, z);
+                    tlas_manager_->rotate_y(time * 2.0f + i);
+                    tlas_manager_->draw(cube_blas_, i % 5);
+                    tlas_manager_->pop_matrix();
+                }
                 tlas_manager_->pop_matrix();
                 
+                // Second circle - counter-rotating spheres
                 tlas_manager_->push_matrix();
                 tlas_manager_->translate(0.0f, 1.5f, 0.0f);
-                SceneBuilder::create_circle(*tlas_manager_, sphere_blas_, 6, 3.5f, smooth_normals_offset + 2);
+                float circle2_radius = 3.5f + std::cos(time * 1.2f) * 0.8f;
+                int circle2_count = 6;
+                for (int i = 0; i < circle2_count; i++) {
+                    float angle = (-time * 1.1f) + (i * 2.0f * M_PI / circle2_count);
+                    float x = std::cos(angle) * circle2_radius;
+                    float z = std::sin(angle) * circle2_radius;
+                    float scale = 1.0f + std::sin(time * 3.0f + i) * 0.3f;
+                    
+                    tlas_manager_->push_matrix();
+                    tlas_manager_->translate(x, 0.0f, z);
+                    tlas_manager_->scale(scale);
+                    tlas_manager_->draw(sphere_blas_, smooth_normals_offset + i + 2);
+                    tlas_manager_->pop_matrix();
+                }
                 tlas_manager_->pop_matrix();
                 
-                // Grid of floating objects
+                // Grid of floating objects with wave motion
                 tlas_manager_->push_matrix();
                 tlas_manager_->translate(-8.0f, 1.0f, -8.0f);
-                SceneBuilder::create_grid(*tlas_manager_, cube_blas_, 4, 4, 2.0f, 3);
+                for (int gx = 0; gx < 4; gx++) {
+                    for (int gz = 0; gz < 4; gz++) {
+                        float wave_y = std::sin(time * 1.5f + gx * 0.5f + gz * 0.5f) * 0.8f;
+                        tlas_manager_->push_matrix();
+                        tlas_manager_->translate(gx * 2.0f, wave_y, gz * 2.0f);
+                        tlas_manager_->rotate_y(time + gx + gz);
+                        tlas_manager_->draw(cube_blas_, (gx + gz) % 5);
+                        tlas_manager_->pop_matrix();
+                    }
+                }
                 tlas_manager_->pop_matrix();
                 
-                // Scattered spheres
+                // Scattered orbiting spheres
                 for (int i = 0; i < 6; i++) {
-                    float angle = i * M_PI / 3.0f;
+                    float orbit_angle = time * 0.4f + i * M_PI / 3.0f;
+                    float orbit_radius = 6.0f + std::sin(time * 0.6f + i) * 1.0f;
+                    float x = std::cos(orbit_angle) * orbit_radius;
+                    float z = std::sin(orbit_angle) * orbit_radius;
+                    float y = 3.0f + i * 0.5f + std::sin(time * 2.0f + i * 0.7f) * 1.0f;
+                    float scale = 0.5f + i * 0.1f + std::cos(time * 3.0f + i) * 0.2f;
+                    
                     tlas_manager_->load_identity();
-                    tlas_manager_->translate(std::cos(angle) * 6.0f, 3.0f + i * 0.5f, std::sin(angle) * 6.0f);
-                    tlas_manager_->scale(0.5f + i * 0.1f);
+                    tlas_manager_->translate(x, y, z);
+                    tlas_manager_->scale(scale);
                     tlas_manager_->draw(sphere_blas_, smooth_normals_offset + i % 5);
                 }
                 break;
@@ -323,7 +434,7 @@ private:
             
             default:
                 // Fallback to test 1
-                setup_test_scene(1);
+                setup_test_scene(1, time);
                 return;
         }
         
@@ -520,6 +631,15 @@ private:
         // Handle input
         handle_input();
         
+        // Update animation time
+        animation_time_ += GetFrameTime();
+        
+        // Rebuild scene with animation if enabled and not in unit test mode
+        if (animate_scenes_ && current_test_scene_ > 0) {
+            PROFILE_SECTION("Animated Scene Update");
+            setup_test_scene(current_test_scene_, animation_time_);
+        }
+        
         // Update camera (DisableCursor handles mouse capture automatically)
         UpdateCamera(&camera_, CAMERA_FREE);
     }
@@ -549,10 +669,11 @@ private:
                 if (current_test_scene_ != i) {
                     current_test_scene_ = i;
                     printf("Switching to test scene %d...\n", i);
-                    setup_test_scene(current_test_scene_);
-                    blas_manager_->print_stats();
-                    tlas_manager_->print_stats();
-                    
+                    if (!animate_scenes_) {
+                        setup_test_scene(current_test_scene_);
+                        blas_manager_->print_stats();
+                        tlas_manager_->print_stats();
+                    }
                 }
                 break;
             }
@@ -561,7 +682,18 @@ private:
         // Unit test scene
         if (IsKeyPressed(KEY_ZERO)) {
             printf("Loading unit test scene...\n");
+            animate_scenes_ = false; // Disable animation for unit test
             setup_unit_test_scene();
+        }
+        
+        // Animation toggle
+        if (IsKeyPressed(KEY_A)) {
+            animate_scenes_ = !animate_scenes_;
+            printf("Animation %s\n", animate_scenes_ ? "enabled" : "disabled");
+            if (!animate_scenes_) {
+                // Rebuild current scene without animation
+                setup_test_scene(current_test_scene_);
+            }
         }
         
         // Performance controls
@@ -816,33 +948,46 @@ private:
             DrawText(TextFormat("Test Scene %d (Press 0 for unit test, 1-9 to change)", current_test_scene_), 10, 90, 16, LIGHTGRAY);
         }
         
+        // Animation status
+        if (animate_scenes_ && current_test_scene_ > 0) {
+            DrawText("ANIMATION ENABLED - TLAS rebuilds every frame", 10, 110, 16, GREEN);
+            DrawText("Press A to toggle animation", 10, 130, 14, LIGHTGRAY);
+        } else if (current_test_scene_ > 0) {
+            DrawText("Animation disabled - Static scene", 10, 110, 16, YELLOW);
+            DrawText("Press A to enable animation", 10, 130, 14, LIGHTGRAY);
+        } else {
+            DrawText("Unit Test Mode - Animation disabled", 10, 110, 16, LIGHTGRAY);
+            DrawText("Press A to toggle animation", 10, 130, 14, LIGHTGRAY);
+        }
+        
         // Performance info
         double frame_time = Performance::Profiler::instance().get_frame_time_ms();
-        DrawText(TextFormat("Frame: %.2f ms (%.1f FPS)", frame_time, 1000.0 / frame_time), 10, 110, 16, LIME);
+        DrawText(TextFormat("Frame: %.2f ms (%.1f FPS)", frame_time, 1000.0 / frame_time), 10, 150, 16, LIME);
         
         // Scene stats
         int total_instances_ = tlas_manager_->get_instance_count();
         DrawText(TextFormat("Scene: %d instances, %d triangles", 
-                 total_instances_, total_triangles_), 10, 130, 14, LIGHTGRAY);
+                 total_instances_, total_triangles_), 10, 170, 14, LIGHTGRAY);
         
         // BVH visualization info
         if (show_bvh_visualization_) {
             const auto& settings = bvh_visualizer_->get_settings();
-            DrawText("BVH VISUALIZATION MODE", 10, 150, 16, YELLOW);
-            DrawText("Q:BLAS W:TLAS E:Leaf T:Interior Y:Colors U:Triangles", 10, 170, 12, LIGHTGRAY);
-            DrawText("UP/DOWN: Depth | B: Toggle visualization", 10, 185, 12, LIGHTGRAY);
+            DrawText("BVH VISUALIZATION MODE", 10, 190, 16, YELLOW);
+            DrawText("Q:BLAS W:TLAS E:Leaf T:Interior Y:Colors U:Triangles", 10, 210, 12, LIGHTGRAY);
+            DrawText("UP/DOWN: Depth | B: Toggle visualization", 10, 225, 12, LIGHTGRAY);
             DrawText(TextFormat("BLAS:%s TLAS:%s Leaf:%s Interior:%s Depth:%d", 
                      settings.show_blas_bvh ? "ON" : "OFF",
                      settings.show_tlas_bvh ? "ON" : "OFF",
                      settings.show_leaf_nodes ? "ON" : "OFF",
                      settings.show_interior_nodes ? "ON" : "OFF", 
-                     settings.max_depth_to_show), 10, 200, 12, LIGHTGRAY);
+                     settings.max_depth_to_show), 10, 240, 12, LIGHTGRAY);
         } else {
-            DrawText("Press B to toggle BVH visualization", 10, 150, 14, LIGHTGRAY);
+            DrawText("Press B to toggle BVH visualization", 10, 190, 14, LIGHTGRAY);
         }
         
-        // Performance controls
-        DrawText("Press P for performance stats, R to reset", 10, screen_height_ - 70, 14, LIGHTGRAY);
+        // Animation and performance controls
+        DrawText("Controls: A=Animation, P=Performance stats, R=Reset", 10, screen_height_ - 90, 14, LIGHTGRAY);
+        DrawText("BVH: B=Toggle visualization", 10, screen_height_ - 70, 14, LIGHTGRAY);
         
         // Mouse control info
         if (cursor_disabled_) {
@@ -852,7 +997,7 @@ private:
         }
         
         // System info
-        DrawText("C++ Modular BLAS/TLAS System", 10, screen_height_ - 30, 16, LIGHTGRAY);
+        DrawText("C++ Modular BLAS/TLAS System with Dynamic Animation", 10, screen_height_ - 30, 16, LIGHTGRAY);
         
         DrawFPS(10, 10);
     }
@@ -870,6 +1015,10 @@ private:
     // Debug mode
     bool debug_mode_;
     int debug_frame_count_;
+    
+    // Animation
+    float animation_time_;
+    bool animate_scenes_;
     
     // Managers
     std::unique_ptr<BLASManager> blas_manager_;
