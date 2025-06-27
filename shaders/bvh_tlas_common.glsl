@@ -456,7 +456,7 @@ HitResult intersectScene(vec3 rayOrigin, vec3 rayDir)
         uint instIdx = ray.hit.instPrim >> 20;
         
         // Get triangle data for normal calculation
-        Triangle tri = decodeTriangle(int(triIdx));
+        Triangle    tri  = decodeTriangle(int(triIdx));
         BVHInstance inst = decodeInstance(int(instIdx));
         
         // Check if this is a sphere material (based on scene setup: materials 1, 3, 4 are spheres)

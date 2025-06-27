@@ -330,7 +330,7 @@ void main() {
     color = color / (color + vec3(1.0)); // Simple Reinhard tone mapping
     
     // Add subtle color grading
-    color = pow(color, vec3(0.95)); // Slight contrast adjustment
+    color = pow(color, vec3(1.05)); // Slight contrast adjustment
     
     finalColor = vec4(color, 1.0);
 }
