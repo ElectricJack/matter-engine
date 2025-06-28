@@ -103,9 +103,18 @@ fi
 
 # Build the project
 if [ "$HAS_MAKE" = "1" ]; then
-    echo "Building ParticleDynamicsExample..."
+    echo "Building ParticleDynamicsExample for Windows..."
+    echo "Note: This will always build a Windows .exe file by default"
     make dependencies || true
     make || echo "Build failed - this is expected without proper toolchain setup"
+    
+    # Show build result
+    if [ -f "build/windows-native/particle_dynamics.exe" ]; then
+        echo "✓ Windows executable built successfully: build/windows-native/particle_dynamics.exe"
+        ls -la build/windows-native/particle_dynamics.exe
+    else
+        echo "Windows build not found. Check for errors above."
+    fi
 else
     echo "Make not available - please build manually with your preferred build system"
 fi
@@ -120,12 +129,14 @@ echo ""
 
 if [ "$HAS_CMAKE" = "1" ] && [ "$HAS_GCC" = "1" ] && [ "$HAS_MAKE" = "1" ]; then
     echo "✓ Full build environment ready!"
-    echo "Run 'make' to build the project"
+    echo "Run 'make' to build Windows executable (default)"
+    echo "Run 'make TARGET=linux' to build Linux executable"
+    echo "Run 'make TARGET=macos' to build macOS executable"
 else
     echo "⚠ Install missing tools to enable building"
     echo "Project demonstrates:"
     echo "  - ODE physics integration"
     echo "  - Raylib graphics rendering" 
     echo "  - Interactive particle simulation"
-    echo "  - Cross-platform build system"
+    echo "  - Windows-first build system (cross-platform)"
 fi 

@@ -73,19 +73,29 @@ ParticleDynamicsExample/
 
 ### Compilation
 
+**This project always builds for Windows by default!**
+
 ```bash
-# Build for current platform
+# Build Windows executable (default)
 make
 
-# Build for Linux from WSL
-make WSL_LINUX=1
+# Build for Linux (when needed)
+make TARGET=linux
 
-# Cross-compile for Windows
-make TARGET=windows-native
+# Build for macOS (when needed)
+make TARGET=macos
+
+# Show build options
+make help
 
 # Clean build files
 make clean
 ```
+
+The build system prioritizes Windows development and automatically:
+- Uses MinGW cross-compilation from WSL/Linux
+- Creates native Windows .exe files
+- Statically links all dependencies for portability
 
 ## Controls
 
@@ -125,10 +135,11 @@ The particle system includes:
 
 ## Platform Support
 
-- **Windows**: Native builds with MinGW or MSVC
-- **Linux**: Native builds with GCC
-- **macOS**: Native builds with Clang
-- **WSL**: Cross-compilation to Windows
+**Primary Target: Windows** (always builds .exe by default)
+- **Windows**: Native .exe with static linking (MinGW cross-compilation)
+- **Linux**: Available when explicitly requested (`make TARGET=linux`)
+- **macOS**: Available when explicitly requested (`make TARGET=macos`)
+- **WSL**: Automatically cross-compiles to Windows .exe
 
 ## Performance
 
