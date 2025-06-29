@@ -290,9 +290,9 @@ private:
     
     void render_ui() {
         // System info
-        DrawText("STRUCTURE OF ARRAYS N-BODY SIMULATION", 10, 10, 20, GREEN);
-        DrawText(TextFormat("Particles: %d in %d pages + 1 Black Hole", 
-                 particle_system_->get_particle_count(), particle_system_->get_page_count()), 10, 40, 16, WHITE);
+        DrawText("SIMPLIFIED STRUCTURE OF ARRAYS N-BODY SIMULATION", 10, 10, 20, GREEN);
+        DrawText(TextFormat("Particles: %d + 1 Black Hole", 
+                 particle_system_->get_particle_count()), 10, 40, 16, WHITE);
         DrawText(TextFormat("FPS: %d", GetFPS()), 10, 60, 16, WHITE);
         
         // Controls

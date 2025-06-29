@@ -2,7 +2,6 @@
 
 extern "C" {
     #include "raylib.h"
-    #include "object_allocator.h"
     #include "../../SpatialQueryLib/include/spatial_hash.h"
 }
 #include "raymath.h"
@@ -25,38 +24,6 @@ struct ParticleType {
         : radius(r), material_id(mid), mass(m), color(c) {}
 };
 
-// Structure of Arrays for cache efficiency - each page holds up to MAX_PARTICLES
-struct ParticlePage {
-    static constexpr size_t MAX_PARTICLES = 1024;
-    
-    uint32_t active_count;
-    uint32_t type_id;
-    
-    // Position arrays (Structure of Arrays for cache efficiency)
-    float pos_x[MAX_PARTICLES];
-    float pos_y[MAX_PARTICLES];
-    float pos_z[MAX_PARTICLES];
-    
-    // Velocity arrays
-    float vel_x[MAX_PARTICLES];
-    float vel_y[MAX_PARTICLES];
-    float vel_z[MAX_PARTICLES];
-    
-    // Temperature array
-    float temperature[MAX_PARTICLES];
-    
-    ParticlePage() : active_count(0), type_id(0) {
-        // Initialize arrays to zero
-        std::memset(pos_x, 0, sizeof(pos_x));
-        std::memset(pos_y, 0, sizeof(pos_y));
-        std::memset(pos_z, 0, sizeof(pos_z));
-        std::memset(vel_x, 0, sizeof(vel_x));
-        std::memset(vel_y, 0, sizeof(vel_y));
-        std::memset(vel_z, 0, sizeof(vel_z));
-        std::memset(temperature, 0, sizeof(temperature));
-    }
-};
-
 struct BlackHole {
     Vector3 position;
     float mass;
@@ -66,13 +33,11 @@ struct BlackHole {
     BlackHole() : position({0, 0, 0}), mass(100.0f), radius(2.0f), color(BLACK) {}
 };
 
-// Particle reference for spatial hash lookups
+// Simple particle reference for spatial hash lookups
 struct ParticleRef {
-    size_t page_index;
     uint32_t particle_index;
     
-    ParticleRef(size_t page_idx = 0, uint32_t part_idx = 0) 
-        : page_index(page_idx), particle_index(part_idx) {}
+    ParticleRef(uint32_t idx = 0) : particle_index(idx) {}
 };
 
 class ParticleSystem {
@@ -88,7 +53,7 @@ public:
     // Particle management
     uint32_t create_particle_type(float radius, float mass, Color color);
     void add_particle(uint32_t type_id, const Vector3& position, const Vector3& velocity, float temperature = 20.0f);
-    void remove_particle(size_t page_index, size_t particle_index);
+    void remove_particle(uint32_t particle_index);
     
     // Simulation
     void update(float dt);
@@ -109,13 +74,12 @@ public:
     
     // Gravitational forces
     void apply_gravitational_forces(float dt);
-    void apply_black_hole_forces(ParticlePage* page, float dt);
-    void apply_particle_particle_forces_spatial(float dt);  // New spatially optimized version
-    void handle_particle_collisions_spatial();  // New spatially optimized version
+    void apply_black_hole_forces(float dt);
+    void apply_particle_particle_forces_spatial(float dt);
+    void handle_particle_collisions_spatial();
     
     // Info
     int get_particle_count() const;
-    int get_page_count() const;
     float get_physics_time_ms() const;
     
     // Profiling interface
@@ -133,10 +97,10 @@ private:
     };
     
     // Instanced rendering resources
-    Mesh sphere_mesh_;
-    Material particle_material_;
+    Mesh                              sphere_mesh_;
+    Material                          particle_material_;
     std::vector<ParticleInstanceData> instance_buffer_;
-    bool instanced_rendering_initialized_;
+    bool                              instanced_rendering_initialized_;
     
     // Instanced rendering methods
     void initialize_instanced_rendering();
@@ -147,14 +111,16 @@ private:
     // Particle type registry
     std::vector<ParticleType> particle_types_;
     
-    // Particle pages (Structure of Arrays)
-    std::vector<ParticlePage*> pages_;
+    // Simple Structure of Arrays for particles
+    std::vector<float>    pos_x_, pos_y_, pos_z_;
+    std::vector<float>    vel_x_, vel_y_, vel_z_;
+    std::vector<float>    temperature_;
+    std::vector<uint32_t> type_id_;
+    std::vector<bool>     active_;  // Track which particles are active
+    std::vector<uint32_t> free_indices_;  // Free list for removed particles
     
     // Black hole
     BlackHole black_hole_;
-    
-    // Object allocator for memory management
-    ObjectAllocator* allocator_state_;
     
     // Spatial hash for efficient neighbor queries
     SpatialHash* spatial_hash_;
@@ -168,27 +134,24 @@ private:
     float physics_time_ms_;
     
     // Physics parameters
-    static constexpr float GRAVITATIONAL_CONSTANT = 50.0f;  // Scaled for simulation
-    static constexpr float MIN_DISTANCE           = 0.1f;  // Prevent singularities
+    static constexpr float GRAVITATIONAL_CONSTANT = 50.0f;   // Scaled for simulation
+    static constexpr float MIN_DISTANCE           = 0.1f;    // Prevent singularities
     static constexpr float MAX_DISTANCE           = 200.0f;  // Simulation bounds
-    static constexpr float DAMPING                = 1.0f;  // No damping for stable orbits
-    static constexpr float COLLISION_DISTANCE     = 0.15f;  // Distance for particle merging
+    static constexpr float DAMPING                = 1.0f;    // No damping for stable orbits
+    static constexpr float COLLISION_DISTANCE     = 0.15f;   // Distance for particle merging
     
     // Spatial optimization parameters
-    static constexpr float SPATIAL_CELL_SIZE      = 1.0f;  // Size of spatial hash cells
-    static constexpr float GRAVITY_BASE_RADIUS    = 5.0f;  // Base gravity influence radius
+    static constexpr float SPATIAL_CELL_SIZE      = 1.0f;    // Size of spatial hash cells
+    static constexpr float GRAVITY_BASE_RADIUS    = 5.0f;    // Base gravity influence radius
     static constexpr float MASS_RADIUS_MULTIPLIER = 100.0f;  // How much mass affects influence radius
-    static constexpr int   MAX_NEIGHBORS          = 64;    // Maximum neighbors to check per particle
+    static constexpr int   MAX_NEIGHBORS          = 64;      // Maximum neighbors to check per particle
     
     // Rendering mode control
     bool use_instanced_rendering_ = true;
     
     // Internal methods
-    ParticlePage* allocate_new_page();
-    void deallocate_page(ParticlePage* page);
-    ParticlePage* find_page_with_space(uint32_t type_id);
-    void integrate_particles(ParticlePage* page, float dt);
-    void check_bounds(ParticlePage* page);
+    void integrate_particles(float dt);
+    void check_bounds();
     
     // Spatial hash methods
     void populate_spatial_hash();
@@ -201,7 +164,7 @@ private:
     void draw_neighbor_connections();
     
     // Rendering helpers
-    void render_page(const ParticlePage* page);
+    void render_particles_individual();
     void render_black_hole();
     Color get_temperature_color(float temperature);
 }; 
