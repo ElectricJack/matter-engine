@@ -1,0 +1,324 @@
+#include "../include/cluster.h"
+#include "../include/cell.h"
+extern "C" {
+#include "../include/spatial_hash.h"
+}
+#include <cmath>
+#include <cstdio>
+#include <algorithm>
+
+// Raymath function prototypes we need (without including the problematic header)
+extern "C" {
+    Quaternion QuaternionIdentity(void);
+    Vector3 Vector3RotateByQuaternion(Vector3 v, Quaternion q);
+    Quaternion QuaternionInvert(Quaternion q);
+    Vector3 Vector3Add(Vector3 v1, Vector3 v2);
+    Vector3 Vector3Subtract(Vector3 v1, Vector3 v2);
+    Vector3 Vector3Scale(Vector3 v, float scalar);
+    float Vector3Length(Vector3 v);
+    float Vector3DotProduct(Vector3 v1, Vector3 v2);
+}
+
+Cluster::Cluster(uint32_t cluster_id, float smallest_cell_size)
+    : cluster_id_(cluster_id),
+      position_({0.0f, 0.0f, 0.0f}),
+      rotation_(QuaternionIdentity()),
+      next_particle_id_(0),
+      smallest_cell_size_(smallest_cell_size) {
+    
+    // Initialize spatial hash for cell management
+    // Use cell size as spatial hash cell size for efficient cell lookup
+    cell_spatial_hash_ = sh_create(smallest_cell_size, 1000);
+    if (!cell_spatial_hash_) {
+        printf("Warning: Failed to initialize spatial hash for cluster %u\n", cluster_id_);
+    }
+    
+    printf("Created cluster %u with smallest cell size %.2f\n", cluster_id_, smallest_cell_size_);
+}
+
+Cluster::~Cluster() {
+    // Clear all cells (this will free their meshes)
+    cells_.clear();
+    
+    // Cleanup spatial hash
+    if (cell_spatial_hash_) {
+        sh_destroy(cell_spatial_hash_);
+    }
+    
+    printf("Destroyed cluster %u\n", cluster_id_);
+}
+
+Vector3 Cluster::local_to_world(const Vector3& local_pos) const {
+    Vector3 rotated = Vector3RotateByQuaternion(local_pos, rotation_);
+    return Vector3Add(position_, rotated);
+}
+
+Vector3 Cluster::world_to_local(const Vector3& world_pos) const {
+    Vector3 relative = Vector3Subtract(world_pos, position_);
+    return Vector3RotateByQuaternion(relative, QuaternionInvert(rotation_));
+}
+
+uint32_t Cluster::add_particle(const Vector3& local_position, float radius, uint32_t material_id) {
+    uint32_t particle_id = next_particle_id_++;
+    
+    // Add particle to storage
+    particles_.emplace_back(local_position, radius, material_id);
+    uint32_t particle_index = static_cast<uint32_t>(particles_.size() - 1);
+    
+    // Mark cells dirty around this particle
+    mark_cells_dirty_around_particle(local_position, radius);
+    
+    printf("Added particle %u to cluster %u at (%.2f, %.2f, %.2f)\n", 
+           particle_id, cluster_id_, local_position.x, local_position.y, local_position.z);
+    
+    return particle_id;
+}
+
+bool Cluster::remove_particle(uint32_t particle_id) {
+    if (particle_id >= particles_.size()) {
+        return false;
+    }
+    
+    // Mark cells dirty around the particle being removed
+    const StaticParticle& particle = particles_[particle_id];
+    mark_cells_dirty_around_particle(particle.position, particle.radius);
+    
+    // Remove particle using swap-and-pop for efficiency
+    if (particle_id != particles_.size() - 1) {
+        particles_[particle_id] = particles_.back();
+        
+        // Update all cells that reference the moved particle
+        for (auto& cell : cells_) {
+            for (auto& material_entry : cell->material_particle_indices) {
+                auto& indices = material_entry.second;
+                for (auto& idx : indices) {
+                    if (idx == particles_.size() - 1) {
+                        idx = particle_id;
+                    }
+                }
+            }
+        }
+    }
+    
+    particles_.pop_back();
+    
+    printf("Removed particle %u from cluster %u\n", particle_id, cluster_id_);
+    return true;
+}
+
+bool Cluster::update_particle_position(uint32_t particle_id, const Vector3& new_local_position) {
+    if (particle_id >= particles_.size()) {
+        return false;
+    }
+    
+    StaticParticle& particle = particles_[particle_id];
+    
+    // Mark cells dirty around old and new positions
+    mark_cells_dirty_around_particle(particle.position, particle.radius);
+    mark_cells_dirty_around_particle(new_local_position, particle.radius);
+    
+    // Update position
+    particle.position = new_local_position;
+    
+    return true;
+}
+
+void Cluster::mark_cells_dirty_around_particle(const Vector3& local_position, float radius) {
+    // Calculate the range of cell coordinates that might be affected
+    float influence_radius = radius * 2.0f; // Conservative estimate
+    
+    // Check multiple LOD levels (different cell sizes)
+    for (int lod = 0; lod <= 4; ++lod) {
+        float cell_size = smallest_cell_size_ * (1 << lod);
+        
+        // Calculate cell coordinate range
+        Vector3 min_cell = {
+            floorf((local_position.x - influence_radius) / cell_size),
+            floorf((local_position.y - influence_radius) / cell_size),
+            floorf((local_position.z - influence_radius) / cell_size)
+        };
+        Vector3 max_cell = {
+            floorf((local_position.x + influence_radius) / cell_size),
+            floorf((local_position.y + influence_radius) / cell_size),
+            floorf((local_position.z + influence_radius) / cell_size)
+        };
+        
+        // Mark cells in this range as dirty
+        for (int x = (int)min_cell.x; x <= (int)max_cell.x; ++x) {
+            for (int y = (int)min_cell.y; y <= (int)max_cell.y; ++y) {
+                for (int z = (int)min_cell.z; z <= (int)max_cell.z; ++z) {
+                    Vector3 cell_coords = {(float)x, (float)y, (float)z};
+                    Cell* cell = find_or_create_cell(cell_coords, lod);
+                    if (cell) {
+                        cell->is_dirty = true;
+                    }
+                }
+            }
+        }
+    }
+}
+
+Vector3 Cluster::get_cell_coordinates(const Vector3& local_position, int cell_size_power) const {
+    float cell_size = smallest_cell_size_ * (1 << cell_size_power);
+    return Vector3{
+        floorf(local_position.x / cell_size),
+        floorf(local_position.y / cell_size),
+        floorf(local_position.z / cell_size)
+    };
+}
+
+Cell* Cluster::find_or_create_cell(const Vector3& cell_coords, int cell_size_power) {
+    float cell_size = smallest_cell_size_ * (1 << cell_size_power);
+    
+    // Calculate cell center for spatial hash lookup
+    Vector3 cell_center = {
+        (cell_coords.x + 0.5f) * cell_size,
+        (cell_coords.y + 0.5f) * cell_size,
+        (cell_coords.z + 0.5f) * cell_size
+    };
+    
+    // Try to find existing cell
+    void* result = sh_query_first(cell_spatial_hash_, cell_center.x, cell_center.y, cell_center.z, cell_size * 0.1f);
+    if (result) {
+        return static_cast<Cell*>(result);
+    }
+    
+    // Create new cell
+    auto new_cell = std::make_unique<Cell>(cell_coords, cell_size_power, smallest_cell_size_);
+    Cell* cell_ptr = new_cell.get();
+    
+    // Insert into spatial hash
+    sh_insert(cell_spatial_hash_, cell_center.x, cell_center.y, cell_center.z, cell_ptr);
+    
+    // Store cell
+    cells_.push_back(std::move(new_cell));
+    
+    return cell_ptr;
+}
+
+void Cluster::rebuild_dirty_cells(BLASManager& blas_manager) {
+    uint32_t rebuilt_count = 0;
+    
+    for (auto& cell : cells_) {
+        if (cell->is_dirty) {
+            update_cell_meshes(cell.get(), blas_manager);
+            cell->is_dirty = false;
+            rebuilt_count++;
+        }
+    }
+    
+    if (rebuilt_count > 0) {
+        printf("Rebuilt %u dirty cells in cluster %u\n", rebuilt_count, cluster_id_);
+    }
+}
+
+void Cluster::update_cell_meshes(Cell* cell, BLASManager& blas_manager) {
+    if (!cell) return;
+    
+    // Clear existing particle indices
+    cell->clear_particle_indices();
+    
+    // Find particles that intersect this cell and group by material
+    for (uint32_t i = 0; i < particles_.size(); ++i) {
+        const StaticParticle& particle = particles_[i];
+        
+        if (cell->intersects_sphere(particle.position, particle.radius)) {
+            cell->add_particle_index(i, particle.materialId);
+        }
+    }
+    
+    // Rebuild meshes for all materials if we have particles
+    if (!cell->material_particle_indices.empty()) {
+        cell->rebuild_meshes(particles_, blas_manager);
+    } else {
+        cell->clear_meshes();
+    }
+    
+    cell->mesh_version++;
+}
+
+std::vector<Cell*> Cluster::get_cells_in_region(const Vector3& min_bound, const Vector3& max_bound) {
+    std::vector<Cell*> result;
+    
+    // Query spatial hash for cells in region
+    Vector3 region_center = {
+        (min_bound.x + max_bound.x) * 0.5f,
+        (min_bound.y + max_bound.y) * 0.5f,
+        (min_bound.z + max_bound.z) * 0.5f
+    };
+    Vector3 region_size = {
+        max_bound.x - min_bound.x,
+        max_bound.y - min_bound.y,
+        max_bound.z - min_bound.z
+    };
+    float search_radius = Vector3Length(region_size) * 0.5f;
+    
+    void* query_results[1000];
+    int found_count = sh_query_radius(cell_spatial_hash_, 
+                                     region_center.x, region_center.y, region_center.z,
+                                     search_radius, query_results, 1000);
+    
+    for (int i = 0; i < found_count; ++i) {
+        Cell* cell = static_cast<Cell*>(query_results[i]);
+        
+        // Check if cell actually intersects the region
+        if (cell->min_bound.x <= max_bound.x && cell->max_bound.x >= min_bound.x &&
+            cell->min_bound.y <= max_bound.y && cell->max_bound.y >= min_bound.y &&
+            cell->min_bound.z <= max_bound.z && cell->max_bound.z >= min_bound.z) {
+            result.push_back(cell);
+        }
+    }
+    
+    return result;
+}
+
+void Cluster::render_cells(bool wireframe) const {
+    for (const auto& cell : cells_) {
+        if (cell->has_meshes) {
+            // TODO: Transform meshes to world space using cluster transform
+            cell->render(wireframe);
+        }
+    }
+}
+
+void Cluster::render_debug_bounds() const {
+    for (const auto& cell : cells_) {
+        cell->render_debug_bounds();
+    }
+}
+
+void Cluster::add_to_tlas(TLASManager& tlas_manager) const {
+    // Add all cell meshes to the TLAS for ray tracing
+    for (const auto& cell : cells_) {
+        if (cell->has_meshes) {
+            const auto& material_blas = cell->get_material_blas();
+            for (const auto& blas_entry : material_blas) {
+                uint32_t material_id = blas_entry.first;
+                BLASHandle blas_handle = blas_entry.second;
+                
+                if (blas_handle > 0) {
+                    // TODO: Apply cluster transform (position + rotation)
+                    // For now, just add at identity transform
+                    // tlas_manager.load_identity();
+                    // tlas_manager.translate(position_.x, position_.y, position_.z);
+                    // tlas_manager.rotate_quaternion(rotation_);
+                    // tlas_manager.draw(blas_handle, material_id);
+                }
+            }
+        }
+    }
+}
+
+uint32_t Cluster::get_cell_count() const {
+    return static_cast<uint32_t>(cells_.size());
+}
+
+uint32_t Cluster::get_dirty_cell_count() const {
+    uint32_t count = 0;
+    for (const auto& cell : cells_) {
+        if (cell->is_dirty) {
+            count++;
+        }
+    }
+    return count;
+}

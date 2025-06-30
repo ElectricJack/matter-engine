@@ -125,8 +125,8 @@ $(shell mkdir -p $(BUILD_DIR))
 $(shell mkdir -p $(RAYLIB_PATH)/build/$(PLATFORM))
 
 # C++ main application
-SRC = main.cpp src/bvh.cpp src/object_allocator.c src/blas_manager.cpp src/tlas_manager.cpp src/bvh_visualizer.cpp src/open_particle_surface.c src/surface.c src/spatial_hash.c
-OBJ = $(OBJ_DIR)/main.o $(OBJ_DIR)/bvh.o $(OBJ_DIR)/object_allocator.o $(OBJ_DIR)/blas_manager.o $(OBJ_DIR)/tlas_manager.o $(OBJ_DIR)/bvh_visualizer.o $(OBJ_DIR)/open_particle_surface.o $(OBJ_DIR)/surface.o $(OBJ_DIR)/spatial_hash.o
+SRC = main.cpp src/bvh.cpp src/object_allocator.c src/blas_manager.cpp src/tlas_manager.cpp src/bvh_visualizer.cpp src/open_particle_surface.c src/surface.c src/spatial_hash.c src/cluster.cpp src/cell.cpp
+OBJ = $(OBJ_DIR)/main.o $(OBJ_DIR)/bvh.o $(OBJ_DIR)/object_allocator.o $(OBJ_DIR)/blas_manager.o $(OBJ_DIR)/tlas_manager.o $(OBJ_DIR)/bvh_visualizer.o $(OBJ_DIR)/open_particle_surface.o $(OBJ_DIR)/surface.o $(OBJ_DIR)/spatial_hash.o $(OBJ_DIR)/cluster.o $(OBJ_DIR)/cell.o
 BIN = $(BUILD_DIR)/matter_surface_lib$(BIN_SUFFIX)
 PREPROCESSOR = $(BUILD_DIR)/shader_preprocessor
 
@@ -244,6 +244,12 @@ $(OBJ_DIR)/surface.o: src/surface.c
 
 $(OBJ_DIR)/spatial_hash.o: src/spatial_hash.c
 	$(CC) -c $< $(CFLAGS) -o $@
+
+$(OBJ_DIR)/cluster.o: src/cluster.cpp
+	$(CXX) -c $< $(CXXFLAGS) -o $@
+
+$(OBJ_DIR)/cell.o: src/cell.cpp
+	$(CXX) -c $< $(CXXFLAGS) -o $@
 
 # Platform-specific clean
 clean:

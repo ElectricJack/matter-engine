@@ -10,24 +10,28 @@ extern "C" {
 
 #include "include/blas_manager.hpp"
 #include "include/tlas_manager.hpp"
+#include "include/cluster.h"
+#include "include/cell.h"
 
-class RayTracingDemo {
+class MatterSurfaceLibDemo {
 public:
-    RayTracingDemo(int width, int height) 
+    MatterSurfaceLibDemo(int width, int height) 
         : screen_width_(width), screen_height_(height),
           blas_manager_(std::make_unique<BLASManager>()),
-          tlas_manager_(std::make_unique<TLASManager>(50)) {
+          tlas_manager_(std::make_unique<TLASManager>(50)),
+          test_cluster_(std::make_unique<Cluster>(0, 2.0f)) {
         
-        InitWindow(screen_width_, screen_height_, "MatterSurfaceLib - Ray Tracing");
+        InitWindow(screen_width_, screen_height_, "MatterSurfaceLib - Cluster and Cell System");
         SetTargetFPS(60);
         
         DisableCursor();
         
         setup_scene();
         setup_rendering();
+        setup_matter_system();
     }
     
-    ~RayTracingDemo() {
+    ~MatterSurfaceLibDemo() {
         cleanup();
         EnableCursor();
         CloseWindow();
@@ -42,41 +46,56 @@ public:
 
 private:
     void setup_scene() {
-        cube_blas_ = BLASFactory::register_cube(*blas_manager_, 1.0f);
-        sphere_blas_ = BLASFactory::register_sphere(*blas_manager_, 0.5f, 32, 16);
-        ground_blas_ = BLASFactory::register_plane(*blas_manager_, 200.0f, 200.0f);
-        
         create_example_scene();
     }
     
     void create_example_scene() {
         tlas_manager_->clear();
         
-        // Ground plane
-        tlas_manager_->load_identity();
-        tlas_manager_->translate(0.0f, -2.0f, 0.0f);
-        tlas_manager_->scale(10.0f, 0.1f, 10.0f);
-        tlas_manager_->draw(cube_blas_, 2);
-
-        // Central cube
-        tlas_manager_->load_identity();
-        tlas_manager_->translate(0.0f, 0.0f, 0.0f);
-        tlas_manager_->draw(cube_blas_, 0);
-        
-        // A few spheres
-        tlas_manager_->load_identity();
-        tlas_manager_->translate(-2.0f, 0.0f, 0.0f);
-        tlas_manager_->draw(sphere_blas_, 1);
-        
-        tlas_manager_->load_identity();
-        tlas_manager_->translate(2.0f, 0.0f, 0.0f);
-        tlas_manager_->draw(sphere_blas_, 1);
+        // Add cluster meshes to TLAS for ray tracing
+        if (test_cluster_) {
+            test_cluster_->add_to_tlas(*tlas_manager_);
+        }
         
         tlas_manager_->build(*blas_manager_);
     }
     
-    
-    
+    void setup_matter_system() {
+        // Create a cluster of particles to demonstrate the system
+        printf("Setting up matter system with cluster and cells...\n");
+        
+        // Add particles in a roughly spherical distribution
+        for (int i = 0; i < 100; ++i) {
+            float angle1 = (float)i * 0.15f;
+            float angle2 = (float)i * 0.25f;
+            
+            Vector3 position = {
+                cosf(angle1) * sinf(angle2) * 5.0f,
+                sinf(angle1) * sinf(angle2) * 5.0f,
+                cosf(angle2) * 5.0f
+            };
+            
+            uint32_t material = i % 3; // Cycle through materials
+            test_cluster_->add_particle(position, 0.5f, material);
+        }
+        
+        // Add some additional particles in a line
+        for (int i = 0; i < 20; ++i) {
+            Vector3 position = {(float)i - 10.0f, 0.0f, 0.0f};
+            test_cluster_->add_particle(position, 0.8f, 1);
+        }
+        
+        printf("Added %u particles to cluster\n", test_cluster_->get_particle_count());
+        
+        // Position cluster in world space
+        test_cluster_->set_position({0.0f, 2.0f, 0.0f});
+        
+        // Force initial mesh rebuild
+        test_cluster_->rebuild_dirty_cells(*blas_manager_);
+        
+        printf("Cluster has %u cells, %u dirty\n", 
+               test_cluster_->get_cell_count(), test_cluster_->get_dirty_cell_count());
+    }
     
     void setup_rendering() {
         raytracing_shader_ = LoadShader(nullptr, "shaders/raytrace_tlas_blas_processed.fs");
@@ -115,6 +134,32 @@ private:
             }
         }
         
+        // Toggle rendering modes
+        if (IsKeyPressed(KEY_R)) {
+            render_mode_ = (render_mode_ + 1) % 4; // Cycle through 4 modes
+            printf("Render mode: %s\n", 
+                   render_mode_ == 0 ? "Ray Tracing" : 
+                   render_mode_ == 1 ? "Surface Meshes" : 
+                   render_mode_ == 2 ? "Wireframe Meshes" : "Debug Bounds");
+        }
+        
+        // Add dynamic particle movement
+        if (IsKeyPressed(KEY_SPACE)) {
+            // Move some particles randomly to test dirty region updates
+            for (int i = 0; i < 10; ++i) {
+                float x = (GetRandomValue(-50, 50) / 10.0f);
+                float y = (GetRandomValue(-50, 50) / 10.0f);
+                float z = (GetRandomValue(-50, 50) / 10.0f);
+                
+                Vector3 new_pos = {x, y, z};
+                test_cluster_->add_particle(new_pos, 0.5f, GetRandomValue(0, 2));
+            }
+            
+            test_cluster_->rebuild_dirty_cells(*blas_manager_);
+            printf("Added 10 random particles. Cluster now has %u cells\n", 
+                   test_cluster_->get_cell_count());
+        }
+        
         UpdateCamera(&camera_, CAMERA_FREE);
     }
     
@@ -123,8 +168,38 @@ private:
         BeginDrawing();
         ClearBackground(BLACK);
         
-        if (raytracing_shader_.id != 0) {
+        if (render_mode_ == 0 && raytracing_shader_.id != 0) {
             render_raytraced();
+        } else {
+            // 3D rendering mode for meshes
+            BeginMode3D(camera_);
+            
+            
+            if (render_mode_ == 1) {
+                // Render solid surface meshes
+                test_cluster_->render_cells(false);
+            } else if (render_mode_ == 2) {
+                // Render wireframe meshes
+                test_cluster_->render_cells(true);
+            } else if (render_mode_ == 3) {
+                // Debug bounds mode
+                test_cluster_->render_debug_bounds();
+            }
+            
+            EndMode3D();
+            
+            // Draw UI
+            DrawText(TextFormat("Render Mode: %s (Press R to cycle)", 
+                               render_mode_ == 0 ? "Ray Tracing" : 
+                               render_mode_ == 1 ? "Surface Meshes" : 
+                               render_mode_ == 2 ? "Wireframe Meshes" : "Debug Bounds"), 
+                     10, 10, 20, WHITE);
+            DrawText("Press SPACE to add random particles", 10, 40, 20, WHITE);
+            DrawText("Press ESC to toggle cursor", 10, 70, 20, WHITE);
+            DrawText(TextFormat("Particles: %u, Cells: %u", 
+                               test_cluster_->get_particle_count(),
+                               test_cluster_->get_cell_count()), 
+                     10, 100, 20, WHITE);
         }
         
         EndDrawing();
@@ -161,14 +236,13 @@ private:
     
     std::unique_ptr<BLASManager> blas_manager_;
     std::unique_ptr<TLASManager> tlas_manager_;
+    std::unique_ptr<Cluster> test_cluster_;
     
-    BLASHandle cube_blas_;
-    BLASHandle sphere_blas_;
-    BLASHandle ground_blas_;
     
     Camera camera_;
     Shader raytracing_shader_{};
     bool cursor_disabled_ = true;
+    int render_mode_ = 1; // 0=raytracing, 1=solid_meshes, 2=wireframe_meshes, 3=debug
     
     int camera_pos_loc_;
     int camera_target_loc_;
@@ -181,7 +255,7 @@ private:
 
 int main() {
     try {
-        RayTracingDemo demo(1280, 800);
+        MatterSurfaceLibDemo demo(1280, 800);
         demo.run();
     } catch (const std::exception& e) {
         printf("Error: %s\n", e.what());
