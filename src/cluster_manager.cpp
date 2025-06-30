@@ -13,7 +13,7 @@ ClusterManager::ClusterManager(MaterialManager& material_manager)
 
 uint32_t ClusterManager::create_cluster() {
     uint32_t cluster_id = next_cluster_id_++;
-    clusters_[cluster_id] = std::make_unique<Cluster>(cluster_id, material_manager_);
+    clusters_[cluster_id] = std::make_unique<Cluster>(cluster_id);
     return cluster_id;
 }
 
@@ -51,7 +51,7 @@ bool ClusterManager::transfer_particle_to_cluster(uint32_t cluster_id, uint32_t 
     float charge = 0.0f;           // particle_system.get_particle_charge(particle_idx);
     
     // Add particle to cluster
-    cluster->add_particle(position, velocity, mass, radius, material, temperature, charge);
+    cluster->add_particle(particle_idx, position, velocity, temperature, charge, 0, PhaseState::Solid);
     
     // Remove particle from ParticleSystem
     // particle_system.remove_particle(particle_idx);
@@ -73,13 +73,14 @@ bool ClusterManager::transfer_particle_from_cluster(uint32_t cluster_id, uint32_
     }
     
     // Get particle data from cluster
-    Vector3 world_pos = cluster->get_particle_world_position(cluster_particle_idx);
-    Vector3 world_vel = cluster->get_particle_world_velocity(cluster_particle_idx);
-    float mass = cluster->get_particle_mass(cluster_particle_idx);
-    float radius = cluster->get_particle_radius(cluster_particle_idx);
-    MaterialType material = cluster->get_particle_material(cluster_particle_idx);
-    float temperature = cluster->get_particle_temperature(cluster_particle_idx);
-    float charge = cluster->get_particle_charge(cluster_particle_idx);
+    // TODO: Implement getter methods in Cluster class
+    Vector3 world_pos = cluster->get_world_position(cluster_particle_idx);
+    Vector3 world_vel = {0, 0, 0};  // cluster->get_particle_world_velocity(cluster_particle_idx);
+    float mass = 1.0f;  // cluster->get_particle_mass(cluster_particle_idx);
+    float radius = 0.5f;  // cluster->get_particle_radius(cluster_particle_idx);
+    MaterialType material = MaterialType::Water;  // cluster->get_particle_material(cluster_particle_idx);
+    float temperature = 20.0f;  // cluster->get_particle_temperature(cluster_particle_idx);
+    float charge = 0.0f;  // cluster->get_particle_charge(cluster_particle_idx);
     
     // Create particle type if needed
     // TODO: Get particle type ID from material or create new one
@@ -117,8 +118,8 @@ void ClusterManager::detect_and_form_clusters(ParticleSystem& particle_system, f
 }
 
 void ClusterManager::update_clusters(float dt, const std::vector<ParticleType>& particle_types) {
-    for (auto& [cluster_id, cluster] : clusters_) {
-        cluster->update_physics(dt);
+    for (auto& pair : clusters_) {
+        pair.second->update_physics(dt, material_manager_, particle_types);
     }
     
     // Clean up empty clusters
@@ -126,16 +127,20 @@ void ClusterManager::update_clusters(float dt, const std::vector<ParticleType>& 
 }
 
 void ClusterManager::render_clusters() const {
-    for (const auto& [cluster_id, cluster] : clusters_) {
-        cluster->render();
+    for (const auto& pair : clusters_) {
+        pair.second->render_particles();
+        pair.second->render_bonds();
     }
 }
 
 void ClusterManager::render_cluster_bounds() const {
     if (!debug_visualization_) return;
     
-    for (const auto& [cluster_id, cluster] : clusters_) {
-        cluster->render_debug_info();
+    for (const auto& pair : clusters_) {
+        const Cluster* cluster = pair.second.get();
+        // Draw a simple sphere at cluster center to show bounds
+        Vector3 center = cluster->get_position();
+        DrawSphereWires(center, 1.0f, 8, 8, RED);
     }
 }
 
@@ -161,7 +166,7 @@ void ClusterManager::get_cluster_world_positions(uint32_t cluster_id, std::vecto
         positions.reserve(cluster->get_particle_count());
         
         for (size_t i = 0; i < cluster->get_particle_count(); ++i) {
-            positions.push_back(cluster->get_particle_world_position(i));
+            positions.push_back(cluster->get_world_position(i));
         }
     }
 }
@@ -174,8 +179,8 @@ bool ClusterManager::cluster_particle_collision(uint32_t cluster_id, const Vecto
     
     const Cluster* cluster = it->second.get();
     for (size_t i = 0; i < cluster->get_particle_count(); ++i) {
-        Vector3 particle_pos = cluster->get_particle_world_position(i);
-        float particle_radius = cluster->get_particle_radius(i);
+        Vector3 particle_pos = cluster->get_world_position(i);
+        float particle_radius = 0.5f;  // TODO: get from cluster->get_particle_radius(i);
         
         float distance = Vector3Distance(point, particle_pos);
         if (distance < (radius + particle_radius)) {
@@ -188,8 +193,8 @@ bool ClusterManager::cluster_particle_collision(uint32_t cluster_id, const Vecto
 
 size_t ClusterManager::get_total_clustered_particles() const {
     size_t total = 0;
-    for (const auto& [cluster_id, cluster] : clusters_) {
-        total += cluster->get_particle_count();
+    for (const auto& pair : clusters_) {
+        total += pair.second->get_particle_count();
     }
     return total;
 }
@@ -209,9 +214,11 @@ void ClusterManager::print_cluster_stats() const {
     std::cout << "Total clusters: " << clusters_.size() << std::endl;
     std::cout << "Total clustered particles: " << get_total_clustered_particles() << std::endl;
     
-    for (const auto& [cluster_id, cluster] : clusters_) {
+    for (const auto& pair : clusters_) {
+        uint32_t cluster_id = pair.first;
+        const Cluster* cluster = pair.second.get();
         std::cout << "Cluster " << cluster_id << ": " << cluster->get_particle_count() 
-                  << " particles, " << cluster->get_bond_count() << " bonds" << std::endl;
+                  << " particles" << std::endl;  // TODO: add bond count when available
     }
 }
 

@@ -3,11 +3,13 @@
 
 MaterialManager::MaterialManager() {
     initialize_material_properties();
+    initialize_gamified_properties();
     initialize_adhesion_matrix();
     initialize_chemical_reactions();
     
     printf("MaterialManager initialized:\n");
     printf("  Materials available: %zu\n", material_properties_.size());
+    printf("  Gamified properties: %zu\n", gamified_properties_.size());
     printf("  Chemical reactions: %zu\n", chemical_reactions_.size());
     printf("  Adhesion matrix entries: %zu\n", adhesion_matrix_.size());
 }
@@ -156,4 +158,114 @@ const std::unordered_map<std::pair<MaterialType, MaterialType>, float,
 
 const std::vector<ChemicalReaction>& MaterialManager::get_chemical_reactions() const {
     return chemical_reactions_;
+}
+
+void MaterialManager::initialize_gamified_properties() {
+    gamified_properties_.resize(static_cast<size_t>(MaterialType::COUNT));
+    
+    // Water: Good heat conductor, no electrical conductivity
+    gamified_properties_[static_cast<size_t>(MaterialType::Water)] = 
+        GamifiedMaterialProperties("Water", 3.0f, 0.1f, 2.0f, 40.0f, 90.0f, 50.0f, 80.0f, 
+                                  DeviceType::None, 0.0f, 0.0f, BLUE, PhaseState::Liquid);
+    
+    // Oxygen: Gas, minimal conductivity
+    gamified_properties_[static_cast<size_t>(MaterialType::Oxygen)] = 
+        GamifiedMaterialProperties("Oxygen", 1.0f, 0.0f, 5.0f, 30.0f, 80.0f, 10.0f, 20.0f, 
+                                  DeviceType::None, 0.0f, 0.0f, LIGHTGRAY, PhaseState::Gas);
+    
+    // Hydrogen: Highly reactive gas
+    gamified_properties_[static_cast<size_t>(MaterialType::Hydrogen)] = 
+        GamifiedMaterialProperties("Hydrogen", 2.0f, 0.0f, 8.0f, 25.0f, 70.0f, 5.0f, 15.0f, 
+                                  DeviceType::None, 0.0f, 0.0f, WHITE, PhaseState::Gas);
+    
+    // Carbon: Good heat conductor, moderate electrical
+    gamified_properties_[static_cast<size_t>(MaterialType::Carbon)] = 
+        GamifiedMaterialProperties("Carbon", 6.0f, 3.0f, 1.0f, 70.0f, 85.0f, 85.0f, 95.0f, 
+                                  DeviceType::None, 0.0f, 0.0f, DARKGRAY, PhaseState::Solid);
+    
+    // Rock: Poor conductor
+    gamified_properties_[static_cast<size_t>(MaterialType::Rock)] = 
+        GamifiedMaterialProperties("Rock", 1.5f, 0.0f, 0.5f, 80.0f, 95.0f, 75.0f, 90.0f, 
+                                  DeviceType::None, 0.0f, 0.0f, GRAY, PhaseState::Solid);
+    
+    // Wood: Insulator
+    gamified_properties_[static_cast<size_t>(MaterialType::Wood)] = 
+        GamifiedMaterialProperties("Wood", 2.0f, 0.0f, 3.0f, 35.0f, 95.0f, 45.0f, 65.0f, 
+                                  DeviceType::None, 0.0f, 0.0f, BROWN, PhaseState::Solid);
+    
+    // Plant: Organic material
+    gamified_properties_[static_cast<size_t>(MaterialType::Plant)] = 
+        GamifiedMaterialProperties("Plant", 2.5f, 0.1f, 4.0f, 30.0f, 90.0f, 40.0f, 60.0f, 
+                                  DeviceType::None, 0.0f, 0.0f, GREEN, PhaseState::Solid);
+    
+    // Iron: Good conductor
+    gamified_properties_[static_cast<size_t>(MaterialType::Iron)] = 
+        GamifiedMaterialProperties("Iron", 5.0f, 6.0f, 1.0f, 75.0f, 85.0f, 80.0f, 92.0f, 
+                                  DeviceType::None, 0.0f, 0.0f, Color{139, 69, 19, 255}, PhaseState::Solid);
+    
+    // Copper: Excellent conductor
+    gamified_properties_[static_cast<size_t>(MaterialType::Copper)] = 
+        GamifiedMaterialProperties("Copper", 8.0f, 10.0f, 1.0f, 70.0f, 80.0f, 78.0f, 90.0f, 
+                                  DeviceType::None, 0.0f, 0.0f, Color{184, 115, 51, 255}, PhaseState::Solid);
+    
+    // Gold: Excellent electrical conductor
+    gamified_properties_[static_cast<size_t>(MaterialType::Gold)] = 
+        GamifiedMaterialProperties("Gold", 7.0f, 9.5f, 0.5f, 75.0f, 85.0f, 75.0f, 88.0f, 
+                                  DeviceType::None, 0.0f, 0.0f, GOLD, PhaseState::Solid);
+    
+    // Oil: Flammable liquid
+    gamified_properties_[static_cast<size_t>(MaterialType::Oil)] = 
+        GamifiedMaterialProperties("Oil", 1.5f, 0.0f, 6.0f, 25.0f, 90.0f, 35.0f, 55.0f, 
+                                  DeviceType::None, 0.0f, 0.0f, Color{64, 32, 0, 255}, PhaseState::Liquid);
+    
+    // Uranium: Radioactive material
+    gamified_properties_[static_cast<size_t>(MaterialType::Uranium)] = 
+        GamifiedMaterialProperties("Uranium", 4.0f, 2.0f, 9.0f, 90.0f, 95.0f, 85.0f, 95.0f, 
+                                  DeviceType::Generator, 50.0f, 0.0f, Color{0, 100, 0, 255}, PhaseState::Solid);
+    
+    // Iron Oxide: Oxidized metal
+    gamified_properties_[static_cast<size_t>(MaterialType::IronOxide)] = 
+        GamifiedMaterialProperties("IronOxide", 2.0f, 0.5f, 0.5f, 80.0f, 90.0f, 85.0f, 95.0f, 
+                                  DeviceType::None, 0.0f, 0.0f, Color{139, 0, 0, 255}, PhaseState::Solid);
+    
+    // Plasma: High energy state
+    gamified_properties_[static_cast<size_t>(MaterialType::Plasma)] = 
+        GamifiedMaterialProperties("Plasma", 10.0f, 10.0f, 10.0f, 95.0f, 100.0f, 95.0f, 100.0f, 
+                                  DeviceType::None, 0.0f, 0.0f, VIOLET, PhaseState::Plasma);
+    
+    // ===== NEW DEVICE MATERIALS =====
+    
+    // Battery: Chemical to electrical energy converter
+    gamified_properties_[static_cast<size_t>(MaterialType::Battery)] = 
+        GamifiedMaterialProperties("Battery", 2.0f, 3.0f, 2.0f, 50.0f, 80.0f, 70.0f, 85.0f, 
+                                  DeviceType::Battery, 25.0f, 0.0f, GREEN, PhaseState::Solid);
+    
+    // Solar: Heat to electrical energy converter
+    gamified_properties_[static_cast<size_t>(MaterialType::Solar)] = 
+        GamifiedMaterialProperties("Solar", 3.0f, 5.0f, 1.0f, 60.0f, 85.0f, 75.0f, 90.0f, 
+                                  DeviceType::Solar, 30.0f, 0.0f, YELLOW, PhaseState::Solid);
+    
+    // Motor: Electrical to kinetic energy converter
+    gamified_properties_[static_cast<size_t>(MaterialType::Motor)] = 
+        GamifiedMaterialProperties("Motor", 4.0f, 6.0f, 1.0f, 65.0f, 90.0f, 80.0f, 95.0f, 
+                                  DeviceType::Motor, 0.0f, 20.0f, RED, PhaseState::Solid);
+    
+    // Silicon: Logic gate material
+    gamified_properties_[static_cast<size_t>(MaterialType::Silicon)] = 
+        GamifiedMaterialProperties("Silicon", 3.0f, 4.0f, 0.5f, 70.0f, 80.0f, 85.0f, 95.0f, 
+                                  DeviceType::LogicGate, 0.0f, 2.0f, GRAY, PhaseState::Solid);
+    
+    // Sensor: Environmental detection device
+    gamified_properties_[static_cast<size_t>(MaterialType::Sensor)] = 
+        GamifiedMaterialProperties("Sensor", 2.0f, 3.0f, 1.0f, 45.0f, 75.0f, 70.0f, 85.0f, 
+                                  DeviceType::Sensor, 5.0f, 1.0f, PURPLE, PhaseState::Solid);
+    
+    // Fiber Optic: Signal-only transmission
+    gamified_properties_[static_cast<size_t>(MaterialType::FiberOptic)] = 
+        GamifiedMaterialProperties("FiberOptic", 1.0f, 0.0f, 0.0f, 85.0f, 95.0f, 90.0f, 98.0f, 
+                                  DeviceType::None, 0.0f, 0.0f, SKYBLUE, PhaseState::Solid);
+}
+
+const GamifiedMaterialProperties& MaterialManager::get_gamified_properties(MaterialType material) const {
+    return gamified_properties_[static_cast<size_t>(material)];
 } 

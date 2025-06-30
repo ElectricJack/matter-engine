@@ -64,8 +64,8 @@ $(shell mkdir -p $(BUILD_DIR))
 $(shell mkdir -p $(RAYLIB_PATH)/build/$(PLATFORM))
 
 # C++ main application with spatial query library and demos
-SRC = main.cpp src/particle_system.cpp src/material_manager.cpp src/cluster.cpp src/cluster_manager.cpp src/solar_system_demo.cpp src/material_sandbox_demo.cpp src/object_allocator.c src/spatial_hash.c
-OBJ = $(OBJ_DIR)/main.o $(OBJ_DIR)/particle_system.o $(OBJ_DIR)/material_manager.o $(OBJ_DIR)/cluster.o $(OBJ_DIR)/cluster_manager.o $(OBJ_DIR)/solar_system_demo.o $(OBJ_DIR)/material_sandbox_demo.o $(OBJ_DIR)/object_allocator.o $(OBJ_DIR)/spatial_hash.o
+SRC = main.cpp src/particle_system.cpp src/material_manager.cpp src/gamified_physics.cpp src/cluster.cpp src/cluster_manager.cpp src/solar_system_demo.cpp src/material_sandbox_demo.cpp src/object_allocator.c src/spatial_hash.c
+OBJ = $(OBJ_DIR)/main.o $(OBJ_DIR)/particle_system.o $(OBJ_DIR)/material_manager.o $(OBJ_DIR)/gamified_physics.o $(OBJ_DIR)/cluster.o $(OBJ_DIR)/cluster_manager.o $(OBJ_DIR)/solar_system_demo.o $(OBJ_DIR)/material_sandbox_demo.o $(OBJ_DIR)/object_allocator.o $(OBJ_DIR)/spatial_hash.o
 BIN = $(BUILD_DIR)/particle_dynamics$(BIN_SUFFIX)
 
 all: dependencies $(BIN)

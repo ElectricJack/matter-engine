@@ -4,6 +4,7 @@
 #include <vector>
 #include <unordered_map>
 #include <utility>
+#include <cstdint>
 #include "raylib.h"
 
 // Material types enum (keep consistent with existing code)
@@ -22,6 +23,13 @@ enum class MaterialType : uint32_t {
     Uranium,
     IronOxide,
     Plasma,
+    // New device materials
+    Battery,
+    Solar,
+    Motor,
+    Silicon,
+    Sensor,
+    FiberOptic,
     COUNT
 };
 
@@ -42,6 +50,20 @@ enum class PhaseState : uint8_t {
     Liquid,
     Gas,
     Plasma
+};
+
+// Device type enum for gamified physics
+enum class DeviceType : uint8_t {
+    None = 0,
+    Battery,
+    Solar,
+    Motor,
+    Heater,
+    Light,
+    Sensor,
+    LogicGate,
+    Generator,
+    Dynamo
 };
 
 // Material properties structure
@@ -86,6 +108,43 @@ struct ChemicalReaction {
         : activation_temperature(temp), energy_change(energy), probability(prob) {}
 };
 
+// Gamified material properties for simplified physics
+struct GamifiedMaterialProperties {
+    const char* name;
+    
+    // Energy flow rates (0-10 scale)
+    float heat_flow_rate;           // How fast heat energy flows
+    float electric_flow_rate;       // How fast electrical energy flows
+    float chemical_flow_rate;       // How fast chemical energy flows
+    
+    // Energy thresholds (0-100 scale)
+    float reaction_heat_threshold;  // Heat needed for chemical reactions
+    float reaction_electric_threshold;  // Electric energy needed for reactions
+    float melting_heat_threshold;   // Heat needed to change to liquid
+    float vaporization_heat_threshold;  // Heat needed to change to gas
+    
+    // Device properties
+    DeviceType device_type;         // What kind of device this material acts as
+    float power_generation_rate;    // For generators: energy produced per second
+    float power_consumption_rate;   // For consumers: energy consumed per second
+    
+    // Visual properties
+    Color base_color;
+    PhaseState default_phase;
+    
+    GamifiedMaterialProperties(
+        const char* n = "Unknown",
+        float hfr = 1.0f, float efr = 0.0f, float cfr = 1.0f,
+        float rht = 60.0f, float ret = 80.0f, float mht = 70.0f, float vht = 90.0f,
+        DeviceType dt = DeviceType::None, float pgr = 0.0f, float pcr = 0.0f,
+        Color color = WHITE, PhaseState phase = PhaseState::Solid
+    ) : name(n), heat_flow_rate(hfr), electric_flow_rate(efr), chemical_flow_rate(cfr),
+        reaction_heat_threshold(rht), reaction_electric_threshold(ret),
+        melting_heat_threshold(mht), vaporization_heat_threshold(vht),
+        device_type(dt), power_generation_rate(pgr), power_consumption_rate(pcr),
+        base_color(color), default_phase(phase) {}
+};
+
 class MaterialManager {
 public:
     MaterialManager();
@@ -93,6 +152,7 @@ public:
     
     // Material properties access
     const MaterialProperties& get_material_properties(MaterialType material) const;
+    const GamifiedMaterialProperties& get_gamified_properties(MaterialType material) const;
     const std::unordered_map<std::pair<MaterialType, MaterialType>, float,
                            std::hash<std::pair<MaterialType, MaterialType>>>& get_adhesion_matrix() const;
     const std::vector<ChemicalReaction>& get_chemical_reactions() const;
@@ -104,12 +164,14 @@ public:
     
 private:
     std::vector<MaterialProperties> material_properties_;
+    std::vector<GamifiedMaterialProperties> gamified_properties_;
     std::unordered_map<std::pair<MaterialType, MaterialType>, float,
                       std::hash<std::pair<MaterialType, MaterialType>>> adhesion_matrix_;
     std::vector<ChemicalReaction> chemical_reactions_;
     
     // Initialization methods
     void initialize_material_properties();
+    void initialize_gamified_properties();
     void initialize_adhesion_matrix();
     void initialize_chemical_reactions();
 };

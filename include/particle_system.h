@@ -7,6 +7,7 @@ extern "C" {
 #include "raymath.h"
 #include "profiler.hpp"
 #include "material_manager.h"
+#include "gamified_physics.h"
 
 #include <vector>
 #include <memory>
@@ -81,6 +82,13 @@ public:
     bool get_debug_thermal_visualization() const { return debug_thermal_vis_; }
     void set_debug_electrical_visualization(bool enabled) { debug_electrical_vis_ = enabled; }
     bool get_debug_electrical_visualization() const { return debug_electrical_vis_; }
+    
+    // Bond system stub methods (removed from particle system, now handled by cluster system)
+    int get_total_bonds_count() const { return 0; }  // Bonds now managed by clusters
+    bool get_bonding_simulation() const { return false; }  // Bonding moved to cluster system
+    void set_bonding_simulation(bool enabled) { (void)enabled; }  // Stub for compatibility
+    void set_debug_bonds_visualization(bool enabled) { (void)enabled; }  // Stub for compatibility
+    bool get_debug_bonds_visualization() const { return false; }  // Stub for compatibility
 
     
     // Rendering mode control
@@ -121,6 +129,38 @@ public:
     float get_average_temperature() const;
     float get_total_electrical_energy() const;
     int get_active_reactions_count() const;
+    
+    // ===== GAMIFIED PHYSICS API =====
+    
+    // Energy system access
+    float get_heat_energy(uint32_t particle_id) const;
+    float get_electric_energy(uint32_t particle_id) const;
+    float get_chemical_energy(uint32_t particle_id) const;
+    float get_kinetic_energy(uint32_t particle_id) const;
+    
+    void set_heat_energy(uint32_t particle_id, float energy);
+    void set_electric_energy(uint32_t particle_id, float energy);
+    void set_chemical_energy(uint32_t particle_id, float energy);
+    void set_kinetic_energy(uint32_t particle_id, float energy);
+    
+    // Bonding system
+    void create_bond_between(uint32_t particle1, uint32_t particle2);
+    void remove_bond_between(uint32_t particle1, uint32_t particle2);
+    bool are_bonded(uint32_t particle1, uint32_t particle2) const;
+    
+    // Electrical transmission
+    bool is_power_transmission_active(uint32_t particle1, uint32_t particle2) const;
+    bool is_signal_transmission_active(uint32_t particle1, uint32_t particle2) const;
+    
+    // Device system
+    void set_control_signal(uint32_t particle_id, float signal);
+    void set_logic_gate_type(uint32_t particle_id, LogicType type);
+    void set_logic_input(uint32_t particle_id, int input_index, float signal);
+    bool is_motor_running(uint32_t particle_id) const;
+    float get_light_level(uint32_t particle_id) const;
+    
+    // Arcing effects
+    bool has_arcing_effect(uint32_t particle1, uint32_t particle2) const;
 
     
     // Profiling interface
@@ -162,6 +202,23 @@ private:
     std::vector<PhaseState> phase_state_;        // Current phase state
     std::vector<bool>      active_;              // Track which particles are active
     std::vector<uint32_t>  free_indices_;        // Free list for removed particles
+    
+    // ===== GAMIFIED PHYSICS DATA =====
+    
+    // Four energy types (0-100 scale)
+    std::vector<float>     heat_energy_;
+    std::vector<float>     electric_energy_;
+    std::vector<float>     chemical_energy_;
+    std::vector<float>     kinetic_energy_;      // Derived from velocity
+    
+    // Device states
+    std::vector<DeviceState> device_states_;
+    
+    // Electrical connections/bonds
+    std::vector<ElectricalConnection> electrical_connections_;
+    
+    // Arcing effects
+    std::vector<ArcingEffect> active_arcs_;
     
     // Black hole
     BlackHole black_hole_;
@@ -251,4 +308,19 @@ private:
     void render_black_hole();
     
     Color get_temperature_color(float temperature);
+    
+    // ===== GAMIFIED PHYSICS METHODS =====
+    
+    void update_gamified_simulation(float dt);
+    void update_gamified_physics(float dt);
+    void update_energy_flow(float dt);
+    void update_device_states(float dt);
+    void update_electrical_network(float dt);
+    void update_chemical_reactions_gamified(float dt);
+    void update_arcing_effects(float dt);
+    
+    // Helper methods
+    void resize_gamified_arrays(size_t new_size);
+    void initialize_particle_gamified_data(uint32_t particle_index);
+    float calculate_kinetic_energy_from_velocity(uint32_t particle_index) const;
 }; 

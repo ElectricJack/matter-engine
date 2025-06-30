@@ -40,7 +40,13 @@ void ParticleSystem::initialize() {
     type_id_.reserve(initial_capacity);
     phase_state_.reserve(initial_capacity);
     active_.reserve(initial_capacity);
-    bonds_.reserve(initial_capacity);
+    
+    // Reserve space for gamified physics data
+    heat_energy_.reserve(initial_capacity);
+    electric_energy_.reserve(initial_capacity);
+    chemical_energy_.reserve(initial_capacity);
+    kinetic_energy_.reserve(initial_capacity);
+    device_states_.reserve(initial_capacity);
     
     // Reserve space for particle references
     particle_refs_.reserve(initial_capacity);
@@ -82,7 +88,6 @@ void ParticleSystem::cleanup() {
     type_id_.clear();
     phase_state_.clear();
     active_.clear();
-    bonds_.clear();
     free_indices_.clear();
     
     particle_types_.clear();
@@ -140,6 +145,9 @@ void ParticleSystem::add_particle(uint32_t type_id, const Vector3& position, con
         type_id_[index] = type_id;
         phase_state_[index] = material.default_phase;
         active_[index] = true;
+        
+        // Initialize gamified physics data
+        initialize_particle_gamified_data(index);
     } else {
         // Add new particle at end
         index = static_cast<uint32_t>(pos_x_.size());
@@ -155,6 +163,13 @@ void ParticleSystem::add_particle(uint32_t type_id, const Vector3& position, con
         type_id_.push_back(type_id);
         phase_state_.push_back(material.default_phase);
         active_.push_back(true);
+        
+        // Initialize gamified physics data
+        heat_energy_.push_back(30.0f);  // Default heat energy
+        electric_energy_.push_back(0.0f);
+        chemical_energy_.push_back(50.0f);  // Default chemical energy
+        kinetic_energy_.push_back(0.0f);
+        device_states_.emplace_back();  // Default device state
     }
     
     printf("Added particle %u (%s) at (%.2f, %.2f, %.2f) T=%.1f°C Q=%.2f\n",
@@ -1629,4 +1644,354 @@ const char* ParticleSystem::get_rendering_mode_name() const {
     } else {
         return "Individual (Legacy)";
     }
+}
+
+// ===== GAMIFIED PHYSICS IMPLEMENTATION =====
+
+// Energy system access methods
+float ParticleSystem::get_heat_energy(uint32_t particle_id) const {
+    if (particle_id >= heat_energy_.size() || !active_[particle_id]) return 0.0f;
+    return heat_energy_[particle_id];
+}
+
+float ParticleSystem::get_electric_energy(uint32_t particle_id) const {
+    if (particle_id >= electric_energy_.size() || !active_[particle_id]) return 0.0f;
+    return electric_energy_[particle_id];
+}
+
+float ParticleSystem::get_chemical_energy(uint32_t particle_id) const {
+    if (particle_id >= chemical_energy_.size() || !active_[particle_id]) return 0.0f;
+    return chemical_energy_[particle_id];
+}
+
+float ParticleSystem::get_kinetic_energy(uint32_t particle_id) const {
+    if (particle_id >= kinetic_energy_.size() || !active_[particle_id]) return 0.0f;
+    // Update kinetic energy from velocity
+    return calculate_kinetic_energy_from_velocity(particle_id);
+}
+
+void ParticleSystem::set_heat_energy(uint32_t particle_id, float energy) {
+    if (particle_id >= heat_energy_.size() || !active_[particle_id]) return;
+    heat_energy_[particle_id] = GamifiedPhysics::clamp_energy(energy);
+}
+
+void ParticleSystem::set_electric_energy(uint32_t particle_id, float energy) {
+    if (particle_id >= electric_energy_.size() || !active_[particle_id]) return;
+    electric_energy_[particle_id] = GamifiedPhysics::clamp_energy(energy);
+}
+
+void ParticleSystem::set_chemical_energy(uint32_t particle_id, float energy) {
+    if (particle_id >= chemical_energy_.size() || !active_[particle_id]) return;
+    chemical_energy_[particle_id] = GamifiedPhysics::clamp_energy(energy);
+}
+
+void ParticleSystem::set_kinetic_energy(uint32_t particle_id, float energy) {
+    if (particle_id >= kinetic_energy_.size() || !active_[particle_id]) return;
+    kinetic_energy_[particle_id] = GamifiedPhysics::clamp_energy(energy);
+    // Note: We don't auto-update velocity from kinetic energy to avoid conflicts
+}
+
+// Bonding system stub methods
+void ParticleSystem::create_bond_between(uint32_t particle1, uint32_t particle2) {
+    // Create electrical connection
+    ElectricalConnection conn;
+    conn.source_particle = particle1;
+    conn.target_particle = particle2;
+    
+    // Set properties based on material types
+    if (particle1 < type_id_.size() && particle2 < type_id_.size()) {
+        const auto& material1 = material_manager_.get_gamified_properties(particle_types_[type_id_[particle1]].material);
+        const auto& material2 = material_manager_.get_gamified_properties(particle_types_[type_id_[particle2]].material);
+        
+        conn.conductivity = (material1.electric_flow_rate + material2.electric_flow_rate) * 0.5f;
+        conn.resistance = 2.0f / std::max(1.0f, conn.conductivity);
+    }
+    
+    electrical_connections_.push_back(conn);
+}
+
+void ParticleSystem::remove_bond_between(uint32_t particle1, uint32_t particle2) {
+    electrical_connections_.erase(
+        std::remove_if(electrical_connections_.begin(), electrical_connections_.end(),
+            [particle1, particle2](const ElectricalConnection& conn) {
+                return (conn.source_particle == particle1 && conn.target_particle == particle2) ||
+                       (conn.source_particle == particle2 && conn.target_particle == particle1);
+            }),
+        electrical_connections_.end());
+}
+
+bool ParticleSystem::are_bonded(uint32_t particle1, uint32_t particle2) const {
+    return std::any_of(electrical_connections_.begin(), electrical_connections_.end(),
+        [particle1, particle2](const ElectricalConnection& conn) {
+            return (conn.source_particle == particle1 && conn.target_particle == particle2) ||
+                   (conn.source_particle == particle2 && conn.target_particle == particle1);
+        });
+}
+
+// Electrical transmission methods
+bool ParticleSystem::is_power_transmission_active(uint32_t particle1, uint32_t particle2) const {
+    if (!are_bonded(particle1, particle2)) return false;
+    float energy1 = get_electric_energy(particle1);
+    float energy2 = get_electric_energy(particle2);
+    return GamifiedPhysics::is_power_transmission(std::max(energy1, energy2));
+}
+
+bool ParticleSystem::is_signal_transmission_active(uint32_t particle1, uint32_t particle2) const {
+    if (!are_bonded(particle1, particle2)) return false;
+    float energy1 = get_electric_energy(particle1);
+    float energy2 = get_electric_energy(particle2);
+    return GamifiedPhysics::is_signal_transmission(std::max(energy1, energy2));
+}
+
+// Device system stub methods
+void ParticleSystem::set_control_signal(uint32_t particle_id, float signal) {
+    if (particle_id >= device_states_.size() || !active_[particle_id]) return;
+    device_states_[particle_id].control_signal = GamifiedPhysics::clamp_energy(signal);
+}
+
+void ParticleSystem::set_logic_gate_type(uint32_t particle_id, LogicType type) {
+    if (particle_id >= device_states_.size() || !active_[particle_id]) return;
+    device_states_[particle_id].type = DeviceType::LogicGate;
+    device_states_[particle_id].logic.gate_type = type;
+    device_states_[particle_id].logic.input_threshold = 8.0f;
+}
+
+void ParticleSystem::set_logic_input(uint32_t particle_id, int input_index, float signal) {
+    if (particle_id >= device_states_.size() || !active_[particle_id]) return;
+    if (input_index < 0 || input_index >= 4) return;
+    device_states_[particle_id].logic.input_signals[input_index] = signal;
+}
+
+bool ParticleSystem::is_motor_running(uint32_t particle_id) const {
+    if (particle_id >= device_states_.size() || !active_[particle_id]) return false;
+    return device_states_[particle_id].type == DeviceType::Motor && device_states_[particle_id].is_active;
+}
+
+float ParticleSystem::get_light_level(uint32_t particle_id) const {
+    if (particle_id >= heat_energy_.size() || !active_[particle_id]) return 0.0f;
+    // Simple light level based on heat energy
+    return std::max(0.0f, heat_energy_[particle_id] - 20.0f);
+}
+
+// Arcing effects stub
+bool ParticleSystem::has_arcing_effect(uint32_t particle1, uint32_t particle2) const {
+    return std::any_of(active_arcs_.begin(), active_arcs_.end(),
+        [particle1, particle2](const ArcingEffect& arc) {
+            return (arc.source_particle == particle1 && arc.target_particle == particle2) ||
+                   (arc.source_particle == particle2 && arc.target_particle == particle1);
+        });
+}
+
+// Helper methods
+void ParticleSystem::initialize_particle_gamified_data(uint32_t particle_index) {
+    if (particle_index >= heat_energy_.size()) {
+        // Expand arrays if needed
+        resize_gamified_arrays(particle_index + 1);
+    }
+    
+    // Initialize with default values
+    heat_energy_[particle_index] = 30.0f;  // Room temperature equivalent
+    electric_energy_[particle_index] = 0.0f;
+    chemical_energy_[particle_index] = 50.0f;  // Default chemical potential
+    kinetic_energy_[particle_index] = 0.0f;
+    
+    // Initialize device state based on material type
+    DeviceState& device = device_states_[particle_index];
+    if (particle_index < type_id_.size()) {
+        const auto& material = material_manager_.get_gamified_properties(particle_types_[type_id_[particle_index]].material);
+        device.type = material.device_type;
+        device.efficiency = 0.8f;  // Default efficiency
+        
+        // Initialize device-specific data
+        switch (device.type) {
+            case DeviceType::Battery:
+                device.battery.charge_level = 80.0f;
+                device.battery.max_capacity = 100.0f;
+                break;
+            case DeviceType::Motor:
+                device.motor.rotation_speed = 0.0f;
+                device.motor.torque = 0.0f;
+                break;
+            case DeviceType::LogicGate:
+                device.logic.gate_type = LogicType::AND;
+                device.logic.input_threshold = 8.0f;
+                for (int i = 0; i < 4; ++i) {
+                    device.logic.input_signals[i] = 0.0f;
+                }
+                break;
+            case DeviceType::Sensor:
+                device.sensor.sensor_value = 0.0f;
+                device.sensor.trigger_threshold = 50.0f;
+                device.sensor.is_triggered = false;
+                break;
+            default:
+                break;
+        }
+    }
+}
+
+void ParticleSystem::resize_gamified_arrays(size_t new_size) {
+    heat_energy_.resize(new_size, 30.0f);
+    electric_energy_.resize(new_size, 0.0f);
+    chemical_energy_.resize(new_size, 50.0f);
+    kinetic_energy_.resize(new_size, 0.0f);
+    device_states_.resize(new_size);
+}
+
+float ParticleSystem::calculate_kinetic_energy_from_velocity(uint32_t particle_index) const {
+    if (particle_index >= vel_x_.size()) return 0.0f;
+    
+    Vector3 velocity = {vel_x_[particle_index], vel_y_[particle_index], vel_z_[particle_index]};
+    return GamifiedPhysics::velocity_to_kinetic_energy(velocity);
+}
+
+// Gamified physics update methods (stubs for now)
+void ParticleSystem::update_gamified_physics(float dt) {
+    // Update kinetic energy from velocities
+    for (uint32_t i = 0; i < pos_x_.size(); ++i) {
+        if (!active_[i]) continue;
+        kinetic_energy_[i] = calculate_kinetic_energy_from_velocity(i);
+    }
+    
+    // Update energy flow between bonded particles
+    update_energy_flow(dt);
+    
+    // Update device states
+    update_device_states(dt);
+    
+    // Update electrical network
+    update_electrical_network(dt);
+    
+    // Update arcing effects
+    update_arcing_effects(dt);
+}
+
+void ParticleSystem::update_energy_flow(float dt) {
+    // Process energy flow through electrical connections
+    for (const auto& conn : electrical_connections_) {
+        if (conn.source_particle >= active_.size() || conn.target_particle >= active_.size()) continue;
+        if (!active_[conn.source_particle] || !active_[conn.target_particle]) continue;
+        
+        // Calculate distance
+        Vector3 pos1 = {pos_x_[conn.source_particle], pos_y_[conn.source_particle], pos_z_[conn.source_particle]};
+        Vector3 pos2 = {pos_x_[conn.target_particle], pos_y_[conn.target_particle], pos_z_[conn.target_particle]};
+        float distance = Vector3Distance(pos1, pos2);
+        
+        // Get material properties
+        const auto& material1 = material_manager_.get_gamified_properties(particle_types_[type_id_[conn.source_particle]].material);
+        const auto& material2 = material_manager_.get_gamified_properties(particle_types_[type_id_[conn.target_particle]].material);
+        
+        // Calculate energy flow
+        auto flow = GamifiedPhysics::calculate_energy_flow_between_particles(
+            heat_energy_[conn.source_particle], electric_energy_[conn.source_particle], chemical_energy_[conn.source_particle],
+            heat_energy_[conn.target_particle], electric_energy_[conn.target_particle], chemical_energy_[conn.target_particle],
+            material1, material2,
+            distance, dt
+        );
+        
+        // Apply energy transfers
+        if (flow.heat_transfer_rate > 0.0f) {
+            heat_energy_[conn.source_particle] = GamifiedPhysics::clamp_energy(heat_energy_[conn.source_particle] - flow.heat_transfer_rate);
+            heat_energy_[conn.target_particle] = GamifiedPhysics::clamp_energy(heat_energy_[conn.target_particle] + flow.heat_transfer_rate);
+        }
+        
+        if (flow.electric_transfer_rate > 0.0f) {
+            electric_energy_[conn.source_particle] = GamifiedPhysics::clamp_energy(electric_energy_[conn.source_particle] - flow.electric_transfer_rate);
+            electric_energy_[conn.target_particle] = GamifiedPhysics::clamp_energy(electric_energy_[conn.target_particle] + flow.electric_transfer_rate);
+            
+            // Apply resistance loss as heat
+            heat_energy_[conn.source_particle] = GamifiedPhysics::clamp_energy(heat_energy_[conn.source_particle] + flow.resistance_loss * 0.5f);
+            heat_energy_[conn.target_particle] = GamifiedPhysics::clamp_energy(heat_energy_[conn.target_particle] + flow.resistance_loss * 0.5f);
+        }
+    }
+}
+
+void ParticleSystem::update_device_states(float dt) {
+    for (uint32_t i = 0; i < device_states_.size(); ++i) {
+        if (!active_[i]) continue;
+        
+        DeviceState& device = device_states_[i];
+        float sensor_input = heat_energy_[i]; // Declare outside switch to avoid jump error
+        
+        switch (device.type) {
+            case DeviceType::Battery:
+                GamifiedPhysics::update_battery_device(device, chemical_energy_[i], electric_energy_[i], dt);
+                break;
+            case DeviceType::Solar:
+                GamifiedPhysics::update_solar_device(device, heat_energy_[i], electric_energy_[i], dt);
+                break;
+            case DeviceType::Motor:
+                GamifiedPhysics::update_motor_device(device, electric_energy_[i], dt);
+                break;
+            case DeviceType::LogicGate:
+                GamifiedPhysics::update_logic_gate_device(device, electric_energy_[i], dt);
+                break;
+            case DeviceType::Sensor:
+                GamifiedPhysics::update_sensor_device(device, sensor_input, electric_energy_[i], dt);
+                break;
+            default:
+                break;
+        }
+    }
+}
+
+void ParticleSystem::update_electrical_network(float dt) {
+    // Check for arcing conditions
+    for (uint32_t i = 0; i < pos_x_.size(); ++i) {
+        if (!active_[i] || electric_energy_[i] < 85.0f) continue;
+        
+        // Check nearby particles for arcing
+        Vector3 pos1 = {pos_x_[i], pos_y_[i], pos_z_[i]};
+        
+        for (uint32_t j = i + 1; j < pos_x_.size(); ++j) {
+            if (!active_[j]) continue;
+            
+            Vector3 pos2 = {pos_x_[j], pos_y_[j], pos_z_[j]};
+            float distance = Vector3Distance(pos1, pos2);
+            
+            if (GamifiedPhysics::check_arcing_conditions(electric_energy_[i], distance)) {
+                // Create arcing effect
+                float energy_transfer = (electric_energy_[i] - 85.0f) * 0.1f;
+                ArcingEffect arc = GamifiedPhysics::create_arcing_effect(i, j, pos1, pos2, energy_transfer);
+                active_arcs_.push_back(arc);
+                
+                // Transfer energy
+                electric_energy_[i] = GamifiedPhysics::clamp_energy(electric_energy_[i] - energy_transfer);
+                electric_energy_[j] = GamifiedPhysics::clamp_energy(electric_energy_[j] + energy_transfer * 0.8f); // 20% loss
+                
+                // Generate heat from arcing
+                heat_energy_[i] = GamifiedPhysics::clamp_energy(heat_energy_[i] + energy_transfer * 0.1f);
+                heat_energy_[j] = GamifiedPhysics::clamp_energy(heat_energy_[j] + energy_transfer * 0.1f);
+            }
+        }
+    }
+}
+
+void ParticleSystem::update_arcing_effects(float dt) {
+    // Update and remove expired arcing effects
+    active_arcs_.erase(
+        std::remove_if(active_arcs_.begin(), active_arcs_.end(),
+            [dt](ArcingEffect& arc) {
+                arc.duration -= dt;
+                return arc.duration <= 0.0f;
+            }),
+        active_arcs_.end());
+}
+
+void ParticleSystem::update_chemical_reactions_gamified(float dt) {
+    // Simplified chemical reactions based on energy thresholds
+    // This replaces the complex chemical reaction system with simple rules
+    // Implementation would go here for gamified chemical reactions
+}
+
+// Update the main update method to use gamified physics
+void ParticleSystem::update_gamified_simulation(float dt) {
+    // Update gamified physics instead of complex physics
+    update_gamified_physics(dt);
+    
+    // Still do basic particle integration
+    integrate_particles(dt);
+    
+    // Boundary checking
+    check_bounds();
 } 
