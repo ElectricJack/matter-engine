@@ -19,7 +19,7 @@ public:
         : screen_width_(width), screen_height_(height),
           blas_manager_(std::make_unique<BLASManager>()),
           tlas_manager_(std::make_unique<TLASManager>(1000)),
-          test_cluster_(std::make_unique<Cluster>(0, 2.0f)) {
+          test_cluster_(std::make_unique<Cluster>(0, 3.0f)) {
         
         InitWindow(screen_width_, screen_height_, "MatterSurfaceLib - Cluster and Cell System");
         SetTargetFPS(60);
@@ -65,7 +65,7 @@ private:
         printf("Setting up matter system with cluster and cells...\n");
         
         // Add particles in a roughly spherical distribution
-        for (int i = 0; i < 20; ++i) {
+        for (int i = 0; i < 50; ++i) {
             float angle1 = (float)i * 0.15f;
             float angle2 = (float)i * 0.25f;
             
@@ -75,7 +75,7 @@ private:
                 cosf(angle2) * 5.0f
             };
             
-            uint32_t material = 2;//i % 3; // Cycle through materials
+            uint32_t material = 0;//i % 3; // Cycle through materials
             test_cluster_->add_particle(position, 1.0f, material);
         }
         
