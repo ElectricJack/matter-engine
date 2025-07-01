@@ -27,7 +27,8 @@ Cluster::Cluster(uint32_t cluster_id, float smallest_cell_size)
       position_({0.0f, 0.0f, 0.0f}),
       rotation_(QuaternionIdentity()),
       next_particle_id_(0),
-      smallest_cell_size_(smallest_cell_size) {
+      smallest_cell_size_(smallest_cell_size),
+      current_lod_level_(0) {
     
     // Initialize spatial hash for cell management
     // Use cell size as spatial hash cell size for efficient cell lookup
@@ -128,40 +129,36 @@ bool Cluster::update_particle_position(uint32_t particle_id, const Vector3& new_
 void Cluster::mark_cells_dirty_around_particle(const Vector3& local_position, float radius) {
     // Calculate the range of cell coordinates that might be affected
     float influence_radius = radius * 2.0f; // Conservative estimate
+    float cell_size = get_current_cell_size();
     
-    // Check multiple LOD levels (different cell sizes)
-    for (int lod = 0; lod <= 4; ++lod) {
-        float cell_size = smallest_cell_size_ * (1 << lod);
-        
-        // Calculate cell coordinate range
-        Vector3 min_cell = {
-            floorf((local_position.x - influence_radius) / cell_size),
-            floorf((local_position.y - influence_radius) / cell_size),
-            floorf((local_position.z - influence_radius) / cell_size)
-        };
-        Vector3 max_cell = {
-            floorf((local_position.x + influence_radius) / cell_size),
-            floorf((local_position.y + influence_radius) / cell_size),
-            floorf((local_position.z + influence_radius) / cell_size)
-        };
-        
-        // Mark cells in this range as dirty
-        for (int x = (int)min_cell.x; x <= (int)max_cell.x; ++x) {
-            for (int y = (int)min_cell.y; y <= (int)max_cell.y; ++y) {
-                for (int z = (int)min_cell.z; z <= (int)max_cell.z; ++z) {
-                    Vector3 cell_coords = {(float)x, (float)y, (float)z};
-                    Cell* cell = find_or_create_cell(cell_coords, lod);
-                    if (cell) {
-                        cell->is_dirty = true;
-                    }
+    // Calculate cell coordinate range for the current LOD level only
+    Vector3 min_cell = {
+        floorf((local_position.x - influence_radius) / cell_size),
+        floorf((local_position.y - influence_radius) / cell_size),
+        floorf((local_position.z - influence_radius) / cell_size)
+    };
+    Vector3 max_cell = {
+        floorf((local_position.x + influence_radius) / cell_size),
+        floorf((local_position.y + influence_radius) / cell_size),
+        floorf((local_position.z + influence_radius) / cell_size)
+    };
+    
+    // Mark cells in this range as dirty (only at current LOD level)
+    for (int x = (int)min_cell.x; x <= (int)max_cell.x; ++x) {
+        for (int y = (int)min_cell.y; y <= (int)max_cell.y; ++y) {
+            for (int z = (int)min_cell.z; z <= (int)max_cell.z; ++z) {
+                Vector3 cell_coords = {(float)x, (float)y, (float)z};
+                Cell* cell = find_or_create_cell(cell_coords);
+                if (cell) {
+                    cell->is_dirty = true;
                 }
             }
         }
     }
 }
 
-Vector3 Cluster::get_cell_coordinates(const Vector3& local_position, int cell_size_power) const {
-    float cell_size = smallest_cell_size_ * (1 << cell_size_power);
+Vector3 Cluster::get_cell_coordinates(const Vector3& local_position) const {
+    float cell_size = get_current_cell_size();
     return Vector3{
         floorf(local_position.x / cell_size),
         floorf(local_position.y / cell_size),
@@ -169,8 +166,8 @@ Vector3 Cluster::get_cell_coordinates(const Vector3& local_position, int cell_si
     };
 }
 
-Cell* Cluster::find_or_create_cell(const Vector3& cell_coords, int cell_size_power) {
-    float cell_size = smallest_cell_size_ * (1 << cell_size_power);
+Cell* Cluster::find_or_create_cell(const Vector3& cell_coords) {
+    float cell_size = get_current_cell_size();
     
     // Calculate cell center for spatial hash lookup
     Vector3 cell_center = {
@@ -186,7 +183,7 @@ Cell* Cluster::find_or_create_cell(const Vector3& cell_coords, int cell_size_pow
     }
     
     // Create new cell
-    auto new_cell = std::make_unique<Cell>(cell_coords, cell_size_power, smallest_cell_size_);
+    auto new_cell = std::make_unique<Cell>(cell_coords, current_lod_level_, smallest_cell_size_);
     Cell* cell_ptr = new_cell.get();
     
     // Insert into spatial hash
@@ -332,4 +329,61 @@ uint32_t Cluster::get_dirty_cell_count() const {
         }
     }
     return count;
+}
+
+void Cluster::set_lod_level(int lod_level) {
+    if (lod_level < 0 || lod_level > 10) {
+        printf("Warning: LOD level %d out of range [0-10], clamping\n", lod_level);
+        lod_level = (lod_level < 0) ? 0 : 10;
+    }
+    
+    if (lod_level != current_lod_level_) {
+        printf("Cluster %u: Changing LOD level from %d to %d\n", cluster_id_, current_lod_level_, lod_level);
+        current_lod_level_ = lod_level;
+        
+        // Clear all existing cells since they're at the wrong LOD level
+        clear_all_cells();
+        
+        // Mark all particles as needing new cell assignment
+        for (const auto& particle : particles_) {
+            mark_cells_dirty_around_particle(particle.position, particle.radius);
+        }
+        
+        printf("Cluster %u: LOD level changed, %u particles will be reassigned to new cells\n", 
+               cluster_id_, static_cast<uint32_t>(particles_.size()));
+    }
+}
+
+void Cluster::force_rebuild_all_cells(BLASManager& blas_manager) {
+    printf("Cluster %u: Force rebuilding all cells at LOD level %d\n", cluster_id_, current_lod_level_);
+    
+    // Clear all existing cells
+    clear_all_cells();
+    
+    // Mark all particles as needing new cell assignment
+    for (const auto& particle : particles_) {
+        mark_cells_dirty_around_particle(particle.position, particle.radius);
+    }
+    
+    // Rebuild all dirty cells
+    rebuild_dirty_cells(blas_manager);
+}
+
+void Cluster::clear_all_cells() {
+    printf("Cluster %u: Clearing all %zu cells\n", cluster_id_, cells_.size());
+    
+    // Clear cells vector (this will call destructors and free mesh memory)
+    cells_.clear();
+    
+    // Clear spatial hash
+    if (cell_spatial_hash_) {
+        // The spatial hash entries will be cleared when cells are destroyed
+        // But we need to reset the spatial hash structure
+        sh_destroy(cell_spatial_hash_);
+        cell_spatial_hash_ = sh_create(get_current_cell_size(), 1000);
+        
+        if (!cell_spatial_hash_) {
+            printf("Warning: Failed to recreate spatial hash for cluster %u after clearing cells\n", cluster_id_);
+        }
+    }
 }

@@ -63,6 +63,12 @@ public:
     void set_smallest_cell_size(float size) { smallest_cell_size_ = size; }
     float get_smallest_cell_size() const { return smallest_cell_size_; }
     
+    // LOD level management
+    void set_lod_level(int lod_level);
+    int get_lod_level() const { return current_lod_level_; }
+    float get_current_cell_size() const { return smallest_cell_size_ * (1 << current_lod_level_); }
+    void force_rebuild_all_cells(BLASManager& blas_manager);
+    
     // Statistics
     uint32_t get_cell_count() const;
     uint32_t get_dirty_cell_count() const;
@@ -79,13 +85,15 @@ private:
     
     // Cell management
     float smallest_cell_size_;
+    int current_lod_level_;           // Currently active LOD level (0 = finest detail)
     SpatialHash* cell_spatial_hash_;
     std::vector<std::unique_ptr<Cell>> cells_;
     
     // Helper methods
-    Vector3 get_cell_coordinates(const Vector3& local_position, int cell_size_power) const;
-    Cell* find_or_create_cell(const Vector3& cell_coords, int cell_size_power);
+    Vector3 get_cell_coordinates(const Vector3& local_position) const;
+    Cell* find_or_create_cell(const Vector3& cell_coords);
     void update_cell_meshes(Cell* cell, BLASManager& blas_manager);
+    void clear_all_cells();
 };
 
 #endif // CLUSTER_H

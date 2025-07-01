@@ -206,6 +206,28 @@ private:
                    test_cluster_->get_cell_count());
         }
         
+        // LOD level controls
+        if (IsKeyPressed(KEY_ONE)) {
+            test_cluster_->set_lod_level(0);
+            test_cluster_->rebuild_dirty_cells(*blas_manager_);
+        }
+        if (IsKeyPressed(KEY_TWO)) {
+            test_cluster_->set_lod_level(1);
+            test_cluster_->rebuild_dirty_cells(*blas_manager_);
+        }
+        if (IsKeyPressed(KEY_THREE)) {
+            test_cluster_->set_lod_level(2);
+            test_cluster_->rebuild_dirty_cells(*blas_manager_);
+        }
+        if (IsKeyPressed(KEY_FOUR)) {
+            test_cluster_->set_lod_level(3);
+            test_cluster_->rebuild_dirty_cells(*blas_manager_);
+        }
+        if (IsKeyPressed(KEY_FIVE)) {
+            test_cluster_->set_lod_level(4);
+            test_cluster_->rebuild_dirty_cells(*blas_manager_);
+        }
+        
         UpdateCamera(&camera_, CAMERA_FREE);
     }
     
@@ -253,25 +275,28 @@ private:
                      10, 10, 20, WHITE);
             DrawText("Press SPACE to add random particles", 10, 40, 20, WHITE);
             DrawText("Press ESC to toggle cursor", 10, 70, 20, WHITE);
-            DrawText(TextFormat("Particles: %u, Cells: %u", 
+            DrawText(TextFormat("Particles: %u, Cells: %u, LOD: %d (%.1f unit cells)", 
                                test_cluster_->get_particle_count(),
-                               test_cluster_->get_cell_count()), 
+                               test_cluster_->get_cell_count(),
+                               test_cluster_->get_lod_level(),
+                               test_cluster_->get_current_cell_size()), 
                      10, 100, 20, WHITE);
+            DrawText("Press 1-5 to change LOD level", 10, 120, 16, LIGHTGRAY);
             
             // BVH visualization info
             if (show_bvh_visualization_ || render_mode_ == 3) {
                 const auto& settings = bvh_visualizer_->get_settings();
-                DrawText("BVH VISUALIZATION MODE", 10, 130, 16, YELLOW);
-                DrawText("Q:BLAS I:TLAS V:Leaf T:Interior Y:Colors U:Triangles", 10, 150, 12, LIGHTGRAY);
-                DrawText("UP/DOWN: Depth | B: Toggle visualization", 10, 165, 12, LIGHTGRAY);
+                DrawText("BVH VISUALIZATION MODE", 10, 140, 16, YELLOW);
+                DrawText("Q:BLAS I:TLAS V:Leaf T:Interior Y:Colors U:Triangles", 10, 160, 12, LIGHTGRAY);
+                DrawText("UP/DOWN: Depth | B: Toggle visualization", 10, 175, 12, LIGHTGRAY);
                 DrawText(TextFormat("BLAS:%s TLAS:%s Leaf:%s Interior:%s Depth:%d", 
                          settings.show_blas_bvh ? "ON" : "OFF",
                          settings.show_tlas_bvh ? "ON" : "OFF",
                          settings.show_leaf_nodes ? "ON" : "OFF",
                          settings.show_interior_nodes ? "ON" : "OFF", 
-                         settings.max_depth_to_show), 10, 180, 12, LIGHTGRAY);
+                         settings.max_depth_to_show), 10, 190, 12, LIGHTGRAY);
             } else {
-                DrawText("Press B to toggle BVH visualization", 10, 130, 14, LIGHTGRAY);
+                DrawText("Press B to toggle BVH visualization", 10, 140, 14, LIGHTGRAY);
             }
         }
         
