@@ -5,16 +5,45 @@
 #include <string.h>
 #include <math.h>
 #include <stdio.h>
-#include <time.h>
+
+// Platform-specific includes for timing
+#ifdef _WIN32
+    // Minimal Windows includes to avoid conflicts with raylib
+    #define WIN32_LEAN_AND_MEAN
+    #define NOGDI        // Exclude GDI (avoids Rectangle conflict)
+    #define NOUSER       // Exclude User32 (avoids CloseWindow/ShowCursor conflicts)
+    #include <windows.h>
+    #undef WIN32_LEAN_AND_MEAN
+    #undef NOGDI
+    #undef NOUSER
+#else
+    #include <time.h>
+#endif
 
 // Performance timing macros
 #define ENABLE_PERFORMANCE_TIMING 1
 
 #if ENABLE_PERFORMANCE_TIMING
     static double performance_timer() {
-        struct timespec ts;
-        clock_gettime(CLOCK_MONOTONIC, &ts);
-        return ts.tv_sec + ts.tv_nsec / 1e9;
+        #ifdef _WIN32
+            // Windows-specific high-resolution timer
+            static LARGE_INTEGER frequency = {0};
+            static int frequency_initialized = 0;
+            
+            if (!frequency_initialized) {
+                QueryPerformanceFrequency(&frequency);
+                frequency_initialized = 1;
+            }
+            
+            LARGE_INTEGER counter;
+            QueryPerformanceCounter(&counter);
+            return (double)counter.QuadPart / (double)frequency.QuadPart;
+        #else
+            // POSIX systems (Linux, macOS, etc.)
+            struct timespec ts;
+            clock_gettime(CLOCK_MONOTONIC, &ts);
+            return ts.tv_sec + ts.tv_nsec / 1e9;
+        #endif
     }
     
     #define TIMER_START(name) double timer_##name = performance_timer()

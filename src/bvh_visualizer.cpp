@@ -25,7 +25,7 @@ void BVHVisualizer::render(const BLASManager& blas_manager,
     PROFILE_SECTION("BVH Visualization");
     
     if (settings.show_blas_bvh) {
-        render_blas_bvh(blas_manager, settings);
+        render_blas_bvh_transformed(blas_manager, tlas_manager, settings);
     }
     
     if (settings.show_tlas_bvh) {
@@ -49,7 +49,7 @@ void BVHVisualizer::render_blas_bvh(const BLASManager& blas_manager,
         const BVH* bvh = entry->bvh.get();
         if (!bvh->bvhNode || bvh->nodesUsed == 0) continue;
         
-        // Render this BLAS BVH starting from root node
+        // Render this BLAS BVH starting from root node (in local space)
         render_bvh_node_recursive(bvh->bvhNode, 0, 0, settings, settings.blas_color);
         
         // Optionally render triangles
@@ -58,6 +58,51 @@ void BVHVisualizer::render_blas_bvh(const BLASManager& blas_manager,
                 draw_triangle_wireframe(entry->mesh->tri[i], 
                                       settings.triangle_color, 
                                       settings.wireframe_thickness);
+            }
+        }
+    }
+}
+
+void BVHVisualizer::render_blas_bvh_transformed(const BLASManager& blas_manager,
+                                               const TLASManager& tlas_manager,
+                                               const VisualizationSettings& settings) {
+    // Get draw records to get transforms for each BLAS instance
+    const auto& draw_records = tlas_manager.get_draw_records();
+    
+    // Debug: Print transform info
+    static bool debug_printed = false;
+    if (!debug_printed) {
+        printf("DEBUG: render_blas_bvh_transformed called with %zu draw records\n", draw_records.size());
+        if (!draw_records.empty()) {
+            const auto& first_record = draw_records[0];
+            const auto& m = first_record.transform.m;
+            printf("DEBUG: First transform matrix:\n");
+            printf("  [%.2f %.2f %.2f %.2f]\n", m[0], m[1], m[2], m[3]);
+            printf("  [%.2f %.2f %.2f %.2f]\n", m[4], m[5], m[6], m[7]);
+            printf("  [%.2f %.2f %.2f %.2f]\n", m[8], m[9], m[10], m[11]);
+            printf("  [%.2f %.2f %.2f %.2f]\n", m[12], m[13], m[14], m[15]);
+        }
+        debug_printed = true;
+    }
+    
+    for (const auto& record : draw_records) {
+        // Get the BLAS entry for this handle
+        auto* entry = blas_manager.get_entry(record.blas_handle);
+        if (!entry || !entry->bvh) continue;
+        
+        const BVH* bvh = entry->bvh.get();
+        if (!bvh->bvhNode || bvh->nodesUsed == 0) continue;
+        
+        // Render this BLAS BVH with the transform applied
+        render_bvh_node_recursive_transformed(bvh->bvhNode, 0, 0, settings, settings.blas_color, record);
+        
+        // Optionally render triangles with transforms
+        if (settings.show_triangles && entry->mesh) {
+            for (int i = 0; i < entry->mesh->triCount; i++) {
+                draw_triangle_wireframe_transformed(entry->mesh->tri[i], 
+                                                  settings.triangle_color, 
+                                                  record,
+                                                  settings.wireframe_thickness);
             }
         }
     }
@@ -114,6 +159,51 @@ void BVHVisualizer::render_bvh_node_recursive(const BVHNode* nodes,
         
         render_bvh_node_recursive(nodes, left_child, depth + 1, settings, base_color);
         render_bvh_node_recursive(nodes, right_child, depth + 1, settings, base_color);
+    }
+}
+
+void BVHVisualizer::render_bvh_node_recursive_transformed(const BVHNode* nodes, 
+                                                         int node_index, 
+                                                         int depth,
+                                                         const VisualizationSettings& settings,
+                                                         Color base_color,
+                                                         const TLASManager::DrawRecord& transform) {
+    if (depth > settings.max_depth_to_show) return;
+    
+    const BVHNode& node = nodes[node_index];
+    
+    // Determine if we should show this node
+    bool is_leaf = node.isLeaf();
+    if ((is_leaf && !settings.show_leaf_nodes) || 
+        (!is_leaf && !settings.show_interior_nodes)) {
+        return;
+    }
+    
+    // Choose color
+    Color node_color = base_color;
+    if (settings.use_depth_colors) {
+        node_color = get_depth_color(depth, settings.max_depth_to_show);
+    } else if (is_leaf) {
+        node_color = settings.leaf_color;
+    }
+    
+    // Make interior nodes more transparent
+    if (!is_leaf) {
+        node_color.a = static_cast<unsigned char>(node_color.a * 0.3f);
+    }
+    
+    // Draw the AABB wireframe with transform applied
+    Vector3 min_pos = float3_to_vector3(node.aabbMin);
+    Vector3 max_pos = float3_to_vector3(node.aabbMax);
+    draw_aabb_wireframe_transformed(min_pos, max_pos, node_color, transform, settings.wireframe_thickness);
+    
+    // Recursively render children if this is an interior node
+    if (!is_leaf) {
+        int left_child = node.leftFirst;
+        int right_child = node.leftFirst + 1;
+        
+        render_bvh_node_recursive_transformed(nodes, left_child, depth + 1, settings, base_color, transform);
+        render_bvh_node_recursive_transformed(nodes, right_child, depth + 1, settings, base_color, transform);
     }
 }
 
@@ -251,6 +341,83 @@ Vector3 BVHVisualizer::float3_to_vector3(const float3& v) {
 
 float3 BVHVisualizer::vector3_to_float3(const Vector3& v) {
     return make_float3(v.x, v.y, v.z);
+}
+
+Vector3 BVHVisualizer::transform_point(const Vector3& point, const TLASManager::DrawRecord& transform) {
+    const auto& m = transform.transform.m;
+    
+    // Matrix4x4 is stored in row-major format:
+    // m[0]  m[1]  m[2]  m[3]     <- Row 0 (x-component)
+    // m[4]  m[5]  m[6]  m[7]     <- Row 1 (y-component) 
+    // m[8]  m[9]  m[10] m[11]    <- Row 2 (z-component)
+    // m[12] m[13] m[14] m[15]    <- Row 3 (translation)
+    
+    // Apply 4x4 matrix transformation to Vector3 (treating as homogeneous coordinate with w=1)
+    float x = m[0] * point.x + m[1] * point.y + m[2]  * point.z + m[3];
+    float y = m[4] * point.x + m[5] * point.y + m[6]  * point.z + m[7];
+    float z = m[8] * point.x + m[9] * point.y + m[10] * point.z + m[11];
+    
+    return Vector3{x, y, z};
+}
+
+void BVHVisualizer::draw_aabb_wireframe_transformed(Vector3 min_pos, Vector3 max_pos, Color color, 
+                                                   const TLASManager::DrawRecord& transform, float thickness) {
+    (void)thickness; // Suppress unused parameter warning
+    
+    // Transform all 8 corners of the AABB
+    Vector3 corners[8] = {
+        {min_pos.x, min_pos.y, min_pos.z}, // 0: min corner
+        {max_pos.x, min_pos.y, min_pos.z}, // 1
+        {max_pos.x, max_pos.y, min_pos.z}, // 2
+        {min_pos.x, max_pos.y, min_pos.z}, // 3
+        {min_pos.x, min_pos.y, max_pos.z}, // 4
+        {max_pos.x, min_pos.y, max_pos.z}, // 5
+        {max_pos.x, max_pos.y, max_pos.z}, // 6: max corner
+        {min_pos.x, max_pos.y, max_pos.z}  // 7
+    };
+    
+    // Transform all corners
+    for (int i = 0; i < 8; i++) {
+        corners[i] = transform_point(corners[i], transform);
+    }
+    
+    // Draw 12 edges of the AABB
+    
+    // Bottom face (4 edges)
+    DrawLine3D(corners[0], corners[1], color);
+    DrawLine3D(corners[1], corners[5], color);
+    DrawLine3D(corners[5], corners[4], color);
+    DrawLine3D(corners[4], corners[0], color);
+    
+    // Top face (4 edges)
+    DrawLine3D(corners[3], corners[2], color);
+    DrawLine3D(corners[2], corners[6], color);
+    DrawLine3D(corners[6], corners[7], color);
+    DrawLine3D(corners[7], corners[3], color);
+    
+    // Vertical edges (4 edges)
+    DrawLine3D(corners[0], corners[3], color);
+    DrawLine3D(corners[1], corners[2], color);
+    DrawLine3D(corners[5], corners[6], color);
+    DrawLine3D(corners[4], corners[7], color);
+}
+
+void BVHVisualizer::draw_triangle_wireframe_transformed(const Tri& triangle, Color color, 
+                                                       const TLASManager::DrawRecord& transform, float thickness) {
+    (void)thickness; // Suppress unused parameter warning
+    
+    Vector3 v0 = float3_to_vector3(triangle.vertex0);
+    Vector3 v1 = float3_to_vector3(triangle.vertex1);
+    Vector3 v2 = float3_to_vector3(triangle.vertex2);
+    
+    // Transform all vertices
+    v0 = transform_point(v0, transform);
+    v1 = transform_point(v1, transform);
+    v2 = transform_point(v2, transform);
+    
+    DrawLine3D(v0, v1, color);
+    DrawLine3D(v1, v2, color);
+    DrawLine3D(v2, v0, color);
 }
 
 // Convenience functions

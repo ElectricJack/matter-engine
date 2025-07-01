@@ -244,18 +244,20 @@ void Cell::generate_mesh_for_material(uint32_t material_id, const std::vector<St
     bounds.center = center;
     bounds.size = Vector3{actual_size, actual_size, actual_size};
     
-    // Set division power based on cell size for appropriate detail
-    if (actual_size <= 2.0f) {
-        bounds.divisionPow = 4; // 16x16x16 resolution
-    } else if (actual_size <= 8.0f) {
-        bounds.divisionPow = 3; // 8x8x8 resolution
-    } else {
-        bounds.divisionPow = 2; // 4x4x4 resolution
-    }
+    // Use fixed mesh resolution for all cells regardless of size
+    // This ensures consistent mesh quality and memory usage per cell
+    // Smaller cells get higher voxel density (more detail per world unit)
+    bounds.divisionPow = 4; // Always 16x16x16 resolution
     
     // Generate mesh using SurfaceLib
+    printf("    Generating mesh: %zu particles, bounds=(%.1f,%.1f,%.1f) size=(%.1f,%.1f,%.1f) divPow=%d\n",
+           surface_particles.size(), bounds.center.x, bounds.center.y, bounds.center.z,
+           bounds.size.x, bounds.size.y, bounds.size.z, bounds.divisionPow);
+    
     Mesh mesh = GenerateMesh(surface_particles.data(), particle_radius, 
                             static_cast<int>(surface_particles.size()), bounds);
+    
+    printf("    Generated mesh: %d vertices, %d triangles\n", mesh.vertexCount, mesh.triangleCount);
     
     if (mesh.vertexCount > 0) {
         // Store the mesh
@@ -291,13 +293,16 @@ void Cell::generate_mesh_for_material(uint32_t material_id, const std::vector<St
 }
 
 void Cell::clear_meshes() {
-    // Free all mesh data
+    // Properly free both GPU and CPU mesh resources
     for (auto& mesh_entry : material_meshes) {
         Mesh& mesh = mesh_entry.second;
-        if (mesh.vertices) RL_FREE(mesh.vertices);
-        if (mesh.normals) RL_FREE(mesh.normals);
-        if (mesh.indices) RL_FREE(mesh.indices);
-        if (mesh.colors) RL_FREE(mesh.colors);
+        
+        // First, unload GPU resources (VAO, VBOs, etc.)
+        // This is critical - without this, old mesh data stays on GPU!
+        UnloadMesh(mesh);
+        
+        // Note: UnloadMesh() already frees the CPU memory (vertices, normals, etc.)
+        // so we don't need to manually call RL_FREE() anymore
     }
     
     material_meshes.clear();

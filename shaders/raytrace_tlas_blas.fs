@@ -381,7 +381,7 @@ vec3 trace(vec3 rayOrigin, vec3 rayDirection, inout uint seed) {
     // Atmospheric parameters - much more transparent haze
     float fogDensity = 0.00005;
     vec3  fogColor   = vec3(0.8, 0.8, 0.9);
-    int   MAX_DEPTH  = 3;
+    int   MAX_DEPTH  = 2;
     
     for (int rayDepth = 0; rayDepth < MAX_DEPTH; rayDepth++) { // Limited to 2 bounces for performance
         HitResult hit = intersectScene(rayPos, rayDir);
@@ -561,6 +561,14 @@ void main() {
     // Compute ray direction
     float fovScale = tan(radians(cameraFovy) * 0.5);
     vec3 rayDir = normalize(uv.x * right * fovScale + uv.y * up * fovScale + forward);
+    
+    // Debug mode: visualize triangle test counts
+    if (debugTriangleTests == 1) {
+        HitResult debugHit = intersectScene(cameraPos, rayDir);
+        vec3 debugColor = triangleTestCountToColor(debugHit.triangleTests);
+        finalColor = vec4(debugColor, 1.0);
+        return;
+    }
     
     // Trace the ray
     vec3 color = trace(cameraPos, rayDir, seed);

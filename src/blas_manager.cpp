@@ -180,8 +180,7 @@ BLASHandle BLASManager::register_triangles(Tri* triangles, int triangle_count) {
         // Add to entries
         entries_.push_back(std::move(entry));
         
-        totals_dirty_ = true;
-        textures_dirty_ = true; // Mark textures for regeneration
+        mark_dirty(); // Mark all cached data as dirty
         return handle;
     }
 }
@@ -226,6 +225,15 @@ BvhMesh* BLASManager::get_mesh(BLASHandle handle) const {
         [handle](const auto& entry) { return entry->handle == handle; });
     
     return (it != entries_.end()) ? (*it)->mesh.get() : nullptr;
+}
+
+const BLASManager::BLASEntry* BLASManager::get_entry(BLASHandle handle) const {
+    if (handle == INVALID_BLAS_HANDLE) return nullptr;
+    
+    auto it = std::find_if(entries_.begin(), entries_.end(),
+        [handle](const auto& entry) { return entry->handle == handle; });
+    
+    return (it != entries_.end()) ? it->get() : nullptr;
 }
 
 void BLASManager::update_totals() const {
@@ -505,34 +513,65 @@ void BLASManager::ensure_gpu_textures_ready() {
 void BLASManager::bind_to_shader(Shader shader) const {
     PROFILE_SECTION("BLAS Shader Binding");
     
-    // Ensure textures are ready
-    const_cast<BLASManager*>(this)->ensure_gpu_textures_ready();
-    
-    // Get uniform locations
-    int triangle_count_loc     = GetShaderLocation(shader, "triangleCount");
-    int blas_node_count_loc    = GetShaderLocation(shader, "blasNodeCount");
-    int triangles_texture_loc  = GetShaderLocation(shader, "trianglesTexture");
-    int blas_nodes_texture_loc = GetShaderLocation(shader, "blasNodesTexture");
-    int intersection_mode_loc  = GetShaderLocation(shader, "intersectionMode");
-    
-    // Set counts
-    int triangle_count = get_total_triangle_count();
-    int node_count     = get_total_node_count();
-    
-    SetShaderValue(shader, triangle_count_loc,  &triangle_count, SHADER_UNIFORM_INT);
-    SetShaderValue(shader, blas_node_count_loc, &node_count,     SHADER_UNIFORM_INT);
-    
-    // Enable BVH traversal
-    int intersection_mode = 1;
-    SetShaderValue(shader, intersection_mode_loc, &intersection_mode, SHADER_UNIFORM_INT);
-    
-    // Bind textures
-    if (triangles_texture_.id != 0 && triangles_texture_loc != -1) {
-        SetShaderValueTexture(shader, triangles_texture_loc, triangles_texture_);
+    // Check if shader has changed and cache locations if needed
+    bool shader_changed = (cached_shader_id_ != shader.id);
+    if (shader_changed) {
+        PROFILE_SECTION("Cache Shader Locations");
+        cached_shader_id_ = shader.id;
+        
+        // Cache uniform locations (these are expensive calls)
+        triangle_count_loc_     = GetShaderLocation(shader, "triangleCount");
+        blas_node_count_loc_    = GetShaderLocation(shader, "blasNodeCount");
+        triangles_texture_loc_  = GetShaderLocation(shader, "trianglesTexture");
+        blas_nodes_texture_loc_ = GetShaderLocation(shader, "blasNodesTexture");
+        intersection_mode_loc_  = GetShaderLocation(shader, "intersectionMode");
+        
+        // Force update shader values when shader changes
+        shader_values_dirty_ = true;
     }
     
-    if (nodes_texture_.id != 0 && blas_nodes_texture_loc != -1) {
-        SetShaderValueTexture(shader, blas_nodes_texture_loc, nodes_texture_);
+    // Only ensure textures are ready if they're dirty
+    bool textures_were_updated = textures_dirty_;
+    if (textures_dirty_) {
+        PROFILE_SECTION("Update GPU Textures");
+        const_cast<BLASManager*>(this)->ensure_gpu_textures_ready();
+    }
+    
+    // Only update shader values if they're dirty or shader changed
+    if (shader_values_dirty_) {
+        PROFILE_SECTION("Update Shader Values");
+        
+        // Set counts
+        int triangle_count = get_total_triangle_count();
+        int node_count     = get_total_node_count();
+        
+        if (triangle_count_loc_ != -1) {
+            SetShaderValue(shader, triangle_count_loc_, &triangle_count, SHADER_UNIFORM_INT);
+        }
+        if (blas_node_count_loc_ != -1) {
+            SetShaderValue(shader, blas_node_count_loc_, &node_count, SHADER_UNIFORM_INT);
+        }
+        
+        // Enable BVH traversal
+        if (intersection_mode_loc_ != -1) {
+            int intersection_mode = 1;
+            SetShaderValue(shader, intersection_mode_loc_, &intersection_mode, SHADER_UNIFORM_INT);
+        }
+        
+        shader_values_dirty_ = false;
+    }
+    
+    // Only bind textures if they've been updated or shader changed
+    if (textures_were_updated || shader_changed) {
+        PROFILE_SECTION("Bind Textures");
+        
+        if (triangles_texture_.id != 0 && triangles_texture_loc_ != -1) {
+            SetShaderValueTexture(shader, triangles_texture_loc_, triangles_texture_);
+        }
+        
+        if (nodes_texture_.id != 0 && blas_nodes_texture_loc_ != -1) {
+            SetShaderValueTexture(shader, blas_nodes_texture_loc_, nodes_texture_);
+        }
     }
 }
 

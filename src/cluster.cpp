@@ -197,18 +197,22 @@ Cell* Cluster::find_or_create_cell(const Vector3& cell_coords) {
 
 void Cluster::rebuild_dirty_cells(BLASManager& blas_manager) {
     uint32_t rebuilt_count = 0;
+    uint32_t total_cells = static_cast<uint32_t>(cells_.size());
+    uint32_t dirty_cells = get_dirty_cell_count();
+    
+    printf("REBUILD: Processing %u total cells, %u dirty\n", total_cells, dirty_cells);
     
     for (auto& cell : cells_) {
         if (cell->is_dirty) {
+            printf("  Rebuilding cell at (%.0f,%.0f,%.0f) size=%.1f\n", 
+                   cell->coordinates.x, cell->coordinates.y, cell->coordinates.z, cell->actual_size);
             update_cell_meshes(cell.get(), blas_manager);
             cell->is_dirty = false;
             rebuilt_count++;
         }
     }
     
-    if (rebuilt_count > 0) {
-        printf("Rebuilt %u dirty cells in cluster %u\n", rebuilt_count, cluster_id_);
-    }
+    printf("REBUILD: Completed %u cells\n", rebuilt_count);
 }
 
 void Cluster::update_cell_meshes(Cell* cell, BLASManager& blas_manager) {
@@ -338,8 +342,12 @@ void Cluster::set_lod_level(int lod_level) {
     }
     
     if (lod_level != current_lod_level_) {
-        printf("Cluster %u: Changing LOD level from %d to %d\n", cluster_id_, current_lod_level_, lod_level);
+        printf("===== LOD CHANGE: %d -> %d =====\n", current_lod_level_, lod_level);
+        printf("Old cell size: %.2f\n", get_current_cell_size());
+        
         current_lod_level_ = lod_level;
+        
+        printf("New cell size: %.2f\n", get_current_cell_size());
         
         // Clear all existing cells since they're at the wrong LOD level
         clear_all_cells();
@@ -349,8 +357,8 @@ void Cluster::set_lod_level(int lod_level) {
             mark_cells_dirty_around_particle(particle.position, particle.radius);
         }
         
-        printf("Cluster %u: LOD level changed, %u particles will be reassigned to new cells\n", 
-               cluster_id_, static_cast<uint32_t>(particles_.size()));
+        printf("Created %zu new cells, %u dirty cells\n", cells_.size(), get_dirty_cell_count());
+        printf("===================================\n");
     }
 }
 

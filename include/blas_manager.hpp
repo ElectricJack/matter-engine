@@ -89,6 +89,9 @@ public:
     // Get Mesh from handle 
     BvhMesh* get_mesh(BLASHandle handle) const;
     
+    // Get entry from handle (for visualization)
+    const BLASEntry* get_entry(BLASHandle handle) const;
+    
     // Get total counts for GPU texture generation
     int get_total_triangle_count() const;
     int get_total_node_count() const;
@@ -123,6 +126,13 @@ public:
     void reset_stats();
 
 private:
+    // Mark data as dirty when BLAS changes
+    void mark_dirty() const {
+        totals_dirty_ = true;
+        textures_dirty_ = true;
+        shader_values_dirty_ = true;
+    }
+    
     // Conversion utilities
     static Tri convert_triangle(const LegacyTriangle& old_tri);
     static LegacyTriangle convert_triangle_back(const Tri& new_tri);
@@ -154,6 +164,15 @@ private:
     mutable Texture2D triangles_texture_{};
     mutable Texture2D nodes_texture_{};
     mutable bool textures_dirty_ = true;
+    
+    // Shader binding optimization
+    mutable uint32_t cached_shader_id_ = 0;
+    mutable int triangle_count_loc_ = -1;
+    mutable int blas_node_count_loc_ = -1;
+    mutable int triangles_texture_loc_ = -1;
+    mutable int blas_nodes_texture_loc_ = -1;
+    mutable int intersection_mode_loc_ = -1;
+    mutable bool shader_values_dirty_ = true;
     
 };
 

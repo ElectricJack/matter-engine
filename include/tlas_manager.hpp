@@ -137,6 +137,12 @@ public:
     int  get_matrix_stack_depth() const { return static_cast<int>(matrix_stack_.size()); }
 
 private:
+    // Mark data as dirty when TLAS changes
+    void mark_dirty() const {
+        textures_dirty_ = true;
+        shader_values_dirty_ = true;
+    }
+    
     // Conversion utilities
     static mat4      convert_matrix(const Matrix4x4& legacy_matrix);
     static Matrix4x4 convert_matrix_back(const mat4& new_matrix);
@@ -158,6 +164,14 @@ private:
     mutable Texture2D nodes_texture_{};
     mutable Texture2D instances_texture_{};
     mutable bool textures_dirty_ = true;
+    
+    // Shader binding optimization
+    mutable uint32_t cached_shader_id_ = 0;
+    mutable int tlas_node_count_loc_ = -1;
+    mutable int instance_count_loc_ = -1;
+    mutable int tlas_nodes_texture_loc_ = -1;
+    mutable int instances_texture_loc_ = -1;
+    mutable bool shader_values_dirty_ = true;
 };
 
 // Utility class for automatic matrix push/pop using RAII

@@ -14,6 +14,7 @@ uniform sampler2D instancesTexture;    // Instance transforms
 
 // Control uniforms
 uniform int intersectionMode;    // 0=brute force, 1=TLAS/BLAS traversal
+uniform int debugTriangleTests;  // 0=normal rendering, 1=visualize triangle test counts
 
 // Ray tracing structures
 struct Intersection
@@ -27,6 +28,7 @@ struct Ray
 {
     vec3 O, D, rD;   // origin, direction, reciprocal direction
     Intersection hit;
+    int triangleTests; // Debug: count triangle intersections tested
 };
 
 struct Triangle
@@ -68,6 +70,7 @@ struct HitResult
     vec3 normal;
     int material;
     int instanceId;
+    int triangleTests; // Debug: number of triangle tests performed
 };
 
 // Random number generation (ported from tools.cl)
@@ -97,6 +100,9 @@ float RandomFloat(inout uint s)
 // Triangle intersection using Moeller-Trumbore (from kernels.cl)
 void IntersectTri(inout Ray ray, Triangle tri, uint instPrim)
 {
+    // Count this triangle test for debugging
+    ray.triangleTests++;
+    
     vec3 edge1 = tri.v1 - tri.v0;
     vec3 edge2 = tri.v2 - tri.v0;
     vec3 h = cross(ray.D, edge2);
@@ -439,6 +445,7 @@ HitResult intersectScene(vec3 rayOrigin, vec3 rayDir)
     ray.hit.u = 0.0;
     ray.hit.v = 0.0;
     ray.hit.instPrim = 0u;
+    ray.triangleTests = 0; // Initialize triangle test counter
     
     // Perform TLAS traversal
     TLASIntersect(ray);
@@ -446,6 +453,7 @@ HitResult intersectScene(vec3 rayOrigin, vec3 rayDir)
     HitResult result;
     result.hit = (ray.hit.t < 1e30);
     result.t = ray.hit.t;
+    result.triangleTests = ray.triangleTests; // Copy debug counter
     
     if (result.hit)
     {
@@ -487,4 +495,26 @@ HitResult intersectScene(vec3 rayOrigin, vec3 rayDir)
     }
     
     return result;
+}
+
+// Debug visualization: convert triangle test count to color
+vec3 triangleTestCountToColor(int testCount)
+{
+    if (testCount == 0) {
+        return vec3(0.0, 0.0, 0.2); // Dark blue for rays that hit nothing
+    }
+    
+    // Color scale: Green (few tests) -> Yellow -> Red (many tests)
+    float normalizedCount = float(testCount) / 50.0; // Adjust scale as needed
+    normalizedCount = clamp(normalizedCount, 0.0, 1.0);
+    
+    if (normalizedCount < 0.5) {
+        // Green to Yellow
+        float t = normalizedCount * 2.0;
+        return mix(vec3(0.0, 1.0, 0.0), vec3(1.0, 1.0, 0.0), t);
+    } else {
+        // Yellow to Red
+        float t = (normalizedCount - 0.5) * 2.0;
+        return mix(vec3(1.0, 1.0, 0.0), vec3(1.0, 0.0, 0.0), t);
+    }
 }

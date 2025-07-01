@@ -222,7 +222,7 @@ uint32_t TLASManager::draw(BLASHandle blas_handle, uint32_t material_id) {
     uint32_t instance_id = next_instance_id_++;
     draw_records_.emplace_back(blas_handle, get_current_matrix(), material_id, instance_id);
     
-    textures_dirty_ = true; // Mark textures for regeneration
+    mark_dirty();
     return instance_id;
 }
 
@@ -262,7 +262,7 @@ void TLASManager::clear() {
         instance_array_size_ = 0;
     }
     
-    textures_dirty_ = true; // Mark textures for regeneration
+    mark_dirty();
 }
 
 void TLASManager::build(const BLASManager& blas_manager) {
@@ -327,7 +327,7 @@ void TLASManager::build(const BLASManager& blas_manager) {
         // Note: This creates a memory leak, but let's test if it works first
     }
     
-    textures_dirty_ = true; // Mark textures for regeneration
+    mark_dirty();
 }
 
 int TLASManager::get_instance_count() const {
@@ -524,29 +524,58 @@ void TLASManager::ensure_gpu_textures_ready(const BLASManager& blas_manager) {
 void TLASManager::bind_to_shader(Shader shader, const BLASManager& blas_manager) const {
     PROFILE_SECTION("TLAS Shader Binding");
     
-    // Ensure textures are ready
-    const_cast<TLASManager*>(this)->ensure_gpu_textures_ready(blas_manager);
-    
-    // Get uniform locations
-    int tlas_node_count_loc = GetShaderLocation(shader, "tlasNodeCount");
-    int instance_count_loc = GetShaderLocation(shader, "instanceCount");
-    int tlas_nodes_texture_loc = GetShaderLocation(shader, "tlasNodesTexture");
-    int instances_texture_loc = GetShaderLocation(shader, "instancesTexture");
-    
-    // Set counts
-    int node_count = get_node_count();
-    int inst_count = get_instance_count();
-    
-    SetShaderValue(shader, tlas_node_count_loc, &node_count, SHADER_UNIFORM_INT);
-    SetShaderValue(shader, instance_count_loc, &inst_count, SHADER_UNIFORM_INT);
-    
-    // Bind textures
-    if (nodes_texture_.id != 0 && tlas_nodes_texture_loc != -1) {
-        SetShaderValueTexture(shader, tlas_nodes_texture_loc, nodes_texture_);
+    // Check if shader has changed and cache locations if needed
+    bool shader_changed = (cached_shader_id_ != shader.id);
+    if (shader_changed) {
+        PROFILE_SECTION("Cache Shader Locations");
+        cached_shader_id_ = shader.id;
+        
+        // Cache uniform locations (these are expensive calls)
+        tlas_node_count_loc_   = GetShaderLocation(shader, "tlasNodeCount");
+        instance_count_loc_    = GetShaderLocation(shader, "instanceCount");
+        tlas_nodes_texture_loc_ = GetShaderLocation(shader, "tlasNodesTexture");
+        instances_texture_loc_ = GetShaderLocation(shader, "instancesTexture");
+        
+        // Force update shader values when shader changes
+        shader_values_dirty_ = true;
     }
     
-    if (instances_texture_.id != 0 && instances_texture_loc != -1) {
-        SetShaderValueTexture(shader, instances_texture_loc, instances_texture_);
+    // Only ensure textures are ready if they're dirty
+    bool textures_were_updated = textures_dirty_;
+    if (textures_dirty_) {
+        PROFILE_SECTION("Update GPU Textures");
+        const_cast<TLASManager*>(this)->ensure_gpu_textures_ready(blas_manager);
+    }
+    
+    // Only update shader values if they're dirty or shader changed
+    if (shader_values_dirty_) {
+        PROFILE_SECTION("Update Shader Values");
+        
+        // Set counts
+        int node_count = get_node_count();
+        int inst_count = get_instance_count();
+        
+        if (tlas_node_count_loc_ != -1) {
+            SetShaderValue(shader, tlas_node_count_loc_, &node_count, SHADER_UNIFORM_INT);
+        }
+        if (instance_count_loc_ != -1) {
+            SetShaderValue(shader, instance_count_loc_, &inst_count, SHADER_UNIFORM_INT);
+        }
+        
+        shader_values_dirty_ = false;
+    }
+    
+    // Only bind textures if they've been updated or shader changed
+    if (textures_were_updated || shader_changed) {
+        PROFILE_SECTION("Bind Textures");
+        
+        if (nodes_texture_.id != 0 && tlas_nodes_texture_loc_ != -1) {
+            SetShaderValueTexture(shader, tlas_nodes_texture_loc_, nodes_texture_);
+        }
+        
+        if (instances_texture_.id != 0 && instances_texture_loc_ != -1) {
+            SetShaderValueTexture(shader, instances_texture_loc_, instances_texture_);
+        }
     }
 }
 

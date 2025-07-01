@@ -42,6 +42,9 @@ public:
     // Individual rendering functions
     void render_blas_bvh(const BLASManager& blas_manager, 
                         const VisualizationSettings& settings);
+    void render_blas_bvh_transformed(const BLASManager& blas_manager,
+                                   const TLASManager& tlas_manager,
+                                   const VisualizationSettings& settings);
     void render_tlas_bvh(const TLASManager& tlas_manager, 
                         const VisualizationSettings& settings);
 
@@ -56,6 +59,12 @@ private:
                                   int depth,
                                   const VisualizationSettings& settings,
                                   Color base_color);
+    void render_bvh_node_recursive_transformed(const BVHNode* nodes, 
+                                             int node_index, 
+                                             int depth,
+                                             const VisualizationSettings& settings,
+                                             Color base_color,
+                                             const TLASManager::DrawRecord& transform);
 
     void render_tlas_node_recursive(const TLASNode* nodes,
                                    int node_index,
@@ -65,13 +74,18 @@ private:
 
     // Utility functions
     void draw_aabb_wireframe(Vector3 min_pos, Vector3 max_pos, Color color, float thickness = 1.0f);
+    void draw_aabb_wireframe_transformed(Vector3 min_pos, Vector3 max_pos, Color color, 
+                                       const TLASManager::DrawRecord& transform, float thickness = 1.0f);
     void draw_triangle_wireframe(const Tri& triangle, Color color, float thickness = 1.0f);
+    void draw_triangle_wireframe_transformed(const Tri& triangle, Color color, 
+                                           const TLASManager::DrawRecord& transform, float thickness = 1.0f);
     Color get_depth_color(int depth, int max_depth);
     Color blend_colors(Color base, Color overlay, float alpha);
 
     // Convert between math types
     Vector3 float3_to_vector3(const float3& v);
     float3 vector3_to_float3(const Vector3& v);
+    Vector3 transform_point(const Vector3& point, const TLASManager::DrawRecord& transform);
 
     VisualizationSettings default_settings_;
 };
