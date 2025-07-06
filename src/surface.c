@@ -5,16 +5,44 @@
 #include <string.h>
 #include <math.h>
 #include <stdio.h>
-#include <time.h>
+// Platform-specific includes for timing
+#ifdef _WIN32
+    // Minimal Windows includes to avoid conflicts with raylib
+    #define WIN32_LEAN_AND_MEAN
+    #define NOGDI        // Exclude GDI (avoids Rectangle conflict)
+    #define NOUSER       // Exclude User32 (avoids CloseWindow/ShowCursor conflicts)
+    #include <windows.h>
+    #undef WIN32_LEAN_AND_MEAN
+    #undef NOGDI
+    #undef NOUSER
+#else
+    #include <time.h>
+#endif
 
 // Performance timing macros
 #define ENABLE_PERFORMANCE_TIMING 1
 
 #if ENABLE_PERFORMANCE_TIMING
     static double performance_timer() {
-        struct timespec ts;
-        clock_gettime(CLOCK_MONOTONIC, &ts);
-        return ts.tv_sec + ts.tv_nsec / 1e9;
+        #ifdef _WIN32
+            // Windows-specific high-resolution timer
+            static LARGE_INTEGER frequency = {0};
+            static int frequency_initialized = 0;
+            
+            if (!frequency_initialized) {
+                QueryPerformanceFrequency(&frequency);
+                frequency_initialized = 1;
+            }
+            
+            LARGE_INTEGER counter;
+            QueryPerformanceCounter(&counter);
+            return (double)counter.QuadPart / (double)frequency.QuadPart;
+        #else
+            // POSIX systems (Linux, macOS, etc.)
+            struct timespec ts;
+            clock_gettime(CLOCK_MONOTONIC, &ts);
+            return ts.tv_sec + ts.tv_nsec / 1e9;
+        #endif
     }
     
     #define TIMER_START(name) double timer_##name = performance_timer()
@@ -161,7 +189,7 @@ static int GetScalarFieldIndex(int x, int y, int z, int gridSize) {
 // Create default mesh generation configuration
 MeshGenerationConfig GetDefaultMeshConfig(void) {
     MeshGenerationConfig config;
-    config.enableEdgeDeduplication = false;  // Default: enabled for better mesh quality
+    config.enableEdgeDeduplication = true;  // Default: enabled for better mesh quality and smooth normals
     config.enableMemoryReuse       = true;   // Default: enabled for better performance
     return config;
 }
@@ -558,7 +586,7 @@ static Mesh GenerateMeshInternal(Particle* particles, float particleRadius, int 
         normals[i] = (Vector3){0.0f, 0.0f, 0.0f};
     }
     
-    // For each triangle, calculate its normal and add it to each vertex normal
+    // For each triangle, calculate its area-weighted normal and add it to each vertex normal
     for (int i = 0; i < triangleCount; i++) {
         int idx1 = triangles[i].indices[0];
         int idx2 = triangles[i].indices[1];
@@ -572,14 +600,17 @@ static Mesh GenerateMeshInternal(Particle* particles, float particleRadius, int 
         Vector3 edge1 = {v2.x - v1.x, v2.y - v1.y, v2.z - v1.z};
         Vector3 edge2 = {v3.x - v1.x, v3.y - v1.y, v3.z - v1.z};
         
-        // Calculate triangle normal using cross product
+        // Calculate triangle normal using cross product (magnitude = 2 * triangle area)
         Vector3 normal = {
             edge1.y * edge2.z - edge1.z * edge2.y,
             edge1.z * edge2.x - edge1.x * edge2.z,
             edge1.x * edge2.y - edge1.y * edge2.x
         };
         
-        // Add to each vertex normal
+        // The cross product magnitude is 2 * triangle area, which naturally weights
+        // the normal contribution by triangle area for better smooth shading
+        
+        // Add area-weighted normal to each vertex
         normals[idx1].x += normal.x;
         normals[idx1].y += normal.y;
         normals[idx1].z += normal.z;

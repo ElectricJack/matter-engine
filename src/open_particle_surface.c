@@ -73,6 +73,45 @@ static SpatialHash* spatialHash = NULL;
 static Particle* cellParticleBuffer = NULL;
 static int cellParticleBufferSize = 0;
 
+// Per-cell vertex welding for smooth normals within each cell
+typedef struct {
+    Vector3 position;
+    Vector3 normal;
+    Color color;
+    int originalIndex;
+} CellVertex;
+
+// Simple spatial hash for vertex welding within a cell
+#define WELD_GRID_SIZE 32
+typedef struct {
+    int* vertexIndices;
+    int count;
+    int capacity;
+} WeldGridCell;
+
+static CellVertex* cellVertices = NULL;
+static int cellVertexCapacity = 0;
+static WeldGridCell weldGrid[WELD_GRID_SIZE][WELD_GRID_SIZE][WELD_GRID_SIZE];
+
+// Mesh simplification structures
+typedef struct {
+    int v1, v2;           // Vertex indices
+    float length;         // Edge length
+    bool valid;           // Whether this edge is still valid
+} Edge;
+
+typedef struct {
+    int v1, v2, v3;       // Vertex indices
+    float area;           // Triangle area
+    bool valid;           // Whether this triangle is still valid
+} Triangle;
+
+static Edge* meshEdges = NULL;
+static int meshEdgeCount = 0;
+static int meshEdgeCapacity = 0;
+static Triangle* meshTriangles = NULL;
+static int meshTriangleCapacity = 0;
+
 // For instanced rendering
 static Model particleModel;
 static Matrix* particleMatrices = NULL;
@@ -86,6 +125,8 @@ static int GetCellIndex(GridCoord coord);
 static GridCoord GetGridCoordFromPosition(Vector3 position);
 static Bounds GetSpatialHashBounds(GridCoord coord);
 static int UpdateDirtyCells(int maxUpdates);
+static void WeldVerticesInMesh(Mesh* mesh);
+static void SimplifyMesh(Mesh* mesh);
 
 // HashGridCoord function removed - now using spatial hash for cell lookups
 
@@ -107,10 +148,14 @@ static Bounds GetSpatialHashBounds(GridCoord coord) {
         (coord.z + 0.5f) * CELL_SIZE
     };
     
-    // Create bounds with center, size, and division power
+    // Expand bounds slightly to overlap with neighboring cells
+    // This ensures vertices on cell boundaries are shared for proper normal blending
+    const float overlap = CELL_SIZE * 0.1f; // 10% overlap with neighbors
+    
+    // Create bounds with center, expanded size, and division power
     Bounds bounds = {
         .center = center,
-        .size = {CELL_SIZE, CELL_SIZE, CELL_SIZE},
+        .size = {CELL_SIZE + overlap, CELL_SIZE + overlap, CELL_SIZE + overlap},
         .divisionPow = HASH_BOUNDS_DETAIL
     };
     
@@ -343,6 +388,41 @@ void ShutdownParticleSystem(void) {
     if (cellParticleBuffer != NULL) {
         free(cellParticleBuffer);
         cellParticleBuffer = NULL;
+    }
+    
+    // Free vertex welding buffer
+    if (cellVertices != NULL) {
+        free(cellVertices);
+        cellVertices = NULL;
+        cellVertexCapacity = 0;
+    }
+    
+    // Free welding grid cell buffers
+    for (int x = 0; x < WELD_GRID_SIZE; x++) {
+        for (int y = 0; y < WELD_GRID_SIZE; y++) {
+            for (int z = 0; z < WELD_GRID_SIZE; z++) {
+                if (weldGrid[x][y][z].vertexIndices) {
+                    free(weldGrid[x][y][z].vertexIndices);
+                    weldGrid[x][y][z].vertexIndices = NULL;
+                    weldGrid[x][y][z].capacity = 0;
+                    weldGrid[x][y][z].count = 0;
+                }
+            }
+        }
+    }
+    
+    // Free mesh simplification buffers
+    if (meshEdges != NULL) {
+        free(meshEdges);
+        meshEdges = NULL;
+        meshEdgeCount = 0;
+        meshEdgeCapacity = 0;
+    }
+    
+    if (meshTriangles != NULL) {
+        free(meshTriangles);
+        meshTriangles = NULL;
+        meshTriangleCapacity = 0;
     }
     
     // Free active cell tracking
@@ -779,6 +859,12 @@ static int UpdateDirtyCells(int maxUpdates) {
                                           validCount, 
                                           spatialHashCells[cellIndex].bounds);
 
+        // Simplify mesh by collapsing short edges and removing thin triangles
+        SimplifyMesh(&spatialHashCells[cellIndex].mesh);
+        
+        // Weld vertices and smooth normals within this mesh
+        WeldVerticesInMesh(&spatialHashCells[cellIndex].mesh);
+
         UploadMesh(&spatialHashCells[cellIndex].mesh, false);
         spatialHashCells[cellIndex].hasMesh = true;
         
@@ -798,6 +884,330 @@ static int UpdateDirtyCells(int maxUpdates) {
     }
     
     return updatedCount;
+}
+
+// Weld nearby vertices within a single mesh using spatial binning
+static void WeldVerticesInMesh(Mesh* mesh) {
+    if (!mesh || !mesh->vertices || !mesh->normals || mesh->vertexCount == 0) {
+        return;
+    }
+    
+    const float WELD_DISTANCE = 0.01f; // Slightly larger threshold for better welding
+    
+    // Ensure we have enough capacity for vertices
+    if (mesh->vertexCount > cellVertexCapacity) {
+        cellVertexCapacity = mesh->vertexCount;
+        cellVertices = (CellVertex*)realloc(cellVertices, cellVertexCapacity * sizeof(CellVertex));
+    }
+    
+    // Clear the spatial grid
+    for (int x = 0; x < WELD_GRID_SIZE; x++) {
+        for (int y = 0; y < WELD_GRID_SIZE; y++) {
+            for (int z = 0; z < WELD_GRID_SIZE; z++) {
+                weldGrid[x][y][z].count = 0;
+            }
+        }
+    }
+    
+    // Find the bounding box of all vertices
+    Vector3 minBounds = {INFINITY, INFINITY, INFINITY};
+    Vector3 maxBounds = {-INFINITY, -INFINITY, -INFINITY};
+    
+    for (int i = 0; i < mesh->vertexCount; i++) {
+        Vector3 pos = {mesh->vertices[i * 3], mesh->vertices[i * 3 + 1], mesh->vertices[i * 3 + 2]};
+        if (pos.x < minBounds.x) minBounds.x = pos.x;
+        if (pos.y < minBounds.y) minBounds.y = pos.y;
+        if (pos.z < minBounds.z) minBounds.z = pos.z;
+        if (pos.x > maxBounds.x) maxBounds.x = pos.x;
+        if (pos.y > maxBounds.y) maxBounds.y = pos.y;
+        if (pos.z > maxBounds.z) maxBounds.z = pos.z;
+    }
+    
+    // Calculate grid cell size
+    Vector3 size = {maxBounds.x - minBounds.x, maxBounds.y - minBounds.y, maxBounds.z - minBounds.z};
+    Vector3 gridCellSize = {
+        size.x / (WELD_GRID_SIZE - 1),
+        size.y / (WELD_GRID_SIZE - 1), 
+        size.z / (WELD_GRID_SIZE - 1)
+    };
+    
+    // Avoid division by zero
+    if (gridCellSize.x < 0.001f) gridCellSize.x = 0.001f;
+    if (gridCellSize.y < 0.001f) gridCellSize.y = 0.001f;
+    if (gridCellSize.z < 0.001f) gridCellSize.z = 0.001f;
+    
+    // Copy vertices and place them in spatial grid
+    for (int i = 0; i < mesh->vertexCount; i++) {
+        CellVertex* cv = &cellVertices[i];
+        cv->position = (Vector3){mesh->vertices[i * 3], mesh->vertices[i * 3 + 1], mesh->vertices[i * 3 + 2]};
+        cv->normal = (Vector3){mesh->normals[i * 3], mesh->normals[i * 3 + 1], mesh->normals[i * 3 + 2]};
+        cv->originalIndex = i;
+        
+        if (mesh->colors) {
+            cv->color = (Color){mesh->colors[i * 4], mesh->colors[i * 4 + 1], mesh->colors[i * 4 + 2], mesh->colors[i * 4 + 3]};
+        } else {
+            cv->color = WHITE;
+        }
+        
+        // Calculate grid position
+        int gx = (int)((cv->position.x - minBounds.x) / gridCellSize.x);
+        int gy = (int)((cv->position.y - minBounds.y) / gridCellSize.y);
+        int gz = (int)((cv->position.z - minBounds.z) / gridCellSize.z);
+        
+        // Clamp to grid bounds
+        gx = (gx < 0) ? 0 : (gx >= WELD_GRID_SIZE) ? WELD_GRID_SIZE - 1 : gx;
+        gy = (gy < 0) ? 0 : (gy >= WELD_GRID_SIZE) ? WELD_GRID_SIZE - 1 : gy;
+        gz = (gz < 0) ? 0 : (gz >= WELD_GRID_SIZE) ? WELD_GRID_SIZE - 1 : gz;
+        
+        // Add to grid cell
+        WeldGridCell* gridCell = &weldGrid[gx][gy][gz];
+        if (gridCell->count >= gridCell->capacity) {
+            gridCell->capacity = gridCell->capacity == 0 ? 8 : gridCell->capacity * 2;
+            gridCell->vertexIndices = (int*)realloc(gridCell->vertexIndices, gridCell->capacity * sizeof(int));
+        }
+        gridCell->vertexIndices[gridCell->count++] = i;
+    }
+    
+    // Weld vertices using spatial grid for fast neighbor lookup
+    for (int i = 0; i < mesh->vertexCount; i++) {
+        if (cellVertices[i].originalIndex == -1) continue; // Already welded
+        
+        Vector3 avgNormal = cellVertices[i].normal;
+        int weldCount = 1;
+        
+        // Calculate grid position for this vertex
+        int gx = (int)((cellVertices[i].position.x - minBounds.x) / gridCellSize.x);
+        int gy = (int)((cellVertices[i].position.y - minBounds.y) / gridCellSize.y);
+        int gz = (int)((cellVertices[i].position.z - minBounds.z) / gridCellSize.z);
+        
+        // Check neighboring grid cells
+        for (int dx = -1; dx <= 1; dx++) {
+            for (int dy = -1; dy <= 1; dy++) {
+                for (int dz = -1; dz <= 1; dz++) {
+                    int nx = gx + dx;
+                    int ny = gy + dy;
+                    int nz = gz + dz;
+                    
+                    if (nx < 0 || nx >= WELD_GRID_SIZE || ny < 0 || ny >= WELD_GRID_SIZE || nz < 0 || nz >= WELD_GRID_SIZE) {
+                        continue;
+                    }
+                    
+                    WeldGridCell* gridCell = &weldGrid[nx][ny][nz];
+                    for (int k = 0; k < gridCell->count; k++) {
+                        int j = gridCell->vertexIndices[k];
+                        if (j <= i || cellVertices[j].originalIndex == -1) continue; // Skip already processed
+                        
+                        float dist = Vector3Distance(cellVertices[i].position, cellVertices[j].position);
+                        if (dist < WELD_DISTANCE) {
+                            // Average the normals
+                            avgNormal.x += cellVertices[j].normal.x;
+                            avgNormal.y += cellVertices[j].normal.y;
+                            avgNormal.z += cellVertices[j].normal.z;
+                            weldCount++;
+                            
+                            // Mark as welded
+                            cellVertices[j].originalIndex = -1;
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Normalize the averaged normal and apply to mesh
+        if (weldCount > 1) {
+            avgNormal.x /= weldCount;
+            avgNormal.y /= weldCount;
+            avgNormal.z /= weldCount;
+            
+            float len = sqrtf(avgNormal.x * avgNormal.x + avgNormal.y * avgNormal.y + avgNormal.z * avgNormal.z);
+            if (len > 0.0001f) {
+                avgNormal.x /= len;
+                avgNormal.y /= len;
+                avgNormal.z /= len;
+            }
+        }
+        
+        // Apply the smoothed normal
+        mesh->normals[i * 3] = avgNormal.x;
+        mesh->normals[i * 3 + 1] = avgNormal.y;
+        mesh->normals[i * 3 + 2] = avgNormal.z;
+    }
+}
+
+// Simplify mesh by collapsing short edges and removing thin triangles
+static void SimplifyMesh(Mesh* mesh) {
+    if (!mesh || !mesh->vertices || !mesh->indices || mesh->vertexCount == 0 || mesh->triangleCount == 0) {
+        return;
+    }
+    
+    const float MIN_EDGE_LENGTH = 0.05f;  // Collapse edges shorter than this
+    const float MIN_TRIANGLE_AREA = 0.001f;  // Remove triangles smaller than this
+    
+    // Ensure capacity for edges and triangles
+    int maxEdges = mesh->triangleCount * 3;  // Each triangle has 3 edges
+    if (maxEdges > meshEdgeCapacity) {
+        meshEdgeCapacity = maxEdges;
+        meshEdges = (Edge*)realloc(meshEdges, meshEdgeCapacity * sizeof(Edge));
+    }
+    
+    if (mesh->triangleCount > meshTriangleCapacity) {
+        meshTriangleCapacity = mesh->triangleCount;
+        meshTriangles = (Triangle*)realloc(meshTriangles, meshTriangleCapacity * sizeof(Triangle));
+    }
+    
+    // Build edge list from triangles
+    meshEdgeCount = 0;
+    for (int t = 0; t < mesh->triangleCount; t++) {
+        int i1 = mesh->indices[t * 3];
+        int i2 = mesh->indices[t * 3 + 1];
+        int i3 = mesh->indices[t * 3 + 2];
+        
+        // Skip degenerate triangles
+        if (i1 == i2 || i2 == i3 || i1 == i3) continue;
+        
+        // Add three edges (avoid duplicates by ensuring v1 < v2)
+        int edges[3][2] = {{i1, i2}, {i2, i3}, {i1, i3}};
+        
+        for (int e = 0; e < 3; e++) {
+            int v1 = edges[e][0];
+            int v2 = edges[e][1];
+            if (v1 > v2) { int temp = v1; v1 = v2; v2 = temp; }
+            
+            // Check if edge already exists
+            bool exists = false;
+            for (int i = 0; i < meshEdgeCount; i++) {
+                if (meshEdges[i].v1 == v1 && meshEdges[i].v2 == v2) {
+                    exists = true;
+                    break;
+                }
+            }
+            
+            if (!exists && meshEdgeCount < meshEdgeCapacity) {
+                Vector3 pos1 = {mesh->vertices[v1 * 3], mesh->vertices[v1 * 3 + 1], mesh->vertices[v1 * 3 + 2]};
+                Vector3 pos2 = {mesh->vertices[v2 * 3], mesh->vertices[v2 * 3 + 1], mesh->vertices[v2 * 3 + 2]};
+                
+                meshEdges[meshEdgeCount].v1 = v1;
+                meshEdges[meshEdgeCount].v2 = v2;
+                meshEdges[meshEdgeCount].length = Vector3Distance(pos1, pos2);
+                meshEdges[meshEdgeCount].valid = true;
+                meshEdgeCount++;
+            }
+        }
+    }
+    
+    // Create vertex remap table for edge collapses
+    int* vertexRemap = (int*)malloc(mesh->vertexCount * sizeof(int));
+    for (int i = 0; i < mesh->vertexCount; i++) {
+        vertexRemap[i] = i;  // Initially, each vertex maps to itself
+    }
+    
+    // Collapse short edges
+    int collapsedEdges = 0;
+    for (int e = 0; e < meshEdgeCount; e++) {
+        if (!meshEdges[e].valid || meshEdges[e].length >= MIN_EDGE_LENGTH) continue;
+        
+        int v1 = meshEdges[e].v1;
+        int v2 = meshEdges[e].v2;
+        
+        // Skip if either vertex has already been remapped
+        if (vertexRemap[v1] != v1 || vertexRemap[v2] != v2) continue;
+        
+        // Collapse v2 into v1 (average their positions)
+        Vector3 pos1 = {mesh->vertices[v1 * 3], mesh->vertices[v1 * 3 + 1], mesh->vertices[v1 * 3 + 2]};
+        Vector3 pos2 = {mesh->vertices[v2 * 3], mesh->vertices[v2 * 3 + 1], mesh->vertices[v2 * 3 + 2]};
+        
+        Vector3 avgPos = {(pos1.x + pos2.x) * 0.5f, (pos1.y + pos2.y) * 0.5f, (pos1.z + pos2.z) * 0.5f};
+        
+        mesh->vertices[v1 * 3] = avgPos.x;
+        mesh->vertices[v1 * 3 + 1] = avgPos.y;
+        mesh->vertices[v1 * 3 + 2] = avgPos.z;
+        
+        // Average normals if available
+        if (mesh->normals) {
+            Vector3 norm1 = {mesh->normals[v1 * 3], mesh->normals[v1 * 3 + 1], mesh->normals[v1 * 3 + 2]};
+            Vector3 norm2 = {mesh->normals[v2 * 3], mesh->normals[v2 * 3 + 1], mesh->normals[v2 * 3 + 2]};
+            
+            Vector3 avgNorm = {(norm1.x + norm2.x) * 0.5f, (norm1.y + norm2.y) * 0.5f, (norm1.z + norm2.z) * 0.5f};
+            float len = sqrtf(avgNorm.x * avgNorm.x + avgNorm.y * avgNorm.y + avgNorm.z * avgNorm.z);
+            if (len > 0.0001f) {
+                avgNorm.x /= len;
+                avgNorm.y /= len;
+                avgNorm.z /= len;
+            }
+            
+            mesh->normals[v1 * 3] = avgNorm.x;
+            mesh->normals[v1 * 3 + 1] = avgNorm.y;
+            mesh->normals[v1 * 3 + 2] = avgNorm.z;
+        }
+        
+        // Average colors if available
+        if (mesh->colors) {
+            Color col1 = {mesh->colors[v1 * 4], mesh->colors[v1 * 4 + 1], mesh->colors[v1 * 4 + 2], mesh->colors[v1 * 4 + 3]};
+            Color col2 = {mesh->colors[v2 * 4], mesh->colors[v2 * 4 + 1], mesh->colors[v2 * 4 + 2], mesh->colors[v2 * 4 + 3]};
+            
+            mesh->colors[v1 * 4] = (col1.r + col2.r) / 2;
+            mesh->colors[v1 * 4 + 1] = (col1.g + col2.g) / 2;
+            mesh->colors[v1 * 4 + 2] = (col1.b + col2.b) / 2;
+            mesh->colors[v1 * 4 + 3] = (col1.a + col2.a) / 2;
+        }
+        
+        // Remap v2 to v1
+        vertexRemap[v2] = v1;
+        collapsedEdges++;
+        
+        // Invalidate all edges involving v2
+        for (int i = 0; i < meshEdgeCount; i++) {
+            if (meshEdges[i].v1 == v2 || meshEdges[i].v2 == v2) {
+                meshEdges[i].valid = false;
+            }
+        }
+    }
+    
+    // Update triangle indices using vertex remap
+    int validTriangles = 0;
+    for (int t = 0; t < mesh->triangleCount; t++) {
+        int i1 = vertexRemap[mesh->indices[t * 3]];
+        int i2 = vertexRemap[mesh->indices[t * 3 + 1]];
+        int i3 = vertexRemap[mesh->indices[t * 3 + 2]];
+        
+        // Skip degenerate triangles
+        if (i1 == i2 || i2 == i3 || i1 == i3) continue;
+        
+        // Calculate triangle area to filter out thin triangles
+        Vector3 v1 = {mesh->vertices[i1 * 3], mesh->vertices[i1 * 3 + 1], mesh->vertices[i1 * 3 + 2]};
+        Vector3 v2 = {mesh->vertices[i2 * 3], mesh->vertices[i2 * 3 + 1], mesh->vertices[i2 * 3 + 2]};
+        Vector3 v3 = {mesh->vertices[i3 * 3], mesh->vertices[i3 * 3 + 1], mesh->vertices[i3 * 3 + 2]};
+        
+        Vector3 edge1 = {v2.x - v1.x, v2.y - v1.y, v2.z - v1.z};
+        Vector3 edge2 = {v3.x - v1.x, v3.y - v1.y, v3.z - v1.z};
+        
+        Vector3 cross = {
+            edge1.y * edge2.z - edge1.z * edge2.y,
+            edge1.z * edge2.x - edge1.x * edge2.z,
+            edge1.x * edge2.y - edge1.y * edge2.x
+        };
+        
+        float area = 0.5f * sqrtf(cross.x * cross.x + cross.y * cross.y + cross.z * cross.z);
+        
+        if (area >= MIN_TRIANGLE_AREA) {
+            // Keep this triangle
+            mesh->indices[validTriangles * 3] = i1;
+            mesh->indices[validTriangles * 3 + 1] = i2;
+            mesh->indices[validTriangles * 3 + 2] = i3;
+            validTriangles++;
+        }
+    }
+    
+    // Update triangle count
+    int removedTriangles = mesh->triangleCount - validTriangles;
+    mesh->triangleCount = validTriangles;
+    
+    free(vertexRemap);
+    
+    if (collapsedEdges > 0 || removedTriangles > 0) {
+        printf("[DEBUG] Mesh simplified: collapsed %d edges, removed %d thin triangles\n", 
+               collapsedEdges, removedTriangles);
+    }
 }
 
 int UpdateParticleSystem(int maxUpdatesPerFrame) {
@@ -825,7 +1235,122 @@ void DrawParticleMeshes(Material material, bool wireframe) {
             spatialHashCells[cellIndex].hasMesh && 
             spatialHashCells[cellIndex].particleCount > 0) {
             
-            DrawMesh(spatialHashCells[cellIndex].mesh, material, MatrixIdentity());
+            Mesh* mesh = &spatialHashCells[cellIndex].mesh;
+            
+            if (wireframe) {
+                // Draw wireframe mesh
+                DrawMesh(*mesh, material, MatrixIdentity());
+                
+                // Draw normal vectors as lines
+                if (mesh->normals != NULL && mesh->vertices != NULL) {
+                    const float normalLength = 0.2f; // Length of normal lines (1/10 of original)
+                    
+                    rlBegin(RL_LINES);
+                    
+                    for (int v = 0; v < mesh->vertexCount; v++) {
+                        // Start point: vertex position
+                        Vector3 vertex = {
+                            mesh->vertices[v * 3],
+                            mesh->vertices[v * 3 + 1], 
+                            mesh->vertices[v * 3 + 2]
+                        };
+                        
+                        // End point: vertex + normal * length
+                        Vector3 normal = {
+                            mesh->normals[v * 3],
+                            mesh->normals[v * 3 + 1],
+                            mesh->normals[v * 3 + 2]
+                        };
+                        
+                        Vector3 endPoint = {
+                            vertex.x + normal.x * normalLength,
+                            vertex.y + normal.y * normalLength,
+                            vertex.z + normal.z * normalLength
+                        };
+                        
+                        // Get vertex color based on material (same as face material)
+                        Color vertexColor = WHITE; // Default color
+                        if (mesh->colors != NULL) {
+                            vertexColor = (Color){
+                                mesh->colors[v * 4],
+                                mesh->colors[v * 4 + 1],
+                                mesh->colors[v * 4 + 2],
+                                mesh->colors[v * 4 + 3]
+                            };
+                        }
+                        
+                        // Set normal line color to match vertex/face material
+                        rlColor4ub(vertexColor.r, vertexColor.g, vertexColor.b, vertexColor.a);
+                        
+                        // Draw line from vertex to end point
+                        rlVertex3f(vertex.x, vertex.y, vertex.z);
+                        rlVertex3f(endPoint.x, endPoint.y, endPoint.z);
+                    }
+                    
+                    rlEnd();
+                }
+            } else {
+                // Draw solid mesh with basic diffuse lighting based on normals
+                if (mesh->normals != NULL && mesh->vertices != NULL) {
+                    // Simple directional lighting calculation
+                    Vector3 lightDir = Vector3Normalize((Vector3){ 0.5f, 1.0f, 0.5f });
+                    
+                    rlBegin(RL_TRIANGLES);
+                    
+                    // Draw each triangle with per-vertex lighting
+                    for (int t = 0; t < mesh->triangleCount; t++) {
+                        for (int v = 0; v < 3; v++) {
+                            int vertexIndex = mesh->indices[t * 3 + v];
+                            
+                            // Get vertex position
+                            Vector3 vertex = {
+                                mesh->vertices[vertexIndex * 3],
+                                mesh->vertices[vertexIndex * 3 + 1],
+                                mesh->vertices[vertexIndex * 3 + 2]
+                            };
+                            
+                            // Get vertex normal
+                            Vector3 normal = {
+                                mesh->normals[vertexIndex * 3],
+                                mesh->normals[vertexIndex * 3 + 1],
+                                mesh->normals[vertexIndex * 3 + 2]
+                            };
+                            
+                            // Calculate lighting intensity (simple dot product)
+                            float dotProduct = Vector3DotProduct(normal, lightDir);
+                            float intensity = fmaxf(0.2f, dotProduct); // Clamp to minimum ambient
+                            
+                            // Get base color from vertex colors if available
+                            Color baseColor = WHITE;
+                            if (mesh->colors != NULL) {
+                                baseColor = (Color){
+                                    mesh->colors[vertexIndex * 4],
+                                    mesh->colors[vertexIndex * 4 + 1],
+                                    mesh->colors[vertexIndex * 4 + 2],
+                                    mesh->colors[vertexIndex * 4 + 3]
+                                };
+                            }
+                            
+                            // Apply lighting to color
+                            Color litColor = (Color){
+                                (unsigned char)(baseColor.r * intensity),
+                                (unsigned char)(baseColor.g * intensity),
+                                (unsigned char)(baseColor.b * intensity),
+                                baseColor.a
+                            };
+                            
+                            rlColor4ub(litColor.r, litColor.g, litColor.b, litColor.a);
+                            rlNormal3f(normal.x, normal.y, normal.z);
+                            rlVertex3f(vertex.x, vertex.y, vertex.z);
+                        }
+                    }
+                    
+                    rlEnd();
+                } else {
+                    // Fallback to regular mesh drawing if no normals
+                    DrawMesh(*mesh, material, MatrixIdentity());
+                }
+            }
         }
     }
     
