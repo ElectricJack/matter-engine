@@ -667,14 +667,14 @@ static int UpdateDirtyCells(int maxUpdates) {
     // Track newly created cells with a higher priority for the first few frames
     // This helps ensure new cells get their initial meshes
     static int* newCellIndices = NULL;
-    static int newCellCount = 0;
+    // static int newCellCount = 0;  // Currently unused - commenting out to avoid warning
     static int newCellCapacity = 0;
     
     // Initialize new cell tracking if needed
     if (newCellIndices == NULL) {
         newCellCapacity = 100;
         newCellIndices = (int*)malloc(newCellCapacity * sizeof(int));
-        newCellCount = 0;
+        // newCellCount = 0;  // Currently unused
     }
     
     // First pass: find cells with highest particle counts - ONLY from active cells

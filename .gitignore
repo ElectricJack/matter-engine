@@ -35,3 +35,8 @@ shaders/*_processed.*
 *.tmp
 *.temp
 *~
+matter_surface_lib
+build/macos/obj/blas_manager.o
+build/macos/obj/bvh_visualizer.o
+build/macos/obj/main.o
+build/macos/obj/tlas_manager.o
