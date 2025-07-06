@@ -8,9 +8,19 @@ extern "C" {
 #include <memory>
 #include <vector>
 
+#include "imgui.h"
+#include "imgui_impl_glfw.h"
+#include "imgui_impl_opengl3.h"
+#include <GLFW/glfw3.h>
+
+extern "C" {
+    GLFWwindow* glfwGetCurrentContext();
+}
+
 #include "include/blas_manager.hpp"
 #include "include/tlas_manager.hpp"
 #include "include/bvh_visualizer.hpp"
+#include "include/bvh_analyzer.h"
 #include "include/cluster.h"
 #include "include/cell.h"
 #include "include/cell_debug_renderer.h"
@@ -29,15 +39,39 @@ public:
         InitWindow(screen_width_, screen_height_, "MatterSurfaceLib - Cluster and Cell System");
         SetTargetFPS(60);
         
-        DisableCursor();
+        // Start in UI interaction mode (cursor enabled) for immediate ImGui access
+        cursor_disabled_ = false;
+        EnableCursor();
+        
+        // Setup Dear ImGui context
+        IMGUI_CHECKVERSION();
+        ImGui::CreateContext();
+        ImGuiIO& io = ImGui::GetIO(); (void)io;
+        
+        // Setup Dear ImGui style
+        ImGui::StyleColorsDark();
+        
+        // Setup Platform/Renderer backends
+        GLFWwindow* window = glfwGetCurrentContext();
+        ImGui_ImplGlfw_InitForOpenGL(window, true);
+        ImGui_ImplOpenGL3_Init("#version 330");
         
         setup_rendering();
         register_scene_geometry();
         setup_matter_system();
+        
+        // Initialize BVH analysis system
+        setup_bvh_analysis();
     }
     
     ~MatterSurfaceLibDemo() {
         cleanup();
+        
+        // ImGui Cleanup
+        ImGui_ImplOpenGL3_Shutdown();
+        ImGui_ImplGlfw_Shutdown();
+        ImGui::DestroyContext();
+        
         EnableCursor();
         CloseWindow();
     }
@@ -138,6 +172,15 @@ private:
                test_cluster_->get_cell_count(), test_cluster_->get_dirty_cell_count());
     }
     
+    void setup_bvh_analysis() {
+        // Register TLAS for analysis
+        BVHReportManager::RegisterTLAS("Main TLAS", tlas_manager_->get_tlas());
+        
+        // Initial analysis update
+        BVHReportManager::UpdateAllAnalyses();
+        last_bvh_analysis_update_ = GetTime();
+    }
+    
     void setup_rendering() {
         raytracing_shader_ = LoadShader(nullptr, "shaders/raytrace_tlas_blas_processed.fs");
         
@@ -169,12 +212,28 @@ private:
     void update() {
         {
             PROFILE_SECTION("Input Handling");
+            
+            // Tab key toggles cursor mode (primary toggle for UI interaction)
+            if (IsKeyPressed(KEY_TAB)) {
+                cursor_disabled_ = !cursor_disabled_;
+                if (cursor_disabled_) {
+                    DisableCursor();
+                    printf("Camera control mode: Mouse locked for camera movement\n");
+                } else {
+                    EnableCursor();
+                    printf("UI interaction mode: Mouse unlocked for ImGui\n");
+                }
+            }
+            
+            // ESC key also toggles cursor (backup/legacy control)
             if (IsKeyPressed(KEY_ESCAPE)) {
                 cursor_disabled_ = !cursor_disabled_;
                 if (cursor_disabled_) {
                     DisableCursor();
+                    printf("Camera control mode: Mouse locked for camera movement\n");
                 } else {
                     EnableCursor();
+                    printf("UI interaction mode: Mouse unlocked for ImGui\n");
                 }
             }
             
@@ -365,12 +424,20 @@ private:
         
         {
             PROFILE_SECTION("Camera Update");
-            UpdateCamera(&camera_, CAMERA_FREE);
+            // Only update camera when cursor is disabled (camera control mode)
+            if (cursor_disabled_) {
+                UpdateCamera(&camera_, CAMERA_FREE);
+            }
         }
     }
     
     
     void render() {
+        // Start the Dear ImGui frame
+        ImGui_ImplOpenGL3_NewFrame();
+        ImGui_ImplGlfw_NewFrame();
+        ImGui::NewFrame();
+        
         PROFILE_SECTION("BeginDrawing");
         BeginDrawing();
         ClearBackground(BLACK);
@@ -435,6 +502,10 @@ private:
             PROFILE_SECTION("UI Rendering");
             render_ui();
         }
+        
+        // Render ImGui
+        ImGui::Render();
+        ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
         
         {
             PROFILE_SECTION("EndDrawing");
@@ -569,78 +640,294 @@ private:
     
     
     void render_ui() {
+        // Main control panel - positioned on the left
+        ImGui::SetNextWindowPos(ImVec2(20, 20), ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowSize(ImVec2(350, 500), ImGuiCond_FirstUseEver);
+        ImGui::Begin("MatterSurfaceLib Controls");
+        
         // Performance info
         double fps = 1000.0 / Performance::Profiler::instance().get_frame_time_ms();
-        DrawText(TextFormat("FPS: %.1f (%.2f ms)", fps, Performance::Profiler::instance().get_frame_time_ms()), 10, 10, 16, YELLOW);
+        ImGui::Text("FPS: %.1f (%.2f ms)", fps, Performance::Profiler::instance().get_frame_time_ms());
         
-        // Render mode info
-        DrawText(TextFormat("Render Mode: %s (Press R to cycle)", 
-                           render_mode_ == 0 ? "Ray Tracing" : 
-                           render_mode_ == 1 ? "Surface Meshes" : 
-                           render_mode_ == 2 ? "Wireframe Meshes" : "Debug BVH"), 
-                 10, 30, 20, WHITE);
-        
-        DrawText("Press SPACE to add random particles (all 8 materials)", 10, 60, 20, WHITE);
-        DrawText("Press ESC to toggle cursor", 10, 90, 20, WHITE);
-        
-        // Material information
-        DrawText("Materials in use:", 10, 390, 14, YELLOW);
-        DrawText("0=Red metallic, 1=Blue diffuse, 2=Green ground, 3=Gold metallic", 10, 410, 12, LIGHTGRAY);
-        DrawText("4=Clear glass, 5=Emissive light, 6=Green glass, 7=Water", 10, 425, 12, LIGHTGRAY);
-        
-        DrawText(TextFormat("Particles: %u, Cells: %u, LOD: %d (%.1f unit cells)", 
-                           test_cluster_->get_particle_count(),
-                           test_cluster_->get_cell_count(),
-                           test_cluster_->get_lod_level(),
-                           test_cluster_->get_current_cell_size()), 
-                 10, 120, 20, WHITE);
-        
-        DrawText("Press 1-5 to change LOD level", 10, 150, 16, LIGHTGRAY);
-        
-        // Rendering stats
-        if (render_mode_ != 0) {
-            DrawText(TextFormat("Meshes: %d, Triangles: %d", last_meshes_rendered_, last_triangles_rendered_), 
-                     10, 180, 16, GREEN);
+        // Cursor mode indicator
+        if (cursor_disabled_) {
+            ImGui::TextColored(ImVec4(0, 1, 0, 1), "Mode: Camera Control (TAB to unlock)");
+        } else {
+            ImGui::TextColored(ImVec4(1, 1, 0, 1), "Mode: UI Interaction (TAB to lock)");
         }
         
-        // BVH visualization info
+        ImGui::Separator();
+        
+        // Render mode selection
+        const char* render_modes[] = {"Ray Tracing", "Surface Meshes", "Wireframe Meshes", "Debug BVH"};
+        if (ImGui::Combo("Render Mode", &render_mode_, render_modes, 4)) {
+            printf("Render mode changed to: %s\n", render_modes[render_mode_]);
+        }
+        
+        ImGui::Separator();
+        
+        // Particle system controls
+        ImGui::Text("Particle System");
+        if (ImGui::Button("Add Random Particles")) {
+            // Add 10 random particles (same as SPACE key)
+            for (int i = 0; i < 10; ++i) {
+                float x = (GetRandomValue(-50, 50) / 10.0f);
+                float y = (GetRandomValue(-50, 50) / 10.0f);
+                float z = (GetRandomValue(-50, 50) / 10.0f);
+                
+                Vector3 new_pos = {x, y, z};
+                uint32_t material = GetRandomValue(0, 7);
+                test_cluster_->add_particle(new_pos, 0.5f, material);
+            }
+            test_cluster_->rebuild_dirty_cells();
+        }
+        
+        ImGui::Text("Particles: %u, Cells: %u", 
+                   test_cluster_->get_particle_count(),
+                   test_cluster_->get_cell_count());
+        
+        // LOD controls
+        int current_lod = test_cluster_->get_lod_level();
+        if (ImGui::SliderInt("LOD Level", &current_lod, 0, 4)) {
+            test_cluster_->set_lod_level(current_lod, true);
+            test_cluster_->rebuild_dirty_cells();
+        }
+        ImGui::Text("Cell Size: %.2f units", test_cluster_->get_current_cell_size());
+        
+        ImGui::Separator();
+        
+        // Visualization controls
+        ImGui::Text("Visualization");
+        ImGui::Checkbox("Show Meshes", &show_meshes_);
+        ImGui::Checkbox("BVH Visualization", &show_bvh_visualization_);
+        ImGui::Checkbox("Debug Triangle Tests", &debug_triangle_tests_);
+        
+        // BVH settings (only when visualization is enabled)
         if (show_bvh_visualization_ || render_mode_ == 3) {
-            const auto& settings = bvh_visualizer_->get_settings();
-            DrawText("BVH VISUALIZATION MODE", 10, 210, 16, YELLOW);
-            DrawText("Q:BLAS I:TLAS V:Leaf T:Interior Y:Colors U:Triangles", 10, 230, 12, LIGHTGRAY);
-            DrawText("UP/DOWN: Depth | B: Toggle visualization", 10, 245, 12, LIGHTGRAY);
-            DrawText(TextFormat("BLAS:%s TLAS:%s Leaf:%s Interior:%s Depth:%d", 
-                     settings.show_blas_bvh ? "ON" : "OFF",
-                     settings.show_tlas_bvh ? "ON" : "OFF",
-                     settings.show_leaf_nodes ? "ON" : "OFF",
-                     settings.show_interior_nodes ? "ON" : "OFF", 
-                     settings.max_depth_to_show), 10, 260, 12, LIGHTGRAY);
-        } else {
-            DrawText("Press B to toggle BVH visualization", 10, 210, 14, LIGHTGRAY);
+            auto& settings = bvh_visualizer_->get_settings();
+            ImGui::Text("BVH Settings:");
+            ImGui::Checkbox("Show BLAS BVH", &settings.show_blas_bvh);
+            ImGui::Checkbox("Show TLAS BVH", &settings.show_tlas_bvh);
+            ImGui::Checkbox("Show Leaf Nodes", &settings.show_leaf_nodes);
+            ImGui::Checkbox("Show Interior Nodes", &settings.show_interior_nodes);
+            ImGui::Checkbox("Use Depth Colors", &settings.use_depth_colors);
+            ImGui::Checkbox("Show Triangles", &settings.show_triangles);
+            ImGui::SliderInt("Max Depth", &settings.max_depth_to_show, 1, 15);
         }
         
-        // Debug triangle test mode info
-        if (debug_triangle_tests_) {
-            DrawText("TRIANGLE TEST DEBUG MODE - Press G to toggle", 10, 290, 14, RED);
-            DrawText("Green=few tests, Yellow=moderate, Red=many tests per ray", 10, 310, 12, LIGHTGRAY);
-        } else {
-            DrawText("Press G to toggle triangle test debug mode", 10, 290, 12, LIGHTGRAY);
+        ImGui::Separator();
+        
+        // System statistics
+        ImGui::Text("System Statistics");
+        ImGui::Text("BLAS Entries: %d", blas_manager_->get_unique_blas_count());
+        ImGui::Text("Total Triangles: %d", blas_manager_->get_total_triangle_count());
+        
+        if (render_mode_ != 0) {
+            ImGui::Text("Rendered Meshes: %d", last_meshes_rendered_);
+            ImGui::Text("Rendered Triangles: %d", last_triangles_rendered_);
         }
         
-        // Mesh visibility info
-        if (render_mode_ != 0) { // Not in raytracing mode
-            DrawText(TextFormat("Mesh visibility: %s (Press M to toggle)", 
-                               show_meshes_ ? "ON" : "OFF"), 
-                     10, 330, 12, show_meshes_ ? GREEN : RED);
+        if (ImGui::Button("Clear BLAS Manager")) {
+            blas_manager_->clear();
+            test_cluster_->rebuild_dirty_cells();
+            printf("BLAS manager cleared and scene rebuilt\n");
         }
         
-        // BLAS Manager statistics
-        DrawText(TextFormat("BLAS Entries: %d, Triangles: %d (Press C to clear)", 
-                           blas_manager_->get_unique_blas_count(),
-                           blas_manager_->get_total_triangle_count()), 
-                 10, 350, 12, blas_manager_->get_unique_blas_count() > 50 ? RED : WHITE);
+        ImGui::End();
         
-        DrawText("Note: LOD changes now auto-clear BLAS to prevent buffer overflow", 10, 370, 10, LIGHTGRAY);
+        // Material reference window - positioned bottom left
+        ImGui::SetNextWindowPos(ImVec2(20, 540), ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowSize(ImVec2(350, 180), ImGuiCond_FirstUseEver);
+        ImGui::Begin("Material Reference");
+        ImGui::Text("Material Types:");
+        ImGui::BulletText("0: Red metallic");
+        ImGui::BulletText("1: Blue diffuse");
+        ImGui::BulletText("2: Green ground");
+        ImGui::BulletText("3: Gold metallic");
+        ImGui::BulletText("4: Clear glass");
+        ImGui::BulletText("5: Emissive light");
+        ImGui::BulletText("6: Green glass");
+        ImGui::BulletText("7: Water");
+        ImGui::End();
+        
+        // Keyboard shortcuts help - positioned center bottom
+        ImGui::SetNextWindowPos(ImVec2(390, 540), ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowSize(ImVec2(400, 180), ImGuiCond_FirstUseEver);
+        ImGui::Begin("Keyboard Shortcuts");
+        ImGui::Text("Controls:");
+        ImGui::TextColored(ImVec4(1, 1, 0, 1), "TAB: Toggle cursor mode (UI/Camera)");
+        ImGui::BulletText("ESC: Toggle cursor (backup)");
+        ImGui::BulletText("SPACE: Add random particles");
+        ImGui::BulletText("R: Cycle render modes");
+        ImGui::BulletText("B: Toggle BVH visualization");
+        ImGui::BulletText("G: Toggle triangle test debug");
+        ImGui::BulletText("M: Toggle mesh visibility");
+        ImGui::BulletText("C: Clear BLAS manager");
+        ImGui::BulletText("1-5: Change LOD level");
+        if (show_bvh_visualization_) {
+            ImGui::Text("BVH Controls:");
+            ImGui::BulletText("Q: Toggle BLAS BVH");
+            ImGui::BulletText("I: Toggle TLAS BVH");
+            ImGui::BulletText("V: Toggle leaf nodes");
+            ImGui::BulletText("T: Toggle interior nodes");
+            ImGui::BulletText("Y: Toggle depth colors");
+            ImGui::BulletText("U: Toggle triangles");
+            ImGui::BulletText("UP/DOWN: Adjust max depth");
+        }
+        ImGui::End();
+        
+        // BVH Analysis Window - positioned on the right side
+        ImGui::SetNextWindowPos(ImVec2(ImGui::GetIO().DisplaySize.x - 400, 20), ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowSize(ImVec2(380, 600), ImGuiCond_FirstUseEver);
+        if (ImGui::Begin("BVH Analysis")) {
+            ImGui::Checkbox("Show BVH Analysis", &show_bvh_analysis_window_);
+            ImGui::Checkbox("Auto Update", &auto_update_bvh_analysis_);
+            
+            if (ImGui::Button("Manual Update All")) {
+                BVHReportManager::UpdateAllAnalyses();
+                last_bvh_analysis_update_ = GetTime();
+            }
+            
+            ImGui::SameLine();
+            if (ImGui::Button("Clear All")) {
+                BVHReportManager::Clear();
+            }
+            
+            ImGui::Text("Last Update: %.2f seconds ago", GetTime() - last_bvh_analysis_update_);
+            
+            // Auto-update if enabled and enough time has passed
+            if (auto_update_bvh_analysis_ && (GetTime() - last_bvh_analysis_update_) > 2.0f) {
+                BVHReportManager::UpdateAllAnalyses();
+                last_bvh_analysis_update_ = GetTime();
+            }
+            
+            ImGui::Separator();
+            
+            // List of registered BVH structures
+            auto registered_names = BVHReportManager::GetRegisteredNames();
+            if (!registered_names.empty()) {
+                ImGui::Text("Registered BVH Structures:");
+                for (const auto& name : registered_names) {
+                    if (ImGui::Selectable(name.c_str(), selected_bvh_for_analysis_ == name)) {
+                        selected_bvh_for_analysis_ = name;
+                    }
+                }
+                
+                ImGui::Separator();
+                
+                // Show quick stats for TLAS
+                const TLASAnalysis* tlas_analysis = BVHReportManager::GetTLASAnalysis("Main TLAS");
+                if (tlas_analysis) {
+                    ImGui::Text("TLAS Quick Stats:");
+                    ImGui::Text("Quality Score: %.1f/100", tlas_analysis->tlas_quality_score);
+                    ImGui::Text("Instances: %u", tlas_analysis->total_instances);
+                    ImGui::Text("TLAS Nodes: %u", tlas_analysis->tlas_nodes);
+                    ImGui::Text("Max Depth: %u", tlas_analysis->max_tlas_depth);
+                    ImGui::Text("Balance Factor: %.3f", tlas_analysis->tlas_balance_factor);
+                    
+                    // Color-code quality
+                    if (tlas_analysis->tlas_quality_score >= 80) {
+                        ImGui::TextColored(ImVec4(0, 1, 0, 1), "Status: EXCELLENT");
+                    } else if (tlas_analysis->tlas_quality_score >= 60) {
+                        ImGui::TextColored(ImVec4(1, 1, 0, 1), "Status: GOOD");
+                    } else if (tlas_analysis->tlas_quality_score >= 40) {
+                        ImGui::TextColored(ImVec4(1, 0.5f, 0, 1), "Status: FAIR");
+                    } else {
+                        ImGui::TextColored(ImVec4(1, 0, 0, 1), "Status: POOR");
+                    }
+                }
+                
+                ImGui::Separator();
+                
+                // BLAS statistics summary
+                ImGui::Text("BLAS Manager Stats:");
+                ImGui::Text("Active BLAS: %d", blas_manager_->get_unique_blas_count());
+                ImGui::Text("Total Triangles: %d", blas_manager_->get_total_triangle_count());
+                
+                // Register any new BLAS for analysis
+                if (ImGui::Button("Register Current BLAS")) {
+                    // This would need access to individual BLAS structures
+                    // For now, we'll focus on TLAS analysis
+                    ImGui::Text("(BLAS registration needs individual mesh access)");
+                }
+                
+            } else {
+                ImGui::Text("No BVH structures registered.");
+                ImGui::Text("Analysis will begin after scene setup.");
+            }
+        }
+        ImGui::End();
+        
+        // Detailed BVH Analysis Window (popup) - positioned center-right
+        if (show_bvh_analysis_window_) {
+            ImGui::SetNextWindowPos(ImVec2(ImGui::GetIO().DisplaySize.x - 650, 100), ImGuiCond_FirstUseEver);
+            ImGui::SetNextWindowSize(ImVec2(620, 700), ImGuiCond_FirstUseEver);
+            if (ImGui::Begin("Detailed BVH Analysis", &show_bvh_analysis_window_)) {
+                
+                if (!selected_bvh_for_analysis_.empty()) {
+                    ImGui::Text("Analysis for: %s", selected_bvh_for_analysis_.c_str());
+                    ImGui::Separator();
+                    
+                    // Show detailed TLAS analysis
+                    const TLASAnalysis* tlas_analysis = BVHReportManager::GetTLASAnalysis("Main TLAS");
+                    if (tlas_analysis && selected_bvh_for_analysis_.find("TLAS") != std::string::npos) {
+                        
+                        ImGui::Text("=== TLAS DETAILED ANALYSIS ===");
+                        
+                        // Quality metrics
+                        ImGui::Text("Overall Quality Score: %.2f/100", tlas_analysis->tlas_quality_score);
+                        ImGui::ProgressBar(tlas_analysis->tlas_quality_score / 100.0f);
+                        
+                        // Structure metrics
+                        ImGui::Text("Structure Metrics:");
+                        ImGui::Indent();
+                        ImGui::Text("Total Instances: %u", tlas_analysis->total_instances);
+                        ImGui::Text("TLAS Nodes: %u", tlas_analysis->tlas_nodes);
+                        ImGui::Text("Max TLAS Depth: %u", tlas_analysis->max_tlas_depth);
+                        ImGui::Text("Balance Factor: %.3f", tlas_analysis->tlas_balance_factor);
+                        ImGui::Text("Surface Area: %.2f", tlas_analysis->tlas_surface_area);
+                        ImGui::Unindent();
+                        
+                        // Performance metrics
+                        ImGui::Text("Performance Metrics:");
+                        ImGui::Indent();
+                        ImGui::Text("Avg Instance Triangles: %.1f", tlas_analysis->avg_instance_triangles);
+                        ImGui::Text("Instance Distribution Variance: %.2f", tlas_analysis->instance_distribution_variance);
+                        ImGui::Text("Analysis Time: %.3f ms", tlas_analysis->total_analysis_time_ms);
+                        ImGui::Unindent();
+                        
+                        // Issues and recommendations
+                        if (!tlas_analysis->tlas_issues.empty()) {
+                            ImGui::Text("Issues:");
+                            ImGui::Indent();
+                            for (const auto& issue : tlas_analysis->tlas_issues) {
+                                ImGui::BulletText("%s", issue.c_str());
+                            }
+                            ImGui::Unindent();
+                        }
+                        
+                        if (!tlas_analysis->tlas_recommendations.empty()) {
+                            ImGui::Text("Recommendations:");
+                            ImGui::Indent();
+                            for (const auto& rec : tlas_analysis->tlas_recommendations) {
+                                ImGui::BulletText("%s", rec.c_str());
+                            }
+                            ImGui::Unindent();
+                        }
+                        
+                        // Generate text report button
+                        if (ImGui::Button("Generate Full Text Report")) {
+                            std::string report = BVHReportManager::GenerateFullReport();
+                            printf("%s", report.c_str());
+                        }
+                    }
+                    
+                } else {
+                    ImGui::Text("Select a BVH structure from the main analysis window.");
+                }
+            }
+            ImGui::End();
+        }
     }
     
     void print_rendering_stats() {
@@ -712,7 +999,7 @@ private:
     
     Camera camera_;
     Shader raytracing_shader_{};
-    bool cursor_disabled_ = true;
+    bool cursor_disabled_ = false;
     int render_mode_ = 0; // 0=raytracing, 1=solid_meshes, 2=wireframe_meshes, 3=debug_bvh
     bool show_bvh_visualization_ = false;
     bool show_meshes_ = true;
@@ -730,6 +1017,12 @@ private:
     // Performance tracking
     int last_triangles_rendered_ = 0;
     int last_meshes_rendered_ = 0;
+    
+    // BVH Analysis
+    bool show_bvh_analysis_window_ = false;
+    bool auto_update_bvh_analysis_ = true;
+    std::string selected_bvh_for_analysis_;
+    float last_bvh_analysis_update_ = 0.0f;
 
 };
 

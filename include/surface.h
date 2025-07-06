@@ -6,6 +6,19 @@
 #include "particle.h"
 #include <stdbool.h>
 
+// Forward declaration for BVH Triangle
+typedef struct {
+    float x, y, z;
+} Vec3;
+
+typedef struct {
+    Vec3 v0, v1, v2;      // Triangle vertices
+    Vec3 n0, n1, n2;      // Per-vertex normals
+    Vec3 centroid;        // Pre-computed centroid for faster BVH building
+    Vec3 normal;          // Face normal (computed from vertices)
+    int  material_id;     // Material identifier
+} BVHTriangle;
+
 
 // Bounds structure defining the volume for isosurface generation
 typedef struct {
@@ -38,6 +51,12 @@ Color GetMaterialColor(int materialId);
 
 // Utility function to generate unique edge key for marching cubes
 unsigned long long GetEdgeKey(int x, int y, int z, int edgeIndex);
+
+// Convert raylib Mesh to BVH Triangle array with per-vertex normals
+BVHTriangle* ConvertMeshToBVHTriangles(Mesh mesh, int* triangleCount);
+
+// Free BVH triangle array
+void FreeBVHTriangles(BVHTriangle* triangles);
 
 
 #endif // SURFACE_H

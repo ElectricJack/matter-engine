@@ -73,17 +73,17 @@ typedef struct {
 // Memory pool for reusing buffers across mesh generations
 typedef struct {
     // Scalar field buffers
-    float* scalarField;
-    int* materialField;
-    size_t fieldCapacity;
+    float*   scalarField;
+    int*     materialField;
+    size_t   fieldCapacity;
     
     // Mesh buffers  
-    Vector3* vertices;
-    Vector3* normals;
-    int* materials;
+    Vector3*  vertices;
+    Vector3*  normals;
+    int*      materials;
     Triangle* triangles;
-    size_t vertexCapacity;
-    size_t triangleCapacity;
+    size_t    vertexCapacity;
+    size_t    triangleCapacity;
     
     // Edge deduplication buffers
     unsigned long long* edgeKeys;
@@ -213,7 +213,7 @@ void SurfaceLibCleanup(void) {
 
 // Internal mesh generation function with configuration
 static Mesh GenerateMeshInternal(Particle* particles, float particleRadius, int particleCount, Bounds volume, MeshGenerationConfig config) {
-    //TIMER_START(total);
+    TIMER_START(total);
     
     // Initialize mesh
     Mesh mesh = {0};
@@ -253,7 +253,7 @@ static Mesh GenerateMeshInternal(Particle* particles, float particleRadius, int 
         }
     }
     
-    //TIMER_START(spatial_hash);
+    TIMER_START(spatial_hash);
     
     // Create spatial hash for efficient particle queries
     // Optimized cell size: smaller cells (1.5x radius) for better spatial locality
@@ -273,9 +273,9 @@ static Mesh GenerateMeshInternal(Particle* particles, float particleRadius, int 
         sh_insert(spatialHash, particles[i].position.x, particles[i].position.y, particles[i].position.z, &particles[i]);
     }
     
-    // TIMER_END(spatial_hash, "Spatial Hash Setup");
+    TIMER_END(spatial_hash, "Spatial Hash Setup");
     
-    //TIMER_START(scalar_field);
+    TIMER_START(scalar_field);
     
     // Fill scalar field with implicit function values (now using combined calculation)
     for (int z = 0; z < gridSize; z++) {
@@ -297,7 +297,7 @@ static Mesh GenerateMeshInternal(Particle* particles, float particleRadius, int 
         }
     }
     
-    //TIMER_END(scalar_field, "Scalar Field Computation");
+    TIMER_END(scalar_field, "Scalar Field Computation");
     
     // Create temporary buffers for storing mesh data using memory pool if enabled
     int maxVertices = data.totalCells * 3; // Maximum possible vertices per cell is typically 3-5
@@ -367,7 +367,7 @@ static Mesh GenerateMeshInternal(Particle* particles, float particleRadius, int 
     // Value for isosurface threshold
     const float isovalue = 0.0f; // Surface at zero level
     
-    //TIMER_START(marching_cubes);
+    TIMER_START(marching_cubes);
     
     // Run marching cubes algorithm on each grid cell
     for (int z = 0; z < gridSize - 1; z++) {
@@ -578,9 +578,9 @@ static Mesh GenerateMeshInternal(Particle* particles, float particleRadius, int 
         }
     }
     
-    //TIMER_END(marching_cubes, "Marching Cubes Algorithm");
+    TIMER_END(marching_cubes, "Marching Cubes Algorithm");
     
-    //TIMER_START(mesh_assembly);
+    TIMER_START(mesh_assembly);
     
     // Calculate normals
     for (int i = 0; i < vertexCount; i++) {
@@ -673,7 +673,7 @@ static Mesh GenerateMeshInternal(Particle* particles, float particleRadius, int 
         mesh.colors[i*4+3] = color.a;
     }
     
-    //TIMER_END(mesh_assembly, "Mesh Assembly");
+    TIMER_END(mesh_assembly, "Mesh Assembly");
     
     // Clean up temporary data (only free if not using memory pool)
     if (!config.enableMemoryReuse) {
@@ -690,7 +690,7 @@ static Mesh GenerateMeshInternal(Particle* particles, float particleRadius, int 
     }
     sh_destroy(spatialHash);
     
-    //TIMER_END(total, "Total Mesh Generation");
+    TIMER_END(total, "Total Mesh Generation");
     
     return mesh;
 }
@@ -698,7 +698,7 @@ static Mesh GenerateMeshInternal(Particle* particles, float particleRadius, int 
 // Combined calculation to eliminate duplicate distance calculations
 static ScalarMaterialPair CalculateScalarAndMaterial(Vector3 position, SpatialHash* spatialHash, float particleRadius) {
     ScalarMaterialPair result;
-    result.scalarValue = 1000.0f;  // Large positive value instead of INFINITY
+    result.scalarValue = INFINITY;
     result.materialId = 0;
     
     // Query nearby particles using spatial hash instead of checking all particles
@@ -712,7 +712,7 @@ static ScalarMaterialPair CalculateScalarAndMaterial(Vector3 position, SpatialHa
     
     // Calculate distance to only the nearby particles in a single pass
     // Optimization: use squared distances for comparison to avoid expensive sqrt
-    float minDistanceSquared = 1000000.0f;  // Large finite value instead of INFINITY
+    float minDistanceSquared = INFINITY;
     
     for (int i = 0; i < foundCount; i++) {
         Vector3 diff = {
@@ -733,12 +733,7 @@ static ScalarMaterialPair CalculateScalarAndMaterial(Vector3 position, SpatialHa
     }
     
     // Only compute sqrt once at the end and calculate scalar field value
-    if (minDistanceSquared < 1000000.0f) {
-        result.scalarValue = sqrtf(minDistanceSquared) - particleRadius;
-    } else {
-        // No particles found, use a large positive distance value
-        result.scalarValue = 100.0f;  // Large positive value to indicate outside surface
-    }
+    result.scalarValue = (minDistanceSquared < INFINITY) ? sqrtf(minDistanceSquared) - particleRadius : INFINITY;
     
     return result;
 }
@@ -763,43 +758,15 @@ static int CalculateCubeIndex(GridCell cell, float isovalue) {
 static Vector3 VertexInterpolation(Vector3 v1, float val1, Vector3 v2, float val2, float isovalue) {
     Vector3 result;
     
-    // Handle infinite values that can cause NaN results
-    if (!isfinite(val1) || !isfinite(val2)) {
-        // If either value is infinite, use the vertex with the finite value
-        if (isfinite(val1) && !isfinite(val2)) {
-            return v1;
-        } else if (!isfinite(val1) && isfinite(val2)) {
-            return v2;
-        } else {
-            // Both infinite, return midpoint
-            result.x = (v1.x + v2.x) * 0.5f;
-            result.y = (v1.y + v2.y) * 0.5f;
-            result.z = (v1.z + v2.z) * 0.5f;
-            return result;
-        }
-    }
-    
     if (fabs(isovalue - val1) < 0.00001f) return v1;
     if (fabs(isovalue - val2) < 0.00001f) return v2;
     if (fabs(val1 - val2) < 0.00001f) return v1;
     
     float mu = (isovalue - val1) / (val2 - val1);
     
-    // Clamp mu to prevent extrapolation that could lead to invalid results
-    if (mu < 0.0f) mu = 0.0f;
-    if (mu > 1.0f) mu = 1.0f;
-    
     result.x = v1.x + mu * (v2.x - v1.x);
     result.y = v1.y + mu * (v2.y - v1.y);
     result.z = v1.z + mu * (v2.z - v1.z);
-    
-    // Validate the result
-    if (!isfinite(result.x) || !isfinite(result.y) || !isfinite(result.z)) {
-        // Fallback to midpoint if result is invalid
-        result.x = (v1.x + v2.x) * 0.5f;
-        result.y = (v1.y + v2.y) * 0.5f;
-        result.z = (v1.z + v2.z) * 0.5f;
-    }
     
     return result;
 }
@@ -956,4 +923,90 @@ Color GetMaterialColor(int materialId) {
     if (index < 0) index += colorCount;
     
     return colors[index];
+}
+
+// Convert raylib Mesh to BVH Triangle array with per-vertex normals
+BVHTriangle* ConvertMeshToBVHTriangles(Mesh mesh, int* triangleCount) {
+    if (!mesh.vertices || !mesh.normals || !mesh.indices || mesh.triangleCount == 0) {
+        *triangleCount = 0;
+        return NULL;
+    }
+    
+    *triangleCount = mesh.triangleCount;
+    BVHTriangle* bvhTriangles = (BVHTriangle*)malloc(mesh.triangleCount * sizeof(BVHTriangle));
+    if (!bvhTriangles) {
+        *triangleCount = 0;
+        return NULL;
+    }
+    
+    // Convert each triangle
+    for (int i = 0; i < mesh.triangleCount; i++) {
+        BVHTriangle* tri = &bvhTriangles[i];
+        
+        // Get vertex indices for this triangle
+        int idx0 = mesh.indices[i * 3 + 0];
+        int idx1 = mesh.indices[i * 3 + 1];
+        int idx2 = mesh.indices[i * 3 + 2];
+        
+        // Set vertices
+        tri->v0.x = mesh.vertices[idx0 * 3 + 0];
+        tri->v0.y = mesh.vertices[idx0 * 3 + 1];
+        tri->v0.z = mesh.vertices[idx0 * 3 + 2];
+        
+        tri->v1.x = mesh.vertices[idx1 * 3 + 0];
+        tri->v1.y = mesh.vertices[idx1 * 3 + 1];
+        tri->v1.z = mesh.vertices[idx1 * 3 + 2];
+        
+        tri->v2.x = mesh.vertices[idx2 * 3 + 0];
+        tri->v2.y = mesh.vertices[idx2 * 3 + 1];
+        tri->v2.z = mesh.vertices[idx2 * 3 + 2];
+        
+        // Set per-vertex normals
+        tri->n0.x = mesh.normals[idx0 * 3 + 0];
+        tri->n0.y = mesh.normals[idx0 * 3 + 1];
+        tri->n0.z = mesh.normals[idx0 * 3 + 2];
+        
+        tri->n1.x = mesh.normals[idx1 * 3 + 0];
+        tri->n1.y = mesh.normals[idx1 * 3 + 1];
+        tri->n1.z = mesh.normals[idx1 * 3 + 2];
+        
+        tri->n2.x = mesh.normals[idx2 * 3 + 0];
+        tri->n2.y = mesh.normals[idx2 * 3 + 1];
+        tri->n2.z = mesh.normals[idx2 * 3 + 2];
+        
+        // Compute centroid
+        tri->centroid.x = (tri->v0.x + tri->v1.x + tri->v2.x) / 3.0f;
+        tri->centroid.y = (tri->v0.y + tri->v1.y + tri->v2.y) / 3.0f;
+        tri->centroid.z = (tri->v0.z + tri->v1.z + tri->v2.z) / 3.0f;
+        
+        // Compute face normal using cross product
+        Vec3 edge1 = {tri->v1.x - tri->v0.x, tri->v1.y - tri->v0.y, tri->v1.z - tri->v0.z};
+        Vec3 edge2 = {tri->v2.x - tri->v0.x, tri->v2.y - tri->v0.y, tri->v2.z - tri->v0.z};
+        
+        tri->normal.x = edge1.y * edge2.z - edge1.z * edge2.y;
+        tri->normal.y = edge1.z * edge2.x - edge1.x * edge2.z;
+        tri->normal.z = edge1.x * edge2.y - edge1.y * edge2.x;
+        
+        // Normalize face normal
+        float length = sqrtf(tri->normal.x * tri->normal.x + 
+                            tri->normal.y * tri->normal.y + 
+                            tri->normal.z * tri->normal.z);
+        if (length > 0.0001f) {
+            tri->normal.x /= length;
+            tri->normal.y /= length;
+            tri->normal.z /= length;
+        }
+        
+        // Set default material ID
+        tri->material_id = 0;
+    }
+    
+    return bvhTriangles;
+}
+
+// Free BVH triangle array
+void FreeBVHTriangles(BVHTriangle* triangles) {
+    if (triangles) {
+        free(triangles);
+    }
 }

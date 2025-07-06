@@ -1,8 +1,9 @@
 CC = gcc
 CXX = g++
 RAYLIB_PATH = ../Libraries/raylib
-CFLAGS = -Wall -Wextra -O2 -I$(RAYLIB_PATH)/src -I./include
-CXXFLAGS = -Wall -Wextra -O2 -std=c++14 -Wno-missing-field-initializers -I$(RAYLIB_PATH)/src -I./include
+IMGUI_PATH = ../Libraries/imgui
+CFLAGS = -Wall -Wextra -O2 -I$(RAYLIB_PATH)/src -I$(RAYLIB_PATH)/src/external/glfw/include -I$(IMGUI_PATH) -I$(IMGUI_PATH)/backends -I./include
+CXXFLAGS = -Wall -Wextra -O2 -std=c++14 -Wno-missing-field-initializers -I$(RAYLIB_PATH)/src -I$(RAYLIB_PATH)/src/external/glfw/include -I$(IMGUI_PATH) -I$(IMGUI_PATH)/backends -I./include
 
 # Build flags:
 # TARGET=windows-native : Cross-compile for Windows from Linux using MinGW
@@ -125,8 +126,8 @@ $(shell mkdir -p $(BUILD_DIR))
 $(shell mkdir -p $(RAYLIB_PATH)/build/$(PLATFORM))
 
 # C++ main application
-SRC = main.cpp src/bvh.cpp src/object_allocator.c src/blas_manager.cpp src/tlas_manager.cpp src/bvh_visualizer.cpp src/open_particle_surface.c src/surface.c src/spatial_hash.c src/cluster.cpp src/cell.cpp src/cell_debug_renderer.cpp
-OBJ = $(OBJ_DIR)/main.o $(OBJ_DIR)/bvh.o $(OBJ_DIR)/object_allocator.o $(OBJ_DIR)/blas_manager.o $(OBJ_DIR)/tlas_manager.o $(OBJ_DIR)/bvh_visualizer.o $(OBJ_DIR)/open_particle_surface.o $(OBJ_DIR)/surface.o $(OBJ_DIR)/spatial_hash.o $(OBJ_DIR)/cluster.o $(OBJ_DIR)/cell.o $(OBJ_DIR)/cell_debug_renderer.o
+SRC = main.cpp src/bvh.cpp src/object_allocator.c src/blas_manager.cpp src/tlas_manager.cpp src/bvh_visualizer.cpp src/bvh_analyzer.cpp src/open_particle_surface.c src/surface.c src/spatial_hash.c src/cluster.cpp src/cell.cpp src/cell_debug_renderer.cpp $(IMGUI_PATH)/imgui.cpp $(IMGUI_PATH)/imgui_demo.cpp $(IMGUI_PATH)/imgui_draw.cpp $(IMGUI_PATH)/imgui_tables.cpp $(IMGUI_PATH)/imgui_widgets.cpp $(IMGUI_PATH)/backends/imgui_impl_opengl3.cpp $(IMGUI_PATH)/backends/imgui_impl_glfw.cpp
+OBJ = $(OBJ_DIR)/main.o $(OBJ_DIR)/bvh.o $(OBJ_DIR)/object_allocator.o $(OBJ_DIR)/blas_manager.o $(OBJ_DIR)/tlas_manager.o $(OBJ_DIR)/bvh_visualizer.o $(OBJ_DIR)/bvh_analyzer.o $(OBJ_DIR)/open_particle_surface.o $(OBJ_DIR)/surface.o $(OBJ_DIR)/spatial_hash.o $(OBJ_DIR)/cluster.o $(OBJ_DIR)/cell.o $(OBJ_DIR)/cell_debug_renderer.o $(OBJ_DIR)/imgui.o $(OBJ_DIR)/imgui_demo.o $(OBJ_DIR)/imgui_draw.o $(OBJ_DIR)/imgui_tables.o $(OBJ_DIR)/imgui_widgets.o $(OBJ_DIR)/imgui_impl_opengl3.o $(OBJ_DIR)/imgui_impl_glfw.o
 BIN = $(BUILD_DIR)/matter_surface_lib$(BIN_SUFFIX)
 PREPROCESSOR = $(BUILD_DIR)/shader_preprocessor
 
@@ -236,6 +237,9 @@ $(OBJ_DIR)/tlas_manager.o: src/tlas_manager.cpp
 $(OBJ_DIR)/bvh_visualizer.o: src/bvh_visualizer.cpp
 	$(CXX) -c $< $(CXXFLAGS) -o $@
 
+$(OBJ_DIR)/bvh_analyzer.o: src/bvh_analyzer.cpp
+	$(CXX) -c $< $(CXXFLAGS) -o $@
+
 $(OBJ_DIR)/open_particle_surface.o: src/open_particle_surface.c
 	$(CC) -c $< $(CFLAGS) -o $@
 
@@ -252,6 +256,28 @@ $(OBJ_DIR)/cell.o: src/cell.cpp
 	$(CXX) -c $< $(CXXFLAGS) -o $@
 
 $(OBJ_DIR)/cell_debug_renderer.o: src/cell_debug_renderer.cpp
+	$(CXX) -c $< $(CXXFLAGS) -o $@
+
+# ImGui build rules
+$(OBJ_DIR)/imgui.o: $(IMGUI_PATH)/imgui.cpp
+	$(CXX) -c $< $(CXXFLAGS) -o $@
+
+$(OBJ_DIR)/imgui_demo.o: $(IMGUI_PATH)/imgui_demo.cpp
+	$(CXX) -c $< $(CXXFLAGS) -o $@
+
+$(OBJ_DIR)/imgui_draw.o: $(IMGUI_PATH)/imgui_draw.cpp
+	$(CXX) -c $< $(CXXFLAGS) -o $@
+
+$(OBJ_DIR)/imgui_tables.o: $(IMGUI_PATH)/imgui_tables.cpp
+	$(CXX) -c $< $(CXXFLAGS) -o $@
+
+$(OBJ_DIR)/imgui_widgets.o: $(IMGUI_PATH)/imgui_widgets.cpp
+	$(CXX) -c $< $(CXXFLAGS) -o $@
+
+$(OBJ_DIR)/imgui_impl_opengl3.o: $(IMGUI_PATH)/backends/imgui_impl_opengl3.cpp
+	$(CXX) -c $< $(CXXFLAGS) -o $@
+
+$(OBJ_DIR)/imgui_impl_glfw.o: $(IMGUI_PATH)/backends/imgui_impl_glfw.cpp
 	$(CXX) -c $< $(CXXFLAGS) -o $@
 
 # Platform-specific clean
