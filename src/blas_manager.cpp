@@ -568,6 +568,31 @@ void BLASManager::reset_stats() {
     totals_dirty_ = true;
 }
 
+void BLASManager::clear() {
+    printf("BLASManager: Clearing all BLAS entries (%zu entries)\n", entries_.size());
+    
+    // Clean up GPU textures first
+    if (triangles_texture_.id != 0) {
+        UnloadTexture(triangles_texture_);
+        triangles_texture_ = {};
+    }
+    if (nodes_texture_.id != 0) {
+        UnloadTexture(nodes_texture_);
+        nodes_texture_ = {};
+    }
+    
+    // Clear all data structures
+    entries_.clear();
+    hash_to_entry_.clear();
+    next_handle_ = 1;
+    
+    // Mark everything as dirty to force regeneration
+    totals_dirty_ = true;
+    textures_dirty_ = true;
+    
+    printf("BLASManager: Cleared, ready for new BLAS registrations\n");
+}
+
 // Factory functions implementation
 namespace BLASFactory {
 
