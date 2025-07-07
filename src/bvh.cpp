@@ -166,10 +166,25 @@ void BVH::UpdateNodeBounds( uint nodeIdx, float3& centroidMin, float3& centroidM
 void BVH::Subdivide( uint nodeIdx, uint depth, uint& nodePtr, float3& centroidMin, float3& centroidMax )
 {
 	BVHNode& node = bvhNode[nodeIdx];
-	// determine split axis using SAH
+	
+	// Improved termination criteria for balanced trees
+	const uint MAX_DEPTH = 40;  // Allow deeper trees for better balance
+	const uint MIN_TRIS_PER_LEAF = 1;  // Minimum triangles per leaf
+	const uint MAX_TRIS_PER_LEAF = 4;  // Maximum triangles per leaf before forced split (reduced from 8)
+	
+	// Early termination conditions
+	if (depth >= MAX_DEPTH || node.triCount <= MIN_TRIS_PER_LEAF) {
+		return; // Too deep or too few triangles
+	}
+	
+	// Force split for nodes with many triangles to maintain balance
+	bool forceSplit = (node.triCount > MAX_TRIS_PER_LEAF);
+	
+	// determine split axis using balanced SAH
 	int axis, splitPos;
 	float splitCost = FindBestSplitPlane( node, axis, splitPos, centroidMin, centroidMax );
-	// terminate recursion
+	
+	// terminate recursion based on improved criteria
 	if (subdivToOnePrim)
 	{
 		if (node.triCount == 1) return;
@@ -177,7 +192,10 @@ void BVH::Subdivide( uint nodeIdx, uint depth, uint& nodePtr, float3& centroidMi
 	else
 	{
 		float nosplitCost = node.CalculateNodeCost();
-		if (splitCost >= nosplitCost) return;
+		// Be much more aggressive about splitting for balance - allow up to 50% cost increase
+		if (!forceSplit && splitCost >= nosplitCost * 1.5f) {
+			return;
+		}
 	}
 	
 	// in-place partition
@@ -196,7 +214,14 @@ void BVH::Subdivide( uint nodeIdx, uint depth, uint& nodePtr, float3& centroidMi
 	}
 	// abort split if one of the sides is empty
 	uint leftCount = i - node.leftFirst;
-	if (leftCount == 0 || leftCount == node.triCount) return;
+	if (leftCount == 0 || leftCount == node.triCount) {
+		// Fallback: try spatial median split for better balance
+		if (TryMedianSplit(nodeIdx, axis, centroidMin, centroidMax, leftCount)) {
+			// Median split succeeded, continue with subdivision
+		} else {
+			return; // Cannot split this node
+		}
+	}
 	// create child nodes
 	int leftChildIdx = nodePtr++;
 	int rightChildIdx = nodePtr++;
@@ -216,6 +241,11 @@ void BVH::Subdivide( uint nodeIdx, uint depth, uint& nodePtr, float3& centroidMi
 float BVH::FindBestSplitPlane( BVHNode& node, int& axis, int& splitPos, float3& centroidMin, float3& centroidMax )
 {
 	float bestCost = 1e30f;
+	
+	// Parameters for balanced tree construction
+	const float BALANCE_WEIGHT = 0.7f;  // Weight balance vs pure SAH (increased from 0.3)
+	const float IDEAL_BALANCE = 0.5f;   // Ideal left/right split ratio
+	
 	for (int a = 0; a < 3; a++)
 	{
 		float boundsMin = centroidMin.cell[a], boundsMax = centroidMax.cell[a];
@@ -249,16 +279,132 @@ float BVH::FindBestSplitPlane( BVHNode& node, int& axis, int& splitPos, float3& 
 			rightBox.grow( bin[BINS - 1 - i].bounds );
 			rightArea[BINS - 2 - i] = rightBox.area();
 		}
-		// calculate SAH cost for the 7 planes
+		
+		// Enhanced splitting: try multiple approaches and pick the most balanced
+		struct SplitCandidate {
+			int axis, splitPos;
+			float cost, balance;
+			bool valid;
+		};
+		
+		SplitCandidate candidates[BINS - 1];
+		int numCandidates = 0;
+		
+		// calculate balanced SAH cost for the 7 planes
 		scale = (boundsMax - boundsMin) / BINS;
 		for (int i = 0; i < BINS - 1; i++)
 		{
-			float planeCost = leftCount[i] * leftArea[i] + rightCount[i] * rightArea[i];
-			if (planeCost < bestCost)
-				axis = a, splitPos = i + 1, bestCost = planeCost;
+			// Skip invalid splits
+			if (leftCount[i] == 0 || rightCount[i] == 0) continue;
+			
+			// Standard SAH cost
+			float sahCost = leftCount[i] * leftArea[i] + rightCount[i] * rightArea[i];
+			
+			// Balance metric - how close to 50/50 split
+			float leftRatio = (float)leftCount[i] / (float)node.triCount;
+			float balanceScore = fabsf(leftRatio - IDEAL_BALANCE);
+			
+			// Exponential penalty for unbalanced splits
+			float balancePenalty = balanceScore * balanceScore * 4.0f; // Quadratic penalty
+			
+			// Combined cost: heavily favor balance
+			float combinedCost = (1.0f - BALANCE_WEIGHT) * sahCost + BALANCE_WEIGHT * (sahCost * (1.0f + balancePenalty));
+			
+			// Store candidate
+			candidates[numCandidates] = {a, i + 1, combinedCost, balanceScore, true};
+			numCandidates++;
+		}
+		
+		// Sort candidates by balance first, then by cost
+		for (int i = 0; i < numCandidates - 1; i++) {
+			for (int j = i + 1; j < numCandidates; j++) {
+				bool shouldSwap = false;
+				
+				// Primary criterion: balance (lower is better)
+				if (candidates[j].balance < candidates[i].balance - 0.05f) {
+					shouldSwap = true;
+				} else if (fabsf(candidates[j].balance - candidates[i].balance) <= 0.05f) {
+					// Similar balance, prefer lower cost
+					if (candidates[j].cost < candidates[i].cost) {
+						shouldSwap = true;
+					}
+				}
+				
+				if (shouldSwap) {
+					SplitCandidate temp = candidates[i];
+					candidates[i] = candidates[j];
+					candidates[j] = temp;
+				}
+			}
+		}
+		
+		// Select the best candidate
+		if (numCandidates > 0 && candidates[0].cost < bestCost) {
+			axis = candidates[0].axis;
+			splitPos = candidates[0].splitPos;
+			bestCost = candidates[0].cost;
 		}
 	}
 	return bestCost;
+}
+
+bool BVH::TryMedianSplit( uint nodeIdx, int axis, float3& centroidMin, float3& centroidMax, uint& leftCount )
+{
+	BVHNode& node = bvhNode[nodeIdx];
+	
+	// Calculate spatial median along the specified axis
+	float medianPos = (centroidMin.cell[axis] + centroidMax.cell[axis]) * 0.5f;
+	
+	// Partition triangles around the median
+	int i = node.leftFirst;
+	int j = i + node.triCount - 1;
+	
+	while (i <= j)
+	{
+		if (mesh->tri[triIdx[i]].centroid.cell[axis] < medianPos) {
+			i++;
+		} else {
+			uint tmp = triIdx[i]; 
+			triIdx[i] = triIdx[j]; 
+			triIdx[j] = tmp;
+			j--;
+		}
+	}
+	
+	// Check if we got a reasonable split
+	leftCount = i - node.leftFirst;
+	float leftRatio = (float)leftCount / (float)node.triCount;
+	
+	// Accept split if it's reasonably balanced (at least 10% on each side)
+	if (leftRatio > 0.1f && leftRatio < 0.9f) {
+		return true;
+	}
+	
+	// If still too one-sided, try splitting exactly in half by count
+	// Sort triangles by centroid position along the axis
+	uint first = node.leftFirst;
+	uint count = node.triCount;
+	
+	// Simple insertion sort for small arrays (good enough for typical leaf sizes)
+	for (uint i = first + 1; i < first + count; i++) {
+		uint key = triIdx[i];
+		float keyPos = mesh->tri[key].centroid.cell[axis];
+		int j = i - 1;
+		
+		while (j >= (int)first && mesh->tri[triIdx[j]].centroid.cell[axis] > keyPos) {
+			triIdx[j + 1] = triIdx[j];
+			j--;
+		}
+		triIdx[j + 1] = key;
+	}
+	
+	// Split exactly in half by count
+	leftCount = count / 2;
+	if (leftCount > 0 && leftCount < count) {
+		return true;
+	}
+	
+	return false; // Cannot create a reasonable split
 }
 
 // BVHInstance implementation

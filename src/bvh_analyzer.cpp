@@ -30,7 +30,7 @@ float BVHAnalyzer::CalculateTLASNodeSurfaceArea(const TLASNode& node) {
 
 // Calculate balance factor (0.0 = completely unbalanced, 1.0 = perfectly balanced)
 float BVHAnalyzer::CalculateBalanceFactor(const BVHTreeAnalysis& analysis) {
-    if (analysis.max_depth == 0) return 1.0f;
+    if (analysis.max_depth == 0 || analysis.min_depth == UINT32_MAX) return 0.0f;
     return static_cast<float>(analysis.min_depth) / static_cast<float>(analysis.max_depth);
 }
 
@@ -75,9 +75,8 @@ void BVHAnalyzer::AnalyzeNodeRecursive(const BVH* bvh, uint32_t node_idx, uint32
     
     const BVHNode& node = bvh->bvhNode[node_idx];
     
-    // Update depth tracking
+    // Update max depth for all nodes
     analysis.max_depth = std::max(analysis.max_depth, depth);
-    analysis.min_depth = std::min(analysis.min_depth, depth);
     
     // Ensure depth_counts vector is large enough
     if (depth >= depth_counts.size()) {
@@ -98,6 +97,9 @@ void BVHAnalyzer::AnalyzeNodeRecursive(const BVH* bvh, uint32_t node_idx, uint32
         analysis.leaf_nodes++;
         uint32_t tri_count = node.triCount;
         analysis.triangles_per_depth[depth] += tri_count;
+        
+        // Track min depth only for leaf nodes (where actual triangles are stored)
+        analysis.min_depth = std::min(analysis.min_depth, depth);
         
         analysis.max_triangles_per_leaf = std::max(analysis.max_triangles_per_leaf, tri_count);
         analysis.min_triangles_per_leaf = std::min(analysis.min_triangles_per_leaf, tri_count);
