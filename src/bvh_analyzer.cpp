@@ -420,9 +420,11 @@ void BVHReportManager::RegisterTLAS(const std::string& name, const TLAS* tlas) {
 
 void BVHReportManager::UpdateAnalysis(const std::string& name) {
     auto bvh_it = bvh_registry_.find(name);
-    if (bvh_it != bvh_registry_.end() && bvh_it->second.needs_update) {
-        bvh_it->second.analysis = BVHAnalyzer::AnalyzeBVH(bvh_it->second.bvh, bvh_it->second.mesh, name);
-        bvh_it->second.needs_update = false;
+    if (bvh_it != bvh_registry_.end()) {
+        if (bvh_it->second.needs_update) {
+            bvh_it->second.analysis = BVHAnalyzer::AnalyzeBVH(bvh_it->second.bvh, bvh_it->second.mesh, name);
+            bvh_it->second.needs_update = false;
+        }
     }
     
     auto tlas_it = tlas_registry_.find(name);

@@ -176,9 +176,29 @@ private:
         // Register TLAS for analysis
         BVHReportManager::RegisterTLAS("Main TLAS", tlas_manager_->get_tlas());
         
+        // Register all BLAS structures for analysis
+        register_all_blas_for_analysis();
+        
         // Initial analysis update
         BVHReportManager::UpdateAllAnalyses();
         last_bvh_analysis_update_ = GetTime();
+    }
+    
+    void register_all_blas_for_analysis() {
+        const auto& entries = blas_manager_->get_entries();
+        
+        for (const auto& entry : entries) {
+            if (entry && entry->bvh && entry->mesh) {
+                // Create a descriptive name for each BLAS
+                std::string blas_name = "BLAS_" + std::to_string(entry->handle) + 
+                                       " (" + std::to_string(entry->mesh->triCount) + " tris)";
+                
+                // Register BLAS with the BVH analyzer
+                BVHReportManager::RegisterBVH(blas_name, entry->bvh.get(), entry->mesh.get());
+                // Immediately update analysis for this BLAS
+                BVHReportManager::UpdateAnalysis(blas_name);
+            }
+        }
     }
     
     void setup_rendering() {
@@ -868,8 +888,19 @@ private:
                     ImGui::Text("Analysis for: %s", selected_bvh_for_analysis_.c_str());
                     ImGui::Separator();
                     
+                    // Strip the " (BVH)" or " (TLAS)" suffix that GetRegisteredNames() adds
+                    std::string clean_name = selected_bvh_for_analysis_;
+                    size_t suffix_pos = clean_name.find(" (BVH)");
+                    if (suffix_pos != std::string::npos) {
+                        clean_name = clean_name.substr(0, suffix_pos);
+                    }
+                    suffix_pos = clean_name.find(" (TLAS)");
+                    if (suffix_pos != std::string::npos) {
+                        clean_name = clean_name.substr(0, suffix_pos);
+                    }
+                    
                     // Show detailed TLAS analysis
-                    const TLASAnalysis* tlas_analysis = BVHReportManager::GetTLASAnalysis("Main TLAS");
+                    const TLASAnalysis* tlas_analysis = BVHReportManager::GetTLASAnalysis(clean_name);
                     if (tlas_analysis && selected_bvh_for_analysis_.find("TLAS") != std::string::npos) {
                         
                         ImGui::Text("=== TLAS DETAILED ANALYSIS ===");
@@ -919,6 +950,89 @@ private:
                         if (ImGui::Button("Generate Full Text Report")) {
                             std::string report = BVHReportManager::GenerateFullReport();
                             printf("%s", report.c_str());
+                        }
+                    }
+                    
+                    // Show detailed BLAS analysis (for non-TLAS structures)
+                    const BVHTreeAnalysis* bvh_analysis = BVHReportManager::GetBVHAnalysis(clean_name);
+                    
+                    bool is_not_tlas = selected_bvh_for_analysis_.find("TLAS") == std::string::npos;
+                    
+                    if (bvh_analysis && is_not_tlas) {
+                        ImGui::Text("=== BLAS DETAILED ANALYSIS ===");
+                        
+                        // Quality metrics
+                        ImGui::Text("Overall Quality Score: %.2f/100", bvh_analysis->overall_quality_score);
+                        ImGui::ProgressBar(bvh_analysis->overall_quality_score / 100.0f);
+                        
+                        // Structure metrics
+                        ImGui::Text("Structure Metrics:");
+                        ImGui::Indent();
+                        ImGui::Text("Total Nodes: %u", bvh_analysis->total_nodes);
+                        ImGui::Text("Leaf Nodes: %u", bvh_analysis->leaf_nodes);
+                        ImGui::Text("Internal Nodes: %u", bvh_analysis->internal_nodes);
+                        ImGui::Text("Total Triangles: %u", bvh_analysis->total_triangles);
+                        ImGui::Text("Max Depth: %u", bvh_analysis->max_depth);
+                        ImGui::Text("Min Depth: %u", bvh_analysis->min_depth);
+                        ImGui::Text("Avg Depth: %.2f", bvh_analysis->avg_depth);
+                        ImGui::Text("Balance Factor: %.3f", bvh_analysis->balance_factor);
+                        ImGui::Text("Tree Efficiency: %.3f", bvh_analysis->tree_efficiency);
+                        ImGui::Text("Node Utilization: %.3f", bvh_analysis->node_utilization);
+                        ImGui::Unindent();
+                        
+                        // Triangle distribution
+                        ImGui::Text("Triangle Distribution:");
+                        ImGui::Indent();
+                        ImGui::Text("Max Triangles per Leaf: %u", bvh_analysis->max_triangles_per_leaf);
+                        ImGui::Text("Min Triangles per Leaf: %u", bvh_analysis->min_triangles_per_leaf);
+                        ImGui::Text("Avg Triangles per Leaf: %.2f", bvh_analysis->avg_triangles_per_leaf);
+                        ImGui::Text("Triangle Variance: %.2f", bvh_analysis->triangle_distribution_variance);
+                        ImGui::Unindent();
+                        
+                        // Performance metrics
+                        ImGui::Text("Performance Metrics:");
+                        ImGui::Indent();
+                        ImGui::Text("Surface Area: %.2f", bvh_analysis->total_surface_area);
+                        ImGui::Text("Avg Node Surface Area: %.2f", bvh_analysis->avg_node_surface_area);
+                        ImGui::Text("Surface Area Ratio: %.3f", bvh_analysis->surface_area_ratio);
+                        ImGui::Text("Estimated Traversal Cost: %.2f", bvh_analysis->estimated_traversal_cost);
+                        ImGui::Text("Memory Usage: %u bytes", bvh_analysis->memory_usage_bytes);
+                        ImGui::Text("Memory Efficiency: %.3f", bvh_analysis->memory_efficiency);
+                        ImGui::Text("Analysis Time: %.3f ms", bvh_analysis->analysis_time_ms);
+                        ImGui::Unindent();
+                        
+                        // Issues and recommendations
+                        if (!bvh_analysis->quality_issues.empty()) {
+                            ImGui::Text("Quality Issues:");
+                            ImGui::Indent();
+                            for (const auto& issue : bvh_analysis->quality_issues) {
+                                ImGui::BulletText("%s", issue.c_str());
+                            }
+                            ImGui::Unindent();
+                        }
+                        
+                        if (!bvh_analysis->recommendations.empty()) {
+                            ImGui::Text("Recommendations:");
+                            ImGui::Indent();
+                            for (const auto& rec : bvh_analysis->recommendations) {
+                                ImGui::BulletText("%s", rec.c_str());
+                            }
+                            ImGui::Unindent();
+                        }
+                        
+                        // Depth distribution chart
+                        if (!bvh_analysis->nodes_per_depth.empty()) {
+                            ImGui::Text("Depth Distribution:");
+                            ImGui::Indent();
+                            for (size_t depth = 0; depth < bvh_analysis->nodes_per_depth.size(); depth++) {
+                                if (bvh_analysis->nodes_per_depth[depth] > 0) {
+                                    ImGui::Text("Depth %zu: %u nodes, %u triangles", 
+                                               depth, bvh_analysis->nodes_per_depth[depth],
+                                               depth < bvh_analysis->triangles_per_depth.size() ? 
+                                               bvh_analysis->triangles_per_depth[depth] : 0);
+                                }
+                            }
+                            ImGui::Unindent();
                         }
                     }
                     

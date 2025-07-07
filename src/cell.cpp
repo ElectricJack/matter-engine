@@ -1,6 +1,7 @@
 #include "../include/cell.h"
 #include "../include/cluster.h"
 #include "../include/blas_manager.hpp"
+#include "../include/bvh_analyzer.h"
 #include "../include/cell_visitor.h"
 #include <cmath>
 #include <cstdio>
@@ -275,6 +276,21 @@ void Cell::generate_mesh_for_material(uint32_t material_id, const std::vector<St
                 printf("Registering %zu triangles with BLAS manager...\\n", triangles.size());
                 material_blas[material_id] = blas_manager.register_triangles(triangles);
                 printf("Successfully registered mesh with BLAS manager, handle %u\\n", material_blas[material_id]);
+                
+                // Also register with BVH analyzer for analysis
+                BVH* bvh = blas_manager.get_bvh(material_blas[material_id]);
+                BvhMesh* mesh_ptr = blas_manager.get_mesh(material_blas[material_id]);
+                if (bvh && mesh_ptr) {
+                    std::string analysis_name = "Cell(" + std::to_string((int)coordinates.x) + "," + 
+                                               std::to_string((int)coordinates.y) + "," + 
+                                               std::to_string((int)coordinates.z) + ")_Mat" + 
+                                               std::to_string(material_id) + "_" + 
+                                               std::to_string(triangles.size()) + "tris";
+                    
+                    BVHReportManager::RegisterBVH(analysis_name, bvh, mesh_ptr);
+                    // Immediately update analysis for this BLAS
+                    BVHReportManager::UpdateAnalysis(analysis_name);
+                }
             } else {
                 material_blas[material_id] = 0;
                 printf("No valid triangles to register with BLAS manager\\n");
