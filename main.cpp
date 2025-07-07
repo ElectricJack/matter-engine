@@ -140,7 +140,7 @@ private:
 
 
         test_cluster_->add_particle({0,0,0},  6, 0);
-        test_cluster_->add_particle({12,0,0},  6, 0);
+        test_cluster_->add_particle({12,0,0},  6, 7);
         //test_cluster_->add_particle({9,0,0},  2, 0);
         //test_cluster_->add_particle({11,0,0}, 1, 0);
         
