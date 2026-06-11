@@ -1,0 +1,16 @@
+# Object files and executables
+obj/
+*.o
+spatialquerylib
+
+# Debug files
+*.dSYM/
+
+# Editor files
+.vscode/
+*.swp
+*.swo
+*~
+
+# System files
+.DS_Store
