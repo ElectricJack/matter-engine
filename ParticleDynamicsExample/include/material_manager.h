@@ -5,6 +5,7 @@
 #include <unordered_map>
 #include <utility>
 #include <cstdint>
+#include <cstddef>
 #include "raylib.h"
 
 // Material types enum (keep consistent with existing code)

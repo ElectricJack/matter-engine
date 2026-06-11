@@ -1,6 +1,6 @@
 CC = gcc
 CFLAGS = -Wall -Wextra -g -I./include
-LDFLAGS =
+LDFLAGS = -lm
 
 SRC_DIR = src
 INCLUDE_DIR = include
