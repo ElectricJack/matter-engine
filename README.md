@@ -10,16 +10,49 @@ This repository is a **monorepo of independently-buildable sub-projects**, each 
 
 Ordered roughly from foundational → integration.
 
-| Project | Language | What it is |
-|---|---|---|
-| **`BasicWindowApp/`** | C++ | raylib + ImGui starter — a spinning cube. The template every later project was forked from. |
-| **`ObjectAllocatorLib/`** | C | Paged growable object allocator (test-driven). 6/6 tests. |
-| **`SurfaceLib/`** | C | Marching-cubes isosurface generation with raylib visualization. |
-| **`SpatialQueryLib/`** | C | Generic spatial hash + CPU BVH (with GPU-flattening for SSBO upload). 9/9 tests. |
-| **`OpenParticleSurfaceLib/`** | C | Dynamic particle → meshed surface pipeline. Pulls in `SurfaceLib` + `ObjectAllocatorLib`. Tested up to 1M particles. |
-| **`GPURayTraceExample/`** | C++ | Pixel-shader BVH ray tracer with modular BLAS/TLAS managers and BVH analyzer/visualizer. |
-| **`ParticleDynamicsExample/`** | C++ | N-body particle sim with spatial-hash optimization. Material manager (20 materials, 3 chemical reactions, 50 adhesion pairs), gamified physics, multiple demo scenes (solar system, material sandbox). |
-| **`MatterSurfaceLib/`** | C++ | **The convergence project.** Combines surface meshing + BVH ray tracing + the cluster/cell architecture from the roadmap. Generates per-cell meshes (~0.5 ms each), registers them with the BLAS manager, and ray-traces the result through the TLAS. |
+### `BasicWindowApp/` — raylib + ImGui starter
+
+![BasicWindowApp screenshot](docs/screenshots/basic_window_app.png)
+
+C++ raylib starter with ImGui integration — a rotating cube with live controls and the canonical Dear ImGui demo window. Every later project was forked from this template.
+
+### `ObjectAllocatorLib/` — paged growable allocator (C)
+
+Test-driven C allocator that grows in pages of fixed-size objects. No graphics. **6/6 tests pass.**
+
+### `SurfaceLib/` — marching-cubes isosurfaces
+
+![SurfaceLib screenshot](docs/screenshots/surface_lib.png)
+
+C library that builds meshes from scalar fields via marching cubes — spheres, tori, metaballs, custom user functions. The screenshot shows a metaball field with hundreds of overlapping wireframe surfaces and particle sites.
+
+### `SpatialQueryLib/` — spatial hash + CPU BVH (C)
+
+Generic spatial hash for radius/box queries and a CPU-side BVH that can flatten into node/index buffers ready for GPU SSBO upload. No graphics. **9/9 tests pass.**
+
+### `OpenParticleSurfaceLib/` — dynamic particle → mesh pipeline
+
+![OpenParticleSurfaceLib screenshot](docs/screenshots/open_particle_surface_lib.png)
+
+C library that hot-rebuilds isosurface meshes as particles move. Pulls in `SurfaceLib` and `ObjectAllocatorLib`. Tested up to 1M particles with active-cell tracking and dirty-bounds rebuilds.
+
+### `GPURayTraceExample/` — pixel-shader BVH ray tracer
+
+![GPURayTraceExample screenshot](docs/screenshots/gpu_ray_trace_example.png)
+
+C++ ray tracer with modular BLAS (bottom-level acceleration structures) per-mesh and a TLAS (top-level) that animates per frame. BVH is built CPU-side, flattened, uploaded as data textures, then traversed in a fragment shader. Includes a BVH analyzer/visualizer.
+
+### `ParticleDynamicsExample/` — material-physics sandbox
+
+![ParticleDynamicsExample screenshot](docs/screenshots/particle_dynamics_example.png)
+
+C++ N-body sim with spatial-hash optimization (O(n²) → O(n·m)). The `MaterialManager` loads 20 material types, 3 chemical reactions, and a 50-entry adhesion matrix. Multiple demo scenes (material sandbox, solar system) selectable at runtime.
+
+### `MatterSurfaceLib/` — the convergence project
+
+![MatterSurfaceLib screenshot](docs/screenshots/matter_surface_lib.png)
+
+**Pulls everything together.** Implements the `Cluster` / `Cell` architecture from the roadmap: a cluster owns particles in its local space, sub-divides into power-of-two integer cells, generates per-cell marching-cubes meshes (~0.5 ms each), registers each mesh as a BLAS, and ray-traces the resulting TLAS in a fragment shader. The screenshot shows the BVH-visualization debug mode with the analyzer panel listing every BLAS in the scene.
 
 See [`ROADMAP.md`](./ROADMAP.md) for the design intent behind each project and what's still ahead (ODE-backed `ParticleDynamicsLib`, streaming data layer, the asteroid-mining game prototype).
 
