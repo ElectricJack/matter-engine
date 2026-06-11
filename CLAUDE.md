@@ -1,13 +1,17 @@
 # MatterEngine2 Project Structure
 
-This document describes the multi-project architecture for MatterEngine2, explaining how individual projects are organized and how code is shared between them.
+This document describes the modular architecture for MatterEngine2: a single git monorepo containing many independently-buildable sub-projects.
+
+## Repository Layout
+
+The entire codebase lives in **one git repo at the root**. Each sub-project is a top-level directory; there are no submodules or nested repos. Per-project history from the original seven sub-repos was preserved via `git subtree` during consolidation, so `git log --all` still surfaces every original commit.
 
 ## Project Philosophy
 
 MatterEngine2 follows a modular architecture where:
 
-1. Each project is a standalone application that can be built and run independently
-2. Projects build on each other by sharing code via symlinks
+1. Each project is a standalone application that can be built and run independently from its own subdirectory
+2. Projects build on each other by referencing sibling project headers via `-I../OtherProject/include` in their Makefiles (or, where convenient, via filesystem symlinks)
 3. Compilation is fast because only the necessary code is compiled for each project
 4. Testing is simplified with self-contained examples
 
@@ -15,9 +19,12 @@ MatterEngine2 follows a modular architecture where:
 
 The root directory contains:
 
-- `Libraries/` - Third-party dependencies (like raylib)
-- Individual project directories (e.g., `BasicWindowApp`, `SurfaceLib`)
-- This documentation file
+- `Libraries/` - Vendored third-party dependencies (raylib, imgui, ode)
+- `Examples/` - Reference material (e.g., `bvh_article`)
+- `build-all.sh` - Top-level script that builds every project for the current platform; `./build-all.sh test` also runs headless test suites
+- `create_project.sh` - Bootstrap a new sub-project skeleton
+- Individual sub-project directories (e.g., `BasicWindowApp`, `SurfaceLib`, `MatterSurfaceLib`)
+- This documentation file and `ROADMAP.md`
 
 Each project follows this general structure:
 
@@ -32,15 +39,15 @@ ProjectName/
     └── *.c         # Source code implementing the library
 ```
 
-## Code Sharing via Symlinks
+## Code Sharing Between Projects
 
 To share code between projects while maintaining independence:
 
-1. Library projects (like `SurfaceLib`) organize reusable code in `include/` and `src/` directories
-2. Consumer projects create symlinks to the specific files or directories they want to use
-3. Makefiles in consumer projects include the appropriate include paths
+1. Library projects (like `SurfaceLib`, `ObjectAllocatorLib`, `SpatialQueryLib`) organize reusable code in `include/` and `src/` directories
+2. Consumer projects reference siblings via `-I../OtherProject/include` in their Makefile's CFLAGS (the common approach today; see `ParticleDynamicsExample/Makefile` for an example pulling in `SpatialQueryLib`)
+3. As an alternative, consumer projects can create symlinks to specific files when finer-grained reuse is needed
 
-Example:
+Symlink example:
 ```bash
 # From a new project that wants to use SurfaceLib
 ln -s ../SurfaceLib/include/surface.h include/surface.h
