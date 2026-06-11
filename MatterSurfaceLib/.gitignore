@@ -1,0 +1,42 @@
+# Build directories and artifacts
+build/
+obj/
+
+# Executables
+*.exe
+gpu_raytrace
+gpu_raytrace.exe
+shader_preprocessor
+shader_preprocessor.exe
+
+# Libraries
+*.a
+*.so
+*.dylib
+*.dll
+
+# Object files
+*.o
+
+# Processed shaders
+shaders/*_processed.*
+
+# System files
+.DS_Store
+*.dSYM/
+
+# IDE files
+.vscode/
+.idea/
+*.vcxproj.user
+*.sln.docstates
+
+# Temporary files
+*.tmp
+*.temp
+*~
+matter_surface_lib
+build/macos/obj/blas_manager.o
+build/macos/obj/bvh_visualizer.o
+build/macos/obj/main.o
+build/macos/obj/tlas_manager.o
