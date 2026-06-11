@@ -1,0 +1,58 @@
+# Build directories and artifacts
+build/
+obj/
+
+# Executables
+*.exe
+*.out
+*.app
+*.i*86
+*.x86_64
+*.hex
+open_particle_surface
+open_particle_surface.exe
+
+# Object files
+*.o
+*.ko
+*.obj
+*.elf
+
+# Precompiled Headers
+*.gch
+*.pch
+
+# Libraries
+*.lib
+*.a
+*.la
+*.lo
+
+# Shared objects (inc. Windows DLLs)
+*.dll
+*.so
+*.so.*
+*.dylib
+
+# Debug files
+*.dSYM/
+*.su
+*.idb
+*.pdb
+
+# System files
+.DS_Store
+
+# IDE files
+.vscode/
+.idea/
+*.vcxproj.user
+*.sln.docstates
+
+# Editor files
+*~
+.*.swp
+
+# Temporary files
+*.tmp
+*.temp
