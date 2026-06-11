@@ -13,20 +13,24 @@ typedef struct {
     Vec3 min, max;
 } AABB;
 
-// Triangle structure optimized for GPU with pre-computed centroid
+// Triangle structure optimized for GPU with per-vertex normals
 typedef struct {
     Vec3 v0, v1, v2;      // Triangle vertices
+    Vec3 n0, n1, n2;      // Per-vertex normals
     Vec3 centroid;        // Pre-computed centroid for faster BVH building
-    Vec3 normal;          // Surface normal
+    Vec3 normal;          // Face normal (computed from vertices)
     int  material_id;      // Material identifier
 } Triangle;
 
-// GPU-compatible triangle structure (32-byte aligned)
+// GPU-compatible triangle structure with per-vertex normals
 typedef struct {
     float v0x, v0y, v0z, dummy1;
     float v1x, v1y, v1z, dummy2;
     float v2x, v2y, v2z, dummy3;
-    float  cx,  cy,  cz, dummy4;
+    float n0x, n0y, n0z, dummy4;
+    float n1x, n1y, n1z, dummy5;
+    float n2x, n2y, n2z, dummy6;
+    float  cx,  cy,  cz, dummy7;
 } GPUTriangle;
 
 // Additional triangle data for shading

@@ -5,16 +5,45 @@
 #include <string.h>
 #include <math.h>
 #include <stdio.h>
-#include <time.h>
+
+// Platform-specific includes for timing
+#ifdef _WIN32
+    // Minimal Windows includes to avoid conflicts with raylib
+    #define WIN32_LEAN_AND_MEAN
+    #define NOGDI        // Exclude GDI (avoids Rectangle conflict)
+    #define NOUSER       // Exclude User32 (avoids CloseWindow/ShowCursor conflicts)
+    #include <windows.h>
+    #undef WIN32_LEAN_AND_MEAN
+    #undef NOGDI
+    #undef NOUSER
+#else
+    #include <time.h>
+#endif
 
 // Performance timing macros
 #define ENABLE_PERFORMANCE_TIMING 1
 
 #if ENABLE_PERFORMANCE_TIMING
     static double performance_timer() {
-        struct timespec ts;
-        clock_gettime(CLOCK_MONOTONIC, &ts);
-        return ts.tv_sec + ts.tv_nsec / 1e9;
+        #ifdef _WIN32
+            // Windows-specific high-resolution timer
+            static LARGE_INTEGER frequency = {0};
+            static int frequency_initialized = 0;
+            
+            if (!frequency_initialized) {
+                QueryPerformanceFrequency(&frequency);
+                frequency_initialized = 1;
+            }
+            
+            LARGE_INTEGER counter;
+            QueryPerformanceCounter(&counter);
+            return (double)counter.QuadPart / (double)frequency.QuadPart;
+        #else
+            // POSIX systems (Linux, macOS, etc.)
+            struct timespec ts;
+            clock_gettime(CLOCK_MONOTONIC, &ts);
+            return ts.tv_sec + ts.tv_nsec / 1e9;
+        #endif
     }
     
     #define TIMER_START(name) double timer_##name = performance_timer()
@@ -44,17 +73,17 @@ typedef struct {
 // Memory pool for reusing buffers across mesh generations
 typedef struct {
     // Scalar field buffers
-    float* scalarField;
-    int* materialField;
-    size_t fieldCapacity;
+    float*   scalarField;
+    int*     materialField;
+    size_t   fieldCapacity;
     
     // Mesh buffers  
-    Vector3* vertices;
-    Vector3* normals;
-    int* materials;
+    Vector3*  vertices;
+    Vector3*  normals;
+    int*      materials;
     Triangle* triangles;
-    size_t vertexCapacity;
-    size_t triangleCapacity;
+    size_t    vertexCapacity;
+    size_t    triangleCapacity;
     
     // Edge deduplication buffers
     unsigned long long* edgeKeys;
@@ -894,4 +923,90 @@ Color GetMaterialColor(int materialId) {
     if (index < 0) index += colorCount;
     
     return colors[index];
+}
+
+// Convert raylib Mesh to BVH Triangle array with per-vertex normals
+BVHTriangle* ConvertMeshToBVHTriangles(Mesh mesh, int* triangleCount) {
+    if (!mesh.vertices || !mesh.normals || !mesh.indices || mesh.triangleCount == 0) {
+        *triangleCount = 0;
+        return NULL;
+    }
+    
+    *triangleCount = mesh.triangleCount;
+    BVHTriangle* bvhTriangles = (BVHTriangle*)malloc(mesh.triangleCount * sizeof(BVHTriangle));
+    if (!bvhTriangles) {
+        *triangleCount = 0;
+        return NULL;
+    }
+    
+    // Convert each triangle
+    for (int i = 0; i < mesh.triangleCount; i++) {
+        BVHTriangle* tri = &bvhTriangles[i];
+        
+        // Get vertex indices for this triangle
+        int idx0 = mesh.indices[i * 3 + 0];
+        int idx1 = mesh.indices[i * 3 + 1];
+        int idx2 = mesh.indices[i * 3 + 2];
+        
+        // Set vertices
+        tri->v0.x = mesh.vertices[idx0 * 3 + 0];
+        tri->v0.y = mesh.vertices[idx0 * 3 + 1];
+        tri->v0.z = mesh.vertices[idx0 * 3 + 2];
+        
+        tri->v1.x = mesh.vertices[idx1 * 3 + 0];
+        tri->v1.y = mesh.vertices[idx1 * 3 + 1];
+        tri->v1.z = mesh.vertices[idx1 * 3 + 2];
+        
+        tri->v2.x = mesh.vertices[idx2 * 3 + 0];
+        tri->v2.y = mesh.vertices[idx2 * 3 + 1];
+        tri->v2.z = mesh.vertices[idx2 * 3 + 2];
+        
+        // Set per-vertex normals
+        tri->n0.x = mesh.normals[idx0 * 3 + 0];
+        tri->n0.y = mesh.normals[idx0 * 3 + 1];
+        tri->n0.z = mesh.normals[idx0 * 3 + 2];
+        
+        tri->n1.x = mesh.normals[idx1 * 3 + 0];
+        tri->n1.y = mesh.normals[idx1 * 3 + 1];
+        tri->n1.z = mesh.normals[idx1 * 3 + 2];
+        
+        tri->n2.x = mesh.normals[idx2 * 3 + 0];
+        tri->n2.y = mesh.normals[idx2 * 3 + 1];
+        tri->n2.z = mesh.normals[idx2 * 3 + 2];
+        
+        // Compute centroid
+        tri->centroid.x = (tri->v0.x + tri->v1.x + tri->v2.x) / 3.0f;
+        tri->centroid.y = (tri->v0.y + tri->v1.y + tri->v2.y) / 3.0f;
+        tri->centroid.z = (tri->v0.z + tri->v1.z + tri->v2.z) / 3.0f;
+        
+        // Compute face normal using cross product
+        Vec3 edge1 = {tri->v1.x - tri->v0.x, tri->v1.y - tri->v0.y, tri->v1.z - tri->v0.z};
+        Vec3 edge2 = {tri->v2.x - tri->v0.x, tri->v2.y - tri->v0.y, tri->v2.z - tri->v0.z};
+        
+        tri->normal.x = edge1.y * edge2.z - edge1.z * edge2.y;
+        tri->normal.y = edge1.z * edge2.x - edge1.x * edge2.z;
+        tri->normal.z = edge1.x * edge2.y - edge1.y * edge2.x;
+        
+        // Normalize face normal
+        float length = sqrtf(tri->normal.x * tri->normal.x + 
+                            tri->normal.y * tri->normal.y + 
+                            tri->normal.z * tri->normal.z);
+        if (length > 0.0001f) {
+            tri->normal.x /= length;
+            tri->normal.y /= length;
+            tri->normal.z /= length;
+        }
+        
+        // Set default material ID
+        tri->material_id = 0;
+    }
+    
+    return bvhTriangles;
+}
+
+// Free BVH triangle array
+void FreeBVHTriangles(BVHTriangle* triangles) {
+    if (triangles) {
+        free(triangles);
+    }
 }

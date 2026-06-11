@@ -251,6 +251,9 @@ bool test_bvh_creation() {
     triangles[0].v0 = (Vec3){-1, -1, 0};
     triangles[0].v1 = (Vec3){1, -1, 0};
     triangles[0].v2 = (Vec3){0, 1, 0};
+    triangles[0].n0 = (Vec3){0, 0, 1};
+    triangles[0].n1 = (Vec3){0, 0, 1};
+    triangles[0].n2 = (Vec3){0, 0, 1};
     triangles[0].normal = (Vec3){0, 0, 1};
     triangles[0].material_id = 0;
     
@@ -258,6 +261,9 @@ bool test_bvh_creation() {
     triangles[1].v0 = (Vec3){2, -1, 0};
     triangles[1].v1 = (Vec3){4, -1, 0};
     triangles[1].v2 = (Vec3){3, 1, 0};
+    triangles[1].n0 = (Vec3){0, 0, 1};
+    triangles[1].n1 = (Vec3){0, 0, 1};
+    triangles[1].n2 = (Vec3){0, 0, 1};
     triangles[1].normal = (Vec3){0, 0, 1};
     triangles[1].material_id = 1;
     
@@ -265,6 +271,9 @@ bool test_bvh_creation() {
     triangles[2].v0 = (Vec3){-1, -1, 2};
     triangles[2].v1 = (Vec3){1, -1, 2};
     triangles[2].v2 = (Vec3){0, 1, 2};
+    triangles[2].n0 = (Vec3){0, 0, 1};
+    triangles[2].n1 = (Vec3){0, 0, 1};
+    triangles[2].n2 = (Vec3){0, 0, 1};
     triangles[2].normal = (Vec3){0, 0, 1};
     triangles[2].material_id = 0;
     
@@ -273,6 +282,9 @@ bool test_bvh_creation() {
         TEST_FAILED;
         return false;
     }
+    
+    // Build the BVH (this was missing!)
+    blas_build(bvh);
     
     if (bvh->triangle_count != 3) {
         TEST_FAILED;

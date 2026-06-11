@@ -439,16 +439,16 @@ private:
         }
         
         // Build TLAS from recorded draw calls
-        printf("=== Building TLAS for scene %d ===\n", test_number);
-        printf("  Draw records before build: %d\n", tlas_manager_->get_draw_record_count());
+        //printf("=== Building TLAS for scene %d ===\n", test_number);
+        //printf("  Draw records before build: %d\n", tlas_manager_->get_draw_record_count());
         
         tlas_manager_->build(*blas_manager_);
         
-        printf("  TLAS built successfully!\n");
-        printf("  Final counts: %d nodes, %d instances\n", 
-               tlas_manager_->get_node_count(), tlas_manager_->get_instance_count());
+        //printf("  TLAS built successfully!\n");
+        //printf("  Final counts: %d nodes, %d instances\n", 
+        //       tlas_manager_->get_node_count(), tlas_manager_->get_instance_count());
         
-        printf("Test scene %d setup complete!\n", test_number);
+        //printf("Test scene %d setup complete!\n", test_number);
     }
     
     void setup_unit_test_scene() {

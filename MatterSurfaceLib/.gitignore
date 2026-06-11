@@ -13,7 +13,7 @@ shader_preprocessor.exe
 *.a
 *.so
 *.dylib
-*.dll
+*.dllls
 
 # Object files
 *.o

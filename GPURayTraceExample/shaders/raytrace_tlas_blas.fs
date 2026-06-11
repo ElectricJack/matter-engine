@@ -39,56 +39,6 @@ uniform sampler2D skyTexture;
 // Include the enhanced BVH common code (ported from bvh_article)
 #include "bvh_tlas_common.glsl"
 
-// Hit result structure for ray intersections
-struct HitResult {
-    bool hit;           // Whether an intersection occurred
-    float t;            // Distance along ray
-    vec3 position;      // Hit position in world space
-    vec3 normal;        // Interpolated surface normal
-    int material;       // Material ID for shading
-    float u, v;         // Barycentric coordinates for interpolation
-};
-
-// Scene intersection function using TLAS/BLAS traversal
-HitResult intersectScene(vec3 rayOrigin, vec3 rayDirection) {
-    HitResult result;
-    result.hit = false;
-    result.t = 1e30;
-    
-    // Create ray for TLAS traversal
-    Ray ray;
-    ray.O = rayOrigin;
-    ray.D = rayDirection;
-    ray.rD = vec3(1.0) / rayDirection;
-    ray.hit.t = 1e30;
-    ray.hit.instPrim = 0u;
-    
-    // Perform TLAS intersection
-    TLASIntersect(ray);
-    
-    if (ray.hit.t < 1e30) {
-        result.hit = true;
-        result.t = ray.hit.t;
-        result.position = rayOrigin + rayDirection * ray.hit.t;
-        result.u = ray.hit.u;
-        result.v = ray.hit.v;
-        
-        // Extract triangle index from instPrim (lower 20 bits)
-        uint triangleIndex = ray.hit.instPrim & 0xFFFFFu;
-        
-        // Decode triangle data including per-vertex normals
-        Triangle tri = decodeTriangle(int(triangleIndex));
-        
-        // Calculate interpolated normal using barycentric coordinates
-        result.normal = interpolateNormal(tri, ray.hit.u, ray.hit.v);
-        
-        // For now, material ID is 0 (can be extended later)
-        result.material = 0;
-    }
-    
-    return result;
-}
-
 
 // Camera ray generation
 vec3 computeCameraRay(vec2 uv) {
@@ -466,11 +416,9 @@ vec3 trace(vec3 rayOrigin, vec3 rayDirection, inout uint seed) {
             color += attenuation * (normal * 0.5 + 0.5);
             break;
         } else if (debugMode == 2) {
-            // Show face normals as RGB colors
-            uint triangleIndex = hit.instPrim & 0xFFFFFu;
-            Triangle tri = decodeTriangle(int(triangleIndex));
-            vec3 faceNormal = getFaceNormal(tri);
-            color += attenuation * (faceNormal * 0.5 + 0.5);
+            // Show face normals as RGB colors (temporarily disabled - requires instPrim field)
+            // Note: Face normal visualization disabled due to HitResult struct compatibility
+            color += attenuation * (normal * 0.5 + 0.5);  // Fall back to interpolated normals
             break;
         }
         

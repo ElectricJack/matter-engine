@@ -185,10 +185,25 @@ void prepare_gpu_triangles(Triangle* triangles, int count, GPUTriangle* gpu_tria
         gpu_tri->v2z = tri->v2.z;
         gpu_tri->dummy3 = 0.0f;
         
+        gpu_tri->n0x = tri->n0.x;
+        gpu_tri->n0y = tri->n0.y;
+        gpu_tri->n0z = tri->n0.z;
+        gpu_tri->dummy4 = 0.0f;
+        
+        gpu_tri->n1x = tri->n1.x;
+        gpu_tri->n1y = tri->n1.y;
+        gpu_tri->n1z = tri->n1.z;
+        gpu_tri->dummy5 = 0.0f;
+        
+        gpu_tri->n2x = tri->n2.x;
+        gpu_tri->n2y = tri->n2.y;
+        gpu_tri->n2z = tri->n2.z;
+        gpu_tri->dummy6 = 0.0f;
+        
         gpu_tri->cx = tri->centroid.x;
         gpu_tri->cy = tri->centroid.y;
         gpu_tri->cz = tri->centroid.z;
-        gpu_tri->dummy4 = 0.0f;
+        gpu_tri->dummy7 = 0.0f;
     }
 }
 
