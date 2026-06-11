@@ -1,0 +1,36 @@
+# Build directories
+build/
+obj/
+
+# Generated executables
+*.exe
+particle_dynamics*
+!particle_dynamics.cpp
+
+# Object files
+*.o
+*.obj
+
+# Library files
+*.a
+*.lib
+*.so
+*.dll
+
+# IDE and editor files
+.vscode/
+.vs/
+*.user
+*.suo
+*.sdf
+*.swp
+*.tmp
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Dependency builds
+../Libraries/*/build/
+../Libraries/*/.ode_built
+../Libraries/raylib/build/
