@@ -154,6 +154,7 @@ private:
     std::stack<Matrix4x4>    matrix_stack_;
     std::vector<DrawRecord>  draw_records_;
     std::unique_ptr<TLAS>    tlas_;
+    std::vector<BVHInstance> instance_storage_; // backing array owned by the manager; TLAS holds a raw pointer into it
     std::vector<std::unique_ptr<BVHInstance>> instances_; // Deprecated - kept for compatibility
     BVHInstance*  instance_array_ = nullptr; // Contiguous array for TLAS
     size_t        instance_array_size_ = 0;

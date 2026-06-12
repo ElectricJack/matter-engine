@@ -315,18 +315,16 @@ void TLASManager::build(const BLASManager& blas_manager) {
     
     // Create and build TLAS
     if (!instance_ptrs.empty()) {
-        // Allocate a simple array for TLAS - this is a temporary fix
-        BVHInstance* simple_array = new BVHInstance[instance_ptrs.size()];
-        for (size_t i = 0; i < instance_ptrs.size(); i++) {
-            simple_array[i] = *instance_ptrs[i]; // Copy construct
+        tlas_.reset(); // old TLAS points into instance_storage_; drop it before mutating
+        instance_storage_.clear();
+        instance_storage_.reserve(instance_ptrs.size());
+        for (BVHInstance* p : instance_ptrs) {
+            instance_storage_.push_back(*p);
         }
-        
-        tlas_ = std::make_unique<TLAS>(simple_array, static_cast<int>(instance_ptrs.size()));
+        tlas_ = std::make_unique<TLAS>(instance_storage_.data(), static_cast<int>(instance_storage_.size()));
         tlas_->Build();
-        
-        // Note: This creates a memory leak, but let's test if it works first
     }
-    
+
     mark_dirty();
 }
 
