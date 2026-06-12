@@ -183,7 +183,8 @@ void BVH::Subdivide( uint nodeIdx, uint depth, uint& nodePtr, float3& centroidMi
 	// determine split axis using balanced SAH
 	int axis, splitPos;
 	float splitCost = FindBestSplitPlane( node, axis, splitPos, centroidMin, centroidMax );
-	
+	if (splitCost == 1e30f) return; // no valid split (all centroids identical) - keep as leaf
+
 	// terminate recursion based on improved criteria
 	if (subdivToOnePrim)
 	{
@@ -240,8 +241,9 @@ void BVH::Subdivide( uint nodeIdx, uint depth, uint& nodePtr, float3& centroidMi
 
 float BVH::FindBestSplitPlane( BVHNode& node, int& axis, int& splitPos, float3& centroidMin, float3& centroidMax )
 {
+	axis = 0; splitPos = 0; // defensible defaults; cost stays 1e30f when no valid split exists
 	float bestCost = 1e30f;
-	
+
 	// Parameters for balanced tree construction
 	const float BALANCE_WEIGHT = 0.7f;  // Weight balance vs pure SAH (increased from 0.3)
 	const float IDEAL_BALANCE = 0.5f;   // Ideal left/right split ratio
@@ -613,7 +615,7 @@ void TLAS::Intersect( BVHRay& ray )
 				// Process closer child first
 				node = leftNode;
 				// Push farther child to stack if it hit
-				if (distRight != 1e30f && stackPtr < 63)
+				if (distRight != 1e30f && stackPtr < 64)
 				{
 					stack[stackPtr++] = rightNode;
 				}
