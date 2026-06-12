@@ -739,9 +739,15 @@ static int UpdateDirtyCells(int maxUpdates) {
         
         // Ensure the buffer is large enough
         if (spatialHashCells[cellIndex].particleCount > cellParticleBufferSize) {
-            cellParticleBufferSize = spatialHashCells[cellIndex].particleCount * 1.5;
-            cellParticleBuffer = (Particle*)realloc(cellParticleBuffer, 
-                                               cellParticleBufferSize * sizeof(Particle));
+            int newSize = spatialHashCells[cellIndex].particleCount * 1.5;
+            Particle* newBuffer = (Particle*)realloc(cellParticleBuffer,
+                                               newSize * sizeof(Particle));
+            if (!newBuffer) {
+                printf("[ERROR] Failed to grow cell particle buffer to %d entries\n", newSize);
+                continue; // keep old buffer/size; skip this cell
+            }
+            cellParticleBuffer = newBuffer;
+            cellParticleBufferSize = newSize;
         }
         
         // Copy particle data to buffer - only copy valid particles
