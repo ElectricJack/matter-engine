@@ -3,6 +3,7 @@
 #include <vector>
 #include <map>
 #include <array>
+#include <queue>
 #include <cmath>
 #include <cstdint>
 
@@ -169,10 +170,168 @@ static Mesh buildMesh(const std::vector<WVert>& verts, const std::vector<WTri>& 
     return out;
 }
 
+// A candidate edge collapse. `vi` is the survivor (kept) vertex, `vj` is
+// merged into it at `target`. Version stamps detect stale heap entries.
+struct HeapEdge {
+    double cost;
+    int vi, vj;
+    V3 target;
+    int veri, verj;
+    // std::priority_queue is a max-heap; invert so lowest cost pops first.
+    // Full ordering on (cost, vi, vj) makes results deterministic.
+    bool operator<(const HeapEdge& o) const {
+        if (cost != o.cost) return cost > o.cost;
+        if (vi != o.vi)     return vi > o.vi;
+        return vj > o.vj;
+    }
+};
+
+// Build a collapse candidate for edge {p,q}. Returns false if the edge must
+// not collapse (both endpoints boundary-locked). When exactly one endpoint is
+// locked, that endpoint is the survivor and the target is its (frozen) position.
+static bool buildEdge(int p, int q, const std::vector<WVert>& verts, HeapEdge& e) {
+    const WVert& vp = verts[p];
+    const WVert& vq = verts[q];
+    if (vp.locked && vq.locked) return false;
+
+    Quadric Q = vp.q; Q.add(vq.q);
+    int survivor, removed;
+    V3 target;
+    if (vp.locked) {
+        survivor = p; removed = q; target = vp.pos;
+    } else if (vq.locked) {
+        survivor = q; removed = p; target = vq.pos;
+    } else {
+        V3 opt;
+        if (!Q.optimal(opt)) {
+            V3 mid = {(vp.pos.x+vq.pos.x)*0.5, (vp.pos.y+vq.pos.y)*0.5, (vp.pos.z+vq.pos.z)*0.5};
+            double ep = Q.error(vp.pos), eq = Q.error(vq.pos), em = Q.error(mid);
+            opt = (ep <= eq && ep <= em) ? vp.pos : ((eq <= em) ? vq.pos : mid);
+        }
+        target = opt;
+        survivor = (p < q) ? p : q;
+        removed  = (p < q) ? q : p;
+    }
+    e.cost   = Q.error(target);
+    e.vi     = survivor;
+    e.vj     = removed;
+    e.target = target;
+    e.veri   = verts[survivor].version;
+    e.verj   = verts[removed].version;
+    return true;
+}
+
 // Decimation engine. STUB in Task 1 (does nothing); implemented in Task 2.
 static void decimate(std::vector<WVert>& verts, std::vector<WTri>& tris,
                      const SimplifyOptions& opts, const CellBounds* bounds, int inputTri) {
-    (void)verts; (void)tris; (void)opts; (void)bounds; (void)inputTri;
+    int targetTri = (int)std::floor((double)opts.target_ratio * (double)inputTri);
+    if (targetTri < 1) targetTri = 1;
+
+    int curTri = 0;
+    for (const auto& t : tris) if (!t.removed) ++curTri;
+    if (curTri <= targetTri) return;
+
+    // 1. Hard-lock vertices on any of the 6 cell face planes.
+    if (bounds && opts.lock_boundary) {
+        const double eps = 1e-4;
+        V3 mn = {bounds->min_bound.x, bounds->min_bound.y, bounds->min_bound.z};
+        V3 mx = {bounds->max_bound.x, bounds->max_bound.y, bounds->max_bound.z};
+        for (auto& v : verts) {
+            if (std::fabs(v.pos.x - mn.x) < eps || std::fabs(v.pos.x - mx.x) < eps ||
+                std::fabs(v.pos.y - mn.y) < eps || std::fabs(v.pos.y - mx.y) < eps ||
+                std::fabs(v.pos.z - mn.z) < eps || std::fabs(v.pos.z - mx.z) < eps)
+                v.locked = true;
+        }
+    }
+
+    // 2. Per-vertex quadrics from incident triangle planes.
+    for (auto& v : verts) v.q = Quadric();
+    for (const auto& t : tris) {
+        if (t.removed) continue;
+        V3 a = verts[t.v[0]].pos, b = verts[t.v[1]].pos, c = verts[t.v[2]].pos;
+        V3 n = cross(sub(b, a), sub(c, a));
+        double l = len(n);
+        if (l < 1e-12) continue;
+        n.x /= l; n.y /= l; n.z /= l;
+        double d = -(n.x*a.x + n.y*a.y + n.z*a.z);
+        Quadric q; q.addPlane(n, d);
+        verts[t.v[0]].q.add(q);
+        verts[t.v[1]].q.add(q);
+        verts[t.v[2]].q.add(q);
+    }
+
+    // 3. Vertex -> incident triangles adjacency.
+    std::vector<std::vector<int>> vtris(verts.size());
+    for (int t = 0; t < (int)tris.size(); ++t) {
+        if (tris[t].removed) continue;
+        for (int k = 0; k < 3; ++k) vtris[tris[t].v[k]].push_back(t);
+    }
+
+    // 4. Seed the edge heap.
+    std::priority_queue<HeapEdge> heap;
+    auto pushTri = [&](int t) {
+        int a = tris[t].v[0], b = tris[t].v[1], c = tris[t].v[2];
+        int pr[3][2] = {{a,b}, {b,c}, {c,a}};
+        for (auto& pe : pr) {
+            HeapEdge he;
+            if (buildEdge(pe[0], pe[1], verts, he)) heap.push(he);
+        }
+    };
+    for (int t = 0; t < (int)tris.size(); ++t)
+        if (!tris[t].removed) pushTri(t);
+
+    // Reject collapses that would flip or degenerate any affected triangle.
+    auto wouldFlip = [&](int s, int r, V3 tgt) -> bool {
+        auto check = [&](int vv) -> bool {
+            for (int t : vtris[vv]) {
+                if (tris[t].removed) continue;
+                int id[3] = {tris[t].v[0], tris[t].v[1], tris[t].v[2]};
+                bool hasS = false, hasR = false;
+                for (int k = 0; k < 3; ++k) { if (id[k]==s) hasS = true; if (id[k]==r) hasR = true; }
+                if (hasS && hasR) continue; // triangle collapses away
+                V3 oldp[3], newp[3];
+                for (int k = 0; k < 3; ++k) {
+                    oldp[k] = verts[id[k]].pos;
+                    newp[k] = (id[k]==r || id[k]==s) ? tgt : verts[id[k]].pos;
+                }
+                V3 no = cross(sub(oldp[1], oldp[0]), sub(oldp[2], oldp[0]));
+                V3 nn = cross(sub(newp[1], newp[0]), sub(newp[2], newp[0]));
+                if (len(nn) < 1e-12) return true;     // degenerate
+                if (dot(no, nn) < 0)  return true;     // flipped
+            }
+            return false;
+        };
+        return check(s) || check(r);
+    };
+
+    // 5. Greedy collapse loop.
+    while (curTri > targetTri && !heap.empty()) {
+        HeapEdge e = heap.top(); heap.pop();
+        if (verts[e.vi].removed || verts[e.vj].removed) continue;
+        if (verts[e.vi].version != e.veri || verts[e.vj].version != e.verj) continue; // stale
+        if (e.cost > opts.max_error) break;
+        if (wouldFlip(e.vi, e.vj, e.target)) continue;
+
+        if (!verts[e.vi].locked) verts[e.vi].pos = e.target;
+        verts[e.vi].q.add(verts[e.vj].q);
+        verts[e.vj].removed = true;
+
+        for (int t : vtris[e.vj]) {
+            if (tris[t].removed) continue;
+            for (int k = 0; k < 3; ++k) if (tris[t].v[k] == e.vj) tris[t].v[k] = e.vi;
+            if (tris[t].v[0] == tris[t].v[1] || tris[t].v[1] == tris[t].v[2] || tris[t].v[0] == tris[t].v[2]) {
+                tris[t].removed = true;
+                --curTri;
+            } else {
+                vtris[e.vi].push_back(t);
+            }
+        }
+        verts[e.vi].version++;
+        verts[e.vj].version++;
+
+        for (int t : vtris[e.vi])
+            if (!tris[t].removed) pushTri(t);
+    }
 }
 
 } // anonymous namespace
