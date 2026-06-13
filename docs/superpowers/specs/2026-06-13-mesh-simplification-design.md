@@ -116,7 +116,7 @@ neighbors at the same simplification level; cross-level stitching is future work
 - After `Cell::generate_mesh_for_material()` produces a mesh, when `ratio < 1.0` the cell
   calls `simplify_mesh(mesh, {ratio, ...}, &cellBounds)` using its own
   `min_bound`/`max_bound`. Ratio `1.0` is identity and is skipped entirely.
-- UI: a "Simplification" slider (0.1–1.0) in `render_ui()` drives the setter.
+- UI: a "Simplification" slider (0.05–1.0) in `render_ui()` drives the setter.
 
 This slider is the **distance-LOD-ready hook**: per-cell distance-based ratio selection
 later replaces the single uniform value without touching the simplifier itself.

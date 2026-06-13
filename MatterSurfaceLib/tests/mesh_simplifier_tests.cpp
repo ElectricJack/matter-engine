@@ -94,7 +94,7 @@ static void test_weld_non_indexed() {
 static void test_normals_unit_length() {
     printf("=== test_normals_unit_length ===\n");
     Mesh in = makeGrid(2, 2.0f);
-    Mesh out = simplify_mesh(in, SimplifyOptions{}); // ratio 0.5; with Task1 stub still valid mesh
+    Mesh out = simplify_mesh(in, SimplifyOptions{}); // ratio 0.5; result must still have unit normals
     assert(out.normals != nullptr);
     for (int i = 0; i < out.vertexCount; ++i) {
         float nx = out.normals[i*3+0], ny = out.normals[i*3+1], nz = out.normals[i*3+2];
@@ -236,6 +236,6 @@ int main() {
     test_no_degenerate_triangles();
     test_boundary_preserved();
     test_watertight_seam();
-    printf("\nAll mesh simplifier scaffold tests PASSED\n");
+    printf("\nAll mesh simplifier tests PASSED\n");
     return 0;
 }

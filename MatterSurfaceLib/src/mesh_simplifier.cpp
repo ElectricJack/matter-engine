@@ -221,7 +221,8 @@ static bool buildEdge(int p, int q, const std::vector<WVert>& verts, HeapEdge& e
     return true;
 }
 
-// Decimation engine. STUB in Task 1 (does nothing); implemented in Task 2.
+// QEM edge-collapse decimation: per-vertex quadrics, min-cost edge heap,
+// greedy collapse with boundary locking and triangle-flip/degeneracy rejection.
 static void decimate(std::vector<WVert>& verts, std::vector<WTri>& tris,
                      const SimplifyOptions& opts, const CellBounds* bounds, int inputTri) {
     int targetTri = (int)std::floor((double)opts.target_ratio * (double)inputTri);
