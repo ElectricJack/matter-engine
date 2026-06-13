@@ -742,7 +742,6 @@ private:
             if (ImGui::SliderFloat("Simplification", &ratio, 0.05f, 1.0f, "%.2f")) {
                 test_cluster_->set_simplification_ratio(ratio);
                 test_cluster_->force_rebuild_all_cells();
-                test_cluster_->rebuild_dirty_cells();
             }
         }
 
