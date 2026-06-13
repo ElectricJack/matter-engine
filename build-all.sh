@@ -109,6 +109,15 @@ if [ "$MODE" = "test" ]; then
             "$bin" || RESULT[$proj]="FAIL (tests)"
         fi
     done
+
+    # MatterSurfaceLib mesh simplifier unit tests (headless, no GL window)
+    if make -C MatterSurfaceLib/tests mesh_simplifier_tests >/dev/null 2>&1; then
+        echo
+        echo "--- MatterSurfaceLib (mesh_simplifier) ---"
+        MatterSurfaceLib/tests/mesh_simplifier_tests || RESULT[MatterSurfaceLib]="FAIL (tests)"
+    else
+        RESULT[MatterSurfaceLib]="FAIL (test build)"
+    fi
 fi
 
 echo

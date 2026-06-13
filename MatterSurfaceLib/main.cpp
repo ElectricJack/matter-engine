@@ -735,6 +735,19 @@ private:
         
         ImGui::Separator();
 
+        // Mesh simplification ratio: 1.0 = full detail, lower = cheaper proxy.
+        // Rebuilds all cells through the simplifier when changed.
+        {
+            float ratio = test_cluster_->get_simplification_ratio();
+            if (ImGui::SliderFloat("Simplification", &ratio, 0.05f, 1.0f, "%.2f")) {
+                test_cluster_->set_simplification_ratio(ratio);
+                test_cluster_->force_rebuild_all_cells();
+                test_cluster_->rebuild_dirty_cells();
+            }
+        }
+
+        ImGui::Separator();
+
         // Camera controls — clickable orbit/zoom so the view is fully navigable without
         // locking the cursor or using WASD (important over remote desktop). Buttons use
         // auto-repeat so holding them down moves the camera continuously.

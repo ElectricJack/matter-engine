@@ -3,6 +3,7 @@
 #include "../include/blas_manager.hpp"
 #include "../include/bvh_analyzer.h"
 #include "../include/cell_visitor.h"
+#include "mesh_simplifier.hpp"
 #include <cmath>
 #include <cstdio>
 #include <algorithm>
@@ -121,19 +122,19 @@ void Cell::clear_particle_indices() {
     is_dirty = true;
 }
 
-void Cell::rebuild_meshes(const std::vector<StaticParticle>& cluster_particles, BLASManager& blas_manager) {
+void Cell::rebuild_meshes(const std::vector<StaticParticle>& cluster_particles, BLASManager& blas_manager, float simplification_ratio) {
     clear_meshes();
-    
+
     if (material_particle_indices.empty()) {
         return;
     }
-    
+
     // Generate a mesh for each material
     for (const auto& material_entry : material_particle_indices) {
         uint32_t material_id = material_entry.first;
-        generate_mesh_for_material(material_id, cluster_particles, blas_manager);
+        generate_mesh_for_material(material_id, cluster_particles, blas_manager, simplification_ratio);
     }
-    
+
     has_meshes = !material_meshes.empty();
 }
 
@@ -231,7 +232,7 @@ std::vector<Tri> convert_mesh_to_triangles(const Mesh& mesh, std::vector<TriEx>*
     return triangles;
 }
 
-void Cell::generate_mesh_for_material(uint32_t material_id, const std::vector<StaticParticle>& cluster_particles, BLASManager& blas_manager) {
+void Cell::generate_mesh_for_material(uint32_t material_id, const std::vector<StaticParticle>& cluster_particles, BLASManager& blas_manager, float simplification_ratio) {
     auto material_it = material_particle_indices.find(material_id);
     if (material_it == material_particle_indices.end() || material_it->second.empty()) {
         return;
@@ -281,7 +282,28 @@ void Cell::generate_mesh_for_material(uint32_t material_id, const std::vector<St
                             static_cast<int>(surface_particles.size()), bounds);
     
     printf("    Generated mesh: %d vertices, %d triangles\n", mesh.vertexCount, mesh.triangleCount);
-    
+
+    // Decimate to a low-poly proxy when the cluster requests it. Boundary
+    // vertices on this cell's face planes are locked so seams with same-level
+    // neighbor cells stay watertight.
+    if (simplification_ratio < 1.0f && mesh.vertexCount > 0 && mesh.triangleCount > 0) {
+        CellBounds cb;
+        cb.min_bound = min_bound;
+        cb.max_bound = max_bound;
+        SimplifyOptions so;
+        so.target_ratio = simplification_ratio;
+        so.lock_boundary = true;
+        Mesh simplified = simplify_mesh(mesh, so, &cb);
+        if (simplified.vertexCount > 0 && simplified.triangleCount > 0) {
+            UnloadMesh(mesh);   // free the pre-upload CPU arrays of the dense mesh
+            mesh = simplified;
+            printf("    Simplified mesh: %d vertices, %d triangles (ratio %.2f)\n",
+                   mesh.vertexCount, mesh.triangleCount, simplification_ratio);
+        } else {
+            UnloadMesh(simplified); // simplification produced nothing usable; keep dense mesh
+        }
+    }
+
     if (mesh.vertexCount > 0) {
         // Store the mesh
         material_meshes[material_id] = mesh;

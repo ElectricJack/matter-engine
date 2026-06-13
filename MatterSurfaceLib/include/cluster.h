@@ -73,7 +73,16 @@ public:
     int get_lod_level() const { return current_lod_level_; }
     float get_current_cell_size() const { return smallest_cell_size_ * (1 << current_lod_level_); }
     void force_rebuild_all_cells();
-    
+
+    // Mesh simplification (uniform across cells; per-cell distance LOD can drive
+    // this later without changing the simplifier).
+    void set_simplification_ratio(float ratio) {
+        if (ratio < 0.05f) ratio = 0.05f;
+        if (ratio > 1.0f)  ratio = 1.0f;
+        simplification_ratio_ = ratio;
+    }
+    float get_simplification_ratio() const { return simplification_ratio_; }
+
     // Statistics
     uint32_t get_cell_count() const;
     uint32_t get_dirty_cell_count() const;
@@ -95,6 +104,7 @@ private:
     // Cell management
     float smallest_cell_size_;
     int current_lod_level_;           // Currently active LOD level (0 = finest detail)
+    float simplification_ratio_ = 1.0f; // 1.0 = no simplification
     SpatialHash* cell_spatial_hash_;
     std::vector<std::unique_ptr<Cell>> cells_;
     

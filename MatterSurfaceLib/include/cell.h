@@ -37,7 +37,7 @@ struct Cell {
     ~Cell();
     
     // Mesh management
-    void rebuild_meshes(const std::vector<StaticParticle>& cluster_particles, BLASManager& blas_manager);
+    void rebuild_meshes(const std::vector<StaticParticle>& cluster_particles, BLASManager& blas_manager, float simplification_ratio = 1.0f);
     void clear_meshes();
     bool contains_point(const Vector3& local_point) const;
     bool intersects_sphere(const Vector3& center, float radius) const;
@@ -60,7 +60,7 @@ struct Cell {
     
 private:
     void calculate_bounds(float smallest_cell_size);
-    void generate_mesh_for_material(uint32_t material_id, const std::vector<StaticParticle>& cluster_particles, BLASManager& blas_manager);
+    void generate_mesh_for_material(uint32_t material_id, const std::vector<StaticParticle>& cluster_particles, BLASManager& blas_manager, float simplification_ratio);
 };
 
 #endif // CELL_H
