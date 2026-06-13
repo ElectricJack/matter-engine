@@ -3,6 +3,8 @@
 #include <cmath>
 #include <vector>
 #include <array>
+#include <map>
+#include <utility>
 
 #include "raylib.h"
 #include "mesh_simplifier.hpp"
@@ -87,6 +89,47 @@ static void test_weld_non_indexed() {
     Mesh out = simplify_mesh(in, o);
     assert(out.vertexCount == 4);   // welded down to 4 unique corners
     assert(out.triangleCount == 2);
+    UnloadMesh(in); UnloadMesh(out);
+    printf("PASSED\n");
+}
+
+// Count undirected edges used by exactly one triangle (boundary edges). A
+// closed manifold has zero; a torn/soup mesh has many.
+static int countBoundaryEdges(const Mesh& m) {
+    std::map<std::pair<int,int>,int> e;
+    for (int t = 0; t < m.triangleCount; ++t) {
+        int a=m.indices[t*3+0], b=m.indices[t*3+1], c=m.indices[t*3+2];
+        int tri[3][2]={{a,b},{b,c},{c,a}};
+        for (auto&p:tri){int x=p[0],y=p[1]; if(x>y)std::swap(x,y); e[{x,y}]++;}
+    }
+    int boundary=0;
+    for (auto&kv:e) if (kv.second==1) boundary++;
+    return boundary;
+}
+
+// Build a closed octahedron, then EXPLODE it into an indexed polygon soup
+// (every triangle gets its own 3 vertices, like enableEdgeDeduplication=false).
+// The simplifier must weld by position so it stays a closed manifold.
+static void test_indexed_unwelded_stays_closed() {
+    printf("=== test_indexed_unwelded_stays_closed ===\n");
+    // Octahedron: 6 verts, 8 closed tris.
+    float p[6][3] = {{1,0,0},{-1,0,0},{0,1,0},{0,-1,0},{0,0,1},{0,0,-1}};
+    int f[8][3] = {{0,2,4},{2,1,4},{1,3,4},{3,0,4},
+                   {2,0,5},{1,2,5},{3,1,5},{0,3,5}};
+    std::vector<float> v; std::vector<unsigned short> idx;
+    for (int t = 0; t < 8; ++t)
+        for (int k = 0; k < 3; ++k) {
+            int vi = f[t][k];
+            v.push_back(p[vi][0]); v.push_back(p[vi][1]); v.push_back(p[vi][2]);
+            idx.push_back((unsigned short)(t*3+k)); // soup: no shared indices
+        }
+    Mesh in = makeMesh(v, idx); // 24 verts, 8 tris, indexed but unwelded
+    assert(countBoundaryEdges(in) == 24); // soup: every edge unshared
+    SimplifyOptions o; o.target_ratio = 0.5f; o.lock_boundary = false;
+    Mesh out = simplify_mesh(in, o);
+    // After welding + decimation the surface must remain a CLOSED manifold.
+    assert(out.triangleCount > 0);
+    assert(countBoundaryEdges(out) == 0);
     UnloadMesh(in); UnloadMesh(out);
     printf("PASSED\n");
 }
@@ -230,6 +273,7 @@ int main() {
     test_single_triangle();
     test_identity_ratio_one();
     test_weld_non_indexed();
+    test_indexed_unwelded_stays_closed();
     test_normals_unit_length();
     test_triangle_reduction();
     test_determinism();

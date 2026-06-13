@@ -65,45 +65,36 @@ struct WTri {
     bool removed = false;
 };
 
-// Build working topology from the input mesh. Indexed input is read directly;
-// non-indexed input is welded by exact-quantized position so edge-collapse has
-// real connectivity.
+// Build working topology from the input mesh, welding by exact-quantized
+// position so edge-collapse has real connectivity. Marching-cubes cell meshes
+// are an unwelded polygon soup (enableEdgeDeduplication defaults off): adjacent
+// triangles carry distinct, co-located vertex copies. Reading those indices
+// verbatim would leave neighbours topologically disconnected, so a collapse
+// moves one triangle's corner while its co-located twins stay put — tearing the
+// surface into holes. Welding by position fixes connectivity regardless of
+// whether the input was indexed.
 static void buildTopology(const Mesh& m, std::vector<WVert>& verts, std::vector<WTri>& tris) {
-    if (m.indices) {
-        verts.resize(m.vertexCount);
-        for (int i = 0; i < m.vertexCount; ++i) {
-            verts[i].pos = {m.vertices[i*3+0], m.vertices[i*3+1], m.vertices[i*3+2]};
-        }
-        tris.resize(m.triangleCount);
-        for (int t = 0; t < m.triangleCount; ++t) {
-            tris[t].v[0] = m.indices[t*3+0];
-            tris[t].v[1] = m.indices[t*3+1];
-            tris[t].v[2] = m.indices[t*3+2];
-        }
-    } else {
-        std::map<std::array<long long,3>, int> weld;
-        tris.resize(m.triangleCount);
-        for (int t = 0; t < m.triangleCount; ++t) {
-            for (int k = 0; k < 3; ++k) {
-                int src = t*3 + k;
-                float x = m.vertices[src*3+0], y = m.vertices[src*3+1], z = m.vertices[src*3+2];
-                std::array<long long,3> key = {
-                    (long long)std::llround((double)x * 100000.0),
-                    (long long)std::llround((double)y * 100000.0),
-                    (long long)std::llround((double)z * 100000.0)
-                };
-                auto it = weld.find(key);
-                int vi;
-                if (it == weld.end()) {
-                    vi = (int)verts.size();
-                    WVert w; w.pos = {x, y, z};
-                    verts.push_back(w);
-                    weld[key] = vi;
-                } else {
-                    vi = it->second;
-                }
-                tris[t].v[k] = vi;
-            }
+    std::map<std::array<long long,3>, int> weld;
+    auto weldVertex = [&](float x, float y, float z) -> int {
+        std::array<long long,3> key = {
+            (long long)std::llround((double)x * 100000.0),
+            (long long)std::llround((double)y * 100000.0),
+            (long long)std::llround((double)z * 100000.0)
+        };
+        auto it = weld.find(key);
+        if (it != weld.end()) return it->second;
+        int vi = (int)verts.size();
+        WVert w; w.pos = {x, y, z};
+        verts.push_back(w);
+        weld[key] = vi;
+        return vi;
+    };
+
+    tris.resize(m.triangleCount);
+    for (int t = 0; t < m.triangleCount; ++t) {
+        for (int k = 0; k < 3; ++k) {
+            int src = m.indices ? (int)m.indices[t*3+k] : (t*3 + k);
+            tris[t].v[k] = weldVertex(m.vertices[src*3+0], m.vertices[src*3+1], m.vertices[src*3+2]);
         }
     }
 }
