@@ -5,6 +5,7 @@ extern "C" {
 
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <memory>
 #include <vector>
 #include <unordered_map>
@@ -77,7 +78,14 @@ public:
     void run() {
         // Print initial BLAS/TLAS statistics
         print_rendering_stats();
-        
+
+        // Non-interactive capture mode for automated visual debugging: render one
+        // framed shot at a given simplification ratio to a PNG, then exit.
+        if (const char* cap = getenv("MSL_CAPTURE")) {
+            run_capture(cap);
+            return;
+        }
+
         while (!WindowShouldClose()) {
             PROFILE_FRAME_BEGIN();
                 update();
@@ -99,7 +107,47 @@ public:
         }
     }
 
+    // Render a single framed screenshot at a chosen simplification ratio, then return.
+    // Controlled by env vars so an external harness can drive it:
+    //   MSL_CAPTURE     output PNG path (presence enables this mode)
+    //   MSL_RATIO       simplification ratio to apply (default 1.0)
+    //   MSL_RENDER_MODE 0=raytrace 1=solid 2=wireframe 3=debug-bvh (default 1)
+    //   MSL_FRAMES      frames to render before the shot (default 24)
+    //   MSL_CAM         "px,py,pz,tx,ty,tz" camera override
+    void run_capture(const char* out_path) {
+        capture_mode_ = true;
+        show_meshes_  = true;
+
+        float ratio  = getenv("MSL_RATIO")       ? (float)atof(getenv("MSL_RATIO")) : 1.0f;
+        int   mode   = getenv("MSL_RENDER_MODE")  ? atoi(getenv("MSL_RENDER_MODE"))  : 1;
+        int   frames = getenv("MSL_FRAMES")       ? atoi(getenv("MSL_FRAMES"))       : 24;
+        render_mode_ = mode;
+
+        // Default view frames the two-sphere blob (world centers ~(0,2,0) and (12,2,0), r=6).
+        camera_.position = {6.0f, 16.0f, 34.0f};
+        camera_.target   = {6.0f, 2.0f, 0.0f};
+        camera_.up       = {0.0f, 1.0f, 0.0f};
+        if (const char* cam = getenv("MSL_CAM")) {
+            sscanf(cam, "%f,%f,%f,%f,%f,%f",
+                   &camera_.position.x, &camera_.position.y, &camera_.position.z,
+                   &camera_.target.x,   &camera_.target.y,   &camera_.target.z);
+        }
+
+        test_cluster_->set_simplification_ratio(ratio);
+        test_cluster_->force_rebuild_all_cells();
+
+        printf("[capture] ratio=%.3f mode=%d frames=%d -> %s\n", ratio, mode, frames, out_path);
+
+        for (int i = 0; i < frames; ++i) {
+            render();
+        }
+        TakeScreenshot(out_path);
+        printf("[capture] wrote %s (%d meshes, %d tris drawn)\n",
+               out_path, last_meshes_rendered_, last_triangles_rendered_);
+    }
+
 private:
+    bool capture_mode_ = false;
 
 
     void setup_matter_system() {
@@ -444,11 +492,13 @@ private:
     
     
     void render() {
-        // Start the Dear ImGui frame
-        ImGui_ImplOpenGL3_NewFrame();
-        ImGui_ImplGlfw_NewFrame();
-        ImGui::NewFrame();
-        
+        // Start the Dear ImGui frame (skipped in headless capture mode)
+        if (!capture_mode_) {
+            ImGui_ImplOpenGL3_NewFrame();
+            ImGui_ImplGlfw_NewFrame();
+            ImGui::NewFrame();
+        }
+
         PROFILE_SECTION("BeginDrawing");
         BeginDrawing();
         ClearBackground(BLACK);
@@ -510,21 +560,23 @@ private:
             }
         }
         
-        {
+        if (!capture_mode_) {
             PROFILE_SECTION("UI Rendering");
             render_ui();
         }
-        
+
         // Flush raylib's batched geometry (e.g. the raytrace blit) to the framebuffer
         // before ImGui draws. ImGui's GL backend renders immediately, but raylib defers
         // its batch to EndDrawing — without this flush the full-screen raytrace quad is
         // drawn on top of the UI, hiding it in raytrace mode.
         rlDrawRenderBatchActive();
 
-        // Render ImGui
-        ImGui::Render();
-        ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
-        
+        // Render ImGui (skipped in headless capture mode)
+        if (!capture_mode_) {
+            ImGui::Render();
+            ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+        }
+
         {
             PROFILE_SECTION("EndDrawing");
             EndDrawing();
