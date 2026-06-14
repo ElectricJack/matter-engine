@@ -34,21 +34,26 @@ typedef struct {
 } MeshGenerationConfig;
 
 
-// Main API function for generating a mesh from particles
-Mesh GenerateMesh(Particle* particles, float particleRadius, int particleCount, Bounds volume);
+// Main API function for generating a mesh from particles.
+// particleRadius is a reference radius (max effective radius in the set) used to
+// size the spatial-hash search; each particle's own .radius drives the SDF.
+// blendWidth k sets the metaball smooth-min fillet size (0 = hard union, no blend).
+Mesh GenerateMesh(Particle* particles, float particleRadius, int particleCount, Bounds volume, float blendWidth);
 
 // Enhanced API function with configuration options
-Mesh GenerateMeshWithConfig(Particle* particles, float particleRadius, int particleCount, Bounds volume, MeshGenerationConfig config);
+Mesh GenerateMeshWithConfig(Particle* particles, float particleRadius, int particleCount, Bounds volume, float blendWidth, MeshGenerationConfig config);
 
 // Recompute per-vertex shading normals in place as the analytic SDF gradient of
-// the union-of-spheres field: each normal is the unit vector from the nearest
-// particle center to the vertex. This depends only on world position, so it is
+// the (smooth-min) union-of-spheres field. With blendWidth 0 each normal is the
+// unit vector from the nearest particle center to the vertex; with blendWidth k
+// it is the softmax-weighted blend of those directions, matching the metaball
+// field GenerateMesh produced. This depends only on world position, so it is
 // continuous across independently-meshed cells (no shading seams), and it must
 // be reapplied after any pass that moves vertices or rebuilds normals from face
 // geometry (e.g. simplify_mesh, which reverts to per-cell face-normal averaging).
 // Operates on mesh->vertices/mesh->normals; any existing normal is used as the
 // fallback for degenerate vertices with no particle in range.
-void ComputeSurfaceNormals(Mesh* mesh, Particle* particles, float particleRadius, int particleCount);
+void ComputeSurfaceNormals(Mesh* mesh, Particle* particles, float particleRadius, int particleCount, float blendWidth);
 
 // Create default configuration
 MeshGenerationConfig GetDefaultMeshConfig(void);

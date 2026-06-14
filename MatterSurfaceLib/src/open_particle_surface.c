@@ -763,6 +763,7 @@ static int UpdateDirtyCells(int maxUpdates) {
             }
             
             cellParticleBuffer[validCount].position = particles[particleIdx].position;
+            cellParticleBuffer[validCount].radius = particleRadius;
             cellParticleBuffer[validCount].materialId = particles[particleIdx].materialId;
             validCount++;
         }
@@ -781,9 +782,9 @@ static int UpdateDirtyCells(int maxUpdates) {
         }
         
         // Generate new mesh
-        spatialHashCells[cellIndex].mesh = GenerateMesh(cellParticleBuffer, particleRadius, 
-                                          validCount, 
-                                          spatialHashCells[cellIndex].bounds);
+        spatialHashCells[cellIndex].mesh = GenerateMesh(cellParticleBuffer, particleRadius,
+                                          validCount,
+                                          spatialHashCells[cellIndex].bounds, 0.0f);
 
         UploadMesh(&spatialHashCells[cellIndex].mesh, false);
         spatialHashCells[cellIndex].hasMesh = true;

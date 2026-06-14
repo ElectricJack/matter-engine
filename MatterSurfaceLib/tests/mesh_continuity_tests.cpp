@@ -48,11 +48,12 @@ extern "C" {
 
     typedef struct {
         Vector3 position;
+        float   radius;
         int     materialId;
     } Particle;
 
-    Mesh GenerateMesh(Particle* particles, float particleRadius, int particleCount, Bounds volume);
-    void ComputeSurfaceNormals(Mesh* mesh, Particle* particles, float particleRadius, int particleCount);
+    Mesh GenerateMesh(Particle* particles, float particleRadius, int particleCount, Bounds volume, float blendWidth);
+    void ComputeSurfaceNormals(Mesh* mesh, Particle* particles, float particleRadius, int particleCount, float blendWidth);
 }
 
 // ----------------------------------------------------------------------------
@@ -565,10 +566,10 @@ static Soup build_scene(const std::vector<PIn>& particles, float s, float ratio)
             sp.reserve(mg.second.size());
             float pr = particles[mg.second[0]].r;
             for (int idx : mg.second) {
-                Particle q; q.position = particles[idx].pos; q.materialId = (int)particles[idx].mat;
+                Particle q; q.position = particles[idx].pos; q.radius = particles[idx].r; q.materialId = (int)particles[idx].mat;
                 sp.push_back(q);
             }
-            Mesh m = GenerateMesh(sp.data(), pr, (int)sp.size(), bounds);
+            Mesh m = GenerateMesh(sp.data(), pr, (int)sp.size(), bounds, 0.0f);
             if (ratio < 1.0f && m.vertexCount > 0 && m.triangleCount > 0) {
                 CellBounds cb; cb.min_bound = minB; cb.max_bound = maxB;
                 SimplifyOptions so; so.target_ratio = ratio; so.lock_boundary = true;
@@ -579,7 +580,7 @@ static Soup build_scene(const std::vector<PIn>& particles, float s, float ratio)
                     // the SDF-gradient normals (radial snap keeps normal direction,
                     // but re-run is cheap and robust).
                     project_to_surface(simp, sp, pr, minB, maxB, s);
-                    ComputeSurfaceNormals(&simp, sp.data(), pr, (int)sp.size());
+                    ComputeSurfaceNormals(&simp, sp.data(), pr, (int)sp.size(), 0.0f);
                     append_mesh(soup, simp);
                     // free both CPU meshes (no GL involved)
                     if (simp.vertices) RL_FREE(simp.vertices);

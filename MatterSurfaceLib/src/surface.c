@@ -176,10 +176,10 @@ typedef struct {
 } IsosurfaceVertex;
 
 // Local function declarations
-static ScalarMaterialPair CalculateScalarAndMaterial(Vector3 position, SpatialHash* spatialHash, float particleRadius);
+static ScalarMaterialPair CalculateScalarAndMaterial(Vector3 position, SpatialHash* spatialHash, float refRadius, float blendWidth);
 static int     CalculateCubeIndex(GridCell cell, float isovalue);
 static Vector3 VertexInterpolation(Vector3 v1, float val1, Vector3 v2, float val2, float isovalue);
-static Mesh    GenerateMeshInternal(Particle* particles, float particleRadius, int particleCount, Bounds volume, MeshGenerationConfig config);
+static Mesh    GenerateMeshInternal(Particle* particles, float particleRadius, int particleCount, Bounds volume, float blendWidth, MeshGenerationConfig config);
 
 
 // Utility function to convert grid cell coordinates to index in the scalar field array
@@ -196,14 +196,14 @@ MeshGenerationConfig GetDefaultMeshConfig(void) {
 }
 
 // Public API wrapper function using default configuration
-Mesh GenerateMesh(Particle* particles, float particleRadius, int particleCount, Bounds volume) {
+Mesh GenerateMesh(Particle* particles, float particleRadius, int particleCount, Bounds volume, float blendWidth) {
     MeshGenerationConfig config = GetDefaultMeshConfig();
-    return GenerateMeshInternal(particles, particleRadius, particleCount, volume, config);
+    return GenerateMeshInternal(particles, particleRadius, particleCount, volume, blendWidth, config);
 }
 
 // Public API function with custom configuration
-Mesh GenerateMeshWithConfig(Particle* particles, float particleRadius, int particleCount, Bounds volume, MeshGenerationConfig config) {
-    return GenerateMeshInternal(particles, particleRadius, particleCount, volume, config);
+Mesh GenerateMeshWithConfig(Particle* particles, float particleRadius, int particleCount, Bounds volume, float blendWidth, MeshGenerationConfig config) {
+    return GenerateMeshInternal(particles, particleRadius, particleCount, volume, blendWidth, config);
 }
 
 // Cleanup function to release memory pool resources
@@ -211,7 +211,7 @@ void SurfaceLibCleanup(void) {
     CleanupMemoryPool();
 }
 
-void ComputeSurfaceNormals(Mesh* mesh, Particle* particles, float particleRadius, int particleCount) {
+void ComputeSurfaceNormals(Mesh* mesh, Particle* particles, float particleRadius, int particleCount, float blendWidth) {
     if (!mesh || !mesh->vertices || !mesh->normals || mesh->vertexCount <= 0 ||
         !particles || particleCount <= 0) {
         return;
@@ -226,7 +226,7 @@ void ComputeSurfaceNormals(Mesh* mesh, Particle* particles, float particleRadius
                   particles[i].position.z, &particles[i]);
     }
 
-    float gradSearch = particleRadius * 2.5f;
+    float gradSearch = particleRadius * 2.5f + blendWidth * 4.0f;
     Particle* nearby[32];
     for (int i = 0; i < mesh->vertexCount; i++) {
         float vx = mesh->vertices[i*3+0];
@@ -234,22 +234,62 @@ void ComputeSurfaceNormals(Mesh* mesh, Particle* particles, float particleRadius
         float vz = mesh->vertices[i*3+2];
 
         int found = sh_query_radius(hash, vx, vy, vz, gradSearch, (void**)nearby, 32);
-        float bestD2 = INFINITY;
-        Vector3 nearestC = {0.0f, 0.0f, 0.0f};
+
+        // Per-particle signed distance f_j = |v - c_j| - r_j (matches the field).
+        // gx/gy/gz accumulates the analytic gradient direction.
+        float gx = 0.0f, gy = 0.0f, gz = 0.0f;
+        bool haveGrad = false;
+        float fmin = INFINITY;
+        int   fminIdx = -1;
+        float fj[32];
         for (int j = 0; j < found; j++) {
             float dx = vx - nearby[j]->position.x;
             float dy = vy - nearby[j]->position.y;
             float dz = vz - nearby[j]->position.z;
             float d2 = dx*dx + dy*dy + dz*dz;
-            if (d2 < bestD2) { bestD2 = d2; nearestC = nearby[j]->position; }
+            fj[j] = sqrtf(d2) - nearby[j]->radius;
+            if (fj[j] < fmin) { fmin = fj[j]; fminIdx = j; }
         }
 
-        if (bestD2 < INFINITY && bestD2 > 1e-12f) {
-            // Outward SDF gradient: unit vector from nearest particle to vertex.
-            float inv = 1.0f / sqrtf(bestD2);
-            mesh->normals[i*3+0] = (vx - nearestC.x) * inv;
-            mesh->normals[i*3+1] = (vy - nearestC.y) * inv;
-            mesh->normals[i*3+2] = (vz - nearestC.z) * inv;
+        if (fminIdx >= 0) {
+            if (blendWidth <= 1e-5f) {
+                // Hard union: gradient of the single dominant sphere = unit(v - c).
+                float dx = vx - nearby[fminIdx]->position.x;
+                float dy = vy - nearby[fminIdx]->position.y;
+                float dz = vz - nearby[fminIdx]->position.z;
+                float d2 = dx*dx + dy*dy + dz*dz;
+                if (d2 > 1e-12f) {
+                    float inv = 1.0f / sqrtf(d2);
+                    gx = dx*inv; gy = dy*inv; gz = dz*inv; haveGrad = true;
+                }
+            } else {
+                // Smooth-min gradient: softmax-weighted blend of each sphere's
+                // outward unit direction (weights w_j = exp(-(f_j - fmin)/k)).
+                float k = blendWidth;
+                for (int j = 0; j < found; j++) {
+                    float dx = vx - nearby[j]->position.x;
+                    float dy = vy - nearby[j]->position.y;
+                    float dz = vz - nearby[j]->position.z;
+                    float d2 = dx*dx + dy*dy + dz*dz;
+                    if (d2 <= 1e-12f) continue; // vertex on this center: no direction
+                    float inv = 1.0f / sqrtf(d2);
+                    float w = expf(-(fj[j] - fmin) / k);
+                    gx += w * dx * inv;
+                    gy += w * dy * inv;
+                    gz += w * dz * inv;
+                }
+                float gl2 = gx*gx + gy*gy + gz*gz;
+                if (gl2 > 1e-12f) {
+                    float ginv = 1.0f / sqrtf(gl2);
+                    gx *= ginv; gy *= ginv; gz *= ginv; haveGrad = true;
+                }
+            }
+        }
+
+        if (haveGrad) {
+            mesh->normals[i*3+0] = gx;
+            mesh->normals[i*3+1] = gy;
+            mesh->normals[i*3+2] = gz;
         } else {
             // Degenerate vertex (on a center, or none in range): normalize the
             // incoming normal, else fall back to a stable up vector.
@@ -271,7 +311,7 @@ void ComputeSurfaceNormals(Mesh* mesh, Particle* particles, float particleRadius
 }
 
 // Internal mesh generation function with configuration
-static Mesh GenerateMeshInternal(Particle* particles, float particleRadius, int particleCount, Bounds volume, MeshGenerationConfig config) {
+static Mesh GenerateMeshInternal(Particle* particles, float particleRadius, int particleCount, Bounds volume, float blendWidth, MeshGenerationConfig config) {
     TIMER_START(total);
     
     // Initialize mesh
@@ -351,7 +391,7 @@ static Mesh GenerateMeshInternal(Particle* particles, float particleRadius, int 
                 int index = GetScalarFieldIndex(x, y, z, gridSize);
                 
                 // Use combined calculation to eliminate duplicate distance calculations
-                ScalarMaterialPair result = CalculateScalarAndMaterial(position, spatialHash, particleRadius);
+                ScalarMaterialPair result = CalculateScalarAndMaterial(position, spatialHash, particleRadius, blendWidth);
                 data.scalarField[index] = result.scalarValue;
                 data.materialField[index] = result.materialId;
             }
@@ -722,7 +762,7 @@ static Mesh GenerateMeshInternal(Particle* particles, float particleRadius, int 
 
     // Overwrite the per-cell face normals with the cross-cell-continuous SDF
     // gradient (face normals remain only as the degenerate-vertex fallback).
-    ComputeSurfaceNormals(&mesh, particles, particleRadius, particleCount);
+    ComputeSurfaceNormals(&mesh, particles, particleRadius, particleCount, blendWidth);
 
     // Set material IDs as vertex colors
     mesh.colors = (unsigned char*)RL_MALLOC(vertexCount * 4 * sizeof(unsigned char));
@@ -757,45 +797,58 @@ static Mesh GenerateMeshInternal(Particle* particles, float particleRadius, int 
 }
 
 // Combined calculation to eliminate duplicate distance calculations
-static ScalarMaterialPair CalculateScalarAndMaterial(Vector3 position, SpatialHash* spatialHash, float particleRadius) {
+static ScalarMaterialPair CalculateScalarAndMaterial(Vector3 position, SpatialHash* spatialHash, float refRadius, float blendWidth) {
     ScalarMaterialPair result;
     result.scalarValue = INFINITY;
     result.materialId = 0;
-    
-    // Query nearby particles using spatial hash instead of checking all particles
-    // Optimized search radius: reduced from 4x to 2.5x for better performance
-    // This reduces the search volume while still capturing relevant particles
-    float searchRadius = particleRadius * 2.5f;
-    
-    Particle* nearbyParticles[32]; // Optimized buffer size: reduced from 64 to 32
-    int foundCount = sh_query_radius(spatialHash, position.x, position.y, position.z, searchRadius, 
+
+    // Query nearby particles. The search must reach the surface of the largest
+    // particle (refRadius is the max radius in the set) plus the smooth-min
+    // fillet, so distant blend partners are not missed.
+    float searchRadius = refRadius * 2.5f + blendWidth * 4.0f;
+
+    Particle* nearbyParticles[32];
+    int foundCount = sh_query_radius(spatialHash, position.x, position.y, position.z, searchRadius,
                                      (void**)nearbyParticles, 32);
-    
-    // Calculate distance to only the nearby particles in a single pass
-    // Optimization: use squared distances for comparison to avoid expensive sqrt
-    float minDistanceSquared = INFINITY;
-    
-    for (int i = 0; i < foundCount; i++) {
-        Vector3 diff = {
-            position.x - nearbyParticles[i]->position.x,
-            position.y - nearbyParticles[i]->position.y,
-            position.z - nearbyParticles[i]->position.z
-        };
-        
-        float distSquared = 
-            diff.x * diff.x +
-            diff.y * diff.y +
-            diff.z * diff.z;
-        
-        if (distSquared < minDistanceSquared) {
-            minDistanceSquared = distSquared;
-            result.materialId = nearbyParticles[i]->materialId;
-        }
+    if (foundCount <= 0) {
+        return result; // INFINITY scalar, material 0
     }
-    
-    // Only compute sqrt once at the end and calculate scalar field value
-    result.scalarValue = (minDistanceSquared < INFINITY) ? sqrtf(minDistanceSquared) - particleRadius : INFINITY;
-    
+
+    // Per-particle signed distance f_i = |p - c_i| - r_i, using each particle's
+    // own radius. Track the hard-min (dominant particle) for the material id and
+    // as the stable base point for the smooth-min.
+    float perDist[32];
+    float fmin = INFINITY;
+    int   fminIdx = 0;
+    for (int i = 0; i < foundCount; i++) {
+        float dx = position.x - nearbyParticles[i]->position.x;
+        float dy = position.y - nearbyParticles[i]->position.y;
+        float dz = position.z - nearbyParticles[i]->position.z;
+        float f = sqrtf(dx*dx + dy*dy + dz*dz) - nearbyParticles[i]->radius;
+        perDist[i] = f;
+        if (f < fmin) { fmin = f; fminIdx = i; }
+    }
+
+    result.materialId = nearbyParticles[fminIdx]->materialId;
+
+    if (blendWidth <= 1e-5f || foundCount == 1) {
+        // Hard union: exact min. With a single uniform radius this is identical
+        // to the original sqrt(minDistSq) - particleRadius behavior.
+        result.scalarValue = fmin;
+        return result;
+    }
+
+    // Exponential smooth-min (metaball union) via the log-sum-exp trick:
+    //   f = fmin - k * ln( sum_i exp(-(f_i - fmin)/k) )
+    // k = blendWidth sets the fillet size; k -> 0 recovers the hard min. The
+    // result is <= fmin, so neighboring spheres bulge together where they meet.
+    float k = blendWidth;
+    float sum = 0.0f;
+    for (int i = 0; i < foundCount; i++) {
+        sum += expf(-(perDist[i] - fmin) / k);
+    }
+    result.scalarValue = fmin - k * logf(sum);
+
     return result;
 }
 
