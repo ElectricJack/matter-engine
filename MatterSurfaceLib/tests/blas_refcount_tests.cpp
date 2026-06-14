@@ -92,10 +92,35 @@ static void test_release_invalid_is_noop() {
     printf("PASSED\n");
 }
 
+static void test_triex_material_roundtrip() {
+    printf("=== test_triex_material_roundtrip ===\n");
+    BLASManager m;
+    std::vector<Tri> tris(2);
+    std::vector<TriEx> ex(2);
+    std::memset(&tris[0], 0, sizeof(Tri));
+    std::memset(&tris[1], 0, sizeof(Tri));
+    for (int i = 0; i < 2; ++i) {
+        tris[i].vertex0 = make_float3(0.0f, 0.0f, 0.0f);
+        tris[i].vertex1 = make_float3(1.0f, 0.0f, 0.0f);
+        tris[i].vertex2 = make_float3(0.0f, 1.0f, 0.0f);
+        tris[i].centroid = (tris[i].vertex0 + tris[i].vertex1 + tris[i].vertex2) * (1.0f/3.0f);
+    }
+    ex[0] = TriEx{}; ex[1] = TriEx{};
+    ex[0].materialId = 8; ex[1].materialId = 9;
+    BLASHandle h = m.register_triangles(tris, ex);
+    BvhMesh* mesh = m.get_mesh(h);
+    assert(mesh != nullptr);
+    assert(mesh->triEx != nullptr);
+    assert(mesh->triEx[0].materialId == 8);
+    assert(mesh->triEx[1].materialId == 9);
+    printf("PASSED\n");
+}
+
 int main() {
     test_dedup_and_release();
     test_remesh_no_leak();
     test_release_invalid_is_noop();
+    test_triex_material_roundtrip();
     printf("\nALL BLAS REFCOUNT TESTS PASSED\n");
     return 0;
 }

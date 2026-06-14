@@ -403,7 +403,12 @@ void BLASManager::ensure_gpu_textures_ready() {
                     texture_data[row0_idx + 0] = tri.vertex0.x;
                     texture_data[row0_idx + 1] = tri.vertex0.y;
                     texture_data[row0_idx + 2] = tri.vertex0.z;
-                    texture_data[row0_idx + 3] = 0.0f;
+                    // Row 0 .w carries the per-triangle materialId (>=0). -1 means "no per-triangle
+                    // material; shader falls back to the instance material". Must match the shader
+                    // fetch of data0.w in bvh_tlas_common.glsl (decodeTriangle / hit block).
+                    texture_data[row0_idx + 3] = (entry->mesh->triEx != nullptr)
+                        ? (float)entry->mesh->triEx[original_idx].materialId
+                        : -1.0f;
 
                     // Row 1: v1
                     int row1_idx = texel_off(static_cast<int>(triangle_index), 1);

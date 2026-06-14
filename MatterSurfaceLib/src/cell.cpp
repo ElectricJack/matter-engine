@@ -343,6 +343,21 @@ void Cell::generate_mesh_for_material(uint32_t material_id, const std::vector<St
             std::vector<Tri> triangles = convert_mesh_to_triangles(mesh, &triangle_normals);
             printf("Converting mesh to %zu triangles for BLAS registration\\n", triangles.size());
 
+            // Tag each triangle with the material of the nearest particle to its centroid.
+            // One mesh may carry multiple materials once meshing is regrouped, so resolve
+            // per-triangle rather than assuming a single material for the whole mesh.
+            for (size_t t = 0; t < triangle_normals.size() && t < triangles.size(); ++t) {
+                const float3& c = triangles[t].centroid;
+                int best = static_cast<int>(material_id);
+                float bestD = 3.4e38f;
+                for (const Particle& p : particles) {
+                    float dx = c.x - p.position.x, dy = c.y - p.position.y, dz = c.z - p.position.z;
+                    float d = dx*dx + dy*dy + dz*dz;
+                    if (d < bestD) { bestD = d; best = p.materialId; }
+                }
+                triangle_normals[t].materialId = best;
+            }
+
             if (!triangles.empty() && triangles.size() > 0) {
                 printf("Registering %zu triangles with BLAS manager...\\n", triangles.size());
                 material_blas[material_id] = blas_manager.register_triangles(triangles, triangle_normals);

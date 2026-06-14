@@ -615,7 +615,11 @@ HitResult intersectScene(vec3 rayOrigin, vec3 rayDir)
         
         // Transform normal to world space
         result.normal = transformNormal(normal, inst.invTransform);
-        result.material = int(inst.materialId);
+        // Per-triangle material packed in row-0 .w (see blas_manager.cpp packing).
+        // >=0 overrides the instance material; -1 means use the instance default.
+        float triMatF = texture(trianglesTexture, tiledTexel(trianglesTexture, int(triIdx), 0, 6)).w;
+        int triMat = int(triMatF);
+        result.material = (triMat >= 0) ? triMat : int(inst.materialId);
         result.instanceId = int(instIdx);
     }
     else
