@@ -110,14 +110,17 @@ if [ "$MODE" = "test" ]; then
         fi
     done
 
-    # MatterSurfaceLib mesh simplifier unit tests (headless, no GL window)
-    if make -C MatterSurfaceLib/tests mesh_simplifier_tests >/dev/null 2>&1; then
-        echo
-        echo "--- MatterSurfaceLib (mesh_simplifier) ---"
-        MatterSurfaceLib/tests/mesh_simplifier_tests || RESULT[MatterSurfaceLib]="FAIL (tests)"
-    else
-        RESULT[MatterSurfaceLib]="FAIL (test build)"
-    fi
+    # MatterSurfaceLib headless suites (no GL window). Target name == binary name.
+    for suite in mesh_simplifier_tests material_registry_tests cell_bounds_tests \
+                 blas_refcount_tests mesh_continuity_tests; do
+        if make -C MatterSurfaceLib/tests "$suite" >/dev/null 2>&1; then
+            echo
+            echo "--- MatterSurfaceLib ($suite) ---"
+            "MatterSurfaceLib/tests/$suite" || RESULT[MatterSurfaceLib]="FAIL (tests)"
+        else
+            RESULT[MatterSurfaceLib]="FAIL (test build)"
+        fi
+    done
 fi
 
 echo

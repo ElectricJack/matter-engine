@@ -865,7 +865,9 @@ static inline void ApplyClipField(ScalarMaterialPair* result, Vector3 position,
         if (f < fO) fO = f;
     }
     // Where a foreign surface is nearer (fO < f_G), force this group outside so
-    // its isosurface terminates on the equidistant locus f_G == fO.
+    // its isosurface terminates on the equidistant locus f_G == fO. We touch only
+    // scalarValue, never materialId: the carved wall keeps this group's own
+    // material so distinct types meet at a clean interface instead of fusing.
     if (-fO > result->scalarValue) result->scalarValue = -fO;
 }
 
