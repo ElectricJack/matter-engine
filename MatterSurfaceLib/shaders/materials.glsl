@@ -20,111 +20,38 @@ struct MaterialProperties
     bool flatShading;      // true = flat shaded, false = smooth normals
 };
 
-// Material lookup table - defines all materials used in the scene
+// Packed material table, uploaded from the CPU registry. 12 floats per material
+// (see MATERIAL_FLOATS_PER_DEF / MaterialRegistryPackForGPU):
+//   [0..2] albedo, [3] roughness, [4] metallic, [5] emission, [6] pad,
+//   [7] translucency, [8] ior, [9] flatShading, [10] mergeGroup, [11] pad
+#define MAX_MATERIALS 64
+uniform float materialTable[MAX_MATERIALS * 12];
+uniform int materialCount;
+
+// Material lookup table - data-driven via uniform array uploaded from CPU registry
 MaterialProperties getMaterialProperties(int materialId)
 {
-    MaterialProperties mat;
-    
-    // Initialize defaults
-    mat.albedo = vec3(0.5, 0.5, 0.5);
-    mat.roughness = 0.5;
-    mat.metallic = 0.0;
-    mat.emission = 0.0;
-    mat.translucency = 0.0;
-    mat.ior = 1.0;
-
-    // If the materialId is greater than 1M, then that's a flag to enable
-    // smooth shading. Otherwise it's flat shading.
+    // Smooth-shading flag is now a table field; keep the legacy >=1M offset
+    // working so existing callers that set it still smooth-shade.
+    bool forceSmooth = false;
     int smooth_normals_offset = 1000000;
-    mat.flatShading = true;
-    if (materialId >= smooth_normals_offset) {
-        materialId -= smooth_normals_offset;
-        mat.flatShading = false;
+    if (materialId >= smooth_normals_offset) { materialId -= smooth_normals_offset; forceSmooth = true; }
+
+    MaterialProperties mat;
+    int id = materialId;
+    if (id < 0 || id >= materialCount) {
+        mat.albedo = vec3(0.6); mat.roughness = 0.1; mat.metallic = 0.8;
+        mat.emission = 0.0; mat.translucency = 0.0; mat.ior = 1.0; mat.flatShading = true;
+        return mat;
     }
-    
-    // Material definitions based on scene setup
-    if (materialId == 0) {
-        // Red semi-metallic with slight emission
-        mat.albedo = vec3(0.8, 0.2, 0.2);
-        mat.roughness = 0.2;
-        mat.metallic = 0.6;
-        mat.emission = 0.1;  // Slight red glow
-        mat.translucency = 0.0;
-        mat.ior = 1.0;
-    } 
-    else if (materialId == 1) {
-        // Blue diffuse sphere with smooth normals
-        mat.albedo = vec3(0.2, 0.3, 0.8);
-        mat.roughness = 0.7;
-        mat.metallic = 0.1;
-        mat.emission = 0.0;
-        mat.translucency = 0.0;
-        mat.ior = 1.0;
-    } 
-    else if (materialId == 2) {
-        // Green diffuse ground with flat shading
-        mat.albedo = vec3(0.3, 0.7, 0.3);
-        mat.roughness = 0.9;
-        mat.metallic = 0.0;
-        mat.emission = 0.0;
-        mat.translucency = 0.0;
-        mat.ior = 1.0;
-    } 
-    else if (materialId == 3) {
-        // Yellow/Gold metallic sphere with smooth normals
-        mat.albedo = vec3(0.8, 0.7, 0.3);
-        mat.roughness = 0.05;
-        mat.metallic = 1.0;
-        mat.emission = 0.0;
-        mat.translucency = 0.0;
-        mat.ior = 1.0;
-    } 
-    else if (materialId == 4) {
-        // White translucent glass with smooth normals
-        mat.albedo = vec3(0.9, 0.9, 0.9);
-        mat.roughness = 0.01;
-        mat.metallic = 0.15;
-        mat.emission = 0.0;
-        mat.translucency = 0.5; // Highly translucent
-        mat.ior = 1.5; // Glass IOR
-    }
-    else if (materialId == 5) {
-        // Bright emissive light source
-        mat.albedo = vec3(1.0, 0.9, 0.7); // Warm white light
-        mat.roughness = 1.0;
-        mat.metallic = 0.0;
-        mat.emission = 5.0; // Strong emission
-        mat.translucency = 0.0;
-        mat.ior = 1.0;
-    }
-    else if (materialId == 6) {
-        // Colored glass - green tinted
-        mat.albedo = vec3(0.2, 0.9, 0.3);
-        mat.roughness = 0.005;
-        mat.metallic = 0.15;
-        mat.emission = 0.0;
-        mat.translucency = 0.5;
-        mat.ior = 1.52; // Crown glass IOR
-    }
-    else if (materialId == 7) {
-        // Water-like material
-        mat.albedo = vec3(0.2, 0.4, 0.8);
-        mat.roughness = 0.0;
-        mat.metallic = 0.1;
-        mat.emission = 0.0;
-        mat.translucency = 1;
-        mat.ior = 1.33; // Water IOR
-    }
-    else {
-        // Default gray metallic material
-        mat.albedo = vec3(0.6, 0.6, 0.6);
-        mat.roughness = 0.1;
-        mat.metallic = 0.8;
-        mat.emission = 0.0;
-        mat.translucency = 0.0;
-        mat.ior = 1.0;
-    }
-    
+    int b = id * 12;
+    mat.albedo = vec3(materialTable[b+0], materialTable[b+1], materialTable[b+2]);
+    mat.roughness = materialTable[b+3];
+    mat.metallic  = materialTable[b+4];
+    mat.emission  = materialTable[b+5];
+    mat.translucency = materialTable[b+7];
+    mat.ior = materialTable[b+8];
+    mat.flatShading = (materialTable[b+9] > 0.5) && !forceSmooth;
     return mat;
 }
 

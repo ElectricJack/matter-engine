@@ -30,6 +30,7 @@ extern "C" {
 #include "include/cluster.h"
 #include "include/cell.h"
 #include "include/profiler.hpp"
+#include "include/material_registry.h"
 
 // ---------------------------------------------------------------------------
 // In-app GL program-binary cache.
@@ -549,6 +550,17 @@ private:
         bool skip_raytrace_shader = getenv("MSL_CAPTURE") && capMode && atoi(capMode) != 0;
         if (!skip_raytrace_shader) {
             raytracing_shader_ = LoadShaderCached("shaders/raytrace_tlas_blas_processed.fs");
+            if (raytracing_shader_.id != 0) {
+                static float s_materialTable[64 * MATERIAL_FLOATS_PER_DEF] = {0};
+                MaterialRegistryPackForGPU(s_materialTable);
+                int count = MaterialRegistryCount();
+                int locTable = GetShaderLocation(raytracing_shader_, "materialTable");
+                int locCount = GetShaderLocation(raytracing_shader_, "materialCount");
+                // raylib uploads float arrays element-by-element via SHADER_UNIFORM_FLOAT count.
+                SetShaderValueV(raytracing_shader_, locTable, s_materialTable,
+                                SHADER_UNIFORM_FLOAT, count * MATERIAL_FLOATS_PER_DEF);
+                SetShaderValue(raytracing_shader_, locCount, &count, SHADER_UNIFORM_INT);
+            }
         }
 
         if (raytracing_shader_.id != 0) {
