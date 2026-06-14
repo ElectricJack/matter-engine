@@ -2,7 +2,6 @@
 #define SURFACE_H
 
 #include "raylib.h"
-#include "raymath.h"
 #include "particle.h"
 #include <stdbool.h>
 
@@ -33,6 +32,10 @@ typedef struct {
     bool enableMemoryReuse;        // Enable memory pool reuse for better performance
 } MeshGenerationConfig;
 
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 // Main API function for generating a mesh from particles.
 // particleRadius is a reference radius (max effective radius in the set) used to
@@ -80,5 +83,8 @@ BVHTriangle* ConvertMeshToBVHTriangles(Mesh mesh, int* triangleCount);
 // Free BVH triangle array
 void FreeBVHTriangles(BVHTriangle* triangles);
 
+#ifdef __cplusplus
+}
+#endif
 
 #endif // SURFACE_H

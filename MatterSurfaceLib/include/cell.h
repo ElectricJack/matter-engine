@@ -13,28 +13,12 @@ class CellVisitor;
 class CellRenderVisitor;
 typedef uint32_t BLASHandle;
 
-// SurfaceLib C-linkage surface API + plain-old-data types. Declared here (the
-// single source) so cell.cpp and the headless tests share one definition
-// instead of each re-typedef'ing Particle/Bounds. These mirror surface.h but
-// are kept in an extern "C" block so the symbols stay unmangled to match the
-// C-compiled surface.c, and so consumers avoid pulling raymath.h's C++ operator
-// overloads in through surface.h.
-extern "C" {
-    typedef struct {
-        Vector3 center;
-        Vector3 size;
-        int     divisionPow;
-    } Bounds;
-
-    typedef struct {
-        Vector3 position;
-        float   radius;
-        int     materialId;
-    } Particle;
-
-    Mesh GenerateMesh(Particle* particles, float particleRadius, int particleCount, Bounds volume, float blendWidth, Particle* clipParticles, int clipCount);
-    void ComputeSurfaceNormals(Mesh* mesh, Particle* particles, float particleRadius, int particleCount, float blendWidth, Particle* clipParticles, int clipCount);
-}
+// SurfaceLib's C-linkage surface API plus the Particle/Bounds plain-old-data
+// types. surface.h now wraps its prototypes in its own `extern "C"` guard, so
+// the symbols stay unmangled to match the C-compiled surface.c. Including it
+// here (rather than re-mirroring the declarations) keeps a single source of
+// truth that cell.cpp and the headless tests share.
+#include "surface.h"
 
 // Builds the transparency-gated foreign clip-particle set for meshing the merge
 // group `group_id` in a cell. For every OTHER non-empty bucket, the carve is

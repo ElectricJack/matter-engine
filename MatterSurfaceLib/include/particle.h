@@ -2,7 +2,6 @@
 #define PARTICLE_H
 
 #include "raylib.h"
-#include "raymath.h"
 #include <stdbool.h>
 
 // Particle structure representing a sphere with material ID
