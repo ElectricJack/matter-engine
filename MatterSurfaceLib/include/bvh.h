@@ -22,7 +22,7 @@ struct ALIGN(64) Tri
 };
 
 // additional triangle data, for texturing and shading
-struct TriEx { float2 uv0, uv1, uv2; float3 N0, N1, N2; };
+struct TriEx { float2 uv0, uv1, uv2; float3 N0, N1, N2; int materialId; };
 
 // minimalist AABB struct with grow functionality
 struct aabb

@@ -644,9 +644,34 @@ static void run_case(const Case& cs, float ratio, const char* ratioLabel) {
     }
 }
 
+// Two well-separated particles with different materialId, meshed as ONE field.
+// surface.c bakes per-vertex material into mesh.colors via GetMaterialColor, so
+// the produced mesh must carry more than one distinct material color.
+static int test_per_vertex_material() {
+    Particle ps[2];
+    ps[0].position = (Vector3){-1.0f, 0, 0}; ps[0].radius = 0.8f; ps[0].materialId = 8;
+    ps[1].position = (Vector3){ 1.0f, 0, 0}; ps[1].radius = 0.8f; ps[1].materialId = 9;
+    Bounds b; b.center=(Vector3){0,0,0}; b.size=(Vector3){4,4,4}; b.divisionPow=4;
+    Mesh m = GenerateMesh(ps, 0.8f, 2, b, 0.0f);
+    int distinctColors = 0;
+    unsigned char c0r = (m.colors && m.vertexCount > 0) ? m.colors[0] : 0;
+    for (int i = 0; i < m.vertexCount; ++i) {
+        if (m.colors && m.colors[i*4] != c0r) { distinctColors = 1; break; }
+    }
+    if (!distinctColors) { printf("FAIL: expected >1 distinct vertex material color\n"); return 1; }
+    return 0;
+}
+
 int main() {
     printf("=== Mesh continuity / edge-case matrix (headless, GL-free) ===\n");
     printf("Replicates cluster create(2r)/assign(r)/field(2.5r) + GenerateMesh + simplify.\n\n");
+
+    // Per-vertex material color regression: surface.c must bake distinct
+    // material colors for two well-separated particles with different materialId.
+    printf("per_vertex_material: ");
+    g_unexpected += test_per_vertex_material();
+    if (g_unexpected == 0) printf("PASS\n");
+    printf("\n");
 
     const float s = 4.0f;  // smallest cell size (size_power 0)
     const uint32_t M0 = 0, M1 = 1;
