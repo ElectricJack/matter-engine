@@ -67,6 +67,14 @@ public:
     // GL_MAX_TEXTURE_SIZE; data beyond the cap wraps into additional tile rows.
     static constexpr int TEXTURE_TILE_WIDTH = 8192;
 
+    // Pure CPU computation of the per-triangle material value packed into row-0 .w
+    // of the GPU triangle texture. A null triEx (no per-triangle material) packs
+    // the -1.0f sentinel; the shader reads <0 as "fall back to instance material".
+    // Extracted so the pack/sentinel selection is unit-testable without a GL context.
+    static float pack_material_w(const TriEx* triex, int index) {
+        return triex ? static_cast<float>(triex[index].materialId) : -1.0f;
+    }
+
     BLASManager();
     ~BLASManager();
     
@@ -153,12 +161,16 @@ private:
     static Tri convert_triangle(const LegacyTriangle& old_tri);
     static LegacyTriangle convert_triangle_back(const Tri& new_tri);
     
-    // Hash calculation
-    uint32_t calculate_hash(const Tri* triangles, int count) const;
-    bool triangles_equal(const std::vector<Tri>& a, const Tri* b, int count) const;
-    
+    // Hash calculation. Per-triangle materialId participates in identity so that
+    // two byte-identical geometries carrying DIFFERENT materials are NOT deduped
+    // (a multi-material mesh must keep its own materials, not inherit another's).
+    // triex may be null (mesh has no per-triangle material); both hash and
+    // equality treat that as a stable "no material" case.
+    uint32_t calculate_hash(const Tri* triangles, int count, const TriEx* triex = nullptr) const;
+    bool triangles_equal(const BLASEntry& entry, const Tri* b, int count, const TriEx* triex) const;
+
     // Find existing BLAS by hash and triangle data
-    BLASHandle find_existing_blas(const Tri* triangles, int count, uint32_t hash) const;
+    BLASHandle find_existing_blas(const Tri* triangles, int count, uint32_t hash, const TriEx* triex) const;
     
     // Legacy hash calculation for old Triangle format
     //uint32_t calculate_hash_legacy(const LegacyTriangle* triangles, int count) const;

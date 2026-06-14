@@ -38,9 +38,9 @@ LegacyTriangle BLASManager::convert_triangle_back(const Tri& new_tri) {
     return old_tri;
 }
 
-uint32_t BLASManager::calculate_hash(const Tri* triangles, int count) const {
+uint32_t BLASManager::calculate_hash(const Tri* triangles, int count, const TriEx* triex) const {
     uint32_t hash = 2166136261u; // FNV-1a offset basis
-    
+
     for (int i = 0; i < count; i++) {
         // Hash vertex positions only
         const float* data = reinterpret_cast<const float*>(&triangles[i].vertex0);
@@ -49,27 +49,43 @@ uint32_t BLASManager::calculate_hash(const Tri* triangles, int count) const {
             hash ^= val;
             hash *= 16777619u; // FNV-1a prime
         }
+        // Fold the per-triangle materialId into identity so meshes with identical
+        // geometry but different materials hash apart. No triEx -> constant sentinel
+        // (matches the -1 "no per-triangle material" convention), applied consistently
+        // in triangles_equal so both sides agree on the null-material case.
+        uint32_t mat = triex ? static_cast<uint32_t>(triex[i].materialId) : 0xFFFFFFFFu;
+        hash ^= mat;
+        hash *= 16777619u;
     }
-    
+
     return hash;
 }
 
-bool BLASManager::triangles_equal(const std::vector<Tri>& a, const Tri* b, int count) const {
+bool BLASManager::triangles_equal(const BLASEntry& entry, const Tri* b, int count, const TriEx* triex) const {
+    const std::vector<Tri>& a = entry.triangles;
     if (a.size() != static_cast<size_t>(count)) return false;
-    
+
+    const TriEx* a_ex = entry.mesh ? entry.mesh->triEx : nullptr;
     for (int i = 0; i < count; i++) {
         if (std::memcmp(&a[i].vertex0, &b[i].vertex0, sizeof(float3) * 3) != 0) {
+            return false;
+        }
+        // Per-triangle material must match too; a null triEx is "no material"
+        // (sentinel) and only matches another null triEx.
+        int a_mat = a_ex ? a_ex[i].materialId : -1;
+        int b_mat = triex ? triex[i].materialId : -1;
+        if (a_mat != b_mat) {
             return false;
         }
     }
     return true;
 }
 
-BLASHandle BLASManager::find_existing_blas(const Tri* triangles, int count, uint32_t hash) const {
+BLASHandle BLASManager::find_existing_blas(const Tri* triangles, int count, uint32_t hash, const TriEx* triex) const {
     auto range = hash_to_entry_.equal_range(hash);
     for (auto it = range.first; it != range.second; ++it) {
         const auto& entry = entries_[it->second];
-        if (triangles_equal(entry->triangles, triangles, count)) {
+        if (triangles_equal(*entry, triangles, count, triex)) {
             return entry->handle;
         }
     }
@@ -97,11 +113,11 @@ BLASHandle BLASManager::register_triangles(Tri* triangles, int triangle_count, c
         return INVALID_BLAS_HANDLE;
     }
     
-    // Calculate hash for deduplication
-    uint32_t hash = calculate_hash(triangles, triangle_count);
-    
+    // Calculate hash for deduplication (geometry + per-triangle material).
+    uint32_t hash = calculate_hash(triangles, triangle_count, triex);
+
     // Check if BLAS already exists; share it and bump its reference count.
-    BLASHandle existing = find_existing_blas(triangles, triangle_count, hash);
+    BLASHandle existing = find_existing_blas(triangles, triangle_count, hash, triex);
     if (existing != INVALID_BLAS_HANDLE) {
         for (auto& entry : entries_) {
             if (entry->handle == existing) {
@@ -406,9 +422,8 @@ void BLASManager::ensure_gpu_textures_ready() {
                     // Row 0 .w carries the per-triangle materialId (>=0). -1 means "no per-triangle
                     // material; shader falls back to the instance material". Must match the shader
                     // fetch of data0.w in bvh_tlas_common.glsl (decodeTriangle / hit block).
-                    texture_data[row0_idx + 3] = (entry->mesh->triEx != nullptr)
-                        ? (float)entry->mesh->triEx[original_idx].materialId
-                        : -1.0f;
+                    texture_data[row0_idx + 3] = pack_material_w(entry->mesh->triEx,
+                                                                 static_cast<int>(original_idx));
 
                     // Row 1: v1
                     int row1_idx = texel_off(static_cast<int>(triangle_index), 1);

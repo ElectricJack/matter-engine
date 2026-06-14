@@ -92,8 +92,11 @@ static void test_release_invalid_is_noop() {
     printf("PASSED\n");
 }
 
-static void test_triex_material_roundtrip() {
-    printf("=== test_triex_material_roundtrip ===\n");
+// Covers CPU-side TriEx retention only: register_triangles must copy the
+// per-triangle materialIds into the mesh's triEx[] array. (The GPU upload that
+// packs these into the texture .w needs a GL context and is verified visually.)
+static void test_triex_material_cpu_retention() {
+    printf("=== test_triex_material_cpu_retention ===\n");
     BLASManager m;
     std::vector<Tri> tris(2);
     std::vector<TriEx> ex(2);
@@ -116,11 +119,65 @@ static void test_triex_material_roundtrip() {
     printf("PASSED\n");
 }
 
+// Exercises the pure CPU pack logic that the GPU upload uses to write row-0 .w:
+// materialId N must pack to float N and read back as int N (exact round-trip),
+// and a null triEx must yield the -1.0f sentinel that reads back as a negative
+// int (the shader's "fall back to instance material" path).
+static void test_triex_material_pack_roundtrip() {
+    printf("=== test_triex_material_pack_roundtrip ===\n");
+    TriEx ex[3] = {};
+    ex[0].materialId = 0;
+    ex[1].materialId = 7;
+    ex[2].materialId = 123456; // exactly representable as float
+
+    for (int i = 0; i < 3; ++i) {
+        float packed = BLASManager::pack_material_w(ex, i);
+        assert(packed == static_cast<float>(ex[i].materialId));
+        // Shader truncates via int(); verify the round-trip recovers the id exactly.
+        assert(static_cast<int>(packed) == ex[i].materialId);
+        assert(static_cast<int>(packed) >= 0); // not the fallback sentinel
+    }
+
+    // Null triEx -> -1.0f sentinel -> negative int -> fallback path.
+    float sentinel = BLASManager::pack_material_w(nullptr, 0);
+    assert(sentinel == -1.0f);
+    assert(static_cast<int>(sentinel) < 0);
+    printf("PASSED\n");
+}
+
+// Dedup must key on per-triangle material as well as geometry: two registrations
+// with byte-identical geometry but DIFFERENT materialIds must NOT collapse to one
+// entry (otherwise the second mesh silently inherits the first's materials).
+static void test_dedup_respects_material() {
+    printf("=== test_dedup_respects_material ===\n");
+    BLASManager m;
+    std::vector<Tri> tris = makeTriSet(0.0f);
+    std::vector<TriEx> ex0(1), ex1(1);
+    ex0[0] = TriEx{}; ex1[0] = TriEx{};
+    ex0[0].materialId = 3;
+    ex1[0].materialId = 4;
+
+    BLASHandle a = m.register_triangles(tris, ex0);
+    BLASHandle b = m.register_triangles(tris, ex1); // same geometry, different material
+    assert(a != INVALID_BLAS_HANDLE);
+    assert(b != INVALID_BLAS_HANDLE);
+    assert(a != b);
+    assert(m.get_unique_blas_count() == 2);
+
+    // Same geometry AND same material -> genuine dedup hit.
+    BLASHandle a_dup = m.register_triangles(tris, ex0);
+    assert(a_dup == a);
+    assert(m.get_unique_blas_count() == 2);
+    printf("PASSED\n");
+}
+
 int main() {
     test_dedup_and_release();
     test_remesh_no_leak();
     test_release_invalid_is_noop();
-    test_triex_material_roundtrip();
+    test_triex_material_cpu_retention();
+    test_triex_material_pack_roundtrip();
+    test_dedup_respects_material();
     printf("\nALL BLAS REFCOUNT TESTS PASSED\n");
     return 0;
 }
