@@ -654,6 +654,8 @@ static int test_per_vertex_material() {
     Bounds b; b.center=(Vector3){0,0,0}; b.size=(Vector3){4,4,4}; b.divisionPow=4;
     Mesh m = GenerateMesh(ps, 0.8f, 2, b, 0.0f);
     int distinctColors = 0;
+    // Compares the R channel only; materialIds 8/9 map to Red/Green via
+    // GetMaterialColor, so R alone (255 vs 0) is a sufficient distinctness signal.
     unsigned char c0r = (m.colors && m.vertexCount > 0) ? m.colors[0] : 0;
     for (int i = 0; i < m.vertexCount; ++i) {
         if (m.colors && m.colors[i*4] != c0r) { distinctColors = 1; break; }
@@ -669,8 +671,9 @@ int main() {
     // Per-vertex material color regression: surface.c must bake distinct
     // material colors for two well-separated particles with different materialId.
     printf("per_vertex_material: ");
-    g_unexpected += test_per_vertex_material();
-    if (g_unexpected == 0) printf("PASS\n");
+    int mat_fail = test_per_vertex_material();
+    g_unexpected += mat_fail;
+    printf("%s\n", mat_fail == 0 ? "PASS" : "FAIL");
     printf("\n");
 
     const float s = 4.0f;  // smallest cell size (size_power 0)
