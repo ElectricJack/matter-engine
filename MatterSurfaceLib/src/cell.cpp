@@ -238,6 +238,15 @@ std::vector<Tri> convert_mesh_to_triangles(const Mesh& mesh, std::vector<TriEx>*
     return triangles;
 }
 
+// Lower bound on a meshed feature, expressed in voxels of the current cell.
+// Marching cubes only emits a surface when a grid sample lands inside a
+// particle's SDF well; a feature narrower than ~1 voxel can fall entirely
+// between samples and vanish. Clamping the effective radius to this many
+// voxels keeps sub-voxel particles visible at coarse LODs -- they render as a
+// minimum-size blob that grows with cell size, so a feature's higher-LOD form
+// encloses its lower-LOD form (low-res but still present).
+static constexpr float kMinFeatureVoxels = 1.5f;
+
 // Build one pre-upload mesh for a set of particles that all share the same
 // radius. SurfaceLib's GenerateMesh bakes a single radius into its SDF, so each
 // radius must be meshed separately. Decimation (when requested) and the SDF
@@ -251,7 +260,12 @@ static Mesh build_radius_group_mesh(std::vector<Particle>& group, float radius,
     bounds.size = Vector3{actual_size, actual_size, actual_size};
     bounds.divisionPow = 4; // Always 16x16x16 resolution
 
-    Mesh mesh = GenerateMesh(group.data(), radius, static_cast<int>(group.size()), bounds);
+    // Clamp the radius so a sub-voxel feature stays resolvable at this LOD.
+    int gridSize = 1 << bounds.divisionPow;
+    float voxel = actual_size / (float)(gridSize - 1);
+    float effective_radius = fmaxf(radius, kMinFeatureVoxels * voxel);
+
+    Mesh mesh = GenerateMesh(group.data(), effective_radius, static_cast<int>(group.size()), bounds);
 
     // Decimate to a low-poly proxy when the cluster requests it. Boundary
     // vertices on this cell's face planes are locked so seams with same-level
@@ -268,7 +282,7 @@ static Mesh build_radius_group_mesh(std::vector<Particle>& group, float radius,
             // simplify_mesh rebuilds normals from face geometry, reintroducing
             // the per-cell shading seams; reapply the cross-cell-continuous SDF
             // gradient so the decimated proxy shades identically to the dense mesh.
-            ComputeSurfaceNormals(&simplified, group.data(), radius,
+            ComputeSurfaceNormals(&simplified, group.data(), effective_radius,
                                   static_cast<int>(group.size()));
             UnloadMesh(mesh);   // free the pre-upload CPU arrays of the dense mesh
             mesh = simplified;
