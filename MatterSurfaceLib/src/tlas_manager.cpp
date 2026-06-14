@@ -412,14 +412,21 @@ void TLASManager::generate_node_texture_data(std::vector<float>& output_data,
         const TLASNode& node = tlas_->tlasNode[i];
         int baseIdx = i * 4;
         
-        // Row 0: aabbMin + leftRight
+        // Child indices are stored as SEPARATE floats (row0.w = left, row2.w = right)
+        // rather than bit-packed into one float: a packed left|(right<<16) value
+        // exceeds 2^24 once a child index reaches 256, and float32 cannot represent
+        // such integers exactly, which corrupted the low (left) bits during traversal.
+        uint32_t leftChild  = node.leftRight & 0xFFFFu;
+        uint32_t rightChild = (node.leftRight >> 16) & 0xFFFFu;
+
+        // Row 0: aabbMin + leftChild (0 for leaf nodes, which acts as the leaf sentinel)
         if (baseIdx + 3 < static_cast<int>(output_data.size())) {
             output_data[baseIdx + 0] = node.aabbMin.x;
             output_data[baseIdx + 1] = node.aabbMin.y;
             output_data[baseIdx + 2] = node.aabbMin.z;
-            output_data[baseIdx + 3] = static_cast<float>(node.leftRight);
+            output_data[baseIdx + 3] = static_cast<float>(leftChild);
         }
-        
+
         // Row 1: aabbMax + blasIndex
         int row1Idx = texture_width * 4 + baseIdx;
         if (row1Idx + 3 < static_cast<int>(output_data.size())) {
@@ -427,17 +434,17 @@ void TLASManager::generate_node_texture_data(std::vector<float>& output_data,
             output_data[row1Idx + 1] = node.aabbMax.y;
             output_data[row1Idx + 2] = node.aabbMax.z;
             output_data[row1Idx + 3] = static_cast<float>(node.BLAS);
-            
+
             // TLAS node data set
         }
-        
-        // Row 2: padding
+
+        // Row 2: rightChild in .w
         int row2Idx = texture_width * 8 + baseIdx;
         if (row2Idx + 3 < static_cast<int>(output_data.size())) {
             output_data[row2Idx + 0] = 0.0f;
             output_data[row2Idx + 1] = 0.0f;
             output_data[row2Idx + 2] = 0.0f;
-            output_data[row2Idx + 3] = 0.0f;
+            output_data[row2Idx + 3] = static_cast<float>(rightChild);
         }
     }
 }

@@ -45,12 +45,13 @@ struct BVHNode
     uint triCount;   // triangle count (0 for interior nodes)
 };
 
-struct TLASNode  
+struct TLASNode
 {
     vec3 aabbMin;
-    uint leftRight;  // packed left/right child indices (16 bits each)
+    uint leftChild;  // left child node index (0 == leaf sentinel)
     vec3 aabbMax;
-    uint BLAS;       // BLAS index for leaf nodes
+    uint BLAS;       // BLAS/instance index for leaf nodes
+    uint rightChild; // right child node index
 };
 
 struct BVHInstance
@@ -102,7 +103,7 @@ void IntersectTri(inout Ray ray, Triangle tri, uint instPrim)
 {
     // Count this triangle test for debugging
     ray.triangleTests++;
-    
+
     vec3 edge1 = tri.v1 - tri.v0;
     vec3 edge2 = tri.v2 - tri.v0;
     vec3 h = cross(ray.D, edge2);
@@ -211,15 +212,17 @@ TLASNode decodeTLASNode(int nodeIndex)
     TLASNode node;
     
     float nodeTexCoord = (float(nodeIndex) + 0.5) / float(tlasNodeCount);
-    
-    vec4 data0 = texture(tlasNodesTexture, vec2(nodeTexCoord, 0.125));  // aabbMin + leftRight
-    vec4 data1 = texture(tlasNodesTexture, vec2(nodeTexCoord, 0.375));  // aabbMax + BLAS
-    
+
+    vec4 data0 = texture(tlasNodesTexture, vec2(nodeTexCoord, 0.125));    // aabbMin + leftChild
+    vec4 data1 = texture(tlasNodesTexture, vec2(nodeTexCoord, 0.375));    // aabbMax + BLAS
+    vec4 data2 = texture(tlasNodesTexture, vec2(nodeTexCoord, 0.8333));   // rightChild in .w
+
     node.aabbMin = data0.xyz;
-    node.leftRight = uint(data0.w);
+    node.leftChild = uint(data0.w);
     node.aabbMax = data1.xyz;
     node.BLAS = uint(data1.w);
-    
+    node.rightChild = uint(data2.w);
+
     return node;
 }
 
@@ -318,7 +321,9 @@ void BVHIntersect(inout Ray ray, uint instanceIdx, uint blasOffset)
     
     while (true)
     {
-        if (++bvhSteps > 4096) break; BVHNode node = decodeBVHNode(nodeIdx);
+        // A tree traversal visits each node at most once, so iterations can never
+        // exceed the total node count unless the data is corrupt; guard against hangs.
+        if (++bvhSteps > blasNodeCount) break; BVHNode node = decodeBVHNode(nodeIdx);
         
         if (node.triCount > 0u) // Leaf node
         {
@@ -400,23 +405,25 @@ void TLASIntersect(inout Ray ray)
     
     while (true)
     {
-        if (++tlasSteps > 512) break; TLASNode node = decodeTLASNode(nodeIdx);
+        // Each TLAS node is visited at most once in a valid tree traversal, so the
+        // node count is a safe upper bound; exceeding it means corrupt data.
+        if (++tlasSteps > tlasNodeCount) break; TLASNode node = decodeTLASNode(nodeIdx);
         
-        if (node.leftRight == 0u) // Leaf node
+        if (node.leftChild == 0u) // Leaf node
         {
             // Current node is a leaf: intersect instance
             BVHInstance inst = decodeInstance(int(node.BLAS));
             instanceIntersect(ray, inst, node.BLAS);
-            
+
             // Pop a node from the stack; terminate if none left
             if (stackPtr == 0) break;
             nodeIdx = stack[--stackPtr];
             continue;
         }
-        
+
         // Current node is an interior node: visit child nodes, ordered
-        uint leftChild = node.leftRight & 0xFFFFu;
-        uint rightChild = (node.leftRight >> 16) & 0xFFFFu;
+        uint leftChild = node.leftChild;
+        uint rightChild = node.rightChild;
         
         TLASNode child1 = decodeTLASNode(int(leftChild));
         TLASNode child2 = decodeTLASNode(int(rightChild));
