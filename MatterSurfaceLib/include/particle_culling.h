@@ -26,8 +26,9 @@ float lattice_vhash(int x, int y, int z);
 float lattice_vnoise(float x, float y, float z);
 
 // A slot is buried iff every slot in the Chebyshev box of half-width `margin`
-// around it is occupied. Grid (6/26-connectivity) assumption; future lattices
-// would expand neighbor_offsets via BFS instead.
+// around it is occupied. This currently hardcodes the grid's box neighborhood
+// and does not consult lattice.neighbor_offsets(); future non-grid lattices
+// would instead expand neighbor_offsets via BFS to `margin` steps.
 bool slot_is_buried(const Occupancy& occ, SlotCoord c, int margin);
 
 // Keep occupied slots that are NOT buried; emit a particle for each kept slot.
