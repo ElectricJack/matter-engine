@@ -318,7 +318,7 @@ public:
     MatterSurfaceLibDemo(int width, int height) 
         : screen_width_(width), screen_height_(height),
           blas_manager_(std::make_unique<BLASManager>()),
-          tlas_manager_(std::make_unique<TLASManager>(1000)),
+          tlas_manager_(std::make_unique<TLASManager>(4096)),
           bvh_visualizer_(std::make_unique<BVHVisualizer>()),
           test_cluster_(std::make_unique<Cluster>(0, *blas_manager_, *tlas_manager_, 5.0f)) {
         
