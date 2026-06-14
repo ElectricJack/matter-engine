@@ -56,7 +56,7 @@ TARGET = minimal_cell_test
 $(TARGET): $(MAIN_SOURCE) $(MATTER_SOURCES)
 	$(CC) $(MAIN_SOURCE) $(MATTER_SOURCES) -o $(TARGET) $(CFLAGS) $(INCLUDE_PATHS) $(LDFLAGS) $(LDLIBS)
 
-.PHONY: clean run run-simp run-blas run-cell run-cont
+.PHONY: clean run run-simp run-blas run-cell run-cont run-reg
 
 clean:
 	rm -f $(TARGET) $(SIMP_TARGET) $(BLAS_TARGET) $(CELL_TARGET) $(CONT_TARGET)
@@ -125,3 +125,17 @@ $(CONT_TARGET): $(CONT_CPP) $(CONT_C)
 
 run-cont: $(CONT_TARGET)
 	./$(CONT_TARGET)
+
+# Material registry unit tests (headless, GL-free)
+REG_TARGET = material_registry_tests
+REG_CPP = material_registry_tests.cpp
+REG_C   = ../src/material_registry.c
+REG_C_OBJ = material_registry.o
+
+$(REG_TARGET): $(REG_CPP) $(REG_C)
+	gcc -c $(REG_C) -O2 -DPLATFORM_DESKTOP $(INCLUDE_PATHS)
+	$(CC) $(REG_CPP) $(REG_C_OBJ) -o $(REG_TARGET) $(CFLAGS) $(INCLUDE_PATHS) $(LDFLAGS) $(LDLIBS)
+	rm -f $(REG_C_OBJ)
+
+run-reg: $(REG_TARGET)
+	./$(REG_TARGET)
