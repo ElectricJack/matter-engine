@@ -293,7 +293,7 @@ static Shader LoadShaderCached(const char* fsPath) {
 
 // --- Deterministic 3D value noise for lattice displacement (no deps) ---
 static float lattice_vhash(int x, int y, int z) {
-    uint32_t h = (uint32_t)(x * 374761393) ^ (uint32_t)(y * 668265263) ^ (uint32_t)(z * 2147483647);
+    uint32_t h = ((uint32_t)x * 374761393u) ^ ((uint32_t)y * 668265263u) ^ ((uint32_t)z * 2147483647u);
     h = (h ^ (h >> 13)) * 1274126177u;
     h ^= h >> 16;
     return (float)(h & 0xFFFFFFu) / (float)0xFFFFFFu; // [0,1]
