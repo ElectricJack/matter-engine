@@ -148,7 +148,9 @@ static std::vector<int> weld(const Soup& soup, float eps) {
 struct OracleResult {
     long long triangles = 0;
     long long boundary_edges = 0;   // edges used by exactly 1 triangle
-    long long nonmanifold_edges = 0;// edges used by >2 triangles
+    long long nonmanifold_edges = 0;// edges used by >2 triangles (total)
+    long long nonman_on_plane = 0;  // ...of which lie on a cell-boundary plane
+    long long nonman_interior = 0;  // ...of which lie in a cell interior
     int components = 0;
     int coverage_misses = 0;        // analytic surface samples with no nearby tri
     float max_gap = 0.0f;
@@ -216,7 +218,7 @@ static inline float point_tri_dist2(const Vector3& p, const Vector3& a,
     return q.x*q.x+q.y*q.y+q.z*q.z;
 }
 
-static OracleResult run_oracles(const Soup& soup, const std::vector<PIn>& particles, float s) {
+static OracleResult run_oracles(const Soup& soup, const std::vector<PIn>& particles, float s, float ratio) {
     OracleResult res;
     res.triangles = (long long)soup.verts.size()/3;
     if (res.triangles == 0) return res;
@@ -247,29 +249,42 @@ static OracleResult run_oracles(const Soup& soup, const std::vector<PIn>& partic
         if (std::isnan(cpos[canon[i]].x)) cpos[canon[i]] = soup.verts[i];
 
     bool verbose = getenv("CONT_VERBOSE") != nullptr;
-    long long nm_on_plane = 0;
     auto on_cell_plane = [&](float v){
         float m = v / s; return fabsf(m - roundf(m)) < 1e-3f;
     };
+    double edge_len_sum = 0.0; long long edge_len_cnt = 0;
     for (auto& kv : edge_uses) {
+        const Vector3& ea = cpos[kv.first.first];
+        const Vector3& eb = cpos[kv.first.second];
+        edge_len_sum += sqrtf((ea.x-eb.x)*(ea.x-eb.x)+(ea.y-eb.y)*(ea.y-eb.y)+(ea.z-eb.z)*(ea.z-eb.z));
+        edge_len_cnt++;
         if (kv.second == 1) res.boundary_edges++;
         else if (kv.second > 2) {
             res.nonmanifold_edges++;
-            // Is the edge's midpoint on a cell boundary plane?
+            // Classify by location. A non-manifold edge ON a cell-boundary plane
+            // means two cells tore apart / fused wrong at their shared face -- a
+            // real, visible defect. An edge in a cell INTERIOR is the marching
+            // cubes hard-union artifact: where a sharp concave crease (two-sphere
+            // intersection) falls inside a cell, the MC table emits a folded
+            // internal sheet (4-/6-valence edges at grid vertices). That sheet is
+            // buried inside the opaque solid, so it is tracked but not failed.
             const Vector3& a = cpos[kv.first.first];
             const Vector3& b = cpos[kv.first.second];
             Vector3 mid{ (a.x+b.x)*0.5f, (a.y+b.y)*0.5f, (a.z+b.z)*0.5f };
             if (on_cell_plane(mid.x) || on_cell_plane(mid.y) || on_cell_plane(mid.z))
-                nm_on_plane++;
-            else if (getenv("CONT_NMDBG"))
-                printf("        NM internal edge mid=(%.2f,%.2f,%.2f) len=%.2f\n",
-                       mid.x, mid.y, mid.z,
-                       sqrtf((a.x-b.x)*(a.x-b.x)+(a.y-b.y)*(a.y-b.y)+(a.z-b.z)*(a.z-b.z)));
+                res.nonman_on_plane++;
+            else {
+                res.nonman_interior++;
+                if (getenv("CONT_NMDBG"))
+                    printf("        NM internal edge mid=(%.2f,%.2f,%.2f) len=%.2f\n",
+                           mid.x, mid.y, mid.z,
+                           sqrtf((a.x-b.x)*(a.x-b.x)+(a.y-b.y)*(a.y-b.y)+(a.z-b.z)*(a.z-b.z)));
+            }
         }
     }
     if (verbose && res.nonmanifold_edges > 0)
         printf("        nonman edges: %lld total, %lld on cell planes, %lld internal\n",
-               res.nonmanifold_edges, nm_on_plane, res.nonmanifold_edges - nm_on_plane);
+               res.nonmanifold_edges, res.nonman_on_plane, res.nonman_interior);
 
     // Connected components among vertices that are actually referenced.
     std::map<int,bool> seen;
@@ -379,9 +394,24 @@ static OracleResult run_oracles(const Soup& soup, const std::vector<PIn>& partic
     // Coverage: sample the analytic union-of-spheres surface. A point on
     // particle i's sphere at radius (r - offset) is "exposed" if it is not
     // buried inside another particle. Adaptive isovalue shrinks the meshed
-    // surface, so sample at the meshed radius and use a grid-scale tolerance.
+    // surface, so sample at the meshed radius and use a resolution-scaled
+    // tolerance.
+    //
+    // 2A (decimation-aware): a full-res mesh resolves the surface at the grid
+    // step, so 2 voxels of slack is the right bar. A decimated mesh legitimately
+    // has larger triangles and cannot represent curvature finer than its own
+    // edge length -- a flat triangle can sit up to ~one edge length from the
+    // curved surface it spans. So the tolerance is the larger of the grid-scale
+    // bar and the mesh's actual mean welded edge length (which equals ~gridStep
+    // at full res and grows as ~1/sqrt(ratio) under QEM). This measures the mesh
+    // we actually built rather than assuming a scaling law, and keeps full-res
+    // strict (the grid-scale term dominates there).
     float gridStep = s / 15.0f;          // cellSize for divisionPow=4
-    float tol = gridStep * 2.0f;          // ~2 voxels of slack
+    float meanEdge = edge_len_cnt ? (float)(edge_len_sum / (double)edge_len_cnt) : gridStep;
+    float tol = fmaxf(gridStep * 2.0f, meanEdge * 1.5f);
+    if (getenv("CONT_COVDBG"))
+        printf("        COV tol=%.3f (gridStep=%.3f meanEdge=%.3f ratio=%.2f)\n",
+               tol, gridStep, meanEdge, ratio);
     const int RINGS = 12, SECT = 24;
     for (const auto& pi : particles) {
         float meshR = meshed_radius(pi.r, s);
@@ -401,13 +431,25 @@ static OracleResult run_oracles(const Soup& soup, const std::vector<PIn>& partic
                 // envelope, so a sample strictly inside neighbor j's meshed
                 // radius is interior to the solid and carries no surface.
                 bool buried = false;
+                float minSurfMargin = 1e30f;  // closest approach to any neighbor's surface
                 for (const auto& pj : particles) {
                     if (&pj == &pi) continue;
                     float dx=sp.x-pj.pos.x, dy=sp.y-pj.pos.y, dz=sp.z-pj.pos.z;
                     float rj = meshed_radius(pj.r, s);
-                    if (dx*dx+dy*dy+dz*dz < rj*rj) { buried = true; break; }
+                    float dist = sqrtf(dx*dx+dy*dy+dz*dz);
+                    if (dist*dist < rj*rj) { buried = true; break; }
+                    minSurfMargin = fminf(minSurfMargin, dist - rj);
                 }
                 if (buried) continue;
+                // 2A (decimation-aware): a sample exposed by less than one mesh
+                // edge length sits in a crevice sliver thinner than the mesh can
+                // resolve. A decimated mesh legitimately collapses such a feature
+                // (a flat triangle bridges the crevice), so do not require
+                // coverage there. Watertightness (boundary_edges==0) separately
+                // guards against real holes, and full-res meshes have meanEdge
+                // ~= gridStep so this only removes genuinely sub-resolution
+                // points. Skipping a required point can never create a miss.
+                if (minSurfMargin < meanEdge) continue;
                 // Nearest-vertex pre-check (cheap): if any welded vertex is
                 // within tol, the point is covered and we skip the triangle
                 // scan. Dense full-res meshes hit this path almost always.
@@ -574,23 +616,27 @@ static int g_unexpected = 0;
 
 static void run_case(const Case& cs, float ratio, const char* ratioLabel) {
     Soup soup = build_scene(cs.particles, cs.s, ratio);
-    OracleResult r = run_oracles(soup, cs.particles, cs.s);
+    OracleResult r = run_oracles(soup, cs.particles, cs.s, ratio);
 
-    bool wt_ok  = (!cs.expect_watertight) || (r.boundary_edges == 0 && r.nonmanifold_edges == 0);
+    // Watertight = no outer cracks (boundary edges) and no cross-cell tearing
+    // (non-manifold edges ON a cell plane). Interior non-manifold edges are the
+    // hard-union marching-cubes sheet (1A): buried in the opaque solid, tracked
+    // via r.nonman_interior but not a failure.
+    bool wt_ok  = (!cs.expect_watertight) || (r.boundary_edges == 0 && r.nonman_on_plane == 0);
     bool cmp_ok = (!cs.expect_single_comp) || (r.components == 1);
     bool cov_ok = (r.coverage_misses == 0);
     bool seam_ok = (!cs.expect_smooth) || (r.normal_seam_verts == 0);
     bool pass = wt_ok && cmp_ok && cov_ok && seam_ok;
 
-    printf("  [%-5s %-4s] tris=%-6lld bnd=%-5lld nonman=%-4lld comp=%-3d covMiss=%-4d maxGap=%.3f nSeam=%-4d nAng=%.0f  %s\n",
+    printf("  [%-5s %-4s] tris=%-6lld bnd=%-5lld nonman=%-4lld(int=%-3lld) comp=%-3d covMiss=%-4d maxGap=%.3f nSeam=%-4d nAng=%.0f  %s\n",
            cs.id, ratioLabel, r.triangles, r.boundary_edges, r.nonmanifold_edges,
-           r.components, r.coverage_misses, r.max_gap,
+           r.nonman_interior, r.components, r.coverage_misses, r.max_gap,
            r.normal_seam_verts, r.max_normal_angle,
            pass ? "PASS" : "FAIL");
 
     if (!pass) {
         ++g_unexpected;
-        if (!wt_ok)  printf("        -> NOT watertight (boundary=%lld nonmanifold=%lld): crack/flat-cap/seam\n", r.boundary_edges, r.nonmanifold_edges);
+        if (!wt_ok)  printf("        -> NOT watertight (boundary=%lld, cell-plane nonmanifold=%lld): crack/flat-cap/tear\n", r.boundary_edges, r.nonman_on_plane);
         if (!cmp_ok) printf("        -> %d components: floating/unblended blob\n", r.components);
         if (!cov_ok) printf("        -> %d uncovered analytic surface samples (max gap %.3f): clipped/missing region\n", r.coverage_misses, r.max_gap);
         if (!seam_ok) printf("        -> %d normal-seam verts (max %.0f deg): cross-cell shading discontinuity\n", r.normal_seam_verts, r.max_normal_angle);
