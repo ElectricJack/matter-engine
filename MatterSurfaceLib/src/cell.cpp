@@ -315,7 +315,9 @@ void Cell::generate_mesh_for_group(uint32_t group_id, const std::vector<StaticPa
     // threshold are dropped. This both fixes the old single-radius hole bug and
     // gives graceful "slightly larger -> blend -> gone" LOD degradation.
     std::vector<Particle> particles;
+    std::vector<float4> particle_tints;   // aligned 1:1 with `particles`
     particles.reserve(particle_indices.size());
+    particle_tints.reserve(particle_indices.size());
     float max_radius = 0.0f;
     for (uint32_t idx : particle_indices) {
         if (idx >= cluster_particles.size()) continue;
@@ -328,6 +330,7 @@ void Cell::generate_mesh_for_group(uint32_t group_id, const std::vector<StaticPa
         surface_particle.radius = r_eff;
         surface_particle.materialId = static_cast<int>(sp.materialId);
         particles.push_back(surface_particle);
+        particle_tints.push_back(make_float4(sp.tint.x, sp.tint.y, sp.tint.z, sp.tint.w));
         if (r_eff > max_radius) max_radius = r_eff;
     }
 
@@ -396,14 +399,16 @@ void Cell::generate_mesh_for_group(uint32_t group_id, const std::vector<StaticPa
                 // here, so the nearest-particle loop below always assigns a real
                 // materialId anyway; this seed is just a belt-and-braces guard
                 // so the group id can never leak onto a triangle's material.
-                int best = particles[0].materialId;
+                int bestIdx = 0;
                 float bestD = 3.4e38f;
-                for (const Particle& p : particles) {
+                for (size_t pi = 0; pi < particles.size(); ++pi) {
+                    const Particle& p = particles[pi];
                     float dx = c.x - p.position.x, dy = c.y - p.position.y, dz = c.z - p.position.z;
                     float d = dx*dx + dy*dy + dz*dz;
-                    if (d < bestD) { bestD = d; best = p.materialId; }
+                    if (d < bestD) { bestD = d; bestIdx = static_cast<int>(pi); }
                 }
-                triangle_normals[t].materialId = best;
+                triangle_normals[t].materialId = particles[bestIdx].materialId;
+                triangle_normals[t].tint = particle_tints[bestIdx];
             }
 
             if (!triangles.empty() && triangles.size() > 0) {
