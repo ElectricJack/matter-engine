@@ -6,6 +6,7 @@
 #include "mesh_simplifier.hpp"
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <algorithm>
 
 // Forward declarations we need for surface mesh generation
@@ -237,56 +238,20 @@ std::vector<Tri> convert_mesh_to_triangles(const Mesh& mesh, std::vector<TriEx>*
     return triangles;
 }
 
-void Cell::generate_mesh_for_material(uint32_t material_id, const std::vector<StaticParticle>& cluster_particles, BLASManager& blas_manager, float simplification_ratio) {
-    auto material_it = material_particle_indices.find(material_id);
-    if (material_it == material_particle_indices.end() || material_it->second.empty()) {
-        return;
-    }
-    
-    const auto& particle_indices = material_it->second;
-    
-    // Convert cluster particles to SurfaceLib format (only for this material)
-    std::vector<Particle> surface_particles;
-    surface_particles.reserve(particle_indices.size());
-    
-    for (uint32_t idx : particle_indices) {
-        if (idx < cluster_particles.size()) {
-            const StaticParticle& static_particle = cluster_particles[idx];
-            
-            Particle surface_particle;
-            surface_particle.position = static_particle.position;
-            surface_particle.materialId = static_particle.materialId;
-            
-            surface_particles.push_back(surface_particle);
-        }
-    }
-    
-    if (surface_particles.empty()) {
-        return;
-    }
-    
-    // Calculate particle radius (use first particle's radius)
-    float particle_radius = cluster_particles[particle_indices[0]].radius;
-    
-    // Create bounds for mesh generation
+// Build one pre-upload mesh for a set of particles that all share the same
+// radius. SurfaceLib's GenerateMesh bakes a single radius into its SDF, so each
+// radius must be meshed separately. Decimation (when requested) and the SDF
+// gradient normal pass both run at this group's own radius.
+static Mesh build_radius_group_mesh(std::vector<Particle>& group, float radius,
+                                    const Vector3& center, float actual_size,
+                                    const Vector3& min_bound, const Vector3& max_bound,
+                                    float simplification_ratio) {
     Bounds bounds;
     bounds.center = center;
     bounds.size = Vector3{actual_size, actual_size, actual_size};
-    
-    // Use fixed mesh resolution for all cells regardless of size
-    // This ensures consistent mesh quality and memory usage per cell
-    // Smaller cells get higher voxel density (more detail per world unit)
     bounds.divisionPow = 4; // Always 16x16x16 resolution
-    
-    // Generate mesh using SurfaceLib
-    printf("    Generating mesh: %zu particles, bounds=(%.1f,%.1f,%.1f) size=(%.1f,%.1f,%.1f) divPow=%d\n",
-           surface_particles.size(), bounds.center.x, bounds.center.y, bounds.center.z,
-           bounds.size.x, bounds.size.y, bounds.size.z, bounds.divisionPow);
-    
-    Mesh mesh = GenerateMesh(surface_particles.data(), particle_radius, 
-                            static_cast<int>(surface_particles.size()), bounds);
-    
-    printf("    Generated mesh: %d vertices, %d triangles\n", mesh.vertexCount, mesh.triangleCount);
+
+    Mesh mesh = GenerateMesh(group.data(), radius, static_cast<int>(group.size()), bounds);
 
     // Decimate to a low-poly proxy when the cluster requests it. Boundary
     // vertices on this cell's face planes are locked so seams with same-level
@@ -303,23 +268,119 @@ void Cell::generate_mesh_for_material(uint32_t material_id, const std::vector<St
             // simplify_mesh rebuilds normals from face geometry, reintroducing
             // the per-cell shading seams; reapply the cross-cell-continuous SDF
             // gradient so the decimated proxy shades identically to the dense mesh.
-            ComputeSurfaceNormals(&simplified, surface_particles.data(), particle_radius,
-                                  static_cast<int>(surface_particles.size()));
+            ComputeSurfaceNormals(&simplified, group.data(), radius,
+                                  static_cast<int>(group.size()));
             UnloadMesh(mesh);   // free the pre-upload CPU arrays of the dense mesh
             mesh = simplified;
-            printf("    Simplified mesh: %d vertices, %d triangles (ratio %.2f)\n",
-                   mesh.vertexCount, mesh.triangleCount, simplification_ratio);
         } else {
             UnloadMesh(simplified); // simplification produced nothing usable; keep dense mesh
         }
     }
+    return mesh;
+}
+
+// Concatenate several pre-upload meshes into one indexed mesh allocated with
+// raylib's allocator (safe for UploadMesh/UnloadMesh). Consumes (frees) the
+// parts. Vertex colors are kept only when every part carries them -- the
+// decimated path drops colors, matching the prior single-mesh behavior.
+static Mesh concat_meshes(std::vector<Mesh>& parts) {
+    int totalV = 0, totalT = 0;
+    bool all_colors = !parts.empty();
+    for (const Mesh& m : parts) {
+        totalV += m.vertexCount;
+        totalT += m.triangleCount;
+        if (!m.colors) all_colors = false;
+    }
+
+    Mesh out = {0};
+    // 16-bit indices cap a merged cell at 65535 verts; at divisionPow 4 a single
+    // cell never approaches this, so bail rather than emit wrapped indices.
+    if (totalV == 0 || totalT == 0 || totalV > 65535) {
+        for (Mesh& m : parts) UnloadMesh(m);
+        return out;
+    }
+
+    out.vertexCount   = totalV;
+    out.triangleCount = totalT;
+    out.vertices = (float*)MemAlloc(totalV * 3 * sizeof(float));
+    out.normals  = (float*)MemAlloc(totalV * 3 * sizeof(float));
+    out.indices  = (unsigned short*)MemAlloc(totalT * 3 * sizeof(unsigned short));
+    out.colors   = all_colors ? (unsigned char*)MemAlloc(totalV * 4 * sizeof(unsigned char)) : nullptr;
+
+    int vOff = 0, tOff = 0;
+    for (Mesh& m : parts) {
+        memcpy(out.vertices + vOff * 3, m.vertices, m.vertexCount * 3 * sizeof(float));
+        if (m.normals) memcpy(out.normals + vOff * 3, m.normals, m.vertexCount * 3 * sizeof(float));
+        else           memset(out.normals + vOff * 3, 0, m.vertexCount * 3 * sizeof(float));
+        if (all_colors) memcpy(out.colors + vOff * 4, m.colors, m.vertexCount * 4 * sizeof(unsigned char));
+        for (int t = 0; t < m.triangleCount * 3; ++t) {
+            out.indices[tOff * 3 + t] = (unsigned short)(m.indices[t] + vOff);
+        }
+        vOff += m.vertexCount;
+        tOff += m.triangleCount;
+        UnloadMesh(m);
+    }
+    return out;
+}
+
+void Cell::generate_mesh_for_material(uint32_t material_id, const std::vector<StaticParticle>& cluster_particles, BLASManager& blas_manager, float simplification_ratio) {
+    auto material_it = material_particle_indices.find(material_id);
+    if (material_it == material_particle_indices.end() || material_it->second.empty()) {
+        return;
+    }
+
+    const auto& particle_indices = material_it->second;
+
+    // Group this material's particles by radius. Mixing radii in one GenerateMesh
+    // call would render every particle at the first one's radius; a small added
+    // particle inflated to a large radius fills the whole cell and erases the
+    // isosurface, punching holes in the surface (most visible at small cell
+    // sizes, i.e. low LOD). One sub-mesh per radius avoids that; merge below.
+    struct RadiusGroup { float radius; std::vector<Particle> particles; };
+    std::vector<RadiusGroup> groups;
+    for (uint32_t idx : particle_indices) {
+        if (idx >= cluster_particles.size()) continue;
+        const StaticParticle& sp = cluster_particles[idx];
+
+        RadiusGroup* group = nullptr;
+        for (auto& candidate : groups) {
+            if (candidate.radius == sp.radius) { group = &candidate; break; }
+        }
+        if (!group) {
+            groups.push_back({sp.radius, {}});
+            group = &groups.back();
+        }
+
+        Particle surface_particle;
+        surface_particle.position = sp.position;
+        surface_particle.materialId = sp.materialId;
+        group->particles.push_back(surface_particle);
+    }
+
+    if (groups.empty()) {
+        return;
+    }
+
+    std::vector<Mesh> parts;
+    parts.reserve(groups.size());
+    for (auto& group : groups) {
+        Mesh part = build_radius_group_mesh(group.particles, group.radius, center, actual_size,
+                                            min_bound, max_bound, simplification_ratio);
+        if (part.vertexCount > 0 && part.triangleCount > 0) {
+            parts.push_back(part);
+        } else {
+            UnloadMesh(part);
+        }
+    }
+
+    Mesh mesh = concat_meshes(parts);
 
     if (mesh.vertexCount > 0) {
         // Store the mesh
         material_meshes[material_id] = mesh;
 
         UploadMesh(&material_meshes[material_id], false);
-        
+
         // Register mesh with BLAS manager for ray tracing
         try {
             std::vector<TriEx> triangle_normals;

@@ -21,6 +21,9 @@ shader_preprocessor.exe
 # Processed shaders
 shaders/*_processed.*
 
+# In-app GL program-binary cache
+.shader_cache/
+
 # System files
 .DS_Store
 *.dSYM/

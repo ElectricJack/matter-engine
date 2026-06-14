@@ -6,7 +6,10 @@ extern "C" {
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#include <cstdint>
 #include <memory>
+#include <string>
 #include <vector>
 #include <unordered_map>
 
@@ -17,6 +20,7 @@ extern "C" {
 
 extern "C" {
     GLFWwindow* glfwGetCurrentContext();
+    void glFinish(void);
 }
 
 #include "include/blas_manager.hpp"
@@ -26,6 +30,265 @@ extern "C" {
 #include "include/cluster.h"
 #include "include/cell.h"
 #include "include/profiler.hpp"
+
+// ---------------------------------------------------------------------------
+// In-app GL program-binary cache.
+//
+// Under WSLg, OpenGL is emulated by Mesa's d3d12 driver, so the 1200+ line
+// raytrace uber-shader is translated GLSL->NIR->DXIL and recompiled by the
+// NVIDIA D3D12 backend on every launch -- tens of seconds of CPU work. The
+// linked program binary (ARB_get_program_binary, core since GL 4.1) lets us
+// store the driver's compiled result on disk and restore it on the next launch
+// with glProgramBinary, skipping the translate+compile entirely.
+//
+// The cache key includes the shader source text and the GL_VERSION/GL_RENDERER
+// strings, so a driver upgrade or shader edit produces a new key. As a final
+// guard, a restored binary is only accepted if it reports GL_LINK_STATUS ==
+// GL_TRUE; otherwise we silently fall back to compiling from source.
+// ---------------------------------------------------------------------------
+#ifndef GL_PROGRAM_BINARY_LENGTH
+#define GL_PROGRAM_BINARY_LENGTH 0x8741
+#endif
+#ifndef GL_PROGRAM_BINARY_RETRIEVABLE_HINT
+#define GL_PROGRAM_BINARY_RETRIEVABLE_HINT 0x8257
+#endif
+#ifndef GL_LINK_STATUS
+#define GL_LINK_STATUS 0x8B82
+#endif
+#ifndef GL_TRUE
+#define GL_TRUE 1
+#endif
+#define MSL_GL_VERTEX_SHADER   0x8B31
+#define MSL_GL_FRAGMENT_SHADER 0x8B30
+
+namespace {
+
+typedef void   (*MSL_glGetProgramiv)(unsigned int, unsigned int, int*);
+typedef void   (*MSL_glGetProgramBinary)(unsigned int, int, int*, unsigned int*, void*);
+typedef void   (*MSL_glProgramBinary)(unsigned int, unsigned int, const void*, int);
+typedef unsigned int (*MSL_glCreateProgram)(void);
+typedef void   (*MSL_glDeleteProgram)(unsigned int);
+typedef void   (*MSL_glAttachShader)(unsigned int, unsigned int);
+typedef void   (*MSL_glDetachShader)(unsigned int, unsigned int);
+typedef void   (*MSL_glDeleteShader)(unsigned int);
+typedef void   (*MSL_glBindAttribLocation)(unsigned int, unsigned int, const char*);
+typedef void   (*MSL_glProgramParameteri)(unsigned int, unsigned int, int);
+typedef void   (*MSL_glLinkProgram)(unsigned int);
+
+struct GLBinFns {
+    MSL_glGetProgramiv     getProgramiv     = nullptr;
+    MSL_glGetProgramBinary getProgramBinary = nullptr;
+    MSL_glProgramBinary    programBinary    = nullptr;
+    MSL_glCreateProgram    createProgram    = nullptr;
+    MSL_glDeleteProgram    deleteProgram    = nullptr;
+    MSL_glAttachShader     attachShader     = nullptr;
+    MSL_glDetachShader     detachShader     = nullptr;
+    MSL_glDeleteShader     deleteShader     = nullptr;
+    MSL_glBindAttribLocation bindAttribLocation = nullptr;
+    MSL_glProgramParameteri  programParameteri  = nullptr;
+    MSL_glLinkProgram      linkProgram      = nullptr;
+    bool ok() const {
+        return getProgramiv && getProgramBinary && programBinary && createProgram &&
+               deleteProgram && attachShader && detachShader && deleteShader &&
+               bindAttribLocation && programParameteri && linkProgram;
+    }
+};
+
+GLBinFns load_gl_bin_fns() {
+    GLBinFns f;
+    f.getProgramiv       = (MSL_glGetProgramiv)      glfwGetProcAddress("glGetProgramiv");
+    f.getProgramBinary   = (MSL_glGetProgramBinary)  glfwGetProcAddress("glGetProgramBinary");
+    f.programBinary      = (MSL_glProgramBinary)     glfwGetProcAddress("glProgramBinary");
+    f.createProgram      = (MSL_glCreateProgram)     glfwGetProcAddress("glCreateProgram");
+    f.deleteProgram      = (MSL_glDeleteProgram)     glfwGetProcAddress("glDeleteProgram");
+    f.attachShader       = (MSL_glAttachShader)      glfwGetProcAddress("glAttachShader");
+    f.detachShader       = (MSL_glDetachShader)      glfwGetProcAddress("glDetachShader");
+    f.deleteShader       = (MSL_glDeleteShader)      glfwGetProcAddress("glDeleteShader");
+    f.bindAttribLocation = (MSL_glBindAttribLocation)glfwGetProcAddress("glBindAttribLocation");
+    f.programParameteri  = (MSL_glProgramParameteri) glfwGetProcAddress("glProgramParameteri");
+    f.linkProgram        = (MSL_glLinkProgram)       glfwGetProcAddress("glLinkProgram");
+    return f;
+}
+
+// raylib's GL 3.3 default vertex shader (mirrors rlgl.h defaultVShaderCode), so
+// a program we link ourselves matches the batch's vertex attribute layout.
+const char* kDefaultVShader =
+    "#version 330                       \n"
+    "in vec3 vertexPosition;            \n"
+    "in vec2 vertexTexCoord;            \n"
+    "in vec4 vertexColor;               \n"
+    "out vec2 fragTexCoord;             \n"
+    "out vec4 fragColor;                \n"
+    "uniform mat4 mvp;                  \n"
+    "void main()                        \n"
+    "{                                  \n"
+    "    fragTexCoord = vertexTexCoord; \n"
+    "    fragColor = vertexColor;       \n"
+    "    gl_Position = mvp*vec4(vertexPosition, 1.0); \n"
+    "}                                  \n";
+
+uint64_t fnv1a64(const char* s) {
+    uint64_t h = 1469598103934665603ULL;
+    for (; s && *s; ++s) { h ^= (unsigned char)(*s); h *= 1099511628211ULL; }
+    return h;
+}
+
+// Populate the default attribute/uniform locations exactly as raylib's
+// LoadShaderFromMemory does, so a binary-restored program draws the fullscreen
+// quad (vertex pos/texcoord/color + mvp + colDiffuse + texture0) correctly.
+void fill_default_shader_locs(Shader* sh) {
+    sh->locs = (int*)RL_CALLOC(RL_MAX_SHADER_LOCATIONS, sizeof(int));
+    for (int i = 0; i < RL_MAX_SHADER_LOCATIONS; i++) sh->locs[i] = -1;
+    sh->locs[SHADER_LOC_VERTEX_POSITION]   = rlGetLocationAttrib(sh->id, "vertexPosition");
+    sh->locs[SHADER_LOC_VERTEX_TEXCOORD01] = rlGetLocationAttrib(sh->id, "vertexTexCoord");
+    sh->locs[SHADER_LOC_VERTEX_TEXCOORD02] = rlGetLocationAttrib(sh->id, "vertexTexCoord2");
+    sh->locs[SHADER_LOC_VERTEX_NORMAL]     = rlGetLocationAttrib(sh->id, "vertexNormal");
+    sh->locs[SHADER_LOC_VERTEX_TANGENT]    = rlGetLocationAttrib(sh->id, "vertexTangent");
+    sh->locs[SHADER_LOC_VERTEX_COLOR]      = rlGetLocationAttrib(sh->id, "vertexColor");
+    sh->locs[SHADER_LOC_MATRIX_MVP]        = rlGetLocationUniform(sh->id, "mvp");
+    sh->locs[SHADER_LOC_MATRIX_VIEW]       = rlGetLocationUniform(sh->id, "matView");
+    sh->locs[SHADER_LOC_MATRIX_PROJECTION] = rlGetLocationUniform(sh->id, "matProjection");
+    sh->locs[SHADER_LOC_MATRIX_MODEL]      = rlGetLocationUniform(sh->id, "matModel");
+    sh->locs[SHADER_LOC_MATRIX_NORMAL]     = rlGetLocationUniform(sh->id, "matNormal");
+    sh->locs[SHADER_LOC_COLOR_DIFFUSE]     = rlGetLocationUniform(sh->id, "colDiffuse");
+    sh->locs[SHADER_LOC_MAP_DIFFUSE]       = rlGetLocationUniform(sh->id, "texture0");
+    sh->locs[SHADER_LOC_MAP_SPECULAR]      = rlGetLocationUniform(sh->id, "texture1");
+    sh->locs[SHADER_LOC_MAP_NORMAL]        = rlGetLocationUniform(sh->id, "texture2");
+}
+
+struct ShaderBinHeader {
+    uint32_t magic;    // 'MSLB'
+    uint32_t version;  // bump to invalidate all caches on format change
+    uint32_t format;   // GLenum binaryFormat from glGetProgramBinary
+    uint32_t length;   // payload byte count
+    uint64_t key;      // source + GL version hash (sanity check)
+};
+const uint32_t kShaderBinMagic   = 0x424C534Du; // "MSLB"
+const uint32_t kShaderBinVersion = 1u;
+
+} // namespace
+
+// Load a fragment shader (raylib default vertex shader) using an on-disk
+// program-binary cache. On a cache hit the linked program is restored without
+// recompiling; on a miss it compiles via raylib LoadShader and saves the binary
+// for next time. Always returns a usable Shader (falls back to plain LoadShader
+// if the cache or GL extension is unavailable).
+static Shader LoadShaderCached(const char* fsPath) {
+    static GLBinFns fns = load_gl_bin_fns();
+
+    char* src = LoadFileText(fsPath);
+    if (!src || !fns.ok()) {
+        if (src) UnloadFileText(src);
+        return LoadShader(nullptr, fsPath);
+    }
+
+    // Key = shader source + GL identity, so driver/shader changes miss cleanly.
+    const char* glVer = (const char*)glGetString(0x1F02 /*GL_VERSION*/);
+    const char* glRen = (const char*)glGetString(0x1F01 /*GL_RENDERER*/);
+    std::string keyStr = src;
+    if (glVer) { keyStr += "\n##GL_VERSION="; keyStr += glVer; }
+    if (glRen) { keyStr += "\n##GL_RENDERER="; keyStr += glRen; }
+    uint64_t key = fnv1a64(keyStr.c_str());
+
+    char cachePath[512];
+    snprintf(cachePath, sizeof(cachePath), ".shader_cache/%016llx.glprog",
+             (unsigned long long)key);
+
+    // --- Try cache hit -----------------------------------------------------
+    FILE* in = fopen(cachePath, "rb");
+    if (in) {
+        ShaderBinHeader hdr{};
+        if (fread(&hdr, sizeof(hdr), 1, in) == 1 &&
+            hdr.magic == kShaderBinMagic && hdr.version == kShaderBinVersion &&
+            hdr.key == key && hdr.length > 0) {
+            std::vector<unsigned char> bin(hdr.length);
+            if (fread(bin.data(), 1, hdr.length, in) == hdr.length) {
+                unsigned int prog = fns.createProgram();
+                fns.programBinary(prog, hdr.format, bin.data(), (int)hdr.length);
+                int linked = 0;
+                fns.getProgramiv(prog, GL_LINK_STATUS, &linked);
+                if (linked == GL_TRUE) {
+                    fclose(in);
+                    UnloadFileText(src);
+                    Shader sh{};
+                    sh.id = prog;
+                    fill_default_shader_locs(&sh);
+                    TraceLog(LOG_INFO, "SHADER: Restored program from binary cache: %s", cachePath);
+                    return sh;
+                }
+                fns.deleteProgram(prog); // rejected (e.g. driver upgrade) -> recompile
+            }
+        }
+        fclose(in);
+    }
+
+    // --- Cache miss: compile + link ourselves so we can request a retrievable
+    // binary (raylib links without GL_PROGRAM_BINARY_RETRIEVABLE_HINT, which
+    // makes glGetProgramBinary return a zero-length blob on Mesa). ------------
+    unsigned int vs = rlCompileShader(kDefaultVShader, MSL_GL_VERTEX_SHADER);
+    unsigned int fs = rlCompileShader(src, MSL_GL_FRAGMENT_SHADER);
+    UnloadFileText(src);
+
+    if (vs == 0 || fs == 0) {
+        if (vs) fns.deleteShader(vs);
+        if (fs) fns.deleteShader(fs);
+        return LoadShader(nullptr, fsPath); // recover via raylib's own path
+    }
+
+    unsigned int prog = fns.createProgram();
+    fns.attachShader(prog, vs);
+    fns.attachShader(prog, fs);
+    // Bind attribute locations to raylib's defaults so the batch VAO matches.
+    fns.bindAttribLocation(prog, 0, "vertexPosition");
+    fns.bindAttribLocation(prog, 1, "vertexTexCoord");
+    fns.bindAttribLocation(prog, 2, "vertexNormal");
+    fns.bindAttribLocation(prog, 3, "vertexColor");
+    fns.bindAttribLocation(prog, 4, "vertexTangent");
+    fns.bindAttribLocation(prog, 5, "vertexTexCoord2");
+    fns.programParameteri(prog, GL_PROGRAM_BINARY_RETRIEVABLE_HINT, GL_TRUE);
+    fns.linkProgram(prog);
+
+    int linked = 0;
+    fns.getProgramiv(prog, GL_LINK_STATUS, &linked);
+    fns.detachShader(prog, vs);
+    fns.detachShader(prog, fs);
+    fns.deleteShader(vs);
+    fns.deleteShader(fs);
+
+    if (linked != GL_TRUE) {
+        fns.deleteProgram(prog);
+        return LoadShader(nullptr, fsPath); // fall back to raylib (it logs the error)
+    }
+
+    Shader sh{};
+    sh.id = prog;
+    fill_default_shader_locs(&sh);
+
+    int len = 0;
+    fns.getProgramiv(prog, GL_PROGRAM_BINARY_LENGTH, &len);
+    if (len > 0) {
+        std::vector<unsigned char> bin(len);
+        int written = 0;
+        unsigned int format = 0;
+        fns.getProgramBinary(prog, len, &written, &format, bin.data());
+        if (written > 0) {
+            if (!DirectoryExists(".shader_cache")) MakeDirectory(".shader_cache");
+            FILE* out = fopen(cachePath, "wb");
+            if (out) {
+                ShaderBinHeader hdr{kShaderBinMagic, kShaderBinVersion, format,
+                                    (uint32_t)written, key};
+                fwrite(&hdr, sizeof(hdr), 1, out);
+                fwrite(bin.data(), 1, written, out);
+                fclose(out);
+                TraceLog(LOG_INFO, "SHADER: Saved program binary to cache (%d bytes): %s",
+                         written, cachePath);
+            }
+        }
+    } else {
+        TraceLog(LOG_WARNING, "SHADER: Program binary not retrievable; cache disabled this run");
+    }
+    return sh;
+}
 
 class MatterSurfaceLibDemo {
 public:
@@ -86,6 +349,10 @@ public:
             return;
         }
 
+        // Pay the one-time raytrace shader compile now, so the first toggle into
+        // raytrace mode doesn't freeze the loop. See warm_up_raytracing_shader().
+        warm_up_raytracing_shader();
+
         while (!WindowShouldClose()) {
             PROFILE_FRAME_BEGIN();
                 update();
@@ -135,6 +402,12 @@ public:
         }
 
         test_cluster_->set_simplification_ratio(ratio);
+        // MSL_LOD lets a capture reproduce a specific LOD level (default scene
+        // boots at LOD 1). Switch before the rebuild so the whole scene meshes
+        // at the requested cell size.
+        if (const char* lodEnv = getenv("MSL_LOD")) {
+            test_cluster_->set_lod_level(atoi(lodEnv), true);
+        }
         test_cluster_->force_rebuild_all_cells();
 
         // Reproduce the interactive "add particles" path headlessly: add N random
@@ -146,6 +419,7 @@ public:
             int batches = getenv("MSL_ADD_BATCHES") ? atoi(getenv("MSL_ADD_BATCHES")) : 1;
             if (batches < 1) batches = 1;
             int per_batch = total / batches;
+            float add_radius = getenv("MSL_ADD_RADIUS") ? (float)atof(getenv("MSL_ADD_RADIUS")) : 0.5f;
             SetRandomSeed(1234); // deterministic scene for pixel-comparable captures
             for (int b = 0; b < batches; ++b) {
                 for (int i = 0; i < per_batch; ++i) {
@@ -154,7 +428,7 @@ public:
                         GetRandomValue(-50, 50) / 10.0f,
                         GetRandomValue(-50, 50) / 10.0f};
                     uint32_t material = GetRandomValue(0, 7);
-                    test_cluster_->add_particle(new_pos, 0.5f, material);
+                    test_cluster_->add_particle(new_pos, add_radius, material);
                 }
                 test_cluster_->rebuild_dirty_cells();
             }
@@ -269,8 +543,14 @@ private:
     }
     
     void setup_rendering() {
-        raytracing_shader_ = LoadShader(nullptr, "shaders/raytrace_tlas_blas_processed.fs");
-        
+        // Skip the expensive raytrace uber-shader compile for non-raytrace
+        // captures (e.g. wireframe mesh debugging) so iterations are fast.
+        const char* capMode = getenv("MSL_RENDER_MODE");
+        bool skip_raytrace_shader = getenv("MSL_CAPTURE") && capMode && atoi(capMode) != 0;
+        if (!skip_raytrace_shader) {
+            raytracing_shader_ = LoadShaderCached("shaders/raytrace_tlas_blas_processed.fs");
+        }
+
         if (raytracing_shader_.id != 0) {
             setup_shader_uniforms();
         }
@@ -295,7 +575,51 @@ private:
         
         // BLAS/TLAS uniforms are now handled by their respective managers
     }
-    
+
+    // Force the GPU driver to compile/link the raytrace program now, at startup,
+    // instead of on the first frame the user toggles into raytrace mode. raylib's
+    // LoadShader only does glLinkProgram; most drivers defer the expensive backend
+    // codegen of this 1200+ line BVH-traversal uber-shader until the program is
+    // first used in a draw. That first draw happens inside render_raytraced(), so
+    // without this warm-up the whole single-threaded loop stalls for the entire
+    // compile (seconds on a GPU, ~150s under llvmpipe) the first time raytracing
+    // is enabled -- the window appears frozen and no input is processed. A trivial
+    // 1x1 offscreen draw with the program bound triggers the same compile here,
+    // where the startup logging already accounts for a brief delay.
+    void warm_up_raytracing_shader() {
+        if (raytracing_shader_.id == 0) return;
+        printf("Warming up raytrace shader (one-time GPU compile)...\n");
+        double t0 = GetTime();
+
+        RenderTexture2D warm = LoadRenderTexture(1, 1);
+        BeginTextureMode(warm);
+        ClearBackground(BLACK);
+        BeginShaderMode(raytracing_shader_);
+
+        Vector2 screen_size = {1.0f, 1.0f};
+        if (screen_size_loc_ != -1)
+            SetShaderValue(raytracing_shader_, screen_size_loc_, &screen_size, SHADER_UNIFORM_VEC2);
+
+        // Bind real BVH data so the texelFetch traversal paths are part of the
+        // compiled program (also performs the initial texture upload early).
+        blas_manager_->bind_to_shader(raytracing_shader_);
+        tlas_manager_->bind_to_shader(raytracing_shader_, *blas_manager_);
+
+        DrawRectangle(0, 0, 1, 1, WHITE);
+        EndShaderMode();
+        EndTextureMode();
+
+        // Force raylib's batch to flush so the draw is issued to GL, then block on
+        // glFinish so the driver actually compiles and executes the program now.
+        // Without the glFinish the compile stays deferred until the first buffer
+        // swap (in the real loop), which is exactly the stall we're moving here.
+        rlDrawRenderBatchActive();
+        glFinish();
+        UnloadRenderTexture(warm);
+
+        printf("Raytrace shader warm-up done in %.2fs\n", GetTime() - t0);
+    }
+
     void update() {
         {
             PROFILE_SECTION("Input Handling");
@@ -1344,6 +1668,16 @@ private:
 };
 
 int main() {
+    // Enable Mesa's on-disk shader cache before any GL context is created.
+    // Under WSLg the d3d12 GL driver otherwise re-translates every shader on
+    // each launch. Non-overriding (overwrite=0) so an explicit user env wins.
+    // This complements our own program-binary cache: it also speeds up the
+    // default raylib / ImGui shaders, not just the raytrace uber-shader.
+    // Mesa-only; the env is irrelevant to the native Windows NVIDIA driver.
+#ifndef _WIN32
+    setenv("MESA_SHADER_CACHE_DISABLE", "false", 0);
+#endif
+
     try {
         MatterSurfaceLibDemo demo(1280, 800);
         demo.run();
