@@ -22,14 +22,16 @@ struct Cell {
     Vector3 min_bound;         // Minimum bound in cluster local space
     Vector3 max_bound;         // Maximum bound in cluster local space
     
-    // Material-based mesh data
-    std::map<uint32_t, Mesh> material_meshes;  // One mesh per material in this cell
-    std::map<uint32_t, BLASHandle> material_blas; // One BLAS per material mesh
+    // Merge-group-based mesh data. The map key is a merge-group id (not a shading
+    // material): shades of the same material merge into one group/mesh, while
+    // distinct material types stay separate.
+    std::map<uint32_t, Mesh> material_meshes;  // One mesh per merge group in this cell
+    std::map<uint32_t, BLASHandle> material_blas; // One BLAS per merge-group mesh
     bool has_meshes;           // Whether any meshes have been generated
     bool is_dirty;             // Whether cell needs mesh rebuilding
     uint32_t mesh_version;     // Version number for cache invalidation
-    
-    // Particle references grouped by material
+
+    // Particle references grouped by merge group (map key is a merge-group id)
     std::map<uint32_t, std::vector<uint32_t>> material_particle_indices;
     
     // Construction and lifecycle

@@ -330,16 +330,20 @@ void Cluster::add_to_tlas() const {
         if (cell->has_meshes) {
             const auto& material_blas = cell->get_material_blas();
             for (const auto& blas_entry : material_blas) {
-                uint32_t material_id = blas_entry.first;
+                // The BLAS map key is a merge-GROUP id, not a shading material.
+                uint32_t group_id = blas_entry.first;
                 BLASHandle blas_handle = blas_entry.second;
-                
+
                 if (blas_handle > 0) {
                     // TODO: Apply cluster transform (position + rotation)
                     // For now, just add at identity transform
                     tlas_manager_.load_identity();
                     tlas_manager_.translate(position_.x, position_.y, position_.z);
                     //tlas_manager.rotate_quaternion(rotation_);
-                    tlas_manager_.draw(blas_handle, material_id);
+                    // The value packed as the instance material is a merge-group id,
+                    // used only as a fallback because every real triangle carries its
+                    // own per-triangle materialId.
+                    tlas_manager_.draw(blas_handle, group_id);
                 }
             }
         }

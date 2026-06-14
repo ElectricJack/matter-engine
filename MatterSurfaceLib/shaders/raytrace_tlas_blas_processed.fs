@@ -598,10 +598,18 @@ HitResult intersectScene(vec3 rayOrigin, vec3 rayDir)
         // Get triangle data for normal calculation
         Triangle    tri  = decodeTriangle(int(triIdx));
         BVHInstance inst = decodeInstance(int(instIdx));
-        
-        // Get material properties to determine shading mode
-        MaterialProperties matProps = getMaterialProperties(int(inst.materialId));
-        
+
+        // Per-triangle material packed in row-0 .w (see blas_manager.cpp packing).
+        // >=0 overrides the instance material; -1 falls back to the instance default.
+        // NOTE: the instance materialId is a merge-GROUP id (see Cluster::add_to_tlas),
+        // so it is only a fallback; every real triangle carries its own materialId here.
+        float triMatF = texture(trianglesTexture, tiledTexel(trianglesTexture, int(triIdx), 0, 6)).w;
+        int triMat = int(triMatF);
+        int effectiveMat = (triMat >= 0) ? triMat : int(inst.materialId);
+
+        // Material properties (incl. flatShading) sourced from the per-triangle material.
+        MaterialProperties matProps = getMaterialProperties(effectiveMat);
+
         vec3 normal;
         if (matProps.flatShading) {
             // Use face normal for flat shading
@@ -615,11 +623,7 @@ HitResult intersectScene(vec3 rayOrigin, vec3 rayDir)
         
         // Transform normal to world space
         result.normal = transformNormal(normal, inst.invTransform);
-        // Per-triangle material packed in row-0 .w (see blas_manager.cpp packing).
-        // >=0 overrides the instance material; -1 means use the instance default.
-        float triMatF = texture(trianglesTexture, tiledTexel(trianglesTexture, int(triIdx), 0, 6)).w;
-        int triMat = int(triMatF);
-        result.material = (triMat >= 0) ? triMat : int(inst.materialId);
+        result.material = effectiveMat;
         result.instanceId = int(instIdx);
     }
     else

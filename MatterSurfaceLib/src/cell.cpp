@@ -266,12 +266,12 @@ static constexpr float kFeatureCullVoxels = 0.6f;
 static constexpr float kBlendVoxels = 0.5f;
 
 void Cell::generate_mesh_for_group(uint32_t group_id, const std::vector<StaticParticle>& cluster_particles, BLASManager& blas_manager, float simplification_ratio) {
-    auto material_it = material_particle_indices.find(group_id);
-    if (material_it == material_particle_indices.end() || material_it->second.empty()) {
+    auto group_it = material_particle_indices.find(group_id);
+    if (group_it == material_particle_indices.end() || group_it->second.empty()) {
         return;
     }
 
-    const auto& particle_indices = material_it->second;
+    const auto& particle_indices = group_it->second;
 
     Bounds bounds;
     bounds.center = center;
@@ -283,7 +283,7 @@ void Cell::generate_mesh_for_group(uint32_t group_id, const std::vector<StaticPa
     float cull_radius = kFeatureCullVoxels * voxel;
     float vis_radius  = kFeatureVisVoxels  * voxel;
 
-    // All particles of this material feed one shared SDF field so differently-
+    // All particles of this merge group feed one shared SDF field so differently-
     // sized particles merge naturally (metaballs) under the smooth-min union.
     // Each particle keeps its own radius, tapered for this LOD: sub-grid features
     // are lifted just enough to stay samplable, and features below the cull
