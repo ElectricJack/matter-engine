@@ -75,6 +75,20 @@ public:
         return triex ? static_cast<float>(triex[index].materialId) : -1.0f;
     }
 
+    // Per-triangle tint channel packed into a spare row .w of the GPU triangle
+    // texture. channel: 0=r,1=g,2=b,3=a. A null triEx packs 0.0f; alpha 0 means
+    // "no tint" in the shader, so untinted meshes stay neutral.
+    static float pack_tint_w(const TriEx* triex, int index, int channel) {
+        if (!triex) return 0.0f;
+        const float4& t = triex[index].tint;
+        switch (channel) {
+            case 0: return t.x;
+            case 1: return t.y;
+            case 2: return t.z;
+            default: return t.w;
+        }
+    }
+
     BLASManager();
     ~BLASManager();
     

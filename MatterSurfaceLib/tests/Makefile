@@ -139,3 +139,13 @@ $(REG_TARGET): $(REG_CPP) $(REG_C)
 
 run-reg: $(REG_TARGET)
 	./$(REG_TARGET)
+
+# Per-triangle tint: GPU pack helper + dedup-identity regression (headless, no GL)
+TINT_TARGET = blas_tint_tests
+TINT_SOURCES = blas_tint_tests.cpp ../src/blas_manager.cpp ../src/bvh.cpp
+
+$(TINT_TARGET): $(TINT_SOURCES)
+	$(CC) $(TINT_SOURCES) -o $(TINT_TARGET) $(CFLAGS) $(INCLUDE_PATHS) $(LDFLAGS) $(LDLIBS)
+
+run-tint: $(TINT_TARGET)
+	./$(TINT_TARGET)

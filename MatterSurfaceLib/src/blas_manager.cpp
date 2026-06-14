@@ -56,6 +56,15 @@ uint32_t BLASManager::calculate_hash(const Tri* triangles, int count, const TriE
         uint32_t mat = triex ? static_cast<uint32_t>(triex[i].materialId) : 0xFFFFFFFFu;
         hash ^= mat;
         hash *= 16777619u;
+
+        // Fold the per-triangle tint into identity so geometry that differs only
+        // by tint is not deduplicated. No triEx -> neutral (0,0,0,0).
+        const float4 tnt = triex ? triex[i].tint : make_float4(0.0f, 0.0f, 0.0f, 0.0f);
+        const float* tf = reinterpret_cast<const float*>(&tnt);
+        for (int k = 0; k < 4; k++) {
+            hash ^= *reinterpret_cast<const uint32_t*>(&tf[k]);
+            hash *= 16777619u;
+        }
     }
 
     return hash;
@@ -75,6 +84,13 @@ bool BLASManager::triangles_equal(const BLASEntry& entry, const Tri* b, int coun
         int a_mat = a_ex ? a_ex[i].materialId : -1;
         int b_mat = triex ? triex[i].materialId : -1;
         if (a_mat != b_mat) {
+            return false;
+        }
+
+        // Tint must match too (a null triEx is neutral (0,0,0,0)).
+        const float4 a_tint = a_ex ? a_ex[i].tint : make_float4(0.0f, 0.0f, 0.0f, 0.0f);
+        const float4 b_tint = triex ? triex[i].tint : make_float4(0.0f, 0.0f, 0.0f, 0.0f);
+        if (std::memcmp(&a_tint, &b_tint, sizeof(float4)) != 0) {
             return false;
         }
     }
@@ -430,14 +446,14 @@ void BLASManager::ensure_gpu_textures_ready() {
                     texture_data[row1_idx + 0] = tri.vertex1.x;
                     texture_data[row1_idx + 1] = tri.vertex1.y;
                     texture_data[row1_idx + 2] = tri.vertex1.z;
-                    texture_data[row1_idx + 3] = 0.0f;
+                    texture_data[row1_idx + 3] = pack_tint_w(entry->mesh->triEx, static_cast<int>(original_idx), 0); // tint.r
 
                     // Row 2: v2
                     int row2_idx = texel_off(static_cast<int>(triangle_index), 2);
                     texture_data[row2_idx + 0] = tri.vertex2.x;
                     texture_data[row2_idx + 1] = tri.vertex2.y;
                     texture_data[row2_idx + 2] = tri.vertex2.z;
-                    texture_data[row2_idx + 3] = 0.0f;
+                    texture_data[row2_idx + 3] = pack_tint_w(entry->mesh->triEx, static_cast<int>(original_idx), 1); // tint.g
 
                     // Per-vertex normals (rows 3-5). Fall back to the face normal when
                     // the mesh carries no shading normals so all three rows match.
@@ -457,6 +473,15 @@ void BLASManager::ensure_gpu_textures_ready() {
                         texture_data[row_idx + 1] = normals[row].y;
                         texture_data[row_idx + 2] = normals[row].z;
                         texture_data[row_idx + 3] = 0.0f;
+                    }
+
+                    // Pack tint.b/.a into the spare .w of normal rows 3 and 4
+                    // (row 5 .w stays unused). Shader reads these in decodeHit.
+                    {
+                        int rowB = texel_off(static_cast<int>(triangle_index), 3);
+                        int rowA = texel_off(static_cast<int>(triangle_index), 4);
+                        texture_data[rowB + 3] = pack_tint_w(entry->mesh->triEx, static_cast<int>(original_idx), 2); // tint.b
+                        texture_data[rowA + 3] = pack_tint_w(entry->mesh->triEx, static_cast<int>(original_idx), 3); // tint.a
                     }
 
                     triangle_index++;
