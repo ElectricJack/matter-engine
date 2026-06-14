@@ -9,24 +9,10 @@
 #include <cstdio>
 #include <algorithm>
 
-// Forward declarations we need for surface mesh generation
+// Forward declarations we need for surface mesh generation.
+// Bounds/Particle and GenerateMesh/ComputeSurfaceNormals now live in cell.h
+// (the single source), so they are not re-declared here.
 extern "C" {
-    // Surface library function
-    typedef struct {
-        Vector3 center;
-        Vector3 size;
-        int     divisionPow;
-    } Bounds;
-    
-    typedef struct {
-        Vector3 position;
-        float radius;
-        int materialId;
-    } Particle;
-    
-    Mesh GenerateMesh(Particle* particles, float particleRadius, int particleCount, Bounds volume, float blendWidth, Particle* clipParticles, int clipCount);
-    void ComputeSurfaceNormals(Mesh* mesh, Particle* particles, float particleRadius, int particleCount, float blendWidth, Particle* clipParticles, int clipCount);
-    
     // Raymath and raylib functions we need
     Vector3 Vector3Add(Vector3 v1, Vector3 v2);
     Vector3 Vector3Subtract(Vector3 v1, Vector3 v2);
@@ -265,6 +251,45 @@ static constexpr float kFeatureCullVoxels = 0.6f;
 // the metaball blend strengthens at coarser LODs and is near-sharp at LOD 0.
 static constexpr float kBlendVoxels = 0.5f;
 
+std::vector<Particle> build_clip_particles(
+    uint32_t group_id,
+    const std::map<uint32_t, std::vector<uint32_t>>& buckets,
+    const std::vector<StaticParticle>& cluster_particles,
+    bool group_transparent,
+    float cull_radius, float vis_radius) {
+    std::vector<Particle> clip;
+    for (const auto& other : buckets) {
+        if (other.first == group_id || other.second.empty()) continue;
+
+        // A merge group is one optical class, so a representative particle's
+        // material decides transparency for the whole foreign group.
+        uint32_t rep_idx = other.second.front();
+        if (rep_idx >= cluster_particles.size()) continue;
+        int rep_mat = static_cast<int>(cluster_particles[rep_idx].materialId);
+        bool other_transparent = MaterialIsTransparent(rep_mat) != 0;
+
+        // Transparency gate: only carve when at least one side is transparent.
+        // opaque<->opaque overlap is hidden, so leave it uncarved.
+        if (!(group_transparent || other_transparent)) continue;
+
+        // Add the foreign group's particles using the SAME LOD taper/cull as the
+        // group's own particles, so the carve locus matches the meshed field.
+        for (uint32_t idx : other.second) {
+            if (idx >= cluster_particles.size()) continue;
+            const StaticParticle& sp = cluster_particles[idx];
+            if (sp.radius < cull_radius) continue;
+            float r_eff = (sp.radius < vis_radius) ? vis_radius : sp.radius;
+
+            Particle cp;
+            cp.position = sp.position;
+            cp.radius = r_eff;
+            cp.materialId = static_cast<int>(sp.materialId); // unused by carve math; set for consistency
+            clip.push_back(cp);
+        }
+    }
+    return clip;
+}
+
 void Cell::generate_mesh_for_group(uint32_t group_id, const std::vector<StaticParticle>& cluster_particles, BLASManager& blas_manager, float simplification_ratio) {
     auto group_it = material_particle_indices.find(group_id);
     if (group_it == material_particle_indices.end() || group_it->second.empty()) {
@@ -310,9 +335,20 @@ void Cell::generate_mesh_for_group(uint32_t group_id, const std::vector<StaticPa
         return;
     }
 
+    // Material-aware surfacing: build the transparency-gated foreign clip set
+    // from the OTHER merge groups in this cell so this group's surface
+    // terminates on the equidistant wall against a transparent neighbor. Uses
+    // the same LOD taper/cull as the group's own particles.
+    bool group_transparent = MaterialIsTransparent(particles[0].materialId) != 0;
+    std::vector<Particle> clip = build_clip_particles(
+        group_id, material_particle_indices, cluster_particles,
+        group_transparent, cull_radius, vis_radius);
+    Particle* clipPtr = clip.empty() ? NULL : clip.data();
+    int clipCount = static_cast<int>(clip.size());
+
     // max_radius is the reference radius for the SDF's spatial-hash search reach.
     Mesh mesh = GenerateMesh(particles.data(), max_radius, static_cast<int>(particles.size()),
-                             bounds, blend_width, NULL, 0);
+                             bounds, blend_width, clipPtr, clipCount);
 
     // Decimate to a low-poly proxy when requested. Boundary vertices on this
     // cell's face planes are locked so seams with same-level neighbors stay
@@ -330,7 +366,7 @@ void Cell::generate_mesh_for_group(uint32_t group_id, const std::vector<StaticPa
             // per-cell shading seams; reapply the cross-cell-continuous SDF
             // gradient (same blend width) so the proxy shades like the dense mesh.
             ComputeSurfaceNormals(&simplified, particles.data(), max_radius,
-                                  static_cast<int>(particles.size()), blend_width, NULL, 0);
+                                  static_cast<int>(particles.size()), blend_width, clipPtr, clipCount);
             UnloadMesh(mesh);
             mesh = simplified;
         } else {

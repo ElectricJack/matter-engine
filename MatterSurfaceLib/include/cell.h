@@ -13,6 +13,43 @@ class CellVisitor;
 class CellRenderVisitor;
 typedef uint32_t BLASHandle;
 
+// SurfaceLib C-linkage surface API + plain-old-data types. Declared here (the
+// single source) so cell.cpp and the headless tests share one definition
+// instead of each re-typedef'ing Particle/Bounds. These mirror surface.h but
+// are kept in an extern "C" block so the symbols stay unmangled to match the
+// C-compiled surface.c, and so consumers avoid pulling raymath.h's C++ operator
+// overloads in through surface.h.
+extern "C" {
+    typedef struct {
+        Vector3 center;
+        Vector3 size;
+        int     divisionPow;
+    } Bounds;
+
+    typedef struct {
+        Vector3 position;
+        float   radius;
+        int     materialId;
+    } Particle;
+
+    Mesh GenerateMesh(Particle* particles, float particleRadius, int particleCount, Bounds volume, float blendWidth, Particle* clipParticles, int clipCount);
+    void ComputeSurfaceNormals(Mesh* mesh, Particle* particles, float particleRadius, int particleCount, float blendWidth, Particle* clipParticles, int clipCount);
+}
+
+// Builds the transparency-gated foreign clip-particle set for meshing the merge
+// group `group_id` in a cell. For every OTHER non-empty bucket, the carve is
+// relevant iff this group is transparent OR the foreign group is transparent
+// (opaque<->opaque pairs are skipped: harmless hidden overlap). Relevant foreign
+// particles are added with the SAME LOD taper/cull as the group's own particles
+// (skip radius < cull_radius; lift r_eff = max(radius, vis_radius)). GL-free, so
+// both generate_mesh_for_group and the headless tests call the same code.
+std::vector<Particle> build_clip_particles(
+    uint32_t group_id,
+    const std::map<uint32_t, std::vector<uint32_t>>& buckets,
+    const std::vector<StaticParticle>& cluster_particles,
+    bool group_transparent,
+    float cull_radius, float vis_radius);
+
 struct Cell {
     // Cell identification and spatial properties
     Vector3 coordinates;        // Integer coordinates in cluster space (stored as floats for convenience)
