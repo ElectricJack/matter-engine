@@ -56,10 +56,10 @@ TARGET = minimal_cell_test
 $(TARGET): $(MAIN_SOURCE) $(MATTER_SOURCES)
 	$(CC) $(MAIN_SOURCE) $(MATTER_SOURCES) -o $(TARGET) $(CFLAGS) $(INCLUDE_PATHS) $(LDFLAGS) $(LDLIBS)
 
-.PHONY: clean run run-simp run-blas
+.PHONY: clean run run-simp run-blas run-cell run-cont
 
 clean:
-	rm -f $(TARGET) $(SIMP_TARGET) $(BLAS_TARGET)
+	rm -f $(TARGET) $(SIMP_TARGET) $(BLAS_TARGET) $(CELL_TARGET) $(CONT_TARGET)
 
 run: $(TARGET)
 	./$(TARGET)
@@ -87,3 +87,41 @@ $(BLAS_TARGET): $(BLAS_SOURCES)
 
 run-blas: $(BLAS_TARGET)
 	./$(BLAS_TARGET)
+
+# Cell geometric-bounds / coordinate-convention regression tests (headless).
+# C sources must be compiled with the C compiler so their symbols stay
+# unmangled (cell.cpp references GenerateMesh et al. via extern "C").
+CELL_TARGET = cell_bounds_tests
+CELL_CPP = cell_bounds_tests.cpp ../src/cell.cpp ../src/mesh_simplifier.cpp \
+           ../src/blas_manager.cpp ../src/bvh.cpp ../src/bvh_analyzer.cpp
+CELL_C = ../src/surface.c ../src/open_particle_surface.c \
+         ../src/spatial_hash.c ../src/object_allocator.c
+
+CELL_C_OBJ = surface.o open_particle_surface.o spatial_hash.o object_allocator.o
+
+$(CELL_TARGET): $(CELL_CPP) $(CELL_C)
+	gcc -c $(CELL_C) -O2 -DPLATFORM_DESKTOP $(INCLUDE_PATHS)
+	$(CC) $(CELL_CPP) $(CELL_C_OBJ) -o $(CELL_TARGET) $(CFLAGS) $(INCLUDE_PATHS) $(LDFLAGS) $(LDLIBS)
+	rm -f $(CELL_C_OBJ)
+
+run-cell: $(CELL_TARGET)
+	./$(CELL_TARGET)
+
+# Cross-cell continuity / edge-case reproduction harness (headless, GL-free).
+# Replicates the cluster meshing pipeline without UploadMesh/BLAS, so it only
+# needs the SurfaceLib C sources + the simplifier. C sources via gcc to keep
+# their symbols unmangled for the extern "C" decls.
+CONT_TARGET = mesh_continuity_tests
+CONT_CPP = mesh_continuity_tests.cpp ../src/mesh_simplifier.cpp
+CONT_C   = ../src/surface.c ../src/open_particle_surface.c \
+           ../src/spatial_hash.c ../src/object_allocator.c
+
+CONT_C_OBJ = surface.o open_particle_surface.o spatial_hash.o object_allocator.o
+
+$(CONT_TARGET): $(CONT_CPP) $(CONT_C)
+	gcc -c $(CONT_C) -O2 -DPLATFORM_DESKTOP $(INCLUDE_PATHS)
+	$(CC) $(CONT_CPP) $(CONT_C_OBJ) -o $(CONT_TARGET) $(CFLAGS) $(INCLUDE_PATHS) $(LDFLAGS) $(LDLIBS)
+	rm -f $(CONT_C_OBJ)
+
+run-cont: $(CONT_TARGET)
+	./$(CONT_TARGET)

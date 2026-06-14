@@ -6,6 +6,7 @@
 #include <queue>
 #include <cmath>
 #include <cstdint>
+#include <algorithm>
 
 namespace {
 
@@ -96,6 +97,15 @@ static void buildTopology(const Mesh& m, std::vector<WVert>& verts, std::vector<
             int src = m.indices ? (int)m.indices[t*3+k] : (t*3 + k);
             tris[t].v[k] = weldVertex(m.vertices[src*3+0], m.vertices[src*3+1], m.vertices[src*3+2]);
         }
+        // Drop triangles that welding collapsed to a degenerate (two corners at
+        // the same vertex). Marching-cubes blobs do this at high-valence hubs
+        // such as UV-sphere poles. A degenerate carries no surface, and leaving
+        // it in would create a self-edge (a,a) whose "collapse" both corrupts
+        // the incidence lists and orphans a live triangle on a removed vertex.
+        if (tris[t].v[0] == tris[t].v[1] ||
+            tris[t].v[1] == tris[t].v[2] ||
+            tris[t].v[0] == tris[t].v[2])
+            tris[t].removed = true;
     }
 }
 
@@ -181,6 +191,7 @@ struct HeapEdge {
 // not collapse (both endpoints boundary-locked). When exactly one endpoint is
 // locked, that endpoint is the survivor and the target is its (frozen) position.
 static bool buildEdge(int p, int q, const std::vector<WVert>& verts, HeapEdge& e) {
+    if (p == q) return false; // never form a self-edge (survivor==removed)
     const WVert& vp = verts[p];
     const WVert& vq = verts[q];
     if (vp.locked && vq.locked) return false;
@@ -321,8 +332,18 @@ static void decimate(std::vector<WVert>& verts, std::vector<WTri>& tris,
         verts[e.vi].version++;
         verts[e.vj].version++;
 
-        for (int t : vtris[e.vi])
-            if (!tris[t].removed) pushTri(t);
+        // Compact vi's incidence list to live, distinct triangles before
+        // re-pushing. Without this the list accumulates removed and duplicate
+        // entries across successive collapses into the same survivor, and both
+        // this re-push and wouldFlip rescan it every collapse -> O(N^2) blowup
+        // (a few-thousand-triangle cell mesh took seconds-to-minutes).
+        std::vector<int>& inc = vtris[e.vi];
+        std::sort(inc.begin(), inc.end());
+        inc.erase(std::unique(inc.begin(), inc.end()), inc.end());
+        inc.erase(std::remove_if(inc.begin(), inc.end(),
+                                 [&](int t){ return tris[t].removed; }),
+                  inc.end());
+        for (int t : inc) pushTri(t);
     }
 }
 

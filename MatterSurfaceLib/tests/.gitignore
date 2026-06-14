@@ -1,0 +1,10 @@
+# Compiled test executables (built from the in-tree Makefile)
+minimal_cell_test
+mesh_simplifier_tests
+blas_refcount_tests
+cell_bounds_tests
+mesh_continuity_tests
+simp_perf_probe
+
+# Object files
+*.o

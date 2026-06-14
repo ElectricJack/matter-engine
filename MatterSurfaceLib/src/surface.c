@@ -211,6 +211,65 @@ void SurfaceLibCleanup(void) {
     CleanupMemoryPool();
 }
 
+void ComputeSurfaceNormals(Mesh* mesh, Particle* particles, float particleRadius, int particleCount) {
+    if (!mesh || !mesh->vertices || !mesh->normals || mesh->vertexCount <= 0 ||
+        !particles || particleCount <= 0) {
+        return;
+    }
+
+    // Mirror GenerateMesh's internal hash: cellSize = r*1.5, search = r*2.5.
+    float spatialCellSize = particleRadius * 1.5f;
+    SpatialHash* hash = sh_create(spatialCellSize, particleCount);
+    if (!hash) return;
+    for (int i = 0; i < particleCount; i++) {
+        sh_insert(hash, particles[i].position.x, particles[i].position.y,
+                  particles[i].position.z, &particles[i]);
+    }
+
+    float gradSearch = particleRadius * 2.5f;
+    Particle* nearby[32];
+    for (int i = 0; i < mesh->vertexCount; i++) {
+        float vx = mesh->vertices[i*3+0];
+        float vy = mesh->vertices[i*3+1];
+        float vz = mesh->vertices[i*3+2];
+
+        int found = sh_query_radius(hash, vx, vy, vz, gradSearch, (void**)nearby, 32);
+        float bestD2 = INFINITY;
+        Vector3 nearestC = {0.0f, 0.0f, 0.0f};
+        for (int j = 0; j < found; j++) {
+            float dx = vx - nearby[j]->position.x;
+            float dy = vy - nearby[j]->position.y;
+            float dz = vz - nearby[j]->position.z;
+            float d2 = dx*dx + dy*dy + dz*dz;
+            if (d2 < bestD2) { bestD2 = d2; nearestC = nearby[j]->position; }
+        }
+
+        if (bestD2 < INFINITY && bestD2 > 1e-12f) {
+            // Outward SDF gradient: unit vector from nearest particle to vertex.
+            float inv = 1.0f / sqrtf(bestD2);
+            mesh->normals[i*3+0] = (vx - nearestC.x) * inv;
+            mesh->normals[i*3+1] = (vy - nearestC.y) * inv;
+            mesh->normals[i*3+2] = (vz - nearestC.z) * inv;
+        } else {
+            // Degenerate vertex (on a center, or none in range): normalize the
+            // incoming normal, else fall back to a stable up vector.
+            float fx = mesh->normals[i*3+0], fy = mesh->normals[i*3+1], fz = mesh->normals[i*3+2];
+            float length = sqrtf(fx*fx + fy*fy + fz*fz);
+            if (length > 0.0001f) {
+                mesh->normals[i*3+0] = fx/length;
+                mesh->normals[i*3+1] = fy/length;
+                mesh->normals[i*3+2] = fz/length;
+            } else {
+                mesh->normals[i*3+0] = 0.0f;
+                mesh->normals[i*3+1] = 0.0f;
+                mesh->normals[i*3+2] = 1.0f;
+            }
+        }
+    }
+
+    sh_destroy(hash);
+}
+
 // Internal mesh generation function with configuration
 static Mesh GenerateMeshInternal(Particle* particles, float particleRadius, int particleCount, Bounds volume, MeshGenerationConfig config) {
     TIMER_START(total);
@@ -628,21 +687,13 @@ static Mesh GenerateMeshInternal(Particle* particles, float particleRadius, int 
         normals[idx3].z += normal.z;
     }
     
-    // Normalize all normals
-    for (int i = 0; i < vertexCount; i++) {
-        float length = sqrtf(
-            normals[i].x * normals[i].x + 
-            normals[i].y * normals[i].y + 
-            normals[i].z * normals[i].z
-        );
-        
-        if (length > 0.0001f) {
-            normals[i].x /= length;
-            normals[i].y /= length;
-            normals[i].z /= length;
-        }
-    }
-    
+    // The per-cell face normals above are only a fallback. The real shading
+    // normal is the analytic SDF gradient (computed below, after the mesh
+    // arrays are filled): for a union of spheres it is the unit vector from the
+    // nearest particle to the vertex, which depends only on world position and
+    // is therefore continuous across independently-meshed cells. See
+    // ComputeSurfaceNormals.
+
     // Create the final mesh
     mesh.vertexCount = vertexCount;
     mesh.triangleCount = triangleCount;
@@ -668,7 +719,11 @@ static Mesh GenerateMeshInternal(Particle* particles, float particleRadius, int 
         mesh.indices[i*3+1] = triangles[i].indices[1];
         mesh.indices[i*3+2] = triangles[i].indices[2];
     }
-    
+
+    // Overwrite the per-cell face normals with the cross-cell-continuous SDF
+    // gradient (face normals remain only as the degenerate-vertex fallback).
+    ComputeSurfaceNormals(&mesh, particles, particleRadius, particleCount);
+
     // Set material IDs as vertex colors
     mesh.colors = (unsigned char*)RL_MALLOC(vertexCount * 4 * sizeof(unsigned char));
     for (int i = 0; i < vertexCount; i++) {

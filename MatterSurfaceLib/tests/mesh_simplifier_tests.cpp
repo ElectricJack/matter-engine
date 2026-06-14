@@ -41,6 +41,68 @@ static Mesh makeGrid(int n /*cells per side*/, float span) {
     return makeMesh(v, idx);
 }
 
+// Closed UV sphere expressed as an indexed polygon soup (every triangle has its
+// own 3 vertices), mimicking an unwelded marching-cubes blob. Decimating this
+// creates high-valence hub vertices and non-manifold welds -- the worst case.
+static Mesh makeSphereSoup(int rings, int sectors, float radius) {
+    static const float PI_ = 3.14159265358979323846f;
+    auto P = [&](int r, int s) {
+        float phi   = PI_ * (float)r / (float)rings;
+        float theta = 2.0f * PI_ * (float)s / (float)sectors;
+        return std::array<float,3>{ radius*sinf(phi)*cosf(theta),
+                                    radius*cosf(phi),
+                                    radius*sinf(phi)*sinf(theta) };
+    };
+    std::vector<float> v; std::vector<unsigned short> idx;
+    auto push = [&](std::array<float,3> p){ v.push_back(p[0]); v.push_back(p[1]); v.push_back(p[2]); };
+    unsigned short next = 0;
+    for (int r = 0; r < rings; ++r)
+        for (int s = 0; s < sectors; ++s) {
+            auto a=P(r,s), b=P(r+1,s), c=P(r+1,s+1), d=P(r,s+1);
+            push(a); push(b); push(c); idx.push_back(next++); idx.push_back(next++); idx.push_back(next++);
+            push(a); push(c); push(d); idx.push_back(next++); idx.push_back(next++); idx.push_back(next++);
+        }
+    return makeMesh(v, idx);
+}
+
+// Every index a simplified mesh emits must address a real vertex. A stale
+// reference to a collapsed-away vertex shows up as 65535 (unsigned short -1),
+// which crashes downstream mesh->triangle conversion and rendering.
+static void assertIndicesInRange(const Mesh& m, const char* tag) {
+    for (int t = 0; t < m.triangleCount; ++t)
+        for (int k = 0; k < 3; ++k) {
+            int v = m.indices[t*3+k];
+            if (v < 0 || v >= m.vertexCount) {
+                printf("  BAD INDEX (%s): tri %d vertex slot %d -> index %d (vertexCount=%d)\n",
+                       tag, t, k, v, m.vertexCount);
+                assert(false && "output index out of range");
+            }
+        }
+}
+
+static void test_indices_in_range_sphere() {
+    printf("=== test_indices_in_range_sphere ===\n");
+    // Reproduces the cell-mesh case: aggressive ratio on a closed soup sphere,
+    // both with and without boundary locking.
+    for (float ratio : {0.5f, 0.23f, 0.1f}) {
+        Mesh in = makeSphereSoup(20, 40, 5.0f);
+        SimplifyOptions o; o.target_ratio = ratio; o.lock_boundary = false;
+        Mesh out = simplify_mesh(in, o);
+        assertIndicesInRange(out, "no-lock");
+        UnloadMesh(out);
+
+        Mesh in2 = makeSphereSoup(20, 40, 5.0f);
+        CellBounds cb; cb.min_bound = {-5,-5,-5}; cb.max_bound = {5,5,5};
+        SimplifyOptions o2; o2.target_ratio = ratio; o2.lock_boundary = true;
+        Mesh out2 = simplify_mesh(in2, o2, &cb);
+        assertIndicesInRange(out2, "lock");
+        UnloadMesh(out2);
+
+        UnloadMesh(in); UnloadMesh(in2);
+    }
+    printf("PASSED\n");
+}
+
 static void test_empty_input() {
     printf("=== test_empty_input ===\n");
     Mesh empty = {0};
@@ -269,6 +331,7 @@ static void test_watertight_seam() {
 
 int main() {
     printf("=== Mesh Simplifier Tests ===\n");
+    test_indices_in_range_sphere();
     test_empty_input();
     test_single_triangle();
     test_identity_ratio_one();

@@ -40,6 +40,16 @@ Mesh GenerateMesh(Particle* particles, float particleRadius, int particleCount, 
 // Enhanced API function with configuration options
 Mesh GenerateMeshWithConfig(Particle* particles, float particleRadius, int particleCount, Bounds volume, MeshGenerationConfig config);
 
+// Recompute per-vertex shading normals in place as the analytic SDF gradient of
+// the union-of-spheres field: each normal is the unit vector from the nearest
+// particle center to the vertex. This depends only on world position, so it is
+// continuous across independently-meshed cells (no shading seams), and it must
+// be reapplied after any pass that moves vertices or rebuilds normals from face
+// geometry (e.g. simplify_mesh, which reverts to per-cell face-normal averaging).
+// Operates on mesh->vertices/mesh->normals; any existing normal is used as the
+// fallback for degenerate vertices with no particle in range.
+void ComputeSurfaceNormals(Mesh* mesh, Particle* particles, float particleRadius, int particleCount);
+
 // Create default configuration
 MeshGenerationConfig GetDefaultMeshConfig(void);
 

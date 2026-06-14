@@ -23,6 +23,7 @@ extern "C" {
     } Particle;
     
     Mesh GenerateMesh(Particle* particles, float particleRadius, int particleCount, Bounds volume);
+    void ComputeSurfaceNormals(Mesh* mesh, Particle* particles, float particleRadius, int particleCount);
     
     // Raymath and raylib functions we need
     Vector3 Vector3Add(Vector3 v1, Vector3 v2);
@@ -57,12 +58,16 @@ Cell::~Cell() {
 }
 
 void Cell::calculate_bounds(float smallest_cell_size) {
-    // Calculate center and bounds based on coordinates and size
-    // Cell coordinates represent the center position, so no offset needed
+    // Cell coordinates use the cluster's CORNER convention: a point at local
+    // position p belongs to cell floor(p / size), so cell C spans
+    // [C*size, (C+1)*size] and is centered at (C+0.5)*size. This must match
+    // Cluster::get_cell_coordinates and the cell spatial-hash key; otherwise
+    // the mesh-generation box is shifted half a cell and spheres render as
+    // partial blobs.
     center = Vector3{
-        coordinates.x * actual_size,
-        coordinates.y * actual_size,
-        coordinates.z * actual_size
+        (coordinates.x + 0.5f) * actual_size,
+        (coordinates.y + 0.5f) * actual_size,
+        (coordinates.z + 0.5f) * actual_size
     };
     
     Vector3 half_size = Vector3{actual_size * 0.5f, actual_size * 0.5f, actual_size * 0.5f};
@@ -295,6 +300,11 @@ void Cell::generate_mesh_for_material(uint32_t material_id, const std::vector<St
         so.lock_boundary = true;
         Mesh simplified = simplify_mesh(mesh, so, &cb);
         if (simplified.vertexCount > 0 && simplified.triangleCount > 0) {
+            // simplify_mesh rebuilds normals from face geometry, reintroducing
+            // the per-cell shading seams; reapply the cross-cell-continuous SDF
+            // gradient so the decimated proxy shades identically to the dense mesh.
+            ComputeSurfaceNormals(&simplified, surface_particles.data(), particle_radius,
+                                  static_cast<int>(surface_particles.size()));
             UnloadMesh(mesh);   // free the pre-upload CPU arrays of the dense mesh
             mesh = simplified;
             printf("    Simplified mesh: %d vertices, %d triangles (ratio %.2f)\n",
