@@ -112,7 +112,8 @@ if [ "$MODE" = "test" ]; then
 
     # MatterSurfaceLib headless suites (no GL window). Target name == binary name.
     for suite in mesh_simplifier_tests material_registry_tests cell_bounds_tests \
-                 blas_refcount_tests mesh_continuity_tests blas_tint_tests; do
+                 blas_refcount_tests mesh_continuity_tests blas_tint_tests \
+                 particle_culling_tests; do
         if make -C MatterSurfaceLib/tests "$suite" >/dev/null 2>&1; then
             echo
             echo "--- MatterSurfaceLib ($suite) ---"

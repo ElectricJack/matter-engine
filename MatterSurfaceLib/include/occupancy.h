@@ -1,6 +1,7 @@
 #pragma once
 
 #include "lattice.h"
+#include <cstddef>
 #include <cstdint>
 #include <unordered_map>
 #include <functional>

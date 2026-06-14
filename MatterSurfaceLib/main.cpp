@@ -31,6 +31,7 @@ extern "C" {
 #include "include/cell.h"
 #include "include/profiler.hpp"
 #include "include/material_registry.h"
+#include "include/particle_culling.h"
 
 // ---------------------------------------------------------------------------
 // In-app GL program-binary cache.
@@ -291,28 +292,6 @@ static Shader LoadShaderCached(const char* fsPath) {
     return sh;
 }
 
-// --- Deterministic 3D value noise for lattice displacement (no deps) ---
-static float lattice_vhash(int x, int y, int z) {
-    uint32_t h = ((uint32_t)x * 374761393u) ^ ((uint32_t)y * 668265263u) ^ ((uint32_t)z * 2147483647u);
-    h = (h ^ (h >> 13)) * 1274126177u;
-    h ^= h >> 16;
-    return (float)(h & 0xFFFFFFu) / (float)0xFFFFFFu; // [0,1]
-}
-static float lattice_vnoise(float x, float y, float z) {
-    int xi = (int)floorf(x), yi = (int)floorf(y), zi = (int)floorf(z);
-    float xf = x - xi, yf = y - yi, zf = z - zi;
-    auto lerpf = [](float a, float b, float t) { return a + (b - a) * t; };
-    auto smooth = [](float t) { return t * t * (3.0f - 2.0f * t); };
-    float u = smooth(xf), v = smooth(yf), w = smooth(zf);
-    float c000 = lattice_vhash(xi, yi, zi),     c100 = lattice_vhash(xi+1, yi, zi);
-    float c010 = lattice_vhash(xi, yi+1, zi),   c110 = lattice_vhash(xi+1, yi+1, zi);
-    float c001 = lattice_vhash(xi, yi, zi+1),   c101 = lattice_vhash(xi+1, yi, zi+1);
-    float c011 = lattice_vhash(xi, yi+1, zi+1), c111 = lattice_vhash(xi+1, yi+1, zi+1);
-    float x00 = lerpf(c000, c100, u), x10 = lerpf(c010, c110, u);
-    float x01 = lerpf(c001, c101, u), x11 = lerpf(c011, c111, u);
-    return lerpf(lerpf(x00, x10, v), lerpf(x01, x11, v), w); // [0,1]
-}
-
 class MatterSurfaceLibDemo {
 public:
     MatterSurfaceLibDemo(int width, int height) 
@@ -538,69 +517,60 @@ private:
     }
 
     void setup_lattice_scene() {
-        printf("Setting up lattice stress scene...\n");
+        printf("Setting up lattice brick scene...\n");
 
-        // --- Tunables (dial DIM down to validate, then crank to 64,64,128) ---
-        const int   DIM_X = 64, DIM_Y = 64, DIM_Z = 128;
+        // --- Tunables ---
+        const int   DIM_X = 20, DIM_Y = 20, DIM_Z = 20;  // solid block of slots
         const float BASE_RADIUS = 0.4f;
-        const float SPACING     = 2.0f * BASE_RADIUS;   // neighbors just touch (hybrid look)
-        const float NOISE_SCALE = 0.15f;                // lattice cells per noise period
-        const float NOISE_AMP   = 0.9f * BASE_RADIUS;   // perlin drift magnitude
-        const float POS_JITTER  = 0.15f * BASE_RADIUS;  // fine per-particle position jitter
-        const float RAD_JITTER  = 0.15f;                // +/- fraction on radius
-        const float GLASS_FRAC  = 0.15f;                // ~15% glass
-        const float TINT_ALPHA  = 0.2f;                 // subtle tint strength
+        const float SPACING     = 2.0f * BASE_RADIUS;     // neighbors just touch
+        const float POS_JITTER  = 0.15f * BASE_RADIUS;
+        const float TINT_ALPHA  = 0.2f;
         const uint32_t MAT_OPAQUE_A = 8;  // stone_light (GROUP_STONE)
         const uint32_t MAT_OPAQUE_B = 9;  // stone_dark  (GROUP_STONE)
-        const uint32_t MAT_GLASS    = 4;  // glass (GROUP_GLASS, carves)
 
-        SetRandomSeed(1337);
-        auto rnd = []() { return (float)GetRandomValue(-1000, 1000) / 1000.0f; }; // [-1,1]
-        auto rnd01 = []() { return (float)GetRandomValue(0, 1000) / 1000.0f; };   // [0,1]
+        // Default margin = 2 (conservatively safe). Set MSL_CULL_MARGIN to tune;
+        // MSL_CULL_MARGIN=-1 bypasses culling (emit every slot) for A/B compare.
+        int margin = 2;
+        const char* mEnv = getenv("MSL_CULL_MARGIN");
+        bool bypass = false;
+        if (mEnv) { margin = atoi(mEnv); if (margin < 0) bypass = true; }
 
-        const float halfx = (DIM_X - 1) * SPACING * 0.5f;
-        const float halfy = (DIM_Y - 1) * SPACING * 0.5f;
-        const float halfz = (DIM_Z - 1) * SPACING * 0.5f;
-
+        // Build a solid block of occupancy, centered on the origin, with a
+        // checkerboard of the two opaque stones so the surface shows variation.
+        GridLattice lattice(SPACING);
+        Occupancy occ;
         for (int ix = 0; ix < DIM_X; ++ix)
         for (int iy = 0; iy < DIM_Y; ++iy)
         for (int iz = 0; iz < DIM_Z; ++iz) {
-            // Base lattice position, centered on the origin.
-            float bx = ix * SPACING - halfx;
-            float by = iy * SPACING - halfy;
-            float bz = iz * SPACING - halfz;
-
-            // Coherent perlin-style drift: sample three offset noise fields.
-            float nx = lattice_vnoise(ix * NOISE_SCALE + 11.3f, iy * NOISE_SCALE, iz * NOISE_SCALE);
-            float ny = lattice_vnoise(ix * NOISE_SCALE, iy * NOISE_SCALE + 27.7f, iz * NOISE_SCALE);
-            float nz = lattice_vnoise(ix * NOISE_SCALE, iy * NOISE_SCALE, iz * NOISE_SCALE + 51.1f);
-            Vector3 pos = {
-                bx + (nx * 2.0f - 1.0f) * NOISE_AMP + rnd() * POS_JITTER,
-                by + (ny * 2.0f - 1.0f) * NOISE_AMP + rnd() * POS_JITTER,
-                bz + (nz * 2.0f - 1.0f) * NOISE_AMP + rnd() * POS_JITTER
-            };
-
-            float radius = BASE_RADIUS * (1.0f + rnd() * RAD_JITTER);
-
-            // Material: ~15% glass, rest split between the two opaque stones.
-            uint32_t mat;
-            if (rnd01() < GLASS_FRAC)      mat = MAT_GLASS;
-            else if (rnd01() < 0.5f)       mat = MAT_OPAQUE_A;
-            else                            mat = MAT_OPAQUE_B;
-
-            // Subtle per-particle tint around the base material color.
-            Vector4 tint = { rnd01(), rnd01(), rnd01(), TINT_ALPHA };
-
-            test_cluster_->add_particle(pos, radius, mat, tint);
+            uint32_t mat = ((ix + iy + iz) & 1) ? MAT_OPAQUE_A : MAT_OPAQUE_B;
+            occ.set(SlotCoord{ix, iy, iz}, SlotData{mat});
         }
 
-        printf("Added %u particles to lattice\n", test_cluster_->get_particle_count());
+        CullParams p;
+        p.margin = margin; p.base_radius = BASE_RADIUS;
+        p.jitter_amount = POS_JITTER; p.tint_alpha = TINT_ALPHA; p.seed = 1337;
+
+        std::vector<EmittedParticle> emitted =
+            bypass ? emit_all(lattice, occ, p) : cull_interior(lattice, occ, p);
+
+        // Re-center: GridLattice puts slot 0 at the origin, so shift by half the
+        // block extent to center the brick.
+        float halfx = (DIM_X - 1) * SPACING * 0.5f;
+        float halfy = (DIM_Y - 1) * SPACING * 0.5f;
+        float halfz = (DIM_Z - 1) * SPACING * 0.5f;
+        for (auto& ep : emitted) {
+            Vector3 pos = { ep.position.x - halfx, ep.position.y - halfy, ep.position.z - halfz };
+            test_cluster_->add_particle(pos, ep.radius, ep.materialId, ep.tint);
+        }
+
+        printf("[cull] occupied=%zu emitted=%zu (margin=%d%s)\n",
+               occ.count(), emitted.size(), margin, bypass ? ", BYPASS" : "");
 
         test_cluster_->set_position({0.0f, 2.0f, 0.0f});
-        test_cluster_->set_lod_level(0);          // finest detail
+        test_cluster_->set_lod_level(0);
         test_cluster_->rebuild_dirty_cells();
 
-        printf("Lattice has %u cells, %u dirty\n",
+        printf("Brick has %u cells, %u dirty\n",
                test_cluster_->get_cell_count(), test_cluster_->get_dirty_cell_count());
     }
 
