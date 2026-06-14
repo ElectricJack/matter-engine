@@ -56,10 +56,10 @@ TARGET = minimal_cell_test
 $(TARGET): $(MAIN_SOURCE) $(MATTER_SOURCES)
 	$(CC) $(MAIN_SOURCE) $(MATTER_SOURCES) -o $(TARGET) $(CFLAGS) $(INCLUDE_PATHS) $(LDFLAGS) $(LDLIBS)
 
-.PHONY: clean run run-simp run-blas run-cell run-cont run-reg
+.PHONY: clean run run-simp run-blas run-cell run-cont run-reg run-tint run-cull
 
 clean:
-	rm -f $(TARGET) $(SIMP_TARGET) $(BLAS_TARGET) $(CELL_TARGET) $(CONT_TARGET) $(REG_TARGET)
+	rm -f $(TARGET) $(SIMP_TARGET) $(BLAS_TARGET) $(CELL_TARGET) $(CONT_TARGET) $(REG_TARGET) $(TINT_TARGET) $(CULL_TARGET)
 
 run: $(TARGET)
 	./$(TARGET)
@@ -149,3 +149,13 @@ $(TINT_TARGET): $(TINT_SOURCES)
 
 run-tint: $(TINT_TARGET)
 	./$(TINT_TARGET)
+
+# Occupancy-based interior culling unit tests (headless, no GL window)
+CULL_TARGET = particle_culling_tests
+CULL_SOURCES = particle_culling_tests.cpp ../src/lattice.cpp ../src/occupancy.cpp ../src/particle_culling.cpp
+
+$(CULL_TARGET): $(CULL_SOURCES)
+	$(CC) $(CULL_SOURCES) -o $(CULL_TARGET) $(CFLAGS) $(INCLUDE_PATHS) $(LDFLAGS) $(LDLIBS)
+
+run-cull: $(CULL_TARGET)
+	./$(CULL_TARGET)
