@@ -476,7 +476,7 @@ void BLASManager::ensure_gpu_textures_ready() {
                     }
 
                     // Pack tint.b/.a into the spare .w of normal rows 3 and 4
-                    // (row 5 .w stays unused). Shader reads these in decodeHit.
+                    // (row 5 .w stays unused); consumed by the shader in a later task.
                     {
                         int rowB = texel_off(static_cast<int>(triangle_index), 3);
                         int rowA = texel_off(static_cast<int>(triangle_index), 4);
