@@ -1,4 +1,5 @@
 #include "material_registry.h"
+#include <cassert>
 #include <cstdio>
 #include <cmath>
 
@@ -14,7 +15,7 @@ int main() {
     const MaterialDef* def = MaterialRegistryGet(99999);
     CHECK(def != nullptr, "out-of-range id must return non-NULL default");
 
-    // Two stone shades (ids 8 and 9, added below) share a merge group.
+    // Two stone shades (ids 8 and 9) share a merge group.
     CHECK(MaterialMergeGroup(8) == MaterialMergeGroup(9),
           "stone_light(8) and stone_dark(9) must share a merge group");
     // Glass and metal do not.
@@ -25,8 +26,9 @@ int main() {
     int n = MaterialRegistryCount();
     CHECK(n >= 10, "expected at least 10 materials");
     float buf[64 * MATERIAL_FLOATS_PER_DEF];
+    assert(n <= 64);
     MaterialRegistryPackForGPU(buf);
-    // translucency is the 8th float (index 7) in each packed record (see Step 3 layout).
+    // translucency is the 8th float (index 7) in each packed record (see MaterialRegistryPackForGPU).
     CHECK(fabsf(buf[4 * MATERIAL_FLOATS_PER_DEF + 7] - MaterialRegistryGet(4)->translucency) < 1e-6f,
           "packed translucency for material 4 must match the table");
 

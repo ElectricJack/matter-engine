@@ -43,6 +43,7 @@ int MaterialIsTransparent(int materialId) {
 }
 
 void MaterialRegistryPackForGPU(float* out) {
+    // Pack as three vec4s (std140-friendly): [albedo.xyz, roughness] [metallic, emission, pad, translucency] [ior, flatShading, mergeGroup, pad].
     for (int i = 0; i < g_count; ++i) {
         const MaterialDef* m = &g_materials[i];
         float* r = out + (size_t)i * MATERIAL_FLOATS_PER_DEF;

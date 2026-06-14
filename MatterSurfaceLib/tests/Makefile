@@ -59,7 +59,7 @@ $(TARGET): $(MAIN_SOURCE) $(MATTER_SOURCES)
 .PHONY: clean run run-simp run-blas run-cell run-cont run-reg
 
 clean:
-	rm -f $(TARGET) $(SIMP_TARGET) $(BLAS_TARGET) $(CELL_TARGET) $(CONT_TARGET)
+	rm -f $(TARGET) $(SIMP_TARGET) $(BLAS_TARGET) $(CELL_TARGET) $(CONT_TARGET) $(REG_TARGET)
 
 run: $(TARGET)
 	./$(TARGET)
