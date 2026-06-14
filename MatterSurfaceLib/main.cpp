@@ -947,28 +947,9 @@ private:
         }
     }
     
-    // Adapt the raytrace render scale based on the previous frame time. Under vsync the
-    // frame time floors at ~16.7ms, so "sitting at the cap" actually means GPU headroom:
-    // scale up after sustained headroom (debounced to avoid flicker), drop immediately
-    // when the frame goes GPU-bound (>20ms).
-    void update_render_scale() {
-        float ft = GetFrameTime(); // seconds for the previous frame
-        if (ft > 0.020f) {
-            if (render_scale_ > 0.25f) render_scale_ -= 0.25f;
-            rt_up_count_ = 0;
-        } else if (ft <= 0.017f) {
-            if (++rt_up_count_ >= 30) {
-                if (render_scale_ < 1.0f) render_scale_ += 0.25f;
-                rt_up_count_ = 0;
-            }
-        } else {
-            rt_up_count_ = 0;
-        }
-        if (render_scale_ < 0.25f) render_scale_ = 0.25f;
-        if (render_scale_ > 1.0f) render_scale_ = 1.0f;
-    }
-
-    // (Re)create the offscreen target only when the required size changes.
+    // (Re)create the offscreen target only when the required size changes. With dynamic
+    // resolution scaling disabled the size is always the full window, so this allocates once
+    // (and again only on a window resize) -- no per-frame FBO churn.
     void ensure_rt_target(int w, int h) {
         if (rt_target_.id != 0 && rt_w_ == w && rt_h_ == h) return;
         if (rt_target_.id != 0) UnloadRenderTexture(rt_target_);
@@ -979,12 +960,13 @@ private:
     }
 
     void render_raytraced() {
-        // Adapt render scale and size the offscreen target accordingly.
-        update_render_scale();
+        // Dynamic resolution scaling is disabled: always render the raytrace pass at full window
+        // resolution. (Under vsync the scaler could not distinguish a too-heavy scale from
+        // headroom, so it hunted up and down -- the visible resolution thrashing and FBO churn.)
         int full_w = GetScreenWidth();
         int full_h = GetScreenHeight();
-        int rw = static_cast<int>(full_w * render_scale_); if (rw < 1) rw = 1;
-        int rh = static_cast<int>(full_h * render_scale_); if (rh < 1) rh = 1;
+        int rw = full_w;
+        int rh = full_h;
         ensure_rt_target(rw, rh);
 
         BeginTextureMode(rt_target_);
@@ -1646,11 +1628,9 @@ private:
     Camera camera_;
     Shader raytracing_shader_{};
 
-    // Dynamic resolution scaling for the raytrace pass (bounds frame time to avoid GPU TDR)
+    // Offscreen target for the raytrace pass, rendered at full window resolution.
     RenderTexture2D rt_target_{};
     int rt_w_ = 0, rt_h_ = 0;
-    float render_scale_ = 1.0f;
-    int rt_up_count_ = 0; // consecutive headroom frames before scaling resolution back up
 
     bool cursor_disabled_ = false;
     int render_mode_ = 3; // 0=raytracing, 1=solid_meshes, 2=wireframe_meshes, 3=debug_bvh
