@@ -19,9 +19,11 @@ struct StaticParticle {
     Vector3 position;       // Position in local cluster space
     float radius;          // Particle radius
     uint32_t materialId;   // Material identifier
-    
-    StaticParticle(const Vector3& pos = {0,0,0}, float r = 1.0f, uint32_t mat = 0)
-        : position(pos), radius(r), materialId(mat) {}
+    Vector4 tint;          // RGBA tint; a = blend strength. (1,1,1,0) = no tint.
+
+    StaticParticle(const Vector3& pos = {0,0,0}, float r = 1.0f, uint32_t mat = 0,
+                   const Vector4& t = {1.0f, 1.0f, 1.0f, 0.0f})
+        : position(pos), radius(r), materialId(mat), tint(t) {}
 };
 
 class Cluster {
@@ -44,6 +46,7 @@ public:
     
     // Particle management
     uint32_t add_particle(const Vector3& local_position, float radius = 1.0f, uint32_t material_id = 0);
+    uint32_t add_particle(const Vector3& local_position, float radius, uint32_t material_id, const Vector4& tint);
     bool remove_particle(uint32_t particle_id);
     bool update_particle_position(uint32_t particle_id, const Vector3& new_local_position);
     
