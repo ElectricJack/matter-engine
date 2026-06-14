@@ -3,6 +3,7 @@
 #include "../include/blas_manager.hpp"
 #include "../include/bvh_analyzer.h"
 #include "../include/cell_visitor.h"
+#include "material_registry.h"
 #include "mesh_simplifier.hpp"
 #include <cmath>
 #include <cstdio>
@@ -98,7 +99,10 @@ bool Cell::intersects_sphere(const Vector3& sphere_center, float radius) const {
 }
 
 void Cell::add_particle_index(uint32_t particle_index, uint32_t material_id) {
-    auto& material_particles = material_particle_indices[material_id];
+    // Bucket by merge group, not raw material id, so shades that share a group
+    // feed one SDF field and blend into a single mesh.
+    uint32_t group = (uint32_t)MaterialMergeGroup((int)material_id);
+    auto& material_particles = material_particle_indices[group];
     // Check if already exists
     if (std::find(material_particles.begin(), material_particles.end(), particle_index) == material_particles.end()) {
         material_particles.push_back(particle_index);
@@ -107,7 +111,8 @@ void Cell::add_particle_index(uint32_t particle_index, uint32_t material_id) {
 }
 
 void Cell::remove_particle_index(uint32_t particle_index, uint32_t material_id) {
-    auto material_it = material_particle_indices.find(material_id);
+    uint32_t group = (uint32_t)MaterialMergeGroup((int)material_id);
+    auto material_it = material_particle_indices.find(group);
     if (material_it != material_particle_indices.end()) {
         auto& material_particles = material_it->second;
         auto it = std::find(material_particles.begin(), material_particles.end(), particle_index);
@@ -135,10 +140,12 @@ void Cell::rebuild_meshes(const std::vector<StaticParticle>& cluster_particles, 
         return;
     }
 
-    // Generate a mesh for each material
-    for (const auto& material_entry : material_particle_indices) {
-        uint32_t material_id = material_entry.first;
-        generate_mesh_for_material(material_id, cluster_particles, blas_manager, simplification_ratio);
+    // Generate one mesh per merge group (the bucket key). Particles of different
+    // materials that share a group blend together; their true per-particle
+    // materialId is still tagged per-triangle inside generate_mesh_for_group.
+    for (const auto& group_entry : material_particle_indices) {
+        uint32_t group_id = group_entry.first;
+        generate_mesh_for_group(group_id, cluster_particles, blas_manager, simplification_ratio);
     }
 
     has_meshes = !material_meshes.empty();
@@ -258,8 +265,8 @@ static constexpr float kFeatureCullVoxels = 0.6f;
 // the metaball blend strengthens at coarser LODs and is near-sharp at LOD 0.
 static constexpr float kBlendVoxels = 0.5f;
 
-void Cell::generate_mesh_for_material(uint32_t material_id, const std::vector<StaticParticle>& cluster_particles, BLASManager& blas_manager, float simplification_ratio) {
-    auto material_it = material_particle_indices.find(material_id);
+void Cell::generate_mesh_for_group(uint32_t group_id, const std::vector<StaticParticle>& cluster_particles, BLASManager& blas_manager, float simplification_ratio) {
+    auto material_it = material_particle_indices.find(group_id);
     if (material_it == material_particle_indices.end() || material_it->second.empty()) {
         return;
     }
@@ -333,9 +340,9 @@ void Cell::generate_mesh_for_material(uint32_t material_id, const std::vector<St
 
     if (mesh.vertexCount > 0) {
         // Store the mesh
-        material_meshes[material_id] = mesh;
+        material_meshes[group_id] = mesh;
 
-        UploadMesh(&material_meshes[material_id], false);
+        UploadMesh(&material_meshes[group_id], false);
 
         // Register mesh with BLAS manager for ray tracing
         try {
@@ -348,7 +355,12 @@ void Cell::generate_mesh_for_material(uint32_t material_id, const std::vector<St
             // per-triangle rather than assuming a single material for the whole mesh.
             for (size_t t = 0; t < triangle_normals.size() && t < triangles.size(); ++t) {
                 const float3& c = triangles[t].centroid;
-                int best = static_cast<int>(material_id);
+                // Seed the default from a REAL particle materialId (never the
+                // group id, which is the bucket key). particles is non-empty
+                // here, so the nearest-particle loop below always assigns a real
+                // materialId anyway; this seed is just a belt-and-braces guard
+                // so the group id can never leak onto a triangle's material.
+                int best = particles[0].materialId;
                 float bestD = 3.4e38f;
                 for (const Particle& p : particles) {
                     float dx = c.x - p.position.x, dy = c.y - p.position.y, dz = c.z - p.position.z;
@@ -360,17 +372,17 @@ void Cell::generate_mesh_for_material(uint32_t material_id, const std::vector<St
 
             if (!triangles.empty() && triangles.size() > 0) {
                 printf("Registering %zu triangles with BLAS manager...\\n", triangles.size());
-                material_blas[material_id] = blas_manager.register_triangles(triangles, triangle_normals);
-                printf("Successfully registered mesh with BLAS manager, handle %u\\n", material_blas[material_id]);
-                
+                material_blas[group_id] = blas_manager.register_triangles(triangles, triangle_normals);
+                printf("Successfully registered mesh with BLAS manager, handle %u\\n", material_blas[group_id]);
+
                 // Also register with BVH analyzer for analysis
-                BVH* bvh = blas_manager.get_bvh(material_blas[material_id]);
-                BvhMesh* mesh_ptr = blas_manager.get_mesh(material_blas[material_id]);
+                BVH* bvh = blas_manager.get_bvh(material_blas[group_id]);
+                BvhMesh* mesh_ptr = blas_manager.get_mesh(material_blas[group_id]);
                 if (bvh && mesh_ptr) {
                     std::string analysis_name = "Cell(" + std::to_string((int)coordinates.x) + "," + 
                                                std::to_string((int)coordinates.y) + "," + 
                                                std::to_string((int)coordinates.z) + ")_Mat" + 
-                                               std::to_string(material_id) + "_" + 
+                                               std::to_string(group_id) + "_" +
                                                std::to_string(triangles.size()) + "tris";
                     
                     BVHReportManager::RegisterBVH(analysis_name, bvh, mesh_ptr);
@@ -378,20 +390,20 @@ void Cell::generate_mesh_for_material(uint32_t material_id, const std::vector<St
                     BVHReportManager::UpdateAnalysis(analysis_name);
                 }
             } else {
-                material_blas[material_id] = 0;
+                material_blas[group_id] = 0;
                 printf("No valid triangles to register with BLAS manager\\n");
             }
         } catch (const std::exception& e) {
             printf("Error registering mesh with BLAS manager: %s\\n", e.what());
-            material_blas[material_id] = 0;
+            material_blas[group_id] = 0;
         } catch (...) {
             printf("Unknown error registering mesh with BLAS manager\\n");
-            material_blas[material_id] = 0;
+            material_blas[group_id] = 0;
         }
         
-        printf("Generated mesh for cell (%.0f,%.0f,%.0f) material %u size %.1f: %d vertices, %d triangles, BLAS handle %u\n",
-               coordinates.x, coordinates.y, coordinates.z, material_id, actual_size,
-               mesh.vertexCount, mesh.triangleCount, material_blas[material_id]);
+        printf("Generated mesh for cell (%.0f,%.0f,%.0f) group %u size %.1f: %d vertices, %d triangles, BLAS handle %u\n",
+               coordinates.x, coordinates.y, coordinates.z, group_id, actual_size,
+               mesh.vertexCount, mesh.triangleCount, material_blas[group_id]);
     }
 }
 

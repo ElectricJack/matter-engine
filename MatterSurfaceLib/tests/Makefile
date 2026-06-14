@@ -95,9 +95,9 @@ CELL_TARGET = cell_bounds_tests
 CELL_CPP = cell_bounds_tests.cpp ../src/cell.cpp ../src/mesh_simplifier.cpp \
            ../src/blas_manager.cpp ../src/bvh.cpp ../src/bvh_analyzer.cpp
 CELL_C = ../src/surface.c ../src/open_particle_surface.c \
-         ../src/spatial_hash.c ../src/object_allocator.c
+         ../src/spatial_hash.c ../src/object_allocator.c ../src/material_registry.c
 
-CELL_C_OBJ = surface.o open_particle_surface.o spatial_hash.o object_allocator.o
+CELL_C_OBJ = surface.o open_particle_surface.o spatial_hash.o object_allocator.o material_registry.o
 
 $(CELL_TARGET): $(CELL_CPP) $(CELL_C)
 	gcc -c $(CELL_C) -O2 -DPLATFORM_DESKTOP $(INCLUDE_PATHS)

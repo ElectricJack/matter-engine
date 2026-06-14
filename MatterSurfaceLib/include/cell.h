@@ -62,7 +62,7 @@ struct Cell {
     
 private:
     void calculate_bounds(float smallest_cell_size);
-    void generate_mesh_for_material(uint32_t material_id, const std::vector<StaticParticle>& cluster_particles, BLASManager& blas_manager, float simplification_ratio);
+    void generate_mesh_for_group(uint32_t group_id, const std::vector<StaticParticle>& cluster_particles, BLASManager& blas_manager, float simplification_ratio);
 };
 
 #endif // CELL_H
