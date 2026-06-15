@@ -131,3 +131,25 @@ If culled BLAS triangles materially *exceed* bypass, an invariant is violated �
 - Modify: `MatterSurfaceLib/main.cpp` — lower cell size to 2.4; wire `no_mesh_cells` into `set_no_mesh_cells`; extend logging.
 - Modify: `MatterSurfaceLib/tests/particle_culling_tests.cpp` — replace `test_cull_counts`; add the invariant and skip-set tests; thread the new param/stats.
 - No Makefile / build-all.sh changes (files already compiled and gated).
+
+## A/B Result (2026-06-14) — PASS
+
+Headless A/B on the 20³ brick (`SPACING = 2*BASE_RADIUS = 0.8`, so the interior is a tangent-sphere packing with real but hidden geometry), identical camera, solid render (`MSL_RENDER_MODE=1`):
+
+| Run | margin | cell_size | particles | cells meshed | BLAS instances | triangles |
+|---|---|---|---|---|---|---|
+| Bypass | -1 | 2.4 | 8000 | 512 | 512 | **1,429,870** |
+| Culled | 2 | 2.4 | 7784 | 448 (64 skipped, 8 core) | 448 | **1,126,916** |
+
+**Acceptance criteria — all met:**
+- BLAS-registered triangles: culled **1,126,916 ≤ bypass 1,429,870** ✓ (the prior cell-granular approach *failed* this: 123,056 > 107,826).
+- Cells meshed: 448 < 512 ✓.
+- Particles fed in: 7784 < 8000 (8 core cells × 27 slots = 216 dropped) ✓.
+- Visual PNG diff (`ab_bypass.png` vs `ab_culled.png`): outer surface identical — no holes, no exposed interior facets ✓.
+- The ~303K triangles removed are *occluded interior* geometry (tangent-sphere bumps inside the brick), not visible surface — exactly the intended win. (The spec's earlier "surface triangles culled ≈ bypass" expectation assumed a solid interior emitting ≈0; with tangent spheres the interior carries real hidden geometry, so culled is meaningfully *lower*, which is correct.)
+
+**Sweep (informational):**
+- `margin=1`, cell 2.4 → 296 cells meshed (216 skipped, 64 core), 413,410 triangles, still no holes — a validated, more aggressive operating point (~71% reduction). Default stays at the conservative margin 2.
+- `MSL_CELL_SIZE=1.6` culled → 1,736,384 triangles: **not** comparable to the 2.4 bypass. Smaller cells skip more interior cells but duplicate more cell-boundary geometry, so a 1.6 comparison would need its own 1.6 bypass baseline. 2.4 is the better operating point on this brick.
+
+Throwaway capture PNGs (`ab_*.png`) are not committed.
