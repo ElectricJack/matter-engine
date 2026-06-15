@@ -52,8 +52,8 @@ extern "C" {
         int     materialId;
     } Particle;
 
-    Mesh GenerateMesh(Particle* particles, float particleRadius, int particleCount, Bounds volume, float blendWidth, Particle* clipParticles, int clipCount);
-    void ComputeSurfaceNormals(Mesh* mesh, Particle* particles, float particleRadius, int particleCount, float blendWidth, Particle* clipParticles, int clipCount);
+    Mesh GenerateMesh(Particle* particles, float particleRadius, int particleCount, Bounds volume, float blendWidth, Particle* clipParticles, int clipCount, Particle* carveParticles, int carveCount, float carveBlend);
+    void ComputeSurfaceNormals(Mesh* mesh, Particle* particles, float particleRadius, int particleCount, float blendWidth, Particle* clipParticles, int clipCount, Particle* carveParticles, int carveCount, float carveBlend);
 }
 
 // ----------------------------------------------------------------------------
@@ -569,7 +569,7 @@ static Soup build_scene(const std::vector<PIn>& particles, float s, float ratio)
                 Particle q; q.position = particles[idx].pos; q.radius = particles[idx].r; q.materialId = (int)particles[idx].mat;
                 sp.push_back(q);
             }
-            Mesh m = GenerateMesh(sp.data(), pr, (int)sp.size(), bounds, 0.0f, NULL, 0);
+            Mesh m = GenerateMesh(sp.data(), pr, (int)sp.size(), bounds, 0.0f, NULL, 0, NULL, 0, 0.0f);
             if (ratio < 1.0f && m.vertexCount > 0 && m.triangleCount > 0) {
                 CellBounds cb; cb.min_bound = minB; cb.max_bound = maxB;
                 SimplifyOptions so; so.target_ratio = ratio; so.lock_boundary = true;
@@ -580,7 +580,7 @@ static Soup build_scene(const std::vector<PIn>& particles, float s, float ratio)
                     // the SDF-gradient normals (radial snap keeps normal direction,
                     // but re-run is cheap and robust).
                     project_to_surface(simp, sp, pr, minB, maxB, s);
-                    ComputeSurfaceNormals(&simp, sp.data(), pr, (int)sp.size(), 0.0f, NULL, 0);
+                    ComputeSurfaceNormals(&simp, sp.data(), pr, (int)sp.size(), 0.0f, NULL, 0, NULL, 0, 0.0f);
                     append_mesh(soup, simp);
                     // free both CPU meshes (no GL involved)
                     if (simp.vertices) RL_FREE(simp.vertices);
@@ -652,7 +652,7 @@ static int test_per_vertex_material() {
     ps[0].position = (Vector3){-1.0f, 0, 0}; ps[0].radius = 0.8f; ps[0].materialId = 8;
     ps[1].position = (Vector3){ 1.0f, 0, 0}; ps[1].radius = 0.8f; ps[1].materialId = 9;
     Bounds b; b.center=(Vector3){0,0,0}; b.size=(Vector3){4,4,4}; b.divisionPow=4;
-    Mesh m = GenerateMesh(ps, 0.8f, 2, b, 0.0f, NULL, 0);
+    Mesh m = GenerateMesh(ps, 0.8f, 2, b, 0.0f, NULL, 0, NULL, 0, 0.0f);
     int distinctColors = 0;
     // Compares the R channel only; materialIds 8/9 map to Red/Green via
     // GetMaterialColor, so R alone (255 vs 0) is a sufficient distinctness signal.
@@ -671,8 +671,8 @@ static int test_clip_carves_surface() {
     Particle g[1]; g[0].position=(Vector3){0,0,0}; g[0].radius=1.0f; g[0].materialId=8;
     Particle clip[1]; clip[0].position=(Vector3){1.2f,0,0}; clip[0].radius=1.0f; clip[0].materialId=4;
     Bounds b; b.center=(Vector3){0,0,0}; b.size=(Vector3){5,5,5}; b.divisionPow=4;
-    Mesh open = GenerateMesh(g, 1.0f, 1, b, 0.0f, NULL, 0);          // no clip
-    Mesh carved = GenerateMesh(g, 1.0f, 1, b, 0.0f, clip, 1);        // clipped on +x
+    Mesh open = GenerateMesh(g, 1.0f, 1, b, 0.0f, NULL, 0, NULL, 0, 0.0f);          // no clip
+    Mesh carved = GenerateMesh(g, 1.0f, 1, b, 0.0f, clip, 1, NULL, 0, 0.0f);        // clipped on +x
     float maxOpen=-1e9f, maxCarved=-1e9f;
     for (int i=0;i<open.vertexCount;i++)   maxOpen   = fmaxf(maxOpen,   open.vertices[i*3]);
     for (int i=0;i<carved.vertexCount;i++) maxCarved = fmaxf(maxCarved, carved.vertices[i*3]);
@@ -707,7 +707,7 @@ static int test_clip_normals_blended() {
     clip[0].position=(Vector3){1.6f,0.9f,0}; clip[0].radius=1.0f; clip[0].materialId=4;
     Bounds b; b.center=(Vector3){0,0,0}; b.size=(Vector3){5,5,5}; b.divisionPow=4;
 
-    Mesh carved = GenerateMesh(g, 1.0f, 2, b, blendWidth, clip, 1);
+    Mesh carved = GenerateMesh(g, 1.0f, 2, b, blendWidth, clip, 1, NULL, 0, 0.0f);
     if (carved.vertexCount == 0 || !carved.normals) {
         printf("FAIL: clip_normals_blended produced no mesh\n");
         return 1;
@@ -792,6 +792,37 @@ static int test_clip_normals_blended() {
     return 0;
 }
 
+// A subtractive carve particle straddling a sphere's +x surface must pull the
+// meshed surface inward there (smooth-CSG subtraction), while carveCount==0
+// leaves the mesh unchanged.
+static int test_carve_scalar_subtracts() {
+    printf("--- carve particle subtracts from the scalar field ---\n");
+    Bounds b; b.center = (Vector3){0,0,0}; b.size = (Vector3){4,4,4}; b.divisionPow = 5;
+    Particle g[1]; g[0].position = (Vector3){0,0,0}; g[0].radius = 1.0f; g[0].materialId = 1;
+    // Carve sphere centered on the +x surface of g[0].
+    Particle carve[1]; carve[0].position = (Vector3){1.0f,0,0}; carve[0].radius = 0.5f; carve[0].materialId = 0;
+    float blend = 0.05f;
+
+    Mesh open   = GenerateMesh(g, 1.0f, 1, b, blend, NULL, 0, NULL, 0, 0.0f);
+    Mesh carved = GenerateMesh(g, 1.0f, 1, b, blend, NULL, 0, carve, 1, blend);
+
+    float openMaxX = -1e9f, carvedMaxX = -1e9f;
+    for (int i = 0; i < open.vertexCount; i++)   if (open.vertices[i*3] > openMaxX)   openMaxX = open.vertices[i*3];
+    for (int i = 0; i < carved.vertexCount; i++) if (carved.vertices[i*3] > carvedMaxX) carvedMaxX = carved.vertices[i*3];
+    printf("  open maxX=%.3f  carved maxX=%.3f\n", openMaxX, carvedMaxX);
+
+    int ok = (carved.vertexCount > 0) && (carvedMaxX < openMaxX - 0.1f);
+    if (!ok) printf("  FAIL: carve did not pull the +x surface inward\n");
+
+    // carveCount==0 must reproduce the uncarved mesh exactly.
+    Mesh noop = GenerateMesh(g, 1.0f, 1, b, blend, NULL, 0, NULL, 0, blend);
+    int identical = (noop.vertexCount == open.vertexCount);
+    if (!identical) printf("  FAIL: carveCount==0 changed the mesh (%d vs %d)\n", noop.vertexCount, open.vertexCount);
+
+    UnloadMesh(open); UnloadMesh(carved); UnloadMesh(noop);
+    return ok && identical;
+}
+
 int main() {
     printf("=== Mesh continuity / edge-case matrix (headless, GL-free) ===\n");
     printf("Replicates cluster create(2r)/assign(r)/field(2.5r) + GenerateMesh + simplify.\n\n");
@@ -820,6 +851,15 @@ int main() {
     g_unexpected += clipn_fail;
     printf("%s\n", clipn_fail == 0 ? "PASS" : "FAIL");
     printf("\n");
+
+    // Carve field: a subtractive particle must pull the surface inward where it
+    // straddles a sphere, and carveCount==0 must leave the mesh unchanged.
+    {
+        int carve_ok = test_carve_scalar_subtracts();
+        g_unexpected += (carve_ok ? 0 : 1);
+        printf("carve_scalar_subtracts: %s\n", carve_ok ? "PASS" : "FAIL");
+        printf("\n");
+    }
 
     const float s = 4.0f;  // smallest cell size (size_power 0)
     const uint32_t M0 = 0, M1 = 1;

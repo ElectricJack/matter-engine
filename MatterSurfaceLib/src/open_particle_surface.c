@@ -784,7 +784,7 @@ static int UpdateDirtyCells(int maxUpdates) {
         // Generate new mesh
         spatialHashCells[cellIndex].mesh = GenerateMesh(cellParticleBuffer, particleRadius,
                                           validCount,
-                                          spatialHashCells[cellIndex].bounds, 0.0f, NULL, 0);
+                                          spatialHashCells[cellIndex].bounds, 0.0f, NULL, 0, NULL, 0, 0.0f);
 
         UploadMesh(&spatialHashCells[cellIndex].mesh, false);
         spatialHashCells[cellIndex].hasMesh = true;

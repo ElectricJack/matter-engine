@@ -133,7 +133,8 @@ void Cell::clear_particle_indices() {
 }
 
 void Cell::rebuild_meshes(const std::vector<StaticParticle>& cluster_particles, BLASManager& blas_manager,
-                          float simplification_ratio, float base_detail, int max_pow, float uniform_detail) {
+                          float simplification_ratio, float base_detail, int max_pow, float uniform_detail,
+                          const Particle* carveParticles, int carveCount) {
     clear_meshes(&blas_manager);
 
     if (material_particle_indices.empty()) {
@@ -145,7 +146,7 @@ void Cell::rebuild_meshes(const std::vector<StaticParticle>& cluster_particles, 
     // materialId is still tagged per-triangle inside generate_mesh_for_group.
     for (const auto& group_entry : material_particle_indices) {
         uint32_t group_id = group_entry.first;
-        generate_mesh_for_group(group_id, cluster_particles, blas_manager, simplification_ratio, base_detail, max_pow, uniform_detail);
+        generate_mesh_for_group(group_id, cluster_particles, blas_manager, simplification_ratio, base_detail, max_pow, uniform_detail, carveParticles, carveCount);
     }
 
     has_meshes = !material_meshes.empty();
@@ -310,7 +311,8 @@ std::vector<Particle> build_clip_particles(
 }
 
 void Cell::generate_mesh_for_group(uint32_t group_id, const std::vector<StaticParticle>& cluster_particles, BLASManager& blas_manager,
-                                   float simplification_ratio, float base_detail, int max_pow, float uniform_detail) {
+                                   float simplification_ratio, float base_detail, int max_pow, float uniform_detail,
+                                   const Particle* carveParticles, int carveCount) {
     auto group_it = material_particle_indices.find(group_id);
     if (group_it == material_particle_indices.end() || group_it->second.empty()) {
         return;
@@ -343,6 +345,8 @@ void Cell::generate_mesh_for_group(uint32_t group_id, const std::vector<StaticPa
     float blend_voxels = kBlendVoxels;
     if (const char* e = getenv("MSL_BLEND_VOXELS")) { float v = (float)atof(e); if (v >= 0.0f) blend_voxels = v; }
     float blend_width = blend_voxels * voxel;
+    float carve_blend = blend_width;
+    if (const char* e = getenv("MSL_CARVE_BLEND")) { float v = (float)atof(e); if (v > 0.0f) carve_blend = v; }
     float cull_radius = kFeatureCullVoxels * voxel;
     float vis_radius  = kFeatureVisVoxels  * voxel;
 
@@ -389,7 +393,8 @@ void Cell::generate_mesh_for_group(uint32_t group_id, const std::vector<StaticPa
 
     // max_radius is the reference radius for the SDF's spatial-hash search reach.
     Mesh mesh = GenerateMesh(particles.data(), max_radius, static_cast<int>(particles.size()),
-                             bounds, blend_width, clipPtr, clipCount);
+                             bounds, blend_width, clipPtr, clipCount,
+                             const_cast<Particle*>(carveParticles), carveCount, carve_blend);
 
     // Decimate to a low-poly proxy when requested. Boundary vertices on this
     // cell's face planes are locked so seams with same-level neighbors stay
@@ -407,7 +412,8 @@ void Cell::generate_mesh_for_group(uint32_t group_id, const std::vector<StaticPa
             // per-cell shading seams; reapply the cross-cell-continuous SDF
             // gradient (same blend width) so the proxy shades like the dense mesh.
             ComputeSurfaceNormals(&simplified, particles.data(), max_radius,
-                                  static_cast<int>(particles.size()), blend_width, clipPtr, clipCount);
+                                  static_cast<int>(particles.size()), blend_width, clipPtr, clipCount,
+                                  const_cast<Particle*>(carveParticles), carveCount, carve_blend);
             UnloadMesh(mesh);
             mesh = simplified;
         } else {

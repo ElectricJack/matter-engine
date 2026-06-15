@@ -180,9 +180,9 @@ static void test_built_clip_carves_surface() {
     b.size   = Vector3{5, 5, 5};
     b.divisionPow = 4;
 
-    Mesh open   = GenerateMesh(g, 1.0f, 1, b, blendWidth, NULL, 0);
+    Mesh open   = GenerateMesh(g, 1.0f, 1, b, blendWidth, NULL, 0, NULL, 0, 0.0f);
     Mesh carved = GenerateMesh(g, 1.0f, 1, b, blendWidth,
-                               clip.empty() ? NULL : clip.data(), (int)clip.size());
+                               clip.empty() ? NULL : clip.data(), (int)clip.size(), NULL, 0, 0.0f);
 
     float maxOpen = -1e9f, maxCarved = -1e9f;
     for (int i = 0; i < open.vertexCount; ++i)

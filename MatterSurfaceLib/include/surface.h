@@ -46,10 +46,14 @@ extern "C" {
 // field, the group is forced outside so its isosurface terminates on the equidistant
 // shared wall (material-aware surfacing). Pass NULL,0 for no clipping (byte-identical
 // to the unclipped path).
-Mesh GenerateMesh(Particle* particles, float particleRadius, int particleCount, Bounds volume, float blendWidth, Particle* clipParticles, int clipCount);
+// carveParticles/carveCount are SUBTRACTIVE particles smooth-CSG subtracted from
+// the union (smooth-max against -(|p-c|-r)); carveBlend is the carve fillet width
+// k_c (carveBlend<=0 => hard subtraction). Pass NULL,0,0 for no carving
+// (byte-identical to the uncarved path).
+Mesh GenerateMesh(Particle* particles, float particleRadius, int particleCount, Bounds volume, float blendWidth, Particle* clipParticles, int clipCount, Particle* carveParticles, int carveCount, float carveBlend);
 
 // Enhanced API function with configuration options
-Mesh GenerateMeshWithConfig(Particle* particles, float particleRadius, int particleCount, Bounds volume, float blendWidth, MeshGenerationConfig config, Particle* clipParticles, int clipCount);
+Mesh GenerateMeshWithConfig(Particle* particles, float particleRadius, int particleCount, Bounds volume, float blendWidth, MeshGenerationConfig config, Particle* clipParticles, int clipCount, Particle* carveParticles, int carveCount, float carveBlend);
 
 // Recompute per-vertex shading normals in place as the analytic SDF gradient of
 // the (smooth-min) union-of-spheres field. With blendWidth 0 each normal is the
@@ -63,7 +67,7 @@ Mesh GenerateMeshWithConfig(Particle* particles, float particleRadius, int parti
 // fallback for degenerate vertices with no particle in range.
 // clipParticles/clipCount mirror GenerateMesh's clip field so the recomputed
 // normals match the carved surface; pass NULL,0 for no clipping.
-void ComputeSurfaceNormals(Mesh* mesh, Particle* particles, float particleRadius, int particleCount, float blendWidth, Particle* clipParticles, int clipCount);
+void ComputeSurfaceNormals(Mesh* mesh, Particle* particles, float particleRadius, int particleCount, float blendWidth, Particle* clipParticles, int clipCount, Particle* carveParticles, int carveCount, float carveBlend);
 
 // Create default configuration
 MeshGenerationConfig GetDefaultMeshConfig(void);

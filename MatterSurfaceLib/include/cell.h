@@ -74,7 +74,8 @@ struct Cell {
     // same-level neighbors, so mixed per-cell resolution cracks the surface.
     void rebuild_meshes(const std::vector<StaticParticle>& cluster_particles, BLASManager& blas_manager,
                         float simplification_ratio = 1.0f, float base_detail = 0.0f, int max_pow = 6,
-                        float uniform_detail = 0.0f);
+                        float uniform_detail = 0.0f,
+                        const Particle* carveParticles = nullptr, int carveCount = 0);
     // Drops this cell's meshes. When blas_manager is provided, the cell's BLAS
     // references are released so stale entries don't accumulate on the GPU.
     void clear_meshes(BLASManager* blas_manager = nullptr);
@@ -100,7 +101,8 @@ struct Cell {
 private:
     void calculate_bounds(float smallest_cell_size);
     void generate_mesh_for_group(uint32_t group_id, const std::vector<StaticParticle>& cluster_particles, BLASManager& blas_manager,
-                                 float simplification_ratio, float base_detail, int max_pow, float uniform_detail);
+                                 float simplification_ratio, float base_detail, int max_pow, float uniform_detail,
+                                 const Particle* carveParticles, int carveCount);
 };
 
 #endif // CELL_H
