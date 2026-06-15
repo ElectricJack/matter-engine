@@ -286,6 +286,46 @@ void ComputeSurfaceNormals(Mesh* mesh, Particle* particles, float particleRadius
             }
         }
 
+        // Carve gradient: blend the additive gradient with the inward directions
+        // of nearby subtractive particles, weighted by exp((v_j - m)/k_c), to
+        // match ApplySubtractField. No-op when carveCount==0.
+        if (carveParticles && carveCount > 0 && haveGrad) {
+            float f_add = fmin;
+            if (blendWidth > 1e-5f && found > 1) {
+                float k = blendWidth, sumf = 0.0f;
+                for (int j = 0; j < found; j++) sumf += expf(-(fj[j] - fmin) / k);
+                f_add = fmin - k * logf(sumf);
+            }
+            float k_c = (carveBlend > 1e-5f) ? carveBlend : 1e-5f;
+            float m = f_add;
+            for (int c = 0; c < carveCount; ++c) {
+                float dx = vx - carveParticles[c].position.x;
+                float dy = vy - carveParticles[c].position.y;
+                float dz = vz - carveParticles[c].position.z;
+                float v = -(sqrtf(dx*dx+dy*dy+dz*dz) - carveParticles[c].radius);
+                if (v > m) m = v;
+            }
+            float wadd = expf((f_add - m) / k_c);
+            float ax = gx*wadd, ay = gy*wadd, az = gz*wadd, wsum = wadd;
+            for (int c = 0; c < carveCount; ++c) {
+                float dx = vx - carveParticles[c].position.x;
+                float dy = vy - carveParticles[c].position.y;
+                float dz = vz - carveParticles[c].position.z;
+                float dist = sqrtf(dx*dx+dy*dy+dz*dz);
+                if (dist < 1e-6f) continue;
+                float v = -(dist - carveParticles[c].radius);
+                float w = expf((v - m) / k_c);
+                float inv = 1.0f / dist;          // grad(-s) = -unit(v - c)
+                ax += w * (-dx*inv); ay += w * (-dy*inv); az += w * (-dz*inv);
+                wsum += w;
+            }
+            if (wsum > 1e-12f) {
+                gx = ax/wsum; gy = ay/wsum; gz = az/wsum;
+                float gl = sqrtf(gx*gx+gy*gy+gz*gz);
+                if (gl > 1e-12f) { float n=1.0f/gl; gx*=n; gy*=n; gz*=n; }
+            }
+        }
+
         // Clip field (material-aware surfacing): where a foreign surface is nearer
         // than this group's own field value, the clipped field becomes -fO, whose
         // gradient is -unit(v - c_clip). Override the group gradient there so the

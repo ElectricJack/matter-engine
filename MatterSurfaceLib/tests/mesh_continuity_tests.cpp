@@ -842,6 +842,54 @@ static int test_carve_hard_path() {
     return ok;
 }
 
+// On a carved divot wall, the recomputed normal must tilt toward the carve
+// center's INWARD direction, not stay the host sphere's outward direction.
+// The carve sphere (r=0.5 at x=1) cuts a shallow dish into the +x face of the
+// host (r=1 at origin); its cavity wall vertices keep a positive x (they are the
+// near wall, so the carve-inward direction -unit(v-c) still has +x there) but
+// their y/z components must swing toward the carve center -- i.e. the dot of the
+// carved normal with the inward carve direction must be strongly positive, while
+// the uncarved (pure host) normal points outward and dots NEGATIVE with it.
+static int test_carve_normals_inward() {
+    printf("--- carve normals tilt inward on the divot wall ---\n");
+    Bounds b; b.center=(Vector3){0,0,0}; b.size=(Vector3){4,4,4}; b.divisionPow=5;
+    Particle g[1]; g[0].position=(Vector3){0,0,0}; g[0].radius=1.0f; g[0].materialId=1;
+    Particle carve[1]; carve[0].position=(Vector3){1.0f,0,0}; carve[0].radius=0.5f; carve[0].materialId=0;
+    float blend=0.05f;
+    // GenerateMesh runs ComputeSurfaceNormals internally with the same carve args.
+    Mesh m = GenerateMesh(g, 1.0f, 1, b, blend, NULL, 0, carve, 1, blend);
+    // Pick the carve-cavity wall vertex (on the carve sphere, inside the host)
+    // nearest the carve center, then check its normal aligns with the carve's
+    // inward direction -unit(v - c_carve). A pure host normal would oppose it
+    // (dot ~ -1); a carve-aware normal aligns with it (dot ~ +1).
+    int best=-1; float bestd=1e9f;
+    for (int i=0;i<m.vertexCount;i++){
+        float dx=m.vertices[i*3]-1.0f, dy=m.vertices[i*3+1], dz=m.vertices[i*3+2];
+        float dCarve=sqrtf(dx*dx+dy*dy+dz*dz);
+        float dOrig=sqrtf(m.vertices[i*3]*m.vertices[i*3]
+                         +m.vertices[i*3+1]*m.vertices[i*3+1]
+                         +m.vertices[i*3+2]*m.vertices[i*3+2]);
+        if (fabsf(dCarve - 0.5f) < 0.15f && dOrig < 0.97f && dCarve > 1e-3f) {
+            // distance of this wall vertex from the carve center, prefer the
+            // most off-axis (largest |y|+|z|) so the inward swing is unambiguous.
+            float offaxis = fabsf(dy) + fabsf(dz);
+            float key = -offaxis;
+            if (key < bestd) { bestd = key; best = i; }
+        }
+    }
+    int ok = 0; float dot = 0.0f;
+    if (best>=0) {
+        float dx=m.vertices[best*3]-1.0f, dy=m.vertices[best*3+1], dz=m.vertices[best*3+2];
+        float inv=1.0f/sqrtf(dx*dx+dy*dy+dz*dz);
+        float ix=-dx*inv, iy=-dy*inv, iz=-dz*inv;   // carve-inward unit direction
+        dot = m.normals[best*3]*ix + m.normals[best*3+1]*iy + m.normals[best*3+2]*iz;
+        ok = (dot > 0.5f);
+    }
+    if(!ok) printf("  FAIL: divot-wall normal . inward = %.3f not tilted inward\n", best>=0?dot:-9.9f);
+    UnloadMesh(m);
+    return ok;
+}
+
 int main() {
     printf("=== Mesh continuity / edge-case matrix (headless, GL-free) ===\n");
     printf("Replicates cluster create(2r)/assign(r)/field(2.5r) + GenerateMesh + simplify.\n\n");
@@ -887,6 +935,16 @@ int main() {
         int carve_hard_ok = test_carve_hard_path();
         g_unexpected += (carve_hard_ok ? 0 : 1);
         printf("carve_hard_path: %s\n", carve_hard_ok ? "PASS" : "FAIL");
+        printf("\n");
+    }
+
+    // Carve-aware normals: on a carved divot wall the recomputed normal must
+    // tilt toward the carve center's inward direction, not stay the sphere's
+    // outward normal.
+    {
+        int carve_norm_ok = test_carve_normals_inward();
+        g_unexpected += (carve_norm_ok ? 0 : 1);
+        printf("carve_normals_inward: %s\n", carve_norm_ok ? "PASS" : "FAIL");
         printf("\n");
     }
 
