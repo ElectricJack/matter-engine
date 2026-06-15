@@ -34,6 +34,13 @@ std::vector<Particle> build_clip_particles(
     bool group_transparent,
     float cull_radius, float vis_radius);
 
+// Pick a marching-cubes divisionPow from the finest detail present in a cell.
+// detail_size_min: smallest StaticParticle.detail_size among the cell's particles
+// (<= 0 or >= base_detail => tier 0). base_detail: lattice tier-0 spacing S.
+// tier = round(log2(base_detail / detail_size_min)); returns
+// clamp(base_pow + max(0,tier), base_pow, max_pow). GL-free / pure.
+int choose_division_pow(float detail_size_min, float base_detail, int base_pow, int max_pow);
+
 struct Cell {
     // Cell identification and spatial properties
     Vector3 coordinates;        // Integer coordinates in cluster space (stored as floats for convenience)

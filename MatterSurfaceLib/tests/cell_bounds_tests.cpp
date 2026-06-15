@@ -196,6 +196,18 @@ static void test_built_clip_carves_surface() {
     check(maxCarved < maxOpen - 0.05f, buf);
 }
 
+static void test_choose_division_pow() {
+    printf("--- choose_division_pow derives resolution from detail ---\n");
+    const float S = 0.8f;          // base (tier-0) spacing
+    const int base_pow = 4, max_pow = 6;
+    check(choose_division_pow(S,        S, base_pow, max_pow) == 4, "tier 0 (detail==S) -> pow 4");
+    check(choose_division_pow(S * 0.5f, S, base_pow, max_pow) == 5, "tier 1 (detail==S/2) -> pow 5");
+    check(choose_division_pow(S * 0.25f,S, base_pow, max_pow) == 6, "tier 2 (detail==S/4) -> pow 6");
+    check(choose_division_pow(S * 0.125f,S, base_pow, max_pow) == 6, "tier 3 clamps to max_pow 6");
+    check(choose_division_pow(0.0f,     S, base_pow, max_pow) == 4, "absent detail (0) -> base pow");
+    check(choose_division_pow(S * 2.0f, S, base_pow, max_pow) == 4, "coarser-than-base detail -> base pow");
+}
+
 int main() {
     const float smallest = 4.0f;  // size_power 0 -> actual_size == 4.0
     const int   size_pow = 0;
@@ -234,6 +246,7 @@ int main() {
     test_shades_merge_one_mesh();
     test_clip_set_transparency_gating();
     test_built_clip_carves_surface();
+    test_choose_division_pow();
 
     printf("\n%s (%d failure%s)\n", g_failures == 0 ? "PASS" : "FAIL",
            g_failures, g_failures == 1 ? "" : "s");

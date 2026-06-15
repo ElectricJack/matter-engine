@@ -30,6 +30,18 @@ extern "C" {
     void RL_FREE(void *ptr);
 }
 
+int choose_division_pow(float detail_size_min, float base_detail, int base_pow, int max_pow) {
+    int tier = 0;
+    if (detail_size_min > 0.0f && base_detail > 0.0f && detail_size_min < base_detail) {
+        tier = (int)lroundf(log2f(base_detail / detail_size_min));
+        if (tier < 0) tier = 0;
+    }
+    int pow = base_pow + tier;
+    if (pow < base_pow) pow = base_pow;
+    if (pow > max_pow)  pow = max_pow;
+    return pow;
+}
+
 Cell::Cell(const Vector3& coords, int size_pow, float smallest_cell_size)
     : coordinates(coords),
       size_power(size_pow),
