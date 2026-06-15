@@ -823,6 +823,25 @@ static int test_carve_scalar_subtracts() {
     return ok && identical;
 }
 
+// With blendWidth==0 (hard union) and carveBlend==0 (hard subtraction), a carve
+// particle must still pull the +x surface inward (plain max(f, -s)).
+static int test_carve_hard_path() {
+    printf("--- carve in the hard-union path (blend=0) ---\n");
+    Bounds b; b.center = (Vector3){0,0,0}; b.size = (Vector3){4,4,4}; b.divisionPow = 5;
+    Particle g[1]; g[0].position = (Vector3){0,0,0}; g[0].radius = 1.0f; g[0].materialId = 1;
+    Particle carve[1]; carve[0].position = (Vector3){1.0f,0,0}; carve[0].radius = 0.5f; carve[0].materialId = 0;
+
+    Mesh open   = GenerateMesh(g, 1.0f, 1, b, 0.0f, NULL, 0, NULL, 0, 0.0f);
+    Mesh carved = GenerateMesh(g, 1.0f, 1, b, 0.0f, NULL, 0, carve, 1, 0.0f);
+    float omx=-1e9f, cmx=-1e9f;
+    for (int i=0;i<open.vertexCount;i++)   if (open.vertices[i*3]>omx)   omx=open.vertices[i*3];
+    for (int i=0;i<carved.vertexCount;i++) if (carved.vertices[i*3]>cmx) cmx=carved.vertices[i*3];
+    int ok = (carved.vertexCount>0) && (cmx < omx - 0.1f);
+    if (!ok) printf("  FAIL: hard-path carve did not pull surface inward (%.3f vs %.3f)\n", cmx, omx);
+    UnloadMesh(open); UnloadMesh(carved);
+    return ok;
+}
+
 int main() {
     printf("=== Mesh continuity / edge-case matrix (headless, GL-free) ===\n");
     printf("Replicates cluster create(2r)/assign(r)/field(2.5r) + GenerateMesh + simplify.\n\n");
@@ -858,6 +877,16 @@ int main() {
         int carve_ok = test_carve_scalar_subtracts();
         g_unexpected += (carve_ok ? 0 : 1);
         printf("carve_scalar_subtracts: %s\n", carve_ok ? "PASS" : "FAIL");
+        printf("\n");
+    }
+
+    // Carve in the hard-union early-out path: with blendWidth==0 and
+    // carveBlend==0 the subtraction is plain max(f, -s) and must still pull the
+    // +x surface inward.
+    {
+        int carve_hard_ok = test_carve_hard_path();
+        g_unexpected += (carve_hard_ok ? 0 : 1);
+        printf("carve_hard_path: %s\n", carve_hard_ok ? "PASS" : "FAIL");
         printf("\n");
     }
 
