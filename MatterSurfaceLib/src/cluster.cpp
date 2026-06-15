@@ -224,11 +224,16 @@ void Cluster::rebuild_dirty_cells() {
     
     for (auto& cell : cells_) {
         if (cell->is_dirty) {
+            // The no_mesh set is keyed on integer cell coords at the finest
+            // cell size (LOD 0, the level the cull was computed for). At coarser
+            // LODs the coords mean something different, so only skip at LOD 0;
+            // higher LODs mesh every cell (cheap -- far fewer, larger cells).
             uint64_t key = pack_slot(SlotCoord{
                 (int)lroundf(cell->coordinates.x),
                 (int)lroundf(cell->coordinates.y),
                 (int)lroundf(cell->coordinates.z)});
-            if (no_mesh_cells_.find(key) != no_mesh_cells_.end()) {
+            if (current_lod_level_ == 0 &&
+                no_mesh_cells_.find(key) != no_mesh_cells_.end()) {
                 cell->clear_meshes(&blas_manager_);  // drop any stale geometry
                 cell->is_dirty = false;
                 continue;                            // never meshed, no BLAS

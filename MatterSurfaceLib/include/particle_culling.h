@@ -16,7 +16,9 @@ struct EmittedParticle {
 struct CullParams {
     int margin;          // sub-shell layers to keep; clamped to >= 1
     float base_radius;   // nominal particle radius
-    float radius_variation = 0.0f; // per-particle radius scales by 1 +/- this (0 = uniform)
+    float radius_variation = 0.0f; // particle radius scales by 1 +/- this (0 = uniform)
+    float radius_cluster_freq = 0.0f; // value-noise frequency driving radius
+                                      // clusters; low = big clumps of one scale
     float jitter_amount; // per-axis position jitter magnitude (0 = none)
     float tint_alpha;    // tint blend strength written to EmittedParticle.tint.w
     uint32_t seed;       // determinism seed for jitter/tint

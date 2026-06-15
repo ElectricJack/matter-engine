@@ -527,15 +527,20 @@ private:
         const float SPACING     = 0.8f;
         float BASE_RADIUS = 0.6f;             // overlap factor = 2*r/SPACING = 1.5
         float POS_JITTER  = 0.35f * SPACING;  // per-axis position jitter
-        float RADIUS_VAR  = 0.3f;             // per-particle radius +/-30%
+        float RADIUS_VAR  = 0.5f;             // radius +/-50% (clustered)
+        float CLUSTER_FREQ = 0.25f;           // low freq -> big clumps of one scale
+        float VOID_AMT    = 0.28f;            // carve slots where noise < this (0=solid)
+        const float VOID_FREQ = 0.12f;        // low freq -> a few big bites, not swiss cheese
         const float TINT_ALPHA  = 0.2f;
         const uint32_t MAT_OPAQUE_A = 8;  // stone_light (GROUP_STONE)
         const uint32_t MAT_OPAQUE_B = 9;  // stone_dark  (GROUP_STONE)
 
         // Env overrides for quick visual iteration.
-        if (const char* e = getenv("MSL_BASE_RADIUS")) { float v = (float)atof(e); if (v > 0.0f) BASE_RADIUS = v; }
-        if (const char* e = getenv("MSL_JITTER"))      { float v = (float)atof(e); if (v >= 0.0f) POS_JITTER = v; }
-        if (const char* e = getenv("MSL_SIZE_VAR"))    { float v = (float)atof(e); if (v >= 0.0f) RADIUS_VAR = v; }
+        if (const char* e = getenv("MSL_BASE_RADIUS"))  { float v = (float)atof(e); if (v > 0.0f) BASE_RADIUS = v; }
+        if (const char* e = getenv("MSL_JITTER"))       { float v = (float)atof(e); if (v >= 0.0f) POS_JITTER = v; }
+        if (const char* e = getenv("MSL_SIZE_VAR"))     { float v = (float)atof(e); if (v >= 0.0f) RADIUS_VAR = v; }
+        if (const char* e = getenv("MSL_CLUSTER_FREQ")) { float v = (float)atof(e); if (v >= 0.0f) CLUSTER_FREQ = v; }
+        if (const char* e = getenv("MSL_VOID"))         { float v = (float)atof(e); if (v >= 0.0f) VOID_AMT = v; }
 
         // Default margin = 2 (conservatively safe). Set MSL_CULL_MARGIN to tune;
         // MSL_CULL_MARGIN=-1 bypasses culling (emit every slot) for A/B compare.
@@ -558,6 +563,11 @@ private:
         for (int ix = 0; ix < DIM_X; ++ix)
         for (int iy = 0; iy < DIM_Y; ++iy)
         for (int iz = 0; iz < DIM_Z; ++iz) {
+            // Carve organic voids: leave a slot empty where the low-frequency
+            // noise field dips below VOID_AMT, so the brick has missing chunks.
+            if (VOID_AMT > 0.0f &&
+                lattice_vnoise(ix * VOID_FREQ, iy * VOID_FREQ, iz * VOID_FREQ) < VOID_AMT)
+                continue;
             uint32_t mat = ((ix + iy + iz) & 1) ? MAT_OPAQUE_A : MAT_OPAQUE_B;
             occ.set(SlotCoord{ix, iy, iz}, SlotData{mat});
         }
@@ -573,6 +583,7 @@ private:
         CullParams p;
         p.margin = margin; p.base_radius = BASE_RADIUS;
         p.radius_variation = RADIUS_VAR;
+        p.radius_cluster_freq = CLUSTER_FREQ;
         p.jitter_amount = POS_JITTER; p.tint_alpha = TINT_ALPHA; p.seed = 1337;
         p.cell_size = test_cluster_->get_smallest_cell_size();   // LOD 0 cell size
         p.cell_origin_offset = Vector3{ -halfx, -halfy, -halfz };

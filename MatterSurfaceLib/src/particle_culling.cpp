@@ -47,7 +47,13 @@ static EmittedParticle make_particle(const Lattice& lat, SlotCoord c,
 
     EmittedParticle ep;
     ep.position   = Vector3{ base.x + jx, base.y + jy, base.z + jz };
-    float rv = (lattice_vhash(c.x + 211 + s, c.y + 211, c.z + 211) - 0.5f) * 2.0f; // [-1,1]
+    // Radius variation has two parts: a low-frequency value-noise term shared by
+    // neighboring slots (so big and small particles form clumps) plus a small
+    // per-particle term that breaks up the clumps. Cluster term dominates.
+    float f = p.radius_cluster_freq;
+    float cluster = (lattice_vnoise(c.x * f, c.y * f, c.z * f) - 0.5f) * 2.0f; // [-1,1]
+    float fine    = (lattice_vhash(c.x + 211 + s, c.y + 211, c.z + 211) - 0.5f) * 2.0f;
+    float rv = cluster * 0.75f + fine * 0.25f;
     ep.radius     = p.base_radius * (1.0f + rv * p.radius_variation);
     ep.materialId = d.materialId;
     float tr = lattice_vhash(c.x + 101 + s, c.y, c.z);
