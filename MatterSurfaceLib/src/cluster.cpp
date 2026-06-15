@@ -3,7 +3,7 @@
 #include "../include/tlas_manager.hpp"
 #include "../include/cell_visitor.h"
 #include "../include/occupancy.h"  // pack_slot, SlotCoord
-#include "../include/surface.h"     // SurfaceScratch create/destroy
+#include "../include/mesh_worker_pool.h"   // MeshWorkerPool + SurfaceScratch
 extern "C" {
 #include "../include/spatial_hash.h"
 }
@@ -12,6 +12,9 @@ extern "C" {
 #include <cassert>
 #include <cstdlib>
 #include <algorithm>
+#include <thread>    // std::thread::hardware_concurrency
+#include <chrono>
+#include <memory>
 
 
 // Raymath function prototypes we need (without including the problematic header)
@@ -43,16 +46,12 @@ Cluster::Cluster(uint32_t cluster_id, BLASManager& blas_manager, TLASManager& tl
         printf("Warning: Failed to initialize spatial hash for cluster %u\n", cluster_id_);
     }
 
-    // One reusable surface-build context shared by every cell mesh in this cluster.
-    surface_scratch_ = CreateSurfaceScratch();
-    // A null scratch is unrecoverable: the mesh-generation path dereferences it
-    // unconditionally (GenerateMeshWithScratch/ComputeSurfaceNormalsWithScratch).
-    // Fail fast at the real root cause rather than limping into a null-deref later.
-    if (!surface_scratch_) {
-        fprintf(stderr, "FATAL: CreateSurfaceScratch failed for cluster %u (out of memory)\n", cluster_id_);
-        assert(surface_scratch_ && "CreateSurfaceScratch failed (out of memory)");
-        abort();
-    }
+    // Persistent CPU mesh worker pool: default to all-but-one hardware thread so
+    // the main thread (GL/BLAS/TLAS commit) stays responsive. One SurfaceScratch
+    // per worker makes the mesh build re-entrant.
+    unsigned hw = std::thread::hardware_concurrency();
+    int default_workers = (hw > 1u) ? (int)(hw - 1u) : 1;
+    mesh_pool_ = std::make_unique<MeshWorkerPool>(default_workers);
 
     printf("Created cluster %u with smallest cell size %.2f\n", cluster_id_, smallest_cell_size_);
 }
@@ -66,11 +65,8 @@ Cluster::~Cluster() {
         sh_destroy(cell_spatial_hash_);
     }
 
-    // Cleanup surface scratch context
-    if (surface_scratch_) {
-        DestroySurfaceScratch(surface_scratch_);
-        surface_scratch_ = nullptr;
-    }
+    // Worker pool joins its threads and frees their scratches in its destructor.
+    mesh_pool_.reset();
 
     printf("Destroyed cluster %u\n", cluster_id_);
 }
@@ -242,58 +238,105 @@ void Cluster::set_no_mesh_cells(const std::vector<Vector3>& coords) {
     }
 }
 
-void Cluster::rebuild_dirty_cells() {
-    uint32_t rebuilt_count = 0;
-    uint32_t total_cells = static_cast<uint32_t>(cells_.size());
-    uint32_t dirty_cells = get_dirty_cell_count();
+void Cluster::set_mesh_worker_count(int n) {
+    if (mesh_pool_) mesh_pool_->resize(n);
+}
 
+int Cluster::get_mesh_worker_count() const {
+    return mesh_pool_ ? mesh_pool_->size() : 0;
+}
+
+void Cluster::rebuild_dirty_cells() {
     // One resolution for every meshed cell: derived from the globally finest
     // detail so neighboring marching-cubes grids align and stay watertight.
     float uniform_detail = compute_finest_detail();
 
-    printf("REBUILD: Processing %u total cells, %u dirty\n", total_cells, dirty_cells);
+    auto t_start = std::chrono::steady_clock::now();
+
+    // PHASE 1 - PRE (serial, main thread): per dirty non-interior cell, gather
+    // particle indices + carve subset, release the old BLAS, and queue a CellJob.
+    std::vector<CellJob> jobs;
+    uint32_t processed = 0;   // non-interior dirty cells handled (gates TLAS rebuild)
 
     for (auto& cell : cells_) {
-        if (cell->is_dirty) {
-            // The no_mesh set is keyed on integer cell coords at the single cell
-            // size the cull was computed for. Interior cells in this set are never
-            // meshed (no geometry, no BLAS).
-            uint64_t key = pack_slot(SlotCoord{
-                (int)lroundf(cell->coordinates.x),
-                (int)lroundf(cell->coordinates.y),
-                (int)lroundf(cell->coordinates.z)});
-            if (no_mesh_cells_.find(key) != no_mesh_cells_.end()) {
-                cell->clear_meshes(&blas_manager_);  // interior cell: never meshed
-                cell->is_dirty = false;
-                continue;
-            }
-            // printf("  Rebuilding cell at (%.0f,%.0f,%.0f) size=%.1f\n",
-            //        cell->coordinates.x, cell->coordinates.y, cell->coordinates.z, cell->actual_size);
-            update_cell_meshes(cell.get(), uniform_detail);
+        if (!cell->is_dirty) continue;
+
+        uint64_t key = pack_slot(SlotCoord{
+            (int)lroundf(cell->coordinates.x),
+            (int)lroundf(cell->coordinates.y),
+            (int)lroundf(cell->coordinates.z)});
+        if (no_mesh_cells_.find(key) != no_mesh_cells_.end()) {
+            cell->clear_meshes(&blas_manager_);  // interior cell: never meshed
             cell->is_dirty = false;
-            rebuilt_count++;
+            continue;
         }
+
+        // Assign particles to this cell (read-only over particles_).
+        cell->clear_particle_indices();
+        for (uint32_t i = 0; i < particles_.size(); ++i) {
+            const StaticParticle& particle = particles_[i];
+            if (cell->intersects_sphere(particle.position, particle.radius)) {
+                cell->add_particle_index(i, particle.materialId);
+            }
+        }
+
+        // Release the previous build's BLAS on the main thread before re-meshing.
+        cell->clear_meshes(&blas_manager_);
+        cell->is_dirty = false;
+        cell->mesh_version++;
+        processed++;
+
+        if (cell->material_particle_indices.empty()) {
+            continue;  // nothing to mesh (already cleared)
+        }
+
+        CellJob job;
+        job.cell = cell.get();
+        // Gather carve particles whose influence overlaps this cell (mirrors the
+        // additive intersects_sphere halo; slack covers the carve fillet reach).
+        for (const Particle& cpart : carve_particles_) {
+            if (cell->intersects_sphere(cpart.position, cpart.radius * 1.5f))
+                job.carve.push_back(cpart);
+        }
+        job.simplification_ratio = simplification_ratio_;
+        job.base_detail = base_detail_size_;
+        job.max_pow = max_division_pow_;
+        job.uniform_detail = uniform_detail;
+        jobs.push_back(std::move(job));
     }
-    
-    printf("REBUILD: Completed %u cells\n", rebuilt_count);
-    
-    // Automatically update TLAS if any cells were rebuilt
-    if (rebuilt_count > 0) {
-        PROFILE_SECTION("Auto TLAS Rebuild After Cell Changes");
-        
-        // Clear old TLAS data
+
+    // PHASE 2 - PARALLEL: build every job's cell mesh on the worker pool. Each
+    // worker uses its own SurfaceScratch; particles_ is read-only here.
+    std::vector<CellMeshResult> results;
+    if (!jobs.empty()) {
+        mesh_pool_->run(jobs, results,
+            [this](const CellJob& job, SurfaceScratch* scratch, CellMeshResult& out) {
+                const Particle* carvePtr = job.carve.empty() ? nullptr : job.carve.data();
+                int carveCount = static_cast<int>(job.carve.size());
+                out = job.cell->build_cell_meshes(particles_, scratch, job.simplification_ratio,
+                                                  job.base_detail, job.max_pow, job.uniform_detail,
+                                                  carvePtr, carveCount);
+            });
+    }
+
+    // PHASE 3 - DRAIN (serial, fixed job order): commit GL/BLAS deterministically.
+    uint32_t committed_groups = 0;
+    for (size_t i = 0; i < jobs.size(); ++i) {
+        jobs[i].cell->commit_cell_meshes(results[i], blas_manager_);
+        committed_groups += static_cast<uint32_t>(results[i].groups.size());
+    }
+
+    // One TLAS rebuild if anything changed (meshed or cleared).
+    if (processed > 0) {
         tlas_manager_.clear();
-        
-        // Re-add all cluster meshes to TLAS
         add_to_tlas();
-        
-        // Build the new TLAS structure
         tlas_manager_.build(blas_manager_);
-        
-        printf("TLAS auto-rebuilt: %d instances, %d nodes\n", 
-               tlas_manager_.get_instance_count(), 
-               tlas_manager_.get_node_count());
     }
+
+    auto t_end = std::chrono::steady_clock::now();
+    double ms = std::chrono::duration<double, std::milli>(t_end - t_start).count();
+    printf("REBUILD: %u cells processed, %zu meshed / %u groups, %.1f ms (%d workers)\n",
+           processed, jobs.size(), committed_groups, ms, mesh_pool_->size());
 }
 
 float Cluster::compute_finest_detail() const {
@@ -303,43 +346,6 @@ float Cluster::compute_finest_detail() const {
             finest = p.detail_size;
     }
     return finest;
-}
-
-void Cluster::update_cell_meshes(Cell* cell, float uniform_detail) {
-    if (!cell) return;
-    
-    // Clear existing particle indices
-    cell->clear_particle_indices();
-    
-    // Find particles that intersect this cell and group by material
-    for (uint32_t i = 0; i < particles_.size(); ++i) {
-        const StaticParticle& particle = particles_[i];
-        
-        if (cell->intersects_sphere(particle.position, particle.radius)) {
-            cell->add_particle_index(i, particle.materialId);
-        }
-    }
-    
-    // Rebuild meshes for all materials if we have particles
-    if (!cell->material_particle_indices.empty()) {
-        // Gather carve particles whose influence overlaps this cell, mirroring the
-        // additive intersects_sphere halo (slack covers the carve fillet reach) so
-        // shared-face field values match and no seam cracks.
-        std::vector<Particle> cell_carve;
-        for (const Particle& cpart : carve_particles_) {
-            if (cell->intersects_sphere(cpart.position, cpart.radius * 1.5f))
-                cell_carve.push_back(cpart);
-        }
-        const Particle* carvePtr = cell_carve.empty() ? nullptr : cell_carve.data();
-        int carveCount = static_cast<int>(cell_carve.size());
-        cell->rebuild_meshes(particles_, blas_manager_, surface_scratch_, simplification_ratio_,
-                             base_detail_size_, max_division_pow_, uniform_detail,
-                             carvePtr, carveCount);
-    } else {
-        cell->clear_meshes(&blas_manager_);
-    }
-    
-    cell->mesh_version++;
 }
 
 std::vector<Cell*> Cluster::get_cells_in_region(const Vector3& min_bound, const Vector3& max_bound) {

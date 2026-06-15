@@ -16,6 +16,7 @@ class BLASManager;
 class TLASManager;
 class CellVisitor;
 class CellRenderVisitor;
+class MeshWorkerPool;
 
 // Static particle structure for matter representation
 struct StaticParticle {
@@ -112,6 +113,11 @@ public:
     void set_max_division_pow(int p) { max_division_pow_ = p; }
     int get_max_division_pow() const { return max_division_pow_; }
 
+    // Number of CPU mesh worker threads. Resizing is only applied between
+    // rebuilds (call from the UI before the next rebuild_dirty_cells).
+    void set_mesh_worker_count(int n);
+    int  get_mesh_worker_count() const;
+
     // Statistics
     uint32_t get_cell_count() const;
     uint32_t get_dirty_cell_count() const;
@@ -136,10 +142,11 @@ private:
     float base_detail_size_ = 0.0f;   // lattice tier-0 spacing S (0 => disabled)
     int   max_division_pow_ = 6;      // resolution ceiling (64^3)
     SpatialHash* cell_spatial_hash_;
-    // Reusable per-cluster surface-build context: owns the marching-cubes memory
-    // pool and the particle spatial hash that GenerateMeshWithScratch builds, so
-    // the per-triangle nearest-particle lookup can reuse it instead of rescanning.
-    SurfaceScratch* surface_scratch_ = nullptr;
+    // Persistent worker pool for per-cell CPU meshing. Owns one SurfaceScratch
+    // per worker thread (replaces the former single per-cluster scratch). Sized
+    // to hardware concurrency at construction; resized between rebuilds via the
+    // ImGui worker slider.
+    std::unique_ptr<MeshWorkerPool> mesh_pool_;
     std::vector<std::unique_ptr<Cell>> cells_;
     std::unordered_set<uint64_t> no_mesh_cells_;  // packed integer cell coords
     std::vector<Particle> carve_particles_;
@@ -147,7 +154,6 @@ private:
     // Helper methods
     Vector3 get_cell_coordinates(const Vector3& local_position) const;
     Cell* find_or_create_cell(const Vector3& cell_coords);
-    void update_cell_meshes(Cell* cell, float uniform_detail);
     void clear_all_cells();
 
     // Finest detail_size across all particles (seeded with base_detail_size_).
