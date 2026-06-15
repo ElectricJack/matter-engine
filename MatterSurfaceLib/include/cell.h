@@ -11,6 +11,8 @@ struct StaticParticle;
 class BLASManager;
 class CellVisitor;
 class CellRenderVisitor;
+struct GroupMeshResult;
+struct CellMeshResult;
 typedef uint32_t BLASHandle;
 
 // SurfaceLib's C-linkage surface API plus the Particle/Bounds plain-old-data
@@ -77,6 +79,18 @@ struct Cell {
                         float simplification_ratio = 1.0f, float base_detail = 0.0f, int max_pow = 6,
                         float uniform_detail = 0.0f,
                         const Particle* carveParticles = nullptr, int carveCount = 0);
+    // CPU-only mesh build for every merge group in this cell. Reentrant: uses the
+    // caller-supplied per-thread SurfaceScratch and touches no GL/BLAS/global
+    // state, so it is safe to run on a worker thread. Reads material_particle_indices
+    // (populated by add_particle_index) and cluster_particles read-only.
+    CellMeshResult build_cell_meshes(const std::vector<StaticParticle>& cluster_particles,
+                                     SurfaceScratch* scratch,
+                                     float simplification_ratio, float base_detail, int max_pow,
+                                     float uniform_detail,
+                                     const Particle* carveParticles, int carveCount) const;
+    // Main-thread commit of a CellMeshResult: UploadMesh (GL), BLAS registration,
+    // BVH report, and material_meshes/material_blas writes. Sets has_meshes.
+    void commit_cell_meshes(CellMeshResult& result, BLASManager& blas_manager);
     // Drops this cell's meshes. When blas_manager is provided, the cell's BLAS
     // references are released so stale entries don't accumulate on the GPU.
     void clear_meshes(BLASManager* blas_manager = nullptr);
@@ -101,10 +115,13 @@ struct Cell {
     
 private:
     void calculate_bounds(float smallest_cell_size);
-    void generate_mesh_for_group(uint32_t group_id, const std::vector<StaticParticle>& cluster_particles, BLASManager& blas_manager,
-                                 SurfaceScratch* scratch,
-                                 float simplification_ratio, float base_detail, int max_pow, float uniform_detail,
-                                 const Particle* carveParticles, int carveCount);
+    // CPU-only build of one merge group's mesh + tagged triangles (no GL/BLAS).
+    GroupMeshResult build_group_mesh(uint32_t group_id, const std::vector<StaticParticle>& cluster_particles,
+                                     SurfaceScratch* scratch,
+                                     float simplification_ratio, float base_detail, int max_pow, float uniform_detail,
+                                     const Particle* carveParticles, int carveCount) const;
+    // Main-thread commit of one group's result (UploadMesh + BLAS + BVH report).
+    void commit_group_mesh(GroupMeshResult& result, BLASManager& blas_manager);
 };
 
 #endif // CELL_H

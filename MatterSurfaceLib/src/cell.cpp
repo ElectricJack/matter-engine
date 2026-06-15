@@ -5,6 +5,8 @@
 #include "../include/cell_visitor.h"
 #include "material_registry.h"
 #include "mesh_simplifier.hpp"
+#include "../include/mesh_worker_pool.h"
+#include <utility>   // std::move
 extern "C" {
 #include "../include/spatial_hash.h"  // sh_query_radius_nearest for per-triangle material/tint
 }
@@ -145,15 +147,10 @@ void Cell::rebuild_meshes(const std::vector<StaticParticle>& cluster_particles, 
         return;
     }
 
-    // Generate one mesh per merge group (the bucket key). Particles of different
-    // materials that share a group blend together; their true per-particle
-    // materialId is still tagged per-triangle inside generate_mesh_for_group.
-    for (const auto& group_entry : material_particle_indices) {
-        uint32_t group_id = group_entry.first;
-        generate_mesh_for_group(group_id, cluster_particles, blas_manager, scratch, simplification_ratio, base_detail, max_pow, uniform_detail, carveParticles, carveCount);
-    }
-
-    has_meshes = !material_meshes.empty();
+    CellMeshResult result = build_cell_meshes(cluster_particles, scratch, simplification_ratio,
+                                              base_detail, max_pow, uniform_detail,
+                                              carveParticles, carveCount);
+    commit_cell_meshes(result, blas_manager);
 }
 
 // Helper function to convert Raylib Mesh to triangles for BLAS registration
@@ -314,13 +311,16 @@ std::vector<Particle> build_clip_particles(
     return clip;
 }
 
-void Cell::generate_mesh_for_group(uint32_t group_id, const std::vector<StaticParticle>& cluster_particles, BLASManager& blas_manager,
-                                   SurfaceScratch* scratch,
-                                   float simplification_ratio, float base_detail, int max_pow, float uniform_detail,
-                                   const Particle* carveParticles, int carveCount) {
+GroupMeshResult Cell::build_group_mesh(uint32_t group_id, const std::vector<StaticParticle>& cluster_particles,
+                                       SurfaceScratch* scratch,
+                                       float simplification_ratio, float base_detail, int max_pow, float uniform_detail,
+                                       const Particle* carveParticles, int carveCount) const {
+    GroupMeshResult result;
+    result.group_id = group_id;
+
     auto group_it = material_particle_indices.find(group_id);
     if (group_it == material_particle_indices.end() || group_it->second.empty()) {
-        return;
+        return result;
     }
 
     const auto& particle_indices = group_it->second;
@@ -329,15 +329,11 @@ void Cell::generate_mesh_for_group(uint32_t group_id, const std::vector<StaticPa
     bounds.center = center;
     bounds.size = Vector3{actual_size, actual_size, actual_size};
 
-    // Mesh resolution. When the cluster supplies a uniform_detail, every meshed
-    // cell resolves to the same divisionPow so neighboring marching-cubes grids
-    // align (mixed resolution cracks the surface at cell faces). Otherwise fall
-    // back to the cell's own finest particle.
     float detail_min;
     if (uniform_detail > 0.0f) {
         detail_min = uniform_detail;
     } else {
-        detail_min = base_detail;   // default tier-0 (base) detail
+        detail_min = base_detail;
         for (uint32_t idx : particle_indices) {
             if (idx >= cluster_particles.size()) continue;
             float ds = cluster_particles[idx].detail_size;
@@ -355,21 +351,15 @@ void Cell::generate_mesh_for_group(uint32_t group_id, const std::vector<StaticPa
     float cull_radius = kFeatureCullVoxels * voxel;
     float vis_radius  = kFeatureVisVoxels  * voxel;
 
-    // All particles of this merge group feed one shared SDF field so differently-
-    // sized particles merge naturally (metaballs) under the smooth-min union.
-    // Each particle keeps its own radius, tapered for this LOD: sub-grid features
-    // are lifted just enough to stay samplable, and features below the cull
-    // threshold are dropped. This both fixes the old single-radius hole bug and
-    // gives graceful "slightly larger -> blend -> gone" LOD degradation.
     std::vector<Particle> particles;
-    std::vector<float4> particle_tints;   // aligned 1:1 with `particles`
+    std::vector<float4> particle_tints;
     particles.reserve(particle_indices.size());
     particle_tints.reserve(particle_indices.size());
     float max_radius = 0.0f;
     for (uint32_t idx : particle_indices) {
         if (idx >= cluster_particles.size()) continue;
         const StaticParticle& sp = cluster_particles[idx];
-        if (sp.radius < cull_radius) continue; // too small to represent at this LOD
+        if (sp.radius < cull_radius) continue;
         float r_eff = (sp.radius < vis_radius) ? vis_radius : sp.radius;
 
         Particle surface_particle;
@@ -382,13 +372,9 @@ void Cell::generate_mesh_for_group(uint32_t group_id, const std::vector<StaticPa
     }
 
     if (particles.empty()) {
-        return;
+        return result;
     }
 
-    // Material-aware surfacing: build the transparency-gated foreign clip set
-    // from the OTHER merge groups in this cell so this group's surface
-    // terminates on the equidistant wall against a transparent neighbor. Uses
-    // the same LOD taper/cull as the group's own particles.
     bool group_transparent = MaterialIsTransparent(particles[0].materialId) != 0;
     std::vector<Particle> clip = build_clip_particles(
         group_id, material_particle_indices, cluster_particles,
@@ -396,14 +382,10 @@ void Cell::generate_mesh_for_group(uint32_t group_id, const std::vector<StaticPa
     Particle* clipPtr = clip.empty() ? NULL : clip.data();
     int clipCount = static_cast<int>(clip.size());
 
-    // max_radius is the reference radius for the SDF's spatial-hash search reach.
     Mesh mesh = GenerateMeshWithScratch(scratch, particles.data(), max_radius, static_cast<int>(particles.size()),
                              bounds, blend_width, clipPtr, clipCount,
                              const_cast<Particle*>(carveParticles), carveCount, carve_blend);
 
-    // Decimate to a low-poly proxy when requested. Boundary vertices on this
-    // cell's face planes are locked so seams with same-level neighbors stay
-    // watertight.
     if (simplification_ratio < 1.0f && mesh.vertexCount > 0 && mesh.triangleCount > 0) {
         CellBounds cb;
         cb.min_bound = min_bound;
@@ -413,97 +395,109 @@ void Cell::generate_mesh_for_group(uint32_t group_id, const std::vector<StaticPa
         so.lock_boundary = true;
         Mesh simplified = simplify_mesh(mesh, so, &cb);
         if (simplified.vertexCount > 0 && simplified.triangleCount > 0) {
-            // simplify_mesh rebuilds normals from face geometry, reintroducing
-            // per-cell shading seams; reapply the cross-cell-continuous SDF
-            // gradient (same blend width) so the proxy shades like the dense mesh.
             ComputeSurfaceNormalsWithScratch(scratch, &simplified, particles.data(), max_radius,
                                   static_cast<int>(particles.size()), blend_width, clipPtr, clipCount,
                                   const_cast<Particle*>(carveParticles), carveCount, carve_blend);
             UnloadMesh(mesh);
             mesh = simplified;
         } else {
-            UnloadMesh(simplified); // simplification produced nothing usable; keep dense mesh
+            UnloadMesh(simplified);
         }
     }
 
-    if (mesh.vertexCount > 0) {
-        // Store the mesh
-        material_meshes[group_id] = mesh;
+    if (mesh.vertexCount <= 0) {
+        return result;
+    }
 
-        UploadMesh(&material_meshes[group_id], false);
+    // CPU triangle conversion + per-triangle material/tint tag. MUST run here in
+    // the same worker right after generation: it reuses the scratch's spatial
+    // hash, which still holds exactly `particles` (same data ptr + count passed
+    // to GenerateMeshWithScratch and ComputeSurfaceNormalsWithScratch), so
+    // `nearest - particles.data()` is a valid index.
+    std::vector<TriEx> triangle_normals;
+    std::vector<Tri> triangles = convert_mesh_to_triangles(mesh, &triangle_normals);
 
-        // Register mesh with BLAS manager for ray tracing
-        try {
-            std::vector<TriEx> triangle_normals;
-            std::vector<Tri> triangles = convert_mesh_to_triangles(mesh, &triangle_normals);
-            printf("Converting mesh to %zu triangles for BLAS registration\\n", triangles.size());
+    SpatialHash* tri_hash = SurfaceScratchHash(scratch);
+    float tri_search = max_radius * 2.5f + blend_width * 4.0f;
+    for (size_t t = 0; t < triangle_normals.size() && t < triangles.size(); ++t) {
+        const float3& c = triangles[t].centroid;
+        int bestIdx = 0;
+        Particle* nearest = NULL;
+        int nfound = tri_hash
+            ? sh_query_radius_nearest(tri_hash, c.x, c.y, c.z, tri_search, (void**)&nearest, 1)
+            : 0;
+        if (nfound > 0 && nearest) {
+            bestIdx = (int)(nearest - particles.data());
+        }
+        triangle_normals[t].materialId = particles[bestIdx].materialId;
+        triangle_normals[t].tint = particle_tints[bestIdx];
+    }
 
-            // Tag each triangle with the material of the nearest particle to its centroid.
-            // One mesh may carry multiple materials once meshing is regrouped, so resolve
-            // per-triangle rather than assuming a single material for the whole mesh.
-            //
-            // Reuse the particle spatial hash the scratch already built during
-            // GenerateMeshWithScratch (it still holds exactly `particles` in the same
-            // index order). This turns the old O(triangles * particles) scan into one
-            // O(1)-ish hash query per triangle. The search radius matches the cellSize
-            // formula (max_radius*2.5 + blend_width*4) the hash was keyed with so the
-            // local bucket actually contains the nearest particle.
-            SpatialHash* tri_hash = SurfaceScratchHash(scratch);
-            float tri_search = max_radius * 2.5f + blend_width * 4.0f;
-            for (size_t t = 0; t < triangle_normals.size() && t < triangles.size(); ++t) {
-                const float3& c = triangles[t].centroid;
-                // Seed the default from a REAL particle materialId (never the
-                // group id, which is the bucket key). particles is non-empty
-                // here, so the query below normally assigns a real materialId;
-                // this seed is just a belt-and-braces guard so the group id can
-                // never leak onto a triangle's material when nothing is found.
-                int bestIdx = 0;
-                Particle* nearest = NULL;
-                int nfound = tri_hash
-                    ? sh_query_radius_nearest(tri_hash, c.x, c.y, c.z, tri_search, (void**)&nearest, 1)
-                    : 0;
-                if (nfound > 0 && nearest) {
-                    bestIdx = (int)(nearest - particles.data());
-                }
-                triangle_normals[t].materialId = particles[bestIdx].materialId;
-                triangle_normals[t].tint = particle_tints[bestIdx];
+    result.mesh = mesh;
+    result.triangles = std::move(triangles);
+    result.triangle_normals = std::move(triangle_normals);
+    return result;
+}
+
+void Cell::commit_group_mesh(GroupMeshResult& result, BLASManager& blas_manager) {
+    if (result.mesh.vertexCount <= 0) {
+        return;
+    }
+    uint32_t group_id = result.group_id;
+
+    material_meshes[group_id] = result.mesh;
+    UploadMesh(&material_meshes[group_id], false);
+
+    try {
+        std::vector<Tri>& triangles = result.triangles;
+        std::vector<TriEx>& triangle_normals = result.triangle_normals;
+
+        if (!triangles.empty()) {
+            material_blas[group_id] = blas_manager.register_triangles(triangles, triangle_normals);
+
+            BVH* bvh = blas_manager.get_bvh(material_blas[group_id]);
+            BvhMesh* mesh_ptr = blas_manager.get_mesh(material_blas[group_id]);
+            if (bvh && mesh_ptr) {
+                std::string analysis_name = "Cell(" + std::to_string((int)coordinates.x) + "," +
+                                           std::to_string((int)coordinates.y) + "," +
+                                           std::to_string((int)coordinates.z) + ")_Mat" +
+                                           std::to_string(group_id) + "_" +
+                                           std::to_string(triangles.size()) + "tris";
+                BVHReportManager::RegisterBVH(analysis_name, bvh, mesh_ptr);
+                BVHReportManager::UpdateAnalysis(analysis_name);
             }
-
-            if (!triangles.empty() && triangles.size() > 0) {
-                printf("Registering %zu triangles with BLAS manager...\\n", triangles.size());
-                material_blas[group_id] = blas_manager.register_triangles(triangles, triangle_normals);
-                printf("Successfully registered mesh with BLAS manager, handle %u\\n", material_blas[group_id]);
-
-                // Also register with BVH analyzer for analysis
-                BVH* bvh = blas_manager.get_bvh(material_blas[group_id]);
-                BvhMesh* mesh_ptr = blas_manager.get_mesh(material_blas[group_id]);
-                if (bvh && mesh_ptr) {
-                    std::string analysis_name = "Cell(" + std::to_string((int)coordinates.x) + "," + 
-                                               std::to_string((int)coordinates.y) + "," + 
-                                               std::to_string((int)coordinates.z) + ")_Mat" + 
-                                               std::to_string(group_id) + "_" +
-                                               std::to_string(triangles.size()) + "tris";
-                    
-                    BVHReportManager::RegisterBVH(analysis_name, bvh, mesh_ptr);
-                    // Immediately update analysis for this BLAS
-                    BVHReportManager::UpdateAnalysis(analysis_name);
-                }
-            } else {
-                material_blas[group_id] = 0;
-                printf("No valid triangles to register with BLAS manager\\n");
-            }
-        } catch (const std::exception& e) {
-            printf("Error registering mesh with BLAS manager: %s\\n", e.what());
-            material_blas[group_id] = 0;
-        } catch (...) {
-            printf("Unknown error registering mesh with BLAS manager\\n");
+        } else {
             material_blas[group_id] = 0;
         }
-        
-        printf("Generated mesh for cell (%.0f,%.0f,%.0f) group %u size %.1f: %d vertices, %d triangles, BLAS handle %u\n",
-               coordinates.x, coordinates.y, coordinates.z, group_id, actual_size,
-               mesh.vertexCount, mesh.triangleCount, material_blas[group_id]);
+    } catch (const std::exception& e) {
+        printf("Error registering mesh with BLAS manager: %s\n", e.what());
+        material_blas[group_id] = 0;
+    } catch (...) {
+        printf("Unknown error registering mesh with BLAS manager\n");
+        material_blas[group_id] = 0;
     }
+}
+
+CellMeshResult Cell::build_cell_meshes(const std::vector<StaticParticle>& cluster_particles, SurfaceScratch* scratch,
+                                       float simplification_ratio, float base_detail, int max_pow, float uniform_detail,
+                                       const Particle* carveParticles, int carveCount) const {
+    CellMeshResult cell_result;
+    for (const auto& group_entry : material_particle_indices) {
+        uint32_t group_id = group_entry.first;
+        GroupMeshResult gr = build_group_mesh(group_id, cluster_particles, scratch, simplification_ratio,
+                                              base_detail, max_pow, uniform_detail, carveParticles, carveCount);
+        if (gr.mesh.vertexCount > 0) {
+            cell_result.groups.push_back(std::move(gr));
+        }
+    }
+    return cell_result;
+}
+
+void Cell::commit_cell_meshes(CellMeshResult& result, BLASManager& blas_manager) {
+    for (auto& gr : result.groups) {
+        commit_group_mesh(gr, blas_manager);
+    }
+    has_meshes = !material_meshes.empty();
 }
 
 void Cell::clear_meshes(BLASManager* blas_manager) {
