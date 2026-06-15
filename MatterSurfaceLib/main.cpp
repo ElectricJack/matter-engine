@@ -405,12 +405,6 @@ public:
         }
 
         test_cluster_->set_simplification_ratio(ratio);
-        // MSL_LOD lets a capture reproduce a specific LOD level (default scene
-        // boots at LOD 1). Switch before the rebuild so the whole scene meshes
-        // at the requested cell size.
-        if (const char* lodEnv = getenv("MSL_LOD")) {
-            test_cluster_->set_lod_level(atoi(lodEnv), true);
-        }
         test_cluster_->force_rebuild_all_cells();
 
         // Reproduce the interactive "add particles" path headlessly: add N random
@@ -509,7 +503,6 @@ private:
         test_cluster_->set_position({0.0f, 2.0f, 0.0f});
         
         // Force initial mesh rebuild
-        test_cluster_->set_lod_level(1);
         test_cluster_->rebuild_dirty_cells();
         
         printf("Cluster has %u cells, %u dirty\n",
@@ -600,7 +593,7 @@ private:
         p.radius_cluster_freq = CLUSTER_FREQ;
         p.jitter_amount = POS_JITTER; p.tint_alpha = TINT_ALPHA; p.seed = 1337;
         p.vein_freq = VEIN_FREQ; p.vein_warp = VEIN_WARP;
-        p.cell_size = test_cluster_->get_smallest_cell_size();   // LOD 0 cell size
+        p.cell_size = test_cluster_->get_smallest_cell_size();   // single cell size
         p.cell_origin_offset = Vector3{ -halfx, -halfy, -halfz };
 
         CullStats stats;
@@ -631,7 +624,6 @@ private:
         }
 
         test_cluster_->set_position({0.0f, 2.0f, 0.0f});
-        test_cluster_->set_lod_level(0);
         test_cluster_->rebuild_dirty_cells();
 
         printf("Brick has %u cells, %u dirty\n",
@@ -889,85 +881,6 @@ private:
             }
         }
         
-        {
-            PROFILE_SECTION("LOD Controls");
-            // LOD level controls
-            if (IsKeyPressed(KEY_ONE)) {
-                printf("\n=== LOD CHANGE TO 0 ===\n");
-                // printf("BEFORE: ");
-                // blas_manager_->print_stats();
-                
-                test_cluster_->set_lod_level(0, true);  // clear_blas = true
-                test_cluster_->rebuild_dirty_cells();
-                
-                // printf("AFTER REBUILD: ");
-                // blas_manager_->print_stats();
-                
-                // printf("AFTER TLAS REBUILD: ");
-                // blas_manager_->print_stats();
-                // printf("========================\n");
-            }
-            if (IsKeyPressed(KEY_TWO)) {
-                printf("\n=== LOD CHANGE TO 1 ===\n");
-                // printf("BEFORE: ");
-                // blas_manager_->print_stats();
-                
-                test_cluster_->set_lod_level(1, true);  // clear_blas = true
-                test_cluster_->rebuild_dirty_cells();
-                
-                // printf("AFTER REBUILD: ");
-                // blas_manager_->print_stats();
-                
-                // printf("AFTER TLAS REBUILD: ");
-                // blas_manager_->print_stats();
-                // printf("========================\n");
-            }
-            if (IsKeyPressed(KEY_THREE)) {
-                printf("\n=== LOD CHANGE TO 2 ===\n");
-                // printf("BEFORE: ");
-                // blas_manager_->print_stats();
-                
-                test_cluster_->set_lod_level(2, true);  // clear_blas = true
-                test_cluster_->rebuild_dirty_cells();
-                
-                // printf("AFTER REBUILD: ");
-                // blas_manager_->print_stats();
-                
-                // printf("AFTER TLAS REBUILD: ");
-                // blas_manager_->print_stats();
-                // printf("========================\n");
-            }
-            if (IsKeyPressed(KEY_FOUR)) {
-                printf("\n=== LOD CHANGE TO 3 ===\n");
-                // printf("BEFORE: ");
-                // blas_manager_->print_stats();
-                
-                test_cluster_->set_lod_level(3, true);  // clear_blas = true
-                test_cluster_->rebuild_dirty_cells();
-                
-                // printf("AFTER REBUILD: ");
-                // blas_manager_->print_stats();
-                
-                // printf("AFTER TLAS REBUILD: ");
-                // blas_manager_->print_stats();
-                // printf("========================\n");
-            }
-            if (IsKeyPressed(KEY_FIVE)) {
-                printf("\n=== LOD CHANGE TO 4 ===\n");
-                // printf("BEFORE: ");
-                // blas_manager_->print_stats();
-                
-                test_cluster_->set_lod_level(4, true);  // clear_blas = true
-                test_cluster_->rebuild_dirty_cells();
-                
-                // printf("AFTER REBUILD: ");
-                // blas_manager_->print_stats();
-                
-                // printf("AFTER TLAS REBUILD: ");
-                // blas_manager_->print_stats();
-                // printf("========================\n");
-            }
-        }
         
         {
             PROFILE_SECTION("Camera Update");
@@ -1342,14 +1255,6 @@ private:
                    test_cluster_->get_particle_count(),
                    test_cluster_->get_cell_count());
         
-        // LOD controls
-        int current_lod = test_cluster_->get_lod_level();
-        if (ImGui::SliderInt("LOD Level", &current_lod, 0, 4)) {
-            test_cluster_->set_lod_level(current_lod, true);
-            test_cluster_->rebuild_dirty_cells();
-        }
-        ImGui::Text("Cell Size: %.2f units", test_cluster_->get_current_cell_size());
-        
         ImGui::Separator();
         
         // Visualization controls
@@ -1419,7 +1324,6 @@ private:
         ImGui::BulletText("G: Toggle triangle test debug");
         ImGui::BulletText("M: Toggle mesh visibility");
         ImGui::BulletText("C: Clear BLAS manager");
-        ImGui::BulletText("1-5: Change LOD level");
         if (show_bvh_visualization_) {
             ImGui::Text("BVH Controls:");
             ImGui::BulletText("Q: Toggle BLAS BVH");
@@ -1712,8 +1616,7 @@ private:
         printf("  - Particles: %u\n", test_cluster_->get_particle_count());
         printf("  - Cells: %u\n", test_cluster_->get_cell_count());
         printf("  - Dirty cells: %u\n", test_cluster_->get_dirty_cell_count());
-        printf("  - LOD level: %d (%.2f unit cells)\n", 
-               test_cluster_->get_lod_level(), test_cluster_->get_current_cell_size());
+        printf("  - cell size: %.2f units\n", test_cluster_->get_smallest_cell_size());
         
         // Shader stats
         printf("Shader System:\n");
