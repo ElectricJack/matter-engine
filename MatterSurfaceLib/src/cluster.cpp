@@ -226,9 +226,13 @@ void Cluster::rebuild_dirty_cells() {
     uint32_t rebuilt_count = 0;
     uint32_t total_cells = static_cast<uint32_t>(cells_.size());
     uint32_t dirty_cells = get_dirty_cell_count();
-    
+
+    // One resolution for every meshed cell: derived from the globally finest
+    // detail so neighboring marching-cubes grids align and stay watertight.
+    float uniform_detail = compute_finest_detail();
+
     printf("REBUILD: Processing %u total cells, %u dirty\n", total_cells, dirty_cells);
-    
+
     for (auto& cell : cells_) {
         if (cell->is_dirty) {
             // The no_mesh set is keyed on integer cell coords at the single cell
@@ -245,7 +249,7 @@ void Cluster::rebuild_dirty_cells() {
             }
             // printf("  Rebuilding cell at (%.0f,%.0f,%.0f) size=%.1f\n",
             //        cell->coordinates.x, cell->coordinates.y, cell->coordinates.z, cell->actual_size);
-            update_cell_meshes(cell.get());
+            update_cell_meshes(cell.get(), uniform_detail);
             cell->is_dirty = false;
             rebuilt_count++;
         }
@@ -272,7 +276,16 @@ void Cluster::rebuild_dirty_cells() {
     }
 }
 
-void Cluster::update_cell_meshes(Cell* cell) {
+float Cluster::compute_finest_detail() const {
+    float finest = base_detail_size_;
+    for (const auto& p : particles_) {
+        if (p.detail_size > 0.0f && (finest <= 0.0f || p.detail_size < finest))
+            finest = p.detail_size;
+    }
+    return finest;
+}
+
+void Cluster::update_cell_meshes(Cell* cell, float uniform_detail) {
     if (!cell) return;
     
     // Clear existing particle indices
@@ -290,7 +303,7 @@ void Cluster::update_cell_meshes(Cell* cell) {
     // Rebuild meshes for all materials if we have particles
     if (!cell->material_particle_indices.empty()) {
         cell->rebuild_meshes(particles_, blas_manager_, simplification_ratio_,
-                             base_detail_size_, max_division_pow_);
+                             base_detail_size_, max_division_pow_, uniform_detail);
     } else {
         cell->clear_meshes(&blas_manager_);
     }

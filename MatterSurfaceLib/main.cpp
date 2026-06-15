@@ -407,6 +407,60 @@ public:
         test_cluster_->set_simplification_ratio(ratio);
         test_cluster_->force_rebuild_all_cells();
 
+        // Topological hole check: union every cell mesh, match triangle edges by
+        // quantized endpoint position, and count edges used by an odd number of
+        // triangles. A watertight closed surface has zero such boundary edges;
+        // any nonzero count is a real hole/crack (cell-seam or otherwise).
+        if (getenv("MSL_TOPO_CHECK")) {
+            std::vector<Cell*> all = test_cluster_->get_cells_in_region(
+                Vector3{-1e6f,-1e6f,-1e6f}, Vector3{1e6f,1e6f,1e6f});
+            auto qkey = [](const float* v, int i){
+                long x=lroundf(v[i*3+0]*2000.0f), y=lroundf(v[i*3+1]*2000.0f), z=lroundf(v[i*3+2]*2000.0f);
+                char b[64]; snprintf(b,sizeof b,"%ld,%ld,%ld",x,y,z); return std::string(b);
+            };
+            long tris=0, open_on_face=0, open_interior=0, meshes=0;
+            const float FE = 1e-3f; // face-plane epsilon (local units)
+            for (Cell* c : all) {
+                for (auto& mm : c->material_meshes) {
+                    const Mesh& m = mm.second;
+                    if (m.vertexCount==0 || m.triangleCount==0 || !m.vertices) continue;
+                    ++meshes;
+                    // Per-cell edge use: an edge open within THIS mesh is either on a
+                    // cell face (intended seam, stitched to a neighbor) or a real hole.
+                    std::unordered_map<std::string,int> use;
+                    std::unordered_map<std::string,std::pair<int,int>> ends;
+                    for (int t=0;t<m.triangleCount;++t){
+                        int idx[3];
+                        if (m.indices){ idx[0]=m.indices[t*3]; idx[1]=m.indices[t*3+1]; idx[2]=m.indices[t*3+2]; }
+                        else          { idx[0]=t*3; idx[1]=t*3+1; idx[2]=t*3+2; }
+                        std::string k[3]={qkey(m.vertices,idx[0]),qkey(m.vertices,idx[1]),qkey(m.vertices,idx[2])};
+                        for (int e=0;e<3;++e){
+                            int a=idx[e], b=idx[(e+1)%3];
+                            std::string ek = k[e]<k[(e+1)%3] ? k[e]+"|"+k[(e+1)%3] : k[(e+1)%3]+"|"+k[e];
+                            use[ek]++; ends[ek]={a,b};
+                        }
+                        ++tris;
+                    }
+                    for (auto& kv : use){
+                        if (kv.second!=1) continue;            // only open edges
+                        int a=ends[kv.first].first, b=ends[kv.first].second;
+                        const float* va=&m.vertices[a*3]; const float* vb=&m.vertices[b*3];
+                        bool on_face =
+                            (fabsf(va[0]-c->min_bound.x)<FE && fabsf(vb[0]-c->min_bound.x)<FE) ||
+                            (fabsf(va[0]-c->max_bound.x)<FE && fabsf(vb[0]-c->max_bound.x)<FE) ||
+                            (fabsf(va[1]-c->min_bound.y)<FE && fabsf(vb[1]-c->min_bound.y)<FE) ||
+                            (fabsf(va[1]-c->max_bound.y)<FE && fabsf(vb[1]-c->max_bound.y)<FE) ||
+                            (fabsf(va[2]-c->min_bound.z)<FE && fabsf(vb[2]-c->min_bound.z)<FE) ||
+                            (fabsf(va[2]-c->max_bound.z)<FE && fabsf(vb[2]-c->max_bound.z)<FE);
+                        if (on_face) ++open_on_face; else ++open_interior;
+                    }
+                }
+            }
+            printf("[topo] cells=%zu meshes=%ld tris=%ld open_on_face(seam)=%ld open_interior(HOLE)=%ld\n",
+                   all.size(), meshes, tris, open_on_face, open_interior);
+            return;
+        }
+
         // Reproduce the interactive "add particles" path headlessly: add N random
         // particles in MSL_ADD_BATCHES batches, rebuilding dirty cells after each
         // batch (matching the UI button), so a capture exercises incremental
@@ -789,11 +843,17 @@ private:
             
             // Toggle rendering modes
             if (IsKeyPressed(KEY_R)) {
-                render_mode_ = (render_mode_ + 1) % 4; // Cycle through 4 modes
-                printf("Render mode: %s\n", 
-                       render_mode_ == 0 ? "Ray Tracing" : 
-                       render_mode_ == 1 ? "Surface Meshes" : 
-                       render_mode_ == 2 ? "Wireframe Meshes" : "Debug BVH");
+                render_mode_ = (render_mode_ + 1) % 5; // Cycle through 5 modes
+                printf("Render mode: %s\n",
+                       render_mode_ == 0 ? "Ray Tracing" :
+                       render_mode_ == 1 ? "Surface Meshes" :
+                       render_mode_ == 2 ? "Wireframe Meshes" :
+                       render_mode_ == 3 ? "Debug BVH" : "Solid Shaded");
+            }
+
+            // Save a screenshot of the current frame.
+            if (IsKeyPressed(KEY_F2)) {
+                screenshot_requested_ = true;
             }
             
             // BVH visualization toggle
@@ -927,7 +987,8 @@ private:
             }
             
             if (show_meshes_) {
-                render_scene_meshes();
+                if (render_mode_ == 4) render_scene_meshes_lit();
+                else                   render_scene_meshes();
             }
             
             // Render BVH visualization if enabled or in debug mode
@@ -993,8 +1054,18 @@ private:
             PROFILE_SECTION("EndDrawing");
             EndDrawing();
         }
+
+        // Honor a requested screenshot after the full frame (including UI) is on
+        // the framebuffer, so what's saved matches what's on screen.
+        if (screenshot_requested_) {
+            char path[64];
+            snprintf(path, sizeof path, "screenshot_%03d.png", screenshot_counter_++);
+            TakeScreenshot(path);
+            printf("[screenshot] saved %s\n", path);
+            screenshot_requested_ = false;
+        }
     }
-    
+
     // (Re)create the offscreen target only when the required size changes. With dynamic
     // resolution scaling disabled the size is always the full window, so this allocates once
     // (and again only on a window resize) -- no per-frame FBO churn.
@@ -1152,8 +1223,85 @@ private:
         last_triangles_rendered_ = triangles_rendered;
         last_meshes_rendered_ = meshes_rendered;
     }
-    
-    
+
+    // Opaque, flat-shaded debug view: solid meshes lit by one fixed directional
+    // light, no transparency and no wireframe. Two-sided lighting (abs of N.L)
+    // so inconsistent winding can't leave faces black -- the point is just to
+    // read shape from shading, not physically correct lighting.
+    void render_scene_meshes_lit() {
+        const auto& draw_records = tlas_manager_->get_draw_records();
+
+        PROFILE_SECTION("Lit Mesh Rendering Loop");
+        int triangles_rendered = 0;
+        int meshes_rendered = 0;
+
+        // Key light direction (toward the light), world space, normalized.
+        const float Llen = sqrtf(0.40f*0.40f + 0.85f*0.85f + 0.35f*0.35f);
+        const float Lx = 0.40f / Llen, Ly = 0.85f / Llen, Lz = 0.35f / Llen;
+        const float ambient = 0.28f;
+
+        for (size_t i = 0; i < draw_records.size(); i++) {
+            const auto& record = draw_records[i];
+            auto* mesh = blas_manager_->get_mesh(record.blas_handle);
+            if (!mesh || !mesh->tri || mesh->triCount == 0) continue;
+
+            meshes_rendered++;
+            triangles_rendered += mesh->triCount;
+
+            const auto& m = record.transform.m;
+            float gl_matrix[16] = {
+                m[0], m[4], m[8],  m[12],
+                m[1], m[5], m[9],  m[13],
+                m[2], m[6], m[10], m[14],
+                m[3], m[7], m[11], m[15]
+            };
+            rlPushMatrix();
+            rlMultMatrixf(gl_matrix);
+
+            rlBegin(RL_TRIANGLES);
+            for (int tri_idx = 0; tri_idx < mesh->triCount; tri_idx++) {
+                const auto& tri = mesh->tri[tri_idx];
+
+                float e1x = tri.vertex1.x - tri.vertex0.x;
+                float e1y = tri.vertex1.y - tri.vertex0.y;
+                float e1z = tri.vertex1.z - tri.vertex0.z;
+                float e2x = tri.vertex2.x - tri.vertex0.x;
+                float e2y = tri.vertex2.y - tri.vertex0.y;
+                float e2z = tri.vertex2.z - tri.vertex0.z;
+                float nx = e1y*e2z - e1z*e2y;
+                float ny = e1z*e2x - e1x*e2z;
+                float nz = e1x*e2y - e1y*e2x;
+
+                // Rotate the local normal into world space (clusters have no scale,
+                // so the rotation 3x3 rows of the transform suffice).
+                float wnx = m[0]*nx + m[1]*ny + m[2]*nz;
+                float wny = m[4]*nx + m[5]*ny + m[6]*nz;
+                float wnz = m[8]*nx + m[9]*ny + m[10]*nz;
+
+                float shade = ambient;
+                float nlen = sqrtf(wnx*wnx + wny*wny + wnz*wnz);
+                if (nlen > 1e-12f) {
+                    float d = (wnx*Lx + wny*Ly + wnz*Lz) / nlen;
+                    if (d < 0.0f) d = -d; // two-sided
+                    shade = ambient + (1.0f - ambient) * d;
+                }
+                unsigned char g = (unsigned char)(shade * 230.0f);
+                rlColor4ub(g, g, g, 255);
+
+                rlVertex3f(tri.vertex0.x, tri.vertex0.y, tri.vertex0.z);
+                rlVertex3f(tri.vertex1.x, tri.vertex1.y, tri.vertex1.z);
+                rlVertex3f(tri.vertex2.x, tri.vertex2.y, tri.vertex2.z);
+            }
+            rlEnd();
+
+            rlPopMatrix();
+        }
+
+        last_triangles_rendered_ = triangles_rendered;
+        last_meshes_rendered_ = meshes_rendered;
+    }
+
+
     void render_ui() {
         // Main control panel - positioned on the left
         ImGui::SetNextWindowPos(ImVec2(20, 20), ImGuiCond_FirstUseEver);
@@ -1173,12 +1321,27 @@ private:
         
         ImGui::Separator();
         
-        // Render mode selection
-        const char* render_modes[] = {"Ray Tracing", "Surface Meshes", "Wireframe Meshes", "Debug BVH"};
-        if (ImGui::Combo("Render Mode", &render_mode_, render_modes, 4)) {
-            printf("Render mode changed to: %s\n", render_modes[render_mode_]);
+        // Render mode selection. Buttons (one click each) instead of a combo:
+        // a dropdown needs two interactions and a steady cursor, which is painful
+        // at low framerates -- single full-width buttons are easy targets.
+        const char* render_modes[] = {"Ray Tracing", "Surface Meshes", "Wireframe Meshes",
+                                      "Debug BVH", "Solid Shaded (lit)"};
+        ImGui::Text("Render Mode:");
+        for (int i = 0; i < 5; ++i) {
+            bool active = (render_mode_ == i);
+            if (active) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.18f, 0.55f, 0.22f, 1.0f));
+            if (ImGui::Button(render_modes[i], ImVec2(-1.0f, 0.0f))) {
+                render_mode_ = i;
+                printf("Render mode: %s\n", render_modes[i]);
+            }
+            if (active) ImGui::PopStyleColor();
         }
-        
+
+        ImGui::Spacing();
+        if (ImGui::Button("Save Screenshot (F2)", ImVec2(-1.0f, 0.0f))) {
+            screenshot_requested_ = true;
+        }
+
         ImGui::Separator();
 
         // Mesh simplification ratio: 1.0 = full detail, lower = cheaper proxy.
@@ -1671,7 +1834,9 @@ private:
     int rt_w_ = 0, rt_h_ = 0;
 
     bool cursor_disabled_ = false;
-    int render_mode_ = 3; // 0=raytracing, 1=solid_meshes, 2=wireframe_meshes, 3=debug_bvh
+    int render_mode_ = 3; // 0=raytracing, 1=solid_meshes, 2=wireframe_meshes, 3=debug_bvh, 4=solid_shaded
+    bool screenshot_requested_ = false;
+    int  screenshot_counter_ = 0;
     bool show_bvh_visualization_ = false;
     bool show_meshes_ = true;
     

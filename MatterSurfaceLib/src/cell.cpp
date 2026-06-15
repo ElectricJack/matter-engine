@@ -7,6 +7,7 @@
 #include "mesh_simplifier.hpp"
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <algorithm>
 
 // Forward declarations we need for surface mesh generation.
@@ -132,7 +133,7 @@ void Cell::clear_particle_indices() {
 }
 
 void Cell::rebuild_meshes(const std::vector<StaticParticle>& cluster_particles, BLASManager& blas_manager,
-                          float simplification_ratio, float base_detail, int max_pow) {
+                          float simplification_ratio, float base_detail, int max_pow, float uniform_detail) {
     clear_meshes(&blas_manager);
 
     if (material_particle_indices.empty()) {
@@ -144,7 +145,7 @@ void Cell::rebuild_meshes(const std::vector<StaticParticle>& cluster_particles, 
     // materialId is still tagged per-triangle inside generate_mesh_for_group.
     for (const auto& group_entry : material_particle_indices) {
         uint32_t group_id = group_entry.first;
-        generate_mesh_for_group(group_id, cluster_particles, blas_manager, simplification_ratio, base_detail, max_pow);
+        generate_mesh_for_group(group_id, cluster_particles, blas_manager, simplification_ratio, base_detail, max_pow, uniform_detail);
     }
 
     has_meshes = !material_meshes.empty();
@@ -262,8 +263,12 @@ static constexpr float kFeatureCullVoxels = 0.6f;
 
 // Smooth-min fillet width as a fraction of voxel size. A coarser cell has a
 // larger voxel, so the metaball blend strengthens; at the finest resolution it
-// is near-sharp.
-static constexpr float kBlendVoxels = 0.5f;
+// is near-sharp. Kept small: the field query now returns the true nearest
+// neighbors (sh_query_radius_nearest), so the smooth-min sums the full local
+// cluster. A wide fillet then fills the valleys between particles and flattens
+// the surface (especially dense tier-1 sub-particles); a narrow one keeps each
+// particle's bump defined while staying watertight.
+static constexpr float kBlendVoxels = 0.15f;
 
 std::vector<Particle> build_clip_particles(
     uint32_t group_id,
@@ -305,7 +310,7 @@ std::vector<Particle> build_clip_particles(
 }
 
 void Cell::generate_mesh_for_group(uint32_t group_id, const std::vector<StaticParticle>& cluster_particles, BLASManager& blas_manager,
-                                   float simplification_ratio, float base_detail, int max_pow) {
+                                   float simplification_ratio, float base_detail, int max_pow, float uniform_detail) {
     auto group_it = material_particle_indices.find(group_id);
     if (group_it == material_particle_indices.end() || group_it->second.empty()) {
         return;
@@ -317,17 +322,27 @@ void Cell::generate_mesh_for_group(uint32_t group_id, const std::vector<StaticPa
     bounds.center = center;
     bounds.size = Vector3{actual_size, actual_size, actual_size};
 
-    // Mesh resolution follows the finest detail present in this cell.
-    float detail_min = base_detail;   // default tier-0 (base) detail
-    for (uint32_t idx : particle_indices) {
-        if (idx >= cluster_particles.size()) continue;
-        float ds = cluster_particles[idx].detail_size;
-        if (ds > 0.0f && ds < detail_min) detail_min = ds;
+    // Mesh resolution. When the cluster supplies a uniform_detail, every meshed
+    // cell resolves to the same divisionPow so neighboring marching-cubes grids
+    // align (mixed resolution cracks the surface at cell faces). Otherwise fall
+    // back to the cell's own finest particle.
+    float detail_min;
+    if (uniform_detail > 0.0f) {
+        detail_min = uniform_detail;
+    } else {
+        detail_min = base_detail;   // default tier-0 (base) detail
+        for (uint32_t idx : particle_indices) {
+            if (idx >= cluster_particles.size()) continue;
+            float ds = cluster_particles[idx].detail_size;
+            if (ds > 0.0f && ds < detail_min) detail_min = ds;
+        }
     }
     bounds.divisionPow = choose_division_pow(detail_min, base_detail, 4, max_pow);
     int gridSize = 1 << bounds.divisionPow;
     float voxel = actual_size / (float)(gridSize - 1);
-    float blend_width = kBlendVoxels * voxel;
+    float blend_voxels = kBlendVoxels;
+    if (const char* e = getenv("MSL_BLEND_VOXELS")) { float v = (float)atof(e); if (v >= 0.0f) blend_voxels = v; }
+    float blend_width = blend_voxels * voxel;
     float cull_radius = kFeatureCullVoxels * voxel;
     float vis_radius  = kFeatureVisVoxels  * voxel;
 

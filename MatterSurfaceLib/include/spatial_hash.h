@@ -31,6 +31,16 @@ bool sh_remove(SpatialHash* hash, float x, float y, float z, void* object);
 int sh_query_radius(SpatialHash* hash, float x, float y, float z, float radius, 
                     void** results, int maxResults);
 
+// Query the NEAREST objects within a radius of the given position. Unlike
+// sh_query_radius (which returns the first maxResults it encounters in grid-scan
+// order and bails early), this scans every candidate in range and keeps the
+// maxResults closest by center distance. Required where local density can exceed
+// maxResults: the field/SDF sampler must never miss the actually-nearest
+// particle, or the isosurface fragments. Results are unordered.
+// Returns the actual number of objects found (<= maxResults).
+int sh_query_radius_nearest(SpatialHash* hash, float x, float y, float z, float radius,
+                            void** results, int maxResults);
+
 // Query objects within a bounding box
 // Returns the actual number of objects found
 int sh_query_box(SpatialHash* hash, float minX, float minY, float minZ,

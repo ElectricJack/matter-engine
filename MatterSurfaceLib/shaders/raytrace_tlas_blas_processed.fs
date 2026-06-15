@@ -140,7 +140,8 @@ struct Intersection
 {
     float t;         // intersection distance along ray
     float u, v;      // barycentric coordinates of the intersection
-    uint instPrim;   // instance index (12 bit) and primitive index (20 bit)
+    uint primIdx;    // global triangle index (full 32 bits; was 20-bit packed)
+    uint instIdx;    // instance index (full 32 bits; was 12-bit packed)
 };
 
 struct Ray
@@ -220,7 +221,7 @@ float RandomFloat(inout uint s)
 }
 
 // Triangle intersection using Moeller-Trumbore (from kernels.cl)
-void IntersectTri(inout Ray ray, Triangle tri, uint instPrim)
+void IntersectTri(inout Ray ray, Triangle tri, uint primIdx, uint instIdx)
 {
     // Count this triangle test for debugging
     ray.triangleTests++;
@@ -250,7 +251,8 @@ void IntersectTri(inout Ray ray, Triangle tri, uint instPrim)
         ray.hit.t = t;
         ray.hit.u = u;
         ray.hit.v = v;
-        ray.hit.instPrim = instPrim;
+        ray.hit.primIdx = primIdx;
+        ray.hit.instIdx = instIdx;
     }
 }
 
@@ -454,8 +456,7 @@ void BVHIntersect(inout Ray ray, uint instanceIdx, uint blasOffset)
                 // Since triangles are now stored in BVH order, direct indexing works
                 uint triIdx = node.leftFirst + i;
                 Triangle tri = decodeTriangle(int(triIdx));
-                uint instPrim = (instanceIdx << 20u) + triIdx;
-                IntersectTri(ray, tri, instPrim);
+                IntersectTri(ray, tri, triIdx, instanceIdx);
             }
             
             if (stackPtr == 0) break;
@@ -585,7 +586,8 @@ HitResult intersectScene(vec3 rayOrigin, vec3 rayDir)
     ray.hit.t = 1e30;
     ray.hit.u = 0.0;
     ray.hit.v = 0.0;
-    ray.hit.instPrim = 0u;
+    ray.hit.primIdx = 0u;
+    ray.hit.instIdx = 0u;
     ray.triangleTests = 0; // Initialize triangle test counter
 
     // Perform TLAS traversal
@@ -601,8 +603,8 @@ HitResult intersectScene(vec3 rayOrigin, vec3 rayDir)
         result.position = rayOrigin + rayDir * ray.hit.t;
         
         // Extract triangle and instance indices
-        uint triIdx = ray.hit.instPrim & 0xFFFFFu;
-        uint instIdx = ray.hit.instPrim >> 20;
+        uint triIdx = ray.hit.primIdx;
+        uint instIdx = ray.hit.instIdx;
         
         // Get triangle data for normal calculation
         Triangle    tri  = decodeTriangle(int(triIdx));

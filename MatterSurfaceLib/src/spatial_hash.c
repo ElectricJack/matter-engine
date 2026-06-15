@@ -221,6 +221,67 @@ int sh_query_radius(SpatialHash* hash, float x, float y, float z, float radius,
     return found;
 }
 
+int sh_query_radius_nearest(SpatialHash* hash, float x, float y, float z, float radius,
+                            void** results, int maxResults) {
+    if (!hash || !results || maxResults <= 0) return 0;
+
+    float radiusSq = radius * radius;
+    int cellRange = (int)ceilf(radius / hash->cellSize);
+    GridCoord centerCoord = world_to_grid(x, y, z, hash->cellSize);
+
+    // Keep the maxResults nearest candidates. distSq[i] parallels results[i].
+    // worstSlot tracks the kept entry with the largest distSq so a closer
+    // candidate can evict it once the buffer is full. maxResults is small
+    // (tens), so the linear worst-slot rescan on eviction is cheap.
+    float* distSq = (float*)malloc((size_t)maxResults * sizeof(float));
+    if (!distSq) return 0;
+    int found = 0;
+    int worstSlot = 0;
+
+    for (int dx = -cellRange; dx <= cellRange; dx++) {
+        for (int dy = -cellRange; dy <= cellRange; dy++) {
+            for (int dz = -cellRange; dz <= cellRange; dz++) {
+                GridCoord coord = {centerCoord.x + dx, centerCoord.y + dy, centerCoord.z + dz};
+                unsigned int bucketIndex = hash_coord(coord);
+
+                BucketEntry* entry = hash->buckets[bucketIndex].head;
+                while (entry) {
+                    float ex = entry->x - x;
+                    float ey = entry->y - y;
+                    float ez = entry->z - z;
+                    float d2 = ex*ex + ey*ey + ez*ez;
+
+                    if (d2 <= radiusSq) {
+                        if (found < maxResults) {
+                            results[found] = entry->object;
+                            distSq[found] = d2;
+                            found++;
+                            if (found == maxResults) {
+                                // Buffer just filled: find the current farthest.
+                                worstSlot = 0;
+                                for (int i = 1; i < found; i++)
+                                    if (distSq[i] > distSq[worstSlot]) worstSlot = i;
+                            }
+                        } else if (d2 < distSq[worstSlot]) {
+                            // Replace the farthest kept entry, then re-find it.
+                            results[worstSlot] = entry->object;
+                            distSq[worstSlot] = d2;
+                            worstSlot = 0;
+                            for (int i = 1; i < maxResults; i++)
+                                if (distSq[i] > distSq[worstSlot]) worstSlot = i;
+                        }
+                    }
+
+                    entry = entry->next;
+                }
+            }
+        }
+    }
+
+    free(distSq);
+    return found;
+}
+
 // Query objects within a bounding box
 int sh_query_box(SpatialHash* hash, float minX, float minY, float minZ,
                  float maxX, float maxY, float maxZ, void** results, int maxResults) {

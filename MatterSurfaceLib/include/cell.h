@@ -67,8 +67,14 @@ struct Cell {
     ~Cell();
     
     // Mesh management
+    // uniform_detail, when > 0, forces every mesh group in this cell to use the
+    // divisionPow derived from that detail size instead of the cell's own finest
+    // particle. The cluster passes its globally finest detail so all meshed cells
+    // share one resolution -- marching-cubes grids only stay watertight between
+    // same-level neighbors, so mixed per-cell resolution cracks the surface.
     void rebuild_meshes(const std::vector<StaticParticle>& cluster_particles, BLASManager& blas_manager,
-                        float simplification_ratio = 1.0f, float base_detail = 0.0f, int max_pow = 6);
+                        float simplification_ratio = 1.0f, float base_detail = 0.0f, int max_pow = 6,
+                        float uniform_detail = 0.0f);
     // Drops this cell's meshes. When blas_manager is provided, the cell's BLAS
     // references are released so stale entries don't accumulate on the GPU.
     void clear_meshes(BLASManager* blas_manager = nullptr);
@@ -94,7 +100,7 @@ struct Cell {
 private:
     void calculate_bounds(float smallest_cell_size);
     void generate_mesh_for_group(uint32_t group_id, const std::vector<StaticParticle>& cluster_particles, BLASManager& blas_manager,
-                                 float simplification_ratio, float base_detail, int max_pow);
+                                 float simplification_ratio, float base_detail, int max_pow, float uniform_detail);
 };
 
 #endif // CELL_H

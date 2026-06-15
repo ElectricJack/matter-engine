@@ -131,8 +131,12 @@ private:
     // Helper methods
     Vector3 get_cell_coordinates(const Vector3& local_position) const;
     Cell* find_or_create_cell(const Vector3& cell_coords);
-    void update_cell_meshes(Cell* cell);
+    void update_cell_meshes(Cell* cell, float uniform_detail);
     void clear_all_cells();
+
+    // Finest detail_size across all particles (seeded with base_detail_size_).
+    // Drives a single uniform mesh resolution for every meshed cell.
+    float compute_finest_detail() const;
 };
 
 #endif // CLUSTER_H

@@ -227,13 +227,13 @@ void ComputeSurfaceNormals(Mesh* mesh, Particle* particles, float particleRadius
     }
 
     float gradSearch = particleRadius * 2.5f + blendWidth * 4.0f;
-    Particle* nearby[32];
+    Particle* nearby[64];
     for (int i = 0; i < mesh->vertexCount; i++) {
         float vx = mesh->vertices[i*3+0];
         float vy = mesh->vertices[i*3+1];
         float vz = mesh->vertices[i*3+2];
 
-        int found = sh_query_radius(hash, vx, vy, vz, gradSearch, (void**)nearby, 32);
+        int found = sh_query_radius_nearest(hash, vx, vy, vz, gradSearch, (void**)nearby, 64);
 
         // Per-particle signed distance f_j = |v - c_j| - r_j (matches the field).
         // gx/gy/gz accumulates the analytic gradient direction.
@@ -241,7 +241,7 @@ void ComputeSurfaceNormals(Mesh* mesh, Particle* particles, float particleRadius
         bool haveGrad = false;
         float fmin = INFINITY;
         int   fminIdx = -1;
-        float fj[32];
+        float fj[64];
         for (int j = 0; j < found; j++) {
             float dx = vx - nearby[j]->position.x;
             float dy = vy - nearby[j]->position.y;
@@ -882,9 +882,9 @@ static ScalarMaterialPair CalculateScalarAndMaterial(Vector3 position, SpatialHa
     // fillet, so distant blend partners are not missed.
     float searchRadius = refRadius * 2.5f + blendWidth * 4.0f;
 
-    Particle* nearbyParticles[32];
-    int foundCount = sh_query_radius(spatialHash, position.x, position.y, position.z, searchRadius,
-                                     (void**)nearbyParticles, 32);
+    Particle* nearbyParticles[64];
+    int foundCount = sh_query_radius_nearest(spatialHash, position.x, position.y, position.z, searchRadius,
+                                             (void**)nearbyParticles, 64);
     if (foundCount <= 0) {
         return result; // INFINITY scalar, material 0
     }
@@ -892,7 +892,7 @@ static ScalarMaterialPair CalculateScalarAndMaterial(Vector3 position, SpatialHa
     // Per-particle signed distance f_i = |p - c_i| - r_i, using each particle's
     // own radius. Track the hard-min (dominant particle) for the material id and
     // as the stable base point for the smooth-min.
-    float perDist[32];
+    float perDist[64];
     float fmin = INFINITY;
     int   fminIdx = 0;
     for (int i = 0; i < foundCount; i++) {
