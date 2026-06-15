@@ -20,10 +20,10 @@ CXXFLAGS = -Wall -Wextra -O2 -std=c++14 -Wno-missing-field-initializers -I$(RAYL
 ifeq ($(TARGET),windows-native)
     # Cross-compile for Windows from Linux/WSL
     CC = x86_64-w64-mingw32-gcc
-    CXX = x86_64-w64-mingw32-g++
+    CXX = x86_64-w64-mingw32-g++-posix
     PLATFORM = windows-native
     PLATFORM_DEFINE = PLATFORM_DESKTOP
-    LDFLAGS = -L$(RAYLIB_PATH)/build/$(PLATFORM) -static-libgcc -static-libstdc++ -lopengl32 -lgdi32 -lwinmm
+    LDFLAGS = -L$(RAYLIB_PATH)/build/$(PLATFORM) -static -lopengl32 -lgdi32 -lwinmm
     LDLIBS = $(RAYLIB_PATH)/build/$(PLATFORM)/libraylib.a
     BIN_SUFFIX = .exe
 else
@@ -78,10 +78,10 @@ else
         else
             # Default: Cross-compile to Windows from WSL
             CC = x86_64-w64-mingw32-gcc
-            CXX = x86_64-w64-mingw32-g++
+            CXX = x86_64-w64-mingw32-g++-posix
             PLATFORM = windows-native
             PLATFORM_DEFINE = PLATFORM_DESKTOP
-            LDFLAGS = -L$(RAYLIB_PATH)/build/$(PLATFORM) -static-libgcc -static-libstdc++ -lopengl32 -lgdi32 -lwinmm
+            LDFLAGS = -L$(RAYLIB_PATH)/build/$(PLATFORM) -static -lopengl32 -lgdi32 -lwinmm
             LDLIBS = $(RAYLIB_PATH)/build/$(PLATFORM)/libraylib.a
             BIN_SUFFIX = .exe
         endif
@@ -101,9 +101,9 @@ else
         else
             # Default: Use MinGW toolchain for native Windows builds
             CC = x86_64-w64-mingw32-gcc
-            CXX = x86_64-w64-mingw32-g++
+            CXX = x86_64-w64-mingw32-g++-posix
             PLATFORM = windows-mingw
-            LDFLAGS = -L$(RAYLIB_PATH)/build/$(PLATFORM) -static-libgcc -static-libstdc++ -lopengl32 -lgdi32 -lwinmm
+            LDFLAGS = -L$(RAYLIB_PATH)/build/$(PLATFORM) -static -lopengl32 -lgdi32 -lwinmm
         endif
         LDLIBS = $(RAYLIB_PATH)/build/$(PLATFORM)/libraylib.a
         BIN_SUFFIX = .exe
