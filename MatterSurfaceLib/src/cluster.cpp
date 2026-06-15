@@ -87,6 +87,14 @@ uint32_t Cluster::add_particle(const Vector3& local_position, float radius, uint
     return particle_id;
 }
 
+uint32_t Cluster::add_particle(const Vector3& local_position, float radius, uint32_t material_id,
+                               const Vector4& tint, float detail_size) {
+    uint32_t particle_id = next_particle_id_++;
+    particles_.emplace_back(local_position, radius, material_id, tint, detail_size);
+    mark_cells_dirty_around_particle(local_position, radius);
+    return particle_id;
+}
+
 bool Cluster::remove_particle(uint32_t particle_id) {
     if (particle_id >= particles_.size()) {
         return false;
