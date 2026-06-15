@@ -21,7 +21,7 @@
 #endif
 
 // Performance timing macros
-#define ENABLE_PERFORMANCE_TIMING 1
+#define ENABLE_PERFORMANCE_TIMING 0
 
 #if ENABLE_PERFORMANCE_TIMING
     static double performance_timer() {
