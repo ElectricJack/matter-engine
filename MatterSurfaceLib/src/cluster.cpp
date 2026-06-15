@@ -223,10 +223,9 @@ void Cluster::rebuild_dirty_cells() {
     
     for (auto& cell : cells_) {
         if (cell->is_dirty) {
-            // The no_mesh set is keyed on integer cell coords at the finest
-            // cell size (LOD 0, the level the cull was computed for). At coarser
-            // LODs the coords mean something different, so only skip at LOD 0;
-            // higher LODs mesh every cell (cheap -- far fewer, larger cells).
+            // The no_mesh set is keyed on integer cell coords at the single cell
+            // size the cull was computed for. Interior cells in this set are never
+            // meshed (no geometry, no BLAS).
             uint64_t key = pack_slot(SlotCoord{
                 (int)lroundf(cell->coordinates.x),
                 (int)lroundf(cell->coordinates.y),
