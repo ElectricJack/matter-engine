@@ -594,6 +594,16 @@ private:
         if (const char* e = getenv("MSL_VEIN_FREQ"))    { float v = (float)atof(e); if (v >= 0.0f) VEIN_FREQ = v; }
         if (const char* e = getenv("MSL_VEIN_WARP"))    { float v = (float)atof(e); if (v >= 0.0f) VEIN_WARP = v; }
 
+        // Carve (subtractive divots/crevices) + lumpiness (coarse radius bulges).
+        float CARVE_AMT = 0.0f, CARVE_FREQ = 0.6f, CARVE_RADIUS = 0.16f, CARVE_RIDGE = 0.4f;
+        float LUMP_AMT = 0.0f, LUMP_FREQ = 0.35f;
+        if (const char* e = getenv("MSL_CARVE_AMT"))    { float v=(float)atof(e); if (v>=0.0f) CARVE_AMT=v; }
+        if (const char* e = getenv("MSL_CARVE_FREQ"))   { float v=(float)atof(e); if (v>0.0f)  CARVE_FREQ=v; }
+        if (const char* e = getenv("MSL_CARVE_RADIUS")) { float v=(float)atof(e); if (v>0.0f)  CARVE_RADIUS=v; }
+        if (const char* e = getenv("MSL_CARVE_RIDGE"))  { float v=(float)atof(e); if (v>=0.0f) CARVE_RIDGE=v; }
+        if (const char* e = getenv("MSL_LUMP_AMT"))     { float v=(float)atof(e); if (v>=0.0f) LUMP_AMT=v; }
+        if (const char* e = getenv("MSL_LUMP_FREQ"))    { float v=(float)atof(e); if (v>0.0f)  LUMP_FREQ=v; }
+
         // Default margin = 2 (conservatively safe). Set MSL_CULL_MARGIN to tune;
         // MSL_CULL_MARGIN=-1 bypasses culling (emit every slot) for A/B compare.
         int margin = 2;
@@ -660,6 +670,8 @@ private:
         p.cell_origin_offset = Vector3{ -halfx, -halfy, -halfz };
         p.max_tier = max_tier;
         p.spacing  = SPACING;
+        p.lump_amt = LUMP_AMT;
+        p.lump_freq = LUMP_FREQ;
 
         CullStats stats;
         std::vector<SlotCoord> no_mesh;
@@ -667,10 +679,22 @@ private:
             bypass ? emit_all(lattice, occ, p)
                    : cull_interior(lattice, occ, p, &stats, &no_mesh);
 
+        std::vector<Particle> carve_seeds;
+        carve_seeds.reserve(emitted.size());
         for (auto& ep : emitted) {
             Vector3 pos = { ep.position.x - halfx, ep.position.y - halfy, ep.position.z - halfz };
             test_cluster_->add_particle(pos, ep.radius, ep.materialId, ep.tint, ep.detail_size);
+            Particle sp; sp.position = pos; sp.radius = ep.radius; sp.materialId = (int)ep.materialId;
+            carve_seeds.push_back(sp);
         }
+
+        CarveParams cv;
+        cv.amt = CARVE_AMT; cv.freq = CARVE_FREQ; cv.base_radius = CARVE_RADIUS;
+        cv.ridge = CARVE_RIDGE; cv.r_max = CARVE_RADIUS * 1.5f; cv.seed = 4242;
+        std::vector<Particle> carve = generate_carve_particles(carve_seeds, cv);
+        test_cluster_->set_carve_particles(carve);
+        printf("[carve] amt=%.2f freq=%.2f radius=%.2f ridge=%.2f -> %zu carve particles\n",
+               CARVE_AMT, CARVE_FREQ, CARVE_RADIUS, CARVE_RIDGE, carve.size());
 
         if (bypass) {
             test_cluster_->set_no_mesh_cells({});  // mesh everything
