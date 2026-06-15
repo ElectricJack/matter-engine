@@ -72,10 +72,7 @@ public:
     void set_smallest_cell_size(float size) { smallest_cell_size_ = size; }
     float get_smallest_cell_size() const { return smallest_cell_size_; }
     
-    // LOD level management
-    void set_lod_level(int lod_level, bool clear_blas = false);
-    int get_lod_level() const { return current_lod_level_; }
-    float get_current_cell_size() const { return smallest_cell_size_ * (1 << current_lod_level_); }
+    // Single-resolution rebuild of every cell (used after a full scene change).
     void force_rebuild_all_cells();
 
     // Skip-meshing: cells whose packed integer coordinate is in this set are
@@ -113,7 +110,6 @@ private:
     
     // Cell management
     float smallest_cell_size_;
-    int current_lod_level_;           // Currently active LOD level (0 = finest detail)
     float simplification_ratio_ = 1.0f; // 1.0 = no simplification
     SpatialHash* cell_spatial_hash_;
     std::vector<std::unique_ptr<Cell>> cells_;
