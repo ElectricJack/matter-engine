@@ -56,10 +56,10 @@ TARGET = minimal_cell_test
 $(TARGET): $(MAIN_SOURCE) $(MATTER_SOURCES)
 	$(CC) $(MAIN_SOURCE) $(MATTER_SOURCES) -o $(TARGET) $(CFLAGS) $(INCLUDE_PATHS) $(LDFLAGS) $(LDLIBS)
 
-.PHONY: clean run run-simp run-blas run-cell run-cont run-reg run-tint run-cull
+.PHONY: clean run run-simp run-blas run-cell run-cont run-reg run-tint run-cull run-par
 
 clean:
-	rm -f $(TARGET) $(SIMP_TARGET) $(BLAS_TARGET) $(CELL_TARGET) $(CONT_TARGET) $(REG_TARGET) $(TINT_TARGET) $(CULL_TARGET)
+	rm -f $(TARGET) $(SIMP_TARGET) $(BLAS_TARGET) $(CELL_TARGET) $(CONT_TARGET) $(REG_TARGET) $(TINT_TARGET) $(CULL_TARGET) $(PAR_TARGET)
 
 run: $(TARGET)
 	./$(TARGET)
@@ -159,3 +159,23 @@ $(CULL_TARGET): $(CULL_SOURCES)
 
 run-cull: $(CULL_TARGET)
 	./$(CULL_TARGET)
+
+# Per-cell parallel-meshing determinism harness (headless, GL-free at runtime).
+# Mirrors the CELL target's C-source handling (gcc for unmangled extern "C")
+# plus the worker pool. Never calls UploadMesh, so no GL context is needed.
+PAR_TARGET = parallel_mesh_tests
+PAR_CPP = parallel_mesh_tests.cpp ../src/cell.cpp ../src/mesh_simplifier.cpp \
+          ../src/blas_manager.cpp ../src/bvh.cpp ../src/bvh_analyzer.cpp \
+          ../src/mesh_worker_pool.cpp
+PAR_C = ../src/surface.c ../src/open_particle_surface.c \
+        ../src/spatial_hash.c ../src/object_allocator.c ../src/material_registry.c
+
+PAR_C_OBJ = surface.o open_particle_surface.o spatial_hash.o object_allocator.o material_registry.o
+
+$(PAR_TARGET): $(PAR_CPP) $(PAR_C)
+	gcc -c $(PAR_C) -O2 -DPLATFORM_DESKTOP $(INCLUDE_PATHS)
+	$(CC) $(PAR_CPP) $(PAR_C_OBJ) -o $(PAR_TARGET) $(CFLAGS) $(INCLUDE_PATHS) $(LDFLAGS) $(LDLIBS)
+	rm -f $(PAR_C_OBJ)
+
+run-par: $(PAR_TARGET)
+	./$(PAR_TARGET)
