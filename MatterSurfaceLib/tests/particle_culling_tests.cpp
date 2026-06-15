@@ -342,6 +342,28 @@ static int test_generate_carve_particles() {
     return ok;
 }
 
+static int test_lumpiness_modulates_radius() {
+    printf("--- lumpiness modulates additive radius ---\n");
+    GridLattice lat(0.8f); Occupancy occ;
+    for (int x=0;x<6;x++) for (int y=0;y<6;y++) for (int z=0;z<6;z++)
+        occ.set(SlotCoord{x,y,z}, SlotData{8});
+    CullParams p{}; p.margin=1; p.base_radius=0.62f; p.jitter_amount=0.0f;
+    p.tint_alpha=0.0f; p.seed=1337; p.cell_size=2.4f; p.max_tier=0; p.spacing=0.8f;
+    p.cell_origin_offset=(Vector3){0,0,0};
+    auto base = emit_all(lat, occ, p);
+    p.lump_amt = 0.5f; p.lump_freq = 0.3f;
+    auto lumped = emit_all(lat, occ, p);
+    int differ = 0; float maxrel = 0.0f;
+    for (size_t i=0;i<base.size() && i<lumped.size();++i) {
+        float rel = fabsf(lumped[i].radius - base[i].radius) / base[i].radius;
+        if (rel > 1e-4f) differ++;
+        if (rel > maxrel) maxrel = rel;
+    }
+    int ok = (differ > 0) && (maxrel <= 0.5f + 1e-3f);
+    if (!ok) printf("  FAIL: differ=%d maxrel=%.3f\n", differ, maxrel);
+    return ok;
+}
+
 int main() {
     test_grid_lattice();
     test_occupancy();
@@ -357,6 +379,7 @@ int main() {
     test_tiered_emission();
     test_core_dropped_with_tiers();
     CHECK(test_generate_carve_particles(), "generate_carve_particles determinism/threshold");
+    CHECK(test_lumpiness_modulates_radius(), "lumpiness modulates additive radius");
     if (failures == 0) printf("All particle_culling tests passed\n");
     return failures == 0 ? 0 : 1;
 }

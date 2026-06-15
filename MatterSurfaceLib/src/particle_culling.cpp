@@ -105,6 +105,10 @@ static EmittedParticle make_sub_particle(const Lattice& lat, SlotCoord c, int ti
     float fine    = (lattice_vhash(fx + 211 + s, fy + 211, fz + 211) - 0.5f) * 2.0f;
     float rv = cluster * 0.75f + fine * 0.25f;
     ep.radius     = (p.base_radius * inv) * (1.0f + rv * p.radius_variation);
+    if (p.lump_amt > 0.0f) {
+        float ln = lattice_vnoise(cfx * p.lump_freq, cfy * p.lump_freq, cfz * p.lump_freq);
+        ep.radius *= 1.0f + p.lump_amt * (2.0f * ln - 1.0f);
+    }
     ep.materialId = d.materialId;
     ep.detail_size = spacing * inv;           // S / 2^tier
 
