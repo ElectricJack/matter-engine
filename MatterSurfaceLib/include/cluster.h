@@ -54,6 +54,9 @@ public:
                           const Vector4& tint, float detail_size);
     bool remove_particle(uint32_t particle_id);
     bool update_particle_position(uint32_t particle_id, const Vector3& new_local_position);
+    // Drop all additive particles (cells/BLAS are reclaimed by the next
+    // force_rebuild_all_cells). Used to re-emit the scene with new parameters.
+    void clear_particles();
     
     // Get particles in local space
     const std::vector<StaticParticle>& get_particles() const { return particles_; }

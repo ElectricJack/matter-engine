@@ -595,14 +595,13 @@ private:
         if (const char* e = getenv("MSL_VEIN_WARP"))    { float v = (float)atof(e); if (v >= 0.0f) VEIN_WARP = v; }
 
         // Carve (subtractive divots/crevices) + lumpiness (coarse radius bulges).
-        float CARVE_AMT = 0.0f, CARVE_FREQ = 0.6f, CARVE_RADIUS = 0.16f, CARVE_RIDGE = 0.4f;
-        float LUMP_AMT = 0.0f, LUMP_FREQ = 0.35f;
-        if (const char* e = getenv("MSL_CARVE_AMT"))    { float v=(float)atof(e); if (v>=0.0f) CARVE_AMT=v; }
-        if (const char* e = getenv("MSL_CARVE_FREQ"))   { float v=(float)atof(e); if (v>0.0f)  CARVE_FREQ=v; }
-        if (const char* e = getenv("MSL_CARVE_RADIUS")) { float v=(float)atof(e); if (v>0.0f)  CARVE_RADIUS=v; }
-        if (const char* e = getenv("MSL_CARVE_RIDGE"))  { float v=(float)atof(e); if (v>=0.0f) CARVE_RIDGE=v; }
-        if (const char* e = getenv("MSL_LUMP_AMT"))     { float v=(float)atof(e); if (v>=0.0f) LUMP_AMT=v; }
-        if (const char* e = getenv("MSL_LUMP_FREQ"))    { float v=(float)atof(e); if (v>0.0f)  LUMP_FREQ=v; }
+        // Env vars seed the INITIAL values; the Controls panel edits them live.
+        if (const char* e = getenv("MSL_CARVE_AMT"))    { float v=(float)atof(e); if (v>=0.0f) carve_amt_=v; }
+        if (const char* e = getenv("MSL_CARVE_FREQ"))   { float v=(float)atof(e); if (v>0.0f)  carve_freq_=v; }
+        if (const char* e = getenv("MSL_CARVE_RADIUS")) { float v=(float)atof(e); if (v>0.0f)  carve_radius_=v; }
+        if (const char* e = getenv("MSL_CARVE_RIDGE"))  { float v=(float)atof(e); if (v>=0.0f) carve_ridge_=v; }
+        if (const char* e = getenv("MSL_LUMP_AMT"))     { float v=(float)atof(e); if (v>=0.0f) lump_amt_=v; }
+        if (const char* e = getenv("MSL_LUMP_FREQ"))    { float v=(float)atof(e); if (v>0.0f)  lump_freq_=v; }
 
         // Default margin = 2 (conservatively safe). Set MSL_CULL_MARGIN to tune;
         // MSL_CULL_MARGIN=-1 bypasses culling (emit every slot) for A/B compare.
@@ -629,8 +628,9 @@ private:
 
         // Build a solid block of occupancy, centered on the origin, with a
         // checkerboard of the two opaque stones so the surface shows variation.
-        GridLattice lattice(SPACING);
-        Occupancy occ;
+        // Cached in scene_occ_ so live re-emission (lumpiness edits) can reuse it.
+        scene_occ_ = Occupancy{};
+        Occupancy& occ = scene_occ_;
         for (int ix = 0; ix < DIM_X; ++ix)
         for (int iy = 0; iy < DIM_Y; ++iy)
         for (int iz = 0; iz < DIM_Z; ++iz) {
@@ -656,50 +656,63 @@ private:
         // the block extent so the brick is centered. The cull must bucket slots
         // on the SAME grid the Cluster uses, so it gets this offset and the
         // cluster's cell size (LOD 0 -> smallest_cell_size).
-        float halfx = (DIM_X - 1) * SPACING * 0.5f;
-        float halfy = (DIM_Y - 1) * SPACING * 0.5f;
-        float halfz = (DIM_Z - 1) * SPACING * 0.5f;
+        scene_halfx_ = (DIM_X - 1) * SPACING * 0.5f;
+        scene_halfy_ = (DIM_Y - 1) * SPACING * 0.5f;
+        scene_halfz_ = (DIM_Z - 1) * SPACING * 0.5f;
 
-        CullParams p;
+        // Cache the base cull params (everything except the live lump knobs, which
+        // regenerate_surface_ injects from the current slider values at re-emit).
+        CullParams& p = scene_cull_;
         p.margin = margin; p.base_radius = BASE_RADIUS;
         p.radius_variation = RADIUS_VAR;
         p.radius_cluster_freq = CLUSTER_FREQ;
         p.jitter_amount = POS_JITTER; p.tint_alpha = TINT_ALPHA; p.seed = 1337;
         p.vein_freq = VEIN_FREQ; p.vein_warp = VEIN_WARP;
         p.cell_size = test_cluster_->get_smallest_cell_size();   // single cell size
-        p.cell_origin_offset = Vector3{ -halfx, -halfy, -halfz };
+        p.cell_origin_offset = Vector3{ -scene_halfx_, -scene_halfy_, -scene_halfz_ };
         p.max_tier = max_tier;
         p.spacing  = SPACING;
-        p.lump_amt = LUMP_AMT;
-        p.lump_freq = LUMP_FREQ;
+
+        scene_spacing_ = SPACING;
+        scene_bypass_  = bypass;
+
+        test_cluster_->set_position({0.0f, 2.0f, 0.0f});
+        regenerate_surface_();
+    }
+
+    // Re-emit the additive surface from the cached occupancy + cull params, using
+    // the current lump knobs. Rebuilds carve seeds, regenerates carve particles,
+    // and forces a full cell rebuild. Called once at setup and again whenever a
+    // lumpiness slider changes (lump modulates additive radii AT EMISSION).
+    void regenerate_surface_() {
+        GridLattice lattice(scene_spacing_);
+
+        CullParams p = scene_cull_;
+        p.lump_amt  = lump_amt_;
+        p.lump_freq = lump_freq_;
 
         CullStats stats;
         std::vector<SlotCoord> no_mesh;
         std::vector<EmittedParticle> emitted =
-            bypass ? emit_all(lattice, occ, p)
-                   : cull_interior(lattice, occ, p, &stats, &no_mesh);
+            scene_bypass_ ? emit_all(lattice, scene_occ_, p)
+                          : cull_interior(lattice, scene_occ_, p, &stats, &no_mesh);
 
-        std::vector<Particle> carve_seeds;
-        carve_seeds.reserve(emitted.size());
+        test_cluster_->clear_particles();
+        carve_seeds_.clear();
+        carve_seeds_.reserve(emitted.size());
         for (auto& ep : emitted) {
-            Vector3 pos = { ep.position.x - halfx, ep.position.y - halfy, ep.position.z - halfz };
+            Vector3 pos = { ep.position.x - scene_halfx_,
+                            ep.position.y - scene_halfy_,
+                            ep.position.z - scene_halfz_ };
             test_cluster_->add_particle(pos, ep.radius, ep.materialId, ep.tint, ep.detail_size);
             Particle sp; sp.position = pos; sp.radius = ep.radius; sp.materialId = (int)ep.materialId;
-            carve_seeds.push_back(sp);
+            carve_seeds_.push_back(sp);
         }
 
-        CarveParams cv;
-        cv.amt = CARVE_AMT; cv.freq = CARVE_FREQ; cv.base_radius = CARVE_RADIUS;
-        cv.ridge = CARVE_RIDGE; cv.r_max = CARVE_RADIUS * 1.5f; cv.seed = 4242;
-        std::vector<Particle> carve = generate_carve_particles(carve_seeds, cv);
-        test_cluster_->set_carve_particles(carve);
-        printf("[carve] amt=%.2f freq=%.2f radius=%.2f ridge=%.2f -> %zu carve particles\n",
-               CARVE_AMT, CARVE_FREQ, CARVE_RADIUS, CARVE_RIDGE, carve.size());
-
-        if (bypass) {
+        if (scene_bypass_) {
             test_cluster_->set_no_mesh_cells({});  // mesh everything
             printf("[cull] occupied=%zu emitted=%zu (margin=%d, BYPASS)\n",
-                   occ.count(), emitted.size(), margin);
+                   scene_occ_.count(), emitted.size(), p.margin);
         } else {
             std::vector<Vector3> nm;
             nm.reserve(no_mesh.size());
@@ -707,14 +720,27 @@ private:
                 nm.push_back(Vector3{(float)c.x, (float)c.y, (float)c.z});
             test_cluster_->set_no_mesh_cells(nm);
             printf("[cull] occupied=%zu emitted=%zu cells_meshed=%zu "
-                   "cells_skipped=%zu cells_core=%zu (margin=%d max_tier=%d max_pow=%d)\n",
-                   occ.count(), emitted.size(), stats.cells_meshed,
-                   stats.cells_skipped, stats.cells_core, margin, max_tier, max_pow);
+                   "cells_skipped=%zu cells_core=%zu (margin=%d max_tier=%d)\n",
+                   scene_occ_.count(), emitted.size(), stats.cells_meshed,
+                   stats.cells_skipped, stats.cells_core, p.margin, p.max_tier);
         }
 
-        test_cluster_->set_position({0.0f, 2.0f, 0.0f});
-        test_cluster_->rebuild_dirty_cells();
+        regenerate_carve_();  // also forces the full cell rebuild
+    }
 
+    // Regenerate the subtractive carve particles from the cached surface seeds and
+    // the current carve knobs, then rebuild every cell. Carve only needs seed
+    // POSITIONS (stable under lumpiness), so this is cheap relative to re-emission.
+    void regenerate_carve_() {
+        CarveParams cv;
+        cv.amt = carve_amt_; cv.freq = carve_freq_; cv.base_radius = carve_radius_;
+        cv.ridge = carve_ridge_; cv.r_max = carve_radius_ * 1.5f; cv.seed = 4242;
+        std::vector<Particle> carve = generate_carve_particles(carve_seeds_, cv);
+        test_cluster_->set_carve_particles(carve);
+        printf("[carve] amt=%.2f freq=%.2f radius=%.2f ridge=%.2f -> %zu carve particles\n",
+               carve_amt_, carve_freq_, carve_radius_, carve_ridge_, carve.size());
+
+        test_cluster_->force_rebuild_all_cells();
         printf("Brick has %u cells, %u dirty\n",
                test_cluster_->get_cell_count(), test_cluster_->get_dirty_cell_count());
     }
@@ -1380,6 +1406,29 @@ private:
 
         ImGui::Separator();
 
+        // Organic surface knobs. Carve (subtractive divots/crevices) regenerates
+        // cheaply from cached surface seeds; lumpiness modulates additive radii at
+        // emission, so it triggers a full re-emit. Apply on release to avoid
+        // rebuilding the whole scene on every dragged pixel.
+        ImGui::Text("Organic Surface");
+        {
+            ImGui::SliderFloat("Carve Amount", &carve_amt_, 0.0f, 1.0f, "%.2f");
+            ImGui::SliderFloat("Carve Freq", &carve_freq_, 0.05f, 2.0f, "%.2f");
+            ImGui::SliderFloat("Carve Radius", &carve_radius_, 0.01f, 0.5f, "%.2f");
+            ImGui::SliderFloat("Carve Ridge", &carve_ridge_, 0.0f, 1.0f, "%.2f");
+            if (ImGui::Button("Apply Carve", ImVec2(-1.0f, 0.0f))) {
+                regenerate_carve_();
+            }
+
+            ImGui::SliderFloat("Lump Amount", &lump_amt_, 0.0f, 1.0f, "%.2f");
+            ImGui::SliderFloat("Lump Freq", &lump_freq_, 0.05f, 2.0f, "%.2f");
+            if (ImGui::Button("Apply Lumpiness", ImVec2(-1.0f, 0.0f))) {
+                regenerate_surface_();
+            }
+        }
+
+        ImGui::Separator();
+
         // Camera controls — clickable orbit/zoom so the view is fully navigable without
         // locking the cursor or using WASD (important over remote desktop). Buttons use
         // auto-repeat so holding them down moves the camera continuously.
@@ -1842,7 +1891,20 @@ private:
     std::unique_ptr<TLASManager> tlas_manager_;
     std::unique_ptr<BVHVisualizer> bvh_visualizer_;
     std::unique_ptr<Cluster> test_cluster_;
-    
+
+    // --- Organic surface tuning (live-editable via the Controls panel) ---
+    // The lattice scene caches its occupancy + cull params so it can re-emit when
+    // a lumpiness knob changes; carve knobs only regenerate the subtractive
+    // particles from the cached surface-particle seeds (no re-emit needed).
+    Occupancy  scene_occ_;
+    CullParams scene_cull_;
+    bool  scene_bypass_  = false;
+    float scene_halfx_   = 0.0f, scene_halfy_ = 0.0f, scene_halfz_ = 0.0f;
+    float scene_spacing_ = 0.8f;
+    std::vector<Particle> carve_seeds_;
+    float carve_amt_    = 0.0f, carve_freq_ = 0.6f, carve_radius_ = 0.16f, carve_ridge_ = 0.4f;
+    float lump_amt_     = 0.0f, lump_freq_  = 0.35f;
+
     // Scene geometry BLAS handles
     BLASHandle sphere_blas_;
     BLASHandle ground_blas_;

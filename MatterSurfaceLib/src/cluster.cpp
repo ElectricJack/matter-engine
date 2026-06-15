@@ -446,6 +446,11 @@ void Cluster::force_rebuild_all_cells() {
     rebuild_dirty_cells();
 }
 
+void Cluster::clear_particles() {
+    particles_.clear();
+    next_particle_id_ = 0;
+}
+
 void Cluster::clear_all_cells() {
     printf("Cluster %u: Clearing all %zu cells\n", cluster_id_, cells_.size());
     
