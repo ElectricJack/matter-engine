@@ -546,27 +546,36 @@ private:
             occ.set(SlotCoord{ix, iy, iz}, SlotData{mat});
         }
 
-        CullParams p;
-        p.margin = margin; p.base_radius = BASE_RADIUS;
-        p.jitter_amount = POS_JITTER; p.tint_alpha = TINT_ALPHA; p.seed = 1337;
-        p.cell_size = test_cluster_->get_current_cell_size();
-        p.cell_origin_offset = Vector3{0, 0, 0};
-
-        std::vector<EmittedParticle> emitted =
-            bypass ? emit_all(lattice, occ, p) : cull_interior(lattice, occ, p);
-
-        // Re-center: GridLattice puts slot 0 at the origin, so shift by half the
-        // block extent to center the brick.
+        // Re-center offset: GridLattice puts slot 0 at the origin; shift by half
+        // the block extent so the brick is centered. The cull must bucket slots
+        // on the SAME grid the Cluster uses, so it gets this offset and the
+        // cluster's cell size (LOD 0 -> smallest_cell_size).
         float halfx = (DIM_X - 1) * SPACING * 0.5f;
         float halfy = (DIM_Y - 1) * SPACING * 0.5f;
         float halfz = (DIM_Z - 1) * SPACING * 0.5f;
+
+        CullParams p;
+        p.margin = margin; p.base_radius = BASE_RADIUS;
+        p.jitter_amount = POS_JITTER; p.tint_alpha = TINT_ALPHA; p.seed = 1337;
+        p.cell_size = test_cluster_->get_smallest_cell_size();   // LOD 0 cell size
+        p.cell_origin_offset = Vector3{ -halfx, -halfy, -halfz };
+
+        CullStats stats;
+        std::vector<EmittedParticle> emitted =
+            bypass ? emit_all(lattice, occ, p) : cull_interior(lattice, occ, p, &stats);
+
         for (auto& ep : emitted) {
             Vector3 pos = { ep.position.x - halfx, ep.position.y - halfy, ep.position.z - halfz };
             test_cluster_->add_particle(pos, ep.radius, ep.materialId, ep.tint);
         }
 
-        printf("[cull] occupied=%zu emitted=%zu (margin=%d%s)\n",
-               occ.count(), emitted.size(), margin, bypass ? ", BYPASS" : "");
+        if (bypass) {
+            printf("[cull] occupied=%zu emitted=%zu (margin=%d, BYPASS)\n",
+                   occ.count(), emitted.size(), margin);
+        } else {
+            printf("[cull] occupied=%zu emitted=%zu cells_kept=%zu cells_dropped=%zu (margin=%d)\n",
+                   occ.count(), emitted.size(), stats.cells_kept, stats.cells_dropped, margin);
+        }
 
         test_cluster_->set_position({0.0f, 2.0f, 0.0f});
         test_cluster_->set_lod_level(0);
