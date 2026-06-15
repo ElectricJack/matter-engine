@@ -131,7 +131,8 @@ void Cell::clear_particle_indices() {
     is_dirty = true;
 }
 
-void Cell::rebuild_meshes(const std::vector<StaticParticle>& cluster_particles, BLASManager& blas_manager, float simplification_ratio) {
+void Cell::rebuild_meshes(const std::vector<StaticParticle>& cluster_particles, BLASManager& blas_manager,
+                          float simplification_ratio, float base_detail, int max_pow) {
     clear_meshes(&blas_manager);
 
     if (material_particle_indices.empty()) {
@@ -143,7 +144,7 @@ void Cell::rebuild_meshes(const std::vector<StaticParticle>& cluster_particles, 
     // materialId is still tagged per-triangle inside generate_mesh_for_group.
     for (const auto& group_entry : material_particle_indices) {
         uint32_t group_id = group_entry.first;
-        generate_mesh_for_group(group_id, cluster_particles, blas_manager, simplification_ratio);
+        generate_mesh_for_group(group_id, cluster_particles, blas_manager, simplification_ratio, base_detail, max_pow);
     }
 
     has_meshes = !material_meshes.empty();
@@ -302,7 +303,8 @@ std::vector<Particle> build_clip_particles(
     return clip;
 }
 
-void Cell::generate_mesh_for_group(uint32_t group_id, const std::vector<StaticParticle>& cluster_particles, BLASManager& blas_manager, float simplification_ratio) {
+void Cell::generate_mesh_for_group(uint32_t group_id, const std::vector<StaticParticle>& cluster_particles, BLASManager& blas_manager,
+                                   float simplification_ratio, float base_detail, int max_pow) {
     auto group_it = material_particle_indices.find(group_id);
     if (group_it == material_particle_indices.end() || group_it->second.empty()) {
         return;
@@ -313,7 +315,15 @@ void Cell::generate_mesh_for_group(uint32_t group_id, const std::vector<StaticPa
     Bounds bounds;
     bounds.center = center;
     bounds.size = Vector3{actual_size, actual_size, actual_size};
-    bounds.divisionPow = 4; // Always 16x16x16 resolution
+
+    // Mesh resolution follows the finest detail present in this cell.
+    float detail_min = base_detail;   // default tier-0 (base) detail
+    for (uint32_t idx : particle_indices) {
+        if (idx >= cluster_particles.size()) continue;
+        float ds = cluster_particles[idx].detail_size;
+        if (ds > 0.0f && ds < detail_min) detail_min = ds;
+    }
+    bounds.divisionPow = choose_division_pow(detail_min, base_detail, 4, max_pow);
     int gridSize = 1 << bounds.divisionPow;
     float voxel = actual_size / (float)(gridSize - 1);
     float blend_width = kBlendVoxels * voxel;

@@ -93,6 +93,14 @@ public:
     }
     float get_simplification_ratio() const { return simplification_ratio_; }
 
+    // Lattice tier-0 spacing S; cells use it to recover the finest tier present
+    // from each particle's detail_size when choosing mesh resolution.
+    void set_base_detail_size(float s) { base_detail_size_ = s; }
+    float get_base_detail_size() const { return base_detail_size_; }
+    // Upper bound on per-cell divisionPow (2^pow grid).
+    void set_max_division_pow(int p) { max_division_pow_ = p; }
+    int get_max_division_pow() const { return max_division_pow_; }
+
     // Statistics
     uint32_t get_cell_count() const;
     uint32_t get_dirty_cell_count() const;
@@ -114,6 +122,8 @@ private:
     // Cell management
     float smallest_cell_size_;
     float simplification_ratio_ = 1.0f; // 1.0 = no simplification
+    float base_detail_size_ = 0.0f;   // lattice tier-0 spacing S (0 => disabled)
+    int   max_division_pow_ = 6;      // resolution ceiling (64^3)
     SpatialHash* cell_spatial_hash_;
     std::vector<std::unique_ptr<Cell>> cells_;
     std::unordered_set<uint64_t> no_mesh_cells_;  // packed integer cell coords

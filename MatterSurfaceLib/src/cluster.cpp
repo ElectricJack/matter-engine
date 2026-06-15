@@ -289,7 +289,8 @@ void Cluster::update_cell_meshes(Cell* cell) {
     
     // Rebuild meshes for all materials if we have particles
     if (!cell->material_particle_indices.empty()) {
-        cell->rebuild_meshes(particles_, blas_manager_, simplification_ratio_);
+        cell->rebuild_meshes(particles_, blas_manager_, simplification_ratio_,
+                             base_detail_size_, max_division_pow_);
     } else {
         cell->clear_meshes(&blas_manager_);
     }

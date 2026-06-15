@@ -67,7 +67,8 @@ struct Cell {
     ~Cell();
     
     // Mesh management
-    void rebuild_meshes(const std::vector<StaticParticle>& cluster_particles, BLASManager& blas_manager, float simplification_ratio = 1.0f);
+    void rebuild_meshes(const std::vector<StaticParticle>& cluster_particles, BLASManager& blas_manager,
+                        float simplification_ratio = 1.0f, float base_detail = 0.0f, int max_pow = 6);
     // Drops this cell's meshes. When blas_manager is provided, the cell's BLAS
     // references are released so stale entries don't accumulate on the GPU.
     void clear_meshes(BLASManager* blas_manager = nullptr);
@@ -92,7 +93,8 @@ struct Cell {
     
 private:
     void calculate_bounds(float smallest_cell_size);
-    void generate_mesh_for_group(uint32_t group_id, const std::vector<StaticParticle>& cluster_particles, BLASManager& blas_manager, float simplification_ratio);
+    void generate_mesh_for_group(uint32_t group_id, const std::vector<StaticParticle>& cluster_particles, BLASManager& blas_manager,
+                                 float simplification_ratio, float base_detail, int max_pow);
 };
 
 #endif // CELL_H
