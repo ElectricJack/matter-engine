@@ -521,12 +521,21 @@ private:
 
         // --- Tunables ---
         const int   DIM_X = 20, DIM_Y = 20, DIM_Z = 20;  // solid block of slots
-        const float BASE_RADIUS = 0.4f;
-        const float SPACING     = 2.0f * BASE_RADIUS;     // neighbors just touch
-        const float POS_JITTER  = 0.15f * BASE_RADIUS;
+        // SPACING is the lattice pitch; BASE_RADIUS is independent so spheres
+        // overlap (radius > SPACING/2). Jitter and size variation break up the
+        // regular packing so the surface reads as bumpy stone, not a grid.
+        const float SPACING     = 0.8f;
+        float BASE_RADIUS = 0.6f;             // overlap factor = 2*r/SPACING = 1.5
+        float POS_JITTER  = 0.35f * SPACING;  // per-axis position jitter
+        float RADIUS_VAR  = 0.3f;             // per-particle radius +/-30%
         const float TINT_ALPHA  = 0.2f;
         const uint32_t MAT_OPAQUE_A = 8;  // stone_light (GROUP_STONE)
         const uint32_t MAT_OPAQUE_B = 9;  // stone_dark  (GROUP_STONE)
+
+        // Env overrides for quick visual iteration.
+        if (const char* e = getenv("MSL_BASE_RADIUS")) { float v = (float)atof(e); if (v > 0.0f) BASE_RADIUS = v; }
+        if (const char* e = getenv("MSL_JITTER"))      { float v = (float)atof(e); if (v >= 0.0f) POS_JITTER = v; }
+        if (const char* e = getenv("MSL_SIZE_VAR"))    { float v = (float)atof(e); if (v >= 0.0f) RADIUS_VAR = v; }
 
         // Default margin = 2 (conservatively safe). Set MSL_CULL_MARGIN to tune;
         // MSL_CULL_MARGIN=-1 bypasses culling (emit every slot) for A/B compare.
@@ -563,6 +572,7 @@ private:
 
         CullParams p;
         p.margin = margin; p.base_radius = BASE_RADIUS;
+        p.radius_variation = RADIUS_VAR;
         p.jitter_amount = POS_JITTER; p.tint_alpha = TINT_ALPHA; p.seed = 1337;
         p.cell_size = test_cluster_->get_smallest_cell_size();   // LOD 0 cell size
         p.cell_origin_offset = Vector3{ -halfx, -halfy, -halfz };

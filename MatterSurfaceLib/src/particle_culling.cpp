@@ -47,7 +47,8 @@ static EmittedParticle make_particle(const Lattice& lat, SlotCoord c,
 
     EmittedParticle ep;
     ep.position   = Vector3{ base.x + jx, base.y + jy, base.z + jz };
-    ep.radius     = p.base_radius;
+    float rv = (lattice_vhash(c.x + 211 + s, c.y + 211, c.z + 211) - 0.5f) * 2.0f; // [-1,1]
+    ep.radius     = p.base_radius * (1.0f + rv * p.radius_variation);
     ep.materialId = d.materialId;
     float tr = lattice_vhash(c.x + 101 + s, c.y, c.z);
     float tg = lattice_vhash(c.x, c.y + 101 + s, c.z);
