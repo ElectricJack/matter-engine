@@ -261,6 +261,63 @@ static void test_tier0_regression_and_detail() {
     CHECK(!base.empty(), "tier-0 emit is non-empty");
 }
 
+static void test_tiered_emission() {
+    GridLattice lat(0.8f);
+    Occupancy occ = solid_block(6);   // coords 0..5
+
+    CullParams p = default_params(1);
+    p.max_tier = 1;
+
+    // With max_tier 1, every outermost-shell slot (depth 0) emits 2^3 = 8
+    // sub-particles; deeper slots stay at tier 0 (1 particle). So the total
+    // exceeds emit_all's one-per-slot count, and is strictly larger than tier 0.
+    auto tier0 = cull_interior(lat, occ, default_params(1));
+    auto tier1 = cull_interior(lat, occ, p);
+    CHECK(tier1.size() > tier0.size(), "max_tier 1 emits more particles than tier 0");
+
+    // detail_size appears at two scales only: S (tier 0) and S/2 (tier 1).
+    int n_full = 0, n_half = 0, n_other = 0;
+    for (const auto& ep : tier1) {
+        if (fabsf(ep.detail_size - 0.8f) < 1e-5f)      ++n_full;
+        else if (fabsf(ep.detail_size - 0.4f) < 1e-5f) ++n_half;
+        else ++n_other;
+    }
+    CHECK(n_half > 0, "tier-1 sub-particles carry detail_size == S/2");
+    CHECK(n_full > 0, "interior keeps tier-0 detail_size == S");
+    CHECK(n_other == 0, "no unexpected detail_size values");
+
+    // Sub-particle count for a single refined slot is exactly 8.
+    Occupancy one; one.set(SlotCoord{0,0,0}, SlotData{8});
+    CullParams q = default_params(1); q.max_tier = 2;   // isolated slot -> depth 0 -> tier 2
+    auto refined = emit_all(lat, one, q);
+    CHECK(refined.size() == 64, "isolated slot at tier 2 emits 4^3 = 64 sub-particles");
+}
+
+static void test_core_dropped_with_tiers() {
+    GridLattice lat(0.8f);
+    Occupancy occ = solid_block(10);
+    CullParams p = default_params(1);
+    p.max_tier = 1;
+    p.jitter_amount = 0.0f;   // emitted position == slot position, exact bucketing
+
+    CullStats stats;
+    std::vector<SlotCoord> no_mesh;
+    auto kept = cull_interior(lat, occ, p, &stats, &no_mesh);
+
+    // The single core cell's 8 slots are still dropped (they are fully buried,
+    // depth >= max_tier so tier 0, but core => not emitted at all).
+    CHECK(stats.cells_core == 1, "core cell count unchanged with tiers on");
+    // No emitted particle may sit inside the core cell (cell index (2,2,2)).
+    bool any_in_core = false;
+    for (const auto& ep : kept) {
+        int cx = (int)floorf(ep.position.x / p.cell_size);
+        int cy = (int)floorf(ep.position.y / p.cell_size);
+        int cz = (int)floorf(ep.position.z / p.cell_size);
+        if (cx == 2 && cy == 2 && cz == 2) any_in_core = true;
+    }
+    CHECK(!any_in_core, "core cell emits zero particles even with tiers on");
+}
+
 int main() {
     test_grid_lattice();
     test_occupancy();
@@ -273,6 +330,8 @@ int main() {
     test_thin_shape_keeps_all();
     test_determinism();
     test_tier0_regression_and_detail();
+    test_tiered_emission();
+    test_core_dropped_with_tiers();
     if (failures == 0) printf("All particle_culling tests passed\n");
     return failures == 0 ? 0 : 1;
 }

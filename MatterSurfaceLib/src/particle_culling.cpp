@@ -181,8 +181,13 @@ std::vector<EmittedParticle> cull_interior(const Lattice& lattice,
     std::vector<EmittedParticle> out;
     occ.for_each([&](SlotCoord c, const SlotData& d) {
         uint64_t k = pack_slot(cell_coord_of(lattice, c, p));
-        if (core.find(k) == core.end())
-            out.push_back(make_sub_particle(lattice, c, 0, 0, 0, 0, d, p));
+        if (core.find(k) != core.end()) return;     // core slots are dropped
+        int tier  = slot_tier(slot_depth(occ, c, p.max_tier), p.max_tier);
+        int scale = 1 << tier;
+        for (int oz = 0; oz < scale; ++oz)
+        for (int oy = 0; oy < scale; ++oy)
+        for (int ox = 0; ox < scale; ++ox)
+            out.push_back(make_sub_particle(lattice, c, tier, ox, oy, oz, d, p));
     });
 
     if (no_mesh_cells) {
@@ -207,7 +212,12 @@ std::vector<EmittedParticle> emit_all(const Lattice& lattice,
                                       const CullParams& p) {
     std::vector<EmittedParticle> out;
     occ.for_each([&](SlotCoord c, const SlotData& d) {
-        out.push_back(make_sub_particle(lattice, c, 0, 0, 0, 0, d, p));
+        int tier  = slot_tier(slot_depth(occ, c, p.max_tier), p.max_tier);
+        int scale = 1 << tier;
+        for (int oz = 0; oz < scale; ++oz)
+        for (int oy = 0; oy < scale; ++oy)
+        for (int ox = 0; ox < scale; ++ox)
+            out.push_back(make_sub_particle(lattice, c, tier, ox, oy, oz, d, p));
     });
     return out;
 }
