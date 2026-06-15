@@ -535,6 +535,13 @@ private:
         bool bypass = false;
         if (mEnv) { margin = atoi(mEnv); if (margin < 0) bypass = true; }
 
+        // Skip-meshing cell size (~3 slots/cell so the meshed shell hugs the
+        // surface and the interior is skippable). Sweep via MSL_CELL_SIZE.
+        float cell_size = 2.4f;
+        const char* csEnv = getenv("MSL_CELL_SIZE");
+        if (csEnv) { float v = (float)atof(csEnv); if (v > 0.0f) cell_size = v; }
+        test_cluster_->set_smallest_cell_size(cell_size);
+
         // Build a solid block of occupancy, centered on the origin, with a
         // checkerboard of the two opaque stones so the surface shows variation.
         GridLattice lattice(SPACING);
@@ -561,8 +568,10 @@ private:
         p.cell_origin_offset = Vector3{ -halfx, -halfy, -halfz };
 
         CullStats stats;
+        std::vector<SlotCoord> no_mesh;
         std::vector<EmittedParticle> emitted =
-            bypass ? emit_all(lattice, occ, p) : cull_interior(lattice, occ, p, &stats);
+            bypass ? emit_all(lattice, occ, p)
+                   : cull_interior(lattice, occ, p, &stats, &no_mesh);
 
         for (auto& ep : emitted) {
             Vector3 pos = { ep.position.x - halfx, ep.position.y - halfy, ep.position.z - halfz };
@@ -570,11 +579,19 @@ private:
         }
 
         if (bypass) {
+            test_cluster_->set_no_mesh_cells({});  // mesh everything
             printf("[cull] occupied=%zu emitted=%zu (margin=%d, BYPASS)\n",
                    occ.count(), emitted.size(), margin);
         } else {
-            printf("[cull] occupied=%zu emitted=%zu cells_kept=%zu cells_dropped=%zu (margin=%d)\n",
-                   occ.count(), emitted.size(), stats.cells_kept, stats.cells_dropped, margin);
+            std::vector<Vector3> nm;
+            nm.reserve(no_mesh.size());
+            for (const SlotCoord& c : no_mesh)
+                nm.push_back(Vector3{(float)c.x, (float)c.y, (float)c.z});
+            test_cluster_->set_no_mesh_cells(nm);
+            printf("[cull] occupied=%zu emitted=%zu cells_meshed=%zu "
+                   "cells_skipped=%zu cells_core=%zu (margin=%d)\n",
+                   occ.count(), emitted.size(), stats.cells_meshed,
+                   stats.cells_skipped, stats.cells_core, margin);
         }
 
         test_cluster_->set_position({0.0f, 2.0f, 0.0f});
