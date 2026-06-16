@@ -29,12 +29,13 @@ static void make_scene(Cell& cell, std::vector<StaticParticle>& particles) {
 }
 
 // Run build_cell_meshes for the cell across `workers` threads; return the result.
-static CellMeshResult run_build(Cell& cell, const std::vector<StaticParticle>& particles, int workers) {
+static CellMeshResult run_build(Cell& cell, const std::vector<StaticParticle>& particles,
+                                int workers, float simplification_ratio) {
     MeshWorkerPool pool(workers);
     std::vector<CellJob> jobs;
     CellJob job;
     job.cell = &cell;
-    job.simplification_ratio = 1.0f;
+    job.simplification_ratio = simplification_ratio;
     job.base_detail = 0.0f;
     job.max_pow = 6;
     job.uniform_detail = 0.0f;
@@ -70,8 +71,10 @@ static void compare(const CellMeshResult& a, const CellMeshResult& b) {
     }
 }
 
-int main() {
-    // Cell at origin; size_power 0 -> actual_size == smallest_cell_size.
+// Build the same fixed scene at W=1 and W=4 for a given simplification ratio and
+// assert byte-identical CPU geometry. Exercises the worker mesh path; ratio<1.0
+// also drives the in-worker simplify branch (simplify_mesh + unload_cpu_mesh).
+static size_t check_ratio(float ratio) {
     const float cell_size = 4.0f;
 
     Cell cell_a(Vector3{0,0,0}, 0, cell_size);
@@ -82,14 +85,21 @@ int main() {
     std::vector<StaticParticle> particles_b;
     make_scene(cell_b, particles_b);
 
-    CellMeshResult serial   = run_build(cell_a, particles_a, 1);
-    CellMeshResult parallel = run_build(cell_b, particles_b, 4);
+    CellMeshResult serial   = run_build(cell_a, particles_a, 1, ratio);
+    CellMeshResult parallel = run_build(cell_b, particles_b, 4, ratio);
 
     CHECK(!serial.groups.empty(), "serial build produced no groups (scene meshed empty)");
     compare(serial, parallel);
+    return serial.groups.size();
+}
+
+int main() {
+    size_t groups_full   = check_ratio(1.0f);   // no simplification
+    size_t groups_simpl  = check_ratio(0.5f);   // drives worker simplify path
 
     if (g_failures == 0) {
-        printf("PARALLEL DETERMINISM: PASS (groups=%zu)\n", serial.groups.size());
+        printf("PARALLEL DETERMINISM: PASS (groups=%zu, simplified groups=%zu)\n",
+               groups_full, groups_simpl);
         return 0;
     }
     printf("PARALLEL DETERMINISM: FAIL (%d failures)\n", g_failures);

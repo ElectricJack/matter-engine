@@ -311,6 +311,30 @@ std::vector<Particle> build_clip_particles(
     return clip;
 }
 
+// Free a CPU-only mesh's heap arrays WITHOUT any GL call. raylib's UnloadMesh
+// unconditionally calls rlUnloadVertexArray (glBindVertexArray/glDeleteVertexArrays
+// once GL is initialized), which is illegal off the GL-context (main) thread and
+// crashes. Meshes produced by the mesher/simplifier are never uploaded here
+// (vaoId==0, vboId==NULL), so only their CPU buffers need freeing. Use this for
+// any mesh discarded inside build_group_mesh (which runs on worker threads);
+// uploaded meshes are still torn down with UnloadMesh on the main thread.
+static void unload_cpu_mesh(Mesh& m) {
+    MemFree(m.vboId);
+    MemFree(m.vertices);
+    MemFree(m.texcoords);
+    MemFree(m.normals);
+    MemFree(m.colors);
+    MemFree(m.tangents);
+    MemFree(m.texcoords2);
+    MemFree(m.indices);
+    MemFree(m.animVertices);
+    MemFree(m.animNormals);
+    MemFree(m.boneWeights);
+    MemFree(m.boneIds);
+    MemFree(m.boneMatrices);
+    m = Mesh{};
+}
+
 GroupMeshResult Cell::build_group_mesh(uint32_t group_id, const std::vector<StaticParticle>& cluster_particles,
                                        SurfaceScratch* scratch,
                                        float simplification_ratio, float base_detail, int max_pow, float uniform_detail,
@@ -398,10 +422,10 @@ GroupMeshResult Cell::build_group_mesh(uint32_t group_id, const std::vector<Stat
             ComputeSurfaceNormalsWithScratch(scratch, &simplified, particles.data(), max_radius,
                                   static_cast<int>(particles.size()), blend_width, clipPtr, clipCount,
                                   const_cast<Particle*>(carveParticles), carveCount, carve_blend);
-            UnloadMesh(mesh);
+            unload_cpu_mesh(mesh);   // worker thread: no GL context, CPU free only
             mesh = simplified;
         } else {
-            UnloadMesh(simplified);
+            unload_cpu_mesh(simplified);
         }
     }
 
