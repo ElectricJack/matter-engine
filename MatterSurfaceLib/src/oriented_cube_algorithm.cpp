@@ -105,9 +105,14 @@ GroupMeshResult OrientedCubeAlgorithm::generate(const MeshContext& ctx) const {
         const MaterialDef* md = MaterialRegistryGet(p.materialId);
         float4 tnt = ctx.particle_tints[i];
         float a = tnt.w;
-        unsigned char cr = (unsigned char)(255.0f * (md->albedo[0]*(1.0f-a) + tnt.x*a));
-        unsigned char cg = (unsigned char)(255.0f * (md->albedo[1]*(1.0f-a) + tnt.y*a));
-        unsigned char cb = (unsigned char)(255.0f * (md->albedo[2]*(1.0f-a) + tnt.z*a));
+        // Tints aren't guaranteed normalized; clamp before the byte cast so an
+        // out-of-range channel can't wrap to garbage in the GL preview color.
+        auto to_byte = [](float v) -> unsigned char {
+            return (unsigned char)(255.0f * fminf(1.0f, fmaxf(0.0f, v)));
+        };
+        unsigned char cr = to_byte(md->albedo[0]*(1.0f-a) + tnt.x*a);
+        unsigned char cg = to_byte(md->albedo[1]*(1.0f-a) + tnt.y*a);
+        unsigned char cb = to_byte(md->albedo[2]*(1.0f-a) + tnt.z*a);
 
         int vbase = i * VPC;
         for (int f = 0; f < 6; ++f) {
