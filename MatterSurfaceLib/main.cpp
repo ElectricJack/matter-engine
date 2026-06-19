@@ -584,6 +584,8 @@ private:
         float VEIN_WARP   = 1.6f;             // how much the veins meander
         const uint32_t MAT_OPAQUE_A = 8;  // stone_light (GROUP_STONE)
         const uint32_t MAT_OPAQUE_B = 9;  // stone_dark  (GROUP_STONE)
+        const uint32_t MAT_GLASS    = 4;  // GROUP_GLASS  -> oriented cubes
+        int GLASS_SPAN = 8;               // glass corner block edge, in slots
 
         // Env overrides for quick visual iteration.
         if (const char* e = getenv("MSL_BASE_RADIUS"))  { float v = (float)atof(e); if (v > 0.0f) BASE_RADIUS = v; }
@@ -594,6 +596,7 @@ private:
         if (const char* e = getenv("MSL_TINT_ALPHA"))   { float v = (float)atof(e); if (v >= 0.0f) TINT_ALPHA = v; }
         if (const char* e = getenv("MSL_VEIN_FREQ"))    { float v = (float)atof(e); if (v >= 0.0f) VEIN_FREQ = v; }
         if (const char* e = getenv("MSL_VEIN_WARP"))    { float v = (float)atof(e); if (v >= 0.0f) VEIN_WARP = v; }
+        if (const char* e = getenv("MSL_GLASS_SPAN"))   { int v = atoi(e); if (v >= 0) GLASS_SPAN = v; }
 
         // Carve (subtractive divots/crevices) + lumpiness (coarse radius bulges).
         // Env vars seed the INITIAL values; the Controls panel edits them live.
@@ -650,6 +653,13 @@ private:
             else if (mn > 0.82f) mat = 11;  // occasional mid sheen
             else if (mn > 0.68f) mat = 10;  // some low sheen
             else                 mat = ((ix + iy + iz) & 1) ? MAT_OPAQUE_A : MAT_OPAQUE_B;
+            // Glass corner: a contiguous corner block is its own merge group and
+            // meshes as oriented cubes (material 4). Its three outer faces are
+            // exposed by the cull, so the glass reads as a cluster of transparent
+            // cubes set into the stone block.
+            if (GLASS_SPAN > 0 &&
+                ix >= DIM_X - GLASS_SPAN && iy >= DIM_Y - GLASS_SPAN && iz >= DIM_Z - GLASS_SPAN)
+                mat = MAT_GLASS;
             occ.set(SlotCoord{ix, iy, iz}, SlotData{mat});
         }
 
