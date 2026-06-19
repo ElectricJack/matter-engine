@@ -78,6 +78,10 @@ GroupMeshResult OrientedCubeAlgorithm::generate(const MeshContext& ctx) const {
     float jitter = 1.0f;
     if (const char* e = getenv("MSL_CUBE_ROT_JITTER")) { float v = (float)atof(e); if (v >= 0.0f) jitter = v; }
 
+    // 24 verts / 12 tris per cube. mesh.indices is raylib's unsigned short, so the
+    // GL preview mesh wraps past n>2730 (24*2730 > 65535) — same limit every raylib
+    // Mesh in the engine carries. The raytraced BLAS path uses result.triangles
+    // (full float3), so it is unaffected; per-cell group counts stay well under this.
     const int VPC = 24, TPC = 12;
     int vertexCount = n * VPC;
     int triangleCount = n * TPC;
