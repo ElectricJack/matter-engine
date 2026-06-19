@@ -102,7 +102,8 @@ run-blas: $(BLAS_TARGET)
 CELL_TARGET = cell_bounds_tests
 CELL_CPP = cell_bounds_tests.cpp ../src/cell.cpp ../src/mesh_simplifier.cpp \
            ../src/blas_manager.cpp ../src/bvh.cpp ../src/bvh_analyzer.cpp \
-           ../src/mesh_build_utils.cpp
+           ../src/mesh_build_utils.cpp ../src/meshing_algorithm.cpp \
+           ../src/marching_cubes_algorithm.cpp ../src/oriented_cube_algorithm.cpp
 CELL_C = ../src/surface.c ../src/open_particle_surface.c \
          ../src/spatial_hash.c ../src/object_allocator.c ../src/material_registry.c
 
@@ -175,7 +176,9 @@ run-cull: $(CULL_TARGET)
 PAR_TARGET = parallel_mesh_tests
 PAR_CPP = parallel_mesh_tests.cpp ../src/cell.cpp ../src/mesh_simplifier.cpp \
           ../src/blas_manager.cpp ../src/bvh.cpp ../src/bvh_analyzer.cpp \
-          ../src/mesh_worker_pool.cpp ../src/mesh_build_utils.cpp
+          ../src/mesh_worker_pool.cpp ../src/mesh_build_utils.cpp \
+          ../src/meshing_algorithm.cpp ../src/marching_cubes_algorithm.cpp \
+          ../src/oriented_cube_algorithm.cpp
 PAR_C = ../src/surface.c ../src/open_particle_surface.c \
         ../src/spatial_hash.c ../src/object_allocator.c ../src/material_registry.c
 

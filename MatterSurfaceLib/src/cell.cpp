@@ -7,6 +7,7 @@
 #include "mesh_simplifier.hpp"
 #include "../include/mesh_worker_pool.h"
 #include "mesh_build_utils.h"
+#include "meshing_algorithm.h"
 #include <utility>   // std::move
 extern "C" {
 #include "../include/spatial_hash.h"  // sh_query_radius_nearest for per-triangle material/tint
@@ -290,61 +291,29 @@ GroupMeshResult Cell::build_group_mesh(uint32_t group_id, const std::vector<Stat
     Particle* clipPtr = clip.empty() ? NULL : clip.data();
     int clipCount = static_cast<int>(clip.size());
 
-    Mesh mesh = GenerateMeshWithScratch(scratch, particles.data(), max_radius, static_cast<int>(particles.size()),
-                             bounds, blend_width, clipPtr, clipCount,
-                             const_cast<Particle*>(carveParticles), carveCount, carve_blend);
+    // Pack the resolved group + meshing parameters and dispatch to the algorithm
+    // selected by the group's representative material. Materials in a merge group
+    // are required to agree on algorithm, so particles[0] is authoritative. The
+    // context's references/pointers borrow these locals and stay valid for the
+    // duration of the generate() call (it runs synchronously on this worker).
+    MeshContext ctx{
+        particles,
+        particle_tints,
+        max_radius,
+        bounds,
+        CellBounds{ min_bound, max_bound },
+        voxel,
+        blend_width,
+        clipPtr, clipCount,
+        carveParticles, carveCount,
+        carve_blend,
+        simplification_ratio,
+        scratch,
+        group_id
+    };
 
-    if (simplification_ratio < 1.0f && mesh.vertexCount > 0 && mesh.triangleCount > 0) {
-        CellBounds cb;
-        cb.min_bound = min_bound;
-        cb.max_bound = max_bound;
-        SimplifyOptions so;
-        so.target_ratio = simplification_ratio;
-        so.lock_boundary = true;
-        Mesh simplified = simplify_mesh(mesh, so, &cb);
-        if (simplified.vertexCount > 0 && simplified.triangleCount > 0) {
-            ComputeSurfaceNormalsWithScratch(scratch, &simplified, particles.data(), max_radius,
-                                  static_cast<int>(particles.size()), blend_width, clipPtr, clipCount,
-                                  const_cast<Particle*>(carveParticles), carveCount, carve_blend);
-            unload_cpu_mesh(mesh);   // worker thread: no GL context, CPU free only
-            mesh = simplified;
-        } else {
-            unload_cpu_mesh(simplified);
-        }
-    }
-
-    if (mesh.vertexCount <= 0) {
-        return result;
-    }
-
-    // CPU triangle conversion + per-triangle material/tint tag. MUST run here in
-    // the same worker right after generation: it reuses the scratch's spatial
-    // hash, which still holds exactly `particles` (same data ptr + count passed
-    // to GenerateMeshWithScratch and ComputeSurfaceNormalsWithScratch), so
-    // `nearest - particles.data()` is a valid index.
-    std::vector<TriEx> triangle_normals;
-    std::vector<Tri> triangles = convert_mesh_to_triangles(mesh, &triangle_normals);
-
-    SpatialHash* tri_hash = SurfaceScratchHash(scratch);
-    float tri_search = max_radius * 2.5f + blend_width * 4.0f;
-    for (size_t t = 0; t < triangle_normals.size() && t < triangles.size(); ++t) {
-        const float3& c = triangles[t].centroid;
-        int bestIdx = 0;
-        Particle* nearest = NULL;
-        int nfound = tri_hash
-            ? sh_query_radius_nearest(tri_hash, c.x, c.y, c.z, tri_search, (void**)&nearest, 1)
-            : 0;
-        if (nfound > 0 && nearest) {
-            bestIdx = (int)(nearest - particles.data());
-        }
-        triangle_normals[t].materialId = particles[bestIdx].materialId;
-        triangle_normals[t].tint = particle_tints[bestIdx];
-    }
-
-    result.mesh = mesh;
-    result.triangles = std::move(triangles);
-    result.triangle_normals = std::move(triangle_normals);
-    return result;
+    MeshAlgorithm algo = (MeshAlgorithm)MaterialMeshingAlgorithm(particles[0].materialId);
+    return GetMeshingAlgorithm(algo).generate(ctx);
 }
 
 void Cell::commit_group_mesh(GroupMeshResult& result, BLASManager& blas_manager) {

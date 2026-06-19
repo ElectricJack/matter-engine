@@ -3,6 +3,7 @@
 #include "../include/cell.h"
 #include "../include/cluster.h"        // StaticParticle
 #include "../include/mesh_worker_pool.h"
+#include "../include/surface.h"        // CreateSurfaceScratch / DestroySurfaceScratch
 #include <cstdio>
 #include <cmath>
 #include <vector>
@@ -93,9 +94,41 @@ static size_t check_ratio(float ratio) {
     return serial.groups.size();
 }
 
+// A single sand particle (material 13) must be meshed by the oriented-cube
+// algorithm rather than marching cubes: exactly one group of 12 triangles,
+// each tagged with the source material. Exercises material-driven dispatch
+// through the real cell pipeline.
+static void test_oriented_cube_material_path() {
+    Cell cell(Vector3{0,0,0}, 0, 1.0f);
+    std::vector<StaticParticle> particles;
+    StaticParticle sp{};
+    sp.position = Vector3{0.5f, 0.5f, 0.5f};
+    sp.radius = 0.3f;
+    sp.materialId = 13;
+    sp.tint = Vector4{1,1,1,0};
+    sp.detail_size = 0.0f;
+    particles.push_back(sp);
+    cell.add_particle_index(0, 13);
+
+    SurfaceScratch* scratch = CreateSurfaceScratch();
+    CellMeshResult res = cell.build_cell_meshes(particles, scratch,
+                                                1.0f, 1.0f, 6, 0.0f, nullptr, 0);
+    DestroySurfaceScratch(scratch);
+
+    CHECK(res.groups.size() == 1, "sand cell should produce exactly one group");
+    if (res.groups.size() == 1) {
+        const GroupMeshResult& g = res.groups[0];
+        CHECK(g.triangle_normals.size() == 12, "one sand cube => 12 triangles");
+        bool tagged = true;
+        for (const TriEx& ex : g.triangle_normals) if (ex.materialId != 13) tagged = false;
+        CHECK(tagged, "cube triangles tagged with material 13");
+    }
+}
+
 int main() {
     size_t groups_full   = check_ratio(1.0f);   // no simplification
     size_t groups_simpl  = check_ratio(0.5f);   // drives worker simplify path
+    test_oriented_cube_material_path();          // material-driven cube dispatch
 
     if (g_failures == 0) {
         printf("PARALLEL DETERMINISM: PASS (groups=%zu, simplified groups=%zu)\n",
