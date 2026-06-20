@@ -186,7 +186,8 @@ std::vector<EmittedParticle> cull_interior(const Lattice& lattice,
     occ.for_each([&](SlotCoord c, const SlotData& d) {
         uint64_t k = pack_slot(cell_coord_of(lattice, c, p));
         if (core.find(k) != core.end()) return;     // core slots are dropped
-        int tier  = slot_tier(slot_depth(occ, c, p.max_tier), p.max_tier);
+        bool coarse = d.materialId < 64 && ((p.coarse_material_mask >> d.materialId) & 1ull);
+        int tier  = coarse ? 0 : slot_tier(slot_depth(occ, c, p.max_tier), p.max_tier);
         int scale = 1 << tier;
         for (int oz = 0; oz < scale; ++oz)
         for (int oy = 0; oy < scale; ++oy)
@@ -216,7 +217,8 @@ std::vector<EmittedParticle> emit_all(const Lattice& lattice,
                                       const CullParams& p) {
     std::vector<EmittedParticle> out;
     occ.for_each([&](SlotCoord c, const SlotData& d) {
-        int tier  = slot_tier(slot_depth(occ, c, p.max_tier), p.max_tier);
+        bool coarse = d.materialId < 64 && ((p.coarse_material_mask >> d.materialId) & 1ull);
+        int tier  = coarse ? 0 : slot_tier(slot_depth(occ, c, p.max_tier), p.max_tier);
         int scale = 1 << tier;
         for (int oz = 0; oz < scale; ++oz)
         for (int oy = 0; oy < scale; ++oy)

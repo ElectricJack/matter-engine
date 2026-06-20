@@ -73,7 +73,7 @@ GroupMeshResult OrientedCubeAlgorithm::generate(const MeshContext& ctx) const {
     const int n = (int)ctx.particles.size();
     if (n == 0) return result;
 
-    float sizeScale = 1.0f;
+    float sizeScale = 0.6f;
     if (const char* e = getenv("MSL_CUBE_SIZE_SCALE")) { float v = (float)atof(e); if (v > 0.0f) sizeScale = v; }
     float jitter = 1.0f;
     if (const char* e = getenv("MSL_CUBE_ROT_JITTER")) { float v = (float)atof(e); if (v >= 0.0f) jitter = v; }

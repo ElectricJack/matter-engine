@@ -29,6 +29,7 @@ extern "C" {
 #include "include/bvh_visualizer.hpp"
 #include "include/bvh_analyzer.h"
 #include "include/cluster.h"
+#include "include/vertex_ao.h"  // AoGrid, AoParams (per-vertex AO bake wiring)
 #include "include/cell.h"
 #include "include/profiler.hpp"
 #include "include/material_registry.h"
@@ -357,24 +358,31 @@ public:
         // raytrace mode doesn't freeze the loop. See warm_up_raytracing_shader().
         warm_up_raytracing_shader();
 
+        // Force GPU profiling on from launch (no need to find the ImGui checkbox).
+        if (getenv("MSL_GPU_PROFILE")) gpu_profile_ = true;
+
         while (!WindowShouldClose()) {
             PROFILE_FRAME_BEGIN();
                 update();
                 render();
             PROFILE_FRAME_END();
-            
-            // Print performance stats every 60 frames (roughly once per second at 60 FPS)
-            // static int frame_counter = 0;
-            // frame_counter++;
-            // if (frame_counter >= 60) {
-            //     printf("\n=== FRAME %d PERFORMANCE REPORT ===\n", frame_counter);
-            //     PROFILE_PRINT();
-            //     print_rendering_stats();
-                
-            //     // Reset profiler stats to show per-period performance instead of cumulative
-            //     PROFILE_RESET();
-            //     frame_counter = 0;
-            // }
+
+            // When GPU profiling is enabled, dump the section breakdown (incl. the
+            // glFinish-bracketed "GPU Raytrace Pass") to stdout roughly every 2s,
+            // then reset so each report is a fresh window rather than cumulative.
+            // Time-based (not frame-based) because at a few fps a 60-frame period
+            // would take ~20s. fflush forces it out even when stdout is block-buffered
+            // (e.g. piped rather than a TTY).
+            if (gpu_profile_) {
+                static double last_prof_dump = 0.0;
+                double now = GetTime();
+                if (now - last_prof_dump >= 2.0) {
+                    PROFILE_PRINT();
+                    fflush(stdout);
+                    PROFILE_RESET();
+                    last_prof_dump = now;
+                }
+            }
         }
     }
 
@@ -584,8 +592,9 @@ private:
         float VEIN_WARP   = 1.6f;             // how much the veins meander
         const uint32_t MAT_OPAQUE_A = 8;  // stone_light (GROUP_STONE)
         const uint32_t MAT_OPAQUE_B = 9;  // stone_dark  (GROUP_STONE)
-        const uint32_t MAT_GLASS    = 4;  // GROUP_GLASS  -> oriented cubes
-        int GLASS_SPAN = 8;               // glass corner block edge, in slots
+        const uint32_t MAT_GLASS = 4;     // GROUP_GLASS -> oriented cubes
+        float GLASS_FREQ   = 0.30f;       // glass-patch noise frequency (lower = bigger patches)
+        float GLASS_THRESH = 0.62f;       // tag glass where noise exceeds this (higher = less glass)
 
         // Env overrides for quick visual iteration.
         if (const char* e = getenv("MSL_BASE_RADIUS"))  { float v = (float)atof(e); if (v > 0.0f) BASE_RADIUS = v; }
@@ -596,7 +605,8 @@ private:
         if (const char* e = getenv("MSL_TINT_ALPHA"))   { float v = (float)atof(e); if (v >= 0.0f) TINT_ALPHA = v; }
         if (const char* e = getenv("MSL_VEIN_FREQ"))    { float v = (float)atof(e); if (v >= 0.0f) VEIN_FREQ = v; }
         if (const char* e = getenv("MSL_VEIN_WARP"))    { float v = (float)atof(e); if (v >= 0.0f) VEIN_WARP = v; }
-        if (const char* e = getenv("MSL_GLASS_SPAN"))   { int v = atoi(e); if (v >= 0) GLASS_SPAN = v; }
+        if (const char* e = getenv("MSL_GLASS_FREQ"))   { float v = (float)atof(e); if (v > 0.0f) GLASS_FREQ = v; }
+        if (const char* e = getenv("MSL_GLASS_THRESH")) { float v = (float)atof(e); if (v >= 0.0f && v <= 1.0f) GLASS_THRESH = v; }
 
         // Carve (subtractive divots/crevices) + lumpiness (coarse radius bulges).
         // Env vars seed the INITIAL values; the Controls panel edits them live.
@@ -653,13 +663,14 @@ private:
             else if (mn > 0.82f) mat = 11;  // occasional mid sheen
             else if (mn > 0.68f) mat = 10;  // some low sheen
             else                 mat = ((ix + iy + iz) & 1) ? MAT_OPAQUE_A : MAT_OPAQUE_B;
-            // Glass corner: a contiguous corner block is its own merge group and
-            // meshes as oriented cubes (material 4). Its three outer faces are
-            // exposed by the cull, so the glass reads as a cluster of transparent
-            // cubes set into the stone block.
-            if (GLASS_SPAN > 0 &&
-                ix >= DIM_X - GLASS_SPAN && iy >= DIM_Y - GLASS_SPAN && iz >= DIM_Z - GLASS_SPAN)
-                mat = MAT_GLASS;
+            // Glass patches: a low-frequency noise field tags contiguous blobs of
+            // slots as glass (a separate merge group that meshes as oriented
+            // cubes). Only outer-shell slots survive the cull, so this scatters
+            // glass-cube patches across the whole surface instead of one corner.
+            float gn = lattice_vnoise(ix * GLASS_FREQ + 71.0f,
+                                      iy * GLASS_FREQ + 71.0f,
+                                      iz * GLASS_FREQ + 71.0f);
+            if (gn > GLASS_THRESH) mat = MAT_GLASS;
             occ.set(SlotCoord{ix, iy, iz}, SlotData{mat});
         }
 
@@ -670,6 +681,42 @@ private:
         scene_halfx_ = (DIM_X - 1) * SPACING * 0.5f;
         scene_halfy_ = (DIM_Y - 1) * SPACING * 0.5f;
         scene_halfz_ = (DIM_Z - 1) * SPACING * 0.5f;
+
+        // Bake per-vertex AO against the occupancy field. Particles (and thus the
+        // meshed vertices) are stored in cluster-local space RE-CENTERED by
+        // -scene_half{x,y,z} (see regenerate_surface_), while slot_position(c) =
+        // c*spacing has no offset. So the AoGrid origin must carry the same
+        // re-center offset: slot_of(pos) = round((pos - origin)/spacing) with
+        // origin = -scene_half recovers the emitting slot.
+        GridLattice lattice(SPACING);
+        test_cluster_->set_ao_baker(
+            &scene_occ_,
+            AoGrid{ lattice.spacing(),
+                    make_float3(-scene_halfx_, -scene_halfy_, -scene_halfz_) },
+            AoParams{ /*radius*/ 1.5f, /*strength*/ 1.0f });
+
+#ifndef NDEBUG
+        // One-shot: confirm a known occupied slot round-trips through the grid
+        // mapping (validates the core coordinate assumption of the AO design).
+        // NOTE: slot_position has NO offset, so we round-trip pure c*spacing here;
+        // the bake's actual mapping uses the re-centered origin above. See Task 6.
+        {
+            bool checked = false;
+            scene_occ_.for_each([&](SlotCoord c, const SlotData&) {
+                if (checked) return;
+                Vector3 wp = lattice.slot_position(c);
+                SlotCoord back{ (int)lroundf(wp.x / lattice.spacing()),
+                                (int)lroundf(wp.y / lattice.spacing()),
+                                (int)lroundf(wp.z / lattice.spacing()) };
+                if (back.x != c.x || back.y != c.y || back.z != c.z)
+                    printf("[AO] WARN slot (%d,%d,%d) -> pos (%.3f,%.3f,%.3f) -> (%d,%d,%d) MISMATCH\n",
+                           c.x, c.y, c.z, wp.x, wp.y, wp.z, back.x, back.y, back.z);
+                else
+                    printf("[AO] grid alignment ok for slot (%d,%d,%d)\n", c.x, c.y, c.z);
+                checked = true;
+            });
+        }
+#endif
 
         // Cache the base cull params (everything except the live lump knobs, which
         // regenerate_surface_ injects from the current slider values at re-emit).
@@ -684,9 +731,19 @@ private:
         p.max_tier = max_tier;
         p.spacing  = SPACING;
 
+        // Discrete-geometry materials (oriented cubes, algorithm id 1) gain nothing
+        // from 8 sub-cubes per slot -- it just bloats the BVH with overlapping
+        // randomly-rotated cubes. Mark them coarse so they emit one cube per slot
+        // (tier 0) regardless of max_tier.
+        uint64_t coarse_mask = 0;
+        for (int m = 0; m < MaterialRegistryCount() && m < 64; ++m)
+            if (MaterialMeshingAlgorithm(m) == 1) coarse_mask |= (1ull << m);
+        p.coarse_material_mask = coarse_mask;
+
         scene_spacing_ = SPACING;
         scene_bypass_  = bypass;
 
+        test_cluster_->set_simplification_ratio(0.5f); // default to 50% simplified
         test_cluster_->set_position({0.0f, 2.0f, 0.0f});
         regenerate_surface_();
     }
@@ -809,7 +866,8 @@ private:
             setup_shader_uniforms();
         }
         
-        camera_.position = {3.0f, 2.0f, 5.0f};
+        // Same view direction as the orbit reset ({3,2,5}), scaled to distance 30.
+        camera_.position = {14.6f, 9.73f, 24.33f};
         camera_.target = {0.0f, 0.0f, 0.0f};
         camera_.up = {0.0f, 1.0f, 0.0f};
         camera_.fovy = 45.0f;
@@ -826,7 +884,10 @@ private:
         camera_fovy_loc_   = GetShaderLocation(raytracing_shader_, "cameraFovy");
         screen_size_loc_   = GetShaderLocation(raytracing_shader_, "screenSize");
         debug_triangle_tests_loc_ = GetShaderLocation(raytracing_shader_, "debugTriangleTests");
-        
+        gi_strength_loc_     = GetShaderLocation(raytracing_shader_, "giStrength");
+        shadow_strength_loc_ = GetShaderLocation(raytracing_shader_, "shadowStrength");
+        ao_enabled_loc_      = GetShaderLocation(raytracing_shader_, "aoEnabled");
+
         // BLAS/TLAS uniforms are now handled by their respective managers
     }
 
@@ -1149,6 +1210,16 @@ private:
         int rh = full_h;
         ensure_rt_target(rw, rh);
 
+        // GPU profiling: the raytrace shader runs async, so a plain CPU timer around
+        // the draw measures only command submission. Bracket the whole pass with
+        // glFinish (drain prior work, then block until this pass completes) so the
+        // recorded "GPU Raytrace Pass" section reflects real shader execution time.
+        // The glFinish stalls the pipeline, so this is opt-in (gpu_profile_).
+        if (gpu_profile_) {
+            glFinish();
+            Performance::Profiler::instance().begin_section("GPU Raytrace Pass");
+        }
+
         BeginTextureMode(rt_target_);
         ClearBackground(BLACK);
 
@@ -1167,6 +1238,11 @@ private:
 
             int debug_mode = debug_triangle_tests_ ? 1 : 0;
             SetShaderValue(raytracing_shader_, debug_triangle_tests_loc_, &debug_mode, SHADER_UNIFORM_INT);
+
+            SetShaderValue(raytracing_shader_, gi_strength_loc_, &gi_strength_, SHADER_UNIFORM_FLOAT);
+            SetShaderValue(raytracing_shader_, shadow_strength_loc_, &shadow_strength_, SHADER_UNIFORM_FLOAT);
+            int ao_on = ao_enabled_ ? 1 : 0;
+            SetShaderValue(raytracing_shader_, ao_enabled_loc_, &ao_on, SHADER_UNIFORM_INT);
         }
 
         {
@@ -1190,6 +1266,11 @@ private:
         }
 
         EndTextureMode();
+
+        if (gpu_profile_) {
+            glFinish();
+            Performance::Profiler::instance().end_section("GPU Raytrace Pass");
+        }
 
         // Blit the offscreen result upscaled to the screen (negative source height flips Y).
         DrawTexturePro(rt_target_.texture,
@@ -1401,6 +1482,18 @@ private:
         ImGui::Spacing();
         if (ImGui::Button("Save Screenshot (F2)", ImVec2(-1.0f, 0.0f))) {
             screenshot_requested_ = true;
+        }
+
+        ImGui::Separator();
+
+        // Lighting / GI feature flags. Lowering GI and AO cuts secondary rays per
+        // pixel (raytracing perf); raising shadow strength deepens shadows.
+        if (ImGui::CollapsingHeader("Lighting / GI", ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::SliderFloat("Indirect (GI)", &gi_strength_, 0.0f, 1.0f, "%.2f");
+            ImGui::SliderFloat("Shadow Depth", &shadow_strength_, 0.0f, 1.0f, "%.2f");
+            ImGui::Checkbox("Ambient Occlusion", &ao_enabled_);
+            ImGui::TextDisabled("GI=0 and AO off = fewest rays / fastest");
+            ImGui::Checkbox("GPU Profile (stalls, prints to stdout)", &gpu_profile_);
         }
 
         ImGui::Separator();
@@ -1942,7 +2035,7 @@ private:
     int rt_w_ = 0, rt_h_ = 0;
 
     bool cursor_disabled_ = false;
-    int render_mode_ = 3; // 0=raytracing, 1=solid_meshes, 2=wireframe_meshes, 3=debug_bvh, 4=solid_shaded
+    int render_mode_ = 0; // 0=raytracing, 1=solid_meshes, 2=wireframe_meshes, 3=debug_bvh, 4=solid_shaded
     bool screenshot_requested_ = false;
     int  screenshot_counter_ = 0;
     bool show_bvh_visualization_ = false;
@@ -1954,6 +2047,20 @@ private:
     int camera_fovy_loc_;
     int screen_size_loc_;
     int debug_triangle_tests_loc_;
+
+    // GI / lighting feature flags (live-tunable from the ImGui lighting panel).
+    // Defaults favor deeper shadows + fewer secondary rays: GI off (no bounce ray),
+    // shadows near-black. Raise the sliders to restore the softer filled-in look.
+    float gi_strength_    = 0.0f;  // indirect bounce strength; 0 skips the GI ray
+    float shadow_strength_ = 0.9f; // shadow depth; 1.0 = fully black shadows
+    bool  ao_enabled_     = true;  // ambient occlusion rays on/off
+    int gi_strength_loc_;
+    int shadow_strength_loc_;
+    int ao_enabled_loc_;
+
+    // GPU profiling: glFinish-bracket the raytrace pass and dump the section table.
+    // Stalls the pipeline, so off by default; enabled from the Lighting/GI panel.
+    bool gpu_profile_ = false;
     
     // Debug modes
     bool debug_triangle_tests_ = false;

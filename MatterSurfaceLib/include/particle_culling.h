@@ -33,6 +33,11 @@ struct CullParams {
     float cell_size;     // meshing cell size used to bucket slots into cells
     Vector3 cell_origin_offset; // added to slot_position before bucketing so the
                                 // cull grid matches the Cluster's recentered grid
+    uint64_t coarse_material_mask = 0; // bit m set => material m emits one particle
+                                       // per slot (forced tier 0), regardless of
+                                       // max_tier. For discrete-geometry algorithms
+                                       // (oriented cubes) where 8 sub-cubes/slot just
+                                       // bloat the BVH without adding detail.
 };
 
 // Per-call statistics about the cell classification (optional output).

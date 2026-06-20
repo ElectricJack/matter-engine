@@ -105,14 +105,18 @@ public:
                 return a->average_time_ms > b->average_time_ms;
             });
         
+        // Compute percentages inline against the frame average rather than relying
+        // on the lazily-updated percentage field (which only refreshes every 10
+        // frames -- at a few fps a short report window never reaches that, leaving
+        // every section at 0% and filtered out).
+        const double frame_avg = frame_stats_.average_time_ms;
         for (const auto* stats : sorted_sections) {
             // Skip sections with very low activity or that are only initialization-related
-            if (stats->call_count == 0 || 
-                stats->average_time_ms < 0.01 || 
-                stats->percentage < 0.1) {
+            if (stats->call_count == 0 || stats->average_time_ms < 0.01) {
                 continue;
             }
-            
+            double pct = (frame_avg > 0.0) ? (stats->average_time_ms / frame_avg) * 100.0 : 0.0;
+
             printf("%-25s %8.2f %8.2f %8.2f %8.2f %6d %4.1f%%\n",
                    stats->name.c_str(),
                    stats->average_time_ms,
@@ -120,7 +124,7 @@ public:
                    stats->max_time_ms,
                    stats->total_time_ms,
                    stats->call_count,
-                   stats->percentage);
+                   pct);
         }
         printf("\n");
     }
