@@ -64,7 +64,7 @@ TARGET = minimal_cell_test
 $(TARGET): $(MAIN_SOURCE) $(MATTER_SOURCES)
 	$(CC) $(MAIN_SOURCE) $(MATTER_SOURCES) -o $(TARGET) $(CFLAGS) $(INCLUDE_PATHS) $(LDFLAGS) $(LDLIBS)
 
-.PHONY: clean run run-simp run-blas run-cell run-cont run-reg run-tint run-cull run-par run-cube
+.PHONY: clean run run-simp run-blas run-cell run-cont run-reg run-tint run-cull run-par run-cube run-ao
 
 clean:
 	rm -f $(TARGET) $(SIMP_TARGET) $(BLAS_TARGET) $(CELL_TARGET) $(CONT_TARGET) $(REG_TARGET) $(TINT_TARGET) $(CULL_TARGET) $(PAR_TARGET)
@@ -169,6 +169,16 @@ $(CULL_TARGET): $(CULL_SOURCES)
 
 run-cull: $(CULL_TARGET)
 	./$(CULL_TARGET)
+
+# Baked per-vertex AO unit tests (headless, no GL window)
+AO_TARGET = vertex_ao_tests
+AO_SOURCES = vertex_ao_tests.cpp ../src/vertex_ao.cpp ../src/lattice.cpp ../src/occupancy.cpp
+
+$(AO_TARGET): $(AO_SOURCES)
+	$(CC) $(AO_SOURCES) -o $(AO_TARGET) $(CFLAGS) $(INCLUDE_PATHS) $(LDFLAGS) $(LDLIBS)
+
+run-ao: $(AO_TARGET)
+	./$(AO_TARGET)
 
 # Per-cell parallel-meshing determinism harness (headless, GL-free at runtime).
 # Mirrors the CELL target's C-source handling (gcc for unmangled extern "C")
