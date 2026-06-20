@@ -460,6 +460,141 @@ void TLASIntersect(inout Ray ray)
     }
 }
 
+// ---- Any-hit shadow query -------------------------------------------------
+// Shadow rays only need to know whether *any* occluder lies between the surface
+// and the light, so this path early-outs on the first triangle hit within
+// (eps, maxDist) and skips the whole HitResult decode (normals/tint/AO/
+// barycentrics) that intersectScene performs for the closest hit. The ray's
+// hit.t is seeded to maxDist so AABB tests also prune nodes beyond the light.
+// t is preserved across the affine instance transform (O and D scale together),
+// so a world-space maxDist is a valid cutoff in instance space too.
+bool shadowIntersectTri(Ray ray, Triangle tri, float maxDist)
+{
+    vec3 edge1 = tri.v1 - tri.v0;
+    vec3 edge2 = tri.v2 - tri.v0;
+    vec3 h = cross(ray.D, edge2);
+    float a = dot(edge1, h);
+    if (a > -0.00001 && a < 0.00001) return false; // ray parallel to triangle
+    float f = 1.0 / a;
+    vec3 s = ray.O - tri.v0;
+    float u = f * dot(s, h);
+    if (u < 0.0 || u > 1.0) return false;
+    vec3 q = cross(s, edge1);
+    float v = f * dot(ray.D, q);
+    if (v < 0.0 || u + v > 1.0) return false;
+    float t = f * dot(edge2, q);
+    return (t > 0.0001 && t < maxDist);
+}
+
+bool shadowBVHIntersect(Ray ray, uint blasOffset, float maxDist)
+{
+    int stack[64];
+    int stackPtr = 0;
+    int nodeIdx = int(blasOffset); int bvhSteps = 0;
+    while (true)
+    {
+        if (++bvhSteps > blasNodeCount) break; BVHNode node = decodeBVHNode(nodeIdx);
+
+        if (node.triCount > 0u) // Leaf node
+        {
+            for (uint i = 0u; i < node.triCount; i++)
+            {
+                uint triIdx = node.leftFirst + i;
+                Triangle tri = decodeTriangle(int(triIdx));
+                if (shadowIntersectTri(ray, tri, maxDist)) return true;
+            }
+            if (stackPtr == 0) break;
+            nodeIdx = stack[--stackPtr];
+            continue;
+        }
+
+        int leftChild = int(node.leftFirst);
+        int rightChild = leftChild + 1;
+        BVHNode leftNode = decodeBVHNode(leftChild);
+        BVHNode rightNode = decodeBVHNode(rightChild);
+        float dist1 = IntersectAABB(ray, leftNode.aabbMin, leftNode.aabbMax);
+        float dist2 = IntersectAABB(ray, rightNode.aabbMin, rightNode.aabbMax);
+        if (dist1 > dist2)
+        {
+            float tmpDist = dist1; dist1 = dist2; dist2 = tmpDist;
+            int tmpIdx = leftChild; leftChild = rightChild; rightChild = tmpIdx;
+        }
+        if (dist1 == 1e30)
+        {
+            if (stackPtr == 0) break;
+            nodeIdx = stack[--stackPtr];
+        }
+        else
+        {
+            nodeIdx = leftChild;
+            if (dist2 != 1e30 && stackPtr < 63)
+                stack[stackPtr++] = rightChild;
+        }
+    }
+    return false;
+}
+
+bool shadowInstanceIntersect(Ray ray, BVHInstance inst, float maxDist)
+{
+    transformRay(ray, inst.invTransform);   // ray is a local copy; TLAS ray unaffected
+    return shadowBVHIntersect(ray, inst.blasIndex, maxDist);
+}
+
+bool shadowQuery(vec3 origin, vec3 dir, float maxDist)
+{
+    Ray ray;
+    ray.O = origin;
+    ray.D = dir;
+    ray.rD = vec3(1.0) / dir;
+    ray.hit.t = maxDist; // AABB tests prune anything past the light
+    ray.hit.u = 0.0;
+    ray.hit.v = 0.0;
+    ray.hit.primIdx = 0u;
+    ray.hit.instIdx = 0u;
+    ray.triangleTests = 0;
+
+    int stack[64];
+    int stackPtr = 0;
+    int nodeIdx = 0; int tlasSteps = 0;
+    while (true)
+    {
+        if (++tlasSteps > tlasNodeCount) break; TLASNode node = decodeTLASNode(nodeIdx);
+
+        if (node.leftChild == 0u) // Leaf node
+        {
+            BVHInstance inst = decodeInstance(int(node.BLAS));
+            if (shadowInstanceIntersect(ray, inst, maxDist)) return true;
+            if (stackPtr == 0) break;
+            nodeIdx = stack[--stackPtr];
+            continue;
+        }
+
+        uint leftChild = node.leftChild;
+        uint rightChild = node.rightChild;
+        TLASNode child1 = decodeTLASNode(int(leftChild));
+        TLASNode child2 = decodeTLASNode(int(rightChild));
+        float dist1 = IntersectAABB(ray, child1.aabbMin, child1.aabbMax);
+        float dist2 = IntersectAABB(ray, child2.aabbMin, child2.aabbMax);
+        if (dist1 > dist2)
+        {
+            float tmpDist = dist1; dist1 = dist2; dist2 = tmpDist;
+            uint tmpIdx = leftChild; leftChild = rightChild; rightChild = tmpIdx;
+        }
+        if (dist1 == 1e30)
+        {
+            if (stackPtr == 0) break;
+            nodeIdx = stack[--stackPtr];
+        }
+        else
+        {
+            nodeIdx = int(leftChild);
+            if (dist2 != 1e30 && stackPtr < 63)
+                stack[stackPtr++] = int(rightChild);
+        }
+    }
+    return false;
+}
+
 // Main intersection interface
 HitResult intersectScene(vec3 rayOrigin, vec3 rayDir)
 {

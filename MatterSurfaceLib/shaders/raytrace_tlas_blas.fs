@@ -186,11 +186,11 @@ float calculateShadow(vec3 hitPos, vec3 lightDir, float lightDist, vec3 normal) 
     // Adaptive bias based on surface orientation relative to light
     float bias = max(0.002, 0.01 * (1.0 - abs(dot(normal, lightDir))));
     vec3 shadowRayOrigin = hitPos + normal * bias;
-    
-    // Test shadow ray
-    HitResult shadowHit = intersectScene(shadowRayOrigin, lightDir);
-    
-    if (shadowHit.hit && shadowHit.t < lightDist - bias) {
+
+    // Any-hit test: stop at the first occluder between surface and light. Same
+    // predicate as the old closest-hit test (hit && t < lightDist - bias), but
+    // it skips the closest-hit decode shadow rays never use.
+    if (shadowQuery(shadowRayOrigin, lightDir, lightDist - bias)) {
         return 1.0 - shadowStrength; // In shadow; higher shadowStrength = deeper
     }
 
