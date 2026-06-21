@@ -1,4 +1,4 @@
-# Brick Serialization (`.brick` deep cache) — Design
+# Part Serialization (`.part` deep cache) — Design
 
 **Date:** 2026-06-20
 **Status:** Approved, ready for implementation planning
@@ -6,39 +6,56 @@
 
 ## Problem
 
-The brick is now complex enough that generating it is expensive: occupancy grid →
-particle emission → parallel marching-cubes meshing → per-cell BVH build → GPU
-texture packing. This runs on every launch. We want to **serialize the fully baked
-object to disk and load it instead of regenerating**, so iteration is fast and a
-future imposter-research sibling project can consume a ready-to-traverse brick.
+We are building a generic **part** generation system. A part is a procedurally
+generated object reduced to baked acceleration structures (BLAS geometry + BVH,
+TLAS instances, materials). The brick is the first concrete part, and it is now
+complex enough that generating it is expensive: occupancy grid → particle
+emission → parallel marching-cubes meshing → per-cell BVH build → GPU texture
+packing. This runs on every launch.
+
+We want to **serialize a fully baked part to disk and load it instead of
+regenerating**, so iteration is fast and a future imposter-research sibling
+project can consume a ready-to-traverse part. The format must be part-kind
+agnostic: it stores baked acceleration structures, not anything brick-specific,
+so any current or future part type serializes through the same path.
 
 This spec covers serialization only. Imposter rendering is a separate sub-project
 with its own spec; it will `-I../MatterSurfaceLib/include` and call the loader
 defined here.
 
+## Terminology
+
+- **Part** — any procedurally generated object serialized through this system.
+  The brick is the first part; nothing in the format is brick-specific.
+- **Part asset / `.part` file** — the on-disk baked representation of a part.
+- **Gen params** — the parameters that drive a part's generation and form its
+  cache key. Each part kind supplies its own params; the brick's are the lattice
+  tunables (see §3).
+
 ## Goals
 
-- Skip the expensive regeneration on load (marching cubes + per-cell BVH build).
-- Auto-cache keyed on generator parameters; no manual save/load steps.
+- Skip the expensive regeneration on load (marching cubes + per-cell BVH build)
+  for any part kind.
+- Auto-cache keyed on the part's generator parameters; no manual save/load steps.
 - Robust regenerate-on-mismatch via a format version, struct-layout guard, and
   content hash. A bad/old/corrupt file is never trusted — it is silently
   regenerated and overwritten.
-- Expose a clean loader the imposter sub-project can reuse.
+- Expose a clean, part-kind-agnostic loader the imposter sub-project can reuse.
 
 ## Non-Goals
 
-- Editable loaded bricks. A loaded brick is **render-only** (see §5).
+- Editable loaded parts. A loaded part is **render-only** (see §5).
 - Cross-architecture / cross-endian portability. We are only ever on WSL/Windows
   x86-64 little-endian. Layout changes are caught and trigger regeneration, not
   conversion.
-- Serializing the scene-level TLAS for the future "castle" (different structure;
-  out of scope, door left open — see §4).
+- Serializing the scene-level TLAS that instances many parts together (different
+  structure; out of scope, door left open — see §4).
 
 ## Decisions (settled during brainstorming)
 
 - **Depth: Deep.** Serialize final CPU-side acceleration structures, not source
   params or intermediate meshes. Load skips all generation.
-- **Trigger: Auto cache.** Hash generator params; load if a matching file exists,
+- **Trigger: Auto cache.** Hash gen params; load if a matching file exists,
   else generate + write.
 - **Code location: Option A.** Loader lives in `MatterSurfaceLib/include` +
   `src`, reused by siblings via `-I../MatterSurfaceLib/include`.
@@ -49,19 +66,21 @@ defined here.
 
 New files in `MatterSurfaceLib/`:
 
-- `include/brick_asset.h` — `BrickGenParams`, save/load API, format constants.
-- `src/brick_asset.cpp` — implementation.
+- `include/part_asset.h` — `PartGenParams`, save/load API, format constants.
+- `src/part_asset.cpp` — implementation.
 
 Dependencies are only `bvh.h`, `blas_manager.hpp`, `tlas_manager.hpp`,
-`material_registry.h`, all already in `MatterSurfaceLib/include`.
+`material_registry.h`, all already in `MatterSurfaceLib/include`. The API is
+part-kind agnostic: it takes a `BLASManager` + `TLASManager` + the gen-param hash
+and knows nothing about how the part was generated.
 
 ## 2. On-Disk Format
 
-Single binary file: `bricks/<param_hash>.brick`. Raw POD array dumps, little-endian.
+Single binary file: `parts/<param_hash>.part`. Raw POD array dumps, little-endian.
 
 ```
 Header
-  magic            u32  'BRCK' (0x4252434B)
+  magic            u32  'PART' (0x50415254)
   format_version   u32
   param_hash       u64                       // cache key, see §3
   sizeof_Tri       u32                        // layout guards
@@ -93,7 +112,8 @@ Instances
     transform      f32[16]                     // row-major, DrawRecord.transform
 ```
 
-We do **not** store the GPU data textures or the TLAS node tree.
+We do **not** store the GPU data textures or the TLAS node tree. Nothing in the
+format encodes the part kind — it is purely baked acceleration data.
 
 ### Validation on load (any failure → ignore file, regenerate, overwrite)
 
@@ -106,9 +126,10 @@ We do **not** store the GPU data textures or the TLAS node tree.
 
 ## 3. Cache Key
 
-The lattice tunables currently live as locals inside `setup_lattice_scene()`
-(main.cpp:579–597). Extract them into a `BrickGenParams` struct so they exist in
-one hashable place and drive both generation and the cache key:
+Each part kind supplies a gen-params struct that exists in one hashable place and
+drives both generation and the cache key. For the brick, the lattice tunables
+currently live as locals inside `setup_lattice_scene()` (main.cpp:579–597);
+extract them into `PartGenParams` (brick variant):
 
 - DIM_X/Y/Z, SPACING, BASE_RADIUS
 - POS_JITTER, RADIUS_VAR, VOID_AMT, vein params
@@ -116,12 +137,12 @@ one hashable place and drive both generation and the cache key:
 - simplification ratio
 - RNG seed
 
-`param_hash = FNV1a(BrickGenParams bytes) ^ format_version`.
+`param_hash = FNV1a(PartGenParams bytes) ^ format_version`.
 
-**Startup flow:**
+**Startup flow (per part):**
 
-1. Build `BrickGenParams` (as today's constants).
-2. Compute `param_hash`; path = `bricks/<param_hash>.brick`.
+1. Build the part's gen params.
+2. Compute `param_hash`; path = `parts/<param_hash>.part`.
 3. If the file exists and passes all §2 validation → load it, skip generation.
 4. Otherwise → generate via the existing pipeline, then write the file.
 
@@ -155,27 +176,28 @@ bumping `format_version`.
   re-linked regardless. So we serialize instance records only and replay them via
   `TLASManager::draw_batch()` (mapping saved `blas_index` → freshly registered
   `BLASHandle`) followed by `build()`. Even an O(N²) agglomerative build over a
-  brick's cell-instances is tens of ms vs. seconds of meshing.
+  part's instances is tens of ms vs. seconds of meshing.
 
 - **GPU data textures: re-packed on load (ms).** Call the managers'
   `ensure_gpu_textures_ready()` from the restored CPU structs, exactly as the
   normal pipeline does.
 
-**Door left open for the castle:** the only case where serializing a TLAS earns
-its keep is a huge instance count where build time dominates — that is the future
-scene-level TLAS over many instanced bricks, a different structure from a single
-brick's internal TLAS. If it ever bites, an optional TLAS section can be added
+**Door left open:** the only case where serializing a TLAS earns its keep is a
+huge instance count where build time dominates — that is a future **scene-level**
+TLAS that instances many parts together, a different structure from a single
+part's internal TLAS. If it ever bites, an optional TLAS section can be added
 behind the same `format_version` guard without disturbing this format.
 
-## 5. Scope of a Loaded Brick (render-only)
+## 5. Scope of a Loaded Part (render-only)
 
 Load reconstructs only the **render state**: `BLASManager` + `TLASManager` +
-material table. It does **not** rebuild the `Cluster`/`Cell`/particle layer. A
-loaded brick therefore renders instantly but the live tuning sliders
-(lumpiness/carve/simplification) do not operate on it. To tune, delete the cache
-file (or change params, which changes the hash) and let the normal pipeline
-regenerate and re-save. This is the intended tradeoff: load to view fast,
-regenerate to edit. (Confirmed acceptable.)
+material table. It does **not** rebuild the source generation layer (for the
+brick, the `Cluster`/`Cell`/particle layer). A loaded part therefore renders
+instantly but the live tuning sliders (for the brick: lumpiness/carve/
+simplification) do not operate on it. To tune, delete the cache file (or change
+params, which changes the hash) and let the normal pipeline regenerate and
+re-save. This is the intended tradeoff: load to view fast, regenerate to edit.
+(Confirmed acceptable.)
 
 ## 6. Save / Load Walkthrough
 
@@ -187,7 +209,7 @@ regenerate to edit. (Confirmed acceptable.)
 2. Walk `TLASManager::get_draw_records()`. For each emit
    `{blas_index(map[handle]), material_id, transform.m[16]}`.
 3. Snapshot the material table (`MaterialRegistryCount()` + `MaterialRegistryGet`).
-4. Compute `content_hash`, write header + sections to `bricks/<param_hash>.brick`
+4. Compute `content_hash`, write header + sections to `parts/<param_hash>.part`
    (temp file + rename for atomicity).
 
 **Load:**
@@ -203,7 +225,7 @@ regenerate to edit. (Confirmed acceptable.)
 
 ## 7. Testing
 
-A headless `tests/brick_asset_tests` mirroring the existing `tests/*` suites:
+A headless `tests/part_asset_tests` mirroring the existing `tests/*` suites:
 
 - **Round-trip:** build a small synthetic `BLASManager` (a couple of registered
   triangle sets) + `TLASManager` (a few instances) + a material snapshot, save,
