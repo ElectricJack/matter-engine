@@ -15,7 +15,7 @@ namespace part_asset {
 constexpr uint32_t kMagic = 0x50415254u;   // 'PART'
 constexpr uint32_t kFormatVersion = 1u;
 
-// Generator parameters for the brick part (the only part kind today). All fields
+// Generator parameters for a part (currently the brick is the only part kind). All fields
 // are 4 bytes so the struct is padding-free and hashes deterministically by bytes.
 struct PartGenParams {
     int      dimX, dimY, dimZ;
