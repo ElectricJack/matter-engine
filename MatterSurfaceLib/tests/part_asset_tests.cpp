@@ -183,10 +183,56 @@ static void test_round_trip() {
     remove(path);
 }
 
+static void write_file(const char* path, const std::vector<uint8_t>& b) {
+    FILE* f = fopen(path, "wb"); fwrite(b.data(),1,b.size(),f); fclose(f);
+}
+
+static void test_guards() {
+    using namespace part_asset;
+    BLASManager blasA; TLASManager tlasA(64);
+    BLASHandle hA, hB; build_scene(blasA, tlasA, hA, hB);
+
+    const char* path = "test_guard.part";
+    remove(path);
+    CHECK(save(path, blasA, tlasA, 0x1234u), "guard save ok");
+    std::vector<uint8_t> good = read_file(path);
+
+    // Sanity: the unmodified file loads.
+    { BLASManager b; TLASManager t(64);
+      CHECK(load(path, 0x1234u, b, t), "unmodified file loads"); }
+
+    // Layout guard: corrupt sizeof_Tri (offset 16).
+    { auto bad = good; uint32_t v = rd_u32(bad,16) + 1; memcpy(bad.data()+16,&v,4);
+      write_file(path, bad);
+      BLASManager b; TLASManager t(64);
+      CHECK(!load(path, 0x1234u, b, t), "rejects sizeof_Tri mismatch"); }
+
+    // Version guard: bump format_version (offset 4).
+    { auto bad = good; uint32_t v = rd_u32(bad,4) + 1; memcpy(bad.data()+4,&v,4);
+      write_file(path, bad);
+      BLASManager b; TLASManager t(64);
+      CHECK(!load(path, 0x1234u, b, t), "rejects version mismatch"); }
+
+    // Corruption guard: flip a byte in the body (offset 40, inside materials).
+    { auto bad = good; bad[40] ^= 0xFF;
+      write_file(path, bad);
+      BLASManager b; TLASManager t(64);
+      CHECK(!load(path, 0x1234u, b, t), "rejects body corruption"); }
+
+    // Magic guard.
+    { auto bad = good; bad[0] ^= 0xFF;
+      write_file(path, bad);
+      BLASManager b; TLASManager t(64);
+      CHECK(!load(path, 0x1234u, b, t), "rejects bad magic"); }
+
+    remove(path);
+}
+
 int main() {
     test_prebuilt_parity();
     test_save_header();
     test_round_trip();
+    test_guards();
 
     using namespace part_asset;
 
