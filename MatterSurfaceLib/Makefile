@@ -126,8 +126,8 @@ $(shell mkdir -p $(BUILD_DIR))
 $(shell mkdir -p $(RAYLIB_PATH)/build/$(PLATFORM))
 
 # C++ main application
-SRC = main.cpp src/bvh.cpp src/object_allocator.c src/blas_manager.cpp src/tlas_manager.cpp src/part_asset.cpp src/bvh_visualizer.cpp src/bvh_analyzer.cpp src/open_particle_surface.c src/surface.c src/material_registry.c src/spatial_hash.c src/cluster.cpp src/cell.cpp src/mesh_worker_pool.cpp src/mesh_simplifier.cpp src/mesh_build_utils.cpp src/meshing_algorithm.cpp src/marching_cubes_algorithm.cpp src/oriented_cube_algorithm.cpp src/lattice.cpp src/occupancy.cpp src/particle_culling.cpp src/vertex_ao.cpp $(IMGUI_PATH)/imgui.cpp $(IMGUI_PATH)/imgui_demo.cpp $(IMGUI_PATH)/imgui_draw.cpp $(IMGUI_PATH)/imgui_tables.cpp $(IMGUI_PATH)/imgui_widgets.cpp $(IMGUI_PATH)/backends/imgui_impl_opengl3.cpp $(IMGUI_PATH)/backends/imgui_impl_glfw.cpp
-OBJ = $(OBJ_DIR)/main.o $(OBJ_DIR)/bvh.o $(OBJ_DIR)/object_allocator.o $(OBJ_DIR)/blas_manager.o $(OBJ_DIR)/tlas_manager.o $(OBJ_DIR)/part_asset.o $(OBJ_DIR)/bvh_visualizer.o $(OBJ_DIR)/bvh_analyzer.o $(OBJ_DIR)/open_particle_surface.o $(OBJ_DIR)/surface.o $(OBJ_DIR)/material_registry.o $(OBJ_DIR)/spatial_hash.o $(OBJ_DIR)/cluster.o $(OBJ_DIR)/cell.o $(OBJ_DIR)/mesh_worker_pool.o $(OBJ_DIR)/mesh_simplifier.o $(OBJ_DIR)/mesh_build_utils.o $(OBJ_DIR)/meshing_algorithm.o $(OBJ_DIR)/marching_cubes_algorithm.o $(OBJ_DIR)/oriented_cube_algorithm.o $(OBJ_DIR)/lattice.o $(OBJ_DIR)/occupancy.o $(OBJ_DIR)/particle_culling.o $(OBJ_DIR)/vertex_ao.o $(OBJ_DIR)/imgui.o $(OBJ_DIR)/imgui_demo.o $(OBJ_DIR)/imgui_draw.o $(OBJ_DIR)/imgui_tables.o $(OBJ_DIR)/imgui_widgets.o $(OBJ_DIR)/imgui_impl_opengl3.o $(OBJ_DIR)/imgui_impl_glfw.o
+SRC = main.cpp src/bvh.cpp src/object_allocator.c src/blas_manager.cpp src/tlas_manager.cpp src/part_asset.cpp src/bvh_visualizer.cpp src/bvh_analyzer.cpp src/open_particle_surface.c src/surface.c src/material_registry.c src/spatial_hash.c src/cluster.cpp src/cell.cpp src/mesh_worker_pool.cpp src/mesh_simplifier.cpp src/mesh_build_utils.cpp src/meshing_algorithm.cpp src/marching_cubes_algorithm.cpp src/oriented_cube_algorithm.cpp src/lattice.cpp src/occupancy.cpp src/particle_culling.cpp src/vertex_ao.cpp src/imposter_asset.cpp src/imposter_bake.cpp $(IMGUI_PATH)/imgui.cpp $(IMGUI_PATH)/imgui_demo.cpp $(IMGUI_PATH)/imgui_draw.cpp $(IMGUI_PATH)/imgui_tables.cpp $(IMGUI_PATH)/imgui_widgets.cpp $(IMGUI_PATH)/backends/imgui_impl_opengl3.cpp $(IMGUI_PATH)/backends/imgui_impl_glfw.cpp
+OBJ = $(OBJ_DIR)/main.o $(OBJ_DIR)/bvh.o $(OBJ_DIR)/object_allocator.o $(OBJ_DIR)/blas_manager.o $(OBJ_DIR)/tlas_manager.o $(OBJ_DIR)/part_asset.o $(OBJ_DIR)/bvh_visualizer.o $(OBJ_DIR)/bvh_analyzer.o $(OBJ_DIR)/open_particle_surface.o $(OBJ_DIR)/surface.o $(OBJ_DIR)/material_registry.o $(OBJ_DIR)/spatial_hash.o $(OBJ_DIR)/cluster.o $(OBJ_DIR)/cell.o $(OBJ_DIR)/mesh_worker_pool.o $(OBJ_DIR)/mesh_simplifier.o $(OBJ_DIR)/mesh_build_utils.o $(OBJ_DIR)/meshing_algorithm.o $(OBJ_DIR)/marching_cubes_algorithm.o $(OBJ_DIR)/oriented_cube_algorithm.o $(OBJ_DIR)/lattice.o $(OBJ_DIR)/occupancy.o $(OBJ_DIR)/particle_culling.o $(OBJ_DIR)/vertex_ao.o $(OBJ_DIR)/imposter_asset.o $(OBJ_DIR)/imposter_bake.o $(OBJ_DIR)/imgui.o $(OBJ_DIR)/imgui_demo.o $(OBJ_DIR)/imgui_draw.o $(OBJ_DIR)/imgui_tables.o $(OBJ_DIR)/imgui_widgets.o $(OBJ_DIR)/imgui_impl_opengl3.o $(OBJ_DIR)/imgui_impl_glfw.o
 BIN = $(BUILD_DIR)/matter_surface_lib$(BIN_SUFFIX)
 PREPROCESSOR = $(BUILD_DIR)/shader_preprocessor
 
@@ -138,7 +138,7 @@ dependencies:
 	@mkdir -p src
 	@cp ../ObjectAllocatorLib/src/object_allocator.c src/
 
-shaders: shaders/raytrace_tlas_blas_processed.fs
+shaders: shaders/raytrace_tlas_blas_processed.fs shaders/imposter_bake_processed.fs
 
 $(PREPROCESSOR): src/shader_preprocessor.cpp
 ifeq ($(TARGET),windows-native)
@@ -154,6 +154,10 @@ endif
 shaders/raytrace_tlas_blas_processed.fs: shaders/raytrace_tlas_blas.fs shaders/bvh_tlas_common.glsl $(PREPROCESSOR)
 	@echo "Processing shader with includes (C++)..."
 	$(PREPROCESSOR) shaders/raytrace_tlas_blas.fs shaders/raytrace_tlas_blas_processed.fs
+
+shaders/imposter_bake_processed.fs: shaders/imposter_bake.fs shaders/bvh_tlas_common.glsl shaders/materials.glsl shaders/lighting.glsl $(PREPROCESSOR)
+	@echo "Processing imposter bake shader with includes (C++)..."
+	$(PREPROCESSOR) shaders/imposter_bake.fs shaders/imposter_bake_processed.fs
 
 # Platform-specific raylib build with force rebuild check
 RAYLIB_LIB = $(RAYLIB_PATH)/build/$(PLATFORM)/libraylib.a
@@ -291,6 +295,12 @@ $(OBJ_DIR)/particle_culling.o: src/particle_culling.cpp
 $(OBJ_DIR)/vertex_ao.o: src/vertex_ao.cpp
 	$(CXX) -c $< $(CXXFLAGS) -o $@
 
+$(OBJ_DIR)/imposter_asset.o: src/imposter_asset.cpp
+	$(CXX) -c $< $(CXXFLAGS) -o $@
+
+$(OBJ_DIR)/imposter_bake.o: src/imposter_bake.cpp
+	$(CXX) -c $< $(CXXFLAGS) -o $@
+
 # ImGui build rules
 $(OBJ_DIR)/imgui.o: $(IMGUI_PATH)/imgui.cpp
 	$(CXX) -c $< $(CXXFLAGS) -o $@
@@ -316,7 +326,7 @@ $(OBJ_DIR)/imgui_impl_glfw.o: $(IMGUI_PATH)/backends/imgui_impl_glfw.cpp
 # Platform-specific clean
 clean:
 	rm -rf $(BUILD_DIR)
-	rm -f *.o $(PREPROCESSOR) shaders/raytrace_tlas_blas_processed.fs
+	rm -f *.o $(PREPROCESSOR) shaders/raytrace_tlas_blas_processed.fs shaders/imposter_bake_processed.fs
 ifeq ($(TARGET),windows-native)
 	-rm -f ./matter_surface_lib.exe
 else ifeq ($(PLATFORM),windows-native)
@@ -333,7 +343,7 @@ endif
 clean-all:
 	rm -rf build/
 	rm -rf $(RAYLIB_PATH)/build/
-	rm -f *.o shaders/raytrace_tlas_blas_processed.fs
+	rm -f *.o shaders/raytrace_tlas_blas_processed.fs shaders/imposter_bake_processed.fs
 	-rm -f ./matter_surface_lib ./matter_surface_lib.exe
 
 # Force rebuild raylib for current platform

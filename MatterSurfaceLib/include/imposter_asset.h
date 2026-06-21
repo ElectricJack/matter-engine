@@ -89,4 +89,10 @@ bool bake_displacement_cpu(const std::vector<Tri>& part_tris, ImposterAsset& out
 // sampling near chart edges does not pull in black. GL-free.
 void dilate_atlas(ImposterAsset& a, int passes);
 
+// GPU bake (defined in imposter_bake.cpp; requires a live GL context). Combines
+// the CPU cage + displacement with a GPU radiance pass and dilation.
+bool bake_imposter(const ImpGenParams& p, const std::vector<Tri>& part_tris,
+                   uint64_t source_part_hash,
+                   class BLASManager& blas, class TLASManager& tlas, ImposterAsset& out);
+
 } // namespace imposter_asset
