@@ -20,7 +20,11 @@ void put_bytes(std::vector<uint8_t>& b, const void* d, size_t n) {
 void ensure_parent_dir(const std::string& path) {
     auto pos = path.find_last_of('/');
     if (pos == std::string::npos) return;
+#ifdef _WIN32
+    mkdir(path.substr(0, pos).c_str()); // ignore EEXIST (Windows mkdir takes no mode)
+#else
     mkdir(path.substr(0, pos).c_str(), 0755); // ignore EEXIST
+#endif
 }
 
 struct Reader {

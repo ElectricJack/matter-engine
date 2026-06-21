@@ -26,6 +26,7 @@ extern "C" {
 
 #include "include/blas_manager.hpp"
 #include "include/tlas_manager.hpp"
+#include "include/part_asset.h"
 #include "include/bvh_visualizer.hpp"
 #include "include/bvh_analyzer.h"
 #include "include/cluster.h"
@@ -325,7 +326,20 @@ public:
         
         setup_rendering();
         // setup_matter_system();
-        setup_lattice_scene();
+        {
+            part_asset::PartGenParams gp = brick_gen_params();
+            uint64_t h = part_asset::compute_param_hash(gp);
+            std::string part_path = part_asset::cache_path(h);
+            if (part_asset::load(part_path, h, *blas_manager_, *tlas_manager_)) {
+                printf("Loaded part from cache: %s (render-only)\n", part_path.c_str());
+            } else {
+                setup_lattice_scene();
+                if (part_asset::save(part_path, *blas_manager_, *tlas_manager_, h))
+                    printf("Saved part to cache: %s\n", part_path.c_str());
+                else
+                    printf("WARNING: failed to save part cache: %s\n", part_path.c_str());
+            }
+        }
         
         // Initialize BVH analysis system
         setup_bvh_analysis();
@@ -572,27 +586,44 @@ private:
                test_cluster_->get_cell_count(), test_cluster_->get_dirty_cell_count());
     }
 
+    part_asset::PartGenParams brick_gen_params() const {
+        part_asset::PartGenParams p{};
+        p.dimX = 20; p.dimY = 20; p.dimZ = 20;     // DIM_X/Y/Z
+        p.spacing = 0.8f;                           // SPACING
+        p.baseRadius = 0.62f;                       // BASE_RADIUS
+        p.posJitter = 0.18f * 0.8f;                 // POS_JITTER = 0.18f * SPACING
+        p.radiusVar = 0.35f;                        // RADIUS_VAR
+        p.voidAmt   = 0.0f;                         // VOID_AMT
+        p.veinFreq  = 0.25f;                        // VEIN_FREQ
+        p.veinThresh= 1.6f;                         // VEIN_WARP
+        p.matOpaqueA = 8; p.matOpaqueB = 9; p.matGlass = 4; // MAT_OPAQUE_A/B, MAT_GLASS
+        p.simplifyRatio = 0.65f;                    // set_simplification_ratio(0.65f)
+        p.seed = 1337u;                             // CullParams seed (main.cpp:727)
+        return p;
+    }
+
     void setup_lattice_scene() {
         printf("Setting up lattice brick scene...\n");
+        const part_asset::PartGenParams gp = brick_gen_params();
 
         // --- Tunables ---
-        const int   DIM_X = 20, DIM_Y = 20, DIM_Z = 20;  // solid block of slots
+        const int   DIM_X = gp.dimX, DIM_Y = gp.dimY, DIM_Z = gp.dimZ;  // solid block of slots
         // SPACING is the lattice pitch; BASE_RADIUS is independent so spheres
         // overlap (radius > SPACING/2). Jitter and size variation break up the
         // regular packing so the surface reads as bumpy stone, not a grid.
-        const float SPACING     = 0.8f;
-        float BASE_RADIUS = 0.62f;            // overlap factor = 2*r/SPACING ~ 1.55
-        float POS_JITTER  = 0.18f * SPACING;  // light jitter -> tighter stone packing
-        float RADIUS_VAR  = 0.35f;            // clustered radius +/-35%
+        const float SPACING     = gp.spacing;
+        float BASE_RADIUS = gp.baseRadius;    // overlap factor = 2*r/SPACING ~ 1.55
+        float POS_JITTER  = gp.posJitter;     // light jitter -> tighter stone packing
+        float RADIUS_VAR  = gp.radiusVar;     // clustered radius +/-35%
         float CLUSTER_FREQ = 0.2f;            // low freq -> big clumps of one scale
-        float VOID_AMT    = 0.0f;             // clean brick (set >0 to carve voids)
+        float VOID_AMT    = gp.voidAmt;       // clean brick (set >0 to carve voids)
         const float VOID_FREQ = 0.12f;        // spatial frequency of carved voids
         float TINT_ALPHA  = 0.88f;            // marble tint mostly overrides base gray
-        float VEIN_FREQ   = 0.25f;            // marble vein band frequency
-        float VEIN_WARP   = 1.6f;             // how much the veins meander
-        const uint32_t MAT_OPAQUE_A = 8;  // stone_light (GROUP_STONE)
-        const uint32_t MAT_OPAQUE_B = 9;  // stone_dark  (GROUP_STONE)
-        const uint32_t MAT_GLASS = 4;     // GROUP_GLASS -> oriented cubes
+        float VEIN_FREQ   = gp.veinFreq;      // marble vein band frequency
+        float VEIN_WARP   = gp.veinThresh;    // how much the veins meander
+        const uint32_t MAT_OPAQUE_A = (uint32_t)gp.matOpaqueA;  // stone_light (GROUP_STONE)
+        const uint32_t MAT_OPAQUE_B = (uint32_t)gp.matOpaqueB;  // stone_dark  (GROUP_STONE)
+        const uint32_t MAT_GLASS = (uint32_t)gp.matGlass;       // GROUP_GLASS -> oriented cubes
         float GLASS_FREQ   = 0.30f;       // glass-patch noise frequency (lower = bigger patches)
         float GLASS_THRESH = 0.62f;       // tag glass where noise exceeds this (higher = less glass)
 
@@ -724,7 +755,7 @@ private:
         p.margin = margin; p.base_radius = BASE_RADIUS;
         p.radius_variation = RADIUS_VAR;
         p.radius_cluster_freq = CLUSTER_FREQ;
-        p.jitter_amount = POS_JITTER; p.tint_alpha = TINT_ALPHA; p.seed = 1337;
+        p.jitter_amount = POS_JITTER; p.tint_alpha = TINT_ALPHA; p.seed = gp.seed;
         p.vein_freq = VEIN_FREQ; p.vein_warp = VEIN_WARP;
         p.cell_size = test_cluster_->get_smallest_cell_size();   // single cell size
         p.cell_origin_offset = Vector3{ -scene_halfx_, -scene_halfy_, -scene_halfz_ };
@@ -743,7 +774,7 @@ private:
         scene_spacing_ = SPACING;
         scene_bypass_  = bypass;
 
-        test_cluster_->set_simplification_ratio(0.5f); // default to 50% simplified
+        test_cluster_->set_simplification_ratio(gp.simplifyRatio); // default to 65% simplified (thins the BVH)
         test_cluster_->set_position({0.0f, 2.0f, 0.0f});
         regenerate_surface_();
     }
