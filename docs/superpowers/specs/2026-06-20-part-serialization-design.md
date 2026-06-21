@@ -223,6 +223,40 @@ re-save. This is the intended tradeoff: load to view fast, regenerate to edit.
    material ids; then `build(blas_manager)`.
 5. `ensure_gpu_textures_ready()` on both managers.
 
+## Versioning & Forward Compatibility
+
+`format_version` in the header is the single switch that lets the format grow
+safely. Rules:
+
+- **Every reader branches on `format_version`.** A reader only trusts files whose
+  version it understands; anything newer or older than it can parse → fail
+  validation → regenerate. This is already the regenerate-on-mismatch behavior in
+  §2, just made an explicit forward-compat contract.
+- **Additive changes bump the version and append a new section.** Section order is
+  fixed and length-prefixed (each section starts with its count), so appending a
+  new trailing section never disturbs existing ones. Old files (lower version)
+  simply lack the section; the version-branching reader knows not to look for it.
+- **Layout-breaking changes (struct field add/remove/reorder) also bump the
+  version**, and are independently caught by the `sizeof_*` guards.
+
+### Planned future section: embedded rebuild params (not now)
+
+Today the gen params are only *hashed* into `param_hash`; the params themselves
+live in code, which is why a loaded part is render-only (§5). A planned future
+version will **embed the part's `PartGenParams` in the file** as a new section, so
+a loaded part carries everything needed to regenerate/edit itself without external
+knowledge — likely lifting the render-only limitation. This is deliberately
+deferred (to be explored later), but the format is designed for it now:
+
+- The params already live in one serializable struct (`PartGenParams`, §3).
+- Adding the section is a version bump + an appended block; no change to the BLAS/
+  instance/material sections.
+- The param section should be self-describing per part kind (e.g. a `part_kind`
+  tag + the params blob) so multiple part types can coexist in one format.
+
+No work on this in the current scope — it is captured here only so the versioning
+and the `PartGenParams` placement don't have to be redone when we get to it.
+
 ## 7. Testing
 
 A headless `tests/part_asset_tests` mirroring the existing `tests/*` suites:
@@ -241,4 +275,10 @@ A headless `tests/part_asset_tests` mirroring the existing `tests/*` suites:
 
 ## Open Items
 
-None. All decisions settled in brainstorming.
+None blocking the current scope; all decisions settled in brainstorming.
+
+**Deferred (future versions, behind a `format_version` bump):**
+
+- Embed per-part `PartGenParams` in the file (a new section) so loaded parts can
+  regenerate/edit themselves — likely lifting the render-only limit (§5). See
+  *Versioning & Forward Compatibility*. To be explored later.
