@@ -137,6 +137,15 @@ uniform sampler2D blasNodesTexture;    // All BLAS nodes
 uniform sampler2D tlasNodesTexture;    // TLAS nodes
 uniform sampler2D instancesTexture;    // Instance transforms
 
+// --- Imposter (v1: single bound atlas + global params) ---
+uniform sampler2D imposterColorTex;   // baked radiance (rgb) + coverage (a)
+uniform sampler2D imposterDispTex;    // scalar inward depth, normalized [0,1]
+uniform int   imposterGrid;           // atlas cell grid (ceil(sqrt(cageTriCount)))
+uniform int   imposterTriBase;        // global triangle index of the cage's first triangle
+uniform float imposterMaxDisp;        // shell thickness (denormalizes displacement)
+uniform vec2  imposterAtlasSize;      // (atlasW, atlasH) for padding math
+uniform float imposterPad;            // gutter padding in texels (matches build_cage)
+
 // Control uniforms
 uniform int intersectionMode;    // 0=brute force, 1=TLAS/BLAS traversal
 uniform int debugTriangleTests;  // 0=normal rendering, 1=visualize triangle test counts
@@ -188,6 +197,7 @@ struct BVHInstance
     float invTransform[16];
     uint blasIndex;
     uint materialId;
+    bool isImposter;
 };
 
 struct HitResult
@@ -202,6 +212,8 @@ struct HitResult
     vec3 tint;       // per-triangle tint rgb (from spare .w of rows 1-3)
     float tintAlpha; // blend strength (from spare .w of row 4); 0 = no tint
     float ao;        // baked ambient occlusion at the hit, [0,1]; 1.0 = unoccluded
+    bool isImposter;
+    vec3 bakedColor; // valid when isImposter && hit (baked radiance to display)
 };
 
 // Random number generation (ported from tools.cl)
@@ -393,7 +405,8 @@ BVHInstance decodeInstance(int instanceIndex)
     vec4 metadata = texture(instancesTexture, vec2(instTexCoord, 0.9444));
     inst.blasIndex = uint(metadata.x); // Actually blas_start_index for now
     inst.materialId = uint(metadata.y); // Will be 0 for now
-    
+    inst.isImposter = metadata.z > 0.5;
+
     return inst;
 }
 
@@ -720,6 +733,80 @@ bool shadowQuery(vec3 origin, vec3 dir, float maxDist)
     return false;
 }
 
+// Deterministic per-cage-triangle UVs (must match build_cage in imposter_asset.cpp).
+void imposterTriUVs(int localTri, out vec2 uv0, out vec2 uv1, out vec2 uv2) {
+    int gx = localTri % imposterGrid;
+    int gy = localTri / imposterGrid;
+    float cU = 1.0 / float(imposterGrid);
+    float cV = 1.0 / float(imposterGrid);
+    float pU = imposterPad / imposterAtlasSize.x;
+    float pV = imposterPad / imposterAtlasSize.y;
+    float bx = float(gx) * cU, by = float(gy) * cV;
+    uv0 = vec2(bx + pU,        by + pU);
+    uv1 = vec2(bx + cU - pU,   by + pU);
+    uv2 = vec2(bx + pU,        by + cV - pV);
+}
+
+// Relief-march from the cage entry into the displacement shell. Returns true and
+// the hit UV when a covered crossing is found within maxDisp; false = pass through.
+bool reliefMarch(vec3 entryPos, vec3 rayDir,
+                 vec3 v0, vec3 v1, vec3 v2,
+                 vec2 uv0, vec2 uv1, vec2 uv2,
+                 vec3 cageN, out vec2 hitUV) {
+    vec3 dpdu, dpdv;
+    {
+        vec3 e1 = v1 - v0, e2 = v2 - v0;
+        vec2 d1 = uv1 - uv0, d2 = uv2 - uv0;
+        float det = d1.x * d2.y - d2.x * d1.y;
+        if (abs(det) < 1e-12) return false;
+        float r = 1.0 / det;
+        dpdu = r * ( d2.y * e1 - d1.y * e2);
+        dpdv = r * (-d2.x * e1 + d1.x * e2);
+    }
+    // Barycentric entry UV.
+    vec3 e1 = v1 - v0, e2 = v2 - v0, ep = entryPos - v0;
+    float d00=dot(e1,e1), d01=dot(e1,e2), d11=dot(e2,e2), d20=dot(ep,e1), d21=dot(ep,e2);
+    float den = d00*d11 - d01*d01;
+    float bv = (d11*d20 - d01*d21) / den;
+    float bw = (d00*d21 - d01*d20) / den;
+    float bu = 1.0 - bv - bw;
+    vec2 entryUV = bu*uv0 + bv*uv1 + bw*uv2;
+
+    // World ray -> (du, dv, dn) rates. dn<0 = going inward (below cage along N).
+    mat3 M = mat3(dpdu, dpdv, cageN);
+    vec3 duvn = inverse(M) * rayDir;
+    float inward = -duvn.z;
+    if (inward <= 1e-5) return false; // ray not entering the shell
+
+    const int LIN = 32;
+    const int BIN = 6;
+    float sMax = imposterMaxDisp / inward;   // arc length to reach full depth
+    float ds = sMax / float(LIN);
+    float prevS = 0.0, prevDiff = 0.0; bool have_prev = false;
+    for (int i = 1; i <= LIN; ++i) {
+        float s = ds * float(i);
+        vec2 uvc = entryUV + duvn.xy * s;
+        float pen = inward * s;                       // penetration below cage
+        float d = texture(imposterDispTex, uvc).r * imposterMaxDisp;
+        float cov = texture(imposterColorTex, uvc).a;
+        float diff = pen - d;                          // >0 once we pass the surface
+        if (cov > 0.5 && diff >= 0.0) {
+            // Binary refine between prevS and s.
+            float lo = have_prev ? prevS : 0.0, hi = s;
+            for (int b = 0; b < BIN; ++b) {
+                float mid = 0.5*(lo+hi);
+                vec2 um = entryUV + duvn.xy*mid;
+                float dm = texture(imposterDispTex, um).r * imposterMaxDisp;
+                if (inward*mid - dm >= 0.0) hi = mid; else lo = mid;
+            }
+            hitUV = entryUV + duvn.xy*hi;
+            return texture(imposterColorTex, hitUV).a > 0.5;
+        }
+        prevS = s; prevDiff = diff; have_prev = true;
+    }
+    return false; // reached maxDisp without a covered crossing -> pass through
+}
+
 // Main intersection interface. maxT bounds the search: seeding the ray's hit.t
 // lets AABB/triangle tests prune anything past maxT, so a short maxT (e.g. a
 // bounded GI ray) walks far less of the BVH. Pass 1e30 for an unbounded search.
@@ -812,6 +899,25 @@ HitResult intersectScene(vec3 rayOrigin, vec3 rayDir, float maxT)
         result.normal = transformNormal(normal, inst.invTransform);
         result.material = effectiveMat;
         result.instanceId = int(instIdx);
+        result.isImposter = inst.isImposter;
+        result.bakedColor = vec3(0.0);
+        if (inst.isImposter) {
+            int localTri = int(triIdx) - imposterTriBase;
+            vec2 uv0, uv1, uv2; imposterTriUVs(localTri, uv0, uv1, uv2);
+            // Cage verts in world space.
+            vec3 w0 = transformPosition(tri.v0, inst.transform);
+            vec3 w1 = transformPosition(tri.v1, inst.transform);
+            vec3 w2 = transformPosition(tri.v2, inst.transform);
+            vec3 cageN = normalize(result.normal);
+            vec2 hitUV;
+            if (reliefMarch(result.position, normalize(rayDir), w0, w1, w2, uv0, uv1, uv2, cageN, hitUV)) {
+                result.bakedColor = texture(imposterColorTex, hitUV).rgb;
+            } else {
+                result.hit = false;          // coverage miss: ray passes through
+                result.material = -1;
+                result.instanceId = -1;
+            }
+        }
     }
     else
     {
@@ -822,6 +928,8 @@ HitResult intersectScene(vec3 rayOrigin, vec3 rayDir, float maxT)
         result.tint = vec3(0.0);
         result.tintAlpha = 0.0;
         result.ao = 1.0;
+        result.isImposter = false;
+        result.bakedColor = vec3(0.0);
     }
     
     return result;
@@ -1206,8 +1314,13 @@ vec3 trace(vec3 rayOrigin, vec3 rayDirection, inout uint seed) {
             break;
         }
 
+        if (hit.isImposter) {
+            color += attenuation * hit.bakedColor;   // baked radiance, no live PBR
+            break;
+        }
+
         //return vec3(1.0,0.0,0.0);
-        
+
         // Get intersection details
         vec3 hitPos = rayPos + rayDir * hit.t;
         vec3 normal = normalize(hit.normal);
@@ -1263,17 +1376,22 @@ vec3 trace(vec3 rayOrigin, vec3 rayDirection, inout uint seed) {
                     HitResult reflectionHit = intersectScene(reflectionPos, reflectedDir);
                     
                     if (reflectionHit.hit) {
+                        if (reflectionHit.isImposter) {
+                            // Reflected surface is an imposter: use baked radiance directly
+                            color += attenuation * reflectionHit.bakedColor * albedo * reflectance;
+                        } else {
                         // Get material properties for reflected surface
                         MaterialProperties reflMatProps = getMaterialProperties(reflectionHit.material);
                         vec3 reflAlbedo = reflMatProps.albedo;
                         vec3 reflNormal = reflectionHit.normal;
-                        
+
                         // Calculate direct lighting on reflected surface
                         vec3 reflectedLight = calculatePBR(reflectionHit.position, reflNormal, reflectedDir,
                                                          reflAlbedo, reflMatProps.roughness, reflMatProps.metallic, reflectionHit.ao, false, seed);
-                        
+
                         // Add reflection contribution with proper energy conservation
                         color += attenuation * reflectedLight * albedo * reflectance;
+                        }
                     } else {
                         // Reflection hits sky
                         vec3 skyReflection = sampleSky(reflectedDir);

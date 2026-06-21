@@ -45,7 +45,8 @@ public:
         Matrix4x4 inv_transform;
         uint32_t material_id;
         uint32_t instance_id;
-        
+        bool is_imposter = false;
+
         DrawRecord(BLASHandle handle, const Matrix4x4& trans, uint32_t mat_id, uint32_t inst_id)
             : blas_handle(handle), transform(trans), material_id(mat_id), instance_id(inst_id) {
             inv_transform = Matrix4x4(); // Will implement matrix_inverse later
@@ -86,6 +87,7 @@ public:
         BLASHandle blas_handle;
         Matrix4x4 transform;
         uint32_t material_id;
+        bool is_imposter = false;
     };
     void draw_batch(const std::vector<DrawInstance>& instances);
     

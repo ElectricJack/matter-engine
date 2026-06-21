@@ -228,11 +228,12 @@ uint32_t TLASManager::draw(BLASHandle blas_handle, uint32_t material_id) {
 
 void TLASManager::draw_batch(const std::vector<DrawInstance>& instances) {
     PROFILE_SECTION("TLAS Batch Draw");
-    
+
     for (const auto& instance : instances) {
         push_matrix();
         load_matrix(instance.transform);
         draw(instance.blas_handle, instance.material_id);
+        draw_records_.back().is_imposter = instance.is_imposter;
         pop_matrix();
     }
 }
@@ -394,8 +395,8 @@ void TLASManager::generate_instance_texture_data(const BLASManager& blas_manager
                 materialId = draw_records_[i].material_id;
             }
             output_data[metadataIdx + 1] = static_cast<float>(materialId);
-            output_data[metadataIdx + 2] = 0.0f; // padding  
-            output_data[metadataIdx + 3] = 0.0f; // padding
+            output_data[metadataIdx + 2] = (i < static_cast<int>(draw_records_.size()) && draw_records_[i].is_imposter) ? 1.0f : 0.0f; // is_imposter flag
+            output_data[metadataIdx + 3] = 0.0f; // reserved
         }
     }
 }

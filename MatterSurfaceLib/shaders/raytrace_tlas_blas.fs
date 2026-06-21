@@ -106,8 +106,13 @@ vec3 trace(vec3 rayOrigin, vec3 rayDirection, inout uint seed) {
             break;
         }
 
+        if (hit.isImposter) {
+            color += attenuation * hit.bakedColor;   // baked radiance, no live PBR
+            break;
+        }
+
         //return vec3(1.0,0.0,0.0);
-        
+
         // Get intersection details
         vec3 hitPos = rayPos + rayDir * hit.t;
         vec3 normal = normalize(hit.normal);
@@ -163,17 +168,22 @@ vec3 trace(vec3 rayOrigin, vec3 rayDirection, inout uint seed) {
                     HitResult reflectionHit = intersectScene(reflectionPos, reflectedDir);
                     
                     if (reflectionHit.hit) {
+                        if (reflectionHit.isImposter) {
+                            // Reflected surface is an imposter: use baked radiance directly
+                            color += attenuation * reflectionHit.bakedColor * albedo * reflectance;
+                        } else {
                         // Get material properties for reflected surface
                         MaterialProperties reflMatProps = getMaterialProperties(reflectionHit.material);
                         vec3 reflAlbedo = reflMatProps.albedo;
                         vec3 reflNormal = reflectionHit.normal;
-                        
+
                         // Calculate direct lighting on reflected surface
                         vec3 reflectedLight = calculatePBR(reflectionHit.position, reflNormal, reflectedDir,
                                                          reflAlbedo, reflMatProps.roughness, reflMatProps.metallic, reflectionHit.ao, false, seed);
-                        
+
                         // Add reflection contribution with proper energy conservation
                         color += attenuation * reflectedLight * albedo * reflectance;
+                        }
                     } else {
                         // Reflection hits sky
                         vec3 skyReflection = sampleSky(reflectedDir);
