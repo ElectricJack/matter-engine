@@ -80,7 +80,9 @@ bool bake_imposter(const ImpGenParams& p, const std::vector<Tri>& part_tris,
 
     UnloadRenderTexture(rt);
     UnloadShader(bake);
-    mat.shader = (Shader){0};
+    // We already unloaded `bake`; reset to the default shader id so UnloadMaterial's
+    // `id != default` guard skips it and only frees mat.maps (no glDeleteProgram(0)).
+    mat.shader.id = rlGetShaderIdDefault();
     UnloadMaterial(mat);
     UnloadMesh(cage);
     return true;
