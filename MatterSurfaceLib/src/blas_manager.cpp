@@ -199,6 +199,43 @@ BLASHandle BLASManager::register_triangles(Tri* triangles, int triangle_count, c
 }
 
 
+BLASHandle BLASManager::register_prebuilt(const Tri* tris, const TriEx* triex, int tri_count,
+                                          const BVHNode* nodes, uint nodes_used, const uint* tri_idx,
+                                          uint32_t hash, uint32_t ref_count) {
+    if (!tris || tri_count <= 0 || !nodes || nodes_used == 0 || !tri_idx) {
+        return INVALID_BLAS_HANDLE;
+    }
+
+    // Copy triangles (memcpy: Tri is __m128-aligned and the source may be an
+    // unaligned file buffer). std::vector range-construct is a memmove for the
+    // trivially-copyable Tri, which is alignment-safe.
+    std::vector<Tri> triangle_copy(tris, tris + tri_count);
+
+    auto mesh = std::make_unique<BvhMesh>();
+    mesh->triCount = tri_count;
+    mesh->tri = static_cast<Tri*>(MALLOC64(tri_count * sizeof(Tri)));
+    std::memcpy(mesh->tri, tris, tri_count * sizeof(Tri));
+    if (triex) {
+        mesh->triEx = static_cast<TriEx*>(MALLOC64(tri_count * sizeof(TriEx)));
+        std::memcpy(mesh->triEx, triex, tri_count * sizeof(TriEx));
+    }
+
+    auto bvh = std::make_unique<BVH>(mesh.get(), nodes, nodes_used, tri_idx);
+
+    BLASHandle handle = next_handle_++;
+    auto entry = std::make_unique<BLASEntry>(handle, std::move(mesh), std::move(bvh),
+                                             std::move(triangle_copy), hash);
+    entry->ref_count = ref_count;
+
+    size_t entry_index = entries_.size();
+    hash_to_entry_.emplace(hash, entry_index);
+    entries_.push_back(std::move(entry));
+
+    mark_dirty();
+    return handle;
+}
+
+
 void BLASManager::release_blas(BLASHandle handle) {
     if (handle == INVALID_BLAS_HANDLE) return;
 

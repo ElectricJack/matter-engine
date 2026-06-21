@@ -108,7 +108,16 @@ public:
     // Register mesh data together with per-vertex shading normals (one TriEx per
     // triangle, same order as triangles). triex may be empty to fall back to face normals.
     BLASHandle register_triangles(const std::vector<Tri>& triangles, const std::vector<TriEx>& triex);
-    
+
+    // Register a fully baked BLAS loaded from disk: installs the saved BVH arrays
+    // directly (no BVH build, no dedup lookup). Used by part_asset::load. tris,
+    // triex (may be null), nodes, and tri_idx are copied; the entry takes the
+    // provided hash and ref_count. tri_idx must contain exactly tri_count entries
+    // (it is indexed by BVH leaf offsets up to tri_count-1, not nodes_used).
+    BLASHandle register_prebuilt(const Tri* tris, const TriEx* triex, int tri_count,
+                                 const BVHNode* nodes, uint nodes_used, const uint* tri_idx,
+                                 uint32_t hash, uint32_t ref_count);
+
     // Legacy interface for old Triangle format
     //BLASHandle register_triangles_legacy(const std::vector<LegacyTriangle>& triangles);
     //BLASHandle register_triangles_legacy(LegacyTriangle* triangles, int triangle_count);

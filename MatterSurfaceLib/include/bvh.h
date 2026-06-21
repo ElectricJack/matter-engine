@@ -90,6 +90,9 @@ class ALIGN(64) BVH
 public:
 	BVH() = default;
 	BVH( BvhMesh* mesh );
+	// Install a previously-built BVH (from disk) without rebuilding. nodes/triIdx
+	// are copied; nodes_used is the live node count. mesh must outlive this BVH.
+	BVH( BvhMesh* mesh, const BVHNode* nodes, uint nodes_used, const uint* tri_idx );
 	void Build();
 	void Refit();
 	void Intersect( BVHRay& ray, uint instanceIdx );

@@ -64,10 +64,10 @@ TARGET = minimal_cell_test
 $(TARGET): $(MAIN_SOURCE) $(MATTER_SOURCES)
 	$(CC) $(MAIN_SOURCE) $(MATTER_SOURCES) -o $(TARGET) $(CFLAGS) $(INCLUDE_PATHS) $(LDFLAGS) $(LDLIBS)
 
-.PHONY: clean run run-simp run-blas run-cell run-cont run-reg run-tint run-cull run-par run-cube run-ao
+.PHONY: clean run run-simp run-blas run-cell run-cont run-reg run-tint run-cull run-par run-cube run-ao run-part
 
 clean:
-	rm -f $(TARGET) $(SIMP_TARGET) $(BLAS_TARGET) $(CELL_TARGET) $(CONT_TARGET) $(REG_TARGET) $(TINT_TARGET) $(CULL_TARGET) $(PAR_TARGET) $(CUBE_TARGET) $(AO_TARGET)
+	rm -f $(TARGET) $(SIMP_TARGET) $(BLAS_TARGET) $(CELL_TARGET) $(CONT_TARGET) $(REG_TARGET) $(TINT_TARGET) $(CULL_TARGET) $(PAR_TARGET) $(CUBE_TARGET) $(AO_TARGET) $(PART_TARGET)
 
 run: $(TARGET)
 	./$(TARGET)
@@ -217,3 +217,20 @@ $(CUBE_TARGET): $(CUBE_CPP) $(CUBE_C)
 
 run-cube: $(CUBE_TARGET)
 	./$(CUBE_TARGET)
+
+# Part serialization round-trip + format-guard tests (headless, GL-free).
+# material_registry.c via gcc to keep its extern "C" symbols unmangled.
+PART_TARGET = part_asset_tests
+PART_CPP = part_asset_tests.cpp ../src/part_asset.cpp ../src/blas_manager.cpp \
+           ../src/bvh.cpp ../src/tlas_manager.cpp ../src/vertex_ao.cpp \
+           ../src/occupancy.cpp
+PART_C   = ../src/material_registry.c
+PART_C_OBJ = material_registry.o
+
+$(PART_TARGET): $(PART_CPP) $(PART_C)
+	gcc -c $(PART_C) -O2 -DPLATFORM_DESKTOP $(INCLUDE_PATHS)
+	$(CC) $(PART_CPP) $(PART_C_OBJ) -o $(PART_TARGET) $(CFLAGS) $(INCLUDE_PATHS) $(LDFLAGS) $(LDLIBS)
+	rm -f $(PART_C_OBJ)
+
+run-part: $(PART_TARGET)
+	./$(PART_TARGET)
