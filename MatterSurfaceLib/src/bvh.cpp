@@ -79,6 +79,17 @@ BVH::BVH( BvhMesh* triMesh )
 	Build();
 }
 
+BVH::BVH( BvhMesh* triMesh, const BVHNode* nodes, uint nodes_used, const uint* tri_idx )
+{
+	mesh = triMesh;
+	// Same allocation shape as the building constructor so all consumers agree.
+	bvhNode = (BVHNode*)MALLOC64( sizeof( BVHNode ) * mesh->triCount * 2 + 64 );
+	triIdx = new uint[mesh->triCount];
+	nodesUsed = nodes_used;
+	memcpy( bvhNode, nodes, sizeof( BVHNode ) * nodes_used );
+	memcpy( triIdx, tri_idx, sizeof( uint ) * mesh->triCount );
+}
+
 void BVH::Intersect( BVHRay& ray, uint instanceIdx )
 {
 	BVHNode* node = &bvhNode[0], * stack[64];
