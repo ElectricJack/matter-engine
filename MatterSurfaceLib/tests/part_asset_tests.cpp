@@ -1,6 +1,8 @@
 #include "../include/part_asset.h"
 #include "../include/blas_manager.hpp"
+#include "../include/tlas_manager.hpp"
 #include <cstdio>
+#include <cstdint>
 #include <cstring>
 #include <vector>
 
@@ -58,6 +60,69 @@ static void test_prebuilt_parity() {
           "prebuilt node bytes match built");
 }
 
+// Builds a tiny baked scene: 2 BLAS, 3 instances.
+static void build_scene(BLASManager& blas, TLASManager& tlas,
+                        BLASHandle& hA, BLASHandle& hB) {
+    Tri triA[3] = { ptri(0,0), ptri(5,0), ptri(0,5) };
+    Tri triB[2] = { ptri(20,0), ptri(25,5) };
+    TriEx exA[3] = {}; TriEx exB[2] = {};
+    for (auto& e : exA) { e.materialId = 8; e.N0=e.N1=e.N2=make_float3(0,0,1); e.tint=make_float4(1,1,1,0); }
+    for (auto& e : exB) { e.materialId = 9; e.N0=e.N1=e.N2=make_float3(0,0,1); e.tint=make_float4(1,1,1,0); }
+    hA = blas.register_triangles(triA, 3, exA);
+    hB = blas.register_triangles(triB, 2, exB);
+
+    std::vector<TLASManager::DrawInstance> insts(3);
+    insts[0].blas_handle = hA; insts[0].material_id = 8; insts[0].transform = Matrix4x4();
+    insts[1].blas_handle = hB; insts[1].material_id = 9; insts[1].transform = Matrix4x4();
+    insts[1].transform.m[3] = 10.0f; // translate x
+    insts[2].blas_handle = hA; insts[2].material_id = 8; insts[2].transform = Matrix4x4();
+    insts[2].transform.m[7] = 7.0f;  // translate y
+    tlas.draw_batch(insts);
+    tlas.build(blas);
+}
+
+static uint32_t rd_u32(const std::vector<uint8_t>& b, size_t off) {
+    uint32_t v; memcpy(&v, b.data()+off, 4); return v;
+}
+static uint64_t rd_u64(const std::vector<uint8_t>& b, size_t off) {
+    uint64_t v; memcpy(&v, b.data()+off, 8); return v;
+}
+static std::vector<uint8_t> read_file(const char* path) {
+    FILE* f = fopen(path, "rb");
+    if (!f) return {};
+    fseek(f,0,SEEK_END); long n = ftell(f); fseek(f,0,SEEK_SET);
+    std::vector<uint8_t> b(n);
+    size_t got = fread(b.data(),1,n,f); fclose(f);
+    b.resize(got);
+    return b;
+}
+
+static void test_save_header() {
+    using namespace part_asset;
+    BLASManager blas; TLASManager tlas(64);
+    BLASHandle hA, hB; build_scene(blas, tlas, hA, hB);
+
+    const char* path = "test_save.part";
+    remove(path);
+    bool ok = save(path, blas, tlas, 0xABCDEF12u);
+    CHECK(ok, "save returns true");
+
+    std::vector<uint8_t> b = read_file(path);
+    CHECK(b.size() >= 36, "file has at least a header");
+    CHECK(rd_u32(b, 0) == kMagic, "magic written");
+    CHECK(rd_u32(b, 4) == kFormatVersion, "version written");
+    CHECK(rd_u64(b, 8) == 0xABCDEF12ull, "param hash written");
+    CHECK(rd_u32(b, 16) == (uint32_t)sizeof(Tri), "sizeof Tri written");
+    CHECK(rd_u32(b, 20) == (uint32_t)sizeof(TriEx), "sizeof TriEx written");
+    CHECK(rd_u32(b, 24) == (uint32_t)sizeof(BVHNode), "sizeof BVHNode written");
+    // content hash covers the body (everything after the 36-byte header).
+    uint64_t stored = rd_u64(b, 28);
+    uint64_t recomputed = fnv1a64(b.data()+36, b.size()-36);
+    CHECK(stored == recomputed, "content hash covers body");
+
+    remove(path);
+}
+
 static part_asset::PartGenParams sample_params() {
     part_asset::PartGenParams p{};
     p.dimX = 20; p.dimY = 20; p.dimZ = 20;
@@ -71,6 +136,7 @@ static part_asset::PartGenParams sample_params() {
 
 int main() {
     test_prebuilt_parity();
+    test_save_header();
 
     using namespace part_asset;
 
