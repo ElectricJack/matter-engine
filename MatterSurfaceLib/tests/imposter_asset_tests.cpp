@@ -194,12 +194,28 @@ static void test_displacement_reconstruction() {
     CHECK(max_err < 0.05f, "reconstructed surface within 5% of sphere radius");
 }
 
+static void test_dilate_atlas() {
+    using namespace imposter_asset;
+    ImposterAsset a;
+    a.atlas_w=4; a.atlas_h=1; a.disp_bits=8;
+    a.color.assign(4*4, 0);
+    // texel 0 covered, red; texels 1..3 uncovered black.
+    a.color[0]=200; a.color[1]=10; a.color[2]=10; a.color[3]=255;
+    dilate_atlas(a, 1);
+    // texel 1 should have picked up texel 0's rgb (neighbor), coverage still 0.
+    CHECK(a.color[1*4+0]==200 && a.color[1*4+1]==10 && a.color[1*4+2]==10, "dilate fills neighbor rgb");
+    CHECK(a.color[1*4+3]==0, "dilate leaves coverage unchanged");
+    CHECK(a.color[0]==200 && a.color[3]==255, "dilate preserves covered texel");
+    CHECK(a.color[3*4+3]==0 && a.color[3*4+0]==0, "dilate stops beyond reach in one pass");
+}
+
 int main() {
     test_hash_and_path();
     test_round_trip();
     test_guards();
     test_build_cage();
     test_displacement_reconstruction();
+    test_dilate_atlas();
     if (failures == 0) printf("All imposter_asset tests passed\n");
     return failures == 0 ? 0 : 1;
 }

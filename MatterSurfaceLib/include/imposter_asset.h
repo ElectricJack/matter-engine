@@ -83,4 +83,10 @@ bool build_cage(const std::vector<Tri>& part_tris, const ImpGenParams& p,
 // BVH over part_tris for the cast. Returns false on degenerate input.
 bool bake_displacement_cpu(const std::vector<Tri>& part_tris, ImposterAsset& out);
 
+// Spread covered color (rgb) into uncovered neighbor texels, `passes` times, using
+// the alpha coverage mask. Coverage values themselves are NOT changed (they remain
+// the runtime hit/miss authority); only rgb in gutter texels is filled so bilinear
+// sampling near chart edges does not pull in black. GL-free.
+void dilate_atlas(ImposterAsset& a, int passes);
+
 } // namespace imposter_asset

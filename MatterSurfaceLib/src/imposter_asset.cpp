@@ -306,4 +306,34 @@ bool bake_displacement_cpu(const std::vector<Tri>& part_tris, ImposterAsset& out
     return true;
 }
 
+void dilate_atlas(ImposterAsset& a, int passes) {
+    if (a.color.empty() || a.atlas_w==0 || a.atlas_h==0) return;
+    const int W=(int)a.atlas_w, H=(int)a.atlas_h;
+    for (int pass=0; pass<passes; ++pass) {
+        std::vector<uint8_t> cov(W*H);
+        for (int i=0;i<W*H;++i) cov[i]=a.color[i*4+3];
+        std::vector<uint8_t> next = a.color;
+        const int dx[8]={-1,1,0,0,-1,-1,1,1}, dy[8]={0,0,-1,1,-1,1,-1,1};
+        for (int y=0;y<H;++y) for (int x=0;x<W;++x) {
+            int i=y*W+x;
+            if (cov[i]!=0) continue; // already covered: keep
+            int rs=0,gs=0,bs=0,n=0;
+            for (int k=0;k<8;++k) {
+                int nx=x+dx[k], ny=y+dy[k];
+                if (nx<0||ny<0||nx>=W||ny>=H) continue;
+                int j=ny*W+nx;
+                if (cov[j]==0) continue;
+                rs+=a.color[j*4+0]; gs+=a.color[j*4+1]; bs+=a.color[j*4+2]; ++n;
+            }
+            if (n>0) {
+                next[i*4+0]=(uint8_t)(rs/n); next[i*4+1]=(uint8_t)(gs/n); next[i*4+2]=(uint8_t)(bs/n);
+                next[i*4+3]=1; // mark as "filled gutter" so the next pass can spread further
+            }
+        }
+        a.color.swap(next);
+    }
+    // Reset the temporary fill markers (1) back to 0 so coverage stays {0,255}.
+    for (int i=0;i<W*H;++i) if (a.color[i*4+3]==1) a.color[i*4+3]=0;
+}
+
 } // namespace imposter_asset
