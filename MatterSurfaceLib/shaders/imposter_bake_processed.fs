@@ -744,6 +744,7 @@ bool reliefMarch(vec3 entryPos, vec3 rayDir,
     vec3 e1 = v1 - v0, e2 = v2 - v0, ep = entryPos - v0;
     float d00=dot(e1,e1), d01=dot(e1,e2), d11=dot(e2,e2), d20=dot(ep,e1), d21=dot(ep,e2);
     float den = d00*d11 - d01*d01;
+    if (abs(den) < 1e-12) return false; // degenerate cage triangle -> avoid NaN
     float bv = (d11*d20 - d01*d21) / den;
     float bw = (d00*d21 - d01*d20) / den;
     float bu = 1.0 - bv - bw;
@@ -751,6 +752,7 @@ bool reliefMarch(vec3 entryPos, vec3 rayDir,
 
     // World ray -> (du, dv, dn) rates. dn<0 = going inward (below cage along N).
     mat3 M = mat3(dpdu, dpdv, cageN);
+    if (abs(determinant(M)) < 1e-9) return false; // near-singular frame -> inverse undefined
     vec3 duvn = inverse(M) * rayDir;
     float inward = -duvn.z;
     if (inward <= 1e-5) return false; // ray not entering the shell
@@ -759,7 +761,7 @@ bool reliefMarch(vec3 entryPos, vec3 rayDir,
     const int BIN = 6;
     float sMax = imposterMaxDisp / inward;   // arc length to reach full depth
     float ds = sMax / float(LIN);
-    float prevS = 0.0, prevDiff = 0.0; bool have_prev = false;
+    float prevS = 0.0; bool have_prev = false;
     for (int i = 1; i <= LIN; ++i) {
         float s = ds * float(i);
         vec2 uvc = entryUV + duvn.xy * s;
@@ -779,7 +781,7 @@ bool reliefMarch(vec3 entryPos, vec3 rayDir,
             hitUV = entryUV + duvn.xy*hi;
             return texture(imposterColorTex, hitUV).a > 0.5;
         }
-        prevS = s; prevDiff = diff; have_prev = true;
+        prevS = s; have_prev = true;
     }
     return false; // reached maxDisp without a covered crossing -> pass through
 }

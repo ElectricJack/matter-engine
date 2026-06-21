@@ -232,8 +232,8 @@ void TLASManager::draw_batch(const std::vector<DrawInstance>& instances) {
     for (const auto& instance : instances) {
         push_matrix();
         load_matrix(instance.transform);
-        draw(instance.blas_handle, instance.material_id);
-        draw_records_.back().is_imposter = instance.is_imposter;
+        if (draw(instance.blas_handle, instance.material_id) != 0)
+            draw_records_.back().is_imposter = instance.is_imposter; // draw appended a record
         pop_matrix();
     }
 }
