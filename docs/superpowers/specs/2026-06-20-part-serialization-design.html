@@ -1,0 +1,282 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>2026-06-20-part-serialization-design</title><style>
+:root { color-scheme: light dark; }
+body { max-width: 860px; margin: 40px auto; padding: 0 24px;
+  font: 16px/1.65 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
+  color:#1b1f24; background:#fff; }
+@media (prefers-color-scheme: dark){ body{color:#d6dae0;background:#0f1216} }
+h1,h2,h3{ line-height:1.25; margin-top:1.6em; }
+h1{ font-size:1.9em; border-bottom:2px solid #d0d7de; padding-bottom:.3em; }
+h2{ font-size:1.4em; border-bottom:1px solid #d0d7de; padding-bottom:.25em; }
+h3{ font-size:1.15em; }
+code{ font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:.9em;
+  background:rgba(127,127,127,.15); padding:.15em .35em; border-radius:4px; }
+pre{ background:rgba(127,127,127,.12); padding:14px 16px; border-radius:8px; overflow:auto;
+  border:1px solid rgba(127,127,127,.25); }
+pre code{ background:none; padding:0; }
+table{ border-collapse:collapse; width:100%; margin:1em 0; }
+th,td{ border:1px solid #d0d7de; padding:6px 12px; text-align:left; }
+blockquote{ border-left:4px solid #d0d7de; margin:1em 0; padding:.2em 1em; color:#57606a; }
+a{ color:#0969da; }
+</style></head>
+<body><h1 id="part-serialization-part-deep-cache-design">Part Serialization (<code>.part</code> deep cache) — Design</h1>
+<p><strong>Date:</strong> 2026-06-20
+<strong>Status:</strong> Approved, ready for implementation planning
+<strong>Project:</strong> MatterSurfaceLib</p>
+<h2 id="problem">Problem</h2>
+<p>We are building a generic <strong>part</strong> generation system. A part is a procedurally
+generated object reduced to baked acceleration structures (BLAS geometry + BVH,
+TLAS instances, materials). The brick is the first concrete part, and it is now
+complex enough that generating it is expensive: occupancy grid → particle
+emission → parallel marching-cubes meshing → per-cell BVH build → GPU texture
+packing. This runs on every launch.</p>
+<p>We want to <strong>serialize a fully baked part to disk and load it instead of
+regenerating</strong>, so iteration is fast and a future imposter-research sibling
+project can consume a ready-to-traverse part. The format must be part-kind
+agnostic: it stores baked acceleration structures, not anything brick-specific,
+so any current or future part type serializes through the same path.</p>
+<p>This spec covers serialization only. Imposter rendering is a separate sub-project
+with its own spec; it will <code>-I../MatterSurfaceLib/include</code> and call the loader
+defined here.</p>
+<h2 id="terminology">Terminology</h2>
+<ul>
+<li><strong>Part</strong> — any procedurally generated object serialized through this system.
+  The brick is the first part; nothing in the format is brick-specific.</li>
+<li><strong>Part asset / <code>.part</code> file</strong> — the on-disk baked representation of a part.</li>
+<li><strong>Gen params</strong> — the parameters that drive a part's generation and form its
+  cache key. Each part kind supplies its own params; the brick's are the lattice
+  tunables (see §3).</li>
+</ul>
+<h2 id="goals">Goals</h2>
+<ul>
+<li>Skip the expensive regeneration on load (marching cubes + per-cell BVH build)
+  for any part kind.</li>
+<li>Auto-cache keyed on the part's generator parameters; no manual save/load steps.</li>
+<li>Robust regenerate-on-mismatch via a format version, struct-layout guard, and
+  content hash. A bad/old/corrupt file is never trusted — it is silently
+  regenerated and overwritten.</li>
+<li>Expose a clean, part-kind-agnostic loader the imposter sub-project can reuse.</li>
+</ul>
+<h2 id="non-goals">Non-Goals</h2>
+<ul>
+<li>Editable loaded parts. A loaded part is <strong>render-only</strong> (see §5).</li>
+<li>Cross-architecture / cross-endian portability. We are only ever on WSL/Windows
+  x86-64 little-endian. Layout changes are caught and trigger regeneration, not
+  conversion.</li>
+<li>Serializing the scene-level TLAS that instances many parts together (different
+  structure; out of scope, door left open — see §4).</li>
+</ul>
+<h2 id="decisions-settled-during-brainstorming">Decisions (settled during brainstorming)</h2>
+<ul>
+<li><strong>Depth: Deep.</strong> Serialize final CPU-side acceleration structures, not source
+  params or intermediate meshes. Load skips all generation.</li>
+<li><strong>Trigger: Auto cache.</strong> Hash gen params; load if a matching file exists,
+  else generate + write.</li>
+<li><strong>Code location: Option A.</strong> Loader lives in <code>MatterSurfaceLib/include</code> +
+  <code>src</code>, reused by siblings via <code>-I../MatterSurfaceLib/include</code>.</li>
+<li><strong>TLAS: rebuilt on load, not serialized</strong> (§4).</li>
+<li><strong>GPU data textures: re-packed on load, not serialized</strong> (§4).</li>
+</ul>
+<h2 id="1-code-layout">1. Code Layout</h2>
+<p>New files in <code>MatterSurfaceLib/</code>:</p>
+<ul>
+<li><code>include/part_asset.h</code> — <code>PartGenParams</code>, save/load API, format constants.</li>
+<li><code>src/part_asset.cpp</code> — implementation.</li>
+</ul>
+<p>Dependencies are only <code>bvh.h</code>, <code>blas_manager.hpp</code>, <code>tlas_manager.hpp</code>,
+<code>material_registry.h</code>, all already in <code>MatterSurfaceLib/include</code>. The API is
+part-kind agnostic: it takes a <code>BLASManager</code> + <code>TLASManager</code> + the gen-param hash
+and knows nothing about how the part was generated.</p>
+<h2 id="2-on-disk-format">2. On-Disk Format</h2>
+<p>Single binary file: <code>parts/&lt;param_hash&gt;.part</code>. Raw POD array dumps, little-endian.</p>
+<pre><code>Header
+  magic            u32  'PART' (0x50415254)
+  format_version   u32
+  param_hash       u64                       // cache key, see §3
+  sizeof_Tri       u32                        // layout guards
+  sizeof_TriEx     u32
+  sizeof_BVHNode   u32
+  content_hash     u64                        // FNV-1a over all bytes after header
+
+Materials
+  count            u32
+  MaterialDef[count]                          // snapshot for validation
+
+BLAS table
+  blas_count       u32
+  per BLAS:
+    hash           u32                        // BLASEntry geometry hash
+    ref_count      u32
+    tri_count      u32
+    nodes_used     u32
+    Tri[tri_count]
+    TriEx[tri_count]
+    BVHNode[nodes_used]
+    triIdx         u32[tri_count]
+
+Instances
+  inst_count       u32
+  per instance:
+    blas_index     u32                        // index into BLAS table above
+    material_id    u32
+    transform      f32[16]                     // row-major, DrawRecord.transform
+</code></pre>
+<p>We do <strong>not</strong> store the GPU data textures or the TLAS node tree. Nothing in the
+format encodes the part kind — it is purely baked acceleration data.</p>
+<h3 id="validation-on-load-any-failure-ignore-file-regenerate-overwrite">Validation on load (any failure → ignore file, regenerate, overwrite)</h3>
+<ul>
+<li><code>magic</code> mismatch</li>
+<li><code>format_version</code> != current</li>
+<li>any <code>sizeof_*</code> != current <code>sizeof(...)</code> (struct layout changed)</li>
+<li>recomputed <code>content_hash</code> != stored (corruption)</li>
+<li><code>param_hash</code> in header != requested hash (defense in depth; filename already
+  encodes it)</li>
+</ul>
+<h2 id="3-cache-key">3. Cache Key</h2>
+<p>Each part kind supplies a gen-params struct that exists in one hashable place and
+drives both generation and the cache key. For the brick, the lattice tunables
+currently live as locals inside <code>setup_lattice_scene()</code> (main.cpp:579–597);
+extract them into <code>PartGenParams</code> (brick variant):</p>
+<ul>
+<li>DIM_X/Y/Z, SPACING, BASE_RADIUS</li>
+<li>POS_JITTER, RADIUS_VAR, VOID_AMT, vein params</li>
+<li>material ids (MAT_OPAQUE_A/B, MAT_GLASS)</li>
+<li>simplification ratio</li>
+<li>RNG seed</li>
+</ul>
+<p><code>param_hash = FNV1a(PartGenParams bytes) ^ format_version</code>.</p>
+<p><strong>Startup flow (per part):</strong></p>
+<ol>
+<li>Build the part's gen params.</li>
+<li>Compute <code>param_hash</code>; path = <code>parts/&lt;param_hash&gt;.part</code>.</li>
+<li>If the file exists and passes all §2 validation → load it, skip generation.</li>
+<li>Otherwise → generate via the existing pipeline, then write the file.</li>
+</ol>
+<p>A "force regenerate" path is not required for normal use (changing params changes
+the hash → new file), but the generate-and-write branch is the same code the
+fallback uses, so regeneration is always available by deleting the file or
+bumping <code>format_version</code>.</p>
+<h2 id="4-what-we-skip-vs-rebuild-on-load">4. What We Skip vs. Rebuild on Load</h2>
+<ul>
+<li><strong>BLAS geometry + BVH: fully restored, no rebuild.</strong> This is the expensive part.
+  <code>register_triangles()</code> today <em>builds</em> the BVH internally, which we must bypass.
+  Add:</li>
+</ul>
+<p><code>cpp
+  BLASHandle BLASManager::register_prebuilt(
+      const Tri* tris, const TriEx* triex, int tri_count,
+      const BVHNode* nodes, uint nodes_used, const uint* tri_idx,
+      uint32_t hash, uint32_t ref_count);</code></p>
+<p>It constructs a <code>BLASEntry</code> with a <code>BvhMesh</code> (tri + triEx) and a <code>BVH</code> whose
+  <code>bvhNode</code>, <code>triIdx</code>, and <code>nodesUsed</code> are filled directly from the file —
+  skipping <code>BVH::Build()</code>. It registers the entry in <code>entries_</code> and
+  <code>hash_to_entry_</code> and marks textures dirty, mirroring the existing register path
+  minus the build.</p>
+<ul>
+<li>
+<p><strong>TLAS tree: rebuilt on load (cheap).</strong> The <code>TLASNode</code> tree is just indices into
+  the <code>BVHInstance</code> backing array, and every <code>BVHInstance</code> holds a raw <code>BVH*</code> plus
+  cached <code>invTransform</code>/<code>bounds</code> that are invalid across runs and must be
+  re-linked regardless. So we serialize instance records only and replay them via
+  <code>TLASManager::draw_batch()</code> (mapping saved <code>blas_index</code> → freshly registered
+  <code>BLASHandle</code>) followed by <code>build()</code>. Even an O(N²) agglomerative build over a
+  part's instances is tens of ms vs. seconds of meshing.</p>
+</li>
+<li>
+<p><strong>GPU data textures: re-packed on load (ms).</strong> Call the managers'
+  <code>ensure_gpu_textures_ready()</code> from the restored CPU structs, exactly as the
+  normal pipeline does.</p>
+</li>
+</ul>
+<p><strong>Door left open:</strong> the only case where serializing a TLAS earns its keep is a
+huge instance count where build time dominates — that is a future <strong>scene-level</strong>
+TLAS that instances many parts together, a different structure from a single
+part's internal TLAS. If it ever bites, an optional TLAS section can be added
+behind the same <code>format_version</code> guard without disturbing this format.</p>
+<h2 id="5-scope-of-a-loaded-part-render-only">5. Scope of a Loaded Part (render-only)</h2>
+<p>Load reconstructs only the <strong>render state</strong>: <code>BLASManager</code> + <code>TLASManager</code> +
+material table. It does <strong>not</strong> rebuild the source generation layer (for the
+brick, the <code>Cluster</code>/<code>Cell</code>/particle layer). A loaded part therefore renders
+instantly but the live tuning sliders (for the brick: lumpiness/carve/
+simplification) do not operate on it. To tune, delete the cache file (or change
+params, which changes the hash) and let the normal pipeline regenerate and
+re-save. This is the intended tradeoff: load to view fast, regenerate to edit.
+(Confirmed acceptable.)</p>
+<h2 id="6-save-load-walkthrough">6. Save / Load Walkthrough</h2>
+<p><strong>Save</strong> (after a normal generation completes):</p>
+<ol>
+<li>Walk <code>BLASManager::get_entries()</code>. For each entry emit hash, ref_count,
+   <code>triangles</code> (Tri), <code>mesh-&gt;triEx</code> (TriEx), <code>bvh-&gt;bvhNode[0..nodesUsed)</code>,
+   <code>bvh-&gt;triIdx[0..tri_count)</code>. Record <code>handle → blas_index</code>.</li>
+<li>Walk <code>TLASManager::get_draw_records()</code>. For each emit
+   <code>{blas_index(map[handle]), material_id, transform.m[16]}</code>.</li>
+<li>Snapshot the material table (<code>MaterialRegistryCount()</code> + <code>MaterialRegistryGet</code>).</li>
+<li>Compute <code>content_hash</code>, write header + sections to <code>parts/&lt;param_hash&gt;.part</code>
+   (temp file + rename for atomicity).</li>
+</ol>
+<p><strong>Load:</strong></p>
+<ol>
+<li>Read + validate header (§2). On any failure return false → caller regenerates.</li>
+<li>Read materials; validate against the live registry (count + bytes). Mismatch →
+   fail (materials are code-defined; a snapshot mismatch means the file is stale).</li>
+<li>For each BLAS, read arrays and call <code>register_prebuilt(...)</code>; build
+   <code>blas_index → new BLASHandle</code> map.</li>
+<li>Read instances; <code>TLASManager::draw_batch()</code> with mapped handles + transforms +
+   material ids; then <code>build(blas_manager)</code>.</li>
+<li><code>ensure_gpu_textures_ready()</code> on both managers.</li>
+</ol>
+<h2 id="versioning-forward-compatibility">Versioning &amp; Forward Compatibility</h2>
+<p><code>format_version</code> in the header is the single switch that lets the format grow
+safely. Rules:</p>
+<ul>
+<li><strong>Every reader branches on <code>format_version</code>.</strong> A reader only trusts files whose
+  version it understands; anything newer or older than it can parse → fail
+  validation → regenerate. This is already the regenerate-on-mismatch behavior in
+  §2, just made an explicit forward-compat contract.</li>
+<li><strong>Additive changes bump the version and append a new section.</strong> Section order is
+  fixed and length-prefixed (each section starts with its count), so appending a
+  new trailing section never disturbs existing ones. Old files (lower version)
+  simply lack the section; the version-branching reader knows not to look for it.</li>
+<li><strong>Layout-breaking changes (struct field add/remove/reorder) also bump the
+  version</strong>, and are independently caught by the <code>sizeof_*</code> guards.</li>
+</ul>
+<h3 id="planned-future-section-embedded-rebuild-params-not-now">Planned future section: embedded rebuild params (not now)</h3>
+<p>Today the gen params are only <em>hashed</em> into <code>param_hash</code>; the params themselves
+live in code, which is why a loaded part is render-only (§5). A planned future
+version will <strong>embed the part's <code>PartGenParams</code> in the file</strong> as a new section, so
+a loaded part carries everything needed to regenerate/edit itself without external
+knowledge — likely lifting the render-only limitation. This is deliberately
+deferred (to be explored later), but the format is designed for it now:</p>
+<ul>
+<li>The params already live in one serializable struct (<code>PartGenParams</code>, §3).</li>
+<li>Adding the section is a version bump + an appended block; no change to the BLAS/
+  instance/material sections.</li>
+<li>The param section should be self-describing per part kind (e.g. a <code>part_kind</code>
+  tag + the params blob) so multiple part types can coexist in one format.</li>
+</ul>
+<p>No work on this in the current scope — it is captured here only so the versioning
+and the <code>PartGenParams</code> placement don't have to be redone when we get to it.</p>
+<h2 id="7-testing">7. Testing</h2>
+<p>A headless <code>tests/part_asset_tests</code> mirroring the existing <code>tests/*</code> suites:</p>
+<ul>
+<li><strong>Round-trip:</strong> build a small synthetic <code>BLASManager</code> (a couple of registered
+  triangle sets) + <code>TLASManager</code> (a few instances) + a material snapshot, save,
+  load into fresh managers, assert Tri / TriEx / BVHNode / triIdx / instance bytes
+  are identical and <code>content_hash</code> matches.</li>
+<li><strong>Layout guard:</strong> write a file, then corrupt a <code>sizeof_*</code> / <code>format_version</code>
+  field and assert load rejects it (so the caller regenerates).</li>
+<li><strong>Corruption guard:</strong> flip a byte in a data section and assert <code>content_hash</code>
+  rejects it.</li>
+<li><strong>prebuilt vs built parity:</strong> register the same geometry via <code>register_triangles</code>
+  (builds BVH) and via <code>register_prebuilt</code> (loads saved BVH) and assert identical
+  node/triIdx arrays, proving the bypass installs an equivalent BVH.</li>
+</ul>
+<h2 id="open-items">Open Items</h2>
+<p>None blocking the current scope; all decisions settled in brainstorming.</p>
+<p><strong>Deferred (future versions, behind a <code>format_version</code> bump):</strong></p>
+<ul>
+<li>Embed per-part <code>PartGenParams</code> in the file (a new section) so loaded parts can
+  regenerate/edit themselves — likely lifting the render-only limit (§5). See
+  <em>Versioning &amp; Forward Compatibility</em>. To be explored later.</li>
+</ul></body></html>
