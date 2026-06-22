@@ -452,4 +452,19 @@ void dilate_atlas(ImposterAsset& a, int passes) {
     for (int i=0;i<W*H;++i) if (a.color[i*4+3]==1) a.color[i*4+3]=0;
 }
 
+std::vector<float> pack_cage_uvs_bvh_order(const ImposterAsset& a,
+                                           const uint32_t* triIdx, int nTris) {
+    std::vector<float> buf((size_t)nTris * 3 * 4, 0.0f);
+    for (int i=0;i<nTris;++i) {
+        const CageTri& t = a.tris[triIdx[i]];
+        const uint32_t vi[3] = { t.i0, t.i1, t.i2 };
+        for (int r=0;r<3;++r) {
+            const CageVert& cv = a.verts[vi[r]];
+            size_t o = (size_t)(r*nTris + i) * 4;
+            buf[o+0]=cv.u; buf[o+1]=cv.v; buf[o+2]=0.0f; buf[o+3]=0.0f;
+        }
+    }
+    return buf;
+}
+
 } // namespace imposter_asset

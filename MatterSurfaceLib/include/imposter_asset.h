@@ -102,4 +102,13 @@ std::vector<Tri> flatten_part_triangles(const class BLASManager& blas,
 // Convert the cage (verts/tris) into a Tri list suitable for register_triangles. GL-free.
 std::vector<Tri> cage_to_tris(const ImposterAsset& a);
 
+// Pack per-vertex cage UVs into a BVH-order RGBA32F buffer for the shader's
+// imposterTriUvTex. Layout: width = nTris, height = 3 (row = triangle corner),
+// channels = (u, v, 0, 0); float offset = (row*nTris + i)*4. For BVH slot i the
+// original triangle is triIdx[i], and its three vertex UVs go to rows 0/1/2. This
+// is what makes the shader's UV lookup invariant to BVH triangle reordering.
+// GL-free so it is unit-testable.
+std::vector<float> pack_cage_uvs_bvh_order(const ImposterAsset& a,
+                                           const uint32_t* triIdx, int nTris);
+
 } // namespace imposter_asset
