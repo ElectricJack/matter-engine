@@ -409,7 +409,7 @@ static void test_segment_charts() {
 static void test_bake_triid_and_continuity() {
     using namespace imposter_asset;
     // Flat 2-triangle quad part facing +Z, so the cage's single chart maps the quad
-    // contiguously; an interior strip should be covered by both triangles.
+    // contiguously and the atlas is well-covered for the triid validity check.
     std::vector<Tri> part(2);
     part[0].vertex0=make_float3(0,0,0); part[0].vertex1=make_float3(1,0,0); part[0].vertex2=make_float3(0,1,0);
     part[1].vertex0=make_float3(1,0,0); part[1].vertex1=make_float3(1,1,0); part[1].vertex2=make_float3(0,1,0);
