@@ -426,7 +426,7 @@ bool build_cage(const std::vector<Tri>& part_tris, const ImpGenParams& p,
     float3 meshC = make_float3(0,0,0);
     for (int t=0;t<nt;++t) for (int k=0;k<3;++k){ float3 q=inflated(t,k);
         meshC=make_float3(meshC.x+q.x,meshC.y+q.y,meshC.z+q.z); }
-    if (nt>0){ float in=1.0f/(float)(nt*3); meshC=make_float3(meshC.x*in,meshC.y*in,meshC.z*in); }
+    if (nt>0){ float invN=1.0f/(float)(nt*3); meshC=make_float3(meshC.x*invN,meshC.y*invN,meshC.z*invN); }
 
     std::vector<float3> chartSumN(nCharts, make_float3(0,0,0));
     std::vector<float3> chartCsum(nCharts, make_float3(0,0,0));
