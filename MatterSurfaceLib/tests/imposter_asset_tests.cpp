@@ -257,22 +257,25 @@ static void test_dilate_atlas() {
 
 static void test_pack_cage_uvs_bvh_order() {
     using namespace imposter_asset;
-    // Two cage triangles, 6 verts; distinct uv per vert so we can trace each.
     ImposterAsset a;
     a.verts.resize(6);
     for (int k=0;k<6;++k){ a.verts[k].u=(float)k; a.verts[k].v=(float)(10+k); }
     a.tris = { {0,1,2}, {3,4,5} };
-    // BVH reorders: slot 0 -> original tri 1, slot 1 -> original tri 0.
-    uint32_t triIdx[2] = {1, 0};
+    a.tri_chart = { 0, 1 };            // each triangle is its own chart
+    uint32_t triIdx[2] = {1, 0};       // slot0 -> tri1, slot1 -> tri0
     std::vector<float> buf = pack_cage_uvs_bvh_order(a, triIdx, 2);
-    CHECK(buf.size() == (size_t)2*3*4, "uv buffer size = nTris*3*4");
-    auto at = [&](int row,int i,int c){ return buf[(size_t)(row*2 + i)*4 + c]; };
-    // slot 0 = original tri 1 = verts 3,4,5
-    CHECK(at(0,0,0)==3.0f && at(0,0,1)==13.0f, "slot0 corner0 = vert3 uv");
-    CHECK(at(1,0,0)==4.0f && at(2,0,0)==5.0f, "slot0 corners1,2 = verts4,5");
-    // slot 1 = original tri 0 = verts 0,1,2
-    CHECK(at(0,1,0)==0.0f && at(0,1,1)==10.0f, "slot1 corner0 = vert0 uv");
-    CHECK(at(1,1,0)==1.0f && at(2,1,0)==2.0f, "slot1 corners1,2 = verts1,2");
+    CHECK(buf.size()==(size_t)2*3*4, "uv buffer size = nTris*3*4");
+    auto at=[&](int row,int i,int c){ return buf[(size_t)(row*2 + i)*4 + c]; };
+    // slot0 = tri1 = verts 3,4,5 -> uvs (3,13),(4,14),(5,15)
+    CHECK(at(0,0,0)==3.0f && at(0,0,1)==13.0f, "slot0 uv0");
+    CHECK(at(1,0,0)==4.0f && at(2,0,0)==5.0f, "slot0 uv1,uv2");
+    // chart of tri1 spans u[3..5], v[13..15] -> chartLo/Hi in row0.zw / row1.zw
+    CHECK(at(0,0,2)==3.0f && at(0,0,3)==13.0f, "slot0 chartLo");
+    CHECK(at(1,0,2)==5.0f && at(1,0,3)==15.0f, "slot0 chartHi");
+    CHECK(at(2,0,2)==1.0f, "slot0 cageTriId == 1");
+    // slot1 = tri0 = verts 0,1,2 ; cageTriId==0
+    CHECK(at(0,1,0)==0.0f && at(0,1,1)==10.0f, "slot1 uv0");
+    CHECK(at(2,1,2)==0.0f, "slot1 cageTriId == 0");
 }
 
 static void test_build_adjacency() {

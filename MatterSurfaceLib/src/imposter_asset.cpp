@@ -649,15 +649,27 @@ void dilate_atlas(ImposterAsset& a, int passes) {
 
 std::vector<float> pack_cage_uvs_bvh_order(const ImposterAsset& a,
                                            const uint32_t* triIdx, int nTris) {
-    std::vector<float> buf((size_t)nTris * 3 * 4, 0.0f);
-    for (int i=0;i<nTris;++i) {
-        const CageTri& t = a.tris[triIdx[i]];
-        const uint32_t vi[3] = { t.i0, t.i1, t.i2 };
-        for (int r=0;r<3;++r) {
-            const CageVert& cv = a.verts[vi[r]];
-            size_t o = (size_t)(r*nTris + i) * 4;
-            buf[o+0]=cv.u; buf[o+1]=cv.v; buf[o+2]=0.0f; buf[o+3]=0.0f;
+    // Chart UV rects from tri_chart + emitted UVs.
+    int nCharts=0; for (uint32_t c : a.tri_chart) nCharts=std::max(nCharts,(int)c+1);
+    std::vector<float> lo((size_t)nCharts*2, 1e30f), hi((size_t)nCharts*2,-1e30f);
+    for (int t=0;t<(int)a.tris.size();++t){
+        int c=(int)a.tri_chart[t]; const CageTri& tr=a.tris[t];
+        const CageVert* vs[3]={&a.verts[tr.i0],&a.verts[tr.i1],&a.verts[tr.i2]};
+        for (auto* v : vs){
+            lo[c*2]=fminf(lo[c*2],v->u); lo[c*2+1]=fminf(lo[c*2+1],v->v);
+            hi[c*2]=fmaxf(hi[c*2],v->u); hi[c*2+1]=fmaxf(hi[c*2+1],v->v);
         }
+    }
+    std::vector<float> buf((size_t)nTris*3*4, 0.0f);
+    auto setpx=[&](int row,int i,float x,float y,float z,float w){
+        size_t o=((size_t)row*nTris + i)*4; buf[o]=x; buf[o+1]=y; buf[o+2]=z; buf[o+3]=w; };
+    for (int i=0;i<nTris;++i){
+        int cageTri=(int)triIdx[i]; const CageTri& tr=a.tris[cageTri];
+        const CageVert& v0=a.verts[tr.i0]; const CageVert& v1=a.verts[tr.i1]; const CageVert& v2=a.verts[tr.i2];
+        int c=(int)a.tri_chart[cageTri];
+        setpx(0,i, v0.u,v0.v, lo[c*2],   lo[c*2+1]);     // uv0 + chartLo
+        setpx(1,i, v1.u,v1.v, hi[c*2],   hi[c*2+1]);     // uv1 + chartHi
+        setpx(2,i, v2.u,v2.v, (float)cageTri, 0.0f);     // uv2 + cageTriId
     }
     return buf;
 }
