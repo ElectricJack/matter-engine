@@ -661,6 +661,18 @@ private:
             SetTextureFilter(imposter_disp_tex_, TEXTURE_FILTER_BILINEAR);
             imposter_grid_ = (int)ceilf(sqrtf((float)(cube ? (imp.tris.size()+1)/2 : imp.tris.size())));
             imposter_tri_base_ = blas_manager_->get_offsets(imposter_cage_blas_).triangle_offset;
+            {
+                const BLASManager::BLASEntry* e = blas_manager_->get_entry(imposter_cage_blas_);
+                int nCageTris = (int)imp.tris.size();
+                imposter_tri_count_ = nCageTris;
+                std::vector<float> uvbuf =
+                    imposter_asset::pack_cage_uvs_bvh_order(imp, e->bvh->triIdx, nCageTris);
+                Image uvimg{}; uvimg.data = uvbuf.data();
+                uvimg.width = nCageTris; uvimg.height = 3; uvimg.mipmaps = 1;
+                uvimg.format = PIXELFORMAT_UNCOMPRESSED_R32G32B32A32;
+                imposter_triuv_tex_ = LoadTextureFromImage(uvimg);
+                SetTextureFilter(imposter_triuv_tex_, TEXTURE_FILTER_POINT);
+            }
             imposter_max_disp_ = imp.max_disp;
             imposter_atlas_w_ = (float)imp.atlas_w; imposter_atlas_h_ = (float)imp.atlas_h;
             // Cage AABB in world space (cage bounds + the +X 24.0 instance offset),
@@ -1370,9 +1382,8 @@ private:
                 float pad=2.0f; SetShaderValue(raytracing_shader_, GetShaderLocation(raytracing_shader_, "imposterPad"), &pad, SHADER_UNIFORM_FLOAT);
                 int impDbg = getenv("MSL_IMP_DBG") ? atoi(getenv("MSL_IMP_DBG")) : 0;
                 SetShaderValue(raytracing_shader_, GetShaderLocation(raytracing_shader_, "imposterDbg"), &impDbg, SHADER_UNIFORM_INT);
-                SetShaderValue(raytracing_shader_, GetShaderLocation(raytracing_shader_, "imposterQuadCharts"), &imposter_quad_charts_, SHADER_UNIFORM_INT);
-                SetShaderValue(raytracing_shader_, GetShaderLocation(raytracing_shader_, "imposterAabbMin"), imposter_aabb_min_, SHADER_UNIFORM_VEC3);
-                SetShaderValue(raytracing_shader_, GetShaderLocation(raytracing_shader_, "imposterAabbMax"), imposter_aabb_max_, SHADER_UNIFORM_VEC3);
+                SetShaderValueTexture(raytracing_shader_, GetShaderLocation(raytracing_shader_, "imposterTriUvTex"), imposter_triuv_tex_);
+                SetShaderValue(raytracing_shader_, GetShaderLocation(raytracing_shader_, "imposterTriCount"), &imposter_tri_count_, SHADER_UNIFORM_INT);
             }
         }
 
@@ -2165,6 +2176,8 @@ private:
     int   imposter_quad_charts_ = 0;
     float imposter_max_disp_ = 0.0f, imposter_atlas_w_ = 0.0f, imposter_atlas_h_ = 0.0f;
     float imposter_aabb_min_[3] = {0,0,0}, imposter_aabb_max_[3] = {0,0,0};
+    Texture2D imposter_triuv_tex_{};
+    int   imposter_tri_count_ = 0;
     bool  imposter_enabled_ = false;
 
     // Mapping between BVH analysis names and BLAS handles for selective rendering
