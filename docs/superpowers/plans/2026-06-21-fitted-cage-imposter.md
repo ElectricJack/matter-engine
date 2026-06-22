@@ -323,6 +323,44 @@ git commit -m "tune: imposter atlas/cage density for fitted-cage quality"
 
 ---
 
+## Task 5 Findings (2026-06-21)
+
+Tasks 1-4 are complete and verified. The reorder-safe per-vertex UV mechanism works and
+the cube + fitted cages now share one path:
+- **Cube (unified path):** renders perfectly — three solid clover clusters, full coverage,
+  no melting/shuffling. The unification did not regress the cube.
+- **Fitted cage UVs/cage:** correct. The `MSL_IMP_DBG=1` cage view shows each cluster as a
+  **solid, fully-covered** blob with the right silhouette — so the cage geometry, the BVH-order
+  UV texture, and chart assignment are all correct.
+
+**Fitted relief quality is NOT yet at bar B, and it is not fixable by parameter tuning.**
+Root cause (diagnosed, not a UV/cage bug): the relief march is **per-facet and bounded to
+that facet's atlas cell** (`reliefMarch`, breaks when the marching UV leaves the triangle's
+UV bbox). A view ray only resolves a displaced hit when it stays inside the entry facet's
+chart — i.e. when it is roughly perpendicular to that facet. For the fitted cage a ray
+typically enters one facet and exits through a *different* facet, so grazing facets return
+pass-through and drop out, leaving the camera-facing facets as disconnected triangular
+fragments. Swept and ruled out:
+- inflation ∈ {0, 0.2, 0.3, 0.4, 0.6, 1.0} — low = holey/fuller, high = sparser fragments.
+- `MSL_IMP_SHELL` (max_disp override) ∈ {0.3, 1.0, 2.0} — all still fragmented.
+- finer cage (`MSL_IMP_RATIO=0.25 MSL_IMP_MAXTRIS=5000`) — *worse* (more facets, more failures).
+
+The bake sets `max_disp = full part depth` (`bake_displacement_cpu`, ~line 382), so each
+facet's march must traverse the whole interior while confined to a tiny cell — the conflict
+that produces the fragments.
+
+**Recommended next step (needs user decision — architecture-level, not tuning):**
+1. *Flat imposter fallback (low risk, loses parallax):* sample the baked color atlas at the
+   cage-surface entry UV and skip the relief march. The cage debug proves this yields a solid,
+   recognizable silhouette — likely meets bar B for distant LOD, but no parallax.
+2. *Different imposter representation (high effort):* octahedral/multi-view imposter or a
+   single shared volume/SDF instead of per-facet charts, so silhouette resolves from any angle.
+
+No source changes were made for Task 5 (all sweeps were env-driven); the committed Task 1-4
+state is clean.
+
+---
+
 ## Self-Review
 
 **Spec coverage:** UV texture (Task 1-2), shader fetch (Task 3), relief cell bound from UV
