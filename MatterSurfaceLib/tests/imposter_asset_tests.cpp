@@ -200,27 +200,41 @@ static void test_displacement_reconstruction() {
     CHECK(a.max_disp >= p.inflation, "max_disp at least inflation");
 
     // Reconstruct surface points from covered texels; assert they lie on the sphere.
+    // Mirrors the rasterized bake: walk each cage triangle's packed UV region, pick
+    // texels inside it, interpolate cage pos/normal by barycentrics, then step inward
+    // by the texel's stored displacement and check the point lands on the sphere.
     int covered = 0; float max_err = 0.0f;
     const int W=a.atlas_w, H=a.atlas_h;
-    int grid = (int)ceilf(sqrtf((float)a.tris.size()));
-    float cell = (float)W/(float)grid; float pad=2.0f;
-    for (int y=0;y<H;++y) for (int x=0;x<W;++x) {
-        if (a.color[(y*W+x)*4+3] == 0) continue; // gutter/miss
-        int gx=(int)((x+0.5f)/cell), gy=(int)((y+0.5f)/cell);
-        int t = gy*grid+gx; if (t<0 || t>=(int)a.tris.size()) continue;
-        float fu = ((x+0.5f)-(gx*cell+pad))/(cell-2*pad);
-        float fv = ((y+0.5f)-(gy*cell+pad))/(cell-2*pad);
-        float w1=fu, w2=fv, w0=1.0f-fu-fv;
-        const CageVert& A=a.verts[3*t], &B=a.verts[3*t+1], &C=a.verts[3*t+2];
-        float px=w0*A.px+w1*B.px+w2*C.px, py=w0*A.py+w1*B.py+w2*C.py, pz=w0*A.pz+w1*B.pz+w2*C.pz;
-        float nx=w0*A.nx+w1*B.nx+w2*C.nx, ny=w0*A.ny+w1*B.ny+w2*C.ny, nz=w0*A.nz+w1*B.nz+w2*C.nz;
-        float nl=sqrtf(nx*nx+ny*ny+nz*nz); nx/=nl; ny/=nl; nz/=nl;
-        uint16_t raw; memcpy(&raw, &a.disp[(y*W+x)*2], 2);
-        float d = (raw/65535.0f)*a.max_disp;
-        float sx=px-nx*d, sy=py-ny*d, sz=pz-nz*d;
-        float err = fabsf(sqrtf(sx*sx+sy*sy+sz*sz) - R);
-        if (err>max_err) max_err=err;
-        ++covered;
+    for (int t=0;t<(int)a.tris.size();++t){
+        const CageTri& tr=a.tris[t];
+        const CageVert& A=a.verts[tr.i0], &B=a.verts[tr.i1], &C=a.verts[tr.i2];
+        float axu=A.u*W, ayu=A.v*H, bxu=B.u*W, byu=B.v*H, cxu=C.u*W, cyu=C.v*H;
+        int x0=(int)floorf(fminf(axu,fminf(bxu,cxu))), x1=(int)ceilf(fmaxf(axu,fmaxf(bxu,cxu)));
+        int y0=(int)floorf(fminf(ayu,fminf(byu,cyu))), y1=(int)ceilf(fmaxf(ayu,fmaxf(byu,cyu)));
+        if (x0<0)x0=0; if (y0<0)y0=0; if (x1>W)x1=W; if (y1>H)y1=H;
+        float area=(bxu-axu)*(cyu-ayu)-(cxu-axu)*(byu-ayu);
+        if (fabsf(area)<1e-9f) continue;
+        float invArea=1.0f/area;
+        for (int y=y0;y<y1;++y) for (int x=x0;x<x1;++x){
+            if (a.color[(y*W+x)*4+3] == 0) continue; // gutter/miss
+            float pxc=x+0.5f, pyc=y+0.5f;
+            float w0=((bxu-pxc)*(cyu-pyc)-(cxu-pxc)*(byu-pyc))*invArea; // weight of A
+            float w1=((cxu-pxc)*(ayu-pyc)-(axu-pxc)*(cyu-pyc))*invArea; // weight of B
+            float w2=1.0f-w0-w1;
+            if (w0<0||w1<0||w2<0) continue;
+            // Only score texels this triangle actually owns (per the triid atlas).
+            uint16_t owner; memcpy(&owner, &a.triid[(y*W+x)*2], 2);
+            if (owner != (uint16_t)t) continue;
+            float px=w0*A.px+w1*B.px+w2*C.px, py=w0*A.py+w1*B.py+w2*C.py, pz=w0*A.pz+w1*B.pz+w2*C.pz;
+            float nx=w0*A.nx+w1*B.nx+w2*C.nx, ny=w0*A.ny+w1*B.ny+w2*C.ny, nz=w0*A.nz+w1*B.nz+w2*C.nz;
+            float nl=sqrtf(nx*nx+ny*ny+nz*nz); nx/=nl; ny/=nl; nz/=nl;
+            uint16_t raw; memcpy(&raw, &a.disp[(y*W+x)*2], 2);
+            float d = (raw/65535.0f)*a.max_disp;
+            float sx=px-nx*d, sy=py-ny*d, sz=pz-nz*d;
+            float err = fabsf(sqrtf(sx*sx+sy*sy+sz*sz) - R);
+            if (err>max_err) max_err=err;
+            ++covered;
+        }
     }
     CHECK(covered > 100, "displacement covered a meaningful texel count");
     CHECK(max_err < 0.05f, "reconstructed surface within 5% of sphere radius");
@@ -392,6 +406,31 @@ static void test_segment_charts() {
     }
 }
 
+static void test_bake_triid_and_continuity() {
+    using namespace imposter_asset;
+    // Flat 2-triangle quad part facing +Z, so the cage's single chart maps the quad
+    // contiguously; an interior strip should be covered by both triangles.
+    std::vector<Tri> part(2);
+    part[0].vertex0=make_float3(0,0,0); part[0].vertex1=make_float3(1,0,0); part[0].vertex2=make_float3(0,1,0);
+    part[1].vertex0=make_float3(1,0,0); part[1].vertex1=make_float3(1,1,0); part[1].vertex2=make_float3(0,1,0);
+    ImpGenParams p{}; p.cageRatio=1.0f; p.atlasW=64; p.atlasH=64;
+    p.inflation=0.05f; p.dispBits=16; p.seed=1u; p.maxCageTris=4096; p.chartConeDeg=75.0f;
+    ImposterAsset a;
+    CHECK(build_cage(part, p, 0x1ull, a), "cage built");
+    CHECK(bake_displacement_cpu(part, a), "bake ok");
+    CHECK(a.triid.size()==(size_t)a.atlas_w*a.atlas_h*2, "triid sized W*H*2");
+    // Every covered texel carries a valid (non-0xFFFF) triangle id; misses carry 0xFFFF.
+    long covered=0, bad=0;
+    for (int i=0;i<(int)a.atlas_w*(int)a.atlas_h;++i){
+        uint16_t id; memcpy(&id, &a.triid[(size_t)i*2], 2);
+        bool cov = a.color[i*4+3] > 127;
+        if (cov){ ++covered; if (id==0xFFFF || id>=a.tris.size()) ++bad; }
+        else    { if (id!=0xFFFF) ++bad; }
+    }
+    CHECK(covered>0, "some texels covered");
+    CHECK(bad==0, "covered<->valid id and miss<->0xFFFF agree");
+}
+
 int main() {
     test_hash_and_path();
     test_round_trip();
@@ -406,6 +445,7 @@ int main() {
     test_segment_charts();
     test_plane_basis();
     test_pack_charts();
+    test_bake_triid_and_continuity();
     if (failures == 0) printf("All imposter_asset tests passed\n");
     return failures == 0 ? 0 : 1;
 }

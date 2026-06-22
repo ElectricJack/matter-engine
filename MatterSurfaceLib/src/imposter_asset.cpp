@@ -518,81 +518,79 @@ bool bake_displacement_cpu(const std::vector<Tri>& part_tris, ImposterAsset& out
 
     // BVH over the part (BvhMesh owns a copy so the BVH's lifetime is self-contained).
     BvhMesh mesh{};
-    mesh.triCount = (int)part_tris.size();
-    mesh.tri = (Tri*)MALLOC64(sizeof(Tri)*mesh.triCount);
-    for (int i=0;i<mesh.triCount;++i) mesh.tri[i] = part_tris[i];
+    mesh.triCount=(int)part_tris.size();
+    mesh.tri=(Tri*)MALLOC64(sizeof(Tri)*mesh.triCount);
+    for (int i=0;i<mesh.triCount;++i) mesh.tri[i]=part_tris[i];
     BVH bvh(&mesh);
 
-    const bool quad = (std::getenv("MSL_IMPOSTER_CUBE") != nullptr);
     const int W=(int)out.atlas_w, H=(int)out.atlas_h;
+    const int bytes=out.disp_bits/8;
     const int nt=(int)out.tris.size();
-    const int nCharts = quad ? (nt+1)/2 : nt;
-    int grid=(int)ceilf(sqrtf((float)nCharts)); if(grid<1) grid=1;
-    const float cell=(float)W/(float)grid, pad=2.0f;
-    const int bytes = out.disp_bits/8;
 
-    // First pass: cast all covered texels, record raw inward hit distances.
     std::vector<float> dist((size_t)W*H, -1.0f);
-    for (int y=0;y<H;++y) for (int x=0;x<W;++x) {
-        int gx=(int)((x+0.5f)/cell), gy=(int)((y+0.5f)/cell);
-        int chart=gy*grid+gx; if(chart<0||chart>=nCharts) continue;
-        float fu=((x+0.5f)-(gx*cell+pad))/(cell-2*pad);
-        float fv=((y+0.5f)-(gy*cell+pad))/(cell-2*pad);
-        float3 pos, n;
-        if (quad) {
-            if (fu<0||fv<0||fu>1.0f||fv>1.0f) continue; // square cell gutter
-            // Bilinear over the face's 4 corners: a=SW, b=SE, c=NE, d=NW.
-            // Vert layout per face f: tri 2f=a,b,c @ 6f,6f+1,6f+2; tri 2f+1=a,c,d @ 6f+3,6f+4,6f+5.
-            const CageVert& A=out.verts[6*chart];   const CageVert& B=out.verts[6*chart+1];
-            const CageVert& C=out.verts[6*chart+2]; const CageVert& D=out.verts[6*chart+5];
-            float wa=(1-fu)*(1-fv), wb=fu*(1-fv), wc=fu*fv, wd=(1-fu)*fv;
-            pos=make_float3(wa*A.px+wb*B.px+wc*C.px+wd*D.px,
-                            wa*A.py+wb*B.py+wc*C.py+wd*D.py,
-                            wa*A.pz+wb*B.pz+wc*C.pz+wd*D.pz);
-            n=norm3(make_float3(wa*A.nx+wb*B.nx+wc*C.nx+wd*D.nx,
-                                wa*A.ny+wb*B.ny+wc*C.ny+wd*D.ny,
-                                wa*A.nz+wb*B.nz+wc*C.nz+wd*D.nz));
-        } else {
-            if (fu<0||fv<0||fu+fv>1.0f) continue; // gutter (outside the padded right-tri)
-            float w1=fu,w2=fv,w0=1.0f-fu-fv;
-            const CageVert& A=out.verts[3*chart]; const CageVert& B=out.verts[3*chart+1]; const CageVert& C=out.verts[3*chart+2];
-            pos=make_float3(w0*A.px+w1*B.px+w2*C.px, w0*A.py+w1*B.py+w2*C.py, w0*A.pz+w1*B.pz+w2*C.pz);
-            n=norm3(make_float3(w0*A.nx+w1*B.nx+w2*C.nx, w0*A.ny+w1*B.ny+w2*C.ny, w0*A.nz+w1*B.nz+w2*C.nz));
+    out.triid.assign((size_t)W*H*2, 0xFF);   // default uint16 0xFFFF
+    auto set_id=[&](int px,uint16_t id){ memcpy(&out.triid[(size_t)px*2], &id, 2); };
+
+    // Rasterize each cage triangle into its packed UV region; cast an inward ray
+    // per covered texel and record the part-surface hit distance + owning triangle.
+    for (int t=0;t<nt;++t){
+        const CageTri& tr=out.tris[t];
+        const CageVert& A=out.verts[tr.i0]; const CageVert& B=out.verts[tr.i1]; const CageVert& C=out.verts[tr.i2];
+        float ax=A.u*W, ay=A.v*H, bx=B.u*W, by=B.v*H, cx=C.u*W, cy=C.v*H;
+        int x0=(int)floorf(fminf(ax,fminf(bx,cx))), x1=(int)ceilf(fmaxf(ax,fmaxf(bx,cx)));
+        int y0=(int)floorf(fminf(ay,fminf(by,cy))), y1=(int)ceilf(fmaxf(ay,fmaxf(by,cy)));
+        if (x0<0)x0=0; if (y0<0)y0=0; if (x1>W)x1=W; if (y1>H)y1=H;
+        float area=(bx-ax)*(cy-ay)-(cx-ax)*(by-ay);
+        if (fabsf(area)<1e-9f) continue;
+        float invArea=1.0f/area;
+        for (int y=y0;y<y1;++y) for (int x=x0;x<x1;++x){
+            float px=x+0.5f, py=y+0.5f;
+            float wA=((bx-px)*(cy-py)-(cx-px)*(by-py))*invArea;   // area(B,C,P)/area -> weight of A
+            float wB=((cx-px)*(ay-py)-(ax-px)*(cy-py))*invArea;   // area(C,A,P)/area -> weight of B
+            float wC=1.0f-wA-wB;
+            if (wA<0||wB<0||wC<0) continue;            // outside this triangle
+            float3 pos=make_float3(wA*A.px+wB*B.px+wC*C.px,
+                                   wA*A.py+wB*B.py+wC*C.py,
+                                   wA*A.pz+wB*B.pz+wC*C.pz);
+            float3 n=norm3(make_float3(wA*A.nx+wB*B.nx+wC*C.nx,
+                                       wA*A.ny+wB*B.ny+wC*C.ny,
+                                       wA*A.nz+wB*B.nz+wC*C.nz));
+            float3 dir=make_float3(-n.x,-n.y,-n.z);
+            BVHRay ray; ray.O=pos; ray.D=dir; ray.rD=make_float3(1.0f/dir.x,1.0f/dir.y,1.0f/dir.z);
+            ray.hit.t=1e30f;
+            bvh.Intersect(ray,0);
+            int idx=y*W+x;
+            if (ray.hit.t<1e29f && ray.hit.t>0.0f){
+                dist[idx]=ray.hit.t;
+                set_id(idx,(uint16_t)t);
+            }
         }
-        float3 dir=make_float3(-n.x,-n.y,-n.z);
-        BVHRay ray; ray.O=pos; ray.D=dir; ray.rD=make_float3(1.0f/dir.x,1.0f/dir.y,1.0f/dir.z);
-        ray.hit.t=1e30f;
-        bvh.Intersect(ray, 0);
-        if (ray.hit.t < 1e29f && ray.hit.t > 0.0f) dist[(size_t)y*W+x]=ray.hit.t;
     }
 
     // Displacement spans the FULL imposter volume, not a thin surface shell:
     // disp 0 = the inward ray hit right at the cage face, disp 1 = it hit near
     // the far side of the volume. max_disp is therefore the cage's depth (largest
-    // bbox extent, "roughly the other side"), so the relief march -- which
-    // resolves [0, max_disp] with 32 linear steps + a binary refine -- walks the
-    // whole interior. 16-bit disp keeps that deep range smooth. Never below the
+    // bbox extent), so the relief march walks the whole interior. Never below the
     // cage inflation (the guaranteed minimum shell).
-    float ext[3] = { out.bounds_max[0]-out.bounds_min[0],
-                     out.bounds_max[1]-out.bounds_min[1],
-                     out.bounds_max[2]-out.bounds_min[2] };
-    float full_depth = fmaxf(ext[0], fmaxf(ext[1], ext[2]));
-    out.max_disp = fmaxf(out.max_disp, full_depth);
-    if (const char* e = std::getenv("MSL_IMP_SHELL")) out.max_disp = (float)atof(e); // absolute override
+    float ext[3]={ out.bounds_max[0]-out.bounds_min[0],
+                   out.bounds_max[1]-out.bounds_min[1],
+                   out.bounds_max[2]-out.bounds_min[2] };
+    float full_depth=fmaxf(ext[0],fmaxf(ext[1],ext[2]));
+    out.max_disp=fmaxf(out.max_disp,full_depth);
+    if (const char* e=std::getenv("MSL_IMP_SHELL")) out.max_disp=(float)atof(e); // absolute override
 
-    // Second pass: normalize every inward hit across the full depth + write
-    // coverage. A texel is covered iff its ray hit the part anywhere inside the
-    // volume; a true miss (ray escaped) is coverage 0. Hits past max_disp clamp
-    // to 1.0 rather than being dropped.
-    out.disp.assign((size_t)W*H*bytes, 0);
-    out.color.assign((size_t)W*H*4, 0);
-    for (int i=0;i<W*H;++i) {
+    // Normalize every inward hit across the full depth + write coverage. A texel
+    // is covered iff its ray hit the part anywhere inside the volume; a true miss
+    // (ray escaped, or never rasterized) is coverage 0. Hits past max_disp clamp.
+    out.disp.assign((size_t)W*H*bytes,0);
+    out.color.assign((size_t)W*H*4,0);
+    for (int i=0;i<W*H;++i){
         float d=dist[i];
-        if (d<0.0f) { out.color[i*4+3]=0; continue; } // miss/gutter
-        float nrm = d/out.max_disp; if(nrm>1.0f) nrm=1.0f; if(nrm<0.0f) nrm=0.0f;
-        if (bytes==2) { uint16_t v=(uint16_t)(nrm*65535.0f+0.5f); memcpy(&out.disp[(size_t)i*2], &v, 2); }
-        else          { out.disp[i]=(uint8_t)(nrm*255.0f+0.5f); }
-        out.color[i*4+3]=255; // coverage
+        if (d<0.0f){ out.color[i*4+3]=0; continue; }
+        float nrm=d/out.max_disp; if(nrm>1.0f)nrm=1.0f; if(nrm<0.0f)nrm=0.0f;
+        if (bytes==2){ uint16_t v=(uint16_t)(nrm*65535.0f+0.5f); memcpy(&out.disp[(size_t)i*2],&v,2); }
+        else         { out.disp[i]=(uint8_t)(nrm*255.0f+0.5f); }
+        out.color[i*4+3]=255;
     }
 
     FREE64(mesh.tri);
