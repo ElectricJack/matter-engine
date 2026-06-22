@@ -125,9 +125,8 @@ uniform float imposterMaxDisp;        // shell thickness (denormalizes displacem
 uniform vec2  imposterAtlasSize;      // (atlasW, atlasH) for padding math
 uniform float imposterPad;            // gutter padding in texels (matches build_cage)
 uniform int   imposterDbg;            // 0=normal, 1=color by cage triangle index (no relief)
-uniform int   imposterQuadCharts;     // !=0: 2 tris per square chart (box faces); else 1 tri per chart
-uniform vec3  imposterAabbMin;        // cube cage AABB (post-instance-transform) for quad-chart UVs
-uniform vec3  imposterAabbMax;
+uniform sampler2D imposterTriUvTex;   // RGBA32F: col=BVH triangle slot, row=corner, .xy=uv
+uniform int   imposterTriCount;       // number of cage triangles (texture width)
 
 // Control uniforms
 uniform int intersectionMode;    // 0=brute force, 1=TLAS/BLAS traversal
@@ -716,67 +715,6 @@ bool shadowQuery(vec3 origin, vec3 dir, float maxDist)
     return false;
 }
 
-// Deterministic per-cage-triangle UVs (must match build_cage in imposter_asset.cpp).
-void imposterTriUVs(int localTri, out vec2 uv0, out vec2 uv1, out vec2 uv2) {
-    float cU = 1.0 / float(imposterGrid);
-    float cV = 1.0 / float(imposterGrid);
-    float pU = imposterPad / imposterAtlasSize.x;
-    float pV = imposterPad / imposterAtlasSize.y;
-    if (imposterQuadCharts != 0) {
-        // Two triangles per square chart (one box face). Both tris share the
-        // cell's four corners so their common diagonal is parameterized
-        // identically -> no seam across the face.
-        int chart = localTri / 2;
-        int gx = chart % imposterGrid;
-        int gy = chart / imposterGrid;
-        float bx = float(gx) * cU, by = float(gy) * cV;
-        vec2 SW = vec2(bx + pU,      by + pV);
-        vec2 SE = vec2(bx + cU - pU, by + pV);
-        vec2 NE = vec2(bx + cU - pU, by + cV - pV);
-        vec2 NW = vec2(bx + pU,      by + cV - pV);
-        if ((localTri & 1) == 0) { uv0 = SW; uv1 = SE; uv2 = NE; } // a,b,c
-        else                     { uv0 = SW; uv1 = NE; uv2 = NW; } // a,c,d
-        return;
-    }
-    int gx = localTri % imposterGrid;
-    int gy = localTri / imposterGrid;
-    float bx = float(gx) * cU, by = float(gy) * cV;
-    uv0 = vec2(bx + pU,        by + pU);
-    uv1 = vec2(bx + cU - pU,   by + pU);
-    uv2 = vec2(bx + pU,        by + cV - pV);
-}
-
-// Order-independent chart selection for the axis-aligned cube cage. The BLAS
-// reorders cage triangles into BVH order, so the texture index (localTri) no
-// longer matches build_cage's face order -> index-based UVs sample the wrong
-// face. For the cube we instead derive the face from the world-space normal and
-// the per-vertex UV from the vertex position within the cage AABB, which is
-// invariant to triangle reordering.
-int imposterCubeFace(vec3 n) {
-    vec3 a = abs(n);
-    if (a.x >= a.y && a.x >= a.z) return n.x > 0.0 ? 0 : 1; // +X / -X
-    if (a.y >= a.z)               return n.y > 0.0 ? 2 : 3; // +Y / -Y
-    return n.z > 0.0 ? 4 : 5;                               // +Z / -Z
-}
-
-vec2 imposterCubeUV(int face, vec3 p) {
-    vec3 t = (p - imposterAabbMin) / max(imposterAabbMax - imposterAabbMin, vec3(1e-6));
-    // su,sv must match the bake's bilinear axes (a->b = su, a->d = sv) per face.
-    float su, sv;
-    if      (face == 0) { su = t.y; sv = t.z; } // +X
-    else if (face == 1) { su = t.z; sv = t.y; } // -X
-    else if (face == 2) { su = t.z; sv = t.x; } // +Y
-    else if (face == 3) { su = t.x; sv = t.z; } // -Y
-    else if (face == 4) { su = t.x; sv = t.y; } // +Z
-    else                { su = t.y; sv = t.x; } // -Z
-    int gx = face % imposterGrid, gy = face / imposterGrid;
-    float cellN = 1.0 / float(imposterGrid);
-    float padU = imposterPad / imposterAtlasSize.x, padV = imposterPad / imposterAtlasSize.y;
-    float innerU = cellN - 2.0 * padU, innerV = cellN - 2.0 * padV;
-    return vec2(float(gx) * cellN + padU + su * innerU,
-                float(gy) * cellN + padV + sv * innerV);
-}
-
 // Relief-march from the cage entry into the displacement shell. Returns true and
 // the hit UV when a covered crossing is found within maxDisp; false = pass through.
 // hitS returns the arc length along (normalized) rayDir from entryPos to the
@@ -806,11 +744,10 @@ bool reliefMarch(vec3 entryPos, vec3 rayDir,
     float bu = 1.0 - bv - bw;
     vec2 entryUV = bu*uv0 + bv*uv1 + bw*uv2;
 
-    // Atlas cell this chart lives in. Marching UV must stay within the cell, or
-    // we'd sample a neighbor chart's heightfield (cross-cell bleed / seams).
-    float cellSz = 1.0 / float(imposterGrid);
-    vec2 cellLo = floor(entryUV / cellSz) * cellSz;
-    vec2 cellHi = cellLo + cellSz;
+    // Chart bounds = this triangle's own UV bbox. Marching UV must stay within it,
+    // or we'd sample a neighbor chart's heightfield (cross-cell bleed / seams).
+    vec2 cellLo = min(uv0, min(uv1, uv2)) - vec2(0.002);
+    vec2 cellHi = max(uv0, max(uv1, uv2)) + vec2(0.002);
 
     // World ray -> (du, dv, dn) rates. dn<0 = going inward (below cage along N).
     mat3 M = mat3(dpdu, dpdv, cageN);
@@ -959,16 +896,11 @@ HitResult intersectScene(vec3 rayOrigin, vec3 rayDir, float maxT)
             vec3 w1 = transformPosition(tri.v1, inst.transform);
             vec3 w2 = transformPosition(tri.v2, inst.transform);
             vec3 cageN = normalize(result.normal);
-            vec2 uv0, uv1, uv2;
-            if (imposterQuadCharts != 0) {
-                // Cube cage: derive UVs from geometry (reorder-safe), not localTri.
-                int face = imposterCubeFace(cageN);
-                uv0 = imposterCubeUV(face, w0);
-                uv1 = imposterCubeUV(face, w1);
-                uv2 = imposterCubeUV(face, w2);
-            } else {
-                imposterTriUVs(localTri, uv0, uv1, uv2);
-            }
+            // Per-corner baked UVs, fetched in BVH-triangle order -> reorder-safe and
+            // geometry-agnostic (same path for cube and fitted cages).
+            vec2 uv0 = texelFetch(imposterTriUvTex, ivec2(localTri, 0), 0).xy;
+            vec2 uv1 = texelFetch(imposterTriUvTex, ivec2(localTri, 1), 0).xy;
+            vec2 uv2 = texelFetch(imposterTriUvTex, ivec2(localTri, 2), 0).xy;
             vec3 ndir = normalize(rayDir);
             vec2 hitUV; float hitS;
             if (reliefMarch(result.position, ndir, w0, w1, w2, uv0, uv1, uv2, cageN, hitUV, hitS)) {
