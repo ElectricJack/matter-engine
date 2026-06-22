@@ -239,10 +239,10 @@ std::vector<int> segment_charts(const float* positions, const unsigned short* in
         stack.clear(); stack.push_back(seed);
         while (!stack.empty()) {
             int t = stack.back(); stack.pop_back();
-            float3 avg = norm3(sumN);
             for (int e=0;e<3;++e) {
                 int nb = adj[t].nbr[e];
                 if (nb < 0 || cid[nb] != -1) continue;
+                float3 avg = norm3(sumN);
                 if (fn[nb].x*avg.x + fn[nb].y*avg.y + fn[nb].z*avg.z >= coneCos) {
                     cid[nb] = c;
                     sumN = make_float3(sumN.x+fn[nb].x, sumN.y+fn[nb].y, sumN.z+fn[nb].z);
