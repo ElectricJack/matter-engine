@@ -406,62 +406,110 @@ bool build_cage(const std::vector<Tri>& part_tris, const ImpGenParams& p,
         for (auto& n : vn) n = norm3(n);
     }
 
-    // Atlas packing grid. In quad-chart mode (box cage) two triangles share one
-    // square cell (one box face), so we pack ceil(sqrt(faces)) cells instead.
-    const bool quad = (std::getenv("MSL_IMPOSTER_CUBE") != nullptr);
+    // ---- Chart pipeline (replaces per-triangle grid packing) ----
     const int nt = cage.triangleCount;
-    const int nCharts = quad ? (nt + 1) / 2 : nt;
-    int grid = (int)ceilf(sqrtf((float)nCharts)); if (grid < 1) grid = 1;
-    const float cell = (float)p.atlasW / (float)grid; // assume square atlas
-    const float pad = 2.0f;
-    const float aw = (float)p.atlasW, ah = (float)p.atlasH;
 
+    std::vector<TriAdj> adj = build_adjacency(cage.vertices, cage.indices, nt);
+    int nCharts = 0;
+    std::vector<int> chartOf = segment_charts(cage.vertices, cage.indices, nt, adj,
+                                              p.chartConeDeg, nCharts);
+
+    // Inflated emitted position per (triangle, corner) using the smoothed normal `vn`.
+    auto inflated = [&](int t,int k)->float3 {
+        int vi = cage.indices[t*3+k];
+        float3 pos = getv(vi), n = vn[vi];
+        return make_float3(pos.x+n.x*p.inflation, pos.y+n.y*p.inflation, pos.z+n.z*p.inflation);
+    };
+
+    // Per-chart outward average normal (re-accumulated from oriented face normals) and
+    // centroid of inflated corners.
+    float3 meshC = make_float3(0,0,0);
+    for (int t=0;t<nt;++t) for (int k=0;k<3;++k){ float3 q=inflated(t,k);
+        meshC=make_float3(meshC.x+q.x,meshC.y+q.y,meshC.z+q.z); }
+    if (nt>0){ float in=1.0f/(float)(nt*3); meshC=make_float3(meshC.x*in,meshC.y*in,meshC.z*in); }
+
+    std::vector<float3> chartSumN(nCharts, make_float3(0,0,0));
+    std::vector<float3> chartCsum(nCharts, make_float3(0,0,0));
+    std::vector<int>    chartCcnt(nCharts, 0);
+    for (int t=0;t<nt;++t){
+        float3 p0=inflated(t,0),p1=inflated(t,1),p2=inflated(t,2);
+        float3 fnv=cross3(sub3(p1,p0),sub3(p2,p0));
+        float3 fc=make_float3((p0.x+p1.x+p2.x)/3-meshC.x,(p0.y+p1.y+p2.y)/3-meshC.y,(p0.z+p1.z+p2.z)/3-meshC.z);
+        if (fnv.x*fc.x+fnv.y*fc.y+fnv.z*fc.z<0.0f) fnv=make_float3(-fnv.x,-fnv.y,-fnv.z);
+        fnv=norm3(fnv);
+        int c=chartOf[t];
+        chartSumN[c]=make_float3(chartSumN[c].x+fnv.x,chartSumN[c].y+fnv.y,chartSumN[c].z+fnv.z);
+        for (int k=0;k<3;++k){ float3 q=inflated(t,k);
+            chartCsum[c]=make_float3(chartCsum[c].x+q.x,chartCsum[c].y+q.y,chartCsum[c].z+q.z);
+            chartCcnt[c]++; }
+    }
+
+    // Per-chart basis + centroid.
+    std::vector<float3> chartT(nCharts), chartB(nCharts), chartO(nCharts);
+    for (int c=0;c<nCharts;++c){
+        float3 N=norm3(chartSumN[c]); float nn[3]={N.x,N.y,N.z}, T[3],B[3];
+        plane_basis(nn,T,B);
+        chartT[c]=make_float3(T[0],T[1],T[2]); chartB[c]=make_float3(B[0],B[1],B[2]);
+        float inv = chartCcnt[c]>0 ? 1.0f/(float)chartCcnt[c] : 0.0f;
+        chartO[c]=make_float3(chartCsum[c].x*inv,chartCsum[c].y*inv,chartCsum[c].z*inv);
+    }
+
+    // Pass 1: project every corner into its chart's plane; track per-chart 2D bbox.
+    std::vector<float> pu((size_t)nt*3), pv((size_t)nt*3);
+    std::vector<float> cMinU(nCharts,1e30f), cMinV(nCharts,1e30f),
+                       cMaxU(nCharts,-1e30f), cMaxV(nCharts,-1e30f);
+    for (int t=0;t<nt;++t){ int c=chartOf[t];
+        for (int k=0;k<3;++k){
+            float3 q=inflated(t,k), d=sub3(q,chartO[c]);
+            float u=d.x*chartT[c].x+d.y*chartT[c].y+d.z*chartT[c].z;
+            float v=d.x*chartB[c].x+d.y*chartB[c].y+d.z*chartB[c].z;
+            pu[t*3+k]=u; pv[t*3+k]=v;
+            cMinU[c]=fminf(cMinU[c],u); cMinV[c]=fminf(cMinV[c],v);
+            cMaxU[c]=fmaxf(cMaxU[c],u); cMaxV[c]=fmaxf(cMaxV[c],v);
+        }
+    }
+
+    // Pack chart rects.
+    std::vector<ChartRect> rects(nCharts);
+    for (int c=0;c<nCharts;++c){
+        float w=fmaxf(cMaxU[c]-cMinU[c],1e-5f), h=fmaxf(cMaxV[c]-cMinV[c],1e-5f);
+        rects[c]=ChartRect{cMinU[c],cMinV[c],w,h};
+    }
+    const int pad=2;
+    float scale=1.0f; std::vector<ChartPlacement> placements;
+    if (!pack_charts(rects, p.atlasW, p.atlasH, pad, scale, placements)) {
+        MemFree(cage.vertices); if (cage.normals) MemFree(cage.normals); MemFree(cage.indices); return false;
+    }
+
+    // ---- Emit ----
     out = ImposterAsset{};
     out.source_part_hash = source_part_hash;
-    out.atlas_w = (uint32_t)p.atlasW;
-    out.atlas_h = (uint32_t)p.atlasH;
-    out.disp_bits = p.dispBits;
-    out.max_disp = p.inflation;
-    out.verts.reserve(nt*3);
-    out.tris.reserve(nt);
+    out.atlas_w=(uint32_t)p.atlasW; out.atlas_h=(uint32_t)p.atlasH;
+    out.disp_bits=p.dispBits; out.max_disp=p.inflation;
+    out.verts.reserve(nt*3); out.tris.reserve(nt); out.tri_chart.reserve(nt);
 
+    const float aw=(float)p.atlasW, ah=(float)p.atlasH;
     float bmin[3]={1e30f,1e30f,1e30f}, bmax[3]={-1e30f,-1e30f,-1e30f};
-    for (int t=0;t<nt;++t) {
-        int idx[3] = { (int)cage.indices[t*3+0], (int)cage.indices[t*3+1], (int)cage.indices[t*3+2] };
-        int chart = quad ? t/2 : t;
-        int gx = chart % grid, gy = chart / grid;
-        float cx = gx*cell, cy = gy*cell;
-        float uv[3][2];
-        if (quad) {
-            // Square chart: a->SW, b->SE, c->NE, d->NW. tri even=a,b,c; tri odd=a,c,d.
-            float SW[2]={(cx+pad)/aw,      (cy+pad)/ah};
-            float SE[2]={(cx+cell-pad)/aw, (cy+pad)/ah};
-            float NE[2]={(cx+cell-pad)/aw, (cy+cell-pad)/ah};
-            float NW[2]={(cx+pad)/aw,      (cy+cell-pad)/ah};
-            if ((t & 1) == 0) { uv[0][0]=SW[0];uv[0][1]=SW[1]; uv[1][0]=SE[0];uv[1][1]=SE[1]; uv[2][0]=NE[0];uv[2][1]=NE[1]; }
-            else              { uv[0][0]=SW[0];uv[0][1]=SW[1]; uv[1][0]=NE[0];uv[1][1]=NE[1]; uv[2][0]=NW[0];uv[2][1]=NW[1]; }
-        } else {
-            uv[0][0]=(cx+pad)/aw;       uv[0][1]=(cy+pad)/ah;
-            uv[1][0]=(cx+cell-pad)/aw;  uv[1][1]=(cy+pad)/ah;
-            uv[2][0]=(cx+pad)/aw;       uv[2][1]=(cy+cell-pad)/ah;
-        }
-        for (int k=0;k<3;++k) {
-            float3 pos = getv(idx[k]);
-            float3 n   = vn[idx[k]];
-            float3 ip  = make_float3(pos.x + n.x*p.inflation, pos.y + n.y*p.inflation, pos.z + n.z*p.inflation);
+    for (int t=0;t<nt;++t){
+        int c=chartOf[t];
+        for (int k=0;k<3;++k){
+            float3 ip=inflated(t,k); int vi=cage.indices[t*3+k]; float3 n=vn[vi];
+            float u=(placements[c].ox+pad+(pu[t*3+k]-cMinU[c])*scale)/aw;
+            float v=(placements[c].oy+pad+(pv[t*3+k]-cMinV[c])*scale)/ah;
             CageVert cv; cv.px=ip.x; cv.py=ip.y; cv.pz=ip.z;
-            cv.nx=n.x; cv.ny=n.y; cv.nz=n.z; cv.u=uv[k][0]; cv.v=uv[k][1];
+            cv.nx=n.x; cv.ny=n.y; cv.nz=n.z; cv.u=u; cv.v=v;
             out.verts.push_back(cv);
             bmin[0]=fminf(bmin[0],ip.x); bmin[1]=fminf(bmin[1],ip.y); bmin[2]=fminf(bmin[2],ip.z);
             bmax[0]=fmaxf(bmax[0],ip.x); bmax[1]=fmaxf(bmax[1],ip.y); bmax[2]=fmaxf(bmax[2],ip.z);
         }
-        out.tris.push_back({ (uint32_t)(t*3), (uint32_t)(t*3+1), (uint32_t)(t*3+2) });
+        out.tris.push_back({(uint32_t)(t*3),(uint32_t)(t*3+1),(uint32_t)(t*3+2)});
+        out.tri_chart.push_back((uint32_t)c);
     }
     for (int i=0;i<3;++i){ out.bounds_min[i]=bmin[i]; out.bounds_max[i]=bmax[i]; }
-    float ext = fmaxf(bmax[0]-bmin[0], fmaxf(bmax[1]-bmin[1], bmax[2]-bmin[2]));
-    out.parallax_radius = ext * 6.0f; // #3 hint; tune later
+    float ext=fmaxf(bmax[0]-bmin[0],fmaxf(bmax[1]-bmin[1],bmax[2]-bmin[2]));
+    out.parallax_radius=ext*6.0f;
 
-    MemFree(cage.vertices); MemFree(cage.normals); MemFree(cage.indices);
+    MemFree(cage.vertices); if (cage.normals) MemFree(cage.normals); MemFree(cage.indices);
     return true;
 }
 

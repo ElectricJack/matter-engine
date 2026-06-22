@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <cmath>
 #include <vector>
+#include <algorithm>
 
 static int failures = 0;
 #define CHECK(cond, msg) do { if (!(cond)) { printf("FAIL: %s\n", msg); ++failures; } } while (0)
@@ -157,6 +158,32 @@ static void test_build_cage() {
             if (fabsf(ci_u-cj_u)<1e-5f && fabsf(ci_v-cj_v)<1e-5f) distinct=false;
         }
     CHECK(distinct, "each cage triangle maps to a distinct atlas cell");
+}
+
+static void test_build_cage_charts() {
+    using namespace imposter_asset;
+    // A simple closed tetrahedron-ish part: 4 triangles with distinct face normals.
+    std::vector<Tri> part(4);
+    auto T=[&](int i,float3 a,float3 b,float3 c){ part[i].vertex0=a;part[i].vertex1=b;part[i].vertex2=c; };
+    T(0, make_float3(0,0,0), make_float3(1,0,0), make_float3(0,1,0));
+    T(1, make_float3(0,0,0), make_float3(0,1,0), make_float3(0,0,1));
+    T(2, make_float3(0,0,0), make_float3(0,0,1), make_float3(1,0,0));
+    T(3, make_float3(1,0,0), make_float3(0,1,0), make_float3(0,0,1));
+    ImpGenParams p{}; p.cageRatio=1.0f; p.atlasW=128; p.atlasH=128;
+    p.inflation=0.02f; p.dispBits=16; p.seed=1u; p.maxCageTris=4096; p.chartConeDeg=75.0f;
+    ImposterAsset a;
+    CHECK(build_cage(part, p, 0x1ull, a), "build_cage succeeds");
+    CHECK(a.tri_chart.size()==a.tris.size(), "tri_chart sized per triangle");
+    CHECK(a.verts.size()==a.tris.size()*3, "3 emitted verts per triangle");
+    int maxc=-1; for (uint32_t c:a.tri_chart) maxc=std::max(maxc,(int)c);
+    CHECK(maxc>=0 && maxc < (int)a.tris.size(), "chart ids in range");
+    bool uv_ok=true, finite=true;
+    for (const auto& v:a.verts){
+        if (v.u<0.0f||v.u>1.0f||v.v<0.0f||v.v>1.0f) uv_ok=false;
+        if (!(v.u==v.u)||!(v.v==v.v)) finite=false;
+    }
+    CHECK(uv_ok, "all UVs within [0,1]");
+    CHECK(finite, "no NaN UVs");
 }
 
 static void test_displacement_reconstruction() {
@@ -370,6 +397,7 @@ int main() {
     test_round_trip();
     test_guards();
     test_build_cage();
+    test_build_cage_charts();
     test_displacement_reconstruction();
     test_dilate_atlas();
     test_pack_cage_uvs_bvh_order();
