@@ -7,6 +7,7 @@
 #include <cmath>
 #include <algorithm>
 #include <vector>
+#include <cstdlib>
 #include <sys/stat.h>
 
 namespace {
@@ -154,59 +155,114 @@ bool build_cage(const std::vector<Tri>& part_tris, const ImpGenParams& p,
                 uint64_t source_part_hash, ImposterAsset& out) {
     if (part_tris.empty() || p.atlasW <= 0 || p.atlasH <= 0) return false;
 
-    // Non-indexed input mesh: 3 corners per triangle, simplifier welds internally.
-    Mesh in{};
-    in.triangleCount = (int)part_tris.size();
-    in.vertexCount   = in.triangleCount * 3;
-    in.vertices = (float*)MemAlloc(sizeof(float)*3*in.vertexCount);
-    for (int t=0;t<in.triangleCount;++t) {
-        const Tri& tr = part_tris[t];
-        const float3 c[3] = { tr.vertex0, tr.vertex1, tr.vertex2 };
-        for (int k=0;k<3;++k){ in.vertices[(t*3+k)*3+0]=c[k].x; in.vertices[(t*3+k)*3+1]=c[k].y; in.vertices[(t*3+k)*3+2]=c[k].z; }
-    }
-
-    SimplifyOptions opt; opt.target_ratio = p.cageRatio; opt.lock_boundary = false;
-    Mesh cage = simplify_mesh(in, opt, nullptr);
-    MemFree(in.vertices);
-    if (cage.vertexCount == 0 || cage.triangleCount == 0) {
-        if (cage.vertices) MemFree(cage.vertices);
-        if (cage.normals)  MemFree(cage.normals);
-        if (cage.indices)  MemFree(cage.indices);
-        return false;
-    }
-
-    // Smoothed per-vertex normals on the simplified mesh.
+    Mesh cage{};
+    std::vector<float3> vn;
     auto getv = [&](int i){ return make_float3(cage.vertices[i*3+0],cage.vertices[i*3+1],cage.vertices[i*3+2]); };
 
-    // Compute mesh centroid to orient face normals outward.
-    float3 centroid = make_float3(0,0,0);
-    for (int i=0;i<cage.vertexCount;++i) {
-        float3 p = getv(i);
-        centroid = make_float3(centroid.x+p.x, centroid.y+p.y, centroid.z+p.z);
-    }
-    float inv = 1.0f / (float)cage.vertexCount;
-    centroid = make_float3(centroid.x*inv, centroid.y*inv, centroid.z*inv);
+    if (std::getenv("MSL_IMPOSTER_CUBE")) {
+        // DEBUG cage: a slightly oversized axis-aligned cube around the part bounds.
+        // 12 tris -> a 4x4 atlas with huge cells, and clean per-face outward normals,
+        // so this isolates UV/orientation bake bugs from simplified-mesh normal noise.
+        // Toggle with MSL_IMPOSTER_CUBE; remove once the bake pipeline is validated.
+        float pmin[3]={1e30f,1e30f,1e30f}, pmax[3]={-1e30f,-1e30f,-1e30f};
+        auto acc=[&](float3 v){ pmin[0]=fminf(pmin[0],v.x);pmin[1]=fminf(pmin[1],v.y);pmin[2]=fminf(pmin[2],v.z);
+                                pmax[0]=fmaxf(pmax[0],v.x);pmax[1]=fmaxf(pmax[1],v.y);pmax[2]=fmaxf(pmax[2],v.z); };
+        for (const Tri& t : part_tris){ acc(t.vertex0); acc(t.vertex1); acc(t.vertex2); }
+        float ext = fmaxf(pmax[0]-pmin[0], fmaxf(pmax[1]-pmin[1], pmax[2]-pmin[2]));
+        float m = 0.05f*ext + 1e-3f; // small oversize margin
+        float lo[3]={pmin[0]-m,pmin[1]-m,pmin[2]-m}, hi[3]={pmax[0]+m,pmax[1]+m,pmax[2]+m};
+        float3 c[8] = {
+            make_float3(lo[0],lo[1],lo[2]), make_float3(hi[0],lo[1],lo[2]),
+            make_float3(hi[0],hi[1],lo[2]), make_float3(lo[0],hi[1],lo[2]),
+            make_float3(lo[0],lo[1],hi[2]), make_float3(hi[0],lo[1],hi[2]),
+            make_float3(hi[0],hi[1],hi[2]), make_float3(lo[0],hi[1],hi[2]),
+        };
+        struct Face { int a,b,c,d; float3 n; };
+        Face faces[6] = {
+            {1,2,6,5, make_float3( 1, 0, 0)}, // +X
+            {0,4,7,3, make_float3(-1, 0, 0)}, // -X
+            {3,7,6,2, make_float3( 0, 1, 0)}, // +Y
+            {0,1,5,4, make_float3( 0,-1, 0)}, // -Y
+            {4,5,6,7, make_float3( 0, 0, 1)}, // +Z
+            {0,3,2,1, make_float3( 0, 0,-1)}, // -Z
+        };
+        const int nv=36, ntr=12;
+        cage.vertexCount=nv; cage.triangleCount=ntr;
+        cage.vertices=(float*)MemAlloc(sizeof(float)*3*nv);
+        cage.indices=(unsigned short*)MemAlloc(sizeof(unsigned short)*3*ntr);
+        vn.assign(nv, make_float3(0,0,0));
+        int vi=0;
+        auto emit=[&](float3 ppos, float3 n){ cage.vertices[vi*3+0]=ppos.x;cage.vertices[vi*3+1]=ppos.y;cage.vertices[vi*3+2]=ppos.z;
+                                              vn[vi]=n; cage.indices[vi]=(unsigned short)vi; ++vi; };
+        for (const Face& f : faces){
+            emit(c[f.a],f.n); emit(c[f.b],f.n); emit(c[f.c],f.n);
+            emit(c[f.a],f.n); emit(c[f.c],f.n); emit(c[f.d],f.n);
+        }
+    } else {
+        // Non-indexed input mesh: 3 corners per triangle, simplifier welds internally.
+        Mesh in{};
+        in.triangleCount = (int)part_tris.size();
+        in.vertexCount   = in.triangleCount * 3;
+        in.vertices = (float*)MemAlloc(sizeof(float)*3*in.vertexCount);
+        for (int t=0;t<in.triangleCount;++t) {
+            const Tri& tr = part_tris[t];
+            const float3 c[3] = { tr.vertex0, tr.vertex1, tr.vertex2 };
+            for (int k=0;k<3;++k){ in.vertices[(t*3+k)*3+0]=c[k].x; in.vertices[(t*3+k)*3+1]=c[k].y; in.vertices[(t*3+k)*3+2]=c[k].z; }
+        }
 
-    std::vector<float3> vn(cage.vertexCount, make_float3(0,0,0));
-    for (int t=0;t<cage.triangleCount;++t) {
-        int i0=cage.indices[t*3+0], i1=cage.indices[t*3+1], i2=cage.indices[t*3+2];
-        float3 p0=getv(i0), p1=getv(i1), p2=getv(i2);
-        float3 fn = cross3(sub3(p1,p0), sub3(p2,p0));
-        // Orient face normal to point away from mesh centroid.
-        float3 fc = make_float3((p0.x+p1.x+p2.x)/3-(centroid.x),
-                                (p0.y+p1.y+p2.y)/3-(centroid.y),
-                                (p0.z+p1.z+p2.z)/3-(centroid.z));
-        float dot = fn.x*fc.x + fn.y*fc.y + fn.z*fc.z;
-        if (dot < 0.0f) { fn = make_float3(-fn.x,-fn.y,-fn.z); }
-        vn[i0]=make_float3(vn[i0].x+fn.x,vn[i0].y+fn.y,vn[i0].z+fn.z);
-        vn[i1]=make_float3(vn[i1].x+fn.x,vn[i1].y+fn.y,vn[i1].z+fn.z);
-        vn[i2]=make_float3(vn[i2].x+fn.x,vn[i2].y+fn.y,vn[i2].z+fn.z);
-    }
-    for (auto& n : vn) n = norm3(n);
+        // Cap the cage triangle count so atlas cells stay large enough to hold a
+        // usable per-triangle heightfield. With ~grid=ceil(sqrt(nt)) cells packed
+        // into atlasW texels, a 97k-tri cage gives 3-texel cells that are almost
+        // entirely padding gutter (near-zero coverage). Clamp the ratio so the cage
+        // never exceeds maxCageTris regardless of how dense the source part is.
+        float ratio = p.cageRatio;
+        if (p.maxCageTris > 0 && (int)part_tris.size() > p.maxCageTris) {
+            float cap = (float)p.maxCageTris / (float)part_tris.size();
+            if (cap < ratio) ratio = cap;
+        }
+        SimplifyOptions opt; opt.target_ratio = ratio; opt.lock_boundary = false;
+        cage = simplify_mesh(in, opt, nullptr);
+        MemFree(in.vertices);
+        if (cage.vertexCount == 0 || cage.triangleCount == 0) {
+            if (cage.vertices) MemFree(cage.vertices);
+            if (cage.normals)  MemFree(cage.normals);
+            if (cage.indices)  MemFree(cage.indices);
+            return false;
+        }
 
-    // Atlas packing grid.
+        // Compute mesh centroid to orient face normals outward.
+        float3 centroid = make_float3(0,0,0);
+        for (int i=0;i<cage.vertexCount;++i) {
+            float3 pp = getv(i);
+            centroid = make_float3(centroid.x+pp.x, centroid.y+pp.y, centroid.z+pp.z);
+        }
+        float inv = 1.0f / (float)cage.vertexCount;
+        centroid = make_float3(centroid.x*inv, centroid.y*inv, centroid.z*inv);
+
+        vn.assign(cage.vertexCount, make_float3(0,0,0));
+        for (int t=0;t<cage.triangleCount;++t) {
+            int i0=cage.indices[t*3+0], i1=cage.indices[t*3+1], i2=cage.indices[t*3+2];
+            float3 p0=getv(i0), p1=getv(i1), p2=getv(i2);
+            float3 fn = cross3(sub3(p1,p0), sub3(p2,p0));
+            // Orient face normal to point away from mesh centroid.
+            float3 fc = make_float3((p0.x+p1.x+p2.x)/3-(centroid.x),
+                                    (p0.y+p1.y+p2.y)/3-(centroid.y),
+                                    (p0.z+p1.z+p2.z)/3-(centroid.z));
+            float dot = fn.x*fc.x + fn.y*fc.y + fn.z*fc.z;
+            if (dot < 0.0f) { fn = make_float3(-fn.x,-fn.y,-fn.z); }
+            vn[i0]=make_float3(vn[i0].x+fn.x,vn[i0].y+fn.y,vn[i0].z+fn.z);
+            vn[i1]=make_float3(vn[i1].x+fn.x,vn[i1].y+fn.y,vn[i1].z+fn.z);
+            vn[i2]=make_float3(vn[i2].x+fn.x,vn[i2].y+fn.y,vn[i2].z+fn.z);
+        }
+        for (auto& n : vn) n = norm3(n);
+    }
+
+    // Atlas packing grid. In quad-chart mode (box cage) two triangles share one
+    // square cell (one box face), so we pack ceil(sqrt(faces)) cells instead.
+    const bool quad = (std::getenv("MSL_IMPOSTER_CUBE") != nullptr);
     const int nt = cage.triangleCount;
-    int grid = (int)ceilf(sqrtf((float)nt)); if (grid < 1) grid = 1;
+    const int nCharts = quad ? (nt + 1) / 2 : nt;
+    int grid = (int)ceilf(sqrtf((float)nCharts)); if (grid < 1) grid = 1;
     const float cell = (float)p.atlasW / (float)grid; // assume square atlas
     const float pad = 2.0f;
     const float aw = (float)p.atlasW, ah = (float)p.atlasH;
@@ -223,13 +279,23 @@ bool build_cage(const std::vector<Tri>& part_tris, const ImpGenParams& p,
     float bmin[3]={1e30f,1e30f,1e30f}, bmax[3]={-1e30f,-1e30f,-1e30f};
     for (int t=0;t<nt;++t) {
         int idx[3] = { (int)cage.indices[t*3+0], (int)cage.indices[t*3+1], (int)cage.indices[t*3+2] };
-        int gx = t % grid, gy = t / grid;
+        int chart = quad ? t/2 : t;
+        int gx = chart % grid, gy = chart / grid;
         float cx = gx*cell, cy = gy*cell;
-        float uv[3][2] = {
-            {(cx+pad)/aw,        (cy+pad)/ah},
-            {(cx+cell-pad)/aw,   (cy+pad)/ah},
-            {(cx+pad)/aw,        (cy+cell-pad)/ah},
-        };
+        float uv[3][2];
+        if (quad) {
+            // Square chart: a->SW, b->SE, c->NE, d->NW. tri even=a,b,c; tri odd=a,c,d.
+            float SW[2]={(cx+pad)/aw,      (cy+pad)/ah};
+            float SE[2]={(cx+cell-pad)/aw, (cy+pad)/ah};
+            float NE[2]={(cx+cell-pad)/aw, (cy+cell-pad)/ah};
+            float NW[2]={(cx+pad)/aw,      (cy+cell-pad)/ah};
+            if ((t & 1) == 0) { uv[0][0]=SW[0];uv[0][1]=SW[1]; uv[1][0]=SE[0];uv[1][1]=SE[1]; uv[2][0]=NE[0];uv[2][1]=NE[1]; }
+            else              { uv[0][0]=SW[0];uv[0][1]=SW[1]; uv[1][0]=NE[0];uv[1][1]=NE[1]; uv[2][0]=NW[0];uv[2][1]=NW[1]; }
+        } else {
+            uv[0][0]=(cx+pad)/aw;       uv[0][1]=(cy+pad)/ah;
+            uv[1][0]=(cx+cell-pad)/aw;  uv[1][1]=(cy+pad)/ah;
+            uv[2][0]=(cx+pad)/aw;       uv[2][1]=(cy+cell-pad)/ah;
+        }
         for (int k=0;k<3;++k) {
             float3 pos = getv(idx[k]);
             float3 n   = vn[idx[k]];
@@ -260,37 +326,67 @@ bool bake_displacement_cpu(const std::vector<Tri>& part_tris, ImposterAsset& out
     for (int i=0;i<mesh.triCount;++i) mesh.tri[i] = part_tris[i];
     BVH bvh(&mesh);
 
+    const bool quad = (std::getenv("MSL_IMPOSTER_CUBE") != nullptr);
     const int W=(int)out.atlas_w, H=(int)out.atlas_h;
     const int nt=(int)out.tris.size();
-    int grid=(int)ceilf(sqrtf((float)nt)); if(grid<1) grid=1;
+    const int nCharts = quad ? (nt+1)/2 : nt;
+    int grid=(int)ceilf(sqrtf((float)nCharts)); if(grid<1) grid=1;
     const float cell=(float)W/(float)grid, pad=2.0f;
     const int bytes = out.disp_bits/8;
 
-    // First pass: cast all covered texels, record raw distances + max.
+    // First pass: cast all covered texels, record raw inward hit distances.
     std::vector<float> dist((size_t)W*H, -1.0f);
-    float observed_max = 1e-6f;
     for (int y=0;y<H;++y) for (int x=0;x<W;++x) {
         int gx=(int)((x+0.5f)/cell), gy=(int)((y+0.5f)/cell);
-        int t=gy*grid+gx; if(t<0||t>=nt) continue;
+        int chart=gy*grid+gx; if(chart<0||chart>=nCharts) continue;
         float fu=((x+0.5f)-(gx*cell+pad))/(cell-2*pad);
         float fv=((y+0.5f)-(gy*cell+pad))/(cell-2*pad);
-        if (fu<0||fv<0||fu+fv>1.0f) continue; // gutter (outside the padded right-tri)
-        float w1=fu,w2=fv,w0=1.0f-fu-fv;
-        const CageVert& A=out.verts[3*t]; const CageVert& B=out.verts[3*t+1]; const CageVert& C=out.verts[3*t+2];
-        float3 pos=make_float3(w0*A.px+w1*B.px+w2*C.px, w0*A.py+w1*B.py+w2*C.py, w0*A.pz+w1*B.pz+w2*C.pz);
-        float3 n=norm3(make_float3(w0*A.nx+w1*B.nx+w2*C.nx, w0*A.ny+w1*B.ny+w2*C.ny, w0*A.nz+w1*B.nz+w2*C.nz));
+        float3 pos, n;
+        if (quad) {
+            if (fu<0||fv<0||fu>1.0f||fv>1.0f) continue; // square cell gutter
+            // Bilinear over the face's 4 corners: a=SW, b=SE, c=NE, d=NW.
+            // Vert layout per face f: tri 2f=a,b,c @ 6f,6f+1,6f+2; tri 2f+1=a,c,d @ 6f+3,6f+4,6f+5.
+            const CageVert& A=out.verts[6*chart];   const CageVert& B=out.verts[6*chart+1];
+            const CageVert& C=out.verts[6*chart+2]; const CageVert& D=out.verts[6*chart+5];
+            float wa=(1-fu)*(1-fv), wb=fu*(1-fv), wc=fu*fv, wd=(1-fu)*fv;
+            pos=make_float3(wa*A.px+wb*B.px+wc*C.px+wd*D.px,
+                            wa*A.py+wb*B.py+wc*C.py+wd*D.py,
+                            wa*A.pz+wb*B.pz+wc*C.pz+wd*D.pz);
+            n=norm3(make_float3(wa*A.nx+wb*B.nx+wc*C.nx+wd*D.nx,
+                                wa*A.ny+wb*B.ny+wc*C.ny+wd*D.ny,
+                                wa*A.nz+wb*B.nz+wc*C.nz+wd*D.nz));
+        } else {
+            if (fu<0||fv<0||fu+fv>1.0f) continue; // gutter (outside the padded right-tri)
+            float w1=fu,w2=fv,w0=1.0f-fu-fv;
+            const CageVert& A=out.verts[3*chart]; const CageVert& B=out.verts[3*chart+1]; const CageVert& C=out.verts[3*chart+2];
+            pos=make_float3(w0*A.px+w1*B.px+w2*C.px, w0*A.py+w1*B.py+w2*C.py, w0*A.pz+w1*B.pz+w2*C.pz);
+            n=norm3(make_float3(w0*A.nx+w1*B.nx+w2*C.nx, w0*A.ny+w1*B.ny+w2*C.ny, w0*A.nz+w1*B.nz+w2*C.nz));
+        }
         float3 dir=make_float3(-n.x,-n.y,-n.z);
         BVHRay ray; ray.O=pos; ray.D=dir; ray.rD=make_float3(1.0f/dir.x,1.0f/dir.y,1.0f/dir.z);
         ray.hit.t=1e30f;
         bvh.Intersect(ray, 0);
-        if (ray.hit.t < 1e29f && ray.hit.t > 0.0f) {
-            dist[(size_t)y*W+x]=ray.hit.t;
-            if (ray.hit.t>observed_max) observed_max=ray.hit.t;
-        }
+        if (ray.hit.t < 1e29f && ray.hit.t > 0.0f) dist[(size_t)y*W+x]=ray.hit.t;
     }
-    out.max_disp = fmaxf(out.max_disp, observed_max);
 
-    // Second pass: normalize + write disp + coverage.
+    // Displacement spans the FULL imposter volume, not a thin surface shell:
+    // disp 0 = the inward ray hit right at the cage face, disp 1 = it hit near
+    // the far side of the volume. max_disp is therefore the cage's depth (largest
+    // bbox extent, "roughly the other side"), so the relief march -- which
+    // resolves [0, max_disp] with 32 linear steps + a binary refine -- walks the
+    // whole interior. 16-bit disp keeps that deep range smooth. Never below the
+    // cage inflation (the guaranteed minimum shell).
+    float ext[3] = { out.bounds_max[0]-out.bounds_min[0],
+                     out.bounds_max[1]-out.bounds_min[1],
+                     out.bounds_max[2]-out.bounds_min[2] };
+    float full_depth = fmaxf(ext[0], fmaxf(ext[1], ext[2]));
+    out.max_disp = fmaxf(out.max_disp, full_depth);
+    if (const char* e = std::getenv("MSL_IMP_SHELL")) out.max_disp = (float)atof(e); // absolute override
+
+    // Second pass: normalize every inward hit across the full depth + write
+    // coverage. A texel is covered iff its ray hit the part anywhere inside the
+    // volume; a true miss (ray escaped) is coverage 0. Hits past max_disp clamp
+    // to 1.0 rather than being dropped.
     out.disp.assign((size_t)W*H*bytes, 0);
     out.color.assign((size_t)W*H*4, 0);
     for (int i=0;i<W*H;++i) {
@@ -309,28 +405,48 @@ bool bake_displacement_cpu(const std::vector<Tri>& part_tris, ImposterAsset& out
 void dilate_atlas(ImposterAsset& a, int passes) {
     if (a.color.empty() || a.atlas_w==0 || a.atlas_h==0) return;
     const int W=(int)a.atlas_w, H=(int)a.atlas_h;
+    const int bytes = a.disp_bits/8;
+    const bool haveDisp = (!a.disp.empty() && (int)a.disp.size() == W*H*bytes);
+    auto dispGet = [&](const std::vector<uint8_t>& d, int i)->float {
+        if (bytes==2) { uint16_t v; memcpy(&v,&d[(size_t)i*2],2); return (float)v; }
+        return (float)d[i];
+    };
+    auto dispSet = [&](std::vector<uint8_t>& d, int i, float v){
+        if (bytes==2) { uint16_t u=(uint16_t)(v+0.5f); memcpy(&d[(size_t)i*2],&u,2); }
+        else          { d[i]=(uint8_t)(v+0.5f); }
+    };
+    // Dilate color AND displacement together. Leaving disp=0 in the gutter makes
+    // bilinear filtering ramp toward "surface at the cage face" at silhouettes,
+    // which the relief march reads as a false near crossing (speckle). Flooding
+    // real neighbor depths outward keeps the filtered edge consistent; the
+    // coverage>0.5 gate then clips the silhouette cleanly.
     for (int pass=0; pass<passes; ++pass) {
         std::vector<uint8_t> cov(W*H);
         for (int i=0;i<W*H;++i) cov[i]=a.color[i*4+3];
-        std::vector<uint8_t> next = a.color;
+        std::vector<uint8_t> nextC = a.color;
+        std::vector<uint8_t> nextD = a.disp;
         const int dx[8]={-1,1,0,0,-1,-1,1,1}, dy[8]={0,0,-1,1,-1,1,-1,1};
         for (int y=0;y<H;++y) for (int x=0;x<W;++x) {
             int i=y*W+x;
             if (cov[i]!=0) continue; // already covered: keep
-            int rs=0,gs=0,bs=0,n=0;
+            int rs=0,gs=0,bs=0,n=0; float ds=0.0f;
             for (int k=0;k<8;++k) {
                 int nx=x+dx[k], ny=y+dy[k];
                 if (nx<0||ny<0||nx>=W||ny>=H) continue;
                 int j=ny*W+nx;
                 if (cov[j]==0) continue;
-                rs+=a.color[j*4+0]; gs+=a.color[j*4+1]; bs+=a.color[j*4+2]; ++n;
+                rs+=a.color[j*4+0]; gs+=a.color[j*4+1]; bs+=a.color[j*4+2];
+                if (haveDisp) ds+=dispGet(a.disp, j);
+                ++n;
             }
             if (n>0) {
-                next[i*4+0]=(uint8_t)(rs/n); next[i*4+1]=(uint8_t)(gs/n); next[i*4+2]=(uint8_t)(bs/n);
-                next[i*4+3]=1; // mark as "filled gutter" so the next pass can spread further
+                nextC[i*4+0]=(uint8_t)(rs/n); nextC[i*4+1]=(uint8_t)(gs/n); nextC[i*4+2]=(uint8_t)(bs/n);
+                nextC[i*4+3]=1; // mark as "filled gutter" so the next pass can spread further
+                if (haveDisp) dispSet(nextD, i, ds/(float)n);
             }
         }
-        a.color.swap(next);
+        a.color.swap(nextC);
+        if (haveDisp) a.disp.swap(nextD);
     }
     // Reset the temporary fill markers (1) back to 0 so coverage stays {0,255}.
     for (int i=0;i<W*H;++i) if (a.color[i*4+3]==1) a.color[i*4+3]=0;

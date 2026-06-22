@@ -15,7 +15,9 @@ static inline Matrix ImposterMatrixIdentity(void) {
 #include "../include/imposter_asset.h"
 #include "../include/blas_manager.hpp"
 #include "../include/tlas_manager.hpp"
+#include "../include/material_registry.h"
 #include <vector>
+#include <cstdlib>
 
 namespace imposter_asset {
 
@@ -50,16 +52,53 @@ bool bake_imposter(const ImpGenParams& p, const std::vector<Tri>& part_tris,
     SetShaderValue(bake, modeLoc, &one, SHADER_UNIFORM_INT);
     float fOne = 1.0f;
     SetShaderValue(bake, GetShaderLocation(bake, "giStrength"), &fOne, SHADER_UNIFORM_FLOAT);
-    SetShaderValue(bake, GetShaderLocation(bake, "shadowStrength"), &fOne, SHADER_UNIFORM_FLOAT);
+    float bakeShadow = 0.9f;
+    if (const char* e = std::getenv("MSL_IMP_SHADOW")) bakeShadow = (float)atof(e);
+    SetShaderValue(bake, GetShaderLocation(bake, "shadowStrength"), &bakeShadow, SHADER_UNIFORM_FLOAT);
     int aoOn = 1; SetShaderValue(bake, GetShaderLocation(bake, "aoEnabled"), &aoOn, SHADER_UNIFORM_INT);
+    int dbgAlbedo = std::getenv("MSL_IMP_ALBEDO") ? 1 : 0;
+    SetShaderValue(bake, GetShaderLocation(bake, "debugAlbedo"), &dbgAlbedo, SHADER_UNIFORM_INT);
+    int dbgAO = std::getenv("MSL_IMP_AO_DBG") ? 1 : 0;
+    SetShaderValue(bake, GetShaderLocation(bake, "debugAO"), &dbgAO, SHADER_UNIFORM_INT);
+
+    // Upload the material registry table; without it getMaterialProperties sees
+    // materialCount==0 and every hit falls through to the gray fallback.
+    static float s_materialTable[64 * MATERIAL_FLOATS_PER_DEF] = {0};
+    MaterialRegistryPackForGPU(s_materialTable);
+    int matCount = MaterialRegistryCount();
+    SetShaderValueV(bake, GetShaderLocation(bake, "materialTable"), s_materialTable,
+                    SHADER_UNIFORM_FLOAT, matCount * MATERIAL_FLOATS_PER_DEF);
+    SetShaderValue(bake, GetShaderLocation(bake, "materialCount"), &matCount, SHADER_UNIFORM_INT);
 
     Material mat = LoadMaterialDefault();
     mat.shader = bake;
+    // Drop the default diffuse map so DrawMesh's material-map loop touches no
+    // texture units; we bind the BVH textures ourselves below.
+    mat.maps[MATERIAL_MAP_DIFFUSE].texture.id = 0;
 
     BeginTextureMode(rt);
         ClearBackground(BLANK);
         rlDisableBackfaceCulling();
         rlDisableDepthTest();
+        // DrawMesh ignores SetShaderValueTexture (those bindings are deferred to
+        // the 2D batch flush, which DrawMesh never triggers). Bind the four BVH
+        // sampler textures to explicit units after BeginTextureMode/ClearBackground
+        // (both flush+reset the batch's active texture slots) and right before the
+        // draw, so the relief/scene rays actually traverse real data.
+        rlEnableShader(bake.id);
+        struct { const char* name; unsigned int id; } bvhTex[4] = {
+            { "trianglesTexture", blas.triangles_texture_id() },
+            { "blasNodesTexture", blas.blas_nodes_texture_id() },
+            { "tlasNodesTexture", tlas.tlas_nodes_texture_id() },
+            { "instancesTexture", tlas.instances_texture_id() },
+        };
+        for (int i = 0; i < 4; ++i) {
+            int unit = i + 1; // unit 0 is raylib's default texture
+            rlActiveTextureSlot(unit);
+            rlEnableTexture(bvhTex[i].id);
+            int loc = GetShaderLocation(bake, bvhTex[i].name);
+            if (loc != -1) rlSetUniform(loc, &unit, RL_SHADER_UNIFORM_INT, 1);
+        }
         DrawMesh(cage, mat, ImposterMatrixIdentity());
         rlEnableDepthTest();
     EndTextureMode();

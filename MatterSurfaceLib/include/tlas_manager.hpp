@@ -110,7 +110,12 @@ public:
     // GPU texture management (fully encapsulated)
     void ensure_gpu_textures_ready(const BLASManager& blas_manager); // Creates/updates textures if needed
     void bind_to_shader(Shader shader, const BLASManager& blas_manager) const; // Manager owns textures completely
-    
+
+    // GPU texture ids (valid after bind_to_shader uploads them). See the BLAS
+    // equivalents: the imposter bake binds these explicitly for DrawMesh.
+    unsigned int tlas_nodes_texture_id() const { return nodes_texture_.id; }
+    unsigned int instances_texture_id() const { return instances_texture_.id; }
+
     // Generate texture data for GPU upload
     void generate_instance_texture_data(const BLASManager& blas_manager,
                                        std::vector<float>& output_data, 

@@ -159,7 +159,13 @@ public:
     // GPU texture management (fully encapsulated)
     void ensure_gpu_textures_ready(); // Creates/updates textures if needed
     void bind_to_shader(Shader shader) const; // Manager owns textures completely
-    
+
+    // GPU texture ids (valid after bind_to_shader uploads them). Needed by the
+    // imposter bake, which draws via DrawMesh and must bind these BVH textures
+    // explicitly (DrawMesh ignores deferred SetShaderValueTexture bindings).
+    unsigned int triangles_texture_id() const { return triangles_texture_.id; }
+    unsigned int blas_nodes_texture_id() const { return nodes_texture_.id; }
+
     // Legacy C-style interface for compatibility
     void generate_triangle_texture_data(Tri* output_triangles) const;
     void generate_node_texture_data(LegacyBVHNode* output_nodes) const;

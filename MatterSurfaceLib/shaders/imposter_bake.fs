@@ -4,6 +4,8 @@ in vec3 cageNormal;
 out vec4 fragColor;
 
 uniform float maxDisp;       // shell thickness; ray marches at most this far inward
+uniform int   debugAlbedo;   // !=0: bake raw albedo (no lighting) to isolate ray/material
+uniform int   debugAO;       // !=0: bake hit.ao as grayscale to isolate the AO term
 
 // --- Free symbols required by lighting.glsl (mirror raytrace_tlas_blas.fs) ---
 uniform float giStrength;
@@ -34,6 +36,9 @@ void main() {
     vec3 hn = normalize(hit.normal);
     MaterialProperties matProps = getMaterialProperties(hit.material);
     vec3 albedo = mix(matProps.albedo, hit.tint, hit.tintAlpha);
+
+    if (debugAlbedo != 0) { fragColor = vec4(albedo, 1.0); return; }
+    if (debugAO != 0) { fragColor = vec4(vec3(hit.ao), 1.0); return; }
 
     // Fixed outward view (no live camera): bake radiance as seen from outside the cage.
     vec3 viewDir = dir;

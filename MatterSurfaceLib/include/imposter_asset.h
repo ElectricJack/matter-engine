@@ -21,8 +21,9 @@ struct ImpGenParams {
     float    inflation;       // cage outward inflation along normals (world units)
     int      dispBits;        // 8 or 16: displacement texel precision
     uint32_t seed;            // reserved for determinism / future jitter
+    int      maxCageTris;     // hard cap on cage triangles so atlas cells stay large
 };
-static_assert(sizeof(ImpGenParams) == 24,
+static_assert(sizeof(ImpGenParams) == 28,
               "ImpGenParams must be padding-free for stable byte hashing");
 
 // 32-byte cage vertex: position, normal, uv. Padding-free.

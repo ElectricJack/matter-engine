@@ -429,7 +429,10 @@ public:
         }
 
         test_cluster_->set_simplification_ratio(ratio);
-        test_cluster_->force_rebuild_all_cells();
+        // The imposter demo builds its scene (cache-loaded part + imposter instance)
+        // in the constructor and bypasses the cluster, so rebuilding here would clear
+        // those BLAS entries and re-mesh from an empty cluster, wiping both.
+        if (!imposter_enabled_) test_cluster_->force_rebuild_all_cells();
 
         // Topological hole check: union every cell mesh, match triangle edges by
         // quantized endpoint position, and count edges used by an odd number of
@@ -606,9 +609,18 @@ private:
     void setup_imposter_demo() {
         imposter_asset::ImpGenParams ip{};
         ip.cageRatio = 0.08f; ip.atlasW = 1024; ip.atlasH = 1024;
-        ip.inflation = 0.15f; ip.dispBits = 16; ip.seed = 1u;
+        ip.inflation = 1.0f; ip.dispBits = 16; ip.seed = 1u;
+        ip.maxCageTris = 2000; // keep atlas cells ~22 texels (1024/ceil(sqrt(2000)))
+        // Debug knobs: override bake params from env so the bake can be iterated
+        // without recompiling (each changes imp_hash, so the cache won't collide).
+        if (const char* e = getenv("MSL_IMP_INFLATION")) ip.inflation = (float)atof(e);
+        if (const char* e = getenv("MSL_IMP_RATIO"))     ip.cageRatio = (float)atof(e);
+        if (const char* e = getenv("MSL_IMP_MAXTRIS"))   ip.maxCageTris = atoi(e);
+        const bool cube = (getenv("MSL_IMPOSTER_CUBE") != nullptr);
+        imposter_quad_charts_ = cube ? 1 : 0;
         uint64_t source_hash = part_asset::compute_param_hash(brick_gen_params());
         uint64_t imp_hash = imposter_asset::compute_imp_hash(ip);
+        if (cube) imp_hash ^= 0x9E3779B97F4A7C15ull; // distinct cache key for the cube cage
         std::string imp_path = imposter_asset::cache_path(imp_hash);
         imposter_asset::ImposterAsset imp;
         if (!imposter_asset::load(imp_path, imp_hash, source_hash, imp)) {
@@ -647,10 +659,18 @@ private:
             dimg.mipmaps=1; dimg.format=PIXELFORMAT_UNCOMPRESSED_R32;
             imposter_disp_tex_ = LoadTextureFromImage(dimg);
             SetTextureFilter(imposter_disp_tex_, TEXTURE_FILTER_BILINEAR);
-            imposter_grid_ = (int)ceilf(sqrtf((float)imp.tris.size()));
+            imposter_grid_ = (int)ceilf(sqrtf((float)(cube ? (imp.tris.size()+1)/2 : imp.tris.size())));
             imposter_tri_base_ = blas_manager_->get_offsets(imposter_cage_blas_).triangle_offset;
             imposter_max_disp_ = imp.max_disp;
             imposter_atlas_w_ = (float)imp.atlas_w; imposter_atlas_h_ = (float)imp.atlas_h;
+            // Cage AABB in world space (cage bounds + the +X 24.0 instance offset),
+            // used by the cube's reorder-safe geometry UVs in the shader.
+            imposter_aabb_min_[0] = imp.bounds_min[0] + 24.0f;
+            imposter_aabb_min_[1] = imp.bounds_min[1];
+            imposter_aabb_min_[2] = imp.bounds_min[2];
+            imposter_aabb_max_[0] = imp.bounds_max[0] + 24.0f;
+            imposter_aabb_max_[1] = imp.bounds_max[1];
+            imposter_aabb_max_[2] = imp.bounds_max[2];
             imposter_enabled_ = true;
         }
     }
@@ -724,11 +744,22 @@ private:
         test_cluster_->set_base_detail_size(SPACING);
         test_cluster_->set_max_division_pow(max_pow);
 
+        scene_occ_ = Occupancy{};
+        Occupancy& occ = scene_occ_;
+
+        // === IMPOSTER DEBUG: three colored meta particles instead of the full
+        // lattice brick. One material per distinct merge group (red/green/blue)
+        // so they stay separate blobs, spread on three axes so each is dominant
+        // from a different cube-cage face. Lets us reason about the bake/atlas
+        // orientation with a trivial input. Old lattice fill is in the #if 0
+        // block below -- flip to #if 1 to restore the brick. ===
+        occ.set(SlotCoord{-3,  0,  0}, SlotData{0u});  // red   (GROUP_RED)
+        occ.set(SlotCoord{ 0,  3,  0}, SlotData{2u});  // green (GROUP_GROUND)
+        occ.set(SlotCoord{ 0,  0,  3}, SlotData{1u});  // blue  (GROUP_BLUE)
+#if 0
         // Build a solid block of occupancy, centered on the origin, with a
         // checkerboard of the two opaque stones so the surface shows variation.
         // Cached in scene_occ_ so live re-emission (lumpiness edits) can reuse it.
-        scene_occ_ = Occupancy{};
-        Occupancy& occ = scene_occ_;
         for (int ix = 0; ix < DIM_X; ++ix)
         for (int iy = 0; iy < DIM_Y; ++iy)
         for (int iz = 0; iz < DIM_Z; ++iz) {
@@ -757,6 +788,7 @@ private:
             if (gn > GLASS_THRESH) mat = MAT_GLASS;
             occ.set(SlotCoord{ix, iy, iz}, SlotData{mat});
         }
+#endif
 
         // Re-center offset: GridLattice puts slot 0 at the origin; shift by half
         // the block extent so the brick is centered. The cull must bucket slots
@@ -1336,6 +1368,11 @@ private:
                 float as[2]={imposter_atlas_w_, imposter_atlas_h_};
                 SetShaderValue(raytracing_shader_, GetShaderLocation(raytracing_shader_, "imposterAtlasSize"), as, SHADER_UNIFORM_VEC2);
                 float pad=2.0f; SetShaderValue(raytracing_shader_, GetShaderLocation(raytracing_shader_, "imposterPad"), &pad, SHADER_UNIFORM_FLOAT);
+                int impDbg = getenv("MSL_IMP_DBG") ? atoi(getenv("MSL_IMP_DBG")) : 0;
+                SetShaderValue(raytracing_shader_, GetShaderLocation(raytracing_shader_, "imposterDbg"), &impDbg, SHADER_UNIFORM_INT);
+                SetShaderValue(raytracing_shader_, GetShaderLocation(raytracing_shader_, "imposterQuadCharts"), &imposter_quad_charts_, SHADER_UNIFORM_INT);
+                SetShaderValue(raytracing_shader_, GetShaderLocation(raytracing_shader_, "imposterAabbMin"), imposter_aabb_min_, SHADER_UNIFORM_VEC3);
+                SetShaderValue(raytracing_shader_, GetShaderLocation(raytracing_shader_, "imposterAabbMax"), imposter_aabb_max_, SHADER_UNIFORM_VEC3);
             }
         }
 
@@ -2125,7 +2162,9 @@ private:
     Texture2D imposter_color_tex_{};
     Texture2D imposter_disp_tex_{};
     int   imposter_grid_ = 0, imposter_tri_base_ = 0;
+    int   imposter_quad_charts_ = 0;
     float imposter_max_disp_ = 0.0f, imposter_atlas_w_ = 0.0f, imposter_atlas_h_ = 0.0f;
+    float imposter_aabb_min_[3] = {0,0,0}, imposter_aabb_max_[3] = {0,0,0};
     bool  imposter_enabled_ = false;
 
     // Mapping between BVH analysis names and BLAS handles for selective rendering
