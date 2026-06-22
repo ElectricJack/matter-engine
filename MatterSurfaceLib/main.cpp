@@ -633,6 +633,24 @@ private:
             printf("[imposter] baked + saved %s\n", imp_path.c_str());
         } else { printf("[imposter] loaded %s\n", imp_path.c_str()); }
 
+        if (getenv("MSL_IMP_DUMP_ATLAS")) {
+            const int W=(int)imp.atlas_w, H=(int)imp.atlas_h;
+            long covered=0; for (int i=0;i<W*H;++i) if (imp.color[i*4+3]>127) ++covered;
+            printf("[imposter] atlas %dx%d  coverage=%ld/%d (%.1f%%)\n",
+                   W,H,covered,W*H,100.0*covered/(double)(W*H));
+            // Color (rgb) atlas.
+            Image col{}; col.data=(void*)imp.color.data(); col.width=W; col.height=H;
+            col.mipmaps=1; col.format=PIXELFORMAT_UNCOMPRESSED_R8G8B8A8;
+            ExportImage(col, ".claude/atlas_color.png");
+            // Coverage mask (alpha -> white) as its own grayscale image.
+            std::vector<unsigned char> cov((size_t)W*H);
+            for (int i=0;i<W*H;++i) cov[i]=imp.color[i*4+3];
+            Image cm{}; cm.data=cov.data(); cm.width=W; cm.height=H;
+            cm.mipmaps=1; cm.format=PIXELFORMAT_UNCOMPRESSED_GRAYSCALE;
+            ExportImage(cm, ".claude/atlas_coverage.png");
+            printf("[imposter] dumped .claude/atlas_color.png + atlas_coverage.png\n");
+        }
+
         std::vector<Tri> cage_tris = imposter_asset::cage_to_tris(imp);
         imposter_cage_blas_ = blas_manager_->register_triangles(cage_tris.data(), (int)cage_tris.size(), nullptr);
         {
@@ -670,6 +688,25 @@ private:
                 uvimg.format = PIXELFORMAT_UNCOMPRESSED_R32G32B32A32;
                 imposter_triuv_tex_ = LoadTextureFromImage(uvimg);
                 SetTextureFilter(imposter_triuv_tex_, TEXTURE_FILTER_POINT);
+            }
+            {
+                // Cage-triangle data texture (cage-tri-id order): pos rows 0-2, uv rows 3-5.
+                std::vector<float> tribuf = imposter_asset::pack_cage_tri_data(imp);
+                Image tri{}; tri.data = tribuf.data();
+                tri.width = (int)imp.tris.size(); tri.height = 6; tri.mipmaps = 1;
+                tri.format = PIXELFORMAT_UNCOMPRESSED_R32G32B32A32;
+                imposter_cagetri_tex_ = LoadTextureFromImage(tri);
+                SetTextureFilter(imposter_cagetri_tex_, TEXTURE_FILTER_POINT);
+
+                // Triangle-id atlas as R32F (-1 = uncovered) for exact point sampling.
+                const int W=(int)imp.atlas_w, H=(int)imp.atlas_h;
+                std::vector<float> idf((size_t)W*H);
+                for (int i=0;i<W*H;++i){ uint16_t id; memcpy(&id,&imp.triid[(size_t)i*2],2);
+                    idf[i] = (id==0xFFFF) ? -1.0f : (float)id; }
+                Image idi{}; idi.data = idf.data(); idi.width=W; idi.height=H; idi.mipmaps=1;
+                idi.format = PIXELFORMAT_UNCOMPRESSED_R32;
+                imposter_triid_tex_ = LoadTextureFromImage(idi);
+                SetTextureFilter(imposter_triid_tex_, TEXTURE_FILTER_POINT);
             }
             imposter_max_disp_ = imp.max_disp;
             imposter_enabled_ = true;
@@ -1368,6 +1405,8 @@ private:
                 int impDbg = getenv("MSL_IMP_DBG") ? atoi(getenv("MSL_IMP_DBG")) : 0;
                 SetShaderValue(raytracing_shader_, GetShaderLocation(raytracing_shader_, "imposterDbg"), &impDbg, SHADER_UNIFORM_INT);
                 SetShaderValueTexture(raytracing_shader_, GetShaderLocation(raytracing_shader_, "imposterTriUvTex"), imposter_triuv_tex_);
+                SetShaderValueTexture(raytracing_shader_, GetShaderLocation(raytracing_shader_, "imposterCageTriTex"), imposter_cagetri_tex_);
+                SetShaderValueTexture(raytracing_shader_, GetShaderLocation(raytracing_shader_, "imposterTriIdTex"),  imposter_triid_tex_);
                 SetShaderValue(raytracing_shader_, GetShaderLocation(raytracing_shader_, "imposterTriCount"), &imposter_tri_count_, SHADER_UNIFORM_INT);
             }
         }
@@ -2160,6 +2199,8 @@ private:
     int   imposter_tri_base_ = 0;
     float imposter_max_disp_ = 0.0f;
     Texture2D imposter_triuv_tex_{};
+    Texture2D imposter_cagetri_tex_{};
+    Texture2D imposter_triid_tex_{};
     int   imposter_tri_count_ = 0;
     bool  imposter_enabled_ = false;
 

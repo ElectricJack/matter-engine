@@ -19,6 +19,8 @@ uniform int   imposterTriBase;        // global triangle index of the cage's fir
 uniform float imposterMaxDisp;        // shell thickness (denormalizes displacement)
 uniform int   imposterDbg;            // 0=normal, 1=color by cage triangle index (no relief)
 uniform sampler2D imposterTriUvTex;   // RGBA32F: col=BVH triangle slot, row=corner, .xy=uv
+uniform sampler2D imposterCageTriTex; // RGBA32F: width=cage-tri id, rows 0-2 pos.xyz, rows 3-5 uv.xy
+uniform sampler2D imposterTriIdTex;   // R32F: atlas of cage-tri id per texel (-1 = uncovered)
 uniform int   imposterTriCount;       // number of cage triangles (texture width)
 
 // Control uniforms
@@ -777,7 +779,7 @@ HitResult intersectScene(vec3 rayOrigin, vec3 rayDir, float maxT)
         result.bakedColor = vec3(0.0);
         if (inst.isImposter) {
             int localTri = int(triIdx) - imposterTriBase;
-            if (imposterDbg != 0) {
+            if (imposterDbg == 1) {
                 // Debug: paint each cage triangle a distinct hue, skip relief, so the
                 // raw cage-triangle hit layout is visible on screen.
                 float h = float(localTri) / 12.0;
@@ -795,6 +797,21 @@ HitResult intersectScene(vec3 rayOrigin, vec3 rayDir, float maxT)
             vec2 uv1 = texelFetch(imposterTriUvTex, ivec2(localTri, 1), 0).xy;
             vec2 uv2 = texelFetch(imposterTriUvTex, ivec2(localTri, 2), 0).xy;
             vec3 ndir = normalize(rayDir);
+            // Diagnostic (imposterDbg==2): skip the relief march, sample baked color at
+            // the cage-surface entry UV. Solid result => cage/coverage/UV are fine and the
+            // relief march is what drops pixels. Doubles as the "flat imposter" preview.
+            if (imposterDbg == 2) {
+                vec3 e1f = w1 - w0, e2f = w2 - w0, epf = result.position - w0;
+                float a00=dot(e1f,e1f), a01=dot(e1f,e2f), a11=dot(e2f,e2f);
+                float a20=dot(epf,e1f), a21=dot(epf,e2f);
+                float den2 = a00*a11 - a01*a01;
+                float fv = (a11*a20 - a01*a21) / den2;
+                float fw = (a00*a21 - a01*a20) / den2;
+                float fu = 1.0 - fv - fw;
+                vec2 euv = fu*uv0 + fv*uv1 + fw*uv2;
+                result.bakedColor = texture(imposterColorTex, euv).rgb;
+                return result;
+            }
             vec2 hitUV; float hitS;
             if (reliefMarch(result.position, ndir, w0, w1, w2, uv0, uv1, uv2, cageN, hitUV, hitS)) {
                 // Advance from the cage plane to the true displaced surface so depth
