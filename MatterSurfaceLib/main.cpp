@@ -28,6 +28,7 @@ extern "C" {
 #include "include/tlas_manager.hpp"
 #include "include/part_asset.h"
 #include "include/imposter_asset.h"
+#include "include/voxel_imposter.h"
 #include "include/bvh_visualizer.hpp"
 #include "include/bvh_analyzer.h"
 #include "include/cluster.h"
@@ -606,113 +607,89 @@ private:
         return p;
     }
 
+    // 12 triangles forming a unit cube [0,1]^3, face normals pointing outward (CCW winding).
+    static std::vector<Tri> make_unit_cube_tris() {
+        // Each face is 2 triangles. Vertices use corners 0=0.0 1=1.0 on each axis.
+        // Winding is CCW when viewed from outside.
+        auto v = [](float x, float y, float z) -> float3 { return make_float3(x, y, z); };
+        struct F { float3 a, b, c; };
+        F faces[12] = {
+            // -Z face (z=0)
+            { v(0,0,0), v(1,0,0), v(1,1,0) },
+            { v(0,0,0), v(1,1,0), v(0,1,0) },
+            // +Z face (z=1)
+            { v(0,0,1), v(1,1,1), v(1,0,1) },
+            { v(0,0,1), v(0,1,1), v(1,1,1) },
+            // -X face (x=0)
+            { v(0,0,0), v(0,1,0), v(0,1,1) },
+            { v(0,0,0), v(0,1,1), v(0,0,1) },
+            // +X face (x=1)
+            { v(1,0,0), v(1,1,1), v(1,1,0) },
+            { v(1,0,0), v(1,0,1), v(1,1,1) },
+            // -Y face (y=0)
+            { v(0,0,0), v(0,0,1), v(1,0,1) },
+            { v(0,0,0), v(1,0,1), v(1,0,0) },
+            // +Y face (y=1)
+            { v(0,1,0), v(1,1,0), v(1,1,1) },
+            { v(0,1,0), v(1,1,1), v(0,1,1) },
+        };
+        std::vector<Tri> tris(12);
+        for (int i = 0; i < 12; ++i) {
+            tris[i].vertex0 = faces[i].a;
+            tris[i].vertex1 = faces[i].b;
+            tris[i].vertex2 = faces[i].c;
+            tris[i].centroid = make_float3(
+                (faces[i].a.x + faces[i].b.x + faces[i].c.x) / 3.0f,
+                (faces[i].a.y + faces[i].b.y + faces[i].c.y) / 3.0f,
+                (faces[i].a.z + faces[i].b.z + faces[i].c.z) / 3.0f);
+        }
+        return tris;
+    }
+
     void setup_imposter_demo() {
-        imposter_asset::ImpGenParams ip{};
-        ip.cageRatio = 0.08f; ip.atlasW = 1024; ip.atlasH = 1024;
-        ip.inflation = 1.0f; ip.dispBits = 16; ip.seed = 1u;
-        ip.maxCageTris = 2000; // keep atlas cells ~22 texels (1024/ceil(sqrt(2000)))
-        ip.chartConeDeg = 75.0f; // chart normal-cone half-angle; must stay < 90
-        // Debug knobs: override bake params from env so the bake can be iterated
-        // without recompiling (each changes imp_hash, so the cache won't collide).
-        if (const char* e = getenv("MSL_IMP_INFLATION")) ip.inflation = (float)atof(e);
-        if (const char* e = getenv("MSL_IMP_RATIO"))     ip.cageRatio = (float)atof(e);
-        if (const char* e = getenv("MSL_IMP_MAXTRIS"))   ip.maxCageTris = atoi(e);
-        if (const char* e = getenv("MSL_IMP_CONE"))      ip.chartConeDeg = (float)atof(e);
-        const bool cube = (getenv("MSL_IMPOSTER_CUBE") != nullptr);
+        // Bake (or load) the voxel volume for the demo part.
         uint64_t source_hash = part_asset::compute_param_hash(brick_gen_params());
-        uint64_t imp_hash = imposter_asset::compute_imp_hash(ip);
-        if (cube) imp_hash ^= 0x9E3779B97F4A7C15ull; // distinct cache key for the cube cage
-        std::string imp_path = imposter_asset::cache_path(imp_hash);
-        imposter_asset::ImposterAsset imp;
-        if (!imposter_asset::load(imp_path, imp_hash, source_hash, imp)) {
-            std::vector<Tri> part_tris = imposter_asset::flatten_part_triangles(*blas_manager_, *tlas_manager_);
-            if (!imposter_asset::bake_imposter(ip, part_tris, source_hash, *blas_manager_, *tlas_manager_, imp)) {
-                // Bail before uploading a 0x0 atlas / registering an empty cage BLAS.
-                printf("[imposter] bake FAILED\n");
+        std::vector<voxel_imposter::FlatTri> part_tris =
+            voxel_imposter::flatten_part_triangles_mat(*blas_manager_, *tlas_manager_);
+        voxel_imposter::VoxGenParams vp{128, 0, 0.5f};
+        uint64_t vhash = voxel_imposter::compute_vox_hash(vp);
+        std::string vpath = voxel_imposter::cache_path(vhash);
+        if (!voxel_imposter::load(vpath, vhash, source_hash, voxel_imposter_)) {
+            if (!voxel_imposter::bake_voxels(part_tris, vp, source_hash, voxel_imposter_)) {
+                printf("[vox_imposter] bake FAILED\n");
                 return;
             }
-            imposter_asset::save(imp_path, imp, imp_hash);
-            printf("[imposter] baked + saved %s\n", imp_path.c_str());
-        } else { printf("[imposter] loaded %s\n", imp_path.c_str()); }
+            voxel_imposter::save(vpath, voxel_imposter_, vhash);
+            printf("[vox_imposter] baked + saved %s\n", vpath.c_str());
+        } else { printf("[vox_imposter] loaded %s\n", vpath.c_str()); }
 
-        if (getenv("MSL_IMP_DUMP_ATLAS")) {
-            const int W=(int)imp.atlas_w, H=(int)imp.atlas_h;
-            long covered=0; for (int i=0;i<W*H;++i) if (imp.color[i*4+3]>127) ++covered;
-            printf("[imposter] atlas %dx%d  coverage=%ld/%d (%.1f%%)\n",
-                   W,H,covered,W*H,100.0*covered/(double)(W*H));
-            // Color (rgb) atlas.
-            Image col{}; col.data=(void*)imp.color.data(); col.width=W; col.height=H;
-            col.mipmaps=1; col.format=PIXELFORMAT_UNCOMPRESSED_R8G8B8A8;
-            ExportImage(col, ".claude/atlas_color.png");
-            // Coverage mask (alpha -> white) as its own grayscale image.
-            std::vector<unsigned char> cov((size_t)W*H);
-            for (int i=0;i<W*H;++i) cov[i]=imp.color[i*4+3];
-            Image cm{}; cm.data=cov.data(); cm.width=W; cm.height=H;
-            cm.mipmaps=1; cm.format=PIXELFORMAT_UNCOMPRESSED_GRAYSCALE;
-            ExportImage(cm, ".claude/atlas_coverage.png");
-            printf("[imposter] dumped .claude/atlas_color.png + atlas_coverage.png\n");
-        }
+        // Unit-cube BLAS: 12 triangles with corners at [0,1]^3.
+        std::vector<Tri> cube = make_unit_cube_tris();
+        imposter_cube_blas_ = blas_manager_->register_triangles(cube.data(), (int)cube.size(), nullptr);
 
-        std::vector<Tri> cage_tris = imposter_asset::cage_to_tris(imp);
-        imposter_cage_blas_ = blas_manager_->register_triangles(cage_tris.data(), (int)cage_tris.size(), nullptr);
+        // Instance: map [0,1]^3 -> world AABB (scale by extent, translate to bounds_min) + demo offset.
         {
             TLASManager::DrawInstance di;
-            di.blas_handle = imposter_cage_blas_;
+            di.blas_handle = imposter_cube_blas_;
             di.material_id = 0;
             di.is_imposter = true;
-            di.transform = Matrix4x4();
-            di.transform.m[3] = 24.0f; // +X offset beside the real part
+            const voxel_imposter::VoxelImposter& vox = voxel_imposter_;
+            float ex = vox.bounds_max[0] - vox.bounds_min[0];
+            float ey = vox.bounds_max[1] - vox.bounds_min[1];
+            float ez = vox.bounds_max[2] - vox.bounds_min[2];
+            di.transform = Matrix4x4(); // identity (zeros off-diagonal, ones on diagonal)
+            di.transform.m[0]  = ex;
+            di.transform.m[5]  = ey;
+            di.transform.m[10] = ez;
+            di.transform.m[3]  = vox.bounds_min[0] + 24.0f; // +X offset beside the real part
+            di.transform.m[7]  = vox.bounds_min[1];
+            di.transform.m[11] = vox.bounds_min[2];
             std::vector<TLASManager::DrawInstance> one{di};
             tlas_manager_->draw_batch(one);
             tlas_manager_->build(*blas_manager_);
         }
-        {
-            Image cimg{}; cimg.data=(void*)imp.color.data(); cimg.width=(int)imp.atlas_w; cimg.height=(int)imp.atlas_h;
-            cimg.mipmaps=1; cimg.format=PIXELFORMAT_UNCOMPRESSED_R8G8B8A8;
-            imposter_color_tex_ = LoadTextureFromImage(cimg);
-            SetTextureFilter(imposter_color_tex_, TEXTURE_FILTER_BILINEAR);
-            std::vector<float> df((size_t)imp.atlas_w*imp.atlas_h);
-            if (imp.disp_bits==16) for (size_t i=0;i<df.size();++i){ uint16_t v; memcpy(&v,&imp.disp[i*2],2); df[i]=v/65535.0f; }
-            else                   for (size_t i=0;i<df.size();++i) df[i]=imp.disp[i]/255.0f;
-            Image dimg{}; dimg.data=df.data(); dimg.width=(int)imp.atlas_w; dimg.height=(int)imp.atlas_h;
-            dimg.mipmaps=1; dimg.format=PIXELFORMAT_UNCOMPRESSED_R32;
-            imposter_disp_tex_ = LoadTextureFromImage(dimg);
-            SetTextureFilter(imposter_disp_tex_, TEXTURE_FILTER_BILINEAR);
-            imposter_tri_base_ = blas_manager_->get_offsets(imposter_cage_blas_).triangle_offset;
-            {
-                const BLASManager::BLASEntry* e = blas_manager_->get_entry(imposter_cage_blas_);
-                int nCageTris = (int)imp.tris.size();
-                imposter_tri_count_ = nCageTris;
-                std::vector<float> uvbuf =
-                    imposter_asset::pack_cage_uvs_bvh_order(imp, e->bvh->triIdx, nCageTris);
-                Image uvimg{}; uvimg.data = uvbuf.data();
-                uvimg.width = nCageTris; uvimg.height = 3; uvimg.mipmaps = 1;
-                uvimg.format = PIXELFORMAT_UNCOMPRESSED_R32G32B32A32;
-                imposter_triuv_tex_ = LoadTextureFromImage(uvimg);
-                SetTextureFilter(imposter_triuv_tex_, TEXTURE_FILTER_POINT);
-            }
-            {
-                // Cage-triangle data texture (cage-tri-id order): pos rows 0-2, uv rows 3-5.
-                std::vector<float> tribuf = imposter_asset::pack_cage_tri_data(imp);
-                Image tri{}; tri.data = tribuf.data();
-                tri.width = (int)imp.tris.size(); tri.height = 6; tri.mipmaps = 1;
-                tri.format = PIXELFORMAT_UNCOMPRESSED_R32G32B32A32;
-                imposter_cagetri_tex_ = LoadTextureFromImage(tri);
-                SetTextureFilter(imposter_cagetri_tex_, TEXTURE_FILTER_POINT);
 
-                // Triangle-id atlas as R32F (-1 = uncovered) for exact point sampling.
-                const int W=(int)imp.atlas_w, H=(int)imp.atlas_h;
-                std::vector<float> idf((size_t)W*H);
-                for (int i=0;i<W*H;++i){ uint16_t id; memcpy(&id,&imp.triid[(size_t)i*2],2);
-                    idf[i] = (id==0xFFFF) ? -1.0f : (float)id; }
-                Image idi{}; idi.data = idf.data(); idi.width=W; idi.height=H; idi.mipmaps=1;
-                idi.format = PIXELFORMAT_UNCOMPRESSED_R32;
-                imposter_triid_tex_ = LoadTextureFromImage(idi);
-                SetTextureFilter(imposter_triid_tex_, TEXTURE_FILTER_POINT);
-            }
-            imposter_max_disp_ = imp.max_disp;
-            imposter_enabled_ = true;
-        }
+        imposter_enabled_ = true;
     }
 
     void setup_lattice_scene() {
@@ -2196,6 +2173,9 @@ private:
 
     // Imposter demo (MSL_SHOW_IMPOSTER): one cage instance beside the real part.
     BLASHandle imposter_cage_blas_ = 0;
+    // Voxel-box imposter: baked volume + unit-cube BLAS for the AABB instance.
+    voxel_imposter::VoxelImposter voxel_imposter_;
+    BLASHandle imposter_cube_blas_ = 0;
     Texture2D imposter_color_tex_{};
     Texture2D imposter_disp_tex_{};
     int   imposter_tri_base_ = 0;
