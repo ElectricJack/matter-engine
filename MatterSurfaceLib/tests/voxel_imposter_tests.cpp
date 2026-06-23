@@ -97,6 +97,22 @@ static void test_vox_roundtrip() {
     CHECK(!voxel_imposter::load(path,0xABCD,1,bad), "source-hash mismatch rejected");
 }
 
+static void test_dda_hits_planted_voxel() {
+    int nx=8,ny=8,nz=8; std::vector<uint8_t> cov((size_t)nx*ny*nz,0);
+    auto idx=[&](int x,int y,int z){ return (z*ny+y)*nx+x; };
+    cov[idx(4,4,4)]=255;
+    float o[3]={0.01f,0.5625f,0.5625f}, d[3]={1,0,0};
+    int hx,hy,hz; float t;
+    CHECK(dda_first_hit(o,d,nx,ny,nz,cov,hx,hy,hz,t), "ray reaches planted voxel");
+    CHECK(hx==4&&hy==4&&hz==4, "first hit is the planted voxel");
+}
+static void test_dda_pass_through() {
+    int nx=8,ny=8,nz=8; std::vector<uint8_t> cov((size_t)nx*ny*nz,0);
+    float o[3]={0.01f,0.5f,0.5f}, d[3]={1,0,0};
+    int hx,hy,hz; float t;
+    CHECK(!dda_first_hit(o,d,nx,ny,nz,cov,hx,hy,hz,t), "empty grid passes through");
+}
+
 int main(){
     test_grid_dims_cube(); test_grid_dims_flat(); test_grid_dims_degenerate();
     test_tribox_hit(); test_tribox_miss();
@@ -104,6 +120,8 @@ int main(){
     test_flatten_mat_count();
     test_bake_surface_only();
     test_vox_roundtrip();
+    test_dda_hits_planted_voxel();
+    test_dda_pass_through();
     if(!failures) printf("All voxel_imposter tests passed\n");
     return failures?1:0;
 }

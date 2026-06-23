@@ -200,6 +200,35 @@ bool bake_voxels(const std::vector<FlatTri>& tris, const VoxGenParams& p,
     return true;
 }
 
+bool dda_first_hit(const float o[3], const float d[3],
+                   int nx,int ny,int nz, const std::vector<uint8_t>& cov,
+                   int& hitX,int& hitY,int& hitZ, float& tHit) {
+    int dim[3]={nx,ny,nz};
+    float p[3]={o[0],o[1],o[2]};
+    int vx[3];
+    for (int a=0;a<3;++a){ int c=(int)std::floor(p[a]*dim[a]); vx[a]=std::max(0,std::min(dim[a]-1,c)); }
+    int step[3]; float tMax[3], tDelta[3];
+    for (int a=0;a<3;++a){
+        if (std::fabs(d[a])<1e-12f){ step[a]=0; tMax[a]=1e30f; tDelta[a]=1e30f; continue; }
+        step[a]=d[a]>0?1:-1;
+        float cellSize=1.0f/dim[a];
+        float voxelBoundary=(vx[a]+(step[a]>0?1:0))*cellSize;
+        tMax[a]=(voxelBoundary-p[a])/d[a];
+        tDelta[a]=cellSize/std::fabs(d[a]);
+    }
+    auto idx=[&](int x,int y,int z){ return (size_t)((z*ny+y)*nx+x); };
+    if (cov[idx(vx[0],vx[1],vx[2])]>0){ hitX=vx[0];hitY=vx[1];hitZ=vx[2]; tHit=0.0f; return true; }
+    for (int guard=0; guard < (nx+ny+nz)*2; ++guard) {
+        int axis = (tMax[0]<tMax[1]) ? (tMax[0]<tMax[2]?0:2) : (tMax[1]<tMax[2]?1:2);
+        vx[axis]+=step[axis];
+        if (vx[axis]<0||vx[axis]>=dim[axis]) return false;
+        float tEnter=tMax[axis];
+        tMax[axis]+=tDelta[axis];
+        if (cov[idx(vx[0],vx[1],vx[2])]>0){ hitX=vx[0];hitY=vx[1];hitZ=vx[2]; tHit=tEnter; return true; }
+    }
+    return false;
+}
+
 // ---- Serialization -------------------------------------------------------
 
 uint64_t compute_vox_hash(const VoxGenParams& p) {

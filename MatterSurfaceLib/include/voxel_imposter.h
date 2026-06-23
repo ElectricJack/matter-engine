@@ -78,4 +78,12 @@ bool save(const std::string& path, const VoxelImposter& v, uint64_t vox_hash);
 bool load(const std::string& path, uint64_t expected_vox_hash,
           uint64_t expected_source_hash, VoxelImposter& out);
 
+// Amanatides-Woo 3D-DDA over a coverage grid in NORMALIZED box space [0,1]^3.
+// origin/dir are in box space. On the first voxel with coverage>0 sets
+// hitX/Y/Z and tHit (ray param in box space) and returns true; false on
+// pass-through. dims = nx,ny,nz. coverage indexed via (z*ny+y)*nx+x.
+bool dda_first_hit(const float origin[3], const float dir[3],
+                   int nx,int ny,int nz, const std::vector<uint8_t>& coverage,
+                   int& hitX,int& hitY,int& hitZ, float& tHit);
+
 } // namespace voxel_imposter
