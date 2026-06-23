@@ -10,7 +10,7 @@
 // tlas_manager.hpp and blas_manager.hpp are already pulled in via voxel_imposter.h
 
 namespace {
-// ---- I/O helpers (mirrored from imposter_asset.cpp) ----
+// ---- I/O helpers ----
 template <class T> void put(std::vector<uint8_t>& b, const T& v){
     const uint8_t* p=reinterpret_cast<const uint8_t*>(&v); b.insert(b.end(),p,p+sizeof(T));
 }
@@ -348,6 +348,14 @@ bool load(const std::string& path, uint64_t expected_vox_hash,
     const uint8_t* nrm_p = r.take(nrm_n);
     if (!r.ok) return false;
     tmp_out.normal.assign(nrm_p, nrm_p+nrm_n);
+
+    // The content hash only proves the body is self-consistent, not that the
+    // dims agree with the blob sizes. Consumers index coverage/albedo/normal by
+    // nx*ny*nz, so a crafted file with large dims but short blobs would drive
+    // out-of-bounds reads downstream. Reject any mismatch here.
+    if (tmp_out.nx <= 0 || tmp_out.ny <= 0 || tmp_out.nz <= 0) return false;
+    const uint64_t n = static_cast<uint64_t>(tmp_out.nx) * tmp_out.ny * tmp_out.nz;
+    if (cov_n != n || alb_n != n * 3 || nrm_n != n * 2) return false;
 
     out = std::move(tmp_out);
     return true;

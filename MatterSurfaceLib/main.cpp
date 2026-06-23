@@ -168,6 +168,7 @@ static PFN_glTexImage3D pglTexImage3D = nullptr;
 // Upload helpers for GL 3D textures used by the voxel imposter.
 static unsigned int upload_volume_rgba8(int nx, int ny, int nz, const uint8_t* data) {
     if (!pglTexImage3D) pglTexImage3D = (PFN_glTexImage3D)glfwGetProcAddress("glTexImage3D");
+    if (!pglTexImage3D) return 0;
     unsigned int id = 0; glGenTextures(1, &id); glBindTexture(GL_TEXTURE_3D, id);
     glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
@@ -179,6 +180,7 @@ static unsigned int upload_volume_rgba8(int nx, int ny, int nz, const uint8_t* d
 }
 static unsigned int upload_volume_rg8(int nx, int ny, int nz, const uint8_t* data) {
     if (!pglTexImage3D) pglTexImage3D = (PFN_glTexImage3D)glfwGetProcAddress("glTexImage3D");
+    if (!pglTexImage3D) return 0;
     unsigned int id = 0; glGenTextures(1, &id); glBindTexture(GL_TEXTURE_3D, id);
     glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
@@ -2207,6 +2209,8 @@ private:
     void cleanup() {
         if (raytracing_shader_.id != 0) UnloadShader(raytracing_shader_);
         if (rt_target_.id != 0) UnloadRenderTexture(rt_target_);
+        if (imposter_color_vol_ != 0)  glDeleteTextures(1, &imposter_color_vol_);
+        if (imposter_normal_vol_ != 0) glDeleteTextures(1, &imposter_normal_vol_);
         // Managers clean up their own textures in destructors
     }
     

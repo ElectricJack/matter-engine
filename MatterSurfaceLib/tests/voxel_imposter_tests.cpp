@@ -97,6 +97,19 @@ static void test_vox_roundtrip() {
     CHECK(!voxel_imposter::load(path,0xABCD,1,bad), "source-hash mismatch rejected");
 }
 
+static void test_vox_load_rejects_dim_mismatch() {
+    // A file whose blob sizes disagree with nx*ny*nz is self-consistent (valid
+    // content hash) but would drive out-of-bounds reads in consumers that index
+    // by nx*ny*nz. load() must reject it.
+    voxel_imposter::VoxelImposter v; v.nx=2;v.ny=2;v.nz=2; v.source_part_hash=99;
+    for(int i=0;i<3;++i){v.bounds_min[i]=0;v.bounds_max[i]=1;}
+    v.coverage.assign(4,0); v.albedo.assign(24,0); v.normal.assign(16,0); // coverage too short (needs 8)
+    const char* path="imposters/test_badmatch.vxi";
+    CHECK(voxel_imposter::save(path,v,0x1234), "save malformed ok");
+    voxel_imposter::VoxelImposter r;
+    CHECK(!voxel_imposter::load(path,0x1234,99,r), "dim/blob mismatch rejected");
+}
+
 static void test_dda_hits_planted_voxel() {
     int nx=8,ny=8,nz=8; std::vector<uint8_t> cov((size_t)nx*ny*nz,0);
     auto idx=[&](int x,int y,int z){ return (z*ny+y)*nx+x; };
@@ -120,6 +133,7 @@ int main(){
     test_flatten_mat_count();
     test_bake_surface_only();
     test_vox_roundtrip();
+    test_vox_load_rejects_dim_mismatch();
     test_dda_hits_planted_voxel();
     test_dda_pass_through();
     if(!failures) printf("All voxel_imposter tests passed\n");
