@@ -83,12 +83,27 @@ static void test_bake_surface_only() {
     CHECK(v.source_part_hash==123, "hash stored");
 }
 
+static void test_vox_roundtrip() {
+    voxel_imposter::VoxelImposter v; v.nx=2;v.ny=2;v.nz=2; v.source_part_hash=99;
+    for(int i=0;i<3;++i){v.bounds_min[i]=0;v.bounds_max[i]=1;}
+    v.coverage.assign(8,0); v.coverage[0]=255; v.albedo.assign(24,7); v.normal.assign(16,3);
+    const char* path="imposters/test_rt.vxi";
+    CHECK(voxel_imposter::save(path,v,0xABCD), "save ok");
+    voxel_imposter::VoxelImposter r;
+    CHECK(voxel_imposter::load(path,0xABCD,99,r), "load ok");
+    CHECK(r.nx==2&&r.coverage[0]==255&&r.albedo[0]==7&&r.normal[0]==3, "round-trip data");
+    voxel_imposter::VoxelImposter bad;
+    CHECK(!voxel_imposter::load(path,0xBEEF,99,bad), "vox-hash mismatch rejected");
+    CHECK(!voxel_imposter::load(path,0xABCD,1,bad), "source-hash mismatch rejected");
+}
+
 int main(){
     test_grid_dims_cube(); test_grid_dims_flat(); test_grid_dims_degenerate();
     test_tribox_hit(); test_tribox_miss();
     test_oct_roundtrip();
     test_flatten_mat_count();
     test_bake_surface_only();
+    test_vox_roundtrip();
     if(!failures) printf("All voxel_imposter tests passed\n");
     return failures?1:0;
 }

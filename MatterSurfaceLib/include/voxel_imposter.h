@@ -65,4 +65,17 @@ void oct_decode(const uint8_t in[2], float n[3]);
 bool bake_voxels(const std::vector<FlatTri>& tris, const VoxGenParams& p,
                  uint64_t source_part_hash, VoxelImposter& out);
 
+// Serialization -----------------------------------------------------------
+// FNV-1a of p XOR kFormatVersion.
+uint64_t compute_vox_hash(const VoxGenParams& p);
+// "imposters/<16-hex-zero-padded>.vxi"
+std::string cache_path(uint64_t hash);
+// Serialize v to path (atomic temp+rename). Returns false on I/O failure.
+bool save(const std::string& path, const VoxelImposter& v, uint64_t vox_hash);
+// Deserialize from path. Returns false (leaves out untouched) on read failure,
+// magic/version mismatch, vox_hash or source_part_hash mismatch, or content
+// hash mismatch. On success fills out completely.
+bool load(const std::string& path, uint64_t expected_vox_hash,
+          uint64_t expected_source_hash, VoxelImposter& out);
+
 } // namespace voxel_imposter

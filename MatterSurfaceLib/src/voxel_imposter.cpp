@@ -1,12 +1,36 @@
 #include "../include/voxel_imposter.h"
-#include "../include/part_asset.h"   // fnv1a64 (used in later tasks)
+#include "../include/part_asset.h"   // fnv1a64
 #include "../include/material_registry.h"
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <cstdio>
+#include <cstdlib>
+#include <sys/stat.h>
 // tlas_manager.hpp and blas_manager.hpp are already pulled in via voxel_imposter.h
 
 namespace {
+// ---- I/O helpers (mirrored from imposter_asset.cpp) ----
+template <class T> void put(std::vector<uint8_t>& b, const T& v){
+    const uint8_t* p=reinterpret_cast<const uint8_t*>(&v); b.insert(b.end(),p,p+sizeof(T));
+}
+void put_bytes(std::vector<uint8_t>& b, const void* d, size_t n){
+    const uint8_t* p=static_cast<const uint8_t*>(d); b.insert(b.end(),p,p+n);
+}
+void ensure_parent_dir(const std::string& path){
+    auto pos=path.find_last_of('/'); if(pos==std::string::npos) return;
+#ifdef _WIN32
+    mkdir(path.substr(0,pos).c_str());
+#else
+    mkdir(path.substr(0,pos).c_str(), 0755);
+#endif
+}
+struct Reader {
+    const uint8_t* p; const uint8_t* end; bool ok=true;
+    template <class T> T get(){ T v{}; if(p+sizeof(T)>end){ok=false;return v;} std::memcpy(&v,p,sizeof(T)); p+=sizeof(T); return v; }
+    const uint8_t* take(size_t n){ if(p+n>end){ok=false;return nullptr;} const uint8_t* r=p; p+=n; return r; }
+};
+
 inline void sub(float r[3],const float a[3],const float b[3]){ r[0]=a[0]-b[0];r[1]=a[1]-b[1];r[2]=a[2]-b[2]; }
 inline void cross(float r[3],const float a[3],const float b[3]){ r[0]=a[1]*b[2]-a[2]*b[1]; r[1]=a[2]*b[0]-a[0]*b[2]; r[2]=a[0]*b[1]-a[1]*b[0]; }
 inline float dot(const float a[3],const float b[3]){ return a[0]*b[0]+a[1]*b[1]+a[2]*b[2]; }
@@ -173,6 +197,113 @@ bool bake_voxels(const std::vector<FlatTri>& tris, const VoxGenParams& p,
         oct_encode(nn,&out.normal[vi*2]);
     }
     (void)p.coverThresh;
+    return true;
+}
+
+// ---- Serialization -------------------------------------------------------
+
+uint64_t compute_vox_hash(const VoxGenParams& p) {
+    return part_asset::fnv1a64(&p, sizeof(p)) ^ static_cast<uint64_t>(kFormatVersion);
+}
+
+std::string cache_path(uint64_t hash) {
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), "%016llx", static_cast<unsigned long long>(hash));
+    return std::string("imposters/") + buf + ".vxi";
+}
+
+bool save(const std::string& path, const VoxelImposter& v, uint64_t vox_hash) {
+    // Build body
+    std::vector<uint8_t> body;
+    put_bytes(body, v.bounds_min, 3*sizeof(float));
+    put_bytes(body, v.bounds_max, 3*sizeof(float));
+    put<int32_t>(body, static_cast<int32_t>(v.nx));
+    put<int32_t>(body, static_cast<int32_t>(v.ny));
+    put<int32_t>(body, static_cast<int32_t>(v.nz));
+    put<uint32_t>(body, static_cast<uint32_t>(v.coverage.size()));
+    put_bytes(body, v.coverage.data(), v.coverage.size());
+    put<uint32_t>(body, static_cast<uint32_t>(v.albedo.size()));
+    put_bytes(body, v.albedo.data(), v.albedo.size());
+    put<uint32_t>(body, static_cast<uint32_t>(v.normal.size()));
+    put_bytes(body, v.normal.data(), v.normal.size());
+
+    const uint64_t content_hash = part_asset::fnv1a64(body.data(), body.size());
+
+    // Build header
+    std::vector<uint8_t> head;
+    put<uint32_t>(head, kMagic);
+    put<uint32_t>(head, kFormatVersion);
+    put<uint64_t>(head, vox_hash);
+    put<uint64_t>(head, v.source_part_hash);
+    put<uint64_t>(head, content_hash);
+
+    ensure_parent_dir(path);
+    const std::string tmp = path + ".tmp";
+    FILE* f = std::fopen(tmp.c_str(), "wb");
+    if (!f) return false;
+    bool ok = std::fwrite(head.data(),1,head.size(),f)==head.size() &&
+              std::fwrite(body.data(),1,body.size(),f)==body.size();
+    std::fclose(f);
+    if (!ok) { std::remove(tmp.c_str()); return false; }
+    return std::rename(tmp.c_str(), path.c_str()) == 0;
+}
+
+bool load(const std::string& path, uint64_t expected_vox_hash,
+          uint64_t expected_source_hash, VoxelImposter& out) {
+    FILE* f = std::fopen(path.c_str(), "rb");
+    if (!f) return false;
+    std::fseek(f,0,SEEK_END); long sz=std::ftell(f); std::fseek(f,0,SEEK_SET);
+    // Minimum header size: magic(4)+version(4)+vox_hash(8)+source_hash(8)+content_hash(8) = 32
+    if (sz < 32) { std::fclose(f); return false; }
+    std::vector<uint8_t> buf(static_cast<size_t>(sz));
+    bool read_ok = std::fread(buf.data(),1,buf.size(),f)==buf.size();
+    std::fclose(f);
+    if (!read_ok) return false;
+
+    Reader r{ buf.data(), buf.data()+buf.size() };
+    const uint32_t magic   = r.get<uint32_t>();
+    const uint32_t version = r.get<uint32_t>();
+    const uint64_t vhash   = r.get<uint64_t>();
+    const uint64_t shash   = r.get<uint64_t>();
+    const uint64_t content = r.get<uint64_t>();
+    if (!r.ok)                          return false;
+    if (magic   != kMagic)              return false;
+    if (version != kFormatVersion)      return false;
+    if (vhash   != expected_vox_hash)   return false;
+    if (shash   != expected_source_hash)return false;
+    if (part_asset::fnv1a64(r.p, static_cast<size_t>(r.end - r.p)) != content) return false;
+
+    VoxelImposter tmp_out{};
+    tmp_out.source_part_hash = shash;
+    const uint8_t* bmin = r.take(3*sizeof(float));
+    const uint8_t* bmax = r.take(3*sizeof(float));
+    if (!r.ok) return false;
+    std::memcpy(tmp_out.bounds_min, bmin, 3*sizeof(float));
+    std::memcpy(tmp_out.bounds_max, bmax, 3*sizeof(float));
+    tmp_out.nx = static_cast<int>(r.get<int32_t>());
+    tmp_out.ny = static_cast<int>(r.get<int32_t>());
+    tmp_out.nz = static_cast<int>(r.get<int32_t>());
+    if (!r.ok) return false;
+
+    const uint32_t cov_n = r.get<uint32_t>();
+    if (!r.ok) return false;
+    const uint8_t* cov_p = r.take(cov_n);
+    if (!r.ok) return false;
+    tmp_out.coverage.assign(cov_p, cov_p+cov_n);
+
+    const uint32_t alb_n = r.get<uint32_t>();
+    if (!r.ok) return false;
+    const uint8_t* alb_p = r.take(alb_n);
+    if (!r.ok) return false;
+    tmp_out.albedo.assign(alb_p, alb_p+alb_n);
+
+    const uint32_t nrm_n = r.get<uint32_t>();
+    if (!r.ok) return false;
+    const uint8_t* nrm_p = r.take(nrm_n);
+    if (!r.ok) return false;
+    tmp_out.normal.assign(nrm_p, nrm_p+nrm_n);
+
+    out = std::move(tmp_out);
     return true;
 }
 
