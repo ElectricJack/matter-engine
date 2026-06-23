@@ -123,7 +123,15 @@ uniform int   imposterTriBase;        // global triangle index of the cage's fir
 uniform float imposterMaxDisp;        // shell thickness (denormalizes displacement)
 uniform int   imposterDbg;            // 0=normal, 1=color by cage triangle index (no relief)
 uniform sampler2D imposterTriUvTex;   // RGBA32F: col=BVH triangle slot, row=corner, .xy=uv
+uniform sampler2D imposterCageTriTex; // RGBA32F: width=cage-tri id, rows 0-2 pos.xyz, rows 3-5 uv.xy
+uniform sampler2D imposterTriIdTex;   // R32F: atlas of cage-tri id per texel (-1 = uncovered)
 uniform int   imposterTriCount;       // number of cage triangles (texture width)
+
+// --- Imposter v2: voxel box volume ---
+uniform sampler3D imposterColorVolume;   // RGB albedo, A coverage
+uniform sampler3D imposterNormalVolume;  // RG octahedral
+uniform vec3 imposterBoxMin;
+uniform vec3 imposterBoxExt;
 
 // Control uniforms
 uniform int intersectionMode;    // 0=brute force, 1=TLAS/BLAS traversal
@@ -195,8 +203,23 @@ struct HitResult
     vec3 bakedColor; // valid when isImposter && hit (baked radiance to display)
 };
 
+// Octahedral normal decode (matches host oct_decode in src/voxel_imposter.cpp).
+vec3 octDecode(vec2 e){
+    vec2 f = e*2.0-1.0;
+    vec3 n = vec3(f.x, f.y, 1.0-abs(f.x)-abs(f.y));
+    float t = max(-n.z,0.0);
+    n.x += n.x>=0.0 ? -t : t;
+    n.y += n.y>=0.0 ? -t : t;
+    return normalize(n);
+}
+// Voxel DDA march through imposterColorVolume/imposterNormalVolume.
+// Filled in next task. Returns false for now (pass-through) so the build is green.
+bool voxelMarch(vec3 originBox, vec3 dirBox, out ivec3 hitVox, out float tBox){
+    hitVox = ivec3(0); tBox = 0.0; return false;
+}
+
 // Random number generation (ported from tools.cl)
-uint WangHash(uint s) 
+uint WangHash(uint s)
 {
     s = (s ^ 61u) ^ (s >> 16);
     s *= 9u;
@@ -712,6 +735,34 @@ bool shadowQuery(vec3 origin, vec3 dir, float maxDist)
     return false;
 }
 
+// Fetch cage triangle `id` (cage-tri-id order) world-space corners + UVs from
+// imposterCageTriTex, applying the instance transform so positions match the seed frame.
+void fetchCageTri(int id, float xform[16], out vec3 p0, out vec3 p1, out vec3 p2,
+                  out vec2 t0, out vec2 t1, out vec2 t2) {
+    p0 = transformPosition(texelFetch(imposterCageTriTex, ivec2(id,0),0).xyz, xform);
+    p1 = transformPosition(texelFetch(imposterCageTriTex, ivec2(id,1),0).xyz, xform);
+    p2 = transformPosition(texelFetch(imposterCageTriTex, ivec2(id,2),0).xyz, xform);
+    t0 = texelFetch(imposterCageTriTex, ivec2(id,3),0).xy;
+    t1 = texelFetch(imposterCageTriTex, ivec2(id,4),0).xy;
+    t2 = texelFetch(imposterCageTriTex, ivec2(id,5),0).xy;
+}
+
+// Project world point P into triangle (p0,p1,p2)/(t0,t1,t2): UV via barycentrics,
+// and signed depth `pen` below the triangle plane (positive = inside the shell).
+bool projectInTri(vec3 P, vec3 p0, vec3 p1, vec3 p2, vec2 t0, vec2 t1, vec2 t2,
+                  vec3 refN, out vec2 uv, out float pen) {
+    vec3 e1=p1-p0, e2=p2-p0, ep=P-p0;
+    float d00=dot(e1,e1), d01=dot(e1,e2), d11=dot(e2,e2), d20=dot(ep,e1), d21=dot(ep,e2);
+    float den=d00*d11-d01*d01;
+    if (abs(den)<1e-12) return false;
+    float bv=(d11*d20-d01*d21)/den, bw=(d00*d21-d01*d20)/den, bu=1.0-bv-bw;
+    uv = bu*t0 + bv*t1 + bw*t2;
+    vec3 fn = normalize(cross(e1,e2));
+    if (dot(fn, refN) < 0.0) fn = -fn;   // orient outward (winding is not outward-consistent)
+    pen = -dot(ep, fn);            // depth below the outward-facing triangle plane
+    return true;
+}
+
 // Relief-march from the cage entry into the displacement shell. Returns true and
 // the hit UV when a covered crossing is found within maxDisp; false = pass through.
 // hitS returns the arc length along (normalized) rayDir from entryPos to the
@@ -719,68 +770,65 @@ bool shadowQuery(vec3 origin, vec3 dir, float maxDist)
 bool reliefMarch(vec3 entryPos, vec3 rayDir,
                  vec3 v0, vec3 v1, vec3 v2,
                  vec2 uv0, vec2 uv1, vec2 uv2,
-                 vec3 cageN, out vec2 hitUV, out float hitS) {
+                 vec3 cageN, vec2 chartLo, vec2 chartHi, int seedTriId, float instXform[16],
+                 out vec2 hitUV, out float hitS) {
     hitS = 0.0;
-    vec3 dpdu, dpdv;
-    {
-        vec3 e1 = v1 - v0, e2 = v2 - v0;
-        vec2 d1 = uv1 - uv0, d2 = uv2 - uv0;
-        float det = d1.x * d2.y - d2.x * d1.y;
-        if (abs(det) < 1e-12) return false;
-        float r = 1.0 / det;
-        dpdu = r * ( d2.y * e1 - d1.y * e2);
-        dpdv = r * (-d2.x * e1 + d1.x * e2);
-    }
-    // Barycentric entry UV.
-    vec3 e1 = v1 - v0, e2 = v2 - v0, ep = entryPos - v0;
-    float d00=dot(e1,e1), d01=dot(e1,e2), d11=dot(e2,e2), d20=dot(ep,e1), d21=dot(ep,e2);
-    float den = d00*d11 - d01*d01;
-    if (abs(den) < 1e-12) return false; // degenerate cage triangle -> avoid NaN
-    float bv = (d11*d20 - d01*d21) / den;
-    float bw = (d00*d21 - d01*d20) / den;
-    float bu = 1.0 - bv - bw;
-    vec2 entryUV = bu*uv0 + bv*uv1 + bw*uv2;
+    vec3 ndir = normalize(rayDir);
 
-    // Chart bounds = this triangle's own UV bbox. Marching UV must stay within it,
-    // or we'd sample a neighbor chart's heightfield (cross-cell bleed / seams).
-    vec2 cellLo = min(uv0, min(uv1, uv2)) - vec2(0.002);
-    vec2 cellHi = max(uv0, max(uv1, uv2)) + vec2(0.002);
+    // Current triangle frame (starts as the hit triangle).
+    int curId = seedTriId;
+    vec3 p0=v0, p1=v1, p2=v2; vec2 t0=uv0, t1=uv1, t2=uv2;
 
-    // World ray -> (du, dv, dn) rates. dn<0 = going inward (below cage along N).
-    mat3 M = mat3(dpdu, dpdv, cageN);
-    if (abs(determinant(M)) < 1e-9) return false; // near-singular frame -> inverse undefined
-    vec3 duvn = inverse(M) * rayDir;
-    float inward = -duvn.z;
-    if (inward <= 1e-5) return false; // ray not entering the shell
+    // Arc-length budget to traverse the full shell depth, using the seed inward rate.
+    float inward0 = -dot(ndir, cageN);
+    if (inward0 <= 1e-5) return false;        // ray not entering the shell
+    float sMax = imposterMaxDisp / inward0;
 
     const int LIN = 128;
     const int BIN = 8;
-    float sMax = imposterMaxDisp / inward;   // arc length to reach full depth
     float ds = sMax / float(LIN);
-    float prevS = 0.0; bool have_prev = false;
-    for (int i = 1; i <= LIN; ++i) {
+    float prevS = 0.0;
+    for (int i=1; i<=LIN; ++i) {
         float s = ds * float(i);
-        vec2 uvc = entryUV + duvn.xy * s;
-        if (uvc.x < cellLo.x - 0.002 || uvc.x > cellHi.x + 0.002 ||
-            uvc.y < cellLo.y - 0.002 || uvc.y > cellHi.y + 0.002) break;
-        float pen = inward * s;                       // penetration below cage
+        vec3 P = entryPos + ndir * s;
+
+        vec2 uvc; float pen;
+        if (!projectInTri(P, p0,p1,p2, t0,t1,t2, cageN, uvc, pen)) { prevS=s; continue; }
+
+        // Stay inside this triangle's chart rect; else terminate (option 1).
+        if (uvc.x < chartLo.x-0.002 || uvc.x > chartHi.x+0.002 ||
+            uvc.y < chartLo.y-0.002 || uvc.y > chartHi.y+0.002) break;
+
+        // Re-anchor if the march moved onto a different cage triangle.
+        float idf = texture(imposterTriIdTex, uvc).r;
+        if (idf < 0.0) { prevS = s; continue; }    // uncovered texel: keep marching
+        int sampleId = int(idf + 0.5);
+        if (sampleId != curId) {
+            curId = sampleId;
+            fetchCageTri(curId, instXform, p0,p1,p2, t0,t1,t2);
+            if (!projectInTri(P, p0,p1,p2, t0,t1,t2, cageN, uvc, pen)) { prevS=s; continue; }
+        }
+
         float d = texture(imposterDispTex, uvc).r * imposterMaxDisp;
         float cov = texture(imposterColorTex, uvc).a;
-        float diff = pen - d;                          // >0 once we pass the surface
-        if (cov > 0.5 && diff >= 0.0) {
-            // Binary refine between prevS and s.
-            float lo = have_prev ? prevS : 0.0, hi = s;
-            for (int b = 0; b < BIN; ++b) {
-                float mid = 0.5*(lo+hi);
-                vec2 um = entryUV + duvn.xy*mid;
+        if (cov > 0.5 && pen - d >= 0.0) {
+            // Binary refine on world arc length between prevS and s.
+            float lo = prevS, hi = s;
+            for (int b=0;b<BIN;++b){
+                float mid=0.5*(lo+hi);
+                vec3 Pm=entryPos+ndir*mid;
+                vec2 um; float pm;
+                if (!projectInTri(Pm, p0,p1,p2, t0,t1,t2, cageN, um, pm)) { lo=mid; continue; }
                 float dm = texture(imposterDispTex, um).r * imposterMaxDisp;
-                if (inward*mid - dm >= 0.0) hi = mid; else lo = mid;
+                if (pm - dm >= 0.0) hi=mid; else lo=mid;
             }
-            hitUV = entryUV + duvn.xy*hi;
-            hitS = hi;
+            vec3 Ph=entryPos+ndir*hi;
+            vec2 uh; float ph;
+            projectInTri(Ph, p0,p1,p2, t0,t1,t2, cageN, uh, ph);
+            hitUV = uh; hitS = hi;
             return texture(imposterColorTex, hitUV).a > 0.5;
         }
-        prevS = s; have_prev = true;
+        prevS = s;
     }
     return false; // reached maxDisp without a covered crossing -> pass through
 }
@@ -881,7 +929,7 @@ HitResult intersectScene(vec3 rayOrigin, vec3 rayDir, float maxT)
         result.bakedColor = vec3(0.0);
         if (inst.isImposter) {
             int localTri = int(triIdx) - imposterTriBase;
-            if (imposterDbg != 0) {
+            if (imposterDbg == 1) {
                 // Debug: paint each cage triangle a distinct hue, skip relief, so the
                 // raw cage-triangle hit layout is visible on screen.
                 float h = float(localTri) / 12.0;
@@ -895,12 +943,31 @@ HitResult intersectScene(vec3 rayOrigin, vec3 rayDir, float maxT)
             vec3 cageN = normalize(result.normal);
             // Per-corner baked UVs, fetched in BVH-triangle order -> reorder-safe and
             // geometry-agnostic (same path for cube and fitted cages).
-            vec2 uv0 = texelFetch(imposterTriUvTex, ivec2(localTri, 0), 0).xy;
-            vec2 uv1 = texelFetch(imposterTriUvTex, ivec2(localTri, 1), 0).xy;
-            vec2 uv2 = texelFetch(imposterTriUvTex, ivec2(localTri, 2), 0).xy;
+            vec4 r0 = texelFetch(imposterTriUvTex, ivec2(localTri, 0), 0);
+            vec4 r1 = texelFetch(imposterTriUvTex, ivec2(localTri, 1), 0);
+            vec4 r2 = texelFetch(imposterTriUvTex, ivec2(localTri, 2), 0);
+            vec2 uv0 = r0.xy, uv1 = r1.xy, uv2 = r2.xy;
+            vec2 chartLo = r0.zw, chartHi = r1.zw;
+            int  seedTriId = int(r2.z + 0.5);
             vec3 ndir = normalize(rayDir);
+            // Diagnostic (imposterDbg==2): skip the relief march, sample baked color at
+            // the cage-surface entry UV. Solid result => cage/coverage/UV are fine and the
+            // relief march is what drops pixels. Doubles as the "flat imposter" preview.
+            if (imposterDbg == 2) {
+                vec3 e1f = w1 - w0, e2f = w2 - w0, epf = result.position - w0;
+                float a00=dot(e1f,e1f), a01=dot(e1f,e2f), a11=dot(e2f,e2f);
+                float a20=dot(epf,e1f), a21=dot(epf,e2f);
+                float den2 = a00*a11 - a01*a01;
+                float fv = (a11*a20 - a01*a21) / den2;
+                float fw = (a00*a21 - a01*a20) / den2;
+                float fu = 1.0 - fv - fw;
+                vec2 euv = fu*uv0 + fv*uv1 + fw*uv2;
+                result.bakedColor = texture(imposterColorTex, euv).rgb;
+                return result;
+            }
             vec2 hitUV; float hitS;
-            if (reliefMarch(result.position, ndir, w0, w1, w2, uv0, uv1, uv2, cageN, hitUV, hitS)) {
+            if (reliefMarch(result.position, ndir, w0, w1, w2, uv0, uv1, uv2,
+                            cageN, chartLo, chartHi, seedTriId, inst.transform, hitUV, hitS)) {
                 // Advance from the cage plane to the true displaced surface so depth
                 // and lighting use the real hit, and neighbouring cage triangles'
                 // relief surfaces line up instead of painting flat at the cage.
