@@ -64,10 +64,10 @@ TARGET = minimal_cell_test
 $(TARGET): $(MAIN_SOURCE) $(MATTER_SOURCES)
 	$(CC) $(MAIN_SOURCE) $(MATTER_SOURCES) -o $(TARGET) $(CFLAGS) $(INCLUDE_PATHS) $(LDFLAGS) $(LDLIBS)
 
-.PHONY: clean run run-simp run-blas run-cell run-cont run-reg run-tint run-cull run-par run-cube run-ao run-part run-imp
+.PHONY: clean run run-simp run-blas run-cell run-cont run-reg run-tint run-cull run-par run-cube run-ao run-part run-imp run-vox
 
 clean:
-	rm -f $(TARGET) $(SIMP_TARGET) $(BLAS_TARGET) $(CELL_TARGET) $(CONT_TARGET) $(REG_TARGET) $(TINT_TARGET) $(CULL_TARGET) $(PAR_TARGET) $(CUBE_TARGET) $(AO_TARGET) $(PART_TARGET) $(IMP_TARGET)
+	rm -f $(TARGET) $(SIMP_TARGET) $(BLAS_TARGET) $(CELL_TARGET) $(CONT_TARGET) $(REG_TARGET) $(TINT_TARGET) $(CULL_TARGET) $(PAR_TARGET) $(CUBE_TARGET) $(AO_TARGET) $(PART_TARGET) $(IMP_TARGET) $(VOX_TARGET)
 
 run: $(TARGET)
 	./$(TARGET)
@@ -251,3 +251,20 @@ $(IMP_TARGET): $(IMP_CPP) $(IMP_C)
 
 run-imp: $(IMP_TARGET)
 	./$(IMP_TARGET)
+
+# Voxel imposter asset struct + grid-dim selection tests (headless, GL-free).
+# material_registry.c via gcc to keep its extern "C" symbols unmangled.
+VOX_TARGET = voxel_imposter_tests
+VOX_CPP = voxel_imposter_tests.cpp ../src/voxel_imposter.cpp ../src/bvh.cpp \
+          ../src/part_asset.cpp ../src/blas_manager.cpp ../src/tlas_manager.cpp \
+          ../src/vertex_ao.cpp ../src/occupancy.cpp
+VOX_C   = ../src/material_registry.c
+VOX_C_OBJ = material_registry.o
+
+$(VOX_TARGET): $(VOX_CPP) $(VOX_C)
+	gcc -c $(VOX_C) -O2 -DPLATFORM_DESKTOP $(INCLUDE_PATHS)
+	$(CC) $(VOX_CPP) $(VOX_C_OBJ) -o $(VOX_TARGET) $(CFLAGS) $(INCLUDE_PATHS) $(LDFLAGS) $(LDLIBS)
+	rm -f $(VOX_C_OBJ)
+
+run-vox: $(VOX_TARGET)
+	./$(VOX_TARGET)
