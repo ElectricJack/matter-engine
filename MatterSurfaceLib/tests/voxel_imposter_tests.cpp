@@ -63,11 +63,32 @@ static void test_flatten_mat_count() {
     CHECK(fl[0].materialId == 2, "materialId carried through flatten");
 }
 
+static void test_bake_surface_only() {
+    voxel_imposter::FlatTri a{}, b{};
+    a.v0=make_float3(0,0,0.5f); a.v1=make_float3(1,0,0.5f); a.v2=make_float3(1,1,0.5f);
+    b.v0=make_float3(0,0,0.5f); b.v1=make_float3(1,1,0.5f); b.v2=make_float3(0,1,0.5f);
+    a.materialId=b.materialId=0; a.tint[0]=a.tint[1]=a.tint[2]=1; a.tint[3]=0;
+    b.tint[0]=b.tint[1]=b.tint[2]=1; b.tint[3]=0;
+    voxel_imposter::FlatTri c=a; c.v0=make_float3(0,0,0.0f); c.v1=make_float3(0,0,1.0f); c.v2=make_float3(0,0,1.0f);
+    std::vector<voxel_imposter::FlatTri> tris{a,b,c};
+    voxel_imposter::VoxGenParams p{16,0,0.5f};
+    voxel_imposter::VoxelImposter v;
+    CHECK(voxel_imposter::bake_voxels(tris,p,123,v), "bake ok");
+    int covered=0; for(uint8_t c8:v.coverage) if(c8>0) ++covered;
+    int total=v.nx*v.ny*v.nz;
+    CHECK(covered>0, "some voxels covered");
+    CHECK(covered < total, "surface fill is sparse, not solid");
+    CHECK(v.albedo.size()==(size_t)total*3, "albedo sized");
+    CHECK(v.normal.size()==(size_t)total*2, "normal sized");
+    CHECK(v.source_part_hash==123, "hash stored");
+}
+
 int main(){
     test_grid_dims_cube(); test_grid_dims_flat(); test_grid_dims_degenerate();
     test_tribox_hit(); test_tribox_miss();
     test_oct_roundtrip();
     test_flatten_mat_count();
+    test_bake_surface_only();
     if(!failures) printf("All voxel_imposter tests passed\n");
     return failures?1:0;
 }

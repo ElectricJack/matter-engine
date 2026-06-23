@@ -1,5 +1,6 @@
 #include "../include/voxel_imposter.h"
 #include "../include/part_asset.h"   // fnv1a64 (used in later tasks)
+#include "../include/material_registry.h"
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -115,6 +116,64 @@ std::vector<FlatTri> flatten_part_triangles_mat(const BLASManager& blas, const T
         }
     }
     return out;
+}
+
+bool bake_voxels(const std::vector<FlatTri>& tris, const VoxGenParams& p,
+                 uint64_t source_part_hash, VoxelImposter& out) {
+    if (tris.empty() || p.maxDim < 1) return false;
+    float lo[3]={1e30f,1e30f,1e30f}, hi[3]={-1e30f,-1e30f,-1e30f};
+    auto grow=[&](const float3& v){ lo[0]=std::min(lo[0],v.x);lo[1]=std::min(lo[1],v.y);lo[2]=std::min(lo[2],v.z);
+                                    hi[0]=std::max(hi[0],v.x);hi[1]=std::max(hi[1],v.y);hi[2]=std::max(hi[2],v.z); };
+    for (auto& t:tris){ grow(t.v0); grow(t.v1); grow(t.v2); }
+    int nx,ny,nz;
+    if (!choose_grid_dims(lo,hi,p.maxDim,nx,ny,nz)) return false;
+
+    out = VoxelImposter{};
+    out.source_part_hash = source_part_hash;
+    for (int i=0;i<3;++i){ out.bounds_min[i]=lo[i]; out.bounds_max[i]=hi[i]; }
+    out.nx=nx; out.ny=ny; out.nz=nz;
+    const size_t N=(size_t)nx*ny*nz;
+    out.coverage.assign(N,0); out.albedo.assign(N*3,0); out.normal.assign(N*2,0);
+
+    std::vector<float> wsum(N,0.0f), nacc(N*3,0.0f), aacc(N*3,0.0f);
+    float cell[3]={ (hi[0]-lo[0])/std::max(1,nx), (hi[1]-lo[1])/std::max(1,ny), (hi[2]-lo[2])/std::max(1,nz) };
+    for (int a=0;a<3;++a) if (cell[a]<=0.0f) cell[a]=1e-6f;
+    float half[3]={cell[0]*0.5f,cell[1]*0.5f,cell[2]*0.5f};
+
+    for (const FlatTri& t : tris) {
+        const float V0[3]={t.v0.x,t.v0.y,t.v0.z}, V1[3]={t.v1.x,t.v1.y,t.v1.z}, V2[3]={t.v2.x,t.v2.y,t.v2.z};
+        float tlo[3]={std::min(V0[0],std::min(V1[0],V2[0])),std::min(V0[1],std::min(V1[1],V2[1])),std::min(V0[2],std::min(V1[2],V2[2]))};
+        float thi[3]={std::max(V0[0],std::max(V1[0],V2[0])),std::max(V0[1],std::max(V1[1],V2[1])),std::max(V0[2],std::max(V1[2],V2[2]))};
+        int x0=std::max(0,(int)std::floor((tlo[0]-lo[0])/cell[0])), x1=std::min(nx-1,(int)std::floor((thi[0]-lo[0])/cell[0]));
+        int y0=std::max(0,(int)std::floor((tlo[1]-lo[1])/cell[1])), y1=std::min(ny-1,(int)std::floor((thi[1]-lo[1])/cell[1]));
+        int z0=std::max(0,(int)std::floor((tlo[2]-lo[2])/cell[2])), z1=std::min(nz-1,(int)std::floor((thi[2]-lo[2])/cell[2]));
+        float e1[3]={V1[0]-V0[0],V1[1]-V0[1],V1[2]-V0[2]}, e2[3]={V2[0]-V0[0],V2[1]-V0[1],V2[2]-V0[2]};
+        float fn[3]={e1[1]*e2[2]-e1[2]*e2[1], e1[2]*e2[0]-e1[0]*e2[2], e1[0]*e2[1]-e1[1]*e2[0]};
+        float area2=std::sqrt(fn[0]*fn[0]+fn[1]*fn[1]+fn[2]*fn[2]);
+        float w=std::max(1e-6f, 0.5f*area2);
+        float un[3]={fn[0],fn[1],fn[2]}; if(area2>1e-12f){un[0]/=area2;un[1]/=area2;un[2]/=area2;}
+        const MaterialDef* md=MaterialRegistryGet(t.materialId);
+        float al[3]={md->albedo[0],md->albedo[1],md->albedo[2]};
+        if (t.tint[3]>0.0f){ for(int k=0;k<3;++k) al[k]=al[k]*(1.0f-t.tint[3])+t.tint[k]*t.tint[3]; }
+        for (int z=z0;z<=z1;++z) for (int y=y0;y<=y1;++y) for (int x=x0;x<=x1;++x) {
+            float bc[3]={lo[0]+(x+0.5f)*cell[0], lo[1]+(y+0.5f)*cell[1], lo[2]+(z+0.5f)*cell[2]};
+            if (!tri_box_overlap(bc,half,V0,V1,V2)) continue;
+            size_t vi=(size_t)out.voxel_index(x,y,z);
+            wsum[vi]+=w;
+            for(int k=0;k<3;++k){ nacc[vi*3+k]+=un[k]*w; aacc[vi*3+k]+=al[k]*w; }
+        }
+    }
+    for (size_t vi=0;vi<N;++vi) {
+        if (wsum[vi] <= 0.0f) continue;
+        out.coverage[vi]=255;
+        float inv=1.0f/wsum[vi];
+        for(int k=0;k<3;++k) out.albedo[vi*3+k]=(uint8_t)std::min(255.0f,std::max(0.0f, aacc[vi*3+k]*inv*255.0f+0.5f));
+        float nn[3]={nacc[vi*3]*inv, nacc[vi*3+1]*inv, nacc[vi*3+2]*inv};
+        float l=std::sqrt(nn[0]*nn[0]+nn[1]*nn[1]+nn[2]*nn[2]); if(l<1e-12f){nn[0]=0;nn[1]=0;nn[2]=1;l=1;} else {nn[0]/=l;nn[1]/=l;nn[2]/=l;}
+        oct_encode(nn,&out.normal[vi*2]);
+    }
+    (void)p.coverThresh;
+    return true;
 }
 
 } // namespace voxel_imposter

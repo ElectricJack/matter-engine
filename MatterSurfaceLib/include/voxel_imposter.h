@@ -57,4 +57,12 @@ bool tri_box_overlap(const float boxCenter[3], const float boxHalf[3],
 void oct_encode(const float n[3], uint8_t out[2]);
 void oct_decode(const uint8_t in[2], float n[3]);
 
+// Surface-voxelize the flattened triangles into a dense grid: coverage=255 for
+// any voxel a triangle overlaps (tri_box_overlap), with area-weighted albedo
+// (MaterialRegistryGet(materialId)->albedo blended by tint) and area-weighted
+// octahedral normal per covered voxel. Fills bounds/dims/coverage/albedo/normal.
+// Returns false on empty/degenerate input. GL-free, unit-testable.
+bool bake_voxels(const std::vector<FlatTri>& tris, const VoxGenParams& p,
+                 uint64_t source_part_hash, VoxelImposter& out);
+
 } // namespace voxel_imposter
