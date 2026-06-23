@@ -23,6 +23,12 @@ uniform sampler2D imposterCageTriTex; // RGBA32F: width=cage-tri id, rows 0-2 po
 uniform sampler2D imposterTriIdTex;   // R32F: atlas of cage-tri id per texel (-1 = uncovered)
 uniform int   imposterTriCount;       // number of cage triangles (texture width)
 
+// --- Imposter v2: voxel box volume ---
+uniform sampler3D imposterColorVolume;   // RGB albedo, A coverage
+uniform sampler3D imposterNormalVolume;  // RG octahedral
+uniform vec3 imposterBoxMin;
+uniform vec3 imposterBoxExt;
+
 // Control uniforms
 uniform int intersectionMode;    // 0=brute force, 1=TLAS/BLAS traversal
 uniform int debugTriangleTests;  // 0=normal rendering, 1=visualize triangle test counts
@@ -93,8 +99,23 @@ struct HitResult
     vec3 bakedColor; // valid when isImposter && hit (baked radiance to display)
 };
 
+// Octahedral normal decode (matches host oct_decode in src/voxel_imposter.cpp).
+vec3 octDecode(vec2 e){
+    vec2 f = e*2.0-1.0;
+    vec3 n = vec3(f.x, f.y, 1.0-abs(f.x)-abs(f.y));
+    float t = max(-n.z,0.0);
+    n.x += n.x>=0.0 ? -t : t;
+    n.y += n.y>=0.0 ? -t : t;
+    return normalize(n);
+}
+// Voxel DDA march through imposterColorVolume/imposterNormalVolume.
+// Filled in next task. Returns false for now (pass-through) so the build is green.
+bool voxelMarch(vec3 originBox, vec3 dirBox, out ivec3 hitVox, out float tBox){
+    hitVox = ivec3(0); tBox = 0.0; return false;
+}
+
 // Random number generation (ported from tools.cl)
-uint WangHash(uint s) 
+uint WangHash(uint s)
 {
     s = (s ^ 61u) ^ (s >> 16);
     s *= 9u;
