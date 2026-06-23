@@ -64,10 +64,10 @@ TARGET = minimal_cell_test
 $(TARGET): $(MAIN_SOURCE) $(MATTER_SOURCES)
 	$(CC) $(MAIN_SOURCE) $(MATTER_SOURCES) -o $(TARGET) $(CFLAGS) $(INCLUDE_PATHS) $(LDFLAGS) $(LDLIBS)
 
-.PHONY: clean run run-simp run-blas run-cell run-cont run-reg run-tint run-cull run-par run-cube run-ao run-part run-imp run-vox
+.PHONY: clean run run-simp run-blas run-cell run-cont run-reg run-tint run-cull run-par run-cube run-ao run-part run-vox
 
 clean:
-	rm -f $(TARGET) $(SIMP_TARGET) $(BLAS_TARGET) $(CELL_TARGET) $(CONT_TARGET) $(REG_TARGET) $(TINT_TARGET) $(CULL_TARGET) $(PAR_TARGET) $(CUBE_TARGET) $(AO_TARGET) $(PART_TARGET) $(IMP_TARGET) $(VOX_TARGET)
+	rm -f $(TARGET) $(SIMP_TARGET) $(BLAS_TARGET) $(CELL_TARGET) $(CONT_TARGET) $(REG_TARGET) $(TINT_TARGET) $(CULL_TARGET) $(PAR_TARGET) $(CUBE_TARGET) $(AO_TARGET) $(PART_TARGET) $(VOX_TARGET)
 
 run: $(TARGET)
 	./$(TARGET)
@@ -234,23 +234,6 @@ $(PART_TARGET): $(PART_CPP) $(PART_C)
 
 run-part: $(PART_TARGET)
 	./$(PART_TARGET)
-
-# Imposter asset round-trip + cage/atlas/displacement tests (headless, GL-free).
-# material_registry.c via gcc to keep its extern "C" symbols unmangled.
-IMP_TARGET = imposter_asset_tests
-IMP_CPP = imposter_asset_tests.cpp ../src/imposter_asset.cpp ../src/part_asset.cpp \
-          ../src/blas_manager.cpp ../src/bvh.cpp ../src/tlas_manager.cpp \
-          ../src/vertex_ao.cpp ../src/occupancy.cpp ../src/mesh_simplifier.cpp
-IMP_C   = ../src/material_registry.c
-IMP_C_OBJ = material_registry.o
-
-$(IMP_TARGET): $(IMP_CPP) $(IMP_C)
-	gcc -c $(IMP_C) -O2 -DPLATFORM_DESKTOP $(INCLUDE_PATHS)
-	$(CC) $(IMP_CPP) $(IMP_C_OBJ) -o $(IMP_TARGET) $(CFLAGS) $(INCLUDE_PATHS) $(LDFLAGS) $(LDLIBS)
-	rm -f $(IMP_C_OBJ)
-
-run-imp: $(IMP_TARGET)
-	./$(IMP_TARGET)
 
 # Voxel imposter asset struct + grid-dim selection tests (headless, GL-free).
 # material_registry.c via gcc to keep its extern "C" symbols unmangled.

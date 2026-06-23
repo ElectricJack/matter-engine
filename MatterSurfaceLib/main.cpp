@@ -27,7 +27,6 @@ extern "C" {
 #include "include/blas_manager.hpp"
 #include "include/tlas_manager.hpp"
 #include "include/part_asset.h"
-#include "include/imposter_asset.h"
 #include "include/voxel_imposter.h"
 #include "include/bvh_visualizer.hpp"
 #include "include/bvh_analyzer.h"
@@ -140,25 +139,53 @@ uint64_t fnv1a64(const char* s) {
     return h;
 }
 
+// GL 1.2+ 3D-texture shim. MinGW's <GL/gl.h> only exposes GL 1.1, so these
+// enums and glTexImage3D are absent there (Linux libGL exports them, which is
+// why the Linux target links directly). Define the missing enums and load the
+// entry point through GLFW so the voxel-imposter 3D textures work on both.
+#ifndef GL_TEXTURE_3D
+#define GL_TEXTURE_3D 0x806F
+#endif
+#ifndef GL_TEXTURE_WRAP_R
+#define GL_TEXTURE_WRAP_R 0x8072
+#endif
+#ifndef GL_CLAMP_TO_EDGE
+#define GL_CLAMP_TO_EDGE 0x812F
+#endif
+#ifndef GL_RGBA8
+#define GL_RGBA8 0x8058
+#endif
+#ifndef GL_RG
+#define GL_RG 0x8227
+#endif
+#ifndef GL_RG8
+#define GL_RG8 0x822B
+#endif
+typedef void (*PFN_glTexImage3D)(unsigned int, int, int, int, int, int, int,
+                                 unsigned int, unsigned int, const void*);
+static PFN_glTexImage3D pglTexImage3D = nullptr;
+
 // Upload helpers for GL 3D textures used by the voxel imposter.
 static unsigned int upload_volume_rgba8(int nx, int ny, int nz, const uint8_t* data) {
+    if (!pglTexImage3D) pglTexImage3D = (PFN_glTexImage3D)glfwGetProcAddress("glTexImage3D");
     unsigned int id = 0; glGenTextures(1, &id); glBindTexture(GL_TEXTURE_3D, id);
     glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
-    glTexImage3D(GL_TEXTURE_3D, 0, GL_RGBA8, nx, ny, nz, 0, GL_RGBA, GL_UNSIGNED_BYTE, data);
+    pglTexImage3D(GL_TEXTURE_3D, 0, GL_RGBA8, nx, ny, nz, 0, GL_RGBA, GL_UNSIGNED_BYTE, data);
     glBindTexture(GL_TEXTURE_3D, 0); return id;
 }
 static unsigned int upload_volume_rg8(int nx, int ny, int nz, const uint8_t* data) {
+    if (!pglTexImage3D) pglTexImage3D = (PFN_glTexImage3D)glfwGetProcAddress("glTexImage3D");
     unsigned int id = 0; glGenTextures(1, &id); glBindTexture(GL_TEXTURE_3D, id);
     glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_3D, GL_TEXTURE_WRAP_R, GL_CLAMP_TO_EDGE);
-    glTexImage3D(GL_TEXTURE_3D, 0, GL_RG8, nx, ny, nz, 0, GL_RG, GL_UNSIGNED_BYTE, data);
+    pglTexImage3D(GL_TEXTURE_3D, 0, GL_RG8, nx, ny, nz, 0, GL_RG, GL_UNSIGNED_BYTE, data);
     glBindTexture(GL_TEXTURE_3D, 0); return id;
 }
 
@@ -2180,8 +2207,6 @@ private:
     void cleanup() {
         if (raytracing_shader_.id != 0) UnloadShader(raytracing_shader_);
         if (rt_target_.id != 0) UnloadRenderTexture(rt_target_);
-        if (imposter_color_tex_.id != 0) UnloadTexture(imposter_color_tex_);
-        if (imposter_disp_tex_.id != 0) UnloadTexture(imposter_disp_tex_);
         // Managers clean up their own textures in destructors
     }
     
@@ -2211,21 +2236,12 @@ private:
     BLASHandle sphere_blas_;
     BLASHandle ground_blas_;
 
-    // Imposter demo (MSL_SHOW_IMPOSTER): one cage instance beside the real part.
-    BLASHandle imposter_cage_blas_ = 0;
-    // Voxel-box imposter: baked volume + unit-cube BLAS for the AABB instance.
+    // Voxel-box imposter (MSL_SHOW_IMPOSTER): baked volume + unit-cube BLAS for
+    // the AABB instance, placed beside the real part.
     voxel_imposter::VoxelImposter voxel_imposter_;
     BLASHandle imposter_cube_blas_ = 0;
     unsigned int imposter_color_vol_ = 0;
     unsigned int imposter_normal_vol_ = 0;
-    Texture2D imposter_color_tex_{};
-    Texture2D imposter_disp_tex_{};
-    int   imposter_tri_base_ = 0;
-    float imposter_max_disp_ = 0.0f;
-    Texture2D imposter_triuv_tex_{};
-    Texture2D imposter_cagetri_tex_{};
-    Texture2D imposter_triid_tex_{};
-    int   imposter_tri_count_ = 0;
     bool  imposter_enabled_ = false;
 
     // Mapping between BVH analysis names and BLAS handles for selective rendering

@@ -73,8 +73,9 @@ clean_one() {
 
 # raylib's intermediate .o files can be stale from a different OS; make
 # sure the static lib gets rebuilt for the current platform.
-# The raytrace shader samples 9 textures at once (4 core BVH + 5 imposter),
-# which exceeds raylib's default RL_DEFAULT_BATCH_MAX_TEXTURE_UNITS of 8. Bump
+# The raytrace shader samples several textures at once (4 core BVH + 2 voxel
+# imposter volumes), which can exceed raylib's default
+# RL_DEFAULT_BATCH_MAX_TEXTURE_UNITS of 8. Bump
 # it so every sampler gets a slot; otherwise the last texture silently fails to
 # bind. Must be defined when raylib itself is compiled (it lives in rlgl).
 RAYLIB_CUSTOM_CFLAGS="-DRL_DEFAULT_BATCH_MAX_TEXTURE_UNITS=16"
@@ -118,7 +119,7 @@ if [ "$MODE" = "test" ]; then
     # MatterSurfaceLib headless suites (no GL window). Target name == binary name.
     for suite in mesh_simplifier_tests material_registry_tests cell_bounds_tests \
                  blas_refcount_tests mesh_continuity_tests blas_tint_tests \
-                 particle_culling_tests; do
+                 particle_culling_tests voxel_imposter_tests; do
         if make -C MatterSurfaceLib/tests "$suite" >/dev/null 2>&1; then
             echo
             echo "--- MatterSurfaceLib ($suite) ---"
