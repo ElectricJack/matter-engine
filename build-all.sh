@@ -127,6 +127,13 @@ if [ "$MODE" = "test" ]; then
             RESULT[MatterSurfaceLib]="FAIL (test build)"
         fi
     done
+
+    if make -C MeshChartingLib/tests mesh_charting_tests >/dev/null 2>&1; then
+        echo; echo "--- MeshChartingLib (mesh_charting_tests) ---"
+        ./MeshChartingLib/tests/mesh_charting_tests || RESULT[MeshChartingLib]="FAIL (tests)"
+    else
+        RESULT[MeshChartingLib]="FAIL (test build)"
+    fi
 fi
 
 echo
