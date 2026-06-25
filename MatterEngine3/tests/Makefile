@@ -54,7 +54,7 @@ else
     LDLIBS = ../../Libraries/raylib/src/libraylib.a
 endif
 
-.PHONY: clean run-partv2 run-script run-graph run-graph-integration run-trivar
+.PHONY: clean run-partv2 run-script run-graph run-graph-integration run-trivar run-shlib
 
 # Part Artifact v2 round-trip + resolved-hash + format-guard tests (headless, GL-free).
 # NEW impl ../src/part_asset_v2.cpp + consumed MatterSurfaceLib backend sources.
@@ -79,7 +79,7 @@ run-partv2: $(PARTV2_TARGET)
 	./$(PARTV2_TARGET)
 
 clean:
-	rm -f $(PARTV2_TARGET) $(SCRIPT_TARGET) $(GRAPH_TARGET) $(GRAPH_INT_TARGET) $(TRIVAR_TARGET)
+	rm -f $(PARTV2_TARGET) $(SCRIPT_TARGET) $(GRAPH_TARGET) $(GRAPH_INT_TARGET) $(TRIVAR_TARGET) $(SHLIB_TARGET)
 
 # Script host (QuickJS-ng) + DSL/CSG bake tests (headless, GL-free for the host;
 # the BLAS surface path links raylib like the part-asset tests). QuickJS-ng C
@@ -190,3 +190,22 @@ $(TRIVAR_TARGET): $(TRIVAR_CPP) $(TRIVAR_C)
 
 run-trivar: $(TRIVAR_TARGET)
 	./$(TRIVAR_TARGET)
+
+# Shared script library: module-resolution + source-fold unit + JS-helper bake tests
+# (headless, GL-free; ModuleResolver requires no QuickJS).
+SHLIB_TARGET = shared_lib_tests
+SHLIB_CPP = shared_lib_tests.cpp ../src/module_resolver.cpp ../src/part_asset_v2.cpp \
+            ../../MatterSurfaceLib/src/part_asset.cpp \
+            ../../MatterSurfaceLib/src/blas_manager.cpp ../../MatterSurfaceLib/src/bvh.cpp \
+            ../../MatterSurfaceLib/src/tlas_manager.cpp \
+            ../../MatterSurfaceLib/src/vertex_ao.cpp ../../MatterSurfaceLib/src/occupancy.cpp
+SHLIB_C   = ../../MatterSurfaceLib/src/material_registry.c
+SHLIB_C_OBJ = material_registry.o
+
+$(SHLIB_TARGET): $(SHLIB_CPP) $(SHLIB_C)
+	gcc -c $(SHLIB_C) -O2 -DPLATFORM_DESKTOP $(INCLUDE_PATHS)
+	$(CC) $(SHLIB_CPP) $(SHLIB_C_OBJ) -o $(SHLIB_TARGET) $(CFLAGS) $(INCLUDE_PATHS) $(LDFLAGS) $(LDLIBS)
+	rm -f $(SHLIB_C_OBJ)
+
+run-shlib: $(SHLIB_TARGET)
+	./$(SHLIB_TARGET)
