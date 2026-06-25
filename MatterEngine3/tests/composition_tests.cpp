@@ -215,6 +215,39 @@ static void test_sector_uses_closest_instance() {
     CHECK(chosen[k].at(1) == 0, "sector LOD for part 1 driven by closest instance -> level 0");
 }
 
+static void test_variation_lod_independence() {
+    // Two variations of "the same part kind" are two distinct resolved_hashes
+    // (varA=100, varB=200) whose geometry is the SAME shape, so their baked LOD
+    // level sets must be identical, and selection at a given distance identical.
+    std::vector<Tri> tris = grid_tris(32);
+    BLASManager blasA, blasB;
+    lod_bake::LodLevels lodsA = lod_bake::bake_lods(tris, lod_bake::BakeTargets{}, blasA);
+    lod_bake::LodLevels lodsB = lod_bake::bake_lods(tris, lod_bake::BakeTargets{}, blasB);
+    CHECK(lodsA.size() == lodsB.size(), "variations have same level count");
+    bool same_thr = true, same_tris = true;
+    for (size_t i = 0; i < lodsA.size(); ++i) {
+        if (lodsA[i].screen_size_threshold != lodsB[i].screen_size_threshold) same_thr = false;
+        size_t ca = blasA.get_entries()[lodsA[i].blas_indices[0]]->triangles.size();
+        size_t cb = blasB.get_entries()[lodsB[i].blas_indices[0]]->triangles.size();
+        if (ca != cb) same_tris = false;
+    }
+    CHECK(same_thr, "variations share identical thresholds");
+    CHECK(same_tris, "variations share identical per-level tri counts");
+
+    using namespace lod_select; using namespace sector_grid; using world_flatten::FlatInstance;
+    std::vector<float> thr; for (auto& L : lodsA) thr.push_back(L.screen_size_threshold);
+    PartLodTable parts;
+    parts[100] = PartLod{1.0f, thr};
+    parts[200] = PartLod{1.0f, thr};
+    std::vector<FlatInstance> flat(2);
+    flat[0].resolved_hash=100; flat[0].world = mat4::Translate(make_float3(0,0,0));
+    flat[1].resolved_hash=200; flat[1].world = mat4::Translate(make_float3(0,0,0));
+    SectorGrid grid(100.0f);
+    auto chosen = select_sector_lods(bin_instances(flat, grid), parts, make_float3(0,0,7));
+    SectorCoord k{0,0,0};
+    CHECK(chosen[k].at(100) == chosen[k].at(200), "two variations select identical LOD");
+}
+
 int main() {
     test_decimate_one_level();
     test_bake_three_levels();
@@ -228,6 +261,7 @@ int main() {
     test_bin_instances();
     test_lod_selection_and_escalation();
     test_sector_uses_closest_instance();
+    test_variation_lod_independence();
     printf(failures ? "FAILED (%d)\n" : "OK\n", failures);
     return failures ? 1 : 0;
 }
