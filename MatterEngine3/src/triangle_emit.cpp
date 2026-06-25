@@ -71,8 +71,53 @@ void TriangleBuildBuffer::endShape() {
     open_ = false;
 }
 
-void TriangleBuildBuffer::line(float3, float3, float, float, int, const mat4&, int, int) {
-    // implemented in Task 3
+void TriangleBuildBuffer::line(float3 a, float3 b, float r0, float r1,
+                               int material_id, const mat4& transform,
+                               int rings, int segments) {
+    if (rings < 2) rings = 2;
+    if (segments < 3) segments = 3;
+    const float kPI = 3.14159265358979323846f;
+
+    float3 axis = b - a;
+    float seg_len = sqrtf(axis.x*axis.x + axis.y*axis.y + axis.z*axis.z);
+    // Step density: one sphere shell per ~half-min-radius of arc length, min 2,
+    // so the tube reads solid without exploding triangle count.
+    float min_r = (r0 < r1 ? r0 : r1);
+    int step_count = 2;
+    if (min_r > 1e-4f) {
+        int by_len = 1 + (int)(seg_len / (0.5f * min_r));
+        step_count = (by_len > step_count) ? by_len : step_count;
+    }
+    if (step_count > 64) step_count = 64;  // YAGNI cost cap
+
+    auto emit_sphere = [&](float3 center, float radius) {
+        // UV sphere: rings latitude bands x segments longitude slices.
+        for (int ri = 0; ri < rings; ++ri) {
+            float lat0 = kPI * ((float)ri / rings - 0.5f);
+            float lat1 = kPI * ((float)(ri+1) / rings - 0.5f);
+            float y0 = sinf(lat0), y1 = sinf(lat1);
+            float cr0 = cosf(lat0), cr1 = cosf(lat1);
+            for (int si = 0; si < segments; ++si) {
+                float lon0 = 2.0f * kPI * ((float)si / segments);
+                float lon1 = 2.0f * kPI * ((float)(si+1) / segments);
+                float x0 = cosf(lon0), z0 = sinf(lon0);
+                float x1 = cosf(lon1), z1 = sinf(lon1);
+                float3 p00 = make_float3(center.x + radius*cr0*x0, center.y + radius*y0, center.z + radius*cr0*z0);
+                float3 p01 = make_float3(center.x + radius*cr0*x1, center.y + radius*y0, center.z + radius*cr0*z1);
+                float3 p10 = make_float3(center.x + radius*cr1*x0, center.y + radius*y1, center.z + radius*cr1*z0);
+                float3 p11 = make_float3(center.x + radius*cr1*x1, center.y + radius*y1, center.z + radius*cr1*z1);
+                emitTriangle(p00, p10, p11, material_id, transform);
+                emitTriangle(p00, p11, p01, material_id, transform);
+            }
+        }
+    };
+
+    for (int i = 0; i < step_count; ++i) {
+        float t = (step_count == 1) ? 0.0f : (float)i / (float)(step_count - 1);
+        float3 center = make_float3(a.x + axis.x*t, a.y + axis.y*t, a.z + axis.z*t);
+        float radius = r0 + (r1 - r0) * t;   // lerped taper
+        emit_sphere(center, radius);
+    }
 }
 
 void TriangleBuildBuffer::appendTo(std::vector<Tri>& out_tris,

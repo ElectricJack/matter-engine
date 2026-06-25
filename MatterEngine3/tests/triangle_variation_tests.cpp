@@ -94,9 +94,45 @@ static void test_one_blas_merge() {
     CHECK(has1 && has2, "both per-triangle materials present in one BLAS");
 }
 
+static void test_skinned_line() {
+    // line from (0,0,0) to (2,0,0), constant radius 0.5 -> solid stepped spheres.
+    tri_emit::TriangleBuildBuffer buf;
+    mat4 id = mat4::Identity();
+    buf.line(make_float3(0,0,0), make_float3(2,0,0), 0.5f, 0.5f,
+             /*material*/4, id, /*rings*/4, /*segments*/6);
+    CHECK(!buf.triangles().empty(), "tubed line produced triangles");
+    CHECK(buf.triangles().size() == buf.tri_extra().size(), "Tri/TriEx parallel");
+    // all triangles carry the line's material
+    for (const TriEx& e : buf.tri_extra())
+        CHECK(e.materialId == 4, "tubed triangle has line material");
+
+    // Geometry is solid around the axis: some triangle vertex must be off-axis
+    // (radius applied), not collapsed onto the segment.
+    bool off_axis = false;
+    for (const Tri& t : buf.triangles()) {
+        if (fabsf(t.vertex0.y) > 0.1f || fabsf(t.vertex0.z) > 0.1f) off_axis = true;
+    }
+    CHECK(off_axis, "stepped spheres have radius (not degenerate to the line)");
+
+    // Lerped radius taper: r0=0.6 at a, r1=0.1 at b. Max |offset from axis|
+    // near a must exceed that near b.
+    tri_emit::TriangleBuildBuffer taper;
+    taper.line(make_float3(0,0,0), make_float3(2,0,0), 0.6f, 0.1f,
+               /*material*/4, id, /*rings*/4, /*segments*/6);
+    float max_r_near_a = 0.0f, max_r_near_b = 0.0f;
+    for (const Tri& t : taper.triangles()) {
+        float3 v = t.centroid;
+        float r = sqrtf(v.y*v.y + v.z*v.z);
+        if (v.x < 0.5f)      max_r_near_a = (r > max_r_near_a) ? r : max_r_near_a;
+        else if (v.x > 1.5f) max_r_near_b = (r > max_r_near_b) ? r : max_r_near_b;
+    }
+    CHECK(max_r_near_a > max_r_near_b, "radius tapers from a (0.6) to b (0.1)");
+}
+
 int main() {
     test_triangle_emission();
     test_one_blas_merge();
+    test_skinned_line();
     if (failures == 0) printf("All triangle_variation tests passed\n");
     return failures == 0 ? 0 : 1;
 }
