@@ -6,6 +6,7 @@
 
 #include <cstdint>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -46,7 +47,7 @@ private:
     std::string                       cache_root_;
     BLASManager                       blas_;
     std::map<uint64_t, LoadedPart>    loaded_;
-    std::map<uint64_t, bool>          load_failed_;     // suppress repeat logging
+    std::set<uint64_t>                load_failed_;      // suppress repeat logging
 };
 
 } // namespace viewer

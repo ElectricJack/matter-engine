@@ -4,6 +4,7 @@
 #include "lod_bake.h"          // lod_bake::bake_lods, BakeTargets
 #include "tlas_manager.hpp"    // TLASManager (load_v2 signature needs one)
 
+#include <cassert>
 #include <cmath>
 #include <cstdio>
 #include <sys/stat.h>
@@ -39,7 +40,7 @@ const LoadedPart* PartStore::get_or_load(uint64_t part_hash) {
     if (!part_asset::load_v2(path, part_hash, scratch, scratch_tlas, children, lods_in)) {
         printf("PartStore: load_v2 failed for %016llx (%s)\n",
                (unsigned long long)part_hash, path.c_str());
-        load_failed_[part_hash] = true;
+        load_failed_.insert(part_hash);
         return nullptr;
     }
 
@@ -70,6 +71,9 @@ const LoadedPart* PartStore::get_or_load(uint64_t part_hash) {
     lod_bake::LodLevels lods = lod_bake::bake_lods(tris, lod_bake::BakeTargets{}, blas_);
     for (const auto& L : lods) {
         lp.thresholds.push_back(L.screen_size_threshold);
+        // bake_lods registers exactly one BLAS per level; guard the assumption
+        // since the LodLevel type can carry multiple indices.
+        assert(L.blas_indices.size() == 1);
         size_t local = L.blas_indices[0];
         // The handle for entry index (before + local).
         lp.lod_blas.push_back(blas_.get_entries()[before + local]->handle);
