@@ -226,11 +226,54 @@ static void test_round_trip_full() {
     remove(path);
 }
 
+static void test_round_trip_degenerate_lod() {
+    using namespace part_asset;
+    BLASManager blasA; TLASManager tlasA(64);
+    BLASHandle hA, hB; build_scene(blasA, tlasA, hA, hB);
+    auto kids = sample_children();
+
+    // Empty LOD array round-trips.
+    {
+        LodLevels empty;
+        const char* path = "test_v2_lod_empty.part";
+        remove(path);
+        CHECK(save_v2(path, blasA, tlasA, kids.data(), kids.size(), empty, 0x10u),
+              "empty-LOD save ok");
+        BLASManager b; TLASManager t(64);
+        std::vector<ChildInstance> ko; LodLevels lo;
+        CHECK(load_v2(path, 0x10u, b, t, ko, lo), "empty-LOD load ok");
+        CHECK(lo.empty(), "empty LOD array round-trips empty");
+        CHECK(ko.size() == 2, "children still round-trip with empty LOD");
+        remove(path);
+    }
+
+    // Single-level LOD round-trips.
+    {
+        LodLevels one(1);
+        one[0].screen_size_threshold = 128.0f;
+        one[0].blas_indices = { 1u };
+        const char* path = "test_v2_lod_one.part";
+        remove(path);
+        CHECK(save_v2(path, blasA, tlasA, kids.data(), kids.size(), one, 0x11u),
+              "single-LOD save ok");
+        BLASManager b; TLASManager t(64);
+        std::vector<ChildInstance> ko; LodLevels lo;
+        CHECK(load_v2(path, 0x11u, b, t, ko, lo), "single-LOD load ok");
+        CHECK(lo.size() == 1, "single LOD level round-trips");
+        CHECK(lo.size() == 1 && lo[0].screen_size_threshold == 128.0f,
+              "single LOD threshold preserved");
+        CHECK(lo.size() == 1 && lo[0].blas_indices == std::vector<uint32_t>{1u},
+              "single LOD indices preserved");
+        remove(path);
+    }
+}
+
 int main() {
     test_cache_path_resolved();
     test_resolved_hash();
     test_save_v2_header();
     test_round_trip_full();
+    test_round_trip_degenerate_lod();
     if (failures == 0) printf("All part_asset_v2 tests passed\n");
     return failures == 0 ? 0 : 1;
 }
