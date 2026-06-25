@@ -161,10 +161,12 @@ bool fold_sources(const std::string& part_source, const std::string& shared_lib_
     // Build the fold buffer: part source, then each module source, NUL-separated.
     out.folded.assign(part_source.begin(), part_source.end());
     out.resolved_specifiers.clear();
+    out.modules.clear();
     for (auto& m : modules) {
         out.folded.push_back('\0');
         out.folded.insert(out.folded.end(), m.second.begin(), m.second.end());
         out.resolved_specifiers.push_back(m.first);
+        out.modules.push_back(ResolvedModule{m.first, m.second});
     }
     return true;
 }

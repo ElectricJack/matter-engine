@@ -22,6 +22,11 @@ std::vector<std::string> parse_import_specifiers(const std::string& source);
 bool resolve_specifier(const std::string& specifier, const std::string& shared_lib_root,
                        std::string& out_path, std::string& err);
 
+struct ResolvedModule {
+    std::string specifier;  // canonical resolved specifier, e.g. "shared-lib/leaf"
+    std::string source;     // full module source as read from disk
+};
+
 struct FoldResult {
     // The canonical folded byte buffer: part source first, then each transitively
     // imported module's full source, modules ordered by resolved specifier
@@ -31,6 +36,11 @@ struct FoldResult {
     std::vector<char>        folded;
     // Resolved specifiers actually folded (sorted), for diagnostics/tests.
     std::vector<std::string> resolved_specifiers;
+    // The {canonical specifier -> source} set actually gathered, sorted by
+    // specifier. The QuickJS module loader serves source from THIS set at eval
+    // time (never re-reading the filesystem) to keep determinism and the
+    // no-file-access contract intact. Same ordering as resolved_specifiers.
+    std::vector<ResolvedModule> modules;
 };
 
 // Parse the part's imports, transitively resolve + read every shared-lib module,
