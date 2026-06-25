@@ -143,7 +143,7 @@ if [ "$MODE" = "test" ]; then
     # raylib-linked BLAS path). Each run-* target builds then runs its binary, so
     # a non-zero status covers both build and test failures. run-graph-integration
     # exercises the full SP-3 install -> SP-2 ScriptHost bake path end-to-end.
-    for tgt in run-partv2 run-script run-graph run-graph-integration run-trivar run-shlib run-comp; do
+    for tgt in run-partv2 run-script run-graph run-graph-integration run-trivar run-shlib run-comp run-dev; do
         echo
         echo "--- MatterEngine3 ($tgt) ---"
         make -C MatterEngine3/tests "$tgt" || RESULT[MatterEngine3]="FAIL ($tgt)"
