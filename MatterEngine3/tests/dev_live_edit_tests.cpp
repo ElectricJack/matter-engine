@@ -191,6 +191,47 @@ static void test_shared_module_fanout_rebake() {
     CHECK(got.count("bush") == 0, "non-importer bush untouched");
 }
 
+// Fails the named part with a given cause until told to succeed.
+struct ScriptedBaker : Baker {
+    PartId fail_part; LiveEditError::Cause cause = LiveEditError::Cause::Script;
+    bool failing = true;
+    std::vector<PartId> baked;
+    BakeOutcome bake(const PartId& p, const ResolvedHash&, long long) override {
+        if (failing && p == fail_part)
+            return {false, LiveEditError{cause, p, "boom", "leaf.js:3"}};
+        baked.push_back(p); return {true, {}};
+    }
+};
+
+static void test_fail_closed_then_retry() {
+    std::printf("[test_fail_closed_then_retry]\n");
+    FakeGraph g;
+    g.file_to_parts["/w/leaf.js"] = {"leaf"};
+    g.parents["leaf"] = {"mid"}; g.parents["mid"] = {"root"};
+    g.roots["leaf"] = {"root"};
+    FakeWatcher w; ScriptedBaker b; RecFlattener f; RecSink s;
+    b.fail_part = "leaf";
+    LiveEditSession sess(w, g, b, f, s, LiveEditConfig{150, 0});
+
+    // First save throws.
+    w.set_now_ms(1000); w.push("/w/leaf.js"); w.advance_ms(200);
+    auto r1 = sess.tick();
+    CHECK(!r1.succeeded, "throwing edit reports failure");
+    CHECK(r1.errors.size() == 1 && r1.errors[0].part == "leaf", "structured error names the part");
+    CHECK(s.errs.size() == 1, "error surfaced to sink");
+    CHECK(f.roots.empty(), "NO re-flatten on failed bake (last-good world kept)");
+    CHECK(r1.rebaked.empty(), "no part recorded as successfully rebaked");
+
+    // Author fixes it and saves again.
+    b.failing = false;
+    w.advance_ms(10); w.push("/w/leaf.js"); w.advance_ms(200);
+    auto r2 = sess.tick();
+    CHECK(r2.succeeded, "subsequent valid edit succeeds");
+    std::set<PartId> got(r2.rebaked.begin(), r2.rebaked.end());
+    CHECK(got.count("leaf") && got.count("mid") && got.count("root"), "retry rebakes full cone");
+    CHECK(f.roots.size() == 1 && f.roots[0] == "root", "retry re-flattens affected root");
+}
+
 int main() {
     std::printf("=== dev_live_edit_tests ===\n");
     test_fake_watcher_roundtrip();
@@ -199,6 +240,7 @@ int main() {
     test_debounce_coalesces_two_writes();
     test_scope_single_part_and_topo();
     test_shared_module_fanout_rebake();
+    test_fail_closed_then_retry();
     if (g_failures) { std::printf("\n%d FAILURES\n", g_failures); return 1; }
     std::printf("\nALL PASS\n");
     return 0;
