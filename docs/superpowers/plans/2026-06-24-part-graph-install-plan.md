@@ -6,7 +6,7 @@
 
 **Architecture:** `PartGraph` discovers child deps from each module's `static requires` (top-level eval, no `build()`), folds child resolved-hashes into each part's identity via SP-1 `compute_resolved_hash`, memoizes resolve over `(source_hash, canonical_params)`, detects cycles as back-edges on the resolution stack, and walks topo order baking only parts whose `parts/<hash>.part` is absent. All graph logic sits behind a `Baker` seam and a `ModuleResolver` seam so resolve/dedup/topo/cycle/reachability/cache-miss are unit-tested with fakes; a thin final task wires the real SP-2 `ScriptHost` and SP-1 `cache_path`.
 
-**Tech Stack:** C++17, depends on SP-1 part_asset v2 (`compute_resolved_hash`, `cache_path`) + SP-2 ScriptHost (`bake(source, params, child_hashes)`), headless tests under MatterSurfaceLib/tests/ matching the existing assert/style (`CHECK` macro + `failures` counter + return code).
+**Tech Stack:** C++17, depends on SP-1 part_asset v2 (`compute_resolved_hash`, `cache_path`) + SP-2 ScriptHost (`resolve_hash`, `bake_source`, `eval_requires` — SP-2 is the hash authority per master C-2; SP-3 obtains hashes through these, never computing them itself), headless tests under MatterSurfaceLib/tests/ matching the existing assert/style (`CHECK` macro + `failures` counter + return code).
 
 ---
 
@@ -14,9 +14,14 @@
 
 1. **Canonical params serialization** (`serialize(params)`): a deterministic string —
    keys sorted lexicographically (ASCII), each emitted as `key=value;`. Numbers use
-   `%.17g` (round-trippable double), booleans `true`/`false`, strings verbatim. This
-   string's bytes are the `params_bytes` fed to `compute_resolved_hash`. Equal params
-   always hash equally regardless of authoring key order.
+   `%.17g` (round-trippable double), booleans `true`/`false`, strings verbatim. This is
+   the **memo-identity** form (used in the memo key and in the GL-free `FakeBaker`'s
+   stand-in hash); equal params always serialize equally regardless of authoring key order.
+   **Note (master C-2):** the *content* `resolved_hash` of a real script part is **not**
+   computed here — SP-2's `resolve_hash` owns it, because it must merge the class's
+   `static params` defaults (which SP-3 can't see) before hashing. SP-3 feeds the host the
+   override params and memoizes the hash the host returns. The `key=value;` form is only an
+   internal install-time identity, never the on-disk cache key for a real bake.
 2. **Root-part discovery:** a **manifest file** `WorldData/<world>/world.manifest` —
    a newline-delimited list of root module names (one per line; blank lines / `#`
    comments ignored). Chosen over a naming convention because a world can have multiple
@@ -84,14 +89,27 @@ struct ModuleResolver {
                               std::vector<ChildRequest>& children_out) = 0;
 };
 
-// Seam: how SP-3 bakes one part. Real impl (Task 9) calls SP-2 ScriptHost::bake +
-// SP-1 save_v2; tests use a fake that records bake order and can be told to fail.
+// Seam: how SP-3 bakes one part. Real impl (Task 12) delegates to SP-2 ScriptHost
+// (resolve_hash + bake_source → save_v2); tests use a fake that records bake order
+// and can be told to fail.
+//
+// HASH AUTHORITY (master C-2): SP-3 does NOT compute a part's resolved_hash itself,
+// because the hash folds the MERGED params (class `static params` defaults overlaid
+// with overrides) and only the host (SP-2) can read those defaults. SP-3 obtains the
+// hash through this seam's resolve_hash and memoizes it. The FakeBaker provides a
+// deterministic stand-in fold so logic tests stay host-free.
 struct Baker {
     virtual ~Baker() = default;
+    // Content hash for one part: merge static+override params, fold child_hashes,
+    // NO bake. Returns 0 on resolve failure (fail-closed => install hard-errors).
+    virtual uint64_t resolve_hash(const std::string& source, const Params& params,
+                                  const std::vector<uint64_t>& child_hashes) = 0;
     // True if parts/<resolved_hash>.part already exists (cache hit => skip bake).
     virtual bool cached(uint64_t resolved_hash) = 0;
     // Bake one part. child_hashes are this part's direct children's resolved hashes
     // (already baked, present in cache). Returns false on bake failure (fail-closed).
+    // Implementations bake to cache_path(resolved_hash); resolved_hash is the value
+    // resolve_hash returned for the same inputs (host recomputes it identically).
     virtual bool bake(const std::string& source, const Params& params,
                       const std::vector<uint64_t>& child_hashes, uint64_t resolved_hash) = 0;
 };
@@ -347,10 +365,12 @@ EOF
 - `MatterSurfaceLib/tests/part_graph_tests.cpp` (edit — fakes + a wiring test)
 
 This is the explicit early seam task: define `Baker`/`ModuleResolver` so all graph
-logic is testable with fakes and **no real JS host / SP-1 file I/O**. `compute_resolved_hash`
-is the only SP-1 symbol the graph core uses; if SP-1 is not yet merged, the fake baker
-makes the test self-contained — the graph core calls `compute_resolved_hash` (declared in
-`part_asset.h` per SP-1) and the fake's `cached`/`bake` replace all disk/host behavior.
+logic is testable with fakes and **no real JS host / SP-1 file I/O**. The graph core gets
+every part's hash through `Baker::resolve_hash` (master C-2: SP-2 is the hash authority) —
+it does **not** call `compute_resolved_hash` directly. The GL-free `FakeBaker::resolve_hash`
+folds `(source, canonical params, child_hashes)` via SP-1's `compute_resolved_hash` as a
+deterministic stand-in, and its `cached`/`bake` replace all disk/host behavior, so the suite
+is self-contained even before SP-2 exists. (`memo_key_of` still uses `fnv1a64` for identity.)
 
 - [ ] Replace the contents of `MatterSurfaceLib/include/part_graph.h` with the full
   public interface shown in the **File Structure** section above (the block beginning
@@ -424,6 +444,19 @@ struct FakeBaker : Baker {
     std::vector<uint64_t> bake_order;           // hashes in the order baked
     std::map<uint64_t,std::vector<uint64_t>> children_seen; // hash -> child_hashes at bake
     std::set<uint64_t> fail_hashes;             // hashes whose bake should fail
+    std::set<uint64_t> resolve_fail_hashes;     // hashes resolve_hash should refuse (=> 0)
+    // Deterministic stand-in for SP-2's resolve_hash: the real host merges static
+    // defaults first, but a GL-free fake has no JS — fold (source, canonical override
+    // params, child_hashes) the same way SP-1's compute_resolved_hash does, so test
+    // expectations can mirror it. Identity/invalidation behavior is what we test here.
+    uint64_t resolve_hash(const std::string& source, const Params& params,
+                          const std::vector<uint64_t>& child_hashes) override {
+        std::string canon = serialize_params(params);
+        uint64_t h = part_asset::compute_resolved_hash(
+            source.data(), source.size(), canon.data(), canon.size(),
+            child_hashes.data(), child_hashes.size());
+        return resolve_fail_hashes.count(h) ? 0 : h;
+    }
     bool cached(uint64_t h) override { return on_disk.count(h) != 0; }
     bool bake(const std::string&, const Params&,
               const std::vector<uint64_t>& child_hashes, uint64_t h) override {
@@ -437,7 +470,8 @@ struct FakeBaker : Baker {
 ```
 
   Add the matching includes at the top of the test file: `#include <functional>`,
-  `#include <set>`.
+  `#include <set>`. The FakeBaker uses `part_asset::compute_resolved_hash` (SP-1) and
+  `serialize_params` (Task 1) so its hashes match the test expectations below.
 
 - [ ] Add a wiring test in `main()` (resolve of a single leaf with no children should
   succeed and bake exactly once):
@@ -551,10 +585,14 @@ InstallResult PartGraph::install(const std::vector<ChildRequest>& roots) {
             node.params        = req.params;
             node.child_keys    = child_keys;
             node.child_hashes  = child_hashes;   // SP-1 sorts internally; ok unsorted here
-            node.resolved_hash = part_asset::compute_resolved_hash(
-                source.data(), source.size(),
-                canon.data(), canon.size(),
-                child_hashes.data(), child_hashes.size());
+            // Hash authority is SP-2 (master C-2): ask the baker, never compute here.
+            // The host merges static+override params before folding, so it sees defaults
+            // SP-3 cannot. 0 => resolve failure (fail-closed).
+            node.resolved_hash = baker_.resolve_hash(source, req.params, child_hashes);
+            if (node.resolved_hash == 0) {
+                error = "failed to resolve hash for part: " + req.module;
+                return false;
+            }
             memo.emplace(key, std::move(node));
             out_key = key;
             return true;
@@ -874,9 +912,13 @@ EOF
             node.params        = req.params;
             node.child_keys    = child_keys;
             node.child_hashes  = child_hashes;
-            node.resolved_hash = part_asset::compute_resolved_hash(
-                source.data(), source.size(), canon.data(), canon.size(),
-                child_hashes.data(), child_hashes.size());
+            // Hash authority is SP-2 (master C-2): ask the baker, never compute here.
+            // (stack/on_stack already popped above before node construction.)
+            node.resolved_hash = baker_.resolve_hash(source, req.params, child_hashes);
+            if (node.resolved_hash == 0) {
+                error = "failed to resolve hash for part: " + req.module;
+                return false;
+            }
             memo.emplace(key, std::move(node));
             out_key = key;
             return true;
@@ -1148,10 +1190,13 @@ private:
     std::string              schemas_dir_;
 };
 
-// Checks parts/<hash>.part existence (SP-1 cache_path) and bakes via ScriptHost::bake.
+// Checks parts/<hash>.part existence (SP-1 cache_path) and delegates hashing/baking to
+// SP-2 ScriptHost (resolve_hash + bake_source). SP-2 is the hash authority (master C-2).
 class HostBaker : public Baker {
 public:
     HostBaker(script_host::ScriptHost& host, std::string parts_dir);
+    uint64_t resolve_hash(const std::string& source, const Params& params,
+                          const std::vector<uint64_t>& child_hashes) override;
     bool cached(uint64_t resolved_hash) override;
     bool bake(const std::string& source, const Params& params,
               const std::vector<uint64_t>& child_hashes, uint64_t resolved_hash) override;
@@ -1164,21 +1209,59 @@ private:
 #endif // MATTER_HAVE_SCRIPT_HOST
 ```
 
-  > The exact `script_host::ScriptHost` member signatures come from the SP-2 spec
-  > (`bake(source, params, child_hashes)`, a top-level-eval entry returning `static
-  > requires`). Adapt the calls below to SP-2's final public API; the seam shape above is
-  > what SP-3 needs.
+  > The exact `script_host::ScriptHost` member signatures are pinned by master contract C-2:
+  > `uint64_t resolve_hash(source, params_json, child_hashes*, count)`,
+  > `BakeResult bake_source(source, params_json, opts, child_hashes*, count)`, and
+  > `std::vector<RequiredChild> eval_requires(source, params_json)`. The adapters convert
+  > SP-3's `Params` to the host's JSON `params_json` and forward `child_hashes` as a pointer
+  > pair. **Precondition:** SP-2's `bake_source` writes to `cache_path(resolved_hash)` and
+  > SP-3's `cached`/`install` read from `parts_dir_`; the integration test runs with the
+  > working directory set so `parts/` resolves to `parts_dir_` (so both sides agree on the
+  > path). The host's `resolve_hash` and `bake_source` recompute the same hash, so the value
+  > SP-3 memoized equals where the `.part` lands.
 
-- [ ] Implement the adapters in `src/part_graph.cpp` under the same guard. `cached` uses
-  SP-1 `cache_path` rooted at `parts_dir_`; `bake` converts `Params` to the host's params
-  representation and calls `ScriptHost::bake`, which itself calls `save_v2` to
-  `cache_path(resolved_hash)` (per SP-2 output section):
+- [ ] Implement the adapters in `src/part_graph.cpp` under the same guard. Add a small
+  `params_to_json(const Params&)` helper (the host wants a JSON object, not the `key=value;`
+  canonical string used for memo identity). `resolve_hash`/`bake` forward to the host;
+  `get_requires` adapts `eval_requires`'s return vector to `ChildRequest`s:
 
 ```cpp
 #if defined(MATTER_HAVE_SCRIPT_HOST)
+#include <cstdio>
 #include <fstream>
+#include <sstream>
 
 namespace part_graph {
+
+// Params -> JSON object string for the host (numbers via %.17g, strings quoted).
+// (Distinct from serialize_params' `key=value;` memo-identity form.) Self-contained
+// here because JSON conversion is only needed on the real-host path.
+static std::string params_to_json(const Params& params) {
+    std::ostringstream os;
+    os << '{';
+    bool first = true;
+    for (const auto& kv : params) {          // Params is an ordered map; host re-sorts
+        if (!first) os << ','; first = false;
+        os << '"' << kv.first << "\":";
+        switch (kv.second.kind) {
+            case ParamValue::Kind::Number: {
+                char buf[32]; std::snprintf(buf, sizeof buf, "%.17g", kv.second.num);
+                os << buf; break;
+            }
+            case ParamValue::Kind::Bool:
+                os << (kv.second.boolean ? "true" : "false"); break;
+            case ParamValue::Kind::Str:
+                os << '"' << kv.second.str << '"'; break;  // SP-3 v1 params have no quotes/escapes
+        }
+    }
+    os << '}';
+    return os.str();
+}
+
+// Inverse: a flat JSON object {"k":num|bool|"str", ...} -> Params. SP-3 v1 only sees
+// the shapes eval_requires emits (flat numbers/bools/strings), so a tiny hand parser
+// suffices; reuse the host's own emitter contract rather than a full JSON lib.
+Params params_from_json(const std::string& json);  // defined below
 
 FileModuleResolver::FileModuleResolver(script_host::ScriptHost& host, std::string schemas_dir)
     : host_(host), schemas_dir_(std::move(schemas_dir)) {}
@@ -1195,13 +1278,24 @@ bool FileModuleResolver::get_requires(const std::string& module, const Params& p
                                       std::vector<ChildRequest>& out) {
     std::string source;
     if (!load_source(module, source)) return false;
-    // SP-2: evaluate module top level (no build()), read `static requires` for `params`.
-    // host_.eval_requires returns child (module, params) pairs; adapt to ChildRequest.
-    return host_.eval_requires(source, params, out);
+    // SP-2 eval_requires: eval module top level (no build()), read `static requires`.
+    std::vector<script_host::RequiredChild> kids =
+        host_.eval_requires(source, params_to_json(params));
+    out.clear();
+    out.reserve(kids.size());
+    for (const auto& k : kids)
+        out.push_back(ChildRequest{ k.module_specifier, params_from_json(k.params_json) });
+    return true;   // (a thrown `requires` surfaces as a host error -> empty + caller errors)
 }
 
 HostBaker::HostBaker(script_host::ScriptHost& host, std::string parts_dir)
     : host_(host), parts_dir_(std::move(parts_dir)) {}
+
+uint64_t HostBaker::resolve_hash(const std::string& source, const Params& params,
+                                 const std::vector<uint64_t>& child_hashes) {
+    return host_.resolve_hash(source, params_to_json(params),
+                              child_hashes.data(), child_hashes.size());
+}
 
 bool HostBaker::cached(uint64_t resolved_hash) {
     std::string path = parts_dir_ + "/" + part_asset::cache_path(resolved_hash);
@@ -1211,13 +1305,64 @@ bool HostBaker::cached(uint64_t resolved_hash) {
 
 bool HostBaker::bake(const std::string& source, const Params& params,
                      const std::vector<uint64_t>& child_hashes, uint64_t resolved_hash) {
-    // SP-2 ScriptHost bakes + writes parts/<hash>.part via save_v2 (its Output section).
-    return host_.bake(source, params, child_hashes, resolved_hash, parts_dir_);
+    // SP-2 bake_source recomputes the same hash and writes parts/<hash>.part via save_v2.
+    script_host::BakeResult r = host_.bake_source(
+        source, params_to_json(params), /*opts*/{},
+        child_hashes.data(), child_hashes.size());
+    // The hash SP-3 memoized must equal where the .part landed (master C-2 guarantee).
+    return r.error.ok && r.resolved_hash == resolved_hash;
+}
+
+// Minimal flat-object JSON parser for the shapes eval_requires emits (flat
+// number|bool|"string"; SP-3 v1 strings carry no escapes). Unknown shapes -> skip.
+Params params_from_json(const std::string& json) {
+    Params out;
+    size_t i = 0, n = json.size();
+    auto skip_ws = [&]{ while (i < n && (json[i]==' '||json[i]=='\t'||json[i]=='\n'||json[i]=='\r')) ++i; };
+    auto parse_str = [&](std::string& s) -> bool {
+        if (i >= n || json[i] != '"') return false;
+        ++i; size_t start = i;
+        while (i < n && json[i] != '"') ++i;
+        if (i >= n) return false;
+        s = json.substr(start, i - start); ++i; return true;
+    };
+    skip_ws();
+    if (i >= n || json[i] != '{') return out; ++i;
+    skip_ws();
+    if (i < n && json[i] == '}') return out;
+    while (i < n) {
+        skip_ws();
+        std::string key;
+        if (!parse_str(key)) break;
+        skip_ws();
+        if (i >= n || json[i] != ':') break; ++i;
+        skip_ws();
+        if (i < n && json[i] == '"') {
+            std::string v; if (!parse_str(v)) break;
+            out[key] = ParamValue::string_(v);
+        } else if (json.compare(i, 4, "true") == 0) {
+            out[key] = ParamValue::boolean_(true); i += 4;
+        } else if (json.compare(i, 5, "false") == 0) {
+            out[key] = ParamValue::boolean_(false); i += 5;
+        } else {
+            size_t start = i;
+            while (i < n && json[i] != ',' && json[i] != '}') ++i;
+            out[key] = ParamValue::number(std::strtod(json.c_str() + start, nullptr));
+        }
+        skip_ws();
+        if (i < n && json[i] == ',') { ++i; continue; }
+        if (i < n && json[i] == '}') break;
+    }
+    return out;
 }
 
 } // namespace part_graph
 #endif // MATTER_HAVE_SCRIPT_HOST
 ```
+
+  > `params_from_json` round-trips with `params_to_json`'s `%.17g` numbers exactly
+  > (`double`→`%.17g`→`strtod`→`%.17g` is stable), so a child's memo key and host hash
+  > stay consistent across the JSON hop. Needs `#include <cstdlib>` for `std::strtod`.
 
 - [ ] **Build check (no new test, guard off by default):** `cd "MatterSurfaceLib/tests" && make run-graph`
   Expected: `All part_graph tests passed`, exit 0 (adapters compiled out; nothing regressed).

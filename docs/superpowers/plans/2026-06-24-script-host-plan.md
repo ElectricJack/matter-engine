@@ -155,18 +155,56 @@ struct BakeResult {
     std::string written_path;     // cache_path of the .part (empty on error)
 };
 
-// Bakes ONE standalone part from `source` (ES class extending Part) with
-// `params_json` (caller overrides; defaults come from the class's static params).
+// Discovered child instance from a part's static `requires(...)` (eval'd WITHOUT baking).
+struct RequiredChild {
+    std::string module_specifier;  // child part the parent instances
+    std::string params_json;       // variation params bound at instance time
+};
+
+// Bakes ONE part from `source` (ES class extending Part) with `params_json`
+// (caller overrides; defaults come from the class's static params).
 // Fresh isolated JSContext per call; fail-closed; writes <=1 .part.
+// `child_hashes`/`child_count` fold into the resolved hash so a PARENT's hash
+// matches SP-3's precomputed cache key. Both default to none, so SP-2's own
+// standalone (childless) tests are unaffected. (Master contract C-2.)
 class ScriptHost {
 public:
+    // Hash-only: merge static+override params, fold child_hashes, return the
+    // content hash WITHOUT running build()/baking. SP-2 is the SOLE hash
+    // authority for script parts (only it can read the class's static-param
+    // defaults to merge). SP-3 calls this for the cache check + parent fold.
+    // Shares the exact merge+canonicalization path as bake_source, so the two
+    // ALWAYS agree for identical inputs. (Master contract C-2.)
+    uint64_t resolve_hash(const std::string& source,
+                          const std::string& params_json,
+                          const uint64_t* child_hashes = nullptr,
+                          size_t child_count = 0);
+
     BakeResult bake_source(const std::string& source,
                            const std::string& params_json,
-                           const BakeOptions& opts);
+                           const BakeOptions& opts,
+                           const uint64_t* child_hashes = nullptr,
+                           size_t child_count = 0);
+
+    // Static discovery of the part's child instances WITHOUT baking — SP-3
+    // calls this to walk the graph leaves-first (owner of requires-discovery
+    // is SP-2, which holds the JSContext). Fail-closed: empty + error otherwise.
+    std::vector<RequiredChild> eval_requires(const std::string& source,
+                                             const std::string& params_json);
+
+    std::string last_merged_params() const;
 };
 
 } // namespace script_host
 ```
+> **C-2 reconciliation:** SP-2 is the **sole hash authority** for script parts (only it can
+> read a class's `static params` defaults to merge). `bake_source` is the single public
+> *bake* entry point; SP-3's `Baker::bake(...)` and SP-7's `host.bake(...)` test wrappers must
+> thin-delegate to it (forwarding `child_hashes`), not introduce a second host method. SP-3
+> gets each node's hash from `resolve_hash(...)` (hash-only, no `build()`), never computing it
+> itself. `resolve_hash`, `bake_source`, and `eval_requires` all share one params-merge +
+> canonicalization helper, so a value `resolve_hash` returns equals the hash `bake_source`
+> writes to. `resolve_hash` + `eval_requires` land in Task 5 alongside the hash plumbing.
 - [ ] Add a failing test `test_fresh_context_runs_empty_class` to `script_host_tests.cpp` (append before `main`, and call it from `main`):
 ```cpp
 #include "../include/script_host.h"
@@ -212,7 +250,9 @@ static BakeError harvest_exception(JSContext* ctx) {
 
 BakeResult ScriptHost::bake_source(const std::string& source,
                                    const std::string& /*params_json*/,
-                                   const BakeOptions& /*opts*/) {
+                                   const BakeOptions& /*opts*/,
+                                   const uint64_t* /*child_hashes*/,
+                                   size_t /*child_count*/) {
     BakeResult r;
     JSRuntime* rt = JS_NewRuntime();
     JSContext* ctx = JS_NewContext(rt);
@@ -622,11 +662,13 @@ JSValue args2[2] = { staticParams, overrides };
 JSValue mergedStr = JS_Call(ctx, mergeFn, JS_UNDEFINED, 2, args2);
 const char* mjson = JS_ToCString(ctx, mergedStr);
 last_merged_params_ = mjson ? mjson : "{}";
-// 4. resolved hash over source + merged params (no children in SP-2)
+// 4. resolved hash over source + merged params + caller-supplied child hashes
+//    (child_hashes/child_count default to none for standalone parts; SP-3 passes
+//    the resolved children so a parent's hash matches its precomputed cache key).
 r.resolved_hash = part_asset::compute_resolved_hash(
     source.data(), source.size(),
     last_merged_params_.data(), last_merged_params_.size(),
-    nullptr, 0);
+    child_hashes, child_count);
 // 5. parse merged JSON back into the object passed to build(p)
 JSValue paramsObj = JS_ParseJSON(ctx, last_merged_params_.c_str(),
                                  last_merged_params_.size(), "<merged>");
@@ -638,6 +680,63 @@ JSValue bret = JS_Invoke(ctx, inst, JS_NewAtom(ctx, "build"), 1, &paramsObj);
 ```
   Add `std::string last_merged_params_;` + accessor to `script_host.h`.
 - [ ] Run `cd MatterSurfaceLib/tests && make run-script` — **expected PASS**: `ALL PASS`. (Requires SP-1's `compute_resolved_hash`; if SP-1 is not yet merged, this is the gating dependency — see Dependencies.)
+- [ ] **Factor the merge+hash into a shared helper and add `resolve_hash` (hash-only, no `build()`).** Add a failing test asserting (a) `resolve_hash` equals the `resolved_hash` `bake_source` returns for identical `(source, params, children)`, and (b) `resolve_hash` does **not** run `build()` (a side-effecting `build` leaves no global). Append:
+```cpp
+static void test_resolve_hash_matches_and_skips_build() {
+    const char* src =
+        "class Rock extends Part {\n"
+        "  static params = { size: 1.0, seed: 0 };\n"
+        "  build(p) { globalThis.__built = true; }\n"
+        "}\n";
+    script_host::ScriptHost hb;
+    script_host::BakeResult baked = hb.bake_source(src, "{\"size\":2.0}", {});
+    CHECK(baked.error.ok, "bake ok");
+
+    script_host::ScriptHost hr;
+    uint64_t rh = hr.resolve_hash(src, "{\"size\":2.0}", nullptr, 0);
+    CHECK(rh == baked.resolved_hash, "resolve_hash agrees with bake_source hash");
+
+    // resolve_hash must not execute build(): probe a fresh context global.
+    script_host::ScriptHost hp;
+    hp.resolve_hash(
+        "class Probe extends Part { static params={};"
+        " build(p){ globalThis.__built2 = true; } }", "{}", nullptr, 0);
+    CHECK(hp.last_merged_params().find("__built2") == std::string::npos,
+          "resolve_hash did not run build()");
+}
+```
+- [ ] Run `cd MatterSurfaceLib/tests && make run-script` — **expected FAIL**: `resolve_hash` undefined.
+- [ ] In `script_host.cpp`, extract the params-merge + canonicalization from `bake_source` (Task-5 steps 1-3 above) into a private helper, then implement `resolve_hash` on top of it. The helper builds a fresh runtime/context, evals the source enough to read the class's `static params`, merges overrides, canonicalizes, and returns the merged JSON — **without** instantiating or calling `build`:
+```cpp
+// Private helper: returns canonical merged-params JSON; fills err on failure.
+// Evals source to read `static params`; does NOT call build().
+std::string ScriptHost::merge_params_canonical(const std::string& source,
+                                               const std::string& params_json,
+                                               BakeError& err) {
+    JSRuntime* rt = JS_NewRuntime();
+    JSContext* ctx = JS_NewContext(rt);
+    // bootstrap Part base + eval source to define the class (no instantiation)
+    // ... (same eval path bake_source uses up to obtaining the class ctor) ...
+    // read static params, parse overrides, merge+sort+stringify (the kMerge fn)
+    // set last_merged_params_ and return it; on any exception set err, return "{}"
+    // tear down ctx/rt before returning.
+}
+
+uint64_t ScriptHost::resolve_hash(const std::string& source,
+                                  const std::string& params_json,
+                                  const uint64_t* child_hashes,
+                                  size_t child_count) {
+    BakeError err;
+    std::string canon = merge_params_canonical(source, params_json, err);
+    if (!err.ok) return 0;   // fail-closed: caller treats 0 as resolve failure
+    return part_asset::compute_resolved_hash(
+        source.data(), source.size(),
+        canon.data(), canon.size(),
+        child_hashes, child_count);
+}
+```
+  Refactor `bake_source`'s Task-5 steps 1-4 to call `merge_params_canonical` too, so both paths hash byte-identical params. Declare both methods + the helper in `script_host.h`.
+  > **Source-fold seam (SP-7, master C-3):** here `resolve_hash`/`bake_source` hash the part's own `source` bytes directly. When SP-7's shared-lib import support lands, the **host** (not SP-3) replaces those `source.data()/size()` bytes with the canonical **folded** buffer — part source + transitively-imported module sources in SP-7's canonical order (via `module_resolver::fold`) — so editing an imported module reinvalidates the importer. Until SP-7, the unfolded source is correct for childless/import-free parts. Keep the hash-input as a single `source_bytes` value so the swap is local to one call site.
 - [ ] Commit:
 ```
 git add MatterSurfaceLib/src/script_host.cpp MatterSurfaceLib/include/script_host.h MatterSurfaceLib/tests/script_host_tests.cpp && git commit -m "$(cat <<'EOF'

@@ -1056,18 +1056,19 @@ The four pure helpers are validated two ways: (1) C++ reference assertions in `s
           "    for (const pt of ring(6, 1.0, 0)) this.sphere(pt, 0.2 + r.random()*0.05);\n"
           "    this.endVoxels(); }\n"
           "}\n";
-      BakeResult a = host.bake(part, "{\"seed\":1}");
-      BakeResult a2 = host.bake(part, "{\"seed\":1}");
-      BakeResult b = host.bake(part, "{\"seed\":2}");
-      CHECK(a.ok, "import-resolving part bakes successfully");
+      // master C-2: the single public bake entry point is bake_source(source, params, opts).
+      BakeResult a = host.bake_source(part, "{\"seed\":1}", {});
+      BakeResult a2 = host.bake_source(part, "{\"seed\":1}", {});
+      BakeResult b = host.bake_source(part, "{\"seed\":2}", {});
+      CHECK(a.error.ok, "import-resolving part bakes successfully");
       CHECK(a.resolved_hash == a2.resolved_hash, "same seed -> identical resolved hash");
       CHECK(a.resolved_hash != b.resolved_hash, "different seed -> different resolved hash");
       // editing a shared module changes the importer's hash (SP-5 shared-module edit):
       std::string scratch = make_scratch_shared_lib("../shared-lib");
       append_to_file(scratch + "/geometry.js", "\nexport const X = 1;\n");
       ScriptHost host2; host2.set_shared_lib_root(scratch);
-      BakeResult c = host2.bake(part, "{\"seed\":1}");
-      CHECK(c.ok && c.resolved_hash != a.resolved_hash, "shared-module edit invalidates importer bake");
+      BakeResult c = host2.bake_source(part, "{\"seed\":1}", {});
+      CHECK(c.error.ok && c.resolved_hash != a.resolved_hash, "shared-module edit invalidates importer bake");
       remove_scratch_shared_lib(scratch);
   }
   #else

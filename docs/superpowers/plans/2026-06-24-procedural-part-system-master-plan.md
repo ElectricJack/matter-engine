@@ -92,22 +92,66 @@ std::string cache_path(uint64_t resolved_hash);   // parts/<16hex>.part
   round-trip with `save_v2`/`load_v2`.
 - **SP-7** adds `compute_resolved_hash` only if SP-1 hasn't — after SP-1, delete the dup.
 
-### C-2 — Bake host (owner: SP-2)
-- `ScriptHost` exposes: bake one part from `(source, params, child_hashes)` →
-  writes one `.part` via SP-1; a settable **time budget** (≤0 = unbounded); a **seeded
-  Math.random** hook (SP-7 supplies the algorithm); structured **fail-closed** error.
+### C-2 — Bake host (owner: SP-2; **sole hash authority for script parts**)
+- **Hash authority.** Only SP-2 can compute a script part's `resolved_hash`, because the
+  hash folds the **merged** params (the class's `static params` defaults overlaid with the
+  caller's overrides) and SP-2 is the only component that can evaluate the script to read
+  those defaults. **SP-3 never hashes a script part itself** — it asks the host. This keeps
+  param canonicalization in exactly one place, so the hash always matches the bytes baked.
+- **Canonical public signature** (all consumers bind to this exact name/shape):
+  ```cpp
+  struct BakeResult { BakeError error; uint64_t resolved_hash; };
+
+  // Hash-only: merge static+override params, fold child_hashes, return the content
+  // hash WITHOUT running build()/baking. SP-3 calls this to check the cache and to
+  // fold into parents. Same merge+canonicalization path bake_source uses, so the two
+  // ALWAYS agree for identical inputs.
+  uint64_t resolve_hash(const std::string& source,
+                        const std::string& params_json,
+                        const uint64_t* child_hashes = nullptr,
+                        size_t child_count = 0);
+
+  // child_hashes folds into the resolved hash so a PARENT's hash matches the value
+  // resolve_hash returned; defaulted so SP-2's own standalone tests (childless parts)
+  // are unaffected. On success writes one .part at cache_path(resolved_hash).
+  BakeResult bake_source(const std::string& source,
+                         const std::string& params_json,
+                         BakeOptions opts,
+                         const uint64_t* child_hashes = nullptr,
+                         size_t child_count = 0);
+
+  // Static discovery of a part's `requires(...)` child instances, evaluated
+  // WITHOUT baking — SP-3 calls this to walk the graph leaves-first.
+  struct RequiredChild { std::string module_specifier; std::string params_json; };
+  std::vector<RequiredChild> eval_requires(const std::string& source,
+                                           const std::string& params_json);
+  ```
+  `bake_source` writes one `.part` via SP-1; a settable **time budget** (≤0 = unbounded); a
+  **seeded Math.random** hook (SP-7 supplies the algorithm); structured **fail-closed** error.
+  `resolve_hash`/`bake_source`/`eval_requires` share the same param-merge + canonicalization
+  helper, so a value `resolve_hash` returns equals the hash `bake_source` writes to.
 - The C++-owned **build buffer + session API** that **SP-6** appends triangles into.
 - The **module loader** that **SP-7** resolves shared-lib imports through.
-- **SP-3** calls SP-2 only through its `Baker` seam (`bake(...)` + `eval_requires(...)`);
-  its Task 12 adapter must match SP-2's final public signatures.
+- **SP-3** calls SP-2 only through its `Baker` seam: `resolve_hash(...)` for each node's hash
+  (cache check + parent fold), `bake_source(...)` (passing the resolved `child_hashes`) on a
+  miss, and `eval_requires(...)` to discover children.
+  **Reconciliation:** SP-2 owns these three methods under these exact names. SP-3's internal
+  `Baker::bake(...)` / SP-7's test `host.bake(...)` are seam/wrapper names that must
+  delegate to `bake_source(...)`; rename or thin-wrap at the adapter, do not add a second
+  public host entry point. **resolve_hash + eval_requires owner = SP-2** (it has the
+  JSContext to merge params and evaluate `requires` statically); SP-3 consumes both.
 
 ### C-3 — Graph resolve (owner: SP-3)
 - `resolve(part, params)` → resolved hash (memoized, leaves-first); `topo_order`,
-  `ancestors`, `parts_for_file`, `roots_over`, cache-miss bake driver.
+  `ancestors`, `parts_for_file`, `roots_over`, cache-miss bake driver. The hash itself comes
+  from SP-2 (`resolve_hash`, C-2) — SP-3 supplies `(source, params, child_hashes)` and
+  memoizes the returned value; it does **not** compute the hash or canonicalize params itself.
 - **SP-5** consumes these via its `GraphResolver` seam — wire to the real SP-3.
-- **SP-7**'s source-fold changes what `source_bytes` SP-3 passes to `compute_resolved_hash`
-  (part source + canonically-ordered imported module sources). SP-3's resolve must call
-  SP-7's fold to assemble `source_bytes`.
+- **SP-7**'s source-fold (part source + canonically-ordered imported module sources) happens
+  **inside SP-2** (the host owns the module loader, so it assembles the folded source before
+  hashing in `resolve_hash`/`bake_source`). SP-3 passes only the part's own source; the
+  transitive fold is host-side, keeping the importer-invalidation guarantee without SP-3
+  re-implementing module resolution.
 
 ### C-4 — World compose (owner: SP-4)
 - `flatten(roots)` → per-sector instance lists; `select_lod(sector, camera)`.
@@ -149,7 +193,7 @@ subsystems. Add these under `MatterSurfaceLib/tests/` as they become reachable.
   - Integration test: a part `import`s `shared-lib/lsystem` + `shared-lib/rng`; bake is
     deterministic from `p.seed`; editing the imported module changes the part's resolved
     hash (rebakes) while a non-importer is untouched; import-order permutation → same hash.
-    `make -C MatterSurfaceLib/tests run-sharedlib` green.
+    `make -C MatterSurfaceLib/tests run-shlib` green.
 
 - [ ] **Gate M6 — SP-4 done (world composes + LODs):**
   - Reconcile: SP-4 LOD round-trip uses real `save_v2`/`load_v2` (drop the shim).
@@ -157,7 +201,7 @@ subsystems. Add these under `MatterSurfaceLib/tests/` as they become reachable.
     monotone tri counts, `screen_size_threshold` tagged, written back into the `.part`),
     flatten roots into per-sector instance lists (composed transforms, dedup preserved,
     depth/budget guards), and select sector LOD by closest-instance screen size.
-    `make -C MatterSurfaceLib/tests run-compose` green.
+    `make -C MatterSurfaceLib/tests run-comp` green.
 
 - [ ] **Gate M7 — SP-5 done (live edit):**
   - Reconcile: SP-5 `GraphResolver`→real SP-3; `Baker`→real SP-2 (dev budget set);
@@ -165,10 +209,10 @@ subsystems. Add these under `MatterSurfaceLib/tests/` as they become reachable.
   - Integration test: touch a leaf `.js` in a temp `WorldData/<world>/ObjectSchemas/`; the
     inotify path debounces, rebakes exactly the upward cone, re-flattens the affected
     subtree, and a script that throws keeps the last-good artifact + surfaces the error.
-    `make -C MatterSurfaceLib/tests run-liveedit` green.
+    `make -C MatterSurfaceLib/tests run-dev` green.
 
 - [ ] **Final gate — full suite:** `./build-all.sh test` green on Linux; all
-  `run-partv2/script/graph/trivar/sharedlib/compose/liveedit` targets pass.
+  `run-partv2/script/graph/trivar/shlib/comp/dev` targets pass.
 
 ---
 
