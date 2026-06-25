@@ -301,6 +301,58 @@ static void test_round_trip_no_children() {
     remove(path);
 }
 
+static void test_v2_guards() {
+    using namespace part_asset;
+    BLASManager blasA; TLASManager tlasA(64);
+    BLASHandle hA, hB; build_scene(blasA, tlasA, hA, hB);
+    auto kids = sample_children();
+    auto lods = sample_lods();
+
+    const char* path = "test_v2_guard.part";
+    remove(path);
+    CHECK(save_v2(path, blasA, tlasA, kids.data(), kids.size(), lods, 0x1234u),
+          "guard save ok");
+    std::vector<uint8_t> good = read_file(path);
+
+    // Sanity: unmodified file loads.
+    { BLASManager b; TLASManager t(64); std::vector<ChildInstance> ko; LodLevels lo;
+      CHECK(load_v2(path, 0x1234u, b, t, ko, lo), "unmodified v2 file loads"); }
+
+    // Layout guard: corrupt sizeof_ChildInstance (offset 28).
+    { auto bad = good; uint32_t v = rd_u32(bad,28) + 1; memcpy(bad.data()+28,&v,4);
+      write_file(path, bad);
+      BLASManager b; TLASManager t(64); std::vector<ChildInstance> ko; LodLevels lo;
+      CHECK(!load_v2(path, 0x1234u, b, t, ko, lo), "rejects sizeof_ChildInstance mismatch"); }
+
+    // Layout guard: corrupt sizeof_Tri (offset 16).
+    { auto bad = good; uint32_t v = rd_u32(bad,16) + 1; memcpy(bad.data()+16,&v,4);
+      write_file(path, bad);
+      BLASManager b; TLASManager t(64); std::vector<ChildInstance> ko; LodLevels lo;
+      CHECK(!load_v2(path, 0x1234u, b, t, ko, lo), "rejects sizeof_Tri mismatch"); }
+
+    // Version guard / v1 cutover: a format_version=1 file is rejected by the v2 loader.
+    { auto bad = good; uint32_t v = 1u; memcpy(bad.data()+4,&v,4);
+      write_file(path, bad);
+      BLASManager b; TLASManager t(64); std::vector<ChildInstance> ko; LodLevels lo;
+      CHECK(!load_v2(path, 0x1234u, b, t, ko, lo), "v2 loader rejects v1 (format_version=1)"); }
+
+    // Corruption guard: flip a byte deep in the body (child or LOD section).
+    // The body is at least the header(40) + materials + BLAS + instances; flipping
+    // the last byte lands inside the trailing LOD section.
+    { auto bad = good; bad[bad.size()-1] ^= 0xFF;
+      write_file(path, bad);
+      BLASManager b; TLASManager t(64); std::vector<ChildInstance> ko; LodLevels lo;
+      CHECK(!load_v2(path, 0x1234u, b, t, ko, lo), "rejects trailing-section corruption"); }
+
+    // Magic guard.
+    { auto bad = good; bad[0] ^= 0xFF;
+      write_file(path, bad);
+      BLASManager b; TLASManager t(64); std::vector<ChildInstance> ko; LodLevels lo;
+      CHECK(!load_v2(path, 0x1234u, b, t, ko, lo), "rejects bad magic"); }
+
+    remove(path);
+}
+
 int main() {
     test_cache_path_resolved();
     test_resolved_hash();
@@ -308,6 +360,7 @@ int main() {
     test_round_trip_full();
     test_round_trip_degenerate_lod();
     test_round_trip_no_children();
+    test_v2_guards();
     if (failures == 0) printf("All part_asset_v2 tests passed\n");
     return failures == 0 ? 0 : 1;
 }
