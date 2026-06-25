@@ -96,7 +96,7 @@ SCRIPT_TARGET = script_host_tests
 # supplies save_v2/compute_resolved_hash/LodLevels. Consumed prototype sources are
 # referenced read-only as ../../MatterSurfaceLib/src/<dep>.
 SCRIPT_CPP = script_host_tests.cpp ../src/script_host.cpp ../src/dsl_state.cpp \
-             ../src/dsl_bindings.cpp ../src/csg_lowering.cpp ../src/part_asset_v2.cpp \
+             ../src/dsl_bindings.cpp ../src/csg_lowering.cpp ../src/module_resolver.cpp ../src/part_asset_v2.cpp \
              ../../MatterSurfaceLib/src/cluster.cpp ../../MatterSurfaceLib/src/cell.cpp ../../MatterSurfaceLib/src/mesh_simplifier.cpp \
              ../../MatterSurfaceLib/src/blas_manager.cpp ../../MatterSurfaceLib/src/bvh.cpp ../../MatterSurfaceLib/src/bvh_analyzer.cpp \
              ../../MatterSurfaceLib/src/mesh_worker_pool.cpp ../../MatterSurfaceLib/src/mesh_build_utils.cpp \
@@ -126,7 +126,7 @@ run-script: $(SCRIPT_TARGET)
 GRAPH_INT_TARGET = part_graph_integration_tests
 GRAPH_INT_CPP = part_graph_integration_tests.cpp ../src/part_graph.cpp \
                 ../src/script_host.cpp ../src/dsl_state.cpp \
-                ../src/dsl_bindings.cpp ../src/csg_lowering.cpp ../src/part_asset_v2.cpp \
+                ../src/dsl_bindings.cpp ../src/csg_lowering.cpp ../src/module_resolver.cpp ../src/part_asset_v2.cpp \
                 ../../MatterSurfaceLib/src/cluster.cpp ../../MatterSurfaceLib/src/cell.cpp ../../MatterSurfaceLib/src/mesh_simplifier.cpp \
                 ../../MatterSurfaceLib/src/blas_manager.cpp ../../MatterSurfaceLib/src/bvh.cpp ../../MatterSurfaceLib/src/bvh_analyzer.cpp \
                 ../../MatterSurfaceLib/src/mesh_worker_pool.cpp ../../MatterSurfaceLib/src/mesh_build_utils.cpp \
@@ -192,21 +192,32 @@ run-trivar: $(TRIVAR_TARGET)
 	./$(TRIVAR_TARGET)
 
 # Shared script library: module-resolution + source-fold unit + JS-helper bake tests
-# (headless, GL-free; ModuleResolver requires no QuickJS).
+# PLUS the SP-7 end-to-end bake test (-DSP2_SCRIPT_HOST), which drives the real
+# SP-2 ScriptHost (set_shared_lib_root -> fold-into-hash + QuickJS module loader).
+# That end-to-end path links the full host + QuickJS source set (mirrors SCRIPT_CPP
+# + QJS_OBJ + SCRIPT_C). QuickJS-ng C sources are gcc-compiled so their extern "C"
+# symbols stay unmangled; material_registry.c likewise.
 SHLIB_TARGET = shared_lib_tests
 SHLIB_CPP = shared_lib_tests.cpp ../src/module_resolver.cpp ../src/script_rng_binding.cpp \
+            ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_bindings.cpp ../src/csg_lowering.cpp \
             ../src/part_asset_v2.cpp \
-            ../../MatterSurfaceLib/src/part_asset.cpp \
-            ../../MatterSurfaceLib/src/blas_manager.cpp ../../MatterSurfaceLib/src/bvh.cpp \
-            ../../MatterSurfaceLib/src/tlas_manager.cpp \
-            ../../MatterSurfaceLib/src/vertex_ao.cpp ../../MatterSurfaceLib/src/occupancy.cpp
-SHLIB_C   = ../../MatterSurfaceLib/src/material_registry.c
-SHLIB_C_OBJ = material_registry.o
+            ../../MatterSurfaceLib/src/cluster.cpp ../../MatterSurfaceLib/src/cell.cpp ../../MatterSurfaceLib/src/mesh_simplifier.cpp \
+            ../../MatterSurfaceLib/src/blas_manager.cpp ../../MatterSurfaceLib/src/bvh.cpp ../../MatterSurfaceLib/src/bvh_analyzer.cpp \
+            ../../MatterSurfaceLib/src/mesh_worker_pool.cpp ../../MatterSurfaceLib/src/mesh_build_utils.cpp \
+            ../../MatterSurfaceLib/src/meshing_algorithm.cpp ../../MatterSurfaceLib/src/marching_cubes_algorithm.cpp \
+            ../../MatterSurfaceLib/src/oriented_cube_algorithm.cpp ../../MatterSurfaceLib/src/vertex_ao.cpp \
+            ../../MatterSurfaceLib/src/occupancy.cpp ../../MatterSurfaceLib/src/tlas_manager.cpp ../../MatterSurfaceLib/src/part_asset.cpp \
+            ../../MatterSurfaceLib/src/lattice.cpp ../../MatterSurfaceLib/src/particle_culling.cpp
+SHLIB_C   = ../../MatterSurfaceLib/src/surface.c ../../MatterSurfaceLib/src/open_particle_surface.c \
+            ../../MatterSurfaceLib/src/spatial_hash.c ../../MatterSurfaceLib/src/object_allocator.c ../../MatterSurfaceLib/src/material_registry.c
+SHLIB_C_OBJ = surface.o open_particle_surface.o spatial_hash.o object_allocator.o material_registry.o
 
-$(SHLIB_TARGET): $(SHLIB_CPP) $(SHLIB_C)
+$(SHLIB_TARGET): $(SHLIB_CPP) $(SHLIB_C) $(QJS_C)
+	gcc -c $(QJS_C) -O2 -DCONFIG_VERSION='"0.10.0"' $(QJS_INC)
 	gcc -c $(SHLIB_C) -O2 -DPLATFORM_DESKTOP $(INCLUDE_PATHS)
-	$(CC) $(SHLIB_CPP) $(SHLIB_C_OBJ) -o $(SHLIB_TARGET) $(CFLAGS) $(INCLUDE_PATHS) $(LDFLAGS) $(LDLIBS)
-	rm -f $(SHLIB_C_OBJ)
+	$(CC) $(SHLIB_CPP) $(QJS_OBJ) $(SHLIB_C_OBJ) -o $(SHLIB_TARGET) \
+	      $(CFLAGS) -DSP2_SCRIPT_HOST $(INCLUDE_PATHS) $(QJS_INC) $(LDFLAGS) $(LDLIBS)
+	rm -f $(QJS_OBJ) $(SHLIB_C_OBJ)
 
 run-shlib: $(SHLIB_TARGET)
 	./$(SHLIB_TARGET)

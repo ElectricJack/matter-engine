@@ -58,6 +58,16 @@ public:
     std::vector<RequiredChild> eval_requires(const std::string& source,
                                              const std::string& params_json);
 
+    // Set the shared-lib root used to resolve `import ... from 'shared-lib/x'`
+    // specifiers. When set, both resolve_hash and bake_source fold the part's
+    // transitively-imported module sources into the bytes they hash (so a shared
+    // module edit invalidates every importer's resolved hash), and bake_source
+    // serves those module sources to the QuickJS module loader so the `import`
+    // actually resolves at bake time. Empty (default) => no module resolution and
+    // the raw part source is hashed (legacy behavior; non-importer parts are
+    // unaffected).
+    void set_shared_lib_root(const std::string& root) { shared_lib_root_ = root; }
+
     std::string last_merged_params() const { return last_merged_params_; }
     bool last_build_ran() const { return last_build_ran_; }
     const dsl::BuildBuffer& last_buffer() const { return last_buffer_; }
@@ -73,6 +83,7 @@ private:
                                        const std::string& params_json,
                                        BakeError& err);
 
+    std::string shared_lib_root_;
     std::string last_merged_params_;
     bool last_build_ran_ = false;
     dsl::BuildBuffer last_buffer_;

@@ -7,6 +7,7 @@ extern "C" {
 #include "../include/dsl_state.h"
 #include "../include/dsl_bindings.h"
 #include "../include/csg_lowering.h"   // NEW MatterEngine3 header
+#include "../include/module_resolver.h" // SP-7 shared-lib fold + resolution
 #include "cluster.h"                    // consumed prototype (StaticParticle, Cluster)
 #include "cell.h"                       // consumed prototype (Cell, build_cell_meshes GL-free)
 #include "mesh_worker_pool.h"           // consumed prototype (CellMeshResult/GroupMeshResult)
@@ -21,6 +22,104 @@ extern "C" {
 #include <regex>
 
 namespace script_host {
+
+// ---------------------------------------------------------------------------
+// SP-7 shared-lib module loading.
+//
+// When a shared-lib root is configured, a part's `import { x } from
+// 'shared-lib/y'` must resolve at bake/eval time. The module_resolver gathers
+// every transitively-imported module's SOURCE up front (no QuickJS); we hand
+// that {canonical specifier -> source} set to QuickJS-ng via JS_SetModuleLoaderFunc.
+// The loader serves source ONLY from this in-memory set (never the filesystem at
+// eval time) to preserve determinism and the no-file-access contract. The part
+// itself is evaluated as an ES module so its `import` statements bind.
+// ---------------------------------------------------------------------------
+struct ModuleStore {
+    // canonical specifier (trailing ".js" stripped) -> module source.
+    std::map<std::string, std::string> sources;
+};
+
+// Canonicalize a specifier the same way module_resolver does: a bare
+// "shared-lib/x" stays as-is; a trailing ".js" is stripped so "shared-lib/x" and
+// "shared-lib/x.js" name the same module. The part's own pseudo-name is passed
+// through untouched.
+static std::string canon_specifier(const std::string& s) {
+    std::string r = s;
+    if (r.size() >= 3 && r.compare(r.size() - 3, 3, ".js") == 0) r.resize(r.size() - 3);
+    return r;
+}
+
+// QuickJS module normalizer: returns the canonical specifier (js_malloc'd).
+static char* sh_module_normalize(JSContext* ctx, const char* /*base*/,
+                                 const char* name, void* /*opaque*/) {
+    std::string c = canon_specifier(name ? name : "");
+    char* out = static_cast<char*>(js_malloc(ctx, c.size() + 1));
+    if (!out) return nullptr;
+    std::memcpy(out, c.c_str(), c.size() + 1);
+    return out;
+}
+
+// QuickJS module loader: compile the in-memory source for `module_name` (already
+// normalized) into a JSModuleDef. Fails (throws) if the specifier is not in the
+// resolved set — the resolver pre-gathered everything reachable, so a miss here
+// means a non-shared-lib or unresolved import, which must fail-closed.
+static JSModuleDef* sh_module_loader(JSContext* ctx, const char* module_name,
+                                     void* opaque) {
+    ModuleStore* store = static_cast<ModuleStore*>(opaque);
+    auto it = store ? store->sources.find(canon_specifier(module_name))
+                    : std::map<std::string, std::string>::iterator();
+    if (!store || it == store->sources.end()) {
+        JS_ThrowReferenceError(ctx, "module not in resolved shared-lib set: %s",
+                               module_name);
+        return nullptr;
+    }
+    const std::string& src = it->second;
+    // Compile-only: produce a module def (tag JS_TAG_MODULE) without running it;
+    // QuickJS links + evaluates it as part of the importing module's evaluation.
+    JSValue func = JS_Eval(ctx, src.c_str(), src.size(), module_name,
+                           JS_EVAL_TYPE_MODULE | JS_EVAL_FLAG_COMPILE_ONLY);
+    if (JS_IsException(func)) return nullptr;
+    JSModuleDef* m = static_cast<JSModuleDef*>(JS_VALUE_GET_PTR(func));
+    JS_FreeValue(ctx, func);
+    return m;
+}
+
+// Drain the runtime's pending job queue (module top-level evaluation of synchronous
+// ES modules is scheduled as a job in QuickJS-ng). Returns false if any job threw.
+static bool drain_jobs(JSRuntime* rt, JSContext** pctx) {
+    for (;;) {
+        int r = JS_ExecutePendingJob(rt, pctx);
+        if (r == 0) return true;     // no more jobs
+        if (r < 0) return false;     // a job threw (exception is on *pctx)
+    }
+}
+
+// Eval `source` as an ES MODULE (so its `import`s resolve via the installed
+// loader) and run it to completion. On a synchronous module the returned promise
+// resolves after draining the job queue. Returns the eval result value (caller
+// frees) or JS_EXCEPTION on failure; sets *threw on error.
+static JSValue eval_part_as_module(JSContext* ctx, JSRuntime* rt,
+                                   const std::string& wrapped, bool* threw) {
+    *threw = false;
+    JSValue v = JS_Eval(ctx, wrapped.c_str(), wrapped.size(), "<part>",
+                        JS_EVAL_TYPE_MODULE);
+    if (JS_IsException(v)) { *threw = true; return v; }
+    // Drain top-level module jobs (synchronous module bodies run here).
+    JSContext* jctx = ctx;
+    if (!drain_jobs(rt, &jctx)) { JS_FreeValue(ctx, v); *threw = true; return JS_EXCEPTION; }
+    // A module eval yields a promise; surface a rejection as a throw.
+    if (JS_IsObject(v)) {
+        JSPromiseStateEnum st = JS_PromiseState(ctx, v);
+        if (st == JS_PROMISE_REJECTED) {
+            JSValue reason = JS_PromiseResult(ctx, v);
+            JS_Throw(ctx, reason);   // re-arm the exception for harvest_exception
+            JS_FreeValue(ctx, v);
+            *threw = true;
+            return JS_EXCEPTION;
+        }
+    }
+    return v;
+}
 
 // Per-bake interrupt context: a wall-clock deadline the QuickJS-ng VM polls via
 // the interrupt handler. In install-mode (time_budget_ms == 0) the bake is
@@ -42,7 +141,7 @@ static int interrupt_cb(JSRuntime*, void* opaque) {
 // (together with the seeded Math.random + the absence of any require/fetch/os
 // bindings) the bake is process-entropy-free. This is what keeps the resolved-hash
 // <-> serialized-bytes contract intact.
-static JSContext* new_bake_context(JSRuntime* rt) {
+static JSContext* new_bake_context(JSRuntime* rt, bool want_modules = false) {
     JSContext* ctx = JS_NewContextRaw(rt);
     if (!ctx) return nullptr;
     JS_AddIntrinsicBaseObjects(ctx);   // Object/Array/Math/String/Number/etc.
@@ -53,6 +152,12 @@ static JSContext* new_bake_context(JSRuntime* rt) {
     JS_AddIntrinsicMapSet(ctx);
     JS_AddIntrinsicTypedArrays(ctx);
     JS_AddIntrinsicBigInt(ctx);
+    // ES module evaluation drives an internal evaluation Promise; the Promise
+    // intrinsic must be present or the module's eval-promise machinery leaks GC
+    // objects. Added ONLY for the module path so the classic-script bake context
+    // is byte-for-byte unchanged for SP-2/SP-3. Promise is pure/deterministic
+    // (no wall-clock, no I/O), so it does not weaken the entropy-free contract.
+    if (want_modules) JS_AddIntrinsicPromise(ctx);
     // Intentionally omitted: JS_AddIntrinsicDate (ambient wall-clock), and we
     // never bind require/fetch/os, so authored code has no entropy source.
     return ctx;
@@ -117,6 +222,51 @@ static BakeError harvest_exception(JSContext* ctx) {
     return e;
 }
 
+// Eval kPartBaseJS, then the part source + trampoline, leaving the authored class
+// on globalThis.__partClass. When `store` is non-null the part is evaluated as an
+// ES MODULE with the shared-lib loader installed (so its `import`s bind); when
+// null it is evaluated as a classic GLOBAL script (legacy, importer-free parts).
+// Either way the surrounding intrinsics are the restricted bake set (no Date/
+// require/fetch/os). On failure returns false with `err` populated and the rt/ctx
+// already freed; on success the caller owns rt/ctx (eval result already freed).
+static bool eval_part_publish_class(const std::string& source,
+                                    const std::string& className,
+                                    ModuleStore* store,
+                                    JSRuntime*& rt, JSContext*& ctx,
+                                    BakeError& err) {
+    rt = JS_NewRuntime();
+    if (store) JS_SetModuleLoaderFunc(rt, sh_module_normalize, sh_module_loader, store);
+    ctx = new_bake_context(rt, /*want_modules*/ store != nullptr);
+
+    JSValue base = JS_Eval(ctx, kPartBaseJS, strlen(kPartBaseJS), "<part-base>",
+                           JS_EVAL_TYPE_GLOBAL);
+    if (JS_IsException(base)) { err = harvest_exception(ctx); JS_FreeValue(ctx, base);
+        JS_FreeContext(ctx); JS_FreeRuntime(rt); rt = nullptr; ctx = nullptr; return false; }
+    JS_FreeValue(ctx, base);
+
+    std::string wrapped = source + "\n;globalThis.__partClass = " + className + ";\n";
+    if (store) {
+        bool threw = false;
+        JSValue v = eval_part_as_module(ctx, rt, wrapped, &threw);
+        if (threw) { err = harvest_exception(ctx); JS_FreeValue(ctx, v);
+            JS_FreeContext(ctx); JS_FreeRuntime(rt); rt = nullptr; ctx = nullptr; return false; }
+        JS_FreeValue(ctx, v);
+    } else {
+        JSValue v = JS_Eval(ctx, wrapped.c_str(), wrapped.size(), "<part>", JS_EVAL_TYPE_GLOBAL);
+        if (JS_IsException(v)) { err = harvest_exception(ctx); JS_FreeValue(ctx, v);
+            JS_FreeContext(ctx); JS_FreeRuntime(rt); rt = nullptr; ctx = nullptr; return false; }
+        JS_FreeValue(ctx, v);
+    }
+    return true;
+}
+
+// Build the in-memory module store from a fold result (used to drive the loader).
+static ModuleStore store_from_fold(const module_resolver::FoldResult& fr) {
+    ModuleStore s;
+    for (const auto& m : fr.modules) s.sources[m.specifier] = m.source;
+    return s;
+}
+
 // Merge static params with caller overrides (overrides win), sort keys, and
 // stringify to canonical JSON. Evals the class's `static params` but does NOT
 // instantiate or call build(). Shared by bake_source and resolve_hash so both
@@ -131,20 +281,24 @@ std::string ScriptHost::merge_params_canonical(const std::string& source,
         return last_merged_params_;
     }
 
-    JSRuntime* rt = JS_NewRuntime();
-    JSContext* ctx = new_bake_context(rt);
+    // If a shared-lib root is set, fold to gather the importable module sources so
+    // the part can be evaluated as a module (its `static params`/class body may
+    // reference imported values). Fail-closed on a fold error.
+    ModuleStore store;
+    bool use_module = false;
+    if (!shared_lib_root_.empty()) {
+        module_resolver::FoldResult fr; std::string ferr;
+        if (!module_resolver::fold_sources(source, shared_lib_root_, fr, ferr)) {
+            err.ok = false; err.message = "module resolution failed: " + ferr;
+            return last_merged_params_;
+        }
+        if (!fr.modules.empty()) { store = store_from_fold(fr); use_module = true; }
+    }
 
-    JSValue base = JS_Eval(ctx, kPartBaseJS, strlen(kPartBaseJS), "<part-base>",
-                           JS_EVAL_TYPE_GLOBAL);
-    if (JS_IsException(base)) { err = harvest_exception(ctx); JS_FreeValue(ctx,base);
-        JS_FreeContext(ctx); JS_FreeRuntime(rt); return last_merged_params_; }
-    JS_FreeValue(ctx, base);
-
-    std::string wrapped = source + "\n;globalThis.__partClass = " + className + ";\n";
-    JSValue v = JS_Eval(ctx, wrapped.c_str(), wrapped.size(), "<part>", JS_EVAL_TYPE_GLOBAL);
-    if (JS_IsException(v)) { err = harvest_exception(ctx); JS_FreeValue(ctx,v);
-        JS_FreeContext(ctx); JS_FreeRuntime(rt); return last_merged_params_; }
-    JS_FreeValue(ctx, v);
+    JSRuntime* rt = nullptr; JSContext* ctx = nullptr;
+    if (!eval_part_publish_class(source, className, use_module ? &store : nullptr,
+                                 rt, ctx, err))
+        return last_merged_params_;
 
     JSValue global = JS_GetGlobalObject(ctx);
     JSValue authored = JS_GetPropertyStr(ctx, global, "__partClass");
@@ -207,20 +361,22 @@ std::vector<RequiredChild> ScriptHost::eval_requires(const std::string& source,
     std::string className = find_part_class_name(source);
     if (className.empty()) return out;
 
-    JSRuntime* rt = JS_NewRuntime();
-    JSContext* ctx = new_bake_context(rt);
+    // Eval as a module when the part imports shared-lib code (so its class body /
+    // `static requires` can reference imported values); fail-closed on a fold
+    // error by returning an empty list.
+    ModuleStore store;
+    bool use_module = false;
+    if (!shared_lib_root_.empty()) {
+        module_resolver::FoldResult fr; std::string ferr;
+        if (!module_resolver::fold_sources(source, shared_lib_root_, fr, ferr)) return out;
+        if (!fr.modules.empty()) { store = store_from_fold(fr); use_module = true; }
+    }
 
-    JSValue base = JS_Eval(ctx, kPartBaseJS, strlen(kPartBaseJS), "<part-base>",
-                           JS_EVAL_TYPE_GLOBAL);
-    if (JS_IsException(base)) { JS_FreeValue(ctx, base);
-        JS_FreeContext(ctx); JS_FreeRuntime(rt); return out; }
-    JS_FreeValue(ctx, base);
-
-    std::string wrapped = source + "\n;globalThis.__partClass = " + className + ";\n";
-    JSValue v = JS_Eval(ctx, wrapped.c_str(), wrapped.size(), "<part>", JS_EVAL_TYPE_GLOBAL);
-    if (JS_IsException(v)) { JS_FreeValue(ctx, v);
-        JS_FreeContext(ctx); JS_FreeRuntime(rt); return out; }
-    JS_FreeValue(ctx, v);
+    JSRuntime* rt = nullptr; JSContext* ctx = nullptr;
+    BakeError eerr;
+    if (!eval_part_publish_class(source, className, use_module ? &store : nullptr,
+                                 rt, ctx, eerr))
+        return out;
 
     JSValue global = JS_GetGlobalObject(ctx);
     JSValue authored = JS_GetPropertyStr(ctx, global, "__partClass");
@@ -317,8 +473,24 @@ uint64_t ScriptHost::resolve_hash(const std::string& source,
     BakeError err;
     std::string canon = merge_params_canonical(source, params_json, err);
     if (!err.ok) return 0;   // fail-closed: caller treats 0 as resolve failure
+
+    // Fold the part source + its transitively-imported shared-lib module sources
+    // into the canonical buffer that becomes source_bytes. If no shared-lib root
+    // is configured, hash the raw source (legacy). Fail-closed: a fold error
+    // (missing/illegal module) makes resolve fail (0). The folded buffer here is
+    // byte-identical to the one bake_source hashes, so the two ALWAYS agree.
+    module_resolver::FoldResult fr;
+    const char* src_bytes = source.data();
+    size_t      src_len   = source.size();
+    if (!shared_lib_root_.empty()) {
+        std::string ferr;
+        if (!module_resolver::fold_sources(source, shared_lib_root_, fr, ferr))
+            return 0;   // fail-closed
+        src_bytes = fr.folded.data();
+        src_len   = fr.folded.size();
+    }
     return part_asset::compute_resolved_hash(
-        source.data(), source.size(),
+        src_bytes, src_len,
         canon.data(), canon.size(),
         child_hashes, child_count);
 }
@@ -331,20 +503,46 @@ BakeResult ScriptHost::bake_source(const std::string& source,
     BakeResult r;
 
     // Merge static params + caller overrides into canonical JSON, and compute
-    // the resolved hash over (source, merged params, child hashes). Shares the
-    // exact path resolve_hash uses so both agree byte-for-byte.
+    // the resolved hash over (folded source, merged params, child hashes). Shares
+    // the exact fold+hash path resolve_hash uses so both agree byte-for-byte.
+    // The FoldResult also carries the resolved {specifier->source} module set,
+    // which the QuickJS module loader serves below (no filesystem reads at eval).
+    module_resolver::FoldResult fold;
     {
         BakeError merr;
         std::string canon = merge_params_canonical(source, params_json, merr);
         if (!merr.ok) { r.error = merr; return r; }
+
+        const char* src_bytes = source.data();
+        size_t      src_len   = source.size();
+        if (!shared_lib_root_.empty()) {
+            std::string ferr;
+            if (!module_resolver::fold_sources(source, shared_lib_root_, fold, ferr)) {
+                // Fail-closed: a missing/illegal shared module aborts the bake with
+                // no artifact written, matching the existing fail-closed pattern.
+                r.error.ok = false;
+                r.error.message = "module resolution failed: " + ferr;
+                return r;
+            }
+            src_bytes = fold.folded.data();
+            src_len   = fold.folded.size();
+        }
         r.resolved_hash = part_asset::compute_resolved_hash(
-            source.data(), source.size(),
+            src_bytes, src_len,
             canon.data(), canon.size(),
             child_hashes, child_count);
     }
     const std::string merged = last_merged_params_;
 
+    // If the part imports shared-lib modules, serve their (already-folded) source
+    // to the QuickJS module loader and evaluate the part as an ES module so the
+    // `import`s bind. The loader reads ONLY this in-memory set (no filesystem at
+    // eval) to keep the bake deterministic and file-access-free.
+    ModuleStore store = store_from_fold(fold);
+    const bool use_module = !store.sources.empty();
+
     JSRuntime* rt = JS_NewRuntime();
+    if (use_module) JS_SetModuleLoaderFunc(rt, sh_module_normalize, sh_module_loader, &store);
 
     // Install a wall-clock interrupt so a runaway build() fails-closed (dev-mode)
     // instead of hanging. Unbounded when time_budget_ms == 0 (install-mode).
@@ -354,7 +552,7 @@ BakeResult ScriptHost::bake_source(const std::string& source,
                   std::chrono::milliseconds(opts.time_budget_ms);
     JS_SetInterruptHandler(rt, interrupt_cb, &ic);
 
-    JSContext* ctx = new_bake_context(rt);
+    JSContext* ctx = new_bake_context(rt, /*want_modules*/ use_module);
 
     // C++-owned authoring state for this bake; native DSL bindings mutate it.
     dsl::DslState state;
@@ -382,9 +580,16 @@ BakeResult ScriptHost::bake_source(const std::string& source,
             goto done;
         }
         std::string wrapped = source + "\n;globalThis.__partClass = " + className + ";\n";
-        JSValue v = JS_Eval(ctx, wrapped.c_str(), wrapped.size(), "<part>", JS_EVAL_TYPE_GLOBAL);
-        if (JS_IsException(v)) { r.error = harvest_exception(ctx); JS_FreeValue(ctx,v); goto done; }
-        JS_FreeValue(ctx, v);
+        if (use_module) {
+            bool threw = false;
+            JSValue v = eval_part_as_module(ctx, rt, wrapped, &threw);
+            if (threw) { r.error = harvest_exception(ctx); JS_FreeValue(ctx,v); goto done; }
+            JS_FreeValue(ctx, v);
+        } else {
+            JSValue v = JS_Eval(ctx, wrapped.c_str(), wrapped.size(), "<part>", JS_EVAL_TYPE_GLOBAL);
+            if (JS_IsException(v)) { r.error = harvest_exception(ctx); JS_FreeValue(ctx,v); goto done; }
+            JS_FreeValue(ctx, v);
+        }
 
         JSValue global = JS_GetGlobalObject(ctx);
         JSValue authored = JS_GetPropertyStr(ctx, global, "__partClass");
