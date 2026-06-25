@@ -81,6 +81,7 @@ void Renderer::warm_up(BLASManager& blas, TLASManager& tlas) {
     if (loc_screen_size_ != -1)
         SetShaderValue(shader_, loc_screen_size_, &screen_size, SHADER_UNIFORM_VEC2);
     // Bind real BVH data so the texelFetch traversal paths are part of the compiled program.
+    blas.ensure_gpu_textures_ready();
     blas.bind_to_shader(shader_);
     tlas.bind_to_shader(shader_, blas);
     DrawRectangle(0, 0, 1, 1, WHITE);

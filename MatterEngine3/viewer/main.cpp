@@ -109,10 +109,15 @@ int main() {
 
         if (stats.reload_requested) {
             stats.reload_requested = false;
-            connect_sequence();
+            // Re-enable the cursor before reload so a failure can't strand it.
+            if (camera_capture) { camera_capture = false; EnableCursor(); }
+            // connect_sequence replaces `store`/`composer`; if it fails partway the
+            // old composer would dangle, so bail the loop and shut down cleanly.
+            if (!connect_sequence()) { printf("reload failed; exiting\n"); break; }
         }
     }
 
+    if (camera_capture) EnableCursor();
     ui.shutdown();
     renderer.shutdown();
     CloseWindow();

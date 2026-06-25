@@ -66,4 +66,4 @@ shaders:
 clean:
 	rm -f viewer shaders
 
-.PHONY: viewer clean
+.PHONY: viewer clean shaders
