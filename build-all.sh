@@ -27,11 +27,14 @@ case "$UNAME_S" in
 esac
 
 # Projects that use a flat Makefile (no TARGET= flag).
+# MatterEngine3 is a library sub-project: `make` builds libmatter_engine3.a
+# (no app binary); its headless test targets run in the test section below.
 SIMPLE_PROJECTS=(
     BasicWindowApp
     SurfaceLib
     ObjectAllocatorLib
     SpatialQueryLib
+    MatterEngine3
 )
 
 # Projects whose Makefile defaults to Windows cross-compile and need
@@ -135,6 +138,16 @@ if [ "$MODE" = "test" ]; then
     else
         RESULT[MeshChartingLib]="FAIL (test build)"
     fi
+
+    # MatterEngine3 headless suites (script host + voxel-CSG bake; GL-free host,
+    # raylib-linked BLAS path). Each run-* target builds then runs its binary, so
+    # a non-zero status covers both build and test failures. run-graph-integration
+    # exercises the full SP-3 install -> SP-2 ScriptHost bake path end-to-end.
+    for tgt in run-partv2 run-script run-graph run-graph-integration run-trivar; do
+        echo
+        echo "--- MatterEngine3 ($tgt) ---"
+        make -C MatterEngine3/tests "$tgt" || RESULT[MatterEngine3]="FAIL ($tgt)"
+    done
 fi
 
 echo
