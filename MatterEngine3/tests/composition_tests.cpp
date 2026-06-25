@@ -32,8 +32,33 @@ static void test_decimate_one_level() {
     CHECK(half.size() < tris.size(), "decimate reduced tri count");
 }
 
+static void test_bake_three_levels() {
+    std::vector<Tri> tris = grid_tris(32);           // 2048 tris (LOD0)
+    BLASManager blas;
+    lod_bake::BakeTargets t;                         // defaults: {1.0, 0.1, 0.01}
+    lod_bake::LodLevels lods = lod_bake::bake_lods(tris, t, blas);
+
+    CHECK(lods.size() == 3, "three LOD levels");
+    // Each level registered exactly one BLAS (single-material part).
+    CHECK(lods[0].blas_indices.size() == 1, "lod0 one blas");
+    CHECK(lods[2].blas_indices.size() == 1, "lod2 one blas");
+    // Tri counts strictly decrease LOD0 -> LOD2.
+    auto tri_count = [&](uint32_t bi) {
+        return blas.get_entries()[bi]->triangles.size();
+    };
+    size_t c0 = tri_count(lods[0].blas_indices[0]);
+    size_t c1 = tri_count(lods[1].blas_indices[0]);
+    size_t c2 = tri_count(lods[2].blas_indices[0]);
+    CHECK(c0 > c1 && c1 > c2, "monotonically decreasing tri counts");
+    CHECK(c0 == tris.size(), "lod0 is full geometry");
+    // Thresholds: LOD0 largest (nearest), LOD2 smallest (farthest).
+    CHECK(lods[0].screen_size_threshold > lods[1].screen_size_threshold, "thr0 > thr1");
+    CHECK(lods[1].screen_size_threshold > lods[2].screen_size_threshold, "thr1 > thr2");
+}
+
 int main() {
     test_decimate_one_level();
+    test_bake_three_levels();
     printf(failures ? "FAILED (%d)\n" : "OK\n", failures);
     return failures ? 1 : 0;
 }
