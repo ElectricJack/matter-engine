@@ -3,6 +3,7 @@
 #include "world_flatten.h"     // world_flatten::FlatInstance
 #include <cmath>
 #include <cstring>
+#include <map>
 
 namespace viewer {
 
@@ -53,15 +54,18 @@ SectorLodResolver::resolve(const WorldState& state,
         float dx = sx - cam_pos.x, dy = sy - cam_pos.y, dz = sz - cam_pos.z;
         if (std::sqrt(dx*dx + dy*dy + dz*dz) > active_radius_) continue;
 
-        const auto& lod_for_part = chosen[c];   // map<part_hash,int>
+        static const std::map<uint64_t,int> kNoLods;
+        auto cit = chosen.find(c);
+        const std::map<uint64_t,int>& lod_for_part = (cit != chosen.end()) ? cit->second : kNoLods;
         for (const auto& inst : sk.second) {
             int lod = 0;
             auto it = lod_for_part.find(inst.resolved_hash);
             if (it != lod_for_part.end()) lod = it->second;
-            WorldManifestEntry tmp;
-            tmp.part_hash = inst.resolved_hash;
-            std::memcpy(tmp.transform, inst.world.cell, sizeof(tmp.transform));  // mat4::cell[16]
-            out.push_back(to_resolved(tmp, lod));
+            ResolvedInstance r;
+            r.part_hash = inst.resolved_hash;
+            r.lod_level = lod;
+            std::memcpy(r.transform, inst.world.cell, sizeof(r.transform));
+            out.push_back(r);
         }
     }
     return out;

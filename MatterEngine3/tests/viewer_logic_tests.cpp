@@ -71,6 +71,7 @@ static void test_resolvers() {
     bool near_present = false; int near_lod = -1;
     for (auto& r : near) if (r.transform[3] == 0.0f) { near_present = true; near_lod = r.lod_level; }
     CHECK(near_present, "sectorlod keeps the near instance active");
+    CHECK(near_lod >= 0, "sectorlod assigned the near instance a valid LOD");
 
     // Far camera: within activation radius but farther from instances -> coarser-or-equal LOD.
     // (0,4000,-4000) would be outside the 1000-unit sphere; use (100,200,-200) which is
