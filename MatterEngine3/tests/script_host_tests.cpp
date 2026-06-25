@@ -168,6 +168,37 @@ static void test_csg_lowering() {
     CHECK(f.smoothing == 0.4f || f.smoothing == 0.0f, "smoothing factor carried");
 }
 
+static void test_voxel_primitive_occupancy() {
+    // Sphere brush occupancy
+    dsl::DslState ss; ss.beginVoxels(0.1f); ss.fill(0);
+    ss.sphere({0,0,0}, 1.0f, dsl::CsgOp::Union); ss.endVoxels();
+    CHECK(dsl::field_is_solid(ss.buffer(), {0,0,0}), "sphere solid at center");
+    CHECK(!dsl::field_is_solid(ss.buffer(), {2,0,0}), "sphere empty outside radius");
+
+    // Box brush occupancy
+    dsl::DslState sb; sb.beginVoxels(0.1f); sb.fill(0);
+    sb.box({0,0,0}, {0.5f,0.5f,0.5f}, dsl::CsgOp::Union); sb.endVoxels();
+    CHECK(dsl::field_is_solid(sb.buffer(), {0.4f,0.4f,0.4f}), "box solid inside");
+    CHECK(!dsl::field_is_solid(sb.buffer(), {0.9f,0,0}), "box empty outside half-extent");
+
+    // Two overlapping spheres: union / difference / intersection
+    auto twoSphere=[&](dsl::CsgOp op2){
+        dsl::DslState s; s.beginVoxels(0.1f); s.fill(0);
+        s.sphere({0,0,0},1.0f,dsl::CsgOp::Union);
+        s.sphere({1,0,0},1.0f,op2); s.endVoxels();
+        return s.buffer();
+    };
+    auto U=twoSphere(dsl::CsgOp::Union);
+    CHECK(dsl::field_is_solid(U,{-0.9f,0,0}) && dsl::field_is_solid(U,{1.9f,0,0}),
+          "union covers both spheres");
+    auto D=twoSphere(dsl::CsgOp::Difference);
+    CHECK(dsl::field_is_solid(D,{-0.9f,0,0}) && !dsl::field_is_solid(D,{1.0f,0,0}),
+          "difference removes second sphere region");
+    auto I=twoSphere(dsl::CsgOp::Intersection);
+    CHECK(dsl::field_is_solid(I,{0.5f,0,0}) && !dsl::field_is_solid(I,{-0.9f,0,0}),
+          "intersection keeps only overlap");
+}
+
 int main() {
     test_embed_eval_1_plus_1();
     test_fresh_context_runs_empty_class();
@@ -177,6 +208,7 @@ int main() {
     test_resolve_hash_matches_and_skips_build();
     test_bindings_record_ops_and_misuse();
     test_csg_lowering();
+    test_voxel_primitive_occupancy();
     if (failures == 0) printf("ALL PASS\n");
     return failures ? 1 : 0;
 }

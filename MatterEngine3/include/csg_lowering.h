@@ -17,4 +17,8 @@ struct LoweredField {
 // Transform stack top is applied to each brush center.
 LoweredField lower_build_buffer(const BuildBuffer& buf);
 
+// Analytic occupancy oracle: evaluates the CSG expression's solidity (>0 inside)
+// at a world point. Used by tests to assert primitive/CSG occupancy without GL.
+bool field_is_solid(const BuildBuffer& buf, const Vector3& worldPoint);
+
 } // namespace dsl
