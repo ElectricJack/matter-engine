@@ -125,10 +125,21 @@ InstallResult PartGraph::install(const std::vector<ChildRequest>& roots) {
         root_keys.push_back(k);
     }
 
-    // Minimal bake: for Task 4 just bake every resolved node whose hash is a cache miss.
-    // (Topo order is enforced in Task 6; here single-leaf graphs already satisfy it.)
-    for (const auto& kv : memo) {
-        const InternalNode& n = kv.second;
+    // Topological (post-order) bake over the reachable set from roots: a node is baked
+    // only after all its children. DFS post-order on a DAG yields children-first order.
+    std::set<uint64_t> baked_or_present;     // memo_keys already handled
+    std::vector<uint64_t> topo;              // memo_keys in children-first order
+    std::function<void(uint64_t)> post = [&](uint64_t key) {
+        if (baked_or_present.count(key)) return;
+        baked_or_present.insert(key);
+        const InternalNode& n = memo.at(key);
+        for (uint64_t ck : n.child_keys) post(ck);
+        topo.push_back(key);
+    };
+    for (uint64_t rk : root_keys) post(rk);
+
+    for (uint64_t key : topo) {
+        const InternalNode& n = memo.at(key);
         if (baker_.cached(n.resolved_hash)) { ++result.hits; continue; }
         if (!baker_.bake(n.source, n.params, n.child_hashes, n.resolved_hash)) {
             result.error = "bake failed for part: " + n.module;

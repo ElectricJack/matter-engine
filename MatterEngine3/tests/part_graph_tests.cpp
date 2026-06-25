@@ -139,6 +139,32 @@ int main() {
         CHECK(r2.hits == 3, "second install reports 3 cache hits");
     }
 
+    // Task 6: topological bake order (children before parents).
+    {
+        // Chain Root -> Mid -> Leaf. Bake order must be Leaf, Mid, Root.
+        FakeModuleResolver res;
+        res.modules["Leaf"] = FakeModule{ "src-Leaf", nullptr, false };
+        res.modules["Mid"]  = FakeModule{ "src-Mid",
+            [](const Params&){ return std::vector<ChildRequest>{ ChildRequest{"Leaf", Params{}} }; }, false };
+        res.modules["Root"] = FakeModule{ "src-Root",
+            [](const Params&){ return std::vector<ChildRequest>{ ChildRequest{"Mid", Params{}} }; }, false };
+
+        FakeBaker baker;
+        PartGraph g(res, baker);
+        InstallResult r = g.install({ ChildRequest{"Root", Params{}} });
+        CHECK(r.ok && r.baked.size() == 3, "chain install bakes 3");
+        // Every parent's children must already be on disk when the parent is baked:
+        // assert the recorded child_hashes were all baked earlier in bake_order.
+        bool order_ok = true;
+        std::set<uint64_t> seen;
+        for (uint64_t h : baker.bake_order) {
+            for (uint64_t c : baker.children_seen[h])
+                if (!seen.count(c)) order_ok = false;  // child baked AFTER parent => fail
+            seen.insert(h);
+        }
+        CHECK(order_ok, "children baked before their parents (topo order)");
+    }
+
     if (failures == 0) printf("All part_graph tests passed\n");
     return failures == 0 ? 0 : 1;
 }
