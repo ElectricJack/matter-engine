@@ -21,7 +21,7 @@ int WorldComposer::compose(const WorldState& state,
 
         TLASManager::DrawInstance di;
         di.blas_handle = lp->lod_blas[lod];
-        di.material_id = 0;
+        di.material_id = 0;          // per-triangle materials live in the BLAS; 0 is the TLAS default slot
         di.is_imposter = false;
         std::memcpy(di.transform.m, r.transform, sizeof(di.transform.m));
         insts.push_back(di);
