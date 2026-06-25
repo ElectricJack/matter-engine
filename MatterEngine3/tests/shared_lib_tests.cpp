@@ -45,9 +45,47 @@ static void test_resolve_specifier() {
           "path traversal rejected");
 }
 
+// ---- Task 3: transitive gather + canonical fold ---------------------------
+static void test_fold_transitive_and_canonical() {
+    const std::string root = "shared-lib-fixtures";
+    // A part that imports top (which transitively pulls mid -> leaf) and bbb.
+    const std::string part =
+        "import { TOP } from 'shared-lib/top';\n"
+        "import { BBB } from 'shared-lib/bbb';\n"
+        "class P extends Part { build(p){} }\n";
+    std::string err;
+    module_resolver::FoldResult r1;
+    CHECK(module_resolver::fold_sources(part, root, r1, err), "fold succeeds");
+    // resolved modules = bbb, leaf, mid, top  (transitive, deduped)
+    CHECK(r1.resolved_specifiers.size() == 4, "four transitive modules gathered");
+    // canonical order: part source first, then modules by sorted resolved specifier.
+    // bytes must start with the part source.
+    CHECK(r1.folded.size() > part.size(), "folded buffer larger than part alone");
+    CHECK(std::equal(part.begin(), part.end(), r1.folded.begin()), "part source folded first");
+
+    // Order independence: same imports listed in a different order -> identical fold.
+    const std::string part_reordered =
+        "import { BBB } from 'shared-lib/bbb';\n"
+        "import { TOP } from 'shared-lib/top';\n"
+        "class P extends Part { build(p){} }\n";
+    module_resolver::FoldResult r2;
+    CHECK(module_resolver::fold_sources(part_reordered, root, r2, err), "fold (reordered) succeeds");
+    // The MODULE portion of the fold (everything after the part source) is identical,
+    // because modules are ordered by sorted resolved specifier, not import order.
+    std::string mods1(r1.folded.begin() + part.size(), r1.folded.end());
+    std::string mods2(r2.folded.begin() + part_reordered.size(), r2.folded.end());
+    CHECK(mods1 == mods2, "module fold is import-order independent (canonical)");
+
+    // Cycle / missing -> fail closed.
+    module_resolver::FoldResult rbad;
+    const std::string bad = "import { X } from 'shared-lib/nope';\n";
+    CHECK(!module_resolver::fold_sources(bad, root, rbad, err), "missing module fails fold");
+}
+
 int main() {
     test_parse_imports();
     test_resolve_specifier();
+    test_fold_transitive_and_canonical();
     if (failures == 0) printf("All shared_lib tests passed\n");
     return failures == 0 ? 0 : 1;
 }

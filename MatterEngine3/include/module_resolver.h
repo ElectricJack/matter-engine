@@ -1,4 +1,5 @@
 #pragma once
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -20,5 +21,23 @@ std::vector<std::string> parse_import_specifiers(const std::string& source);
 // or a resolved path that does not exist as a readable file.
 bool resolve_specifier(const std::string& specifier, const std::string& shared_lib_root,
                        std::string& out_path, std::string& err);
+
+struct FoldResult {
+    // The canonical folded byte buffer: part source first, then each transitively
+    // imported module's full source, modules ordered by resolved specifier
+    // (lexicographic byte sort). This is the source_bytes input to
+    // compute_resolved_hash. A NUL (0x00) separator is written between each
+    // segment so concatenation is unambiguous (no specifier can contain NUL).
+    std::vector<char>        folded;
+    // Resolved specifiers actually folded (sorted), for diagnostics/tests.
+    std::vector<std::string> resolved_specifiers;
+};
+
+// Parse the part's imports, transitively resolve + read every shared-lib module,
+// and produce the canonical fold buffer. Returns false (err set) on any missing
+// module, illegal specifier, or read failure (fail-closed). Cycles are handled by
+// visiting each resolved specifier at most once.
+bool fold_sources(const std::string& part_source, const std::string& shared_lib_root,
+                  FoldResult& out, std::string& err);
 
 } // namespace module_resolver

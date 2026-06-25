@@ -1,6 +1,9 @@
 #include "../include/module_resolver.h"
 #include <cctype>
 #include <fstream>
+#include <set>
+#include <sstream>
+#include <algorithm>
 
 namespace module_resolver {
 
@@ -113,6 +116,56 @@ bool resolve_specifier(const std::string& specifier, const std::string& shared_l
     std::ifstream f(path, std::ios::binary);
     if (!f.good()) { err = "module not found: " + path; return false; }
     out_path = path;
+    return true;
+}
+
+static bool read_file(const std::string& path, std::string& out) {
+    std::ifstream f(path, std::ios::binary);
+    if (!f.good()) return false;
+    std::ostringstream ss; ss << f.rdbuf();
+    out = ss.str();
+    return true;
+}
+
+bool fold_sources(const std::string& part_source, const std::string& shared_lib_root,
+                  FoldResult& out, std::string& err) {
+    // BFS/DFS over imports, keyed by RESOLVED SPECIFIER (e.g. "shared-lib/leaf"),
+    // normalizing any trailing ".js" so "shared-lib/x" and "shared-lib/x.js" dedup.
+    std::set<std::string> seen;                 // canonical specifiers visited
+    std::vector<std::string> worklist = module_resolver::parse_import_specifiers(part_source);
+    std::vector<std::pair<std::string,std::string>> modules; // (canonical spec, source)
+
+    auto canon = [](std::string s) {
+        if (s.size() >= 3 && s.compare(s.size()-3,3,".js") == 0) s.resize(s.size()-3);
+        return s;
+    };
+
+    for (size_t i = 0; i < worklist.size(); ++i) {
+        std::string spec = canon(worklist[i]);
+        if (seen.count(spec)) continue;
+        seen.insert(spec);
+        std::string path;
+        if (!resolve_specifier(spec, shared_lib_root, path, err)) return false;
+        std::string src;
+        if (!read_file(path, src)) { err = "read failed: " + path; return false; }
+        modules.emplace_back(spec, src);
+        // enqueue this module's own imports (transitive)
+        for (auto& dep : module_resolver::parse_import_specifiers(src))
+            worklist.push_back(dep);
+    }
+
+    // Canonical ordering: sort modules by resolved specifier (lexicographic byte sort).
+    std::sort(modules.begin(), modules.end(),
+              [](const auto& a, const auto& b){ return a.first < b.first; });
+
+    // Build the fold buffer: part source, then each module source, NUL-separated.
+    out.folded.assign(part_source.begin(), part_source.end());
+    out.resolved_specifiers.clear();
+    for (auto& m : modules) {
+        out.folded.push_back('\0');
+        out.folded.insert(out.folded.end(), m.second.begin(), m.second.end());
+        out.resolved_specifiers.push_back(m.first);
+    }
     return true;
 }
 
