@@ -55,9 +55,109 @@ static void test_cache_path_resolved() {
           "cache_path_resolved full-width hex");
 }
 
+static Tri ptri(float ox, float oy) {
+    Tri t;
+    t.vertex0 = make_float3(ox + 0.0f, oy + 0.0f, 0.0f);
+    t.vertex1 = make_float3(ox + 1.0f, oy + 0.0f, 0.0f);
+    t.vertex2 = make_float3(ox + 0.0f, oy + 1.0f, 0.0f);
+    t.centroid = make_float3(ox + 0.333f, oy + 0.333f, 0.0f);
+    return t;
+}
+
+static void build_scene(BLASManager& blas, TLASManager& tlas,
+                        BLASHandle& hA, BLASHandle& hB) {
+    Tri triA[3] = { ptri(0,0), ptri(5,0), ptri(0,5) };
+    Tri triB[2] = { ptri(20,0), ptri(25,5) };
+    TriEx exA[3] = {}; TriEx exB[2] = {};
+    for (auto& e : exA) { e.materialId = 8; e.N0=e.N1=e.N2=make_float3(0,0,1); e.tint=make_float4(1,1,1,0); }
+    for (auto& e : exB) { e.materialId = 9; e.N0=e.N1=e.N2=make_float3(0,0,1); e.tint=make_float4(1,1,1,0); }
+    hA = blas.register_triangles(triA, 3, exA);
+    hB = blas.register_triangles(triB, 2, exB);
+
+    std::vector<TLASManager::DrawInstance> insts(3);
+    insts[0].blas_handle = hA; insts[0].material_id = 8; insts[0].transform = Matrix4x4();
+    insts[1].blas_handle = hB; insts[1].material_id = 9; insts[1].transform = Matrix4x4();
+    insts[1].transform.m[3] = 10.0f;
+    insts[2].blas_handle = hA; insts[2].material_id = 8; insts[2].transform = Matrix4x4();
+    insts[2].transform.m[7] = 7.0f;
+    tlas.draw_batch(insts);
+    tlas.build(blas);
+}
+
+// A couple of synthetic child rows and a 2-level LOD array for the full round-trip.
+static std::vector<part_asset::ChildInstance> sample_children() {
+    std::vector<part_asset::ChildInstance> kids(2);
+    kids[0].child_resolved_hash = 0x1111222233334444ull;
+    for (int i = 0; i < 16; ++i) kids[0].transform[i] = (i % 5 == 0) ? 1.0f : 0.0f;
+    kids[0].transform[3] = 2.5f;
+    kids[1].child_resolved_hash = 0x5555666677778888ull;
+    for (int i = 0; i < 16; ++i) kids[1].transform[i] = (i % 5 == 0) ? 1.0f : 0.0f;
+    kids[1].transform[7] = -4.0f;
+    return kids;
+}
+static part_asset::LodLevels sample_lods() {
+    part_asset::LodLevels lods(2);
+    lods[0].screen_size_threshold = 256.0f;
+    lods[0].blas_indices = { 0u, 1u };
+    lods[1].screen_size_threshold = 32.0f;
+    lods[1].blas_indices = { 0u };
+    return lods;
+}
+
+static uint32_t rd_u32(const std::vector<uint8_t>& b, size_t off) {
+    uint32_t v; memcpy(&v, b.data()+off, 4); return v;
+}
+static uint64_t rd_u64(const std::vector<uint8_t>& b, size_t off) {
+    uint64_t v; memcpy(&v, b.data()+off, 8); return v;
+}
+static std::vector<uint8_t> read_file(const char* path) {
+    FILE* f = fopen(path, "rb");
+    if (!f) return {};
+    fseek(f,0,SEEK_END); long n = ftell(f); fseek(f,0,SEEK_SET);
+    std::vector<uint8_t> b(n);
+    size_t got = fread(b.data(),1,n,f); fclose(f);
+    b.resize(got);
+    return b;
+}
+static void write_file(const char* path, const std::vector<uint8_t>& b) {
+    FILE* f = fopen(path, "wb"); fwrite(b.data(),1,b.size(),f); fclose(f);
+}
+
+static void test_save_v2_header() {
+    using namespace part_asset;
+    BLASManager blas; TLASManager tlas(64);
+    BLASHandle hA, hB; build_scene(blas, tlas, hA, hB);
+    auto kids = sample_children();
+    auto lods = sample_lods();
+
+    const char* path = "test_v2_save.part";
+    remove(path);
+    bool ok = save_v2(path, blas, tlas, kids.data(), kids.size(), lods, 0xABCDEF12u);
+    CHECK(ok, "save_v2 returns true");
+
+    std::vector<uint8_t> b = read_file(path);
+    // Header layout (v2): magic u32, version u32, resolved_hash^ver u64, sizeof Tri/TriEx/
+    // BVHNode/ChildInstance u32 x4, content_hash u64 => 8 + 16 + 8 = 40-byte header.
+    CHECK(b.size() >= 40, "file has at least a v2 header");
+    CHECK(rd_u32(b, 0) == kMagic, "magic written");
+    CHECK(rd_u32(b, 4) == kFormatVersionV2, "v2 version written");
+    CHECK(rd_u64(b, 8) == (0xABCDEF12ull ^ (uint64_t)kFormatVersionV2),
+          "resolved hash stored XOR format version");
+    CHECK(rd_u32(b, 16) == (uint32_t)sizeof(Tri), "sizeof Tri written");
+    CHECK(rd_u32(b, 20) == (uint32_t)sizeof(TriEx), "sizeof TriEx written");
+    CHECK(rd_u32(b, 24) == (uint32_t)sizeof(BVHNode), "sizeof BVHNode written");
+    CHECK(rd_u32(b, 28) == (uint32_t)sizeof(ChildInstance), "sizeof ChildInstance written");
+    uint64_t stored = rd_u64(b, 32);
+    uint64_t recomputed = fnv1a64(b.data()+40, b.size()-40);
+    CHECK(stored == recomputed, "content hash covers body after 40-byte header");
+
+    remove(path);
+}
+
 int main() {
     test_cache_path_resolved();
     test_resolved_hash();
+    test_save_v2_header();
     if (failures == 0) printf("All part_asset_v2 tests passed\n");
     return failures == 0 ? 0 : 1;
 }
