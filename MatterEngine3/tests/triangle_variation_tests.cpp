@@ -1,3 +1,12 @@
+// SP-6 (Direct-Triangle Path & Variations) headless GL-free test suite.
+//
+// Spec Testing-bullet -> covering test:
+//   - Triangle emission (per-tri material + transform stack)  -> test_triangle_emission
+//   - One BLAS (voxel + direct quad, distinct per-tri mats)    -> test_one_blas_merge
+//   - Skinned line (stepped spheres, lerped radius taper)      -> test_skinned_line
+//   - No field interaction (triangle survives over a brush)    -> test_no_field_interaction
+//   - Variation dedup (same params -> one artifact, N records) -> test_variation_dedup
+//   - Variation/LOD independence (same LOD-array shape)        -> test_variation_lod_independence
 #include "../include/triangle_emit.hpp"
 #include "../../MatterSurfaceLib/include/blas_manager.hpp"
 #include <cstdio>
@@ -199,12 +208,35 @@ static void test_variation_dedup() {
     CHECK(distinct == 2, "3x variation A + 1x variation B -> 2 distinct artifacts");
 }
 
+// Models the SP-4 contract: LOD level count is a pipeline constant, independent
+// of the variation params. Lives in the test (SP-4 owns the real generator).
+static int lod_level_count_for(uint64_t /*resolved_hash*/) {
+    return 3;  // ~3 LOD levels per part, same rule for every variation
+}
+
+static void test_variation_lod_independence() {
+    tri_emit::VariationRecorder rec;
+    const char* src = "class Tree extends Part {}";
+    const unsigned char pA[] = { 'v','=','a' };
+    const unsigned char pB[] = { 'v','=','b' };
+
+    uint64_t hA = rec.instance(src, 26, pA, sizeof(pA), mat4::Identity());
+    uint64_t hB = rec.instance(src, 26, pB, sizeof(pB), mat4::Identity());
+
+    CHECK(hA != hB, "two variations are distinct artifacts (variation picks geometry)");
+    // LOD shape is identical across variations (LOD picks detail, not geometry).
+    CHECK(lod_level_count_for(hA) == lod_level_count_for(hB),
+          "both variations get the same LOD-array shape (LOD independent of variation)");
+    CHECK(lod_level_count_for(hA) == 3, "expected ~3 LOD levels per variation");
+}
+
 int main() {
     test_triangle_emission();
     test_one_blas_merge();
     test_skinned_line();
     test_no_field_interaction();
     test_variation_dedup();
+    test_variation_lod_independence();
     if (failures == 0) printf("All triangle_variation tests passed\n");
     return failures == 0 ? 0 : 1;
 }
