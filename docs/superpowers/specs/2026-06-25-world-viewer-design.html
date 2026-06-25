@@ -105,7 +105,13 @@ strong{color:#e6edf3}
 <li>Each frame, <code>poll_deltas()</code> applies <code>added</code>/<code>removed</code> to the live <code>WorldState</code>.</li>
 </ol>
 <p><strong><code>LocalProvider</code> (the only concrete impl in the minimal viewer):</strong>
-Backs <code>connect()</code> with the <code>example_world</code> pipeline output — it runs the same install → bake → flatten path (or reads its committed <code>parts/</code> dir + flattened instance list) and returns a manifest where every <code>part_hash</code> is already present in the local <code>PartStore</code>. So <code>reconcile</code> yields an empty want-list, <code>fetch_parts</code> is a no-op, and <code>poll_deltas</code> returns empty. The network path and the local path are identical code in the renderer.</p>
+Backs <code>connect()</code> with the SP-3 install path against a <strong>persistent</strong> content-addressed cache dir (e.g. <code>MatterEngine3/viewer/cache/parts/</code>, <strong>not</strong> a throwaway <code>/tmp</code> sandbox — this is the key difference from the <code>example_world</code> driver, which <code>rm -rf</code>s its sandbox each run). It runs <code>read_manifest</code> → <code>install</code>, then returns a <code>WorldManifest</code> whose entries carry each part's resolved hash. Because install is content-addressed:</p>
+<ul>
+<li><strong>First run (cold cache):</strong> install bakes every part, writing <code>parts/&lt;hash&gt;.part</code>. <code>reconcile</code> reports all hashes as wanted; <code>fetch_parts</code> loads them.</li>
+<li><strong>Second run, nothing changed (warm cache):</strong> install is an all-hits no-op (<code>InstallResult.baked.empty()</code>), every <code>.part</code> is already on disk, <code>reconcile</code> yields an <strong>empty want-list</strong>, <code>fetch_parts</code> is a no-op — the world reloads immediately, no rebake. (This is exactly the <code>example_world</code> "second install bakes nothing" behavior, made persistent.)</li>
+<li><strong>Source changed:</strong> only the parts whose resolved hash changed (and their dependents) re-bake; <code>reconcile</code> wants only those.</li>
+</ul>
+<p>This is the same content-addressed reconciliation the network path uses — "build once, then hash-check and skip" — so the local and network providers are identical in the renderer. The persistent on-disk <code>parts/</code> dir IS the cache the client carries between runs and between server sessions.</p>
 <hr />
 <h2 id="module-responsibilities-and-interfaces">Module responsibilities and interfaces</h2>
 <h3 id="world_source-world_sourceh-local_providercpp"><code>world_source</code> (<code>world_source.h</code> / <code>local_provider.cpp</code>)</h3>
@@ -116,17 +122,19 @@ Backs <code>connect()</code> with the <code>example_world</code> pipeline output
 </ul>
 <h3 id="part_library-part_storeh-part_storecpp"><code>part_library</code> (<code>part_store.h</code> / <code>part_store.cpp</code>)</h3>
 <ul>
-<li><code>PartStore</code>: maps <code>part_hash -&gt; BLASHandle</code> via an owned <code>BLASManager</code>. <code>has(hash)</code>, <code>get_or_load(hash, dir)</code> (calls <code>part_asset::load_v2</code> → <code>BLASManager::register_triangles</code>), and exposes the <code>BLASManager&amp;</code> for the renderer to bind.</li>
-<li>Content-addressed: a hash loaded once is reused for every instance (terrain/tree/grass dedup is automatic).</li>
+<li><code>PartStore</code>: maps <code>part_hash -&gt; BLASHandle</code> via an owned <code>BLASManager</code>, backed by a <strong>persistent on-disk cache dir</strong> (<code>cache_path_resolved(hash)</code> → <code>parts/&lt;hash&gt;.part</code>). <code>has(hash)</code> (in-memory <strong>or</strong> on-disk presence — drives <code>reconcile</code>), <code>get_or_load(hash)</code> (<code>part_asset::load_v2</code> → <code>BLASManager::register_triangles</code>, memoized), and exposes the <code>BLASManager&amp;</code> for the renderer to bind.</li>
+<li>Content-addressed and <strong>durable across runs</strong>: a hash loaded once is reused for every instance this run (terrain/tree/grass dedup is automatic), and a <code>.part</code> baked on a prior run is found on disk so the next launch skips the bake entirely.</li>
 <li>Depends on: SP-1 <code>part_asset_v2</code> (<code>load_v2</code>, <code>cache_path_resolved</code>), MSL <code>BLASManager</code> (read-only).</li>
 </ul>
 <h3 id="world_composer-world_composerh-world_composercpp"><code>world_composer</code> (<code>world_composer.h</code> / <code>world_composer.cpp</code>)</h3>
 <ul>
 <li>Per frame: takes <code>WorldState</code> + <code>PartStore</code> + camera, decides which instances are active and at which LOD, and records them into the <code>TLASManager</code> (<code>tlas.clear()</code> → <code>tlas.draw(blas_handle, material_id)</code> under each instance transform → <code>tlas.build(blas_manager)</code>).</li>
-<li><strong><code>SectorResolver</code> seam</strong> — a strategy object that answers "given the camera, which instances render this frame and at which LOD level?"</li>
-<li>Minimal viewer: <code>PassThroughResolver</code> — all instances active, LOD 0 (finest), no culling.</li>
-<li>Future drop-in: <code>SectorLodResolver</code> backed by <code>sector_grid::bin_instances</code> + <code>lod_select::select_sector_lods</code> + distance-sphere activation + far-proxy (the <code>2026-06-24-sector-lod-instanced-world-design.md</code> pipeline). The composer interface does not change.</li>
-<li>Depends on: MSL <code>TLASManager</code> (read-only), <code>part_library</code>.</li>
+<li><strong><code>SectorResolver</code> seam</strong> — a strategy object that answers "given the camera, which instances render this frame and at which LOD level?" Two impls ship in the viewer, <strong>selectable live from the HUD</strong> so they can be A/B'd against the same world:</li>
+<li><code>PassThroughResolver</code> — all instances active, LOD 0 (finest), no culling. The baseline / correctness reference.</li>
+<li><code>SectorLodResolver</code> — bins instances with <code>sector_grid::bin_instances</code>, chooses per-sector LOD via <code>lod_select::select_sector_lods</code> against the camera, and activates sectors by distance sphere (the <code>2026-06-24-sector-lod-instanced-world-design.md</code> pipeline). This is what exercises the <code>lod_bake</code> LOD levels and the sector/LOD-select composition at render time. Merged far-proxy is the one piece left to backlog (see below).</li>
+<li>Both satisfy the same <code>SectorResolver</code> interface; swapping them changes no composer/renderer code.</li>
+<li>The per-part LOD table (<code>lod_select::PartLodTable</code>: bound radius + screen-size thresholds) is built once at load from the <code>.part</code> LOD levels and handed to the resolver.</li>
+<li>Depends on: MSL <code>TLASManager</code> (read-only), <code>part_library</code>, SP-4 <code>sector_grid</code> + <code>lod_select</code>.</li>
 </ul>
 <h3 id="renderer-rendererh-renderercpp"><code>renderer</code> (<code>renderer.h</code> / <code>renderer.cpp</code>)</h3>
 <ul>
@@ -140,7 +148,7 @@ Backs <code>connect()</code> with the <code>example_world</code> pipeline output
 <li>Mirrors MSL's integration exactly: Dear ImGui core (<code>Libraries/imgui</code>) with the <strong>GLFW + OpenGL3 backends</strong> (<code>imgui_impl_glfw</code>, <code>imgui_impl_opengl3</code>), bound to raylib's GLFW window via <code>glfwGetCurrentContext()</code>. raylib uses GLFW under <code>PLATFORM_DESKTOP</code>, so ImGui shares the same window/GL context.</li>
 <li><code>Ui::setup()</code> — <code>ImGui::CreateContext()</code> → <code>StyleColorsDark()</code> → <code>ImGui_ImplGlfw_InitForOpenGL(glfwGetCurrentContext(), true)</code> → <code>ImGui_ImplOpenGL3_Init("#version 330")</code>. Called once after <code>InitWindow</code>.</li>
 <li><code>Ui::begin_frame()</code> / <code>Ui::end_frame()</code> — wrap <code>ImGui_ImplOpenGL3_NewFrame()</code> + <code>ImGui_ImplGlfw_NewFrame()</code> + <code>ImGui::NewFrame()</code> and <code>ImGui::Render()</code> + <code>ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData())</code>. Called after the raytrace pass so the overlay composites on top.</li>
-<li><code>Ui::draw_debug_panel(const ViewerStats&amp;)</code> — the minimal HUD: FPS/frame time, camera position + facing, instance count (total / active this frame), occupied-sector count and the resolver in use, provider connection state + last reconcile want-count, and a "reload world" button (re-runs the connect sequence). <code>ViewerStats</code> is a plain struct the renderer/composer/provider fill in each frame — the panel reads it, owning no engine state.</li>
+<li><code>Ui::draw_debug_panel(ViewerStats&amp;)</code> — the HUD: FPS/frame time, camera position + facing, instance count (total / active this frame), occupied-sector count, provider connection state, <strong>cache stats</strong> (parts baked vs. cache hits on the last connect, i.e. cold-vs-warm reload + last reconcile want-count), a <strong>resolver selector</strong> (<code>PassThrough</code> vs <code>SectorLod</code>) that switches the active <code>SectorResolver</code> live, and a "reload world" button (re-runs the connect sequence). <code>ViewerStats</code> is a plain struct the renderer/composer/provider fill in each frame; the resolver selection is the one writable field the panel sets back — it owns no other engine state.</li>
 <li><code>Ui::shutdown()</code> — <code>ImGui_ImplOpenGL3_Shutdown()</code> → <code>ImGui_ImplGlfw_Shutdown()</code> → <code>ImGui::DestroyContext()</code>.</li>
 <li>This panel is the seam for future in-engine tools (part placement, material pickers, live-edit controls); minimal viewer ships only the read-only debug panel plus the reload button.</li>
 <li>Depends on: Dear ImGui (<code>Libraries/imgui</code>), raylib's bundled GLFW.</li>
@@ -169,7 +177,8 @@ Backs <code>connect()</code> with the <code>example_world</code> pipeline output
 <hr />
 <h2 id="testing">Testing</h2>
 <ul>
-<li>The composition/provider units are GL-free and unit-testable: a headless test that constructs a <code>LocalProvider</code>, runs <code>connect</code> → <code>reconcile</code> (asserts empty want-list when parts are pre-baked) → builds <code>WorldState</code>, and applies a synthetic <code>WorldDelta</code> (assert add/remove/move semantics). This can join the headless sweep.</li>
+<li>The composition/provider units are GL-free and unit-testable: a headless test that constructs a <code>LocalProvider</code> over a temp cache dir and asserts the <strong>two-run cache behavior</strong> — first <code>connect</code> bakes and <code>reconcile</code> wants every hash; a second <code>connect</code> against the same cache bakes nothing (<code>InstallResult.baked.empty()</code>) and <code>reconcile</code> returns an <strong>empty want-list</strong> (the "instant reload, nothing changed" path). It also builds <code>WorldState</code> and applies a synthetic <code>WorldDelta</code> (assert add/remove/move semantics). This joins the headless sweep.</li>
+<li><code>SectorLodResolver</code> is GL-free too: a headless test asserts that a far camera selects coarser LOD levels and deactivates distant sectors versus a near camera, over a fixed instance set.</li>
 <li>The renderer + <code>main</code> are GL and not in the headless sweep; verified by launching the viewer and confirming the world draws (the user launches GUI apps via <code>!</code> or their own terminal — the harness reaps backgrounded GUI children).</li>
 </ul>
 <hr />
@@ -177,8 +186,8 @@ Backs <code>connect()</code> with the <code>example_world</code> pipeline output
 <p>These are the drop-in points the architecture preserves but does not build in the minimal viewer:</p>
 <ul>
 <li><strong>Network <code>WorldProvider</code> drop-in (SP-8 / SP-9).</strong> A <code>NetworkProvider</code> implementing the same <code>WorldProvider</code> interface over a socket: <code>connect()</code> opens the session and streams the server's manifest; <code>reconcile()</code> runs the hash have/want diff client-side; <code>fetch_parts()</code> requests only missing <code>.part</code> blobs from the server (content-addressed dedup); <code>poll_deltas()</code> receives server-broadcast world deltas. <strong>No renderer, composer, or part_store changes</strong> — <code>main</code> selects <code>LocalProvider</code> (single-player / embedded server) vs <code>NetworkProvider</code> (connect to dedicated server) at startup. This is the primary growth seam.</li>
-<li><strong><code>SectorLodResolver</code> drop-in.</strong> Replace <code>PassThroughResolver</code> with the sector-LOD pipeline (<code>bin_instances</code> → <code>select_sector_lods</code>, distance-sphere activation, merged far-proxy) behind the unchanged <code>SectorResolver</code> interface.</li>
-<li><strong>Live edit / hot-reload (SP-5).</strong> The <code>poll_deltas</code> channel already carries instance changes; a future provider can also signal part-hash re-bakes so the <code>PartStore</code> reloads a changed BLAS and the world refreshes without restart.</li>
+<li><strong>Merged far-proxy.</strong> <code>SectorLodResolver</code> ships with binning + per-sector LOD-select + distance-sphere activation (in scope); collapsing far sectors into a single merged proxy mesh is the remaining optimization from the sector-LOD spec, left to backlog behind the unchanged <code>SectorResolver</code> interface.</li>
+<li><strong>Live edit / hot-reload (SP-5).</strong> The <code>poll_deltas</code> channel already carries instance changes; a future provider can also signal part-hash re-bakes so the <code>PartStore</code> reloads a changed BLAS and the world refreshes without restart — the incremental-rebake counterpart to the bake-once cache.</li>
 <li><strong>Materials / lighting / temporal rendering.</strong> The viewer binds whatever the MSL shader supports today; the temporal-rendering-foundation work is orthogonal and plugs into the renderer later.</li>
 </ul>
 <hr />
@@ -186,12 +195,14 @@ Backs <code>connect()</code> with the <code>example_world</code> pipeline output
 <p><strong>Goals</strong>
 - One GL window rendering the committed example world via MSL's raytraced TLAS/BLAS path.
 - Free-fly camera.
-- The <code>WorldProvider</code> + <code>PartStore</code> + <code>SectorResolver</code> boundaries, with <code>LocalProvider</code> + <code>PassThroughResolver</code> as the minimal concrete impls.
-- A Dear ImGui debug/HUD overlay (stats + camera/provider state + reload button), wired as the seam for future in-engine tools.
-- A headless unit test for the GL-free provider/composer logic.</p>
+- The <code>WorldProvider</code> + <code>PartStore</code> + <code>SectorResolver</code> boundaries, with <code>LocalProvider</code> plus <strong>both</strong> <code>PassThroughResolver</code> and <code>SectorLodResolver</code> as concrete impls.
+- A <strong>persistent content-addressed cache</strong>: build the world once, and on a subsequent run with nothing changed reload immediately (no rebake) via hash reconciliation.
+- Live sector-LOD: <code>bin_instances</code> + <code>select_sector_lods</code> + distance-sphere activation, exercising the baked LOD levels at render time.
+- A Dear ImGui debug/HUD overlay (stats + cache hit/bake counts + a live resolver <code>PassThrough</code>/<code>SectorLod</code> toggle + reload button), wired as the seam for future in-engine tools.
+- A headless unit test for the GL-free provider/composer/resolver logic, including the two-run cache-hit path.</p>
 <p><strong>Non-goals (deferred)</strong>
 - Networking (interface is ready; <code>NetworkProvider</code> is backlog).
-- Sector-LOD activation / far-proxy (interface is ready; <code>SectorLodResolver</code> is backlog).
-- Live editing and in-world part placement (the ImGui panel is the seam, but editing tools are backlog).
+- Merged far-proxy (sector binning + LOD-select + activation are in scope; the far-sector merge is backlog).
+- Live editing / hot-reload and in-world part placement (the ImGui panel and <code>poll_deltas</code> channel are the seams, but editing tools are backlog).
 - Any modification to MatterSurfaceLib.</p>
 </div></body></html>
