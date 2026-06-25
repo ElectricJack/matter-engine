@@ -159,11 +159,52 @@ static void test_no_field_interaction() {
     (void)brush_center;
 }
 
+static void test_variation_dedup() {
+    // A child part's source bytes (opaque) + variation params (opaque) fold into
+    // a resolved hash. Same variation params N times -> same hash (one artifact),
+    // N child-instance records. Different params -> distinct hash.
+    tri_emit::VariationRecorder rec;
+    const char* child_src = "class Rock extends Part {}";
+
+    // variation A applied to 3 instances at different transforms
+    const unsigned char paramsA[] = { 's','e','e','d','=','1' };
+    mat4 x1 = mat4::Translate(make_float3(1,0,0));
+    mat4 x2 = mat4::Translate(make_float3(2,0,0));
+    mat4 x3 = mat4::Translate(make_float3(3,0,0));
+    uint64_t hA1 = rec.instance(child_src, 26, paramsA, sizeof(paramsA), x1);
+    uint64_t hA2 = rec.instance(child_src, 26, paramsA, sizeof(paramsA), x2);
+    uint64_t hA3 = rec.instance(child_src, 26, paramsA, sizeof(paramsA), x3);
+    CHECK(hA1 == hA2 && hA2 == hA3, "same variation params -> same resolved hash");
+
+    // variation B: different params -> distinct artifact
+    const unsigned char paramsB[] = { 's','e','e','d','=','2' };
+    uint64_t hB = rec.instance(child_src, 26, paramsB, sizeof(paramsB), x1);
+    CHECK(hB != hA1, "different variation params -> distinct resolved hash");
+
+    // child-instance table: 4 records, transforms preserved, hashes correct
+    const std::vector<tri_emit::ChildInstance>& kids = rec.children();
+    CHECK(kids.size() == 4, "one child-instance record per instance() call");
+    CHECK(kids[0].child_resolved_hash == hA1, "record 0 carries variation-A hash");
+    CHECK(kids[3].child_resolved_hash == hB,  "record 3 carries variation-B hash");
+    CHECK(fabsf(kids[1].transform[3] - 2.0f) < 1e-6f, "record 1 transform tx=2 (row-major [3])");
+
+    // distinct cached artifacts = distinct hashes among the records
+    int distinct = 0;
+    uint64_t seen[8]; int ns = 0;
+    for (const tri_emit::ChildInstance& c : kids) {
+        bool found = false;
+        for (int i = 0; i < ns; ++i) if (seen[i] == c.child_resolved_hash) found = true;
+        if (!found) { seen[ns++] = c.child_resolved_hash; ++distinct; }
+    }
+    CHECK(distinct == 2, "3x variation A + 1x variation B -> 2 distinct artifacts");
+}
+
 int main() {
     test_triangle_emission();
     test_one_blas_merge();
     test_skinned_line();
     test_no_field_interaction();
+    test_variation_dedup();
     if (failures == 0) printf("All triangle_variation tests passed\n");
     return failures == 0 ? 0 : 1;
 }
