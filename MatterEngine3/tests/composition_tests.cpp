@@ -1,7 +1,9 @@
 // SP-4 Composition-to-world tests: LOD bake, world flatten, sector grid, LOD select.
 // Harness convention mirrors MatterSurfaceLib/tests/part_asset_tests.cpp.
 #include "../include/lod_bake.h"
+#include "../include/part_asset_v2.h"
 #include "../../MatterSurfaceLib/include/blas_manager.hpp"
+#include "../../MatterSurfaceLib/include/tlas_manager.hpp"
 #include <cstdio>
 #include <cstdint>
 #include <vector>
@@ -56,9 +58,43 @@ static void test_bake_three_levels() {
     CHECK(lods[1].screen_size_threshold > lods[2].screen_size_threshold, "thr1 > thr2");
 }
 
+static void test_lod_roundtrip_v2() {
+    std::vector<Tri> tris = grid_tris(32);
+    BLASManager blas; TLASManager tlas(64);
+    lod_bake::LodLevels lods = lod_bake::bake_lods(tris, lod_bake::BakeTargets{}, blas);
+    const char* path = "/tmp/sp4_lod_roundtrip.part";
+    uint64_t rh = 0xABCDEF1234567890ull;
+    bool saved = part_asset::save_v2(path, blas, tlas, nullptr, 0, lods, rh);
+    CHECK(saved, "save_v2 ok");
+    BLASManager blas2; TLASManager tlas2(64);
+    std::vector<part_asset::ChildInstance> children_out;
+    part_asset::LodLevels lods_out;
+    bool loaded = part_asset::load_v2(path, rh, blas2, tlas2, children_out, lods_out);
+    CHECK(loaded, "load_v2 ok");
+    CHECK(lods_out.size() == lods.size(), "lod level count round-trips");
+    for (size_t i = 0; i < lods.size(); ++i) {
+        CHECK(lods_out[i].screen_size_threshold == lods[i].screen_size_threshold, "threshold round-trips");
+        // SP-4 aliases SP-1's LodLevel directly: both use blas_indices.
+        CHECK(lods_out[i].blas_indices == lods[i].blas_indices, "blas indices round-trip");
+    }
+}
+
+static void test_lod_roundtrip_degenerate() {
+    BLASManager blas; TLASManager tlas(8);
+    const char* path = "/tmp/sp4_lod_empty.part";
+    part_asset::LodLevels empty;
+    CHECK(part_asset::save_v2(path, blas, tlas, nullptr, 0, empty, 7), "save empty lods");
+    BLASManager b2; TLASManager t2(8);
+    std::vector<part_asset::ChildInstance> c; part_asset::LodLevels out;
+    CHECK(part_asset::load_v2(path, 7, b2, t2, c, out), "load empty lods");
+    CHECK(out.empty(), "empty lods round-trip");
+}
+
 int main() {
     test_decimate_one_level();
     test_bake_three_levels();
+    test_lod_roundtrip_v2();
+    test_lod_roundtrip_degenerate();
     printf(failures ? "FAILED (%d)\n" : "OK\n", failures);
     return failures ? 1 : 0;
 }
