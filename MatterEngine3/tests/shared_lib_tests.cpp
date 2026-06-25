@@ -171,12 +171,58 @@ static void test_ordering_stability() {
           "specifiers sorted lexicographically (aaa before bbb)");
 }
 
+// ---- Task 6: C++ reference xoshiro128** to pin rng.js outputs --------------
+struct RefRng {
+    uint32_t s[4];
+    static uint32_t rotl(uint32_t x, int k){ return (x << k) | (x >> (32 - k)); }
+    explicit RefRng(uint32_t seed){
+        uint32_t z = seed;
+        for (int i = 0; i < 4; ++i) {
+            z += 0x9e3779b9u;
+            uint32_t w = z;
+            w = (w ^ (w >> 16)) * 0x21f0aaadu;
+            w = (w ^ (w >> 15)) * 0x735a2d97u;
+            s[i] = w ^ (w >> 15);
+        }
+    }
+    uint32_t next(){
+        uint32_t result = rotl(s[1] * 5u, 7) * 9u;
+        uint32_t t = s[1] << 9;
+        s[2] ^= s[0]; s[3] ^= s[1]; s[1] ^= s[2]; s[0] ^= s[3]; s[2] ^= t;
+        s[3] = rotl(s[3], 11);
+        return result;
+    }
+};
+
+static void test_rng_reference_stream() {
+    // Same seed -> identical stream; different seed -> different stream; no entropy.
+    RefRng a(12345u), a2(12345u);
+    for (int i = 0; i < 8; ++i) {
+        uint32_t x = a.next(), y = a2.next();
+        CHECK(x == y, "same seed yields identical stream value");
+    }
+    RefRng c(12345u), d(999u);
+    bool any_diff = false;
+    for (int i = 0; i < 8; ++i) if (c.next() != d.next()) any_diff = true;
+    CHECK(any_diff, "different seed yields a different stream");
+    // Pin a few exact values so rng.js can be verified against them. Sequence the
+    // calls explicitly: printf argument evaluation order is unspecified in C++.
+    RefRng e(42u);
+    uint32_t e0 = e.next(), e1 = e.next(), e2 = e.next(), e3 = e.next();
+    printf("INFO: xoshiro128** seed=42 first4: %u %u %u %u\n", e0, e1, e2, e3);
+    // Cross-checked against shared-lib/rng.js via node: 660444221 3652823732
+    // 77672526 910233633 (same stream, bit-for-bit).
+    CHECK(e0 == 660444221u && e1 == 3652823732u && e2 == 77672526u && e3 == 910233633u,
+          "rng.js xoshiro128** seed=42 stream pinned (matches node cross-check)");
+}
+
 int main() {
     test_parse_imports();
     test_resolve_specifier();
     test_fold_transitive_and_canonical();
     test_fold_changes_resolved_hash();
     test_ordering_stability();
+    test_rng_reference_stream();
     if (failures == 0) printf("All shared_lib tests passed\n");
     return failures == 0 ? 0 : 1;
 }
