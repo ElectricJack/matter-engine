@@ -3,6 +3,7 @@
 #include "../include/lod_bake.h"
 #include "../include/world_flatten.h"
 #include "../include/sector_grid.h"
+#include "../include/lod_select.h"
 #include "../include/part_asset_v2.h"
 #include "../../MatterSurfaceLib/include/blas_manager.hpp"
 #include "../../MatterSurfaceLib/include/tlas_manager.hpp"
@@ -183,6 +184,37 @@ static void test_bin_instances() {
     CHECK(s[k0].size() == 2, "two instances in sector (0,0,0)");
 }
 
+static void test_lod_selection_and_escalation() {
+    using namespace lod_select;
+    std::vector<float> thresholds = {0.20f, 0.05f, 0.0125f};
+    float r = 1.0f; float3 c = make_float3(0,0,0);
+
+    int far_lvl = select_level(projected_size(c, r, make_float3(0,0,100)), thresholds);
+    CHECK(far_lvl == 2, "far camera -> coarsest level 2");
+    int mid_lvl = select_level(projected_size(c, r, make_float3(0,0,10)), thresholds);
+    CHECK(mid_lvl == 1, "mid camera -> level 1");
+    int near_lvl = select_level(projected_size(c, r, make_float3(0,0,2)), thresholds);
+    CHECK(near_lvl == 0, "near camera -> finest level 0");
+    CHECK(near_lvl <= mid_lvl && mid_lvl <= far_lvl, "moving closer escalates (lower index)");
+}
+
+static void test_sector_uses_closest_instance() {
+    using namespace lod_select;
+    using namespace sector_grid;
+    using world_flatten::FlatInstance;
+    std::vector<FlatInstance> flat(2);
+    flat[0].resolved_hash=1; flat[0].world = mat4::Translate(make_float3(0,0,0));   // closest to z=3 cam
+    flat[1].resolved_hash=1; flat[1].world = mat4::Translate(make_float3(0,0,8));
+    SectorGrid grid(100.0f);                 // both land in sector (0,0,0)
+    Sectors sec = bin_instances(flat, grid);
+    PartLodTable parts;
+    parts[1] = PartLod{ /*radius=*/1.0f, /*thresholds=*/{0.20f,0.05f,0.0125f} };
+    float3 cam = make_float3(0,0,3);
+    auto chosen = select_sector_lods(sec, parts, cam);
+    SectorCoord k{0,0,0};
+    CHECK(chosen[k].at(1) == 0, "sector LOD for part 1 driven by closest instance -> level 0");
+}
+
 int main() {
     test_decimate_one_level();
     test_bake_three_levels();
@@ -194,6 +226,8 @@ int main() {
     test_budget_guard();
     test_sector_binning();
     test_bin_instances();
+    test_lod_selection_and_escalation();
+    test_sector_uses_closest_instance();
     printf(failures ? "FAILED (%d)\n" : "OK\n", failures);
     return failures ? 1 : 0;
 }
