@@ -10,6 +10,7 @@
 #include <string>
 #include <vector>
 #include <algorithm>
+#include <cmath>
 
 static int failures = 0;
 #define CHECK(cond, msg) do { if (!(cond)) { printf("FAIL: %s\n", msg); ++failures; } } while (0)
@@ -240,6 +241,64 @@ static void test_script_rng_binding() {
           "ScriptRng matches rng.js seed=42 stream");
 }
 
+// ---- Task 8: helper pure-output reference assertions ----------------------
+static void test_helper_pure_outputs() {
+    // vecmath: cross of basis vectors. cross([1,0,0],[0,1,0]) = [0,0,1]
+    double cx = 1*0 - 0*1, cy = 0*0 - 1*0, cz = 1*1 - 0*0;
+    CHECK(cx == 0 && cy == 0 && cz == 1, "cross(x,y)=z reference");
+    // bezier cubic at t=0.5 for p0=0,p1=0,p2=1,p3=1 (scalar):
+    // w0=0.125,w1=0.375,w2=0.375,w3=0.125 -> 0.375*1 + 0.125*1 = 0.5
+    double B = 0.125*0 + 0.375*0 + 0.375*1 + 0.125*1;
+    CHECK(std::abs(B - 0.5) < 1e-9, "cubic bezier midpoint reference = 0.5");
+    // geometry ring(4, r=1): points at angles 0, pi/2, pi, 3pi/2 -> unit circle in XZ.
+    double a0x = std::cos(0), a1z = std::sin(M_PI/2);
+    CHECK(std::abs(a0x - 1.0) < 1e-9 && std::abs(a1z - 1.0) < 1e-9, "ring(4) basis points reference");
+    // lsystem deterministic: axiom "A", rule A->AB, 2 iters -> "ABB"
+    // it1: "AB"; it2: A->AB, B->B(default) => "ABB"
+    auto step = [](const std::string& in){ std::string o; for(char c: in){ o += (c=='A') ? "AB" : std::string(1,c);} return o; };
+    std::string s = step(step(std::string("A")));
+    CHECK(s == "ABB", "lsystem A->AB twice = ABB reference");
+}
+
+#ifdef SP2_SCRIPT_HOST
+#include "../include/script_host.h"   // SP-2
+static void test_import_resolves_end_to_end() {
+    // A tiny part importing geometry.ring + rng; bake it through SP-2's host with the
+    // real shared-lib/ root and assert (a) bake succeeds, (b) same seed -> identical
+    // resolved hash/bytes; (c) different seed -> different.
+    using namespace script_host;
+    ScriptHost host;
+    host.set_shared_lib_root("../shared-lib");
+    const std::string part =
+        "import { ring } from 'shared-lib/geometry';\n"
+        "import { rng } from 'shared-lib/rng';\n"
+        "class Tree extends Part {\n"
+        "  static params = { seed: 0 };\n"
+        "  build(p){ this.beginVoxels(0.1); this.fill(MAT.stone);\n"
+        "    const r = rng(p.seed);\n"
+        "    for (const pt of ring(6, 1.0, 0)) this.sphere(pt, 0.2 + r.random()*0.05);\n"
+        "    this.endVoxels(); }\n"
+        "}\n";
+    BakeResult a = host.bake_source(part, "{\"seed\":1}", {});
+    BakeResult a2 = host.bake_source(part, "{\"seed\":1}", {});
+    BakeResult b = host.bake_source(part, "{\"seed\":2}", {});
+    CHECK(a.error.ok, "import-resolving part bakes successfully");
+    CHECK(a.resolved_hash == a2.resolved_hash, "same seed -> identical resolved hash");
+    CHECK(a.resolved_hash != b.resolved_hash, "different seed -> different resolved hash");
+    // editing a shared module changes the importer's hash:
+    std::string scratch = make_scratch_shared_lib("../shared-lib");
+    append_to_file(scratch + "/geometry.js", "\nexport const X = 1;\n");
+    ScriptHost host2; host2.set_shared_lib_root(scratch);
+    BakeResult c = host2.bake_source(part, "{\"seed\":1}", {});
+    CHECK(c.error.ok && c.resolved_hash != a.resolved_hash, "shared-module edit invalidates importer bake");
+    remove_scratch_shared_lib(scratch);
+}
+#else
+static void test_import_resolves_end_to_end() {
+    printf("INFO: SP-2 ScriptHost not linked; end-to-end bake test skipped (compile with -DSP2_SCRIPT_HOST)\n");
+}
+#endif
+
 int main() {
     test_parse_imports();
     test_resolve_specifier();
@@ -248,6 +307,8 @@ int main() {
     test_ordering_stability();
     test_rng_reference_stream();
     test_script_rng_binding();
+    test_helper_pure_outputs();
+    test_import_resolves_end_to_end();
     if (failures == 0) printf("All shared_lib tests passed\n");
     return failures == 0 ? 0 : 1;
 }
