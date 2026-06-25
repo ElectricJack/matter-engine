@@ -25,8 +25,29 @@ static void test_parse_imports() {
     CHECK(specs.size() == 3 && specs[2] == "shared-lib/vecmath.js", "specifier 2 keeps .js as written");
 }
 
+// ---- Task 2: specifier resolution -----------------------------------------
+static void test_resolve_specifier() {
+    const std::string root = "shared-lib-fixtures";
+    std::string path, err;
+    CHECK(module_resolver::resolve_specifier("shared-lib/aaa", root, path, err),
+          "resolve shared-lib/aaa");
+    CHECK(path == "shared-lib-fixtures/aaa.js", "aaa resolves to aaa.js under root");
+    CHECK(module_resolver::resolve_specifier("shared-lib/bbb.js", root, path, err),
+          "trailing .js accepted");
+    CHECK(path == "shared-lib-fixtures/bbb.js", "bbb.js resolves to bbb.js");
+    // missing file -> fail closed
+    CHECK(!module_resolver::resolve_specifier("shared-lib/nope", root, path, err),
+          "missing module fails closed");
+    // non-shared-lib specifier rejected
+    CHECK(!module_resolver::resolve_specifier("./relative", root, path, err),
+          "relative specifier rejected");
+    CHECK(!module_resolver::resolve_specifier("shared-lib/../escape", root, path, err),
+          "path traversal rejected");
+}
+
 int main() {
     test_parse_imports();
+    test_resolve_specifier();
     if (failures == 0) printf("All shared_lib tests passed\n");
     return failures == 0 ? 0 : 1;
 }

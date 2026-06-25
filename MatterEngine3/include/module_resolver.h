@@ -14,4 +14,11 @@ namespace module_resolver {
 // ignored. Only single/double-quoted `from '<spec>'` forms are matched.
 std::vector<std::string> parse_import_specifiers(const std::string& source);
 
+// Maps a bare "shared-lib/<name>" specifier to "<root>/<name>.js". A trailing
+// ".js" in the specifier is accepted and not doubled. Returns false (fail-closed,
+// with err set) for: non-"shared-lib/" specifiers, names containing "/" or "..",
+// or a resolved path that does not exist as a readable file.
+bool resolve_specifier(const std::string& specifier, const std::string& shared_lib_root,
+                       std::string& out_path, std::string& err);
+
 } // namespace module_resolver

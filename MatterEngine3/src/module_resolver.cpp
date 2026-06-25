@@ -1,5 +1,6 @@
 #include "../include/module_resolver.h"
 #include <cctype>
+#include <fstream>
 
 namespace module_resolver {
 
@@ -96,6 +97,23 @@ std::vector<std::string> parse_import_specifiers(const std::string& source) {
         i = e + 1;
     }
     return out;
+}
+
+bool resolve_specifier(const std::string& specifier, const std::string& shared_lib_root,
+                       std::string& out_path, std::string& err) {
+    const std::string prefix = "shared-lib/";
+    if (specifier.rfind(prefix, 0) != 0) { err = "specifier not under shared-lib/: " + specifier; return false; }
+    std::string name = specifier.substr(prefix.size());
+    if (name.empty() || name.find('/') != std::string::npos || name.find("..") != std::string::npos) {
+        err = "illegal module name: " + name; return false;
+    }
+    if (name.size() >= 3 && name.compare(name.size() - 3, 3, ".js") == 0)
+        name.resize(name.size() - 3);
+    std::string path = shared_lib_root + "/" + name + ".js";
+    std::ifstream f(path, std::ios::binary);
+    if (!f.good()) { err = "module not found: " + path; return false; }
+    out_path = path;
+    return true;
 }
 
 } // namespace module_resolver
