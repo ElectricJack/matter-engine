@@ -293,6 +293,34 @@ int main() {
         CHECK(!root_baked, "parent is not baked after child bake failure");
     }
 
+    // Task 11: world manifest root discovery.
+    {
+        // Write a temp world tree and parse the manifest.
+        std::string dir = "/tmp/pg_world_test";
+        std::string wdir = dir + "/WorldData/w1";
+        system(("rm -rf " + dir + " && mkdir -p " + wdir).c_str());
+        {
+            FILE* f = fopen((wdir + "/world.manifest").c_str(), "w");
+            fputs("# roots for w1\nTower\n\nBridge\n", f);
+            fclose(f);
+        }
+        std::vector<ChildRequest> roots;
+        std::string err;
+        bool ok = PartGraph::read_manifest(dir + "/WorldData", "w1", roots, err);
+        CHECK(ok, "manifest parse succeeds");
+        CHECK(roots.size() == 2, "manifest yields 2 roots (comments/blank lines ignored)");
+        CHECK(roots[0].module == "Tower" && roots[1].module == "Bridge",
+              "roots parsed in order");
+
+        // Missing manifest => hard error.
+        std::vector<ChildRequest> none;
+        std::string err2;
+        bool ok2 = PartGraph::read_manifest(dir + "/WorldData", "does_not_exist", none, err2);
+        CHECK(!ok2, "missing manifest is a hard error");
+        CHECK(!err2.empty(), "missing manifest reports an error message");
+        system(("rm -rf " + dir).c_str());
+    }
+
     if (failures == 0) printf("All part_graph tests passed\n");
     return failures == 0 ? 0 : 1;
 }

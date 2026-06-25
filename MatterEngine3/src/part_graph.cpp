@@ -2,8 +2,10 @@
 #include "part_asset_v2.h"   // SP-1 (MatterEngine3, via -I../include): compute_resolved_hash,
                             //   cache_path_resolved; pulls in v1 part_asset.h for fnv1a64
 #include <cstdio>
+#include <fstream>
 #include <functional>
 #include <set>
+#include <sstream>
 #include <unordered_map>
 #include <vector>
 
@@ -163,6 +165,27 @@ InstallResult PartGraph::install(const std::vector<ChildRequest>& roots) {
     }
     result.ok = true;
     return result;
+}
+
+bool PartGraph::read_manifest(const std::string& world_data_dir, const std::string& world,
+                              std::vector<ChildRequest>& roots_out, std::string& error_out) {
+    std::string path = world_data_dir + "/" + world + "/world.manifest";
+    std::ifstream in(path);
+    if (!in) {
+        error_out = "world manifest not found: " + path;
+        return false;
+    }
+    std::string line;
+    while (std::getline(in, line)) {
+        // trim leading/trailing whitespace
+        size_t b = line.find_first_not_of(" \t\r\n");
+        if (b == std::string::npos) continue;        // blank
+        size_t e = line.find_last_not_of(" \t\r\n");
+        std::string name = line.substr(b, e - b + 1);
+        if (name.empty() || name[0] == '#') continue; // comment
+        roots_out.push_back(ChildRequest{ name, Params{} });
+    }
+    return true;
 }
 
 } // namespace part_graph
