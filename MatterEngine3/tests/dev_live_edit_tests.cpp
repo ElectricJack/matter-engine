@@ -232,6 +232,31 @@ static void test_fail_closed_then_retry() {
     CHECK(f.roots.size() == 1 && f.roots[0] == "root", "retry re-flattens affected root");
 }
 
+// Asserts it received the configured budget; fails with BudgetExceeded.
+struct BudgetBaker : Baker {
+    long long seen_budget = -999;
+    BakeOutcome bake(const PartId& p, const ResolvedHash&, long long budget_ms) override {
+        seen_budget = budget_ms;
+        return {false, LiveEditError{LiveEditError::Cause::BudgetExceeded, p, "budget exceeded", ""}};
+    }
+};
+
+static void test_budget_abort_fail_closed() {
+    std::printf("[test_budget_abort_fail_closed]\n");
+    FakeGraph g;
+    g.file_to_parts["/w/leaf.js"] = {"leaf"};
+    g.parents["leaf"] = {"root"}; g.roots["leaf"] = {"root"};
+    FakeWatcher w; BudgetBaker b; RecFlattener f; RecSink s;
+    LiveEditSession sess(w, g, b, f, s, LiveEditConfig{150, /*budget*/750});
+    w.set_now_ms(1000); w.push("/w/leaf.js"); w.advance_ms(200);
+    auto r = sess.tick();
+    CHECK(b.seen_budget == 750, "dev budget forwarded to baker");
+    CHECK(!r.succeeded, "budget-exceeded rebuild fails closed");
+    CHECK(r.errors.size() == 1 && r.errors[0].cause == LiveEditError::Cause::BudgetExceeded,
+          "structured BudgetExceeded error surfaced");
+    CHECK(f.roots.empty(), "no re-flatten -> last-good world kept");
+}
+
 int main() {
     std::printf("=== dev_live_edit_tests ===\n");
     test_fake_watcher_roundtrip();
@@ -241,6 +266,7 @@ int main() {
     test_scope_single_part_and_topo();
     test_shared_module_fanout_rebake();
     test_fail_closed_then_retry();
+    test_budget_abort_fail_closed();
     if (g_failures) { std::printf("\n%d FAILURES\n", g_failures); return 1; }
     std::printf("\nALL PASS\n");
     return 0;
