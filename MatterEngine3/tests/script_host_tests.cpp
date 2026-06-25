@@ -214,6 +214,35 @@ static void test_bake_writes_part() {
     CHECK(file_exists(r.written_path), "the .part file exists on disk");
 }
 
+static void test_sharp_vs_smooth_seam() {
+    dsl::DslState sharp; sharp.beginVoxels(0.1f); sharp.fill(0);
+    sharp.sphere({0,0,0},1.0f,dsl::CsgOp::Union);
+    sharp.sphere({1,0,0},1.0f,dsl::CsgOp::Union);
+    sharp.smoothing(0.0f); sharp.endVoxels();
+    dsl::LoweredField fs = dsl::lower_build_buffer(sharp.buffer());
+    CHECK(fs.smoothing == 0.0f, "k=0 lowers to hard min (sharp seam)");
+
+    dsl::DslState smooth; smooth.beginVoxels(0.1f); smooth.fill(0);
+    smooth.sphere({0,0,0},1.0f,dsl::CsgOp::Union);
+    smooth.sphere({1,0,0},1.0f,dsl::CsgOp::Union);
+    smooth.smoothing(0.8f); smooth.endVoxels();
+    dsl::LoweredField fm = dsl::lower_build_buffer(smooth.buffer());
+    CHECK(fm.smoothing > 0.5f, "high k lowers to a large smooth-min factor (merged)");
+    CHECK(fm.smoothing > fs.smoothing, "smooth seam has strictly larger blend factor than sharp");
+}
+
+static void test_sub_min_box_feature_survives() {
+    dsl::DslState s; s.beginVoxels(0.5f); s.fill(0);   // min particle ~0.5
+    s.sphere({0,0,0}, 1.0f, dsl::CsgOp::Union);
+    s.box({1,0,0}, {0.05f,0.05f,0.05f}, dsl::CsgOp::Difference); // 0.1 box << 0.5 min
+    s.endVoxels();
+    s.set_last_op(dsl::CsgOp::Difference);
+    dsl::LoweredField f = dsl::lower_build_buffer(s.buffer());
+    CHECK(!f.carve.empty(), "sub-min box carves at least one carve particle");
+    // the analytic field still shows the crisp removal at the box location
+    CHECK(!dsl::field_is_solid(s.buffer(), {1.0f,0,0}), "sub-min feature present in field");
+}
+
 int main() {
     test_embed_eval_1_plus_1();
     test_fresh_context_runs_empty_class();
@@ -225,6 +254,8 @@ int main() {
     test_csg_lowering();
     test_voxel_primitive_occupancy();
     test_bake_writes_part();
+    test_sharp_vs_smooth_seam();
+    test_sub_min_box_feature_survives();
     if (failures == 0) printf("ALL PASS\n");
     return failures ? 1 : 0;
 }

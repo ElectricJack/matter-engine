@@ -27,9 +27,16 @@ void DslState::applyMatrix(const float m[16]) {
 void DslState::beginVoxels(float spacing) {
     if (session_ != Session::None) { set_error("beginVoxels inside an open session"); return; }
     session_ = Session::Voxels; spacing_ = (spacing > 0 ? spacing : 0.1f);
+    session_start_ = buffer_.ops.size();
 }
 void DslState::endVoxels() {
     if (session_ != Session::Voxels) { set_error("endVoxels with no open voxel session"); return; }
+    // Whole-expression smoothing: the spec applies smoothing(k) to the whole
+    // session's union, not just the brush emitted while the cursor was set. Stamp
+    // the final cursor onto every op emitted in this session so smoothing(k)
+    // called anywhere in the build (incl. after the brushes) takes effect.
+    for (size_t i = session_start_; i < buffer_.ops.size(); ++i)
+        buffer_.ops[i].smoothing = smoothing_;
     session_ = Session::None;
 }
 

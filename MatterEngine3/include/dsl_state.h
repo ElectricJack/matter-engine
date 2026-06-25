@@ -81,6 +81,7 @@ private:
     Session  session_ = Session::None;
     float    spacing_ = 0.1f;
     float    smoothing_ = 0.0f;
+    size_t   session_start_ = 0;  // index into buffer_.ops where the open session began
     BuildBuffer buffer_;
     bool        has_error_ = false;
     std::string error_;
