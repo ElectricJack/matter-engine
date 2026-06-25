@@ -165,6 +165,46 @@ int main() {
         CHECK(order_ok, "children baked before their parents (topo order)");
     }
 
+    // Task 7: dedup (same params collapse; different params split).
+    {
+        // Two parents instantiate child "Bolt" with IDENTICAL params -> ONE artifact.
+        FakeModuleResolver res;
+        res.modules["Bolt"] = FakeModule{ "src-Bolt", nullptr, false };
+        auto mk = [](){ Params p; p["len"] = ParamValue::number(2.0); return p; };
+        res.modules["P1"] = FakeModule{ "src-P1",
+            [mk](const Params&){ return std::vector<ChildRequest>{ ChildRequest{"Bolt", mk()} }; }, false };
+        res.modules["P2"] = FakeModule{ "src-P2",
+            [mk](const Params&){ return std::vector<ChildRequest>{ ChildRequest{"Bolt", mk()} }; }, false };
+        res.modules["Root"] = FakeModule{ "src-Root",
+            [](const Params&){ return std::vector<ChildRequest>{
+                ChildRequest{"P1", Params{}}, ChildRequest{"P2", Params{}} }; }, false };
+
+        FakeBaker baker;
+        PartGraph g(res, baker);
+        InstallResult r = g.install({ ChildRequest{"Root", Params{}} });
+        CHECK(r.ok, "dedup-same install ok");
+        // Root, P1, P2, Bolt -> 4 unique artifacts (Bolt shared once).
+        CHECK(r.baked.size() == 4, "identical-params child collapses to one artifact");
+    }
+    {
+        // Same child module, DIFFERENT params -> TWO artifacts.
+        FakeModuleResolver res;
+        res.modules["Bolt"] = FakeModule{ "src-Bolt", nullptr, false };
+        res.modules["Root"] = FakeModule{ "src-Root",
+            [](const Params&){
+                Params a; a["len"] = ParamValue::number(2.0);
+                Params b; b["len"] = ParamValue::number(3.0);
+                return std::vector<ChildRequest>{
+                    ChildRequest{"Bolt", a}, ChildRequest{"Bolt", b} };
+            }, false };
+        FakeBaker baker;
+        PartGraph g(res, baker);
+        InstallResult r = g.install({ ChildRequest{"Root", Params{}} });
+        CHECK(r.ok, "dedup-diff install ok");
+        // Root + two distinct Bolt artifacts = 3.
+        CHECK(r.baked.size() == 3, "differing-params child produces two artifacts");
+    }
+
     if (failures == 0) printf("All part_graph tests passed\n");
     return failures == 0 ? 0 : 1;
 }
