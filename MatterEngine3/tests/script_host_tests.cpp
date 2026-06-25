@@ -4,6 +4,7 @@
 extern "C" {
 #include "quickjs.h"
 }
+#include "../include/script_host.h"
 
 static int failures = 0;
 #define CHECK(cond, msg) do { if (!(cond)) { printf("FAIL: %s\n", msg); ++failures; } } while (0)
@@ -23,8 +24,20 @@ static void test_embed_eval_1_plus_1() {
     JS_FreeRuntime(rt);
 }
 
+static void test_fresh_context_runs_empty_class() {
+    script_host::ScriptHost host;
+    const char* src =
+        "class Empty extends Part {\n"
+        "  static params = {};\n"
+        "  build(p) {}\n"
+        "}\n";
+    script_host::BakeResult r = host.bake_source(src, "{}", {});
+    CHECK(r.error.ok, "empty class bakes without error");
+}
+
 int main() {
     test_embed_eval_1_plus_1();
+    test_fresh_context_runs_empty_class();
     if (failures == 0) printf("ALL PASS\n");
     return failures ? 1 : 0;
 }

@@ -92,7 +92,7 @@ QJS_C    = $(QJS_DIR)/quickjs.c $(QJS_DIR)/libregexp.c \
 QJS_OBJ  = quickjs.o libregexp.o libunicode.o cutils.o xsum.o
 
 SCRIPT_TARGET = script_host_tests
-SCRIPT_CPP = script_host_tests.cpp
+SCRIPT_CPP = script_host_tests.cpp ../src/script_host.cpp
 SCRIPT_C   = ../../MatterSurfaceLib/src/material_registry.c
 
 $(SCRIPT_TARGET): $(SCRIPT_CPP) $(SCRIPT_C) $(QJS_C)
