@@ -306,6 +306,7 @@ VIEWER_LOGIC_CPP = viewer_logic_tests.cpp \
               ../viewer/resolvers.cpp \
               ../viewer/part_store.cpp \
               ../viewer/local_provider.cpp \
+              ../viewer/world_composer.cpp \
               $(VIEWER_PIPELINE_CPP)
 
 $(VIEWER_LOGIC_TARGET): $(VIEWER_LOGIC_CPP) $(EXAMPLE_C) $(QJS_C)

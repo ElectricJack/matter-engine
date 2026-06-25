@@ -4,6 +4,7 @@
 #include "../viewer/sector_resolver.h"
 #include "../viewer/part_store.h"
 #include "../viewer/local_provider.h"
+#include "../viewer/world_composer.h"
 #include "lod_select.h"   // PartLodTable, PartLod
 
 #include <cstdio>
@@ -130,11 +131,43 @@ static void test_local_provider_cache() {
     }
 }
 
+static void test_composer_counts() {
+    const std::string cache = "/tmp/me3_viewer_cache_test";  // reuse Task 4's warm cache
+    viewer::LocalProviderConfig cfg;
+    cfg.schemas_dir = "../examples/world_demo/schemas";
+    cfg.world_data_dir = "../examples/world_demo/WorldData";
+    cfg.world_name = "Demo";
+    cfg.shared_lib_dir = "../shared-lib";
+    cfg.cache_root = cache;
+
+    viewer::LocalProvider prov(cfg);
+    viewer::WorldManifest m; std::string err;
+    if (!prov.connect(m, err)) { CHECK(false, "composer test: connect"); return; }
+    viewer::PartStore store(cache);
+    auto want = prov.reconcile(m, store);
+    prov.fetch_parts(want, store, err);
+
+    viewer::WorldState state; state.reset(m);
+
+    viewer::WorldComposer composer(store, m.instances.size() + 16);
+    auto lods = store.part_lod_table();
+
+    viewer::PassThroughResolver pass;
+    int active_all = composer.compose(state, pass, lods, make_float3(0,0,0));
+    CHECK(active_all == (int)m.instances.size(), "passthrough composes every instance");
+
+    // Far camera with a small activation radius -> fewer active instances.
+    viewer::SectorLodResolver sec(16.0f, 32.0f);
+    int active_far = composer.compose(state, sec, lods, make_float3(1000,1000,1000));
+    CHECK(active_far < active_all, "sectorlod from far/small-radius composes fewer");
+}
+
 int main() {
     test_world_state_delta();
     test_resolvers();
     test_part_store_missing();
     test_local_provider_cache();
+    test_composer_counts();
     printf("\n%s\n", g_failures == 0 ? "viewer-logic OK" : "viewer-logic FAILED");
     return g_failures == 0 ? 0 : 1;
 }
