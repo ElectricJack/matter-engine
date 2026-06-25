@@ -2,6 +2,7 @@
 // Harness convention mirrors MatterSurfaceLib/tests/part_asset_tests.cpp.
 #include "../include/lod_bake.h"
 #include "../include/world_flatten.h"
+#include "../include/sector_grid.h"
 #include "../include/part_asset_v2.h"
 #include "../../MatterSurfaceLib/include/blas_manager.hpp"
 #include "../../MatterSurfaceLib/include/tlas_manager.hpp"
@@ -155,6 +156,33 @@ static void test_budget_guard() {
     CHECK(err.find("max_instances") != std::string::npos, "budget error message");
 }
 
+static void test_sector_binning() {
+    using namespace sector_grid;
+    SectorGrid grid(10.0f);     // 10-unit pitch, origin at 0
+    SectorCoord a = grid.sector_of(make_float3(5,5,5));
+    CHECK(a.x==0 && a.y==0 && a.z==0, "interior point sector (0,0,0)");
+    SectorCoord b = grid.sector_of(make_float3(15,5,-5));
+    CHECK(b.x==1 && b.y==0 && b.z==-1, "point sector (1,0,-1)");
+    SectorCoord c = grid.sector_of(make_float3(-1,0,0));
+    CHECK(c.x==-1, "negative coord uses floor not truncation");
+    SectorCoord bd = grid.sector_of(make_float3(10.0f,0,0));
+    CHECK(bd.x==1, "boundary point belongs to upper cell deterministically");
+}
+
+static void test_bin_instances() {
+    using namespace sector_grid;
+    using world_flatten::FlatInstance;
+    SectorGrid grid(10.0f);
+    std::vector<FlatInstance> flat(3);
+    flat[0].resolved_hash=1; flat[0].world = mat4::Translate(make_float3(1,1,1));
+    flat[1].resolved_hash=1; flat[1].world = mat4::Translate(make_float3(2,2,2));   // same sector as [0]
+    flat[2].resolved_hash=2; flat[2].world = mat4::Translate(make_float3(25,0,0));  // sector (2,0,0)
+    Sectors s = bin_instances(flat, grid);
+    CHECK(s.size() == 2, "two distinct occupied sectors");
+    SectorCoord k0{0,0,0};
+    CHECK(s[k0].size() == 2, "two instances in sector (0,0,0)");
+}
+
 int main() {
     test_decimate_one_level();
     test_bake_three_levels();
@@ -164,6 +192,8 @@ int main() {
     test_dedup_preserved();
     test_depth_guard();
     test_budget_guard();
+    test_sector_binning();
+    test_bin_instances();
     printf(failures ? "FAILED (%d)\n" : "OK\n", failures);
     return failures ? 1 : 0;
 }
