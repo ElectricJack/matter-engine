@@ -154,10 +154,83 @@ static void test_save_v2_header() {
     remove(path);
 }
 
+static void test_round_trip_full() {
+    using namespace part_asset;
+
+    // Source scene + children + LODs.
+    BLASManager blasA; TLASManager tlasA(64);
+    BLASHandle hA, hB; build_scene(blasA, tlasA, hA, hB);
+    auto kids = sample_children();
+    auto lods = sample_lods();
+
+    std::vector<Tri> triA; blasA.generate_triangle_data(triA);
+    std::vector<LegacyBVHNode> nodeA; blasA.generate_node_data(nodeA);
+    const auto recsA = tlasA.get_draw_records();
+
+    const char* path = "test_v2_round.part";
+    remove(path);
+    CHECK(save_v2(path, blasA, tlasA, kids.data(), kids.size(), lods, 0x55AA55AAu),
+          "round-trip save_v2 ok");
+
+    // Load into fresh state.
+    BLASManager blasB; TLASManager tlasB(64);
+    std::vector<ChildInstance> kidsOut;
+    LodLevels lodsOut;
+    bool ok = load_v2(path, 0x55AA55AAu, blasB, tlasB, kidsOut, lodsOut);
+    CHECK(ok, "round-trip load_v2 ok");
+
+    // BLAS CPU data byte-identical.
+    std::vector<Tri> triB; blasB.generate_triangle_data(triB);
+    std::vector<LegacyBVHNode> nodeB; blasB.generate_node_data(nodeB);
+    CHECK(triA.size() == triB.size() &&
+          memcmp(triA.data(), triB.data(), triA.size()*sizeof(Tri)) == 0,
+          "round-trip triangle bytes");
+    CHECK(nodeA.size() == nodeB.size() &&
+          memcmp(nodeA.data(), nodeB.data(), nodeA.size()*sizeof(LegacyBVHNode)) == 0,
+          "round-trip node bytes");
+
+    // Internal instances preserved.
+    const auto recsB = tlasB.get_draw_records();
+    CHECK(recsA.size() == recsB.size() && recsB.size() == 3, "round-trip instance count");
+    bool inst_ok = recsA.size() == recsB.size();
+    for (size_t i = 0; inst_ok && i < recsA.size(); ++i) {
+        if (recsA[i].material_id != recsB[i].material_id) inst_ok = false;
+        if (memcmp(recsA[i].transform.m, recsB[i].transform.m, 16*sizeof(float)) != 0) inst_ok = false;
+    }
+    CHECK(inst_ok, "round-trip instance material+transform");
+
+    // Child instances preserved exactly.
+    CHECK(kidsOut.size() == kids.size() && kidsOut.size() == 2, "round-trip child count");
+    bool kids_ok = kidsOut.size() == kids.size();
+    for (size_t i = 0; kids_ok && i < kids.size(); ++i) {
+        if (kidsOut[i].child_resolved_hash != kids[i].child_resolved_hash) kids_ok = false;
+        if (memcmp(kidsOut[i].transform, kids[i].transform, 16*sizeof(float)) != 0) kids_ok = false;
+    }
+    CHECK(kids_ok, "round-trip child hash+transform");
+
+    // LOD levels preserved exactly (order, threshold, index arrays).
+    CHECK(lodsOut.size() == lods.size() && lodsOut.size() == 2, "round-trip lod count");
+    bool lod_ok = lodsOut.size() == lods.size();
+    for (size_t i = 0; lod_ok && i < lods.size(); ++i) {
+        if (lodsOut[i].screen_size_threshold != lods[i].screen_size_threshold) lod_ok = false;
+        if (lodsOut[i].blas_indices != lods[i].blas_indices) lod_ok = false;
+    }
+    CHECK(lod_ok, "round-trip lod threshold+indices");
+
+    // Wrong expected resolved hash must be rejected.
+    BLASManager blasC; TLASManager tlasC(64);
+    std::vector<ChildInstance> kc; LodLevels lc;
+    CHECK(!load_v2(path, 0xDEADBEEFu, blasC, tlasC, kc, lc),
+          "load_v2 rejects wrong resolved hash");
+
+    remove(path);
+}
+
 int main() {
     test_cache_path_resolved();
     test_resolved_hash();
     test_save_v2_header();
+    test_round_trip_full();
     if (failures == 0) printf("All part_asset_v2 tests passed\n");
     return failures == 0 ? 0 : 1;
 }
