@@ -118,12 +118,52 @@ static void test_flatten_n_times_m() {
     CHECK(found, "composed translate (100,20,0) present");
 }
 
+static void test_dedup_preserved() {
+    using namespace world_flatten;
+    PartGraph g; ChildInstance c; c.child_resolved_hash = 9;
+    for (int i = 0; i < 5; ++i) { set_translate(c.transform,(float)i,0,0); g[1].push_back(c); }
+    g[9];   // leaf
+    FlattenLimits lim; std::vector<FlatInstance> flat; std::string err;
+    CHECK(flatten(g, 1, lim, flat, err), "dedup flatten ok");
+    CHECK(flat.size() == 5, "instance count grows to 5");
+    std::vector<uint64_t> uniq;
+    for (auto& f : flat) if (std::find(uniq.begin(),uniq.end(),f.resolved_hash)==uniq.end()) uniq.push_back(f.resolved_hash);
+    CHECK(uniq.size() == 1, "one unique geometry hash despite 5 instances");
+}
+
+static void test_depth_guard() {
+    using namespace world_flatten;
+    PartGraph g; ChildInstance c;
+    set_translate(c.transform,0,0,0);
+    for (uint64_t h = 1; h <= 4; ++h) { c.child_resolved_hash = h+1; g[h].push_back(c); }
+    g[5];   // leaf at depth 4
+    FlattenLimits lim; lim.max_depth = 2;     // too shallow for a depth-4 chain
+    std::vector<FlatInstance> flat; std::string err;
+    CHECK(!flatten(g, 1, lim, flat, err), "depth guard fires");
+    CHECK(err.find("max_depth") != std::string::npos, "depth error message");
+    CHECK(err.find("part") != std::string::npos, "depth error names offending part");
+}
+
+static void test_budget_guard() {
+    using namespace world_flatten;
+    PartGraph g; ChildInstance c; c.child_resolved_hash = 9;
+    for (int i = 0; i < 50; ++i) { set_translate(c.transform,(float)i,0,0); g[1].push_back(c); }
+    g[9];
+    FlattenLimits lim; lim.max_instances = 10;  // 50 leaves > budget
+    std::vector<FlatInstance> flat; std::string err;
+    CHECK(!flatten(g, 1, lim, flat, err), "budget guard fires");
+    CHECK(err.find("max_instances") != std::string::npos, "budget error message");
+}
+
 int main() {
     test_decimate_one_level();
     test_bake_three_levels();
     test_lod_roundtrip_v2();
     test_lod_roundtrip_degenerate();
     test_flatten_n_times_m();
+    test_dedup_preserved();
+    test_depth_guard();
+    test_budget_guard();
     printf(failures ? "FAILED (%d)\n" : "OK\n", failures);
     return failures ? 1 : 0;
 }
