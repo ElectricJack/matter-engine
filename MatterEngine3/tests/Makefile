@@ -54,7 +54,7 @@ else
     LDLIBS = ../../Libraries/raylib/src/libraylib.a
 endif
 
-.PHONY: clean run-partv2
+.PHONY: clean run-partv2 run-script
 
 # Part Artifact v2 round-trip + resolved-hash + format-guard tests (headless, GL-free).
 # NEW impl ../src/part_asset_v2.cpp + consumed MatterSurfaceLib backend sources.
@@ -79,4 +79,28 @@ run-partv2: $(PARTV2_TARGET)
 	./$(PARTV2_TARGET)
 
 clean:
-	rm -f $(PARTV2_TARGET)
+	rm -f $(PARTV2_TARGET) $(SCRIPT_TARGET)
+
+# Script host (QuickJS-ng) + DSL/CSG bake tests (headless, GL-free for the host;
+# the BLAS surface path links raylib like the part-asset tests). QuickJS-ng C
+# sources are compiled via gcc so their symbols stay unmangled for extern "C".
+# v0.10.0 requires xsum.c (xsum_small_* symbols) in addition to the plan's core set.
+QJS_DIR  = ../../Libraries/quickjs-ng
+QJS_INC  = -I$(QJS_DIR)
+QJS_C    = $(QJS_DIR)/quickjs.c $(QJS_DIR)/libregexp.c \
+           $(QJS_DIR)/libunicode.c $(QJS_DIR)/cutils.c $(QJS_DIR)/xsum.c
+QJS_OBJ  = quickjs.o libregexp.o libunicode.o cutils.o xsum.o
+
+SCRIPT_TARGET = script_host_tests
+SCRIPT_CPP = script_host_tests.cpp
+SCRIPT_C   = ../../MatterSurfaceLib/src/material_registry.c
+
+$(SCRIPT_TARGET): $(SCRIPT_CPP) $(SCRIPT_C) $(QJS_C)
+	gcc -c $(QJS_C) -O2 -DCONFIG_VERSION='"0.10.0"' $(QJS_INC)
+	gcc -c $(SCRIPT_C) -O2 -DPLATFORM_DESKTOP $(INCLUDE_PATHS)
+	$(CC) $(SCRIPT_CPP) $(QJS_OBJ) material_registry.o -o $(SCRIPT_TARGET) \
+	      $(CFLAGS) $(INCLUDE_PATHS) $(QJS_INC) $(LDFLAGS) $(LDLIBS)
+	rm -f $(QJS_OBJ) material_registry.o
+
+run-script: $(SCRIPT_TARGET)
+	./$(SCRIPT_TARGET)
