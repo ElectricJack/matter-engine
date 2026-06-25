@@ -54,7 +54,7 @@ else
     LDLIBS = ../../Libraries/raylib/src/libraylib.a
 endif
 
-.PHONY: clean run-partv2 run-script run-graph
+.PHONY: clean run-partv2 run-script run-graph run-trivar
 
 # Part Artifact v2 round-trip + resolved-hash + format-guard tests (headless, GL-free).
 # NEW impl ../src/part_asset_v2.cpp + consumed MatterSurfaceLib backend sources.
@@ -79,7 +79,7 @@ run-partv2: $(PARTV2_TARGET)
 	./$(PARTV2_TARGET)
 
 clean:
-	rm -f $(PARTV2_TARGET) $(SCRIPT_TARGET) $(GRAPH_TARGET)
+	rm -f $(PARTV2_TARGET) $(SCRIPT_TARGET) $(GRAPH_TARGET) $(TRIVAR_TARGET)
 
 # Script host (QuickJS-ng) + DSL/CSG bake tests (headless, GL-free for the host;
 # the BLAS surface path links raylib like the part-asset tests). QuickJS-ng C
@@ -138,3 +138,25 @@ $(GRAPH_TARGET): $(GRAPH_SOURCES) $(GRAPH_C)
 
 run-graph: $(GRAPH_TARGET)
 	./$(GRAPH_TARGET)
+
+# Direct-triangle emission + line tuber + variation dedup tests (headless, GL-free).
+# NEW impl ../src/triangle_emit.cpp + SP-1's ../src/part_asset_v2.cpp (for the
+# real part_asset::compute_resolved_hash / ChildInstance used by VariationRecorder)
+# + consumed MatterSurfaceLib backend sources (read-only). material_registry.c is
+# compiled via gcc so its extern "C" symbols stay unmangled.
+TRIVAR_TARGET = triangle_variation_tests
+TRIVAR_CPP = triangle_variation_tests.cpp ../src/triangle_emit.cpp ../src/part_asset_v2.cpp \
+             ../../MatterSurfaceLib/src/part_asset.cpp \
+             ../../MatterSurfaceLib/src/blas_manager.cpp ../../MatterSurfaceLib/src/bvh.cpp \
+             ../../MatterSurfaceLib/src/tlas_manager.cpp \
+             ../../MatterSurfaceLib/src/vertex_ao.cpp ../../MatterSurfaceLib/src/occupancy.cpp
+TRIVAR_C   = ../../MatterSurfaceLib/src/material_registry.c
+TRIVAR_C_OBJ = material_registry.o
+
+$(TRIVAR_TARGET): $(TRIVAR_CPP) $(TRIVAR_C)
+	gcc -c $(TRIVAR_C) -O2 -DPLATFORM_DESKTOP $(INCLUDE_PATHS)
+	$(CC) $(TRIVAR_CPP) $(TRIVAR_C_OBJ) -o $(TRIVAR_TARGET) $(CFLAGS) $(INCLUDE_PATHS) $(LDFLAGS) $(LDLIBS)
+	rm -f $(TRIVAR_C_OBJ)
+
+run-trivar: $(TRIVAR_TARGET)
+	./$(TRIVAR_TARGET)
