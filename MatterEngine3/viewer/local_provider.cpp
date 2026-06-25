@@ -79,7 +79,7 @@ bool LocalProvider::connect(WorldManifest& out, std::string& err) {
         return false;
     }
     if (chdir(abs_cache_root.c_str()) != 0) {
-        err = "chdir to cache_root failed";
+        err = "cache_root does not exist or could not be created: " + cfg_.cache_root;
         return false;
     }
 
@@ -114,10 +114,11 @@ bool LocalProvider::connect(WorldManifest& out, std::string& err) {
     // Resolve each module's content hash (host is the hash authority).
     std::map<std::string, uint64_t> hash_of;
     for (auto& r : roots) {
-        std::string src = read_file(abs_schemas + "/" + r.module + ".js");
-        if (src.empty()) { err = "missing schema " + r.module; return false; }
+        std::string schema_path = abs_schemas + "/" + r.module + ".js";
+        std::string src = read_file(schema_path);
+        if (src.empty()) { err = "missing schema " + schema_path; return false; }
         uint64_t h = host.resolve_hash(src, "{}");
-        if (h == 0) { err = "resolve_hash failed for " + r.module; return false; }
+        if (h == 0) { err = "resolve_hash failed for " + schema_path; return false; }
         hash_of[r.module] = h;
     }
 
@@ -171,7 +172,7 @@ bool LocalProvider::fetch_parts(const std::vector<uint64_t>& want,
     // LocalProvider already wrote the .part blobs to the shared cache during
     // connect()'s install; "fetching" is just loading them into the store.
     for (uint64_t h : want) {
-        if (!store.get_or_load(h)) { err = "load failed for part"; return false; }
+        if (!store.get_or_load(h)) { err = "load failed for part " + std::to_string(h); return false; }
     }
     return true;
 }
