@@ -112,6 +112,33 @@ int main() {
         CHECK(baker.bake_order.size() == 1, "single leaf baked exactly once");
     }
 
+    // Task 5: cache miss -> bake; cache hit -> skip (incremental build).
+    {
+        // Parent -> two children A, B. First install bakes all 3; second bakes 0.
+        FakeModuleResolver res;
+        res.modules["A"]    = FakeModule{ "src-A", nullptr, false };
+        res.modules["B"]    = FakeModule{ "src-B", nullptr, false };
+        res.modules["Root"] = FakeModule{ "src-Root",
+            [](const Params&) {
+                return std::vector<ChildRequest>{
+                    ChildRequest{"A", Params{}}, ChildRequest{"B", Params{}} };
+            }, false };
+
+        FakeBaker baker;
+        PartGraph g(res, baker);
+
+        InstallResult r1 = g.install({ ChildRequest{"Root", Params{}} });
+        CHECK(r1.ok, "first install ok");
+        CHECK(r1.baked.size() == 3, "first install bakes 3 parts");
+        CHECK(r1.hits == 0, "first install has 0 cache hits");
+
+        // Second install with the same (now-populated) baker cache: 0 bakes, 3 hits.
+        InstallResult r2 = g.install({ ChildRequest{"Root", Params{}} });
+        CHECK(r2.ok, "second install ok");
+        CHECK(r2.baked.empty(), "second install bakes nothing (all hits)");
+        CHECK(r2.hits == 3, "second install reports 3 cache hits");
+    }
+
     if (failures == 0) printf("All part_graph tests passed\n");
     return failures == 0 ? 0 : 1;
 }
