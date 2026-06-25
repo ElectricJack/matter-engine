@@ -78,11 +78,60 @@ static void test_dsl_state_rules() {
     CHECK(s5.buffer().ops[0].spacing == 0.25f, "session spacing captured");
 }
 
+static void test_params_merge_and_hash() {
+    script_host::ScriptHost host;
+    const char* src =
+        "class Rock extends Part {\n"
+        "  static params = { size: 1.0, seed: 0 };\n"
+        "  build(p) { globalThis.__seen = JSON.stringify(p); }\n"
+        "}\n";
+    script_host::BakeResult def = host.bake_source(src, "{}", {});
+    CHECK(def.error.ok, "defaults bake ok");
+    CHECK(host.last_merged_params().find("\"size\":1") != std::string::npos,
+          "default size present in merged params");
+
+    script_host::ScriptHost host2;
+    script_host::BakeResult ov = host2.bake_source(src, "{\"size\":2.0}", {});
+    CHECK(ov.error.ok, "override bake ok");
+    CHECK(host2.last_merged_params().find("\"size\":2") != std::string::npos,
+          "override size present in merged params");
+    CHECK(host2.last_merged_params().find("\"seed\":0") != std::string::npos,
+          "non-overridden default still present");
+
+    CHECK(def.resolved_hash != ov.resolved_hash,
+          "override changes resolved_hash");
+}
+
+static void test_resolve_hash_matches_and_skips_build() {
+    const char* src =
+        "class Rock extends Part {\n"
+        "  static params = { size: 1.0, seed: 0 };\n"
+        "  build(p) { globalThis.__built = true; }\n"
+        "}\n";
+    script_host::ScriptHost hb;
+    script_host::BakeResult baked = hb.bake_source(src, "{\"size\":2.0}", {});
+    CHECK(baked.error.ok, "bake ok");
+
+    script_host::ScriptHost hr;
+    uint64_t rh = hr.resolve_hash(src, "{\"size\":2.0}", nullptr, 0);
+    CHECK(rh == baked.resolved_hash, "resolve_hash agrees with bake_source hash");
+
+    // resolve_hash must not execute build(): probe a fresh context global.
+    script_host::ScriptHost hp;
+    hp.resolve_hash(
+        "class Probe extends Part { static params={};"
+        " build(p){ globalThis.__built2 = true; } }", "{}", nullptr, 0);
+    CHECK(hp.last_merged_params().find("__built2") == std::string::npos,
+          "resolve_hash did not run build()");
+}
+
 int main() {
     test_embed_eval_1_plus_1();
     test_fresh_context_runs_empty_class();
     test_build_called_on_authored_class();
     test_dsl_state_rules();
+    test_params_merge_and_hash();
+    test_resolve_hash_matches_and_skips_build();
     if (failures == 0) printf("ALL PASS\n");
     return failures ? 1 : 0;
 }

@@ -92,7 +92,14 @@ QJS_C    = $(QJS_DIR)/quickjs.c $(QJS_DIR)/libregexp.c \
 QJS_OBJ  = quickjs.o libregexp.o libunicode.o cutils.o xsum.o
 
 SCRIPT_TARGET = script_host_tests
-SCRIPT_CPP = script_host_tests.cpp ../src/script_host.cpp ../src/dsl_state.cpp
+SCRIPT_CPP = script_host_tests.cpp ../src/script_host.cpp ../src/dsl_state.cpp \
+             ../src/part_asset_v2.cpp \
+             ../../MatterSurfaceLib/src/part_asset.cpp \
+             ../../MatterSurfaceLib/src/blas_manager.cpp \
+             ../../MatterSurfaceLib/src/bvh.cpp \
+             ../../MatterSurfaceLib/src/tlas_manager.cpp \
+             ../../MatterSurfaceLib/src/vertex_ao.cpp \
+             ../../MatterSurfaceLib/src/occupancy.cpp
 SCRIPT_C   = ../../MatterSurfaceLib/src/material_registry.c
 
 $(SCRIPT_TARGET): $(SCRIPT_CPP) $(SCRIPT_C) $(QJS_C)

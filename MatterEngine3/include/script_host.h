@@ -39,10 +39,25 @@ public:
                            const uint64_t* child_hashes = nullptr,
                            size_t child_count = 0);
 
+    // Hash-only: merge static+override params, fold child_hashes, return the
+    // content hash WITHOUT running build()/baking. Shares the params-merge +
+    // canonicalization path with bake_source so the two ALWAYS agree.
+    uint64_t resolve_hash(const std::string& source,
+                          const std::string& params_json,
+                          const uint64_t* child_hashes = nullptr,
+                          size_t child_count = 0);
+
     std::string last_merged_params() const { return last_merged_params_; }
     bool last_build_ran() const { return last_build_ran_; }
 
 private:
+    // Returns canonical merged-params JSON; fills err on failure. Evals source
+    // to read `static params`; does NOT call build(). Also stashes the result in
+    // last_merged_params_.
+    std::string merge_params_canonical(const std::string& source,
+                                       const std::string& params_json,
+                                       BakeError& err);
+
     std::string last_merged_params_;
     bool last_build_ran_ = false;
 };
