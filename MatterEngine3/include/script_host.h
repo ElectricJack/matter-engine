@@ -38,7 +38,8 @@ public:
                            const std::string& params_json,
                            const BakeOptions& opts,
                            const uint64_t* child_hashes = nullptr,
-                           size_t child_count = 0);
+                           size_t child_count = 0,
+                           const std::string* child_modules = nullptr);
 
     // Hash-only: merge static+override params, fold child_hashes, return the
     // content hash WITHOUT running build()/baking. Shares the params-merge +

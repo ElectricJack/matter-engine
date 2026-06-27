@@ -499,7 +499,8 @@ BakeResult ScriptHost::bake_source(const std::string& source,
                                    const std::string& params_json,
                                    const BakeOptions& opts,
                                    const uint64_t* child_hashes,
-                                   size_t child_count) {
+                                   size_t child_count,
+                                   const std::string* child_modules) {
     BakeResult r;
 
     // Merge static params + caller overrides into canonical JSON, and compute
@@ -559,6 +560,16 @@ BakeResult ScriptHost::bake_source(const std::string& source,
     // Seed the deterministic RNG (bound to Math.random) from the merged params so
     // the bake is reproducible and process-entropy-free.
     state.set_rng(derive_seed(merged));
+    // Install the declared-children module-name -> resolved-hash map so placeChild()
+    // can resolve placements during build(). Child hashes are already folded into the
+    // resolved hash upstream; this only feeds the placement table.
+    {
+        std::map<std::string, uint64_t> name2hash;
+        if (child_modules && child_hashes)
+            for (size_t i = 0; i < child_count; ++i)
+                name2hash[child_modules[i]] = child_hashes[i];
+        state.set_child_hashes(std::move(name2hash));
+    }
     JS_SetContextOpaque(ctx, &state);
 
     last_build_ran_ = false;
@@ -803,9 +814,19 @@ BakeResult ScriptHost::bake_source(const std::string& source,
         DestroySurfaceScratch(scratch);
 
         tlas.build(blas);
+        // Persist the child instances placed via placeChild() during build().
+        std::vector<part_asset::ChildInstance> kids;
+        kids.reserve(state.children().size());
+        for (const auto& c : state.children()) {
+            part_asset::ChildInstance ci;
+            ci.child_resolved_hash = c.hash;
+            std::memcpy(ci.transform, c.transform, sizeof ci.transform);
+            kids.push_back(ci);
+        }
         std::string path = part_asset::cache_path_resolved(r.resolved_hash);
-        part_asset::LodLevels lods{};   // SP-2 writes no children, empty LOD array.
-        bool ok = part_asset::save_v2(path, blas, tlas, /*children*/nullptr, 0,
+        part_asset::LodLevels lods{};   // SP-2 writes no LOD array.
+        bool ok = part_asset::save_v2(path, blas, tlas,
+                                      kids.empty() ? nullptr : kids.data(), kids.size(),
                                       lods, r.resolved_hash);
         if (!ok) { r.error.ok = false; r.error.message = "save_v2 failed"; }
         else { r.written_path = path; }
