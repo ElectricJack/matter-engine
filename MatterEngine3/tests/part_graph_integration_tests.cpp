@@ -106,8 +106,58 @@ static void test_install_with_placement() {
     system(("rm -rf " + root).c_str());
 }
 
+// SP-3 Tasks 8/9: bake the REAL demo Tree (an L-system that places instanced Leaf
+// children) through the graph and assert its .part carries Leaf instances. Unlike
+// the synthetic tests above, this installs the on-disk demo schemas dir, so it must
+// also point the host at the real shared-lib (Tree.js `import`s lsystem). The host's
+// resolve_hash/bake_source fold the imported module source into the hash, so the
+// Tree hash recomputed here MUST use the SAME host (shared-lib root set) that
+// installed it, and MUST fold the Leaf child hash (kids,1) exactly as the graph did.
+//
+// Paths: the demo schemas/shared-lib are repo-relative to the tests dir
+// (../examples/world_demo/schemas, ../shared-lib). The caller passes ABSOLUTE paths
+// resolved from the original cwd before any chdir, so resolution survives a chdir.
+static void test_demo_tree_has_leaves(const std::string& schemas,
+                                      const std::string& sharedlib) {
+    namespace pg = part_graph;
+
+    script_host::ScriptHost host;
+    host.set_shared_lib_root(sharedlib);
+    pg::FileModuleResolver resolver(host, schemas);
+    pg::HostBaker baker(host, ".");
+    pg::PartGraph graph(resolver, baker);
+
+    std::vector<pg::ChildRequest> roots = { pg::ChildRequest{ "Tree", pg::Params{} } };
+    pg::InstallResult ir = graph.install(roots);
+    CHECK(ir.ok, "demo Tree installs");
+    if (!ir.ok) printf("  install error: %s\n", ir.error.c_str());
+
+    uint64_t leaf_hash = host.resolve_hash(read_file(schemas + "/Leaf.js"), "{}");
+    uint64_t kids[1] = { leaf_hash };
+    uint64_t tree_hash = host.resolve_hash(read_file(schemas + "/Tree.js"), "{}", kids, 1);
+
+    BLASManager blas; TLASManager tlas(64);
+    std::vector<part_asset::ChildInstance> children;
+    part_asset::LodLevels lods;
+    bool loaded = part_asset::load_v2(part_asset::cache_path_resolved(tree_hash),
+                                      tree_hash, blas, tlas, children, lods);
+    CHECK(loaded, "demo Tree .part reloads");
+    CHECK(!children.empty(), "demo Tree placed at least one leaf");
+    printf("  demo Tree placed %zu leaf instance(s)\n", children.size());
+    for (const auto& c : children)
+        CHECK(c.child_resolved_hash == leaf_hash, "every Tree child is a Leaf");
+}
+
 int main() {
     using namespace part_graph;
+
+    // Resolve the demo schemas + shared-lib to ABSOLUTE paths NOW, before any test
+    // chdir()s into a sandbox, so test_demo_tree_has_leaves can find the real files
+    // regardless of cwd. (They are repo-relative to the tests dir we start in.)
+    std::string demo_schemas, demo_sharedlib;
+    { char abs[4096];
+      if (realpath("../examples/world_demo/schemas", abs)) demo_schemas = abs;
+      if (realpath("../shared-lib", abs)) demo_sharedlib = abs; }
 
     // Fresh sandbox so parts/<hash>.part and the schemas live in a known place.
     const std::string root = "/tmp/me3_graph_integration";
@@ -171,6 +221,12 @@ int main() {
 
     // SP-3 Task 7: graph-driven placement (requires + placeChild) round-trip.
     test_install_with_placement();
+
+    // SP-3 Tasks 8/9: the real demo Tree bakes Leaf instances through the graph.
+    CHECK(!demo_schemas.empty() && !demo_sharedlib.empty(),
+          "resolved demo schemas + shared-lib absolute paths");
+    if (!demo_schemas.empty() && !demo_sharedlib.empty())
+        test_demo_tree_has_leaves(demo_schemas, demo_sharedlib);
 
     if (failures == 0) printf("All part_graph integration tests passed\n");
     return failures == 0 ? 0 : 1;
