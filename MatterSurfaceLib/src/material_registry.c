@@ -6,7 +6,8 @@
 enum {
     GROUP_RED = 0, GROUP_BLUE = 1, GROUP_GROUND = 2, GROUP_METAL = 3,
     GROUP_GLASS = 4, GROUP_LIGHT = 5, GROUP_GREENGLASS = 6, GROUP_WATER = 7,
-    GROUP_STONE = 8, GROUP_SAND = 9
+    GROUP_STONE = 8, GROUP_SAND = 9,
+    GROUP_BARK = 10, GROUP_LEAF = 11, GROUP_DIRT = 12
 };
 
 static const MaterialDef g_materials[] = {
@@ -24,6 +25,9 @@ static const MaterialDef g_materials[] = {
     /* 11 */ {{0.55f,0.53f,0.50f},0.35f,0.65f,0.0f, 0.0f, 1.0f, 1, GROUP_STONE, 0}, // stone_mica_mid
     /* 12 */ {{0.62f,0.59f,0.54f},0.22f,0.90f,0.0f, 0.0f, 1.0f, 1, GROUP_STONE, 0}, // stone_pyrite_fleck
     /* 13 */ {{0.76f,0.70f,0.50f},0.95f,0.0f, 0.0f, 0.0f, 1.0f, 1, GROUP_SAND, 1}, // sand -> oriented cubes
+    /* 14 BARK */ {{0.36f,0.25f,0.16f}, 0.90f, 0.0f, 0.0f, 0.0f, 1.0f, 0, GROUP_BARK, 0},
+    /* 15 LEAF */ {{0.22f,0.45f,0.18f}, 0.80f, 0.0f, 0.0f, 0.0f, 1.0f, 1, GROUP_LEAF, 0},
+    /* 16 DIRT */ {{0.40f,0.28f,0.18f}, 1.00f, 0.0f, 0.0f, 0.0f, 1.0f, 1, GROUP_DIRT, 0},
 };
 
 static const MaterialDef g_default =

@@ -1,6 +1,7 @@
 #include "../include/part_asset_v2.h"
 #include "../../MatterSurfaceLib/include/blas_manager.hpp"
 #include "../../MatterSurfaceLib/include/tlas_manager.hpp"
+#include "../../MatterSurfaceLib/include/material_registry.h"
 #include <cstdio>
 #include <cstdint>
 #include <cstring>
@@ -353,6 +354,17 @@ static void test_v2_guards() {
     remove(path);
 }
 
+static void test_new_materials() {
+    CHECK(MaterialRegistryCount() == 17, "registry has 17 materials after bark/leaf/dirt");
+    const MaterialDef* bark = MaterialRegistryGet(14);
+    CHECK(bark->albedo[0] > 0.30f && bark->albedo[2] < 0.20f, "material 14 is brown bark");
+    const MaterialDef* leaf = MaterialRegistryGet(15);
+    CHECK(leaf->albedo[1] > leaf->albedo[0] && leaf->albedo[1] > leaf->albedo[2],
+          "material 15 is green leaf");
+    const MaterialDef* dirt = MaterialRegistryGet(16);
+    CHECK(dirt->albedo[0] > dirt->albedo[2], "material 16 is brown dirt");
+}
+
 int main() {
     test_cache_path_resolved();
     test_resolved_hash();
@@ -361,6 +373,7 @@ int main() {
     test_round_trip_degenerate_lod();
     test_round_trip_no_children();
     test_v2_guards();
+    test_new_materials();
     if (failures == 0) printf("All part_asset_v2 tests passed\n");
     return failures == 0 ? 0 : 1;
 }
