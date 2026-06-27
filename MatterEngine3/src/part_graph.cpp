@@ -143,6 +143,9 @@ InstallResult PartGraph::install(const std::vector<ChildRequest>& roots) {
         uint64_t k = 0;
         if (!resolve(r, k)) { result.error = error; return result; }
         root_keys.push_back(k);
+        // Surface the child-folded resolved hash so callers (e.g. LocalProvider's
+        // manifest) reference the SAME hash the graph bakes to, not an unfolded recompute.
+        result.root_hashes.push_back(memo.at(k).resolved_hash);
     }
 
     // Topological (post-order) bake over the reachable set from roots: a node is baked

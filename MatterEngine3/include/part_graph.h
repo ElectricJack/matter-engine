@@ -82,6 +82,7 @@ struct InstallResult {
     std::string              error;       // human-readable; names the offending part on failure
     std::vector<uint64_t>    baked;       // resolved hashes baked this run (cache misses)
     int                      hits = 0;    // parts skipped because already cached
+    std::vector<uint64_t>    root_hashes; // resolved hash per root (parallel to `roots`), child-folded
 };
 
 class PartGraph {

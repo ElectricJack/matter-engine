@@ -10,8 +10,16 @@
 #include <set>
 #include <sstream>
 #include <sys/stat.h>
+#ifdef _WIN32
+#include <direct.h>      // _mkdir, _getcwd, _chdir
+#include <stdlib.h>      // _fullpath, _MAX_PATH
+#ifndef PATH_MAX
+#define PATH_MAX _MAX_PATH
+#endif
+#else
 #include <limits.h>
 #include <unistd.h>
+#endif
 
 using namespace part_graph;
 
@@ -19,6 +27,19 @@ namespace viewer {
 
 // Deterministic splitmix64 (matches example_world's scatter exactly).
 namespace {
+// Filesystem portability shim: MinGW lacks the POSIX mkdir(mode)/realpath and
+// spells getcwd/chdir with leading underscores.
+#ifdef _WIN32
+int  fs_mkdir(const char* p)                       { return _mkdir(p); }
+bool fs_realpath(const char* in, char* out)        { return _fullpath(out, in, PATH_MAX) != nullptr; }
+bool fs_getcwd(char* buf, size_t n)                { return _getcwd(buf, (int)n) != nullptr; }
+int  fs_chdir(const char* p)                       { return _chdir(p); }
+#else
+int  fs_mkdir(const char* p)                       { return ::mkdir(p, 0755); }
+bool fs_realpath(const char* in, char* out)        { return realpath(in, out) != nullptr; }
+bool fs_getcwd(char* buf, size_t n)                { return getcwd(buf, n) != nullptr; }
+int  fs_chdir(const char* p)                       { return chdir(p); }
+#endif
 struct Rng64 {
     uint64_t s;
     explicit Rng64(uint64_t seed) : s(seed) {}
@@ -33,11 +54,6 @@ struct Rng64 {
         return a + (float)((next() >> 11) * (1.0 / 9007199254740992.0)) * (b - a);
     }
 };
-std::string read_file(const std::string& path) {
-    std::ifstream in(path, std::ios::binary);
-    std::ostringstream ss; ss << in.rdbuf();
-    return ss.str();
-}
 void set_translate(float m[16], float x, float y, float z) {
     for (int i = 0; i < 16; ++i) m[i] = 0.0f;
     m[0] = m[5] = m[10] = m[15] = 1.0f;
@@ -46,7 +62,7 @@ void set_translate(float m[16], float x, float y, float z) {
 // Resolve a path (possibly relative to cwd) to an absolute path.
 std::string abspath(const std::string& rel) {
     char buf[PATH_MAX];
-    if (realpath(rel.c_str(), buf)) return std::string(buf);
+    if (fs_realpath(rel.c_str(), buf)) return std::string(buf);
     return rel;
 }
 } // namespace
@@ -62,9 +78,9 @@ bool LocalProvider::connect(WorldManifest& out, std::string& err) {
     // bake_source writes "parts/<hash>.part" relative to cwd, so we temporarily
     // chdir into cache_root (saving and restoring the caller's cwd). All other
     // paths are resolved to absolute BEFORE the chdir so they remain valid.
-    ::mkdir(cfg_.cache_root.c_str(), 0755);
+    fs_mkdir(cfg_.cache_root.c_str());
     std::string parts_subdir = cfg_.cache_root + "/parts";
-    ::mkdir(parts_subdir.c_str(), 0755);
+    fs_mkdir(parts_subdir.c_str());
 
     // Resolve all relative paths to absolute now, while cwd is still the caller's.
     std::string abs_schemas    = abspath(cfg_.schemas_dir);
@@ -74,11 +90,11 @@ bool LocalProvider::connect(WorldManifest& out, std::string& err) {
 
     // Save caller's cwd, chdir to cache_root so bake_source writes parts/ there.
     char orig_cwd[PATH_MAX];
-    if (!getcwd(orig_cwd, sizeof(orig_cwd))) {
+    if (!fs_getcwd(orig_cwd, sizeof(orig_cwd))) {
         err = "getcwd failed";
         return false;
     }
-    if (chdir(abs_cache_root.c_str()) != 0) {
+    if (fs_chdir(abs_cache_root.c_str()) != 0) {
         err = "cache_root does not exist or could not be created: " + cfg_.cache_root;
         return false;
     }
@@ -94,14 +110,14 @@ bool LocalProvider::connect(WorldManifest& out, std::string& err) {
     std::vector<ChildRequest> roots;
     bool manifest_ok = PartGraph::read_manifest(abs_world_data, cfg_.world_name, roots, err);
     if (!manifest_ok) {
-        chdir(orig_cwd);
+        fs_chdir(orig_cwd);
         return false;
     }
 
     InstallResult ir = graph.install(roots);
     if (!ir.ok) {
         err = ir.error;
-        chdir(orig_cwd);
+        fs_chdir(orig_cwd);
         return false;
     }
     baked_count_ = (int)ir.baked.size();
@@ -109,18 +125,19 @@ bool LocalProvider::connect(WorldManifest& out, std::string& err) {
     baked_hashes_.insert(ir.baked.begin(), ir.baked.end());
 
     // Restore caller's cwd before doing anything further.
-    chdir(orig_cwd);
+    fs_chdir(orig_cwd);
 
-    // Resolve each module's content hash (host is the hash authority).
-    std::map<std::string, uint64_t> hash_of;
-    for (auto& r : roots) {
-        std::string schema_path = abs_schemas + "/" + r.module + ".js";
-        std::string src = read_file(schema_path);
-        if (src.empty()) { err = "missing schema " + schema_path; return false; }
-        uint64_t h = host.resolve_hash(src, "{}");
-        if (h == 0) { err = "resolve_hash failed for " + schema_path; return false; }
-        hash_of[r.module] = h;
+    // Map each root module to the child-FOLDED resolved hash the graph baked it under.
+    // install() returns root_hashes parallel to `roots`; using them (instead of an
+    // unfolded resolve_hash recompute) keeps manifest instances pointing at the .part
+    // that actually exists on disk — critical once a root has children (e.g. Tree->Leaf).
+    if (ir.root_hashes.size() != roots.size()) {
+        err = "install did not return a hash for every root";
+        return false;
     }
+    std::map<std::string, uint64_t> hash_of;
+    for (size_t i = 0; i < roots.size(); ++i)
+        hash_of[roots[i].module] = ir.root_hashes[i];
 
     // Scatter the example world (identical layout to example_world.cpp).
     out.world_root_hash = 1;
