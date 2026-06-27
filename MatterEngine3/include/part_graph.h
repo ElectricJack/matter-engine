@@ -59,7 +59,9 @@ struct Baker {
     // Implementations bake to cache_path_resolved(resolved_hash); resolved_hash is the value
     // resolve_hash returned for the same inputs (host recomputes it identically).
     virtual bool bake(const std::string& source, const Params& params,
-                      const std::vector<uint64_t>& child_hashes, uint64_t resolved_hash) = 0;
+                      const std::vector<uint64_t>& child_hashes,
+                      const std::vector<std::string>& child_modules,
+                      uint64_t resolved_hash) = 0;
 };
 
 // Canonical params string (sorted keys, %.17g numbers). Public for unit testing.
@@ -128,7 +130,9 @@ public:
                           const std::vector<uint64_t>& child_hashes) override;
     bool cached(uint64_t resolved_hash) override;
     bool bake(const std::string& source, const Params& params,
-              const std::vector<uint64_t>& child_hashes, uint64_t resolved_hash) override;
+              const std::vector<uint64_t>& child_hashes,
+              const std::vector<std::string>& child_modules,
+              uint64_t resolved_hash) override;
 private:
     script_host::ScriptHost& host_;
     std::string              parts_dir_;

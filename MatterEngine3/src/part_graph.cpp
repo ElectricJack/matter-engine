@@ -49,6 +49,7 @@ struct InternalNode {
     Params                params;
     std::vector<uint64_t> child_hashes;       // direct children (for SP-1 fold, sorted)
     std::vector<uint64_t> child_keys;         // direct children memo keys (topo edges)
+    std::vector<std::string> child_modules;   // direct children's module names (parallel to child_hashes)
 };
 
 // Memo key = fnv1a64(source) combined with fnv1a64(canonical_params). Identity is the
@@ -104,11 +105,13 @@ InstallResult PartGraph::install(const std::vector<ChildRequest>& roots) {
             on_stack.insert(key);
 
             std::vector<uint64_t> child_keys, child_hashes;
+            std::vector<std::string> child_modules;
             for (const auto& kid : kids) {
                 uint64_t ck = 0;
                 if (!resolve(kid, ck)) { stack.pop_back(); on_stack.erase(key); return false; }
                 child_keys.push_back(ck);
                 child_hashes.push_back(memo.at(ck).resolved_hash);
+                child_modules.push_back(kid.module);
             }
 
             stack.pop_back();
@@ -121,6 +124,7 @@ InstallResult PartGraph::install(const std::vector<ChildRequest>& roots) {
             node.params        = req.params;
             node.child_keys    = child_keys;
             node.child_hashes  = child_hashes;   // SP-1 sorts internally; ok unsorted here
+            node.child_modules = child_modules;  // parallel to child_hashes (name->hash map downstream)
             // Hash authority is SP-2 (master C-2): ask the baker, never compute here.
             // The host merges static+override params before folding, so it sees defaults
             // SP-3 cannot. 0 => resolve failure (fail-closed).
@@ -157,7 +161,7 @@ InstallResult PartGraph::install(const std::vector<ChildRequest>& roots) {
     for (uint64_t key : topo) {
         const InternalNode& n = memo.at(key);
         if (baker_.cached(n.resolved_hash)) { ++result.hits; continue; }
-        if (!baker_.bake(n.source, n.params, n.child_hashes, n.resolved_hash)) {
+        if (!baker_.bake(n.source, n.params, n.child_hashes, n.child_modules, n.resolved_hash)) {
             result.error = "bake failed for part: " + n.module;
             return result;
         }
@@ -269,11 +273,13 @@ bool HostBaker::cached(uint64_t resolved_hash) {
 }
 
 bool HostBaker::bake(const std::string& source, const Params& params,
-                     const std::vector<uint64_t>& child_hashes, uint64_t resolved_hash) {
+                     const std::vector<uint64_t>& child_hashes,
+                     const std::vector<std::string>& child_modules, uint64_t resolved_hash) {
     // SP-2 bake_source recomputes the same hash and writes parts/<hash>.part via save_v2.
     script_host::BakeResult r = host_.bake_source(
         source, params_to_json(params), /*opts*/{},
-        child_hashes.data(), child_hashes.size());
+        child_hashes.data(), child_hashes.size(),
+        child_modules.data());
     // The hash SP-3 memoized must equal where the .part landed (master C-2 guarantee).
     return r.error.ok && r.resolved_hash == resolved_hash;
 }

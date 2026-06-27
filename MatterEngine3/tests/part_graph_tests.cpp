@@ -59,7 +59,8 @@ struct FakeBaker : Baker {
     }
     bool cached(uint64_t h) override { return on_disk.count(h) != 0; }
     bool bake(const std::string&, const Params&,
-              const std::vector<uint64_t>& child_hashes, uint64_t h) override {
+              const std::vector<uint64_t>& child_hashes,
+              const std::vector<std::string>& /*child_modules*/, uint64_t h) override {
         if (fail_hashes.count(h)) return false; // fail-closed: nothing "written"
         bake_order.push_back(h);
         children_seen[h] = child_hashes;
