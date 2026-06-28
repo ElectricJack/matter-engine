@@ -59,18 +59,25 @@ std::vector<Tri> decimate_tris(const std::vector<Tri>& tris, float keep_ratio) {
 }
 
 LodLevels bake_lods(const std::vector<Tri>& tris, const BakeTargets& targets,
-                    BLASManager& blas) {
+                    BLASManager& blas, const std::vector<TriEx>* triex) {
     LodLevels out;
     for (size_t lvl = 0; lvl < targets.keep_ratio.size(); ++lvl) {
         float keep = targets.keep_ratio[lvl];
-        std::vector<Tri> geo = (keep >= 0.999f) ? tris : decimate_tris(tris, keep);
+        bool full = (keep >= 0.999f);
+        std::vector<Tri> geo = full ? tris : decimate_tris(tris, keep);
         if (geo.empty()) geo = tris;     // never register empty geometry
         std::vector<Tri> copy = geo;     // register_triangles takes Tri*
+        // Per-triangle TriEx (materialId/tint/normals/AO) is only valid for the
+        // undecimated level: `geo` is then the input triangle set in original order,
+        // so triex[i] still describes copy[i]. Decimation reorders/merges triangles,
+        // so those levels pass nullptr and fall back to the instance material.
+        const TriEx* ex = (full && triex && triex->size() == copy.size())
+                          ? triex->data() : nullptr;
         // register_triangles may deduplicate (returning an existing handle), so we
         // must NOT pre-record entries().size() as the index — it would be off-by-N
         // if prior identical geometry already occupies that slot. Look up the returned
         // handle's actual position in the entries array after registration instead.
-        BLASHandle h = blas.register_triangles(copy.data(), (int)copy.size(), nullptr);
+        BLASHandle h = blas.register_triangles(copy.data(), (int)copy.size(), ex);
         uint32_t idx = UINT32_MAX;
         const auto& entries = blas.get_entries();
         for (size_t i = 0; i < entries.size(); ++i) {

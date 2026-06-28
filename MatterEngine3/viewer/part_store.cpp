@@ -47,10 +47,21 @@ const LoadedPart* PartStore::get_or_load(uint64_t part_hash) {
         return nullptr;
     }
 
-    // Gather full-res triangles for lod_bake.
+    // Gather full-res triangles (and their parallel per-triangle TriEx, which
+    // carries the baked materialId/tint/normals) for lod_bake. Without the TriEx
+    // the re-baked LOD geometry has no per-triangle material, so every triangle
+    // falls back to the instance material in the shader and the whole world renders
+    // as one color. e->triangles and e->tri_extra are parallel in registration order.
     std::vector<Tri> tris;
-    for (const auto& e : scratch.get_entries())
+    std::vector<TriEx> triex;
+    for (const auto& e : scratch.get_entries()) {
         tris.insert(tris.end(), e->triangles.begin(), e->triangles.end());
+        triex.insert(triex.end(), e->tri_extra.begin(), e->tri_extra.end());
+    }
+    // Only pass TriEx through when it is fully parallel to the triangle list;
+    // a partial/absent table would misalign materials.
+    const std::vector<TriEx>* triex_ptr = (triex.size() == tris.size() && !triex.empty())
+                                          ? &triex : nullptr;
 
     // Bound radius = half AABB diagonal (drives projected-size LOD math).
     float mn[3] = {1e30f,1e30f,1e30f}, mx[3] = {-1e30f,-1e30f,-1e30f};
@@ -72,7 +83,7 @@ const LoadedPart* PartStore::get_or_load(uint64_t part_hash) {
     LoadedPart lp;
     lp.bound_radius = radius;
     lp.children = std::move(children);   // keep the baked child-instance table for the WorldComposer
-    lod_bake::LodLevels lods = lod_bake::bake_lods(tris, lod_bake::BakeTargets{}, blas_);
+    lod_bake::LodLevels lods = lod_bake::bake_lods(tris, lod_bake::BakeTargets{}, blas_, triex_ptr);
     for (const auto& L : lods) {
         lp.thresholds.push_back(L.screen_size_threshold);
         // bake_lods registers exactly one BLAS per level; guard the assumption

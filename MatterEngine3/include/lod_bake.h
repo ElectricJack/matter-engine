@@ -34,7 +34,12 @@ struct BakeTargets {
 // registered BLAS index + its screen_size_threshold). LOD0 with keep_ratio 1.0 is
 // the full input (no decimation). The returned blas_indices values index
 // blas.get_entries() in registration order.
+//
+// `triex` (optional) is the per-triangle TriEx data parallel to `tris` (materialId,
+// tint, shading normals, AO). It is attached only to the undecimated level (keep ==
+// 1.0), where the triangle list is unchanged; decimated levels reorder/merge
+// triangles so their per-triangle material falls back to the instance material.
 LodLevels bake_lods(const std::vector<Tri>& tris, const BakeTargets& targets,
-                    BLASManager& blas);
+                    BLASManager& blas, const std::vector<TriEx>* triex = nullptr);
 
 } // namespace lod_bake
