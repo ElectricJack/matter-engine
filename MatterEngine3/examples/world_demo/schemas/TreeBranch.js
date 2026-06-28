@@ -42,9 +42,11 @@ class TreeBranch extends Part {
 
     // Safety guards (v2 had none): a Rewrite(5) twig expands to tens of thousands
     // of tokens, so cap how much geometry we actually emit per branch.
-    const MAX_LEAVES = 90;
+    // Oak canopy reads as a solid mass of leaves, so push the leaf budget up and
+    // make each cluster a full ball of blades rather than a light tuft.
+    const MAX_LEAVES = 200;
     const MAX_SEGS   = 160;
-    const CLUSTER    = 3;      // leaves per cluster (a light tuft, not a ball)
+    const CLUSTER    = 8;      // leaves per cluster (a dense ball, not a tuft)
     let leaves = 0;
 
     // A leaf cluster: a tuft of CLUSTER blades splayed around the twig axis AND

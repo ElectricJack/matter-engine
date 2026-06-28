@@ -32,6 +32,20 @@ int main() {
         return 1;
     }
 
+    // MATTER_CAM="px,py,pz,tx,ty,tz" overrides the initial camera (eye + target),
+    // so a headless screenshot can frame an arbitrarily sized scene without a
+    // rebuild. Missing/garbage -> keep the renderer default.
+    if (const char* cam_env = getenv("MATTER_CAM")) {
+        float c[6];
+        if (sscanf(cam_env, "%f,%f,%f,%f,%f,%f",
+                   &c[0],&c[1],&c[2],&c[3],&c[4],&c[5]) == 6) {
+            renderer.camera().position = (Vector3){ c[0], c[1], c[2] };
+            renderer.camera().target   = (Vector3){ c[3], c[4], c[5] };
+            printf("MATTER_CAM: eye(%.1f,%.1f,%.1f) target(%.1f,%.1f,%.1f)\n",
+                   c[0],c[1],c[2],c[3],c[4],c[5]);
+        }
+    }
+
     LocalProviderConfig cfg;
     cfg.schemas_dir    = "../examples/world_demo/schemas";
     cfg.world_data_dir = "../examples/world_demo/WorldData";
