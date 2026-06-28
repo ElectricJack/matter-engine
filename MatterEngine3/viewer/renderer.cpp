@@ -21,11 +21,17 @@ bool Renderer::init(const std::string& shader_fs_path, std::string& err) {
     loc_screen_size_   = GetShaderLocation(shader_, "screenSize");
     loc_material_table_ = GetShaderLocation(shader_, "materialTable");
     loc_material_count_ = GetShaderLocation(shader_, "materialCount");
+    loc_gi_strength_     = GetShaderLocation(shader_, "giStrength");
+    loc_shadow_strength_ = GetShaderLocation(shader_, "shadowStrength");
+    loc_ao_enabled_      = GetShaderLocation(shader_, "aoEnabled");
+    loc_debug_tri_       = GetShaderLocation(shader_, "debugTriangleTests");
 
-    camera_.position   = (Vector3){ 12.0f, 10.0f, -12.0f };
-    camera_.target     = (Vector3){ 12.0f, 1.0f, 12.0f };
+    // Single tree sits at the origin; frame it slightly above the base so the
+    // canopy is centered. Orbit/zoom from the Camera panel pivots on the target.
+    camera_.position   = (Vector3){ 20.0f, 16.0f, 34.0f };
+    camera_.target     = (Vector3){ 0.0f, 9.0f, 0.0f };
     camera_.up         = (Vector3){ 0.0f, 1.0f, 0.0f };
-    camera_.fovy       = 60.0f;
+    camera_.fovy       = 45.0f;
     camera_.projection = CAMERA_PERSPECTIVE;
 
     ready_ = true;
@@ -53,18 +59,29 @@ void Renderer::draw(BLASManager& blas, TLASManager& tlas) {
     float fovy = camera_.fovy;
     float screen[2] = { (float)GetScreenWidth(), (float)GetScreenHeight() };
 
-    SetShaderValue(shader_, loc_cam_pos_,    &cp,   SHADER_UNIFORM_VEC3);
-    SetShaderValue(shader_, loc_cam_target_, &ct,   SHADER_UNIFORM_VEC3);
-    SetShaderValue(shader_, loc_cam_up_,     &cu,   SHADER_UNIFORM_VEC3);
-    SetShaderValue(shader_, loc_cam_fovy_,   &fovy, SHADER_UNIFORM_FLOAT);
-    SetShaderValue(shader_, loc_screen_size_, screen, SHADER_UNIFORM_VEC2);
-    upload_material_table();
-
+    // All uniform/texture binding must happen with the shader active: raylib
+    // stages sampler textures into the active program, and BeginShaderMode
+    // flushes the batch, so binding the BVH textures before it would lose them
+    // and every ray would miss (blank sky). Mirrors MSL main.cpp's render order.
     blas.ensure_gpu_textures_ready();
-    blas.bind_to_shader(shader_);
-    tlas.bind_to_shader(shader_, blas);
-
     BeginShaderMode(shader_);
+        SetShaderValue(shader_, loc_cam_pos_,    &cp,   SHADER_UNIFORM_VEC3);
+        SetShaderValue(shader_, loc_cam_target_, &ct,   SHADER_UNIFORM_VEC3);
+        SetShaderValue(shader_, loc_cam_up_,     &cu,   SHADER_UNIFORM_VEC3);
+        SetShaderValue(shader_, loc_cam_fovy_,   &fovy, SHADER_UNIFORM_FLOAT);
+        SetShaderValue(shader_, loc_screen_size_, screen, SHADER_UNIFORM_VEC2);
+        upload_material_table();
+
+        float gi = 1.0f, shadow = 0.5f;
+        int ao = 1, debug_tri = 0;
+        if (loc_gi_strength_     != -1) SetShaderValue(shader_, loc_gi_strength_,     &gi,        SHADER_UNIFORM_FLOAT);
+        if (loc_shadow_strength_ != -1) SetShaderValue(shader_, loc_shadow_strength_, &shadow,    SHADER_UNIFORM_FLOAT);
+        if (loc_ao_enabled_      != -1) SetShaderValue(shader_, loc_ao_enabled_,      &ao,        SHADER_UNIFORM_INT);
+        if (loc_debug_tri_       != -1) SetShaderValue(shader_, loc_debug_tri_,       &debug_tri, SHADER_UNIFORM_INT);
+
+        blas.bind_to_shader(shader_);
+        tlas.bind_to_shader(shader_, blas);
+
         DrawRectangle(0, 0, GetScreenWidth(), GetScreenHeight(), WHITE);
     EndShaderMode();
 }

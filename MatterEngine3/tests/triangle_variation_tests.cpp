@@ -11,6 +11,10 @@
 #include "../../MatterSurfaceLib/include/blas_manager.hpp"
 #include <cstdio>
 #include <cmath>
+#include <algorithm>
+#include <utility>
+#include <tuple>
+#include <vector>
 
 static int failures = 0;
 #define CHECK(cond, msg) do { if (!(cond)) { printf("FAIL: %s\n", msg); ++failures; } } while (0)
@@ -230,6 +234,290 @@ static void test_variation_lod_independence() {
     CHECK(lod_level_count_for(hA) == 3, "expected ~3 LOD levels per variation");
 }
 
+// G8: TriangleBuildBuffer::sphere emits a closed UV sphere of the correct radius,
+// baked under the transform; box emits 12 triangles. G4: tint flows into TriEx.
+static void test_g8_mesh_sphere_box() {
+    // Sphere: every vertex ~ r from center; watertight (every edge shared by 2 tris).
+    tri_emit::TriangleBuildBuffer sb;
+    sb.sphere(make_float3(0,0,0), 1.5f, /*mat*/3, mat4::Identity(), /*segments*/12);
+    CHECK(!sb.triangles().empty(), "G8: sphere emits triangles");
+    float maxr=0, minr=1e9f;
+    for (const Tri& t : sb.triangles())
+        for (const float3& v : { t.vertex0, t.vertex1, t.vertex2 }) {
+            float r = sqrtf(v.x*v.x+v.y*v.y+v.z*v.z);
+            if (r>maxr) maxr=r; if (r<minr) minr=r;
+        }
+    CHECK(fabsf(maxr-1.5f)<1e-3f && fabsf(minr-1.5f)<1e-3f,
+          "G8: sphere vertices lie on radius 1.5 (closed, round)");
+    // Closed surface: no boundary edges. After merging coincident vertices (the
+    // longitude seam + the two poles, where a UV sphere legitimately merges many
+    // vertices into one position), every undirected edge must be shared by at
+    // least two triangles -- i.e. there is no hole/open edge. (Pole/seam vertices
+    // are high-valence, which is correct for a UV sphere, so we assert >= 2 rather
+    // than == 2.)
+    {
+        std::vector<std::pair<long long,long long>> edges;
+        auto key=[&](const float3& p){ // quantize to a stable vertex id
+            long long x=(long long)llround(p.x*1000.0), y=(long long)llround(p.y*1000.0), z=(long long)llround(p.z*1000.0);
+            return (x*73856093LL) ^ (y*19349663LL) ^ (z*83492791LL);
+        };
+        auto add=[&](const float3&a,const float3&b){ long long ka=key(a),kb=key(b);
+            if (ka==kb) return;  // degenerate edge at a pole fan; not a boundary
+            edges.push_back(ka<kb?std::make_pair(ka,kb):std::make_pair(kb,ka)); };
+        for (const Tri& t : sb.triangles()) { add(t.vertex0,t.vertex1); add(t.vertex1,t.vertex2); add(t.vertex2,t.vertex0); }
+        std::sort(edges.begin(), edges.end());
+        bool closed = !edges.empty();
+        for (size_t i=0;i<edges.size();) {
+            size_t j=i; while (j<edges.size() && edges[j]==edges[i]) ++j;
+            if ((j-i) < 2) closed=false; i=j;   // an edge with <2 tris = a hole
+        }
+        CHECK(closed, "G8: sphere is closed (no boundary edges -> watertight)");
+    }
+
+    // Sphere baked under a translation: center moves with the transform.
+    tri_emit::TriangleBuildBuffer sb2;
+    sb2.sphere(make_float3(0,0,0), 1.0f, 0, mat4::Translate(make_float3(10,0,0)), 8);
+    float cx=0; int nv=0;
+    for (const Tri& t : sb2.triangles()) { cx+=t.centroid.x; ++nv; }
+    CHECK(nv>0 && fabsf((cx/nv)-10.0f) < 0.5f, "G8: sphere baked under translate (centered ~x=10)");
+
+    // Box: 12 triangles; all 8 corners present.
+    tri_emit::TriangleBuildBuffer bb;
+    bb.box(make_float3(0,0,0), make_float3(1,1,1), /*mat*/5, mat4::Identity());
+    CHECK(bb.triangles().size() == 12, "G8: box is 12 triangles");
+    bool minc=false, maxc=false;
+    for (const Tri& t : bb.triangles())
+        for (const float3& v : { t.vertex0, t.vertex1, t.vertex2 }) {
+            if (near3(v, make_float3(-1,-1,-1))) minc=true;
+            if (near3(v, make_float3( 1, 1, 1))) maxc=true;
+        }
+    CHECK(minc && maxc, "G8: box spans both extreme corners");
+
+    // G4: tint flows into TriEx on the mesh emitters.
+    tri_emit::TriangleBuildBuffer tb;
+    tb.box(make_float3(0,0,0), make_float3(1,1,1), 0, mat4::Identity(),
+           make_float4(0.1f,0.2f,0.3f,0.7f));
+    bool all_tinted = !tb.tri_extra().empty();
+    for (const TriEx& e : tb.tri_extra())
+        if (fabsf(e.tint.x-0.1f)>1e-6f || fabsf(e.tint.w-0.7f)>1e-6f) all_tinted=false;
+    CHECK(all_tinted, "G4: mesh box carries the supplied tint into every TriEx");
+}
+
+// --- Phase 3: extrude mesh machine -----------------------------------------
+
+// Watertight test: every undirected edge of the mesh is shared by exactly two
+// triangles (a closed 2-manifold). Vertices are quantized so coincident corners
+// merge. Returns true if closed.
+static bool is_watertight(const std::vector<Tri>& tris) {
+    // Collision-free vertex id: pack quantized (x,y,z) into a tuple (no XOR fold,
+    // which collides for symmetric coordinates like a cube's corners).
+    auto key = [](const float3& p) {
+        return std::make_tuple((long long)llround(p.x*1000.0),
+                               (long long)llround(p.y*1000.0),
+                               (long long)llround(p.z*1000.0));
+    };
+    using Key = std::tuple<long long,long long,long long>;
+    std::vector<std::pair<Key,Key>> edges;
+    auto add=[&](const float3&a,const float3&b){ Key ka=key(a),kb=key(b);
+        if (ka==kb) return;
+        edges.push_back(ka<kb?std::make_pair(ka,kb):std::make_pair(kb,ka)); };
+    for (const Tri& t : tris) { add(t.vertex0,t.vertex1); add(t.vertex1,t.vertex2); add(t.vertex2,t.vertex0); }
+    std::sort(edges.begin(), edges.end());
+    if (edges.empty()) return false;
+    for (size_t i=0;i<edges.size();) {
+        size_t j=i; while (j<edges.size() && edges[j]==edges[i]) ++j;
+        if ((j-i) != 2) return false;   // open edge (1) or non-manifold (>2)
+        i=j;
+    }
+    return true;
+}
+
+// Extrude a unit square profile along one segment -> a closed prism, watertight.
+static void test_extrude_square_prism() {
+    tri_emit::Profile prof;
+    prof.outer = { {-0.5f,-0.5f}, {0.5f,-0.5f}, {0.5f,0.5f}, {-0.5f,0.5f} }; // CCW
+    float3 path[2] = { make_float3(0,0,0), make_float3(0,0,2) };
+
+    tri_emit::TriangleBuildBuffer buf;
+    buf.extrude(prof, path, 2, tri_emit::JoinType::MITER, /*mat*/3, mat4::Identity());
+    CHECK(!buf.triangles().empty(), "extrude square prism emits triangles");
+    CHECK(buf.triangles().size() == buf.tri_extra().size(), "Tri/TriEx parallel");
+    CHECK(is_watertight(buf.triangles()),
+          "extrude square prism is watertight (every edge shared by exactly 2 tris)");
+    for (const TriEx& e : buf.tri_extra())
+        CHECK(e.materialId == 3, "extrude prism carries the material");
+}
+
+// Extrude an annulus (outer square + inner square hole) -> a hollow tube with
+// capped (annular) ends. Walls on both contours + annular caps; watertight.
+static void test_extrude_annulus_tube() {
+    tri_emit::Profile prof;
+    prof.outer = { {-1,-1}, {1,-1}, {1,1}, {-1,1} };               // CCW
+    prof.holes.push_back({ {-0.4f,-0.4f}, {-0.4f,0.4f}, {0.4f,0.4f}, {0.4f,-0.4f} }); // CW
+    float3 path[2] = { make_float3(0,0,0), make_float3(0,0,3) };
+
+    tri_emit::TriangleBuildBuffer buf;
+    buf.extrude(prof, path, 2, tri_emit::JoinType::MITER, /*mat*/2, mat4::Identity());
+    CHECK(!buf.triangles().empty(), "extrude annulus emits triangles");
+    CHECK(is_watertight(buf.triangles()),
+          "extrude annulus tube is watertight (hollow with annular caps)");
+    // Inner cavity exists: some wall vertex sits at the hole radius (|x|~0.4),
+    // distinct from the outer wall (|x|~1.0).
+    bool inner_wall=false, outer_wall=false;
+    for (const Tri& t : buf.triangles())
+        for (const float3& v : { t.vertex0, t.vertex1, t.vertex2 }) {
+            float ax=fabsf(v.x), ay=fabsf(v.y);
+            if (fabsf(ax-0.4f)<1e-3f || fabsf(ay-0.4f)<1e-3f) inner_wall=true;
+            if (fabsf(ax-1.0f)<1e-3f || fabsf(ay-1.0f)<1e-3f) outer_wall=true;
+        }
+    CHECK(inner_wall && outer_wall, "extrude annulus has both inner (hole) and outer walls");
+}
+
+// Extrude along an L-shaped polyline (3 points): no twist at the joint, and
+// MITER vs BEVEL produce a different corner triangle count.
+static void test_extrude_polyline_joins() {
+    tri_emit::Profile prof;
+    prof.outer = { {-0.3f,-0.3f}, {0.3f,-0.3f}, {0.3f,0.3f}, {-0.3f,0.3f} };
+    // L path: go +X then +Y, bending in the XY plane.
+    float3 path[3] = { make_float3(0,0,0), make_float3(2,0,0), make_float3(2,2,0) };
+
+    tri_emit::TriangleBuildBuffer miter;
+    miter.extrude(prof, path, 3, tri_emit::JoinType::MITER, 1, mat4::Identity());
+    CHECK(!miter.triangles().empty(), "extrude L (miter) emits triangles");
+
+    tri_emit::TriangleBuildBuffer bevel;
+    bevel.extrude(prof, path, 3, tri_emit::JoinType::BEVEL, 1, mat4::Identity());
+    CHECK(!bevel.triangles().empty(), "extrude L (bevel) emits triangles");
+
+    // The join differs: bevel inserts an extra chamfer band at the corner, so
+    // its triangle count differs from miter's.
+    CHECK(miter.triangles().size() != bevel.triangles().size(),
+          "MITER vs BEVEL produce a different corner triangle count");
+
+    // No twist: the profile must not flip across the joint. Check the section at
+    // the end retains the profile's extent (~0.3 half-width), i.e. the frame
+    // transported without collapsing/rolling. The mid/end rings keep |offset|
+    // near 0.3 from the path centerline.
+    bool kept_extent = false;
+    for (const Tri& t : miter.triangles()) {
+        float3 v = t.vertex2;
+        // near the end point (2,2,0): z stays ~0 (no out-of-plane twist).
+        if (fabsf(v.x-2.0f)<0.5f && v.y>1.0f) {
+            if (fabsf(v.z) < 0.35f) kept_extent = true;
+        }
+    }
+    CHECK(kept_extent, "extrude L keeps the profile in-plane (no twist at the joint)");
+}
+
+// --- Phase 5: round-primitive mesh emitters ---------------------------------
+
+// Cylinder = cappedCone with equal radii: a flat-capped circular wall, watertight,
+// every wall vertex at radius r from the axis.
+static void test_mesh_cylinder() {
+    tri_emit::TriangleBuildBuffer buf;
+    buf.cappedCone(make_float3(0,0,0), make_float3(0,0,2), 0.5f, 0.5f,
+                   /*mat*/3, mat4::Identity(), /*segments*/16);
+    CHECK(!buf.triangles().empty(), "cylinder emits triangles");
+    CHECK(buf.triangles().size() == buf.tri_extra().size(), "Tri/TriEx parallel");
+    CHECK(is_watertight(buf.triangles()),
+          "cylinder is watertight (flat-capped circular wall)");
+    for (const TriEx& e : buf.tri_extra())
+        CHECK(e.materialId == 3, "cylinder carries material");
+    // Wall radius: max distance from the z-axis ~ r.
+    float maxr = 0;
+    for (const Tri& t : buf.triangles())
+        for (const float3& v : { t.vertex0, t.vertex1, t.vertex2 }) {
+            float rr = sqrtf(v.x*v.x + v.y*v.y);
+            if (rr > maxr) maxr = rr;
+        }
+    CHECK(fabsf(maxr - 0.5f) < 1e-3f, "cylinder wall radius ~ 0.5");
+}
+
+// Cone with r1==0: tapers to a point. Watertight, with a genuine apex (a vertex
+// at the b endpoint) and no degenerate zero-area cap at that end.
+static void test_mesh_cone_apex() {
+    tri_emit::TriangleBuildBuffer buf;
+    buf.cappedCone(make_float3(0,0,0), make_float3(0,0,2), 0.7f, 0.0f,
+                   /*mat*/1, mat4::Identity(), /*segments*/16);
+    CHECK(!buf.triangles().empty(), "cone (r1=0) emits triangles");
+    CHECK(is_watertight(buf.triangles()), "cone to a point is watertight");
+    // Apex present at b=(0,0,2); base radius ~0.7 near a.
+    bool apex = false; float base_r = 0;
+    for (const Tri& t : buf.triangles())
+        for (const float3& v : { t.vertex0, t.vertex1, t.vertex2 }) {
+            if (near3(v, make_float3(0,0,2), 1e-4f)) apex = true;
+            if (fabsf(v.z) < 1e-4f) {
+                float rr = sqrtf(v.x*v.x + v.y*v.y);
+                if (rr > base_r) base_r = rr;
+            }
+        }
+    CHECK(apex, "cone has a true apex vertex at b");
+    CHECK(fabsf(base_r - 0.7f) < 1e-3f, "cone base radius ~ 0.7");
+    // No zero-area triangles (the apex must not produce a degenerate flat cap).
+    int degenerate = 0;
+    for (const Tri& t : buf.triangles()) {
+        float3 e1 = t.vertex1 - t.vertex0, e2 = t.vertex2 - t.vertex0;
+        float3 n = cross(e1, e2);
+        if (sqrtf(n.x*n.x+n.y*n.y+n.z*n.z) < 1e-9f) ++degenerate;
+    }
+    CHECK(degenerate == 0, "cone apex produces no zero-area triangles");
+}
+
+// Truncated cone: r0 != r1, both nonzero -> flat caps at both ends, watertight.
+static void test_mesh_truncated_cone() {
+    tri_emit::TriangleBuildBuffer buf;
+    buf.cappedCone(make_float3(0,0,0), make_float3(0,3,0), 1.0f, 0.4f,
+                   /*mat*/2, mat4::Identity(), /*segments*/20);
+    CHECK(!buf.triangles().empty(), "truncated cone emits triangles");
+    CHECK(is_watertight(buf.triangles()), "truncated cone is watertight");
+    float r_at_a = 0, r_at_b = 0;
+    for (const Tri& t : buf.triangles())
+        for (const float3& v : { t.vertex0, t.vertex1, t.vertex2 }) {
+            float rr = sqrtf(v.x*v.x + v.z*v.z);
+            if (fabsf(v.y) < 1e-4f)        { if (rr > r_at_a) r_at_a = rr; }
+            else if (fabsf(v.y-3.0f)<1e-4f){ if (rr > r_at_b) r_at_b = rr; }
+        }
+    CHECK(fabsf(r_at_a-1.0f)<1e-3f && fabsf(r_at_b-0.4f)<1e-3f,
+          "truncated cone tapers 1.0 (a) -> 0.4 (b)");
+}
+
+// Capsule: cylindrical wall + a hemisphere cap at each end. Watertight, smooth,
+// extent extends a full radius past each segment endpoint along the axis.
+static void test_mesh_capsule() {
+    tri_emit::TriangleBuildBuffer buf;
+    buf.capsule(make_float3(0,0,0), make_float3(0,0,2), 0.5f,
+                /*mat*/4, mat4::Identity(), /*segments*/16, /*rings*/6);
+    CHECK(!buf.triangles().empty(), "capsule emits triangles");
+    CHECK(is_watertight(buf.triangles()), "capsule is watertight (hemisphere caps)");
+    for (const TriEx& e : buf.tri_extra())
+        CHECK(e.materialId == 4, "capsule carries material");
+    // Hemisphere caps: a pole sits a full radius beyond each endpoint
+    // (z ~ -0.5 below a and z ~ 2.5 above b), and no vertex exceeds r from axis.
+    float minz = 1e9f, maxz = -1e9f, maxr = 0;
+    for (const Tri& t : buf.triangles())
+        for (const float3& v : { t.vertex0, t.vertex1, t.vertex2 }) {
+            if (v.z < minz) minz = v.z;
+            if (v.z > maxz) maxz = v.z;
+            float rr = sqrtf(v.x*v.x + v.y*v.y);
+            if (rr > maxr) maxr = rr;
+        }
+    CHECK(fabsf(minz - (-0.5f)) < 1e-3f, "capsule -z pole a radius below a");
+    CHECK(fabsf(maxz - 2.5f) < 1e-3f, "capsule +z pole a radius above b");
+    CHECK(maxr <= 0.5f + 1e-3f, "capsule never exceeds radius from the axis");
+}
+
+// Mesh capsule/cylinder/cone bake under the transform stack (translation moves
+// every vertex), mirroring the G8 sphere/box baking contract.
+static void test_mesh_round_baked_transform() {
+    tri_emit::TriangleBuildBuffer buf;
+    buf.cappedCone(make_float3(0,0,0), make_float3(0,0,1), 0.3f, 0.3f,
+                   0, mat4::Translate(make_float3(10,0,0)), 12);
+    float cx = 0; int nv = 0;
+    for (const Tri& t : buf.triangles()) { cx += t.centroid.x; ++nv; }
+    CHECK(nv > 0 && fabsf((cx/nv) - 10.0f) < 0.5f,
+          "round primitive baked under translate (centered ~x=10)");
+}
+
 int main() {
     test_triangle_emission();
     test_one_blas_merge();
@@ -237,6 +525,15 @@ int main() {
     test_no_field_interaction();
     test_variation_dedup();
     test_variation_lod_independence();
+    test_g8_mesh_sphere_box();
+    test_extrude_square_prism();
+    test_extrude_annulus_tube();
+    test_extrude_polyline_joins();
+    test_mesh_cylinder();
+    test_mesh_cone_apex();
+    test_mesh_truncated_cone();
+    test_mesh_capsule();
+    test_mesh_round_baked_transform();
     if (failures == 0) printf("All triangle_variation tests passed\n");
     return failures == 0 ? 0 : 1;
 }

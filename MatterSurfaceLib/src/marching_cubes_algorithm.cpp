@@ -11,14 +11,28 @@ GroupMeshResult MarchingCubesAlgorithm::generate(const MeshContext& ctx) const {
     GroupMeshResult result;
     result.group_id = ctx.group_id;
 
-    if (ctx.particles.empty()) return result;
+    // A fat-primitive-only group (e.g. a pure box part) has no spheres but still
+    // has surface to mesh, so only bail when there is nothing at all to sample.
+    if (ctx.particles.empty() && ctx.fat_count == 0) return result;
 
-    Particle* particles = const_cast<Particle*>(ctx.particles.data());
+    Particle* particles = ctx.particles.empty()
+        ? nullptr : const_cast<Particle*>(ctx.particles.data());
     int particleCount = (int)ctx.particles.size();
     Particle* clip = const_cast<Particle*>(ctx.clip);
     Particle* carve = const_cast<Particle*>(ctx.carve);
 
-    Mesh mesh = GenerateMeshWithScratch(ctx.scratch, particles, ctx.max_radius, particleCount,
+    // Ordered-CSG / typed iso-primitive path: when the context carries an ordered
+    // stage list or any fat primitive, drive the staged field eval. Otherwise the
+    // legacy single-union mesher runs (byte-identical hot path). GenerateMeshStaged
+    // internally falls back to the legacy path when field_needs_staging is false.
+    const bool staged = (ctx.fat_count > 0) ||
+                        (ctx.stages != nullptr && ctx.stages->stageCount > 1);
+
+    Mesh mesh = staged
+        ? GenerateMeshStaged(ctx.scratch, particles, ctx.max_radius, particleCount,
+                             ctx.bounds, ctx.blend_width, ctx.stages, ctx.fat, ctx.fat_count,
+                             clip, ctx.clip_count, carve, ctx.carve_count, ctx.carve_blend)
+        : GenerateMeshWithScratch(ctx.scratch, particles, ctx.max_radius, particleCount,
                              ctx.bounds, ctx.blend_width, clip, ctx.clip_count,
                              carve, ctx.carve_count, ctx.carve_blend);
 
@@ -48,16 +62,32 @@ GroupMeshResult MarchingCubesAlgorithm::generate(const MeshContext& ctx) const {
     float tri_search = ctx.max_radius * 2.5f + ctx.blend_width * 4.0f;
     for (size_t t = 0; t < triangle_normals.size() && t < triangles.size(); ++t) {
         const float3& c = triangles[t].centroid;
-        int bestIdx = 0;
-        Particle* nearest = NULL;
-        int nfound = tri_hash
-            ? sh_query_radius_nearest(tri_hash, c.x, c.y, c.z, tri_search, (void**)&nearest, 1)
-            : 0;
-        if (nfound > 0 && nearest) {
-            bestIdx = (int)(nearest - particles);
+        if (particleCount > 0) {
+            int bestIdx = 0;
+            Particle* nearest = NULL;
+            int nfound = tri_hash
+                ? sh_query_radius_nearest(tri_hash, c.x, c.y, c.z, tri_search, (void**)&nearest, 1)
+                : 0;
+            if (nfound > 0 && nearest) {
+                bestIdx = (int)(nearest - particles);
+            }
+            triangle_normals[t].materialId = particles[bestIdx].materialId;
+            triangle_normals[t].tint = ctx.particle_tints[bestIdx];
+        } else if (ctx.fat_count > 0) {
+            // Fat-primitive-only group: tag each triangle from the nearest fat
+            // primitive (by bounding-sphere center) since there are no spheres.
+            int bestIdx = 0; float bestD2 = 1e30f;
+            for (int j = 0; j < ctx.fat_count; ++j) {
+                float dx = c.x - ctx.fat[j].center.x;
+                float dy = c.y - ctx.fat[j].center.y;
+                float dz = c.z - ctx.fat[j].center.z;
+                float d2 = dx*dx + dy*dy + dz*dz;
+                if (d2 < bestD2) { bestD2 = d2; bestIdx = j; }
+            }
+            triangle_normals[t].materialId = ctx.fat[bestIdx].materialId;
+            const Vector4& ft = ctx.fat[bestIdx].tint;
+            triangle_normals[t].tint = make_float4(ft.x, ft.y, ft.z, ft.w);
         }
-        triangle_normals[t].materialId = particles[bestIdx].materialId;
-        triangle_normals[t].tint = ctx.particle_tints[bestIdx];
     }
 
     result.mesh = mesh;

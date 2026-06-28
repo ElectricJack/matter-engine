@@ -54,7 +54,7 @@ else
     LDLIBS = ../../Libraries/raylib/src/libraylib.a
 endif
 
-.PHONY: clean run-partv2 run-script run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-example run-viewer-logic
+.PHONY: clean run-partv2 run-script run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-example run-gallery run-viewer-logic run-iso run-polytri
 
 # Part Artifact v2 round-trip + resolved-hash + format-guard tests (headless, GL-free).
 # NEW impl ../src/part_asset_v2.cpp + consumed MatterSurfaceLib backend sources.
@@ -95,8 +95,8 @@ SCRIPT_TARGET = script_host_tests
 # NEW MatterEngine3 sources keep ../src/...; SP-1's NEW part_asset_v2.cpp (../src/)
 # supplies save_v2/compute_resolved_hash/LodLevels. Consumed prototype sources are
 # referenced read-only as ../../MatterSurfaceLib/src/<dep>.
-SCRIPT_CPP = script_host_tests.cpp ../src/script_host.cpp ../src/dsl_state.cpp \
-             ../src/dsl_bindings.cpp ../src/csg_lowering.cpp ../src/module_resolver.cpp ../src/part_asset_v2.cpp \
+SCRIPT_CPP = script_host_tests.cpp ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp \
+             ../src/dsl_bindings.cpp ../src/csg_lowering.cpp ../src/module_resolver.cpp ../src/part_asset_v2.cpp ../src/lod_bake.cpp \
              ../../MatterSurfaceLib/src/cluster.cpp ../../MatterSurfaceLib/src/cell.cpp ../../MatterSurfaceLib/src/mesh_simplifier.cpp \
              ../../MatterSurfaceLib/src/blas_manager.cpp ../../MatterSurfaceLib/src/bvh.cpp ../../MatterSurfaceLib/src/bvh_analyzer.cpp \
              ../../MatterSurfaceLib/src/mesh_worker_pool.cpp ../../MatterSurfaceLib/src/mesh_build_utils.cpp \
@@ -105,8 +105,9 @@ SCRIPT_CPP = script_host_tests.cpp ../src/script_host.cpp ../src/dsl_state.cpp \
              ../../MatterSurfaceLib/src/occupancy.cpp ../../MatterSurfaceLib/src/tlas_manager.cpp ../../MatterSurfaceLib/src/part_asset.cpp \
              ../../MatterSurfaceLib/src/lattice.cpp ../../MatterSurfaceLib/src/particle_culling.cpp
 SCRIPT_C   = ../../MatterSurfaceLib/src/surface.c ../../MatterSurfaceLib/src/open_particle_surface.c \
+             ../../MatterSurfaceLib/src/fat_primitive.c \
              ../../MatterSurfaceLib/src/spatial_hash.c ../../MatterSurfaceLib/src/object_allocator.c ../../MatterSurfaceLib/src/material_registry.c
-SCRIPT_C_OBJ = surface.o open_particle_surface.o spatial_hash.o object_allocator.o material_registry.o
+SCRIPT_C_OBJ = surface.o open_particle_surface.o fat_primitive.o spatial_hash.o object_allocator.o material_registry.o
 
 $(SCRIPT_TARGET): $(SCRIPT_CPP) $(SCRIPT_C) $(QJS_C)
 	gcc -c $(QJS_C) -O2 -DCONFIG_VERSION='"0.10.0"' $(QJS_INC)
@@ -118,6 +119,31 @@ $(SCRIPT_TARGET): $(SCRIPT_CPP) $(SCRIPT_C) $(QJS_C)
 run-script: $(SCRIPT_TARGET)
 	./$(SCRIPT_TARGET)
 
+# Phase 1 typed iso-primitives + ordered CSG: drives the REAL surface.c field eval
+# (via ProbeFieldScalar) from a lowered DslState buffer and compares against the
+# csg_lowering analytic oracle. GL-free, no QuickJS. fat_primitive.c is the new MSL
+# SDF dispatch; material_registry.c/object_allocator.c keep their extern "C" symbols
+# unmangled via gcc.
+ISO_TARGET = iso_primitive_tests
+ISO_CPP = iso_primitive_tests.cpp field_probe.cpp \
+          ../src/csg_lowering.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp \
+          ../src/part_asset_v2.cpp \
+          ../../MatterSurfaceLib/src/part_asset.cpp ../../MatterSurfaceLib/src/blas_manager.cpp \
+          ../../MatterSurfaceLib/src/bvh.cpp ../../MatterSurfaceLib/src/tlas_manager.cpp \
+          ../../MatterSurfaceLib/src/vertex_ao.cpp ../../MatterSurfaceLib/src/occupancy.cpp
+ISO_C   = ../../MatterSurfaceLib/src/surface.c ../../MatterSurfaceLib/src/fat_primitive.c \
+          ../../MatterSurfaceLib/src/spatial_hash.c ../../MatterSurfaceLib/src/object_allocator.c \
+          ../../MatterSurfaceLib/src/material_registry.c
+ISO_C_OBJ = surface.o fat_primitive.o spatial_hash.o object_allocator.o material_registry.o
+
+$(ISO_TARGET): $(ISO_CPP) $(ISO_C)
+	gcc -c $(ISO_C) -O2 -DPLATFORM_DESKTOP $(INCLUDE_PATHS)
+	$(CC) $(ISO_CPP) $(ISO_C_OBJ) -o $(ISO_TARGET) $(CFLAGS) $(INCLUDE_PATHS) $(LDFLAGS) $(LDLIBS)
+	rm -f $(ISO_C_OBJ)
+
+run-iso: $(ISO_TARGET)
+	./$(ISO_TARGET)
+
 # SP-3 end-to-end install through the REAL FileModuleResolver/HostBaker adapters,
 # which drive the SP-2 ScriptHost (eval_requires + resolve_hash + bake_source ->
 # save_v2). Built with -DMATTER_HAVE_SCRIPT_HOST so the guarded adapters in
@@ -125,8 +151,8 @@ run-script: $(SCRIPT_TARGET)
 # SCRIPT_CPP) plus ../src/part_graph.cpp. material_registry.c stays gcc-compiled.
 GRAPH_INT_TARGET = part_graph_integration_tests
 GRAPH_INT_CPP = part_graph_integration_tests.cpp ../src/part_graph.cpp \
-                ../src/script_host.cpp ../src/dsl_state.cpp \
-                ../src/dsl_bindings.cpp ../src/csg_lowering.cpp ../src/module_resolver.cpp ../src/part_asset_v2.cpp \
+                ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp \
+                ../src/dsl_bindings.cpp ../src/csg_lowering.cpp ../src/module_resolver.cpp ../src/part_asset_v2.cpp ../src/lod_bake.cpp \
                 ../../MatterSurfaceLib/src/cluster.cpp ../../MatterSurfaceLib/src/cell.cpp ../../MatterSurfaceLib/src/mesh_simplifier.cpp \
                 ../../MatterSurfaceLib/src/blas_manager.cpp ../../MatterSurfaceLib/src/bvh.cpp ../../MatterSurfaceLib/src/bvh_analyzer.cpp \
                 ../../MatterSurfaceLib/src/mesh_worker_pool.cpp ../../MatterSurfaceLib/src/mesh_build_utils.cpp \
@@ -135,8 +161,9 @@ GRAPH_INT_CPP = part_graph_integration_tests.cpp ../src/part_graph.cpp \
                 ../../MatterSurfaceLib/src/occupancy.cpp ../../MatterSurfaceLib/src/tlas_manager.cpp ../../MatterSurfaceLib/src/part_asset.cpp \
                 ../../MatterSurfaceLib/src/lattice.cpp ../../MatterSurfaceLib/src/particle_culling.cpp
 GRAPH_INT_C   = ../../MatterSurfaceLib/src/surface.c ../../MatterSurfaceLib/src/open_particle_surface.c \
+                ../../MatterSurfaceLib/src/fat_primitive.c \
                 ../../MatterSurfaceLib/src/spatial_hash.c ../../MatterSurfaceLib/src/object_allocator.c ../../MatterSurfaceLib/src/material_registry.c
-GRAPH_INT_C_OBJ = surface.o open_particle_surface.o spatial_hash.o object_allocator.o material_registry.o
+GRAPH_INT_C_OBJ = surface.o open_particle_surface.o fat_primitive.o spatial_hash.o object_allocator.o material_registry.o
 
 $(GRAPH_INT_TARGET): $(GRAPH_INT_CPP) $(GRAPH_INT_C) $(QJS_C)
 	gcc -c $(QJS_C) -O2 -DCONFIG_VERSION='"0.10.0"' $(QJS_INC)
@@ -175,7 +202,7 @@ run-graph: $(GRAPH_TARGET)
 # + consumed MatterSurfaceLib backend sources (read-only). material_registry.c is
 # compiled via gcc so its extern "C" symbols stay unmangled.
 TRIVAR_TARGET = triangle_variation_tests
-TRIVAR_CPP = triangle_variation_tests.cpp ../src/triangle_emit.cpp ../src/part_asset_v2.cpp \
+TRIVAR_CPP = triangle_variation_tests.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp ../src/part_asset_v2.cpp \
              ../../MatterSurfaceLib/src/part_asset.cpp \
              ../../MatterSurfaceLib/src/blas_manager.cpp ../../MatterSurfaceLib/src/bvh.cpp \
              ../../MatterSurfaceLib/src/tlas_manager.cpp \
@@ -191,6 +218,17 @@ $(TRIVAR_TARGET): $(TRIVAR_CPP) $(TRIVAR_C)
 run-trivar: $(TRIVAR_TARGET)
 	./$(TRIVAR_TARGET)
 
+# Phase 3 pure ear-clipping triangulator (holes + concave). Standalone, no MSL/
+# raylib/QuickJS deps -> a fast unit test of polygon_triangulate.{hpp,cpp} alone.
+POLYTRI_TARGET = polygon_triangulate_tests
+POLYTRI_CPP = polygon_triangulate_tests.cpp ../src/polygon_triangulate.cpp
+
+$(POLYTRI_TARGET): $(POLYTRI_CPP)
+	$(CC) $(POLYTRI_CPP) -o $(POLYTRI_TARGET) $(CFLAGS) -I../include
+
+run-polytri: $(POLYTRI_TARGET)
+	./$(POLYTRI_TARGET)
+
 # Shared script library: module-resolution + source-fold unit + JS-helper bake tests
 # PLUS the SP-7 end-to-end bake test (-DSP2_SCRIPT_HOST), which drives the real
 # SP-2 ScriptHost (set_shared_lib_root -> fold-into-hash + QuickJS module loader).
@@ -199,7 +237,7 @@ run-trivar: $(TRIVAR_TARGET)
 # symbols stay unmangled; material_registry.c likewise.
 SHLIB_TARGET = shared_lib_tests
 SHLIB_CPP = shared_lib_tests.cpp ../src/module_resolver.cpp ../src/script_rng_binding.cpp \
-            ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_bindings.cpp ../src/csg_lowering.cpp \
+            ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp ../src/dsl_bindings.cpp ../src/csg_lowering.cpp \
             ../src/part_asset_v2.cpp \
             ../../MatterSurfaceLib/src/cluster.cpp ../../MatterSurfaceLib/src/cell.cpp ../../MatterSurfaceLib/src/mesh_simplifier.cpp \
             ../../MatterSurfaceLib/src/blas_manager.cpp ../../MatterSurfaceLib/src/bvh.cpp ../../MatterSurfaceLib/src/bvh_analyzer.cpp \
@@ -268,7 +306,7 @@ run-dev: $(DEV_TARGET)
 # sources are gcc-compiled to keep their extern "C" symbols unmangled.
 EXAMPLE_TARGET = example_world
 EXAMPLE_CPP = example_world.cpp ../src/part_graph.cpp \
-              ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_bindings.cpp \
+              ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp ../src/dsl_bindings.cpp \
               ../src/csg_lowering.cpp ../src/module_resolver.cpp ../src/script_rng_binding.cpp \
               ../src/part_asset_v2.cpp ../src/lod_bake.cpp ../src/world_flatten.cpp \
               ../src/sector_grid.cpp ../src/lod_select.cpp \
@@ -280,8 +318,9 @@ EXAMPLE_CPP = example_world.cpp ../src/part_graph.cpp \
               ../../MatterSurfaceLib/src/occupancy.cpp ../../MatterSurfaceLib/src/tlas_manager.cpp ../../MatterSurfaceLib/src/part_asset.cpp \
               ../../MatterSurfaceLib/src/lattice.cpp ../../MatterSurfaceLib/src/particle_culling.cpp
 EXAMPLE_C   = ../../MatterSurfaceLib/src/surface.c ../../MatterSurfaceLib/src/open_particle_surface.c \
-              ../../MatterSurfaceLib/src/spatial_hash.c ../../MatterSurfaceLib/src/object_allocator.c ../../MatterSurfaceLib/src/material_registry.c
-EXAMPLE_C_OBJ = surface.o open_particle_surface.o spatial_hash.o object_allocator.o material_registry.o
+              ../../MatterSurfaceLib/src/spatial_hash.c ../../MatterSurfaceLib/src/object_allocator.c ../../MatterSurfaceLib/src/material_registry.c \
+              ../../MatterSurfaceLib/src/fat_primitive.c
+EXAMPLE_C_OBJ = surface.o open_particle_surface.o spatial_hash.o object_allocator.o material_registry.o fat_primitive.o
 
 $(EXAMPLE_TARGET): $(EXAMPLE_CPP) $(EXAMPLE_C) $(QJS_C)
 	gcc -c $(QJS_C) -O2 -DCONFIG_VERSION='"0.10.0"' $(QJS_INC)
@@ -292,6 +331,22 @@ $(EXAMPLE_TARGET): $(EXAMPLE_CPP) $(EXAMPLE_C) $(QJS_C)
 
 run-example: $(EXAMPLE_TARGET)
 	./$(EXAMPLE_TARGET)
+
+# Headless bake smoke test for the primitive test world (examples/primitive_demo).
+# Reuses the full example_world pipeline source set (minus that driver) and points
+# it at the Gallery manifest; asserts every baked artifact round-trips with
+# geometry. Must run from this tests/ dir so the relative asset paths resolve.
+GALLERY_TARGET = gallery_bake_tests
+GALLERY_CPP = gallery_bake_tests.cpp $(filter-out example_world.cpp, $(EXAMPLE_CPP))
+$(GALLERY_TARGET): $(GALLERY_CPP) $(EXAMPLE_C) $(QJS_C)
+	gcc -c $(QJS_C) -O2 -DCONFIG_VERSION='"0.10.0"' $(QJS_INC)
+	gcc -c $(EXAMPLE_C) -O2 -DPLATFORM_DESKTOP $(INCLUDE_PATHS)
+	$(CC) $(GALLERY_CPP) $(QJS_OBJ) $(EXAMPLE_C_OBJ) -o $(GALLERY_TARGET) \
+	      $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST $(INCLUDE_PATHS) $(QJS_INC) $(LDFLAGS) $(LDLIBS)
+	rm -f $(QJS_OBJ) $(EXAMPLE_C_OBJ)
+
+run-gallery: $(GALLERY_TARGET)
+	./$(GALLERY_TARGET)
 
 # --- Viewer GL-free logic suite (WorldState, resolvers, PartStore, LocalProvider).
 # Reuses the example_world pipeline source set (SP-2 host + QuickJS + SP-4 compose

@@ -87,7 +87,16 @@ struct Cell {
                                      SurfaceScratch* scratch,
                                      float simplification_ratio, float base_detail, int max_pow,
                                      float uniform_detail,
-                                     const Particle* carveParticles, int carveCount) const;
+                                     const Particle* carveParticles, int carveCount,
+                                     // Typed iso-primitives + ordered CSG (Phase 1). Borrowed,
+                                     // NOT in the spatial hash. Left NULL/0 by the legacy live
+                                     // bake so its hot path stays byte-identical. `stages`
+                                     // carries the ordered stage-op list; `clusterStage` is the
+                                     // CSG stage index per `cluster_particles` entry (parallel),
+                                     // from which the cell builds its local particle->stage map.
+                                     const FieldStages* stages = nullptr,
+                                     const FatPrim* fat = nullptr, int fatCount = 0,
+                                     const int* clusterStage = nullptr) const;
     // Main-thread commit of a CellMeshResult: UploadMesh (GL), BLAS registration,
     // BVH report, and material_meshes/material_blas writes. Sets has_meshes.
     void commit_cell_meshes(CellMeshResult& result, BLASManager& blas_manager);
@@ -119,7 +128,10 @@ private:
     GroupMeshResult build_group_mesh(uint32_t group_id, const std::vector<StaticParticle>& cluster_particles,
                                      SurfaceScratch* scratch,
                                      float simplification_ratio, float base_detail, int max_pow, float uniform_detail,
-                                     const Particle* carveParticles, int carveCount) const;
+                                     const Particle* carveParticles, int carveCount,
+                                     const FieldStages* stages = nullptr,
+                                     const FatPrim* fat = nullptr, int fatCount = 0,
+                                     const int* clusterStage = nullptr) const;
     // Main-thread commit of one group's result (UploadMesh + BLAS + BVH report).
     void commit_group_mesh(GroupMeshResult& result, BLASManager& blas_manager);
 };

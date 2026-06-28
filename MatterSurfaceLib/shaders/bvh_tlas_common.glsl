@@ -281,12 +281,10 @@ BVHNode decodeBVHNode(int nodeIndex)
 TLASNode decodeTLASNode(int nodeIndex)
 {
     TLASNode node;
-    
-    float nodeTexCoord = (float(nodeIndex) + 0.5) / float(tlasNodeCount);
 
-    vec4 data0 = texture(tlasNodesTexture, vec2(nodeTexCoord, 0.125));    // aabbMin + leftChild
-    vec4 data1 = texture(tlasNodesTexture, vec2(nodeTexCoord, 0.375));    // aabbMax + BLAS
-    vec4 data2 = texture(tlasNodesTexture, vec2(nodeTexCoord, 0.8333));   // rightChild in .w
+    vec4 data0 = texture(tlasNodesTexture, tiledTexel(tlasNodesTexture, nodeIndex, 0, 3));  // aabbMin + leftChild
+    vec4 data1 = texture(tlasNodesTexture, tiledTexel(tlasNodesTexture, nodeIndex, 1, 3));  // aabbMax + BLAS
+    vec4 data2 = texture(tlasNodesTexture, tiledTexel(tlasNodesTexture, nodeIndex, 2, 3));  // rightChild in .w
 
     node.aabbMin = data0.xyz;
     node.leftChild = uint(data0.w);
@@ -301,27 +299,25 @@ TLASNode decodeTLASNode(int nodeIndex)
 BVHInstance decodeInstance(int instanceIndex)
 {
     BVHInstance inst;
-    
-    float instTexCoord = (float(instanceIndex) + 0.5) / float(instanceCount);
-    
+
     // Load transform matrix (4 rows, stored as individual floats)
-    vec4 row0 = texture(instancesTexture, vec2(instTexCoord, 0.0556));
-    vec4 row1 = texture(instancesTexture, vec2(instTexCoord, 0.1667));
-    vec4 row2 = texture(instancesTexture, vec2(instTexCoord, 0.2778));
-    vec4 row3 = texture(instancesTexture, vec2(instTexCoord, 0.3889));
-    
+    vec4 row0 = texture(instancesTexture, tiledTexel(instancesTexture, instanceIndex, 0, 9));
+    vec4 row1 = texture(instancesTexture, tiledTexel(instancesTexture, instanceIndex, 1, 9));
+    vec4 row2 = texture(instancesTexture, tiledTexel(instancesTexture, instanceIndex, 2, 9));
+    vec4 row3 = texture(instancesTexture, tiledTexel(instancesTexture, instanceIndex, 3, 9));
+
     // Store as individual floats in row-major order
     inst.transform[0] = row0.x; inst.transform[1] = row0.y; inst.transform[2] = row0.z; inst.transform[3] = row0.w;
     inst.transform[4] = row1.x; inst.transform[5] = row1.y; inst.transform[6] = row1.z; inst.transform[7] = row1.w;
     inst.transform[8] = row2.x; inst.transform[9] = row2.y; inst.transform[10] = row2.z; inst.transform[11] = row2.w;
     inst.transform[12] = row3.x; inst.transform[13] = row3.y; inst.transform[14] = row3.z; inst.transform[15] = row3.w;
-    
+
     // Load inverse transform matrix (4 rows)
-    vec4 invRow0 = texture(instancesTexture, vec2(instTexCoord, 0.5000));
-    vec4 invRow1 = texture(instancesTexture, vec2(instTexCoord, 0.6111));
-    vec4 invRow2 = texture(instancesTexture, vec2(instTexCoord, 0.7222));
-    vec4 invRow3 = texture(instancesTexture, vec2(instTexCoord, 0.8333));
-    
+    vec4 invRow0 = texture(instancesTexture, tiledTexel(instancesTexture, instanceIndex, 4, 9));
+    vec4 invRow1 = texture(instancesTexture, tiledTexel(instancesTexture, instanceIndex, 5, 9));
+    vec4 invRow2 = texture(instancesTexture, tiledTexel(instancesTexture, instanceIndex, 6, 9));
+    vec4 invRow3 = texture(instancesTexture, tiledTexel(instancesTexture, instanceIndex, 7, 9));
+
     // Store as individual floats in row-major order  
     inst.invTransform[0] = invRow0.x; inst.invTransform[1] = invRow0.y; inst.invTransform[2] = invRow0.z; inst.invTransform[3] = invRow0.w;
     inst.invTransform[4] = invRow1.x; inst.invTransform[5] = invRow1.y; inst.invTransform[6] = invRow1.z; inst.invTransform[7] = invRow1.w;
@@ -329,7 +325,7 @@ BVHInstance decodeInstance(int instanceIndex)
     inst.invTransform[12] = invRow3.x; inst.invTransform[13] = invRow3.y; inst.invTransform[14] = invRow3.z; inst.invTransform[15] = invRow3.w;
     
     // Load metadata (currently using blas_start_index as blasIndex for compatibility)
-    vec4 metadata = texture(instancesTexture, vec2(instTexCoord, 0.9444));
+    vec4 metadata = texture(instancesTexture, tiledTexel(instancesTexture, instanceIndex, 8, 9));
     inst.blasIndex = uint(metadata.x); // Actually blas_start_index for now
     inst.materialId = uint(metadata.y); // Will be 0 for now
     inst.isImposter = metadata.z > 0.5;

@@ -34,7 +34,10 @@ const LoadedPart* PartStore::get_or_load(uint64_t part_hash) {
     // load_v2 registers the full-resolution geometry into a SCRATCH BLASManager;
     // we then re-bake LODs into the shared store BLASManager.
     BLASManager scratch;
-    TLASManager scratch_tlas(256);
+    // Sized to match the part bake's group cap: a detailed trunk bakes to >256
+    // mesh groups. The scratch TLAS is unused for geometry (we re-bake LODs from
+    // the BLAS triangles below), but an undersized cap spams capacity warnings.
+    TLASManager scratch_tlas(65536);
     std::vector<part_asset::ChildInstance> children;
     part_asset::LodLevels lods_in;   // .part stores LOD0 only (empty levels)
     if (!part_asset::load_v2(path, part_hash, scratch, scratch_tlas, children, lods_in)) {

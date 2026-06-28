@@ -1,0 +1,6 @@
+# Primitive test world root parts (one module name per line; '#' starts a comment).
+# Gallery is the only root: it `requires` (and thus transitively bakes) the three
+# sub-galleries -- VoxelPrims, MeshPrims, Extrusions -- and places them via
+# placeChild. The viewer's LocalProvider drops a single Gallery instance at the
+# origin (see local_provider.cpp, world_name == "Primitives").
+Gallery

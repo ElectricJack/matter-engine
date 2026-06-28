@@ -1,5 +1,7 @@
 #include "../include/surface.h"
 #include "../include/spatial_hash.h"
+#include "../include/fat_primitive.h"   // FatPrim, primitive_sdf (typed iso-primitives)
+#include "../include/csg_stages.h"      // FieldStages (ordered CSG)
 #include "mc_tables.h"
 #include <stdlib.h>
 #include <string.h>
@@ -185,9 +187,18 @@ typedef struct {
 
 // Local function declarations
 static ScalarMaterialPair CalculateScalarAndMaterial(Vector3 position, SpatialHash* spatialHash, float refRadius, float blendWidth, Particle* clipParticles, int clipCount, Particle* carveParticles, int carveCount, float carveBlend);
+static ScalarMaterialPair CalculateScalarStaged(Vector3 position, SpatialHash* spatialHash, float refRadius, float blendWidth, const FieldStages* stages, const FatPrim* fat, int fatCount, Particle* clipParticles, int clipCount, Particle* carveParticles, int carveCount, float carveBlend);
 static int     CalculateCubeIndex(GridCell cell, float isovalue);
 static Vector3 VertexInterpolation(Vector3 v1, float val1, Vector3 v2, float val2, float isovalue);
-static Mesh    GenerateMeshInternal(SurfaceScratch* scratch, Particle* particles, float particleRadius, int particleCount, Bounds volume, float blendWidth, MeshGenerationConfig config, Particle* clipParticles, int clipCount, Particle* carveParticles, int carveCount, float carveBlend);
+static Mesh    GenerateMeshInternal(SurfaceScratch* scratch, Particle* particles, float particleRadius, int particleCount, Bounds volume, float blendWidth, MeshGenerationConfig config, const FieldStages* stages, const FatPrim* fat, int fatCount, Particle* clipParticles, int clipCount, Particle* carveParticles, int carveCount, float carveBlend);
+
+// True when the staged/fat field path must run; otherwise the legacy
+// single-union path is used (byte-identical to before this feature).
+static int field_needs_staging(const FieldStages* stages, int fatCount) {
+    if (fatCount > 0) return 1;
+    if (stages && stages->stageCount > 1) return 1;
+    return 0;
+}
 static SpatialHash* scratch_ensure_hash(SurfaceScratch* s, Particle* particles, int count, float cellSize);
 static void    compute_surface_normals_impl(SpatialHash* hash, Mesh* mesh, Particle* particles, float particleRadius, int particleCount, float blendWidth, Particle* clipParticles, int clipCount, Particle* carveParticles, int carveCount, float carveBlend);
 
@@ -225,12 +236,12 @@ static SurfaceScratch* DefaultScratch(void) {
 // Public API wrapper function using default configuration
 Mesh GenerateMesh(Particle* particles, float particleRadius, int particleCount, Bounds volume, float blendWidth, Particle* clipParticles, int clipCount, Particle* carveParticles, int carveCount, float carveBlend) {
     MeshGenerationConfig config = GetDefaultMeshConfig();
-    return GenerateMeshInternal(DefaultScratch(), particles, particleRadius, particleCount, volume, blendWidth, config, clipParticles, clipCount, carveParticles, carveCount, carveBlend);
+    return GenerateMeshInternal(DefaultScratch(), particles, particleRadius, particleCount, volume, blendWidth, config, NULL, NULL, 0, clipParticles, clipCount, carveParticles, carveCount, carveBlend);
 }
 
 // Public API function with custom configuration
 Mesh GenerateMeshWithConfig(Particle* particles, float particleRadius, int particleCount, Bounds volume, float blendWidth, MeshGenerationConfig config, Particle* clipParticles, int clipCount, Particle* carveParticles, int carveCount, float carveBlend) {
-    return GenerateMeshInternal(DefaultScratch(), particles, particleRadius, particleCount, volume, blendWidth, config, clipParticles, clipCount, carveParticles, carveCount, carveBlend);
+    return GenerateMeshInternal(DefaultScratch(), particles, particleRadius, particleCount, volume, blendWidth, config, NULL, NULL, 0, clipParticles, clipCount, carveParticles, carveCount, carveBlend);
 }
 
 // Scratch-aware mesh generation: lets a caller supply (and reuse) its own
@@ -240,7 +251,38 @@ Mesh GenerateMeshWithScratch(SurfaceScratch* scratch, Particle* particles, float
         int particleCount, Bounds volume, float blendWidth, Particle* clipParticles, int clipCount,
         Particle* carveParticles, int carveCount, float carveBlend) {
     return GenerateMeshInternal(scratch, particles, particleRadius, particleCount, volume, blendWidth,
-        GetDefaultMeshConfig(), clipParticles, clipCount, carveParticles, carveCount, carveBlend);
+        GetDefaultMeshConfig(), NULL, NULL, 0, clipParticles, clipCount, carveParticles, carveCount, carveBlend);
+}
+
+// Typed iso-primitives + ordered CSG variant. Threads the stage list + fat array
+// into the field-fill; everything else (normals, simplify-free path) matches
+// GenerateMeshWithScratch.
+Mesh GenerateMeshStaged(SurfaceScratch* scratch, Particle* particles, float particleRadius,
+        int particleCount, Bounds volume, float blendWidth,
+        const FieldStages* stages, const FatPrim* fat, int fatCount,
+        Particle* clipParticles, int clipCount,
+        Particle* carveParticles, int carveCount, float carveBlend) {
+    return GenerateMeshInternal(scratch, particles, particleRadius, particleCount, volume, blendWidth,
+        GetDefaultMeshConfig(), stages, fat, fatCount, clipParticles, clipCount, carveParticles, carveCount, carveBlend);
+}
+
+// Single-point field probe through the production staged eval (test/QA seam).
+float ProbeFieldScalar(SurfaceScratch* scratch, Particle* particles, float particleRadius,
+        int particleCount, float blendWidth,
+        const FieldStages* stages, const FatPrim* fat, int fatCount,
+        Particle* carveParticles, int carveCount, float carveBlend, Vector3 point) {
+    float cellSize = particleRadius * 2.5f + blendWidth * 4.0f;
+    if (cellSize <= 0.0f) cellSize = 1.0f;
+    SpatialHash* hash = scratch_ensure_hash(scratch, particles, particleCount, cellSize);
+    ScalarMaterialPair r;
+    if (field_needs_staging(stages, fatCount)) {
+        r = CalculateScalarStaged(point, hash, particleRadius, blendWidth, stages, fat, fatCount,
+                                  NULL, 0, carveParticles, carveCount, carveBlend);
+    } else {
+        r = CalculateScalarAndMaterial(point, hash, particleRadius, blendWidth,
+                                       NULL, 0, carveParticles, carveCount, carveBlend);
+    }
+    return r.scalarValue;
 }
 
 // Scratch-aware normal recomputation: reuses the hash GenerateMeshWithScratch
@@ -474,8 +516,9 @@ void ComputeSurfaceNormals(Mesh* mesh, Particle* particles, float particleRadius
 }
 
 // Internal mesh generation function with configuration
-static Mesh GenerateMeshInternal(SurfaceScratch* scratch, Particle* particles, float particleRadius, int particleCount, Bounds volume, float blendWidth, MeshGenerationConfig config, Particle* clipParticles, int clipCount, Particle* carveParticles, int carveCount, float carveBlend) {
+static Mesh GenerateMeshInternal(SurfaceScratch* scratch, Particle* particles, float particleRadius, int particleCount, Bounds volume, float blendWidth, MeshGenerationConfig config, const FieldStages* stages, const FatPrim* fat, int fatCount, Particle* clipParticles, int clipCount, Particle* carveParticles, int carveCount, float carveBlend) {
     TIMER_START(total);
+    const int useStaged = field_needs_staging(stages, fatCount);
     
     // Initialize mesh
     Mesh mesh = {0};
@@ -548,9 +591,16 @@ static Mesh GenerateMeshInternal(SurfaceScratch* scratch, Particle* particles, f
                 };
                 
                 int index = GetScalarFieldIndex(x, y, z, gridSize);
-                
-                // Use combined calculation to eliminate duplicate distance calculations
-                ScalarMaterialPair result = CalculateScalarAndMaterial(position, spatialHash, particleRadius, blendWidth, clipParticles, clipCount, carveParticles, carveCount, carveBlend);
+
+                // Use combined calculation to eliminate duplicate distance calculations.
+                // Staged path runs only when ordered CSG stages / fat primitives are
+                // present; otherwise the legacy union-then-carve call is byte-identical.
+                ScalarMaterialPair result = useStaged
+                    ? CalculateScalarStaged(position, spatialHash, particleRadius, blendWidth,
+                                            stages, fat, fatCount, clipParticles, clipCount,
+                                            carveParticles, carveCount, carveBlend)
+                    : CalculateScalarAndMaterial(position, spatialHash, particleRadius, blendWidth,
+                                            clipParticles, clipCount, carveParticles, carveCount, carveBlend);
                 data.scalarField[index] = result.scalarValue;
                 data.materialField[index] = result.materialId;
             }
@@ -1076,6 +1126,128 @@ static ScalarMaterialPair CalculateScalarAndMaterial(Vector3 position, SpatialHa
     }
     result.scalarValue = fmin - k * logf(sum);
 
+    ApplySubtractField(&result, position, carveParticles, carveCount, carveBlend);
+    ApplyClipField(&result, position, clipParticles, clipCount);
+    return result;
+}
+
+// Smooth-min (metaball union) of a set of signed distances via log-sum-exp:
+//   f = fmin - k*ln( sum_i exp(-(f_i - fmin)/k) ).  k<=0 => hard min.
+// `vals[0..n)` are the per-element signed distances; fmin must be their min.
+static float smin_set(const float* vals, int n, float fmin, float k) {
+    if (n <= 0) return INFINITY;
+    if (k <= 1e-5f || n == 1) return fmin;
+    float sum = 0.0f;
+    for (int i = 0; i < n; ++i) sum += expf(-(vals[i] - fmin) / k);
+    return fmin - k * logf(sum);
+}
+
+// Ordered-CSG staged field evaluation (Phase 1). Folds the authored stages in
+// order so add->subtract->add is correct. The sphere stream is queried ONCE from
+// the hash and bucketed by stage (stages->particleStage[i]); fat primitives are
+// linear-scanned into their stage. Carve and clip are applied after the stages as
+// special cases (legacy behavior preserved). Material id is taken from the nearest
+// additive sphere overall, as in the legacy path.
+//
+// This path runs only when ordered stages and/or fat primitives are present; the
+// common single-union case stays on CalculateScalarAndMaterial (byte-identical).
+static ScalarMaterialPair CalculateScalarStaged(
+        Vector3 position, SpatialHash* spatialHash, float refRadius, float blendWidth,
+        const FieldStages* stages, const FatPrim* fat, int fatCount,
+        Particle* clipParticles, int clipCount,
+        Particle* carveParticles, int carveCount, float carveBlend) {
+    ScalarMaterialPair result;
+    result.scalarValue = INFINITY;
+    result.materialId = 0;
+
+    int stageCount = stages ? stages->stageCount : 1;
+    if (stageCount < 1) stageCount = 1;
+
+    float searchRadius = refRadius * 2.5f + blendWidth * 4.0f;
+    Particle* nearby[128];
+    int foundCount = sh_query_radius_nearest(spatialHash, position.x, position.y, position.z,
+                                             searchRadius, (void**)nearby, 128);
+
+    // Per-stage accumulation of additive-sphere distances (bucketed by stage).
+    // STAGE_CAP bounds stack use; deeper stages fold via the field below.
+    enum { STAGE_CAP = 64 };
+    if (stageCount > STAGE_CAP) stageCount = STAGE_CAP;
+    float stageVals[STAGE_CAP][128];
+    int   stageN[STAGE_CAP];
+    float stageMin[STAGE_CAP];
+    for (int s = 0; s < stageCount; ++s) { stageN[s] = 0; stageMin[s] = INFINITY; }
+
+    // Material from the globally-nearest additive sphere (matches legacy).
+    float bestF = INFINITY;
+    for (int i = 0; i < foundCount; ++i) {
+        Particle* pp = nearby[i];
+        float dx = position.x - pp->position.x;
+        float dy = position.y - pp->position.y;
+        float dz = position.z - pp->position.z;
+        float f = sqrtf(dx*dx + dy*dy + dz*dz) - pp->radius;
+        if (f < bestF) { bestF = f; result.materialId = pp->materialId; }
+
+        // Resolve this particle's stage. particleStage is parallel to the hash's
+        // backing Particle array, so index = pp - particles base. We instead read
+        // it via the index encoded by the hash lookup is unavailable; the caller
+        // guarantees particleStage indexing matches pointer order from a single
+        // contiguous array, so recover the index by pointer arithmetic against the
+        // first found is unsafe. Use stage tag from the FieldStages map keyed by
+        // pointer offset supplied by the caller's particle base.
+        int st = 0;
+        if (stages && stages->particleStage && stages->stageCount > 1) {
+            // Pointer-difference against the caller's contiguous particle array.
+            // The hash stores &particles[i]; particleStage is indexed identically.
+            long idx = (long)(pp - (Particle*)stages->_particleBase);
+            if (idx >= 0 && idx < stages->_particleCount) st = stages->particleStage[idx];
+        }
+        if (st < 0 || st >= stageCount) st = 0;
+        if (stageN[st] < 128) {
+            stageVals[st][stageN[st]] = f;
+            if (f < stageMin[st]) stageMin[st] = f;
+            stageN[st]++;
+        }
+    }
+
+    // Fold the ordered stages. Each stage's SDF = smin over its spheres unioned
+    // with its fat primitives (also via smin so fat blends with stage spheres).
+    float field = INFINITY;
+    int haveAny = 0;
+    for (int s = 0; s < stageCount; ++s) {
+        // Collect this stage's fat-primitive distances alongside its spheres.
+        float vals[128 + 64];
+        int   n = 0;
+        float fmin = stageMin[s];
+        for (int i = 0; i < stageN[s] && n < (int)(sizeof(vals)/sizeof(vals[0])); ++i)
+            vals[n++] = stageVals[s][i];
+        for (int j = 0; j < fatCount; ++j) {
+            if (fat[j].stage != s) continue;
+            float d = primitive_sdf(&fat[j], position);
+            if (n < (int)(sizeof(vals)/sizeof(vals[0]))) {
+                vals[n] = d;
+                if (d < fmin) fmin = d;
+                n++;
+            }
+        }
+        if (n == 0) continue; // empty stage contributes nothing
+        float d = smin_set(vals, n, fmin, blendWidth);
+
+        CsgStageOp op = stages ? stages->stageOp[s] : CSG_STAGE_UNION;
+        if (!haveAny) {
+            // First non-empty stage seeds the field regardless of its op (an
+            // opening Difference/Intersection has nothing to act on yet).
+            field = d; haveAny = 1;
+        } else {
+            switch (op) {
+                case CSG_STAGE_UNION:        field = fminf(field, d); break;
+                case CSG_STAGE_DIFFERENCE:   field = fmaxf(field, -d); break;
+                case CSG_STAGE_INTERSECTION: field = fmaxf(field, d); break;
+            }
+        }
+    }
+
+    result.scalarValue = haveAny ? field : INFINITY;
+    // Legacy carve + clip as trailing special cases (unchanged semantics).
     ApplySubtractField(&result, position, carveParticles, carveCount, carveBlend);
     ApplyClipField(&result, position, clipParticles, clipCount);
     return result;

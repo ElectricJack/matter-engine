@@ -4,9 +4,11 @@ extern "C" {
 }
 #include "part_base.js.h"
 #include "part_asset_v2.h"   // SP-1 v2 helper (compute_resolved_hash, save_v2)
+#include "triangle_emit.hpp" // direct-triangle (mesh) session buffer
 #include "../include/dsl_state.h"
 #include "../include/dsl_bindings.h"
 #include "../include/csg_lowering.h"   // NEW MatterEngine3 header
+#include "../include/lod_bake.h"        // QEM decimation for simplify() on direct-tri parts
 #include "../include/module_resolver.h" // SP-7 shared-lib fold + resolution
 #include "cluster.h"                    // consumed prototype (StaticParticle, Cluster)
 #include "cell.h"                       // consumed prototype (Cell, build_cell_meshes GL-free)
@@ -14,6 +16,9 @@ extern "C" {
 #include "blas_manager.hpp"             // consumed prototype
 #include "tlas_manager.hpp"             // consumed prototype
 #include "surface.h"                    // consumed prototype (CreateSurfaceScratch; self-guards extern "C")
+extern "C" {
+#include "material_registry.h"          // MaterialMergeGroup (fat-prim bucket seeding)
+}
 #include <cstring>
 #include <cmath>
 #include <chrono>
@@ -645,6 +650,13 @@ BakeResult ScriptHost::bake_source(const std::string& source,
     }
     } // close DslState-scope block
 
+    // P3 lazy-emission flush point: build end. An unclaimed POLYGON profile (one
+    // authored with beginShape(POLYGON)/endShape but never extruded) flat-fills
+    // here as a triangulated face. No-op when nothing is retained. Guarded on a
+    // clean build so a failed bake emits no stray geometry.
+    if (r.error.ok && !state.has_error())
+        state.flush_retained_profile();
+
     // Fail-closed: a DSL session/transform misuse during build surfaces here.
     last_buffer_ = state.buffer();
     if (r.error.ok && state.has_error()) {
@@ -655,6 +667,14 @@ BakeResult ScriptHost::bake_source(const std::string& source,
     if (r.error.ok && state.session() != dsl::Session::None) {
         r.error.ok = false;
         r.error.message = "session left open at end of build";
+    }
+    // G7: an unbalanced transform stack (a pushMatrix without a matching
+    // popMatrix) leaves depth > 1. Fail closed, same path as the open-session
+    // check, so authoring bugs surface instead of silently leaking a frame.
+    if (r.error.ok && state.stack_depth() != 1) {
+        r.error.ok = false;
+        r.error.message = "transform stack left unbalanced at end of build "
+                          "(pushMatrix without matching popMatrix)";
     }
 
     // Success path: lower the build buffer to particles, surface per-cell BLAS,
@@ -674,30 +694,53 @@ BakeResult ScriptHost::bake_source(const std::string& source,
         const float base_detail = state.buffer().ops.empty()
                                       ? 0.1f : state.buffer().ops[0].spacing;
 
-        BLASManager blas; TLASManager tlas;
+        // Bake-time TLAS holds one draw per marching-cubes mesh group (≈ one per
+        // surface cell). A detailed/large trunk touches well over the default 100
+        // cells, and exceeding the cap silently drops geometry from the baked part,
+        // so size it generously for the part bake.
+        BLASManager blas; TLASManager tlas(65536);
 
         // Build the additive particle vector once (Cell reads it by index).
         const std::vector<StaticParticle>& particles = f.additive;
+
+        // Ordered-CSG: a global FieldStages carrying just the stage-op list. The
+        // per-cell FieldStages (with the cell-local particle->stage map) is built
+        // inside Cell::build_group_mesh; here we only hand over the op order and
+        // the additive->stage map. Staging engages only when there is >1 stage or
+        // any fat primitive, so the common single-union part stays byte-identical.
+        FieldStages gstages{};
+        gstages.stageOp = f.stages.empty() ? nullptr : f.stages.data();
+        gstages.stageCount = (int)f.stages.size();
+        const FieldStages* gstagesPtr = (f.stages.size() > 1 || !f.fat.empty())
+                                            ? &gstages : nullptr;
+        const FatPrim* fatPtr = f.fat.empty() ? nullptr : f.fat.data();
+        int fatCount = (int)f.fat.size();
+        const int* clusterStage = f.additive_stage.empty() ? nullptr : f.additive_stage.data();
 
         // Determine the set of integer cell coordinates touched by any additive
         // particle, using the prototype's influence_radius = radius * 2 halo.
         std::map<std::tuple<int,int,int>, std::unique_ptr<Cell>> cells;
         auto cell_key = [](int x,int y,int z){ return std::make_tuple(x,y,z); };
-        for (const StaticParticle& sp : particles) {
-            float inf = sp.radius * 2.0f;
-            int x0 = (int)std::floor((sp.position.x - inf) / cell_size);
-            int x1 = (int)std::floor((sp.position.x + inf) / cell_size);
-            int y0 = (int)std::floor((sp.position.y - inf) / cell_size);
-            int y1 = (int)std::floor((sp.position.y + inf) / cell_size);
-            int z0 = (int)std::floor((sp.position.z - inf) / cell_size);
-            int z1 = (int)std::floor((sp.position.z + inf) / cell_size);
+        auto touch_cells = [&](Vector3 c, float inf) {
+            int x0 = (int)std::floor((c.x - inf) / cell_size);
+            int x1 = (int)std::floor((c.x + inf) / cell_size);
+            int y0 = (int)std::floor((c.y - inf) / cell_size);
+            int y1 = (int)std::floor((c.y + inf) / cell_size);
+            int z0 = (int)std::floor((c.z - inf) / cell_size);
+            int z1 = (int)std::floor((c.z + inf) / cell_size);
             for (int x=x0;x<=x1;++x) for (int y=y0;y<=y1;++y) for (int z=z0;z<=z1;++z) {
                 auto k = cell_key(x,y,z);
                 if (cells.find(k) == cells.end())
                     cells[k] = std::make_unique<Cell>(Vector3{(float)x,(float)y,(float)z},
                                                       0, cell_size);
             }
-        }
+        };
+        for (const StaticParticle& sp : particles)
+            touch_cells(sp.position, sp.radius * 2.0f);
+        // Fat primitives (oriented box / ellipsoid) expand the cell set too, so a
+        // pure-box part still gets cells to mesh its surface.
+        for (const FatPrim& fp : f.fat)
+            touch_cells(fp.center, fp.boundRadius * 2.0f);
 
         // One scratch shared across all cells. The consumed mesher's marching-cubes
         // pass leaves the per-vertex normal buffer (scratch->pool.normals) UNWRITTEN;
@@ -720,6 +763,16 @@ BakeResult ScriptHost::bake_source(const std::string& source,
                 if (cell->intersects_sphere(sp.position, sp.radius))
                     cell->add_particle_index(i, sp.materialId);
             }
+            // Seed an (empty) merge-group bucket for every fat primitive overlapping
+            // this cell so build_cell_meshes iterates the group and meshes the box/
+            // ellipsoid even when no additive sphere shares the cell. The fat field
+            // eval pulls its own surface; the bucket just makes the group visible.
+            for (const FatPrim& fp : f.fat) {
+                if (cell->intersects_sphere(fp.center, fp.boundRadius * 1.5f)) {
+                    uint32_t g = (uint32_t)MaterialMergeGroup(fp.materialId);
+                    cell->material_particle_indices[g]; // default-inserts empty bucket
+                }
+            }
             if (cell->material_particle_indices.empty()) continue;
 
             // Gather carve particles whose influence overlaps this cell (mirrors
@@ -732,8 +785,9 @@ BakeResult ScriptHost::bake_source(const std::string& source,
             int carveCount = (int)carve.size();
 
             CellMeshResult res = cell->build_cell_meshes(
-                particles, scratch, /*simplification*/1.0f, base_detail,
-                /*max_pow*/6, /*uniform_detail*/0.0f, carvePtr, carveCount);
+                particles, scratch, /*simplification*/state.simplify_ratio(), base_detail,
+                /*max_pow*/6, /*uniform_detail*/0.0f, carvePtr, carveCount,
+                gstagesPtr, fatPtr, fatCount, clusterStage);
 
             // Register each group's GL-free triangle arrays directly into the BLAS
             // and place an identity instance in the TLAS.
@@ -812,6 +866,66 @@ BakeResult ScriptHost::bake_source(const std::string& source,
             }
         }
         DestroySurfaceScratch(scratch);
+
+        // Direct-triangle session: register the DSL's accumulated mesh triangles as
+        // one more BLAS with an identity TLAS instance. These are literal surfaces
+        // (leaf blades, line-tube twigs) that never entered the SDF/voxel path.
+        // Re-pack each Tri/TriEx through a memset-zeroed copy for the same byte-
+        // stability reason as the voxel path above (union/alignment padding the
+        // emitter never writes would otherwise make re-bakes byte-differ).
+        const tri_emit::TriangleBuildBuffer* tb = state.triangle_buffer();
+        if (tb && !tb->triangles().empty()) {
+            const std::vector<Tri>&   src_t = tb->triangles();
+            const std::vector<TriEx>& src_e = tb->tri_extra();
+
+            // Parts that call this.simplify() (trunk/branches, but never leaves)
+            // get QEM-decimated here. decimate_tris carries only vertex POSITIONS,
+            // so the per-vertex TriEx (normals/uv/material) cannot survive the
+            // collapse; we recompute geometric face normals from the decimated
+            // triangles and carry the part's single material (simplify-using parts
+            // are single-material bark, so src_e[0].materialId is representative).
+            const float simp = state.simplify_ratio();
+            const bool decimate = simp < 0.999f;
+            std::vector<Tri> work = decimate ? lod_bake::decimate_tris(src_t, simp) : src_t;
+            const uint32_t mat = src_e.empty() ? 0u : src_e[0].materialId;
+
+            std::vector<Tri>   norm(work.size());
+            std::vector<TriEx> normEx(work.size());
+            for (size_t i = 0; i < work.size(); ++i) {
+                Tri t; std::memset(&t, 0, sizeof(Tri));
+                t.vertex0 = work[i].vertex0; t.vertex1 = work[i].vertex1;
+                t.vertex2 = work[i].vertex2; t.centroid = work[i].centroid;
+                norm[i] = t;
+            }
+            for (size_t i = 0; i < work.size(); ++i) {
+                TriEx e; std::memset(&e, 0, sizeof(TriEx));
+                if (decimate) {
+                    // No source TriEx to copy: geometric face normal + carried material.
+                    const Tri& tr = norm[i];
+                    float ax=tr.vertex1.x-tr.vertex0.x, ay=tr.vertex1.y-tr.vertex0.y, az=tr.vertex1.z-tr.vertex0.z;
+                    float bx=tr.vertex2.x-tr.vertex0.x, by=tr.vertex2.y-tr.vertex0.y, bz=tr.vertex2.z-tr.vertex0.z;
+                    float nx=ay*bz-az*by, ny=az*bx-ax*bz, nz=ax*by-ay*bx;
+                    float nl=std::sqrt(nx*nx+ny*ny+nz*nz);
+                    if (nl>1e-12f) { nx/=nl; ny/=nl; nz/=nl; } else { nx=0; ny=0; nz=1; }
+                    float3 fn = make_float3(nx,ny,nz);
+                    e.N0=fn; e.N1=fn; e.N2=fn;
+                    e.materialId=mat;
+                } else {
+                    const TriEx& s = src_e[i];
+                    e.uv0=s.uv0; e.uv1=s.uv1; e.uv2=s.uv2;
+                    e.N0=s.N0; e.N1=s.N1; e.N2=s.N2;
+                    e.materialId=s.materialId;
+                }
+                e.tint = make_float4(1.0f, 1.0f, 1.0f, 0.0f);
+                e.ao0 = e.ao1 = e.ao2 = 1.0f;
+                normEx[i]=e;
+            }
+            BLASHandle h = blas.register_triangles(norm, normEx);
+            if (h != INVALID_BLAS_HANDLE) {
+                tlas.load_identity();
+                tlas.draw(h, 0);
+            }
+        }
 
         tlas.build(blas);
         // Persist the child instances placed via placeChild() during build().

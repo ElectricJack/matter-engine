@@ -3,6 +3,8 @@
 
 #include "raylib.h"
 #include "particle.h"
+#include "fat_primitive.h"   // FatPrim (typed iso-primitives)
+#include "csg_stages.h"      // FieldStages (ordered CSG)
 #include <stdbool.h>
 
 // Forward declaration for BVH Triangle
@@ -60,6 +62,30 @@ void ComputeSurfaceNormalsWithScratch(SurfaceScratch* scratch, Mesh* mesh, Parti
 // Returns the scratch's current spatial hash (the one the last GenerateMeshWithScratch
 // built), or NULL if none yet. The scratch owns it; do not destroy it.
 SpatialHash* SurfaceScratchHash(SurfaceScratch* scratch);
+
+// Typed iso-primitives + ordered CSG (Phase 1). Like GenerateMeshWithScratch but
+// also folds an ordered CSG stage list (`stages`, tagging the hashed spheres) and a
+// borrowed fat-primitive array (`fat`,`fatCount`, e.g. oriented boxes) into the
+// field. When `stages` is NULL/<=1 stage and `fatCount`==0, the field is computed
+// by the legacy union-then-carve path (byte-identical to GenerateMeshWithScratch).
+// The fat array is NOT inserted into the spatial hash; it is linear-scanned per
+// sample. The caller must keep `fat`/`stages` arrays alive for the call.
+Mesh GenerateMeshStaged(SurfaceScratch* scratch, Particle* particles, float particleRadius,
+                        int particleCount, Bounds volume, float blendWidth,
+                        const FieldStages* stages, const FatPrim* fat, int fatCount,
+                        Particle* clipParticles, int clipCount,
+                        Particle* carveParticles, int carveCount, float carveBlend);
+
+// Test/probe seam: evaluate the production field scalar at a single WORLD point
+// using the SAME staged + fat + carve/clip code path the mesher uses. `particles`
+// is the additive sphere set (also tagged by `stages`); returns the signed field
+// value (<0 => the meshed surface treats the point as inside). Builds a one-shot
+// spatial hash internally on `scratch`. GL-free.
+float ProbeFieldScalar(SurfaceScratch* scratch, Particle* particles, float particleRadius,
+                       int particleCount, float blendWidth,
+                       const FieldStages* stages, const FatPrim* fat, int fatCount,
+                       Particle* carveParticles, int carveCount, float carveBlend,
+                       Vector3 point);
 
 // Main API function for generating a mesh from particles.
 // particleRadius is a reference radius (max effective radius in the set) used to

@@ -26,9 +26,10 @@ VIEWER_SRC = main.cpp renderer.cpp ui.cpp \
 # ME3 pipeline + MSL backend C++ sources (verbatim from tests/Makefile EXAMPLE_CPP,
 # minus example_world.cpp). Same dir depth, so the ../ paths are unchanged.
 PIPELINE_CPP = ../src/part_graph.cpp \
-              ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_bindings.cpp \
+              ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../src/dsl_bindings.cpp \
               ../src/csg_lowering.cpp ../src/module_resolver.cpp ../src/script_rng_binding.cpp \
-              ../src/part_asset_v2.cpp ../src/lod_bake.cpp ../src/world_flatten.cpp \
+              ../src/polygon_triangulate.cpp \
+              ../src/part_asset_v2.cpp ../src/lod_bake.cpp ../src/world_flatten.cpp ../src/triangle_emit.cpp \
               ../src/sector_grid.cpp ../src/lod_select.cpp \
               ../../MatterSurfaceLib/src/cluster.cpp ../../MatterSurfaceLib/src/cell.cpp ../../MatterSurfaceLib/src/mesh_simplifier.cpp \
               ../../MatterSurfaceLib/src/blas_manager.cpp ../../MatterSurfaceLib/src/bvh.cpp ../../MatterSurfaceLib/src/bvh_analyzer.cpp \
@@ -41,8 +42,8 @@ PIPELINE_CPP = ../src/part_graph.cpp \
 # C sources (gcc-compiled to keep extern "C" symbols unmangled) + QuickJS C.
 PIPELINE_C = ../../MatterSurfaceLib/src/surface.c ../../MatterSurfaceLib/src/open_particle_surface.c \
              ../../MatterSurfaceLib/src/spatial_hash.c ../../MatterSurfaceLib/src/object_allocator.c \
-             ../../MatterSurfaceLib/src/material_registry.c
-PIPELINE_C_OBJ = surface.o open_particle_surface.o spatial_hash.o object_allocator.o material_registry.o
+             ../../MatterSurfaceLib/src/material_registry.c ../../MatterSurfaceLib/src/fat_primitive.c
+PIPELINE_C_OBJ = surface.o open_particle_surface.o spatial_hash.o object_allocator.o material_registry.o fat_primitive.o
 QJS_C   = $(QJS_DIR)/quickjs.c $(QJS_DIR)/libregexp.c $(QJS_DIR)/libunicode.c \
           $(QJS_DIR)/cutils.c $(QJS_DIR)/xsum.c
 QJS_OBJ = quickjs.o libregexp.o libunicode.o cutils.o xsum.o
@@ -60,10 +61,46 @@ viewer: shaders $(VIEWER_SRC) $(PIPELINE_CPP) $(PIPELINE_C) $(QJS_C) $(IMGUI_SRC
 	rm -f $(QJS_OBJ) $(PIPELINE_C_OBJ)
 
 # Shader path resolves relative to the binary; symlink MSL's shaders/ dir.
-shaders:
+# The viewer loads the include-flattened raytrace_tlas_blas_processed.fs, so it
+# MUST be regenerated from MSL's .glsl sources first — a stale processed file
+# silently mismatches the C++ TLAS texture layout (tiled reads vs single-row).
+shaders: regen-processed-shader
 	@[ -e shaders ] || ln -s ../../MatterSurfaceLib/shaders shaders
 
-clean:
-	rm -f viewer shaders
+# Rebuild MSL's shader preprocessor and re-flatten the processed fragment shader
+# so edits to bvh_tlas_common.glsl / materials.glsl / lighting.glsl take effect.
+MSL_SHADERS = ../../MatterSurfaceLib/shaders
+regen-processed-shader:
+	@g++ -O2 -std=c++14 -o /tmp/me3_shader_preprocessor \
+	    ../../MatterSurfaceLib/src/shader_preprocessor.cpp
+	@/tmp/me3_shader_preprocessor $(MSL_SHADERS)/raytrace_tlas_blas.fs \
+	    $(MSL_SHADERS)/raytrace_tlas_blas_processed.fs
 
-.PHONY: viewer clean shaders
+# ---- Native Windows .exe (MinGW cross-compile from WSL/Linux) ----
+# Mirrors MatterSurfaceLib's windows-native target: MinGW toolchain, the
+# prebuilt windows-native raylib, and Win32 GL/GDI libs, statically linked so
+# the .exe is self-contained. Run as MatterEngine3\viewer\viewer.exe on Windows.
+WIN_CXX     = x86_64-w64-mingw32-g++-posix
+WIN_CC      = x86_64-w64-mingw32-gcc
+WIN_RAYLIB  = ../../Libraries/raylib/build/windows-native/libraylib.a
+# Win32 import libs raylib depends on; MUST come AFTER libraylib.a on the link
+# line so the static linker can resolve raylib's __imp_* references.
+WIN_LIBS    = -lopengl32 -lgdi32 -lwinmm
+
+windows: win-shaders $(VIEWER_SRC) $(PIPELINE_CPP) $(PIPELINE_C) $(QJS_C) $(IMGUI_SRC)
+	$(WIN_CC) -c $(QJS_C) -O2 -DCONFIG_VERSION='"0.10.0"' $(QJS_INC)
+	$(WIN_CC) -c $(PIPELINE_C) -O2 -DPLATFORM_DESKTOP $(INCLUDE_PATHS)
+	$(WIN_CXX) $(VIEWER_SRC) $(PIPELINE_CPP) $(IMGUI_SRC) $(QJS_OBJ) $(PIPELINE_C_OBJ) \
+	  -o viewer.exe $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST $(INCLUDE_PATHS) $(QJS_INC) -static $(WIN_RAYLIB) $(WIN_LIBS)
+	rm -f $(QJS_OBJ) $(PIPELINE_C_OBJ)
+
+# A Windows .exe can't follow a Linux symlink, so copy MSL's shaders/ next to it.
+# Regenerate the processed shader first (see `regen-processed-shader`) so the copy
+# is current — otherwise the .exe ships a stale, layout-mismatched shader.
+win-shaders: regen-processed-shader
+	@rm -rf shaders && cp -r ../../MatterSurfaceLib/shaders shaders
+
+clean:
+	rm -rf viewer viewer.exe shaders
+
+.PHONY: viewer windows clean shaders win-shaders regen-processed-shader

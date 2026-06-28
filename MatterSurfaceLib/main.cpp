@@ -393,7 +393,20 @@ public:
                     printf("WARNING: failed to save part cache: %s\n", part_path.c_str());
             }
         }
-        if (getenv("MSL_SHOW_IMPOSTER")) setup_imposter_demo();
+        // Snapshot the original part's TLAS draw records now, while they're the only
+        // thing in the TLAS. The part may come from the cluster (fresh build) OR
+        // straight from the .part cache (render-only, never enters test_cluster_), so
+        // the cluster is not a reliable source for restoring the original geometry.
+        // Replaying these recorded instances reconstructs the original either way.
+        snapshot_original_instances();
+
+        // MSL_SHOW_IMPOSTER bakes the imposter up front and starts in imposter mode;
+        // otherwise the imposter bakes lazily the first time the UI toggle is used.
+        if (getenv("MSL_SHOW_IMPOSTER")) {
+            ensure_imposter_built();
+            show_imposter_ = true;
+            rebuild_scene_tlas();
+        }
         // Initialize BVH analysis system
         setup_bvh_analysis();
     }
@@ -697,8 +710,14 @@ private:
         return tris;
     }
 
-    void setup_imposter_demo() {
-        // Bake (or load) the voxel volume for the demo part.
+    // Bake (or load) the voxel imposter for the current part, upload its volumes,
+    // and build the unit-cube proxy instance positioned exactly where the real
+    // part sits. Idempotent: the first call can stall while a 128^3 volume bakes,
+    // every later call (and every later run, via the .vxi cache) is a no-op / load.
+    // Must run while the real part is still in the TLAS so the flatten sees it.
+    void ensure_imposter_built() {
+        if (imposter_ready_) return;
+
         uint64_t source_hash = part_asset::compute_param_hash(brick_gen_params());
         std::vector<voxel_imposter::FlatTri> part_tris =
             voxel_imposter::flatten_part_triangles_mat(*blas_manager_, *tlas_manager_);
@@ -732,29 +751,53 @@ private:
         std::vector<Tri> cube = make_unit_cube_tris();
         imposter_cube_blas_ = blas_manager_->register_triangles(cube.data(), (int)cube.size(), nullptr);
 
-        // Instance: map [0,1]^3 -> world AABB (scale by extent, translate to bounds_min) + demo offset.
-        {
-            TLASManager::DrawInstance di;
-            di.blas_handle = imposter_cube_blas_;
-            di.material_id = 0;
-            di.is_imposter = true;
-            const voxel_imposter::VoxelImposter& vox = voxel_imposter_;
-            float ex = vox.bounds_max[0] - vox.bounds_min[0];
-            float ey = vox.bounds_max[1] - vox.bounds_min[1];
-            float ez = vox.bounds_max[2] - vox.bounds_min[2];
-            di.transform = Matrix4x4(); // identity (zeros off-diagonal, ones on diagonal)
-            di.transform.m[0]  = ex;
-            di.transform.m[5]  = ey;
-            di.transform.m[10] = ez;
-            di.transform.m[3]  = vox.bounds_min[0] + 24.0f; // +X offset beside the real part
-            di.transform.m[7]  = vox.bounds_min[1];
-            di.transform.m[11] = vox.bounds_min[2];
-            std::vector<TLASManager::DrawInstance> one{di};
-            tlas_manager_->draw_batch(one);
-            tlas_manager_->build(*blas_manager_);
-        }
+        // Instance: map [0,1]^3 -> the part's world AABB (scale by extent, translate
+        // to bounds_min) so the imposter occupies the real part's footprint exactly.
+        TLASManager::DrawInstance& di = imposter_instance_;
+        di = TLASManager::DrawInstance{};
+        di.blas_handle = imposter_cube_blas_;
+        di.material_id = 0;
+        di.is_imposter = true;
+        const voxel_imposter::VoxelImposter& vox = voxel_imposter_;
+        di.transform = Matrix4x4(); // identity (zeros off-diagonal, ones on diagonal)
+        di.transform.m[0]  = vox.bounds_max[0] - vox.bounds_min[0];
+        di.transform.m[5]  = vox.bounds_max[1] - vox.bounds_min[1];
+        di.transform.m[10] = vox.bounds_max[2] - vox.bounds_min[2];
+        di.transform.m[3]  = vox.bounds_min[0];
+        di.transform.m[7]  = vox.bounds_min[1];
+        di.transform.m[11] = vox.bounds_min[2];
 
         imposter_enabled_ = true;
+        imposter_ready_   = true;
+    }
+
+    // Capture the current TLAS draw records as replayable instances. Called once at
+    // startup with only the original part present, so original_instances_ is exactly
+    // the geometry to restore when the imposter is toggled back off.
+    void snapshot_original_instances() {
+        original_instances_.clear();
+        for (const auto& rec : tlas_manager_->get_draw_records()) {
+            TLASManager::DrawInstance di{};
+            di.blas_handle = rec.blas_handle;
+            di.transform   = rec.transform;
+            di.material_id = rec.material_id;
+            di.is_imposter = rec.is_imposter;
+            original_instances_.push_back(di);
+        }
+    }
+
+    // Compose the TLAS with only the active geometry so the GPU traverses exactly
+    // one of {real part, imposter cube}. Keeping both in the BVH would muddy any
+    // performance comparison, so the inactive set is omitted entirely.
+    void rebuild_scene_tlas() {
+        tlas_manager_->clear();
+        if (show_imposter_ && imposter_ready_) {
+            std::vector<TLASManager::DrawInstance> one{imposter_instance_};
+            tlas_manager_->draw_batch(one);
+        } else {
+            tlas_manager_->draw_batch(original_instances_);
+        }
+        tlas_manager_->build(*blas_manager_);
     }
 
     void setup_lattice_scene() {
@@ -829,16 +872,6 @@ private:
         scene_occ_ = Occupancy{};
         Occupancy& occ = scene_occ_;
 
-        // === IMPOSTER DEBUG: three colored meta particles instead of the full
-        // lattice brick. One material per distinct merge group (red/green/blue)
-        // so they stay separate blobs, spread on three axes so each is dominant
-        // from a different cube-cage face. Lets us reason about the bake/atlas
-        // orientation with a trivial input. Old lattice fill is in the #if 0
-        // block below -- flip to #if 1 to restore the brick. ===
-        occ.set(SlotCoord{-3,  0,  0}, SlotData{0u});  // red   (GROUP_RED)
-        occ.set(SlotCoord{ 0,  3,  0}, SlotData{2u});  // green (GROUP_GROUND)
-        occ.set(SlotCoord{ 0,  0,  3}, SlotData{1u});  // blue  (GROUP_BLUE)
-#if 0
         // Build a solid block of occupancy, centered on the origin, with a
         // checkerboard of the two opaque stones so the surface shows variation.
         // Cached in scene_occ_ so live re-emission (lumpiness edits) can reuse it.
@@ -870,7 +903,6 @@ private:
             if (gn > GLASS_THRESH) mat = MAT_GLASS;
             occ.set(SlotCoord{ix, iy, iz}, SlotData{mat});
         }
-#endif
 
         // Re-center offset: GridLattice puts slot 0 at the origin; shift by half
         // the block extent so the brick is centered. The cull must bucket slots
@@ -1700,6 +1732,26 @@ private:
 
         ImGui::Separator();
 
+        // Original-vs-imposter toggle. The imposter replaces the real part in place
+        // (same footprint), and the TLAS is rebuilt to traverse only the active set,
+        // so the FPS readout above reflects the true cost of each. The first switch
+        // to the imposter bakes the 128^3 volume (one-time stall; cached afterwards).
+        ImGui::Text("Geometry (watch FPS):");
+        const bool showing_imposter = show_imposter_; // snapshot: the button may flip it
+        const char* geo_label = showing_imposter ? "Showing: Voxel Imposter  ->  Original"
+                                                  : "Showing: Original Part  ->  Imposter";
+        if (showing_imposter) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.18f, 0.40f, 0.60f, 1.0f));
+        if (ImGui::Button(geo_label, ImVec2(-1.0f, 0.0f))) {
+            show_imposter_ = !show_imposter_;
+            if (show_imposter_) ensure_imposter_built(); // lazy bake on first switch
+            rebuild_scene_tlas();
+        }
+        if (showing_imposter) ImGui::PopStyleColor(); // balance push regardless of toggle
+        if (showing_imposter) ImGui::TextDisabled("Imposter: 12 tris + voxel volume march");
+        else ImGui::TextDisabled("Original: %d triangles", blas_manager_->get_total_triangle_count());
+
+        ImGui::Separator();
+
         // Lighting / GI feature flags. Lowering GI and AO cuts secondary rays per
         // pixel (raytracing perf); raising shadow strength deepens shadows.
         if (ImGui::CollapsingHeader("Lighting / GI", ImGuiTreeNodeFlags_DefaultOpen)) {
@@ -1753,59 +1805,6 @@ private:
             ImGui::SliderFloat("Lump Freq", &lump_freq_, 0.05f, 2.0f, "%.2f");
             if (ImGui::Button("Apply Lumpiness", ImVec2(-1.0f, 0.0f))) {
                 regenerate_surface_();
-            }
-        }
-
-        ImGui::Separator();
-
-        // Camera controls — clickable orbit/zoom so the view is fully navigable without
-        // locking the cursor or using WASD (important over remote desktop). Buttons use
-        // auto-repeat so holding them down moves the camera continuously.
-        ImGui::Text("Camera");
-        {
-            float dx = camera_.position.x - camera_.target.x;
-            float dy = camera_.position.y - camera_.target.y;
-            float dz = camera_.position.z - camera_.target.z;
-            float dist = sqrtf(dx * dx + dy * dy + dz * dz);
-            if (dist < 0.0001f) dist = 0.0001f;
-            float yaw = atan2f(dz, dx);
-            float pitch = asinf(dy / dist);
-            bool changed = false;
-            const float orbit_step = 0.04f; // radians per repeat tick
-
-            ImGui::PushButtonRepeat(true);
-            ImGui::Text("Orbit:");
-            if (ImGui::Button("Left"))  { yaw -= orbit_step; changed = true; }
-            ImGui::SameLine();
-            if (ImGui::Button("Right")) { yaw += orbit_step; changed = true; }
-            ImGui::SameLine();
-            if (ImGui::Button("Up"))    { pitch += orbit_step; changed = true; }
-            ImGui::SameLine();
-            if (ImGui::Button("Down"))  { pitch -= orbit_step; changed = true; }
-
-            if (ImGui::Button("Zoom In"))  { dist *= 0.96f; changed = true; }
-            ImGui::SameLine();
-            if (ImGui::Button("Zoom Out")) { dist *= 1.04f; changed = true; }
-            ImGui::PopButtonRepeat();
-
-            if (ImGui::SliderFloat("Distance", &dist, 1.0f, 150.0f)) changed = true;
-
-            // Clamp pitch just shy of the poles so the orbit never flips/gimbal-locks.
-            const float pitch_limit = 1.5533f; // ~89 degrees
-            if (pitch > pitch_limit) pitch = pitch_limit;
-            if (pitch < -pitch_limit) pitch = -pitch_limit;
-            if (dist < 1.0f) dist = 1.0f;
-
-            if (changed) {
-                camera_.position.x = camera_.target.x + dist * cosf(pitch) * cosf(yaw);
-                camera_.position.y = camera_.target.y + dist * sinf(pitch);
-                camera_.position.z = camera_.target.z + dist * cosf(pitch) * sinf(yaw);
-            }
-
-            if (ImGui::Button("Reset View")) {
-                camera_.position = {3.0f, 2.0f, 5.0f};
-                camera_.target = {0.0f, 0.0f, 0.0f};
-                camera_.up = {0.0f, 1.0f, 0.0f};
             }
         }
 
@@ -1871,7 +1870,62 @@ private:
         }
         
         ImGui::End();
-        
+
+        // Camera controls — own window so the main panel stays focused on scene
+        // controls. Clickable orbit/zoom keeps the view fully navigable without
+        // locking the cursor or using WASD (important over remote desktop).
+        // Buttons use auto-repeat so holding them down moves continuously.
+        ImGui::SetNextWindowPos(ImVec2(GetScreenWidth() - 270.0f, 20.0f), ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowSize(ImVec2(250, 0), ImGuiCond_FirstUseEver);
+        ImGui::Begin("Camera");
+        {
+            float dx = camera_.position.x - camera_.target.x;
+            float dy = camera_.position.y - camera_.target.y;
+            float dz = camera_.position.z - camera_.target.z;
+            float dist = sqrtf(dx * dx + dy * dy + dz * dz);
+            if (dist < 0.0001f) dist = 0.0001f;
+            float yaw = atan2f(dz, dx);
+            float pitch = asinf(dy / dist);
+            bool changed = false;
+            const float orbit_step = 0.04f; // radians per repeat tick
+
+            ImGui::PushButtonRepeat(true);
+            ImGui::Text("Orbit:");
+            if (ImGui::Button("Left"))  { yaw -= orbit_step; changed = true; }
+            ImGui::SameLine();
+            if (ImGui::Button("Right")) { yaw += orbit_step; changed = true; }
+            ImGui::SameLine();
+            if (ImGui::Button("Up"))    { pitch += orbit_step; changed = true; }
+            ImGui::SameLine();
+            if (ImGui::Button("Down"))  { pitch -= orbit_step; changed = true; }
+
+            if (ImGui::Button("Zoom In"))  { dist *= 0.96f; changed = true; }
+            ImGui::SameLine();
+            if (ImGui::Button("Zoom Out")) { dist *= 1.04f; changed = true; }
+            ImGui::PopButtonRepeat();
+
+            if (ImGui::SliderFloat("Distance", &dist, 1.0f, 150.0f)) changed = true;
+
+            // Clamp pitch just shy of the poles so the orbit never flips/gimbal-locks.
+            const float pitch_limit = 1.5533f; // ~89 degrees
+            if (pitch > pitch_limit) pitch = pitch_limit;
+            if (pitch < -pitch_limit) pitch = -pitch_limit;
+            if (dist < 1.0f) dist = 1.0f;
+
+            if (changed) {
+                camera_.position.x = camera_.target.x + dist * cosf(pitch) * cosf(yaw);
+                camera_.position.y = camera_.target.y + dist * sinf(pitch);
+                camera_.position.z = camera_.target.z + dist * cosf(pitch) * sinf(yaw);
+            }
+
+            if (ImGui::Button("Reset View")) {
+                camera_.position = {3.0f, 2.0f, 5.0f};
+                camera_.target = {0.0f, 0.0f, 0.0f};
+                camera_.up = {0.0f, 1.0f, 0.0f};
+            }
+        }
+        ImGui::End();
+
         // Material reference window - positioned bottom left
         ImGui::SetNextWindowPos(ImVec2(20, 540), ImGuiCond_FirstUseEver);
         ImGui::SetNextWindowSize(ImVec2(350, 180), ImGuiCond_FirstUseEver);
@@ -2246,7 +2300,11 @@ private:
     BLASHandle imposter_cube_blas_ = 0;
     unsigned int imposter_color_vol_ = 0;
     unsigned int imposter_normal_vol_ = 0;
-    bool  imposter_enabled_ = false;
+    bool  imposter_enabled_ = false;          // 3D volumes uploaded + bound each frame
+    bool  imposter_ready_   = false;          // imposter baked + instance built (once)
+    bool  show_imposter_    = false;          // UI toggle: imposter in place of the real part
+    TLASManager::DrawInstance imposter_instance_{}; // unit-cube proxy at the part's footprint
+    std::vector<TLASManager::DrawInstance> original_instances_; // original part, for toggle-back
 
     // Mapping between BVH analysis names and BLAS handles for selective rendering
     std::unordered_map<std::string, BLASHandle> bvh_name_to_handle_;

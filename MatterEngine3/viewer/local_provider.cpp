@@ -151,18 +151,17 @@ bool LocalProvider::connect(WorldManifest& out, std::string& err) {
         out.instances.push_back(e);
     };
 
-    const int kTileGrid = 3; const float kTile = 8.0f;
-    const float kSpan = kTileGrid * kTile;
-    for (int i = 0; i < kTileGrid; ++i)
-        for (int j = 0; j < kTileGrid; ++j)
-            place(hash_of["Terrain"], i * kTile, 0.0f, j * kTile);
+    // The Primitives world (examples/primitive_demo) places a single Gallery root
+    // at the origin; the Gallery's child table scatters the three sub-galleries.
+    if (cfg_.world_name == "Primitives") {
+        place(hash_of["Gallery"], 0.0f, 0.0f, 0.0f);
+        return true;
+    }
 
-    Rng64 rng(0xC0FFEEu);
-    const int kTrees = 24, kGrass = 120;
-    for (int n = 0; n < kTrees; ++n)
-        place(hash_of["Tree"],  rng.range(0, kSpan), 1.0f, rng.range(0, kSpan));
-    for (int n = 0; n < kGrass; ++n)
-        place(hash_of["Grass"], rng.range(0, kSpan), 0.6f, rng.range(0, kSpan));
+    // Iteration scene: a single Tree at the origin, no terrain or grass, so we
+    // can inspect the tree geometry up close. The other roots are still installed
+    // above (hash_of has them); we just don't place any instances of them.
+    place(hash_of["Tree"], 0.0f, 0.0f, 0.0f);
 
     return true;
 }

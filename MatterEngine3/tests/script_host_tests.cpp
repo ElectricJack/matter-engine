@@ -6,6 +6,7 @@ extern "C" {
 }
 #include "../include/script_host.h"
 #include "../include/dsl_state.h"
+#include "../include/triangle_emit.hpp"   // complete TriangleBuildBuffer for G4/G8 tests
 #include "../include/csg_lowering.h"
 #include "../include/part_asset_v2.h"
 #include "../../MatterSurfaceLib/include/blas_manager.hpp"
@@ -72,9 +73,16 @@ static void test_dsl_state_rules() {
     s2.endVoxels();
     CHECK(s2.has_error(), "endVoxels with no open session is an error");
 
+    // G8: sphere() outside a voxel session is no longer an error -- in None/mesh
+    // mode it emits a triangulated solid. The remaining misuse is emitting a solid
+    // mid-beginShape (a solid is its own primitive, not loose verts).
     dsl::DslState s3;
     s3.sphere({0,0,0}, 1.0f, dsl::CsgOp::Union);
-    CHECK(s3.has_error(), "emitting outside a session is an error");
+    CHECK(!s3.has_error(), "sphere() in None session meshes (G8), not an error");
+    dsl::DslState s3b;
+    s3b.beginShape(0);
+    s3b.sphere({0,0,0}, 1.0f, dsl::CsgOp::Union);
+    CHECK(s3b.has_error(), "sphere() mid-beginShape is an error");
 
     dsl::DslState s4;
     s4.beginVoxels(0.1f);
@@ -154,14 +162,27 @@ static void test_bindings_record_ops_and_misuse() {
     CHECK(host.last_buffer().ops.size() == 2, "two brushes recorded");
     CHECK(host.last_buffer().ops[1].op == dsl::CsgOp::Difference, "difference applied to box");
 
+    // G8: a solid emitted mid-beginShape is the misuse now (a loose sphere with no
+    // session meshes fine). The error message names the open-shape conflict.
     script_host::ScriptHost host2;
     const char* bad =
         "class Bad extends Part { static params={};\n"
-        "  build(p){ this.sphere([0,0,0],1.0); }\n"   // emit with no session
+        "  build(p){ this.beginShape(SHAPE.triangles); this.sphere([0,0,0],1.0); this.endShape(); }\n"
         "}\n";
     script_host::BakeResult rb = host2.bake_source(bad, "{}", {});
-    CHECK(!rb.error.ok, "emit outside session is fail-closed");
-    CHECK(rb.error.message.find("session") != std::string::npos, "structured session error message");
+    CHECK(!rb.error.ok, "solid mid-beginShape is fail-closed");
+    CHECK(rb.error.message.find("beginShape") != std::string::npos ||
+          rb.error.message.find("solid") != std::string::npos,
+          "structured mid-shape error message");
+
+    // A loose sphere() with no session now bakes (mesh mode, G8).
+    script_host::ScriptHost host3;
+    const char* meshOnly =
+        "class Mesh extends Part { static params={};\n"
+        "  build(p){ this.fill(MAT.stone); this.sphere([0,0,0],1.0); }\n"
+        "}\n";
+    script_host::BakeResult rm = host3.bake_source(meshOnly, "{}", {});
+    CHECK(rm.error.ok, "G8: loose mesh sphere bakes without a session");
 }
 
 static void test_csg_lowering() {
@@ -170,14 +191,21 @@ static void test_csg_lowering() {
     s.fill(3);
     s.sphere({0,0,0}, 1.0f, dsl::CsgOp::Union);
     s.box({1,0,0}, {0.05f,0.05f,0.05f}, dsl::CsgOp::Difference); // sub-min box
+    // re-tag the box op as difference IN-SESSION (verb sets last op; G3 scopes
+    // this to the open session, so it must run before endVoxels()).
+    s.set_last_op(dsl::CsgOp::Difference);
     s.smoothing(0.4f);
     s.endVoxels();
-    // re-tag the box op as difference (verb sets last op)
-    s.set_last_op(dsl::CsgOp::Difference);
     dsl::LoweredField f = dsl::lower_build_buffer(s.buffer());
     CHECK(f.additive.size() == 1, "sphere lowered to one additive particle");
     CHECK(f.additive[0].materialId == 3, "additive carries material cursor");
-    CHECK(!f.carve.empty(), "sub-min box still produces carve particles (feature survives)");
+    // Phase 1: a box (any op) lowers to ONE oriented fat primitive, not a carve
+    // sphere stamp. A Difference box is folded as a Difference STAGE on the fat
+    // prim (no trailing carve particle is emitted for it).
+    CHECK(f.fat.size() == 1, "sub-min box lowers to one oriented fat primitive");
+    CHECK(f.fat[0].kind == FAT_PRIM_BOX, "the fat primitive is a box");
+    CHECK(f.stages.size() >= 2, "union sphere then difference box opens two ordered stages");
+    CHECK(f.stages.back() == CSG_STAGE_DIFFERENCE, "the box's stage is a Difference");
     CHECK(f.smoothing == 0.4f || f.smoothing == 0.0f, "smoothing factor carried");
 }
 
@@ -248,7 +276,10 @@ static void test_sub_min_box_feature_survives() {
     s.endVoxels();
     s.set_last_op(dsl::CsgOp::Difference);
     dsl::LoweredField f = dsl::lower_build_buffer(s.buffer());
-    CHECK(!f.carve.empty(), "sub-min box carves at least one carve particle");
+    // Phase 1: the sub-min box is a real oriented fat primitive (a Difference
+    // stage), so the crisp removal no longer depends on the cubic carve stamp;
+    // it survives at full fidelity regardless of the min particle size.
+    CHECK(f.fat.size() == 1, "sub-min box lowers to one oriented fat primitive");
     // the analytic field still shows the crisp removal at the box location
     CHECK(!dsl::field_is_solid(s.buffer(), {1.0f,0,0}), "sub-min feature present in field");
 }
@@ -515,8 +546,464 @@ static void test_place_child_roundtrip() {
           "parent re-bake is deterministic");
 }
 
+// --- Phase 2 DSL-completeness gaps (G3..G8) ---------------------------------
+
+// G3: CSG op verbs are scoped to the open voxel session + its brush range. A stray
+// difference() after endVoxels() errors; in-session re-tag still works.
+static void test_g3_session_scoped_op_verbs() {
+    // In-session re-tag works.
+    dsl::DslState ok;
+    ok.beginVoxels(0.1f);
+    ok.sphere({0,0,0}, 1.0f, dsl::CsgOp::Union);
+    ok.set_last_op(dsl::CsgOp::Difference);
+    CHECK(!ok.has_error(), "G3: in-session op re-tag has no error");
+    CHECK(ok.buffer().ops.size() == 1 && ok.buffer().ops[0].op == dsl::CsgOp::Difference,
+          "G3: in-session difference() re-tags the current brush");
+    ok.endVoxels();
+
+    // Stray difference() AFTER endVoxels() is a clear error.
+    dsl::DslState stray;
+    stray.beginVoxels(0.1f);
+    stray.sphere({0,0,0}, 1.0f, dsl::CsgOp::Union);
+    stray.endVoxels();
+    stray.set_last_op(dsl::CsgOp::Difference);
+    CHECK(stray.has_error(), "G3: difference() after endVoxels() is an error");
+
+    // difference() with no brush in THIS session is a clear error (can't mis-tag a
+    // previous session's brush).
+    dsl::DslState empty;
+    empty.beginVoxels(0.1f);
+    empty.sphere({0,0,0}, 1.0f, dsl::CsgOp::Union);
+    empty.endVoxels();
+    empty.beginVoxels(0.1f);
+    empty.set_last_op(dsl::CsgOp::Difference);   // no brush yet in this session
+    CHECK(empty.has_error(), "G3: op verb before any brush in this session errors");
+}
+
+// G4: tint(r,g,b,a) cursor is captured onto each brush (BuildOp) and triangle (TriEx);
+// default is neutral (1,1,1,0) and unchanged.
+static void test_g4_tint_cursor() {
+    // Default neutral.
+    dsl::DslState def;
+    CHECK(def.tint().w == 0.0f && def.tint().x == 1.0f, "G4: default tint is neutral (1,1,1,0)");
+
+    // Voxel brush captures the tint cursor.
+    dsl::DslState s;
+    s.beginVoxels(0.1f);
+    s.tint(0.2f, 0.4f, 0.6f, 0.8f);
+    s.sphere({0,0,0}, 1.0f, dsl::CsgOp::Union);
+    s.endVoxels();
+    CHECK(!s.has_error(), "G4: tinted voxel session has no error");
+    CHECK(s.buffer().ops.size() == 1, "G4: one brush recorded");
+    const Vector4& bt = s.buffer().ops[0].tint;
+    CHECK(fabsf(bt.x-0.2f)<1e-6f && fabsf(bt.y-0.4f)<1e-6f &&
+          fabsf(bt.z-0.6f)<1e-6f && fabsf(bt.w-0.8f)<1e-6f,
+          "G4: BuildOp carries the tint cursor");
+
+    // Mesh triangle captures the tint cursor into TriEx.
+    dsl::DslState m;
+    m.tint(0.1f, 0.2f, 0.3f, 0.9f);
+    m.beginShape(0);
+    m.vertex(0,0,0); m.vertex(1,0,0); m.vertex(0,1,0);
+    m.endShape();
+    CHECK(!m.has_error(), "G4: tinted shape has no error");
+    const auto& tx = m.triangle_buffer()->tri_extra();
+    CHECK(tx.size() == 1, "G4: one triangle emitted");
+    CHECK(fabsf(tx[0].tint.x-0.1f)<1e-6f && fabsf(tx[0].tint.w-0.9f)<1e-6f,
+          "G4: TriEx carries the tint cursor");
+
+    // Default path still neutral on the triangle.
+    dsl::DslState d2;
+    d2.beginShape(0); d2.vertex(0,0,0); d2.vertex(1,0,0); d2.vertex(0,1,0); d2.endShape();
+    CHECK(d2.triangle_buffer()->tri_extra()[0].tint.w == 0.0f,
+          "G4: default tint alpha 0 unchanged");
+}
+
+// G5: lookAt aims the forward (+Z) axis at the target and composes with the stack.
+static void test_g5_lookat() {
+    dsl::DslState s;
+    // Look from origin toward +X. Forward +Z (local) should map to +X (world).
+    s.lookAt(5, 0, 0, 0, 1, 0);
+    CHECK(!s.has_error(), "G5: lookAt has no error");
+    Matrix m = s.top();
+    // Local +Z transformed = third column (m.m8,m.m9,m.m10) should be ~+X.
+    float fx = m.m8, fy = m.m9, fz = m.m10;
+    float len = sqrtf(fx*fx+fy*fy+fz*fz);
+    fx/=len; fy/=len; fz/=len;
+    CHECK(fabsf(fx-1.0f)<1e-4f && fabsf(fy)<1e-4f && fabsf(fz)<1e-4f,
+          "G5: +Z forward axis aims at the target direction (+X)");
+
+    // Composes with a prior translate: origin stays put, forward aims from there.
+    dsl::DslState s2;
+    s2.translate(0, 10, 0);
+    s2.lookAt(0, 10, 5, 0, 1, 0);   // from (0,10,0) toward (0,10,5) => +Z forward
+    Vector3 p = s2.position();
+    CHECK(fabsf(p.y-10.0f)<1e-4f, "G5: lookAt preserves the current frame origin");
+    Matrix m2 = s2.top();
+    float gz = m2.m10 / sqrtf(m2.m8*m2.m8+m2.m9*m2.m9+m2.m10*m2.m10);
+    CHECK(gz > 0.99f, "G5: forward aims +Z toward target from composed origin");
+}
+
+// G6: placeChild(module, params?) folds params into the child's resolved hash.
+static void test_g6_place_child_params() {
+    using namespace script_host;
+    ScriptHost host;
+    const char* leaf =
+        "class Leaf extends Part {"
+        "  build(p){ this.beginVoxels(0.1); this.fill(MAT.leaf);"
+        "            this.sphere([0,0,0],0.1); this.endVoxels(); } }";
+    BakeResult lr = host.bake_source(leaf, "{}", {});
+    CHECK(lr.error.ok, "G6: leaf bakes");
+    uint64_t leaf_hash = lr.resolved_hash;
+    uint64_t kids[1] = { leaf_hash };
+    std::string names[1] = { std::string("Leaf") };
+
+    // No params: child hash unchanged (backwards compatible).
+    const char* p_none =
+        "class P extends Part { build(p){ this.placeChild('Leaf'); } }";
+    BakeResult rn = host.bake_source(p_none, "{}", {}, kids, 1, names);
+    CHECK(rn.error.ok, "G6: no-params parent bakes");
+    BLASManager b0; TLASManager t0(64); std::vector<part_asset::ChildInstance> c0;
+    part_asset::LodLevels l0;
+    part_asset::load_v2(part_asset::cache_path_resolved(rn.resolved_hash), rn.resolved_hash, b0, t0, c0, l0);
+    CHECK(c0.size() == 1 && c0[0].child_resolved_hash == leaf_hash,
+          "G6: no params => child hash unchanged (== declared hash)");
+
+    // Same params twice => same folded hash (dedup); different params => different.
+    const char* p_a =
+        "class P extends Part { build(p){ this.placeChild('Leaf', {seed:1});"
+        "                                  this.placeChild('Leaf', {seed:1}); } }";
+    const char* p_b =
+        "class P extends Part { build(p){ this.placeChild('Leaf', {seed:2}); } }";
+    BakeResult ra = host.bake_source(p_a, "{}", {}, kids, 1, names);
+    BakeResult rb = host.bake_source(p_b, "{}", {}, kids, 1, names);
+    CHECK(ra.error.ok && rb.error.ok, "G6: parametric parents bake");
+
+    BLASManager ba; TLASManager ta(64); std::vector<part_asset::ChildInstance> ca;
+    part_asset::LodLevels la;
+    part_asset::load_v2(part_asset::cache_path_resolved(ra.resolved_hash), ra.resolved_hash, ba, ta, ca, la);
+    BLASManager bb; TLASManager tb(64); std::vector<part_asset::ChildInstance> cb;
+    part_asset::LodLevels lb;
+    part_asset::load_v2(part_asset::cache_path_resolved(rb.resolved_hash), rb.resolved_hash, bb, tb, cb, lb);
+
+    CHECK(ca.size() == 2, "G6: two parametric instances recorded");
+    if (ca.size() == 2)
+        CHECK(ca[0].child_resolved_hash == ca[1].child_resolved_hash,
+              "G6: same module + same params => same resolved hash (dedup)");
+    if (!ca.empty()) {
+        CHECK(ca[0].child_resolved_hash != leaf_hash,
+              "G6: params fold changes the child hash vs no-params");
+        if (!cb.empty())
+            CHECK(ca[0].child_resolved_hash != cb[0].child_resolved_hash,
+                  "G6: different params => different resolved hash");
+    }
+}
+
+// G7: a pushMatrix() with no popMatrix() fails the build with a clear message.
+static void test_g7_stack_balance() {
+    script_host::ScriptHost host;
+    const char* src =
+        "class Leaky extends Part { static params={};"
+        "  build(p){ this.pushMatrix(); this.translate(1,0,0); /* no popMatrix */ } }";
+    script_host::BakeResult r = host.bake_source(src, "{}", {});
+    CHECK(!r.error.ok, "G7: leaked pushMatrix fails the build");
+    CHECK(r.error.message.find("stack") != std::string::npos ||
+          r.error.message.find("pushMatrix") != std::string::npos,
+          "G7: error message names the transform-stack imbalance");
+
+    // Balanced build still succeeds.
+    script_host::ScriptHost host2;
+    const char* ok =
+        "class Ok extends Part { static params={};"
+        "  build(p){ this.pushMatrix(); this.translate(1,0,0); this.popMatrix();"
+        "            this.beginVoxels(0.2); this.sphere([0,0,0],0.5); this.endVoxels(); } }";
+    script_host::BakeResult r2 = host2.bake_source(ok, "{}", {});
+    CHECK(r2.error.ok, "G7: balanced stack bakes fine");
+}
+
+// G8: sphere()/box() are session-polymorphic. None => a closed triangulated solid;
+// Voxels => a brush; mid-beginShape => error. (Mesh-emitter geometry is tested in
+// triangle_variation_tests; here we pin the dispatch.)
+static void test_g8_sphere_box_polymorphic() {
+    // None / mesh mode: sphere emits a closed triangulated solid at the right radius.
+    dsl::DslState mesh;
+    mesh.sphere({0,0,0}, 2.0f, dsl::CsgOp::Union);
+    CHECK(!mesh.has_error(), "G8: sphere() in None session is not an error");
+    const auto& mt = mesh.triangle_buffer()->triangles();
+    CHECK(!mt.empty(), "G8: sphere() in None session emits triangles");
+    CHECK(mesh.buffer().ops.empty(), "G8: mesh sphere does NOT push a voxel brush");
+    // Radius check: every vertex sits ~2.0 from center (the sphere is closed/round).
+    float maxr = 0, minr = 1e9f;
+    for (const Tri& t : mt) {
+        for (const float3& v : { t.vertex0, t.vertex1, t.vertex2 }) {
+            float rr = sqrtf(v.x*v.x+v.y*v.y+v.z*v.z);
+            if (rr>maxr) maxr=rr; if (rr<minr) minr=rr;
+        }
+    }
+    CHECK(fabsf(maxr-2.0f)<1e-3f && fabsf(minr-2.0f)<1e-3f,
+          "G8: mesh sphere vertices all lie at radius 2.0");
+
+    // Voxels: sphere stays a brush (no triangles).
+    dsl::DslState vox;
+    vox.beginVoxels(0.1f);
+    vox.sphere({0,0,0}, 1.0f, dsl::CsgOp::Union);
+    vox.endVoxels();
+    CHECK(!vox.has_error(), "G8: voxel sphere ok");
+    CHECK(vox.buffer().ops.size() == 1, "G8: voxel sphere is a brush");
+    CHECK(vox.triangle_buffer()->triangles().empty(), "G8: voxel sphere emits no triangles");
+
+    // Mid-beginShape: sphere()/box() error (a solid is its own primitive).
+    dsl::DslState mid;
+    mid.beginShape(0);
+    mid.sphere({0,0,0}, 1.0f, dsl::CsgOp::Union);
+    CHECK(mid.has_error(), "G8: sphere() mid-beginShape is an error");
+
+    dsl::DslState midb;
+    midb.beginShape(0);
+    midb.box({0,0,0}, {1,1,1}, dsl::CsgOp::Union);
+    CHECK(midb.has_error(), "G8: box() mid-beginShape is an error");
+
+    // box() in None emits a 12-triangle solid baked under the matrix.
+    dsl::DslState boxmesh;
+    boxmesh.box({0,0,0}, {1,1,1}, dsl::CsgOp::Union);
+    CHECK(!boxmesh.has_error(), "G8: box() in None session is not an error");
+    CHECK(boxmesh.triangle_buffer()->triangles().size() == 12,
+          "G8: mesh box is 12 triangles");
+    CHECK(boxmesh.buffer().ops.empty(), "G8: mesh box does NOT push a voxel brush");
+}
+
+// Phase 3: extrude dispatch + POLYGON lazy retention + joinType cursor.
+static void test_extrude_dispatch_and_polygon() {
+    // (a) extrude in a voxel session errors (deferred).
+    {
+        dsl::DslState s;
+        s.beginVoxels(0.1f);
+        float seg[6] = {0,0,0, 0,0,1};
+        s.extrude(seg, 2);
+        CHECK(s.has_error(), "P3: extrude in a voxel session errors (deferred)");
+        CHECK(s.error().find("voxel") != std::string::npos,
+              "P3: voxel-extrude error mentions voxel");
+    }
+    // (b) extrude mid open beginShape (not yet ended) errors.
+    {
+        dsl::DslState s;
+        s.beginShape(3);                 // POLYGON, still open
+        s.vertex(0,0,0); s.vertex(1,0,0); s.vertex(1,1,0);
+        float seg[6] = {0,0,0, 0,0,1};
+        s.extrude(seg, 2);
+        CHECK(s.has_error(), "P3: extrude mid-beginShape errors (needs finalized profile)");
+    }
+    // (c) extrude with no retained profile errors.
+    {
+        dsl::DslState s;
+        float seg[6] = {0,0,0, 0,0,1};
+        s.extrude(seg, 2);
+        CHECK(s.has_error(), "P3: extrude with no retained profile errors");
+    }
+    // (d) POLYGON beginShape in a voxel session errors (mesh-only).
+    {
+        dsl::DslState s;
+        s.beginVoxels(0.1f);
+        s.beginShape(3);
+        CHECK(s.has_error(), "P3: POLYGON beginShape in a voxel session errors");
+    }
+    // (e) Lazy retention: a POLYGON shape with NO following extrude emits a flat
+    //     filled face (triangulated).
+    {
+        dsl::DslState s;
+        s.beginShape(3);                 // POLYGON
+        s.vertex(0,0,0); s.vertex(2,0,0); s.vertex(2,2,0); s.vertex(0,2,0);
+        s.endShape();                    // finalize + retain (no emit yet)
+        CHECK(!s.has_error(), "P3: POLYGON shape has no error");
+        // The retained profile flat-fills on the next session boundary / build end.
+        s.flush_retained_profile();      // host calls this at build end
+        const auto& tris = s.triangle_buffer()->triangles();
+        CHECK(tris.size() == 2, "P3: unclaimed POLYGON flat-fills (square -> 2 tris)");
+    }
+    // (f) Lazy retention claimed: a POLYGON followed by extrude emits the swept
+    //     solid and NO flat face.
+    {
+        dsl::DslState s;
+        s.beginShape(3);                 // POLYGON profile
+        s.vertex(-0.5f,-0.5f,0); s.vertex(0.5f,-0.5f,0);
+        s.vertex(0.5f,0.5f,0);   s.vertex(-0.5f,0.5f,0);
+        s.endShape();                    // retain
+        float seg[6] = {0,0,0, 0,0,2};
+        s.extrude(seg, 2);               // consumes the retained profile
+        CHECK(!s.has_error(), "P3: extrude of a retained POLYGON has no error");
+        s.flush_retained_profile();      // would flat-fill IF unclaimed
+        const auto& tris = s.triangle_buffer()->triangles();
+        // A swept prism is 12 tris; a flat fill would have been 2. The flat face
+        // must NOT have been emitted (profile was claimed), so count == 12.
+        CHECK(tris.size() == 12, "P3: claimed POLYGON sweeps (12 tris) and emits NO flat face");
+    }
+    // (g) joinType cursor affects the corner: MITER vs BEVEL on an L polyline
+    //     change the triangle count (drives the tri_emit::extrude join path).
+    {
+        dsl::DslState miter;
+        miter.joinType(0);               // MITER
+        miter.beginShape(3);
+        miter.vertex(-0.3f,-0.3f,0); miter.vertex(0.3f,-0.3f,0);
+        miter.vertex(0.3f,0.3f,0);   miter.vertex(-0.3f,0.3f,0);
+        miter.endShape();
+        float L[9] = {0,0,0, 2,0,0, 2,2,0};
+        miter.extrude(L, 3);
+
+        dsl::DslState bevel;
+        bevel.joinType(1);               // BEVEL
+        bevel.beginShape(3);
+        bevel.vertex(-0.3f,-0.3f,0); bevel.vertex(0.3f,-0.3f,0);
+        bevel.vertex(0.3f,0.3f,0);   bevel.vertex(-0.3f,0.3f,0);
+        bevel.endShape();
+        bevel.extrude(L, 3);
+
+        CHECK(!miter.has_error() && !bevel.has_error(), "P3: L-extrude (both joins) ok");
+        CHECK(miter.triangle_buffer()->triangles().size() !=
+              bevel.triangle_buffer()->triangles().size(),
+              "P3: joinType MITER vs BEVEL change the corner triangle count");
+    }
+    // (h) beginContour/endContour build a hole; the flat fill excludes it.
+    {
+        dsl::DslState s;
+        s.beginShape(3);
+        s.vertex(0,0,0); s.vertex(4,0,0); s.vertex(4,4,0); s.vertex(0,4,0);  // outer CCW
+        s.beginContour();
+        s.vertex(1,1,0); s.vertex(1,3,0); s.vertex(3,3,0); s.vertex(3,1,0);  // hole CW
+        s.endContour();
+        s.endShape();
+        s.flush_retained_profile();
+        const auto& tris = s.triangle_buffer()->triangles();
+        CHECK(!s.has_error(), "P3: POLYGON with a hole has no error");
+        CHECK(tris.size() == 8, "P3: square+hole flat fill -> 8 tris (annulus)");
+    }
+}
+
+// Phase 4 / G1: voxel line() lowers to a capsule brush (sdSegment - r) instead of
+// erroring; None line() keeps the swept-tube mesh; voxel capsule()/cylinder()/cone()
+// emit brushes, None mesh branch errors cleanly (Phase 5 owns the mesh geometry).
+static void test_g1_voxel_line_and_round_dispatch() {
+    // (a) line() in a voxel session no longer errors -> one capsule brush.
+    {
+        dsl::DslState s;
+        s.beginVoxels(0.1f); s.fill(0);
+        s.line(-1,0,0, 1,0,0, 0.5f, 0.5f);
+        CHECK(!s.has_error(), "G1: line() in a voxel session is not an error");
+        CHECK(s.buffer().ops.size() == 1, "G1: voxel line() emits one brush");
+        CHECK(s.buffer().ops[0].kind == dsl::BrushKind::Capsule,
+              "G1: voxel line() is a capsule brush");
+        CHECK(s.triangle_buffer()->triangles().empty(),
+              "G1: voxel line() emits no triangles");
+        // Occupancy matches the capsule SDF (sdSegment - r).
+        CHECK(dsl::field_is_solid(s.buffer(), {0,0,0}),    "G1: capsule mid solid");
+        CHECK(dsl::field_is_solid(s.buffer(), {1.4f,0,0}), "G1: capsule end-cap solid");
+        CHECK(!dsl::field_is_solid(s.buffer(), {0,0.6f,0}),"G1: capsule outside wall empty");
+    }
+    // (b) line() in None session keeps the swept-tube MESH (unchanged behavior).
+    {
+        dsl::DslState s;
+        s.line(-1,0,0, 1,0,0, 0.5f, 0.5f);
+        CHECK(!s.has_error(), "G1: line() in None session is not an error");
+        CHECK(s.buffer().ops.empty(), "G1: None line() pushes NO voxel brush");
+        CHECK(!s.triangle_buffer()->triangles().empty(),
+              "G1: None line() still emits the swept-tube mesh");
+    }
+    // (c) voxel capsule()/cylinder()/cone() emit brushes.
+    {
+        dsl::DslState s; s.beginVoxels(0.1f); s.fill(0);
+        s.capsule({-1,0,0},{1,0,0},0.5f, dsl::CsgOp::Union);
+        s.cylinder({0,-1,0},{0,1,0},0.4f, dsl::CsgOp::Union);
+        s.cone({0,0,-1},{0,0,1},0.6f,0.0f, dsl::CsgOp::Union);
+        s.endVoxels();
+        CHECK(!s.has_error(), "P4: voxel capsule/cylinder/cone have no error");
+        CHECK(s.buffer().ops.size() == 3, "P4: three round brushes recorded");
+        CHECK(s.buffer().ops[0].kind == dsl::BrushKind::Capsule,  "P4: capsule kind");
+        CHECK(s.buffer().ops[1].kind == dsl::BrushKind::Cylinder, "P4: cylinder kind");
+        CHECK(s.buffer().ops[2].kind == dsl::BrushKind::Cylinder, "P4: cone lowers to cylinder kind");
+    }
+    // (d) None / mesh branch of capsule/cylinder/cone emits triangles (Phase 5)
+    //     and pushes NO voxel brush. (Geometry detail tested in triangle_variation_tests.)
+    {
+        dsl::DslState s;
+        s.capsule({-1,0,0},{1,0,0},0.5f, dsl::CsgOp::Union);
+        CHECK(!s.has_error(), "P5: capsule() in None session is not an error");
+        CHECK(!s.triangle_buffer()->triangles().empty(), "P5: mesh capsule emits triangles");
+        CHECK(s.buffer().ops.empty(), "P5: mesh capsule pushes no voxel brush");
+    }
+    {
+        dsl::DslState s;
+        s.cylinder({0,-1,0},{0,1,0},0.4f, dsl::CsgOp::Union);
+        CHECK(!s.has_error(), "P5: cylinder() in None session is not an error");
+        CHECK(!s.triangle_buffer()->triangles().empty(), "P5: mesh cylinder emits triangles");
+        CHECK(s.buffer().ops.empty(), "P5: mesh cylinder pushes no voxel brush");
+    }
+    {
+        dsl::DslState s;
+        s.cone({0,0,-1},{0,0,1},0.6f,0.0f, dsl::CsgOp::Union);
+        CHECK(!s.has_error(), "P5: cone() in None session is not an error");
+        CHECK(!s.triangle_buffer()->triangles().empty(), "P5: mesh cone emits triangles");
+        CHECK(s.buffer().ops.empty(), "P5: mesh cone pushes no voxel brush");
+    }
+    // (e) capsule()/cylinder()/cone() mid-beginShape error (a solid is its own primitive).
+    {
+        dsl::DslState s; s.beginShape(0);
+        s.capsule({-1,0,0},{1,0,0},0.5f, dsl::CsgOp::Union);
+        CHECK(s.has_error(), "P4: capsule() mid-beginShape is an error");
+    }
+    // (f) End-to-end JS surface: capsule/cylinder/cone/voxel-line bake through
+    //     QuickJS + part_base.js.h + bindings without error (wiring smoke test).
+    {
+        script_host::ScriptHost host;
+        const char* src =
+            "class Round extends Part { static params={};\n"
+            "  build(p){ this.beginVoxels(0.25); this.fill(MAT.stone);\n"
+            "    this.capsule([-1,0,0],[1,0,0],0.5);\n"
+            "    this.cylinder([0,-1,0],[0,1,0],0.4);\n"
+            "    this.cone([0,0,-1],[0,0,1],0.6,0.0);\n"
+            "    this.line([0,2,0],[0,3,0],0.2);\n"   // voxel line -> capsule (G1)
+            "    this.endVoxels(); }\n"
+            "}\n";
+        script_host::BakeResult r = host.bake_source(src, "{}", {});
+        CHECK(r.error.ok, "P4: JS capsule/cylinder/cone/line voxel bake succeeds");
+        CHECK(!r.written_path.empty(), "P4: round-primitive part written");
+    }
+}
+
+// Phase 5: round-primitive mesh emitters through the JS DSL. In a None (mesh)
+// session capsule/cylinder/cone bake triangles; mid-beginShape (Triangles
+// session) they still error.
+static void test_p5_round_mesh_dispatch() {
+    // (a) JS mesh-mode capsule/cylinder/cone bake without a voxel session.
+    {
+        script_host::ScriptHost host;
+        const char* src =
+            "class RoundMesh extends Part { static params={};\n"
+            "  build(p){ this.fill(MAT.stone);\n"
+            "    this.cylinder([-1,0,0],[1,0,0],0.4);\n"
+            "    this.cone([0,-1,0],[0,1,0],0.5,0.0);\n"
+            "    this.capsule([0,0,-1],[0,0,1],0.3);\n"
+            "  }\n"
+            "}\n";
+        script_host::BakeResult r = host.bake_source(src, "{}", {});
+        CHECK(r.error.ok, "P5: JS mesh capsule/cylinder/cone bake succeeds");
+        CHECK(!r.written_path.empty(), "P5: mesh round-primitive part written");
+    }
+    // (b) Mid-beginShape (Triangles session) each still errors via direct DslState.
+    {
+        dsl::DslState s; s.beginShape(0);
+        s.cylinder({-1,0,0},{1,0,0},0.4f, dsl::CsgOp::Union);
+        CHECK(s.has_error(), "P5: cylinder() mid-beginShape is an error");
+    }
+    {
+        dsl::DslState s; s.beginShape(0);
+        s.cone({0,-1,0},{0,1,0},0.5f,0.0f, dsl::CsgOp::Union);
+        CHECK(s.has_error(), "P5: cone() mid-beginShape is an error");
+    }
+}
+
 int main() {
     test_embed_eval_1_plus_1();
+    test_p5_round_mesh_dispatch();
+    test_g1_voxel_line_and_round_dispatch();
     test_fresh_context_runs_empty_class();
     test_build_called_on_authored_class();
     test_dsl_state_rules();
@@ -538,6 +1025,13 @@ int main() {
     test_eval_requires_deterministic();
     test_eval_requires_does_not_build();
     test_place_child_roundtrip();
+    test_g3_session_scoped_op_verbs();
+    test_g4_tint_cursor();
+    test_g5_lookat();
+    test_g6_place_child_params();
+    test_g7_stack_balance();
+    test_g8_sphere_box_polymorphic();
+    test_extrude_dispatch_and_polygon();
     if (failures == 0) printf("ALL PASS\n");
     return failures ? 1 : 0;
 }

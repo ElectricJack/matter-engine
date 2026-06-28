@@ -3,6 +3,8 @@
 
 #include <cstdint>
 
+#include "raylib.h"   // Camera3D for the orbit panel
+
 namespace viewer {
 
 // Read-only stats the HUD displays each frame; the resolver selector is the one
@@ -30,6 +32,9 @@ public:
     void begin_frame();
     void end_frame();
     void draw_debug_panel(ViewerStats& stats);
+    // MSL-style orbit/zoom controls: navigate the view without locking the cursor
+    // or using WASD (works over remote desktop). Mutates the camera in place.
+    void draw_camera_panel(Camera3D& cam);
 };
 
 } // namespace viewer

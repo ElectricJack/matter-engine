@@ -35,6 +35,8 @@ private:
     int      loc_cam_pos_ = -1, loc_cam_target_ = -1, loc_cam_up_ = -1;
     int      loc_cam_fovy_ = -1, loc_screen_size_ = -1;
     int      loc_material_table_ = -1, loc_material_count_ = -1;
+    int      loc_gi_strength_ = -1, loc_shadow_strength_ = -1;
+    int      loc_ao_enabled_ = -1, loc_debug_tri_ = -1;
     bool     ready_ = false;
 };
 

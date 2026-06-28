@@ -117,6 +117,13 @@ static void test_install_with_placement() {
 // Paths: the demo schemas/shared-lib are repo-relative to the tests dir
 // (../examples/world_demo/schemas, ../shared-lib). The caller passes ABSOLUTE paths
 // resolved from the original cwd before any chdir, so resolution survives a chdir.
+// The real demo tree is a faithful port of MatterEngine2's three-mode system:
+//   Tree  -> voxel sphere-sweep trunk + instanced TreeBranch twigs
+//   TreeBranch -> mesh line-tube twig + instanced Leaf blades
+//   Leaf  -> bezier triangle-fan blade (mesh)
+// This installs the on-disk schemas through the real graph and walks the whole
+// chain Tree -> TreeBranch -> Leaf, asserting each level reloads with the right
+// child structure and that the mesh levels actually registered geometry.
 static void test_demo_tree_has_leaves(const std::string& schemas,
                                       const std::string& sharedlib) {
     namespace pg = part_graph;
@@ -131,21 +138,59 @@ static void test_demo_tree_has_leaves(const std::string& schemas,
     pg::InstallResult ir = graph.install(roots);
     CHECK(ir.ok, "demo Tree installs");
     if (!ir.ok) printf("  install error: %s\n", ir.error.c_str());
+    CHECK(ir.root_hashes.size() == 1, "install returned the Tree root hash");
+    if (ir.root_hashes.empty()) return;
 
-    uint64_t leaf_hash = host.resolve_hash(read_file(schemas + "/Leaf.js"), "{}");
-    uint64_t kids[1] = { leaf_hash };
-    uint64_t tree_hash = host.resolve_hash(read_file(schemas + "/Tree.js"), "{}", kids, 1);
+    // Child-folded hashes, in the same nesting order the graph used: Leaf has no
+    // children; TreeBranch folds [Leaf]; Tree folds [TreeBranch].
+    uint64_t leaf_hash   = host.resolve_hash(read_file(schemas + "/Leaf.js"), "{}");
+    uint64_t lkids[1]    = { leaf_hash };
+    uint64_t branch_hash = host.resolve_hash(read_file(schemas + "/TreeBranch.js"), "{}", lkids, 1);
+    uint64_t tree_hash   = ir.root_hashes[0];
 
-    BLASManager blas; TLASManager tlas(64);
-    std::vector<part_asset::ChildInstance> children;
-    part_asset::LodLevels lods;
-    bool loaded = part_asset::load_v2(part_asset::cache_path_resolved(tree_hash),
-                                      tree_hash, blas, tlas, children, lods);
-    CHECK(loaded, "demo Tree .part reloads");
-    CHECK(!children.empty(), "demo Tree placed at least one leaf");
-    printf("  demo Tree placed %zu leaf instance(s)\n", children.size());
-    for (const auto& c : children)
-        CHECK(c.child_resolved_hash == leaf_hash, "every Tree child is a Leaf");
+    // --- Tree: voxel trunk + TreeBranch instances ---
+    BLASManager t_blas; TLASManager t_tlas(64);
+    std::vector<part_asset::ChildInstance> t_children;
+    part_asset::LodLevels t_lods;
+    bool t_loaded = part_asset::load_v2(part_asset::cache_path_resolved(tree_hash),
+                                        tree_hash, t_blas, t_tlas, t_children, t_lods);
+    CHECK(t_loaded, "demo Tree .part reloads");
+    CHECK(t_blas.get_unique_blas_count() >= 1, "Tree registered trunk voxel geometry");
+    CHECK(!t_children.empty(), "demo Tree placed at least one TreeBranch");
+    { size_t tt = 0; for (const auto& e : t_blas.get_entries()) tt += e->triangles.size();
+      // Geometry budget guard: the trunk voxel sweep once ballooned to >130k tris
+      // (multi-second synchronous LOD bake per part at viewer startup). Keep it sane.
+      CHECK(tt < 150000, "Tree trunk triangle count within budget"); }
+    printf("  demo Tree placed %zu TreeBranch instance(s)\n", t_children.size());
+    for (const auto& c : t_children)
+        CHECK(c.child_resolved_hash == branch_hash, "every Tree child is a TreeBranch");
+
+    // --- TreeBranch: mesh twig tubes + Leaf instances ---
+    BLASManager b_blas; TLASManager b_tlas(64);
+    std::vector<part_asset::ChildInstance> b_children;
+    part_asset::LodLevels b_lods;
+    bool b_loaded = part_asset::load_v2(part_asset::cache_path_resolved(branch_hash),
+                                        branch_hash, b_blas, b_tlas, b_children, b_lods);
+    CHECK(b_loaded, "demo TreeBranch .part reloads");
+    CHECK(b_blas.get_unique_blas_count() >= 1, "TreeBranch registered twig tube mesh");
+    CHECK(!b_children.empty(), "demo TreeBranch placed at least one Leaf");
+    { size_t bt = 0; for (const auto& e : b_blas.get_entries()) bt += e->triangles.size();
+      // A single twig once baked to 513k tris (~20s LOD bake) via line()'s stacked
+      // UV-sphere tubes. Guard the budget so it can't silently regress again.
+      CHECK(bt < 150000, "TreeBranch twig triangle count within budget"); }
+    printf("  demo TreeBranch placed %zu Leaf instance(s)\n", b_children.size());
+    for (const auto& c : b_children)
+        CHECK(c.child_resolved_hash == leaf_hash, "every TreeBranch child is a Leaf");
+
+    // --- Leaf: bezier triangle-fan blade (mesh, no children) ---
+    BLASManager l_blas; TLASManager l_tlas(64);
+    std::vector<part_asset::ChildInstance> l_children;
+    part_asset::LodLevels l_lods;
+    bool l_loaded = part_asset::load_v2(part_asset::cache_path_resolved(leaf_hash),
+                                        leaf_hash, l_blas, l_tlas, l_children, l_lods);
+    CHECK(l_loaded, "demo Leaf .part reloads");
+    CHECK(l_blas.get_unique_blas_count() >= 1, "Leaf registered blade triangle mesh");
+    CHECK(l_children.empty(), "Leaf is a mesh leaf with no children");
 }
 
 int main() {

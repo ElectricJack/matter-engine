@@ -10,6 +10,8 @@
 #include "ui.h"
 
 #include <cstdio>
+#include <cstdlib>
+#include <functional>
 #include <memory>
 #include <string>
 
@@ -37,6 +39,15 @@ int main() {
     cfg.shared_lib_dir = "../shared-lib";
     cfg.cache_root     = "cache";   // persistent: viewer/cache/parts/<hash>.part
 
+    // MATTER_WORLD=primitives switches to the primitive-demo gallery (every DSL
+    // op) instead of the default tree scene; local_provider scatters it by name.
+    const char* world_env = getenv("MATTER_WORLD");
+    if (world_env && std::string(world_env) == "primitives") {
+        cfg.schemas_dir    = "../examples/primitive_demo/schemas";
+        cfg.world_data_dir = "../examples/primitive_demo/WorldData";
+        cfg.world_name     = "Primitives";
+    }
+
     auto provider = std::make_unique<LocalProvider>(cfg);
 
     // --- Connect sequence (reusable for the reload button). ---
@@ -53,7 +64,23 @@ int main() {
         auto want = provider->reconcile(manifest, *store);
         if (!provider->fetch_parts(want, *store, err)) { printf("fetch: %s\n", err.c_str()); return false; }
         state.reset(manifest);
-        composer = std::make_unique<WorldComposer>(*store, manifest.instances.size() + 16);
+        // Size the TLAS to the fully child-expanded instance count, not just the
+        // root count: each placed part recursively pulls in its baked children
+        // (e.g. a Tree expands to hundreds of Leaf instances). Mirrors the depth
+        // cap and empty-LOD skip in WorldComposer::compose.
+        std::function<size_t(uint64_t, int)> expanded_count =
+            [&](uint64_t h, int depth) -> size_t {
+                if (depth > 8) return 0;
+                const LoadedPart* lp = store->get_or_load(h);
+                if (!lp || lp->lod_blas.empty()) return 0;
+                size_t n = 1;
+                for (const auto& c : lp->children)
+                    n += expanded_count(c.child_resolved_hash, depth + 1);
+                return n;
+            };
+        size_t cap = 16;
+        for (const auto& e : manifest.instances) cap += expanded_count(e.part_hash, 0);
+        composer = std::make_unique<WorldComposer>(*store, cap);
         lods = store->part_lod_table();
         stats.connected        = true;
         stats.parts_baked      = provider->baked_count();
@@ -76,6 +103,11 @@ int main() {
     }
 
     bool camera_capture = false;
+
+    // Headless capture: if MATTER_SCREENSHOT is set, render a few frames so the
+    // raytrace output is stable, dump a PNG to that path, then exit cleanly.
+    const char* screenshot_path = getenv("MATTER_SCREENSHOT");
+    int frames_drawn = 0;
 
     while (!WindowShouldClose()) {
         if (IsKeyPressed(KEY_TAB)) {
@@ -101,8 +133,17 @@ int main() {
             renderer.draw(store->blas(), composer->tlas());
             ui.begin_frame();
             ui.draw_debug_panel(stats);
+            ui.draw_camera_panel(renderer.camera());
             ui.end_frame();
         EndDrawing();
+
+        if (screenshot_path) {
+            if (++frames_drawn >= 3) {
+                TakeScreenshot(screenshot_path);
+                printf("screenshot written to %s\n", screenshot_path);
+                break;
+            }
+        }
 
         WorldDelta d;
         if (provider->poll_deltas(d)) state.apply(d);

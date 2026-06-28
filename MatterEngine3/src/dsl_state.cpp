@@ -2,9 +2,12 @@
 #define RAYMATH_IMPLEMENTATION
 #include "raymath.h"
 
-namespace dsl {
+// NOTE: The TriangleBuildBuffer-touching members (ctor/dtor + beginShape/vertex/
+// endShape/line) live in dsl_triangle.cpp, NOT here. triangle_emit.hpp pulls in
+// MSL's precomp.h, whose `struct float3` collides with raymath.h's `float3`, so
+// this TU (which needs raymath for the matrix stack) must stay free of it.
 
-DslState::DslState() { stack_.push_back(MatrixIdentity()); }
+namespace dsl {
 
 void DslState::pushMatrix() { stack_.push_back(stack_.back()); }
 void DslState::popMatrix() {
@@ -23,9 +26,48 @@ void DslState::applyMatrix(const float m[16]) {
                   m[8],m[9],m[10],m[11], m[12],m[13],m[14],m[15] };
     stack_.back() = MatrixMultiply(mm, stack_.back());
 }
+void DslState::lookAt(float tx, float ty, float tz,
+                      float upx, float upy, float upz) {
+    // Orient the current frame so its +Z (forward) points from the current frame
+    // origin toward the target, composed onto the stack top. The frame origin is
+    // the translation of the current matrix (position()). We build a rotation in
+    // current-frame-local space, so it composes with the existing rotation/scale.
+    Vector3 origin = position();
+    Vector3 fwd = Vector3Subtract(Vector3{tx,ty,tz}, origin);
+    if (Vector3Length(fwd) < 1e-9f) return;   // degenerate: target == origin, no-op
+    fwd = Vector3Normalize(fwd);
+    Vector3 up = Vector3{upx,upy,upz};
+    if (Vector3Length(up) < 1e-9f) up = Vector3{0,1,0};
+    up = Vector3Normalize(up);
+    // Right = up x fwd; if up is parallel to fwd, pick a fallback up.
+    Vector3 right = Vector3CrossProduct(up, fwd);
+    if (Vector3Length(right) < 1e-6f) {
+        up = (fabsf(fwd.y) < 0.9f) ? Vector3{0,1,0} : Vector3{1,0,0};
+        right = Vector3CrossProduct(up, fwd);
+    }
+    right = Vector3Normalize(right);
+    Vector3 trueUp = Vector3CrossProduct(fwd, right);  // orthonormal
+    // Column-basis rotation matrix mapping local +X->right, +Y->trueUp, +Z->fwd.
+    // raylib Matrix is column-major (m0,m4,m8 = first row); basis vectors go in
+    // columns so a local axis maps to its world basis vector.
+    Matrix rot = {
+        right.x, trueUp.x, fwd.x, 0,
+        right.y, trueUp.y, fwd.y, 0,
+        right.z, trueUp.z, fwd.z, 0,
+        0,       0,        0,     1
+    };
+    // The basis above is expressed in the SAME space as the target/origin (i.e.
+    // already-composed world). Replace the stack top's rotation while preserving
+    // its translation (origin) so the oriented frame sits at the current position.
+    Matrix m = MatrixTranslate(origin.x, origin.y, origin.z);
+    stack_.back() = MatrixMultiply(rot, m);
+}
 
 void DslState::beginVoxels(float spacing) {
     if (session_ != Session::None) { set_error("beginVoxels inside an open session"); return; }
+    // A session change is a lazy-emission flush point: any unclaimed POLYGON
+    // profile flat-fills here before the voxel session opens (P3).
+    flush_retained_profile();
     session_ = Session::Voxels; spacing_ = (spacing > 0 ? spacing : 0.1f);
     session_start_ = buffer_.ops.size();
 }
@@ -40,16 +82,26 @@ void DslState::endVoxels() {
     session_ = Session::None;
 }
 
-void DslState::sphere(const Vector3& c, float r, CsgOp op) {
-    if (session_ != Session::Voxels) { set_error("sphere() emitted outside a voxel session"); return; }
+void DslState::emit_voxel_sphere(const Vector3& c, float r, CsgOp op) {
     BuildOp o{}; o.kind=BrushKind::Sphere; o.op=op; o.transform=stack_.back();
     o.materialId=material_; o.center=c; o.radius=r; o.smoothing=smoothing_; o.spacing=spacing_;
+    o.tint=tint_;
     buffer_.ops.push_back(o);
 }
-void DslState::box(const Vector3& c, const Vector3& h, CsgOp op) {
-    if (session_ != Session::Voxels) { set_error("box() emitted outside a voxel session"); return; }
+void DslState::emit_voxel_box(const Vector3& c, const Vector3& h, CsgOp op) {
     BuildOp o{}; o.kind=BrushKind::Box; o.op=op; o.transform=stack_.back();
     o.materialId=material_; o.center=c; o.halfExtents=h; o.smoothing=smoothing_; o.spacing=spacing_;
+    o.tint=tint_;
+    buffer_.ops.push_back(o);
+}
+// Capsule (sdSegment - r0) / cylinder|cone (sdCappedCone) brush. `center` holds
+// segment endpoint a, `segB` endpoint b, `radius`=r0 and `r1`=r1 (capsule passes
+// r1==r0; lowering uses only r0 for the capsule kind).
+void DslState::emit_voxel_segment(BrushKind kind, const Vector3& a, const Vector3& b,
+                                  float r0, float r1, CsgOp op) {
+    BuildOp o{}; o.kind=kind; o.op=op; o.transform=stack_.back();
+    o.materialId=material_; o.center=a; o.segB=b; o.radius=r0; o.r1=r1;
+    o.smoothing=smoothing_; o.spacing=spacing_; o.tint=tint_;
     buffer_.ops.push_back(o);
 }
 
@@ -63,7 +115,32 @@ static void matrix_to_row16(const Matrix& mm, float out[16]) {
     out[12]=mm.m3; out[13]=mm.m7; out[14]=mm.m11; out[15]=mm.m15;
 }
 
-void DslState::placeChild(const std::string& module) {
+// Fold variation params into a child's declared resolved hash (G6). Mirrors
+// part_asset::compute_resolved_hash byte-for-byte: stream = [params][child hash
+// little-endian]. We inline the FNV-1a here rather than include part_asset_v2.h,
+// because that header pulls MSL's bvh.h whose `struct float3` collides with
+// raymath.h's `float3` (this TU needs raymath for the matrix stack). The fold
+// order and constants match the pipeline, so the resolved hash stays stable and
+// content-addressed across runs.
+static uint64_t fold_child_params(uint64_t child_hash,
+                                  const void* params, size_t params_len) {
+    uint64_t h = 1469598103934665603ull;           // FNV offset basis
+    auto fold = [&h](const void* d, size_t n) {
+        const uint8_t* p = static_cast<const uint8_t*>(d);
+        for (size_t i = 0; i < n; ++i) { h ^= p[i]; h *= 1099511628211ull; }
+    };
+    // compute_resolved_hash folds source then params then sorted children; here
+    // the params ARE the variation source and the single child hash is the only
+    // (already-sorted) child. An empty params range leaves the child hash folded
+    // alone, which differs from the no-fold path on purpose — but the binding
+    // only calls this when params are present, so no-params keeps the raw hash.
+    fold(params, params_len);
+    fold(&child_hash, sizeof(child_hash));
+    return h;
+}
+
+void DslState::placeChild(const std::string& module,
+                          const void* params, size_t params_len) {
     auto it = child_hashes_.find(module);
     if (it == child_hashes_.end()) {
         set_error("placeChild: undeclared child '" + module +
@@ -71,7 +148,11 @@ void DslState::placeChild(const std::string& module) {
         return;
     }
     ChildPlacement p;
-    p.hash = it->second;
+    // No params => the declared hash unchanged (backwards compatible). Params =>
+    // fold them into the child's resolved hash so parametric children dedup.
+    p.hash = (params && params_len > 0)
+                 ? fold_child_params(it->second, params, params_len)
+                 : it->second;
     matrix_to_row16(top(), p.transform);
     children_.push_back(p);
 }

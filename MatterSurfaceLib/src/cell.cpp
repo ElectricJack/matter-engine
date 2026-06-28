@@ -223,7 +223,9 @@ std::vector<Particle> build_clip_particles(
 GroupMeshResult Cell::build_group_mesh(uint32_t group_id, const std::vector<StaticParticle>& cluster_particles,
                                        SurfaceScratch* scratch,
                                        float simplification_ratio, float base_detail, int max_pow, float uniform_detail,
-                                       const Particle* carveParticles, int carveCount) const {
+                                       const Particle* carveParticles, int carveCount,
+                                       const FieldStages* stages, const FatPrim* fat, int fatCount,
+                                       const int* clusterStage) const {
     GroupMeshResult result;
     result.group_id = group_id;
 
@@ -262,8 +264,12 @@ GroupMeshResult Cell::build_group_mesh(uint32_t group_id, const std::vector<Stat
 
     std::vector<Particle> particles;
     std::vector<float4> particle_tints;
+    // Local CSG stage index parallel to `particles` (only populated when the
+    // caller supplied a clusterStage map; drives the ordered-CSG field eval).
+    std::vector<int> particle_stage;
     particles.reserve(particle_indices.size());
     particle_tints.reserve(particle_indices.size());
+    if (clusterStage) particle_stage.reserve(particle_indices.size());
     float max_radius = 0.0f;
     for (uint32_t idx : particle_indices) {
         if (idx >= cluster_particles.size()) continue;
@@ -277,19 +283,67 @@ GroupMeshResult Cell::build_group_mesh(uint32_t group_id, const std::vector<Stat
         surface_particle.materialId = static_cast<int>(sp.materialId);
         particles.push_back(surface_particle);
         particle_tints.push_back(make_float4(sp.tint.x, sp.tint.y, sp.tint.z, sp.tint.w));
+        if (clusterStage) particle_stage.push_back(clusterStage[idx]);
         if (r_eff > max_radius) max_radius = r_eff;
     }
 
-    if (particles.empty()) {
+    // Typed iso-primitives (Phase 1): keep only fat prims whose bounding sphere
+    // overlaps this cell box (same halo test the sphere path uses). The cell's
+    // sampling grid already spans the full cell box, so an overlapping fat prim
+    // is sampled where it enters the cell; ones outside the cell are dropped to
+    // keep the per-cell linear scan small. Cluster-level cell creation (caller)
+    // is responsible for ensuring a cell exists wherever a fat prim has surface.
+    std::vector<FatPrim> cell_fat;
+    if (fat && fatCount > 0) {
+        cell_fat.reserve(fatCount);
+        for (int i = 0; i < fatCount; ++i) {
+            if (intersects_sphere(fat[i].center, fat[i].boundRadius * 1.5f))
+                cell_fat.push_back(fat[i]);
+        }
+    }
+
+    // A group can be sphere-only, mixed, or fat(box)-only. Only bail when this
+    // cell has neither spheres nor overlapping fat prims to sample.
+    if (particles.empty() && cell_fat.empty()) {
         return result;
     }
 
-    bool group_transparent = MaterialIsTransparent(particles[0].materialId) != 0;
+    bool group_transparent = particles.empty()
+        ? (MaterialIsTransparent(cell_fat[0].materialId) != 0)
+        : (MaterialIsTransparent(particles[0].materialId) != 0);
     std::vector<Particle> clip = build_clip_particles(
         group_id, material_particle_indices, cluster_particles,
         group_transparent, cull_radius, vis_radius);
     Particle* clipPtr = clip.empty() ? NULL : clip.data();
     int clipCount = static_cast<int>(clip.size());
+    const FatPrim* fatPtr = cell_fat.empty() ? nullptr : cell_fat.data();
+    int cellFatCount = static_cast<int>(cell_fat.size());
+
+    // A fat-only group has no spheres, so max_radius is still 0 and the field
+    // query / hash cell size (r*2.5 + blend*4) would collapse to 0. Seed it from
+    // the largest fat bounding radius so the grid sampling has a sane scale.
+    if (particles.empty() && cellFatCount > 0) {
+        for (int i = 0; i < cellFatCount; ++i)
+            if (cell_fat[i].boundRadius > max_radius) max_radius = cell_fat[i].boundRadius;
+    }
+
+    // Build a per-cell FieldStages. The staged field eval recovers a hashed
+    // particle's stage by pointer arithmetic against `_particleBase`, so it MUST
+    // point at this cell's local `particles` array (the one the mesher hashes),
+    // with `particleStage` parallel to it. The ordered stage-op list itself is
+    // shared (borrowed from the caller's global FieldStages).
+    FieldStages cellStages;
+    const FieldStages* stagesPtr = nullptr;
+    if (stages && (stages->stageCount > 1 || cellFatCount > 0)) {
+        cellStages.stageOp = stages->stageOp;
+        cellStages.stageCount = stages->stageCount;
+        // particleStage may be empty for a fat-only group (no spheres to tag);
+        // the staged eval then leaves every sphere at stage 0 (there are none).
+        cellStages.particleStage = particle_stage.empty() ? nullptr : particle_stage.data();
+        cellStages._particleBase = particles.empty() ? nullptr : particles.data();
+        cellStages._particleCount = (long)particles.size();
+        stagesPtr = &cellStages;
+    }
 
     // Pack the resolved group + meshing parameters and dispatch to the algorithm
     // selected by the group's representative material. Materials in a merge group
@@ -309,10 +363,13 @@ GroupMeshResult Cell::build_group_mesh(uint32_t group_id, const std::vector<Stat
         carve_blend,
         simplification_ratio,
         scratch,
-        group_id
+        group_id,
+        stagesPtr,
+        fatPtr, cellFatCount
     };
 
-    MeshAlgorithm algo = (MeshAlgorithm)MaterialMeshingAlgorithm(particles[0].materialId);
+    int repMat = particles.empty() ? cell_fat[0].materialId : particles[0].materialId;
+    MeshAlgorithm algo = (MeshAlgorithm)MaterialMeshingAlgorithm(repMat);
     return GetMeshingAlgorithm(algo).generate(ctx);
 }
 
@@ -357,12 +414,15 @@ void Cell::commit_group_mesh(GroupMeshResult& result, BLASManager& blas_manager)
 
 CellMeshResult Cell::build_cell_meshes(const std::vector<StaticParticle>& cluster_particles, SurfaceScratch* scratch,
                                        float simplification_ratio, float base_detail, int max_pow, float uniform_detail,
-                                       const Particle* carveParticles, int carveCount) const {
+                                       const Particle* carveParticles, int carveCount,
+                                       const FieldStages* stages, const FatPrim* fat, int fatCount,
+                                       const int* clusterStage) const {
     CellMeshResult cell_result;
     for (const auto& group_entry : material_particle_indices) {
         uint32_t group_id = group_entry.first;
         GroupMeshResult gr = build_group_mesh(group_id, cluster_particles, scratch, simplification_ratio,
-                                              base_detail, max_pow, uniform_detail, carveParticles, carveCount);
+                                              base_detail, max_pow, uniform_detail, carveParticles, carveCount,
+                                              stages, fat, fatCount, clusterStage);
         if (gr.mesh.vertexCount > 0) {
             cell_result.groups.push_back(std::move(gr));
         }

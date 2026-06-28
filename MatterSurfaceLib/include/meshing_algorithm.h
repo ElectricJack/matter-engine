@@ -36,6 +36,16 @@ struct MeshContext {
     SurfaceScratch* scratch;  // per-worker scratch (MC uses spatial hash; cubes ignore)
 
     uint32_t group_id;
+
+    // --- Typed iso-primitives + ordered CSG (Phase 1) ---------------------
+    // Borrowed, NOT in the spatial hash. When `stages` is non-NULL with >1
+    // stage (or a Difference stage), or `fat_count` > 0, the marching-cubes
+    // mesher runs the ordered staged field eval (GenerateMeshStaged) instead of
+    // the legacy single-union path. Left zero/NULL by every legacy caller, so
+    // the hot path is byte-identical.
+    const FieldStages* stages = nullptr;        // ordered CSG stage list (+ particle->stage map)
+    const FatPrim*     fat = nullptr;           // non-sphere iso-primitives (oriented box)
+    int                fat_count = 0;
 };
 
 // Abstract mesher. Implementations must be GL-free (CPU only) and reentrant on

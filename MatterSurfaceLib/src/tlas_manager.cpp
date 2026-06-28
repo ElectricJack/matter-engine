@@ -4,6 +4,13 @@
 #include <cstdlib>
 #include <cmath>
 
+// Tiled-texture width cap: TLAS instance/node data wider than this wraps into
+// extra vertical tile rows so the texture width never exceeds GL_MAX_TEXTURE_SIZE
+// (mirrors BLASManager::TEXTURE_TILE_WIDTH). For counts <= this, tiles_y == 1 and
+// the layout is byte-identical to the old single-row form, so small scenes (and
+// shaders that have not adopted tiledTexel) are unaffected.
+static constexpr int kTlasTileWidth = 8192;
+
 // Conversion utilities
 mat4 TLASManager::convert_matrix(const Matrix4x4& legacy_matrix) {
     mat4 new_matrix;
@@ -345,17 +352,24 @@ void TLASManager::generate_instance_texture_data(const BLASManager& blas_manager
     
     output_data.clear();
     output_data.resize(texture_width * texture_height * 4, 0.0f);
-    
+
+    // Tiled texel offset: 9 rows per instance, tiled into vertical rows of
+    // `texture_width` instances each (see kTlasTileWidth). For instance counts
+    // <= texture_width this collapses to the old single-row layout.
+    auto texel_off = [tw = texture_width](int idx, int row) {
+        int tx = idx % tw, ty = idx / tw;
+        return ((ty * 9 + row) * tw + tx) * 4;
+    };
+
     for (int i = 0; i < static_cast<int>(tlas_->blasCount); i++) {
         const BVHInstance& inst = tlas_->blas[i];
-        int baseIdx = i * 4;
-        
+
         // Get transform matrix once for this instance
         mat4& transform_matrix = const_cast<BVHInstance&>(inst).GetTransform();
-        
+
         // Rows 0-3: transform matrix (4x4)
         for (int row = 0; row < 4; row++) {
-            int rowIdx = texture_width * (row * 4) + baseIdx;
+            int rowIdx = texel_off(i, row);
             if (rowIdx + 3 < static_cast<int>(output_data.size())) {
                 output_data[rowIdx + 0] = transform_matrix.cell[row * 4 + 0];
                 output_data[rowIdx + 1] = transform_matrix.cell[row * 4 + 1];
@@ -363,12 +377,12 @@ void TLASManager::generate_instance_texture_data(const BLASManager& blas_manager
                 output_data[rowIdx + 3] = transform_matrix.cell[row * 4 + 3];
             }
         }
-        
+
         // Rows 4-7: inverse transform matrix (4x4)
         // Get the actual inverse transform from the BVHInstance
         mat4 inv_transform = const_cast<BVHInstance&>(inst).GetInvTransform();
         for (int row = 0; row < 4; row++) {
-            int rowIdx = texture_width * ((row + 4) * 4) + baseIdx;
+            int rowIdx = texel_off(i, row + 4);
             if (rowIdx + 3 < static_cast<int>(output_data.size())) {
                 output_data[rowIdx + 0] = inv_transform.cell[row * 4 + 0];
                 output_data[rowIdx + 1] = inv_transform.cell[row * 4 + 1];
@@ -376,9 +390,9 @@ void TLASManager::generate_instance_texture_data(const BLASManager& blas_manager
                 output_data[rowIdx + 3] = inv_transform.cell[row * 4 + 3];
             }
         }
-        
+
         // Row 8: metadata (blasIndex + materialId + padding)
-        int metadataIdx = texture_width * (8 * 4) + baseIdx;
+        int metadataIdx = texel_off(i, 8);
         if (metadataIdx + 3 < static_cast<int>(output_data.size())) {
             // Get the actual BLAS node start offset for this instance
             // This is what the shader expects for geometry traversal
@@ -408,11 +422,18 @@ void TLASManager::generate_node_texture_data(std::vector<float>& output_data,
     
     output_data.clear();
     output_data.resize(texture_width * texture_height * 4, 0.0f);
-    
+
+    // Tiled texel offset: 3 rows per node, tiled into vertical rows of
+    // `texture_width` nodes each (see kTlasTileWidth). For node counts
+    // <= texture_width this collapses to the old single-row layout.
+    auto texel_off = [tw = texture_width](int idx, int row) {
+        int tx = idx % tw, ty = idx / tw;
+        return ((ty * 3 + row) * tw + tx) * 4;
+    };
+
     for (int i = 0; i < static_cast<int>(tlas_->nodesUsed); i++) {
         const TLASNode& node = tlas_->tlasNode[i];
-        int baseIdx = i * 4;
-        
+
         // Child indices are stored as SEPARATE floats (row0.w = left, row2.w = right)
         // rather than bit-packed into one float: a packed left|(right<<16) value
         // exceeds 2^24 once a child index reaches 256, and float32 cannot represent
@@ -421,15 +442,16 @@ void TLASManager::generate_node_texture_data(std::vector<float>& output_data,
         uint32_t rightChild = (node.leftRight >> 16) & 0xFFFFu;
 
         // Row 0: aabbMin + leftChild (0 for leaf nodes, which acts as the leaf sentinel)
-        if (baseIdx + 3 < static_cast<int>(output_data.size())) {
-            output_data[baseIdx + 0] = node.aabbMin.x;
-            output_data[baseIdx + 1] = node.aabbMin.y;
-            output_data[baseIdx + 2] = node.aabbMin.z;
-            output_data[baseIdx + 3] = static_cast<float>(leftChild);
+        int row0Idx = texel_off(i, 0);
+        if (row0Idx + 3 < static_cast<int>(output_data.size())) {
+            output_data[row0Idx + 0] = node.aabbMin.x;
+            output_data[row0Idx + 1] = node.aabbMin.y;
+            output_data[row0Idx + 2] = node.aabbMin.z;
+            output_data[row0Idx + 3] = static_cast<float>(leftChild);
         }
 
         // Row 1: aabbMax + blasIndex
-        int row1Idx = texture_width * 4 + baseIdx;
+        int row1Idx = texel_off(i, 1);
         if (row1Idx + 3 < static_cast<int>(output_data.size())) {
             output_data[row1Idx + 0] = node.aabbMax.x;
             output_data[row1Idx + 1] = node.aabbMax.y;
@@ -440,7 +462,7 @@ void TLASManager::generate_node_texture_data(std::vector<float>& output_data,
         }
 
         // Row 2: rightChild in .w
-        int row2Idx = texture_width * 8 + baseIdx;
+        int row2Idx = texel_off(i, 2);
         if (row2Idx + 3 < static_cast<int>(output_data.size())) {
             output_data[row2Idx + 0] = 0.0f;
             output_data[row2Idx + 1] = 0.0f;
@@ -482,9 +504,15 @@ void TLASManager::ensure_gpu_textures_ready(const BLASManager& blas_manager) {
     
     // Generate instances texture
     if (get_instance_count() > 0) {
-        int texture_width = get_instance_count();
-        int texture_height = 9; // 9 rows per instance (4 transform + 4 inverse + 1 metadata)
-        
+        // Tile wide instance data into vertical tile-rows so the texture width never
+        // exceeds GL_MAX_TEXTURE_SIZE. For counts <= kTlasTileWidth, tiles_y == 1 and
+        // the layout is byte-identical to the old single-row form.
+        const int total = get_instance_count();
+        const int tile_w = std::min(total, kTlasTileWidth);
+        const int tiles_y = (total + tile_w - 1) / tile_w;
+        int texture_width = tile_w;
+        int texture_height = tiles_y * 9; // 9 rows per instance (4 transform + 4 inverse + 1 metadata)
+
         std::vector<float> texture_data(texture_width * texture_height * 4);
         
         // Use existing method to generate the data
@@ -501,12 +529,18 @@ void TLASManager::ensure_gpu_textures_ready(const BLASManager& blas_manager) {
         instances_texture_ = LoadTextureFromImage(instances_image);
         SetTextureFilter(instances_texture_, TEXTURE_FILTER_POINT);
     }
-    
+
     // Generate nodes texture
     if (get_node_count() > 0) {
-        int texture_width = get_node_count();
-        int texture_height = 3; // 3 rows per node
-        
+        // Tile wide node data into vertical tile-rows so the texture width never
+        // exceeds GL_MAX_TEXTURE_SIZE. For counts <= kTlasTileWidth, tiles_y == 1 and
+        // the layout is byte-identical to the old single-row form.
+        const int total = get_node_count();
+        const int tile_w = std::min(total, kTlasTileWidth);
+        const int tiles_y = (total + tile_w - 1) / tile_w;
+        int texture_width = tile_w;
+        int texture_height = tiles_y * 3; // 3 rows per node
+
         std::vector<float> texture_data(texture_width * texture_height * 4);
         
         // Use existing method to generate the data
@@ -523,7 +557,7 @@ void TLASManager::ensure_gpu_textures_ready(const BLASManager& blas_manager) {
         nodes_texture_ = LoadTextureFromImage(tlas_image);
         SetTextureFilter(nodes_texture_, TEXTURE_FILTER_POINT);
     }
-    
+
     textures_dirty_ = false;
 }
 
