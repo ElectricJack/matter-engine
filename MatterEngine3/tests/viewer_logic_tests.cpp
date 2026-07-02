@@ -6,6 +6,7 @@
 #include "../viewer/local_provider.h"
 #include "../viewer/world_composer.h"
 #include "../viewer/raster_mesh.h"
+#include "../viewer/raster_composer.h"
 #include "lod_select.h"   // PartLodTable, PartLod
 #include "part_graph.h"   // PartGraph + FileModuleResolver/HostBaker (script-host guarded)
 #include "part_asset_v2.h"
@@ -13,6 +14,7 @@
 #include <cstdio>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <fstream>
 #include <functional>
 #include <set>
@@ -371,6 +373,30 @@ static void test_compose_expands_children() {
     // without rebuilding (behavioral check: count identical and stable).
     int again = composer.compose(state, pass, lods, make_float3(0,0,0));
     CHECK(again == recorded, "unchanged instance set composes to the same count");
+
+    // RasterComposer::build_batches: parent + 2 children -> 2 (hash,level) batches,
+    // 3 total instances, child batch has 2 transforms, second child at x=+20.
+    {
+        viewer::ResolvedInstance r{};
+        r.part_hash = parent_hash; r.lod_level = 0;
+        float ident[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
+        std::memcpy(r.transform, ident, sizeof ident);
+        auto batches = viewer::RasterComposer::build_batches({r}, store);
+        CHECK(batches.size() == 2, "two (hash,level) batches");            // parent + child groups
+        size_t total = 0; size_t child_batch_n = 0;
+        for (const auto& b : batches) {
+            total += b.transforms.size();
+            if (b.part_hash == child_hash) child_batch_n = b.transforms.size();
+        }
+        CHECK(total == 3, "3 instances total");
+        CHECK(child_batch_n == 2, "children grouped into one batch");
+        // second child sits at x=+20 (fixture translation): translation is in m12
+        bool found20 = false;
+        for (const auto& b : batches)
+            if (b.part_hash == child_hash)
+                for (const auto& m : b.transforms) if (m.m12 == 20.0f) found20 = true;
+        CHECK(found20, "child world transform applied");
+    }
 
     system(("rm -rf " + root).c_str());
 }

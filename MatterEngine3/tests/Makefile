@@ -399,6 +399,7 @@ VIEWER_LOGIC_CPP = viewer_logic_tests.cpp \
               ../viewer/local_provider.cpp \
               ../viewer/world_composer.cpp \
               ../viewer/raster_mesh.cpp \
+              ../viewer/raster_composer.cpp \
               $(VIEWER_PIPELINE_CPP)
 
 $(VIEWER_LOGIC_TARGET): $(VIEWER_LOGIC_CPP) $(EXAMPLE_C) $(QJS_C)
