@@ -28,7 +28,8 @@ LDLIBS  = ../../Libraries/raylib/build/linux/libraylib.a
 # Viewer units (GL-free logic + GL renderer/ui/main).
 VIEWER_SRC = main.cpp renderer.cpp ui.cpp \
              world_state.cpp part_store.cpp resolvers.cpp \
-             world_composer.cpp local_provider.cpp
+             world_composer.cpp local_provider.cpp \
+             raster_mesh.cpp raster_composer.cpp
 
 # ME3 pipeline + MSL backend C++ sources (verbatim from tests/Makefile EXAMPLE_CPP,
 # minus example_world.cpp). Same dir depth, so the ../ paths are unchanged.

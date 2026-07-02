@@ -23,6 +23,9 @@ struct ViewerStats {
     // Writable: 0 = PassThrough, 1 = SectorLod. Panel sets this; main swaps resolver.
     int      resolver_choice = 0;
     bool     reload_requested = false;   // panel sets; main clears after handling
+    // Raster-path counters (zero in RT mode)
+    int      raster_batches = 0;
+    int      raster_tris = 0;
 };
 
 class Ui {
