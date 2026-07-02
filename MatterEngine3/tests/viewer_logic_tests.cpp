@@ -371,7 +371,7 @@ static void test_compose_expands_children() {
     system(("rm -rf " + root).c_str());
 }
 
-static bool test_raster_mesh_data() {
+static void test_raster_mesh_data() {
     Tri t[2] = {};
     t[0].vertex0 = make_float3(0,0,0); t[0].vertex1 = make_float3(1,0,0); t[0].vertex2 = make_float3(0,1,0);
     t[1].vertex0 = make_float3(0,0,1); t[1].vertex1 = make_float3(1,0,1); t[1].vertex2 = make_float3(0,1,1);
@@ -401,7 +401,6 @@ static bool test_raster_mesh_data() {
     float rm[16] = {1,0,0, 5,  0,1,0, 6,  0,0,1, 7,  0,0,0,1};    // row-major translate(5,6,7)
     Matrix m = viewer::row_major_to_matrix(rm);
     CHECK(m.m12 == 5.0f && m.m13 == 6.0f && m.m14 == 7.0f, "translation lands in m12..m14");
-    return true;
 }
 
 int main() {
