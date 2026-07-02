@@ -644,7 +644,12 @@ static void test_g5_lookat() {
     CHECK(gz > 0.99f, "G5: forward aims +Z toward target from composed origin");
 }
 
-// G6: placeChild(module, params?) folds params into the child's resolved hash.
+// G6: placeChild(module, params?) selects the matching required VARIANT's real
+// resolved hash. The host installs a placement table keyed by both the plain
+// module name and a composite `module \x1f canonical-params` per declared child;
+// placeChild('Leaf',{...}) maps straight to the variant baked with those params
+// (no hash re-derivation). This replaces the old params-fold scheme, which
+// produced hashes matching no baked part.
 static void test_g6_place_child_params() {
     using namespace script_host;
     ScriptHost host;
@@ -652,50 +657,57 @@ static void test_g6_place_child_params() {
         "class Leaf extends Part {"
         "  build(p){ this.beginVoxels(0.1); this.fill(MAT.leaf);"
         "            this.sphere([0,0,0],0.1); this.endVoxels(); } }";
+
+    // Two distinct required variants: same source, different params => different
+    // resolved hashes (params fold into each child's own content hash).
+    BakeResult la1 = host.bake_source(leaf, "{\"seed\":1}", {});
+    BakeResult la2 = host.bake_source(leaf, "{\"seed\":2}", {});
+    CHECK(la1.error.ok && la2.error.ok, "G6: leaf variants bake");
+    uint64_t hashA = la1.resolved_hash, hashB = la2.resolved_hash;
+    CHECK(hashA != hashB, "G6: distinct params => distinct child variant hashes");
+
+    // No-params parent: a single plain-keyed child resolves via the module name.
     BakeResult lr = host.bake_source(leaf, "{}", {});
-    CHECK(lr.error.ok, "G6: leaf bakes");
+    CHECK(lr.error.ok, "G6: plain leaf bakes");
     uint64_t leaf_hash = lr.resolved_hash;
-    uint64_t kids[1] = { leaf_hash };
-    std::string names[1] = { std::string("Leaf") };
+    {
+        uint64_t kids[1] = { leaf_hash };
+        std::string names[1]   = { std::string("Leaf") };
+        std::string cparams[1] = { std::string("{}") };
+        const char* p_none =
+            "class P extends Part { build(p){ this.placeChild('Leaf'); } }";
+        BakeResult rn = host.bake_source(p_none, "{}", {}, kids, 1, names, cparams);
+        CHECK(rn.error.ok, "G6: no-params parent bakes");
+        BLASManager b0; TLASManager t0(64); std::vector<part_asset::ChildInstance> c0;
+        part_asset::LodLevels l0;
+        part_asset::load_v2(part_asset::cache_path_resolved(rn.resolved_hash), rn.resolved_hash, b0, t0, c0, l0);
+        CHECK(c0.size() == 1 && c0[0].child_resolved_hash == leaf_hash,
+              "G6: no params => plain module key => declared hash");
+    }
 
-    // No params: child hash unchanged (backwards compatible).
-    const char* p_none =
-        "class P extends Part { build(p){ this.placeChild('Leaf'); } }";
-    BakeResult rn = host.bake_source(p_none, "{}", {}, kids, 1, names);
-    CHECK(rn.error.ok, "G6: no-params parent bakes");
-    BLASManager b0; TLASManager t0(64); std::vector<part_asset::ChildInstance> c0;
-    part_asset::LodLevels l0;
-    part_asset::load_v2(part_asset::cache_path_resolved(rn.resolved_hash), rn.resolved_hash, b0, t0, c0, l0);
-    CHECK(c0.size() == 1 && c0[0].child_resolved_hash == leaf_hash,
-          "G6: no params => child hash unchanged (== declared hash)");
-
-    // Same params twice => same folded hash (dedup); different params => different.
-    const char* p_a =
+    // Variant-selecting parent: two declared variants; placeChild picks each by
+    // its params. Same params twice => same real variant hash (dedup); different
+    // params => the other real variant hash.
+    uint64_t kids[2]       = { hashA, hashB };
+    std::string names[2]   = { std::string("Leaf"), std::string("Leaf") };
+    std::string cparams[2] = { std::string("{\"seed\":1}"), std::string("{\"seed\":2}") };
+    const char* p_ab =
         "class P extends Part { build(p){ this.placeChild('Leaf', {seed:1});"
-        "                                  this.placeChild('Leaf', {seed:1}); } }";
-    const char* p_b =
-        "class P extends Part { build(p){ this.placeChild('Leaf', {seed:2}); } }";
-    BakeResult ra = host.bake_source(p_a, "{}", {}, kids, 1, names);
-    BakeResult rb = host.bake_source(p_b, "{}", {}, kids, 1, names);
-    CHECK(ra.error.ok && rb.error.ok, "G6: parametric parents bake");
+        "                                  this.placeChild('Leaf', {seed:1});"
+        "                                  this.placeChild('Leaf', {seed:2}); } }";
+    BakeResult r = host.bake_source(p_ab, "{}", {}, kids, 2, names, cparams);
+    CHECK(r.error.ok, "G6: variant-selecting parent bakes");
 
-    BLASManager ba; TLASManager ta(64); std::vector<part_asset::ChildInstance> ca;
-    part_asset::LodLevels la;
-    part_asset::load_v2(part_asset::cache_path_resolved(ra.resolved_hash), ra.resolved_hash, ba, ta, ca, la);
-    BLASManager bb; TLASManager tb(64); std::vector<part_asset::ChildInstance> cb;
+    BLASManager bb; TLASManager tb(64); std::vector<part_asset::ChildInstance> ca;
     part_asset::LodLevels lb;
-    part_asset::load_v2(part_asset::cache_path_resolved(rb.resolved_hash), rb.resolved_hash, bb, tb, cb, lb);
-
-    CHECK(ca.size() == 2, "G6: two parametric instances recorded");
-    if (ca.size() == 2)
-        CHECK(ca[0].child_resolved_hash == ca[1].child_resolved_hash,
-              "G6: same module + same params => same resolved hash (dedup)");
-    if (!ca.empty()) {
-        CHECK(ca[0].child_resolved_hash != leaf_hash,
-              "G6: params fold changes the child hash vs no-params");
-        if (!cb.empty())
-            CHECK(ca[0].child_resolved_hash != cb[0].child_resolved_hash,
-                  "G6: different params => different resolved hash");
+    part_asset::load_v2(part_asset::cache_path_resolved(r.resolved_hash), r.resolved_hash, bb, tb, ca, lb);
+    CHECK(ca.size() == 3, "G6: three placements recorded");
+    if (ca.size() == 3) {
+        CHECK(ca[0].child_resolved_hash == hashA &&
+              ca[1].child_resolved_hash == hashA,
+              "G6: {seed:1} placements resolve to variant A's real hash (dedup)");
+        CHECK(ca[2].child_resolved_hash == hashB,
+              "G6: {seed:2} placement resolves to variant B's real hash");
     }
 }
 

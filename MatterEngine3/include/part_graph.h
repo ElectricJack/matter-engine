@@ -58,9 +58,13 @@ struct Baker {
     // (already baked, present in cache). Returns false on bake failure (fail-closed).
     // Implementations bake to cache_path_resolved(resolved_hash); resolved_hash is the value
     // resolve_hash returned for the same inputs (host recomputes it identically).
+    // child_params (parallel to child_modules/child_hashes) carries each child's
+    // canonical params JSON so the bake can key parametric placements to the exact
+    // required variant. See ScriptHost::bake_source.
     virtual bool bake(const std::string& source, const Params& params,
                       const std::vector<uint64_t>& child_hashes,
                       const std::vector<std::string>& child_modules,
+                      const std::vector<std::string>& child_params,
                       uint64_t resolved_hash) = 0;
 };
 
@@ -133,6 +137,7 @@ public:
     bool bake(const std::string& source, const Params& params,
               const std::vector<uint64_t>& child_hashes,
               const std::vector<std::string>& child_modules,
+              const std::vector<std::string>& child_params,
               uint64_t resolved_hash) override;
 private:
     script_host::ScriptHost& host_;

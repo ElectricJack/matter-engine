@@ -34,12 +34,18 @@ struct RequiredChild {
 // Fresh isolated JSContext per call; fail-closed; writes <=1 .part.
 class ScriptHost {
 public:
+    // child_modules/child_params (parallel to child_hashes) feed placeChild's
+    // placement table: each declared child is keyed by both its plain module name
+    // and a composite `module \x1f canonical-params-json` so placeChild('M',{...})
+    // selects the matching required variant's real resolved hash. child_params may
+    // be null (then only module-name keys are installed; placeChild ignores params).
     BakeResult bake_source(const std::string& source,
                            const std::string& params_json,
                            const BakeOptions& opts,
                            const uint64_t* child_hashes = nullptr,
                            size_t child_count = 0,
-                           const std::string* child_modules = nullptr);
+                           const std::string* child_modules = nullptr,
+                           const std::string* child_params = nullptr);
 
     // Hash-only: merge static+override params, fold child_hashes, return the
     // content hash WITHOUT running build()/baking. Shares the params-merge +

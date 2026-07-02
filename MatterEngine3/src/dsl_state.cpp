@@ -115,44 +115,31 @@ static void matrix_to_row16(const Matrix& mm, float out[16]) {
     out[12]=mm.m3; out[13]=mm.m7; out[14]=mm.m11; out[15]=mm.m15;
 }
 
-// Fold variation params into a child's declared resolved hash (G6). Mirrors
-// part_asset::compute_resolved_hash byte-for-byte: stream = [params][child hash
-// little-endian]. We inline the FNV-1a here rather than include part_asset_v2.h,
-// because that header pulls MSL's bvh.h whose `struct float3` collides with
-// raymath.h's `float3` (this TU needs raymath for the matrix stack). The fold
-// order and constants match the pipeline, so the resolved hash stays stable and
-// content-addressed across runs.
-static uint64_t fold_child_params(uint64_t child_hash,
-                                  const void* params, size_t params_len) {
-    uint64_t h = 1469598103934665603ull;           // FNV offset basis
-    auto fold = [&h](const void* d, size_t n) {
-        const uint8_t* p = static_cast<const uint8_t*>(d);
-        for (size_t i = 0; i < n; ++i) { h ^= p[i]; h *= 1099511628211ull; }
-    };
-    // compute_resolved_hash folds source then params then sorted children; here
-    // the params ARE the variation source and the single child hash is the only
-    // (already-sorted) child. An empty params range leaves the child hash folded
-    // alone, which differs from the no-fold path on purpose — but the binding
-    // only calls this when params are present, so no-params keeps the raw hash.
-    fold(params, params_len);
-    fold(&child_hash, sizeof(child_hash));
-    return h;
-}
-
 void DslState::placeChild(const std::string& module,
                           const void* params, size_t params_len) {
-    auto it = child_hashes_.find(module);
-    if (it == child_hashes_.end()) {
+    // Variant selection: with params, prefer the composite `module \x1f params`
+    // key the host installed for the matching required variant; that maps straight
+    // to the child's REAL resolved hash (no re-derivation). The params bytes are
+    // the JSON.stringify of the placeChild object and must match the canonical
+    // params-json the host keyed by (true for the flat number/bool/string params
+    // requires emits). Fall back to the plain `module` key when no variant matches
+    // or no params were given.
+    const auto end = child_hashes_.end();
+    auto it = end;
+    if (params && params_len > 0) {
+        std::string key = module;
+        key.push_back('\x1f');
+        key.append(static_cast<const char*>(params), params_len);
+        it = child_hashes_.find(key);
+    }
+    if (it == end) it = child_hashes_.find(module);
+    if (it == end) {
         set_error("placeChild: undeclared child '" + module +
                   "' (add it to static requires)");
         return;
     }
     ChildPlacement p;
-    // No params => the declared hash unchanged (backwards compatible). Params =>
-    // fold them into the child's resolved hash so parametric children dedup.
-    p.hash = (params && params_len > 0)
-                 ? fold_child_params(it->second, params, params_len)
-                 : it->second;
+    p.hash = it->second;
     matrix_to_row16(top(), p.transform);
     children_.push_back(p);
 }

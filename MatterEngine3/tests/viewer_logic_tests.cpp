@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <fstream>
+#include <functional>
 #include <set>
 #include <sstream>
 #include <string>
@@ -223,11 +224,13 @@ static std::string read_file(const std::string& path) {
     return ss.str();
 }
 
-// Task 10: the PartStore must KEEP the baked child-instance table on its LoadedPart
-// (the next task's WorldComposer expands it into the TLAS). We install the REAL demo
-// Tree through the same part_graph + ScriptHost harness the integration test uses
-// (which bakes parts/<hash>.part relative to cwd), then point a PartStore at that
-// sandbox and assert get_or_load(tree)->children is non-empty (the placed Leaf rows).
+// Task 10 (updated for bake-time flattening): the PartStore serves parts two ways.
+//  - A PLACED ROOT (the Tree) has a flat artifact (<hash>.flat.part, written by
+//    LocalProvider::connect): loaded flat-preferred with its STORED LOD ladder and
+//    an EMPTY child table (the whole subtree is merged into the mesh).
+//  - A non-flattened part (TreeBranch, never placed as a root) loads through the
+//    compositional path and must KEEP its baked child-instance table for the
+//    WorldComposer to expand.
 static void test_partstore_keeps_children() {
     namespace pg = part_graph;
 
@@ -261,63 +264,110 @@ static void test_partstore_keeps_children() {
     CHECK(ir.ok, "demo Tree installs into sandbox cache");
     if (!ir.ok) printf("  install error: %s\n", ir.error.c_str());
 
-    // Recompute the Tree hash exactly as the graph did: Leaf (no children) folded
-    // into Tree (kids,1). Use the SAME host (shared-lib root set) so the imported
-    // module sources fold identically.
+    // Recompute the hash chain exactly as the graph did: Leaf (no children) folds
+    // into TreeBranch, which folds into Tree. Use the SAME host (shared-lib root
+    // set) so the imported module sources fold identically.
     uint64_t leaf_hash = host.resolve_hash(read_file(schemas + "/Leaf.js"), "{}");
-    uint64_t kids[1] = { leaf_hash };
-    uint64_t tree_hash = host.resolve_hash(read_file(schemas + "/Tree.js"), "{}", kids, 1);
+    uint64_t branch_kids[1] = { leaf_hash };
+    uint64_t branch_hash = host.resolve_hash(read_file(schemas + "/TreeBranch.js"), "{}",
+                                             branch_kids, 1);
+    uint64_t tree_kids[1] = { branch_hash };
+    uint64_t tree_hash = host.resolve_hash(read_file(schemas + "/Tree.js"), "{}",
+                                           tree_kids, 1);
 
     // Reuse the shared PartStore (already has Tree loaded) to avoid a second lod_bake
     // pass on the large Tree geometry. The shared store points at the same cache root.
     if (!g_shared_store) { CHECK(false, "keep-children: shared store not set"); if (prevcwd[0]) chdir(prevcwd); return; }
-    const viewer::LoadedPart* lp = g_shared_store->get_or_load(tree_hash);
-    CHECK(lp != nullptr, "tree part loads from PartStore");
-    CHECK(lp && !lp->children.empty(), "loaded tree part carries its child table");
-    if (lp) printf("  loaded Tree carries %zu child instance(s)\n", lp->children.size());
+
+    // Placed root -> flat-preferred: merged mesh, stored ladder, EMPTY child table.
+    const viewer::LoadedPart* tree = g_shared_store->get_or_load(tree_hash);
+    CHECK(tree != nullptr, "tree part loads from PartStore");
+    CHECK(tree && !tree->lod_blas.empty(), "flat tree carries LOD geometry");
+    CHECK(tree && tree->children.empty(), "flat tree has an empty child table");
+    if (tree) printf("  flat Tree: %zu LOD level(s), %zu children\n",
+                     tree->lod_blas.size(), tree->children.size());
+
+    // Non-flattened part (never placed as a root, so no flat artifact) ->
+    // compositional path. The branch itself may or may not place children as the
+    // schema iterates; the child-table behavior is covered by the synthetic
+    // fixture in test_compose_expands_children below.
+    const viewer::LoadedPart* branch = g_shared_store->get_or_load(branch_hash);
+    CHECK(branch != nullptr, "branch part loads from PartStore");
 
     if (prevcwd[0]) (void)chdir(prevcwd);
     // Do not remove root — it is the shared warm cache reused by other tests.
 }
 
+// Synthetic non-flattened parent+child fixture in its own temp cache: the
+// compositional path must keep the baked child table on LoadedPart, and the
+// composer must recursively expand it (parent + 2 children = 3 instances).
+// Independent of demo-schema iteration (whether TreeBranch places leaves etc).
 static void test_compose_expands_children() {
-    namespace pg = part_graph;
+    const std::string root = "/tmp/me3_viewer_synth_cache";
+    system(("mkdir -p " + root + "/parts").c_str());
+    const uint64_t child_hash  = 0xAAAA0000AAAA0001ull;
+    const uint64_t parent_hash = 0xBBBB0000BBBB0001ull;
 
-    // Reuse the shared PartStore and manifest from test_local_provider_cache to avoid
-    // a second lod_bake pass on the large Tree geometry within the same process.
-    if (!g_shared_store) { CHECK(false, "compose_expands_children: shared store not set"); return; }
-    viewer::PartStore& store = *g_shared_store;
-    viewer::WorldManifest& m = g_shared_manifest;
+    auto quad = [](float3 base) {
+        std::vector<Tri> out(2);
+        auto set = [&](Tri& t, float3 a, float3 b, float3 c) {
+            t.vertex0=a; t.vertex1=b; t.vertex2=c;
+            t.centroid = make_float3((a.x+b.x+c.x)/3,(a.y+b.y+c.y)/3,(a.z+b.z+c.z)/3);
+        };
+        set(out[0], base, make_float3(base.x+1,base.y,base.z), make_float3(base.x+1,base.y+1,base.z));
+        set(out[1], base, make_float3(base.x+1,base.y+1,base.z), make_float3(base.x,base.y+1,base.z));
+        return out;
+    };
+    auto save_part = [&](uint64_t hash, const std::vector<part_asset::ChildInstance>& kids) {
+        BLASManager blas; TLASManager tlas(8);
+        std::vector<Tri> tris = quad(make_float3(0,0,0));
+        blas.register_triangles(tris.data(), (int)tris.size(), nullptr);
+        part_asset::LodLevels lods;
+        part_asset::LodLevel L; L.screen_size_threshold = 0.0f; L.blas_indices.push_back(0);
+        lods.push_back(L);
+        const std::string path = root + "/" + part_asset::cache_path_resolved(hash);
+        return part_asset::save_v2(path, blas, tlas,
+                                   kids.empty() ? nullptr : kids.data(), kids.size(),
+                                   lods, hash);
+    };
+    auto translate = [](float x, float y, float z) {
+        part_asset::ChildInstance c{};
+        for (int i = 0; i < 16; ++i) c.transform[i] = 0;
+        c.transform[0]=c.transform[5]=c.transform[10]=c.transform[15]=1;
+        c.transform[3]=x; c.transform[7]=y; c.transform[11]=z;
+        return c;
+    };
+    std::vector<part_asset::ChildInstance> kids;
+    kids.push_back(translate(10, 0, 0)); kids.back().child_resolved_hash = child_hash;
+    kids.push_back(translate(20, 0, 0)); kids.back().child_resolved_hash = child_hash;
+    CHECK(save_part(child_hash, {}), "synthetic child part saved");
+    CHECK(save_part(parent_hash, kids), "synthetic parent part saved");
 
-    // Find one Tree instance (the demo world places Trees; pick the first whose
-    // loaded part has non-empty children). Parts are already loaded in g_shared_store.
-    uint64_t tree_hash = 0;
-    for (auto& e : m.instances) {
-        const viewer::LoadedPart* lp = store.get_or_load(e.part_hash);
-        if (lp && !lp->children.empty()) { tree_hash = e.part_hash; break; }
-    }
-    CHECK(tree_hash != 0, "compose_expands_children: found a part with children in demo world");
-    if (tree_hash == 0) return;
+    viewer::PartStore store(root);
+    const viewer::LoadedPart* parent = store.get_or_load(parent_hash);
+    CHECK(parent != nullptr, "synthetic parent loads (compositional path)");
+    CHECK(parent && parent->children.size() == 2, "loaded parent keeps its child table");
 
-    const viewer::LoadedPart* tree = store.get_or_load(tree_hash);
-    size_t expected = 1 + tree->children.size();
-    printf("  tree has %zu children -> expecting %zu total instances\n",
-           tree->children.size(), expected);
-
-    // Build a one-Tree world at identity.
     viewer::WorldManifest single;
     single.world_root_hash = 1;
-    single.instances.push_back(mk_entry(1, tree_hash, 0.0f));
+    single.instances.push_back(mk_entry(1, parent_hash, 0.0f));
     viewer::WorldState state;
     state.reset(single);
 
-    viewer::WorldComposer composer(store, expected + 16);
+    viewer::WorldComposer composer(store, 16);
     auto lods = store.part_lod_table();
     viewer::PassThroughResolver pass;
 
     int recorded = composer.compose(state, pass, lods, make_float3(0,0,0));
-    printf("  recorded=%d  expected=%zu\n", recorded, expected);
-    CHECK((size_t)recorded == expected, "one tree expands into trunk + its leaves");
+    printf("  recorded=%d  expected=3\n", recorded);
+    CHECK(recorded == 3, "one parent expands into parent + 2 children");
+
+    // Same instance set again -> the fingerprint skip must return the SAME count
+    // without rebuilding (behavioral check: count identical and stable).
+    int again = composer.compose(state, pass, lods, make_float3(0,0,0));
+    CHECK(again == recorded, "unchanged instance set composes to the same count");
+
+    system(("rm -rf " + root).c_str());
 }
 
 int main() {

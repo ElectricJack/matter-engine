@@ -90,8 +90,10 @@ int main() {
             [&](uint64_t h, int depth) -> size_t {
                 if (depth > 8) return 0;
                 const LoadedPart* lp = store->get_or_load(h);
-                if (!lp || lp->lod_blas.empty()) return 0;
-                size_t n = 1;
+                if (!lp) return 0;
+                // A geometry-less assembly part contributes no instance of its own
+                // but still expands its children -- mirror WorldComposer::compose.
+                size_t n = lp->lod_blas.empty() ? 0 : 1;
                 for (const auto& c : lp->children)
                     n += expanded_count(c.child_resolved_hash, depth + 1);
                 return n;
@@ -141,6 +143,7 @@ int main() {
     int cmd_fd = -1;
     std::string cmd_buf;
     const char* fifo_path = getenv("MATTER_CMD_FIFO");
+#ifndef _WIN32
     if (fifo_path) {
         mkfifo(fifo_path, 0600);   // harmless if it already exists
         // O_RDWR holds a writer fd open on our side so reads never see EOF
@@ -149,6 +152,10 @@ int main() {
         if (cmd_fd < 0) printf("MATTER_CMD_FIFO: failed to open %s\n", fifo_path);
         else            printf("MATTER_CMD_FIFO: listening on %s\n", fifo_path);
     }
+#else
+    // mkfifo/O_NONBLOCK are POSIX-only; the live-command FIFO is a Linux dev aid.
+    if (fifo_path) printf("MATTER_CMD_FIFO not supported on Windows; ignoring\n");
+#endif
     std::string shot_path;   // pending screenshot target
     int  shot_frames = 0;    // frames to let the image settle before capture
     bool quit_requested = false;

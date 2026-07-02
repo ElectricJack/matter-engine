@@ -36,12 +36,9 @@ class Tree extends Part {
     // Flowing-core sway: lateral wander as a function of height.
     const SWAY_AMP    = 0.40;     // max lateral offset (world units)
     const SWAY_FREQ   = 0.42;     // vertical wavelength of the sway
-    // Base flare: trunk widens toward the ground. A mature oak sits on a broad
-    // buttressed root flare, so the base swells dramatically before tapering.
-    // A subtle buttress, not an onion: a modest swell confined to the lowest
-    // couple of units. Too much here necks the trunk in above it into a bulb.
-    const FLARE       = 0.55;     // extra radius fraction at the very base
-    const FLARE_H     = 2.5;      // height over which the flare fades out
+    // Base flare: trunk widens toward the ground.
+    const FLARE       = 0.7;      // extra radius fraction at the very base
+    const FLARE_H     = 3.0;      // height over which the flare fades out
     // ------------------------------------------------------------------------
 
     const lsys = new LSystem();
@@ -50,10 +47,7 @@ class Tree extends Part {
     lsys.rule('Fwd => Fwd Fwd');
     lsys.rewrite(4);
 
-    // Fatter, shorter bole: a mature oak's trunk is stout and forks LOW, not a
-    // tall whip. Start wide (6 diameters), taper to a still-substantial 2.5 over
-    // a short run (28) so the trunk stays thick and the crown begins low.
-    const follower = new LSystemFollower(this, lsys, 6.0 * S, 2.5 * S, 28.0 * S);
+    const follower = new LSystemFollower(this, lsys, 4.0 * S, 1.0 * S, 50.0 * S);
     follower.addAction('Rotx1', () => this.rotateX(a1));
     follower.addAction('Roty1', () => this.rotateY(a1));
     follower.addAction('Rotz1', () => this.rotateZ(a1));
@@ -62,7 +56,7 @@ class Tree extends Part {
     follower.addAction('Rotz2', () => this.rotateZ(a2));
 
     // Safety guard (v2 had none): cap placed twigs so a deep rewrite can't OOM.
-    const MAX_BRANCHES = 130;
+    const MAX_BRANCHES = 110;
     let branches = 0;
 
     follower.onGetForwardDistance = () => (2.0 + Math.random() * 3.6) * S;
@@ -78,10 +72,7 @@ class Tree extends Part {
           // the (near-vertical) crown direction, so branches radiate to fill the
           // canopy volume instead of all shooting straight up in a clump.
           this.rotateY(Math.random() * 360 * DEG);
-          // Tilt branches over a wide range (20-75deg off the crown axis) so they
-          // fill a rounded hemispherical dome: some reach up, some out, packing
-          // the broad mushroom-cap crown of a mature oak.
-          this.rotateX((20 + Math.random() * 55) * DEG);
+          this.rotateX((30 + Math.random() * 45) * DEG);
           this.placeChild('TreeBranch');
           this.popMatrix();
           ++branches;

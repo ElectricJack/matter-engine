@@ -83,6 +83,13 @@ std::string cache_path_resolved(uint64_t resolved_hash) {
     return std::string("parts/") + buf + ".part";
 }
 
+std::string cache_path_flat(uint64_t resolved_hash) {
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), "%016llx",
+                  static_cast<unsigned long long>(resolved_hash));
+    return std::string("parts/") + buf + ".flat.part";
+}
+
 bool save_v2(const std::string& path, const BLASManager& blas,
              const TLASManager& tlas,
              const ChildInstance* children, size_t child_count,

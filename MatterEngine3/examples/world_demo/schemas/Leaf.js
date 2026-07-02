@@ -8,7 +8,7 @@ class Leaf extends Part {
     const LENGTH = 5.0;
     const cwNear = 8.0,  coNear = [0.1, -1.2];
     const cwFar  = 1.0,  coFar  = [-0.1, -1.2];
-    const SCALE  = 0.55;   // 5 * 0.55 ~= 2.75 units long; big overlapping blades read as a solid green mass from afar
+    const SCALE  = 0.21;   // 5 * 0.21 ~= 1.0 units long; small blades so tufts don't clump
 
     const lerp = (a, b, t) => [a[0]+(b[0]-a[0])*t, a[1]+(b[1]-a[1])*t, a[2]+(b[2]-a[2])*t];
     const sub  = (a, b)    => [a[0]-b[0], a[1]-b[1], a[2]-b[2]];

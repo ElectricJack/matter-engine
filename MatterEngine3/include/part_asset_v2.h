@@ -51,6 +51,12 @@ using LodLevels = std::vector<LodLevel>;
 // Cache key / filename for a part keyed on its resolved hash: "parts/<16-hex>.part".
 std::string cache_path_resolved(uint64_t resolved_hash);
 
+// Cache key for the FLATTENED artifact of the same part: "parts/<16-hex>.flat.part".
+// Same v2 format; whole subtree merged into the BLAS table (LOD ladder populated,
+// child table empty). Derived from the compositional .part, so it shares the hash:
+// any subtree change changes the resolved hash and orphans the stale flat file.
+std::string cache_path_flat(uint64_t resolved_hash);
+
 // Serialize the baked managers + child table + LOD levels to path (atomic temp+rename).
 // Writes format_version=2. Returns false on any I/O failure or dangling BLAS handle.
 // GL-free. children may be null iff child_count == 0; lods may be empty.

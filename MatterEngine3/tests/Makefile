@@ -286,6 +286,29 @@ $(COMP_TARGET): $(COMP_CPP) $(COMP_C)
 run-comp: $(COMP_TARGET)
 	./$(COMP_TARGET)
 
+# Bake-time subtree flattening + error-bounded LOD ladder (headless, GL-free;
+# raylib linked only for MemAlloc/MemFree in the Tri<->Mesh bridge, like COMP).
+FLATTEN_TARGET = part_flatten_tests
+FLATTEN_CPP = part_flatten_tests.cpp ../src/part_flatten.cpp ../src/lod_bake.cpp \
+              ../src/part_asset_v2.cpp \
+              ../../MatterSurfaceLib/src/mesh_simplifier.cpp \
+              ../../MatterSurfaceLib/src/blas_manager.cpp \
+              ../../MatterSurfaceLib/src/bvh.cpp \
+              ../../MatterSurfaceLib/src/tlas_manager.cpp \
+              ../../MatterSurfaceLib/src/part_asset.cpp \
+              ../../MatterSurfaceLib/src/vertex_ao.cpp \
+              ../../MatterSurfaceLib/src/occupancy.cpp
+FLATTEN_C   = ../../MatterSurfaceLib/src/material_registry.c
+FLATTEN_C_OBJ = material_registry.o
+
+$(FLATTEN_TARGET): $(FLATTEN_CPP) $(FLATTEN_C)
+	gcc -c $(FLATTEN_C) -O2 -DPLATFORM_DESKTOP $(INCLUDE_PATHS)
+	$(CC) $(FLATTEN_CPP) $(FLATTEN_C_OBJ) -o $(FLATTEN_TARGET) $(CFLAGS) $(INCLUDE_PATHS) $(LDFLAGS) $(LDLIBS)
+	rm -f $(FLATTEN_C_OBJ)
+
+run-flatten: $(FLATTEN_TARGET)
+	./$(FLATTEN_TARGET)
+
 # SP-5 dev live-edit: debounce + upward-cone scoping + last-good (headless, GL-free).
 # All-new MatterEngine3 sources; inotify_watcher.cpp is Linux-only (guarded by __linux__ internally).
 DEV_TARGET = dev_live_edit_tests
@@ -308,7 +331,7 @@ EXAMPLE_TARGET = example_world
 EXAMPLE_CPP = example_world.cpp ../src/part_graph.cpp \
               ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp ../src/dsl_bindings.cpp \
               ../src/csg_lowering.cpp ../src/module_resolver.cpp ../src/script_rng_binding.cpp \
-              ../src/part_asset_v2.cpp ../src/lod_bake.cpp ../src/world_flatten.cpp \
+              ../src/part_asset_v2.cpp ../src/lod_bake.cpp ../src/world_flatten.cpp ../src/part_flatten.cpp \
               ../src/sector_grid.cpp ../src/lod_select.cpp \
               ../../MatterSurfaceLib/src/cluster.cpp ../../MatterSurfaceLib/src/cell.cpp ../../MatterSurfaceLib/src/mesh_simplifier.cpp \
               ../../MatterSurfaceLib/src/blas_manager.cpp ../../MatterSurfaceLib/src/bvh.cpp ../../MatterSurfaceLib/src/bvh_analyzer.cpp \
@@ -347,6 +370,19 @@ $(GALLERY_TARGET): $(GALLERY_CPP) $(EXAMPLE_C) $(QJS_C)
 
 run-gallery: $(GALLERY_TARGET)
 	./$(GALLERY_TARGET)
+
+# Headless bake check for the world_demo Tree (Trunk/Tree split validation).
+TREEBAKE_TARGET = tree_bake_check
+TREEBAKE_CPP = tree_bake_check.cpp $(filter-out example_world.cpp, $(EXAMPLE_CPP))
+$(TREEBAKE_TARGET): $(TREEBAKE_CPP) $(EXAMPLE_C) $(QJS_C)
+	gcc -c $(QJS_C) -O2 -DCONFIG_VERSION='"0.10.0"' $(QJS_INC)
+	gcc -c $(EXAMPLE_C) -O2 -DPLATFORM_DESKTOP $(INCLUDE_PATHS)
+	$(CC) $(TREEBAKE_CPP) $(QJS_OBJ) $(EXAMPLE_C_OBJ) -o $(TREEBAKE_TARGET) \
+	      $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST $(INCLUDE_PATHS) $(QJS_INC) $(LDFLAGS) $(LDLIBS)
+	rm -f $(QJS_OBJ) $(EXAMPLE_C_OBJ)
+
+run-treebake: $(TREEBAKE_TARGET)
+	./$(TREEBAKE_TARGET)
 
 # --- Viewer GL-free logic suite (WorldState, resolvers, PartStore, LocalProvider).
 # Reuses the example_world pipeline source set (SP-2 host + QuickJS + SP-4 compose

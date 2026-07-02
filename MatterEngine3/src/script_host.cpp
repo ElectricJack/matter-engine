@@ -505,7 +505,8 @@ BakeResult ScriptHost::bake_source(const std::string& source,
                                    const BakeOptions& opts,
                                    const uint64_t* child_hashes,
                                    size_t child_count,
-                                   const std::string* child_modules) {
+                                   const std::string* child_modules,
+                                   const std::string* child_params) {
     BakeResult r;
 
     // Merge static params + caller overrides into canonical JSON, and compute
@@ -565,14 +566,24 @@ BakeResult ScriptHost::bake_source(const std::string& source,
     // Seed the deterministic RNG (bound to Math.random) from the merged params so
     // the bake is reproducible and process-entropy-free.
     state.set_rng(derive_seed(merged));
-    // Install the declared-children module-name -> resolved-hash map so placeChild()
-    // can resolve placements during build(). Child hashes are already folded into the
-    // resolved hash upstream; this only feeds the placement table.
+    // Install the declared-children placement table so placeChild() can resolve
+    // placements during build(). Child hashes are already folded into the resolved
+    // hash upstream; this only feeds the placement table. Each child contributes a
+    // plain `module` key (no-param / fallback, last variant wins) AND, when its
+    // canonical params are known, a composite `module \x1f params` key that maps a
+    // parametric placeChild('M',{...}) to the EXACT required variant's real hash.
     {
         std::map<std::string, uint64_t> name2hash;
         if (child_modules && child_hashes)
-            for (size_t i = 0; i < child_count; ++i)
+            for (size_t i = 0; i < child_count; ++i) {
                 name2hash[child_modules[i]] = child_hashes[i];
+                if (child_params) {
+                    std::string key = child_modules[i];
+                    key.push_back('\x1f');
+                    key += child_params[i];
+                    name2hash[key] = child_hashes[i];
+                }
+            }
         state.set_child_hashes(std::move(name2hash));
     }
     JS_SetContextOpaque(ctx, &state);

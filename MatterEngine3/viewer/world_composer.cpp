@@ -31,17 +31,22 @@ int WorldComposer::compose(const WorldState& state,
         [&](uint64_t hash, const float* world, int lod, int depth) {
             if (depth > kMaxDepth || insts.size() >= kMaxInstances) return;
             const LoadedPart* lp = store_.get_or_load(hash);
-            if (!lp || lp->lod_blas.empty()) return;
-            int use_lod = lod;
-            if (use_lod < 0) use_lod = 0;
-            if (use_lod >= (int)lp->lod_blas.size()) use_lod = (int)lp->lod_blas.size() - 1;
+            if (!lp) return;
+            // A geometry-less "assembly" part (e.g. a Tree that only places a
+            // Trunk + branches) has no BLAS of its own, but its children must
+            // still be expanded -- so only emit an instance when there IS geometry.
+            if (!lp->lod_blas.empty()) {
+                int use_lod = lod;
+                if (use_lod < 0) use_lod = 0;
+                if (use_lod >= (int)lp->lod_blas.size()) use_lod = (int)lp->lod_blas.size() - 1;
 
-            TLASManager::DrawInstance di;
-            di.blas_handle = lp->lod_blas[use_lod];
-            di.material_id = 0;
-            di.is_imposter = false;
-            std::memcpy(di.transform.m, world, sizeof(di.transform.m));
-            insts.push_back(di);
+                TLASManager::DrawInstance di;
+                di.blas_handle = lp->lod_blas[use_lod];
+                di.material_id = 0;
+                di.is_imposter = false;
+                std::memcpy(di.transform.m, world, sizeof(di.transform.m));
+                insts.push_back(di);
+            }
 
             for (const auto& c : lp->children) {
                 float child_world[16];
@@ -53,6 +58,22 @@ int WorldComposer::compose(const WorldState& state,
     for (const auto& r : resolved) {
         emit(r.part_hash, r.transform, r.lod_level, 0);
     }
+
+    // FNV-1a fingerprint over (blas_handle, transform) of every instance: when
+    // nothing moved and no LOD switched, skip the full TLAS clear/refit/build.
+    uint64_t fp = 1469598103934665603ull;
+    auto fold = [&fp](const void* p, size_t n) {
+        const unsigned char* b = static_cast<const unsigned char*>(p);
+        for (size_t i = 0; i < n; ++i) fp = (fp ^ b[i]) * 1099511628211ull;
+    };
+    for (const auto& di : insts) {
+        fold(&di.blas_handle, sizeof di.blas_handle);
+        fold(di.transform.m, sizeof di.transform.m);
+    }
+    if (last_count_ == (int)insts.size() && last_fingerprint_ == fp)
+        return last_count_;
+    last_count_ = (int)insts.size();
+    last_fingerprint_ = fp;
 
     tlas_.clear();
     tlas_.draw_batch(insts);
