@@ -35,10 +35,13 @@ int main() {
     Ui ui; ui.setup();
 
     Renderer renderer;
+    renderer.init_camera();   // always: sets camera defaults used in both modes
     std::string err;
-    if (!renderer.init("shaders/raytrace_tlas_blas_processed.fs", err)) {
-        printf("FATAL: %s\n", err.c_str());
-        return 1;
+    if (use_rt) {
+        if (!renderer.init_shader("shaders/raytrace_tlas_blas_processed.fs", err)) {
+            printf("FATAL: %s\n", err.c_str());
+            return 1;
+        }
     }
 
     // MATTER_CAM="px,py,pz,tx,ty,tz" overrides the initial camera (eye + target),

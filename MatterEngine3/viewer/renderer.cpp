@@ -10,7 +10,17 @@ extern "C" { void glFinish(void); }
 
 namespace viewer {
 
-bool Renderer::init(const std::string& shader_fs_path, std::string& err) {
+void Renderer::init_camera() {
+    // Single tree sits at the origin; frame it slightly above the base so the
+    // canopy is centered. Orbit/zoom from the Camera panel pivots on the target.
+    camera_.position   = (Vector3){ 20.0f, 16.0f, 34.0f };
+    camera_.target     = (Vector3){ 0.0f, 9.0f, 0.0f };
+    camera_.up         = (Vector3){ 0.0f, 1.0f, 0.0f };
+    camera_.fovy       = 45.0f;
+    camera_.projection = CAMERA_PERSPECTIVE;
+}
+
+bool Renderer::init_shader(const std::string& shader_fs_path, std::string& err) {
     shader_ = LoadShader(nullptr, shader_fs_path.c_str());
     if (shader_.id == 0) { err = "failed to load shader: " + shader_fs_path; return false; }
 
@@ -25,14 +35,6 @@ bool Renderer::init(const std::string& shader_fs_path, std::string& err) {
     loc_shadow_strength_ = GetShaderLocation(shader_, "shadowStrength");
     loc_ao_enabled_      = GetShaderLocation(shader_, "aoEnabled");
     loc_debug_tri_       = GetShaderLocation(shader_, "debugTriangleTests");
-
-    // Single tree sits at the origin; frame it slightly above the base so the
-    // canopy is centered. Orbit/zoom from the Camera panel pivots on the target.
-    camera_.position   = (Vector3){ 20.0f, 16.0f, 34.0f };
-    camera_.target     = (Vector3){ 0.0f, 9.0f, 0.0f };
-    camera_.up         = (Vector3){ 0.0f, 1.0f, 0.0f };
-    camera_.fovy       = 45.0f;
-    camera_.projection = CAMERA_PERSPECTIVE;
 
     ready_ = true;
     return true;
