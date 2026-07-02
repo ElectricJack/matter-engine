@@ -20,6 +20,24 @@ using part_asset::LodLevels;
 // degenerates (zeroed mesh), returns a copy of the input unchanged.
 std::vector<Tri> decimate_tris(const std::vector<Tri>& tris, float keep_ratio);
 
+// Decimate a Tri set until the minimum QEM collapse cost exceeds the given
+// world-space error bound `epsilon` (quadric cost is a squared distance, so the
+// simplifier is driven with epsilon^2). No triangle-count target: the mesh keeps
+// collapsing while every remaining collapse moves the surface less than epsilon.
+// Same fallback semantics as decimate_tris (empty in -> empty out; degenerate
+// simplifier output -> copy of input).
+std::vector<Tri> decimate_to_error(const std::vector<Tri>& tris, float epsilon);
+
+// Rebuild per-triangle TriEx for a decimated mesh by re-projection: for each
+// output triangle, copy materialId/tint/AO from the nearest source triangle
+// (by centroid, via a uniform spatial hash over `src_tris`), and set all three
+// shading normals to the output triangle's geometric normal. `src_triex` must be
+// parallel to `src_tris`. Returns a vector parallel to `out_tris` (empty if the
+// source set is empty or non-parallel).
+std::vector<TriEx> reproject_triex(const std::vector<Tri>& out_tris,
+                                   const std::vector<Tri>& src_tris,
+                                   const std::vector<TriEx>& src_triex);
+
 // Per-level decimation targets (keep-ratios) and matching selection thresholds.
 // Defaults: LOD0 = full (1.0), LOD1 ~ 1/10, LOD2 ~ 1/100. Thresholds are on the
 // projected-size scale (bound_radius / distance) used by lod_select: a finer
@@ -34,7 +52,12 @@ struct BakeTargets {
 // registered BLAS index + its screen_size_threshold). LOD0 with keep_ratio 1.0 is
 // the full input (no decimation). The returned blas_indices values index
 // blas.get_entries() in registration order.
+//
+// `triex` (optional) is the per-triangle TriEx data parallel to `tris` (materialId,
+// tint, shading normals, AO). It is attached only to the undecimated level (keep ==
+// 1.0), where the triangle list is unchanged; decimated levels reorder/merge
+// triangles so their per-triangle material falls back to the instance material.
 LodLevels bake_lods(const std::vector<Tri>& tris, const BakeTargets& targets,
-                    BLASManager& blas);
+                    BLASManager& blas, const std::vector<TriEx>* triex = nullptr);
 
 } // namespace lod_bake

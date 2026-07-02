@@ -34,3 +34,20 @@ SurfaceLib/test_config
 # Allow raylib's vendored static lib through the *.a exclusion (committed builds)
 !Libraries/raylib/build/**/libraylib.a
 !Libraries/raylib/src/libraylib.a
+MatterEngine3/viewer/cache
+MatterSurfaceLib/parts
+
+# MatterEngine3 compiled binaries and bake caches
+MatterEngine3/viewer/viewer
+MatterEngine3/tests/parts/
+MatterEngine3/tests/composition_tests
+MatterEngine3/tests/example_world
+MatterEngine3/tests/part_asset_v2_tests
+MatterEngine3/tests/part_flatten_tests
+MatterEngine3/tests/script_host_tests
+MatterEngine3/tests/tree_bake_check
+MatterEngine3/tests/viewer_logic_tests
+MatterEngine3/tests/part_graph_tests
+MatterEngine3/tests/part_graph_integration_tests
+MatterEngine3/tests/dsl_state_tests
+MatterEngine3/tests/script_host_bake_tests

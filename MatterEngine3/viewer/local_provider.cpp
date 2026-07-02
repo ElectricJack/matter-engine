@@ -1,7 +1,8 @@
 #include "local_provider.h"
 
 #include "part_graph.h"        // -DMATTER_HAVE_SCRIPT_HOST pulls in script_host.h
-#include "part_asset_v2.h"     // cache_path_resolved
+#include "part_asset_v2.h"     // cache_path_resolved, cache_path_flat
+#include "part_flatten.h"      // bake-time subtree flattening
 
 #include <cstdint>
 #include <cstdio>
@@ -151,10 +152,38 @@ bool LocalProvider::connect(WorldManifest& out, std::string& err) {
         out.instances.push_back(e);
     };
 
+    // Bake-time flattening of every placed root: merge its whole child subtree
+    // into one mesh with an error-bounded LOD ladder (<hash>.flat.part), so the
+    // viewer renders one instance per root instead of re-expanding children each
+    // frame. Content-addressed: skip when the flat file already exists (any
+    // subtree change changes the root hash, orphaning the stale flat artifact).
+    auto flatten_placed = [&]() {
+        std::set<uint64_t> done;
+        for (const auto& e : out.instances) {
+            if (!done.insert(e.part_hash).second) continue;
+            const std::string flat_path =
+                abs_cache_root + "/" + part_asset::cache_path_flat(e.part_hash);
+            struct stat st;
+            if (::stat(flat_path.c_str(), &st) == 0) continue;
+            part_flatten::FlattenResult fr =
+                part_flatten::flatten_part(abs_cache_root, e.part_hash);
+            if (fr.ok) {
+                printf("LocalProvider: flattened %016llx (%zu levels, %zu -> %zu tris)\n",
+                       (unsigned long long)e.part_hash, fr.levels,
+                       fr.full_tris, fr.coarsest_tris);
+            } else {
+                // Non-fatal: the viewer falls back to compositional rendering.
+                printf("LocalProvider: flatten failed for %016llx: %s\n",
+                       (unsigned long long)e.part_hash, fr.error.c_str());
+            }
+        }
+    };
+
     // The Primitives world (examples/primitive_demo) places a single Gallery root
     // at the origin; the Gallery's child table scatters the three sub-galleries.
     if (cfg_.world_name == "Primitives") {
         place(hash_of["Gallery"], 0.0f, 0.0f, 0.0f);
+        flatten_placed();
         return true;
     }
 
@@ -162,6 +191,7 @@ bool LocalProvider::connect(WorldManifest& out, std::string& err) {
     // can inspect the tree geometry up close. The other roots are still installed
     // above (hash_of has them); we just don't place any instances of them.
     place(hash_of["Tree"], 0.0f, 0.0f, 0.0f);
+    flatten_placed();
 
     return true;
 }

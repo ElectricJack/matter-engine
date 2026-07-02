@@ -15,6 +15,10 @@
 #include <memory>
 #include <string>
 
+#include <fcntl.h>      // open, O_RDWR/O_NONBLOCK (live-command FIFO)
+#include <sys/stat.h>   // mkfifo
+#include <unistd.h>     // read, close, unlink
+
 using namespace viewer;
 
 int main() {
@@ -30,6 +34,20 @@ int main() {
     if (!renderer.init("shaders/raytrace_tlas_blas_processed.fs", err)) {
         printf("FATAL: %s\n", err.c_str());
         return 1;
+    }
+
+    // MATTER_CAM="px,py,pz,tx,ty,tz" overrides the initial camera (eye + target),
+    // so a headless screenshot can frame an arbitrarily sized scene without a
+    // rebuild. Missing/garbage -> keep the renderer default.
+    if (const char* cam_env = getenv("MATTER_CAM")) {
+        float c[6];
+        if (sscanf(cam_env, "%f,%f,%f,%f,%f,%f",
+                   &c[0],&c[1],&c[2],&c[3],&c[4],&c[5]) == 6) {
+            renderer.camera().position = (Vector3){ c[0], c[1], c[2] };
+            renderer.camera().target   = (Vector3){ c[3], c[4], c[5] };
+            printf("MATTER_CAM: eye(%.1f,%.1f,%.1f) target(%.1f,%.1f,%.1f)\n",
+                   c[0],c[1],c[2],c[3],c[4],c[5]);
+        }
     }
 
     LocalProviderConfig cfg;
@@ -72,8 +90,10 @@ int main() {
             [&](uint64_t h, int depth) -> size_t {
                 if (depth > 8) return 0;
                 const LoadedPart* lp = store->get_or_load(h);
-                if (!lp || lp->lod_blas.empty()) return 0;
-                size_t n = 1;
+                if (!lp) return 0;
+                // A geometry-less assembly part contributes no instance of its own
+                // but still expands its children -- mirror WorldComposer::compose.
+                size_t n = lp->lod_blas.empty() ? 0 : 1;
                 for (const auto& c : lp->children)
                     n += expanded_count(c.child_resolved_hash, depth + 1);
                 return n;
@@ -109,12 +129,72 @@ int main() {
     const char* screenshot_path = getenv("MATTER_SCREENSHOT");
     int frames_drawn = 0;
 
+    // --- Live command FIFO (optional) ---------------------------------------
+    // MATTER_CMD_FIFO names a named pipe; when set, the viewer stays alive and
+    // executes one-line commands so an external driver can move the camera,
+    // capture screenshots, and hot-reload schemas WITHOUT paying the (~60s)
+    // raytrace shader warm-up again. Commands (one per line):
+    //   cam <px> <py> <pz> <tx> <ty> <tz>   move eye + look-at target
+    //   shot <path>                          capture a PNG once the image settles
+    //   reload                               re-bake changed schemas + repopulate
+    //   quit                                 exit cleanly
+    // After each shot the viewer touches "<path>.done" so the driver can poll for
+    // a fully-written file instead of racing the PNG encode.
+    int cmd_fd = -1;
+    std::string cmd_buf;
+    const char* fifo_path = getenv("MATTER_CMD_FIFO");
+#ifndef _WIN32
+    if (fifo_path) {
+        mkfifo(fifo_path, 0600);   // harmless if it already exists
+        // O_RDWR holds a writer fd open on our side so reads never see EOF
+        // between separate external writers; O_NONBLOCK keeps the loop running.
+        cmd_fd = open(fifo_path, O_RDWR | O_NONBLOCK);
+        if (cmd_fd < 0) printf("MATTER_CMD_FIFO: failed to open %s\n", fifo_path);
+        else            printf("MATTER_CMD_FIFO: listening on %s\n", fifo_path);
+    }
+#else
+    // mkfifo/O_NONBLOCK are POSIX-only; the live-command FIFO is a Linux dev aid.
+    if (fifo_path) printf("MATTER_CMD_FIFO not supported on Windows; ignoring\n");
+#endif
+    std::string shot_path;   // pending screenshot target
+    int  shot_frames = 0;    // frames to let the image settle before capture
+    bool quit_requested = false;
+
     while (!WindowShouldClose()) {
         if (IsKeyPressed(KEY_TAB)) {
             camera_capture = !camera_capture;
             if (camera_capture) DisableCursor(); else EnableCursor();
         }
         if (camera_capture) renderer.update_camera_free();
+
+        if (cmd_fd >= 0) {
+            char rb[512];
+            ssize_t n;
+            while ((n = read(cmd_fd, rb, sizeof rb)) > 0) cmd_buf.append(rb, (size_t)n);
+            size_t nl;
+            while ((nl = cmd_buf.find('\n')) != std::string::npos) {
+                std::string line = cmd_buf.substr(0, nl);
+                cmd_buf.erase(0, nl + 1);
+                if (!line.empty() && line.back() == '\r') line.pop_back();
+                if (line.empty()) continue;
+                float c[6];
+                char pathbuf[256];
+                if (sscanf(line.c_str(), "cam %f %f %f %f %f %f",
+                           &c[0],&c[1],&c[2],&c[3],&c[4],&c[5]) == 6) {
+                    renderer.camera().position = (Vector3){ c[0], c[1], c[2] };
+                    renderer.camera().target   = (Vector3){ c[3], c[4], c[5] };
+                } else if (sscanf(line.c_str(), "shot %255s", pathbuf) == 1) {
+                    shot_path = pathbuf;
+                    shot_frames = 4;   // let the raytrace image stabilize
+                } else if (line == "reload") {
+                    stats.reload_requested = true;
+                } else if (line == "quit") {
+                    quit_requested = true;
+                } else {
+                    printf("cmd: unrecognized '%s'\n", line.c_str());
+                }
+            }
+        }
 
         Vector3 cp = renderer.camera().position;
         float3 cam = make_float3(cp.x, cp.y, cp.z);
@@ -145,6 +225,16 @@ int main() {
             }
         }
 
+        // FIFO-driven capture: shoot once the image has settled, then touch a
+        // "<path>.done" marker so the driver polls a complete file, not a
+        // half-encoded PNG.
+        if (shot_frames > 0 && --shot_frames == 0) {
+            TakeScreenshot(shot_path.c_str());
+            std::string done = shot_path + ".done";
+            if (FILE* f = fopen(done.c_str(), "w")) fclose(f);
+            printf("shot %s\n", shot_path.c_str());
+        }
+
         WorldDelta d;
         if (provider->poll_deltas(d)) state.apply(d);
 
@@ -156,8 +246,11 @@ int main() {
             // old composer would dangle, so bail the loop and shut down cleanly.
             if (!connect_sequence()) { printf("reload failed; exiting\n"); break; }
         }
+
+        if (quit_requested) break;
     }
 
+    if (cmd_fd >= 0) { close(cmd_fd); if (fifo_path) unlink(fifo_path); }
     if (camera_capture) EnableCursor();
     ui.shutdown();
     renderer.shutdown();

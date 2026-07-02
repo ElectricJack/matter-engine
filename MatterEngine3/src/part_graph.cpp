@@ -36,6 +36,33 @@ std::string serialize_params(const Params& params) {
     return out;
 }
 
+// Params -> JSON object string (numbers via %.17g, strings quoted). This is the
+// canonical form placeChild's JSON.stringify must match for parametric child
+// selection, and the form the host re-canonicalizes for a child's own resolved
+// hash. Always compiled (no host dependency) so install() can key child
+// placements by it regardless of the script-host build flag.
+std::string params_to_json(const Params& params) {
+    std::ostringstream os;
+    os << '{';
+    bool first = true;
+    for (const auto& kv : params) {          // Params is an ordered map; host re-sorts
+        if (!first) os << ','; first = false;
+        os << '"' << kv.first << "\":";
+        switch (kv.second.kind) {
+            case ParamValue::Kind::Number: {
+                char buf[32]; std::snprintf(buf, sizeof buf, "%.17g", kv.second.num);
+                os << buf; break;
+            }
+            case ParamValue::Kind::Bool:
+                os << (kv.second.boolean ? "true" : "false"); break;
+            case ParamValue::Kind::Str:
+                os << '"' << kv.second.str << '"'; break;  // SP-3 v1 params have no quotes/escapes
+        }
+    }
+    os << '}';
+    return os.str();
+}
+
 PartGraph::PartGraph(ModuleResolver& resolver, Baker& baker)
     : resolver_(resolver), baker_(baker) {}
 
@@ -50,6 +77,7 @@ struct InternalNode {
     std::vector<uint64_t> child_hashes;       // direct children (for SP-1 fold, sorted)
     std::vector<uint64_t> child_keys;         // direct children memo keys (topo edges)
     std::vector<std::string> child_modules;   // direct children's module names (parallel to child_hashes)
+    std::vector<std::string> child_params;    // direct children's canonical params JSON (parallel to child_hashes)
 };
 
 // Memo key = fnv1a64(source) combined with fnv1a64(canonical_params). Identity is the
@@ -105,13 +133,14 @@ InstallResult PartGraph::install(const std::vector<ChildRequest>& roots) {
             on_stack.insert(key);
 
             std::vector<uint64_t> child_keys, child_hashes;
-            std::vector<std::string> child_modules;
+            std::vector<std::string> child_modules, child_params;
             for (const auto& kid : kids) {
                 uint64_t ck = 0;
                 if (!resolve(kid, ck)) { stack.pop_back(); on_stack.erase(key); return false; }
                 child_keys.push_back(ck);
                 child_hashes.push_back(memo.at(ck).resolved_hash);
                 child_modules.push_back(kid.module);
+                child_params.push_back(params_to_json(kid.params));
             }
 
             stack.pop_back();
@@ -125,6 +154,7 @@ InstallResult PartGraph::install(const std::vector<ChildRequest>& roots) {
             node.child_keys    = child_keys;
             node.child_hashes  = child_hashes;   // SP-1 sorts internally; ok unsorted here
             node.child_modules = child_modules;  // parallel to child_hashes (name->hash map downstream)
+            node.child_params  = child_params;   // parallel canonical params JSON (variant selection key)
             // Hash authority is SP-2 (master C-2): ask the baker, never compute here.
             // The host merges static+override params before folding, so it sees defaults
             // SP-3 cannot. 0 => resolve failure (fail-closed).
@@ -164,7 +194,7 @@ InstallResult PartGraph::install(const std::vector<ChildRequest>& roots) {
     for (uint64_t key : topo) {
         const InternalNode& n = memo.at(key);
         if (baker_.cached(n.resolved_hash)) { ++result.hits; continue; }
-        if (!baker_.bake(n.source, n.params, n.child_hashes, n.child_modules, n.resolved_hash)) {
+        if (!baker_.bake(n.source, n.params, n.child_hashes, n.child_modules, n.child_params, n.resolved_hash)) {
             result.error = "bake failed for part: " + n.module;
             return result;
         }
@@ -205,30 +235,8 @@ bool PartGraph::read_manifest(const std::string& world_data_dir, const std::stri
 
 namespace part_graph {
 
-// Params -> JSON object string for the host (numbers via %.17g, strings quoted).
-// (Distinct from serialize_params' `key=value;` memo-identity form.) Self-contained
-// here because JSON conversion is only needed on the real-host path.
-static std::string params_to_json(const Params& params) {
-    std::ostringstream os;
-    os << '{';
-    bool first = true;
-    for (const auto& kv : params) {          // Params is an ordered map; host re-sorts
-        if (!first) os << ','; first = false;
-        os << '"' << kv.first << "\":";
-        switch (kv.second.kind) {
-            case ParamValue::Kind::Number: {
-                char buf[32]; std::snprintf(buf, sizeof buf, "%.17g", kv.second.num);
-                os << buf; break;
-            }
-            case ParamValue::Kind::Bool:
-                os << (kv.second.boolean ? "true" : "false"); break;
-            case ParamValue::Kind::Str:
-                os << '"' << kv.second.str << '"'; break;  // SP-3 v1 params have no quotes/escapes
-        }
-    }
-    os << '}';
-    return os.str();
-}
+// params_to_json is defined in the always-compiled section above (install() keys
+// child placements by it); the host path reuses it for resolve_hash/bake.
 
 // Inverse: a flat JSON object {"k":num|bool|"str", ...} -> Params. SP-3 v1 only sees
 // the shapes eval_requires emits (flat numbers/bools/strings), so a tiny hand parser
@@ -277,12 +285,13 @@ bool HostBaker::cached(uint64_t resolved_hash) {
 
 bool HostBaker::bake(const std::string& source, const Params& params,
                      const std::vector<uint64_t>& child_hashes,
-                     const std::vector<std::string>& child_modules, uint64_t resolved_hash) {
+                     const std::vector<std::string>& child_modules,
+                     const std::vector<std::string>& child_params, uint64_t resolved_hash) {
     // SP-2 bake_source recomputes the same hash and writes parts/<hash>.part via save_v2.
     script_host::BakeResult r = host_.bake_source(
         source, params_to_json(params), /*opts*/{},
         child_hashes.data(), child_hashes.size(),
-        child_modules.data());
+        child_modules.data(), child_params.data());
     // The hash SP-3 memoized must equal where the .part landed (master C-2 guarantee).
     return r.error.ok && r.resolved_hash == resolved_hash;
 }

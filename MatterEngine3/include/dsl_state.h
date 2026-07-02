@@ -207,17 +207,21 @@ public:
     // transform (row-major) at the current matrix-stack top when placeChild ran.
     struct ChildPlacement { uint64_t hash; float transform[16]; };
 
-    // Host installs the declared children's module-name -> resolved-hash map
-    // before build(); placeChild looks names up here. Empty map => any placeChild
-    // is a fail-closed error.
+    // Host installs the declared children's placement table before build();
+    // placeChild looks entries up here. Keys come in two forms (the host inserts
+    // BOTH for every declared child): a plain `module` name (no-param / fallback,
+    // last-variant-wins) and a composite `module \x1f canonical-params-json` that
+    // selects ONE specific required variant. Empty map => any placeChild is a
+    // fail-closed error.
     void set_child_hashes(std::map<std::string, uint64_t> m) { child_hashes_ = std::move(m); }
 
-    // Record a placement of `module` at the current transform-stack top. Unknown
-    // module (not in set_child_hashes) -> set_error (fail-closed).
+    // Record a placement of `module` at the current transform-stack top.
     //
-    // G6: optional variation params (canonical bytes) fold into the child's
-    // resolved hash so parametric children dedup correctly. Empty params => the
-    // child's declared hash is used unchanged (backwards compatible).
+    // When `params` is present (the JSON.stringify bytes of the placeChild params
+    // object), look up the composite `module \x1f params` key so the placement
+    // resolves to the EXACT required variant's real resolved hash. Falls back to
+    // the plain `module` key when no variant matches (or no params given). Unknown
+    // module -> set_error (fail-closed).
     void placeChild(const std::string& module,
                     const void* params = nullptr, size_t params_len = 0);
 
@@ -247,7 +251,7 @@ private:
     bool        has_error_ = false;
     std::string error_;
     std::unique_ptr<Rng> rng_;    // seeded by the host before build()
-    std::map<std::string, uint64_t>   child_hashes_;   // declared children (name -> hash)
+    std::map<std::string, uint64_t>   child_hashes_;   // declared children placement table (see set_child_hashes)
     std::vector<ChildPlacement>       children_;        // accumulated placements
     std::unique_ptr<tri_emit::TriangleBuildBuffer> tris_buf_;  // direct-triangle session
 

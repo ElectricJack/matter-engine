@@ -2,6 +2,13 @@
 # set (SP-2 host + QuickJS + SP-4 compose + MSL backend) plus raylib GL and Dear
 # ImGui. NOT part of the headless build-all test sweep (needs a GL context).
 
+# Per-object parallel build: each TU compiles to its own .o under build/<platform>/
+# so `make -j` fans them across cores; header changes are tracked via -MMD -MP
+# generated .d files (so incremental rebuilds are correct, not silently stale).
+# Parallel by default; override with e.g. `make -j1 windows` to serialize.
+JOBS ?= $(shell nproc)
+MAKEFLAGS += -j$(JOBS)
+
 CC = g++
 CFLAGS = -std=c++17 -Wall -Wno-missing-braces -Wno-unused-variable \
          -DPLATFORM_DESKTOP -DGRAPHICS_API_OPENGL_33
@@ -29,7 +36,7 @@ PIPELINE_CPP = ../src/part_graph.cpp \
               ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp ../src/dsl_bindings.cpp \
               ../src/csg_lowering.cpp ../src/module_resolver.cpp ../src/script_rng_binding.cpp \
               ../src/polygon_triangulate.cpp \
-              ../src/part_asset_v2.cpp ../src/lod_bake.cpp ../src/world_flatten.cpp ../src/triangle_emit.cpp \
+              ../src/part_asset_v2.cpp ../src/lod_bake.cpp ../src/world_flatten.cpp ../src/part_flatten.cpp ../src/triangle_emit.cpp \
               ../src/sector_grid.cpp ../src/lod_select.cpp \
               ../../MatterSurfaceLib/src/cluster.cpp ../../MatterSurfaceLib/src/cell.cpp ../../MatterSurfaceLib/src/mesh_simplifier.cpp \
               ../../MatterSurfaceLib/src/blas_manager.cpp ../../MatterSurfaceLib/src/bvh.cpp ../../MatterSurfaceLib/src/bvh_analyzer.cpp \
@@ -43,22 +50,55 @@ PIPELINE_CPP = ../src/part_graph.cpp \
 PIPELINE_C = ../../MatterSurfaceLib/src/surface.c ../../MatterSurfaceLib/src/open_particle_surface.c \
              ../../MatterSurfaceLib/src/spatial_hash.c ../../MatterSurfaceLib/src/object_allocator.c \
              ../../MatterSurfaceLib/src/material_registry.c ../../MatterSurfaceLib/src/fat_primitive.c
-PIPELINE_C_OBJ = surface.o open_particle_surface.o spatial_hash.o object_allocator.o material_registry.o fat_primitive.o
 QJS_C   = $(QJS_DIR)/quickjs.c $(QJS_DIR)/libregexp.c $(QJS_DIR)/libunicode.c \
           $(QJS_DIR)/cutils.c $(QJS_DIR)/xsum.c
-QJS_OBJ = quickjs.o libregexp.o libunicode.o cutils.o xsum.o
 
 IMGUI_SRC = $(IMGUI_PATH)/imgui.cpp $(IMGUI_PATH)/imgui_draw.cpp \
             $(IMGUI_PATH)/imgui_tables.cpp $(IMGUI_PATH)/imgui_widgets.cpp \
             $(IMGUI_PATH)/backends/imgui_impl_glfw.cpp \
             $(IMGUI_PATH)/backends/imgui_impl_opengl3.cpp
 
-viewer: shaders $(VIEWER_SRC) $(PIPELINE_CPP) $(PIPELINE_C) $(QJS_C) $(IMGUI_SRC)
-	gcc -c $(QJS_C) -O2 -DCONFIG_VERSION='"0.10.0"' $(QJS_INC)
-	gcc -c $(PIPELINE_C) -O2 -DPLATFORM_DESKTOP $(INCLUDE_PATHS)
-	$(CC) $(VIEWER_SRC) $(PIPELINE_CPP) $(IMGUI_SRC) $(QJS_OBJ) $(PIPELINE_C_OBJ) \
-	  -o viewer $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST $(INCLUDE_PATHS) $(QJS_INC) $(LDFLAGS) $(LDLIBS)
-	rm -f $(QJS_OBJ) $(PIPELINE_C_OBJ)
+# ---- Per-object lists (one .o per TU, in a platform build dir, so `make -j`
+# can compile them concurrently). Basenames are unique across all source dirs,
+# so flattening with $(notdir ...) is collision-free. vpath (below) lets the
+# pattern rules find each source by basename.
+CXX_FLAGS_BUILD = $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST $(INCLUDE_PATHS) $(QJS_INC) -MMD -MP
+CPP_NAMES = $(notdir $(VIEWER_SRC) $(PIPELINE_CPP) $(IMGUI_SRC))
+QJS_NAMES = $(notdir $(QJS_C))
+PIPC_NAMES = $(notdir $(PIPELINE_C))
+
+vpath %.cpp . ../src ../../MatterSurfaceLib/src $(IMGUI_PATH) $(IMGUI_PATH)/backends
+vpath %.c ../../MatterSurfaceLib/src $(QJS_DIR)
+
+# Linux object sets
+L_DIR = build/linux
+L_CPP_OBJ  = $(addprefix $(L_DIR)/,$(CPP_NAMES:.cpp=.o))
+L_QJS_OBJ  = $(addprefix $(L_DIR)/,$(QJS_NAMES:.c=.o))
+L_PIPC_OBJ = $(addprefix $(L_DIR)/,$(PIPC_NAMES:.c=.o))
+L_ALL_OBJ  = $(L_CPP_OBJ) $(L_QJS_OBJ) $(L_PIPC_OBJ)
+
+# Windows object sets
+W_DIR = build/windows
+W_CPP_OBJ  = $(addprefix $(W_DIR)/,$(CPP_NAMES:.cpp=.o))
+W_QJS_OBJ  = $(addprefix $(W_DIR)/,$(QJS_NAMES:.c=.o))
+W_PIPC_OBJ = $(addprefix $(W_DIR)/,$(PIPC_NAMES:.c=.o))
+W_ALL_OBJ  = $(W_CPP_OBJ) $(W_QJS_OBJ) $(W_PIPC_OBJ)
+
+$(L_DIR) $(W_DIR):
+	mkdir -p $@
+
+# ---- Linux compile rules
+$(L_CPP_OBJ): $(L_DIR)/%.o: %.cpp | $(L_DIR)
+	$(CC) -c $< -o $@ $(CXX_FLAGS_BUILD)
+$(L_QJS_OBJ): $(L_DIR)/%.o: $(QJS_DIR)/%.c | $(L_DIR)
+	gcc -c $< -o $@ -O2 -DCONFIG_VERSION='"0.10.0"' $(QJS_INC) -MMD -MP
+$(L_PIPC_OBJ): $(L_DIR)/%.o: ../../MatterSurfaceLib/src/%.c | $(L_DIR)
+	gcc -c $< -o $@ -O2 -DPLATFORM_DESKTOP $(INCLUDE_PATHS) -MMD -MP
+
+viewer: shaders $(L_ALL_OBJ)
+	$(CC) $(L_ALL_OBJ) -o viewer $(CFLAGS) $(LDFLAGS) $(LDLIBS)
+
+-include $(L_ALL_OBJ:.o=.d)
 
 # Shader path resolves relative to the binary; symlink MSL's shaders/ dir.
 # The viewer loads the include-flattened raytrace_tlas_blas_processed.fs, so it
@@ -87,12 +127,18 @@ WIN_RAYLIB  = ../../Libraries/raylib/build/windows-native/libraylib.a
 # line so the static linker can resolve raylib's __imp_* references.
 WIN_LIBS    = -lopengl32 -lgdi32 -lwinmm
 
-windows: win-shaders $(VIEWER_SRC) $(PIPELINE_CPP) $(PIPELINE_C) $(QJS_C) $(IMGUI_SRC)
-	$(WIN_CC) -c $(QJS_C) -O2 -DCONFIG_VERSION='"0.10.0"' $(QJS_INC)
-	$(WIN_CC) -c $(PIPELINE_C) -O2 -DPLATFORM_DESKTOP $(INCLUDE_PATHS)
-	$(WIN_CXX) $(VIEWER_SRC) $(PIPELINE_CPP) $(IMGUI_SRC) $(QJS_OBJ) $(PIPELINE_C_OBJ) \
-	  -o viewer.exe $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST $(INCLUDE_PATHS) $(QJS_INC) -static $(WIN_RAYLIB) $(WIN_LIBS)
-	rm -f $(QJS_OBJ) $(PIPELINE_C_OBJ)
+# ---- Windows compile rules
+$(W_CPP_OBJ): $(W_DIR)/%.o: %.cpp | $(W_DIR)
+	$(WIN_CXX) -c $< -o $@ $(CXX_FLAGS_BUILD)
+$(W_QJS_OBJ): $(W_DIR)/%.o: $(QJS_DIR)/%.c | $(W_DIR)
+	$(WIN_CC) -c $< -o $@ -O2 -DCONFIG_VERSION='"0.10.0"' $(QJS_INC) -MMD -MP
+$(W_PIPC_OBJ): $(W_DIR)/%.o: ../../MatterSurfaceLib/src/%.c | $(W_DIR)
+	$(WIN_CC) -c $< -o $@ -O2 -DPLATFORM_DESKTOP $(INCLUDE_PATHS) -MMD -MP
+
+windows: win-shaders $(W_ALL_OBJ)
+	$(WIN_CXX) $(W_ALL_OBJ) -o viewer.exe $(CFLAGS) -static $(WIN_RAYLIB) $(WIN_LIBS)
+
+-include $(W_ALL_OBJ:.o=.d)
 
 # A Windows .exe can't follow a Linux symlink, so copy MSL's shaders/ next to it.
 # Regenerate the processed shader first (see `regen-processed-shader`) so the copy
@@ -101,6 +147,6 @@ win-shaders: regen-processed-shader
 	@rm -rf shaders && cp -r ../../MatterSurfaceLib/shaders shaders
 
 clean:
-	rm -rf viewer viewer.exe shaders
+	rm -rf viewer viewer.exe shaders build
 
 .PHONY: viewer windows clean shaders win-shaders regen-processed-shader

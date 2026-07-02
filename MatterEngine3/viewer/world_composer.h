@@ -25,6 +25,10 @@ public:
 private:
     PartStore&  store_;
     TLASManager tlas_;
+    // Last built instance set's fingerprint: compose() skips the TLAS rebuild
+    // when the (blas_handle, transform) set is unchanged frame-over-frame.
+    uint64_t last_fingerprint_ = 0;
+    int      last_count_ = -1;
 };
 
 } // namespace viewer

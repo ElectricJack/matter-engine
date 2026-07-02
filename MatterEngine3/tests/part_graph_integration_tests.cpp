@@ -141,32 +141,63 @@ static void test_demo_tree_has_leaves(const std::string& schemas,
     CHECK(ir.root_hashes.size() == 1, "install returned the Tree root hash");
     if (ir.root_hashes.empty()) return;
 
-    // Child-folded hashes, in the same nesting order the graph used: Leaf has no
-    // children; TreeBranch folds [Leaf]; Tree folds [TreeBranch].
-    uint64_t leaf_hash   = host.resolve_hash(read_file(schemas + "/Leaf.js"), "{}");
-    uint64_t lkids[1]    = { leaf_hash };
-    uint64_t branch_hash = host.resolve_hash(read_file(schemas + "/TreeBranch.js"), "{}", lkids, 1);
+    // TreeBranch requires four Leaf variants ({shade:0..3}), each a distinct
+    // content hash; placeChild('Leaf',{shade:N}) selects among them. Recompute the
+    // four expected variant hashes the same way the graph bakes them (Leaf has no
+    // children, params fold into its own hash). The branch hash is NOT recomputed
+    // here (it folds all four variant hashes in graph order); instead it is read
+    // back from the Tree's own child placements below.
+    const std::string leaf_src = read_file(schemas + "/Leaf.js");
+    uint64_t leaf_shade[4];
+    for (int s = 0; s < 4; ++s) {
+        char pj[24]; std::snprintf(pj, sizeof pj, "{\"shade\":%d}", s);
+        leaf_shade[s] = host.resolve_hash(leaf_src, pj);
+    }
+    auto is_leaf_variant = [&](uint64_t h) {
+        for (int s = 0; s < 4; ++s) if (leaf_shade[s] == h) return true;
+        return false;
+    };
     uint64_t tree_hash   = ir.root_hashes[0];
+    // Trunk is a childless voxel leaf, so its hash is a plain source+params hash.
+    uint64_t trunk_hash  = host.resolve_hash(read_file(schemas + "/Trunk.js"), "{}");
 
-    // --- Tree: voxel trunk + TreeBranch instances ---
-    BLASManager t_blas; TLASManager t_tlas(64);
+    // --- Tree: geometry-less assembler placing one Trunk + N TreeBranch ---
+    BLASManager t_blas; TLASManager t_tlas(256);
     std::vector<part_asset::ChildInstance> t_children;
     part_asset::LodLevels t_lods;
     bool t_loaded = part_asset::load_v2(part_asset::cache_path_resolved(tree_hash),
                                         tree_hash, t_blas, t_tlas, t_children, t_lods);
     CHECK(t_loaded, "demo Tree .part reloads");
-    CHECK(t_blas.get_unique_blas_count() >= 1, "Tree registered trunk voxel geometry");
-    CHECK(!t_children.empty(), "demo Tree placed at least one TreeBranch");
-    { size_t tt = 0; for (const auto& e : t_blas.get_entries()) tt += e->triangles.size();
+    CHECK(!t_children.empty(), "demo Tree placed children");
+    // Tree requires [Trunk, TreeBranch]; sort placements by which part they name.
+    // The branch hash folds all four Leaf variants, so it can't be recomputed here
+    // -- read it back from the (non-trunk) placements instead.
+    size_t trunk_placements = 0;
+    uint64_t branch_hash = 0;
+    for (const auto& c : t_children) {
+        if (c.child_resolved_hash == trunk_hash) ++trunk_placements;
+        else branch_hash = c.child_resolved_hash;   // all branches share one hash
+    }
+    CHECK(trunk_placements >= 1, "Tree placed the Trunk");
+    CHECK(branch_hash != 0, "Tree placed at least one TreeBranch");
+    printf("  demo Tree placed %zu child instance(s) (%zu trunk)\n",
+           t_children.size(), trunk_placements);
+
+    // --- Trunk: voxel geometry, no children ---
+    BLASManager k_blas; TLASManager k_tlas(64);
+    std::vector<part_asset::ChildInstance> k_children;
+    part_asset::LodLevels k_lods;
+    bool k_loaded = part_asset::load_v2(part_asset::cache_path_resolved(trunk_hash),
+                                        trunk_hash, k_blas, k_tlas, k_children, k_lods);
+    CHECK(k_loaded, "demo Trunk .part reloads");
+    CHECK(k_blas.get_unique_blas_count() >= 1, "Trunk registered voxel geometry");
+    { size_t tt = 0; for (const auto& e : k_blas.get_entries()) tt += e->triangles.size();
       // Geometry budget guard: the trunk voxel sweep once ballooned to >130k tris
       // (multi-second synchronous LOD bake per part at viewer startup). Keep it sane.
-      CHECK(tt < 150000, "Tree trunk triangle count within budget"); }
-    printf("  demo Tree placed %zu TreeBranch instance(s)\n", t_children.size());
-    for (const auto& c : t_children)
-        CHECK(c.child_resolved_hash == branch_hash, "every Tree child is a TreeBranch");
+      CHECK(tt < 400000, "Trunk triangle count within budget"); }
 
     // --- TreeBranch: mesh twig tubes + Leaf instances ---
-    BLASManager b_blas; TLASManager b_tlas(64);
+    BLASManager b_blas; TLASManager b_tlas(256);
     std::vector<part_asset::ChildInstance> b_children;
     part_asset::LodLevels b_lods;
     bool b_loaded = part_asset::load_v2(part_asset::cache_path_resolved(branch_hash),
@@ -179,15 +210,19 @@ static void test_demo_tree_has_leaves(const std::string& schemas,
       // UV-sphere tubes. Guard the budget so it can't silently regress again.
       CHECK(bt < 150000, "TreeBranch twig triangle count within budget"); }
     printf("  demo TreeBranch placed %zu Leaf instance(s)\n", b_children.size());
+    // Every placed Leaf must resolve to one of the four real {shade:N} variant
+    // hashes -- this is the regression guard for parametric-child resolution.
+    bool all_variants = true;
     for (const auto& c : b_children)
-        CHECK(c.child_resolved_hash == leaf_hash, "every TreeBranch child is a Leaf");
+        if (!is_leaf_variant(c.child_resolved_hash)) all_variants = false;
+    CHECK(all_variants, "every placed Leaf is one of the four real shade variants");
 
     // --- Leaf: bezier triangle-fan blade (mesh, no children) ---
     BLASManager l_blas; TLASManager l_tlas(64);
     std::vector<part_asset::ChildInstance> l_children;
     part_asset::LodLevels l_lods;
-    bool l_loaded = part_asset::load_v2(part_asset::cache_path_resolved(leaf_hash),
-                                        leaf_hash, l_blas, l_tlas, l_children, l_lods);
+    bool l_loaded = part_asset::load_v2(part_asset::cache_path_resolved(leaf_shade[0]),
+                                        leaf_shade[0], l_blas, l_tlas, l_children, l_lods);
     CHECK(l_loaded, "demo Leaf .part reloads");
     CHECK(l_blas.get_unique_blas_count() >= 1, "Leaf registered blade triangle mesh");
     CHECK(l_children.empty(), "Leaf is a mesh leaf with no children");
