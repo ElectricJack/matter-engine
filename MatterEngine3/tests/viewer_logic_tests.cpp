@@ -285,6 +285,8 @@ static void test_partstore_keeps_children() {
     CHECK(tree != nullptr, "tree part loads from PartStore");
     CHECK(tree && !tree->lod_blas.empty(), "flat tree carries LOD geometry");
     CHECK(tree && tree->children.empty(), "flat tree has an empty child table");
+    CHECK(tree && tree->lod_mesh_data.size() == tree->lod_blas.size(), "raster data per LOD level");
+    CHECK(tree && tree->lod_mesh_data[0].vertex_count > 0, "LOD0 raster verts present");
     if (tree) printf("  flat Tree: %zu LOD level(s), %zu children\n",
                      tree->lod_blas.size(), tree->children.size());
 
@@ -348,6 +350,8 @@ static void test_compose_expands_children() {
     const viewer::LoadedPart* parent = store.get_or_load(parent_hash);
     CHECK(parent != nullptr, "synthetic parent loads (compositional path)");
     CHECK(parent && parent->children.size() == 2, "loaded parent keeps its child table");
+    CHECK(parent && parent->lod_mesh_data.size() == parent->lod_blas.size(), "raster data per LOD level");
+    CHECK(parent && parent->lod_mesh_data[0].vertex_count > 0, "LOD0 raster verts present");
 
     viewer::WorldManifest single;
     single.world_root_hash = 1;

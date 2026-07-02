@@ -60,6 +60,15 @@ bool PartStore::load_flat(uint64_t part_hash, LoadedPart& lp) {
         lp.thresholds.push_back(lods_in[li].screen_size_threshold);
         lp.lod_blas.push_back(h);
 
+        if (const auto* e = blas_.get_entry(lp.lod_blas.back())) {
+            const TriEx* mesh_ex = (e->tri_extra.size() == e->triangles.size() && !e->tri_extra.empty())
+                                      ? e->tri_extra.data() : nullptr;
+            lp.lod_mesh_data.push_back(
+                build_raster_mesh_data(e->triangles.data(), mesh_ex, (int)e->triangles.size()));
+        } else {
+            lp.lod_mesh_data.push_back({});
+        }
+
         if (li == 0) {
             // Bound radius from the finest level (drives projected-size LOD math).
             float mn[3] = {1e30f,1e30f,1e30f}, mx[3] = {-1e30f,-1e30f,-1e30f};
@@ -158,6 +167,15 @@ const LoadedPart* PartStore::get_or_load(uint64_t part_hash) {
         lp.thresholds.push_back(L.screen_size_threshold);
         size_t abs_idx = L.blas_indices[0];   // absolute index into blas_.get_entries()
         lp.lod_blas.push_back(blas_.get_entries()[abs_idx]->handle);
+
+        if (const auto* e = blas_.get_entry(lp.lod_blas.back())) {
+            const TriEx* mesh_ex = (e->tri_extra.size() == e->triangles.size() && !e->tri_extra.empty())
+                                      ? e->tri_extra.data() : nullptr;
+            lp.lod_mesh_data.push_back(
+                build_raster_mesh_data(e->triangles.data(), mesh_ex, (int)e->triangles.size()));
+        } else {
+            lp.lod_mesh_data.push_back({});
+        }
     }
     if (lp.lod_blas.empty()) {
         // No geometry (empty part) -> log; lookups will see an empty LOD list.

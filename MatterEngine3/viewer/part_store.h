@@ -4,6 +4,7 @@
 #include "blas_manager.hpp"     // MSL BLASManager / BLASHandle
 #include "lod_select.h"         // lod_select::PartLodTable
 #include "part_asset_v2.h"      // part_asset::ChildInstance
+#include "raster_mesh.h"        // RasterMeshData
 
 #include <cstdint>
 #include <map>
@@ -21,6 +22,7 @@ struct LoadedPart {
     float                   bound_radius = 0.0f;
     std::vector<float>      thresholds;      // per-LOD screen-size thresholds
     std::vector<part_asset::ChildInstance> children;   // baked child-instance table (may be empty)
+    std::vector<RasterMeshData> lod_mesh_data;  // parallel to lod_blas (CPU-only; GL upload is lazy)
 };
 
 // Owns one BLASManager shared across all loaded parts. Content-addressed and
