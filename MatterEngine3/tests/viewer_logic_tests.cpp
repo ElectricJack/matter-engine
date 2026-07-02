@@ -5,6 +5,7 @@
 #include "../viewer/part_store.h"
 #include "../viewer/local_provider.h"
 #include "../viewer/world_composer.h"
+#include "../viewer/raster_mesh.h"
 #include "lod_select.h"   // PartLodTable, PartLod
 #include "part_graph.h"   // PartGraph + FileModuleResolver/HostBaker (script-host guarded)
 #include "part_asset_v2.h"
@@ -370,6 +371,39 @@ static void test_compose_expands_children() {
     system(("rm -rf " + root).c_str());
 }
 
+static bool test_raster_mesh_data() {
+    Tri t[2] = {};
+    t[0].vertex0 = make_float3(0,0,0); t[0].vertex1 = make_float3(1,0,0); t[0].vertex2 = make_float3(0,1,0);
+    t[1].vertex0 = make_float3(0,0,1); t[1].vertex1 = make_float3(1,0,1); t[1].vertex2 = make_float3(0,1,1);
+    TriEx ex[2] = {};
+    for (int i = 0; i < 2; ++i) {
+        ex[i].N0 = ex[i].N1 = ex[i].N2 = make_float3(0,0,1);
+        ex[i].materialId = 7; ex[i].tint = make_float4(0.5f, 0.25f, 1.0f, 1.0f);
+        ex[i].ao0 = 0.5f; ex[i].ao1 = 1.0f; ex[i].ao2 = 0.0f;
+    }
+    auto d = viewer::build_raster_mesh_data(t, ex, 2);
+    CHECK(d.vertex_count == 6, "6 verts from 2 tris");
+    CHECK(d.vertices.size() == 18 && d.normals.size() == 18, "array sizes");
+    CHECK(d.colors.size() == 24 && d.texcoords.size() == 12, "color/uv sizes");
+    CHECK(d.vertices[3] == 1.0f && d.vertices[4] == 0.0f, "v1 position");
+    CHECK(d.normals[2] == 1.0f, "N0.z passthrough");
+    CHECK(d.colors[0] == 127 || d.colors[0] == 128, "tint r quantized");
+    CHECK(d.colors[3] == 255, "tint alpha");
+    CHECK(d.texcoords[0] == 7.0f, "materialId in u");
+    CHECK(d.texcoords[1] == 0.5f && d.texcoords[5] == 0.0f, "per-vertex AO in v");
+
+    auto plain = viewer::build_raster_mesh_data(t, nullptr, 2);   // no TriEx: geometric fallback
+    CHECK(plain.vertex_count == 6, "plain verts");
+    CHECK(plain.normals[2] == 1.0f, "geometric normal +z");
+    CHECK(plain.texcoords[0] == -1.0f && plain.texcoords[1] == 1.0f, "sentinel mat, AO=1");
+    CHECK(plain.colors[3] == 0, "neutral tint alpha 0");
+
+    float rm[16] = {1,0,0, 5,  0,1,0, 6,  0,0,1, 7,  0,0,0,1};    // row-major translate(5,6,7)
+    Matrix m = viewer::row_major_to_matrix(rm);
+    CHECK(m.m12 == 5.0f && m.m13 == 6.0f && m.m14 == 7.0f, "translation lands in m12..m14");
+    return true;
+}
+
 int main() {
     test_world_state_delta();
     test_resolvers();
@@ -378,6 +412,7 @@ int main() {
     test_composer_counts();
     test_partstore_keeps_children();
     test_compose_expands_children();
+    test_raster_mesh_data();
     delete g_shared_store; g_shared_store = nullptr;
     printf("\n%s\n", g_failures == 0 ? "viewer-logic OK" : "viewer-logic FAILED");
     return g_failures == 0 ? 0 : 1;
