@@ -52,9 +52,14 @@ Fixed-constant, unshadowed, single sun:
 - Sun direction: `(-0.45, -0.80, -0.35)` normalized (baked in `raster_composer.cpp`).
 - Sun color: `(2.2, 2.05, 1.8)` — warm white.
 - Ambient: `(0.38, 0.43, 0.52)` — cool blue-grey sky ambient.
-- Per-fragment: `saturate(dot(N, -sunDir)) * sunColor * albedo + ambient * albedo`.
-- Material albedo from the material table uniform (64 materials × 12 floats, same
-  `material_registry` data used by the ray tracer).
+- Per-fragment:
+  1. Tint blend: `albedo = mix(albedo, tint.rgb, tint.a)` (from vertex `fragTint`).
+  2. Lighting: `color = albedo * (ambientColor * ao + sunColor * ndl) + albedo * emission`
+     where `ndl = max(dot(N, -sunDir), 0)` and `ao` is the per-vertex AO from texcoord V.
+  3. Reinhard tone-map: `color = color / (color + 1)`.
+  4. Gamma 2.2: `color = pow(color, 1/2.2)`.
+- Material albedo and emission from the material table uniform (64 materials × 12 floats,
+  same `material_registry` data used by the ray tracer).
 - AO packed in texcoord V multiplies the ambient term.
 
 No shadows, no GI, no reflections. Phase 2 will replace the fixed constants with a

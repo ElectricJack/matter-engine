@@ -204,7 +204,7 @@ int main() {
                     renderer.camera().target   = (Vector3){ c[3], c[4], c[5] };
                 } else if (sscanf(line.c_str(), "shot %255s", pathbuf) == 1) {
                     shot_path = pathbuf;
-                    shot_frames = 4;   // let the raytrace image stabilize
+                    shot_frames = 4;   // RT-derived settle count; applied harmlessly in raster mode too
                 } else if (line == "reload") {
                     stats.reload_requested = true;
                 } else if (line == "quit") {
@@ -251,6 +251,8 @@ int main() {
         EndDrawing();
 
         if (screenshot_path) {
+            // Settle count of 3 is RT-derived (waits for raytrace to stabilize);
+            // harmless in raster mode where the image is stable on frame 1.
             if (++frames_drawn >= 3) {
                 TakeScreenshot(screenshot_path);
                 printf("screenshot written to %s\n", screenshot_path);
@@ -285,6 +287,11 @@ int main() {
 
     if (cmd_fd >= 0) { close(cmd_fd); if (fifo_path) unlink(fifo_path); }
     if (camera_capture) EnableCursor();
+    // Reset GL-owning objects before CloseWindow; order matters — all
+    // UnloadMesh/UnloadShader calls must complete while the GL context is live.
+    raster.reset();
+    composer.reset();
+    store.reset();
     ui.shutdown();
     renderer.shutdown();
     CloseWindow();
