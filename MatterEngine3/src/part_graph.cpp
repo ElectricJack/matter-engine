@@ -224,6 +224,7 @@ bool PartGraph::read_manifest(const std::string& world_data_dir, const std::stri
         std::istringstream tokens(trimmed);
         std::string name, flag;
         tokens >> name;
+        if (name == "light") continue;  // light lines are owned by world_lights::parse_lights
         bool expand = false;
         while (tokens >> flag) {
             if (flag == "expand") expand = true;

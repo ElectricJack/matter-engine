@@ -54,7 +54,7 @@ else
     LDLIBS = ../../Libraries/raylib/src/libraylib.a
 endif
 
-.PHONY: clean run-partv2 run-script run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-meadow run-meadow-check
+.PHONY: clean run-partv2 run-script run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting
 
 # Part Artifact v2 round-trip + resolved-hash + format-guard tests (headless, GL-free).
 # NEW impl ../src/part_asset_v2.cpp + consumed MatterSurfaceLib backend sources.
@@ -438,3 +438,26 @@ $(VIEWER_LOGIC_TARGET): $(VIEWER_LOGIC_CPP) $(EXAMPLE_C) $(QJS_C)
 
 run-viewer-logic: $(VIEWER_LOGIC_TARGET)
 	./$(VIEWER_LOGIC_TARGET)
+
+# Task 1 — World light list: parse_lights + lights_fingerprint + read_manifest skip.
+# GL-free, no QuickJS. Uses the same dep set as the GRAPH stanza (part_graph.cpp
+# drags in part_asset_v2.cpp + MSL backend objects).
+LIGHTING_TARGET = lighting_tests
+LIGHTING_SOURCES = lighting_tests.cpp ../src/world_lights.cpp \
+                   ../src/part_graph.cpp ../src/part_asset_v2.cpp \
+                   ../../MatterSurfaceLib/src/part_asset.cpp \
+                   ../../MatterSurfaceLib/src/blas_manager.cpp \
+                   ../../MatterSurfaceLib/src/bvh.cpp \
+                   ../../MatterSurfaceLib/src/tlas_manager.cpp \
+                   ../../MatterSurfaceLib/src/vertex_ao.cpp \
+                   ../../MatterSurfaceLib/src/occupancy.cpp
+LIGHTING_C   = ../../MatterSurfaceLib/src/material_registry.c
+LIGHTING_C_OBJ = material_registry.o
+
+$(LIGHTING_TARGET): $(LIGHTING_SOURCES) $(LIGHTING_C)
+	gcc -c $(LIGHTING_C) -O2 -DPLATFORM_DESKTOP $(INCLUDE_PATHS)
+	$(CC) $(LIGHTING_SOURCES) $(LIGHTING_C_OBJ) -o $(LIGHTING_TARGET) $(CFLAGS) $(INCLUDE_PATHS) $(LDFLAGS) $(LDLIBS)
+	rm -f $(LIGHTING_C_OBJ)
+
+run-lighting: $(LIGHTING_TARGET)
+	./$(LIGHTING_TARGET)
