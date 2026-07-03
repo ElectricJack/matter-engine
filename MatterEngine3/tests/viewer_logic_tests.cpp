@@ -50,6 +50,25 @@ static viewer::WorldManifestEntry mk_entry(uint32_t id, uint64_t hash, float x) 
     return e;
 }
 
+static void test_world_state_version() {
+    viewer::WorldState s;
+    assert(s.version() == 0);
+
+    viewer::WorldManifest m;
+    m.instances.push_back(mk_entry(1, 0xAAu, 0.0f));
+    s.reset(m);
+    assert(s.version() == 1);
+
+    viewer::WorldDelta d;
+    d.added.push_back(mk_entry(2, 0xAAu, 4.0f));
+    s.apply(d);
+    assert(s.version() == 2);
+
+    s.reset(m);                    // reset always bumps, even to the same content
+    assert(s.version() == 3);
+    printf("  test_world_state_version OK\n");
+}
+
 static void test_world_state_delta() {
     viewer::WorldState state;
     viewer::WorldManifest m;
@@ -1352,6 +1371,7 @@ static void test_cull_transform_convention() {
 
 int main() {
     test_cull_transform_convention();
+    test_world_state_version();
     test_world_state_delta();
     test_resolvers();
     test_part_store_missing();

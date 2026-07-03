@@ -40,9 +40,14 @@ public:
     void apply(const WorldDelta& d);              // add/move/remove by instance_id
     const std::vector<WorldManifestEntry>& entries() const { return entries_; }
     const WorldManifestEntry* find(uint32_t instance_id) const;
+    // Monotonic content version: bumped by every reset()/apply(). Resolver and
+    // composer caches key on it so per-frame work skips re-derivation when the
+    // world hasn't changed (frame-time package, Stage 1).
+    uint64_t version() const { return version_; }
 
 private:
     std::vector<WorldManifestEntry> entries_;
+    uint64_t version_ = 0;
 };
 
 // Source of world + part data. Same interface for LocalProvider (in-process)

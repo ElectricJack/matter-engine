@@ -3,6 +3,7 @@
 namespace viewer {
 
 void WorldState::reset(const WorldManifest& m) {
+    ++version_;
     entries_ = m.instances;
 }
 
@@ -13,6 +14,7 @@ const WorldManifestEntry* WorldState::find(uint32_t instance_id) const {
 }
 
 void WorldState::apply(const WorldDelta& d) {
+    ++version_;
     // Removals first so a same-frame re-add of an id is honored.
     for (uint32_t id : d.removed) {
         for (size_t i = 0; i < entries_.size(); ++i) {
