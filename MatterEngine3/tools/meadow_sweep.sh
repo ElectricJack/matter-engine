@@ -11,7 +11,7 @@ LOG="/tmp/matter_sweep_$$.log"
 mkfifo "$FIFO"
 MATTER_WORLD=meadow MATTER_CMD_FIFO="$FIFO" ./viewer > "$LOG" 2>&1 &
 PID=$!
-trap 'kill $PID 2>/dev/null || true; rm -f "$FIFO"' EXIT
+trap 'kill $PID 2>/dev/null || true; rm -f "$FIFO" "$LOG"' EXIT
 
 sleep 25   # world bake/load + first frames; generous on a cold cache
 
