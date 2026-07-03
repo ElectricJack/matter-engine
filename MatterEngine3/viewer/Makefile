@@ -39,6 +39,8 @@ PIPELINE_CPP = ../src/part_graph.cpp \
               ../src/polygon_triangulate.cpp \
               ../src/part_asset_v2.cpp ../src/lod_bake.cpp ../src/world_flatten.cpp ../src/part_flatten.cpp ../src/triangle_emit.cpp \
               ../src/sector_grid.cpp ../src/lod_select.cpp \
+              ../src/world_lights.cpp ../src/probe_volume.cpp \
+              ../src/world_tracer.cpp ../src/probe_bake.cpp \
               ../../MatterSurfaceLib/src/cluster.cpp ../../MatterSurfaceLib/src/cell.cpp ../../MatterSurfaceLib/src/mesh_simplifier.cpp \
               ../../MatterSurfaceLib/src/blas_manager.cpp ../../MatterSurfaceLib/src/bvh.cpp ../../MatterSurfaceLib/src/bvh_analyzer.cpp \
               ../../MatterSurfaceLib/src/mesh_worker_pool.cpp ../../MatterSurfaceLib/src/mesh_build_utils.cpp \

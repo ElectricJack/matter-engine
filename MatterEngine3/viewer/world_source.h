@@ -1,7 +1,11 @@
 #ifndef VIEWER_WORLD_SOURCE_H
 #define VIEWER_WORLD_SOURCE_H
 
+#include "world_lights.h"
+#include "probe_volume.h"
+
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -20,6 +24,8 @@ struct WorldManifestEntry {
 struct WorldManifest {
     uint64_t world_root_hash = 0;
     std::vector<WorldManifestEntry> instances;
+    world_lights::WorldLights lights;                        // defaults if no light lines
+    std::shared_ptr<probe_volume::ProbeVolume> probes;       // null => fallback shading
 };
 
 struct WorldDelta {

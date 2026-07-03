@@ -3,12 +3,19 @@
 #include "part_graph.h"        // -DMATTER_HAVE_SCRIPT_HOST pulls in script_host.h
 #include "part_asset_v2.h"     // cache_path_resolved, cache_path_flat
 #include "part_flatten.h"      // bake-time subtree flattening
+#include "world_lights.h"
+#include "probe_volume.h"
+#include "world_tracer.h"
+#include "probe_bake.h"
+#include "part_asset.h"   // fnv1a64
 
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <memory>
 #include <set>
 #include <sstream>
 #include <sys/stat.h>
@@ -193,6 +200,118 @@ bool LocalProvider::connect(WorldManifest& out, std::string& err) {
         }
     }
     flatten_placed();
+
+    // --- Parse world lights ---
+    {
+        const std::string manifest_path = abs_world_data + "/" + cfg_.world_name + "/world.manifest";
+        std::string lights_err;
+        if (!world_lights::parse_lights(manifest_path, out.lights, lights_err)) {
+            printf("LocalProvider: warning: light parse failed: %s\n", lights_err.c_str());
+            out.lights = world_lights::WorldLights{};  // keep defaults
+        }
+    }
+
+    // --- Compute probe fingerprint ---
+    // Fold: each instance (part_hash, transform[16]) in manifest order,
+    // then bake grid constants packed as a struct, then lights_fingerprint(out.lights).
+    {
+        probe_bake::BakeParams bake_params;   // default BakeParams
+        std::vector<uint8_t> fp_buf;
+
+        // 1. Instances (part_hash u64 + transform[16] floats)
+        for (const auto& e : out.instances) {
+            const size_t off = fp_buf.size();
+            fp_buf.resize(off + sizeof(uint64_t) + 16 * sizeof(float));
+            std::memcpy(fp_buf.data() + off, &e.part_hash, sizeof(uint64_t));
+            std::memcpy(fp_buf.data() + off + sizeof(uint64_t), e.transform, 16 * sizeof(float));
+        }
+
+        // 2. Bake grid constants (packed struct of raw bytes)
+        struct BakeGridKey {
+            float cell;
+            int   max_cells_axis;
+            int   pad_cells;
+            int   rays_per_cell;
+            int   sun_rays;
+        } gk;
+        gk.cell           = bake_params.cell;
+        gk.max_cells_axis = bake_params.max_cells_axis;
+        gk.pad_cells      = bake_params.pad_cells;
+        gk.rays_per_cell  = bake_params.rays_per_cell;
+        gk.sun_rays       = bake_params.sun_rays;
+        {
+            const size_t off = fp_buf.size();
+            fp_buf.resize(off + sizeof(BakeGridKey));
+            std::memcpy(fp_buf.data() + off, &gk, sizeof(BakeGridKey));
+        }
+
+        // 3. Lights fingerprint (u64 appended as bytes)
+        uint64_t lf = world_lights::lights_fingerprint(out.lights);
+        {
+            const size_t off = fp_buf.size();
+            fp_buf.resize(off + sizeof(uint64_t));
+            std::memcpy(fp_buf.data() + off, &lf, sizeof(uint64_t));
+        }
+
+        const uint64_t probe_fingerprint = part_asset::fnv1a64(fp_buf.data(), fp_buf.size());
+
+        // --- Probe cache path: <cache_root>/cache/<world_name>.probes ---
+        const std::string cache_subdir = abs_cache_root + "/cache";
+        {
+            int r = fs_mkdir(cache_subdir.c_str());
+            (void)r;   // EEXIST is fine; mirrors the parts/ mkdir above
+        }
+        const std::string probes_path = cache_subdir + "/" + cfg_.world_name + ".probes";
+
+        // --- Try to load cached probes ---
+        probe_volume::ProbeVolume vol;
+        bool loaded = probe_volume::load_probes(probes_path, vol, probe_fingerprint);
+        if (loaded) {
+            out.probes = std::make_shared<probe_volume::ProbeVolume>(std::move(vol));
+        } else {
+            // Cache miss or stale -> re-bake
+            // Build TraceInstance list from manifest instances.
+            std::vector<world_tracer::TraceInstance> trace_instances;
+            trace_instances.reserve(out.instances.size());
+            for (const auto& e : out.instances) {
+                world_tracer::TraceInstance ti;
+                ti.part_hash = e.part_hash;
+                std::memcpy(ti.transform, e.transform, sizeof(ti.transform));
+                trace_instances.push_back(ti);
+            }
+
+            // Build tracer (non-fatal on failure).
+            world_tracer::WorldTracer tracer;
+            std::string tracer_err;
+            if (!tracer.build(abs_cache_root, trace_instances, tracer_err)) {
+                printf("probe bake failed: %s\n", tracer_err.c_str());
+                // out.probes stays null -> fallback shading
+            } else {
+                // Bake probes and measure wall time.
+                auto t0 = std::chrono::steady_clock::now();
+                probe_volume::ProbeVolume baked = probe_bake::bake_probes(tracer, out.lights, bake_params);
+                auto t1 = std::chrono::steady_clock::now();
+                double elapsed_s = std::chrono::duration<double>(t1 - t0).count();
+
+                if (!baked.valid()) {
+                    printf("probe bake failed: baked volume is invalid\n");
+                    // out.probes stays null -> fallback shading
+                } else {
+                    printf("probes: %dx%dx%d baked in %.1fs\n",
+                           baked.grid.nx, baked.grid.ny, baked.grid.nz, elapsed_s);
+
+                    // Save to cache (non-fatal on failure).
+                    if (!probe_volume::save_probes(probes_path, baked, probe_fingerprint)) {
+                        printf("probe bake failed: could not save probes to %s\n",
+                               probes_path.c_str());
+                        // Still assign probes even if save failed (runtime will work, no cache).
+                    }
+                    out.probes = std::make_shared<probe_volume::ProbeVolume>(std::move(baked));
+                }
+            }
+        }
+    }
+
     return true;
 }
 

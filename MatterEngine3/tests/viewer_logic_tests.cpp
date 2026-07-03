@@ -10,6 +10,8 @@
 #include "lod_select.h"   // PartLodTable, PartLod
 #include "part_graph.h"   // PartGraph + FileModuleResolver/HostBaker (script-host guarded)
 #include "part_asset_v2.h"
+#include "world_lights.h"
+#include "probe_volume.h"
 
 #include <cstdio>
 #include <cstdint>
@@ -17,9 +19,11 @@
 #include <cstring>
 #include <fstream>
 #include <functional>
+#include <memory>
 #include <set>
 #include <sstream>
 #include <string>
+#include <sys/stat.h>
 #include <vector>
 #include <unistd.h>
 
@@ -496,6 +500,135 @@ static void test_sector_lod_floor_cull() {
     CHECK(r2.size() == 1, "instance returns below-floor -> above-floor");
 }
 
+// Helper: read raw file bytes into a string; returns empty string if missing.
+static std::string read_file_bytes(const std::string& path) {
+    std::ifstream f(path, std::ios::binary);
+    if (!f) return {};
+    std::ostringstream ss; ss << f.rdbuf();
+    return ss.str();
+}
+
+// Helper: check that a file exists (returns true if stat() succeeds).
+static bool file_exists(const std::string& path) {
+    struct stat st;
+    return ::stat(path.c_str(), &st) == 0;
+}
+
+// Test Task-5: LocalProvider bakes and caches probe volume keyed by fingerprint.
+//  1. connect() yields valid probes and writes the .probes cache file.
+//  2. A second connect() also yields valid probes but does NOT re-bake (same file bytes).
+//  3. A manifest with a different light line yields a DIFFERENT .probes file (re-bake).
+static void test_provider_bakes_probes() {
+    const std::string cache = "/tmp/me3_viewer_cache_test";   // reuse the warm cache
+    const std::string probes_path = cache + "/cache/Demo.probes";
+
+    // --- Part 1: connect() yields probes, .probes file exists. ---
+    {
+        viewer::LocalProviderConfig cfg;
+        cfg.schemas_dir    = "../examples/world_demo/schemas";
+        cfg.world_data_dir = "../examples/world_demo/WorldData";
+        cfg.world_name     = "Demo";
+        cfg.shared_lib_dir = "../shared-lib";
+        cfg.cache_root     = cache;
+
+        viewer::LocalProvider prov(cfg);
+        viewer::WorldManifest m; std::string err;
+        bool ok = prov.connect(m, err);
+        CHECK(ok, "probe test: connect() succeeds");
+        if (!ok) { printf("  connect error: %s\n", err.c_str()); return; }
+
+        CHECK(m.probes != nullptr, "connect yields non-null probes");
+        CHECK(m.probes && m.probes->valid(), "probes.valid() after connect");
+        CHECK(file_exists(probes_path), ".probes cache file written");
+    }
+
+    // --- Part 2: second connect (same fingerprint) -> no re-bake, identical bytes. ---
+    {
+        std::string bytes_before = read_file_bytes(probes_path);
+        CHECK(!bytes_before.empty(), ".probes file is non-empty before second connect");
+
+        viewer::LocalProviderConfig cfg;
+        cfg.schemas_dir    = "../examples/world_demo/schemas";
+        cfg.world_data_dir = "../examples/world_demo/WorldData";
+        cfg.world_name     = "Demo";
+        cfg.shared_lib_dir = "../shared-lib";
+        cfg.cache_root     = cache;
+
+        viewer::LocalProvider prov(cfg);
+        viewer::WorldManifest m; std::string err;
+        bool ok = prov.connect(m, err);
+        CHECK(ok, "probe test: second connect() succeeds");
+        CHECK(m.probes != nullptr, "second connect yields non-null probes");
+        CHECK(m.probes && m.probes->valid(), "second probes.valid()");
+
+        std::string bytes_after = read_file_bytes(probes_path);
+        CHECK(bytes_before == bytes_after,
+              "second connect did not re-bake (file bytes identical)");
+    }
+
+    // --- Part 3: different sky light -> different .probes content (fingerprint changed). ---
+    {
+        // Write a temporary manifest with an extra sky light line.
+        const std::string alt_world_data = "/tmp/me3_alt_world_data";
+        const std::string alt_manifest_dir = alt_world_data + "/Demo";
+        ::system(("mkdir -p " + alt_manifest_dir).c_str());
+        {
+            // Append "light sky 1 0 0" to the normal manifest content.
+            std::string orig_manifest;
+            {
+                std::ifstream f("../examples/world_demo/WorldData/Demo/world.manifest",
+                                std::ios::binary);
+                std::ostringstream ss; ss << f.rdbuf();
+                orig_manifest = ss.str();
+            }
+            std::ofstream out(alt_manifest_dir + "/world.manifest");
+            out << orig_manifest;
+            out << "\nlight sky 1 0 0\n";
+        }
+
+        // Also need the same schemas dir referenced by world_data_dir bake; copy the
+        // parts cache is shared. Use a separate cache dir for the alt world so the
+        // probes file doesn't collide with Demo's probes.
+        const std::string alt_cache = "/tmp/me3_alt_probes_cache";
+        ::system(("mkdir -p " + alt_cache + "/parts").c_str());
+        // Symlink/copy Demo parts from the main warm cache so bake is instant.
+        ::system(("cp -r " + cache + "/parts/. " + alt_cache + "/parts/ 2>/dev/null; true").c_str());
+        // Also copy the flat parts if they exist.
+        ::system(("for f in " + cache + "/*.flat.part; do [ -f \"$f\" ] && cp \"$f\" " + alt_cache + "/ 2>/dev/null; done; true").c_str());
+
+        const std::string alt_probes_path = alt_cache + "/cache/Demo.probes";
+
+        viewer::LocalProviderConfig cfg;
+        cfg.schemas_dir    = "../examples/world_demo/schemas";
+        cfg.world_data_dir = alt_world_data;
+        cfg.world_name     = "Demo";
+        cfg.shared_lib_dir = "../shared-lib";
+        cfg.cache_root     = alt_cache;
+
+        viewer::LocalProvider prov(cfg);
+        viewer::WorldManifest m; std::string err;
+        bool ok = prov.connect(m, err);
+        CHECK(ok, "alt-light connect() succeeds");
+        if (!ok) { printf("  alt-light error: %s\n", err.c_str()); return; }
+
+        CHECK(m.lights.sky_color[0] == 1.0f,
+              "alt manifest: sky_color[0] == 1.0f");
+        CHECK(m.probes != nullptr, "alt-light probes non-null");
+        CHECK(m.probes && m.probes->valid(), "alt-light probes valid");
+        CHECK(file_exists(alt_probes_path), "alt .probes file written");
+
+        // The content should differ from the default-light bake.
+        std::string default_bytes = read_file_bytes(probes_path);
+        std::string alt_bytes     = read_file_bytes(alt_probes_path);
+        CHECK(!alt_bytes.empty(), "alt .probes file is non-empty");
+        CHECK(default_bytes != alt_bytes,
+              "different lights -> different .probes content (fingerprint changed)");
+
+        // Cleanup alt dirs.
+        ::system(("rm -rf " + alt_world_data + " " + alt_cache).c_str());
+    }
+}
+
 int main() {
     test_world_state_delta();
     test_resolvers();
@@ -507,6 +640,7 @@ int main() {
     test_append_expanded_children();
     test_raster_mesh_data();
     test_sector_lod_floor_cull();
+    test_provider_bakes_probes();
     delete g_shared_store; g_shared_store = nullptr;
     printf("\n%s\n", g_failures == 0 ? "viewer-logic OK" : "viewer-logic FAILED");
     return g_failures == 0 ? 0 : 1;

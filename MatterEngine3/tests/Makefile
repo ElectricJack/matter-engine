@@ -427,13 +427,15 @@ VIEWER_LOGIC_CPP = viewer_logic_tests.cpp \
               ../viewer/world_composer.cpp \
               ../viewer/raster_mesh.cpp \
               ../viewer/raster_composer.cpp \
+              ../src/world_lights.cpp ../src/probe_volume.cpp \
+              ../src/world_tracer.cpp ../src/probe_bake.cpp \
               $(VIEWER_PIPELINE_CPP)
 
 $(VIEWER_LOGIC_TARGET): $(VIEWER_LOGIC_CPP) $(EXAMPLE_C) $(QJS_C)
 	gcc -c $(QJS_C) -O2 -DCONFIG_VERSION='"0.10.0"' $(QJS_INC)
 	gcc -c $(EXAMPLE_C) -O2 -DPLATFORM_DESKTOP $(INCLUDE_PATHS)
 	$(CC) $(VIEWER_LOGIC_CPP) $(QJS_OBJ) $(EXAMPLE_C_OBJ) -o $(VIEWER_LOGIC_TARGET) \
-	      $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST $(INCLUDE_PATHS) -I../viewer $(QJS_INC) $(LDFLAGS) $(LDLIBS)
+	      $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST -pthread $(INCLUDE_PATHS) -I../viewer $(QJS_INC) $(LDFLAGS) $(LDLIBS)
 	rm -f $(QJS_OBJ) $(EXAMPLE_C_OBJ)
 
 run-viewer-logic: $(VIEWER_LOGIC_TARGET)
