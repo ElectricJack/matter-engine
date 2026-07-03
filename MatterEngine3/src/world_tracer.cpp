@@ -667,7 +667,8 @@ bool WorldTracer::occluded(const float origin[3], const float dir[3],
                            float max_t) const {
     Hit hit;
     bool did_hit = trace(origin, dir, max_t, hit);
-    return did_hit && hit.t > 0.f && hit.t < max_t;
+    // Self-hit guard for shadow rays originating on/near surfaces
+    return did_hit && hit.t > 1e-4f && hit.t < max_t;
 }
 
 void WorldTracer::world_bounds(float mn[3], float mx[3]) const {

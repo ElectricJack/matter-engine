@@ -515,6 +515,27 @@ static void test_tracer_occluded() {
     CHECK(!wt.occluded(O, D, 3.f), "tracer occluded: max_t=3 is not occluded");
 }
 
+// ---- Test 19: occluded self-hit guard (origin on surface) ----
+static void test_tracer_occluded_self_hit() {
+    world_tracer::WorldTracer wt;
+    std::string err;
+    world_tracer::TraceInstance inst;
+    inst.part_hash = kCubeHash;
+    std::memcpy(inst.transform, wt_identity, 64);
+    std::vector<world_tracer::TraceInstance> insts = {inst};
+    bool built = wt.build(kTracerCache, insts, err);
+    CHECK(built, "tracer self-hit: build ok");
+    if (!built) return;
+
+    // Ray origin ON the cube surface (z = -0.5, the front face), direction along -Z away from cube
+    // No geometry lies along -Z from the surface, so should NOT be occluded
+    const float O[3] = {0.f, 0.f, -0.5f};
+    const float D[3] = {0.f, 0.f, -1.f};
+
+    // With a lower t bound, this should return false (no self-occlusion at t~0)
+    CHECK(!wt.occluded(O, D, 100.f), "tracer self-hit: origin on surface, ray away is not occluded");
+}
+
 // ---- Test 16: two instances — nearer one wins ----
 static void test_tracer_two_instances_nearer_wins() {
     world_tracer::WorldTracer wt;
@@ -680,6 +701,7 @@ int main() {
         test_tracer_translated();
         test_tracer_scaled_instance();
         test_tracer_occluded();
+        test_tracer_occluded_self_hit();
         test_tracer_two_instances_nearer_wins();
         test_tracer_world_bounds();
     }
