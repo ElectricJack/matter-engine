@@ -290,7 +290,7 @@ int main() {
             auto t0 = std::chrono::steady_clock::now();
             auto resolved = resolver.resolve(state, lods, cam);
             auto t1 = std::chrono::steady_clock::now();
-            batches = raster->build_batches(resolved, *store, renderer.camera());
+            batches = raster->build_batches(resolved, *store, renderer.camera(), state.version());
             auto t2 = std::chrono::steady_clock::now();
             stats.resolve_ms = std::chrono::duration<float, std::milli>(t1 - t0).count();
             stats.build_ms   = std::chrono::duration<float, std::milli>(t2 - t1).count();

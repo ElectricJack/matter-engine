@@ -34,12 +34,16 @@ public:
     // GL-free: recursive child expansion (depth<=8, 200k cap), per-cluster
     // frustum cull + LOD selection when clusters are present (v3/v2 flat parts),
     // whole-part path for compositional parts. Camera drives the frustum and the
-    // per-cluster projected-size LOD metric. Batches are fingerprinted and reused
-    // across frames when the camera + instance set is unchanged.
+    // per-cluster projected-size LOD metric. Batches are fingerprinted over
+    // (camera, world_version, per-instance (part_hash, lod)) and reused across
+    // frames when nothing changed. Transform bytes are NOT hashed: transforms only
+    // change via world deltas, which bump world_version (Stage 1 — drops ~3.3 MB/frame
+    // of FNV input).
     std::vector<RasterBatch> build_batches(
         const std::vector<ResolvedInstance>& resolved,
         PartStore& store,
-        const Camera3D& cam);
+        const Camera3D& cam,
+        uint64_t world_version);
 
     // GL: lazy-upload meshes, BeginMode3D, one DrawMeshInstanced per batch. Returns drawn tris.
     int draw(const std::vector<RasterBatch>& batches, PartStore& store, const Camera3D& cam);
@@ -80,6 +84,7 @@ private:
     // Fingerprint-based batch reuse: cache built batches when camera+instances
     // are identical across consecutive frames.
     uint64_t              last_fp_       = 0;
+    bool                  last_valid_    = false;   // true after the first build
     std::vector<RasterBatch> last_batches_;
 
     // HUD stats (written by build_batches, read by accessors above).

@@ -169,21 +169,24 @@ static void fnv_fold(uint64_t& fp, const void* p, size_t n) {
 std::vector<RasterBatch> RasterComposer::build_batches(
         const std::vector<ResolvedInstance>& resolved,
         PartStore& store,
-        const Camera3D& cam) {
+        const Camera3D& cam,
+        uint64_t world_version) {
 
-    // ---- Compute fingerprint for camera + all resolved instances ----
+    // ---- Compute fingerprint: (camera, world_version, per-instance (part_hash, lod)) ----
+    // Transform bytes are NOT hashed: transforms only change via world deltas, which
+    // bump world_version (Stage 1 — drops ~3.3 MB/frame of FNV input).
     uint64_t fp = 1469598103934665603ull;
     // Fold camera (position, target, fovy) so any camera move invalidates cache.
     fnv_fold(fp, &cam.position, sizeof cam.position);
     fnv_fold(fp, &cam.target,   sizeof cam.target);
     fnv_fold(fp, &cam.fovy,     sizeof cam.fovy);
+    fnv_fold(fp, &world_version, sizeof(world_version));
     for (const auto& r : resolved) {
         fnv_fold(fp, &r.part_hash,  sizeof r.part_hash);
         fnv_fold(fp, &r.lod_level,  sizeof r.lod_level);
-        fnv_fold(fp, r.transform,   sizeof r.transform);
     }
 
-    if (fp == last_fp_ && !last_batches_.empty()) {
+    if (last_valid_ && fp == last_fp_) {
         // Reuse cached result; update HUD stats from the cached batches.
         stat_cache_hit_       = true;
         stat_culled_clusters_ = 0;   // can't know from cache; keep previous value
@@ -287,6 +290,7 @@ std::vector<RasterBatch> RasterComposer::build_batches(
 
     // Cache for next frame.
     last_fp_      = fp;
+    last_valid_   = true;
     last_batches_ = out;
 
     return out;

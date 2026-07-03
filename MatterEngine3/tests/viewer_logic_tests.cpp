@@ -425,7 +425,7 @@ static void test_compose_expands_children() {
         cam.position = {0,0,-50}; cam.target = {0,0,0}; cam.up = {0,1,0};
         cam.fovy = 60.0f; cam.projection = CAMERA_PERSPECTIVE;
         viewer::RasterComposer rc;
-        auto batches = rc.build_batches({r}, store, cam);
+        auto batches = rc.build_batches({r}, store, cam, /*world_version=*/1);
         CHECK(batches.size() == 2, "two (hash,level) batches");            // parent + child groups
         size_t total = 0; size_t child_batch_n = 0;
         for (const auto& b : batches) {
@@ -1013,6 +1013,12 @@ static void test_partstore_cluster_loading() {
 // Helpers to build a minimal synthetic PartStore entry with clusters, without
 // requiring a disk flat artifact (we inject directly via the public API).
 
+// Build a PartStore with no parts loaded (empty cache root). Used by Task 6
+// fingerprint test where part_hash 0xBEEF is intentionally absent.
+static viewer::PartStore mk_empty_store() {
+    return viewer::PartStore("/tmp/me3_empty_store");
+}
+
 // Build a Camera3D looking along +Z from `eye` at the origin.
 static Camera3D make_cam(float ex, float ey, float ez,
                           float tx=0, float ty=0, float tz=0,
@@ -1135,7 +1141,7 @@ static void test_task13_frustum_cull_behind() {
     // looking toward z=300, so clusters at z=0 are BEHIND the camera.
 
     viewer::RasterComposer rc;
-    auto batches = rc.build_batches({r}, store, cam);
+    auto batches = rc.build_batches({r}, store, cam, /*world_version=*/1);
     CHECK(batches.empty(), "task13: all clusters behind camera -> 0 batches (culled)");
     CHECK(rc.culled_clusters() >= 2, "task13: culled_clusters counter >= 2");
     s.cleanup();
@@ -1162,7 +1168,7 @@ static void test_task13_lod_by_distance() {
     viewer::ResolvedInstance r = make_resolved_inst(s.hash, 0);
 
     viewer::RasterComposer rc;
-    auto batches = rc.build_batches({r}, store, cam);
+    auto batches = rc.build_batches({r}, store, cam, /*world_version=*/1);
 
     // We expect at least the near cluster to be visible.
     CHECK(!batches.empty(), "task13_lod: at least one cluster visible");
@@ -1197,7 +1203,7 @@ static void test_task13_two_instances_batch_counts() {
     viewer::ResolvedInstance r2 = make_resolved_inst(s.hash, 0);
 
     viewer::RasterComposer rc;
-    auto batches = rc.build_batches({r1, r2}, store, cam);
+    auto batches = rc.build_batches({r1, r2}, store, cam, /*world_version=*/1);
 
     // Each cluster at each level gets exactly ONE batch; each batch accumulates
     // transforms from all instances. So we expect at most 2 batches (one per cluster
@@ -1227,19 +1233,19 @@ static void test_task13_fingerprint_reuse() {
 
     viewer::RasterComposer rc;
     // First call: builds batches from scratch.
-    auto b1 = rc.build_batches({r}, store, cam);
+    auto b1 = rc.build_batches({r}, store, cam, /*world_version=*/1);
     bool first_was_cache_hit = rc.cache_hit();
     CHECK(!first_was_cache_hit, "task13_fp: first call is NOT a cache hit");
 
     // Second call: same camera + same instances -> fingerprint hit.
-    auto b2 = rc.build_batches({r}, store, cam);
+    auto b2 = rc.build_batches({r}, store, cam, /*world_version=*/1);
     bool second_was_cache_hit = rc.cache_hit();
     CHECK(second_was_cache_hit, "task13_fp: second call IS a cache hit (reuse)");
     CHECK(b1.size() == b2.size(), "task13_fp: cached result has same batch count");
 
     // Third call: different camera position -> NOT a cache hit.
     Camera3D cam2 = make_cam(0, 0, -50, 0, 0, 0);
-    auto b3 = rc.build_batches({r}, store, cam2);
+    auto b3 = rc.build_batches({r}, store, cam2, /*world_version=*/1);
     bool third_was_cache_hit = rc.cache_hit();
     CHECK(!third_was_cache_hit, "task13_fp: camera move invalidates fingerprint");
 
@@ -1291,7 +1297,7 @@ static void test_task13_compositional_unaffected() {
     viewer::ResolvedInstance r = make_resolved_inst(parent_hash, 0);
 
     viewer::RasterComposer rc;
-    auto batches = rc.build_batches({r}, store, cam);
+    auto batches = rc.build_batches({r}, store, cam, /*world_version=*/1);
 
     // Compositional path: parent (no clusters) + 1 child (no clusters).
     // Should get 2 batches (parent hash, child hash), total 2 instances.
@@ -1313,7 +1319,7 @@ static void test_task13_hud_counters() {
     viewer::ResolvedInstance r = make_resolved_inst(s.hash, 0);
 
     viewer::RasterComposer rc;
-    auto batches = rc.build_batches({r}, store, cam);
+    auto batches = rc.build_batches({r}, store, cam, /*world_version=*/1);
 
     CHECK(rc.batches() == batches.size(), "task13_hud: batches() matches returned vector size");
     // culled_clusters() + visible clusters should equal total clusters in the part.
@@ -1332,6 +1338,46 @@ static void test_task13_hud_counters() {
     }
 
     s.cleanup();
+}
+
+// Task 6 — fingerprint shrunk to (camera, world_version, per-instance
+// (part_hash, lod)): transforms no longer participate.
+static void test_fingerprint_world_version() {
+    // Fingerprint semantics after Stage 1: (camera, world_version, per-instance
+    // (part_hash, lod)) — transform bytes no longer participate.
+    // Reuse the PartStore + camera fixture from the existing task13
+    // fingerprint tests in this file.
+    viewer::RasterComposer rc;              // build_batches is GL-free
+    Camera3D cam{};
+    cam.position = { 0, 5, -10 };
+    cam.target   = { 0, 0, 0 };
+    cam.up       = { 0, 1, 0 };
+    cam.fovy     = 60.0f;
+    cam.projection = CAMERA_PERSPECTIVE;
+
+    std::vector<viewer::ResolvedInstance> resolved(1);
+    resolved[0].part_hash = 0xBEEFu;        // absent from the store: emit skips it,
+    resolved[0].lod_level = 0;              // fingerprint/cache logic still runs
+    for (int i = 0; i < 16; ++i) resolved[0].transform[i] = (i % 5 == 0) ? 1.0f : 0.0f;
+
+    viewer::PartStore store = mk_empty_store();   // same helper the task13 tests use
+
+    (void)rc.build_batches(resolved, store, cam, /*world_version=*/1);
+    assert(!rc.cache_hit());                       // first build: miss
+    (void)rc.build_batches(resolved, store, cam, 1);
+    assert(rc.cache_hit());                        // identical inputs: hit
+
+    (void)rc.build_batches(resolved, store, cam, 2);
+    assert(!rc.cache_hit());                       // version bump: miss
+
+    cam.position.x += 1.0f;                        // camera move: miss
+    (void)rc.build_batches(resolved, store, cam, 2);
+    assert(!rc.cache_hit());
+
+    resolved[0].lod_level = 1;                     // LOD flip: miss
+    (void)rc.build_batches(resolved, store, cam, 2);
+    assert(!rc.cache_hit());
+    printf("  test_fingerprint_world_version OK\n");
 }
 
 // Regression: instance transforms are engine (column-vector) convention with
@@ -1448,6 +1494,8 @@ int main() {
     test_task13_fingerprint_reuse();
     test_task13_compositional_unaffected();
     test_task13_hud_counters();
+    // Task 6: cheap fingerprint — world_version replaces transform bytes
+    test_fingerprint_world_version();
     delete g_shared_store; g_shared_store = nullptr;
     printf("\n%s\n", g_failures == 0 ? "viewer-logic OK" : "viewer-logic FAILED");
     return g_failures == 0 ? 0 : 1;
