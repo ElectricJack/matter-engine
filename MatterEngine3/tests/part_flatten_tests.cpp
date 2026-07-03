@@ -1161,6 +1161,91 @@ static void test_ratio2_ladder_shape() {
     printf(res.levels >= 6 && monotonic ? "PASSED\n" : "FAILED\n");
 }
 
+// ----------------------------------------------------------------- Task 14 test --
+
+// Write a tiny part (~40 tris) as a childless .part in the cache.
+// Uses a fixed hash distinct from any other fixture.
+static const uint64_t kTinyPartHash = 0xCCCC000033330003ull;
+
+static uint64_t write_tiny_part(const std::string& cache_root) {
+    (void)cache_root;
+    // 5 segs x 4 rings => 5*4*2=40 tris; small enough to be "low" variant
+    std::vector<Tri> tris = sphere_tris(5, 4);
+    if (!save_fixture(kTinyPartHash, 8, {tris}, {})) return 0;
+    return kTinyPartHash;
+}
+
+// Test that flatten_part detects a .lods sidecar and assembles the budget ladder:
+// single cluster, two levels (one per variant), no QEM decimation.
+static void test_budget_ladder_assembly() {
+    printf("=== test_budget_ladder_assembly ===\n");
+
+    // Two hand-built childless parts standing in for budget variants:
+    // "full" (~300 tris) and "low" (~40 tris). A hand-written sidecar binds them.
+    uint64_t full_hash = write_small_sphere_part(kCacheRoot);
+    uint64_t low_hash  = write_tiny_part(kCacheRoot);
+    CHECK(full_hash != 0, "budget ladder: full part written");
+    CHECK(low_hash  != 0, "budget ladder: low part written");
+    if (!full_hash || !low_hash) { printf("  SKIPPING\n"); return; }
+
+    // Remove any stale flat artifact so the sidecar path re-runs.
+    std::string flat = std::string(kCacheRoot) + "/" + part_asset::cache_path_flat(full_hash);
+    std::remove(flat.c_str());
+
+    // Write the .lods sidecar for full_hash.
+    {
+        std::string sidecar = std::string(kCacheRoot) + "/" + part_asset::cache_path_lods(full_hash);
+        std::ofstream o(sidecar);
+        char hex[17];
+        o << 0.5 << "\n";
+        snprintf(hex, sizeof hex, "%016llx", (unsigned long long)full_hash);
+        o << 1.0 << " " << hex << "\n";
+        snprintf(hex, sizeof hex, "%016llx", (unsigned long long)low_hash);
+        o << 0.3 << " " << hex << "\n";
+        CHECK(o.good(), "budget ladder: sidecar written");
+    }
+
+    auto res = part_flatten::flatten_part(kCacheRoot, full_hash);
+    CHECK(res.ok, "budget ladder: flatten_part ok");
+    if (!res.ok) { printf("  error: %s\n", res.error.c_str()); return; }
+    CHECK(res.clusters == 1, "budget ladder: single cluster");
+    CHECK(res.levels   == 2, "budget ladder: 2 levels (one per variant)");
+
+    BLASManager blas; TLASManager tlas(4);
+    std::vector<part_asset::FlatCluster> clusters;
+    bool loaded = part_asset::load_flat_v3(flat, full_hash, blas, tlas, clusters);
+    CHECK(loaded, "budget ladder: load_flat_v3 ok");
+    if (!loaded) return;
+    CHECK(clusters.size() == 1, "budget ladder: 1 cluster in artifact");
+    const auto& lods = clusters[0].lods;
+    CHECK(lods.size() == 2, "budget ladder: 2 LOD levels in cluster");
+    if (lods.size() < 2) return;
+
+    // Level tri counts must match variant parts exactly (no decimation).
+    const auto& entries = blas.get_entries();
+    CHECK(!lods[0].blas_indices.empty(), "budget ladder: lod[0] has blas index");
+    CHECK(!lods[1].blas_indices.empty(), "budget ladder: lod[1] has blas index");
+    if (lods[0].blas_indices.empty() || lods[1].blas_indices.empty()) return;
+
+    size_t t0 = entries[lods[0].blas_indices[0]]->triangles.size();
+    size_t t1 = entries[lods[1].blas_indices[0]]->triangles.size();
+    CHECK(t0 > t1, "budget ladder: fine level has more tris than coarse");
+
+    // Thresholds: fine (lod0) > 0, coarse (lod1) == 0.
+    CHECK(lods[0].screen_size_threshold > 0.0f, "budget ladder: lod[0] threshold > 0");
+    CHECK(lods[1].screen_size_threshold == 0.0f, "budget ladder: lod[1] threshold == 0 (never hides)");
+
+    // Native TriEx present at both levels.
+    CHECK(!entries[lods[0].blas_indices[0]]->tri_extra.empty(),
+          "budget ladder: TriEx present at lod[0]");
+    CHECK(!entries[lods[1].blas_indices[0]]->tri_extra.empty(),
+          "budget ladder: TriEx present at lod[1]");
+
+    printf("  t0=%zu t1=%zu thr0=%.4f clusters=%zu levels=%zu\n",
+           t0, t1, lods[0].screen_size_threshold, clusters.size(), lods.size());
+    printf("  test_budget_ladder_assembly OK\n");
+}
+
 static void test_flat_version_bump() {
     uint64_t hash = write_small_sphere_part(kCacheRoot);   // Task 7 fixture
     auto res = part_flatten::flatten_part(kCacheRoot, hash);
@@ -1213,6 +1298,7 @@ int main() {
     test_flatten_watertight_invariant();
     test_small_part_gets_ladder();
     test_ratio2_ladder_shape();
+    test_budget_ladder_assembly();
     test_flat_version_bump();
 
     if (failures == 0) { printf("part_flatten_tests: ALL PASS\n"); return 0; }

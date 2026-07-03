@@ -1,10 +1,11 @@
 #include "../include/part_flatten.h"
 
-#include "../include/part_asset_v2.h"   // load_v2/save_flat_v3, cache_path_*
+#include "../include/part_asset_v2.h"   // load_v2/save_flat_v3, cache_path_*, load_lod_sidecar
 #include "../include/lod_bake.h"        // decimate_to_error, reproject_triex
 #include "../include/part_cluster.h"    // split_clusters
 #include "tlas_manager.hpp"             // MSL TLASManager (load_v2 signature)
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <map>
@@ -183,6 +184,88 @@ const float kIdentity[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
 
 } // namespace
 
+// Stage 3: assemble a flat artifact from budget-variant bakes (sidecar) instead
+// of QEM. Single cluster; level i = variant i's full mesh with native TriEx.
+static FlattenResult flatten_budget_ladder(const std::string& cache_root,
+                                           uint64_t root_hash,
+                                           const FlattenTargets& targets,
+                                           Gatherer& g0, float radius,
+                                           const part_asset::LodVariants& v) {
+    FlattenResult res;
+    res.full_tris = g0.tris().size();
+
+    BLASManager blas;
+    TLASManager tlas(4);
+    part_asset::LodLevels lods;
+
+    // Full res holds until an anchor-sized feature (a grass blade) is ~2 px;
+    // each coarser level halves the switch size (same ratio-2 spirit as the
+    // mesh ladder). Selection metric is the PART's projected size
+    // (radius / dist), so convert: at blade==2px, dist = anchor/(2*pixel_angle)
+    // => part psize = 2 * radius * pixel_angle / anchor.
+    const float anchor = (v.anchor_size > 0.0) ? (float)v.anchor_size : radius;
+    const float thr0 = 2.0f * radius * targets.pixel_angle * targets.pixel_budget / anchor;
+
+    // Union AABB over ALL variants (widened blades overhang the level-0 box).
+    float mn[3] = {1e30f,1e30f,1e30f}, mx[3] = {-1e30f,-1e30f,-1e30f};
+    auto acc = [&](const std::vector<Tri>& ts) {
+        for (const auto& t : ts) {
+            const float3* vs[3] = { &t.vertex0, &t.vertex1, &t.vertex2 };
+            for (int k = 0; k < 3; ++k) {
+                mn[0]=std::fmin(mn[0],vs[k]->x); mx[0]=std::fmax(mx[0],vs[k]->x);
+                mn[1]=std::fmin(mn[1],vs[k]->y); mx[1]=std::fmax(mx[1],vs[k]->y);
+                mn[2]=std::fmin(mn[2],vs[k]->z); mx[2]=std::fmax(mx[2],vs[k]->z);
+            }
+        }
+    };
+
+    const size_t n = v.hashes.size();
+    for (size_t i = 0; i < n; ++i) {
+        std::vector<Tri> tris; std::vector<TriEx> ex;
+        if (v.hashes[i] == root_hash) {
+            tris = g0.tris(); ex = g0.triex();
+        } else {
+            Gatherer gi(cache_root, targets);
+            if (!gi.gather(v.hashes[i], kIdentity, 0, res.error)) return res;
+            tris = gi.tris(); ex = gi.triex();
+        }
+        if (tris.empty()) { res.error = "flatten: empty budget variant"; return res; }
+        acc(tris);
+
+        const TriEx* exp = ex.empty() ? nullptr : ex.data();
+        BLASHandle h = blas.register_triangles(tris.data(), (int)tris.size(), exp);
+        uint32_t idx = UINT32_MAX;
+        const auto& entries = blas.get_entries();
+        for (size_t k = 0; k < entries.size(); ++k)
+            if (entries[k]->handle == h) { idx = (uint32_t)k; break; }
+        if (idx == UINT32_MAX) { res.error = "flatten: BLAS registration failed"; return res; }
+
+        part_asset::LodLevel lvl;
+        lvl.screen_size_threshold =
+            (i + 1 < n) ? thr0 / (float)(1u << i) : 0.0f;
+        lvl.blas_indices.push_back(idx);
+        lods.push_back(std::move(lvl));
+        res.coarsest_tris = tris.size();
+    }
+
+    part_asset::FlatCluster fc;
+    for (int a = 0; a < 3; ++a) { fc.aabb_min[a] = mn[a]; fc.aabb_max[a] = mx[a]; }
+    fc.lods = std::move(lods);
+    std::vector<part_asset::FlatCluster> clusters;
+    clusters.push_back(std::move(fc));
+
+    res.levels   = n;
+    res.clusters = 1;
+
+    const std::string out_path = cache_root + "/" + part_asset::cache_path_flat(root_hash);
+    if (!part_asset::save_flat_v3(out_path, blas, tlas, clusters, root_hash)) {
+        res.error = "flatten: save_flat_v3 failed for " + out_path;
+        return res;
+    }
+    res.ok = true;
+    return res;
+}
+
 FlattenResult flatten_part(const std::string& cache_root, uint64_t root_hash,
                            const FlattenTargets& targets) {
     FlattenResult res;
@@ -208,6 +291,19 @@ FlattenResult flatten_part(const std::string& cache_root, uint64_t root_hash,
     for (const auto& t : full) { acc(t.vertex0); acc(t.vertex1); acc(t.vertex2); }
     float dx=mx[0]-mn[0], dy=mx[1]-mn[1], dz=mx[2]-mn[2];
     const float radius = 0.5f * std::sqrt(dx*dx+dy*dy+dz*dz);
+
+    // Opt-in procedural budget ladder (Stage 3): a variant sidecar next to the
+    // part means the baker re-ran the generator at reduced budgets — assemble
+    // the ladder from those meshes instead of QEM (aggregate thin geometry
+    // like grass decimates to sparseness, not coarseness).
+    {
+        part_asset::LodVariants variants;
+        const std::string sidecar =
+            cache_root + "/" + part_asset::cache_path_lods(root_hash);
+        if (part_asset::load_lod_sidecar(sidecar, variants))
+            return flatten_budget_ladder(cache_root, root_hash, targets,
+                                         g, radius, variants);
+    }
 
     // Split the merged mesh into spatial clusters.
     auto clusters = part_cluster::split_clusters(full, fullex, targets.cluster_target_tris);
