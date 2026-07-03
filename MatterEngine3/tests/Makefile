@@ -444,7 +444,7 @@ run-viewer-logic: $(VIEWER_LOGIC_TARGET)
 # and part_asset_v2.cpp so the tracer's load_v2 round-trip compiles.
 LIGHTING_TARGET = lighting_tests
 LIGHTING_SOURCES = lighting_tests.cpp ../src/world_lights.cpp ../src/probe_volume.cpp \
-                   ../src/world_tracer.cpp \
+                   ../src/world_tracer.cpp ../src/probe_bake.cpp \
                    ../src/part_graph.cpp ../src/part_asset_v2.cpp \
                    ../../MatterSurfaceLib/src/mesh_simplifier.cpp \
                    ../../MatterSurfaceLib/src/blas_manager.cpp \
@@ -458,7 +458,7 @@ LIGHTING_C_OBJ = material_registry.o
 
 $(LIGHTING_TARGET): $(LIGHTING_SOURCES) $(LIGHTING_C)
 	gcc -c $(LIGHTING_C) -O2 -DPLATFORM_DESKTOP $(INCLUDE_PATHS)
-	$(CC) $(LIGHTING_SOURCES) $(LIGHTING_C_OBJ) -o $(LIGHTING_TARGET) $(CFLAGS) $(INCLUDE_PATHS) $(LDFLAGS) $(LDLIBS)
+	$(CC) $(LIGHTING_SOURCES) $(LIGHTING_C_OBJ) -o $(LIGHTING_TARGET) $(CFLAGS) -pthread $(INCLUDE_PATHS) $(LDFLAGS) $(LDLIBS)
 	rm -f $(LIGHTING_C_OBJ)
 
 run-lighting: $(LIGHTING_TARGET)

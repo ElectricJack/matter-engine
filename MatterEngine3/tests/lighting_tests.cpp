@@ -1,16 +1,19 @@
 // Task 1+2: World light list + ProbeVolume tests.
 // Task 3: WorldTracer GL-free CPU tracer tests.
+// Task 4: CPU SH-L1 probe bake tests.
 // Tests parse_lights, lights_fingerprint, read_manifest light-line skip,
-// probe_volume save/load round-trip + rejection cases, and WorldTracer
-// ray/instance intersection with transform correctness.
+// probe_volume save/load round-trip + rejection cases, WorldTracer
+// ray/instance intersection with transform correctness, and probe_bake.
 #include "world_lights.h"
 #include "part_graph.h"
 #include "probe_volume.h"
 #include "world_tracer.h"
+#include "probe_bake.h"
 
 #include "blas_manager.hpp"
 #include "tlas_manager.hpp"
 #include "part_asset_v2.h"
+#include "material_registry.h"
 
 #include <cmath>
 #include <cstdio>
@@ -673,6 +676,426 @@ static void test_tracer_world_bounds() {
     CHECK(mx[1] >=  0.5f - 0.01f, "tracer bounds: mx[1] >= 0.5");
 }
 
+// ================================================================
+// Task 4: probe_bake tests
+// ================================================================
+
+
+// Helper: BakeParams with bounds override so grid is tiny (4x4x4)
+static probe_bake::BakeParams tiny_params(float bx, float by, float bz,
+                                          float ex, float ey, float ez) {
+    probe_bake::BakeParams p;
+    p.cell = 1.0f;
+    p.pad_cells = 0;
+    p.rays_per_cell = 64;
+    p.sun_rays = 16;
+    p.threads = 1;
+    p.has_bounds = true;
+    p.bounds_min[0] = bx; p.bounds_min[1] = by; p.bounds_min[2] = bz;
+    p.bounds_max[0] = ex; p.bounds_max[1] = ey; p.bounds_max[2] = ez;
+    return p;
+}
+
+// ---- Test 20: open world — ambient == sky_color, sun_vis == 1, |dominant| < 0.05 ----
+static void test_bake_open_world() {
+    printf("\n--- Task 4: probe_bake ---\n");
+
+    world_tracer::WorldTracer wt;
+    std::string err;
+    wt.build(kTracerCache, {}, err);
+
+    world_lights::WorldLights lights;
+    lights.sky_color[0] = 0.38f;
+    lights.sky_color[1] = 0.43f;
+    lights.sky_color[2] = 0.52f;
+    // Sun pointing mostly down
+    lights.sun_dir[0] = -0.45f; lights.sun_dir[1] = -0.80f; lights.sun_dir[2] = -0.35f;
+
+    probe_bake::BakeParams p = tiny_params(-2,-2,-2, 2,2,2);
+
+    probe_volume::ProbeVolume vol = probe_bake::bake_probes(wt, lights, p);
+
+    CHECK(vol.valid(), "bake open world: volume valid");
+    if (!vol.valid()) return;
+
+    bool all_sky_ok = true;
+    bool all_vis_ok = true;
+    bool all_dom_ok = true;
+
+    size_t ncells = vol.cells();
+    for (size_t i = 0; i < ncells; ++i) {
+        const float* a = &vol.ambient[i*4];
+        const float* d = &vol.dominant[i*4];
+        if (std::fabs(a[0] - lights.sky_color[0]) > 1e-4f) all_sky_ok = false;
+        if (std::fabs(a[1] - lights.sky_color[1]) > 1e-4f) all_sky_ok = false;
+        if (std::fabs(a[2] - lights.sky_color[2]) > 1e-4f) all_sky_ok = false;
+        if (std::fabs(a[3] - 1.0f) > 1e-5f) all_vis_ok = false;
+        if (d[3] >= 0.05f) all_dom_ok = false;
+    }
+    CHECK(all_sky_ok, "bake open world: ambient == sky_color (all cells, ±1e-4)");
+    CHECK(all_vis_ok, "bake open world: sun_vis == 1.0 (all cells)");
+    CHECK(all_dom_ok, "bake open world: |dominant intensity| < 0.05 (all cells)");
+}
+
+// ---- Test 21: occluder plane above — cells below have sun_vis < 0.1 ----
+// We use a large flat box (multiple cube instances) at y=+3 spanning the grid.
+// Sun points down. Cells at y=0 should be in shadow.
+static void test_bake_occluder_plane() {
+    // Build a WorldTracer with several cubes forming a "ceiling" at y=3
+    // spanning the test grid. We use 5 cubes at (x=-2,-1,0,1,2), y=3, z=0.
+    world_tracer::WorldTracer wt;
+    std::string err;
+
+    std::vector<world_tracer::TraceInstance> insts;
+    for (int xi = -3; xi <= 3; ++xi) {
+        for (int zi = -3; zi <= 3; ++zi) {
+            world_tracer::TraceInstance inst;
+            inst.part_hash = kCubeHash;
+            // Scale the cube to be 1x1x1 but translated
+            float m[16];
+            std::memset(m, 0, 64);
+            m[0] = m[5] = m[10] = m[15] = 1.f;
+            m[3] = (float)xi; m[7] = 3.f; m[11] = (float)zi;
+            std::memcpy(inst.transform, m, 64);
+            insts.push_back(inst);
+        }
+    }
+    bool built = wt.build(kTracerCache, insts, err);
+    if (!built) {
+        printf("FAIL: bake occluder: build failed: %s\n", err.c_str());
+        ++failures;
+        return;
+    }
+
+    world_lights::WorldLights lights;
+    // Sun pointing mostly DOWN so rays from below hit the ceiling
+    lights.sun_dir[0] = 0.f; lights.sun_dir[1] = -1.f; lights.sun_dir[2] = 0.f;
+
+    // Grid: x,z in [-1,1], y in [0,2] (below the y=3 ceiling)
+    probe_bake::BakeParams p = tiny_params(-1,0,-1, 1,2,1);
+    p.sun_cone_deg = 2.0f;
+
+    probe_volume::ProbeVolume vol = probe_bake::bake_probes(wt, lights, p);
+
+    CHECK(vol.valid(), "bake occluder: volume valid");
+    if (!vol.valid()) return;
+
+    // All cells in this grid are below the ceiling at y=3, so sun_vis should be low
+    bool shadowed = true;
+    size_t ncells = vol.cells();
+    for (size_t i = 0; i < ncells; ++i) {
+        float vis = vol.ambient[i*4 + 3];
+        if (vis >= 0.1f) shadowed = false;
+    }
+    CHECK(shadowed, "bake occluder: cells below plane have sun_vis < 0.1");
+}
+
+// ---- Test 22: closed box — interior ambient luminance < 0.05 * sky luminance ----
+static void test_bake_closed_box() {
+    // Build 6 cube walls forming an enclosure around origin.
+    // Each wall: a 3x3 grid of cubes (so we actually get good coverage).
+    world_tracer::WorldTracer wt;
+    std::string err;
+
+    std::vector<world_tracer::TraceInstance> insts;
+
+    // Helper to add a wall: offset = direction, position = distance 2 from origin
+    auto add_wall = [&](float ox, float oy, float oz, int axis) {
+        (void)axis;
+        for (int a = -1; a <= 1; ++a) {
+            for (int b = -1; b <= 1; ++b) {
+                world_tracer::TraceInstance inst;
+                inst.part_hash = kCubeHash;
+                float m[16];
+                std::memset(m, 0, 64);
+                m[0] = m[5] = m[10] = m[15] = 1.f;
+                m[3]  = ox + (axis==0 ? 0 : (axis==1 ? a : a));
+                m[7]  = oy + (axis==0 ? a : (axis==1 ? 0 : b));
+                m[11] = oz + (axis==0 ? b : (axis==1 ? b : 0));
+                std::memcpy(inst.transform, m, 64);
+                insts.push_back(inst);
+            }
+        }
+    };
+
+    // 6 walls at ±2 in each axis
+    add_wall(-2,0,0, 0);  // -X wall
+    add_wall( 2,0,0, 0);  // +X wall
+    add_wall(0,-2,0, 1);  // -Y wall
+    add_wall(0, 2,0, 1);  // +Y wall
+    add_wall(0,0,-2, 2);  // -Z wall
+    add_wall(0,0, 2, 2);  // +Z wall
+
+    bool built = wt.build(kTracerCache, insts, err);
+    if (!built) {
+        printf("FAIL: bake closed box: build failed: %s\n", err.c_str());
+        ++failures;
+        return;
+    }
+
+    world_lights::WorldLights lights;
+    // Zero sun so only sky matters
+    lights.sky_color[0] = 0.38f;
+    lights.sky_color[1] = 0.43f;
+    lights.sky_color[2] = 0.52f;
+
+    // Single interior cell at origin
+    probe_bake::BakeParams p = tiny_params(-0.4f,-0.4f,-0.4f, 0.4f,0.4f,0.4f);
+    p.pad_cells = 0;
+
+    probe_volume::ProbeVolume vol = probe_bake::bake_probes(wt, lights, p);
+
+    CHECK(vol.valid(), "bake closed box: volume valid");
+    if (!vol.valid()) return;
+
+    float sky_lum = 0.2126f*lights.sky_color[0] + 0.7152f*lights.sky_color[1]
+                    + 0.0722f*lights.sky_color[2];
+
+    // Interior cells should have near-zero ambient (non-emissive walls → L=0 when hit)
+    bool all_dark = true;
+    for (size_t i = 0; i < vol.cells(); ++i) {
+        const float* a = &vol.ambient[i*4];
+        float cell_lum = 0.2126f*a[0] + 0.7152f*a[1] + 0.0722f*a[2];
+        if (cell_lum >= 0.05f * sky_lum) all_dark = false;
+    }
+    CHECK(all_dark, "bake closed box: interior ambient luminance < 0.05 * sky luminance");
+}
+
+// ---- Test 23: emissive material ----
+static void test_bake_emissive() {
+    // Scan registry for an emissive material
+    int emissive_id = -1;
+    int mat_count = MaterialRegistryCount();
+    for (int id = 0; id < mat_count; ++id) {
+        const MaterialDef* m = MaterialRegistryGet(id);
+        if (m && m->emission > 0.5f) { emissive_id = id; break; }
+    }
+
+    if (emissive_id < 0) {
+        printf("WARN: no emissive material in registry — skipping emissive bake test\n");
+        return;
+    }
+    printf("  emissive material id=%d found\n", emissive_id);
+
+    // Write a fixture with an emissive cube using emissive_id
+    // We write a NEW part with emissive material to a separate hash
+    static const uint64_t kEmissiveHash = 0xEE00000000000000ULL;
+
+    {
+        std::vector<Tri>   tris = unit_cube_tris();
+        std::vector<TriEx> triex(tris.size(), wt_make_triex(emissive_id));
+        BLASManager blas;
+        TLASManager tlas(16);
+        BLASHandle h = blas.register_triangles(tris.data(), (int)tris.size(), triex.data());
+        (void)h;
+
+        const auto& entries = blas.get_entries();
+        uint32_t idx = 0;
+        for (size_t k = 0; k < entries.size(); ++k)
+            if (entries[k]->handle == h) { idx = (uint32_t)k; break; }
+
+        part_asset::LodLevel lvl;
+        lvl.screen_size_threshold = 1e9f;
+        lvl.blas_indices.push_back(idx);
+        part_asset::LodLevels lods;
+        lods.push_back(std::move(lvl));
+
+        std::string path = std::string(kTracerCache) + "/" +
+                           part_asset::cache_path_resolved(kEmissiveHash);
+        bool ok = part_asset::save_v2(path, blas, tlas, nullptr, 0, lods, kEmissiveHash);
+        if (!ok) {
+            printf("FAIL: emissive: could not write emissive fixture\n");
+            ++failures;
+            return;
+        }
+    }
+
+    // Build tracer with emissive cube near origin, occluder cube far away
+    world_tracer::WorldTracer wt;
+    std::string err;
+
+    std::vector<world_tracer::TraceInstance> insts;
+    {
+        // Emissive cube near origin at (0, 0, 2)
+        world_tracer::TraceInstance inst;
+        inst.part_hash = kEmissiveHash;
+        float m[16]; std::memset(m, 0, 64);
+        m[0]=m[5]=m[10]=m[15]=1.f; m[3]=0.f; m[7]=0.f; m[11]=2.f;
+        std::memcpy(inst.transform, m, 64);
+        insts.push_back(inst);
+
+        // Occluder cube between near-cell and far-cell at (0,0,10)
+        world_tracer::TraceInstance inst2;
+        inst2.part_hash = kCubeHash;
+        float m2[16]; std::memset(m2, 0, 64);
+        m2[0]=m2[5]=m2[10]=m2[15]=1.f; m2[3]=0.f; m2[7]=0.f; m2[11]=6.f;
+        std::memcpy(inst2.transform, m2, 64);
+        insts.push_back(inst2);
+    }
+
+    bool built = wt.build(kTracerCache, insts, err);
+    if (!built) {
+        printf("FAIL: emissive: build failed: %s\n", err.c_str());
+        ++failures;
+        return;
+    }
+
+    // Use black sky so only mesh emission contributes
+    world_lights::WorldLights lights;
+    lights.sky_color[0] = lights.sky_color[1] = lights.sky_color[2] = 0.f;
+    lights.sun_color[0] = lights.sun_color[1] = lights.sun_color[2] = 0.f;
+
+    // Near cell: origin (should see emissive cube)
+    {
+        probe_bake::BakeParams p = tiny_params(-0.4f,-0.4f,-0.4f, 0.4f,0.4f,0.4f);
+        p.pad_cells = 0;
+        probe_volume::ProbeVolume vol = probe_bake::bake_probes(wt, lights, p);
+
+        CHECK(vol.valid(), "bake emissive: near vol valid");
+        if (vol.valid()) {
+            float cell_lum = 0.f;
+            for (size_t i = 0; i < vol.cells(); ++i) {
+                const float* a = &vol.ambient[i*4];
+                cell_lum += 0.2126f*a[0] + 0.7152f*a[1] + 0.0722f*a[2];
+            }
+            CHECK(cell_lum > 0.f, "bake emissive: near cell has ambient luminance > 0");
+        }
+    }
+
+    // Far cell: at (0,0,15), behind the occluder — should be darker
+    {
+        probe_bake::BakeParams p = tiny_params(-0.4f,-0.4f,14.6f, 0.4f,0.4f,15.4f);
+        p.pad_cells = 0;
+        probe_volume::ProbeVolume vol = probe_bake::bake_probes(wt, lights, p);
+
+        CHECK(vol.valid(), "bake emissive: far vol valid");
+        if (vol.valid()) {
+            float near_lum = 0.f;
+            {
+                probe_bake::BakeParams p2 = tiny_params(-0.4f,-0.4f,-0.4f, 0.4f,0.4f,0.4f);
+                p2.pad_cells = 0;
+                probe_volume::ProbeVolume vol2 = probe_bake::bake_probes(wt, lights, p2);
+                if (vol2.valid()) {
+                    for (size_t i = 0; i < vol2.cells(); ++i) {
+                        const float* a = &vol2.ambient[i*4];
+                        near_lum += 0.2126f*a[0] + 0.7152f*a[1] + 0.0722f*a[2];
+                    }
+                }
+            }
+            float far_lum = 0.f;
+            for (size_t i = 0; i < vol.cells(); ++i) {
+                const float* a = &vol.ambient[i*4];
+                far_lum += 0.2126f*a[0] + 0.7152f*a[1] + 0.0722f*a[2];
+            }
+            CHECK(far_lum < near_lum, "bake emissive: far cell darker than near cell");
+        }
+    }
+}
+
+// ---- Test 24: spotlight ----
+static void test_bake_spotlight() {
+    // No geometry, black sky. One spot at (0,5,0) pointing -y, inner 15°, outer 30°, range 20.
+    world_tracer::WorldTracer wt;
+    std::string err;
+    wt.build(kTracerCache, {}, err);
+
+    world_lights::WorldLights lights;
+    lights.sky_color[0] = lights.sky_color[1] = lights.sky_color[2] = 0.f;
+    lights.sun_color[0] = lights.sun_color[1] = lights.sun_color[2] = 0.f;
+
+    world_lights::SpotLight spot;
+    spot.pos[0] = 0.f; spot.pos[1] = 5.f; spot.pos[2] = 0.f;
+    spot.dir[0] = 0.f; spot.dir[1] = -1.f; spot.dir[2] = 0.f;
+    spot.color[0] = spot.color[1] = spot.color[2] = 10.f;
+    spot.range = 20.f;
+    spot.cos_inner = std::cos(15.f * (float)M_PI / 180.f);
+    spot.cos_outer = std::cos(30.f * (float)M_PI / 180.f);
+    lights.spots.push_back(spot);
+
+    // Cell directly below spot at (0,0,0)
+    {
+        probe_bake::BakeParams p = tiny_params(-0.4f,-0.4f,-0.4f, 0.4f,0.4f,0.4f);
+        p.pad_cells = 0;
+        probe_volume::ProbeVolume vol = probe_bake::bake_probes(wt, lights, p);
+
+        CHECK(vol.valid(), "bake spotlight: lit cell vol valid");
+        if (vol.valid()) {
+            const float* a = &vol.ambient[0];
+            float cell_lum = 0.2126f*a[0] + 0.7152f*a[1] + 0.0722f*a[2];
+            CHECK(cell_lum > 0.f, "bake spotlight: cell directly below has ambient luminance > 0");
+
+            // dominant dir should point toward the spot (up = +y)
+            const float* d = &vol.dominant[0];
+            char msg[128];
+            std::snprintf(msg, sizeof msg, "bake spotlight: dominant dir y > 0.7 (got %.4f)", d[1]);
+            CHECK(d[1] > 0.7f, msg);
+        }
+    }
+
+    // Cell far off-axis at (5,0,0) — should be ~0
+    {
+        probe_bake::BakeParams p = tiny_params(4.6f,-0.4f,-0.4f, 5.4f,0.4f,0.4f);
+        p.pad_cells = 0;
+        probe_volume::ProbeVolume vol = probe_bake::bake_probes(wt, lights, p);
+
+        CHECK(vol.valid(), "bake spotlight: off-axis vol valid");
+        if (vol.valid()) {
+            const float* a = &vol.ambient[0];
+            float cell_lum = 0.2126f*a[0] + 0.7152f*a[1] + 0.0722f*a[2];
+            // Should be very close to zero (outside cone)
+            char msg[128];
+            std::snprintf(msg, sizeof msg, "bake spotlight: off-axis cell ~0 (got %.6f)", cell_lum);
+            CHECK(cell_lum < 0.01f, msg);
+        }
+    }
+}
+
+// ---- Test 25: determinism — two bakes of the occluder scene are memcmp equal ----
+static void test_bake_determinism() {
+    // Rebuild the same occluder scene as test_bake_occluder_plane
+    world_tracer::WorldTracer wt;
+    std::string err;
+
+    std::vector<world_tracer::TraceInstance> insts;
+    for (int xi = -3; xi <= 3; ++xi) {
+        for (int zi = -3; zi <= 3; ++zi) {
+            world_tracer::TraceInstance inst;
+            inst.part_hash = kCubeHash;
+            float m[16];
+            std::memset(m, 0, 64);
+            m[0] = m[5] = m[10] = m[15] = 1.f;
+            m[3] = (float)xi; m[7] = 3.f; m[11] = (float)zi;
+            std::memcpy(inst.transform, m, 64);
+            insts.push_back(inst);
+        }
+    }
+    wt.build(kTracerCache, insts, err);
+
+    world_lights::WorldLights lights;
+    lights.sun_dir[0] = 0.f; lights.sun_dir[1] = -1.f; lights.sun_dir[2] = 0.f;
+
+    probe_bake::BakeParams p = tiny_params(-1,0,-1, 1,2,1);
+    p.sun_cone_deg = 2.0f;
+    p.threads = 4;
+
+    probe_volume::ProbeVolume vol1 = probe_bake::bake_probes(wt, lights, p);
+    probe_volume::ProbeVolume vol2 = probe_bake::bake_probes(wt, lights, p);
+
+    CHECK(vol1.valid() && vol2.valid(), "bake determinism: both volumes valid");
+    if (!vol1.valid() || !vol2.valid()) return;
+    CHECK(vol1.ambient.size() == vol2.ambient.size(), "bake determinism: ambient size equal");
+    CHECK(vol1.dominant.size() == vol2.dominant.size(), "bake determinism: dominant size equal");
+
+    bool amb_eq = (vol1.ambient.size() == vol2.ambient.size()) &&
+                  (memcmp(vol1.ambient.data(), vol2.ambient.data(),
+                          vol1.ambient.size() * sizeof(float)) == 0);
+    bool dom_eq = (vol1.dominant.size() == vol2.dominant.size()) &&
+                  (memcmp(vol1.dominant.data(), vol2.dominant.data(),
+                          vol1.dominant.size() * sizeof(float)) == 0);
+    CHECK(amb_eq, "bake determinism: ambient memcmp equal (threads=4)");
+    CHECK(dom_eq, "bake determinism: dominant memcmp equal (threads=4)");
+}
+
 int main() {
     // Create fresh sandbox.
     system("rm -rf sandbox && mkdir -p sandbox");
@@ -714,6 +1137,14 @@ int main() {
     } else {
         test_tracer_compositional_child();
     }
+
+    // Task 4: probe_bake tests (require cube fixture to be present).
+    test_bake_open_world();
+    test_bake_occluder_plane();
+    test_bake_closed_box();
+    test_bake_emissive();
+    test_bake_spotlight();
+    test_bake_determinism();
 
     if (failures == 0) {
         printf("\nALL PASS (%d checks failed)\n", 0);
