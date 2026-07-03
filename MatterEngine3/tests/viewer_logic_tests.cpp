@@ -13,6 +13,7 @@
 #include "world_lights.h"
 #include "probe_volume.h"
 
+#include <cmath>
 #include <cstdio>
 #include <cstdint>
 #include <cstdlib>
@@ -660,6 +661,78 @@ static void test_raster_composer_lights() {
           "set_lights stores sky_color");
 }
 
+// Task 6: probe quantization round-trip.
+// probe_texture.cpp requires a GL context (GL calls in upload_probe_textures), so
+// the encode helper is not separable headlessly. We test the documented encoding math
+// directly per the brief: (uint8_t)(clamp(x,0,1)*255 + 0.5f), inverse = byte/255.
+// Ambient channels: encoded = clamp(v/kProbeAmbientScale,0,1)*255.
+// Dominant dir channel: encoded = clamp(v*0.5+0.5,0,1)*255.
+// Dominant intensity: encoded = clamp(v/kProbeAmbientScale,0,1)*255.
+// The round-trip error must be <= 1/255 for all tested values.
+static void test_probe_quantization_roundtrip() {
+    // Encode/decode lambdas matching probe_texture.cpp's staging loop.
+    auto encode_unit = [](float v) -> uint8_t {
+        float c = v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v);
+        return (uint8_t)(c * 255.0f + 0.5f);
+    };
+    auto decode_unit = [](uint8_t b) -> float {
+        return b / 255.0f;
+    };
+
+    // --- Ambient RGB: v -> clamp(v/scale) -> encode -> decode -> * scale ---
+    const float scale = viewer::kProbeAmbientScale;
+    float test_ambients[] = { 0.0f, 0.38f, 1.0f, 2.05f, 3.9f, 4.0f };
+    for (float v : test_ambients) {
+        float normalized = v / scale;
+        uint8_t enc = encode_unit(normalized);
+        float decoded = decode_unit(enc) * scale;
+        float err = std::fabs(decoded - (v > scale ? scale : v));   // clamp input before comparing
+        char msg[128];
+        std::snprintf(msg, sizeof msg,
+            "probe quant roundtrip: ambient %.4f -> %.4f err=%.6f (<= 1/255)", v, decoded, err);
+        CHECK(err <= 1.0f / 255.0f * scale + 1e-7f, msg);
+    }
+
+    // --- sun_vis: stored in A.a, already in [0,1] ---
+    float test_vis[] = { 0.0f, 0.25f, 0.5f, 0.75f, 1.0f };
+    for (float v : test_vis) {
+        uint8_t enc = encode_unit(v);
+        float decoded = decode_unit(enc);
+        float err = std::fabs(decoded - v);
+        char msg[128];
+        std::snprintf(msg, sizeof msg,
+            "probe quant roundtrip: sun_vis %.4f -> %.4f err=%.6f (<= 1/255)", v, decoded, err);
+        CHECK(err <= 1.0f / 255.0f + 1e-7f, msg);
+    }
+
+    // --- Dominant dir: dir*0.5+0.5 (each component in [-1,1] maps to [0,1]) ---
+    float test_dirs[] = { -1.0f, -0.5f, 0.0f, 0.5f, 1.0f };
+    for (float d : test_dirs) {
+        float mapped = d * 0.5f + 0.5f;
+        uint8_t enc = encode_unit(mapped);
+        float recovered = decode_unit(enc) * 2.0f - 1.0f;
+        float err = std::fabs(recovered - d);
+        char msg[128];
+        std::snprintf(msg, sizeof msg,
+            "probe quant roundtrip: dir component %.4f -> %.4f err=%.6f (<= 2/255)", d, recovered, err);
+        CHECK(err <= 2.0f / 255.0f + 1e-7f, msg);
+    }
+
+    // --- Dominant intensity: same as ambient channel (clamp(I/scale)) ---
+    float test_intensities[] = { 0.0f, 1.0f, 2.0f, 3.9f, 4.0f };
+    for (float v : test_intensities) {
+        float normalized = v / scale;
+        uint8_t enc = encode_unit(normalized);
+        float decoded = decode_unit(enc) * scale;
+        float clamped = v > scale ? scale : v;
+        float err = std::fabs(decoded - clamped);
+        char msg[128];
+        std::snprintf(msg, sizeof msg,
+            "probe quant roundtrip: intensity %.4f -> %.4f err=%.6f (<= scale/255)", v, decoded, err);
+        CHECK(err <= scale / 255.0f + 1e-7f, msg);
+    }
+}
+
 int main() {
     test_world_state_delta();
     test_resolvers();
@@ -673,6 +746,7 @@ int main() {
     test_sector_lod_floor_cull();
     test_provider_bakes_probes();
     test_raster_composer_lights();
+    test_probe_quantization_roundtrip();
     delete g_shared_store; g_shared_store = nullptr;
     printf("\n%s\n", g_failures == 0 ? "viewer-logic OK" : "viewer-logic FAILED");
     return g_failures == 0 ? 0 : 1;
