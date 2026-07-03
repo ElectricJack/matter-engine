@@ -27,7 +27,7 @@ int select_level(float size, const std::vector<float>& thr) {
 std::map<sector_grid::SectorCoord, std::map<uint64_t,int>>
 select_sector_lods(const sector_grid::Sectors& sectors,
                    const PartLodTable& parts, const float3& cam,
-                   float min_projected_size) {
+                   float min_projected_size, float pixel_budget) {
     std::map<sector_grid::SectorCoord, std::map<uint64_t,int>> out;
     for (const auto& kv : sectors) {
         const auto& coord = kv.first;
@@ -43,7 +43,7 @@ select_sector_lods(const sector_grid::Sectors& sectors,
         for (const auto& f : insts) {
             auto pit = parts.find(f.resolved_hash);
             if (pit == parts.end()) continue;
-            float size = pit->second.bound_radius / closest;
+            float size = pit->second.bound_radius / closest * pixel_budget;
             out[coord][f.resolved_hash] =
                 (size < min_projected_size) ? -1
                                             : select_level(size, pit->second.thresholds);

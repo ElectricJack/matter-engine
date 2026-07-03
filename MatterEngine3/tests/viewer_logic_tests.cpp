@@ -1468,6 +1468,53 @@ static void test_resolver_binning_cache() {
     printf("  test_resolver_binning_cache OK\n");
 }
 
+static void test_pixel_budget_dial() {
+    // Budget 0.5 selects coarser-or-equal levels than 1.0 for every part (spec test).
+    sector_grid::Sectors sectors;
+    // One sector at origin with one instance of each part; camera 10 m away.
+    world_flatten::FlatInstance fi{};
+    fi.resolved_hash = 0xA1u;
+    for (int i = 0; i < 16; ++i) fi.world.cell[i] = (i % 5 == 0) ? 1.0f : 0.0f;
+    sectors[sector_grid::SectorCoord{0,0,0}].push_back(fi);
+    fi.resolved_hash = 0xA2u;
+    sectors[sector_grid::SectorCoord{0,0,0}].push_back(fi);
+
+    lod_select::PartLodTable parts;
+    parts[0xA1u] = { 2.0f,  { 0.15f, 0.05f, 0.0f } };   // 3-level ladder
+    parts[0xA2u] = { 0.5f,  { 0.04f, 0.0f } };          // small part
+
+    float3 cam = make_float3(10, 0, 0);
+    auto full = lod_select::select_sector_lods(sectors, parts, cam, 0.0f, 1.0f);
+    auto half = lod_select::select_sector_lods(sectors, parts, cam, 0.0f, 0.5f);
+    for (const auto& sk : full)
+        for (const auto& pk : sk.second) {
+            int lf = pk.second;
+            int lh = half.at(sk.first).at(pk.first);
+            assert(lh >= lf);                     // coarser-or-equal at lower budget
+        }
+
+    // The dial also scales the floor cull: visible at budget 1, culled at 0.1.
+    auto floored = lod_select::select_sector_lods(sectors, parts, cam, 0.02f, 0.1f);
+    assert(floored.at(sector_grid::SectorCoord{0,0,0}).at(0xA2u) == -1);
+    auto unfloored = lod_select::select_sector_lods(sectors, parts, cam, 0.02f, 1.0f);
+    assert(unfloored.at(sector_grid::SectorCoord{0,0,0}).at(0xA2u) >= 0);
+    printf("  test_pixel_budget_dial OK\n");
+}
+
+static void test_cluster_budget_dial() {
+    viewer::LoadedCluster cl{};
+    cl.aabb_min[0] = -1; cl.aabb_min[1] = -1; cl.aabb_min[2] = -1;
+    cl.aabb_max[0] =  1; cl.aabb_max[1] =  1; cl.aabb_max[2] =  1;
+    cl.radius = 1.7f;
+    cl.thresholds = { 0.3f, 0.1f, 0.0f };
+    float inst[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
+    float eye[3] = { 10, 0, 0 };
+    int lf = viewer::cluster_lod_select(cl, inst, eye, 1.0f);
+    int lh = viewer::cluster_lod_select(cl, inst, eye, 0.5f);
+    assert(lh >= lf);
+    printf("  test_cluster_budget_dial OK\n");
+}
+
 int main() {
     test_cull_transform_convention();
     test_world_state_version();
@@ -1496,6 +1543,9 @@ int main() {
     test_task13_hud_counters();
     // Task 6: cheap fingerprint — world_version replaces transform bytes
     test_fingerprint_world_version();
+    // Task 9: runtime pixel-budget dial
+    test_pixel_budget_dial();
+    test_cluster_budget_dial();
     delete g_shared_store; g_shared_store = nullptr;
     printf("\n%s\n", g_failures == 0 ? "viewer-logic OK" : "viewer-logic FAILED");
     return g_failures == 0 ? 0 : 1;

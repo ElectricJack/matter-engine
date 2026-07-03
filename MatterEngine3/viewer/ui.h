@@ -34,6 +34,9 @@ struct ViewerStats {
     float    draw_ms    = 0.0f;   // RasterComposer::draw (CPU submit side)
     // Probe status: dims[0..2] = nx,ny,nz from the grid (all zero = probes OFF/unavailable)
     int      probe_dims[3] = {0,0,0};
+    // Writable: runtime LOD quality/speed dial. main propagates it to the
+    // resolver + composer each frame; also settable via FIFO `budget <f>`.
+    float    pixel_budget = 1.0f;
 };
 
 class Ui {

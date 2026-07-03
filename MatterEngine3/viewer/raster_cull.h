@@ -63,11 +63,14 @@ inline float inst_scale(const float m[16]) {
 }
 
 // Select per-cluster LOD level: same formula as lod_select.cpp.
-// projected_size = cluster.radius * scale / max(dist, 0.01)
+// projected_size = cluster.radius * scale / max(dist, 0.01) * pixel_budget
+// pixel_budget is the runtime quality/speed dial (Stage 2); default 1.0 is
+// bit-identical to the pre-budget behaviour.
 // Pick coarsest level whose threshold <= projected_size (thresholds fine->coarse).
 inline int cluster_lod_select(const LoadedCluster& cl,
                               const float* inst,
-                              const float* cam_eye) {
+                              const float* cam_eye,
+                              float pixel_budget = 1.0f) {
     float scale = inst_scale(inst);
     // Cluster center = midpoint of AABB, transformed to world space.
     float lcx = (cl.aabb_min[0] + cl.aabb_max[0]) * 0.5f;
@@ -78,7 +81,7 @@ inline int cluster_lod_select(const LoadedCluster& cl,
     float dx = wcx - cam_eye[0], dy = wcy - cam_eye[1], dz = wcz - cam_eye[2];
     float dist = std::sqrt(dx*dx + dy*dy + dz*dz);
     if (dist < 0.01f) dist = 0.01f;
-    float psize = cl.radius * scale / dist;
+    float psize = cl.radius * scale / dist * pixel_budget;
 
     // Same as lod_select::select_level: iterate fine->coarse, pick first >= threshold.
     const auto& thr = cl.thresholds;

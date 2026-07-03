@@ -181,6 +181,7 @@ std::vector<RasterBatch> RasterComposer::build_batches(
     fnv_fold(fp, &cam.target,   sizeof cam.target);
     fnv_fold(fp, &cam.fovy,     sizeof cam.fovy);
     fnv_fold(fp, &world_version, sizeof(world_version));
+    fnv_fold(fp, &pixel_budget_, sizeof(pixel_budget_));
     for (const auto& r : resolved) {
         fnv_fold(fp, &r.part_hash,  sizeof r.part_hash);
         fnv_fold(fp, &r.lod_level,  sizeof r.lod_level);
@@ -236,7 +237,7 @@ std::vector<RasterBatch> RasterComposer::build_batches(
                         }
 
                         // Per-cluster LOD selection.
-                        int lv = cluster_lod_select(cl, world, cam_eye);
+                        int lv = cluster_lod_select(cl, world, cam_eye, pixel_budget_);
                         // lv is index into cl.thresholds / cl.lod_mesh; clamp defensively.
                         if (lv >= (int)cl.lod_mesh.size())
                             lv = (int)cl.lod_mesh.size() - 1;

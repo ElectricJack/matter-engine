@@ -47,7 +47,8 @@ SectorLodResolver::resolve(const WorldState& state,
         ++rebin_count_;
     }
     const sector_grid::Sectors& sectors = sectors_;
-    auto chosen = lod_select::select_sector_lods(sectors, lods, cam_pos, min_projected_size_);
+    auto chosen = lod_select::select_sector_lods(sectors, lods, cam_pos,
+                                                 min_projected_size_, pixel_budget_);
 
     // 3. Emit instances only for sectors within the activation sphere.
     std::vector<ResolvedInstance> out;

@@ -266,6 +266,8 @@ int main() {
                     shot_frames = 4;   // RT-derived settle count; applied harmlessly in raster mode too
                 } else if (sscanf(line.c_str(), "stats %63s", labelbuf) == 1) {
                     stats_label = labelbuf;   // printed after this frame's stats fill
+                } else if (sscanf(line.c_str(), "budget %f", &c[0]) == 1) {
+                    stats.pixel_budget = c[0];
                 } else if (line == "reload") {
                     stats.reload_requested = true;
                 } else if (line == "quit") {
@@ -281,6 +283,9 @@ int main() {
 
         SectorResolver& resolver =
             (stats.resolver_choice == 1) ? (SectorResolver&)sec : (SectorResolver&)pass;
+
+        sec.set_pixel_budget(stats.pixel_budget);
+        raster->set_pixel_budget(stats.pixel_budget);
 
         int active = 0;
         std::vector<RasterBatch> batches;

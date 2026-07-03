@@ -48,6 +48,9 @@ public:
     // GL: lazy-upload meshes, BeginMode3D, one DrawMeshInstanced per batch. Returns drawn tris.
     int draw(const std::vector<RasterBatch>& batches, PartStore& store, const Camera3D& cam);
 
+    // Runtime LOD quality/speed dial (Stage 2); folded into the batch fingerprint.
+    void set_pixel_budget(float b) { pixel_budget_ = b; }
+
     // Store WorldLights; draw() uploads them each frame instead of hardcoded values.
     void set_lights(const world_lights::WorldLights& l) { lights_ = l; }
 
@@ -78,6 +81,7 @@ private:
     int  loc_probe_origin_   = -1, loc_probe_cell_     = -1;
     int  loc_probe_dims_     = -1, loc_use_probes_     = -1;
 
+    float pixel_budget_ = 1.0f;            // runtime LOD quality/speed dial (Stage 2)
     world_lights::WorldLights lights_{};   // defaults reproduce Phase-1 hardcoded values
     ProbeTextures probes_{};               // default-constructed: valid() == false
 
