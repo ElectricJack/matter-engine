@@ -2,6 +2,7 @@
 #include "part_asset_v2.h"   // SP-1 (via -I../include): compute_resolved_hash
 #include <cstdio>
 #include <cstdlib>
+#include <fstream>
 #include <functional>
 #include <map>
 #include <set>
@@ -69,6 +70,41 @@ struct FakeBaker : Baker {
         return true;
     }
 };
+
+static void test_read_manifest_expand_flag() {
+    system("mkdir -p /tmp/me3_manifest_test/W1");
+    {
+        std::ofstream f("/tmp/me3_manifest_test/W1/world.manifest");
+        f << "# comment line\n"
+          << "Tree\n"
+          << "Meadow expand\n"
+          << "\n";
+    }
+    std::vector<ChildRequest> roots;
+    std::vector<bool> flags;
+    std::string err;
+    bool ok = PartGraph::read_manifest("/tmp/me3_manifest_test", "W1", roots, err, &flags);
+    CHECK(ok, "manifest with expand flag parses");
+    CHECK(roots.size() == 2 && flags.size() == 2, "two roots with parallel flags");
+    CHECK(roots.size() == 2 && roots[0].module == "Tree" && !flags[0],
+          "unflagged root -> expand=false");
+    CHECK(roots.size() == 2 && roots[1].module == "Meadow" && flags[1],
+          "expand flag parsed for flagged root");
+
+    // 4-arg form still works (flags optional).
+    std::vector<ChildRequest> r2;
+    CHECK(PartGraph::read_manifest("/tmp/me3_manifest_test", "W1", r2, err) && r2.size() == 2,
+          "read_manifest without expand_out still parses");
+
+    // Unknown flag tokens are a hard error (fail-closed).
+    {
+        std::ofstream f("/tmp/me3_manifest_test/W1/world.manifest");
+        f << "Meadow explode\n";
+    }
+    std::vector<ChildRequest> r3;
+    CHECK(!PartGraph::read_manifest("/tmp/me3_manifest_test", "W1", r3, err),
+          "unknown manifest flag rejected");
+}
 
 int main() {
     using namespace part_graph;
@@ -322,6 +358,9 @@ int main() {
         CHECK(!err2.empty(), "missing manifest reports an error message");
         system(("rm -rf " + dir).c_str());
     }
+
+    // Task 5: per-root expand flag in read_manifest.
+    test_read_manifest_expand_flag();
 
     if (failures == 0) printf("All part_graph tests passed\n");
     return failures == 0 ? 0 : 1;

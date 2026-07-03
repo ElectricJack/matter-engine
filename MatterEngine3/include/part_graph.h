@@ -96,11 +96,15 @@ public:
     // Resolve + topo-sort + bake the reachable graph for the given roots.
     InstallResult install(const std::vector<ChildRequest>& roots);
 
-    // Parse WorldData/<world>/world.manifest into root ChildRequests (each root has
-    // empty params unless the manifest carries them; v1: roots take their `static params`
-    // defaults, supplied as empty Params here). Returns false + error on missing manifest.
+    // Parse WorldData/<world>/world.manifest into root ChildRequests. Each line:
+    // "<Module> [expand]"; '#' starts a comment. Roots take their `static params`
+    // defaults (empty Params here). If expand_out is non-null it receives one flag
+    // per root (parallel to roots_out): `expand` marks an assembly root whose baked
+    // child-instance table the provider promotes to individual world instances.
+    // Unknown flag tokens hard-error. Returns false + error on missing manifest.
     static bool read_manifest(const std::string& world_data_dir, const std::string& world,
-                              std::vector<ChildRequest>& roots_out, std::string& error_out);
+                              std::vector<ChildRequest>& roots_out, std::string& error_out,
+                              std::vector<bool>* expand_out = nullptr);
 private:
     ModuleResolver& resolver_;
     Baker&          baker_;

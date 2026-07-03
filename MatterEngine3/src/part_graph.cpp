@@ -205,7 +205,8 @@ InstallResult PartGraph::install(const std::vector<ChildRequest>& roots) {
 }
 
 bool PartGraph::read_manifest(const std::string& world_data_dir, const std::string& world,
-                              std::vector<ChildRequest>& roots_out, std::string& error_out) {
+                              std::vector<ChildRequest>& roots_out, std::string& error_out,
+                              std::vector<bool>* expand_out) {
     std::string path = world_data_dir + "/" + world + "/world.manifest";
     std::ifstream in(path);
     if (!in) {
@@ -218,9 +219,21 @@ bool PartGraph::read_manifest(const std::string& world_data_dir, const std::stri
         size_t b = line.find_first_not_of(" \t\r\n");
         if (b == std::string::npos) continue;        // blank
         size_t e = line.find_last_not_of(" \t\r\n");
-        std::string name = line.substr(b, e - b + 1);
-        if (name.empty() || name[0] == '#') continue; // comment
+        std::string trimmed = line.substr(b, e - b + 1);
+        if (trimmed.empty() || trimmed[0] == '#') continue; // comment
+        std::istringstream tokens(trimmed);
+        std::string name, flag;
+        tokens >> name;
+        bool expand = false;
+        while (tokens >> flag) {
+            if (flag == "expand") expand = true;
+            else {
+                error_out = "unknown manifest flag '" + flag + "' for root " + name;
+                return false;
+            }
+        }
         roots_out.push_back(ChildRequest{ name, Params{} });
+        if (expand_out) expand_out->push_back(expand);
     }
     return true;
 }
