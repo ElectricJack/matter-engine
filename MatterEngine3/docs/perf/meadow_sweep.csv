@@ -1,0 +1,6 @@
+date,stage,camera,frame_ms,resolve_ms,build_ms,draw_ms,active,batches,tris,culled
+2026-07-03,baseline,aerial,69.16,42.66,3.88,1.97,40179,299,11961477,0
+2026-07-03,baseline,corner,66.95,43.12,4.09,1.84,34728,311,10841023,0
+2026-07-03,baseline,midfield,65.16,41.93,4.06,1.54,26476,260,8227011,0
+2026-07-03,baseline,far,69.83,44.85,4.04,1.85,35800,317,11157995,0
+2026-07-03,baseline,empty,66.27,43.68,16.88,0.02,0,0,0,42416
