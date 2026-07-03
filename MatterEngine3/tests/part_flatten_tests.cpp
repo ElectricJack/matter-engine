@@ -132,25 +132,50 @@ static void test_flatten_merge() {
     // Parent quad (2) + 2 child instances x LOD0 quad (2) = 6. The child's
     // coarse LOD entry (1 tri) must NOT leak into the merge.
     CHECK(res.full_tris == 6, "merged level-0 tri count = parent + 2x child LOD0");
+    CHECK(res.clusters >= 1, "result has at least 1 cluster");
+
+    // Task 11: flatten writes v3; load_flat_v3 must succeed.
+    uint32_t fv = part_asset::peek_format_version(flat_path());
+    CHECK(fv == 3, "flat artifact is v3 (peek_format_version == 3)");
 
     BLASManager blas; TLASManager tlas(16);
-    std::vector<part_asset::ChildInstance> children;
-    part_asset::LodLevels lods;
-    bool loaded = part_asset::load_v2(flat_path(), kParentHash, blas, tlas, children, lods);
-    CHECK(loaded, "flat artifact loads as v2");
+    std::vector<part_asset::FlatCluster> clusters_in;
+    bool loaded = part_asset::load_flat_v3(flat_path(), kParentHash, blas, tlas, clusters_in);
+    CHECK(loaded, "flat artifact loads as v3");
     if (!loaded) return;
-    CHECK(children.empty(), "flat artifact has an empty child table");
-    CHECK(lods.size() == res.levels, "stored LOD count matches result");
-    CHECK(!lods.empty() && lods[0].blas_indices.size() == 1, "level 0 = one BLAS entry");
+    CHECK(!clusters_in.empty(), "v3 flat has at least 1 cluster");
 
-    const auto& e0 = *blas.get_entries()[lods[0].blas_indices[0]];
-    CHECK(e0.triangles.size() == 6, "level-0 entry holds all 6 merged tris");
-    CHECK(e0.tri_extra.size() == 6, "TriEx table parallel to triangles");
+    // The 6-tri merged mesh should produce >= 1 cluster with all 6 tris at level 0.
+    // (6 << 16000 so it's just one cluster, level 0 = full 6 tris.)
+    uint32_t total_l0_tris = 0;
+    for (const auto& cl : clusters_in) {
+        if (cl.lods.empty()) continue;
+        for (uint32_t bi : cl.lods[0].blas_indices) {
+            if (bi < blas.get_entries().size())
+                total_l0_tris += (uint32_t)blas.get_entries()[bi]->triangles.size();
+        }
+    }
+    CHECK(total_l0_tris == 6, "sum of cluster level-0 tris == 6 (all merged tris)");
+
+    // Collect all triangles across cluster level-0 to verify placement and materials.
+    std::vector<Tri> all_tris;
+    std::vector<TriEx> all_triex;
+    for (const auto& cl : clusters_in) {
+        if (cl.lods.empty()) continue;
+        for (uint32_t bi : cl.lods[0].blas_indices) {
+            if (bi >= blas.get_entries().size()) continue;
+            const auto& e = *blas.get_entries()[bi];
+            all_tris.insert(all_tris.end(), e.triangles.begin(), e.triangles.end());
+            all_triex.insert(all_triex.end(), e.tri_extra.begin(), e.tri_extra.end());
+        }
+    }
+    CHECK(all_tris.size() == 6, "level-0 entry holds all 6 merged tris across clusters");
+    CHECK(all_triex.size() == 6, "TriEx table parallel to triangles across clusters");
 
     // Child placement: a vertex at local (1,1,0) under translate(20,0,0) must
     // appear at world (21,1,0).
     bool found = false;
-    for (const Tri& t : e0.triangles) {
+    for (const Tri& t : all_tris) {
         const float3* vs[3] = { &t.vertex0, &t.vertex1, &t.vertex2 };
         for (const float3* v : vs)
             if (std::fabs(v->x - 21) < 1e-5f && std::fabs(v->y - 1) < 1e-5f &&
@@ -160,27 +185,31 @@ static void test_flatten_merge() {
 
     // Materials: both the parent's (3) and the child's (7) survive, no others.
     std::set<int> mats;
-    for (const TriEx& ex : e0.tri_extra) mats.insert(ex.materialId);
+    for (const TriEx& ex : all_triex) mats.insert(ex.materialId);
     CHECK(mats.count(3) == 1 && mats.count(7) == 1 && mats.size() == 2,
           "parent + child materialIds preserved through the merge");
 
-    // Thresholds finest-to-coarsest, last level open-ended (0).
-    for (size_t i = 0; i + 1 < lods.size(); ++i)
-        CHECK(lods[i].screen_size_threshold > lods[i+1].screen_size_threshold,
-              "thresholds strictly decreasing");
-    CHECK(lods.back().screen_size_threshold == 0.0f, "coarsest threshold is 0");
+    // Thresholds: within each cluster, thresholds must be finest-to-coarsest.
+    for (const auto& cl : clusters_in) {
+        for (size_t i = 0; i + 1 < cl.lods.size(); ++i)
+            CHECK(cl.lods[i].screen_size_threshold >= cl.lods[i+1].screen_size_threshold,
+                  "per-cluster thresholds non-increasing");
+        if (!cl.lods.empty())
+            CHECK(cl.lods.back().screen_size_threshold == 0.0f, "coarsest cluster threshold is 0");
+    }
 }
 
 static void test_flatten_deterministic() {
     std::remove(flat_path().c_str());
     part_flatten::FlattenResult a = part_flatten::flatten_part(kCacheRoot, kParentHash);
     std::vector<char> bytes_a;
-    CHECK(a.ok && read_bytes(flat_path(), bytes_a), "first flatten written");
+    CHECK(a.ok && read_bytes(flat_path(), bytes_a), "first flatten written (v3)");
+    CHECK(part_asset::peek_format_version(flat_path()) == 3, "first flatten is v3");
 
     std::remove(flat_path().c_str());
     part_flatten::FlattenResult b = part_flatten::flatten_part(kCacheRoot, kParentHash);
     std::vector<char> bytes_b;
-    CHECK(b.ok && read_bytes(flat_path(), bytes_b), "second flatten written");
+    CHECK(b.ok && read_bytes(flat_path(), bytes_b), "second flatten written (v3)");
 
     CHECK(bytes_a == bytes_b, "re-flatten is byte-identical (deterministic)");
 }
@@ -868,6 +897,177 @@ static void test_v2_byte_stability() {
     printf("PASSED\n");
 }
 
+// ----------------------------------------------------------------- Task 11 tests --
+
+// Large-mesh test: synthesize a 40k-tri grid, save as a one-BLAS v2 part, then
+// flatten it. Verifies that:
+//  - the flat artifact is v3
+//  - result.clusters > 1 (40k >> 16000 target)
+//  - every cluster's level-0 tri range <= 16000
+//  - tri counts across all cluster level-0 entries sum to full_tris
+static const uint64_t kBigHash = 0x4040404040404040ull;
+
+static void test_flatten_clustered_v3() {
+    printf("=== test_flatten_clustered_v3 ===\n");
+
+    // Write a 40k-tri flat grid as a single v2 part.
+    const int NX = 200, NZ = 100;
+    std::vector<Tri> big_tris = grid_sheet_tris(NX, NZ, 200.0f, 100.0f);
+    CHECK(big_tris.size() == 40000u, "big mesh: 40000 tris");
+
+    {
+        BLASManager blas; TLASManager tlas(16);
+        std::vector<TriEx> ex(big_tris.size(), make_triex(99));
+        BLASHandle h = blas.register_triangles(big_tris.data(), (int)big_tris.size(), ex.data());
+        uint32_t idx = UINT32_MAX;
+        const auto& entries = blas.get_entries();
+        for (size_t k = 0; k < entries.size(); ++k)
+            if (entries[k]->handle == h) { idx = (uint32_t)k; break; }
+        CHECK(idx != UINT32_MAX, "big mesh: blas registration ok");
+        part_asset::LodLevels lods;
+        part_asset::LodLevel L; L.screen_size_threshold = 0.0f; L.blas_indices.push_back(idx);
+        lods.push_back(L);
+        const std::string path = std::string(kCacheRoot) + "/" + part_asset::cache_path_resolved(kBigHash);
+        bool sv = part_asset::save_v2(path, blas, tlas, nullptr, 0, lods, kBigHash);
+        CHECK(sv, "big mesh: save_v2 ok");
+        if (!sv) { printf("  SKIPPING remaining big-mesh tests\n"); return; }
+    }
+
+    const std::string big_flat = std::string(kCacheRoot) + "/" + part_asset::cache_path_flat(kBigHash);
+    std::remove(big_flat.c_str());
+
+    part_flatten::FlattenTargets tgt;
+    // Use tight cluster size so we definitely get multiple clusters.
+    tgt.cluster_target_tris = 16000;
+
+    part_flatten::FlattenResult res = part_flatten::flatten_part(kCacheRoot, kBigHash, tgt);
+    CHECK(res.ok, "big mesh: flatten_part ok");
+    if (!res.ok) { printf("  error: %s\n", res.error.c_str()); return; }
+
+    CHECK(res.full_tris == 40000u, "big mesh: full_tris == 40000");
+    CHECK(res.clusters > 1, "big mesh: result.clusters > 1 (split required)");
+    printf("  clusters=%zu, levels=%zu, full_tris=%zu\n", res.clusters, res.levels, res.full_tris);
+
+    // Verify v3 format.
+    uint32_t fv = part_asset::peek_format_version(big_flat);
+    CHECK(fv == 3, "big mesh: flat artifact is v3");
+
+    // Load v3 and verify cluster invariants.
+    BLASManager blas_in; TLASManager tlas_in(16);
+    std::vector<part_asset::FlatCluster> clusters_in;
+    bool loaded = part_asset::load_flat_v3(big_flat, kBigHash, blas_in, tlas_in, clusters_in);
+    CHECK(loaded, "big mesh: load_flat_v3 ok");
+    if (!loaded) return;
+
+    CHECK(clusters_in.size() == res.clusters, "big mesh: cluster count matches result");
+
+    // Every cluster level-0 tri count must be <= 16000.
+    const auto& entries = blas_in.get_entries();
+    uint32_t total_l0 = 0;
+    bool all_le_target = true;
+    for (const auto& cl : clusters_in) {
+        if (cl.lods.empty()) continue;
+        uint32_t cl_l0 = 0;
+        for (uint32_t bi : cl.lods[0].blas_indices) {
+            if (bi < entries.size()) cl_l0 += (uint32_t)entries[bi]->triangles.size();
+        }
+        if (cl_l0 > 16000) { all_le_target = false; }
+        total_l0 += cl_l0;
+    }
+    CHECK(all_le_target, "big mesh: every cluster level-0 tri count <= 16000");
+    CHECK(total_l0 == 40000u, "big mesh: cluster level-0 tri counts sum to 40000");
+
+    printf(res.ok && res.clusters > 1 && all_le_target && total_l0 == 40000u ? "PASSED\n" : "FAILED\n");
+}
+
+// Watertight invariant (Task 8 payoff): for the 40k grid flatten, shared
+// cluster-boundary vertices must remain bit-identical across clusters at EVERY
+// LOD level. Verifies that decimate_to_error with use_aabb_bounds=false plus
+// the topological boundary lock (lock_boundary=true) freezes seam vertices.
+static void test_flatten_watertight_invariant() {
+    printf("=== test_flatten_watertight_invariant ===\n");
+
+    // Re-use the big-mesh flat from the previous test (same kBigHash).
+    const std::string big_flat = std::string(kCacheRoot) + "/" + part_asset::cache_path_flat(kBigHash);
+
+    BLASManager blas_in; TLASManager tlas_in(16);
+    std::vector<part_asset::FlatCluster> clusters_in;
+    bool loaded = part_asset::load_flat_v3(big_flat, kBigHash, blas_in, tlas_in, clusters_in);
+    CHECK(loaded, "watertight: load_flat_v3 ok");
+    if (!loaded || clusters_in.size() < 2) {
+        CHECK(false, "watertight: need >= 2 clusters");
+        return;
+    }
+
+    const auto& entries = blas_in.get_entries();
+
+    // Helper: collect all vertex positions from a set of BLAS indices.
+    struct FP3 { float x, y, z;
+        bool operator<(const FP3& o) const {
+            if (x != o.x) return x < o.x;
+            if (y != o.y) return y < o.y;
+            return z < o.z;
+        }
+    };
+    auto collect_verts = [&](const std::vector<uint32_t>& blas_indices) {
+        std::set<FP3> verts;
+        for (uint32_t bi : blas_indices) {
+            if (bi >= entries.size()) continue;
+            for (const Tri& t : entries[bi]->triangles) {
+                const float3* vs[3] = { &t.vertex0, &t.vertex1, &t.vertex2 };
+                for (const float3* v : vs)
+                    verts.insert({v->x, v->y, v->z});
+            }
+        }
+        return verts;
+    };
+
+    // Collect level-0 vertex sets per cluster.
+    std::vector<std::set<FP3>> per_cluster_verts(clusters_in.size());
+    for (size_t ci = 0; ci < clusters_in.size(); ++ci) {
+        if (clusters_in[ci].lods.empty()) continue;
+        per_cluster_verts[ci] = collect_verts(clusters_in[ci].lods[0].blas_indices);
+    }
+
+    // Find cross-cluster shared positions: vertices appearing in >= 2 clusters.
+    std::map<FP3, int> vert_cluster_count;
+    for (const auto& vs : per_cluster_verts)
+        for (const FP3& p : vs) vert_cluster_count[p]++;
+    std::set<FP3> shared_verts;
+    for (const auto& kv : vert_cluster_count)
+        if (kv.second >= 2) shared_verts.insert(kv.first);
+    printf("  shared boundary vertices: %zu\n", shared_verts.size());
+    CHECK(!shared_verts.empty(), "watertight: 40k grid has cross-cluster shared boundary vertices");
+
+    // For EVERY cluster and EVERY LOD level: each shared vertex that belongs to the
+    // cluster at level 0 must also be present bit-identical at every coarser level.
+    int missing_total = 0;
+    for (size_t ci = 0; ci < clusters_in.size(); ++ci) {
+        // Shared vertices belonging to this cluster at level 0.
+        std::set<FP3> cluster_shared;
+        for (const FP3& p : per_cluster_verts[ci])
+            if (shared_verts.count(p)) cluster_shared.insert(p);
+        if (cluster_shared.empty()) continue;
+
+        // Check every coarser level.
+        for (size_t li = 1; li < clusters_in[ci].lods.size(); ++li) {
+            std::set<FP3> level_verts = collect_verts(clusters_in[ci].lods[li].blas_indices);
+            for (const FP3& p : cluster_shared) {
+                if (level_verts.find(p) == level_verts.end()) {
+                    ++missing_total;
+                    printf("  MISSING shared vertex (%.6f, %.6f, %.6f) in cluster %zu level %zu\n",
+                           p.x, p.y, p.z, ci, li);
+                    if (missing_total > 5) { printf("  (further mismatches suppressed)\n"); goto done; }
+                }
+            }
+        }
+    }
+done:
+    CHECK(missing_total == 0,
+          "watertight: all shared boundary vertices preserved bit-identical at every LOD level");
+    printf(missing_total == 0 ? "PASSED\n" : "FAILED\n");
+}
+
 int main() {
     if (!write_fixtures()) {
         printf("FAIL: could not write fixture parts under %s\n", kCacheRoot);
@@ -888,6 +1088,8 @@ int main() {
     test_v3_cross_version_guards();
     test_peek_format_version();
     test_v2_byte_stability();
+    test_flatten_clustered_v3();
+    test_flatten_watertight_invariant();
 
     if (failures == 0) { printf("part_flatten_tests: ALL PASS\n"); return 0; }
     printf("part_flatten_tests: %d FAILURE(S)\n", failures);

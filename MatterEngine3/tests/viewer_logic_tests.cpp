@@ -10,6 +10,7 @@
 #include "lod_select.h"   // PartLodTable, PartLod
 #include "part_graph.h"   // PartGraph + FileModuleResolver/HostBaker (script-host guarded)
 #include "part_asset_v2.h"
+#include "part_flatten.h"  // Task 11: flatten_part for regen sniff test
 #include "world_lights.h"
 #include "probe_volume.h"
 
@@ -733,6 +734,73 @@ static void test_probe_quantization_roundtrip() {
     }
 }
 
+// Task 11 regen sniff: write a v2 flat artifact at the provider's flat path for
+// a simple synthetic part, then call connect() on a LocalProvider that would
+// flatten it. The provider must detect version mismatch (peek != 3) and
+// regenerate the file as v3.
+static void test_provider_regen_stale_v2_flat() {
+    printf("=== test_provider_regen_stale_v2_flat ===\n");
+
+    // Use a dedicated temp cache (not the shared warm one) so we can plant a v2
+    // flat without disturbing the tree cache used by other tests.
+    const std::string regen_cache = "/tmp/me3_regen_sniff_cache";
+    ::system(("rm -rf " + regen_cache).c_str());
+    ::system(("mkdir -p " + regen_cache + "/parts").c_str());
+
+    // Build a tiny synthetic part: one quad, no children. Write as v2 .part.
+    const uint64_t kRegenHash = 0xABCD1234ABCD5678ull;
+    {
+        BLASManager blas; TLASManager tlas(16);
+        Tri t[2] = {};
+        t[0].vertex0 = make_float3(0,0,0); t[0].vertex1 = make_float3(1,0,0); t[0].vertex2 = make_float3(1,1,0);
+        t[0].centroid = make_float3(2.0f/3,1.0f/3,0);
+        t[1].vertex0 = make_float3(0,0,0); t[1].vertex1 = make_float3(1,1,0); t[1].vertex2 = make_float3(0,1,0);
+        t[1].centroid = make_float3(1.0f/3,2.0f/3,0);
+        blas.register_triangles(t, 2, nullptr);
+        part_asset::LodLevels lods;
+        part_asset::LodLevel L; L.screen_size_threshold = 0.0f; L.blas_indices.push_back(0);
+        lods.push_back(L);
+        const std::string part_path = regen_cache + "/" + part_asset::cache_path_resolved(kRegenHash);
+        bool sp = part_asset::save_v2(part_path, blas, tlas, nullptr, 0, lods, kRegenHash);
+        CHECK(sp, "regen sniff: v2 part file written");
+        if (!sp) { printf("  SKIPPING regen sniff\n"); return; }
+    }
+
+    // Plant a stale v2 FLAT file at the provider's expected flat path.
+    const std::string flat_path = regen_cache + "/" + part_asset::cache_path_flat(kRegenHash);
+    {
+        BLASManager blas; TLASManager tlas(16);
+        Tri t[2] = {};
+        t[0].vertex0 = make_float3(0,0,0); t[0].vertex1 = make_float3(1,0,0); t[0].vertex2 = make_float3(1,1,0);
+        t[0].centroid = make_float3(2.0f/3,1.0f/3,0);
+        t[1].vertex0 = make_float3(0,0,0); t[1].vertex1 = make_float3(1,1,0); t[1].vertex2 = make_float3(0,1,0);
+        t[1].centroid = make_float3(1.0f/3,2.0f/3,0);
+        blas.register_triangles(t, 2, nullptr);
+        part_asset::LodLevels lods;
+        part_asset::LodLevel L; L.screen_size_threshold = 0.0f; L.blas_indices.push_back(0);
+        lods.push_back(L);
+        bool sp = part_asset::save_v2(flat_path, blas, tlas, nullptr, 0, lods, kRegenHash);
+        CHECK(sp, "regen sniff: stale v2 flat planted");
+        CHECK(part_asset::peek_format_version(flat_path) == 2,
+              "regen sniff: pre-connect flat is v2");
+        if (!sp) { printf("  SKIPPING regen sniff\n"); return; }
+    }
+
+    // Call flatten_part directly (the provider's flatten_placed does exactly this).
+    // The provider checks peek_format_version != 3 and regenerates.
+    part_flatten::FlattenResult fr = part_flatten::flatten_part(regen_cache, kRegenHash);
+    CHECK(fr.ok, "regen sniff: flatten_part succeeded");
+    if (!fr.ok) { printf("  error: %s\n", fr.error.c_str()); return; }
+
+    // The file must now be v3.
+    uint32_t pv = part_asset::peek_format_version(flat_path);
+    CHECK(pv == 3, "regen sniff: flat is now v3 after regeneration");
+    CHECK(fr.clusters >= 1, "regen sniff: result reports clusters");
+
+    ::system(("rm -rf " + regen_cache).c_str());
+    printf(pv == 3 ? "PASSED\n" : "FAILED\n");
+}
+
 int main() {
     test_world_state_delta();
     test_resolvers();
@@ -747,6 +815,7 @@ int main() {
     test_provider_bakes_probes();
     test_raster_composer_lights();
     test_probe_quantization_roundtrip();
+    test_provider_regen_stale_v2_flat();
     delete g_shared_store; g_shared_store = nullptr;
     printf("\n%s\n", g_failures == 0 ? "viewer-logic OK" : "viewer-logic FAILED");
     return g_failures == 0 ? 0 : 1;

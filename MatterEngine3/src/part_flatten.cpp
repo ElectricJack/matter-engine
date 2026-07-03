@@ -1,7 +1,8 @@
 #include "../include/part_flatten.h"
 
-#include "../include/part_asset_v2.h"   // load_v2/save_v2, cache_path_*
+#include "../include/part_asset_v2.h"   // load_v2/save_flat_v3, cache_path_*
 #include "../include/lod_bake.h"        // decimate_to_error, reproject_triex
+#include "../include/part_cluster.h"    // split_clusters
 #include "tlas_manager.hpp"             // MSL TLASManager (load_v2 signature)
 
 #include <cmath>
@@ -194,7 +195,10 @@ FlattenResult flatten_part(const std::string& cache_root, uint64_t root_hash,
     if (full.empty()) { res.error = "flatten: merged mesh is empty"; return res; }
     res.full_tris = full.size();
 
-    // Bound radius = half AABB diagonal (same convention as the viewer).
+    // Whole-mesh AABB and bound radius (half diagonal). Used to compute
+    // consistent epsilon across all clusters: using the global radius means
+    // a cluster's LOD ladder matches what an equivalent whole-mesh bake would
+    // produce at the same view distance.
     float mn[3] = {1e30f,1e30f,1e30f}, mx[3] = {-1e30f,-1e30f,-1e30f};
     auto acc = [&](const float3& v){
         mn[0]=std::fmin(mn[0],v.x); mx[0]=std::fmax(mx[0],v.x);
@@ -205,55 +209,104 @@ FlattenResult flatten_part(const std::string& cache_root, uint64_t root_hash,
     float dx=mx[0]-mn[0], dy=mx[1]-mn[1], dz=mx[2]-mn[2];
     const float radius = 0.5f * std::sqrt(dx*dx+dy*dy+dz*dz);
 
-    // Build the ladder: level 0 = full mesh, then error-bounded decimations.
-    struct Level { std::vector<Tri> tris; std::vector<TriEx> triex; float eps; };
-    std::vector<Level> levels;
-    levels.push_back({full, fullex, 0.0f});
-    size_t prev_count = full.size();
-    for (float div : targets.radius_divisor) {
-        const float eps = radius / div;
-        std::vector<Tri> geo = lod_bake::decimate_to_error(full, eps);
-        if (geo.empty() || geo.size() >= prev_count) continue;  // no progress
-        std::vector<TriEx> ex = lod_bake::reproject_triex(geo, full, fullex);
-        levels.push_back({std::move(geo), std::move(ex), eps});
-        prev_count = levels.back().tris.size();
-        if ((int)prev_count <= targets.min_tris) break;   // far field = imposters
-    }
+    // Split the merged mesh into spatial clusters.
+    auto clusters = part_cluster::split_clusters(full, fullex, targets.cluster_target_tris);
+    const size_t n_clusters = clusters.size();
 
-    // Register every level into a fresh BLASManager and pack LodLevels.
-    // Threshold semantics (lod_select): level i is used while projected size
-    // (radius/dist) >= thr[i], finest cleared level wins. Level i's floor is the
-    // point where the NEXT coarser level's error drops below the pixel budget;
-    // the last level has no floor (0).
+    // Per-cluster triangle floor: scale min_tris by cluster count so many-cluster
+    // parts still ladder down, but enforce a minimum of 64 to avoid degenerate
+    // single-triangle levels on tiny clusters.
+    const uint32_t per_cluster_floor =
+        (uint32_t)std::max(64, targets.min_tris / (int)n_clusters);
+
+    // Shared BLAS/TLAS for the flat artifact (all clusters share one BLAS table).
     BLASManager blas;
     TLASManager tlas(4);   // no internal instances in a flat artifact
-    part_asset::LodLevels lods;
-    for (size_t i = 0; i < levels.size(); ++i) {
-        Level& L = levels[i];
-        BLASHandle h = blas.register_triangles(L.tris.data(), (int)L.tris.size(),
-                                               L.triex.data());
-        uint32_t idx = UINT32_MAX;
-        const auto& entries = blas.get_entries();
-        for (size_t k = 0; k < entries.size(); ++k)
-            if (entries[k]->handle == h) { idx = (uint32_t)k; break; }
-        if (idx == UINT32_MAX) { res.error = "flatten: BLAS registration failed"; return res; }
 
-        float thr = 0.0f;
-        if (i + 1 < levels.size()) {
-            const float next_eps = levels[i + 1].eps;
-            thr = radius * targets.pixel_budget * targets.pixel_angle / next_eps;
+    std::vector<part_asset::FlatCluster> flat_clusters;
+    flat_clusters.reserve(n_clusters);
+
+    size_t max_levels = 0;
+    size_t coarsest_tris = 0;
+
+    for (const auto& cl : clusters) {
+        // Slice the cluster's triangles from the reordered arrays.
+        std::vector<Tri> ctris(full.begin() + cl.first_tri,
+                               full.begin() + cl.first_tri + cl.tri_count);
+        std::vector<TriEx> ctriex;
+        if (fullex.size() == full.size()) {
+            ctriex.assign(fullex.begin() + cl.first_tri,
+                          fullex.begin() + cl.first_tri + cl.tri_count);
         }
-        part_asset::LodLevel lvl;
-        lvl.screen_size_threshold = thr;
-        lvl.blas_indices.push_back(idx);
-        lods.push_back(std::move(lvl));
+
+        // Build per-cluster LOD ladder.
+        // Level 0: full cluster (no decimation).
+        struct Level { std::vector<Tri> tris; std::vector<TriEx> triex; float eps; };
+        std::vector<Level> levels;
+        {
+            Level L0;
+            L0.tris  = ctris;
+            L0.triex = ctriex;
+            L0.eps   = 0.0f;
+            levels.push_back(std::move(L0));
+        }
+        size_t prev_count = ctris.size();
+        for (float div : targets.radius_divisor) {
+            // Use global radius so epsilon is consistent across clusters.
+            const float eps = radius / div;
+            // use_aabb_bounds=false: only topological boundary lock (open edges =
+            // cluster-cut seam edges) freezes cut vertices; face-plane locking
+            // would over-freeze cluster interiors that touch the cluster AABB.
+            std::vector<Tri> geo = lod_bake::decimate_to_error(ctris, eps, /*use_aabb_bounds=*/false);
+            if (geo.empty() || geo.size() >= prev_count) continue;  // no progress
+            std::vector<TriEx> ex = lod_bake::reproject_triex(geo, ctris, ctriex);
+            levels.push_back({std::move(geo), std::move(ex), eps});
+            prev_count = levels.back().tris.size();
+            // Per-cluster floor: max(64, min_tris / clusters).
+            if (prev_count <= (size_t)per_cluster_floor) break;
+        }
+
+        // Register each level into the shared BLAS table and build LodLevels.
+        part_asset::LodLevels lods;
+        for (size_t i = 0; i < levels.size(); ++i) {
+            Level& L = levels[i];
+            const TriEx* ex_ptr = L.triex.empty() ? nullptr : L.triex.data();
+            BLASHandle h = blas.register_triangles(L.tris.data(), (int)L.tris.size(), ex_ptr);
+            uint32_t idx = UINT32_MAX;
+            const auto& entries = blas.get_entries();
+            for (size_t k = 0; k < entries.size(); ++k)
+                if (entries[k]->handle == h) { idx = (uint32_t)k; break; }
+            if (idx == UINT32_MAX) { res.error = "flatten: BLAS registration failed"; return res; }
+
+            // Threshold: the global radius gives consistent lod_select behaviour.
+            float thr = 0.0f;
+            if (i + 1 < levels.size()) {
+                const float next_eps = levels[i + 1].eps;
+                thr = radius * targets.pixel_budget * targets.pixel_angle / next_eps;
+            }
+            part_asset::LodLevel lvl;
+            lvl.screen_size_threshold = thr;
+            lvl.blas_indices.push_back(idx);
+            lods.push_back(std::move(lvl));
+        }
+
+        if (levels.size() > max_levels) max_levels = levels.size();
+        coarsest_tris = levels.back().tris.size();
+
+        part_asset::FlatCluster fc;
+        fc.aabb_min[0] = cl.aabb_min[0]; fc.aabb_min[1] = cl.aabb_min[1]; fc.aabb_min[2] = cl.aabb_min[2];
+        fc.aabb_max[0] = cl.aabb_max[0]; fc.aabb_max[1] = cl.aabb_max[1]; fc.aabb_max[2] = cl.aabb_max[2];
+        fc.lods = std::move(lods);
+        flat_clusters.push_back(std::move(fc));
     }
-    res.levels = levels.size();
-    res.coarsest_tris = levels.back().tris.size();
+
+    res.levels        = max_levels;
+    res.clusters      = n_clusters;
+    res.coarsest_tris = coarsest_tris;
 
     const std::string out_path = cache_root + "/" + part_asset::cache_path_flat(root_hash);
-    if (!part_asset::save_v2(out_path, blas, tlas, nullptr, 0, lods, root_hash)) {
-        res.error = "flatten: save_v2 failed for " + out_path;
+    if (!part_asset::save_flat_v3(out_path, blas, tlas, flat_clusters, root_hash)) {
+        res.error = "flatten: save_flat_v3 failed for " + out_path;
         return res;
     }
     res.ok = true;

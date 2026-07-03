@@ -160,23 +160,23 @@ bool LocalProvider::connect(WorldManifest& out, std::string& err) {
     };
 
     // Bake-time flattening of every placed root: merge its whole child subtree
-    // into one mesh with an error-bounded LOD ladder (<hash>.flat.part), so the
-    // viewer renders one instance per root instead of re-expanding children each
-    // frame. Content-addressed: skip when the flat file already exists (any
-    // subtree change changes the root hash, orphaning the stale flat artifact).
+    // into per-cluster meshes with per-cluster LOD ladders (<hash>.flat.part),
+    // so the viewer renders flat cluster instances per root instead of
+    // re-expanding hundreds of child instances each frame.
+    // Content-addressed AND version-sniffed: regenerate when the flat artifact
+    // is missing OR is an old v2 file (peek_format_version != 3).
     auto flatten_placed = [&]() {
         std::set<uint64_t> done;
         for (const auto& e : out.instances) {
             if (!done.insert(e.part_hash).second) continue;
-            const std::string flat_path =
+            const std::string flat_abs_path =
                 abs_cache_root + "/" + part_asset::cache_path_flat(e.part_hash);
-            struct stat st;
-            if (::stat(flat_path.c_str(), &st) == 0) continue;
+            if (part_asset::peek_format_version(flat_abs_path) == 3) continue;
             part_flatten::FlattenResult fr =
                 part_flatten::flatten_part(abs_cache_root, e.part_hash);
             if (fr.ok) {
-                printf("LocalProvider: flattened %016llx (%zu levels, %zu -> %zu tris)\n",
-                       (unsigned long long)e.part_hash, fr.levels,
+                printf("LocalProvider: flattened %016llx (%zu clusters, %zu levels, %zu -> %zu tris)\n",
+                       (unsigned long long)e.part_hash, fr.clusters, fr.levels,
                        fr.full_tris, fr.coarsest_tris);
             } else {
                 // Non-fatal: the viewer falls back to compositional rendering.

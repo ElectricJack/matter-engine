@@ -38,6 +38,7 @@ PIPELINE_CPP = ../src/part_graph.cpp \
               ../src/csg_lowering.cpp ../src/module_resolver.cpp ../src/script_rng_binding.cpp \
               ../src/polygon_triangulate.cpp \
               ../src/part_asset_v2.cpp ../src/lod_bake.cpp ../src/world_flatten.cpp ../src/part_flatten.cpp ../src/triangle_emit.cpp \
+              ../src/part_cluster.cpp \
               ../src/sector_grid.cpp ../src/lod_select.cpp \
               ../src/world_lights.cpp ../src/probe_volume.cpp \
               ../src/world_tracer.cpp ../src/probe_bake.cpp \

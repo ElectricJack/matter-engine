@@ -25,67 +25,148 @@ bool PartStore::has(uint64_t part_hash) const {
 }
 
 // Flat-preferred load: a bake-time flattened artifact (<hash>.flat.part) already
-// carries the whole merged subtree plus an error-bounded LOD ladder, so we use
-// its STORED levels directly instead of re-baking, and its empty child table
-// makes the composer's recursion a natural no-op. Returns false (fall back to
-// the compositional .part) when the file is absent or fails to load.
+// carries the whole merged subtree plus per-cluster error-bounded LOD ladders.
+// Tries v3 first (Task 11 format: clustered flat); falls back to legacy v2 flat
+// if v3 is unavailable. Returns false (fall back to the compositional .part) when
+// the file is absent or fails to load in either format.
 bool PartStore::load_flat(uint64_t part_hash, LoadedPart& lp) {
     const std::string path = cache_root_ + "/" + part_asset::cache_path_flat(part_hash);
-    struct stat st;
-    if (::stat(path.c_str(), &st) != 0) return false;
 
-    BLASManager scratch;
-    TLASManager scratch_tlas(65536);
-    std::vector<part_asset::ChildInstance> children;
-    part_asset::LodLevels lods_in;
-    if (!part_asset::load_v2(path, part_hash, scratch, scratch_tlas, children, lods_in) ||
-        lods_in.empty()) {
-        printf("PartStore: flat artifact unusable for %016llx (%s), falling back\n",
-               (unsigned long long)part_hash, path.c_str());
-        return false;
+    // Sniff version first; fall back to compositional path when absent.
+    uint32_t ver = part_asset::peek_format_version(path);
+    if (ver == 0) return false;   // absent or unreadable
+
+    if (ver == 3) {
+        // --- v3 clustered flat ---
+        BLASManager scratch;
+        TLASManager scratch_tlas(65536);
+        std::vector<part_asset::FlatCluster> clusters_in;
+        if (!part_asset::load_flat_v3(path, part_hash, scratch, scratch_tlas, clusters_in) ||
+            clusters_in.empty()) {
+            printf("PartStore: v3 flat artifact unusable for %016llx (%s), falling back\n",
+                   (unsigned long long)part_hash, path.c_str());
+            return false;
+        }
+        // For the flat-preferred path, collapse all clusters' level-0 geometry
+        // into one combined LOD ladder by flattening cluster[i].lods[j] across
+        // clusters: register ALL cluster level-0 triangles together as lod_blas[0],
+        // then all cluster level-1 triangles as lod_blas[1], etc. This gives the
+        // PartStore consumer (WorldComposer/RasterComposer) a simple per-part LOD
+        // array identical to the v2 flat path. Task 12 will consume clusters
+        // individually per-cluster for GPU-side cluster culling.
+        const auto& entries = scratch.get_entries();
+        // Determine max LOD count across clusters.
+        size_t max_lods = 0;
+        for (const auto& cl : clusters_in) max_lods = std::max(max_lods, cl.lods.size());
+        if (max_lods == 0) return false;
+
+        bool radius_set = false;
+        for (size_t li = 0; li < max_lods; ++li) {
+            std::vector<Tri> tris;
+            std::vector<TriEx> triex;
+            float thr = 0.0f;
+            for (const auto& cl : clusters_in) {
+                if (li >= cl.lods.size()) continue;
+                thr = cl.lods[li].screen_size_threshold; // same across clusters
+                for (uint32_t bi : cl.lods[li].blas_indices) {
+                    if (bi >= entries.size()) continue;
+                    tris.insert(tris.end(), entries[bi]->triangles.begin(), entries[bi]->triangles.end());
+                    triex.insert(triex.end(), entries[bi]->tri_extra.begin(), entries[bi]->tri_extra.end());
+                }
+            }
+            if (tris.empty()) continue;
+            const TriEx* ex = (triex.size() == tris.size()) ? triex.data() : nullptr;
+            BLASHandle h = blas_.register_triangles(tris.data(), (int)tris.size(), ex);
+            lp.thresholds.push_back(thr);
+            lp.lod_blas.push_back(h);
+
+            if (const auto* e = blas_.get_entry(lp.lod_blas.back())) {
+                const TriEx* mesh_ex = (e->tri_extra.size() == e->triangles.size() && !e->tri_extra.empty())
+                                          ? e->tri_extra.data() : nullptr;
+                lp.lod_mesh_data.push_back(
+                    build_raster_mesh_data(e->triangles.data(), mesh_ex, (int)e->triangles.size()));
+            } else {
+                lp.lod_mesh_data.push_back({});
+            }
+
+            if (!radius_set && !tris.empty()) {
+                float mn[3] = {1e30f,1e30f,1e30f}, mx[3] = {-1e30f,-1e30f,-1e30f};
+                auto acc = [&](const float3& v){
+                    mn[0]=std::fmin(mn[0],v.x); mx[0]=std::fmax(mx[0],v.x);
+                    mn[1]=std::fmin(mn[1],v.y); mx[1]=std::fmax(mx[1],v.y);
+                    mn[2]=std::fmin(mn[2],v.z); mx[2]=std::fmax(mx[2],v.z);
+                };
+                for (const auto& t : tris) { acc(t.vertex0); acc(t.vertex1); acc(t.vertex2); }
+                float dx=mx[0]-mn[0], dy=mx[1]-mn[1], dz=mx[2]-mn[2];
+                lp.bound_radius = 0.5f * std::sqrt(dx*dx+dy*dy+dz*dz);
+                radius_set = true;
+            }
+        }
+        if (lp.lod_blas.empty()) return false;
+        printf("PartStore: loaded v3 FLAT part %016llx (%zu LOD levels, %zu clusters)\n",
+               (unsigned long long)part_hash, lp.lod_blas.size(), clusters_in.size());
+        return true;
     }
 
-    const auto& entries = scratch.get_entries();
-    for (size_t li = 0; li < lods_in.size(); ++li) {
-        std::vector<Tri> tris;
-        std::vector<TriEx> triex;
-        for (uint32_t bi : lods_in[li].blas_indices) {
-            if (bi >= entries.size()) continue;
-            tris.insert(tris.end(), entries[bi]->triangles.begin(), entries[bi]->triangles.end());
-            triex.insert(triex.end(), entries[bi]->tri_extra.begin(), entries[bi]->tri_extra.end());
-        }
-        if (tris.empty()) continue;
-        const TriEx* ex = (triex.size() == tris.size()) ? triex.data() : nullptr;
-        BLASHandle h = blas_.register_triangles(tris.data(), (int)tris.size(), ex);
-        lp.thresholds.push_back(lods_in[li].screen_size_threshold);
-        lp.lod_blas.push_back(h);
-
-        if (const auto* e = blas_.get_entry(lp.lod_blas.back())) {
-            const TriEx* mesh_ex = (e->tri_extra.size() == e->triangles.size() && !e->tri_extra.empty())
-                                      ? e->tri_extra.data() : nullptr;
-            lp.lod_mesh_data.push_back(
-                build_raster_mesh_data(e->triangles.data(), mesh_ex, (int)e->triangles.size()));
-        } else {
-            lp.lod_mesh_data.push_back({});
+    // --- Legacy v2 flat (pre-Task-11) ---
+    if (ver == 2) {
+        BLASManager scratch;
+        TLASManager scratch_tlas(65536);
+        std::vector<part_asset::ChildInstance> children;
+        part_asset::LodLevels lods_in;
+        if (!part_asset::load_v2(path, part_hash, scratch, scratch_tlas, children, lods_in) ||
+            lods_in.empty()) {
+            printf("PartStore: flat artifact unusable for %016llx (%s), falling back\n",
+                   (unsigned long long)part_hash, path.c_str());
+            return false;
         }
 
-        if (li == 0) {
-            // Bound radius from the finest level (drives projected-size LOD math).
-            float mn[3] = {1e30f,1e30f,1e30f}, mx[3] = {-1e30f,-1e30f,-1e30f};
-            auto acc = [&](const float3& v){
-                mn[0]=std::fmin(mn[0],v.x); mx[0]=std::fmax(mx[0],v.x);
-                mn[1]=std::fmin(mn[1],v.y); mx[1]=std::fmax(mx[1],v.y);
-                mn[2]=std::fmin(mn[2],v.z); mx[2]=std::fmax(mx[2],v.z);
-            };
-            for (const auto& t : tris) { acc(t.vertex0); acc(t.vertex1); acc(t.vertex2); }
-            float dx=mx[0]-mn[0], dy=mx[1]-mn[1], dz=mx[2]-mn[2];
-            lp.bound_radius = 0.5f * std::sqrt(dx*dx+dy*dy+dz*dz);
+        const auto& entries = scratch.get_entries();
+        for (size_t li = 0; li < lods_in.size(); ++li) {
+            std::vector<Tri> tris;
+            std::vector<TriEx> triex;
+            for (uint32_t bi : lods_in[li].blas_indices) {
+                if (bi >= entries.size()) continue;
+                tris.insert(tris.end(), entries[bi]->triangles.begin(), entries[bi]->triangles.end());
+                triex.insert(triex.end(), entries[bi]->tri_extra.begin(), entries[bi]->tri_extra.end());
+            }
+            if (tris.empty()) continue;
+            const TriEx* ex = (triex.size() == tris.size()) ? triex.data() : nullptr;
+            BLASHandle h = blas_.register_triangles(tris.data(), (int)tris.size(), ex);
+            lp.thresholds.push_back(lods_in[li].screen_size_threshold);
+            lp.lod_blas.push_back(h);
+
+            if (const auto* e = blas_.get_entry(lp.lod_blas.back())) {
+                const TriEx* mesh_ex = (e->tri_extra.size() == e->triangles.size() && !e->tri_extra.empty())
+                                          ? e->tri_extra.data() : nullptr;
+                lp.lod_mesh_data.push_back(
+                    build_raster_mesh_data(e->triangles.data(), mesh_ex, (int)e->triangles.size()));
+            } else {
+                lp.lod_mesh_data.push_back({});
+            }
+
+            if (li == 0) {
+                float mn[3] = {1e30f,1e30f,1e30f}, mx[3] = {-1e30f,-1e30f,-1e30f};
+                auto acc = [&](const float3& v){
+                    mn[0]=std::fmin(mn[0],v.x); mx[0]=std::fmax(mx[0],v.x);
+                    mn[1]=std::fmin(mn[1],v.y); mx[1]=std::fmax(mx[1],v.y);
+                    mn[2]=std::fmin(mn[2],v.z); mx[2]=std::fmax(mx[2],v.z);
+                };
+                for (const auto& t : tris) { acc(t.vertex0); acc(t.vertex1); acc(t.vertex2); }
+                float dx=mx[0]-mn[0], dy=mx[1]-mn[1], dz=mx[2]-mn[2];
+                lp.bound_radius = 0.5f * std::sqrt(dx*dx+dy*dy+dz*dz);
+            }
         }
+        if (lp.lod_blas.empty()) return false;
+        printf("PartStore: loaded v2 FLAT part %016llx (%zu LOD levels)\n",
+               (unsigned long long)part_hash, lp.lod_blas.size());
+        return true;
     }
-    if (lp.lod_blas.empty()) return false;
-    printf("PartStore: loaded FLAT part %016llx (%zu LOD levels)\n",
-           (unsigned long long)part_hash, lp.lod_blas.size());
-    return true;
+
+    // Unknown version.
+    printf("PartStore: unrecognized flat artifact version %u for %016llx, falling back\n",
+           ver, (unsigned long long)part_hash);
+    return false;
 }
 
 const LoadedPart* PartStore::get_or_load(uint64_t part_hash) {

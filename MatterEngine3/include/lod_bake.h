@@ -26,7 +26,15 @@ std::vector<Tri> decimate_tris(const std::vector<Tri>& tris, float keep_ratio);
 // collapsing while every remaining collapse moves the surface less than epsilon.
 // Same fallback semantics as decimate_tris (empty in -> empty out; degenerate
 // simplifier output -> copy of input).
-std::vector<Tri> decimate_to_error(const std::vector<Tri>& tris, float epsilon);
+//
+// use_aabb_bounds: when true (default), the mesh's own AABB is passed as
+// CellBounds so vertices on the mesh border (face planes) are frozen — correct
+// for terrain tiles. When false, bounds=nullptr is passed so ONLY the
+// topological boundary lock (lock_boundary=true, Task 8) freezes open edges;
+// face-plane locking is suppressed, which is correct for cluster interiors that
+// happen to touch the cluster AABB but are NOT terrain borders.
+std::vector<Tri> decimate_to_error(const std::vector<Tri>& tris, float epsilon,
+                                   bool use_aabb_bounds = true);
 
 // Rebuild per-triangle TriEx for a decimated mesh by re-projection: for each
 // output triangle, copy materialId/tint/AO from the nearest source triangle
