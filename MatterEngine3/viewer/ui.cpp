@@ -40,6 +40,8 @@ void Ui::draw_debug_panel(ViewerStats& s) {
     ImGui::Begin("Viewer Debug");
 
     ImGui::Text("FPS: %.1f  (%.2f ms)", s.fps, s.frame_ms);
+    ImGui::Text("CPU: resolve %.2f  build %.2f  draw %.2f ms",
+                s.resolve_ms, s.build_ms, s.draw_ms);
     ImGui::Text("Camera: %.1f, %.1f, %.1f", s.cam_pos[0], s.cam_pos[1], s.cam_pos[2]);
     ImGui::Separator();
 

@@ -13,6 +13,7 @@
 #include "probe_texture.h"
 #include "ui.h"
 
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -232,6 +233,7 @@ int main() {
     if (fifo_path) printf("MATTER_CMD_FIFO not supported on Windows; ignoring\n");
 #endif
     std::string shot_path;   // pending screenshot target
+    std::string stats_label;   // pending `stats <label>` FIFO request
     int  shot_frames = 0;    // frames to let the image settle before capture
     bool quit_requested = false;
 
@@ -254,6 +256,7 @@ int main() {
                 if (line.empty()) continue;
                 float c[6];
                 char pathbuf[256];
+                char labelbuf[64];
                 if (sscanf(line.c_str(), "cam %f %f %f %f %f %f",
                            &c[0],&c[1],&c[2],&c[3],&c[4],&c[5]) == 6) {
                     renderer.camera().position = (Vector3){ c[0], c[1], c[2] };
@@ -261,6 +264,8 @@ int main() {
                 } else if (sscanf(line.c_str(), "shot %255s", pathbuf) == 1) {
                     shot_path = pathbuf;
                     shot_frames = 4;   // RT-derived settle count; applied harmlessly in raster mode too
+                } else if (sscanf(line.c_str(), "stats %63s", labelbuf) == 1) {
+                    stats_label = labelbuf;   // printed after this frame's stats fill
                 } else if (line == "reload") {
                     stats.reload_requested = true;
                 } else if (line == "quit") {
@@ -282,8 +287,13 @@ int main() {
         if (use_rt) {
             active = composer->compose(state, resolver, lods, cam);
         } else {
+            auto t0 = std::chrono::steady_clock::now();
             auto resolved = resolver.resolve(state, lods, cam);
+            auto t1 = std::chrono::steady_clock::now();
             batches = raster->build_batches(resolved, *store, renderer.camera());
+            auto t2 = std::chrono::steady_clock::now();
+            stats.resolve_ms = std::chrono::duration<float, std::milli>(t1 - t0).count();
+            stats.build_ms   = std::chrono::duration<float, std::milli>(t2 - t1).count();
             for (const auto& b : batches) active += (int)b.transforms.size();
         }
 
@@ -297,7 +307,10 @@ int main() {
             if (use_rt) {
                 renderer.draw(store->blas(), composer->tlas());
             } else {
+                auto d0 = std::chrono::steady_clock::now();
                 stats.raster_tris     = raster->draw(batches, *store, renderer.camera());
+                stats.draw_ms = std::chrono::duration<float, std::milli>(
+                                    std::chrono::steady_clock::now() - d0).count();
                 stats.raster_batches  = (int)raster->batches();
                 stats.culled_clusters = (int)raster->culled_clusters();
                 stats.batch_cache_hit = raster->cache_hit();
@@ -307,6 +320,16 @@ int main() {
             ui.draw_camera_panel(renderer.camera());
             ui.end_frame();
         EndDrawing();
+
+        if (!stats_label.empty()) {
+            printf("STATS,%s,%.2f,%.2f,%.2f,%.2f,%d,%d,%d,%d\n",
+                   stats_label.c_str(), stats.frame_ms,
+                   stats.resolve_ms, stats.build_ms, stats.draw_ms,
+                   stats.instances_active, stats.raster_batches,
+                   stats.raster_tris, stats.culled_clusters);
+            fflush(stdout);
+            stats_label.clear();
+        }
 
         if (screenshot_path) {
             // Settle count of 3 is RT-derived (waits for raytrace to stabilize);

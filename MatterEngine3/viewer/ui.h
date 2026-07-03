@@ -28,6 +28,10 @@ struct ViewerStats {
     int      raster_tris = 0;
     int      culled_clusters = 0;
     bool     batch_cache_hit = false;   // true when build_batches reused last frame's result
+    // Raster-path CPU timing split (ms) — Stage 0 of the frame-time package.
+    float    resolve_ms = 0.0f;   // SectorResolver::resolve
+    float    build_ms   = 0.0f;   // RasterComposer::build_batches
+    float    draw_ms    = 0.0f;   // RasterComposer::draw (CPU submit side)
     // Probe status: dims[0..2] = nx,ny,nz from the grid (all zero = probes OFF/unavailable)
     int      probe_dims[3] = {0,0,0};
 };
