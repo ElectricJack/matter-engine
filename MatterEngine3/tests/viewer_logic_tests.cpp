@@ -293,7 +293,9 @@ static void test_partstore_keeps_children() {
     CHECK(tree != nullptr, "tree part loads from PartStore");
     CHECK(tree && !tree->lod_blas.empty(), "flat tree carries LOD geometry");
     CHECK(tree && tree->children.empty(), "flat tree has an empty child table");
-    CHECK(tree && tree->lod_mesh_data.size() == tree->lod_blas.size(), "raster data per LOD level");
+    // Task 12: v3 flat lod_mesh_data includes per-cluster entries AFTER the legacy
+    // whole-part entries, so lod_mesh_data.size() >= lod_blas.size().
+    CHECK(tree && tree->lod_mesh_data.size() >= tree->lod_blas.size(), "raster data per LOD level (>= for v3)");
     CHECK(tree && !tree->lod_mesh_data.empty() && tree->lod_mesh_data[0].vertex_count > 0, "LOD0 raster verts present");
     if (tree) printf("  flat Tree: %zu LOD level(s), %zu children\n",
                      tree->lod_blas.size(), tree->children.size());
@@ -801,6 +803,175 @@ static void test_provider_regen_stale_v2_flat() {
     printf(pv == 3 ? "PASSED\n" : "FAILED\n");
 }
 
+// Task 12: per-cluster loading.
+// Verifies that:
+//  (a) a v3 flat artifact loads into lp.clusters (>= 1 entry, each with parallel
+//      thresholds/lod_blas/lod_mesh arrays of matching size >= 1),
+//  (b) the legacy lp.lod_blas / lp.thresholds are still populated (whole-part RT view),
+//  (c) legacy lod0 tri total == sum of cluster lod0 tri counts,
+//  (d) bound_radius > 0,
+//  (e) loading a v2 flat still works (produces 1 synthetic cluster + non-empty legacy view),
+//  (f) the compositional path (no flat artifact) still works (clusters stays empty).
+static void test_partstore_cluster_loading() {
+    printf("=== test_partstore_cluster_loading ===\n");
+
+    // ---- Helper: build two quads (distinct positions) as v3 flat artifact. ----
+    // We write TWO clusters, each with ONE LOD level, to test the cluster path.
+    const std::string root = "/tmp/me3_cluster_load_test";
+    ::system(("rm -rf " + root).c_str());
+    ::system(("mkdir -p " + root + "/parts").c_str());
+
+    // Helper lambda: make a pair of tris forming a quad at a given offset.
+    auto make_tris = [](float ox, float oy, float oz) -> std::vector<Tri> {
+        std::vector<Tri> t(2);
+        auto set = [](Tri& tri, float3 a, float3 b, float3 c) {
+            tri.vertex0 = a; tri.vertex1 = b; tri.vertex2 = c;
+            tri.centroid = make_float3((a.x+b.x+c.x)/3,(a.y+b.y+c.y)/3,(a.z+b.z+c.z)/3);
+        };
+        float3 P0 = make_float3(ox,    oy,    oz);
+        float3 P1 = make_float3(ox+2,  oy,    oz);
+        float3 P2 = make_float3(ox+2,  oy+2,  oz);
+        float3 P3 = make_float3(ox,    oy+2,  oz);
+        set(t[0], P0, P1, P2);
+        set(t[1], P0, P2, P3);
+        return t;
+    };
+
+    // Build a scratch BLASManager with 2 clusters (each one BLAS entry).
+    const uint64_t kV3Hash = 0xC1C2C3C4D1D2D3D4ull;
+    {
+        BLASManager scratch; TLASManager scratch_tlas(64);
+        // Cluster 0: tris at (0,0,0)
+        auto t0 = make_tris(0, 0, 0);
+        uint32_t bi0 = (uint32_t)scratch.get_entries().size();
+        scratch.register_triangles(t0.data(), (int)t0.size(), nullptr);
+        // Cluster 1: tris at (10,0,0)
+        auto t1 = make_tris(10, 0, 0);
+        uint32_t bi1 = (uint32_t)scratch.get_entries().size();
+        scratch.register_triangles(t1.data(), (int)t1.size(), nullptr);
+
+        std::vector<part_asset::FlatCluster> clusters(2);
+        clusters[0].aabb_min[0]=0; clusters[0].aabb_min[1]=0; clusters[0].aabb_min[2]=0;
+        clusters[0].aabb_max[0]=2; clusters[0].aabb_max[1]=2; clusters[0].aabb_max[2]=0;
+        {
+            part_asset::LodLevel L; L.screen_size_threshold = 0.5f; L.blas_indices.push_back(bi0);
+            clusters[0].lods.push_back(L);
+        }
+        clusters[1].aabb_min[0]=10; clusters[1].aabb_min[1]=0; clusters[1].aabb_min[2]=0;
+        clusters[1].aabb_max[0]=12; clusters[1].aabb_max[1]=2; clusters[1].aabb_max[2]=0;
+        {
+            part_asset::LodLevel L; L.screen_size_threshold = 0.5f; L.blas_indices.push_back(bi1);
+            clusters[1].lods.push_back(L);
+        }
+
+        const std::string flat_path = root + "/" + part_asset::cache_path_flat(kV3Hash);
+        bool ok = part_asset::save_flat_v3(flat_path, scratch, scratch_tlas, clusters, kV3Hash);
+        CHECK(ok, "cluster test: v3 flat artifact saved");
+        if (!ok) return;
+        CHECK(part_asset::peek_format_version(flat_path) == 3, "cluster test: flat is v3");
+    }
+
+    // (a)-(d): Load the v3 flat via PartStore and check clusters + legacy view.
+    {
+        viewer::PartStore store(root);
+        const viewer::LoadedPart* lp = store.get_or_load(kV3Hash);
+        CHECK(lp != nullptr, "cluster test: v3 flat part loads");
+        if (!lp) return;
+
+        // (a) clusters populated.
+        CHECK(lp->clusters.size() >= 1, "v3 load: clusters.size() >= 1");
+        bool cluster_arrays_ok = true;
+        for (size_t ci = 0; ci < lp->clusters.size(); ++ci) {
+            const viewer::LoadedCluster& cl = lp->clusters[ci];
+            if (cl.thresholds.size() < 1 ||
+                cl.lod_blas.size() != cl.thresholds.size() ||
+                cl.lod_mesh.size() != cl.thresholds.size()) {
+                cluster_arrays_ok = false;
+            }
+        }
+        CHECK(cluster_arrays_ok,
+              "v3 load: every cluster has parallel thresholds/lod_blas/lod_mesh (size >= 1)");
+
+        // (b) legacy view populated.
+        CHECK(!lp->lod_blas.empty(),   "v3 load: legacy lod_blas non-empty (RT path)");
+        CHECK(!lp->thresholds.empty(), "v3 load: legacy thresholds non-empty");
+
+        // (c) legacy lod0 tri count == sum of per-cluster lod0 tri counts.
+        if (!lp->lod_blas.empty() && !lp->clusters.empty()) {
+            // Legacy lod0 BLAS tri count.
+            const BLASManager& bm = store.blas();
+            const auto* leg_entry = bm.get_entry(lp->lod_blas[0]);
+            int legacy_tris = leg_entry ? (int)leg_entry->triangles.size() : 0;
+
+            // Sum cluster lod0 tri counts.
+            int sum_cluster_tris = 0;
+            for (const auto& cl : lp->clusters) {
+                if (cl.lod_blas.empty()) continue;
+                const auto* cl_entry = bm.get_entry(cl.lod_blas[0]);
+                if (cl_entry) sum_cluster_tris += (int)cl_entry->triangles.size();
+            }
+            char msg[200];
+            std::snprintf(msg, sizeof msg,
+                "v3 load: legacy lod0 tris (%d) == sum cluster lod0 tris (%d)",
+                legacy_tris, sum_cluster_tris);
+            CHECK(legacy_tris == sum_cluster_tris, msg);
+        }
+
+        // (d) bound_radius > 0.
+        CHECK(lp->bound_radius > 0.0f, "v3 load: bound_radius > 0");
+    }
+
+    // (e): v2 flat still works (1 synthetic cluster + non-empty legacy view).
+    const uint64_t kV2Hash = 0xA1A2A3A4B1B2B3B4ull;
+    {
+        BLASManager scratch2; TLASManager scratch_tlas2(64);
+        auto t2 = make_tris(5, 0, 0);
+        scratch2.register_triangles(t2.data(), (int)t2.size(), nullptr);
+        part_asset::LodLevels lods;
+        part_asset::LodLevel Lv2; Lv2.screen_size_threshold = 0.3f; Lv2.blas_indices.push_back(0);
+        lods.push_back(Lv2);
+        const std::string flat_path2 = root + "/" + part_asset::cache_path_flat(kV2Hash);
+        bool ok2 = part_asset::save_v2(flat_path2, scratch2, scratch_tlas2, nullptr, 0, lods, kV2Hash);
+        CHECK(ok2, "cluster test: v2 flat saved");
+        CHECK(part_asset::peek_format_version(flat_path2) == 2, "cluster test: v2 flat is v2");
+    }
+    {
+        viewer::PartStore store2(root);
+        const viewer::LoadedPart* lp2 = store2.get_or_load(kV2Hash);
+        CHECK(lp2 != nullptr, "v2 flat: loads successfully");
+        if (lp2) {
+            CHECK(!lp2->lod_blas.empty(), "v2 flat: legacy lod_blas non-empty");
+            CHECK(lp2->clusters.size() == 1, "v2 flat: produces exactly 1 synthetic cluster");
+        }
+    }
+
+    // (f): compositional path (no flat artifact) -> clusters stays empty.
+    const uint64_t kCompHash = 0x1234567890ABCDEFull;
+    {
+        BLASManager scratch3; TLASManager scratch_tlas3(64);
+        auto t3 = make_tris(0, 5, 0);
+        scratch3.register_triangles(t3.data(), (int)t3.size(), nullptr);
+        part_asset::LodLevels lods3;
+        part_asset::LodLevel Lc; Lc.screen_size_threshold = 0.0f; Lc.blas_indices.push_back(0);
+        lods3.push_back(Lc);
+        const std::string comp_path = root + "/" + part_asset::cache_path_resolved(kCompHash);
+        bool ok3 = part_asset::save_v2(comp_path, scratch3, scratch_tlas3, nullptr, 0, lods3, kCompHash);
+        CHECK(ok3, "comp path: v2 .part saved (no flat artifact)");
+    }
+    {
+        viewer::PartStore store3(root);
+        const viewer::LoadedPart* lp3 = store3.get_or_load(kCompHash);
+        CHECK(lp3 != nullptr, "comp path: part loads via compositional path");
+        if (lp3) {
+            CHECK(lp3->clusters.empty(), "comp path: clusters stays empty (no flat artifact)");
+            CHECK(!lp3->lod_blas.empty(), "comp path: legacy lod_blas populated");
+        }
+    }
+
+    ::system(("rm -rf " + root).c_str());
+    printf("=== test_partstore_cluster_loading DONE ===\n");
+}
+
 int main() {
     test_world_state_delta();
     test_resolvers();
@@ -816,6 +987,7 @@ int main() {
     test_raster_composer_lights();
     test_probe_quantization_roundtrip();
     test_provider_regen_stale_v2_flat();
+    test_partstore_cluster_loading();
     delete g_shared_store; g_shared_store = nullptr;
     printf("\n%s\n", g_failures == 0 ? "viewer-logic OK" : "viewer-logic FAILED");
     return g_failures == 0 ? 0 : 1;

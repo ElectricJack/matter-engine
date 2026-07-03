@@ -7,6 +7,7 @@
 #include <cassert>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <sys/stat.h>
 
 namespace viewer {
@@ -47,28 +48,43 @@ bool PartStore::load_flat(uint64_t part_hash, LoadedPart& lp) {
                    (unsigned long long)part_hash, path.c_str());
             return false;
         }
-        // For the flat-preferred path, collapse all clusters' level-0 geometry
-        // into one combined LOD ladder by flattening cluster[i].lods[j] across
-        // clusters: register ALL cluster level-0 triangles together as lod_blas[0],
-        // then all cluster level-1 triangles as lod_blas[1], etc. This gives the
-        // PartStore consumer (WorldComposer/RasterComposer) a simple per-part LOD
-        // array identical to the v2 flat path. Task 12 will consume clusters
-        // individually per-cluster for GPU-side cluster culling.
+
         const auto& entries = scratch.get_entries();
+
         // Determine max LOD count across clusters.
         size_t max_lods = 0;
         for (const auto& cl : clusters_in) max_lods = std::max(max_lods, cl.lods.size());
         if (max_lods == 0) return false;
 
-        bool radius_set = false;
+        // --- Step 1: Legacy whole-part view for the RT path (WorldComposer/TLAS). ---
+        // IMPORTANT: lp.lod_mesh_data[0..max_lods-1] are the whole-part entries (parallel
+        // to lp.lod_blas). Per-cluster mesh-data is appended AFTER these entries so that
+        // the RasterComposer's `lp.lod_mesh_data[level]` access remains correct.
+        //
+        // Legacy level i = concatenation over clusters of level min(i, cluster.levels-1).
+        // Legacy threshold i = max over clusters of that same choice.
+        // bound_radius = union of cluster AABBs from the stored FlatCluster AABBs.
+        float g_mn[3] = {1e30f,1e30f,1e30f}, g_mx[3] = {-1e30f,-1e30f,-1e30f};
+        for (const auto& cl : clusters_in) {
+            for (int k = 0; k < 3; ++k) {
+                g_mn[k] = std::fmin(g_mn[k], cl.aabb_min[k]);
+                g_mx[k] = std::fmax(g_mx[k], cl.aabb_max[k]);
+            }
+        }
+        {
+            float dx = g_mx[0]-g_mn[0], dy = g_mx[1]-g_mn[1], dz = g_mx[2]-g_mn[2];
+            lp.bound_radius = 0.5f * std::sqrt(dx*dx + dy*dy + dz*dz);
+        }
+
         for (size_t li = 0; li < max_lods; ++li) {
             std::vector<Tri> tris;
             std::vector<TriEx> triex;
             float thr = 0.0f;
             for (const auto& cl : clusters_in) {
-                if (li >= cl.lods.size()) continue;
-                thr = cl.lods[li].screen_size_threshold; // same across clusters
-                for (uint32_t bi : cl.lods[li].blas_indices) {
+                // Use level min(li, cluster_levels-1) for clusters with fewer levels.
+                size_t use_li = (li < cl.lods.size()) ? li : cl.lods.size() - 1;
+                thr = std::fmax(thr, cl.lods[use_li].screen_size_threshold);
+                for (uint32_t bi : cl.lods[use_li].blas_indices) {
                     if (bi >= entries.size()) continue;
                     tris.insert(tris.end(), entries[bi]->triangles.begin(), entries[bi]->triangles.end());
                     triex.insert(triex.end(), entries[bi]->tri_extra.begin(), entries[bi]->tri_extra.end());
@@ -80,7 +96,8 @@ bool PartStore::load_flat(uint64_t part_hash, LoadedPart& lp) {
             lp.thresholds.push_back(thr);
             lp.lod_blas.push_back(h);
 
-            if (const auto* e = blas_.get_entry(lp.lod_blas.back())) {
+            // Append legacy whole-part mesh-data at lod_mesh_data[li] (parallel to lod_blas).
+            if (const auto* e = blas_.get_entry(h)) {
                 const TriEx* mesh_ex = (e->tri_extra.size() == e->triangles.size() && !e->tri_extra.empty())
                                           ? e->tri_extra.data() : nullptr;
                 lp.lod_mesh_data.push_back(
@@ -88,23 +105,65 @@ bool PartStore::load_flat(uint64_t part_hash, LoadedPart& lp) {
             } else {
                 lp.lod_mesh_data.push_back({});
             }
-
-            if (!radius_set && !tris.empty()) {
-                float mn[3] = {1e30f,1e30f,1e30f}, mx[3] = {-1e30f,-1e30f,-1e30f};
-                auto acc = [&](const float3& v){
-                    mn[0]=std::fmin(mn[0],v.x); mx[0]=std::fmax(mx[0],v.x);
-                    mn[1]=std::fmin(mn[1],v.y); mx[1]=std::fmax(mx[1],v.y);
-                    mn[2]=std::fmin(mn[2],v.z); mx[2]=std::fmax(mx[2],v.z);
-                };
-                for (const auto& t : tris) { acc(t.vertex0); acc(t.vertex1); acc(t.vertex2); }
-                float dx=mx[0]-mn[0], dy=mx[1]-mn[1], dz=mx[2]-mn[2];
-                lp.bound_radius = 0.5f * std::sqrt(dx*dx+dy*dy+dz*dz);
-                radius_set = true;
-            }
         }
         if (lp.lod_blas.empty()) return false;
+
+        // --- Step 2: Per-cluster data (for Task 13 per-cluster GPU culling). ---
+        // Each cluster gets its own LoadedCluster with parallel thresholds / lod_blas /
+        // lod_mesh arrays. Per-cluster BLAS entries are individually registered into the
+        // shared blas_. Per-cluster mesh-data is APPENDED to lp.lod_mesh_data AFTER the
+        // legacy whole-part entries (indices lp.lod_blas.size()..end). lod_mesh[i] is
+        // an absolute index into lp.lod_mesh_data.
+        lp.clusters.reserve(clusters_in.size());
+        for (const auto& cl_in : clusters_in) {
+            LoadedCluster cl_out;
+            // AABB / radius from the FlatCluster's stored AABB.
+            std::memcpy(cl_out.aabb_min, cl_in.aabb_min, sizeof cl_out.aabb_min);
+            std::memcpy(cl_out.aabb_max, cl_in.aabb_max, sizeof cl_out.aabb_max);
+            float dx = cl_in.aabb_max[0] - cl_in.aabb_min[0];
+            float dy = cl_in.aabb_max[1] - cl_in.aabb_min[1];
+            float dz = cl_in.aabb_max[2] - cl_in.aabb_min[2];
+            cl_out.radius = 0.5f * std::sqrt(dx*dx + dy*dy + dz*dz);
+
+            for (size_t li = 0; li < cl_in.lods.size(); ++li) {
+                const auto& lod_in = cl_in.lods[li];
+                // Gather tris from this cluster's lod level.
+                std::vector<Tri> ctris;
+                std::vector<TriEx> ctriex;
+                for (uint32_t bi : lod_in.blas_indices) {
+                    if (bi >= entries.size()) continue;
+                    ctris.insert(ctris.end(), entries[bi]->triangles.begin(), entries[bi]->triangles.end());
+                    ctriex.insert(ctriex.end(), entries[bi]->tri_extra.begin(), entries[bi]->tri_extra.end());
+                }
+                if (ctris.empty()) continue;
+                const TriEx* cex = (ctriex.size() == ctris.size()) ? ctriex.data() : nullptr;
+                BLASHandle ch = blas_.register_triangles(ctris.data(), (int)ctris.size(), cex);
+
+                // Append cluster-level mesh-data after the legacy whole-part entries.
+                int mesh_idx = (int)lp.lod_mesh_data.size();
+                if (const auto* ce = blas_.get_entry(ch)) {
+                    const TriEx* mex = (ce->tri_extra.size() == ce->triangles.size() && !ce->tri_extra.empty())
+                                           ? ce->tri_extra.data() : nullptr;
+                    lp.lod_mesh_data.push_back(
+                        build_raster_mesh_data(ce->triangles.data(), mex, (int)ce->triangles.size()));
+                } else {
+                    lp.lod_mesh_data.push_back({});
+                }
+
+                cl_out.thresholds.push_back(lod_in.screen_size_threshold);
+                cl_out.lod_blas.push_back(ch);
+                cl_out.lod_mesh.push_back(mesh_idx);
+            }
+            if (cl_out.lod_blas.empty()) {
+                // Cluster yielded no geometry - skip rather than leaving an empty entry.
+                continue;
+            }
+            lp.clusters.push_back(std::move(cl_out));
+        }
+        if (lp.clusters.empty()) return false;
+
         printf("PartStore: loaded v3 FLAT part %016llx (%zu LOD levels, %zu clusters)\n",
-               (unsigned long long)part_hash, lp.lod_blas.size(), clusters_in.size());
+               (unsigned long long)part_hash, lp.lod_blas.size(), lp.clusters.size());
         return true;
     }
 
@@ -122,6 +181,13 @@ bool PartStore::load_flat(uint64_t part_hash, LoadedPart& lp) {
         }
 
         const auto& entries = scratch.get_entries();
+
+        // Build the legacy whole-part LOD ladder AND accumulate a synthetic single
+        // cluster from the loaded lods so the raster path is uniform.
+        LoadedCluster syn_cl;
+        float mn[3] = {1e30f,1e30f,1e30f}, mx[3] = {-1e30f,-1e30f,-1e30f};
+        bool aabb_set = false;
+
         for (size_t li = 0; li < lods_in.size(); ++li) {
             std::vector<Tri> tris;
             std::vector<TriEx> triex;
@@ -136,7 +202,8 @@ bool PartStore::load_flat(uint64_t part_hash, LoadedPart& lp) {
             lp.thresholds.push_back(lods_in[li].screen_size_threshold);
             lp.lod_blas.push_back(h);
 
-            if (const auto* e = blas_.get_entry(lp.lod_blas.back())) {
+            int mesh_idx = (int)lp.lod_mesh_data.size();
+            if (const auto* e = blas_.get_entry(h)) {
                 const TriEx* mesh_ex = (e->tri_extra.size() == e->triangles.size() && !e->tri_extra.empty())
                                           ? e->tri_extra.data() : nullptr;
                 lp.lod_mesh_data.push_back(
@@ -145,8 +212,12 @@ bool PartStore::load_flat(uint64_t part_hash, LoadedPart& lp) {
                 lp.lod_mesh_data.push_back({});
             }
 
-            if (li == 0) {
-                float mn[3] = {1e30f,1e30f,1e30f}, mx[3] = {-1e30f,-1e30f,-1e30f};
+            // Accumulate synthetic cluster level (mirrors legacy view exactly).
+            syn_cl.thresholds.push_back(lods_in[li].screen_size_threshold);
+            syn_cl.lod_blas.push_back(h);
+            syn_cl.lod_mesh.push_back(mesh_idx);
+
+            if (!aabb_set) {
                 auto acc = [&](const float3& v){
                     mn[0]=std::fmin(mn[0],v.x); mx[0]=std::fmax(mx[0],v.x);
                     mn[1]=std::fmin(mn[1],v.y); mx[1]=std::fmax(mx[1],v.y);
@@ -155,10 +226,21 @@ bool PartStore::load_flat(uint64_t part_hash, LoadedPart& lp) {
                 for (const auto& t : tris) { acc(t.vertex0); acc(t.vertex1); acc(t.vertex2); }
                 float dx=mx[0]-mn[0], dy=mx[1]-mn[1], dz=mx[2]-mn[2];
                 lp.bound_radius = 0.5f * std::sqrt(dx*dx+dy*dy+dz*dz);
+                aabb_set = true;
             }
         }
         if (lp.lod_blas.empty()) return false;
-        printf("PartStore: loaded v2 FLAT part %016llx (%zu LOD levels)\n",
+
+        // Finalise synthetic cluster AABB.
+        std::memcpy(syn_cl.aabb_min, mn, sizeof mn);
+        std::memcpy(syn_cl.aabb_max, mx, sizeof mx);
+        {
+            float dx = mx[0]-mn[0], dy = mx[1]-mn[1], dz = mx[2]-mn[2];
+            syn_cl.radius = 0.5f * std::sqrt(dx*dx + dy*dy + dz*dz);
+        }
+        if (!syn_cl.lod_blas.empty()) lp.clusters.push_back(std::move(syn_cl));
+
+        printf("PartStore: loaded v2 FLAT part %016llx (%zu LOD levels, 1 synthetic cluster)\n",
                (unsigned long long)part_hash, lp.lod_blas.size());
         return true;
     }

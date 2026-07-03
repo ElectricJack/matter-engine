@@ -14,6 +14,25 @@
 
 namespace viewer {
 
+// Per-cluster data loaded from a v3 flat artifact.
+// aabb_min/aabb_max and radius describe the cluster's spatial extent (for Task 13
+// per-cluster GPU culling).  thresholds / lod_blas / lod_mesh are parallel arrays
+// (one entry per LOD level in the cluster's own ladder).
+// lod_blas[i]  : BLASHandle in the shared BLASManager (legacy lod_blas entries may
+//                re-use the SAME handle when the whole-part and per-cluster entries
+//                are identical, but typically the whole-part legacy level is a new
+//                merged registration).
+// lod_mesh[i]  : index into LoadedPart::lod_mesh_data for the cluster's i-th level
+//                mesh-data (stored there to keep mesh-data ownership in one place).
+struct LoadedCluster {
+    float aabb_min[3];
+    float aabb_max[3];
+    float radius;                          // half AABB diagonal
+    std::vector<float>    thresholds;      // per ladder level
+    std::vector<uint32_t> lod_blas;        // per level: BLAS index in the SHARED blas_
+    std::vector<int>      lod_mesh;        // per level: index into lp.lod_mesh_data
+};
+
 // A part loaded into the shared BLASManager: one BLAS handle per LOD level
 // (regenerated via lod_bake, since .part stores only LOD0), plus the LOD
 // metadata the SectorResolver needs.
@@ -23,6 +42,7 @@ struct LoadedPart {
     std::vector<float>      thresholds;      // per-LOD screen-size thresholds
     std::vector<part_asset::ChildInstance> children;   // baked child-instance table (may be empty)
     std::vector<RasterMeshData> lod_mesh_data;  // parallel to lod_blas (CPU-only; GL upload is lazy)
+    std::vector<LoadedCluster>  clusters;        // non-empty iff a v3 flat was loaded
 };
 
 // Owns one BLASManager shared across all loaded parts. Content-addressed and
