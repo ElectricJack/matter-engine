@@ -233,11 +233,50 @@ static void test_error_bound_calibration() {
     }
 }
 
+// Open heightfield grid over a known XZ footprint — the terrain-tile shape.
+// Decimation must NOT erode the border: adjacent tiles are simplified
+// independently, and any outline shrink opens visible sky cracks at the seams.
+static void test_open_grid_border_preserved() {
+    // 32x32 quad grid over [0,16]^2, gentle sine relief (plenty to decimate).
+    const int N = 32;
+    const float W = 16.0f;
+    auto h = [](float x, float z) {
+        return 0.6f * std::sin(x * 0.7f) * std::cos(z * 0.5f);
+    };
+    auto pt = [&](int i, int j) {
+        float x = W * i / N, z = W * j / N;
+        return make_float3(x, h(x, z), z);
+    };
+    std::vector<Tri> grid;
+    for (int j = 0; j < N; ++j)
+        for (int i = 0; i < N; ++i) {
+            float3 a = pt(i, j), b = pt(i+1, j), c = pt(i+1, j+1), d = pt(i, j+1);
+            grid.push_back(make_tri(a, b, c));
+            grid.push_back(make_tri(a, c, d));
+        }
+
+    // Coarse epsilon (~tile bound_radius / 4 in the real ladder).
+    std::vector<Tri> dec = lod_bake::decimate_to_error(grid, 2.8f);
+    CHECK(dec.size() < grid.size() / 2, "open grid actually decimates (>2x reduction)");
+
+    float minx = 1e9f, maxx = -1e9f, minz = 1e9f, maxz = -1e9f;
+    for (const Tri& t : dec) {
+        const float3* vs[3] = { &t.vertex0, &t.vertex1, &t.vertex2 };
+        for (const float3* v : vs) {
+            minx = std::fmin(minx, v->x); maxx = std::fmax(maxx, v->x);
+            minz = std::fmin(minz, v->z); maxz = std::fmax(maxz, v->z);
+        }
+    }
+    char msg[160];
+    std::snprintf(msg, sizeof msg,
+                  "border preserved exactly: x=[%.4f,%.4f] z=[%.4f,%.4f] vs [0,16]^2",
+                  minx, maxx, minz, maxz);
+    CHECK(minx == 0.0f && maxx == W && minz == 0.0f && maxz == W, msg);
+}
+
 static void test_reproject_two_materials() {
     // Closed two-material mesh: unit sphere, left hemisphere (x<0) material 1,
-    // right material 2. (Closed on purpose: QEM error-only mode erodes OPEN
-    // outlines for free — coplanar boundary collapses cost 0 — so an open sheet
-    // is not a valid decimation fixture.)
+    // right material 2.
     std::vector<Tri> tris = sphere_tris(48, 24);
     std::vector<TriEx> triex;
     triex.reserve(tris.size());
@@ -263,6 +302,7 @@ int main() {
     test_flatten_deterministic();
     test_flatten_missing_part();
     test_error_bound_calibration();
+    test_open_grid_border_preserved();
     test_reproject_two_materials();
 
     if (failures == 0) { printf("part_flatten_tests: ALL PASS\n"); return 0; }

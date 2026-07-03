@@ -67,13 +67,28 @@ std::vector<Tri> decimate_to_error(const std::vector<Tri>& tris, float epsilon) 
     SimplifyOptions opts;
     // target_ratio 0 -> targetTri clamps to 1, so the collapse loop runs until
     // the min heap cost exceeds max_error (the error bound is the ONLY stop).
-    // Caveat: on OPEN meshes the outline erodes for free (boundary collapses
-    // are coplanar with the quadric planes, cost ~0), possibly down to nothing;
-    // the empty-output fallback below then returns the input unchanged.
     opts.target_ratio  = 0.0f;
     opts.max_error     = epsilon * epsilon;  // QEM cost is squared distance
-    opts.lock_boundary = false;
-    Mesh out = simplify_mesh(in, opts, nullptr);
+    // On OPEN meshes the outline erodes for free (boundary collapses are
+    // coplanar with the quadric planes, cost ~0) — adjacent terrain tiles then
+    // shrink independently and open sky cracks at the seams. lock_boundary only
+    // acts when CellBounds is supplied, so pass the mesh's own AABB: vertices on
+    // its face planes (tile borders, sheet rims) are frozen; interior verts and
+    // closed organic parts are barely affected.
+    opts.lock_boundary = true;
+    float minx=1e30f,maxx=-1e30f,miny=1e30f,maxy=-1e30f,minz=1e30f,maxz=-1e30f;
+    for (const Tri& t : tris) {
+        const float3* vs[3] = { &t.vertex0, &t.vertex1, &t.vertex2 };
+        for (const float3* v : vs) {
+            if (v->x < minx) minx = v->x; if (v->x > maxx) maxx = v->x;
+            if (v->y < miny) miny = v->y; if (v->y > maxy) maxy = v->y;
+            if (v->z < minz) minz = v->z; if (v->z > maxz) maxz = v->z;
+        }
+    }
+    CellBounds cb;
+    cb.min_bound = { minx, miny, minz };
+    cb.max_bound = { maxx, maxy, maxz };
+    Mesh out = simplify_mesh(in, opts, &cb);
     std::vector<Tri> result = (out.vertexCount > 0) ? mesh_to_tris(out) : tris;
     if (in.vertices) MemFree(in.vertices);
     if (out.vertices) MemFree(out.vertices);
