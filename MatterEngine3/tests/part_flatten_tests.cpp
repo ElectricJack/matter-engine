@@ -245,8 +245,7 @@ static const uint64_t kDenseSphereHash = 0xBBBB000022220002ull;
 
 // Write a small sphere part (~400 tris) as a childless .part in the cache.
 // Returns kSmallSphereHash on success, 0 on failure.
-static uint64_t write_small_sphere_part(const std::string& cache_root) {
-    (void)cache_root; // kCacheRoot is the same value used by save_fixture
+static uint64_t write_small_sphere_part() {
     // segs=20, rings=10 => ~20*10*2=400 tris (well under old min_tris=2000)
     std::vector<Tri> tris = sphere_tris(20, 10);
     if (!save_fixture(kSmallSphereHash, 5, {tris}, {})) return 0;
@@ -255,8 +254,7 @@ static uint64_t write_small_sphere_part(const std::string& cache_root) {
 
 // Write a dense sphere part (>=20k tris) as a childless .part in the cache.
 // Returns kDenseSphereHash on success, 0 on failure.
-static uint64_t write_dense_sphere_part(const std::string& cache_root) {
-    (void)cache_root;
+static uint64_t write_dense_sphere_part() {
     // segs=120, rings=90 => ~120*90*2=21600 tris
     std::vector<Tri> tris = sphere_tris(120, 90);
     if (!save_fixture(kDenseSphereHash, 6, {tris}, {})) return 0;
@@ -1102,7 +1100,11 @@ static void test_small_part_gets_ladder() {
     std::string flat = std::string(kCacheRoot) + "/" + part_asset::cache_path_flat(kSmallSphereHash);
     std::remove(flat.c_str());
 
-    uint64_t hash = write_small_sphere_part(kCacheRoot);
+    // Remove any stale lods sidecar to ensure QEM path, not budget-ladder path.
+    std::string lods = std::string(kCacheRoot) + "/" + part_asset::cache_path_lods(kSmallSphereHash);
+    std::remove(lods.c_str());
+
+    uint64_t hash = write_small_sphere_part();
     CHECK(hash != 0, "small sphere part written");
     if (hash == 0) { printf("  SKIPPING\n"); return; }
 
@@ -1127,7 +1129,7 @@ static void test_ratio2_ladder_shape() {
     std::string flat = std::string(kCacheRoot) + "/" + part_asset::cache_path_flat(kDenseSphereHash);
     std::remove(flat.c_str());
 
-    uint64_t hash = write_dense_sphere_part(kCacheRoot);
+    uint64_t hash = write_dense_sphere_part();
     CHECK(hash != 0, "dense sphere part written");
     if (hash == 0) { printf("  SKIPPING\n"); return; }
 
@@ -1167,8 +1169,7 @@ static void test_ratio2_ladder_shape() {
 // Uses a fixed hash distinct from any other fixture.
 static const uint64_t kTinyPartHash = 0xCCCC000033330003ull;
 
-static uint64_t write_tiny_part(const std::string& cache_root) {
-    (void)cache_root;
+static uint64_t write_tiny_part() {
     // 5 segs x 4 rings => 5*4*2=40 tris; small enough to be "low" variant
     std::vector<Tri> tris = sphere_tris(5, 4);
     if (!save_fixture(kTinyPartHash, 8, {tris}, {})) return 0;
@@ -1182,8 +1183,8 @@ static void test_budget_ladder_assembly() {
 
     // Two hand-built childless parts standing in for budget variants:
     // "full" (~300 tris) and "low" (~40 tris). A hand-written sidecar binds them.
-    uint64_t full_hash = write_small_sphere_part(kCacheRoot);
-    uint64_t low_hash  = write_tiny_part(kCacheRoot);
+    uint64_t full_hash = write_small_sphere_part();
+    uint64_t low_hash  = write_tiny_part();
     CHECK(full_hash != 0, "budget ladder: full part written");
     CHECK(low_hash  != 0, "budget ladder: low part written");
     if (!full_hash || !low_hash) { printf("  SKIPPING\n"); return; }
@@ -1244,10 +1245,14 @@ static void test_budget_ladder_assembly() {
     printf("  t0=%zu t1=%zu thr0=%.4f clusters=%zu levels=%zu\n",
            t0, t1, lods[0].screen_size_threshold, clusters.size(), lods.size());
     printf("  test_budget_ladder_assembly OK\n");
+
+    // Clean up the sidecar we wrote so ordering doesn't matter on reruns.
+    std::string sidecar = std::string(kCacheRoot) + "/" + part_asset::cache_path_lods(full_hash);
+    std::remove(sidecar.c_str());
 }
 
 static void test_flat_version_bump() {
-    uint64_t hash = write_small_sphere_part(kCacheRoot);   // Task 7 fixture
+    uint64_t hash = write_small_sphere_part();   // Task 7 fixture
     auto res = part_flatten::flatten_part(kCacheRoot, hash);
     assert(res.ok);
     std::string p = std::string(kCacheRoot) + "/" + part_asset::cache_path_flat(hash);
