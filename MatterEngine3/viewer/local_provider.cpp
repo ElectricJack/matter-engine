@@ -139,7 +139,8 @@ bool LocalProvider::connect(WorldManifest& out, std::string& err) {
         err = "install did not return a hash for every root";
         return false;
     }
-    // Scatter the example world (identical layout to example_world.cpp).
+    // Place each manifest root at the origin; `expand`-flagged roots are instead
+    // replaced by their baked child-instance table (one world instance per child).
     out.world_root_hash = 1;
     out.instances.clear();
     uint32_t next_id = 1;
