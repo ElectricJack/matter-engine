@@ -401,6 +401,46 @@ static void test_compose_expands_children() {
     system(("rm -rf " + root).c_str());
 }
 
+static void test_append_expanded_children() {
+    const std::string root = "/tmp/me3_expand_test";
+    system(("rm -rf " + root).c_str());
+    system(("mkdir -p " + root + "/parts").c_str());
+
+    // Synthetic assembly root: no geometry, two children with distinct transforms.
+    BLASManager blas; TLASManager tlas(256);
+    part_asset::ChildInstance kids[2] = {};
+    kids[0].child_resolved_hash = 0x1111;
+    kids[1].child_resolved_hash = 0x2222;
+    for (int k = 0; k < 2; ++k) {
+        kids[k].transform[0] = kids[k].transform[5] =
+        kids[k].transform[10] = kids[k].transform[15] = 1.0f;
+        kids[k].transform[3] = 10.0f * (k + 1);   // translate-x 10 / 20
+    }
+    const uint64_t root_hash = 0xABCDEFull;
+    part_asset::LodLevels no_lods;
+    CHECK(part_asset::save_v2(root + "/" + part_asset::cache_path_resolved(root_hash),
+                              blas, tlas, kids, 2, no_lods, root_hash),
+          "synthetic assembly root saved");
+
+    uint32_t next_id = 7;
+    std::vector<viewer::WorldManifestEntry> out;
+    std::string err;
+    CHECK(viewer::append_expanded_children(root, root_hash, next_id, out, err),
+          "expansion succeeds");
+    CHECK(out.size() == 2, "one world instance per child");
+    CHECK(out.size() == 2 && out[0].part_hash == 0x1111 && out[1].part_hash == 0x2222,
+          "child hashes preserved");
+    CHECK(out.size() == 2 && out[0].transform[3] == 10.0f && out[1].transform[3] == 20.0f,
+          "child transforms preserved");
+    CHECK(out.size() == 2 && out[0].instance_id == 7 && out[1].instance_id == 8 && next_id == 9,
+          "instance ids advance");
+
+    // Missing root artifact is a hard error.
+    std::vector<viewer::WorldManifestEntry> out2;
+    CHECK(!viewer::append_expanded_children(root, 0xDEADull, next_id, out2, err),
+          "missing root part fails closed");
+}
+
 static void test_raster_mesh_data() {
     Tri t[2] = {};
     t[0].vertex0 = make_float3(0,0,0); t[0].vertex1 = make_float3(1,0,0); t[0].vertex2 = make_float3(0,1,0);
@@ -441,6 +481,7 @@ int main() {
     test_composer_counts();
     test_partstore_keeps_children();
     test_compose_expands_children();
+    test_append_expanded_children();
     test_raster_mesh_data();
     delete g_shared_store; g_shared_store = nullptr;
     printf("\n%s\n", g_failures == 0 ? "viewer-logic OK" : "viewer-logic FAILED");

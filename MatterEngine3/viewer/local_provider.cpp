@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <fstream>
 #include <set>
 #include <sstream>
@@ -109,7 +110,9 @@ bool LocalProvider::connect(WorldManifest& out, std::string& err) {
     PartGraph graph(resolver, baker);
 
     std::vector<ChildRequest> roots;
-    bool manifest_ok = PartGraph::read_manifest(abs_world_data, cfg_.world_name, roots, err);
+    std::vector<bool> expand_flags;
+    bool manifest_ok = PartGraph::read_manifest(abs_world_data, cfg_.world_name,
+                                                roots, err, &expand_flags);
     if (!manifest_ok) {
         fs_chdir(orig_cwd);
         return false;
@@ -136,10 +139,6 @@ bool LocalProvider::connect(WorldManifest& out, std::string& err) {
         err = "install did not return a hash for every root";
         return false;
     }
-    std::map<std::string, uint64_t> hash_of;
-    for (size_t i = 0; i < roots.size(); ++i)
-        hash_of[roots[i].module] = ir.root_hashes[i];
-
     // Scatter the example world (identical layout to example_world.cpp).
     out.world_root_hash = 1;
     out.instances.clear();
@@ -179,20 +178,20 @@ bool LocalProvider::connect(WorldManifest& out, std::string& err) {
         }
     };
 
-    // The Primitives world (examples/primitive_demo) places a single Gallery root
-    // at the origin; the Gallery's child table scatters the three sub-galleries.
-    if (cfg_.world_name == "Primitives") {
-        place(hash_of["Gallery"], 0.0f, 0.0f, 0.0f);
-        flatten_placed();
-        return true;
+    // Generic placement: every manifest root is placed at the origin, except
+    // roots flagged `expand`, whose baked child-instance table is promoted to
+    // individual world instances (per-child LOD, culling, and instanced
+    // batching downstream). No per-world special cases.
+    for (size_t i = 0; i < roots.size(); ++i) {
+        if (expand_flags[i]) {
+            if (!append_expanded_children(abs_cache_root, ir.root_hashes[i],
+                                          next_id, out.instances, err))
+                return false;
+        } else {
+            place(ir.root_hashes[i], 0.0f, 0.0f, 0.0f);
+        }
     }
-
-    // Iteration scene: a single Tree at the origin, no terrain or grass, so we
-    // can inspect the tree geometry up close. The other roots are still installed
-    // above (hash_of has them); we just don't place any instances of them.
-    place(hash_of["Tree"], 0.0f, 0.0f, 0.0f);
     flatten_placed();
-
     return true;
 }
 
@@ -224,5 +223,32 @@ bool LocalProvider::fetch_parts(const std::vector<uint64_t>& want,
 }
 
 bool LocalProvider::poll_deltas(WorldDelta&) { return false; }  // static world
+
+bool append_expanded_children(const std::string& cache_root, uint64_t root_hash,
+                              uint32_t& next_id,
+                              std::vector<WorldManifestEntry>& out_instances,
+                              std::string& err) {
+    const std::string path = cache_root + "/" + part_asset::cache_path_resolved(root_hash);
+    BLASManager blas; TLASManager tlas(256);
+    std::vector<part_asset::ChildInstance> children;
+    part_asset::LodLevels lods;
+    if (!part_asset::load_v2(path, root_hash, blas, tlas, children, lods)) {
+        err = "expand: failed to load root part " + path;
+        return false;
+    }
+    if (children.empty()) {
+        err = "expand: root has no children (nothing to expand)";
+        return false;
+    }
+    out_instances.reserve(out_instances.size() + children.size());
+    for (const auto& c : children) {
+        WorldManifestEntry e;
+        e.instance_id = next_id++;
+        e.part_hash   = c.child_resolved_hash;
+        std::memcpy(e.transform, c.transform, sizeof(e.transform));
+        out_instances.push_back(e);
+    }
+    return true;
+}
 
 } // namespace viewer

@@ -43,6 +43,15 @@ private:
     std::set<uint64_t>   baked_hashes_;  // hashes freshly baked by last connect()
 };
 
+// Expand an assembly root's baked child-instance table (from its .part in
+// cache_root) into individual world-manifest instances — one per child, with
+// the child's stored transform. Generic: used for any manifest root flagged
+// `expand`. Fails closed if the root artifact is missing or has no children.
+bool append_expanded_children(const std::string& cache_root, uint64_t root_hash,
+                              uint32_t& next_id,
+                              std::vector<WorldManifestEntry>& out_instances,
+                              std::string& err);
+
 } // namespace viewer
 
 #endif // VIEWER_LOCAL_PROVIDER_H

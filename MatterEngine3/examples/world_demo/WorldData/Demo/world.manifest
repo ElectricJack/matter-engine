@@ -1,6 +1,3 @@
-# Demo world root parts (one module name per line; '#' starts a comment).
-# The driver installs (bakes) each, then composes them into a world by
-# scattering instances across a terrain grid in C++.
-Terrain
+# Demo world: a single Tree at the origin for close-up iteration on the tree
+# geometry. (The Meadow world scatters Terrain/Grass/etc. via its assembly root.)
 Tree
-Grass
