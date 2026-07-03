@@ -1,3 +1,4 @@
+#include <cassert>
 #include <cstdio>
 #include <cstdint>
 #include <cstring>
@@ -1012,6 +1013,36 @@ static void test_p5_round_mesh_dispatch() {
     }
 }
 
+static void test_eval_lod_budgets() {
+    script_host::ScriptHost host;
+    const char* opted =
+        "class G extends Part {\n"
+        "  static params = { seed: 0, lodBudget: 1.0 };\n"
+        "  static lodBudgets = [1.0, 0.3, 0.08];\n"
+        "  static lodAnchorSize = 0.5;\n"
+        "  build(p) {}\n"
+        "}\n";
+    auto spec = host.eval_lod_budgets(opted);
+    assert(spec.budgets.size() == 3);
+    assert(spec.budgets[0] == 1.0 && spec.budgets[1] == 0.3 && spec.budgets[2] == 0.08);
+    assert(spec.anchor_size == 0.5);
+
+    const char* plain =
+        "class P extends Part { static params = {}; build(p) {} }\n";
+    assert(host.eval_lod_budgets(plain).budgets.empty());
+
+    const char* malformed =
+        "class M extends Part {\n"
+        "  static lodBudgets = [1.0, 'x'];\n"      // non-number: fail closed
+        "  build(p) {}\n"
+        "}\n";
+    assert(host.eval_lod_budgets(malformed).budgets.empty());
+
+    const char* broken = "not even javascript {{{";
+    assert(host.eval_lod_budgets(broken).budgets.empty());
+    printf("  test_eval_lod_budgets OK\n");
+}
+
 int main() {
     test_embed_eval_1_plus_1();
     test_p5_round_mesh_dispatch();
@@ -1044,6 +1075,7 @@ int main() {
     test_g7_stack_balance();
     test_g8_sphere_box_polymorphic();
     test_extrude_dispatch_and_polygon();
+    test_eval_lod_budgets();
     if (failures == 0) printf("ALL PASS\n");
     return failures ? 1 : 0;
 }

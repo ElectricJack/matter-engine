@@ -65,6 +65,18 @@ public:
     std::vector<RequiredChild> eval_requires(const std::string& source,
                                              const std::string& params_json);
 
+    // LOD budget data read from a schema's static statics (no build() call).
+    struct LodBudgetSpec {
+        std::vector<double> budgets;  // e.g. {1.0, 0.3, 0.08}; empty = not opted in
+        double anchor_size = 0.0;     // lodAnchorSize (m); 0 = unset
+    };
+
+    // Fail-closed like eval_requires; does not run build(). Reads static
+    // lodBudgets (array of numbers in (0,1]) and static lodAnchorSize (positive
+    // number) from the part class. Any eval error, missing/invalid lodBudgets =>
+    // empty spec (schema treated as not opted in).
+    LodBudgetSpec eval_lod_budgets(const std::string& source);
+
     // Set the shared-lib root used to resolve `import ... from 'shared-lib/x'`
     // specifiers. When set, both resolve_hash and bake_source fold the part's
     // transitively-imported module sources into the bytes they hash (so a shared

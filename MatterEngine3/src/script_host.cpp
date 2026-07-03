@@ -471,6 +471,62 @@ std::vector<RequiredChild> ScriptHost::eval_requires(const std::string& source,
     return out;
 }
 
+// Static discovery of a part's LOD budget statics WITHOUT baking. Evals the
+// class in a fresh isolated bake context (same restricted intrinsics as
+// eval_requires), reads `static lodBudgets` (array of numbers in (0,1]) and
+// `static lodAnchorSize` (positive number), and returns them. Fail-closed:
+// any error => empty LodBudgetSpec (schema treated as not opted in).
+ScriptHost::LodBudgetSpec ScriptHost::eval_lod_budgets(const std::string& source) {
+    LodBudgetSpec out;
+
+    std::string className = find_part_class_name(source);
+    if (className.empty()) return out;
+
+    ModuleStore store;
+    bool use_module = false;
+    if (!shared_lib_root_.empty()) {
+        module_resolver::FoldResult fr; std::string ferr;
+        if (!module_resolver::fold_sources(source, shared_lib_root_, fr, ferr)) return out;
+        if (!fr.modules.empty()) { store = store_from_fold(fr); use_module = true; }
+    }
+
+    JSRuntime* rt = nullptr; JSContext* ctx = nullptr;
+    BakeError eerr;
+    if (!eval_part_publish_class(source, className, use_module ? &store : nullptr,
+                                 rt, ctx, eerr))
+        return out;
+
+    JSValue global = JS_GetGlobalObject(ctx);
+    JSValue authored = JS_GetPropertyStr(ctx, global, "__partClass");
+    JS_FreeValue(ctx, global);
+    if (JS_IsFunction(ctx, authored)) {
+        JSValue budgets = JS_GetPropertyStr(ctx, authored, "lodBudgets");
+        if (JS_IsArray(budgets)) {
+            JSValue lenv = JS_GetPropertyStr(ctx, budgets, "length");
+            uint32_t len = 0; JS_ToUint32(ctx, &len, lenv); JS_FreeValue(ctx, lenv);
+            for (uint32_t i = 0; i < len; ++i) {
+                JSValue el = JS_GetPropertyUint32(ctx, budgets, i);
+                double d = 0.0;
+                bool ok = !JS_IsException(el) && JS_IsNumber(el) &&
+                          JS_ToFloat64(ctx, &d, el) == 0 && d > 0.0 && d <= 1.0;
+                JS_FreeValue(ctx, el);
+                if (!ok) { out.budgets.clear(); break; }  // fail closed
+                out.budgets.push_back(d);
+            }
+        }
+        JS_FreeValue(ctx, budgets);
+        JSValue anchor = JS_GetPropertyStr(ctx, authored, "lodAnchorSize");
+        if (JS_IsNumber(anchor)) {
+            double a = 0.0;
+            if (JS_ToFloat64(ctx, &a, anchor) == 0 && a > 0.0) out.anchor_size = a;
+        }
+        JS_FreeValue(ctx, anchor);
+    }
+    JS_FreeValue(ctx, authored);
+    JS_FreeContext(ctx); JS_FreeRuntime(rt);
+    return out;
+}
+
 uint64_t ScriptHost::resolve_hash(const std::string& source,
                                   const std::string& params_json,
                                   const uint64_t* child_hashes,
