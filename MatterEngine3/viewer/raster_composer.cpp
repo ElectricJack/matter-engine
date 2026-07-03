@@ -44,11 +44,11 @@ static void mul16(const float* a, const float* b, float* out) {
 // Plane storage: planes[6][4], each = {a,b,c,d}.
 // ---------------------------------------------------------------------------
 
-// Build a row-major look-at view matrix for row-vector convention.
-// v_cam = v_world * View, so View is the TRANSPOSE of the standard column-vector look-at.
-// Column j of View = j-th camera axis expressed in world space:
-//   col0 = right, col1 = true_up, col2 = -forward (GL looks -z), col3 = (0,0,0,1)
-// with translation folded into row 3.
+// Build a view matrix stored row-major in a float[16].
+// The C++ side composes matrices with row-major multiplies; row_major_to_matrix
+// memcpys these 16 floats into raylib's Matrix, whose field layout the GLSL shader
+// reads as column-major — the memcpy acts as an implicit transpose, so the shader
+// receives the standard column-vector look-at (model * vec4(...) convention).
 static void make_lookat(const float eye[3], const float target[3],
                         const float up[3], float out[16]) {
     // Forward = normalize(target - eye)
@@ -70,11 +70,9 @@ static void make_lookat(const float eye[3], const float target[3],
     float uy = rz*fx - rx*fz;
     float uz = rx*fy - ry*fx;
 
-    // Row-vector convention: M[row=i, col=j] = vp[i*4+j].
-    // col0 = (rx,ry,rz,0): M[0,0]=rx, M[1,0]=ry, M[2,0]=rz, M[3,0]=-dot(r,eye)
-    // col1 = (ux,uy,uz,0): M[0,1]=ux, M[1,1]=uy, M[2,1]=uz, M[3,1]=-dot(u,eye)
-    // col2 = (-fx,-fy,-fz,0): M[0,2]=-fx, M[1,2]=-fy, M[2,2]=-fz, M[3,2]=dot(f,eye)
-    // col3 = (0,0,0,1):   M[0,3]=0, M[1,3]=0, M[2,3]=0, M[3,3]=1
+    // Row-major storage: out[i*4+j] = M[row=i, col=j].
+    // After memcpy-transpose via row_major_to_matrix, the shader sees column-major layout:
+    // col0=(right), col1=(up), col2=(-forward), col3=(translation) — standard GL column-vector look-at.
     float dot_re = rx*eye[0]+ry*eye[1]+rz*eye[2];
     float dot_ue = ux*eye[0]+uy*eye[1]+uz*eye[2];
     float dot_fe = fx*eye[0]+fy*eye[1]+fz*eye[2];
@@ -84,37 +82,34 @@ static void make_lookat(const float eye[3], const float target[3],
     out[12]=-dot_re; out[13]=-dot_ue; out[14]=dot_fe; out[15]=1;
 }
 
-// Build a row-major perspective projection matrix for row-vector convention.
-// This is the TRANSPOSE of the standard column-vector OpenGL projection.
-// For row-vector convention: v_clip = v_view * Proj, so:
-//   w_clip = v_view.z * M[2,3] + v_view.w * M[3,3] = v_view.z * (-1) + 0 = -v_view.z
-//   z_clip = v_view.z * M[2,2] + v_view.w * M[3,2] = v_view.z * (-(f+n)/(f-n)) - 2fn/(f-n)
+// Build a perspective projection matrix stored row-major in a float[16].
+// row_major_to_matrix memcpy-transposes it into raylib's Matrix so the shader
+// receives the standard column-vector OpenGL projection (gl_Position = mvp * world).
+// After the implicit transpose: w_clip = -v_view.z, z_clip = v_view.z*(-(f+n)/(f-n)) - 2fn/(f-n).
 static void make_perspective(float fovy_deg, float aspect,
                               float near_z, float far_z, float out[16]) {
     const float pi = 3.14159265358979323846f;
     float fovy_rad = fovy_deg * pi / 180.0f;
     float f = 1.0f / std::tan(fovy_rad * 0.5f);
     float d = far_z - near_z;
-    // Row-major, row-vector convention (transpose of standard GL column-vector proj):
+    // Row-major storage; after memcpy-transpose via row_major_to_matrix the shader receives the standard GL column-vector projection:
     out[ 0]=f/aspect; out[ 1]=0; out[ 2]=0;                   out[ 3]=0;
     out[ 4]=0;        out[ 5]=f; out[ 6]=0;                   out[ 7]=0;
     out[ 8]=0;        out[ 9]=0; out[10]=-(far_z+near_z)/d;   out[11]=-1.0f;
     out[12]=0;        out[13]=0; out[14]=-(2.0f*far_z*near_z)/d; out[15]=0;
 }
 
-// Extract 6 frustum planes from a row-major VP matrix.
+// Extract 6 frustum planes from the row-major C++ VP matrix (Gribb-Hartmann).
 // planes[0..5][4] = {a,b,c,d}; point p is inside plane when dot(p,{a,b,c})+d >= 0.
 //
-// The engine uses row-vector convention: v_clip = v_world * VP, where vp[i*4+j] = VP[row=i,col=j].
-// Clip planes in homogeneous: x_clip = v · col0, w_clip = v · col3, etc.
-// col0 = {vp[0],vp[4],vp[8],vp[12]}, col3 = {vp[3],vp[7],vp[11],vp[15]}, etc.
-// Left   (x+w >= 0): col0 + col3
-// Right  (w-x >= 0): col3 - col0
-// Bottom (y+w >= 0): col1 + col3
-// Top    (w-y >= 0): col3 - col1
-// Near   (z+w >= 0): col2 + col3
-// Far    (w-z >= 0): col3 - col2
-// where col_j[row] = vp[row*4 + j].
+// The C++ VP is stored row-major: vp[i*4+j] = VP[row=i, col=j].
+// For a column-vector clip transform (v_clip = VP_shader * v_world), the shader-side
+// matrix is the transpose of the C++ VP — so VP_shader's rows are the C++ VP's columns.
+// Gribb-Hartmann plane extraction reads VP_shader's rows, i.e. C++ VP's columns:
+//   col0 = {vp[0],vp[4],vp[8],vp[12]}, col3 = {vp[3],vp[7],vp[11],vp[15]}, etc.
+// Left (x+w>=0): col0+col3,  Right (w-x>=0): col3-col0,
+// Bottom (y+w>=0): col1+col3, Top (w-y>=0): col3-col1,
+// Near (z+w>=0): col2+col3,  Far (w-z>=0): col3-col2.
 static void extract_frustum_planes(const float vp[16], float planes[6][4]) {
     // col0 = vp[0],vp[4],vp[8],vp[12]
     // col1 = vp[1],vp[5],vp[9],vp[13]

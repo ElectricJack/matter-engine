@@ -233,12 +233,15 @@ bool LocalProvider::connect(WorldManifest& out, std::string& err) {
             int   pad_cells;
             int   rays_per_cell;
             int   sun_rays;
+            float sun_cone_deg;
         } gk;
+        static_assert(sizeof(BakeGridKey) == 24, "fingerprinted byte-for-byte; no padding allowed");
         gk.cell           = bake_params.cell;
         gk.max_cells_axis = bake_params.max_cells_axis;
         gk.pad_cells      = bake_params.pad_cells;
         gk.rays_per_cell  = bake_params.rays_per_cell;
         gk.sun_rays       = bake_params.sun_rays;
+        gk.sun_cone_deg   = bake_params.sun_cone_deg;
         {
             const size_t off = fp_buf.size();
             fp_buf.resize(off + sizeof(BakeGridKey));
