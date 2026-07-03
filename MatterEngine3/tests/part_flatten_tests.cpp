@@ -238,6 +238,31 @@ static std::vector<Tri> sphere_tris(int segs, int rings) {
     return out;
 }
 
+// ---- Task 7 fixture helpers (defined after sphere_tris) ----
+
+static const uint64_t kSmallSphereHash = 0xAAAA000011110001ull;
+static const uint64_t kDenseSphereHash = 0xBBBB000022220002ull;
+
+// Write a small sphere part (~400 tris) as a childless .part in the cache.
+// Returns kSmallSphereHash on success, 0 on failure.
+static uint64_t write_small_sphere_part(const std::string& cache_root) {
+    (void)cache_root; // kCacheRoot is the same value used by save_fixture
+    // segs=20, rings=10 => ~20*10*2=400 tris (well under old min_tris=2000)
+    std::vector<Tri> tris = sphere_tris(20, 10);
+    if (!save_fixture(kSmallSphereHash, 5, {tris}, {})) return 0;
+    return kSmallSphereHash;
+}
+
+// Write a dense sphere part (>=20k tris) as a childless .part in the cache.
+// Returns kDenseSphereHash on success, 0 on failure.
+static uint64_t write_dense_sphere_part(const std::string& cache_root) {
+    (void)cache_root;
+    // segs=120, rings=90 => ~120*90*2=21600 tris
+    std::vector<Tri> tris = sphere_tris(120, 90);
+    if (!save_fixture(kDenseSphereHash, 6, {tris}, {})) return 0;
+    return kDenseSphereHash;
+}
+
 static void test_error_bound_calibration() {
     std::vector<Tri> sphere = sphere_tris(48, 24);   // ~2.2k tris, radius 1
     const float eps_list[] = {0.01f, 0.05f, 0.2f};
@@ -1068,6 +1093,74 @@ done:
     printf(missing_total == 0 ? "PASSED\n" : "FAILED\n");
 }
 
+// Task 7: small part (old min_tris=2000 floor would freeze it at LOD0) now
+// gets a real ladder thanks to the new 32-tri stop rule.
+static void test_small_part_gets_ladder() {
+    printf("=== test_small_part_gets_ladder ===\n");
+
+    // Remove any stale flat artifact first.
+    std::string flat = std::string(kCacheRoot) + "/" + part_asset::cache_path_flat(kSmallSphereHash);
+    std::remove(flat.c_str());
+
+    uint64_t hash = write_small_sphere_part(kCacheRoot);
+    CHECK(hash != 0, "small sphere part written");
+    if (hash == 0) { printf("  SKIPPING\n"); return; }
+
+    auto res = part_flatten::flatten_part(kCacheRoot, hash);
+    CHECK(res.ok, "small part: flatten_part ok");
+    if (!res.ok) { printf("  error: %s\n", res.error.c_str()); return; }
+    CHECK(res.levels >= 2,
+          "small part: laddered despite being small (>= 2 levels, not frozen at LOD0)");
+    CHECK(res.coarsest_tris <= 64,
+          "small part: coarsest level driven down near the 32-tri floor");
+
+    printf("  levels=%zu, coarsest_tris=%zu, full_tris=%zu\n",
+           res.levels, res.coarsest_tris, res.full_tris);
+    printf(res.levels >= 2 && res.coarsest_tris <= 64 ? "PASSED\n" : "FAILED\n");
+}
+
+// Task 7: ratio-2 divisor schedule yields a deep ladder with monotonically
+// decreasing rung tri-counts on a dense fixture.
+static void test_ratio2_ladder_shape() {
+    printf("=== test_ratio2_ladder_shape ===\n");
+
+    std::string flat = std::string(kCacheRoot) + "/" + part_asset::cache_path_flat(kDenseSphereHash);
+    std::remove(flat.c_str());
+
+    uint64_t hash = write_dense_sphere_part(kCacheRoot);
+    CHECK(hash != 0, "dense sphere part written");
+    if (hash == 0) { printf("  SKIPPING\n"); return; }
+
+    auto res = part_flatten::flatten_part(kCacheRoot, hash);
+    CHECK(res.ok, "dense part: flatten_part ok");
+    if (!res.ok) { printf("  error: %s\n", res.error.c_str()); return; }
+    CHECK(res.levels >= 6, "dense part: >= 6 levels with ratio-2 schedule");
+
+    // Load the flat artifact and check per-cluster monotonic decrease.
+    BLASManager blas; TLASManager tlas(4);
+    std::vector<part_asset::FlatCluster> clusters;
+    bool loaded = part_asset::load_flat_v3(flat, hash, blas, tlas, clusters);
+    CHECK(loaded, "dense part: load_flat_v3 ok");
+    if (!loaded) { printf("  SKIPPING monotonic check\n"); return; }
+
+    bool monotonic = true;
+    for (const auto& cl : clusters) {
+        size_t prev = SIZE_MAX;
+        for (const auto& lvl : cl.lods) {
+            if (lvl.blas_indices.empty()) continue;
+            size_t tris = blas.get_entries()[lvl.blas_indices[0]]->triangles.size();
+            if (prev != SIZE_MAX && tris >= prev) { monotonic = false; break; }
+            prev = tris;
+        }
+        if (!monotonic) break;
+    }
+    CHECK(monotonic, "dense part: per-cluster LOD tri-counts strictly decrease");
+
+    printf("  levels=%zu, clusters=%zu, full_tris=%zu\n",
+           res.levels, res.clusters, res.full_tris);
+    printf(res.levels >= 6 && monotonic ? "PASSED\n" : "FAILED\n");
+}
+
 int main() {
     if (!write_fixtures()) {
         printf("FAIL: could not write fixture parts under %s\n", kCacheRoot);
@@ -1090,6 +1183,8 @@ int main() {
     test_v2_byte_stability();
     test_flatten_clustered_v3();
     test_flatten_watertight_invariant();
+    test_small_part_gets_ladder();
+    test_ratio2_ladder_shape();
 
     if (failures == 0) { printf("part_flatten_tests: ALL PASS\n"); return 0; }
     printf("part_flatten_tests: %d FAILURE(S)\n", failures);

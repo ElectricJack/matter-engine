@@ -213,12 +213,6 @@ FlattenResult flatten_part(const std::string& cache_root, uint64_t root_hash,
     auto clusters = part_cluster::split_clusters(full, fullex, targets.cluster_target_tris);
     const size_t n_clusters = clusters.size();
 
-    // Per-cluster triangle floor: scale min_tris by cluster count so many-cluster
-    // parts still ladder down, but enforce a minimum of 64 to avoid degenerate
-    // single-triangle levels on tiny clusters.
-    const uint32_t per_cluster_floor =
-        (uint32_t)std::max(64, targets.min_tris / (int)n_clusters);
-
     // Shared BLAS/TLAS for the flat artifact (all clusters share one BLAS table).
     BLASManager blas;
     TLASManager tlas(4);   // no internal instances in a flat artifact
@@ -262,8 +256,7 @@ FlattenResult flatten_part(const std::string& cache_root, uint64_t root_hash,
             std::vector<TriEx> ex = lod_bake::reproject_triex(geo, ctris, ctriex);
             levels.push_back({std::move(geo), std::move(ex), eps});
             prev_count = levels.back().tris.size();
-            // Per-cluster floor: max(64, min_tris / clusters).
-            if (prev_count <= (size_t)per_cluster_floor) break;
+            if (prev_count <= (size_t)targets.min_level_tris) break;
         }
 
         // Register each level into the shared BLAS table and build LodLevels.

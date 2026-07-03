@@ -21,7 +21,10 @@ struct FlattenTargets {
     // bound_radius is computed from the WHOLE flattened mesh so epsilon is
     // consistent across clusters (a cluster's local radius would give very
     // different ladder spacing for small vs. large clusters).
-    std::vector<float> radius_divisor = {256.0f, 64.0f, 16.0f, 4.0f};
+    // Ratio-2 schedule (Stage 2): finer near rungs (switch sooner, smaller pops),
+    // coarser far rungs (a terrain tile drops to tens of tris at distance).
+    std::vector<float> radius_divisor = {512.0f, 256.0f, 128.0f, 64.0f,
+                                         32.0f, 16.0f, 8.0f, 4.0f, 2.0f};
 
     // Selection thresholds are derived from eps: a level becomes eligible when
     // its world-space error projects below pixel_budget pixels.
@@ -29,11 +32,10 @@ struct FlattenTargets {
     float pixel_angle  = 1.047f / 720.0f;
     float pixel_budget = 1.0f;
 
-    // Stop adding coarser levels once a cluster level lands below this
-    // per-cluster triangle floor: max(64u, min_tris / cluster_count).
-    // The floor is scaled down per cluster so many-cluster parts still ladder
-    // down; 64 prevents degenerate single-tri levels on tiny clusters.
-    int min_tris = 2000;
+    // Stop adding coarser rungs once a level lands at/below this triangle
+    // count, or when a rung stops shrinking. Replaces the old min_tris=2000
+    // floor that froze small parts at LOD0 forever (Stage 2).
+    int min_level_tris = 32;
 
     // Cluster size target: split_clusters targets at most this many tris per
     // cluster. 16000 is the Task 11 default (matches the brief).
