@@ -54,7 +54,7 @@ else
     LDLIBS = ../../Libraries/raylib/src/libraylib.a
 endif
 
-.PHONY: clean run-partv2 run-script run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-example run-gallery run-viewer-logic run-iso run-polytri
+.PHONY: clean run-partv2 run-script run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-meadow
 
 # Part Artifact v2 round-trip + resolved-hash + format-guard tests (headless, GL-free).
 # NEW impl ../src/part_asset_v2.cpp + consumed MatterSurfaceLib backend sources.
@@ -79,7 +79,7 @@ run-partv2: $(PARTV2_TARGET)
 	./$(PARTV2_TARGET)
 
 clean:
-	rm -f $(PARTV2_TARGET) $(SCRIPT_TARGET) $(GRAPH_TARGET) $(GRAPH_INT_TARGET) $(TRIVAR_TARGET) $(SHLIB_TARGET) $(COMP_TARGET) $(DEV_TARGET) $(EXAMPLE_TARGET) $(VIEWER_LOGIC_TARGET)
+	rm -f $(PARTV2_TARGET) $(SCRIPT_TARGET) $(GRAPH_TARGET) $(GRAPH_INT_TARGET) $(TRIVAR_TARGET) $(SHLIB_TARGET) $(COMP_TARGET) $(DEV_TARGET) $(EXAMPLE_TARGET) $(VIEWER_LOGIC_TARGET) $(TREEBAKE_TARGET) $(MEADOW_TARGET)
 
 # Script host (QuickJS-ng) + DSL/CSG bake tests (headless, GL-free for the host;
 # the BLAS surface path links raylib like the part-asset tests). QuickJS-ng C
@@ -383,6 +383,20 @@ $(TREEBAKE_TARGET): $(TREEBAKE_CPP) $(EXAMPLE_C) $(QJS_C)
 
 run-treebake: $(TREEBAKE_TARGET)
 	./$(TREEBAKE_TARGET)
+
+# Headless bake tests for the Meadow schemas (terrain noise seam, rock/pebble/
+# grass variants). Fresh sandbox per run.
+MEADOW_TARGET = meadow_bake_tests
+MEADOW_CPP = meadow_bake_tests.cpp $(filter-out example_world.cpp, $(EXAMPLE_CPP))
+$(MEADOW_TARGET): $(MEADOW_CPP) $(EXAMPLE_C) $(QJS_C)
+	gcc -c $(QJS_C) -O2 -DCONFIG_VERSION='"0.10.0"' $(QJS_INC)
+	gcc -c $(EXAMPLE_C) -O2 -DPLATFORM_DESKTOP $(INCLUDE_PATHS)
+	$(CC) $(MEADOW_CPP) $(QJS_OBJ) $(EXAMPLE_C_OBJ) -o $(MEADOW_TARGET) \
+	      $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST $(INCLUDE_PATHS) $(QJS_INC) $(LDFLAGS) $(LDLIBS)
+	rm -f $(QJS_OBJ) $(EXAMPLE_C_OBJ)
+
+run-meadow: $(MEADOW_TARGET)
+	./$(MEADOW_TARGET)
 
 # --- Viewer GL-free logic suite (WorldState, resolvers, PartStore, LocalProvider).
 # Reuses the example_world pipeline source set (SP-2 host + QuickJS + SP-4 compose
