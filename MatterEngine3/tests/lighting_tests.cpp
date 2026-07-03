@@ -1,7 +1,9 @@
-// Task 1: World light list tests.
-// Tests parse_lights, lights_fingerprint, and read_manifest light-line skip.
+// Task 1+2: World light list + ProbeVolume tests.
+// Tests parse_lights, lights_fingerprint, read_manifest light-line skip,
+// and probe_volume save/load round-trip + rejection cases.
 #include "world_lights.h"
 #include "part_graph.h"
+#include "probe_volume.h"
 
 #include <cmath>
 #include <cstdio>
@@ -12,6 +14,7 @@
 #include <vector>
 #include <limits.h>
 #include <unistd.h>
+#include <sys/types.h>
 
 static int failures = 0;
 #define CHECK(cond, msg) do { \
@@ -209,6 +212,102 @@ static void test_read_manifest_skip() {
     }
 }
 
+// ---- Task 2 Tests: ProbeVolume save/load round-trip ----
+
+// Build a deterministic 2x2x2 ProbeVolume with distinct values per cell.
+static probe_volume::ProbeVolume make_test_volume() {
+    probe_volume::ProbeVolume v;
+    v.grid.origin[0] = 1.0f; v.grid.origin[1] = 2.0f; v.grid.origin[2] = 3.0f;
+    v.grid.cell = 0.5f;
+    v.grid.nx = 2; v.grid.ny = 2; v.grid.nz = 2;
+    size_t n = v.cells(); // 8 cells
+    v.ambient.resize(n * 4);
+    v.dominant.resize(n * 4);
+    for (size_t i = 0; i < n * 4; ++i) {
+        v.ambient[i]  = (float)(i + 1) * 0.01f;
+        v.dominant[i] = (float)(i + 1) * 0.02f;
+    }
+    return v;
+}
+
+// Test 8: save + load with matching fingerprint yields equal data.
+static void test_probe_roundtrip() {
+    probe_volume::ProbeVolume orig = make_test_volume();
+    const uint64_t fp = 0xDEADBEEF12345678ULL;
+    const std::string path = "sandbox/test.probes";
+
+    bool saved = probe_volume::save_probes(path, orig, fp);
+    CHECK(saved, "probe_roundtrip: save returns true");
+
+    probe_volume::ProbeVolume loaded;
+    bool loaded_ok = probe_volume::load_probes(path, loaded, fp);
+    CHECK(loaded_ok, "probe_roundtrip: load returns true");
+
+    // Grid equality.
+    CHECK(loaded.grid.nx == orig.grid.nx, "probe_roundtrip: grid.nx");
+    CHECK(loaded.grid.ny == orig.grid.ny, "probe_roundtrip: grid.ny");
+    CHECK(loaded.grid.nz == orig.grid.nz, "probe_roundtrip: grid.nz");
+    CHECK(feq(loaded.grid.cell, orig.grid.cell), "probe_roundtrip: grid.cell");
+    CHECK(feq(loaded.grid.origin[0], orig.grid.origin[0]), "probe_roundtrip: origin[0]");
+    CHECK(feq(loaded.grid.origin[1], orig.grid.origin[1]), "probe_roundtrip: origin[1]");
+    CHECK(feq(loaded.grid.origin[2], orig.grid.origin[2]), "probe_roundtrip: origin[2]");
+
+    // Blob equality.
+    CHECK(loaded.ambient.size() == orig.ambient.size(), "probe_roundtrip: ambient.size");
+    CHECK(loaded.dominant.size() == orig.dominant.size(), "probe_roundtrip: dominant.size");
+    bool amb_eq = (loaded.ambient.size() == orig.ambient.size()) &&
+                  (memcmp(loaded.ambient.data(), orig.ambient.data(),
+                          orig.ambient.size() * sizeof(float)) == 0);
+    CHECK(amb_eq, "probe_roundtrip: ambient memcmp");
+    bool dom_eq = (loaded.dominant.size() == orig.dominant.size()) &&
+                  (memcmp(loaded.dominant.data(), orig.dominant.data(),
+                          orig.dominant.size() * sizeof(float)) == 0);
+    CHECK(dom_eq, "probe_roundtrip: dominant memcmp");
+    CHECK(loaded.valid(), "probe_roundtrip: loaded.valid()");
+}
+
+// Test 9: load with wrong fingerprint returns false.
+static void test_probe_fingerprint_mismatch() {
+    probe_volume::ProbeVolume orig = make_test_volume();
+    const uint64_t fp = 0xAAAABBBBCCCCDDDDULL;
+    const std::string path = "sandbox/test_fp.probes";
+
+    probe_volume::save_probes(path, orig, fp);
+
+    probe_volume::ProbeVolume loaded;
+    bool ok = probe_volume::load_probes(path, loaded, fp ^ 1ULL);
+    CHECK(!ok, "probe_fp_mismatch: load returns false for wrong fingerprint");
+}
+
+// Test 10: truncated file returns false.
+static void test_probe_truncated() {
+    probe_volume::ProbeVolume orig = make_test_volume();
+    const uint64_t fp = 0x1234567890ABCDEFULL;
+    const std::string path = "sandbox/test_trunc.probes";
+
+    probe_volume::save_probes(path, orig, fp);
+
+    // Truncate by 10 bytes.
+    FILE* ff = std::fopen(path.c_str(), "r+b");
+    if (ff) {
+        std::fseek(ff, 0, SEEK_END);
+        long sz = std::ftell(ff);
+        std::fclose(ff);
+        if (sz > 10) ::truncate(path.c_str(), sz - 10);
+    }
+
+    probe_volume::ProbeVolume loaded;
+    bool ok = probe_volume::load_probes(path, loaded, fp);
+    CHECK(!ok, "probe_truncated: load returns false for truncated file");
+}
+
+// Test 11: nonexistent path returns false.
+static void test_probe_nonexistent() {
+    probe_volume::ProbeVolume loaded;
+    bool ok = probe_volume::load_probes("sandbox/no_such_file.probes", loaded, 0ULL);
+    CHECK(!ok, "probe_nonexistent: load returns false");
+}
+
 int main() {
     // Create fresh sandbox.
     system("rm -rf sandbox && mkdir -p sandbox");
@@ -220,6 +319,12 @@ int main() {
     test_malformed();
     test_fingerprint();
     test_read_manifest_skip();
+
+    // Task 2: ProbeVolume tests.
+    test_probe_roundtrip();
+    test_probe_fingerprint_mismatch();
+    test_probe_truncated();
+    test_probe_nonexistent();
 
     if (failures == 0) {
         printf("\nALL PASS (%d checks failed)\n", 0);

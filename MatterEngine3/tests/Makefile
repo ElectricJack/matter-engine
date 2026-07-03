@@ -443,7 +443,7 @@ run-viewer-logic: $(VIEWER_LOGIC_TARGET)
 # GL-free, no QuickJS. Uses the same dep set as the GRAPH stanza (part_graph.cpp
 # drags in part_asset_v2.cpp + MSL backend objects).
 LIGHTING_TARGET = lighting_tests
-LIGHTING_SOURCES = lighting_tests.cpp ../src/world_lights.cpp \
+LIGHTING_SOURCES = lighting_tests.cpp ../src/world_lights.cpp ../src/probe_volume.cpp \
                    ../src/part_graph.cpp ../src/part_asset_v2.cpp \
                    ../../MatterSurfaceLib/src/part_asset.cpp \
                    ../../MatterSurfaceLib/src/blas_manager.cpp \
