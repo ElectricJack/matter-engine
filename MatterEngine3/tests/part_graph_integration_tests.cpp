@@ -228,6 +228,98 @@ static void test_demo_tree_has_leaves(const std::string& schemas,
     CHECK(l_children.empty(), "Leaf is a mesh leaf with no children");
 }
 
+// SP-3 Task 13: budget-variant baking + .lods sidecar.
+// An opted-in childless schema (static lodBudgets = [1.0, 0.5]) in a fresh
+// temp sandbox is installed through the REAL FileModuleResolver + HostBaker.
+// After install:
+//   - parts/<root_hash>.lods exists with anchor_size, 2 budget/hash lines
+//   - budgets[0]==1.0 maps to the root hash itself (no re-bake)
+//   - budgets[1]==0.5 maps to a distinct variant .part on disk
+// Re-install with everything cached: sidecar untouched, ir.baked empty.
+// A schema WITHOUT lodBudgets gets no sidecar.
+static void test_lod_variant_sidecar() {
+    namespace pg = part_graph;
+
+    const std::string root = "/tmp/me3_lod_sidecar";
+    system(("rm -rf " + root).c_str());
+    const std::string schemas = root + "/schemas";
+    system(("mkdir -p " + schemas + " " + root + "/parts").c_str());
+
+    // BudgetGrass: opted in, childless. build() emits n=ceil(lodBudget*4) strips.
+    write_file(schemas + "/BudgetGrass.js",
+        "class BudgetGrass extends Part {\n"
+        "  static params = { seed: 0, lodBudget: 1.0 };\n"
+        "  static lodBudgets = [1.0, 0.5];\n"
+        "  static lodAnchorSize = 0.5;\n"
+        "  build(p) {\n"
+        "    const n = Math.max(1, Math.ceil(p.lodBudget * 4));\n"
+        "    this.fill(1);\n"
+        "    for (let i = 0; i < n; ++i) {\n"
+        "      this.beginShape(SHAPE.strip);\n"
+        "      this.vertex(i, 0, 0); this.vertex(i + 1, 0, 0); this.vertex(i, 1, 0);\n"
+        "      this.endShape();\n"
+        "    }\n"
+        "  }\n"
+        "}\n");
+
+    // PlainBox: no lodBudgets — should get NO sidecar.
+    write_file(schemas + "/PlainBox.js",
+        "class PlainBox extends Part { static params = {};\n"
+        "  build(p) { this.fill(1); this.beginShape(SHAPE.strip);\n"
+        "  this.vertex(0,0,0); this.vertex(1,0,0); this.vertex(0,1,0);\n"
+        "  this.endShape(); } }\n");
+
+    char prevcwd[4096]; if (!getcwd(prevcwd, sizeof prevcwd)) prevcwd[0] = '\0';
+    CHECK(chdir(root.c_str()) == 0, "lod_sidecar: chdir into sandbox");
+
+    script_host::ScriptHost host;
+    pg::FileModuleResolver resolver(host, "schemas");
+    pg::HostBaker baker(host, ".");
+    pg::PartGraph graph(resolver, baker);
+
+    // --- BudgetGrass: first install ---
+    pg::InstallResult ir = graph.install({ pg::ChildRequest{"BudgetGrass", pg::Params{}} });
+    CHECK(ir.ok, "lod_sidecar: BudgetGrass install ok");
+    if (!ir.ok) printf("  install error: %s\n", ir.error.c_str());
+    CHECK(ir.root_hashes.size() == 1, "lod_sidecar: one root hash");
+
+    if (ir.ok && ir.root_hashes.size() == 1) {
+        uint64_t root_hash = ir.root_hashes[0];
+        std::string sidecar_path = std::string(".") + "/" + part_asset::cache_path_lods(root_hash);
+
+        part_asset::LodVariants v;
+        CHECK(part_asset::load_lod_sidecar(sidecar_path, v), "lod_sidecar: sidecar loads");
+        CHECK(v.anchor_size == 0.5, "lod_sidecar: anchor_size == 0.5");
+        CHECK(v.budgets.size() == 2, "lod_sidecar: 2 budget entries");
+        CHECK(v.hashes.size() == 2, "lod_sidecar: 2 hash entries");
+        if (v.budgets.size() == 2 && v.hashes.size() == 2) {
+            CHECK(v.hashes[0] == root_hash, "lod_sidecar: budget 1.0 == main bake hash");
+            CHECK(v.hashes[1] != root_hash, "lod_sidecar: budget 0.5 is a distinct variant");
+            // The variant .part must exist on disk.
+            std::ifstream in(part_asset::cache_path_resolved(v.hashes[1]), std::ios::binary);
+            CHECK(in.good(), "lod_sidecar: variant .part exists on disk");
+        }
+
+        // Re-install: everything cached, sidecar untouched (no re-bake).
+        pg::InstallResult ir2 = graph.install({ pg::ChildRequest{"BudgetGrass", pg::Params{}} });
+        CHECK(ir2.ok, "lod_sidecar: second install ok");
+        CHECK(ir2.baked.empty(), "lod_sidecar: second install bakes nothing");
+    }
+
+    // --- PlainBox: no lodBudgets => no sidecar ---
+    pg::InstallResult ir3 = graph.install({ pg::ChildRequest{"PlainBox", pg::Params{}} });
+    CHECK(ir3.ok, "lod_sidecar: PlainBox install ok");
+    if (ir3.ok && ir3.root_hashes.size() == 1) {
+        std::string nos = std::string(".") + "/" + part_asset::cache_path_lods(ir3.root_hashes[0]);
+        std::ifstream nosin(nos);
+        CHECK(!nosin.good(), "lod_sidecar: PlainBox has no sidecar");
+    }
+
+    if (prevcwd[0]) (void)chdir(prevcwd);
+    system(("rm -rf " + root).c_str());
+    printf("  test_lod_variant_sidecar OK\n");
+}
+
 int main() {
     using namespace part_graph;
 
@@ -307,6 +399,9 @@ int main() {
           "resolved demo schemas + shared-lib absolute paths");
     if (!demo_schemas.empty() && !demo_sharedlib.empty())
         test_demo_tree_has_leaves(demo_schemas, demo_sharedlib);
+
+    // SP-3 Task 13: budget-variant baking + .lods sidecar.
+    test_lod_variant_sidecar();
 
     if (failures == 0) printf("All part_graph integration tests passed\n");
     return failures == 0 ? 0 : 1;

@@ -4,6 +4,8 @@
 #include <cstring>
 #include <cstdint>
 #include <cstddef>   // offsetof
+#include <cstdlib>   // strtoull
+#include <fstream>
 #include <vector>
 #include <unordered_map>
 #include <algorithm>
@@ -88,6 +90,28 @@ std::string cache_path_flat(uint64_t resolved_hash) {
     std::snprintf(buf, sizeof(buf), "%016llx",
                   static_cast<unsigned long long>(resolved_hash));
     return std::string("parts/") + buf + ".flat.part";
+}
+
+std::string cache_path_lods(uint64_t resolved_hash) {
+    char hex[17];
+    snprintf(hex, sizeof hex, "%016llx", (unsigned long long)resolved_hash);
+    return std::string("parts/") + hex + ".lods";
+}
+
+bool load_lod_sidecar(const std::string& path, LodVariants& out) {
+    std::ifstream in(path);
+    if (!in) return false;
+    LodVariants v;
+    if (!(in >> v.anchor_size)) return false;
+    double budget; std::string hex;
+    while (in >> budget >> hex) {
+        if (hex.size() != 16) return false;
+        v.budgets.push_back(budget);
+        v.hashes.push_back((uint64_t)strtoull(hex.c_str(), nullptr, 16));
+    }
+    if (v.hashes.empty()) return false;
+    out = std::move(v);
+    return true;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

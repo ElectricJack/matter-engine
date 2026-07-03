@@ -66,6 +66,17 @@ struct Baker {
                       const std::vector<std::string>& child_modules,
                       const std::vector<std::string>& child_params,
                       uint64_t resolved_hash) = 0;
+
+    // Optional: bake budget-LOD variants for an opted-in part (schemas exporting
+    // `static lodBudgets`). Called for EVERY node after its bake (or cache hit),
+    // so a missing sidecar regenerates even on fully-cached installs. Default
+    // no-op keeps logic-test fakes untouched. False = hard bake failure.
+    virtual bool bake_lod_variants(const std::string& source, const Params& params,
+                                   const std::vector<uint64_t>& child_hashes,
+                                   uint64_t resolved_hash) {
+        (void)source; (void)params; (void)child_hashes; (void)resolved_hash;
+        return true;
+    }
 };
 
 // Canonical params string (sorted keys, %.17g numbers). Public for unit testing.
@@ -143,6 +154,9 @@ public:
               const std::vector<std::string>& child_modules,
               const std::vector<std::string>& child_params,
               uint64_t resolved_hash) override;
+    bool bake_lod_variants(const std::string& source, const Params& params,
+                           const std::vector<uint64_t>& child_hashes,
+                           uint64_t resolved_hash) override;
 private:
     script_host::ScriptHost& host_;
     std::string              parts_dir_;

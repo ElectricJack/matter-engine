@@ -193,12 +193,21 @@ InstallResult PartGraph::install(const std::vector<ChildRequest>& roots) {
 
     for (uint64_t key : topo) {
         const InternalNode& n = memo.at(key);
-        if (baker_.cached(n.resolved_hash)) { ++result.hits; continue; }
-        if (!baker_.bake(n.source, n.params, n.child_hashes, n.child_modules, n.child_params, n.resolved_hash)) {
-            result.error = "bake failed for part: " + n.module;
+        if (baker_.cached(n.resolved_hash)) {
+            ++result.hits;
+        } else {
+            if (!baker_.bake(n.source, n.params, n.child_hashes, n.child_modules,
+                             n.child_params, n.resolved_hash)) {
+                result.error = "bake failed for part: " + n.module;
+                return result;
+            }
+            result.baked.push_back(n.resolved_hash);
+        }
+        if (!baker_.bake_lod_variants(n.source, n.params, n.child_hashes,
+                                      n.resolved_hash)) {
+            result.error = "lod-variant bake failed for part: " + n.module;
             return result;
         }
-        result.baked.push_back(n.resolved_hash);
     }
     result.ok = true;
     return result;
@@ -308,6 +317,47 @@ bool HostBaker::bake(const std::string& source, const Params& params,
         child_modules.data(), child_params.data());
     // The hash SP-3 memoized must equal where the .part landed (master C-2 guarantee).
     return r.error.ok && r.resolved_hash == resolved_hash;
+}
+
+bool HostBaker::bake_lod_variants(const std::string& source, const Params& params,
+                                  const std::vector<uint64_t>& child_hashes,
+                                  uint64_t resolved_hash) {
+    script_host::ScriptHost::LodBudgetSpec spec = host_.eval_lod_budgets(source);
+    if (spec.budgets.empty()) return true;                    // not opted in
+    if (!child_hashes.empty()) {
+        printf("HostBaker: lodBudgets on a part with children is unsupported; skipping\n");
+        return true;
+    }
+    const std::string sidecar = parts_dir_ + "/" + part_asset::cache_path_lods(resolved_hash);
+    { std::ifstream in(sidecar); if (in.good()) return true; }  // content-addressed: done
+
+    std::vector<uint64_t> variant_hashes;
+    for (double b : spec.budgets) {
+        if (b >= 1.0) {
+            // Full budget == the main bake: lodBudget defaults to 1.0 in the
+            // schema's static params, so the merged params (and hash) match.
+            variant_hashes.push_back(resolved_hash);
+            continue;
+        }
+        Params p2 = params;
+        p2["lodBudget"] = ParamValue::number(b);
+        script_host::BakeResult r = host_.bake_source(source, params_to_json(p2), {});
+        if (!r.error.ok) return false;
+        variant_hashes.push_back(r.resolved_hash);
+    }
+
+    const std::string tmp = sidecar + ".tmp";
+    {
+        std::ofstream o(tmp);
+        o << spec.anchor_size << "\n";
+        for (size_t i = 0; i < spec.budgets.size(); ++i) {
+            char hex[17];
+            snprintf(hex, sizeof hex, "%016llx", (unsigned long long)variant_hashes[i]);
+            o << spec.budgets[i] << " " << hex << "\n";
+        }
+        if (!o.good()) return false;
+    }
+    return std::rename(tmp.c_str(), sidecar.c_str()) == 0;
 }
 
 // Minimal flat-object JSON parser for the shapes eval_requires emits (flat

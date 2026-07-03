@@ -61,6 +61,22 @@ std::string cache_path_resolved(uint64_t resolved_hash);
 // any subtree change changes the resolved hash and orphans the stale flat file.
 std::string cache_path_flat(uint64_t resolved_hash);
 
+// Sidecar listing a part's budget-LOD variant bakes: "parts/<16-hex>.lods".
+// Written by HostBaker::bake_lod_variants for schemas exporting `static
+// lodBudgets`; consumed by part_flatten to assemble a budget ladder instead
+// of QEM. Text format: line 1 = anchor_size, then "<budget> <16-hex-hash>"
+// per level, finest (1.0) first. Content-addressed alongside the .part: any
+// source/param change changes the root hash and orphans the stale sidecar.
+std::string cache_path_lods(uint64_t resolved_hash);
+
+struct LodVariants {
+    double                anchor_size = 0.0;
+    std::vector<double>   budgets;   // parallel to hashes, finest first
+    std::vector<uint64_t> hashes;
+};
+// False if the file is missing or unparseable (callers fall back to QEM).
+bool load_lod_sidecar(const std::string& path, LodVariants& out);
+
 // Serialize the baked managers + child table + LOD levels to path (atomic temp+rename).
 // Writes format_version=2. Returns false on any I/O failure or dangling BLAS handle.
 // GL-free. children may be null iff child_count == 0; lods may be empty.
