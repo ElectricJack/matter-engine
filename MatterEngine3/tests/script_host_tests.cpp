@@ -1038,6 +1038,13 @@ static void test_eval_lod_budgets() {
         "}\n";
     assert(host.eval_lod_budgets(malformed).budgets.empty());
 
+    const char* outofrange =
+        "class O extends Part {\n"
+        "  static lodBudgets = [1.0, 1.5];\n"     // out-of-range number: fail closed
+        "  build(p) {}\n"
+        "}\n";
+    assert(host.eval_lod_budgets(outofrange).budgets.empty());
+
     const char* broken = "not even javascript {{{";
     assert(host.eval_lod_budgets(broken).budgets.empty());
     printf("  test_eval_lod_budgets OK\n");
