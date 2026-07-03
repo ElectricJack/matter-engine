@@ -407,7 +407,7 @@ bool save_flat_v3(const std::string& path, const BLASManager& blas,
         }
     }
 
-    return write_file_atomic(path, kFormatVersionV3, resolved_hash, body);
+    return write_file_atomic(path, kFormatVersionFlat, resolved_hash, body);
 }
 
 bool load_flat_v3(const std::string& path, uint64_t expected_resolved_hash,
@@ -428,7 +428,7 @@ bool load_flat_v3(const std::string& path, uint64_t expected_resolved_hash,
 
     Reader r{ buf.data(), buf.data() + buf.size() };
     uint64_t content_hash = 0;
-    if (!read_and_validate_header(r, expected_resolved_hash, kFormatVersionV3, content_hash))
+    if (!read_and_validate_header(r, expected_resolved_hash, kFormatVersionFlat, content_hash))
         return false;
     if (fnv1a64(r.p, static_cast<size_t>(r.end - r.p)) != content_hash) return false;
 

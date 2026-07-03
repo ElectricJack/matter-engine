@@ -825,18 +825,18 @@ static void test_provider_regen_stale_v2_flat() {
     }
 
     // Call flatten_part directly (the provider's flatten_placed does exactly this).
-    // The provider checks peek_format_version != 3 and regenerates.
+    // The provider checks peek_format_version != kFormatVersionFlat and regenerates.
     part_flatten::FlattenResult fr = part_flatten::flatten_part(regen_cache, kRegenHash);
     CHECK(fr.ok, "regen sniff: flatten_part succeeded");
     if (!fr.ok) { printf("  error: %s\n", fr.error.c_str()); return; }
 
-    // The file must now be v3.
+    // The file must now be the current bake version.
     uint32_t pv = part_asset::peek_format_version(flat_path);
-    CHECK(pv == 3, "regen sniff: flat is now v3 after regeneration");
+    CHECK(pv == part_asset::kFormatVersionFlat, "regen sniff: flat is now current bake version after regeneration");
     CHECK(fr.clusters >= 1, "regen sniff: result reports clusters");
 
     ::system(("rm -rf " + regen_cache).c_str());
-    printf(pv == 3 ? "PASSED\n" : "FAILED\n");
+    printf(pv == part_asset::kFormatVersionFlat ? "PASSED\n" : "FAILED\n");
 }
 
 // Task 12: per-cluster loading.
@@ -904,7 +904,7 @@ static void test_partstore_cluster_loading() {
         bool ok = part_asset::save_flat_v3(flat_path, scratch, scratch_tlas, clusters, kV3Hash);
         CHECK(ok, "cluster test: v3 flat artifact saved");
         if (!ok) return;
-        CHECK(part_asset::peek_format_version(flat_path) == 3, "cluster test: flat is v3");
+        CHECK(part_asset::peek_format_version(flat_path) == part_asset::kFormatVersionFlat, "cluster test: flat is current bake version");
     }
 
     // (a)-(d): Load the v3 flat via PartStore and check clusters + legacy view.

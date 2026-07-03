@@ -164,14 +164,14 @@ bool LocalProvider::connect(WorldManifest& out, std::string& err) {
     // so the viewer renders flat cluster instances per root instead of
     // re-expanding hundreds of child instances each frame.
     // Content-addressed AND version-sniffed: regenerate when the flat artifact
-    // is missing OR is an old v2 file (peek_format_version != 3).
+    // is missing OR from an older bake version (peek_format_version != kFormatVersionFlat).
     auto flatten_placed = [&]() {
         std::set<uint64_t> done;
         for (const auto& e : out.instances) {
             if (!done.insert(e.part_hash).second) continue;
             const std::string flat_abs_path =
                 abs_cache_root + "/" + part_asset::cache_path_flat(e.part_hash);
-            if (part_asset::peek_format_version(flat_abs_path) == 3) continue;
+            if (part_asset::peek_format_version(flat_abs_path) == part_asset::kFormatVersionFlat) continue;
             part_flatten::FlattenResult fr =
                 part_flatten::flatten_part(abs_cache_root, e.part_hash);
             if (fr.ok) {

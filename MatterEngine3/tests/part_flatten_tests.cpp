@@ -134,9 +134,9 @@ static void test_flatten_merge() {
     CHECK(res.full_tris == 6, "merged level-0 tri count = parent + 2x child LOD0");
     CHECK(res.clusters >= 1, "result has at least 1 cluster");
 
-    // Task 11: flatten writes v3; load_flat_v3 must succeed.
+    // Task 11: flatten writes v3 (now v4); load_flat_v3 must succeed.
     uint32_t fv = part_asset::peek_format_version(flat_path());
-    CHECK(fv == 3, "flat artifact is v3 (peek_format_version == 3)");
+    CHECK(fv == part_asset::kFormatVersionFlat, "flat artifact is current bake version");
 
     BLASManager blas; TLASManager tlas(16);
     std::vector<part_asset::FlatCluster> clusters_in;
@@ -203,8 +203,8 @@ static void test_flatten_deterministic() {
     std::remove(flat_path().c_str());
     part_flatten::FlattenResult a = part_flatten::flatten_part(kCacheRoot, kParentHash);
     std::vector<char> bytes_a;
-    CHECK(a.ok && read_bytes(flat_path(), bytes_a), "first flatten written (v3)");
-    CHECK(part_asset::peek_format_version(flat_path()) == 3, "first flatten is v3");
+    CHECK(a.ok && read_bytes(flat_path(), bytes_a), "first flatten written");
+    CHECK(part_asset::peek_format_version(flat_path()) == part_asset::kFormatVersionFlat, "first flatten is current bake version");
 
     std::remove(flat_path().c_str());
     part_flatten::FlattenResult b = part_flatten::flatten_part(kCacheRoot, kParentHash);
@@ -853,7 +853,7 @@ static void test_peek_format_version() {
     bool spk = part_asset::save_flat_v3(v3_path, bpk, tpk, clspk, kPeekHash);
     CHECK(spk, "peek: v3 file saved");
     uint32_t pv3 = part_asset::peek_format_version(v3_path);
-    CHECK(pv3 == 3, "peek returns 3 for a v3 file");
+    CHECK(pv3 == part_asset::kFormatVersionFlat, "peek returns kFormatVersionFlat for a fresh flat file");
 
     // Garbage / non-existent file.
     uint32_t pg = part_asset::peek_format_version("/tmp/__no_such_file_matter_v3__.part");
@@ -973,9 +973,9 @@ static void test_flatten_clustered_v3() {
     CHECK(res.clusters > 1, "big mesh: result.clusters > 1 (split required)");
     printf("  clusters=%zu, levels=%zu, full_tris=%zu\n", res.clusters, res.levels, res.full_tris);
 
-    // Verify v3 format.
+    // Verify current bake-version format.
     uint32_t fv = part_asset::peek_format_version(big_flat);
-    CHECK(fv == 3, "big mesh: flat artifact is v3");
+    CHECK(fv == part_asset::kFormatVersionFlat, "big mesh: flat artifact is current bake version");
 
     // Load v3 and verify cluster invariants.
     BLASManager blas_in; TLASManager tlas_in(16);
@@ -1161,6 +1161,34 @@ static void test_ratio2_ladder_shape() {
     printf(res.levels >= 6 && monotonic ? "PASSED\n" : "FAILED\n");
 }
 
+static void test_flat_version_bump() {
+    uint64_t hash = write_small_sphere_part(kCacheRoot);   // Task 7 fixture
+    auto res = part_flatten::flatten_part(kCacheRoot, hash);
+    assert(res.ok);
+    std::string p = std::string(kCacheRoot) + "/" + part_asset::cache_path_flat(hash);
+
+    // New flats carry the bumped version.
+    assert(part_asset::peek_format_version(p) == part_asset::kFormatVersionFlat);
+    assert(part_asset::kFormatVersionFlat == 4u);
+
+    // Patch the version field back to 3 (a pre-retune bake): loader must reject.
+    // Header layout: magic (u32) then format_version (u32) — verify the write
+    // offset against write_file_atomic in part_asset_v2.cpp before relying on it.
+    {
+        FILE* f = fopen(p.c_str(), "r+b");
+        assert(f);
+        uint32_t old = 3u;
+        fseek(f, 4, SEEK_SET);
+        fwrite(&old, sizeof old, 1, f);
+        fclose(f);
+    }
+    assert(part_asset::peek_format_version(p) == 3u);
+    BLASManager b2; TLASManager t2(4);
+    std::vector<part_asset::FlatCluster> cl2;
+    assert(!part_asset::load_flat_v3(p, hash, b2, t2, cl2));
+    printf("  test_flat_version_bump OK\n");
+}
+
 int main() {
     if (!write_fixtures()) {
         printf("FAIL: could not write fixture parts under %s\n", kCacheRoot);
@@ -1185,6 +1213,7 @@ int main() {
     test_flatten_watertight_invariant();
     test_small_part_gets_ladder();
     test_ratio2_ladder_shape();
+    test_flat_version_bump();
 
     if (failures == 0) { printf("part_flatten_tests: ALL PASS\n"); return 0; }
     printf("part_flatten_tests: %d FAILURE(S)\n", failures);

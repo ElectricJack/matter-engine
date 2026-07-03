@@ -37,7 +37,7 @@ bool PartStore::load_flat(uint64_t part_hash, LoadedPart& lp) {
     uint32_t ver = part_asset::peek_format_version(path);
     if (ver == 0) return false;   // absent or unreadable
 
-    if (ver == 3) {
+    if (ver == part_asset::kFormatVersionFlat) {
         // --- v3 clustered flat ---
         BLASManager scratch;
         TLASManager scratch_tlas(65536);

@@ -19,6 +19,9 @@ namespace part_asset {
 
 constexpr uint32_t kFormatVersionV2 = 2u;
 constexpr uint32_t kFormatVersionV3 = 3u;
+// Flat-artifact bake version: bump whenever FlattenTargets defaults change so
+// stale flats regenerate automatically (Stage 2 ladder retune bumped 3 -> 4).
+constexpr uint32_t kFormatVersionFlat = 4u;
 
 // Content-addressed identity for a part. All three inputs are OPAQUE byte ranges
 // to SP-1 (script source, params, child resolved-hashes). child_hashes need NOT be
