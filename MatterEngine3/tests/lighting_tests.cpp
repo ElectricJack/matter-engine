@@ -543,6 +543,90 @@ static void test_tracer_two_instances_nearer_wins() {
     CHECK(feq(hit.t, 4.5f, 0.1f), msg);
 }
 
+// ================================================================
+// Task 3 gap: compositional child expansion
+// CHILD part (0xC1): unit cube, no flat artifact.
+// PARENT part (0xB1): own cube geometry + one ChildInstance { 0xC1, translate+3x }.
+//   No flat artifact — tracer must expand children from the compositional .part.
+// WorldTracer: one identity instance of parent.
+// Asserts: ray from (3,0,-5) dir (0,0,1) hits (child expanded at x=3).
+// ================================================================
+
+static const uint64_t kChildHash  = 0xC100000000000000ULL;
+static const uint64_t kParentHash = 0xB100000000000000ULL;
+
+static bool wt_write_compositional_fixture() {
+    // --- Write CHILD part (0xC1): unit cube geometry, no children, no lods ---
+    {
+        std::vector<Tri>  tris  = unit_cube_tris();
+        std::vector<TriEx> tex(tris.size(), wt_make_triex(1));
+        BLASManager blas;
+        TLASManager tlas(16);
+        BLASHandle h = blas.register_triangles(tris.data(), (int)tris.size(), tex.data());
+        (void)h;
+        std::string path = std::string(kTracerCache) + "/" +
+                           part_asset::cache_path_resolved(kChildHash);
+        if (!part_asset::save_v2(path, blas, tlas, nullptr, 0,
+                                 part_asset::LodLevels{}, kChildHash))
+            return false;
+    }
+    // --- Write PARENT part (0xB1): one cube geometry + child table { 0xC1, +3x } ---
+    {
+        std::vector<Tri>  tris  = unit_cube_tris();
+        std::vector<TriEx> tex(tris.size(), wt_make_triex(1));
+        BLASManager blas;
+        TLASManager tlas(16);
+        BLASHandle h = blas.register_triangles(tris.data(), (int)tris.size(), tex.data());
+        (void)h;
+        // Child instance: kChildHash translated +3 along x
+        part_asset::ChildInstance ci;
+        ci.child_resolved_hash = kChildHash;
+        // row-major identity with tx=3
+        float tf[16] = {1,0,0,3, 0,1,0,0, 0,0,1,0, 0,0,0,1};
+        std::memcpy(ci.transform, tf, sizeof(tf));
+        std::string path = std::string(kTracerCache) + "/" +
+                           part_asset::cache_path_resolved(kParentHash);
+        if (!part_asset::save_v2(path, blas, tlas, &ci, 1,
+                                 part_asset::LodLevels{}, kParentHash))
+            return false;
+    }
+    return true;
+}
+
+// ---- Test 18: compositional child expansion ----
+static void test_tracer_compositional_child() {
+    world_tracer::WorldTracer wt;
+    std::string err;
+
+    // Single identity instance of the parent (which has no flat artifact).
+    world_tracer::TraceInstance inst;
+    inst.part_hash = kParentHash;
+    std::memcpy(inst.transform, wt_identity, 64);
+
+    bool built = wt.build(kTracerCache, {inst}, err);
+    if (!built) printf("  build error: %s\n", err.c_str());
+    CHECK(built, "tracer compositional: build ok");
+    if (!built) return;
+
+    // Ray aimed at the child's translated position (x=3): from (3,0,-5) dir (0,0,1)
+    // Child cube spans [2.5,3.5]x[-0.5,0.5]x[-0.5,0.5]; front face at z=-0.5, t=4.5
+    const float O[3] = {3.f, 0.f, -5.f};
+    const float D[3] = {0.f, 0.f,  1.f};
+    world_tracer::Hit hit;
+    bool ok = wt.trace(O, D, 100.f, hit);
+    CHECK(ok, "tracer compositional: ray at child pos hits");
+    char msg[128];
+    std::snprintf(msg, sizeof msg,
+                  "tracer compositional: t ≈ 4.5 (got %.4f)", hit.t);
+    CHECK(feq(hit.t, 4.5f, 0.1f), msg);
+
+    // Ray aimed at the parent's own geometry (x=0): should also hit (t≈4.5)
+    const float O2[3] = {0.f, 0.f, -5.f};
+    world_tracer::Hit hit2;
+    bool ok2 = wt.trace(O2, D, 100.f, hit2);
+    CHECK(ok2, "tracer compositional: ray at parent pos hits own geometry");
+}
+
 // ---- Test 17: world_bounds contains both instances ----
 static void test_tracer_world_bounds() {
     world_tracer::WorldTracer wt;
@@ -598,6 +682,15 @@ int main() {
         test_tracer_occluded();
         test_tracer_two_instances_nearer_wins();
         test_tracer_world_bounds();
+    }
+
+    // Task 3 gap: compositional child expansion.
+    printf("\n--- Task 3 gap: compositional child expansion ---\n");
+    if (!wt_write_compositional_fixture()) {
+        printf("FAIL: could not write compositional fixture under %s\n", kTracerCache);
+        ++failures;
+    } else {
+        test_tracer_compositional_child();
     }
 
     if (failures == 0) {

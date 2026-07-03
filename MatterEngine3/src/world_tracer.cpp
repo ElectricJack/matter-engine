@@ -13,6 +13,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <deque>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -183,6 +184,11 @@ struct LoadedTracePart {
     std::unique_ptr<TLASManager> tlas_mgr;
     // Entries to trace (pointers into blas_mgr).
     std::vector<BLASSlice> slices;
+    // Children from the compositional file (empty if loaded from flat artifact).
+    std::vector<part_asset::ChildInstance> children;
+    // True when loaded from flat artifact (children will be empty and not expanded).
+    // False when loaded from compositional .part (children, if present, are expanded).
+    bool loaded_flat = false;
     // Local AABB of the part (union of all traced entry triangles).
     float local_mn[3], local_mx[3];
     bool ok = false;
@@ -223,8 +229,8 @@ namespace world_tracer {
 struct WorldTracer::Impl {
     // Part cache (by resolved hash)
     std::unordered_map<uint64_t, std::unique_ptr<LoadedTracePart>> parts_;
-    // NormalMat pool (parallel to expanded_)
-    std::vector<NormalMat3> nm_pool_;
+    // NormalMat pool — deque so push_back never invalidates existing element pointers.
+    std::deque<NormalMat3> nm_pool_;
     // Expanded instances
     std::vector<ExpandedInst> expanded_;
     // Instance BVH nodes
@@ -259,10 +265,12 @@ struct WorldTracer::Impl {
                                 *ltp->blas_mgr, *ltp->tlas_mgr,
                                 children, lods)) {
             loaded = true;
+            ltp->loaded_flat = true;
         } else if (part_asset::load_v2(comp_path, hash,
                                        *ltp->blas_mgr, *ltp->tlas_mgr,
                                        children, lods)) {
             loaded = true;
+            ltp->loaded_flat = false;
         }
         if (!loaded) {
             err = "world_tracer: load_v2 failed for hash "
@@ -292,6 +300,9 @@ struct WorldTracer::Impl {
                 ltp->slices.push_back(s);
             }
         }
+
+        // Store children for compositional expansion by expand_instance()
+        ltp->children = std::move(children);
 
         // Compute local AABB
         ltp->local_mn[0] = ltp->local_mn[1] = ltp->local_mn[2] =  1e30f;
@@ -328,33 +339,38 @@ struct WorldTracer::Impl {
         LoadedTracePart* part = load_part(cache_root, hash, err);
         if (!part) return;
 
-        // If the compositional file had children, expand them instead of
-        // adding this as a leaf (only for the compositional file — a flat
-        // artifact will have an empty child table).
-        // We need to re-read children from the managers if the compositional
-        // path was taken. However, load_part doesn't store the child table.
-        // Re-read from the compositional file to check for children.
-        // (We only do this on depth > 0 to avoid infinite recursion on roots;
-        //  at depth 0 we always emit the instance and let load_part decide.)
-        //
-        // Actually: the brief says "compositional fallback expands children".
-        // The flat file has an empty child table. We stored lods but not children
-        // in LoadedTracePart. Re-read children here if needed.
-        //
-        // Simpler approach: store children in LoadedTracePart.
-        // But we already discarded them in load_part above.
-        // Re-implement: store children in the struct and use them here.
-        //
-        // For now (since this is the impl pass), emit the instance as-is.
-        // Children from a compositional .part won't be re-expanded here
-        // because the flat file is preferred and it already has merged geometry.
-        // If only the compositional file is available and it has children,
-        // we need to recurse. Let's support that by storing children in load_part.
+        // If the part was loaded from a compositional .part and has children,
+        // expand each child as an additional pending instance with
+        // transform = world_xf × child_transform (row-major multiply).
+        // This is the fix for the gap: the flat artifact is preferred and
+        // has merged geometry (no children), but a compositional .part only
+        // has its own BLAS entries + a child table. We must recurse into the
+        // children to trace the full subtree.
+        if (!part->loaded_flat && !part->children.empty()) {
+            // Expand each child recursively.
+            for (const part_asset::ChildInstance& ci : part->children) {
+                float combined[16];
+                mul16(world_xf, ci.transform, combined);
+                expand_instance(cache_root, ci.child_resolved_hash,
+                                combined, depth + 1, err);
+                if (!err.empty()) {
+                    std::fprintf(stderr,
+                        "world_tracer: warning expanding child 0x%llx of 0x%llx: %s\n",
+                        (unsigned long long)ci.child_resolved_hash,
+                        (unsigned long long)hash, err.c_str());
+                    err.clear();
+                }
+            }
+            // Also emit the parent's own geometry if it has any slices,
+            // so that parts which have both their own BLAS entries AND children
+            // (mixed compositional) are fully traced.
+            if (part->slices.empty()) return;
+            // Fall through to emit own geometry below.
+        }
 
-        // The design: loaded parts are emitted as ExpandedInst.
-        // Child expansion from compositional .part is needed for completeness
-        // but the tests only use flat artifacts (save_v2 with one LOD level).
-        // We emit this instance.
+        // Emit this part's own geometry as a leaf ExpandedInst.
+        if (part->slices.empty()) return; // nothing to trace
+
         nm_pool_.emplace_back(world_xf);
         ExpandedInst ei;
         ei.part = part;
@@ -571,8 +587,7 @@ bool WorldTracer::build(const std::string& cache_root,
     impl_ = std::make_unique<Impl>();
     Impl& im = *impl_;
 
-    // Reserve enough for the nm_pool so pointers stay stable.
-    im.nm_pool_.reserve(instances.size() + 1);
+    // nm_pool_ is a deque so pointers remain stable across push_back.
     im.expanded_.reserve(instances.size());
 
     for (const TraceInstance& ti : instances) {
