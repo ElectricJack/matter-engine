@@ -112,6 +112,24 @@ int main() {
     CHECK(ir2.ok && ir2.baked.empty(), "re-install bakes nothing (deterministic)");
     CHECK(ir2.root_hashes == ir.root_hashes, "re-install resolves identical hashes");
 
+    // ---- Rock / Pebble variants --------------------------------------------
+    std::vector<ChildRequest> boulders = {
+        ChildRequest{ "Rock",   {{"seed", num(0)}} },
+        ChildRequest{ "Rock",   {{"seed", num(1)}} },
+        ChildRequest{ "Pebble", {{"seed", num(0)}} },
+    };
+    InstallResult rr = graph.install(boulders);
+    CHECK(rr.ok, "rock/pebble install ok");
+    if (rr.ok) {
+        CHECK(rr.root_hashes[0] != rr.root_hashes[1], "rock seeds 0/1 are distinct variants");
+        size_t rt = load_tris(rr.root_hashes[0]).size();
+        size_t pt = load_tris(rr.root_hashes[2]).size();
+        printf("  rock tris=%zu pebble tris=%zu\n", rt, pt);
+        CHECK(rt > 200,  "rock has real geometry");
+        CHECK(pt > 50,   "pebble has real geometry");
+        CHECK(rt < 40000 && pt < 20000, "rock/pebble tri counts stay budget-sane");
+    }
+
     printf(failures ? "\n%d FAILURE(S)\n" : "\nALL PASS\n", failures);
     return failures ? 1 : 0;
 }
