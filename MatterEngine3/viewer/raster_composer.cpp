@@ -1,6 +1,7 @@
 #include "raster_composer.h"
 #include "material_registry.h"
 #include "rlgl.h"
+#include "external/glad.h"
 #include <cmath>
 #include <cstring>
 #include <functional>
@@ -59,6 +60,13 @@ bool RasterComposer::init(std::string& err) {
     loc_ambient_   = GetShaderLocation(shader_, "ambientColor");
     loc_mat_table_ = GetShaderLocation(shader_, "materialTable");
     loc_mat_count_ = GetShaderLocation(shader_, "materialCount");
+    // Probe-volume uniforms (Task 6).
+    loc_probe_ambient_  = GetShaderLocation(shader_, "probeAmbient");
+    loc_probe_dominant_ = GetShaderLocation(shader_, "probeDominant");
+    loc_probe_origin_   = GetShaderLocation(shader_, "probeOrigin");
+    loc_probe_cell_     = GetShaderLocation(shader_, "probeCell");
+    loc_probe_dims_     = GetShaderLocation(shader_, "probeDims");
+    loc_use_probes_     = GetShaderLocation(shader_, "useProbes");
     material_ = LoadMaterialDefault();
     material_.shader = shader_;
     ready_ = true;
@@ -95,16 +103,46 @@ int RasterComposer::draw(const std::vector<RasterBatch>& batches, PartStore& sto
     int count = MaterialRegistryCount();
     SetShaderValueV(shader_, loc_mat_table_, table, SHADER_UNIFORM_FLOAT, count * MATERIAL_FLOATS_PER_DEF);
     SetShaderValue(shader_, loc_mat_count_, &count, SHADER_UNIFORM_INT);
-    // Normalize sun direction inline (avoid raymath.h / float3 conflict with precomp.h)
-    const float sdx = -0.45f, sdy = -0.80f, sdz = -0.35f;
+    // Upload WorldLights (stored via set_lights(); defaults reproduce Phase-1 values).
+    // Normalize sun_dir inline to avoid raymath.h / float3 conflicts.
+    float sdx = lights_.sun_dir[0], sdy = lights_.sun_dir[1], sdz = lights_.sun_dir[2];
     float sdlen = std::sqrt(sdx*sdx + sdy*sdy + sdz*sdz);
     if (sdlen < 1e-6f) sdlen = 1.0f;
-    Vector3 sun_dir = (Vector3){ sdx/sdlen, sdy/sdlen, sdz/sdlen };   // phase-1 fixed sun
-    Vector3 sun_col = (Vector3){ 2.2f, 2.05f, 1.8f };
-    Vector3 ambient = (Vector3){ 0.38f, 0.43f, 0.52f };
+    Vector3 sun_dir = (Vector3){ sdx/sdlen, sdy/sdlen, sdz/sdlen };
+    Vector3 sun_col = (Vector3){ lights_.sun_color[0], lights_.sun_color[1], lights_.sun_color[2] };
+    Vector3 ambient = (Vector3){ lights_.sky_color[0], lights_.sky_color[1], lights_.sky_color[2] };
     SetShaderValue(shader_, loc_sun_dir_,   &sun_dir, SHADER_UNIFORM_VEC3);
     SetShaderValue(shader_, loc_sun_color_, &sun_col, SHADER_UNIFORM_VEC3);
     SetShaderValue(shader_, loc_ambient_,   &ambient, SHADER_UNIFORM_VEC3);
+
+    // Bind probe textures to units 4 and 5 (every frame; raylib only manages unit 0).
+    if (probes_.valid()) {
+        glActiveTexture(GL_TEXTURE4);
+        glBindTexture(GL_TEXTURE_3D, probes_.tex_ambient);
+        glActiveTexture(GL_TEXTURE5);
+        glBindTexture(GL_TEXTURE_3D, probes_.tex_dominant);
+        glActiveTexture(GL_TEXTURE0);   // restore default active unit
+
+        int unit4 = 4, unit5 = 5;
+        SetShaderValue(shader_, loc_probe_ambient_,  &unit4, SHADER_UNIFORM_INT);
+        SetShaderValue(shader_, loc_probe_dominant_, &unit5, SHADER_UNIFORM_INT);
+
+        Vector3 origin = (Vector3){ probes_.grid.origin[0],
+                                    probes_.grid.origin[1],
+                                    probes_.grid.origin[2] };
+        float cell = probes_.grid.cell;
+        Vector3 dims = (Vector3){ (float)probes_.grid.nx,
+                                  (float)probes_.grid.ny,
+                                  (float)probes_.grid.nz };
+        SetShaderValue(shader_, loc_probe_origin_, &origin, SHADER_UNIFORM_VEC3);
+        SetShaderValue(shader_, loc_probe_cell_,   &cell,   SHADER_UNIFORM_FLOAT);
+        SetShaderValue(shader_, loc_probe_dims_,   &dims,   SHADER_UNIFORM_VEC3);
+        int use = 1;
+        SetShaderValue(shader_, loc_use_probes_, &use, SHADER_UNIFORM_INT);
+    } else {
+        int use = 0;
+        SetShaderValue(shader_, loc_use_probes_, &use, SHADER_UNIFORM_INT);
+    }
 
     int tris = 0;
     BeginMode3D(cam);

@@ -10,8 +10,10 @@
 #include "sector_resolver.h"
 #include "renderer.h"
 #include "raster_composer.h"
+#include "probe_texture.h"
 #include "ui.h"
 
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <functional>
@@ -88,6 +90,8 @@ int main() {
     std::unique_ptr<WorldComposer> composer;
     std::unique_ptr<RasterComposer> raster;
     lod_select::PartLodTable lods;
+    ProbeTextures probe_tex{};   // current probe 3D textures; released on reload/shutdown
+    Color sky_clear = (Color){ 96, 118, 143, 255 };   // updated from tone-mapped sky_color
 
     auto connect_sequence = [&]() -> bool {
         if (!provider->connect(manifest, err)) { printf("connect: %s\n", err.c_str()); return false; }
@@ -115,6 +119,8 @@ int main() {
         for (const auto& e : manifest.instances) cap += expanded_count(e.part_hash, 0);
         composer = std::make_unique<WorldComposer>(*store, cap);
         // Recreate RasterComposer on each (re)connect so stale GL mesh caches drop.
+        // Release stale probe textures before creating new ones (GL context must be live).
+        release_probe_textures(probe_tex);
         raster = std::make_unique<RasterComposer>();
         if (!use_rt) {
             std::string rerr;
@@ -122,6 +128,34 @@ int main() {
                 printf("raster: %s\n", rerr.c_str());
                 return false;
             }
+            // Always upload WorldLights (defaults reproduce Phase-1 look for worlds
+            // without light lines).
+            raster->set_lights(manifest.lights);
+
+            // Upload probe textures if available; fallback to Phase-1 flat ambient.
+            if (manifest.probes && manifest.probes->valid()) {
+                probe_tex = upload_probe_textures(*manifest.probes);
+                raster->set_probes(probe_tex);
+            } else {
+                printf("probes unavailable - flat ambient fallback\n");
+            }
+
+            // Tone-map sky_color (c/(c+1) then pow(1/2.2)) to derive the clear color.
+            // With the default lights this reproduces approximately the old (96,118,143).
+            auto tonemap = [](float c) -> unsigned char {
+                float mapped = c / (c + 1.0f);                    // Reinhard
+                float gamma  = std::pow(mapped, 1.0f / 2.2f);     // gamma
+                float clamped = gamma < 0.0f ? 0.0f : (gamma > 1.0f ? 1.0f : gamma);
+                return (unsigned char)(clamped * 255.0f + 0.5f);
+            };
+            sky_clear = (Color){
+                tonemap(manifest.lights.sky_color[0]),
+                tonemap(manifest.lights.sky_color[1]),
+                tonemap(manifest.lights.sky_color[2]),
+                255
+            };
+            printf("sky clear color: (%d,%d,%d)\n",
+                   (int)sky_clear.r, (int)sky_clear.g, (int)sky_clear.b);
         }
         lods = store->part_lod_table();
         stats.connected        = true;
@@ -248,7 +282,7 @@ int main() {
         stats.instances_active = active;
 
         BeginDrawing();
-            ClearBackground((Color){ 96, 118, 143, 255 });   // blue-grey sky (placeholder)
+            ClearBackground(sky_clear);
             if (use_rt) {
                 renderer.draw(store->blas(), composer->tlas());
             } else {
@@ -300,6 +334,7 @@ int main() {
     if (camera_capture) EnableCursor();
     // Reset GL-owning objects before CloseWindow; order matters — all
     // UnloadMesh/UnloadShader calls must complete while the GL context is live.
+    release_probe_textures(probe_tex);
     raster.reset();
     composer.reset();
     store.reset();

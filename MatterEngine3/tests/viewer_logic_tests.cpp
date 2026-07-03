@@ -629,6 +629,37 @@ static void test_provider_bakes_probes() {
     }
 }
 
+// Task 6: verify set_lights() stores values accessible via lights() accessor.
+// (GL-free: RasterComposer's batch/light-storage logic is headless; the actual
+// GL upload is exercised only in the live viewer.)
+static void test_raster_composer_lights() {
+    viewer::RasterComposer rc;
+
+    // Default-constructed lights must match WorldLights defaults.
+    const world_lights::WorldLights& def = rc.lights();
+    CHECK(def.sun_dir[0] == -0.45f && def.sun_dir[1] == -0.80f && def.sun_dir[2] == -0.35f,
+          "default sun_dir matches WorldLights default");
+    CHECK(def.sun_color[0] == 2.2f && def.sun_color[1] == 2.05f && def.sun_color[2] == 1.8f,
+          "default sun_color matches WorldLights default");
+    CHECK(def.sky_color[0] == 0.38f && def.sky_color[1] == 0.43f && def.sky_color[2] == 0.52f,
+          "default sky_color matches WorldLights default");
+
+    // After set_lights(), the accessor must return the updated values.
+    world_lights::WorldLights custom;
+    custom.sun_dir[0] = 1.0f; custom.sun_dir[1] = 0.0f; custom.sun_dir[2] = 0.0f;
+    custom.sun_color[0] = 3.0f; custom.sun_color[1] = 3.0f; custom.sun_color[2] = 2.5f;
+    custom.sky_color[0] = 0.1f; custom.sky_color[1] = 0.2f; custom.sky_color[2] = 0.9f;
+    rc.set_lights(custom);
+
+    const world_lights::WorldLights& stored = rc.lights();
+    CHECK(stored.sun_dir[0] == 1.0f && stored.sun_dir[1] == 0.0f && stored.sun_dir[2] == 0.0f,
+          "set_lights stores sun_dir");
+    CHECK(stored.sun_color[0] == 3.0f && stored.sun_color[1] == 3.0f && stored.sun_color[2] == 2.5f,
+          "set_lights stores sun_color");
+    CHECK(stored.sky_color[0] == 0.1f && stored.sky_color[1] == 0.2f && stored.sky_color[2] == 0.9f,
+          "set_lights stores sky_color");
+}
+
 int main() {
     test_world_state_delta();
     test_resolvers();
@@ -641,6 +672,7 @@ int main() {
     test_raster_mesh_data();
     test_sector_lod_floor_cull();
     test_provider_bakes_probes();
+    test_raster_composer_lights();
     delete g_shared_store; g_shared_store = nullptr;
     printf("\n%s\n", g_failures == 0 ? "viewer-logic OK" : "viewer-logic FAILED");
     return g_failures == 0 ? 0 : 1;

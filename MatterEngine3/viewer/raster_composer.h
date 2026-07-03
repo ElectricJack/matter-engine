@@ -5,6 +5,8 @@
 #include "sector_resolver.h"
 #include "part_store.h"
 #include "raster_mesh.h"
+#include "probe_texture.h"
+#include "world_lights.h"
 
 #include <map>
 #include <string>
@@ -33,6 +35,15 @@ public:
     // GL: lazy-upload meshes, BeginMode3D, one DrawMeshInstanced per batch. Returns drawn tris.
     int draw(const std::vector<RasterBatch>& batches, PartStore& store, const Camera3D& cam);
 
+    // Store WorldLights; draw() uploads them each frame instead of hardcoded values.
+    void set_lights(const world_lights::WorldLights& l) { lights_ = l; }
+
+    // Store probe textures; draw() binds them to units 4/5 and sets useProbes=1.
+    void set_probes(const ProbeTextures& t) { probes_ = t; }
+
+    // Accessor for testing (verifies set_lights stores values correctly).
+    const world_lights::WorldLights& lights() const { return lights_; }
+
 private:
     Mesh* ensure_mesh(uint64_t hash, int level, PartStore& store);  // upload-once cache
 
@@ -42,6 +53,13 @@ private:
     bool ready_ = false;
     int  loc_sun_dir_ = -1, loc_sun_color_ = -1, loc_ambient_ = -1,
          loc_mat_table_ = -1, loc_mat_count_ = -1;
+    // Probe-volume uniform locations (Task 6).
+    int  loc_probe_ambient_  = -1, loc_probe_dominant_ = -1;
+    int  loc_probe_origin_   = -1, loc_probe_cell_     = -1;
+    int  loc_probe_dims_     = -1, loc_use_probes_     = -1;
+
+    world_lights::WorldLights lights_{};   // defaults reproduce Phase-1 hardcoded values
+    ProbeTextures probes_{};               // default-constructed: valid() == false
 };
 
 } // namespace viewer
