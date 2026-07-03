@@ -190,7 +190,7 @@ std::vector<RasterBatch> RasterComposer::build_batches(
     if (last_valid_ && fp == last_fp_) {
         // Reuse cached result; update HUD stats from the cached batches.
         stat_cache_hit_       = true;
-        stat_culled_clusters_ = 0;   // can't know from cache; keep previous value
+        stat_culled_clusters_ = 0;   // reset to 0: last frame's culled count would be misleading
         stat_batches_         = last_batches_.size();
         stat_drawn_tris_      = 0;
         // drawn_tris is GL-only; caller queries after draw(); leave at 0.

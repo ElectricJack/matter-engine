@@ -329,7 +329,20 @@ bool HostBaker::bake_lod_variants(const std::string& source, const Params& param
         return true;
     }
     const std::string sidecar = parts_dir_ + "/" + part_asset::cache_path_lods(resolved_hash);
-    { std::ifstream in(sidecar); if (in.good()) return true; }  // content-addressed: done
+    {
+        // content-addressed fast path: sidecar exists AND every referenced .part exists.
+        // If a variant was pruned from the cache, fall through and re-bake the whole ladder.
+        part_asset::LodVariants existing;
+        if (part_asset::load_lod_sidecar(sidecar, existing)) {
+            bool all_present = true;
+            for (uint64_t h : existing.hashes) {
+                const std::string vpath = parts_dir_ + "/" + part_asset::cache_path_resolved(h);
+                std::ifstream probe(vpath);
+                if (!probe.good()) { all_present = false; break; }
+            }
+            if (all_present) return true;
+        }
+    }
 
     std::vector<uint64_t> variant_hashes;
     for (double b : spec.budgets) {

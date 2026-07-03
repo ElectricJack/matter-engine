@@ -219,7 +219,9 @@ static FlattenResult flatten_budget_ladder(const std::string& cache_root,
         }
     };
 
-    const size_t n = v.hashes.size();
+    // Cap levels: `1u << i` is UB for i >= 32; schemas have no upper bound on
+    // lodBudgets.size(), so enforce a safe maximum here.
+    const size_t n = std::min(v.hashes.size(), (size_t)16);
     for (size_t i = 0; i < n; ++i) {
         std::vector<Tri> tris; std::vector<TriEx> ex;
         if (v.hashes[i] == root_hash) {

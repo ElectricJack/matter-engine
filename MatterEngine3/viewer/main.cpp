@@ -267,6 +267,10 @@ int main() {
                 } else if (sscanf(line.c_str(), "stats %63s", labelbuf) == 1) {
                     stats_label = labelbuf;   // printed after this frame's stats fill
                 } else if (sscanf(line.c_str(), "budget %f", &c[0]) == 1) {
+                    // Clamp to [0.05, 4.0]: wider than the HUD slider for scripted sweeps,
+                    // but guards against 0/negative values that break LOD selection math.
+                    if (c[0] < 0.05f) c[0] = 0.05f;
+                    if (c[0] > 4.0f)  c[0] = 4.0f;
                     stats.pixel_budget = c[0];
                 } else if (line == "reload") {
                     stats.reload_requested = true;
