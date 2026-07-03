@@ -10,7 +10,7 @@ JOBS ?= $(shell nproc)
 MAKEFLAGS += -j$(JOBS)
 
 CC = g++
-CFLAGS = -std=c++17 -Wall -Wno-missing-braces -Wno-unused-variable \
+CFLAGS = -std=c++17 -O2 -Wall -Wno-missing-braces -Wno-unused-variable \
          -DPLATFORM_DESKTOP -DGRAPHICS_API_OPENGL_33
 
 RAYLIB_PATH = ../../Libraries/raylib/src
