@@ -130,6 +130,24 @@ int main() {
         CHECK(rt < 40000 && pt < 20000, "rock/pebble tri counts stay budget-sane");
     }
 
+    // ---- Grass clump --------------------------------------------------------
+    InstallResult gr = graph.install({ ChildRequest{ "Grass", {{"seed", num(0)}} } });
+    CHECK(gr.ok, "grass install ok");
+    if (gr.ok) {
+        std::vector<Tri> gt = load_tris(gr.root_hashes[0]);
+        printf("  grass tris=%zu\n", gt.size());
+        CHECK(gt.size() >= 60 && gt.size() <= 400, "grass clump tri count in budget");
+        // Blades are mesh strips, not voxels: some vertices must dip below y=0
+        // (root skirt) and reach above y=0.3 (blade tips).
+        bool below = false, above = false;
+        for (const auto& t : gt)
+            for (const float3* v : { &t.vertex0, &t.vertex1, &t.vertex2 }) {
+                if (v->y < -0.01f) below = true;
+                if (v->y >  0.30f) above = true;
+            }
+        CHECK(below && above, "grass has a root skirt below y=0 and tips above");
+    }
+
     printf(failures ? "\n%d FAILURE(S)\n" : "\nALL PASS\n", failures);
     return failures ? 1 : 0;
 }
