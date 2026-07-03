@@ -90,13 +90,20 @@ std::string cache_path_flat(uint64_t resolved_hash) {
     return std::string("parts/") + buf + ".flat.part";
 }
 
-bool save_v2(const std::string& path, const BLASManager& blas,
-             const TLASManager& tlas,
-             const ChildInstance* children, size_t child_count,
-             const LodLevels& lods,
-             uint64_t resolved_hash) {
-    std::vector<uint8_t> body;
+// ─────────────────────────────────────────────────────────────────────────────
+// Internal helpers: write/read the common body (materials, BLAS, instances,
+// children, top-level lods). The v3 writer calls save_common_body and then
+// appends the cluster table before finalizing the header.
+// ─────────────────────────────────────────────────────────────────────────────
 
+// Appends the common serialization body (materials → BLAS → internal instances
+// → children → top-level lods) into `body`. Returns false on a dangling handle.
+static bool append_common_body(std::vector<uint8_t>& body,
+                               const BLASManager& blas,
+                               const TLASManager& tlas,
+                               const ChildInstance* children, size_t child_count,
+                               const LodLevels& lods,
+                               std::unordered_map<BLASHandle, uint32_t>& handle_to_index_out) {
     // --- Materials --- (unchanged from v1)
     const uint32_t mcount = static_cast<uint32_t>(MaterialRegistryCount());
     put<uint32_t>(body, mcount);
@@ -106,10 +113,10 @@ bool save_v2(const std::string& path, const BLASManager& blas,
     // --- BLAS table --- (unchanged from v1; index == position in entries_)
     const auto& entries = blas.get_entries();
     put<uint32_t>(body, static_cast<uint32_t>(entries.size()));
-    std::unordered_map<BLASHandle, uint32_t> handle_to_index;
+    handle_to_index_out.clear();
     for (uint32_t i = 0; i < entries.size(); ++i) {
         const auto& e = entries[i];
-        handle_to_index[e->handle] = i;
+        handle_to_index_out[e->handle] = i;
         const uint32_t tri_count  = static_cast<uint32_t>(e->mesh->triCount);
         const uint32_t nodes_used = e->bvh->nodesUsed;
         const TriEx* triex_src = (!e->tri_extra.empty() && e->tri_extra.size() == tri_count)
@@ -149,8 +156,8 @@ bool save_v2(const std::string& path, const BLASManager& blas,
     const auto& recs = tlas.get_draw_records();
     put<uint32_t>(body, static_cast<uint32_t>(recs.size()));
     for (const auto& r : recs) {
-        auto it = handle_to_index.find(r.blas_handle);
-        if (it == handle_to_index.end()) return false; // dangling handle
+        auto it = handle_to_index_out.find(r.blas_handle);
+        if (it == handle_to_index_out.end()) return false; // dangling handle
         put<uint32_t>(body, it->second);
         put<uint32_t>(body, r.material_id);
         put_bytes(body, r.transform.m, 16 * sizeof(float));
@@ -171,19 +178,25 @@ bool save_v2(const std::string& path, const BLASManager& blas,
         for (uint32_t idx : lvl.blas_indices) put<uint32_t>(body, idx);
     }
 
-    // --- Header (40 bytes) ---
+    return true;
+}
+
+// Finalize and atomically write header + body to path.
+static bool write_file_atomic(const std::string& path,
+                              uint32_t version,
+                              uint64_t resolved_hash,
+                              const std::vector<uint8_t>& body) {
     const uint64_t content_hash = fnv1a64(body.data(), body.size());
     std::vector<uint8_t> head;
     put<uint32_t>(head, kMagic);
-    put<uint32_t>(head, kFormatVersionV2);
-    put<uint64_t>(head, resolved_hash ^ static_cast<uint64_t>(kFormatVersionV2));
+    put<uint32_t>(head, version);
+    put<uint64_t>(head, resolved_hash ^ static_cast<uint64_t>(version));
     put<uint32_t>(head, static_cast<uint32_t>(sizeof(Tri)));
     put<uint32_t>(head, static_cast<uint32_t>(sizeof(TriEx)));
     put<uint32_t>(head, static_cast<uint32_t>(sizeof(BVHNode)));
     put<uint32_t>(head, static_cast<uint32_t>(sizeof(ChildInstance)));
     put<uint64_t>(head, content_hash);
 
-    // --- Atomic write --- (unchanged from v1)
     ensure_parent_dir(path);
     const std::string tmp = path + ".tmp";
     FILE* f = std::fopen(tmp.c_str(), "wb");
@@ -195,27 +208,13 @@ bool save_v2(const std::string& path, const BLASManager& blas,
     return std::rename(tmp.c_str(), path.c_str()) == 0;
 }
 
-bool load_v2(const std::string& path, uint64_t expected_resolved_hash,
-             BLASManager& blas, TLASManager& tlas,
-             std::vector<ChildInstance>& children_out,
-             LodLevels& lods_out) {
-    children_out.clear();
-    lods_out.clear();
-
-    FILE* f = std::fopen(path.c_str(), "rb");
-    if (!f) return false;
-    std::fseek(f, 0, SEEK_END);
-    long sz = std::ftell(f);
-    std::fseek(f, 0, SEEK_SET);
-    if (sz < 40) { std::fclose(f); return false; } // 40-byte v2 header
-    std::vector<uint8_t> buf(static_cast<size_t>(sz));
-    bool read_ok = std::fread(buf.data(), 1, buf.size(), f) == buf.size();
-    std::fclose(f);
-    if (!read_ok) return false;
-
-    Reader r{ buf.data(), buf.data() + buf.size() };
-
-    // --- Header + validation ---
+// Read and validate the common header; on success sets `r` to point at the body
+// (i.e., just past the 40-byte header) and returns the format_version.
+// Returns 0 on any failure.
+static uint32_t read_and_validate_header(Reader& r,
+                                         uint64_t expected_resolved_hash,
+                                         uint32_t expected_version,
+                                         uint64_t& content_hash_out) {
     const uint32_t magic    = r.get<uint32_t>();
     const uint32_t version  = r.get<uint32_t>();
     const uint64_t rhash_x  = r.get<uint64_t>();
@@ -224,16 +223,30 @@ bool load_v2(const std::string& path, uint64_t expected_resolved_hash,
     const uint32_t s_node   = r.get<uint32_t>();
     const uint32_t s_child  = r.get<uint32_t>();
     const uint64_t content  = r.get<uint64_t>();
-    if (!r.ok) return false;
-    if (magic   != kMagic)                  return false;
-    if (version != kFormatVersionV2)        return false; // v1 cutover: v1 fails here
-    if (s_tri   != sizeof(Tri))             return false;
-    if (s_triex != sizeof(TriEx))           return false;
-    if (s_node  != sizeof(BVHNode))         return false;
-    if (s_child != sizeof(ChildInstance))   return false;
-    const uint64_t resolved = rhash_x ^ static_cast<uint64_t>(kFormatVersionV2);
-    if (resolved != expected_resolved_hash) return false;
-    if (fnv1a64(r.p, static_cast<size_t>(r.end - r.p)) != content) return false;
+    if (!r.ok) return 0;
+    if (magic   != kMagic)                  return 0;
+    if (version != expected_version)         return 0;
+    if (s_tri   != sizeof(Tri))             return 0;
+    if (s_triex != sizeof(TriEx))           return 0;
+    if (s_node  != sizeof(BVHNode))         return 0;
+    if (s_child != sizeof(ChildInstance))   return 0;
+    const uint64_t resolved = rhash_x ^ static_cast<uint64_t>(version);
+    if (resolved != expected_resolved_hash) return 0;
+    content_hash_out = content;
+    return version;
+}
+
+// Read the common body sections (materials, BLAS, instances, children, lods)
+// from a Reader that is positioned just past the header. Populates the managers
+// and out-params; returns false on any corruption.
+static bool read_common_body(Reader& r,
+                             BLASManager& blas, TLASManager& tlas,
+                             std::vector<ChildInstance>& children_out,
+                             LodLevels& lods_out,
+                             std::vector<BLASHandle>& handles_out) {
+    children_out.clear();
+    lods_out.clear();
+    handles_out.clear();
 
     // --- Materials (validate against the live registry) ---
     const uint32_t mcount = r.get<uint32_t>();
@@ -249,7 +262,7 @@ bool load_v2(const std::string& path, uint64_t expected_resolved_hash,
     // --- BLAS table ---
     const uint32_t blas_count = r.get<uint32_t>();
     if (!r.ok) return false;
-    std::vector<BLASHandle> handles(blas_count, INVALID_BLAS_HANDLE);
+    handles_out.resize(blas_count, INVALID_BLAS_HANDLE);
     for (uint32_t i = 0; i < blas_count; ++i) {
         const uint32_t hash       = r.get<uint32_t>();
         const uint32_t ref_count  = r.get<uint32_t>();
@@ -264,9 +277,9 @@ bool load_v2(const std::string& path, uint64_t expected_resolved_hash,
         const BVHNode* nodes  = reinterpret_cast<const BVHNode*>(r.take(nodes_used * sizeof(BVHNode)));
         const uint*    triIdx = reinterpret_cast<const uint*>(r.take(tri_count * sizeof(uint)));
         if (!r.ok) return false;
-        handles[i] = blas.register_prebuilt(tris, triex, static_cast<int>(tri_count),
-                                            nodes, nodes_used, triIdx, hash, ref_count);
-        if (handles[i] == INVALID_BLAS_HANDLE) return false;
+        handles_out[i] = blas.register_prebuilt(tris, triex, static_cast<int>(tri_count),
+                                                nodes, nodes_used, triIdx, hash, ref_count);
+        if (handles_out[i] == INVALID_BLAS_HANDLE) return false;
     }
 
     // --- Internal instances ---
@@ -281,13 +294,13 @@ bool load_v2(const std::string& path, uint64_t expected_resolved_hash,
         if (!r.ok) return false;
         if (blas_index >= blas_count) return false;
         TLASManager::DrawInstance di;
-        di.blas_handle = handles[blas_index];
+        di.blas_handle = handles_out[blas_index];
         di.material_id = material;
         std::memcpy(di.transform.m, tf, 16 * sizeof(float));
         insts.push_back(di);
     }
 
-    // --- Child instances (NEW; passive — returned to caller) ---
+    // --- Child instances (passive — returned to caller) ---
     const uint32_t child_count = r.get<uint32_t>();
     if (!r.ok) return false;
     children_out.reserve(child_count);
@@ -300,7 +313,7 @@ bool load_v2(const std::string& path, uint64_t expected_resolved_hash,
         children_out.push_back(ci);
     }
 
-    // --- LOD levels (NEW; passive — returned to caller) ---
+    // --- LOD levels (passive — returned to caller) ---
     const uint32_t level_count = r.get<uint32_t>();
     if (!r.ok) return false;
     lods_out.reserve(level_count);
@@ -325,6 +338,151 @@ bool load_v2(const std::string& path, uint64_t expected_resolved_hash,
         tlas.build(blas);
     }
     return true;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Public API
+// ─────────────────────────────────────────────────────────────────────────────
+
+bool save_v2(const std::string& path, const BLASManager& blas,
+             const TLASManager& tlas,
+             const ChildInstance* children, size_t child_count,
+             const LodLevels& lods,
+             uint64_t resolved_hash) {
+    std::vector<uint8_t> body;
+    std::unordered_map<BLASHandle, uint32_t> h2i;
+    if (!append_common_body(body, blas, tlas, children, child_count, lods, h2i))
+        return false;
+    return write_file_atomic(path, kFormatVersionV2, resolved_hash, body);
+}
+
+bool load_v2(const std::string& path, uint64_t expected_resolved_hash,
+             BLASManager& blas, TLASManager& tlas,
+             std::vector<ChildInstance>& children_out,
+             LodLevels& lods_out) {
+    children_out.clear();
+    lods_out.clear();
+
+    FILE* f = std::fopen(path.c_str(), "rb");
+    if (!f) return false;
+    std::fseek(f, 0, SEEK_END);
+    long sz = std::ftell(f);
+    std::fseek(f, 0, SEEK_SET);
+    if (sz < 40) { std::fclose(f); return false; } // 40-byte v2 header
+    std::vector<uint8_t> buf(static_cast<size_t>(sz));
+    bool read_ok = std::fread(buf.data(), 1, buf.size(), f) == buf.size();
+    std::fclose(f);
+    if (!read_ok) return false;
+
+    Reader r{ buf.data(), buf.data() + buf.size() };
+    uint64_t content_hash = 0;
+    if (!read_and_validate_header(r, expected_resolved_hash, kFormatVersionV2, content_hash))
+        return false;
+    if (fnv1a64(r.p, static_cast<size_t>(r.end - r.p)) != content_hash) return false;
+
+    std::vector<BLASHandle> handles;
+    return read_common_body(r, blas, tlas, children_out, lods_out, handles);
+}
+
+bool save_flat_v3(const std::string& path, const BLASManager& blas,
+                  const TLASManager& tlas,
+                  const std::vector<FlatCluster>& clusters,
+                  uint64_t resolved_hash) {
+    std::vector<uint8_t> body;
+    std::unordered_map<BLASHandle, uint32_t> h2i;
+    // v3 body = common body (children=empty, top-lods=empty) + cluster table
+    if (!append_common_body(body, blas, tlas, nullptr, 0, LodLevels{}, h2i))
+        return false;
+
+    // --- Cluster table ---
+    put<uint32_t>(body, static_cast<uint32_t>(clusters.size()));
+    for (const auto& c : clusters) {
+        put_bytes(body, c.aabb_min, 3 * sizeof(float));
+        put_bytes(body, c.aabb_max, 3 * sizeof(float));
+        put<uint32_t>(body, static_cast<uint32_t>(c.lods.size()));
+        for (const auto& lvl : c.lods) {
+            put<float>(body, lvl.screen_size_threshold);
+            put<uint32_t>(body, static_cast<uint32_t>(lvl.blas_indices.size()));
+            for (uint32_t idx : lvl.blas_indices) put<uint32_t>(body, idx);
+        }
+    }
+
+    return write_file_atomic(path, kFormatVersionV3, resolved_hash, body);
+}
+
+bool load_flat_v3(const std::string& path, uint64_t expected_resolved_hash,
+                  BLASManager& blas, TLASManager& tlas,
+                  std::vector<FlatCluster>& clusters_out) {
+    clusters_out.clear();
+
+    FILE* f = std::fopen(path.c_str(), "rb");
+    if (!f) return false;
+    std::fseek(f, 0, SEEK_END);
+    long sz = std::ftell(f);
+    std::fseek(f, 0, SEEK_SET);
+    if (sz < 40) { std::fclose(f); return false; }
+    std::vector<uint8_t> buf(static_cast<size_t>(sz));
+    bool read_ok = std::fread(buf.data(), 1, buf.size(), f) == buf.size();
+    std::fclose(f);
+    if (!read_ok) return false;
+
+    Reader r{ buf.data(), buf.data() + buf.size() };
+    uint64_t content_hash = 0;
+    if (!read_and_validate_header(r, expected_resolved_hash, kFormatVersionV3, content_hash))
+        return false;
+    if (fnv1a64(r.p, static_cast<size_t>(r.end - r.p)) != content_hash) return false;
+
+    std::vector<ChildInstance> children_ignored;
+    LodLevels lods_ignored;
+    std::vector<BLASHandle> handles;
+    const uint32_t blas_count_before_read = 0; // we'll get count from BLAS after load
+    if (!read_common_body(r, blas, tlas, children_ignored, lods_ignored, handles))
+        return false;
+
+    const uint32_t blas_count = static_cast<uint32_t>(blas.get_entries().size());
+
+    // --- Cluster table ---
+    const uint32_t cluster_count = r.get<uint32_t>();
+    if (!r.ok) return false;
+    clusters_out.reserve(cluster_count);
+    for (uint32_t ci = 0; ci < cluster_count; ++ci) {
+        FlatCluster fc;
+        const uint8_t* amin = r.take(3 * sizeof(float));
+        const uint8_t* amax = r.take(3 * sizeof(float));
+        if (!r.ok) return false;
+        std::memcpy(fc.aabb_min, amin, 3 * sizeof(float));
+        std::memcpy(fc.aabb_max, amax, 3 * sizeof(float));
+        const uint32_t level_count = r.get<uint32_t>();
+        if (!r.ok) return false;
+        fc.lods.reserve(level_count);
+        for (uint32_t li = 0; li < level_count; ++li) {
+            LodLevel lvl;
+            lvl.screen_size_threshold = r.get<float>();
+            const uint32_t idx_count = r.get<uint32_t>();
+            if (!r.ok) return false;
+            lvl.blas_indices.reserve(idx_count);
+            for (uint32_t j = 0; j < idx_count; ++j) {
+                const uint32_t idx = r.get<uint32_t>();
+                if (!r.ok) return false;
+                if (idx >= blas_count) return false; // dangling cluster LOD index
+                lvl.blas_indices.push_back(idx);
+            }
+            fc.lods.push_back(std::move(lvl));
+        }
+        clusters_out.push_back(std::move(fc));
+    }
+    return r.ok;
+}
+
+uint32_t peek_format_version(const std::string& path) {
+    FILE* f = std::fopen(path.c_str(), "rb");
+    if (!f) return 0;
+    uint32_t magic = 0, version = 0;
+    bool ok = std::fread(&magic,   sizeof(uint32_t), 1, f) == 1 &&
+              std::fread(&version, sizeof(uint32_t), 1, f) == 1;
+    std::fclose(f);
+    if (!ok || magic != kMagic) return 0;
+    return version;
 }
 
 } // namespace part_asset

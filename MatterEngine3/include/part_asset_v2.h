@@ -18,6 +18,7 @@
 namespace part_asset {
 
 constexpr uint32_t kFormatVersionV2 = 2u;
+constexpr uint32_t kFormatVersionV3 = 3u;
 
 // Content-addressed identity for a part. All three inputs are OPAQUE byte ranges
 // to SP-1 (script source, params, child resolved-hashes). child_hashes need NOT be
@@ -74,5 +75,29 @@ bool load_v2(const std::string& path, uint64_t expected_resolved_hash,
              BLASManager& blas, TLASManager& tlas,
              std::vector<ChildInstance>& children_out,
              LodLevels& lods_out);
+
+// One cluster of a v3 flat artifact: its vertex AABB and its own LOD ladder
+// (same LodLevel type; blas_indices point into the shared BLAS table).
+struct FlatCluster {
+    float    aabb_min[3];
+    float    aabb_max[3];
+    LodLevels lods;
+};
+
+// v3 flat save/load: identical body to v2 (materials, BLAS table, internal
+// instances, EMPTY children, EMPTY top-level lods) + an appended cluster table.
+// load_v2 on a v3 file fails its version guard (callers regenerate), and
+// load_flat_v3 on a v2 file fails likewise.
+bool save_flat_v3(const std::string& path, const BLASManager& blas,
+                  const TLASManager& tlas,
+                  const std::vector<FlatCluster>& clusters,
+                  uint64_t resolved_hash);
+bool load_flat_v3(const std::string& path, uint64_t expected_resolved_hash,
+                  BLASManager& blas, TLASManager& tlas,
+                  std::vector<FlatCluster>& clusters_out);
+
+// Header sniff without a full load: returns the format_version field (0 on any
+// read/magic failure). The provider uses this to spot stale v2 flats.
+uint32_t peek_format_version(const std::string& path);
 
 } // namespace part_asset

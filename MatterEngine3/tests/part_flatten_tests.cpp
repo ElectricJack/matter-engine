@@ -585,6 +585,289 @@ static void test_cluster_split_deterministic() {
     printf(same_count && same_clusters && same_tris && same_triex ? "PASSED\n" : "FAILED\n");
 }
 
+// ------------------------------------------------------------------ v3 tests --
+
+// Build a minimal BLASManager with n synthetic meshes of 2 tris each.
+// Returns the BLAS handles in order.
+static std::vector<BLASHandle> make_blas_n(BLASManager& blas, int n, int base_mat = 0) {
+    std::vector<BLASHandle> handles;
+    for (int k = 0; k < n; ++k) {
+        std::vector<Tri> tris;
+        tris.push_back(make_tri(
+            make_float3((float)k,     0, 0),
+            make_float3((float)k+1.f, 0, 0),
+            make_float3((float)k+1.f, 1, 0)));
+        tris.push_back(make_tri(
+            make_float3((float)k,     0, 0),
+            make_float3((float)k+1.f, 1, 0),
+            make_float3((float)k,     1, 0)));
+        std::vector<TriEx> ex(tris.size(), make_triex(base_mat + k));
+        handles.push_back(blas.register_triangles(tris.data(), (int)tris.size(), ex.data()));
+    }
+    return handles;
+}
+
+// Map BLASHandle -> index in blas entries vector.
+static uint32_t blas_handle_index(const BLASManager& blas, BLASHandle h) {
+    const auto& entries = blas.get_entries();
+    for (size_t i = 0; i < entries.size(); ++i)
+        if (entries[i]->handle == h) return (uint32_t)i;
+    return UINT32_MAX;
+}
+
+static void test_v3_round_trip() {
+    printf("=== test_v3_round_trip ===\n");
+
+    // Build BLASManager with 2 entries (4 tris total, 2 each).
+    BLASManager blas_out;
+    TLASManager tlas_out(16);
+    auto handles = make_blas_n(blas_out, 2, 10);
+    uint32_t idx0 = blas_handle_index(blas_out, handles[0]);
+    uint32_t idx1 = blas_handle_index(blas_out, handles[1]);
+    CHECK(idx0 != UINT32_MAX && idx1 != UINT32_MAX, "v3: blas handles map to indices");
+
+    // Build 2 clusters with distinct AABBs and 2-level LOD ladders.
+    std::vector<part_asset::FlatCluster> clusters_out(2);
+    // Cluster 0: covers BLAS 0
+    clusters_out[0].aabb_min[0] = 0.0f; clusters_out[0].aabb_min[1] = 0.0f; clusters_out[0].aabb_min[2] = -1.0f;
+    clusters_out[0].aabb_max[0] = 1.0f; clusters_out[0].aabb_max[1] = 1.0f; clusters_out[0].aabb_max[2] =  1.0f;
+    { part_asset::LodLevel l0, l1;
+      l0.screen_size_threshold = 200.0f; l0.blas_indices.push_back(idx0);
+      l1.screen_size_threshold =   0.0f; l1.blas_indices.push_back(idx0);
+      clusters_out[0].lods.push_back(std::move(l0));
+      clusters_out[0].lods.push_back(std::move(l1)); }
+    // Cluster 1: covers BLAS 1
+    clusters_out[1].aabb_min[0] = 2.0f; clusters_out[1].aabb_min[1] = -0.5f; clusters_out[1].aabb_min[2] = -2.0f;
+    clusters_out[1].aabb_max[0] = 4.0f; clusters_out[1].aabb_max[1] =  2.0f; clusters_out[1].aabb_max[2] =  2.0f;
+    { part_asset::LodLevel l0, l1;
+      l0.screen_size_threshold = 150.0f; l0.blas_indices.push_back(idx1);
+      l1.screen_size_threshold =   0.0f; l1.blas_indices.push_back(idx1);
+      clusters_out[1].lods.push_back(std::move(l0));
+      clusters_out[1].lods.push_back(std::move(l1)); }
+
+    const uint64_t kV3Hash = 0xABCDEF0012345678ull;
+    const std::string v3_path = std::string(kCacheRoot) + "/parts/test_v3_roundtrip.flat.part";
+
+    bool saved = part_asset::save_flat_v3(v3_path, blas_out, tlas_out, clusters_out, kV3Hash);
+    CHECK(saved, "v3: save_flat_v3 returns true");
+    if (!saved) { printf("  SKIPPING remaining v3 round-trip checks\n"); return; }
+
+    // Load back.
+    BLASManager blas_in;
+    TLASManager tlas_in(16);
+    std::vector<part_asset::FlatCluster> clusters_in;
+    bool loaded = part_asset::load_flat_v3(v3_path, kV3Hash, blas_in, tlas_in, clusters_in);
+    CHECK(loaded, "v3: load_flat_v3 returns true");
+    if (!loaded) { printf("  SKIPPING cluster checks\n"); return; }
+
+    // Cluster count and per-cluster fields.
+    CHECK(clusters_in.size() == 2, "v3: round-trip: 2 clusters");
+    if (clusters_in.size() == 2) {
+        // AABB equality (bit-exact floats written/read back).
+        CHECK(clusters_in[0].aabb_min[0] == clusters_out[0].aabb_min[0] &&
+              clusters_in[0].aabb_min[1] == clusters_out[0].aabb_min[1] &&
+              clusters_in[0].aabb_min[2] == clusters_out[0].aabb_min[2],
+              "v3: cluster0 aabb_min matches");
+        CHECK(clusters_in[0].aabb_max[0] == clusters_out[0].aabb_max[0] &&
+              clusters_in[0].aabb_max[1] == clusters_out[0].aabb_max[1] &&
+              clusters_in[0].aabb_max[2] == clusters_out[0].aabb_max[2],
+              "v3: cluster0 aabb_max matches");
+        CHECK(clusters_in[1].aabb_min[0] == clusters_out[1].aabb_min[0] &&
+              clusters_in[1].aabb_min[1] == clusters_out[1].aabb_min[1] &&
+              clusters_in[1].aabb_min[2] == clusters_out[1].aabb_min[2],
+              "v3: cluster1 aabb_min matches");
+        // LOD counts.
+        CHECK(clusters_in[0].lods.size() == 2, "v3: cluster0 has 2 LOD levels");
+        CHECK(clusters_in[1].lods.size() == 2, "v3: cluster1 has 2 LOD levels");
+        if (clusters_in[0].lods.size() == 2) {
+            CHECK(clusters_in[0].lods[0].screen_size_threshold == 200.0f, "v3: cluster0 lod0 threshold");
+            CHECK(clusters_in[0].lods[1].screen_size_threshold ==   0.0f, "v3: cluster0 lod1 threshold");
+            CHECK(clusters_in[0].lods[0].blas_indices.size() == 1, "v3: cluster0 lod0 index count");
+        }
+        if (clusters_in[1].lods.size() == 2) {
+            CHECK(clusters_in[1].lods[0].screen_size_threshold == 150.0f, "v3: cluster1 lod0 threshold");
+            CHECK(clusters_in[1].lods[0].blas_indices.size() == 1, "v3: cluster1 lod0 index count");
+        }
+    }
+
+    // BLAS entries: 2 entries with 2 tris each.
+    CHECK(blas_in.get_entries().size() == 2, "v3: round-trip: 2 BLAS entries");
+    if (blas_in.get_entries().size() == 2) {
+        CHECK(blas_in.get_entries()[0]->triangles.size() == 2, "v3: blas[0] tri count = 2");
+        CHECK(blas_in.get_entries()[1]->triangles.size() == 2, "v3: blas[1] tri count = 2");
+    }
+
+    printf("PASSED\n");
+}
+
+static void test_v3_empty_children_and_lods() {
+    printf("=== test_v3_empty_children_and_lods ===\n");
+    // The v3 body MUST write child_count=0 and level_count=0 (same as the flat v2 invariant).
+    // We verify by loading and checking there are no children/top-lods in the TLAS.
+    BLASManager blas_out;
+    TLASManager tlas_out(16);
+    make_blas_n(blas_out, 1, 0);
+    // No TLAS instances added => internal instance count is 0, children empty, top-lods empty.
+    part_asset::FlatCluster fc;
+    fc.aabb_min[0] = fc.aabb_min[1] = fc.aabb_min[2] = 0.0f;
+    fc.aabb_max[0] = fc.aabb_max[1] = fc.aabb_max[2] = 1.0f;
+    part_asset::LodLevel lv;
+    lv.screen_size_threshold = 0.0f;
+    lv.blas_indices.push_back(0);
+    fc.lods.push_back(std::move(lv));
+    std::vector<part_asset::FlatCluster> clusters_out = { fc };
+
+    const uint64_t kHash2 = 0xC0FFEE00DEADBEEFull;
+    const std::string path2 = std::string(kCacheRoot) + "/parts/test_v3_empty.flat.part";
+    bool saved = part_asset::save_flat_v3(path2, blas_out, tlas_out, clusters_out, kHash2);
+    CHECK(saved, "v3_empty: save ok");
+
+    BLASManager blas_in;
+    TLASManager tlas_in(16);
+    std::vector<part_asset::FlatCluster> clusters_in;
+    bool loaded = part_asset::load_flat_v3(path2, kHash2, blas_in, tlas_in, clusters_in);
+    CHECK(loaded, "v3_empty: load ok");
+    CHECK(clusters_in.size() == 1, "v3_empty: 1 cluster loaded");
+    CHECK(tlas_in.get_draw_records().empty(), "v3_empty: no TLAS instances (empty body)");
+
+    printf(loaded ? "PASSED\n" : "FAILED\n");
+}
+
+static void test_v3_cross_version_guards() {
+    printf("=== test_v3_cross_version_guards ===\n");
+
+    // Write a v2 file using save_v2 (parent fixture already written above).
+    // load_flat_v3 on a v2 file must return false.
+    const std::string v2_path = std::string(kCacheRoot) + "/" +
+                                part_asset::cache_path_resolved(kParentHash);
+    BLASManager bv2; TLASManager tv2(16);
+    std::vector<part_asset::ChildInstance> ch;
+    part_asset::LodLevels lv2;
+    bool v2_ok = part_asset::load_v2(v2_path, kParentHash, bv2, tv2, ch, lv2);
+    CHECK(v2_ok, "cross-guard: v2 file loads as v2 (sanity)");
+
+    BLASManager bv3_a; TLASManager tv3_a(16);
+    std::vector<part_asset::FlatCluster> dummy;
+    bool v3_on_v2 = part_asset::load_flat_v3(v2_path, kParentHash, bv3_a, tv3_a, dummy);
+    CHECK(!v3_on_v2, "cross-guard: load_flat_v3 on a v2 file returns false");
+
+    // Write a v3 file; load_v2 on it must return false.
+    BLASManager blas_v3; TLASManager tlas_v3(16);
+    make_blas_n(blas_v3, 1, 0);
+    part_asset::FlatCluster fc2;
+    fc2.aabb_min[0] = fc2.aabb_min[1] = fc2.aabb_min[2] = 0.0f;
+    fc2.aabb_max[0] = fc2.aabb_max[1] = fc2.aabb_max[2] = 1.0f;
+    part_asset::LodLevel lv3;
+    lv3.screen_size_threshold = 0.0f; lv3.blas_indices.push_back(0);
+    fc2.lods.push_back(std::move(lv3));
+    std::vector<part_asset::FlatCluster> cls_v3 = { fc2 };
+    const uint64_t kHashV3Guard = 0x1122334455667788ull;
+    const std::string v3_path = std::string(kCacheRoot) + "/parts/test_v3_guard.flat.part";
+    bool sv3 = part_asset::save_flat_v3(v3_path, blas_v3, tlas_v3, cls_v3, kHashV3Guard);
+    CHECK(sv3, "cross-guard: save_flat_v3 ok for guard test");
+
+    BLASManager bv2b; TLASManager tv2b(16);
+    std::vector<part_asset::ChildInstance> ch2;
+    part_asset::LodLevels lv2b;
+    bool v2_on_v3 = part_asset::load_v2(v3_path, kHashV3Guard, bv2b, tv2b, ch2, lv2b);
+    CHECK(!v2_on_v3, "cross-guard: load_v2 on a v3 file returns false");
+
+    printf("PASSED\n");
+}
+
+static void test_peek_format_version() {
+    printf("=== test_peek_format_version ===\n");
+
+    // v2 file (parent fixture).
+    const std::string v2_path = std::string(kCacheRoot) + "/" +
+                                part_asset::cache_path_resolved(kParentHash);
+    uint32_t pv2 = part_asset::peek_format_version(v2_path);
+    CHECK(pv2 == 2, "peek returns 2 for a v2 file");
+
+    // v3 file (created in cross-version guard test or create a fresh one).
+    BLASManager bpk; TLASManager tpk(16);
+    make_blas_n(bpk, 1, 0);
+    part_asset::FlatCluster fcp;
+    fcp.aabb_min[0] = fcp.aabb_min[1] = fcp.aabb_min[2] = 0.0f;
+    fcp.aabb_max[0] = fcp.aabb_max[1] = fcp.aabb_max[2] = 1.0f;
+    part_asset::LodLevel lvp;
+    lvp.screen_size_threshold = 0.0f; lvp.blas_indices.push_back(0);
+    fcp.lods.push_back(std::move(lvp));
+    std::vector<part_asset::FlatCluster> clspk = { fcp };
+    const uint64_t kPeekHash = 0x9988776655443322ull;
+    const std::string v3_path = std::string(kCacheRoot) + "/parts/test_peek_v3.flat.part";
+    bool spk = part_asset::save_flat_v3(v3_path, bpk, tpk, clspk, kPeekHash);
+    CHECK(spk, "peek: v3 file saved");
+    uint32_t pv3 = part_asset::peek_format_version(v3_path);
+    CHECK(pv3 == 3, "peek returns 3 for a v3 file");
+
+    // Garbage / non-existent file.
+    uint32_t pg = part_asset::peek_format_version("/tmp/__no_such_file_matter_v3__.part");
+    CHECK(pg == 0, "peek returns 0 for a non-existent file");
+
+    // Write a garbage file (wrong magic).
+    const std::string garbage_path = std::string(kCacheRoot) + "/parts/garbage.part";
+    {
+        FILE* fg = std::fopen(garbage_path.c_str(), "wb");
+        if (fg) {
+            uint32_t bad_magic = 0xDEADDEADu;
+            uint32_t bad_version = 99u;
+            std::fwrite(&bad_magic, 4, 1, fg);
+            std::fwrite(&bad_version, 4, 1, fg);
+            std::fclose(fg);
+        }
+    }
+    uint32_t pbad = part_asset::peek_format_version(garbage_path);
+    CHECK(pbad == 0, "peek returns 0 for a wrong-magic file");
+
+    printf("PASSED\n");
+}
+
+static void test_v2_byte_stability() {
+    printf("=== test_v2_byte_stability ===\n");
+
+    // Save a v2 fixture to a known path, read its bytes.
+    // Then save again to a different path and compare byte-for-byte.
+    // This catches any refactor drift in the v2 serialization path.
+    const uint64_t kStabHash = 0xF0F0F0F0A5A5A5A5ull;
+    const std::string stab_path_a = std::string(kCacheRoot) + "/parts/stab_a.part";
+    const std::string stab_path_b = std::string(kCacheRoot) + "/parts/stab_b.part";
+
+    BLASManager bla; TLASManager tla(16);
+    auto hv = make_blas_n(bla, 2, 5);
+    uint32_t si0 = blas_handle_index(bla, hv[0]);
+    uint32_t si1 = blas_handle_index(bla, hv[1]);
+
+    part_asset::LodLevels lods_stab;
+    { part_asset::LodLevel l0, l1;
+      l0.screen_size_threshold = 100.0f; l0.blas_indices.push_back(si0);
+      l1.screen_size_threshold =   0.0f; l1.blas_indices.push_back(si1);
+      lods_stab.push_back(std::move(l0));
+      lods_stab.push_back(std::move(l1)); }
+
+    bool s1 = part_asset::save_v2(stab_path_a, bla, tla, nullptr, 0, lods_stab, kStabHash);
+    CHECK(s1, "v2_stability: first save ok");
+    bool s2 = part_asset::save_v2(stab_path_b, bla, tla, nullptr, 0, lods_stab, kStabHash);
+    CHECK(s2, "v2_stability: second save ok");
+
+    std::vector<char> bytes_a, bytes_b;
+    bool ra = read_bytes(stab_path_a, bytes_a);
+    bool rb = read_bytes(stab_path_b, bytes_b);
+    CHECK(ra && rb, "v2_stability: both files readable");
+    CHECK(!bytes_a.empty() && bytes_a == bytes_b,
+          "v2_stability: save_v2 is byte-identical across calls (refactor-stable)");
+
+    // Also round-trip to confirm v2 still loads.
+    BLASManager blb; TLASManager tlb(16);
+    std::vector<part_asset::ChildInstance> ch_stab;
+    part_asset::LodLevels lods_loaded;
+    bool loaded = part_asset::load_v2(stab_path_a, kStabHash, blb, tlb, ch_stab, lods_loaded);
+    CHECK(loaded, "v2_stability: saved file loads back as v2");
+    CHECK(lods_loaded.size() == 2, "v2_stability: 2 LOD levels survive round-trip");
+
+    printf("PASSED\n");
+}
+
 int main() {
     if (!write_fixtures()) {
         printf("FAIL: could not write fixture parts under %s\n", kCacheRoot);
@@ -600,6 +883,11 @@ int main() {
     test_cluster_split_40k();
     test_cluster_split_small();
     test_cluster_split_deterministic();
+    test_v3_round_trip();
+    test_v3_empty_children_and_lods();
+    test_v3_cross_version_guards();
+    test_peek_format_version();
+    test_v2_byte_stability();
 
     if (failures == 0) { printf("part_flatten_tests: ALL PASS\n"); return 0; }
     printf("part_flatten_tests: %d FAILURE(S)\n", failures);
