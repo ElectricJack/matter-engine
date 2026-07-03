@@ -7,6 +7,7 @@
 #include "../viewer/world_composer.h"
 #include "../viewer/raster_mesh.h"
 #include "../viewer/raster_composer.h"
+#include "../viewer/raster_cull.h"
 #include "lod_select.h"   // PartLodTable, PartLod
 #include "part_graph.h"   // PartGraph + FileModuleResolver/HostBaker (script-host guarded)
 #include "part_asset_v2.h"
@@ -1303,7 +1304,54 @@ static void test_task13_hud_counters() {
     s.cleanup();
 }
 
+// Regression: instance transforms are engine (column-vector) convention with
+// translation at cells 3/7/11 — the same layout mk_entry writes and
+// sector_grid::instance_position reads. transform_point must place points at
+// their true world positions, not collapse them toward the origin.
+static void test_cull_transform_convention() {
+    // T(100, 0, 0) in engine convention.
+    float t100[16] = { 1,0,0,100,  0,1,0,0,  0,0,1,0,  0,0,0,1 };
+
+    float ox, oy, oz;
+    viewer::transform_point(t100, 0, 0, 0, ox, oy, oz);
+    CHECK(std::fabs(ox - 100.0f) < 1e-4f && std::fabs(oy) < 1e-4f &&
+          std::fabs(oz) < 1e-4f,
+          "cull_convention: T(100,0,0) maps origin to (100,0,0)");
+
+    viewer::transform_point(t100, 1, 2, 3, ox, oy, oz);
+    CHECK(std::fabs(ox - 101.0f) < 1e-4f && std::fabs(oy - 2.0f) < 1e-4f &&
+          std::fabs(oz - 3.0f) < 1e-4f,
+          "cull_convention: T(100,0,0) maps (1,2,3) to (101,2,3)");
+
+    // Half-space planes accepting only x >= 50 (repeated to fill all 6 slots).
+    float planes[6][4];
+    for (int p = 0; p < 6; ++p) {
+        planes[p][0] = 1; planes[p][1] = 0; planes[p][2] = 0; planes[p][3] = -50;
+    }
+    float mn[3] = { 0, 0, 0 }, mx[3] = { 1, 1, 1 };
+    CHECK(!viewer::aabb_culled(mn, mx, t100, planes),
+          "cull_convention: unit box translated to x=100 survives x>=50 planes");
+    float ident[16] = { 1,0,0,0,  0,1,0,0,  0,0,1,0,  0,0,0,1 };
+    CHECK(viewer::aabb_culled(mn, mx, ident, planes),
+          "cull_convention: unit box at origin is culled by x>=50 planes");
+
+    // LOD must follow the true per-instance distance, not distance-to-origin.
+    viewer::LoadedCluster cl{};
+    cl.aabb_min[0] = cl.aabb_min[1] = cl.aabb_min[2] = -1;
+    cl.aabb_max[0] = cl.aabb_max[1] = cl.aabb_max[2] =  1;
+    cl.radius = 1.0f;
+    cl.thresholds = { 0.5f, 0.05f, 0.0f };   // fine -> coarse
+    float eye[3] = { 0, 0, 0 };
+    float near_t[16] = { 1,0,0,1.9f,  0,1,0,0,  0,0,1,0,  0,0,0,1 };
+    float far_t[16]  = { 1,0,0,30,    0,1,0,0,  0,0,1,0,  0,0,0,1 };
+    CHECK(viewer::cluster_lod_select(cl, near_t, eye) == 0,
+          "cull_convention: cluster 1.9m away picks LOD0");
+    CHECK(viewer::cluster_lod_select(cl, far_t, eye) == 2,
+          "cull_convention: cluster 30m away picks coarsest LOD");
+}
+
 int main() {
+    test_cull_transform_convention();
     test_world_state_delta();
     test_resolvers();
     test_part_store_missing();
