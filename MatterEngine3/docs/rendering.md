@@ -73,35 +73,85 @@ in V). Non-indexed; 3 vertices per triangle. CPU arrays stay owned by `PartStore
 `ensure_mesh` detaches the pointers after `UploadMesh` so raylib's `UnloadMesh`
 cannot double-free them.
 
-### Phase-1 lighting model (`MatterSurfaceLib/shaders/raster.vs`, `raster.fs`)
+### Phase-2 world light list
 
-Fixed-constant, unshadowed, single sun:
+`world.manifest` may contain `light` lines parsed by `world_lights::parse_lights`:
 
-- Sun direction: `(-0.45, -0.80, -0.35)` normalized (baked in `raster_composer.cpp`).
-- Sun color: `(2.2, 2.05, 1.8)` — warm white.
-- Ambient: `(0.38, 0.43, 0.52)` — cool blue-grey sky ambient.
-- Per-fragment:
-  1. Tint blend: `albedo = mix(albedo, tint.rgb, tint.a)` (from vertex `fragTint`).
-  2. Lighting: `color = albedo * (ambientColor * ao + sunColor * ndl) + albedo * emission`
-     where `ndl = max(dot(N, -sunDir), 0)` and `ao` is the per-vertex AO from texcoord V.
-  3. Reinhard tone-map: `color = color / (color + 1)`.
-  4. Gamma 2.2: `color = pow(color, 1/2.2)`.
-- Material albedo and emission from the material table uniform (64 materials × 12 floats,
-  same `material_registry` data used by the ray tracer).
-- AO packed in texcoord V multiplies the ambient term.
+```
+light sun  <dx> <dy> <dz>  <r> <g> <b>         # sun direction + linear-RGB color
+light sky  <r> <g> <b>                           # sky ambient color
+light spot <px> <py> <pz>  <dx> <dy> <dz>  <r> <g> <b>  <range>  <inner_deg> <outer_deg>
+```
 
-No shadows, no GI, no reflections. Phase 2 will replace the fixed constants with a
-light list; Phase 3 will add clustered multi-draw and v3 part format.
+Missing lines produce defaults that reproduce the Phase-1 hardcoded look. The
+`WorldLights` struct is uploaded to the raster shader each frame (`sunDir`, `sunColor`,
+`ambientColor`) and to the ray-tracer (`wlSunDir`, `wlSunColor`, `wlSkyColor`).
+
+### Phase-2 probe-volume lighting (`src/probe_bake.cpp`, `viewer/probe_texture.h`)
+
+On world load, `LocalProvider` bakes a CPU SH-L1 probe volume covering the scene:
+
+1. Grid is sized to the world AABB with `cell ≈ 4` world units.
+2. Per probe, ray bundles sample sky/sun visibility and accumulate ambient irradiance
+   (hemisphere-weighted sky + blocked sun) via the world tracer.
+3. Result cached as `cache/<world>.probes` (PRB1 format; fingerprint = lights hash).
+   Second run skips baking and loads from cache (no "baking probes" prints).
+4. Uploaded as two RGBA8 3D textures (GL units 4/5):
+   - `tex_ambient`: `rgb = clamp(irradiance / 4)`, `a = sun_vis [0,1]`
+   - `tex_dominant`: `rgb = dir * 0.5 + 0.5`, `a = clamp(intensity / 4)`
+5. Sampled in `raster.fs` with `useProbes=1`, trilinear, `CLAMP_TO_EDGE`.
+   Adds a dominant-direction cosine term to the ambient term.
+6. If probes are unavailable (file missing, world without geometry), the raster path
+   falls back to flat ambient using `sky_color` from the light list.
+
+Editing any `light` line changes the lights fingerprint → cache miss → re-bake.
+
+### Phase-3 lighting model (`shaders/raster.vs`, `shaders/raster.fs`)
+
+The raster fragment shader supports three ambient modes selected by `useProbes`:
+
+| Mode | When | Ambient term |
+|---|---|---|
+| `useProbes=1` | probes available | trilinear sample from 3D probe textures; dominant-direction cosine term added |
+| `useProbes=0` | probes OFF/missing | `ambientColor * ao` (flat ambient from `sky_color` uniform) |
+
+Sun lighting is always applied: `sunColor * max(dot(N, -sunDir), 0)`.
+
+Material albedo and emission from the material table uniform (64 materials × 12 floats).
+Reinhard tone-map + gamma 2.2 applied per fragment.
+
+### Fallback matrix
+
+| Artifact present | Geometry path | Lighting path |
+|---|---|---|
+| `<hash>.flat.part` (v3, clusters) | per-cluster frustum cull + LOD select | probe sampling if probes valid, else flat ambient |
+| `<hash>.flat.part` (v2, whole-part) | whole-part LOD via `lod_mesh_data[level]` | probe sampling if probes valid, else flat ambient |
+| `<hash>.part` only (compositional) | recursive child expansion (depth ≤ 8) | probe sampling if probes valid, else flat ambient |
+
+No v3 clusters → whole-part batch path (cluster_index = UINT32\_MAX). No flat artifact
+at all → compositional recursive expansion, always LOD0 for children.
+
+### Per-cluster LOD selection (`viewer/raster_composer.cpp`)
+
+For each cluster of a flat part, the raster composer:
+1. Transforms the cluster AABB center by the instance world transform.
+2. Computes `projected_size = cluster.radius * scale / distance` (same formula as
+   `lod_select::select_level`).
+3. Picks the coarsest LOD level whose threshold ≤ projected_size (fine→coarse scan).
+4. Maps that level index to `lod_mesh_data[cl.lod_mesh[level]]` via the cluster table.
 
 ### HUD stats (`viewer/ui.cpp`)
 
 The Viewer Debug panel shows:
 - `FPS / frame ms` — wall-clock frame time.
 - `Instances: N active / M total` — instances drawn this frame vs world total.
-- `Raster: N batches / M tris` — number of `DrawMeshInstanced` calls and total
-  triangle count for the frame (0/0 when `MATTER_RT=1`).
+- `Raster: N batches / M tris  culled: N [cached]` — `DrawMeshInstanced` calls, total
+  triangle count, clusters culled by frustum, and `[cached]` when the batch fingerprint
+  matched last frame (no rebuild).
+- `Probes: NxNxN` or `Probes: OFF` — active probe grid dimensions, or fallback indicator.
 
-Background: blue-grey placeholder sky (`ClearBackground` with RGB 96,118,143).
+Background sky color is derived by tone-mapping `sky_color` from the light list
+(Reinhard + gamma 2.2) so it tracks the world's ambient hue.
 
 ---
 

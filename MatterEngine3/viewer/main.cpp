@@ -166,6 +166,14 @@ int main() {
         stats.cache_hits       = provider->hit_count();
         stats.last_want_count  = (int)want.size();
         stats.instances_total  = (int)manifest.instances.size();
+        // Probe grid dims for HUD (all-zero = probes unavailable/OFF)
+        if (manifest.probes && manifest.probes->valid()) {
+            stats.probe_dims[0] = manifest.probes->grid.nx;
+            stats.probe_dims[1] = manifest.probes->grid.ny;
+            stats.probe_dims[2] = manifest.probes->grid.nz;
+        } else {
+            stats.probe_dims[0] = stats.probe_dims[1] = stats.probe_dims[2] = 0;
+        }
         return true;
     };
     if (!connect_sequence()) return 1;
@@ -289,9 +297,10 @@ int main() {
             if (use_rt) {
                 renderer.draw(store->blas(), composer->tlas());
             } else {
-                stats.raster_tris    = raster->draw(batches, *store, renderer.camera());
-                stats.raster_batches = (int)raster->batches();
+                stats.raster_tris     = raster->draw(batches, *store, renderer.camera());
+                stats.raster_batches  = (int)raster->batches();
                 stats.culled_clusters = (int)raster->culled_clusters();
+                stats.batch_cache_hit = raster->cache_hit();
             }
             ui.begin_frame();
             ui.draw_debug_panel(stats);

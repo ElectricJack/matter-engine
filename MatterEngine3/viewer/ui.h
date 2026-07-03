@@ -27,6 +27,9 @@ struct ViewerStats {
     int      raster_batches = 0;
     int      raster_tris = 0;
     int      culled_clusters = 0;
+    bool     batch_cache_hit = false;   // true when build_batches reused last frame's result
+    // Probe status: dims[0..2] = nx,ny,nz from the grid (all zero = probes OFF/unavailable)
+    int      probe_dims[3] = {0,0,0};
 };
 
 class Ui {

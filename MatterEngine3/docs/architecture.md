@@ -22,11 +22,19 @@ DslState ── voxel session ──► BuildBuffer (flat SDF brush ops)
 part_asset_v2: parts/<resolved_hash>.part        content-addressed artifact
    │  { materials, BLAS table (tris + TriEx), child-instance table, LOD levels }
    ▼  part_flatten (placed roots): merge whole subtree → ε-bounded LOD ladder
-parts/<resolved_hash>.flat.part                  same v2 format, empty child table
+   ▼  part_cluster::split_clusters: spatial k-d split → ~16k-tri clusters
+   ▼  per-cluster ε-ladder (decimate_to_error per cluster)
+parts/<resolved_hash>.flat.part                  v3 format: cluster table + per-cluster LOD
+   │
+   ▼  world_lights: `light sun/sky/spot` lines in world.manifest → WorldLights
+   ▼  probe_bake: CPU SH-L1 probes (sky + sun + spots) → cache/<world>.probes (PRB1)
+   ▼  probe_texture: 2× RGBA8 3D textures (units 4/5) uploaded to raster.fs
    │
    ▼
-viewer: PartStore flat-preferred load → WorldComposer (1 instance per flat root,
-        child expansion only as fallback) → TLAS (rebuilt only on change) → shader RT
+viewer: PartStore flat-preferred load (v3 cluster ladders or v2 whole-part)
+        → RasterComposer per-cluster frustum cull + LOD select → DrawMeshInstanced
+        → probe-sampled forward lighting  (default, no warm-up)
+        fallback: WorldComposer → TLAS → raytrace (MATTER_RT=1, ~60s warm-up)
 ```
 
 ## Stage responsibilities
@@ -38,8 +46,11 @@ viewer: PartStore flat-preferred load → WorldComposer (1 instance per flat roo
 | CSG lowering | `src/csg_lowering.cpp` | Flat brush list → mesher field: additive spheres → particles, boxes → typed iso-prims, ordered Union/Difference/Intersection stages |
 | Triangle emit | `include/triangle_emit.hpp:48` | Direct-mesh path: line tubes, spheres/boxes, capped cones, capsules, polygon extrude (parallel-transport frames, miter/bevel/round joins) |
 | LOD bake | `src/lod_bake.cpp` | QEM edge-collapse. Ratio pyramid (`bake_lods`, keep {1.0, 0.1, 0.01}) for per-part bakes; error-bounded `decimate_to_error(ε)` + `reproject_triex` (TriEx carried via nearest-centroid re-projection) for the flatten ladder |
-| Asset v2 | `src/part_asset_v2.cpp:86` | Atomic serialize: materials, BLAS table, `ChildInstance[]` (hash + 4x4, 72 B), LOD levels |
-| Flatten | `src/part_flatten.cpp` | Merge a root's whole subtree (transforms applied, TriEx carried, LOD0 of each part) into ONE mesh; build ε ladder (ε = radius/{256,64,16,4}, stop < 2000 tris); save as `<root>.flat.part` with an empty child table |
+| Asset v2/v3 | `src/part_asset_v2.cpp:86` | Atomic serialize: materials, BLAS table, `ChildInstance[]` (hash + 4x4, 72 B), LOD levels. v3 extends this with a cluster table: each cluster carries its own AABB, radius, and per-level LOD indices |
+| Flatten | `src/part_flatten.cpp` | Merge a root's whole subtree (transforms applied, TriEx carried, LOD0 of each part) into ONE mesh; build ε ladder (ε = radius/{256,64,16,4}, stop < 2000 tris); then invoke `split_clusters` to spatially partition into ~16k-tri clusters, bake a per-cluster ladder, and save as `<root>.flat.part` (v3) |
+| Clusters | `src/part_cluster.cpp` | k-d median spatial split of a flat merged mesh → `ClusterSet` (cluster AABB, mesh slice, per-cluster ε-ladder); basis for per-cluster frustum cull + projected-size LOD in the raster path |
+| World lights | `src/world_lights.cpp` | Parse `light sun/sky/spot` lines from `world.manifest`; produce `WorldLights` (sun dir/color, sky color, spot list). Defaults reproduce the Phase-1 hardcoded look for worlds without light lines |
+| Probe bake | `src/probe_bake.cpp` | CPU SH-L1 probe volume: traces ray bundles from a grid of probes across the scene to accumulate sky ambient and sun visibility per cell; cached as `cache/<world>.probes` (PRB1 format). Invalidated when the lights fingerprint changes. Uploaded as two RGBA8 3D textures (ambient + dominant) to the raster shader (units 4/5) |
 | PartGraph | `src/part_graph.cpp:96` | Dependency DAG: `static requires` discovery → memoized DFS with cycle detection → topo sort → children-first bake with cache hits |
 | Live edit | `src/live_edit.cpp`, `src/inotify_watcher.cpp` | Debounced file watch → changed parts → upward ancestor cone → topo re-bake → re-flatten roots. Fail-closed with last-good artifact |
 
@@ -81,14 +92,22 @@ Compositional `.part`s still store a child-instance table (child hash + transfor
 authoring/bake side stays hierarchical and content-addressed. At world-load time,
 however, every **placed root** is flattened (`LocalProvider::connect` →
 `part_flatten::flatten_part`): the whole subtree is merged into one mesh with an
-ε-bounded LOD ladder, saved as `parts/<root>.flat.part`. The flat artifact shares the
-root's resolved hash, so invalidation is free — any subtree change changes the hash and
-orphans the stale flat file. The viewer's PartStore prefers the flat artifact (stored
-ladder used directly, empty child table); a flattened Tree is therefore ONE TLAS
-instance per frame instead of hundreds. Per-frame recursive child expansion
-(`viewer/world_composer.cpp`, depth cap 8, 200k instance cap) remains only as the
-fallback for parts without a flat artifact, and the TLAS rebuild is skipped entirely
-when the instance set fingerprint is unchanged frame-over-frame.
+ε-bounded LOD ladder, then spatially partitioned into ~16k-tri clusters
+(`part_cluster::split_clusters`). Each cluster gets its own AABB, radius, and per-level
+LOD mesh indices, and the result is saved as `parts/<root>.flat.part` (v3 format) with
+an empty child table. The flat artifact shares the root's resolved hash, so invalidation
+is free — any subtree change changes the hash and orphans the stale flat file.
+
+**Raster path (default):** PartStore loads the v3 flat artifact's cluster table;
+`RasterComposer::build_batches` iterates clusters per root instance, frustum-culls by
+AABB, selects per-cluster LOD via projected-size metric, and accumulates
+`DrawMeshInstanced` batches keyed by `(hash, cluster_idx, lod_level)`. The batch set is
+fingerprinted (camera + instance set); unchanged frames reuse the last result. HUD shows
+batch count, drawn-tris, culled-cluster count, and a `[cached]` indicator.
+
+**RT fallback:** `WorldComposer` emits one TLAS leaf per flat root (empty child table →
+no recursive expansion) or expands compositional parts recursively (depth cap 8, 200k
+instance cap). TLAS rebuild is skipped when the instance fingerprint is unchanged.
 
 ## Known constraints (spotted in code)
 
