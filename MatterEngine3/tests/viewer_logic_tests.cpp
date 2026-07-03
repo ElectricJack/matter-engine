@@ -473,6 +473,29 @@ static void test_raster_mesh_data() {
     CHECK(m.m12 == 5.0f && m.m13 == 6.0f && m.m14 == 7.0f, "translation lands in m12..m14");
 }
 
+static void test_sector_lod_floor_cull() {
+    viewer::WorldState state;
+    viewer::WorldManifest m;
+    m.world_root_hash = 1;
+    m.instances.push_back(mk_entry(1, 0xF00D, 200.0f));   // 200 units from origin
+    state.reset(m);
+    lod_select::PartLodTable lods;
+    lods[0xF00D] = { 0.5f, {0.0f} };    // projected size at 200u = 0.0025
+    viewer::SectorLodResolver sec(16.0f, 400.0f);
+    float3 cam = make_float3(0, 0, 0);
+
+    auto r0 = sec.resolve(state, lods, cam);
+    CHECK(r0.size() == 1, "no floor: instance emitted");
+
+    sec.set_min_projected_size(0.01f);   // 0.0025 < 0.01 -> culled
+    auto r1 = sec.resolve(state, lods, cam);
+    CHECK(r1.empty(), "floor cull drops sub-threshold instance");
+
+    sec.set_min_projected_size(0.001f);  // 0.0025 > 0.001 -> visible again
+    auto r2 = sec.resolve(state, lods, cam);
+    CHECK(r2.size() == 1, "instance returns below-floor -> above-floor");
+}
+
 int main() {
     test_world_state_delta();
     test_resolvers();
@@ -483,6 +506,7 @@ int main() {
     test_compose_expands_children();
     test_append_expanded_children();
     test_raster_mesh_data();
+    test_sector_lod_floor_cull();
     delete g_shared_store; g_shared_store = nullptr;
     printf("\n%s\n", g_failures == 0 ? "viewer-logic OK" : "viewer-logic FAILED");
     return g_failures == 0 ? 0 : 1;

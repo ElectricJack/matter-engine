@@ -27,9 +27,13 @@ using PartLodTable = std::map<uint64_t, PartLod>;     // resolved_hash -> PartLo
 
 // For each sector, find its CLOSEST instance to cam_pos, and for every distinct
 // part hash present in the sector compute its chosen LOD level using the closest
-// instance's distance. Returns sector -> (part hash -> chosen level index).
+// instance's distance. Parts whose projected size falls below min_projected_size
+// get level -1 ("floor-culled": too small to matter — resolvers emit nothing for
+// them). The 0.0f default disables the floor. Returns
+// sector -> (part hash -> chosen level index, or -1).
 std::map<sector_grid::SectorCoord, std::map<uint64_t,int>>
 select_sector_lods(const sector_grid::Sectors& sectors,
-                   const PartLodTable& parts, const float3& cam_pos);
+                   const PartLodTable& parts, const float3& cam_pos,
+                   float min_projected_size = 0.0f);
 
 } // namespace lod_select

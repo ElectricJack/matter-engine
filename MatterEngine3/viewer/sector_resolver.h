@@ -46,10 +46,12 @@ public:
         resolve(const WorldState&, const lod_select::PartLodTable&, const float3&) override;
     const char* name() const override { return "SectorLod"; }
     void set_active_radius(float r) { active_radius_ = r; }
+    void set_min_projected_size(float v) { min_projected_size_ = v; }
 
 private:
     float pitch_;
     float active_radius_;
+    float min_projected_size_ = 0.0f;
 };
 
 } // namespace viewer

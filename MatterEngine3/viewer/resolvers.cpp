@@ -42,7 +42,7 @@ SectorLodResolver::resolve(const WorldState& state,
     // 2. Bin into sectors and choose per-sector LOD for this camera.
     sector_grid::SectorGrid grid(pitch_);
     sector_grid::Sectors sectors = sector_grid::bin_instances(flat, grid);
-    auto chosen = lod_select::select_sector_lods(sectors, lods, cam_pos);
+    auto chosen = lod_select::select_sector_lods(sectors, lods, cam_pos, min_projected_size_);
 
     // 3. Emit instances only for sectors within the activation sphere.
     std::vector<ResolvedInstance> out;
@@ -61,6 +61,7 @@ SectorLodResolver::resolve(const WorldState& state,
             int lod = 0;
             auto it = lod_for_part.find(inst.resolved_hash);
             if (it != lod_for_part.end()) lod = it->second;
+            if (lod < 0) continue;   // floor-culled: projected size below the min
             ResolvedInstance r;
             r.part_hash = inst.resolved_hash;
             r.lod_level = lod;

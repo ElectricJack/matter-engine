@@ -248,6 +248,49 @@ static void test_variation_lod_independence() {
     CHECK(chosen[k].at(100) == chosen[k].at(200), "two variations select identical LOD");
 }
 
+static void test_floor_cull_lod_select() {
+    auto mk = [](uint64_t h, float x) {
+        world_flatten::FlatInstance f;
+        for (int i = 0; i < 16; ++i) f.world.cell[i] = 0.0f;
+        f.world.cell[0] = f.world.cell[5] = f.world.cell[10] = f.world.cell[15] = 1.0f;
+        f.world.cell[3] = x;
+        f.resolved_hash = h;
+        return f;
+    };
+    // 0xA: tiny part far away (0.05/100 = 0.0005 < floor)   -> culled (-1)
+    // 0xB: large part, same far sector (10/100 = 0.1)        -> level 0
+    // 0xC: tiny part near the camera (0.05/4 = 0.0125)       -> level 0
+    std::vector<world_flatten::FlatInstance> flat = {
+        mk(0xA, 100.0f), mk(0xB, 100.0f), mk(0xC, 4.0f)
+    };
+    sector_grid::SectorGrid grid(16.0f);
+    sector_grid::Sectors sectors = sector_grid::bin_instances(flat, grid);
+    lod_select::PartLodTable parts;
+    parts[0xA] = { 0.05f, {0.0f} };
+    parts[0xB] = { 10.0f, {0.0f} };
+    parts[0xC] = { 0.05f, {0.0f} };
+    float3 cam = make_float3(0, 0, 0);
+
+    auto chosen = lod_select::select_sector_lods(sectors, parts, cam, 0.002f);
+    int lodA = 99, lodB = 99, lodC = 99;
+    for (const auto& sk : chosen)
+        for (const auto& pl : sk.second) {
+            if (pl.first == 0xA) lodA = pl.second;
+            if (pl.first == 0xB) lodB = pl.second;
+            if (pl.first == 0xC) lodC = pl.second;
+        }
+    CHECK(lodA == -1, "small far part floor-culled (level -1)");
+    CHECK(lodB == 0,  "large far part not culled");
+    CHECK(lodC == 0,  "small near part not culled");
+
+    // Default arg (no floor) never emits -1: existing behavior preserved.
+    auto chosen0 = lod_select::select_sector_lods(sectors, parts, cam);
+    bool any_cull = false;
+    for (const auto& sk : chosen0)
+        for (const auto& pl : sk.second) if (pl.second < 0) any_cull = true;
+    CHECK(!any_cull, "zero floor culls nothing (back-compat)");
+}
+
 int main() {
     test_decimate_one_level();
     test_bake_three_levels();
@@ -262,6 +305,7 @@ int main() {
     test_lod_selection_and_escalation();
     test_sector_uses_closest_instance();
     test_variation_lod_independence();
+    test_floor_cull_lod_select();
     printf(failures ? "FAILED (%d)\n" : "OK\n", failures);
     return failures ? 1 : 0;
 }
