@@ -726,13 +726,13 @@ static void test_bake_open_world() {
     for (size_t i = 0; i < ncells; ++i) {
         const float* a = &vol.ambient[i*4];
         const float* d = &vol.dominant[i*4];
-        if (std::fabs(a[0] - lights.sky_color[0]) > 1e-4f) all_sky_ok = false;
-        if (std::fabs(a[1] - lights.sky_color[1]) > 1e-4f) all_sky_ok = false;
-        if (std::fabs(a[2] - lights.sky_color[2]) > 1e-4f) all_sky_ok = false;
+        if (std::fabs(a[0] - lights.sky_color[0]) > 1e-5f) all_sky_ok = false;
+        if (std::fabs(a[1] - lights.sky_color[1]) > 1e-5f) all_sky_ok = false;
+        if (std::fabs(a[2] - lights.sky_color[2]) > 1e-5f) all_sky_ok = false;
         if (std::fabs(a[3] - 1.0f) > 1e-5f) all_vis_ok = false;
         if (d[3] >= 0.05f) all_dom_ok = false;
     }
-    CHECK(all_sky_ok, "bake open world: ambient == sky_color (all cells, ±1e-4)");
+    CHECK(all_sky_ok, "bake open world: ambient == sky_color (all cells, ±1e-5)");
     CHECK(all_vis_ok, "bake open world: sun_vis == 1.0 (all cells)");
     CHECK(all_dom_ok, "bake open world: |dominant intensity| < 0.05 (all cells)");
 }
@@ -1050,7 +1050,7 @@ static void test_bake_spotlight() {
     }
 }
 
-// ---- Test 25: determinism — two bakes of the occluder scene are memcmp equal ----
+// ---- Test 25: determinism — bakes with threads=1 and threads=4 are memcmp equal ----
 static void test_bake_determinism() {
     // Rebuild the same occluder scene as test_bake_occluder_plane
     world_tracer::WorldTracer wt;
@@ -1074,26 +1074,44 @@ static void test_bake_determinism() {
     world_lights::WorldLights lights;
     lights.sun_dir[0] = 0.f; lights.sun_dir[1] = -1.f; lights.sun_dir[2] = 0.f;
 
-    probe_bake::BakeParams p = tiny_params(-1,0,-1, 1,2,1);
-    p.sun_cone_deg = 2.0f;
-    p.threads = 4;
+    probe_bake::BakeParams p_single = tiny_params(-1,0,-1, 1,2,1);
+    p_single.sun_cone_deg = 2.0f;
+    p_single.threads = 1;
 
-    probe_volume::ProbeVolume vol1 = probe_bake::bake_probes(wt, lights, p);
-    probe_volume::ProbeVolume vol2 = probe_bake::bake_probes(wt, lights, p);
+    probe_bake::BakeParams p_multi = tiny_params(-1,0,-1, 1,2,1);
+    p_multi.sun_cone_deg = 2.0f;
+    p_multi.threads = 4;
 
-    CHECK(vol1.valid() && vol2.valid(), "bake determinism: both volumes valid");
-    if (!vol1.valid() || !vol2.valid()) return;
-    CHECK(vol1.ambient.size() == vol2.ambient.size(), "bake determinism: ambient size equal");
-    CHECK(vol1.dominant.size() == vol2.dominant.size(), "bake determinism: dominant size equal");
+    probe_volume::ProbeVolume vol_single = probe_bake::bake_probes(wt, lights, p_single);
+    probe_volume::ProbeVolume vol_multi = probe_bake::bake_probes(wt, lights, p_multi);
 
-    bool amb_eq = (vol1.ambient.size() == vol2.ambient.size()) &&
-                  (memcmp(vol1.ambient.data(), vol2.ambient.data(),
-                          vol1.ambient.size() * sizeof(float)) == 0);
-    bool dom_eq = (vol1.dominant.size() == vol2.dominant.size()) &&
-                  (memcmp(vol1.dominant.data(), vol2.dominant.data(),
-                          vol1.dominant.size() * sizeof(float)) == 0);
-    CHECK(amb_eq, "bake determinism: ambient memcmp equal (threads=4)");
-    CHECK(dom_eq, "bake determinism: dominant memcmp equal (threads=4)");
+    CHECK(vol_single.valid() && vol_multi.valid(), "bake determinism: both volumes valid");
+    if (!vol_single.valid() || !vol_multi.valid()) return;
+    CHECK(vol_single.ambient.size() == vol_multi.ambient.size(), "bake determinism: ambient size equal");
+    CHECK(vol_single.dominant.size() == vol_multi.dominant.size(), "bake determinism: dominant size equal");
+
+    bool amb_eq = (vol_single.ambient.size() == vol_multi.ambient.size()) &&
+                  (memcmp(vol_single.ambient.data(), vol_multi.ambient.data(),
+                          vol_single.ambient.size() * sizeof(float)) == 0);
+    bool dom_eq = (vol_single.dominant.size() == vol_multi.dominant.size()) &&
+                  (memcmp(vol_single.dominant.data(), vol_multi.dominant.data(),
+                          vol_single.dominant.size() * sizeof(float)) == 0);
+    CHECK(amb_eq, "bake determinism: ambient memcmp equal (threads=1 vs threads=4)");
+    CHECK(dom_eq, "bake determinism: dominant memcmp equal (threads=1 vs threads=4)");
+
+    // Also verify same-thread-count repeat for threads=4
+    probe_volume::ProbeVolume vol_repeat = probe_bake::bake_probes(wt, lights, p_multi);
+    CHECK(vol_repeat.valid(), "bake determinism: repeat volume valid");
+    if (vol_repeat.valid()) {
+        bool amb_repeat = (vol_multi.ambient.size() == vol_repeat.ambient.size()) &&
+                          (memcmp(vol_multi.ambient.data(), vol_repeat.ambient.data(),
+                                  vol_multi.ambient.size() * sizeof(float)) == 0);
+        bool dom_repeat = (vol_multi.dominant.size() == vol_repeat.dominant.size()) &&
+                          (memcmp(vol_multi.dominant.data(), vol_repeat.dominant.data(),
+                                  vol_multi.dominant.size() * sizeof(float)) == 0);
+        CHECK(amb_repeat, "bake determinism: ambient memcmp equal (threads=4 repeat)");
+        CHECK(dom_repeat, "bake determinism: dominant memcmp equal (threads=4 repeat)");
+    }
 }
 
 int main() {
