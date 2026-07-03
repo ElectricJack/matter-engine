@@ -13,14 +13,16 @@ uniform mat4 mvp;
 out vec3 fragNormal;       // world space
 out vec4 fragTint;
 out vec2 fragMatAO;
+out vec3 fragWorldPos;
 
 void main() {
     mat4 model = instanceTransform;
     vec4 world = model * vec4(vertexPosition, 1.0);
     // inverse-transpose-free normal: assumes rigid+uniform-scale placements (true for
     // current worlds); revisit if non-uniform instance scales appear.
-    fragNormal = normalize(mat3(model) * vertexNormal);
-    fragTint   = vertexColor;
-    fragMatAO  = vertexTexCoord;
-    gl_Position = mvp * world;
+    fragNormal    = normalize(mat3(model) * vertexNormal);
+    fragTint      = vertexColor;
+    fragMatAO     = vertexTexCoord;
+    fragWorldPos  = world.xyz;
+    gl_Position   = mvp * world;
 }
