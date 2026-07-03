@@ -13,7 +13,10 @@ namespace viewer {
 // Mirrors MatterSurfaceLib/main.cpp's render path.
 class Renderer {
 public:
-    bool init(const std::string& shader_fs_path, std::string& err);   // after InitWindow
+    // init_camera sets camera defaults (always called, both modes).
+    void init_camera();
+    // init_shader loads the raytrace shader (call only when use_rt=true).
+    bool init_shader(const std::string& shader_fs_path, std::string& err);
     void shutdown();
 
     Camera3D& camera() { return camera_; }

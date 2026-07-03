@@ -1,5 +1,7 @@
 // MatterEngine3 world viewer: connect to a WorldProvider, reconcile a persistent
-// part cache, compose with a selectable SectorResolver, raytrace, ImGui HUD.
+// part cache, compose with a selectable SectorResolver, raytrace or rasterize,
+// ImGui HUD. Default: raster path (no ~60s shader warm-up). MATTER_RT=1 uses
+// the full raytrace path.
 #include "raylib.h"
 
 #include "local_provider.h"
@@ -7,6 +9,7 @@
 #include "world_composer.h"
 #include "sector_resolver.h"
 #include "renderer.h"
+#include "raster_composer.h"
 #include "ui.h"
 
 #include <cstdio>
@@ -22,6 +25,8 @@
 using namespace viewer;
 
 int main() {
+    const bool use_rt = getenv("MATTER_RT") != nullptr;
+
     const int W = 1280, H = 720;
     SetConfigFlags(FLAG_MSAA_4X_HINT);
     InitWindow(W, H, "MatterEngine3 World Viewer");
@@ -30,10 +35,13 @@ int main() {
     Ui ui; ui.setup();
 
     Renderer renderer;
+    renderer.init_camera();   // always: sets camera defaults used in both modes
     std::string err;
-    if (!renderer.init("shaders/raytrace_tlas_blas_processed.fs", err)) {
-        printf("FATAL: %s\n", err.c_str());
-        return 1;
+    if (use_rt) {
+        if (!renderer.init_shader("shaders/raytrace_tlas_blas_processed.fs", err)) {
+            printf("FATAL: %s\n", err.c_str());
+            return 1;
+        }
     }
 
     // MATTER_CAM="px,py,pz,tx,ty,tz" overrides the initial camera (eye + target),
@@ -74,6 +82,7 @@ int main() {
     WorldState state;
     std::unique_ptr<PartStore> store;
     std::unique_ptr<WorldComposer> composer;
+    std::unique_ptr<RasterComposer> raster;
     lod_select::PartLodTable lods;
 
     auto connect_sequence = [&]() -> bool {
@@ -101,6 +110,15 @@ int main() {
         size_t cap = 16;
         for (const auto& e : manifest.instances) cap += expanded_count(e.part_hash, 0);
         composer = std::make_unique<WorldComposer>(*store, cap);
+        // Recreate RasterComposer on each (re)connect so stale GL mesh caches drop.
+        raster = std::make_unique<RasterComposer>();
+        if (!use_rt) {
+            std::string rerr;
+            if (!raster->init(rerr)) {
+                printf("raster: %s\n", rerr.c_str());
+                return false;
+            }
+        }
         lods = store->part_lod_table();
         stats.connected        = true;
         stats.parts_baked      = provider->baked_count();
@@ -114,9 +132,10 @@ int main() {
     PassThroughResolver pass;
     SectorLodResolver   sec(16.0f, 64.0f);
 
-    // Populate the TLAS once, then warm up the raytrace shader so the GPU compile
-    // stall happens here (with startup logging) instead of on the first real frame.
-    {
+    // RT mode only: populate the TLAS and warm up the raytrace shader so the GPU
+    // compile stall happens here (with startup logging) instead of on the first
+    // real frame. Raster mode skips this entirely — no ~60s warm-up.
+    if (use_rt) {
         Vector3 cp0 = renderer.camera().position;
         composer->compose(state, pass, lods, make_float3(cp0.x, cp0.y, cp0.z));
         renderer.warm_up(store->blas(), composer->tlas());
@@ -185,7 +204,7 @@ int main() {
                     renderer.camera().target   = (Vector3){ c[3], c[4], c[5] };
                 } else if (sscanf(line.c_str(), "shot %255s", pathbuf) == 1) {
                     shot_path = pathbuf;
-                    shot_frames = 4;   // let the raytrace image stabilize
+                    shot_frames = 4;   // RT-derived settle count; applied harmlessly in raster mode too
                 } else if (line == "reload") {
                     stats.reload_requested = true;
                 } else if (line == "quit") {
@@ -201,7 +220,16 @@ int main() {
 
         SectorResolver& resolver =
             (stats.resolver_choice == 1) ? (SectorResolver&)sec : (SectorResolver&)pass;
-        int active = composer->compose(state, resolver, lods, cam);
+
+        int active = 0;
+        std::vector<RasterBatch> batches;
+        if (use_rt) {
+            active = composer->compose(state, resolver, lods, cam);
+        } else {
+            auto resolved = resolver.resolve(state, lods, cam);
+            batches = RasterComposer::build_batches(resolved, *store);
+            for (const auto& b : batches) active += (int)b.transforms.size();
+        }
 
         stats.fps = (float)GetFPS();
         stats.frame_ms = GetFrameTime() * 1000.0f;
@@ -209,8 +237,13 @@ int main() {
         stats.instances_active = active;
 
         BeginDrawing();
-            ClearBackground(BLACK);
-            renderer.draw(store->blas(), composer->tlas());
+            ClearBackground((Color){ 96, 118, 143, 255 });   // blue-grey sky (placeholder)
+            if (use_rt) {
+                renderer.draw(store->blas(), composer->tlas());
+            } else {
+                stats.raster_tris    = raster->draw(batches, *store, renderer.camera());
+                stats.raster_batches = (int)batches.size();
+            }
             ui.begin_frame();
             ui.draw_debug_panel(stats);
             ui.draw_camera_panel(renderer.camera());
@@ -218,6 +251,8 @@ int main() {
         EndDrawing();
 
         if (screenshot_path) {
+            // Settle count of 3 is RT-derived (waits for raytrace to stabilize);
+            // harmless in raster mode where the image is stable on frame 1.
             if (++frames_drawn >= 3) {
                 TakeScreenshot(screenshot_path);
                 printf("screenshot written to %s\n", screenshot_path);
@@ -252,6 +287,11 @@ int main() {
 
     if (cmd_fd >= 0) { close(cmd_fd); if (fifo_path) unlink(fifo_path); }
     if (camera_capture) EnableCursor();
+    // Reset GL-owning objects before CloseWindow; order matters — all
+    // UnloadMesh/UnloadShader calls must complete while the GL context is live.
+    raster.reset();
+    composer.reset();
+    store.reset();
     ui.shutdown();
     renderer.shutdown();
     CloseWindow();

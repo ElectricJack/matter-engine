@@ -52,6 +52,9 @@ void Ui::draw_debug_panel(ViewerStats& s) {
     ImGui::Text("Last reconcile want: %d", s.last_want_count);
     ImGui::Separator();
 
+    ImGui::Text("Raster: %d batches / %d tris", s.raster_batches, s.raster_tris);
+    ImGui::Separator();
+
     const char* resolvers[] = { "PassThrough", "SectorLod" };
     ImGui::Combo("Resolver", &s.resolver_choice, resolvers, 2);
     if (ImGui::Button("Reload world")) s.reload_requested = true;
