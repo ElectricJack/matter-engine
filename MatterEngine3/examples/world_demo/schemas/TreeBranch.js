@@ -25,9 +25,8 @@ class TreeBranch extends Part {
     // More bracketed splits per node => the branch forks repeatedly instead of
     // running out as one long whip. "C" marks a leaf-cluster node; it sits on
     // every sub-branch so foliage clusters cover the whole branch densely.
-    //lsys.rule('X => Fwd [Rotx1 X C] [Rotz1 X C] [Rotx2 X C] [Roty1 X C] X C [Rotz2 X C]');
-    lsys.rule('X => Fwd [Rotx1 Y] [Rotx2 X]');
-    lsys.rule('Y => Fwd [Roty1 X] [Roty2 Y]');
+    lsys.rule('X => Fwd [Rotx1 Y C] [Rotx2 X C]');
+    lsys.rule('Y => Fwd [Roty1 X C] [Roty2 Y C]');
     lsys.rule('Fwd => Fwd Fwd');
     lsys.rewrite(5);
 
@@ -51,16 +50,16 @@ class TreeBranch extends Part {
     // A leaf cluster: a tuft of CLUSTER blades splayed around the twig axis AND
     // varied in pitch (rotateX), so the tuft fills a little volume of foliage
     // instead of a flat ring. Each node sprouts a dense tuft.
-    // follower.addAction('C', () => {
-    //   for (let i = 0; i < CLUSTER && leaves < MAX_LEAVES; ++i) {
-    //     this.pushMatrix();
-    //     this.rotateY(i * (360 / CLUSTER) * DEG + (Math.random() * 50 - 25) * DEG);
-    //     this.rotateX(-40 * DEG - Math.random() * 70 * DEG);   // spread from out to up
-    //     this.placeChild('Leaf');
-    //     this.popMatrix();
-    //     ++leaves;
-    //   }
-    // });
+    follower.addAction('C', () => {
+      for (let i = 0; i < CLUSTER && leaves < MAX_LEAVES; ++i) {
+        this.pushMatrix();
+        this.rotateY(i * (360 / CLUSTER) * DEG + (Math.random() * 50 - 25) * DEG);
+        this.rotateX(-40 * DEG - Math.random() * 70 * DEG);   // spread from out to up
+        this.placeChild('Leaf');
+        this.popMatrix();
+        ++leaves;
+      }
+    });
 
     // Longer segments spread the leaf nodes apart, so the wide-angle fan reads as
     // an open, airy branch rather than a tight clump of overlapping tufts.

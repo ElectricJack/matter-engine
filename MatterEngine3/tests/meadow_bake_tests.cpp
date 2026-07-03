@@ -44,6 +44,20 @@ static std::vector<Tri> load_tris(uint64_t h) {
 
 static ParamValue num(double v) { return ParamValue::number(v); }
 
+// Material histogram (registry index) across all BLAS entries of a baked part.
+static std::map<int, size_t> load_materials(uint64_t h) {
+    std::string path = part_asset::cache_path_resolved(h);
+    BLASManager blas; TLASManager tlas(256);
+    std::vector<part_asset::ChildInstance> children;
+    part_asset::LodLevels lods;
+    std::map<int, size_t> mats;
+    if (!part_asset::load_v2(path, h, blas, tlas, children, lods)) return mats;
+    for (const auto& e : blas.get_entries())
+        for (const TriEx& ex : e->tri_extra)
+            mats[(int)(ex.materialId % 1000000)]++;
+    return mats;
+}
+
 int main() {
     const std::string schemas    = abspath("../examples/world_demo/schemas");
     const std::string shared_lib = abspath("../shared-lib");
@@ -146,6 +160,28 @@ int main() {
                 if (v->y >  0.30f) above = true;
             }
         CHECK(below && above, "grass has a root skirt below y=0 and tips above");
+    }
+
+    // ---- TreeBranch foliage --------------------------------------------------
+    // Regression: the oak rendered pale tan because TreeBranch stopped placing
+    // Leaf children (the 'C' cluster action was disabled), so the flattened tree
+    // was 100% bark. A branch must carry leaf instances, and the Leaf part must
+    // carry the green LEAF material (registry index 15).
+    InstallResult tb = graph.install({ ChildRequest{ "TreeBranch", {} } });
+    CHECK(tb.ok, "treebranch install ok");
+    if (tb.ok) {
+        std::string path = part_asset::cache_path_resolved(tb.root_hashes[0]);
+        BLASManager bblas; TLASManager btlas(256);
+        std::vector<part_asset::ChildInstance> bkids;
+        part_asset::LodLevels blods;
+        bool loaded = part_asset::load_v2(path, tb.root_hashes[0], bblas, btlas, bkids, blods);
+        CHECK(loaded, "treebranch part loads");
+        printf("  treebranch leaf instances=%zu\n", bkids.size());
+        CHECK(bkids.size() >= 10, "branch places leaf clusters (foliage present)");
+        if (!bkids.empty()) {
+            std::map<int, size_t> mats = load_materials(bkids[0].child_resolved_hash);
+            CHECK(mats.count(15) == 1, "leaf child carries LEAF material (15)");
+        }
     }
 
     printf(failures ? "\n%d FAILURE(S)\n" : "\nALL PASS\n", failures);
