@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <algorithm>
 #include <cstring>
+#include <unordered_map>
 
 namespace {
 
@@ -306,7 +307,7 @@ static void decimate(std::vector<WVert>& verts, std::vector<WTri>& tris,
     for (const auto& t : tris) if (!t.removed) ++curTri;
     if (curTri <= targetTri) return;
 
-    // 1. Hard-lock vertices on any of the 6 cell face planes.
+    // 1a. Hard-lock vertices on any of the 6 cell face planes.
     if (bounds && opts.lock_boundary) {
         const double eps = 1e-4;
         V3 mn = {bounds->min_bound.x, bounds->min_bound.y, bounds->min_bound.z};
@@ -316,6 +317,33 @@ static void decimate(std::vector<WVert>& verts, std::vector<WTri>& tris,
                 std::fabs(v.pos.y - mn.y) < eps || std::fabs(v.pos.y - mx.y) < eps ||
                 std::fabs(v.pos.z - mn.z) < eps || std::fabs(v.pos.z - mx.z) < eps)
                 v.locked = true;
+        }
+    }
+
+    // 1b. Topological boundary lock: vertices on open or non-manifold edges
+    // (incidence != 2 in the welded topology) are frozen. A cluster cut from a
+    // larger mesh has its shared cut edges as exactly this open boundary, so
+    // per-cluster decimation keeps cut vertices bit-identical across LOD levels
+    // and across neighboring clusters. (Engine cluster ladders rely on this;
+    // approved extension to the read-only convention, 2026-07-02.)
+    if (opts.lock_boundary) {
+        std::unordered_map<uint64_t, int> edge_count;
+        edge_count.reserve(tris.size() * 3);
+        auto ekey = [](int a, int b) {
+            if (a > b) std::swap(a, b);
+            return ((uint64_t)(uint32_t)a << 32) | (uint32_t)b;
+        };
+        for (const auto& t : tris) {
+            if (t.removed) continue;
+            edge_count[ekey(t.v[0], t.v[1])]++;
+            edge_count[ekey(t.v[1], t.v[2])]++;
+            edge_count[ekey(t.v[2], t.v[0])]++;
+        }
+        for (const auto& kv : edge_count) {
+            if (kv.second != 2) {
+                verts[(int)(kv.first >> 32)].locked        = true;
+                verts[(int)(kv.first & 0xFFFFFFFF)].locked = true;
+            }
         }
     }
 

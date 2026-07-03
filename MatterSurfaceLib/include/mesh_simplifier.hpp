@@ -8,7 +8,17 @@
 struct SimplifyOptions {
     float target_ratio  = 0.5f;     // fraction of triangles to keep, (0..1]
     float max_error     = FLT_MAX;  // stop once min collapse cost exceeds this
-    bool  lock_boundary = true;     // freeze vertices lying on a cell face plane
+    // When true, two classes of vertices are frozen (never moved or removed):
+    //   (a) Face-plane lock: vertices on any of the 6 CellBounds face planes
+    //       (eps 1e-4). Requires CellBounds to be supplied. Preserves watertight
+    //       same-level seams between adjacent cells.
+    //   (b) Topological boundary lock: endpoints of edges with incidence != 2 in
+    //       the welded topology. These are open-sheet rims, cut edges, or
+    //       non-manifold junctions. Locking them keeps cut-vertex positions
+    //       bit-identical across LOD levels and between neighboring clusters.
+    //       Active regardless of whether CellBounds is supplied.
+    //       (Approved MSL extension, 2026-07-02.)
+    bool  lock_boundary = true;
 };
 
 // Axis-aligned cell extent in cluster-local space. When supplied to

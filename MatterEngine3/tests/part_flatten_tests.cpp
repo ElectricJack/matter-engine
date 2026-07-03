@@ -9,12 +9,14 @@
 #include "../include/lod_bake.h"
 #include "../../MatterSurfaceLib/include/blas_manager.hpp"
 #include "../../MatterSurfaceLib/include/tlas_manager.hpp"
+#include "../../MatterSurfaceLib/include/mesh_simplifier.hpp"
 
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <map>
 #include <set>
 #include <string>
 #include <vector>
@@ -293,6 +295,114 @@ static void test_reproject_two_materials() {
     CHECK(mats.size() == 2, "no phantom materials introduced");
 }
 
+// Task 8: topological boundary-vertex lock.
+// Build an open 8x8 bumped grid sheet (128 tris). Collect its boundary vertex
+// positions (edges with incidence == 1 in the welded input topology). Call
+// simplify_mesh directly with bounds=nullptr and lock_boundary=true and a
+// huge max_error so interior collapses have every opportunity to fire. Assert:
+//   1. Every recorded boundary position is present bit-identical in the output.
+//   2. The output has fewer tris than the input (interior did decimate).
+static void test_topological_boundary_lock() {
+    printf("=== test_topological_boundary_lock ===\n");
+
+    // Build indexed 8x8 grid on XZ plane, y = 0.05*sin(x)*cos(z) bump.
+    const int N = 8;
+    const float span = 1.0f;
+    const int side = N + 1; // 9 verts per side
+    std::vector<float> vpos;
+    std::vector<unsigned short> idx;
+    vpos.reserve(side * side * 3);
+    for (int j = 0; j < side; ++j) {
+        for (int i = 0; i < side; ++i) {
+            float x = span * (float)i / (float)N;
+            float z = span * (float)j / (float)N;
+            float y = 0.05f * std::sin(x * 6.28f) * std::cos(z * 6.28f);
+            vpos.push_back(x);
+            vpos.push_back(y);
+            vpos.push_back(z);
+        }
+    }
+    auto vid = [&](int i, int j) -> unsigned short { return (unsigned short)(j * side + i); };
+    for (int j = 0; j < N; ++j) {
+        for (int i = 0; i < N; ++i) {
+            idx.push_back(vid(i,   j));   idx.push_back(vid(i+1, j));   idx.push_back(vid(i+1, j+1));
+            idx.push_back(vid(i,   j));   idx.push_back(vid(i+1, j+1)); idx.push_back(vid(i,   j+1));
+        }
+    }
+    Mesh in = {0};
+    in.vertexCount   = side * side;
+    in.triangleCount = N * N * 2; // 128
+    in.vertices = (float*)MemAlloc(sizeof(float) * vpos.size());
+    for (size_t k = 0; k < vpos.size(); ++k) in.vertices[k] = vpos[k];
+    in.indices = (unsigned short*)MemAlloc(sizeof(unsigned short) * idx.size());
+    for (size_t k = 0; k < idx.size(); ++k) in.indices[k] = idx[k];
+
+    // Collect topological boundary vertex positions from the input: edges with
+    // incidence 1 contribute both endpoints to the boundary set.
+    std::map<std::pair<int,int>, int> edge_count;
+    for (int t = 0; t < in.triangleCount; ++t) {
+        int a = in.indices[t*3+0], b = in.indices[t*3+1], c = in.indices[t*3+2];
+        int pairs[3][2] = {{a,b},{b,c},{c,a}};
+        for (auto& p : pairs) {
+            int lo = p[0], hi = p[1];
+            if (lo > hi) std::swap(lo, hi);
+            edge_count[{lo, hi}]++;
+        }
+    }
+    // Collect the float positions of boundary vertices (incidence != 2).
+    std::set<int> boundary_vi;
+    for (const auto& kv : edge_count) {
+        if (kv.second != 2) {
+            boundary_vi.insert(kv.first.first);
+            boundary_vi.insert(kv.first.second);
+        }
+    }
+    // Store bit-identical float triples for each boundary vertex.
+    struct FP3 { float x, y, z; bool operator<(const FP3& o) const {
+        if (x != o.x) return x < o.x; if (y != o.y) return y < o.y; return z < o.z;
+    }};
+    std::set<FP3> boundary_pos;
+    for (int vi : boundary_vi) {
+        boundary_pos.insert({in.vertices[vi*3+0], in.vertices[vi*3+1], in.vertices[vi*3+2]});
+    }
+    printf("  input: %d tris, %d boundary verts\n",
+           in.triangleCount, (int)boundary_pos.size());
+
+    // Call simplify_mesh directly: bounds=nullptr, lock_boundary=true, huge max_error.
+    SimplifyOptions opts;
+    opts.target_ratio  = 0.0f;   // clamps to targetTri=1, so error-stop drives everything
+    opts.max_error     = 1e30f;  // never stop on cost alone
+    opts.lock_boundary = true;
+    Mesh out = simplify_mesh(in, opts, nullptr);
+
+    printf("  output: %d tris, %d verts\n", out.triangleCount, out.vertexCount);
+
+    // 1. Interior must have decimated.
+    CHECK(out.triangleCount < in.triangleCount,
+          "topological lock: interior decimated (output has fewer tris than 128)");
+
+    // 2. Every boundary position appears bit-identical in the output vertex set.
+    std::set<FP3> out_pos;
+    for (int vi = 0; vi < out.vertexCount; ++vi) {
+        out_pos.insert({out.vertices[vi*3+0], out.vertices[vi*3+1], out.vertices[vi*3+2]});
+    }
+    int missing = 0;
+    for (const FP3& bp : boundary_pos) {
+        if (out_pos.find(bp) == out_pos.end()) {
+            printf("  MISSING boundary vertex (%.6f, %.6f, %.6f)\n", bp.x, bp.y, bp.z);
+            ++missing;
+        }
+    }
+    CHECK(missing == 0,
+          "topological lock: all boundary vertex positions preserved bit-identical");
+
+    MemFree(in.vertices); MemFree(in.indices);
+    if (out.vertices) MemFree(out.vertices);
+    if (out.indices)  MemFree(out.indices);
+    if (out.normals)  MemFree(out.normals);
+    printf(missing == 0 && out.triangleCount < in.triangleCount ? "PASSED\n" : "FAILED\n");
+}
+
 int main() {
     if (!write_fixtures()) {
         printf("FAIL: could not write fixture parts under %s\n", kCacheRoot);
@@ -304,6 +414,7 @@ int main() {
     test_error_bound_calibration();
     test_open_grid_border_preserved();
     test_reproject_two_materials();
+    test_topological_boundary_lock();
 
     if (failures == 0) { printf("part_flatten_tests: ALL PASS\n"); return 0; }
     printf("part_flatten_tests: %d FAILURE(S)\n", failures);
