@@ -52,7 +52,7 @@ void Ui::draw_debug_panel(ViewerStats& s) {
     ImGui::Text("Last reconcile want: %d", s.last_want_count);
     ImGui::Separator();
 
-    ImGui::Text("Raster: %d batches / %d tris", s.raster_batches, s.raster_tris);
+    ImGui::Text("Raster: %d batches / %d tris  culled: %d", s.raster_batches, s.raster_tris, s.culled_clusters);
     ImGui::Separator();
 
     const char* resolvers[] = { "PassThrough", "SectorLod" };

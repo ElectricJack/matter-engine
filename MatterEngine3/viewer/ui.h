@@ -26,6 +26,7 @@ struct ViewerStats {
     // Raster-path counters (zero in RT mode)
     int      raster_batches = 0;
     int      raster_tris = 0;
+    int      culled_clusters = 0;
 };
 
 class Ui {

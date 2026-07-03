@@ -275,7 +275,7 @@ int main() {
             active = composer->compose(state, resolver, lods, cam);
         } else {
             auto resolved = resolver.resolve(state, lods, cam);
-            batches = RasterComposer::build_batches(resolved, *store);
+            batches = raster->build_batches(resolved, *store, renderer.camera());
             for (const auto& b : batches) active += (int)b.transforms.size();
         }
 
@@ -290,7 +290,8 @@ int main() {
                 renderer.draw(store->blas(), composer->tlas());
             } else {
                 stats.raster_tris    = raster->draw(batches, *store, renderer.camera());
-                stats.raster_batches = (int)batches.size();
+                stats.raster_batches = (int)raster->batches();
+                stats.culled_clusters = (int)raster->culled_clusters();
             }
             ui.begin_frame();
             ui.draw_debug_panel(stats);
