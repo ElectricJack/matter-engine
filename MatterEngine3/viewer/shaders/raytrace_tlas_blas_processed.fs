@@ -17,10 +17,15 @@ uniform float giStrength;      // 0 = skip the indirect bounce ray entirely; 1 =
 uniform float shadowStrength;  // 0 = no shadow darkening; 1 = fully black shadows
 uniform int   aoEnabled;       // 0 = skip AO rays (return unoccluded)
 
-// Enhanced lighting for better shadow visibility
-vec3 lightPos   = vec3(3.0, 8.0, 2.0);            // Lower sun position for better shadows
-vec3 lightColor = vec3(4.0, 3.8, 3.5);          // Brighter direct lighting
-vec3 ambient    = vec3(0.34, 0.34, 0.33);          // Brighter neutral fill so light stone/marble reads
+// World-light uniforms — driven by the world manifest's `light` lines (same
+// source as the raster path). GLSL initializers reproduce the Phase-1 defaults
+// so the tracer's output is bit-identical when no manifest overrides are set.
+uniform vec3 wlSunDir   = vec3(-0.45, -0.80, -0.35);
+uniform vec3 wlSunColor = vec3(2.2, 2.05, 1.8);
+uniform vec3 wlSkyColor = vec3(0.38, 0.43, 0.52);
+vec3 lightPos;    // assigned in main() from wlSunDir
+vec3 lightColor;  // assigned in main() from wlSunColor
+vec3 ambient;     // assigned in main() from wlSkyColor
 
 // Light cache for performance optimization
 struct LightCache {
@@ -1014,6 +1019,9 @@ vec3 sampleSky(vec3 direction) {
         skyColor = mix(horizonColor * 0.4, groundColor, depth);
     }
     
+    // Tint the procedural sky by the world-light sky color so manifest overrides
+    // affect the traced sky gradient (default wlSkyColor leaves it bit-identical).
+    skyColor *= wlSkyColor / vec3(0.38, 0.43, 0.52);
     return skyColor;
 }
 
@@ -1442,6 +1450,13 @@ vec3 trace(vec3 rayOrigin, vec3 rayDirection, inout uint seed) {
 
 
 void main() {
+    // Derive tracer light globals from world-light uniforms.  The scale factors
+    // (12.0 / 1.8) preserve the tracer's previous absolute magnitudes: with the
+    // defaults, lightPos ≈ (5.4, 9.6, 4.2) and lightColor ≈ (3.96, 3.69, 3.24).
+    lightPos   = -normalize(wlSunDir) * 12.0;
+    lightColor = wlSunColor * 1.8;
+    ambient    = wlSkyColor;
+
     // Use gl_FragCoord for reliable screen-space coordinates
     vec2 screenUV = gl_FragCoord.xy / screenSize;
     

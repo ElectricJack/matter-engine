@@ -4,6 +4,7 @@
 #include "raylib.h"
 #include "blas_manager.hpp"
 #include "tlas_manager.hpp"
+#include "world_lights.h"
 
 #include <string>
 
@@ -21,6 +22,11 @@ public:
 
     Camera3D& camera() { return camera_; }
     void update_camera_free();                  // UpdateCamera(CAMERA_FREE)
+
+    // Upload the three WorldLights uniforms (wlSunDir/wlSunColor/wlSkyColor) to
+    // the raytrace shader so A/B vs the raster path uses the same light source.
+    // No-ops if the shader is not loaded (raster-only mode).
+    void set_lights(const world_lights::WorldLights& lights);
 
     // Bind BLAS/TLAS + camera + material uniforms and draw the fullscreen pass.
     void draw(BLASManager& blas, TLASManager& tlas);
@@ -40,6 +46,7 @@ private:
     int      loc_material_table_ = -1, loc_material_count_ = -1;
     int      loc_gi_strength_ = -1, loc_shadow_strength_ = -1;
     int      loc_ao_enabled_ = -1, loc_debug_tri_ = -1;
+    int      loc_wl_sun_dir_ = -1, loc_wl_sun_color_ = -1, loc_wl_sky_color_ = -1;
     bool     ready_ = false;
 };
 

@@ -36,6 +36,9 @@ vec3 sampleSky(vec3 direction) {
         skyColor = mix(horizonColor * 0.4, groundColor, depth);
     }
     
+    // Tint the procedural sky by the world-light sky color so manifest overrides
+    // affect the traced sky gradient (default wlSkyColor leaves it bit-identical).
+    skyColor *= wlSkyColor / vec3(0.38, 0.43, 0.52);
     return skyColor;
 }
 

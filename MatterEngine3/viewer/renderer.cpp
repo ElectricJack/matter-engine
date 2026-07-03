@@ -35,6 +35,9 @@ bool Renderer::init_shader(const std::string& shader_fs_path, std::string& err) 
     loc_shadow_strength_ = GetShaderLocation(shader_, "shadowStrength");
     loc_ao_enabled_      = GetShaderLocation(shader_, "aoEnabled");
     loc_debug_tri_       = GetShaderLocation(shader_, "debugTriangleTests");
+    loc_wl_sun_dir_      = GetShaderLocation(shader_, "wlSunDir");
+    loc_wl_sun_color_    = GetShaderLocation(shader_, "wlSunColor");
+    loc_wl_sky_color_    = GetShaderLocation(shader_, "wlSkyColor");
 
     ready_ = true;
     return true;
@@ -46,6 +49,17 @@ void Renderer::shutdown() {
 }
 
 void Renderer::update_camera_free() { UpdateCamera(&camera_, CAMERA_FREE); }
+
+void Renderer::set_lights(const world_lights::WorldLights& lights) {
+    if (!ready_) return;
+    // Must set uniforms with the shader active (raylib uploads them into the
+    // currently bound program). Use BeginShaderMode/EndShaderMode just like draw().
+    BeginShaderMode(shader_);
+    if (loc_wl_sun_dir_   != -1) SetShaderValue(shader_, loc_wl_sun_dir_,   lights.sun_dir,   SHADER_UNIFORM_VEC3);
+    if (loc_wl_sun_color_ != -1) SetShaderValue(shader_, loc_wl_sun_color_, lights.sun_color, SHADER_UNIFORM_VEC3);
+    if (loc_wl_sky_color_ != -1) SetShaderValue(shader_, loc_wl_sky_color_, lights.sky_color, SHADER_UNIFORM_VEC3);
+    EndShaderMode();
+}
 
 void Renderer::upload_material_table() {
     float table[64 * MATERIAL_FLOATS_PER_DEF] = {0};

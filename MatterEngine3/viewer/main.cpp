@@ -157,6 +157,9 @@ int main() {
             printf("sky clear color: (%d,%d,%d)\n",
                    (int)sky_clear.r, (int)sky_clear.g, (int)sky_clear.b);
         }
+        // Upload world lights to the raytrace shader (no-op in raster mode because
+        // the shader is not loaded; the raster path uses raster->set_lights above).
+        renderer.set_lights(manifest.lights);
         lods = store->part_lod_table();
         stats.connected        = true;
         stats.parts_baked      = provider->baked_count();
