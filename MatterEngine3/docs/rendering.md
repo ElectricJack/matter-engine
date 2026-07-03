@@ -58,7 +58,7 @@ LOD ladders stop above 1 px. The viewer enables this per world
 
 `MATTER_WORLD=meadow`, default camera `MATTER_CAM="128,25,40,128,2,128"`,
 1280×720: 277 batches / 8,685,895 tris, ~1 FPS / 94 ms frame
-(recorded 2026-07-02, commit PLACEHOLDER_SHA). Scatter constants: GRASS_CLUMPS=40000,
+(recorded 2026-07-02, commit 9a87fdc). Scatter constants: GRASS_CLUMPS=40000,
 BLADES default (Grass.js), kMinProjectedSize=0.0015 (Meadow: active radius 400).
 Note: frame ms measured on RTX 4090 via WSL/Mesa (D3D12 translation); native
 GL performance will differ.
