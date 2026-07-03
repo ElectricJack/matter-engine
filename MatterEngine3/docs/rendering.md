@@ -57,11 +57,12 @@ LOD ladders stop above 1 px. The viewer enables this per world
 ### Meadow benchmark (Phase 3 raster baseline)
 
 `MATTER_WORLD=meadow`, default camera `MATTER_CAM="128,25,40,128,2,128"`,
-1280×720: 277 batches / 8,685,895 tris, ~1 FPS / 94 ms frame
+1280×720: 277 batches / 8,685,895 tris, 94 ms frame
 (recorded 2026-07-02, commit 9a87fdc). Scatter constants: GRASS_CLUMPS=40000,
 BLADES default (Grass.js), kMinProjectedSize=0.0015 (Meadow: active radius 400).
-Note: frame ms measured on RTX 4090 via WSL/Mesa (D3D12 translation); native
-GL performance will differ.
+Note: 94 ms captured on the first frames after load (includes lazy VAO
+uploads; steady-state not measured in the headless path), on RTX 4090 via
+WSL/Mesa (D3D12 translation); native GL performance will differ.
 
 ### Raster vertex data (`viewer/raster_mesh.h`, `raster_mesh.cpp`)
 
