@@ -4,6 +4,12 @@
 
 namespace lod_select {
 
+// Parts at least this large (terrain tiles: ~14 m) are never floor-culled,
+// only clamped to their coarsest rung — a structural never-invisible
+// guarantee inside the active radius (Stage 2.4). Small scatter (grass,
+// pebbles) stays floor-cullable.
+static constexpr float kNeverCullRadius = 4.0f;
+
 static float dist(const float3& a, const float3& b) {
     float dx=a.x-b.x, dy=a.y-b.y, dz=a.z-b.z;
     return std::sqrt(dx*dx + dy*dy + dz*dz);
@@ -44,9 +50,17 @@ select_sector_lods(const sector_grid::Sectors& sectors,
             auto pit = parts.find(f.resolved_hash);
             if (pit == parts.end()) continue;
             float size = pit->second.bound_radius / closest * pixel_budget;
-            out[coord][f.resolved_hash] =
-                (size < min_projected_size) ? -1
-                                            : select_level(size, pit->second.thresholds);
+            int level;
+            if (size < min_projected_size) {
+                level = (pit->second.bound_radius >= kNeverCullRadius)
+                            ? (pit->second.thresholds.empty()
+                                   ? 0
+                                   : (int)pit->second.thresholds.size() - 1)
+                            : -1;
+            } else {
+                level = select_level(size, pit->second.thresholds);
+            }
+            out[coord][f.resolved_hash] = level;
         }
     }
     return out;

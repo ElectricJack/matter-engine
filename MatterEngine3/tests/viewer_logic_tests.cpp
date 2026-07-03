@@ -1501,6 +1501,28 @@ static void test_pixel_budget_dial() {
     printf("  test_pixel_budget_dial OK\n");
 }
 
+static void test_never_invisible_guarantee() {
+    sector_grid::Sectors sectors;
+    world_flatten::FlatInstance fi{};
+    for (int i = 0; i < 16; ++i) fi.world.cell[i] = (i % 5 == 0) ? 1.0f : 0.0f;
+    fi.resolved_hash = 0xB16u;   // terrain-tile class: radius 14 m
+    sectors[sector_grid::SectorCoord{0,0,0}].push_back(fi);
+    fi.resolved_hash = 0x5A11u;  // small scatter: radius 0.5 m
+    sectors[sector_grid::SectorCoord{0,0,0}].push_back(fi);
+
+    lod_select::PartLodTable parts;
+    parts[0xB16u]  = { 14.0f, { 0.3f, 0.1f, 0.03f, 0.0f } };
+    parts[0x5A11u] = { 0.5f,  { 0.04f, 0.0f } };
+
+    // Extreme distance: both project below the floor.
+    float3 cam = make_float3(20000, 0, 0);
+    auto chosen = lod_select::select_sector_lods(sectors, parts, cam, 0.0015f);
+    const auto& sec = chosen.at(sector_grid::SectorCoord{0,0,0});
+    assert(sec.at(0xB16u) == 3);      // radius >= 4 m: clamped to coarsest, never -1
+    assert(sec.at(0x5A11u) == -1);    // small part: still floor-culled
+    printf("  test_never_invisible_guarantee OK\n");
+}
+
 static void test_cluster_budget_dial() {
     viewer::LoadedCluster cl{};
     cl.aabb_min[0] = -1; cl.aabb_min[1] = -1; cl.aabb_min[2] = -1;
@@ -1546,6 +1568,8 @@ int main() {
     // Task 9: runtime pixel-budget dial
     test_pixel_budget_dial();
     test_cluster_budget_dial();
+    // Task 10: never-invisible guarantee for large parts
+    test_never_invisible_guarantee();
     delete g_shared_store; g_shared_store = nullptr;
     printf("\n%s\n", g_failures == 0 ? "viewer-logic OK" : "viewer-logic FAILED");
     return g_failures == 0 ? 0 : 1;
