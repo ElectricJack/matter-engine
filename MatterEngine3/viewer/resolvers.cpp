@@ -29,19 +29,24 @@ std::vector<ResolvedInstance>
 SectorLodResolver::resolve(const WorldState& state,
                            const lod_select::PartLodTable& lods,
                            const float3& cam_pos) {
-    // 1. Build FlatInstances so we can reuse SP-4 binning + lod-select verbatim.
-    std::vector<world_flatten::FlatInstance> flat;
-    flat.reserve(state.entries().size());
-    for (const auto& e : state.entries()) {
-        world_flatten::FlatInstance fi;
-        fi.resolved_hash = e.part_hash;
-        std::memcpy(fi.world.cell, e.transform, sizeof(fi.world.cell));  // mat4::cell[16]
-        flat.push_back(fi);
+    // 1+2. (Re)build the sector binning only when the world content changed.
+    // LOD selection below stays exact per frame — identical output to the
+    // uncached implementation (Stage 1 constraint).
+    if (state.version() != cached_version_) {
+        std::vector<world_flatten::FlatInstance> flat;
+        flat.reserve(state.entries().size());
+        for (const auto& e : state.entries()) {
+            world_flatten::FlatInstance fi;
+            fi.resolved_hash = e.part_hash;
+            std::memcpy(fi.world.cell, e.transform, sizeof(fi.world.cell));  // mat4::cell[16]
+            flat.push_back(fi);
+        }
+        sector_grid::SectorGrid grid(pitch_);
+        sectors_ = sector_grid::bin_instances(flat, grid);
+        cached_version_ = state.version();
+        ++rebin_count_;
     }
-
-    // 2. Bin into sectors and choose per-sector LOD for this camera.
-    sector_grid::SectorGrid grid(pitch_);
-    sector_grid::Sectors sectors = sector_grid::bin_instances(flat, grid);
+    const sector_grid::Sectors& sectors = sectors_;
     auto chosen = lod_select::select_sector_lods(sectors, lods, cam_pos, min_projected_size_);
 
     // 3. Emit instances only for sectors within the activation sphere.

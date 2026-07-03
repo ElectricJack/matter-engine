@@ -47,11 +47,19 @@ public:
     const char* name() const override { return "SectorLod"; }
     void set_active_radius(float r) { active_radius_ = r; }
     void set_min_projected_size(float v) { min_projected_size_ = v; }
+    // Times the sector table was (re)built — bumps only when WorldState::version()
+    // changes, never on camera motion.
+    int rebin_count() const { return rebin_count_; }
 
 private:
     float pitch_;
     float active_radius_;
     float min_projected_size_ = 0.0f;
+    // Binning cache (Stage 1): re-binning ~44k instances into a std::map every
+    // frame dominated the CPU floor. Sectors only change when the world does.
+    sector_grid::Sectors sectors_;
+    uint64_t cached_version_ = UINT64_MAX;
+    int      rebin_count_    = 0;
 };
 
 } // namespace viewer

@@ -50,6 +50,17 @@ static viewer::WorldManifestEntry mk_entry(uint32_t id, uint64_t hash, float x) 
     return e;
 }
 
+static viewer::WorldManifestEntry mk_entry(uint32_t id, uint64_t hash, float x, float y, float z) {
+    viewer::WorldManifestEntry e{};
+    e.instance_id = id;
+    e.part_hash   = hash;
+    e.transform[0] = e.transform[5] = e.transform[10] = e.transform[15] = 1.0f;
+    e.transform[3]  = x;   // translate-x
+    e.transform[7]  = y;   // translate-y
+    e.transform[11] = z;   // translate-z
+    return e;
+}
+
 static void test_world_state_version() {
     viewer::WorldState s;
     assert(s.version() == 0);
@@ -1369,11 +1380,54 @@ static void test_cull_transform_convention() {
           "cull_convention: cluster 30m away picks coarsest LOD");
 }
 
+static void test_resolver_binning_cache() {
+    viewer::WorldState s;
+    viewer::WorldManifest m;
+    m.instances.push_back(mk_entry(1, 0xAAu,  5, 0,  5));
+    m.instances.push_back(mk_entry(2, 0xAAu, 40, 0, 40));
+    s.reset(m);
+
+    lod_select::PartLodTable lods;
+    lods[0xAAu] = { 1.0f, { 0.5f, 0.0f } };   // 2-level ladder
+
+    viewer::SectorLodResolver r(16.0f, 1000.0f);
+    float3 cam = make_float3(0, 0, 0);
+
+    auto out1 = r.resolve(s, lods, cam);
+    assert(r.rebin_count() == 1);
+
+    // Same world + camera: identical output, no re-bin.
+    auto out2 = r.resolve(s, lods, cam);
+    assert(r.rebin_count() == 1);
+    assert(out1.size() == out2.size());
+    for (size_t i = 0; i < out1.size(); ++i) {
+        assert(out1[i].part_hash == out2[i].part_hash);
+        assert(out1[i].lod_level == out2[i].lod_level);
+        assert(std::memcmp(out1[i].transform, out2[i].transform,
+                           sizeof(float) * 16) == 0);
+    }
+
+    // Camera move alone must NOT re-bin (LOD selection still re-runs).
+    float3 cam2 = make_float3(30, 0, 30);
+    (void)r.resolve(s, lods, cam2);
+    assert(r.rebin_count() == 1);
+
+    // World delta bumps the version -> re-bin; new instance shows up.
+    viewer::WorldDelta d;
+    d.added.push_back(mk_entry(3, 0xAAu, 60, 0, 60));
+    s.apply(d);
+    auto out4 = r.resolve(s, lods, cam);
+    assert(r.rebin_count() == 2);
+    assert(out4.size() == out1.size() + 1);
+    printf("  test_resolver_binning_cache OK\n");
+}
+
 int main() {
     test_cull_transform_convention();
     test_world_state_version();
     test_world_state_delta();
     test_resolvers();
+    test_resolver_binning_cache();
     test_part_store_missing();
     test_local_provider_cache();
     test_composer_counts();
