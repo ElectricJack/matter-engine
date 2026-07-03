@@ -48,9 +48,9 @@ QJS_OBJ = quickjs.o libregexp.o libunicode.o cutils.o xsum.o
 # NEW MatterEngine3 host/DSL/CSG sources + SP-1's part-asset v2 serializer.
 ME3_CPP = src/script_host.cpp src/dsl_state.cpp src/dsl_bindings.cpp \
           src/csg_lowering.cpp src/part_asset_v2.cpp src/world_lights.cpp \
-          src/probe_volume.cpp src/world_tracer.cpp
+          src/probe_volume.cpp src/world_tracer.cpp src/part_cluster.cpp
 ME3_OBJ = script_host.o dsl_state.o dsl_bindings.o csg_lowering.o part_asset_v2.o world_lights.o \
-          probe_volume.o world_tracer.o
+          probe_volume.o world_tracer.o part_cluster.o
 
 LIB = libmatter_engine3.a
 

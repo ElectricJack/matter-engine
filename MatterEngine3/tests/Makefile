@@ -290,6 +290,7 @@ run-comp: $(COMP_TARGET)
 # raylib linked only for MemAlloc/MemFree in the Tri<->Mesh bridge, like COMP).
 FLATTEN_TARGET = part_flatten_tests
 FLATTEN_CPP = part_flatten_tests.cpp ../src/part_flatten.cpp ../src/lod_bake.cpp \
+              ../src/part_cluster.cpp \
               ../src/part_asset_v2.cpp \
               ../../MatterSurfaceLib/src/mesh_simplifier.cpp \
               ../../MatterSurfaceLib/src/blas_manager.cpp \

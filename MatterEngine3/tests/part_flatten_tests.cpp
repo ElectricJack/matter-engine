@@ -7,6 +7,7 @@
 #include "../include/part_flatten.h"
 #include "../include/part_asset_v2.h"
 #include "../include/lod_bake.h"
+#include "../include/part_cluster.h"
 #include "../../MatterSurfaceLib/include/blas_manager.hpp"
 #include "../../MatterSurfaceLib/include/tlas_manager.hpp"
 #include "../../MatterSurfaceLib/include/mesh_simplifier.hpp"
@@ -403,6 +404,187 @@ static void test_topological_boundary_lock() {
     printf(missing == 0 && out.triangleCount < in.triangleCount ? "PASSED\n" : "FAILED\n");
 }
 
+// ----------------------------------------------------------------- cluster tests --
+
+// Build a synthetic 40,000-tri flat grid sheet.  Each tri gets a unique
+// materialId == its original index so we can track reordering via TriEx.
+static std::vector<Tri> grid_sheet_tris(int nx, int nz, float w, float d) {
+    std::vector<Tri> out;
+    out.reserve(nx * nz * 2);
+    for (int j = 0; j < nz; ++j) {
+        for (int i = 0; i < nx; ++i) {
+            float x0 = w * i / nx, x1 = w * (i+1) / nx;
+            float z0 = d * j / nz, z1 = d * (j+1) / nz;
+            out.push_back(make_tri(make_float3(x0,0,z0), make_float3(x1,0,z0), make_float3(x1,0,z1)));
+            out.push_back(make_tri(make_float3(x0,0,z0), make_float3(x1,0,z1), make_float3(x0,0,z1)));
+        }
+    }
+    return out;
+}
+
+static void test_cluster_split_40k() {
+    printf("=== test_cluster_split_40k ===\n");
+
+    // 200x100 grid => 200*100*2 = 40,000 tris
+    const int NX = 200, NZ = 100;
+    std::vector<Tri> tris = grid_sheet_tris(NX, NZ, 200.0f, 100.0f);
+    CHECK(tris.size() == 40000u, "grid sheet has 40000 tris");
+
+    // Give each tri a unique materialId equal to its original index
+    std::vector<TriEx> triex(tris.size());
+    for (size_t i = 0; i < tris.size(); ++i) {
+        std::memset(&triex[i], 0, sizeof(TriEx));
+        triex[i].materialId = (int)i;
+        triex[i].tint = make_float4(1,1,1,0);
+        triex[i].ao0 = triex[i].ao1 = triex[i].ao2 = 1.0f;
+        triex[i].N0 = triex[i].N1 = triex[i].N2 = make_float3(0,1,0);
+    }
+
+    // Keep a copy of centroids keyed by original materialId for conservation check
+    std::vector<float3> orig_centroids(tris.size());
+    for (size_t i = 0; i < tris.size(); ++i) orig_centroids[i] = tris[i].centroid;
+
+    auto clusters = part_cluster::split_clusters(tris, triex, 16000);
+
+    // 1. Every cluster's tri_count <= 16000
+    bool all_le_target = true;
+    for (const auto& c : clusters)
+        if (c.tri_count > 16000) { all_le_target = false; break; }
+    CHECK(all_le_target, "every cluster tri_count <= 16000");
+
+    // 2. tri_count sum == 40000
+    uint32_t total = 0;
+    for (const auto& c : clusters) total += c.tri_count;
+    CHECK(total == 40000u, "cluster tri_count sum == 40000");
+
+    // 3. Contiguous non-overlapping ranges starting from 0
+    bool contiguous = true;
+    uint32_t next = 0;
+    for (const auto& c : clusters) {
+        if (c.first_tri != next) { contiguous = false; break; }
+        next += c.tri_count;
+    }
+    CHECK(contiguous, "cluster ranges are contiguous and non-overlapping from 0");
+
+    // 4. Every output triangle's 3 vertices inside its cluster AABB (+/- 1e-5)
+    bool verts_in_aabb = true;
+    for (const auto& c : clusters) {
+        for (uint32_t j = c.first_tri; j < c.first_tri + c.tri_count; ++j) {
+            const Tri& t = tris[j];
+            const float3* vs[3] = {&t.vertex0, &t.vertex1, &t.vertex2};
+            for (const float3* v : vs) {
+                if (v->x < c.aabb_min[0]-1e-5f || v->x > c.aabb_max[0]+1e-5f ||
+                    v->y < c.aabb_min[1]-1e-5f || v->y > c.aabb_max[1]+1e-5f ||
+                    v->z < c.aabb_min[2]-1e-5f || v->z > c.aabb_max[2]+1e-5f) {
+                    verts_in_aabb = false;
+                }
+            }
+        }
+    }
+    CHECK(verts_in_aabb, "every output tri vertex is inside its cluster AABB (+/-1e-5)");
+
+    // 5. Conservation: multiset of centroids before == after
+    // Sort a copy of orig_centroids and the post-split centroids, compare
+    auto cent_lt = [](const float3& a, const float3& b) {
+        if (a.x != b.x) return a.x < b.x;
+        if (a.y != b.y) return a.y < b.y;
+        return a.z < b.z;
+    };
+    std::vector<float3> before_sorted = orig_centroids;
+    std::sort(before_sorted.begin(), before_sorted.end(), cent_lt);
+    std::vector<float3> after_sorted(tris.size());
+    for (size_t i = 0; i < tris.size(); ++i) after_sorted[i] = tris[i].centroid;
+    std::sort(after_sorted.begin(), after_sorted.end(), cent_lt);
+    bool conserved = (before_sorted.size() == after_sorted.size());
+    for (size_t i = 0; i < before_sorted.size() && conserved; ++i) {
+        if (before_sorted[i].x != after_sorted[i].x ||
+            before_sorted[i].y != after_sorted[i].y ||
+            before_sorted[i].z != after_sorted[i].z) conserved = false;
+    }
+    CHECK(conserved, "centroid multiset is conserved after cluster reorder");
+
+    // 6. TriEx parallelism: for every j, triex[j].materialId identifies the original
+    //    source tri whose centroid matches tris[j].centroid
+    bool triex_ok = true;
+    for (size_t j = 0; j < tris.size() && triex_ok; ++j) {
+        int mid = triex[j].materialId;
+        if (mid < 0 || (size_t)mid >= orig_centroids.size()) { triex_ok = false; break; }
+        const float3& oc = orig_centroids[mid];
+        const float3& tc = tris[j].centroid;
+        if (oc.x != tc.x || oc.y != tc.y || oc.z != tc.z) triex_ok = false;
+    }
+    CHECK(triex_ok, "triex[j].materialId tracks its source tri centroid after reorder");
+
+    printf("  clusters: %zu, total tris: %u\n", clusters.size(), total);
+    printf(all_le_target && total==40000u && contiguous && verts_in_aabb && conserved && triex_ok
+           ? "PASSED\n" : "FAILED\n");
+}
+
+static void test_cluster_split_small() {
+    printf("=== test_cluster_split_small (100 tris => 1 cluster) ===\n");
+
+    // 5x10 grid => 5*10*2 = 100 tris
+    std::vector<Tri> tris = grid_sheet_tris(5, 10, 5.0f, 10.0f);
+    CHECK(tris.size() == 100u, "small grid has 100 tris");
+    std::vector<TriEx> triex; // empty triex is allowed
+
+    auto clusters = part_cluster::split_clusters(tris, triex, 16000);
+
+    CHECK(clusters.size() == 1u, "100-tri input => exactly 1 cluster");
+    if (!clusters.empty()) {
+        CHECK(clusters[0].first_tri == 0u, "single cluster starts at 0");
+        CHECK(clusters[0].tri_count == 100u, "single cluster has all 100 tris");
+    }
+    printf(clusters.size()==1u ? "PASSED\n" : "FAILED\n");
+}
+
+static void test_cluster_split_deterministic() {
+    printf("=== test_cluster_split_deterministic ===\n");
+
+    // 200x100 grid => 40,000 tris
+    std::vector<Tri> tris_a = grid_sheet_tris(200, 100, 200.0f, 100.0f);
+    std::vector<TriEx> triex_a(tris_a.size());
+    for (size_t i = 0; i < tris_a.size(); ++i) {
+        std::memset(&triex_a[i], 0, sizeof(TriEx));
+        triex_a[i].materialId = (int)i;
+        triex_a[i].tint = make_float4(1,1,1,0);
+        triex_a[i].ao0 = triex_a[i].ao1 = triex_a[i].ao2 = 1.0f;
+        triex_a[i].N0 = triex_a[i].N1 = triex_a[i].N2 = make_float3(0,1,0);
+    }
+
+    std::vector<Tri> tris_b = tris_a;          // copy before mutation
+    std::vector<TriEx> triex_b = triex_a;
+
+    auto clusters_a = part_cluster::split_clusters(tris_a, triex_a, 16000);
+    auto clusters_b = part_cluster::split_clusters(tris_b, triex_b, 16000);
+
+    bool same_count = (clusters_a.size() == clusters_b.size());
+    CHECK(same_count, "determinism: same cluster count on identical inputs");
+
+    bool same_clusters = same_count;
+    for (size_t i = 0; i < clusters_a.size() && same_clusters; ++i) {
+        if (clusters_a[i].first_tri != clusters_b[i].first_tri ||
+            clusters_a[i].tri_count != clusters_b[i].tri_count) {
+            same_clusters = false;
+        }
+    }
+    CHECK(same_clusters, "determinism: cluster tables are identical");
+
+    bool same_tris = (tris_a.size() == tris_b.size());
+    for (size_t i = 0; i < tris_a.size() && same_tris; ++i) {
+        if (std::memcmp(&tris_a[i], &tris_b[i], sizeof(Tri)) != 0) same_tris = false;
+    }
+    CHECK(same_tris, "determinism: reordered tri arrays are identical (memcmp)");
+
+    bool same_triex = (triex_a.size() == triex_b.size());
+    for (size_t i = 0; i < triex_a.size() && same_triex; ++i) {
+        if (triex_a[i].materialId != triex_b[i].materialId) same_triex = false;
+    }
+    CHECK(same_triex, "determinism: reordered triex arrays are identical");
+
+    printf(same_count && same_clusters && same_tris && same_triex ? "PASSED\n" : "FAILED\n");
+}
+
 int main() {
     if (!write_fixtures()) {
         printf("FAIL: could not write fixture parts under %s\n", kCacheRoot);
@@ -415,6 +597,9 @@ int main() {
     test_open_grid_border_preserved();
     test_reproject_two_materials();
     test_topological_boundary_lock();
+    test_cluster_split_40k();
+    test_cluster_split_small();
+    test_cluster_split_deterministic();
 
     if (failures == 0) { printf("part_flatten_tests: ALL PASS\n"); return 0; }
     printf("part_flatten_tests: %d FAILURE(S)\n", failures);
