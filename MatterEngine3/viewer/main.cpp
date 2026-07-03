@@ -73,6 +73,10 @@ int main() {
         cfg.world_data_dir = "../examples/primitive_demo/WorldData";
         cfg.world_name     = "Primitives";
     }
+    // MATTER_WORLD=meadow loads the dense meadow benchmark world (same
+    // world_demo schemas; the Meadow manifest root carries the expand flag).
+    const bool meadow = world_env && std::string(world_env) == "meadow";
+    if (meadow) cfg.world_name = "Meadow";
 
     auto provider = std::make_unique<LocalProvider>(cfg);
 
@@ -130,7 +134,14 @@ int main() {
     if (!connect_sequence()) return 1;
 
     PassThroughResolver pass;
-    SectorLodResolver   sec(16.0f, 64.0f);
+    // Per-world resolver config: the Meadow spans ~256x256 units, so activate
+    // sectors across the whole world and floor-cull sub-pixel parts (grass/
+    // pebbles self-cull at distance; their epsilon ladders stop well above 1 px).
+    const float kActiveRadius     = meadow ? 400.0f : 64.0f;
+    const float kMinProjectedSize = meadow ? 0.0015f : 0.0f;   // ~1 px at 720p (fov/height)
+    SectorLodResolver sec(16.0f, kActiveRadius);
+    sec.set_min_projected_size(kMinProjectedSize);
+    if (meadow) stats.resolver_choice = 1;   // SectorLod by default for the benchmark
 
     // RT mode only: populate the TLAS and warm up the raytrace shader so the GPU
     // compile stall happens here (with startup logging) instead of on the first

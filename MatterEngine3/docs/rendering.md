@@ -36,6 +36,33 @@ Every frame:
    lifetime of the `RasterComposer` instance). One `DrawMeshInstanced` call per
    batch; backface culling disabled (mesh winding is not guaranteed consistent).
 
+### Root expansion (`expand` manifest flag)
+
+A world-manifest root may carry the `expand` flag (`Meadow expand`). The
+provider then does NOT place the root itself; after install it reads the root's
+baked child-instance table and emits one world instance per child. Children
+thereby become root instances: SectorLod selection, bake-time flattening (one
+flat artifact per unique child hash), floor cull, and instanced raster batching
+all apply per child. Unflagged roots place at the origin and flatten whole.
+
+### Projected-size floor cull
+
+`select_sector_lods` takes a `min_projected_size` (default 0 = off). Parts
+whose projected size (`bound_radius / distance`) in a sector falls below the
+floor are assigned level -1 and the resolver emits nothing for them — small
+parts (grass, pebbles) self-cull at distance even though their error-bounded
+LOD ladders stop above 1 px. The viewer enables this per world
+(Meadow: 0.0015 ≈ 1 px at 720p, active radius 400).
+
+### Meadow benchmark (Phase 3 raster baseline)
+
+`MATTER_WORLD=meadow`, default camera `MATTER_CAM="128,25,40,128,2,128"`,
+1280×720: 277 batches / 8,685,895 tris, ~1 FPS / 94 ms frame
+(recorded 2026-07-02, commit PLACEHOLDER_SHA). Scatter constants: GRASS_CLUMPS=40000,
+BLADES default (Grass.js), kMinProjectedSize=0.0015 (Meadow: active radius 400).
+Note: frame ms measured on RTX 4090 via WSL/Mesa (D3D12 translation); native
+GL performance will differ.
+
 ### Raster vertex data (`viewer/raster_mesh.h`, `raster_mesh.cpp`)
 
 `build_raster_mesh_data` packs each part's `Tri`/`TriEx` arrays into raylib Mesh
