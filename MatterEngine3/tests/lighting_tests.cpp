@@ -1,9 +1,16 @@
 // Task 1+2: World light list + ProbeVolume tests.
+// Task 3: WorldTracer GL-free CPU tracer tests.
 // Tests parse_lights, lights_fingerprint, read_manifest light-line skip,
-// and probe_volume save/load round-trip + rejection cases.
+// probe_volume save/load round-trip + rejection cases, and WorldTracer
+// ray/instance intersection with transform correctness.
 #include "world_lights.h"
 #include "part_graph.h"
 #include "probe_volume.h"
+#include "world_tracer.h"
+
+#include "blas_manager.hpp"
+#include "tlas_manager.hpp"
+#include "part_asset_v2.h"
 
 #include <cmath>
 #include <cstdio>
@@ -14,6 +21,7 @@
 #include <vector>
 #include <limits.h>
 #include <unistd.h>
+#include <sys/stat.h>
 #include <sys/types.h>
 
 static int failures = 0;
@@ -308,6 +316,258 @@ static void test_probe_nonexistent() {
     CHECK(!ok, "probe_nonexistent: load returns false");
 }
 
+// ================================================================
+// Task 3: WorldTracer tests
+// ================================================================
+
+static const char* kTracerCache = "/tmp/world_tracer_tests_cache";
+static const uint64_t kCubeHash = 0xAAAA000000000000ULL;
+
+// ---- Cube triangle builder (unit cube spanning -0.5 to +0.5) ----
+static Tri wt_make_tri(float ax, float ay, float az,
+                        float bx, float by, float bz,
+                        float cx, float cy, float cz) {
+    Tri t;
+    t.vertex0 = make_float3(ax, ay, az);
+    t.vertex1 = make_float3(bx, by, bz);
+    t.vertex2 = make_float3(cx, cy, cz);
+    t.centroid = make_float3((ax+bx+cx)/3.f, (ay+by+cy)/3.f, (az+bz+cz)/3.f);
+    return t;
+}
+
+static std::vector<Tri> unit_cube_tris() {
+    // 12 triangles for a unit cube spanning [-0.5, 0.5]^3
+    std::vector<Tri> v;
+    const float n = -0.5f, p = 0.5f;
+    // -Z face
+    v.push_back(wt_make_tri(n,n,n, p,n,n, p,p,n));
+    v.push_back(wt_make_tri(n,n,n, p,p,n, n,p,n));
+    // +Z face
+    v.push_back(wt_make_tri(p,n,p, n,n,p, n,p,p));
+    v.push_back(wt_make_tri(p,n,p, n,p,p, p,p,p));
+    // -X face
+    v.push_back(wt_make_tri(n,n,p, n,n,n, n,p,n));
+    v.push_back(wt_make_tri(n,n,p, n,p,n, n,p,p));
+    // +X face
+    v.push_back(wt_make_tri(p,n,n, p,n,p, p,p,p));
+    v.push_back(wt_make_tri(p,n,n, p,p,p, p,p,n));
+    // -Y face
+    v.push_back(wt_make_tri(n,n,p, p,n,p, p,n,n));
+    v.push_back(wt_make_tri(n,n,p, p,n,n, n,n,n));
+    // +Y face
+    v.push_back(wt_make_tri(n,p,n, p,p,n, p,p,p));
+    v.push_back(wt_make_tri(n,p,n, p,p,p, n,p,p));
+    return v;
+}
+
+static TriEx wt_make_triex(int mat_id) {
+    TriEx ex;
+    std::memset(&ex, 0, sizeof(TriEx));
+    ex.materialId = mat_id;
+    ex.tint = make_float4(1, 1, 1, 0);
+    ex.ao0 = ex.ao1 = ex.ao2 = 1.0f;
+    ex.N0 = ex.N1 = ex.N2 = make_float3(0, 1, 0);
+    return ex;
+}
+
+static bool wt_write_cube_fixture() {
+    mkdir(kTracerCache, 0755);
+    mkdir((std::string(kTracerCache) + "/parts").c_str(), 0755);
+
+    std::vector<Tri> tris = unit_cube_tris();
+    std::vector<TriEx> triex(tris.size(), wt_make_triex(1));
+
+    BLASManager blas;
+    TLASManager tlas(16);
+    BLASHandle h = blas.register_triangles(tris.data(), (int)tris.size(), triex.data());
+    uint32_t idx = UINT32_MAX;
+    const auto& entries = blas.get_entries();
+    for (size_t k = 0; k < entries.size(); ++k)
+        if (entries[k]->handle == h) { idx = (uint32_t)k; break; }
+    if (idx == UINT32_MAX) return false;
+
+    part_asset::LodLevel lvl;
+    lvl.screen_size_threshold = 1e9f;
+    lvl.blas_indices.push_back(idx);
+    part_asset::LodLevels lods;
+    lods.push_back(std::move(lvl));
+
+    std::string path = std::string(kTracerCache) + "/" +
+                       part_asset::cache_path_resolved(kCubeHash);
+    return part_asset::save_v2(path, blas, tlas, nullptr, 0, lods, kCubeHash);
+}
+
+static float wt_identity[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
+
+static void wt_translate(float m[16], float tx, float ty, float tz) {
+    std::memset(m, 0, 64);
+    m[0] = m[5] = m[10] = m[15] = 1.f;
+    m[3] = tx; m[7] = ty; m[11] = tz;
+}
+
+static void wt_scale_uniform(float m[16], float s) {
+    std::memset(m, 0, 64);
+    m[0] = m[5] = m[10] = s;
+    m[15] = 1.f;
+}
+
+// ---- Test 12: identity placement — ray hits front face of cube ----
+static void test_tracer_identity_hit() {
+    world_tracer::WorldTracer wt;
+    std::string err;
+    world_tracer::TraceInstance inst;
+    inst.part_hash = kCubeHash;
+    std::memcpy(inst.transform, wt_identity, 64);
+    std::vector<world_tracer::TraceInstance> insts = {inst};
+    bool built = wt.build(kTracerCache, insts, err);
+    if (!built) printf("  build error: %s\n", err.c_str());
+    CHECK(built, "tracer identity: build ok");
+    if (!built) return;
+
+    // Ray from (0,0,-5) toward +Z; cube front face is at z=-0.5
+    const float O[3] = {0.f, 0.f, -5.f};
+    const float D[3] = {0.f, 0.f,  1.f};
+    world_tracer::Hit hit;
+    bool ok = wt.trace(O, D, 100.f, hit);
+    CHECK(ok, "tracer identity: trace returns true");
+    CHECK(hit.t > 0.f, "tracer identity: hit.t > 0");
+    // cube -Z face is at z=-0.5; ray origin z=-5; t should be ~4.5
+    char msg[128];
+    std::snprintf(msg, sizeof msg, "tracer identity: t ≈ 4.5 (got %.4f)", hit.t);
+    CHECK(feq(hit.t, 4.5f, 0.05f), msg);
+    // normal should face -Z (toward ray origin)
+    std::snprintf(msg, sizeof msg, "tracer identity: normal[2] ≈ -1 (got %.4f)", hit.normal[2]);
+    CHECK(feq(hit.normal[2], -1.0f, 0.1f), msg);
+    CHECK(hit.material_id == 1, "tracer identity: material_id == 1");
+}
+
+// ---- Test 13: instance translated +10x — original ray misses, shifted ray hits ----
+static void test_tracer_translated() {
+    world_tracer::WorldTracer wt;
+    std::string err;
+    world_tracer::TraceInstance inst;
+    inst.part_hash = kCubeHash;
+    wt_translate(inst.transform, 10.f, 0.f, 0.f);
+    std::vector<world_tracer::TraceInstance> insts = {inst};
+    bool built = wt.build(kTracerCache, insts, err);
+    CHECK(built, "tracer translated: build ok");
+    if (!built) return;
+
+    // Original ray misses (cube is at x=10)
+    const float O0[3] = {0.f, 0.f, -5.f};
+    const float D0[3] = {0.f, 0.f,  1.f};
+    world_tracer::Hit miss_hit;
+    bool missed = wt.trace(O0, D0, 100.f, miss_hit);
+    CHECK(!missed, "tracer translated: original ray misses");
+
+    // Ray at x=10 hits
+    const float O1[3] = {10.f, 0.f, -5.f};
+    const float D1[3] = { 0.f, 0.f,  1.f};
+    world_tracer::Hit hit;
+    bool ok = wt.trace(O1, D1, 100.f, hit);
+    CHECK(ok, "tracer translated: shifted ray hits");
+    char msg[128];
+    std::snprintf(msg, sizeof msg, "tracer translated: t ≈ 4.5 (got %.4f)", hit.t);
+    CHECK(feq(hit.t, 4.5f, 0.05f), msg);
+}
+
+// ---- Test 14: uniform scale 2× — t reflects scaled surface (t ≈ 4.0) ----
+static void test_tracer_scaled_instance() {
+    world_tracer::WorldTracer wt;
+    std::string err;
+    world_tracer::TraceInstance inst;
+    inst.part_hash = kCubeHash;
+    // Uniform scale 2: cube now spans [-1, 1]^3. Front face at z=-1.
+    // Ray from (0,0,-5): t = 5 - 1 = 4.0 (world-space t preserved)
+    wt_scale_uniform(inst.transform, 2.f);
+    std::vector<world_tracer::TraceInstance> insts = {inst};
+    bool built = wt.build(kTracerCache, insts, err);
+    CHECK(built, "tracer scaled: build ok");
+    if (!built) return;
+
+    const float O[3] = {0.f, 0.f, -5.f};
+    const float D[3] = {0.f, 0.f,  1.f};
+    world_tracer::Hit hit;
+    bool ok = wt.trace(O, D, 100.f, hit);
+    CHECK(ok, "tracer scaled: trace returns true");
+    char msg[128];
+    std::snprintf(msg, sizeof msg, "tracer scaled: t ≈ 4.0 (got %.4f)", hit.t);
+    CHECK(feq(hit.t, 4.0f, 0.1f), msg);
+}
+
+// ---- Test 15: occluded ----
+static void test_tracer_occluded() {
+    world_tracer::WorldTracer wt;
+    std::string err;
+    world_tracer::TraceInstance inst;
+    inst.part_hash = kCubeHash;
+    std::memcpy(inst.transform, wt_identity, 64);
+    std::vector<world_tracer::TraceInstance> insts = {inst};
+    bool built = wt.build(kTracerCache, insts, err);
+    CHECK(built, "tracer occluded: build ok");
+    if (!built) return;
+
+    const float O[3] = {0.f, 0.f, -5.f};
+    const float D[3] = {0.f, 0.f,  1.f};
+    // max_t = 10: ray can reach (hits at t≈4.5) — occluded
+    CHECK(wt.occluded(O, D, 10.f), "tracer occluded: max_t=10 is occluded");
+    // max_t = 3: ray cannot reach cube — not occluded
+    CHECK(!wt.occluded(O, D, 3.f), "tracer occluded: max_t=3 is not occluded");
+}
+
+// ---- Test 16: two instances — nearer one wins ----
+static void test_tracer_two_instances_nearer_wins() {
+    world_tracer::WorldTracer wt;
+    std::string err;
+
+    world_tracer::TraceInstance near_inst, far_inst;
+    near_inst.part_hash = kCubeHash;
+    far_inst.part_hash  = kCubeHash;
+    // Near cube: identity (front face at z=-0.5, hit at t=4.5)
+    std::memcpy(near_inst.transform, wt_identity, 64);
+    // Far cube: translated +3z (front face at z=2.5, hit at t=7.5)
+    wt_translate(far_inst.transform, 0.f, 0.f, 3.f);
+
+    std::vector<world_tracer::TraceInstance> insts = {near_inst, far_inst};
+    bool built = wt.build(kTracerCache, insts, err);
+    CHECK(built, "tracer two-inst: build ok");
+    if (!built) return;
+
+    const float O[3] = {0.f, 0.f, -5.f};
+    const float D[3] = {0.f, 0.f,  1.f};
+    world_tracer::Hit hit;
+    bool ok = wt.trace(O, D, 100.f, hit);
+    CHECK(ok, "tracer two-inst: trace hits");
+    char msg[128];
+    std::snprintf(msg, sizeof msg, "tracer two-inst: nearer wins (t ≈ 4.5, got %.4f)", hit.t);
+    CHECK(feq(hit.t, 4.5f, 0.1f), msg);
+}
+
+// ---- Test 17: world_bounds contains both instances ----
+static void test_tracer_world_bounds() {
+    world_tracer::WorldTracer wt;
+    std::string err;
+
+    world_tracer::TraceInstance inst0, inst1;
+    inst0.part_hash = kCubeHash;
+    inst1.part_hash = kCubeHash;
+    std::memcpy(inst0.transform, wt_identity, 64);        // cube at origin
+    wt_translate(inst1.transform, 10.f, 0.f, 0.f);        // cube at x=10
+
+    std::vector<world_tracer::TraceInstance> insts = {inst0, inst1};
+    bool built = wt.build(kTracerCache, insts, err);
+    CHECK(built, "tracer bounds: build ok");
+    if (!built) return;
+
+    float mn[3], mx[3];
+    wt.world_bounds(mn, mx);
+    // inst0 spans [-0.5, 0.5]^3; inst1 spans [9.5, 10.5] in x
+    CHECK(mn[0] <= -0.5f + 0.01f, "tracer bounds: mn[0] <= -0.5");
+    CHECK(mx[0] >= 10.5f - 0.01f, "tracer bounds: mx[0] >= 10.5");
+    CHECK(mn[1] <= -0.5f + 0.01f, "tracer bounds: mn[1] <= -0.5");
+    CHECK(mx[1] >=  0.5f - 0.01f, "tracer bounds: mx[1] >= 0.5");
+}
+
 int main() {
     // Create fresh sandbox.
     system("rm -rf sandbox && mkdir -p sandbox");
@@ -325,6 +585,20 @@ int main() {
     test_probe_fingerprint_mismatch();
     test_probe_truncated();
     test_probe_nonexistent();
+
+    // Task 3: WorldTracer tests.
+    printf("\n--- Task 3: WorldTracer ---\n");
+    if (!wt_write_cube_fixture()) {
+        printf("FAIL: could not write cube fixture under %s\n", kTracerCache);
+        ++failures;
+    } else {
+        test_tracer_identity_hit();
+        test_tracer_translated();
+        test_tracer_scaled_instance();
+        test_tracer_occluded();
+        test_tracer_two_instances_nearer_wins();
+        test_tracer_world_bounds();
+    }
 
     if (failures == 0) {
         printf("\nALL PASS (%d checks failed)\n", 0);
