@@ -13,6 +13,9 @@
 #include <tuple>
 #include <vector>
 
+// Forward declaration for Stage-2 GPU-driven path.
+namespace viewer { class GpuCuller; }
+
 namespace viewer {
 
 // Batch key: (part_hash, cluster_index, lod_level).
@@ -30,6 +33,14 @@ public:
 
     // GL: LoadShader("shaders/raster.vs", "shaders/raster.fs")
     bool init(std::string& err);
+
+    // Stage-2 GPU-driven path: load raster_gpu_driven.vs + patched raster.fs (#version 460).
+    // Called only when MATTER_GPU_CULL=1.  Must be called after init().
+    bool init_gpu_driven(std::string& err);
+
+    // Stage-2: set shader uniforms + issue glMultiDrawArraysIndirect via culler.
+    // Returns drawn tris.
+    int draw_gpu_driven(GpuCuller& culler, PartStore& store, const Camera3D& cam);
 
     // GL-free: recursive child expansion (depth<=8, 200k cap), per-cluster
     // frustum cull + LOD selection when clusters are present (v3/v2 flat parts),
@@ -77,6 +88,13 @@ public:
 private:
     Mesh* ensure_mesh(uint64_t hash, int cluster_index, int level, PartStore& store);
 
+    // Upload sun/probe/material uniforms to a shader (shared by draw() and draw_gpu_driven()).
+    void setup_frame_uniforms(Shader& sh,
+                              int loc_sun, int loc_sun_col, int loc_amb,
+                              int loc_mat, int loc_cnt,
+                              int loc_pa, int loc_pd, int loc_po,
+                              int loc_pc, int loc_pdims, int loc_up);
+
     Shader   shader_{};
     Material material_{};
     // Mesh cache key: (part_hash, cluster_index, level). cluster_index==UINT32_MAX->whole-part.
@@ -88,6 +106,16 @@ private:
     int  loc_probe_ambient_  = -1, loc_probe_dominant_ = -1;
     int  loc_probe_origin_   = -1, loc_probe_cell_     = -1;
     int  loc_probe_dims_     = -1, loc_use_probes_     = -1;
+
+    // Stage-2 GPU-driven shader (raster_gpu_driven.vs + patched raster.fs).
+    Shader shader_gpu_{};
+    bool   gpu_ready_ = false;
+    int    loc_gpu_mvp_         = -1;
+    int    loc_gpu_sun_dir_     = -1, loc_gpu_sun_color_ = -1, loc_gpu_ambient_   = -1;
+    int    loc_gpu_mat_table_   = -1, loc_gpu_mat_count_ = -1;
+    int    loc_gpu_probe_amb_   = -1, loc_gpu_probe_dom_ = -1;
+    int    loc_gpu_probe_orig_  = -1, loc_gpu_probe_cell_= -1;
+    int    loc_gpu_probe_dims_  = -1, loc_gpu_use_probes_= -1;
 
     float pixel_budget_ = 1.0f;            // runtime LOD quality/speed dial (Stage 2)
     world_lights::WorldLights lights_{};   // defaults reproduce Phase-1 hardcoded values

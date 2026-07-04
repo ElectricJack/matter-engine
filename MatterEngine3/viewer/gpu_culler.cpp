@@ -666,4 +666,120 @@ std::vector<RasterBatch> GpuCuller::readback_batches(PartStore& store) {
     return out;
 }
 
+// ---------------------------------------------------------------------------
+// draw_indirect — Stage-2: issue glMultiDrawArraysIndirect for every registered
+// part, reading commands + transforms directly from the GPU SSBOs written by the
+// most recent cull() call.  Caller must have:
+//   1. Called BeginMode3D (sets up GL viewport/projection state)
+//   2. Called rlDrawRenderBatchActive() to flush any pending raylib batch
+//   3. Activated the GPU-driven shader (glUseProgram(shader_gpu.id))
+//   4. Set the mvp uniform on that shader
+//   5. Called rlDisableBackfaceCulling() if desired
+//
+// Returns drawn tris (from a small cmd readback of 16-B structs).
+// Also reads back the stats SSBO to update stat_culled_ / stat_emitted_.
+// ---------------------------------------------------------------------------
+int GpuCuller::draw_indirect() {
+    if (parts_.empty() || cmd_template_.empty() || !ssbo_cmds_ || !ssbo_xforms_)
+        return 0;
+
+    // Small readback: read back just the command buffer (360 cmds × 16 B = ~5.7 kB).
+    size_t cmds_bytes = cmd_template_.size() * sizeof(DrawArraysCmd);
+    std::vector<DrawArraysCmd> cmds_gpu(cmd_template_.size());
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo_cmds_);
+    glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, (GLsizeiptr)cmds_bytes, cmds_gpu.data());
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+
+    // Read back stats.
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo_stats_);
+    uint32_t stats[2] = {0, 0};
+    glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(stats), stats);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+    stat_culled_  = stats[0];
+    stat_emitted_ = stats[1];
+
+    // Bind the xforms SSBO to binding 3 (DrawXforms in raster_gpu_driven.vs).
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, ssbo_xforms_);
+
+    // Draw each registered part.
+    glBindBuffer(GL_DRAW_INDIRECT_BUFFER, ssbo_cmds_);
+
+    int total_tris = 0;
+    for (const auto& pg : parts_) {
+        if (pg.vao == 0) continue;
+        glBindVertexArray(pg.vao);
+
+        // Part's command range starts at cluster_start * kMaxLod in the cmd array.
+        size_t cmd_offset = (size_t)pg.cluster_start * (size_t)kMaxLod * sizeof(DrawArraysCmd);
+        GLsizei cmd_count = (GLsizei)(pg.cluster_count * (uint32_t)kMaxLod);
+
+        glMultiDrawArraysIndirect(GL_TRIANGLES,
+            (const void*)(uintptr_t)cmd_offset,
+            cmd_count,
+            0);   // stride 0 = tightly packed
+
+        // Count tris from the readback (cpu-side, avoids a second GPU sync).
+        uint32_t base_bucket = pg.cluster_start * (uint32_t)kMaxLod;
+        for (uint32_t b = 0; b < (uint32_t)(pg.cluster_count * (uint32_t)kMaxLod); ++b) {
+            uint32_t bucket = base_bucket + b;
+            if (bucket < (uint32_t)cmds_gpu.size()) {
+                const DrawArraysCmd& cmd = cmds_gpu[bucket];
+                if (cmd.instance_count > 0 && cmd.count >= 3)
+                    total_tris += (int)(cmd.count / 3) * (int)cmd.instance_count;
+            }
+        }
+    }
+
+    glBindBuffer(GL_DRAW_INDIRECT_BUFFER, 0);
+    glBindVertexArray(0);
+
+    return total_tris;
+}
+
+// ---------------------------------------------------------------------------
+// reset — release all per-part GPU state and reinitialize fixed buffers.
+// Called on world switch when gpu_cull is active, to prevent stale part slots
+// from a previous world being used with a new PartStore.
+// ---------------------------------------------------------------------------
+void GpuCuller::reset() {
+    // Release per-part GL objects.
+    for (auto& pg : parts_) {
+        if (pg.vao) { glDeleteVertexArrays(1, &pg.vao); pg.vao = 0; }
+        if (pg.vbo) { glDeleteBuffers(1, &pg.vbo);      pg.vbo = 0; }
+    }
+    parts_.clear();
+    slot_of_.clear();
+    cluster_staging_.clear();
+    cmd_template_.clear();
+
+    clusters_cap_bytes_  = 0;
+    instances_cap_bytes_ = 0;
+    cmds_cap_bytes_      = 0;
+    xforms_cap_bytes_    = 0;
+    total_xform_slots_   = 0;
+    stat_culled_         = 0;
+    stat_emitted_        = 0;
+
+    // Re-initialize fixed-size buffers (keep same GL names to avoid re-init overhead).
+    // ssbo_stats_: reset to zeros.
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo_stats_);
+    uint32_t zeros[2] = {0, 0};
+    glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(zeros), zeros, GL_DYNAMIC_READ);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+
+    // Growable SSBOs: orphan them (zero-size placeholder keeps names valid for lazy alloc).
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo_clusters_);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, 1, nullptr, GL_DYNAMIC_DRAW);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo_instances_);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, 1, nullptr, GL_DYNAMIC_DRAW);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo_cmds_);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, 1, nullptr, GL_DYNAMIC_DRAW);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo_xforms_);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, 1, nullptr, GL_DYNAMIC_COPY);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+}
+
 } // namespace viewer

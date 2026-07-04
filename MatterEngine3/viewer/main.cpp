@@ -207,6 +207,13 @@ int main() {
             printf("sky clear color: (%d,%d,%d)\n",
                    (int)sky_clear.r, (int)sky_clear.g, (int)sky_clear.b);
         }
+        // Stage-2 GPU-driven shader: load after init() so the raster shader is ready.
+        if (!use_rt && gpu_cull) {
+            std::string gerr;
+            if (!raster->init_gpu_driven(gerr)) {
+                printf("gpu_driven shader: %s (non-fatal, falling back to CPU draw)\n", gerr.c_str());
+            }
+        }
         // Upload world lights to the raytrace shader (no-op in raster mode because
         // the shader is not loaded; the raster path uses raster->set_lights above).
         renderer.set_lights(manifest.lights);
@@ -368,16 +375,18 @@ int main() {
                 viewer::camera_frustum_planes_raw(eye, target3, up3,
                         renderer.camera().fovy, aspect, planes);
                 gpu_culler.cull(resolved, *store, eye, planes, stats.pixel_budget);
-                batches = gpu_culler.readback_batches(*store);   // Stage-1 bridge
-                stats.gpu_emitted = (int)gpu_culler.emitted();
-                stats.gpu_culled  = (int)gpu_culler.culled_clusters();
+                // Stage-2: no readback; draw_gpu_driven reads cmds/xforms on GPU.
             } else {
                 batches = raster->build_batches(resolved, *store, renderer.camera(), state.version());
             }
             auto t2 = std::chrono::steady_clock::now();
             stats.resolve_ms = std::chrono::duration<float, std::milli>(t1 - t0).count();
             stats.build_ms   = std::chrono::duration<float, std::milli>(t2 - t1).count();
-            for (const auto& b : batches) active += (int)b.transforms.size();
+            if (gpu_cull) {
+                active = (int)resolved.size();   // resolved count; emitted shown via gpu_emitted
+            } else {
+                for (const auto& b : batches) active += (int)b.transforms.size();
+            }
         }
 
         stats.fps = (float)GetFPS();
@@ -391,12 +400,22 @@ int main() {
                 renderer.draw(store->blas(), composer->tlas());
             } else {
                 auto d0 = std::chrono::steady_clock::now();
-                stats.raster_tris     = raster->draw(batches, *store, renderer.camera());
+                if (gpu_cull) {
+                    stats.raster_tris = raster->draw_gpu_driven(
+                            gpu_culler, *store, renderer.camera());
+                    stats.gpu_emitted = (int)gpu_culler.emitted();
+                    stats.gpu_culled  = (int)gpu_culler.culled_clusters();
+                    stats.raster_batches  = 0;   // not meaningful for indirect path
+                    stats.culled_clusters = stats.gpu_culled;
+                    stats.batch_cache_hit = false;
+                } else {
+                    stats.raster_tris     = raster->draw(batches, *store, renderer.camera());
+                    stats.raster_batches  = (int)raster->batches();
+                    stats.culled_clusters = (int)raster->culled_clusters();
+                    stats.batch_cache_hit = raster->cache_hit();
+                }
                 stats.draw_ms = std::chrono::duration<float, std::milli>(
                                     std::chrono::steady_clock::now() - d0).count();
-                stats.raster_batches  = (int)raster->batches();
-                stats.culled_clusters = (int)raster->culled_clusters();
-                stats.batch_cache_hit = raster->cache_hit();
             }
             ui.begin_frame();
             ui.draw_debug_panel(stats);
@@ -442,6 +461,8 @@ int main() {
             stats.reload_requested = false;
             // Re-enable the cursor before reload so a failure can't strand it.
             if (camera_capture) { camera_capture = false; EnableCursor(); }
+            // Reset GpuCuller so stale part slots from the old world are cleared.
+            if (gpu_cull) gpu_culler.reset();
             // connect_sequence replaces `store`/`composer`; if it fails partway the
             // old composer would dangle, so bail the loop and shut down cleanly.
             if (!connect_sequence()) { printf("reload failed; exiting\n"); break; }
@@ -462,6 +483,8 @@ int main() {
                 // Re-enable the cursor before rebuilding so a failure can't strand it
                 // (mirrors the reload path).
                 if (camera_capture) { camera_capture = false; EnableCursor(); }
+                // Reset GpuCuller so stale part slots from the old world are cleared.
+                if (gpu_cull) gpu_culler.reset();
                 if (!connect_sequence()) { printf("world switch failed; exiting\n"); break; }
                 stats.world_current = idx;
                 apply_world_resolver_defaults(cfg.world_name, sec, stats);

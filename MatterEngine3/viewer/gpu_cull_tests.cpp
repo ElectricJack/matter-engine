@@ -144,6 +144,51 @@ static uint64_t build_fixture(viewer::PartStore& store) {
     return hash;
 }
 
+// Build a second fixture part (1 cluster, different AABB/mesh geometry).
+// This part will have cluster_start > 0 after both parts are registered.
+static uint64_t build_fixture2(viewer::PartStore& store) {
+    const uint64_t hash = 0xCAFEBABEDEAD0002ULL;
+
+    viewer::LoadedPart lp;
+
+    // 2 LOD mesh entries for this part.
+    viewer::RasterMeshData md2a;
+    md2a.vertex_count = 3;
+    md2a.vertices  = { 0.0f, 0.0f, 0.0f,  2.0f, 0.0f, 0.0f,  0.0f, 2.0f, 0.0f };
+    md2a.normals   = { 0.0f, 0.0f, 1.0f,  0.0f, 0.0f, 1.0f,  0.0f, 0.0f, 1.0f };
+    md2a.colors    = { 128, 200, 100, 255, 128, 200, 100, 255, 128, 200, 100, 255 };
+    md2a.texcoords = { 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f };
+    lp.lod_mesh_data.push_back(md2a);  // index 0 – LOD 0
+
+    viewer::RasterMeshData md2b;
+    md2b.vertex_count = 3;
+    md2b.vertices  = { 0.0f, 0.0f, 0.0f,  1.0f, 0.0f, 0.0f,  0.0f, 1.0f, 0.0f };
+    md2b.normals   = { 0.0f, 0.0f, 1.0f,  0.0f, 0.0f, 1.0f,  0.0f, 0.0f, 1.0f };
+    md2b.colors    = { 100, 100, 200, 255, 100, 100, 200, 255, 100, 100, 200, 255 };
+    md2b.texcoords = { 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f };
+    lp.lod_mesh_data.push_back(md2b);  // index 1 – LOD 1
+
+    lp.thresholds  = { 0.5f, 0.1f };
+    lp.bound_radius = 4.0f;
+
+    // 1 cluster only — so after registering part1 (2 clusters), this part's
+    // cluster_start will be 2 (> 0), exposing local-vs-global cluster_index bugs.
+    {
+        viewer::LoadedCluster cl;
+        cl.aabb_min[0] = -2.0f; cl.aabb_min[1] = -1.0f; cl.aabb_min[2] = -1.0f;
+        cl.aabb_max[0] =  2.0f; cl.aabb_max[1] =  1.0f; cl.aabb_max[2] =  1.0f;
+        float dx = 4.0f, dy = 2.0f, dz = 2.0f;
+        cl.radius = 0.5f * sqrtf(dx*dx + dy*dy + dz*dz);
+        cl.thresholds = { 0.5f, 0.1f };
+        cl.lod_blas   = { 0, 0 };
+        cl.lod_mesh   = { 0, 1 };
+        lp.clusters.push_back(cl);
+    }
+
+    store.inject_for_test(hash, std::move(lp));
+    return hash;
+}
+
 // Build a ResolvedInstance for a given transform.
 static viewer::ResolvedInstance make_ri(uint64_t hash, const float t[16]) {
     viewer::ResolvedInstance ri{};
@@ -323,6 +368,116 @@ static bool test_parity_frustum_lod() {
     CHECK(trans_ok, "per-bucket translation multisets CPU==GPU");
 
     return !g_failures;
+}
+
+// ---------------------------------------------------------------------------
+// TEST 1b: Multi-part parity — exercises non-zero cluster_start for part2,
+// exposing local-vs-global cluster_index bugs.
+// ---------------------------------------------------------------------------
+static bool test_multi_part_parity() {
+    printf("\n[test_multi_part_parity]\n");
+
+    viewer::PartStore store("/tmp/gpu_test_mp");
+
+    // Register part1 FIRST so it occupies cluster slots 0..1.
+    // Part2 then gets cluster_start == 2 (> 0).
+    uint64_t hash1 = build_fixture(store);
+    uint64_t hash2 = build_fixture2(store);
+
+    viewer::GpuCuller culler;
+    std::string err;
+    if (!culler.init(err)) {
+        printf("  ERROR: GpuCuller::init failed: %s\n", err.c_str());
+        return false;
+    }
+
+    int slot1 = culler.ensure_part(hash1, store);
+    int slot2 = culler.ensure_part(hash2, store);
+    CHECK(slot1 >= 0, "multi-part: slot1 valid");
+    CHECK(slot2 >= 0, "multi-part: slot2 valid");
+    if (slot1 < 0 || slot2 < 0) return false;
+
+    // Verify cluster_start > 0 for part2.
+    const auto& parts = culler.parts();
+    CHECK(parts.size() >= 2u, "multi-part: at least 2 parts registered");
+    if (parts.size() < 2) return false;
+
+    uint32_t cs2 = parts[(size_t)slot2].cluster_start;
+    CHECK(cs2 > 0, "multi-part: part2 cluster_start > 0");
+    printf("  part2 cluster_start = %u (part1 has %u clusters)\n",
+           cs2, parts[(size_t)slot1].cluster_count);
+
+    // Camera at origin looking +X, FOV 60, aspect 1.6.
+    const float eye[3]    = { 0.0f, 0.0f, 0.0f };
+    const float target[3] = { 1.0f, 0.0f, 0.0f };
+    const float up[3]     = { 0.0f, 1.0f, 0.0f };
+    float planes[6][4];
+    viewer::camera_frustum_planes_raw(eye, target, up, 60.0f, 1.6f, planes);
+
+    // Place 10 instances of part1 and 10 instances of part2, all in-frustum.
+    std::vector<viewer::ResolvedInstance> resolved;
+    for (int i = 0; i < 10; ++i) {
+        float t[16];
+        make_translate((float)i * 3.0f, 0.0f, 0.0f, t);
+        resolved.push_back(make_ri(hash1, t));
+        resolved.push_back(make_ri(hash2, t));
+    }
+
+    if (!culler.cull(resolved, store, eye, planes, 1.0f)) {
+        printf("  ERROR: cull() returned false for multi-part\n");
+        return false;
+    }
+    auto batches = culler.readback_batches(store);
+
+    // CPU reference — per-part, per-cluster.
+    const viewer::LoadedPart* lp1 = store.get_or_load(hash1);
+    const viewer::LoadedPart* lp2 = store.get_or_load(hash2);
+    assert(lp1 && lp2);
+
+    // Count per (part_hash, local_cluster_idx, lod).
+    using Key3 = std::tuple<uint64_t, uint32_t, int>;
+    std::map<Key3, int> cpu_count;
+    std::map<Key3, int> gpu_count;
+
+    auto do_cpu = [&](const viewer::LoadedPart* lp, uint64_t hash) {
+        for (const auto& ri : resolved) {
+            if (ri.part_hash != hash) continue;
+            for (int ci = 0; ci < (int)lp->clusters.size(); ++ci) {
+                const viewer::LoadedCluster& cl = lp->clusters[ci];
+                if (viewer::aabb_culled(cl.aabb_min, cl.aabb_max, ri.transform, planes))
+                    continue;
+                int lv = viewer::cluster_lod_select(cl, ri.transform, eye, 1.0f);
+                cpu_count[{hash, (uint32_t)ci, lv}]++;
+            }
+        }
+    };
+    do_cpu(lp1, hash1);
+    do_cpu(lp2, hash2);
+
+    // Map GPU batches back to (part_hash, local_cluster_idx, lod).
+    for (const auto& b : batches) {
+        // b.cluster_index is the LOCAL cluster index (readback_batches maps ci→local ci).
+        gpu_count[{b.part_hash, b.cluster_index, b.level}] += (int)b.transforms.size();
+    }
+
+    // Collect all keys.
+    std::set<Key3> all_keys;
+    for (auto& kv : cpu_count) all_keys.insert(kv.first);
+    for (auto& kv : gpu_count) all_keys.insert(kv.first);
+
+    bool ok = true;
+    for (const auto& k : all_keys) {
+        int cc = cpu_count.count(k) ? cpu_count.at(k) : 0;
+        int gc = gpu_count.count(k) ? gpu_count.at(k) : 0;
+        if (cc != gc) {
+            printf("  bucket(hash=%llx, ci=%u, lv=%d): cpu=%d gpu=%d\n",
+                   (unsigned long long)std::get<0>(k), std::get<1>(k), std::get<2>(k), cc, gc);
+            ok = false;
+        }
+    }
+    CHECK(ok, "multi-part: per-(part,cluster,lod) counts match CPU reference");
+
+    return ok;
 }
 
 // ---------------------------------------------------------------------------
@@ -522,6 +677,7 @@ int main() {
     printf("GL 4.6 available — running GPU cull parity tests.\n");
 
     test_parity_frustum_lod();
+    test_multi_part_parity();
     test_matrix_convention();
     test_cap_growth();
     test_empty_resolve();

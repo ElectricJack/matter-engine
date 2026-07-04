@@ -60,7 +60,21 @@ public:
     // Populates stat_culled_ / stat_emitted_ from ssbo_stats_ readback.
     std::vector<RasterBatch> readback_batches(PartStore& store);
 
-    // HUD counters (valid after readback_batches()).
+    // Stage-2: issue glMultiDrawArraysIndirect for all registered parts using the
+    // GPU command + xform SSBOs written by the most recent cull() call.
+    // shader_id must already be active (glUseProgram).
+    // Caller must call BeginMode3D + rlDrawRenderBatchActive before this.
+    // Returns the number of triangles submitted (sum of count/3 * instance_count per
+    // live bucket, from a small cmd readback).
+    int draw_indirect();
+
+    // Reset all per-part GPU state (called on world switch when gpu_cull active).
+    // Releases per-part VAO/VBO objects, clears bookkeeping, re-initializes fixed
+    // buffers in-place.  After reset(), ensure_part() must be called again for all
+    // parts in the new world.
+    void reset();
+
+    // HUD counters (valid after readback_batches() or draw_indirect()).
     size_t culled_clusters() const { return stat_culled_; }
     size_t emitted()         const { return stat_emitted_; }
 
@@ -111,7 +125,7 @@ private:
     // Running total of xform slots allocated across all parts (P1 regions).
     uint32_t total_xform_slots_ = 0;
 
-    // HUD stats populated by readback_batches().
+    // HUD stats populated by readback_batches() or draw_indirect().
     size_t stat_culled_  = 0;
     size_t stat_emitted_ = 0;
 
