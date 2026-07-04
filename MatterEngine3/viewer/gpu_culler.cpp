@@ -584,14 +584,13 @@ bool GpuCuller::cull(const std::vector<ResolvedInstance>& resolved,
 // ---------------------------------------------------------------------------
 // readback_batches — read back cmds + xforms; rebuild RasterBatch list.
 //
-// Matrix conversion note (5-line comment as required by the brief):
-//   GL ssbo_xforms_ stores mat4 in column-major memory (column c at floats [c*4..c*4+3]).
-//   raylib Matrix field declaration order is m0,m4,m8,m12,m1,m5,... which is
-//   row-major memory (m0 at byte 0, m4 at byte 4 = col-0 row-1, ...).
-//   Memcpy of GL column-major float[16] into Matrix yields Matrix.m0=col0row0,
-//   Matrix.m4=col0row1, ... which equals the transpose of the engine row-major matrix.
-//   This is exactly what row_major_to_matrix(engine_t) produces, making the Stage-1
-//   bridge correct without an explicit transpose operation.
+// Matrix conversion note:
+//   GL ssbo_xforms_ stores mat4 column-major (column c at floats [c*4..c*4+3]).
+//   raylib Matrix memory is ROW-major (declaration order m0,m4,m8,m12 = first row),
+//   and engine float[16] is also row-major, so row_major_to_matrix is a straight copy.
+//   A direct memcpy of GL data into Matrix would therefore yield the TRANSPOSE;
+//   we first transpose back to engine layout (transpose_to_gl is self-inverse),
+//   then convert via row_major_to_matrix.
 // ---------------------------------------------------------------------------
 std::vector<RasterBatch> GpuCuller::readback_batches(PartStore& store) {
     std::vector<RasterBatch> out;
@@ -650,16 +649,11 @@ std::vector<RasterBatch> GpuCuller::readback_batches(PartStore& store) {
                 for (uint32_t i = 0; i < n; ++i) {
                     uint32_t xf_slot = base + i;
                     if (xf_slot >= total_xform_slots_) break;
-                    // GL column-major float[16] → raylib Matrix via memcpy.
-                    // See the 5-line convention note above readback_batches.
-                    //
-                    // Debug assert (checked in Task 6 gpu_cull_tests):
-                    //   For the identity+translate case, memcpy into Matrix and
-                    //   row_major_to_matrix(engine_t) must agree to within FLT_EPSILON
-                    //   on all 16 fields.
-                    Matrix mx;
-                    std::memcpy(&mx, xforms_gpu.data() + xf_slot * 16, sizeof(Matrix));
-                    b.transforms.push_back(mx);
+                    // GL column-major → engine row-major (transpose_to_gl is its
+                    // own inverse as a memory op) → raylib Matrix.
+                    float engine_t[16];
+                    transpose_to_gl(xforms_gpu.data() + xf_slot * 16, engine_t);
+                    b.transforms.push_back(row_major_to_matrix(engine_t));
                 }
                 if (!b.transforms.empty())
                     out.push_back(std::move(b));
