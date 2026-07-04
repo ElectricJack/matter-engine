@@ -189,6 +189,21 @@ static uint64_t build_fixture2(viewer::PartStore& store) {
     return hash;
 }
 
+// Build the engine row-major view-proj (vp) AND the frustum planes for a
+// camera. Mirrors camera_frustum_planes_raw but exposes the vp so tests can
+// feed GpuCuller::cull()'s view_proj parameter (HiZ path). near/far are
+// per-test: the engine default near of 0.05 packs all practical depths at
+// window-z ≈ 1, useless for occlusion assertions.
+static void make_cam(const float eye[3], const float target[3], const float up[3],
+                     float fovy_deg, float aspect, float near_z, float far_z,
+                     float vp[16], float planes[6][4]) {
+    float view[16], proj[16];
+    viewer::make_lookat(eye, target, up, view);
+    viewer::make_perspective(fovy_deg, aspect, near_z, far_z, proj);
+    viewer::mul16(view, proj, vp);
+    viewer::extract_frustum_planes(vp, planes);
+}
+
 // Build a ResolvedInstance for a given transform.
 static viewer::ResolvedInstance make_ri(uint64_t hash, const float t[16]) {
     viewer::ResolvedInstance ri{};
@@ -259,8 +274,9 @@ static bool test_parity_frustum_lod() {
     const float fovy      = 60.0f;
     const float aspect    = 1.6f;
 
+    float vp[16];
     float planes[6][4];
-    viewer::camera_frustum_planes_raw(eye, target, up, fovy, aspect, planes);
+    make_cam(eye, target, up, fovy, aspect, 0.05f, 4000.0f, vp, planes);
 
     // ---- CPU reference ----
     // Our synthetic part has no expansion, so the loop just uses the root directly.
@@ -302,7 +318,7 @@ static bool test_parity_frustum_lod() {
     CHECK(slot >= 0, "ensure_part returns valid slot");
     if (slot < 0) return false;
 
-    if (!culler.cull(resolved, store, eye, planes, 1.0f)) {
+    if (!culler.cull(resolved, store, eye, planes, vp, 1.0f)) {
         printf("  ERROR: cull() returned false\n");
         return false;
     }
@@ -411,8 +427,9 @@ static bool test_multi_part_parity() {
     const float eye[3]    = { 0.0f, 0.0f, 0.0f };
     const float target[3] = { 1.0f, 0.0f, 0.0f };
     const float up[3]     = { 0.0f, 1.0f, 0.0f };
+    float vp[16];
     float planes[6][4];
-    viewer::camera_frustum_planes_raw(eye, target, up, 60.0f, 1.6f, planes);
+    make_cam(eye, target, up, 60.0f, 1.6f, 0.05f, 4000.0f, vp, planes);
 
     // Place 10 instances of part1 and 10 instances of part2, all in-frustum.
     std::vector<viewer::ResolvedInstance> resolved;
@@ -423,7 +440,7 @@ static bool test_multi_part_parity() {
         resolved.push_back(make_ri(hash2, t));
     }
 
-    if (!culler.cull(resolved, store, eye, planes, 1.0f)) {
+    if (!culler.cull(resolved, store, eye, planes, vp, 1.0f)) {
         printf("  ERROR: cull() returned false for multi-part\n");
         return false;
     }
@@ -502,13 +519,14 @@ static bool test_matrix_convention() {
     const float eye[3]    = { 0.0f, 0.0f, 0.0f };
     const float target[3] = { 1.0f, 0.0f, 0.0f };
     const float up[3]     = { 0.0f, 1.0f, 0.0f };
+    float vp[16];
     float planes[6][4];
-    viewer::camera_frustum_planes_raw(eye, target, up, 90.0f, 1.0f, planes);
+    make_cam(eye, target, up, 90.0f, 1.0f, 0.05f, 4000.0f, vp, planes);
 
     auto run_single = [&](const float t[16], const char* label) -> bool {
         std::vector<viewer::ResolvedInstance> resolved = { make_ri(hash, t) };
 
-        if (!culler.cull(resolved, store, eye, planes, 1.0f)) {
+        if (!culler.cull(resolved, store, eye, planes, vp, 1.0f)) {
             printf("  SKIP (cull returned false): %s\n", label);
             return true;  // not a failure — might be culled
         }
@@ -576,8 +594,9 @@ static bool test_cap_growth() {
     const float eye[3]    = { -1.0f, 0.0f, 0.0f };
     const float target[3] = { 1.0f, 0.0f, 0.0f };
     const float up[3]     = { 0.0f, 1.0f, 0.0f };
+    float vp[16];
     float planes[6][4];
-    viewer::camera_frustum_planes_raw(eye, target, up, 170.0f, 1.0f, planes);
+    make_cam(eye, target, up, 170.0f, 1.0f, 0.05f, 4000.0f, vp, planes);
 
     const int N = 10000;
     std::vector<viewer::ResolvedInstance> resolved;
@@ -594,7 +613,7 @@ static bool test_cap_growth() {
     }
 
     bool no_crash = true;
-    if (!culler.cull(resolved, store, eye, planes, 1.0f)) {
+    if (!culler.cull(resolved, store, eye, planes, vp, 1.0f)) {
         // Empty result is still OK (all culled), just means 0 drawn.
         // The important thing is no crash.
     }
@@ -642,11 +661,12 @@ static bool test_empty_resolve() {
     const float eye[3]    = { 0.0f, 0.0f, 0.0f };
     const float target[3] = { 1.0f, 0.0f, 0.0f };
     const float up[3]     = { 0.0f, 1.0f, 0.0f };
+    float vp[16];
     float planes[6][4];
-    viewer::camera_frustum_planes_raw(eye, target, up, 60.0f, 1.6f, planes);
+    make_cam(eye, target, up, 60.0f, 1.6f, 0.05f, 4000.0f, vp, planes);
 
     std::vector<viewer::ResolvedInstance> empty_resolved;
-    bool cull_ret = culler.cull(empty_resolved, store, eye, planes, 1.0f);
+    bool cull_ret = culler.cull(empty_resolved, store, eye, planes, vp, 1.0f);
     CHECK(!cull_ret, "empty_resolve: cull({}) returns false");
 
     // readback after a false cull should return empty (no new GPU work done).
@@ -799,6 +819,129 @@ static bool test_hiz_pyramid() {
 }
 
 // ---------------------------------------------------------------------------
+// TEST 6: HiZ occlusion culling (Task 10).
+//
+// Synthetic full-screen "wall" at window depth 0.95 uploaded straight into
+// hiz_tex_ mip 0 (glTexSubImage2D) + downsample_pyramid(), then a cull()
+// dispatch with a known camera/view_proj:
+//   - camera at origin looking +X, fov 90, aspect W/H, near=1, far=100
+//     (window depth zw(dist) = 1.0101 - 1.0101/dist for this projection;
+//      the engine default near of 0.05 packs everything at zw ≈ 1, useless)
+//   - 4 "behind" instances at x = 30,32,34,36: nearest cluster corners at
+//     dist 25..39 → z_min ∈ [0.9697, 0.9846] > 0.95 → ALL hiz-culled (8 clusters)
+//   - 3 "front" instances at x = 6.5: cluster corners at dist 1.5 / 9.5 →
+//     z_min = 0.3367 / 0.9038 < 0.95 → ALL emitted (6 clusters)
+// Also verifies the toggle (off → 0 hiz-culled, everything emitted) and the
+// hiz_valid_ first-frame guard (re-enable without build_hiz → shader gets
+// hiz_enabled=0).
+// ---------------------------------------------------------------------------
+static bool test_hiz_occlusion() {
+    printf("\n[test_hiz_occlusion]\n");
+
+    const int W = 320, H = 200;   // harness window dims (must match build_hiz)
+
+    viewer::PartStore store("/tmp/gpu_test_hiz_occ");
+    uint64_t hash = build_fixture(store);
+
+    viewer::GpuCuller culler;
+    std::string err;
+    if (!culler.init(err)) {
+        printf("  ERROR: GpuCuller::init failed: %s\n", err.c_str());
+        ++g_failures; ++g_tests;
+        return false;
+    }
+    culler.ensure_part(hash, store);
+
+    // Camera at origin looking +X. near=1 so window depth is usable.
+    const float eye[3]    = { 0.0f, 0.0f, 0.0f };
+    const float target[3] = { 1.0f, 0.0f, 0.0f };
+    const float up[3]     = { 0.0f, 1.0f, 0.0f };
+    float vp[16];
+    float planes[6][4];
+    make_cam(eye, target, up, 90.0f, (float)W / (float)H, 1.0f, 100.0f, vp, planes);
+
+    // Enable HiZ and build once: compiles hiz_downsample.comp, allocates the
+    // pyramid, blits the (just-cleared) window depth — overwritten below.
+    culler.set_hiz_enabled(true);
+    culler.build_hiz(W, H);
+    if (!culler.hiz_enabled()) {
+        printf("  SKIP: hiz_enabled false after build_hiz (MSAA or shader error)\n");
+        ++g_tests;
+        printf("  ok:   hiz_occlusion skipped (MSAA)\n");
+        return true;
+    }
+    CHECK(culler.hiz_valid(), "hiz_occlusion: hiz_valid true after build_hiz");
+
+    // Upload the synthetic wall (depth 0.95 everywhere) into mip 0, reduce.
+    auto upload_wall = [&]() {
+        std::vector<float> wall((size_t)W * H, 0.95f);
+        glBindTexture(GL_TEXTURE_2D, culler.hiz_tex_for_test());
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, W, H, GL_RED, GL_FLOAT, wall.data());
+        glBindTexture(GL_TEXTURE_2D, 0);
+        glMemoryBarrier(GL_TEXTURE_FETCH_BARRIER_BIT | GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+        culler.downsample_pyramid();
+    };
+    upload_wall();
+
+    // 4 behind (both clusters occluded) + 3 in front (both clusters visible).
+    std::vector<viewer::ResolvedInstance> resolved;
+    for (int i = 0; i < 4; ++i) {
+        float t[16];
+        make_translate(30.0f + 2.0f * (float)i, 0.0f, 0.0f, t);
+        resolved.push_back(make_ri(hash, t));
+    }
+    for (int i = 0; i < 3; ++i) {
+        float t[16];
+        make_translate(6.5f, 0.0f, 0.0f, t);
+        resolved.push_back(make_ri(hash, t));
+    }
+
+    // --- Phase 1: HiZ on, wall in place. Expect 8 hiz-culled / 6 emitted. ---
+    if (!culler.cull(resolved, store, eye, planes, vp, 1.0f)) {
+        printf("  ERROR: cull() returned false\n");
+        ++g_failures; ++g_tests;
+        return false;
+    }
+    culler.readback_batches(store);
+    printf("  phase1 (hiz on):  frustum=%zu hiz=%zu emitted=%zu\n",
+           culler.culled_clusters(), culler.culled_hiz(), culler.emitted());
+    CHECK(culler.culled_clusters() == 0, "hiz_occlusion: 0 frustum-culled (all in frustum)");
+    CHECK(culler.culled_hiz() == 8,      "hiz_occlusion: 8 behind clusters hiz-culled");
+    CHECK(culler.emitted() == 6,         "hiz_occlusion: 6 front clusters emitted");
+
+    // --- Phase 2: HiZ off. Expect 0 hiz-culled / all 14 emitted. ---
+    culler.set_hiz_enabled(false);
+    culler.cull(resolved, store, eye, planes, vp, 1.0f);
+    culler.readback_batches(store);
+    printf("  phase2 (hiz off): frustum=%zu hiz=%zu emitted=%zu\n",
+           culler.culled_clusters(), culler.culled_hiz(), culler.emitted());
+    CHECK(culler.culled_hiz() == 0, "hiz_occlusion: toggle off -> 0 hiz-culled");
+    CHECK(culler.emitted() == 14,   "hiz_occlusion: toggle off -> all 14 clusters emitted");
+
+    // --- Phase 3: re-enable WITHOUT rebuilding the pyramid. hiz_valid_ was
+    // cleared by the disable, so the shader must get hiz_enabled=0 until the
+    // next build_hiz (first-frame guard). ---
+    culler.set_hiz_enabled(true);
+    CHECK(!culler.hiz_valid(), "hiz_occlusion: re-enable leaves hiz_valid false until build");
+    culler.cull(resolved, store, eye, planes, vp, 1.0f);
+    culler.readback_batches(store);
+    CHECK(culler.culled_hiz() == 0, "hiz_occlusion: re-enable without build -> 0 hiz-culled");
+    CHECK(culler.emitted() == 14,   "hiz_occlusion: re-enable without build -> 14 emitted");
+
+    // --- Phase 4: rebuild pyramid + wall; culling resumes. ---
+    culler.build_hiz(W, H);   // blit overwrites the wall with cleared depth...
+    upload_wall();            // ...so re-upload it before culling
+    culler.cull(resolved, store, eye, planes, vp, 1.0f);
+    culler.readback_batches(store);
+    printf("  phase4 (rebuilt): frustum=%zu hiz=%zu emitted=%zu\n",
+           culler.culled_clusters(), culler.culled_hiz(), culler.emitted());
+    CHECK(culler.culled_hiz() == 8, "hiz_occlusion: rebuilt pyramid culls 8 again");
+    CHECK(culler.emitted() == 6,    "hiz_occlusion: rebuilt pyramid emits 6 again");
+
+    return true;
+}
+
+// ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
 int main() {
@@ -821,6 +964,7 @@ int main() {
     test_cap_growth();
     test_empty_resolve();
     test_hiz_pyramid();
+    test_hiz_occlusion();
 
     CloseWindow();
 

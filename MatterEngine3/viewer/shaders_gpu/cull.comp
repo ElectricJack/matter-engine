@@ -26,13 +26,20 @@ layout(std430, binding = 0) readonly buffer ClusterMetas { ClusterMeta clusters[
 layout(std430, binding = 1) readonly buffer Instances    { GpuInstance instances[]; };
 layout(std430, binding = 2) buffer DrawCmds              { DrawCmd cmds[]; };
 layout(std430, binding = 3) writeonly buffer DrawXforms  { mat4 out_xforms[]; };
-layout(std430, binding = 4) buffer Stats                 { uint stat_culled; uint stat_emitted; };
+layout(std430, binding = 4) buffer Stats                 { uint stat_culled_frustum; uint stat_culled_hiz; uint stat_emitted; };
 
 uniform vec4  planes[6];
 uniform vec3  cam_eye;
 uniform float pixel_budget;
 uniform uint  instance_count;
 uniform uint  max_clusters_per_instance;
+
+// ---- HiZ occlusion (Task 10). hiz_enabled is 0 unless the flag is on AND a
+// pyramid was built this session (previous frame's depth, conservative).
+uniform int  hiz_enabled;
+uniform sampler2D hiz_tex;
+uniform mat4 view_proj;          // shader-convention VP (CPU vp transposed on upload)
+uniform vec2 hiz_size;           // mip-0 texel dims
 
 void main() {
     uint tid  = gl_GlobalInvocationID.x;
@@ -57,7 +64,42 @@ void main() {
         bool all_out = true;
         for (int i = 0; i < 8; ++i)
             if (dot(planes[p].xyz, w[i]) + planes[p].w >= 0.0) { all_out = false; break; }
-        if (all_out) { atomicAdd(stat_culled, 1u); return; }
+        if (all_out) { atomicAdd(stat_culled_frustum, 1u); return; }
+    }
+
+    // ---- HiZ occlusion (previous-frame pyramid; conservative).
+    // Project the 8 world-space AABB corners, take the screen-rect + nearest
+    // depth, pick the mip where the rect covers ~1 texel, and compare against
+    // the max-depth pyramid: if the nearest point of the box is farther than
+    // the farthest depth in the rect, the box is fully occluded.
+    if (hiz_enabled == 1) {
+        vec2 uv_min = vec2( 1e9), uv_max = vec2(-1e9);
+        float z_min = 1e9;
+        bool crosses_near = false;
+        for (int i = 0; i < 8; ++i) {
+            vec4 c = view_proj * vec4(w[i], 1.0);
+            if (c.w <= 0.001) { crosses_near = true; break; }
+            vec3 ndc = c.xyz / c.w;
+            uv_min = min(uv_min, ndc.xy); uv_max = max(uv_max, ndc.xy);
+            z_min = min(z_min, ndc.z * 0.5 + 0.5);   // [0,1] window depth
+        }
+        if (!crosses_near) {
+            vec2 a = clamp(uv_min * 0.5 + 0.5, 0.0, 1.0);
+            vec2 b = clamp(uv_max * 0.5 + 0.5, 0.0, 1.0);
+            vec2 px = (b - a) * hiz_size;
+            float lod = ceil(log2(max(max(px.x, px.y), 1.0)));
+            ivec2 msize = textureSize(hiz_tex, int(lod));
+            ivec2 t0 = clamp(ivec2(a   * vec2(msize)), ivec2(0), msize - 1);
+            ivec2 t1 = clamp(ivec2(vec2(b.x, a.y) * vec2(msize)), ivec2(0), msize - 1);
+            ivec2 t2 = clamp(ivec2(vec2(a.x, b.y) * vec2(msize)), ivec2(0), msize - 1);
+            ivec2 t3 = clamp(ivec2(b   * vec2(msize)), ivec2(0), msize - 1);
+            float far0 = texelFetch(hiz_tex, t0, int(lod)).r;
+            float far1 = texelFetch(hiz_tex, t1, int(lod)).r;
+            float far2 = texelFetch(hiz_tex, t2, int(lod)).r;
+            float far3 = texelFetch(hiz_tex, t3, int(lod)).r;
+            float hiz_far = max(max(far0, far1), max(far2, far3));
+            if (z_min > hiz_far) { atomicAdd(stat_culled_hiz, 1u); return; }
+        }
     }
 
     // ---- LOD select (== raster_cull.h cluster_lod_select).

@@ -9,7 +9,7 @@
 //   GpuCuller culler;
 //   culler.init(err);                            // compile cull.comp, allocate fixed buffers
 //   culler.ensure_part(hash, store);             // register per-part GPU state lazily
-//   culler.cull(resolved, store, eye, planes, budget);  // upload + dispatch
+//   culler.cull(resolved, store, eye, planes, vp, budget);  // upload + dispatch
 //   auto batches = culler.readback_batches(store);       // bridge to RasterBatch list
 
 #include "gpu_cull_types.h"    // GpuClusterMeta, GpuInstanceRec, DrawArraysCmd, kMaxLod
@@ -45,14 +45,18 @@ public:
     int ensure_part(uint64_t part_hash, PartStore& store);
 
     // Frame: upload instances (expansion applied), seed cmds, dispatch cull.
-    // planes[6][4] from raster_cull.h camera_frustum_planes_raw or
-    // camera_frustum_planes.  cam_eye[3] world-space eye position.
+    // planes[6][4] from raster_cull.h extract_frustum_planes (or the
+    // camera_frustum_planes wrappers).  cam_eye[3] world-space eye position.
+    // view_proj[16] is the engine ROW-MAJOR VP from mul16(view, proj) — the
+    // SAME matrix extract_frustum_planes consumes; cull() uploads it so the
+    // shader receives the column-vector (shader-convention) VP for HiZ.
     // pixel_budget is the runtime LOD quality dial (default 1.0).
     // Returns false if nothing to draw (empty resolved list or no registered parts).
     bool cull(const std::vector<ResolvedInstance>& resolved,
               PartStore& store,
               const float cam_eye[3],
               const float planes[6][4],
+              const float view_proj[16],
               float pixel_budget);
 
     // Stage-1 bridge: GPU-sync (glMemoryBarrier already issued in cull()), read back
@@ -90,15 +94,23 @@ public:
     // reduce math directly.  build_hiz() calls this internally after the blit.
     void downsample_pyramid();
 
-    void set_hiz_enabled(bool v) { hiz_enabled_ = v; }
+    // Disabling invalidates the pyramid: build_hiz() stops running, so any
+    // existing pyramid content goes stale — hiz_valid_ must drop with it and
+    // only come back after the next successful build_hiz().
+    void set_hiz_enabled(bool v) { hiz_enabled_ = v; if (!v) hiz_valid_ = false; }
     bool hiz_enabled() const     { return hiz_enabled_; }
+    // True once build_hiz() has completed under the current enable state.
+    // The cull shader gets hiz_enabled=0 until this is true (first frame after
+    // enable has no pyramid yet).
+    bool hiz_valid() const       { return hiz_valid_; }
 
     // Test hook: returns the hiz_tex_ GL name so tests can upload synthetic
     // patterns into mip 0 and verify the reduce math without a depth blit.
     unsigned hiz_tex_for_test() const { return hiz_tex_; }
 
     // HUD counters (valid after readback_batches() or draw_indirect()).
-    size_t culled_clusters() const { return stat_culled_; }
+    size_t culled_clusters() const { return stat_culled_; }        // frustum
+    size_t culled_hiz()      const { return stat_culled_hiz_; }    // occlusion
     size_t emitted()         const { return stat_emitted_; }
 
     // Per-part GPU bookkeeping — exposed for Task 8's direct draw loop.
@@ -123,7 +135,7 @@ private:
     unsigned ssbo_instances_ = 0;   // binding 1: GpuInstanceRec array
     unsigned ssbo_cmds_      = 0;   // binding 2: DrawArraysCmd array
     unsigned ssbo_xforms_    = 0;   // binding 3: mat4 output transforms
-    unsigned ssbo_stats_     = 0;   // binding 4: {stat_culled, stat_emitted}
+    unsigned ssbo_stats_     = 0;   // binding 4: {stat_culled_frustum, stat_culled_hiz, stat_emitted}
     unsigned program_cull_   = 0;
 
     // Uniform locations cached after program link.
@@ -132,6 +144,10 @@ private:
     int uloc_pixel_budget_         = -1;
     int uloc_instance_count_       = -1;
     int uloc_max_clusters_per_inst_= -1;
+    int uloc_hiz_enabled_          = -1;
+    int uloc_hiz_tex_              = -1;
+    int uloc_view_proj_            = -1;
+    int uloc_hiz_size_             = -1;
 
     // CPU mirrors / bookkeeping.
     std::vector<PartGpu>            parts_;
@@ -153,13 +169,15 @@ private:
     std::vector<uint8_t> active_slots_;
 
     // HUD stats populated by readback_batches() or draw_indirect().
-    size_t stat_culled_  = 0;
-    size_t stat_emitted_ = 0;
+    size_t stat_culled_      = 0;   // frustum
+    size_t stat_culled_hiz_  = 0;   // occlusion
+    size_t stat_emitted_     = 0;
 
     // -----------------------------------------------------------------------
     // HiZ pyramid state (screen-sized; kept across reset()).
     // -----------------------------------------------------------------------
     bool     hiz_enabled_     = false;
+    bool     hiz_valid_       = false;   // pyramid built under current enable state
     bool     hiz_msaa_warned_ = false;   // print MSAA warning at most once
     unsigned depth_copy_tex_  = 0;       // GL_DEPTH_COMPONENT32F, no mips
     unsigned depth_fbo_       = 0;       // FBO wrapping depth_copy_tex_

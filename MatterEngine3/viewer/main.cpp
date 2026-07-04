@@ -22,6 +22,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>     // strcmp (FIFO `hiz on|off`)
 #include <functional>
 #include <memory>
 #include <string>
@@ -53,7 +54,14 @@ int main() {
     const bool use_rt = getenv("MATTER_RT") != nullptr;
 
     const int W = 1280, H = 720;
-    SetConfigFlags(FLAG_MSAA_4X_HINT | FLAG_WINDOW_RESIZABLE);
+    // MSAA is incompatible with the HiZ occlusion path: build_hiz blits the
+    // default framebuffer depth, which is undefined for a multisampled FB
+    // (the GpuCuller MSAA guard would permanently disable HiZ). The GPU cull
+    // path therefore runs without the MSAA hint. gpu_cull_requested() is a
+    // pure env read, safe before InitWindow.
+    unsigned cfg_flags = FLAG_WINDOW_RESIZABLE;
+    if (!viewer::gpu_cull_requested()) cfg_flags |= FLAG_MSAA_4X_HINT;
+    SetConfigFlags(cfg_flags);
     InitWindow(W, H, "MatterEngine3 World Viewer");
     SetTargetFPS(60);
 
@@ -134,6 +142,10 @@ int main() {
     // --- Connect sequence (reusable for the reload button). ---
     ViewerStats stats{};
     stats.world_current = initial_world;
+    // MATTER_HIZ=0|1 overrides the HiZ occlusion default (on) at startup, so
+    // A/B runs are scriptable without the FIFO. Runtime toggles: HUD checkbox
+    // + FIFO `hiz on|off`. Only meaningful when the GPU cull path is active.
+    if (const char* hz = getenv("MATTER_HIZ")) stats.hiz_enabled = (hz[0] != '0');
     WorldManifest manifest;
     WorldState state;
     std::unique_ptr<PartStore> store;
@@ -340,6 +352,9 @@ int main() {
                     if (c[0] < 0.05f) c[0] = 0.05f;
                     if (c[0] > 4.0f)  c[0] = 4.0f;
                     stats.pixel_budget = c[0];
+                } else if (sscanf(line.c_str(), "hiz %15s", labelbuf) == 1) {
+                    stats.hiz_enabled = (strcmp(labelbuf, "on") == 0);
+                    printf("hiz %s\n", stats.hiz_enabled ? "on" : "off");
                 } else if (line == "reload") {
                     stats.reload_requested = true;
                 } else if (line == "quit") {
@@ -373,10 +388,19 @@ int main() {
                 float target3[3] = {tgt.x, tgt.y, tgt.z};
                 float up3[3]     = {0, 1, 0};
                 float aspect     = (float)GetScreenWidth() / (float)GetScreenHeight();
+                // Build view/proj/vp explicitly (same near/far as
+                // camera_frustum_planes_raw) so the HiZ path gets the exact vp
+                // the frustum planes came from.
+                const float near_z = 0.05f, far_z = 4000.0f;
+                float view[16], proj[16], vp[16];
+                viewer::make_lookat(eye, target3, up3, view);
+                viewer::make_perspective(renderer.camera().fovy, aspect, near_z, far_z, proj);
+                viewer::mul16(view, proj, vp);
                 float planes[6][4];
-                viewer::camera_frustum_planes_raw(eye, target3, up3,
-                        renderer.camera().fovy, aspect, planes);
-                gpu_culler.cull(resolved, *store, eye, planes, stats.pixel_budget);
+                viewer::extract_frustum_planes(vp, planes);
+                // Propagate the runtime HiZ toggle every frame (HUD/FIFO/env).
+                gpu_culler.set_hiz_enabled(stats.hiz_enabled);
+                gpu_culler.cull(resolved, *store, eye, planes, vp, stats.pixel_budget);
                 // Stage-2: no readback; draw_gpu_driven reads cmds/xforms on GPU.
             } else {
                 batches = raster->build_batches(resolved, *store, renderer.camera(), state.version());
@@ -405,8 +429,9 @@ int main() {
                 if (gpu_cull) {
                     stats.raster_tris = raster->draw_gpu_driven(
                             gpu_culler, *store, renderer.camera());
-                    stats.gpu_emitted = (int)gpu_culler.emitted();
-                    stats.gpu_culled  = (int)gpu_culler.culled_clusters();
+                    stats.gpu_emitted    = (int)gpu_culler.emitted();
+                    stats.gpu_culled     = (int)gpu_culler.culled_clusters();
+                    stats.gpu_culled_hiz = (int)gpu_culler.culled_hiz();
                     stats.raster_batches  = 0;   // not meaningful for indirect path
                     stats.culled_clusters = stats.gpu_culled;
                     stats.batch_cache_hit = false;
@@ -419,8 +444,8 @@ int main() {
                 stats.draw_ms = std::chrono::duration<float, std::milli>(
                                     std::chrono::steady_clock::now() - d0).count();
             }
-            // Build HiZ depth max-pyramid for next-frame occlusion culling (Task 9).
-            // hiz_enabled_ is false by default; no visual change this task.
+            // Build HiZ depth max-pyramid for next-frame occlusion culling.
+            // No-op when the HiZ toggle is off (set_hiz_enabled above).
             if (gpu_cull) gpu_culler.build_hiz(GetScreenWidth(), GetScreenHeight());
             ui.begin_frame();
             ui.draw_debug_panel(stats);
@@ -430,11 +455,14 @@ int main() {
         EndDrawing();
 
         if (!stats_label.empty()) {
-            printf("STATS,%s,%.2f,%.2f,%.2f,%.2f,%d,%d,%d,%d\n",
+            // Append-only format (scripts parse by position): the trailing
+            // field is the HiZ-occlusion-culled cluster count (Task 10).
+            printf("STATS,%s,%.2f,%.2f,%.2f,%.2f,%d,%d,%d,%d,%d\n",
                    stats_label.c_str(), stats.frame_ms,
                    stats.resolve_ms, stats.build_ms, stats.draw_ms,
                    stats.instances_active, stats.raster_batches,
-                   stats.raster_tris, stats.culled_clusters);
+                   stats.raster_tris, stats.culled_clusters,
+                   stats.gpu_culled_hiz);
             fflush(stdout);
             stats_label.clear();
         }

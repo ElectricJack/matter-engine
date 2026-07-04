@@ -111,11 +111,15 @@ bool GpuCuller::init(std::string& err) {
     uloc_pixel_budget_          = glGetUniformLocation(program_cull_, "pixel_budget");
     uloc_instance_count_        = glGetUniformLocation(program_cull_, "instance_count");
     uloc_max_clusters_per_inst_ = glGetUniformLocation(program_cull_, "max_clusters_per_instance");
+    uloc_hiz_enabled_           = glGetUniformLocation(program_cull_, "hiz_enabled");
+    uloc_hiz_tex_               = glGetUniformLocation(program_cull_, "hiz_tex");
+    uloc_view_proj_             = glGetUniformLocation(program_cull_, "view_proj");
+    uloc_hiz_size_              = glGetUniformLocation(program_cull_, "hiz_size");
 
-    // Stats SSBO: 8 bytes (two uint32s: culled, emitted). Fixed size.
+    // Stats SSBO: 12 bytes (three uint32s: culled_frustum, culled_hiz, emitted).
     glGenBuffers(1, &ssbo_stats_);
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo_stats_);
-    uint32_t zeros[2] = {0, 0};
+    uint32_t zeros[3] = {0, 0, 0};
     glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(zeros), zeros, GL_DYNAMIC_READ);
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
 
@@ -416,6 +420,7 @@ bool GpuCuller::cull(const std::vector<ResolvedInstance>& resolved,
                      PartStore& store,
                      const float cam_eye[3],
                      const float planes[6][4],
+                     const float view_proj[16],
                      float pixel_budget)
 {
     if (resolved.empty()) return false;
@@ -558,7 +563,7 @@ bool GpuCuller::cull(const std::vector<ResolvedInstance>& resolved,
     // Zero stats SSBO.
     // ------------------------------------------------------------------
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo_stats_);
-    uint32_t zeros[2] = {0, 0};
+    uint32_t zeros[3] = {0, 0, 0};
     glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(zeros), zeros);
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
 
@@ -592,12 +597,37 @@ bool GpuCuller::cull(const std::vector<ResolvedInstance>& resolved,
     glUniform1ui(uloc_instance_count_, n_records);
     glUniform1ui(uloc_max_clusters_per_inst_, max_cpi);
 
+    // ------------------------------------------------------------------
+    // HiZ occlusion uniforms.  hiz_enabled goes to the shader as 0 unless the
+    // runtime flag is on AND a pyramid was actually built (hiz_valid_) — the
+    // first frame after enable (and any MSAA-guard trip) has no pyramid.
+    //
+    // view_proj: engine ROW-MAJOR vp uploaded with transpose=GL_FALSE.  GL
+    // reads the memory column-major, which is exactly the shader-convention
+    // VP (= transpose of the C++ storage) — the same implicit transpose that
+    // row_major_to_matrix + raylib's matrix upload perform for the draw path,
+    // and the same convention extract_frustum_planes documents.
+    // ------------------------------------------------------------------
+    const int hiz_on = (hiz_enabled_ && hiz_valid_ && hiz_tex_) ? 1 : 0;
+    glUniform1i(uloc_hiz_enabled_, hiz_on);
+    glUniformMatrix4fv(uloc_view_proj_, 1, GL_FALSE, view_proj);
+    if (hiz_on) {
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, hiz_tex_);
+        glUniform1i(uloc_hiz_tex_, 0);
+        glUniform2f(uloc_hiz_size_, (float)hiz_w_, (float)hiz_h_);
+    }
+
     uint32_t total_threads = n_records * max_cpi;
     uint32_t groups = (total_threads + 63) / 64;
     glDispatchCompute(groups, 1, 1);
 
     glMemoryBarrier(GL_COMMAND_BARRIER_BIT | GL_SHADER_STORAGE_BARRIER_BIT);
 
+    if (hiz_on) {
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, 0);
+    }
     glUseProgram(0);
 
     return true;
@@ -640,11 +670,12 @@ std::vector<RasterBatch> GpuCuller::readback_batches(PartStore& store) {
 
     // Read back stats.
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo_stats_);
-    uint32_t stats[2] = {0, 0};
+    uint32_t stats[3] = {0, 0, 0};
     glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(stats), stats);
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
-    stat_culled_  = stats[0];
-    stat_emitted_ = stats[1];
+    stat_culled_     = stats[0];
+    stat_culled_hiz_ = stats[1];
+    stat_emitted_    = stats[2];
 
     // Walk every bucket; emit a RasterBatch for each with instance_count > 0.
     for (int ps = 0; ps < (int)parts_.size(); ++ps) {
@@ -714,11 +745,12 @@ int GpuCuller::draw_indirect() {
 
     // Read back stats.
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo_stats_);
-    uint32_t stats[2] = {0, 0};
+    uint32_t stats[3] = {0, 0, 0};
     glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(stats), stats);
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
-    stat_culled_  = stats[0];
-    stat_emitted_ = stats[1];
+    stat_culled_     = stats[0];
+    stat_culled_hiz_ = stats[1];
+    stat_emitted_    = stats[2];
 
     // Bind the xforms SSBO to binding 3 (DrawXforms in raster_gpu_driven.vs).
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, ssbo_xforms_);
@@ -783,12 +815,13 @@ void GpuCuller::reset() {
     xforms_cap_bytes_    = 0;
     total_xform_slots_   = 0;
     stat_culled_         = 0;
+    stat_culled_hiz_     = 0;
     stat_emitted_        = 0;
 
     // Re-initialize fixed-size buffers (keep same GL names to avoid re-init overhead).
     // ssbo_stats_: reset to zeros.
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo_stats_);
-    uint32_t zeros[2] = {0, 0};
+    uint32_t zeros[3] = {0, 0, 0};
     glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(zeros), zeros, GL_DYNAMIC_READ);
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
 
@@ -830,6 +863,7 @@ void GpuCuller::build_hiz(int screen_w, int screen_h) {
                 hiz_msaa_warned_ = true;
             }
             hiz_enabled_ = false;
+            hiz_valid_   = false;
             return;
         }
     }
@@ -841,6 +875,7 @@ void GpuCuller::build_hiz(int screen_w, int screen_h) {
         if (!program_hiz_) {
             printf("HiZ disabled: shader compile failed: %s\n", err.c_str());
             hiz_enabled_ = false;
+            hiz_valid_   = false;
             return;
         }
         uloc_hiz_src_mip_   = glGetUniformLocation(program_hiz_, "src_mip");
@@ -924,6 +959,34 @@ void GpuCuller::build_hiz(int screen_w, int screen_h) {
 
     // Downsample the remaining mips.
     downsample_pyramid();
+
+    // MATTER_HIZ_DEBUG=1: print min/max of a mid mip once per second-ish so a
+    // live run can confirm the depth blit produced a real pyramid (all-1.0 =
+    // blit failed / nothing drawn; min < 1 = scene depth landed).
+    static const bool hiz_debug = [] {
+        const char* e = getenv("MATTER_HIZ_DEBUG");
+        return e && e[0] == '1';
+    }();
+    if (hiz_debug) {
+        static int frame_ctr = 0;
+        if ((frame_ctr++ % 60) == 0) {
+            int mip = hiz_mip_levels_ > 5 ? 5 : hiz_mip_levels_ - 1;
+            int mw = (hiz_w_ >> mip) > 0 ? (hiz_w_ >> mip) : 1;
+            int mh = (hiz_h_ >> mip) > 0 ? (hiz_h_ >> mip) : 1;
+            std::vector<float> buf((size_t)mw * mh);
+            glBindTexture(GL_TEXTURE_2D, hiz_tex_);
+            glGetTexImage(GL_TEXTURE_2D, mip, GL_RED, GL_FLOAT, buf.data());
+            glBindTexture(GL_TEXTURE_2D, 0);
+            float mn = 1e9f, mx = -1e9f;
+            for (float v : buf) { if (v < mn) mn = v; if (v > mx) mx = v; }
+            printf("HIZ_DEBUG mip%d %dx%d min=%.6f max=%.6f\n", mip, mw, mh, mn, mx);
+            fflush(stdout);
+        }
+    }
+
+    // Pyramid is now current for this frame: the cull shader may consume it
+    // next frame (previous-frame occlusion, conservative).
+    hiz_valid_ = true;
 }
 
 // ---------------------------------------------------------------------------
