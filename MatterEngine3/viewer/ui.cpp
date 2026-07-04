@@ -1,6 +1,9 @@
 #include "ui.h"
 
 #include <cmath>
+#include <algorithm>
+#include <filesystem>
+#include <system_error>
 
 #include "imgui.h"
 #include "imgui_impl_glfw.h"
@@ -10,6 +13,41 @@
 #include <GLFW/glfw3.h>
 
 namespace viewer {
+
+std::vector<WorldEntry> scan_worlds(const std::string& examples_root) {
+    namespace fs = std::filesystem;
+    std::vector<WorldEntry> out;
+    std::error_code ec;
+
+    // examples_root/<demo>/
+    for (auto it = fs::directory_iterator(examples_root, ec);
+         !ec && it != fs::directory_iterator(); it.increment(ec)) {
+        const fs::path demo = it->path();
+        if (!fs::is_directory(demo, ec)) continue;
+
+        const fs::path schemas   = demo / "schemas";
+        const fs::path world_data = demo / "WorldData";
+        if (!fs::is_directory(schemas, ec) || !fs::is_directory(world_data, ec)) continue;
+
+        // examples_root/<demo>/WorldData/<world_name>/
+        std::error_code ec2;
+        for (auto wit = fs::directory_iterator(world_data, ec2);
+             !ec2 && wit != fs::directory_iterator(); wit.increment(ec2)) {
+            const fs::path world_dir = wit->path();
+            if (!fs::is_directory(world_dir, ec2)) continue;
+            WorldEntry e;
+            e.label          = world_dir.filename().string();
+            e.schemas_dir    = schemas.string();
+            e.world_data_dir = world_data.string();
+            e.world_name     = world_dir.filename().string();
+            out.push_back(std::move(e));
+        }
+    }
+
+    std::sort(out.begin(), out.end(),
+              [](const WorldEntry& a, const WorldEntry& b) { return a.label < b.label; });
+    return out;
+}
 
 void Ui::setup() {
     IMGUI_CHECKVERSION();
