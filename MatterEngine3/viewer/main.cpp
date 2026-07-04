@@ -13,6 +13,8 @@
 #include "probe_texture.h"
 #include "ui.h"
 
+#include <algorithm>   // std::transform
+#include <cctype>      // std::tolower
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -26,6 +28,23 @@
 #include <unistd.h>     // read, close, unlink
 
 using namespace viewer;
+
+static void apply_world_resolver_defaults(const std::string& world_name,
+                                          SectorLodResolver& sec,
+                                          ViewerStats& stats) {
+    // Per-world resolver knobs: the Meadow spans ~256x256 units and needs a
+    // wider active radius plus sub-pixel culling; every other world uses the
+    // tight defaults.
+    if (world_name == "Meadow") {
+        sec.set_active_radius(400.0f);
+        sec.set_min_projected_size(0.0015f);   // ~1 px at 720p (fov/height)
+        stats.resolver_choice = 1;             // SectorLod by default
+    } else {
+        sec.set_active_radius(64.0f);
+        sec.set_min_projected_size(0.0f);
+        stats.resolver_choice = 0;             // PassThrough by default
+    }
+}
 
 int main() {
     const bool use_rt = getenv("MATTER_RT") != nullptr;
@@ -73,30 +92,34 @@ int main() {
         }
     }
 
+    // Pick the initial world from the scanned list. MATTER_WORLD (case-
+    // insensitive match against world_name) overrides the default; unknown
+    // value falls through to index 0.
+    int initial_world = 0;
+    if (const char* world_env = getenv("MATTER_WORLD")) {
+        std::string want = world_env;
+        std::transform(want.begin(), want.end(), want.begin(),
+                       [](unsigned char c) { return std::tolower(c); });
+        for (size_t i = 0; i < worlds.size(); ++i) {
+            std::string have = worlds[i].world_name;
+            std::transform(have.begin(), have.end(), have.begin(),
+                           [](unsigned char c) { return std::tolower(c); });
+            if (have == want) { initial_world = (int)i; break; }
+        }
+    }
+
     LocalProviderConfig cfg;
-    cfg.schemas_dir    = "../examples/world_demo/schemas";
-    cfg.world_data_dir = "../examples/world_demo/WorldData";
-    cfg.world_name     = "Demo";
+    cfg.schemas_dir    = worlds[initial_world].schemas_dir;
+    cfg.world_data_dir = worlds[initial_world].world_data_dir;
+    cfg.world_name     = worlds[initial_world].world_name;
     cfg.shared_lib_dir = "../shared-lib";
     cfg.cache_root     = "cache";   // persistent: viewer/cache/parts/<hash>.part
-
-    // MATTER_WORLD=primitives switches to the primitive-demo gallery (every DSL
-    // op) instead of the default tree scene; local_provider scatters it by name.
-    const char* world_env = getenv("MATTER_WORLD");
-    if (world_env && std::string(world_env) == "primitives") {
-        cfg.schemas_dir    = "../examples/primitive_demo/schemas";
-        cfg.world_data_dir = "../examples/primitive_demo/WorldData";
-        cfg.world_name     = "Primitives";
-    }
-    // MATTER_WORLD=meadow loads the dense meadow benchmark world (same
-    // world_demo schemas; the Meadow manifest root carries the expand flag).
-    const bool meadow = world_env && std::string(world_env) == "meadow";
-    if (meadow) cfg.world_name = "Meadow";
 
     auto provider = std::make_unique<LocalProvider>(cfg);
 
     // --- Connect sequence (reusable for the reload button). ---
     ViewerStats stats{};
+    stats.world_current = initial_world;
     WorldManifest manifest;
     WorldState state;
     std::unique_ptr<PartStore> store;
@@ -192,14 +215,10 @@ int main() {
     if (!connect_sequence()) return 1;
 
     PassThroughResolver pass;
-    // Per-world resolver config: the Meadow spans ~256x256 units, so activate
-    // sectors across the whole world and floor-cull sub-pixel parts (grass/
-    // pebbles self-cull at distance; their epsilon ladders stop well above 1 px).
-    const float kActiveRadius     = meadow ? 400.0f : 64.0f;
-    const float kMinProjectedSize = meadow ? 0.0015f : 0.0f;   // ~1 px at 720p (fov/height)
-    SectorLodResolver sec(16.0f, kActiveRadius);
-    sec.set_min_projected_size(kMinProjectedSize);
-    if (meadow) stats.resolver_choice = 1;   // SectorLod by default for the benchmark
+    // Constructor radius is overwritten immediately by apply_world_resolver_defaults;
+    // the placeholder 64.0f keeps the resolver in a valid state before the first call.
+    SectorLodResolver sec(16.0f, 64.0f);
+    apply_world_resolver_defaults(cfg.world_name, sec, stats);
 
     // RT mode only: populate the TLAS and warm up the raytrace shader so the GPU
     // compile stall happens here (with startup logging) instead of on the first
@@ -386,10 +405,24 @@ int main() {
         }
 
         if (stats.world_switch_requested >= 0) {
-            printf("DBG: world switch requested -> [%d] %s\n",
-                   stats.world_switch_requested,
-                   worlds[stats.world_switch_requested].label.c_str());
-            stats.world_switch_requested = -1;   // consume so it doesn't spam
+            int idx = stats.world_switch_requested;
+            stats.world_switch_requested = -1;
+            if (idx < (int)worlds.size()) {
+                const auto& w = worlds[idx];
+                printf("world switch -> [%d] %s\n", idx, w.label.c_str());
+                cfg.schemas_dir    = w.schemas_dir;
+                cfg.world_data_dir = w.world_data_dir;
+                cfg.world_name     = w.world_name;
+                // LocalProvider takes cfg by value at construction — mutating cfg
+                // alone doesn't reach the existing provider instance.
+                provider = std::make_unique<LocalProvider>(cfg);
+                // Re-enable the cursor before rebuilding so a failure can't strand it
+                // (mirrors the reload path).
+                if (camera_capture) { camera_capture = false; EnableCursor(); }
+                if (!connect_sequence()) { printf("world switch failed; exiting\n"); break; }
+                stats.world_current = idx;
+                apply_world_resolver_defaults(cfg.world_name, sec, stats);
+            }
         }
 
         if (quit_requested) break;
