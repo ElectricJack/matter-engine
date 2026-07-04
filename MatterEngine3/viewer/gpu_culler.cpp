@@ -637,10 +637,12 @@ std::vector<RasterBatch> GpuCuller::readback_batches(PartStore& store) {
 
                 RasterBatch b;
                 b.part_hash     = pg.part_hash;
-                // cluster_index: UINT32_MAX for synthetic whole-part, else real cluster index.
+                // cluster_index: UINT32_MAX for synthetic whole-part, else LOCAL cluster
+                // index within the part (ci). ensure_mesh uses this to index into
+                // lp->clusters[ci].lod_mesh[level], so it must be per-part-local, NOT global.
                 b.cluster_index = (pg.cluster_count == 1 &&
                                    cluster_staging_[global_ci].cluster_index == 0xFFFFFFFFu)
-                                  ? UINT32_MAX : global_ci;
+                                  ? UINT32_MAX : ci;
                 b.level = lv;
 
                 uint32_t base = cmd.base_instance;

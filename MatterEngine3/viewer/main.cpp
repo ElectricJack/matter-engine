@@ -13,6 +13,8 @@
 #include "probe_texture.h"
 #include "ui.h"
 #include "gl46.h"
+#include "gpu_culler.h"
+#include "raster_cull.h"
 
 #include <algorithm>   // std::transform
 #include <cctype>      // std::tolower
@@ -89,7 +91,6 @@ int main() {
         gpu_cull = true;
         printf("GPU cull path: enabled (GL 4.6 ok)\n");
     }
-    (void)gpu_cull;
 
     // MATTER_CAM="px,py,pz,tx,ty,tz" overrides the initial camera (eye + target),
     // so a headless screenshot can frame an arbitrarily sized scene without a
@@ -227,6 +228,20 @@ int main() {
     };
     if (!connect_sequence()) return 1;
 
+    // GPU culler: constructed and initialized ONLY when the GL 4.6 gate passed.
+    // Must be initialized after InitWindow (GL context live) and after connect_sequence
+    // (GL state settled). FATAL on init failure per task spec.
+    GpuCuller gpu_culler;
+    if (gpu_cull) {
+        std::string cull_err;
+        if (!gpu_culler.init(cull_err)) {
+            fprintf(stderr, "FATAL: GpuCuller::init failed: %s\n", cull_err.c_str());
+            return 1;
+        }
+        printf("GpuCuller: initialized\n");
+        stats.gpu_cull_active = true;
+    }
+
     PassThroughResolver pass;
     // Constructor radius is overwritten immediately by apply_world_resolver_defaults;
     // the placeholder 64.0f keeps the resolver in a valid state before the first call.
@@ -343,7 +358,22 @@ int main() {
             auto t0 = std::chrono::steady_clock::now();
             auto resolved = resolver.resolve(state, lods, cam);
             auto t1 = std::chrono::steady_clock::now();
-            batches = raster->build_batches(resolved, *store, renderer.camera(), state.version());
+            if (gpu_cull) {
+                float eye[3]     = {cp.x, cp.y, cp.z};
+                Vector3 tgt      = renderer.camera().target;
+                float target3[3] = {tgt.x, tgt.y, tgt.z};
+                float up3[3]     = {0, 1, 0};
+                float aspect     = (float)GetScreenWidth() / (float)GetScreenHeight();
+                float planes[6][4];
+                viewer::camera_frustum_planes_raw(eye, target3, up3,
+                        renderer.camera().fovy, aspect, planes);
+                gpu_culler.cull(resolved, *store, eye, planes, stats.pixel_budget);
+                batches = gpu_culler.readback_batches(*store);   // Stage-1 bridge
+                stats.gpu_emitted = (int)gpu_culler.emitted();
+                stats.gpu_culled  = (int)gpu_culler.culled_clusters();
+            } else {
+                batches = raster->build_batches(resolved, *store, renderer.camera(), state.version());
+            }
             auto t2 = std::chrono::steady_clock::now();
             stats.resolve_ms = std::chrono::duration<float, std::milli>(t1 - t0).count();
             stats.build_ms   = std::chrono::duration<float, std::milli>(t2 - t1).count();

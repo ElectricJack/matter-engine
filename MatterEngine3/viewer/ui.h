@@ -50,6 +50,10 @@ struct ViewerStats {
     float    draw_ms    = 0.0f;   // RasterComposer::draw (CPU submit side)
     // Probe status: dims[0..2] = nx,ny,nz from the grid (all zero = probes OFF/unavailable)
     int      probe_dims[3] = {0,0,0};
+    // GPU cull HUD (Task 7): active only when MATTER_GPU_CULL=1 + GL 4.6 ok.
+    bool     gpu_cull_active = false;
+    int      gpu_emitted = 0;   // clusters that passed the cull this frame
+    int      gpu_culled  = 0;   // clusters rejected by the cull this frame
     // Writable: runtime LOD quality/speed dial. main propagates it to the
     // resolver + composer each frame; also settable via FIFO `budget <f>`.
     float    pixel_budget = 1.0f;
