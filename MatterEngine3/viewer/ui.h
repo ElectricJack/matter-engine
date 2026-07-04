@@ -2,10 +2,26 @@
 #define VIEWER_UI_H
 
 #include <cstdint>
+#include <string>
+#include <vector>
 
 #include "raylib.h"   // Camera3D for the orbit panel
 
 namespace viewer {
+
+// One available world for the runtime picker. Populated by scan_worlds at
+// startup; consumed by draw_worlds_panel and the main-loop switch handler.
+struct WorldEntry {
+    std::string label;           // display name (WorldData/ subdir name)
+    std::string schemas_dir;     // e.g. "../examples/world_demo/schemas"
+    std::string world_data_dir;  // e.g. "../examples/world_demo/WorldData"
+    std::string world_name;      // e.g. "Demo"
+};
+
+// Scan a root like "../examples" for available worlds. Every subdirectory
+// <demo>/ that contains both schemas/ and WorldData/ contributes one entry
+// per subdirectory of WorldData/. Sorted by label.
+std::vector<WorldEntry> scan_worlds(const std::string& examples_root);
 
 // Read-only stats the HUD displays each frame; the resolver selector is the one
 // field the panel writes back. Everything else is filled by main/composer/provider.
@@ -37,6 +53,10 @@ struct ViewerStats {
     // Writable: runtime LOD quality/speed dial. main propagates it to the
     // resolver + composer each frame; also settable via FIFO `budget <f>`.
     float    pixel_budget = 1.0f;
+    // World picker: main sets `world_current` after each connect; panel writes
+    // `world_switch_requested` (index into the enumerated worlds list, -1 = none).
+    int      world_current = 0;
+    int      world_switch_requested = -1;
 };
 
 class Ui {
@@ -49,6 +69,9 @@ public:
     // MSL-style orbit/zoom controls: navigate the view without locking the cursor
     // or using WASD (works over remote desktop). Mutates the camera in place.
     void draw_camera_panel(Camera3D& cam);
+    // Standalone panel listing available worlds as buttons. Clicking a non-current
+    // world sets stats.world_switch_requested; main handles the swap next frame.
+    void draw_worlds_panel(const std::vector<WorldEntry>& worlds, ViewerStats& stats);
 };
 
 } // namespace viewer
