@@ -39,6 +39,29 @@ Decisions locked during design:
 - Previous-frame HiZ (temporal); a 1-frame conservative-cull pop after camera
   cuts is accepted.
 
+## Amendments (planning phase, 2026-07-03)
+
+Three facts discovered while writing the implementation plan
+(`docs/superpowers/plans/2026-07-03-gpu-instancing-culling.md`) change
+mechanics but not architecture. Where this section conflicts with text
+below, this section wins.
+
+1. **`glMultiDrawArraysIndirect`, not `...ElementsIndirect`.**
+   `RasterMeshData` is non-indexed triangle soup — no IBO exists anywhere in
+   the raster path. The mesh atlas is a VBO only; `MeshRange` =
+   `{first_vertex, vertex_count}`; the indirect command is the 16-byte
+   `DrawArraysIndirectCommand`. All `MultiDrawElementsIndirect` references
+   below read accordingly.
+2. **GL uploads live in `GpuCuller`, not `PartStore`.** `PartStore` is
+   GL-free today and is compiled into headless tests. It gains only the
+   CPU-side expansion table; mesh-atlas and ClusterMeta uploads happen
+   lazily in `GpuCuller` per part_hash (the same laziness `ensure_mesh` has
+   now). Stage 0 folds into Stages 1's GpuCuller work.
+3. **Fragment shader is runtime-patched, not duplicated.** The GPU path
+   loads the MSL-owned `shaders/raster.fs`, string-replaces `#version 330`
+   with `#version 460`, and compiles via `LoadShaderFromMemory` — no forked
+   fragment shader to drift out of sync.
+
 ## Architecture
 
 Three components change; one is new.
