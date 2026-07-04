@@ -37,6 +37,18 @@ int main() {
 
     Ui ui; ui.setup();
 
+    auto worlds = scan_worlds("../examples");
+    printf("worlds available (%d):\n", (int)worlds.size());
+    for (size_t i = 0; i < worlds.size(); ++i) {
+        printf("  [%zu] %s  (%s / %s)\n",
+               i, worlds[i].label.c_str(),
+               worlds[i].schemas_dir.c_str(), worlds[i].world_data_dir.c_str());
+    }
+    if (worlds.empty()) {
+        printf("FATAL: no worlds found under ../examples\n");
+        return 1;
+    }
+
     Renderer renderer;
     renderer.init_camera();   // always: sets camera defaults used in both modes
     std::string err;
@@ -326,6 +338,7 @@ int main() {
             }
             ui.begin_frame();
             ui.draw_debug_panel(stats);
+            ui.draw_worlds_panel(worlds, stats);
             ui.draw_camera_panel(renderer.camera());
             ui.end_frame();
         EndDrawing();
@@ -370,6 +383,13 @@ int main() {
             // connect_sequence replaces `store`/`composer`; if it fails partway the
             // old composer would dangle, so bail the loop and shut down cleanly.
             if (!connect_sequence()) { printf("reload failed; exiting\n"); break; }
+        }
+
+        if (stats.world_switch_requested >= 0) {
+            printf("DBG: world switch requested -> [%d] %s\n",
+                   stats.world_switch_requested,
+                   worlds[stats.world_switch_requested].label.c_str());
+            stats.world_switch_requested = -1;   // consume so it doesn't spam
         }
 
         if (quit_requested) break;
