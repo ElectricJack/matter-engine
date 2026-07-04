@@ -125,6 +125,10 @@ private:
     // Running total of xform slots allocated across all parts (P1 regions).
     uint32_t total_xform_slots_ = 0;
 
+    // Per-frame active part slots: set in cull(), consumed in draw_indirect().
+    // active_slots_[i] == 1 iff part slot i received >=1 GpuInstanceRec this frame.
+    std::vector<uint8_t> active_slots_;
+
     // HUD stats populated by readback_batches() or draw_indirect().
     size_t stat_culled_  = 0;
     size_t stat_emitted_ = 0;

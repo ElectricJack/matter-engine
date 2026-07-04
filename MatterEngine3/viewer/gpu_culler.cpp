@@ -471,7 +471,10 @@ bool GpuCuller::cull(const std::vector<ResolvedInstance>& resolved,
         }
     }
 
-    if (expanded.empty()) return false;
+    if (expanded.empty()) {
+        active_slots_.assign(parts_.size(), 0);
+        return false;
+    }
 
     // ------------------------------------------------------------------
     // Overflow check: if any part's resolved count > region_cap, grow that
@@ -491,8 +494,11 @@ bool GpuCuller::cull(const std::vector<ResolvedInstance>& resolved,
     if (regions_dirty) recompute_regions();
 
     // ------------------------------------------------------------------
-    // Build GpuInstanceRec staging vector.
+    // Build GpuInstanceRec staging vector and record active part slots.
     // ------------------------------------------------------------------
+    // Clear active_slots_ for this frame; mark slots that receive >= 1 record.
+    active_slots_.assign(parts_.size(), 0);
+
     std::vector<GpuInstanceRec> inst_recs;
     inst_recs.reserve(expanded.size());
 
@@ -507,6 +513,8 @@ bool GpuCuller::cull(const std::vector<ResolvedInstance>& resolved,
         rec.cluster_start  = pg.cluster_start;
         rec.cluster_count  = pg.cluster_count;
         inst_recs.push_back(rec);
+
+        active_slots_[(size_t)ei.part_slot] = 1;
     }
 
     uint32_t n_records = (uint32_t)inst_recs.size();
@@ -705,8 +713,11 @@ int GpuCuller::draw_indirect() {
     glBindBuffer(GL_DRAW_INDIRECT_BUFFER, ssbo_cmds_);
 
     int total_tris = 0;
-    for (const auto& pg : parts_) {
+    for (int ps = 0; ps < (int)parts_.size(); ++ps) {
+        const PartGpu& pg = parts_[ps];
         if (pg.vao == 0) continue;
+        // Skip parts that received no instances this frame (zero indirect cmds).
+        if (ps >= (int)active_slots_.size() || active_slots_[(size_t)ps] == 0) continue;
         glBindVertexArray(pg.vao);
 
         // Part's command range starts at cluster_start * kMaxLod in the cmd array.

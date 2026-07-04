@@ -211,7 +211,9 @@ int main() {
         if (!use_rt && gpu_cull) {
             std::string gerr;
             if (!raster->init_gpu_driven(gerr)) {
-                printf("gpu_driven shader: %s (non-fatal, falling back to CPU draw)\n", gerr.c_str());
+                printf("WARNING: GPU-driven shader init failed (%s); falling back to CPU raster path\n",
+                       gerr.c_str());
+                gpu_cull = false;
             }
         }
         // Upload world lights to the raytrace shader (no-op in raster mode because
