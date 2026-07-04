@@ -12,6 +12,7 @@
 #include "raster_composer.h"
 #include "probe_texture.h"
 #include "ui.h"
+#include "gl46.h"
 
 #include <algorithm>   // std::transform
 #include <cctype>      // std::tolower
@@ -77,6 +78,18 @@ int main() {
             return 1;
         }
     }
+
+    bool gpu_cull = false;
+    if (viewer::gpu_cull_requested()) {
+        std::string why;
+        if (!viewer::gl46_available(why)) {
+            fprintf(stderr, "FATAL: MATTER_GPU_CULL=1 but %s. GPU cull path requires GL 4.6.\n", why.c_str());
+            return 1;
+        }
+        gpu_cull = true;
+        printf("GPU cull path: enabled (GL 4.6 ok)\n");
+    }
+    (void)gpu_cull;
 
     // MATTER_CAM="px,py,pz,tx,ty,tz" overrides the initial camera (eye + target),
     // so a headless screenshot can frame an arbitrarily sized scene without a
