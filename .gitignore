@@ -31,6 +31,9 @@ SurfaceLib/test_config
 .idea/
 *.swp
 
+# Claude Code / assistant tool state (regenerated locally)
+.claude/
+
 # Allow raylib's vendored static lib through the *.a exclusion (committed builds)
 !Libraries/raylib/build/**/libraylib.a
 !Libraries/raylib/src/libraylib.a
@@ -51,3 +54,18 @@ MatterEngine3/tests/part_graph_tests
 MatterEngine3/tests/part_graph_integration_tests
 MatterEngine3/tests/dsl_state_tests
 MatterEngine3/tests/script_host_bake_tests
+MatterEngine3/tests/dev_live_edit_tests
+MatterEngine3/tests/gallery_bake_tests
+MatterEngine3/tests/grass_lod_tests
+MatterEngine3/tests/iso_primitive_tests
+MatterEngine3/tests/lighting_tests
+MatterEngine3/tests/meadow_bake_check
+MatterEngine3/tests/meadow_bake_tests
+MatterEngine3/tests/polygon_triangulate_tests
+MatterEngine3/tests/triangle_variation_tests
+MatterEngine3/tests/*.log
+MatterEngine3/tests/sandbox/
+
+# Transient viewer screenshots + sentinel files (from FIFO shot capture)
+MatterEngine3/viewer/*.png
+MatterEngine3/viewer/*.png.done

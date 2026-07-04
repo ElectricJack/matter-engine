@@ -39,6 +39,14 @@ public:
     // frames when nothing changed. Transform bytes are NOT hashed: transforms only
     // change via world deltas, which bump world_version (Stage 1 — drops ~3.3 MB/frame
     // of FNV input).
+    //
+    // Invariant: PartStore contents referenced by `resolved` are stable across
+    // calls with the same fingerprint. In practice, any new part appearing in
+    // the resolved set arrives via a world delta (which bumps world_version and
+    // invalidates the cache); PartStore is otherwise read-only during a frame.
+    // If a future change introduces a code path that mutates a loaded part
+    // (e.g. re-load its BLAS handles) without a world_version bump, this cache
+    // will serve stale batches — extend the fingerprint accordingly.
     std::vector<RasterBatch> build_batches(
         const std::vector<ResolvedInstance>& resolved,
         PartStore& store,
