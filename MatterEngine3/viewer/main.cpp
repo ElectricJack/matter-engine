@@ -50,7 +50,7 @@ int main() {
     const bool use_rt = getenv("MATTER_RT") != nullptr;
 
     const int W = 1280, H = 720;
-    SetConfigFlags(FLAG_MSAA_4X_HINT);
+    SetConfigFlags(FLAG_MSAA_4X_HINT | FLAG_WINDOW_RESIZABLE);
     InitWindow(W, H, "MatterEngine3 World Viewer");
     SetTargetFPS(60);
 
