@@ -25,6 +25,17 @@
 namespace viewer {
 
 // ---------------------------------------------------------------------------
+// release_hiz_objects — free HiZ GL objects (textures, FBO, program).
+// Called from destructor and when recreating on resize.
+// ---------------------------------------------------------------------------
+void GpuCuller::release_hiz_objects() {
+    if (depth_copy_tex_) { glDeleteTextures(1, &depth_copy_tex_); depth_copy_tex_ = 0; }
+    if (depth_fbo_)      { glDeleteFramebuffers(1, &depth_fbo_);  depth_fbo_      = 0; }
+    if (hiz_tex_)        { glDeleteTextures(1, &hiz_tex_);        hiz_tex_        = 0; }
+    // Note: program_hiz_ is compiled once and NOT released on resize — only on destroy.
+}
+
+// ---------------------------------------------------------------------------
 // Destructor
 // ---------------------------------------------------------------------------
 GpuCuller::~GpuCuller() {
@@ -38,6 +49,9 @@ GpuCuller::~GpuCuller() {
     if (ssbo_xforms_)    glDeleteBuffers(1, &ssbo_xforms_);
     if (ssbo_stats_)     glDeleteBuffers(1, &ssbo_stats_);
     if (program_cull_)   glDeleteProgram(program_cull_);
+    // HiZ objects (program_hiz_ + textures/FBO).
+    release_hiz_objects();
+    if (program_hiz_)    glDeleteProgram(program_hiz_);
 }
 
 // ---------------------------------------------------------------------------
@@ -791,6 +805,168 @@ void GpuCuller::reset() {
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo_xforms_);
     glBufferData(GL_SHADER_STORAGE_BUFFER, 1, nullptr, GL_DYNAMIC_COPY);
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
+}
+
+// ---------------------------------------------------------------------------
+// build_hiz — blit default-framebuffer depth into depth_copy_tex_, then copy
+// into hiz_tex_ mip 0 (R32F), then downsample_pyramid() for all remaining mips.
+//
+// Recreates textures/FBO when screen size changes.
+// No-op when hiz_enabled_ is false.
+// MSAA guard: if the default framebuffer has samples > 0, prints once and keeps
+// hiz_enabled_ false.
+// ---------------------------------------------------------------------------
+void GpuCuller::build_hiz(int screen_w, int screen_h) {
+    if (!hiz_enabled_) return;
+    if (screen_w <= 0 || screen_h <= 0) return;
+
+    // MSAA guard: if default FB is multisampled, HiZ blit is not valid.
+    {
+        GLint samples = 0;
+        glGetIntegerv(GL_SAMPLES, &samples);
+        if (samples > 0) {
+            if (!hiz_msaa_warned_) {
+                printf("HiZ disabled: MSAA framebuffer\n");
+                hiz_msaa_warned_ = true;
+            }
+            hiz_enabled_ = false;
+            return;
+        }
+    }
+
+    // Compile hiz_downsample.comp once.
+    if (!program_hiz_) {
+        std::string err;
+        program_hiz_ = compile_compute("shaders_gpu/hiz_downsample.comp", err);
+        if (!program_hiz_) {
+            printf("HiZ disabled: shader compile failed: %s\n", err.c_str());
+            hiz_enabled_ = false;
+            return;
+        }
+        uloc_hiz_src_mip_   = glGetUniformLocation(program_hiz_, "src_mip");
+        uloc_hiz_dst_size_  = glGetUniformLocation(program_hiz_, "dst_size");
+        uloc_hiz_copy_mode_ = glGetUniformLocation(program_hiz_, "copy_mode");
+    }
+
+    // Recreate textures/FBO if size changed.
+    if (screen_w != hiz_w_ || screen_h != hiz_h_) {
+        release_hiz_objects();   // releases depth_copy_tex_, depth_fbo_, hiz_tex_
+
+        hiz_w_ = screen_w;
+        hiz_h_ = screen_h;
+
+        // Compute mip chain length.
+        int maxdim = screen_w > screen_h ? screen_w : screen_h;
+        hiz_mip_levels_ = 1;
+        {
+            int d = maxdim;
+            while (d > 1) { d >>= 1; ++hiz_mip_levels_; }
+        }
+
+        // depth_copy_tex_: GL_DEPTH_COMPONENT24, no mips, used as blit destination.
+        // Must match the default framebuffer's depth format exactly for glBlitFramebuffer.
+        // The viewer window uses no explicit depth format and GLFW defaults to 24-bit depth.
+        glGenTextures(1, &depth_copy_tex_);
+        glBindTexture(GL_TEXTURE_2D, depth_copy_tex_);
+        glTexStorage2D(GL_TEXTURE_2D, 1, GL_DEPTH_COMPONENT24, screen_w, screen_h);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glBindTexture(GL_TEXTURE_2D, 0);
+
+        // depth_fbo_: wrap depth_copy_tex_ so we can blit into it.
+        // A depth-only FBO requires GL_NONE draw/read buffers to be complete.
+        glGenFramebuffers(1, &depth_fbo_);
+        glBindFramebuffer(GL_FRAMEBUFFER, depth_fbo_);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,
+                               GL_TEXTURE_2D, depth_copy_tex_, 0);
+        glDrawBuffer(GL_NONE);
+        glReadBuffer(GL_NONE);
+        GLenum fbo_status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+        if (fbo_status != GL_FRAMEBUFFER_COMPLETE)
+            printf("HiZ: depth_fbo_ incomplete: 0x%X\n", fbo_status);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+        // hiz_tex_: R32F with full mip chain.
+        glGenTextures(1, &hiz_tex_);
+        glBindTexture(GL_TEXTURE_2D, hiz_tex_);
+        glTexStorage2D(GL_TEXTURE_2D, hiz_mip_levels_, GL_R32F, screen_w, screen_h);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST_MIPMAP_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glBindTexture(GL_TEXTURE_2D, 0);
+    }
+
+    // Blit default-framebuffer depth -> depth_copy_tex_ via depth_fbo_.
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, depth_fbo_);
+    glBlitFramebuffer(0, 0, screen_w, screen_h,
+                      0, 0, screen_w, screen_h,
+                      GL_DEPTH_BUFFER_BIT, GL_NEAREST);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+
+    // Copy pass: depth_copy_tex_ (depth, mip 0) -> hiz_tex_ mip 0 (R32F).
+    // Uses copy_mode=1: 1:1 texelFetch of the depth texture, no 2x2 reduce.
+    glUseProgram(program_hiz_);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, depth_copy_tex_);
+    glUniform1i(glGetUniformLocation(program_hiz_, "src"), 0);
+    glBindImageTexture(1, hiz_tex_, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_R32F);
+    glUniform1i(uloc_hiz_src_mip_,   0);
+    glUniform1i(uloc_hiz_copy_mode_, 1);   // 1:1 copy
+    glUniform2i(uloc_hiz_dst_size_,  screen_w, screen_h);
+
+    uint32_t gx = ((uint32_t)screen_w + 7) / 8;
+    uint32_t gy = ((uint32_t)screen_h + 7) / 8;
+    glDispatchCompute(gx, gy, 1);
+    glMemoryBarrier(GL_TEXTURE_FETCH_BARRIER_BIT | GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+    glUseProgram(0);
+    glBindTexture(GL_TEXTURE_2D, 0);
+
+    // Downsample the remaining mips.
+    downsample_pyramid();
+}
+
+// ---------------------------------------------------------------------------
+// downsample_pyramid — run max-reduce from mip 0 through mip (levels-1).
+// Can be called directly by tests after manually filling mip 0 via glTexSubImage2D.
+// Requires hiz_tex_ and program_hiz_ to be valid.
+// ---------------------------------------------------------------------------
+void GpuCuller::downsample_pyramid() {
+    if (!hiz_tex_ || !program_hiz_) return;
+    if (hiz_mip_levels_ <= 1) return;
+
+    glUseProgram(program_hiz_);
+
+    // Bind hiz_tex_ as sampler at unit 0.
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, hiz_tex_);
+    glUniform1i(glGetUniformLocation(program_hiz_, "src"), 0);
+    glUniform1i(uloc_hiz_copy_mode_, 0);   // 2x2 max-reduce
+
+    // Keep BASE_LEVEL=0, MAX_LEVEL=full so texelFetch can access any level.
+    // Simultaneous read of mip i-1 and write to mip i is defined when levels differ
+    // and glMemoryBarrier separates dispatches (GL 4.6 spec).
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, 0);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL,  hiz_mip_levels_ - 1);
+
+    for (int i = 1; i < hiz_mip_levels_; ++i) {
+        // Destination mip i dimensions.
+        int dst_w = (hiz_w_ >> i) > 0 ? (hiz_w_ >> i) : 1;
+        int dst_h = (hiz_h_ >> i) > 0 ? (hiz_h_ >> i) : 1;
+
+        glBindImageTexture(1, hiz_tex_, i, GL_FALSE, 0, GL_WRITE_ONLY, GL_R32F);
+
+        glUniform1i(uloc_hiz_src_mip_,  i - 1);
+        glUniform2i(uloc_hiz_dst_size_, dst_w, dst_h);
+
+        uint32_t gx = ((uint32_t)dst_w + 7) / 8;
+        uint32_t gy = ((uint32_t)dst_h + 7) / 8;
+        glDispatchCompute(gx, gy, 1);
+        glMemoryBarrier(GL_TEXTURE_FETCH_BARRIER_BIT | GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+    }
+
+    glBindTexture(GL_TEXTURE_2D, 0);
+    glUseProgram(0);
 }
 
 } // namespace viewer

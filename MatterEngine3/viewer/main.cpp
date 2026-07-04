@@ -419,6 +419,9 @@ int main() {
                 stats.draw_ms = std::chrono::duration<float, std::milli>(
                                     std::chrono::steady_clock::now() - d0).count();
             }
+            // Build HiZ depth max-pyramid for next-frame occlusion culling (Task 9).
+            // hiz_enabled_ is false by default; no visual change this task.
+            if (gpu_cull) gpu_culler.build_hiz(GetScreenWidth(), GetScreenHeight());
             ui.begin_frame();
             ui.draw_debug_panel(stats);
             ui.draw_worlds_panel(worlds, stats);

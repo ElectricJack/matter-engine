@@ -72,7 +72,30 @@ public:
     // Releases per-part VAO/VBO objects, clears bookkeeping, re-initializes fixed
     // buffers in-place.  After reset(), ensure_part() must be called again for all
     // parts in the new world.
+    // NOTE: HiZ textures/FBO are screen-sized (not world-sized) and are intentionally
+    // kept across reset() to avoid recreating them on every world switch.
     void reset();
+
+    // -----------------------------------------------------------------------
+    // HiZ depth max-pyramid.
+    // build_hiz(): blit the default framebuffer depth into an R32F mip chain,
+    // then downsample a max-pyramid with one compute dispatch per mip level.
+    // Called at end-of-frame (after 3D draw, before UI).  No-op when hiz_enabled_
+    // is false (default).  Recreates textures/FBO on resize.
+    // -----------------------------------------------------------------------
+    void build_hiz(int screen_w, int screen_h);
+
+    // Expose the mip-0-copy-then-downsample chain without the depth blit, so
+    // tests can upload a synthetic pattern to hiz_tex_ mip 0 and verify the
+    // reduce math directly.  build_hiz() calls this internally after the blit.
+    void downsample_pyramid();
+
+    void set_hiz_enabled(bool v) { hiz_enabled_ = v; }
+    bool hiz_enabled() const     { return hiz_enabled_; }
+
+    // Test hook: returns the hiz_tex_ GL name so tests can upload synthetic
+    // patterns into mip 0 and verify the reduce math without a depth blit.
+    unsigned hiz_tex_for_test() const { return hiz_tex_; }
 
     // HUD counters (valid after readback_batches() or draw_indirect()).
     size_t culled_clusters() const { return stat_culled_; }
@@ -132,6 +155,27 @@ private:
     // HUD stats populated by readback_batches() or draw_indirect().
     size_t stat_culled_  = 0;
     size_t stat_emitted_ = 0;
+
+    // -----------------------------------------------------------------------
+    // HiZ pyramid state (screen-sized; kept across reset()).
+    // -----------------------------------------------------------------------
+    bool     hiz_enabled_     = false;
+    bool     hiz_msaa_warned_ = false;   // print MSAA warning at most once
+    unsigned depth_copy_tex_  = 0;       // GL_DEPTH_COMPONENT32F, no mips
+    unsigned depth_fbo_       = 0;       // FBO wrapping depth_copy_tex_
+    unsigned hiz_tex_         = 0;       // R32F, full mip chain (glTexStorage2D)
+    unsigned program_hiz_     = 0;       // hiz_downsample.comp program
+    int      hiz_w_           = 0;       // cached width  (for resize detection)
+    int      hiz_h_           = 0;       // cached height (for resize detection)
+    int      hiz_mip_levels_  = 0;       // floor(log2(max(w,h)))+1
+    // Uniform locations on program_hiz_.
+    int      uloc_hiz_src_mip_    = -1;
+    int      uloc_hiz_dst_size_   = -1;
+    int      uloc_hiz_copy_mode_  = -1;
+
+    // Release HiZ GL objects (textures + FBO + program).
+    // Called from destructor and when reallocating on resize.
+    void release_hiz_objects();
 
     // --- Internal helpers ---
 
