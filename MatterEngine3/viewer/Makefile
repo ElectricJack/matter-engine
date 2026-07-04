@@ -29,7 +29,8 @@ LDLIBS  = ../../Libraries/raylib/build/linux/libraylib.a
 VIEWER_SRC = main.cpp renderer.cpp ui.cpp \
              world_state.cpp part_store.cpp resolvers.cpp \
              world_composer.cpp local_provider.cpp \
-             raster_mesh.cpp raster_composer.cpp probe_texture.cpp
+             raster_mesh.cpp raster_composer.cpp probe_texture.cpp \
+             gpu_culler.cpp
 
 # ME3 pipeline + MSL backend C++ sources (verbatim from tests/Makefile EXAMPLE_CPP,
 # minus example_world.cpp). Same dir depth, so the ../ paths are unchanged.
@@ -99,7 +100,7 @@ $(L_QJS_OBJ): $(L_DIR)/%.o: $(QJS_DIR)/%.c | $(L_DIR)
 $(L_PIPC_OBJ): $(L_DIR)/%.o: ../../MatterSurfaceLib/src/%.c | $(L_DIR)
 	gcc -c $< -o $@ -O2 -DPLATFORM_DESKTOP $(INCLUDE_PATHS) -MMD -MP
 
-viewer: shaders $(L_ALL_OBJ)
+viewer: shaders shaders_gpu_link $(L_ALL_OBJ)
 	$(CC) $(L_ALL_OBJ) -o viewer $(CFLAGS) $(LDFLAGS) $(LDLIBS)
 
 -include $(L_ALL_OBJ:.o=.d)
@@ -110,6 +111,12 @@ viewer: shaders $(L_ALL_OBJ)
 # silently mismatches the C++ TLAS texture layout (tiled reads vs single-row).
 shaders: regen-processed-shader
 	@[ -e shaders ] || ln -s ../../MatterSurfaceLib/shaders shaders
+
+# shaders_gpu/ is a real directory committed to the repo; it lives next to the
+# binary on Linux (no copy needed, the binary resolves relative paths from its
+# own directory).  Just ensure it exists (it always does after checkout).
+shaders_gpu_link:
+	@[ -d shaders_gpu ] || (echo "ERROR: shaders_gpu/ directory missing" && exit 1)
 
 # Rebuild MSL's shader preprocessor and re-flatten the processed fragment shader
 # so edits to bvh_tlas_common.glsl / materials.glsl / lighting.glsl take effect.
@@ -139,7 +146,7 @@ $(W_QJS_OBJ): $(W_DIR)/%.o: $(QJS_DIR)/%.c | $(W_DIR)
 $(W_PIPC_OBJ): $(W_DIR)/%.o: ../../MatterSurfaceLib/src/%.c | $(W_DIR)
 	$(WIN_CC) -c $< -o $@ -O2 -DPLATFORM_DESKTOP $(INCLUDE_PATHS) -MMD -MP
 
-windows: win-shaders $(W_ALL_OBJ)
+windows: win-shaders win-shaders-gpu $(W_ALL_OBJ)
 	$(WIN_CXX) $(W_ALL_OBJ) -o viewer.exe $(CFLAGS) -static $(WIN_RAYLIB) $(WIN_LIBS)
 
 -include $(W_ALL_OBJ:.o=.d)
@@ -150,7 +157,14 @@ windows: win-shaders $(W_ALL_OBJ)
 win-shaders: regen-processed-shader
 	@rm -rf shaders && cp -r ../../MatterSurfaceLib/shaders shaders
 
+# shaders_gpu/ is a real directory committed to the repo; it lives next to viewer.exe
+# already (viewer.exe is output to the same viewer/ dir, same as on Linux).
+# No copy needed: the .exe resolves "shaders_gpu/cull.comp" relative to cwd, which is
+# this directory when launched from MatterEngine3\viewer\ on Windows.
+win-shaders-gpu:
+	@[ -d shaders_gpu ] || (echo "ERROR: shaders_gpu/ directory missing" && exit 1)
+
 clean:
 	rm -rf viewer viewer.exe shaders build
 
-.PHONY: viewer windows clean shaders win-shaders regen-processed-shader
+.PHONY: viewer windows clean shaders shaders_gpu_link win-shaders win-shaders-gpu regen-processed-shader
