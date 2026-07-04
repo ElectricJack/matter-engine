@@ -8,6 +8,7 @@
 #include "../viewer/raster_mesh.h"
 #include "../viewer/raster_composer.h"
 #include "../viewer/raster_cull.h"
+#include "../viewer/gpu_cull_types.h"
 #include "lod_select.h"   // PartLodTable, PartLod
 #include "part_graph.h"   // PartGraph + FileModuleResolver/HostBaker (script-host guarded)
 #include "part_asset_v2.h"
@@ -1559,6 +1560,36 @@ static void test_frustum_planes_known_camera() {
     printf("  test_frustum_planes_known_camera OK\n");
 }
 
+// Task 3: GPU record types + packing
+static void test_transpose_to_gl_roundtrip() {
+    // Engine transform: translate(5,6,7) — translation at [3],[7],[11].
+    float t[16] = {1,0,0,5, 0,1,0,6, 0,0,1,7, 0,0,0,1};
+    float g[16];
+    viewer::transpose_to_gl(t, g);
+    // GL column-major memory: translation lands in the 4th column = g[12..14].
+    CHECK(g[12] == 5 && g[13] == 6 && g[14] == 7, "translation in GL column 3");
+    // shader (M*v).x for v=(0,0,0,1) = g[12] -> 5, matches transform_point x.
+    float ox, oy, oz;
+    viewer::transform_point(t, 0, 0, 0, ox, oy, oz);
+    CHECK(ox == 5 && oy == 6 && oz == 7, "transform_point agrees");
+    printf("  test_transpose_to_gl_roundtrip OK\n");
+}
+
+static void test_pack_cluster_thresholds() {
+    viewer::LoadedCluster cl{};
+    cl.aabb_min[0]=-1; cl.aabb_min[1]=-2; cl.aabb_min[2]=-3;
+    cl.aabb_max[0]= 1; cl.aabb_max[1]= 2; cl.aabb_max[2]= 3;
+    cl.radius = 3.74f;
+    cl.thresholds = {0.5f, 0.25f, 0.125f};
+    cl.lod_mesh   = {4, 7, 9};
+    auto m = viewer::pack_cluster(cl, 2, 5);
+    CHECK(m.lod_count == 3, "lod_count");
+    CHECK(m.thresholds[2] == 0.125f && m.lod_mesh_idx[1] == 7, "arrays copied");
+    CHECK(m.thresholds[3] > 1e38f, "tail thresholds are +inf");
+    CHECK(m.part_slot == 2 && m.cluster_index == 5, "ids");
+    printf("  test_pack_cluster_thresholds OK\n");
+}
+
 int main() {
     test_cull_transform_convention();
     test_world_state_version();
@@ -1594,6 +1625,9 @@ int main() {
     test_never_invisible_guarantee();
     // Task 1 (GPU culler): frustum/matrix helpers in raster_cull.h
     test_frustum_planes_known_camera();
+    // Task 3 (GPU culler): GPU record types + packing
+    test_transpose_to_gl_roundtrip();
+    test_pack_cluster_thresholds();
     delete g_shared_store; g_shared_store = nullptr;
     printf("\n%s\n", g_failures == 0 ? "viewer-logic OK" : "viewer-logic FAILED");
     return g_failures == 0 ? 0 : 1;
