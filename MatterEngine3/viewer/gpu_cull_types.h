@@ -2,7 +2,6 @@
 #define VIEWER_GPU_CULL_TYPES_H
 #include "part_store.h"
 #include <cstdint>
-#include <cstring>
 
 namespace viewer {
 
@@ -72,9 +71,14 @@ inline GpuClusterMeta pack_whole_part(const LoadedPart& lp, uint32_t part_slot) 
     uint32_t n = (uint32_t)lp.thresholds.size();
     if (n > (uint32_t)kMaxLod) n = kMaxLod;
     if (n == 0) { n = 1; m.thresholds[0] = 0.0f; m.lod_mesh_idx[0] = 0; }
-    else for (uint32_t i = 0; i < (uint32_t)kMaxLod; ++i) {
-        m.thresholds[i]   = (i < n) ? lp.thresholds[i] : 3.402823e38f;
-        m.lod_mesh_idx[i] = (i < n && i < lp.lod_mesh_data.size()) ? i : (n ? n - 1 : 0);
+    else for (uint32_t i = 0; i < n; ++i) {
+        m.thresholds[i]   = lp.thresholds[i];
+        m.lod_mesh_idx[i] = (i < lp.lod_mesh_data.size()) ? i : (n - 1);
+    }
+    // Fill the tail [n..kMaxLod) unconditionally to ensure unused slots are +inf.
+    for (uint32_t i = n; i < (uint32_t)kMaxLod; ++i) {
+        m.thresholds[i] = 3.402823e38f;
+        m.lod_mesh_idx[i] = 0;
     }
     m.lod_count = n;
     m.part_slot = part_slot;

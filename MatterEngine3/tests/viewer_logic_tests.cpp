@@ -1590,6 +1590,19 @@ static void test_pack_cluster_thresholds() {
     printf("  test_pack_cluster_thresholds OK\n");
 }
 
+static void test_pack_whole_part_zero_threshold() {
+    viewer::LoadedPart lp{};
+    lp.bound_radius = 5.0f;
+    lp.thresholds = {};  // Empty thresholds -> n == 0
+    lp.lod_mesh_data = {};
+    auto m = viewer::pack_whole_part(lp, 10);
+    CHECK(m.lod_count == 1, "lod_count for n==0");
+    CHECK(m.thresholds[0] == 0.0f, "synthetic threshold");
+    CHECK(m.thresholds[1] > 1e38f, "thresholds[1] is +inf");
+    CHECK(m.thresholds[8] > 1e38f, "thresholds[8] is +inf");
+    printf("  test_pack_whole_part_zero_threshold OK\n");
+}
+
 int main() {
     test_cull_transform_convention();
     test_world_state_version();
@@ -1628,6 +1641,7 @@ int main() {
     // Task 3 (GPU culler): GPU record types + packing
     test_transpose_to_gl_roundtrip();
     test_pack_cluster_thresholds();
+    test_pack_whole_part_zero_threshold();
     delete g_shared_store; g_shared_store = nullptr;
     printf("\n%s\n", g_failures == 0 ? "viewer-logic OK" : "viewer-logic FAILED");
     return g_failures == 0 ? 0 : 1;
