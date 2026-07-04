@@ -14,142 +14,18 @@
 
 namespace viewer {
 
-// ---------------------------------------------------------------------------
-// Row-major 4x4 multiply (same convention as world_composer.cpp:9).
-// ---------------------------------------------------------------------------
-static void mul16(const float* a, const float* b, float* out) {
-    for (int i = 0; i < 4; ++i)
-        for (int j = 0; j < 4; ++j) {
-            float s = 0;
-            for (int k = 0; k < 4; ++k) s += a[i*4+k] * b[k*4+j];
-            out[i*4+j] = s;
-        }
-}
-
-// ---------------------------------------------------------------------------
-// Frustum plane extraction (Gribb-Hartmann, row-major VP matrix).
-//
-// For a row-major matrix VP (row_i = row i of VP), the clip planes are:
-//   left   = row3 + row0
-//   right  = row3 - row0
-//   bottom = row3 + row1
-//   top    = row3 - row1
-//   near   = row3 + row2
-//   far    = row3 - row2
-// Each plane is (a, b, c, d) where ax+by+cz+d >= 0 means inside.
-//
-// The VP is produced by:
-//   view (row-major look-at) then proj (row-major perspective),
-//   combined as VP = view * proj.
-//
-// Plane storage: planes[6][4], each = {a,b,c,d}.
-// ---------------------------------------------------------------------------
-
-// Build a view matrix stored row-major in a float[16].
-// The C++ side composes matrices with row-major multiplies; row_major_to_matrix
-// memcpys these 16 floats into raylib's Matrix, whose field layout the GLSL shader
-// reads as column-major — the memcpy acts as an implicit transpose, so the shader
-// receives the standard column-vector look-at (model * vec4(...) convention).
-static void make_lookat(const float eye[3], const float target[3],
-                        const float up[3], float out[16]) {
-    // Forward = normalize(target - eye)
-    float fx = target[0]-eye[0], fy = target[1]-eye[1], fz = target[2]-eye[2];
-    float flen = std::sqrt(fx*fx + fy*fy + fz*fz);
-    if (flen < 1e-9f) flen = 1.0f;
-    fx /= flen; fy /= flen; fz /= flen;
-
-    // Right = normalize(forward x up)
-    float rx = fy*up[2] - fz*up[1];
-    float ry = fz*up[0] - fx*up[2];
-    float rz = fx*up[1] - fy*up[0];
-    float rlen = std::sqrt(rx*rx + ry*ry + rz*rz);
-    if (rlen < 1e-9f) rlen = 1.0f;
-    rx /= rlen; ry /= rlen; rz /= rlen;
-
-    // True up = right x forward
-    float ux = ry*fz - rz*fy;
-    float uy = rz*fx - rx*fz;
-    float uz = rx*fy - ry*fx;
-
-    // Row-major storage: out[i*4+j] = M[row=i, col=j].
-    // After memcpy-transpose via row_major_to_matrix, the shader sees column-major layout:
-    // col0=(right), col1=(up), col2=(-forward), col3=(translation) — standard GL column-vector look-at.
-    float dot_re = rx*eye[0]+ry*eye[1]+rz*eye[2];
-    float dot_ue = ux*eye[0]+uy*eye[1]+uz*eye[2];
-    float dot_fe = fx*eye[0]+fy*eye[1]+fz*eye[2];
-    out[0]=rx;   out[1]=ux;   out[2]=-fx;  out[3]=0;
-    out[4]=ry;   out[5]=uy;   out[6]=-fy;  out[7]=0;
-    out[8]=rz;   out[9]=uz;   out[10]=-fz; out[11]=0;
-    out[12]=-dot_re; out[13]=-dot_ue; out[14]=dot_fe; out[15]=1;
-}
-
-// Build a perspective projection matrix stored row-major in a float[16].
-// row_major_to_matrix memcpy-transposes it into raylib's Matrix so the shader
-// receives the standard column-vector OpenGL projection (gl_Position = mvp * world).
-// After the implicit transpose: w_clip = -v_view.z, z_clip = v_view.z*(-(f+n)/(f-n)) - 2fn/(f-n).
-static void make_perspective(float fovy_deg, float aspect,
-                              float near_z, float far_z, float out[16]) {
-    const float pi = 3.14159265358979323846f;
-    float fovy_rad = fovy_deg * pi / 180.0f;
-    float f = 1.0f / std::tan(fovy_rad * 0.5f);
-    float d = far_z - near_z;
-    // Row-major storage; after memcpy-transpose via row_major_to_matrix the shader receives the standard GL column-vector projection:
-    out[ 0]=f/aspect; out[ 1]=0; out[ 2]=0;                   out[ 3]=0;
-    out[ 4]=0;        out[ 5]=f; out[ 6]=0;                   out[ 7]=0;
-    out[ 8]=0;        out[ 9]=0; out[10]=-(far_z+near_z)/d;   out[11]=-1.0f;
-    out[12]=0;        out[13]=0; out[14]=-(2.0f*far_z*near_z)/d; out[15]=0;
-}
-
-// Extract 6 frustum planes from the row-major C++ VP matrix (Gribb-Hartmann).
-// planes[0..5][4] = {a,b,c,d}; point p is inside plane when dot(p,{a,b,c})+d >= 0.
-//
-// The C++ VP is stored row-major: vp[i*4+j] = VP[row=i, col=j].
-// For a column-vector clip transform (v_clip = VP_shader * v_world), the shader-side
-// matrix is the transpose of the C++ VP — so VP_shader's rows are the C++ VP's columns.
-// Gribb-Hartmann plane extraction reads VP_shader's rows, i.e. C++ VP's columns:
-//   col0 = {vp[0],vp[4],vp[8],vp[12]}, col3 = {vp[3],vp[7],vp[11],vp[15]}, etc.
-// Left (x+w>=0): col0+col3,  Right (w-x>=0): col3-col0,
-// Bottom (y+w>=0): col1+col3, Top (w-y>=0): col3-col1,
-// Near (z+w>=0): col2+col3,  Far (w-z>=0): col3-col2.
-static void extract_frustum_planes(const float vp[16], float planes[6][4]) {
-    // col0 = vp[0],vp[4],vp[8],vp[12]
-    // col1 = vp[1],vp[5],vp[9],vp[13]
-    // col2 = vp[2],vp[6],vp[10],vp[14]
-    // col3 = vp[3],vp[7],vp[11],vp[15]
-    // left  = col0 + col3
-    planes[0][0]=vp[0]+vp[3];  planes[0][1]=vp[4]+vp[7];
-    planes[0][2]=vp[8]+vp[11]; planes[0][3]=vp[12]+vp[15];
-    // right = col3 - col0
-    planes[1][0]=vp[3]-vp[0];  planes[1][1]=vp[7]-vp[4];
-    planes[1][2]=vp[11]-vp[8]; planes[1][3]=vp[15]-vp[12];
-    // bottom = col1 + col3
-    planes[2][0]=vp[1]+vp[3];  planes[2][1]=vp[5]+vp[7];
-    planes[2][2]=vp[9]+vp[11]; planes[2][3]=vp[13]+vp[15];
-    // top = col3 - col1
-    planes[3][0]=vp[3]-vp[1];  planes[3][1]=vp[7]-vp[5];
-    planes[3][2]=vp[11]-vp[9]; planes[3][3]=vp[15]-vp[13];
-    // near = col2 + col3
-    planes[4][0]=vp[2]+vp[3];  planes[4][1]=vp[6]+vp[7];
-    planes[4][2]=vp[10]+vp[11];planes[4][3]=vp[14]+vp[15];
-    // far  = col3 - col2
-    planes[5][0]=vp[3]-vp[2];  planes[5][1]=vp[7]-vp[6];
-    planes[5][2]=vp[11]-vp[10];planes[5][3]=vp[15]-vp[14];
-}
+// mul16 / make_lookat / make_perspective / extract_frustum_planes /
+// camera_frustum_planes_raw now live in raster_cull.h (GL-free, shared with
+// viewer_logic_tests and the upcoming GpuCuller compute path).
 
 // Build the 6 frustum planes from a Camera3D and viewport aspect.
-// fovy is in degrees (raylib convention).
+// Unpacks Camera3D fields and delegates to the GL-free raw version.
 static void camera_frustum_planes(const Camera3D& cam, float aspect,
                                   float planes[6][4]) {
-    const float near_z = 0.05f, far_z = 4000.0f;
     float eye[3]    = { cam.position.x, cam.position.y, cam.position.z };
     float target[3] = { cam.target.x,   cam.target.y,   cam.target.z   };
     float up[3]     = { cam.up.x,       cam.up.y,       cam.up.z       };
-
-    float view[16], proj[16], vp[16];
-    make_lookat(eye, target, up, view);
-    make_perspective(cam.fovy, aspect, near_z, far_z, proj);
-    mul16(view, proj, vp);
-    extract_frustum_planes(vp, planes);
+    camera_frustum_planes_raw(eye, target, up, cam.fovy, aspect, planes);
 }
 
 // transform_point / aabb_culled / inst_scale / cluster_lod_select live in

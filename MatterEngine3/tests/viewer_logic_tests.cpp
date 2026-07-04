@@ -1537,6 +1537,28 @@ static void test_cluster_budget_dial() {
     printf("  test_cluster_budget_dial OK\n");
 }
 
+static void test_frustum_planes_known_camera() {
+    // Camera at origin looking down -Z (engine convention: forward = target-eye).
+    float eye[3] = {0, 0, 0}, target[3] = {0, 0, -1}, up[3] = {0, 1, 0};
+    float planes[6][4];
+    viewer::camera_frustum_planes_raw(eye, target, up, 60.0f, 16.0f/9.0f, planes);
+    // A point straight ahead inside the frustum passes all 6 planes.
+    float p[3] = {0, 0, -10};
+    for (int i = 0; i < 6; ++i) {
+        float d = planes[i][0]*p[0] + planes[i][1]*p[1] + planes[i][2]*p[2] + planes[i][3];
+        CHECK(d >= 0.0f, "inside point passes plane");
+    }
+    // A point 1000 units behind the camera fails at least one plane.
+    float q[3] = {0, 0, 1000};
+    bool outside = false;
+    for (int i = 0; i < 6; ++i) {
+        float d = planes[i][0]*q[0] + planes[i][1]*q[1] + planes[i][2]*q[2] + planes[i][3];
+        if (d < 0.0f) outside = true;
+    }
+    CHECK(outside, "behind point fails a plane");
+    printf("  test_frustum_planes_known_camera OK\n");
+}
+
 int main() {
     test_cull_transform_convention();
     test_world_state_version();
@@ -1570,6 +1592,8 @@ int main() {
     test_cluster_budget_dial();
     // Task 10: never-invisible guarantee for large parts
     test_never_invisible_guarantee();
+    // Task 1 (GPU culler): frustum/matrix helpers in raster_cull.h
+    test_frustum_planes_known_camera();
     delete g_shared_store; g_shared_store = nullptr;
     printf("\n%s\n", g_failures == 0 ? "viewer-logic OK" : "viewer-logic FAILED");
     return g_failures == 0 ? 0 : 1;
