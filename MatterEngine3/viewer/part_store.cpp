@@ -1,4 +1,5 @@
 #include "part_store.h"
+#include "raster_cull.h"       // viewer::mul16
 
 #include "part_asset_v2.h"     // load_v2, cache_path_resolved, ChildInstance, LodLevels
 #include "lod_bake.h"          // lod_bake::bake_lods, BakeTargets
@@ -8,9 +9,42 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <functional>
 #include <sys/stat.h>
 
 namespace viewer {
+
+// ---------------------------------------------------------------------------
+// build_expansion implementation
+// ---------------------------------------------------------------------------
+
+static void expand_rec(uint64_t hash, const float parent_rel[16], int depth,
+                       const std::function<const viewer::LoadedPart*(uint64_t)>& getter,
+                       std::vector<viewer::ExpandedNode>& out) {
+    if (depth > 8) return;                        // matches raster_composer.cpp kMaxDepth
+    const viewer::LoadedPart* lp = getter(hash);
+    if (!lp) return;
+    if (!lp->lod_mesh_data.empty()) {
+        viewer::ExpandedNode n;
+        n.part_hash = hash;
+        memcpy(n.rel_transform, parent_rel, sizeof n.rel_transform);
+        out.push_back(n);
+    }
+    for (const auto& c : lp->children) {
+        float rel[16];
+        viewer::mul16(parent_rel, c.transform, rel);
+        expand_rec(c.child_resolved_hash, rel, depth + 1, getter, out);
+    }
+}
+
+void build_expansion(uint64_t root_hash,
+        const std::function<const LoadedPart*(uint64_t)>& getter,
+        std::vector<ExpandedNode>& out) {
+    static const float kIdentity[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
+    expand_rec(root_hash, kIdentity, 0, getter, out);
+}
+
+// ---------------------------------------------------------------------------
 
 PartStore::PartStore(std::string cache_root) : cache_root_(std::move(cache_root)) {}
 
@@ -260,6 +294,13 @@ const LoadedPart* PartStore::get_or_load(uint64_t part_hash) {
         LoadedPart flat;
         if (load_flat(part_hash, flat)) {
             auto ins = loaded_.emplace(part_hash, std::move(flat));
+            // Build expansion into a local vector first, then assign to avoid
+            // holding a reference across the recursive get_or_load calls that
+            // build_expansion may trigger. (std::map doesn't invalidate refs on
+            // insert, but the brief explicitly warns about this; be explicit.)
+            std::vector<ExpandedNode> exp;
+            build_expansion(part_hash, [this](uint64_t h){ return get_or_load(h); }, exp);
+            loaded_[part_hash].expansion = std::move(exp);
             return &ins.first->second;
         }
     }
@@ -347,6 +388,10 @@ const LoadedPart* PartStore::get_or_load(uint64_t part_hash) {
     }
 
     auto ins = loaded_.emplace(part_hash, std::move(lp));
+    // Build expansion into a local vector first (see flat path comment above).
+    std::vector<ExpandedNode> exp;
+    build_expansion(part_hash, [this](uint64_t h){ return get_or_load(h); }, exp);
+    loaded_[part_hash].expansion = std::move(exp);
     return &ins.first->second;
 }
 

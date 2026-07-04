@@ -7,12 +7,20 @@
 #include "raster_mesh.h"        // RasterMeshData
 
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <set>
 #include <string>
 #include <vector>
 
 namespace viewer {
+
+// A single drawable node in a part's precomputed expansion table.
+// Produced by build_expansion(); consumed by the GPU culler (Task 5+).
+struct ExpandedNode {
+    uint64_t part_hash;          // hash of the part that owns the drawable lod_mesh_data
+    float    rel_transform[16];  // engine row-major, relative to instance root
+};
 
 // Per-cluster data loaded from a v3 flat artifact.
 // aabb_min/aabb_max and radius describe the cluster's spatial extent (for Task 13
@@ -43,7 +51,17 @@ struct LoadedPart {
     std::vector<part_asset::ChildInstance> children;   // baked child-instance table (may be empty)
     std::vector<RasterMeshData> lod_mesh_data;  // parallel to lod_blas (CPU-only; GL upload is lazy)
     std::vector<LoadedCluster>  clusters;        // non-empty iff a v3 flat was loaded
+    std::vector<ExpandedNode>   expansion;       // precomputed flattened drawable nodes (Task 4)
 };
+
+// Precompute the flat list of drawable (part_hash, rel_transform) nodes for a
+// compositional part tree rooted at root_hash. The getter returns nullptr for
+// unloadable parts (their subtrees are skipped, matching build_batches behaviour).
+// Depth cap matches raster_composer.cpp kMaxDepth (8).
+// GL-free: suitable for headless tests and the GPU culler compute path.
+void build_expansion(uint64_t root_hash,
+                     const std::function<const LoadedPart*(uint64_t)>& getter,
+                     std::vector<ExpandedNode>& out);
 
 // Owns one BLASManager shared across all loaded parts. Content-addressed and
 // durable: a .part baked on a prior run is found on disk under cache_root/parts/.

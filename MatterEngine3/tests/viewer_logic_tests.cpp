@@ -1603,6 +1603,31 @@ static void test_pack_whole_part_zero_threshold() {
     printf("  test_pack_whole_part_zero_threshold OK\n");
 }
 
+// Task 4: per-part compositional expansion table
+static void test_build_expansion_leaf_and_children() {
+    using namespace viewer;
+    // Synthetic parts: root (mesh + 1 child), child (mesh, no children).
+    LoadedPart root{}, child{};
+    root.lod_mesh_data.resize(1);  root.lod_mesh_data[0].vertex_count = 3;
+    child.lod_mesh_data.resize(1); child.lod_mesh_data[0].vertex_count = 3;
+    part_asset::ChildInstance ci{};
+    ci.child_resolved_hash = 42;
+    float tr[16] = {1,0,0,10, 0,1,0,0, 0,0,1,0, 0,0,0,1};  // translate x+10
+    memcpy(ci.transform, tr, sizeof tr);
+    root.children.push_back(ci);
+    auto getter = [&](uint64_t h) -> const LoadedPart* {
+        if (h == 1) return &root;
+        if (h == 42) return &child;
+        return nullptr;
+    };
+    std::vector<ExpandedNode> out;
+    build_expansion(1, getter, out);
+    CHECK(out.size() == 2, "root node + child node");
+    CHECK(out[0].part_hash == 1 && out[0].rel_transform[3] == 0.0f, "root identity");
+    CHECK(out[1].part_hash == 42 && out[1].rel_transform[3] == 10.0f, "child offset");
+    printf("  test_build_expansion_leaf_and_children OK\n");
+}
+
 int main() {
     test_cull_transform_convention();
     test_world_state_version();
@@ -1642,6 +1667,8 @@ int main() {
     test_transpose_to_gl_roundtrip();
     test_pack_cluster_thresholds();
     test_pack_whole_part_zero_threshold();
+    // Task 4 (GPU culler): per-part compositional expansion table
+    test_build_expansion_leaf_and_children();
     delete g_shared_store; g_shared_store = nullptr;
     printf("\n%s\n", g_failures == 0 ? "viewer-logic OK" : "viewer-logic FAILED");
     return g_failures == 0 ? 0 : 1;
