@@ -25,6 +25,9 @@ INCLUDE_PATHS = -I../include -I../../MatterSurfaceLib/include -I$(RAYLIB_PATH) \
 LDFLAGS = -lGL -lm -lpthread -ldl -lrt -lX11
 LDLIBS  = ../../Libraries/raylib/build/linux/libraylib.a
 
+# Test-only sources excluded from VIEWER_SRC so `make viewer` doesn't link them.
+TEST_ONLY_SRC = gpu_cull_tests.cpp
+
 # Viewer units (GL-free logic + GL renderer/ui/main).
 VIEWER_SRC = main.cpp renderer.cpp ui.cpp \
              world_state.cpp part_store.cpp resolvers.cpp \
@@ -92,8 +95,15 @@ W_ALL_OBJ  = $(W_CPP_OBJ) $(W_QJS_OBJ) $(W_PIPC_OBJ)
 $(L_DIR) $(W_DIR):
 	mkdir -p $@
 
+# Test-only objects (compiled with same flags, but NOT part of L_ALL_OBJ so they
+# don't pollute the viewer link).
+TEST_CPP_NAMES = $(notdir $(TEST_ONLY_SRC))
+L_TEST_OBJ = $(addprefix $(L_DIR)/,$(TEST_CPP_NAMES:.cpp=.o))
+
 # ---- Linux compile rules
 $(L_CPP_OBJ): $(L_DIR)/%.o: %.cpp | $(L_DIR)
+	$(CC) -c $< -o $@ $(CXX_FLAGS_BUILD)
+$(L_TEST_OBJ): $(L_DIR)/%.o: %.cpp | $(L_DIR)
 	$(CC) -c $< -o $@ $(CXX_FLAGS_BUILD)
 $(L_QJS_OBJ): $(L_DIR)/%.o: $(QJS_DIR)/%.c | $(L_DIR)
 	gcc -c $< -o $@ -O2 -DCONFIG_VERSION='"0.10.0"' $(QJS_INC) -MMD -MP
@@ -102,6 +112,11 @@ $(L_PIPC_OBJ): $(L_DIR)/%.o: ../../MatterSurfaceLib/src/%.c | $(L_DIR)
 
 viewer: shaders shaders_gpu_link $(L_ALL_OBJ)
 	$(CC) $(L_ALL_OBJ) -o viewer $(CFLAGS) $(LDFLAGS) $(LDLIBS)
+
+# GPU cull parity test binary: same objects as viewer, minus main.o, plus gpu_cull_tests.o.
+GPU_TEST_OBJ = $(filter-out $(L_DIR)/main.o,$(L_ALL_OBJ)) $(L_TEST_OBJ)
+gpu-tests: shaders shaders_gpu_link $(GPU_TEST_OBJ)
+	$(CC) $(GPU_TEST_OBJ) -o gpu_tests $(CFLAGS) $(LDFLAGS) $(LDLIBS)
 
 -include $(L_ALL_OBJ:.o=.d)
 
@@ -165,6 +180,6 @@ win-shaders-gpu:
 	@[ -d shaders_gpu ] || (echo "ERROR: shaders_gpu/ directory missing" && exit 1)
 
 clean:
-	rm -rf viewer viewer.exe shaders build
+	rm -rf viewer viewer.exe gpu_tests shaders build
 
-.PHONY: viewer windows clean shaders shaders_gpu_link win-shaders win-shaders-gpu regen-processed-shader
+.PHONY: viewer windows gpu-tests clean shaders shaders_gpu_link win-shaders win-shaders-gpu regen-processed-shader

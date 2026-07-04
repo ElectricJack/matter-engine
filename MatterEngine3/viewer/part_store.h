@@ -83,6 +83,12 @@ public:
     // LOD table for the SectorResolver: radius + thresholds per loaded part.
     lod_select::PartLodTable part_lod_table() const;
 
+    // TEST-ONLY: register a pre-built LoadedPart under a hash without any disk I/O.
+    // Used by gpu_cull_tests to build synthetic fixtures. Not for production use.
+    void inject_for_test(uint64_t part_hash, LoadedPart lp) {
+        loaded_[part_hash] = std::move(lp);
+    }
+
 private:
     std::string disk_path(uint64_t part_hash) const;   // cache_root_ + "/parts/<hash>.part"
 
