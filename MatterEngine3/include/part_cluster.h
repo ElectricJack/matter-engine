@@ -21,4 +21,24 @@ std::vector<Cluster> split_clusters(std::vector<Tri>& tris,
                                     std::vector<TriEx>& triex,
                                     uint32_t target_tris = 16000);
 
+// Bake-hardening #3: centroid-only variant. Same algorithm as split_clusters
+// (recursive longest-axis centroid-median, deterministic tie-break by original
+// index), but consumes only per-triangle centroids and produces an out-of-
+// place permutation `order[]` — the caller applies the permutation to whichever
+// per-triangle stream it manages (tris, tickets into a source pool, etc.).
+// Returned Cluster records carry first_tri/tri_count in the FINAL permuted
+// layout; aabb_min/max are LEFT ZEROED because per-triangle vertices are not
+// available here — the caller must fill them from the materialized geometry
+// (see part_flatten.cpp Pass 2).
+//
+// Byte-identical to split_clusters when fed the same centroid stream: same
+// nth_element order (index tie-break), same emission order, same first_tri /
+// tri_count. Motivation: streaming flatten builds only the centroids in Pass 1
+// (28 bytes/tri) and permutes just the ticket array in Pass 2, instead of
+// materializing the whole ~160-bytes/tri Tri+TriEx buffer to feed
+// split_clusters.
+std::vector<Cluster> split_centroids(const std::vector<float3>& centroids,
+                                     std::vector<uint32_t>& order_out,
+                                     uint32_t target_tris = 16000);
+
 } // namespace part_cluster
