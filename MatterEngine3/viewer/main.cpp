@@ -154,7 +154,7 @@ int main() {
     // --- Connect sequence (reusable for the reload button). ---
     ViewerStats stats{};
     stats.world_current = initial_world;
-    // MATTER_HIZ=0|1 overrides the HiZ occlusion default (on) at startup, so
+    // MATTER_HIZ=0|1 overrides the HiZ occlusion default (off) at startup, so
     // A/B runs are scriptable without the FIFO. Runtime toggles: HUD checkbox
     // + FIFO `hiz on|off`. Only meaningful when the GPU cull path is active.
     if (const char* hz = getenv("MATTER_HIZ")) stats.hiz_enabled = (hz[0] != '0');

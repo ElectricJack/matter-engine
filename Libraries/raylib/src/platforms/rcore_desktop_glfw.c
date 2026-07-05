@@ -1436,8 +1436,12 @@ int InitPlatform(void)
     }
     else if (rlGetVersion() == RL_OPENGL_43)
     {
+        // MatterEngine3 patch: request 4.6 in the OPENGL_43 profile so the
+        // GPU-cull raster path gets gl_BaseInstance (GLSL 460). raylib's
+        // rlgl functionality is unchanged — the profile numbering just
+        // gates which entry points raylib itself uses.
         glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 4);          // Choose OpenGL major version (just hint)
-        glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);          // Choose OpenGL minor version (just hint)
+        glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 6);          // Choose OpenGL minor version (just hint)
         glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
         glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_FALSE);
 #if defined(RLGL_ENABLE_OPENGL_DEBUG_CONTEXT)

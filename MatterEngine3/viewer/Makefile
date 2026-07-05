@@ -11,7 +11,7 @@ MAKEFLAGS += -j$(JOBS)
 
 CC = g++
 CFLAGS = -std=c++17 -O2 -Wall -Wno-missing-braces -Wno-unused-variable \
-         -DPLATFORM_DESKTOP -DGRAPHICS_API_OPENGL_33
+         -DPLATFORM_DESKTOP -DGRAPHICS_API_OPENGL_43
 
 RAYLIB_PATH = ../../Libraries/raylib/src
 IMGUI_PATH  = ../../Libraries/imgui

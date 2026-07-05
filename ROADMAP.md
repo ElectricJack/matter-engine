@@ -1,4 +1,39 @@
 
+## Fix HiZ occlusion false-positives (default is OFF because of this)
+
+**Backlog — surfaced 2026-07-05 during freehand Windows testing.**
+
+The Task 10 HiZ occlusion test uses the **previous frame's** max-depth pyramid.
+At freehand camera angles / after quick camera motion, the stale pyramid
+occludes geometry that is genuinely visible this frame — terrain tiles and
+tree segments disappear rectangular-tile-shaped. Task 10 measured pixel-clean
+diffs only at 5 fixed poses; freehand camera hits angles those didn't. HUD
+`hiz culled` counter climbs into the thousands during the artifact.
+
+Default flipped OFF as a mitigation. Full infrastructure ships: cull.comp
+block, pyramid build (Task 9), HUD checkbox, FIFO `hiz on|off`, MATTER_HIZ
+env, stats readback, 4-phase unit test. Opt in via any of those toggles.
+
+Correct fix options (pick one):
+- **Same-frame conservative depth**: emit a coarse per-cluster near-depth into
+  an SSBO in the vertex phase of a prepass, reduce to a pyramid before the
+  main cull dispatch. Costs one extra pass but eliminates staleness.
+- **Scissor-refined redraw**: keep the previous-frame HiZ but issue a second
+  cull+draw pass that reprocesses screen regions where the camera delta
+  exceeds a threshold. Cheap when the camera isn't moving.
+- **Reprojection heuristic**: dilate the pyramid by the camera's per-frame
+  angular delta before sampling. Simplest, still lossy.
+
+Also worth trying regardless: switch the 4-corner samples in the shader to a
+2×2 or 3×3 grid across the clamped rect, so partial-off-screen AABBs aren't
+sampled only at the clipped edges.
+
+Cross-refs: `MatterEngine3/viewer/shaders_gpu/cull.comp` (hiz block),
+`MatterEngine3/viewer/gpu_culler.cpp` (`build_hiz`, `downsample_pyramid`),
+`.superpowers/sdd/task-10-report.md`.
+
+---
+
 ## P2: compact GPU cull xforms SSBO — 275 MB at 500k trips plan's ~200 MB gate
 
 **Backlog / follow-up — surfaced from GPU instancing/culling Stage-4 stress sweep (2026-07-05).**

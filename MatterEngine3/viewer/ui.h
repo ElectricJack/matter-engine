@@ -57,10 +57,12 @@ struct ViewerStats {
     int      gpu_emitted = 0;   // clusters that passed the cull this frame
     int      gpu_culled  = 0;   // clusters rejected by the frustum cull this frame
     int      gpu_culled_hiz = 0;   // clusters rejected by HiZ occlusion this frame
-    // Writable: HiZ occlusion toggle (Task 10). Default ON; also driven by the
-    // FIFO `hiz on|off` command and the MATTER_HIZ=0|1 startup env override.
-    // main propagates it to GpuCuller::set_hiz_enabled each frame.
-    bool     hiz_enabled = true;
+    // Writable: HiZ occlusion toggle (Task 10). Default OFF: the previous-frame
+    // pyramid causes false-positive occlusion culls at freehand camera angles
+    // (terrain / tree segments disappear). Correct fix needs a same-frame
+    // conservative depth or scissor-refined redraw — filed as ROADMAP follow-up.
+    // HUD checkbox / FIFO `hiz on|off` / MATTER_HIZ=1 opt in.
+    bool     hiz_enabled = false;
     // Writable: runtime LOD quality/speed dial. main propagates it to the
     // resolver + composer each frame; also settable via FIFO `budget <f>`.
     float    pixel_budget = 1.0f;
