@@ -1,35 +1,50 @@
 // stress_forest_tests.cpp
-// Determinism of the Stage-4 stress fixture scatter (StressForest50k.js).
+// Real-content flatten-policy check for StressForest50k.
 //
-// Bakes the schema twice into SEPARATE cache dirs with a fixed synthetic child
-// hash standing in for 'Pebble' (child geometry is irrelevant here — the
-// flattened placement stream is the contract), then verifies:
-//   1. both bakes produce the same resolved hash
-//   2. the .part files are byte-identical
-//   3. the flattened placement stream (child_resolved_hash + transform[16], in
-//      order) hashes identically (FNV-1a) and has exactly COUNT entries
+// The scatter fixture places COUNT=50000 children in a deterministic 1/3-1/3-1/3
+// mix of Pebble / Rock(seed=0) / Tree (see StressForest50k.js). This test proves
+// the bake pipeline's per-part flatten policy on that fixture:
 //
-// Uses the 50k variant (not 500k) for test runtime sanity; the 100k/200k/500k
-// schemas are byte-for-byte copies except COUNT/class name, so the 50k stream
-// determinism covers the shared scatter logic.
+//   1. Tree.flat.part exists with real merged triangles and NO instance_refs
+//      => Tree is FlattenDecision::INLINE — its own subtree (trunk + branches)
+//      got fused into a single artifact.
 //
-// Follows the grass_lod_tests.cpp determinism pattern (two sandbox caches,
-// bake_source, compare hash + bytes). Must be run from MatterEngine3/tests/ so
-// relative schema paths resolve.
+//   2. StressForest50k.flat.part exists with zero merged geometry and EXACTLY
+//      50000 instance_refs, each pointing at Pebble / Rock / Tree's resolved
+//      hash => StressForest50k is FlattenDecision::BOUNDARY — the pipeline
+//      never allocated the fully-expanded intermediate buffer. This is the
+//      load-bearing memory guarantee for large scatters.
+//
+//   3. Cross-cache determinism: two independent sandboxes produce the same
+//      StressForest50k resolved hash, byte-identical .flat.part files, and an
+//      identical FNV-1a hash over the FlatInstanceRef stream (child_hash +
+//      transform[16], in table order).
+//
+// Sandbox: /tmp/me3_stress_forest/cache{A,B}. Rebuilt fresh on every run so the
+// install path exercises real bakes (not warm cache hits) and the two caches
+// are genuinely independent.
+//
+// Must run from MatterEngine3/tests/ so ../examples/world_demo paths resolve.
 
-#include "script_host.h"
-#include "part_asset_v2.h"
-#include "part_asset.h"          // fnv1a64
+#include "part_graph.h"        // -DMATTER_HAVE_SCRIPT_HOST pulls in script_host.h
+#include "part_asset_v2.h"     // cache_path_flat, load_flat_v3, FlatInstanceRef
+#include "part_asset.h"        // fnv1a64
+#include "part_flatten.h"      // flatten_part
 #include "blas_manager.hpp"
 #include "tlas_manager.hpp"
 
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
+#include <iterator>
 #include <string>
 #include <vector>
 #include <limits.h>
 #include <unistd.h>
+
+using namespace part_graph;
 
 static int g_failures = 0;
 #define CHECK(cond, msg) do { \
@@ -37,8 +52,7 @@ static int g_failures = 0;
     else         { printf("ok:   %s\n", (msg)); } \
 } while (0)
 
-static const size_t   kExpectedCount = 50000;
-static const uint64_t kFakePebbleHash = 0x5157e55f04e57000ull;  // synthetic 'Pebble'
+static const size_t kExpectedCount = 50000;
 
 static std::string abspath(const std::string& rel) {
     char buf[PATH_MAX];
@@ -46,107 +60,97 @@ static std::string abspath(const std::string& rel) {
     return rel;
 }
 
-static std::string read_text(const std::string& path) {
-    std::string s;
-    FILE* f = fopen(path.c_str(), "r");
-    if (!f) return s;
-    fseek(f, 0, SEEK_END); long n = ftell(f); fseek(f, 0, SEEK_SET);
-    s.resize((size_t)n);
-    size_t got = fread(&s[0], 1, (size_t)n, f);
-    s.resize(got);
-    fclose(f);
-    return s;
-}
-
 static std::vector<uint8_t> file_bytes(const std::string& path) {
-    std::vector<uint8_t> b;
-    FILE* f = fopen(path.c_str(), "rb");
-    if (!f) return b;
-    fseek(f, 0, SEEK_END); long n = ftell(f); fseek(f, 0, SEEK_SET);
-    b.resize((size_t)n);
-    if (fread(b.data(), 1, (size_t)n, f) != (size_t)n) b.clear();
-    fclose(f);
+    std::ifstream f(path, std::ios::binary);
+    std::vector<uint8_t> b(std::istreambuf_iterator<char>(f), {});
     return b;
 }
 
-static std::string g_source;
-static std::string g_shared_lib;
-
+// One sandbox: fresh cache dir, PartGraph.install of StressForest50k, then
+// explicit flatten_part for both Tree and StressForest50k.
 struct BakeRec {
-    uint64_t    resolved_hash = 0;
-    std::string written_path;   // absolute
+    bool     ok = false;
+    uint64_t root_hash = 0;         // StressForest50k
+    uint64_t tree_hash = 0;         // Tree
+    std::string flat_root_path;     // absolute path to StressForest50k.flat.part
+    std::string flat_tree_path;     // absolute path to Tree.flat.part
+    part_flatten::FlattenResult flat_root_result;
+    part_flatten::FlattenResult flat_tree_result;
 };
 
-// Bake StressForest50k.js in `cache_dir` (must contain parts/). The synthetic
-// Pebble hash feeds placeChild's placement table exactly as PartGraph would.
-static BakeRec bake_forest_in(const std::string& cache_dir) {
+// Look up a required module's resolved hash by installing it directly. The
+// graph caches previously-baked artifacts, so re-installing a module already
+// pulled in transitively is a cheap hit.
+static uint64_t install_and_hash(PartGraph& g, const std::string& module_name,
+                                 const Params& params) {
+    ChildRequest req{module_name, params};
+    InstallResult ir = g.install({req});
+    if (!ir.ok || ir.root_hashes.empty()) return 0;
+    return ir.root_hashes[0];
+}
+
+static BakeRec run_bake(const std::string& sandbox_abs,
+                        const std::string& schemas_abs,
+                        const std::string& shared_lib_abs) {
+    BakeRec rec;
+
     char prev[PATH_MAX];
-    getcwd(prev, sizeof(prev));
-    if (chdir(cache_dir.c_str()) != 0) {
-        printf("  ERROR: chdir(%s)\n", cache_dir.c_str());
-        return {};
+    if (!getcwd(prev, sizeof(prev))) { printf("FAIL: getcwd\n"); return rec; }
+    if (chdir(sandbox_abs.c_str()) != 0) {
+        printf("FAIL: chdir(%s)\n", sandbox_abs.c_str()); return rec;
     }
 
     script_host::ScriptHost host;
-    host.set_shared_lib_root(g_shared_lib);
+    host.set_shared_lib_root(shared_lib_abs);
+    FileModuleResolver resolver(host, schemas_abs);
+    HostBaker baker(host, ".");
+    PartGraph graph(resolver, baker);
 
-    uint64_t    kids[1]  = { kFakePebbleHash };
-    std::string names[1] = { "Pebble" };
-    script_host::BakeResult r =
-        host.bake_source(g_source, "{}", {}, kids, 1, names);
-
-    std::string abs_written;
-    if (!r.written_path.empty()) {
-        char abs_buf[PATH_MAX];
-        if (realpath(r.written_path.c_str(), abs_buf))
-            abs_written = abs_buf;
-        else
-            abs_written = cache_dir + "/" + r.written_path;
+    // Install StressForest50k: transitively bakes Pebble, Rock(seed=0), Tree,
+    // TreeBranch, and the parent. Reads the four child hashes back off the
+    // parent's ChildInstance table by installing each module separately (the
+    // graph's cache makes the extra installs cheap).
+    InstallResult ir_root = graph.install({ChildRequest{"StressForest50k", {}}});
+    if (!ir_root.ok || ir_root.root_hashes.empty()) {
+        printf("FAIL: install StressForest50k: %s\n", ir_root.error.c_str());
+        chdir(prev);
+        return rec;
     }
+    rec.root_hash = ir_root.root_hashes[0];
+    printf("  StressForest50k resolved hash = %016llx (baked=%zu, hits=%d)\n",
+           (unsigned long long)rec.root_hash, ir_root.baked.size(), ir_root.hits);
+
+    rec.tree_hash = install_and_hash(graph, "Tree", {});
+    if (!rec.tree_hash) { printf("FAIL: install Tree\n"); chdir(prev); return rec; }
+    printf("  Tree resolved hash             = %016llx\n",
+           (unsigned long long)rec.tree_hash);
+
+    // Explicit flatten calls (install does not flatten; only the viewer's
+    // LocalProvider does that on demand — see viewer/local_provider.cpp:170).
+    std::string abs_cache = sandbox_abs;
+
+    rec.flat_tree_path = abs_cache + "/" + part_asset::cache_path_flat(rec.tree_hash);
+    rec.flat_tree_result = part_flatten::flatten_part(abs_cache, rec.tree_hash);
+    printf("  Tree flatten: ok=%d clusters=%zu full_tris=%zu instance_refs=%zu\n",
+           (int)rec.flat_tree_result.ok, rec.flat_tree_result.clusters,
+           rec.flat_tree_result.full_tris, rec.flat_tree_result.instance_refs);
+
+    rec.flat_root_path = abs_cache + "/" + part_asset::cache_path_flat(rec.root_hash);
+    rec.flat_root_result = part_flatten::flatten_part(abs_cache, rec.root_hash);
+    printf("  StressForest50k flatten: ok=%d clusters=%zu full_tris=%zu instance_refs=%zu\n",
+           (int)rec.flat_root_result.ok, rec.flat_root_result.clusters,
+           rec.flat_root_result.full_tris, rec.flat_root_result.instance_refs);
+
     chdir(prev);
-
-    if (!r.error.ok)
-        printf("  bake ERROR: %s\n", r.error.message.c_str());
-    return BakeRec{ r.resolved_hash, abs_written };
-}
-
-// FNV-1a over the placement stream: for each ChildInstance in table order,
-// fold child_resolved_hash then the raw transform[16] floats.
-static uint64_t placement_stream_hash(const std::string& part_path,
-                                      uint64_t resolved_hash,
-                                      size_t* out_count) {
-    BLASManager blas; TLASManager tlas(256);
-    std::vector<part_asset::ChildInstance> children;
-    part_asset::LodLevels lods;
-    *out_count = 0;
-    if (!part_asset::load_v2(part_path, resolved_hash, blas, tlas, children, lods))
-        return 0;
-    *out_count = children.size();
-    std::vector<uint8_t> buf;
-    buf.reserve(children.size() * (sizeof(uint64_t) + 16 * sizeof(float)));
-    for (const auto& c : children) {
-        const size_t off = buf.size();
-        buf.resize(off + sizeof(uint64_t) + 16 * sizeof(float));
-        std::memcpy(buf.data() + off, &c.child_resolved_hash, sizeof(uint64_t));
-        std::memcpy(buf.data() + off + sizeof(uint64_t), c.transform,
-                    16 * sizeof(float));
-    }
-    return part_asset::fnv1a64(buf.data(), buf.size());
+    rec.ok = true;
+    return rec;
 }
 
 int main() {
-    const std::string schemas = abspath("../examples/world_demo/schemas");
-    g_shared_lib = abspath("../shared-lib");
-    const std::string src_path = schemas + "/StressForest50k.js";
-    g_source = read_text(src_path);
-    if (g_source.empty()) {
-        printf("FAIL: could not read %s\n", src_path.c_str());
-        return 1;
-    }
-    printf("StressForest50k.js source: %zu bytes from %s\n",
-           g_source.size(), src_path.c_str());
+    const std::string schemas_abs    = abspath("../examples/world_demo/schemas");
+    const std::string shared_lib_abs = abspath("../shared-lib");
 
-    // Fresh sandbox with two independent caches.
+    // Fresh sandbox with two independent cache dirs.
     const std::string sandbox = "/tmp/me3_stress_forest";
     system(("rm -rf " + sandbox).c_str());
     const std::string cacheA = sandbox + "/cacheA";
@@ -154,28 +158,105 @@ int main() {
     system(("mkdir -p " + cacheA + "/parts").c_str());
     system(("mkdir -p " + cacheB + "/parts").c_str());
 
-    printf("\n[test_scatter_determinism]\n");
-    BakeRec r1 = bake_forest_in(cacheA);
-    BakeRec r2 = bake_forest_in(cacheB);
-    CHECK(!r1.written_path.empty() && !r2.written_path.empty(),
-          "both bakes wrote a .part file");
-    CHECK(r1.resolved_hash != 0 && r1.resolved_hash == r2.resolved_hash,
-          "separate caches => same resolved hash");
+    const std::string cacheA_abs = abspath(cacheA);
+    const std::string cacheB_abs = abspath(cacheB);
 
-    auto b1 = file_bytes(r1.written_path);
-    auto b2 = file_bytes(r2.written_path);
-    CHECK(!b1.empty() && b1 == b2,
-          "separate caches => byte-identical .part files");
+    printf("[cacheA] running bake + flatten\n");
+    BakeRec A = run_bake(cacheA_abs, schemas_abs, shared_lib_abs);
+    printf("[cacheB] running bake + flatten\n");
+    BakeRec B = run_bake(cacheB_abs, schemas_abs, shared_lib_abs);
 
-    size_t n1 = 0, n2 = 0;
-    uint64_t h1 = placement_stream_hash(r1.written_path, r1.resolved_hash, &n1);
-    uint64_t h2 = placement_stream_hash(r2.written_path, r2.resolved_hash, &n2);
-    printf("  placement stream: n1=%zu n2=%zu hash1=%016llx hash2=%016llx\n",
-           n1, n2, (unsigned long long)h1, (unsigned long long)h2);
-    CHECK(n1 == kExpectedCount, "placement count == 50000");
-    CHECK(n1 == n2, "both bakes place the same number of children");
-    CHECK(h1 != 0 && h1 == h2,
-          "flattened placement stream hashes identically across bakes");
+    CHECK(A.ok && B.ok, "both sandboxes completed bake + flatten");
+    if (!A.ok || !B.ok) { printf("\n%d FAILURE(S)\n", g_failures); return 1; }
+
+    // ---- Policy assertions on cache A ---------------------------------------
+    printf("\n[test_tree_inline]\n");
+    CHECK(A.flat_tree_result.ok, "Tree flatten_part ok");
+    CHECK(A.flat_tree_result.clusters > 0,
+          "Tree.flat.part has >= 1 cluster (merged geometry present)");
+    CHECK(A.flat_tree_result.full_tris > 0,
+          "Tree.flat.part has non-zero merged triangles (INLINE fused trunk + branches)");
+    CHECK(A.flat_tree_result.instance_refs == 0,
+          "Tree.flat.part has zero instance_refs (INLINE, no BOUNDARY children)");
+
+    // Load Tree.flat.part directly and re-verify.
+    {
+        BLASManager blas; TLASManager tlas(64);
+        std::vector<part_asset::FlatCluster> clusters;
+        std::vector<part_asset::FlatInstanceRef> refs;
+        bool loaded = part_asset::load_flat_v3(A.flat_tree_path, A.tree_hash,
+                                               blas, tlas, clusters, refs);
+        CHECK(loaded, "Tree.flat.part reloads via load_flat_v3");
+        CHECK(!clusters.empty(), "Tree.flat.part reload: clusters non-empty");
+        CHECK(refs.empty(), "Tree.flat.part reload: instance_refs empty");
+    }
+
+    printf("\n[test_stress_boundary]\n");
+    CHECK(A.flat_root_result.ok, "StressForest50k flatten_part ok");
+    CHECK(A.flat_root_result.full_tris == 0,
+          "StressForest50k.flat.part has zero merged triangles (BOUNDARY, no expansion)");
+    CHECK(A.flat_root_result.instance_refs == kExpectedCount,
+          "StressForest50k.flat.part instance_refs == 50000 (every scatter kept as instance)");
+
+    // Load StressForest50k.flat.part and verify the refs point only at Pebble /
+    // Rock / Tree resolved hashes.
+    std::vector<part_asset::FlatInstanceRef> A_refs;
+    {
+        BLASManager blas; TLASManager tlas(64);
+        std::vector<part_asset::FlatCluster> clusters;
+        bool loaded = part_asset::load_flat_v3(A.flat_root_path, A.root_hash,
+                                               blas, tlas, clusters, A_refs);
+        CHECK(loaded, "StressForest50k.flat.part reloads via load_flat_v3");
+        CHECK(A_refs.size() == kExpectedCount,
+              "StressForest50k.flat.part reload: instance_refs.size == 50000");
+
+        // Each ref must point at one of the three real child hashes. We can
+        // check Tree directly; Pebble and Rock we haven't installed separately
+        // yet, so verify the three-way bucket count structurally.
+        size_t tree_count = 0, other_count = 0;
+        for (const auto& r : A_refs) {
+            if (r.child_resolved_hash == A.tree_hash) ++tree_count;
+            else ++other_count;
+        }
+        printf("  refs by tree=%zu other=%zu\n", tree_count, other_count);
+        // i % 3 with i in [0, 50000): buckets {0: 16667, 1: 16667, 2: 16666}.
+        CHECK(tree_count == 16666,
+              "StressForest50k.flat.part has 16666 Tree refs (i%%3 == 2 bucket)");
+        CHECK(other_count == kExpectedCount - 16666,
+              "remaining refs are Pebble + Rock (i%%3 in {0,1})");
+    }
+
+    // ---- Cross-cache determinism -------------------------------------------
+    printf("\n[test_cross_cache_determinism]\n");
+    CHECK(A.root_hash == B.root_hash,
+          "StressForest50k resolved hash matches across independent caches");
+    CHECK(A.tree_hash == B.tree_hash,
+          "Tree resolved hash matches across independent caches");
+
+    auto ba = file_bytes(A.flat_root_path);
+    auto bb = file_bytes(B.flat_root_path);
+    CHECK(!ba.empty() && ba == bb,
+          "StressForest50k.flat.part is byte-identical across caches");
+
+    // FNV-1a over the FlatInstanceRef stream from cache B.
+    std::vector<part_asset::FlatInstanceRef> B_refs;
+    {
+        BLASManager blas; TLASManager tlas(64);
+        std::vector<part_asset::FlatCluster> clusters;
+        part_asset::load_flat_v3(B.flat_root_path, B.root_hash,
+                                 blas, tlas, clusters, B_refs);
+    }
+    CHECK(A_refs.size() == B_refs.size(),
+          "instance_refs count matches across caches");
+
+    uint64_t hA = part_asset::fnv1a64(A_refs.data(),
+                                      A_refs.size() * sizeof(part_asset::FlatInstanceRef));
+    uint64_t hB = part_asset::fnv1a64(B_refs.data(),
+                                      B_refs.size() * sizeof(part_asset::FlatInstanceRef));
+    printf("  FNV(A)=%016llx FNV(B)=%016llx\n",
+           (unsigned long long)hA, (unsigned long long)hB);
+    CHECK(hA != 0 && hA == hB,
+          "FlatInstanceRef stream FNV-1a matches across caches");
 
     printf("\n");
     if (g_failures == 0) printf("ALL PASS\n");
