@@ -43,7 +43,25 @@ struct FlattenTargets {
 
     // Child recursion cap; mirrors the viewer WorldComposer's depth cap.
     int max_depth = 8;
+
+    // Bake-hardening #2: budget for a single part's inline flatten, expressed
+    // as the max bytes we're willing to hold in the intermediate TriEx buffer
+    // while merging. When a subtree's estimated post-expansion size exceeds
+    // this, the parent stays as an "instance boundary" and its .flat.part
+    // stores the children as instance_refs (see FlatInstanceRef) instead of
+    // inlining their triangles. Default 512 MB is a rough ceiling for the
+    // biggest hand-authored composite (a full mesh model with dense LOD0);
+    // scatter-heavy roots (StressForest) trip it and land on the instance-ref
+    // path automatically. Schemas / build scripts may override.
+    size_t budget_tri_bytes = 512ull * 1024ull * 1024ull;
 };
+
+// Bake-hardening #2: decision recorded per part during the bottom-up pass.
+// INLINE  : this part's subtree is small enough to merge into a single mesh.
+// BOUNDARY: this part stays as a stand-alone artifact; every parent that
+//           references it emits a FlatInstanceRef pointing at its .flat.part
+//           instead of inlining its geometry.
+enum class FlattenDecision : uint8_t { INLINE = 0, BOUNDARY = 1 };
 
 struct FlattenResult {
     bool        ok = false;
@@ -52,6 +70,10 @@ struct FlattenResult {
     size_t      clusters = 0;       // number of spatial clusters written
     size_t      full_tris = 0;      // triangle count of the merged level-0 mesh
     size_t      coarsest_tris = 0;  // triangle count of the last ladder level (last cluster)
+    // Bake-hardening #2: instance-boundary children not expanded into the
+    // merged mesh; recorded as FlatInstanceRefs in the .flat.part trailer for
+    // the runtime consumer to expand into world instances.
+    size_t      instance_refs = 0;
 };
 
 // Flatten the subtree rooted at root_hash. Reads parts from

@@ -12,6 +12,8 @@
 #include <map>
 #include <memory>
 #include <new>       // std::bad_alloc
+#include <unordered_map>
+#include <vector>
 
 namespace part_flatten {
 
@@ -81,8 +83,32 @@ public:
     Gatherer(const std::string& cache_root, const FlattenTargets& t)
         : cache_root_(cache_root), targets_(t) {}
 
+    // Bake-hardening #2: register the per-hash flatten decision map before
+    // gather(). Any child seen during the walk that maps to BOUNDARY is not
+    // expanded into tris/triex; instead its (child_hash, world-transform) is
+    // recorded into instance_refs_ for the caller to serialize.
+    void set_decisions(const std::unordered_map<uint64_t, FlattenDecision>* d,
+                       uint64_t self_hash) {
+        decisions_ = d;
+        self_hash_ = self_hash;
+    }
+
     bool gather(uint64_t hash, const float* world, int depth, std::string& err) {
         if (depth > targets_.max_depth) return true;   // silently cap, like the composer
+        // Bake-hardening #2: a child marked BOUNDARY stays out of the merge —
+        // its (hash, world) pair is recorded so the writer emits a
+        // FlatInstanceRef instead of expanding the mesh. The root itself is
+        // never treated as a boundary of itself.
+        if (decisions_ && hash != self_hash_) {
+            auto it = decisions_->find(hash);
+            if (it != decisions_->end() && it->second == FlattenDecision::BOUNDARY) {
+                part_asset::FlatInstanceRef ref{};
+                ref.child_resolved_hash = hash;
+                std::memcpy(ref.transform, world, 16 * sizeof(float));
+                instance_refs_.push_back(ref);
+                return true;
+            }
+        }
         const PartGeo* geo = load(hash, err);
         if (!geo) return false;
 
@@ -103,9 +129,31 @@ public:
             tris_.push_back(t);
             triex_.push_back(ex);
         }
+        // Bake-hardening #2: if THIS part (the root of the flatten job) is
+        // itself marked BOUNDARY, every direct child of ROOT is emitted as an
+        // instance_ref regardless of the child's own decision. That's the
+        // "shallow flatten" case from the roadmap: P.flat.part contains only
+        // P's own geometry + refs for all its direct children, so P's own
+        // artifact is bounded even when the full inline expansion would
+        // exceed budget. Deeper descendants (grandchildren) never get an
+        // opportunity to expand from here because they'd only be reached
+        // through a child we just short-circuited.
+        bool self_is_boundary = false;
+        if (decisions_ && hash == self_hash_) {
+            auto it = decisions_->find(hash);
+            self_is_boundary = (it != decisions_->end() &&
+                                it->second == FlattenDecision::BOUNDARY);
+        }
         for (const auto& c : geo->children) {
             float child_world[16];
             mul16(world, c.transform, child_world);
+            if (self_is_boundary) {
+                part_asset::FlatInstanceRef ref{};
+                ref.child_resolved_hash = c.child_resolved_hash;
+                std::memcpy(ref.transform, child_world, 16 * sizeof(float));
+                instance_refs_.push_back(ref);
+                continue;
+            }
             if (!gather(c.child_resolved_hash, child_world, depth + 1, err))
                 return false;
         }
@@ -114,6 +162,18 @@ public:
 
     std::vector<Tri>&   tris()  { return tris_; }
     std::vector<TriEx>& triex() { return triex_; }
+    std::vector<part_asset::FlatInstanceRef>& instance_refs() { return instance_refs_; }
+
+    // Access the loaded PartGeo cache so callers can walk children/tri counts
+    // for the estimation pass without a second round-trip to disk.
+    const PartGeo* peek(uint64_t hash) const {
+        auto it = cache_.find(hash);
+        return (it == cache_.end()) ? nullptr : it->second.get();
+    }
+    // Load-and-return; exposes the lazy loader for the estimation pass.
+    const PartGeo* load_public(uint64_t hash, std::string& err) {
+        return load(hash, err);
+    }
 
 private:
     const PartGeo* load(uint64_t hash, std::string& err) {
@@ -180,6 +240,15 @@ private:
     std::map<uint64_t, std::unique_ptr<PartGeo>> cache_;
     std::vector<Tri>   tris_;
     std::vector<TriEx> triex_;
+    // Bake-hardening #2: children whose per-part decision is BOUNDARY are
+    // recorded here (world-space transform + child hash) instead of being
+    // expanded into tris/triex. The writer emits them as FlatInstanceRefs.
+    std::vector<part_asset::FlatInstanceRef> instance_refs_;
+    // Optional per-part decision map, keyed by resolved hash. self_hash_ is
+    // the root of the flatten job — the root's own decision is not applied
+    // to itself (a BOUNDARY root still writes its own .flat.part).
+    const std::unordered_map<uint64_t, FlattenDecision>* decisions_ = nullptr;
+    uint64_t self_hash_ = 0;
 };
 
 const float kIdentity[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
@@ -262,6 +331,8 @@ static FlattenResult flatten_budget_ladder(const std::string& cache_root,
     res.clusters = 1;
 
     const std::string out_path = cache_root + "/" + part_asset::cache_path_flat(root_hash);
+    // Budget-variant ladder has no instance boundaries: each variant is a
+    // complete standalone mesh at its own tri budget.
     if (!part_asset::save_flat_v3(out_path, blas, tlas, clusters, root_hash)) {
         res.error = "flatten: save_flat_v3 failed for " + out_path;
         return res;
@@ -270,17 +341,99 @@ static FlattenResult flatten_budget_ladder(const std::string& cache_root,
     return res;
 }
 
+// Bake-hardening #2: bottom-up traversal that decides FlattenDecision for
+// every part reachable from `root_hash`. Cheap: it only calls part_asset::load_v2
+// once per unique hash (via `Gatherer::load_public`, whose PartGeo cache
+// is shared with the subsequent gather pass). Fills `decisions` and returns
+// each part's estimated triangle count under the current decision map so the
+// caller can budget-check the ROOT itself. Returns 0 on load failure and sets
+// `err`.
+//
+// est_tri(P) = own_tris(P) + Σ over children c: (decision(c) == BOUNDARY ? 0 : est_tri(c))
+//
+// A part is marked BOUNDARY iff est_tri(P) * sizeof(TriEx) > budget_tri_bytes.
+// Leaves are always INLINE (est_tri = own_tris; if own_tris alone busts the
+// budget the leaf still can't be split further — it just stays INLINE and
+// the merge tries; that case is the classic hand-authored composite).
+static size_t decide_bottomup(uint64_t hash, int depth,
+                              Gatherer& scratch,
+                              const FlattenTargets& targets,
+                              std::unordered_map<uint64_t, FlattenDecision>& decisions,
+                              std::unordered_map<uint64_t, size_t>& est_tris,
+                              std::string& err) {
+    if (depth > targets.max_depth) return 0;  // silently cap, like the gather walk
+    auto it_est = est_tris.find(hash);
+    if (it_est != est_tris.end()) return it_est->second;
+
+    const PartGeo* geo = scratch.load_public(hash, err);
+    if (!geo) {
+        // A missing/unreadable part means we can't reason about its size; the
+        // outer gather will surface the same error. Cache 0 so we don't retry.
+        est_tris[hash] = 0;
+        return 0;
+    }
+
+    size_t est = geo->tris.size();
+    for (const auto& c : geo->children) {
+        size_t child_est =
+            decide_bottomup(c.child_resolved_hash, depth + 1, scratch, targets,
+                            decisions, est_tris, err);
+        auto it_dec = decisions.find(c.child_resolved_hash);
+        FlattenDecision cd =
+            (it_dec == decisions.end()) ? FlattenDecision::INLINE : it_dec->second;
+        // Only INLINE children contribute their expanded size to the parent's
+        // estimate — BOUNDARY children are replaced by a single FlatInstanceRef.
+        if (cd == FlattenDecision::INLINE) est += child_est;
+    }
+
+    // Decision: does inlining this whole subtree fit in the budget?
+    // Leaves (empty children) always end up INLINE regardless of size — a
+    // single leaf's own_tris blowing the budget is a hand-authored problem
+    // task #3 (streaming flatten) addresses, not this task.
+    FlattenDecision d = FlattenDecision::INLINE;
+    if (!geo->children.empty() &&
+        est * sizeof(TriEx) > targets.budget_tri_bytes) {
+        d = FlattenDecision::BOUNDARY;
+    }
+    decisions[hash] = d;
+    est_tris[hash] = est;
+    return est;
+}
+
 static FlattenResult flatten_part_impl(const std::string& cache_root,
                                        uint64_t root_hash,
                                        const FlattenTargets& targets) {
     FlattenResult res;
 
     Gatherer g(cache_root, targets);
+
+    // Bake-hardening #2: bottom-up decision pass. Estimates each part's
+    // post-inline triangle count and picks INLINE vs BOUNDARY per part. Runs
+    // through the same Gatherer instance so the loaded PartGeo cache is
+    // reused for the subsequent gather pass (no double disk I/O).
+    std::unordered_map<uint64_t, FlattenDecision> decisions;
+    std::unordered_map<uint64_t, size_t> est_tris;
+    (void)decide_bottomup(root_hash, 0, g, targets, decisions, est_tris,
+                          res.error);
+    if (!res.error.empty()) {
+        // decide_bottomup already logged the offending part; surface the same
+        // error the old top-down gather would have surfaced.
+        return res;
+    }
+    g.set_decisions(&decisions, root_hash);
+
     if (!g.gather(root_hash, kIdentity, 0, res.error)) return res;
 
     std::vector<Tri>&   full   = g.tris();
     std::vector<TriEx>& fullex = g.triex();
-    if (full.empty()) { res.error = "flatten: merged mesh is empty"; return res; }
+    std::vector<part_asset::FlatInstanceRef>& refs = g.instance_refs();
+    // A pure-scatter root has zero own triangles once its BOUNDARY children
+    // are recorded as refs. That's still a valid flat.part — the runtime
+    // consumer will expand `refs` into world instances. Only bail out if we
+    // have neither triangles nor refs (truly empty subtree).
+    if (full.empty() && refs.empty()) {
+        res.error = "flatten: merged mesh is empty"; return res;
+    }
     res.full_tris = full.size();
 
     // Whole-mesh AABB and bound radius (half diagonal). Used to compute
@@ -294,14 +447,18 @@ static FlattenResult flatten_part_impl(const std::string& cache_root,
         mn[2]=std::fmin(mn[2],v.z); mx[2]=std::fmax(mx[2],v.z);
     };
     for (const auto& t : full) { acc(t.vertex0); acc(t.vertex1); acc(t.vertex2); }
-    float dx=mx[0]-mn[0], dy=mx[1]-mn[1], dz=mx[2]-mn[2];
+    float dx = full.empty() ? 0.0f : mx[0]-mn[0];
+    float dy = full.empty() ? 0.0f : mx[1]-mn[1];
+    float dz = full.empty() ? 0.0f : mx[2]-mn[2];
     const float radius = 0.5f * std::sqrt(dx*dx+dy*dy+dz*dz);
 
     // Opt-in procedural budget ladder (Stage 3): a variant sidecar next to the
     // part means the baker re-ran the generator at reduced budgets — assemble
     // the ladder from those meshes instead of QEM (aggregate thin geometry
     // like grass decimates to sparseness, not coarseness).
-    {
+    // Skipped when the root's own mesh is empty (pure-scatter BOUNDARY root
+    // has no local geometry to build a variant ladder over).
+    if (!full.empty()) {
         part_asset::LodVariants variants;
         const std::string sidecar =
             cache_root + "/" + part_asset::cache_path_lods(root_hash);
@@ -397,9 +554,11 @@ static FlattenResult flatten_part_impl(const std::string& cache_root,
     res.levels        = max_levels;
     res.clusters      = n_clusters;
     res.coarsest_tris = coarsest_tris;
+    res.instance_refs = refs.size();
 
     const std::string out_path = cache_root + "/" + part_asset::cache_path_flat(root_hash);
-    if (!part_asset::save_flat_v3(out_path, blas, tlas, flat_clusters, root_hash)) {
+    if (!part_asset::save_flat_v3(out_path, blas, tlas, flat_clusters, refs,
+                                  root_hash)) {
         res.error = "flatten: save_flat_v3 failed for " + out_path;
         return res;
     }

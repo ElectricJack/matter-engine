@@ -20,8 +20,9 @@ namespace part_asset {
 constexpr uint32_t kFormatVersionV2 = 2u;
 constexpr uint32_t kFormatVersionV3 = 3u;
 // Flat-artifact bake version: bump whenever FlattenTargets defaults change so
-// stale flats regenerate automatically (Stage 2 ladder retune bumped 3 -> 4).
-constexpr uint32_t kFormatVersionFlat = 4u;
+// stale flats regenerate automatically (Stage 2 ladder retune bumped 3 -> 4;
+// bake-hardening #2 bumped 4 -> 5 to add the instance_refs trailer).
+constexpr uint32_t kFormatVersionFlat = 5u;
 
 // Content-addressed identity for a part. All three inputs are OPAQUE byte ranges
 // to SP-1 (script source, params, child resolved-hashes). child_hashes need NOT be
@@ -103,14 +104,43 @@ struct FlatCluster {
     LodLevels lods;
 };
 
-// v3 flat save/load: identical body to v2 (materials, BLAS table, internal
-// instances, EMPTY children, EMPTY top-level lods) + an appended cluster table.
-// load_v2 on a v3 file fails its version guard (callers regenerate), and
-// load_flat_v3 on a v2 file fails likewise.
+// Instance-reference record in a v5 flat artifact: when the flatten decision
+// declares a child subtree an "instance boundary" (its inlined size would
+// exceed FlattenTargets::budget_tri_bytes), the parent .flat.part stores each
+// placement as a (child_hash, transform, count=1) record rather than inlining
+// the child's mesh. The runtime consumer expands these into world instances so
+// GpuCuller processes them like any other scatter-placed instance.
+// Kept padding-free (8 + 64 = 72 bytes) so sizeof(FlatInstanceRef) is a stable
+// layout guard mirroring ChildInstance.
+struct FlatInstanceRef {
+    uint64_t child_resolved_hash;
+    float    transform[16];
+};
+static_assert(sizeof(FlatInstanceRef) == 72,
+              "FlatInstanceRef must be padding-free for a stable layout guard");
+
+// v5 flat save/load: identical body to v2 (materials, BLAS table, internal
+// instances, EMPTY children, EMPTY top-level lods) + an appended cluster table
+// + an appended instance_refs table (may be empty).
+// load_v2 on a v5 file fails its version guard (callers regenerate), and
+// load_flat_v3 on a v2 file fails likewise. Name kept for continuity with v3/v4
+// (the on-disk format simply appends a trailer; the two-arg loader below is a
+// v3/v4-compatible shim for tests that don't care about instance_refs).
+bool save_flat_v3(const std::string& path, const BLASManager& blas,
+                  const TLASManager& tlas,
+                  const std::vector<FlatCluster>& clusters,
+                  const std::vector<FlatInstanceRef>& instance_refs,
+                  uint64_t resolved_hash);
+// Back-compat overload: writes zero instance_refs.
 bool save_flat_v3(const std::string& path, const BLASManager& blas,
                   const TLASManager& tlas,
                   const std::vector<FlatCluster>& clusters,
                   uint64_t resolved_hash);
+bool load_flat_v3(const std::string& path, uint64_t expected_resolved_hash,
+                  BLASManager& blas, TLASManager& tlas,
+                  std::vector<FlatCluster>& clusters_out,
+                  std::vector<FlatInstanceRef>& instance_refs_out);
+// Back-compat overload: discards the instance_refs trailer (still validates it).
 bool load_flat_v3(const std::string& path, uint64_t expected_resolved_hash,
                   BLASManager& blas, TLASManager& tlas,
                   std::vector<FlatCluster>& clusters_out);

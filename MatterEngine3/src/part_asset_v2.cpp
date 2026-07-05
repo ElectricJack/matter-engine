@@ -411,10 +411,12 @@ bool load_v2(const std::string& path, uint64_t expected_resolved_hash,
 bool save_flat_v3(const std::string& path, const BLASManager& blas,
                   const TLASManager& tlas,
                   const std::vector<FlatCluster>& clusters,
+                  const std::vector<FlatInstanceRef>& instance_refs,
                   uint64_t resolved_hash) {
     std::vector<uint8_t> body;
     std::unordered_map<BLASHandle, uint32_t> h2i;
-    // v3 body = common body (children=empty, top-lods=empty) + cluster table
+    // v5 body = common body (children=empty, top-lods=empty) + cluster table
+    //          + instance_refs trailer (may be empty).
     if (!append_common_body(body, blas, tlas, nullptr, 0, LodLevels{}, h2i))
         return false;
 
@@ -431,13 +433,32 @@ bool save_flat_v3(const std::string& path, const BLASManager& blas,
         }
     }
 
+    // --- Instance refs (v5 trailer) ---
+    // Each entry is a placement of a child part that the flatten decision left
+    // as an instance boundary; runtime consumer expands to a world instance.
+    put<uint32_t>(body, static_cast<uint32_t>(instance_refs.size()));
+    for (const auto& r : instance_refs) {
+        put<uint64_t>(body, r.child_resolved_hash);
+        put_bytes(body, r.transform, 16 * sizeof(float));
+    }
+
     return write_file_atomic(path, kFormatVersionFlat, resolved_hash, body);
+}
+
+bool save_flat_v3(const std::string& path, const BLASManager& blas,
+                  const TLASManager& tlas,
+                  const std::vector<FlatCluster>& clusters,
+                  uint64_t resolved_hash) {
+    return save_flat_v3(path, blas, tlas, clusters,
+                        std::vector<FlatInstanceRef>{}, resolved_hash);
 }
 
 bool load_flat_v3(const std::string& path, uint64_t expected_resolved_hash,
                   BLASManager& blas, TLASManager& tlas,
-                  std::vector<FlatCluster>& clusters_out) {
+                  std::vector<FlatCluster>& clusters_out,
+                  std::vector<FlatInstanceRef>& instance_refs_out) {
     clusters_out.clear();
+    instance_refs_out.clear();
 
     FILE* f = std::fopen(path.c_str(), "rb");
     if (!f) return false;
@@ -459,7 +480,6 @@ bool load_flat_v3(const std::string& path, uint64_t expected_resolved_hash,
     std::vector<ChildInstance> children_ignored;
     LodLevels lods_ignored;
     std::vector<BLASHandle> handles;
-    const uint32_t blas_count_before_read = 0; // we'll get count from BLAS after load
     if (!read_common_body(r, blas, tlas, children_ignored, lods_ignored, handles))
         return false;
 
@@ -495,7 +515,31 @@ bool load_flat_v3(const std::string& path, uint64_t expected_resolved_hash,
         }
         clusters_out.push_back(std::move(fc));
     }
+    if (!r.ok) return false;
+
+    // --- Instance refs trailer (v5) ---
+    // Every valid v5 flat has this trailer, even if empty. If the reader hits
+    // EOF before we can read the ref_count, the artifact is malformed.
+    const uint32_t ref_count = r.get<uint32_t>();
+    if (!r.ok) return false;
+    instance_refs_out.reserve(ref_count);
+    for (uint32_t i = 0; i < ref_count; ++i) {
+        FlatInstanceRef ref{};
+        ref.child_resolved_hash = r.get<uint64_t>();
+        const uint8_t* tf = r.take(16 * sizeof(float));
+        if (!r.ok) return false;
+        std::memcpy(ref.transform, tf, 16 * sizeof(float));
+        instance_refs_out.push_back(ref);
+    }
     return r.ok;
+}
+
+bool load_flat_v3(const std::string& path, uint64_t expected_resolved_hash,
+                  BLASManager& blas, TLASManager& tlas,
+                  std::vector<FlatCluster>& clusters_out) {
+    std::vector<FlatInstanceRef> refs_ignored;
+    return load_flat_v3(path, expected_resolved_hash, blas, tlas, clusters_out,
+                        refs_ignored);
 }
 
 uint32_t peek_format_version(const std::string& path) {

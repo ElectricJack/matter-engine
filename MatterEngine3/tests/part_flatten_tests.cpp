@@ -1251,6 +1251,137 @@ static void test_budget_ladder_assembly() {
     std::remove(sidecar.c_str());
 }
 
+// Bake-hardening #2: a parent with N instances of a heavy child should trip
+// the flatten budget, land the parent on the BOUNDARY path, and emit
+// instance_refs instead of inlining the child's mesh. Fixture: 10 instances
+// of a ~2000-tri dense sphere ≈ 20000 * 96 B = 1.9 MB; set the parent budget
+// to 100 KB so the estimate blows past it and we know the boundary tripped.
+static void test_instance_boundary_records_refs() {
+    printf("=== test_instance_boundary_records_refs ===\n");
+    const uint64_t kParentBHash = 0x3333000033330000ull;   // fresh hash so fixtures don't collide
+    const uint64_t kDenseHash   = kDenseSphereHash;        // ~21600 tris
+
+    // Ensure the dense sphere fixture (Task 7) is on disk.
+    uint64_t dh = write_dense_sphere_part();
+    CHECK(dh == kDenseHash, "dense sphere fixture written");
+
+    // Parent with 10 placements of the dense sphere; no own geometry.
+    std::vector<part_asset::ChildInstance> kids(10);
+    for (int i = 0; i < 10; ++i) {
+        kids[i].child_resolved_hash = kDenseHash;
+        set_translate(kids[i].transform, (float)(i * 5), 0.0f, 0.0f);
+    }
+    // Parent has no own geometry: pass an empty LOD-0 tri set.
+    std::vector<Tri> empty_lod0;
+    (void)empty_lod0;
+    bool ok = save_fixture(kParentBHash, 3, {std::vector<Tri>{}}, kids);
+    // save_fixture requires at least one non-empty triangle set for BLAS
+    // registration to succeed — so give it a single degenerate placeholder tri
+    // (that's still fine: the flatten pass reads it and skips over an
+    // effectively-zero-area triangle from the merge).
+    if (!ok) {
+        std::vector<Tri> placeholder;
+        placeholder.push_back(make_tri(make_float3(0,0,0), make_float3(0,0,0), make_float3(0,0,0)));
+        ok = save_fixture(kParentBHash, 3, {placeholder}, kids);
+    }
+    CHECK(ok, "parent-B fixture written (10x dense-sphere placements)");
+
+    // Tight budget: 100 KB. 10 * 21600 * 96 = 20 MB — trips easily.
+    part_flatten::FlattenTargets targets;
+    targets.budget_tri_bytes = 100 * 1024ull;
+
+    const std::string flat = std::string(kCacheRoot) + "/" +
+                             part_asset::cache_path_flat(kParentBHash);
+    std::remove(flat.c_str());
+    part_flatten::FlattenResult res =
+        part_flatten::flatten_part(kCacheRoot, kParentBHash, targets);
+    CHECK(res.ok, "flatten with tight budget succeeds");
+    if (!res.ok) { printf("  error: %s\n", res.error.c_str()); return; }
+    CHECK(res.instance_refs == 10, "instance_refs count matches child placements");
+
+    // Reload and verify the trailer.
+    BLASManager blas; TLASManager tlas(16);
+    std::vector<part_asset::FlatCluster> clusters;
+    std::vector<part_asset::FlatInstanceRef> refs;
+    bool loaded = part_asset::load_flat_v3(flat, kParentBHash, blas, tlas,
+                                           clusters, refs);
+    CHECK(loaded, "load_flat_v3 (v5) recovers instance_refs");
+    CHECK(refs.size() == 10, "reloaded instance_refs matches source");
+    // Every ref points at the dense sphere with the placement transform we set.
+    bool refs_ok = true;
+    for (size_t i = 0; i < refs.size() && refs_ok; ++i) {
+        if (refs[i].child_resolved_hash != kDenseHash) refs_ok = false;
+        // translation lives at [3]/[7]/[11] in row-major convention.
+        if (std::fabs(refs[i].transform[3] - (float)(i * 5)) > 1e-5f) refs_ok = false;
+    }
+    CHECK(refs_ok, "each instance_ref carries correct hash + placement translation");
+
+    // The flat.part should contain NO inlined dense-sphere triangles (they'd
+    // put the merged mesh well over the placeholder tri).
+    size_t inlined_tris = 0;
+    for (const auto& cl : clusters)
+        for (uint32_t bi : cl.lods.empty() ? std::vector<uint32_t>{} : cl.lods[0].blas_indices)
+            if (bi < blas.get_entries().size())
+                inlined_tris += blas.get_entries()[bi]->triangles.size();
+    // The placeholder degenerate tri may live in a cluster; but the 10*21600
+    // sphere tris must not appear. Tolerate a small placeholder count.
+    CHECK(inlined_tris < 100, "no dense-sphere geometry inlined into flat.part");
+
+    printf("  instance_refs=%zu inlined_tris=%zu clusters=%zu\n",
+           refs.size(), inlined_tris, clusters.size());
+    printf("  test_instance_boundary_records_refs OK\n");
+
+    // Clean up the parent-B fixture / flat.
+    std::remove(flat.c_str());
+}
+
+// Bake-hardening #2: when the budget is generous, the same fixture should
+// take the INLINE path — inline the dense-sphere mesh into the flat.part
+// with zero instance_refs.
+static void test_generous_budget_inlines() {
+    printf("=== test_generous_budget_inlines ===\n");
+    const uint64_t kParentCHash = 0x4444000044440000ull;
+    const uint64_t kDenseHash   = kDenseSphereHash;
+
+    // Reuse the dense sphere; add a smaller (4 placement) parent so the merged
+    // mesh is still bounded.
+    std::vector<part_asset::ChildInstance> kids(4);
+    for (int i = 0; i < 4; ++i) {
+        kids[i].child_resolved_hash = kDenseHash;
+        set_translate(kids[i].transform, (float)(i * 5), 0.0f, 0.0f);
+    }
+    std::vector<Tri> placeholder;
+    placeholder.push_back(make_tri(make_float3(0,0,0), make_float3(0,0,0), make_float3(0,0,0)));
+    CHECK(save_fixture(kParentCHash, 3, {placeholder}, kids),
+          "parent-C fixture written (4x dense-sphere placements)");
+
+    // Generous budget: 512 MB default — 4 * 21600 * 96 = 8.3 MB, well under.
+    part_flatten::FlattenTargets targets;   // default budget
+    const std::string flat = std::string(kCacheRoot) + "/" +
+                             part_asset::cache_path_flat(kParentCHash);
+    std::remove(flat.c_str());
+    part_flatten::FlattenResult res =
+        part_flatten::flatten_part(kCacheRoot, kParentCHash, targets);
+    CHECK(res.ok, "flatten with generous budget succeeds");
+    if (!res.ok) { printf("  error: %s\n", res.error.c_str()); return; }
+    CHECK(res.instance_refs == 0, "no instance_refs (all children inlined)");
+
+    BLASManager blas; TLASManager tlas(16);
+    std::vector<part_asset::FlatCluster> clusters;
+    std::vector<part_asset::FlatInstanceRef> refs;
+    CHECK(part_asset::load_flat_v3(flat, kParentCHash, blas, tlas, clusters, refs),
+          "reload succeeds under generous budget");
+    CHECK(refs.empty(), "reloaded refs empty in INLINE path");
+    // Sanity: some dense-sphere geometry did get inlined.
+    size_t total_tris = 0;
+    for (const auto& e : blas.get_entries()) total_tris += e->triangles.size();
+    CHECK(total_tris > 4 * 20000u, "dense-sphere geometry (4x ~21600) is present in flat.part");
+    printf("  total_tris=%zu clusters=%zu\n", total_tris, clusters.size());
+    printf("  test_generous_budget_inlines OK\n");
+
+    std::remove(flat.c_str());
+}
+
 static void test_flat_version_bump() {
     uint64_t hash = write_small_sphere_part();   // Task 7 fixture
     auto res = part_flatten::flatten_part(kCacheRoot, hash);
@@ -1259,7 +1390,7 @@ static void test_flat_version_bump() {
 
     // New flats carry the bumped version.
     assert(part_asset::peek_format_version(p) == part_asset::kFormatVersionFlat);
-    assert(part_asset::kFormatVersionFlat == 4u);
+    assert(part_asset::kFormatVersionFlat == 5u);
 
     // Patch the version field back to 3 (a pre-retune bake): loader must reject.
     // Header layout: magic (u32) then format_version (u32) — verify the write
@@ -1304,6 +1435,8 @@ int main() {
     test_small_part_gets_ladder();
     test_ratio2_ladder_shape();
     test_budget_ladder_assembly();
+    test_instance_boundary_records_refs();
+    test_generous_budget_inlines();
     test_flat_version_bump();
 
     if (failures == 0) { printf("part_flatten_tests: ALL PASS\n"); return 0; }

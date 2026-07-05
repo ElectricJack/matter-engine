@@ -1,13 +1,15 @@
 #include "local_provider.h"
 
 #include "part_graph.h"        // -DMATTER_HAVE_SCRIPT_HOST pulls in script_host.h
-#include "part_asset_v2.h"     // cache_path_resolved, cache_path_flat
+#include "part_asset_v2.h"     // cache_path_resolved, cache_path_flat, FlatInstanceRef
 #include "part_flatten.h"      // bake-time subtree flattening
 #include "world_lights.h"
 #include "probe_volume.h"
 #include "world_tracer.h"
 #include "probe_bake.h"
 #include "part_asset.h"   // fnv1a64
+#include "blas_manager.hpp"
+#include "tlas_manager.hpp"
 
 #include <chrono>
 #include <cstdint>
@@ -165,24 +167,85 @@ bool LocalProvider::connect(WorldManifest& out, std::string& err) {
     // re-expanding hundreds of child instances each frame.
     // Content-addressed AND version-sniffed: regenerate when the flat artifact
     // is missing OR from an older bake version (peek_format_version != kFormatVersionFlat).
+    auto flatten_one = [&](uint64_t part_hash) -> bool {
+        const std::string flat_abs_path =
+            abs_cache_root + "/" + part_asset::cache_path_flat(part_hash);
+        if (part_asset::peek_format_version(flat_abs_path) == part_asset::kFormatVersionFlat)
+            return true;
+        part_flatten::FlattenResult fr =
+            part_flatten::flatten_part(abs_cache_root, part_hash);
+        if (fr.ok) {
+            printf("LocalProvider: flattened %016llx (%zu clusters, %zu levels, %zu -> %zu tris, %zu instance_refs)\n",
+                   (unsigned long long)part_hash, fr.clusters, fr.levels,
+                   fr.full_tris, fr.coarsest_tris, fr.instance_refs);
+            return true;
+        } else {
+            // Non-fatal: the viewer falls back to compositional rendering.
+            printf("LocalProvider: flatten failed for %016llx: %s\n",
+                   (unsigned long long)part_hash, fr.error.c_str());
+            return false;
+        }
+    };
     auto flatten_placed = [&]() {
         std::set<uint64_t> done;
         for (const auto& e : out.instances) {
             if (!done.insert(e.part_hash).second) continue;
-            const std::string flat_abs_path =
-                abs_cache_root + "/" + part_asset::cache_path_flat(e.part_hash);
-            if (part_asset::peek_format_version(flat_abs_path) == part_asset::kFormatVersionFlat) continue;
-            part_flatten::FlattenResult fr =
-                part_flatten::flatten_part(abs_cache_root, e.part_hash);
-            if (fr.ok) {
-                printf("LocalProvider: flattened %016llx (%zu clusters, %zu levels, %zu -> %zu tris)\n",
-                       (unsigned long long)e.part_hash, fr.clusters, fr.levels,
-                       fr.full_tris, fr.coarsest_tris);
-            } else {
-                // Non-fatal: the viewer falls back to compositional rendering.
-                printf("LocalProvider: flatten failed for %016llx: %s\n",
-                       (unsigned long long)e.part_hash, fr.error.c_str());
+            flatten_one(e.part_hash);
+        }
+    };
+
+    // Bake-hardening #2: expand FlatInstanceRefs recorded in each placed
+    // root's .flat.part into world manifest entries. A pure-scatter root
+    // (StressForest) that busts the flatten budget lands on the BOUNDARY
+    // path — its .flat.part contains N refs, one per placement, which the
+    // GpuCuller consumes exactly like any other resolved instance. Runs
+    // AFTER flatten_placed so every referenced part is guaranteed to have
+    // been baked and (recursively) flattened. Iterates to a fixed point so
+    // nested boundaries are expanded too.
+    auto append_instance_refs = [&]() {
+        // Snapshot the set of already-emitted part hashes so we don't
+        // double-expand a part that appears both as a manifest root and as
+        // an instance ref of another root.
+        std::set<uint64_t> visited;
+        // Deferred expansion: read every unique part's flat.part refs and
+        // append world entries; repeat until no new part hashes appear.
+        while (true) {
+            std::vector<uint64_t> to_process;
+            std::set<uint64_t> seen;
+            for (const auto& e : out.instances) {
+                if (!seen.insert(e.part_hash).second) continue;
+                if (visited.count(e.part_hash)) continue;
+                to_process.push_back(e.part_hash);
             }
+            if (to_process.empty()) break;
+            const size_t before = out.instances.size();
+            for (uint64_t ph : to_process) {
+                visited.insert(ph);
+                // Make sure this part's flat.part exists (some added-mid-loop
+                // parts may not have been flattened yet). Non-fatal on failure.
+                flatten_one(ph);
+                const std::string flat_abs_path =
+                    abs_cache_root + "/" + part_asset::cache_path_flat(ph);
+                if (part_asset::peek_format_version(flat_abs_path) !=
+                    part_asset::kFormatVersionFlat) continue;
+                BLASManager scratch_blas;
+                TLASManager scratch_tlas(4);
+                std::vector<part_asset::FlatCluster> clusters_ignored;
+                std::vector<part_asset::FlatInstanceRef> refs;
+                if (!part_asset::load_flat_v3(flat_abs_path, ph, scratch_blas,
+                                              scratch_tlas, clusters_ignored, refs))
+                    continue;
+                if (refs.empty()) continue;
+                out.instances.reserve(out.instances.size() + refs.size());
+                for (const auto& r : refs) {
+                    WorldManifestEntry we;
+                    we.instance_id = next_id++;
+                    we.part_hash   = r.child_resolved_hash;
+                    std::memcpy(we.transform, r.transform, sizeof(we.transform));
+                    out.instances.push_back(we);
+                }
+            }
+            if (out.instances.size() == before) break;   // fixed point
         }
     };
 
@@ -200,6 +263,7 @@ bool LocalProvider::connect(WorldManifest& out, std::string& err) {
         }
     }
     flatten_placed();
+    append_instance_refs();
 
     // --- Parse world lights ---
     {
