@@ -39,15 +39,17 @@ struct ViewerStats {
     // Writable: 0 = PassThrough, 1 = SectorLod. Panel sets this; main swaps resolver.
     int      resolver_choice = 0;
     bool     reload_requested = false;   // panel sets; main clears after handling
-    // Raster-path counters (zero in RT mode)
+    // Raster-path counters (zero in RT mode). raster_batches / batch_cache_hit
+    // are legacy fields kept in the struct so the HUD layout stays put; the
+    // GPU-driven path always reports 0/false (there's no per-frame batch cache).
     int      raster_batches = 0;
     int      raster_tris = 0;
     int      culled_clusters = 0;
-    bool     batch_cache_hit = false;   // true when build_batches reused last frame's result
+    bool     batch_cache_hit = false;
     // Raster-path CPU timing split (ms) — Stage 0 of the frame-time package.
     float    resolve_ms = 0.0f;   // SectorResolver::resolve
-    float    build_ms   = 0.0f;   // RasterComposer::build_batches
-    float    draw_ms    = 0.0f;   // RasterComposer::draw (CPU submit side)
+    float    build_ms   = 0.0f;   // GpuCuller::cull (upload + dispatch, no readback)
+    float    draw_ms    = 0.0f;   // RasterComposer::draw_gpu_driven (CPU submit side)
     // Probe status: dims[0..2] = nx,ny,nz from the grid (all zero = probes OFF/unavailable)
     int      probe_dims[3] = {0,0,0};
     // GPU cull HUD (Task 7): active only when MATTER_GPU_CULL=1 + GL 4.6 ok.

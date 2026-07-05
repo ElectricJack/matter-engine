@@ -32,8 +32,9 @@ parts/<resolved_hash>.flat.part                  v3 format: cluster table + per-
    │
    ▼
 viewer: PartStore flat-preferred load (v3 cluster ladders or v2 whole-part)
-        → RasterComposer per-cluster frustum cull + LOD select → DrawMeshInstanced
-        → probe-sampled forward lighting  (default, no warm-up)
+        → GpuCuller (cull.comp) per-cluster frustum + HiZ + LOD select
+        → RasterComposer::draw_gpu_driven (glMultiDrawArraysIndirect, SSBO instancing)
+        → probe-sampled forward lighting  (default; requires GL 4.6)
         fallback: WorldComposer → TLAS → raytrace (MATTER_RT=1, ~60s warm-up)
 ```
 
@@ -98,12 +99,22 @@ LOD mesh indices, and the result is saved as `parts/<root>.flat.part` (v3 format
 an empty child table. The flat artifact shares the root's resolved hash, so invalidation
 is free — any subtree change changes the hash and orphans the stale flat file.
 
-**Raster path (default):** PartStore loads the v3 flat artifact's cluster table;
-`RasterComposer::build_batches` iterates clusters per root instance, frustum-culls by
-AABB, selects per-cluster LOD via projected-size metric, and accumulates
-`DrawMeshInstanced` batches keyed by `(hash, cluster_idx, lod_level)`. The batch set is
-fingerprinted (camera + instance set); unchanged frames reuse the last result. HUD shows
-batch count, drawn-tris, culled-cluster count, and a `[cached]` indicator.
+**Raster path (default, GPU-driven):** PartStore loads the v3 flat artifact's
+cluster table into GPU SSBOs (`GpuClusterMeta` for per-cluster bounds + LOD
+metadata, and per-part vertex buffers). Each frame `GpuCuller::cull` uploads the
+resolved instance stream (`GpuInstanceRec` SSBO), then a compute shader
+(`shaders_gpu/cull.comp`) walks each instance × cluster, frustum-culls,
+HiZ-culls against the previous-frame max-pyramid (`MATTER_HIZ`, default on),
+picks a LOD by projected-size, and atomically appends the transform to that
+(part, cluster, LOD) bucket's `DrawXforms` slice + increments its
+`DrawArraysCmd::instance_count`. The CPU then issues a single
+`glMultiDrawArraysIndirect`; the vertex shader (`raster_gpu_driven.vs`) reads
+per-instance transforms via `gl_BaseInstance + gl_InstanceID`. There is no CPU
+batch walk, no per-frame `UploadMesh`, and no batch-fingerprint cache. GL 4.6
+is a hard requirement (compute + SSBO + indirect + `gl_BaseInstance` in
+GLSL 460); `MATTER_GPU_CULL=0` opts out but is only sensible paired with
+`MATTER_RT=1` (there is no CPU raster fallback). HUD shows GPU-emitted instances,
+per-cluster frustum/HiZ kills, and drawn triangle total.
 
 **RT fallback:** `WorldComposer` emits one TLAS leaf per flat root (empty child table →
 no recursive expansion) or expands compositional parts recursively (depth cap 8, 200k

@@ -28,9 +28,16 @@ inline bool gl46_available(std::string& why) {
     return true;
 }
 
+// GPU-driven raster is the default path. MATTER_GPU_CULL=0 opts out — which,
+// since the CPU raster batch path has been deleted, only makes sense together
+// with MATTER_RT=1 (the ray-traced fallback). Any other value (unset, empty,
+// "1", "true", etc.) leaves the GPU path ON.
 inline bool gpu_cull_requested() {
     static int v = -1;
-    if (v < 0) { const char* e = getenv("MATTER_GPU_CULL"); v = (e && e[0] == '1') ? 1 : 0; }
+    if (v < 0) {
+        const char* e = getenv("MATTER_GPU_CULL");
+        v = (e && e[0] == '0') ? 0 : 1;
+    }
     return v == 1;
 }
 

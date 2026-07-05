@@ -428,10 +428,14 @@ VIEWER_LOGIC_CPP = viewer_logic_tests.cpp \
               ../viewer/local_provider.cpp \
               ../viewer/world_composer.cpp \
               ../viewer/raster_mesh.cpp \
-              ../viewer/raster_composer.cpp \
               ../src/world_lights.cpp ../src/probe_volume.cpp \
               ../src/world_tracer.cpp ../src/probe_bake.cpp \
               $(VIEWER_PIPELINE_CPP)
+# raster_composer.cpp is intentionally NOT linked: after Task 12 it depends on
+# GpuCuller (GL) via draw_gpu_driven, so it can't compile in the GL-free tests
+# path. The CPU batch tests it used to exercise (build_batches / fingerprint /
+# mesh_cache) were deleted together with the CPU raster path; GPU parity of the
+# per-cluster cull is covered by gpu_cull_tests in viewer/gpu_tests.
 
 $(VIEWER_LOGIC_TARGET): $(VIEWER_LOGIC_CPP) $(EXAMPLE_C) $(QJS_C)
 	gcc -c $(QJS_C) -O2 -DCONFIG_VERSION='"0.10.0"' $(QJS_INC)

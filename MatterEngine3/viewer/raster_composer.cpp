@@ -1,5 +1,4 @@
 #include "raster_composer.h"
-#include "raster_cull.h"
 #include "material_registry.h"
 #include "gpu_culler.h"
 // raylib must come before rlgl.h and glad to avoid double-definition of GL types.
@@ -7,10 +6,7 @@
 #include "rlgl.h"
 #include "external/glad.h"
 #include <cmath>
-#include <cstring>
-#include <functional>
-#include <sstream>
-#include <tuple>
+#include <string>
 
 // NOTE: do NOT include raymath.h — it conflicts with the engine's float3 type
 // (precomp.h defines float3 as a plain struct; raymath.h also defines Vector3
@@ -38,164 +34,8 @@ static Matrix mat_mul(Matrix a, Matrix b) {
 
 namespace viewer {
 
-// mul16 / make_lookat / make_perspective / extract_frustum_planes /
-// camera_frustum_planes_raw now live in raster_cull.h (GL-free, shared with
-// viewer_logic_tests and the upcoming GpuCuller compute path).
-
-// Build the 6 frustum planes from a Camera3D and viewport aspect.
-// Unpacks Camera3D fields and delegates to the GL-free raw version.
-static void camera_frustum_planes(const Camera3D& cam, float aspect,
-                                  float planes[6][4]) {
-    float eye[3]    = { cam.position.x, cam.position.y, cam.position.z };
-    float target[3] = { cam.target.x,   cam.target.y,   cam.target.z   };
-    float up[3]     = { cam.up.x,       cam.up.y,       cam.up.z       };
-    camera_frustum_planes_raw(eye, target, up, cam.fovy, aspect, planes);
-}
-
-// transform_point / aabb_culled / inst_scale / cluster_lod_select live in
-// raster_cull.h (shared with viewer_logic_tests).
-
-// ---------------------------------------------------------------------------
-// FNV-1a fold helper (matches world_composer.cpp).
-// ---------------------------------------------------------------------------
-static void fnv_fold(uint64_t& fp, const void* p, size_t n) {
-    const unsigned char* b = static_cast<const unsigned char*>(p);
-    for (size_t i = 0; i < n; ++i) fp = (fp ^ b[i]) * 1099511628211ull;
-}
-
-// ---------------------------------------------------------------------------
-// build_batches — non-static (needs to write stat_ counters + fingerprint cache)
-// ---------------------------------------------------------------------------
-std::vector<RasterBatch> RasterComposer::build_batches(
-        const std::vector<ResolvedInstance>& resolved,
-        PartStore& store,
-        const Camera3D& cam,
-        uint64_t world_version) {
-
-    // ---- Compute fingerprint: (camera, world_version, per-instance (part_hash, lod)) ----
-    // Transform bytes are NOT hashed: transforms only change via world deltas, which
-    // bump world_version (Stage 1 — drops ~3.3 MB/frame of FNV input).
-    uint64_t fp = 1469598103934665603ull;
-    // Fold camera (position, target, fovy) so any camera move invalidates cache.
-    fnv_fold(fp, &cam.position, sizeof cam.position);
-    fnv_fold(fp, &cam.target,   sizeof cam.target);
-    fnv_fold(fp, &cam.fovy,     sizeof cam.fovy);
-    fnv_fold(fp, &world_version, sizeof(world_version));
-    fnv_fold(fp, &pixel_budget_, sizeof(pixel_budget_));
-    for (const auto& r : resolved) {
-        fnv_fold(fp, &r.part_hash,  sizeof r.part_hash);
-        fnv_fold(fp, &r.lod_level,  sizeof r.lod_level);
-    }
-
-    if (last_valid_ && fp == last_fp_) {
-        // Reuse cached result; update HUD stats from the cached batches.
-        stat_cache_hit_       = true;
-        stat_culled_clusters_ = 0;   // reset to 0: last frame's culled count would be misleading
-        stat_batches_         = last_batches_.size();
-        stat_drawn_tris_      = 0;
-        // drawn_tris is GL-only; caller queries after draw(); leave at 0.
-        return last_batches_;
-    }
-    stat_cache_hit_ = false;
-
-    // ---- Build frustum planes ----
-    float aspect = 16.0f / 9.0f;   // default; overridden below if GL is available
-    {
-        int sw = GetScreenWidth(), sh = GetScreenHeight();
-        if (sw > 0 && sh > 0) aspect = (float)sw / (float)sh;
-    }
-    float planes[6][4];
-    camera_frustum_planes(cam, aspect, planes);
-
-    float cam_eye[3] = { cam.position.x, cam.position.y, cam.position.z };
-
-    const int kMaxDepth = 8;
-    const size_t kMaxInstances = 200000;
-
-    // Batch key: (part_hash, cluster_index, level)
-    using BatchKey = std::tuple<uint64_t, uint32_t, uint32_t>;
-    std::map<BatchKey, RasterBatch> acc;
-    size_t emitted = 0;
-    size_t culled  = 0;
-
-    std::function<void(uint64_t, const float*, int, int)> emit =
-        [&](uint64_t hash, const float* world, int lod, int depth) {
-            if (depth > kMaxDepth || emitted >= kMaxInstances) return;
-            const LoadedPart* lp = store.get_or_load(hash);
-            if (!lp) return;
-
-            if (!lp->lod_mesh_data.empty()) {
-                if (!lp->clusters.empty()) {
-                    // ---- Clustered path (v3 or v2-synthetic clusters) ----
-                    for (uint32_t ci = 0; ci < (uint32_t)lp->clusters.size(); ++ci) {
-                        const LoadedCluster& cl = lp->clusters[ci];
-
-                        // Frustum cull: transform cluster AABB corners by instance transform.
-                        if (aabb_culled(cl.aabb_min, cl.aabb_max, world, planes)) {
-                            ++culled;
-                            continue;
-                        }
-
-                        // Per-cluster LOD selection.
-                        int lv = cluster_lod_select(cl, world, cam_eye, pixel_budget_);
-                        // lv is index into cl.thresholds / cl.lod_mesh; clamp defensively.
-                        if (lv >= (int)cl.lod_mesh.size())
-                            lv = (int)cl.lod_mesh.size() - 1;
-                        int mesh_idx = cl.lod_mesh[lv];
-                        if (mesh_idx < 0 || mesh_idx >= (int)lp->lod_mesh_data.size())
-                            continue;
-
-                        BatchKey key{ hash, ci, (uint32_t)lv };
-                        auto& b = acc[key];
-                        b.part_hash     = hash;
-                        b.cluster_index = ci;
-                        b.level         = lv;
-                        b.transforms.push_back(row_major_to_matrix(world));
-                        ++emitted;
-                    }
-                } else {
-                    // ---- Whole-part path (compositional, no clusters) ----
-                    int lv = lod < 0 ? 0 : lod;
-                    if (lv >= (int)lp->lod_mesh_data.size())
-                        lv = (int)lp->lod_mesh_data.size() - 1;
-                    static constexpr uint32_t kWholePart = UINT32_MAX;
-                    BatchKey key{ hash, kWholePart, (uint32_t)lv };
-                    auto& b = acc[key];
-                    b.part_hash     = hash;
-                    b.cluster_index = kWholePart;
-                    b.level         = lv;
-                    b.transforms.push_back(row_major_to_matrix(world));
-                    ++emitted;
-                }
-            }
-
-            // Recurse into children (compositional parts).
-            for (const auto& c : lp->children) {
-                float cw[16]; mul16(world, c.transform, cw);
-                emit(c.child_resolved_hash, cw, 0, depth + 1);
-            }
-        };
-
-    for (const auto& r : resolved)
-        emit(r.part_hash, r.transform, r.lod_level, 0);
-
-    std::vector<RasterBatch> out;
-    out.reserve(acc.size());
-    for (auto& kv : acc) out.push_back(std::move(kv.second));
-
-    // Update HUD stats.
-    stat_batches_         = out.size();
-    stat_culled_clusters_ = culled;
-    stat_drawn_tris_      = 0;   // filled in by draw()
-    stat_cache_hit_       = false;
-
-    // Cache for next frame.
-    last_fp_      = fp;
-    last_valid_   = true;
-    last_batches_ = out;
-
-    return out;
-}
+// Frustum/matrix helpers live in raster_cull.h (GL-free, shared with the
+// GpuCuller compute path and viewer_logic_tests).
 
 bool RasterComposer::init(std::string& err) {
     shader_ = LoadShader("shaders/raster.vs", "shaders/raster.fs");
@@ -207,7 +47,7 @@ bool RasterComposer::init(std::string& err) {
     loc_ambient_   = GetShaderLocation(shader_, "ambientColor");
     loc_mat_table_ = GetShaderLocation(shader_, "materialTable");
     loc_mat_count_ = GetShaderLocation(shader_, "materialCount");
-    // Probe-volume uniforms (Task 6).
+    // Probe-volume uniforms.
     loc_probe_ambient_  = GetShaderLocation(shader_, "probeAmbient");
     loc_probe_dominant_ = GetShaderLocation(shader_, "probeDominant");
     loc_probe_origin_   = GetShaderLocation(shader_, "probeOrigin");
@@ -220,74 +60,9 @@ bool RasterComposer::init(std::string& err) {
     return true;
 }
 
-Mesh* RasterComposer::ensure_mesh(uint64_t hash, int cluster_index, int level, PartStore& store) {
-    auto key = std::make_tuple(hash, (uint32_t)cluster_index, level);
-    auto it = mesh_cache_.find(key);
-    if (it != mesh_cache_.end()) return &it->second;
-
-    const LoadedPart* lp = store.get_or_load(hash);
-    if (!lp) return nullptr;
-
-    // Determine the lod_mesh_data index.
-    int mesh_idx = -1;
-    if (cluster_index == (int)UINT32_MAX) {
-        // Whole-part path: lod_mesh_data[level] is the whole-part LOD.
-        mesh_idx = level;
-    } else {
-        // Clustered path: look up lod_mesh[level] from the cluster.
-        if (cluster_index >= 0 && cluster_index < (int)lp->clusters.size()) {
-            const LoadedCluster& cl = lp->clusters[cluster_index];
-            if (level >= 0 && level < (int)cl.lod_mesh.size())
-                mesh_idx = cl.lod_mesh[level];
-        }
-    }
-    if (mesh_idx < 0 || mesh_idx >= (int)lp->lod_mesh_data.size()) return nullptr;
-
-    const RasterMeshData& d = lp->lod_mesh_data[mesh_idx];
-    if (d.vertex_count == 0) return nullptr;
-
-    Mesh m{};
-    m.vertexCount   = d.vertex_count;
-    m.triangleCount = d.vertex_count / 3;
-    m.vertices  = const_cast<float*>(d.vertices.data());
-    m.normals   = const_cast<float*>(d.normals.data());
-    m.colors    = const_cast<unsigned char*>(d.colors.data());
-    m.texcoords = const_cast<float*>(d.texcoords.data());
-    UploadMesh(&m, false);
-    // Detach CPU pointers: PartStore owns them.
-    m.vertices = nullptr; m.normals = nullptr; m.colors = nullptr; m.texcoords = nullptr;
-    return &(mesh_cache_[key] = m);
-}
-
-int RasterComposer::draw(const std::vector<RasterBatch>& batches, PartStore& store,
-                         const Camera3D& cam) {
-    if (!ready_) return 0;
-
-    // Upload WorldLights + probe + material uniforms using the shared helper.
-    setup_frame_uniforms(shader_,
-        loc_sun_dir_, loc_sun_color_, loc_ambient_,
-        loc_mat_table_, loc_mat_count_,
-        loc_probe_ambient_, loc_probe_dominant_,
-        loc_probe_origin_, loc_probe_cell_, loc_probe_dims_, loc_use_probes_);
-
-    int tris = 0;
-    BeginMode3D(cam);
-    rlDisableBackfaceCulling();   // mesh-session winding is not guaranteed consistent
-    for (const auto& b : batches) {
-        Mesh* m = ensure_mesh(b.part_hash, (int)b.cluster_index, b.level, store);
-        if (!m || b.transforms.empty()) continue;
-        DrawMeshInstanced(*m, material_, b.transforms.data(), (int)b.transforms.size());
-        tris += m->triangleCount * (int)b.transforms.size();
-    }
-    rlEnableBackfaceCulling();
-    EndMode3D();
-    stat_drawn_tris_ = (size_t)tris;
-    return tris;
-}
-
 // ---------------------------------------------------------------------------
 // setup_frame_uniforms — upload sun/probe/material uniforms to any shader.
-// Shares logic between draw() (using shader_) and draw_gpu_driven() (shader_gpu_).
+// Called by draw_gpu_driven().
 // ---------------------------------------------------------------------------
 void RasterComposer::setup_frame_uniforms(Shader& sh,
     int loc_sun, int loc_sun_col, int loc_amb,
@@ -344,7 +119,7 @@ bool RasterComposer::init_gpu_driven(std::string& err) {
         return false;
     }
 
-    // Load FS text from shaders/raster.fs (same file used by draw()).
+    // Load FS text from shaders/raster.fs (same file used by the base shader).
     char* fs_text_raw = LoadFileText("shaders/raster.fs");
     if (!fs_text_raw) {
         UnloadFileText(vs_text);
@@ -389,7 +164,7 @@ bool RasterComposer::init_gpu_driven(std::string& err) {
 }
 
 // ---------------------------------------------------------------------------
-// draw_gpu_driven — Stage-2: set uniforms + issue glMultiDrawArraysIndirect.
+// draw_gpu_driven — set uniforms + issue glMultiDrawArraysIndirect.
 // ---------------------------------------------------------------------------
 int RasterComposer::draw_gpu_driven(GpuCuller& culler, PartStore& /*store*/,
                                      const Camera3D& cam) {
@@ -437,7 +212,6 @@ int RasterComposer::draw_gpu_driven(GpuCuller& culler, PartStore& /*store*/,
 }
 
 RasterComposer::~RasterComposer() {
-    for (auto& kv : mesh_cache_) UnloadMesh(kv.second);
     if (ready_) UnloadShader(shader_);   // material_ holds the same shader; don't double-free via UnloadMaterial
     if (gpu_ready_) UnloadShader(shader_gpu_);
 }

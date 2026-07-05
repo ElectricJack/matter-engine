@@ -54,13 +54,15 @@ int main() {
     const bool use_rt = getenv("MATTER_RT") != nullptr;
 
     const int W = 1280, H = 720;
-    // MSAA is incompatible with the HiZ occlusion path: build_hiz blits the
-    // default framebuffer depth, which is undefined for a multisampled FB
-    // (the GpuCuller MSAA guard would permanently disable HiZ). The GPU cull
-    // path therefore runs without the MSAA hint. gpu_cull_requested() is a
-    // pure env read, safe before InitWindow.
+    // GL 4.6 is a hard requirement for the raster path (MATTER_RT=1 is the
+    // ray-traced fallback for older GL). MSAA is incompatible with the HiZ
+    // occlusion path: build_hiz blits the default framebuffer depth, which is
+    // undefined for a multisampled FB. The raster path therefore runs without
+    // the MSAA hint. gpu_cull_requested() is a pure env read, safe before
+    // InitWindow — it defaults ON and is only disabled by MATTER_GPU_CULL=0
+    // (typically paired with MATTER_RT=1 on GL < 4.6 hardware).
     unsigned cfg_flags = FLAG_WINDOW_RESIZABLE;
-    if (!viewer::gpu_cull_requested()) cfg_flags |= FLAG_MSAA_4X_HINT;
+    if (use_rt || !viewer::gpu_cull_requested()) cfg_flags |= FLAG_MSAA_4X_HINT;
     SetConfigFlags(cfg_flags);
     InitWindow(W, H, "MatterEngine3 World Viewer");
     SetTargetFPS(60);
@@ -89,11 +91,21 @@ int main() {
         }
     }
 
+    // Raster path is GPU-driven only. RT path bypasses the GL 4.6 check.
     bool gpu_cull = false;
-    if (viewer::gpu_cull_requested()) {
+    if (!use_rt) {
+        if (!viewer::gpu_cull_requested()) {
+            fprintf(stderr, "FATAL: MATTER_GPU_CULL=0 requires MATTER_RT=1 "
+                    "(the CPU raster path has been removed). Unset MATTER_GPU_CULL "
+                    "for the default GPU-driven raster path, or set MATTER_RT=1 "
+                    "to fall back to the software ray tracer.\n");
+            return 1;
+        }
         std::string why;
         if (!viewer::gl46_available(why)) {
-            fprintf(stderr, "FATAL: MATTER_GPU_CULL=1 but %s. GPU cull path requires GL 4.6.\n", why.c_str());
+            fprintf(stderr, "FATAL: GL 4.6 required for raster path (%s). "
+                    "Set MATTER_GPU_CULL=0 with MATTER_RT=1 for the ray-traced fallback.\n",
+                    why.c_str());
             return 1;
         }
         gpu_cull = true;
@@ -219,13 +231,16 @@ int main() {
             printf("sky clear color: (%d,%d,%d)\n",
                    (int)sky_clear.r, (int)sky_clear.g, (int)sky_clear.b);
         }
-        // Stage-2 GPU-driven shader: load after init() so the raster shader is ready.
-        if (!use_rt && gpu_cull) {
+        // GPU-driven shader: load after init() so the raster shader is ready.
+        // FATAL on failure — there is no CPU raster fallback (MATTER_RT=1 is
+        // the escape hatch for older GL).
+        if (!use_rt) {
             std::string gerr;
             if (!raster->init_gpu_driven(gerr)) {
-                printf("WARNING: GPU-driven shader init failed (%s); falling back to CPU raster path\n",
-                       gerr.c_str());
-                gpu_cull = false;
+                fprintf(stderr, "FATAL: GPU-driven shader init failed: %s. "
+                        "Set MATTER_RT=1 to fall back to the ray-traced path.\n",
+                        gerr.c_str());
+                return false;
             }
         }
         // Upload world lights to the raytrace shader (no-op in raster mode because
@@ -375,44 +390,35 @@ int main() {
         raster->set_pixel_budget(stats.pixel_budget);
 
         int active = 0;
-        std::vector<RasterBatch> batches;
         if (use_rt) {
             active = composer->compose(state, resolver, lods, cam);
         } else {
             auto t0 = std::chrono::steady_clock::now();
             auto resolved = resolver.resolve(state, lods, cam);
             auto t1 = std::chrono::steady_clock::now();
-            if (gpu_cull) {
-                float eye[3]     = {cp.x, cp.y, cp.z};
-                Vector3 tgt      = renderer.camera().target;
-                float target3[3] = {tgt.x, tgt.y, tgt.z};
-                float up3[3]     = {0, 1, 0};
-                float aspect     = (float)GetScreenWidth() / (float)GetScreenHeight();
-                // Build view/proj/vp explicitly (same near/far as
-                // camera_frustum_planes_raw) so the HiZ path gets the exact vp
-                // the frustum planes came from.
-                const float near_z = 0.05f, far_z = 4000.0f;
-                float view[16], proj[16], vp[16];
-                viewer::make_lookat(eye, target3, up3, view);
-                viewer::make_perspective(renderer.camera().fovy, aspect, near_z, far_z, proj);
-                viewer::mul16(view, proj, vp);
-                float planes[6][4];
-                viewer::extract_frustum_planes(vp, planes);
-                // Propagate the runtime HiZ toggle every frame (HUD/FIFO/env).
-                gpu_culler.set_hiz_enabled(stats.hiz_enabled);
-                gpu_culler.cull(resolved, *store, eye, planes, vp, stats.pixel_budget);
-                // Stage-2: no readback; draw_gpu_driven reads cmds/xforms on GPU.
-            } else {
-                batches = raster->build_batches(resolved, *store, renderer.camera(), state.version());
-            }
+            // Raster path is GPU-driven only (guaranteed by the startup FATAL gate).
+            float eye[3]     = {cp.x, cp.y, cp.z};
+            Vector3 tgt      = renderer.camera().target;
+            float target3[3] = {tgt.x, tgt.y, tgt.z};
+            float up3[3]     = {0, 1, 0};
+            float aspect     = (float)GetScreenWidth() / (float)GetScreenHeight();
+            // Build view/proj/vp explicitly (same near/far as
+            // camera_frustum_planes_raw) so the HiZ path gets the exact vp
+            // the frustum planes came from.
+            const float near_z = 0.05f, far_z = 4000.0f;
+            float view[16], proj[16], vp[16];
+            viewer::make_lookat(eye, target3, up3, view);
+            viewer::make_perspective(renderer.camera().fovy, aspect, near_z, far_z, proj);
+            viewer::mul16(view, proj, vp);
+            float planes[6][4];
+            viewer::extract_frustum_planes(vp, planes);
+            // Propagate the runtime HiZ toggle every frame (HUD/FIFO/env).
+            gpu_culler.set_hiz_enabled(stats.hiz_enabled);
+            gpu_culler.cull(resolved, *store, eye, planes, vp, stats.pixel_budget);
             auto t2 = std::chrono::steady_clock::now();
             stats.resolve_ms = std::chrono::duration<float, std::milli>(t1 - t0).count();
             stats.build_ms   = std::chrono::duration<float, std::milli>(t2 - t1).count();
-            if (gpu_cull) {
-                active = (int)resolved.size();   // resolved count; emitted shown via gpu_emitted
-            } else {
-                for (const auto& b : batches) active += (int)b.transforms.size();
-            }
+            active = (int)resolved.size();   // resolved count; emitted shown via gpu_emitted
         }
 
         stats.fps = (float)GetFPS();
@@ -426,21 +432,14 @@ int main() {
                 renderer.draw(store->blas(), composer->tlas());
             } else {
                 auto d0 = std::chrono::steady_clock::now();
-                if (gpu_cull) {
-                    stats.raster_tris = raster->draw_gpu_driven(
-                            gpu_culler, *store, renderer.camera());
-                    stats.gpu_emitted    = (int)gpu_culler.emitted();
-                    stats.gpu_culled     = (int)gpu_culler.culled_clusters();
-                    stats.gpu_culled_hiz = (int)gpu_culler.culled_hiz();
-                    stats.raster_batches  = 0;   // not meaningful for indirect path
-                    stats.culled_clusters = stats.gpu_culled;
-                    stats.batch_cache_hit = false;
-                } else {
-                    stats.raster_tris     = raster->draw(batches, *store, renderer.camera());
-                    stats.raster_batches  = (int)raster->batches();
-                    stats.culled_clusters = (int)raster->culled_clusters();
-                    stats.batch_cache_hit = raster->cache_hit();
-                }
+                stats.raster_tris = raster->draw_gpu_driven(
+                        gpu_culler, *store, renderer.camera());
+                stats.gpu_emitted    = (int)gpu_culler.emitted();
+                stats.gpu_culled     = (int)gpu_culler.culled_clusters();
+                stats.gpu_culled_hiz = (int)gpu_culler.culled_hiz();
+                stats.raster_batches  = 0;   // not meaningful for indirect path
+                stats.culled_clusters = stats.gpu_culled;
+                stats.batch_cache_hit = false;
                 stats.draw_ms = std::chrono::duration<float, std::milli>(
                                     std::chrono::steady_clock::now() - d0).count();
             }

@@ -6,8 +6,8 @@
 #include "../viewer/local_provider.h"
 #include "../viewer/world_composer.h"
 #include "../viewer/raster_mesh.h"
-#include "../viewer/raster_composer.h"
 #include "../viewer/raster_cull.h"
+#include "../viewer/probe_texture.h"   // kProbeAmbientScale (previously via raster_composer.h)
 #include "../viewer/gpu_cull_types.h"
 #include "lod_select.h"   // PartLodTable, PartLod
 #include "part_graph.h"   // PartGraph + FileModuleResolver/HostBaker (script-host guarded)
@@ -414,34 +414,12 @@ static void test_compose_expands_children() {
     int again = composer.compose(state, pass, lods, make_float3(0,0,0));
     CHECK(again == recorded, "unchanged instance set composes to the same count");
 
-    // RasterComposer::build_batches: parent + 2 children -> 2 (hash,level) batches,
-    // 3 total instances, child batch has 2 transforms, second child at x=+20.
-    {
-        viewer::ResolvedInstance r{};
-        r.part_hash = parent_hash; r.lod_level = 0;
-        float ident[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
-        std::memcpy(r.transform, ident, sizeof ident);
-        // Camera looking +z from origin (frustum must NOT cull the instances near origin).
-        Camera3D cam{};
-        cam.position = {0,0,-50}; cam.target = {0,0,0}; cam.up = {0,1,0};
-        cam.fovy = 60.0f; cam.projection = CAMERA_PERSPECTIVE;
-        viewer::RasterComposer rc;
-        auto batches = rc.build_batches({r}, store, cam, /*world_version=*/1);
-        CHECK(batches.size() == 2, "two (hash,level) batches");            // parent + child groups
-        size_t total = 0; size_t child_batch_n = 0;
-        for (const auto& b : batches) {
-            total += b.transforms.size();
-            if (b.part_hash == child_hash) child_batch_n = b.transforms.size();
-        }
-        CHECK(total == 3, "3 instances total");
-        CHECK(child_batch_n == 2, "children grouped into one batch");
-        // second child sits at x=+20 (fixture translation): translation is in m12
-        bool found20 = false;
-        for (const auto& b : batches)
-            if (b.part_hash == child_hash)
-                for (const auto& m : b.transforms) if (m.m12 == 20.0f) found20 = true;
-        CHECK(found20, "child world transform applied");
-    }
+    // NOTE: RasterComposer::build_batches (CPU batch path) was deleted in Task 12
+    // along with the whole CPU raster fallback; the GPU-driven path replaces it,
+    // and expansion+batching is exercised by gpu_cull_tests (readback_batches
+    // parity) instead. The (child_hash) variable is left set so the fixture
+    // remains valid for any future GL-free assertion added here.
+    (void)child_hash;
 
     system(("rm -rf " + root).c_str());
 }
@@ -670,36 +648,10 @@ static void test_provider_bakes_probes() {
     }
 }
 
-// Task 6: verify set_lights() stores values accessible via lights() accessor.
-// (GL-free: RasterComposer's batch/light-storage logic is headless; the actual
-// GL upload is exercised only in the live viewer.)
-static void test_raster_composer_lights() {
-    viewer::RasterComposer rc;
-
-    // Default-constructed lights must match WorldLights defaults.
-    const world_lights::WorldLights& def = rc.lights();
-    CHECK(def.sun_dir[0] == -0.45f && def.sun_dir[1] == -0.80f && def.sun_dir[2] == -0.35f,
-          "default sun_dir matches WorldLights default");
-    CHECK(def.sun_color[0] == 2.2f && def.sun_color[1] == 2.05f && def.sun_color[2] == 1.8f,
-          "default sun_color matches WorldLights default");
-    CHECK(def.sky_color[0] == 0.38f && def.sky_color[1] == 0.43f && def.sky_color[2] == 0.52f,
-          "default sky_color matches WorldLights default");
-
-    // After set_lights(), the accessor must return the updated values.
-    world_lights::WorldLights custom;
-    custom.sun_dir[0] = 1.0f; custom.sun_dir[1] = 0.0f; custom.sun_dir[2] = 0.0f;
-    custom.sun_color[0] = 3.0f; custom.sun_color[1] = 3.0f; custom.sun_color[2] = 2.5f;
-    custom.sky_color[0] = 0.1f; custom.sky_color[1] = 0.2f; custom.sky_color[2] = 0.9f;
-    rc.set_lights(custom);
-
-    const world_lights::WorldLights& stored = rc.lights();
-    CHECK(stored.sun_dir[0] == 1.0f && stored.sun_dir[1] == 0.0f && stored.sun_dir[2] == 0.0f,
-          "set_lights stores sun_dir");
-    CHECK(stored.sun_color[0] == 3.0f && stored.sun_color[1] == 3.0f && stored.sun_color[2] == 2.5f,
-          "set_lights stores sun_color");
-    CHECK(stored.sky_color[0] == 0.1f && stored.sky_color[1] == 0.2f && stored.sky_color[2] == 0.9f,
-          "set_lights stores sky_color");
-}
+// Task 12 deleted test_raster_composer_lights: RasterComposer now depends on
+// GpuCuller (GL) via draw_gpu_driven, so raster_composer.cpp is no longer
+// linked into the GL-free viewer_logic_tests binary. set_lights/lights() are
+// trivial getter/setter and are covered by the live viewer path.
 
 // Task 6: probe quantization round-trip.
 // probe_texture.cpp requires a GL context (GL calls in upload_probe_textures), so
@@ -1009,377 +961,13 @@ static void test_partstore_cluster_loading() {
     printf("=== test_partstore_cluster_loading DONE ===\n");
 }
 
-// ---- Task 13: per-cluster frustum cull + LOD selection tests ---------------
+// Task 13 tests (test_task13_*) + test_fingerprint_world_version + the
+// SyntheticClustered / build_two_cluster_store / mk_empty_store / make_cam /
+// make_resolved_inst helpers were deleted in Task 12 along with the CPU
+// raster batch path (RasterComposer::build_batches and friends). Frustum
+// math is still exercised by test_frustum_planes_known_camera below and by
+// gpu_cull_tests (which round-trip cluster cull through the GpuCuller).
 
-// Helpers to build a minimal synthetic PartStore entry with clusters, without
-// requiring a disk flat artifact (we inject directly via the public API).
-
-// Build a PartStore with no parts loaded (empty cache root). Used by Task 6
-// fingerprint test where part_hash 0xBEEF is intentionally absent.
-static viewer::PartStore mk_empty_store() {
-    return viewer::PartStore("/tmp/me3_empty_store");
-}
-
-// Build a Camera3D looking along +Z from `eye` at the origin.
-static Camera3D make_cam(float ex, float ey, float ez,
-                          float tx=0, float ty=0, float tz=0,
-                          float fovy=60.0f) {
-    Camera3D c{};
-    c.position   = (Vector3){ex, ey, ez};
-    c.target     = (Vector3){tx, ty, tz};
-    c.up         = (Vector3){0, 1, 0};
-    c.fovy       = fovy;
-    c.projection = CAMERA_PERSPECTIVE;
-    return c;
-}
-
-// Build a ResolvedInstance at the origin with an identity transform.
-static viewer::ResolvedInstance make_resolved_inst(uint64_t hash, int lod=0) {
-    viewer::ResolvedInstance r{};
-    r.part_hash = hash; r.lod_level = lod;
-    // Identity row-major transform
-    r.transform[0]=r.transform[5]=r.transform[10]=r.transform[15]=1.0f;
-    return r;
-}
-
-// Build a minimal PartStore with one v3-style flat part (injected directly).
-// The part has two clusters: one near (0,0,0) and one far (0,0,100).
-// Each cluster has 2 LOD levels with thresholds [0.5, 0.1].
-struct SyntheticClustered {
-    std::string cache_root;
-    uint64_t    hash;
-    // Computed: near cluster AABB, far cluster AABB
-    float near_aabb_min[3];   // {-1,-1,-1}
-    float near_aabb_max[3];   // { 1, 1, 1}
-    float far_aabb_min[3];    // {-1,-1, 99}
-    float far_aabb_max[3];    // { 1, 1,101}
-
-    void cleanup() { ::system(("rm -rf " + cache_root).c_str()); }
-};
-
-// Helper: write v3 flat artifact for two clusters (near + far).
-static SyntheticClustered build_two_cluster_store() {
-    SyntheticClustered s;
-    s.cache_root = "/tmp/me3_task13_cull_test";
-    s.hash       = 0x1301130113011301ull;
-    ::system(("rm -rf " + s.cache_root).c_str());
-    ::system(("mkdir -p " + s.cache_root + "/parts").c_str());
-
-    // Near cluster: AABB [-1,-1,-1]..[1,1,1]
-    s.near_aabb_min[0]=-1; s.near_aabb_min[1]=-1; s.near_aabb_min[2]=-1;
-    s.near_aabb_max[0]= 1; s.near_aabb_max[1]= 1; s.near_aabb_max[2]= 1;
-    // Far cluster: AABB [-1,-1,99]..[1,1,101]  (centered at z=100)
-    s.far_aabb_min[0]=-1; s.far_aabb_min[1]=-1; s.far_aabb_min[2]= 99;
-    s.far_aabb_max[0]= 1; s.far_aabb_max[1]= 1; s.far_aabb_max[2]=101;
-
-    BLASManager scratch; TLASManager scratch_tlas(64);
-
-    // Near cluster triangles (a small quad near origin)
-    Tri tn[2] = {};
-    tn[0].vertex0=make_float3(-1,-1,-1); tn[0].vertex1=make_float3(1,-1,-1); tn[0].vertex2=make_float3(1,1,-1);
-    tn[0].centroid=make_float3(0.33f,-0.33f,-1);
-    tn[1].vertex0=make_float3(-1,-1,-1); tn[1].vertex1=make_float3(1,1,-1); tn[1].vertex2=make_float3(-1,1,-1);
-    tn[1].centroid=make_float3(-0.33f,0.33f,-1);
-    uint32_t bn0 = (uint32_t)scratch.get_entries().size();
-    scratch.register_triangles(tn, 2, nullptr);
-
-    // Far cluster triangles (same quad displaced +100 in z)
-    Tri tf[2] = {};
-    tf[0].vertex0=make_float3(-1,-1,99); tf[0].vertex1=make_float3(1,-1,99); tf[0].vertex2=make_float3(1,1,99);
-    tf[0].centroid=make_float3(0.33f,-0.33f,99);
-    tf[1].vertex0=make_float3(-1,-1,99); tf[1].vertex1=make_float3(1,1,99); tf[1].vertex2=make_float3(-1,1,99);
-    tf[1].centroid=make_float3(-0.33f,0.33f,99);
-    uint32_t bf0 = (uint32_t)scratch.get_entries().size();
-    scratch.register_triangles(tf, 2, nullptr);
-
-    // Two LOD levels per cluster (so we can test LOD selection with distance).
-    // Level 0 is finest (threshold 0.5), level 1 is coarsest (threshold 0.1).
-    // Note: per lod_select convention, thresholds are fine->coarse (index 0 = largest).
-    std::vector<part_asset::FlatCluster> clusters(2);
-    // Near cluster
-    std::memcpy(clusters[0].aabb_min, s.near_aabb_min, 12);
-    std::memcpy(clusters[0].aabb_max, s.near_aabb_max, 12);
-    { part_asset::LodLevel L0; L0.screen_size_threshold=0.5f; L0.blas_indices.push_back(bn0); clusters[0].lods.push_back(L0); }
-    { part_asset::LodLevel L1; L1.screen_size_threshold=0.1f; L1.blas_indices.push_back(bn0); clusters[0].lods.push_back(L1); }
-    // Far cluster
-    std::memcpy(clusters[1].aabb_min, s.far_aabb_min, 12);
-    std::memcpy(clusters[1].aabb_max, s.far_aabb_max, 12);
-    { part_asset::LodLevel L0; L0.screen_size_threshold=0.5f; L0.blas_indices.push_back(bf0); clusters[1].lods.push_back(L0); }
-    { part_asset::LodLevel L1; L1.screen_size_threshold=0.1f; L1.blas_indices.push_back(bf0); clusters[1].lods.push_back(L1); }
-
-    const std::string flat_path = s.cache_root + "/" + part_asset::cache_path_flat(s.hash);
-    bool ok = part_asset::save_flat_v3(flat_path, scratch, scratch_tlas, clusters, s.hash);
-    if (!ok) {
-        printf("  WARN: build_two_cluster_store: save_flat_v3 failed\n");
-        s.hash = 0;   // signal failure
-    }
-    return s;
-}
-
-// Task 13 — test 1: frustum-plane sanity.
-// Camera at (0,0,-10) looking at origin (+z direction).
-// A point at (0,0,5) is straight ahead: inside all 6 planes.
-// A point at (0,0,-20) is behind the camera: outside the near plane.
-// Uses the internal helpers via extern (we expose them via a test shim if needed).
-// Since the helpers are in the anonymous namespace of raster_composer.cpp, we test
-// them indirectly: build a clustered store, place the part at z=100 behind the
-// camera (looking -z), expect 0 batches (culled).
-static void test_task13_frustum_cull_behind() {
-    SyntheticClustered s = build_two_cluster_store();
-    if (!s.hash) { CHECK(false, "task13_cull_behind: synthetic store creation failed"); return; }
-
-    viewer::PartStore store(s.cache_root);
-
-    // Camera at (0,0,-10) looking at origin (along +z).
-    // The near cluster (at origin) is IN FRONT. Place the PART at z=-200 so ALL
-    // clusters are way behind the camera (below near plane).
-    // Actually: camera at (0,0,200) looking at (0,0,300) -> clusters near (0,0,0)
-    // are behind the camera. Frustum test should cull both clusters -> 0 batches.
-    Camera3D cam = make_cam(0, 0, 200, 0, 0, 300);
-
-    viewer::ResolvedInstance r = make_resolved_inst(s.hash, 0);
-    // Translate the instance to (0,0,0): clusters are near origin, camera is at z=200
-    // looking toward z=300, so clusters at z=0 are BEHIND the camera.
-
-    viewer::RasterComposer rc;
-    auto batches = rc.build_batches({r}, store, cam, /*world_version=*/1);
-    CHECK(batches.empty(), "task13: all clusters behind camera -> 0 batches (culled)");
-    CHECK(rc.culled_clusters() >= 2, "task13: culled_clusters counter >= 2");
-    s.cleanup();
-}
-
-// Task 13 — test 2: cluster visible near -> LOD 0; cluster visible far -> coarser.
-// Camera at (0,0,-5) looking at origin. Near cluster (at origin, radius ~sqrt(3))
-// is close -> high projected size -> level 0 (finest). Far cluster (at z=100) is
-// distant -> low projected size -> level 1 (coarsest).
-static void test_task13_lod_by_distance() {
-    SyntheticClustered s = build_two_cluster_store();
-    if (!s.hash) { CHECK(false, "task13_lod_by_distance: store creation failed"); return; }
-
-    viewer::PartStore store(s.cache_root);
-
-    // Camera very close to origin, looking at +z (both clusters visible).
-    // Near cluster center at (0,0,0), radius ~= sqrt(3) ~= 1.73.
-    // Far cluster center at (0,0,100).
-    // At dist=5: near_psize = 1.73/5 ~= 0.35 -> >= thr[0]=0.5? No. >= thr[1]=0.1? Yes -> level 1.
-    // Actually let's move closer: dist=2: near_psize=0.87 >= 0.5 -> level 0.
-    // Far at dist=102: far_psize ~=1.73/102=0.017 < 0.1 -> level 1 (coarsest).
-    Camera3D cam = make_cam(0, 0, -2, 0, 0, 50);
-
-    viewer::ResolvedInstance r = make_resolved_inst(s.hash, 0);
-
-    viewer::RasterComposer rc;
-    auto batches = rc.build_batches({r}, store, cam, /*world_version=*/1);
-
-    // We expect at least the near cluster to be visible.
-    CHECK(!batches.empty(), "task13_lod: at least one cluster visible");
-
-    // Find near cluster (cluster_index 0) and far cluster (cluster_index 1) batches.
-    int near_level = -1, far_level = -1;
-    for (const auto& b : batches) {
-        if (b.cluster_index == 0) near_level = b.level;
-        if (b.cluster_index == 1) far_level  = b.level;
-    }
-    CHECK(near_level >= 0, "task13_lod: near cluster is visible");
-    if (near_level >= 0 && far_level >= 0) {
-        // Near should be at a finer-or-equal LOD than far.
-        CHECK(near_level <= far_level, "task13_lod: near cluster picks finer LOD than far");
-    }
-    s.cleanup();
-}
-
-// Task 13 — test 3: two instances of the same clustered part -> batch instance
-// counts sum correctly per (cluster, level).
-static void test_task13_two_instances_batch_counts() {
-    SyntheticClustered s = build_two_cluster_store();
-    if (!s.hash) { CHECK(false, "task13_two_instances: store creation failed"); return; }
-
-    viewer::PartStore store(s.cache_root);
-
-    // Camera close to origin so all clusters are in frustum and at level 0.
-    Camera3D cam = make_cam(0, 0, -2, 0, 0, 0);
-
-    // Two identical instances at the origin.
-    viewer::ResolvedInstance r1 = make_resolved_inst(s.hash, 0);
-    viewer::ResolvedInstance r2 = make_resolved_inst(s.hash, 0);
-
-    viewer::RasterComposer rc;
-    auto batches = rc.build_batches({r1, r2}, store, cam, /*world_version=*/1);
-
-    // Each cluster at each level gets exactly ONE batch; each batch accumulates
-    // transforms from all instances. So we expect at most 2 batches (one per cluster
-    // if both at same level), each with 2 transforms (one per instance).
-    size_t total_transforms = 0;
-    for (const auto& b : batches) total_transforms += b.transforms.size();
-
-    // We have 2 instances, each with 2 clusters -> 4 cluster draws total.
-    // They should be in 2 batches (2 clusters * 1 level), each with 2 transforms.
-    CHECK(total_transforms == 4, "task13_two_instances: 2 instances * 2 clusters = 4 draws");
-    // Each batch should have exactly 2 transforms (one per instance).
-    bool all_two = true;
-    for (const auto& b : batches) if (b.transforms.size() != 2) all_two = false;
-    CHECK(all_two, "task13_two_instances: each batch has 2 transforms");
-
-    s.cleanup();
-}
-
-// Task 13 — test 4: fingerprint reuse when camera + instances are identical.
-static void test_task13_fingerprint_reuse() {
-    SyntheticClustered s = build_two_cluster_store();
-    if (!s.hash) { CHECK(false, "task13_fingerprint: store creation failed"); return; }
-
-    viewer::PartStore store(s.cache_root);
-    Camera3D cam = make_cam(0, 0, -2, 0, 0, 0);
-    viewer::ResolvedInstance r = make_resolved_inst(s.hash, 0);
-
-    viewer::RasterComposer rc;
-    // First call: builds batches from scratch.
-    auto b1 = rc.build_batches({r}, store, cam, /*world_version=*/1);
-    bool first_was_cache_hit = rc.cache_hit();
-    CHECK(!first_was_cache_hit, "task13_fp: first call is NOT a cache hit");
-
-    // Second call: same camera + same instances -> fingerprint hit.
-    auto b2 = rc.build_batches({r}, store, cam, /*world_version=*/1);
-    bool second_was_cache_hit = rc.cache_hit();
-    CHECK(second_was_cache_hit, "task13_fp: second call IS a cache hit (reuse)");
-    CHECK(b1.size() == b2.size(), "task13_fp: cached result has same batch count");
-
-    // Third call: different camera position -> NOT a cache hit.
-    Camera3D cam2 = make_cam(0, 0, -50, 0, 0, 0);
-    auto b3 = rc.build_batches({r}, store, cam2, /*world_version=*/1);
-    bool third_was_cache_hit = rc.cache_hit();
-    CHECK(!third_was_cache_hit, "task13_fp: camera move invalidates fingerprint");
-
-    s.cleanup();
-}
-
-// Task 13 — test 5: compositional parts (no clusters) keep rendering exactly as before.
-static void test_task13_compositional_unaffected() {
-    // Reuse the synthetic parent+child fixture from test_compose_expands_children.
-    const std::string root = "/tmp/me3_task13_comp_test";
-    ::system(("rm -rf " + root).c_str());
-    ::system(("mkdir -p " + root + "/parts").c_str());
-
-    const uint64_t child_hash  = 0xCC13CC13CC13CC01ull;
-    const uint64_t parent_hash = 0xCC13CC13CC13CC02ull;
-
-    auto make_quad_tris = [](float ox) -> std::vector<Tri> {
-        std::vector<Tri> t(2);
-        t[0].vertex0=make_float3(ox,0,0); t[0].vertex1=make_float3(ox+1,0,0); t[0].vertex2=make_float3(ox+1,1,0);
-        t[0].centroid=make_float3(ox+0.67f,0.33f,0);
-        t[1].vertex0=make_float3(ox,0,0); t[1].vertex1=make_float3(ox+1,1,0); t[1].vertex2=make_float3(ox,1,0);
-        t[1].centroid=make_float3(ox+0.33f,0.67f,0);
-        return t;
-    };
-
-    auto save_comp = [&](uint64_t hash, const std::vector<part_asset::ChildInstance>& kids,
-                         float ox) -> bool {
-        BLASManager blas; TLASManager tlas(8);
-        auto tris = make_quad_tris(ox);
-        blas.register_triangles(tris.data(), (int)tris.size(), nullptr);
-        part_asset::LodLevels lods;
-        part_asset::LodLevel L; L.screen_size_threshold=0.0f; L.blas_indices.push_back(0);
-        lods.push_back(L);
-        return part_asset::save_v2(root + "/" + part_asset::cache_path_resolved(hash),
-                                   blas, tlas, kids.empty()?nullptr:kids.data(), kids.size(),
-                                   lods, hash);
-    };
-
-    part_asset::ChildInstance kid{};
-    kid.child_resolved_hash = child_hash;
-    kid.transform[0]=kid.transform[5]=kid.transform[10]=kid.transform[15]=1.0f;
-    kid.transform[3]=10.0f;  // translate x=10
-
-    CHECK(save_comp(child_hash, {}, 0), "task13_comp: child saved");
-    CHECK(save_comp(parent_hash, {kid}, 0), "task13_comp: parent saved");
-
-    viewer::PartStore store(root);
-    Camera3D cam = make_cam(0, 0, -50, 0, 0, 0);
-    viewer::ResolvedInstance r = make_resolved_inst(parent_hash, 0);
-
-    viewer::RasterComposer rc;
-    auto batches = rc.build_batches({r}, store, cam, /*world_version=*/1);
-
-    // Compositional path: parent (no clusters) + 1 child (no clusters).
-    // Should get 2 batches (parent hash, child hash), total 2 instances.
-    CHECK(batches.size() == 2, "task13_comp: 2 batches (parent + child, no clusters)");
-    size_t total = 0;
-    for (const auto& b : batches) total += b.transforms.size();
-    CHECK(total == 2, "task13_comp: 2 total instances (parent + child)");
-
-    ::system(("rm -rf " + root).c_str());
-}
-
-// Task 13 — test 6: HUD counter stat_batches_ matches batches().size().
-static void test_task13_hud_counters() {
-    SyntheticClustered s = build_two_cluster_store();
-    if (!s.hash) { CHECK(false, "task13_hud: store creation failed"); return; }
-
-    viewer::PartStore store(s.cache_root);
-    Camera3D cam = make_cam(0, 0, -2, 0, 0, 0);
-    viewer::ResolvedInstance r = make_resolved_inst(s.hash, 0);
-
-    viewer::RasterComposer rc;
-    auto batches = rc.build_batches({r}, store, cam, /*world_version=*/1);
-
-    CHECK(rc.batches() == batches.size(), "task13_hud: batches() matches returned vector size");
-    // culled_clusters() + visible clusters should equal total clusters in the part.
-    const viewer::LoadedPart* lp = store.get_or_load(s.hash);
-    if (lp) {
-        size_t visible_clusters = 0;
-        for (const auto& b : batches)
-            if (b.cluster_index != UINT32_MAX) ++visible_clusters;
-        // camera is close and looking at the clusters; far cluster at z=100 may or may not
-        // be culled depending on exact frustum. At minimum we can check:
-        // culled + visible == total clusters in part.
-        // (With camera at z=-2 looking at origin, z=100 cluster may be just inside frustum;
-        //  the culled count depends on the near-far depth range. Just verify counter is sane.)
-        CHECK(rc.culled_clusters() + visible_clusters == lp->clusters.size(),
-              "task13_hud: culled + visible == total clusters");
-    }
-
-    s.cleanup();
-}
-
-// Task 6 — fingerprint shrunk to (camera, world_version, per-instance
-// (part_hash, lod)): transforms no longer participate.
-static void test_fingerprint_world_version() {
-    // Fingerprint semantics after Stage 1: (camera, world_version, per-instance
-    // (part_hash, lod)) — transform bytes no longer participate.
-    // Reuse the PartStore + camera fixture from the existing task13
-    // fingerprint tests in this file.
-    viewer::RasterComposer rc;              // build_batches is GL-free
-    Camera3D cam{};
-    cam.position = { 0, 5, -10 };
-    cam.target   = { 0, 0, 0 };
-    cam.up       = { 0, 1, 0 };
-    cam.fovy     = 60.0f;
-    cam.projection = CAMERA_PERSPECTIVE;
-
-    std::vector<viewer::ResolvedInstance> resolved(1);
-    resolved[0].part_hash = 0xBEEFu;        // absent from the store: emit skips it,
-    resolved[0].lod_level = 0;              // fingerprint/cache logic still runs
-    for (int i = 0; i < 16; ++i) resolved[0].transform[i] = (i % 5 == 0) ? 1.0f : 0.0f;
-
-    viewer::PartStore store = mk_empty_store();   // same helper the task13 tests use
-
-    (void)rc.build_batches(resolved, store, cam, /*world_version=*/1);
-    assert(!rc.cache_hit());                       // first build: miss
-    (void)rc.build_batches(resolved, store, cam, 1);
-    assert(rc.cache_hit());                        // identical inputs: hit
-
-    (void)rc.build_batches(resolved, store, cam, 2);
-    assert(!rc.cache_hit());                       // version bump: miss
-
-    cam.position.x += 1.0f;                        // camera move: miss
-    (void)rc.build_batches(resolved, store, cam, 2);
-    assert(!rc.cache_hit());
-
-    resolved[0].lod_level = 1;                     // LOD flip: miss
-    (void)rc.build_batches(resolved, store, cam, 2);
-    assert(!rc.cache_hit());
-    printf("  test_fingerprint_world_version OK\n");
-}
 
 // Regression: instance transforms are engine (column-vector) convention with
 // translation at cells 3/7/11 — the same layout mk_entry writes and
@@ -1643,19 +1231,13 @@ int main() {
     test_raster_mesh_data();
     test_sector_lod_floor_cull();
     test_provider_bakes_probes();
-    test_raster_composer_lights();
+    // test_raster_composer_lights deleted in Task 12 — see comment at definition.
     test_probe_quantization_roundtrip();
     test_provider_regen_stale_v2_flat();
     test_partstore_cluster_loading();
-    // Task 13: per-cluster frustum cull + LOD
-    test_task13_frustum_cull_behind();
-    test_task13_lod_by_distance();
-    test_task13_two_instances_batch_counts();
-    test_task13_fingerprint_reuse();
-    test_task13_compositional_unaffected();
-    test_task13_hud_counters();
-    // Task 6: cheap fingerprint — world_version replaces transform bytes
-    test_fingerprint_world_version();
+    // Task 13 per-cluster frustum cull tests + Task 6 fingerprint test deleted
+    // in Task 12 along with the CPU raster batch path (RasterComposer::build_batches).
+    // Per-cluster cull is exercised in gpu_cull_tests via readback_batches parity.
     // Task 9: runtime pixel-budget dial
     test_pixel_budget_dial();
     test_cluster_budget_dial();

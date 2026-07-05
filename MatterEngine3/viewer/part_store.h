@@ -56,8 +56,8 @@ struct LoadedPart {
 
 // Precompute the flat list of drawable (part_hash, rel_transform) nodes for a
 // compositional part tree rooted at root_hash. The getter returns nullptr for
-// unloadable parts (their subtrees are skipped, matching build_batches behaviour).
-// Depth cap matches raster_composer.cpp kMaxDepth (8).
+// unloadable parts (their subtrees are skipped, matching the historical
+// CPU raster batch behaviour). Depth cap 8.
 // GL-free: suitable for headless tests and the GPU culler compute path.
 void build_expansion(uint64_t root_hash,
                      const std::function<const LoadedPart*(uint64_t)>& getter,
