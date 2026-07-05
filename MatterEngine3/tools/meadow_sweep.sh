@@ -13,7 +13,7 @@ MATTER_WORLD=meadow MATTER_CMD_FIFO="$FIFO" ./viewer > "$LOG" 2>&1 &
 PID=$!
 trap 'kill $PID 2>/dev/null || true; rm -f "$FIFO" "$LOG"' EXIT
 
-sleep 25   # world bake/load + first frames; generous on a cold cache
+sleep 55   # world bake ~40 s on cold cache + margin; aerial must land in steady-state
 
 run_cam() {  # name px py pz tx ty tz
   echo "cam $2 $3 $4 $5 $6 $7" > "$FIFO"

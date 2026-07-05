@@ -11,7 +11,7 @@ MAKEFLAGS += -j$(JOBS)
 
 CC = g++
 CFLAGS = -std=c++17 -O2 -Wall -Wno-missing-braces -Wno-unused-variable \
-         -DPLATFORM_DESKTOP -DGRAPHICS_API_OPENGL_33
+         -DPLATFORM_DESKTOP -DGRAPHICS_API_OPENGL_43
 
 RAYLIB_PATH = ../../Libraries/raylib/src
 IMGUI_PATH  = ../../Libraries/imgui
@@ -25,11 +25,15 @@ INCLUDE_PATHS = -I../include -I../../MatterSurfaceLib/include -I$(RAYLIB_PATH) \
 LDFLAGS = -lGL -lm -lpthread -ldl -lrt -lX11
 LDLIBS  = ../../Libraries/raylib/build/linux/libraylib.a
 
+# Test-only sources excluded from VIEWER_SRC so `make viewer` doesn't link them.
+TEST_ONLY_SRC = gpu_cull_tests.cpp
+
 # Viewer units (GL-free logic + GL renderer/ui/main).
 VIEWER_SRC = main.cpp renderer.cpp ui.cpp \
              world_state.cpp part_store.cpp resolvers.cpp \
              world_composer.cpp local_provider.cpp \
-             raster_mesh.cpp raster_composer.cpp probe_texture.cpp
+             raster_mesh.cpp raster_composer.cpp probe_texture.cpp \
+             gpu_culler.cpp
 
 # ME3 pipeline + MSL backend C++ sources (verbatim from tests/Makefile EXAMPLE_CPP,
 # minus example_world.cpp). Same dir depth, so the ../ paths are unchanged.
@@ -91,16 +95,28 @@ W_ALL_OBJ  = $(W_CPP_OBJ) $(W_QJS_OBJ) $(W_PIPC_OBJ)
 $(L_DIR) $(W_DIR):
 	mkdir -p $@
 
+# Test-only objects (compiled with same flags, but NOT part of L_ALL_OBJ so they
+# don't pollute the viewer link).
+TEST_CPP_NAMES = $(notdir $(TEST_ONLY_SRC))
+L_TEST_OBJ = $(addprefix $(L_DIR)/,$(TEST_CPP_NAMES:.cpp=.o))
+
 # ---- Linux compile rules
 $(L_CPP_OBJ): $(L_DIR)/%.o: %.cpp | $(L_DIR)
+	$(CC) -c $< -o $@ $(CXX_FLAGS_BUILD)
+$(L_TEST_OBJ): $(L_DIR)/%.o: %.cpp | $(L_DIR)
 	$(CC) -c $< -o $@ $(CXX_FLAGS_BUILD)
 $(L_QJS_OBJ): $(L_DIR)/%.o: $(QJS_DIR)/%.c | $(L_DIR)
 	gcc -c $< -o $@ -O2 -DCONFIG_VERSION='"0.10.0"' $(QJS_INC) -MMD -MP
 $(L_PIPC_OBJ): $(L_DIR)/%.o: ../../MatterSurfaceLib/src/%.c | $(L_DIR)
 	gcc -c $< -o $@ -O2 -DPLATFORM_DESKTOP $(INCLUDE_PATHS) -MMD -MP
 
-viewer: shaders $(L_ALL_OBJ)
+viewer: shaders shaders_gpu_link $(L_ALL_OBJ)
 	$(CC) $(L_ALL_OBJ) -o viewer $(CFLAGS) $(LDFLAGS) $(LDLIBS)
+
+# GPU cull parity test binary: same objects as viewer, minus main.o, plus gpu_cull_tests.o.
+GPU_TEST_OBJ = $(filter-out $(L_DIR)/main.o,$(L_ALL_OBJ)) $(L_TEST_OBJ)
+gpu-tests: shaders shaders_gpu_link $(GPU_TEST_OBJ)
+	$(CC) $(GPU_TEST_OBJ) -o gpu_tests $(CFLAGS) $(LDFLAGS) $(LDLIBS)
 
 -include $(L_ALL_OBJ:.o=.d)
 
@@ -110,6 +126,12 @@ viewer: shaders $(L_ALL_OBJ)
 # silently mismatches the C++ TLAS texture layout (tiled reads vs single-row).
 shaders: regen-processed-shader
 	@[ -e shaders ] || ln -s ../../MatterSurfaceLib/shaders shaders
+
+# shaders_gpu/ is a real directory committed to the repo; it lives next to the
+# binary on Linux (no copy needed, the binary resolves relative paths from its
+# own directory).  Just ensure it exists (it always does after checkout).
+shaders_gpu_link:
+	@[ -d shaders_gpu ] || (echo "ERROR: shaders_gpu/ directory missing" && exit 1)
 
 # Rebuild MSL's shader preprocessor and re-flatten the processed fragment shader
 # so edits to bvh_tlas_common.glsl / materials.glsl / lighting.glsl take effect.
@@ -139,7 +161,7 @@ $(W_QJS_OBJ): $(W_DIR)/%.o: $(QJS_DIR)/%.c | $(W_DIR)
 $(W_PIPC_OBJ): $(W_DIR)/%.o: ../../MatterSurfaceLib/src/%.c | $(W_DIR)
 	$(WIN_CC) -c $< -o $@ -O2 -DPLATFORM_DESKTOP $(INCLUDE_PATHS) -MMD -MP
 
-windows: win-shaders $(W_ALL_OBJ)
+windows: win-shaders win-shaders-gpu $(W_ALL_OBJ)
 	$(WIN_CXX) $(W_ALL_OBJ) -o viewer.exe $(CFLAGS) -static $(WIN_RAYLIB) $(WIN_LIBS)
 
 -include $(W_ALL_OBJ:.o=.d)
@@ -150,7 +172,14 @@ windows: win-shaders $(W_ALL_OBJ)
 win-shaders: regen-processed-shader
 	@rm -rf shaders && cp -r ../../MatterSurfaceLib/shaders shaders
 
-clean:
-	rm -rf viewer viewer.exe shaders build
+# shaders_gpu/ is a real directory committed to the repo; it lives next to viewer.exe
+# already (viewer.exe is output to the same viewer/ dir, same as on Linux).
+# No copy needed: the .exe resolves "shaders_gpu/cull.comp" relative to cwd, which is
+# this directory when launched from MatterEngine3\viewer\ on Windows.
+win-shaders-gpu:
+	@[ -d shaders_gpu ] || (echo "ERROR: shaders_gpu/ directory missing" && exit 1)
 
-.PHONY: viewer windows clean shaders win-shaders regen-processed-shader
+clean:
+	rm -rf viewer viewer.exe gpu_tests shaders build
+
+.PHONY: viewer windows gpu-tests clean shaders shaders_gpu_link win-shaders win-shaders-gpu regen-processed-shader

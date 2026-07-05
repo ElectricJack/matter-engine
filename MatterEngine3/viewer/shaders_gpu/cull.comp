@@ -1,0 +1,125 @@
+#version 460
+// One thread per (instance, local_cluster). Frustum cull + LOD select, emit
+// into per-(cluster,lod) DrawArraysIndirect buckets. Math ports raster_cull.h
+// verbatim; parity is tested against the CPU path (gpu_cull_tests).
+layout(local_size_x = 64) in;
+
+const int MAX_LOD = 9;
+
+struct ClusterMeta {
+    vec4  aabb_min_radius;      // xyz min, w radius
+    vec4  aabb_max_pad;
+    float thresholds[MAX_LOD];
+    uint  lod_mesh_idx[MAX_LOD];
+    uint  lod_count;
+    uint  part_slot;
+    uint  cluster_index;
+    uint  pad1a; uint pad1b; uint pad1c;
+};
+struct GpuInstance {
+    mat4 transform;             // column-major (pre-transposed on upload)
+    uint part_slot; uint base_lod; uint cluster_start; uint cluster_count;
+};
+struct DrawCmd { uint count; uint instance_count; uint first; uint base_instance; };
+
+layout(std430, binding = 0) readonly buffer ClusterMetas { ClusterMeta clusters[]; };
+layout(std430, binding = 1) readonly buffer Instances    { GpuInstance instances[]; };
+layout(std430, binding = 2) buffer DrawCmds              { DrawCmd cmds[]; };
+layout(std430, binding = 3) writeonly buffer DrawXforms  { mat4 out_xforms[]; };
+layout(std430, binding = 4) buffer Stats                 { uint stat_culled_frustum; uint stat_culled_hiz; uint stat_emitted; };
+
+uniform vec4  planes[6];
+uniform vec3  cam_eye;
+uniform float pixel_budget;
+uniform uint  instance_count;
+uniform uint  max_clusters_per_instance;
+
+// ---- HiZ occlusion (Task 10). hiz_enabled is 0 unless the flag is on AND a
+// pyramid was built this session (previous frame's depth, conservative).
+uniform int  hiz_enabled;
+uniform sampler2D hiz_tex;
+uniform mat4 view_proj;          // shader-convention VP (CPU vp transposed on upload)
+uniform vec2 hiz_size;           // mip-0 texel dims
+
+void main() {
+    uint tid  = gl_GlobalInvocationID.x;
+    uint ii   = tid / max_clusters_per_instance;
+    uint lc   = tid % max_clusters_per_instance;
+    if (ii >= instance_count) return;
+    GpuInstance inst = instances[ii];
+    if (lc >= inst.cluster_count) return;
+    uint ci = inst.cluster_start + lc;
+    ClusterMeta cm = clusters[ci];
+
+    // ---- Frustum: transform 8 AABB corners, all-outside-any-plane => culled.
+    vec3 bmin = cm.aabb_min_radius.xyz, bmax = cm.aabb_max_pad.xyz;
+    vec3 w[8];
+    for (int i = 0; i < 8; ++i) {
+        vec3 p = vec3((i & 4) != 0 ? bmax.x : bmin.x,
+                      (i & 2) != 0 ? bmax.y : bmin.y,
+                      (i & 1) != 0 ? bmax.z : bmin.z);
+        w[i] = (inst.transform * vec4(p, 1.0)).xyz;
+    }
+    for (int p = 0; p < 6; ++p) {
+        bool all_out = true;
+        for (int i = 0; i < 8; ++i)
+            if (dot(planes[p].xyz, w[i]) + planes[p].w >= 0.0) { all_out = false; break; }
+        if (all_out) { atomicAdd(stat_culled_frustum, 1u); return; }
+    }
+
+    // ---- HiZ occlusion (previous-frame pyramid; conservative).
+    // Project the 8 world-space AABB corners, take the screen-rect + nearest
+    // depth, pick the mip where the rect covers ~1 texel, and compare against
+    // the max-depth pyramid: if the nearest point of the box is farther than
+    // the farthest depth in the rect, the box is fully occluded.
+    if (hiz_enabled == 1) {
+        vec2 uv_min = vec2( 1e9), uv_max = vec2(-1e9);
+        float z_min = 1e9;
+        bool crosses_near = false;
+        for (int i = 0; i < 8; ++i) {
+            vec4 c = view_proj * vec4(w[i], 1.0);
+            if (c.w <= 0.001) { crosses_near = true; break; }
+            vec3 ndc = c.xyz / c.w;
+            uv_min = min(uv_min, ndc.xy); uv_max = max(uv_max, ndc.xy);
+            z_min = min(z_min, ndc.z * 0.5 + 0.5);   // [0,1] window depth
+        }
+        if (!crosses_near) {
+            vec2 a = clamp(uv_min * 0.5 + 0.5, 0.0, 1.0);
+            vec2 b = clamp(uv_max * 0.5 + 0.5, 0.0, 1.0);
+            vec2 px = (b - a) * hiz_size;
+            float lod = ceil(log2(max(max(px.x, px.y), 1.0)));
+            ivec2 msize = textureSize(hiz_tex, int(lod));
+            ivec2 t0 = clamp(ivec2(a   * vec2(msize)), ivec2(0), msize - 1);
+            ivec2 t1 = clamp(ivec2(vec2(b.x, a.y) * vec2(msize)), ivec2(0), msize - 1);
+            ivec2 t2 = clamp(ivec2(vec2(a.x, b.y) * vec2(msize)), ivec2(0), msize - 1);
+            ivec2 t3 = clamp(ivec2(b   * vec2(msize)), ivec2(0), msize - 1);
+            float far0 = texelFetch(hiz_tex, t0, int(lod)).r;
+            float far1 = texelFetch(hiz_tex, t1, int(lod)).r;
+            float far2 = texelFetch(hiz_tex, t2, int(lod)).r;
+            float far3 = texelFetch(hiz_tex, t3, int(lod)).r;
+            float hiz_far = max(max(far0, far1), max(far2, far3));
+            if (z_min > hiz_far) { atomicAdd(stat_culled_hiz, 1u); return; }
+        }
+    }
+
+    // ---- LOD select (== raster_cull.h cluster_lod_select).
+    // inst_scale: average basis-column length. Engine columns are the shader
+    // matrix's ROWS after the upload transpose; row r = vec3(M[0][r],M[1][r],M[2][r]).
+    float sx = length(vec3(inst.transform[0][0], inst.transform[1][0], inst.transform[2][0]));
+    float sy = length(vec3(inst.transform[0][1], inst.transform[1][1], inst.transform[2][1]));
+    float sz = length(vec3(inst.transform[0][2], inst.transform[1][2], inst.transform[2][2]));
+    float scale = (sx + sy + sz) / 3.0;
+    vec3 lc3 = (bmin + bmax) * 0.5;
+    vec3 wc  = (inst.transform * vec4(lc3, 1.0)).xyz;
+    float dist = max(distance(wc, cam_eye), 0.01);
+    float psize = cm.aabb_min_radius.w * scale / dist * pixel_budget;
+    int lv = int(cm.lod_count) - 1;
+    for (uint i = 0u; i < cm.lod_count; ++i)
+        if (psize >= cm.thresholds[i]) { lv = int(i); break; }
+
+    // ---- Emit.
+    uint bucket = ci * uint(MAX_LOD) + uint(lv);
+    uint slot = atomicAdd(cmds[bucket].instance_count, 1u);
+    out_xforms[cmds[bucket].base_instance + slot] = inst.transform;
+    atomicAdd(stat_emitted, 1u);
+}

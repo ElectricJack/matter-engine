@@ -39,17 +39,30 @@ struct ViewerStats {
     // Writable: 0 = PassThrough, 1 = SectorLod. Panel sets this; main swaps resolver.
     int      resolver_choice = 0;
     bool     reload_requested = false;   // panel sets; main clears after handling
-    // Raster-path counters (zero in RT mode)
+    // Raster-path counters (zero in RT mode). raster_batches / batch_cache_hit
+    // are legacy fields kept in the struct so the HUD layout stays put; the
+    // GPU-driven path always reports 0/false (there's no per-frame batch cache).
     int      raster_batches = 0;
     int      raster_tris = 0;
     int      culled_clusters = 0;
-    bool     batch_cache_hit = false;   // true when build_batches reused last frame's result
+    bool     batch_cache_hit = false;
     // Raster-path CPU timing split (ms) — Stage 0 of the frame-time package.
     float    resolve_ms = 0.0f;   // SectorResolver::resolve
-    float    build_ms   = 0.0f;   // RasterComposer::build_batches
-    float    draw_ms    = 0.0f;   // RasterComposer::draw (CPU submit side)
+    float    build_ms   = 0.0f;   // GpuCuller::cull (upload + dispatch, no readback)
+    float    draw_ms    = 0.0f;   // RasterComposer::draw_gpu_driven (CPU submit side)
     // Probe status: dims[0..2] = nx,ny,nz from the grid (all zero = probes OFF/unavailable)
     int      probe_dims[3] = {0,0,0};
+    // GPU cull HUD (Task 7): active only when MATTER_GPU_CULL=1 + GL 4.6 ok.
+    bool     gpu_cull_active = false;
+    int      gpu_emitted = 0;   // clusters that passed the cull this frame
+    int      gpu_culled  = 0;   // clusters rejected by the frustum cull this frame
+    int      gpu_culled_hiz = 0;   // clusters rejected by HiZ occlusion this frame
+    // Writable: HiZ occlusion toggle (Task 10). Default OFF: the previous-frame
+    // pyramid causes false-positive occlusion culls at freehand camera angles
+    // (terrain / tree segments disappear). Correct fix needs a same-frame
+    // conservative depth or scissor-refined redraw — filed as ROADMAP follow-up.
+    // HUD checkbox / FIFO `hiz on|off` / MATTER_HIZ=1 opt in.
+    bool     hiz_enabled = false;
     // Writable: runtime LOD quality/speed dial. main propagates it to the
     // resolver + composer each frame; also settable via FIFO `budget <f>`.
     float    pixel_budget = 1.0f;

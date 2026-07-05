@@ -2,39 +2,66 @@
 
 ## Headline fact
 
-**Rasterization is the default path.** Every frame, the viewer calls
-`DrawMeshInstanced` (raylib) over flat per-LOD CPU vertex arrays built from the
-engine's part graph. No shader warm-up, no ray traversal — a clean raster frame
-runs in single-digit milliseconds. The software ray tracer remains available via
-`MATTER_RT=1` for offline baking and correctness reference (note: RT mode
+**Rasterization is the default path, and it is GPU-driven.** Every frame, a
+compute shader (`cull.comp`) does per-cluster frustum + projected-size LOD
+selection over the resolved instance set, appends a `DrawArraysCmd` per surviving
+(part, cluster, LOD) bucket, and the CPU issues a single
+`glMultiDrawArraysIndirect` with the vertex shader reading per-instance
+transforms via `gl_BaseInstance` out of a live SSBO — no CPU batch walk, no
+per-frame `UploadMesh`, no per-cluster `DrawMeshInstanced`. **GL 4.6 is a hard
+requirement** (compute + SSBO + indirect + `gl_BaseInstance` in GLSL 460). The
+software ray tracer remains available via `MATTER_RT=1` as the compatibility
+escape hatch on older GL (and for offline correctness reference; note: RT mode
 requires a ~60–65s GPU shader compile on first launch).
 
-## Default raster path
+## Default raster path (GPU-driven)
 
 ### Viewer flow (`viewer/main.cpp`)
 
-1. Raylib + ImGui init (1280×720, MSAA 4×). Camera defaults applied via
-   `renderer.init_camera()` (used in both raster and RT mode).
+1. Raylib + ImGui init (1280×720). MSAA hint is gated OFF under the GPU-driven
+   raster path (HiZ blit depends on a single-sample default FB).
 2. `LocalProvider` bakes/reconciles the world's part graph (QuickJS → `.part` cache).
-3. `RasterComposer::init` loads `shaders/raster.vs` / `shaders/raster.fs` and
-   caches uniform locations (`sunDir`, `sunColor`, `ambientColor`, `materialTable`,
-   `materialCount`). No warm-up step.
-4. Frame loop: resolver → `build_batches` → lazy `UploadMesh` → `DrawMeshInstanced`
-   → ImGui HUD with raster batch/tri stats.
+3. GL 4.6 gate: `viewer::gl46_available()` — if it fails, the viewer FATALs with
+   a hint to set `MATTER_RT=1` (there is no CPU raster fallback). `MATTER_GPU_CULL`
+   defaults ON; setting `MATTER_GPU_CULL=0` also FATALs unless paired with
+   `MATTER_RT=1`.
+4. `RasterComposer::init` loads `shaders/raster.vs`/`shaders/raster.fs` for uniform
+   discovery; `RasterComposer::init_gpu_driven` then loads
+   `shaders_gpu/raster_gpu_driven.vs` + a `#version 460`-patched copy of the
+   raster fragment shader as the live draw program.
+5. `GpuCuller::init` compiles `shaders_gpu/cull.comp` (and, when HiZ is enabled,
+   `shaders_gpu/hiz_downsample.comp`), allocates the persistent SSBOs, and warms
+   the indirect command buffer.
+6. Frame loop: resolver → `GpuCuller::cull` (compute) → `RasterComposer::draw_gpu_driven`
+   (single `glMultiDrawArraysIndirect`) → optional HiZ pyramid build → ImGui HUD.
 
-### Per-frame composition (`viewer/raster_composer.cpp`)
+### Per-frame composition (`viewer/gpu_culler.cpp`, `viewer/raster_composer.cpp`)
 
-Every frame:
+Every frame the compute pipeline runs:
+
 1. `SectorResolver` (PassThrough or SectorLod) produces a flat list of
-   `ResolvedInstance` records with part hash + world transform + LOD level.
-2. `RasterComposer::build_batches` walks that list recursively (depth ≤ 8,
-   ≤ 200k instances cap). Geometry-less assembly parts recurse without emitting;
-   parts with `lod_mesh_data` get their transform appended to the matching
-   `RasterBatch` (keyed by `(hash<<4)|level`).  Children always render at LOD 0.
-3. `RasterComposer::draw` iterates batches: `ensure_mesh` lazy-uploads each
-   (hash, level) pair to VRAM via `UploadMesh` on first access (cached for the
-   lifetime of the `RasterComposer` instance). One `DrawMeshInstanced` call per
-   batch; backface culling disabled (mesh winding is not guaranteed consistent).
+   `ResolvedInstance` records (part hash + world transform + LOD hint).
+2. `GpuCuller::cull` uploads the resolved instance stream into a `GpuInstanceRec`
+   SSBO (binding 1), sets uniforms (camera position, frustum planes, VP,
+   pixel budget), zeros the per-bucket draw commands, and dispatches `cull.comp`.
+3. Inside the compute shader each thread walks its instance's part → cluster
+   expansion table (`GpuClusterMeta` SSBO, binding 0) and, per cluster:
+   frustum-culls the transformed AABB, HiZ-culls against the previous-frame
+   max-pyramid (when `MATTER_HIZ` is on), picks a LOD via projected size, then
+   atomically appends the world transform to that (part, cluster, LOD) bucket's
+   `DrawXforms` slice (SSBO binding 3) and increments the matching
+   `DrawArraysCmd`'s `instance_count` (SSBO binding 2). `MATTER_HIZ_DEBUG`
+   emits per-cluster HiZ probes for offline inspection.
+4. `RasterComposer::draw_gpu_driven` binds `shader_gpu_`, uploads frame
+   uniforms via `setup_frame_uniforms` (sun/probes/material table), computes
+   MVP the raylib way (`rlGetMatrix*`), and issues one
+   `glMultiDrawArraysIndirect` over the live command buffer. The vertex shader
+   fetches its per-instance transform out of `DrawXforms` using
+   `gl_BaseInstance + gl_InstanceID`; there is no CPU vertex re-upload, no
+   per-cluster draw, and no batch-fingerprint cache.
+5. After `EndDrawing`, `GpuCuller::build_hiz` blits the depth buffer, runs
+   `hiz_downsample.comp` down the mip chain, and marks the pyramid valid for
+   next frame's occlusion pass.
 
 ### Root expansion (`expand` manifest flag)
 
@@ -57,21 +84,24 @@ LOD ladders stop above 1 px. The viewer enables this per world
 ### Meadow benchmark (Phase 3 raster baseline)
 
 `MATTER_WORLD=meadow`, default camera `MATTER_CAM="128,25,40,128,2,128"`,
-1280×720: 277 batches / 8,685,895 tris, 94 ms frame
-(recorded 2026-07-02, commit 9a87fdc). Scatter constants: GRASS_CLUMPS=40000,
-BLADES default (Grass.js), kMinProjectedSize=0.0015 (Meadow: active radius 400).
-Note: 94 ms captured on the first frames after load (includes lazy VAO
-uploads; steady-state not measured in the headless path), on RTX 4090 via
-WSL/Mesa (D3D12 translation); native GL performance will differ.
+1280×720, GPU-driven cull: see `docs/perf/meadow_sweep.csv` for the current 5-pose
+sweep (columns: label, frame_ms, resolve_ms, build_ms, draw_ms, instances_active,
+raster_batches, raster_tris, culled_clusters, hiz_culled). The historical
+Phase-3 CPU-batch baseline (277 batches / 8.7M tris / 94 ms, 2026-07-02
+commit 9a87fdc) has been superseded by the GPU-driven `gpucull-promoted` rows;
+draw_ms is single-digit ms across all standard poses. Scatter constants:
+GRASS_CLUMPS=40000, BLADES default (Grass.js), kMinProjectedSize=0.0015
+(Meadow: active radius 400).
 
 ### Raster vertex data (`viewer/raster_mesh.h`, `raster_mesh.cpp`)
 
 `build_raster_mesh_data` packs each part's `Tri`/`TriEx` arrays into raylib Mesh
 channels: vertices (float3), normals (N0/N1/N2 → float3 per vertex),
 colors (tint RGBA → unsigned char4), texcoords (materialId in U, per-vertex AO
-in V). Non-indexed; 3 vertices per triangle. CPU arrays stay owned by `PartStore`;
-`ensure_mesh` detaches the pointers after `UploadMesh` so raylib's `UnloadMesh`
-cannot double-free them.
+in V). Non-indexed; 3 vertices per triangle. On the GPU-driven path,
+`GpuCuller` uploads the packed vertex arrays into per-part vertex SSBOs at
+registration time; the vertex shader indexes them directly, so `UploadMesh`
+is not used and there is no VAO churn per frame.
 
 ### Phase-2 world light list
 
@@ -131,23 +161,40 @@ Reinhard tone-map + gamma 2.2 applied per fragment.
 No v3 clusters → whole-part batch path (cluster_index = UINT32\_MAX). No flat artifact
 at all → compositional recursive expansion, always LOD0 for children.
 
-### Per-cluster LOD selection (`viewer/raster_composer.cpp`)
+### Per-cluster LOD selection (`shaders_gpu/cull.comp`)
 
-For each cluster of a flat part, the raster composer:
+Per surviving cluster, the compute shader:
 1. Transforms the cluster AABB center by the instance world transform.
 2. Computes `projected_size = cluster.radius * scale / distance` (same formula as
-   `lod_select::select_level`).
+   `lod_select::select_level`, kept in lockstep with the CPU reference in
+   `raster_cull.h` — verified by `test_gpu_cull_parity` in `gpu_cull_tests`).
 3. Picks the coarsest LOD level whose threshold ≤ projected_size (fine→coarse scan).
-4. Maps that level index to `lod_mesh_data[cl.lod_mesh[level]]` via the cluster table.
+4. Appends the transform to the (part, cluster, LOD) bucket's `DrawXforms` slice
+   and increments its `DrawArraysCmd::instance_count`.
+
+### HiZ occlusion (`shaders_gpu/hiz_downsample.comp`, `MATTER_HIZ`)
+
+`MATTER_HIZ=1` (default; `MATTER_HIZ=0` opts out at startup, HUD checkbox +
+`hiz on|off` on the FIFO toggle at runtime) enables previous-frame HiZ
+occlusion culling. After each frame the viewer blits depth into an R32F
+pyramid, then `hiz_downsample.comp` walks the mip chain producing max-per-mip.
+Next frame's `cull.comp` samples the four screen-space corners of each
+cluster's projected AABB against the pyramid's coarsest fitting mip; clusters
+whose min-z exceeds the sampled max-z are dropped. Near-plane bail, tile
+clamp, and 4-corner mip coverage keep the occlusion test conservative
+(no observed pixel differences on canonical poses, verified by
+`test_hiz_occlusion` in `gpu_tests`). `MATTER_HIZ_DEBUG=1` writes per-cluster
+HiZ probe data to a small SSBO for offline inspection.
 
 ### HUD stats (`viewer/ui.cpp`)
 
 The Viewer Debug panel shows:
 - `FPS / frame ms` — wall-clock frame time.
-- `Instances: N active / M total` — instances drawn this frame vs world total.
-- `Raster: N batches / M tris  culled: N [cached]` — `DrawMeshInstanced` calls, total
-  triangle count, clusters culled by frustum, and `[cached]` when the batch fingerprint
-  matched last frame (no rebuild).
+- `Instances: N active / M total` — instances that survived the resolver vs
+  world total (pre-GPU-cull; the compute shader may further cull them).
+- `GPU cull: emitted=E / culled=C / hiz=H  tris=T` — total per-cluster
+  instances the compute pass emitted, per-cluster frustum + LOD kills, HiZ
+  kills, and the total triangles summed from live `DrawArraysCmd`s.
 - `Probes: NxNxN` or `Probes: OFF` — active probe grid dimensions, or fallback indicator.
 
 Background sky color is derived by tone-mapping `sky_color` from the light list

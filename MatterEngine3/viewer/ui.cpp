@@ -95,6 +95,11 @@ void Ui::draw_debug_panel(ViewerStats& s) {
     const char* hit_tag = s.batch_cache_hit ? " [cached]" : "";
     ImGui::Text("Raster: %d batches / %d tris  culled: %d%s",
                 s.raster_batches, s.raster_tris, s.culled_clusters, hit_tag);
+    if (s.gpu_cull_active) {
+        ImGui::Text("GPU cull: emitted %d  frustum %d  hiz %d",
+                    s.gpu_emitted, s.gpu_culled, s.gpu_culled_hiz);
+        ImGui::Checkbox("HiZ occlusion", &s.hiz_enabled);
+    }
     if (s.probe_dims[0] > 0)
         ImGui::Text("Probes: %dx%dx%d", s.probe_dims[0], s.probe_dims[1], s.probe_dims[2]);
     else

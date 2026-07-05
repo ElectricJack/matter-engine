@@ -1,4 +1,105 @@
 
+## Fix HiZ occlusion false-positives (default is OFF because of this)
+
+**Backlog — surfaced 2026-07-05 during freehand Windows testing.**
+
+The Task 10 HiZ occlusion test uses the **previous frame's** max-depth pyramid.
+At freehand camera angles / after quick camera motion, the stale pyramid
+occludes geometry that is genuinely visible this frame — terrain tiles and
+tree segments disappear rectangular-tile-shaped. Task 10 measured pixel-clean
+diffs only at 5 fixed poses; freehand camera hits angles those didn't. HUD
+`hiz culled` counter climbs into the thousands during the artifact.
+
+Default flipped OFF as a mitigation. Full infrastructure ships: cull.comp
+block, pyramid build (Task 9), HUD checkbox, FIFO `hiz on|off`, MATTER_HIZ
+env, stats readback, 4-phase unit test. Opt in via any of those toggles.
+
+Correct fix options (pick one):
+- **Same-frame conservative depth**: emit a coarse per-cluster near-depth into
+  an SSBO in the vertex phase of a prepass, reduce to a pyramid before the
+  main cull dispatch. Costs one extra pass but eliminates staleness.
+- **Scissor-refined redraw**: keep the previous-frame HiZ but issue a second
+  cull+draw pass that reprocesses screen regions where the camera delta
+  exceeds a threshold. Cheap when the camera isn't moving.
+- **Reprojection heuristic**: dilate the pyramid by the camera's per-frame
+  angular delta before sampling. Simplest, still lossy.
+
+Also worth trying regardless: switch the 4-corner samples in the shader to a
+2×2 or 3×3 grid across the clamped rect, so partial-off-screen AABBs aren't
+sampled only at the clipped edges.
+
+Cross-refs: `MatterEngine3/viewer/shaders_gpu/cull.comp` (hiz block),
+`MatterEngine3/viewer/gpu_culler.cpp` (`build_hiz`, `downsample_pyramid`),
+`.superpowers/sdd/task-10-report.md`.
+
+---
+
+## P2: compact GPU cull xforms SSBO — 275 MB at 500k trips plan's ~200 MB gate
+
+**Backlog / follow-up — surfaced from GPU instancing/culling Stage-4 stress sweep (2026-07-05).**
+
+At 500k instances the xforms SSBO grew to 274.7 MB (one part × one cluster ×
+kMaxLod (9) × region_cap (500000) × sizeof(mat4) (64) = 288 M bytes). The plan
+defined an explicit P2 gate: stop and surface to Jack if the SSBO exceeds
+~200 MB at 500k. The gate tripped; Task 11 was committed with the measurement
+recorded and 500k was NOT chosen as the shipped ceiling — Meadow and worlds up
+to 200k are comfortable (< 110 MB).
+
+Two P2 designs from the design doc worth revisiting:
+- **Compact emit buffer sized to the visible-cluster count per frame** (skips
+  the per-LOD × region_cap over-allocation entirely).
+- **Drop kMaxLod × region_cap slots to region_cap × 1** — the cull shader
+  picks LOD per instance, one row of xforms is enough.
+
+Also: `resolve_ms` scales super-linearly (1.9 ms at 200k → 20.9 ms at 500k;
+10× for 2.5× instances), and `build_ms` similarly (14.5 → 55 ms). The CPU cull
+pipeline has its own scaling problem separate from the SSBO — profile before
+committing to a P2 design so the fix targets the right bottleneck.
+
+Cross-refs: `docs/superpowers/plans/2026-07-03-gpu-instancing-culling.md`
+(P2 section), `MatterEngine3/docs/perf/stress_sweep.csv`,
+`.superpowers/sdd/task-11-report.md`.
+
+---
+
+## Investigate: Tree flatten pipeline OOMs at ~50k scattered instances
+
+**Backlog / diagnostic — surfaced from GPU instancing/culling Stage-4 stress fixture (2026-07-05).**
+
+The Stage-4 stress fixture (StressForest{50k,100k,200k,500k}) was designed to
+scatter `Tree` placements across a 2 km world and measure the GPU cull path at
+scale. It cannot be baked: the viewer aborts with `std::bad_alloc` during world
+load at 50k, exceeding 32 GB of RAM + 32 GB of swap before the world becomes
+ready. The stress fixture was switched to use `Pebble` as the placed child so
+Task 11 could gather real GPU-side numbers, but the underlying question stands:
+
+**why does baking 50k Tree placements require > 63 GB?**
+
+Suspected hotspots to investigate:
+- Does `placeChild('Tree')` at each of the 50k call sites eagerly materialize a
+  per-instance sub-part expansion (part_flatten.cpp / world_flatten.cpp), rather
+  than sharing Tree's flattened sub-tree by content hash?
+- Tree.js runs an L-system rewrite depth 4 + voxel bark + up to 110 TreeBranch
+  twigs — is any intermediate bake state (voxel grids, per-cluster mesh data,
+  BVH scratch) kept alive across the 50k iterations instead of being freed
+  after the first cache hit?
+- Does the flatten expansion table (Task 4 ExpandedNode / build_expansion) hit
+  the depth cap or explode along a particular branching factor for Tree?
+- Compare against Meadow (`Meadow.js` scatters trees over ~256 m² successfully) —
+  what count / density does Meadow reach before it hits the same wall? If
+  Meadow is close to the wall too, this bug is already affecting shipped worlds.
+
+Concrete first step: instrument the bake pipeline with per-part cumulative
+placement-expansion counts + peak RSS deltas, then run the 5k/10k/20k tree
+scatter (single-schema variation) and watch which counter blows up. Do NOT
+attempt this inside Task 11 — it's an orthogonal engine-side scaling bug that
+predates the GPU cull work.
+
+Cross-refs: `.superpowers/sdd/task-11-report.md`,
+`MatterEngine3/examples/world_demo/schemas/StressForest*.js`,
+`MatterEngine3/viewer/src/part_flatten.cpp`.
+
+---
 
 ## SurfaceLib Project [DONE]
 
