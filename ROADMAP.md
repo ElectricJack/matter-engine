@@ -62,42 +62,97 @@ Cross-refs: `docs/superpowers/plans/2026-07-03-gpu-instancing-culling.md`
 
 ---
 
-## Investigate: Tree flatten pipeline OOMs at ~50k scattered instances
+## Harden bake against OOM (three-part plan)
 
-**Backlog / diagnostic — surfaced from GPU instancing/culling Stage-4 stress fixture (2026-07-05).**
+**Backlog / plan — surfaced from GPU instancing/culling Stage-4 stress fixture
+(2026-07-05).** Replaces the earlier "Investigate Tree flatten OOM" placeholder.
 
-The Stage-4 stress fixture (StressForest{50k,100k,200k,500k}) was designed to
-scatter `Tree` placements across a 2 km world and measure the GPU cull path at
-scale. It cannot be baked: the viewer aborts with `std::bad_alloc` during world
-load at 50k, exceeding 32 GB of RAM + 32 GB of swap before the world becomes
-ready. The stress fixture was switched to use `Pebble` as the placed child so
-Task 11 could gather real GPU-side numbers, but the underlying question stands:
+### Diagnosis (already done)
 
-**why does baking 50k Tree placements require > 63 GB?**
+`part_flatten.cpp` runs top-down per root and merges every triangle from every
+child instance into a single monolithic mesh before clustering:
+StressForest50k × Tree.part (~100k tri) ≈ 5 B triangles × 72 B TriEx ≈ 360 GB
+peak. Viewer aborts with `std::bad_alloc`; no structured error surfaces.
 
-Suspected hotspots to investigate:
-- Does `placeChild('Tree')` at each of the 50k call sites eagerly materialize a
-  per-instance sub-part expansion (part_flatten.cpp / world_flatten.cpp), rather
-  than sharing Tree's flattened sub-tree by content hash?
-- Tree.js runs an L-system rewrite depth 4 + voxel bark + up to 110 TreeBranch
-  twigs — is any intermediate bake state (voxel grids, per-cluster mesh data,
-  BVH scratch) kept alive across the 50k iterations instead of being freed
-  after the first cache hit?
-- Does the flatten expansion table (Task 4 ExpandedNode / build_expansion) hit
-  the depth cap or explode along a particular branching factor for Tree?
-- Compare against Meadow (`Meadow.js` scatters trees over ~256 m² successfully) —
-  what count / density does Meadow reach before it hits the same wall? If
-  Meadow is close to the wall too, this bug is already affecting shipped worlds.
+The pipeline does NOT persist intermediate `.flat.part` artifacts for
+non-root parts, and does not decide per-parent whether flatten or instancing
+wins. Flatten is an unconditional bake-time optimization designed for
+hand-authored composites, applied uniformly to scatter-style scatter content
+where it's catastrophically wrong.
 
-Concrete first step: instrument the bake pipeline with per-part cumulative
-placement-expansion counts + peak RSS deltas, then run the 5k/10k/20k tree
-scatter (single-schema variation) and watch which counter blows up. Do NOT
-attempt this inside Task 11 — it's an orthogonal engine-side scaling bug that
-predates the GPU cull work.
+### Fix plan (in dependency order)
+
+**#1 — Bad_alloc safety net.** Wrap every `part_flatten` / `bake_source` /
+`world_flatten` call site in a `try { … } catch (const std::bad_alloc&)` that
+converts to a `BakeError::OutOfMemory{root_hash, phase}` and surfaces cleanly
+to the viewer log. Doesn't fix the OOM but turns crash → actionable error.
+Small (~50 LOC across a handful of files); ships independently.
+
+**#2 — Per-part flatten decision + persistent intermediate `.flat.part`.**
+Change the flatten pipeline from "unconditionally merge at the root" to a
+per-part decision based on estimated merged size:
+
+```
+for each part P in the graph:
+    merged_size(P) = own_tris(P) + Σ over children c: subtree_size(c) × count(c)
+    if merged_size(P) ≤ BUDGET:
+        flatten P into P.flat.part
+    else:
+        mark P as instance-boundary; parents reference P.flat.part by hash
+```
+
+Every part gets its own `.flat.part` (leaves get their baked mesh, composites
+get their flattened mesh — up to the budget). Parents that DO flatten inline
+the flat.part of children that stayed within budget; instance-boundary
+children stay as instance references. GpuCuller consumes those references
+via the existing indirect-draw path — no change required on the runtime side.
+
+Applied to the failing cases:
+- Meadow: Tree.flat.part small (unchanged), Meadow.flat.part small (unchanged).
+- StressForest{N}: Tree.flat.part small, StressForest.merged_size ≫ budget →
+  StressForest becomes an instance boundary; 50k instance refs go directly
+  to the GpuCuller. Crash prevented.
+- 25k Trees + 25k Rocks: same — total merged size dominates, not any single
+  hash's dominance. Budget triggers, StressForest stays instance-boundary.
+
+Key design decisions to nail down BEFORE implementing:
+- Budget default (proposed: 512 MB of TriEx as an initial ceiling; expose as
+  a `FlattenTargets` field so schemas / build scripts can override).
+- Estimation source: precomputed `tri_count` from each child's cache metadata,
+  no per-child load required.
+- Cache invalidation: `.flat.part` cache key must depend on the child's own
+  hash AND its flatten decision (leaf vs instance-boundary), so that flipping
+  a child from "flattens" to "instance-boundary" invalidates parents.
+- Backward compat: existing single-`.flat.part`-at-root worlds keep working;
+  new intermediate artifacts are additive.
+
+**#3 — Streaming flatten (peak-memory refactor).**
+Even after #2's decision rule keeps most content out of pathological flatten,
+the flatten cases themselves can be more memory-efficient. Two variants:
+
+1. *Cluster-streaming*: pre-compute the flat merged AABB in a cheap first
+   pass (add up child AABB × transform, no per-tri work), pick the cluster
+   grid, then a second pass emits each child's transformed triangles
+   directly into cluster buckets. Peak memory = per-bucket state + largest
+   single child's per-triangle burst.
+2. *Child-streaming*: after grid is picked, process one child at a time — 
+   expand its tris, distribute to clusters, decimate that portion, discard.
+   Peak = single-child expansion + all-cluster-decimation state.
+
+Peak-memory reduction ~20-30× for meadow-scale content; makes the budget
+in #2 rarer to trip and lets us raise its ceiling.
+
+### Order and cost estimate
+
+| # | Item | Risk | LOC est. | Ships value |
+|---|------|------|----------|-------------|
+| 1 | bad_alloc catch | low | ~80 | debuggable errors immediately |
+| 2 | per-part flatten decision + intermediate `.flat.part` | medium (cache invalidation) | ~400 | fixes scatter-style OOMs |
+| 3 | streaming flatten | medium (refactor) | ~600 | raises safe ceiling ~30× |
 
 Cross-refs: `.superpowers/sdd/task-11-report.md`,
-`MatterEngine3/examples/world_demo/schemas/StressForest*.js`,
-`MatterEngine3/viewer/src/part_flatten.cpp`.
+`MatterEngine3/src/part_flatten.cpp` (Gatherer::gather top-down expansion),
+`MatterEngine3/examples/world_demo/schemas/StressForest*.js`.
 
 ---
 
