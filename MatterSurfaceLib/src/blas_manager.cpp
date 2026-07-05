@@ -216,10 +216,16 @@ BLASHandle BLASManager::register_prebuilt(const Tri* tris, const TriEx* triex, i
         return INVALID_BLAS_HANDLE;
     }
 
-    // Copy triangles (memcpy: Tri is __m128-aligned and the source may be an
-    // unaligned file buffer). std::vector range-construct is a memmove for the
-    // trivially-copyable Tri, which is alignment-safe.
-    std::vector<Tri> triangle_copy(tris, tris + tri_count);
+    // Copy triangles via explicit memcpy: the source is a raw file buffer with
+    // NO alignment guarantee, while Tri/TriEx are 16-byte-aligned SSE types.
+    // std::vector range-construct/assign can compile to aligned vector loads
+    // (movaps) for these element types, which GP-faults (SIGSEGV) when a
+    // mid-buffer pointer's offset is not a multiple of 16. Only multi-BLAS
+    // .part files hit this (entry N's payload offset depends on entry N-1's
+    // tri_count); every single-BLAS part happens to land 16-aligned, which is
+    // why this never fired before the Stage-4 stress fixture's Tree bake.
+    std::vector<Tri> triangle_copy(static_cast<size_t>(tri_count));
+    std::memcpy(triangle_copy.data(), tris, static_cast<size_t>(tri_count) * sizeof(Tri));
 
     auto mesh = std::make_unique<BvhMesh>();
     mesh->triCount = tri_count;
@@ -238,7 +244,10 @@ BLASHandle BLASManager::register_prebuilt(const Tri* tris, const TriEx* triex, i
     BLASHandle handle = next_handle_++;
     std::vector<TriEx> tri_extra_copy;
     if (triex) {
-        tri_extra_copy.assign(triex, triex + tri_count);
+        // memcpy, NOT assign: see the alignment note above triangle_copy.
+        tri_extra_copy.resize(static_cast<size_t>(tri_count));
+        std::memcpy(tri_extra_copy.data(), triex,
+                    static_cast<size_t>(tri_count) * sizeof(TriEx));
     }
     auto entry = std::make_unique<BLASEntry>(handle, std::move(mesh), std::move(bvh),
                                              std::move(triangle_copy), std::move(tri_extra_copy), hash);
