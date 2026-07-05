@@ -1,0 +1,4 @@
+# Stage-4 stress fixture: 100k trees over a 2 km x 2 km square (see
+# schemas/StressForest100k.js). `expand` promotes the baked child-instance
+# table to individual world instances, same as Meadow.
+StressForest100k expand

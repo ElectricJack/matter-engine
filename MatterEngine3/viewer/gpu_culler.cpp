@@ -200,6 +200,12 @@ void GpuCuller::recompute_regions() {
     size_t need = (size_t)total_xform_slots_ * 16 * sizeof(float);
     if (need == 0) need = 1;   // keep valid GL object
 
+    // P2-decision telemetry (Stage-4 brief): total xforms SSBO footprint at
+    // every registration/grow event, printed BEFORE the allocation so the
+    // number survives an out-of-memory failure.
+    printf("GpuCuller: xforms SSBO %zu bytes (%.1f MB, %u slots, %zu parts)\n",
+           need, (double)need / (1024.0 * 1024.0), total_xform_slots_, parts_.size());
+
     if (ssbo_xforms_) glDeleteBuffers(1, &ssbo_xforms_);
     glGenBuffers(1, &ssbo_xforms_);
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo_xforms_);
@@ -399,6 +405,11 @@ int GpuCuller::ensure_part(uint64_t part_hash, PartStore& store) {
                     cluster_staging_.data());
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, 0);
 
+    // P2-decision telemetry: per-part region footprint at registration.
+    printf("GpuCuller: part %016llx slot %d clusters %u region_cap %u (%zu region bytes)\n",
+           (unsigned long long)part_hash, slot, pg.cluster_count, pg.region_cap,
+           (size_t)pg.cluster_count * (size_t)kMaxLod * (size_t)pg.region_cap * 64);
+
     // Recompute P1 regions now that we have a new part.
     recompute_regions();
 
@@ -508,6 +519,11 @@ bool GpuCuller::cull(const std::vector<ResolvedInstance>& resolved,
             if (new_cap < n) new_cap = n;
             parts_[s].region_cap = new_cap;
             regions_dirty = true;
+            // P2-decision telemetry: region growth event.
+            printf("GpuCuller: slot %d region_cap %u -> grew for %u instances "
+                   "(clusters %u, %zu region bytes)\n",
+                   s, new_cap, n, parts_[s].cluster_count,
+                   (size_t)parts_[s].cluster_count * (size_t)kMaxLod * (size_t)new_cap * 64);
         }
     }
     if (regions_dirty) recompute_regions();

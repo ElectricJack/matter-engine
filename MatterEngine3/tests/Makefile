@@ -54,7 +54,7 @@ else
     LDLIBS = ../../Libraries/raylib/src/libraylib.a
 endif
 
-.PHONY: clean run-partv2 run-script run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting run-flatten run-grasslod
+.PHONY: clean run-partv2 run-script run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting run-flatten run-grasslod run-stressforest
 
 # Part Artifact v2 round-trip + resolved-hash + format-guard tests (headless, GL-free).
 # NEW impl ../src/part_asset_v2.cpp + consumed MatterSurfaceLib backend sources.
@@ -79,7 +79,7 @@ run-partv2: $(PARTV2_TARGET)
 	./$(PARTV2_TARGET)
 
 clean:
-	rm -f $(PARTV2_TARGET) $(SCRIPT_TARGET) $(GRAPH_TARGET) $(GRAPH_INT_TARGET) $(TRIVAR_TARGET) $(SHLIB_TARGET) $(COMP_TARGET) $(DEV_TARGET) $(EXAMPLE_TARGET) $(VIEWER_LOGIC_TARGET) $(TREEBAKE_TARGET) $(MEADOW_TARGET) $(MEADOWCHECK_TARGET) $(GRASSLOD_TARGET)
+	rm -f $(PARTV2_TARGET) $(SCRIPT_TARGET) $(GRAPH_TARGET) $(GRAPH_INT_TARGET) $(TRIVAR_TARGET) $(SHLIB_TARGET) $(COMP_TARGET) $(DEV_TARGET) $(EXAMPLE_TARGET) $(VIEWER_LOGIC_TARGET) $(TREEBAKE_TARGET) $(MEADOW_TARGET) $(MEADOWCHECK_TARGET) $(GRASSLOD_TARGET) $(STRESSFOREST_TARGET)
 
 # Script host (QuickJS-ng) + DSL/CSG bake tests (headless, GL-free for the host;
 # the BLAS surface path links raylib like the part-asset tests). QuickJS-ng C
@@ -487,3 +487,19 @@ $(GRASSLOD_TARGET): $(GRASSLOD_CPP) $(EXAMPLE_C) $(QJS_C)
 
 run-grasslod: $(GRASSLOD_TARGET)
 	./$(GRASSLOD_TARGET)
+
+# Stage-4 stress fixture scatter determinism (StressForest50k.js): two separate
+# cache dirs must produce the same resolved hash, byte-identical .part files,
+# and an identical FNV-1a hash over the flattened placement stream. Mirrors the
+# GRASSLOD stanza (full host + QuickJS set, -DMATTER_HAVE_SCRIPT_HOST).
+STRESSFOREST_TARGET = stress_forest_tests
+STRESSFOREST_CPP = stress_forest_tests.cpp $(filter-out example_world.cpp, $(EXAMPLE_CPP))
+$(STRESSFOREST_TARGET): $(STRESSFOREST_CPP) $(EXAMPLE_C) $(QJS_C)
+	gcc -c $(QJS_C) -O2 -DCONFIG_VERSION='"0.10.0"' $(QJS_INC)
+	gcc -c $(EXAMPLE_C) -O2 -DPLATFORM_DESKTOP $(INCLUDE_PATHS)
+	$(CC) $(STRESSFOREST_CPP) $(QJS_OBJ) $(EXAMPLE_C_OBJ) -o $(STRESSFOREST_TARGET) \
+	      $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST $(INCLUDE_PATHS) $(QJS_INC) $(LDFLAGS) $(LDLIBS)
+	rm -f $(QJS_OBJ) $(EXAMPLE_C_OBJ)
+
+run-stressforest: $(STRESSFOREST_TARGET)
+	./$(STRESSFOREST_TARGET)

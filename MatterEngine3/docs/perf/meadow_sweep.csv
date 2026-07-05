@@ -44,3 +44,8 @@ date,stage,camera,frame_ms,resolve_ms,build_ms,draw_ms,active,batches,tris,culle
 2026-07-04,gpucull-stage3-hizon,midfield,31.48,4.11,2.58,4.26,42675,0,7598999,17439,0
 2026-07-04,gpucull-stage3-hizon,far,33.99,4.05,2.59,5.25,42037,0,10319373,7477,0
 2026-07-04,gpucull-stage3-hizon,empty,27.87,4.01,2.49,2.80,41176,0,0,42416,0
+2026-07-05,gpucull-stage4,aerial,58320.28,3.97,4.83,8.00,42096,0,10030195,8608,0
+2026-07-05,gpucull-stage4,corner,36.06,4.22,3.09,4.98,42096,0,10030195,8608,0
+2026-07-05,gpucull-stage4,midfield,34.37,4.18,2.60,5.38,42675,0,7598999,17439,0
+2026-07-05,gpucull-stage4,far,34.59,5.10,2.64,5.46,42037,0,10319373,7477,0
+2026-07-05,gpucull-stage4,empty,30.84,3.96,2.47,3.25,41176,0,0,42416,0
