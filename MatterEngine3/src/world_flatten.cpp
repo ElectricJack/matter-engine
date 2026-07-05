@@ -1,5 +1,6 @@
 #include "../include/world_flatten.h"
 #include <cstdio>
+#include <new>       // std::bad_alloc
 
 namespace world_flatten {
 
@@ -48,7 +49,20 @@ static bool recurse(const PartGraph& g, uint64_t hash, const mat4& world,
 bool flatten(const PartGraph& graph, uint64_t root, const FlattenLimits& limits,
              std::vector<FlatInstance>& out, std::string& err) {
     out.clear(); err.clear();
-    return recurse(graph, root, mat4::Identity(), 0, limits, out, err);
+    // Outer boundary: `out` grows up to limits.max_instances (1M by default),
+    // and mat4 stack copies during recurse can spike briefly. A structured
+    // OOM message beats a viewer crash.
+    try {
+        return recurse(graph, root, mat4::Identity(), 0, limits, out, err);
+    } catch (const std::bad_alloc& e) {
+        char buf[192];
+        std::snprintf(buf, sizeof(buf),
+                      "OOM in world_flatten (root=%016llx, phase=flatten): %s",
+                      (unsigned long long)root, e.what());
+        err = buf;
+        out.clear();
+        return false;
+    }
 }
 
 } // namespace world_flatten

@@ -7,9 +7,11 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <map>
 #include <memory>
+#include <new>       // std::bad_alloc
 
 namespace part_flatten {
 
@@ -268,8 +270,9 @@ static FlattenResult flatten_budget_ladder(const std::string& cache_root,
     return res;
 }
 
-FlattenResult flatten_part(const std::string& cache_root, uint64_t root_hash,
-                           const FlattenTargets& targets) {
+static FlattenResult flatten_part_impl(const std::string& cache_root,
+                                       uint64_t root_hash,
+                                       const FlattenTargets& targets) {
     FlattenResult res;
 
     Gatherer g(cache_root, targets);
@@ -402,6 +405,31 @@ FlattenResult flatten_part(const std::string& cache_root, uint64_t root_hash,
     }
     res.ok = true;
     return res;
+}
+
+// Public entry point: outer boundary that converts a std::bad_alloc thrown by
+// the merge/decimate/cluster pipeline (which routinely inflates scatter-style
+// content 100-1000x during Gatherer::gather; StressForest*.js can peak at
+// tens of GB) into a structured error string instead of aborting the viewer.
+// The catch handler intentionally makes NO new heap allocations beyond a
+// small stack buffer + snprintf into res.error's SSO / already-reserved
+// storage; std::string assignment of a short literal may still allocate, but
+// this is a best-effort catch (a fully-exhausted allocator can still fail
+// during the message construction).
+FlattenResult flatten_part(const std::string& cache_root, uint64_t root_hash,
+                           const FlattenTargets& targets) {
+    try {
+        return flatten_part_impl(cache_root, root_hash, targets);
+    } catch (const std::bad_alloc& e) {
+        FlattenResult res;
+        char buf[192];
+        std::snprintf(buf, sizeof(buf),
+                      "OOM in part_flatten (root=%016llx, phase=flatten_part): %s",
+                      (unsigned long long)root_hash, e.what());
+        res.error = buf;
+        res.ok = false;
+        return res;
+    }
 }
 
 } // namespace part_flatten

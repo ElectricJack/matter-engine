@@ -19,11 +19,13 @@ extern "C" {
 extern "C" {
 #include "material_registry.h"          // MaterialMergeGroup (fat-prim bucket seeding)
 }
+#include <cstdio>
 #include <cstring>
 #include <cmath>
 #include <chrono>
 #include <map>
 #include <memory>
+#include <new>       // std::bad_alloc
 #include <regex>
 
 namespace script_host {
@@ -565,6 +567,13 @@ BakeResult ScriptHost::bake_source(const std::string& source,
                                    const std::string* child_params) {
     BakeResult r;
 
+    // Outer boundary: any std::bad_alloc thrown by build()'s particle table,
+    // the DSL buffer, or the marching-cubes mesh accumulation surfaces here
+    // as a structured error rather than aborting the viewer. This is a
+    // best-effort catch: if bad_alloc unwinds past the QuickJS init, the
+    // runtime/context can leak (the process is already at an OOM edge).
+    try {
+
     // Merge static params + caller overrides into canonical JSON, and compute
     // the resolved hash over (folded source, merged params, child hashes). Shares
     // the exact fold+hash path resolve_hash uses so both agree byte-for-byte.
@@ -1017,6 +1026,21 @@ done:
     JS_FreeContext(ctx);
     JS_FreeRuntime(rt);
     return r;
+
+    } catch (const std::bad_alloc& e) {
+        // r.resolved_hash may or may not have been populated by the pre-eval
+        // hash step; carry whatever was set at throw time so the log ties the
+        // OOM to the offending part when possible.
+        char buf[192];
+        std::snprintf(buf, sizeof(buf),
+                      "OOM in script_host::bake_source "
+                      "(root=%016llx, phase=bake_source): %s",
+                      (unsigned long long)r.resolved_hash, e.what());
+        r.error.ok = false;
+        r.error.message = buf;
+        r.written_path.clear();
+        return r;
+    }
 }
 
 } // namespace script_host
