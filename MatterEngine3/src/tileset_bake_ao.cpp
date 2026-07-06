@@ -98,10 +98,11 @@ bool bake_ao(GLuint program,
     // Disable baked-AO fetch in intersectScene (primary hit only needs normal).
     set_i("aoEnabled",        0);
     set_i("debugTriangleTests", 0);
-    // Set materialCount = 0 so getMaterialProperties always returns the default
+    // FIXME(Task 6): Set materialCount = 0 so getMaterialProperties always returns the default
     // material (flatShading = true). This makes intersectScene always use the
     // face normal (cross(e1,e2)) rather than the stored per-vertex normals, which
     // may be zero for procedurally generated base-field triangles.
+    // See header note (PRECONDITION FOR TASK 6).
     set_i("materialCount",    0);
 
     // -----------------------------------------------------------------------

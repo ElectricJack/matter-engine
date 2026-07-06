@@ -313,6 +313,13 @@ static void test_ao_bake_edge_darkens() {
                     2.0f, 0.0f, 0.5f, 0xC0DEu, ao2, err));
     REQUIRE(ao == ao2);
 
+    // Seed sensitivity: a different seed should produce different bytes.
+    std::vector<uint8_t> ao3;
+    REQUIRE(bake_ao(prog, blas, tlas, st.cfg, 2.0f, 0.0f, 0.5f,
+                    /*seed=*/0xDEADBEEFu, ao3, err));
+    REQUIRE(ao3.size() == ao.size());
+    REQUIRE(ao3 != ao);   // Different seed → different Monte Carlo output.
+
     glDeleteProgram(prog);
 }
 
