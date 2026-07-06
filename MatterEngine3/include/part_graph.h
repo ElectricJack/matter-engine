@@ -108,14 +108,17 @@ public:
     InstallResult install(const std::vector<ChildRequest>& roots);
 
     // Parse WorldData/<world>/world.manifest into root ChildRequests. Each line:
-    // "<Module> [expand]"; '#' starts a comment. Roots take their `static params`
+    // "<Module> [expand] [tileset]"; '#' starts a comment. Roots take their `static params`
     // defaults (empty Params here). If expand_out is non-null it receives one flag
     // per root (parallel to roots_out): `expand` marks an assembly root whose baked
     // child-instance table the provider promotes to individual world instances.
-    // Unknown flag tokens hard-error. Returns false + error on missing manifest.
+    // If tileset_out is non-null it receives one flag per root: `tileset` marks a
+    // tileset root. Unknown flag tokens hard-error; tileset + expand on the same
+    // root also errors. Returns false + error on missing manifest.
     static bool read_manifest(const std::string& world_data_dir, const std::string& world,
                               std::vector<ChildRequest>& roots_out, std::string& error_out,
-                              std::vector<bool>* expand_out = nullptr);
+                              std::vector<bool>* expand_out = nullptr,
+                              std::vector<bool>* tileset_out = nullptr);
 private:
     ModuleResolver& resolver_;
     Baker&          baker_;

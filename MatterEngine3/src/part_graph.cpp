@@ -215,7 +215,8 @@ InstallResult PartGraph::install(const std::vector<ChildRequest>& roots) {
 
 bool PartGraph::read_manifest(const std::string& world_data_dir, const std::string& world,
                               std::vector<ChildRequest>& roots_out, std::string& error_out,
-                              std::vector<bool>* expand_out) {
+                              std::vector<bool>* expand_out,
+                              std::vector<bool>* tileset_out) {
     std::string path = world_data_dir + "/" + world + "/world.manifest";
     std::ifstream in(path);
     if (!in) {
@@ -234,16 +235,22 @@ bool PartGraph::read_manifest(const std::string& world_data_dir, const std::stri
         std::string name, flag;
         tokens >> name;
         if (name == "light") continue;  // light lines are owned by world_lights::parse_lights
-        bool expand = false;
+        bool expand = false, tileset = false;
         while (tokens >> flag) {
             if (flag == "expand") expand = true;
+            else if (flag == "tileset") tileset = true;
             else {
                 error_out = "unknown manifest flag '" + flag + "' for root " + name;
                 return false;
             }
         }
+        if (expand && tileset) {
+            error_out = "root " + name + " cannot be both tileset and expand";
+            return false;
+        }
         roots_out.push_back(ChildRequest{ name, Params{} });
-        if (expand_out) expand_out->push_back(expand);
+        if (expand_out)  expand_out->push_back(expand);
+        if (tileset_out) tileset_out->push_back(tileset);
     }
     return true;
 }

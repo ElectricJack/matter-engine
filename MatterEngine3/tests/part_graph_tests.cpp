@@ -362,6 +362,52 @@ int main() {
     // Task 5: per-root expand flag in read_manifest.
     test_read_manifest_expand_flag();
 
+    // Task 1: tileset flag in read_manifest.
+    {
+        // Arrange: manifest with a plain root, a tileset root, and a comment
+        std::string dir = "/tmp/me3_manifest_tileset_test";
+        system(("rm -rf " + dir + " && mkdir -p " + dir + "/TsFlag").c_str());
+        {
+            std::ofstream f(dir + "/TsFlag/world.manifest");
+            f << "# demo\n"
+              << "Meadow\n"
+              << "ForestFloor tileset\n";
+        }
+
+        std::vector<ChildRequest> roots;
+        std::vector<bool> expand, tileset;
+        std::string err;
+        bool ok = PartGraph::read_manifest(dir, "TsFlag", roots, err, &expand, &tileset);
+        CHECK(ok, "manifest: parses tileset flag");
+        CHECK(roots.size() == 2, "manifest: two roots");
+        CHECK(tileset.size() == 2 && !tileset[0] && tileset[1], "manifest: tileset flag on second root only");
+        CHECK(expand.size() == 2 && !expand[0] && !expand[1], "manifest: expand unset");
+
+        // Unknown flags still hard-error
+        system(("mkdir -p " + dir + "/TsBad").c_str());
+        {
+            std::ofstream f(dir + "/TsBad/world.manifest");
+            f << "Meadow frobnicate\n";
+        }
+        roots.clear(); err.clear();
+        ok = PartGraph::read_manifest(dir, "TsBad", roots, err);
+        CHECK(!ok && err.find("unknown manifest flag") != std::string::npos,
+              "manifest: unknown flag still errors");
+
+        // tileset + expand on one root errors
+        system(("mkdir -p " + dir + "/TsBoth").c_str());
+        {
+            std::ofstream f(dir + "/TsBoth/world.manifest");
+            f << "ForestFloor tileset expand\n";
+        }
+        roots.clear(); err.clear();
+        ok = PartGraph::read_manifest(dir, "TsBoth", roots, err);
+        CHECK(!ok && err.find("both") != std::string::npos,
+              "manifest: tileset+expand rejected");
+
+        system(("rm -rf " + dir).c_str());
+    }
+
     if (failures == 0) printf("All part_graph tests passed\n");
     return failures == 0 ? 0 : 1;
 }
