@@ -112,9 +112,23 @@ static float base_height(const BaseField& base, float x, float z, float tile_siz
 }
 
 // ---------------------------------------------------------------------------
-// Collider memoization key
+// Collider memoization keys
 // ---------------------------------------------------------------------------
+// Base key: (child_hash, collider_override) — used to cache the unscaled fit.
 using ColliderKey = std::pair<uint64_t, std::string>;
+
+// Scaled key: (child_hash, collider_override, scale) — one entry per unique scale.
+// Scale derives deterministically from the RNG so exact float comparison is safe.
+struct ScaledColliderKey {
+    uint64_t    child_hash;
+    std::string override_str;
+    float       scale;
+    bool operator<(const ScaledColliderKey& o) const {
+        if (child_hash != o.child_hash) return child_hash < o.child_hash;
+        if (override_str != o.override_str) return override_str < o.override_str;
+        return scale < o.scale;
+    }
+};
 
 // ---------------------------------------------------------------------------
 // Provenance record for each spawned body
@@ -157,8 +171,14 @@ bool settle_tileset(const TilesetSpec& spec, const BakeInputs& in,
     }
 
     // ---- Step 2: memoize colliders -----------------------------------------------
-    // Key: (child_hash, collider_override)
+    // Base cache: (child_hash, collider_override) -> unscaled ColliderFit.
     std::map<ColliderKey, ColliderFit> collider_cache;
+    // Scaled cache: (child_hash, collider_override, scale) -> scale_fit(base, scale).
+    // std::map is pointer-stable so &entry is valid for the lifetime of settle_tileset.
+    // Scale 1.0 is stored here too (scale_fit(base, 1.0) == base, but the pointer
+    // from the scaled map is used uniformly so BodySpawn.collider always reflects
+    // the intended simulation geometry.
+    std::map<ScaledColliderKey, ColliderFit> scaled_cache;
 
     // Helper: get or load a base ColliderFit for a (hash, override) pair.
     // Returns nullptr and sets err on failure.
@@ -181,6 +201,23 @@ bool settle_tileset(const TilesetSpec& spec, const BakeInputs& in,
         }
         collider_cache[key] = std::move(fit);
         return &collider_cache[key];
+    };
+
+    // Helper: get or create a scaled ColliderFit for (hash, override, scale).
+    // Depends on get_base_collider, so defined after it.
+    // For drops (scale always 1.0) and physics placements with p.scale != 1.0 alike,
+    // BodySpawn.collider always points into scaled_cache so the simulated geometry
+    // matches the intended scale.
+    auto get_scaled_collider = [&](uint64_t hash, const std::string& override_str,
+                                   float scale,
+                                   const std::string& layer_module) -> const ColliderFit* {
+        const ColliderFit* base = get_base_collider(hash, override_str, layer_module);
+        if (!base) return nullptr;
+        ScaledColliderKey sk{ hash, override_str, scale };
+        auto it = scaled_cache.find(sk);
+        if (it != scaled_cache.end()) return &it->second;
+        scaled_cache[sk] = scale_fit(*base, scale);
+        return &scaled_cache[sk];
     };
 
     // Pre-load colliders for drops.
@@ -227,14 +264,14 @@ bool settle_tileset(const TilesetSpec& spec, const BakeInputs& in,
 
         int sg = world.add_sync_group(frames);
 
-        // Scaled collider (scale = 1 for drops).
-        const ColliderFit* base_fit = get_base_collider(dr.child_hash, "", "drop");
-        ColliderFit scaled = scale_fit(*base_fit, 1.0f);
+        // Drops always have scale 1.0 (DropChildRec carries no scale field).
+        // Use the scaled cache (scale=1.0) so the pointer convention is uniform.
+        const ColliderFit* scaled_fit = get_scaled_collider(dr.child_hash, "", 1.0f, "drop");
 
         // One spawn per occurrence frame.
         for (int k = 0; k < 16; ++k) {
             BodySpawn bs;
-            bs.collider   = &collider_cache[{ dr.child_hash, std::string{} }];
+            bs.collider   = scaled_fit;
             bs.start      = spawn_pose;
             bs.sync_group = sg;
             bs.instance   = k;
@@ -246,7 +283,6 @@ bool settle_tileset(const TilesetSpec& spec, const BakeInputs& in,
             pv.layer      = -1;
             drop_provs.push_back(pv);
         }
-        (void)scaled; // base_fit used directly
     }
 
     // Settle all drops in one batch.
@@ -313,24 +349,28 @@ bool settle_tileset(const TilesetSpec& spec, const BakeInputs& in,
 
                         int sg = world.add_sync_group(frames);
 
-                        // Scaled collider.
-                        const ColliderFit* base_fit = get_base_collider(p.child_hash, ov, ls.module);
-                        if (!base_fit) return false;
+                        // Scaled collider: use p.scale so physics simulates with the
+                        // correct geometry even when scale != 1.0.
+                        const ColliderFit* scaled_fit =
+                            get_scaled_collider(p.child_hash, ov, p.scale, ls.module);
+                        if (!scaled_fit) return false;
 
                         // Spawn pose (strip-local): pos from placement, rotation from placement.
-                        // For vertical strips: across = x, along = z (brief: "strip-local: across → x, along → z for vertical")
-                        // For horizontal: swapped.
+                        //
+                        // Axis convention (verified against dsl_bindings.cpp j_ts_layer):
+                        //   DSL records vertical:   p.pos = {across, y, along}
+                        //   DSL records horizontal: p.pos = {along,  y, across}  (axes swapped at recording time)
+                        //   Frame construction here: vertical   frame = {boundary*T, 0, lane*T}
+                        //                            horizontal frame = {lane*T,     0, boundary*T}
+                        //   Both swaps compose so world = frame + spawn_pose gives:
+                        //     vertical   world_x = boundary*T + across,  world_z = lane*T    + along
+                        //     horizontal world_x = lane*T     + along,   world_z = boundary*T + across
+                        //   The non-physics snap path (below) uses the identical formula, confirming
+                        //   that direct assignment of p.pos[0]/p.pos[2] is correct for both orientations.
                         Pose spawn_pose;
-                        if (is_vertical) {
-                            spawn_pose.px = p.pos[0];
-                            spawn_pose.py = p.pos[1];
-                            spawn_pose.pz = p.pos[2];
-                        } else {
-                            // horizontal: strip-local x=along-seam, z=across-seam
-                            spawn_pose.px = p.pos[0];
-                            spawn_pose.py = p.pos[1];
-                            spawn_pose.pz = p.pos[2];
-                        }
+                        spawn_pose.px = p.pos[0];
+                        spawn_pose.py = p.pos[1];
+                        spawn_pose.pz = p.pos[2];
                         spawn_pose.qx = p.quat[0];
                         spawn_pose.qy = p.quat[1];
                         spawn_pose.qz = p.quat[2];
@@ -339,7 +379,7 @@ bool settle_tileset(const TilesetSpec& spec, const BakeInputs& in,
                         // One spawn per occurrence.
                         for (int k = 0; k < (int)occs.size(); ++k) {
                             BodySpawn bs;
-                            bs.collider   = &collider_cache[{ p.child_hash, ov }];
+                            bs.collider   = scaled_fit;
                             bs.start      = spawn_pose;
                             bs.sync_group = sg;
                             bs.instance   = k;
@@ -360,15 +400,18 @@ bool settle_tileset(const TilesetSpec& spec, const BakeInputs& in,
                 int row = t / kTorusN;
                 int col = t % kTorusN;
                 for (const auto& p : ls.interior[t]) {
-                    const ColliderFit* base_fit = get_base_collider(p.child_hash, ov, ls.module);
-                    if (!base_fit) return false;
+                    // Scaled collider: use p.scale so physics simulates with the
+                    // correct geometry even when scale != 1.0.
+                    const ColliderFit* scaled_fit =
+                        get_scaled_collider(p.child_hash, ov, p.scale, ls.module);
+                    if (!scaled_fit) return false;
 
                     float wx = (float)col * T + p.pos[0];
                     float wy = p.pos[1];
                     float wz = (float)row * T + p.pos[2];
 
                     BodySpawn bs;
-                    bs.collider   = &collider_cache[{ p.child_hash, ov }];
+                    bs.collider   = scaled_fit;
                     bs.start      = Pose{ wx, wy, wz, p.quat[0], p.quat[1], p.quat[2], p.quat[3] };
                     bs.sync_group = -1;
                     layer_spawns.push_back(bs);
