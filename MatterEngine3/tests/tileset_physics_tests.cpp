@@ -159,12 +159,110 @@ static void test_settle_determinism() {
     CHECK(h1 == h2, "determinism: double-run pose hashes are identical");
 }
 
+static tileset::ColliderFit heavy_ball_fit() {
+    tileset::ColliderFit f;
+    f.type = tileset::ColliderType::Sphere;
+    f.radius = 0.06f;
+    f.volume = (4.0f / 3.0f) * 3.14159265f * 0.06f * 0.06f * 0.06f;
+    return f;
+}
+
+// A canonical box instanced at two occurrence frames stays consistent even
+// when only ONE instance is struck by a free obstacle: the interaction is
+// transmitted through the portal, and finalize() snaps the poses exactly.
+static void test_sync_group_instances_match() {
+    const float T = 8.0f;
+    tileset::HeightField hf = flat_field(T, 0.25f);
+    tileset::SettleParams sp;
+    tileset::SettleWorld sw(T, hf, sp);
+
+    int g = sw.add_sync_group({ { 0, 0, 0, 0, 0, 0, 1 },
+                                { 4, 0, 0, 0, 0, 0, 1 } });
+
+    tileset::ColliderFit box = small_box_fit();
+    tileset::ColliderFit ball = heavy_ball_fit();
+
+    std::vector<tileset::BodySpawn> spawns;
+    // Canonical box at strip-local (2.0, 0.06, 4.0):
+    // instance 0 lands at world x=2, instance 1 at world x=6.
+    for (int k = 0; k < 2; ++k) {
+        tileset::BodySpawn b;
+        b.collider = &box;
+        b.start = { 2.0f + 4.0f * k, 0.06f, 4.0f, 0, 0, 0, 1 };
+        b.sync_group = g;
+        b.instance = k;
+        spawns.push_back(b);
+    }
+    // Heavy ball slides in and strikes ONLY instance 0.
+    tileset::BodySpawn ob;
+    ob.collider = &ball;
+    ob.density = 2000.0f;
+    ob.start = { 1.5f, 0.07f, 4.0f, 0, 0, 0, 1 };
+    ob.vx = 3.0f;
+    spawns.push_back(ob);
+
+    tileset::LayerResult r = sw.settle_layer(spawns);
+    CHECK(r.converged, "sync: world with a sync group still converges");
+    sw.finalize();
+
+    const tileset::Pose& a = sw.poses()[0];   // instance 0
+    const tileset::Pose& b = sw.poses()[1];   // instance 1
+
+    // The untouched instance moved: proof the hit crossed the portal.
+    bool moved = std::fabs(b.px - 6.0f) > 1e-3f || std::fabs(b.pz - 4.0f) > 1e-3f;
+    CHECK(moved, "sync: untouched instance was displaced through the portal");
+
+    // Poses identical modulo the occurrence translation (1e-4 m float slack).
+    CHECK(std::fabs((b.px - 4.0f) - a.px) < 1e-4f &&
+          std::fabs(b.py - a.py) < 1e-4f &&
+          std::fabs(b.pz - a.pz) < 1e-4f,
+          "sync: instance positions identical modulo occurrence translation");
+    CHECK(a.qx == b.qx && a.qy == b.qy && a.qz == b.qz && a.qw == b.qw,
+          "sync: instance rotations bit-identical after finalize snap");
+}
+
+// Same scenario twice -> identical pose hashes.
+static void test_sync_determinism() {
+    auto run = []() -> uint64_t {
+        const float T = 8.0f;
+        tileset::HeightField hf = flat_field(T, 0.25f);
+        tileset::SettleParams sp;
+        tileset::SettleWorld sw(T, hf, sp);
+        int g = sw.add_sync_group({ { 0, 0, 0, 0, 0, 0, 1 },
+                                    { 4, 0, 0, 0, 0, 0, 1 } });
+        tileset::ColliderFit box = small_box_fit();
+        tileset::ColliderFit ball = heavy_ball_fit();
+        std::vector<tileset::BodySpawn> spawns;
+        for (int k = 0; k < 2; ++k) {
+            tileset::BodySpawn b;
+            b.collider = &box;
+            b.start = { 2.0f + 4.0f * k, 0.06f, 4.0f, 0, 0, 0, 1 };
+            b.sync_group = g;
+            b.instance = k;
+            spawns.push_back(b);
+        }
+        tileset::BodySpawn ob;
+        ob.collider = &ball;
+        ob.density = 2000.0f;
+        ob.start = { 1.5f, 0.07f, 4.0f, 0, 0, 0, 1 };
+        ob.vx = 3.0f;
+        spawns.push_back(ob);
+        sw.settle_layer(spawns);
+        sw.finalize();
+        return sw.pose_hash();
+    };
+    uint64_t h1 = run(), h2 = run();
+    CHECK(h1 == h2, "sync determinism: double-run pose hashes are identical");
+}
+
 int main() {
     printf("== tileset_physics_tests ==\n");
     test_smoke_drop();
     test_settle_boxes_converge();
     test_settle_toroidal_wrap();
     test_settle_determinism();
+    test_sync_group_instances_match();
+    test_sync_determinism();
     printf("%s (%d failures)\n", g_failures ? "FAILED" : "PASSED", g_failures);
     return g_failures ? 1 : 0;
 }

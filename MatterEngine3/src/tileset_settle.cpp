@@ -68,7 +68,7 @@ struct SettleWorld::Impl {
     std::vector<SyncGroup> groups;
 
     void wrap_bodies();
-    void sync_groups_step();   // Task 5
+    void sync_groups_step(bool force_snap);
     void refresh_poses();
     int count_awake() const;
 };
@@ -206,7 +206,7 @@ LayerResult SettleWorld::settle_layer(const std::vector<BodySpawn>& spawns) {
     while (r.sim_time < P.max_sim_time) {
         b3World_Step(impl_->world, P.dt, P.substeps);
         impl_->wrap_bodies();
-        impl_->sync_groups_step();
+        impl_->sync_groups_step(false);
         r.sim_time += P.dt;
         r.awake_count = impl_->count_awake();
         if (r.awake_count <= (int)((1.0f - P.sleep_fraction) * total)) {
@@ -219,7 +219,19 @@ LayerResult SettleWorld::settle_layer(const std::vector<BodySpawn>& spawns) {
 }
 
 void SettleWorld::finalize() {
-    // Task 5: snap sync groups, kinematic micro-relax. Base version: no-op.
+    // Exact snap: every instance gets the identical averaged local pose.
+    impl_->sync_groups_step(true);
+    // Freeze strips so free bodies can re-settle against fixed geometry.
+    for (const Impl::TrackedBody& tb : impl_->bodies) {
+        if (tb.group < 0) continue;
+        b3Body_SetType(tb.id, b3_kinematicBody);
+        b3Body_SetLinearVelocity(tb.id, (b3Vec3){ 0, 0, 0 });
+        b3Body_SetAngularVelocity(tb.id, (b3Vec3){ 0, 0, 0 });
+    }
+    for (int i = 0; i < impl_->params.micro_relax_steps; ++i) {
+        b3World_Step(impl_->world, impl_->params.dt, impl_->params.substeps);
+        impl_->wrap_bodies();
+    }
     impl_->refresh_poses();
 }
 
@@ -250,8 +262,85 @@ void SettleWorld::Impl::wrap_bodies() {
     }
 }
 
-void SettleWorld::Impl::sync_groups_step() {
-    // Implemented in Task 5.
+void SettleWorld::Impl::sync_groups_step(bool force_snap) {
+    const float half = torus * 0.5f;
+    for (SyncGroup& g : groups) {
+        const int K = (int)g.frames.size();
+        if (K < 2 || (int)g.members.size() < K) continue;
+        const int canon_count = (int)g.members[0].size();
+        for (int c = 0; c < canon_count; ++c) {
+            bool any_awake = false;
+            for (int k = 0; k < K; ++k)
+                if (b3Body_IsAwake(bodies[g.members[k][c]].id)) { any_awake = true; break; }
+            if (!any_awake && !force_snap) continue;
+
+            // Reference: instance 0's strip-local pose.
+            const b3BodyId id0 = bodies[g.members[0][c]].id;
+            b3Pos p0 = b3Body_GetPosition(id0);
+            b3Quat q0 = b3Body_GetRotation(id0);
+            const float l0x = p0.x - g.frames[0].px;
+            const float l0y = p0.y - g.frames[0].py;
+            const float l0z = p0.z - g.frames[0].pz;
+
+            float ax = 0, ay = 0, az = 0;               // avg local delta from l0
+            float sqx = 0, sqy = 0, sqz = 0, sqw = 0;   // sign-aligned quat sum
+            float vx = 0, vy = 0, vz = 0;               // avg linear velocity
+            float wx = 0, wy = 0, wz = 0;               // avg angular velocity
+            float max_dev = 0.0f;
+            for (int k = 0; k < K; ++k) {
+                const b3BodyId id = bodies[g.members[k][c]].id;
+                b3Pos p = b3Body_GetPosition(id);
+                b3Quat q = b3Body_GetRotation(id);
+                float dx = (p.x - g.frames[k].px) - l0x;
+                float dy = (p.y - g.frames[k].py) - l0y;
+                float dz = (p.z - g.frames[k].pz) - l0z;
+                // An instance may have wrapped across the torus edge.
+                while (dx >  half) dx -= torus;
+                while (dx < -half) dx += torus;
+                while (dz >  half) dz -= torus;
+                while (dz < -half) dz += torus;
+                ax += dx; ay += dy; az += dz;
+                float dot = q.v.x * q0.v.x + q.v.y * q0.v.y + q.v.z * q0.v.z + q.s * q0.s;
+                float sgn = (dot < 0.0f) ? -1.0f : 1.0f;
+                sqx += sgn * q.v.x; sqy += sgn * q.v.y; sqz += sgn * q.v.z; sqw += sgn * q.s;
+                b3Vec3 lv = b3Body_GetLinearVelocity(id);
+                b3Vec3 av = b3Body_GetAngularVelocity(id);
+                vx += lv.x; vy += lv.y; vz += lv.z;
+                wx += av.x; wy += av.y; wz += av.z;
+                float dev = std::fabs(dx) + std::fabs(dy) + std::fabs(dz)
+                          + std::fabs(sgn * q.v.x - q0.v.x) + std::fabs(sgn * q.v.y - q0.v.y)
+                          + std::fabs(sgn * q.v.z - q0.v.z) + std::fabs(sgn * q.s - q0.s);
+                if (dev > max_dev) max_dev = dev;
+            }
+            // Already in sync: skip the write-back so sleeping bodies stay
+            // asleep (SetTransform may wake them and block convergence forever).
+            if (!force_snap && max_dev < 1e-6f) continue;
+
+            const float invK = 1.0f / (float)K;
+            ax *= invK; ay *= invK; az *= invK;
+            vx *= invK; vy *= invK; vz *= invK;
+            wx *= invK; wy *= invK; wz *= invK;
+            float qn = std::sqrt(sqx * sqx + sqy * sqy + sqz * sqz + sqw * sqw);
+            b3Quat aq;
+            if (qn < 1e-12f) { aq = q0; }
+            else { aq.v.x = sqx / qn; aq.v.y = sqy / qn; aq.v.z = sqz / qn; aq.s = sqw / qn; }
+
+            const float alx = l0x + ax, aly = l0y + ay, alz = l0z + az;
+            for (int k = 0; k < K; ++k) {
+                const b3BodyId id = bodies[g.members[k][c]].id;
+                float nx = alx + g.frames[k].px;
+                float ny = aly + g.frames[k].py;
+                float nz = alz + g.frames[k].pz;
+                while (nx < 0.0f)   nx += torus;
+                while (nx >= torus) nx -= torus;
+                while (nz < 0.0f)   nz += torus;
+                while (nz >= torus) nz -= torus;
+                b3Body_SetTransform(id, (b3Pos){ nx, ny, nz }, aq);
+                b3Body_SetLinearVelocity(id, (b3Vec3){ vx, vy, vz });
+                b3Body_SetAngularVelocity(id, (b3Vec3){ wx, wy, wz });
+            }
+        }
+    }
 }
 
 void SettleWorld::Impl::refresh_poses() {
