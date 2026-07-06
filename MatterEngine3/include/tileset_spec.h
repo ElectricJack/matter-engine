@@ -73,6 +73,15 @@ struct TilesetState {
     // Per-placement attribute RNG: set/cleared by j_ts_layer for each placement.
     // The params-fn `r` helper reads from this via the native bindings.
     dsl::Rng* param_rng = nullptr;   // non-owning pointer into the current placement loop
+
+    // variant() registration (Task 5).
+    // The JS function value is stored as raw bits (16 bytes = sizeof(JSValue) on the
+    // target platform: 4-byte union + 8-byte int64 tag). Stored via memcpy so this
+    // header need not include quickjs.h. Set/read only from dsl_bindings.cpp /
+    // script_host.cpp which include quickjs.h and know the layout.
+    bool variant_called = false;     // variant() was invoked at least once
+    bool variant_fn_set = false;     // a valid fn was stored in variant_fn_bits
+    uint64_t variant_fn_bits[2] = { 0, 0 };  // memcpy of the duped JSValue
 };
 
 }  // namespace tileset

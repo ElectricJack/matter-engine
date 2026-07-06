@@ -303,6 +303,72 @@ class F extends Tileset {
           "layer: params fn undeclared variant error names the module");
 }
 
+// ---------------------------------------------------------------------------
+// Task 5: variant() verb tests
+// ---------------------------------------------------------------------------
+
+static void test_variant(ScriptHost& host) {
+    auto r = host.eval_tileset(R"JS(
+class F extends Tileset {
+  build() {
+    this.tile({ size: 2.0, texelsPerMeter: 128, seed: 3 });
+    this.variant(t => {
+      if (t.index === 5) {
+        this.fill(2);
+        this.beginVoxels(0.05);
+        this.sphere([1.0, 0.0, 1.0], 0.05);   // center tile, well inside margin
+        this.endVoxels();
+      }
+    });
+  }
+}
+)JS", "{}", BakeOptions{});
+    CHECK(r.error.ok, "variant: hook evals clean");
+    CHECK(r.spec.variant_ranges.size() == 1 && !r.spec.variant_ranges.empty() && r.spec.variant_ranges[0].tile == 5,
+          "variant: only tile 5 emitted content");
+    if (!r.spec.variant_ranges.empty())
+        CHECK(r.spec.variant_ranges[0].op_end > r.spec.variant_ranges[0].op_begin,
+              "variant: op range non-empty");
+}
+
+static void test_variant_margin(ScriptHost& host) {
+    auto r = host.eval_tileset(R"JS(
+class F extends Tileset {
+  build() {
+    this.tile({ size: 2.0, texelsPerMeter: 128, seed: 3 });
+    this.variant(t => {
+      if (t.index === 2) {
+        this.beginVoxels(0.05);
+        this.sphere([0.05, 0.0, 1.0], 0.04);   // 0.05 from x=0 bound < 0.15 margin
+        this.endVoxels();
+      }
+    });
+  }
+}
+)JS", "{}", BakeOptions{});
+    CHECK(!r.error.ok, "variant: margin violation is an error");
+    CHECK(r.error.message.find("tile 2") != std::string::npos,
+          "variant: error names the tile");
+}
+
+static void test_variant_colors(ScriptHost& host) {
+    // Hook observes de Bruijn colors: record them via heights hack? No — throw on mismatch.
+    auto r = host.eval_tileset(R"JS(
+class F extends Tileset {
+  build() {
+    this.tile({ size: 2.0, texelsPerMeter: 128, seed: 3 });
+    this.variant(t => {
+      const ok = [0,1].includes(t.colors.top) && [0,1].includes(t.colors.left);
+      if (!ok) throw new Error('bad colors at tile ' + t.index);
+      if (t.index === 0 && (t.colors.top !== 0 || t.colors.left !== 0))
+        throw new Error('tile 0 colors wrong');
+    });
+  }
+}
+)JS", "{}", BakeOptions{});
+    CHECK(r.error.ok, "variant: de Bruijn colors passed to hook");
+}
+
 int main() {
     printf("== tileset_dsl_tests ==\n");
     ScriptHost host;
@@ -314,6 +380,9 @@ int main() {
     test_layer_recording(host);
     test_layer_determinism(host);
     test_layer_errors(host);
+    test_variant(host);
+    test_variant_margin(host);
+    test_variant_colors(host);
     if (g_failures == 0) printf("PASSED (0 failures)\n");
     else                 printf("FAILED (%d failures)\n", g_failures);
     return g_failures;

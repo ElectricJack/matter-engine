@@ -11,6 +11,8 @@ extern "C" {
 #include "../include/csg_lowering.h"   // NEW MatterEngine3 header
 #include "../include/lod_bake.h"        // QEM decimation for simplify() on direct-tri parts
 #include "../include/module_resolver.h" // SP-7 shared-lib fold + resolution
+#include "../include/tileset_layout.h"     // tile_colors (Task 5: variant hook)
+#include "../include/tileset_placement.h"  // placement_seed (Task 5: variant rng)
 #include "cluster.h"                    // consumed prototype (StaticParticle, Cluster)
 #include "cell.h"                       // consumed prototype (Cell, build_cell_meshes GL-free)
 #include "mesh_worker_pool.h"           // consumed prototype (CellMeshResult/GroupMeshResult)
@@ -1263,6 +1265,210 @@ TilesetEvalResult ScriptHost::eval_tileset(const std::string& source,
     if (r.error.ok && !state.tileset()->spec.tile_called) {
         r.error.ok = false;
         r.error.message = "tileset build() never called tile()";
+    }
+
+    // Task 5: invoke the variant hook 16 times (once per tile in torus order 0..15).
+    // Runs only when no earlier error and the hook was registered via variant().
+    if (r.error.ok && state.tileset()->variant_fn_set) {
+        tileset::TilesetState* ts = state.tileset();
+        const tileset::TileConfig& cfg = ts->spec.cfg;
+
+        // Recover the duped JSValue from raw bits storage.
+        JSValue variant_fn;
+        std::memcpy(&variant_fn, ts->variant_fn_bits, sizeof(variant_fn));
+
+        // Build the `r` helper object for the variant hook rng (same pattern as layer).
+        JSValue g_obj = JS_GetGlobalObject(ctx);
+        JSValue rng_helper = JS_NewObject(ctx);
+        {
+            JSValue fn_int   = JS_GetPropertyStr(ctx, g_obj, "__dsl_ts_rng_int");
+            JSValue fn_float = JS_GetPropertyStr(ctx, g_obj, "__dsl_ts_rng_float");
+            JS_SetPropertyStr(ctx, rng_helper, "int",   fn_int);
+            JS_SetPropertyStr(ctx, rng_helper, "float", fn_float);
+        }
+        JS_FreeValue(ctx, g_obj);
+
+        for (int t = 0; t < 16 && r.error.ok; ++t) {
+            int row = t / 4;
+            int col = t % 4;
+            tileset::EdgeColors ec = tileset::tile_colors(row, col);
+
+            // Seed the per-tile rng: placement_seed(master, 0xFFFF, t).
+            dsl::Rng tile_rng(tileset::placement_seed(cfg.seed, 0xFFFF, (uint32_t)t));
+            ts->param_rng = &tile_rng;
+
+            // Record stack depth and op/child counts before the call.
+            size_t stack_before = state.stack_depth();
+            size_t op_begin     = state.op_count();
+            size_t child_begin  = state.child_count_ts();
+
+            // Build the argument object: { index, colors: {top,bottom,left,right}, rng }.
+            JSValue arg = JS_NewObject(ctx);
+            JS_SetPropertyStr(ctx, arg, "index", JS_NewInt32(ctx, t));
+            {
+                JSValue colors = JS_NewObject(ctx);
+                JS_SetPropertyStr(ctx, colors, "top",    JS_NewInt32(ctx, ec.top));
+                JS_SetPropertyStr(ctx, colors, "bottom", JS_NewInt32(ctx, ec.bottom));
+                JS_SetPropertyStr(ctx, colors, "left",   JS_NewInt32(ctx, ec.left));
+                JS_SetPropertyStr(ctx, colors, "right",  JS_NewInt32(ctx, ec.right));
+                JS_SetPropertyStr(ctx, arg, "colors", colors);
+            }
+            JS_SetPropertyStr(ctx, arg, "rng", JS_DupValue(ctx, rng_helper));
+
+            // Call the variant hook.
+            JSValue ret = JS_Call(ctx, variant_fn, JS_UNDEFINED, 1, &arg);
+            JS_FreeValue(ctx, arg);
+
+            ts->param_rng = nullptr;
+
+            if (JS_IsException(ret)) {
+                r.error = harvest_exception(ctx);
+                JS_FreeValue(ctx, ret);
+                break;
+            }
+            JS_FreeValue(ctx, ret);
+
+            // Check for errors set by DSL verbs inside the hook.
+            if (state.has_error()) {
+                r.error.ok = false; r.error.message = state.error(); break;
+            }
+            if (ts->has_error) {
+                r.error.ok = false; r.error.message = ts->error; break;
+            }
+
+            // Transform-stack balance check.
+            if (state.stack_depth() != stack_before) {
+                char buf[128];
+                std::snprintf(buf, sizeof(buf),
+                    "variant(): tile %d hook left transform stack unbalanced "
+                    "(depth %zu before, %zu after)",
+                    t, stack_before, state.stack_depth());
+                r.error.ok = false; r.error.message = buf; break;
+            }
+
+            size_t op_end    = state.op_count();
+            size_t child_end = state.child_count_ts();
+
+            // Margin check: every op emitted inside the hook must keep its
+            // conservative XZ AABB >= edge_strip_width from the tile bounds [0, size).
+            if (op_end > op_begin) {
+                const float strip = cfg.edge_strip_width;
+                const float sz    = cfg.size;
+                const auto& ops   = state.buffer().ops;
+                bool margin_ok = true;
+                for (size_t i = op_begin; i < op_end && margin_ok; ++i) {
+                    const dsl::BuildOp& op = ops[i];
+                    // Compute world-space conservative AABB of this brush in XZ.
+                    float xmin, xmax, zmin, zmax;
+                    // Helper: compute XZ extent of a world-space point cloud.
+                    auto update_xz = [&](float wx, float wz) {
+                        if (wx < xmin) xmin = wx;
+                        if (wx > xmax) xmax = wx;
+                        if (wz < zmin) zmin = wz;
+                        if (wz > zmax) zmax = wz;
+                    };
+                    // Transform a local point by the op's transform (raylib Matrix,
+                    // column-major: m0-m3=col0, m4-m7=col1, m8-m11=col2, m12-m15=col3/translation).
+                    auto tx = [&](float lx, float ly, float lz, float& ox, float& oz) {
+                        const Matrix& M = op.transform;
+                        ox = M.m0*lx + M.m4*ly + M.m8*lz  + M.m12;
+                        oz = M.m2*lx + M.m6*ly + M.m10*lz + M.m14;
+                    };
+                    // Initialize to first point.
+                    float fx, fz;
+                    tx(op.center.x, op.center.y, op.center.z, fx, fz);
+                    xmin = xmax = fx; zmin = zmax = fz;
+
+                    if (op.kind == dsl::BrushKind::Sphere) {
+                        // World-space center ± radius (conservative: ignore rotation-only scaling).
+                        // Better: transform 6 axis-aligned points at center±radius.
+                        float r0 = op.radius;
+                        float cx = op.center.x, cy = op.center.y, cz = op.center.z;
+                        for (int dx = -1; dx <= 1; dx += 2)
+                        for (int dz = -1; dz <= 1; dz += 2) {
+                            float wx, wz;
+                            tx(cx + dx*r0, cy, cz + dz*r0, wx, wz);
+                            update_xz(wx, wz);
+                        }
+                        // Also transform along y-axis in case transform has shear.
+                        for (int dy = -1; dy <= 1; dy += 2) {
+                            float wx, wz;
+                            tx(cx, cy + dy*r0, cz, wx, wz);
+                            update_xz(wx, wz);
+                        }
+                    } else if (op.kind == dsl::BrushKind::Box) {
+                        // 8 corners of the box.
+                        float cx = op.center.x, cy = op.center.y, cz = op.center.z;
+                        float hx = op.halfExtents.x, hy = op.halfExtents.y, hz = op.halfExtents.z;
+                        for (int sx2 = -1; sx2 <= 1; sx2 += 2)
+                        for (int sy2 = -1; sy2 <= 1; sy2 += 2)
+                        for (int sz2 = -1; sz2 <= 1; sz2 += 2) {
+                            float wx, wz;
+                            tx(cx + sx2*hx, cy + sy2*hy, cz + sz2*hz, wx, wz);
+                            update_xz(wx, wz);
+                        }
+                    } else {
+                        // Capsule / Cylinder / Cone: segment endpoints a=center, b=segB, ±radius.
+                        float r0 = op.radius;
+                        float ax = op.center.x, ay = op.center.y, az = op.center.z;
+                        float bx = op.segB.x,   by = op.segB.y,   bz = op.segB.z;
+                        float r1 = op.r1;
+                        for (int dx = -1; dx <= 1; dx += 2) {
+                            float wx, wz;
+                            tx(ax + dx*r0, ay, az, wx, wz); update_xz(wx, wz);
+                            tx(ax, ay, az + dx*r0, wx, wz); update_xz(wx, wz);
+                            tx(bx + dx*r1, by, bz, wx, wz); update_xz(wx, wz);
+                            tx(bx, by, bz + dx*r1, wx, wz); update_xz(wx, wz);
+                        }
+                    }
+
+                    if (xmin < strip || xmax > sz - strip ||
+                        zmin < strip || zmax > sz - strip) {
+                        char buf[160];
+                        std::snprintf(buf, sizeof(buf),
+                            "variant(): tile %d content within edgeStripWidth of tile bounds",
+                            t);
+                        r.error.ok = false; r.error.message = buf;
+                        margin_ok = false;
+                    }
+                }
+            }
+
+            // Margin check for child placements inside the hook.
+            if (r.error.ok && child_end > child_begin) {
+                const float strip = cfg.edge_strip_width;
+                const float sz    = cfg.size;
+                const auto& ch    = state.children();
+                for (size_t i = child_begin; i < child_end && r.error.ok; ++i) {
+                    // Row-major transform: X = [3], Z = [11].
+                    float px = ch[i].transform[3];
+                    float pz = ch[i].transform[11];
+                    if (px < strip || px > sz - strip ||
+                        pz < strip || pz > sz - strip) {
+                        char buf[160];
+                        std::snprintf(buf, sizeof(buf),
+                            "variant(): tile %d content within edgeStripWidth of tile bounds",
+                            t);
+                        r.error.ok = false; r.error.message = buf;
+                    }
+                }
+            }
+
+            // Record the VariantRange if anything was emitted (and no error).
+            if (r.error.ok && (op_end > op_begin || child_end > child_begin)) {
+                tileset::VariantRange vr;
+                vr.tile        = t;
+                vr.op_begin    = op_begin;
+                vr.op_end      = op_end;
+                vr.child_begin = child_begin;
+                vr.child_end   = child_end;
+                ts->spec.variant_ranges.push_back(vr);
+            }
+        }
+
+        // Free the duped fn value.
+        JS_FreeValue(ctx, variant_fn);
+        JS_FreeValue(ctx, rng_helper);
     }
 
     // Move spec into result (no mesher, no .part write).

@@ -4,6 +4,7 @@
 #include "../include/tileset_placement.h"
 #include "../include/tileset_layout.h"
 #include <cmath>
+#include <cstring>
 #include <vector>
 extern "C" {
 #include "quickjs.h"
@@ -627,10 +628,31 @@ static JSValue j_ts_dropChild(JSContext* c, JSValueConst, int n, JSValueConst* a
     return JS_UNDEFINED;
 }
 
-static JSValue j_ts_variant(JSContext* c, JSValueConst, int, JSValueConst*) {
+static JSValue j_ts_variant(JSContext* c, JSValueConst, int n, JSValueConst* a) {
     tileset::TilesetState* ts = ts_of(c);
     if (!ts) { state_of(c)->set_error("tileset verb outside Tileset root"); return JS_UNDEFINED; }
-    ts->set_error("variant(): not implemented");
+    if (ts->has_error) return JS_UNDEFINED;
+    // variant() may only be called after tile().
+    if (!ts->spec.tile_called) {
+        ts->set_error("variant(): must be called after tile()");
+        return JS_UNDEFINED;
+    }
+    // variant() may only be called once.
+    if (ts->variant_called) {
+        ts->set_error("variant(): called more than once");
+        return JS_UNDEFINED;
+    }
+    ts->variant_called = true;
+    // Register the hook fn: dup it and store the JSValue as raw bits.
+    if (n < 1 || !JS_IsFunction(c, a[0])) {
+        ts->set_error("variant(): argument must be a function");
+        return JS_UNDEFINED;
+    }
+    JSValue fn = JS_DupValue(c, a[0]);
+    static_assert(sizeof(fn) <= sizeof(ts->variant_fn_bits),
+                  "JSValue too large for variant_fn_bits storage");
+    std::memcpy(ts->variant_fn_bits, &fn, sizeof(fn));
+    ts->variant_fn_set = true;
     return JS_UNDEFINED;
 }
 
