@@ -113,4 +113,4 @@ Step 4: GALLIUM_DRIVER=d3d12 ./tileset_gpu_tests → 51/51 PASS
 ```
 
 ### Commit SHA
-(see git log)
+`f445a77`
