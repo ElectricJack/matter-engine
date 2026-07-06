@@ -5,7 +5,6 @@
 
 #include "box3d/box3d.h"
 #include "box3d/collision.h"
-#include "box3d/math_functions.h"
 
 namespace tileset {
 
@@ -132,6 +131,7 @@ int SettleWorld::add_sync_group(const std::vector<Pose>& occurrence_frames) {
 
 LayerResult SettleWorld::settle_layer(const std::vector<BodySpawn>& spawns) {
     const float S = impl_->params.sim_scale;
+    const size_t layer_start = impl_->bodies.size();
 
     for (const BodySpawn& sp : spawns) {
         b3BodyDef bd = b3DefaultBodyDef();
@@ -202,14 +202,19 @@ LayerResult SettleWorld::settle_layer(const std::vector<BodySpawn>& spawns) {
 
     LayerResult r;
     const SettleParams& P = impl_->params;
-    const int total = (int)impl_->bodies.size();
+    const int layer_count = (int)(impl_->bodies.size() - layer_start);
     while (r.sim_time < P.max_sim_time) {
         b3World_Step(impl_->world, P.dt, P.substeps);
         impl_->wrap_bodies();
         impl_->sync_groups_step(false);
         r.sim_time += P.dt;
+        // Count awake only among this layer's bodies so prior settled layers
+        // don't inflate the denominator and make convergence impossible.
+        int layer_awake = 0;
+        for (size_t i = layer_start; i < impl_->bodies.size(); ++i)
+            if (b3Body_IsAwake(impl_->bodies[i].id)) ++layer_awake;
         r.awake_count = impl_->count_awake();
-        if (r.awake_count <= (int)((1.0f - P.sleep_fraction) * total)) {
+        if (layer_awake <= (int)((1.0f - P.sleep_fraction) * layer_count)) {
             r.converged = true;
             break;
         }
@@ -252,6 +257,7 @@ void SettleWorld::Impl::wrap_bodies() {
     for (const TrackedBody& tb : bodies) {
         if (!b3Body_IsAwake(tb.id)) continue;
         b3Pos p = b3Body_GetPosition(tb.id);
+        if (!std::isfinite(p.x) || !std::isfinite(p.z)) continue;
         float nx = p.x, nz = p.z;
         while (nx < 0.0f)     nx += torus;
         while (nx >= torus)   nx -= torus;
@@ -295,6 +301,7 @@ void SettleWorld::Impl::sync_groups_step(bool force_snap) {
                 float dy = (p.y - g.frames[k].py) - l0y;
                 float dz = (p.z - g.frames[k].pz) - l0z;
                 // An instance may have wrapped across the torus edge.
+                if (!std::isfinite(dx) || !std::isfinite(dz)) continue;
                 while (dx >  half) dx -= torus;
                 while (dx < -half) dx += torus;
                 while (dz >  half) dz -= torus;
@@ -307,6 +314,7 @@ void SettleWorld::Impl::sync_groups_step(bool force_snap) {
                 b3Vec3 av = b3Body_GetAngularVelocity(id);
                 vx += lv.x; vy += lv.y; vz += lv.z;
                 wx += av.x; wy += av.y; wz += av.z;
+                // Asymmetry (instance 0 as reference) is fine: finalize() force-snaps all instances to the exact average.
                 float dev = std::fabs(dx) + std::fabs(dy) + std::fabs(dz)
                           + std::fabs(sgn * q.v.x - q0.v.x) + std::fabs(sgn * q.v.y - q0.v.y)
                           + std::fabs(sgn * q.v.z - q0.v.z) + std::fabs(sgn * q.s - q0.s);
@@ -331,6 +339,7 @@ void SettleWorld::Impl::sync_groups_step(bool force_snap) {
                 float nx = alx + g.frames[k].px;
                 float ny = aly + g.frames[k].py;
                 float nz = alz + g.frames[k].pz;
+                if (!std::isfinite(nx) || !std::isfinite(nz)) continue;
                 while (nx < 0.0f)   nx += torus;
                 while (nx >= torus) nx -= torus;
                 while (nz < 0.0f)   nz += torus;
