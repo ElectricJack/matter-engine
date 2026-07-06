@@ -429,7 +429,6 @@ static JSValue j_ts_layer(JSContext* c, JSValueConst, int n, JSValueConst* a) {
                 }
                 // params
                 if (params_is_fn) {
-                    dsl::Rng placement_attr_rng = attr_rng;
                     ts->param_rng = &attr_rng;
                     JSValue ret = JS_Call(c, params_val, JS_UNDEFINED, 1, &r_helper);
                     ts->param_rng = nullptr;
@@ -449,7 +448,19 @@ static JSValue j_ts_layer(JSContext* c, JSValueConst, int n, JSValueConst* a) {
                     }
                     JS_FreeValue(c, js);
                     uint64_t h=0;
-                    if (!state->lookup_child_hash(module, pjson.c_str(), pjson.size(), h)) {
+                    // Fail-closed: if fn returned a non-trivial params object, the composite
+                    // key (module\x1f<params>) must be explicitly declared in static requires.
+                    // Trivial (empty/"{}"): fall through to plain-module lookup so that a fn
+                    // that returns {} for a plain-declared module still resolves correctly.
+                    bool has_real_params = !pjson.empty() && pjson != "{}";
+                    if (has_real_params && !state->has_composite_child_key(module, pjson.c_str(), pjson.size())) {
+                        ts->set_error("layer('" + module + "'): params variant not declared in static requires");
+                        JS_FreeValue(c, params_val);
+                        JS_FreeValue(c, r_helper);
+                        return JS_UNDEFINED;
+                    }
+                    if (!state->lookup_child_hash(module, has_real_params ? pjson.c_str() : nullptr,
+                                                  has_real_params ? pjson.size() : 0, h)) {
                         ts->set_error("layer('" + module + "'): params variant not declared in static requires");
                         JS_FreeValue(c, params_val);
                         JS_FreeValue(c, r_helper);
@@ -532,7 +543,19 @@ static JSValue j_ts_layer(JSContext* c, JSValueConst, int n, JSValueConst* a) {
                 }
                 JS_FreeValue(c, js);
                 uint64_t h=0;
-                if (!state->lookup_child_hash(module, pjson.c_str(), pjson.size(), h)) {
+                // Fail-closed: if fn returned a non-trivial params object, the composite
+                // key (module\x1f<params>) must be explicitly declared in static requires.
+                // Trivial (empty/"{}"): fall through to plain-module lookup so that a fn
+                // that returns {} for a plain-declared module still resolves correctly.
+                bool has_real_params = !pjson.empty() && pjson != "{}";
+                if (has_real_params && !state->has_composite_child_key(module, pjson.c_str(), pjson.size())) {
+                    ts->set_error("layer('" + module + "'): params variant not declared in static requires");
+                    JS_FreeValue(c, params_val);
+                    JS_FreeValue(c, r_helper);
+                    return JS_UNDEFINED;
+                }
+                if (!state->lookup_child_hash(module, has_real_params ? pjson.c_str() : nullptr,
+                                              has_real_params ? pjson.size() : 0, h)) {
                     ts->set_error("layer('" + module + "'): params variant not declared in static requires");
                     JS_FreeValue(c, params_val);
                     JS_FreeValue(c, r_helper);

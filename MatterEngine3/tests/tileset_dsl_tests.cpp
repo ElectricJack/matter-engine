@@ -247,13 +247,22 @@ static void test_layer_determinism(ScriptHost& host) {
     bool same = a.spec.layers.size() == b.spec.layers.size();
     for (size_t l = 0; same && l < a.spec.layers.size(); ++l) {
         const auto& x = a.spec.layers[l]; const auto& y = b.spec.layers[l];
+        // Compare all four strip tables (orient 0/1, color 0/1) bit-identically.
+        for (int o = 0; same && o < 2; ++o) {
+            for (int c = 0; same && c < 2; ++c) {
+                same = x.strip[o][c].size() == y.strip[o][c].size();
+                for (size_t i = 0; same && i < x.strip[o][c].size(); ++i)
+                    same = std::memcmp(&x.strip[o][c][i], &y.strip[o][c][i], sizeof(tileset::Placement)) == 0;
+            }
+        }
+        // Compare all 16 interior tile tables bit-identically.
         for (int t = 0; same && t < 16; ++t) {
             same = x.interior[t].size() == y.interior[t].size();
             for (size_t i = 0; same && i < x.interior[t].size(); ++i)
                 same = std::memcmp(&x.interior[t][i], &y.interior[t][i], sizeof(tileset::Placement)) == 0;
         }
     }
-    CHECK(same, "layer: placements bit-identical across evals");
+    CHECK(same, "layer: placements bit-identical across evals (strips + interior)");
 }
 
 static void test_layer_errors(ScriptHost& host) {
@@ -266,7 +275,7 @@ class F extends Tileset {
 )JS", "{}", BakeOptions{}, &kChildHashes[2], 1, &kChildModules[2], &kChildParams[2]);
     CHECK(!r1.error.ok && r1.error.message.find("density") != std::string::npos,
           "layer: missing density is a structured error");
-    // undeclared params variant
+    // undeclared params variant (static object path)
     auto r2 = host.eval_tileset(R"JS(
 class F extends Tileset {
   static requires = [ { module: 'Twig' } ];
@@ -276,6 +285,22 @@ class F extends Tileset {
 )JS", "{}", BakeOptions{}, &kChildHashes[2], 1, &kChildModules[2], &kChildParams[2]);
     CHECK(!r2.error.ok && r2.error.message.find("variant") != std::string::npos,
           "layer: undeclared params variant is a structured error");
+
+    // params fn returning an undeclared variant must be fail-closed (not silently
+    // fall back to the plain-module hash).  'Twig' is declared plain (no params);
+    // a fn that returns {seed:9} names a variant that was never declared.
+    auto r3 = host.eval_tileset(R"JS(
+class F extends Tileset {
+  static requires = [ { module: 'Twig' } ];
+  build() { this.tile({size:2.0, texelsPerMeter:128, seed:1});
+            this.layer('Twig', { density: 5,
+                                 params: r => ({ seed: 9 }) }); }
+}
+)JS", "{}", BakeOptions{}, &kChildHashes[2], 1, &kChildModules[2], &kChildParams[2]);
+    CHECK(!r3.error.ok, "layer: params fn undeclared variant is a structured error");
+    CHECK(r3.error.message.find("Twig") != std::string::npos &&
+          r3.error.message.find("variant") != std::string::npos,
+          "layer: params fn undeclared variant error names the module");
 }
 
 int main() {
