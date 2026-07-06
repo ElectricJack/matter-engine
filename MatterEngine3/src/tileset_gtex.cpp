@@ -221,6 +221,10 @@ bool load_gtex(const std::string& path,
         if (id >= CHAN_COUNT) {
             err = "load_gtex: bad channel id in table: " + path; return false;
         }
+        if (by_id[id]) {
+            err = "load_gtex: duplicate channel id " + std::to_string(id) + ": " + path;
+            return false;
+        }
         by_id[id] = &entries[i];
     }
     for (int i = 0; i < CHAN_COUNT; ++i) {

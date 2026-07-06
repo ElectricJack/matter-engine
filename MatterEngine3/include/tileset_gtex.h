@@ -11,7 +11,7 @@
 //
 // All multi-byte scalars are little-endian (writer + reader are LE-only).
 // The four channel blobs are PNG-encoded via stb_image_write; height is
-// 16-bit greyscale PNG.
+// raw LE uint16 (R16).
 
 #include <cstdint>
 #include <string>
