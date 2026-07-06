@@ -143,11 +143,32 @@ if [ "$MODE" = "test" ]; then
     # raylib-linked BLAS path). Each run-* target builds then runs its binary, so
     # a non-zero status covers both build and test failures. run-graph-integration
     # exercises the full SP-3 install -> SP-2 ScriptHost bake path end-to-end.
-    for tgt in run-partv2 run-script run-iso run-graph run-graph-integration run-trivar run-polytri run-shlib run-comp run-flatten run-dev run-example run-gallery run-treebake run-meadow run-meadow-check run-viewer-logic run-lighting run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake; do
+    for tgt in run-partv2 run-script run-iso run-graph run-graph-integration run-trivar run-polytri run-shlib run-comp run-flatten run-dev run-example run-gallery run-treebake run-meadow run-meadow-check run-viewer-logic run-lighting run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetgtex run-tilesettorusbvh; do
         echo
         echo "--- MatterEngine3 ($tgt) ---"
         make -C MatterEngine3/tests "$tgt" || RESULT[MatterEngine3]="FAIL ($tgt)"
     done
+
+    # Viewer GPU tests — GL 4.6 required. On WSLg this needs GALLIUM_DRIVER=d3d12.
+    # We infer availability by (a) the env var being set OR (b) glxinfo reporting >=4.6.
+    can_gpu=0
+    if [ "${GALLIUM_DRIVER:-}" = "d3d12" ]; then can_gpu=1
+    elif command -v glxinfo >/dev/null 2>&1; then
+        if glxinfo 2>/dev/null | grep -q "OpenGL core profile version string:.* 4\.[6-9]\|OpenGL core profile version string:.* [5-9]\."; then
+            can_gpu=1
+        fi
+    fi
+
+    if [ "$can_gpu" -eq 1 ]; then
+        for tgt in run-tilesetgpu run-tilesetseam; do
+            echo
+            echo "--- MatterEngine3/viewer ($tgt) ---"
+            make -C MatterEngine3/viewer "$tgt" || RESULT[MatterEngine3]="FAIL ($tgt)"
+        done
+    else
+        echo
+        echo "--- MatterEngine3/viewer GPU tests SKIPPED (needs GL 4.6 + GALLIUM_DRIVER=d3d12) ---"
+    fi
 fi
 
 echo
