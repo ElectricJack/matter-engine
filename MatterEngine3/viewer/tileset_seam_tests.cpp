@@ -80,8 +80,8 @@ static std::vector<uint8_t> extract_rect_r16(const std::vector<uint16_t>& atlas,
 
 // Build the SettledTorus fixture used throughout this test.
 // texels_per_meter=32 → 256×256 atlas (quick to bake and read back).
-// Periodic base bumps (period 8 samples, divides kSamplesPerTile=64 evenly)
-// ensure non-trivial AO while keeping the geometry toroidally consistent.
+// Per-index pseudo-random heights (Wang-hash) ensure every cell is unique,
+// so the seam-invariance check is a genuine regression test for atlas-coord math.
 static tileset::SettledTorus make_fixture()
 {
     using namespace tileset;
@@ -95,13 +95,26 @@ static tileset::SettledTorus make_fixture()
     st.base.material        = 3;
     st.base.set             = true;
     st.base.heights.assign((size_t)st.base.n * st.base.n, 0.0f);
-    // Periodic ridge every 8 samples along both axes — toroidally consistent
-    // (period 8 divides kSamplesPerTile=64 evenly) and gives non-flat geometry
-    // for meaningful AO.
-    for (int k = 0; k < st.base.n; ++k)
-        for (int i = 0; i < st.base.n; ++i)
+    // Non-periodic deterministic pseudo-random heights — every cell gets a
+    // unique value so no two atlas positions are geometrically identical by
+    // construction.  This makes the seam-invariance loop a genuine regression
+    // test: if atlas-coord math maps the wrong texel → base-sample index, the
+    // extracted strip bytes differ and the REQUIRE fires.
+    //
+    // Formula: Wang-hash of the linearised index, mapped to [0, 0.05].
+    // Wang hash: uint32 → uint32, avalanche quality sufficient for this purpose.
+    for (int k = 0; k < st.base.n; ++k) {
+        for (int i = 0; i < st.base.n; ++i) {
+            uint32_t h = (uint32_t)(k * st.base.n + i);
+            h = (h ^ 61u) ^ (h >> 16u);
+            h *= 0x45d9f3bu;
+            h ^= h >> 15u;
+            h *= 0x45d9f3bu;
+            h ^= h >> 15u;
             st.base.heights[(size_t)k * st.base.n + i] =
-                0.05f * (float)((i % 8 == 0) || (k % 8 == 0));
+                0.05f * (float)(h & 0xFFFFu) / 65535.0f;
+        }
+    }
     st.report.pose_hash = 0x1234u;
     return st;
 }
