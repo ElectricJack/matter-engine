@@ -205,4 +205,4 @@ PASSED (0 failures)
 
 ### Commit SHA
 
-(filled in after commit)
+`ef281bc` — fix: variant fn lifetime on error paths + conservative sphere margin bound (review findings)
