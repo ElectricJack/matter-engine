@@ -54,7 +54,7 @@ else
     LDLIBS = ../../Libraries/raylib/src/libraylib.a
 endif
 
-.PHONY: clean run-partv2 run-script run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting run-flatten run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake
+.PHONY: clean run-partv2 run-script run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting run-flatten run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetgtex
 
 # Part Artifact v2 round-trip + resolved-hash + format-guard tests (headless, GL-free).
 # NEW impl ../src/part_asset_v2.cpp + consumed MatterSurfaceLib backend sources.
@@ -607,3 +607,13 @@ $(TILESETBAKE_TARGET): $(TILESETBAKE_CPP) $(TILESETBAKE_C) $(QJS_C) $(BOX3D_DIR)
 
 run-tilesetbake: $(TILESETBAKE_TARGET)
 	./$(TILESETBAKE_TARGET)
+
+# tileset .gtex format round-trip + cache-hit tests (headless, GL-free).
+TILESETGTEX_TARGET = tileset_gtex_tests
+TILESETGTEX_CPP    = tileset_gtex_tests.cpp ../src/tileset_gtex.cpp
+
+$(TILESETGTEX_TARGET): $(TILESETGTEX_CPP)
+	$(CC) $(TILESETGTEX_CPP) -o $(TILESETGTEX_TARGET) $(CFLAGS) -I../include -I../../Libraries/raylib/src
+
+run-tilesetgtex: $(TILESETGTEX_TARGET)
+	./$(TILESETGTEX_TARGET)
