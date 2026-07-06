@@ -521,9 +521,9 @@ $(BOX3D_DIR)/libbox3d.a:
 run-tilesetphysics: tileset_physics_tests
 	./tileset_physics_tests
 
-tileset_core_tests: tileset_core_tests.cpp ../src/tileset_layout.cpp
+tileset_core_tests: tileset_core_tests.cpp ../src/tileset_layout.cpp ../src/tileset_collider.cpp
 	g++ -std=c++17 -Wall -Wno-missing-braces -O2 -I../include \
-	    -o $@ tileset_core_tests.cpp ../src/tileset_layout.cpp
+	    -o $@ tileset_core_tests.cpp ../src/tileset_layout.cpp ../src/tileset_collider.cpp
 
 run-tilesetcore: tileset_core_tests
 	./tileset_core_tests
