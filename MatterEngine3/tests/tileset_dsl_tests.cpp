@@ -81,12 +81,77 @@ static void test_eval_deterministic(ScriptHost& host) {
     CHECK(a.spec.base.heights == b.spec.base.heights, "dsl: base samples identical across evals");
 }
 
+// C1 regression: params_json override must be folded into the resolved hash;
+// two eval_tileset calls with different params_json must produce different hashes.
+static void test_params_override_changes_hash(ScriptHost& host) {
+    // A tileset with no static params — class extends Tileset (not Part directly),
+    // so merge_params_canonical returns "{}" for the static-params step. The
+    // params_json override must still be canonicalized and included in the hash.
+    static const char* kSrc = R"JS(
+class MyFloor extends Tileset {
+  build(p) {
+    this.tile({ size: 2.0, texelsPerMeter: 128, seed: 1 });
+  }
+}
+)JS";
+    auto r_no_override   = host.eval_tileset(kSrc, "{}",              BakeOptions{});
+    auto r_with_override = host.eval_tileset(kSrc, "{\"variant\":1}", BakeOptions{});
+    CHECK(r_no_override.error.ok,   "dsl: params-override: no-override eval clean");
+    CHECK(r_with_override.error.ok, "dsl: params-override: with-override eval clean");
+    CHECK(r_no_override.resolved_hash != r_with_override.resolved_hash,
+          "dsl: params-override: different params_json → different resolved_hash (C1 fix)");
+}
+
+// M2: error-path tests for tile() argument validation.
+static void test_tile_validation_errors(ScriptHost& host) {
+    // tile({size:-1}) — negative size must error with a recognizable message.
+    auto r1 = host.eval_tileset(R"JS(
+class F extends Tileset {
+  build() { this.tile({ size: -1.0, texelsPerMeter: 128 }); }
+}
+)JS", "{}", BakeOptions{});
+    CHECK(!r1.error.ok, "dsl: tile({size:-1}) is an error");
+    CHECK(r1.error.message.find("size") != std::string::npos,
+          "dsl: tile({size:-1}) message mentions 'size'");
+
+    // tile() called twice — second call must error.
+    auto r2 = host.eval_tileset(R"JS(
+class F extends Tileset {
+  build() {
+    this.tile({ size: 2.0, texelsPerMeter: 128, seed: 1 });
+    this.tile({ size: 3.0, texelsPerMeter: 128, seed: 2 });
+  }
+}
+)JS", "{}", BakeOptions{});
+    CHECK(!r2.error.ok, "dsl: tile() called twice is an error");
+    CHECK(r2.error.message.find("twice") != std::string::npos ||
+          r2.error.message.find("tile") != std::string::npos,
+          "dsl: tile() called twice message is recognizable");
+
+    // tile({edgeStripWidth:0.05, cornerClearRadius:0.08}) —
+    // edgeStripWidth (0.05) must exceed cornerClearRadius (0.08): should error.
+    auto r3 = host.eval_tileset(R"JS(
+class F extends Tileset {
+  build() {
+    this.tile({ size: 2.0, texelsPerMeter: 128, seed: 1,
+                edgeStripWidth: 0.05, cornerClearRadius: 0.08 });
+  }
+}
+)JS", "{}", BakeOptions{});
+    CHECK(!r3.error.ok, "dsl: tile({edgeStripWidth:0.05, cornerClearRadius:0.08}) is an error");
+    CHECK(r3.error.message.find("edgeStrip") != std::string::npos ||
+          r3.error.message.find("cornerClear") != std::string::npos,
+          "dsl: edgeStripWidth<=cornerClearRadius message is recognizable");
+}
+
 int main() {
     printf("== tileset_dsl_tests ==\n");
     ScriptHost host;
     test_eval_records_tile_and_base(host);
     test_eval_errors(host);
     test_eval_deterministic(host);
+    test_params_override_changes_hash(host);
+    test_tile_validation_errors(host);
     if (g_failures == 0) printf("PASSED (0 failures)\n");
     else                 printf("FAILED (%d failures)\n", g_failures);
     return g_failures;

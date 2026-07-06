@@ -149,7 +149,8 @@ static JSValue j_ts_tile(JSContext* c, JSValueConst, int n, JSValueConst* a) {
     if (n > 2 && !JS_IsUndefined(a[2]) && !JS_ToFloat64(c, &v, a[2])) cfg.seed = (uint64_t)(double)v;
     if (n > 3 && !JS_IsUndefined(a[3]) && !JS_ToFloat64(c, &v, a[3])) cfg.edge_strip_width = (float)v;
     if (n > 4 && !JS_IsUndefined(a[4]) && !JS_ToFloat64(c, &v, a[4])) cfg.corner_clear_radius = (float)v;
-    if (cfg.size <= 0.0f || cfg.texels_per_meter <= 0) { ts->set_error("tile(): size and texelsPerMeter must be positive"); return JS_UNDEFINED; }
+    if (cfg.size <= 0.0f) { ts->set_error("tile: size must be positive"); return JS_UNDEFINED; }
+    if (cfg.texels_per_meter <= 0) { ts->set_error("tile: texelsPerMeter must be positive"); return JS_UNDEFINED; }
     if (cfg.edge_strip_width <= cfg.corner_clear_radius) { ts->set_error("tile(): edgeStripWidth must exceed cornerClearRadius"); return JS_UNDEFINED; }
     ts->spec.tile_called = true;
     return JS_UNDEFINED;

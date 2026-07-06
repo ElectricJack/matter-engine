@@ -31,6 +31,12 @@ extern "C" {
 
 namespace script_host {
 
+// Shared sentinel: the exact message merge_params_canonical sets when the source
+// has no class extending Part (the tileset case — Tileset extends Part indirectly).
+// Both merge_params_canonical's return sites and eval_tileset's comparison use this
+// constant so a rename stays consistent (I1 fix).
+static constexpr const char* kNoPartClassMsg = "no class extending Part found";
+
 // ---------------------------------------------------------------------------
 // SP-7 shared-lib module loading.
 //
@@ -293,7 +299,7 @@ std::string ScriptHost::merge_params_canonical(const std::string& source,
     last_merged_params_ = "{}";
     std::string className = find_part_class_name(source);
     if (className.empty()) {
-        err.ok = false; err.message = "no class extending Part found";
+        err.ok = false; err.message = kNoPartClassMsg;
         return last_merged_params_;
     }
 
@@ -321,7 +327,7 @@ std::string ScriptHost::merge_params_canonical(const std::string& source,
     JS_FreeValue(ctx, global);
     if (!JS_IsFunction(ctx, authored)) {
         JS_FreeValue(ctx, authored);
-        err.ok = false; err.message = "no class extending Part found";
+        err.ok = false; err.message = kNoPartClassMsg;
         JS_FreeContext(ctx); JS_FreeRuntime(rt); return last_merged_params_;
     }
 
@@ -677,7 +683,7 @@ BakeResult ScriptHost::bake_source(const std::string& source,
         // class (lexically declared) onto globalThis.__partClass.
         std::string className = find_part_class_name(source);
         if (className.empty()) {
-            r.error.ok = false; r.error.message = "no class extending Part found";
+            r.error.ok = false; r.error.message = kNoPartClassMsg;
             goto done;
         }
         std::string wrapped = source + "\n;globalThis.__partClass = " + className + ";\n";
@@ -697,7 +703,7 @@ BakeResult ScriptHost::bake_source(const std::string& source,
         JS_FreeValue(ctx, global);
         if (!JS_IsFunction(ctx, authored)) {
             JS_FreeValue(ctx, authored);
-            r.error.ok = false; r.error.message = "no class extending Part found";
+            r.error.ok = false; r.error.message = kNoPartClassMsg;
             goto done;
         }
         JSValue inst = JS_CallConstructor(ctx, authored, 0, nullptr);
@@ -1071,20 +1077,51 @@ TilesetEvalResult ScriptHost::eval_tileset(const std::string& source,
 
     // Merge static params + caller overrides into canonical JSON and compute the
     // resolved hash (same fold+hash path as bake_source / resolve_hash).
+    // `merged` is declared at this outer scope so it outlives the hash block and
+    // is available when forwarding params to build() below.
+    std::string merged;
     module_resolver::FoldResult fold;
     {
         BakeError merr;
         // Tileset classes extend Tileset (which in turn extends Part), so
         // find_part_class_name (which looks for `extends Part`) won't match.
         // merge_params_canonical falls back to "{}" and sets err.ok=false with
-        // "no class extending Part found". For tilesets, that is the correct
-        // canonical params (no static params declared). Accept the fallback and
-        // only fail-closed on a genuinely bad params_json parse.
-        std::string canon = merge_params_canonical(source, params_json, merr);
-        if (!merr.ok && merr.message != "no class extending Part found") {
+        // kNoPartClassMsg. For tilesets, that is the expected case (no static
+        // params). Accept the fallback and only fail-closed on a genuinely bad
+        // params_json parse.
+        merged = merge_params_canonical(source, params_json, merr);
+        if (!merr.ok && merr.message != kNoPartClassMsg) {
             r.error = merr; return r;
         }
-        // If the class was not found (tileset case), canon is "{}" — that is fine.
+        // If the Part class was not found (tileset case), merged is "{}".
+        // Still canonicalize any caller params_json override so that (a) the
+        // resolved hash changes when overrides change and (b) merged params are
+        // forwarded to build() correctly.
+        if (!merr.ok && merr.message == kNoPartClassMsg && !params_json.empty()
+                     && params_json != "{}") {
+            // Use a tiny QuickJS context to parse + sort-key-stringify params_json,
+            // matching the merge behavior in merge_params_canonical.
+            JSRuntime* prt = JS_NewRuntime();
+            JSContext* pctx = JS_NewContext(prt);
+            static const char* kSort =
+                "(function(o){let keys=Object.keys(o).sort();"
+                "let r={};for(let k of keys)r[k]=o[k];"
+                "return JSON.stringify(r);})";
+            JSValue sortFn  = JS_Eval(pctx, kSort, strlen(kSort), "<sort>", JS_EVAL_TYPE_GLOBAL);
+            JSValue pjv     = JS_ParseJSON(pctx, params_json.c_str(), params_json.size(), "<params>");
+            if (!JS_IsException(pjv) && !JS_IsException(sortFn)) {
+                JSValue sv = JS_Call(pctx, sortFn, JS_UNDEFINED, 1, &pjv);
+                if (!JS_IsException(sv)) {
+                    const char* s = JS_ToCString(pctx, sv);
+                    if (s) { merged = s; JS_FreeCString(pctx, s); }
+                }
+                JS_FreeValue(pctx, sv);
+            }
+            JS_FreeValue(pctx, pjv);
+            JS_FreeValue(pctx, sortFn);
+            JS_FreeContext(pctx);
+            JS_FreeRuntime(prt);
+        }
 
         const char* src_bytes = source.data();
         size_t      src_len   = source.size();
@@ -1100,10 +1137,14 @@ TilesetEvalResult ScriptHost::eval_tileset(const std::string& source,
         }
         r.resolved_hash = part_asset::compute_resolved_hash(
             src_bytes, src_len,
-            canon.data(), canon.size(),
+            merged.data(), merged.size(),
             child_hashes, child_count);
     }
-    const std::string merged = last_merged_params_;
+    // `merged` is the canonical params string computed above. Using it directly
+    // (not last_merged_params_) avoids the side-effect contamination bug: parallel
+    // bake_source/eval_tileset calls on the same host would otherwise overwrite
+    // each other's params, and explicit params_json overrides would be silently
+    // dropped for tilesets.
 
     ModuleStore store = store_from_fold(fold);
     const bool use_module = !store.sources.empty();
