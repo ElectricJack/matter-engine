@@ -135,6 +135,19 @@ tileset-gpu-tests: shaders shaders_gpu_link $(TILESET_GPU_TEST_OBJ)
 run-tilesetgpu: tileset-gpu-tests
 	./tileset_gpu_tests
 
+# tileset seam-invariance tests (Task 7). Same object set as tileset-gpu-tests
+# + tileset_seam_tests.cpp driver, minus main.o and gpu_cull_tests.o.
+L_TSET_SEAM_OBJ = $(L_DIR)/tileset_seam_tests.o
+$(L_TSET_SEAM_OBJ): tileset_seam_tests.cpp | $(L_DIR)
+	$(CC) -c $< -o $@ $(CXX_FLAGS_BUILD)
+
+TILESET_SEAM_TEST_OBJ = $(filter-out $(L_DIR)/main.o $(L_DIR)/gpu_cull_tests.o,$(L_ALL_OBJ)) $(L_TSET_SEAM_OBJ)
+tileset-seam-tests: shaders shaders_gpu_link $(TILESET_SEAM_TEST_OBJ)
+	$(CC) $(TILESET_SEAM_TEST_OBJ) -o tileset_seam_tests $(CFLAGS) $(LDFLAGS) $(LDLIBS)
+
+run-tilesetseam: tileset-seam-tests
+	./tileset_seam_tests
+
 -include $(L_ALL_OBJ:.o=.d)
 
 # Shader path resolves relative to the binary; symlink MSL's shaders/ dir.
@@ -197,6 +210,6 @@ win-shaders-gpu:
 	@[ -d shaders_gpu ] || (echo "ERROR: shaders_gpu/ directory missing" && exit 1)
 
 clean:
-	rm -rf viewer viewer.exe gpu_tests tileset_gpu_tests shaders build
+	rm -rf viewer viewer.exe gpu_tests tileset_gpu_tests tileset_seam_tests shaders build
 
-.PHONY: viewer windows gpu-tests tileset-gpu-tests run-tilesetgpu clean shaders shaders_gpu_link win-shaders win-shaders-gpu regen-processed-shader
+.PHONY: viewer windows gpu-tests tileset-gpu-tests run-tilesetgpu tileset-seam-tests run-tilesetseam clean shaders shaders_gpu_link win-shaders win-shaders-gpu regen-processed-shader
