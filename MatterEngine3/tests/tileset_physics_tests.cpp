@@ -221,6 +221,116 @@ static void test_sync_group_instances_match() {
           "sync: instance rotations bit-identical after finalize snap");
 }
 
+static tileset::ColliderFit twig_fit() {
+    tileset::ColliderFit f;
+    f.type = tileset::ColliderType::Capsule;
+    f.axis[0][0] = 1.0f; f.axis[0][1] = 0.0f; f.axis[0][2] = 0.0f;  // segment dir
+    f.radius = 0.02f;
+    f.seg_half = 0.08f;
+    f.volume = 3.14159265f * 0.02f * 0.02f * 0.16f
+             + (4.0f / 3.0f) * 3.14159265f * 0.02f * 0.02f * 0.02f;
+    return f;
+}
+
+// Toroidal min-image distance between two points on the [0,T)^2 ground plane.
+static float torus_dist(const tileset::Pose& a, const tileset::Pose& b, float T) {
+    float dx = std::fabs(a.px - b.px); if (dx > T * 0.5f) dx = T - dx;
+    float dz = std::fabs(a.pz - b.pz); if (dz > T * 0.5f) dz = T - dz;
+    float dy = a.py - b.py;
+    return std::sqrt(dx * dx + dy * dy + dz * dz);
+}
+
+// End-to-end: two layers (boxes then capsules) + a sync group, finalize,
+// and the invariants Phase 2 depends on.
+static void test_layered_end_to_end() {
+    const float T = 8.0f;
+
+    auto run = [&](std::vector<tileset::Pose>* out) -> uint64_t {
+        tileset::HeightField hf = flat_field(T, 0.25f);
+        tileset::SettleParams sp;
+        tileset::SettleWorld sw(T, hf, sp);
+        int g = sw.add_sync_group({ { 0, 0, 0, 0, 0, 0, 1 },
+                                    { 4, 0, 0, 0, 0, 0, 1 } });
+
+        tileset::ColliderFit box = small_box_fit();
+        tileset::ColliderFit twig = twig_fit();
+
+        // Layer 1: 40 free boxes + 1 canonical box instanced twice.
+        std::vector<tileset::BodySpawn> layer1;
+        uint64_t s = 424242;
+        for (int i = 0; i < 40; ++i) {
+            tileset::BodySpawn b;
+            b.collider = &box;
+            b.start = { phys_unit(s) * T, 0.3f + 0.5f * phys_unit(s), phys_unit(s) * T,
+                        0, 0, 0, 1 };
+            layer1.push_back(b);
+        }
+        for (int k = 0; k < 2; ++k) {
+            tileset::BodySpawn b;
+            b.collider = &box;
+            b.start = { 1.0f + 4.0f * k, 0.2f, 2.0f, 0, 0, 0, 1 };
+            b.sync_group = g;
+            b.instance = k;
+            layer1.push_back(b);
+        }
+        tileset::LayerResult r1 = sw.settle_layer(layer1);
+        CHECK(r1.converged, "e2e: layer 1 (boxes) converges");
+
+        // Layer 2: 20 capsules dropped onto the settled boxes.
+        std::vector<tileset::BodySpawn> layer2;
+        for (int i = 0; i < 20; ++i) {
+            tileset::BodySpawn b;
+            b.collider = &twig;
+            b.density = 500.0f;
+            b.start = { phys_unit(s) * T, 0.4f + 0.4f * phys_unit(s), phys_unit(s) * T,
+                        0, 0, 0, 1 };
+            layer2.push_back(b);
+        }
+        tileset::LayerResult r2 = sw.settle_layer(layer2);
+        CHECK(r2.converged, "e2e: layer 2 (capsules) converges");
+
+        sw.finalize();
+        if (out) *out = sw.poses();
+        return sw.pose_hash();
+    };
+
+    std::vector<tileset::Pose> poses;
+    uint64_t h1 = run(&poses);
+
+    // 62 poses in spawn order: 40 boxes, 2 sync instances, 20 capsules.
+    CHECK(poses.size() == 62, "e2e: one pose per spawned body, in order");
+
+    bool in_range = true, grounded = true;
+    for (const tileset::Pose& p : poses) {
+        if (p.px < 0.0f || p.px >= T || p.pz < 0.0f || p.pz >= T) in_range = false;
+        if (p.py < 0.015f || p.py > 0.5f) grounded = false;  // min radius 0.02
+    }
+    CHECK(in_range, "e2e: every body inside the torus domain");
+    CHECK(grounded, "e2e: no body tunneled below ground or floated away");
+
+    // No guaranteed interpenetration among the boxes: two 0.05-half boxes
+    // whose centers are closer than 0.1 - slop MUST overlap (inscribed
+    // spheres). Slop budget: B3_LINEAR_SLOP 0.005 sim units / sim_scale 4.
+    bool separated = true;
+    for (int i = 0; i < 42 && separated; ++i)
+        for (int j = i + 1; j < 42; ++j)
+            if (torus_dist(poses[i], poses[j], T) < 0.095f) { separated = false; break; }
+    CHECK(separated, "e2e: no pair of boxes is inside the guaranteed-overlap radius");
+
+    // Sync invariant survives the full pipeline.
+    const tileset::Pose& a = poses[40];
+    const tileset::Pose& b = poses[41];
+    CHECK(std::fabs((b.px - 4.0f) - a.px) < 1e-4f &&
+          std::fabs(b.py - a.py) < 1e-4f &&
+          std::fabs(b.pz - a.pz) < 1e-4f &&
+          a.qw == b.qw && a.qx == b.qx && a.qy == b.qy && a.qz == b.qz,
+          "e2e: sync instances still identical modulo occurrence translation");
+
+    // Whole-pipeline determinism.
+    uint64_t h2 = run(nullptr);
+    CHECK(h1 == h2, "e2e: full two-layer pipeline is deterministic");
+}
+
 // Same scenario twice -> identical pose hashes.
 static void test_sync_determinism() {
     auto run = []() -> uint64_t {
@@ -263,6 +373,7 @@ int main() {
     test_settle_determinism();
     test_sync_group_instances_match();
     test_sync_determinism();
+    test_layered_end_to_end();
     printf("%s (%d failures)\n", g_failures ? "FAILED" : "PASSED", g_failures);
     return g_failures ? 1 : 0;
 }
