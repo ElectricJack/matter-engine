@@ -1,5 +1,6 @@
 #include "../include/dsl_state.h"
 #include "../include/dsl_bindings.h"
+#include "../include/tileset_spec.h"
 #include <vector>
 extern "C" {
 #include "quickjs.h"
@@ -129,6 +130,78 @@ static JSValue j_random(JSContext* c, JSValueConst, int, JSValueConst*) {
     return JS_NewFloat64(c, d);
 }
 
+// ---------------------------------------------------------------------------
+// Tileset bindings (__dsl_ts_*)
+// ---------------------------------------------------------------------------
+static tileset::TilesetState* ts_of(JSContext* c) {
+    dsl::DslState* s = state_of(c);
+    return s ? s->tileset() : nullptr;
+}
+
+static JSValue j_ts_tile(JSContext* c, JSValueConst, int n, JSValueConst* a) {
+    tileset::TilesetState* ts = ts_of(c);
+    if (!ts) { state_of(c)->set_error("tileset verb outside Tileset root"); return JS_UNDEFINED; }
+    if (ts->spec.tile_called) { ts->set_error("tile() called twice"); return JS_UNDEFINED; }
+    tileset::TileConfig& cfg = ts->spec.cfg;
+    double v;
+    if (n > 0 && !JS_IsUndefined(a[0]) && !JS_ToFloat64(c, &v, a[0])) cfg.size = (float)v;
+    if (n > 1 && !JS_IsUndefined(a[1]) && !JS_ToFloat64(c, &v, a[1])) cfg.texels_per_meter = (int)v;
+    if (n > 2 && !JS_IsUndefined(a[2]) && !JS_ToFloat64(c, &v, a[2])) cfg.seed = (uint64_t)(double)v;
+    if (n > 3 && !JS_IsUndefined(a[3]) && !JS_ToFloat64(c, &v, a[3])) cfg.edge_strip_width = (float)v;
+    if (n > 4 && !JS_IsUndefined(a[4]) && !JS_ToFloat64(c, &v, a[4])) cfg.corner_clear_radius = (float)v;
+    if (cfg.size <= 0.0f || cfg.texels_per_meter <= 0) { ts->set_error("tile(): size and texelsPerMeter must be positive"); return JS_UNDEFINED; }
+    if (cfg.edge_strip_width <= cfg.corner_clear_radius) { ts->set_error("tile(): edgeStripWidth must exceed cornerClearRadius"); return JS_UNDEFINED; }
+    ts->spec.tile_called = true;
+    return JS_UNDEFINED;
+}
+
+static JSValue j_ts_base(JSContext* c, JSValueConst, int n, JSValueConst* a) {
+    tileset::TilesetState* ts = ts_of(c);
+    if (!ts) { state_of(c)->set_error("tileset verb outside Tileset root"); return JS_UNDEFINED; }
+    if (!ts->spec.tile_called) { ts->set_error("base() before tile()"); return JS_UNDEFINED; }
+    if (n < 2 || !JS_IsFunction(c, a[0])) { ts->set_error("base(fn, material): fn required"); return JS_UNDEFINED; }
+    uint32_t mat = 0; JS_ToUint32(c, &mat, a[1]);
+
+    tileset::BaseField& b = ts->spec.base;
+    b.n = tileset::BaseField::kSamplesPerTile;
+    b.cell = ts->spec.cfg.size / (float)b.n;
+    b.material = mat;
+    b.heights.assign((size_t)b.n * b.n, 0.0f);
+    for (int z = 0; z < b.n; ++z) {
+        for (int x = 0; x < b.n; ++x) {
+            JSValue args[2] = { JS_NewFloat64(c, x * b.cell), JS_NewFloat64(c, z * b.cell) };
+            JSValue rv = JS_Call(c, a[0], JS_UNDEFINED, 2, args);
+            JS_FreeValue(c, args[0]); JS_FreeValue(c, args[1]);
+            if (JS_IsException(rv)) { ts->set_error("base(): heightfield fn threw"); return JS_EXCEPTION; }
+            double h = 0.0; JS_ToFloat64(c, &h, rv); JS_FreeValue(c, rv);
+            b.heights[(size_t)z * b.n + x] = (float)h;
+        }
+    }
+    b.set = true;
+    return JS_UNDEFINED;
+}
+
+static JSValue j_ts_layer(JSContext* c, JSValueConst, int, JSValueConst*) {
+    tileset::TilesetState* ts = ts_of(c);
+    if (!ts) { state_of(c)->set_error("tileset verb outside Tileset root"); return JS_UNDEFINED; }
+    ts->set_error("layer(): not implemented");
+    return JS_UNDEFINED;
+}
+
+static JSValue j_ts_dropChild(JSContext* c, JSValueConst, int, JSValueConst*) {
+    tileset::TilesetState* ts = ts_of(c);
+    if (!ts) { state_of(c)->set_error("tileset verb outside Tileset root"); return JS_UNDEFINED; }
+    ts->set_error("dropChild(): not implemented");
+    return JS_UNDEFINED;
+}
+
+static JSValue j_ts_variant(JSContext* c, JSValueConst, int, JSValueConst*) {
+    tileset::TilesetState* ts = ts_of(c);
+    if (!ts) { state_of(c)->set_error("tileset verb outside Tileset root"); return JS_UNDEFINED; }
+    ts->set_error("variant(): not implemented");
+    return JS_UNDEFINED;
+}
+
 void install_bindings(JSContext* ctx) {
     JSValue g = JS_GetGlobalObject(ctx);
     auto bind=[&](const char* n, JSCFunction* f, int argc){ JS_SetPropertyStr(ctx,g,n,JS_NewCFunction(ctx,f,n,argc)); };
@@ -150,6 +223,10 @@ void install_bindings(JSContext* ctx) {
     bind("__dsl_beginContour",j_beginContour,0); bind("__dsl_endContour",j_endContour,0);
     bind("__dsl_joinType",j_joinType,1); bind("__dsl_extrude",j_extrude,1);
     bind("__dsl_position",j_position,0);
+    // Tileset verb bindings.
+    bind("__dsl_ts_tile",j_ts_tile,5); bind("__dsl_ts_base",j_ts_base,2);
+    bind("__dsl_ts_layer",j_ts_layer,2); bind("__dsl_ts_dropChild",j_ts_dropChild,2);
+    bind("__dsl_ts_variant",j_ts_variant,1);
     // Override Math.random with the seeded draw so authored parts are reproducible.
     JSValue math = JS_GetPropertyStr(ctx, g, "Math");
     if (JS_IsObject(math)) {

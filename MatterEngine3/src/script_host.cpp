@@ -3,6 +3,7 @@ extern "C" {
 #include "quickjs.h"
 }
 #include "part_base.js.h"
+#include "tileset_base.js.h"
 #include "part_asset_v2.h"   // SP-1 v2 helper (compute_resolved_hash, save_v2)
 #include "triangle_emit.hpp" // direct-triangle (mesh) session buffer
 #include "../include/dsl_state.h"
@@ -208,6 +209,14 @@ static uint64_t derive_seed(const std::string& merged_json) {
 static std::string find_part_class_name(const std::string& source) {
     std::smatch m;
     std::regex re("class\\s+([A-Za-z_$][A-Za-z0-9_$]*)\\s+extends\\s+Part\\b");
+    if (std::regex_search(source, m, re)) return m[1].str();
+    return std::string();
+}
+
+// Extract the authored class name from `class <Name> extends Tileset`.
+static std::string find_tileset_class_name(const std::string& source) {
+    std::smatch m;
+    std::regex re("class\\s+([A-Za-z_$][A-Za-z0-9_$]*)\\s+extends\\s+Tileset\\b");
     if (std::regex_search(source, m, re)) return m[1].str();
     return std::string();
 }
@@ -1039,6 +1048,200 @@ done:
         r.error.ok = false;
         r.error.message = buf;
         r.written_path.clear();
+        return r;
+    }
+}
+
+// Evaluate a Tileset root: fresh isolated context, records DSL verbs into a
+// TilesetSpec via dsl::DslState + tileset::TilesetState. No geometry artifact
+// is written. Mirrors bake_source step-for-step (params canonicalization,
+// module fold, hash, context creation, child-hash table, RNG seed) with the
+// differences described in the brief (enable_tileset, kTilesetBaseJS injection,
+// class extraction via `extends Tileset`, no mesher, no .part output).
+TilesetEvalResult ScriptHost::eval_tileset(const std::string& source,
+                                           const std::string& params_json,
+                                           const BakeOptions& opts,
+                                           const uint64_t* child_hashes,
+                                           size_t child_count,
+                                           const std::string* child_modules,
+                                           const std::string* child_params) {
+    TilesetEvalResult r;
+
+    try {
+
+    // Merge static params + caller overrides into canonical JSON and compute the
+    // resolved hash (same fold+hash path as bake_source / resolve_hash).
+    module_resolver::FoldResult fold;
+    {
+        BakeError merr;
+        // Tileset classes extend Tileset (which in turn extends Part), so
+        // find_part_class_name (which looks for `extends Part`) won't match.
+        // merge_params_canonical falls back to "{}" and sets err.ok=false with
+        // "no class extending Part found". For tilesets, that is the correct
+        // canonical params (no static params declared). Accept the fallback and
+        // only fail-closed on a genuinely bad params_json parse.
+        std::string canon = merge_params_canonical(source, params_json, merr);
+        if (!merr.ok && merr.message != "no class extending Part found") {
+            r.error = merr; return r;
+        }
+        // If the class was not found (tileset case), canon is "{}" — that is fine.
+
+        const char* src_bytes = source.data();
+        size_t      src_len   = source.size();
+        if (!shared_lib_root_.empty()) {
+            std::string ferr;
+            if (!module_resolver::fold_sources(source, shared_lib_root_, fold, ferr)) {
+                r.error.ok = false;
+                r.error.message = "module resolution failed: " + ferr;
+                return r;
+            }
+            src_bytes = fold.folded.data();
+            src_len   = fold.folded.size();
+        }
+        r.resolved_hash = part_asset::compute_resolved_hash(
+            src_bytes, src_len,
+            canon.data(), canon.size(),
+            child_hashes, child_count);
+    }
+    const std::string merged = last_merged_params_;
+
+    ModuleStore store = store_from_fold(fold);
+    const bool use_module = !store.sources.empty();
+
+    JSRuntime* rt = JS_NewRuntime();
+    if (use_module) JS_SetModuleLoaderFunc(rt, sh_module_normalize, sh_module_loader, &store);
+
+    InterruptCtx ic;
+    ic.bounded = opts.time_budget_ms > 0;
+    ic.deadline = std::chrono::steady_clock::now() +
+                  std::chrono::milliseconds(opts.time_budget_ms);
+    JS_SetInterruptHandler(rt, interrupt_cb, &ic);
+
+    JSContext* ctx = new_bake_context(rt, /*want_modules*/ use_module);
+
+    dsl::DslState state;
+    // Enable tileset mode: allocates TilesetState and attaches it to DslState.
+    state.enable_tileset();
+    // Default master seed from merged params; an explicit tile({seed}) overrides it.
+    state.tileset()->spec.cfg.seed = derive_seed(merged);
+    state.set_rng(derive_seed(merged));
+
+    // Install child-hash placement table (same as bake_source).
+    {
+        std::map<std::string, uint64_t> name2hash;
+        if (child_modules && child_hashes)
+            for (size_t i = 0; i < child_count; ++i) {
+                name2hash[child_modules[i]] = child_hashes[i];
+                if (child_params) {
+                    std::string key = child_modules[i];
+                    key.push_back('\x1f');
+                    key += child_params[i];
+                    name2hash[key] = child_hashes[i];
+                }
+            }
+        state.set_child_hashes(std::move(name2hash));
+    }
+    JS_SetContextOpaque(ctx, &state);
+
+    {
+    // Inject Part base, then Tileset base (Tileset extends Part), then DSL bindings.
+    JSValue base = JS_Eval(ctx, kPartBaseJS, strlen(kPartBaseJS), "<part-base>",
+                           JS_EVAL_TYPE_GLOBAL);
+    if (JS_IsException(base)) { r.error = harvest_exception(ctx); JS_FreeValue(ctx, base); goto ts_done; }
+    JS_FreeValue(ctx, base);
+
+    {
+    JSValue tsbase = JS_Eval(ctx, kTilesetBaseJS, strlen(kTilesetBaseJS), "<tileset-base>",
+                             JS_EVAL_TYPE_GLOBAL);
+    if (JS_IsException(tsbase)) { r.error = harvest_exception(ctx); JS_FreeValue(ctx, tsbase); goto ts_done; }
+    JS_FreeValue(ctx, tsbase);
+    }
+
+    dsl::install_bindings(ctx);
+
+    {
+        std::string className = find_tileset_class_name(source);
+        if (className.empty()) {
+            r.error.ok = false; r.error.message = "no class extending Tileset found";
+            goto ts_done;
+        }
+        std::string wrapped = source + "\n;globalThis.__partClass = " + className + ";\n";
+        if (use_module) {
+            bool threw = false;
+            JSValue v = eval_part_as_module(ctx, rt, wrapped, &threw);
+            if (threw) { r.error = harvest_exception(ctx); JS_FreeValue(ctx, v); goto ts_done; }
+            JS_FreeValue(ctx, v);
+        } else {
+            JSValue v = JS_Eval(ctx, wrapped.c_str(), wrapped.size(), "<tileset>", JS_EVAL_TYPE_GLOBAL);
+            if (JS_IsException(v)) { r.error = harvest_exception(ctx); JS_FreeValue(ctx, v); goto ts_done; }
+            JS_FreeValue(ctx, v);
+        }
+
+        JSValue global = JS_GetGlobalObject(ctx);
+        JSValue authored = JS_GetPropertyStr(ctx, global, "__partClass");
+        JS_FreeValue(ctx, global);
+        if (!JS_IsFunction(ctx, authored)) {
+            JS_FreeValue(ctx, authored);
+            r.error.ok = false; r.error.message = "no class extending Tileset found";
+            goto ts_done;
+        }
+        JSValue inst = JS_CallConstructor(ctx, authored, 0, nullptr);
+        JS_FreeValue(ctx, authored);
+        if (JS_IsException(inst)) { r.error = harvest_exception(ctx); JS_FreeValue(ctx, inst); goto ts_done; }
+        JSValue paramsObj = JS_ParseJSON(ctx, merged.c_str(), merged.size(), "<merged>");
+        if (JS_IsException(paramsObj)) { JS_FreeValue(ctx, paramsObj); paramsObj = JS_NewObject(ctx); }
+        JSAtom buildAtom = JS_NewAtom(ctx, "build");
+        JSValue bret = JS_Invoke(ctx, inst, buildAtom, 1, &paramsObj);
+        JS_FreeAtom(ctx, buildAtom);
+        if (JS_IsException(bret)) {
+            r.error = harvest_exception(ctx);
+            if (ic.bounded && std::chrono::steady_clock::now() >= ic.deadline) {
+                r.error.ok = false;
+                r.error.message = "time budget exceeded (interrupt)";
+            }
+        }
+        JS_FreeValue(ctx, bret);
+        JS_FreeValue(ctx, paramsObj);
+        JS_FreeValue(ctx, inst);
+    }
+    }
+
+    // Collect errors from DslState (Part-verb misuse) and TilesetState (tileset-verb
+    // misuse) BEFORE the tile()-called check, so a verb-ordering error surfaces with
+    // its own message rather than being masked by the "never called tile()" fallback.
+    if (r.error.ok && state.has_error()) {
+        r.error.ok = false;
+        r.error.message = state.error();
+    }
+    if (r.error.ok && state.tileset()->has_error) {
+        r.error.ok = false;
+        r.error.message = state.tileset()->error;
+    }
+
+    // Post-build check: tile() must have been called (only if no earlier error).
+    if (r.error.ok && !state.tileset()->spec.tile_called) {
+        r.error.ok = false;
+        r.error.message = "tileset build() never called tile()";
+    }
+
+    // Move spec into result (no mesher, no .part write).
+    if (r.error.ok) {
+        r.spec = std::move(state.tileset()->spec);
+    }
+
+ts_done:
+    JS_FreeContext(ctx);
+    JS_FreeRuntime(rt);
+    return r;
+
+    } catch (const std::bad_alloc& e) {
+        char buf[192];
+        std::snprintf(buf, sizeof(buf),
+                      "OOM in script_host::eval_tileset "
+                      "(root=%016llx): %s",
+                      (unsigned long long)r.resolved_hash, e.what());
+        r.error.ok = false;
+        r.error.message = buf;
         return r;
     }
 }

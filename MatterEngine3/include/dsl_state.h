@@ -1,6 +1,7 @@
 #pragma once
 #include "raylib.h"   // Vector3, Matrix, Vector4
 #include "dsl_rng.h"
+#include "tileset_spec.h"
 #include <cstdint>
 #include <map>
 #include <memory>
@@ -238,7 +239,15 @@ public:
     const std::string& error() const { return error_; }
     void set_error(const std::string& m) { if (!has_error_) { has_error_ = true; error_ = m; } }
 
+    // Tileset mode: non-null only when evaluating a Tileset root.
+    tileset::TilesetState* tileset() { return tileset_.get(); }
+    void enable_tileset() { tileset_ = std::make_unique<tileset::TilesetState>(); }
+    // Scope bookkeeping for variant(): current sizes of the recorded streams.
+    size_t op_count() const { return buffer_.ops.size(); }
+    size_t child_count_ts() const { return children_.size(); }
+
 private:
+    std::unique_ptr<tileset::TilesetState> tileset_;
     std::vector<Matrix> stack_;   // never empty (seeded with identity)
     uint32_t material_ = 0;
     Vector4  tint_ = Vector4{1,1,1,0};  // G4 tint cursor; (1,1,1,0) = neutral

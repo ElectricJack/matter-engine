@@ -54,7 +54,7 @@ else
     LDLIBS = ../../Libraries/raylib/src/libraylib.a
 endif
 
-.PHONY: clean run-partv2 run-script run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting run-flatten run-grasslod run-stressforest run-tilesetphysics run-tilesetcore
+.PHONY: clean run-partv2 run-script run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting run-flatten run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetdsl
 
 # Part Artifact v2 round-trip + resolved-hash + format-guard tests (headless, GL-free).
 # NEW impl ../src/part_asset_v2.cpp + consumed MatterSurfaceLib backend sources.
@@ -528,3 +528,18 @@ tileset_core_tests: tileset_core_tests.cpp ../src/tileset_layout.cpp ../src/tile
 
 run-tilesetcore: tileset_core_tests
 	./tileset_core_tests
+
+# Tileset DSL root: TilesetSpec recording, tile/base verbs, eval_tileset.
+# Mirrors run-script's recipe: same QuickJS objects + full script-host source set.
+TILESETDSL_TARGET = tileset_dsl_tests
+TILESETDSL_CPP = tileset_dsl_tests.cpp $(filter-out script_host_tests.cpp, $(SCRIPT_CPP))
+
+$(TILESETDSL_TARGET): tileset_dsl_tests.cpp $(SCRIPT_CPP) $(SCRIPT_C) $(QJS_C)
+	gcc -c $(QJS_C) -O2 -DCONFIG_VERSION='"0.10.0"' $(QJS_INC)
+	gcc -c $(SCRIPT_C) -O2 -DPLATFORM_DESKTOP $(INCLUDE_PATHS)
+	$(CC) $(TILESETDSL_CPP) $(QJS_OBJ) $(SCRIPT_C_OBJ) -o $(TILESETDSL_TARGET) \
+	      $(CFLAGS) $(INCLUDE_PATHS) $(QJS_INC) $(LDFLAGS) $(LDLIBS)
+	rm -f $(QJS_OBJ) $(SCRIPT_C_OBJ)
+
+run-tilesetdsl: $(TILESETDSL_TARGET)
+	./$(TILESETDSL_TARGET)

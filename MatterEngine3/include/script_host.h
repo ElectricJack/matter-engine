@@ -3,6 +3,7 @@
 #include <string>
 #include <vector>
 #include "dsl_state.h"
+#include "tileset_spec.h"
 
 namespace script_host {
 
@@ -21,6 +22,12 @@ struct BakeResult {
     BakeError error;              // error.ok == false => nothing written
     uint64_t  resolved_hash = 0;  // valid only when error.ok
     std::string written_path;     // cache_path of the .part (empty on error)
+};
+
+struct TilesetEvalResult {
+    BakeError error;
+    tileset::TilesetSpec spec;
+    uint64_t resolved_hash = 0;
 };
 
 // Discovered child instance from a part's static `requires(...)` (eval'd WITHOUT baking).
@@ -54,6 +61,16 @@ public:
                           const std::string& params_json,
                           const uint64_t* child_hashes = nullptr,
                           size_t child_count = 0);
+
+    // Evaluate a Tileset root: fresh isolated context, records verbs into a TilesetSpec.
+    // No geometry artifact is written. Fail-closed like bake_source.
+    TilesetEvalResult eval_tileset(const std::string& source,
+                                   const std::string& params_json,
+                                   const BakeOptions& opts,
+                                   const uint64_t* child_hashes = nullptr,
+                                   size_t child_count = 0,
+                                   const std::string* child_modules = nullptr,
+                                   const std::string* child_params = nullptr);
 
     // Static discovery of the part's child instances WITHOUT baking. Evals the
     // class top-level in a fresh isolated context, reads its `static requires`
