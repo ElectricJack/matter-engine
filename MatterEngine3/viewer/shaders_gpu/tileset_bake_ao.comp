@@ -1,0 +1,94 @@
+#version 460 core
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(r8, binding = 4) uniform writeonly image2D aoImg;
+
+uniform int   atlasW;
+uniform int   atlasH;
+uniform int   texelsPerMeter;
+uniform float rayY;
+uniform float heightMin;
+uniform float heightMax;
+uniform float maxRayDist;    // = edge_strip_width from TileConfig
+uniform int   aoSamples;     // 64
+uniform uint  seed;          // derived from cfg.seed
+
+// aoEnabled: required by bvh_tlas_common.glsl intersectScene.
+// We don't need baked-AO data in the primary hit, disable it.
+uniform int aoEnabled;
+
+// Material table uniform (required by getMaterialProperties called inside
+// bvh_tlas_common.glsl's intersectScene for the primary hit decode).
+#include "materials.glsl"
+
+// BVH sampler uniforms + intersectScene + shadowQuery.
+#include "bvh_tlas_common.glsl"
+
+// Material SSBO: 12 floats per entry; layout mirrors tileset_bake_primary.comp.
+layout(std430, binding = 10) readonly buffer MaterialBuf { float mats[]; };
+
+// SplitMix32-style bit hash (32-bit output).
+uint splitmix32(uint x) {
+    x += 0x9E3779B9u;
+    x = (x ^ (x >> 16)) * 0x85EBCA6Bu;
+    x = (x ^ (x >> 13)) * 0xC2B2AE35u;
+    return x ^ (x >> 16);
+}
+
+// Uniform [0,1) from a 32-bit hash.
+float u01(uint h) { return float(h & 0x00FFFFFFu) / 16777216.0; }
+
+// Cosine-weighted hemisphere direction in the local frame (N = +Y).
+vec3 cosine_hemi(vec2 uv) {
+    float r = sqrt(uv.x);
+    float phi = 6.28318530718 * uv.y;
+    float x = r * cos(phi);
+    float z = r * sin(phi);
+    float y = sqrt(max(0.0, 1.0 - uv.x));
+    return vec3(x, y, z);
+}
+
+// Build an orthonormal frame with N as +Y.
+mat3 make_basis(vec3 n) {
+    vec3 t = abs(n.y) < 0.999 ? vec3(0, 1, 0) : vec3(1, 0, 0);
+    vec3 b = normalize(cross(t, n));
+    vec3 tt = cross(n, b);
+    return mat3(b, n, tt);
+}
+
+void main() {
+    ivec2 xy = ivec2(gl_GlobalInvocationID.xy);
+    if (xy.x >= atlasW || xy.y >= atlasH) return;
+
+    // Re-cast the primary ortho ray to fetch position + normal.
+    float wx = (float(xy.x) + 0.5) / float(texelsPerMeter);
+    float wz = (float(xy.y) + 0.5) / float(texelsPerMeter);
+    vec3 O = vec3(wx, rayY, wz);
+    vec3 D = vec3(0.0, -1.0, 0.0);
+    float maxT = rayY - (heightMin - 1.0);
+    HitResult hit = intersectScene(O, D, maxT);
+    if (!hit.hit) {
+        imageStore(aoImg, xy, vec4(1.0));  // no geometry = full sky, AO=1
+        return;
+    }
+
+    vec3 N = normalize(hit.normal);
+    if (N.y < 0.0) N = -N;
+    mat3 F = make_basis(N);
+    vec3 P = hit.position + N * 1e-3;   // bias off surface to avoid self-intersection
+
+    int occluded = 0;
+    for (int i = 0; i < aoSamples; ++i) {
+        // Hash depends on texel XY + sample index + user seed -> deterministic.
+        uint h1 = splitmix32(uint(xy.x) * 73856093u ^ uint(xy.y) * 19349663u
+                             ^ uint(i) * 83492791u ^ seed);
+        uint h2 = splitmix32(h1);
+        vec2 uv = vec2(u01(h1), u01(h2));
+        vec3 local_dir = cosine_hemi(uv);
+        vec3 dir = F * local_dir;
+        // Use shadowQuery: early-exit BVH traversal, no material decode needed.
+        if (shadowQuery(P, dir, maxRayDist)) ++occluded;
+    }
+    float ao = 1.0 - float(occluded) / float(aoSamples);
+    imageStore(aoImg, xy, vec4(ao));
+}

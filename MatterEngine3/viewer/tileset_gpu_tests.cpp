@@ -7,6 +7,7 @@
 #include "gl46.h"
 #include "tileset_gl_ctx.h"
 #include "tileset_bake_primary.h"
+#include "tileset_bake_ao.h"
 #include "tileset_torus_bvh.h"
 #include "tileset_bake.h"
 #include "tileset_spec.h"
@@ -227,6 +228,94 @@ static void test_primary_bake_single_pebble() {
     glDeleteProgram(prog);
 }
 
+// -----------------------------------------------------------------------------
+// Task 5 test — raised 0.4m cube in the centre of the torus. AO texels under
+// the cube edge should be measurably darker than texels in open ground far from
+// the cube. Also verifies byte-identical output across two bake calls with the
+// same inputs (determinism guarantee).
+// -----------------------------------------------------------------------------
+static void test_ao_bake_edge_darkens() {
+    using namespace tileset;
+
+    SettledTorus st;
+    st.cfg.size             = 2.0f;
+    st.cfg.texels_per_meter = 32;
+    st.cfg.seed             = 0xC0DEu;
+    st.cfg.edge_strip_width = 0.5f;   // large so the 0.4m box is comfortably in range
+    st.base.n        = BaseField::kSamplesPerTile;
+    st.base.cell     = st.cfg.size / (float)st.base.n;
+    st.base.material = 3;
+    st.base.set      = true;
+    st.base.heights.assign((size_t)st.base.n * st.base.n, 0.0f);
+
+    BLASManager blas;
+    TLASManager tlas(16);
+    std::string err;
+    REQUIRE(assemble_torus_bvh(st, BakeInputs{}, blas, tlas, err));
+
+    // Add a big raised box in the centre.
+    std::vector<Tri> b; std::vector<TriEx> bex;
+    float bx = 4.0f, bz = 4.0f, y0 = 0.0f, y1 = 0.4f;
+    float e = 0.4f;
+    float lo = -e, hi = e;
+    float3 c[8] = {
+        {bx+lo,y0,bz+lo},{bx+hi,y0,bz+lo},{bx+hi,y1,bz+lo},{bx+lo,y1,bz+lo},
+        {bx+lo,y0,bz+hi},{bx+hi,y0,bz+hi},{bx+hi,y1,bz+hi},{bx+lo,y1,bz+hi},
+    };
+    static const int F[12][3] = {
+        {0,2,1},{0,3,2},{4,5,6},{4,6,7},{0,1,5},{0,5,4},
+        {3,7,6},{3,6,2},{0,4,7},{0,7,3},{1,2,6},{1,6,5},
+    };
+    for (int i = 0; i < 12; ++i) {
+        Tri t{}; t.vertex0 = c[F[i][0]]; t.vertex1 = c[F[i][1]]; t.vertex2 = c[F[i][2]];
+        b.push_back(t); TriEx ex{}; ex.materialId = 6; bex.push_back(ex);
+    }
+    BLASHandle box_h = blas.register_triangles(b, bex);
+    tlas.push_matrix(); tlas.load_identity(); tlas.draw(box_h, 0); tlas.pop_matrix();
+    tlas.build(blas); tlas.ensure_gpu_textures_ready(blas);
+
+    // Compile.
+    std::string src;
+    REQUIRE(load_compute_source("shaders_gpu/tileset_bake_ao.comp",
+                                 "shaders", src, err));
+    GLuint prog = compile_compute_program(src, err);
+    REQUIRE(prog != 0);
+    if (!prog) {
+        std::fprintf(stderr, "  AO shader compile err: %s\n", err.c_str());
+        return;
+    }
+
+    std::vector<uint8_t> ao;
+    REQUIRE(bake_ao(prog, blas, tlas, st.cfg,
+                    /*ray_y*/ 2.0f, /*height_min*/ 0.0f, /*height_max*/ 0.5f,
+                    /*seed*/ 0xC0DEu, ao, err));
+
+    const int W = kTorusN * (int)st.cfg.size * st.cfg.texels_per_meter;
+
+    // Texel next to the box edge: (bx - e - 0.02, bz) — just outside the box
+    // left wall on the ground plane, where AO rays are partially occluded by the
+    // box wall 0.02 m away.
+    int ex_ = (int)((bx - e - 0.02f) * st.cfg.texels_per_meter);
+    int ez_ = (int)(bz               * st.cfg.texels_per_meter);
+    int e_i = ez_ * W + ex_;
+    // Texel far from the box (0.5m, 0.5m)
+    int fx = (int)(0.5f * st.cfg.texels_per_meter);
+    int fz = (int)(0.5f * st.cfg.texels_per_meter);
+    int f_i = fz * W + fx;
+
+    // The far corner should be brighter (higher AO byte) than the box edge.
+    REQUIRE(ao[e_i] < ao[f_i]);
+    REQUIRE(ao[f_i] > 200);   // far corner mostly unoccluded
+
+    // Determinism: bake twice -> byte-identical.
+    std::vector<uint8_t> ao2;
+    REQUIRE(bake_ao(prog, blas, tlas, st.cfg,
+                    2.0f, 0.0f, 0.5f, 0xC0DEu, ao2, err));
+    REQUIRE(ao == ao2);
+
+    glDeleteProgram(prog);
+}
+
 int main() {
     SetConfigFlags(FLAG_WINDOW_HIDDEN);
     InitWindow(320, 200, "tileset_gpu_tests");
@@ -244,6 +333,7 @@ int main() {
     test_trivial_compute_ssbo();
     test_include_expansion();
     test_primary_bake_single_pebble();
+    test_ao_bake_edge_darkens();
 
     CloseWindow();
 
