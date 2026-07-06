@@ -9,6 +9,7 @@
 // FileModuleResolver + HostBaker in part_graph.h/.cpp).
 
 #include "tileset_phase.h"
+#include "tileset_bake_gpu.h"  // bake_tileset_gpu, TilesetPhaseOpts
 
 #ifdef MATTER_HAVE_SCRIPT_HOST
 
@@ -149,6 +150,51 @@ bool run_tileset_phase(const std::string& world_data_dir, const std::string& /*w
     return true;
 }
 
+// Simple FNV-1a → then fold via SplitMix64 for the source hash.
+static uint64_t hash_source_bytes(const std::string& s) {
+    uint64_t h = 0xCBF29CE484222325ull;
+    for (unsigned char c : s) {
+        h ^= (uint64_t)c;
+        h *= 0x100000001B3ull;
+    }
+    // SplitMix64 fold for good avalanche.
+    h += 0x9E3779B97F4A7C15ull;
+    h = (h ^ (h >> 30)) * 0xBF58476D1CE4E5B9ull;
+    h = (h ^ (h >> 27)) * 0x94D049BB133111EBull;
+    return h ^ (h >> 31);
+}
+
+bool run_tileset_phase(const std::string& world_data_dir,
+                       const std::string& world,
+                       const std::string& root_module,
+                       const std::string& parts_cache_dir,
+                       SettledTorus& out,
+                       const TilesetPhaseOpts& opts,
+                       std::string& err)
+{
+    // Run the existing settle-only phase first (delegates via the older overload).
+    if (!run_tileset_phase(world_data_dir, world, root_module, parts_cache_dir, out, err))
+        return false;
+
+    // Compute the source hash by re-reading the root .js (same convention as the
+    // no-opts overload). Cheap; script is small.
+    const std::string schemas_dir = schemas_dir_for(world_data_dir);
+    const std::string root_path   = schemas_dir + "/" + root_module + ".js";
+    std::string root_source;
+    if (!read_file_str(root_path, root_source)) {
+        err = "run_tileset_phase(opts): cannot re-read root for hash: " + root_path;
+        return false;
+    }
+    const uint64_t script_hash = hash_source_bytes(root_source);
+
+    // Assemble the target path: <world_data_dir>/<root_module>.gtex
+    const std::string gtex_path = world_data_dir + "/" + root_module + ".gtex";
+
+    BakeInputs bi; bi.parts_cache_dir = parts_cache_dir;
+    return bake_tileset_gpu(out, script_hash, gtex_path, bi,
+                            opts.force_rebake, opts.dump_png, err);
+}
+
 } // namespace tileset
 
 #else // !MATTER_HAVE_SCRIPT_HOST
@@ -158,6 +204,14 @@ namespace tileset {
 bool run_tileset_phase(const std::string&, const std::string&,
                        const std::string&, const std::string&,
                        SettledTorus&, std::string& err)
+{
+    err = "tileset_phase: built without MATTER_HAVE_SCRIPT_HOST";
+    return false;
+}
+
+bool run_tileset_phase(const std::string&, const std::string&,
+                       const std::string&, const std::string&,
+                       SettledTorus&, const TilesetPhaseOpts&, std::string& err)
 {
     err = "tileset_phase: built without MATTER_HAVE_SCRIPT_HOST";
     return false;

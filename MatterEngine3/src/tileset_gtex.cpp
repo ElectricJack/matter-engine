@@ -9,11 +9,18 @@
 #include <string>
 #include <vector>
 
-// stb_image_write + stb_image are bundled with raylib. The single-translation-
-// unit implementation lives here.
+// stb_image_write + stb_image are bundled with raylib. When building as a
+// standalone library (no raylib in the link), define the macros so we own the
+// implementation TU. When building alongside raylib (e.g. the viewer binary),
+// define TILESET_GTEX_USE_RAYLIB_STB to suppress the impl macros and avoid
+// multiple-definition errors (raylib's rtextures.o already provides them).
+#ifndef TILESET_GTEX_USE_RAYLIB_STB
 #define STB_IMAGE_WRITE_IMPLEMENTATION
+#endif
 #include "external/stb_image_write.h"
+#ifndef TILESET_GTEX_USE_RAYLIB_STB
 #define STB_IMAGE_IMPLEMENTATION
+#endif
 #include "external/stb_image.h"
 
 namespace tileset {

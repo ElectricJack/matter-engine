@@ -4,10 +4,9 @@
 // Resolves + installs the tileset root's child parts through PartGraph,
 // evaluates the tileset script, and settles it into a SettledTorus.
 // Intended as the SP-3 bridge from read_manifest to the GPU render phase.
-//
-// Phase 3 will add .gtex caching and PNG dump here; Phase 4 adds viewer consumption.
 
-#include "tileset_bake.h"   // SettledTorus, BakeInputs
+#include "tileset_bake.h"       // SettledTorus, BakeInputs
+#include "tileset_bake_gpu.h"   // TilesetPhaseOpts
 #include <string>
 
 namespace tileset {
@@ -25,5 +24,16 @@ bool run_tileset_phase(const std::string& world_data_dir, const std::string& wor
                        const std::string& root_module,
                        const std::string& parts_cache_dir,
                        SettledTorus& out, std::string& err);
+
+// New overload that also runs the GPU .gtex bake at the end of the phase.
+// The existing 6-arg run_tileset_phase (no opts) remains unchanged so all
+// existing call-sites still compile. opts controls cache-hit skip and PNG dump.
+bool run_tileset_phase(const std::string& world_data_dir,
+                       const std::string& world,
+                       const std::string& root_module,
+                       const std::string& parts_cache_dir,
+                       SettledTorus& out,
+                       const TilesetPhaseOpts& opts,
+                       std::string& err);
 
 } // namespace tileset

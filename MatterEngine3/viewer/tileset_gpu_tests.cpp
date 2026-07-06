@@ -12,10 +12,14 @@
 #include "tileset_bake.h"
 #include "tileset_spec.h"
 #include "tileset_layout.h"
+#include "tileset_bake_gpu.h"
+#include "tileset_gtex.h"
 #include "blas_manager.hpp"
 #include "tlas_manager.hpp"
 #include "material_registry.h"
 #include <cmath>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #include <cstdio>
 #include <cstdlib>
@@ -323,6 +327,79 @@ static void test_ao_bake_edge_darkens() {
     glDeleteProgram(prog);
 }
 
+// -----------------------------------------------------------------------------
+// Task 6 test — end-to-end bake + cache-hit + force-rebake + hash sensitivity.
+// Uses a trivial flat SettledTorus with no scattered instances (no .part files
+// needed). Verifies:
+//   (a) First bake produces a non-empty .gtex.
+//   (b) Second call with same inputs: cache hit, file unchanged.
+//   (c) force_rebake=true: re-runs even though hash matches; file unchanged in size.
+//   (d) Different pose_hash: content_hash changes; new file passes load_gtex.
+// -----------------------------------------------------------------------------
+static void test_end_to_end_cache_hit() {
+    using namespace tileset;
+
+    // Trivial SettledTorus fixture — flat base, no instances.
+    SettledTorus st;
+    st.cfg.size = 2.0f; st.cfg.texels_per_meter = 32;
+    st.base.n = BaseField::kSamplesPerTile;
+    st.base.cell = st.cfg.size / (float)st.base.n;
+    st.base.material = 3; st.base.set = true;
+    st.base.heights.assign((size_t)st.base.n * st.base.n, 0.0f);
+    st.report.pose_hash = 0xFEEDFACE11223344ull;
+
+    char pbuf[256];
+    std::snprintf(pbuf, sizeof(pbuf), "/tmp/tileset_e2e_%d.gtex", (int)getpid());
+    ::unlink(pbuf);
+    std::string gtex_path = pbuf;
+
+    BakeInputs bi; bi.parts_cache_dir = "/tmp/does-not-matter-no-parts";
+    std::string err;
+
+    // (a) First bake: no cache, must produce a file.
+    bool ok1 = bake_tileset_gpu(st, /*script_hash*/ 0xABCDEF01u, gtex_path,
+                                 bi, /*force*/ false, /*dump_png*/ false, err);
+    if (!ok1) std::fprintf(stderr, "  bake1 err: %s\n", err.c_str());
+    REQUIRE(ok1);
+    struct stat s1{}; REQUIRE(::stat(gtex_path.c_str(), &s1) == 0);
+    off_t first_size = s1.st_size;
+    REQUIRE(first_size > 0);
+
+    // (b) Second bake with same inputs: cache hit, file size unchanged.
+    bool ok2 = bake_tileset_gpu(st, 0xABCDEF01u, gtex_path,
+                                 bi, false, false, err);
+    if (!ok2) std::fprintf(stderr, "  bake2 err: %s\n", err.c_str());
+    REQUIRE(ok2);
+    struct stat s2{}; REQUIRE(::stat(gtex_path.c_str(), &s2) == 0);
+    REQUIRE(s2.st_size == first_size);
+
+    // (c) force_rebake=true with same inputs → re-runs; same deterministic content_hash.
+    bool ok3 = bake_tileset_gpu(st, 0xABCDEF01u, gtex_path,
+                                 bi, /*force*/ true, false, err);
+    if (!ok3) std::fprintf(stderr, "  bake3 err: %s\n", err.c_str());
+    REQUIRE(ok3);
+    struct stat s3{}; REQUIRE(::stat(gtex_path.c_str(), &s3) == 0);
+    REQUIRE(s3.st_size == first_size);
+
+    // (d) Different pose_hash → new content_hash → non-cache-hit, file updated.
+    SettledTorus st2 = st; st2.report.pose_hash = 0x1234567890ABCDEFull;
+    bool ok4 = bake_tileset_gpu(st2, 0xABCDEF01u, gtex_path,
+                                 bi, false, false, err);
+    if (!ok4) std::fprintf(stderr, "  bake4 err: %s\n", err.c_str());
+    REQUIRE(ok4);
+    GTexHeader hdr{};
+    std::vector<uint8_t> a, n, o; std::vector<uint16_t> h;
+    std::string e2;
+    REQUIRE(load_gtex(gtex_path, hdr, a, n, o, h, e2));
+    REQUIRE(hdr.content_hash != 0);
+    // Sanity: content_hash equals the expected recompute.
+    REQUIRE(hdr.content_hash ==
+            gtex_content_hash(st2.report.pose_hash, 0xABCDEF01u,
+                              kEngineBakeVersion, kBox3dVersion));
+
+    ::unlink(gtex_path.c_str());
+}
+
 int main() {
     SetConfigFlags(FLAG_WINDOW_HIDDEN);
     InitWindow(320, 200, "tileset_gpu_tests");
@@ -341,6 +418,7 @@ int main() {
     test_include_expansion();
     test_primary_bake_single_pebble();
     test_ao_bake_edge_darkens();
+    test_end_to_end_cache_hit();
 
     CloseWindow();
 

@@ -53,12 +53,12 @@ ME3_CPP = src/script_host.cpp src/dsl_state.cpp src/dsl_bindings.cpp \
           src/tileset_layout.cpp src/tileset_collider.cpp src/tileset_settle.cpp \
           src/tileset_placement.cpp src/tileset_part_collider.cpp src/tileset_bake.cpp \
           src/tileset_phase.cpp src/tileset_gtex.cpp src/tileset_torus_bvh.cpp \
-          src/tileset_bake_primary.cpp src/tileset_bake_ao.cpp
+          src/tileset_bake_primary.cpp src/tileset_bake_ao.cpp src/tileset_bake_gpu.cpp
 ME3_OBJ = script_host.o dsl_state.o dsl_bindings.o csg_lowering.o part_asset_v2.o world_lights.o \
           probe_volume.o world_tracer.o part_cluster.o tileset_layout.o tileset_collider.o \
           tileset_settle.o tileset_placement.o tileset_part_collider.o tileset_bake.o \
           tileset_phase.o tileset_gtex.o tileset_torus_bvh.o tileset_bake_primary.o \
-          tileset_bake_ao.o
+          tileset_bake_ao.o tileset_bake_gpu.o
 
 LIB = libmatter_engine3.a
 

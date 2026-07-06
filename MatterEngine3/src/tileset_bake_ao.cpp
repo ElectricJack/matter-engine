@@ -17,16 +17,22 @@
 
 namespace tileset {
 
-bool bake_ao(GLuint program,
-             BLASManager& blas,
-             TLASManager& tlas,
-             const TileConfig& cfg,
-             float ray_y,
-             float height_min,
-             float height_max,
-             uint32_t seed,
-             std::vector<uint8_t>& ao_out,
-             std::string& err)
+// ---------------------------------------------------------------------------
+// Internal implementation — accepts a pre-packed material float buffer and
+// an explicit materialCount. All public overloads delegate here.
+// ---------------------------------------------------------------------------
+static bool bake_ao_impl(GLuint program,
+                         BLASManager& blas,
+                         TLASManager& tlas,
+                         const std::vector<float>& packed_mats,
+                         int material_count,
+                         const TileConfig& cfg,
+                         float ray_y,
+                         float height_min,
+                         float height_max,
+                         uint32_t seed,
+                         std::vector<uint8_t>& ao_out,
+                         std::string& err)
 {
     if (program == 0) { err = "bake_ao: null program"; return false; }
     if (cfg.texels_per_meter <= 0 || cfg.size <= 0.0f) {
@@ -48,19 +54,14 @@ bool bake_ao(GLuint program,
     glBindImageTexture(4, texAo, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_R8);
 
     // -----------------------------------------------------------------------
-    // Material SSBO: minimal stub (all zeros) so getMaterialProperties in
-    // bvh_tlas_common.glsl doesn't read out-of-bounds. The AO pass uses
-    // shadowQuery for AO rays and intersectScene only for the primary hit
-    // normal; material colour is not consumed by the caller.
+    // Material SSBO: upload packed_mats (may be a zero-stub or real table).
     // -----------------------------------------------------------------------
-    const int kMinMats = 64;
-    std::vector<float> packed(kMinMats * 12, 0.0f);
     GLuint ssboMat = 0;
     glGenBuffers(1, &ssboMat);
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssboMat);
     glBufferData(GL_SHADER_STORAGE_BUFFER,
-                 (GLsizeiptr)(packed.size() * sizeof(float)),
-                 packed.data(), GL_STATIC_DRAW);
+                 (GLsizeiptr)(packed_mats.size() * sizeof(float)),
+                 packed_mats.data(), GL_STATIC_DRAW);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 10, ssboMat);
 
     // -----------------------------------------------------------------------
@@ -98,12 +99,7 @@ bool bake_ao(GLuint program,
     // Disable baked-AO fetch in intersectScene (primary hit only needs normal).
     set_i("aoEnabled",        0);
     set_i("debugTriangleTests", 0);
-    // FIXME(Task 6): Set materialCount = 0 so getMaterialProperties always returns the default
-    // material (flatShading = true). This makes intersectScene always use the
-    // face normal (cross(e1,e2)) rather than the stored per-vertex normals, which
-    // may be zero for procedurally generated base-field triangles.
-    // See header note (PRECONDITION FOR TASK 6).
-    set_i("materialCount",    0);
+    set_i("materialCount",    material_count);
 
     // -----------------------------------------------------------------------
     // Dispatch.
@@ -138,6 +134,70 @@ bool bake_ao(GLuint program,
     glBindTexture(GL_TEXTURE_2D, 0);
     glUseProgram(0);
     return true;
+}
+
+// ---------------------------------------------------------------------------
+// Overload 1: no material table — forces materialCount=0 (safe for base-only
+// TLAS where vertex normals are zero; face normals are used throughout).
+// ---------------------------------------------------------------------------
+bool bake_ao(GLuint program,
+             BLASManager& blas,
+             TLASManager& tlas,
+             const TileConfig& cfg,
+             float ray_y,
+             float height_min,
+             float height_max,
+             uint32_t seed,
+             std::vector<uint8_t>& ao_out,
+             std::string& err)
+{
+    // Zero-stub: 64 entries * 12 floats each, all zero.
+    // getMaterialProperties in the shader returns the hardcoded default
+    // (flatShading=true) when materialCount=0, so this is safe.
+    const int kMinMats = 64;
+    std::vector<float> stub(kMinMats * 12, 0.0f);
+    return bake_ao_impl(program, blas, tlas, stub, /*material_count=*/0,
+                        cfg, ray_y, height_min, height_max, seed, ao_out, err);
+}
+
+// ---------------------------------------------------------------------------
+// Overload 2: real material table — the caller must ensure all materials
+// whose triangles carry zero vertex normals have flatShading=true.
+// The orchestrator (bake_tileset_gpu) forces the base material to
+// flatShading=true before calling this overload.
+// ---------------------------------------------------------------------------
+bool bake_ao(GLuint program,
+             BLASManager& blas,
+             TLASManager& tlas,
+             const std::vector<MaterialDef>& mats,
+             const TileConfig& cfg,
+             float ray_y,
+             float height_min,
+             float height_max,
+             uint32_t seed,
+             std::vector<uint8_t>& ao_out,
+             std::string& err)
+{
+    // Pack mats[] into the same float layout as bake_primary / MaterialRegistryPackForGPU:
+    // 12 floats per entry: [albedo.r, albedo.g, albedo.b, roughness,
+    //                       metallic, emission, translucency, pad,
+    //                       ior, flatShading, mergeGroup, pad]
+    const int n = (int)mats.size();
+    std::vector<float> packed((size_t)n * 12, 0.0f);
+    for (int i = 0; i < n; ++i) {
+        float* r = packed.data() + (size_t)i * 12;
+        const MaterialDef& m = mats[i];
+        r[0]  = m.albedo[0]; r[1]  = m.albedo[1]; r[2]  = m.albedo[2];
+        r[3]  = m.roughness;
+        r[4]  = m.metallic;  r[5]  = m.emission;
+        r[6]  = m.translucency; r[7] = 0.0f;
+        r[8]  = m.ior;
+        r[9]  = (float)m.flatShading;
+        r[10] = (float)m.mergeGroup;
+        r[11] = 0.0f;
+    }
+    return bake_ao_impl(program, blas, tlas, packed, n,
+                        cfg, ray_y, height_min, height_max, seed, ao_out, err);
 }
 
 } // namespace tileset

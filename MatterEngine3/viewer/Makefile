@@ -46,6 +46,7 @@ PIPELINE_CPP = ../src/part_graph.cpp \
               ../src/part_cluster.cpp \
               ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
               ../src/tileset_torus_bvh.cpp \
+              ../src/tileset_gtex.cpp ../src/tileset_bake_gpu.cpp \
               ../src/sector_grid.cpp ../src/lod_select.cpp \
               ../src/world_lights.cpp ../src/probe_volume.cpp \
               ../src/world_tracer.cpp ../src/probe_bake.cpp \
@@ -73,7 +74,7 @@ IMGUI_SRC = $(IMGUI_PATH)/imgui.cpp $(IMGUI_PATH)/imgui_draw.cpp \
 # can compile them concurrently). Basenames are unique across all source dirs,
 # so flattening with $(notdir ...) is collision-free. vpath (below) lets the
 # pattern rules find each source by basename.
-CXX_FLAGS_BUILD = $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST $(INCLUDE_PATHS) $(QJS_INC) -MMD -MP
+CXX_FLAGS_BUILD = $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST -DTILESET_GTEX_USE_RAYLIB_STB $(INCLUDE_PATHS) $(QJS_INC) -MMD -MP
 CPP_NAMES = $(notdir $(VIEWER_SRC) $(PIPELINE_CPP) $(IMGUI_SRC))
 QJS_NAMES = $(notdir $(QJS_C))
 PIPC_NAMES = $(notdir $(PIPELINE_C))
