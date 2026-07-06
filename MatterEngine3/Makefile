@@ -38,7 +38,7 @@ RAYLIB_PATH = ../Libraries/raylib/src
 # headers, vendored QuickJS-ng, then raylib (for the BLAS/Tri/TriEx types).
 QJS_DIR       = ../Libraries/quickjs-ng
 BOX3D_DIR     = ../Libraries/box3d
-INCLUDE_PATHS = -Iinclude -I../MatterSurfaceLib/include -I$(QJS_DIR) -I$(RAYLIB_PATH) -I$(BOX3D_DIR)/include
+INCLUDE_PATHS = -Iinclude -Iviewer -I../MatterSurfaceLib/include -I$(QJS_DIR) -I$(RAYLIB_PATH) -I$(BOX3D_DIR)/include
 
 # Vendored QuickJS-ng engine. v0.10.0 needs xsum.c (xsum_small_* symbols) beyond
 # the core four. Compiled via gcc (C) so the embedding symbols stay unmangled.

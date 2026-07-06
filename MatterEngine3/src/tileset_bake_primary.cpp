@@ -2,6 +2,7 @@
 
 #include "tileset_bake_primary.h"
 #include "tileset_layout.h"  // kTorusN
+#include "tileset_gl_ctx.h"  // bind_bvh_samplers
 
 #include "blas_manager.hpp"
 #include "tlas_manager.hpp"
@@ -16,18 +17,6 @@
 #include <vector>
 
 namespace tileset {
-
-// Fabricate a raylib Shader wrapper around a raw compute program id so we can
-// use BLASManager::bind_to_shader / TLASManager::bind_to_shader (which expect
-// a Shader by value). raylib::Shader is a POD { id, locs* }. We don't own any
-// location array; bind_to_shader queries locs by name via GetShaderLocation on
-// its own path.
-static Shader wrap_program(GLuint program) {
-    Shader sh{};
-    sh.id = program;
-    sh.locs = nullptr;
-    return sh;
-}
 
 bool bake_primary(GLuint program,
                   BLASManager& blas,
@@ -101,49 +90,11 @@ bool bake_primary(GLuint program,
     // -----------------------------------------------------------------------
     // BLAS/TLAS bindings + scalar uniforms.
     //
-    // bind_to_shader uploads integer uniforms (counts) correctly for compute
-    // shaders. However, SetShaderValueTexture is a no-op under GL 4.3+ (the
-    // viewer compile flag), so we manually bind each sampler2D texture to an
-    // explicit texture unit and set the corresponding uniform ourselves.
+    // bind_to_shader is a no-op under GL 4.3+ for samplers; bind_bvh_samplers
+    // does the real work (including ensure_gpu_textures_ready) and also sets
+    // the count uniforms directly.
     // -----------------------------------------------------------------------
-    Shader sh = wrap_program(program);
-    blas.bind_to_shader(sh);
-    tlas.bind_to_shader(sh, blas);
-
-    // Manually bind BLAS + TLAS textures to known units.
-    // bvh_tlas_common.glsl expects sampler2D uniforms:
-    //   trianglesTexture, blasNodesTexture, tlasNodesTexture, instancesTexture
-    // We also need imposterColorVolume + imposterNormalVolume slots (3D samplers
-    // used in intersectScene); bind dummy IDs of 0 (safe — never sampled when
-    // no imposter instance is hit).
-    struct TexBind { const char* name; GLuint id; GLenum target; };
-    const TexBind bindings[] = {
-        { "trianglesTexture",    blas.triangles_texture_id(),   GL_TEXTURE_2D },
-        { "blasNodesTexture",    blas.blas_nodes_texture_id(),  GL_TEXTURE_2D },
-        { "tlasNodesTexture",    tlas.tlas_nodes_texture_id(),  GL_TEXTURE_2D },
-        { "instancesTexture",    tlas.instances_texture_id(),   GL_TEXTURE_2D },
-    };
-    for (int unit = 0; unit < 4; ++unit) {
-        GLint loc = glGetUniformLocation(program, bindings[unit].name);
-        if (loc < 0) continue;
-        glActiveTexture(GL_TEXTURE0 + unit);
-        glBindTexture(bindings[unit].target, bindings[unit].id);
-        glUniform1i(loc, unit);
-    }
-    // Imposter volumes unused in this pass; bind texture-unit 4 to unit 4 and 5
-    // but leave them as default (0) — intersectScene only reads them when
-    // inst.isImposter == true, which doesn't happen in our base+pebble fixture.
-    {
-        GLint cLoc = glGetUniformLocation(program, "imposterColorVolume");
-        GLint nLoc = glGetUniformLocation(program, "imposterNormalVolume");
-        glActiveTexture(GL_TEXTURE4);
-        glBindTexture(GL_TEXTURE_3D, 0);
-        if (cLoc >= 0) glUniform1i(cLoc, 4);
-        glActiveTexture(GL_TEXTURE5);
-        glBindTexture(GL_TEXTURE_3D, 0);
-        if (nLoc >= 0) glUniform1i(nLoc, 5);
-        glActiveTexture(GL_TEXTURE0);
-    }
+    tileset::bind_bvh_samplers(program, blas, tlas);
 
     auto set_i = [&](const char* n, int v) {
         GLint l = glGetUniformLocation(program, n);
@@ -187,6 +138,25 @@ bool bake_primary(GLuint program,
     glGetTexImage(GL_TEXTURE_2D, 0, GL_RGB,  GL_UNSIGNED_BYTE,  orm_out.data());
     glBindTexture(GL_TEXTURE_2D, texH);
     glGetTexImage(GL_TEXTURE_2D, 0, GL_RED,  GL_UNSIGNED_SHORT, height_out.data());
+
+    // GL error sweep: surface any driver error from the readbacks as a
+    // structured bake error rather than silently returning zeroed output.
+    {
+        GLenum gl_err = glGetError();
+        if (gl_err != GL_NO_ERROR) {
+            char buf[64];
+            std::snprintf(buf, sizeof(buf), "0x%04X", (unsigned)gl_err);
+            err = std::string("bake_primary: glGetTexImage returned GL error ") + buf;
+            glDeleteTextures(1, &texA);
+            glDeleteTextures(1, &texN);
+            glDeleteTextures(1, &texO);
+            glDeleteTextures(1, &texH);
+            glDeleteBuffers(1, &ssboMat);
+            glBindTexture(GL_TEXTURE_2D, 0);
+            glUseProgram(0);
+            return false;
+        }
+    }
 
     glDeleteTextures(1, &texA);
     glDeleteTextures(1, &texN);

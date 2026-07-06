@@ -2,6 +2,9 @@
 
 #include "tileset_gl_ctx.h"
 
+#include "blas_manager.hpp"
+#include "tlas_manager.hpp"
+
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -9,6 +12,7 @@
 #include <sstream>
 #include <string>
 #include <unordered_set>
+#include <vector>
 
 namespace tileset {
 
@@ -119,6 +123,62 @@ bool load_compute_source(const std::string& primary_path,
     out_source.clear();
     std::unordered_set<std::string> stack;
     return expand_includes(src, includes_dir, /*depth*/ 0, stack, out_source, err);
+}
+
+// ---------------------------------------------------------------------------
+// BVH sampler + count uniform binding for compute programs.
+// ---------------------------------------------------------------------------
+void bind_bvh_samplers(GLuint program, BLASManager& blas, TLASManager& tlas)
+{
+    // Upload any pending CPU data to GPU textures (no-op if already current).
+    blas.ensure_gpu_textures_ready();
+    tlas.ensure_gpu_textures_ready(blas);
+
+    // Bind BVH sampler2Ds to known texture units.
+    // bvh_tlas_common.glsl expects:
+    //   trianglesTexture    → unit 0
+    //   blasNodesTexture    → unit 1
+    //   tlasNodesTexture    → unit 2
+    //   instancesTexture    → unit 3
+    struct TexBind { const char* name; GLuint id; GLenum target; };
+    const TexBind bindings[] = {
+        { "trianglesTexture",  blas.triangles_texture_id(),  GL_TEXTURE_2D },
+        { "blasNodesTexture",  blas.blas_nodes_texture_id(), GL_TEXTURE_2D },
+        { "tlasNodesTexture",  tlas.tlas_nodes_texture_id(), GL_TEXTURE_2D },
+        { "instancesTexture",  tlas.instances_texture_id(),  GL_TEXTURE_2D },
+    };
+    for (int unit = 0; unit < 4; ++unit) {
+        GLint loc = glGetUniformLocation(program, bindings[unit].name);
+        if (loc < 0) continue;
+        glActiveTexture(GL_TEXTURE0 + unit);
+        glBindTexture(bindings[unit].target, bindings[unit].id);
+        glUniform1i(loc, unit);
+    }
+
+    // Imposter volumes unused in the bake passes; bind texture units 4..5 to 0
+    // (safe — intersectScene only reads them when inst.isImposter == true).
+    {
+        GLint cLoc = glGetUniformLocation(program, "imposterColorVolume");
+        GLint nLoc = glGetUniformLocation(program, "imposterNormalVolume");
+        glActiveTexture(GL_TEXTURE4);
+        glBindTexture(GL_TEXTURE_3D, 0);
+        if (cLoc >= 0) glUniform1i(cLoc, 4);
+        glActiveTexture(GL_TEXTURE5);
+        glBindTexture(GL_TEXTURE_3D, 0);
+        if (nLoc >= 0) glUniform1i(nLoc, 5);
+        glActiveTexture(GL_TEXTURE0);
+    }
+
+    // Set count uniforms directly (bind_to_shader is a no-op under GL 4.3+ for
+    // samplers; fabricating a Shader{locs=nullptr} would be UB on the locs path).
+    auto set_i = [&](const char* name, int value) {
+        GLint loc = glGetUniformLocation(program, name);
+        if (loc >= 0) glUniform1i(loc, value);
+    };
+    set_i("triangleCount", blas.get_total_triangle_count());
+    set_i("blasNodeCount",  blas.get_total_node_count());
+    set_i("tlasNodeCount",  tlas.get_node_count());
+    set_i("instanceCount",  tlas.get_instance_count());
 }
 
 } // namespace tileset
