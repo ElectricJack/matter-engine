@@ -1,4 +1,4 @@
-// tileset_dsl_tests: ScriptHost::eval_tileset recording (tile/base verbs).
+// tileset_dsl_tests: ScriptHost::eval_tileset recording (tile/base/layer/dropChild verbs).
 #include "script_host.h"
 #include "tileset_spec.h"
 #include <cmath>
@@ -144,6 +144,140 @@ class F extends Tileset {
           "dsl: edgeStripWidth<=cornerClearRadius message is recognizable");
 }
 
+// NOTE: eval_tileset in non-module mode (no shared-lib imports) requires plain
+// `class X extends Tileset` syntax — not `export default class`. The brief's
+// fixtures use `export default` but that requires module mode which is only
+// activated by shared-lib imports. All tests here use the classic-script pattern
+// matching the other tileset_dsl_tests fixtures.
+static const char* kLayeredTileset = R"JS(
+class Floor extends Tileset {
+  static requires = [
+    { module: 'Pebble', params: { seed: 0 } },
+    { module: 'Pebble', params: { seed: 1 } },
+    { module: 'Twig' },
+  ];
+  build() {
+    this.tile({ size: 2.0, texelsPerMeter: 128, seed: 42 });
+    this.base((x, z) => 0.0, 1);
+
+    this.pushMatrix();
+    this.translate(1.0, 0.2, 0.6);
+    this.dropChild('Twig');
+    this.popMatrix();
+
+    this.layer('Pebble', { density: 30, physics: false, embed: 0.3,
+                           params: r => ({ seed: r.int(2) }) });
+    this.layer('Twig',   { density: 8, physics: true, dropHeight: [0.1, 0.3],
+                           scale: [0.7, 1.3], placement: 'poisson' });
+  }
+}
+)JS";
+
+// Child tables: hashes are arbitrary but distinct; modules/params match `requires`.
+static const uint64_t kChildHashes[] = { 0x1111, 0x2222, 0x3333 };
+static const std::string kChildModules[] = { "Pebble", "Pebble", "Twig" };
+static const std::string kChildParams[]  = { R"({"seed":0})", R"({"seed":1})", "{}" };
+
+static void test_layer_recording(ScriptHost& host) {
+    auto r = host.eval_tileset(kLayeredTileset, "{}", BakeOptions{},
+                               kChildHashes, 3, kChildModules, kChildParams);
+    CHECK(r.error.ok, "layer: layered tileset evals clean");
+    if (!r.error.ok) return;  // guard: remaining checks dereference into spec
+    CHECK(r.spec.layers.size() == 2, "layer: two layers in call order");
+    CHECK(r.spec.drops.size() == 1 && r.spec.drops[0].child_hash == 0x3333,
+          "layer: dropChild recorded with Twig hash");
+    if (!r.spec.drops.empty())
+    CHECK(std::fabs(r.spec.drops[0].transform[3] - 1.0f) < 1e-6f ||
+          std::fabs(r.spec.drops[0].transform[12] - 1.0f) < 1e-6f,
+          "layer: dropChild transform carries translation (row- or col-major slot)");
+    if (r.spec.layers.size() < 2) return;  // guard: L0/L1 accesses below
+
+    const auto& L0 = r.spec.layers[0];
+    CHECK(L0.module == "Pebble" && !L0.physics && std::fabs(L0.embed - 0.3f) < 1e-6f,
+          "layer: pebble opts recorded");
+    // 4 strip lists + 16 interiors all populated
+    size_t strip_total = 0, interior_total = 0;
+    for (int o = 0; o < 2; ++o) for (int c = 0; c < 2; ++c) strip_total += L0.strip[o][c].size();
+    for (int t = 0; t < 16; ++t) interior_total += L0.interior[t].size();
+    CHECK(strip_total > 0,    "layer: strip placements generated");
+    CHECK(interior_total > 0, "layer: interior placements generated");
+    // interior expected ~ density*(size-2w)^2 = 30*1.7^2 = 86.7 per tile
+    CHECK(L0.interior[0].size() >= 70 && L0.interior[0].size() <= 100,
+          "layer: interior count near density*area");
+
+    // params fn resolved to declared variants only
+    bool hashes_ok = true;
+    for (const auto& p : L0.interior[0])
+        if (p.child_hash != 0x1111 && p.child_hash != 0x2222) hashes_ok = false;
+    CHECK(hashes_ok, "layer: params fn resolves to declared variant hashes");
+    // both variants appear (density is high enough that P(all-same) ~ 2^-86)
+    bool saw0 = false, saw1 = false;
+    for (const auto& p : L0.interior[0]) { saw0 |= p.child_hash == 0x1111; saw1 |= p.child_hash == 0x2222; }
+    CHECK(saw0 && saw1, "layer: both param variants used");
+
+    // physics:false -> yaw-only quats (x,z components zero)
+    bool yaw_only = true;
+    for (const auto& p : L0.interior[0])
+        if (std::fabs(p.quat[0]) > 1e-6f || std::fabs(p.quat[2]) > 1e-6f) yaw_only = false;
+    CHECK(yaw_only, "layer: non-physics placements are yaw-only");
+
+    const auto& L1 = r.spec.layers[1];
+    CHECK(L1.physics && L1.placement_kind == 1, "layer: twig physics+poisson recorded");
+    bool y_in_range = true, scale_in_range = true;
+    for (const auto& p : L1.interior[5]) {
+        if (p.pos[1] < 0.1f || p.pos[1] > 0.3f) y_in_range = false;
+        if (p.scale < 0.7f || p.scale > 1.3f) scale_in_range = false;
+    }
+    CHECK(y_in_range,     "layer: drop heights within range");
+    CHECK(scale_in_range, "layer: scales within range");
+    // strip placements stay within the strip domain
+    bool strip_in = true;
+    for (const auto& p : L1.strip[0][0])
+        if (p.pos[0] < -0.15f || p.pos[0] >= 0.15f || p.pos[2] < 0.0f || p.pos[2] >= 2.0f)
+            strip_in = false;
+    CHECK(strip_in, "layer: vertical strip placements inside strip domain");
+}
+
+static void test_layer_determinism(ScriptHost& host) {
+    auto a = host.eval_tileset(kLayeredTileset, "{}", BakeOptions{},
+                               kChildHashes, 3, kChildModules, kChildParams);
+    auto b = host.eval_tileset(kLayeredTileset, "{}", BakeOptions{},
+                               kChildHashes, 3, kChildModules, kChildParams);
+    CHECK(a.error.ok && b.error.ok, "layer: double eval clean");
+    bool same = a.spec.layers.size() == b.spec.layers.size();
+    for (size_t l = 0; same && l < a.spec.layers.size(); ++l) {
+        const auto& x = a.spec.layers[l]; const auto& y = b.spec.layers[l];
+        for (int t = 0; same && t < 16; ++t) {
+            same = x.interior[t].size() == y.interior[t].size();
+            for (size_t i = 0; same && i < x.interior[t].size(); ++i)
+                same = std::memcmp(&x.interior[t][i], &y.interior[t][i], sizeof(tileset::Placement)) == 0;
+        }
+    }
+    CHECK(same, "layer: placements bit-identical across evals");
+}
+
+static void test_layer_errors(ScriptHost& host) {
+    // density missing
+    auto r1 = host.eval_tileset(R"JS(
+class F extends Tileset {
+  static requires = [ { module: 'Twig' } ];
+  build() { this.tile({size:2.0, texelsPerMeter:128, seed:1}); this.layer('Twig', {}); }
+}
+)JS", "{}", BakeOptions{}, &kChildHashes[2], 1, &kChildModules[2], &kChildParams[2]);
+    CHECK(!r1.error.ok && r1.error.message.find("density") != std::string::npos,
+          "layer: missing density is a structured error");
+    // undeclared params variant
+    auto r2 = host.eval_tileset(R"JS(
+class F extends Tileset {
+  static requires = [ { module: 'Twig' } ];
+  build() { this.tile({size:2.0, texelsPerMeter:128, seed:1});
+            this.layer('Twig', { density: 5, params: { seed: 9 } }); }
+}
+)JS", "{}", BakeOptions{}, &kChildHashes[2], 1, &kChildModules[2], &kChildParams[2]);
+    CHECK(!r2.error.ok && r2.error.message.find("variant") != std::string::npos,
+          "layer: undeclared params variant is a structured error");
+}
+
 int main() {
     printf("== tileset_dsl_tests ==\n");
     ScriptHost host;
@@ -152,6 +286,9 @@ int main() {
     test_eval_deterministic(host);
     test_params_override_changes_hash(host);
     test_tile_validation_errors(host);
+    test_layer_recording(host);
+    test_layer_determinism(host);
+    test_layer_errors(host);
     if (g_failures == 0) printf("PASSED (0 failures)\n");
     else                 printf("FAILED (%d failures)\n", g_failures);
     return g_failures;

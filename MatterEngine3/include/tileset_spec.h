@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <string>
 #include <vector>
+#include "dsl_rng.h"
 
 namespace tileset {
 
@@ -69,6 +70,9 @@ struct TilesetState {
     std::string error;               // first tileset-verb error (fail-closed)
     bool has_error = false;
     void set_error(const std::string& m) { if (!has_error) { has_error = true; error = m; } }
+    // Per-placement attribute RNG: set/cleared by j_ts_layer for each placement.
+    // The params-fn `r` helper reads from this via the native bindings.
+    dsl::Rng* param_rng = nullptr;   // non-owning pointer into the current placement loop
 };
 
 }  // namespace tileset

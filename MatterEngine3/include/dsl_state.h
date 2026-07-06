@@ -216,6 +216,20 @@ public:
     // fail-closed error.
     void set_child_hashes(std::map<std::string, uint64_t> m) { child_hashes_ = std::move(m); }
 
+    // Exposed composite-key lookup used by both placeChild and j_ts_layer:
+    // tries `module \x1f params_json` first (when params_json is non-empty),
+    // falls back to plain `module`. Returns true + fills `out` on success.
+    // Returns false when the module is not found in the table at all.
+    bool lookup_child_hash(const std::string& module,
+                           const char* params_json, size_t len,
+                           uint64_t& out);
+
+    // Strict composite-key-only lookup: does NOT fall back to the plain module key.
+    // Returns true iff `module \x1f params_json` is an explicit entry in the table.
+    // Used by layer() to validate that a static params object names a declared variant.
+    bool has_composite_child_key(const std::string& module,
+                                 const char* params_json, size_t len);
+
     // Record a placement of `module` at the current transform-stack top.
     //
     // When `params` is present (the JSON.stringify bytes of the placeChild params

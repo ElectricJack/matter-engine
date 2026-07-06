@@ -1,6 +1,9 @@
 #include "../include/dsl_state.h"
 #include "../include/dsl_bindings.h"
 #include "../include/tileset_spec.h"
+#include "../include/tileset_placement.h"
+#include "../include/tileset_layout.h"
+#include <cmath>
 #include <vector>
 extern "C" {
 #include "quickjs.h"
@@ -138,6 +141,42 @@ static tileset::TilesetState* ts_of(JSContext* c) {
     return s ? s->tileset() : nullptr;
 }
 
+// Uniform random unit quaternion (Box-Muller). Draws 4 normal floats, normalizes.
+// Guard: retry if norm is degenerate (astronomically rare).
+static void random_unit_quat(dsl::Rng& r, float q[4]) {
+    for (;;) {
+        float g[4];
+        for (int i = 0; i < 4; i += 2) {
+            float u1 = (float)r.next_unit(); if (u1 < 1e-7f) u1 = 1e-7f;
+            float u2 = (float)r.next_unit();
+            float m = std::sqrt(-2.0f * std::log(u1));
+            g[i]     = m * std::cos(6.2831853f * u2);
+            g[i + 1] = m * std::sin(6.2831853f * u2);
+        }
+        float n = std::sqrt(g[0]*g[0] + g[1]*g[1] + g[2]*g[2] + g[3]*g[3]);
+        if (n > 1e-6f) { q[0]=g[0]/n; q[1]=g[1]/n; q[2]=g[2]/n; q[3]=g[3]/n; return; }
+    }
+}
+
+// Params-fn `r` helper: int(n) and float(a,b) drawing from ts->param_rng.
+static JSValue j_ts_rng_int(JSContext* c, JSValueConst, int n, JSValueConst* a) {
+    tileset::TilesetState* ts = ts_of(c);
+    if (!ts || !ts->param_rng) return JS_NewInt32(c, 0);
+    int32_t nn = 1; if (n > 0) JS_ToInt32(c, &nn, a[0]);
+    if (nn <= 1) return JS_NewInt32(c, 0);
+    uint64_t v = ts->param_rng->next_u64();
+    return JS_NewInt32(c, (int32_t)(v % (uint64_t)nn));
+}
+static JSValue j_ts_rng_float(JSContext* c, JSValueConst, int n, JSValueConst* a) {
+    tileset::TilesetState* ts = ts_of(c);
+    if (!ts || !ts->param_rng) return JS_NewFloat64(c, 0.0);
+    double lo = 0.0, hi = 1.0;
+    if (n > 0) JS_ToFloat64(c, &lo, a[0]);
+    if (n > 1) JS_ToFloat64(c, &hi, a[1]);
+    double u = ts->param_rng->next_unit();
+    return JS_NewFloat64(c, lo + u * (hi - lo));
+}
+
 static JSValue j_ts_tile(JSContext* c, JSValueConst, int n, JSValueConst* a) {
     tileset::TilesetState* ts = ts_of(c);
     if (!ts) { state_of(c)->set_error("tileset verb outside Tileset root"); return JS_UNDEFINED; }
@@ -182,17 +221,386 @@ static JSValue j_ts_base(JSContext* c, JSValueConst, int n, JSValueConst* a) {
     return JS_UNDEFINED;
 }
 
-static JSValue j_ts_layer(JSContext* c, JSValueConst, int, JSValueConst*) {
+static JSValue j_ts_layer(JSContext* c, JSValueConst, int n, JSValueConst* a) {
     tileset::TilesetState* ts = ts_of(c);
     if (!ts) { state_of(c)->set_error("tileset verb outside Tileset root"); return JS_UNDEFINED; }
-    ts->set_error("layer(): not implemented");
+    if (ts->has_error) return JS_UNDEFINED;
+    dsl::DslState* state = state_of(c);
+
+    // -- Argument 0: module name --
+    if (n < 1 || JS_IsUndefined(a[0])) {
+        ts->set_error("layer: module name required"); return JS_UNDEFINED;
+    }
+    const char* mstr = JS_ToCString(c, a[0]);
+    if (!mstr) { ts->set_error("layer: module name required"); return JS_UNDEFINED; }
+    std::string module(mstr);
+    JS_FreeCString(c, mstr);
+
+    // -- tile() must have been called first --
+    if (!ts->spec.tile_called) {
+        ts->set_error("layer('" + module + "'): tile() must be called before layer()");
+        return JS_UNDEFINED;
+    }
+
+    // -- Argument 1: opts object --
+    JSValue opts = (n > 1 && !JS_IsUndefined(a[1])) ? a[1] : JS_UNDEFINED;
+
+    // Helper to read a named float property from opts.
+    auto get_float = [&](const char* key, bool* found) -> double {
+        if (JS_IsUndefined(opts)) { if (found) *found=false; return 0.0; }
+        JSValue v = JS_GetPropertyStr(c, opts, key);
+        if (JS_IsUndefined(v) || JS_IsNull(v)) { JS_FreeValue(c,v); if (found) *found=false; return 0.0; }
+        double d = 0.0; JS_ToFloat64(c, &d, v); JS_FreeValue(c,v);
+        if (found) *found=true; return d;
+    };
+    auto get_bool = [&](const char* key, bool def) -> bool {
+        if (JS_IsUndefined(opts)) return def;
+        JSValue v = JS_GetPropertyStr(c, opts, key);
+        if (JS_IsUndefined(v) || JS_IsNull(v)) { JS_FreeValue(c,v); return def; }
+        bool b = JS_ToBool(c, v) != 0; JS_FreeValue(c,v); return b;
+    };
+    auto get_str = [&](const char* key) -> std::string {
+        if (JS_IsUndefined(opts)) return "";
+        JSValue v = JS_GetPropertyStr(c, opts, key);
+        if (!JS_IsString(v)) { JS_FreeValue(c,v); return ""; }
+        const char* s = JS_ToCString(c, v); JS_FreeValue(c,v);
+        if (!s) return "";
+        std::string r(s); JS_FreeCString(c, s); return r;
+    };
+    // Read [min,max] array property.
+    auto get_range = [&](const char* key, float def0, float def1, float out[2]) {
+        out[0]=def0; out[1]=def1;
+        if (JS_IsUndefined(opts)) return;
+        JSValue v = JS_GetPropertyStr(c, opts, key);
+        if (!JS_IsArray(v)) { JS_FreeValue(c,v); return; }
+        JSValue e0=JS_GetPropertyUint32(c,v,0); JSValue e1=JS_GetPropertyUint32(c,v,1);
+        double d0=def0, d1=def1;
+        JS_ToFloat64(c,&d0,e0); JS_ToFloat64(c,&d1,e1);
+        out[0]=(float)d0; out[1]=(float)d1;
+        JS_FreeValue(c,e0); JS_FreeValue(c,e1); JS_FreeValue(c,v);
+    };
+
+    // -- Parse density (required) --
+    bool density_found = false;
+    double density_val = get_float("density", &density_found);
+    if (!density_found || density_val <= 0.0) {
+        ts->set_error("layer('" + module + "'): density required");
+        return JS_UNDEFINED;
+    }
+
+    // -- Parse remaining opts with defaults --
+    tileset::LayerSpec layer;
+    layer.module = module;
+    layer.density = (float)density_val;
+
+    // placement: 'uniform'(0) / 'poisson'(1) / 'cluster'(2)
+    {
+        std::string pk = get_str("placement");
+        if (pk.empty() || pk == "uniform") layer.placement_kind = 0;
+        else if (pk == "poisson")          layer.placement_kind = 1;
+        else if (pk == "cluster")          layer.placement_kind = 2;
+        else {
+            ts->set_error("layer('" + module + "'): unknown placement '" + pk + "'");
+            return JS_UNDEFINED;
+        }
+    }
+
+    layer.physics = get_bool("physics", true);
+    layer.embed   = (float)get_float("embed", nullptr);
+    get_range("dropHeight", 0.15f, 0.35f, layer.drop_h);
+    get_range("scale",      1.0f,  1.0f,  layer.scale_range);
+    layer.collider_override = get_str("collider");
+
+    // -- Params: object, function, or absent --
+    JSValue params_val = JS_UNDEFINED;
+    bool params_is_fn = false;
+    bool params_is_obj = false;
+    if (!JS_IsUndefined(opts)) {
+        params_val = JS_GetPropertyStr(c, opts, "params");
+        if (JS_IsFunction(c, params_val))           params_is_fn  = true;
+        else if (JS_IsObject(params_val))            params_is_obj = true;
+        else { JS_FreeValue(c, params_val); params_val = JS_UNDEFINED; }
+    }
+
+    // If params is a static object, stringify once now.
+    std::string static_params_json;
+    if (params_is_obj) {
+        JSValue js = JS_JSONStringify(c, params_val, JS_UNDEFINED, JS_UNDEFINED);
+        if (!JS_IsException(js)) {
+            size_t len=0; const char* s = JS_ToCStringLen(c, &len, js);
+            if (s) { static_params_json.assign(s, len); JS_FreeCString(c,s); }
+        }
+        JS_FreeValue(c, js);
+        JS_FreeValue(c, params_val); params_val = JS_UNDEFINED;
+        // Validate: the composite key module\x1f params_json must be an explicit entry
+        // (no plain-module fallback — an explicit params object must name a declared variant).
+        if (!state->has_composite_child_key(module, static_params_json.c_str(),
+                                            static_params_json.size())) {
+            ts->set_error("layer('" + module + "'): params variant not declared in static requires");
+            return JS_UNDEFINED;
+        }
+    } else if (!params_is_fn) {
+        // No params: use empty string to fall back to plain module key.
+        static_params_json = "";
+    }
+
+    // If no params, pre-resolve the hash once (plain module key).
+    uint64_t fixed_hash = 0;
+    bool has_fixed_hash = false;
+    if (!params_is_fn) {
+        has_fixed_hash = state->lookup_child_hash(
+            module,
+            static_params_json.empty() ? nullptr : static_params_json.c_str(),
+            static_params_json.size(), fixed_hash);
+        if (!has_fixed_hash) {
+            ts->set_error("layer('" + module + "'): undeclared module (add to static requires)");
+            JS_FreeValue(c, params_val);
+            return JS_UNDEFINED;
+        }
+    }
+
+    // -- Build the params-fn `r` helper object (shared across all placements) --
+    JSValue r_helper = JS_UNDEFINED;
+    if (params_is_fn) {
+        r_helper = JS_NewObject(c);
+        JSValue g = JS_GetGlobalObject(c);
+        JSValue fn_int   = JS_GetPropertyStr(c, g, "__dsl_ts_rng_int");
+        JSValue fn_float = JS_GetPropertyStr(c, g, "__dsl_ts_rng_float");
+        JS_SetPropertyStr(c, r_helper, "int",   fn_int);
+        JS_SetPropertyStr(c, r_helper, "float", fn_float);
+        JS_FreeValue(c, g);
+    }
+
+    // -- Domain generation: 20 domains in fixed order --
+    const tileset::TileConfig& cfg = ts->spec.cfg;
+    const float w    = cfg.edge_strip_width;
+    const float size = cfg.size;
+    const float ccr  = cfg.corner_clear_radius;
+    const uint64_t master_seed = cfg.seed;
+    const uint32_t layer_index = (uint32_t)ts->spec.layers.size();  // index at entry
+    tileset::PlacementKind pk = (tileset::PlacementKind)layer.placement_kind;
+
+    // Domain ids: vStrip c0->0, c1->1, hStrip c0->2, c1->3, interior->4+tile
+    // orientation 0 = vertical strips, orientation 1 = horizontal strips
+    // Vertical strip: across = [-w, +w), along = [0, size). Map: pos={across, y, along}
+    // Horizontal strip: across = [-w, +w), along = [0, size). Map: pos={along, y, across}
+    // Corner clear disks: at along=0 and along=size (wrap), radius=ccr.
+
+    for (int orient = 0; orient < 2; ++orient) {
+        for (int color = 0; color < 2; ++color) {
+            uint32_t domain_id = (uint32_t)(orient * 2 + color);
+            uint64_t dom_seed = tileset::placement_seed(master_seed, layer_index, domain_id);
+            uint64_t attr_seed = dom_seed ^ 0xA5A5A5A5A5A5A5A5ull;
+
+            tileset::PlacementDomain dom;
+            dom.x0 = -w; dom.x1 = w;
+            dom.z0 = 0.0f; dom.z1 = size;
+            dom.clear_disks = { {0.0f, 0.0f}, {0.0f, size} };
+            dom.clear_radius = ccr;
+
+            std::vector<tileset::Point2> pts = tileset::scatter(pk, dom, layer.density, dom_seed);
+
+            dsl::Rng attr_rng(attr_seed);
+            std::vector<tileset::Placement>& dest = layer.strip[orient][color];
+            dest.reserve(pts.size());
+
+            for (const auto& pt : pts) {
+                tileset::Placement p{};
+                // scale drawn first
+                if (layer.scale_range[0] == layer.scale_range[1]) {
+                    p.scale = layer.scale_range[0];
+                } else {
+                    p.scale = layer.scale_range[0] +
+                              (float)attr_rng.next_unit() * (layer.scale_range[1] - layer.scale_range[0]);
+                }
+                // y / quat
+                if (layer.physics) {
+                    p.pos[1] = layer.drop_h[0] +
+                               (float)attr_rng.next_unit() * (layer.drop_h[1] - layer.drop_h[0]);
+                    random_unit_quat(attr_rng, p.quat);
+                } else {
+                    p.pos[1] = 0.0f;
+                    float angle = (float)attr_rng.next_unit() * 6.2831853f;
+                    float half = angle * 0.5f;
+                    p.quat[0] = 0.0f;
+                    p.quat[1] = std::sin(half);
+                    p.quat[2] = 0.0f;
+                    p.quat[3] = std::cos(half);
+                }
+                // params
+                if (params_is_fn) {
+                    dsl::Rng placement_attr_rng = attr_rng;
+                    ts->param_rng = &attr_rng;
+                    JSValue ret = JS_Call(c, params_val, JS_UNDEFINED, 1, &r_helper);
+                    ts->param_rng = nullptr;
+                    if (JS_IsException(ret)) {
+                        JS_FreeValue(c, ret);
+                        ts->set_error("layer('" + module + "'): params fn threw");
+                        JS_FreeValue(c, params_val);
+                        JS_FreeValue(c, r_helper);
+                        return JS_UNDEFINED;
+                    }
+                    JSValue js = JS_JSONStringify(c, ret, JS_UNDEFINED, JS_UNDEFINED);
+                    JS_FreeValue(c, ret);
+                    std::string pjson;
+                    if (!JS_IsException(js)) {
+                        size_t len=0; const char* s = JS_ToCStringLen(c, &len, js);
+                        if (s) { pjson.assign(s, len); JS_FreeCString(c,s); }
+                    }
+                    JS_FreeValue(c, js);
+                    uint64_t h=0;
+                    if (!state->lookup_child_hash(module, pjson.c_str(), pjson.size(), h)) {
+                        ts->set_error("layer('" + module + "'): params variant not declared in static requires");
+                        JS_FreeValue(c, params_val);
+                        JS_FreeValue(c, r_helper);
+                        return JS_UNDEFINED;
+                    }
+                    p.child_hash = h;
+                } else {
+                    p.child_hash = fixed_hash;
+                }
+                // Map strip coordinates: across=pt.x, along=pt.z
+                if (orient == 0) {
+                    p.pos[0] = pt.x; p.pos[2] = pt.z;  // vertical: x=across, z=along
+                } else {
+                    p.pos[0] = pt.z; p.pos[2] = pt.x;  // horizontal: x=along, z=across
+                }
+                dest.push_back(p);
+            }
+        }
+    }
+
+    // Interior tiles 0..15 (row*4+col)
+    for (int tile = 0; tile < 16; ++tile) {
+        uint32_t domain_id = 4u + (uint32_t)tile;
+        uint64_t dom_seed = tileset::placement_seed(master_seed, layer_index, domain_id);
+        uint64_t attr_seed = dom_seed ^ 0xA5A5A5A5A5A5A5A5ull;
+
+        tileset::PlacementDomain dom;
+        dom.x0 = w; dom.x1 = size - w;
+        dom.z0 = w; dom.z1 = size - w;
+        // No corner disks for interior (edgeStripWidth > cornerClearRadius enforced by tile())
+        dom.clear_radius = 0.0f;
+
+        std::vector<tileset::Point2> pts = tileset::scatter(pk, dom, layer.density, dom_seed);
+
+        dsl::Rng attr_rng(attr_seed);
+        std::vector<tileset::Placement>& dest = layer.interior[tile];
+        dest.reserve(pts.size());
+
+        for (const auto& pt : pts) {
+            tileset::Placement p{};
+            // scale
+            if (layer.scale_range[0] == layer.scale_range[1]) {
+                p.scale = layer.scale_range[0];
+            } else {
+                p.scale = layer.scale_range[0] +
+                          (float)attr_rng.next_unit() * (layer.scale_range[1] - layer.scale_range[0]);
+            }
+            // y / quat
+            if (layer.physics) {
+                p.pos[1] = layer.drop_h[0] +
+                           (float)attr_rng.next_unit() * (layer.drop_h[1] - layer.drop_h[0]);
+                random_unit_quat(attr_rng, p.quat);
+            } else {
+                p.pos[1] = 0.0f;
+                float angle = (float)attr_rng.next_unit() * 6.2831853f;
+                float half = angle * 0.5f;
+                p.quat[0] = 0.0f;
+                p.quat[1] = std::sin(half);
+                p.quat[2] = 0.0f;
+                p.quat[3] = std::cos(half);
+            }
+            // params
+            if (params_is_fn) {
+                ts->param_rng = &attr_rng;
+                JSValue ret = JS_Call(c, params_val, JS_UNDEFINED, 1, &r_helper);
+                ts->param_rng = nullptr;
+                if (JS_IsException(ret)) {
+                    JS_FreeValue(c, ret);
+                    ts->set_error("layer('" + module + "'): params fn threw");
+                    JS_FreeValue(c, params_val);
+                    JS_FreeValue(c, r_helper);
+                    return JS_UNDEFINED;
+                }
+                JSValue js = JS_JSONStringify(c, ret, JS_UNDEFINED, JS_UNDEFINED);
+                JS_FreeValue(c, ret);
+                std::string pjson;
+                if (!JS_IsException(js)) {
+                    size_t len=0; const char* s = JS_ToCStringLen(c, &len, js);
+                    if (s) { pjson.assign(s, len); JS_FreeCString(c,s); }
+                }
+                JS_FreeValue(c, js);
+                uint64_t h=0;
+                if (!state->lookup_child_hash(module, pjson.c_str(), pjson.size(), h)) {
+                    ts->set_error("layer('" + module + "'): params variant not declared in static requires");
+                    JS_FreeValue(c, params_val);
+                    JS_FreeValue(c, r_helper);
+                    return JS_UNDEFINED;
+                }
+                p.child_hash = h;
+            } else {
+                p.child_hash = fixed_hash;
+            }
+            p.pos[0] = pt.x; p.pos[2] = pt.z;
+            dest.push_back(p);
+        }
+    }
+
+    JS_FreeValue(c, params_val);
+    JS_FreeValue(c, r_helper);
+
+    // Push the completed LayerSpec (errors mid-generation leave no partial layer).
+    ts->spec.layers.push_back(std::move(layer));
     return JS_UNDEFINED;
 }
 
-static JSValue j_ts_dropChild(JSContext* c, JSValueConst, int, JSValueConst*) {
+static JSValue j_ts_dropChild(JSContext* c, JSValueConst, int n, JSValueConst* a) {
     tileset::TilesetState* ts = ts_of(c);
     if (!ts) { state_of(c)->set_error("tileset verb outside Tileset root"); return JS_UNDEFINED; }
-    ts->set_error("dropChild(): not implemented");
+    if (ts->has_error) return JS_UNDEFINED;
+    dsl::DslState* state = state_of(c);
+
+    // Get module name (arg 0).
+    if (n < 1 || JS_IsUndefined(a[0])) {
+        ts->set_error("dropChild: module name required"); return JS_UNDEFINED;
+    }
+    const char* m = JS_ToCString(c, a[0]);
+    if (!m) { ts->set_error("dropChild: module name required"); return JS_UNDEFINED; }
+    std::string module(m);
+    JS_FreeCString(c, m);
+
+    // Optional params (arg 1) — stringify like placeChild does.
+    std::string params_str;
+    if (n > 1 && !JS_IsUndefined(a[1]) && !JS_IsNull(a[1])) {
+        JSValue js = JS_JSONStringify(c, a[1], JS_UNDEFINED, JS_UNDEFINED);
+        if (!JS_IsException(js)) {
+            size_t len = 0;
+            const char* s = JS_ToCStringLen(c, &len, js);
+            if (s) { params_str.assign(s, len); JS_FreeCString(c, s); }
+        }
+        JS_FreeValue(c, js);
+    }
+
+    uint64_t hash = 0;
+    if (!state->lookup_child_hash(module,
+                                  params_str.empty() ? nullptr : params_str.c_str(),
+                                  params_str.size(), hash)) {
+        ts->set_error("dropChild('" + module + "'): undeclared module (add to static requires)");
+        return JS_UNDEFINED;
+    }
+
+    tileset::DropChildRec rec{};
+    rec.child_hash = hash;
+    // Capture current transform stack top as row-major float[16].
+    // Use the same matrix_to_row16 logic DslState::placeChild uses by accessing top().
+    // We need the row-major layout; replicate the conversion inline here.
+    Matrix mm = state->top();
+    rec.transform[0]=mm.m0;  rec.transform[1]=mm.m4;  rec.transform[2]=mm.m8;  rec.transform[3]=mm.m12;
+    rec.transform[4]=mm.m1;  rec.transform[5]=mm.m5;  rec.transform[6]=mm.m9;  rec.transform[7]=mm.m13;
+    rec.transform[8]=mm.m2;  rec.transform[9]=mm.m6;  rec.transform[10]=mm.m10; rec.transform[11]=mm.m14;
+    rec.transform[12]=mm.m3; rec.transform[13]=mm.m7; rec.transform[14]=mm.m11; rec.transform[15]=mm.m15;
+    ts->spec.drops.push_back(rec);
     return JS_UNDEFINED;
 }
 
@@ -228,6 +636,8 @@ void install_bindings(JSContext* ctx) {
     bind("__dsl_ts_tile",j_ts_tile,5); bind("__dsl_ts_base",j_ts_base,2);
     bind("__dsl_ts_layer",j_ts_layer,2); bind("__dsl_ts_dropChild",j_ts_dropChild,2);
     bind("__dsl_ts_variant",j_ts_variant,1);
+    // Params-fn `r` helper natives (draw from ts->param_rng during layer()).
+    bind("__dsl_ts_rng_int",j_ts_rng_int,1); bind("__dsl_ts_rng_float",j_ts_rng_float,2);
     // Override Math.random with the seeded draw so authored parts are reproducible.
     JSValue math = JS_GetPropertyStr(ctx, g, "Math");
     if (JS_IsObject(math)) {

@@ -115,31 +115,44 @@ static void matrix_to_row16(const Matrix& mm, float out[16]) {
     out[12]=mm.m3; out[13]=mm.m7; out[14]=mm.m11; out[15]=mm.m15;
 }
 
-void DslState::placeChild(const std::string& module,
-                          const void* params, size_t params_len) {
-    // Variant selection: with params, prefer the composite `module \x1f params`
-    // key the host installed for the matching required variant; that maps straight
-    // to the child's REAL resolved hash (no re-derivation). The params bytes are
-    // the JSON.stringify of the placeChild object and must match the canonical
-    // params-json the host keyed by (true for the flat number/bool/string params
-    // requires emits). Fall back to the plain `module` key when no variant matches
-    // or no params were given.
+bool DslState::has_composite_child_key(const std::string& module,
+                                       const char* params_json, size_t len) {
+    if (!params_json || len == 0) return false;
+    std::string key = module;
+    key.push_back('\x1f');
+    key.append(params_json, len);
+    return child_hashes_.find(key) != child_hashes_.end();
+}
+
+bool DslState::lookup_child_hash(const std::string& module,
+                                 const char* params_json, size_t len,
+                                 uint64_t& out) {
     const auto end = child_hashes_.end();
     auto it = end;
-    if (params && params_len > 0) {
+    if (params_json && len > 0) {
         std::string key = module;
         key.push_back('\x1f');
-        key.append(static_cast<const char*>(params), params_len);
+        key.append(params_json, len);
         it = child_hashes_.find(key);
     }
     if (it == end) it = child_hashes_.find(module);
-    if (it == end) {
+    if (it == end) return false;
+    out = it->second;
+    return true;
+}
+
+void DslState::placeChild(const std::string& module,
+                          const void* params, size_t params_len) {
+    uint64_t hash = 0;
+    if (!lookup_child_hash(module,
+                           static_cast<const char*>(params), params_len,
+                           hash)) {
         set_error("placeChild: undeclared child '" + module +
                   "' (add it to static requires)");
         return;
     }
     ChildPlacement p;
-    p.hash = it->second;
+    p.hash = hash;
     matrix_to_row16(top(), p.transform);
     children_.push_back(p);
 }
