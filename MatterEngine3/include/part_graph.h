@@ -131,6 +131,11 @@ private:
 
 namespace part_graph {
 
+// Inverse of params_to_json: flat JSON object {"k": num|bool|"str", ...} → Params.
+// SP-3 v1 only handles the shapes eval_requires emits (flat numbers/bools/strings).
+// Defined in part_graph.cpp (MATTER_HAVE_SCRIPT_HOST section).
+Params params_from_json(const std::string& json);
+
 // Reads .js modules from <schemas_dir> and evaluates `static requires` via the host's
 // top-level eval (no build()).
 class FileModuleResolver : public ModuleResolver {

@@ -564,6 +564,7 @@ TILESETBAKE_TARGET = tileset_bake_tests
 TILESETBAKE_CPP = tileset_bake_tests.cpp ../src/part_graph.cpp \
                   ../src/tileset_bake.cpp ../src/tileset_settle.cpp \
                   ../src/tileset_collider.cpp ../src/tileset_part_collider.cpp \
+                  ../src/tileset_phase.cpp \
                   ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp \
                   ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp \
                   ../src/dsl_bindings.cpp ../src/csg_lowering.cpp \

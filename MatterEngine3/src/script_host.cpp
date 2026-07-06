@@ -376,14 +376,23 @@ std::vector<RequiredChild> ScriptHost::eval_requires(const std::string& source,
     std::vector<RequiredChild> out;
 
     // Reuse the shared params-merge path so the params handed to `requires` are
-    // the same canonical merged params build()/resolve_hash see. On merge
-    // failure (no class, bad params, etc.) fail closed with an empty list.
+    // the same canonical merged params build()/resolve_hash see.
+    // Tileset classes extend Tileset (not Part directly), so merge_params_canonical
+    // returns "{}" with kNoPartClassMsg — accept the fallback (like eval_tileset does)
+    // and only fail-closed on a genuinely bad params_json parse or other errors.
     BakeError merr;
     std::string merged = merge_params_canonical(source, params_json, merr);
-    if (!merr.ok) return out;
+    if (!merr.ok && merr.message != kNoPartClassMsg) return out;
+    if (!merr.ok) merged = "{}";  // tileset fallback: no static params
 
+    // Try Part class first; fall back to Tileset class name for tileset roots.
+    bool is_tileset = false;
     std::string className = find_part_class_name(source);
-    if (className.empty()) return out;
+    if (className.empty()) {
+        className = find_tileset_class_name(source);
+        is_tileset = !className.empty();
+        if (className.empty()) return out;
+    }
 
     // Eval as a module when the part imports shared-lib code (so its class body /
     // `static requires` can reference imported values); fail-closed on a fold
@@ -398,9 +407,37 @@ std::vector<RequiredChild> ScriptHost::eval_requires(const std::string& source,
 
     JSRuntime* rt = nullptr; JSContext* ctx = nullptr;
     BakeError eerr;
-    if (!eval_part_publish_class(source, className, use_module ? &store : nullptr,
-                                 rt, ctx, eerr))
-        return out;
+    if (is_tileset) {
+        // Tileset sources need both kPartBaseJS and kTilesetBaseJS injected so
+        // that `class X extends Tileset` evaluates without a reference error.
+        rt = JS_NewRuntime();
+        if (use_module && !store.sources.empty())
+            JS_SetModuleLoaderFunc(rt, sh_module_normalize, sh_module_loader, &store);
+        ctx = new_bake_context(rt, use_module);
+        JSValue base = JS_Eval(ctx, kPartBaseJS, strlen(kPartBaseJS), "<part-base>",
+                               JS_EVAL_TYPE_GLOBAL);
+        if (JS_IsException(base)) {
+            JS_FreeValue(ctx, base); JS_FreeContext(ctx); JS_FreeRuntime(rt); return out;
+        }
+        JS_FreeValue(ctx, base);
+        JSValue tsbase = JS_Eval(ctx, kTilesetBaseJS, strlen(kTilesetBaseJS),
+                                 "<tileset-base>", JS_EVAL_TYPE_GLOBAL);
+        if (JS_IsException(tsbase)) {
+            JS_FreeValue(ctx, tsbase); JS_FreeContext(ctx); JS_FreeRuntime(rt); return out;
+        }
+        JS_FreeValue(ctx, tsbase);
+        std::string wrapped = source + "\n;globalThis.__partClass = " + className + ";\n";
+        JSValue v = JS_Eval(ctx, wrapped.c_str(), wrapped.size(), "<tileset>",
+                            JS_EVAL_TYPE_GLOBAL);
+        if (JS_IsException(v)) {
+            JS_FreeValue(ctx, v); JS_FreeContext(ctx); JS_FreeRuntime(rt); return out;
+        }
+        JS_FreeValue(ctx, v);
+    } else {
+        if (!eval_part_publish_class(source, className, use_module ? &store : nullptr,
+                                     rt, ctx, eerr))
+            return out;
+    }
 
     JSValue global = JS_GetGlobalObject(ctx);
     JSValue authored = JS_GetPropertyStr(ctx, global, "__partClass");

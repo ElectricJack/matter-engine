@@ -4,14 +4,19 @@
 // the real HostBaker into a temp cache dir, then exercises collider_for_part,
 // scale_fit, and fit_half_height.
 //
+// Task 8 appends: test_e2e_manifest_to_settled_torus — full pipeline from a
+// world.manifest on disk through run_tileset_phase to a SettledTorus.
+//
 // Link recipe: mirrors run-graph-integration (full ScriptHost + QuickJS + MSL
 // backend) plus box3d objects (like run-tilesetphysics) and
-// ../src/tileset_collider.cpp + ../src/tileset_part_collider.cpp.
+// ../src/tileset_collider.cpp + ../src/tileset_part_collider.cpp +
+// ../src/tileset_phase.cpp.
 
 #include "part_graph.h"          // -DMATTER_HAVE_SCRIPT_HOST: FileModuleResolver + HostBaker
 #include "part_asset_v2.h"       // cache_path_resolved
 #include "tileset_part_collider.h"
 #include "tileset_bake.h"
+#include "tileset_phase.h"
 #include "tileset_spec.h"
 
 #include <cmath>
@@ -410,6 +415,86 @@ static void test_scaled_collider_physics(const std::string& cache_dir,
 }
 
 // ---------------------------------------------------------------------------
+// Task 8: test_e2e_manifest_to_settled_torus
+//
+// End-to-end test: writes a ForestFloor.js tileset root + world.manifest to
+// disk, then exercises run_tileset_phase all the way to a SettledTorus.
+// schemas_dir and world_data_dir are set up so that
+//   world_data_dir + "/../schemas" == schemas_dir
+// (matching the real-world WorldData/ / schemas/ sibling convention).
+// ---------------------------------------------------------------------------
+static void test_e2e_manifest_to_settled_torus(const std::string& schemas_dir,
+                                               const std::string& world_data_dir,
+                                               const std::string& cache_dir) {
+    // ForestFloor tileset fixture (global-script syntax: no export default).
+    // Pebble uses seed:0 as a required param; Twig has no overrides.
+    // Both layers use physics:false so the e2e test is fast and convergence is
+    // guaranteed (physics settle is exercised by test_settle_tileset above).
+    static const char* kFloorJs = R"JS(
+class ForestFloor extends Tileset {
+  static requires = [
+    { module: 'Pebble', params: { seed: 0 } },
+    { module: 'Twig' },
+  ];
+  build() {
+    this.tile({ size: 2.0, texelsPerMeter: 128, seed: 7 });
+    this.base((x, z) => 0.0, 1);
+    this.layer('Pebble', { density: 4, physics: false, embed: 0.4,
+                           params: () => ({ seed: 0 }) });
+    this.layer('Twig',   { density: 2, physics: false, embed: 0.2 });
+  }
+}
+)JS";
+
+    // Write the fixture files.
+    const std::string e2e_world_dir = world_data_dir + "/E2E";
+    system(("mkdir -p " + e2e_world_dir).c_str());
+    write_file(schemas_dir + "/ForestFloor.js", kFloorJs);
+    write_file(e2e_world_dir + "/world.manifest", "ForestFloor tileset\n");
+
+    // Manifest surfaces the tileset flag.
+    std::vector<part_graph::ChildRequest> roots;
+    std::vector<bool> expand, ts;
+    std::string err;
+    CHECK(part_graph::PartGraph::read_manifest(world_data_dir, "E2E", roots, err, &expand, &ts),
+          "e2e: manifest parses");
+    CHECK(roots.size() == 1 && !ts.empty() && ts[0], "e2e: root flagged tileset");
+
+    // Run the full tileset phase.
+    tileset::SettledTorus torus;
+    CHECK(tileset::run_tileset_phase(world_data_dir, "E2E", roots[0].module,
+                                     cache_dir, torus, err),
+          "e2e: tileset phase runs");
+    if (!err.empty()) printf("  e2e phase err: %s\n", err.c_str());
+    CHECK(torus.report.converged_all, "e2e: all layers converged");
+    CHECK(!torus.instances.empty(), "e2e: settled instances produced");
+    CHECK(torus.base.set, "e2e: base field present");
+
+    // Determinism: run the phase a second time and compare pose hashes.
+    tileset::SettledTorus torus2;
+    CHECK(tileset::run_tileset_phase(world_data_dir, "E2E", roots[0].module,
+                                     cache_dir, torus2, err),
+          "e2e: second phase run");
+    if (!err.empty()) printf("  e2e phase2 err: %s\n", err.c_str());
+    CHECK(torus.report.pose_hash == torus2.report.pose_hash,
+          "e2e: phase deterministic (pose_hash stable)");
+
+    // Fail-closed: missing child module → error, false return.
+    static const char* kBadFloorJs =
+        "class BadFloor extends Tileset {\n"
+        "  static requires = [ { module: 'Nope' } ];\n"
+        "  build() { this.tile({size:2.0, texelsPerMeter:64, seed:1});\n"
+        "            this.layer('Nope', { density: 1 }); }\n}\n";
+    write_file(schemas_dir + "/BadFloor.js", kBadFloorJs);
+    tileset::SettledTorus t3;
+    bool bad_ok = !tileset::run_tileset_phase(world_data_dir, "E2E", "BadFloor",
+                                              cache_dir, t3, err)
+                  && !err.empty();
+    CHECK(bad_ok, "e2e: missing child module fails closed");
+    if (!bad_ok) printf("  bad floor err was: '%s'\n", err.c_str());
+}
+
+// ---------------------------------------------------------------------------
 // main: set up temp cache, bake fixtures, call test.
 // ---------------------------------------------------------------------------
 int main()
@@ -490,6 +575,17 @@ int main()
         uint64_t pebble_hash = pebble_ir.root_hashes[0];
         uint64_t twig_hash   = twig_ir.root_hashes[0];
         test_scaled_collider_physics(root, pebble_hash, twig_hash);
+    }
+
+    // Task 8 e2e: world_data_dir is a WorldData/ subdir of root so that
+    //   world_data_dir + "/../schemas" resolves to root + "/schemas" (already written).
+    {
+        const std::string world_data_dir = root + "/WorldData";
+        system(("mkdir -p " + world_data_dir).c_str());
+        // cache_dir = root (contains parts/); we are already chdir'd there.
+        test_e2e_manifest_to_settled_torus(schemas /*= root+"/schemas"*/,
+                                           world_data_dir,
+                                           root /*cache_dir*/);
     }
 
     if (prevcwd[0]) (void)chdir(prevcwd);
