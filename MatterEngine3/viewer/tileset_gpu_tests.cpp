@@ -6,6 +6,15 @@
 #include "raylib.h"
 #include "gl46.h"
 #include "tileset_gl_ctx.h"
+#include "tileset_bake_primary.h"
+#include "tileset_torus_bvh.h"
+#include "tileset_bake.h"
+#include "tileset_spec.h"
+#include "tileset_layout.h"
+#include "blas_manager.hpp"
+#include "tlas_manager.hpp"
+#include "material_registry.h"
+#include <cmath>
 
 #include <cstdio>
 #include <cstdlib>
@@ -99,6 +108,125 @@ static void test_include_expansion() {
     std::remove(primary_path.c_str());
 }
 
+// -----------------------------------------------------------------------------
+// Task 4 test — small fixture: base + a single "pebble" BLAS placed at torus
+// centre. We manufacture the pebble as a hand-built 12-triangle cube (side
+// 0.1m, centred at y=0.05) so we don't need part_asset::load_v2. Assertions:
+//  - inside the pebble's XZ footprint, at least one texel has albedo != base
+//  - outside the footprint, at least one texel has albedo == base material
+//  - height range is within [heightMin, heightMax]
+// -----------------------------------------------------------------------------
+static void test_primary_bake_single_pebble() {
+    using namespace tileset;
+
+    // ---- Build a SettledTorus with a flat base and one instance ---------
+    SettledTorus st;
+    st.cfg.size             = 2.0f;
+    st.cfg.texels_per_meter = 32;      // small: 4 * 2m * 32 = 256 px per side
+    st.cfg.seed             = 7;
+    st.base.n        = BaseField::kSamplesPerTile;
+    st.base.cell     = st.cfg.size / (float)st.base.n;
+    st.base.material = 3;              // arbitrary "ground" material id
+    st.base.set      = true;
+    st.base.heights.assign((size_t)st.base.n * st.base.n, 0.0f);
+
+    // ---- Assemble base BLAS + a hand-built pebble BLAS + TLAS -----------
+    BLASManager blas;
+    TLASManager tlas(16);
+    std::string err;
+
+    // Base only (we skip assemble_torus_bvh so we can hand-inject a pebble
+    // BLAS without needing a .part file on disk).
+    SettledTorus base_only = st;
+    REQUIRE(assemble_torus_bvh(base_only, BakeInputs{}, blas, tlas, err));
+
+    // Add pebble: 12-triangle box at (4.0, 0.05, 4.0) with side 0.2 m.
+    std::vector<Tri>   ptri;
+    std::vector<TriEx> ptex;
+    float px = 4.0f, pz = 4.0f;
+    float e = 0.1f;
+    float lo = -e, hi = e;
+    // 8 corners
+    float3 c[8] = {
+        {lo,lo,lo},{hi,lo,lo},{hi,hi,lo},{lo,hi,lo},
+        {lo,lo,hi},{hi,lo,hi},{hi,hi,hi},{lo,hi,hi},
+    };
+    static const int F[12][3] = {
+        {0,2,1},{0,3,2},   // -Z
+        {4,5,6},{4,6,7},   // +Z
+        {0,1,5},{0,5,4},   // -Y
+        {3,7,6},{3,6,2},   // +Y
+        {0,4,7},{0,7,3},   // -X
+        {1,2,6},{1,6,5},   // +X
+    };
+    for (int i = 0; i < 12; ++i) {
+        Tri t{};
+        t.vertex0 = float3{ c[F[i][0]].x + px, c[F[i][0]].y + 0.1f, c[F[i][0]].z + pz };
+        t.vertex1 = float3{ c[F[i][1]].x + px, c[F[i][1]].y + 0.1f, c[F[i][1]].z + pz };
+        t.vertex2 = float3{ c[F[i][2]].x + px, c[F[i][2]].y + 0.1f, c[F[i][2]].z + pz };
+        ptri.push_back(t);
+        TriEx ex{}; ex.materialId = 5; // pebble material
+        ptex.push_back(ex);
+    }
+    BLASHandle pebble_h = blas.register_triangles(ptri, ptex);
+
+    // Push a second instance for the pebble at identity (its verts are pre-
+    // placed in torus space).
+    tlas.push_matrix(); tlas.load_identity(); tlas.draw(pebble_h, 0); tlas.pop_matrix();
+    tlas.build(blas);
+    tlas.ensure_gpu_textures_ready(blas);
+
+    // ---- Compile primary shader ---------------------------------------
+    std::string src;
+    REQUIRE(load_compute_source("shaders_gpu/tileset_bake_primary.comp",
+                                 "shaders", src, err));
+    GLuint prog = compile_compute_program(src, err);
+    REQUIRE(prog != 0);
+    if (!prog) { std::fprintf(stderr, "  err: %s\n", err.c_str()); return; }
+
+    // ---- Materials --------------------------------------------------
+    std::vector<MaterialDef> mats(64);
+    for (int i = 0; i < 64; ++i) mats[i] = *MaterialRegistryGet(i);
+    // Override 3 = grey base, 5 = red pebble so we can distinguish.
+    mats[3].albedo[0] = 0.5f; mats[3].albedo[1] = 0.5f; mats[3].albedo[2] = 0.5f;
+    mats[5].albedo[0] = 1.0f; mats[5].albedo[1] = 0.0f; mats[5].albedo[2] = 0.0f;
+
+    // ---- Bake -----------------------------------------------------
+    std::vector<uint8_t>  a, n2, o;
+    std::vector<uint16_t> h;
+    REQUIRE(bake_primary(prog, blas, tlas, mats, st.cfg,
+                         /*ray_y*/ 2.0f, /*height_min*/ 0.0f, /*height_max*/ 0.5f,
+                         a, n2, o, h, err));
+
+    const int W = kTorusN * (int)st.cfg.size * st.cfg.texels_per_meter;
+    const int H = W;
+    REQUIRE((int)a.size()  == W * H * 3);
+    REQUIRE((int)n2.size() == W * H * 2);
+    REQUIRE((int)o.size()  == W * H * 3);
+    REQUIRE((int)h.size()  == W * H);
+
+    // Sample a texel over the pebble centre (4.0, 4.0).
+    int px_x = (int)((4.0f) * st.cfg.texels_per_meter);
+    int px_z = (int)((4.0f) * st.cfg.texels_per_meter);
+    int idx  = px_z * W + px_x;
+    REQUIRE(a[idx*3 + 0] > 200);  // red-ish
+    REQUIRE(a[idx*3 + 1] < 80);
+
+    // Sample base far from the pebble (0.5m in): should read grey.
+    int bx = (int)(0.5f * st.cfg.texels_per_meter);
+    int bz = (int)(0.5f * st.cfg.texels_per_meter);
+    int bi = bz * W + bx;
+    REQUIRE(a[bi*3 + 0] > 100 && a[bi*3 + 0] < 160);
+    REQUIRE(a[bi*3 + 1] > 100 && a[bi*3 + 1] < 160);
+
+    // Height at pebble ≈ 0.2m (top of the box); at base ≈ 0.0m.
+    // R16 normalization: (y - 0) / (0.5 - 0) * 65535.
+    REQUIRE(h[idx] > (uint16_t)(0.15f / 0.5f * 65535 * 0.9f));
+    REQUIRE(h[bi]  < (uint16_t)(0.05f / 0.5f * 65535));
+
+    glDeleteProgram(prog);
+}
+
 int main() {
     SetConfigFlags(FLAG_WINDOW_HIDDEN);
     InitWindow(320, 200, "tileset_gpu_tests");
@@ -115,6 +243,7 @@ int main() {
     test_gl_init();
     test_trivial_compute_ssbo();
     test_include_expansion();
+    test_primary_bake_single_pebble();
 
     CloseWindow();
 

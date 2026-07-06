@@ -1,0 +1,89 @@
+#version 460 core
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+// -----------------------------------------------------------------------------
+// Output images (bindings match the C++ driver in tileset_bake_primary.cpp).
+// -----------------------------------------------------------------------------
+layout(rgba8, binding = 0) uniform writeonly image2D albedoImg;   // .rgb + .a=1
+layout(rg8,   binding = 1) uniform writeonly image2D normalImg;   // (nx, nz) [0,1]
+layout(rgba8, binding = 2) uniform writeonly image2D ormImg;      // .r=255 (no AO)
+layout(r16,   binding = 3) uniform writeonly image2D heightImg;   // 16-bit norm
+
+uniform int   atlasW;
+uniform int   atlasH;
+uniform float tileSize;         // meters per tile edge
+uniform int   texelsPerMeter;
+uniform float rayY;             // ortho ray origin Y (well above all geometry)
+uniform float heightMin;
+uniform float heightMax;
+
+// aoEnabled: required by bvh_tlas_common.glsl (intersectScene reads it for AO).
+// We don't compute AO in this pass so always disable it.
+uniform int aoEnabled;
+
+// -----------------------------------------------------------------------------
+// Material table uniform (required by materials.glsl / getMaterialProperties
+// which is called inside bvh_tlas_common.glsl's intersectScene).
+// -----------------------------------------------------------------------------
+#include "materials.glsl"
+
+// -----------------------------------------------------------------------------
+// BVH sampler uniforms + intersectScene (textually included from viewer/shaders).
+// -----------------------------------------------------------------------------
+#include "bvh_tlas_common.glsl"
+
+// Material SSBO: MATERIAL_FLOATS_PER_DEF = 12 floats per id, packed.
+// Layout matches MaterialRegistryPackForGPU:
+//   [ albedo.r, .g, .b, roughness, metallic, emission, translucency, ior,
+//     flatShading, mergeGroup, meshingAlgorithm, pad ]
+layout(std430, binding = 10) readonly buffer MaterialBuf { float mats[]; };
+
+vec3 mat_albedo(int id) {
+    int base = id * 12;
+    return vec3(mats[base + 0], mats[base + 1], mats[base + 2]);
+}
+float mat_rough(int id)  { return mats[id * 12 + 3]; }
+float mat_metal(int id)  { return mats[id * 12 + 4]; }
+
+void main() {
+    ivec2 xy = ivec2(gl_GlobalInvocationID.xy);
+    if (xy.x >= atlasW || xy.y >= atlasH) return;
+
+    // Texel centre -> world XZ. Ortho ray straight down.
+    float wx = (float(xy.x) + 0.5) / float(texelsPerMeter);
+    float wz = (float(xy.y) + 0.5) / float(texelsPerMeter);
+    vec3 O = vec3(wx, rayY, wz);
+    vec3 D = vec3(0.0, -1.0, 0.0);
+
+    float maxT = rayY - (heightMin - 1.0);  // guaranteed to reach the deepest sample
+    HitResult hit = intersectScene(O, D, maxT);
+
+    if (!hit.hit) {
+        imageStore(albedoImg, xy, vec4(0.0, 0.0, 0.0, 1.0));
+        imageStore(normalImg, xy, vec4(0.5, 0.5, 0.0, 0.0));
+        imageStore(ormImg,    xy, vec4(1.0, 1.0, 0.0, 1.0));  // AO=255, rough=255, metal=0
+        imageStore(heightImg, xy, vec4(0.0));
+        return;
+    }
+
+    int mid = hit.material;
+    vec3 albedo = mat_albedo(mid);
+    float rough = mat_rough(mid);
+    float metal = mat_metal(mid);
+
+    // Tangent-space normal over +Y: pack (nx, nz) -> [0,1]. Z reconstructed
+    // at sample time via sqrt(1 - nx^2 - nz^2).
+    vec3 N = normalize(hit.normal);
+    // If the surface is facing away (rare -- back face hit), flip.
+    if (N.y < 0.0) N = -N;
+    vec2 nrm_rg = 0.5 * N.xz + 0.5;
+
+    // Height: normalize hit.y into [0,1] over [heightMin, heightMax].
+    float hnorm = clamp((hit.position.y - heightMin) / max(heightMax - heightMin, 1e-6),
+                        0.0, 1.0);
+
+    imageStore(albedoImg, xy, vec4(albedo, 1.0));
+    imageStore(normalImg, xy, vec4(nrm_rg, 0.0, 0.0));
+    imageStore(ormImg,    xy, vec4(1.0, rough, metal, 1.0)); // .r AO placeholder
+    imageStore(heightImg, xy, vec4(hnorm, 0.0, 0.0, 0.0));
+}

@@ -33,7 +33,7 @@ VIEWER_SRC = main.cpp renderer.cpp ui.cpp \
              world_state.cpp part_store.cpp resolvers.cpp \
              world_composer.cpp local_provider.cpp \
              raster_mesh.cpp raster_composer.cpp probe_texture.cpp \
-             gpu_culler.cpp tileset_gl_ctx.cpp
+             gpu_culler.cpp tileset_gl_ctx.cpp tileset_bake_primary.cpp
 
 # ME3 pipeline + MSL backend C++ sources (verbatim from tests/Makefile EXAMPLE_CPP,
 # minus example_world.cpp). Same dir depth, so the ../ paths are unchanged.
@@ -44,6 +44,7 @@ PIPELINE_CPP = ../src/part_graph.cpp \
               ../src/part_asset_v2.cpp ../src/lod_bake.cpp ../src/world_flatten.cpp ../src/part_flatten.cpp ../src/triangle_emit.cpp \
               ../src/part_cluster.cpp \
               ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
+              ../src/tileset_torus_bvh.cpp \
               ../src/sector_grid.cpp ../src/lod_select.cpp \
               ../src/world_lights.cpp ../src/probe_volume.cpp \
               ../src/world_tracer.cpp ../src/probe_bake.cpp \
