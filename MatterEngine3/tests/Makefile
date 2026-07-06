@@ -54,7 +54,7 @@ else
     LDLIBS = ../../Libraries/raylib/src/libraylib.a
 endif
 
-.PHONY: clean run-partv2 run-script run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting run-flatten run-grasslod run-stressforest run-tilesetphysics
+.PHONY: clean run-partv2 run-script run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting run-flatten run-grasslod run-stressforest run-tilesetphysics run-tilesetcore
 
 # Part Artifact v2 round-trip + resolved-hash + format-guard tests (headless, GL-free).
 # NEW impl ../src/part_asset_v2.cpp + consumed MatterSurfaceLib backend sources.
@@ -520,3 +520,10 @@ $(BOX3D_DIR)/libbox3d.a:
 
 run-tilesetphysics: tileset_physics_tests
 	./tileset_physics_tests
+
+tileset_core_tests: tileset_core_tests.cpp ../src/tileset_layout.cpp
+	g++ -std=c++17 -Wall -Wno-missing-braces -O2 -I../include \
+	    -o $@ tileset_core_tests.cpp ../src/tileset_layout.cpp
+
+run-tilesetcore: tileset_core_tests
+	./tileset_core_tests
