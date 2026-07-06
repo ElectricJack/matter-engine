@@ -54,7 +54,7 @@ else
     LDLIBS = ../../Libraries/raylib/src/libraylib.a
 endif
 
-.PHONY: clean run-partv2 run-script run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting run-flatten run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl
+.PHONY: clean run-partv2 run-script run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting run-flatten run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake
 
 # Part Artifact v2 round-trip + resolved-hash + format-guard tests (headless, GL-free).
 # NEW impl ../src/part_asset_v2.cpp + consumed MatterSurfaceLib backend sources.
@@ -553,3 +553,55 @@ $(TILESETDSL_TARGET): tileset_dsl_tests.cpp $(SCRIPT_CPP) $(SCRIPT_C) $(QJS_C)
 
 run-tilesetdsl: $(TILESETDSL_TARGET)
 	./$(TILESETDSL_TARGET)
+
+# Tileset bake bridge: bakes Pebble + Twig fixtures via HostBaker, then tests
+# collider_for_part / scale_fit / fit_half_height. Full stack: ScriptHost +
+# QuickJS + MSL backend (mirrors run-graph-integration) + tileset_collider +
+# tileset_part_collider + box3d (box3d.h transitively included via tileset_settle.h;
+# linked for completeness since collider_for_part ultimately feeds box3d).
+# -DMATTER_HAVE_SCRIPT_HOST enables FileModuleResolver + HostBaker in part_graph.h.
+TILESETBAKE_TARGET = tileset_bake_tests
+TILESETBAKE_CPP = tileset_bake_tests.cpp ../src/part_graph.cpp \
+                  ../src/tileset_collider.cpp ../src/tileset_part_collider.cpp \
+                  ../src/script_host.cpp ../src/dsl_state.cpp ../src/dsl_triangle.cpp \
+                  ../src/triangle_emit.cpp ../src/polygon_triangulate.cpp \
+                  ../src/dsl_bindings.cpp ../src/csg_lowering.cpp \
+                  ../src/module_resolver.cpp ../src/part_asset_v2.cpp ../src/lod_bake.cpp \
+                  ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
+                  ../../MatterSurfaceLib/src/cluster.cpp ../../MatterSurfaceLib/src/cell.cpp \
+                  ../../MatterSurfaceLib/src/mesh_simplifier.cpp \
+                  ../../MatterSurfaceLib/src/blas_manager.cpp \
+                  ../../MatterSurfaceLib/src/bvh.cpp \
+                  ../../MatterSurfaceLib/src/bvh_analyzer.cpp \
+                  ../../MatterSurfaceLib/src/mesh_worker_pool.cpp \
+                  ../../MatterSurfaceLib/src/mesh_build_utils.cpp \
+                  ../../MatterSurfaceLib/src/meshing_algorithm.cpp \
+                  ../../MatterSurfaceLib/src/marching_cubes_algorithm.cpp \
+                  ../../MatterSurfaceLib/src/oriented_cube_algorithm.cpp \
+                  ../../MatterSurfaceLib/src/vertex_ao.cpp \
+                  ../../MatterSurfaceLib/src/occupancy.cpp \
+                  ../../MatterSurfaceLib/src/tlas_manager.cpp \
+                  ../../MatterSurfaceLib/src/part_asset.cpp \
+                  ../../MatterSurfaceLib/src/lattice.cpp \
+                  ../../MatterSurfaceLib/src/particle_culling.cpp
+TILESETBAKE_C   = ../../MatterSurfaceLib/src/surface.c \
+                  ../../MatterSurfaceLib/src/open_particle_surface.c \
+                  ../../MatterSurfaceLib/src/fat_primitive.c \
+                  ../../MatterSurfaceLib/src/spatial_hash.c \
+                  ../../MatterSurfaceLib/src/object_allocator.c \
+                  ../../MatterSurfaceLib/src/material_registry.c
+TILESETBAKE_C_OBJ = surface.o open_particle_surface.o fat_primitive.o \
+                    spatial_hash.o object_allocator.o material_registry.o
+
+$(TILESETBAKE_TARGET): $(TILESETBAKE_CPP) $(TILESETBAKE_C) $(QJS_C) $(BOX3D_DIR)/libbox3d.a
+	gcc -c $(QJS_C) -O2 -DCONFIG_VERSION='"0.10.0"' $(QJS_INC)
+	gcc -c $(TILESETBAKE_C) -O2 -DPLATFORM_DESKTOP $(INCLUDE_PATHS)
+	$(CC) $(TILESETBAKE_CPP) $(QJS_OBJ) $(TILESETBAKE_C_OBJ) \
+	      -o $(TILESETBAKE_TARGET) \
+	      $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST \
+	      $(INCLUDE_PATHS) -I$(BOX3D_DIR)/include \
+	      $(QJS_INC) $(LDFLAGS) $(LDLIBS) $(BOX3D_DIR)/libbox3d.a -lm
+	rm -f $(QJS_OBJ) $(TILESETBAKE_C_OBJ)
+
+run-tilesetbake: $(TILESETBAKE_TARGET)
+	./$(TILESETBAKE_TARGET)
