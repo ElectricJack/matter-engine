@@ -33,8 +33,14 @@ namespace tileset {
 // -----------------------------------------------------------------------------
 // Height range from the base field + a coarse instance-y estimate.
 // -----------------------------------------------------------------------------
-static void compute_height_range(const SettledTorus& st, float& hmin, float& hmax) {
+// compute_height_range also returns the instance top envelope for ray_y.
+// max_instance_top is the highest point any instance can reach: pose_y + 2*scale
+// (generous bounding-sphere assumption). The caller floors ray_y at hmax+2.
+static void compute_height_range(const SettledTorus& st,
+                                  float& hmin, float& hmax,
+                                  float& max_instance_top) {
     hmin = 1e30f; hmax = -1e30f;
+    max_instance_top = -1e30f;
     for (float y : st.base.heights) {
         if (y < hmin) hmin = y;
         if (y > hmax) hmax = y;
@@ -46,8 +52,13 @@ static void compute_height_range(const SettledTorus& st, float& hmin, float& hma
         float hi = y + 0.5f * si.scale;
         if (lo < hmin) hmin = lo;
         if (hi > hmax) hmax = hi;
+        // Conservative instance top: pose_y + 2*scale (bounding-sphere radius
+        // is at most scale, plus a 1*scale safety margin).
+        float top = y + 2.0f * si.scale;
+        if (top > max_instance_top) max_instance_top = top;
     }
     if (hmin > hmax) { hmin = 0.0f; hmax = 1.0f; }
+    if (max_instance_top < hmax) max_instance_top = hmax;
     // Pad so R16 quantization has headroom.
     hmax += 0.05f;
     hmin -= 0.05f;
@@ -149,11 +160,17 @@ bool bake_tileset_gpu(const SettledTorus& settled,
         }
 
         // ------------------------------------------------------------------
-        // 6. Height range.
+        // 6. Height range + ray origin.
+        //    ray_y is floored at hmax+2 so it always clears the quantization-
+        //    padded top, then raised further if any instance top extends above
+        //    that floor (e.g. scale=5 → top≈10m, hmax+2 would miss it).
         // ------------------------------------------------------------------
-        float hmin = 0.0f, hmax = 1.0f;
-        compute_height_range(settled, hmin, hmax);
-        const float ray_y = hmax + 2.0f;
+        float hmin = 0.0f, hmax = 1.0f, max_instance_top = 1.0f;
+        compute_height_range(settled, hmin, hmax, max_instance_top);
+        const float ray_y_floor    = hmax + 2.0f;
+        const float ray_y_envelope = max_instance_top + 0.5f;
+        const float ray_y          = ray_y_floor > ray_y_envelope
+                                         ? ray_y_floor : ray_y_envelope;
 
         // ------------------------------------------------------------------
         // 7. Primary bake pass.

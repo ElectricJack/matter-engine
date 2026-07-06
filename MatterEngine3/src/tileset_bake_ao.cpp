@@ -15,13 +15,17 @@
 #include <string>
 #include <vector>
 
+// Confirm the header's uint32_t aliasing is safe on this platform.
+static_assert(sizeof(GLuint) == sizeof(uint32_t),
+              "GLuint != uint32_t: tileset_bake_ao.h API is mismatched");
+
 namespace tileset {
 
 // ---------------------------------------------------------------------------
 // Internal implementation — accepts a pre-packed material float buffer and
 // an explicit materialCount. All public overloads delegate here.
 // ---------------------------------------------------------------------------
-static bool bake_ao_impl(GLuint program,
+static bool bake_ao_impl(uint32_t program,
                          BLASManager& blas,
                          TLASManager& tlas,
                          const std::vector<float>& packed_mats,
@@ -63,6 +67,14 @@ static bool bake_ao_impl(GLuint program,
                  (GLsizeiptr)(packed_mats.size() * sizeof(float)),
                  packed_mats.data(), GL_STATIC_DRAW);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 10, ssboMat);
+    // NOTE: materialTable uniform is intentionally NOT uploaded here.
+    // The AO shader uses getMaterialProperties only to decide flatShading for
+    // the primary hit normal. With zero vertex normals on the base mesh, the
+    // BVH shader's den<1e-12 guard produces a valid face normal even without
+    // flatShading=true. Uploading the real table changes AO output and breaks
+    // Wang-tile seam invariance for the AO channel, because each tile's unique
+    // interior produces different neighbour-occlusion at shared boundary strips.
+    // The canonical materialTable data IS uploaded by bake_primary.
 
     // -----------------------------------------------------------------------
     // BLAS/TLAS bindings (calls ensure_gpu_textures_ready internally).
@@ -140,7 +152,7 @@ static bool bake_ao_impl(GLuint program,
 // Overload 1: no material table — forces materialCount=0 (safe for base-only
 // TLAS where vertex normals are zero; face normals are used throughout).
 // ---------------------------------------------------------------------------
-bool bake_ao(GLuint program,
+bool bake_ao(uint32_t program,
              BLASManager& blas,
              TLASManager& tlas,
              const TileConfig& cfg,
@@ -166,7 +178,7 @@ bool bake_ao(GLuint program,
 // The orchestrator (bake_tileset_gpu) forces the base material to
 // flatShading=true before calling this overload.
 // ---------------------------------------------------------------------------
-bool bake_ao(GLuint program,
+bool bake_ao(uint32_t program,
              BLASManager& blas,
              TLASManager& tlas,
              const std::vector<MaterialDef>& mats,
@@ -178,10 +190,9 @@ bool bake_ao(GLuint program,
              std::vector<uint8_t>& ao_out,
              std::string& err)
 {
-    // Pack mats[] into the same float layout as bake_primary / MaterialRegistryPackForGPU:
-    // 12 floats per entry: [albedo.r, albedo.g, albedo.b, roughness,
-    //                       metallic, emission, translucency, pad,
-    //                       ior, flatShading, mergeGroup, pad]
+    // Pack mats[] into the canonical MaterialRegistryPackForGPU layout (12 floats):
+    //   [0..2] albedo.rgb, [3] roughness, [4] metallic, [5] emission, [6] pad,
+    //   [7] translucency, [8] ior, [9] flatShading, [10] mergeGroup, [11] pad
     const int n = (int)mats.size();
     std::vector<float> packed((size_t)n * 12, 0.0f);
     for (int i = 0; i < n; ++i) {
@@ -190,11 +201,12 @@ bool bake_ao(GLuint program,
         r[0]  = m.albedo[0]; r[1]  = m.albedo[1]; r[2]  = m.albedo[2];
         r[3]  = m.roughness;
         r[4]  = m.metallic;  r[5]  = m.emission;
-        r[6]  = m.translucency; r[7] = 0.0f;
+        r[6]  = 0.0f; /* pad */
+        r[7]  = m.translucency;
         r[8]  = m.ior;
         r[9]  = (float)m.flatShading;
         r[10] = (float)m.mergeGroup;
-        r[11] = 0.0f;
+        r[11] = 0.0f; /* pad */
     }
     return bake_ao_impl(program, blas, tlas, packed, n,
                         cfg, ray_y, height_min, height_max, seed, ao_out, err);

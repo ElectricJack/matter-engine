@@ -7,10 +7,10 @@
 #include <string>
 #include <vector>
 
-// raylib types via ../viewer/gl46.h; but this header is used from both viewer
-// (has GL) and the future orchestration TU (also viewer-side), so we forward-
-// declare GLuint as unsigned int (matches the GLAD typedef).
-typedef unsigned int GLuint;
+// Use uint32_t in the public API instead of GLuint to avoid a GL header
+// dependency here. GLuint is typedef unsigned int in all GL implementations;
+// tileset_bake_primary.cpp asserts sizeof(GLuint)==sizeof(uint32_t) at compile
+// time so a mismatch is a hard build error rather than a silent runtime bug.
 
 class BLASManager;
 class TLASManager;
@@ -26,7 +26,7 @@ namespace tileset {
 //
 // program: prebuilt GL compute program (from compile_compute_program).
 // ray_y: ortho origin Y in world space (must be well above heightMax).
-bool bake_primary(GLuint program,
+bool bake_primary(uint32_t program,
                   BLASManager& blas,
                   TLASManager& tlas,
                   const std::vector<MaterialDef>& mats,

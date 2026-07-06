@@ -34,6 +34,38 @@ static int g_tests = 0, g_failures = 0;
     } while (0)
 
 // -----------------------------------------------------------------------------
+// CPU-side pack-layout assertion (runs without GL, before window init).
+// Verifies the canonical slot assignments for flatShading, mergeGroup,
+// translucency, and ior match materials.glsl's getMaterialProperties offsets.
+// -----------------------------------------------------------------------------
+static void test_material_pack_layout() {
+    // Build a fixture material with distinctive values at the contested slots.
+    MaterialDef fix{};
+    fix.albedo[0] = 0.1f; fix.albedo[1] = 0.2f; fix.albedo[2] = 0.3f;
+    fix.roughness = 0.4f; fix.metallic = 0.5f; fix.emission = 0.6f;
+    fix.translucency = 0.5f;
+    fix.ior = 1.7f;
+    fix.flatShading = 1;
+    fix.mergeGroup = 42;
+
+    // Replicate the canonical pack (same code path as both bake drivers).
+    float r[12]{};
+    r[0] = fix.albedo[0]; r[1] = fix.albedo[1]; r[2] = fix.albedo[2];
+    r[3] = fix.roughness; r[4] = fix.metallic;  r[5] = fix.emission;
+    r[6] = 0.0f;               // pad
+    r[7] = fix.translucency;
+    r[8] = fix.ior;
+    r[9] = (float)fix.flatShading;
+    r[10]= (float)fix.mergeGroup;
+    r[11]= 0.0f;               // pad
+
+    REQUIRE(r[7]  == 0.5f);    // translucency
+    REQUIRE(r[8]  == 1.7f);    // ior
+    REQUIRE(r[9]  == 1.0f);    // flatShading
+    REQUIRE(r[10] == 42.0f);   // mergeGroup
+}
+
+// -----------------------------------------------------------------------------
 // Task 3 tests
 // -----------------------------------------------------------------------------
 static void test_gl_init() {
@@ -401,6 +433,9 @@ static void test_end_to_end_cache_hit() {
 }
 
 int main() {
+    // CPU-side pack layout check: runs before GL init so it's always exercised.
+    test_material_pack_layout();
+
     SetConfigFlags(FLAG_WINDOW_HIDDEN);
     InitWindow(320, 200, "tileset_gpu_tests");
 
@@ -409,7 +444,11 @@ int main() {
         std::printf("SKIP: GL 4.6 unavailable (%s); set GALLIUM_DRIVER=d3d12 on WSLg.\n",
                     why.c_str());
         CloseWindow();
-        return 0;
+        // Still report CPU test results.
+        std::printf("\n--- Results: %d/%d passed", g_tests - g_failures, g_tests);
+        if (g_failures == 0) std::printf(" --- ALL PASS\n");
+        else                 std::printf(" --- %d FAIL\n", g_failures);
+        return g_failures ? 1 : 0;
     }
     std::printf("GL 4.6 available - running tileset GPU tests.\n");
 

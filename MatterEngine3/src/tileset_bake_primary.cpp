@@ -16,9 +16,13 @@
 #include <string>
 #include <vector>
 
+// Confirm the header's uint32_t aliasing is safe on this platform.
+static_assert(sizeof(GLuint) == sizeof(uint32_t),
+              "GLuint != uint32_t: tileset_bake_primary.h API is mismatched");
+
 namespace tileset {
 
-bool bake_primary(GLuint program,
+bool bake_primary(uint32_t program,
                   BLASManager& blas,
                   TLASManager& tlas,
                   const std::vector<MaterialDef>& mats,
@@ -65,27 +69,35 @@ bool bake_primary(GLuint program,
     // -----------------------------------------------------------------------
     // Material SSBO.
     // -----------------------------------------------------------------------
+    // Pack using the canonical MaterialRegistryPackForGPU layout (12 floats):
+    //   [0..2] albedo.rgb, [3] roughness, [4] metallic, [5] emission, [6] pad,
+    //   [7] translucency, [8] ior, [9] flatShading, [10] mergeGroup, [11] pad
     std::vector<float> packed(mats.size() * 12);
     for (size_t i = 0; i < mats.size(); ++i) {
         const MaterialDef& m = mats[i];
-        packed[i*12 + 0]  = m.albedo[0];
-        packed[i*12 + 1]  = m.albedo[1];
-        packed[i*12 + 2]  = m.albedo[2];
-        packed[i*12 + 3]  = m.roughness;
-        packed[i*12 + 4]  = m.metallic;
-        packed[i*12 + 5]  = m.emission;
-        packed[i*12 + 6]  = m.translucency;
-        packed[i*12 + 7]  = m.ior;
-        packed[i*12 + 8]  = (float)m.flatShading;
-        packed[i*12 + 9]  = (float)m.mergeGroup;
-        packed[i*12 + 10] = (float)m.meshingAlgorithm;
-        packed[i*12 + 11] = 0.0f;
+        float* r = packed.data() + i * 12;
+        r[0]  = m.albedo[0]; r[1]  = m.albedo[1]; r[2]  = m.albedo[2];
+        r[3]  = m.roughness;
+        r[4]  = m.metallic;  r[5]  = m.emission;
+        r[6]  = 0.0f; /* pad */
+        r[7]  = m.translucency;
+        r[8]  = m.ior;
+        r[9]  = (float)m.flatShading;
+        r[10] = (float)m.mergeGroup;
+        r[11] = 0.0f; /* pad */
     }
     GLuint ssboMat = 0;
     glGenBuffers(1, &ssboMat);
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssboMat);
     glBufferData(GL_SHADER_STORAGE_BUFFER, (GLsizeiptr)(packed.size() * 4), packed.data(), GL_STATIC_DRAW);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 10, ssboMat);
+
+    // Upload materialTable uniform so getMaterialProperties() in materials.glsl
+    // reads real values (not zero-initialized defaults).
+    {
+        GLint loc = glGetUniformLocation(program, "materialTable");
+        if (loc >= 0) glUniform1fv(loc, (GLsizei)packed.size(), packed.data());
+    }
 
     // -----------------------------------------------------------------------
     // BLAS/TLAS bindings + scalar uniforms.

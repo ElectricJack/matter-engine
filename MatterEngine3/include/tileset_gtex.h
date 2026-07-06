@@ -1,6 +1,12 @@
 #pragma once
 // tileset_gtex.h — .gtex binary atlas format (writer + reader + cache check).
 //
+// LINKING NOTE: when this header is compiled into a translation unit that
+// links raylib (which bundles stb_image/stb_image_write), the caller must
+// define TILESET_GTEX_USE_RAYLIB_STB. Without it, tileset_gtex.cpp's stb
+// impl macros collide with raylib's copies. The viewer Makefile defines
+// this; the headless engine build does not (no raylib linked).
+//
 // File layout:
 //   [ GTexHeader (fixed) ]
 //   [ ChannelEntry[4]    ]  // ALBEDO_RGB8, NORMAL_RG8, ORM_RGB8, HEIGHT_R16 (in this order)

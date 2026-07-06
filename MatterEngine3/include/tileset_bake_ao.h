@@ -7,7 +7,10 @@
 #include <string>
 #include <vector>
 
-typedef unsigned int GLuint;
+// Use uint32_t in the public API instead of GLuint to avoid a GL header
+// dependency here. GLuint is typedef unsigned int in all GL implementations;
+// tileset_bake_ao.cpp asserts sizeof(GLuint)==sizeof(uint32_t) at compile
+// time so a mismatch is a hard build error rather than a silent runtime bug.
 
 class BLASManager;
 class TLASManager;
@@ -28,7 +31,7 @@ namespace tileset {
 //       all materials whose triangles carry zero vertex normals have
 //       flatShading=true. The orchestrator (bake_tileset_gpu) uses this form
 //       and forces the base material entry to flatShading=1 before calling.
-bool bake_ao(GLuint program,
+bool bake_ao(uint32_t program,
              BLASManager& blas,
              TLASManager& tlas,
              const TileConfig& cfg,
@@ -39,7 +42,7 @@ bool bake_ao(GLuint program,
              std::vector<uint8_t>& ao_r8_out,
              std::string& err);
 
-bool bake_ao(GLuint program,
+bool bake_ao(uint32_t program,
              BLASManager& blas,
              TLASManager& tlas,
              const std::vector<MaterialDef>& mats,
