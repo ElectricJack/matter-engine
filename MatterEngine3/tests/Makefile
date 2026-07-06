@@ -54,7 +54,7 @@ else
     LDLIBS = ../../Libraries/raylib/src/libraylib.a
 endif
 
-.PHONY: clean run-partv2 run-script run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting run-flatten run-grasslod run-stressforest
+.PHONY: clean run-partv2 run-script run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting run-flatten run-grasslod run-stressforest run-tilesetphysics
 
 # Part Artifact v2 round-trip + resolved-hash + format-guard tests (headless, GL-free).
 # NEW impl ../src/part_asset_v2.cpp + consumed MatterSurfaceLib backend sources.
@@ -507,3 +507,16 @@ $(STRESSFOREST_TARGET): $(STRESSFOREST_CPP) $(EXAMPLE_C) $(QJS_C)
 
 run-stressforest: $(STRESSFOREST_TARGET)
 	./$(STRESSFOREST_TARGET)
+
+# Box3d physics smoke test: dropping cube on static slab, verifying settle and sleep.
+BOX3D_DIR = ../../Libraries/box3d
+
+tileset_physics_tests: tileset_physics_tests.cpp $(BOX3D_DIR)/libbox3d.a
+	g++ -std=c++17 -Wall -Wno-missing-braces -O2 -I$(BOX3D_DIR)/include \
+	    -o $@ tileset_physics_tests.cpp $(BOX3D_DIR)/libbox3d.a -lm
+
+$(BOX3D_DIR)/libbox3d.a:
+	$(MAKE) -C $(BOX3D_DIR)
+
+run-tilesetphysics: tileset_physics_tests
+	./tileset_physics_tests
