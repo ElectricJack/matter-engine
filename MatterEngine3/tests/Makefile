@@ -54,7 +54,7 @@ else
     LDLIBS = ../../Libraries/raylib/src/libraylib.a
 endif
 
-.PHONY: clean run-partv2 run-script run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting run-flatten run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetdsl
+.PHONY: clean run-partv2 run-script run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting run-flatten run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl
 
 # Part Artifact v2 round-trip + resolved-hash + format-guard tests (headless, GL-free).
 # NEW impl ../src/part_asset_v2.cpp + consumed MatterSurfaceLib backend sources.
@@ -528,6 +528,13 @@ tileset_core_tests: tileset_core_tests.cpp ../src/tileset_layout.cpp ../src/tile
 
 run-tilesetcore: tileset_core_tests
 	./tileset_core_tests
+
+tileset_placement_tests: tileset_placement_tests.cpp ../src/tileset_placement.cpp
+	g++ -std=c++17 -Wall -Wno-missing-braces -O2 -I../include \
+	    -o $@ tileset_placement_tests.cpp ../src/tileset_placement.cpp
+
+run-tilesetplacement: tileset_placement_tests
+	./tileset_placement_tests
 
 # Tileset DSL root: TilesetSpec recording, tile/base verbs, eval_tileset.
 # Mirrors run-script's recipe: same QuickJS objects + full script-host source set.
