@@ -54,7 +54,7 @@ else
     LDLIBS = ../../Libraries/raylib/src/libraylib.a
 endif
 
-.PHONY: clean run-partv2 run-script run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting run-flatten run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetgtex
+.PHONY: clean run-partv2 run-script run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting run-flatten run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetgtex run-tilesettorusbvh
 
 # Part Artifact v2 round-trip + resolved-hash + format-guard tests (headless, GL-free).
 # NEW impl ../src/part_asset_v2.cpp + consumed MatterSurfaceLib backend sources.
@@ -617,3 +617,27 @@ $(TILESETGTEX_TARGET): $(TILESETGTEX_CPP)
 
 run-tilesetgtex: $(TILESETGTEX_TARGET)
 	./$(TILESETGTEX_TARGET)
+
+# tileset_torus_bvh: assemble SettledTorus into BLAS + TLAS (CPU-only, GL-free).
+# Mirrors the TILESETBAKE stanza dep set (full MSL BLAS/TLAS backend +
+# part_asset::load_v2 + part_asset::register_prebuilt). No QuickJS needed.
+TILESETTORUSBVH_TARGET = tileset_torus_bvh_tests
+TILESETTORUSBVH_CPP    = tileset_torus_bvh_tests.cpp ../src/tileset_torus_bvh.cpp \
+                         ../src/part_asset_v2.cpp \
+                         ../../MatterSurfaceLib/src/part_asset.cpp \
+                         ../../MatterSurfaceLib/src/blas_manager.cpp \
+                         ../../MatterSurfaceLib/src/bvh.cpp \
+                         ../../MatterSurfaceLib/src/tlas_manager.cpp \
+                         ../../MatterSurfaceLib/src/vertex_ao.cpp \
+                         ../../MatterSurfaceLib/src/occupancy.cpp
+TILESETTORUSBVH_C      = ../../MatterSurfaceLib/src/material_registry.c
+TILESETTORUSBVH_C_OBJ  = material_registry.o
+
+$(TILESETTORUSBVH_TARGET): $(TILESETTORUSBVH_CPP) $(TILESETTORUSBVH_C)
+	gcc -c $(TILESETTORUSBVH_C) -O2 -DPLATFORM_DESKTOP $(INCLUDE_PATHS)
+	$(CC) $(TILESETTORUSBVH_CPP) $(TILESETTORUSBVH_C_OBJ) -o $(TILESETTORUSBVH_TARGET) \
+	      $(CFLAGS) $(INCLUDE_PATHS) $(LDFLAGS) $(LDLIBS)
+	rm -f $(TILESETTORUSBVH_C_OBJ)
+
+run-tilesettorusbvh: $(TILESETTORUSBVH_TARGET)
+	./$(TILESETTORUSBVH_TARGET)
