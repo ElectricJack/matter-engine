@@ -82,6 +82,11 @@ struct Baker {
 // Canonical params string (sorted keys, %.17g numbers). Public for unit testing.
 std::string serialize_params(const Params& params);
 
+// JSON object string for a Params map: {"key":value,...} with keys in sorted
+// order, numbers via %.17g, strings quoted.  Used by install() to key child
+// placements and by the script host for resolve_hash. Public for roundtrip tests.
+std::string params_to_json(const Params& params);
+
 // Resolved node in the graph (one per unique (source_hash, canonical_params)).
 struct ResolvedNode {
     uint64_t              resolved_hash = 0;

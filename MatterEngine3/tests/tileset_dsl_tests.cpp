@@ -301,6 +301,18 @@ class F extends Tileset {
     CHECK(r3.error.message.find("Twig") != std::string::npos &&
           r3.error.message.find("variant") != std::string::npos,
           "layer: params fn undeclared variant error names the module");
+
+    // F8: placement opt present but not a string must fail closed (not silently
+    // map to uniform).  placement:42 must produce a structured error.
+    auto r4 = host.eval_tileset(R"JS(
+class F extends Tileset {
+  static requires = [ { module: 'Twig' } ];
+  build() { this.tile({size:2.0, texelsPerMeter:128, seed:1});
+            this.layer('Twig', { density: 5, placement: 42 }); }
+}
+)JS", "{}", BakeOptions{}, &kChildHashes[2], 1, &kChildModules[2], &kChildParams[2]);
+    CHECK(!r4.error.ok, "layer: non-string placement is a structured error");
+    CHECK(!r4.error.message.empty(), "layer: non-string placement error message is non-empty");
 }
 
 // ---------------------------------------------------------------------------

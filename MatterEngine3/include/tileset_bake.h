@@ -26,7 +26,10 @@ struct SettledInstance {
 
 struct SettleReport {
     bool converged_all = true;
-    std::vector<LayerResult> layers;   // per script layer
+    // One LayerResult per script layer (in declaration order).
+    // NOTE: the dropChild settle pass is NOT represented here — drops feed only
+    // the aggregate converged_all flag, not an individual LayerResult entry.
+    std::vector<LayerResult> layers;
     uint64_t pose_hash = 0;            // SettleWorld determinism hash
 };
 

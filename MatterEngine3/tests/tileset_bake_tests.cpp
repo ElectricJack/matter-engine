@@ -46,6 +46,53 @@ static void write_file(const std::string& path, const std::string& body) {
     f << body;
 }
 
+// ---------------------------------------------------------------------------
+// F2: params_to_json / params_from_json roundtrip regression test.
+//
+// run_tileset_phase converts params_json -> Params via params_from_json for
+// graph.install, while the original JSON string is used as the composite
+// child-hash key in eval_tileset.  If params_to_json(params_from_json(x)) != x
+// for any canonical shape, resolved hashes can silently diverge.
+// ---------------------------------------------------------------------------
+static void test_params_roundtrip() {
+    using namespace part_graph;
+
+    // Helper: assert roundtrip idempotence for one canonical JSON string.
+    auto check_rt = [&](const char* label, const std::string& json) {
+        Params p = params_from_json(json);
+        std::string back = params_to_json(p);
+        if (back != json) {
+            printf("FAIL: params roundtrip [%s]: in='%s' out='%s'\n",
+                   label, json.c_str(), back.c_str());
+            ++g_failures;
+        } else {
+            printf("ok:   params roundtrip [%s]\n", label);
+        }
+    };
+
+    // Empty object.
+    check_rt("{}", "{}");
+
+    // Integer-valued number (%.17g prints without decimal point for exact integers).
+    check_rt("integer", R"({"seed":0})");
+    check_rt("integer nonzero", R"({"count":42})");
+
+    // Float (verify %.17g -> strtod -> %.17g is identity).
+    check_rt("float", R"({"scale":1.5})");
+    check_rt("float 17g", R"({"x":0.10000000000000001})");
+
+    // Bool.
+    check_rt("bool true",  R"({"physics":true})");
+    check_rt("bool false", R"({"physics":false})");
+
+    // String.
+    check_rt("string", R"({"variant":"oak"})");
+
+    // Multiple keys (params_to_json outputs in std::map sorted order).
+    // eval_requires emits keys in alphabetical order, matching std::map.
+    check_rt("multi", R"({"physics":true,"scale":1.5,"seed":0})");
+}
+
 // NOTE: The host evaluates schemas as GLOBAL scripts (no shared-lib root set),
 // so `export default class` would throw. Use plain `class X extends Part` syntax.
 
@@ -208,7 +255,6 @@ static void test_settle_tileset(const std::string& cache_dir,
     CHECK(pebble_y_consistent, "bake: snapped pebble height identical across tiles");
 
     // Sync invariants: the 16 drop instances differ only by tile translation
-    const auto* first = &torus.instances[0];
     bool sync_ok = true;
     for (int k = 1; k < 16; ++k) {
         const auto& a = torus.instances[0], & b = torus.instances[k];
@@ -219,7 +265,6 @@ static void test_settle_tileset(const std::string& cache_dir,
         if (std::fabs(b.pose.py - a.pose.py) > 1e-4f) sync_ok = false;
         if (b.pose.qx != a.pose.qx || b.pose.qw != a.pose.qw) sync_ok = false;
     }
-    (void)first;
     CHECK(sync_ok, "bake: 16 drop instances identical modulo tile translation");
 
     CHECK(torus.report.layers.size() == 2, "bake: per-layer reports present");
@@ -386,11 +431,6 @@ static void test_scaled_collider_physics(const std::string& cache_dir,
         // matching world_x = boundary*T+across, world_z = lane*T+along for vertical
         // after the natural boundary<->lane role swap between orientations).
         // The simplest cheap assertion: both produce exactly 8 instances each.
-        int vert_count = 0, horiz_count = 0;
-        for (const auto& si : torus.instances) {
-            // layer 0 is the only layer; distinguish by nothing — just count total.
-            (void)si;
-        }
         CHECK(torus.instances.size() == 16,
               "hstrip: 8 vertical + 8 horizontal non-physics instances (8 occ each)");
 
@@ -499,6 +539,9 @@ class ForestFloor extends Tileset {
 // ---------------------------------------------------------------------------
 int main()
 {
+    // F2: params roundtrip — no sandbox needed, runs first.
+    test_params_roundtrip();
+
     namespace pg = part_graph;
 
     // Absolute paths before any chdir.

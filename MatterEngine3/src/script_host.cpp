@@ -621,11 +621,15 @@ BakeResult ScriptHost::bake_source(const std::string& source,
                                    const std::string* child_params) {
     BakeResult r;
 
+    // Hoist rt/ctx to outer scope so the catch handler can clean them up if
+    // bad_alloc fires after QuickJS init. Both start null; the catch guard
+    // checks before calling Free so a pre-init throw is safe.
+    JSRuntime* rt  = nullptr;
+    JSContext* ctx = nullptr;
+
     // Outer boundary: any std::bad_alloc thrown by build()'s particle table,
     // the DSL buffer, or the marching-cubes mesh accumulation surfaces here
-    // as a structured error rather than aborting the viewer. This is a
-    // best-effort catch: if bad_alloc unwinds past the QuickJS init, the
-    // runtime/context can leak (the process is already at an OOM edge).
+    // as a structured error rather than aborting the viewer.
     try {
 
     // Merge static params + caller overrides into canonical JSON, and compute
@@ -667,7 +671,7 @@ BakeResult ScriptHost::bake_source(const std::string& source,
     ModuleStore store = store_from_fold(fold);
     const bool use_module = !store.sources.empty();
 
-    JSRuntime* rt = JS_NewRuntime();
+    rt = JS_NewRuntime();
     if (use_module) JS_SetModuleLoaderFunc(rt, sh_module_normalize, sh_module_loader, &store);
 
     // Install a wall-clock interrupt so a runaway build() fails-closed (dev-mode)
@@ -678,7 +682,7 @@ BakeResult ScriptHost::bake_source(const std::string& source,
                   std::chrono::milliseconds(opts.time_budget_ms);
     JS_SetInterruptHandler(rt, interrupt_cb, &ic);
 
-    JSContext* ctx = new_bake_context(rt, /*want_modules*/ use_module);
+    ctx = new_bake_context(rt, /*want_modules*/ use_module);
 
     // C++-owned authoring state for this bake; native DSL bindings mutate it.
     dsl::DslState state;
@@ -1093,6 +1097,10 @@ done:
         r.error.ok = false;
         r.error.message = buf;
         r.written_path.clear();
+        // ctx/rt were hoisted to outer scope; free whatever was allocated before
+        // the throw. Guards are necessary: a pre-init throw leaves them null.
+        if (ctx) JS_FreeContext(ctx);
+        if (rt)  JS_FreeRuntime(rt);
         return r;
     }
 }
@@ -1111,6 +1119,16 @@ TilesetEvalResult ScriptHost::eval_tileset(const std::string& source,
                                            const std::string* child_modules,
                                            const std::string* child_params) {
     TilesetEvalResult r;
+
+    // Hoist rt/ctx and a pointer to the TilesetState to outer scope so the
+    // catch handler can perform the same cleanup as ts_done if bad_alloc fires
+    // after QuickJS init.  All start null/nullptr; the catch guards check before
+    // calling Free so a pre-init throw is safe.  ts_cleanup is set inside the
+    // try (after enable_tileset); state lives on the stack and is still alive
+    // during catch execution in C++, so the pointer remains valid there.
+    JSRuntime* rt  = nullptr;
+    JSContext* ctx = nullptr;
+    tileset::TilesetState* ts_cleanup = nullptr;
 
     try {
 
@@ -1188,7 +1206,7 @@ TilesetEvalResult ScriptHost::eval_tileset(const std::string& source,
     ModuleStore store = store_from_fold(fold);
     const bool use_module = !store.sources.empty();
 
-    JSRuntime* rt = JS_NewRuntime();
+    rt = JS_NewRuntime();
     if (use_module) JS_SetModuleLoaderFunc(rt, sh_module_normalize, sh_module_loader, &store);
 
     InterruptCtx ic;
@@ -1197,11 +1215,12 @@ TilesetEvalResult ScriptHost::eval_tileset(const std::string& source,
                   std::chrono::milliseconds(opts.time_budget_ms);
     JS_SetInterruptHandler(rt, interrupt_cb, &ic);
 
-    JSContext* ctx = new_bake_context(rt, /*want_modules*/ use_module);
+    ctx = new_bake_context(rt, /*want_modules*/ use_module);
 
     dsl::DslState state;
     // Enable tileset mode: allocates TilesetState and attaches it to DslState.
     state.enable_tileset();
+    ts_cleanup = state.tileset();  // expose to catch handler for variant-fn cleanup
     // Default master seed from merged params; an explicit tile({seed}) overrides it.
     state.tileset()->spec.cfg.seed = derive_seed(merged);
     state.set_rng(derive_seed(merged));
@@ -1442,18 +1461,31 @@ TilesetEvalResult ScriptHost::eval_tileset(const std::string& source,
                             update_xz(wx, wz);
                         }
                     } else {
-                        // Capsule / Cylinder / Cone: segment endpoints a=center, b=segB, ±radius.
+                        // Capsule / Cylinder / Cone: segment endpoints a=center, b=segB.
+                        // The along-axis endpoints are exact transformed points;
+                        // the radial margin uses the row-norm bound (same formula as
+                        // the sphere case) so it is conservative under any affine M,
+                        // including rotation + non-uniform scale.  Local-axis ±r probes
+                        // are non-conservative when the transform has off-diagonal terms
+                        // that route Y into world X (they under-estimate world extent).
+                        const Matrix& M2 = op.transform;
                         float r0 = op.radius;
                         float ax = op.center.x, ay = op.center.y, az = op.center.z;
                         float bx = op.segB.x,   by = op.segB.y,   bz = op.segB.z;
                         float r1 = op.r1;
-                        for (int dx = -1; dx <= 1; dx += 2) {
-                            float wx, wz;
-                            tx(ax + dx*r0, ay, az, wx, wz); update_xz(wx, wz);
-                            tx(ax, ay, az + dx*r0, wx, wz); update_xz(wx, wz);
-                            tx(bx + dx*r1, by, bz, wx, wz); update_xz(wx, wz);
-                            tx(bx, by, bz + dx*r1, wx, wz); update_xz(wx, wz);
-                        }
+                        // Row-norm world-space radial margins for each end radius.
+                        float row_x = std::sqrt(M2.m0*M2.m0 + M2.m4*M2.m4 + M2.m8*M2.m8);
+                        float row_z = std::sqrt(M2.m2*M2.m2 + M2.m6*M2.m6 + M2.m10*M2.m10);
+                        // Endpoint a (radius r0): world center + ±row-norm margin.
+                        float wax, waz;
+                        tx(ax, ay, az, wax, waz);
+                        update_xz(wax - r0*row_x, waz - r0*row_z);
+                        update_xz(wax + r0*row_x, waz + r0*row_z);
+                        // Endpoint b (radius r1; for capsule r1==r0, for cone r1==0).
+                        float wbx, wbz;
+                        tx(bx, by, bz, wbx, wbz);
+                        update_xz(wbx - r1*row_x, wbz - r1*row_z);
+                        update_xz(wbx + r1*row_x, wbz + r1*row_z);
                     }
 
                     if (xmin < strip || xmax > sz - strip ||
@@ -1534,6 +1566,18 @@ ts_done:
                       (unsigned long long)r.resolved_hash, e.what());
         r.error.ok = false;
         r.error.message = buf;
+        // Perform the same cleanup as ts_done.  ctx/rt were hoisted; ts_cleanup
+        // points into the still-live `state` stack frame (C++ guarantees stack
+        // locals of the try block are alive during catch handler execution).
+        // All three are null/nullptr when bad_alloc fires before their init.
+        if (ctx && ts_cleanup && ts_cleanup->variant_fn_set) {
+            JSValue vfn_cleanup;
+            std::memcpy(&vfn_cleanup, ts_cleanup->variant_fn_bits, sizeof(vfn_cleanup));
+            JS_FreeValue(ctx, vfn_cleanup);
+            ts_cleanup->variant_fn_set = false;
+        }
+        if (ctx) JS_FreeContext(ctx);
+        if (rt)  JS_FreeRuntime(rt);
         return r;
     }
 }

@@ -107,8 +107,10 @@ float fit_half_height(const ColliderFit& f)
         }
         return h;
     }
+
+    default:
+        return 0.0f;
     }
-    return 0.0f;
 }
 
 } // namespace tileset

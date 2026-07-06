@@ -294,15 +294,34 @@ static JSValue j_ts_layer(JSContext* c, JSValueConst, int n, JSValueConst* a) {
     layer.module = module;
     layer.density = (float)density_val;
 
-    // placement: 'uniform'(0) / 'poisson'(1) / 'cluster'(2)
+    // placement: 'uniform'(0) / 'poisson'(1) / 'cluster'(2).
+    // Fail-closed: if the property is present and not a string, error rather than
+    // silently falling back to uniform (e.g. placement:42 must not compile).
     {
-        std::string pk = get_str("placement");
-        if (pk.empty() || pk == "uniform") layer.placement_kind = 0;
-        else if (pk == "poisson")          layer.placement_kind = 1;
-        else if (pk == "cluster")          layer.placement_kind = 2;
-        else {
-            ts->set_error("layer('" + module + "'): unknown placement '" + pk + "'");
-            return JS_UNDEFINED;
+        layer.placement_kind = 0;   // default: uniform
+        if (!JS_IsUndefined(opts)) {
+            JSValue pv = JS_GetPropertyStr(c, opts, "placement");
+            bool has_placement = !JS_IsUndefined(pv) && !JS_IsNull(pv);
+            if (has_placement && !JS_IsString(pv)) {
+                JS_FreeValue(c, pv);
+                ts->set_error("layer('" + module + "'): placement must be a string");
+                return JS_UNDEFINED;
+            }
+            if (has_placement) {
+                const char* ps = JS_ToCString(c, pv);
+                std::string pk(ps ? ps : "");
+                if (ps) JS_FreeCString(c, ps);
+                JS_FreeValue(c, pv);
+                if (pk.empty() || pk == "uniform") layer.placement_kind = 0;
+                else if (pk == "poisson")          layer.placement_kind = 1;
+                else if (pk == "cluster")          layer.placement_kind = 2;
+                else {
+                    ts->set_error("layer('" + module + "'): unknown placement '" + pk + "'");
+                    return JS_UNDEFINED;
+                }
+            } else {
+                JS_FreeValue(c, pv);
+            }
         }
     }
 
@@ -407,7 +426,10 @@ static JSValue j_ts_layer(JSContext* c, JSValueConst, int n, JSValueConst* a) {
 
             for (const auto& pt : pts) {
                 tileset::Placement p{};
-                // scale drawn first
+                // scale drawn first.
+                // NOTE: if scale_range transitions between degenerate ([a,a]) and
+                // non-degenerate, the RNG draw is added or removed here, shifting
+                // every subsequent placement attribute (y, quat, params) in the stream.
                 if (layer.scale_range[0] == layer.scale_range[1]) {
                     p.scale = layer.scale_range[0];
                 } else {
@@ -502,7 +524,10 @@ static JSValue j_ts_layer(JSContext* c, JSValueConst, int n, JSValueConst* a) {
 
         for (const auto& pt : pts) {
             tileset::Placement p{};
-            // scale
+            // scale.
+            // NOTE: if scale_range transitions between degenerate ([a,a]) and
+            // non-degenerate, the RNG draw is added or removed here, shifting
+            // every subsequent placement attribute (y, quat, params) in the stream.
             if (layer.scale_range[0] == layer.scale_range[1]) {
                 p.scale = layer.scale_range[0];
             } else {

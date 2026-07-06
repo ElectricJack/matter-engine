@@ -142,6 +142,11 @@ struct SpawnProv {
 // ---------------------------------------------------------------------------
 // settle_tileset — main orchestrator
 // ---------------------------------------------------------------------------
+
+// Samples per tile for the flat-base heightfield (no scripted base() call).
+// Mirrors BaseField::kSamplesPerTile for cross-path consistency.
+static constexpr int kFlatBaseSamplesPerTile = 8;
+
 bool settle_tileset(const TilesetSpec& spec, const BakeInputs& in,
                     SettledTorus& out, std::string& err)
 {
@@ -165,7 +170,7 @@ bool settle_tileset(const TilesetSpec& spec, const BakeInputs& in,
             }
         }
     } else {
-        hf.cell    = T / 8.0f;
+        hf.cell    = T / kFlatBaseSamplesPerTile;
         hf.count_x = hf.count_z = (int)(ET / hf.cell) + 1;
         hf.heights.assign((size_t)hf.count_x * hf.count_z, 0.0f);
     }
