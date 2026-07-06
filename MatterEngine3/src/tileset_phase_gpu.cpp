@@ -1,8 +1,12 @@
 // tileset_phase_gpu.cpp — GPU bake overload of run_tileset_phase.
 //
-// This translation unit is compiled ONLY into viewer/GPU-test builds (where
-// bake_tileset_gpu is available). It is NOT part of libmatter_engine3.a so
-// the headless engine lib has no GL dependency.
+// This translation unit is NOT part of libmatter_engine3.a (the headless
+// engine lib has no GL dependency) and is NOT yet linked into any binary in
+// the tree today. Phase 4 will wire it into the viewer/world-bake path once
+// world.manifest reads a `[tileset]` entry into a bake pipeline that has GL
+// available. Until then it is source-only; the file compiles standalone but
+// is not needed by tileset-gpu-tests or tileset-seam-tests (both synthesize
+// their SettledTorus fixtures in-test and call bake_tileset_gpu directly).
 
 #include "tileset_phase.h"
 #include "tileset_bake_gpu.h"  // bake_tileset_gpu, TilesetPhaseOpts
