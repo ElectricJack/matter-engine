@@ -20,7 +20,10 @@ struct BakeInputs;
 // Fail-closed: false + err on missing/corrupt part file, unnormalized
 // quaternion (|q| deviates from 1 by > 1e-3), or empty base grid.
 // On success, blas and tlas are populated and `tlas.build(blas)` has been
-// called; the managers are in a GPU-upload-ready state.
+// called; the managers are in a CPU-ready state.
+// NOTE: this does NOT call TLASManager::ensure_gpu_textures_ready(blas),
+// which requires a live GL context. Callers with GL active (Phase 3 Tasks 3+)
+// must call it themselves before bind_to_shader.
 bool assemble_torus_bvh(const SettledTorus& settled,
                         const BakeInputs& inputs,
                         BLASManager& blas,

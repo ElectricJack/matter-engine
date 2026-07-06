@@ -119,8 +119,14 @@ static bool build_base_blas(const SettledTorus& st, BLASManager& blas,
 
 // -----------------------------------------------------------------------------
 // Quaternion (qx, qy, qz, qw) + translation + uniform scale → Matrix4x4.
-// TLASManager uses column-major layout: m[0..3]=col0, m[4..7]=col1, etc.,
-// matching raylib/rlgl conventions.
+// TLASManager uses ROW-major layout: m[0..3]=row0, m[4..7]=row1, m[8..11]=row2.
+// mat4::TransformPoint reads translation from cell[3], cell[7], cell[11], and
+// TLASManager::matrix_translation sets m[3], m[7], m[11].
+// Layout: [R00*s  R01*s  R02*s  px]
+//         [R10*s  R11*s  R12*s  py]
+//         [R20*s  R21*s  R22*s  pz]
+//         [0      0      0      1 ]
+// where the rotation rows use the standard right-handed quaternion formula.
 // -----------------------------------------------------------------------------
 static Matrix4x4 mat4_from_pose_scale(const Pose& p, float s)
 {
@@ -130,25 +136,25 @@ static Matrix4x4 mat4_from_pose_scale(const Pose& p, float s)
     float wx = qw*qx, wy = qw*qy, wz = qw*qz;
 
     Matrix4x4 M;
-    // Column 0
+    // Row 0: [R00  R01  R02  tx]
     M.m[0] = s * (1.0f - 2.0f*(yy + zz));
-    M.m[1] = s * (2.0f*(xy + wz));
-    M.m[2] = s * (2.0f*(xz - wy));
-    M.m[3] = 0.0f;
-    // Column 1
-    M.m[4] = s * (2.0f*(xy - wz));
+    M.m[1] = s * (2.0f*(xy - wz));
+    M.m[2] = s * (2.0f*(xz + wy));
+    M.m[3] = p.px;
+    // Row 1: [R10  R11  R12  ty]
+    M.m[4] = s * (2.0f*(xy + wz));
     M.m[5] = s * (1.0f - 2.0f*(xx + zz));
-    M.m[6] = s * (2.0f*(yz + wx));
-    M.m[7] = 0.0f;
-    // Column 2
-    M.m[8]  = s * (2.0f*(xz + wy));
-    M.m[9]  = s * (2.0f*(yz - wx));
+    M.m[6] = s * (2.0f*(yz - wx));
+    M.m[7] = p.py;
+    // Row 2: [R20  R21  R22  tz]
+    M.m[8]  = s * (2.0f*(xz - wy));
+    M.m[9]  = s * (2.0f*(yz + wx));
     M.m[10] = s * (1.0f - 2.0f*(xx + yy));
-    M.m[11] = 0.0f;
-    // Column 3 (translation)
-    M.m[12] = p.px;
-    M.m[13] = p.py;
-    M.m[14] = p.pz;
+    M.m[11] = p.pz;
+    // Row 3: [0  0  0  1]
+    M.m[12] = 0.0f;
+    M.m[13] = 0.0f;
+    M.m[14] = 0.0f;
     M.m[15] = 1.0f;
     return M;
 }
