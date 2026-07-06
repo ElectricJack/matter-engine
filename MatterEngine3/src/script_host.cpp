@@ -1380,22 +1380,19 @@ TilesetEvalResult ScriptHost::eval_tileset(const std::string& source,
                     xmin = xmax = fx; zmin = zmax = fz;
 
                     if (op.kind == dsl::BrushKind::Sphere) {
-                        // World-space center ± radius (conservative: ignore rotation-only scaling).
-                        // Better: transform 6 axis-aligned points at center±radius.
+                        // Exact conservative AABB for a sphere under any affine M:
+                        //   world_center = M * center  (already captured in fx, fz above)
+                        //   world half-extent along world axis i = r * L2_norm(row_i of linear part of M)
+                        // For raylib's Matrix layout (row names m0,m4,m8 = X-row; m2,m6,m10 = Z-row):
+                        //   hx = r * sqrt(m0^2 + m4^2 + m8^2)
+                        //   hz = r * sqrt(m2^2 + m6^2 + m10^2)
+                        // This is exact for spheres under rotation + non-uniform scale (no probe samples needed).
+                        const Matrix& M = op.transform;
                         float r0 = op.radius;
-                        float cx = op.center.x, cy = op.center.y, cz = op.center.z;
-                        for (int dx = -1; dx <= 1; dx += 2)
-                        for (int dz = -1; dz <= 1; dz += 2) {
-                            float wx, wz;
-                            tx(cx + dx*r0, cy, cz + dz*r0, wx, wz);
-                            update_xz(wx, wz);
-                        }
-                        // Also transform along y-axis in case transform has shear.
-                        for (int dy = -1; dy <= 1; dy += 2) {
-                            float wx, wz;
-                            tx(cx, cy + dy*r0, cz, wx, wz);
-                            update_xz(wx, wz);
-                        }
+                        float hx = r0 * std::sqrt(M.m0*M.m0 + M.m4*M.m4 + M.m8*M.m8);
+                        float hz = r0 * std::sqrt(M.m2*M.m2 + M.m6*M.m6 + M.m10*M.m10);
+                        xmin = fx - hx; xmax = fx + hx;
+                        zmin = fz - hz; zmax = fz + hz;
                     } else if (op.kind == dsl::BrushKind::Box) {
                         // 8 corners of the box.
                         float cx = op.center.x, cy = op.center.y, cz = op.center.z;
@@ -1466,9 +1463,10 @@ TilesetEvalResult ScriptHost::eval_tileset(const std::string& source,
             }
         }
 
-        // Free the duped fn value.
+        // Free the duped fn value and mark it consumed so ts_done doesn't double-free.
         JS_FreeValue(ctx, variant_fn);
         JS_FreeValue(ctx, rng_helper);
+        ts->variant_fn_set = false;
     }
 
     // Move spec into result (no mesher, no .part write).
@@ -1477,6 +1475,16 @@ TilesetEvalResult ScriptHost::eval_tileset(const std::string& source,
     }
 
 ts_done:
+    // Release the duped variant fn if it was never consumed by the loop above
+    // (early-exit paths: build() exception, DSL/tileset errors, tile() not called).
+    // variant_fn_set is cleared to false by the happy path after JS_FreeValue,
+    // so this runs only when the loop was skipped entirely.
+    if (state.tileset()->variant_fn_set) {
+        JSValue vfn_cleanup;
+        std::memcpy(&vfn_cleanup, state.tileset()->variant_fn_bits, sizeof(vfn_cleanup));
+        JS_FreeValue(ctx, vfn_cleanup);
+        state.tileset()->variant_fn_set = false;
+    }
     JS_FreeContext(ctx);
     JS_FreeRuntime(rt);
     return r;

@@ -369,6 +369,94 @@ class F extends Tileset {
     CHECK(r.error.ok, "variant: de Bruijn colors passed to hook");
 }
 
+// ---------------------------------------------------------------------------
+// Review findings: conservative sphere AABB under non-uniform scale (Fix 2)
+// ---------------------------------------------------------------------------
+// The old diagonal-probe approach for spheres could underestimate the world-space
+// extent when the transform has off-diagonal components that route Y into world X.
+// The row-norm formula is exact for spheres under any affine M.
+//
+// Scenario: rotateZ(PI/4) * scale(SQRT2, SQRT2, 1) gives M where
+//   M.m0 = 1, M.m4 = -1, M.m8 = 0  (world X row)
+//   M.m2 = 0, M.m6 = 0,  M.m10 = 1 (world Z row)
+// For a sphere of radius 0.1 at world center (0.26, 0.2, 1.0):
+//   true world hx = 0.1 * sqrt(1^2 + (-1)^2 + 0^2) = 0.1 * sqrt(2) ~= 0.1414
+//   world xmin = 0.26 - 0.1414 = 0.1186 < 0.15 (strip) => MARGIN VIOLATION
+// Old probes sampled (±r, 0, ±r) and (0, ±r, 0): old hx = max(1+0, 1)*0.1 = 0.1
+//   old xmin = 0.26 - 0.1 = 0.16 >= 0.15 => PASSES (missed violation).
+static void test_variant_sphere_nonuniform_scale_margin(ScriptHost& host) {
+    // This tileset should produce a margin violation with the fixed row-norm AABB,
+    // but the old diagonal-probe code would have passed it silently.
+    // DSL order: translate -> rotateZ(PI/4) -> scale(sqrt(2), sqrt(2), 1) ->
+    //   sphere at local origin with r=0.1.
+    // M = RotZ(PI/4) * Scale(sqrt2, sqrt2, 1):  m0=1, m4=-1, m8=0 (X-row)
+    //   => true hx = 0.1*sqrt(2) ~= 0.1414; world center X = 0.26
+    //   => world xmin = 0.1186 < 0.15 (strip) => error expected.
+    auto r = host.eval_tileset(R"JS(
+class F extends Tileset {
+  build() {
+    this.tile({ size: 2.0, texelsPerMeter: 128, seed: 3 });
+    this.variant(t => {
+      if (t.index === 0) {
+        this.pushMatrix();
+        this.translate(0.26, 0.2, 1.0);
+        this.rotateZ(Math.PI / 4);
+        this.scale(Math.SQRT2, Math.SQRT2, 1.0);
+        this.beginVoxels(0.05);
+        this.sphere([0, 0, 0], 0.1);
+        this.endVoxels();
+        this.popMatrix();
+      }
+    });
+  }
+}
+)JS", "{}", BakeOptions{});
+    CHECK(!r.error.ok, "variant: non-uniform scale sphere margin violation detected (row-norm fix)");
+    CHECK(r.error.message.find("tile 0") != std::string::npos,
+          "variant: non-uniform scale sphere margin error names tile 0");
+}
+
+// ---------------------------------------------------------------------------
+// Review findings: variant fn lifetime on early-exit paths (Fix 1)
+// ---------------------------------------------------------------------------
+// When build() errors AFTER calling variant() (e.g., a DSL verb error after
+// tile() and variant()), the duped JSValue should be freed at ts_done and not
+// leak. The test verifies the error path is structurally correct (returns an
+// error, doesn't crash on context teardown).
+static void test_variant_fn_freed_on_build_error(ScriptHost& host) {
+    // variant() is registered, then a DSL verb throws an error inside build() itself.
+    // The eval should return a structured error, not crash.
+    auto r1 = host.eval_tileset(R"JS(
+class F extends Tileset {
+  build() {
+    this.tile({ size: 2.0, texelsPerMeter: 128, seed: 3 });
+    this.variant(t => { /* hook registered */ });
+    throw new Error('build error after variant');
+  }
+}
+)JS", "{}", BakeOptions{});
+    CHECK(!r1.error.ok, "variant fn leak fix: build() throw after variant() returns error");
+    CHECK(r1.error.message.find("build error after variant") != std::string::npos ||
+          !r1.error.message.empty(),
+          "variant fn leak fix: error message is non-empty");
+
+    // variant() registered but tile() DSL error before the loop: variant_fn_set is
+    // true but r.error.ok is false when entering the if-block.
+    auto r2 = host.eval_tileset(R"JS(
+class F extends Tileset {
+  build() {
+    this.tile({ size: 2.0, texelsPerMeter: 128, seed: 3 });
+    this.variant(t => { /* hook registered */ });
+    this.tile({ size: 2.0, texelsPerMeter: 128, seed: 3 });  /* tile() twice → error */
+  }
+}
+)JS", "{}", BakeOptions{});
+    CHECK(!r2.error.ok, "variant fn leak fix: tile() twice after variant() returns error");
+    CHECK(r2.error.message.find("twice") != std::string::npos ||
+          r2.error.message.find("tile") != std::string::npos,
+          "variant fn leak fix: tile-twice error message is recognizable");
+}
+
 int main() {
     printf("== tileset_dsl_tests ==\n");
     ScriptHost host;
@@ -383,6 +471,8 @@ int main() {
     test_variant(host);
     test_variant_margin(host);
     test_variant_colors(host);
+    test_variant_sphere_nonuniform_scale_margin(host);
+    test_variant_fn_freed_on_build_error(host);
     if (g_failures == 0) printf("PASSED (0 failures)\n");
     else                 printf("FAILED (%d failures)\n", g_failures);
     return g_failures;
