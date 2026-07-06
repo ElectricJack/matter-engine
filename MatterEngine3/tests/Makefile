@@ -511,9 +511,10 @@ run-stressforest: $(STRESSFOREST_TARGET)
 # Box3d physics smoke test: dropping cube on static slab, verifying settle and sleep.
 BOX3D_DIR = ../../Libraries/box3d
 
-tileset_physics_tests: tileset_physics_tests.cpp $(BOX3D_DIR)/libbox3d.a
-	g++ -std=c++17 -Wall -Wno-missing-braces -O2 -I$(BOX3D_DIR)/include \
-	    -o $@ tileset_physics_tests.cpp $(BOX3D_DIR)/libbox3d.a -lm
+tileset_physics_tests: tileset_physics_tests.cpp ../src/tileset_settle.cpp ../src/tileset_collider.cpp $(BOX3D_DIR)/libbox3d.a
+	g++ -std=c++17 -Wall -Wno-missing-braces -O2 -I../include -I$(BOX3D_DIR)/include \
+	    -o $@ tileset_physics_tests.cpp ../src/tileset_settle.cpp ../src/tileset_collider.cpp \
+	    $(BOX3D_DIR)/libbox3d.a -lm
 
 $(BOX3D_DIR)/libbox3d.a:
 	$(MAKE) -C $(BOX3D_DIR)

@@ -37,7 +37,8 @@ RAYLIB_PATH = ../Libraries/raylib/src
 # Include directories: NEW MatterEngine3 headers, consumed MatterSurfaceLib
 # headers, vendored QuickJS-ng, then raylib (for the BLAS/Tri/TriEx types).
 QJS_DIR       = ../Libraries/quickjs-ng
-INCLUDE_PATHS = -Iinclude -I../MatterSurfaceLib/include -I$(QJS_DIR) -I$(RAYLIB_PATH)
+BOX3D_DIR     = ../Libraries/box3d
+INCLUDE_PATHS = -Iinclude -I../MatterSurfaceLib/include -I$(QJS_DIR) -I$(RAYLIB_PATH) -I$(BOX3D_DIR)/include
 
 # Vendored QuickJS-ng engine. v0.10.0 needs xsum.c (xsum_small_* symbols) beyond
 # the core four. Compiled via gcc (C) so the embedding symbols stay unmangled.
@@ -49,9 +50,9 @@ QJS_OBJ = quickjs.o libregexp.o libunicode.o cutils.o xsum.o
 ME3_CPP = src/script_host.cpp src/dsl_state.cpp src/dsl_bindings.cpp \
           src/csg_lowering.cpp src/part_asset_v2.cpp src/world_lights.cpp \
           src/probe_volume.cpp src/world_tracer.cpp src/part_cluster.cpp \
-          src/tileset_layout.cpp src/tileset_collider.cpp
+          src/tileset_layout.cpp src/tileset_collider.cpp src/tileset_settle.cpp
 ME3_OBJ = script_host.o dsl_state.o dsl_bindings.o csg_lowering.o part_asset_v2.o world_lights.o \
-          probe_volume.o world_tracer.o part_cluster.o tileset_layout.o tileset_collider.o
+          probe_volume.o world_tracer.o part_cluster.o tileset_layout.o tileset_collider.o tileset_settle.o
 
 LIB = libmatter_engine3.a
 
