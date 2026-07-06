@@ -26,7 +26,9 @@ tile seams.
 - Physics settling via box3d with **full two-way interaction across portal
   boundaries** — no frozen-border phase.
 - Texture-generation algorithms authored in the existing QuickJS DSL, under a
-  new root type distinct from `Part`/world roots.
+  new root type (`Tileset`, a `Part` subclass) that behaves essentially like a
+  world script — full geometry/voxel verbs and manual placement — with the
+  only differences being the defined tile bounds/portals and texture output.
 - Runs as a phase of the world bake; consumed first by the v3 viewer terrain.
 
 ## Non-Goals (v1)
@@ -43,9 +45,10 @@ tile seams.
 1. **Script eval** — QuickJS via the existing `script_host` (fresh isolated
    context, fail-closed, pre-resolved shared-lib imports). Root class is a new
    `Tileset` global (`tileset_base.js.h`, sibling of `part_base.js.h`).
-2. **Placement** — seeded, deterministic placements generated from layer specs:
-   one canonical placement list per edge color (strip content) and one per tile
-   interior.
+2. **Placement** — shared `build()` content (inline geometry, manual
+   `placeChild`/`dropChild`, toroidally wrapped at bounds) plus seeded,
+   deterministic placements generated from layer specs: one canonical
+   placement list per edge color (strip content) and one per tile interior.
 3. **Collision proxies** — auto-fitted box3d colliders per scattered part
    instance; base heightfield as static collider.
 4. **Joint settle** — single box3d world containing the whole 4×4 de Bruijn
@@ -66,32 +69,69 @@ ForestFloor [tileset]
 
 ## DSL Root: `Tileset`
 
-Scattered objects are ordinary `Part` modules — existing procedural twigs,
-leaves, rocks are reused unchanged.
+`Tileset extends Part`. A tileset script behaves essentially like a world/part
+script — the **full Part API is inherited**: transform stack, `fill`/`tint`,
+voxel/SDF sessions with CSG, direct triangles, `line`/`capsule`/`extrude`,
+`placeChild`. The only differences are the defined tile bounds with portal
+wrap, the tileset verbs (`tile`/`base`/`layer`/`dropChild`/`variant`), and
+texture output instead of world geometry.
+
+Parts are referenced exactly as in world scripts: `static requires` declares
+module + params variants so the engine pre-resolves modules before eval, and
+verbs take module-name strings. Existing procedural twigs, leaves, rocks are
+reused unchanged.
 
 ```js
 export default class ForestFloor extends Tileset {
+  static requires = [
+    ...[0,1,2,3].map(s => ({ module: 'Pebble', params: { seed: s } })),
+    ...[0,1].map(s => ({ module: 'Rock',   params: { seed: s } })),
+    { module: 'Twig' }, { module: 'Leaf' },
+  ];
+
   build() {
     this.tile({ size: 2.0, texelsPerMeter: 512, seed: 1234 });
 
-    // Dirt underlayer: relief heightfield + base material
-    this.base((x, z) => 0.03 * noise2(x * 2.1, z * 2.1), MAT.DIRT);
+    // Dirt underlayer: convenience heightfield helper...
+    this.base((x, z) => 0.03 * noise2(x * 2.1, z * 2.1), MAT.dirt);
 
-    // Layers scatter bottom-up; order = drop order
-    this.layer(Pebble, { density: 120, scale: [0.4, 1.0], placement: 'poisson', physics: false, embed: 0.3 });
-    this.layer(Rock,   { density: 4,   scale: [0.8, 1.6], physics: true });
-    this.layer(Twig,   { density: 25,  scale: [0.7, 1.3], physics: true, dropHeight: [0.1, 0.3] });
-    this.layer(Leaf,   { density: 200, scale: [0.8, 1.2], physics: true, dropHeight: [0.05, 0.25] });
+    // ...or sculpt shared detail with any Part verbs (portals at bounds)
+    this.fill(MAT.dirt);
+    this.beginVoxels(0.01);
+    this.sphere([0.3, 0.0, 1.2], 0.08);   // root bump; wraps if near an edge
+    this.endVoxels();
+
+    // Manually drop a hero rock: settles physically from this transform
+    this.pushMatrix();
+    this.translate(1.0, 0.15, 0.6);
+    this.dropChild('Rock', { seed: 0 });
+    this.popMatrix();
+
+    // Engine-driven Wang layers, bottom-up; order = drop order
+    this.layer('Pebble', { density: 120, scale: [0.4, 1.0], placement: 'poisson',
+                           physics: false, embed: 0.3, params: r => ({ seed: r.int(4) }) });
+    this.layer('Rock',   { density: 4,   scale: [0.8, 1.6], physics: true,
+                           params: r => ({ seed: r.int(2) }) });
+    this.layer('Twig',   { density: 25,  scale: [0.7, 1.3], physics: true, dropHeight: [0.1, 0.3] });
+    this.layer('Leaf',   { density: 200, scale: [0.8, 1.2], physics: true, dropHeight: [0.05, 0.25] });
   }
 }
 ```
 
-- `tile()` — tile size (meters), resolution (texels/m), master seed. Edge
-  colors fixed at 2+2 in v1 (complete 16-tile set).
-- `base(fn, material)` — underlayer heightfield function + base material. The
-  heightfield tiles per-tile (identical in every tile), so it is shared-by-
-  construction content like the strips.
-- `layer(module, opts)`:
+### Semantics
+
+- **`build()` is the shared pass.** Everything authored directly in `build()`
+  (inline geometry, `placeChild`, `dropChild`) is identical in every tile and
+  is wrapped **toroidally at the tile bounds** — geometry or placements
+  crossing the +X bound portal to −X, likewise Z. Because every tile carries
+  the same toroidally-wrapped shared content, seam legality is automatic.
+- `tile({ size, texelsPerMeter, seed })` — bounds (meters), resolution, master
+  seed. Edge colors fixed at 2+2 in v1 (complete 16-tile set).
+- `base(fn, material)` — convenience heightfield underlayer; equivalent
+  results can be built manually with geometry verbs. Shared content.
+- `layer(moduleName, opts)` — the engine-driven Wang machinery: per-edge-color
+  strip placements + per-tile interior placements + physics settle. This is
+  what differentiates the 16 tiles. Options:
   - `density` — instances per m².
   - `placement` — `uniform | poisson | cluster` (default `uniform`).
   - `physics: false` — algorithmic placement, surface-snapped; optional
@@ -99,7 +139,20 @@ export default class ForestFloor extends Tileset {
   - `physics: true` — dropped from `dropHeight` range with random orientation,
     settled in the joint sim.
   - `scale` — uniform scale range.
+  - `params` — child params object, or a function of the placement rng
+    (e.g. variant selection).
   - `collider` — optional override: `auto | capsule | box | sphere | hull`.
+- `dropChild(moduleName, params)` — like `placeChild`, but registers the
+  instance as a dynamic body seeded at the current transform; it settles in
+  the joint sim. Plain `placeChild` content is static: baked in place,
+  participates in collision, never moves. Shared dynamic bodies (from
+  `dropChild` in `build()`) are portal-synced across their 16 per-tile
+  instances, exactly like edge-strip bodies (which have 8).
+- `variant(fn)` — optional per-tile hook `(t) => { ... }` with
+  `t = { index, colors: {top,bottom,left,right}, rng }`; full Part API inside,
+  for manual per-tile content. Its content must stay ≥ `edgeStripWidth` from
+  the tile bounds (engine-enforced) — per-tile geometry at a seam would break
+  tile interchangeability.
 - Tunables with defaults: `edgeStripWidth` 0.15 m, `cornerClearRadius` 0.08 m.
 
 All randomness derives from `seed`; combined with box3d determinism, re-bakes
@@ -213,6 +266,8 @@ Fail-closed, matching the recent bake hardening:
 
 - Script error → structured bake error (existing script_host semantics).
 - Layer module fails to build → error naming layer + module.
+- `variant()` content within `edgeStripWidth` of the tile bounds → structured
+  error naming the tile.
 - Settle non-convergence → warning (awake-body count + layer); bake proceeds
   with best pose.
 - `std::bad_alloc` → caught at the tileset-bake boundary, structured error
@@ -225,8 +280,9 @@ Fail-closed, matching the recent bake hardening:
 ## Testing
 
 - **Unit (CPU):** de Bruijn layout legality (16 unique tiles, all adjacencies
-  match, torus wrap legal); placement determinism; collider auto-fit on
-  twig/leaf/rock/pebble fixtures.
+  match, torus wrap legal); placement determinism; toroidal wrap of shared
+  `build()` content at bounds; `variant()` edge-margin enforcement; collider
+  auto-fit on twig/leaf/rock/pebble fixtures.
 - **Physics (`tileset_physics_tests`):** drop-box fixture converges within max
   steps; portal sync keeps 8 instances bit-identical through a settle;
   double-run full-settle hash equality (determinism gate).
@@ -253,6 +309,12 @@ Fail-closed, matching the recent bake hardening:
 
 ## Future Work (out of scope)
 
-Parallax/relief from height, hex tiles, >2 edge colors, slope-aware/triplanar
-mapping, tileset interaction with the imposter far tier, additional surface
-types (gravel, snow, forest duff variants) as more part modules land.
+- **Physics settling in world roots.** `dropChild` is designed as a general
+  DSL verb, not a tileset-specific one: settling scattered parts at world-bake
+  time (a box3d pass over world scatter — rocks that actually rest on terrain,
+  deadfall against trunks) is a recognized legitimate use case once the
+  physics core exists. World roots get it in a later phase.
+- Parallax/relief from height, hex tiles, >2 edge colors,
+  slope-aware/triplanar mapping, tileset interaction with the imposter far
+  tier, additional surface types (gravel, snow, forest duff variants) as more
+  part modules land.
