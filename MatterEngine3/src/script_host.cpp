@@ -1120,15 +1120,15 @@ TilesetEvalResult ScriptHost::eval_tileset(const std::string& source,
                                            const std::string* child_params) {
     TilesetEvalResult r;
 
-    // Hoist rt/ctx and a pointer to the TilesetState to outer scope so the
-    // catch handler can perform the same cleanup as ts_done if bad_alloc fires
-    // after QuickJS init.  All start null/nullptr; the catch guards check before
-    // calling Free so a pre-init throw is safe.  ts_cleanup is set inside the
-    // try (after enable_tileset); state lives on the stack and is still alive
-    // during catch execution in C++, so the pointer remains valid there.
+    // Hoist rt/ctx and the DSL state to outer scope so the catch handler can
+    // perform the same cleanup as ts_done if bad_alloc fires after QuickJS
+    // init. rt/ctx start null; the catch guards check before calling Free so
+    // a pre-init throw is safe. state must live OUTSIDE the try: locals
+    // constructed inside a try block are destroyed during unwinding before
+    // the catch handler runs, so a pointer into try-scope state would dangle.
     JSRuntime* rt  = nullptr;
     JSContext* ctx = nullptr;
-    tileset::TilesetState* ts_cleanup = nullptr;
+    dsl::DslState state;
 
     try {
 
@@ -1217,10 +1217,9 @@ TilesetEvalResult ScriptHost::eval_tileset(const std::string& source,
 
     ctx = new_bake_context(rt, /*want_modules*/ use_module);
 
-    dsl::DslState state;
     // Enable tileset mode: allocates TilesetState and attaches it to DslState.
+    // (state itself is declared before the try so the catch can reach it.)
     state.enable_tileset();
-    ts_cleanup = state.tileset();  // expose to catch handler for variant-fn cleanup
     // Default master seed from merged params; an explicit tile({seed}) overrides it.
     state.tileset()->spec.cfg.seed = derive_seed(merged);
     state.set_rng(derive_seed(merged));
@@ -1566,15 +1565,15 @@ ts_done:
                       (unsigned long long)r.resolved_hash, e.what());
         r.error.ok = false;
         r.error.message = buf;
-        // Perform the same cleanup as ts_done.  ctx/rt were hoisted; ts_cleanup
-        // points into the still-live `state` stack frame (C++ guarantees stack
-        // locals of the try block are alive during catch handler execution).
-        // All three are null/nullptr when bad_alloc fires before their init.
-        if (ctx && ts_cleanup && ts_cleanup->variant_fn_set) {
+        // Perform the same cleanup as ts_done. rt/ctx/state were hoisted above
+        // the try, so they survive unwinding; all are null/unset when
+        // bad_alloc fires before their init.
+        tileset::TilesetState* ts = state.tileset();
+        if (ctx && ts && ts->variant_fn_set) {
             JSValue vfn_cleanup;
-            std::memcpy(&vfn_cleanup, ts_cleanup->variant_fn_bits, sizeof(vfn_cleanup));
+            std::memcpy(&vfn_cleanup, ts->variant_fn_bits, sizeof(vfn_cleanup));
             JS_FreeValue(ctx, vfn_cleanup);
-            ts_cleanup->variant_fn_set = false;
+            ts->variant_fn_set = false;
         }
         if (ctx) JS_FreeContext(ctx);
         if (rt)  JS_FreeRuntime(rt);
