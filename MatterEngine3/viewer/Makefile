@@ -33,7 +33,7 @@ VIEWER_SRC = main.cpp renderer.cpp ui.cpp \
              world_state.cpp part_store.cpp resolvers.cpp \
              world_composer.cpp local_provider.cpp \
              raster_mesh.cpp raster_composer.cpp probe_texture.cpp \
-             gpu_culler.cpp
+             gpu_culler.cpp tileset_gl_ctx.cpp
 
 # ME3 pipeline + MSL backend C++ sources (verbatim from tests/Makefile EXAMPLE_CPP,
 # minus example_world.cpp). Same dir depth, so the ../ paths are unchanged.
@@ -43,6 +43,7 @@ PIPELINE_CPP = ../src/part_graph.cpp \
               ../src/polygon_triangulate.cpp \
               ../src/part_asset_v2.cpp ../src/lod_bake.cpp ../src/world_flatten.cpp ../src/part_flatten.cpp ../src/triangle_emit.cpp \
               ../src/part_cluster.cpp \
+              ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
               ../src/sector_grid.cpp ../src/lod_select.cpp \
               ../src/world_lights.cpp ../src/probe_volume.cpp \
               ../src/world_tracer.cpp ../src/probe_bake.cpp \
@@ -118,6 +119,19 @@ GPU_TEST_OBJ = $(filter-out $(L_DIR)/main.o,$(L_ALL_OBJ)) $(L_TEST_OBJ)
 gpu-tests: shaders shaders_gpu_link $(GPU_TEST_OBJ)
 	$(CC) $(GPU_TEST_OBJ) -o gpu_tests $(CFLAGS) $(LDFLAGS) $(LDLIBS)
 
+# tileset headless GPU tests (Task 3..7). Same object set as gpu-tests + the
+# tileset_gpu_tests.cpp driver, minus main.o and gpu_cull_tests.o.
+L_TSET_GPU_TEST_OBJ = $(L_DIR)/tileset_gpu_tests.o
+$(L_TSET_GPU_TEST_OBJ): tileset_gpu_tests.cpp | $(L_DIR)
+	$(CC) -c $< -o $@ $(CXX_FLAGS_BUILD)
+
+TILESET_GPU_TEST_OBJ = $(filter-out $(L_DIR)/main.o $(L_DIR)/gpu_cull_tests.o,$(L_ALL_OBJ)) $(L_TSET_GPU_TEST_OBJ)
+tileset-gpu-tests: shaders shaders_gpu_link $(TILESET_GPU_TEST_OBJ)
+	$(CC) $(TILESET_GPU_TEST_OBJ) -o tileset_gpu_tests $(CFLAGS) $(LDFLAGS) $(LDLIBS)
+
+run-tilesetgpu: tileset-gpu-tests
+	./tileset_gpu_tests
+
 -include $(L_ALL_OBJ:.o=.d)
 
 # Shader path resolves relative to the binary; symlink MSL's shaders/ dir.
@@ -180,6 +194,6 @@ win-shaders-gpu:
 	@[ -d shaders_gpu ] || (echo "ERROR: shaders_gpu/ directory missing" && exit 1)
 
 clean:
-	rm -rf viewer viewer.exe gpu_tests shaders build
+	rm -rf viewer viewer.exe gpu_tests tileset_gpu_tests shaders build
 
-.PHONY: viewer windows gpu-tests clean shaders shaders_gpu_link win-shaders win-shaders-gpu regen-processed-shader
+.PHONY: viewer windows gpu-tests tileset-gpu-tests run-tilesetgpu clean shaders shaders_gpu_link win-shaders win-shaders-gpu regen-processed-shader

@@ -1,0 +1,124 @@
+// tileset_gl_ctx.cpp — see header.
+
+#include "tileset_gl_ctx.h"
+
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <fstream>
+#include <sstream>
+#include <string>
+#include <unordered_set>
+
+namespace tileset {
+
+bool tileset_gl_init(std::string& err) {
+    std::string why;
+    if (!viewer::gl46_available(why)) {
+        err = "tileset_gl_init: " + why + "; set GALLIUM_DRIVER=d3d12 on WSLg";
+        return false;
+    }
+    return true;
+}
+
+GLuint compile_compute_program(const std::string& source, std::string& err) {
+    GLuint sh = glCreateShader(GL_COMPUTE_SHADER);
+    const char* src = source.c_str();
+    glShaderSource(sh, 1, &src, nullptr);
+    glCompileShader(sh);
+
+    GLint status = 0;
+    glGetShaderiv(sh, GL_COMPILE_STATUS, &status);
+    if (!status) {
+        GLint len = 0; glGetShaderiv(sh, GL_INFO_LOG_LENGTH, &len);
+        std::string log(len > 0 ? (size_t)len : 1, '\0');
+        if (len > 0) glGetShaderInfoLog(sh, len, nullptr, log.data());
+        err = "compile_compute_program: shader compile failed: " + log;
+        glDeleteShader(sh);
+        return 0;
+    }
+
+    GLuint prog = glCreateProgram();
+    glAttachShader(prog, sh);
+    glLinkProgram(prog);
+    glDetachShader(prog, sh);
+    glDeleteShader(sh);
+
+    glGetProgramiv(prog, GL_LINK_STATUS, &status);
+    if (!status) {
+        GLint len = 0; glGetProgramiv(prog, GL_INFO_LOG_LENGTH, &len);
+        std::string log(len > 0 ? (size_t)len : 1, '\0');
+        if (len > 0) glGetProgramInfoLog(prog, len, nullptr, log.data());
+        err = "compile_compute_program: link failed: " + log;
+        glDeleteProgram(prog);
+        return 0;
+    }
+    return prog;
+}
+
+// ---------------------------------------------------------------------------
+// Textual #include expansion (depth-limited).
+// ---------------------------------------------------------------------------
+static bool read_file(const std::string& path, std::string& out) {
+    std::ifstream f(path, std::ios::binary);
+    if (!f) return false;
+    std::ostringstream ss; ss << f.rdbuf();
+    out = ss.str();
+    return true;
+}
+
+static bool expand_includes(const std::string& src, const std::string& includes_dir,
+                            int depth, std::unordered_set<std::string>& stack,
+                            std::string& out, std::string& err)
+{
+    if (depth > 4) { err = "load_compute_source: include depth > 4"; return false; }
+
+    std::istringstream in(src);
+    std::string line;
+    while (std::getline(in, line)) {
+        // Trim leading whitespace to detect "#include" directives.
+        size_t p = 0;
+        while (p < line.size() && (line[p] == ' ' || line[p] == '\t')) ++p;
+        const std::string trimmed = line.substr(p);
+        if (trimmed.rfind("#include", 0) == 0) {
+            size_t q1 = trimmed.find('"'); size_t q2 = trimmed.find('"', q1 + 1);
+            if (q1 == std::string::npos || q2 == std::string::npos || q2 <= q1 + 1) {
+                err = "load_compute_source: malformed #include: " + line; return false;
+            }
+            const std::string name = trimmed.substr(q1 + 1, q2 - q1 - 1);
+            const std::string path = includes_dir + "/" + name;
+            if (stack.count(path)) {
+                err = "load_compute_source: include cycle: " + name; return false;
+            }
+            std::string inc_src;
+            if (!read_file(path, inc_src)) {
+                err = "load_compute_source: missing include: " + path; return false;
+            }
+            stack.insert(path);
+            if (!expand_includes(inc_src, includes_dir, depth + 1, stack, out, err)) return false;
+            stack.erase(path);
+            out.append("\n");
+            continue;
+        }
+        out.append(line);
+        out.append("\n");
+    }
+    return true;
+}
+
+bool load_compute_source(const std::string& primary_path,
+                         const std::string& includes_dir,
+                         std::string& out_source,
+                         std::string& err)
+{
+    std::string src;
+    if (!read_file(primary_path, src)) {
+        err = "load_compute_source: cannot read primary: " + primary_path;
+        return false;
+    }
+    out_source.clear();
+    std::unordered_set<std::string> stack;
+    return expand_includes(src, includes_dir, /*depth*/ 0, stack, out_source, err);
+}
+
+} // namespace tileset
