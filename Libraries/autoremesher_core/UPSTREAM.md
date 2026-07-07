@@ -128,6 +128,12 @@ Not vendored from upstream `thirdparty/`:
   TBB headers with `__has_include`, supporting both legacy `<tbb/...>` and
   oneAPI `<oneapi/tbb/...>`. Task 2/3 must verify which branch our vendored
   `thirdparty/tbb/` snapshot triggers and confirm only that branch compiles.
+
+  **Task 2 verified:** The vendored `thirdparty/tbb/` snapshot (wjakob/tbb,
+  TBB 2017-era) exposes `include/tbb/` only — there is no `include/oneapi/`
+  directory. The `__has_include(<tbb/parallel_for.h>)` branch fires; the
+  `<oneapi/tbb/...>` branch does not apply. Task 3/4 should add
+  `-I../thirdparty/tbb/include` and use the legacy `<tbb/...>` headers.
 - **`QuadRemesher` alias may be stale.** Upstream `include/AutoRemesher/`
   ships an extensionless `QuadRemesher` alias header, but there is no
   corresponding `src/AutoRemesher/quadremesher.cpp`. Task 2 should confirm
