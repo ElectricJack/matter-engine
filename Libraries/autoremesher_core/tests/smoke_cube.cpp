@@ -17,11 +17,13 @@
 // unchanged.
 #include "autoremesher/remesh.h"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <unordered_map>
 #include <vector>
 
@@ -105,6 +107,44 @@ static void build_spherified_cube(int N,
     }
 }
 
+// Run remesh() once on `in` with `opts`, validate basic invariants, print a
+// per-call OK line tagged with `label`. Returns true on success (r.ok + shape
+// checks pass), false otherwise; on failure a FAIL line is printed to stderr.
+static bool run_once(const char* label,
+                     const autoremesher::Mesh& in,
+                     const autoremesher::Options& opts,
+                     autoremesher::Result& out)
+{
+    out = autoremesher::remesh(in, opts);
+
+    if (!out.ok) {
+        std::fprintf(stderr, "FAIL [%s]: remesh returned ok=false, err=\"%s\"\n",
+                     label, out.err.c_str());
+        return false;
+    }
+    if (out.mesh.positions.size() < 12) {   // at least 4 verts
+        std::fprintf(stderr, "FAIL [%s]: too few positions (%zu)\n",
+                     label, out.mesh.positions.size());
+        return false;
+    }
+    if (out.mesh.indices.size() % 3 != 0) {
+        std::fprintf(stderr, "FAIL [%s]: indices not a multiple of 3 (%zu)\n",
+                     label, out.mesh.indices.size());
+        return false;
+    }
+    if (out.mesh.indices.empty()) {
+        std::fprintf(stderr, "FAIL [%s]: no output triangles\n", label);
+        return false;
+    }
+
+    std::printf("OK [%s]: %zu verts, %zu tris, elapsed=%.3fs\n",
+                label,
+                out.mesh.positions.size() / 3,
+                out.mesh.indices.size() / 3,
+                out.elapsed_seconds);
+    return true;
+}
+
 int main() {
     autoremesher::Mesh in;
     build_spherified_cube(8, in.positions, in.indices);
@@ -116,28 +156,51 @@ int main() {
     opts.timeout_seconds = 60;
     opts.threads         = 1;
 
-    autoremesher::Result r = autoremesher::remesh(in, opts);
+    // First call. Also exercises one-time geogram + TBB scheduler init.
+    autoremesher::Result r1;
+    if (!run_once("call 1", in, opts, r1)) return 1;
 
-    if (!r.ok) {
-        std::fprintf(stderr, "FAIL: remesh returned ok=false, err=\"%s\"\n", r.err.c_str());
-        return 1;
-    }
-    if (r.mesh.positions.size() < 12) {   // at least 4 verts
-        std::fprintf(stderr, "FAIL: too few positions (%zu)\n", r.mesh.positions.size());
-        return 1;
-    }
-    if (r.mesh.indices.size() % 3 != 0) {
-        std::fprintf(stderr, "FAIL: indices not a multiple of 3 (%zu)\n", r.mesh.indices.size());
-        return 1;
-    }
-    if (r.mesh.indices.empty()) {
-        std::fprintf(stderr, "FAIL: no output triangles\n");
-        return 1;
+    // Second call with identical input + options. This exercises the fix for
+    // Task 6 review finding C1: the previous v1 driver constructed a fresh
+    // tbb::task_scheduler_init on every call, which segfaulted on the second
+    // invocation. It also verifies determinism (byte-identical output at
+    // threads=1) which the cache-key contract in MSL depends on.
+    autoremesher::Result r2;
+    if (!run_once("call 2", in, opts, r2)) return 1;
+
+    // Byte-identity check between call 1 and call 2.
+    bool positions_identical =
+        (r1.mesh.positions.size() == r2.mesh.positions.size()) &&
+        std::equal(r1.mesh.positions.begin(), r1.mesh.positions.end(),
+                   r2.mesh.positions.begin(),
+                   [](float a, float b) {
+                       // Byte-identity for floats — memcmp semantics via bit
+                       // reinterpret so NaN patterns compare literally.
+                       std::uint32_t ai, bi;
+                       std::memcpy(&ai, &a, sizeof(ai));
+                       std::memcpy(&bi, &b, sizeof(bi));
+                       return ai == bi;
+                   });
+    bool indices_identical =
+        (r1.mesh.indices.size() == r2.mesh.indices.size()) &&
+        std::equal(r1.mesh.indices.begin(), r1.mesh.indices.end(),
+                   r2.mesh.indices.begin());
+
+    if (positions_identical && indices_identical) {
+        std::printf("OK [determinism]: byte-identical positions + indices between calls\n");
+    } else {
+        // Do NOT fail the test — the report contract says a determinism
+        // regression is a "concern to surface", not a paper-over. Print a
+        // clear CONCERN line so the caller sees it in the stdout capture.
+        std::printf("CONCERN [determinism]: outputs differ across calls "
+                    "(positions_identical=%d indices_identical=%d, "
+                    "sizes: verts %zu vs %zu, tris %zu vs %zu)\n",
+                    (int)positions_identical, (int)indices_identical,
+                    r1.mesh.positions.size() / 3,
+                    r2.mesh.positions.size() / 3,
+                    r1.mesh.indices.size() / 3,
+                    r2.mesh.indices.size() / 3);
     }
 
-    std::printf("OK: %zu verts, %zu tris, elapsed=%.3fs\n",
-                r.mesh.positions.size() / 3,
-                r.mesh.indices.size() / 3,
-                r.elapsed_seconds);
     return 0;
 }

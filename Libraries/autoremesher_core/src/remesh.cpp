@@ -43,6 +43,11 @@
 // task_scheduler_init explicitly (deprecated in oneAPI TBB, still supported
 // in the legacy TBB we vendor) forces early scheduler startup before any
 // static-init aliasing can go wrong.
+//
+// The scheduler is constructed exactly once for process lifetime inside
+// ensure_singletons_initialized(); constructing it per-call segfaults on the
+// second remesh() invocation (wjakob 2017 TBB doesn't survive
+// destroy-then-reinit sequences).
 #if defined(__has_include)
 #  if __has_include(<tbb/task_scheduler_init.h>)
 #    include <tbb/task_scheduler_init.h>
@@ -67,7 +72,7 @@ const char* const AUTOREMESHER_CORE_VERSION = "0.1.0-2026-07-07";
 
 namespace {
 
-// One-time Geogram initialization. The vendored pipeline uses geogram
+// One-time Geogram + TBB initialization. The vendored pipeline uses geogram
 // internally (for meshing / parameterization primitives) and geogram's
 // singletons (Logger, ProcessManager, attribute registry, etc.) require
 // GEO::initialize() before any use. Upstream's Qt main.cpp performed this;
@@ -75,10 +80,24 @@ namespace {
 // remesh() call. GEOGRAM_NO_HANDLER avoids installing exit handlers and
 // dialog boxes, which is inappropriate for a library consumed by hosts
 // with their own error-handling story (MSL, MatterEngine3).
-void ensure_geogram_initialized()
+//
+// The TBB task scheduler (wjakob 2017 vintage TBB) is also constructed here
+// once for the process lifetime. Constructing a fresh `tbb::task_scheduler_init`
+// per remesh() call — as v1 originally did — segfaults on the second call
+// because the wjakob 2017 TBB doesn't gracefully re-init after the scheduler
+// destructor runs at the end of the first call. Since MSL will call remesh()
+// many times per session on cache misses, we anchor the scheduler for process
+// lifetime under the same call_once and never let it be destroyed until
+// program exit.
+//
+// Thread-count implication: the value of `opts.threads` from the FIRST
+// invocation is baked in for the whole process. Subsequent calls with a
+// different `threads` value silently reuse the first-call setting. This is
+// documented in remesh.h.
+void ensure_singletons_initialized(int threads)
 {
     static std::once_flag once;
-    std::call_once(once, [](){
+    std::call_once(once, [threads](){
         GEO::initialize(GEO::GEOGRAM_NO_HANDLER);
         // Register the command-line-arg groups the parameterizer + mesher
         // stages rely on for defaults (algorithm choices, remesh tolerances,
@@ -91,6 +110,15 @@ void ensure_geogram_initialized()
         // that want progress info can adjust this via GEO::Logger::instance()
         // after remesh() has returned once.
         GEO::Logger::instance()->set_quiet(true);
+
+        // Construct the TBB scheduler once for the process lifetime. We
+        // allocate on the heap and intentionally never delete: the OS
+        // reclaims memory at process exit, and this sidesteps the wjakob
+        // 2017 TBB's fragility around destructor-then-reinit sequences.
+        static tbb::task_scheduler_init* tbb_init =
+            new tbb::task_scheduler_init(
+                threads > 0 ? threads : tbb::task_scheduler_init::automatic);
+        (void)tbb_init;
     });
 }
 
@@ -217,12 +245,14 @@ Result remesh(const Mesh& in, const Options& opts)
     // scheduler is initialized). Documented in Task 6 report.
 
     try {
-        // Geogram singletons must be initialized before any pipeline call.
-        ensure_geogram_initialized();
-
-        // Force TBB scheduler creation eagerly. See #include comment above.
-        tbb::task_scheduler_init tbb_init(
-            opts.threads > 0 ? opts.threads : tbb::task_scheduler_init::automatic);
+        // Geogram + TBB singletons must be initialized before any pipeline call.
+        // Both are anchored for the process lifetime under std::call_once inside
+        // this helper; subsequent remesh() calls are no-ops here. The
+        // opts.threads value from the FIRST invocation is baked in for the
+        // whole process — see remesh.h. This intentionally sidesteps the
+        // wjakob 2017 TBB's segfault-on-second-init behavior that the
+        // per-call tbb::task_scheduler_init in the v1 driver exhibited.
+        ensure_singletons_initialized(opts.threads);
 
         // ---- Convert input to upstream types ------------------------------
         std::vector<::AutoRemesher::Vector3> ar_vertices;

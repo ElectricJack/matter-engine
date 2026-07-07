@@ -18,10 +18,22 @@ struct Mesh {
 
 struct Options {
     float    target_ratio    = 1.0f;   // relative to input tri count, clamped (0, 4.0]
-    int      iterations      = 3;      // upstream default
-    uint32_t seed            = 0;      // deterministic RNG seed
+    // v1: accepted but ignored — reserved for future implementation.
+    // Upstream's AutoRemesher class exposes no setter for parameterizer
+    // iteration count; wiring this up requires modifying vendored sources
+    // (deferred to Phase 6+). MSL / cache-key logic MAY still include this
+    // field in the cache key so future changes invalidate old cache entries.
+    int      iterations      = 3;
+    // v1: accepted but ignored — reserved for future implementation.
+    // Upstream's MIQ solver has no seed setter. Same rationale as `iterations`.
+    uint32_t seed            = 0;
     int      timeout_seconds = 60;     // 0 = no limit
-    int      threads         = 1;      // pinned for determinism (>= 1)
+    // Pinned for FP-summation determinism (>= 1). NOTE: the TBB scheduler is
+    // constructed once for the process lifetime on the FIRST remesh() call,
+    // so the `threads` value from that first invocation is baked in for all
+    // subsequent calls in the same process. A later call passing a different
+    // `threads` value silently reuses the first-call setting.
+    int      threads         = 1;
 };
 
 struct Result {
@@ -33,6 +45,10 @@ struct Result {
 
 // Runs the sanitize → parameterize → quad-extract → triangulate pipeline.
 // Never throws. Never modifies `in`. Deterministic given (in, opts).
+//
+// v1 note: only `target_ratio`, `timeout_seconds`, and `threads` (first call
+// only, see Options) affect output. `iterations` and `seed` are reserved
+// for future implementation and are silently ignored by this version.
 Result remesh(const Mesh& in, const Options& opts);
 
 // Version string embedded at compile time. Change this string whenever an
