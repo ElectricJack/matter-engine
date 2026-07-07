@@ -34,6 +34,14 @@ $(OBJ_DIR)/$(SRC_DIR)/%.o: $(SRC_DIR)/%.c $(HEADERS)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 clean:
-	rm -rf $(OBJ_DIR) $(TARGET)
+	rm -rf $(OBJ_DIR) $(TARGET) object_allocator_tests
 
-.PHONY: all clean
+# Test target: build and run tests with AddressSanitizer + UBSan
+TEST_SRCS = tests/object_allocator_tests.c src/object_allocator.c
+TEST_FLAGS = -Wall -Wextra -g -I./include -fsanitize=address,undefined
+
+test: $(TEST_SRCS)
+	$(CC) $(TEST_FLAGS) -o object_allocator_tests $(TEST_SRCS)
+	./object_allocator_tests
+
+.PHONY: all clean test
