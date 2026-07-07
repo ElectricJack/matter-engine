@@ -139,11 +139,19 @@ Not vendored from upstream `thirdparty/`:
   includes `<QDebug>` and calls `qDebug()/qWarning()`. Task 2 must strip these
   and replace with a Qt-free logging shim (e.g. `fprintf(stderr, ...)` or a
   thin `#define qDebug() ...` shim). Header copyright must be preserved.
-  **Task 4 addendum:** the file also uses `std::this_thread::sleep_for` inside
+  **Task 4 addendum 1:** the file also uses `std::this_thread::sleep_for` inside
   the progress-lock guard. Upstream got `<thread>` transitively via `<QDebug>`;
   the Qt-free shim (this Deviation) drops that path, so an explicit
   `#include <thread>` was added at the same time as the shim. Marked with an
   inline comment referencing this Deviation.
+
+  **Task 4 addendum 2 (`nl_ext_stubs.c`):** upstream's `NL/nl_amgcl.cpp` was
+  excluded from the build (upstream typo + missing amgcl dep — see Task 4
+  Makefile comment). To keep the OpenNL fallback intact, a `nlSolveAMGCL()`
+  no-op stub was added to `src/nl_ext_stubs.c` matching the style of the
+  other stubs in that file (returns `NL_FALSE`). This is a modification to
+  a Task 3-vendored file and is logged here for paper-trail hygiene; upstream
+  `nl_ext_stubs.c` has no MIT copyright block to preserve.
 - **TBB `__has_include` branch.** Upstream `autoremesher.cpp` already guards
   TBB headers with `__has_include`, supporting both legacy `<tbb/...>` and
   oneAPI `<oneapi/tbb/...>`. Task 2/3 must verify which branch our vendored
