@@ -334,7 +334,17 @@ bool HostBaker::bake(const std::string& source, const Params& params,
         child_hashes.data(), child_hashes.size(),
         child_modules.data(), child_params.data());
     // The hash SP-3 memoized must equal where the .part landed (master C-2 guarantee).
-    return r.error.ok && r.resolved_hash == resolved_hash;
+    if (!r.error.ok) {
+        std::fprintf(stderr, "  HostBaker::bake: %s\n", r.error.message.c_str());
+        return false;
+    }
+    if (r.resolved_hash != resolved_hash) {
+        std::fprintf(stderr,
+            "  HostBaker::bake: resolved_hash mismatch: expected %016llx got %016llx\n",
+            (unsigned long long)resolved_hash, (unsigned long long)r.resolved_hash);
+        return false;
+    }
+    return true;
 }
 
 bool HostBaker::bake_lod_variants(const std::string& source, const Params& params,
