@@ -180,10 +180,6 @@ namespace BLASFactory {
     std::vector<Tri> create_sphere_triangles(float radius, int segments, int rings);
     std::vector<Tri> create_plane_triangles(float width, float height);
     
-    // Legacy functions for backward compatibility
-    // std::vector<LegacyTriangle> create_cube_triangles_legacy(float size = 1.0f);
-    // std::vector<LegacyTriangle> create_sphere_triangles_legacy(float radius, int segments, int rings);
-    // std::vector<LegacyTriangle> create_plane_triangles_legacy(float width, float height);
     
     BLASHandle register_cube(BLASManager& manager, float size = 1.0f);
     BLASHandle register_sphere(BLASManager& manager, float radius, int segments = 32, int rings = 16);
