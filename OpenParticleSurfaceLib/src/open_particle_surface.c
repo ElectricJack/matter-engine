@@ -366,6 +366,10 @@ static void InitializeActiveCellTracking(void) {
     // Start with capacity for a reasonable number of active cells
     activeCells.capacity = 1000;
     activeCells.indices = (int*)malloc(activeCells.capacity * sizeof(int));
+    if (!activeCells.indices) {
+        fprintf(stderr, "[ERROR] Failed to allocate activeCells.indices (%d entries)\n", activeCells.capacity);
+        activeCells.capacity = 0;
+    }
     activeCells.count = 0;
 }
 
@@ -1208,9 +1212,9 @@ static inline uint64_t EdgeKey(int v1, int v2) {
 }
 
 // Ensure the edge hash table is large enough for the given number of edges.
-// Size is always a power of two, at least 2× the number of edges (50% load).
+// Size is always a power of two, at least 3× the number of edges to guarantee free slots.
 static bool EdgeHashEnsure(int edgeCount) {
-    int needed = edgeCount * 2;
+    int needed = edgeCount * 3;
     if (needed < 16) needed = 16;
     // Round up to next power of two
     int sz = 1;
@@ -1313,15 +1317,19 @@ static void SimplifyMesh(Mesh* mesh) {
 
             if (EdgeHashInsert(v1, v2)) {
                 // New edge — append to edge list
-                Vector3 pos1 = {mesh->vertices[v1 * 3], mesh->vertices[v1 * 3 + 1], mesh->vertices[v1 * 3 + 2]};
-                Vector3 pos2 = {mesh->vertices[v2 * 3], mesh->vertices[v2 * 3 + 1], mesh->vertices[v2 * 3 + 2]};
-                int lo = v1 < v2 ? v1 : v2;
-                int hi = v1 < v2 ? v2 : v1;
-                meshEdges[meshEdgeCount].v1 = lo;
-                meshEdges[meshEdgeCount].v2 = hi;
-                meshEdges[meshEdgeCount].length = Vector3Distance(pos1, pos2);
-                meshEdges[meshEdgeCount].valid = true;
-                meshEdgeCount++;
+                if (meshEdgeCount < meshEdgeCapacity) {
+                    Vector3 pos1 = {mesh->vertices[v1 * 3], mesh->vertices[v1 * 3 + 1], mesh->vertices[v1 * 3 + 2]};
+                    Vector3 pos2 = {mesh->vertices[v2 * 3], mesh->vertices[v2 * 3 + 1], mesh->vertices[v2 * 3 + 2]};
+                    int lo = v1 < v2 ? v1 : v2;
+                    int hi = v1 < v2 ? v2 : v1;
+                    meshEdges[meshEdgeCount].v1 = lo;
+                    meshEdges[meshEdgeCount].v2 = hi;
+                    meshEdges[meshEdgeCount].length = Vector3Distance(pos1, pos2);
+                    meshEdges[meshEdgeCount].valid = true;
+                    meshEdgeCount++;
+                } else {
+                    fprintf(stderr, "[ERROR] meshEdges array full (capacity %d, tried to insert edge %d)\n", meshEdgeCapacity, meshEdgeCount);
+                }
             }
         }
     }
@@ -1559,6 +1567,12 @@ void DrawParticleSystemDebug(bool showBounds) {
 }
 
 void DrawParticles(bool useInstancing, int maxInstancesToDraw) {
+    // Guard against malloc failures in InitializeParticleSystem
+    if (!particleMatrices || !particleColors) {
+        fprintf(stderr, "[ERROR] DrawParticles: particleMatrices or particleColors is NULL\n");
+        return;
+    }
+
     if (useInstancing) {
         // Prepare matrices and colors for instanced rendering
         particleInstanceCount = 0;
