@@ -110,16 +110,16 @@ int main(void)
             BeginMode3D(camera);
                 // Draw rotating cube with imgui-controlled color
                 Color cubeColor = {(unsigned char)(cube_color.x * 255), (unsigned char)(cube_color.y * 255), (unsigned char)(cube_color.z * 255), 255};
-                DrawCube((Vector3){0.0f, 0.0f, 0.0f}, 2.0f, 2.0f, 2.0f, cubeColor);
-                
-                // Draw cube wireframe for better visualization
-                DrawCubeWires((Vector3){0.0f, 0.0f, 0.0f}, 2.0f, 2.0f, 2.0f, MAROON);
-                
-                // Manually rotate the model matrix for the next frame
+
+                // Rotate the model matrix around the cube before drawing
                 rlPushMatrix();
                 rlRotatef(rotationY * RAD2DEG, 0.0f, 1.0f, 0.0f);
+                DrawCube((Vector3){0.0f, 0.0f, 0.0f}, 2.0f, 2.0f, 2.0f, cubeColor);
+
+                // Draw cube wireframe for better visualization
+                DrawCubeWires((Vector3){0.0f, 0.0f, 0.0f}, 2.0f, 2.0f, 2.0f, MAROON);
                 rlPopMatrix();
-                
+
                 DrawGrid(10, 1.0f);        // Draw a grid
             EndMode3D();
             
