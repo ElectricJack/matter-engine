@@ -20,7 +20,13 @@ struct MaterialProperties
 // (see MATERIAL_FLOATS_PER_DEF / MaterialRegistryPackForGPU):
 //   [0..2] albedo, [3] roughness, [4] metallic, [5] emission, [6] pad,
 //   [7] translucency, [8] ior, [9] flatShading, [10] mergeGroup, [11] groundTilesetSlot
-#define MAX_MATERIALS 64
+// Was 64 — reduced to 32 to keep the `PARAM c[N]` block for compute shaders
+// under NVIDIA's NVcp5.0 local-parameter cap on Windows. The CPU registry
+// currently uses ~17 materials; 32 keeps 2x headroom. Increase carefully:
+// the total uniform float count is MAX_MATERIALS * MATERIAL_FLOATS_PER_DEF
+// (currently 384), and NVcp5.0 rejects programs whose local param count
+// exceeds its (undocumented) profile cap around ~512-768 params.
+#define MAX_MATERIALS 32
 #define MATERIAL_FLOATS_PER_DEF 12
 uniform float materialTable[MAX_MATERIALS * MATERIAL_FLOATS_PER_DEF];
 uniform int materialCount;
