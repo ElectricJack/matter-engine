@@ -37,6 +37,9 @@ SurfaceLib/test_config
 # Allow raylib's vendored static lib through the *.a exclusion (committed builds)
 !Libraries/raylib/build/**/libraylib.a
 !Libraries/raylib/src/libraylib.a
+# Allow box3d's prebuilt Linux and MinGW static libs
+!Libraries/box3d/libbox3d.a
+!Libraries/box3d/build-mingw/libbox3d.a
 MatterEngine3/viewer/cache
 MatterSurfaceLib/parts
 

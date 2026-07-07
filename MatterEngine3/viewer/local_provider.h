@@ -35,11 +35,13 @@ public:
 
     int baked_count() const { return baked_count_; }
     int hit_count()   const { return hit_count_; }
+    int baked_tileset_count() const { return baked_tileset_count_; }
 
 private:
     LocalProviderConfig  cfg_;
     int                  baked_count_ = 0;
     int                  hit_count_   = 0;
+    int                  baked_tileset_count_ = 0;
     std::set<uint64_t>   baked_hashes_;  // hashes freshly baked by last connect()
 };
 

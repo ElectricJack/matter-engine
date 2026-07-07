@@ -24,6 +24,8 @@ INCLUDE_PATHS = -I../include -I../../MatterSurfaceLib/include -I$(RAYLIB_PATH) \
 
 LDFLAGS = -lGL -lm -lpthread -ldl -lrt -lX11
 LDLIBS  = ../../Libraries/raylib/build/linux/libraylib.a
+BOX3D_LIB = ../../Libraries/box3d/libbox3d.a
+LDLIBS   += $(BOX3D_LIB)
 
 # Test-only sources excluded from VIEWER_SRC so `make viewer` doesn't link them.
 TEST_ONLY_SRC = gpu_cull_tests.cpp
@@ -56,6 +58,9 @@ PIPELINE_CPP = ../src/part_graph.cpp \
               ../../MatterSurfaceLib/src/meshing_algorithm.cpp ../../MatterSurfaceLib/src/marching_cubes_algorithm.cpp \
               ../../MatterSurfaceLib/src/oriented_cube_algorithm.cpp ../../MatterSurfaceLib/src/vertex_ao.cpp \
               ../../MatterSurfaceLib/src/occupancy.cpp ../../MatterSurfaceLib/src/tlas_manager.cpp ../../MatterSurfaceLib/src/part_asset.cpp \
+              ../src/tileset_phase.cpp ../src/tileset_phase_gpu.cpp \
+              ../src/tileset_bake.cpp ../src/tileset_settle.cpp \
+              ../src/tileset_collider.cpp ../src/tileset_part_collider.cpp \
               ../../MatterSurfaceLib/src/lattice.cpp ../../MatterSurfaceLib/src/particle_culling.cpp
 
 # C sources (gcc-compiled to keep extern "C" symbols unmangled) + QuickJS C.
@@ -74,7 +79,7 @@ IMGUI_SRC = $(IMGUI_PATH)/imgui.cpp $(IMGUI_PATH)/imgui_draw.cpp \
 # can compile them concurrently). Basenames are unique across all source dirs,
 # so flattening with $(notdir ...) is collision-free. vpath (below) lets the
 # pattern rules find each source by basename.
-CXX_FLAGS_BUILD = $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST -DTILESET_GTEX_USE_RAYLIB_STB $(INCLUDE_PATHS) $(QJS_INC) -MMD -MP
+CXX_FLAGS_BUILD = $(CFLAGS) -DMATTER_HAVE_SCRIPT_HOST -DTILESET_GTEX_USE_RAYLIB_STB $(INCLUDE_PATHS) -I../../Libraries/box3d/include $(QJS_INC) -MMD -MP
 CPP_NAMES = $(notdir $(VIEWER_SRC) $(PIPELINE_CPP) $(IMGUI_SRC))
 QJS_NAMES = $(notdir $(QJS_C))
 PIPC_NAMES = $(notdir $(PIPELINE_C))
@@ -161,6 +166,19 @@ tileset-provider-tests: shaders shaders_gpu_link $(TILESET_PROV_TEST_OBJ)
 run-tilesetprovider: tileset-provider-tests
 	./tileset_provider_tests
 
+# tileset load integration tests (Phase 4 Task 4). LocalProvider connect() path:
+# world.manifest tileset root -> run_tileset_phase(opts) -> load_slot.
+L_TSET_LOAD_TEST_OBJ = $(L_DIR)/tileset_load_tests.o
+$(L_TSET_LOAD_TEST_OBJ): tileset_load_tests.cpp | $(L_DIR)
+	$(CC) -c $< -o $@ $(CXX_FLAGS_BUILD)
+
+TILESET_LOAD_TEST_OBJ = $(filter-out $(L_DIR)/main.o $(L_DIR)/gpu_cull_tests.o,$(L_ALL_OBJ)) $(L_TSET_LOAD_TEST_OBJ)
+tileset-load-tests: shaders shaders_gpu_link $(TILESET_LOAD_TEST_OBJ)
+	$(CC) $(TILESET_LOAD_TEST_OBJ) -o tileset_load_tests $(CFLAGS) $(LDFLAGS) $(LDLIBS)
+
+run-tilesetload: tileset-load-tests
+	./tileset_load_tests
+
 -include $(L_ALL_OBJ:.o=.d)
 
 # Shader path resolves relative to the binary; symlink MSL's shaders/ dir.
@@ -185,6 +203,22 @@ regen-processed-shader:
 	@/tmp/me3_shader_preprocessor $(MSL_SHADERS)/raytrace_tlas_blas.fs \
 	    $(MSL_SHADERS)/raytrace_tlas_blas_processed.fs
 
+# ---- MinGW cross-compile of box3d (Linux → Windows) ----
+# box3d/src/timer.c includes <Windows.h> (capital W) which is case-sensitive on
+# Linux. We create a local wrapper header and compile timer.c separately.
+# Run `make mingw-box3d` once; the resulting build-mingw/libbox3d.a is committed.
+BOX3D_DIR     = ../../Libraries/box3d
+MINGW_CC      = x86_64-w64-mingw32-gcc
+MINGW_CASE_FIX_DIR = /tmp/box3d_mingw_case_fix
+
+mingw-box3d:
+	mkdir -p $(MINGW_CASE_FIX_DIR)
+	echo '#include <windows.h>' > $(MINGW_CASE_FIX_DIR)/Windows.h
+	mkdir -p $(BOX3D_DIR)/build-mingw
+	cd $(BOX3D_DIR) && $(MINGW_CC) -std=c17 -O2 -ffp-contract=off -Iinclude -Isrc -Wall -Wno-unused-parameter -Wno-unused-value -c src/*.c
+	cd $(BOX3D_DIR) && $(MINGW_CC) -std=c17 -O2 -ffp-contract=off -Iinclude -Isrc -I$(MINGW_CASE_FIX_DIR) -c src/timer.c -o timer_win.o
+	cd $(BOX3D_DIR) && ar rcs build-mingw/libbox3d.a *.o timer_win.o && rm -f *.o timer_win.o
+
 # ---- Native Windows .exe (MinGW cross-compile from WSL/Linux) ----
 # Mirrors MatterSurfaceLib's windows-native target: MinGW toolchain, the
 # prebuilt windows-native raylib, and Win32 GL/GDI libs, statically linked so
@@ -194,7 +228,7 @@ WIN_CC      = x86_64-w64-mingw32-gcc
 WIN_RAYLIB  = ../../Libraries/raylib/build/windows-native/libraylib.a
 # Win32 import libs raylib depends on; MUST come AFTER libraylib.a on the link
 # line so the static linker can resolve raylib's __imp_* references.
-WIN_LIBS    = -lopengl32 -lgdi32 -lwinmm
+WIN_LIBS    = -lopengl32 -lgdi32 -lwinmm ../../Libraries/box3d/build-mingw/libbox3d.a
 
 # ---- Windows compile rules
 $(W_CPP_OBJ): $(W_DIR)/%.o: %.cpp | $(W_DIR)
@@ -223,6 +257,6 @@ win-shaders-gpu:
 	@[ -d shaders_gpu ] || (echo "ERROR: shaders_gpu/ directory missing" && exit 1)
 
 clean:
-	rm -rf viewer viewer.exe gpu_tests tileset_gpu_tests tileset_seam_tests tileset_provider_tests shaders build
+	rm -rf viewer viewer.exe gpu_tests tileset_gpu_tests tileset_seam_tests tileset_provider_tests tileset_load_tests shaders build
 
-.PHONY: viewer windows gpu-tests tileset-gpu-tests run-tilesetgpu tileset-seam-tests run-tilesetseam tileset-provider-tests run-tilesetprovider clean shaders shaders_gpu_link win-shaders win-shaders-gpu regen-processed-shader
+.PHONY: viewer windows gpu-tests tileset-gpu-tests run-tilesetgpu tileset-seam-tests run-tilesetseam tileset-provider-tests run-tilesetprovider tileset-load-tests run-tilesetload clean shaders shaders_gpu_link win-shaders win-shaders-gpu regen-processed-shader mingw-box3d

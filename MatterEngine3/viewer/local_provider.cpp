@@ -10,6 +10,10 @@
 #include "part_asset.h"   // fnv1a64
 #include "blas_manager.hpp"
 #include "tlas_manager.hpp"
+#include "tileset_phase.h"
+#include "tileset_bake_gpu.h"  // TilesetPhaseOpts
+#include "tileset_provider.h"
+#include "material_registry.h"
 
 #include <chrono>
 #include <cstdint>
@@ -120,14 +124,26 @@ bool LocalProvider::connect(WorldManifest& out, std::string& err) {
 
     std::vector<ChildRequest> roots;
     std::vector<bool> expand_flags;
+    std::vector<bool> tileset_flags;
     bool manifest_ok = PartGraph::read_manifest(abs_world_data, cfg_.world_name,
-                                                roots, err, &expand_flags);
+                                                roots, err, &expand_flags, &tileset_flags);
     if (!manifest_ok) {
         fs_chdir(orig_cwd);
         return false;
     }
 
-    InstallResult ir = graph.install(roots);
+    // Tileset roots are installed by run_tileset_phase (it calls install() itself
+    // on the tileset script's `static requires` children). Split them out here so
+    // PartGraph::install() only sees the non-tileset roots.
+    std::vector<ChildRequest> roots_for_install;
+    std::vector<size_t> install_to_orig;
+    std::vector<size_t> tileset_indices;
+    for (size_t i = 0; i < roots.size(); ++i) {
+        if (tileset_flags[i]) tileset_indices.push_back(i);
+        else { roots_for_install.push_back(roots[i]); install_to_orig.push_back(i); }
+    }
+
+    InstallResult ir = graph.install(roots_for_install);
     if (!ir.ok) {
         err = ir.error;
         fs_chdir(orig_cwd);
@@ -141,10 +157,10 @@ bool LocalProvider::connect(WorldManifest& out, std::string& err) {
     fs_chdir(orig_cwd);
 
     // Map each root module to the child-FOLDED resolved hash the graph baked it under.
-    // install() returns root_hashes parallel to `roots`; using them (instead of an
-    // unfolded resolve_hash recompute) keeps manifest instances pointing at the .part
+    // install() returns root_hashes parallel to `roots_for_install`; using them (instead
+    // of an unfolded resolve_hash recompute) keeps manifest instances pointing at the .part
     // that actually exists on disk — critical once a root has children (e.g. Tree->Leaf).
-    if (ir.root_hashes.size() != roots.size()) {
+    if (ir.root_hashes.size() != roots_for_install.size()) {
         err = "install did not return a hash for every root";
         return false;
     }
@@ -249,21 +265,69 @@ bool LocalProvider::connect(WorldManifest& out, std::string& err) {
         }
     };
 
-    // Generic placement: every manifest root is placed at the origin, except
+    // Generic placement: every non-tileset manifest root is placed at the origin, except
     // roots flagged `expand`, whose baked child-instance table is promoted to
     // individual world instances (per-child LOD, culling, and instanced
-    // batching downstream). No per-world special cases.
+    // batching downstream). Tileset roots are handled separately below.
     for (size_t i = 0; i < roots.size(); ++i) {
+        if (tileset_flags[i]) {
+            // Handled below via run_tileset_phase; not placed as a world instance.
+            continue;
+        }
+        // Map back to the install index for this original root.
+        size_t k = 0; bool found = false;
+        for (size_t j = 0; j < install_to_orig.size(); ++j)
+            if (install_to_orig[j] == i) { k = j; found = true; break; }
+        if (!found) continue;  // (unreachable — every non-tileset root was installed)
         if (expand_flags[i]) {
-            if (!append_expanded_children(abs_cache_root, ir.root_hashes[i],
+            if (!append_expanded_children(abs_cache_root, ir.root_hashes[k],
                                           next_id, out.instances, err))
                 return false;
         } else {
-            place(ir.root_hashes[i], 0.0f, 0.0f, 0.0f);
+            place(ir.root_hashes[k], 0.0f, 0.0f, 0.0f);
         }
     }
     flatten_placed();
     append_instance_refs();
+
+    // ---- Tileset roots: GPU bake + .gtex load into a viewer slot -----------
+    // run_tileset_phase reads world.manifest and .js from abs_world_data.
+    // The gtex is written to abs_world_data/<root_module>.gtex (the GPU overload
+    // constructs the path as world_data_dir + "/" + root_module + ".gtex").
+    baked_tileset_count_ = 0;
+    for (size_t ti : tileset_indices) {
+        if (baked_tileset_count_ >= viewer::tileset_provider::max_slots()) {
+            err = "LocalProvider: more tileset roots (" +
+                  std::to_string(tileset_indices.size()) + ") than slots (" +
+                  std::to_string(viewer::tileset_provider::max_slots()) + ")";
+            return false;
+        }
+        const std::string root_module = roots[ti].module;
+        tileset::SettledTorus settled;
+        tileset::TilesetPhaseOpts opts;
+        opts.force_rebake = false;   // let content_hash decide
+        opts.dump_png     = false;
+        std::string te;
+        if (!tileset::run_tileset_phase(abs_world_data, cfg_.world_name, root_module,
+                                        abs_cache_root, settled, opts, te)) {
+            err = "LocalProvider: run_tileset_phase(" + root_module + "): " + te +
+                  " (if a GL error: set GALLIUM_DRIVER=d3d12 on WSLg)";
+            return false;
+        }
+        // The GPU overload writes: world_data_dir + "/" + root_module + ".gtex"
+        const std::string gtex_path = abs_world_data + "/" + root_module + ".gtex";
+        std::string le;
+        if (!viewer::tileset_provider::load_slot(baked_tileset_count_, gtex_path, le)) {
+            err = "LocalProvider: tileset_provider::load_slot(" + gtex_path + "): " + le;
+            return false;
+        }
+        // Bind material DIRT (16) to this slot by default — the world script may
+        // override later. Non-DIRT materials keep groundTilesetSlot = -1.
+        MaterialRegistrySetGroundTilesetSlot(16, baked_tileset_count_);
+        ++baked_tileset_count_;
+        printf("LocalProvider: tileset '%s' -> slot %d (%s)\n",
+               root_module.c_str(), baked_tileset_count_ - 1, gtex_path.c_str());
+    }
 
     // --- Parse world lights ---
     {
