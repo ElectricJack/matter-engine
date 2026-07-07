@@ -73,3 +73,7 @@ MatterEngine3/viewer/shaders/
 *.bak
 imposters/
 MatterEngine3/examples/world_demo/WorldData/*.gtex
+
+# Screenshots/ is a checked-in folder — override the broad `shots/` rule above
+# for the specific subdir that happens to be named `shots`.
+!Screenshots/shots/
