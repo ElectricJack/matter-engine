@@ -3,3 +3,4 @@
 # individual world instances, so per-child LOD selection, flattening, floor
 # cull, and instanced raster batching all apply.
 Meadow expand
+ForestFloor tileset

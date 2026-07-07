@@ -54,7 +54,7 @@ else
     LDLIBS = ../../Libraries/raylib/src/libraylib.a
 endif
 
-.PHONY: clean run-partv2 run-script run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting run-flatten run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetgtex run-tilesettorusbvh
+.PHONY: clean run-partv2 run-script run-graph run-graph-integration run-trivar run-shlib run-comp run-dev run-example run-gallery run-viewer-logic run-iso run-polytri run-treebake run-meadow run-meadow-check run-lighting run-flatten run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetgtex run-tilesettorusbvh run-tilesetmeadowmanifest
 
 # Part Artifact v2 round-trip + resolved-hash + format-guard tests (headless, GL-free).
 # NEW impl ../src/part_asset_v2.cpp + consumed MatterSurfaceLib backend sources.
@@ -79,7 +79,7 @@ run-partv2: $(PARTV2_TARGET)
 	./$(PARTV2_TARGET)
 
 clean:
-	rm -f $(PARTV2_TARGET) $(SCRIPT_TARGET) $(GRAPH_TARGET) $(GRAPH_INT_TARGET) $(TRIVAR_TARGET) $(SHLIB_TARGET) $(COMP_TARGET) $(DEV_TARGET) $(EXAMPLE_TARGET) $(VIEWER_LOGIC_TARGET) $(TREEBAKE_TARGET) $(MEADOW_TARGET) $(MEADOWCHECK_TARGET) $(GRASSLOD_TARGET) $(STRESSFOREST_TARGET)
+	rm -f $(PARTV2_TARGET) $(SCRIPT_TARGET) $(GRAPH_TARGET) $(GRAPH_INT_TARGET) $(TRIVAR_TARGET) $(SHLIB_TARGET) $(COMP_TARGET) $(DEV_TARGET) $(EXAMPLE_TARGET) $(VIEWER_LOGIC_TARGET) $(TREEBAKE_TARGET) $(MEADOW_TARGET) $(MEADOWCHECK_TARGET) $(GRASSLOD_TARGET) $(STRESSFOREST_TARGET) $(TILESETMEADOWMANIFEST_TARGET)
 
 # Script host (QuickJS-ng) + DSL/CSG bake tests (headless, GL-free for the host;
 # the BLAS surface path links raylib like the part-asset tests). QuickJS-ng C
@@ -641,3 +641,26 @@ $(TILESETTORUSBVH_TARGET): $(TILESETTORUSBVH_CPP) $(TILESETTORUSBVH_C)
 
 run-tilesettorusbvh: $(TILESETTORUSBVH_TARGET)
 	./$(TILESETTORUSBVH_TARGET)
+
+# Meadow world.manifest tileset-flag parse test (headless, GL-free, no QuickJS).
+# Verifies ForestFloor is declared with the `tileset` flag in Meadow's manifest.
+TILESETMEADOWMANIFEST_TARGET = tileset_meadow_manifest_tests
+TILESETMEADOWMANIFEST_CPP = tileset_meadow_manifest_tests.cpp ../src/part_graph.cpp \
+                            ../src/part_asset_v2.cpp \
+                            ../../MatterSurfaceLib/src/part_asset.cpp \
+                            ../../MatterSurfaceLib/src/blas_manager.cpp \
+                            ../../MatterSurfaceLib/src/bvh.cpp \
+                            ../../MatterSurfaceLib/src/tlas_manager.cpp \
+                            ../../MatterSurfaceLib/src/vertex_ao.cpp \
+                            ../../MatterSurfaceLib/src/occupancy.cpp
+TILESETMEADOWMANIFEST_C   = ../../MatterSurfaceLib/src/material_registry.c
+TILESETMEADOWMANIFEST_C_OBJ = material_registry.o
+
+$(TILESETMEADOWMANIFEST_TARGET): $(TILESETMEADOWMANIFEST_CPP) $(TILESETMEADOWMANIFEST_C)
+	gcc -c $(TILESETMEADOWMANIFEST_C) -O2 -DPLATFORM_DESKTOP $(INCLUDE_PATHS)
+	$(CC) $(TILESETMEADOWMANIFEST_CPP) $(TILESETMEADOWMANIFEST_C_OBJ) -o $(TILESETMEADOWMANIFEST_TARGET) \
+	      $(CFLAGS) $(INCLUDE_PATHS) $(LDFLAGS) $(LDLIBS)
+	rm -f $(TILESETMEADOWMANIFEST_C_OBJ)
+
+run-tilesetmeadowmanifest: $(TILESETMEADOWMANIFEST_TARGET)
+	./$(TILESETMEADOWMANIFEST_TARGET)
