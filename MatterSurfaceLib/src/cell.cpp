@@ -116,6 +116,15 @@ void Cell::add_particle_index(uint32_t particle_index, uint32_t material_id) {
     }
 }
 
+void Cell::add_particle_index_unchecked(uint32_t particle_index, uint32_t material_id) {
+    // Fast path used in rebuild_dirty_cells after clear_particle_indices(): the
+    // caller iterates each particle at most once per cell, so uniqueness is
+    // guaranteed — skip the O(n) std::find.
+    uint32_t group = (uint32_t)MaterialMergeGroup((int)material_id);
+    material_particle_indices[group].push_back(particle_index);
+    is_dirty = true;
+}
+
 void Cell::remove_particle_index(uint32_t particle_index, uint32_t material_id) {
     uint32_t group = (uint32_t)MaterialMergeGroup((int)material_id);
     auto material_it = material_particle_indices.find(group);
@@ -401,7 +410,12 @@ void Cell::commit_group_mesh(GroupMeshResult& result, BLASManager& blas_manager)
                                            std::to_string(group_id);
                 BVHReportManager::UnregisterBVH(analysis_name); // remove stale entry
                 BVHReportManager::RegisterBVH(analysis_name, bvh, mesh_ptr);
-                BVHReportManager::UpdateAnalysis(analysis_name);
+                // Perf: UpdateAnalysis runs a full BVH quality pass — skip it on
+                // every commit unless the caller opts in via MSL_BVH_ANALYSIS=1.
+                static const bool bvh_analysis_enabled = (getenv("MSL_BVH_ANALYSIS") != nullptr);
+                if (bvh_analysis_enabled) {
+                    BVHReportManager::UpdateAnalysis(analysis_name);
+                }
             }
         } else {
             material_blas[group_id] = 0;

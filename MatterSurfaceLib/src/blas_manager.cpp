@@ -138,11 +138,9 @@ BLASHandle BLASManager::register_triangles(Tri* triangles, int triangle_count, c
     // Check if BLAS already exists; share it and bump its reference count.
     BLASHandle existing = find_existing_blas(triangles, triangle_count, hash, triex);
     if (existing != INVALID_BLAS_HANDLE) {
-        for (auto& entry : entries_) {
-            if (entry->handle == existing) {
-                entry->ref_count++;
-                break;
-            }
+        auto idx_it = handle_to_index_.find(existing);
+        if (idx_it != handle_to_index_.end() && idx_it->second < entries_.size()) {
+            entries_[idx_it->second]->ref_count++;
         }
         return existing;
     }
@@ -197,13 +195,14 @@ BLASHandle BLASManager::register_triangles(Tri* triangles, int triangle_count, c
         auto entry = std::make_unique<BLASEntry>(handle, std::move(mesh), std::move(bvh),
                                                  std::move(triangle_copy), std::move(tri_extra_copy), hash);
         
-        // Add to hash table
+        // Add to hash table and handle map
         size_t entry_index = entries_.size();
         hash_to_entry_.emplace(hash, entry_index);
-        
+        handle_to_index_.emplace(handle, entry_index);
+
         // Add to entries
         entries_.push_back(std::move(entry));
-        
+
         mark_dirty(); // Mark all cached data as dirty
         return handle;
     }
@@ -256,6 +255,7 @@ BLASHandle BLASManager::register_prebuilt(const Tri* tris, const TriEx* triex, i
 
     size_t entry_index = entries_.size();
     hash_to_entry_.emplace(hash, entry_index);
+    handle_to_index_.emplace(handle, entry_index);
     entries_.push_back(std::move(entry));
 
     mark_dirty();
@@ -266,22 +266,27 @@ BLASHandle BLASManager::register_prebuilt(const Tri* tris, const TriEx* triex, i
 void BLASManager::release_blas(BLASHandle handle) {
     if (handle == INVALID_BLAS_HANDLE) return;
 
-    auto it = std::find_if(entries_.begin(), entries_.end(),
-        [handle](const auto& entry) { return entry->handle == handle; });
-    if (it == entries_.end()) return;
+    // O(1) handle lookup via handle_to_index_ map.
+    auto idx_it = handle_to_index_.find(handle);
+    if (idx_it == handle_to_index_.end()) return;
+    size_t idx = idx_it->second;
+    if (idx >= entries_.size()) return;
 
-    if ((*it)->ref_count > 1) {
-        (*it)->ref_count--;
+    if (entries_[idx]->ref_count > 1) {
+        entries_[idx]->ref_count--;
         return;
     }
 
     // Last owner: drop the entry and reclaim its place in the combined arrays.
-    entries_.erase(it);
+    entries_.erase(entries_.begin() + static_cast<ptrdiff_t>(idx));
+    handle_to_index_.erase(idx_it);
 
-    // entries_ indices shifted, so rebuild the hash lookup table from scratch.
+    // entries_ indices shifted, so rebuild both lookup tables from scratch.
     hash_to_entry_.clear();
+    handle_to_index_.clear();
     for (size_t i = 0; i < entries_.size(); ++i) {
         hash_to_entry_.emplace(entries_[i]->hash, i);
+        handle_to_index_.emplace(entries_[i]->handle, i);
     }
 
     mark_dirty();
@@ -289,36 +294,29 @@ void BLASManager::release_blas(BLASHandle handle) {
 
 bool BLASManager::has_blas(BLASHandle handle) const {
     if (handle == INVALID_BLAS_HANDLE) return false;
-    
-    return std::any_of(entries_.begin(), entries_.end(),
-        [handle](const auto& entry) { return entry->handle == handle; });
+    auto it = handle_to_index_.find(handle);
+    return (it != handle_to_index_.end() && it->second < entries_.size());
 }
 
 BVH* BLASManager::get_bvh(BLASHandle handle) const {
     if (handle == INVALID_BLAS_HANDLE) return nullptr;
-    
-    auto it = std::find_if(entries_.begin(), entries_.end(),
-        [handle](const auto& entry) { return entry->handle == handle; });
-    
-    return (it != entries_.end()) ? (*it)->bvh.get() : nullptr;
+    auto it = handle_to_index_.find(handle);
+    if (it == handle_to_index_.end() || it->second >= entries_.size()) return nullptr;
+    return entries_[it->second]->bvh.get();
 }
 
 BvhMesh* BLASManager::get_mesh(BLASHandle handle) const {
     if (handle == INVALID_BLAS_HANDLE) return nullptr;
-    
-    auto it = std::find_if(entries_.begin(), entries_.end(),
-        [handle](const auto& entry) { return entry->handle == handle; });
-    
-    return (it != entries_.end()) ? (*it)->mesh.get() : nullptr;
+    auto it = handle_to_index_.find(handle);
+    if (it == handle_to_index_.end() || it->second >= entries_.size()) return nullptr;
+    return entries_[it->second]->mesh.get();
 }
 
 const BLASManager::BLASEntry* BLASManager::get_entry(BLASHandle handle) const {
     if (handle == INVALID_BLAS_HANDLE) return nullptr;
-    
-    auto it = std::find_if(entries_.begin(), entries_.end(),
-        [handle](const auto& entry) { return entry->handle == handle; });
-    
-    return (it != entries_.end()) ? it->get() : nullptr;
+    auto it = handle_to_index_.find(handle);
+    if (it == handle_to_index_.end() || it->second >= entries_.size()) return nullptr;
+    return entries_[it->second].get();
 }
 
 void BLASManager::update_totals() const {
@@ -352,24 +350,26 @@ int BLASManager::get_total_node_count() const {
 BLASOffsets BLASManager::get_offsets(BLASHandle handle) const {
     BLASOffsets offsets{0, 0};
     if (handle == INVALID_BLAS_HANDLE) return offsets;
-    
+
+    // O(1) existence check; walk only up to the target index.
+    auto idx_it = handle_to_index_.find(handle);
+    if (idx_it == handle_to_index_.end()) return offsets; // Not found
+
     int triangle_offset = 0;
     int node_offset = 0;
-    
-    for (const auto& entry : entries_) {
-        if (entry->handle == handle) {
-            offsets.triangle_offset = triangle_offset;
-            offsets.node_offset = node_offset;
-            return offsets;
-        }
-        
+    size_t target = idx_it->second;
+
+    for (size_t i = 0; i < target && i < entries_.size(); ++i) {
+        const auto& entry = entries_[i];
         if (entry->mesh && entry->bvh) {
             triangle_offset += entry->mesh->triCount;
             node_offset += entry->bvh->nodesUsed;
         }
     }
-    
-    return offsets; // Not found
+
+    offsets.triangle_offset = triangle_offset;
+    offsets.node_offset = node_offset;
+    return offsets;
 }
 
 void BLASManager::generate_triangle_data(std::vector<Tri>& output_triangles) const {
@@ -731,6 +731,7 @@ void BLASManager::reset_stats() {
     // This would clear all data - be careful!
     entries_.clear();
     hash_to_entry_.clear();
+    handle_to_index_.clear();
     next_handle_ = 1;
     totals_dirty_ = true;
 }
@@ -751,6 +752,7 @@ void BLASManager::clear() {
     // Clear all data structures
     entries_.clear();
     hash_to_entry_.clear();
+    handle_to_index_.clear();
     next_handle_ = 1;
     
     // Mark everything as dirty to force regeneration

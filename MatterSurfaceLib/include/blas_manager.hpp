@@ -223,6 +223,7 @@ private:
     
     std::vector<std::unique_ptr<BLASEntry>> entries_;
     std::unordered_multimap<uint32_t, size_t> hash_to_entry_; // hash -> entry index
+    std::unordered_map<BLASHandle, size_t> handle_to_index_;  // handle -> entry index (O(1) lookup)
     BLASHandle next_handle_;
     
     // Cached totals (mutable for lazy evaluation)

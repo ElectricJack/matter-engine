@@ -108,6 +108,9 @@ struct Cell {
     
     // Particle management
     void add_particle_index(uint32_t particle_index, uint32_t material_id);
+    // Fast variant used during rebuild_dirty_cells: caller guarantees particle_index
+    // has not already been added to this cell (skips the O(n) std::find check).
+    void add_particle_index_unchecked(uint32_t particle_index, uint32_t material_id);
     void remove_particle_index(uint32_t particle_index, uint32_t material_id);
     void clear_particle_indices();
     

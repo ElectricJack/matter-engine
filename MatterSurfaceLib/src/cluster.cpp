@@ -260,6 +260,49 @@ void Cluster::rebuild_dirty_cells() {
 
     auto t_start = std::chrono::steady_clock::now();
 
+    // Build a transient particle spatial hash to avoid O(dirty × total) scans.
+    // Cell size = smallest_cell_size_ so each cell center query touches ~3^3 buckets.
+    // The hash maps particle position → particle index (cast via uintptr_t).
+    // Also track max_particle_radius so we can expand the per-cell query box.
+    float max_particle_radius = 0.0f;
+    float max_carve_radius    = 0.0f;
+    for (const auto& p : particles_) {
+        if (p.radius > max_particle_radius) max_particle_radius = p.radius;
+    }
+    for (const auto& cp : carve_particles_) {
+        if (cp.radius * 1.5f > max_carve_radius) max_carve_radius = cp.radius * 1.5f;
+    }
+
+    // Build additive particle hash (sh_query_box will over-approximate; we
+    // refine with intersects_sphere on the candidate set).
+    SpatialHash* particle_hash = nullptr;
+    if (!particles_.empty()) {
+        particle_hash = sh_create(smallest_cell_size_, (int)particles_.size());
+        if (particle_hash) {
+            for (uint32_t i = 0; i < (uint32_t)particles_.size(); ++i) {
+                const Vector3& pos = particles_[i].position;
+                // Store index as pointer: (void*)(uintptr_t)(i+1) to distinguish 0 from null.
+                sh_insert(particle_hash, pos.x, pos.y, pos.z, (void*)(uintptr_t)(i + 1));
+            }
+        }
+    }
+
+    // Build carve particle hash similarly.
+    SpatialHash* carve_hash = nullptr;
+    if (!carve_particles_.empty()) {
+        carve_hash = sh_create(smallest_cell_size_, (int)carve_particles_.size());
+        if (carve_hash) {
+            for (uint32_t i = 0; i < (uint32_t)carve_particles_.size(); ++i) {
+                const Vector3& pos = carve_particles_[i].position;
+                sh_insert(carve_hash, pos.x, pos.y, pos.z, (void*)(uintptr_t)(i + 1));
+            }
+        }
+    }
+
+    // Scratch buffer for sh_query_box results (reused per cell).
+    const int kMaxQueryResults = 4096;
+    std::vector<void*> query_buf(kMaxQueryResults);
+
     // PHASE 1 - PRE (serial, main thread): per dirty non-interior cell, gather
     // particle indices + carve subset, release the old BLAS, and queue a CellJob.
     std::vector<CellJob> jobs;
@@ -278,12 +321,37 @@ void Cluster::rebuild_dirty_cells() {
             continue;
         }
 
-        // Assign particles to this cell (read-only over particles_).
+        // Assign particles to this cell using the spatial hash:
+        // query the expanded cell AABB then refine with intersects_sphere.
+        // Use the unchecked variant: each candidate is unique in the hash,
+        // so each matching particle is added at most once.
         cell->clear_particle_indices();
-        for (uint32_t i = 0; i < particles_.size(); ++i) {
-            const StaticParticle& particle = particles_[i];
-            if (cell->intersects_sphere(particle.position, particle.radius)) {
-                cell->add_particle_index(i, particle.materialId);
+
+        if (particle_hash) {
+            float qxmin = cell->min_bound.x - max_particle_radius;
+            float qymin = cell->min_bound.y - max_particle_radius;
+            float qzmin = cell->min_bound.z - max_particle_radius;
+            float qxmax = cell->max_bound.x + max_particle_radius;
+            float qymax = cell->max_bound.y + max_particle_radius;
+            float qzmax = cell->max_bound.z + max_particle_radius;
+            int found = sh_query_box(particle_hash, qxmin, qymin, qzmin,
+                                     qxmax, qymax, qzmax,
+                                     query_buf.data(), kMaxQueryResults);
+            for (int qi = 0; qi < found; ++qi) {
+                uint32_t i = (uint32_t)((uintptr_t)query_buf[qi] - 1);
+                if (i >= (uint32_t)particles_.size()) continue;
+                const StaticParticle& particle = particles_[i];
+                if (cell->intersects_sphere(particle.position, particle.radius)) {
+                    cell->add_particle_index_unchecked(i, particle.materialId);
+                }
+            }
+        } else {
+            // Fallback: no hash (e.g. OOM) — scan all particles.
+            for (uint32_t i = 0; i < (uint32_t)particles_.size(); ++i) {
+                const StaticParticle& particle = particles_[i];
+                if (cell->intersects_sphere(particle.position, particle.radius)) {
+                    cell->add_particle_index_unchecked(i, particle.materialId);
+                }
             }
         }
 
@@ -299,11 +367,31 @@ void Cluster::rebuild_dirty_cells() {
 
         CellJob job;
         job.cell = cell.get();
-        // Gather carve particles whose influence overlaps this cell (mirrors the
-        // additive intersects_sphere halo; slack covers the carve fillet reach).
-        for (const Particle& cpart : carve_particles_) {
-            if (cell->intersects_sphere(cpart.position, cpart.radius * 1.5f))
-                job.carve.push_back(cpart);
+        // Gather carve particles whose influence overlaps this cell using the
+        // carve hash (mirrors the additive intersects_sphere halo; slack covers
+        // the carve fillet reach).
+        if (carve_hash) {
+            float cxmin = cell->min_bound.x - max_carve_radius;
+            float cymin = cell->min_bound.y - max_carve_radius;
+            float czmin = cell->min_bound.z - max_carve_radius;
+            float cxmax = cell->max_bound.x + max_carve_radius;
+            float cymax = cell->max_bound.y + max_carve_radius;
+            float czmax = cell->max_bound.z + max_carve_radius;
+            int cfound = sh_query_box(carve_hash, cxmin, cymin, czmin,
+                                      cxmax, cymax, czmax,
+                                      query_buf.data(), kMaxQueryResults);
+            for (int qi = 0; qi < cfound; ++qi) {
+                uint32_t ci = (uint32_t)((uintptr_t)query_buf[qi] - 1);
+                if (ci >= (uint32_t)carve_particles_.size()) continue;
+                const Particle& cpart = carve_particles_[ci];
+                if (cell->intersects_sphere(cpart.position, cpart.radius * 1.5f))
+                    job.carve.push_back(cpart);
+            }
+        } else {
+            for (const Particle& cpart : carve_particles_) {
+                if (cell->intersects_sphere(cpart.position, cpart.radius * 1.5f))
+                    job.carve.push_back(cpart);
+            }
         }
         job.simplification_ratio = simplification_ratio_;
         job.base_detail = base_detail_size_;
@@ -311,6 +399,10 @@ void Cluster::rebuild_dirty_cells() {
         job.uniform_detail = uniform_detail;
         jobs.push_back(std::move(job));
     }
+
+    // Free transient hashes.
+    if (particle_hash) sh_destroy(particle_hash);
+    if (carve_hash)    sh_destroy(carve_hash);
 
     // PHASE 2 - PARALLEL: build every job's cell mesh on the worker pool. Each
     // worker uses its own SurfaceScratch; particles_ is read-only here.

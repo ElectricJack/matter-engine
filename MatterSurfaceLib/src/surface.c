@@ -99,6 +99,16 @@ struct SurfaceScratch {
     Particle*    hashParticles; // identity guard for hash reuse (Task 2)
     int          hashCount;     // (Task 2)
     float        hashCellSize;  // cellSize the hash was created with (Task 2)
+    // Carve/clip spatial hash (perf fix: avoids O(voxels × carveCount) scans).
+    // Rebuilt whenever carve/clip content changes; NULL if no carve particles.
+    SpatialHash* carve_hash;    // carve particles binned for per-voxel radius queries
+    SpatialHash* clip_hash;     // clip particles binned for per-voxel radius queries
+    Particle*    carve_particles; // pointer for identity guard
+    int          carve_count;
+    Particle*    clip_particles;
+    int          clip_count;
+    float        carve_max_radius; // max(carveParticle.radius) for query expansion
+    float        clip_max_radius;
 };
 
 // Legacy single-threaded API delegates here. Lazily created; freed by SurfaceLibCleanup.
@@ -211,8 +221,8 @@ typedef struct {
 } IsosurfaceVertex;
 
 // Local function declarations
-static ScalarMaterialPair CalculateScalarAndMaterial(Vector3 position, SpatialHash* spatialHash, float refRadius, float blendWidth, Particle* clipParticles, int clipCount, Particle* carveParticles, int carveCount, float carveBlend);
-static ScalarMaterialPair CalculateScalarStaged(Vector3 position, SpatialHash* spatialHash, float refRadius, float blendWidth, const FieldStages* stages, const FatPrim* fat, int fatCount, Particle* clipParticles, int clipCount, Particle* carveParticles, int carveCount, float carveBlend);
+static ScalarMaterialPair CalculateScalarAndMaterial(Vector3 position, SpatialHash* spatialHash, float refRadius, float blendWidth, Particle* clipParticles, int clipCount, Particle* carveParticles, int carveCount, float carveBlend, SpatialHash* carve_hash, float carve_qr, SpatialHash* clip_hash, float clip_qr);
+static ScalarMaterialPair CalculateScalarStaged(Vector3 position, SpatialHash* spatialHash, float refRadius, float blendWidth, const FieldStages* stages, const FatPrim* fat, int fatCount, Particle* clipParticles, int clipCount, Particle* carveParticles, int carveCount, float carveBlend, SpatialHash* carve_hash, float carve_qr, SpatialHash* clip_hash, float clip_qr);
 static int     CalculateCubeIndex(GridCell cell, float isovalue);
 static Vector3 VertexInterpolation(Vector3 v1, float val1, Vector3 v2, float val2, float isovalue);
 static Mesh    GenerateMeshInternal(SurfaceScratch* scratch, Particle* particles, float particleRadius, int particleCount, Bounds volume, float blendWidth, MeshGenerationConfig config, const FieldStages* stages, const FatPrim* fat, int fatCount, Particle* clipParticles, int clipCount, Particle* carveParticles, int carveCount, float carveBlend);
@@ -249,7 +259,9 @@ SurfaceScratch* CreateSurfaceScratch(void) {
 void DestroySurfaceScratch(SurfaceScratch* s) {
     if (!s) return;
     CleanupMemoryPool(&s->pool);
-    if (s->hash) sh_destroy(s->hash);
+    if (s->hash)       sh_destroy(s->hash);
+    if (s->carve_hash) sh_destroy(s->carve_hash);
+    if (s->clip_hash)  sh_destroy(s->clip_hash);
     free(s);
 }
 
@@ -302,10 +314,12 @@ float ProbeFieldScalar(SurfaceScratch* scratch, Particle* particles, float parti
     ScalarMaterialPair r;
     if (field_needs_staging(stages, fatCount)) {
         r = CalculateScalarStaged(point, hash, particleRadius, blendWidth, stages, fat, fatCount,
-                                  NULL, 0, carveParticles, carveCount, carveBlend);
+                                  NULL, 0, carveParticles, carveCount, carveBlend,
+                                  NULL, 0.0f, NULL, 0.0f);
     } else {
         r = CalculateScalarAndMaterial(point, hash, particleRadius, blendWidth,
-                                       NULL, 0, carveParticles, carveCount, carveBlend);
+                                       NULL, 0, carveParticles, carveCount, carveBlend,
+                                       NULL, 0.0f, NULL, 0.0f);
     }
     return r.scalarValue;
 }
@@ -602,9 +616,64 @@ static Mesh GenerateMeshInternal(SurfaceScratch* scratch, Particle* particles, f
     }
 
     TIMER_END(spatial_hash, "Spatial Hash Setup");
-    
+
+    // Perf: bin carve and clip particles into spatial hashes so ApplySubtractField /
+    // ApplyClipField query only nearby ones per voxel (avoids O(voxels×carveCount)).
+    // Query radius = max particle radius + fillet slack (same heuristic as the main hash).
+    // We reuse the scratch's carve/clip hash slots, rebuilding only when content changes.
+    float carve_qr = 0.0f;
+    float clip_qr  = 0.0f;
+    if (carveParticles && carveCount > 0) {
+        float max_cr = 0.0f;
+        for (int i = 0; i < carveCount; ++i)
+            if (carveParticles[i].radius > max_cr) max_cr = carveParticles[i].radius;
+        carve_qr = max_cr + blendWidth * 2.0f + 1.0f; // generous fillet slack
+        if (scratch->carve_particles != carveParticles || scratch->carve_count != carveCount) {
+            if (scratch->carve_hash) { sh_destroy(scratch->carve_hash); scratch->carve_hash = NULL; }
+            scratch->carve_hash = sh_create(carve_qr > 0.5f ? carve_qr : 1.0f, carveCount);
+            if (scratch->carve_hash) {
+                for (int i = 0; i < carveCount; ++i)
+                    sh_insert(scratch->carve_hash,
+                              carveParticles[i].position.x,
+                              carveParticles[i].position.y,
+                              carveParticles[i].position.z,
+                              &carveParticles[i]);
+                scratch->carve_particles = carveParticles;
+                scratch->carve_count     = carveCount;
+            }
+        }
+    } else {
+        if (scratch->carve_hash) { sh_destroy(scratch->carve_hash); scratch->carve_hash = NULL; }
+        scratch->carve_particles = NULL;
+        scratch->carve_count     = 0;
+    }
+    if (clipParticles && clipCount > 0) {
+        float max_clr = 0.0f;
+        for (int i = 0; i < clipCount; ++i)
+            if (clipParticles[i].radius > max_clr) max_clr = clipParticles[i].radius;
+        clip_qr = max_clr + blendWidth * 2.0f + 1.0f;
+        if (scratch->clip_particles != clipParticles || scratch->clip_count != clipCount) {
+            if (scratch->clip_hash) { sh_destroy(scratch->clip_hash); scratch->clip_hash = NULL; }
+            scratch->clip_hash = sh_create(clip_qr > 0.5f ? clip_qr : 1.0f, clipCount);
+            if (scratch->clip_hash) {
+                for (int i = 0; i < clipCount; ++i)
+                    sh_insert(scratch->clip_hash,
+                              clipParticles[i].position.x,
+                              clipParticles[i].position.y,
+                              clipParticles[i].position.z,
+                              &clipParticles[i]);
+                scratch->clip_particles = clipParticles;
+                scratch->clip_count     = clipCount;
+            }
+        }
+    } else {
+        if (scratch->clip_hash) { sh_destroy(scratch->clip_hash); scratch->clip_hash = NULL; }
+        scratch->clip_particles = NULL;
+        scratch->clip_count     = 0;
+    }
+
     TIMER_START(scalar_field);
-    
+
     // Fill scalar field with implicit function values (now using combined calculation)
     for (int z = 0; z < gridSize; z++) {
         for (int y = 0; y < gridSize; y++) {
@@ -614,7 +683,7 @@ static Mesh GenerateMeshInternal(SurfaceScratch* scratch, Particle* particles, f
                     data.minBound.y + y * data.cellSize.y,
                     data.minBound.z + z * data.cellSize.z
                 };
-                
+
                 int index = GetScalarFieldIndex(x, y, z, gridSize);
 
                 // Use combined calculation to eliminate duplicate distance calculations.
@@ -623,15 +692,19 @@ static Mesh GenerateMeshInternal(SurfaceScratch* scratch, Particle* particles, f
                 ScalarMaterialPair result = useStaged
                     ? CalculateScalarStaged(position, spatialHash, particleRadius, blendWidth,
                                             stages, fat, fatCount, clipParticles, clipCount,
-                                            carveParticles, carveCount, carveBlend)
+                                            carveParticles, carveCount, carveBlend,
+                                            scratch->carve_hash, carve_qr,
+                                            scratch->clip_hash, clip_qr)
                     : CalculateScalarAndMaterial(position, spatialHash, particleRadius, blendWidth,
-                                            clipParticles, clipCount, carveParticles, carveCount, carveBlend);
+                                            clipParticles, clipCount, carveParticles, carveCount, carveBlend,
+                                            scratch->carve_hash, carve_qr,
+                                            scratch->clip_hash, clip_qr);
                 data.scalarField[index] = result.scalarValue;
                 data.materialField[index] = result.materialId;
             }
         }
     }
-    
+
     TIMER_END(scalar_field, "Scalar Field Computation");
     
     // Create temporary buffers for storing mesh data using memory pool if enabled
@@ -1075,16 +1148,33 @@ static Mesh GenerateMeshInternal(SurfaceScratch* scratch, Particle* particles, f
 // cubes contours at isovalue <= 0 with corners < isovalue treated as inside), so
 // raising scalarValue toward/above 0 pushes the surface back. No-op when
 // clipCount == 0, keeping the unclipped path byte-identical.
+// Perf: when the scratch has a clip hash, query it for nearby particles instead
+// of scanning all clipCount particles. When hash is NULL, falls back to full scan.
 static inline void ApplyClipField(ScalarMaterialPair* result, Vector3 position,
-                                  Particle* clipParticles, int clipCount) {
+                                  Particle* clipParticles, int clipCount,
+                                  SpatialHash* clip_hash, float clip_query_radius) {
     if (!clipParticles || clipCount <= 0) return;
     float fO = INFINITY;
-    for (int i = 0; i < clipCount; ++i) {
-        float dx = position.x - clipParticles[i].position.x;
-        float dy = position.y - clipParticles[i].position.y;
-        float dz = position.z - clipParticles[i].position.z;
-        float f = sqrtf(dx*dx + dy*dy + dz*dz) - clipParticles[i].radius;
-        if (f < fO) fO = f;
+    if (clip_hash) {
+        // Hash path: query only nearby clip particles.
+        Particle* nearby[128];
+        int found = sh_query_radius(clip_hash, position.x, position.y, position.z,
+                                    clip_query_radius, (void**)nearby, 128);
+        for (int i = 0; i < found; ++i) {
+            float dx = position.x - nearby[i]->position.x;
+            float dy = position.y - nearby[i]->position.y;
+            float dz = position.z - nearby[i]->position.z;
+            float f = sqrtf(dx*dx + dy*dy + dz*dz) - nearby[i]->radius;
+            if (f < fO) fO = f;
+        }
+    } else {
+        for (int i = 0; i < clipCount; ++i) {
+            float dx = position.x - clipParticles[i].position.x;
+            float dy = position.y - clipParticles[i].position.y;
+            float dz = position.z - clipParticles[i].position.z;
+            float f = sqrtf(dx*dx + dy*dy + dz*dz) - clipParticles[i].radius;
+            if (f < fO) fO = f;
+        }
     }
     // Where a foreign surface is nearer (fO < f_G), force this group outside so
     // its isosurface terminates on the equidistant locus f_G == fO. We touch only
@@ -1098,10 +1188,42 @@ static inline void ApplyClipField(ScalarMaterialPair* result, Vector3 position,
 // for numerical stability. k_c<=0 collapses to the hard max. materialId is left
 // untouched (a divot exposes the surrounding material). No-op when carveCount==0,
 // so the uncarved path is byte-identical.
+// Perf: when carve_hash is non-NULL, queries only nearby carve particles instead
+// of scanning all carveCount (avoids O(voxels × carveCount) hot loop).
 static inline void ApplySubtractField(ScalarMaterialPair* result, Vector3 position,
-                                      Particle* carveParticles, int carveCount, float k_c) {
+                                      Particle* carveParticles, int carveCount, float k_c,
+                                      SpatialHash* carve_hash, float carve_query_radius) {
     if (!carveParticles || carveCount <= 0) return;
     float f_add = result->scalarValue;
+
+    if (carve_hash) {
+        // Hash path: query only nearby carve particles.
+        Particle* nearby[128];
+        int n = sh_query_radius(carve_hash, position.x, position.y, position.z,
+                                carve_query_radius, (void**)nearby, 128);
+        if (n <= 0) return; // no carve particles nearby; field unchanged
+        float m = f_add;
+        for (int j = 0; j < n; ++j) {
+            float dx = position.x - nearby[j]->position.x;
+            float dy = position.y - nearby[j]->position.y;
+            float dz = position.z - nearby[j]->position.z;
+            float v = -(sqrtf(dx*dx + dy*dy + dz*dz) - nearby[j]->radius);
+            if (v > m) m = v;
+        }
+        if (k_c <= 1e-5f) { result->scalarValue = m; return; }
+        float sum = expf((f_add - m) / k_c);
+        for (int j = 0; j < n; ++j) {
+            float dx = position.x - nearby[j]->position.x;
+            float dy = position.y - nearby[j]->position.y;
+            float dz = position.z - nearby[j]->position.z;
+            float v = -(sqrtf(dx*dx + dy*dy + dz*dz) - nearby[j]->radius);
+            sum += expf((v - m) / k_c);
+        }
+        result->scalarValue = m + k_c * logf(sum);
+        return;
+    }
+
+    // No-hash fallback: scan all carve particles (original behavior).
     if (k_c <= 1e-5f) {
         float best = f_add;
         for (int j = 0; j < carveCount; ++j) {
@@ -1133,8 +1255,10 @@ static inline void ApplySubtractField(ScalarMaterialPair* result, Vector3 positi
     result->scalarValue = m + k_c * logf(sum);
 }
 
-// Combined calculation to eliminate duplicate distance calculations
-static ScalarMaterialPair CalculateScalarAndMaterial(Vector3 position, SpatialHash* spatialHash, float refRadius, float blendWidth, Particle* clipParticles, int clipCount, Particle* carveParticles, int carveCount, float carveBlend) {
+// Combined calculation to eliminate duplicate distance calculations.
+// carve_hash/clip_hash: optional spatial hashes for nearby-only carve/clip queries.
+// Pass NULL for hash and 0.0f for qr to fall back to full-scan (original behavior).
+static ScalarMaterialPair CalculateScalarAndMaterial(Vector3 position, SpatialHash* spatialHash, float refRadius, float blendWidth, Particle* clipParticles, int clipCount, Particle* carveParticles, int carveCount, float carveBlend, SpatialHash* carve_hash, float carve_qr, SpatialHash* clip_hash, float clip_qr) {
     ScalarMaterialPair result;
     result.scalarValue = INFINITY;
     result.materialId = 0;
@@ -1172,8 +1296,8 @@ static ScalarMaterialPair CalculateScalarAndMaterial(Vector3 position, SpatialHa
         // Hard union: exact min. With a single uniform radius this is identical
         // to the original sqrt(minDistSq) - particleRadius behavior.
         result.scalarValue = fmin;
-        ApplySubtractField(&result, position, carveParticles, carveCount, carveBlend);
-        ApplyClipField(&result, position, clipParticles, clipCount);
+        ApplySubtractField(&result, position, carveParticles, carveCount, carveBlend, carve_hash, carve_qr);
+        ApplyClipField(&result, position, clipParticles, clipCount, clip_hash, clip_qr);
         return result;
     }
 
@@ -1188,8 +1312,8 @@ static ScalarMaterialPair CalculateScalarAndMaterial(Vector3 position, SpatialHa
     }
     result.scalarValue = fmin - k * logf(sum);
 
-    ApplySubtractField(&result, position, carveParticles, carveCount, carveBlend);
-    ApplyClipField(&result, position, clipParticles, clipCount);
+    ApplySubtractField(&result, position, carveParticles, carveCount, carveBlend, carve_hash, carve_qr);
+    ApplyClipField(&result, position, clipParticles, clipCount, clip_hash, clip_qr);
     return result;
 }
 
@@ -1217,7 +1341,8 @@ static ScalarMaterialPair CalculateScalarStaged(
         Vector3 position, SpatialHash* spatialHash, float refRadius, float blendWidth,
         const FieldStages* stages, const FatPrim* fat, int fatCount,
         Particle* clipParticles, int clipCount,
-        Particle* carveParticles, int carveCount, float carveBlend) {
+        Particle* carveParticles, int carveCount, float carveBlend,
+        SpatialHash* carve_hash, float carve_qr, SpatialHash* clip_hash, float clip_qr) {
     ScalarMaterialPair result;
     result.scalarValue = INFINITY;
     result.materialId = 0;
@@ -1310,8 +1435,8 @@ static ScalarMaterialPair CalculateScalarStaged(
 
     result.scalarValue = haveAny ? field : INFINITY;
     // Legacy carve + clip as trailing special cases (unchanged semantics).
-    ApplySubtractField(&result, position, carveParticles, carveCount, carveBlend);
-    ApplyClipField(&result, position, clipParticles, clipCount);
+    ApplySubtractField(&result, position, carveParticles, carveCount, carveBlend, carve_hash, carve_qr);
+    ApplyClipField(&result, position, clipParticles, clipCount, clip_hash, clip_qr);
     return result;
 }
 
