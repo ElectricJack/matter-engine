@@ -91,13 +91,28 @@ prep_raylib() {
     cp Libraries/raylib/src/libraylib.a "Libraries/raylib/build/$PLATFORM/libraylib.a"
 }
 
+# autoremesher_core: static library (geogram core + hexdom + isotropicremesher
+# + autoremesher pipeline). Built once here so MSL / MatterEngine3 can link
+# it. Not cross-platform-sensitive like raylib -- just a Linux/WSL .a.
+prep_autoremesher_core() {
+    echo "Building autoremesher_core static lib..."
+    ( cd Libraries/autoremesher_core && make >/dev/null 2>&1 )
+    if [ -f Libraries/autoremesher_core/libautoremesher_core.a ]; then
+        echo "  autoremesher_core: OK"
+    else
+        echo "  autoremesher_core: FAIL"
+    fi
+}
+
 if [ "$MODE" = "clean" ]; then
     for p in "${ALL_PROJECTS[@]}"; do clean_one "$p"; done
     ( cd Libraries/raylib/src && make clean PLATFORM=PLATFORM_DESKTOP >/dev/null 2>&1 || true )
+    ( cd Libraries/autoremesher_core && make clean >/dev/null 2>&1 || true )
     echo "All projects cleaned."
 fi
 
 prep_raylib
+prep_autoremesher_core
 
 for p in "${SIMPLE_PROJECTS[@]}";        do build_one "$p" ""; done
 for p in "${WSL_LINUX_PROJECTS[@]}";     do build_one "$p" "WSL_LINUX=1"; done

@@ -30,3 +30,9 @@ NLboolean nlExtensionIsInitialized_CUDA(void) { return NL_FALSE; }
 void *nlCUDABlas(void) { return NULL; }
 NLMatrix nlCUDAJacobiPreconditionerNewFromCRSMatrix(NLMatrix M) { (void)M; return NULL; }
 NLMatrix nlCUDAMatrixNewFromCRSMatrix(NLMatrix M) { (void)M; return NULL; }
+
+/* AMGCL stub. Upstream ships nl_amgcl.cpp with a broken else-branch stub
+ * (typo `nlBoolean` vs `NLboolean`); we exclude that TU from the build
+ * (see Makefile) and provide a proper NL_FALSE stub here so nl_context.c's
+ * call site links. */
+NLboolean nlSolveAMGCL(void) { return NL_FALSE; }

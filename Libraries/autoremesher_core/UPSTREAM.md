@@ -73,6 +73,12 @@ matches what a future `git subtree pull --squash` would key off.
   Pinned SHA: `533c6bada09c256fc1c704e73e076a8901db06b8`
 - `thirdparty/eigen/` — MPL-2, headers only. Upstream vendors the full Eigen
   source tree; we only need the `Eigen/` header cluster.
+  **License caveat:** Eigen ships GPL/LGPL-licensed submodules as source
+  (e.g. `Eigen/src/SuperLUSupport/`, `Eigen/src/UmfPackSupport/`,
+  `Eigen/src/CholmodSupport/`, `Eigen/src/PastixSupport/`,
+  `Eigen/src/SPQRSupport/`). Vendored code MUST NOT `#include` any of these
+  — MPL-2 core only. The pipeline uses only `<Eigen/Dense>` (MPL-2), so
+  this is enforced by the fact that no source pulls in the GPL/LGPL paths.
   Pinned SHA: `be6a3ae1fd14d8f6861ab1314ec549c5d1f199be`
 - `thirdparty/tbb/` — Apache-2. Pinned SHA: `012d9f2a909fc6245a1f6e35f34dcbf0daea3c0a`
 
@@ -133,6 +139,11 @@ Not vendored from upstream `thirdparty/`:
   includes `<QDebug>` and calls `qDebug()/qWarning()`. Task 2 must strip these
   and replace with a Qt-free logging shim (e.g. `fprintf(stderr, ...)` or a
   thin `#define qDebug() ...` shim). Header copyright must be preserved.
+  **Task 4 addendum:** the file also uses `std::this_thread::sleep_for` inside
+  the progress-lock guard. Upstream got `<thread>` transitively via `<QDebug>`;
+  the Qt-free shim (this Deviation) drops that path, so an explicit
+  `#include <thread>` was added at the same time as the shim. Marked with an
+  inline comment referencing this Deviation.
 - **TBB `__has_include` branch.** Upstream `autoremesher.cpp` already guards
   TBB headers with `__has_include`, supporting both legacy `<tbb/...>` and
   oneAPI `<oneapi/tbb/...>`. Task 2/3 must verify which branch our vendored

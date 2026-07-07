@@ -41,6 +41,10 @@
 #include <queue>
 #include <sstream>
 #include <string>
+// <thread> is required for std::this_thread::sleep_for below. Upstream got
+// it transitively via <QDebug>; the Qt-free shim (Deviation #6) drops that
+// path, so we add the explicit include here.
+#include <thread>
 // Qt defines `emit` as a macro, which collides with TBB profiling.h's `void emit()`.
 // macOS `<mach/mach.h>` also defines `emit`. Undefine before including TBB headers.
 #if defined(__APPLE__) || defined(emit)
