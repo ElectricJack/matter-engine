@@ -156,8 +156,14 @@ vec3 trace(vec3 rayOrigin, vec3 rayDirection, inout uint seed) {
             // Terrain up = world +Y. Build a tangent frame around the surface normal:
             // T = normalize(cross(worldUp, N)); B = cross(N, T).
             vec3 upN = vec3(0.0, 1.0, 0.0);
-            vec3 T = normalize(cross(upN, normal));
-            if (length(T) < 1e-3) T = vec3(1.0, 0.0, 0.0);
+            vec3 raw = cross(upN, normal);
+            vec3 T;
+            if (dot(raw, raw) < 1e-6) {
+                // normal is nearly parallel to +Y — pick +X as the tangent instead
+                T = normalize(cross(vec3(1.0, 0.0, 0.0), normal));
+            } else {
+                T = normalize(raw);
+            }
             vec3 B = cross(normal, T);
             normal = normalize(T * baked_normal_ts.x + B * baked_normal_ts.y + normal * baked_normal_ts.z);
         }

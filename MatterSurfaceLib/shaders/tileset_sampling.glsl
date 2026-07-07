@@ -62,14 +62,20 @@ ivec2 wang_atlas_cell(int top, int bottom, int left, int right) {
 // Because both cells look up wang_edge_color with the same ivec2, the color agrees
 // (seam invariant).
 //
-// Z-axis boundaries use y-component = cell.y and cell.y+1 (integer z coords).
-// X-axis boundaries use y-component = cell.y*2+1 to avoid collision with z-axis keys,
-// and x-component = cell.x or cell.x+1 for left/right respectively.
+// Namespace: horizontal (row) boundaries encode x as cell.x*2+0; vertical (col)
+// boundaries encode x as cell.x*2+1. This keeps the two axes in disjoint
+// integer sub-spaces so row-0 bottom edge and col-0 left edge cannot collide.
+//
+// Seam check:
+//   rgt-of-(cx,cy)  = ivec2((cx+1)*2+1, cy)
+//   lft-of-(cx+1,cy)= ivec2((cx+1)*2+1, cy)  => same key ✓
+//   bot-of-(cx,cy)  = ivec2(cx*2+0, cy+1)
+//   top-of-(cx,cy+1)= ivec2(cx*2+0, cy+1)     => same key ✓
 void wang_cell_edges(ivec2 cell, out int top, out int bot, out int lft, out int rgt) {
-    top = wang_edge_color(ivec2(cell.x,     cell.y));         // z-min boundary
-    bot = wang_edge_color(ivec2(cell.x,     cell.y + 1));     // z-max boundary
-    lft = wang_edge_color(ivec2(cell.x,     cell.y * 2 + 1)); // x-min boundary
-    rgt = wang_edge_color(ivec2(cell.x + 1, cell.y * 2 + 1)); // x-max boundary
+    top = wang_edge_color(ivec2(cell.x * 2 + 0,       cell.y));     // horizontal boundary between (cx, cy-1) and (cx, cy)
+    bot = wang_edge_color(ivec2(cell.x * 2 + 0,       cell.y + 1)); // horizontal boundary between (cx, cy) and (cx, cy+1)
+    lft = wang_edge_color(ivec2(cell.x * 2 + 1,       cell.y));     // vertical boundary between (cx-1, cy) and (cx, cy)
+    rgt = wang_edge_color(ivec2((cell.x + 1) * 2 + 1, cell.y));     // vertical boundary between (cx, cy) and (cx+1, cy)
 }
 
 // Sample helpers — one per channel type. Dispatch on slot at runtime since

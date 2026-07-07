@@ -200,18 +200,43 @@ static void test_wang_helpers_seam_invariant_and_lut() {
         "\n"
         "layout(std430, binding = 0) buffer B { int data[]; };\n"
         "void main() {\n"
-        // Two neighbouring cells sharing the vertical boundary at x=1: for cell (0,0)
-        // that's the +X boundary (boundaryCoord=(1,0)); for cell (1,0) that's the -X
-        // boundary — same integer coord.
+        // ---------------------------------------------------------------------------
+        // data[0]: determinism — same wang_edge_color call twice must be equal.
         "  int lhs = wang_edge_color(ivec2(1, 0));\n"
-        "  int rhs = wang_edge_color(ivec2(1, 0));\n"   // same call = same result (trivial)
-        "  int neighborLeft  = wang_edge_color(ivec2(1, 0));\n"
-        "  int neighborRight = wang_edge_color(ivec2(1, 0));\n"
-        "  data[0] = lhs;\n"
-        "  data[1] = rhs;\n"
-        "  data[2] = neighborLeft;\n"
-        "  data[3] = neighborRight;\n"
-        // Assert wang_atlas_cell returns a legal 0..3 row/col for every {0,1}^4.
+        "  int rhs = wang_edge_color(ivec2(1, 0));\n"
+        "  data[0] = int(lhs == rhs);\n"
+        // ---------------------------------------------------------------------------
+        // data[1]: horizontal seam — cell A=(5,3) and cell C=(5,4) share a horizontal
+        // boundary. bot-of-A must equal top-of-C.
+        "  int tA, bA, lA, rA;\n"
+        "  wang_cell_edges(ivec2(5, 3), tA, bA, lA, rA);\n"
+        "  int tC, bC, lC, rC;\n"
+        "  wang_cell_edges(ivec2(5, 4), tC, bC, lC, rC);\n"
+        "  data[1] = int(bA == tC);\n"
+        // ---------------------------------------------------------------------------
+        // data[2]: vertical seam — cell A=(5,3) and cell B=(6,3) share a vertical
+        // boundary. rgt-of-A must equal lft-of-B.
+        "  int tB, bB, lB, rB;\n"
+        "  wang_cell_edges(ivec2(6, 3), tB, bB, lB, rB);\n"
+        "  data[2] = int(rA == lB);\n"
+        // ---------------------------------------------------------------------------
+        // data[3]: seam at row 0 (the previous bug: row-0 bottom vs col-0 left
+        // collided when using cell.y*2+1 encoding).
+        // Cell (2,0) and (2,1) share a horizontal boundary: bot-of-(2,0)==top-of-(2,1).
+        "  int t20, b20, l20, r20;\n"
+        "  wang_cell_edges(ivec2(2, 0), t20, b20, l20, r20);\n"
+        "  int t21, b21, l21, r21;\n"
+        "  wang_cell_edges(ivec2(2, 1), t21, b21, l21, r21);\n"
+        "  data[3] = int(b20 == t21);\n"
+        // ---------------------------------------------------------------------------
+        // data[4]: additional vertical seam at row 0 — (0,0) and (1,0).
+        "  int t00, b00, l00, r00;\n"
+        "  wang_cell_edges(ivec2(0, 0), t00, b00, l00, r00);\n"
+        "  int t10, b10, l10, r10;\n"
+        "  wang_cell_edges(ivec2(1, 0), t10, b10, l10, r10);\n"
+        "  data[4] = int(r00 == l10);\n"
+        // ---------------------------------------------------------------------------
+        // data[5]: wang_atlas_cell returns valid 0..3 row/col for all {0,1}^4 inputs.
         "  int allValid = 1;\n"
         "  for (int t = 0; t < 2; ++t)\n"
         "  for (int b = 0; b < 2; ++b)\n"
@@ -220,7 +245,7 @@ static void test_wang_helpers_seam_invariant_and_lut() {
         "    ivec2 cell = wang_atlas_cell(t,b,l,rr);\n"
         "    if (cell.x < 0 || cell.x > 3 || cell.y < 0 || cell.y > 3) allValid = 0;\n"
         "  }\n"
-        "  data[4] = allValid;\n"
+        "  data[5] = allValid;\n"
         "}\n";
 
     GLuint prog = tileset::compile_compute_program(prog_src, err);
@@ -240,10 +265,12 @@ static void test_wang_helpers_seam_invariant_and_lut() {
 
     std::vector<int32_t> out(8, -1);
     glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, (GLsizeiptr)(out.size()*4), out.data());
-    REQUIRE(out[0] == out[1]);                         // same call -> same result
-    REQUIRE(out[0] == out[2] && out[0] == out[3]);     // seam invariant
-    REQUIRE(out[0] == 0 || out[0] == 1);               // color is 0 or 1
-    REQUIRE(out[4] == 1);                              // every LUT entry valid
+    REQUIRE(out[0] == 1);   // determinism
+    REQUIRE(out[1] == 1);   // horizontal seam (5,3)-(5,4): bot_A == top_C
+    REQUIRE(out[2] == 1);   // vertical seam (5,3)-(6,3): rgt_A == lft_B
+    REQUIRE(out[3] == 1);   // horizontal seam at row 0 (2,0)-(2,1): no namespace collision
+    REQUIRE(out[4] == 1);   // vertical seam at row 0 (0,0)-(1,0)
+    REQUIRE(out[5] == 1);   // every LUT entry valid
 
     glDeleteBuffers(1, &ssbo);
     glDeleteProgram(prog);

@@ -37,6 +37,8 @@ void main() {
     vec3  N   = normalize(fragNormal);
 
     // Phase 4: Wang-tile ground sampling — branch on groundTilesetSlot field at [11].
+    // Layout dependency: slot [11] = groundTilesetSlot per MaterialRegistryPackForGPU.
+    // Kept in sync with materials.glsl:53 which reads the same offset.
     int groundTilesetSlot = int(materialTable[b + 11]);
     if (groundTilesetSlot >= 0) {
         vec2 worldXZ = fragWorldPos.xz;
@@ -49,8 +51,14 @@ void main() {
         albedo = ground_albedo;
         // Rebase the surface normal onto the baked tangent-space normal.
         vec3 upN = vec3(0.0, 1.0, 0.0);
-        vec3 T = normalize(cross(upN, N));
-        if (length(T) < 1e-3) T = vec3(1.0, 0.0, 0.0);
+        vec3 raw = cross(upN, N);
+        vec3 T;
+        if (dot(raw, raw) < 1e-6) {
+            // normal is nearly parallel to +Y — pick +X as the tangent instead
+            T = normalize(cross(vec3(1.0, 0.0, 0.0), N));
+        } else {
+            T = normalize(raw);
+        }
         vec3 B = cross(N, T);
         N = normalize(T * baked_normal_ts.x + B * baked_normal_ts.y + N * baked_normal_ts.z);
     }
