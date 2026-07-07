@@ -8,12 +8,14 @@
 #include "tileset_spec.h"        // TileConfig, BaseField
 #include "blas_manager.hpp"
 #include "tlas_manager.hpp"
+#include "part_asset_v2.h"       // save_v2 — regenerates fixture when MaterialDef changes
 
 #include <cstdio>
 #include <cstdint>
 #include <cstring>
 #include <string>
 #include <vector>
+#include <sys/stat.h>
 
 static int g_pass = 0, g_fail = 0;
 #define CHECK(cond) do { \
@@ -86,14 +88,41 @@ static void test_missing_part_fails_closed() {
 // to the wrong matrix slot (e.g. m[12..14] instead of m[3/7/11]), then
 // mat4::TransformPoint(0,0,0) returns (0,0,0) and the assertions below fail.
 //
-// Uses the fixture part in tests/parts/079c8b9a2b36045f.part (committed).
-// parts_cache_dir = "." so the path resolves to ./parts/079c8b9a2b36045f.part.
+// The fixture part is generated on-the-fly (single triangle BLAS) and written
+// into tests/parts/ on first run or whenever MaterialDef changes (format guard).
+// Previously this used a static committed .part file; self-generation keeps the
+// test in sync with MaterialDef struct changes without a manual regen step.
 static void test_placement_smoke() {
     using namespace tileset;
 
-    // Pick the first committed fixture part so we don't need to bake anything.
-    // Hash == filename stem.
-    const uint64_t kFixtureHash = 0x079c8b9a2b36045fULL;
+    // Stable hash for the synthetic fixture — chosen so that (a) it doesn't
+    // collide with any real baked part hash in tests/parts/, and (b) the file
+    // path resolves to ./parts/0000000000000001.part which is unambiguous.
+    const uint64_t kFixtureHash = 0x0000000000000001ULL;
+    const std::string kFixturePath = "./parts/0000000000000001.part";
+
+    // Generate (or regenerate) the fixture part. We build a one-triangle BLAS
+    // and call save_v2 with kFixtureHash. load_v2 validates sizeof(MaterialDef)
+    // via memcmp in its format guard, so any MaterialDef struct change will
+    // invalidate old files; regenerating here keeps the test self-consistent.
+    {
+        BLASManager fblas;
+        TLASManager ftlas(4);
+        // Minimal geometry: one triangle in the XZ plane.
+        Tri t{};
+        t.vertex0 = float3{0.0f, 0.0f, 0.0f};
+        t.vertex1 = float3{1.0f, 0.0f, 0.0f};
+        t.vertex2 = float3{0.0f, 0.0f, 1.0f};
+        TriEx ex{}; ex.materialId = 1;
+        BLASHandle h = fblas.register_triangles({t}, {ex});
+        ftlas.push_matrix(); ftlas.load_identity(); ftlas.draw(h, 0); ftlas.pop_matrix();
+        ftlas.build(fblas);
+        mkdir("parts", 0755);  // ensure ./parts/ exists
+        bool saved = part_asset::save_v2(kFixturePath, fblas, ftlas,
+                                         nullptr, 0, part_asset::LodLevels{},
+                                         kFixtureHash);
+        if (!saved) std::fprintf(stderr, "  placement_smoke: failed to write fixture\n");
+    }
 
     SettledTorus st;
     st.cfg.size = 2.0f;

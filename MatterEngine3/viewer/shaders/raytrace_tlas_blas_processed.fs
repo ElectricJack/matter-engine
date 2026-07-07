@@ -52,26 +52,22 @@ uniform sampler2D skyTexture;
 
 struct MaterialProperties
 {
-    // PBR properties
-    vec3 albedo;           // Base color/diffuse reflectance
-    float roughness;       // Surface roughness (0 = mirror, 1 = completely rough)
-    float metallic;        // Metallic factor (0 = dielectric, 1 = metallic)
-    
-    // Emission properties
-    float emission;        // Emission strength (0 = no emission, >0 = emissive)
-    
-    // Translucency and refraction
-    float translucency;    // Translucency factor (0 = opaque, 1 = fully translucent)
-    float ior;             // Index of refraction (1.0 = air, 1.5 = glass, etc.)
-    
-    // Surface properties
-    bool flatShading;      // true = flat shaded, false = smooth normals
+    vec3 albedo;
+    float roughness;
+    float metallic;
+    float emission;
+    float translucency;
+    float ior;
+    bool flatShading;
+    int  groundTilesetSlot;  // Phase 4: -1 = untextured, 0..3 = viewer tileset slot.
+                              // Fragment shaders branch on this to sample the Wang
+                              // atlas instead of using the flat albedo/roughness/metallic.
 };
 
 // Packed material table, uploaded from the CPU registry. 12 floats per material
 // (see MATERIAL_FLOATS_PER_DEF / MaterialRegistryPackForGPU):
 //   [0..2] albedo, [3] roughness, [4] metallic, [5] emission, [6] pad,
-//   [7] translucency, [8] ior, [9] flatShading, [10] mergeGroup, [11] pad
+//   [7] translucency, [8] ior, [9] flatShading, [10] mergeGroup, [11] groundTilesetSlot
 #define MAX_MATERIALS 64
 #define MATERIAL_FLOATS_PER_DEF 12
 uniform float materialTable[MAX_MATERIALS * MATERIAL_FLOATS_PER_DEF];
@@ -91,6 +87,7 @@ MaterialProperties getMaterialProperties(int materialId)
     if (id < 0 || id >= materialCount) {
         mat.albedo = vec3(0.6); mat.roughness = 0.1; mat.metallic = 0.8;
         mat.emission = 0.0; mat.translucency = 0.0; mat.ior = 1.0; mat.flatShading = true;
+        mat.groundTilesetSlot = -1;
         return mat;
     }
     int b = id * MATERIAL_FLOATS_PER_DEF;
@@ -101,6 +98,7 @@ MaterialProperties getMaterialProperties(int materialId)
     mat.translucency = materialTable[b+7];
     mat.ior = materialTable[b+8];
     mat.flatShading = forceSmooth ? false : (materialTable[b+9] > 0.5);
+    mat.groundTilesetSlot = int(materialTable[b+11]);
     return mat;
 }
 

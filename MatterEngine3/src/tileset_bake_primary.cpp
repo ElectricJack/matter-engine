@@ -71,7 +71,7 @@ bool bake_primary(uint32_t program,
     // -----------------------------------------------------------------------
     // Pack using the canonical MaterialRegistryPackForGPU layout (12 floats):
     //   [0..2] albedo.rgb, [3] roughness, [4] metallic, [5] emission, [6] pad,
-    //   [7] translucency, [8] ior, [9] flatShading, [10] mergeGroup, [11] pad
+    //   [7] translucency, [8] ior, [9] flatShading, [10] mergeGroup, [11] groundTilesetSlot
     std::vector<float> packed(mats.size() * 12);
     for (size_t i = 0; i < mats.size(); ++i) {
         const MaterialDef& m = mats[i];
@@ -84,7 +84,7 @@ bool bake_primary(uint32_t program,
         r[8]  = m.ior;
         r[9]  = (float)m.flatShading;
         r[10] = (float)m.mergeGroup;
-        r[11] = 0.0f; /* pad */
+        r[11] = (float)m.groundTilesetSlot;   // Phase 4: -1 = untextured
     }
     GLuint ssboMat = 0;
     glGenBuffers(1, &ssboMat);

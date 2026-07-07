@@ -17,6 +17,10 @@ typedef struct {
     int   flatShading;    // 0 = smooth normals, 1 = flat
     int   mergeGroup;     // particles whose materials share a mergeGroup blend together
     int   meshingAlgorithm; // 0 = marching cubes (default), 1 = oriented cubes; selects the mesher
+    int   groundTilesetSlot; // Phase 4: -1 = untextured, 0..3 = viewer tileset slot to sample.
+                             // For static registry entries this stays -1; the viewer runtime
+                             // sets a live override via MaterialRegistrySetGroundTilesetSlot()
+                             // after loading a world tileset atlas.
 } MaterialDef;
 
 // Number of defined materials.
@@ -40,6 +44,13 @@ int MaterialIsTransparent(int materialId);
 // packed for GPU upload (see MATERIAL_FLOATS_PER_DEF). Used by the renderer.
 #define MATERIAL_FLOATS_PER_DEF 12
 void MaterialRegistryPackForGPU(float* out);
+
+// Runtime override: bind material `materialId` to viewer tileset slot `slot`.
+// Pass slot < 0 to clear. Values persist for the life of the process and are
+// read by MaterialRegistryPackForGPU() (slot [11]). Used by the viewer to bind
+// material 16 (DIRT) to the ForestFloor atlas after LocalProvider::connect().
+// materialId out-of-range is a no-op (fail-closed defensive default).
+void MaterialRegistrySetGroundTilesetSlot(int materialId, int slot);
 
 #ifdef __cplusplus
 }

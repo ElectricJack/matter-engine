@@ -197,7 +197,7 @@ bool bake_ao(uint32_t program,
 {
     // Pack mats[] into the canonical MaterialRegistryPackForGPU layout (12 floats):
     //   [0..2] albedo.rgb, [3] roughness, [4] metallic, [5] emission, [6] pad,
-    //   [7] translucency, [8] ior, [9] flatShading, [10] mergeGroup, [11] pad
+    //   [7] translucency, [8] ior, [9] flatShading, [10] mergeGroup, [11] groundTilesetSlot
     const int n = (int)mats.size();
     std::vector<float> packed((size_t)n * 12, 0.0f);
     for (int i = 0; i < n; ++i) {
@@ -211,7 +211,7 @@ bool bake_ao(uint32_t program,
         r[8]  = m.ior;
         r[9]  = (float)m.flatShading;
         r[10] = (float)m.mergeGroup;
-        r[11] = 0.0f; /* pad */
+        r[11] = (float)m.groundTilesetSlot;   // Phase 4: -1 = untextured
     }
     return bake_ao_impl(program, blas, tlas, packed, n,
                         cfg, ray_y, height_min, height_max, seed, ao_out, err);

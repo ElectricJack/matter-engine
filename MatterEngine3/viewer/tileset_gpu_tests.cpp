@@ -39,7 +39,6 @@ static int g_tests = 0, g_failures = 0;
 // translucency, and ior match materials.glsl's getMaterialProperties offsets.
 // -----------------------------------------------------------------------------
 static void test_material_pack_layout() {
-    // Build a fixture material with distinctive values at the contested slots.
     MaterialDef fix{};
     fix.albedo[0] = 0.1f; fix.albedo[1] = 0.2f; fix.albedo[2] = 0.3f;
     fix.roughness = 0.4f; fix.metallic = 0.5f; fix.emission = 0.6f;
@@ -47,22 +46,47 @@ static void test_material_pack_layout() {
     fix.ior = 1.7f;
     fix.flatShading = 1;
     fix.mergeGroup = 42;
+    fix.groundTilesetSlot = 2;   // Phase 4: slot [11] now carries this.
 
-    // Replicate the canonical pack (same code path as both bake drivers).
     float r[12]{};
     r[0] = fix.albedo[0]; r[1] = fix.albedo[1]; r[2] = fix.albedo[2];
     r[3] = fix.roughness; r[4] = fix.metallic;  r[5] = fix.emission;
-    r[6] = 0.0f;               // pad
+    r[6] = 0.0f;                // pad
     r[7] = fix.translucency;
     r[8] = fix.ior;
     r[9] = (float)fix.flatShading;
     r[10]= (float)fix.mergeGroup;
-    r[11]= 0.0f;               // pad
+    r[11]= (float)fix.groundTilesetSlot;
 
-    REQUIRE(r[7]  == 0.5f);    // translucency
-    REQUIRE(r[8]  == 1.7f);    // ior
-    REQUIRE(r[9]  == 1.0f);    // flatShading
-    REQUIRE(r[10] == 42.0f);   // mergeGroup
+    REQUIRE(r[7]  == 0.5f);
+    REQUIRE(r[8]  == 1.7f);
+    REQUIRE(r[9]  == 1.0f);
+    REQUIRE(r[10] == 42.0f);
+    REQUIRE(r[11] == 2.0f);   // NEW: groundTilesetSlot at [11]
+}
+
+// -----------------------------------------------------------------------------
+// Runtime setter round-trip: set slot 16 → 0, verify pack outputs 0.0 at [11].
+// -----------------------------------------------------------------------------
+static void test_material_tileset_slot_setter() {
+    // Slot 16 (DIRT) starts with groundTilesetSlot = -1 in the static table.
+    // After the runtime setter assigns slot 0, MaterialRegistryPackForGPU must
+    // write 0.0f at r[11] for material 16.
+    MaterialRegistrySetGroundTilesetSlot(16, 0);
+
+    int count = MaterialRegistryCount();
+    std::vector<float> buf((size_t)count * MATERIAL_FLOATS_PER_DEF, 0.0f);
+    MaterialRegistryPackForGPU(buf.data());
+
+    float slot_val = buf[16 * MATERIAL_FLOATS_PER_DEF + 11];
+    REQUIRE(slot_val == 0.0f);   // override in effect
+
+    // Clear the override: slot should revert to the static value (-1).
+    MaterialRegistrySetGroundTilesetSlot(16, -1);
+    std::vector<float> buf2((size_t)count * MATERIAL_FLOATS_PER_DEF, 0.0f);
+    MaterialRegistryPackForGPU(buf2.data());
+    float slot_cleared = buf2[16 * MATERIAL_FLOATS_PER_DEF + 11];
+    REQUIRE(slot_cleared == -1.0f);   // static default restored
 }
 
 // -----------------------------------------------------------------------------
@@ -435,6 +459,7 @@ static void test_end_to_end_cache_hit() {
 int main() {
     // CPU-side pack layout check: runs before GL init so it's always exercised.
     test_material_pack_layout();
+    test_material_tileset_slot_setter();
 
     SetConfigFlags(FLAG_WINDOW_HIDDEN);
     InitWindow(320, 200, "tileset_gpu_tests");
