@@ -34,7 +34,7 @@ VIEWER_SRC = main.cpp renderer.cpp ui.cpp \
              world_composer.cpp local_provider.cpp \
              raster_mesh.cpp raster_composer.cpp probe_texture.cpp \
              gpu_culler.cpp tileset_gl_ctx.cpp tileset_bake_primary.cpp \
-             tileset_bake_ao.cpp
+             tileset_bake_ao.cpp tileset_provider.cpp
 
 # ME3 pipeline + MSL backend C++ sources (verbatim from tests/Makefile EXAMPLE_CPP,
 # minus example_world.cpp). Same dir depth, so the ../ paths are unchanged.
@@ -148,6 +148,19 @@ tileset-seam-tests: shaders shaders_gpu_link $(TILESET_SEAM_TEST_OBJ)
 run-tilesetseam: tileset-seam-tests
 	./tileset_seam_tests
 
+# tileset_provider headless tests (Phase 4 Task 1). Same object set as
+# tileset-gpu-tests + the tileset_provider_tests.cpp driver, minus main.o.
+L_TSET_PROV_TEST_OBJ = $(L_DIR)/tileset_provider_tests.o
+$(L_TSET_PROV_TEST_OBJ): tileset_provider_tests.cpp | $(L_DIR)
+	$(CC) -c $< -o $@ $(CXX_FLAGS_BUILD)
+
+TILESET_PROV_TEST_OBJ = $(filter-out $(L_DIR)/main.o $(L_DIR)/gpu_cull_tests.o,$(L_ALL_OBJ)) $(L_TSET_PROV_TEST_OBJ)
+tileset-provider-tests: shaders shaders_gpu_link $(TILESET_PROV_TEST_OBJ)
+	$(CC) $(TILESET_PROV_TEST_OBJ) -o tileset_provider_tests $(CFLAGS) $(LDFLAGS) $(LDLIBS)
+
+run-tilesetprovider: tileset-provider-tests
+	./tileset_provider_tests
+
 -include $(L_ALL_OBJ:.o=.d)
 
 # Shader path resolves relative to the binary; symlink MSL's shaders/ dir.
@@ -210,6 +223,6 @@ win-shaders-gpu:
 	@[ -d shaders_gpu ] || (echo "ERROR: shaders_gpu/ directory missing" && exit 1)
 
 clean:
-	rm -rf viewer viewer.exe gpu_tests tileset_gpu_tests tileset_seam_tests shaders build
+	rm -rf viewer viewer.exe gpu_tests tileset_gpu_tests tileset_seam_tests tileset_provider_tests shaders build
 
-.PHONY: viewer windows gpu-tests tileset-gpu-tests run-tilesetgpu tileset-seam-tests run-tilesetseam clean shaders shaders_gpu_link win-shaders win-shaders-gpu regen-processed-shader
+.PHONY: viewer windows gpu-tests tileset-gpu-tests run-tilesetgpu tileset-seam-tests run-tilesetseam tileset-provider-tests run-tilesetprovider clean shaders shaders_gpu_link win-shaders win-shaders-gpu regen-processed-shader
