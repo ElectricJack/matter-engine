@@ -1,5 +1,5 @@
 #include "../include/surface.h"
-#include "../include/spatial_hash.h"
+#include "spatial_hash.h"
 #include "mc_tables.h"
 #include <stdlib.h>
 #include <string.h>
