@@ -2,6 +2,7 @@
 
 #include <cstdio>
 #include <cstring>
+#include <cerrno>
 #include <cstdint>
 #include <cstddef>   // offsetof
 #include <cstdlib>   // strtoull
@@ -224,12 +225,32 @@ static bool write_file_atomic(const std::string& path,
     ensure_parent_dir(path);
     const std::string tmp = path + ".tmp";
     FILE* f = std::fopen(tmp.c_str(), "wb");
-    if (!f) return false;
+    if (!f) {
+        std::fprintf(stderr, "  save_v2: fopen('%s', 'wb') failed: errno=%d (%s); cwd is what matters — bake_source runs after LocalProvider chdir'd to abs_cache_root\n",
+                     tmp.c_str(), errno, std::strerror(errno));
+        return false;
+    }
     bool ok = std::fwrite(head.data(), 1, head.size(), f) == head.size() &&
               std::fwrite(body.data(), 1, body.size(), f) == body.size();
     std::fclose(f);
-    if (!ok) { std::remove(tmp.c_str()); return false; }
-    return std::rename(tmp.c_str(), path.c_str()) == 0;
+    if (!ok) {
+        std::fprintf(stderr, "  save_v2: fwrite('%s') failed\n", tmp.c_str());
+        std::remove(tmp.c_str());
+        return false;
+    }
+    // POSIX rename() atomically overwrites a same-name target file; Windows
+    // rename() FAILS with EEXIST if the target already exists.  For the .part
+    // cache the target is content-addressed by resolved_hash so overwriting is
+    // safe and expected on legitimate re-bakes.  Delete-then-rename gives us
+    // that semantic on Windows; on POSIX the extra remove is a no-op if the
+    // target doesn't exist (rename would have overwritten anyway).
+    std::remove(path.c_str());
+    if (std::rename(tmp.c_str(), path.c_str()) != 0) {
+        std::fprintf(stderr, "  save_v2: rename('%s' -> '%s') failed: errno=%d (%s)\n",
+                     tmp.c_str(), path.c_str(), errno, std::strerror(errno));
+        return false;
+    }
+    return true;
 }
 
 // Read and validate the common header; on success sets `r` to point at the body

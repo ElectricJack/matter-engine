@@ -316,12 +316,15 @@ bool HostBaker::cached(uint64_t resolved_hash) {
     // (a previous bake with the SAME filename hash-key but DIFFERENT resolved
     // hash — happens when a schema is edited between runs and the old .part
     // was left behind).  Treat mismatch as cache miss so we re-bake.
-    struct { uint32_t magic; uint32_t version; uint64_t hash; } hdr{};
+    // Header layout (see part_asset_v2.cpp:write_file_atomic):
+    //   [0..4)  magic uint32   ('TRAP' little-endian = 0x50415254)
+    //   [4..8)  version uint32 (currently 2)
+    //   [8..16) resolved_hash XOR version (uint64, obfuscation)
+    struct { uint32_t magic; uint32_t version; uint64_t hash_xor; } hdr{};
     in.read(reinterpret_cast<char*>(&hdr), sizeof(hdr));
     if (!in.good()) return false;
-    // 'TRAP' little-endian = 0x50415254
     if (hdr.magic != 0x50415254u || hdr.version != 2u) return false;
-    return hdr.hash == resolved_hash;
+    return hdr.hash_xor == (resolved_hash ^ (uint64_t)hdr.version);
 }
 
 bool HostBaker::bake(const std::string& source, const Params& params,
