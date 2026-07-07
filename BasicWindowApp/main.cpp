@@ -44,22 +44,23 @@ int main(void)
     camera.projection = CAMERA_PERSPECTIVE;
 
     SetTargetFPS(60);               // Set our game to run at 60 frames-per-second
-    
+
     // ImGui state
     bool show_demo_window = true;
     bool show_another_window = false;
     ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
     float cube_rotation_speed = 0.4f;
     Vector3 cube_color = {1.0f, 0.0f, 0.0f}; // RGB for RED
-    
+    float rotationY = 0.0f;  // Accumulate rotation across frames
+
     // Main game loop
     while (!WindowShouldClose())    // Detect window close button or ESC key
     {
         // Update
         UpdateCamera(&camera, CAMERA_ORBITAL);      // Update camera
-        
-        // Calculate rotation angle based on time
-        float rotationY = GetTime() * cube_rotation_speed;
+
+        // Accumulate rotation angle per frame
+        rotationY += cube_rotation_speed * GetFrameTime();
 
         // Start the Dear ImGui frame
         ImGui_ImplOpenGL3_NewFrame();
