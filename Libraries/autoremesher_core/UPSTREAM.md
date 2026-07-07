@@ -42,6 +42,15 @@ pipeline stages transitively include from upstream `src/AutoRemesher/`:
 - `src/AutoRemesher/vector3.h`         → `include/autoremesher/vector3.h`
 - `src/AutoRemesher/nl_ext_stubs.c`    → `src/nl_ext_stubs.c` (OpenNL extension stubs required by geogram MIQ path)
 
+### Locally authored (not vendored)
+
+- `src/quad_to_tri.cpp` — trivial fan/diagonal triangulator; no upstream
+  equivalent (see Deviation #1). MatterEngine2 MIT copyright.
+- `include/autoremesher/quad_to_tri.h` — companion header for the above.
+- `tests/quad_to_tri_test.cpp` — standalone unit test for the triangulator
+  (single quad, two quads, empty input, malformed input). Not yet wired into
+  a Makefile; Task 6 will create `tests/Makefile`.
+
 The alias header shims under upstream `include/AutoRemesher/` (extensionless
 files like `include/AutoRemesher/QuadExtractor` that just re-include the real
 header from `src/AutoRemesher/`) are **not** vendored — we consume the
@@ -134,7 +143,8 @@ Not vendored from upstream `thirdparty/`:
   directory. The `__has_include(<tbb/parallel_for.h>)` branch fires; the
   `<oneapi/tbb/...>` branch does not apply. Task 3/4 should add
   `-I../thirdparty/tbb/include` and use the legacy `<tbb/...>` headers.
-- **`QuadRemesher` alias may be stale.** Upstream `include/AutoRemesher/`
-  ships an extensionless `QuadRemesher` alias header, but there is no
-  corresponding `src/AutoRemesher/quadremesher.cpp`. Task 2 should confirm
-  whether this alias resolves to anything real; if not, do not vendor it.
+- **`QuadRemesher` alias is stale (confirmed Task 3).** Upstream
+  `include/AutoRemesher/QuadRemesher` re-includes
+  `../src/AutoRemesher/quadremesher.h`, but no such file exists in upstream
+  `src/AutoRemesher/` at the pinned SHA (only `quadextractor.{cpp,h}` does).
+  The alias is dead; not vendored.
