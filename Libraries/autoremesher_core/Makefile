@@ -61,6 +61,9 @@ INCLUDES := -Iinclude \
             -Ithirdparty/eigen \
             -Ithirdparty/geogram \
             -Ithirdparty/geogram/src/lib \
+            -Ithirdparty/geogram/src/lib/geogram/third_party/libMeshb/sources \
+            -Ithirdparty/geogram/src/lib/geogram/third_party/rply \
+            -Ithirdparty/geogram/src/lib/geogram/third_party/zlib \
             -Ithirdparty/isotropicremesher \
             -Ithirdparty/tbb/include
 
@@ -76,9 +79,11 @@ CFLAGS   := -std=gnu11 $(COMMON_FLAGS) $(GEOGRAM_DEFINES) $(INCLUDES)
 # ---------------------------------------------------------------------
 # Pipeline sources (Task 3: cherry-picked from upstream + local shim)
 # ---------------------------------------------------------------------
-# NOTE: remesh.cpp -- the top-level driver composing sanitize -> param ->
-# quad-extract -> triangulate -- is added in Task 6.
+# Task 6: remesh.cpp -- the top-level headless driver composing sanitize ->
+# parameterize -> quad-extract -> triangulate behind autoremesher::remesh().
+# Adds AUTOREMESHER_CORE_VERSION as well.
 PIPELINE_CPP := \
+    src/remesh.cpp \
     src/autoremesher.cpp \
     src/mesh_sanitize.cpp \
     src/mesh_separator.cpp \
@@ -124,6 +129,27 @@ ISOTROPIC_ROOT := thirdparty/isotropicremesher
 ISOTROPIC_CPP := $(wildcard $(ISOTROPIC_ROOT)/*.cpp)
 
 # ---------------------------------------------------------------------
+# Geogram third_party helpers required to satisfy mesh_io.cpp / logger /
+# etc. static references. Only permissively-licensed pieces:
+#   - libMeshb (MIT) -- .meshb/.mesh file format support
+#   - rply     (MIT) -- .ply file format support
+#   - zlib     (permissive) -- generic compression, pulled in by both above
+# These are NEVER called from our headless pipeline (we operate on
+# in-memory buffers), but the linker requires the symbols to resolve
+# because mesh_io.cpp unconditionally references them.
+# UPSTREAM.md still bans lua/, HLBFGS/, PoissonRecon/, triangle/, xatlas/,
+# stb_image/ from being compiled (unused + licenses vary).
+# ---------------------------------------------------------------------
+GEO_TP_ROOT := thirdparty/geogram/src/lib/geogram/third_party
+GEO_TP_C := \
+    $(GEO_TP_ROOT)/libMeshb/sources/libmeshb7.c \
+    $(GEO_TP_ROOT)/rply/rply.c \
+    $(wildcard $(GEO_TP_ROOT)/zlib/*.c)
+
+# libMeshb has one extra include quirk on Linux: no changes needed for
+# our snapshot. rply is a single translation unit. zlib compiles standalone.
+
+# ---------------------------------------------------------------------
 # TBB: header-only from this library's perspective. The runtime .cpp
 # files under thirdparty/tbb/src/tbb/ are NOT compiled here -- consumers
 # link a TBB runtime at final link time. Left as a variable in case it
@@ -135,7 +161,7 @@ TBB_CPP :=
 # Object aggregation
 # ---------------------------------------------------------------------
 ALL_CPP := $(PIPELINE_CPP) $(GEOGRAM_CPP) $(EXPLORAGRAM_CPP) $(ISOTROPIC_CPP) $(TBB_CPP)
-ALL_C   := $(PIPELINE_C) $(GEOGRAM_C)
+ALL_C   := $(PIPELINE_C) $(GEOGRAM_C) $(GEO_TP_C)
 
 CPP_OBJ := $(ALL_CPP:.cpp=.o)
 C_OBJ   := $(ALL_C:.c=.o)

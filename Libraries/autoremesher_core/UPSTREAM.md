@@ -167,3 +167,67 @@ Not vendored from upstream `thirdparty/`:
   `../src/AutoRemesher/quadremesher.h`, but no such file exists in upstream
   `src/AutoRemesher/` at the pinned SHA (only `quadextractor.{cpp,h}` does).
   The alias is dead; not vendored.
+
+## Task 6 additions
+
+- **`src/remesh.cpp` — headless driver.** Locally authored (MatterEngine2 MIT
+  copyright), composes upstream's `AutoRemesher::AutoRemesher` class end-to-end
+  (Option A per the Task 6 brief) rather than reimplementing the sanitize →
+  parameterize → quad-extract pipeline stage-by-stage. Adds the
+  `autoremesher::remesh()` public entrypoint and the
+  `AUTOREMESHER_CORE_VERSION = "0.1.0-2026-07-07"` string constant.
+- **`tests/smoke_cube.cpp` — spherified subdivided cube.** The plan's original
+  unit cube (12 tris) is too coarse for the upstream cross-field parameterizer
+  — the extractor returns zero quads on inputs that flat and simple. The
+  smoke test now builds a subdivided cube projected onto a unit sphere
+  (N=8, 386 verts / 768 tris), which the pipeline handles cleanly. Result:
+  `OK: 265 verts, 526 tris, elapsed≈0.05s`.
+- **Fan-triangulation of quad-dominant output.** `QuadExtractor::remeshedQuads()`
+  is quad-DOMINANT, not quad-only: it may emit 3- and 5-gons at parametric
+  singularities. The driver fan-triangulates all n-gons directly in
+  `faces_to_triangles()`. Task 3's `ar_internal::triangulate` is intentionally
+  strict quad-only (matches the header contract) and remains available for
+  callers with a guaranteed-quad input stream.
+- **Geogram initialization.** Upstream's Qt main.cpp called `GEO::initialize()`
+  + `GEO::CmdLine::import_arg_group()` for the "standard", "algo", and "remesh"
+  groups. Neither is called from anywhere in the vendored pipeline sources;
+  the headless driver does both under `std::call_once` guard on first
+  `remesh()` invocation. Also calls `GEO::Logger::instance()->set_quiet(true)`.
+- **Explicit TBB `task_scheduler_init`.** On gcc-13 + glibc 2.39 + WSL2 kernel
+  6.18, the wjakob 2017 TBB static observer path segfaults inside
+  `observer_list::do_notify_entry_observers` on the first `tbb::parallel_for`
+  call from the pipeline. Constructing a `tbb::task_scheduler_init` at the top
+  of the driver forces early, well-ordered scheduler init and works around it.
+  This is deprecated in oneAPI TBB but still supported in the vendored TBB.
+- **`opts.iterations`, `opts.seed`, `opts.threads` accepted but not wired.**
+  Upstream's `AutoRemesher` class has no setter for these; changing solver
+  iterations or RNG seed would require modifying vendored `param_hdc.cpp` /
+  geogram internals. Threading pinning would require `tbb::global_control`
+  which we don't currently invoke (see driver comment). Fields are accepted
+  for API-surface stability and revisited in Phase 6+.
+- **`upstream.setScaling(1.0)`.** Upstream's `AutoRemesher::m_scaling` default
+  is 0.0, which passes through to `Parameterizer::m_scaling` and ultimately to
+  `GEO::GlobalParam2d::quad_cover(scaling=0.0, ...)`, producing zero quads on
+  every input we tried. `Parameterizer.h`'s own header-declared default is
+  1.0; the driver passes 1.0 explicitly to override.
+- **Additional geogram third_party sources compiled.** The `mesh_io.cpp`
+  translation unit in geogram unconditionally references symbols from
+  `libMeshb` (`Gmf*`), `rply` (`ply_*`), and `zlib` (`gz*`). These are never
+  called from our headless pipeline (no file I/O), but the linker requires the
+  symbols to resolve. Added under `GEO_TP_C` in the Makefile with a comment.
+  Licenses: MIT (libMeshb, rply) and zlib (permissive) — no LGPL/GPL taint.
+  `lua/`, `HLBFGS/`, `PoissonRecon/`, `triangle/`, `xatlas/`, `stb_image/`
+  remain excluded from compile.
+- **Vendored TBB built (release only).** `thirdparty/tbb/build/linux_*_release/
+  libtbb.so.2`. Two build-config edits made under `thirdparty/tbb/build/
+  linux.gcc.inc`:
+  - `WARNING_SUPPRESS` extended with `-Wno-changes-meaning -Wno-class-memaccess
+    -Wno-deprecated-declarations -Wno-cast-function-type
+    -Wno-stringop-overflow` to survive gcc-13.
+  - `ITT_NOTIFY = -DDO_ITT_NOTIFY` cleared for the `intel64` arch — VTune
+    profiling hooks; we don't use VTune and the observer path had ancillary
+    fragility (see task_scheduler_init note above). Comment inline.
+- **`tests/Makefile` links against vendored TBB by rpath.** Uses `$ORIGIN`
+  relative rpath to avoid embedding the absolute build path (which contains
+  spaces and breaks `ld -rpath`). The `-rpath` includes the versioned TBB
+  build subdir name.
