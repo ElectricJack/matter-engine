@@ -1,116 +1,188 @@
-# Task 8 Report: build-all.sh + doc pass
+# Task 8 Report: MSL `mesh_transform.hpp` + `reproject_triex`
+
+**Status:** DONE
+
+**Branch:** `feature/autoremesher-integration`
+**Base commit:** `40174b9` (Task 7 complete — MeshIndexed exists)
+**Commit SHA:** (populated by the commit step below)
+
+---
 
 ## Summary
 
-Task 8 is complete. Integrated new CPU tests (run-tilesetgtex, run-tilesettorusbvh) into the MatterEngine3 test sweep and added a guarded GPU test block to build-all.sh. All existing tests pass, GPU tests skip gracefully when GL 4.6 is unavailable.
+Ported `lod_bake::reproject_triex` from `MatterEngine3/src/lod_bake.cpp` into
+MatterSurfaceLib as `void reproject_triex(const MeshIndexed& source,
+MeshIndexed& target)`. The port is semantically identical to the source
+implementation: same spatial-hash algorithm, same cell-size heuristic, same
+tie-breaking rule, same TriEx field handling. Removed the old declaration and
+definition from `lod_bake.{h,cpp}` and updated both existing call sites
+(`part_flatten.cpp` and `part_flatten_tests.cpp`) to wrap through MSL's
+`from_tri`/`to_tri`. This wrapping is intentionally verbose per the brief —
+Task 11 will collapse it once `lod_bake`/`part_flatten` speak `MeshIndexed` at
+their boundary.
 
-## Changes
+The `O(N*M)` naive fallback shown in the brief's Step 3 scaffold was NOT
+shipped — the spatial-hash algorithm was ported verbatim.
 
-1. **build-all.sh**
-   - Added `run-tilesetgtex` and `run-tilesettorusbvh` to the MatterEngine3 CPU test list
-   - Added a guarded GPU test block that:
-     - Checks for GL 4.6 availability via GALLIUM_DRIVER=d3d12 env var OR glxinfo detection
-     - Runs `run-tilesetgpu` and `run-tilesetseam` if GL 4.6 is available
-     - Prints SKIP message otherwise
+---
 
-2. **MatterEngine3/tests/Makefile**
-   - Added `tileset_bake_gpu_stub.cpp` to TILESETBAKE_CPP to fix linker error
-   - This stub satisfies the undefined reference to bake_tileset_gpu for headless builds
+## Source-algorithm audit (`lod_bake.cpp:112-201`)
 
-3. **MatterEngine3/tests/tileset_bake_gpu_stub.cpp** (new file)
-   - Minimal stub implementation that returns an error (tests don't use GPU path)
-   - Allows headless test suite to link despite tileset_phase.cpp having GPU overload
+The original `lod_bake::reproject_triex` is a **uniform spatial hash over
+source centroids**:
 
-## Verification
+- **Cell-size heuristic.** Compute source-centroid AABB; take max extent
+  (clamped `>= 1e-6f`); divide by `cbrt(source_tri_count)` (clamped `>= 1.0`).
+  An average cell holds ~O(1) centroids, so ring-1 neighborhood spans a few
+  cell-widths — appropriate for nearest-source lookup when the decimated
+  surface stays close to the source.
 
-All tileset test suites pass individually:
-- run-tilesetdsl ✓
-- run-tilesetplacement ✓
-- run-tilesetbake ✓
-- run-tilesetphysics ✓
-- run-tilesetcore ✓
-- run-tilesetgtex ✓ (new)
-- run-tilesettorusbvh ✓ (new)
+- **Hash function.** Three-prime XOR (`73856093*ix ^ 19349663*iy ^
+  83492791*iz`) on integer cell coords `floorf((c - mn)/cell)`. One bucket
+  entry per source triangle (one centroid per source triangle).
 
-GPU test detection logic verified:
-- With GALLIUM_DRIVER=d3d12: GPU tests enabled
-- Without: GPU tests skipped with informative message
+- **Nearest-source lookup.** Ring-by-ring outward growth from the target
+  centroid's cell (`for ring in 0..64`). Each iteration scans only the outer
+  shell (`abs(dx)==ring OR abs(dy)==ring OR abs(dz)==ring`). Once ANY
+  occupied shell is hit (`hit_ring = ring`), scan **one more** ring and stop
+  — a neighbor cell can hold a closer centroid than the first occupied cell.
+  Cap of 64 rings is a safety net for pathological sparse regions.
 
-## Commit
+- **TriEx field handling on OUTPUT.** For each target triangle:
+  - `TriEx ex = src;` copies **all** source TriEx fields verbatim
+    (materialId, tint, uv0/uv1/uv2, AO/ao channels — anything in the struct).
+  - `N0/N1/N2` are then **overwritten** with the target triangle's geometric
+    face normal, computed via cross product of the two edge vectors and
+    normalized. Degenerate case (`len <= 1e-12f`) falls back to `(0, 1, 0)`.
+    Source comment: "decimation changed the surface, so the source shading
+    normals no longer describe it."
 
-SHA: d92c1c3
-Message: "phase 3: tileset GPU bake + .gtex complete"
+- **Early-out.** Empty `src_tris` OR `src_triex.size() != src_tris.size()`
+  returns `{}` (an empty output vector). MSL equivalent: `target.triex.clear();
+  return;`.
 
-Files changed:
-- build-all.sh (2 insertions: CPU test list, GPU test block)
-- MatterEngine3/tests/Makefile (1 insertion: stub linking)
-- MatterEngine3/tests/tileset_bake_gpu_stub.cpp (new, 22 lines)
+## Adaptation to `MeshIndexed`
 
-## Notes
+`Tri` carries a precomputed `t.centroid` field; `MeshIndexed` does not. The
+MSL port computes centroids from `positions[indices[i*3+k]]` via
+`centroid_of()`. Verified that all existing call sites populate `Tri.centroid`
+as `(v0+v1+v2)/3` (see `part_flatten.cpp:174,266,322` — every centroid write
+is the arithmetic mean), so this substitution is byte-preserving.
 
-The fix in MatterEngine3/tests/tileset_bake_gpu_stub.cpp was necessary because Task 6 added a GPU-based overload to run_tileset_phase() that references bake_tileset_gpu, but the headless test Makefile didn't link the GPU code (tileset_bake_gpu.cpp requires GL headers). This stub allows the test to link without actually using the GPU path (which tests don't call).
+Source centroids are precomputed once into `src_centroids[]` so the AABB
+sweep, grid build, and per-target nearest-source scans all share them (avoids
+recomputing per query — matches the effect of the source using
+`src_tris[i].centroid` directly).
 
-## Phase 3 final-review fixes
+## Bugs found in the source (NOT fixed)
 
-### I1 — Material table divergence
-**Files**: `MatterEngine3/src/tileset_bake_primary.cpp` (lines 68-95), `MatterEngine3/src/tileset_bake_ao.cpp` (lines 63-76, 181-197)
+None. The port is faithful. Two minor observations noted but not addressed
+(preserving semantic identity per the brief's "DO NOT change the algorithm"
+directive):
 
-Unified both bake drivers to the canonical `MaterialRegistryPackForGPU` slot layout:
-`[0..2]=albedo, [3]=roughness, [4]=metallic, [5]=emission, [6]=pad, [7]=translucency, [8]=ior, [9]=flatShading, [10]=mergeGroup, [11]=pad`.
+- The AABB min/max initialization sentinels `+/-1e30f` assume the source
+  triangle set fits inside a `1e30f`-cube in world space. This is a shared
+  assumption across MatterEngine3.
+- The 3-prime XOR hash is standard-issue for uniform grids; not
+  cryptographic. Pathological aligned coords could produce elevated
+  collision rates. No production complaints; leaving as-is.
 
-Primary bake (`tileset_bake_primary.cpp`) now also uploads the `materialTable` uniform
-so `getMaterialProperties` in `materials.glsl` reads real values instead of zero-initialized
-defaults.
+## Wrapping strategy at existing call sites
 
-AO bake (`tileset_bake_ao.cpp`) slot order was fixed but `materialTable` upload intentionally
-omitted: the AO pass uses normals only; uploading the real table changes per-tile AO output in
-a way that breaks Wang-tile seam invariance for the AO channel (each tile's unique geometry
-produces different boundary-strip occlusion). The no-materialTable path retains the pre-existing
-behaviour where `getMaterialProperties(id)` with `id<materialCount` reads the correct SSBO and
-the BVH shader's zero-normal fallback handles the base mesh safely.
+Per Step 6 of the brief, `lod_bake::reproject_triex` callers now go through
+MSL. The brief's "internal calls inside `lod_bake.cpp`" phrasing was slightly
+misleading — `lod_bake.cpp` itself never called `reproject_triex`, only
+exported it. Actual callers were:
 
-Added CPU-side pack assertion in `MatterEngine3/viewer/tileset_gpu_tests.cpp`
-`test_material_pack_layout()`: fixture with flatShading=1, mergeGroup=42, translucency=0.5,
-ior=1.7 verifies r[7]=0.5, r[8]=1.7, r[9]=1.0, r[10]=42.0 exactly.
+1. **`MatterEngine3/src/part_flatten.cpp`** (flatten ladder LOD loop, near
+   `build_flatten_ladder`'s decimate-and-reproject loop). Before:
+   ```cpp
+   std::vector<TriEx> ex = lod_bake::reproject_triex(geo, ctris, ctriex);
+   ```
+   After:
+   ```cpp
+   std::vector<TriEx> ex;
+   {
+       MeshIndexed src_m = from_tri(ctris, &ctriex);
+       MeshIndexed tgt_m = from_tri(geo, nullptr);
+       ::reproject_triex(src_m, tgt_m);
+       std::vector<Tri> tgt_tris_ignored;
+       to_tri(tgt_m, tgt_tris_ignored, ex);
+   }
+   ```
 
-### I2 — GPU stub split
-**Files**: `MatterEngine3/src/tileset_phase.cpp`, `MatterEngine3/src/tileset_phase_gpu.cpp` (new),
-`MatterEngine3/tests/Makefile`, `MatterEngine3/tests/tileset_bake_gpu_stub.cpp` (deleted)
+2. **`MatterEngine3/tests/part_flatten_tests.cpp::test_reproject_two_materials`**
+   — same wrapping. The test's assertions (`ex.size() == dec.size()`, both
+   materials survive) are unchanged and pass.
 
-Moved the `run_tileset_phase` opts overload (which calls `bake_tileset_gpu`) to new file
-`tileset_phase_gpu.cpp`, not included in `libmatter_engine3.a`. The headless lib no longer
-references `bake_tileset_gpu` through `tileset_phase.cpp`, so the stub is deleted.
-`tileset_bake_gpu_stub.cpp` removed from `TILESETBAKE_CPP` in `tests/Makefile`.
+## Files touched
 
-### M1 — Document TILESET_GTEX_USE_RAYLIB_STB contract
-**File**: `MatterEngine3/include/tileset_gtex.h` (header comment, +6 lines)
+**Created:**
+- `MatterSurfaceLib/include/mesh_transform.hpp` — declaration.
+- `MatterSurfaceLib/src/mesh_transform.cpp` — ported implementation.
+- `MatterSurfaceLib/tests/mesh_transform_tests.cpp` — 5 unit tests
+  (empty-source clears target, mismatched-triex clears target, identity
+  single-material, two-materials-nearest-wins, output-parallel-to-target).
 
-Added 5-line block comment explaining the `TILESET_GTEX_USE_RAYLIB_STB` macro contract.
+**Modified:**
+- `MatterEngine3/include/lod_bake.h` — removed `reproject_triex` declaration;
+  left a Task 8 breadcrumb comment pointing at `mesh_transform.hpp`.
+- `MatterEngine3/src/lod_bake.cpp` — removed the `reproject_triex` definition;
+  left a matching breadcrumb.
+- `MatterEngine3/src/part_flatten.cpp` — added MSL includes; wrapped the
+  single call site.
+- `MatterEngine3/tests/part_flatten_tests.cpp` — added MSL includes; wrapped
+  the test's call site.
+- `MatterEngine3/tests/Makefile` — added `mesh_indexed.cpp` and
+  `mesh_transform.cpp` to `FLATTEN_CPP` (part_flatten_tests) and `EXAMPLE_CPP`
+  (shared by `example_world` + `gallery_bake_tests`, both of which link
+  `part_flatten.cpp`). Other targets (script_host_tests, part_graph_int
+  tests, tileset_bake_tests) link `lod_bake.cpp` but do NOT reference
+  `reproject_triex` and thus needed no change.
+- `MatterSurfaceLib/tests/Makefile` — added `mesh_transform_tests` target
+  following the `mesh_indexed_tests` pattern.
 
-### M2 — Replace typedef GLuint with uint32_t
-**Files**: `MatterEngine3/include/tileset_bake_primary.h`, `MatterEngine3/include/tileset_bake_ao.h`,
-`MatterEngine3/src/tileset_bake_primary.cpp`, `MatterEngine3/src/tileset_bake_ao.cpp`
+## Main `MatterSurfaceLib/Makefile`
 
-Replaced `typedef unsigned int GLuint` in both public headers with `uint32_t` (from `<cstdint>`)
-and a comment explaining the aliasing. Added `static_assert(sizeof(GLuint)==sizeof(uint32_t))`
-in both `.cpp` files to catch platform mismatches at compile time.
+Per the "same pattern as `src/mesh_indexed.cpp`" instruction, verified that
+`mesh_indexed.cpp` is NOT in the main MSL Makefile's `SRC` — only in the
+tests Makefile. Following that pattern, `mesh_transform.cpp` was likewise
+NOT added to the main Makefile. Both files ship as sources consumed by test
+targets and by MatterEngine3's tests; MSL's viewer binary does not currently
+link either. If a future task wires either into the viewer, the main Makefile
+will need updating.
 
-### M3 — Derive ray_y from instance envelope
-**File**: `MatterEngine3/src/tileset_bake_gpu.cpp` (lines 36-61, 153-163)
+## Test summary
 
-`compute_height_range` now also tracks `max_instance_top = pose_y + 2*scale` per instance.
-`ray_y = max(hmax + 2.0, max_instance_top + 0.5)` so tall scaled instances don't poke above
-the ortho ray origin.
+**Existing tests (semantic-preservation gate):**
 
-### Build/test results
-```
-Step 1: cd MatterEngine3 && make clean && make  → OK (no errors, pre-existing warnings only)
-Step 2: CPU suites (tilesetdsl, tilesetplacement, tilesetbake, tilesetphysics,
-         tilesetcore, tilesetgtex, tilesettorusbvh) → ALL PASS
-Step 3: cd viewer && make tileset-gpu-tests tileset-seam-tests → builds OK
-Step 4: GALLIUM_DRIVER=d3d12 ./tileset_gpu_tests → 51/51 PASS
-        GALLIUM_DRIVER=d3d12 ./tileset_seam_tests → 32/32 PASS
-```
+- `MatterEngine3/tests/part_flatten_tests` — rebuilt through the wrapped MSL
+  path; **ALL PASS**. Notable subtests exercising reproject_triex:
+  `test_reproject_two_materials` (both materials survive decimation),
+  `test_flatten_clustered_v3`, `test_flatten_watertight_invariant`,
+  `test_small_part_gets_ladder`, `test_ratio2_ladder_shape`,
+  `test_budget_ladder_assembly`, `test_instance_boundary_records_refs`,
+  `test_generous_budget_inlines`, `test_flat_version_bump`.
+- `MatterEngine3/tests/composition_tests` — rebuilt (links `lod_bake.cpp`
+  without `part_flatten.cpp`); PASS.
+- `MatterSurfaceLib/tests/mesh_indexed_tests` — unchanged; PASS (5/5).
+- `MatterEngine3/tests/script_host_tests` — links `lod_bake.cpp`; builds
+  cleanly.
 
-### Commit SHA
-`f445a77`
+**New tests:**
+
+- `MatterSurfaceLib/tests/mesh_transform_tests` — PASS (5/5).
+
+## Concerns
+
+None blocking. Two minor observations:
+
+1. Brief's Step 6 said "every internal call to `reproject_triex` inside
+   `lod_bake.cpp`" — reality: no calls inside `lod_bake.cpp`, only in
+   `part_flatten.cpp` and `part_flatten_tests.cpp`. Intent (update all
+   callers) is fulfilled; documented above.
+
+2. Main `MatterSurfaceLib/Makefile` still does not list `mesh_indexed.cpp`
+   or `mesh_transform.cpp` in `SRC` — following the pattern the brief pointed
+   at. If a future task lands a consumer inside MSL's viewer, that Makefile
+   will need updating.

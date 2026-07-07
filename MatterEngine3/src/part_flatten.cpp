@@ -1,9 +1,11 @@
 #include "../include/part_flatten.h"
 
 #include "../include/part_asset_v2.h"   // load_v2/save_flat_v3, cache_path_*, load_lod_sidecar
-#include "../include/lod_bake.h"        // decimate_to_error, reproject_triex
+#include "../include/lod_bake.h"        // decimate_to_error
 #include "../include/part_cluster.h"    // split_clusters
 #include "tlas_manager.hpp"             // MSL TLASManager (load_v2 signature)
+#include "mesh_indexed.hpp"             // MSL from_tri/to_tri (reproject wrapping)
+#include "mesh_transform.hpp"           // MSL reproject_triex (was lod_bake::)
 
 #include <algorithm>
 #include <cmath>
@@ -812,7 +814,19 @@ static FlattenResult flatten_part_impl(const std::string& cache_root,
             // would over-freeze cluster interiors that touch the cluster AABB.
             std::vector<Tri> geo = lod_bake::decimate_to_error(ctris, eps, /*use_aabb_bounds=*/false);
             if (geo.empty() || geo.size() >= prev_count) continue;  // no progress
-            std::vector<TriEx> ex = lod_bake::reproject_triex(geo, ctris, ctriex);
+            // Task 8 wrap: reproject_triex now lives in MSL and operates on
+            // MeshIndexed. Weld both source (ctris/ctriex) and target (geo)
+            // into MeshIndexed, run the MSL reprojection, then unweld back to
+            // parallel Tri/TriEx vectors. Task 11 will collapse this once
+            // part_flatten's own pipeline speaks MeshIndexed at its boundary.
+            std::vector<TriEx> ex;
+            {
+                MeshIndexed src_m = from_tri(ctris, &ctriex);
+                MeshIndexed tgt_m = from_tri(geo, nullptr);
+                ::reproject_triex(src_m, tgt_m);
+                std::vector<Tri> tgt_tris_ignored;
+                to_tri(tgt_m, tgt_tris_ignored, ex);
+            }
             if (!register_level(geo, ex, eps, level_metas)) return res;
             prev_count = geo.size();
             last_kept_count = geo.size();

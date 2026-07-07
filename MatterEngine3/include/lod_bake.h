@@ -36,15 +36,12 @@ std::vector<Tri> decimate_tris(const std::vector<Tri>& tris, float keep_ratio);
 std::vector<Tri> decimate_to_error(const std::vector<Tri>& tris, float epsilon,
                                    bool use_aabb_bounds = true);
 
-// Rebuild per-triangle TriEx for a decimated mesh by re-projection: for each
-// output triangle, copy materialId/tint/AO from the nearest source triangle
-// (by centroid, via a uniform spatial hash over `src_tris`), and set all three
-// shading normals to the output triangle's geometric normal. `src_triex` must be
-// parallel to `src_tris`. Returns a vector parallel to `out_tris` (empty if the
-// source set is empty or non-parallel).
-std::vector<TriEx> reproject_triex(const std::vector<Tri>& out_tris,
-                                   const std::vector<Tri>& src_tris,
-                                   const std::vector<TriEx>& src_triex);
+// NOTE (Task 8, Phase 5 autoremesher integration): `reproject_triex` moved to
+// MatterSurfaceLib — see `mesh_transform.hpp` for the MeshIndexed-shaped
+// replacement `void reproject_triex(const MeshIndexed& source, MeshIndexed&
+// target)`. Callers historically built through Tri/TriEx vectors; those sites
+// wrap via MSL `from_tri`/`to_tri` until lod_bake itself is refactored to
+// MeshIndexed at its boundary (Task 11).
 
 // Per-level decimation targets (keep-ratios) and matching selection thresholds.
 // Defaults: LOD0 = full (1.0), LOD1 ~ 1/10, LOD2 ~ 1/100. Thresholds are on the

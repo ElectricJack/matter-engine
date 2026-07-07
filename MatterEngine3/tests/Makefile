@@ -295,6 +295,8 @@ FLATTEN_CPP = part_flatten_tests.cpp ../src/part_flatten.cpp ../src/lod_bake.cpp
               ../src/part_cluster.cpp \
               ../src/part_asset_v2.cpp \
               ../../MatterSurfaceLib/src/mesh_simplifier.cpp \
+              ../../MatterSurfaceLib/src/mesh_indexed.cpp \
+              ../../MatterSurfaceLib/src/mesh_transform.cpp \
               ../../MatterSurfaceLib/src/blas_manager.cpp \
               ../../MatterSurfaceLib/src/bvh.cpp \
               ../../MatterSurfaceLib/src/tlas_manager.cpp \
@@ -339,6 +341,7 @@ EXAMPLE_CPP = example_world.cpp ../src/part_graph.cpp \
               ../src/part_cluster.cpp \
               ../src/sector_grid.cpp ../src/lod_select.cpp \
               ../../MatterSurfaceLib/src/cluster.cpp ../../MatterSurfaceLib/src/cell.cpp ../../MatterSurfaceLib/src/mesh_simplifier.cpp \
+              ../../MatterSurfaceLib/src/mesh_indexed.cpp ../../MatterSurfaceLib/src/mesh_transform.cpp \
               ../../MatterSurfaceLib/src/blas_manager.cpp ../../MatterSurfaceLib/src/bvh.cpp ../../MatterSurfaceLib/src/bvh_analyzer.cpp \
               ../../MatterSurfaceLib/src/mesh_worker_pool.cpp ../../MatterSurfaceLib/src/mesh_build_utils.cpp \
               ../../MatterSurfaceLib/src/meshing_algorithm.cpp ../../MatterSurfaceLib/src/marching_cubes_algorithm.cpp \

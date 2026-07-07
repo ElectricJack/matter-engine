@@ -261,3 +261,13 @@ $(MIDX_TARGET): $(MIDX_SOURCES)
 
 run-midx: $(MIDX_TARGET)
 	./$(MIDX_TARGET)
+
+# Mesh transform (reproject_triex) unit tests (headless, GL-free).
+MTX_TARGET = mesh_transform_tests
+MTX_SOURCES = mesh_transform_tests.cpp ../src/mesh_indexed.cpp ../src/mesh_transform.cpp
+
+$(MTX_TARGET): $(MTX_SOURCES)
+	$(CC) $(MTX_SOURCES) -o $(MTX_TARGET) $(CFLAGS) $(INCLUDE_PATHS) $(LDFLAGS) $(LDLIBS)
+
+run-mtx: $(MTX_TARGET)
+	./$(MTX_TARGET)

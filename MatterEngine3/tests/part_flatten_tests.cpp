@@ -11,6 +11,8 @@
 #include "../../MatterSurfaceLib/include/blas_manager.hpp"
 #include "../../MatterSurfaceLib/include/tlas_manager.hpp"
 #include "../../MatterSurfaceLib/include/mesh_simplifier.hpp"
+#include "../../MatterSurfaceLib/include/mesh_indexed.hpp"
+#include "../../MatterSurfaceLib/include/mesh_transform.hpp"
 
 #include <cmath>
 #include <cstdint>
@@ -339,7 +341,17 @@ static void test_reproject_two_materials() {
 
     std::vector<Tri> dec = lod_bake::decimate_to_error(tris, 0.05f);
     CHECK(!dec.empty() && dec.size() < tris.size(), "sphere decimated");
-    std::vector<TriEx> ex = lod_bake::reproject_triex(dec, tris, triex);
+    // Task 8: reproject_triex moved to MSL; wrap the Tri/TriEx call site
+    // through MeshIndexed until Task 11 refactors this test to speak
+    // MeshIndexed natively.
+    std::vector<TriEx> ex;
+    {
+        MeshIndexed src_m = from_tri(tris, &triex);
+        MeshIndexed tgt_m = from_tri(dec, nullptr);
+        ::reproject_triex(src_m, tgt_m);
+        std::vector<Tri> tgt_tris_ignored;
+        to_tri(tgt_m, tgt_tris_ignored, ex);
+    }
     CHECK(ex.size() == dec.size(), "reprojected TriEx parallel to output tris");
 
     std::set<int> mats;
