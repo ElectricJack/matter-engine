@@ -13,6 +13,8 @@
 #include <string>
 #include <unordered_set>
 #include <vector>
+#include <unistd.h>
+#include <limits.h>
 
 namespace tileset {
 
@@ -110,19 +112,38 @@ static bool expand_includes(const std::string& src, const std::string& includes_
     return true;
 }
 
+// Resolve a shader-relative path against the running binary's own directory so
+// callers that chdir() (e.g. LocalProvider chdirs to abs_cache_root so
+// bake_source can write parts/<hash>.part relative to CWD) can still load
+// shaders shipped next to the binary. Absolute paths are returned unchanged.
+static std::string resolve_relative_to_exe(const std::string& p) {
+    if (!p.empty() && p[0] == '/') return p;
+    char exe_buf[PATH_MAX];
+    ssize_t n = readlink("/proc/self/exe", exe_buf, sizeof(exe_buf) - 1);
+    if (n <= 0) return p;   // fall back to CWD-relative on non-Linux
+    exe_buf[n] = 0;
+    std::string exe_dir(exe_buf);
+    size_t slash = exe_dir.find_last_of('/');
+    if (slash == std::string::npos) return p;
+    return exe_dir.substr(0, slash) + "/" + p;
+}
+
 bool load_compute_source(const std::string& primary_path,
                          const std::string& includes_dir,
                          std::string& out_source,
                          std::string& err)
 {
+    const std::string abs_primary  = resolve_relative_to_exe(primary_path);
+    const std::string abs_includes = resolve_relative_to_exe(includes_dir);
+
     std::string src;
-    if (!read_file(primary_path, src)) {
-        err = "load_compute_source: cannot read primary: " + primary_path;
+    if (!read_file(abs_primary, src)) {
+        err = "load_compute_source: cannot read primary: " + abs_primary;
         return false;
     }
     out_source.clear();
     std::unordered_set<std::string> stack;
-    return expand_includes(src, includes_dir, /*depth*/ 0, stack, out_source, err);
+    return expand_includes(src, abs_includes, /*depth*/ 0, stack, out_source, err);
 }
 
 // ---------------------------------------------------------------------------

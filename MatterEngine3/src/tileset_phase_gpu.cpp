@@ -49,10 +49,12 @@ bool run_tileset_phase(const std::string& world_data_dir,
                        const std::string& parts_cache_dir,
                        SettledTorus& out,
                        const TilesetPhaseOpts& opts,
-                       std::string& err)
+                       std::string& err,
+                       const std::string& shared_lib_root)
 {
     // Run the existing settle-only phase first (delegates via the older overload).
-    if (!run_tileset_phase(world_data_dir, world, root_module, parts_cache_dir, out, err))
+    if (!run_tileset_phase(world_data_dir, world, root_module, parts_cache_dir, out, err,
+                           shared_lib_root))
         return false;
 
     // Compute the source hash by re-reading the root .js (same convention as the

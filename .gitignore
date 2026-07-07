@@ -72,3 +72,6 @@ MatterEngine3/tests/sandbox/
 # Transient viewer screenshots + sentinel files (from FIFO shot capture)
 MatterEngine3/viewer/*.png
 MatterEngine3/viewer/*.png.done
+MatterEngine3/viewer/shots_forestfloor/
+MatterEngine3/tools/shots_task6/
+shots/

@@ -294,24 +294,44 @@ bool LocalProvider::connect(WorldManifest& out, std::string& err) {
     // run_tileset_phase reads world.manifest and .js from abs_world_data.
     // The gtex is written to abs_world_data/<root_module>.gtex (the GPU overload
     // constructs the path as world_data_dir + "/" + root_module + ".gtex").
+    //
+    // run_tileset_phase calls ScriptHost::bake_source internally to bake the
+    // tileset's child schemas (Pebble/Rock/Twig/Leaf). bake_source writes
+    // parts/<hash>.part RELATIVE to CWD, so we must chdir to abs_cache_root
+    // for the duration of the tileset loop (mirrors the earlier
+    // graph.install() setup at line 112).  Restore CWD after.
     baked_tileset_count_ = 0;
+    bool restored_cwd_after_tileset = tileset_indices.empty();
+    if (!tileset_indices.empty()) {
+        if (fs_chdir(abs_cache_root.c_str()) != 0) {
+            err = "LocalProvider: chdir to cache_root failed before tileset bake: " +
+                  abs_cache_root;
+            return false;
+        }
+    }
     for (size_t ti : tileset_indices) {
         if (baked_tileset_count_ >= viewer::tileset_provider::max_slots()) {
             err = "LocalProvider: more tileset roots (" +
                   std::to_string(tileset_indices.size()) + ") than slots (" +
                   std::to_string(viewer::tileset_provider::max_slots()) + ")";
+            fs_chdir(orig_cwd);
             return false;
         }
         const std::string root_module = roots[ti].module;
         tileset::SettledTorus settled;
         tileset::TilesetPhaseOpts opts;
         opts.force_rebake = false;   // let content_hash decide
-        opts.dump_png     = false;
+        // Dev hook: MATTER_TILESET_DUMP_PNG=1 dumps loose <root>-albedo.png /
+        // -normal.png / -orm.png / -height.png next to the .gtex so an operator
+        // can eyeball the baked atlas without launching the viewer.
+        opts.dump_png     = std::getenv("MATTER_TILESET_DUMP_PNG") != nullptr;
         std::string te;
         if (!tileset::run_tileset_phase(abs_world_data, cfg_.world_name, root_module,
-                                        abs_cache_root, settled, opts, te)) {
+                                        abs_cache_root, settled, opts, te,
+                                        abs_shared_lib)) {
             err = "LocalProvider: run_tileset_phase(" + root_module + "): " + te +
                   " (if a GL error: set GALLIUM_DRIVER=d3d12 on WSLg)";
+            fs_chdir(orig_cwd);
             return false;
         }
         // The GPU overload writes: world_data_dir + "/" + root_module + ".gtex"
@@ -319,6 +339,7 @@ bool LocalProvider::connect(WorldManifest& out, std::string& err) {
         std::string le;
         if (!viewer::tileset_provider::load_slot(baked_tileset_count_, gtex_path, le)) {
             err = "LocalProvider: tileset_provider::load_slot(" + gtex_path + "): " + le;
+            fs_chdir(orig_cwd);
             return false;
         }
         // Bind material DIRT (16) to this slot by default — the world script may
@@ -327,6 +348,9 @@ bool LocalProvider::connect(WorldManifest& out, std::string& err) {
         ++baked_tileset_count_;
         printf("LocalProvider: tileset '%s' -> slot %d (%s)\n",
                root_module.c_str(), baked_tileset_count_ - 1, gtex_path.c_str());
+    }
+    if (!restored_cwd_after_tileset) {
+        fs_chdir(orig_cwd);
     }
 
     // --- Parse world lights ---

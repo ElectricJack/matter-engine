@@ -45,7 +45,8 @@ static bool read_file_str(const std::string& path, std::string& out) {
 bool run_tileset_phase(const std::string& world_data_dir, const std::string& /*world*/,
                        const std::string& root_module,
                        const std::string& parts_cache_dir,
-                       SettledTorus& out, std::string& err)
+                       SettledTorus& out, std::string& err,
+                       const std::string& shared_lib_root)
 {
     // -----------------------------------------------------------------------
     // 1. Load the tileset root's source.
@@ -66,6 +67,11 @@ bool run_tileset_phase(const std::string& world_data_dir, const std::string& /*w
     //    Returns {module_specifier, params_json} for each static `requires` entry.
     // -----------------------------------------------------------------------
     script_host::ScriptHost host;
+    // Set shared-lib root so that child scripts that import from 'shared-lib/*'
+    // (e.g. Pebble.js imports shared-lib/rng) can resolve their dependencies.
+    // An empty shared_lib_root is a no-op (tileset children with no shared-lib
+    // imports, or callers that don't need it).
+    if (!shared_lib_root.empty()) host.set_shared_lib_root(shared_lib_root);
     std::vector<script_host::RequiredChild> required =
         host.eval_requires(root_source, "{}");
 

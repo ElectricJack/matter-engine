@@ -126,7 +126,14 @@ bool bake_tileset_gpu(const SettledTorus& settled,
         // 3. Assemble BVH (CPU).
         // ------------------------------------------------------------------
         BLASManager blas;
-        TLASManager tlas(1024);
+        // Size the TLAS to accommodate the settled instance count plus the base
+        // heightfield instance, with 25% headroom for any drop/instance the
+        // orchestrator hasn't accounted for.  A too-small cap silently drops
+        // instances (producing an atlas where only strip-boundary content is
+        // present because interior placements arrived last and got refused).
+        const int n_settled = (int)settled.instances.size();
+        const int tlas_cap  = (n_settled + 1) * 5 / 4 + 32;
+        TLASManager tlas(tlas_cap);
         if (!assemble_torus_bvh(settled, inputs, blas, tlas, err)) return false;
 
         // ------------------------------------------------------------------
