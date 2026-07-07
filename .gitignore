@@ -45,34 +45,31 @@ MatterSurfaceLib/parts
 
 # MatterEngine3 compiled binaries and bake caches
 MatterEngine3/viewer/viewer
-MatterEngine3/tests/parts/
-MatterEngine3/tests/composition_tests
+MatterEngine3/tests/*_tests
+MatterEngine3/tests/*_tests_*
+MatterEngine3/tests/*_check
 MatterEngine3/tests/example_world
-MatterEngine3/tests/part_asset_v2_tests
-MatterEngine3/tests/part_flatten_tests
-MatterEngine3/tests/script_host_tests
-MatterEngine3/tests/tree_bake_check
-MatterEngine3/tests/viewer_logic_tests
-MatterEngine3/tests/part_graph_tests
-MatterEngine3/tests/part_graph_integration_tests
-MatterEngine3/tests/dsl_state_tests
-MatterEngine3/tests/script_host_bake_tests
-MatterEngine3/tests/dev_live_edit_tests
-MatterEngine3/tests/gallery_bake_tests
-MatterEngine3/tests/grass_lod_tests
-MatterEngine3/tests/iso_primitive_tests
-MatterEngine3/tests/lighting_tests
-MatterEngine3/tests/meadow_bake_check
-MatterEngine3/tests/meadow_bake_tests
-MatterEngine3/tests/polygon_triangulate_tests
-MatterEngine3/tests/triangle_variation_tests
+MatterEngine3/tests/parts/
 MatterEngine3/tests/*.log
 MatterEngine3/tests/sandbox/
 
-# Transient viewer screenshots + sentinel files (from FIFO shot capture)
+# viewer-integration tests (share viewer's object graph; live in viewer/ for
+# now — see followup on moving to tests/)
+MatterEngine3/viewer/*_tests
+
+# Other project test binaries (compiled from same-named *.cpp drivers)
+MatterSurfaceLib/tests/*_tests
+MeshChartingLib/tests/*_tests
+
+# Transient screenshots + sentinel files (FIFO shot capture)
+*.png.done
 MatterEngine3/viewer/*.png
-MatterEngine3/viewer/*.png.done
 MatterEngine3/viewer/shots_forestfloor/
 MatterEngine3/tools/shots_task6/
 shots/
 MatterEngine3/viewer/shaders/
+
+# Local backups / imposter test outputs / world bake data
+*.bak
+imposters/
+MatterEngine3/examples/world_demo/WorldData/*.gtex
