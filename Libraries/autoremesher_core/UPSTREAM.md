@@ -80,10 +80,8 @@ Not vendored from upstream `thirdparty/`:
 - Non-pipeline utilities (upstream logging, Qt argument parsers, GUI helpers)
   are excluded. The pipeline call graph is: sanitize → parameterize →
   quad-extract → (see Deviations re: triangulate).
-- One in-place edit is expected in `src/autoremesher.cpp`: upstream includes
-  `<QDebug>` (Qt logging) — this include and any `qDebug()/qWarning()` calls
-  must be replaced with a Qt-free logging shim. This is a pipeline-code
-  concession; header copyright is preserved.
+- One in-place edit is expected in `src/autoremesher.cpp`: see Deviation 6
+  (Qt logging concession) in "Deviations from spec" below.
 - The `nl_ext_stubs.c` file has no MIT copyright header upstream (it is a
   ~30-line stub); preserved as-is.
 - Every future sync is a deliberate cherry-pick against an updated pinned SHA,
@@ -122,3 +120,15 @@ Not vendored from upstream `thirdparty/`:
   drop that scheme: our vendored code will use conventional
   `#include "autoremesher/vector3.h"` style. Task 2 must rewrite the
   extensionless includes at import time.
+- **Qt logging concession.** `src/AutoRemesher/autoremesher.cpp` upstream
+  includes `<QDebug>` and calls `qDebug()/qWarning()`. Task 2 must strip these
+  and replace with a Qt-free logging shim (e.g. `fprintf(stderr, ...)` or a
+  thin `#define qDebug() ...` shim). Header copyright must be preserved.
+- **TBB `__has_include` branch.** Upstream `autoremesher.cpp` already guards
+  TBB headers with `__has_include`, supporting both legacy `<tbb/...>` and
+  oneAPI `<oneapi/tbb/...>`. Task 2/3 must verify which branch our vendored
+  `thirdparty/tbb/` snapshot triggers and confirm only that branch compiles.
+- **`QuadRemesher` alias may be stale.** Upstream `include/AutoRemesher/`
+  ships an extensionless `QuadRemesher` alias header, but there is no
+  corresponding `src/AutoRemesher/quadremesher.cpp`. Task 2 should confirm
+  whether this alias resolves to anything real; if not, do not vendor it.
