@@ -10,6 +10,14 @@ extern "C" {
 #include "quickjs.h"
 }
 
+// Per-part SCHEMA-level configuration (lodBudgets, lodAnchorSize, retopo, ...)
+// is discovered via `static` class properties read by ScriptHost — NOT via the
+// runtime verb bindings below. If you're looking for the retopo binding (Phase
+// 5 autoremesher integration) or the lodBudgets binding, see:
+//   MatterEngine3/src/script_host.cpp :: eval_retopo_settings, eval_lod_budgets
+// This file only owns the runtime-verb bindings the Part class methods forward
+// to (translate, box, sphere, placeChild, tileset verbs, etc.).
+
 namespace dsl {
 
 static DslState* state_of(JSContext* ctx) {

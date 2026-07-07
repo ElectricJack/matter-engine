@@ -12,10 +12,33 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstring>   // std::memcpy (RetopoSettings::target_ratio_bits)
 #include <string>
 #include <vector>
 
 namespace part_asset {
+
+// Per-part opt-in retopo (autoremesher) settings, discovered from a schema's
+// `static retopo = {...}` static (Phase 5 autoremesher integration). Defaults
+// mean "not opted in": any part definition without the static reads as
+// disabled and the bake pipeline routes around retopo entirely, so existing
+// schemas bake byte-identically. See docs/superpowers/plans/2026-07-07-
+// autoremesher-integration.md; consumed by part_flatten's retopo hook (Task 13).
+struct RetopoSettings {
+    bool     enabled         = false;
+    float    target_ratio    = 1.0f;
+    int      iterations      = 3;
+    uint32_t seed            = 0;
+    int      timeout_seconds = 60;
+
+    // Bit-pattern of target_ratio for stable cache-key hashing (Task 13 folds
+    // this into the .retopo.part cache key; hashing a raw float is fraught).
+    uint32_t target_ratio_bits() const {
+        uint32_t b;
+        std::memcpy(&b, &target_ratio, sizeof(b));
+        return b;
+    }
+};
 
 constexpr uint32_t kFormatVersionV2 = 2u;
 constexpr uint32_t kFormatVersionV3 = 3u;

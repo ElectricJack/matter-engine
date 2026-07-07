@@ -4,6 +4,7 @@
 #include <vector>
 #include "dsl_state.h"
 #include "tileset_spec.h"
+#include "part_asset_v2.h"   // part_asset::RetopoSettings (eval_retopo_settings)
 
 namespace script_host {
 
@@ -93,6 +94,17 @@ public:
     // number) from the part class. Any eval error, missing/invalid lodBudgets =>
     // empty spec (schema treated as not opted in).
     LodBudgetSpec eval_lod_budgets(const std::string& source);
+
+    // Static discovery of a part's retopo settings (Phase 5 autoremesher).
+    // Reads the class's `static retopo = { enabled, target_ratio, iterations,
+    // seed, timeout_seconds }` object. Follows the SAME fail-closed discipline
+    // as eval_lod_budgets and eval_requires: no build() call, any error / a
+    // missing static / bad shape => defaults (enabled=false, i.e. not opted
+    // in) so back-compat holds for every existing schema. Unknown keys are
+    // ignored; unspecified keys keep the RetopoSettings{} default (per the
+    // plan's "no clamping in the binding" contract — real clamping lives in
+    // MSL::retopo). Consumed by part_flatten's retopo hook (Task 13).
+    part_asset::RetopoSettings eval_retopo_settings(const std::string& source);
 
     // Set the shared-lib root used to resolve `import ... from 'shared-lib/x'`
     // specifiers. When set, both resolve_hash and bake_source fold the part's
