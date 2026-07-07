@@ -1157,15 +1157,29 @@ static inline void ApplyClipField(ScalarMaterialPair* result, Vector3 position,
     float fO = INFINITY;
     if (clip_hash) {
         // Hash path: query only nearby clip particles.
+        // If the result buffer fills exactly (possible truncation), fall back to
+        // the full linear scan so output is identical to the pre-hash path.
         Particle* nearby[128];
         int found = sh_query_radius(clip_hash, position.x, position.y, position.z,
                                     clip_query_radius, (void**)nearby, 128);
-        for (int i = 0; i < found; ++i) {
-            float dx = position.x - nearby[i]->position.x;
-            float dy = position.y - nearby[i]->position.y;
-            float dz = position.z - nearby[i]->position.z;
-            float f = sqrtf(dx*dx + dy*dy + dz*dz) - nearby[i]->radius;
-            if (f < fO) fO = f;
+        if (found < 128) {
+            for (int i = 0; i < found; ++i) {
+                float dx = position.x - nearby[i]->position.x;
+                float dy = position.y - nearby[i]->position.y;
+                float dz = position.z - nearby[i]->position.z;
+                float f = sqrtf(dx*dx + dy*dy + dz*dz) - nearby[i]->radius;
+                if (f < fO) fO = f;
+            }
+        } else {
+            // Buffer saturated — possible truncation; fall back to full linear scan
+            // to ensure output is identical to the original unoptimized path.
+            for (int i = 0; i < clipCount; ++i) {
+                float dx = position.x - clipParticles[i].position.x;
+                float dy = position.y - clipParticles[i].position.y;
+                float dz = position.z - clipParticles[i].position.z;
+                float f = sqrtf(dx*dx + dy*dy + dz*dz) - clipParticles[i].radius;
+                if (f < fO) fO = f;
+            }
         }
     } else {
         for (int i = 0; i < clipCount; ++i) {
@@ -1198,32 +1212,40 @@ static inline void ApplySubtractField(ScalarMaterialPair* result, Vector3 positi
 
     if (carve_hash) {
         // Hash path: query only nearby carve particles.
+        // If the result buffer fills exactly (possible truncation due to cap), fall
+        // back to the full linear scan so output is identical to the pre-hash path.
         Particle* nearby[128];
         int n = sh_query_radius(carve_hash, position.x, position.y, position.z,
                                 carve_query_radius, (void**)nearby, 128);
-        if (n <= 0) return; // no carve particles nearby; field unchanged
-        float m = f_add;
-        for (int j = 0; j < n; ++j) {
-            float dx = position.x - nearby[j]->position.x;
-            float dy = position.y - nearby[j]->position.y;
-            float dz = position.z - nearby[j]->position.z;
-            float v = -(sqrtf(dx*dx + dy*dy + dz*dz) - nearby[j]->radius);
-            if (v > m) m = v;
+        if (n < 128) {
+            // No saturation — use the hashed result set.
+            if (n <= 0) return; // no carve particles nearby; field unchanged
+            float m = f_add;
+            for (int j = 0; j < n; ++j) {
+                float dx = position.x - nearby[j]->position.x;
+                float dy = position.y - nearby[j]->position.y;
+                float dz = position.z - nearby[j]->position.z;
+                float v = -(sqrtf(dx*dx + dy*dy + dz*dz) - nearby[j]->radius);
+                if (v > m) m = v;
+            }
+            if (k_c <= 1e-5f) { result->scalarValue = m; return; }
+            float sum = expf((f_add - m) / k_c);
+            for (int j = 0; j < n; ++j) {
+                float dx = position.x - nearby[j]->position.x;
+                float dy = position.y - nearby[j]->position.y;
+                float dz = position.z - nearby[j]->position.z;
+                float v = -(sqrtf(dx*dx + dy*dy + dz*dz) - nearby[j]->radius);
+                sum += expf((v - m) / k_c);
+            }
+            result->scalarValue = m + k_c * logf(sum);
+            return;
         }
-        if (k_c <= 1e-5f) { result->scalarValue = m; return; }
-        float sum = expf((f_add - m) / k_c);
-        for (int j = 0; j < n; ++j) {
-            float dx = position.x - nearby[j]->position.x;
-            float dy = position.y - nearby[j]->position.y;
-            float dz = position.z - nearby[j]->position.z;
-            float v = -(sqrtf(dx*dx + dy*dy + dz*dz) - nearby[j]->radius);
-            sum += expf((v - m) / k_c);
-        }
-        result->scalarValue = m + k_c * logf(sum);
-        return;
+        // Buffer saturated (n == 128): possible truncation — fall through to
+        // the full linear scan below so output is identical to the pre-hash path.
     }
 
     // No-hash fallback: scan all carve particles (original behavior).
+    // Also used when the hashed query saturated the 128-entry buffer.
     if (k_c <= 1e-5f) {
         float best = f_add;
         for (int j = 0; j < carveCount; ++j) {

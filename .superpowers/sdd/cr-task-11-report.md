@@ -254,3 +254,85 @@ The one implementation wrinkle: `float3` has no `[]` subscript operator, so the 
 | `MatterSurfaceLib/include/blas_manager.hpp` | Fix 6: handle_to_index_ map member declaration |
 | `MatterSurfaceLib/src/bvh.cpp` | Fix 7: longest-axis centroid sort in BuildRecursive |
 | `MatterSurfaceLib/src/surface.c` | Fix 8: carve/clip spatial hashes on SurfaceScratch |
+
+---
+
+## Code-Review Follow-Up Fixes (post-commit 6766ba3)
+
+### Fix A — `blas_manager.cpp` / `blas_manager.hpp`: Per-entry GPU texture dirty tracking
+
+**Required finding:** `ensure_gpu_textures_ready` was doing a full re-upload of ALL GPU texture data on any single BLAS change (single global `textures_dirty_` flag).
+
+**Design:** Texture data is a concatenated buffer where an entry's offsets depend on prior entries' total triangle/node counts. A change in the entry set (add/release) changes `tile_w` (the texture width) and thus shifts ALL offsets → full regeneration required. Only when the total counts are unchanged can we safely reuse the existing texture.
+
+**Implementation:**
+
+1. Added `mutable bool gpu_dirty = true` field to `BLASEntry` (set on construction, cleared after upload). `blas_manager.hpp:62-70`
+2. Added `mutable int gpu_total_triangles_ = 0; mutable int gpu_total_nodes_ = 0;` to track counts from last successful GPU upload. `blas_manager.hpp:241-244`
+3. Extracted `build_triangle_texture_buffer()` and `build_node_texture_buffer()` as file-scope helpers (removes duplication, enables future partial-path reuse). `blas_manager.cpp:450-597`
+4. `ensure_gpu_textures_ready()` now:
+   - **Fast path (cheap win):** if total counts unchanged AND no entry has `gpu_dirty=true`, clears `textures_dirty_` and returns immediately — no CPU or GPU work.
+   - **Same-size update:** if total counts unchanged and textures already exist at the correct dimensions, uses `UpdateTexture()` instead of `UnloadTexture()` + `LoadTextureFromImage()`, avoiding GPU reallocation.
+   - **Set/size changed:** full rebuild as before (Unload + Load). `blas_manager.cpp:599-683`
+5. After upload, clears per-entry `gpu_dirty` flags and records `gpu_total_*`. `blas_manager.cpp:675-681`
+6. `clear()` resets `gpu_total_triangles_` and `gpu_total_nodes_` to 0. `blas_manager.cpp:829-832`
+
+**Behavior:** identical — same texture contents produced in all cases; `UpdateTexture` is a full-texture push so the GPU sees the same data as Unload+Load.
+
+**Note on partial span upload:** True per-span `UpdateTextureRec` is not implemented because (a) the tiled layout means a single entry's triangles may straddle tile-row boundaries, requiring multiple `UpdateTextureRec` calls per entry, and (b) no CPU-side texture buffer is cached between calls so clean entries' texels would need recomputing anyway. The primary win (skip entirely when clean) and the secondary win (reuse GPU allocation when same size) are both captured.
+
+---
+
+### Fix B — `surface.c`: Carve/clip query saturation fallback
+
+**Latent behavioral difference:** `ApplySubtractField` and `ApplyClipField` used `nearby[128]` stack buffers with `sh_query_radius(..., 128)`. If ≥128 carve/clip particles are within the query radius, `sh_query_radius` silently truncated the result set. The original full-scan had no cap.
+
+**Implementation:**
+
+`ApplyClipField` (`surface.c:1158-1184`): added `found < 128` guard before using the hash result. When `found == 128` (possible truncation), falls back to the full linear scan over `clipParticles[0..clipCount)`.
+
+`ApplySubtractField` (`surface.c:1214-1246`): added `n < 128` guard before the hash path. When `n == 128` (possible truncation), falls through to the existing no-hash fallback code (scan all `carveParticles`). No `goto` used — the if-block returns early on the non-saturated path; saturation lets control fall through the closing brace into the existing fallback.
+
+**Behavior:** exactly identical in all scenes with ≤127 carve/clip particles per query radius (the common case). Scenes with ≥128 particles in a voxel's radius now also produce bit-exact output (full scan, same as pre-optimization).
+
+---
+
+## Build and Test Evidence (Code-Review Fixes)
+
+**MSL standalone build:**
+```
+cd MatterSurfaceLib && make clean && make
+# All object files compiled clean
+# Only pre-existing failure: primitive_sdf undefined reference in Windows link
+```
+
+**MatterEngine3 `make test`:**
+```
+cd MatterEngine3 && GALLIUM_DRIVER=d3d12 make test
+# ALL PASS
+```
+
+**MatterEngine3/tests individual targets:**
+```
+cd MatterEngine3/tests && GALLIUM_DRIVER=d3d12 make run-tilesetbake
+# All tileset_bake_tests passed.
+
+GALLIUM_DRIVER=d3d12 make run-comp
+# OK
+
+GALLIUM_DRIVER=d3d12 make run-iso
+# ALL PASS
+
+GALLIUM_DRIVER=d3d12 make run-flatten
+# part_flatten_tests: ALL PASS
+```
+
+---
+
+## Additional Files Changed (Code-Review Fixes)
+
+| File | Change |
+|------|--------|
+| `MatterSurfaceLib/include/blas_manager.hpp` | Added `gpu_dirty` to BLASEntry; added `gpu_total_triangles_/nodes_` private members |
+| `MatterSurfaceLib/src/blas_manager.cpp` | Extracted texture-build helpers; per-entry dirty fast path + UpdateTexture reuse |
+| `MatterSurfaceLib/src/surface.c` | Saturation fallback in ApplyClipField and ApplySubtractField |

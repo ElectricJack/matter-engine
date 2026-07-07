@@ -59,11 +59,15 @@ public:
         std::vector<TriEx> tri_extra;   // parallel to triangles; empty if none supplied
         uint32_t hash;
         uint32_t ref_count; // number of live owners (cells) referencing this BLAS
+        // Per-entry GPU dirty flag: set when this entry's data has not yet been
+        // uploaded to the GPU texture. Cleared after ensure_gpu_textures_ready
+        // processes it. Allows the fast-path skip when no entry has changed.
+        mutable bool gpu_dirty = true;
 
         BLASEntry(BLASHandle h, std::unique_ptr<BvhMesh> m, std::unique_ptr<BVH> b,
                   std::vector<Tri>&& tris, std::vector<TriEx>&& tex, uint32_t hash_val)
             : handle(h), mesh(std::move(m)), bvh(std::move(b)), triangles(std::move(tris)),
-              tri_extra(std::move(tex)), hash(hash_val), ref_count(1) {}
+              tri_extra(std::move(tex)), hash(hash_val), ref_count(1), gpu_dirty(true) {}
     };
 
     // Texel columns are capped to this so the texture width never exceeds
@@ -235,6 +239,11 @@ private:
     mutable Texture2D triangles_texture_{};
     mutable Texture2D nodes_texture_{};
     mutable bool textures_dirty_ = true;
+    // Cached total counts from the last successful GPU upload; used to detect
+    // whether the entry set has changed (add/release) vs. only data has changed
+    // within an unchanged set (enabling the partial-update fast path).
+    mutable int gpu_total_triangles_ = 0;
+    mutable int gpu_total_nodes_ = 0;
     
     // Shader binding optimization
     mutable uint32_t cached_shader_id_ = 0;
