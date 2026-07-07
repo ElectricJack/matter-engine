@@ -21,7 +21,7 @@ endif
 
 # Source files — sibling library sources compiled directly from source of truth
 SRC = main.c src/surface.c tests.c
-OBJ = main.o src/surface.o tests.o src/object_allocator.o src/spatial_hash.o
+OBJ = main.o src/surface.o tests.o object_allocator.o spatial_hash.o
 BIN = surface_app
 
 all: $(BIN)
@@ -36,10 +36,10 @@ raylib:
 	$(CC) -c $< $(CFLAGS) -o $@
 
 # Sibling library sources compiled directly from source of truth
-src/object_allocator.o: $(OA_LIB)/src/object_allocator.c $(OA_LIB)/include/object_allocator.h
+object_allocator.o: $(OA_LIB)/src/object_allocator.c $(OA_LIB)/include/object_allocator.h
 	$(CC) -c $< $(CFLAGS) -o $@
 
-src/spatial_hash.o: $(SPATIAL_QUERY_PATH)/src/spatial_hash.c $(SPATIAL_QUERY_PATH)/include/spatial_hash.h
+spatial_hash.o: $(SPATIAL_QUERY_PATH)/src/spatial_hash.c $(SPATIAL_QUERY_PATH)/include/spatial_hash.h
 	$(CC) -c $< $(CFLAGS) -o $@
 
 clean:

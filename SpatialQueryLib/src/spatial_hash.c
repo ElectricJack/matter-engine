@@ -1,5 +1,5 @@
 #include "../include/spatial_hash.h"
-#include "../include/object_allocator.h"
+#include "object_allocator.h"
 #include <stdlib.h>
 #include <math.h>
 #include <string.h>

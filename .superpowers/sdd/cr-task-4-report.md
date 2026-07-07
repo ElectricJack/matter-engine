@@ -169,3 +169,37 @@ gcc -c ../ObjectAllocatorLib/src/object_allocator.c ... -o build/linux/obj/objec
 ```
 
 All 6 projects (SpatialQueryLib, ObjectAllocatorLib, ParticleDynamicsExample, OpenParticleSurfaceLib, SurfaceLib, GPURayTraceExample) build cleanly. Both library test suites (13 tests total) pass.
+
+## Fix Round 1 (2026-07-07)
+
+### What changed
+
+**Finding 1 — Retained duplicate header:**
+- `SpatialQueryLib/src/spatial_hash.c` line 2: changed `#include "../include/object_allocator.h"` → `#include "object_allocator.h"` (bare form resolved via existing `-I$(OA_LIB)/include` in CFLAGS/TEST_FLAGS).
+- `SpatialQueryLib/main.c` line 7: same fix — `#include "include/object_allocator.h"` → `#include "object_allocator.h"` (this file also referenced the now-deleted duplicate via a relative path from the project root; `-I./include` plus `-I$(OA_LIB)/include` makes the bare form resolve correctly).
+- `git rm SpatialQueryLib/include/object_allocator.h` — duplicate header removed.
+- No Makefile `-I` flag additions were needed: SpatialQueryLib, ParticleDynamicsExample, OpenParticleSurfaceLib, and SurfaceLib all already carried `-I$(OA_LIB)/include` in the flags used when compiling spatial_hash.c.
+
+**Finding 2 — SurfaceLib sibling objects landing in src/:**
+- `SurfaceLib/Makefile` OBJ list: `src/object_allocator.o src/spatial_hash.o` → `object_allocator.o spatial_hash.o` (project-root level, matching the dominant pattern of `main.o` and `tests.o`).
+- Explicit rules updated accordingly: `src/object_allocator.o:` → `object_allocator.o:`, `src/spatial_hash.o:` → `spatial_hash.o:`.
+- `clean:` target already uses `rm -f $(OBJ)` which expands to the updated names — no further change needed.
+
+### Build & test commands + outcomes
+
+```
+for p in SpatialQueryLib ObjectAllocatorLib ParticleDynamicsExample OpenParticleSurfaceLib SurfaceLib GPURayTraceExample; do
+  (cd $p && make clean && make TARGET=linux 2>&1 | tail -3) && echo "OK: $p" || echo "BUILD FAILED: $p"
+done
+```
+Result: OK for all 6 projects.
+
+```
+cd SpatialQueryLib && make test
+```
+Result: `=== Results: 8/8 passed ===` (spatial_hash_tests) + `=== Results: 5/5 passed ===` (bvh_tests) — 13/13 total.
+
+```
+cd ObjectAllocatorLib && make test
+```
+Result: `All tests passed!`
