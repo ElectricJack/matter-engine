@@ -61,6 +61,11 @@ MatterEngine3/viewer/*_tests
 MatterSurfaceLib/tests/*_tests
 MeshChartingLib/tests/*_tests
 
+# ObjectAllocatorLib and SpatialQueryLib test binaries
+SpatialQueryLib/spatial_hash_tests
+SpatialQueryLib/bvh_tests
+ObjectAllocatorLib/object_allocator_tests
+
 # Transient screenshots + sentinel files (FIFO shot capture)
 *.png.done
 MatterEngine3/viewer/*.png
