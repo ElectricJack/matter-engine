@@ -34,14 +34,20 @@ $(OBJ_DIR)/$(SRC_DIR)/%.o: $(SRC_DIR)/%.c $(HEADERS)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 clean:
-	rm -rf $(OBJ_DIR) $(TARGET) spatial_hash_tests
+	rm -rf $(OBJ_DIR) $(TARGET) spatial_hash_tests bvh_tests
 
 # Test target: build and run spatial hash tests with AddressSanitizer + UBSan
 TEST_SRCS = tests/spatial_hash_tests.c src/spatial_hash.c src/object_allocator.c
 TEST_FLAGS = -Wall -Wextra -g -I./include -fsanitize=address,undefined -lm
 
-test: $(TEST_SRCS)
+# BVH / matrix_inverse tests
+BVH_TEST_SRCS = tests/bvh_tests.c src/bvh.c src/object_allocator.c
+BVH_TEST_FLAGS = -Wall -Wextra -g -I./include -fsanitize=address,undefined -lm
+
+test: $(TEST_SRCS) $(BVH_TEST_SRCS)
 	$(CC) $(TEST_FLAGS) -o spatial_hash_tests $(TEST_SRCS)
 	./spatial_hash_tests
+	$(CC) $(BVH_TEST_FLAGS) -o bvh_tests $(BVH_TEST_SRCS)
+	./bvh_tests
 
 .PHONY: all clean test
