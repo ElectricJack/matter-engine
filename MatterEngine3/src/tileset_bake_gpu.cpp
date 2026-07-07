@@ -144,20 +144,14 @@ bool bake_tileset_gpu(const SettledTorus& settled,
 
         // ------------------------------------------------------------------
         // 5. Material table snapshot.
-        //    Force the base field's material to flatShading=true so the AO
-        //    pass can use the real material table without NaN from
-        //    normalize(vec3(0)) on the base mesh's zero vertex normals.
+        //    The base heightfield carries real per-vertex normals now
+        //    (build_base_blas central-difference sampling), so no per-material
+        //    flatShading patch is required — both primary and AO passes read
+        //    the canonical MaterialRegistry as-is.
         // ------------------------------------------------------------------
         const int n_mat = MaterialRegistryCount();
         std::vector<MaterialDef> mats((size_t)n_mat);
         for (int i = 0; i < n_mat; ++i) mats[i] = *MaterialRegistryGet(i);
-
-        // Guard: base field sets zero vertex normals; ensure its material
-        // entry uses flat (face-normal) shading in the GPU table.
-        const int base_mat_id = (int)settled.base.material;
-        if (base_mat_id >= 0 && base_mat_id < n_mat) {
-            mats[(size_t)base_mat_id].flatShading = 1;
-        }
 
         // ------------------------------------------------------------------
         // 6. Height range + ray origin.
@@ -186,8 +180,7 @@ bool bake_tileset_gpu(const SettledTorus& settled,
         }
 
         // ------------------------------------------------------------------
-        // 8. AO bake pass (real material table; base material flatShading
-        //    already forced to 1 above).
+        // 8. AO bake pass (real material table).
         // ------------------------------------------------------------------
         std::vector<uint8_t> ao;
         if (!bake_ao(prog_ao, blas, tlas, mats, settled.cfg,

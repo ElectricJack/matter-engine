@@ -45,9 +45,28 @@ static bool build_base_blas(const SettledTorus& st, BLASManager& blas,
 
     // Sample the periodic base: global column i, global row k → height.
     auto sample_y = [&](int gi, int gk) -> float {
-        int i = gi % n;
-        int k = gk % n;
+        int i = ((gi % n) + n) % n;   // handle negative gi from central-diff below
+        int k = ((gk % n) + n) % n;
         return st.base.heights[(size_t)k * n + i];
+    };
+
+    // Central-difference vertex normal at grid corner (gi, gk).  For a
+    // heightfield y = h(x, z) with grid spacing `cell`:
+    //   dy/dx = (h(i+1,k) - h(i-1,k)) / (2*cell)
+    //   dy/dz = (h(i,k+1) - h(i,k-1)) / (2*cell)
+    //   N = normalize((-dy/dx, 1, -dy/dz))
+    // Periodic wrap on the sample grid is toroidal.  Populating real per-vertex
+    // normals lets the AO / lighting path smooth-shade the base without ever
+    // hitting the `normalize(vec3(0))` NaN that the earlier flatShading-forced
+    // workaround was papering over.
+    auto vertex_normal = [&](int gi, int gk) -> float3 {
+        const float inv_2c = 0.5f / cell;
+        const float dydx = (sample_y(gi + 1, gk) - sample_y(gi - 1, gk)) * inv_2c;
+        const float dydz = (sample_y(gi, gk + 1) - sample_y(gi, gk - 1)) * inv_2c;
+        float3 n{ -dydx, 1.0f, -dydz };
+        const float len = std::sqrt(n.x*n.x + n.y*n.y + n.z*n.z);
+        // len >= 1.0 because the y component is 1; safe divide.
+        return float3{ n.x / len, n.y / len, n.z / len };
     };
 
     // Tessellate total_n*total_n quads (toroidal wrap) → 2 * total_n^2 triangles.
@@ -73,6 +92,12 @@ static bool build_base_blas(const SettledTorus& st, BLASManager& blas,
             float y01 = sample_y(i,  k1);
             float y11 = sample_y(i1, k1);
 
+            // Per-corner smooth normals (central difference, toroidal wrap).
+            float3 n00 = vertex_normal(i,  k);
+            float3 n10 = vertex_normal(i1, k);
+            float3 n01 = vertex_normal(i,  k1);
+            float3 n11 = vertex_normal(i1, k1);
+
             Tri a{}, b{};
             a.vertex0 = float3{ x0, y00, z0 };
             a.vertex1 = float3{ x1, y10, z0 };
@@ -95,12 +120,18 @@ static bool build_base_blas(const SettledTorus& st, BLASManager& blas,
             tris.push_back(a);
             tris.push_back(b);
 
-            TriEx ex{};
-            ex.materialId = (int)st.base.material;
-            ex.tint = float4{ 1.0f, 1.0f, 1.0f, 0.0f };  // no tint
-            ex.ao0 = ex.ao1 = ex.ao2 = 1.0f;
-            triex.push_back(ex);
-            triex.push_back(ex);
+            TriEx exa{};
+            exa.materialId = (int)st.base.material;
+            exa.tint = float4{ 1.0f, 1.0f, 1.0f, 0.0f };
+            exa.ao0 = exa.ao1 = exa.ao2 = 1.0f;
+            exa.N0 = n00; exa.N1 = n10; exa.N2 = n11;
+            TriEx exb{};
+            exb.materialId = (int)st.base.material;
+            exb.tint = float4{ 1.0f, 1.0f, 1.0f, 0.0f };
+            exb.ao0 = exb.ao1 = exb.ao2 = 1.0f;
+            exb.N0 = n00; exb.N1 = n11; exb.N2 = n01;
+            triex.push_back(exa);
+            triex.push_back(exb);
         }
     }
 

@@ -67,14 +67,19 @@ static bool bake_ao_impl(uint32_t program,
                  (GLsizeiptr)(packed_mats.size() * sizeof(float)),
                  packed_mats.data(), GL_STATIC_DRAW);
     glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 10, ssboMat);
-    // NOTE: materialTable uniform is intentionally NOT uploaded here.
-    // The AO shader uses getMaterialProperties only to decide flatShading for
-    // the primary hit normal. With zero vertex normals on the base mesh, the
-    // BVH shader's den<1e-12 guard produces a valid face normal even without
-    // flatShading=true. Uploading the real table changes AO output and breaks
-    // Wang-tile seam invariance for the AO channel, because each tile's unique
-    // interior produces different neighbour-occlusion at shared boundary strips.
-    // The canonical materialTable data IS uploaded by bake_primary.
+
+    // Upload materialTable uniform so getMaterialProperties() in materials.glsl
+    // reads real values.  Same shape and semantics as bake_primary — both
+    // passes must see the identical material table or the primary hit normal
+    // in AO could disagree with the primary bake's normal (they must match to
+    // avoid AO artifacts along mesh edges).  The base heightfield now carries
+    // real per-vertex normals from central-difference sampling in
+    // tileset_torus_bvh.cpp::build_base_blas, so the NaN path that motivated
+    // the earlier zero-stub workaround no longer exists.
+    if (material_count > 0) {
+        GLint loc = glGetUniformLocation(program, "materialTable");
+        if (loc >= 0) glUniform1fv(loc, (GLsizei)packed_mats.size(), packed_mats.data());
+    }
 
     // -----------------------------------------------------------------------
     // BLAS/TLAS bindings (calls ensure_gpu_textures_ready internally).
@@ -173,10 +178,10 @@ bool bake_ao(uint32_t program,
 }
 
 // ---------------------------------------------------------------------------
-// Overload 2: real material table — the caller must ensure all materials
-// whose triangles carry zero vertex normals have flatShading=true.
-// The orchestrator (bake_tileset_gpu) forces the base material to
-// flatShading=true before calling this overload.
+// Overload 2: real material table.  Uploaded to the materialTable uniform
+// AND to the MaterialBuf SSBO so getMaterialProperties() reads real values.
+// Base heightfield carries real per-vertex normals (Task 2 build_base_blas)
+// so smooth shading is safe.
 // ---------------------------------------------------------------------------
 bool bake_ao(uint32_t program,
              BLASManager& blas,

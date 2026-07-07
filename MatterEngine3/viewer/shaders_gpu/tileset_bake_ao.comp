@@ -77,10 +77,21 @@ void main() {
     mat3 F = make_basis(N);
     vec3 P = hit.position + N * 1e-3;   // bias off surface to avoid self-intersection
 
+    // Tile-local seed coordinates so same relative position within any tile
+    // uses identical rays.  Two texels at the same phase within different tiles
+    // (e.g. atlas x=0 and x=tile_texels) get IDENTICAL Monte Carlo samples,
+    // which is required for Wang-tile seam invariance: same-color boundary
+    // strips at different atlas locations must produce byte-identical AO.
+    // Within one tile, adjacent texels still get different phases → different
+    // rays → low Monte Carlo variance (no visible banding).
+    // kTorusN=4 (see include/tileset_layout.h); atlasW = kTorusN * tile_texels.
+    int tile_texels = atlasW / 4;
+    uint local_x = uint(xy.x % tile_texels);
+    uint local_y = uint(xy.y % tile_texels);
+
     int occluded = 0;
     for (int i = 0; i < aoSamples; ++i) {
-        // Hash depends on texel XY + sample index + user seed -> deterministic.
-        uint h1 = splitmix32(uint(xy.x) * 73856093u ^ uint(xy.y) * 19349663u
+        uint h1 = splitmix32(local_x * 73856093u ^ local_y * 19349663u
                              ^ uint(i) * 83492791u ^ seed);
         uint h2 = splitmix32(h1);
         vec2 uv = vec2(u01(h1), u01(h2));

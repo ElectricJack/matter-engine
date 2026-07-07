@@ -23,14 +23,14 @@ namespace tileset {
 //
 // Two overloads:
 //   (1) No material table — forces materialCount=0 so getMaterialProperties()
-//       always returns the default (flatShading=true). Safe when the TLAS
-//       contains only the base heightfield (which has zero vertex normals and
-//       must use face normals to avoid normalize(vec3(0)) NaN).
-//   (2) Material table overload — uploads `mats` to the SSBO and sets
-//       materialCount to mats.size(). The caller is responsible for ensuring
-//       all materials whose triangles carry zero vertex normals have
-//       flatShading=true. The orchestrator (bake_tileset_gpu) uses this form
-//       and forces the base material entry to flatShading=1 before calling.
+//       returns the default. Suitable when the TLAS is base-only and the base
+//       already carries per-vertex normals (build_base_blas fills N0/N1/N2
+//       via central-difference sampling), which is the standard case now.
+//   (2) Material table overload — uploads `mats` to both the MaterialBuf SSBO
+//       and the materialTable uniform so getMaterialProperties() reads real
+//       values (matches bake_primary's binding shape). Required whenever the
+//       TLAS contains meshes whose triangles need real per-material properties
+//       (flatShading, roughness, etc.) surfaced to the AO shader.
 bool bake_ao(uint32_t program,
              BLASManager& blas,
              TLASManager& tlas,
