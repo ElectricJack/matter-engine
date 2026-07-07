@@ -1,4 +1,5 @@
 #include "raster_composer.h"
+#include "tileset_provider.h"      // bind_all_to_shader for Wang atlas samplers
 #include "material_registry.h"
 #include "gpu_culler.h"
 // raylib must come before rlgl.h and glad to avoid double-definition of GL types.
@@ -6,6 +7,8 @@
 #include "rlgl.h"
 #include "external/glad.h"
 #include <cmath>
+#include <fstream>
+#include <sstream>
 #include <string>
 
 // NOTE: do NOT include raymath.h — it conflicts with the engine's float3 type
@@ -37,8 +40,60 @@ namespace viewer {
 // Frustum/matrix helpers live in raster_cull.h (GL-free, shared with the
 // GpuCuller compute path and viewer_logic_tests).
 
+// Read a text file into a string; returns empty on failure.
+static std::string read_file_text(const std::string& path) {
+    std::ifstream f(path, std::ios::binary);
+    if (!f) return {};
+    std::ostringstream ss; ss << f.rdbuf();
+    return ss.str();
+}
+
+// Resolve a single level of #include "file" directives in GLSL source.
+// Mesa/GLSL #include requires GL_ARB_shading_language_include with named-string
+// registration — which the viewer doesn't use.  Inline includes manually so the
+// raster fragment shader can share tileset_sampling.glsl without the extension.
+// Only handles includes relative to the shader dir (passed as `base_dir`).
+static std::string resolve_glsl_includes(const std::string& src,
+                                         const std::string& base_dir) {
+    std::string out;
+    out.reserve(src.size());
+    std::istringstream stream(src);
+    std::string line;
+    while (std::getline(stream, line)) {
+        // Match: #include "filename"
+        const std::string prefix = "#include \"";
+        auto pos = line.find(prefix);
+        if (pos != std::string::npos) {
+            auto end = line.find('"', pos + prefix.size());
+            if (end != std::string::npos) {
+                std::string fname = line.substr(pos + prefix.size(),
+                                               end - pos - prefix.size());
+                std::string incl = read_file_text(base_dir + "/" + fname);
+                if (!incl.empty()) {
+                    out += "// --- begin " + fname + " ---\n";
+                    out += incl;
+                    out += "\n// --- end " + fname + " ---\n";
+                    continue;
+                }
+                // Include not resolved: emit as comment so compile error is clear.
+                out += "// WARNING: could not resolve #include \"" + fname + "\"\n";
+                continue;
+            }
+        }
+        out += line + "\n";
+    }
+    return out;
+}
+
 bool RasterComposer::init(std::string& err) {
-    shader_ = LoadShader("shaders/raster.vs", "shaders/raster.fs");
+    // Load vertex and fragment shaders, resolving #include directives manually
+    // (Mesa GLSL does not resolve #include without glNamedStringARB registration).
+    const std::string vs_src = read_file_text("shaders/raster.vs");
+    const std::string fs_raw = read_file_text("shaders/raster.fs");
+    if (vs_src.empty()) { err = "raster vertex shader not found: shaders/raster.vs"; return false; }
+    if (fs_raw.empty()) { err = "raster fragment shader not found: shaders/raster.fs"; return false; }
+    const std::string fs_src = resolve_glsl_includes(fs_raw, "shaders");
+    shader_ = LoadShaderFromMemory(vs_src.c_str(), fs_src.c_str());
     if (shader_.id == 0) { err = "raster shader failed to load"; return false; }
     if (shader_.locs[SHADER_LOC_VERTEX_INSTANCE_TX] == -1)      // defensive; raylib auto-resolves
         shader_.locs[SHADER_LOC_VERTEX_INSTANCE_TX] = GetShaderLocationAttrib(shader_, "instanceTransform");
@@ -127,7 +182,8 @@ bool RasterComposer::init_gpu_driven(std::string& err) {
         return false;
     }
 
-    // Patch FS: replace the leading "#version 330" with "#version 460".
+    // Patch FS: replace the leading "#version 330" with "#version 460", then
+    // resolve #include directives (Mesa GLSL does not handle #include natively).
     std::string fs_str(fs_text_raw);
     {
         const std::string old_ver = "#version 330";
@@ -137,6 +193,7 @@ bool RasterComposer::init_gpu_driven(std::string& err) {
             fs_str.replace(pos, old_ver.size(), new_ver);
     }
     UnloadFileText(fs_text_raw);
+    fs_str = resolve_glsl_includes(fs_str, "shaders");
 
     shader_gpu_ = LoadShaderFromMemory(vs_text, fs_str.c_str());
     UnloadFileText(vs_text);
@@ -194,6 +251,12 @@ int RasterComposer::draw_gpu_driven(GpuCuller& culler, PartStore& /*store*/,
     // Activate the GPU-driven shader and upload mvp.
     glUseProgram(shader_gpu_.id);
     rlSetUniformMatrix(loc_gpu_mvp_, mvp);
+
+    // Bind loaded tileset atlas slots to groundAlbedo[]/groundNormal[]/
+    // groundORM[]/groundHeight[] sampler arrays used by raster.fs's Wang
+    // sampling branch. Safe no-op when no slots are loaded (each glGetUniform
+    // returns -1 and the helper skips the binding).
+    viewer::tileset_provider::bind_all_to_shader((GLuint)shader_gpu_.id);
 
     // Disable backface culling (mesh-session winding not guaranteed).
     rlDisableBackfaceCulling();

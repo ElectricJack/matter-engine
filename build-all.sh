@@ -143,7 +143,7 @@ if [ "$MODE" = "test" ]; then
     # raylib-linked BLAS path). Each run-* target builds then runs its binary, so
     # a non-zero status covers both build and test failures. run-graph-integration
     # exercises the full SP-3 install -> SP-2 ScriptHost bake path end-to-end.
-    for tgt in run-partv2 run-script run-iso run-graph run-graph-integration run-trivar run-polytri run-shlib run-comp run-flatten run-dev run-example run-gallery run-treebake run-meadow run-meadow-check run-viewer-logic run-lighting run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetgtex run-tilesettorusbvh; do
+    for tgt in run-partv2 run-script run-iso run-graph run-graph-integration run-trivar run-polytri run-shlib run-comp run-flatten run-dev run-example run-gallery run-treebake run-meadow run-meadow-check run-viewer-logic run-lighting run-grasslod run-stressforest run-tilesetphysics run-tilesetcore run-tilesetplacement run-tilesetdsl run-tilesetbake run-tilesetgtex run-tilesettorusbvh run-tilesetmeadowmanifest; do
         echo
         echo "--- MatterEngine3 ($tgt) ---"
         make -C MatterEngine3/tests "$tgt" || RESULT[MatterEngine3]="FAIL ($tgt)"
@@ -165,6 +165,19 @@ if [ "$MODE" = "test" ]; then
             echo "--- MatterEngine3/viewer ($tgt) ---"
             make -C MatterEngine3/viewer "$tgt" || RESULT[MatterEngine3]="FAIL ($tgt)"
         done
+
+        echo
+        echo "--- MatterEngine3/viewer (tileset-provider-tests) ---"
+        make -C MatterEngine3/viewer run-tilesetprovider || RESULT[MatterEngine3]="FAIL (run-tilesetprovider)"
+
+        echo
+        echo "--- MatterEngine3/viewer (tileset-load-tests) ---"
+        make -C MatterEngine3/viewer run-tilesetload || RESULT[MatterEngine3]="FAIL (run-tilesetload)"
+
+        echo
+        echo "--- MatterEngine3/tools (meadow_forestfloor_shots) ---"
+        MatterEngine3/tools/meadow_forestfloor_shots.sh /tmp/build_all_ff_shots \
+            || RESULT[MatterEngine3]="FAIL (meadow_forestfloor_shots)"
     else
         echo
         echo "--- MatterEngine3/viewer GPU tests SKIPPED (needs GL 4.6 + GALLIUM_DRIVER=d3d12) ---"

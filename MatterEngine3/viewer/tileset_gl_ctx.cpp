@@ -13,8 +13,21 @@
 #include <string>
 #include <unordered_set>
 #include <vector>
-#include <unistd.h>
-#include <limits.h>
+#if defined(_WIN32)
+// Reduce windows.h namespace pollution — otherwise Rectangle / CloseWindow /
+// ShowCursor collide with raylib names in downstream code that pulls in this
+// TU's transitive includes.
+#  define WIN32_LEAN_AND_MEAN
+#  define NOGDI
+#  define NOUSER
+#  include <windows.h>
+#  ifndef PATH_MAX
+#    define PATH_MAX 260
+#  endif
+#else
+#  include <unistd.h>
+#  include <limits.h>
+#endif
 
 namespace tileset {
 
@@ -117,13 +130,23 @@ static bool expand_includes(const std::string& src, const std::string& includes_
 // bake_source can write parts/<hash>.part relative to CWD) can still load
 // shaders shipped next to the binary. Absolute paths are returned unchanged.
 static std::string resolve_relative_to_exe(const std::string& p) {
-    if (!p.empty() && p[0] == '/') return p;
+    if (!p.empty() && (p[0] == '/' || (p.size() >= 2 && p[1] == ':'))) return p;
     char exe_buf[PATH_MAX];
+#if defined(_WIN32)
+    DWORD n = GetModuleFileNameA(NULL, exe_buf, (DWORD)sizeof(exe_buf) - 1);
+    if (n == 0 || n >= sizeof(exe_buf)) return p;
+    exe_buf[n] = 0;
+    // Windows path separator is '\\', but treat '/' too since MinGW-built
+    // binaries typically get invoked with forward-slashed cwd anyway.
+    std::string exe_dir(exe_buf);
+    size_t slash = exe_dir.find_last_of("/\\");
+#else
     ssize_t n = readlink("/proc/self/exe", exe_buf, sizeof(exe_buf) - 1);
-    if (n <= 0) return p;   // fall back to CWD-relative on non-Linux
+    if (n <= 0) return p;   // fall back to CWD-relative
     exe_buf[n] = 0;
     std::string exe_dir(exe_buf);
     size_t slash = exe_dir.find_last_of('/');
+#endif
     if (slash == std::string::npos) return p;
     return exe_dir.substr(0, slash) + "/" + p;
 }

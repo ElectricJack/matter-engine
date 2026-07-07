@@ -480,10 +480,19 @@ int main() {
         // "<path>.done" marker so the driver polls a complete file, not a
         // half-encoded PNG.
         if (shot_frames > 0 && --shot_frames == 0) {
-            TakeScreenshot(shot_path.c_str());
+            // raylib's TakeScreenshot silently prepends GetWorkingDirectory()
+            // to the path, so absolute paths land at `<cwd><path>` which is
+            // nonsense. Do the screen-capture + PNG export ourselves so
+            // absolute paths work verbatim.
+            Image screen = LoadImageFromScreen();
+            if (!ExportImage(screen, shot_path.c_str())) {
+                printf("shot FAILED %s\n", shot_path.c_str());
+            } else {
+                printf("shot %s\n", shot_path.c_str());
+            }
+            UnloadImage(screen);
             std::string done = shot_path + ".done";
             if (FILE* f = fopen(done.c_str(), "w")) fclose(f);
-            printf("shot %s\n", shot_path.c_str());
         }
 
         WorldDelta d;

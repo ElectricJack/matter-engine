@@ -310,7 +310,18 @@ uint64_t HostBaker::resolve_hash(const std::string& source, const Params& params
 bool HostBaker::cached(uint64_t resolved_hash) {
     std::string path = parts_dir_ + "/" + part_asset::cache_path_resolved(resolved_hash);
     std::ifstream in(path, std::ios::binary);
-    return in.good();
+    if (!in.good()) return false;
+    // Validate the header: magic must be 'TRAP', version 2, and the embedded
+    // resolved_hash must match `resolved_hash`. Otherwise the file is stale
+    // (a previous bake with the SAME filename hash-key but DIFFERENT resolved
+    // hash — happens when a schema is edited between runs and the old .part
+    // was left behind).  Treat mismatch as cache miss so we re-bake.
+    struct { uint32_t magic; uint32_t version; uint64_t hash; } hdr{};
+    in.read(reinterpret_cast<char*>(&hdr), sizeof(hdr));
+    if (!in.good()) return false;
+    // 'TRAP' little-endian = 0x50415254
+    if (hdr.magic != 0x50415254u || hdr.version != 2u) return false;
+    return hdr.hash == resolved_hash;
 }
 
 bool HostBaker::bake(const std::string& source, const Params& params,
