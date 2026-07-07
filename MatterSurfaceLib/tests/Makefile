@@ -78,7 +78,7 @@ debug: $(TARGET)
 
 # Mesh simplifier unit tests (headless, no GL window required)
 SIMP_TARGET = mesh_simplifier_tests
-SIMP_SOURCES = mesh_simplifier_tests.cpp ../src/mesh_simplifier.cpp
+SIMP_SOURCES = mesh_simplifier_tests.cpp ../src/mesh_simplifier.cpp ../src/mesh_indexed.cpp
 
 $(SIMP_TARGET): $(SIMP_SOURCES)
 	$(CC) $(SIMP_SOURCES) -o $(SIMP_TARGET) $(CFLAGS) $(INCLUDE_PATHS) $(LDFLAGS) $(LDLIBS)

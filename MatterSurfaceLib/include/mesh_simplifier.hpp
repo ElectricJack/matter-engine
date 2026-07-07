@@ -36,4 +36,14 @@ Mesh simplify_mesh(const Mesh& input,
                    const SimplifyOptions& opts,
                    const CellBounds* bounds = nullptr);
 
+#include "mesh_indexed.hpp"
+
+// MeshIndexed overload — same semantics as simplify_mesh(raylib::Mesh) above.
+// Internally converts to raylib::Mesh, calls the existing implementation, and
+// converts back. When lod_bake and other callers migrate to MeshIndexed
+// end-to-end (Task 11+), the intermediate raylib::Mesh round-trip goes away.
+MeshIndexed simplify(const MeshIndexed& in,
+                     const SimplifyOptions& opts,
+                     const CellBounds* bounds = nullptr);
+
 #endif // MESH_SIMPLIFIER_HPP

@@ -8,6 +8,7 @@
 
 #include "raylib.h"
 #include "mesh_simplifier.hpp"
+#include "mesh_indexed.hpp"
 
 // Build an indexed Mesh from raw vertex + index arrays (CPU-only, no GL upload).
 static Mesh makeMesh(const std::vector<float>& v, const std::vector<unsigned short>& idx) {
@@ -329,6 +330,30 @@ static void test_watertight_seam() {
     printf("PASSED\n");
 }
 
+static void test_simplify_meshindexed_overload_delegates() {
+    printf("=== test_simplify_meshindexed_overload_delegates ===\n");
+    // Build a small MeshIndexed input, call the overload, verify output shape.
+    MeshIndexed in;
+    in.positions = {
+        make_float3(0,0,0), make_float3(1,0,0), make_float3(1,1,0),
+        make_float3(0,1,0), make_float3(1,0,1), make_float3(0,0,1),
+    };
+    in.indices = { 0,1,2, 0,2,3, 0,1,4, 0,4,5 };
+
+    SimplifyOptions opts;
+    opts.target_ratio  = 0.5f;
+    opts.lock_boundary = false;
+
+    MeshIndexed out = simplify(in, opts, nullptr);
+
+    // Overload should produce something (may be exactly input if too small to
+    // decimate further; we're checking the shim wires up, not decimation).
+    assert(!out.positions.empty());
+    assert(!out.indices.empty());
+    assert(out.indices.size() % 3 == 0);
+    printf("PASSED\n");
+}
+
 int main() {
     printf("=== Mesh Simplifier Tests ===\n");
     test_indices_in_range_sphere();
@@ -343,6 +368,7 @@ int main() {
     test_no_degenerate_triangles();
     test_boundary_preserved();
     test_watertight_seam();
+    test_simplify_meshindexed_overload_delegates();
     printf("\nAll mesh simplifier tests PASSED\n");
     return 0;
 }

@@ -461,3 +461,70 @@ Mesh simplify_mesh(const Mesh& input, const SimplifyOptions& opts, const CellBou
     decimate(verts, tris, opts, bounds, inputTri);
     return buildMesh(verts, tris);
 }
+
+#include "mesh_indexed.hpp"
+
+MeshIndexed simplify(const MeshIndexed& in,
+                     const SimplifyOptions& opts,
+                     const CellBounds* bounds) {
+    MeshIndexed out;
+    if (in.indices.empty()) return out;
+
+    // Adapt MeshIndexed → raylib::Mesh (indexed) → call existing simplify_mesh
+    // → convert result back to MeshIndexed. All allocations use raylib's
+    // MemAlloc; the returned raylib::Mesh owns its buffers until we MemFree.
+    Mesh rl{};
+    rl.vertexCount   = (int)in.positions.size();
+    rl.triangleCount = (int)(in.indices.size() / 3);
+    rl.vertices      = (float*)MemAlloc(sizeof(float) * 3 * rl.vertexCount);
+    rl.indices       = (unsigned short*)MemAlloc(sizeof(unsigned short) * in.indices.size());
+
+    for (int i = 0; i < rl.vertexCount; ++i) {
+        rl.vertices[i*3 + 0] = in.positions[i].x;
+        rl.vertices[i*3 + 1] = in.positions[i].y;
+        rl.vertices[i*3 + 2] = in.positions[i].z;
+    }
+    for (size_t i = 0; i < in.indices.size(); ++i) {
+        rl.indices[i] = (unsigned short)in.indices[i];
+    }
+    // NOTE: unsigned short caps vertex count at 65535. For meshes larger than
+    // that, this shim path breaks — a follow-up (Task 11 migration) removes
+    // the raylib::Mesh intermediate entirely. For now, callers whose flatten
+    // meshes exceed 65535 verts get an unimplemented path; guard here:
+    if (rl.vertexCount > 65535) {
+        MemFree(rl.vertices);   // free rl.vertices — no other allocs outstanding
+        MemFree(rl.indices);    // free rl.indices  — no other allocs outstanding
+        // Degrade to identity: return input unchanged.
+        return in;
+    }
+
+    Mesh simplified = simplify_mesh(rl, opts, bounds);
+
+    if (simplified.vertexCount == 0) {
+        // Simplifier degenerate fallback — return input unchanged.
+        MemFree(rl.vertices);   // free rl.vertices — simplified owns nothing (vertexCount==0)
+        MemFree(rl.indices);    // free rl.indices
+        return in;
+    }
+
+    out.positions.reserve(simplified.vertexCount);
+    for (int i = 0; i < simplified.vertexCount; ++i) {
+        out.positions.push_back(make_float3(simplified.vertices[i*3 + 0],
+                                            simplified.vertices[i*3 + 1],
+                                            simplified.vertices[i*3 + 2]));
+    }
+    if (simplified.indices) {
+        out.indices.reserve(simplified.triangleCount * 3);
+        for (int i = 0; i < simplified.triangleCount * 3; ++i) {
+            out.indices.push_back((uint32_t)simplified.indices[i]);
+        }
+    }
+
+    // Success path: free both the input staging Mesh and the simplified output Mesh.
+    MemFree(rl.vertices);                                // free rl.vertices
+    MemFree(rl.indices);                                 // free rl.indices
+    if (simplified.vertices) MemFree(simplified.vertices); // free simplified.vertices
+    if (simplified.indices)  MemFree(simplified.indices);  // free simplified.indices
+
+    return out;
+}
