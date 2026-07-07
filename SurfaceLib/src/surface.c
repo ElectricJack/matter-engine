@@ -575,16 +575,25 @@ static Mesh GenerateMeshInternal(Particle* particles, float particleRadius, int 
                                         triangles  = g_memoryPool.triangles;
                                     } else {
                                         Vector3* nv = (Vector3*)realloc(vertices,  newMax * sizeof(Vector3));
-                                        Vector3* nn = (Vector3*)realloc(normals,   newMax * sizeof(Vector3));
-                                        int*     nm = (int*)realloc(materials, newMax * sizeof(int));
-                                        if (!nv || !nn || !nm) {
-                                            printf("Error: OOM growing vertex buffer; geometry truncated\n");
-                                            if (nv) vertices  = nv;
-                                            if (nn) normals   = nn;
-                                            if (nm) materials = nm;
+                                        if (!nv) {
+                                            fprintf(stderr, "Error: OOM growing vertex buffer; geometry truncated\n");
                                             continue;
                                         }
-                                        vertices = nv; normals = nn; materials = nm;
+                                        vertices = nv;
+                                        
+                                        Vector3* nn = (Vector3*)realloc(normals,   newMax * sizeof(Vector3));
+                                        if (!nn) {
+                                            fprintf(stderr, "Error: OOM growing normals buffer; geometry truncated\n");
+                                            continue;
+                                        }
+                                        normals = nn;
+                                        
+                                        int*     nm = (int*)realloc(materials, newMax * sizeof(int));
+                                        if (!nm) {
+                                            fprintf(stderr, "Error: OOM growing materials buffer; geometry truncated\n");
+                                            continue;
+                                        }
+                                        materials = nm;
                                     }
                                     maxVertices = (int)newMax;
                                 }
@@ -620,16 +629,25 @@ static Mesh GenerateMeshInternal(Particle* particles, float particleRadius, int 
                                     triangles  = g_memoryPool.triangles;
                                 } else {
                                     Vector3* nv = (Vector3*)realloc(vertices,  newMax * sizeof(Vector3));
-                                    Vector3* nn = (Vector3*)realloc(normals,   newMax * sizeof(Vector3));
-                                    int*     nm = (int*)realloc(materials, newMax * sizeof(int));
-                                    if (!nv || !nn || !nm) {
-                                        printf("Error: OOM growing vertex buffer; geometry truncated\n");
-                                        if (nv) vertices  = nv;
-                                        if (nn) normals   = nn;
-                                        if (nm) materials = nm;
+                                    if (!nv) {
+                                        fprintf(stderr, "Error: OOM growing vertex buffer; geometry truncated\n");
                                         continue;
                                     }
-                                    vertices = nv; normals = nn; materials = nm;
+                                    vertices = nv;
+                                    
+                                    Vector3* nn = (Vector3*)realloc(normals,   newMax * sizeof(Vector3));
+                                    if (!nn) {
+                                        fprintf(stderr, "Error: OOM growing normals buffer; geometry truncated\n");
+                                        continue;
+                                    }
+                                    normals = nn;
+                                    
+                                    int*     nm = (int*)realloc(materials, newMax * sizeof(int));
+                                    if (!nm) {
+                                        fprintf(stderr, "Error: OOM growing materials buffer; geometry truncated\n");
+                                        continue;
+                                    }
+                                    materials = nm;
                                 }
                                 maxVertices = (int)newMax;
                             }
@@ -843,8 +861,8 @@ static ScalarMaterialPair CalculateScalarAndMaterial(Vector3 position, SpatialHa
     // Use squared distance for comparison to avoid repeated sqrtf calls.
     float minDistSq = INFINITY;
 
-    // Walk all entries in the search radius; batch size matches the query API but
-    // we loop until exhausted so the 32-entry cap never silently drops particles.
+    // Single call to sh_query_radius with 32-entry buffer; results capped at 32 entries.
+    // Warning: if > 32 particles fall within search sphere, nearest beyond first 32 may be missed.
     Particle* batch[32];
     int batchSize;
     // sh_query_radius returns at most maxResults per call; we drain by repeated calls
