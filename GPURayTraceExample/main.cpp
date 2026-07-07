@@ -28,7 +28,8 @@ public:
         
         InitWindow(screen_width_, screen_height_, "C++ Modular BLAS/TLAS with Performance Profiling");
         SetTargetFPS(120);
-        
+        SetExitKey(KEY_NULL); // ESC is used for cursor toggle; don't let raylib exit on it
+
         // Disable cursor for first person camera control (hides cursor and captures mouse)
         DisableCursor();
         
@@ -65,23 +66,7 @@ public:
                 printf("DEBUG MODE: Reached 60 frames, auto-quitting...\n");
                 break;
             }
-            
-            // // Print simple frame count to check if we're making progress
-            // if (frame_count % 30 == 0 || debug_mode_) {
-            //     printf("Frame %d...\n", frame_count);
-            // }
-            
-            // // Print performance stats every 60 frames (roughly every second at 60 FPS)
-            // if (frame_count % 60 == 0) {
-            //     PROFILE_PRINT();
-            // }
-            
-            // // Reset stats every 5 seconds to show current performance
-            // if (frame_count % 300 == 0) {
-            //     printf("\n--- Performance Reset ---\n");
-            //     PROFILE_RESET();
-            // }
-            
+
             update();
             render();
             
@@ -439,16 +424,7 @@ private:
         }
         
         // Build TLAS from recorded draw calls
-        //printf("=== Building TLAS for scene %d ===\n", test_number);
-        //printf("  Draw records before build: %d\n", tlas_manager_->get_draw_record_count());
-        
         tlas_manager_->build(*blas_manager_);
-        
-        //printf("  TLAS built successfully!\n");
-        //printf("  Final counts: %d nodes, %d instances\n", 
-        //       tlas_manager_->get_node_count(), tlas_manager_->get_instance_count());
-        
-        //printf("Test scene %d setup complete!\n", test_number);
     }
     
     void setup_unit_test_scene() {
@@ -966,18 +942,15 @@ private:
 
         // Scene statistics
         int total_triangles_  = blas_manager_->get_total_triangle_count();
-        //int total_blas_nodes_ = blas_manager_->get_total_node_count();
-        //int total_tlas_nodes_ = tlas_manager_->get_node_count();
-        //int total_instances_  = tlas_manager_->get_instance_count(); 
         
         // Mode indicator
         if (use_raytracing_) {
             DrawText("C++ RAYTRACING MODE", 10, 40, 20, GREEN);
-            DrawText("Press SPACE to toggle rasterization", 10, 70, 16, LIGHTGRAY);
+            DrawText("Press LEFT_SHIFT to toggle rasterization", 10, 70, 16, LIGHTGRAY);
         } else {
             DrawText("C++ RASTERIZATION MODE", 10, 40, 20, YELLOW);
             if (raytracing_shader_.id != 0) {
-                DrawText("Press SPACE to toggle raytracing", 10, 70, 16, LIGHTGRAY);
+                DrawText("Press LEFT_SHIFT to toggle raytracing", 10, 70, 16, LIGHTGRAY);
             } else {
                 DrawText("Raytracing shader failed to load", 10, 70, 16, RED);
             }

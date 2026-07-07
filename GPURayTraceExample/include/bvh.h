@@ -83,6 +83,7 @@ class ALIGN(64) BVH
 public:
 	BVH() = default;
 	BVH( BvhMesh* mesh );
+	~BVH() { FREE64( bvhNode ); delete[] triIdx; }
 	void Build();
 	void Refit();
 	void Intersect( BVHRay& ray, uint instanceIdx );
@@ -107,6 +108,7 @@ public:
 	BvhMesh() = default;
 	BvhMesh( uint primCount );
 	BvhMesh( const char* objFile, const char* texFile, const float scale = 1 );
+	~BvhMesh() { FREE64( tri ); FREE64( triEx ); }
 	Tri* tri = 0;			// triangle data for intersection
 	TriEx* triEx = 0;		// triangle data for shading
 	int triCount = 0;
@@ -267,6 +269,7 @@ class ALIGN(64) TLAS
 public:
 	TLAS() = default;
 	TLAS( BVHInstance* blas, int N );
+	~TLAS() { FREE64( tlasNode ); delete[] nodeIdx; }
 	void Build();
 	void Intersect( BVHRay& ray );
 	

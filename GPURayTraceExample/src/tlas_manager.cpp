@@ -39,11 +39,6 @@ Matrix4x4 matrix_multiply(const Matrix4x4* a, const Matrix4x4* b) {
     return result;
 }
 
-Matrix4x4 matrix_inverse(const Matrix4x4* m) {
-    // Simplified inverse for now - would need full implementation
-    return *m; // placeholder
-}
-
 Matrix4x4 matrix_translation(float x, float y, float z) {
     Matrix4x4 m;
     // Use column-major layout: translation goes in positions [3], [7], [11]
@@ -118,15 +113,6 @@ TLASManager::TLASManager(int max_instances)
 }
 
 TLASManager::~TLASManager() {
-    // Clean up instance array
-    if (instance_array_) {
-        // Call destructors for existing instances
-        for (size_t i = 0; i < instance_array_size_; i++) {
-            instance_array_[i].~BVHInstance();
-        }
-        free(instance_array_);
-    }
-    
     // Clean up GPU textures
     if (nodes_texture_.id != 0) UnloadTexture(nodes_texture_);
     if (instances_texture_.id != 0) UnloadTexture(instances_texture_);
@@ -239,29 +225,20 @@ void TLASManager::draw_batch(const std::vector<DrawInstance>& instances) {
 
 void TLASManager::clear() {
     draw_records_.clear();
+    active_records_.clear();
     next_instance_id_ = 1;
-    
+
     // Reset matrix stack to just identity
     while (matrix_stack_.size() > 1) {
         matrix_stack_.pop();
     }
     load_identity();
-    
+
     // Clean up existing TLAS and instances
     tlas_.reset(nullptr);
     instances_.clear();
-    
-    // Clean up instance array
-    if (instance_array_) {
-        // Call destructors for existing instances
-        for (size_t i = 0; i < instance_array_size_; i++) {
-            instance_array_[i].~BVHInstance();
-        }
-        free(instance_array_);
-        instance_array_ = nullptr;
-        instance_array_size_ = 0;
-    }
-    
+    instance_storage_.clear();
+
     textures_dirty_ = true; // Mark textures for regeneration
 }
 
@@ -276,23 +253,16 @@ void TLASManager::build(const BLASManager& blas_manager) {
     // Clean up existing TLAS and instances
     tlas_.reset(nullptr);
     instances_.clear();
-    
-    // Clean up previous instance array
-    if (instance_array_) {
-        // Call destructors for existing instances
-        for (size_t i = 0; i < instance_array_size_; i++) {
-            instance_array_[i].~BVHInstance();
-        }
-        free(instance_array_);
-        instance_array_ = nullptr;
-        instance_array_size_ = 0;
-    }
-    
-    // Create BVH instances from draw records (using unique_ptr approach for now)
+
+    // Create BVH instances from draw records, compacting out any with missing BLAS.
+    // active_records_ is kept in sync with instance_storage_/tlas_->blas so that
+    // generate_instance_texture_data can index them in parallel.
     instances_.reserve(draw_records_.size());
+    active_records_.clear();
+    active_records_.reserve(draw_records_.size());
     std::vector<BVHInstance*> instance_ptrs;
     instance_ptrs.reserve(draw_records_.size());
-    
+
     for (const auto& record : draw_records_) {
         // Get BVH from manager
         BVH* bvh = blas_manager.get_bvh(record.blas_handle);
@@ -300,15 +270,16 @@ void TLASManager::build(const BLASManager& blas_manager) {
             printf("Warning: BLAS handle %u not found in BLAS manager\n", record.blas_handle);
             continue;
         }
-        
+
         // Create BVH instance
         auto instance = std::make_unique<BVHInstance>(bvh, record.instance_id);
-        
+
         // Convert and set transform - this will also calculate world bounds
         mat4 new_transform = convert_matrix(record.transform);
         instance->SetTransform(new_transform);
-        
-        // Add to our vectors
+
+        // Add to our vectors (keep active_records_ in sync with instance list)
+        active_records_.push_back(record);
         instance_ptrs.push_back(instance.get());
         instances_.push_back(std::move(instance));
     }
@@ -379,22 +350,20 @@ void TLASManager::generate_instance_texture_data(const BLASManager& blas_manager
         // Row 8: metadata (blasIndex + materialId + padding)
         int metadataIdx = texture_width * (8 * 4) + baseIdx;
         if (metadataIdx + 3 < static_cast<int>(output_data.size())) {
-            // Get the actual BLAS node start offset for this instance
-            // This is what the shader expects for geometry traversal
-            BLASHandle blas_handle = i < static_cast<int>(draw_records_.size()) ? 
-                                   draw_records_[i].blas_handle : INVALID_BLAS_HANDLE;
+            // Get the actual BLAS node start offset for this instance.
+            // Use active_records_ which is compacted to match tlas_->blas[i] exactly.
+            BLASHandle blas_handle = i < static_cast<int>(active_records_.size()) ?
+                                   active_records_[i].blas_handle : INVALID_BLAS_HANDLE;
             BLASOffsets offsets = blas_manager.get_offsets(blas_handle);
             output_data[metadataIdx + 0] = static_cast<float>(offsets.node_offset);
-            
-            // Instance metadata set
-            
-            // Get material ID from the corresponding draw record
+
+            // Get material ID from the compacted active record (not raw draw_records_[i])
             uint32_t materialId = 0;
-            if (i < static_cast<int>(draw_records_.size())) {
-                materialId = draw_records_[i].material_id;
+            if (i < static_cast<int>(active_records_.size())) {
+                materialId = active_records_[i].material_id;
             }
             output_data[metadataIdx + 1] = static_cast<float>(materialId);
-            output_data[metadataIdx + 2] = 0.0f; // padding  
+            output_data[metadataIdx + 2] = 0.0f; // padding
             output_data[metadataIdx + 3] = 0.0f; // padding
         }
     }
@@ -465,86 +434,98 @@ void TLASManager::generate_node_texture_data(float* output_data,
 
 void TLASManager::ensure_gpu_textures_ready(const BLASManager& blas_manager) {
     if (!textures_dirty_) return;
-    
+
     PROFILE_SECTION("TLAS GPU Texture Update");
-    
-    // Clean up old textures
-    if (nodes_texture_.id != 0) UnloadTexture(nodes_texture_);
-    if (instances_texture_.id != 0) UnloadTexture(instances_texture_);
-    
-    // Generate instances texture
-    if (get_instance_count() > 0) {
-        int texture_width = get_instance_count();
-        int texture_height = 9; // 9 rows per instance (4 transform + 4 inverse + 1 metadata)
-        
-        std::vector<float> texture_data(texture_width * texture_height * 4);
-        
-        // Use existing method to generate the data
-        generate_instance_texture_data(blas_manager, texture_data, texture_width, texture_height);
-        
-        Image instances_image = {
-            .data = texture_data.data(),
-            .width = texture_width,
-            .height = texture_height,
-            .mipmaps = 1,
-            .format = PIXELFORMAT_UNCOMPRESSED_R32G32B32A32
-        };
-        
-        instances_texture_ = LoadTextureFromImage(instances_image);
-        SetTextureFilter(instances_texture_, TEXTURE_FILTER_POINT);
+
+    // --- instances texture ---
+    {
+        int inst_count = get_instance_count();
+        const int INST_HEIGHT = 9; // 9 rows per instance (4 transform + 4 inverse + 1 metadata)
+
+        if (inst_count > 0) {
+            std::vector<float> texture_data(inst_count * INST_HEIGHT * 4);
+            generate_instance_texture_data(blas_manager, texture_data, inst_count, INST_HEIGHT);
+
+            if (instances_texture_.id != 0 && instances_texture_cap_ == inst_count) {
+                // Same dimensions as last frame: reuse GPU texture, just push new data.
+                // UpdateTexture requires data to be exactly width*height*format_bytes.
+                UpdateTexture(instances_texture_, texture_data.data());
+            } else {
+                // Count changed or first allocation: (re)create the texture.
+                if (instances_texture_.id != 0) UnloadTexture(instances_texture_);
+                Image img = {
+                    .data = texture_data.data(),
+                    .width = inst_count,
+                    .height = INST_HEIGHT,
+                    .mipmaps = 1,
+                    .format = PIXELFORMAT_UNCOMPRESSED_R32G32B32A32
+                };
+                instances_texture_ = LoadTextureFromImage(img);
+                SetTextureFilter(instances_texture_, TEXTURE_FILTER_POINT);
+                instances_texture_cap_ = inst_count;
+            }
+        }
     }
-    
-    // Generate nodes texture
-    if (get_node_count() > 0) {
-        int texture_width = get_node_count();
-        int texture_height = 3; // 3 rows per node
-        
-        std::vector<float> texture_data(texture_width * texture_height * 4);
-        
-        // Use existing method to generate the data
-        generate_node_texture_data(texture_data, texture_width, texture_height);
-        
-        Image tlas_image = {
-            .data = texture_data.data(),
-            .width = texture_width,
-            .height = texture_height,
-            .mipmaps = 1,
-            .format = PIXELFORMAT_UNCOMPRESSED_R32G32B32A32
-        };
-        
-        nodes_texture_ = LoadTextureFromImage(tlas_image);
-        SetTextureFilter(nodes_texture_, TEXTURE_FILTER_POINT);
+
+    // --- nodes texture ---
+    {
+        int node_count = get_node_count();
+        const int NODE_HEIGHT = 3; // 3 rows per node
+
+        if (node_count > 0) {
+            std::vector<float> texture_data(node_count * NODE_HEIGHT * 4);
+            generate_node_texture_data(texture_data, node_count, NODE_HEIGHT);
+
+            if (nodes_texture_.id != 0 && nodes_texture_cap_ == node_count) {
+                UpdateTexture(nodes_texture_, texture_data.data());
+            } else {
+                if (nodes_texture_.id != 0) UnloadTexture(nodes_texture_);
+                Image img = {
+                    .data = texture_data.data(),
+                    .width = node_count,
+                    .height = NODE_HEIGHT,
+                    .mipmaps = 1,
+                    .format = PIXELFORMAT_UNCOMPRESSED_R32G32B32A32
+                };
+                nodes_texture_ = LoadTextureFromImage(img);
+                SetTextureFilter(nodes_texture_, TEXTURE_FILTER_POINT);
+                nodes_texture_cap_ = node_count;
+            }
+        }
     }
-    
+
     textures_dirty_ = false;
 }
 
 void TLASManager::bind_to_shader(Shader shader, const BLASManager& blas_manager) const {
     PROFILE_SECTION("TLAS Shader Binding");
-    
+
     // Ensure textures are ready
     const_cast<TLASManager*>(this)->ensure_gpu_textures_ready(blas_manager);
-    
-    // Get uniform locations
-    int tlas_node_count_loc = GetShaderLocation(shader, "tlasNodeCount");
-    int instance_count_loc = GetShaderLocation(shader, "instanceCount");
-    int tlas_nodes_texture_loc = GetShaderLocation(shader, "tlasNodesTexture");
-    int instances_texture_loc = GetShaderLocation(shader, "instancesTexture");
-    
+
+    // Cache uniform locations once per shader (identified by shader.id)
+    if (cached_shader_id_ != static_cast<int>(shader.id)) {
+        cached_shader_id_        = static_cast<int>(shader.id);
+        loc_tlas_node_count_     = GetShaderLocation(shader, "tlasNodeCount");
+        loc_instance_count_      = GetShaderLocation(shader, "instanceCount");
+        loc_tlas_nodes_texture_  = GetShaderLocation(shader, "tlasNodesTexture");
+        loc_instances_texture_   = GetShaderLocation(shader, "instancesTexture");
+    }
+
     // Set counts
     int node_count = get_node_count();
     int inst_count = get_instance_count();
-    
-    SetShaderValue(shader, tlas_node_count_loc, &node_count, SHADER_UNIFORM_INT);
-    SetShaderValue(shader, instance_count_loc, &inst_count, SHADER_UNIFORM_INT);
-    
+
+    SetShaderValue(shader, loc_tlas_node_count_, &node_count, SHADER_UNIFORM_INT);
+    SetShaderValue(shader, loc_instance_count_,  &inst_count, SHADER_UNIFORM_INT);
+
     // Bind textures
-    if (nodes_texture_.id != 0 && tlas_nodes_texture_loc != -1) {
-        SetShaderValueTexture(shader, tlas_nodes_texture_loc, nodes_texture_);
+    if (nodes_texture_.id != 0 && loc_tlas_nodes_texture_ != -1) {
+        SetShaderValueTexture(shader, loc_tlas_nodes_texture_, nodes_texture_);
     }
-    
-    if (instances_texture_.id != 0 && instances_texture_loc != -1) {
-        SetShaderValueTexture(shader, instances_texture_loc, instances_texture_);
+
+    if (instances_texture_.id != 0 && loc_instances_texture_ != -1) {
+        SetShaderValueTexture(shader, loc_instances_texture_, instances_texture_);
     }
 }
 

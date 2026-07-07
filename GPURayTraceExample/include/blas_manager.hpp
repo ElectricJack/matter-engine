@@ -161,7 +161,17 @@ private:
     mutable Texture2D triangles_texture_{};
     mutable Texture2D nodes_texture_{};
     mutable bool textures_dirty_ = true;
-    
+    mutable int triangles_texture_cap_ = 0; // allocated width of triangles_texture_
+    mutable int nodes_texture_cap_ = 0;     // allocated width of nodes_texture_
+
+    // Cached shader uniform locations (set once per shader after load)
+    mutable int cached_shader_id_ = 0;
+    mutable int loc_triangle_count_ = -1;
+    mutable int loc_blas_node_count_ = -1;
+    mutable int loc_triangles_texture_ = -1;
+    mutable int loc_blas_nodes_texture_ = -1;
+    mutable int loc_intersection_mode_ = -1;
+
 };
 
 // Factory functions for common geometry types

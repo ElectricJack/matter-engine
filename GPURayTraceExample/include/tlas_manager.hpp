@@ -147,11 +147,10 @@ private:
     
     std::stack<Matrix4x4> matrix_stack_;
     std::vector<DrawRecord> draw_records_;
+    std::vector<DrawRecord> active_records_; // compacted: only records whose BLAS was found at build() time
     std::unique_ptr<TLAS> tlas_;
     std::vector<BVHInstance> instance_storage_; // backing array owned by the manager; TLAS holds a raw pointer into it
-    std::vector<std::unique_ptr<BVHInstance>> instances_; // Deprecated - kept for compatibility
-    BVHInstance* instance_array_ = nullptr; // Contiguous array for TLAS
-    size_t instance_array_size_ = 0;
+    std::vector<std::unique_ptr<BVHInstance>> instances_; // kept for build() lifetime management
     uint32_t next_instance_id_;
     int max_instances_;
     
@@ -159,6 +158,15 @@ private:
     mutable Texture2D nodes_texture_{};
     mutable Texture2D instances_texture_{};
     mutable bool textures_dirty_ = true;
+    mutable int nodes_texture_cap_ = 0;    // allocated width of nodes_texture_
+    mutable int instances_texture_cap_ = 0; // allocated width of instances_texture_
+
+    // Cached shader uniform locations (set once after shader load via cache_shader_locs)
+    mutable int cached_shader_id_ = 0;          // shader id these locations belong to
+    mutable int loc_tlas_node_count_ = -1;
+    mutable int loc_instance_count_ = -1;
+    mutable int loc_tlas_nodes_texture_ = -1;
+    mutable int loc_instances_texture_ = -1;
 };
 
 // Utility class for automatic matrix push/pop using RAII
