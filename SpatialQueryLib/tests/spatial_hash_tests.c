@@ -283,7 +283,7 @@ static void test_basic_insert_query(void) {
 }
 
 /* --------------------------------------------------------------------------
- * Test 6: sh_query_radius_nearest (existing function — regression guard)
+ * Test 6: sh_query_first returns a valid object when two objects are in range (regression guard)
  * -------------------------------------------------------------------------- */
 static void test_query_first_with_two_objects(void) {
     SpatialHash* sh = sh_create(1.0f, 64);
