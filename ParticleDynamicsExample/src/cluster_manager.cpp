@@ -30,69 +30,24 @@ bool ClusterManager::cluster_exists(uint32_t cluster_id) const {
 
 bool ClusterManager::transfer_particle_to_cluster(uint32_t cluster_id, uint32_t particle_idx,
                                                   ParticleSystem& particle_system) {
-    auto it = clusters_.find(cluster_id);
-    if (it == clusters_.end()) {
-        return false;
-    }
-    
-    Cluster* cluster = it->second.get();
-    
-    // Get particle data from ParticleSystem
-    // Note: This assumes ParticleSystem has getter methods for particle data
-    // TODO: Add proper interface to ParticleSystem for particle data access
-    
-    // For now, this is a placeholder - we'd need proper getters in ParticleSystem
-    Vector3 position = {0, 0, 0};  // particle_system.get_particle_position(particle_idx);
-    Vector3 velocity = {0, 0, 0};  // particle_system.get_particle_velocity(particle_idx);
-    float mass = 1.0f;             // particle_system.get_particle_mass(particle_idx);
-    float radius = 0.5f;           // particle_system.get_particle_radius(particle_idx);
-    MaterialType material = MaterialType::Water;  // particle_system.get_particle_material(particle_idx);
-    float temperature = 20.0f;     // particle_system.get_particle_temperature(particle_idx);
-    float charge = 0.0f;           // particle_system.get_particle_charge(particle_idx);
-    
-    // Add particle to cluster
-    cluster->add_particle(particle_idx, position, velocity, temperature, charge, 0, PhaseState::Solid);
-    
-    // Remove particle from ParticleSystem
-    // particle_system.remove_particle(particle_idx);
-    
-    return true;
+    // ParticleSystem does not yet expose per-particle getters required for a
+    // real transfer.  Return false and log so callers know it did nothing.
+    (void)cluster_id;
+    (void)particle_idx;
+    (void)particle_system;
+    printf("ClusterManager::transfer_particle_to_cluster: not implemented\n");
+    return false;
 }
 
 bool ClusterManager::transfer_particle_from_cluster(uint32_t cluster_id, uint32_t cluster_particle_idx,
                                                     ParticleSystem& particle_system) {
-    auto it = clusters_.find(cluster_id);
-    if (it == clusters_.end()) {
-        return false;
-    }
-    
-    Cluster* cluster = it->second.get();
-    
-    if (cluster_particle_idx >= cluster->get_particle_count()) {
-        return false;
-    }
-    
-    // Get particle data from cluster
-    // TODO: Implement getter methods in Cluster class
-    Vector3 world_pos = cluster->get_world_position(cluster_particle_idx);
-    Vector3 world_vel = {0, 0, 0};  // cluster->get_particle_world_velocity(cluster_particle_idx);
-    float mass = 1.0f;  // cluster->get_particle_mass(cluster_particle_idx);
-    float radius = 0.5f;  // cluster->get_particle_radius(cluster_particle_idx);
-    MaterialType material = MaterialType::Water;  // cluster->get_particle_material(cluster_particle_idx);
-    float temperature = 20.0f;  // cluster->get_particle_temperature(cluster_particle_idx);
-    float charge = 0.0f;  // cluster->get_particle_charge(cluster_particle_idx);
-    
-    // Create particle type if needed
-    // TODO: Get particle type ID from material or create new one
-    uint32_t type_id = 0;  // particle_system.get_or_create_particle_type(radius, material, mass, color);
-    
-    // Add to ParticleSystem
-    // particle_system.add_particle(type_id, world_pos, world_vel, temperature, charge);
-    
-    // Remove from cluster
-    cluster->remove_particle(cluster_particle_idx);
-    
-    return true;
+    // Cluster does not yet expose the per-particle getters required for a real
+    // transfer.  Return false and log so callers know it did nothing.
+    (void)cluster_id;
+    (void)cluster_particle_idx;
+    (void)particle_system;
+    printf("ClusterManager::transfer_particle_from_cluster: not implemented\n");
+    return false;
 }
 
 void ClusterManager::add_bond_to_cluster(uint32_t cluster_id, uint32_t particle1_idx, uint32_t particle2_idx,
