@@ -64,10 +64,10 @@ TARGET = minimal_cell_test
 $(TARGET): $(MAIN_SOURCE) $(MATTER_SOURCES)
 	$(CC) $(MAIN_SOURCE) $(MATTER_SOURCES) -o $(TARGET) $(CFLAGS) $(INCLUDE_PATHS) $(LDFLAGS) $(LDLIBS)
 
-.PHONY: clean run run-simp run-blas run-cell run-cont run-reg run-tint run-cull run-par run-cube run-ao run-part run-vox run-midx
+.PHONY: clean run run-simp run-blas run-cell run-cont run-reg run-tint run-cull run-par run-cube run-ao run-part run-vox run-midx run-mtx run-retopo
 
 clean:
-	rm -f $(TARGET) $(SIMP_TARGET) $(BLAS_TARGET) $(CELL_TARGET) $(CONT_TARGET) $(REG_TARGET) $(TINT_TARGET) $(CULL_TARGET) $(PAR_TARGET) $(CUBE_TARGET) $(AO_TARGET) $(PART_TARGET) $(VOX_TARGET) $(MIDX_TARGET)
+	rm -f $(TARGET) $(SIMP_TARGET) $(BLAS_TARGET) $(CELL_TARGET) $(CONT_TARGET) $(REG_TARGET) $(TINT_TARGET) $(CULL_TARGET) $(PAR_TARGET) $(CUBE_TARGET) $(AO_TARGET) $(PART_TARGET) $(VOX_TARGET) $(MIDX_TARGET) $(MTX_TARGET) $(RETOPO_TARGET)
 
 run: $(TARGET)
 	./$(TARGET)
@@ -271,3 +271,26 @@ $(MTX_TARGET): $(MTX_SOURCES)
 
 run-mtx: $(MTX_TARGET)
 	./$(MTX_TARGET)
+
+# mesh_retopo wrapper unit tests (headless, GL-free).
+# Links against autoremesher_core (static) + TBB (shared). The rpath uses
+# $ORIGIN so the binary finds libtbb.so.2 at runtime without LD_LIBRARY_PATH.
+AR_CORE_PATH = ../../Libraries/autoremesher_core
+TBB_BUILD_DIR := $(firstword $(wildcard $(AR_CORE_PATH)/thirdparty/tbb/build/linux_*_release))
+TBB_BUILD_SUBDIR := $(patsubst $(AR_CORE_PATH)/thirdparty/tbb/build/%,%,$(TBB_BUILD_DIR))
+
+RETOPO_TARGET = mesh_retopo_tests
+RETOPO_SOURCES = mesh_retopo_tests.cpp ../src/mesh_retopo.cpp \
+                 ../src/mesh_indexed.cpp ../src/mesh_transform.cpp
+RETOPO_CFLAGS = $(CFLAGS) -I$(AR_CORE_PATH)/include
+RETOPO_LDFLAGS = $(LDFLAGS) \
+                 -L$(AR_CORE_PATH) -lautoremesher_core \
+                 -L$(TBB_BUILD_DIR) -ltbb \
+                 -Wl,-rpath,'$$ORIGIN/../../Libraries/autoremesher_core/thirdparty/tbb/build/$(TBB_BUILD_SUBDIR)' \
+                 -lpthread -ldl -lrt
+
+$(RETOPO_TARGET): $(RETOPO_SOURCES)
+	$(CC) $(RETOPO_SOURCES) -o $(RETOPO_TARGET) $(RETOPO_CFLAGS) $(INCLUDE_PATHS) $(RETOPO_LDFLAGS) $(LDLIBS)
+
+run-retopo: $(RETOPO_TARGET)
+	./$(RETOPO_TARGET)
