@@ -48,30 +48,42 @@ static std::string read_file_text(const std::string& path) {
     return ss.str();
 }
 
-// Resolve a single level of #include "file" directives in GLSL source.
-// Mesa/GLSL #include requires GL_ARB_shading_language_include with named-string
-// registration — which the viewer doesn't use.  Inline includes manually so the
-// raster fragment shader can share tileset_sampling.glsl without the extension.
+// Resolve #include "file" directives in GLSL source, recursively expanding
+// transitive includes up to max_depth levels.  Mesa/GLSL #include requires
+// GL_ARB_shading_language_include with named-string registration — which the
+// viewer doesn't use.  Inline includes manually so the raster fragment shader
+// can share tileset_sampling.glsl without the extension.
 // Only handles includes relative to the shader dir (passed as `base_dir`).
+// Lines where "//" appears before "#include" on the same line are treated as
+// comments and emitted verbatim.
 static std::string resolve_glsl_includes(const std::string& src,
-                                         const std::string& base_dir) {
+                                         const std::string& base_dir,
+                                         int depth = 0) {
+    static constexpr int kMaxDepth = 4;
     std::string out;
     out.reserve(src.size());
     std::istringstream stream(src);
     std::string line;
     while (std::getline(stream, line)) {
-        // Match: #include "filename"
+        // Skip lines where a line comment precedes the #include directive.
+        const std::string comment_prefix = "//";
         const std::string prefix = "#include \"";
-        auto pos = line.find(prefix);
-        if (pos != std::string::npos) {
-            auto end = line.find('"', pos + prefix.size());
+        auto comment_pos = line.find(comment_prefix);
+        auto inc_pos     = line.find(prefix);
+        if (inc_pos != std::string::npos &&
+            (comment_pos == std::string::npos || comment_pos > inc_pos)) {
+            auto end = line.find('"', inc_pos + prefix.size());
             if (end != std::string::npos) {
-                std::string fname = line.substr(pos + prefix.size(),
-                                               end - pos - prefix.size());
+                std::string fname = line.substr(inc_pos + prefix.size(),
+                                               end - inc_pos - prefix.size());
                 std::string incl = read_file_text(base_dir + "/" + fname);
                 if (!incl.empty()) {
                     out += "// --- begin " + fname + " ---\n";
-                    out += incl;
+                    // Recursively expand transitive #includes up to the depth cap.
+                    if (depth < kMaxDepth)
+                        out += resolve_glsl_includes(incl, base_dir, depth + 1);
+                    else
+                        out += incl;
                     out += "\n// --- end " + fname + " ---\n";
                     continue;
                 }

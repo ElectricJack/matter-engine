@@ -85,6 +85,15 @@ std::string abspath(const std::string& rel) {
 LocalProvider::LocalProvider(LocalProviderConfig cfg) : cfg_(std::move(cfg)) {}
 
 bool LocalProvider::connect(WorldManifest& out, std::string& err) {
+    // Reset all mutable state at entry so repeated connect() calls are
+    // idempotent. Unload any previously-loaded tileset slots so a re-connect
+    // for a different world doesn't inherit stale atlases. Also reset the
+    // material-16 (DIRT) binding so the shader sees -1 (unbound) until the
+    // new bake installs a fresh slot.
+    viewer::tileset_provider::unload_all();
+    MaterialRegistrySetGroundTilesetSlot(16, -1);
+    baked_tileset_count_ = 0;
+
     baked_count_ = 0;
     hit_count_   = 0;
     baked_hashes_.clear();
@@ -300,7 +309,20 @@ bool LocalProvider::connect(WorldManifest& out, std::string& err) {
     // parts/<hash>.part RELATIVE to CWD, so we must chdir to abs_cache_root
     // for the duration of the tileset loop (mirrors the earlier
     // graph.install() setup at line 112).  Restore CWD after.
-    baked_tileset_count_ = 0;
+    // (baked_tileset_count_ already reset at connect() entry.)
+
+    // Guard: fail-closed BEFORE any GL/disk work if the manifest declares more
+    // tileset roots than we have sampler-array slots. Checking inside the loop
+    // left 0..N-1 slots loaded with stale atlases on error.
+    if ((int)tileset_indices.size() > viewer::tileset_provider::max_slots()) {
+        err = "LocalProvider: manifest declares " +
+              std::to_string(tileset_indices.size()) +
+              " tileset roots but only " +
+              std::to_string(viewer::tileset_provider::max_slots()) +
+              " slots are available";
+        return false;
+    }
+
     bool restored_cwd_after_tileset = tileset_indices.empty();
     if (!tileset_indices.empty()) {
         if (fs_chdir(abs_cache_root.c_str()) != 0) {
@@ -310,13 +332,6 @@ bool LocalProvider::connect(WorldManifest& out, std::string& err) {
         }
     }
     for (size_t ti : tileset_indices) {
-        if (baked_tileset_count_ >= viewer::tileset_provider::max_slots()) {
-            err = "LocalProvider: more tileset roots (" +
-                  std::to_string(tileset_indices.size()) + ") than slots (" +
-                  std::to_string(viewer::tileset_provider::max_slots()) + ")";
-            fs_chdir(orig_cwd);
-            return false;
-        }
         const std::string root_module = roots[ti].module;
         tileset::SettledTorus settled;
         tileset::TilesetPhaseOpts opts;

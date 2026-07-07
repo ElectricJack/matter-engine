@@ -1,10 +1,13 @@
 #include "renderer.h"
 
 #include "material_registry.h"   // MaterialRegistryPackForGPU/Count, MATERIAL_FLOATS_PER_DEF
+// tileset_provider.h includes gl46.h -> glad.h, which declares glFinish via
+// GLAD's function-pointer mechanism (glFinish == glad_glFinish macro).  Include
+// it before rlgl.h so glad is the canonical GL declaration source; the manual
+// extern "C" glFinish that was here would conflict with glad's pointer decl.
+#include "tileset_provider.h"    // bind_all_to_shader for Wang atlas samplers
 
 #include "rlgl.h"   // rlDrawRenderBatchActive
-
-extern "C" { void glFinish(void); }
 
 #include <cstdio>
 
@@ -55,6 +58,7 @@ void Renderer::set_lights(const world_lights::WorldLights& lights) {
     // Must set uniforms with the shader active (raylib uploads them into the
     // currently bound program). Use BeginShaderMode/EndShaderMode just like draw().
     BeginShaderMode(shader_);
+    viewer::tileset_provider::bind_all_to_shader((GLuint)shader_.id);
     if (loc_wl_sun_dir_   != -1) SetShaderValue(shader_, loc_wl_sun_dir_,   lights.sun_dir,   SHADER_UNIFORM_VEC3);
     if (loc_wl_sun_color_ != -1) SetShaderValue(shader_, loc_wl_sun_color_, lights.sun_color, SHADER_UNIFORM_VEC3);
     if (loc_wl_sky_color_ != -1) SetShaderValue(shader_, loc_wl_sky_color_, lights.sky_color, SHADER_UNIFORM_VEC3);
@@ -81,6 +85,7 @@ void Renderer::draw(BLASManager& blas, TLASManager& tlas) {
     // and every ray would miss (blank sky). Mirrors MSL main.cpp's render order.
     blas.ensure_gpu_textures_ready();
     BeginShaderMode(shader_);
+        viewer::tileset_provider::bind_all_to_shader((GLuint)shader_.id);
         SetShaderValue(shader_, loc_cam_pos_,    &cp,   SHADER_UNIFORM_VEC3);
         SetShaderValue(shader_, loc_cam_target_, &ct,   SHADER_UNIFORM_VEC3);
         SetShaderValue(shader_, loc_cam_up_,     &cu,   SHADER_UNIFORM_VEC3);
@@ -110,6 +115,7 @@ void Renderer::warm_up(BLASManager& blas, TLASManager& tlas) {
     BeginTextureMode(warm);
     ClearBackground(BLACK);
     BeginShaderMode(shader_);
+    viewer::tileset_provider::bind_all_to_shader((GLuint)shader_.id);
     Vector2 screen_size = {1.0f, 1.0f};
     if (loc_screen_size_ != -1)
         SetShaderValue(shader_, loc_screen_size_, &screen_size, SHADER_UNIFORM_VEC2);
