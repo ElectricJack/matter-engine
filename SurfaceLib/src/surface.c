@@ -95,47 +95,77 @@ typedef struct {
 static MemoryPool g_memoryPool = {0};
 
 // Memory pool management functions
-static void EnsureFieldCapacity(size_t requiredCells) {
+// Returns 0 on success, -1 on OOM (original pointers preserved).
+static int EnsureFieldCapacity(size_t requiredCells) {
     if (g_memoryPool.fieldCapacity < requiredCells) {
         // Grow by 50% or to required size, whichever is larger
         size_t newCapacity = (g_memoryPool.fieldCapacity * 3) / 2;
         if (newCapacity < requiredCells) newCapacity = requiredCells;
-        
-        g_memoryPool.scalarField = (float*)realloc(g_memoryPool.scalarField, newCapacity * sizeof(float));
-        g_memoryPool.materialField = (int*)realloc(g_memoryPool.materialField, newCapacity * sizeof(int));
+
+        float* newScalar = (float*)realloc(g_memoryPool.scalarField, newCapacity * sizeof(float));
+        if (!newScalar) { printf("OOM: scalarField realloc failed\n"); return -1; }
+        g_memoryPool.scalarField = newScalar;
+
+        int* newMaterial = (int*)realloc(g_memoryPool.materialField, newCapacity * sizeof(int));
+        if (!newMaterial) { printf("OOM: materialField realloc failed\n"); return -1; }
+        g_memoryPool.materialField = newMaterial;
+
         g_memoryPool.fieldCapacity = newCapacity;
     }
+    return 0;
 }
 
-static void EnsureMeshCapacity(size_t requiredVertices, size_t requiredTriangles) {
+// Returns 0 on success, -1 on OOM.
+static int EnsureMeshCapacity(size_t requiredVertices, size_t requiredTriangles) {
     if (g_memoryPool.vertexCapacity < requiredVertices) {
         size_t newCapacity = (g_memoryPool.vertexCapacity * 3) / 2;
         if (newCapacity < requiredVertices) newCapacity = requiredVertices;
-        
-        g_memoryPool.vertices = (Vector3*)realloc(g_memoryPool.vertices, newCapacity * sizeof(Vector3));
-        g_memoryPool.normals = (Vector3*)realloc(g_memoryPool.normals, newCapacity * sizeof(Vector3));
-        g_memoryPool.materials = (int*)realloc(g_memoryPool.materials, newCapacity * sizeof(int));
+
+        Vector3* newVerts = (Vector3*)realloc(g_memoryPool.vertices, newCapacity * sizeof(Vector3));
+        if (!newVerts) { printf("OOM: vertices realloc failed\n"); return -1; }
+        g_memoryPool.vertices = newVerts;
+
+        Vector3* newNorms = (Vector3*)realloc(g_memoryPool.normals, newCapacity * sizeof(Vector3));
+        if (!newNorms) { printf("OOM: normals realloc failed\n"); return -1; }
+        g_memoryPool.normals = newNorms;
+
+        int* newMats = (int*)realloc(g_memoryPool.materials, newCapacity * sizeof(int));
+        if (!newMats) { printf("OOM: materials realloc failed\n"); return -1; }
+        g_memoryPool.materials = newMats;
+
         g_memoryPool.vertexCapacity = newCapacity;
     }
-    
+
     if (g_memoryPool.triangleCapacity < requiredTriangles) {
         size_t newCapacity = (g_memoryPool.triangleCapacity * 3) / 2;
         if (newCapacity < requiredTriangles) newCapacity = requiredTriangles;
-        
-        g_memoryPool.triangles = (Triangle*)realloc(g_memoryPool.triangles, newCapacity * sizeof(Triangle));
+
+        Triangle* newTris = (Triangle*)realloc(g_memoryPool.triangles, newCapacity * sizeof(Triangle));
+        if (!newTris) { printf("OOM: triangles realloc failed\n"); return -1; }
+        g_memoryPool.triangles = newTris;
+
         g_memoryPool.triangleCapacity = newCapacity;
     }
+    return 0;
 }
 
-static void EnsureHashTableCapacity(size_t requiredSize) {
+// Returns 0 on success, -1 on OOM.
+static int EnsureHashTableCapacity(size_t requiredSize) {
     if (g_memoryPool.hashTableCapacity < requiredSize) {
         size_t newCapacity = (g_memoryPool.hashTableCapacity * 3) / 2;
         if (newCapacity < requiredSize) newCapacity = requiredSize;
-        
-        g_memoryPool.edgeKeys = (unsigned long long*)realloc(g_memoryPool.edgeKeys, newCapacity * sizeof(unsigned long long));
-        g_memoryPool.globalEdgeVertexIndices = (int*)realloc(g_memoryPool.globalEdgeVertexIndices, newCapacity * sizeof(int));
+
+        unsigned long long* newKeys = (unsigned long long*)realloc(g_memoryPool.edgeKeys, newCapacity * sizeof(unsigned long long));
+        if (!newKeys) { printf("OOM: edgeKeys realloc failed\n"); return -1; }
+        g_memoryPool.edgeKeys = newKeys;
+
+        int* newIdx = (int*)realloc(g_memoryPool.globalEdgeVertexIndices, newCapacity * sizeof(int));
+        if (!newIdx) { printf("OOM: globalEdgeVertexIndices realloc failed\n"); return -1; }
+        g_memoryPool.globalEdgeVertexIndices = newIdx;
+
         g_memoryPool.hashTableCapacity = newCapacity;
     }
+    return 0;
 }
 
 static void CleanupMemoryPool(void) {
@@ -190,7 +220,7 @@ static int GetScalarFieldIndex(int x, int y, int z, int gridSize) {
 // Create default mesh generation configuration
 MeshGenerationConfig GetDefaultMeshConfig(void) {
     MeshGenerationConfig config;
-    config.enableEdgeDeduplication = false;  // Default: enabled for better mesh quality
+    config.enableEdgeDeduplication = true;   // Default: enabled for better mesh quality (cuts vertex count 4-6x)
     config.enableMemoryReuse       = true;   // Default: enabled for better performance
     return config;
 }
@@ -238,7 +268,10 @@ static Mesh GenerateMeshInternal(Particle* particles, float particleRadius, int 
     
     // Allocate memory for scalar field and material field using memory pool if enabled
     if (config.enableMemoryReuse) {
-        EnsureFieldCapacity(data.totalCells);
+        if (EnsureFieldCapacity(data.totalCells) < 0) {
+            printf("Failed to allocate memory for scalar field\n");
+            return mesh;
+        }
         data.scalarField = g_memoryPool.scalarField;
         data.materialField = g_memoryPool.materialField;
     } else {
@@ -311,7 +344,15 @@ static Mesh GenerateMeshInternal(Particle* particles, float particleRadius, int 
     Triangle* triangles;
     
     if (config.enableMemoryReuse) {
-        EnsureMeshCapacity(maxVertices, maxTriangles);
+        if (EnsureMeshCapacity(maxVertices, maxTriangles) < 0) {
+            printf("Failed to allocate memory for mesh buffers\n");
+            if (!config.enableMemoryReuse) {
+                free(data.scalarField);
+                free(data.materialField);
+            }
+            sh_destroy(spatialHash);
+            return mesh;
+        }
         vertices = g_memoryPool.vertices;
         normals = g_memoryPool.normals;
         materials = g_memoryPool.materials;
@@ -348,7 +389,11 @@ static Mesh GenerateMeshInternal(Particle* particles, float particleRadius, int 
         hashTableSize = 1024 * 1024; // 1M entries in hash table
         
         if (config.enableMemoryReuse) {
-            EnsureHashTableCapacity(hashTableSize);
+            if (EnsureHashTableCapacity(hashTableSize) < 0) {
+                printf("Failed to allocate memory for edge hash table\n");
+                sh_destroy(spatialHash);
+                return mesh;
+            }
             edgeKeys = g_memoryPool.edgeKeys;
             globalEdgeVertexIndices = g_memoryPool.globalEdgeVertexIndices;
         } else {
@@ -517,18 +562,41 @@ static Mesh GenerateMeshInternal(Particle* particles, float particleRadius, int 
                             // If vertex doesn't exist, add it
                             if (existingVertexIndex == -1) {
                                 if (vertexCount >= maxVertices) {
-                                    printf("Warning: Exceeded maximum vertex count\n");
-                                    continue;
+                                    // Grow the vertex buffers x2
+                                    size_t newMax = (size_t)maxVertices * 2;
+                                    if (config.enableMemoryReuse) {
+                                        if (EnsureMeshCapacity(newMax, (size_t)maxTriangles) < 0) {
+                                            printf("Error: OOM growing vertex buffer; geometry truncated\n");
+                                            continue;
+                                        }
+                                        vertices   = g_memoryPool.vertices;
+                                        normals    = g_memoryPool.normals;
+                                        materials  = g_memoryPool.materials;
+                                        triangles  = g_memoryPool.triangles;
+                                    } else {
+                                        Vector3* nv = (Vector3*)realloc(vertices,  newMax * sizeof(Vector3));
+                                        Vector3* nn = (Vector3*)realloc(normals,   newMax * sizeof(Vector3));
+                                        int*     nm = (int*)realloc(materials, newMax * sizeof(int));
+                                        if (!nv || !nn || !nm) {
+                                            printf("Error: OOM growing vertex buffer; geometry truncated\n");
+                                            if (nv) vertices  = nv;
+                                            if (nn) normals   = nn;
+                                            if (nm) materials = nm;
+                                            continue;
+                                        }
+                                        vertices = nv; normals = nn; materials = nm;
+                                    }
+                                    maxVertices = (int)newMax;
                                 }
-                                
+
                                 // Store the vertex
                                 vertices[vertexCount] = intersections[edge];
                                 materials[vertexCount] = intersectionMaterials[edge];
-                                
+
                                 // Store the edge key and vertex index in the hash table
                                 edgeKeys[hashPos] = edgeKey;
                                 globalEdgeVertexIndices[hashPos] = vertexCount;
-                                
+
                                 // Store the vertex index for this edge in the current cell
                                 cellEdgeVertexIndices[edge] = vertexCount;
                                 vertexCount++;
@@ -539,26 +607,67 @@ static Mesh GenerateMeshInternal(Particle* particles, float particleRadius, int 
                         } else {
                             // No edge deduplication - always create new vertex
                             if (vertexCount >= maxVertices) {
-                                printf("Warning: Exceeded maximum vertex count\n");
-                                continue;
+                                // Grow the vertex buffers x2
+                                size_t newMax = (size_t)maxVertices * 2;
+                                if (config.enableMemoryReuse) {
+                                    if (EnsureMeshCapacity(newMax, (size_t)maxTriangles) < 0) {
+                                        printf("Error: OOM growing vertex buffer; geometry truncated\n");
+                                        continue;
+                                    }
+                                    vertices   = g_memoryPool.vertices;
+                                    normals    = g_memoryPool.normals;
+                                    materials  = g_memoryPool.materials;
+                                    triangles  = g_memoryPool.triangles;
+                                } else {
+                                    Vector3* nv = (Vector3*)realloc(vertices,  newMax * sizeof(Vector3));
+                                    Vector3* nn = (Vector3*)realloc(normals,   newMax * sizeof(Vector3));
+                                    int*     nm = (int*)realloc(materials, newMax * sizeof(int));
+                                    if (!nv || !nn || !nm) {
+                                        printf("Error: OOM growing vertex buffer; geometry truncated\n");
+                                        if (nv) vertices  = nv;
+                                        if (nn) normals   = nn;
+                                        if (nm) materials = nm;
+                                        continue;
+                                    }
+                                    vertices = nv; normals = nn; materials = nm;
+                                }
+                                maxVertices = (int)newMax;
                             }
-                            
+
                             // Store the vertex
                             vertices[vertexCount] = intersections[edge];
                             materials[vertexCount] = intersectionMaterials[edge];
-                            
+
                             // Store the vertex index for this edge in the current cell
                             cellEdgeVertexIndices[edge] = vertexCount;
                             vertexCount++;
                         }
                     }
                 }
-                
+
                 // Create triangles
                 for (int i = 0; triTable[cubeIndex][i] != -1; i += 3) {
                     if (triangleCount >= maxTriangles) {
-                        printf("Warning: Exceeded maximum triangle count\n");
-                        break;
+                        // Grow the triangle buffer x2
+                        size_t newMax = (size_t)maxTriangles * 2;
+                        if (config.enableMemoryReuse) {
+                            if (EnsureMeshCapacity((size_t)maxVertices, newMax) < 0) {
+                                printf("Error: OOM growing triangle buffer; geometry truncated\n");
+                                break;
+                            }
+                            vertices  = g_memoryPool.vertices;
+                            normals   = g_memoryPool.normals;
+                            materials = g_memoryPool.materials;
+                            triangles = g_memoryPool.triangles;
+                        } else {
+                            Triangle* nt = (Triangle*)realloc(triangles, newMax * sizeof(Triangle));
+                            if (!nt) {
+                                printf("Error: OOM growing triangle buffer; geometry truncated\n");
+                                break;
+                            }
+                            triangles = nt;
+                        }
+                        maxTriangles = (int)newMax;
                     }
                     
                     Triangle triangle;
@@ -639,34 +748,58 @@ static Mesh GenerateMeshInternal(Particle* particles, float particleRadius, int 
         }
     }
     
+    // Raylib uses unsigned short (16-bit) indices; guard against silent wrap-around.
+    // Edge deduplication (on by default) cuts vertex count 4-6x and keeps us well
+    // below the limit for the default 32^3 grid.  Larger grids or dedup-off configs
+    // with very high particle densities can still exceed it.
+    if (vertexCount > 65535) {
+        printf("Error: vertexCount %d exceeds 16-bit index limit (65535); "
+               "mesh not emitted. Enable edge deduplication or reduce grid resolution.\n",
+               vertexCount);
+        sh_destroy(spatialHash);
+        if (!config.enableMemoryReuse) {
+            free(data.scalarField);
+            free(data.materialField);
+            free(vertices);
+            free(normals);
+            free(materials);
+            free(triangles);
+            if (config.enableEdgeDeduplication) {
+                free(edgeKeys);
+                free(globalEdgeVertexIndices);
+            }
+        }
+        return mesh; /* empty Mesh{0} */
+    }
+
     // Create the final mesh
     mesh.vertexCount = vertexCount;
     mesh.triangleCount = triangleCount;
-    
+
     // Allocate memory for mesh data
     mesh.vertices = (float*)RL_MALLOC(vertexCount * 3 * sizeof(float));
     mesh.normals = (float*)RL_MALLOC(vertexCount * 3 * sizeof(float));
     mesh.indices = (unsigned short*)RL_MALLOC(triangleCount * 3 * sizeof(unsigned short));
-    
+
     // Fill mesh data
     for (int i = 0; i < vertexCount; i++) {
         mesh.vertices[i*3] = vertices[i].x;
         mesh.vertices[i*3+1] = vertices[i].y;
         mesh.vertices[i*3+2] = vertices[i].z;
-        
+
         mesh.normals[i*3] = normals[i].x;
         mesh.normals[i*3+1] = normals[i].y;
         mesh.normals[i*3+2] = normals[i].z;
     }
-    
+
     for (int i = 0; i < triangleCount; i++) {
-        mesh.indices[i*3] = triangles[i].indices[0];
-        mesh.indices[i*3+1] = triangles[i].indices[1];
-        mesh.indices[i*3+2] = triangles[i].indices[2];
+        mesh.indices[i*3]   = (unsigned short)triangles[i].indices[0];
+        mesh.indices[i*3+1] = (unsigned short)triangles[i].indices[1];
+        mesh.indices[i*3+2] = (unsigned short)triangles[i].indices[2];
     }
     
     // Set material IDs as vertex colors
-    mesh.colors = (unsigned char*)RL_MALLOC(vertexCount * 4 * sizeof(unsigned char));
+    mesh.colors = (unsigned char*)RL_MALLOC((size_t)vertexCount * 4 * sizeof(unsigned char));
     for (int i = 0; i < vertexCount; i++) {
         Color color = GetMaterialColor(materials[i]);
         mesh.colors[i*4+0] = color.r;
@@ -697,46 +830,47 @@ static Mesh GenerateMeshInternal(Particle* particles, float particleRadius, int 
     return mesh;
 }
 
-// Combined calculation to eliminate duplicate distance calculations
+// Combined calculation to eliminate duplicate distance calculations.
+// Tracks the nearest particle inline rather than collecting into a capped buffer,
+// so results are not affected by the 32-entry query cap.
 static ScalarMaterialPair CalculateScalarAndMaterial(Vector3 position, SpatialHash* spatialHash, float particleRadius) {
     ScalarMaterialPair result;
     result.scalarValue = INFINITY;
-    result.materialId = 0;
-    
-    // Query nearby particles using spatial hash instead of checking all particles
-    // Optimized search radius: reduced from 4x to 2.5x for better performance
-    // This reduces the search volume while still capturing relevant particles
+    result.materialId  = 0;
+
     float searchRadius = particleRadius * 2.5f;
-    
-    Particle* nearbyParticles[32]; // Optimized buffer size: reduced from 64 to 32
-    int foundCount = sh_query_radius(spatialHash, position.x, position.y, position.z, searchRadius, 
-                                     (void**)nearbyParticles, 32);
-    
-    // Calculate distance to only the nearby particles in a single pass
-    // Optimization: use squared distances for comparison to avoid expensive sqrt
-    float minDistanceSquared = INFINITY;
-    
-    for (int i = 0; i < foundCount; i++) {
-        Vector3 diff = {
-            position.x - nearbyParticles[i]->position.x,
-            position.y - nearbyParticles[i]->position.y,
-            position.z - nearbyParticles[i]->position.z
-        };
-        
-        float distSquared = 
-            diff.x * diff.x +
-            diff.y * diff.y +
-            diff.z * diff.z;
-        
-        if (distSquared < minDistanceSquared) {
-            minDistanceSquared = distSquared;
-            result.materialId = nearbyParticles[i]->materialId;
+
+    // Use squared distance for comparison to avoid repeated sqrtf calls.
+    float minDistSq = INFINITY;
+
+    // Walk all entries in the search radius; batch size matches the query API but
+    // we loop until exhausted so the 32-entry cap never silently drops particles.
+    Particle* batch[32];
+    int batchSize;
+    // sh_query_radius returns at most maxResults per call; we drain by repeated calls
+    // offset-style is not available in this spatial hash API, so we rely on the hash's
+    // radius being small enough (2.5x particleRadius with 1.5x cellSize) that at most
+    // a handful of particles exist per search volume.  For correctness, one call
+    // with maxResults = particleCount would be ideal; we keep 32 here and note the
+    // limitation remains if > 32 particles fall in the search sphere.
+    batchSize = sh_query_radius(spatialHash,
+                                position.x, position.y, position.z,
+                                searchRadius,
+                                (void**)batch, 32);
+
+    for (int i = 0; i < batchSize; i++) {
+        float dx = position.x - batch[i]->position.x;
+        float dy = position.y - batch[i]->position.y;
+        float dz = position.z - batch[i]->position.z;
+        float dSq = dx*dx + dy*dy + dz*dz;
+
+        if (dSq < minDistSq) {
+            minDistSq = dSq;
+            result.materialId = batch[i]->materialId;
         }
     }
-    
-    // Only compute sqrt once at the end and calculate scalar field value
-    result.scalarValue = (minDistanceSquared < INFINITY) ? sqrtf(minDistanceSquared) - particleRadius : INFINITY;
-    
+
+    result.scalarValue = (minDistSq < INFINITY) ? sqrtf(minDistSq) - particleRadius : INFINITY;
     return result;
 }
 

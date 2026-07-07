@@ -143,8 +143,6 @@ int main(int argc, char** argv) {
     }
     else
     {
-        Material defaultMat = LoadMaterialDefault();
-
         // Main game loop - limited to 30 seconds for performance analysis
         while (!WindowShouldClose() && (GetTime() - startTime) < MAX_RUN_TIME) {  // Detect window close button or ESC key
             UpdateCamera(&camera, CAMERA_ORBITAL);      // Update camera
@@ -185,7 +183,33 @@ int main(int argc, char** argv) {
             //if (mesh.vertices) UnloadMesh(mesh);
             mesh = GenerateMesh(particles, PARTICLE_RADIUS, particleCount, volume);
 
-            
+            // Compute mesh bounds from vertex positions
+            if (mesh.vertices && mesh.vertexCount > 0) {
+                meshMin = (Vector3){ mesh.vertices[0], mesh.vertices[1], mesh.vertices[2] };
+                meshMax = meshMin;
+                for (int vi = 1; vi < mesh.vertexCount; vi++) {
+                    float vx = mesh.vertices[vi*3+0];
+                    float vy = mesh.vertices[vi*3+1];
+                    float vz = mesh.vertices[vi*3+2];
+                    if (vx < meshMin.x) meshMin.x = vx;
+                    if (vy < meshMin.y) meshMin.y = vy;
+                    if (vz < meshMin.z) meshMin.z = vz;
+                    if (vx > meshMax.x) meshMax.x = vx;
+                    if (vy > meshMax.y) meshMax.y = vy;
+                    if (vz > meshMax.z) meshMax.z = vz;
+                }
+                meshCenter = (Vector3){
+                    (meshMin.x + meshMax.x) * 0.5f,
+                    (meshMin.y + meshMax.y) * 0.5f,
+                    (meshMin.z + meshMax.z) * 0.5f
+                };
+                meshSize = (Vector3){
+                    meshMax.x - meshMin.x,
+                    meshMax.y - meshMin.y,
+                    meshMax.z - meshMin.z
+                };
+            }
+
             // Upload mesh data to GPU (VAO)
             UploadMesh(&mesh, false);
 
@@ -214,11 +238,11 @@ int main(int argc, char** argv) {
                     if (wireframe) {
                         // Use wireframe mode
                         rlEnableWireMode();
-                        DrawMesh(mesh, defaultMat, MatrixIdentity());
+                        DrawMesh(mesh, material, MatrixIdentity());
                         rlDisableWireMode();
                     } else {
                         // Draw solid model with a bright color
-                        DrawMesh(mesh, defaultMat, MatrixIdentity());
+                        DrawMesh(mesh, material, MatrixIdentity());
                     }
                     
                     
