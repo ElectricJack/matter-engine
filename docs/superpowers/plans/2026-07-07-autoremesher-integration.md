@@ -8,6 +8,15 @@
 
 **Tech Stack:** C++17, existing per-project Makefile build system, quickjs-ng DSL, raylib, per-`MatterSurfaceLib`-project test binaries (`main.cpp` runs test suites), vendored deps `geogram` (BSD-3), `isotropicremesher` (Instant-Meshes-derivative), `eigen` (MPL-2), `tbb` (Apache-2).
 
+## Agent Model Assignment
+
+Each task carries an **Agent Model:** designation identifying which model runs the task and, where applicable, which model reviews the work. Steps within a task use the same model as the task.
+
+- **Opus** — investigation, judgment calls, open-ended debug loops, semantic-preserving refactors, integration decisions. Any task where the plan's code is aspirational or where discovering the existing pattern is part of the work.
+- **Sonnet implementation, Opus review** — tasks where the code is fully specified in the plan and implementation is largely mechanical. Sonnet writes; Opus does a targeted review focused on the specific risk noted per task (not a full re-read).
+
+Reviews after Sonnet tasks should be small, focused checks — not full task redos. If Opus review surfaces issues that require substantial rework, that's a signal the task was miscategorized and should be reclassified as Opus-implemented for the fix.
+
 ## Global Constraints
 
 Copied verbatim from the spec — every task's requirements implicitly include these:
@@ -95,6 +104,8 @@ Tasks 7–10 can proceed in parallel with 1–6 — MSL work only needs the vend
 ---
 
 ## Task 1: Scaffold `Libraries/autoremesher_core/` and produce UPSTREAM.md
+
+**Agent Model:** Opus — upstream repo enumeration and UPSTREAM.md drafting require judgment about which upstream files map to the spec's named pipeline stages, and whether Deviations need to be recorded.
 
 **Files:**
 - Create: `Libraries/autoremesher_core/LICENSE`
@@ -234,6 +245,8 @@ git commit -m "chore(autoremesher_core): scaffold vendored library dir with UPST
 
 ## Task 2: Vendor thirdparty deps into `Libraries/autoremesher_core/thirdparty/`
 
+**Agent Model:** Sonnet implementation, Opus review — mechanical `curl | tar` per subtree and known-name GPL-module removal. Opus review confirms no accidental Qt content survived, GPL modules are absent, and sampled copyright headers were preserved.
+
 **Files:**
 - Create: `Libraries/autoremesher_core/thirdparty/geogram/`
 - Create: `Libraries/autoremesher_core/thirdparty/isotropicremesher/`
@@ -312,6 +325,8 @@ git commit -m "chore(autoremesher_core): vendor geogram, isotropicremesher, eige
 
 ## Task 3: Vendor autoremesher pipeline sources
 
+**Agent Model:** Opus — upstream filenames rarely match the spec's naming verbatim; requires deciding on file-to-file renames, sourcing companion headers, updating UPSTREAM.md's Deviations, and stripping Qt includes without breaking compilation.
+
 **Files:**
 - Create: `Libraries/autoremesher_core/src/mesh_sanitize.cpp` (+ companion header if upstream has one)
 - Create: `Libraries/autoremesher_core/src/param_hdc.cpp` (+ companion header if upstream has one)
@@ -366,6 +381,8 @@ git commit -m "chore(autoremesher_core): vendor pipeline sources (sanitize/param
 ---
 
 ## Task 4: `Libraries/autoremesher_core/Makefile` builds `libautoremesher_core.a`
+
+**Agent Model:** Opus — the iterative "add source until it links" loop on geogram is open-ended; may need to fall back to a CMake shim per the spec's noted open item. Requires reading geogram's headers to walk the include graph.
 
 **Files:**
 - Create: `Libraries/autoremesher_core/Makefile`
@@ -460,6 +477,8 @@ git commit -m "build(autoremesher_core): Makefile + build-all.sh integration"
 
 ## Task 5: Public API header `autoremesher/remesh.h`
 
+**Agent Model:** Sonnet implementation, Opus review — header contents are verbatim from the spec. Opus review confirms no drift from the spec's field types/defaults and that the standalone-compile check passes.
+
 **Files:**
 - Create: `Libraries/autoremesher_core/include/autoremesher/remesh.h`
 
@@ -535,6 +554,8 @@ git commit -m "feat(autoremesher_core): public API header"
 ---
 
 ## Task 6: Driver `src/remesh.cpp` + standalone smoke test
+
+**Agent Model:** Opus — the plan's `ar_internal::` forward declarations are aspirational scaffolding. Real upstream signatures must be discovered by reading the vendored sources from Task 3, and the driver body adapted to match. Failure debugging requires tracing pipeline-stage semantics.
 
 **Files:**
 - Create: `Libraries/autoremesher_core/src/remesh.cpp`
@@ -790,6 +811,8 @@ git commit -m "feat(autoremesher_core): driver + cube smoke test"
 ---
 
 ## Task 7: MSL `MeshIndexed` type + tests
+
+**Agent Model:** Sonnet implementation, Opus review — struct definitions, weld implementation, and TDD tests are fully specified in the plan. Opus review focuses on weld-tolerance edge cases at the epsilon grid boundary (positions that quantize to different keys despite being within epsilon of each other).
 
 **Files:**
 - Create: `MatterSurfaceLib/include/mesh_indexed.hpp`
@@ -1141,6 +1164,8 @@ git commit -m "feat(MSL): MeshIndexed type with from_tri/to_tri weld"
 
 ## Task 8: MSL `mesh_transform.hpp` + `reproject_triex`
 
+**Agent Model:** Opus — the plan explicitly flags its O(N*M) fallback as a placeholder to remove. Faithful port of the existing `lod_bake::reproject_triex` spatial-hash algorithm requires reading the current implementation and preserving its exact semantics (cell-size heuristic, tie-breaking).
+
 **Files:**
 - Create: `MatterSurfaceLib/include/mesh_transform.hpp`
 - Create: `MatterSurfaceLib/src/mesh_transform.cpp`
@@ -1338,6 +1363,8 @@ git commit -m "refactor: move reproject_triex from lod_bake to MSL"
 
 ## Task 9: MSL `mesh_simplifier` `MeshIndexed` overload
 
+**Agent Model:** Sonnet implementation, Opus review — shim code is fully specified. Opus review checks the `unsigned short` 65535-vert guard, MemAlloc/MemFree pairing (raylib allocator ownership), and the degenerate-output fallback (`if (simplified.vertexCount == 0)`).
+
 **Files:**
 - Modify: `MatterSurfaceLib/include/mesh_simplifier.hpp` — add overload declaration
 - Modify: `MatterSurfaceLib/src/mesh_simplifier.cpp` — implement overload as a shim
@@ -1493,6 +1520,8 @@ git commit -m "feat(MSL): mesh_simplifier MeshIndexed overload (shim)"
 ---
 
 ## Task 10: MSL `mesh_retopo` module + tests
+
+**Agent Model:** Sonnet implementation, Opus review — module wiring is fully specified. Opus review checks the `MeshIndexed` ↔ `autoremesher::Mesh` conversion for position and index ordering, the failure-fallback path (empty output on `ok=false`), and that `reproject_triex` is called on the retopo'd result rather than the input.
 
 **Files:**
 - Create: `MatterSurfaceLib/include/mesh_retopo.hpp`
@@ -1790,6 +1819,8 @@ git commit -m "feat(MSL): mesh_retopo module wrapping autoremesher_core"
 
 ## Task 11: MatterEngine3 `lod_bake.cpp` refactored to consume `MeshIndexed`
 
+**Agent Model:** Opus — refactoring `bake_lods` and the ladder loop without changing semantics requires reading the existing implementation end-to-end and preserving byte-identical output on existing tests. AABB computation for `use_aabb_bounds=true` must be lifted from the current implementation exactly.
+
 **Files:**
 - Modify: `MatterEngine3/src/lod_bake.cpp`
 - Modify: `MatterEngine3/include/lod_bake.h` (if any signatures change)
@@ -1902,6 +1933,8 @@ git commit -m "refactor(lod_bake): route through MeshIndexed, remove tris_to_mes
 ---
 
 ## Task 12: DSL `retopo` block + `RetopoSettings` on part definition
+
+**Agent Model:** Opus — existing DSL binding pattern (quickjs-ng property parsing, helper macros) must be discovered by reading `dsl_bindings.cpp`. `part_asset_v2` serialization versioning has back-compat implications: existing parts on disk must load cleanly with `retopo` defaulted.
 
 **Files:**
 - Modify: `MatterEngine3/include/part_asset_v2.h` — add `RetopoSettings` struct
@@ -2027,6 +2060,8 @@ git commit -m "feat(dsl): retopo block on part definition + serialization"
 ---
 
 ## Task 13: Retopo pipeline hook in `part_flatten` + `.retopo.part` cache
+
+**Agent Model:** Opus — must discover the existing `.flat.part` cache infrastructure (cache dir, hashing scheme, serialization codec) by reading `part_flatten.cpp` and mirror it faithfully. Log-line format must match the spec exactly for greppability; hash-key composition affects cache correctness.
 
 **Files:**
 - Modify: `MatterEngine3/src/part_flatten.cpp` — insert retopo call between flatten and QEM ladder
@@ -2171,6 +2206,8 @@ git commit -m "feat(part_flatten): retopo hook + .retopo.part cache read/write"
 
 ## Task 14: Retopo integration test
 
+**Agent Model:** Opus — the integration test relies on hooks (`retopo_invocation_count`, `bake_world`, `make_temp_cache_dir`) that may not exist in the current test harness and require judgment to add. Windows cross-build integration step may require reading `build-all.sh` and mimicking `raylib`/`imgui` patterns.
+
 **Files:**
 - Create: `MatterEngine3/tests/retopo_integration_tests.cpp`
 - Modify: `MatterEngine3/Makefile` — add source
@@ -2311,6 +2348,8 @@ git commit -m "test(retopo): end-to-end bake integration test"
 ---
 
 ## Task 15: E2E — Tree.js retopo opt-in + viewer smoke
+
+**Agent Model:** Opus — visual regression judgment (silhouette cleanliness at LOD1/LOD2, shading smoothness on trunk/branches) requires taste. Tree.js opt-in requires reading the existing schema to place the `retopo` block correctly. Diagnosing meadow-scale bake failures crosses multiple pipeline stages.
 
 **Files:**
 - Modify: `MatterEngine3/examples/world_demo/schemas/Tree.js` — add `retopo` block
