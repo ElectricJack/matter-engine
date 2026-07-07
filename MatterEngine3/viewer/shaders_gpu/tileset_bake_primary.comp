@@ -29,7 +29,11 @@ uniform int aoEnabled;
 
 // -----------------------------------------------------------------------------
 // BVH sampler uniforms + intersectScene (textually included from viewer/shaders).
+// Strip shadow* functions — primary bake never casts shadow rays, and their
+// definitions push NVIDIA's NVcp5.0 compute profile over the local-parameter
+// limit on Windows.
 // -----------------------------------------------------------------------------
+#define TILESET_COMPUTE_NO_SHADOW
 #include "bvh_tlas_common.glsl"
 
 // Material SSBO: MATERIAL_FLOATS_PER_DEF = 12 floats per id, packed.

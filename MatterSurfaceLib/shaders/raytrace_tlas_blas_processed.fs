@@ -675,6 +675,12 @@ bool shadowIntersectTri(Ray ray, Triangle tri, float maxDist)
     return (t > 0.0001 && t < maxDist);
 }
 
+// Compute-shader opt-out: shadow* code is only used by the AO bake and by
+// raster/raytrace paths. Primary bake compute shaders never call shadowQuery,
+// but NVIDIA's compiler still inlines these definitions and consumes local
+// parameter slots — enough to blow the NVcp5.0 limit on Windows/NVIDIA. Gate
+// the whole section so the primary bake can define TILESET_COMPUTE_NO_SHADOW.
+#ifndef TILESET_COMPUTE_NO_SHADOW
 bool shadowBVHIntersect(Ray ray, uint blasOffset, float maxDist)
 {
     int stack[32];
@@ -783,6 +789,7 @@ bool shadowQuery(vec3 origin, vec3 dir, float maxDist)
     }
     return false;
 }
+#endif // TILESET_COMPUTE_NO_SHADOW
 
 // Main intersection interface. maxT bounds the search: seeding the ray's hit.t
 // lets AABB/triangle tests prune anything past maxT, so a short maxT (e.g. a
