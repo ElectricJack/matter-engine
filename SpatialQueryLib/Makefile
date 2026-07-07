@@ -34,6 +34,14 @@ $(OBJ_DIR)/$(SRC_DIR)/%.o: $(SRC_DIR)/%.c $(HEADERS)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 clean:
-	rm -rf $(OBJ_DIR) $(TARGET)
+	rm -rf $(OBJ_DIR) $(TARGET) spatial_hash_tests
 
-.PHONY: all clean
+# Test target: build and run spatial hash tests with AddressSanitizer + UBSan
+TEST_SRCS = tests/spatial_hash_tests.c src/spatial_hash.c src/object_allocator.c
+TEST_FLAGS = -Wall -Wextra -g -I./include -fsanitize=address,undefined -lm
+
+test: $(TEST_SRCS)
+	$(CC) $(TEST_FLAGS) -o spatial_hash_tests $(TEST_SRCS)
+	./spatial_hash_tests
+
+.PHONY: all clean test
