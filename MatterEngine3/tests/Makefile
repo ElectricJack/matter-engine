@@ -99,6 +99,7 @@ SCRIPT_CPP = script_host_tests.cpp ../src/script_host.cpp ../src/dsl_state.cpp .
              ../src/dsl_bindings.cpp ../src/csg_lowering.cpp ../src/module_resolver.cpp ../src/part_asset_v2.cpp ../src/lod_bake.cpp \
              ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
              ../../MatterSurfaceLib/src/cluster.cpp ../../MatterSurfaceLib/src/cell.cpp ../../MatterSurfaceLib/src/mesh_simplifier.cpp \
+             ../../MatterSurfaceLib/src/mesh_indexed.cpp \
              ../../MatterSurfaceLib/src/blas_manager.cpp ../../MatterSurfaceLib/src/bvh.cpp ../../MatterSurfaceLib/src/bvh_analyzer.cpp \
              ../../MatterSurfaceLib/src/mesh_worker_pool.cpp ../../MatterSurfaceLib/src/mesh_build_utils.cpp \
              ../../MatterSurfaceLib/src/meshing_algorithm.cpp ../../MatterSurfaceLib/src/marching_cubes_algorithm.cpp \
@@ -156,6 +157,7 @@ GRAPH_INT_CPP = part_graph_integration_tests.cpp ../src/part_graph.cpp \
                 ../src/dsl_bindings.cpp ../src/csg_lowering.cpp ../src/module_resolver.cpp ../src/part_asset_v2.cpp ../src/lod_bake.cpp \
                 ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
                 ../../MatterSurfaceLib/src/cluster.cpp ../../MatterSurfaceLib/src/cell.cpp ../../MatterSurfaceLib/src/mesh_simplifier.cpp \
+                ../../MatterSurfaceLib/src/mesh_indexed.cpp \
                 ../../MatterSurfaceLib/src/blas_manager.cpp ../../MatterSurfaceLib/src/bvh.cpp ../../MatterSurfaceLib/src/bvh_analyzer.cpp \
                 ../../MatterSurfaceLib/src/mesh_worker_pool.cpp ../../MatterSurfaceLib/src/mesh_build_utils.cpp \
                 ../../MatterSurfaceLib/src/meshing_algorithm.cpp ../../MatterSurfaceLib/src/marching_cubes_algorithm.cpp \
@@ -271,6 +273,7 @@ COMP_TARGET = composition_tests
 COMP_CPP = composition_tests.cpp ../src/lod_bake.cpp ../src/world_flatten.cpp \
            ../src/sector_grid.cpp ../src/lod_select.cpp ../src/part_asset_v2.cpp \
            ../../MatterSurfaceLib/src/mesh_simplifier.cpp \
+           ../../MatterSurfaceLib/src/mesh_indexed.cpp \
            ../../MatterSurfaceLib/src/blas_manager.cpp \
            ../../MatterSurfaceLib/src/bvh.cpp \
            ../../MatterSurfaceLib/src/tlas_manager.cpp \
@@ -575,6 +578,7 @@ TILESETBAKE_CPP = tileset_bake_tests.cpp ../src/part_graph.cpp \
                   ../src/tileset_placement.cpp ../src/tileset_layout.cpp \
                   ../../MatterSurfaceLib/src/cluster.cpp ../../MatterSurfaceLib/src/cell.cpp \
                   ../../MatterSurfaceLib/src/mesh_simplifier.cpp \
+                  ../../MatterSurfaceLib/src/mesh_indexed.cpp \
                   ../../MatterSurfaceLib/src/blas_manager.cpp \
                   ../../MatterSurfaceLib/src/bvh.cpp \
                   ../../MatterSurfaceLib/src/bvh_analyzer.cpp \

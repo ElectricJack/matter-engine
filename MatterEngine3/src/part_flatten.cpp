@@ -814,11 +814,15 @@ static FlattenResult flatten_part_impl(const std::string& cache_root,
             // would over-freeze cluster interiors that touch the cluster AABB.
             std::vector<Tri> geo = lod_bake::decimate_to_error(ctris, eps, /*use_aabb_bounds=*/false);
             if (geo.empty() || geo.size() >= prev_count) continue;  // no progress
-            // Task 8 wrap: reproject_triex now lives in MSL and operates on
-            // MeshIndexed. Weld both source (ctris/ctriex) and target (geo)
-            // into MeshIndexed, run the MSL reprojection, then unweld back to
-            // parallel Tri/TriEx vectors. Task 11 will collapse this once
-            // part_flatten's own pipeline speaks MeshIndexed at its boundary.
+            // reproject_triex lives in MSL and operates on MeshIndexed
+            // (Task 8). part_flatten's ladder still works at the Tri/TriEx
+            // boundary (that's what lod_bake::decimate_to_error returns and
+            // what BLASManager::register_triangles takes), so we adapt: weld
+            // source (ctris/ctriex) and target (geo) into MeshIndexed, run
+            // the MSL reprojection, then unweld to parallel Tri/TriEx.
+            // Task 11 kept this shape — the wrap is minimal and there's no
+            // way to collapse further without changing decimate_to_error's
+            // public Tri-in/Tri-out signature.
             std::vector<TriEx> ex;
             {
                 MeshIndexed src_m = from_tri(ctris, &ctriex);
