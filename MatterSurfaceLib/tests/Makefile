@@ -64,10 +64,10 @@ TARGET = minimal_cell_test
 $(TARGET): $(MAIN_SOURCE) $(MATTER_SOURCES)
 	$(CC) $(MAIN_SOURCE) $(MATTER_SOURCES) -o $(TARGET) $(CFLAGS) $(INCLUDE_PATHS) $(LDFLAGS) $(LDLIBS)
 
-.PHONY: clean run run-simp run-blas run-cell run-cont run-reg run-tint run-cull run-par run-cube run-ao run-part run-vox
+.PHONY: clean run run-simp run-blas run-cell run-cont run-reg run-tint run-cull run-par run-cube run-ao run-part run-vox run-midx
 
 clean:
-	rm -f $(TARGET) $(SIMP_TARGET) $(BLAS_TARGET) $(CELL_TARGET) $(CONT_TARGET) $(REG_TARGET) $(TINT_TARGET) $(CULL_TARGET) $(PAR_TARGET) $(CUBE_TARGET) $(AO_TARGET) $(PART_TARGET) $(VOX_TARGET)
+	rm -f $(TARGET) $(SIMP_TARGET) $(BLAS_TARGET) $(CELL_TARGET) $(CONT_TARGET) $(REG_TARGET) $(TINT_TARGET) $(CULL_TARGET) $(PAR_TARGET) $(CUBE_TARGET) $(AO_TARGET) $(PART_TARGET) $(VOX_TARGET) $(MIDX_TARGET)
 
 run: $(TARGET)
 	./$(TARGET)
@@ -251,3 +251,13 @@ $(VOX_TARGET): $(VOX_CPP) $(VOX_C)
 
 run-vox: $(VOX_TARGET)
 	./$(VOX_TARGET)
+
+# MeshIndexed weld/unweld unit tests (headless, GL-free; only STL + MSL types).
+MIDX_TARGET = mesh_indexed_tests
+MIDX_SOURCES = mesh_indexed_tests.cpp ../src/mesh_indexed.cpp
+
+$(MIDX_TARGET): $(MIDX_SOURCES)
+	$(CC) $(MIDX_SOURCES) -o $(MIDX_TARGET) $(CFLAGS) $(INCLUDE_PATHS) $(LDFLAGS) $(LDLIBS)
+
+run-midx: $(MIDX_TARGET)
+	./$(MIDX_TARGET)
