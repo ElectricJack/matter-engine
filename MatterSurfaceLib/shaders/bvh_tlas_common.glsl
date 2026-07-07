@@ -381,7 +381,7 @@ void BVHIntersect(inout Ray ray, uint instanceIdx, uint blasOffset)
     // Stack for iterative BVH traversal. Size must exceed the builder's
     // MAX_DEPTH (40 in bvh.cpp) or deep trees overflow and corrupt traversal;
     // 64 matches the CPU reference BVH::Intersect stack.
-    int stack[64];
+    int stack[32];
     int stackPtr = 0;
 
     // Start with root node
@@ -464,7 +464,7 @@ void TLASIntersect(inout Ray ray)
     ray.rD = vec3(1.0) / ray.D;
     
     // Stack for iterative TLAS traversal (sized to match the CPU reference, 64).
-    int stack[64];
+    int stack[32];
     int stackPtr = 0;
 
     // Start with TLAS root node
@@ -549,7 +549,7 @@ bool shadowIntersectTri(Ray ray, Triangle tri, float maxDist)
 
 bool shadowBVHIntersect(Ray ray, uint blasOffset, float maxDist)
 {
-    int stack[64];
+    int stack[32];
     int stackPtr = 0;
     int nodeIdx = int(blasOffset); int bvhSteps = 0;
     while (true)
@@ -614,7 +614,7 @@ bool shadowQuery(vec3 origin, vec3 dir, float maxDist)
     ray.hit.instIdx = 0u;
     ray.triangleTests = 0;
 
-    int stack[64];
+    int stack[32];
     int stackPtr = 0;
     int nodeIdx = 0; int tlasSteps = 0;
     while (true)
