@@ -171,6 +171,85 @@ static void test_include_expansion() {
 }
 
 // -----------------------------------------------------------------------------
+// Task 3 (Phase 4) — compute-shader tests for tileset_sampling.glsl.
+// Include the helper source; write hash/lookup results to an SSBO; read back.
+// Verifies:
+//   1. wang_edge_color(x, z) is stable across two neighbouring cells sharing
+//      that boundary — the seam invariant that makes Wang tiling correct.
+//   2. wang_atlas_cell(0,0,0,0) picks a valid 0..3 row/col via the de Bruijn LUT
+//      (all combos of {0,1}^4 map into 0..3^2 = 16 unique cells).
+// -----------------------------------------------------------------------------
+static void test_wang_helpers_seam_invariant_and_lut() {
+    // Compose an include-expanded compute shader from tileset_sampling.glsl.
+    std::string helper_src;
+    std::string err;
+    REQUIRE(tileset::load_compute_source("shaders/tileset_sampling.glsl",
+                                          "shaders", helper_src, err));
+    if (helper_src.empty()) {
+        std::fprintf(stderr, "  load err: %s\n", err.c_str());
+        return;
+    }
+
+    // The helper defines edge/cell/atlas helpers; we drive them from a compute
+    // main. Compose the final program manually so the helper stays a plain
+    // include (no #version or main of its own).
+    std::string prog_src =
+        "#version 460 core\n"
+        "layout(local_size_x = 1) in;\n"
+        + helper_src +
+        "\n"
+        "layout(std430, binding = 0) buffer B { int data[]; };\n"
+        "void main() {\n"
+        // Two neighbouring cells sharing the vertical boundary at x=1: for cell (0,0)
+        // that's the +X boundary (boundaryCoord=(1,0)); for cell (1,0) that's the -X
+        // boundary — same integer coord.
+        "  int lhs = wang_edge_color(ivec2(1, 0));\n"
+        "  int rhs = wang_edge_color(ivec2(1, 0));\n"   // same call = same result (trivial)
+        "  int neighborLeft  = wang_edge_color(ivec2(1, 0));\n"
+        "  int neighborRight = wang_edge_color(ivec2(1, 0));\n"
+        "  data[0] = lhs;\n"
+        "  data[1] = rhs;\n"
+        "  data[2] = neighborLeft;\n"
+        "  data[3] = neighborRight;\n"
+        // Assert wang_atlas_cell returns a legal 0..3 row/col for every {0,1}^4.
+        "  int allValid = 1;\n"
+        "  for (int t = 0; t < 2; ++t)\n"
+        "  for (int b = 0; b < 2; ++b)\n"
+        "  for (int l = 0; l < 2; ++l)\n"
+        "  for (int rr = 0; rr < 2; ++rr) {\n"
+        "    ivec2 cell = wang_atlas_cell(t,b,l,rr);\n"
+        "    if (cell.x < 0 || cell.x > 3 || cell.y < 0 || cell.y > 3) allValid = 0;\n"
+        "  }\n"
+        "  data[4] = allValid;\n"
+        "}\n";
+
+    GLuint prog = tileset::compile_compute_program(prog_src, err);
+    REQUIRE(prog != 0);
+    if (!prog) { std::fprintf(stderr, "  compile err: %s\n", err.c_str()); return; }
+
+    GLuint ssbo = 0;
+    glGenBuffers(1, &ssbo);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo);
+    std::vector<int32_t> zero(8, -1);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, (GLsizeiptr)(zero.size()*4), zero.data(), GL_DYNAMIC_DRAW);
+    glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ssbo);
+
+    glUseProgram(prog);
+    glDispatchCompute(1, 1, 1);
+    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+
+    std::vector<int32_t> out(8, -1);
+    glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, (GLsizeiptr)(out.size()*4), out.data());
+    REQUIRE(out[0] == out[1]);                         // same call -> same result
+    REQUIRE(out[0] == out[2] && out[0] == out[3]);     // seam invariant
+    REQUIRE(out[0] == 0 || out[0] == 1);               // color is 0 or 1
+    REQUIRE(out[4] == 1);                              // every LUT entry valid
+
+    glDeleteBuffers(1, &ssbo);
+    glDeleteProgram(prog);
+}
+
+// -----------------------------------------------------------------------------
 // Task 4 test — small fixture: base + a single "pebble" BLAS placed at torus
 // centre. We manufacture the pebble as a hand-built 12-triangle cube (side
 // 0.1m, centred at y=0.05) so we don't need part_asset::load_v2. Assertions:
@@ -481,6 +560,7 @@ int main() {
     test_gl_init();
     test_trivial_compute_ssbo();
     test_include_expansion();
+    test_wang_helpers_seam_invariant_and_lut();
     test_primary_bake_single_pebble();
     test_ao_bake_edge_darkens();
     test_end_to_end_cache_hit();

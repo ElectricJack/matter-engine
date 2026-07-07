@@ -20,6 +20,9 @@ uniform float probeCell;
 uniform vec3  probeDims;                // (nx,ny,nz) as floats
 uniform int   useProbes;                // 0 => Phase-1 flat fallback
 
+// Phase 4: Wang-tile ground sampling helpers.
+#include "tileset_sampling.glsl"
+
 out vec4 finalColor;
 
 void main() {
@@ -32,6 +35,25 @@ void main() {
     albedo = mix(albedo, fragTint.rgb, fragTint.a);
 
     vec3  N   = normalize(fragNormal);
+
+    // Phase 4: Wang-tile ground sampling — branch on groundTilesetSlot field at [11].
+    int groundTilesetSlot = int(materialTable[b + 11]);
+    if (groundTilesetSlot >= 0) {
+        vec2 worldXZ = fragWorldPos.xz;
+        vec2 dWorldXZ_dx = vec2(dFdx(fragWorldPos.x), dFdx(fragWorldPos.z));
+        vec2 dWorldXZ_dy = vec2(dFdy(fragWorldPos.x), dFdy(fragWorldPos.z));
+        vec3 baked_normal_ts, orm;
+        vec3 ground_albedo = wang_sample_ground(groundTilesetSlot,
+                                                worldXZ, dWorldXZ_dx, dWorldXZ_dy,
+                                                baked_normal_ts, orm);
+        albedo = ground_albedo;
+        // Rebase the surface normal onto the baked tangent-space normal.
+        vec3 upN = vec3(0.0, 1.0, 0.0);
+        vec3 T = normalize(cross(upN, N));
+        if (length(T) < 1e-3) T = vec3(1.0, 0.0, 0.0);
+        vec3 B = cross(N, T);
+        N = normalize(T * baked_normal_ts.x + B * baked_normal_ts.y + N * baked_normal_ts.z);
+    }
     float ndl = max(dot(N, -sunDir), 0.0);
     float ao  = clamp(fragMatAO.y, 0.0, 1.0);
 

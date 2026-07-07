@@ -50,6 +50,9 @@ uniform sampler2D skyTexture;
 // Include the enhanced BVH common code (ported from bvh_article)
 #include "bvh_tlas_common.glsl"
 
+// Phase 4: Wang-tile ground sampling helpers.
+#include "tileset_sampling.glsl"
+
 
 // Camera ray generation
 vec3 computeCameraRay(vec2 uv) {
@@ -129,6 +132,35 @@ vec3 trace(vec3 rayOrigin, vec3 rayDirection, inout uint seed) {
         vec3 albedo = mix(matProps.albedo, hit.tint, hit.tintAlpha);
         float roughness = matProps.roughness;
         float metallic = matProps.metallic;
+        vec3 baked_normal_ts = vec3(0.0, 0.0, 1.0);
+        bool have_ground_normal = false;
+        if (matProps.groundTilesetSlot >= 0) {
+            // Ray footprint approximation: derivatives of the hit's world XZ against
+            // screen space. For the raytracer we use the ray-cone width proxy
+            // (hit.t * fovy / resolution) so mips survive. Same magnitude in x and y.
+            vec2 worldXZ = hitPos.xz;
+            float footprint = max(1e-4, hit.t * 0.0015);   // ~1 px @ 720p, 60 deg fov
+            vec2 dWorldXZ_dx = vec2(footprint, 0.0);
+            vec2 dWorldXZ_dy = vec2(0.0, footprint);
+            vec3 orm;
+            vec3 ground_albedo = wang_sample_ground(matProps.groundTilesetSlot,
+                                                    worldXZ, dWorldXZ_dx, dWorldXZ_dy,
+                                                    baked_normal_ts, orm);
+            albedo    = mix(ground_albedo, hit.tint, hit.tintAlpha);
+            roughness = orm.g;
+            metallic  = orm.b;
+            have_ground_normal = true;
+        }
+        // Compose baked tangent-space normal into world space if we have one.
+        if (have_ground_normal) {
+            // Terrain up = world +Y. Build a tangent frame around the surface normal:
+            // T = normalize(cross(worldUp, N)); B = cross(N, T).
+            vec3 upN = vec3(0.0, 1.0, 0.0);
+            vec3 T = normalize(cross(upN, normal));
+            if (length(T) < 1e-3) T = vec3(1.0, 0.0, 0.0);
+            vec3 B = cross(normal, T);
+            normal = normalize(T * baked_normal_ts.x + B * baked_normal_ts.y + normal * baked_normal_ts.z);
+        }
         bool isMirror = (metallic > 0.5 && roughness < 0.3);
         
         // Add emission contribution
