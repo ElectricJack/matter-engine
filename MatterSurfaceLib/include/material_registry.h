@@ -49,7 +49,7 @@ void MaterialRegistryPackForGPU(float* out);
 // Pass slot < 0 to clear. Values persist for the life of the process and are
 // read by MaterialRegistryPackForGPU() (slot [11]). Used by the viewer to bind
 // material 16 (DIRT) to the ForestFloor atlas after LocalProvider::connect().
-// materialId out-of-range is a no-op (fail-closed defensive default).
+// Silently no-op on materialId out of range OR slot outside [-1, 3].
 void MaterialRegistrySetGroundTilesetSlot(int materialId, int slot);
 
 #ifdef __cplusplus

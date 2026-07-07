@@ -67,6 +67,7 @@ int MaterialIsTransparent(int materialId) {
 
 void MaterialRegistrySetGroundTilesetSlot(int materialId, int slot) {
     if (materialId < 0 || materialId >= ME_MAX_SLOT_OVERRIDES) return;
+    if (slot < -1 || slot > 3) return;
     g_slot_overrides[materialId] = slot;
 }
 

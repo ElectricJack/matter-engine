@@ -79,13 +79,14 @@ static void test_material_tileset_slot_setter() {
     MaterialRegistryPackForGPU(buf.data());
 
     float slot_val = buf[16 * MATERIAL_FLOATS_PER_DEF + 11];
+    MaterialRegistrySetGroundTilesetSlot(16, -1);  // reset BEFORE assertion so it always runs
     REQUIRE(slot_val == 0.0f);   // override in effect
 
     // Clear the override: slot should revert to the static value (-1).
-    MaterialRegistrySetGroundTilesetSlot(16, -1);
     std::vector<float> buf2((size_t)count * MATERIAL_FLOATS_PER_DEF, 0.0f);
     MaterialRegistryPackForGPU(buf2.data());
     float slot_cleared = buf2[16 * MATERIAL_FLOATS_PER_DEF + 11];
+    MaterialRegistrySetGroundTilesetSlot(16, -1);  // reset BEFORE assertion
     REQUIRE(slot_cleared == -1.0f);   // static default restored
 }
 
