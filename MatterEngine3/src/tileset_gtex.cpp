@@ -168,6 +168,13 @@ bool save_gtex(const std::string& path,
         std::remove(tmp.c_str());
         err = "save_gtex: fwrite truncated: " + tmp; return false;
     }
+    // Windows rename() refuses to overwrite an existing target; POSIX rename()
+    // overwrites atomically. Since the .gtex is content-addressed by the hash
+    // embedded in its header, hitting the same target on re-bake is expected
+    // and safe. Delete-then-rename gives that semantic on Windows; on POSIX
+    // the extra remove is a no-op if the target didn't exist. Mirrors the
+    // fix in part_asset_v2::write_file_atomic.
+    std::remove(path.c_str());
     if (std::rename(tmp.c_str(), path.c_str()) != 0) {
         std::remove(tmp.c_str());
         err = "save_gtex: rename failed: " + tmp + " -> " + path;
