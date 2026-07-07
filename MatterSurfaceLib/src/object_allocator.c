@@ -24,7 +24,13 @@ struct ObjectAllocator {
 static size_t calculate_object_size(size_t requested_size) {
     // Ensure the object is at least as large as the header
     size_t header_size = sizeof(ObjectHeader);
-    return (requested_size > header_size) ? requested_size : header_size;
+    size_t size = (requested_size > header_size) ? requested_size : header_size;
+
+    // Align stride to max_align_t to ensure proper object alignment
+    size_t al = _Alignof(max_align_t);
+    size = (size + al - 1) / al * al;
+
+    return size;
 }
 
 // Allocate a new page of objects and add them to the free list

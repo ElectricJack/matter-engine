@@ -103,14 +103,22 @@ public:
     BLASManager(BLASManager&&) = default;
     BLASManager& operator=(BLASManager&&) = default;
     
-    // Register mesh data and get BLAS handle
-    BLASHandle register_triangles(const std::vector<Tri>& triangles);
+    // Register mesh data and get BLAS handle.
+    // force_subdiv_one_prim: when true, build the BVH with subdivToOnePrim=true so
+    // every triangle gets its own leaf — needed for unit tests with sparse geometry.
+    // Defaults to false; do NOT set it based on triangle_count (that was the old
+    // "triangle_count==3" heuristic, now removed per code review finding B4/smells).
+    BLASHandle register_triangles(const std::vector<Tri>& triangles,
+                                  bool force_subdiv_one_prim = false);
 
-    BLASHandle register_triangles(Tri* triangles, int triangle_count, const TriEx* triex = nullptr);
+    BLASHandle register_triangles(Tri* triangles, int triangle_count,
+                                  const TriEx* triex = nullptr,
+                                  bool force_subdiv_one_prim = false);
 
     // Register mesh data together with per-vertex shading normals (one TriEx per
     // triangle, same order as triangles). triex may be empty to fall back to face normals.
-    BLASHandle register_triangles(const std::vector<Tri>& triangles, const std::vector<TriEx>& triex);
+    BLASHandle register_triangles(const std::vector<Tri>& triangles, const std::vector<TriEx>& triex,
+                                  bool force_subdiv_one_prim = false);
 
     // Register a fully baked BLAS loaded from disk: installs the saved BVH arrays
     // directly (no BVH build, no dedup lookup). Used by part_asset::load. tris,

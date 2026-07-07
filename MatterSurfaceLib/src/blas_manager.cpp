@@ -110,20 +110,22 @@ BLASHandle BLASManager::find_existing_blas(const Tri* triangles, int count, uint
 }
 
 
-BLASHandle BLASManager::register_triangles(const std::vector<Tri>& triangles) {
-    return register_triangles(const_cast<Tri*>(triangles.data()), 
-                             static_cast<int>(triangles.size()));
+BLASHandle BLASManager::register_triangles(const std::vector<Tri>& triangles, bool force_subdiv_one_prim) {
+    return register_triangles(const_cast<Tri*>(triangles.data()),
+                             static_cast<int>(triangles.size()), nullptr, force_subdiv_one_prim);
 }
 
 
-BLASHandle BLASManager::register_triangles(const std::vector<Tri>& triangles, const std::vector<TriEx>& triex) {
+BLASHandle BLASManager::register_triangles(const std::vector<Tri>& triangles, const std::vector<TriEx>& triex,
+                                           bool force_subdiv_one_prim) {
     const TriEx* triex_ptr = (triex.size() == triangles.size() && !triex.empty()) ? triex.data() : nullptr;
     return register_triangles(const_cast<Tri*>(triangles.data()),
-                              static_cast<int>(triangles.size()), triex_ptr);
+                              static_cast<int>(triangles.size()), triex_ptr, force_subdiv_one_prim);
 }
 
 
-BLASHandle BLASManager::register_triangles(Tri* triangles, int triangle_count, const TriEx* triex) {
+BLASHandle BLASManager::register_triangles(Tri* triangles, int triangle_count, const TriEx* triex,
+                                           bool force_subdiv_one_prim) {
     PROFILE_SECTION("BLAS Registration");
     
     if (!triangles || triangle_count <= 0) {
@@ -175,12 +177,11 @@ BLASHandle BLASManager::register_triangles(Tri* triangles, int triangle_count, c
 
         // Create BVH using the proper constructor
         auto bvh = std::make_unique<BVH>(mesh.get());
-        
-        // For the unit test scene, enable subdivToOnePrim to force proper subdivision
-        if (triangle_count == 3) {
-            // This is likely our unit test with 3 well-separated triangles
+        // force_subdiv_one_prim: explicit flag requested by the caller.
+        // Previously this was triggered heuristically by triangle_count==3, which
+        // changed production behaviour for real 3-tri meshes (code-review smell fix).
+        if (force_subdiv_one_prim) {
             bvh->subdivToOnePrim = true;
-            // Rebuild with the correct flag
             bvh->Build();
         }
         

@@ -178,46 +178,54 @@ bool sh_remove(SpatialHash* hash, float x, float y, float z, void* object) {
 }
 
 // Query objects within a radius of the given position
-int sh_query_radius(SpatialHash* hash, float x, float y, float z, float radius, 
+int sh_query_radius(SpatialHash* hash, float x, float y, float z, float radius,
                     void** results, int maxResults) {
     if (!hash || !results || maxResults <= 0) return 0;
-    
+
     int found = 0;
     float radiusSq = radius * radius;
-    
-    // Calculate the range of grid cells to check
-    int cellRange = (int)ceilf(radius / hash->cellSize);
-    GridCoord centerCoord = world_to_grid(x, y, z, hash->cellSize);
-    
-    // Check all cells in the range
-    for (int dx = -cellRange; dx <= cellRange; dx++) {
-        for (int dy = -cellRange; dy <= cellRange; dy++) {
-            for (int dz = -cellRange; dz <= cellRange; dz++) {
-                GridCoord coord = {centerCoord.x + dx, centerCoord.y + dy, centerCoord.z + dz};
+
+    // T3/spatial-hash dedup fix: iterate the AABB of grid cells that overlap
+    // the sphere, using floor-corner coords (same as sh_query_radius_nearest).
+    // Track visited bucket indices with a stack-allocated bitset so that grid
+    // coords that hash to the same bucket are only walked once — otherwise
+    // hash-colliding cells emit duplicate results.
+    GridCoord lo = world_to_grid(x - radius, y - radius, z - radius, hash->cellSize);
+    GridCoord hi = world_to_grid(x + radius, y + radius, z + radius, hash->cellSize);
+
+    unsigned char visited[HASH_TABLE_SIZE];
+    memset(visited, 0, sizeof(visited));
+
+    for (int gx = lo.x; gx <= hi.x; gx++) {
+        for (int gy = lo.y; gy <= hi.y; gy++) {
+            for (int gz = lo.z; gz <= hi.z; gz++) {
+                GridCoord coord = {gx, gy, gz};
                 unsigned int bucketIndex = hash_coord(coord);
-                
+                if (visited[bucketIndex]) continue;
+                visited[bucketIndex] = 1;
+
                 // Check all objects in this bucket
                 BucketEntry* entry = hash->buckets[bucketIndex].head;
                 while (entry && found < maxResults) {
-                    float dx = entry->x - x;
-                    float dy = entry->y - y;
-                    float dz = entry->z - z;
-                    float distSq = dx*dx + dy*dy + dz*dz;
-                    
+                    float ex = entry->x - x;
+                    float ey = entry->y - y;
+                    float ez = entry->z - z;
+                    float distSq = ex*ex + ey*ey + ez*ez;
+
                     if (distSq <= radiusSq) {
                         results[found++] = entry->object;
                     }
-                    
+
                     entry = entry->next;
                 }
-                
+
                 if (found >= maxResults) break;
             }
             if (found >= maxResults) break;
         }
         if (found >= maxResults) break;
     }
-    
+
     return found;
 }
 
@@ -401,37 +409,43 @@ int sh_query_point(SpatialHash* hash, float x, float y, float z, void** results,
 // Query for the first object within a radius (optimized for single-object lookups)
 void* sh_query_first(SpatialHash* hash, float x, float y, float z, float radius) {
     if (!hash) return NULL;
-    
+
     float radiusSq = radius * radius;
-    
-    // Calculate the range of grid cells to check
-    int cellRange = (int)ceilf(radius / hash->cellSize);
-    GridCoord centerCoord = world_to_grid(x, y, z, hash->cellSize);
-    
-    // Check all cells in the range
-    for (int dx = -cellRange; dx <= cellRange; dx++) {
-        for (int dy = -cellRange; dy <= cellRange; dy++) {
-            for (int dz = -cellRange; dz <= cellRange; dz++) {
-                GridCoord coord = {centerCoord.x + dx, centerCoord.y + dy, centerCoord.z + dz};
+
+    // T3/spatial-hash dedup fix: use floor-corner AABB iteration + visited[]
+    // guard (same pattern as sh_query_radius and sh_query_radius_nearest) to
+    // avoid walking the same bucket twice and returning a stale duplicate.
+    GridCoord lo = world_to_grid(x - radius, y - radius, z - radius, hash->cellSize);
+    GridCoord hi = world_to_grid(x + radius, y + radius, z + radius, hash->cellSize);
+
+    unsigned char visited[HASH_TABLE_SIZE];
+    memset(visited, 0, sizeof(visited));
+
+    for (int gx = lo.x; gx <= hi.x; gx++) {
+        for (int gy = lo.y; gy <= hi.y; gy++) {
+            for (int gz = lo.z; gz <= hi.z; gz++) {
+                GridCoord coord = {gx, gy, gz};
                 unsigned int bucketIndex = hash_coord(coord);
-                
+                if (visited[bucketIndex]) continue;
+                visited[bucketIndex] = 1;
+
                 // Check all objects in this bucket
                 BucketEntry* entry = hash->buckets[bucketIndex].head;
                 while (entry) {
-                    float dx = entry->x - x;
-                    float dy = entry->y - y;
-                    float dz = entry->z - z;
-                    float distSq = dx*dx + dy*dy + dz*dz;
-                    
+                    float ex = entry->x - x;
+                    float ey = entry->y - y;
+                    float ez = entry->z - z;
+                    float distSq = ex*ex + ey*ey + ez*ez;
+
                     if (distSq <= radiusSq) {
                         return entry->object; // Return first match
                     }
-                    
+
                     entry = entry->next;
                 }
             }
         }
     }
-    
+
     return NULL; // No object found
 }

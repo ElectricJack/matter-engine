@@ -507,6 +507,12 @@ std::vector<std::string> BVHReportManager::GetRegisteredNames() {
     return names;
 }
 
+// B11 fix: remove a single entry so the registry doesn't hold dangling pointers
+// after the BVH is freed via release_blas.
+void BVHReportManager::UnregisterBVH(const std::string& name) {
+    bvh_registry_.erase(name);
+}
+
 void BVHReportManager::Clear() {
     bvh_registry_.clear();
     tlas_registry_.clear();

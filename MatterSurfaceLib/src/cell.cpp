@@ -392,11 +392,14 @@ void Cell::commit_group_mesh(GroupMeshResult& result, BLASManager& blas_manager)
             BVH* bvh = blas_manager.get_bvh(material_blas[group_id]);
             BvhMesh* mesh_ptr = blas_manager.get_mesh(material_blas[group_id]);
             if (bvh && mesh_ptr) {
+                // B11 fix: use a stable name (no triangle count) so the registry
+                // key is consistent across rebuilds; unregister the old entry first
+                // so we don't accumulate dangling pointers.
                 std::string analysis_name = "Cell(" + std::to_string((int)coordinates.x) + "," +
                                            std::to_string((int)coordinates.y) + "," +
                                            std::to_string((int)coordinates.z) + ")_Mat" +
-                                           std::to_string(group_id) + "_" +
-                                           std::to_string(triangles.size()) + "tris";
+                                           std::to_string(group_id);
+                BVHReportManager::UnregisterBVH(analysis_name); // remove stale entry
                 BVHReportManager::RegisterBVH(analysis_name, bvh, mesh_ptr);
                 BVHReportManager::UpdateAnalysis(analysis_name);
             }
@@ -438,6 +441,16 @@ void Cell::commit_cell_meshes(CellMeshResult& result, BLASManager& blas_manager)
 }
 
 void Cell::clear_meshes(BLASManager* blas_manager) {
+    // B11 fix: unregister BVH analyzer entries before releasing the BLAS so the
+    // registry never holds dangling raw pointers.
+    for (const auto& blas_entry : material_blas) {
+        std::string analysis_name = "Cell(" + std::to_string((int)coordinates.x) + "," +
+                                   std::to_string((int)coordinates.y) + "," +
+                                   std::to_string((int)coordinates.z) + ")_Mat" +
+                                   std::to_string(blas_entry.first);
+        BVHReportManager::UnregisterBVH(analysis_name);
+    }
+
     // Release this cell's BLAS references so the manager can reclaim entries
     // that no live cell still points at (prevents unbounded GPU accumulation).
     if (blas_manager) {

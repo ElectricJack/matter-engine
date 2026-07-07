@@ -105,14 +105,21 @@ struct SurfaceScratch {
 static SurfaceScratch* g_defaultScratch = NULL;
 
 // Memory pool management functions
+// B8 fix: all reallocs use a temp pointer so OOM doesn't lose the original block.
 static void EnsureFieldCapacity(MemoryPool* pool, size_t requiredCells) {
     if (pool->fieldCapacity < requiredCells) {
         // Grow by 50% or to required size, whichever is larger
         size_t newCapacity = (pool->fieldCapacity * 3) / 2;
         if (newCapacity < requiredCells) newCapacity = requiredCells;
 
-        pool->scalarField = (float*)realloc(pool->scalarField, newCapacity * sizeof(float));
-        pool->materialField = (int*)realloc(pool->materialField, newCapacity * sizeof(int));
+        float* sf = (float*)realloc(pool->scalarField, newCapacity * sizeof(float));
+        if (!sf) { fprintf(stderr, "[ERROR] OOM growing scalarField\n"); return; }
+        pool->scalarField = sf;
+
+        int* mf = (int*)realloc(pool->materialField, newCapacity * sizeof(int));
+        if (!mf) { fprintf(stderr, "[ERROR] OOM growing materialField\n"); return; }
+        pool->materialField = mf;
+
         pool->fieldCapacity = newCapacity;
     }
 }
@@ -122,9 +129,18 @@ static void EnsureMeshCapacity(MemoryPool* pool, size_t requiredVertices, size_t
         size_t newCapacity = (pool->vertexCapacity * 3) / 2;
         if (newCapacity < requiredVertices) newCapacity = requiredVertices;
 
-        pool->vertices = (Vector3*)realloc(pool->vertices, newCapacity * sizeof(Vector3));
-        pool->normals = (Vector3*)realloc(pool->normals, newCapacity * sizeof(Vector3));
-        pool->materials = (int*)realloc(pool->materials, newCapacity * sizeof(int));
+        Vector3* vt = (Vector3*)realloc(pool->vertices, newCapacity * sizeof(Vector3));
+        if (!vt) { fprintf(stderr, "[ERROR] OOM growing vertices\n"); return; }
+        pool->vertices = vt;
+
+        Vector3* nt = (Vector3*)realloc(pool->normals, newCapacity * sizeof(Vector3));
+        if (!nt) { fprintf(stderr, "[ERROR] OOM growing normals\n"); return; }
+        pool->normals = nt;
+
+        int* mt = (int*)realloc(pool->materials, newCapacity * sizeof(int));
+        if (!mt) { fprintf(stderr, "[ERROR] OOM growing materials\n"); return; }
+        pool->materials = mt;
+
         pool->vertexCapacity = newCapacity;
     }
 
@@ -132,7 +148,10 @@ static void EnsureMeshCapacity(MemoryPool* pool, size_t requiredVertices, size_t
         size_t newCapacity = (pool->triangleCapacity * 3) / 2;
         if (newCapacity < requiredTriangles) newCapacity = requiredTriangles;
 
-        pool->triangles = (Triangle*)realloc(pool->triangles, newCapacity * sizeof(Triangle));
+        Triangle* tt = (Triangle*)realloc(pool->triangles, newCapacity * sizeof(Triangle));
+        if (!tt) { fprintf(stderr, "[ERROR] OOM growing triangles\n"); return; }
+        pool->triangles = tt;
+
         pool->triangleCapacity = newCapacity;
     }
 }
@@ -142,8 +161,14 @@ static void EnsureHashTableCapacity(MemoryPool* pool, size_t requiredSize) {
         size_t newCapacity = (pool->hashTableCapacity * 3) / 2;
         if (newCapacity < requiredSize) newCapacity = requiredSize;
 
-        pool->edgeKeys = (unsigned long long*)realloc(pool->edgeKeys, newCapacity * sizeof(unsigned long long));
-        pool->globalEdgeVertexIndices = (int*)realloc(pool->globalEdgeVertexIndices, newCapacity * sizeof(int));
+        unsigned long long* ek = (unsigned long long*)realloc(pool->edgeKeys, newCapacity * sizeof(unsigned long long));
+        if (!ek) { fprintf(stderr, "[ERROR] OOM growing edgeKeys\n"); return; }
+        pool->edgeKeys = ek;
+
+        int* gi = (int*)realloc(pool->globalEdgeVertexIndices, newCapacity * sizeof(int));
+        if (!gi) { fprintf(stderr, "[ERROR] OOM growing globalEdgeVertexIndices\n"); return; }
+        pool->globalEdgeVertexIndices = gi;
+
         pool->hashTableCapacity = newCapacity;
     }
 }
@@ -211,7 +236,7 @@ static int GetScalarFieldIndex(int x, int y, int z, int gridSize) {
 // Create default mesh generation configuration
 MeshGenerationConfig GetDefaultMeshConfig(void) {
     MeshGenerationConfig config;
-    config.enableEdgeDeduplication = false;  // Default: enabled for better mesh quality
+    config.enableEdgeDeduplication = true;   // Default: enabled for better mesh quality
     config.enableMemoryReuse       = true;   // Default: enabled for better performance
     return config;
 }
@@ -798,48 +823,57 @@ static Mesh GenerateMeshInternal(SurfaceScratch* scratch, Particle* particles, f
                         if (config.enableEdgeDeduplication) {
                             // Check if this vertex already exists (using an edge key)
                             unsigned long long edgeKey = GetEdgeKey(x, y, z, edge);
-                            
+
                             // Skip if the key is 0 (invalid edge)
                             if (edgeKey == 0) {
                                 continue;
                             }
-                            
+
                             // Hash the key to find its position in the hash table
                             unsigned int hashPos = (unsigned int)(edgeKey % hashTableSize);
                             int existingVertexIndex = -1;
-                            
+                            // B6 fix: track whether the probe loop found an insertion slot
+                            // (vs. exhausted all probes without finding one).
+                            bool foundSlot = false;
+
                             // Linear probing to handle hash collisions
                             int maxProbes = 100;  // Limit probing to avoid infinite loops
                             for (int probe = 0; probe < maxProbes; probe++) {
                                 unsigned int pos = (hashPos + probe) % hashTableSize;
-                                
+
                                 // If we found our key or an empty slot
                                 if (edgeKeys[pos] == edgeKey) {
                                     existingVertexIndex = globalEdgeVertexIndices[pos];
+                                    foundSlot = true;
                                     break;
                                 }
                                 else if (edgeKeys[pos] == 0) {
                                     // Found an empty slot, so this edge doesn't exist yet
                                     hashPos = pos;  // Remember this position for insertion
+                                    foundSlot = true;
                                     break;
                                 }
                             }
-                            
+
                             // If vertex doesn't exist, add it
                             if (existingVertexIndex == -1) {
                                 if (vertexCount >= maxVertices) {
                                     printf("Warning: Exceeded maximum vertex count\n");
                                     continue;
                                 }
-                                
+
                                 // Store the vertex
                                 vertices[vertexCount] = intersections[edge];
                                 materials[vertexCount] = intersectionMaterials[edge];
-                                
-                                // Store the edge key and vertex index in the hash table
-                                edgeKeys[hashPos] = edgeKey;
-                                globalEdgeVertexIndices[hashPos] = vertexCount;
-                                
+
+                                if (foundSlot) {
+                                    // B6 fix: only write to the hash if we found an empty slot;
+                                    // if probe exhausted, skip hash insertion to avoid corrupting
+                                    // a foreign occupied slot.
+                                    edgeKeys[hashPos] = edgeKey;
+                                    globalEdgeVertexIndices[hashPos] = vertexCount;
+                                }
+
                                 // Store the vertex index for this edge in the current cell
                                 cellEdgeVertexIndices[edge] = vertexCount;
                                 vertexCount++;
@@ -871,18 +905,28 @@ static Mesh GenerateMeshInternal(SurfaceScratch* scratch, Particle* particles, f
                         printf("Warning: Exceeded maximum triangle count\n");
                         break;
                     }
-                    
-                    Triangle triangle;
-                    
+
                     // Get the vertex indices for each triangle
                     int edge1 = triTable[cubeIndex][i];
                     int edge2 = triTable[cubeIndex][i+1];
                     int edge3 = triTable[cubeIndex][i+2];
-                    
-                    triangle.indices[2] = cellEdgeVertexIndices[edge1];
-                    triangle.indices[1] = cellEdgeVertexIndices[edge2];
-                    triangle.indices[0] = cellEdgeVertexIndices[edge3];
-                    
+
+                    int idx0 = cellEdgeVertexIndices[edge3];
+                    int idx1 = cellEdgeVertexIndices[edge2];
+                    int idx2 = cellEdgeVertexIndices[edge1];
+
+                    // B6 fix: skip triangles whose edge vertex index is -1 (edge hash
+                    // probe exhausted without a valid slot — the vertex was still
+                    // emitted but cellEdgeVertexIndices stayed -1 before this fix;
+                    // now it is always set, but guard anyway against future regressions
+                    // and for any cell where edgeKey==0 caused a continue above).
+                    if (idx0 < 0 || idx1 < 0 || idx2 < 0) continue;
+
+                    Triangle triangle;
+                    triangle.indices[0] = idx0;
+                    triangle.indices[1] = idx1;
+                    triangle.indices[2] = idx2;
+
                     // Add the triangle
                     triangles[triangleCount] = triangle;
                     triangleCount++;
@@ -942,10 +986,28 @@ static Mesh GenerateMeshInternal(SurfaceScratch* scratch, Particle* particles, f
     // is therefore continuous across independently-meshed cells. See
     // ComputeSurfaceNormals.
 
+    // T4 fix: 16-bit indices silently truncate past 65535 vertices.
+    // Fail loudly rather than emit a silently-corrupt mesh.
+    if (vertexCount > 65535) {
+        fprintf(stderr, "[ERROR] GenerateMesh: vertex count %d exceeds 65535 (16-bit index limit). "
+                "Reduce grid resolution or particle count.\n", vertexCount);
+        if (!config.enableMemoryReuse) {
+            free(data.scalarField);
+            free(data.materialField);
+            free(vertices);
+            free(normals);
+            free(materials);
+            free(triangles);
+            free(edgeKeys);
+            free(globalEdgeVertexIndices);
+        }
+        return mesh; // return empty mesh
+    }
+
     // Create the final mesh
     mesh.vertexCount = vertexCount;
     mesh.triangleCount = triangleCount;
-    
+
     // Allocate memory for mesh data
     mesh.vertices = (float*)RL_MALLOC(vertexCount * 3 * sizeof(float));
     mesh.normals = (float*)RL_MALLOC(vertexCount * 3 * sizeof(float));
