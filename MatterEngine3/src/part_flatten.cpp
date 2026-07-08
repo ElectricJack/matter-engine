@@ -3,11 +3,25 @@
 #include "../include/part_asset_v2.h"   // load_v2/save_flat_v3, cache_path_*, load_lod_sidecar
 #include "../include/lod_bake.h"        // decimate_to_error
 #include "../include/part_cluster.h"    // split_clusters
+#include "../include/retopo_hook_stats.h"  // Phase 5: hook invocation counter (Task 14)
 #include "tlas_manager.hpp"             // MSL TLASManager (load_v2 signature)
 #include "mesh_indexed.hpp"             // MSL from_tri/to_tri (reproject wrapping)
 #include "mesh_transform.hpp"           // MSL reproject_triex (was lod_bake::)
+#include "part_asset.h"                 // fnv1a64 (retopo cache key fold)
+
+// Phase 5 autoremesher integration. Guarded so builds without the vendored
+// autoremesher_core lib (most existing test binaries — they don't link TBB
+// either) still compile: without the macro, the retopo hook is a no-op that
+// logs a single warning if a schema explicitly opts in. Builds that DO link
+// autoremesher_core (Task 14's integration test, viewer bakes) define
+// MATTER_HAVE_AUTOREMESHER and pull in the retopo path.
+#if defined(MATTER_HAVE_AUTOREMESHER)
+#  include "mesh_retopo.hpp"            // MSL retopo(MeshIndexed, RetopoOptions)
+#  include "autoremesher/remesh.h"      // AUTOREMESHER_CORE_VERSION (cache key)
+#endif
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>   // std::getenv
@@ -16,12 +30,33 @@
 #include <map>
 #include <memory>
 #include <new>       // std::bad_alloc
+#include <sys/stat.h>  // stat() for .retopo.part sibling existence check
 #include <unordered_map>
 #include <vector>
 
 #if defined(__linux__) || defined(__APPLE__)
 #  include <sys/resource.h>  // getrusage (peak-RSS measurement, bake-hardening #3)
 #endif
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase 5 retopo hook invocation counter (retopo_hook_stats.h).
+// File-scope so the header exposes a stable ABI without touching part_flatten's
+// internals. Reset() / invocation_count() live in this TU because the same TU
+// bumps the counter — placing them here avoids a separate object file.
+// ─────────────────────────────────────────────────────────────────────────────
+namespace matter_engine3 {
+namespace retopo_hook_stats {
+// Static file-scope counter — same TU bumps it and same TU exposes it via
+// reset() / invocation_count(). Not thread-safe (flatten_part is single-
+// threaded per invocation). `bump()` is an implementation detail used only
+// by this TU's retopo hook — it's not declared in the header so callers
+// can't accidentally poke it.
+static uint64_t g_invocations = 0;
+void     reset()             { g_invocations = 0; }
+uint64_t invocation_count()  { return g_invocations; }
+void     bump()              { ++g_invocations; }
+} // namespace retopo_hook_stats
+} // namespace matter_engine3
 
 namespace part_flatten {
 
@@ -475,6 +510,476 @@ private:
 
 const float kIdentity[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase 5 retopo hook helpers (Task 13).
+// The cache key for `.retopo.part` folds four inputs so any input change
+// invalidates cached retopo output:
+//   1. flat_mesh_hash: fnv1a64 over the merged Tri stream (world-space verts).
+//      Encodes both source geometry AND all placements/transforms; matches the
+//      granularity of the .flat.part filename key (root_hash), but is derived
+//      DIRECTLY from mesh bytes so a schema edit that produces the same
+//      root_hash — impossible in practice, but formally — would still miss.
+//   2. RetopoSettings (target_ratio_bits, iterations, seed, timeout_seconds).
+//      target_ratio_bits() reinterprets the float bit pattern (safe hash key).
+//   3. AUTOREMESHER_CORE_VERSION: the vendored lib's version string. Any
+//      extraction sync bumps this constant → stale retopo outputs regenerate.
+//   4. platform_triple: encodes host OS/ABI so cross-platform bakes don't
+//      accidentally reuse an artifact that trips FP-summation determinism.
+// The four inputs are folded with fnv1a64 for a single u64 cache-key filename.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Return a stable hash of the current build's platform triple. Used by the
+// retopo cache key so a Windows-cross vs Linux bake never share artifacts.
+[[maybe_unused]] uint64_t platform_triple_hash() {
+#if defined(_WIN32)
+    static const char kTriple[] = "windows-cross-x86_64";
+#elif defined(__APPLE__)
+    static const char kTriple[] = "macos-x86_64";
+#elif defined(__linux__)
+    static const char kTriple[] = "linux-x86_64";
+#else
+    static const char kTriple[] = "unknown-platform";
+#endif
+    return part_asset::fnv1a64(kTriple, sizeof(kTriple) - 1);
+}
+
+// Fold the merged mesh into an fnv1a64 hash. Only vertex positions participate
+// — TriEx / centroid fields are derived and would just add noise. This is the
+// first ingredient of the retopo cache key (see docstring above).
+[[maybe_unused]] uint64_t merged_mesh_hash(const std::vector<Tri>& tris) {
+    // Feed vertex bytes directly (float3 = 12B, 3 verts per tri = 36B/tri).
+    // The Tri layout is { v0, v1, v2, centroid }; slicing off centroid would
+    // save 12B/tri but forces a per-tri temp copy — cache key correctness
+    // doesn't need it, and folding raw bytes is faster.
+    static_assert(sizeof(float3) == 12, "float3 must be tightly packed");
+    // Stream in chunks so we don't materialize a copy of every vertex.
+    uint64_t h = 0xcbf29ce484222325ull;   // fnv1a64 seed matches MSL's helper
+    for (const Tri& t : tris) {
+        const float3 verts[3] = { t.vertex0, t.vertex1, t.vertex2 };
+        const uint8_t* p = reinterpret_cast<const uint8_t*>(verts);
+        for (size_t i = 0; i < sizeof(verts); ++i) {
+            h ^= p[i];
+            h *= 0x100000001b3ull;
+        }
+    }
+    return h;
+}
+
+// Compose the retopo cache-key filename hash. Combines merged mesh, settings,
+// autoremesher version string, and platform triple into a single u64 via
+// fnv1a64 (folded byte-wise). Kept file-static so callers don't need to know
+// the exact composition — just the hash's role in the .retopo.part filename.
+[[maybe_unused]] uint64_t compute_retopo_cache_key(uint64_t flat_mesh_hash,
+                                  const part_asset::RetopoSettings& rs,
+#if defined(MATTER_HAVE_AUTOREMESHER)
+                                  const char* ar_version_str
+#else
+                                  const char* ar_version_str = "unavailable"
+#endif
+                                 ) {
+    // Layout of the fold buffer — pack every input contiguously and fnv1a64 the
+    // whole thing at once. Keep the layout stable: any change forces a full
+    // cache invalidation, which is fine (the key is opaque to consumers).
+    struct KeyPayload {
+        uint64_t flat_mesh_hash;
+        uint32_t target_ratio_bits;
+        int32_t  iterations;
+        uint32_t seed;
+        int32_t  timeout_seconds;
+        uint32_t enabled;                 // uint32 not bool: pad-free layout
+        uint64_t platform_triple_hash;
+    } payload{};
+    payload.flat_mesh_hash       = flat_mesh_hash;
+    payload.target_ratio_bits    = rs.target_ratio_bits();
+    payload.iterations           = rs.iterations;
+    payload.seed                 = rs.seed;
+    payload.timeout_seconds      = rs.timeout_seconds;
+    payload.enabled              = rs.enabled ? 1u : 0u;
+    payload.platform_triple_hash = platform_triple_hash();
+
+    uint64_t h = part_asset::fnv1a64(&payload, sizeof(payload));
+    // Fold the version string separately so its length participates too (a
+    // string suffix bump like "0.1.0" -> "0.1.0a" would leave the payload
+    // identical without this).
+    if (ar_version_str && ar_version_str[0]) {
+        h ^= part_asset::fnv1a64(ar_version_str, std::strlen(ar_version_str));
+    }
+    return h;
+}
+
+// Cheap "does file exist" probe. stat() beats fopen() because it doesn't need
+// to open a descriptor for the miss path. Used by the retopo hook before
+// deciding to run the (expensive) MSL::retopo call.
+[[maybe_unused]] bool file_exists(const std::string& path) {
+    struct stat st;
+    return ::stat(path.c_str(), &st) == 0;
+}
+
+// Very lightweight escape for a part name / cache path substring embedded in
+// the retopo warning log line. Just strips embedded quotes so the log stays
+// greppable. We don't have the source's schema name here (root_hash is what
+// the flatten pipeline knows) — the plan's log format asks for `part="Name"`
+// so we surface the 16-hex root hash as a stand-in and callers wrapping this
+// with a name-aware layer can prepend a friendlier tag if needed.
+[[maybe_unused]] std::string retopo_log_part_id(uint64_t root_hash) {
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), "%016llx",
+                  static_cast<unsigned long long>(root_hash));
+    return std::string(buf);
+}
+
+// Retopo hook entry point. Called with the materialized merged mesh
+// (tris/triex, world-space, before clustering). Handles:
+//   - cache-key composition (merged mesh + settings + core version + platform)
+//   - .retopo.part cache hit -> swap merged mesh for cached retopo output
+//   - cache miss -> run MSL::retopo, on success write cache + swap mesh,
+//     on failure log a warn and leave tris/triex untouched
+// Returns silently in all cases (retopo failure is non-fatal by contract; the
+// flat bake continues with whichever mesh survived). Bumps
+// retopo_hook_stats::g_invocations on the cache-miss path (not on hit).
+//
+// Design notes:
+//   - When MATTER_HAVE_AUTOREMESHER is not defined at compile time, we log a
+//     one-line warning that the schema opted in but the build has no retopo
+//     support, and leave tris/triex unchanged. This preserves the "no
+//     observable behavior change" contract for the no-retopo build case where
+//     the schema wants retopo but the binary can't provide it.
+//   - Cache-hit path calls load_v2 with the retopo cache key as the expected
+//     hash — a stale or corrupted sibling (hash mismatch) is treated as a
+//     miss and rewritten by the follow-up MSL::retopo call.
+[[maybe_unused]] void apply_retopo_hook(const std::string& cache_root,
+                       uint64_t root_hash,
+                       const part_asset::RetopoSettings& rs,
+                       std::vector<Tri>&   tris,
+                       std::vector<TriEx>& triex) {
+    if (!rs.enabled) return;               // schema not opted in — inert path
+    if (tris.empty()) return;              // nothing to retopo
+
+#if !defined(MATTER_HAVE_AUTOREMESHER)
+    // Unreachable in practice: the top-level flatten_part_impl short-
+    // circuits opt-in bakes to the streaming path (byte-identical fallback)
+    // when this macro isn't defined. Kept as a defence-in-depth guard so
+    // apply_retopo_hook is safe to call even if a future caller wires it
+    // in from another site.
+    (void)cache_root; (void)root_hash; (void)tris; (void)triex;
+    return;
+#else
+    const uint64_t flat_mesh_hash = merged_mesh_hash(tris);
+    const uint64_t retopo_key =
+        compute_retopo_cache_key(flat_mesh_hash, rs,
+                                 autoremesher::AUTOREMESHER_CORE_VERSION);
+    const std::string retopo_rel_path = part_asset::cache_path_retopo(retopo_key);
+    const std::string retopo_abs_path = cache_root + "/" + retopo_rel_path;
+
+    // Cache-hit path.
+    if (file_exists(retopo_abs_path)) {
+        std::vector<Tri>   cached_tris;
+        std::vector<TriEx> cached_triex;
+        if (load_retopo_part(retopo_abs_path, retopo_key,
+                             cached_tris, cached_triex)) {
+            tris.swap(cached_tris);
+            triex.swap(cached_triex);
+            return;                        // hit: don't bump invocation counter
+        }
+        // File exists but load failed (stale / corrupt / hash mismatch); fall
+        // through to the miss path and overwrite.
+    }
+
+    // Cache-miss path — run MSL::retopo. Bump invocation counter FIRST so
+    // Task 14 sees the pipeline reached the retopo call even if the retopo
+    // itself fails (a failed retopo call still counts as an invocation from
+    // the test's perspective).
+    matter_engine3::retopo_hook_stats::bump();
+
+    const auto t0 = std::chrono::steady_clock::now();
+    MeshIndexed in = from_tri(tris, &triex);
+    RetopoOptions ropts;
+    ropts.target_ratio    = rs.target_ratio;
+    ropts.iterations      = rs.iterations;
+    ropts.seed            = rs.seed;
+    ropts.timeout_seconds = rs.timeout_seconds;
+    ropts.threads         = 1;             // deterministic FP summation
+
+    RetopoResult rres = retopo(in, ropts);
+    const auto t1 = std::chrono::steady_clock::now();
+    const double elapsed =
+        std::chrono::duration<double>(t1 - t0).count();
+
+    if (!rres.ok) {
+        // Failure fallback — log exactly the format the plan mandates so
+        // downstream greps (`grep '\[warn\] retopo:' ...`) surface the case.
+        std::fprintf(stderr,
+            "[warn] retopo: part=\"%s\" err=\"%s\" elapsed=%.2fs "
+            "-> falling back to unretopo'd mesh\n",
+            retopo_log_part_id(root_hash).c_str(),
+            rres.err.c_str(), elapsed);
+        // Do NOT write .retopo.part — next bake retries.
+        return;
+    }
+
+    // Success — swap the retopo'd mesh in, write the cache sibling.
+    std::vector<Tri>   out_tris;
+    std::vector<TriEx> out_triex;
+    to_tri(rres.mesh, out_tris, out_triex);
+    if (out_tris.empty()) {
+        // MSL::retopo reports ok=true but yielded no triangles. Treat as a
+        // soft failure so we don't cache an empty artifact.
+        std::fprintf(stderr,
+            "[warn] retopo: part=\"%s\" err=\"empty retopo output\" "
+            "elapsed=%.2fs -> falling back to unretopo'd mesh\n",
+            retopo_log_part_id(root_hash).c_str(), elapsed);
+        return;
+    }
+
+    // Write cache BEFORE swapping so a save_v2 failure doesn't leave us with
+    // an unwritten cache but a mesh replacement.
+    if (!save_retopo_part(retopo_abs_path, retopo_key, out_tris, out_triex)) {
+        // Cache write failed (disk full, permission, etc.) — still use the
+        // retopo'd mesh for THIS bake so the schema author sees the effect,
+        // but log so the next bake can be diagnosed.
+        std::fprintf(stderr,
+            "[warn] retopo: part=\"%s\" err=\"save_retopo_part failed\" "
+            "elapsed=%.2fs -> using retopo output but cache write skipped\n",
+            retopo_log_part_id(root_hash).c_str(), elapsed);
+    }
+    tris.swap(out_tris);
+    triex.swap(out_triex);
+#endif   // MATTER_HAVE_AUTOREMESHER
+}
+
+// Load a `.retopo.part` artifact into (tris, triex). Returns true on success.
+// The retopo cache uses the plain .part v2 codec — the file's expected
+// resolved_hash is the retopo cache key itself, so an accidental hash
+// collision or stale sibling from an older run trips load_v2's hash guard and
+// we fall through to a cache miss (re-run retopo).
+[[maybe_unused]] bool load_retopo_part(const std::string& path,
+                      uint64_t retopo_cache_key,
+                      std::vector<Tri>& tris_out,
+                      std::vector<TriEx>& triex_out) {
+    BLASManager blas;
+    TLASManager tlas(4);          // no internal instances in a retopo artifact
+    std::vector<part_asset::ChildInstance> children_unused;
+    part_asset::LodLevels lods_unused;
+    if (!part_asset::load_v2(path, retopo_cache_key, blas, tlas,
+                             children_unused, lods_unused)) {
+        return false;
+    }
+    // A retopo .part has exactly one BLAS entry (the merged retopo'd mesh).
+    // Anything else is a corrupt / mis-versioned artifact; treat as miss.
+    const auto& entries = blas.get_entries();
+    if (entries.size() != 1) return false;
+    const auto& e = entries[0];
+    tris_out.assign(e->triangles.begin(), e->triangles.end());
+    if (e->tri_extra.size() == e->triangles.size()) {
+        triex_out.assign(e->tri_extra.begin(), e->tri_extra.end());
+    } else {
+        triex_out.clear();
+    }
+    return true;
+}
+
+// Write the retopo'd mesh into a .retopo.part sibling. Uses the plain .part
+// v2 codec — a single BLAS entry stores the whole retopo'd mesh (retopo
+// output isn't clustered; the LOD ladder still runs downstream and produces
+// the multi-cluster .flat.part). Same atomic-temp-then-rename semantics as
+// save_v2 so a concurrent bake never sees a half-written file.
+[[maybe_unused]] bool save_retopo_part(const std::string& path,
+                      uint64_t retopo_cache_key,
+                      const std::vector<Tri>& tris,
+                      const std::vector<TriEx>& triex) {
+    BLASManager blas;
+    TLASManager tlas(4);
+    const TriEx* ex_ptr = triex.empty() ? nullptr : triex.data();
+    (void)blas.register_triangles(const_cast<Tri*>(tris.data()),
+                                  static_cast<int>(tris.size()),
+                                  ex_ptr);
+    part_asset::LodLevels empty_lods;
+    return part_asset::save_v2(path, blas, tlas,
+                               /*children*/nullptr, /*child_count*/0,
+                               empty_lods, retopo_cache_key);
+}
+
+// Materialized-mesh flatten path used by the retopo hook. Mirrors the
+// streaming loop below (identical cluster+ladder shape and BLAS registration
+// order) but starts from a pre-materialized `tris`/`triex` array instead of
+// tickets. `refs` is threaded through from the gather so instance_refs land
+// in the .flat.part trailer as usual.
+//
+// This function is a near-copy of the streaming path — the two are only
+// meaningfully different in HOW the per-cluster Tri array is produced. If
+// the streaming loop's cluster/ladder logic ever changes, keep this in sync.
+[[maybe_unused]] FlattenResult flatten_materialized(const std::string& cache_root,
+                                   uint64_t root_hash,
+                                   const FlattenTargets& targets,
+                                   std::vector<Tri>&   tris,
+                                   std::vector<TriEx>& triex,
+                                   std::vector<part_asset::FlatInstanceRef>& refs,
+                                   FlattenResult& res,
+                                   bool log_peak,
+                                   size_t rss_entry) {
+    res.full_tris = tris.size();
+
+    // Whole-mesh AABB & radius — needed for the ladder's global epsilon
+    // sizing (see the streaming path's identical computation).
+    float mn[3] = { std::numeric_limits<float>::max(),
+                    std::numeric_limits<float>::max(),
+                    std::numeric_limits<float>::max() };
+    float mx[3] = { -std::numeric_limits<float>::max(),
+                    -std::numeric_limits<float>::max(),
+                    -std::numeric_limits<float>::max() };
+    for (const auto& t : tris) {
+        const float3* vs[3] = { &t.vertex0, &t.vertex1, &t.vertex2 };
+        for (int k = 0; k < 3; ++k) {
+            if (vs[k]->x < mn[0]) mn[0] = vs[k]->x;
+            if (vs[k]->y < mn[1]) mn[1] = vs[k]->y;
+            if (vs[k]->z < mn[2]) mn[2] = vs[k]->z;
+            if (vs[k]->x > mx[0]) mx[0] = vs[k]->x;
+            if (vs[k]->y > mx[1]) mx[1] = vs[k]->y;
+            if (vs[k]->z > mx[2]) mx[2] = vs[k]->z;
+        }
+    }
+    const float dx = tris.empty() ? 0.0f : mx[0]-mn[0];
+    const float dy = tris.empty() ? 0.0f : mx[1]-mn[1];
+    const float dz = tris.empty() ? 0.0f : mx[2]-mn[2];
+    const float radius = 0.5f * std::sqrt(dx*dx+dy*dy+dz*dz);
+
+    // Reorder tris (and triex, if present) into contiguous cluster ranges.
+    // split_clusters permutes in place; it fills each Cluster's per-cluster
+    // AABB alongside so we don't have to recompute.
+    auto clusters = part_cluster::split_clusters(tris, triex,
+                                                 targets.cluster_target_tris);
+    const size_t n_clusters = clusters.size();
+
+    BLASManager blas;
+    TLASManager tlas(4);
+
+    std::vector<part_asset::FlatCluster> flat_clusters;
+    flat_clusters.reserve(n_clusters);
+
+    size_t max_levels = 0;
+    size_t coarsest_tris = 0;
+
+    auto find_blas_idx = [&](BLASHandle h) -> uint32_t {
+        const auto& entries = blas.get_entries();
+        for (size_t k = 0; k < entries.size(); ++k)
+            if (entries[k]->handle == h) return static_cast<uint32_t>(k);
+        return UINT32_MAX;
+    };
+
+    struct LevelMeta { float eps; uint32_t blas_idx; };
+    auto register_level = [&](const std::vector<Tri>& ltris,
+                              const std::vector<TriEx>& ltriex,
+                              float eps,
+                              std::vector<LevelMeta>& metas) -> bool {
+        const TriEx* ex_ptr = ltriex.empty() ? nullptr : ltriex.data();
+        BLASHandle h = blas.register_triangles(const_cast<Tri*>(ltris.data()),
+                                               static_cast<int>(ltris.size()),
+                                               ex_ptr);
+        uint32_t idx = find_blas_idx(h);
+        if (idx == UINT32_MAX) { res.error = "flatten: BLAS registration failed"; return false; }
+        metas.push_back({eps, idx});
+        return true;
+    };
+
+    for (const auto& cl : clusters) {
+        // Slice the (already permuted) merged arrays into a per-cluster
+        // buffer. Direct copies — no ticket indirection needed here.
+        std::vector<Tri>   ctris(tris.begin() + cl.first_tri,
+                                 tris.begin() + cl.first_tri + cl.tri_count);
+        std::vector<TriEx> ctriex;
+        if (!triex.empty()) {
+            ctriex.assign(triex.begin() + cl.first_tri,
+                          triex.begin() + cl.first_tri + cl.tri_count);
+        }
+
+        std::vector<LevelMeta> level_metas;
+        if (!register_level(ctris, ctriex, /*eps=*/0.0f, level_metas)) return res;
+
+        size_t prev_count = ctris.size();
+        size_t last_kept_count = ctris.size();
+        for (float div : targets.radius_divisor) {
+            const float eps = radius / div;
+            std::vector<Tri> geo = lod_bake::decimate_to_error(ctris, eps, /*use_aabb_bounds=*/false);
+            if (geo.empty() || geo.size() >= prev_count) continue;
+            std::vector<TriEx> ex;
+            {
+                MeshIndexed src_m = from_tri(ctris, &ctriex);
+                MeshIndexed tgt_m = from_tri(geo, nullptr);
+                ::reproject_triex(src_m, tgt_m);
+                std::vector<Tri> tgt_tris_ignored;
+                to_tri(tgt_m, tgt_tris_ignored, ex);
+            }
+            if (!register_level(geo, ex, eps, level_metas)) return res;
+            prev_count = geo.size();
+            last_kept_count = geo.size();
+            if (prev_count <= (size_t)targets.min_level_tris) break;
+        }
+
+        std::vector<Tri>().swap(ctris);
+        std::vector<TriEx>().swap(ctriex);
+
+        part_asset::LodLevels lods;
+        lods.reserve(level_metas.size());
+        for (size_t i = 0; i < level_metas.size(); ++i) {
+            float thr = 0.0f;
+            if (i + 1 < level_metas.size()) {
+                const float next_eps = level_metas[i + 1].eps;
+                thr = radius * targets.pixel_budget * targets.pixel_angle / next_eps;
+            }
+            part_asset::LodLevel lvl;
+            lvl.screen_size_threshold = thr;
+            lvl.blas_indices.push_back(level_metas[i].blas_idx);
+            lods.push_back(std::move(lvl));
+        }
+
+        if (level_metas.size() > max_levels) max_levels = level_metas.size();
+        coarsest_tris = last_kept_count;
+
+        part_asset::FlatCluster fc;
+        fc.aabb_min[0] = cl.aabb_min[0];
+        fc.aabb_min[1] = cl.aabb_min[1];
+        fc.aabb_min[2] = cl.aabb_min[2];
+        fc.aabb_max[0] = cl.aabb_max[0];
+        fc.aabb_max[1] = cl.aabb_max[1];
+        fc.aabb_max[2] = cl.aabb_max[2];
+        fc.lods = std::move(lods);
+        flat_clusters.push_back(std::move(fc));
+    }
+
+    res.levels        = max_levels;
+    res.clusters      = n_clusters;
+    res.coarsest_tris = coarsest_tris;
+    res.instance_refs = refs.size();
+
+    // Drop the merged mesh before save so peak RSS report is honest.
+    std::vector<Tri>().swap(tris);
+    std::vector<TriEx>().swap(triex);
+
+    const size_t rss_peak = log_peak ? peak_rss_bytes() : 0;
+
+    const std::string out_path = cache_root + "/" + part_asset::cache_path_flat(root_hash);
+    if (!part_asset::save_flat_v3(out_path, blas, tlas, flat_clusters, refs,
+                                  root_hash)) {
+        res.error = "flatten: save_flat_v3 failed for " + out_path;
+        return res;
+    }
+
+    if (log_peak) {
+        const double mb = 1.0 / (1024.0 * 1024.0);
+        const size_t rss_exit = peak_rss_bytes();
+        std::fprintf(stderr,
+            "[flatten peak retopo] root=%016llx tris=%zu clusters=%zu refs=%zu "
+            "rss_entry=%.1fMB rss_pre_save=%.1fMB rss_exit=%.1fMB "
+            "delta=%.1fMB\n",
+            (unsigned long long)root_hash, res.full_tris, n_clusters, refs.size(),
+            (double)rss_entry * mb, (double)rss_peak * mb, (double)rss_exit * mb,
+            (double)(rss_exit - rss_entry) * mb);
+    }
+
+    res.ok = true;
+    return res;
+}
+
 } // namespace
 
 // Stage 3: assemble a flat artifact from budget-variant bakes (sidecar) instead
@@ -688,6 +1193,58 @@ static FlattenResult flatten_part_impl(const std::string& cache_root,
         return flatten_budget_ladder(cache_root, root_hash, targets, g,
                                      radius_full, variants);
     }
+
+    // Phase 5 retopo hook: when the schema opts in
+    // (targets.retopo.enabled == true), we can't use the streaming skeleton
+    // path — retopo is a global-mesh operation and needs the merged Tri array
+    // materialized up front. Switch to a classic gather() that produces the
+    // whole merged mesh in memory, run the retopo hook (cache-check +
+    // MSL::retopo on miss), then feed the resulting mesh into a materialized
+    // cluster+LOD ladder that mirrors the streaming loop below.
+    //
+    // Trade-off is intentional: retopo is opt-in, typically for hand-authored
+    // hero parts small enough that materializing the whole mesh isn't a
+    // memory concern. Scatter-heavy roots (StressForest, meadow grass) never
+    // opt in, so their streaming path is unaffected.
+    //
+    // Gated on MATTER_HAVE_AUTOREMESHER: builds without the vendored
+    // autoremesher_core lib have no retopo pipeline at all, so a schema
+    // opt-in in that build case would waste CPU running the materialized
+    // path only to fall back to unretopo'd output. Skip straight to
+    // streaming — same effect, no code-path divergence for the byte-
+    // identical guarantee.
+#if defined(MATTER_HAVE_AUTOREMESHER)
+    if (targets.retopo.enabled) {
+        if (!g.gather(root_hash, kIdentity, 0, res.error)) return res;
+        std::vector<Tri>&   full_tris  = g.tris();
+        std::vector<TriEx>& full_triex = g.triex();
+        std::vector<part_asset::FlatInstanceRef>& refs = g.instance_refs();
+        if (full_tris.empty() && refs.empty()) {
+            res.error = "flatten: merged mesh is empty"; return res;
+        }
+
+        // Apply retopo (in-place mesh swap on cache hit or successful run;
+        // no-op on schema opt-out / failure / build without autoremesher).
+        apply_retopo_hook(cache_root, root_hash, targets.retopo,
+                          full_tris, full_triex);
+
+        return flatten_materialized(cache_root, root_hash, targets,
+                                    full_tris, full_triex, refs, res, log_peak,
+                                    rss_entry);
+    }
+#else
+    if (targets.retopo.enabled) {
+        // Schema opted into retopo but this build has no autoremesher_core.
+        // Log a one-line warning and fall through to the streaming path so
+        // the .flat.part stays byte-identical to a schema that never opted
+        // in. Same non-observable-behavior guarantee.
+        std::fprintf(stderr,
+            "[warn] retopo: part=\"%016llx\" err=\"MATTER_HAVE_AUTOREMESHER "
+            "undefined in this build\" elapsed=0.00s -> falling back to "
+            "unretopo'd mesh (streaming path)\n",
+            static_cast<unsigned long long>(root_hash));
+    }
+#endif
 
     // Streaming path: Pass 1 gathers per-triangle centroids + tickets (~28
     // bytes/tri) instead of the whole merged mesh (~160 bytes/tri), computes

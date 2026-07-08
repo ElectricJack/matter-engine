@@ -93,6 +93,14 @@ std::string cache_path_flat(uint64_t resolved_hash);
 // source/param change changes the root hash and orphans the stale sidecar.
 std::string cache_path_lods(uint64_t resolved_hash);
 
+// Cache path for the RETOPO'd merged mesh (Phase 5 autoremesher). The
+// filename key is NOT the part's resolved hash — retopo output depends on
+// (flat mesh hash, RetopoSettings, autoremesher_core version, platform
+// triple), so part_flatten computes a fold of those inputs and uses THAT as
+// the key. Written iff MSL::retopo succeeds; on failure the pipeline keeps
+// the unretopo'd mesh and no sibling is written (next bake retries).
+std::string cache_path_retopo(uint64_t retopo_cache_key);
+
 struct LodVariants {
     double                anchor_size = 0.0;
     std::vector<double>   budgets;   // parallel to hashes, finest first
